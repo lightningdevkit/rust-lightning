@@ -575,6 +575,14 @@ pub enum HTLCHandlingFailureType {
 		/// The payment hash of the payment we attempted to process.
 		payment_hash: PaymentHash,
 	},
+	/// We were responsible for pathfinding and forwarding of a trampoline payment, but failed to
+	/// do so. An example of such an instance is when we can't find a route to the specified
+	/// trampoline destination within.
+	TrampolineForward {
+		/// The set of HTLCs dispatched by our node in an attempt to complete the trampoline forward
+		/// which have failed.
+		attempted_htlcs: Vec<HTLCLocator>,
+	},
 }
 
 impl_writeable_tlv_based_enum_upgradable!(HTLCHandlingFailureType,
@@ -591,6 +599,9 @@ impl_writeable_tlv_based_enum_upgradable!(HTLCHandlingFailureType,
 	(3, InvalidOnion) => {},
 	(4, Receive) => {
 		(0, payment_hash, required),
+	},
+	(5, TrampolineForward) => {
+		(0, attempted_htlcs, required_vec),
 	},
 );
 
@@ -728,6 +739,25 @@ pub enum InboundChannelFunds {
 	/// who is the channel opener in this case.
 	DualFunded,
 }
+
+/// Identifies the channel and peer committed to a HTLC, used for both incoming and outgoing HTLCs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HTLCLocator {
+	/// The channel that the HTLC was sent or received on.
+	pub channel_id: ChannelId,
+
+	/// The `user_channel_id` for `channel_id`.
+	pub user_channel_id: Option<u128>,
+
+	/// The public key identify of the node that the HTLC was sent to or received from.
+	pub node_id: Option<PublicKey>,
+}
+
+impl_writeable_tlv_based!(HTLCLocator, {
+	(1, channel_id, required),
+	(3, user_channel_id, option),
+	(5, node_id, option),
+});
 
 /// An Event which you should probably take some action in response to.
 ///
@@ -1316,34 +1346,14 @@ pub enum Event {
 	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
 	/// returning `Err(ReplayEvent ())`) and will be persisted across restarts.
 	PaymentForwarded {
-		/// The channel id of the incoming channel between the previous node and us.
-		///
-		/// This is only `None` for events generated or serialized by versions prior to 0.0.107.
-		prev_channel_id: Option<ChannelId>,
-		/// The channel id of the outgoing channel between the next node and us.
-		///
-		/// This is only `None` for events generated or serialized by versions prior to 0.0.107.
-		next_channel_id: Option<ChannelId>,
-		/// The `user_channel_id` of the incoming channel between the previous node and us.
-		///
-		/// This is only `None` for events generated or serialized by versions prior to 0.0.122.
-		prev_user_channel_id: Option<u128>,
-		/// The `user_channel_id` of the outgoing channel between the next node and us.
-		///
-		/// This will be `None` if the payment was settled via an on-chain transaction. See the
-		/// caveat described for the `total_fee_earned_msat` field. Moreover it will be `None` for
-		/// events generated or serialized by versions prior to 0.0.122.
-		next_user_channel_id: Option<u128>,
-		/// The node id of the previous node.
-		///
-		/// This is only `None` for HTLCs received prior to 0.1 or for events serialized by
-		/// versions prior to 0.1
-		prev_node_id: Option<PublicKey>,
-		/// The node id of the next node.
-		///
-		/// This is only `None` for HTLCs received prior to 0.1 or for events serialized by
-		/// versions prior to 0.1
-		next_node_id: Option<PublicKey>,
+		/// The set of HTLCs forwarded to our node that will be claimed by this forward. Contains a
+		/// single HTLC for source-routed payments, and may contain multiple HTLCs when we acted as
+		/// a trampoline router, responsible for pathfinding within the route.
+		prev_htlcs: Vec<HTLCLocator>,
+		/// The set of HTLCs forwarded by our node that have been claimed by this forward. Contains
+		/// a single HTLC for regular source-routed payments, and may contain multiple HTLCs when
+		/// we acted as a trampoline router, responsible for pathfinding within the route.
+		next_htlcs: Vec<HTLCLocator>,
 		/// The total fee, in milli-satoshis, which was earned as a result of the payment.
 		///
 		/// Note that if we force-closed the channel over which we forwarded an HTLC while the HTLC
@@ -1664,8 +1674,9 @@ pub enum Event {
 	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
 	/// returning `Err(ReplayEvent ())`) and will be persisted across restarts.
 	HTLCHandlingFailed {
-		/// The channel over which the HTLC was received.
-		prev_channel_id: ChannelId,
+		/// The channel(s) over which the HTLC(s) was received. May contain multiple entries for
+		/// trampoline forwards.
+		prev_channel_ids: Vec<ChannelId>,
 		/// The type of HTLC handling that failed.
 		failure_type: HTLCHandlingFailureType,
 		/// The reason that the HTLC failed.
@@ -2027,12 +2038,8 @@ impl Writeable for Event {
 				});
 			},
 			&Event::PaymentForwarded {
-				prev_channel_id,
-				next_channel_id,
-				prev_user_channel_id,
-				next_user_channel_id,
-				prev_node_id,
-				next_node_id,
+				ref prev_htlcs,
+				ref next_htlcs,
 				total_fee_earned_msat,
 				skimmed_fee_msat,
 				claim_from_onchain_tx,
@@ -2041,15 +2048,20 @@ impl Writeable for Event {
 				7u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(0, total_fee_earned_msat, option),
-					(1, prev_channel_id, option),
+					// Type 1 was prev_channel_id in 0.2 and earlier.
 					(2, claim_from_onchain_tx, required),
-					(3, next_channel_id, option),
+					// Type 3 was next_channel_id in 0.2 and earlier.
 					(5, outbound_amount_forwarded_msat, option),
 					(7, skimmed_fee_msat, option),
-					(9, prev_user_channel_id, option),
-					(11, next_user_channel_id, option),
-					(13, prev_node_id, option),
-					(15, next_node_id, option),
+					// Type 9 was prev_user_channel_id in 0.2 and earlier.
+					// Type 11 was next_user_channel_id in 0.2 and earlier.
+					// Type 13 was prev_node_id in 0.2 and earlier.
+					// Type 15 was next_node_id in 0.2 and earlier.
+					// HTLCs are written as required, rather than required_vec, so that they can be
+					// deserialized using default_value to fill in legacy fields which expects
+					// LengthReadable (requried_vec is WithoutLength).
+					(17, *prev_htlcs, required),
+					(19, *next_htlcs, required),
 				});
 			},
 			&Event::ChannelClosed {
@@ -2197,15 +2209,16 @@ impl Writeable for Event {
 				})
 			},
 			&Event::HTLCHandlingFailed {
-				ref prev_channel_id,
+				ref prev_channel_ids,
 				ref failure_type,
 				ref failure_reason,
 			} => {
 				25u8.write(writer)?;
 				write_tlv_fields!(writer, {
-					(0, prev_channel_id, required),
+					// Type 0 was prev_channel_id in 0.2 and earlier.
 					(1, failure_reason, option),
 					(2, failure_type, required),
+					(3, *prev_channel_ids, required),
 				})
 			},
 			&Event::BumpTransaction(ref event) => {
@@ -2544,35 +2557,63 @@ impl MaybeReadable for Event {
 			},
 			7u8 => {
 				let mut f = || {
-					let mut prev_channel_id = None;
-					let mut next_channel_id = None;
-					let mut prev_user_channel_id = None;
-					let mut next_user_channel_id = None;
-					let mut prev_node_id = None;
-					let mut next_node_id = None;
+					// Legacy values that have been replaced by prev_htlcs and next_htlcs.
+					let mut prev_channel_id_legacy = None;
+					let mut next_channel_id_legacy = None;
+					let mut prev_user_channel_id_legacy = None;
+					let mut next_user_channel_id_legacy = None;
+					let mut prev_node_id_legacy = None;
+					let mut next_node_id_legacy = None;
+
 					let mut total_fee_earned_msat = None;
 					let mut skimmed_fee_msat = None;
 					let mut claim_from_onchain_tx = false;
 					let mut outbound_amount_forwarded_msat = None;
+					let mut prev_htlcs = vec![];
+					let mut next_htlcs = vec![];
 					read_tlv_fields!(reader, {
 						(0, total_fee_earned_msat, option),
-						(1, prev_channel_id, option),
+						(1, prev_channel_id_legacy, option),
 						(2, claim_from_onchain_tx, required),
-						(3, next_channel_id, option),
+						(3, next_channel_id_legacy, option),
 						(5, outbound_amount_forwarded_msat, option),
 						(7, skimmed_fee_msat, option),
-						(9, prev_user_channel_id, option),
-						(11, next_user_channel_id, option),
-						(13, prev_node_id, option),
-						(15, next_node_id, option),
+						(9, prev_user_channel_id_legacy, option),
+						(11, next_user_channel_id_legacy, option),
+						(13, prev_node_id_legacy, option),
+						(15, next_node_id_legacy, option),
+						// We can't unwrap prev_channel_id_legacy or next_channel_id_legacy here
+						// because default_value eagerly evaluates the default, so events that do
+						// not have legacy fields would fail. We settle for setting a zero ChannelID
+						// and replacing it below.
+						(17, prev_htlcs, (default_value, vec![HTLCLocator{
+							channel_id: ChannelId::new_zero(),
+							user_channel_id: prev_user_channel_id_legacy,
+							node_id: prev_node_id_legacy,
+						}])),
+						(19, next_htlcs, (default_value, vec![HTLCLocator{
+							channel_id: ChannelId::new_zero(),
+							user_channel_id: next_user_channel_id_legacy,
+							node_id: next_node_id_legacy,
+						}])),
 					});
+
+					// If dealing with legacy serialization, we can be confident that we'll
+					// replace the zero value placeholders above because these fields were only
+					// None for events serialized before 0.0.107. We do not allow nodes with pending
+					// forwards to be upgraded directly to 0.1 from versions 0.0.123 or earlier,
+					// so we should always have Some here when reading legacy serialization.
+					if let Some(prev_channel_id) = prev_channel_id_legacy {
+						prev_htlcs[0].channel_id = prev_channel_id;
+					}
+
+					if let Some(next_channel_id) = next_channel_id_legacy {
+						next_htlcs[0].channel_id = next_channel_id;
+					}
+
 					Ok(Some(Event::PaymentForwarded {
-						prev_channel_id,
-						next_channel_id,
-						prev_user_channel_id,
-						next_user_channel_id,
-						prev_node_id,
-						next_node_id,
+						prev_htlcs,
+						next_htlcs,
 						total_fee_earned_msat,
 						skimmed_fee_msat,
 						claim_from_onchain_tx,
@@ -2761,13 +2802,19 @@ impl MaybeReadable for Event {
 			},
 			25u8 => {
 				let mut f = || {
-					let mut prev_channel_id = ChannelId::new_zero();
+					let mut prev_channel_id_legacy = None;
 					let mut failure_reason = None;
 					let mut failure_type_opt = UpgradableRequired(None);
+					let mut prev_channel_ids = vec![];
 					read_tlv_fields!(reader, {
-						(0, prev_channel_id, required),
+						(0, prev_channel_id_legacy, option),
 						(1, failure_reason, option),
 						(2, failure_type_opt, upgradable_required),
+						// If our new prev_channel_ids field is not present, the legacy field
+						// must be because it used to be required.
+						(3, prev_channel_ids, (default_value, vec![
+							prev_channel_id_legacy.ok_or(msgs::DecodeError::InvalidValue)?,
+						])),
 					});
 
 					// If a legacy HTLCHandlingFailureType::UnknownNextHop was written, upgrade
@@ -2781,8 +2828,9 @@ impl MaybeReadable for Event {
 						});
 						failure_reason = Some(LocalHTLCFailureReason::UnknownNextPeer.into());
 					}
+
 					Ok(Some(Event::HTLCHandlingFailed {
-						prev_channel_id,
+						prev_channel_ids,
 						failure_type: _init_tlv_based_struct_field!(
 							failure_type_opt,
 							upgradable_required
