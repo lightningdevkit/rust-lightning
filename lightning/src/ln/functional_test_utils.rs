@@ -733,7 +733,7 @@ pub trait NodeHolder {
 		&self,
 	) -> &ChannelManager<
 		<Self::CM as AChannelManager>::M,
-		<Self::CM as AChannelManager>::T,
+		<Self::CM as AChannelManager>::Broadcaster,
 		<Self::CM as AChannelManager>::ES,
 		<Self::CM as AChannelManager>::NS,
 		<Self::CM as AChannelManager>::SP,
@@ -750,7 +750,7 @@ impl<H: NodeHolder> NodeHolder for &H {
 		&self,
 	) -> &ChannelManager<
 		<Self::CM as AChannelManager>::M,
-		<Self::CM as AChannelManager>::T,
+		<Self::CM as AChannelManager>::Broadcaster,
 		<Self::CM as AChannelManager>::ES,
 		<Self::CM as AChannelManager>::NS,
 		<Self::CM as AChannelManager>::SP,

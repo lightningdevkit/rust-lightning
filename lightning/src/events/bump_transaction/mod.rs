@@ -694,9 +694,8 @@ where
 ///
 /// [`Event::BumpTransaction`]: crate::events::Event::BumpTransaction
 // Note that updates to documentation on this struct should be copied to the synchronous version.
-pub struct BumpTransactionEventHandler<B: Deref, C: Deref, SP: Deref, L: Deref>
+pub struct BumpTransactionEventHandler<B: BroadcasterInterface, C: Deref, SP: Deref, L: Deref>
 where
-	B::Target: BroadcasterInterface,
 	C::Target: CoinSelectionSource,
 	SP::Target: SignerProvider,
 	L::Target: Logger,
@@ -708,9 +707,9 @@ where
 	secp: Secp256k1<secp256k1::All>,
 }
 
-impl<B: Deref, C: Deref, SP: Deref, L: Deref> BumpTransactionEventHandler<B, C, SP, L>
+impl<B: BroadcasterInterface, C: Deref, SP: Deref, L: Deref>
+	BumpTransactionEventHandler<B, C, SP, L>
 where
-	B::Target: BroadcasterInterface,
 	C::Target: CoinSelectionSource,
 	SP::Target: SignerProvider,
 	L::Target: Logger,

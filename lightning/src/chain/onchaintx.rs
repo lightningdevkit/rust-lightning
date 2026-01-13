@@ -485,13 +485,12 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 	/// invoking this every 30 seconds, or lower if running in an environment with spotty
 	/// connections, like on mobile.
 	#[rustfmt::skip]
-	pub(super) fn rebroadcast_pending_claims<B: Deref, F: Deref, L: Logger>(
+	pub(super) fn rebroadcast_pending_claims<B: BroadcasterInterface, F: Deref, L: Logger>(
 		&mut self, current_height: u32, feerate_strategy: FeerateStrategy, broadcaster: &B,
 		conf_target: ConfirmationTarget, destination_script: &Script,
 		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
 	)
 	where
-		B::Target: BroadcasterInterface,
 		F::Target: FeeEstimator,
 	{
 		let mut bump_requests = Vec::with_capacity(self.pending_claim_requests.len());
@@ -761,14 +760,11 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 	/// does not need to equal the current blockchain tip height, which should be provided via
 	/// `cur_height`, however it must never be higher than `cur_height`.
 	#[rustfmt::skip]
-	pub(super) fn update_claims_view_from_requests<B: Deref, F: Deref, L: Logger>(
+	pub(super) fn update_claims_view_from_requests<B: BroadcasterInterface, F: Deref, L: Logger>(
 		&mut self, mut requests: Vec<PackageTemplate>, conf_height: u32, cur_height: u32,
 		broadcaster: &B, conf_target: ConfirmationTarget, destination_script: &Script,
 		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L
-	) where
-		B::Target: BroadcasterInterface,
-		F::Target: FeeEstimator,
-	{
+	) where F::Target: FeeEstimator, {
 		if !requests.is_empty() {
 			log_debug!(logger, "Updating claims view at height {} with {} claim requests", cur_height, requests.len());
 		}
@@ -912,12 +908,11 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 	/// confirmed. This does not need to equal the current blockchain tip height, which should be
 	/// provided via `cur_height`, however it must never be higher than `cur_height`.
 	#[rustfmt::skip]
-	pub(super) fn update_claims_view_from_matched_txn<B: Deref, F: Deref, L: Logger>(
+	pub(super) fn update_claims_view_from_matched_txn<B: BroadcasterInterface, F: Deref, L: Logger>(
 		&mut self, txn_matched: &[&Transaction], conf_height: u32, conf_hash: BlockHash,
 		cur_height: u32, broadcaster: &B, conf_target: ConfirmationTarget,
 		destination_script: &Script, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L
 	) where
-		B::Target: BroadcasterInterface,
 		F::Target: FeeEstimator,
 	{
 		let mut have_logged_intro = false;
@@ -1110,7 +1105,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 	}
 
 	#[rustfmt::skip]
-	pub(super) fn transaction_unconfirmed<B: Deref, F: Deref, L: Logger>(
+	pub(super) fn transaction_unconfirmed<B: BroadcasterInterface, F: Deref, L: Logger>(
 		&mut self,
 		txid: &Txid,
 		broadcaster: &B,
@@ -1119,7 +1114,6 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 		fee_estimator: &LowerBoundedFeeEstimator<F>,
 		logger: &L,
 	) where
-		B::Target: BroadcasterInterface,
 		F::Target: FeeEstimator,
 	{
 		let mut height = None;
@@ -1138,13 +1132,10 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 	}
 
 	#[rustfmt::skip]
-	pub(super) fn blocks_disconnected<B: Deref, F: Deref, L: Logger>(
+	pub(super) fn blocks_disconnected<B: BroadcasterInterface, F: Deref, L: Logger>(
 		&mut self, new_best_height: u32, broadcaster: &B, conf_target: ConfirmationTarget,
 		destination_script: &Script, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
-	)
-		where B::Target: BroadcasterInterface,
-			F::Target: FeeEstimator,
-	{
+	) where F::Target: FeeEstimator, {
 		let mut bump_candidates = new_hash_map();
 		let onchain_events_awaiting_threshold_conf =
 			self.onchain_events_awaiting_threshold_conf.drain(..).collect::<Vec<_>>();
