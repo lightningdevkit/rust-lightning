@@ -1776,9 +1776,7 @@ pub trait AChannelManager {
 	/// A type that may be dereferenced to [`Self::Watch`].
 	type M: Deref<Target = Self::Watch>;
 	/// A type implementing [`BroadcasterInterface`].
-	type Broadcaster: BroadcasterInterface + ?Sized;
-	/// A type that may be dereferenced to [`Self::Broadcaster`].
-	type T: Deref<Target = Self::Broadcaster>;
+	type Broadcaster: BroadcasterInterface;
 	/// A type implementing [`EntropySource`].
 	type EntropySource: EntropySource + ?Sized;
 	/// A type that may be dereferenced to [`Self::EntropySource`].
@@ -1814,7 +1812,7 @@ pub trait AChannelManager {
 		&self,
 	) -> &ChannelManager<
 		Self::M,
-		Self::T,
+		Self::Broadcaster,
 		Self::ES,
 		Self::NS,
 		Self::SP,
@@ -1827,7 +1825,7 @@ pub trait AChannelManager {
 
 impl<
 		M: Deref,
-		T: Deref,
+		T: BroadcasterInterface,
 		ES: Deref,
 		NS: Deref,
 		SP: Deref,
@@ -1838,7 +1836,6 @@ impl<
 	> AChannelManager for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-	T::Target: BroadcasterInterface,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -1849,8 +1846,7 @@ where
 {
 	type Watch = M::Target;
 	type M = M;
-	type Broadcaster = T::Target;
-	type T = T;
+	type Broadcaster = T;
 	type EntropySource = ES::Target;
 	type ES = ES;
 	type NodeSigner = NS::Target;
@@ -2652,7 +2648,7 @@ where
 //
 pub struct ChannelManager<
 	M: Deref,
-	T: Deref,
+	T: BroadcasterInterface,
 	ES: Deref,
 	NS: Deref,
 	SP: Deref,
@@ -2662,7 +2658,6 @@ pub struct ChannelManager<
 	L: Deref,
 > where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-	T::Target: BroadcasterInterface,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -3728,7 +3723,7 @@ fn create_htlc_intercepted_event(
 
 impl<
 		M: Deref,
-		T: Deref,
+		T: BroadcasterInterface,
 		ES: Deref,
 		NS: Deref,
 		SP: Deref,
@@ -3739,7 +3734,6 @@ impl<
 	> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-	T::Target: BroadcasterInterface,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -13203,7 +13197,7 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 
 impl<
 		M: Deref,
-		T: Deref,
+		T: BroadcasterInterface,
 		ES: Deref,
 		NS: Deref,
 		SP: Deref,
@@ -13214,7 +13208,6 @@ impl<
 	> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-	T::Target: BroadcasterInterface,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -14055,7 +14048,7 @@ where
 
 impl<
 		M: Deref,
-		T: Deref,
+		T: BroadcasterInterface,
 		ES: Deref,
 		NS: Deref,
 		SP: Deref,
@@ -14066,7 +14059,6 @@ impl<
 	> BaseMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-	T::Target: BroadcasterInterface,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -14413,7 +14405,7 @@ where
 
 impl<
 		M: Deref,
-		T: Deref,
+		T: BroadcasterInterface,
 		ES: Deref,
 		NS: Deref,
 		SP: Deref,
@@ -14424,7 +14416,6 @@ impl<
 	> EventsProvider for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-	T::Target: BroadcasterInterface,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -14448,7 +14439,7 @@ where
 
 impl<
 		M: Deref,
-		T: Deref,
+		T: BroadcasterInterface,
 		ES: Deref,
 		NS: Deref,
 		SP: Deref,
@@ -14459,7 +14450,6 @@ impl<
 	> chain::Listen for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-	T::Target: BroadcasterInterface,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -14509,7 +14499,7 @@ where
 
 impl<
 		M: Deref,
-		T: Deref,
+		T: BroadcasterInterface,
 		ES: Deref,
 		NS: Deref,
 		SP: Deref,
@@ -14520,7 +14510,6 @@ impl<
 	> chain::Confirm for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-	T::Target: BroadcasterInterface,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -14682,7 +14671,7 @@ pub(super) enum FundingConfirmedMessage {
 
 impl<
 		M: Deref,
-		T: Deref,
+		T: BroadcasterInterface,
 		ES: Deref,
 		NS: Deref,
 		SP: Deref,
@@ -14693,7 +14682,6 @@ impl<
 	> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-	T::Target: BroadcasterInterface,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -15044,7 +15032,7 @@ where
 
 impl<
 		M: Deref,
-		T: Deref,
+		T: BroadcasterInterface,
 		ES: Deref,
 		NS: Deref,
 		SP: Deref,
@@ -15055,7 +15043,6 @@ impl<
 	> ChannelMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-	T::Target: BroadcasterInterface,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -15619,7 +15606,7 @@ where
 
 impl<
 		M: Deref,
-		T: Deref,
+		T: BroadcasterInterface,
 		ES: Deref,
 		NS: Deref,
 		SP: Deref,
@@ -15630,7 +15617,6 @@ impl<
 	> OffersMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-	T::Target: BroadcasterInterface,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -15837,7 +15823,7 @@ where
 
 impl<
 		M: Deref,
-		T: Deref,
+		T: BroadcasterInterface,
 		ES: Deref,
 		NS: Deref,
 		SP: Deref,
@@ -15848,7 +15834,6 @@ impl<
 	> AsyncPaymentsMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-	T::Target: BroadcasterInterface,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -16039,7 +16024,7 @@ where
 #[cfg(feature = "dnssec")]
 impl<
 		M: Deref,
-		T: Deref,
+		T: BroadcasterInterface,
 		ES: Deref,
 		NS: Deref,
 		SP: Deref,
@@ -16050,7 +16035,6 @@ impl<
 	> DNSResolverMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-	T::Target: BroadcasterInterface,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -16107,7 +16091,7 @@ where
 
 impl<
 		M: Deref,
-		T: Deref,
+		T: BroadcasterInterface,
 		ES: Deref,
 		NS: Deref,
 		SP: Deref,
@@ -16118,7 +16102,6 @@ impl<
 	> NodeIdLookUp for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-	T::Target: BroadcasterInterface,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -16623,7 +16606,7 @@ impl_writeable_tlv_based!(PendingInboundPayment, {
 
 impl<
 		M: Deref,
-		T: Deref,
+		T: BroadcasterInterface,
 		ES: Deref,
 		NS: Deref,
 		SP: Deref,
@@ -16634,7 +16617,6 @@ impl<
 	> Writeable for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-	T::Target: BroadcasterInterface,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -16990,7 +16972,7 @@ impl Readable for VecDeque<(Event, Option<EventCompletionAction>)> {
 pub struct ChannelManagerReadArgs<
 	'a,
 	M: Deref,
-	T: Deref,
+	T: BroadcasterInterface,
 	ES: Deref,
 	NS: Deref,
 	SP: Deref,
@@ -17000,7 +16982,6 @@ pub struct ChannelManagerReadArgs<
 	L: Deref + Clone,
 > where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-	T::Target: BroadcasterInterface,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -17070,7 +17051,7 @@ pub struct ChannelManagerReadArgs<
 impl<
 		'a,
 		M: Deref,
-		T: Deref,
+		T: BroadcasterInterface,
 		ES: Deref,
 		NS: Deref,
 		SP: Deref,
@@ -17081,7 +17062,6 @@ impl<
 	> ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-	T::Target: BroadcasterInterface,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -17158,7 +17138,7 @@ fn dedup_decode_update_add_htlcs<L: Deref>(
 impl<
 		'a,
 		M: Deref,
-		T: Deref,
+		T: BroadcasterInterface,
 		ES: Deref,
 		NS: Deref,
 		SP: Deref,
@@ -17170,7 +17150,6 @@ impl<
 	for (BlockHash, Arc<ChannelManager<M, T, ES, NS, SP, F, R, MR, L>>)
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-	T::Target: BroadcasterInterface,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -17191,7 +17170,7 @@ where
 impl<
 		'a,
 		M: Deref,
-		T: Deref,
+		T: BroadcasterInterface,
 		ES: Deref,
 		NS: Deref,
 		SP: Deref,
@@ -17203,7 +17182,6 @@ impl<
 	for (BlockHash, ChannelManager<M, T, ES, NS, SP, F, R, MR, L>)
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-	T::Target: BroadcasterInterface,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
