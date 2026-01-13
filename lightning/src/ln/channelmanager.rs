@@ -2643,11 +2643,9 @@ pub struct ChannelManager<
 	#[cfg(not(test))]
 	flow: OffersMessageFlow<MR, L>,
 
-	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	#[cfg(any(test, feature = "_test_utils"))]
 	pub(super) best_block: RwLock<BestBlock>,
 	#[cfg(not(any(test, feature = "_test_utils")))]
-	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	best_block: RwLock<BestBlock>,
 	pub(super) secp_ctx: Secp256k1<secp256k1::All>,
 
@@ -2661,8 +2659,6 @@ pub struct ChannelManager<
 	/// after reloading from disk while replaying blocks against ChannelMonitors.
 	///
 	/// See `PendingOutboundPayment` documentation for more info.
-	///
-	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	pending_outbound_payments: OutboundPayments<L>,
 
 	/// SCID/SCID Alias -> forward infos. Key of 0 means payments received.
@@ -2673,8 +2669,6 @@ pub struct ChannelManager<
 	///
 	/// Note that no consistency guarantees are made about the existence of a channel with the
 	/// `short_channel_id` here, nor the `short_channel_id` in the `PendingHTLCInfo`!
-	///
-	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	#[cfg(test)]
 	pub(super) forward_htlcs: Mutex<HashMap<u64, Vec<HTLCForwardInfo>>>,
 	#[cfg(not(test))]
@@ -2687,8 +2681,6 @@ pub struct ChannelManager<
 	///    (or timeout)
 	/// 2. HTLCs that are being held on behalf of an often-offline sender until receipt of a
 	///    [`ReleaseHeldHtlc`] onion message from an often-offline recipient
-	///
-	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	pending_intercepted_htlcs: Mutex<HashMap<InterceptId, PendingAddHTLCInfo>>,
 
 	/// Outbound SCID Alias -> pending `update_add_htlc`s to decode.
@@ -2696,22 +2688,16 @@ pub struct ChannelManager<
 	///
 	/// Note that no consistency guarantees are made about the existence of a channel with the
 	/// `short_channel_id` here, nor the `channel_id` in `UpdateAddHTLC`!
-	///
-	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	decode_update_add_htlcs: Mutex<HashMap<u64, Vec<msgs::UpdateAddHTLC>>>,
 
 	/// The sets of payments which are claimable or currently being claimed. See
 	/// [`ClaimablePayments`]' individual field docs for more info.
-	///
-	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	claimable_payments: Mutex<ClaimablePayments>,
 
 	/// The set of outbound SCID aliases across all our channels, including unconfirmed channels
 	/// and some closed channels which reached a usable state prior to being closed. This is used
 	/// only to avoid duplicates, and is not persisted explicitly to disk, but rebuilt from the
 	/// active channel list on load.
-	///
-	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	outbound_scid_aliases: Mutex<HashSet<u64>>,
 
 	/// SCIDs (and outbound SCID aliases) -> `counterparty_node_id`s and `channel_id`s.
@@ -2723,8 +2709,6 @@ pub struct ChannelManager<
 	/// Note that while this holds `counterparty_node_id`s and `channel_id`s, no consistency
 	/// guarantees are made about the existence of a peer with the `counterparty_node_id` nor a
 	/// channel with the `channel_id` in our other maps.
-	///
-	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	#[cfg(test)]
 	pub(super) short_to_chan_info: FairRwLock<HashMap<u64, (PublicKey, ChannelId)>>,
 	#[cfg(not(test))]
@@ -2765,8 +2749,6 @@ pub struct ChannelManager<
 	/// channels.
 	///
 	/// Note that the same thread must never acquire two inner `PeerState` locks at the same time.
-	///
-	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	#[cfg(not(any(test, feature = "_test_utils")))]
 	per_peer_state: FairRwLock<HashMap<PublicKey, Mutex<PeerState<SP>>>>,
 	#[cfg(any(test, feature = "_test_utils"))]
@@ -2787,8 +2769,6 @@ pub struct ChannelManager<
 	///
 	/// Note that events MUST NOT be removed from pending_events after deserialization, as they
 	/// could be in the middle of being processed without the direct mutex held.
-	///
-	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	#[cfg(not(any(test, feature = "_test_utils")))]
 	pending_events: Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
 	#[cfg(any(test, feature = "_test_utils"))]
@@ -2808,8 +2788,6 @@ pub struct ChannelManager<
 	/// [`ChainMonitor`] and thus attempting to update it will fail or panic.
 	///
 	/// Thus, we place them here to be handled as soon as possible once we are running normally.
-	///
-	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	///
 	/// [`ChainMonitor`]: crate::chain::chainmonitor::ChainMonitor
 	pending_background_events: Mutex<Vec<BackgroundEvent>>,
