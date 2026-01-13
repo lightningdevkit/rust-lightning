@@ -125,6 +125,10 @@ use crate::types::string::UntrustedString;
 use crate::util::config::{ChannelConfig, ChannelConfigOverrides, ChannelConfigUpdate, UserConfig};
 use crate::util::errors::APIError;
 use crate::util::logger::{Level, Logger, WithContext};
+use crate::util::persist::{
+	KVStoreSync, CHANNEL_MANAGER_PERSISTENCE_KEY, CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+	CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
+};
 use crate::util::scid_utils::fake_scid;
 use crate::util::ser::{
 	BigSize, FixedLengthReader, LengthReadable, MaybeReadable, Readable, ReadableArgs, VecWriter,
@@ -1714,9 +1718,10 @@ struct PendingInboundPayment {
 ///
 /// This is not exported to bindings users as type aliases aren't supported in most languages.
 #[cfg(not(c_bindings))]
-pub type SimpleArcChannelManager<M, T, F, L> = ChannelManager<
+pub type SimpleArcChannelManager<M, T, K, F, L> = ChannelManager<
 	Arc<M>,
 	Arc<T>,
+	Arc<K>,
 	Arc<KeysManager>,
 	Arc<KeysManager>,
 	Arc<KeysManager>,
@@ -1747,24 +1752,26 @@ pub type SimpleArcChannelManager<M, T, F, L> = ChannelManager<
 ///
 /// This is not exported to bindings users as type aliases aren't supported in most languages.
 #[cfg(not(c_bindings))]
-pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, 'i, M, T, F, L> = ChannelManager<
-	&'a M,
-	&'b T,
-	&'c KeysManager,
-	&'c KeysManager,
-	&'c KeysManager,
-	&'d F,
-	&'e DefaultRouter<
-		&'f NetworkGraph<&'g L>,
-		&'g L,
+pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, 'i, 'j, M, T, K, F, L> =
+	ChannelManager<
+		&'a M,
+		&'b T,
+		&'j K,
 		&'c KeysManager,
-		&'h RwLock<ProbabilisticScorer<&'f NetworkGraph<&'g L>, &'g L>>,
-		ProbabilisticScoringFeeParameters,
-		ProbabilisticScorer<&'f NetworkGraph<&'g L>, &'g L>,
-	>,
-	&'i DefaultMessageRouter<&'f NetworkGraph<&'g L>, &'g L, &'c KeysManager>,
-	&'g L,
->;
+		&'c KeysManager,
+		&'c KeysManager,
+		&'d F,
+		&'e DefaultRouter<
+			&'f NetworkGraph<&'g L>,
+			&'g L,
+			&'c KeysManager,
+			&'h RwLock<ProbabilisticScorer<&'f NetworkGraph<&'g L>, &'g L>>,
+			ProbabilisticScoringFeeParameters,
+			ProbabilisticScorer<&'f NetworkGraph<&'g L>, &'g L>,
+		>,
+		&'i DefaultMessageRouter<&'f NetworkGraph<&'g L>, &'g L, &'c KeysManager>,
+		&'g L,
+	>;
 
 /// A trivial trait which describes any [`ChannelManager`].
 ///
@@ -1779,6 +1786,10 @@ pub trait AChannelManager {
 	type Broadcaster: BroadcasterInterface + ?Sized;
 	/// A type that may be dereferenced to [`Self::Broadcaster`].
 	type T: Deref<Target = Self::Broadcaster>;
+	/// A type implementing [`KVStoreSync`].
+	type KVStore: KVStoreSync + ?Sized;
+	/// A type that may be dereferenced to [`Self::KVStore`].
+	type K: Deref<Target = Self::KVStore>;
 	/// A type implementing [`EntropySource`].
 	type EntropySource: EntropySource + ?Sized;
 	/// A type that may be dereferenced to [`Self::EntropySource`].
@@ -1815,6 +1826,7 @@ pub trait AChannelManager {
 	) -> &ChannelManager<
 		Self::M,
 		Self::T,
+		Self::K,
 		Self::ES,
 		Self::NS,
 		Self::SP,
@@ -1828,6 +1840,7 @@ pub trait AChannelManager {
 impl<
 		M: Deref,
 		T: Deref,
+		K: Deref,
 		ES: Deref,
 		NS: Deref,
 		SP: Deref,
@@ -1835,10 +1848,11 @@ impl<
 		R: Deref,
 		MR: Deref,
 		L: Deref,
-	> AChannelManager for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> AChannelManager for ChannelManager<M, T, K, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
+	K::Target: KVStoreSync,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -1851,6 +1865,8 @@ where
 	type M = M;
 	type Broadcaster = T::Target;
 	type T = T;
+	type KVStore = K::Target;
+	type K = K;
 	type EntropySource = ES::Target;
 	type ES = ES;
 	type NodeSigner = NS::Target;
@@ -1866,7 +1882,7 @@ where
 	type MR = MR;
 	type Logger = L::Target;
 	type L = L;
-	fn get_cm(&self) -> &ChannelManager<M, T, ES, NS, SP, F, R, MR, L> {
+	fn get_cm(&self) -> &ChannelManager<M, T, K, ES, NS, SP, F, R, MR, L> {
 		self
 	}
 }
@@ -1937,6 +1953,7 @@ where
 /// #     'a,
 /// #     L: lightning::util::logger::Logger,
 /// #     ES: lightning::sign::EntropySource,
+/// #     K: lightning::util::persist::KVStoreSync,
 /// #     S: for <'b> lightning::routing::scoring::LockableScore<'b, ScoreLookUp = SL>,
 /// #     SL: lightning::routing::scoring::ScoreLookUp<ScoreParams = SP>,
 /// #     SP: Sized,
@@ -1945,6 +1962,7 @@ where
 /// #     fee_estimator: &dyn lightning::chain::chaininterface::FeeEstimator,
 /// #     chain_monitor: &dyn lightning::chain::Watch<lightning::sign::InMemorySigner>,
 /// #     tx_broadcaster: &dyn lightning::chain::chaininterface::BroadcasterInterface,
+/// #     kv_store: &K,
 /// #     router: &lightning::routing::router::DefaultRouter<&NetworkGraph<&'a L>, &'a L, &ES, &S, SP, SL>,
 /// #     message_router: &lightning::onion_message::messenger::DefaultMessageRouter<&NetworkGraph<&'a L>, &'a L, &ES>,
 /// #     logger: &L,
@@ -1962,7 +1980,7 @@ where
 /// };
 /// let config = UserConfig::default();
 /// let channel_manager = ChannelManager::new(
-///     fee_estimator, chain_monitor, tx_broadcaster, router, message_router, logger,
+///     fee_estimator, chain_monitor, tx_broadcaster, kv_store, router, message_router, logger,
 ///     entropy_source, node_signer, signer_provider, config.clone(), params, current_timestamp,
 /// );
 ///
@@ -1970,10 +1988,10 @@ where
 /// let mut channel_monitors = read_channel_monitors();
 /// let args = ChannelManagerReadArgs::new(
 ///     entropy_source, node_signer, signer_provider, fee_estimator, chain_monitor, tx_broadcaster,
-///     router, message_router, logger, config, channel_monitors.iter().collect(),
+///     kv_store, router, message_router, logger, config, channel_monitors.iter().collect(),
 /// );
 /// let (block_hash, channel_manager) =
-///     <(BlockHash, ChannelManager<_, _, _, _, _, _, _, _, _>)>::read(&mut reader, args)?;
+///     <(BlockHash, ChannelManager<_, _, _, _, _, _, _, _, _, _>)>::read(&mut reader, args)?;
 ///
 /// // Update the ChannelManager and ChannelMonitors with the latest chain data
 /// // ...
@@ -2653,6 +2671,7 @@ where
 pub struct ChannelManager<
 	M: Deref,
 	T: Deref,
+	K: Deref,
 	ES: Deref,
 	NS: Deref,
 	SP: Deref,
@@ -2663,6 +2682,7 @@ pub struct ChannelManager<
 > where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
+	K::Target: KVStoreSync,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -2671,6 +2691,7 @@ pub struct ChannelManager<
 	MR::Target: MessageRouter,
 	L::Target: Logger,
 {
+	kv_store: K,
 	config: RwLock<UserConfig>,
 	chain_hash: ChainHash,
 	fee_estimator: LowerBoundedFeeEstimator<F>,
@@ -3729,6 +3750,7 @@ fn create_htlc_intercepted_event(
 impl<
 		M: Deref,
 		T: Deref,
+		K: Deref,
 		ES: Deref,
 		NS: Deref,
 		SP: Deref,
@@ -3736,10 +3758,11 @@ impl<
 		R: Deref,
 		MR: Deref,
 		L: Deref,
-	> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> ChannelManager<M, T, K, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
+	K::Target: KVStoreSync,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -3767,8 +3790,8 @@ where
 	/// [`params.best_block.block_hash`]: chain::BestBlock::block_hash
 	#[rustfmt::skip]
 	pub fn new(
-		fee_est: F, chain_monitor: M, tx_broadcaster: T, router: R, message_router: MR, logger: L,
-		entropy_source: ES, node_signer: NS, signer_provider: SP, config: UserConfig,
+		fee_est: F, chain_monitor: M, tx_broadcaster: T, kv_store: K, router: R, message_router: MR,
+		logger: L, entropy_source: ES, node_signer: NS, signer_provider: SP, config: UserConfig,
 		params: ChainParameters, current_timestamp: u32,
 	) -> Self
 	where
@@ -3787,6 +3810,7 @@ where
 		);
 
 		ChannelManager {
+			kv_store,
 			config: RwLock::new(config),
 			chain_hash: ChainHash::using_genesis_block(params.network),
 			fee_estimator: LowerBoundedFeeEstimator::new(fee_est),
@@ -13194,6 +13218,7 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 impl<
 		M: Deref,
 		T: Deref,
+		K: Deref,
 		ES: Deref,
 		NS: Deref,
 		SP: Deref,
@@ -13201,10 +13226,11 @@ impl<
 		R: Deref,
 		MR: Deref,
 		L: Deref,
-	> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> ChannelManager<M, T, K, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
+	K::Target: KVStoreSync,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -13831,8 +13857,9 @@ where
 
 	#[cfg(any(test, feature = "_test_utils"))]
 	pub fn get_and_clear_pending_events(&self) -> Vec<events::Event> {
-		// Commit any pending writes to the chain monitor before returning events.
-		let _ = self.chain_monitor.commit();
+		// Commit any pending writes before returning events.
+		let _ = self.persist();
+		let _ = self.kv_store.commit();
 
 		let events = core::cell::RefCell::new(Vec::new());
 		let event_handler = |event: events::Event| Ok(events.borrow_mut().push(event));
@@ -14049,6 +14076,7 @@ where
 impl<
 		M: Deref,
 		T: Deref,
+		K: Deref,
 		ES: Deref,
 		NS: Deref,
 		SP: Deref,
@@ -14056,10 +14084,11 @@ impl<
 		R: Deref,
 		MR: Deref,
 		L: Deref,
-	> BaseMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> BaseMessageHandler for ChannelManager<M, T, K, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
+	K::Target: KVStoreSync,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -14354,8 +14383,9 @@ where
 	/// `MessageSendEvent`s are intended to be broadcasted to all peers, they will be placed among
 	/// the `MessageSendEvent`s to the specific peer they were generated under.
 	fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> {
-		// Commit any pending writes to the chain monitor before returning events.
-		let _ = self.chain_monitor.commit();
+		// Commit any pending writes before returning events.
+		let _ = self.persist();
+		let _ = self.kv_store.commit();
 
 		let events = RefCell::new(Vec::new());
 		PersistenceNotifierGuard::optionally_notify(self, || {
@@ -14410,6 +14440,7 @@ where
 impl<
 		M: Deref,
 		T: Deref,
+		K: Deref,
 		ES: Deref,
 		NS: Deref,
 		SP: Deref,
@@ -14417,10 +14448,11 @@ impl<
 		R: Deref,
 		MR: Deref,
 		L: Deref,
-	> EventsProvider for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> EventsProvider for ChannelManager<M, T, K, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
+	K::Target: KVStoreSync,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -14445,6 +14477,7 @@ where
 impl<
 		M: Deref,
 		T: Deref,
+		K: Deref,
 		ES: Deref,
 		NS: Deref,
 		SP: Deref,
@@ -14452,10 +14485,11 @@ impl<
 		R: Deref,
 		MR: Deref,
 		L: Deref,
-	> chain::Listen for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> chain::Listen for ChannelManager<M, T, K, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
+	K::Target: KVStoreSync,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -14506,6 +14540,7 @@ where
 impl<
 		M: Deref,
 		T: Deref,
+		K: Deref,
 		ES: Deref,
 		NS: Deref,
 		SP: Deref,
@@ -14513,10 +14548,11 @@ impl<
 		R: Deref,
 		MR: Deref,
 		L: Deref,
-	> chain::Confirm for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> chain::Confirm for ChannelManager<M, T, K, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
+	K::Target: KVStoreSync,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -14679,6 +14715,7 @@ pub(super) enum FundingConfirmedMessage {
 impl<
 		M: Deref,
 		T: Deref,
+		K: Deref,
 		ES: Deref,
 		NS: Deref,
 		SP: Deref,
@@ -14686,10 +14723,11 @@ impl<
 		R: Deref,
 		MR: Deref,
 		L: Deref,
-	> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> ChannelManager<M, T, K, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
+	K::Target: KVStoreSync,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -14986,6 +15024,26 @@ where
 		self.needs_persist_flag.swap(false, Ordering::AcqRel)
 	}
 
+	/// Persists this [`ChannelManager`] to the configured [`KVStoreSync`] if it needs persistence.
+	///
+	/// This encodes the [`ChannelManager`] and writes it to the underlying store. Returns `true`
+	/// if persistence was performed, `false` if no persistence was needed.
+	///
+	/// This is equivalent to checking [`Self::get_and_clear_needs_persistence`] and then calling
+	/// the store's write method with the encoded [`ChannelManager`].
+	pub fn persist(&self) -> Result<bool, io::Error> {
+		if !self.get_and_clear_needs_persistence() {
+			return Ok(false);
+		}
+		self.kv_store.write(
+			CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+			CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
+			CHANNEL_MANAGER_PERSISTENCE_KEY,
+			self.encode(),
+		)?;
+		Ok(true)
+	}
+
 	#[cfg(any(test, feature = "_test_utils"))]
 	pub fn get_event_or_persist_condvar_value(&self) -> bool {
 		self.event_persist_notifier.notify_pending()
@@ -15041,6 +15099,7 @@ where
 impl<
 		M: Deref,
 		T: Deref,
+		K: Deref,
 		ES: Deref,
 		NS: Deref,
 		SP: Deref,
@@ -15048,10 +15107,11 @@ impl<
 		R: Deref,
 		MR: Deref,
 		L: Deref,
-	> ChannelMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> ChannelMessageHandler for ChannelManager<M, T, K, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
+	K::Target: KVStoreSync,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -15616,6 +15676,7 @@ where
 impl<
 		M: Deref,
 		T: Deref,
+		K: Deref,
 		ES: Deref,
 		NS: Deref,
 		SP: Deref,
@@ -15623,10 +15684,11 @@ impl<
 		R: Deref,
 		MR: Deref,
 		L: Deref,
-	> OffersMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> OffersMessageHandler for ChannelManager<M, T, K, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
+	K::Target: KVStoreSync,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -15834,6 +15896,7 @@ where
 impl<
 		M: Deref,
 		T: Deref,
+		K: Deref,
 		ES: Deref,
 		NS: Deref,
 		SP: Deref,
@@ -15841,10 +15904,11 @@ impl<
 		R: Deref,
 		MR: Deref,
 		L: Deref,
-	> AsyncPaymentsMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> AsyncPaymentsMessageHandler for ChannelManager<M, T, K, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
+	K::Target: KVStoreSync,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -16036,6 +16100,7 @@ where
 impl<
 		M: Deref,
 		T: Deref,
+		K: Deref,
 		ES: Deref,
 		NS: Deref,
 		SP: Deref,
@@ -16043,10 +16108,11 @@ impl<
 		R: Deref,
 		MR: Deref,
 		L: Deref,
-	> DNSResolverMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> DNSResolverMessageHandler for ChannelManager<M, T, K, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
+	K::Target: KVStoreSync,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -16104,6 +16170,7 @@ where
 impl<
 		M: Deref,
 		T: Deref,
+		K: Deref,
 		ES: Deref,
 		NS: Deref,
 		SP: Deref,
@@ -16111,10 +16178,11 @@ impl<
 		R: Deref,
 		MR: Deref,
 		L: Deref,
-	> NodeIdLookUp for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> NodeIdLookUp for ChannelManager<M, T, K, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
+	K::Target: KVStoreSync,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -16620,6 +16688,7 @@ impl_writeable_tlv_based!(PendingInboundPayment, {
 impl<
 		M: Deref,
 		T: Deref,
+		K: Deref,
 		ES: Deref,
 		NS: Deref,
 		SP: Deref,
@@ -16627,10 +16696,11 @@ impl<
 		R: Deref,
 		MR: Deref,
 		L: Deref,
-	> Writeable for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> Writeable for ChannelManager<M, T, K, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
+	K::Target: KVStoreSync,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -16987,6 +17057,7 @@ pub struct ChannelManagerReadArgs<
 	'a,
 	M: Deref,
 	T: Deref,
+	K: Deref,
 	ES: Deref,
 	NS: Deref,
 	SP: Deref,
@@ -16997,6 +17068,7 @@ pub struct ChannelManagerReadArgs<
 > where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
+	K::Target: KVStoreSync,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -17031,6 +17103,10 @@ pub struct ChannelManagerReadArgs<
 	/// used to broadcast the latest local commitment transactions of channels which must be
 	/// force-closed during deserialization.
 	pub tx_broadcaster: T,
+
+	/// The key-value store for persisting the ChannelManager.
+	pub kv_store: K,
+
 	/// The router which will be used in the ChannelManager in the future for finding routes
 	/// on-the-fly for trampoline payments. Absent in private nodes that don't support forwarding.
 	///
@@ -17067,6 +17143,7 @@ impl<
 		'a,
 		M: Deref,
 		T: Deref,
+		K: Deref,
 		ES: Deref,
 		NS: Deref,
 		SP: Deref,
@@ -17074,10 +17151,11 @@ impl<
 		R: Deref,
 		MR: Deref,
 		L: Deref + Clone,
-	> ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>
+	> ChannelManagerReadArgs<'a, M, T, K, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
+	K::Target: KVStoreSync,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -17091,7 +17169,7 @@ where
 	/// populate a HashMap directly from C.
 	pub fn new(
 		entropy_source: ES, node_signer: NS, signer_provider: SP, fee_estimator: F,
-		chain_monitor: M, tx_broadcaster: T, router: R, message_router: MR, logger: L,
+		chain_monitor: M, tx_broadcaster: T, kv_store: K, router: R, message_router: MR, logger: L,
 		config: UserConfig,
 		mut channel_monitors: Vec<&'a ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>>,
 	) -> Self {
@@ -17102,6 +17180,7 @@ where
 			fee_estimator,
 			chain_monitor,
 			tx_broadcaster,
+			kv_store,
 			router,
 			message_router,
 			logger,
@@ -17151,6 +17230,7 @@ impl<
 		'a,
 		M: Deref,
 		T: Deref,
+		K: Deref,
 		ES: Deref,
 		NS: Deref,
 		SP: Deref,
@@ -17158,11 +17238,12 @@ impl<
 		R: Deref,
 		MR: Deref,
 		L: Deref + Clone,
-	> ReadableArgs<ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>>
-	for (BlockHash, Arc<ChannelManager<M, T, ES, NS, SP, F, R, MR, L>>)
+	> ReadableArgs<ChannelManagerReadArgs<'a, M, T, K, ES, NS, SP, F, R, MR, L>>
+	for (BlockHash, Arc<ChannelManager<M, T, K, ES, NS, SP, F, R, MR, L>>)
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
+	K::Target: KVStoreSync,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -17172,10 +17253,10 @@ where
 	L::Target: Logger,
 {
 	fn read<Reader: io::Read>(
-		reader: &mut Reader, args: ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>,
+		reader: &mut Reader, args: ChannelManagerReadArgs<'a, M, T, K, ES, NS, SP, F, R, MR, L>,
 	) -> Result<Self, DecodeError> {
 		let (blockhash, chan_manager) =
-			<(BlockHash, ChannelManager<M, T, ES, NS, SP, F, R, MR, L>)>::read(reader, args)?;
+			<(BlockHash, ChannelManager<M, T, K, ES, NS, SP, F, R, MR, L>)>::read(reader, args)?;
 		Ok((blockhash, Arc::new(chan_manager)))
 	}
 }
@@ -17184,6 +17265,7 @@ impl<
 		'a,
 		M: Deref,
 		T: Deref,
+		K: Deref,
 		ES: Deref,
 		NS: Deref,
 		SP: Deref,
@@ -17191,11 +17273,12 @@ impl<
 		R: Deref,
 		MR: Deref,
 		L: Deref + Clone,
-	> ReadableArgs<ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>>
-	for (BlockHash, ChannelManager<M, T, ES, NS, SP, F, R, MR, L>)
+	> ReadableArgs<ChannelManagerReadArgs<'a, M, T, K, ES, NS, SP, F, R, MR, L>>
+	for (BlockHash, ChannelManager<M, T, K, ES, NS, SP, F, R, MR, L>)
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
+	K::Target: KVStoreSync,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -17205,7 +17288,7 @@ where
 	L::Target: Logger,
 {
 	fn read<Reader: io::Read>(
-		reader: &mut Reader, mut args: ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>,
+		reader: &mut Reader, mut args: ChannelManagerReadArgs<'a, M, T, K, ES, NS, SP, F, R, MR, L>,
 	) -> Result<Self, DecodeError> {
 		let _ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
 
@@ -18647,6 +18730,7 @@ where
 		.with_async_payments_offers_cache(async_receive_offer_cache);
 
 		let channel_manager = ChannelManager {
+			kv_store: args.kv_store,
 			chain_hash,
 			fee_estimator: bounded_fee_estimator,
 			chain_monitor: args.chain_monitor,
