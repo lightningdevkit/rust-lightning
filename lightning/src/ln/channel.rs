@@ -6516,9 +6516,8 @@ fn check_splice_contribution_sufficient(
 				estimated_fee.to_signed().expect("fees should never exceed Amount::MAX_MONEY"),
 			)
 			.ok_or(format!(
-				"{} splice-out amount plus {} fee estimate exceeds the total bitcoin supply",
+				"{estimated_fee} splice-out amount plus {} fee estimate exceeds the total bitcoin supply",
 				contribution_amount.unsigned_abs(),
-				estimated_fee,
 			))
 	} else {
 		check_v2_funding_inputs_sufficient(
