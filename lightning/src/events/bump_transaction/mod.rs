@@ -284,12 +284,15 @@ pub struct Utxo {
 	/// with their lengths included, required to satisfy the output's script. The weight consumed by
 	/// the input's `script_sig` must account for [`WITNESS_SCALE_FACTOR`].
 	pub satisfaction_weight: u64,
+	/// The sequence number to use in the [`TxIn`] when spending the UTXO.
+	pub sequence: Sequence,
 }
 
 impl_writeable_tlv_based!(Utxo, {
 	(1, outpoint, required),
 	(3, output, required),
 	(5, satisfaction_weight, required),
+	(7, sequence, (default_value, Sequence::ENABLE_RBF_NO_LOCKTIME)),
 });
 
 impl Utxo {
@@ -304,6 +307,7 @@ impl Utxo {
 			outpoint,
 			output: TxOut { value, script_pubkey: ScriptBuf::new_p2pkh(pubkey_hash) },
 			satisfaction_weight: script_sig_size * WITNESS_SCALE_FACTOR as u64 + 1, /* empty witness */
+			sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
 		}
 	}
 
@@ -323,6 +327,7 @@ impl Utxo {
 			},
 			satisfaction_weight: script_sig_size * WITNESS_SCALE_FACTOR as u64
 				+ P2WPKH_WITNESS_WEIGHT,
+			sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
 		}
 	}
 
@@ -332,6 +337,7 @@ impl Utxo {
 			outpoint,
 			output: TxOut { value, script_pubkey: ScriptBuf::new_p2wpkh(pubkey_hash) },
 			satisfaction_weight: EMPTY_SCRIPT_SIG_WEIGHT + P2WPKH_WITNESS_WEIGHT,
+			sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
 		}
 	}
 
@@ -343,6 +349,7 @@ impl Utxo {
 			outpoint,
 			output: TxOut { value, script_pubkey: ScriptBuf::new_p2tr_tweaked(tweaked_public_key) },
 			satisfaction_weight: EMPTY_SCRIPT_SIG_WEIGHT + P2TR_KEY_PATH_WITNESS_WEIGHT,
+			sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
 		}
 	}
 }
@@ -737,7 +744,7 @@ where
 			tx.input.push(TxIn {
 				previous_output: utxo.outpoint,
 				script_sig: ScriptBuf::new(),
-				sequence: Sequence::ZERO,
+				sequence: utxo.sequence,
 				witness: Witness::new(),
 			});
 		}
@@ -1371,6 +1378,7 @@ mod tests {
 								script_pubkey: ScriptBuf::new(),
 							},
 							satisfaction_weight: 5, // Just the script_sig and witness lengths
+							sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
 						}],
 						change_output: None,
 					},
