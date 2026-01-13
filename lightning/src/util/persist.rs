@@ -193,6 +193,15 @@ pub trait KVStoreSync {
 	fn list(
 		&self, primary_namespace: &str, secondary_namespace: &str,
 	) -> Result<Vec<String>, io::Error>;
+	/// Commits any pending writes to the underlying storage.
+	///
+	/// For implementations that buffer writes, this method ensures all pending operations are
+	/// persisted to durable storage. For implementations that write directly, this is a no-op.
+	///
+	/// Returns the number of operations committed, or an error if any operation fails.
+	fn commit(&self) -> Result<usize, io::Error> {
+		Ok(0)
+	}
 }
 
 /// A wrapper around a [`KVStoreSync`] that implements the [`KVStore`] trait. It is not necessary to use this type
@@ -245,6 +254,12 @@ where
 		&self, primary_namespace: &str, secondary_namespace: &str,
 	) -> impl Future<Output = Result<Vec<String>, io::Error>> + 'static + MaybeSend {
 		let res = self.0.list(primary_namespace, secondary_namespace);
+
+		async move { res }
+	}
+
+	fn commit(&self) -> impl Future<Output = Result<usize, io::Error>> + 'static + MaybeSend {
+		let res = KVStoreSync::commit(&*self.0);
 
 		async move { res }
 	}
@@ -345,6 +360,15 @@ pub trait KVStore {
 	fn list(
 		&self, primary_namespace: &str, secondary_namespace: &str,
 	) -> impl Future<Output = Result<Vec<String>, io::Error>> + 'static + MaybeSend;
+	/// Commits any pending writes to the underlying storage.
+	///
+	/// For implementations that buffer writes, this method ensures all pending operations are
+	/// persisted to durable storage. For implementations that write directly, this is a no-op.
+	///
+	/// Returns the number of operations committed, or an error if any operation fails.
+	fn commit(&self) -> impl Future<Output = Result<usize, io::Error>> + 'static + MaybeSend {
+		async move { Ok(0) }
+	}
 }
 
 /// Provides additional interface methods that are required for [`KVStore`]-to-[`KVStore`]

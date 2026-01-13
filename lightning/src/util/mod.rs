@@ -29,6 +29,7 @@ pub mod errors;
 pub mod message_signing;
 pub mod native_async;
 pub mod persist;
+pub mod queued_kv_store;
 pub mod scid_utils;
 pub mod ser;
 pub mod sweep;

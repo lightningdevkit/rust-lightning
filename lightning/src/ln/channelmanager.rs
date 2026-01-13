@@ -13831,6 +13831,9 @@ where
 
 	#[cfg(any(test, feature = "_test_utils"))]
 	pub fn get_and_clear_pending_events(&self) -> Vec<events::Event> {
+		// Commit any pending writes to the chain monitor before returning events.
+		let _ = self.chain_monitor.commit();
+
 		let events = core::cell::RefCell::new(Vec::new());
 		let event_handler = |event: events::Event| Ok(events.borrow_mut().push(event));
 		self.process_pending_events(&event_handler);
@@ -14351,6 +14354,9 @@ where
 	/// `MessageSendEvent`s are intended to be broadcasted to all peers, they will be placed among
 	/// the `MessageSendEvent`s to the specific peer they were generated under.
 	fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> {
+		// Commit any pending writes to the chain monitor before returning events.
+		let _ = self.chain_monitor.commit();
+
 		let events = RefCell::new(Vec::new());
 		PersistenceNotifierGuard::optionally_notify(self, || {
 			let mut result = NotifyOption::SkipPersistNoEvents;
