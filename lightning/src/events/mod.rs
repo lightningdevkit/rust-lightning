@@ -1250,28 +1250,29 @@ pub enum Event {
 		short_channel_id: Option<u64>,
 	},
 	/// Used to indicate that we've intercepted an HTLC forward. This event will only be generated if
-	/// you've encoded an intercept scid in the receiver's invoice route hints using
-	/// [`ChannelManager::get_intercept_scid`] and have set [`UserConfig::accept_intercept_htlcs`].
+	/// you've set some flags on [`UserConfig::htlc_interception_flags`].
 	///
 	/// [`ChannelManager::forward_intercepted_htlc`] or
-	/// [`ChannelManager::fail_intercepted_htlc`] MUST be called in response to this event. See
-	/// their docs for more information.
+	/// [`ChannelManager::fail_intercepted_htlc`] MUST be called in response to this event in a
+	/// timely manner (i.e. within some number of seconds, not minutes). See their docs for more
+	/// information.
 	///
 	/// # Failure Behavior and Persistence
 	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
 	/// returning `Err(ReplayEvent ())`) and will be persisted across restarts.
 	///
-	/// [`ChannelManager::get_intercept_scid`]: crate::ln::channelmanager::ChannelManager::get_intercept_scid
-	/// [`UserConfig::accept_intercept_htlcs`]: crate::util::config::UserConfig::accept_intercept_htlcs
+	/// [`UserConfig::htlc_interception_flags`]: crate::util::config::UserConfig::htlc_interception_flags
 	/// [`ChannelManager::forward_intercepted_htlc`]: crate::ln::channelmanager::ChannelManager::forward_intercepted_htlc
 	/// [`ChannelManager::fail_intercepted_htlc`]: crate::ln::channelmanager::ChannelManager::fail_intercepted_htlc
 	HTLCIntercepted {
 		/// An id to help LDK identify which HTLC is being forwarded or failed.
 		intercept_id: InterceptId,
-		/// The fake scid that was programmed as the next hop's scid, generated using
-		/// [`ChannelManager::get_intercept_scid`].
+		/// The SCID which was selected by the sender as the next hop. It may point to one of our
+		/// channels, an intercept SCID generated with [`ChannelManager::get_intercept_scid`], or
+		/// an unknown SCID if [`HTLCInterceptionFlags::ToUnknownSCIDs`] was selected.
 		///
 		/// [`ChannelManager::get_intercept_scid`]: crate::ln::channelmanager::ChannelManager::get_intercept_scid
+		/// [`HTLCInterceptionFlags::ToUnknownSCIDs`]: crate::util::config::HTLCInterceptionFlags::ToUnknownSCIDs
 		requested_next_hop_scid: u64,
 		/// The payment hash used for this HTLC.
 		payment_hash: PaymentHash,
@@ -1282,7 +1283,8 @@ pub enum Event {
 		/// Forwarding less than this amount may break compatibility with LDK versions prior to 0.0.116.
 		///
 		/// Note that LDK will NOT check that expected fees were factored into this value. You MUST
-		/// check that whatever fee you want has been included here or subtract it as required. Further,
+		/// check that whatever fee you want has been included here (by comparing with
+		/// [`Self::HTLCIntercepted::inbound_amount_msat`]) or subtract it as required. Further,
 		/// LDK will not stop you from forwarding more than you received.
 		expected_outbound_amount_msat: u64,
 	},

@@ -122,7 +122,9 @@ use crate::types::features::{
 };
 use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::types::string::UntrustedString;
-use crate::util::config::{ChannelConfig, ChannelConfigOverrides, ChannelConfigUpdate, UserConfig};
+use crate::util::config::{
+	ChannelConfig, ChannelConfigOverrides, ChannelConfigUpdate, HTLCInterceptionFlags, UserConfig,
+};
 use crate::util::errors::APIError;
 use crate::util::logger::{Level, Logger, WithContext};
 use crate::util::scid_utils::fake_scid;
@@ -4768,27 +4770,53 @@ where
 		}
 	}
 
-	fn forward_needs_intercept(
-		&self, outbound_chan: Option<&FundedChannel<SP>>, outgoing_scid: u64,
-	) -> bool {
-		if outbound_chan.is_none() {
-			if fake_scid::is_valid_intercept(
-				&self.fake_scid_rand_bytes,
-				outgoing_scid,
-				&self.chain_hash,
-			) {
-				if self.config.read().unwrap().accept_intercept_htlcs {
+	fn forward_needs_intercept_to_known_chan(&self, outbound_chan: &FundedChannel<SP>) -> bool {
+		let intercept_flags = self.config.read().unwrap().htlc_interception_flags;
+		if !outbound_chan.context.should_announce() {
+			if outbound_chan.context.is_connected() {
+				if intercept_flags & (HTLCInterceptionFlags::ToOnlinePrivateChannels as u8) != 0 {
+					return true;
+				}
+			} else {
+				if intercept_flags & (HTLCInterceptionFlags::ToOfflinePrivateChannels as u8) != 0 {
 					return true;
 				}
 			}
+		} else {
+			if intercept_flags & (HTLCInterceptionFlags::ToPublicChannels as u8) != 0 {
+				return true;
+			}
+		}
+		false
+	}
+
+	fn forward_needs_intercept_to_unknown_chan(&self, outgoing_scid: u64) -> bool {
+		let intercept_flags = self.config.read().unwrap().htlc_interception_flags;
+		if fake_scid::is_valid_intercept(
+			&self.fake_scid_rand_bytes,
+			outgoing_scid,
+			&self.chain_hash,
+		) {
+			if intercept_flags & (HTLCInterceptionFlags::ToInterceptSCIDs as u8) != 0 {
+				return true;
+			}
+		} else if fake_scid::is_valid_phantom(
+			&self.fake_scid_rand_bytes,
+			outgoing_scid,
+			&self.chain_hash,
+		) {
+			// Handled as a normal forward
+		} else if intercept_flags & (HTLCInterceptionFlags::ToUnknownSCIDs as u8) != 0 {
+			return true;
 		}
 		false
 	}
 
 	#[rustfmt::skip]
 	fn can_forward_htlc_to_outgoing_channel(
-		&self, chan: &mut FundedChannel<SP>, msg: &msgs::UpdateAddHTLC, next_packet: &NextPacketDetails
-	) -> Result<bool, LocalHTLCFailureReason> {
+		&self, chan: &mut FundedChannel<SP>, msg: &msgs::UpdateAddHTLC,
+		next_packet: &NextPacketDetails, will_intercept: bool,
+	) -> Result<(), LocalHTLCFailureReason> {
 		if !chan.context.should_announce()
 			&& !self.config.read().unwrap().accept_forwards_to_priv_channels
 		{
@@ -4797,7 +4825,6 @@ where
 			// we don't allow forwards outbound over them.
 			return Err(LocalHTLCFailureReason::PrivateChannelForward);
 		}
-		let intercepted;
 		if let HopConnector::ShortChannelId(outgoing_scid) = next_packet.outgoing_connector {
 			if chan.funding.get_channel_type().supports_scid_privacy() && outgoing_scid != chan.context.outbound_scid_alias() {
 				// `option_scid_alias` (referred to in LDK as `scid_privacy`) means
@@ -4805,7 +4832,6 @@ where
 				// we don't have the channel here.
 				return Err(LocalHTLCFailureReason::RealSCIDForward);
 			}
-			intercepted = self.forward_needs_intercept(Some(chan), outgoing_scid);
 		} else {
 			return Err(LocalHTLCFailureReason::InvalidTrampolineForward);
 		}
@@ -4815,7 +4841,7 @@ where
 		// around to doing the actual forward, but better to fail early if we can and
 		// hopefully an attacker trying to path-trace payments cannot make this occur
 		// on a small/per-node/per-channel scale.
-		if !intercepted && !chan.context.is_live() {
+		if !will_intercept && !chan.context.is_live() {
 			if !chan.context.is_enabled() {
 				return Err(LocalHTLCFailureReason::ChannelDisabled);
 			} else if !chan.context.is_connected() {
@@ -4827,9 +4853,7 @@ where
 		if next_packet.outgoing_amt_msat < chan.context.get_counterparty_htlc_minimum_msat() {
 			return Err(LocalHTLCFailureReason::AmountBelowMinimum);
 		}
-		chan.htlc_satisfies_config(msg, next_packet.outgoing_amt_msat, next_packet.outgoing_cltv_value)?;
-
-		Ok(intercepted)
+		chan.htlc_satisfies_config(msg, next_packet.outgoing_amt_msat, next_packet.outgoing_cltv_value)
 	}
 
 	/// Executes a callback `C` that returns some value `X` on the channel found with the given
@@ -4855,10 +4879,10 @@ where
 		}
 	}
 
-	fn can_forward_htlc_intercepted(
-		&self, msg: &msgs::UpdateAddHTLC, next_packet_details: &NextPacketDetails,
+	fn can_forward_htlc_should_intercept(
+		&self, msg: &msgs::UpdateAddHTLC, next_hop: &NextPacketDetails,
 	) -> Result<bool, LocalHTLCFailureReason> {
-		let outgoing_scid = match next_packet_details.outgoing_connector {
+		let outgoing_scid = match next_hop.outgoing_connector {
 			HopConnector::ShortChannelId(scid) => scid,
 			HopConnector::Dummy => {
 				// Dummy hops are only used for path padding and must not reach HTLC processing.
@@ -4870,22 +4894,23 @@ where
 			},
 		};
 		// TODO: We do the fake SCID namespace check a bunch of times here (and indirectly via
-		// `forward_needs_intercept`, including as called in
+		// `forward_needs_intercept_*`, including as called in
 		// `can_forward_htlc_to_outgoing_channel`), we should find a way to reduce the number of
 		// times we do it.
 		let intercept =
 			match self.do_funded_channel_callback(outgoing_scid, |chan: &mut FundedChannel<SP>| {
-				self.can_forward_htlc_to_outgoing_channel(chan, msg, next_packet_details)
+				let intercept = self.forward_needs_intercept_to_known_chan(chan);
+				self.can_forward_htlc_to_outgoing_channel(chan, msg, next_hop, intercept)?;
+				Ok(intercept)
 			}) {
 				Some(Ok(intercept)) => intercept,
 				Some(Err(e)) => return Err(e),
 				None => {
 					// Perform basic sanity checks on the amounts and CLTV being forwarded
-					if next_packet_details.outgoing_amt_msat > msg.amount_msat {
+					if next_hop.outgoing_amt_msat > msg.amount_msat {
 						return Err(LocalHTLCFailureReason::FeeInsufficient);
 					}
-					let cltv_delta =
-						msg.cltv_expiry.saturating_sub(next_packet_details.outgoing_cltv_value);
+					let cltv_delta = msg.cltv_expiry.saturating_sub(next_hop.outgoing_cltv_value);
 					if cltv_delta < MIN_CLTV_EXPIRY_DELTA.into() {
 						return Err(LocalHTLCFailureReason::IncorrectCLTVExpiry);
 					}
@@ -4896,7 +4921,7 @@ where
 						&self.chain_hash,
 					) {
 						false
-					} else if self.forward_needs_intercept(None, outgoing_scid) {
+					} else if self.forward_needs_intercept_to_unknown_chan(outgoing_scid) {
 						true
 					} else {
 						return Err(LocalHTLCFailureReason::UnknownNextPeer);
@@ -4905,11 +4930,7 @@ where
 			};
 
 		let cur_height = self.best_block.read().unwrap().height + 1;
-		check_incoming_htlc_cltv(
-			cur_height,
-			next_packet_details.outgoing_cltv_value,
-			msg.cltv_expiry,
-		)?;
+		check_incoming_htlc_cltv(cur_height, next_hop.outgoing_cltv_value, msg.cltv_expiry)?;
 
 		Ok(intercept)
 	}
@@ -6641,11 +6662,8 @@ where
 	/// Intercepted HTLCs can be useful for Lightning Service Providers (LSPs) to open a just-in-time
 	/// channel to a receiving node if the node lacks sufficient inbound liquidity.
 	///
-	/// To make use of intercepted HTLCs, set [`UserConfig::accept_intercept_htlcs`] and use
-	/// [`ChannelManager::get_intercept_scid`] to generate short channel id(s) to put in the
-	/// receiver's invoice route hints. These route hints will signal to LDK to generate an
-	/// [`HTLCIntercepted`] event when it receives the forwarded HTLC, and this method or
-	/// [`ChannelManager::fail_intercepted_htlc`] MUST be called in response to the event.
+	/// To make use of intercepted HTLCs, set [`UserConfig::htlc_interception_flags`] must have a
+	/// non-0 value.
 	///
 	/// Note that LDK does not enforce fee requirements in `amt_to_forward_msat`, and will not stop
 	/// you from forwarding more than you received. See
@@ -6655,7 +6673,7 @@ where
 	/// Errors if the event was not handled in time, in which case the HTLC was automatically failed
 	/// backwards.
 	///
-	/// [`UserConfig::accept_intercept_htlcs`]: crate::util::config::UserConfig::accept_intercept_htlcs
+	/// [`UserConfig::htlc_interception_flags`]: crate::util::config::UserConfig::htlc_interception_flags
 	/// [`HTLCIntercepted`]: events::Event::HTLCIntercepted
 	/// [`HTLCIntercepted::expected_outbound_amount_msat`]: events::Event::HTLCIntercepted::expected_outbound_amount_msat
 	// TODO: when we move to deciding the best outbound channel at forward time, only take
@@ -6973,7 +6991,9 @@ where
 				// Now process the HTLC on the outgoing channel if it's a forward.
 				let mut intercept_forward = false;
 				if let Some(next_packet_details) = next_packet_details_opt.as_ref() {
-					match self.can_forward_htlc_intercepted(&update_add_htlc, next_packet_details) {
+					match self
+						.can_forward_htlc_should_intercept(&update_add_htlc, next_packet_details)
+					{
 						Err(reason) => {
 							fail_htlc_continue_to_next!(reason);
 						},
@@ -16329,9 +16349,9 @@ where
 
 				let should_intercept = self
 					.do_funded_channel_callback(next_hop_scid, |chan| {
-						self.forward_needs_intercept(Some(chan), next_hop_scid)
+						self.forward_needs_intercept_to_known_chan(chan)
 					})
-					.unwrap_or_else(|| self.forward_needs_intercept(None, next_hop_scid));
+					.unwrap_or_else(|| self.forward_needs_intercept_to_unknown_chan(next_hop_scid));
 
 				if should_intercept {
 					let intercept_id = InterceptId::from_htlc_id_and_chan_id(

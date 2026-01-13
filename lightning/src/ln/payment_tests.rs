@@ -45,6 +45,7 @@ use crate::sign::EntropySource;
 use crate::types::features::{Bolt11InvoiceFeatures, ChannelTypeFeatures};
 use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::types::string::UntrustedString;
+use crate::util::config::HTLCInterceptionFlags;
 use crate::util::errors::APIError;
 use crate::util::ser::Writeable;
 use crate::util::test_utils;
@@ -2210,7 +2211,8 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 	let mut zero_conf_chan_config = test_default_channel_config();
 	zero_conf_chan_config.manually_accept_inbound_channels = true;
 	let mut intercept_forwards_config = test_default_channel_config();
-	intercept_forwards_config.accept_intercept_htlcs = true;
+	intercept_forwards_config.htlc_interception_flags =
+		HTLCInterceptionFlags::ToInterceptSCIDs as u8;
 
 	let configs = [None, Some(intercept_forwards_config), Some(zero_conf_chan_config)];
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &configs);
@@ -2435,7 +2437,8 @@ fn do_accept_underpaying_htlcs_config(num_mpp_parts: usize) {
 
 	let max_in_flight_percent = 10;
 	let mut intercept_forwards_config = test_default_channel_config();
-	intercept_forwards_config.accept_intercept_htlcs = true;
+	intercept_forwards_config.htlc_interception_flags =
+		HTLCInterceptionFlags::ToInterceptSCIDs as u8;
 	intercept_forwards_config
 		.channel_handshake_config
 		.max_inbound_htlc_value_in_flight_percent_of_channel = max_in_flight_percent;
