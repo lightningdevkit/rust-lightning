@@ -315,7 +315,7 @@ where
 #[cfg(test)]
 mod test {
 	use super::*;
-	use bitcoin::{OutPoint, ScriptBuf, TxOut, Txid};
+	use bitcoin::{OutPoint, ScriptBuf, Sequence, TxOut, Txid};
 	use std::str::FromStr;
 
 	#[test]
@@ -343,6 +343,7 @@ mod test {
 			},
 			output: TxOut { value: amount, script_pubkey: ScriptBuf::new() },
 			satisfaction_weight: 1 * 4 + (1 + 1 + 72 + 1 + 33),
+			sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
 		}
 	}
 
