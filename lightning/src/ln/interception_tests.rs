@@ -267,7 +267,6 @@ fn test_htlc_bad_for_chan_config() {
 	}
 }
 
-
 #[test]
 fn test_htlc_bad_no_chan() {
 	// Test that setting the CLTV below the hard-coded minimum fails whether we're intercepting for
