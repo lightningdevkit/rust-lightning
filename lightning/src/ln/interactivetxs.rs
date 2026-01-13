@@ -2054,9 +2054,13 @@ impl InteractiveTxConstructor {
 
 		let mut inputs_to_contribute: Vec<(SerialId, InputOwned)> = inputs_to_contribute
 			.into_iter()
-			.map(|FundingTxInput { utxo, sequence, prevtx: prev_tx }| {
+			.map(|FundingTxInput { utxo, prevtx: prev_tx }| {
 				let serial_id = generate_holder_serial_id(entropy_source, is_initiator);
-				let txin = TxIn { previous_output: utxo.outpoint, sequence, ..Default::default() };
+				let txin = TxIn {
+					previous_output: utxo.outpoint,
+					sequence: utxo.sequence,
+					..Default::default()
+				};
 				let prev_output = utxo.output;
 				let input = InputOwned::Single(SingleOwnedInput {
 					input: txin,
