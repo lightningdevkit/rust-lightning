@@ -5057,8 +5057,8 @@ where
 
 	/// Executes a callback `C` that returns some value `X` on the channel found with the given
 	/// `scid`. `None` is returned when the channel is not found.
-	fn do_funded_channel_callback<X, C: FnMut(&mut FundedChannel<SP>) -> X>(
-		&self, scid: u64, mut callback: C,
+	fn do_funded_channel_callback<X, C: Fn(&mut FundedChannel<SP>) -> X>(
+		&self, scid: u64, callback: C,
 	) -> Option<X> {
 		let (counterparty_node_id, channel_id) =
 			match self.short_to_chan_info.read().unwrap().get(&scid).cloned() {
