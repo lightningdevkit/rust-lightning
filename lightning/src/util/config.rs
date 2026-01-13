@@ -1023,7 +1023,7 @@ pub struct UserConfig {
 	/// To ensure efficiency and reliable HTLC latency you should ensure you only intercept types
 	/// of HTLCs which you need to manually forward or reject.
 	///
-	/// Defalut value: `0` (indicating no HTLCs will be intercepted).
+	/// Default value: `0` (indicating no HTLCs will be intercepted).
 	///
 	/// [`Event::HTLCIntercepted`]: crate::events::Event::HTLCIntercepted
 	pub htlc_interception_flags: u8,
