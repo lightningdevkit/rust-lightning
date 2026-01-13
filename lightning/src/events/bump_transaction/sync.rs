@@ -267,9 +267,8 @@ where
 ///
 /// [`Event::BumpTransaction`]: crate::events::Event::BumpTransaction
 // Note that updates to documentation on this struct should be copied to the synchronous version.
-pub struct BumpTransactionEventHandlerSync<B: Deref, C: Deref, SP: Deref, L: Deref>
+pub struct BumpTransactionEventHandlerSync<B: BroadcasterInterface, C: Deref, SP: Deref, L: Deref>
 where
-	B::Target: BroadcasterInterface,
 	C::Target: CoinSelectionSourceSync,
 	SP::Target: SignerProvider,
 	L::Target: Logger,
@@ -278,9 +277,9 @@ where
 		BumpTransactionEventHandler<B, CoinSelectionSourceSyncWrapper<C>, SP, L>,
 }
 
-impl<B: Deref, C: Deref, SP: Deref, L: Deref> BumpTransactionEventHandlerSync<B, C, SP, L>
+impl<B: BroadcasterInterface, C: Deref, SP: Deref, L: Deref>
+	BumpTransactionEventHandlerSync<B, C, SP, L>
 where
-	B::Target: BroadcasterInterface,
 	C::Target: CoinSelectionSourceSync,
 	SP::Target: SignerProvider,
 	L::Target: Logger,

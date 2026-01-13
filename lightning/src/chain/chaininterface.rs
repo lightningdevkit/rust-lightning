@@ -48,6 +48,12 @@ pub trait BroadcasterInterface {
 	fn broadcast_transactions(&self, txs: &[&Transaction]);
 }
 
+impl<T: BroadcasterInterface + ?Sized, B: Deref<Target = T>> BroadcasterInterface for B {
+	fn broadcast_transactions(&self, txs: &[&Transaction]) {
+		self.deref().broadcast_transactions(txs)
+	}
+}
+
 /// An enum that represents the priority at which we want a transaction to confirm used for feerate
 /// estimation.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
