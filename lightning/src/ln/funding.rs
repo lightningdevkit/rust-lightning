@@ -108,11 +108,6 @@ pub struct FundingTxInput {
 	/// [`TxOut`]: bitcoin::TxOut
 	pub(super) utxo: Utxo,
 
-	/// The sequence number to use in the [`TxIn`].
-	///
-	/// [`TxIn`]: bitcoin::TxIn
-	pub(super) sequence: Sequence,
-
 	/// The transaction containing the unspent [`TxOut`] referenced by [`utxo`].
 	///
 	/// [`TxOut`]: bitcoin::TxOut
@@ -122,7 +117,7 @@ pub struct FundingTxInput {
 
 impl_writeable_tlv_based!(FundingTxInput, {
 	(1, utxo, required),
-	(3, sequence, required),
+	(3, _sequence, (legacy, Sequence, |input: &FundingTxInput| Some(input.utxo.sequence))),
 	(5, prevtx, required),
 });
 
@@ -140,8 +135,8 @@ impl FundingTxInput {
 					.ok_or(())?
 					.clone(),
 				satisfaction_weight: EMPTY_SCRIPT_SIG_WEIGHT + witness_weight.to_wu(),
+				sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
 			},
-			sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
 			prevtx,
 		})
 	}
@@ -234,14 +229,14 @@ impl FundingTxInput {
 	///
 	/// [`TxIn`]: bitcoin::TxIn
 	pub fn sequence(&self) -> Sequence {
-		self.sequence
+		self.utxo.sequence
 	}
 
 	/// Sets the sequence number to use in the [`TxIn`].
 	///
 	/// [`TxIn`]: bitcoin::TxIn
 	pub fn set_sequence(&mut self, sequence: Sequence) {
-		self.sequence = sequence;
+		self.utxo.sequence = sequence;
 	}
 
 	/// Converts the [`FundingTxInput`] into a [`Utxo`] for coin selection.
