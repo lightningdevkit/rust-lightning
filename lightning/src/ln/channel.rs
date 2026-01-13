@@ -14723,7 +14723,7 @@ where
 			}
 		}
 		let mut removed_htlc_attribution_data: Vec<&Option<AttributionData>> = Vec::new();
-		let mut inbound_committed_update_adds: Vec<Option<msgs::UpdateAddHTLC>> = Vec::new();
+		let mut inbound_committed_update_adds: Vec<&Option<msgs::UpdateAddHTLC>> = Vec::new();
 		(self.context.pending_inbound_htlcs.len() as u64 - dropped_inbound_htlcs).write(writer)?;
 		for htlc in self.context.pending_inbound_htlcs.iter() {
 			if let &InboundHTLCState::RemoteAnnounced(_) = &htlc.state {
@@ -14745,7 +14745,7 @@ where
 				},
 				&InboundHTLCState::Committed { ref update_add_htlc_opt } => {
 					3u8.write(writer)?;
-					inbound_committed_update_adds.push(update_add_htlc_opt.clone());
+					inbound_committed_update_adds.push(update_add_htlc_opt);
 				},
 				&InboundHTLCState::LocalRemoved(ref removal_reason) => {
 					4u8.write(writer)?;
