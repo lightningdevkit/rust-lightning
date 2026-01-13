@@ -122,7 +122,9 @@ use crate::types::features::{
 };
 use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::types::string::UntrustedString;
-use crate::util::config::{ChannelConfig, ChannelConfigOverrides, ChannelConfigUpdate, UserConfig};
+use crate::util::config::{
+	ChannelConfig, ChannelConfigOverrides, ChannelConfigUpdate, HTLCInterceptionFlags, UserConfig,
+};
 use crate::util::errors::APIError;
 use crate::util::logger::{Level, Logger, WithContext};
 use crate::util::scid_utils::fake_scid;
@@ -4994,15 +4996,43 @@ where
 	fn forward_needs_intercept(
 		&self, outbound_chan: Option<&FundedChannel<SP>>, outgoing_scid: u64,
 	) -> bool {
-		if outbound_chan.is_none() {
+		let intercept_flags = self.config.read().unwrap().htlc_interception_flags;
+		if let Some(chan) = outbound_chan {
+			if !chan.context.should_announce() {
+				if chan.context.is_connected() {
+					if intercept_flags & (HTLCInterceptionFlags::ToOnlinePrivateChannels as u8) != 0
+					{
+						return true;
+					}
+				} else {
+					if intercept_flags & (HTLCInterceptionFlags::ToOfflinePrivateChannels as u8)
+						!= 0
+					{
+						return true;
+					}
+				}
+			} else {
+				if intercept_flags & (HTLCInterceptionFlags::ToPublicChannels as u8) != 0 {
+					return true;
+				}
+			}
+		} else {
 			if fake_scid::is_valid_intercept(
 				&self.fake_scid_rand_bytes,
 				outgoing_scid,
 				&self.chain_hash,
 			) {
-				if self.config.read().unwrap().accept_intercept_htlcs {
+				if intercept_flags & (HTLCInterceptionFlags::ToInterceptSCIDs as u8) != 0 {
 					return true;
 				}
+			} else if fake_scid::is_valid_phantom(
+				&self.fake_scid_rand_bytes,
+				outgoing_scid,
+				&self.chain_hash,
+			) {
+				// Handled as a normal forward
+			} else if intercept_flags & (HTLCInterceptionFlags::ToUnknownSCIDs as u8) != 0 {
+				return true;
 			}
 		}
 		false
@@ -6839,11 +6869,8 @@ where
 	/// Intercepted HTLCs can be useful for Lightning Service Providers (LSPs) to open a just-in-time
 	/// channel to a receiving node if the node lacks sufficient inbound liquidity.
 	///
-	/// To make use of intercepted HTLCs, set [`UserConfig::accept_intercept_htlcs`] and use
-	/// [`ChannelManager::get_intercept_scid`] to generate short channel id(s) to put in the
-	/// receiver's invoice route hints. These route hints will signal to LDK to generate an
-	/// [`HTLCIntercepted`] event when it receives the forwarded HTLC, and this method or
-	/// [`ChannelManager::fail_intercepted_htlc`] MUST be called in response to the event.
+	/// To make use of intercepted HTLCs, set [`UserConfig::htlc_interception_flags`] must have a
+	/// non-0 value.
 	///
 	/// Note that LDK does not enforce fee requirements in `amt_to_forward_msat`, and will not stop
 	/// you from forwarding more than you received. See
@@ -6853,7 +6880,7 @@ where
 	/// Errors if the event was not handled in time, in which case the HTLC was automatically failed
 	/// backwards.
 	///
-	/// [`UserConfig::accept_intercept_htlcs`]: crate::util::config::UserConfig::accept_intercept_htlcs
+	/// [`UserConfig::htlc_interception_flags`]: crate::util::config::UserConfig::htlc_interception_flags
 	/// [`HTLCIntercepted`]: events::Event::HTLCIntercepted
 	/// [`HTLCIntercepted::expected_outbound_amount_msat`]: events::Event::HTLCIntercepted::expected_outbound_amount_msat
 	// TODO: when we move to deciding the best outbound channel at forward time, only take
