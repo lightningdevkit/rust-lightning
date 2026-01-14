@@ -1663,6 +1663,10 @@ pub enum Event {
 	/// Indicates that the HTLC was accepted, but could not be processed when or after attempting to
 	/// forward it.
 	///
+	/// Note that downgrading from 0.3 with pending trampoline forwards that have incoming multipart
+	/// payments will produce an event that only provides information about the first htlc that was
+	/// received/dispatched.
+	///
 	/// # Failure Behavior and Persistence
 	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
 	/// returning `Err(ReplayEvent ())`) and will be persisted across restarts.
@@ -2210,8 +2214,11 @@ impl Writeable for Event {
 				ref failure_reason,
 			} => {
 				25u8.write(writer)?;
+				let legacy_chan_id =
+					prev_channel_ids.first().ok_or(io::Error::from(IOInvalidData))?;
 				write_tlv_fields!(writer, {
-					// Type 0 was prev_channel_id in 0.2 and earlier.
+					// Write legacy field to remain backwards compatible.
+					(0, legacy_chan_id, required),
 					(1, failure_reason, option),
 					(2, failure_type, required),
 					(3, *prev_channel_ids, required),
@@ -2786,18 +2793,16 @@ impl MaybeReadable for Event {
 			},
 			25u8 => {
 				let mut f = || {
-					let mut prev_channel_id_legacy = None;
+					let mut prev_channel_id_legacy = ChannelId::new_zero();
 					let mut failure_reason = None;
 					let mut failure_type_opt = UpgradableRequired(None);
 					let mut prev_channel_ids = vec![];
 					read_tlv_fields!(reader, {
-						(0, prev_channel_id_legacy, option),
+						(0, prev_channel_id_legacy, required),
 						(1, failure_reason, option),
 						(2, failure_type_opt, upgradable_required),
-						// If our new prev_channel_ids field is not present, the legacy field
-						// must be because it used to be required.
 						(3, prev_channel_ids, (default_value, vec![
-							prev_channel_id_legacy.ok_or(msgs::DecodeError::InvalidValue)?,
+							prev_channel_id_legacy,
 						])),
 					});
 
@@ -2812,7 +2817,6 @@ impl MaybeReadable for Event {
 						});
 						failure_reason = Some(LocalHTLCFailureReason::UnknownNextPeer.into());
 					}
-
 					Ok(Some(Event::HTLCHandlingFailed {
 						prev_channel_ids,
 						failure_type: _init_tlv_based_struct_field!(
