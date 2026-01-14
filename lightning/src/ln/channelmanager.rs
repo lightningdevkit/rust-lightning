@@ -7048,7 +7048,7 @@ where
 					});
 				let shared_secret = next_hop.shared_secret().secret_bytes();
 
-				macro_rules! fail_htlc {
+				macro_rules! fail_htlc_continue_to_next {
 					($reason: expr) => {{
 						let htlc_fail = self.htlc_failure_from_update_add_err(
 							&update_add_htlc,
@@ -7076,7 +7076,7 @@ where
 				if update_add_htlc.hold_htlc.is_some()
 					&& !BaseMessageHandler::provided_node_features(self).supports_htlc_hold()
 				{
-					fail_htlc!(LocalHTLCFailureReason::TemporaryNodeFailure);
+					fail_htlc_continue_to_next!(LocalHTLCFailureReason::TemporaryNodeFailure);
 				}
 
 				// Process the HTLC on the incoming channel.
@@ -7093,7 +7093,7 @@ where
 				) {
 					Some(Ok(_)) => {},
 					Some(Err(reason)) => {
-						fail_htlc!(reason);
+						fail_htlc_continue_to_next!(reason);
 					},
 					// The incoming channel no longer exists, HTLCs should be resolved onchain instead.
 					None => continue 'outer_loop,
@@ -7104,7 +7104,7 @@ where
 					if let Err(reason) =
 						self.can_forward_htlc(&update_add_htlc, next_packet_details)
 					{
-						fail_htlc!(reason);
+						fail_htlc_continue_to_next!(reason);
 					}
 				}
 
@@ -7150,7 +7150,9 @@ where
 									debug_assert!(false, "Should never have two HTLCs with the same channel id and htlc id");
 									log_error!(logger, "Duplicate intercept id for HTLC");
 									debug_assert!(false, "Should never have two HTLCs with the same channel id and htlc id");
-									fail_htlc!(LocalHTLCFailureReason::TemporaryNodeFailure);
+									fail_htlc_continue_to_next!(
+										LocalHTLCFailureReason::TemporaryNodeFailure
+									);
 								},
 							}
 						} else {
