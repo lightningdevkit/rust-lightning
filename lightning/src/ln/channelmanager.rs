@@ -756,8 +756,6 @@ type PerSourcePendingForward =
 type FailedHTLCForward = (HTLCSource, PaymentHash, HTLCFailReason, HTLCHandlingFailureType);
 
 mod fuzzy_channelmanager {
-	use crate::routing::router::RouteHop;
-
 	use super::*;
 
 	/// Tracks the inbound corresponding to an outbound HTLC
@@ -770,7 +768,7 @@ mod fuzzy_channelmanager {
 			/// need to store the vector of corresponding `HTLCPreviousHopData` values.
 			previous_hop_data: Vec<HTLCPreviousHopData>,
 			incoming_trampoline_shared_secret: [u8; 32],
-			hops: Vec<RouteHop>,
+			path: Path,
 			/// In order to decode inter-Trampoline errors, we need to store the session_priv key
 			/// given we're effectively creating new outbound routes.
 			session_priv: SecretKey,
@@ -840,13 +838,13 @@ impl core::hash::Hash for HTLCSource {
 			HTLCSource::TrampolineForward {
 				previous_hop_data,
 				incoming_trampoline_shared_secret,
-				hops,
+				path,
 				session_priv,
 			} => {
 				2u8.hash(hasher);
 				previous_hop_data.hash(hasher);
 				incoming_trampoline_shared_secret.hash(hasher);
-				hops.hash(hasher);
+				path.hash(hasher);
 				session_priv[..].hash(hasher);
 			},
 		}
@@ -16511,21 +16509,17 @@ impl Readable for HTLCSource {
 			}
 			1 => Ok(HTLCSource::PreviousHopData(Readable::read(reader)?)),
 			2 => {
-				let mut previous_hop_data = Vec::new();
-				let mut incoming_trampoline_shared_secret: crate::util::ser::RequiredWrapper<[u8; 32]> = crate::util::ser::RequiredWrapper(None);
-				let mut session_priv: crate::util::ser::RequiredWrapper<SecretKey> = crate::util::ser::RequiredWrapper(None);
-				let mut hops = Vec::new();
-				read_tlv_fields!(reader, {
-					(0, previous_hop_data, required_vec),
-					(2, incoming_trampoline_shared_secret, required),
-					(4, session_priv, required),
-					(6, hops, required_vec),
+				_init_and_read_len_prefixed_tlv_fields!(reader, {
+					(1, previous_hop_data, required_vec),
+					(3, incoming_trampoline_shared_secret, required),
+					(5, path, required),
+					(7, session_priv, required),
 				});
 				Ok(HTLCSource::TrampolineForward {
-					previous_hop_data,
-					incoming_trampoline_shared_secret: incoming_trampoline_shared_secret.0.unwrap(),
-					hops,
-					session_priv: session_priv.0.unwrap(),
+					previous_hop_data: _init_tlv_based_struct_field!(previous_hop_data, required_vec),
+					incoming_trampoline_shared_secret: _init_tlv_based_struct_field!(incoming_trampoline_shared_secret, required),
+					path: _init_tlv_based_struct_field!(path, required),
+					session_priv: _init_tlv_based_struct_field!(session_priv, required),
 				})
 			},
 			_ => Err(DecodeError::UnknownRequiredFeature),
@@ -16564,14 +16558,14 @@ impl Writeable for HTLCSource {
 				ref previous_hop_data,
 				incoming_trampoline_shared_secret,
 				ref session_priv,
-				ref hops,
+				ref path,
 			} => {
 				2u8.write(writer)?;
 				write_tlv_fields!(writer, {
-					(0, *previous_hop_data, required_vec),
-					(2, incoming_trampoline_shared_secret, required),
-					(4, session_priv, required),
-					(6, *hops, required_vec),
+					(1, *previous_hop_data, required_vec),
+					(3, incoming_trampoline_shared_secret, required),
+					(5, *path, required),
+					(7, session_priv, required),
 				});
 			},
 		}
