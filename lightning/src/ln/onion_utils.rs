@@ -2308,13 +2308,10 @@ pub(crate) enum OnionDecodeErr {
 	},
 }
 
-pub(crate) fn decode_next_payment_hop<NS: Deref>(
+pub(crate) fn decode_next_payment_hop<NS: NodeSigner>(
 	recipient: Recipient, hop_pubkey: &PublicKey, hop_data: &[u8], hmac_bytes: [u8; 32],
 	payment_hash: PaymentHash, blinding_point: Option<PublicKey>, node_signer: NS,
-) -> Result<Hop, OnionDecodeErr>
-where
-	NS::Target: NodeSigner,
-{
+) -> Result<Hop, OnionDecodeErr> {
 	let blinded_node_id_tweak = blinding_point.map(|bp| {
 		let blinded_tlvs_ss = node_signer.ecdh(recipient, &bp, None).unwrap().secret_bytes();
 		let mut hmac = HmacEngine::<Sha256>::new(b"blinded_node_id");
@@ -2329,7 +2326,7 @@ where
 		hop_data,
 		hmac_bytes,
 		Some(payment_hash),
-		(blinding_point, &(*node_signer)),
+		(blinding_point, &node_signer),
 	);
 	match decoded_hop {
 		Ok((next_hop_data, Some((next_hop_hmac, FixedSizeOnionPacket(new_packet_bytes))))) => {
@@ -2397,7 +2394,7 @@ where
 					&hop_data.trampoline_packet.hop_data,
 					hop_data.trampoline_packet.hmac,
 					Some(payment_hash),
-					(blinding_point, node_signer),
+					(blinding_point, &node_signer),
 				);
 				match decoded_trampoline_hop {
 					Ok((

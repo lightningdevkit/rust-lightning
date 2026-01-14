@@ -177,15 +177,14 @@ impl BlindedPaymentPath {
 	/// introduction node.
 	///
 	/// Will only modify `self` when returning `Ok`.
-	pub fn advance_path_by_one<NS: Deref, NL: Deref, T>(
+	pub fn advance_path_by_one<NS: NodeSigner, NL: Deref, T>(
 		&mut self, node_signer: &NS, node_id_lookup: &NL, secp_ctx: &Secp256k1<T>,
 	) -> Result<(), ()>
 	where
-		NS::Target: NodeSigner,
 		NL::Target: NodeIdLookUp,
 		T: secp256k1::Signing + secp256k1::Verification,
 	{
-		match self.decrypt_intro_payload::<NS>(node_signer) {
+		match self.decrypt_intro_payload(node_signer) {
 			Ok((
 				BlindedPaymentTlvs::Forward(ForwardTlvs { short_channel_id, .. }),
 				control_tlvs_ss,
@@ -209,12 +208,9 @@ impl BlindedPaymentPath {
 		}
 	}
 
-	pub(crate) fn decrypt_intro_payload<NS: Deref>(
+	pub(crate) fn decrypt_intro_payload<NS: NodeSigner>(
 		&self, node_signer: &NS,
-	) -> Result<(BlindedPaymentTlvs, SharedSecret), ()>
-	where
-		NS::Target: NodeSigner,
-	{
+	) -> Result<(BlindedPaymentTlvs, SharedSecret), ()> {
 		let control_tlvs_ss =
 			node_signer.ecdh(Recipient::Node, &self.inner_path.blinding_point, None)?;
 		let rho = onion_utils::gen_rho_from_shared_secret(&control_tlvs_ss.secret_bytes());

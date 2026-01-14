@@ -421,8 +421,7 @@ pub const NO_ONION_MESSENGER: Option<
 	Arc<
 		dyn AOnionMessenger<
 				EntropySource = &(dyn EntropySource + Send + Sync),
-				NodeSigner = dyn lightning::sign::NodeSigner + Send + Sync,
-				NS = &(dyn lightning::sign::NodeSigner + Send + Sync),
+				NodeSigner = &(dyn lightning::sign::NodeSigner + Send + Sync),
 				Logger = dyn Logger + Send + Sync,
 				L = &'static (dyn Logger + Send + Sync),
 				NodeIdLookUp = DynChannelManager,
@@ -480,8 +479,7 @@ pub const NO_LIQUIDITY_MANAGER: Option<
 	Arc<
 		dyn ALiquidityManager<
 				EntropySource = &(dyn EntropySource + Send + Sync),
-				NodeSigner = dyn lightning::sign::NodeSigner + Send + Sync,
-				NS = &(dyn lightning::sign::NodeSigner + Send + Sync),
+				NodeSigner = &(dyn lightning::sign::NodeSigner + Send + Sync),
 				AChannelManager = DynChannelManager,
 				CM = &DynChannelManager,
 				Filter = dyn chain::Filter + Send + Sync,
@@ -505,8 +503,7 @@ pub const NO_LIQUIDITY_MANAGER_SYNC: Option<
 	Arc<
 		dyn ALiquidityManagerSync<
 				EntropySource = &(dyn EntropySource + Send + Sync),
-				NodeSigner = dyn lightning::sign::NodeSigner + Send + Sync,
-				NS = &(dyn lightning::sign::NodeSigner + Send + Sync),
+				NodeSigner = &(dyn lightning::sign::NodeSigner + Send + Sync),
 				AChannelManager = DynChannelManager,
 				CM = &DynChannelManager,
 				Filter = dyn chain::Filter + Send + Sync,
