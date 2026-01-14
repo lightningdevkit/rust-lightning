@@ -44,7 +44,7 @@ use crate::util::ser::{
 	WithoutLength, Writeable, Writer,
 };
 
-use crate::io;
+use crate::io::{self, ErrorKind::InvalidData as IOInvalidData};
 use crate::sync::Arc;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash;
@@ -1331,6 +1331,10 @@ pub enum Event {
 	/// This event is generated when a payment has been successfully forwarded through us and a
 	/// forwarding fee earned.
 	///
+	/// Note that downgrading from 0.3 with pending trampoline forwards that use multipart payments
+	/// will produce an event that only provides information about the first htlc that was
+	/// received/dispatched.
+	///
 	/// # Failure Behavior and Persistence
 	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
 	/// returning `Err(ReplayEvent ())`) and will be persisted across restarts.
@@ -2034,17 +2038,20 @@ impl Writeable for Event {
 				outbound_amount_forwarded_msat,
 			} => {
 				7u8.write(writer)?;
+				// Fields 1, 3, 9, 11, 13 and 15 are written for backwards compatibility.
+				let legacy_prev = prev_htlcs.first().ok_or(io::Error::from(IOInvalidData))?;
+				let legacy_next = next_htlcs.first().ok_or(io::Error::from(IOInvalidData))?;
 				write_tlv_fields!(writer, {
 					(0, total_fee_earned_msat, option),
-					// Type 1 was prev_channel_id in 0.2 and earlier.
+					(1, Some(legacy_prev.channel_id), option),
 					(2, claim_from_onchain_tx, required),
-					// Type 3 was next_channel_id in 0.2 and earlier.
+					(3, Some(legacy_next.channel_id), option),
 					(5, outbound_amount_forwarded_msat, option),
 					(7, skimmed_fee_msat, option),
-					// Type 9 was prev_user_channel_id in 0.2 and earlier.
-					// Type 11 was next_user_channel_id in 0.2 and earlier.
-					// Type 13 was prev_node_id in 0.2 and earlier.
-					// Type 15 was next_node_id in 0.2 and earlier.
+					(9, legacy_prev.user_channel_id, option),
+					(11, legacy_next.user_channel_id, option),
+					(13, legacy_prev.node_id, option),
+					(15, legacy_next.node_id, option),
 					// HTLCs are written as required, rather than required_vec, so that they can be
 					// deserialized using default_value to fill in legacy fields which expects
 					// LengthReadable (requried_vec is WithoutLength).
@@ -2569,34 +2576,22 @@ impl MaybeReadable for Event {
 						(11, next_user_channel_id_legacy, option),
 						(13, prev_node_id_legacy, option),
 						(15, next_node_id_legacy, option),
-						// We can't unwrap prev_channel_id_legacy or next_channel_id_legacy here
-						// because default_value eagerly evaluates the default, so events that do
-						// not have legacy fields would fail. We settle for setting a zero ChannelID
-						// and replacing it below.
+						// We can unwrap in the eagerly-evaluated default_value code because we
+						// always write legacy fields to be backwards compatible, and expect
+						// this field to be set because the legacy field was only None for versions
+						// before 0.0.107 and we do not allow upgrades with pending forwards to 0.1
+						// for any version before 0.0.123.
 						(17, prev_htlcs, (default_value, vec![HTLCLocator{
-							channel_id: ChannelId::new_zero(),
+							channel_id: prev_channel_id_legacy.unwrap(),
 							user_channel_id: prev_user_channel_id_legacy,
 							node_id: prev_node_id_legacy,
 						}])),
 						(19, next_htlcs, (default_value, vec![HTLCLocator{
-							channel_id: ChannelId::new_zero(),
+							channel_id: next_channel_id_legacy.unwrap(),
 							user_channel_id: next_user_channel_id_legacy,
 							node_id: next_node_id_legacy,
 						}])),
 					});
-
-					// If dealing with legacy serialization, we can be confident that we'll
-					// replace the zero value placeholders above because these fields were only
-					// None for events serialized before 0.0.107. We do not allow nodes with pending
-					// forwards to be upgraded directly to 0.1 from versions 0.0.123 or earlier,
-					// so we should always have Some here when reading legacy serialization.
-					if let Some(prev_channel_id) = prev_channel_id_legacy {
-						prev_htlcs[0].channel_id = prev_channel_id;
-					}
-
-					if let Some(next_channel_id) = next_channel_id_legacy {
-						next_htlcs[0].channel_id = next_channel_id;
-					}
 
 					Ok(Some(Event::PaymentForwarded {
 						prev_htlcs,
