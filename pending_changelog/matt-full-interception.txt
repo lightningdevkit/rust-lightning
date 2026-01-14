@@ -1,0 +1,4 @@
+# Backwards Compatibility
+ * HTLCs which were first received on an LDK version prior to LDK 0.2 will no
+   longer be intercepted. Instead, they will be handled as if they were not
+   intercepted and be forwarded/failed automatically.

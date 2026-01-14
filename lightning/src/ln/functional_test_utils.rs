@@ -2906,7 +2906,7 @@ pub fn check_payment_claimable(
 				_ => {},
 			}
 		},
-		_ => panic!("Unexpected event"),
+		_ => panic!("Unexpected event {event:?}"),
 	}
 }
 

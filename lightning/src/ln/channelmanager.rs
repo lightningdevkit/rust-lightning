@@ -637,14 +637,6 @@ impl Readable for PaymentId {
 pub struct InterceptId(pub [u8; 32]);
 
 impl InterceptId {
-	/// This intercept id corresponds to an HTLC that will be forwarded on
-	/// [`ChannelManager::forward_intercepted_htlc`].
-	fn from_incoming_shared_secret(ss: &[u8; 32]) -> Self {
-		Self(Sha256::hash(ss).to_byte_array())
-	}
-
-	/// This intercept id corresponds to an HTLC that will be forwarded on receipt of a
-	/// [`ReleaseHeldHtlc`] onion message.
 	fn from_htlc_id_and_chan_id(
 		htlc_id: u64, channel_id: &ChannelId, counterparty_node_id: &PublicKey,
 	) -> Self {
@@ -4776,10 +4768,27 @@ where
 		}
 	}
 
+	fn forward_needs_intercept(
+		&self, outbound_chan: Option<&FundedChannel<SP>>, outgoing_scid: u64,
+	) -> bool {
+		if outbound_chan.is_none() {
+			if fake_scid::is_valid_intercept(
+				&self.fake_scid_rand_bytes,
+				outgoing_scid,
+				&self.chain_hash,
+			) {
+				if self.config.read().unwrap().accept_intercept_htlcs {
+					return true;
+				}
+			}
+		}
+		false
+	}
+
 	#[rustfmt::skip]
 	fn can_forward_htlc_to_outgoing_channel(
 		&self, chan: &mut FundedChannel<SP>, msg: &msgs::UpdateAddHTLC, next_packet: &NextPacketDetails
-	) -> Result<(), LocalHTLCFailureReason> {
+	) -> Result<bool, LocalHTLCFailureReason> {
 		if !chan.context.should_announce()
 			&& !self.config.read().unwrap().accept_forwards_to_priv_channels
 		{
@@ -4788,6 +4797,7 @@ where
 			// we don't allow forwards outbound over them.
 			return Err(LocalHTLCFailureReason::PrivateChannelForward);
 		}
+		let intercepted;
 		if let HopConnector::ShortChannelId(outgoing_scid) = next_packet.outgoing_connector {
 			if chan.funding.get_channel_type().supports_scid_privacy() && outgoing_scid != chan.context.outbound_scid_alias() {
 				// `option_scid_alias` (referred to in LDK as `scid_privacy`) means
@@ -4795,6 +4805,7 @@ where
 				// we don't have the channel here.
 				return Err(LocalHTLCFailureReason::RealSCIDForward);
 			}
+			intercepted = self.forward_needs_intercept(Some(chan), outgoing_scid);
 		} else {
 			return Err(LocalHTLCFailureReason::InvalidTrampolineForward);
 		}
@@ -4804,7 +4815,7 @@ where
 		// around to doing the actual forward, but better to fail early if we can and
 		// hopefully an attacker trying to path-trace payments cannot make this occur
 		// on a small/per-node/per-channel scale.
-		if !chan.context.is_live() {
+		if !intercepted && !chan.context.is_live() {
 			if !chan.context.is_enabled() {
 				return Err(LocalHTLCFailureReason::ChannelDisabled);
 			} else if !chan.context.is_connected() {
@@ -4818,7 +4829,7 @@ where
 		}
 		chan.htlc_satisfies_config(msg, next_packet.outgoing_amt_msat, next_packet.outgoing_cltv_value)?;
 
-		Ok(())
+		Ok(intercepted)
 	}
 
 	/// Executes a callback `C` that returns some value `X` on the channel found with the given
@@ -4844,42 +4855,63 @@ where
 		}
 	}
 
-	#[rustfmt::skip]
-	fn can_forward_htlc(
-		&self, msg: &msgs::UpdateAddHTLC, next_packet_details: &NextPacketDetails
-	) -> Result<(), LocalHTLCFailureReason> {
+	fn can_forward_htlc_intercepted(
+		&self, msg: &msgs::UpdateAddHTLC, next_packet_details: &NextPacketDetails,
+	) -> Result<bool, LocalHTLCFailureReason> {
 		let outgoing_scid = match next_packet_details.outgoing_connector {
 			HopConnector::ShortChannelId(scid) => scid,
 			HopConnector::Dummy => {
 				// Dummy hops are only used for path padding and must not reach HTLC processing.
 				debug_assert!(false, "Dummy hop reached HTLC handling.");
 				return Err(LocalHTLCFailureReason::InvalidOnionPayload);
-			}
+			},
 			HopConnector::Trampoline(_) => {
 				return Err(LocalHTLCFailureReason::InvalidTrampolineForward);
-			}
+			},
 		};
-		match self.do_funded_channel_callback(outgoing_scid, |chan: &mut FundedChannel<SP>| {
-			self.can_forward_htlc_to_outgoing_channel(chan, msg, next_packet_details)
-		}) {
-			Some(Ok(())) => {},
-			Some(Err(e)) => return Err(e),
-			None => {
-				// If we couldn't find the channel info for the scid, it may be a phantom or
-				// intercept forward.
-				if (self.config.read().unwrap().accept_intercept_htlcs &&
-					fake_scid::is_valid_intercept(&self.fake_scid_rand_bytes, outgoing_scid, &self.chain_hash)) ||
-					fake_scid::is_valid_phantom(&self.fake_scid_rand_bytes, outgoing_scid, &self.chain_hash)
-				{} else {
-					return Err(LocalHTLCFailureReason::UnknownNextPeer);
-				}
-			}
-		}
+		// TODO: We do the fake SCID namespace check a bunch of times here (and indirectly via
+		// `forward_needs_intercept`, including as called in
+		// `can_forward_htlc_to_outgoing_channel`), we should find a way to reduce the number of
+		// times we do it.
+		let intercept =
+			match self.do_funded_channel_callback(outgoing_scid, |chan: &mut FundedChannel<SP>| {
+				self.can_forward_htlc_to_outgoing_channel(chan, msg, next_packet_details)
+			}) {
+				Some(Ok(intercept)) => intercept,
+				Some(Err(e)) => return Err(e),
+				None => {
+					// Perform basic sanity checks on the amounts and CLTV being forwarded
+					if next_packet_details.outgoing_amt_msat > msg.amount_msat {
+						return Err(LocalHTLCFailureReason::FeeInsufficient);
+					}
+					let cltv_delta =
+						msg.cltv_expiry.saturating_sub(next_packet_details.outgoing_cltv_value);
+					if cltv_delta < MIN_CLTV_EXPIRY_DELTA.into() {
+						return Err(LocalHTLCFailureReason::IncorrectCLTVExpiry);
+					}
+
+					if fake_scid::is_valid_phantom(
+						&self.fake_scid_rand_bytes,
+						outgoing_scid,
+						&self.chain_hash,
+					) {
+						false
+					} else if self.forward_needs_intercept(None, outgoing_scid) {
+						true
+					} else {
+						return Err(LocalHTLCFailureReason::UnknownNextPeer);
+					}
+				},
+			};
 
 		let cur_height = self.best_block.read().unwrap().height + 1;
-		check_incoming_htlc_cltv(cur_height, next_packet_details.outgoing_cltv_value, msg.cltv_expiry)?;
+		check_incoming_htlc_cltv(
+			cur_height,
+			next_packet_details.outgoing_cltv_value,
+			msg.cltv_expiry,
+		)?;
 
-		Ok(())
+		Ok(intercept)
 	}
 
 	#[rustfmt::skip]
@@ -6939,11 +6971,13 @@ where
 				}
 
 				// Now process the HTLC on the outgoing channel if it's a forward.
+				let mut intercept_forward = false;
 				if let Some(next_packet_details) = next_packet_details_opt.as_ref() {
-					if let Err(reason) =
-						self.can_forward_htlc(&update_add_htlc, next_packet_details)
-					{
-						fail_htlc_continue_to_next!(reason);
+					match self.can_forward_htlc_intercepted(&update_add_htlc, next_packet_details) {
+						Err(reason) => {
+							fail_htlc_continue_to_next!(reason);
+						},
+						Ok(intercept) => intercept_forward = intercept,
 					}
 				}
 
@@ -6955,6 +6989,22 @@ where
 					next_packet_details_opt.map(|d| d.next_packet_pubkey),
 				) {
 					Ok(info) => {
+						let to_pending_add = |info| PendingAddHTLCInfo {
+							prev_outbound_scid_alias: incoming_scid_alias,
+							prev_counterparty_node_id: incoming_counterparty_node_id,
+							prev_funding_outpoint: incoming_funding_txo,
+							prev_channel_id: incoming_channel_id,
+							prev_htlc_id: update_add_htlc.htlc_id,
+							prev_user_channel_id: incoming_user_channel_id,
+							forward_info: info,
+						};
+						let intercept_id = || {
+							InterceptId::from_htlc_id_and_chan_id(
+								update_add_htlc.htlc_id,
+								&incoming_channel_id,
+								&incoming_counterparty_node_id,
+							)
+						};
 						let logger = WithContext::from(
 							&self.logger,
 							None,
@@ -6962,32 +7012,64 @@ where
 							Some(update_add_htlc.payment_hash),
 						);
 						if info.routing.should_hold_htlc() {
-							let intercept_id = InterceptId::from_htlc_id_and_chan_id(
-								update_add_htlc.htlc_id,
-								&incoming_channel_id,
-								&incoming_counterparty_node_id,
-							);
 							let mut held_htlcs = self.pending_intercepted_htlcs.lock().unwrap();
+							let intercept_id = intercept_id();
 							match held_htlcs.entry(intercept_id) {
 								hash_map::Entry::Vacant(entry) => {
 									log_debug!(
 										logger,
 										"Intercepted held HTLC with id {intercept_id}, holding until the recipient is online"
 									);
-									let pending_add = PendingAddHTLCInfo {
-										prev_outbound_scid_alias: incoming_scid_alias,
-										prev_counterparty_node_id: incoming_counterparty_node_id,
-										prev_funding_outpoint: incoming_funding_txo,
-										prev_channel_id: incoming_channel_id,
-										prev_htlc_id: update_add_htlc.htlc_id,
-										prev_user_channel_id: incoming_user_channel_id,
-										forward_info: info,
-									};
+									let pending_add = to_pending_add(info);
 									entry.insert(pending_add);
 								},
 								hash_map::Entry::Occupied(_) => {
 									debug_assert!(false, "Should never have two HTLCs with the same channel id and htlc id");
 									log_error!(logger, "Duplicate intercept id for HTLC");
+									fail_htlc_continue_to_next!(
+										LocalHTLCFailureReason::TemporaryNodeFailure
+									);
+								},
+							}
+						} else if intercept_forward {
+							let intercept_id = intercept_id();
+							let mut pending_intercepts =
+								self.pending_intercepted_htlcs.lock().unwrap();
+							match pending_intercepts.entry(intercept_id) {
+								hash_map::Entry::Vacant(entry) => {
+									let pending_add = to_pending_add(info);
+									if let Ok(intercept_ev) =
+										create_htlc_intercepted_event(intercept_id, &pending_add)
+									{
+										log_debug!(
+											logger,
+											"Intercepted HTLC, generating intercept event with ID {intercept_id}"
+										);
+										let ev_entry = (intercept_ev, None);
+										// It's possible we processed this intercept forward,
+										// generated an event, then re-processed it here after
+										// restart, in which case the intercept event should not be
+										// pushed redundantly.
+										let mut events = self.pending_events.lock().unwrap();
+										events.retain(|ev| *ev != ev_entry);
+										events.push_back(ev_entry);
+										entry.insert(pending_add);
+									} else {
+										debug_assert!(false);
+										log_error!(
+											logger,
+											"Failed to generate an intercept event for HTLC"
+										);
+										fail_htlc_continue_to_next!(
+											LocalHTLCFailureReason::TemporaryNodeFailure
+										);
+									}
+								},
+								hash_map::Entry::Occupied(_) => {
+									log_error!(
+										logger,
+										"Failed to forward incoming HTLC: detected duplicate intercepted payment",
+									);
 									debug_assert!(false, "Should never have two HTLCs with the same channel id and htlc id");
 									fail_htlc_continue_to_next!(
 										LocalHTLCFailureReason::TemporaryNodeFailure
@@ -11886,26 +11968,15 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			ref mut pending_forwards,
 		) in per_source_pending_forwards
 		{
-			let mut new_intercept_events = VecDeque::new();
-			let mut failed_intercept_forwards = Vec::new();
 			if !pending_forwards.is_empty() {
 				for (forward_info, prev_htlc_id) in pending_forwards.drain(..) {
 					let scid = match forward_info.routing {
 						PendingHTLCRouting::Forward { short_channel_id, .. } => short_channel_id,
-						PendingHTLCRouting::TrampolineForward { .. } => 0,
-						PendingHTLCRouting::Receive { .. } => 0,
-						PendingHTLCRouting::ReceiveKeysend { .. } => 0,
+						PendingHTLCRouting::TrampolineForward { .. }
+						| PendingHTLCRouting::Receive { .. }
+						| PendingHTLCRouting::ReceiveKeysend { .. } => 0,
 					};
-					// Pull this now to avoid introducing a lock order with `forward_htlcs`.
-					let is_our_scid = self.short_to_chan_info.read().unwrap().contains_key(&scid);
 
-					let payment_hash = forward_info.payment_hash;
-					let logger = WithContext::from(
-						&self.logger,
-						None,
-						Some(prev_channel_id),
-						Some(payment_hash),
-					);
 					let pending_add = PendingAddHTLCInfo {
 						prev_outbound_scid_alias,
 						prev_counterparty_node_id,
@@ -11915,87 +11986,16 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						prev_user_channel_id,
 						forward_info,
 					};
-					let mut fail_intercepted_htlc = |pending_add: PendingAddHTLCInfo| {
-						let htlc_source =
-							HTLCSource::PreviousHopData(pending_add.htlc_previous_hop_data());
-						let reason = HTLCFailReason::from_failure_code(
-							LocalHTLCFailureReason::UnknownNextPeer,
-						);
-						let failure_type = HTLCHandlingFailureType::InvalidForward {
-							requested_forward_scid: scid,
-						};
-						failed_intercept_forwards.push((
-							htlc_source,
-							payment_hash,
-							reason,
-							failure_type,
-						));
-					};
 
-					if !is_our_scid
-						&& pending_add.forward_info.incoming_amt_msat.is_some()
-						&& fake_scid::is_valid_intercept(
-							&self.fake_scid_rand_bytes,
-							scid,
-							&self.chain_hash,
-						) {
-						let intercept_id = InterceptId::from_incoming_shared_secret(
-							&pending_add.forward_info.incoming_shared_secret,
-						);
-						let mut pending_intercepts = self.pending_intercepted_htlcs.lock().unwrap();
-						match pending_intercepts.entry(intercept_id) {
-							hash_map::Entry::Vacant(entry) => {
-								if let Ok(intercept_ev) =
-									create_htlc_intercepted_event(intercept_id, &pending_add)
-								{
-									new_intercept_events.push_back((intercept_ev, None));
-									entry.insert(pending_add);
-								} else {
-									debug_assert!(false);
-									fail_intercepted_htlc(pending_add);
-								}
-							},
-							hash_map::Entry::Occupied(_) => {
-								log_info!(
-											logger,
-											"Failed to forward incoming HTLC: detected duplicate intercepted payment over short channel id {}",
-											scid
-										);
-								fail_intercepted_htlc(pending_add);
-							},
-						}
-					} else {
-						match self.forward_htlcs.lock().unwrap().entry(scid) {
-							hash_map::Entry::Occupied(mut entry) => {
-								entry.get_mut().push(HTLCForwardInfo::AddHTLC(pending_add));
-							},
-							hash_map::Entry::Vacant(entry) => {
-								entry.insert(vec![HTLCForwardInfo::AddHTLC(pending_add)]);
-							},
-						}
+					match self.forward_htlcs.lock().unwrap().entry(scid) {
+						hash_map::Entry::Occupied(mut entry) => {
+							entry.get_mut().push(HTLCForwardInfo::AddHTLC(pending_add));
+						},
+						hash_map::Entry::Vacant(entry) => {
+							entry.insert(vec![HTLCForwardInfo::AddHTLC(pending_add)]);
+						},
 					}
 				}
-			}
-
-			for (htlc_source, payment_hash, failure_reason, destination) in
-				failed_intercept_forwards.drain(..)
-			{
-				self.fail_htlc_backwards_internal(
-					&htlc_source,
-					&payment_hash,
-					&failure_reason,
-					destination,
-					None,
-				);
-			}
-
-			if !new_intercept_events.is_empty() {
-				let mut events = self.pending_events.lock().unwrap();
-				// It's possible we processed this intercept forward, generated an event, then re-processed
-				// it here after restart, in which case the intercept event should not be pushed
-				// redundantly.
-				new_intercept_events.retain(|ev| !events.contains(ev));
-				events.append(&mut new_intercept_events);
 			}
 		}
 	}
@@ -16267,6 +16267,7 @@ where
 				prev_outbound_scid_alias,
 				htlc_id,
 			} => {
+				let _serialize_guard = PersistenceNotifierGuard::notify_on_drop(self);
 				// It's possible the release_held_htlc message raced ahead of us transitioning the pending
 				// update_add to `Self::pending_intercept_htlcs`. If that's the case, update the pending
 				// update_add to indicate that the HTLC should be released immediately.
@@ -16305,16 +16306,18 @@ where
 						},
 					}
 				};
-				match htlc.forward_info.routing {
-					PendingHTLCRouting::Forward { ref mut hold_htlc, .. } => {
+				let next_hop_scid = match htlc.forward_info.routing {
+					PendingHTLCRouting::Forward { ref mut hold_htlc, short_channel_id, .. } => {
 						debug_assert!(hold_htlc.is_some());
 						*hold_htlc = None;
+						short_channel_id
 					},
 					_ => {
 						debug_assert!(false, "HTLC intercepts can only be forwards");
+						// Let the HTLC be auto-failed before it expires.
 						return;
 					},
-				}
+				};
 
 				let logger = WithContext::from(
 					&self.logger,
@@ -16324,16 +16327,56 @@ where
 				);
 				log_trace!(logger, "Releasing held htlc with intercept_id {}", intercept_id);
 
-				let mut per_source_pending_forward = [(
-					htlc.prev_outbound_scid_alias,
-					htlc.prev_counterparty_node_id,
-					htlc.prev_funding_outpoint,
-					htlc.prev_channel_id,
-					htlc.prev_user_channel_id,
-					vec![(htlc.forward_info, htlc.prev_htlc_id)],
-				)];
-				self.forward_htlcs(&mut per_source_pending_forward);
-				PersistenceNotifierGuard::notify_on_drop(self);
+				let should_intercept = self
+					.do_funded_channel_callback(next_hop_scid, |chan| {
+						self.forward_needs_intercept(Some(chan), next_hop_scid)
+					})
+					.unwrap_or_else(|| self.forward_needs_intercept(None, next_hop_scid));
+
+				if should_intercept {
+					let intercept_id = InterceptId::from_htlc_id_and_chan_id(
+						htlc.prev_htlc_id,
+						&htlc.prev_channel_id,
+						&htlc.prev_counterparty_node_id,
+					);
+					let mut pending_intercepts = self.pending_intercepted_htlcs.lock().unwrap();
+					match pending_intercepts.entry(intercept_id) {
+						hash_map::Entry::Vacant(entry) => {
+							if let Ok(intercept_ev) =
+								create_htlc_intercepted_event(intercept_id, &htlc)
+							{
+								self.pending_events.lock().unwrap().push_back((intercept_ev, None));
+								entry.insert(htlc);
+							} else {
+								debug_assert!(false);
+								// Let the HTLC be auto-failed before it expires.
+								return;
+							}
+						},
+						hash_map::Entry::Occupied(_) => {
+							log_error!(
+								logger,
+								"Failed to forward incoming HTLC: detected duplicate intercepted payment",
+							);
+							debug_assert!(
+								false,
+								"Should never have two HTLCs with the same channel id and htlc id",
+							);
+							// Let the HTLC be auto-failed before it expires.
+							return;
+						},
+					}
+				} else {
+					let mut per_source_pending_forward = [(
+						htlc.prev_outbound_scid_alias,
+						htlc.prev_counterparty_node_id,
+						htlc.prev_funding_outpoint,
+						htlc.prev_channel_id,
+						htlc.prev_user_channel_id,
+						vec![(htlc.forward_info, htlc.prev_htlc_id)],
+					)];
+					self.forward_htlcs(&mut per_source_pending_forward);
+				}
 			},
 			_ => return,
 		}
@@ -17062,6 +17105,7 @@ where
 			}
 		}
 
+		let our_pending_intercepts = self.pending_intercepted_htlcs.lock().unwrap();
 
 		// Since some FundingNegotiation variants are not persisted, any splice in such state must
 		// be failed upon reload. However, as the necessary information for the SpliceFailed event
@@ -17159,7 +17203,6 @@ where
 		}
 
 		let mut pending_intercepted_htlcs = None;
-		let our_pending_intercepts = self.pending_intercepted_htlcs.lock().unwrap();
 		if our_pending_intercepts.len() != 0 {
 			pending_intercepted_htlcs = Some(our_pending_intercepts);
 		}
