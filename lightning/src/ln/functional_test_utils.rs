@@ -971,7 +971,7 @@ pub fn get_revoke_commit_msgs<CM: AChannelManager, H: NodeHolder<CM = CM>>(
 				assert_eq!(node_id, recipient);
 				(*msg).clone()
 			},
-			_ => panic!("Unexpected event"),
+			_ => panic!("Unexpected event: {events:?}"),
 		},
 		match events[1] {
 			MessageSendEvent::UpdateHTLCs { ref node_id, ref channel_id, ref updates } => {
@@ -984,7 +984,7 @@ pub fn get_revoke_commit_msgs<CM: AChannelManager, H: NodeHolder<CM = CM>>(
 				assert!(updates.commitment_signed.iter().all(|cs| cs.channel_id == *channel_id));
 				updates.commitment_signed.clone()
 			},
-			_ => panic!("Unexpected event"),
+			_ => panic!("Unexpected event: {events:?}"),
 		},
 	)
 }
