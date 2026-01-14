@@ -668,9 +668,7 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 			script_pubkey: wallet.get_change_script().unwrap(),
 		}],
 	};
-	let coinbase_txid = coinbase_tx.compute_txid();
-	wallet
-		.add_utxo(bitcoin::OutPoint { txid: coinbase_txid, vout: 0 }, Amount::from_sat(1_000_000));
+	wallet.add_utxo(coinbase_tx.clone(), 0);
 
 	loop {
 		match get_slice!(1)[0] {
