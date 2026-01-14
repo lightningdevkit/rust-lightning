@@ -2192,6 +2192,7 @@ where
 								Some(FundingNegotiation::AwaitingSignatures {
 									is_initiator,
 									funding,
+									initial_commit_sig_from_counterparty: None,
 								});
 							interactive_tx_constructor
 						})?
@@ -2277,6 +2278,12 @@ where
 					})
 					.map(|funding_negotiation| funding_negotiation.as_funding().is_some())
 					.unwrap_or(false);
+				let has_holder_tx_signatures = funded_channel
+					.context
+					.interactive_tx_signing_session
+					.as_ref()
+					.map(|session| session.holder_tx_signatures().is_some())
+					.unwrap_or(false);
 				let session_received_commitment_signed = funded_channel
 					.context
 					.interactive_tx_signing_session
@@ -2286,9 +2293,26 @@ where
 					// which must always come after the initial commitment signed is sent.
 					.unwrap_or(true);
 				let res = if has_negotiated_pending_splice && !session_received_commitment_signed {
-					funded_channel
-						.splice_initial_commitment_signed(msg, fee_estimator, logger)
-						.map(|monitor_update_opt| (None, monitor_update_opt))
+					// We delay processing this until the user manually approves the splice via
+					// [`Channel::funding_transaction_signed`], as otherwise, there would be a
+					// [`ChannelMonitorUpdateStep::RenegotiatedFunding`] committed that we would
+					// need to undo if they no longer wish to proceed.
+					if has_holder_tx_signatures {
+						funded_channel
+							.splice_initial_commitment_signed(msg, fee_estimator, logger)
+							.map(|monitor_update_opt| (None, monitor_update_opt))
+					} else {
+						let pending_splice = funded_channel.pending_splice.as_mut()
+							.expect("We have a pending splice negotiated");
+						let funding_negotiation = pending_splice.funding_negotiation.as_mut()
+							.expect("We have a pending splice negotiated");
+						if let FundingNegotiation::AwaitingSignatures {
+							ref mut initial_commit_sig_from_counterparty, ..
+						} = funding_negotiation {
+							*initial_commit_sig_from_counterparty = Some(msg.clone());
+						}
+						Ok((None, None))
+					}
 				} else {
 					funded_channel.commitment_signed(msg, fee_estimator, logger)
 						.map(|monitor_update_opt| (None, monitor_update_opt))
@@ -2772,6 +2796,17 @@ enum FundingNegotiation {
 	AwaitingSignatures {
 		funding: FundingScope,
 		is_initiator: bool,
+		/// The initial `commitment_signed` message received for the [`FundingScope`] above. We
+		/// delay processing this until the user manually approves the splice via
+		/// [`Channel::funding_transaction_signed`], as otherwise, there would be a
+		/// [`ChannelMonitorUpdateStep::RenegotiatedFunding`] committed that we would need to undo
+		/// if they no longer wish to proceed.
+		///
+		/// Note that this doesn't need to be done with dual-funded channels as there is no
+		/// equivalent monitor update for them.
+		///
+		/// This field is not persisted as the message should be resent on reconnections.
+		initial_commit_sig_from_counterparty: Option<msgs::CommitmentSigned>,
 	},
 }
 
@@ -2779,6 +2814,7 @@ impl_writeable_tlv_based_enum_upgradable!(FundingNegotiation,
 	(0, AwaitingSignatures) => {
 		(1, funding, required),
 		(3, is_initiator, required),
+		(_unused, initial_commit_sig_from_counterparty, (static_value, None)),
 	},
 	unread_variants: AwaitingAck, ConstructingTransaction
 );
@@ -7033,16 +7069,16 @@ where
 
 	pub(crate) fn maybe_handle_funding_transaction_signed_post_action<F: Deref, L: Deref>(
 		&mut self, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
-	) -> Result<Option<msgs::CommitmentSigned>, ChannelError>
+	) -> Result<(Option<msgs::CommitmentSigned>, Option<ChannelMonitorUpdate>), ChannelError>
 	where
 		F::Target: FeeEstimator,
 		L::Target: Logger,
 	{
 		let Some(signing_session) = self.context.interactive_tx_signing_session.as_ref() else {
-			return Ok(None);
+			return Ok((None, None));
 		};
 		if signing_session.holder_tx_signatures().is_none() {
-			return Ok(None);
+			return Ok((None, None));
 		}
 
 		let mut commit_sig = None;
@@ -7065,7 +7101,27 @@ where
 			}
 		}
 
-		Ok(commit_sig)
+		let mut monitor_update = None;
+		if let Some(initial_commit_sig) = self
+			.pending_splice
+			.as_mut()
+			.and_then(|pending_splice| pending_splice.funding_negotiation.as_mut())
+			.and_then(|funding_negotiation| {
+				if let FundingNegotiation::AwaitingSignatures {
+					ref mut initial_commit_sig_from_counterparty,
+					..
+				} = funding_negotiation
+				{
+					initial_commit_sig_from_counterparty.take()
+				} else {
+					None
+				}
+			}) {
+			monitor_update =
+				self.splice_initial_commitment_signed(&initial_commit_sig, fee_estimator, logger)?;
+		}
+
+		Ok((commit_sig, monitor_update))
 	}
 
 	fn maybe_fail_splice_negotiation(&mut self) -> Option<SpliceFundingFailed> {

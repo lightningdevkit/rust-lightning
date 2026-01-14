@@ -12637,57 +12637,77 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let mut handle_errors: Vec<(PublicKey, ChannelId, Result<(), MsgHandleErrInternal>)> =
 			Vec::new();
 
-		let per_peer_state = self.per_peer_state.read().unwrap();
-		for (counterparty_node_id, peer_state_mutex) in per_peer_state.iter() {
-			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
-			let peer_state = &mut *peer_state_lock;
-			let pending_msg_events = &mut peer_state.pending_msg_events;
-			for (channel_id, chan) in &mut peer_state.channel_by_id {
-				if let Some(funded_chan) = chan.as_funded_mut() {
-					let logger = WithChannelContext::from(&self.logger, &funded_chan.context, None);
-					match funded_chan.maybe_handle_funding_transaction_signed_post_action(
-						&self.fee_estimator,
-						&&logger,
-					) {
-						Ok(commit_sig) => {
-							if let Some(commit_sig) = commit_sig {
-								pending_msg_events.push(MessageSendEvent::UpdateHTLCs {
-									node_id: *counterparty_node_id,
-									channel_id: *channel_id,
-									updates: CommitmentUpdate {
-										update_add_htlcs: vec![],
-										update_fulfill_htlcs: vec![],
-										update_fail_htlcs: vec![],
-										update_fail_malformed_htlcs: vec![],
-										update_fee: None,
-										commitment_signed: vec![commit_sig],
-									},
-								});
-							}
-						},
-						Err(e) => {
-							let (_, err) = self.locked_handle_funded_force_close(
-								&mut peer_state.closed_channel_monitor_update_ids,
-								&mut peer_state.in_flight_monitor_updates,
-								e,
-								funded_chan,
-							);
-							handle_errors.push((*counterparty_node_id, *channel_id, Err(err)));
-							has_update = true;
-						},
+		// Handling a monitor update requires dropping peer state locks, so we use the labeled loop
+		// as a goto statement.
+		'peer_loop: loop {
+			let per_peer_state = self.per_peer_state.read().unwrap();
+			for (counterparty_node_id, peer_state_mutex) in per_peer_state.iter() {
+				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+				let peer_state = &mut *peer_state_lock;
+				let pending_msg_events = &mut peer_state.pending_msg_events;
+				for (channel_id, chan) in &mut peer_state.channel_by_id {
+					if let Some(funded_chan) = chan.as_funded_mut() {
+						let logger =
+							WithChannelContext::from(&self.logger, &funded_chan.context, None);
+						match funded_chan.maybe_handle_funding_transaction_signed_post_action(
+							&self.fee_estimator,
+							&&logger,
+						) {
+							Ok((commit_sig, monitor_update)) => {
+								if let Some(commit_sig) = commit_sig {
+									pending_msg_events.push(MessageSendEvent::UpdateHTLCs {
+										node_id: *counterparty_node_id,
+										channel_id: *channel_id,
+										updates: CommitmentUpdate {
+											update_add_htlcs: vec![],
+											update_fulfill_htlcs: vec![],
+											update_fail_htlcs: vec![],
+											update_fail_malformed_htlcs: vec![],
+											update_fee: None,
+											commitment_signed: vec![commit_sig],
+										},
+									});
+								}
+
+								if let Some(monitor_update) = monitor_update {
+									handle_new_monitor_update!(
+										self,
+										funded_chan.funding_outpoint(),
+										monitor_update,
+										peer_state_lock,
+										peer_state,
+										per_peer_state,
+										funded_chan
+									);
+									has_update = true;
+									continue 'peer_loop;
+								}
+							},
+							Err(e) => {
+								let (_, err) = self.locked_handle_funded_force_close(
+									&mut peer_state.closed_channel_monitor_update_ids,
+									&mut peer_state.in_flight_monitor_updates,
+									e,
+									funded_chan,
+								);
+								handle_errors.push((*counterparty_node_id, *channel_id, Err(err)));
+								has_update = true;
+							},
+						}
+					}
+				}
+
+				for (cp_node_id, channel_id, _) in &handle_errors {
+					if cp_node_id == counterparty_node_id {
+						peer_state.channel_by_id.remove_entry(channel_id);
 					}
 				}
 			}
 
-			for (cp_node_id, channel_id, _) in &handle_errors {
-				if cp_node_id == counterparty_node_id {
-					peer_state.channel_by_id.remove_entry(channel_id);
-				}
+			for (counterparty_node_id, _, err) in handle_errors {
+				let _ = self.handle_error(err, counterparty_node_id);
 			}
-		}
-
-		for (counterparty_node_id, _, err) in handle_errors {
-			let _ = self.handle_error(err, counterparty_node_id);
+			break;
 		}
 
 		has_update
