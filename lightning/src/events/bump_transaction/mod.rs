@@ -1296,14 +1296,8 @@ mod tests {
 			Ok(res)
 		}
 		fn sign_psbt(&self, psbt: Psbt) -> Result<Transaction, ()> {
-			let mut tx = psbt.unsigned_tx;
-			for input in tx.input.iter_mut() {
-				if input.previous_output.txid != Txid::from_byte_array([44; 32]) {
-					// Channel output, add a realistic size witness to make the assertions happy
-					input.witness = Witness::from_slice(&[vec![42; 162]]);
-				}
-			}
-			Ok(tx)
+			// FIXME: Why does handle_channel_close override the witness?
+			Ok(psbt.unsigned_tx)
 		}
 	}
 
