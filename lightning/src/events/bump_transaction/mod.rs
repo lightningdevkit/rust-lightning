@@ -29,7 +29,7 @@ use crate::ln::chan_utils::{
 	HTLC_TIMEOUT_INPUT_KEYED_ANCHOR_WITNESS_WEIGHT, HTLC_TIMEOUT_INPUT_P2A_ANCHOR_WITNESS_WEIGHT,
 	P2WSH_TXOUT_WEIGHT, SEGWIT_MARKER_FLAG_WEIGHT, TRUC_CHILD_MAX_WEIGHT, TRUC_MAX_WEIGHT,
 };
-use crate::ln::funding::ConfirmedUtxo;
+use crate::ln::funding::FundingTxInput;
 use crate::ln::types::ChannelId;
 use crate::prelude::*;
 use crate::sign::ecdsa::EcdsaChannelSigner;
@@ -339,6 +339,9 @@ impl Utxo {
 		}
 	}
 }
+
+/// An unspent transaction output with at least one confirmation.
+pub type ConfirmedUtxo = FundingTxInput;
 
 /// The result of a successful coin selection attempt for a transaction requiring additional UTXOs
 /// to cover its fees.

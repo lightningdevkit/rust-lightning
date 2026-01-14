@@ -99,9 +99,10 @@ impl SpliceContribution {
 	}
 }
 
-/// An unspent transaction output with at least one confirmation.
+/// An input to contribute to a channel's funding transaction either when using the v2 channel
+/// establishment protocol or when splicing.
 #[derive(Debug, Clone)]
-pub struct ConfirmedUtxo {
+pub struct FundingTxInput {
 	/// The unspent [`TxOut`] found in [`prevtx`].
 	///
 	/// [`TxOut`]: bitcoin::TxOut
@@ -114,10 +115,6 @@ pub struct ConfirmedUtxo {
 	/// [`utxo`]: Self::utxo
 	pub(crate) prevtx: Transaction,
 }
-
-/// An input to contribute to a channel's funding transaction either when using the v2 channel
-/// establishment protocol or when splicing.
-pub type FundingTxInput = ConfirmedUtxo;
 
 impl_writeable_tlv_based!(FundingTxInput, {
 	(1, utxo, required),
