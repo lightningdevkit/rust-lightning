@@ -274,7 +274,7 @@ pub fn can_support_additional_anchor_channel<
 	ChannelSigner: EcdsaChannelSigner,
 	FilterRef: Deref,
 	Broadcaster: BroadcasterInterface,
-	EstimatorRef: Deref,
+	EstimatorRef: FeeEstimator,
 	LoggerRef: Deref,
 	PersistRef: Deref,
 	EntropySourceRef: Deref,
@@ -296,7 +296,6 @@ pub fn can_support_additional_anchor_channel<
 where
 	AChannelManagerRef::Target: AChannelManager,
 	FilterRef::Target: Filter,
-	EstimatorRef::Target: FeeEstimator,
 	LoggerRef::Target: Logger,
 	PersistRef::Target: Persist<ChannelSigner>,
 	EntropySourceRef::Target: EntropySource,

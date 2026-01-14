@@ -593,21 +593,25 @@ pub struct MonitorUpdatingPersister<
 	ES: EntropySource,
 	SP: Deref,
 	BI: BroadcasterInterface,
-	FE: Deref,
+	FE: FeeEstimator,
 >(MonitorUpdatingPersisterAsync<KVStoreSyncWrapper<K>, PanicingSpawner, L, ES, SP, BI, FE>)
 where
 	K::Target: KVStoreSync,
 	L::Target: Logger,
-	SP::Target: SignerProvider + Sized,
-	FE::Target: FeeEstimator;
+	SP::Target: SignerProvider + Sized;
 
-impl<K: Deref, L: Deref, ES: EntropySource, SP: Deref, BI: BroadcasterInterface, FE: Deref>
-	MonitorUpdatingPersister<K, L, ES, SP, BI, FE>
+impl<
+		K: Deref,
+		L: Deref,
+		ES: EntropySource,
+		SP: Deref,
+		BI: BroadcasterInterface,
+		FE: FeeEstimator,
+	> MonitorUpdatingPersister<K, L, ES, SP, BI, FE>
 where
 	K::Target: KVStoreSync,
 	L::Target: Logger,
 	SP::Target: SignerProvider + Sized,
-	FE::Target: FeeEstimator,
 {
 	/// Constructs a new [`MonitorUpdatingPersister`].
 	///
@@ -698,13 +702,12 @@ impl<
 		ES: EntropySource,
 		SP: Deref,
 		BI: BroadcasterInterface,
-		FE: Deref,
+		FE: FeeEstimator,
 	> Persist<ChannelSigner> for MonitorUpdatingPersister<K, L, ES, SP, BI, FE>
 where
 	K::Target: KVStoreSync,
 	L::Target: Logger,
 	SP::Target: SignerProvider + Sized,
-	FE::Target: FeeEstimator,
 {
 	/// Persists a new channel. This means writing the entire monitor to the
 	/// parametrized [`KVStoreSync`].
@@ -782,13 +785,12 @@ pub struct MonitorUpdatingPersisterAsync<
 	ES: EntropySource,
 	SP: Deref,
 	BI: BroadcasterInterface,
-	FE: Deref,
+	FE: FeeEstimator,
 >(Arc<MonitorUpdatingPersisterAsyncInner<K, S, L, ES, SP, BI, FE>>)
 where
 	K::Target: KVStore,
 	L::Target: Logger,
-	SP::Target: SignerProvider + Sized,
-	FE::Target: FeeEstimator;
+	SP::Target: SignerProvider + Sized;
 
 struct MonitorUpdatingPersisterAsyncInner<
 	K: Deref,
@@ -797,12 +799,11 @@ struct MonitorUpdatingPersisterAsyncInner<
 	ES: EntropySource,
 	SP: Deref,
 	BI: BroadcasterInterface,
-	FE: Deref,
+	FE: FeeEstimator,
 > where
 	K::Target: KVStore,
 	L::Target: Logger,
 	SP::Target: SignerProvider + Sized,
-	FE::Target: FeeEstimator,
 {
 	kv_store: K,
 	async_completed_updates: Mutex<Vec<(ChannelId, u64)>>,
@@ -822,13 +823,12 @@ impl<
 		ES: EntropySource,
 		SP: Deref,
 		BI: BroadcasterInterface,
-		FE: Deref,
+		FE: FeeEstimator,
 	> MonitorUpdatingPersisterAsync<K, S, L, ES, SP, BI, FE>
 where
 	K::Target: KVStore,
 	L::Target: Logger,
 	SP::Target: SignerProvider + Sized,
-	FE::Target: FeeEstimator,
 {
 	/// Constructs a new [`MonitorUpdatingPersisterAsync`].
 	///
@@ -971,13 +971,12 @@ impl<
 		ES: EntropySource + MaybeSend + MaybeSync + 'static,
 		SP: Deref + MaybeSend + MaybeSync + 'static,
 		BI: BroadcasterInterface + MaybeSend + MaybeSync + 'static,
-		FE: Deref + MaybeSend + MaybeSync + 'static,
+		FE: FeeEstimator + MaybeSend + MaybeSync + 'static,
 	> MonitorUpdatingPersisterAsync<K, S, L, ES, SP, BI, FE>
 where
 	K::Target: KVStore + MaybeSync,
 	L::Target: Logger,
 	SP::Target: SignerProvider + Sized,
-	FE::Target: FeeEstimator,
 	<SP::Target as SignerProvider>::EcdsaSigner: MaybeSend + 'static,
 {
 	pub(crate) fn spawn_async_persist_new_channel(
@@ -1061,13 +1060,12 @@ impl<
 		ES: EntropySource,
 		SP: Deref,
 		BI: BroadcasterInterface,
-		FE: Deref,
+		FE: FeeEstimator,
 	> MonitorUpdatingPersisterAsyncInner<K, S, L, ES, SP, BI, FE>
 where
 	K::Target: KVStore,
 	L::Target: Logger,
 	SP::Target: SignerProvider + Sized,
-	FE::Target: FeeEstimator,
 {
 	pub async fn read_channel_monitor_with_updates(
 		&self, monitor_key: &str,
