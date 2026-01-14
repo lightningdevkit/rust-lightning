@@ -178,7 +178,6 @@ use crate::sync::{Arc, FairRwLock, LockHeldState, LockTestExt, Mutex, RwLock, Rw
 use bitcoin::hex::impl_fmt_traits;
 
 use core::borrow::Borrow;
-use core::cell::RefCell;
 use core::convert::Infallible;
 use core::ops::Deref;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -14382,31 +14381,24 @@ where
 	/// `MessageSendEvent`s are intended to be broadcasted to all peers, they will be placed among
 	/// the `MessageSendEvent`s to the specific peer they were generated under.
 	fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> {
-		// Commit any pending writes before returning events.
-		let _ = self.persist();
+		// Take write lock for the entire operation to ensure atomic persist + event gathering.
+		let _consistency_lock = self.total_consistency_lock.write().unwrap();
 
-		let events = RefCell::new(Vec::new());
-		PersistenceNotifierGuard::optionally_notify(self, || {
-			let mut result = NotifyOption::SkipPersistNoEvents;
+		// Process background events (normally done by PersistenceNotifierGuard).
+		let _ = self.process_background_events();
 
-			// TODO: This behavior should be documented. It's unintuitive that we query
-			// ChannelMonitors when clearing other events.
-			if self.process_pending_monitor_events() {
-				result = NotifyOption::DoPersist;
-			}
+		// TODO: This behavior should be documented. It's unintuitive that we query
+		// ChannelMonitors when clearing other events.
+		self.process_pending_monitor_events();
+		self.check_free_holding_cells();
+		self.maybe_generate_initial_closing_signed();
 
-			if self.check_free_holding_cells() {
-				result = NotifyOption::DoPersist;
-			}
-			if self.maybe_generate_initial_closing_signed() {
-				result = NotifyOption::DoPersist;
-			}
+		// Quiescence is an in-memory protocol, so we don't have to persist because of it.
+		self.maybe_send_stfu();
 
-			// Quiescence is an in-memory protocol, so we don't have to persist because of it.
-			self.maybe_send_stfu();
-
-			let mut is_any_peer_connected = false;
-			let mut pending_events = Vec::new();
+		let mut is_any_peer_connected = false;
+		let mut pending_events = Vec::new();
+		{
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			for (_cp_id, peer_state_mutex) in per_peer_state.iter() {
 				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
@@ -14418,20 +14410,30 @@ where
 					is_any_peer_connected = true
 				}
 			}
+		}
 
-			// Ensure that we are connected to some peers before getting broadcast messages.
-			if is_any_peer_connected {
-				let mut broadcast_msgs = self.pending_broadcast_messages.lock().unwrap();
-				pending_events.append(&mut broadcast_msgs);
-			}
+		// Ensure that we are connected to some peers before getting broadcast messages.
+		if is_any_peer_connected {
+			let mut broadcast_msgs = self.pending_broadcast_messages.lock().unwrap();
+			pending_events.append(&mut broadcast_msgs);
+		}
 
-			if !pending_events.is_empty() {
-				events.replace(pending_events);
-			}
+		// Serialize and persist while still holding the write lock, ensuring the persisted
+		// state matches the events we're about to return.
+		let mut buf = Vec::new();
+		if self.write_without_lock(&mut buf).is_ok() {
+			let _ = self.kv_store.write(
+				CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+				CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
+				CHANNEL_MANAGER_PERSISTENCE_KEY,
+				buf,
+			);
+		}
 
-			result
-		});
-		events.into_inner()
+		// Clear the persistence flag since we just persisted.
+		self.needs_persist_flag.store(false, Ordering::Release);
+
+		pending_events
 	}
 }
 
