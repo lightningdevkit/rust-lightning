@@ -58,14 +58,11 @@ impl BlindedMessagePath {
 	/// `compact_padding` selects between space-inefficient padding which better hides contents and
 	/// a space-constrained padding which does very little to hide the contents, especially for the
 	/// last hop. It should only be set when the blinded path needs to be as compact as possible.
-	pub fn one_hop<ES: Deref, T: secp256k1::Signing + secp256k1::Verification>(
+	pub fn one_hop<ES: EntropySource, T: secp256k1::Signing + secp256k1::Verification>(
 		recipient_node_id: PublicKey, local_node_receive_key: ReceiveAuthKey,
 		context: MessageContext, compact_padding: bool, entropy_source: ES,
 		secp_ctx: &Secp256k1<T>,
-	) -> Self
-	where
-		ES::Target: EntropySource,
-	{
+	) -> Self {
 		Self::new(
 			&[],
 			recipient_node_id,
@@ -82,14 +79,11 @@ impl BlindedMessagePath {
 	/// `compact_padding` selects between space-inefficient padding which better hides contents and
 	/// a space-constrained padding which does very little to hide the contents, especially for the
 	/// last hop. It should only be set when the blinded path needs to be as compact as possible.
-	pub fn new<ES: Deref, T: secp256k1::Signing + secp256k1::Verification>(
+	pub fn new<ES: EntropySource, T: secp256k1::Signing + secp256k1::Verification>(
 		intermediate_nodes: &[MessageForwardNode], recipient_node_id: PublicKey,
 		local_node_receive_key: ReceiveAuthKey, context: MessageContext, compact_padding: bool,
 		entropy_source: ES, secp_ctx: &Secp256k1<T>,
-	) -> Self
-	where
-		ES::Target: EntropySource,
-	{
+	) -> Self {
 		BlindedMessagePath::new_with_dummy_hops(
 			intermediate_nodes,
 			recipient_node_id,
@@ -109,14 +103,14 @@ impl BlindedMessagePath {
 	/// last hop. It should only be set when the blinded path needs to be as compact as possible.
 	///
 	/// Note: At most [`MAX_DUMMY_HOPS_COUNT`] dummy hops can be added to the blinded path.
-	pub fn new_with_dummy_hops<ES: Deref, T: secp256k1::Signing + secp256k1::Verification>(
+	pub fn new_with_dummy_hops<
+		ES: EntropySource,
+		T: secp256k1::Signing + secp256k1::Verification,
+	>(
 		intermediate_nodes: &[MessageForwardNode], recipient_node_id: PublicKey,
 		dummy_hop_count: usize, local_node_receive_key: ReceiveAuthKey, context: MessageContext,
 		compact_padding: bool, entropy_source: ES, secp_ctx: &Secp256k1<T>,
-	) -> Self
-	where
-		ES::Target: EntropySource,
-	{
+	) -> Self {
 		let introduction_node = IntroductionNode::NodeId(
 			intermediate_nodes.first().map_or(recipient_node_id, |n| n.node_id),
 		);

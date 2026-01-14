@@ -445,12 +445,11 @@ impl<ChannelSigner: EcdsaChannelSigner, K: KVStoreSync + ?Sized> Persist<Channel
 }
 
 /// Read previously persisted [`ChannelMonitor`]s from the store.
-pub fn read_channel_monitors<K: Deref, ES: Deref, SP: Deref>(
+pub fn read_channel_monitors<K: Deref, ES: EntropySource, SP: Deref>(
 	kv_store: K, entropy_source: ES, signer_provider: SP,
 ) -> Result<Vec<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>)>, io::Error>
 where
 	K::Target: KVStoreSync,
-	ES::Target: EntropySource + Sized,
 	SP::Target: SignerProvider + Sized,
 {
 	let mut res = Vec::new();
@@ -465,7 +464,7 @@ where
 				CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
 				&stored_key,
 			)?),
-			(&*entropy_source, &*signer_provider),
+			(&entropy_source, &*signer_provider),
 		) {
 			Ok(Some((block_hash, channel_monitor))) => {
 				let monitor_name = MonitorName::from_str(&stored_key)?;
@@ -591,7 +590,7 @@ fn poll_sync_future<F: Future>(future: F) -> F::Output {
 pub struct MonitorUpdatingPersister<
 	K: Deref,
 	L: Deref,
-	ES: Deref,
+	ES: EntropySource,
 	SP: Deref,
 	BI: BroadcasterInterface,
 	FE: Deref,
@@ -599,16 +598,14 @@ pub struct MonitorUpdatingPersister<
 where
 	K::Target: KVStoreSync,
 	L::Target: Logger,
-	ES::Target: EntropySource + Sized,
 	SP::Target: SignerProvider + Sized,
 	FE::Target: FeeEstimator;
 
-impl<K: Deref, L: Deref, ES: Deref, SP: Deref, BI: BroadcasterInterface, FE: Deref>
+impl<K: Deref, L: Deref, ES: EntropySource, SP: Deref, BI: BroadcasterInterface, FE: Deref>
 	MonitorUpdatingPersister<K, L, ES, SP, BI, FE>
 where
 	K::Target: KVStoreSync,
 	L::Target: Logger,
-	ES::Target: EntropySource + Sized,
 	SP::Target: SignerProvider + Sized,
 	FE::Target: FeeEstimator,
 {
@@ -698,7 +695,7 @@ impl<
 		ChannelSigner: EcdsaChannelSigner,
 		K: Deref,
 		L: Deref,
-		ES: Deref,
+		ES: EntropySource,
 		SP: Deref,
 		BI: BroadcasterInterface,
 		FE: Deref,
@@ -706,7 +703,6 @@ impl<
 where
 	K::Target: KVStoreSync,
 	L::Target: Logger,
-	ES::Target: EntropySource + Sized,
 	SP::Target: SignerProvider + Sized,
 	FE::Target: FeeEstimator,
 {
@@ -783,7 +779,7 @@ pub struct MonitorUpdatingPersisterAsync<
 	K: Deref,
 	S: FutureSpawner,
 	L: Deref,
-	ES: Deref,
+	ES: EntropySource,
 	SP: Deref,
 	BI: BroadcasterInterface,
 	FE: Deref,
@@ -791,7 +787,6 @@ pub struct MonitorUpdatingPersisterAsync<
 where
 	K::Target: KVStore,
 	L::Target: Logger,
-	ES::Target: EntropySource + Sized,
 	SP::Target: SignerProvider + Sized,
 	FE::Target: FeeEstimator;
 
@@ -799,14 +794,13 @@ struct MonitorUpdatingPersisterAsyncInner<
 	K: Deref,
 	S: FutureSpawner,
 	L: Deref,
-	ES: Deref,
+	ES: EntropySource,
 	SP: Deref,
 	BI: BroadcasterInterface,
 	FE: Deref,
 > where
 	K::Target: KVStore,
 	L::Target: Logger,
-	ES::Target: EntropySource + Sized,
 	SP::Target: SignerProvider + Sized,
 	FE::Target: FeeEstimator,
 {
@@ -825,7 +819,7 @@ impl<
 		K: Deref,
 		S: FutureSpawner,
 		L: Deref,
-		ES: Deref,
+		ES: EntropySource,
 		SP: Deref,
 		BI: BroadcasterInterface,
 		FE: Deref,
@@ -833,7 +827,6 @@ impl<
 where
 	K::Target: KVStore,
 	L::Target: Logger,
-	ES::Target: EntropySource + Sized,
 	SP::Target: SignerProvider + Sized,
 	FE::Target: FeeEstimator,
 {
@@ -975,7 +968,7 @@ impl<
 		K: Deref + MaybeSend + MaybeSync + 'static,
 		S: FutureSpawner,
 		L: Deref + MaybeSend + MaybeSync + 'static,
-		ES: Deref + MaybeSend + MaybeSync + 'static,
+		ES: EntropySource + MaybeSend + MaybeSync + 'static,
 		SP: Deref + MaybeSend + MaybeSync + 'static,
 		BI: BroadcasterInterface + MaybeSend + MaybeSync + 'static,
 		FE: Deref + MaybeSend + MaybeSync + 'static,
@@ -983,7 +976,6 @@ impl<
 where
 	K::Target: KVStore + MaybeSync,
 	L::Target: Logger,
-	ES::Target: EntropySource + Sized,
 	SP::Target: SignerProvider + Sized,
 	FE::Target: FeeEstimator,
 	<SP::Target as SignerProvider>::EcdsaSigner: MaybeSend + 'static,
@@ -1066,7 +1058,7 @@ impl<
 		K: Deref,
 		S: FutureSpawner,
 		L: Deref,
-		ES: Deref,
+		ES: EntropySource,
 		SP: Deref,
 		BI: BroadcasterInterface,
 		FE: Deref,
@@ -1074,7 +1066,6 @@ impl<
 where
 	K::Target: KVStore,
 	L::Target: Logger,
-	ES::Target: EntropySource + Sized,
 	SP::Target: SignerProvider + Sized,
 	FE::Target: FeeEstimator,
 {
@@ -1159,7 +1150,7 @@ where
 		}
 		match <Option<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>)>>::read(
 			&mut monitor_cursor,
-			(&*self.entropy_source, &*self.signer_provider),
+			(&self.entropy_source, &*self.signer_provider),
 		) {
 			Ok(None) => Ok(None),
 			Ok(Some((blockhash, channel_monitor))) => {

@@ -24,7 +24,6 @@ use bitcoin::hashes::{sha256::Hash as Sha256, Hash as _, HashEngine as _};
 use bitcoin::hex::display::impl_fmt_traits;
 
 use core::borrow::Borrow;
-use core::ops::Deref;
 
 /// A unique 32-byte identifier for a channel.
 /// Depending on how the ID is generated, several varieties are distinguished
@@ -53,10 +52,7 @@ impl ChannelId {
 	}
 
 	/// Create a _temporary_ channel ID randomly, based on an entropy source.
-	pub fn temporary_from_entropy_source<ES: Deref>(entropy_source: &ES) -> Self
-	where
-		ES::Target: EntropySource,
-	{
+	pub fn temporary_from_entropy_source<ES: EntropySource>(entropy_source: &ES) -> Self {
 		Self(entropy_source.get_secure_random_bytes())
 	}
 

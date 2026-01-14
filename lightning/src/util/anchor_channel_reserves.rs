@@ -277,17 +277,9 @@ pub fn can_support_additional_anchor_channel<
 	EstimatorRef: Deref,
 	LoggerRef: Deref,
 	PersistRef: Deref,
-	EntropySourceRef: Deref,
+	ES: EntropySource,
 	ChainMonitorRef: Deref<
-		Target = ChainMonitor<
-			ChannelSigner,
-			FilterRef,
-			B,
-			EstimatorRef,
-			LoggerRef,
-			PersistRef,
-			EntropySourceRef,
-		>,
+		Target = ChainMonitor<ChannelSigner, FilterRef, B, EstimatorRef, LoggerRef, PersistRef, ES>,
 	>,
 >(
 	context: &AnchorChannelReserveContext, utxos: &[Utxo], a_channel_manager: AChannelManagerRef,
@@ -299,7 +291,6 @@ where
 	EstimatorRef::Target: FeeEstimator,
 	LoggerRef::Target: Logger,
 	PersistRef::Target: Persist<ChannelSigner>,
-	EntropySourceRef::Target: EntropySource,
 {
 	let mut anchor_channels = new_hash_set();
 	// Calculate the number of in-progress anchor channels by inspecting ChannelMonitors with balance.

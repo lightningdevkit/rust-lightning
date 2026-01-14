@@ -143,13 +143,10 @@ fn min_final_cltv_expiry_delta_from_metadata(bytes: [u8; METADATA_LEN]) -> u16 {
 ///
 /// [phantom node payments]: crate::sign::PhantomKeysManager
 /// [`NodeSigner::get_expanded_key`]: crate::sign::NodeSigner::get_expanded_key
-pub fn create<ES: Deref>(
+pub fn create<ES: EntropySource>(
 	keys: &ExpandedKey, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32,
 	entropy_source: &ES, current_time: u64, min_final_cltv_expiry_delta: Option<u16>,
-) -> Result<(PaymentHash, PaymentSecret), ()>
-where
-	ES::Target: EntropySource,
-{
+) -> Result<(PaymentHash, PaymentSecret), ()> {
 	let metadata_bytes = construct_metadata_bytes(
 		min_value_msat,
 		if min_final_cltv_expiry_delta.is_some() {

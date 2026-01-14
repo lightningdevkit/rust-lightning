@@ -132,9 +132,8 @@ impl PeerState {
 }
 
 /// The main object allowing to send and receive bLIP-51 / LSPS1 messages.
-pub struct LSPS1ServiceHandler<ES: Deref, CM: Deref + Clone, C: Deref, K: Deref + Clone>
+pub struct LSPS1ServiceHandler<ES: EntropySource, CM: Deref + Clone, C: Deref, K: Deref + Clone>
 where
-	ES::Target: EntropySource,
 	CM::Target: AChannelManager,
 	C::Target: Filter,
 	K::Target: KVStore,
@@ -148,12 +147,11 @@ where
 	config: LSPS1ServiceConfig,
 }
 
-impl<ES: Deref, CM: Deref + Clone, C: Deref, K: Deref + Clone> LSPS1ServiceHandler<ES, CM, C, K>
+impl<ES: EntropySource, CM: Deref + Clone, C: Deref, K: Deref + Clone>
+	LSPS1ServiceHandler<ES, CM, C, K>
 where
-	ES::Target: EntropySource,
 	CM::Target: AChannelManager,
 	C::Target: Filter,
-	ES::Target: EntropySource,
 	K::Target: KVStore,
 {
 	/// Constructs a `LSPS1ServiceHandler`.
@@ -421,10 +419,9 @@ where
 	}
 }
 
-impl<ES: Deref, CM: Deref + Clone, C: Deref, K: Deref + Clone> LSPSProtocolMessageHandler
+impl<ES: EntropySource, CM: Deref + Clone, C: Deref, K: Deref + Clone> LSPSProtocolMessageHandler
 	for LSPS1ServiceHandler<ES, CM, C, K>
 where
-	ES::Target: EntropySource,
 	CM::Target: AChannelManager,
 	C::Target: Filter,
 	K::Target: KVStore,

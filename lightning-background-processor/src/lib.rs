@@ -420,8 +420,7 @@ type DynChannelManager = lightning::ln::channelmanager::ChannelManager<
 pub const NO_ONION_MESSENGER: Option<
 	Arc<
 		dyn AOnionMessenger<
-				EntropySource = dyn EntropySource + Send + Sync,
-				ES = &(dyn EntropySource + Send + Sync),
+				EntropySource = &(dyn EntropySource + Send + Sync),
 				NodeSigner = dyn lightning::sign::NodeSigner + Send + Sync,
 				NS = &(dyn lightning::sign::NodeSigner + Send + Sync),
 				Logger = dyn Logger + Send + Sync,
@@ -480,8 +479,7 @@ impl KVStore for DummyKVStore {
 pub const NO_LIQUIDITY_MANAGER: Option<
 	Arc<
 		dyn ALiquidityManager<
-				EntropySource = dyn EntropySource + Send + Sync,
-				ES = &(dyn EntropySource + Send + Sync),
+				EntropySource = &(dyn EntropySource + Send + Sync),
 				NodeSigner = dyn lightning::sign::NodeSigner + Send + Sync,
 				NS = &(dyn lightning::sign::NodeSigner + Send + Sync),
 				AChannelManager = DynChannelManager,
@@ -506,8 +504,7 @@ pub const NO_LIQUIDITY_MANAGER: Option<
 pub const NO_LIQUIDITY_MANAGER_SYNC: Option<
 	Arc<
 		dyn ALiquidityManagerSync<
-				EntropySource = dyn EntropySource + Send + Sync,
-				ES = &(dyn EntropySource + Send + Sync),
+				EntropySource = &(dyn EntropySource + Send + Sync),
 				NodeSigner = dyn lightning::sign::NodeSigner + Send + Sync,
 				NS = &(dyn lightning::sign::NodeSigner + Send + Sync),
 				AChannelManager = DynChannelManager,
@@ -961,7 +958,7 @@ pub async fn process_events_async<
 	P: Deref,
 	EventHandlerFuture: core::future::Future<Output = Result<(), ReplayEvent>>,
 	EventHandler: Fn(Event) -> EventHandlerFuture,
-	ES: Deref,
+	ES: EntropySource,
 	M: Deref<Target = ChainMonitor<<CM::Target as AChannelManager>::Signer, CF, T, F, L, P, ES>>,
 	CM: Deref,
 	OM: Deref,
@@ -990,7 +987,6 @@ where
 	F::Target: FeeEstimator,
 	L::Target: Logger,
 	P::Target: Persist<<CM::Target as AChannelManager>::Signer>,
-	ES::Target: EntropySource,
 	CM::Target: AChannelManager,
 	OM::Target: AOnionMessenger,
 	PM::Target: APeerManager,
@@ -1461,7 +1457,7 @@ pub async fn process_events_async_with_kv_store_sync<
 	P: Deref,
 	EventHandlerFuture: core::future::Future<Output = Result<(), ReplayEvent>>,
 	EventHandler: Fn(Event) -> EventHandlerFuture,
-	ES: Deref,
+	ES: EntropySource,
 	M: Deref<Target = ChainMonitor<<CM::Target as AChannelManager>::Signer, CF, T, F, L, P, ES>>,
 	CM: Deref,
 	OM: Deref,
@@ -1490,7 +1486,6 @@ where
 	F::Target: FeeEstimator,
 	L::Target: Logger,
 	P::Target: Persist<<CM::Target as AChannelManager>::Signer>,
-	ES::Target: EntropySource,
 	CM::Target: AChannelManager,
 	OM::Target: AOnionMessenger,
 	PM::Target: APeerManager,
@@ -1573,7 +1568,7 @@ impl BackgroundProcessor {
 		L: 'static + Deref + Send,
 		P: 'static + Deref,
 		EH: 'static + EventHandler + Send,
-		ES: 'static + Deref + Send,
+		ES: 'static + EntropySource + Send,
 		M: 'static
 			+ Deref<
 				Target = ChainMonitor<<CM::Target as AChannelManager>::Signer, CF, T, F, L, P, ES>,
@@ -1603,7 +1598,6 @@ impl BackgroundProcessor {
 		F::Target: 'static + FeeEstimator,
 		L::Target: 'static + Logger,
 		P::Target: 'static + Persist<<CM::Target as AChannelManager>::Signer>,
-		ES::Target: 'static + EntropySource,
 		CM::Target: AChannelManager,
 		OM::Target: AOnionMessenger,
 		PM::Target: APeerManager,

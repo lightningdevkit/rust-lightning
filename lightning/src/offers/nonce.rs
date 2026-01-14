@@ -13,7 +13,6 @@ use crate::io::{self, Read};
 use crate::ln::msgs::DecodeError;
 use crate::sign::EntropySource;
 use crate::util::ser::{Readable, Writeable, Writer};
-use core::ops::Deref;
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -34,10 +33,7 @@ impl Nonce {
 	pub const LENGTH: usize = 16;
 
 	/// Creates a `Nonce` from the given [`EntropySource`].
-	pub fn from_entropy_source<ES: Deref>(entropy_source: ES) -> Self
-	where
-		ES::Target: EntropySource,
-	{
+	pub fn from_entropy_source<ES: EntropySource>(entropy_source: ES) -> Self {
 		let mut bytes = [0u8; Self::LENGTH];
 		let rand_bytes = entropy_source.get_secure_random_bytes();
 		bytes.copy_from_slice(&rand_bytes[..Self::LENGTH]);

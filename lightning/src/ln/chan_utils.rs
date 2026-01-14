@@ -1452,13 +1452,10 @@ impl BuiltCommitmentTransaction {
 	}
 
 	/// Signs the holder commitment transaction because we are about to broadcast it.
-	pub fn sign_holder_commitment<T: secp256k1::Signing, ES: Deref>(
+	pub fn sign_holder_commitment<T: secp256k1::Signing, ES: EntropySource>(
 		&self, funding_key: &SecretKey, funding_redeemscript: &Script, channel_value_satoshis: u64,
 		entropy_source: &ES, secp_ctx: &Secp256k1<T>,
-	) -> Signature
-	where
-		ES::Target: EntropySource,
-	{
+	) -> Signature {
 		let sighash = self.get_sighash_all(funding_redeemscript, channel_value_satoshis);
 		sign_with_aux_rand(secp_ctx, &sighash, funding_key, entropy_source)
 	}
@@ -2139,10 +2136,10 @@ impl<'a> TrustedCommitmentTransaction<'a> {
 	///
 	/// This function is only valid in the holder commitment context, it always uses EcdsaSighashType::All.
 	#[rustfmt::skip]
-	pub fn get_htlc_sigs<T: secp256k1::Signing, ES: Deref>(
+	pub fn get_htlc_sigs<T: secp256k1::Signing, ES: EntropySource>(
 		&self, htlc_base_key: &SecretKey, channel_parameters: &DirectedChannelTransactionParameters,
 		entropy_source: &ES, secp_ctx: &Secp256k1<T>,
-	) -> Result<Vec<Signature>, ()> where ES::Target: EntropySource {
+	) -> Result<Vec<Signature>, ()> {
 		let inner = self.inner;
 		let keys = &inner.keys;
 		let txid = inner.built.txid;

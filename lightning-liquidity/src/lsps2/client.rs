@@ -68,9 +68,8 @@ impl PeerState {
 /// opened. Please refer to the [`bLIP-52 / LSPS2 specification`] for more information.
 ///
 /// [`bLIP-52 / LSPS2 specification`]: https://github.com/lightning/blips/blob/master/blip-0052.md#trust-models
-pub struct LSPS2ClientHandler<ES: Deref, K: Deref + Clone>
+pub struct LSPS2ClientHandler<ES: EntropySource, K: Deref + Clone>
 where
-	ES::Target: EntropySource,
 	K::Target: KVStore,
 {
 	entropy_source: ES,
@@ -80,9 +79,8 @@ where
 	config: LSPS2ClientConfig,
 }
 
-impl<ES: Deref, K: Deref + Clone> LSPS2ClientHandler<ES, K>
+impl<ES: EntropySource, K: Deref + Clone> LSPS2ClientHandler<ES, K>
 where
-	ES::Target: EntropySource,
 	K::Target: KVStore,
 {
 	/// Constructs an `LSPS2ClientHandler`.
@@ -375,9 +373,8 @@ where
 	}
 }
 
-impl<ES: Deref, K: Deref + Clone> LSPSProtocolMessageHandler for LSPS2ClientHandler<ES, K>
+impl<ES: EntropySource, K: Deref + Clone> LSPSProtocolMessageHandler for LSPS2ClientHandler<ES, K>
 where
-	ES::Target: EntropySource,
 	K::Target: KVStore,
 {
 	type ProtocolMessage = LSPS2Message;

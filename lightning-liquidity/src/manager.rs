@@ -104,9 +104,7 @@ pub struct LiquidityClientConfig {
 /// languages.
 pub trait ALiquidityManager {
 	/// A type implementing [`EntropySource`]
-	type EntropySource: EntropySource + ?Sized;
-	/// A type that may be dereferenced to [`Self::EntropySource`].
-	type ES: Deref<Target = Self::EntropySource> + Clone;
+	type EntropySource: EntropySource + Clone;
 	/// A type implementing [`NodeSigner`]
 	type NodeSigner: NodeSigner + ?Sized;
 	/// A type that may be dereferenced to [`Self::NodeSigner`].
@@ -133,7 +131,7 @@ pub trait ALiquidityManager {
 	fn get_lm(
 		&self,
 	) -> &LiquidityManager<
-		Self::ES,
+		Self::EntropySource,
 		Self::NS,
 		Self::CM,
 		Self::C,
@@ -144,7 +142,7 @@ pub trait ALiquidityManager {
 }
 
 impl<
-		ES: Deref + Clone,
+		ES: EntropySource + Clone,
 		NS: Deref + Clone,
 		CM: Deref + Clone,
 		C: Deref + Clone,
@@ -153,15 +151,13 @@ impl<
 		T: BroadcasterInterface + Clone,
 	> ALiquidityManager for LiquidityManager<ES, NS, CM, C, K, TP, T>
 where
-	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	CM::Target: AChannelManager,
 	C::Target: Filter,
 	K::Target: KVStore,
 	TP::Target: TimeProvider,
 {
-	type EntropySource = ES::Target;
-	type ES = ES;
+	type EntropySource = ES;
 	type NodeSigner = NS::Target;
 	type NS = NS;
 	type AChannelManager = CM::Target;
@@ -184,9 +180,7 @@ where
 /// languages.
 pub trait ALiquidityManagerSync {
 	/// A type implementing [`EntropySource`]
-	type EntropySource: EntropySource + ?Sized;
-	/// A type that may be dereferenced to [`Self::EntropySource`].
-	type ES: Deref<Target = Self::EntropySource> + Clone;
+	type EntropySource: EntropySource + Clone;
 	/// A type implementing [`NodeSigner`]
 	type NodeSigner: NodeSigner + ?Sized;
 	/// A type that may be dereferenced to [`Self::NodeSigner`].
@@ -214,7 +208,7 @@ pub trait ALiquidityManagerSync {
 	fn get_lm_async(
 		&self,
 	) -> &LiquidityManager<
-		Self::ES,
+		Self::EntropySource,
 		Self::NS,
 		Self::CM,
 		Self::C,
@@ -226,7 +220,7 @@ pub trait ALiquidityManagerSync {
 	fn get_lm(
 		&self,
 	) -> &LiquidityManagerSync<
-		Self::ES,
+		Self::EntropySource,
 		Self::NS,
 		Self::CM,
 		Self::C,
@@ -237,7 +231,7 @@ pub trait ALiquidityManagerSync {
 }
 
 impl<
-		ES: Deref + Clone,
+		ES: EntropySource + Clone,
 		NS: Deref + Clone,
 		CM: Deref + Clone,
 		C: Deref + Clone,
@@ -246,15 +240,13 @@ impl<
 		T: BroadcasterInterface + Clone,
 	> ALiquidityManagerSync for LiquidityManagerSync<ES, NS, CM, C, KS, TP, T>
 where
-	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	CM::Target: AChannelManager,
 	C::Target: Filter,
 	KS::Target: KVStoreSync,
 	TP::Target: TimeProvider,
 {
-	type EntropySource = ES::Target;
-	type ES = ES;
+	type EntropySource = ES;
 	type NodeSigner = NS::Target;
 	type NS = NS;
 	type AChannelManager = CM::Target;
@@ -271,7 +263,7 @@ where
 	fn get_lm_async(
 		&self,
 	) -> &LiquidityManager<
-		Self::ES,
+		Self::EntropySource,
 		Self::NS,
 		Self::CM,
 		Self::C,
@@ -306,7 +298,7 @@ where
 /// [`Event::HTLCHandlingFailed`]: lightning::events::Event::HTLCHandlingFailed
 /// [`Event::PaymentForwarded`]: lightning::events::Event::PaymentForwarded
 pub struct LiquidityManager<
-	ES: Deref + Clone,
+	ES: EntropySource + Clone,
 	NS: Deref + Clone,
 	CM: Deref + Clone,
 	C: Deref + Clone,
@@ -314,7 +306,6 @@ pub struct LiquidityManager<
 	TP: Deref + Clone,
 	T: BroadcasterInterface + Clone,
 > where
-	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	CM::Target: AChannelManager,
 	C::Target: Filter,
@@ -344,7 +335,7 @@ pub struct LiquidityManager<
 
 #[cfg(feature = "time")]
 impl<
-		ES: Deref + Clone,
+		ES: EntropySource + Clone,
 		NS: Deref + Clone,
 		CM: Deref + Clone,
 		C: Deref + Clone,
@@ -352,7 +343,6 @@ impl<
 		T: BroadcasterInterface + Clone,
 	> LiquidityManager<ES, NS, CM, C, K, DefaultTimeProvider, T>
 where
-	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	CM::Target: AChannelManager,
 	C::Target: Filter,
@@ -384,7 +374,7 @@ where
 }
 
 impl<
-		ES: Deref + Clone,
+		ES: EntropySource + Clone,
 		NS: Deref + Clone,
 		CM: Deref + Clone,
 		C: Deref + Clone,
@@ -393,7 +383,6 @@ impl<
 		T: BroadcasterInterface + Clone,
 	> LiquidityManager<ES, NS, CM, C, K, TP, T>
 where
-	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	CM::Target: AChannelManager,
 	C::Target: Filter,
@@ -810,7 +799,7 @@ where
 }
 
 impl<
-		ES: Deref + Clone,
+		ES: EntropySource + Clone,
 		NS: Deref + Clone,
 		CM: Deref + Clone,
 		C: Deref + Clone,
@@ -819,7 +808,6 @@ impl<
 		T: BroadcasterInterface + Clone,
 	> CustomMessageReader for LiquidityManager<ES, NS, CM, C, K, TP, T>
 where
-	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	CM::Target: AChannelManager,
 	C::Target: Filter,
@@ -841,7 +829,7 @@ where
 }
 
 impl<
-		ES: Deref + Clone,
+		ES: EntropySource + Clone,
 		NS: Deref + Clone,
 		CM: Deref + Clone,
 		C: Deref + Clone,
@@ -850,7 +838,6 @@ impl<
 		T: BroadcasterInterface + Clone,
 	> CustomMessageHandler for LiquidityManager<ES, NS, CM, C, K, TP, T>
 where
-	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	CM::Target: AChannelManager,
 	C::Target: Filter,
@@ -974,7 +961,7 @@ where
 }
 
 impl<
-		ES: Deref + Clone,
+		ES: EntropySource + Clone,
 		NS: Deref + Clone,
 		CM: Deref + Clone,
 		C: Deref + Clone,
@@ -983,7 +970,6 @@ impl<
 		T: BroadcasterInterface + Clone,
 	> Listen for LiquidityManager<ES, NS, CM, C, K, TP, T>
 where
-	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	CM::Target: AChannelManager,
 	C::Target: Filter,
@@ -1019,7 +1005,7 @@ where
 }
 
 impl<
-		ES: Deref + Clone,
+		ES: EntropySource + Clone,
 		NS: Deref + Clone,
 		CM: Deref + Clone,
 		C: Deref + Clone,
@@ -1028,7 +1014,6 @@ impl<
 		T: BroadcasterInterface + Clone,
 	> Confirm for LiquidityManager<ES, NS, CM, C, K, TP, T>
 where
-	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	CM::Target: AChannelManager,
 	C::Target: Filter,
@@ -1064,7 +1049,7 @@ where
 /// A synchroneous wrapper around [`LiquidityManager`] to be used in contexts where async is not
 /// available.
 pub struct LiquidityManagerSync<
-	ES: Deref + Clone,
+	ES: EntropySource + Clone,
 	NS: Deref + Clone,
 	CM: Deref + Clone,
 	C: Deref + Clone,
@@ -1072,7 +1057,6 @@ pub struct LiquidityManagerSync<
 	TP: Deref + Clone,
 	T: BroadcasterInterface + Clone,
 > where
-	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	CM::Target: AChannelManager,
 	C::Target: Filter,
@@ -1084,7 +1068,7 @@ pub struct LiquidityManagerSync<
 
 #[cfg(feature = "time")]
 impl<
-		ES: Deref + Clone,
+		ES: EntropySource + Clone,
 		NS: Deref + Clone,
 		CM: Deref + Clone,
 		C: Deref + Clone,
@@ -1092,7 +1076,6 @@ impl<
 		T: BroadcasterInterface + Clone,
 	> LiquidityManagerSync<ES, NS, CM, C, KS, DefaultTimeProvider, T>
 where
-	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	CM::Target: AChannelManager,
 	KS::Target: KVStoreSync,
@@ -1135,7 +1118,7 @@ where
 }
 
 impl<
-		ES: Deref + Clone,
+		ES: EntropySource + Clone,
 		NS: Deref + Clone,
 		CM: Deref + Clone,
 		C: Deref + Clone,
@@ -1144,7 +1127,6 @@ impl<
 		T: BroadcasterInterface + Clone,
 	> LiquidityManagerSync<ES, NS, CM, C, KS, TP, T>
 where
-	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	CM::Target: AChannelManager,
 	C::Target: Filter,
@@ -1304,7 +1286,7 @@ where
 }
 
 impl<
-		ES: Deref + Clone,
+		ES: EntropySource + Clone,
 		NS: Deref + Clone,
 		CM: Deref + Clone,
 		C: Deref + Clone,
@@ -1313,7 +1295,6 @@ impl<
 		T: BroadcasterInterface + Clone,
 	> CustomMessageReader for LiquidityManagerSync<ES, NS, CM, C, KS, TP, T>
 where
-	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	CM::Target: AChannelManager,
 	C::Target: Filter,
@@ -1330,7 +1311,7 @@ where
 }
 
 impl<
-		ES: Deref + Clone,
+		ES: EntropySource + Clone,
 		NS: Deref + Clone,
 		CM: Deref + Clone,
 		C: Deref + Clone,
@@ -1339,7 +1320,6 @@ impl<
 		T: BroadcasterInterface + Clone,
 	> CustomMessageHandler for LiquidityManagerSync<ES, NS, CM, C, KS, TP, T>
 where
-	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	CM::Target: AChannelManager,
 	C::Target: Filter,
@@ -1376,7 +1356,7 @@ where
 }
 
 impl<
-		ES: Deref + Clone,
+		ES: EntropySource + Clone,
 		NS: Deref + Clone,
 		CM: Deref + Clone,
 		C: Deref + Clone,
@@ -1385,7 +1365,6 @@ impl<
 		T: BroadcasterInterface + Clone,
 	> Listen for LiquidityManagerSync<ES, NS, CM, C, KS, TP, T>
 where
-	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	CM::Target: AChannelManager,
 	C::Target: Filter,
@@ -1405,7 +1384,7 @@ where
 }
 
 impl<
-		ES: Deref + Clone,
+		ES: EntropySource + Clone,
 		NS: Deref + Clone,
 		CM: Deref + Clone,
 		C: Deref + Clone,
@@ -1414,7 +1393,6 @@ impl<
 		T: BroadcasterInterface + Clone,
 	> Confirm for LiquidityManagerSync<ES, NS, CM, C, KS, TP, T>
 where
-	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	CM::Target: AChannelManager,
 	C::Target: Filter,

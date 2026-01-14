@@ -1,7 +1,7 @@
 //! Utilities for LSPS5 service.
 
 use alloc::string::String;
-use core::{fmt::Write, ops::Deref};
+use core::fmt::Write;
 
 use lightning::sign::EntropySource;
 
@@ -23,10 +23,7 @@ pub fn scid_from_human_readable_string(human_readable_scid: &str) -> Result<u64,
 	Ok((block << 40) | (tx_index << 16) | vout_index)
 }
 
-pub(crate) fn generate_request_id<ES: Deref>(entropy_source: &ES) -> LSPSRequestId
-where
-	ES::Target: EntropySource,
-{
+pub(crate) fn generate_request_id<ES: EntropySource>(entropy_source: &ES) -> LSPSRequestId {
 	let bytes = entropy_source.get_secure_random_bytes();
 	LSPSRequestId(hex_str(&bytes[0..16]))
 }

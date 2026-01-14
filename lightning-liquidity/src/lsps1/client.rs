@@ -47,9 +47,8 @@ struct PeerState {
 }
 
 /// The main object allowing to send and receive bLIP-51 / LSPS1 messages.
-pub struct LSPS1ClientHandler<ES: Deref, K: Deref + Clone>
+pub struct LSPS1ClientHandler<ES: EntropySource, K: Deref + Clone>
 where
-	ES::Target: EntropySource,
 	K::Target: KVStore,
 {
 	entropy_source: ES,
@@ -59,9 +58,8 @@ where
 	config: LSPS1ClientConfig,
 }
 
-impl<ES: Deref, K: Deref + Clone> LSPS1ClientHandler<ES, K>
+impl<ES: EntropySource, K: Deref + Clone> LSPS1ClientHandler<ES, K>
 where
-	ES::Target: EntropySource,
 	K::Target: KVStore,
 {
 	/// Constructs an `LSPS1ClientHandler`.
@@ -432,9 +430,8 @@ where
 	}
 }
 
-impl<ES: Deref, K: Deref + Clone> LSPSProtocolMessageHandler for LSPS1ClientHandler<ES, K>
+impl<ES: EntropySource, K: Deref + Clone> LSPSProtocolMessageHandler for LSPS1ClientHandler<ES, K>
 where
-	ES::Target: EntropySource,
 	K::Target: KVStore,
 {
 	type ProtocolMessage = LSPS1Message;

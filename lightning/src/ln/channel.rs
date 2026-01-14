@@ -3567,7 +3567,7 @@ where
 	SP::Target: SignerProvider,
 {
 	#[rustfmt::skip]
-	fn new_for_inbound_channel<'a, ES: Deref, F: Deref, L: Deref>(
+	fn new_for_inbound_channel<'a, ES: EntropySource, F: Deref, L: Deref>(
 		fee_estimator: &'a LowerBoundedFeeEstimator<F>,
 		entropy_source: &'a ES,
 		signer_provider: &'a SP,
@@ -3587,7 +3587,6 @@ where
 		open_channel_fields: msgs::CommonOpenChannelFields,
 	) -> Result<(FundingScope, ChannelContext<SP>), ChannelError>
 		where
-			ES::Target: EntropySource,
 			F::Target: FeeEstimator,
 			L::Target: Logger,
 			SP::Target: SignerProvider,
@@ -3912,7 +3911,7 @@ where
 	}
 
 	#[rustfmt::skip]
-	fn new_for_outbound_channel<'a, ES: Deref, F: Deref, L: Deref>(
+	fn new_for_outbound_channel<'a, ES: EntropySource, F: Deref, L: Deref>(
 		fee_estimator: &'a LowerBoundedFeeEstimator<F>,
 		entropy_source: &'a ES,
 		signer_provider: &'a SP,
@@ -3931,7 +3930,6 @@ where
 		_logger: L,
 	) -> Result<(FundingScope, ChannelContext<SP>), APIError>
 		where
-			ES::Target: EntropySource,
 			F::Target: FeeEstimator,
 			SP::Target: SignerProvider,
 			L::Target: Logger,
@@ -6846,13 +6844,12 @@ pub(super) struct FundingNegotiationContext {
 impl FundingNegotiationContext {
 	/// Prepare and start interactive transaction negotiation.
 	/// If error occurs, it is caused by our side, not the counterparty.
-	fn into_interactive_tx_constructor<SP: Deref, ES: Deref>(
+	fn into_interactive_tx_constructor<SP: Deref, ES: EntropySource>(
 		mut self, context: &ChannelContext<SP>, funding: &FundingScope, signer_provider: &SP,
 		entropy_source: &ES, holder_node_id: PublicKey,
 	) -> Result<InteractiveTxConstructor, NegotiationError>
 	where
 		SP::Target: SignerProvider,
-		ES::Target: EntropySource,
 	{
 		debug_assert_eq!(
 			self.shared_funding_input.is_some(),
@@ -12521,12 +12518,11 @@ where
 		Ok(())
 	}
 
-	pub(crate) fn splice_init<ES: Deref, L: Deref>(
+	pub(crate) fn splice_init<ES: EntropySource, L: Deref>(
 		&mut self, msg: &msgs::SpliceInit, our_funding_contribution_satoshis: i64,
 		signer_provider: &SP, entropy_source: &ES, holder_node_id: &PublicKey, logger: &L,
 	) -> Result<msgs::SpliceAck, ChannelError>
 	where
-		ES::Target: EntropySource,
 		L::Target: Logger,
 	{
 		let our_funding_contribution = SignedAmount::from_sat(our_funding_contribution_satoshis);
@@ -12592,12 +12588,11 @@ where
 		})
 	}
 
-	pub(crate) fn splice_ack<ES: Deref, L: Deref>(
+	pub(crate) fn splice_ack<ES: EntropySource, L: Deref>(
 		&mut self, msg: &msgs::SpliceAck, signer_provider: &SP, entropy_source: &ES,
 		holder_node_id: &PublicKey, logger: &L,
 	) -> Result<Option<InteractiveTxMessageSend>, ChannelError>
 	where
-		ES::Target: EntropySource,
 		L::Target: Logger,
 	{
 		let splice_funding = self.validate_splice_ack(msg)?;
@@ -13704,13 +13699,12 @@ where
 
 	#[allow(dead_code)] // TODO(dual_funding): Remove once opending V2 channels is enabled.
 	#[rustfmt::skip]
-	pub fn new<ES: Deref, F: Deref, L: Deref>(
+	pub fn new<ES: EntropySource, F: Deref, L: Deref>(
 		fee_estimator: &LowerBoundedFeeEstimator<F>, entropy_source: &ES, signer_provider: &SP, counterparty_node_id: PublicKey, their_features: &InitFeatures,
 		channel_value_satoshis: u64, push_msat: u64, user_id: u128, config: &UserConfig, current_chain_height: u32,
 		outbound_scid_alias: u64, temporary_channel_id: Option<ChannelId>, logger: L
 	) -> Result<OutboundV1Channel<SP>, APIError>
-	where ES::Target: EntropySource,
-	      F::Target: FeeEstimator,
+	where F::Target: FeeEstimator,
 	      L::Target: Logger,
 	{
 		let holder_selected_channel_reserve_satoshis = get_holder_selected_channel_reserve_satoshis(channel_value_satoshis, config);
@@ -14096,14 +14090,13 @@ where
 	/// Creates a new channel from a remote sides' request for one.
 	/// Assumes chain_hash has already been checked and corresponds with what we expect!
 	#[rustfmt::skip]
-	pub fn new<ES: Deref, F: Deref, L: Deref>(
+	pub fn new<ES: EntropySource, F: Deref, L: Deref>(
 		fee_estimator: &LowerBoundedFeeEstimator<F>, entropy_source: &ES, signer_provider: &SP,
 		counterparty_node_id: PublicKey, our_supported_features: &ChannelTypeFeatures,
 		their_features: &InitFeatures, msg: &msgs::OpenChannel, user_id: u128, config: &UserConfig,
 		current_chain_height: u32, logger: &L, is_0conf: bool,
 	) -> Result<InboundV1Channel<SP>, ChannelError>
-		where ES::Target: EntropySource,
-			  F::Target: FeeEstimator,
+		where F::Target: FeeEstimator,
 			  L::Target: Logger,
 	{
 		let logger = WithContext::from(logger, Some(counterparty_node_id), Some(msg.common_fields.temporary_channel_id), None);
@@ -14370,15 +14363,14 @@ where
 {
 	#[allow(dead_code)] // TODO(dual_funding): Remove once creating V2 channels is enabled.
 	#[rustfmt::skip]
-	pub fn new_outbound<ES: Deref, F: Deref, L: Deref>(
+	pub fn new_outbound<ES: EntropySource, F: Deref, L: Deref>(
 		fee_estimator: &LowerBoundedFeeEstimator<F>, entropy_source: &ES, signer_provider: &SP,
 		counterparty_node_id: PublicKey, their_features: &InitFeatures, funding_satoshis: u64,
 		funding_inputs: Vec<FundingTxInput>, user_id: u128, config: &UserConfig,
 		current_chain_height: u32, outbound_scid_alias: u64, funding_confirmation_target: ConfirmationTarget,
 		logger: L,
 	) -> Result<Self, APIError>
-	where ES::Target: EntropySource,
-	      F::Target: FeeEstimator,
+	where F::Target: FeeEstimator,
 	      L::Target: Logger,
 	{
 		let channel_keys_id = signer_provider.generate_channel_keys_id(false, user_id);
@@ -14519,14 +14511,13 @@ where
 	/// TODO(dual_funding): Allow contributions, pass intended amount and inputs
 	#[allow(dead_code)] // TODO(dual_funding): Remove once V2 channels is enabled.
 	#[rustfmt::skip]
-	pub fn new_inbound<ES: Deref, F: Deref, L: Deref>(
+	pub fn new_inbound<ES: EntropySource, F: Deref, L: Deref>(
 		fee_estimator: &LowerBoundedFeeEstimator<F>, entropy_source: &ES, signer_provider: &SP,
 		holder_node_id: PublicKey, counterparty_node_id: PublicKey, our_supported_features: &ChannelTypeFeatures,
 		their_features: &InitFeatures, msg: &msgs::OpenChannelV2,
 		user_id: u128, config: &UserConfig, current_chain_height: u32, logger: &L,
 	) -> Result<Self, ChannelError>
-		where ES::Target: EntropySource,
-			  F::Target: FeeEstimator,
+		where F::Target: FeeEstimator,
 			  L::Target: Logger,
 	{
 		// TODO(dual_funding): Take these as input once supported
@@ -15277,10 +15268,9 @@ where
 	}
 }
 
-impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c ChannelTypeFeatures)>
-	for FundedChannel<SP>
+impl<'a, 'b, 'c, ES: EntropySource, SP: Deref>
+	ReadableArgs<(&'a ES, &'b SP, &'c ChannelTypeFeatures)> for FundedChannel<SP>
 where
-	ES::Target: EntropySource,
 	SP::Target: SignerProvider,
 {
 	fn read<R: io::Read>(
