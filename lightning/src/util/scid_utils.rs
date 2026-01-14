@@ -80,8 +80,6 @@ pub(crate) mod fake_scid {
 	use bitcoin::constants::ChainHash;
 	use bitcoin::Network;
 
-	use core::ops::Deref;
-
 	const TEST_SEGWIT_ACTIVATION_HEIGHT: u32 = 1;
 	const MAINNET_SEGWIT_ACTIVATION_HEIGHT: u32 = 481_824;
 	const MAX_TX_INDEX: u32 = 2_500;
@@ -110,13 +108,10 @@ pub(crate) mod fake_scid {
 		/// between segwit activation and the current best known height, and the tx index and output
 		/// index are also selected from a "reasonable" range. We add this logic because it makes it
 		/// non-obvious at a glance that the scid is fake, e.g. if it appears in invoice route hints.
-		pub(crate) fn get_fake_scid<ES: Deref>(
+		pub(crate) fn get_fake_scid<ES: EntropySource>(
 			&self, highest_seen_blockheight: u32, chain_hash: &ChainHash,
 			fake_scid_rand_bytes: &[u8; 32], entropy_source: &ES,
-		) -> u64
-		where
-			ES::Target: EntropySource,
-		{
+		) -> u64 {
 			// Ensure we haven't created a namespace that doesn't fit into the 3 bits we've allocated for
 			// namespaces.
 			assert!((*self as u8) < MAX_NAMESPACES);

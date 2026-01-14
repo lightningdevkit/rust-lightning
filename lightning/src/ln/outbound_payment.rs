@@ -872,7 +872,7 @@ where
 	}
 
 	#[rustfmt::skip]
-	pub(super) fn send_payment<R: Deref, ES: Deref, NS: Deref, IH, SP>(
+	pub(super) fn send_payment<R: Deref, ES: EntropySource, NS: Deref, IH, SP>(
 		&self, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields, payment_id: PaymentId,
 		retry_strategy: Retry, route_params: RouteParameters, router: &R,
 		first_hops: Vec<ChannelDetails>, compute_inflight_htlcs: IH, entropy_source: &ES,
@@ -881,7 +881,6 @@ where
 	) -> Result<(), RetryableSendFailure>
 	where
 		R::Target: Router,
-		ES::Target: EntropySource,
 		NS::Target: NodeSigner,
 		IH: Fn() -> InFlightHtlcs,
 		SP: Fn(SendAlongPathArgs) -> Result<(), APIError>,
@@ -892,7 +891,7 @@ where
 	}
 
 	#[rustfmt::skip]
-	pub(super) fn send_spontaneous_payment<R: Deref, ES: Deref, NS: Deref, IH, SP>(
+	pub(super) fn send_spontaneous_payment<R: Deref, ES: EntropySource, NS: Deref, IH, SP>(
 		&self, payment_preimage: Option<PaymentPreimage>, recipient_onion: RecipientOnionFields,
 		payment_id: PaymentId, retry_strategy: Retry, route_params: RouteParameters, router: &R,
 		first_hops: Vec<ChannelDetails>, inflight_htlcs: IH, entropy_source: &ES,
@@ -901,7 +900,6 @@ where
 	) -> Result<PaymentHash, RetryableSendFailure>
 	where
 		R::Target: Router,
-		ES::Target: EntropySource,
 		NS::Target: NodeSigner,
 		IH: Fn() -> InFlightHtlcs,
 		SP: Fn(SendAlongPathArgs) -> Result<(), APIError>,
@@ -916,7 +914,7 @@ where
 	}
 
 	#[rustfmt::skip]
-	pub(super) fn pay_for_bolt11_invoice<R: Deref, ES: Deref, NS: Deref, IH, SP>(
+	pub(super) fn pay_for_bolt11_invoice<R: Deref, ES: EntropySource, NS: Deref, IH, SP>(
 		&self, invoice: &Bolt11Invoice, payment_id: PaymentId,
 		amount_msats: Option<u64>,
 		route_params_config: RouteParametersConfig,
@@ -928,7 +926,6 @@ where
 	) -> Result<(), Bolt11PaymentError>
 	where
 		R::Target: Router,
-		ES::Target: EntropySource,
 		NS::Target: NodeSigner,
 		IH: Fn() -> InFlightHtlcs,
 		SP: Fn(SendAlongPathArgs) -> Result<(), APIError>,
@@ -963,7 +960,7 @@ where
 
 	#[rustfmt::skip]
 	pub(super) fn send_payment_for_bolt12_invoice<
-		R: Deref, ES: Deref, NS: Deref, NL: Deref, IH, SP
+		R: Deref, ES: EntropySource, NS: Deref, NL: Deref, IH, SP
 	>(
 		&self, invoice: &Bolt12Invoice, payment_id: PaymentId, router: &R,
 		first_hops: Vec<ChannelDetails>, features: Bolt12InvoiceFeatures, inflight_htlcs: IH,
@@ -974,7 +971,6 @@ where
 	) -> Result<(), Bolt12PaymentError>
 	where
 		R::Target: Router,
-		ES::Target: EntropySource,
 		NS::Target: NodeSigner,
 		NL::Target: NodeIdLookUp,
 		IH: Fn() -> InFlightHtlcs,
@@ -1008,7 +1004,7 @@ where
 
 	#[rustfmt::skip]
 	fn send_payment_for_bolt12_invoice_internal<
-		R: Deref, ES: Deref, NS: Deref, NL: Deref, IH, SP
+		R: Deref, ES: EntropySource, NS: Deref, NL: Deref, IH, SP
 	>(
 		&self, payment_id: PaymentId, payment_hash: PaymentHash,
 		keysend_preimage: Option<PaymentPreimage>, invoice_request: Option<&InvoiceRequest>,
@@ -1021,7 +1017,6 @@ where
 	) -> Result<(), Bolt12PaymentError>
 	where
 		R::Target: Router,
-		ES::Target: EntropySource,
 		NS::Target: NodeSigner,
 		NL::Target: NodeIdLookUp,
 		IH: Fn() -> InFlightHtlcs,
@@ -1115,14 +1110,11 @@ where
 		Ok(())
 	}
 
-	pub(super) fn static_invoice_received<ES: Deref>(
+	pub(super) fn static_invoice_received<ES: EntropySource>(
 		&self, invoice: &StaticInvoice, payment_id: PaymentId, features: Bolt12InvoiceFeatures,
 		best_block_height: u32, duration_since_epoch: Duration, entropy_source: ES,
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
-	) -> Result<(), Bolt12PaymentError>
-	where
-		ES::Target: EntropySource,
-	{
+	) -> Result<(), Bolt12PaymentError> {
 		macro_rules! abandon_with_entry {
 			($payment: expr, $reason: expr) => {
 				assert!(
@@ -1226,7 +1218,7 @@ where
 
 	pub(super) fn send_payment_for_static_invoice<
 		R: Deref,
-		ES: Deref,
+		ES: EntropySource,
 		NS: Deref,
 		NL: Deref,
 		IH,
@@ -1240,7 +1232,6 @@ where
 	) -> Result<(), Bolt12PaymentError>
 	where
 		R::Target: Router,
-		ES::Target: EntropySource,
 		NS::Target: NodeSigner,
 		NL::Target: NodeIdLookUp,
 		IH: Fn() -> InFlightHtlcs,
@@ -1307,7 +1298,7 @@ where
 	}
 
 	// Returns whether the data changed and needs to be repersisted.
-	pub(super) fn check_retry_payments<R: Deref, ES: Deref, NS: Deref, SP, IH, FH>(
+	pub(super) fn check_retry_payments<R: Deref, ES: EntropySource, NS: Deref, SP, IH, FH>(
 		&self, router: &R, first_hops: FH, inflight_htlcs: IH, entropy_source: &ES,
 		node_signer: &NS, best_block_height: u32,
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
@@ -1315,7 +1306,6 @@ where
 	) -> bool
 	where
 		R::Target: Router,
-		ES::Target: EntropySource,
 		NS::Target: NodeSigner,
 		SP: Fn(SendAlongPathArgs) -> Result<(), APIError>,
 		IH: Fn() -> InFlightHtlcs,
@@ -1469,7 +1459,7 @@ where
 	/// [`Event::PaymentPathFailed`]: crate::events::Event::PaymentPathFailed
 	/// [`Event::PaymentFailed`]: crate::events::Event::PaymentFailed
 	#[rustfmt::skip]
-	fn send_payment_for_non_bolt12_invoice<R: Deref, NS: Deref, ES: Deref, IH, SP>(
+	fn send_payment_for_non_bolt12_invoice<R: Deref, NS: Deref, ES: EntropySource, IH, SP>(
 		&self, payment_id: PaymentId, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields,
 		keysend_preimage: Option<PaymentPreimage>, retry_strategy: Retry, mut route_params: RouteParameters,
 		router: &R, first_hops: Vec<ChannelDetails>, inflight_htlcs: IH, entropy_source: &ES,
@@ -1478,7 +1468,6 @@ where
 	) -> Result<(), RetryableSendFailure>
 	where
 		R::Target: Router,
-		ES::Target: EntropySource,
 		NS::Target: NodeSigner,
 		L::Target: Logger,
 		IH: Fn() -> InFlightHtlcs,
@@ -1514,7 +1503,7 @@ where
 	}
 
 	#[rustfmt::skip]
-	fn find_route_and_send_payment<R: Deref, NS: Deref, ES: Deref, IH, SP>(
+	fn find_route_and_send_payment<R: Deref, NS: Deref, ES: EntropySource, IH, SP>(
 		&self, payment_hash: PaymentHash, payment_id: PaymentId, route_params: RouteParameters,
 		router: &R, first_hops: Vec<ChannelDetails>, inflight_htlcs: &IH, entropy_source: &ES,
 		node_signer: &NS, best_block_height: u32,
@@ -1522,7 +1511,6 @@ where
 	)
 	where
 		R::Target: Router,
-		ES::Target: EntropySource,
 		NS::Target: NodeSigner,
 		L::Target: Logger,
 		IH: Fn() -> InFlightHtlcs,
@@ -1675,7 +1663,7 @@ where
 	}
 
 	#[rustfmt::skip]
-	fn handle_pay_route_err<R: Deref, NS: Deref, ES: Deref, IH, SP>(
+	fn handle_pay_route_err<R: Deref, NS: Deref, ES: EntropySource, IH, SP>(
 		&self, err: PaymentSendFailure, payment_id: PaymentId, payment_hash: PaymentHash, route: Route,
 		mut route_params: RouteParameters, onion_session_privs: Vec<[u8; 32]>, router: &R,
 		first_hops: Vec<ChannelDetails>, inflight_htlcs: &IH, entropy_source: &ES, node_signer: &NS,
@@ -1685,7 +1673,6 @@ where
 	)
 	where
 		R::Target: Router,
-		ES::Target: EntropySource,
 		NS::Target: NodeSigner,
 		IH: Fn() -> InFlightHtlcs,
 		SP: Fn(SendAlongPathArgs) -> Result<(), APIError>,
@@ -1792,12 +1779,11 @@ where
 	}
 
 	#[rustfmt::skip]
-	pub(super) fn send_probe<ES: Deref, NS: Deref, F>(
+	pub(super) fn send_probe<ES: EntropySource, NS: Deref, F>(
 		&self, path: Path, probing_cookie_secret: [u8; 32], entropy_source: &ES, node_signer: &NS,
 		best_block_height: u32, send_payment_along_path: F
 	) -> Result<(PaymentHash, PaymentId), ProbeSendFailure>
 	where
-		ES::Target: EntropySource,
 		NS::Target: NodeSigner,
 		F: Fn(SendAlongPathArgs) -> Result<(), APIError>,
 	{
@@ -1867,20 +1853,20 @@ where
 
 	#[cfg(any(test, feature = "_externalize_tests"))]
 	#[rustfmt::skip]
-	pub(super) fn test_add_new_pending_payment<ES: Deref>(
+	pub(super) fn test_add_new_pending_payment<ES: EntropySource>(
 		&self, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields, payment_id: PaymentId,
 		route: &Route, retry_strategy: Option<Retry>, entropy_source: &ES, best_block_height: u32
-	) -> Result<Vec<[u8; 32]>, PaymentSendFailure> where ES::Target: EntropySource {
+	) -> Result<Vec<[u8; 32]>, PaymentSendFailure> {
 		self.add_new_pending_payment(payment_hash, recipient_onion, payment_id, None, route, retry_strategy, None, entropy_source, best_block_height, None)
 	}
 
 	#[rustfmt::skip]
-	pub(super) fn add_new_pending_payment<ES: Deref>(
+	pub(super) fn add_new_pending_payment<ES: EntropySource>(
 		&self, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields, payment_id: PaymentId,
 		keysend_preimage: Option<PaymentPreimage>, route: &Route, retry_strategy: Option<Retry>,
 		payment_params: Option<PaymentParameters>, entropy_source: &ES, best_block_height: u32,
 		bolt12_invoice: Option<PaidBolt12Invoice>
-	) -> Result<Vec<[u8; 32]>, PaymentSendFailure> where ES::Target: EntropySource {
+	) -> Result<Vec<[u8; 32]>, PaymentSendFailure> {
 		let mut pending_outbounds = self.pending_outbound_payments.lock().unwrap();
 		match pending_outbounds.entry(payment_id) {
 			hash_map::Entry::Occupied(_) => Err(PaymentSendFailure::DuplicatePayment),
@@ -1896,15 +1882,12 @@ where
 	}
 
 	#[rustfmt::skip]
-	fn create_pending_payment<ES: Deref>(
+	fn create_pending_payment<ES: EntropySource>(
 		payment_hash: PaymentHash, recipient_onion: RecipientOnionFields,
 		keysend_preimage: Option<PaymentPreimage>, invoice_request: Option<InvoiceRequest>,
 		bolt12_invoice: Option<PaidBolt12Invoice>, route: &Route, retry_strategy: Option<Retry>,
 		payment_params: Option<PaymentParameters>, entropy_source: &ES, best_block_height: u32
-	) -> (PendingOutboundPayment, Vec<[u8; 32]>)
-	where
-		ES::Target: EntropySource,
-	{
+	) -> (PendingOutboundPayment, Vec<[u8; 32]>) {
 		let mut onion_session_privs = Vec::with_capacity(route.paths.len());
 		for _ in 0..route.paths.len() {
 			onion_session_privs.push(entropy_source.get_secure_random_bytes());

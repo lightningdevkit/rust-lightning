@@ -125,9 +125,8 @@ impl PeerState {
 /// [`lsps5.list_webhooks`]: super::msgs::LSPS5Request::ListWebhooks
 /// [`lsps5.remove_webhook`]: super::msgs::LSPS5Request::RemoveWebhook
 /// [`LSPS5Validator`]: super::validator::LSPS5Validator
-pub struct LSPS5ClientHandler<ES: Deref, K: Deref + Clone>
+pub struct LSPS5ClientHandler<ES: EntropySource, K: Deref + Clone>
 where
-	ES::Target: EntropySource,
 	K::Target: KVStore,
 {
 	pending_messages: Arc<MessageQueue>,
@@ -137,9 +136,8 @@ where
 	_config: LSPS5ClientConfig,
 }
 
-impl<ES: Deref, K: Deref + Clone> LSPS5ClientHandler<ES, K>
+impl<ES: EntropySource, K: Deref + Clone> LSPS5ClientHandler<ES, K>
 where
-	ES::Target: EntropySource,
 	K::Target: KVStore,
 {
 	/// Constructs an `LSPS5ClientHandler`.
@@ -426,9 +424,8 @@ where
 	}
 }
 
-impl<ES: Deref, K: Deref + Clone> LSPSProtocolMessageHandler for LSPS5ClientHandler<ES, K>
+impl<ES: EntropySource, K: Deref + Clone> LSPSProtocolMessageHandler for LSPS5ClientHandler<ES, K>
 where
-	ES::Target: EntropySource,
 	K::Target: KVStore,
 {
 	type ProtocolMessage = LSPS5Message;

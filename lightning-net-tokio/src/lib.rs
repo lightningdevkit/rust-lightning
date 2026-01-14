@@ -480,13 +480,12 @@ where
 ///
 /// Returns a future (as the fn is async) that yields another future, see [`connect_outbound`] for
 /// details on this return value.
-pub async fn tor_connect_outbound<PM: Deref + 'static + Send + Sync + Clone, ES: Deref>(
+pub async fn tor_connect_outbound<PM: Deref + 'static + Send + Sync + Clone, ES: EntropySource>(
 	peer_manager: PM, their_node_id: PublicKey, addr: SocketAddress, tor_proxy_addr: SocketAddr,
 	entropy_source: ES,
 ) -> Option<impl std::future::Future<Output = ()>>
 where
 	PM::Target: APeerManager<Descriptor = SocketDescriptor>,
-	ES::Target: EntropySource,
 {
 	let connect_fut = async {
 		tor_connect(addr, tor_proxy_addr, entropy_source).await.map(|s| s.into_std().unwrap())
@@ -500,12 +499,9 @@ where
 	}
 }
 
-async fn tor_connect<ES: Deref>(
+async fn tor_connect<ES: EntropySource>(
 	addr: SocketAddress, tor_proxy_addr: SocketAddr, entropy_source: ES,
-) -> Result<TcpStream, ()>
-where
-	ES::Target: EntropySource,
-{
+) -> Result<TcpStream, ()> {
 	use std::io::Write;
 	use tokio::io::AsyncReadExt;
 

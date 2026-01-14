@@ -25,9 +25,8 @@ use bitcoin::secp256k1::PublicKey;
 use core::ops::Deref;
 
 /// A message handler capable of sending and handling bLIP-50 / LSPS0 messages.
-pub struct LSPS0ClientHandler<ES: Deref, K: Deref + Clone>
+pub struct LSPS0ClientHandler<ES: EntropySource, K: Deref + Clone>
 where
-	ES::Target: EntropySource,
 	K::Target: KVStore,
 {
 	entropy_source: ES,
@@ -35,9 +34,8 @@ where
 	pending_events: Arc<EventQueue<K>>,
 }
 
-impl<ES: Deref, K: Deref + Clone> LSPS0ClientHandler<ES, K>
+impl<ES: EntropySource, K: Deref + Clone> LSPS0ClientHandler<ES, K>
 where
-	ES::Target: EntropySource,
 	K::Target: KVStore,
 {
 	/// Returns a new instance of [`LSPS0ClientHandler`].
@@ -89,9 +87,8 @@ where
 	}
 }
 
-impl<ES: Deref, K: Deref + Clone> LSPSProtocolMessageHandler for LSPS0ClientHandler<ES, K>
+impl<ES: EntropySource, K: Deref + Clone> LSPSProtocolMessageHandler for LSPS0ClientHandler<ES, K>
 where
-	ES::Target: EntropySource,
 	K::Target: KVStore,
 {
 	type ProtocolMessage = LSPS0Message;

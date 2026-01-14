@@ -878,6 +878,12 @@ pub trait EntropySource {
 	fn get_secure_random_bytes(&self) -> [u8; 32];
 }
 
+impl<T: EntropySource + ?Sized, E: Deref<Target = T>> EntropySource for E {
+	fn get_secure_random_bytes(&self) -> [u8; 32] {
+		self.deref().get_secure_random_bytes()
+	}
+}
+
 /// A trait that can handle cryptographic operations at the scope level of a node.
 pub trait NodeSigner {
 	/// Get the [`ExpandedKey`] which provides cryptographic material for various Lightning Network operations.

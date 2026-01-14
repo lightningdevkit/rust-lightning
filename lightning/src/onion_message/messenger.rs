@@ -66,9 +66,7 @@ pub(super) const MAX_TIMER_TICKS: usize = 2;
 /// languages.
 pub trait AOnionMessenger {
 	/// A type implementing [`EntropySource`]
-	type EntropySource: EntropySource + ?Sized;
-	/// A type that may be dereferenced to [`Self::EntropySource`]
-	type ES: Deref<Target = Self::EntropySource>;
+	type EntropySource: EntropySource;
 	/// A type implementing [`NodeSigner`]
 	type NodeSigner: NodeSigner + ?Sized;
 	/// A type that may be dereferenced to [`Self::NodeSigner`]
@@ -105,7 +103,7 @@ pub trait AOnionMessenger {
 	fn get_om(
 		&self,
 	) -> &OnionMessenger<
-		Self::ES,
+		Self::EntropySource,
 		Self::NS,
 		Self::L,
 		Self::NL,
@@ -118,7 +116,7 @@ pub trait AOnionMessenger {
 }
 
 impl<
-		ES: Deref,
+		ES: EntropySource,
 		NS: Deref,
 		L: Deref,
 		NL: Deref,
@@ -129,7 +127,6 @@ impl<
 		CMH: Deref,
 	> AOnionMessenger for OnionMessenger<ES, NS, L, NL, MR, OMH, APH, DRH, CMH>
 where
-	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	L::Target: Logger,
 	NL::Target: NodeIdLookUp,
@@ -139,8 +136,7 @@ where
 	DRH::Target: DNSResolverMessageHandler,
 	CMH::Target: CustomOnionMessageHandler,
 {
-	type EntropySource = ES::Target;
-	type ES = ES;
+	type EntropySource = ES;
 	type NodeSigner = NS::Target;
 	type NS = NS;
 	type Logger = L::Target;
@@ -284,7 +280,7 @@ where
 /// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 /// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 pub struct OnionMessenger<
-	ES: Deref,
+	ES: EntropySource,
 	NS: Deref,
 	L: Deref,
 	NL: Deref,
@@ -294,7 +290,6 @@ pub struct OnionMessenger<
 	DRH: Deref,
 	CMH: Deref,
 > where
-	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	L::Target: Logger,
 	NL::Target: NodeIdLookUp,
@@ -549,10 +544,9 @@ pub trait MessageRouter {
 /// node. Otherwise, there is no way to find a path to the introduction node in order to send a
 /// message, and thus an `Err` is returned. The impact of this may be somewhat muted when
 /// additional dummy hops are added to the blinded path, but this protection is not complete.
-pub struct DefaultMessageRouter<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref>
+pub struct DefaultMessageRouter<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: EntropySource>
 where
 	L::Target: Logger,
-	ES::Target: EntropySource,
 {
 	network_graph: G,
 	entropy_source: ES,
@@ -569,10 +563,9 @@ pub(crate) const DUMMY_HOPS_PATH_LENGTH: usize = 4;
 // We add dummy hops until the path reaches this length (including the recipient).
 pub(crate) const QR_CODED_DUMMY_HOPS_PATH_LENGTH: usize = 2;
 
-impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref> DefaultMessageRouter<G, L, ES>
+impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: EntropySource> DefaultMessageRouter<G, L, ES>
 where
 	L::Target: Logger,
-	ES::Target: EntropySource,
 {
 	/// Creates a [`DefaultMessageRouter`] using the given [`NetworkGraph`].
 	pub fn new(network_graph: G, entropy_source: ES) -> Self {
@@ -660,7 +653,7 @@ where
 				local_node_receive_key,
 				context.clone(),
 				size_constrained,
-				&**entropy_source,
+				&entropy_source,
 				secp_ctx,
 			)
 		};
@@ -738,11 +731,10 @@ where
 	}
 }
 
-impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref> MessageRouter
+impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: EntropySource> MessageRouter
 	for DefaultMessageRouter<G, L, ES>
 where
 	L::Target: Logger,
-	ES::Target: EntropySource,
 {
 	fn find_path(
 		&self, sender: PublicKey, peers: Vec<PublicKey>, destination: Destination,
@@ -784,19 +776,17 @@ where
 /// node. Otherwise, there is no way to find a path to the introduction node in order to send a
 /// message, and thus an `Err` is returned. The impact of this may be somewhat muted when
 /// additional dummy hops are added to the blinded path, but this protection is not complete.
-pub struct NodeIdMessageRouter<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref>
+pub struct NodeIdMessageRouter<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: EntropySource>
 where
 	L::Target: Logger,
-	ES::Target: EntropySource,
 {
 	network_graph: G,
 	entropy_source: ES,
 }
 
-impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref> NodeIdMessageRouter<G, L, ES>
+impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: EntropySource> NodeIdMessageRouter<G, L, ES>
 where
 	L::Target: Logger,
-	ES::Target: EntropySource,
 {
 	/// Creates a [`NodeIdMessageRouter`] using the given [`NetworkGraph`].
 	pub fn new(network_graph: G, entropy_source: ES) -> Self {
@@ -804,11 +794,10 @@ where
 	}
 }
 
-impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref> MessageRouter
+impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: EntropySource> MessageRouter
 	for NodeIdMessageRouter<G, L, ES>
 where
 	L::Target: Logger,
-	ES::Target: EntropySource,
 {
 	fn find_path(
 		&self, sender: PublicKey, peers: Vec<PublicKey>, destination: Destination,
@@ -1052,7 +1041,7 @@ pub enum PeeledOnion<T: OnionMessageContents> {
 /// Returns the node id of the peer to send the message to, the message itself, and any addresses
 /// needed to connect to the first node.
 pub fn create_onion_message_resolving_destination<
-	ES: Deref,
+	ES: EntropySource,
 	NS: Deref,
 	NL: Deref,
 	T: OnionMessageContents,
@@ -1062,7 +1051,6 @@ pub fn create_onion_message_resolving_destination<
 	mut path: OnionMessagePath, contents: T, reply_path: Option<BlindedMessagePath>,
 ) -> Result<(PublicKey, OnionMessage, Vec<SocketAddress>), SendError>
 where
-	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	NL::Target: NodeIdLookUp,
 {
@@ -1089,13 +1077,12 @@ where
 /// - unless it can be resolved by [`NodeIdLookUp::next_node_id`].
 /// Use [`create_onion_message_resolving_destination`] instead to resolve the introduction node
 /// first with a [`ReadOnlyNetworkGraph`].
-pub fn create_onion_message<ES: Deref, NS: Deref, NL: Deref, T: OnionMessageContents>(
+pub fn create_onion_message<ES: EntropySource, NS: Deref, NL: Deref, T: OnionMessageContents>(
 	entropy_source: &ES, node_signer: &NS, node_id_lookup: &NL,
 	secp_ctx: &Secp256k1<secp256k1::All>, path: OnionMessagePath, contents: T,
 	reply_path: Option<BlindedMessagePath>,
 ) -> Result<(PublicKey, OnionMessage, Vec<SocketAddress>), SendError>
 where
-	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	NL::Target: NodeIdLookUp,
 {
@@ -1394,7 +1381,7 @@ macro_rules! drop_handled_events_and_abort {
 }
 
 impl<
-		ES: Deref,
+		ES: EntropySource,
 		NS: Deref,
 		L: Deref,
 		NL: Deref,
@@ -1405,7 +1392,6 @@ impl<
 		CMH: Deref,
 	> OnionMessenger<ES, NS, L, NL, MR, OMH, APH, DRH, CMH>
 where
-	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	L::Target: Logger,
 	NL::Target: NodeIdLookUp,
@@ -2038,7 +2024,7 @@ fn outbound_buffer_full(
 }
 
 impl<
-		ES: Deref,
+		ES: EntropySource,
 		NS: Deref,
 		L: Deref,
 		NL: Deref,
@@ -2049,7 +2035,6 @@ impl<
 		CMH: Deref,
 	> EventsProvider for OnionMessenger<ES, NS, L, NL, MR, OMH, APH, DRH, CMH>
 where
-	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	L::Target: Logger,
 	NL::Target: NodeIdLookUp,
@@ -2159,7 +2144,7 @@ where
 }
 
 impl<
-		ES: Deref,
+		ES: EntropySource,
 		NS: Deref,
 		L: Deref,
 		NL: Deref,
@@ -2170,7 +2155,6 @@ impl<
 		CMH: Deref,
 	> BaseMessageHandler for OnionMessenger<ES, NS, L, NL, MR, OMH, APH, DRH, CMH>
 where
-	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	L::Target: Logger,
 	NL::Target: NodeIdLookUp,
@@ -2231,7 +2215,7 @@ where
 }
 
 impl<
-		ES: Deref,
+		ES: EntropySource,
 		NS: Deref,
 		L: Deref,
 		NL: Deref,
@@ -2242,7 +2226,6 @@ impl<
 		CMH: Deref,
 	> OnionMessageHandler for OnionMessenger<ES, NS, L, NL, MR, OMH, APH, DRH, CMH>
 where
-	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	L::Target: Logger,
 	NL::Target: NodeIdLookUp,
