@@ -3652,27 +3652,40 @@ macro_rules! process_events_body {
 				return;
 			}
 
-			let mut result;
-
+			let pending_events;
 			{
-				// We'll acquire our total consistency lock so that we can be sure no other
-				// persists happen while processing monitor events.
-				let _read_guard = $self.total_consistency_lock.read().unwrap();
+				// Take write lock to process background/monitor events and persist before
+				// handing events to the user. This ensures if the handler crashes, events
+				// will be replayed on restart.
+				let _consistency_lock = $self.total_consistency_lock.write().unwrap();
 
 				// Because `handle_post_event_actions` may send `ChannelMonitorUpdate`s to the user we must
 				// ensure any startup-generated background events are handled first.
-				result = $self.process_background_events();
+				let _ = $self.process_background_events();
 
 				// TODO: This behavior should be documented. It's unintuitive that we query
 				// ChannelMonitors when clearing other events.
-				if $self.process_pending_monitor_events() {
-					result = NotifyOption::DoPersist;
-				}
-			}
+				$self.process_pending_monitor_events();
 
-			let pending_events = $self.pending_events.lock().unwrap().clone();
-			if !pending_events.is_empty() {
-				result = NotifyOption::DoPersist;
+				pending_events = $self.pending_events.lock().unwrap().clone();
+
+				// Persist while holding the write lock, before handling events.
+				// This ensures the persisted state includes the events we're about to handle.
+				let mut buf = Vec::new();
+				if $self.write_without_lock(&mut buf).is_ok() {
+					let _ = $self.kv_store.write(
+						CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+						CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
+						CHANNEL_MANAGER_PERSISTENCE_KEY,
+						buf,
+					);
+				}
+
+				// Commit all pending writes (including any queued monitor updates) atomically.
+				let _ = $self.kv_store.commit();
+
+				// Clear the persistence flag since we just persisted.
+				$self.needs_persist_flag.store(false, Ordering::Release);
 			}
 
 			let mut post_event_actions = Vec::new();
@@ -3712,16 +3725,6 @@ macro_rules! process_events_body {
 				$self.handle_post_event_actions(post_event_actions);
 				// If we had some actions, go around again as we may have more events now
 				processed_all_events = false;
-			}
-
-			match result {
-				NotifyOption::DoPersist => {
-					$self.needs_persist_flag.store(true, Ordering::Release);
-					$self.event_persist_notifier.notify();
-				},
-				NotifyOption::SkipPersistHandleEvents =>
-					$self.event_persist_notifier.notify(),
-				NotifyOption::SkipPersistNoEvents => {},
 			}
 		}
 	}
@@ -13856,9 +13859,6 @@ where
 
 	#[cfg(any(test, feature = "_test_utils"))]
 	pub fn get_and_clear_pending_events(&self) -> Vec<events::Event> {
-		// Commit any pending writes before returning events.
-		let _ = self.persist();
-
 		let events = core::cell::RefCell::new(Vec::new());
 		let event_handler = |event: events::Event| Ok(events.borrow_mut().push(event));
 		self.process_pending_events(&event_handler);
@@ -15282,30 +15282,6 @@ where
 		events.truncate(event_count);
 
 		Ok(())
-	}
-
-	/// Persists this [`ChannelManager`] to the configured [`KVStoreSync`] if it needs persistence.
-	///
-	/// This encodes the [`ChannelManager`] and writes it to the underlying store. Returns `true`
-	/// if persistence was performed, `false` if no persistence was needed.
-	///
-	/// This is equivalent to checking [`Self::get_and_clear_needs_persistence`] and then calling
-	/// the store's write method with the encoded [`ChannelManager`].
-	pub fn persist(&self) -> Result<bool, io::Error> {
-		if !self.get_and_clear_needs_persistence() {
-			return Ok(false);
-		}
-		let _consistency_lock = self.total_consistency_lock.write().unwrap();
-		let mut buf = Vec::new();
-		self.write_without_lock(&mut buf)?;
-		self.kv_store.write(
-			CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
-			CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
-			CHANNEL_MANAGER_PERSISTENCE_KEY,
-			buf,
-		)?;
-		self.kv_store.commit()?;
-		Ok(true)
 	}
 
 	#[cfg(any(test, feature = "_test_utils"))]
