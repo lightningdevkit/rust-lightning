@@ -397,8 +397,7 @@ fn do_connect_block_without_consistency_checks<'a, 'b, 'c, 'd>(
 		let wallet_script = node.wallet_source.get_change_script().unwrap();
 		for (idx, output) in tx.output.iter().enumerate() {
 			if output.script_pubkey == wallet_script {
-				let outpoint = bitcoin::OutPoint { txid: tx.compute_txid(), vout: idx as u32 };
-				node.wallet_source.add_utxo(outpoint, output.value);
+				node.wallet_source.add_utxo(tx.clone(), idx as u32);
 			}
 		}
 	}
