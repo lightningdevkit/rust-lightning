@@ -4467,7 +4467,7 @@ where
 			log_error!(logger, "Closed channel due to close-required error: {}", msg);
 
 			if let Some((_, funding_txo, _, update)) = shutdown_res.monitor_update.take() {
-				self.update_channel_monitor(
+				self.handle_new_monitor_update_locked_actions_handled_by_caller(
 					in_flight_monitor_updates,
 					chan.context.channel_id(),
 					funding_txo,
@@ -9581,7 +9581,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	/// Returns a tuple of `(update_completed, all_updates_completed)`:
 	/// - `update_completed`: whether this specific monitor update finished persisting
 	/// - `all_updates_completed`: whether all in-flight updates for this channel are now complete
-	fn update_channel_monitor(
+	fn handle_new_monitor_update_locked_actions_handled_by_caller(
 		&self,
 		in_flight_monitor_updates: &mut BTreeMap<ChannelId, (OutPoint, Vec<ChannelMonitorUpdate>)>,
 		channel_id: ChannelId, funding_txo: OutPoint, counterparty_node_id: PublicKey,
@@ -9647,13 +9647,14 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		funding_txo: OutPoint, update: ChannelMonitorUpdate, counterparty_node_id: PublicKey,
 		channel_id: ChannelId,
 	) -> Option<Vec<MonitorUpdateCompletionAction>> {
-		let (_update_completed, all_updates_complete) = self.update_channel_monitor(
-			in_flight_monitor_updates,
-			channel_id,
-			funding_txo,
-			counterparty_node_id,
-			update,
-		);
+		let (_update_completed, all_updates_complete) = self
+			.handle_new_monitor_update_locked_actions_handled_by_caller(
+				in_flight_monitor_updates,
+				channel_id,
+				funding_txo,
+				counterparty_node_id,
+				update,
+			);
 		if all_updates_complete {
 			Some(monitor_update_blocked_actions.remove(&channel_id).unwrap_or(Vec::new()))
 		} else {
@@ -9767,13 +9768,14 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let chan_id = chan.context.channel_id();
 		let counterparty_node_id = chan.context.get_counterparty_node_id();
 
-		let (update_completed, all_updates_complete) = self.update_channel_monitor(
-			in_flight_monitor_updates,
-			chan_id,
-			funding_txo,
-			counterparty_node_id,
-			update,
-		);
+		let (update_completed, all_updates_complete) = self
+			.handle_new_monitor_update_locked_actions_handled_by_caller(
+				in_flight_monitor_updates,
+				chan_id,
+				funding_txo,
+				counterparty_node_id,
+				update,
+			);
 
 		let completion_data = if all_updates_complete {
 			Some(self.try_resume_channel_post_monitor_update(
@@ -14993,7 +14995,7 @@ where
 											insert_short_channel_id!(short_to_chan_info, funded_channel);
 
 											if let Some(monitor_update) = monitor_update_opt {
-												self.update_channel_monitor(
+												self.handle_new_monitor_update_locked_actions_handled_by_caller(
 													&mut peer_state.in_flight_monitor_updates,
 													funded_channel.context.channel_id(),
 													funding_txo,
