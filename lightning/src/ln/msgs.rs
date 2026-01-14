@@ -50,7 +50,6 @@ use crate::io_extras::read_to_end;
 use core::fmt;
 use core::fmt::Debug;
 use core::fmt::Display;
-use core::ops::Deref;
 #[cfg(feature = "std")]
 use core::str::FromStr;
 #[cfg(feature = "std")]
@@ -3637,10 +3636,7 @@ impl<'a> Writeable for OutboundTrampolinePayload<'a> {
 	}
 }
 
-impl<NS: Deref> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPayload
-where
-	NS::Target: NodeSigner,
-{
+impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPayload {
 	fn read<R: Read>(r: &mut R, args: (Option<PublicKey>, NS)) -> Result<Self, DecodeError> {
 		let (update_add_blinding_point, node_signer) = args;
 
@@ -3824,10 +3820,7 @@ where
 	}
 }
 
-impl<NS: Deref> ReadableArgs<(Option<PublicKey>, NS)> for InboundTrampolinePayload
-where
-	NS::Target: NodeSigner,
-{
+impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundTrampolinePayload {
 	fn read<R: Read>(r: &mut R, args: (Option<PublicKey>, NS)) -> Result<Self, DecodeError> {
 		let (update_add_blinding_point, node_signer) = args;
 		let receive_auth_key = node_signer.get_receive_auth_key();

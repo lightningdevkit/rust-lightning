@@ -67,14 +67,13 @@ use core::time::Duration;
 	feature = "std",
 	doc = "This can be used in a `no_std` environment, where [`std::time::SystemTime`] is not available and the current time is supplied by the caller."
 )]
-pub fn create_phantom_invoice<ES: EntropySource, NS: Deref, L: Deref>(
+pub fn create_phantom_invoice<ES: EntropySource, NS: NodeSigner, L: Deref>(
 	amt_msat: Option<u64>, payment_hash: Option<PaymentHash>, description: String,
 	invoice_expiry_delta_secs: u32, phantom_route_hints: Vec<PhantomRouteHints>,
 	entropy_source: ES, node_signer: NS, logger: L, network: Currency,
 	min_final_cltv_expiry_delta: Option<u16>, duration_since_epoch: Duration,
 ) -> Result<Bolt11Invoice, SignOrCreationError<()>>
 where
-	NS::Target: NodeSigner,
 	L::Target: Logger,
 {
 	let description = Description::new(description).map_err(SignOrCreationError::CreationError)?;
@@ -134,14 +133,13 @@ where
 	feature = "std",
 	doc = "This version can be used in a `no_std` environment, where [`std::time::SystemTime`] is not available and the current time is supplied by the caller."
 )]
-pub fn create_phantom_invoice_with_description_hash<ES: EntropySource, NS: Deref, L: Deref>(
+pub fn create_phantom_invoice_with_description_hash<ES: EntropySource, NS: NodeSigner, L: Deref>(
 	amt_msat: Option<u64>, payment_hash: Option<PaymentHash>, invoice_expiry_delta_secs: u32,
 	description_hash: Sha256, phantom_route_hints: Vec<PhantomRouteHints>, entropy_source: ES,
 	node_signer: NS, logger: L, network: Currency, min_final_cltv_expiry_delta: Option<u16>,
 	duration_since_epoch: Duration,
 ) -> Result<Bolt11Invoice, SignOrCreationError<()>>
 where
-	NS::Target: NodeSigner,
 	L::Target: Logger,
 {
 	_create_phantom_invoice::<ES, NS, L>(
@@ -161,14 +159,13 @@ where
 
 const MAX_CHANNEL_HINTS: usize = 3;
 
-fn _create_phantom_invoice<ES: EntropySource, NS: Deref, L: Deref>(
+fn _create_phantom_invoice<ES: EntropySource, NS: NodeSigner, L: Deref>(
 	amt_msat: Option<u64>, payment_hash: Option<PaymentHash>,
 	description: Bolt11InvoiceDescription, invoice_expiry_delta_secs: u32,
 	phantom_route_hints: Vec<PhantomRouteHints>, entropy_source: ES, node_signer: NS, logger: L,
 	network: Currency, min_final_cltv_expiry_delta: Option<u16>, duration_since_epoch: Duration,
 ) -> Result<Bolt11Invoice, SignOrCreationError<()>>
 where
-	NS::Target: NodeSigner,
 	L::Target: Logger,
 {
 	if phantom_route_hints.is_empty() {

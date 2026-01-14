@@ -7861,12 +7861,11 @@ where
 	/// and the channel is now usable (and public), this may generate an announcement_signatures to
 	/// reply with.
 	#[rustfmt::skip]
-	pub fn channel_ready<NS: Deref, L: Deref>(
+	pub fn channel_ready<NS: NodeSigner, L: Deref>(
 		&mut self, msg: &msgs::ChannelReady, node_signer: &NS, chain_hash: ChainHash,
 		user_config: &UserConfig, best_block: &BestBlock, logger: &L
 	) -> Result<Option<msgs::AnnouncementSignatures>, ChannelError>
 	where
-		NS::Target: NodeSigner,
 		L::Target: Logger
 	{
 		if self.context.channel_state.is_peer_disconnected() {
@@ -9552,13 +9551,12 @@ where
 	/// successfully and we should restore normal operation. Returns messages which should be sent
 	/// to the remote side.
 	#[rustfmt::skip]
-	pub fn monitor_updating_restored<L: Deref, NS: Deref, CBP>(
+	pub fn monitor_updating_restored<L: Deref, NS: NodeSigner, CBP>(
 		&mut self, logger: &L, node_signer: &NS, chain_hash: ChainHash,
 		user_config: &UserConfig, best_block_height: u32, path_for_release_htlc: CBP
 	) -> MonitorRestoreUpdates
 	where
 		L::Target: Logger,
-		NS::Target: NodeSigner,
 		CBP: Fn(u64) -> BlindedMessagePath
 	{
 		assert!(self.context.channel_state.is_monitor_update_in_progress());
@@ -10044,14 +10042,13 @@ where
 	/// May panic if some calls other than message-handling calls (which will all Err immediately)
 	/// have been called between remove_uncommitted_htlcs_and_mark_paused and this call.
 	#[rustfmt::skip]
-	pub fn channel_reestablish<L: Deref, NS: Deref, CBP>(
+	pub fn channel_reestablish<L: Deref, NS: NodeSigner, CBP>(
 		&mut self, msg: &msgs::ChannelReestablish, logger: &L, node_signer: &NS,
 		chain_hash: ChainHash, user_config: &UserConfig, best_block: &BestBlock,
 		path_for_release_htlc: CBP,
 	) -> Result<ReestablishResponses, ChannelError>
 	where
 		L::Target: Logger,
-		NS::Target: NodeSigner,
 		CBP: Fn(u64) -> BlindedMessagePath
 	{
 		if !self.context.channel_state.is_peer_disconnected() {
@@ -11397,12 +11394,11 @@ where
 	}
 
 	/// Returns `Some` if a splice [`FundingScope`] was promoted.
-	fn maybe_promote_splice_funding<NS: Deref, L: Deref>(
+	fn maybe_promote_splice_funding<NS: NodeSigner, L: Deref>(
 		&mut self, node_signer: &NS, chain_hash: ChainHash, user_config: &UserConfig,
 		block_height: u32, logger: &L,
 	) -> Option<SpliceFundingPromotion>
 	where
-		NS::Target: NodeSigner,
 		L::Target: Logger,
 	{
 		debug_assert!(self.pending_splice.is_some());
@@ -11518,12 +11514,11 @@ where
 	/// In the first case, we store the confirmation height and calculating the short channel id.
 	/// In the second, we simply return an Err indicating we need to be force-closed now.
 	#[rustfmt::skip]
-	pub fn transactions_confirmed<NS: Deref, L: Deref>(
+	pub fn transactions_confirmed<NS: NodeSigner, L: Deref>(
 		&mut self, block_hash: &BlockHash, height: u32, txdata: &TransactionData,
 		chain_hash: ChainHash, node_signer: &NS, user_config: &UserConfig, logger: &L
 	) -> Result<(Option<FundingConfirmedMessage>, Option<msgs::AnnouncementSignatures>), ClosureReason>
 	where
-		NS::Target: NodeSigner,
 		L::Target: Logger
 	{
 		for &(index_in_block, tx) in txdata.iter() {
@@ -11616,12 +11611,11 @@ where
 	///
 	/// May return some HTLCs (and their payment_hash) which have timed out and should be failed
 	/// back.
-	pub fn best_block_updated<NS: Deref, L: Deref>(
+	pub fn best_block_updated<NS: NodeSigner, L: Deref>(
 		&mut self, height: u32, highest_header_time: Option<u32>, chain_hash: ChainHash,
 		node_signer: &NS, user_config: &UserConfig, logger: &L,
 	) -> Result<BestBlockUpdatedRes, ClosureReason>
 	where
-		NS::Target: NodeSigner,
 		L::Target: Logger,
 	{
 		self.do_best_block_updated(
@@ -11633,12 +11627,11 @@ where
 	}
 
 	#[rustfmt::skip]
-	fn do_best_block_updated<NS: Deref, L: Deref>(
+	fn do_best_block_updated<NS: NodeSigner, L: Deref>(
 		&mut self, height: u32, highest_header_time: Option<u32>,
 		chain_node_signer: Option<(ChainHash, &NS, &UserConfig)>, logger: &L
 	) -> Result<(Option<FundingConfirmedMessage>, Vec<(HTLCSource, PaymentHash)>, Option<msgs::AnnouncementSignatures>), ClosureReason>
 	where
-		NS::Target: NodeSigner,
 		L::Target: Logger
 	{
 		let mut timed_out_htlcs = Vec::new();
@@ -11866,9 +11859,9 @@ where
 	///
 	/// [`ChannelReady`]: crate::ln::msgs::ChannelReady
 	#[rustfmt::skip]
-	fn get_channel_announcement<NS: Deref>(
+	fn get_channel_announcement<NS: NodeSigner>(
 		&self, node_signer: &NS, chain_hash: ChainHash, user_config: &UserConfig,
-	) -> Result<msgs::UnsignedChannelAnnouncement, ChannelError> where NS::Target: NodeSigner {
+	) -> Result<msgs::UnsignedChannelAnnouncement, ChannelError> {
 		if !self.context.config.announce_for_forwarding {
 			return Err(ChannelError::Ignore("Channel is not available for public announcements".to_owned()));
 		}
@@ -11898,12 +11891,11 @@ where
 	}
 
 	#[rustfmt::skip]
-	fn get_announcement_sigs<NS: Deref, L: Deref>(
+	fn get_announcement_sigs<NS: NodeSigner, L: Deref>(
 		&mut self, node_signer: &NS, chain_hash: ChainHash, user_config: &UserConfig,
 		best_block_height: u32, logger: &L
 	) -> Option<msgs::AnnouncementSignatures>
 	where
-		NS::Target: NodeSigner,
 		L::Target: Logger
 	{
 		if self.funding.funding_tx_confirmation_height == 0 || self.funding.funding_tx_confirmation_height + 5 > best_block_height {
@@ -11972,9 +11964,9 @@ where
 	/// Signs the given channel announcement, returning a ChannelError::Ignore if no keys are
 	/// available.
 	#[rustfmt::skip]
-	fn sign_channel_announcement<NS: Deref>(
+	fn sign_channel_announcement<NS: NodeSigner>(
 		&self, node_signer: &NS, announcement: msgs::UnsignedChannelAnnouncement
-	) -> Result<msgs::ChannelAnnouncement, ChannelError> where NS::Target: NodeSigner {
+	) -> Result<msgs::ChannelAnnouncement, ChannelError> {
 		if let Some((their_node_sig, their_bitcoin_sig)) = self.context.announcement_sigs {
 			let our_node_key = NodeId::from_pubkey(&node_signer.get_node_id(Recipient::Node)
 				.map_err(|_| ChannelError::Ignore("Signer failed to retrieve own public key".to_owned()))?);
@@ -12009,10 +12001,10 @@ where
 	/// channel_announcement message which we can broadcast and storing our counterparty's
 	/// signatures for later reconstruction/rebroadcast of the channel_announcement.
 	#[rustfmt::skip]
-	pub fn announcement_signatures<NS: Deref>(
+	pub fn announcement_signatures<NS: NodeSigner>(
 		&mut self, node_signer: &NS, chain_hash: ChainHash, best_block_height: u32,
 		msg: &msgs::AnnouncementSignatures, user_config: &UserConfig
-	) -> Result<msgs::ChannelAnnouncement, ChannelError> where NS::Target: NodeSigner {
+	) -> Result<msgs::ChannelAnnouncement, ChannelError> {
 		let announcement = self.get_channel_announcement(node_signer, chain_hash, user_config)?;
 
 		let msghash = hash_to_message!(&Sha256d::hash(&announcement.encode()[..])[..]);
@@ -12040,9 +12032,9 @@ where
 	/// Gets a signed channel_announcement for this channel, if we previously received an
 	/// announcement_signatures from our counterparty.
 	#[rustfmt::skip]
-	pub fn get_signed_channel_announcement<NS: Deref>(
+	pub fn get_signed_channel_announcement<NS: NodeSigner>(
 		&self, node_signer: &NS, chain_hash: ChainHash, best_block_height: u32, user_config: &UserConfig
-	) -> Option<msgs::ChannelAnnouncement> where NS::Target: NodeSigner {
+	) -> Option<msgs::ChannelAnnouncement> {
 		if self.funding.funding_tx_confirmation_height == 0 || self.funding.funding_tx_confirmation_height + 5 > best_block_height {
 			return None;
 		}
@@ -12741,12 +12733,11 @@ where
 		Ok((holder_balance_floor, counterparty_balance_floor))
 	}
 
-	pub fn splice_locked<NS: Deref, L: Deref>(
+	pub fn splice_locked<NS: NodeSigner, L: Deref>(
 		&mut self, msg: &msgs::SpliceLocked, node_signer: &NS, chain_hash: ChainHash,
 		user_config: &UserConfig, block_height: u32, logger: &L,
 	) -> Result<Option<SpliceFundingPromotion>, ChannelError>
 	where
-		NS::Target: NodeSigner,
 		L::Target: Logger,
 	{
 		log_info!(logger, "Received splice_locked txid {} from our peer", msg.splice_txid,);

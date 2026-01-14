@@ -68,9 +68,7 @@ pub trait AOnionMessenger {
 	/// A type implementing [`EntropySource`]
 	type EntropySource: EntropySource;
 	/// A type implementing [`NodeSigner`]
-	type NodeSigner: NodeSigner + ?Sized;
-	/// A type that may be dereferenced to [`Self::NodeSigner`]
-	type NS: Deref<Target = Self::NodeSigner>;
+	type NodeSigner: NodeSigner;
 	/// A type implementing [`Logger`]
 	type Logger: Logger + ?Sized;
 	/// A type that may be dereferenced to [`Self::Logger`]
@@ -104,7 +102,7 @@ pub trait AOnionMessenger {
 		&self,
 	) -> &OnionMessenger<
 		Self::EntropySource,
-		Self::NS,
+		Self::NodeSigner,
 		Self::L,
 		Self::NL,
 		Self::MR,
@@ -117,7 +115,7 @@ pub trait AOnionMessenger {
 
 impl<
 		ES: EntropySource,
-		NS: Deref,
+		NS: NodeSigner,
 		L: Deref,
 		NL: Deref,
 		MR: Deref,
@@ -127,7 +125,6 @@ impl<
 		CMH: Deref,
 	> AOnionMessenger for OnionMessenger<ES, NS, L, NL, MR, OMH, APH, DRH, CMH>
 where
-	NS::Target: NodeSigner,
 	L::Target: Logger,
 	NL::Target: NodeIdLookUp,
 	MR::Target: MessageRouter,
@@ -137,8 +134,7 @@ where
 	CMH::Target: CustomOnionMessageHandler,
 {
 	type EntropySource = ES;
-	type NodeSigner = NS::Target;
-	type NS = NS;
+	type NodeSigner = NS;
 	type Logger = L::Target;
 	type L = L;
 	type NodeIdLookUp = NL::Target;
@@ -281,7 +277,7 @@ where
 /// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 pub struct OnionMessenger<
 	ES: EntropySource,
-	NS: Deref,
+	NS: NodeSigner,
 	L: Deref,
 	NL: Deref,
 	MR: Deref,
@@ -290,7 +286,6 @@ pub struct OnionMessenger<
 	DRH: Deref,
 	CMH: Deref,
 > where
-	NS::Target: NodeSigner,
 	L::Target: Logger,
 	NL::Target: NodeIdLookUp,
 	MR::Target: MessageRouter,
@@ -1042,7 +1037,7 @@ pub enum PeeledOnion<T: OnionMessageContents> {
 /// needed to connect to the first node.
 pub fn create_onion_message_resolving_destination<
 	ES: EntropySource,
-	NS: Deref,
+	NS: NodeSigner,
 	NL: Deref,
 	T: OnionMessageContents,
 >(
@@ -1051,7 +1046,6 @@ pub fn create_onion_message_resolving_destination<
 	mut path: OnionMessagePath, contents: T, reply_path: Option<BlindedMessagePath>,
 ) -> Result<(PublicKey, OnionMessage, Vec<SocketAddress>), SendError>
 where
-	NS::Target: NodeSigner,
 	NL::Target: NodeIdLookUp,
 {
 	path.destination.resolve(network_graph);
@@ -1077,13 +1071,12 @@ where
 /// - unless it can be resolved by [`NodeIdLookUp::next_node_id`].
 /// Use [`create_onion_message_resolving_destination`] instead to resolve the introduction node
 /// first with a [`ReadOnlyNetworkGraph`].
-pub fn create_onion_message<ES: EntropySource, NS: Deref, NL: Deref, T: OnionMessageContents>(
+pub fn create_onion_message<ES: EntropySource, NS: NodeSigner, NL: Deref, T: OnionMessageContents>(
 	entropy_source: &ES, node_signer: &NS, node_id_lookup: &NL,
 	secp_ctx: &Secp256k1<secp256k1::All>, path: OnionMessagePath, contents: T,
 	reply_path: Option<BlindedMessagePath>,
 ) -> Result<(PublicKey, OnionMessage, Vec<SocketAddress>), SendError>
 where
-	NS::Target: NodeSigner,
 	NL::Target: NodeIdLookUp,
 {
 	let OnionMessagePath { intermediate_nodes, mut destination, first_node_addresses } = path;
@@ -1158,12 +1151,11 @@ where
 ///
 /// Returns either the next layer of the onion for forwarding or the decrypted content for the
 /// receiver.
-pub fn peel_onion_message<NS: Deref, L: Deref, CMH: Deref>(
+pub fn peel_onion_message<NS: NodeSigner, L: Deref, CMH: Deref>(
 	msg: &OnionMessage, secp_ctx: &Secp256k1<secp256k1::All>, node_signer: NS, logger: L,
 	custom_handler: CMH,
 ) -> Result<PeeledOnion<<<CMH>::Target as CustomOnionMessageHandler>::CustomMessage>, ()>
 where
-	NS::Target: NodeSigner,
 	L::Target: Logger,
 	CMH::Target: CustomOnionMessageHandler,
 {
@@ -1382,7 +1374,7 @@ macro_rules! drop_handled_events_and_abort {
 
 impl<
 		ES: EntropySource,
-		NS: Deref,
+		NS: NodeSigner,
 		L: Deref,
 		NL: Deref,
 		MR: Deref,
@@ -1392,7 +1384,6 @@ impl<
 		CMH: Deref,
 	> OnionMessenger<ES, NS, L, NL, MR, OMH, APH, DRH, CMH>
 where
-	NS::Target: NodeSigner,
 	L::Target: Logger,
 	NL::Target: NodeIdLookUp,
 	MR::Target: MessageRouter,
@@ -1794,7 +1785,7 @@ where
 		peel_onion_message(
 			msg,
 			&self.secp_ctx,
-			&*self.node_signer,
+			&self.node_signer,
 			&*self.logger,
 			&*self.custom_handler,
 		)
@@ -2025,7 +2016,7 @@ fn outbound_buffer_full(
 
 impl<
 		ES: EntropySource,
-		NS: Deref,
+		NS: NodeSigner,
 		L: Deref,
 		NL: Deref,
 		MR: Deref,
@@ -2035,7 +2026,6 @@ impl<
 		CMH: Deref,
 	> EventsProvider for OnionMessenger<ES, NS, L, NL, MR, OMH, APH, DRH, CMH>
 where
-	NS::Target: NodeSigner,
 	L::Target: Logger,
 	NL::Target: NodeIdLookUp,
 	MR::Target: MessageRouter,
@@ -2145,7 +2135,7 @@ where
 
 impl<
 		ES: EntropySource,
-		NS: Deref,
+		NS: NodeSigner,
 		L: Deref,
 		NL: Deref,
 		MR: Deref,
@@ -2155,7 +2145,6 @@ impl<
 		CMH: Deref,
 	> BaseMessageHandler for OnionMessenger<ES, NS, L, NL, MR, OMH, APH, DRH, CMH>
 where
-	NS::Target: NodeSigner,
 	L::Target: Logger,
 	NL::Target: NodeIdLookUp,
 	MR::Target: MessageRouter,
@@ -2216,7 +2205,7 @@ where
 
 impl<
 		ES: EntropySource,
-		NS: Deref,
+		NS: NodeSigner,
 		L: Deref,
 		NL: Deref,
 		MR: Deref,
@@ -2226,7 +2215,6 @@ impl<
 		CMH: Deref,
 	> OnionMessageHandler for OnionMessenger<ES, NS, L, NL, MR, OMH, APH, DRH, CMH>
 where
-	NS::Target: NodeSigner,
 	L::Target: Logger,
 	NL::Target: NodeIdLookUp,
 	MR::Target: MessageRouter,
