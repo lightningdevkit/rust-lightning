@@ -46,7 +46,6 @@ use crate::util::ser::{Readable, ReadableArgs, RequiredWrapper, Writeable, Write
 
 use crate::io;
 use core::cmp;
-use core::ops::Deref;
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -1512,12 +1511,10 @@ impl PackageTemplate {
 	/// which was used to generate the value. Will not return less than `dust_limit_sats` for the
 	/// value.
 	#[rustfmt::skip]
-	pub(crate) fn compute_package_output<F: Deref, L: Logger>(
+	pub(crate) fn compute_package_output<F: FeeEstimator, L: Logger>(
 		&self, predicted_weight: u64, dust_limit_sats: u64, feerate_strategy: &FeerateStrategy,
 		conf_target: ConfirmationTarget, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
-	) -> Option<(u64, u64)>
-	where F::Target: FeeEstimator,
-	{
+	) -> Option<(u64, u64)> {
 		debug_assert!(matches!(self.malleability, PackageMalleability::Malleable(..)),
 			"The package output is fixed for non-malleable packages");
 		let input_amounts = self.package_amount();
@@ -1540,10 +1537,10 @@ impl PackageTemplate {
 
 	/// Computes a feerate based on the given confirmation target and feerate strategy.
 	#[rustfmt::skip]
-	pub(crate) fn compute_package_feerate<F: Deref>(
+	pub(crate) fn compute_package_feerate<F: FeeEstimator>(
 		&self, fee_estimator: &LowerBoundedFeeEstimator<F>, conf_target: ConfirmationTarget,
 		feerate_strategy: &FeerateStrategy,
-	) -> u32 where F::Target: FeeEstimator {
+	) -> u32 {
 		let feerate_estimate = fee_estimator.bounded_sat_per_1000_weight(conf_target);
 		if self.feerate_previous != 0 {
 			let previous_feerate = self.feerate_previous.try_into().unwrap_or(u32::max_value());
@@ -1675,11 +1672,9 @@ impl Readable for PackageTemplate {
 /// fee and the corresponding updated feerate. If fee is under [`FEERATE_FLOOR_SATS_PER_KW`],
 /// we return nothing.
 #[rustfmt::skip]
-fn compute_fee_from_spent_amounts<F: Deref, L: Logger>(
+fn compute_fee_from_spent_amounts<F: FeeEstimator, L: Logger>(
 	input_amounts: u64, predicted_weight: u64, conf_target: ConfirmationTarget, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L
-) -> Option<(u64, u64)>
-	where F::Target: FeeEstimator,
-{
+) -> Option<(u64, u64)> {
 	let sweep_feerate = fee_estimator.bounded_sat_per_1000_weight(conf_target);
 	let fee_rate = cmp::min(sweep_feerate, compute_feerate_sat_per_1000_weight(input_amounts / 2, predicted_weight));
 	let fee = fee_rate as u64 * (predicted_weight) / 1000;
@@ -1701,14 +1696,11 @@ fn compute_fee_from_spent_amounts<F: Deref, L: Logger>(
 /// respect BIP125 rules 3) and 4) and if required adjust the new fee to meet the RBF policy
 /// requirement.
 #[rustfmt::skip]
-fn feerate_bump<F: Deref, L: Logger>(
+fn feerate_bump<F: FeeEstimator, L: Logger>(
 	predicted_weight: u64, input_amounts: u64, dust_limit_sats: u64, previous_feerate: u64,
 	feerate_strategy: &FeerateStrategy, conf_target: ConfirmationTarget,
 	fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
-) -> Option<(u64, u64)>
-where
-	F::Target: FeeEstimator,
-{
+) -> Option<(u64, u64)> {
 	let previous_fee = previous_feerate * predicted_weight / 1000;
 
 	// If old feerate inferior to actual one given back by Fee Estimator, use it to compute new fee...

@@ -1801,9 +1801,7 @@ pub trait AChannelManager {
 	/// A type that may be dereferenced to [`Self::SignerProvider`].
 	type SP: Deref<Target = Self::SignerProvider>;
 	/// A type implementing [`FeeEstimator`].
-	type FeeEstimator: FeeEstimator + ?Sized;
-	/// A type that may be dereferenced to [`Self::FeeEstimator`].
-	type F: Deref<Target = Self::FeeEstimator>;
+	type FeeEstimator: FeeEstimator;
 	/// A type implementing [`Router`].
 	type Router: Router + ?Sized;
 	/// A type that may be dereferenced to [`Self::Router`].
@@ -1825,7 +1823,7 @@ pub trait AChannelManager {
 		Self::EntropySource,
 		Self::NodeSigner,
 		Self::SP,
-		Self::F,
+		Self::FeeEstimator,
 		Self::R,
 		Self::MR,
 		Self::L,
@@ -1838,7 +1836,7 @@ impl<
 		ES: EntropySource,
 		NS: NodeSigner,
 		SP: Deref,
-		F: Deref,
+		F: FeeEstimator,
 		R: Deref,
 		MR: Deref,
 		L: Deref,
@@ -1846,7 +1844,6 @@ impl<
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	SP::Target: SignerProvider,
-	F::Target: FeeEstimator,
 	R::Target: Router,
 	MR::Target: MessageRouter,
 	L::Target: Logger,
@@ -1859,8 +1856,7 @@ where
 	type Signer = <SP::Target as SignerProvider>::EcdsaSigner;
 	type SignerProvider = SP::Target;
 	type SP = SP;
-	type FeeEstimator = F::Target;
-	type F = F;
+	type FeeEstimator = F;
 	type Router = R::Target;
 	type R = R;
 	type MessageRouter = MR::Target;
@@ -2617,14 +2613,13 @@ pub struct ChannelManager<
 	ES: EntropySource,
 	NS: NodeSigner,
 	SP: Deref,
-	F: Deref,
+	F: FeeEstimator,
 	R: Deref,
 	MR: Deref,
 	L: Deref,
 > where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	SP::Target: SignerProvider,
-	F::Target: FeeEstimator,
 	R::Target: Router,
 	MR::Target: MessageRouter,
 	L::Target: Logger,
@@ -3404,7 +3399,7 @@ impl<
 		ES: EntropySource,
 		NS: NodeSigner,
 		SP: Deref,
-		F: Deref,
+		F: FeeEstimator,
 		R: Deref,
 		MR: Deref,
 		L: Deref,
@@ -3412,7 +3407,6 @@ impl<
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	SP::Target: SignerProvider,
-	F::Target: FeeEstimator,
 	R::Target: Router,
 	MR::Target: MessageRouter,
 	L::Target: Logger,
@@ -13542,7 +13536,7 @@ impl<
 		ES: EntropySource,
 		NS: NodeSigner,
 		SP: Deref,
-		F: Deref,
+		F: FeeEstimator,
 		R: Deref,
 		MR: Deref,
 		L: Deref,
@@ -13550,7 +13544,6 @@ impl<
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	SP::Target: SignerProvider,
-	F::Target: FeeEstimator,
 	R::Target: Router,
 	MR::Target: MessageRouter,
 	L::Target: Logger,
@@ -14416,7 +14409,7 @@ impl<
 		ES: EntropySource,
 		NS: NodeSigner,
 		SP: Deref,
-		F: Deref,
+		F: FeeEstimator,
 		R: Deref,
 		MR: Deref,
 		L: Deref,
@@ -14424,7 +14417,6 @@ impl<
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	SP::Target: SignerProvider,
-	F::Target: FeeEstimator,
 	R::Target: Router,
 	MR::Target: MessageRouter,
 	L::Target: Logger,
@@ -14784,7 +14776,7 @@ impl<
 		ES: EntropySource,
 		NS: NodeSigner,
 		SP: Deref,
-		F: Deref,
+		F: FeeEstimator,
 		R: Deref,
 		MR: Deref,
 		L: Deref,
@@ -14792,7 +14784,6 @@ impl<
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	SP::Target: SignerProvider,
-	F::Target: FeeEstimator,
 	R::Target: Router,
 	MR::Target: MessageRouter,
 	L::Target: Logger,
@@ -14816,7 +14807,7 @@ impl<
 		ES: EntropySource,
 		NS: NodeSigner,
 		SP: Deref,
-		F: Deref,
+		F: FeeEstimator,
 		R: Deref,
 		MR: Deref,
 		L: Deref,
@@ -14824,7 +14815,6 @@ impl<
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	SP::Target: SignerProvider,
-	F::Target: FeeEstimator,
 	R::Target: Router,
 	MR::Target: MessageRouter,
 	L::Target: Logger,
@@ -14874,7 +14864,7 @@ impl<
 		ES: EntropySource,
 		NS: NodeSigner,
 		SP: Deref,
-		F: Deref,
+		F: FeeEstimator,
 		R: Deref,
 		MR: Deref,
 		L: Deref,
@@ -14882,7 +14872,6 @@ impl<
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	SP::Target: SignerProvider,
-	F::Target: FeeEstimator,
 	R::Target: Router,
 	MR::Target: MessageRouter,
 	L::Target: Logger,
@@ -15044,7 +15033,7 @@ impl<
 		ES: EntropySource,
 		NS: NodeSigner,
 		SP: Deref,
-		F: Deref,
+		F: FeeEstimator,
 		R: Deref,
 		MR: Deref,
 		L: Deref,
@@ -15052,7 +15041,6 @@ impl<
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	SP::Target: SignerProvider,
-	F::Target: FeeEstimator,
 	R::Target: Router,
 	MR::Target: MessageRouter,
 	L::Target: Logger,
@@ -15403,7 +15391,7 @@ impl<
 		ES: EntropySource,
 		NS: NodeSigner,
 		SP: Deref,
-		F: Deref,
+		F: FeeEstimator,
 		R: Deref,
 		MR: Deref,
 		L: Deref,
@@ -15411,7 +15399,6 @@ impl<
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	SP::Target: SignerProvider,
-	F::Target: FeeEstimator,
 	R::Target: Router,
 	MR::Target: MessageRouter,
 	L::Target: Logger,
@@ -15975,7 +15962,7 @@ impl<
 		ES: EntropySource,
 		NS: NodeSigner,
 		SP: Deref,
-		F: Deref,
+		F: FeeEstimator,
 		R: Deref,
 		MR: Deref,
 		L: Deref,
@@ -15983,7 +15970,6 @@ impl<
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	SP::Target: SignerProvider,
-	F::Target: FeeEstimator,
 	R::Target: Router,
 	MR::Target: MessageRouter,
 	L::Target: Logger,
@@ -16190,7 +16176,7 @@ impl<
 		ES: EntropySource,
 		NS: NodeSigner,
 		SP: Deref,
-		F: Deref,
+		F: FeeEstimator,
 		R: Deref,
 		MR: Deref,
 		L: Deref,
@@ -16198,7 +16184,6 @@ impl<
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	SP::Target: SignerProvider,
-	F::Target: FeeEstimator,
 	R::Target: Router,
 	MR::Target: MessageRouter,
 	L::Target: Logger,
@@ -16432,7 +16417,7 @@ impl<
 		ES: EntropySource,
 		NS: NodeSigner,
 		SP: Deref,
-		F: Deref,
+		F: FeeEstimator,
 		R: Deref,
 		MR: Deref,
 		L: Deref,
@@ -16440,7 +16425,6 @@ impl<
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	SP::Target: SignerProvider,
-	F::Target: FeeEstimator,
 	R::Target: Router,
 	MR::Target: MessageRouter,
 	L::Target: Logger,
@@ -16497,7 +16481,7 @@ impl<
 		ES: EntropySource,
 		NS: NodeSigner,
 		SP: Deref,
-		F: Deref,
+		F: FeeEstimator,
 		R: Deref,
 		MR: Deref,
 		L: Deref,
@@ -16505,7 +16489,6 @@ impl<
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	SP::Target: SignerProvider,
-	F::Target: FeeEstimator,
 	R::Target: Router,
 	MR::Target: MessageRouter,
 	L::Target: Logger,
@@ -17010,7 +16993,7 @@ impl<
 		ES: EntropySource,
 		NS: NodeSigner,
 		SP: Deref,
-		F: Deref,
+		F: FeeEstimator,
 		R: Deref,
 		MR: Deref,
 		L: Deref,
@@ -17018,7 +17001,6 @@ impl<
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	SP::Target: SignerProvider,
-	F::Target: FeeEstimator,
 	R::Target: Router,
 	MR::Target: MessageRouter,
 	L::Target: Logger,
@@ -17374,14 +17356,13 @@ pub struct ChannelManagerReadArgs<
 	ES: EntropySource,
 	NS: NodeSigner,
 	SP: Deref,
-	F: Deref,
+	F: FeeEstimator,
 	R: Deref,
 	MR: Deref,
 	L: Deref + Clone,
 > where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	SP::Target: SignerProvider,
-	F::Target: FeeEstimator,
 	R::Target: Router,
 	MR::Target: MessageRouter,
 	L::Target: Logger,
@@ -17451,7 +17432,7 @@ impl<
 		ES: EntropySource,
 		NS: NodeSigner,
 		SP: Deref,
-		F: Deref,
+		F: FeeEstimator,
 		R: Deref,
 		MR: Deref,
 		L: Deref + Clone,
@@ -17459,7 +17440,6 @@ impl<
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	SP::Target: SignerProvider,
-	F::Target: FeeEstimator,
 	R::Target: Router,
 	MR::Target: MessageRouter,
 	L::Target: Logger,
@@ -17536,7 +17516,7 @@ impl<
 		ES: EntropySource,
 		NS: NodeSigner,
 		SP: Deref,
-		F: Deref,
+		F: FeeEstimator,
 		R: Deref,
 		MR: Deref,
 		L: Deref + Clone,
@@ -17545,7 +17525,6 @@ impl<
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	SP::Target: SignerProvider,
-	F::Target: FeeEstimator,
 	R::Target: Router,
 	MR::Target: MessageRouter,
 	L::Target: Logger,
@@ -17566,7 +17545,7 @@ impl<
 		ES: EntropySource,
 		NS: NodeSigner,
 		SP: Deref,
-		F: Deref,
+		F: FeeEstimator,
 		R: Deref,
 		MR: Deref,
 		L: Deref + Clone,
@@ -17575,7 +17554,6 @@ impl<
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	SP::Target: SignerProvider,
-	F::Target: FeeEstimator,
 	R::Target: Router,
 	MR::Target: MessageRouter,
 	L::Target: Logger,
