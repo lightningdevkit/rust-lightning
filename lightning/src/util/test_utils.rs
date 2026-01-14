@@ -22,7 +22,7 @@ use crate::chain::channelmonitor::{
 use crate::chain::transaction::OutPoint;
 use crate::chain::WatchedOutput;
 use crate::events::bump_transaction::sync::WalletSourceSync;
-use crate::events::bump_transaction::Utxo;
+use crate::events::bump_transaction::{ConfirmedUtxo, Utxo};
 #[cfg(any(test, feature = "_externalize_tests"))]
 use crate::ln::chan_utils::CommitmentTransaction;
 use crate::ln::channel_state::ChannelDetails;
@@ -2256,7 +2256,7 @@ impl Drop for TestScorer {
 
 pub struct TestWalletSource {
 	secret_key: SecretKey,
-	utxos: Mutex<Vec<Utxo>>,
+	utxos: Mutex<Vec<ConfirmedUtxo>>,
 	secp: Secp256k1<bitcoin::secp256k1::All>,
 }
 
@@ -2265,21 +2265,13 @@ impl TestWalletSource {
 		Self { secret_key, utxos: Mutex::new(Vec::new()), secp: Secp256k1::new() }
 	}
 
-	pub fn add_utxo(&self, outpoint: bitcoin::OutPoint, value: Amount) -> TxOut {
-		let public_key = bitcoin::PublicKey::new(self.secret_key.public_key(&self.secp));
-		let utxo = Utxo::new_v0_p2wpkh(outpoint, value, &public_key.wpubkey_hash().unwrap());
-		self.utxos.lock().unwrap().push(utxo.clone());
-		utxo.output
-	}
-
-	pub fn add_custom_utxo(&self, utxo: Utxo) -> TxOut {
-		let output = utxo.output.clone();
+	pub fn add_utxo(&self, prevtx: Transaction, vout: u32) {
+		let utxo = ConfirmedUtxo::new_p2wpkh(prevtx, vout).unwrap();
 		self.utxos.lock().unwrap().push(utxo);
-		output
 	}
 
 	pub fn remove_utxo(&self, outpoint: bitcoin::OutPoint) {
-		self.utxos.lock().unwrap().retain(|utxo| utxo.outpoint != outpoint);
+		self.utxos.lock().unwrap().retain(|utxo| utxo.outpoint() != outpoint);
 	}
 
 	pub fn clear_utxos(&self) {
@@ -2292,12 +2284,12 @@ impl TestWalletSource {
 		let utxos = self.utxos.lock().unwrap();
 		for i in 0..tx.input.len() {
 			if let Some(utxo) =
-				utxos.iter().find(|utxo| utxo.outpoint == tx.input[i].previous_output)
+				utxos.iter().find(|utxo| utxo.outpoint() == tx.input[i].previous_output)
 			{
 				let sighash = SighashCache::new(&tx).p2wpkh_signature_hash(
 					i,
-					&utxo.output.script_pubkey,
-					utxo.output.value,
+					&utxo.output().script_pubkey,
+					utxo.output().value,
 					EcdsaSighashType::All,
 				)?;
 				#[cfg(not(feature = "grind_signatures"))]
@@ -2322,7 +2314,17 @@ impl TestWalletSource {
 
 impl WalletSourceSync for TestWalletSource {
 	fn list_confirmed_utxos(&self) -> Result<Vec<Utxo>, ()> {
-		Ok(self.utxos.lock().unwrap().clone())
+		let utxos = self.utxos.lock().unwrap();
+		Ok(utxos.iter().map(|ConfirmedUtxo { utxo, .. }| utxo.clone()).collect())
+	}
+
+	fn get_prevtx(&self, outpoint: bitcoin::OutPoint) -> Result<Transaction, ()> {
+		let utxos = self.utxos.lock().unwrap();
+		utxos
+			.iter()
+			.find(|confirmed_utxo| confirmed_utxo.utxo.outpoint == outpoint)
+			.map(|ConfirmedUtxo { prevtx, .. }| prevtx.clone())
+			.ok_or(())
 	}
 
 	fn get_change_script(&self) -> Result<ScriptBuf, ()> {

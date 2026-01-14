@@ -21,7 +21,7 @@ use crate::sign::SignerProvider;
 use crate::util::async_poll::{dummy_waker, MaybeSend, MaybeSync};
 use crate::util::logger::Logger;
 
-use bitcoin::{Psbt, ScriptBuf, Transaction, TxOut};
+use bitcoin::{OutPoint, Psbt, ScriptBuf, Transaction, TxOut};
 
 use super::BumpTransactionEvent;
 use super::{
@@ -37,9 +37,14 @@ use super::{
 pub trait WalletSourceSync {
 	/// Returns all UTXOs, with at least 1 confirmation each, that are available to spend.
 	fn list_confirmed_utxos(&self) -> Result<Vec<Utxo>, ()>;
+
+	/// Returns the previous transaction containing the UTXO referenced by the outpoint.
+	fn get_prevtx(&self, outpoint: OutPoint) -> Result<Transaction, ()>;
+
 	/// Returns a script to use for change above dust resulting from a successful coin selection
 	/// attempt.
 	fn get_change_script(&self) -> Result<ScriptBuf, ()>;
+
 	/// Signs and provides the full [`TxIn::script_sig`] and [`TxIn::witness`] for all inputs within
 	/// the transaction known to the wallet (i.e., any provided via
 	/// [`WalletSource::list_confirmed_utxos`]).
@@ -77,6 +82,13 @@ where
 	) -> impl Future<Output = Result<Vec<Utxo>, ()>> + MaybeSend + 'a {
 		let utxos = self.0.list_confirmed_utxos();
 		async move { utxos }
+	}
+
+	fn get_prevtx<'a>(
+		&'a self, outpoint: OutPoint,
+	) -> impl Future<Output = Result<Transaction, ()>> + MaybeSend + 'a {
+		let prevtx = self.0.get_prevtx(outpoint);
+		Box::pin(async move { prevtx })
 	}
 
 	fn get_change_script<'a>(

@@ -103,16 +103,17 @@ impl SpliceContribution {
 /// establishment protocol or when splicing.
 #[derive(Debug, Clone)]
 pub struct FundingTxInput {
-	/// The unspent [`TxOut`] that the input spends.
+	/// The unspent [`TxOut`] found in [`prevtx`].
 	///
 	/// [`TxOut`]: bitcoin::TxOut
-	pub(super) utxo: Utxo,
+	/// [`prevtx`]: Self::prevtx
+	pub(crate) utxo: Utxo,
 
 	/// The transaction containing the unspent [`TxOut`] referenced by [`utxo`].
 	///
 	/// [`TxOut`]: bitcoin::TxOut
 	/// [`utxo`]: Self::utxo
-	pub(super) prevtx: Transaction,
+	pub(crate) prevtx: Transaction,
 }
 
 impl_writeable_tlv_based!(FundingTxInput, {
@@ -237,6 +238,11 @@ impl FundingTxInput {
 		self.utxo.outpoint
 	}
 
+	/// The unspent output.
+	pub fn output(&self) -> &TxOut {
+		&self.utxo.output
+	}
+
 	/// The sequence number to use in the [`TxIn`].
 	///
 	/// [`TxIn`]: bitcoin::TxIn
@@ -251,8 +257,13 @@ impl FundingTxInput {
 		self.utxo.sequence = sequence;
 	}
 
-	/// Converts the [`FundingTxInput`] into a [`Utxo`] for coin selection.
+	/// Converts the [`FundingTxInput`] into a [`Utxo`].
 	pub fn into_utxo(self) -> Utxo {
 		self.utxo
+	}
+
+	/// Converts the [`FundingTxInput`] into a [`TxOut`].
+	pub fn into_output(self) -> TxOut {
+		self.utxo.output
 	}
 }
