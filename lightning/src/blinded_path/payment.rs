@@ -88,13 +88,10 @@ pub struct BlindedPaymentPath {
 
 impl BlindedPaymentPath {
 	/// Create a one-hop blinded path for a payment.
-	pub fn one_hop<ES: Deref, T: secp256k1::Signing + secp256k1::Verification>(
+	pub fn one_hop<ES: EntropySource, T: secp256k1::Signing + secp256k1::Verification>(
 		payee_node_id: PublicKey, local_node_receive_key: ReceiveAuthKey, payee_tlvs: ReceiveTlvs,
 		min_final_cltv_expiry_delta: u16, entropy_source: ES, secp_ctx: &Secp256k1<T>,
-	) -> Result<Self, ()>
-	where
-		ES::Target: EntropySource,
-	{
+	) -> Result<Self, ()> {
 		// This value is not considered in pathfinding for 1-hop blinded paths, because it's intended to
 		// be in relation to a specific channel.
 		let htlc_maximum_msat = u64::max_value();
@@ -116,14 +113,11 @@ impl BlindedPaymentPath {
 	/// * [`BlindedPayInfo`] calculation results in an integer overflow
 	/// * any unknown features are required in the provided [`ForwardTlvs`]
 	//  TODO: make all payloads the same size with padding + add dummy hops
-	pub fn new<ES: Deref, T: secp256k1::Signing + secp256k1::Verification>(
+	pub fn new<ES: EntropySource, T: secp256k1::Signing + secp256k1::Verification>(
 		intermediate_nodes: &[PaymentForwardNode], payee_node_id: PublicKey,
 		local_node_receive_key: ReceiveAuthKey, payee_tlvs: ReceiveTlvs, htlc_maximum_msat: u64,
 		min_final_cltv_expiry_delta: u16, entropy_source: ES, secp_ctx: &Secp256k1<T>,
-	) -> Result<Self, ()>
-	where
-		ES::Target: EntropySource,
-	{
+	) -> Result<Self, ()> {
 		let introduction_node = IntroductionNode::NodeId(
 			intermediate_nodes.first().map_or(payee_node_id, |n| n.node_id),
 		);

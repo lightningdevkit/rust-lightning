@@ -58,14 +58,13 @@ pub use lightning_types::routing::{RouteHint, RouteHintHop};
 pub struct DefaultRouter<
 	G: Deref<Target = NetworkGraph<L>>,
 	L: Deref,
-	ES: Deref,
+	ES: EntropySource,
 	S: Deref,
 	SP: Sized,
 	Sc: ScoreLookUp<ScoreParams = SP>,
 > where
 	L::Target: Logger,
 	S::Target: for<'a> LockableScore<'a, ScoreLookUp = Sc>,
-	ES::Target: EntropySource,
 {
 	network_graph: G,
 	logger: L,
@@ -77,7 +76,7 @@ pub struct DefaultRouter<
 impl<
 		G: Deref<Target = NetworkGraph<L>>,
 		L: Deref,
-		ES: Deref,
+		ES: EntropySource,
 		S: Deref,
 		SP: Sized,
 		Sc: ScoreLookUp<ScoreParams = SP>,
@@ -85,7 +84,6 @@ impl<
 where
 	L::Target: Logger,
 	S::Target: for<'a> LockableScore<'a, ScoreLookUp = Sc>,
-	ES::Target: EntropySource,
 {
 	/// Creates a new router.
 	pub fn new(
@@ -98,7 +96,7 @@ where
 impl<
 		G: Deref<Target = NetworkGraph<L>>,
 		L: Deref,
-		ES: Deref,
+		ES: EntropySource,
 		S: Deref,
 		SP: Sized,
 		Sc: ScoreLookUp<ScoreParams = SP>,
@@ -106,7 +104,6 @@ impl<
 where
 	L::Target: Logger,
 	S::Target: for<'a> LockableScore<'a, ScoreLookUp = Sc>,
-	ES::Target: EntropySource,
 {
 	#[rustfmt::skip]
 	fn find_route(
@@ -200,7 +197,7 @@ where
 			.map(|forward_node| {
 				BlindedPaymentPath::new(
 					&[forward_node], recipient, local_node_receive_key, tlvs.clone(), u64::MAX, MIN_FINAL_CLTV_EXPIRY_DELTA,
-					&*self.entropy_source, secp_ctx
+					&self.entropy_source, secp_ctx
 				)
 			})
 			.take(MAX_PAYMENT_PATHS)
@@ -211,7 +208,7 @@ where
 			_ => {
 				if network_graph.nodes().contains_key(&NodeId::from_pubkey(&recipient)) {
 					BlindedPaymentPath::new(
-						&[], recipient, local_node_receive_key, tlvs, u64::MAX, MIN_FINAL_CLTV_EXPIRY_DELTA, &*self.entropy_source,
+						&[], recipient, local_node_receive_key, tlvs, u64::MAX, MIN_FINAL_CLTV_EXPIRY_DELTA, &self.entropy_source,
 						secp_ctx
 					).map(|path| vec![path])
 				} else {
