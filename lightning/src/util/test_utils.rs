@@ -62,6 +62,7 @@ use crate::util::persist::{KVStore, KVStoreSync, MonitorName};
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
 use crate::util::test_channel_signer::{EnforcementState, TestChannelSigner};
 
+use bitcoin::absolute::LockTime;
 use bitcoin::amount::Amount;
 use bitcoin::block::Block;
 use bitcoin::constants::genesis_block;
@@ -71,7 +72,7 @@ use bitcoin::hashes::{hex::FromHex, Hash};
 use bitcoin::network::Network;
 use bitcoin::script::{Builder, Script, ScriptBuf};
 use bitcoin::sighash::{EcdsaSighashType, SighashCache};
-use bitcoin::transaction::{Transaction, TxOut};
+use bitcoin::transaction::{Transaction, TxOut, Version};
 use bitcoin::{opcodes, Witness};
 
 use bitcoin::secp256k1::ecdh::SharedSecret;
@@ -2277,6 +2278,15 @@ impl TestWalletSource {
 impl WalletSourceSync for TestWalletSource {
 	fn list_confirmed_utxos(&self) -> Result<Vec<Utxo>, ()> {
 		Ok(self.utxos.lock().unwrap().clone())
+	}
+
+	fn get_prevtx(&self, utxo: &Utxo) -> Result<Transaction, ()> {
+		Ok(Transaction {
+			version: Version::TWO,
+			lock_time: LockTime::ZERO,
+			input: vec![],
+			output: vec![utxo.output.clone()],
+		})
 	}
 
 	fn get_change_script(&self) -> Result<ScriptBuf, ()> {

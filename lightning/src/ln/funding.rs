@@ -99,21 +99,25 @@ impl SpliceContribution {
 	}
 }
 
-/// An input to contribute to a channel's funding transaction either when using the v2 channel
-/// establishment protocol or when splicing.
+/// An unspent transaction output with at least one confirmation.
 #[derive(Debug, Clone)]
-pub struct FundingTxInput {
-	/// The unspent [`TxOut`] that the input spends.
+pub struct ConfirmedUtxo {
+	/// The unspent [`TxOut`] found in [`prevtx`].
 	///
 	/// [`TxOut`]: bitcoin::TxOut
-	pub(super) utxo: Utxo,
+	/// [`prevtx`]: Self::prevtx
+	pub(crate) utxo: Utxo,
 
 	/// The transaction containing the unspent [`TxOut`] referenced by [`utxo`].
 	///
 	/// [`TxOut`]: bitcoin::TxOut
 	/// [`utxo`]: Self::utxo
-	pub(super) prevtx: Transaction,
+	pub(crate) prevtx: Transaction,
 }
+
+/// An input to contribute to a channel's funding transaction either when using the v2 channel
+/// establishment protocol or when splicing.
+pub type FundingTxInput = ConfirmedUtxo;
 
 impl_writeable_tlv_based!(FundingTxInput, {
 	(1, utxo, required),

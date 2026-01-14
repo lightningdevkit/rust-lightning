@@ -29,6 +29,7 @@ use crate::ln::chan_utils::{
 	HTLC_TIMEOUT_INPUT_KEYED_ANCHOR_WITNESS_WEIGHT, HTLC_TIMEOUT_INPUT_P2A_ANCHOR_WITNESS_WEIGHT,
 	P2WSH_TXOUT_WEIGHT, SEGWIT_MARKER_FLAG_WEIGHT, TRUC_CHILD_MAX_WEIGHT, TRUC_MAX_WEIGHT,
 };
+use crate::ln::funding::ConfirmedUtxo;
 use crate::ln::types::ChannelId;
 use crate::prelude::*;
 use crate::sign::ecdsa::EcdsaChannelSigner;
@@ -345,12 +346,22 @@ impl Utxo {
 pub struct CoinSelection {
 	/// The set of UTXOs (with at least 1 confirmation) to spend and use within a transaction
 	/// requiring additional fees.
-	pub confirmed_utxos: Vec<Utxo>,
+	pub confirmed_utxos: Vec<ConfirmedUtxo>,
 	/// An additional output tracking whether any change remained after coin selection. This output
 	/// should always have a value above dust for its given `script_pubkey`. It should not be
 	/// spent until the transaction it belongs to confirms to ensure mempool descendant limits are
 	/// not met. This implies no other party should be able to spend it except us.
 	pub change_output: Option<TxOut>,
+}
+
+impl CoinSelection {
+	fn satisfaction_weight(&self) -> u64 {
+		self.confirmed_utxos.iter().map(|ConfirmedUtxo { utxo, .. }| utxo.satisfaction_weight).sum()
+	}
+
+	fn amount(&self) -> Amount {
+		self.confirmed_utxos.iter().map(|ConfirmedUtxo { utxo, .. }| utxo.output.value).sum()
+	}
 }
 
 /// An abstraction over a bitcoin wallet that can perform coin selection over a set of UTXOs and can
@@ -419,9 +430,14 @@ pub trait CoinSelectionSource {
 pub trait WalletSource {
 	/// Returns all UTXOs, with at least 1 confirmation each, that are available to spend.
 	fn list_confirmed_utxos<'a>(&'a self) -> AsyncResult<'a, Vec<Utxo>, ()>;
+
+	/// Returns the previous transaction containing the UTXO.
+	fn get_prevtx<'a>(&'a self, utxo: &Utxo) -> AsyncResult<'a, Transaction, ()>;
+
 	/// Returns a script to use for change above dust resulting from a successful coin selection
 	/// attempt.
 	fn get_change_script<'a>(&'a self) -> AsyncResult<'a, ScriptBuf, ()>;
+
 	/// Signs and provides the full [`TxIn::script_sig`] and [`TxIn::witness`] for all inputs within
 	/// the transaction known to the wallet (i.e., any provided via
 	/// [`WalletSource::list_confirmed_utxos`]).
@@ -607,10 +623,13 @@ where
 			Some(TxOut { script_pubkey: change_script, value: change_output_amount })
 		};
 
-		Ok(CoinSelection {
-			confirmed_utxos: selected_utxos.into_iter().map(|(utxo, _)| utxo).collect(),
-			change_output,
-		})
+		let mut confirmed_utxos = Vec::with_capacity(selected_utxos.len());
+		for (utxo, _) in selected_utxos {
+			let prevtx = self.source.get_prevtx(&utxo).await?;
+			confirmed_utxos.push(ConfirmedUtxo { utxo, prevtx });
+		}
+
+		Ok(CoinSelection { confirmed_utxos, change_output })
 	}
 }
 
@@ -719,7 +738,7 @@ where
 
 	/// Updates a transaction with the result of a successful coin selection attempt.
 	fn process_coin_selection(&self, tx: &mut Transaction, coin_selection: &CoinSelection) {
-		for utxo in coin_selection.confirmed_utxos.iter() {
+		for ConfirmedUtxo { utxo, .. } in coin_selection.confirmed_utxos.iter() {
 			tx.input.push(TxIn {
 				previous_output: utxo.outpoint,
 				script_sig: ScriptBuf::new(),
@@ -841,12 +860,10 @@ where
 				output: vec![],
 			};
 
-			let input_satisfaction_weight: u64 =
-				coin_selection.confirmed_utxos.iter().map(|utxo| utxo.satisfaction_weight).sum();
+			let input_satisfaction_weight = coin_selection.satisfaction_weight();
 			let total_satisfaction_weight =
 				anchor_input_witness_weight + EMPTY_SCRIPT_SIG_WEIGHT + input_satisfaction_weight;
-			let total_input_amount = must_spend_amount
-				+ coin_selection.confirmed_utxos.iter().map(|utxo| utxo.output.value).sum();
+			let total_input_amount = must_spend_amount + coin_selection.amount();
 
 			self.process_coin_selection(&mut anchor_tx, &coin_selection);
 			let anchor_txid = anchor_tx.compute_txid();
@@ -856,7 +873,7 @@ where
 			// add witness_utxo to anchor input
 			anchor_psbt.inputs[0].witness_utxo = Some(anchor_descriptor.previous_utxo());
 			// add witness_utxo to remaining inputs
-			for (idx, utxo) in coin_selection.confirmed_utxos.into_iter().enumerate() {
+			for (idx, ConfirmedUtxo { utxo, .. }) in coin_selection.confirmed_utxos.into_iter().enumerate() {
 				// add 1 to skip the anchor input
 				let index = idx + 1;
 				debug_assert_eq!(
@@ -1096,13 +1113,11 @@ where
 			utxo_id = claim_id.step_with_bytes(&broadcasted_htlcs.to_be_bytes());
 
 			#[cfg(debug_assertions)]
-			let input_satisfaction_weight: u64 =
-				coin_selection.confirmed_utxos.iter().map(|utxo| utxo.satisfaction_weight).sum();
+			let input_satisfaction_weight = coin_selection.satisfaction_weight();
 			#[cfg(debug_assertions)]
 			let total_satisfaction_weight = must_spend_satisfaction_weight + input_satisfaction_weight;
 			#[cfg(debug_assertions)]
-			let input_value: u64 =
-				coin_selection.confirmed_utxos.iter().map(|utxo| utxo.output.value.to_sat()).sum();
+			let input_value = coin_selection.amount().to_sat();
 			#[cfg(debug_assertions)]
 			let total_input_amount = must_spend_amount + input_value;
 
@@ -1120,7 +1135,7 @@ where
 			}
 
 			// add witness_utxo to remaining inputs
-			for (idx, utxo) in coin_selection.confirmed_utxos.into_iter().enumerate() {
+			for (idx, ConfirmedUtxo { utxo, .. }) in coin_selection.confirmed_utxos.into_iter().enumerate() {
 				// offset to skip the htlc inputs
 				let index = idx + selected_htlcs.len();
 				debug_assert_eq!(htlc_psbt.unsigned_tx.input[index].previous_output, utxo.outpoint);
@@ -1269,9 +1284,8 @@ mod tests {
 	use crate::util::ser::Readable;
 	use crate::util::test_utils::{TestBroadcaster, TestLogger};
 
-	use bitcoin::hashes::Hash;
 	use bitcoin::hex::FromHex;
-	use bitcoin::{Network, ScriptBuf, Transaction, Txid};
+	use bitcoin::{Network, ScriptBuf, Transaction};
 
 	struct TestCoinSelectionSource {
 		// (commitment + anchor value, commitment + input weight, target feerate, result)
@@ -1291,8 +1305,12 @@ mod tests {
 			Ok(res)
 		}
 		fn sign_psbt(&self, psbt: Psbt) -> Result<Transaction, ()> {
-			// FIXME: Why does handle_channel_close override the witness?
-			Ok(psbt.unsigned_tx)
+			let mut tx = psbt.unsigned_tx;
+			// Channel output, add a realistic size witness to make the assertions happy
+			//
+			// FIXME: This doesn't seem to be needed since handle_channel_close overrides it
+			tx.input.first_mut().unwrap().witness = Witness::from_slice(&[vec![42; 162]]);
+			Ok(tx)
 		}
 	}
 
@@ -1328,6 +1346,16 @@ mod tests {
 				.weight()
 				.to_wu();
 
+		let prevtx = Transaction {
+			version: Version::TWO,
+			lock_time: LockTime::ZERO,
+			input: vec![],
+			output: vec![TxOut {
+				value: Amount::from_sat(200),
+				script_pubkey: ScriptBuf::new()
+			}],
+		};
+
 		let broadcaster = TestBroadcaster::new(Network::Testnet);
 		let source = TestCoinSelectionSource {
 			expected_selects: Mutex::new(vec![
@@ -1342,14 +1370,14 @@ mod tests {
 					commitment_and_anchor_fee,
 					868,
 					CoinSelection {
-						confirmed_utxos: vec![Utxo {
-							outpoint: OutPoint { txid: Txid::from_byte_array([44; 32]), vout: 0 },
-							output: TxOut {
-								value: Amount::from_sat(200),
-								script_pubkey: ScriptBuf::new(),
+						confirmed_utxos: vec![ConfirmedUtxo {
+							utxo: Utxo {
+								outpoint: OutPoint { txid: prevtx.compute_txid(), vout: 0 },
+								output: prevtx.output[0].clone(),
+								satisfaction_weight: 5, // Just the script_sig and witness lengths
+								sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
 							},
-							satisfaction_weight: 5, // Just the script_sig and witness lengths
-							sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+							prevtx,
 						}],
 						change_output: None,
 					},

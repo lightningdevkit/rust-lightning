@@ -36,9 +36,14 @@ use super::{
 pub trait WalletSourceSync {
 	/// Returns all UTXOs, with at least 1 confirmation each, that are available to spend.
 	fn list_confirmed_utxos(&self) -> Result<Vec<Utxo>, ()>;
+
+	/// Returns the previous transaction containing the UTXO.
+	fn get_prevtx(&self, utxo: &Utxo) -> Result<Transaction, ()>;
+
 	/// Returns a script to use for change above dust resulting from a successful coin selection
 	/// attempt.
 	fn get_change_script(&self) -> Result<ScriptBuf, ()>;
+
 	/// Signs and provides the full [`TxIn::script_sig`] and [`TxIn::witness`] for all inputs within
 	/// the transaction known to the wallet (i.e., any provided via
 	/// [`WalletSource::list_confirmed_utxos`]).
@@ -74,6 +79,11 @@ where
 	fn list_confirmed_utxos<'a>(&'a self) -> AsyncResult<'a, Vec<Utxo>, ()> {
 		let utxos = self.0.list_confirmed_utxos();
 		Box::pin(async move { utxos })
+	}
+
+	fn get_prevtx<'a>(&'a self, utxo: &Utxo) -> AsyncResult<'a, Transaction, ()> {
+		let prevtx = self.0.get_prevtx(utxo);
+		Box::pin(async move { prevtx })
 	}
 
 	fn get_change_script<'a>(&'a self) -> AsyncResult<'a, ScriptBuf, ()> {
