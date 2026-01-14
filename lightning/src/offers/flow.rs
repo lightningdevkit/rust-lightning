@@ -317,14 +317,11 @@ where
 
 	/// Creates multi-hop blinded payment paths for the given `amount_msats` by delegating to
 	/// [`Router::create_blinded_payment_paths`].
-	fn create_blinded_payment_paths<R: Deref>(
+	fn create_blinded_payment_paths<R: Router>(
 		&self, router: &R, usable_channels: Vec<ChannelDetails>, amount_msats: Option<u64>,
 		payment_secret: PaymentSecret, payment_context: PaymentContext,
 		relative_expiry_seconds: u32,
-	) -> Result<Vec<BlindedPaymentPath>, ()>
-	where
-		R::Target: Router,
-	{
+	) -> Result<Vec<BlindedPaymentPath>, ()> {
 		let secp_ctx = &self.secp_ctx;
 		let receive_auth_key = self.receive_auth_key;
 
@@ -356,14 +353,11 @@ where
 	#[cfg(test)]
 	/// Creates multi-hop blinded payment paths for the given `amount_msats` by delegating to
 	/// [`Router::create_blinded_payment_paths`].
-	pub(crate) fn test_create_blinded_payment_paths<R: Deref>(
+	pub(crate) fn test_create_blinded_payment_paths<R: Router>(
 		&self, router: &R, usable_channels: Vec<ChannelDetails>, amount_msats: Option<u64>,
 		payment_secret: PaymentSecret, payment_context: PaymentContext,
 		relative_expiry_seconds: u32,
-	) -> Result<Vec<BlindedPaymentPath>, ()>
-	where
-		R::Target: Router,
-	{
+	) -> Result<Vec<BlindedPaymentPath>, ()> {
 		self.create_blinded_payment_paths(
 			router,
 			usable_channels,
@@ -821,14 +815,11 @@ where
 	/// created via [`Self::create_async_receive_offer_builder`].
 	///
 	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
-	pub fn create_static_invoice_builder<'a, R: Deref>(
+	pub fn create_static_invoice_builder<'a, R: Router>(
 		&self, router: &R, offer: &'a Offer, offer_nonce: Nonce, payment_secret: PaymentSecret,
 		relative_expiry_secs: u32, usable_channels: Vec<ChannelDetails>,
 		peers: Vec<MessageForwardNode>,
-	) -> Result<StaticInvoiceBuilder<'a>, Bolt12SemanticError>
-	where
-		R::Target: Router,
-	{
+	) -> Result<StaticInvoiceBuilder<'a>, Bolt12SemanticError> {
 		let expanded_key = &self.inbound_payment_key;
 		let secp_ctx = &self.secp_ctx;
 
@@ -892,12 +883,11 @@ where
 	/// blinded path can be constructed.
 	///
 	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
-	pub fn create_invoice_builder_from_refund<'a, ES: EntropySource, R: Deref, F>(
+	pub fn create_invoice_builder_from_refund<'a, ES: EntropySource, R: Router, F>(
 		&'a self, router: &R, entropy_source: ES, refund: &'a Refund,
 		usable_channels: Vec<ChannelDetails>, get_payment_info: F,
 	) -> Result<InvoiceBuilder<'a, DerivedSigningPubkey>, Bolt12SemanticError>
 	where
-		R::Target: Router,
 		F: Fn(u64, u32) -> Result<(PaymentHash, PaymentSecret), Bolt12SemanticError>,
 	{
 		if refund.chain() != self.chain_hash {
@@ -960,12 +950,11 @@ where
 	/// Returns a [`Bolt12SemanticError`] if:
 	/// - Valid blinded payment paths could not be generated for the [`Bolt12Invoice`].
 	/// - The [`InvoiceBuilder`] could not be created from the [`InvoiceRequest`].
-	pub fn create_invoice_builder_from_invoice_request_with_keys<'a, R: Deref, F>(
+	pub fn create_invoice_builder_from_invoice_request_with_keys<'a, R: Router, F>(
 		&self, router: &R, invoice_request: &'a VerifiedInvoiceRequest<DerivedSigningPubkey>,
 		usable_channels: Vec<ChannelDetails>, get_payment_info: F,
 	) -> Result<(InvoiceBuilder<'a, DerivedSigningPubkey>, MessageContext), Bolt12SemanticError>
 	where
-		R::Target: Router,
 		F: Fn(u64, u32) -> Result<(PaymentHash, PaymentSecret), Bolt12SemanticError>,
 	{
 		let relative_expiry = DEFAULT_RELATIVE_EXPIRY.as_secs() as u32;
@@ -1020,12 +1009,11 @@ where
 	/// Returns a [`Bolt12SemanticError`] if:
 	/// - Valid blinded payment paths could not be generated for the [`Bolt12Invoice`].
 	/// - The [`InvoiceBuilder`] could not be created from the [`InvoiceRequest`].
-	pub fn create_invoice_builder_from_invoice_request_without_keys<'a, R: Deref, F>(
+	pub fn create_invoice_builder_from_invoice_request_without_keys<'a, R: Router, F>(
 		&self, router: &R, invoice_request: &'a VerifiedInvoiceRequest<ExplicitSigningPubkey>,
 		usable_channels: Vec<ChannelDetails>, get_payment_info: F,
 	) -> Result<(InvoiceBuilder<'a, ExplicitSigningPubkey>, MessageContext), Bolt12SemanticError>
 	where
-		R::Target: Router,
 		F: Fn(u64, u32) -> Result<(PaymentHash, PaymentSecret), Bolt12SemanticError>,
 	{
 		let relative_expiry = DEFAULT_RELATIVE_EXPIRY.as_secs() as u32;
@@ -1372,13 +1360,10 @@ where
 	/// the cache can self-regulate the number of messages sent out.
 	///
 	/// Errors if we failed to create blinded reply paths when sending an [`OfferPathsRequest`] message.
-	pub fn check_refresh_async_receive_offer_cache<R: Deref>(
+	pub fn check_refresh_async_receive_offer_cache<R: Router>(
 		&self, peers: Vec<MessageForwardNode>, usable_channels: Vec<ChannelDetails>, router: R,
 		timer_tick_occurred: bool,
-	) -> Result<(), ()>
-	where
-		R::Target: Router,
-	{
+	) -> Result<(), ()> {
 		// Terminate early if this node does not intend to receive async payments.
 		{
 			let cache = self.async_receive_offer_cache.lock().unwrap();
@@ -1447,11 +1432,9 @@ where
 
 	/// Enqueue onion messages that will used to request invoice refresh from the static invoice
 	/// server, based on the offers provided by the cache.
-	fn check_refresh_static_invoices<R: Deref>(
+	fn check_refresh_static_invoices<R: Router>(
 		&self, peers: Vec<MessageForwardNode>, usable_channels: Vec<ChannelDetails>, router: R,
-	) where
-		R::Target: Router,
-	{
+	) {
 		let mut serve_static_invoice_msgs = Vec::new();
 		{
 			let duration_since_epoch = self.duration_since_epoch();
@@ -1464,7 +1447,7 @@ where
 					offer_nonce,
 					peers.clone(),
 					usable_channels.clone(),
-					&*router,
+					&router,
 				) {
 					Ok((invoice, path)) => (invoice, path),
 					Err(()) => continue,
@@ -1572,14 +1555,11 @@ where
 	///
 	/// Returns `None` if we have enough offers cached already, verification of `message` fails, or we
 	/// fail to create blinded paths.
-	pub fn handle_offer_paths<ES: EntropySource, R: Deref>(
+	pub fn handle_offer_paths<ES: EntropySource, R: Router>(
 		&self, message: OfferPaths, context: AsyncPaymentsContext, responder: Responder,
 		peers: Vec<MessageForwardNode>, usable_channels: Vec<ChannelDetails>, entropy: ES,
 		router: R,
-	) -> Option<(ServeStaticInvoice, MessageContext)>
-	where
-		R::Target: Router,
-	{
+	) -> Option<(ServeStaticInvoice, MessageContext)> {
 		let duration_since_epoch = self.duration_since_epoch();
 		let invoice_slot = match context {
 			AsyncPaymentsContext::OfferPaths { invoice_slot, path_absolute_expiry } => {
@@ -1662,13 +1642,10 @@ where
 
 	/// Creates a [`StaticInvoice`] and a blinded path for the server to forward invoice requests from
 	/// payers to our node.
-	fn create_static_invoice_for_server<R: Deref>(
+	fn create_static_invoice_for_server<R: Router>(
 		&self, offer: &Offer, offer_nonce: Nonce, peers: Vec<MessageForwardNode>,
 		usable_channels: Vec<ChannelDetails>, router: R,
-	) -> Result<(StaticInvoice, BlindedMessagePath), ()>
-	where
-		R::Target: Router,
-	{
+	) -> Result<(StaticInvoice, BlindedMessagePath), ()> {
 		let expanded_key = &self.inbound_payment_key;
 		let duration_since_epoch = self.duration_since_epoch();
 		let secp_ctx = &self.secp_ctx;

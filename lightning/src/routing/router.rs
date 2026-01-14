@@ -292,6 +292,45 @@ pub trait Router {
 	) -> Result<Vec<BlindedPaymentPath>, ()>;
 }
 
+impl<T: Router + ?Sized, R: Deref<Target = T>> Router for R {
+	fn find_route(
+		&self, payer: &PublicKey, route_params: &RouteParameters,
+		first_hops: Option<&[&ChannelDetails]>, inflight_htlcs: InFlightHtlcs,
+	) -> Result<Route, &'static str> {
+		self.deref().find_route(payer, route_params, first_hops, inflight_htlcs)
+	}
+
+	fn find_route_with_id(
+		&self, payer: &PublicKey, route_params: &RouteParameters,
+		first_hops: Option<&[&ChannelDetails]>, inflight_htlcs: InFlightHtlcs,
+		payment_hash: PaymentHash, payment_id: PaymentId,
+	) -> Result<Route, &'static str> {
+		self.deref().find_route_with_id(
+			payer,
+			route_params,
+			first_hops,
+			inflight_htlcs,
+			payment_hash,
+			payment_id,
+		)
+	}
+
+	fn create_blinded_payment_paths<S: secp256k1::Signing + secp256k1::Verification>(
+		&self, recipient: PublicKey, local_node_receive_key: ReceiveAuthKey,
+		first_hops: Vec<ChannelDetails>, tlvs: ReceiveTlvs, amount_msats: Option<u64>,
+		secp_ctx: &Secp256k1<S>,
+	) -> Result<Vec<BlindedPaymentPath>, ()> {
+		self.deref().create_blinded_payment_paths(
+			recipient,
+			local_node_receive_key,
+			first_hops,
+			tlvs,
+			amount_msats,
+			secp_ctx,
+		)
+	}
+}
+
 /// [`ScoreLookUp`] implementation that factors in in-flight HTLC liquidity.
 ///
 /// Useful for custom [`Router`] implementations to wrap their [`ScoreLookUp`] on-the-fly when calling
