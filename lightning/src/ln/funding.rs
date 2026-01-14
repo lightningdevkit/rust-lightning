@@ -226,6 +226,11 @@ impl FundingTxInput {
 		self.utxo.outpoint
 	}
 
+	/// The unspent output.
+	pub fn output(&self) -> &TxOut {
+		&self.utxo.output
+	}
+
 	/// The sequence number to use in the [`TxIn`].
 	///
 	/// [`TxIn`]: bitcoin::TxIn
@@ -240,8 +245,13 @@ impl FundingTxInput {
 		self.utxo.sequence = sequence;
 	}
 
-	/// Converts the [`FundingTxInput`] into a [`Utxo`] for coin selection.
+	/// Converts the [`FundingTxInput`] into a [`Utxo`].
 	pub fn into_utxo(self) -> Utxo {
 		self.utxo
+	}
+
+	/// Converts the [`FundingTxInput`] into a [`TxOut`].
+	pub fn into_output(self) -> TxOut {
+		self.utxo.output
 	}
 }

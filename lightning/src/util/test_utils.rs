@@ -2237,13 +2237,13 @@ impl TestWalletSource {
 	) -> Result<Transaction, bitcoin::sighash::P2wpkhError> {
 		let utxos = self.utxos.lock().unwrap();
 		for i in 0..tx.input.len() {
-			if let Some(ConfirmedUtxo { utxo, .. }) =
+			if let Some(utxo) =
 				utxos.iter().find(|utxo| utxo.outpoint() == tx.input[i].previous_output)
 			{
 				let sighash = SighashCache::new(&tx).p2wpkh_signature_hash(
 					i,
-					&utxo.output.script_pubkey,
-					utxo.output.value,
+					&utxo.output().script_pubkey,
+					utxo.output().value,
 					EcdsaSighashType::All,
 				)?;
 				#[cfg(not(feature = "grind_signatures"))]
@@ -2268,7 +2268,13 @@ impl TestWalletSource {
 
 impl WalletSourceSync for TestWalletSource {
 	fn list_confirmed_utxos(&self) -> Result<Vec<Utxo>, ()> {
-		Ok(self.utxos.lock().unwrap().iter().map(|ConfirmedUtxo { utxo, .. }| utxo.clone()).collect())
+		Ok(self
+			.utxos
+			.lock()
+			.unwrap()
+			.iter()
+			.map(|ConfirmedUtxo { utxo, .. }| utxo.clone())
+			.collect())
 	}
 
 	fn get_prevtx(&self, utxo: &Utxo) -> Result<Transaction, ()> {

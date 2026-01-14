@@ -876,15 +876,15 @@ where
 			// add witness_utxo to anchor input
 			anchor_psbt.inputs[0].witness_utxo = Some(anchor_descriptor.previous_utxo());
 			// add witness_utxo to remaining inputs
-			for (idx, ConfirmedUtxo { utxo, .. }) in coin_selection.confirmed_utxos.into_iter().enumerate() {
+			for (idx, utxo) in coin_selection.confirmed_utxos.into_iter().enumerate() {
 				// add 1 to skip the anchor input
 				let index = idx + 1;
 				debug_assert_eq!(
 					anchor_psbt.unsigned_tx.input[index].previous_output,
-					utxo.outpoint
+					utxo.outpoint()
 				);
-				if utxo.output.script_pubkey.is_witness_program() {
-					anchor_psbt.inputs[index].witness_utxo = Some(utxo.output);
+				if utxo.output().script_pubkey.is_witness_program() {
+					anchor_psbt.inputs[index].witness_utxo = Some(utxo.into_output());
 				}
 			}
 
@@ -1138,12 +1138,15 @@ where
 			}
 
 			// add witness_utxo to remaining inputs
-			for (idx, ConfirmedUtxo { utxo, .. }) in coin_selection.confirmed_utxos.into_iter().enumerate() {
+			for (idx, utxo) in coin_selection.confirmed_utxos.into_iter().enumerate() {
 				// offset to skip the htlc inputs
 				let index = idx + selected_htlcs.len();
-				debug_assert_eq!(htlc_psbt.unsigned_tx.input[index].previous_output, utxo.outpoint);
-				if utxo.output.script_pubkey.is_witness_program() {
-					htlc_psbt.inputs[index].witness_utxo = Some(utxo.output);
+				debug_assert_eq!(
+					htlc_psbt.unsigned_tx.input[index].previous_output,
+					utxo.outpoint()
+				);
+				if utxo.output().script_pubkey.is_witness_program() {
+					htlc_psbt.inputs[index].witness_utxo = Some(utxo.into_output());
 				}
 			}
 
@@ -1353,10 +1356,7 @@ mod tests {
 			version: Version::TWO,
 			lock_time: LockTime::ZERO,
 			input: vec![],
-			output: vec![TxOut {
-				value: Amount::from_sat(200),
-				script_pubkey: ScriptBuf::new()
-			}],
+			output: vec![TxOut { value: Amount::from_sat(200), script_pubkey: ScriptBuf::new() }],
 		};
 
 		let broadcaster = TestBroadcaster::new(Network::Testnet);
