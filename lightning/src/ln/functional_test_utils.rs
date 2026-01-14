@@ -738,7 +738,7 @@ pub trait NodeHolder {
 		<Self::CM as AChannelManager>::NodeSigner,
 		<Self::CM as AChannelManager>::SP,
 		<Self::CM as AChannelManager>::FeeEstimator,
-		<Self::CM as AChannelManager>::R,
+		<Self::CM as AChannelManager>::Router,
 		<Self::CM as AChannelManager>::MR,
 		<Self::CM as AChannelManager>::L,
 	>;
@@ -755,7 +755,7 @@ impl<H: NodeHolder> NodeHolder for &H {
 		<Self::CM as AChannelManager>::NodeSigner,
 		<Self::CM as AChannelManager>::SP,
 		<Self::CM as AChannelManager>::FeeEstimator,
-		<Self::CM as AChannelManager>::R,
+		<Self::CM as AChannelManager>::Router,
 		<Self::CM as AChannelManager>::MR,
 		<Self::CM as AChannelManager>::L,
 	> {
