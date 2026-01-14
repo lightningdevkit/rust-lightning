@@ -612,6 +612,10 @@ impl<'a, 'b, 'c> Node<'a, 'b, 'c> {
 		self.blocks.lock().unwrap()[height as usize].0.header
 	}
 
+	pub fn provide_funding_utxos(&self, utxos: usize, amount: Amount) -> Transaction {
+		provide_anchor_utxo_reserves(core::slice::from_ref(self), utxos, amount)
+	}
+
 	/// Executes `enable_channel_signer_op` for every single signer operation for this channel.
 	#[cfg(test)]
 	pub fn enable_all_channel_signer_ops(&self, peer_id: &PublicKey, chan_id: &ChannelId) {

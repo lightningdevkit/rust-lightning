@@ -2232,6 +2232,10 @@ impl TestWalletSource {
 		self.utxos.lock().unwrap().clear();
 	}
 
+	pub fn utxos(&self) -> Vec<ConfirmedUtxo> {
+		self.utxos.lock().unwrap().clone()
+	}
+
 	pub fn sign_tx(
 		&self, mut tx: Transaction,
 	) -> Result<Transaction, bitcoin::sighash::P2wpkhError> {

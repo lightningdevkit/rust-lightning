@@ -15758,7 +15758,6 @@ mod tests {
 	};
 	use crate::ln::channel_keys::{RevocationBasepoint, RevocationKey};
 	use crate::ln::channelmanager::{self, HTLCSource, PaymentId};
-	use crate::ln::funding::FundingTxInput;
 	use crate::ln::msgs;
 	use crate::ln::msgs::{ChannelUpdate, UnsignedChannelUpdate, MAX_VALUE_MSAT};
 	use crate::ln::onion_utils::{AttributionData, LocalHTLCFailureReason};
@@ -15790,7 +15789,7 @@ mod tests {
 	use bitcoin::secp256k1::{ecdsa::Signature, Secp256k1};
 	use bitcoin::secp256k1::{PublicKey, SecretKey};
 	use bitcoin::transaction::{Transaction, TxOut, Version};
-	use bitcoin::{ScriptBuf, WPubkeyHash, WitnessProgram, WitnessVersion};
+	use bitcoin::{WitnessProgram, WitnessVersion};
 	use std::cmp;
 
 	#[test]
