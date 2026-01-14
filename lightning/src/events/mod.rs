@@ -1836,7 +1836,7 @@ pub enum Event {
 	///
 	/// # Failure Behavior and Persistence
 	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
-	/// returning `Err(ReplayEvent ())`), but will only be regenerated as needed after restarts.
+	/// returning `Err(ReplayEvent ())`) and will be persisted across restarts.
 	///
 	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 	/// [`ChannelManager::funding_transaction_signed`]: crate::ln::channelmanager::ChannelManager::funding_transaction_signed
@@ -2305,10 +2305,19 @@ impl Writeable for Event {
 				47u8.write(writer)?;
 				// Never write StaticInvoiceRequested events as buffered onion messages aren't serialized.
 			},
-			&Event::FundingTransactionReadyForSigning { .. } => {
-				49u8.write(writer)?;
-				// We never write out FundingTransactionReadyForSigning events as they will be regenerated when
-				// necessary.
+			&Event::FundingTransactionReadyForSigning {
+				ref channel_id,
+				ref counterparty_node_id,
+				ref user_channel_id,
+				ref unsigned_transaction,
+			} => {
+				48u8.write(writer)?;
+				write_tlv_fields!(writer, {
+					(1, channel_id, required),
+					(3, counterparty_node_id, required),
+					(5, user_channel_id, required),
+					(7, unsigned_transaction, required),
+				});
 			},
 			&Event::SplicePending {
 				ref channel_id,
@@ -2931,8 +2940,24 @@ impl MaybeReadable for Event {
 			45u8 => Ok(None),
 			// Note that we do not write a length-prefixed TLV for StaticInvoiceRequested events.
 			47u8 => Ok(None),
-			// Note that we do not write a length-prefixed TLV for FundingTransactionReadyForSigning events.
-			49u8 => Ok(None),
+			48u8 => {
+				let mut f = || {
+					_init_and_read_len_prefixed_tlv_fields!(reader, {
+						(1, channel_id, required),
+						(3, counterparty_node_id, required),
+						(5, user_channel_id, required),
+						(7, unsigned_transaction, required),
+					});
+
+					Ok(Some(Event::FundingTransactionReadyForSigning {
+						channel_id: channel_id.0.unwrap(),
+						user_channel_id: user_channel_id.0.unwrap(),
+						counterparty_node_id: counterparty_node_id.0.unwrap(),
+						unsigned_transaction: unsigned_transaction.0.unwrap(),
+					}))
+				};
+				f()
+			},
 			50u8 => {
 				let mut f = || {
 					_init_and_read_len_prefixed_tlv_fields!(reader, {
