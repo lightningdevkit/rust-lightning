@@ -487,16 +487,15 @@ pub(super) fn create_recv_pending_htlc_info(
 ///
 /// [`Event::PaymentClaimable`]: crate::events::Event::PaymentClaimable
 #[rustfmt::skip]
-pub fn peel_payment_onion<NS: Deref, L: Deref, T: secp256k1::Verification>(
+pub fn peel_payment_onion<NS: NodeSigner, L: Deref, T: secp256k1::Verification>(
 	msg: &msgs::UpdateAddHTLC, node_signer: NS, logger: L, secp_ctx: &Secp256k1<T>,
 	cur_height: u32, allow_skimmed_fees: bool,
 ) -> Result<PendingHTLCInfo, InboundHTLCErr>
 where
-	NS::Target: NodeSigner,
 	L::Target: Logger,
 {
 	let (hop, next_packet_details_opt) =
-		decode_incoming_update_add_htlc_onion(msg, &*node_signer, &*logger, secp_ctx
+		decode_incoming_update_add_htlc_onion(msg, &node_signer, &*logger, secp_ctx
 	).map_err(|(msg, failure_reason)| {
 		let (reason, err_data) = match msg {
 			HTLCFailureMsg::Malformed(_) => (failure_reason, Vec::new()),
@@ -551,7 +550,7 @@ where
 				next_hop_hmac,
 				new_packet_bytes,
 				next_packet_details,
-				&*node_signer,
+				&node_signer,
 				secp_ctx
 			);
 
@@ -586,11 +585,10 @@ pub(super) struct NextPacketDetails {
 }
 
 #[rustfmt::skip]
-pub(super) fn decode_incoming_update_add_htlc_onion<NS: Deref, L: Deref, T: secp256k1::Verification>(
+pub(super) fn decode_incoming_update_add_htlc_onion<NS: NodeSigner, L: Deref, T: secp256k1::Verification>(
 	msg: &msgs::UpdateAddHTLC, node_signer: NS, logger: L, secp_ctx: &Secp256k1<T>,
 ) -> Result<(onion_utils::Hop, Option<NextPacketDetails>), (HTLCFailureMsg, LocalHTLCFailureReason)>
 where
-	NS::Target: NodeSigner,
 	L::Target: Logger,
 {
 	let encode_malformed_error = |message: &str, failure_reason: LocalHTLCFailureReason| {

@@ -885,6 +885,13 @@ impl<T: EntropySource + ?Sized, E: Deref<Target = T>> EntropySource for E {
 }
 
 /// A trait that can handle cryptographic operations at the scope level of a node.
+///
+/// Instantiations of this trait should generally be shared by reference across the lightning
+/// node's components, e.g. the [`NodeSigner`]s provided to [`PeerManager`] and [`ChannelManager`],
+/// etc. MUST all return the same value for a given input.
+///
+/// [`PeerManager`]: crate::ln::peer_handler::PeerManager
+/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 pub trait NodeSigner {
 	/// Get the [`ExpandedKey`] which provides cryptographic material for various Lightning Network operations.
 	///
@@ -996,6 +1003,42 @@ pub trait NodeSigner {
 	/// An `Err` can be returned to signal that the signer is unavailable / cannot produce a valid
 	/// signature.
 	fn sign_message(&self, msg: &[u8]) -> Result<String, ()>;
+}
+
+impl<T: NodeSigner + ?Sized, N: Deref<Target = T>> NodeSigner for N {
+	fn get_expanded_key(&self) -> ExpandedKey {
+		self.deref().get_expanded_key()
+	}
+	fn get_peer_storage_key(&self) -> PeerStorageKey {
+		self.deref().get_peer_storage_key()
+	}
+	fn get_receive_auth_key(&self) -> ReceiveAuthKey {
+		self.deref().get_receive_auth_key()
+	}
+	fn get_node_id(&self, recipient: Recipient) -> Result<PublicKey, ()> {
+		self.deref().get_node_id(recipient)
+	}
+	fn ecdh(
+		&self, recipient: Recipient, other_key: &PublicKey, tweak: Option<&Scalar>,
+	) -> Result<SharedSecret, ()> {
+		self.deref().ecdh(recipient, other_key, tweak)
+	}
+	fn sign_invoice(
+		&self, invoice: &RawBolt11Invoice, recipient: Recipient,
+	) -> Result<RecoverableSignature, ()> {
+		self.deref().sign_invoice(invoice, recipient)
+	}
+	fn sign_bolt12_invoice(
+		&self, invoice: &UnsignedBolt12Invoice,
+	) -> Result<schnorr::Signature, ()> {
+		self.deref().sign_bolt12_invoice(invoice)
+	}
+	fn sign_gossip_message(&self, msg: UnsignedGossipMessage) -> Result<Signature, ()> {
+		self.deref().sign_gossip_message(msg)
+	}
+	fn sign_message(&self, msg: &[u8]) -> Result<String, ()> {
+		self.deref().sign_message(msg)
+	}
 }
 
 /// A trait that describes a wallet capable of creating a spending [`Transaction`] from a set of
