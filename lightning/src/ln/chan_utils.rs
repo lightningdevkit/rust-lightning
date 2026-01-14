@@ -320,12 +320,9 @@ pub(crate) fn htlc_tx_fees_sat(feerate_per_kw: u32, num_accepted_htlcs: usize, n
 
 /// Returns a fee estimate for the commitment transaction that we would ideally like to set,
 /// depending on channel type.
-pub(super) fn selected_commitment_sat_per_1000_weight<F: Deref>(
+pub(super) fn selected_commitment_sat_per_1000_weight<F: FeeEstimator>(
 	fee_estimator: &LowerBoundedFeeEstimator<F>, channel_type: &ChannelTypeFeatures,
-) -> u32
-where
-	F::Target: FeeEstimator,
-{
+) -> u32 {
 	if channel_type.supports_anchor_zero_fee_commitments() {
 		0
 	} else if channel_type.supports_anchors_zero_fee_htlc_tx() {

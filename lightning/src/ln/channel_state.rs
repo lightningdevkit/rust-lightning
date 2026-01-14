@@ -524,13 +524,12 @@ impl ChannelDetails {
 		}
 	}
 
-	pub(super) fn from_channel<SP: Deref, F: Deref>(
+	pub(super) fn from_channel<SP: Deref, F: FeeEstimator>(
 		channel: &Channel<SP>, best_block_height: u32, latest_features: InitFeatures,
 		fee_estimator: &LowerBoundedFeeEstimator<F>,
 	) -> Self
 	where
 		SP::Target: SignerProvider,
-		F::Target: FeeEstimator,
 	{
 		let context = channel.context();
 		let funding = channel.funding();

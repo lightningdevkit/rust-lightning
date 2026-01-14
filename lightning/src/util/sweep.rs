@@ -340,14 +340,13 @@ impl_writeable_tlv_based_enum!(OutputSpendStatus,
 pub struct OutputSweeper<
 	B: BroadcasterInterface,
 	D: Deref,
-	E: Deref,
+	E: FeeEstimator,
 	F: Deref,
 	K: Deref,
 	L: Deref,
 	O: Deref,
 > where
 	D::Target: ChangeDestinationSource,
-	E::Target: FeeEstimator,
 	F::Target: Filter,
 	K::Target: KVStore,
 	L::Target: Logger,
@@ -364,11 +363,17 @@ pub struct OutputSweeper<
 	logger: L,
 }
 
-impl<B: BroadcasterInterface, D: Deref, E: Deref, F: Deref, K: Deref, L: Deref, O: Deref>
-	OutputSweeper<B, D, E, F, K, L, O>
+impl<
+		B: BroadcasterInterface,
+		D: Deref,
+		E: FeeEstimator,
+		F: Deref,
+		K: Deref,
+		L: Deref,
+		O: Deref,
+	> OutputSweeper<B, D, E, F, K, L, O>
 where
 	D::Target: ChangeDestinationSource,
-	E::Target: FeeEstimator,
 	F::Target: Filter,
 	K::Target: KVStore,
 	L::Target: Logger,
@@ -715,11 +720,17 @@ where
 	}
 }
 
-impl<B: BroadcasterInterface, D: Deref, E: Deref, F: Deref, K: Deref, L: Deref, O: Deref> Listen
-	for OutputSweeper<B, D, E, F, K, L, O>
+impl<
+		B: BroadcasterInterface,
+		D: Deref,
+		E: FeeEstimator,
+		F: Deref,
+		K: Deref,
+		L: Deref,
+		O: Deref,
+	> Listen for OutputSweeper<B, D, E, F, K, L, O>
 where
 	D::Target: ChangeDestinationSource,
-	E::Target: FeeEstimator,
 	F::Target: Filter + Sync + Send,
 	K::Target: KVStore,
 	L::Target: Logger,
@@ -755,11 +766,17 @@ where
 	}
 }
 
-impl<B: BroadcasterInterface, D: Deref, E: Deref, F: Deref, K: Deref, L: Deref, O: Deref> Confirm
-	for OutputSweeper<B, D, E, F, K, L, O>
+impl<
+		B: BroadcasterInterface,
+		D: Deref,
+		E: FeeEstimator,
+		F: Deref,
+		K: Deref,
+		L: Deref,
+		O: Deref,
+	> Confirm for OutputSweeper<B, D, E, F, K, L, O>
 where
 	D::Target: ChangeDestinationSource,
-	E::Target: FeeEstimator,
 	F::Target: Filter + Sync + Send,
 	K::Target: KVStore,
 	L::Target: Logger,
@@ -851,11 +868,17 @@ pub enum SpendingDelay {
 	},
 }
 
-impl<B: BroadcasterInterface, D: Deref, E: Deref, F: Deref, K: Deref, L: Deref, O: Deref>
-	ReadableArgs<(B, E, Option<F>, O, D, K, L)> for (BestBlock, OutputSweeper<B, D, E, F, K, L, O>)
+impl<
+		B: BroadcasterInterface,
+		D: Deref,
+		E: FeeEstimator,
+		F: Deref,
+		K: Deref,
+		L: Deref,
+		O: Deref,
+	> ReadableArgs<(B, E, Option<F>, O, D, K, L)> for (BestBlock, OutputSweeper<B, D, E, F, K, L, O>)
 where
 	D::Target: ChangeDestinationSource,
-	E::Target: FeeEstimator,
 	F::Target: Filter + Sync + Send,
 	K::Target: KVStore,
 	L::Target: Logger,
@@ -923,14 +946,13 @@ where
 pub struct OutputSweeperSync<
 	B: BroadcasterInterface,
 	D: Deref,
-	E: Deref,
+	E: FeeEstimator,
 	F: Deref,
 	K: Deref,
 	L: Deref,
 	O: Deref,
 > where
 	D::Target: ChangeDestinationSourceSync,
-	E::Target: FeeEstimator,
 	F::Target: Filter,
 	K::Target: KVStoreSync,
 	L::Target: Logger,
@@ -940,11 +962,17 @@ pub struct OutputSweeperSync<
 		OutputSweeper<B, ChangeDestinationSourceSyncWrapper<D>, E, F, KVStoreSyncWrapper<K>, L, O>,
 }
 
-impl<B: BroadcasterInterface, D: Deref, E: Deref, F: Deref, K: Deref, L: Deref, O: Deref>
-	OutputSweeperSync<B, D, E, F, K, L, O>
+impl<
+		B: BroadcasterInterface,
+		D: Deref,
+		E: FeeEstimator,
+		F: Deref,
+		K: Deref,
+		L: Deref,
+		O: Deref,
+	> OutputSweeperSync<B, D, E, F, K, L, O>
 where
 	D::Target: ChangeDestinationSourceSync,
-	E::Target: FeeEstimator,
 	F::Target: Filter,
 	K::Target: KVStoreSync,
 	L::Target: Logger,
@@ -1059,11 +1087,17 @@ where
 	}
 }
 
-impl<B: BroadcasterInterface, D: Deref, E: Deref, F: Deref, K: Deref, L: Deref, O: Deref> Listen
-	for OutputSweeperSync<B, D, E, F, K, L, O>
+impl<
+		B: BroadcasterInterface,
+		D: Deref,
+		E: FeeEstimator,
+		F: Deref,
+		K: Deref,
+		L: Deref,
+		O: Deref,
+	> Listen for OutputSweeperSync<B, D, E, F, K, L, O>
 where
 	D::Target: ChangeDestinationSourceSync,
-	E::Target: FeeEstimator,
 	F::Target: Filter + Sync + Send,
 	K::Target: KVStoreSync,
 	L::Target: Logger,
@@ -1080,11 +1114,17 @@ where
 	}
 }
 
-impl<B: BroadcasterInterface, D: Deref, E: Deref, F: Deref, K: Deref, L: Deref, O: Deref> Confirm
-	for OutputSweeperSync<B, D, E, F, K, L, O>
+impl<
+		B: BroadcasterInterface,
+		D: Deref,
+		E: FeeEstimator,
+		F: Deref,
+		K: Deref,
+		L: Deref,
+		O: Deref,
+	> Confirm for OutputSweeperSync<B, D, E, F, K, L, O>
 where
 	D::Target: ChangeDestinationSourceSync,
-	E::Target: FeeEstimator,
 	F::Target: Filter + Sync + Send,
 	K::Target: KVStoreSync,
 	L::Target: Logger,
@@ -1109,11 +1149,18 @@ where
 	}
 }
 
-impl<B: BroadcasterInterface, D: Deref, E: Deref, F: Deref, K: Deref, L: Deref, O: Deref>
-	ReadableArgs<(B, E, Option<F>, O, D, K, L)> for (BestBlock, OutputSweeperSync<B, D, E, F, K, L, O>)
+impl<
+		B: BroadcasterInterface,
+		D: Deref,
+		E: FeeEstimator,
+		F: Deref,
+		K: Deref,
+		L: Deref,
+		O: Deref,
+	> ReadableArgs<(B, E, Option<F>, O, D, K, L)>
+	for (BestBlock, OutputSweeperSync<B, D, E, F, K, L, O>)
 where
 	D::Target: ChangeDestinationSourceSync,
-	E::Target: FeeEstimator,
 	F::Target: Filter + Sync + Send,
 	K::Target: KVStoreSync,
 	L::Target: Logger,
