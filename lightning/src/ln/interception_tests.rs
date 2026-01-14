@@ -30,7 +30,38 @@ enum ForwardingMods {
 	None,
 }
 
-fn do_test_htlc_interception_flags(flags_bitmask: u8, flag_bit: u8, modification: ForwardingMods) {
+#[derive(Clone, Copy, Debug)]
+enum Flag {
+	InterceptSCIDs = (HTLCInterceptionFlags::ToInterceptSCIDs as usize).trailing_zeros() as isize,
+	OfflinePrivChans =
+		(HTLCInterceptionFlags::ToOfflinePrivateChannels as usize).trailing_zeros() as isize,
+	OnlinePrivChans =
+		(HTLCInterceptionFlags::ToOnlinePrivateChannels as usize).trailing_zeros() as isize,
+	PublicChans = (HTLCInterceptionFlags::ToPublicChannels as usize).trailing_zeros() as isize,
+	UnknownSCIDs = (HTLCInterceptionFlags::ToUnknownSCIDs as usize).trailing_zeros() as isize,
+}
+
+impl Flag {
+	fn all() -> [Flag; 5] {
+		use Flag::*;
+		let all = [InterceptSCIDs, OfflinePrivChans, OnlinePrivChans, PublicChans, UnknownSCIDs];
+
+		// Make sure that our list of flags is actually all HTLCs
+		let mut all_flags = 0;
+		for flag in all {
+			all_flags |= flag.mask();
+		}
+		assert_eq!(all_flags, HTLCInterceptionFlags::AllValidHTLCs as u8);
+
+		all
+	}
+
+	fn mask(&self) -> u8 {
+		1 << *self as usize
+	}
+}
+
+fn do_test_htlc_interception_flags(flags_bitmask: u8, flag: Flag, modification: ForwardingMods) {
 	// Tests that the `htlc_interception_flags` bitmask given by `flags_bitmask` correctly
 	// intercepts (or doesn't intercept) an HTLC which is of type `flag_bit`
 	let chanmon_cfgs = create_chanmon_cfgs(3);
@@ -53,32 +84,31 @@ fn do_test_htlc_interception_flags(flags_bitmask: u8, flag_bit: u8, modification
 
 	// First open the right type of channel (and get it in the right state) for the bit we're
 	// testing.
-	let (target_scid, target_chan_id) = match flag_bit {
-		1 | 2 => {
+	let (target_scid, target_chan_id) = match flag {
+		Flag::OfflinePrivChans | Flag::OnlinePrivChans => {
 			create_unannounced_chan_between_nodes_with_value(&nodes, 1, 2, 100000, 0);
 			let chan_id = nodes[2].node.list_channels()[0].channel_id;
 			let scid = nodes[2].node.list_channels()[0].short_channel_id.unwrap();
-			if (1 << flag_bit) == HTLCInterceptionFlags::ToOfflinePrivateChannels as u8 {
+			if flag.mask() == HTLCInterceptionFlags::ToOfflinePrivateChannels as u8 {
 				nodes[1].node.peer_disconnected(node_2_id);
 				nodes[2].node.peer_disconnected(node_1_id);
 			} else {
-				assert_eq!(1 << flag_bit, HTLCInterceptionFlags::ToOnlinePrivateChannels as u8);
+				assert_eq!(flag.mask(), HTLCInterceptionFlags::ToOnlinePrivateChannels as u8);
 			}
 			(scid, chan_id)
 		},
-		0 | 3 | 4 => {
+		Flag::InterceptSCIDs | Flag::PublicChans | Flag::UnknownSCIDs => {
 			let (chan_upd, _, chan_id, _) = create_announced_chan_between_nodes(&nodes, 1, 2);
-			if (1 << flag_bit) == HTLCInterceptionFlags::ToInterceptSCIDs as u8 {
+			if flag.mask() == HTLCInterceptionFlags::ToInterceptSCIDs as u8 {
 				(nodes[1].node.get_intercept_scid(), chan_id)
-			} else if (1 << flag_bit) == HTLCInterceptionFlags::ToPublicChannels as u8 {
+			} else if flag.mask() == HTLCInterceptionFlags::ToPublicChannels as u8 {
 				(chan_upd.contents.short_channel_id, chan_id)
-			} else if (1 << flag_bit) == HTLCInterceptionFlags::ToUnknownSCIDs as u8 {
+			} else if flag.mask() == HTLCInterceptionFlags::ToUnknownSCIDs as u8 {
 				(42424242, chan_id)
 			} else {
 				panic!();
 			}
 		},
-		_ => panic!("Invalid flag_bit: {}", flag_bit),
 	};
 
 	// Start every node on the same block height to ensure we don't hit spurious CLTV issues
@@ -95,7 +125,7 @@ fn do_test_htlc_interception_flags(flags_bitmask: u8, flag_bit: u8, modification
 		get_route_and_payment_hash!(nodes[0], nodes[2], pay_params, amt_msat);
 	route.paths[0].hops[1].short_channel_id = target_scid;
 
-	let interception_bit_match = (flags_bitmask & (1 << flag_bit)) != 0;
+	let interception_bit_match = (flags_bitmask & flag.mask()) != 0;
 	match modification {
 		ForwardingMods::FeeTooLow => {
 			assert!(
@@ -136,13 +166,13 @@ fn do_test_htlc_interception_flags(flags_bitmask: u8, flag_bit: u8, modification
 		if let Event::HTLCIntercepted { intercept_id: id, requested_next_hop_scid, .. } = &events[0]
 		{
 			assert_eq!(*requested_next_hop_scid, target_scid,
-				"Bitmask {flags_bitmask:#x}: Expected interception for bit {flag_bit} to target SCID {target_scid}");
+				"Bitmask {flags_bitmask:#x}: Expected interception for bit {flag:?} to target SCID {target_scid}");
 			intercept_id = *id;
 		} else {
 			panic!("{events:?}");
 		}
 
-		if (1 << flag_bit) == HTLCInterceptionFlags::ToOfflinePrivateChannels as u8 {
+		if flag.mask() == HTLCInterceptionFlags::ToOfflinePrivateChannels as u8 {
 			let mut reconnect_args = ReconnectArgs::new(&nodes[1], &nodes[2]);
 			reconnect_args.send_channel_ready = (true, true);
 			reconnect_nodes(reconnect_args);
@@ -165,8 +195,8 @@ fn do_test_htlc_interception_flags(flags_bitmask: u8, flag_bit: u8, modification
 	} else {
 		// If we were not set to intercept, check that the HTLC either failed or was
 		// automatically forwarded as appropriate.
-		match (modification, flag_bit) {
-			(ForwardingMods::None, 2 | 3) => {
+		match (modification, flag) {
+			(ForwardingMods::None, Flag::OnlinePrivChans | Flag::PublicChans) => {
 				check_added_monitors(&nodes[1], 1);
 
 				let forward_ev = SendEvent::from_node(&nodes[1]);
@@ -192,18 +222,18 @@ fn do_test_htlc_interception_flags(flags_bitmask: u8, flag_bit: u8, modification
 					ForwardingMods::None => None,
 				};
 				let (expected_failure_type, reason);
-				if (1 << flag_bit) == HTLCInterceptionFlags::ToOfflinePrivateChannels as u8 {
+				if flag.mask() == HTLCInterceptionFlags::ToOfflinePrivateChannels as u8 {
 					expected_failure_type = HTLCHandlingFailureType::Forward {
 						node_id: Some(node_2_id),
 						channel_id: target_chan_id,
 					};
 					reason = reason_from_mod.unwrap_or(LocalHTLCFailureReason::PeerOffline);
-				} else if (1 << flag_bit) == HTLCInterceptionFlags::ToInterceptSCIDs as u8 {
+				} else if flag.mask() == HTLCInterceptionFlags::ToInterceptSCIDs as u8 {
 					expected_failure_type = HTLCHandlingFailureType::InvalidForward {
 						requested_forward_scid: target_scid,
 					};
 					reason = reason_from_mod.unwrap_or(LocalHTLCFailureReason::UnknownNextPeer);
-				} else if (1 << flag_bit) == HTLCInterceptionFlags::ToUnknownSCIDs as u8 {
+				} else if flag.mask() == HTLCInterceptionFlags::ToUnknownSCIDs as u8 {
 					expected_failure_type = HTLCHandlingFailureType::InvalidForward {
 						requested_forward_scid: target_scid,
 					};
@@ -235,17 +265,14 @@ fn do_test_htlc_interception_flags(flags_bitmask: u8, flag_bit: u8, modification
 }
 
 const MAX_BITMASK: u8 = HTLCInterceptionFlags::AllValidHTLCs as u8;
-const MAX_FLAG: u8 = 4;
 
 #[test]
 fn test_htlc_interception_flags() {
 	// Test all 2^5 = 32 combinations of the HTLCInterceptionFlags bitmask
 	// For each combination, test 5 different HTLC forwards and verify correct interception behavior
-	assert_eq!((1 << MAX_FLAG + 1) - 1, MAX_BITMASK);
-
 	for flags_bitmask in 0..=MAX_BITMASK {
-		for flag_bit in 0..=MAX_FLAG {
-			do_test_htlc_interception_flags(flags_bitmask, flag_bit, ForwardingMods::None);
+		for flag in Flag::all() {
+			do_test_htlc_interception_flags(flags_bitmask, flag, ForwardingMods::None);
 		}
 	}
 }
@@ -254,16 +281,10 @@ fn test_htlc_interception_flags() {
 fn test_htlc_bad_for_chan_config() {
 	// Test that interception won't be done if an HTLC fails to meet the target channel's channel
 	// config.
-	let have_chan_flags = [
-		HTLCInterceptionFlags::ToOfflinePrivateChannels,
-		HTLCInterceptionFlags::ToOnlinePrivateChannels,
-		HTLCInterceptionFlags::ToPublicChannels,
-	];
+	let have_chan_flags = [Flag::OfflinePrivChans, Flag::OnlinePrivChans, Flag::PublicChans];
 	for flag in have_chan_flags {
-		assert_eq!((flag as u8).count_ones(), 1);
-		let bit = (flag as u8).trailing_zeros() as u8;
-		do_test_htlc_interception_flags(flag as u8, bit, ForwardingMods::FeeTooLow);
-		do_test_htlc_interception_flags(flag as u8, bit, ForwardingMods::CLTVBelowConfig);
+		do_test_htlc_interception_flags(flag.mask(), flag, ForwardingMods::FeeTooLow);
+		do_test_htlc_interception_flags(flag.mask(), flag, ForwardingMods::CLTVBelowConfig);
 	}
 }
 
@@ -271,7 +292,7 @@ fn test_htlc_bad_for_chan_config() {
 fn test_htlc_bad_no_chan() {
 	// Test that setting the CLTV below the hard-coded minimum fails whether we're intercepting for
 	// a channel or not.
-	for flag_bit in 0..=MAX_FLAG {
-		do_test_htlc_interception_flags(1 << flag_bit, flag_bit, ForwardingMods::CLTVBelowMin);
+	for flag in Flag::all() {
+		do_test_htlc_interception_flags(flag.mask(), flag, ForwardingMods::CLTVBelowMin);
 	}
 }
