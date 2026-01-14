@@ -13859,7 +13859,6 @@ where
 	pub fn get_and_clear_pending_events(&self) -> Vec<events::Event> {
 		// Commit any pending writes before returning events.
 		let _ = self.persist();
-		let _ = self.kv_store.commit();
 
 		let events = core::cell::RefCell::new(Vec::new());
 		let event_handler = |event: events::Event| Ok(events.borrow_mut().push(event));
@@ -14385,7 +14384,6 @@ where
 	fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> {
 		// Commit any pending writes before returning events.
 		let _ = self.persist();
-		let _ = self.kv_store.commit();
 
 		let events = RefCell::new(Vec::new());
 		PersistenceNotifierGuard::optionally_notify(self, || {
@@ -15024,6 +15022,266 @@ where
 		self.needs_persist_flag.swap(false, Ordering::AcqRel)
 	}
 
+	/// Serializes the [`ChannelManager`] to the given writer.
+	///
+	/// This method assumes that [`Self::total_consistency_lock`] is already held by the caller.
+	#[rustfmt::skip]
+	pub(crate) fn write_without_lock<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		write_ver_prefix!(writer, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
+
+		self.chain_hash.write(writer)?;
+		{
+			let best_block = self.best_block.read().unwrap();
+			best_block.height.write(writer)?;
+			best_block.block_hash.write(writer)?;
+		}
+
+		let per_peer_state = self.per_peer_state.write().unwrap();
+
+		let mut serializable_peer_count: u64 = 0;
+		{
+			let mut number_of_funded_channels = 0;
+			for (_, peer_state_mutex) in per_peer_state.iter() {
+				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+				let peer_state = &mut *peer_state_lock;
+				if !peer_state.ok_to_remove(false) {
+					serializable_peer_count += 1;
+				}
+
+				number_of_funded_channels += peer_state.channel_by_id
+					.values()
+					.filter_map(Channel::as_funded)
+					.filter(|chan| chan.context.can_resume_on_restart())
+					.count();
+			}
+
+			(number_of_funded_channels as u64).write(writer)?;
+
+			for (_, peer_state_mutex) in per_peer_state.iter() {
+				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+				let peer_state = &mut *peer_state_lock;
+				for channel in peer_state.channel_by_id
+					.values()
+					.filter_map(Channel::as_funded)
+					.filter(|channel| channel.context.can_resume_on_restart())
+				{
+					channel.write(writer)?;
+				}
+			}
+		}
+
+		{
+			let forward_htlcs = self.forward_htlcs.lock().unwrap();
+			(forward_htlcs.len() as u64).write(writer)?;
+			for (short_channel_id, pending_forwards) in forward_htlcs.iter() {
+				short_channel_id.write(writer)?;
+				(pending_forwards.len() as u64).write(writer)?;
+				for forward in pending_forwards {
+					forward.write(writer)?;
+				}
+			}
+		}
+
+		let mut decode_update_add_htlcs_opt = None;
+		let decode_update_add_htlcs = self.decode_update_add_htlcs.lock().unwrap();
+		if !decode_update_add_htlcs.is_empty() {
+			decode_update_add_htlcs_opt = Some(decode_update_add_htlcs);
+		}
+
+		let claimable_payments = self.claimable_payments.lock().unwrap();
+		let pending_outbound_payments = self.pending_outbound_payments.pending_outbound_payments.lock().unwrap();
+
+		let mut htlc_purposes: Vec<&events::PaymentPurpose> = Vec::new();
+		let mut htlc_onion_fields: Vec<&_> = Vec::new();
+		(claimable_payments.claimable_payments.len() as u64).write(writer)?;
+		for (payment_hash, payment) in claimable_payments.claimable_payments.iter() {
+			payment_hash.write(writer)?;
+			(payment.htlcs.len() as u64).write(writer)?;
+			for htlc in payment.htlcs.iter() {
+				htlc.write(writer)?;
+			}
+			htlc_purposes.push(&payment.purpose);
+			htlc_onion_fields.push(&payment.onion_fields);
+		}
+
+		let mut monitor_update_blocked_actions_per_peer = None;
+		let mut peer_states = Vec::new();
+		for (_, peer_state_mutex) in per_peer_state.iter() {
+			// Because we're holding the owning `per_peer_state` write lock here there's no chance
+			// of a lockorder violation deadlock - no other thread can be holding any
+			// per_peer_state lock at all.
+			peer_states.push(peer_state_mutex.unsafe_well_ordered_double_lock_self());
+		}
+
+		let mut peer_storage_dir: Vec<(&PublicKey, &Vec<u8>)> = Vec::new();
+
+		(serializable_peer_count).write(writer)?;
+		for ((peer_pubkey, _), peer_state) in per_peer_state.iter().zip(peer_states.iter()) {
+			// Peers which we have no channels to should be dropped once disconnected. As we
+			// disconnect all peers when shutting down and serializing the ChannelManager, we
+			// consider all peers as disconnected here. There's therefore no need write peers with
+			// no channels.
+			if !peer_state.ok_to_remove(false) {
+				peer_pubkey.write(writer)?;
+				peer_state.latest_features.write(writer)?;
+				peer_storage_dir.push((peer_pubkey, &peer_state.peer_storage));
+
+				if !peer_state.monitor_update_blocked_actions.is_empty() {
+					monitor_update_blocked_actions_per_peer
+						.get_or_insert_with(Vec::new)
+						.push((*peer_pubkey, &peer_state.monitor_update_blocked_actions));
+				}
+			}
+		}
+
+
+		// Since some FundingNegotiation variants are not persisted, any splice in such state must
+		// be failed upon reload. However, as the necessary information for the SpliceFailed event
+		// is not persisted, the event itself needs to be persisted even though it hasn't been
+		// emitted yet. These are removed after the events are written.
+		let mut events = self.pending_events.lock().unwrap();
+		let event_count = events.len();
+		for peer_state in peer_states.iter() {
+			for chan in peer_state.channel_by_id.values().filter_map(Channel::as_funded) {
+				if let Some(splice_funding_failed) = chan.maybe_splice_funding_failed() {
+					events.push_back((
+						events::Event::SpliceFailed {
+							channel_id: chan.context.channel_id(),
+							counterparty_node_id: chan.context.get_counterparty_node_id(),
+							user_channel_id: chan.context.get_user_id(),
+							abandoned_funding_txo: splice_funding_failed.funding_txo,
+							channel_type: splice_funding_failed.channel_type,
+							contributed_inputs: splice_funding_failed.contributed_inputs,
+							contributed_outputs: splice_funding_failed.contributed_outputs,
+						},
+						None,
+					));
+				}
+			}
+		}
+
+		// LDK versions prior to 0.0.115 don't support post-event actions, thus if there's no
+		// actions at all, skip writing the required TLV. Otherwise, pre-0.0.115 versions will
+		// refuse to read the new ChannelManager.
+		let events_not_backwards_compatible = events.iter().any(|(_, action)| action.is_some());
+		if events_not_backwards_compatible {
+			// If we're gonna write a even TLV that will overwrite our events anyway we might as
+			// well save the space and not write any events here.
+			0u64.write(writer)?;
+		} else {
+			(events.len() as u64).write(writer)?;
+			for (event, _) in events.iter() {
+				event.write(writer)?;
+			}
+		}
+
+		// LDK versions prior to 0.0.116 wrote the `pending_background_events`
+		// `MonitorUpdateRegeneratedOnStartup`s here, however there was never a reason to do so -
+		// the closing monitor updates were always effectively replayed on startup (either directly
+		// by calling `broadcast_latest_holder_commitment_txn` on a `ChannelMonitor` during
+		// deserialization or, in 0.0.115, by regenerating the monitor update itself).
+		0u64.write(writer)?;
+
+		// Prior to 0.0.111 we tracked node_announcement serials here, however that now happens in
+		// `PeerManager`, and thus we simply write the `highest_seen_timestamp` twice, which is
+		// likely to be identical.
+		(self.highest_seen_timestamp.load(Ordering::Acquire) as u32).write(writer)?;
+		(self.highest_seen_timestamp.load(Ordering::Acquire) as u32).write(writer)?;
+
+		// LDK versions prior to 0.0.104 wrote `pending_inbound_payments` here, with deprecated support
+		// for stateful inbound payments maintained until 0.0.116, after which no further inbound
+		// payments could have been written here.
+		(0 as u64).write(writer)?;
+
+		// For backwards compat, write the session privs and their total length.
+		let mut num_pending_outbounds_compat: u64 = 0;
+		for (_, outbound) in pending_outbound_payments.iter() {
+			if !outbound.is_fulfilled() && !outbound.abandoned() {
+				num_pending_outbounds_compat += outbound.remaining_parts() as u64;
+			}
+		}
+		num_pending_outbounds_compat.write(writer)?;
+		for (_, outbound) in pending_outbound_payments.iter() {
+			match outbound {
+				PendingOutboundPayment::Legacy { session_privs } |
+				PendingOutboundPayment::Retryable { session_privs, .. } => {
+					for session_priv in session_privs.iter() {
+						session_priv.write(writer)?;
+					}
+				}
+				PendingOutboundPayment::AwaitingInvoice { .. } => {},
+				PendingOutboundPayment::AwaitingOffer { .. } => {},
+				PendingOutboundPayment::InvoiceReceived { .. } => {},
+				PendingOutboundPayment::StaticInvoiceReceived { .. } => {},
+				PendingOutboundPayment::Fulfilled { .. } => {},
+				PendingOutboundPayment::Abandoned { .. } => {},
+			}
+		}
+
+		// Encode without retry info for 0.0.101 compatibility.
+		let mut pending_outbound_payments_no_retry: HashMap<PaymentId, HashSet<[u8; 32]>> = new_hash_map();
+		for (id, outbound) in pending_outbound_payments.iter() {
+			match outbound {
+				PendingOutboundPayment::Legacy { session_privs } |
+				PendingOutboundPayment::Retryable { session_privs, .. } => {
+					pending_outbound_payments_no_retry.insert(*id, session_privs.clone());
+				},
+				_ => {},
+			}
+		}
+
+		let mut pending_intercepted_htlcs = None;
+		let our_pending_intercepts = self.pending_intercepted_htlcs.lock().unwrap();
+		if our_pending_intercepts.len() != 0 {
+			pending_intercepted_htlcs = Some(our_pending_intercepts);
+		}
+
+		let mut pending_claiming_payments = Some(&claimable_payments.pending_claiming_payments);
+		if pending_claiming_payments.as_ref().unwrap().is_empty() {
+			// LDK versions prior to 0.0.113 do not know how to read the pending claimed payments
+			// map. Thus, if there are no entries we skip writing a TLV for it.
+			pending_claiming_payments = None;
+		}
+
+		let mut legacy_in_flight_monitor_updates: Option<HashMap<(&PublicKey, &OutPoint), &Vec<ChannelMonitorUpdate>>> = None;
+		let mut in_flight_monitor_updates: Option<HashMap<(&PublicKey, &ChannelId), &Vec<ChannelMonitorUpdate>>> = None;
+		for ((counterparty_id, _), peer_state) in per_peer_state.iter().zip(peer_states.iter()) {
+			for (channel_id, (funding_txo, updates)) in peer_state.in_flight_monitor_updates.iter() {
+				if !updates.is_empty() {
+					legacy_in_flight_monitor_updates.get_or_insert_with(|| new_hash_map())
+						.insert((counterparty_id, funding_txo), updates);
+					in_flight_monitor_updates.get_or_insert_with(|| new_hash_map())
+						.insert((counterparty_id, channel_id), updates);
+				}
+			}
+		}
+
+		write_tlv_fields!(writer, {
+			(1, pending_outbound_payments_no_retry, required),
+			(2, pending_intercepted_htlcs, option),
+			(3, pending_outbound_payments, required),
+			(4, pending_claiming_payments, option),
+			(5, self.our_network_pubkey, required),
+			(6, monitor_update_blocked_actions_per_peer, option),
+			(7, self.fake_scid_rand_bytes, required),
+			(8, if events_not_backwards_compatible { Some(&*events) } else { None }, option),
+			(9, htlc_purposes, required_vec),
+			(10, legacy_in_flight_monitor_updates, option),
+			(11, self.probing_cookie_secret, required),
+			(13, htlc_onion_fields, optional_vec),
+			(14, decode_update_add_htlcs_opt, option),
+			(15, self.inbound_payment_id_secret, required),
+			(17, in_flight_monitor_updates, option),
+			(19, peer_storage_dir, optional_vec),
+			(21, WithoutLength(&self.flow.writeable_async_receive_offer_cache()), required),
+		});
+
+		// Remove the SpliceFailed events added earlier.
+		events.truncate(event_count);
+
+		Ok(())
+	}
+
 	/// Persists this [`ChannelManager`] to the configured [`KVStoreSync`] if it needs persistence.
 	///
 	/// This encodes the [`ChannelManager`] and writes it to the underlying store. Returns `true`
@@ -15035,12 +15293,16 @@ where
 		if !self.get_and_clear_needs_persistence() {
 			return Ok(false);
 		}
+		let _consistency_lock = self.total_consistency_lock.write().unwrap();
+		let mut buf = Vec::new();
+		self.write_without_lock(&mut buf)?;
 		self.kv_store.write(
 			CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
 			CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
 			CHANNEL_MANAGER_PERSISTENCE_KEY,
-			self.encode(),
+			buf,
 		)?;
+		self.kv_store.commit()?;
 		Ok(true)
 	}
 
@@ -16709,263 +16971,9 @@ where
 	MR::Target: MessageRouter,
 	L::Target: Logger,
 {
-	#[rustfmt::skip]
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		let _consistency_lock = self.total_consistency_lock.write().unwrap();
-
-		write_ver_prefix!(writer, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
-
-		self.chain_hash.write(writer)?;
-		{
-			let best_block = self.best_block.read().unwrap();
-			best_block.height.write(writer)?;
-			best_block.block_hash.write(writer)?;
-		}
-
-		let per_peer_state = self.per_peer_state.write().unwrap();
-
-		let mut serializable_peer_count: u64 = 0;
-		{
-			let mut number_of_funded_channels = 0;
-			for (_, peer_state_mutex) in per_peer_state.iter() {
-				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
-				let peer_state = &mut *peer_state_lock;
-				if !peer_state.ok_to_remove(false) {
-					serializable_peer_count += 1;
-				}
-
-				number_of_funded_channels += peer_state.channel_by_id
-					.values()
-					.filter_map(Channel::as_funded)
-					.filter(|chan| chan.context.can_resume_on_restart())
-					.count();
-			}
-
-			(number_of_funded_channels as u64).write(writer)?;
-
-			for (_, peer_state_mutex) in per_peer_state.iter() {
-				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
-				let peer_state = &mut *peer_state_lock;
-				for channel in peer_state.channel_by_id
-					.values()
-					.filter_map(Channel::as_funded)
-					.filter(|channel| channel.context.can_resume_on_restart())
-				{
-					channel.write(writer)?;
-				}
-			}
-		}
-
-		{
-			let forward_htlcs = self.forward_htlcs.lock().unwrap();
-			(forward_htlcs.len() as u64).write(writer)?;
-			for (short_channel_id, pending_forwards) in forward_htlcs.iter() {
-				short_channel_id.write(writer)?;
-				(pending_forwards.len() as u64).write(writer)?;
-				for forward in pending_forwards {
-					forward.write(writer)?;
-				}
-			}
-		}
-
-		let mut decode_update_add_htlcs_opt = None;
-		let decode_update_add_htlcs = self.decode_update_add_htlcs.lock().unwrap();
-		if !decode_update_add_htlcs.is_empty() {
-			decode_update_add_htlcs_opt = Some(decode_update_add_htlcs);
-		}
-
-		let claimable_payments = self.claimable_payments.lock().unwrap();
-		let pending_outbound_payments = self.pending_outbound_payments.pending_outbound_payments.lock().unwrap();
-
-		let mut htlc_purposes: Vec<&events::PaymentPurpose> = Vec::new();
-		let mut htlc_onion_fields: Vec<&_> = Vec::new();
-		(claimable_payments.claimable_payments.len() as u64).write(writer)?;
-		for (payment_hash, payment) in claimable_payments.claimable_payments.iter() {
-			payment_hash.write(writer)?;
-			(payment.htlcs.len() as u64).write(writer)?;
-			for htlc in payment.htlcs.iter() {
-				htlc.write(writer)?;
-			}
-			htlc_purposes.push(&payment.purpose);
-			htlc_onion_fields.push(&payment.onion_fields);
-		}
-
-		let mut monitor_update_blocked_actions_per_peer = None;
-		let mut peer_states = Vec::new();
-		for (_, peer_state_mutex) in per_peer_state.iter() {
-			// Because we're holding the owning `per_peer_state` write lock here there's no chance
-			// of a lockorder violation deadlock - no other thread can be holding any
-			// per_peer_state lock at all.
-			peer_states.push(peer_state_mutex.unsafe_well_ordered_double_lock_self());
-		}
-
-		let mut peer_storage_dir: Vec<(&PublicKey, &Vec<u8>)> = Vec::new();
-
-		(serializable_peer_count).write(writer)?;
-		for ((peer_pubkey, _), peer_state) in per_peer_state.iter().zip(peer_states.iter()) {
-			// Peers which we have no channels to should be dropped once disconnected. As we
-			// disconnect all peers when shutting down and serializing the ChannelManager, we
-			// consider all peers as disconnected here. There's therefore no need write peers with
-			// no channels.
-			if !peer_state.ok_to_remove(false) {
-				peer_pubkey.write(writer)?;
-				peer_state.latest_features.write(writer)?;
-				peer_storage_dir.push((peer_pubkey, &peer_state.peer_storage));
-
-				if !peer_state.monitor_update_blocked_actions.is_empty() {
-					monitor_update_blocked_actions_per_peer
-						.get_or_insert_with(Vec::new)
-						.push((*peer_pubkey, &peer_state.monitor_update_blocked_actions));
-				}
-			}
-		}
-
-
-		// Since some FundingNegotiation variants are not persisted, any splice in such state must
-		// be failed upon reload. However, as the necessary information for the SpliceFailed event
-		// is not persisted, the event itself needs to be persisted even though it hasn't been
-		// emitted yet. These are removed after the events are written.
-		let mut events = self.pending_events.lock().unwrap();
-		let event_count = events.len();
-		for peer_state in peer_states.iter() {
-			for chan in peer_state.channel_by_id.values().filter_map(Channel::as_funded) {
-				if let Some(splice_funding_failed) = chan.maybe_splice_funding_failed() {
-					events.push_back((
-						events::Event::SpliceFailed {
-							channel_id: chan.context.channel_id(),
-							counterparty_node_id: chan.context.get_counterparty_node_id(),
-							user_channel_id: chan.context.get_user_id(),
-							abandoned_funding_txo: splice_funding_failed.funding_txo,
-							channel_type: splice_funding_failed.channel_type,
-							contributed_inputs: splice_funding_failed.contributed_inputs,
-							contributed_outputs: splice_funding_failed.contributed_outputs,
-						},
-						None,
-					));
-				}
-			}
-		}
-
-		// LDK versions prior to 0.0.115 don't support post-event actions, thus if there's no
-		// actions at all, skip writing the required TLV. Otherwise, pre-0.0.115 versions will
-		// refuse to read the new ChannelManager.
-		let events_not_backwards_compatible = events.iter().any(|(_, action)| action.is_some());
-		if events_not_backwards_compatible {
-			// If we're gonna write a even TLV that will overwrite our events anyway we might as
-			// well save the space and not write any events here.
-			0u64.write(writer)?;
-		} else {
-			(events.len() as u64).write(writer)?;
-			for (event, _) in events.iter() {
-				event.write(writer)?;
-			}
-		}
-
-		// LDK versions prior to 0.0.116 wrote the `pending_background_events`
-		// `MonitorUpdateRegeneratedOnStartup`s here, however there was never a reason to do so -
-		// the closing monitor updates were always effectively replayed on startup (either directly
-		// by calling `broadcast_latest_holder_commitment_txn` on a `ChannelMonitor` during
-		// deserialization or, in 0.0.115, by regenerating the monitor update itself).
-		0u64.write(writer)?;
-
-		// Prior to 0.0.111 we tracked node_announcement serials here, however that now happens in
-		// `PeerManager`, and thus we simply write the `highest_seen_timestamp` twice, which is
-		// likely to be identical.
-		(self.highest_seen_timestamp.load(Ordering::Acquire) as u32).write(writer)?;
-		(self.highest_seen_timestamp.load(Ordering::Acquire) as u32).write(writer)?;
-
-		// LDK versions prior to 0.0.104 wrote `pending_inbound_payments` here, with deprecated support
-		// for stateful inbound payments maintained until 0.0.116, after which no further inbound
-		// payments could have been written here.
-		(0 as u64).write(writer)?;
-
-		// For backwards compat, write the session privs and their total length.
-		let mut num_pending_outbounds_compat: u64 = 0;
-		for (_, outbound) in pending_outbound_payments.iter() {
-			if !outbound.is_fulfilled() && !outbound.abandoned() {
-				num_pending_outbounds_compat += outbound.remaining_parts() as u64;
-			}
-		}
-		num_pending_outbounds_compat.write(writer)?;
-		for (_, outbound) in pending_outbound_payments.iter() {
-			match outbound {
-				PendingOutboundPayment::Legacy { session_privs } |
-				PendingOutboundPayment::Retryable { session_privs, .. } => {
-					for session_priv in session_privs.iter() {
-						session_priv.write(writer)?;
-					}
-				}
-				PendingOutboundPayment::AwaitingInvoice { .. } => {},
-				PendingOutboundPayment::AwaitingOffer { .. } => {},
-				PendingOutboundPayment::InvoiceReceived { .. } => {},
-				PendingOutboundPayment::StaticInvoiceReceived { .. } => {},
-				PendingOutboundPayment::Fulfilled { .. } => {},
-				PendingOutboundPayment::Abandoned { .. } => {},
-			}
-		}
-
-		// Encode without retry info for 0.0.101 compatibility.
-		let mut pending_outbound_payments_no_retry: HashMap<PaymentId, HashSet<[u8; 32]>> = new_hash_map();
-		for (id, outbound) in pending_outbound_payments.iter() {
-			match outbound {
-				PendingOutboundPayment::Legacy { session_privs } |
-				PendingOutboundPayment::Retryable { session_privs, .. } => {
-					pending_outbound_payments_no_retry.insert(*id, session_privs.clone());
-				},
-				_ => {},
-			}
-		}
-
-		let mut pending_intercepted_htlcs = None;
-		let our_pending_intercepts = self.pending_intercepted_htlcs.lock().unwrap();
-		if our_pending_intercepts.len() != 0 {
-			pending_intercepted_htlcs = Some(our_pending_intercepts);
-		}
-
-		let mut pending_claiming_payments = Some(&claimable_payments.pending_claiming_payments);
-		if pending_claiming_payments.as_ref().unwrap().is_empty() {
-			// LDK versions prior to 0.0.113 do not know how to read the pending claimed payments
-			// map. Thus, if there are no entries we skip writing a TLV for it.
-			pending_claiming_payments = None;
-		}
-
-		let mut legacy_in_flight_monitor_updates: Option<HashMap<(&PublicKey, &OutPoint), &Vec<ChannelMonitorUpdate>>> = None;
-		let mut in_flight_monitor_updates: Option<HashMap<(&PublicKey, &ChannelId), &Vec<ChannelMonitorUpdate>>> = None;
-		for ((counterparty_id, _), peer_state) in per_peer_state.iter().zip(peer_states.iter()) {
-			for (channel_id, (funding_txo, updates)) in peer_state.in_flight_monitor_updates.iter() {
-				if !updates.is_empty() {
-					legacy_in_flight_monitor_updates.get_or_insert_with(|| new_hash_map())
-						.insert((counterparty_id, funding_txo), updates);
-					in_flight_monitor_updates.get_or_insert_with(|| new_hash_map())
-						.insert((counterparty_id, channel_id), updates);
-				}
-			}
-		}
-
-		write_tlv_fields!(writer, {
-			(1, pending_outbound_payments_no_retry, required),
-			(2, pending_intercepted_htlcs, option),
-			(3, pending_outbound_payments, required),
-			(4, pending_claiming_payments, option),
-			(5, self.our_network_pubkey, required),
-			(6, monitor_update_blocked_actions_per_peer, option),
-			(7, self.fake_scid_rand_bytes, required),
-			(8, if events_not_backwards_compatible { Some(&*events) } else { None }, option),
-			(9, htlc_purposes, required_vec),
-			(10, legacy_in_flight_monitor_updates, option),
-			(11, self.probing_cookie_secret, required),
-			(13, htlc_onion_fields, optional_vec),
-			(14, decode_update_add_htlcs_opt, option),
-			(15, self.inbound_payment_id_secret, required),
-			(17, in_flight_monitor_updates, option),
-			(19, peer_storage_dir, optional_vec),
-			(21, WithoutLength(&self.flow.writeable_async_receive_offer_cache()), required),
-		});
-
-		// Remove the SpliceFailed events added earlier.
-		events.truncate(event_count);
-
-		Ok(())
+		self.write_without_lock(writer)
 	}
 }
 
