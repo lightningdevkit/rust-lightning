@@ -739,7 +739,7 @@ pub trait NodeHolder {
 		<Self::CM as AChannelManager>::SP,
 		<Self::CM as AChannelManager>::FeeEstimator,
 		<Self::CM as AChannelManager>::Router,
-		<Self::CM as AChannelManager>::MR,
+		<Self::CM as AChannelManager>::MessageRouter,
 		<Self::CM as AChannelManager>::L,
 	>;
 	fn chain_monitor(&self) -> Option<&test_utils::TestChainMonitor<'_>>;
@@ -756,7 +756,7 @@ impl<H: NodeHolder> NodeHolder for &H {
 		<Self::CM as AChannelManager>::SP,
 		<Self::CM as AChannelManager>::FeeEstimator,
 		<Self::CM as AChannelManager>::Router,
-		<Self::CM as AChannelManager>::MR,
+		<Self::CM as AChannelManager>::MessageRouter,
 		<Self::CM as AChannelManager>::L,
 	> {
 		(*self).node()

@@ -78,9 +78,7 @@ pub trait AOnionMessenger {
 	/// A type that may be dereferenced to [`Self::NodeIdLookUp`]
 	type NL: Deref<Target = Self::NodeIdLookUp>;
 	/// A type implementing [`MessageRouter`]
-	type MessageRouter: MessageRouter + ?Sized;
-	/// A type that may be dereferenced to [`Self::MessageRouter`]
-	type MR: Deref<Target = Self::MessageRouter>;
+	type MessageRouter: MessageRouter;
 	/// A type implementing [`OffersMessageHandler`]
 	type OffersMessageHandler: OffersMessageHandler + ?Sized;
 	/// A type that may be dereferenced to [`Self::OffersMessageHandler`]
@@ -105,7 +103,7 @@ pub trait AOnionMessenger {
 		Self::NodeSigner,
 		Self::L,
 		Self::NL,
-		Self::MR,
+		Self::MessageRouter,
 		Self::OMH,
 		Self::APH,
 		Self::DRH,
@@ -118,7 +116,7 @@ impl<
 		NS: NodeSigner,
 		L: Deref,
 		NL: Deref,
-		MR: Deref,
+		MR: MessageRouter,
 		OMH: Deref,
 		APH: Deref,
 		DRH: Deref,
@@ -127,7 +125,6 @@ impl<
 where
 	L::Target: Logger,
 	NL::Target: NodeIdLookUp,
-	MR::Target: MessageRouter,
 	OMH::Target: OffersMessageHandler,
 	APH::Target: AsyncPaymentsMessageHandler,
 	DRH::Target: DNSResolverMessageHandler,
@@ -139,8 +136,7 @@ where
 	type L = L;
 	type NodeIdLookUp = NL::Target;
 	type NL = NL;
-	type MessageRouter = MR::Target;
-	type MR = MR;
+	type MessageRouter = MR;
 	type OffersMessageHandler = OMH::Target;
 	type OMH = OMH;
 	type AsyncPaymentsMessageHandler = APH::Target;
@@ -280,7 +276,7 @@ pub struct OnionMessenger<
 	NS: NodeSigner,
 	L: Deref,
 	NL: Deref,
-	MR: Deref,
+	MR: MessageRouter,
 	OMH: Deref,
 	APH: Deref,
 	DRH: Deref,
@@ -288,7 +284,6 @@ pub struct OnionMessenger<
 > where
 	L::Target: Logger,
 	NL::Target: NodeIdLookUp,
-	MR::Target: MessageRouter,
 	OMH::Target: OffersMessageHandler,
 	APH::Target: AsyncPaymentsMessageHandler,
 	DRH::Target: DNSResolverMessageHandler,
@@ -510,6 +505,27 @@ pub trait MessageRouter {
 		&self, recipient: PublicKey, local_node_receive_key: ReceiveAuthKey,
 		context: MessageContext, peers: Vec<MessageForwardNode>, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedMessagePath>, ()>;
+}
+
+impl<T: MessageRouter + ?Sized, R: Deref<Target = T>> MessageRouter for R {
+	fn find_path(
+		&self, sender: PublicKey, peers: Vec<PublicKey>, destination: Destination,
+	) -> Result<OnionMessagePath, ()> {
+		self.deref().find_path(sender, peers, destination)
+	}
+
+	fn create_blinded_paths<S: secp256k1::Signing + secp256k1::Verification>(
+		&self, recipient: PublicKey, local_node_receive_key: ReceiveAuthKey,
+		context: MessageContext, peers: Vec<MessageForwardNode>, secp_ctx: &Secp256k1<S>,
+	) -> Result<Vec<BlindedMessagePath>, ()> {
+		self.deref().create_blinded_paths(
+			recipient,
+			local_node_receive_key,
+			context,
+			peers,
+			secp_ctx,
+		)
+	}
 }
 
 /// A [`MessageRouter`] that can only route to a directly connected [`Destination`].
@@ -1377,7 +1393,7 @@ impl<
 		NS: NodeSigner,
 		L: Deref,
 		NL: Deref,
-		MR: Deref,
+		MR: MessageRouter,
 		OMH: Deref,
 		APH: Deref,
 		DRH: Deref,
@@ -1386,7 +1402,6 @@ impl<
 where
 	L::Target: Logger,
 	NL::Target: NodeIdLookUp,
-	MR::Target: MessageRouter,
 	OMH::Target: OffersMessageHandler,
 	APH::Target: AsyncPaymentsMessageHandler,
 	DRH::Target: DNSResolverMessageHandler,
@@ -2019,7 +2034,7 @@ impl<
 		NS: NodeSigner,
 		L: Deref,
 		NL: Deref,
-		MR: Deref,
+		MR: MessageRouter,
 		OMH: Deref,
 		APH: Deref,
 		DRH: Deref,
@@ -2028,7 +2043,6 @@ impl<
 where
 	L::Target: Logger,
 	NL::Target: NodeIdLookUp,
-	MR::Target: MessageRouter,
 	OMH::Target: OffersMessageHandler,
 	APH::Target: AsyncPaymentsMessageHandler,
 	DRH::Target: DNSResolverMessageHandler,
@@ -2138,7 +2152,7 @@ impl<
 		NS: NodeSigner,
 		L: Deref,
 		NL: Deref,
-		MR: Deref,
+		MR: MessageRouter,
 		OMH: Deref,
 		APH: Deref,
 		DRH: Deref,
@@ -2147,7 +2161,6 @@ impl<
 where
 	L::Target: Logger,
 	NL::Target: NodeIdLookUp,
-	MR::Target: MessageRouter,
 	OMH::Target: OffersMessageHandler,
 	APH::Target: AsyncPaymentsMessageHandler,
 	DRH::Target: DNSResolverMessageHandler,
@@ -2208,7 +2221,7 @@ impl<
 		NS: NodeSigner,
 		L: Deref,
 		NL: Deref,
-		MR: Deref,
+		MR: MessageRouter,
 		OMH: Deref,
 		APH: Deref,
 		DRH: Deref,
@@ -2217,7 +2230,6 @@ impl<
 where
 	L::Target: Logger,
 	NL::Target: NodeIdLookUp,
-	MR::Target: MessageRouter,
 	OMH::Target: OffersMessageHandler,
 	APH::Target: AsyncPaymentsMessageHandler,
 	DRH::Target: DNSResolverMessageHandler,
