@@ -824,6 +824,10 @@ impl<Signer: sign::ecdsa::EcdsaChannelSigner> Persist<Signer> for WatchtowerPers
 			monitor_name,
 		);
 	}
+
+	fn flush(&self, _count: usize) -> Result<Vec<(ChannelId, u64)>, io::Error> {
+		Ok(Vec::new())
+	}
 }
 
 pub struct TestPersister {
@@ -886,6 +890,10 @@ impl<Signer: sign::ecdsa::EcdsaChannelSigner> Persist<Signer> for TestPersister 
 		// remove the channel from the offchain_monitor_updates and chain_sync_monitor_persistences.
 		self.offchain_monitor_updates.lock().unwrap().remove(&monitor_name);
 		self.chain_sync_monitor_persistences.lock().unwrap().retain(|x| x != &monitor_name);
+	}
+
+	fn flush(&self, _count: usize) -> Result<Vec<(ChannelId, u64)>, io::Error> {
+		Ok(Vec::new())
 	}
 }
 
