@@ -202,16 +202,6 @@ pub struct KVStoreSyncWrapper<K: Deref>(pub K)
 where
 	K::Target: KVStoreSync;
 
-impl<K: Deref> Deref for KVStoreSyncWrapper<K>
-where
-	K::Target: KVStoreSync,
-{
-	type Target = Self;
-	fn deref(&self) -> &Self::Target {
-		self
-	}
-}
-
 /// This is not exported to bindings users as async is only supported in Rust.
 impl<K: Deref> KVStore for KVStoreSyncWrapper<K>
 where
@@ -345,6 +335,32 @@ pub trait KVStore {
 	fn list(
 		&self, primary_namespace: &str, secondary_namespace: &str,
 	) -> impl Future<Output = Result<Vec<String>, io::Error>> + 'static + MaybeSend;
+}
+
+impl<T: KVStore + ?Sized + 'static, K: Deref<Target = T>> KVStore for K {
+	fn read(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
+	) -> impl Future<Output = Result<Vec<u8>, io::Error>> + 'static + MaybeSend {
+		self.deref().read(primary_namespace, secondary_namespace, key)
+	}
+
+	fn write(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: Vec<u8>,
+	) -> impl Future<Output = Result<(), io::Error>> + 'static + MaybeSend {
+		self.deref().write(primary_namespace, secondary_namespace, key, buf)
+	}
+
+	fn remove(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, lazy: bool,
+	) -> impl Future<Output = Result<(), io::Error>> + 'static + MaybeSend {
+		self.deref().remove(primary_namespace, secondary_namespace, key, lazy)
+	}
+
+	fn list(
+		&self, primary_namespace: &str, secondary_namespace: &str,
+	) -> impl Future<Output = Result<Vec<String>, io::Error>> + 'static + MaybeSend {
+		self.deref().list(primary_namespace, secondary_namespace)
+	}
 }
 
 /// Provides additional interface methods that are required for [`KVStore`]-to-[`KVStore`]
@@ -768,28 +784,24 @@ where
 /// [`ChainMonitor`]: crate::chain::chainmonitor::ChainMonitor
 /// [`ChainMonitor::new_async_beta`]: crate::chain::chainmonitor::ChainMonitor::new_async_beta
 pub struct MonitorUpdatingPersisterAsync<
-	K: Deref,
+	K: KVStore,
 	S: FutureSpawner,
 	L: Logger,
 	ES: EntropySource,
 	SP: SignerProvider,
 	BI: BroadcasterInterface,
 	FE: FeeEstimator,
->(Arc<MonitorUpdatingPersisterAsyncInner<K, S, L, ES, SP, BI, FE>>)
-where
-	K::Target: KVStore;
+>(Arc<MonitorUpdatingPersisterAsyncInner<K, S, L, ES, SP, BI, FE>>);
 
 struct MonitorUpdatingPersisterAsyncInner<
-	K: Deref,
+	K: KVStore,
 	S: FutureSpawner,
 	L: Logger,
 	ES: EntropySource,
 	SP: SignerProvider,
 	BI: BroadcasterInterface,
 	FE: FeeEstimator,
-> where
-	K::Target: KVStore,
-{
+> {
 	kv_store: K,
 	async_completed_updates: Mutex<Vec<(ChannelId, u64)>>,
 	future_spawner: S,
@@ -802,7 +814,7 @@ struct MonitorUpdatingPersisterAsyncInner<
 }
 
 impl<
-		K: Deref,
+		K: KVStore,
 		S: FutureSpawner,
 		L: Logger,
 		ES: EntropySource,
@@ -810,8 +822,6 @@ impl<
 		BI: BroadcasterInterface,
 		FE: FeeEstimator,
 	> MonitorUpdatingPersisterAsync<K, S, L, ES, SP, BI, FE>
-where
-	K::Target: KVStore,
 {
 	/// Constructs a new [`MonitorUpdatingPersisterAsync`].
 	///
@@ -941,7 +951,7 @@ where
 }
 
 impl<
-		K: Deref + MaybeSend + MaybeSync + 'static,
+		K: KVStore + MaybeSend + MaybeSync + 'static,
 		S: FutureSpawner,
 		L: Logger + MaybeSend + MaybeSync + 'static,
 		ES: EntropySource + MaybeSend + MaybeSync + 'static,
@@ -950,7 +960,6 @@ impl<
 		FE: FeeEstimator + MaybeSend + MaybeSync + 'static,
 	> MonitorUpdatingPersisterAsync<K, S, L, ES, SP, BI, FE>
 where
-	K::Target: KVStore + MaybeSync,
 	<SP as SignerProvider>::EcdsaSigner: MaybeSend + 'static,
 {
 	pub(crate) fn spawn_async_persist_new_channel(
@@ -1026,7 +1035,7 @@ trait MaybeSendableFuture: Future<Output = Result<(), io::Error>> + MaybeSend {}
 impl<F: Future<Output = Result<(), io::Error>> + MaybeSend> MaybeSendableFuture for F {}
 
 impl<
-		K: Deref,
+		K: KVStore,
 		S: FutureSpawner,
 		L: Logger,
 		ES: EntropySource,
@@ -1034,8 +1043,6 @@ impl<
 		BI: BroadcasterInterface,
 		FE: FeeEstimator,
 	> MonitorUpdatingPersisterAsyncInner<K, S, L, ES, SP, BI, FE>
-where
-	K::Target: KVStore,
 {
 	pub async fn read_channel_monitor_with_updates(
 		&self, monitor_key: &str,

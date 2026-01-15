@@ -22,8 +22,6 @@ use lightning::util::ser::Readable;
 use bitcoin::secp256k1::PublicKey;
 
 use alloc::collections::VecDeque;
-
-use core::ops::Deref;
 use core::str::FromStr;
 
 /// The primary namespace under which the [`LiquidityManager`] will be persisted.
@@ -51,12 +49,9 @@ pub const LSPS2_SERVICE_PERSISTENCE_SECONDARY_NAMESPACE: &str = "lsps2_service";
 /// [`LSPS5ServiceHandler`]: crate::lsps5::service::LSPS5ServiceHandler
 pub const LSPS5_SERVICE_PERSISTENCE_SECONDARY_NAMESPACE: &str = "lsps5_service";
 
-pub(crate) async fn read_event_queue<K: Deref>(
+pub(crate) async fn read_event_queue<K: KVStore>(
 	kv_store: K,
-) -> Result<Option<VecDeque<LiquidityEvent>>, lightning::io::Error>
-where
-	K::Target: KVStore,
-{
+) -> Result<Option<VecDeque<LiquidityEvent>>, lightning::io::Error> {
 	let read_fut = kv_store.read(
 		LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
 		LIQUIDITY_MANAGER_EVENT_QUEUE_PERSISTENCE_SECONDARY_NAMESPACE,
@@ -85,12 +80,9 @@ where
 	Ok(Some(queue.0))
 }
 
-pub(crate) async fn read_lsps2_service_peer_states<K: Deref>(
+pub(crate) async fn read_lsps2_service_peer_states<K: KVStore>(
 	kv_store: K,
-) -> Result<HashMap<PublicKey, Mutex<LSPS2ServicePeerState>>, lightning::io::Error>
-where
-	K::Target: KVStore,
-{
+) -> Result<HashMap<PublicKey, Mutex<LSPS2ServicePeerState>>, lightning::io::Error> {
 	let mut res = new_hash_map();
 
 	for stored_key in kv_store
@@ -129,12 +121,9 @@ where
 	Ok(res)
 }
 
-pub(crate) async fn read_lsps5_service_peer_states<K: Deref>(
+pub(crate) async fn read_lsps5_service_peer_states<K: KVStore>(
 	kv_store: K,
-) -> Result<HashMap<PublicKey, LSPS5ServicePeerState>, lightning::io::Error>
-where
-	K::Target: KVStore,
-{
+) -> Result<HashMap<PublicKey, LSPS5ServicePeerState>, lightning::io::Error> {
 	let mut res = new_hash_map();
 
 	for stored_key in kv_store
