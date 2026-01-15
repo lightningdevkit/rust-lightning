@@ -196,12 +196,6 @@ mod test {
 			eprintln!("{:<8} {}", self.node, record);
 		}
 	}
-	impl Deref for TestLogger {
-		type Target = TestLogger;
-		fn deref(&self) -> &TestLogger {
-			self
-		}
-	}
 
 	struct DummyNodeLookup {}
 	impl NodeIdLookUp for DummyNodeLookup {

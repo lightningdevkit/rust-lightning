@@ -2,7 +2,6 @@
 #![allow(dead_code)]
 
 use core::cmp;
-use core::ops::Deref;
 
 use bitcoin::secp256k1::{self, PublicKey, Secp256k1};
 
@@ -169,14 +168,12 @@ pub(crate) trait TxBuilder {
 		&self, is_outbound_from_holder: bool, value_to_self_after_htlcs: u64,
 		value_to_remote_after_htlcs: u64, channel_type: &ChannelTypeFeatures,
 	) -> (u64, u64);
-	fn build_commitment_transaction<L: Deref>(
+	fn build_commitment_transaction<L: Logger>(
 		&self, local: bool, commitment_number: u64, per_commitment_point: &PublicKey,
 		channel_parameters: &ChannelTransactionParameters, secp_ctx: &Secp256k1<secp256k1::All>,
 		value_to_self_msat: u64, htlcs_in_tx: Vec<HTLCOutputInCommitment>, feerate_per_kw: u32,
 		broadcaster_dust_limit_satoshis: u64, logger: &L,
-	) -> (CommitmentTransaction, CommitmentStats)
-	where
-		L::Target: Logger;
+	) -> (CommitmentTransaction, CommitmentStats);
 }
 
 pub(crate) struct SpecTxBuilder {}
@@ -322,15 +319,12 @@ impl TxBuilder for SpecTxBuilder {
 
 		(local_balance_before_fee_msat, remote_balance_before_fee_msat)
 	}
-	fn build_commitment_transaction<L: Deref>(
+	fn build_commitment_transaction<L: Logger>(
 		&self, local: bool, commitment_number: u64, per_commitment_point: &PublicKey,
 		channel_parameters: &ChannelTransactionParameters, secp_ctx: &Secp256k1<secp256k1::All>,
 		value_to_self_msat: u64, mut htlcs_in_tx: Vec<HTLCOutputInCommitment>, feerate_per_kw: u32,
 		broadcaster_dust_limit_satoshis: u64, logger: &L,
-	) -> (CommitmentTransaction, CommitmentStats)
-	where
-		L::Target: Logger,
-	{
+	) -> (CommitmentTransaction, CommitmentStats) {
 		let mut local_htlc_total_msat = 0;
 		let mut remote_htlc_total_msat = 0;
 		let channel_type = &channel_parameters.channel_type_features;

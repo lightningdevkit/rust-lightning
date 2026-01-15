@@ -26,8 +26,6 @@ use crate::util::logger::Logger;
 #[allow(unused_imports)]
 use crate::prelude::*;
 
-use core::ops::Deref;
-
 /// Invalid inbound onion payment.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct InboundHTLCErr {
@@ -487,15 +485,12 @@ pub(super) fn create_recv_pending_htlc_info(
 ///
 /// [`Event::PaymentClaimable`]: crate::events::Event::PaymentClaimable
 #[rustfmt::skip]
-pub fn peel_payment_onion<NS: NodeSigner, L: Deref, T: secp256k1::Verification>(
+pub fn peel_payment_onion<NS: NodeSigner, L: Logger, T: secp256k1::Verification>(
 	msg: &msgs::UpdateAddHTLC, node_signer: NS, logger: L, secp_ctx: &Secp256k1<T>,
 	cur_height: u32, allow_skimmed_fees: bool,
-) -> Result<PendingHTLCInfo, InboundHTLCErr>
-where
-	L::Target: Logger,
-{
+) -> Result<PendingHTLCInfo, InboundHTLCErr> {
 	let (hop, next_packet_details_opt) =
-		decode_incoming_update_add_htlc_onion(msg, &node_signer, &*logger, secp_ctx
+		decode_incoming_update_add_htlc_onion(msg, &node_signer, &logger, secp_ctx
 	).map_err(|(msg, failure_reason)| {
 		let (reason, err_data) = match msg {
 			HTLCFailureMsg::Malformed(_) => (failure_reason, Vec::new()),
@@ -585,12 +580,9 @@ pub(super) struct NextPacketDetails {
 }
 
 #[rustfmt::skip]
-pub(super) fn decode_incoming_update_add_htlc_onion<NS: NodeSigner, L: Deref, T: secp256k1::Verification>(
+pub(super) fn decode_incoming_update_add_htlc_onion<NS: NodeSigner, L: Logger, T: secp256k1::Verification>(
 	msg: &msgs::UpdateAddHTLC, node_signer: NS, logger: L, secp_ctx: &Secp256k1<T>,
-) -> Result<(onion_utils::Hop, Option<NextPacketDetails>), (HTLCFailureMsg, LocalHTLCFailureReason)>
-where
-	L::Target: Logger,
-{
+) -> Result<(onion_utils::Hop, Option<NextPacketDetails>), (HTLCFailureMsg, LocalHTLCFailureReason)> {
 	let encode_malformed_error = |message: &str, failure_reason: LocalHTLCFailureReason| {
 		log_info!(logger, "Failed to accept/forward incoming HTLC: {}", message);
 		let (sha256_of_onion, failure_reason) = if msg.blinding_point.is_some() || failure_reason == LocalHTLCFailureReason::InvalidOnionBlinding {

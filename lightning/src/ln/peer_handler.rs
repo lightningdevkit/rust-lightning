@@ -977,8 +977,7 @@ pub trait APeerManager {
 	type RM: Deref<Target = Self::RMT>;
 	type OMT: OnionMessageHandler + ?Sized;
 	type OM: Deref<Target = Self::OMT>;
-	type LT: Logger + ?Sized;
-	type L: Deref<Target = Self::LT>;
+	type Logger: Logger;
 	type CMHT: CustomMessageHandler + ?Sized;
 	type CMH: Deref<Target = Self::CMHT>;
 	type NodeSigner: NodeSigner;
@@ -992,7 +991,7 @@ pub trait APeerManager {
 		Self::CM,
 		Self::RM,
 		Self::OM,
-		Self::L,
+		Self::Logger,
 		Self::CMH,
 		Self::NodeSigner,
 		Self::SM,
@@ -1004,7 +1003,7 @@ impl<
 		CM: Deref,
 		RM: Deref,
 		OM: Deref,
-		L: Deref,
+		L: Logger,
 		CMH: Deref,
 		NS: NodeSigner,
 		SM: Deref,
@@ -1013,7 +1012,6 @@ where
 	CM::Target: ChannelMessageHandler,
 	RM::Target: RoutingMessageHandler,
 	OM::Target: OnionMessageHandler,
-	L::Target: Logger,
 	CMH::Target: CustomMessageHandler,
 	SM::Target: SendOnlyMessageHandler,
 {
@@ -1024,8 +1022,7 @@ where
 	type RM = RM;
 	type OMT = <OM as Deref>::Target;
 	type OM = OM;
-	type LT = <L as Deref>::Target;
-	type L = L;
+	type Logger = L;
 	type CMHT = <CMH as Deref>::Target;
 	type CMH = CMH;
 	type NodeSigner = NS;
@@ -1060,7 +1057,7 @@ pub struct PeerManager<
 	CM: Deref,
 	RM: Deref,
 	OM: Deref,
-	L: Deref,
+	L: Logger,
 	CMH: Deref,
 	NS: NodeSigner,
 	SM: Deref,
@@ -1068,7 +1065,6 @@ pub struct PeerManager<
 	CM::Target: ChannelMessageHandler,
 	RM::Target: RoutingMessageHandler,
 	OM::Target: OnionMessageHandler,
-	L::Target: Logger,
 	CMH::Target: CustomMessageHandler,
 	SM::Target: SendOnlyMessageHandler,
 {
@@ -1147,12 +1143,11 @@ fn encode_message<T: wire::Type>(message: wire::Message<T>) -> Vec<u8> {
 	buffer.0
 }
 
-impl<Descriptor: SocketDescriptor, CM: Deref, OM: Deref, L: Deref, NS: NodeSigner, SM: Deref>
+impl<Descriptor: SocketDescriptor, CM: Deref, OM: Deref, L: Logger, NS: NodeSigner, SM: Deref>
 	PeerManager<Descriptor, CM, IgnoringMessageHandler, OM, L, IgnoringMessageHandler, NS, SM>
 where
 	CM::Target: ChannelMessageHandler,
 	OM::Target: OnionMessageHandler,
-	L::Target: Logger,
 	SM::Target: SendOnlyMessageHandler,
 {
 	/// Constructs a new `PeerManager` with the given `ChannelMessageHandler` and
@@ -1189,7 +1184,7 @@ where
 	}
 }
 
-impl<Descriptor: SocketDescriptor, RM: Deref, L: Deref, NS: NodeSigner>
+impl<Descriptor: SocketDescriptor, RM: Deref, L: Logger, NS: NodeSigner>
 	PeerManager<
 		Descriptor,
 		ErroringMessageHandler,
@@ -1201,7 +1196,6 @@ impl<Descriptor: SocketDescriptor, RM: Deref, L: Deref, NS: NodeSigner>
 		IgnoringMessageHandler,
 	> where
 	RM::Target: RoutingMessageHandler,
-	L::Target: Logger,
 {
 	/// Constructs a new `PeerManager` with the given `RoutingMessageHandler`. No channel message
 	/// handler or onion message handler is used and onion and channel messages will be ignored (or
@@ -1290,7 +1284,7 @@ impl<
 		CM: Deref,
 		RM: Deref,
 		OM: Deref,
-		L: Deref,
+		L: Logger,
 		CMH: Deref,
 		NS: NodeSigner,
 		SM: Deref,
@@ -1299,7 +1293,6 @@ where
 	CM::Target: ChannelMessageHandler,
 	RM::Target: RoutingMessageHandler,
 	OM::Target: OnionMessageHandler,
-	L::Target: Logger,
 	CMH::Target: CustomMessageHandler,
 	SM::Target: SendOnlyMessageHandler,
 {

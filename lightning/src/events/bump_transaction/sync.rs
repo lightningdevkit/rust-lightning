@@ -100,18 +100,16 @@ where
 ///
 /// For an asynchronous version of this wrapper, see [`Wallet`].
 // Note that updates to documentation on this struct should be copied to the asynchronous version.
-pub struct WalletSync<W: Deref + MaybeSync + MaybeSend, L: Deref + MaybeSync + MaybeSend>
+pub struct WalletSync<W: Deref + MaybeSync + MaybeSend, L: Logger + MaybeSync + MaybeSend>
 where
 	W::Target: WalletSourceSync + MaybeSend,
-	L::Target: Logger + MaybeSend,
 {
 	wallet: Wallet<WalletSourceSyncWrapper<W>, L>,
 }
 
-impl<W: Deref + MaybeSync + MaybeSend, L: Deref + MaybeSync + MaybeSend> WalletSync<W, L>
+impl<W: Deref + MaybeSync + MaybeSend, L: Logger + MaybeSync + MaybeSend> WalletSync<W, L>
 where
 	W::Target: WalletSourceSync + MaybeSend,
-	L::Target: Logger + MaybeSend,
 {
 	/// Constructs a new [`WalletSync`] instance.
 	pub fn new(source: W, logger: L) -> Self {
@@ -119,11 +117,10 @@ where
 	}
 }
 
-impl<W: Deref + MaybeSync + MaybeSend, L: Deref + MaybeSync + MaybeSend> CoinSelectionSourceSync
+impl<W: Deref + MaybeSync + MaybeSend, L: Logger + MaybeSync + MaybeSend> CoinSelectionSourceSync
 	for WalletSync<W, L>
 where
 	W::Target: WalletSourceSync + MaybeSend + MaybeSync,
-	L::Target: Logger + MaybeSend + MaybeSync,
 {
 	fn select_confirmed_utxos(
 		&self, claim_id: ClaimId, must_spend: Vec<Input>, must_pay_to: &[TxOut],
@@ -267,22 +264,20 @@ where
 ///
 /// [`Event::BumpTransaction`]: crate::events::Event::BumpTransaction
 // Note that updates to documentation on this struct should be copied to the synchronous version.
-pub struct BumpTransactionEventHandlerSync<B: BroadcasterInterface, C: Deref, SP: Deref, L: Deref>
+pub struct BumpTransactionEventHandlerSync<B: BroadcasterInterface, C: Deref, SP: Deref, L: Logger>
 where
 	C::Target: CoinSelectionSourceSync,
 	SP::Target: SignerProvider,
-	L::Target: Logger,
 {
 	bump_transaction_event_handler:
 		BumpTransactionEventHandler<B, CoinSelectionSourceSyncWrapper<C>, SP, L>,
 }
 
-impl<B: BroadcasterInterface, C: Deref, SP: Deref, L: Deref>
+impl<B: BroadcasterInterface, C: Deref, SP: Deref, L: Logger>
 	BumpTransactionEventHandlerSync<B, C, SP, L>
 where
 	C::Target: CoinSelectionSourceSync,
 	SP::Target: SignerProvider,
-	L::Target: Logger,
 {
 	/// Constructs a new instance of [`BumpTransactionEventHandlerSync`].
 	pub fn new(broadcaster: B, utxo_source: C, signer_provider: SP, logger: L) -> Self {
