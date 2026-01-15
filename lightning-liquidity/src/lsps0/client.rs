@@ -22,22 +22,14 @@ use lightning::util::persist::KVStore;
 
 use bitcoin::secp256k1::PublicKey;
 
-use core::ops::Deref;
-
 /// A message handler capable of sending and handling bLIP-50 / LSPS0 messages.
-pub struct LSPS0ClientHandler<ES: EntropySource, K: Deref + Clone>
-where
-	K::Target: KVStore,
-{
+pub struct LSPS0ClientHandler<ES: EntropySource, K: KVStore + Clone> {
 	entropy_source: ES,
 	pending_messages: Arc<MessageQueue>,
 	pending_events: Arc<EventQueue<K>>,
 }
 
-impl<ES: EntropySource, K: Deref + Clone> LSPS0ClientHandler<ES, K>
-where
-	K::Target: KVStore,
-{
+impl<ES: EntropySource, K: KVStore + Clone> LSPS0ClientHandler<ES, K> {
 	/// Returns a new instance of [`LSPS0ClientHandler`].
 	pub(crate) fn new(
 		entropy_source: ES, pending_messages: Arc<MessageQueue>, pending_events: Arc<EventQueue<K>>,
@@ -87,9 +79,8 @@ where
 	}
 }
 
-impl<ES: EntropySource, K: Deref + Clone> LSPSProtocolMessageHandler for LSPS0ClientHandler<ES, K>
-where
-	K::Target: KVStore,
+impl<ES: EntropySource, K: KVStore + Clone> LSPSProtocolMessageHandler
+	for LSPS0ClientHandler<ES, K>
 {
 	type ProtocolMessage = LSPS0Message;
 	const PROTOCOL_NUMBER: Option<u16> = None;

@@ -35,8 +35,6 @@ use alloc::collections::VecDeque;
 use alloc::string::String;
 use lightning::util::persist::KVStore;
 
-use core::ops::Deref;
-
 impl PartialEq<LSPSRequestId> for (LSPSRequestId, (LSPS5AppName, LSPS5WebhookUrl)) {
 	fn eq(&self, other: &LSPSRequestId) -> bool {
 		&self.0 == other
@@ -125,10 +123,7 @@ impl PeerState {
 /// [`lsps5.list_webhooks`]: super::msgs::LSPS5Request::ListWebhooks
 /// [`lsps5.remove_webhook`]: super::msgs::LSPS5Request::RemoveWebhook
 /// [`LSPS5Validator`]: super::validator::LSPS5Validator
-pub struct LSPS5ClientHandler<ES: EntropySource, K: Deref + Clone>
-where
-	K::Target: KVStore,
-{
+pub struct LSPS5ClientHandler<ES: EntropySource, K: KVStore + Clone> {
 	pending_messages: Arc<MessageQueue>,
 	pending_events: Arc<EventQueue<K>>,
 	entropy_source: ES,
@@ -136,10 +131,7 @@ where
 	_config: LSPS5ClientConfig,
 }
 
-impl<ES: EntropySource, K: Deref + Clone> LSPS5ClientHandler<ES, K>
-where
-	K::Target: KVStore,
-{
+impl<ES: EntropySource, K: KVStore + Clone> LSPS5ClientHandler<ES, K> {
 	/// Constructs an `LSPS5ClientHandler`.
 	pub(crate) fn new(
 		entropy_source: ES, pending_messages: Arc<MessageQueue>,
@@ -424,9 +416,8 @@ where
 	}
 }
 
-impl<ES: EntropySource, K: Deref + Clone> LSPSProtocolMessageHandler for LSPS5ClientHandler<ES, K>
-where
-	K::Target: KVStore,
+impl<ES: EntropySource, K: KVStore + Clone> LSPSProtocolMessageHandler
+	for LSPS5ClientHandler<ES, K>
 {
 	type ProtocolMessage = LSPS5Message;
 	const PROTOCOL_NUMBER: Option<u16> = Some(5);

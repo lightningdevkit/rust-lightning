@@ -116,9 +116,7 @@ pub trait ALiquidityManager {
 	/// A type that may be dereferenced to [`Self::Filter`].
 	type C: Deref<Target = Self::Filter> + Clone;
 	/// A type implementing [`KVStore`].
-	type KVStore: KVStore + ?Sized;
-	/// A type that may be dereferenced to [`Self::KVStore`].
-	type K: Deref<Target = Self::KVStore> + Clone;
+	type K: KVStore + Clone;
 	/// A type implementing [`TimeProvider`].
 	type TimeProvider: TimeProvider + ?Sized;
 	/// A type that may be dereferenced to [`Self::TimeProvider`].
@@ -144,14 +142,13 @@ impl<
 		NS: NodeSigner + Clone,
 		CM: Deref + Clone,
 		C: Deref + Clone,
-		K: Deref + Clone,
+		K: KVStore + Clone,
 		TP: Deref + Clone,
 		T: BroadcasterInterface + Clone,
 	> ALiquidityManager for LiquidityManager<ES, NS, CM, C, K, TP, T>
 where
 	CM::Target: AChannelManager,
 	C::Target: Filter,
-	K::Target: KVStore,
 	TP::Target: TimeProvider,
 {
 	type EntropySource = ES;
@@ -160,7 +157,6 @@ where
 	type CM = CM;
 	type Filter = C::Target;
 	type C = C;
-	type KVStore = K::Target;
 	type K = K;
 	type TimeProvider = TP::Target;
 	type TP = TP;
@@ -294,13 +290,12 @@ pub struct LiquidityManager<
 	NS: NodeSigner + Clone,
 	CM: Deref + Clone,
 	C: Deref + Clone,
-	K: Deref + Clone,
+	K: KVStore + Clone,
 	TP: Deref + Clone,
 	T: BroadcasterInterface + Clone,
 > where
 	CM::Target: AChannelManager,
 	C::Target: Filter,
-	K::Target: KVStore,
 	TP::Target: TimeProvider,
 {
 	pending_messages: Arc<MessageQueue>,
@@ -330,13 +325,12 @@ impl<
 		NS: NodeSigner + Clone,
 		CM: Deref + Clone,
 		C: Deref + Clone,
-		K: Deref + Clone,
+		K: KVStore + Clone,
 		T: BroadcasterInterface + Clone,
 	> LiquidityManager<ES, NS, CM, C, K, DefaultTimeProvider, T>
 where
 	CM::Target: AChannelManager,
 	C::Target: Filter,
-	K::Target: KVStore,
 {
 	/// Constructor for the [`LiquidityManager`] using the default system clock
 	///
@@ -368,14 +362,13 @@ impl<
 		NS: NodeSigner + Clone,
 		CM: Deref + Clone,
 		C: Deref + Clone,
-		K: Deref + Clone,
+		K: KVStore + Clone,
 		TP: Deref + Clone,
 		T: BroadcasterInterface + Clone,
 	> LiquidityManager<ES, NS, CM, C, K, TP, T>
 where
 	CM::Target: AChannelManager,
 	C::Target: Filter,
-	K::Target: KVStore,
 	TP::Target: TimeProvider,
 {
 	/// Constructor for the [`LiquidityManager`] with a custom time provider.
@@ -792,14 +785,13 @@ impl<
 		NS: NodeSigner + Clone,
 		CM: Deref + Clone,
 		C: Deref + Clone,
-		K: Deref + Clone,
+		K: KVStore + Clone,
 		TP: Deref + Clone,
 		T: BroadcasterInterface + Clone,
 	> CustomMessageReader for LiquidityManager<ES, NS, CM, C, K, TP, T>
 where
 	CM::Target: AChannelManager,
 	C::Target: Filter,
-	K::Target: KVStore,
 	TP::Target: TimeProvider,
 {
 	type CustomMessage = RawLSPSMessage;
@@ -821,14 +813,13 @@ impl<
 		NS: NodeSigner + Clone,
 		CM: Deref + Clone,
 		C: Deref + Clone,
-		K: Deref + Clone,
+		K: KVStore + Clone,
 		TP: Deref + Clone,
 		T: BroadcasterInterface + Clone,
 	> CustomMessageHandler for LiquidityManager<ES, NS, CM, C, K, TP, T>
 where
 	CM::Target: AChannelManager,
 	C::Target: Filter,
-	K::Target: KVStore,
 	TP::Target: TimeProvider,
 {
 	fn handle_custom_message(
@@ -952,14 +943,13 @@ impl<
 		NS: NodeSigner + Clone,
 		CM: Deref + Clone,
 		C: Deref + Clone,
-		K: Deref + Clone,
+		K: KVStore + Clone,
 		TP: Deref + Clone,
 		T: BroadcasterInterface + Clone,
 	> Listen for LiquidityManager<ES, NS, CM, C, K, TP, T>
 where
 	CM::Target: AChannelManager,
 	C::Target: Filter,
-	K::Target: KVStore,
 	TP::Target: TimeProvider,
 {
 	fn filtered_block_connected(
@@ -995,14 +985,13 @@ impl<
 		NS: NodeSigner + Clone,
 		CM: Deref + Clone,
 		C: Deref + Clone,
-		K: Deref + Clone,
+		K: KVStore + Clone,
 		TP: Deref + Clone,
 		T: BroadcasterInterface + Clone,
 	> Confirm for LiquidityManager<ES, NS, CM, C, K, TP, T>
 where
 	CM::Target: AChannelManager,
 	C::Target: Filter,
-	K::Target: KVStore,
 	TP::Target: TimeProvider,
 {
 	fn transactions_confirmed(

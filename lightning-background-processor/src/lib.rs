@@ -474,7 +474,6 @@ pub const NO_LIQUIDITY_MANAGER: Option<
 				CM = &DynChannelManager,
 				Filter = dyn chain::Filter + Send + Sync,
 				C = &(dyn chain::Filter + Send + Sync),
-				KVStore = DummyKVStore,
 				K = &DummyKVStore,
 				TimeProvider = dyn lightning_liquidity::utils::time::TimeProvider + Send + Sync,
 				TP = &(dyn lightning_liquidity::utils::time::TimeProvider + Send + Sync),
@@ -955,7 +954,7 @@ pub async fn process_events_async<
 	LM: Deref,
 	D: Deref,
 	O: Deref,
-	K: Deref,
+	K: KVStore,
 	OS: Deref<Target = OutputSweeper<T, D, F, CF, K, L, O>>,
 	S: Deref<Target = SC>,
 	SC: for<'b> WriteableScore<'b>,
@@ -978,7 +977,6 @@ where
 	LM::Target: ALiquidityManager,
 	O::Target: OutputSpender,
 	D::Target: ChangeDestinationSource,
-	K::Target: KVStore,
 {
 	let async_event_handler = |event| {
 		let network_graph = gossip_sync.network_graph();

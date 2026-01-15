@@ -30,8 +30,6 @@ use lightning::util::persist::KVStore;
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::Address;
 
-use core::ops::Deref;
-
 /// Client-side configuration options for bLIP-51 / LSPS1 channel requests.
 #[derive(Clone, Debug)]
 pub struct LSPS1ClientConfig {
@@ -47,10 +45,7 @@ struct PeerState {
 }
 
 /// The main object allowing to send and receive bLIP-51 / LSPS1 messages.
-pub struct LSPS1ClientHandler<ES: EntropySource, K: Deref + Clone>
-where
-	K::Target: KVStore,
-{
+pub struct LSPS1ClientHandler<ES: EntropySource, K: KVStore + Clone> {
 	entropy_source: ES,
 	pending_messages: Arc<MessageQueue>,
 	pending_events: Arc<EventQueue<K>>,
@@ -58,10 +53,7 @@ where
 	config: LSPS1ClientConfig,
 }
 
-impl<ES: EntropySource, K: Deref + Clone> LSPS1ClientHandler<ES, K>
-where
-	K::Target: KVStore,
-{
+impl<ES: EntropySource, K: KVStore + Clone> LSPS1ClientHandler<ES, K> {
 	/// Constructs an `LSPS1ClientHandler`.
 	pub(crate) fn new(
 		entropy_source: ES, pending_messages: Arc<MessageQueue>,
@@ -430,9 +422,8 @@ where
 	}
 }
 
-impl<ES: EntropySource, K: Deref + Clone> LSPSProtocolMessageHandler for LSPS1ClientHandler<ES, K>
-where
-	K::Target: KVStore,
+impl<ES: EntropySource, K: KVStore + Clone> LSPSProtocolMessageHandler
+	for LSPS1ClientHandler<ES, K>
 {
 	type ProtocolMessage = LSPS1Message;
 	const PROTOCOL_NUMBER: Option<u16> = Some(1);
