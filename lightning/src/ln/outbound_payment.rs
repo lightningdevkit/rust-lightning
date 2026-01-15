@@ -948,7 +948,7 @@ impl<L: Logger> OutboundPayments<L> {
 
 	#[rustfmt::skip]
 	pub(super) fn send_payment_for_bolt12_invoice<
-		R: Router, ES: EntropySource, NS: NodeSigner, NL: Deref, IH, SP
+		R: Router, ES: EntropySource, NS: NodeSigner, NL: NodeIdLookUp, IH, SP
 	>(
 		&self, invoice: &Bolt12Invoice, payment_id: PaymentId, router: &R,
 		first_hops: Vec<ChannelDetails>, features: Bolt12InvoiceFeatures, inflight_htlcs: IH,
@@ -958,7 +958,6 @@ impl<L: Logger> OutboundPayments<L> {
 		send_payment_along_path: SP,
 	) -> Result<(), Bolt12PaymentError>
 	where
-		NL::Target: NodeIdLookUp,
 		IH: Fn() -> InFlightHtlcs,
 		SP: Fn(SendAlongPathArgs) -> Result<(), APIError>,
 	{
@@ -990,7 +989,7 @@ impl<L: Logger> OutboundPayments<L> {
 
 	#[rustfmt::skip]
 	fn send_payment_for_bolt12_invoice_internal<
-		R: Router, ES: EntropySource, NS: NodeSigner, NL: Deref, IH, SP
+		R: Router, ES: EntropySource, NS: NodeSigner, NL: NodeIdLookUp, IH, SP
 	>(
 		&self, payment_id: PaymentId, payment_hash: PaymentHash,
 		keysend_preimage: Option<PaymentPreimage>, invoice_request: Option<&InvoiceRequest>,
@@ -1002,7 +1001,6 @@ impl<L: Logger> OutboundPayments<L> {
 		send_payment_along_path: SP,
 	) -> Result<(), Bolt12PaymentError>
 	where
-		NL::Target: NodeIdLookUp,
 		IH: Fn() -> InFlightHtlcs,
 		SP: Fn(SendAlongPathArgs) -> Result<(), APIError>,
 	{
