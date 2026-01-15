@@ -37,6 +37,7 @@ use dnssec_prover::rr::Name;
 use lightning_types::features::NodeFeatures;
 
 use core::fmt;
+use core::ops::Deref;
 
 use crate::blinded_path::message::DNSResolverContext;
 use crate::io;
@@ -86,6 +87,23 @@ pub trait DNSResolverMessageHandler {
 	/// Release any [`DNSResolverMessage`]s that need to be sent.
 	fn release_pending_messages(&self) -> Vec<(DNSResolverMessage, MessageSendInstructions)> {
 		vec![]
+	}
+}
+
+impl<T: DNSResolverMessageHandler + ?Sized, D: Deref<Target = T>> DNSResolverMessageHandler for D {
+	fn handle_dnssec_query(
+		&self, message: DNSSECQuery, responder: Option<Responder>,
+	) -> Option<(DNSResolverMessage, ResponseInstruction)> {
+		self.deref().handle_dnssec_query(message, responder)
+	}
+	fn handle_dnssec_proof(&self, message: DNSSECProof, context: DNSResolverContext) {
+		self.deref().handle_dnssec_proof(message, context)
+	}
+	fn provided_node_features(&self) -> NodeFeatures {
+		self.deref().provided_node_features()
+	}
+	fn release_pending_messages(&self) -> Vec<(DNSResolverMessage, MessageSendInstructions)> {
+		self.deref().release_pending_messages()
 	}
 }
 

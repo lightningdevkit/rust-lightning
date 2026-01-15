@@ -53,7 +53,6 @@ use crate::util::ser::{VecWriter, Writeable, Writer};
 #[allow(unused_imports)]
 use crate::prelude::*;
 
-use super::wire::CustomMessageReader;
 use crate::io;
 use crate::sync::{FairRwLock, Mutex, MutexGuard};
 use core::convert::Infallible;
@@ -124,6 +123,31 @@ pub trait CustomMessageHandler: wire::CustomMessageReader {
 	///
 	/// [`Init`]: crate::ln::msgs::Init
 	fn provided_init_features(&self, their_node_id: PublicKey) -> InitFeatures;
+}
+
+impl<T: CustomMessageHandler + ?Sized, C: Deref<Target = T>> CustomMessageHandler for C {
+	fn handle_custom_message(
+		&self, msg: Self::CustomMessage, sender_node_id: PublicKey,
+	) -> Result<(), LightningError> {
+		self.deref().handle_custom_message(msg, sender_node_id)
+	}
+	fn get_and_clear_pending_msg(&self) -> Vec<(PublicKey, Self::CustomMessage)> {
+		self.deref().get_and_clear_pending_msg()
+	}
+	fn peer_disconnected(&self, their_node_id: PublicKey) {
+		self.deref().peer_disconnected(their_node_id)
+	}
+	fn peer_connected(
+		&self, their_node_id: PublicKey, msg: &Init, inbound: bool,
+	) -> Result<(), ()> {
+		self.deref().peer_connected(their_node_id, msg, inbound)
+	}
+	fn provided_node_features(&self) -> NodeFeatures {
+		self.deref().provided_node_features()
+	}
+	fn provided_init_features(&self, their_node_id: PublicKey) -> InitFeatures {
+		self.deref().provided_init_features(their_node_id)
+	}
 }
 
 /// A dummy struct which implements `RoutingMessageHandler` without storing any routing information
@@ -285,13 +309,6 @@ impl OnionMessageContents for Infallible {
 	#[cfg(not(c_bindings))]
 	fn msg_type(&self) -> &'static str {
 		unreachable!();
-	}
-}
-
-impl Deref for IgnoringMessageHandler {
-	type Target = IgnoringMessageHandler;
-	fn deref(&self) -> &Self {
-		self
 	}
 }
 
@@ -568,22 +585,14 @@ impl ChannelMessageHandler for ErroringMessageHandler {
 	fn message_received(&self) {}
 }
 
-impl Deref for ErroringMessageHandler {
-	type Target = ErroringMessageHandler;
-	fn deref(&self) -> &Self {
-		self
-	}
-}
-
 /// Provides references to trait impls which handle different types of messages.
-pub struct MessageHandler<CM: Deref, RM: Deref, OM: Deref, CustomM: Deref, SM: Deref>
-where
-	CM::Target: ChannelMessageHandler,
-	RM::Target: RoutingMessageHandler,
-	OM::Target: OnionMessageHandler,
-	CustomM::Target: CustomMessageHandler,
-	SM::Target: SendOnlyMessageHandler,
-{
+pub struct MessageHandler<
+	CM: ChannelMessageHandler,
+	RM: RoutingMessageHandler,
+	OM: OnionMessageHandler,
+	CustomM: CustomMessageHandler,
+	SM: SendOnlyMessageHandler,
+> {
 	/// A message handler which handles messages specific to channels. Usually this is just a
 	/// [`ChannelManager`] object or an [`ErroringMessageHandler`].
 	///
@@ -971,18 +980,13 @@ pub type SimpleRefPeerManager<
 #[allow(missing_docs)]
 pub trait APeerManager {
 	type Descriptor: SocketDescriptor;
-	type CMT: ChannelMessageHandler + ?Sized;
-	type CM: Deref<Target = Self::CMT>;
-	type RMT: RoutingMessageHandler + ?Sized;
-	type RM: Deref<Target = Self::RMT>;
-	type OMT: OnionMessageHandler + ?Sized;
-	type OM: Deref<Target = Self::OMT>;
+	type CM: ChannelMessageHandler;
+	type RM: RoutingMessageHandler;
+	type OM: OnionMessageHandler;
 	type Logger: Logger;
-	type CMHT: CustomMessageHandler + ?Sized;
-	type CMH: Deref<Target = Self::CMHT>;
+	type CMH: CustomMessageHandler;
 	type NodeSigner: NodeSigner;
-	type SMT: SendOnlyMessageHandler + ?Sized;
-	type SM: Deref<Target = Self::SMT>;
+	type SM: SendOnlyMessageHandler;
 	/// Gets a reference to the underlying [`PeerManager`].
 	fn as_ref(
 		&self,
@@ -1000,33 +1004,22 @@ pub trait APeerManager {
 
 impl<
 		Descriptor: SocketDescriptor,
-		CM: Deref,
-		RM: Deref,
-		OM: Deref,
+		CM: ChannelMessageHandler,
+		RM: RoutingMessageHandler,
+		OM: OnionMessageHandler,
 		L: Logger,
-		CMH: Deref,
+		CMH: CustomMessageHandler,
 		NS: NodeSigner,
-		SM: Deref,
+		SM: SendOnlyMessageHandler,
 	> APeerManager for PeerManager<Descriptor, CM, RM, OM, L, CMH, NS, SM>
-where
-	CM::Target: ChannelMessageHandler,
-	RM::Target: RoutingMessageHandler,
-	OM::Target: OnionMessageHandler,
-	CMH::Target: CustomMessageHandler,
-	SM::Target: SendOnlyMessageHandler,
 {
 	type Descriptor = Descriptor;
-	type CMT = <CM as Deref>::Target;
 	type CM = CM;
-	type RMT = <RM as Deref>::Target;
 	type RM = RM;
-	type OMT = <OM as Deref>::Target;
 	type OM = OM;
 	type Logger = L;
-	type CMHT = <CMH as Deref>::Target;
 	type CMH = CMH;
 	type NodeSigner = NS;
-	type SMT = <SM as Deref>::Target;
 	type SM = SM;
 	fn as_ref(&self) -> &PeerManager<Descriptor, CM, RM, OM, L, CMH, NS, SM> {
 		self
@@ -1054,20 +1047,14 @@ where
 /// [`read_event`]: PeerManager::read_event
 pub struct PeerManager<
 	Descriptor: SocketDescriptor,
-	CM: Deref,
-	RM: Deref,
-	OM: Deref,
+	CM: ChannelMessageHandler,
+	RM: RoutingMessageHandler,
+	OM: OnionMessageHandler,
 	L: Logger,
-	CMH: Deref,
+	CMH: CustomMessageHandler,
 	NS: NodeSigner,
-	SM: Deref,
-> where
-	CM::Target: ChannelMessageHandler,
-	RM::Target: RoutingMessageHandler,
-	OM::Target: OnionMessageHandler,
-	CMH::Target: CustomMessageHandler,
-	SM::Target: SendOnlyMessageHandler,
-{
+	SM: SendOnlyMessageHandler,
+> {
 	message_handler: MessageHandler<CM, RM, OM, CMH, SM>,
 	/// Connection state for each connected peer - we have an outer read-write lock which is taken
 	/// as read while we're doing processing for a peer and taken write when a peer is being added
@@ -1143,12 +1130,14 @@ fn encode_message<T: wire::Type>(message: wire::Message<T>) -> Vec<u8> {
 	buffer.0
 }
 
-impl<Descriptor: SocketDescriptor, CM: Deref, OM: Deref, L: Logger, NS: NodeSigner, SM: Deref>
-	PeerManager<Descriptor, CM, IgnoringMessageHandler, OM, L, IgnoringMessageHandler, NS, SM>
-where
-	CM::Target: ChannelMessageHandler,
-	OM::Target: OnionMessageHandler,
-	SM::Target: SendOnlyMessageHandler,
+impl<
+		Descriptor: SocketDescriptor,
+		CM: ChannelMessageHandler,
+		OM: OnionMessageHandler,
+		L: Logger,
+		NS: NodeSigner,
+		SM: SendOnlyMessageHandler,
+	> PeerManager<Descriptor, CM, IgnoringMessageHandler, OM, L, IgnoringMessageHandler, NS, SM>
 {
 	/// Constructs a new `PeerManager` with the given `ChannelMessageHandler` and
 	/// `OnionMessageHandler`. No routing message handler is used and network graph messages are
@@ -1184,7 +1173,7 @@ where
 	}
 }
 
-impl<Descriptor: SocketDescriptor, RM: Deref, L: Logger, NS: NodeSigner>
+impl<Descriptor: SocketDescriptor, RM: RoutingMessageHandler, L: Logger, NS: NodeSigner>
 	PeerManager<
 		Descriptor,
 		ErroringMessageHandler,
@@ -1194,8 +1183,7 @@ impl<Descriptor: SocketDescriptor, RM: Deref, L: Logger, NS: NodeSigner>
 		IgnoringMessageHandler,
 		NS,
 		IgnoringMessageHandler,
-	> where
-	RM::Target: RoutingMessageHandler,
+	>
 {
 	/// Constructs a new `PeerManager` with the given `RoutingMessageHandler`. No channel message
 	/// handler or onion message handler is used and onion and channel messages will be ignored (or
@@ -1281,20 +1269,14 @@ fn filter_addresses(ip_address: Option<SocketAddress>) -> Option<SocketAddress> 
 
 impl<
 		Descriptor: SocketDescriptor,
-		CM: Deref,
-		RM: Deref,
-		OM: Deref,
+		CM: ChannelMessageHandler,
+		RM: RoutingMessageHandler,
+		OM: OnionMessageHandler,
 		L: Logger,
-		CMH: Deref,
+		CMH: CustomMessageHandler,
 		NS: NodeSigner,
-		SM: Deref,
+		SM: SendOnlyMessageHandler,
 	> PeerManager<Descriptor, CM, RM, OM, L, CMH, NS, SM>
-where
-	CM::Target: ChannelMessageHandler,
-	RM::Target: RoutingMessageHandler,
-	OM::Target: OnionMessageHandler,
-	CMH::Target: CustomMessageHandler,
-	SM::Target: SendOnlyMessageHandler,
 {
 	/// Constructs a new `PeerManager` with the given message handlers.
 	///
@@ -1721,10 +1703,7 @@ where
 	}
 
 	/// Append a message to a peer's pending outbound/write buffer
-	fn enqueue_message(
-		&self, peer: &mut Peer,
-		message: Message<<CMH::Target as CustomMessageReader>::CustomMessage>,
-	) {
+	fn enqueue_message(&self, peer: &mut Peer, message: Message<CMH::CustomMessage>) {
 		let their_node_id = peer.their_node_id.map(|p| p.0);
 		if their_node_id.is_some() {
 			let logger = WithContext::from(&self.logger, their_node_id, None, None);
@@ -1940,7 +1919,7 @@ where
 								let message_result = wire::read(
 									&mut &peer.pending_read_buffer
 										[..peer.pending_read_buffer.len() - 16],
-									&*self.message_handler.custom_message_handler,
+									&self.message_handler.custom_message_handler,
 								);
 
 								// Reset read buffer
@@ -2067,7 +2046,7 @@ where
 	/// Returns the message back if it needs to be broadcasted to all other peers.
 	fn handle_message(
 		&self, peer_mutex: &Mutex<Peer>, peer_lock: MutexGuard<Peer>,
-		message: Message<<<CMH as Deref>::Target as wire::CustomMessageReader>::CustomMessage>,
+		message: Message<CMH::CustomMessage>,
 	) -> Result<Option<BroadcastGossipMessage>, MessageHandlingError> {
 		let their_node_id = peer_lock
 			.their_node_id
@@ -2107,15 +2086,9 @@ where
 	// Returns `None` if the message was fully processed and otherwise returns the message back to
 	// allow it to be subsequently processed by `do_handle_message_without_peer_lock`.
 	fn do_handle_message_holding_peer_lock<'a>(
-		&self, mut peer_lock: MutexGuard<Peer>,
-		message: Message<<<CMH as Deref>::Target as wire::CustomMessageReader>::CustomMessage>,
+		&self, mut peer_lock: MutexGuard<Peer>, message: Message<CMH::CustomMessage>,
 		their_node_id: PublicKey, logger: &WithContext<'a, L>,
-	) -> Result<
-		Option<
-			LogicalMessage<<<CMH as Deref>::Target as wire::CustomMessageReader>::CustomMessage>,
-		>,
-		MessageHandlingError,
-	> {
+	) -> Result<Option<LogicalMessage<CMH::CustomMessage>>, MessageHandlingError> {
 		peer_lock.received_message_since_timer_tick = true;
 
 		// Need an Init as first message
@@ -2387,8 +2360,7 @@ where
 	//
 	// Returns the message back if it needs to be broadcasted to all other peers.
 	fn do_handle_message_without_peer_lock<'a>(
-		&self, peer_mutex: &Mutex<Peer>,
-		message: Message<<<CMH as Deref>::Target as wire::CustomMessageReader>::CustomMessage>,
+		&self, peer_mutex: &Mutex<Peer>, message: Message<CMH::CustomMessage>,
 		their_node_id: PublicKey, logger: &WithContext<'a, L>,
 	) -> Result<Option<BroadcastGossipMessage>, MessageHandlingError> {
 		if is_gossip_msg(message.type_id()) {
@@ -2657,8 +2629,7 @@ where
 				let scid = msg.contents.short_channel_id;
 				let node_id_1 = msg.contents.node_id_1;
 				let node_id_2 = msg.contents.node_id_2;
-				let msg: Message<<CMH::Target as CustomMessageReader>::CustomMessage> =
-					Message::ChannelAnnouncement(msg);
+				let msg: Message<CMH::CustomMessage> = Message::ChannelAnnouncement(msg);
 				let encoded_msg = encode_message(msg);
 				for (_, peer_mutex) in peers.iter() {
 					let mut peer = peer_mutex.lock().unwrap();
@@ -2704,8 +2675,7 @@ where
 				let our_announcement = self.our_node_id == msg.contents.node_id;
 				let msg_node_id = msg.contents.node_id;
 
-				let msg: Message<<CMH::Target as CustomMessageReader>::CustomMessage> =
-					Message::NodeAnnouncement(msg);
+				let msg: Message<CMH::CustomMessage> = Message::NodeAnnouncement(msg);
 				let encoded_msg = encode_message(msg);
 				for (_, peer_mutex) in peers.iter() {
 					let mut peer = peer_mutex.lock().unwrap();
@@ -2750,8 +2720,7 @@ where
 				);
 				let our_channel = self.our_node_id == node_id_1 || self.our_node_id == node_id_2;
 				let scid = msg.contents.short_channel_id;
-				let msg: Message<<CMH::Target as CustomMessageReader>::CustomMessage> =
-					Message::ChannelUpdate(msg);
+				let msg: Message<CMH::CustomMessage> = Message::ChannelUpdate(msg);
 				let encoded_msg = encode_message(msg);
 				for (_, peer_mutex) in peers.iter() {
 					let mut peer = peer_mutex.lock().unwrap();
@@ -3285,9 +3254,8 @@ where
 									// We do not have the peers write lock, so we just store that we're
 									// about to disconnect the peer and do it after we finish
 									// processing most messages.
-									let msg = msg.map(|msg| {
-										Message::<<<CMH as Deref>::Target as wire::CustomMessageReader>::CustomMessage>::Error(msg)
-									});
+									let msg =
+										msg.map(|msg| Message::<CMH::CustomMessage>::Error(msg));
 									peers_to_disconnect.insert(node_id, msg);
 								},
 								msgs::ErrorAction::DisconnectPeerWithWarning { msg } => {
@@ -3557,8 +3525,7 @@ where
 		if peer.awaiting_pong_timer_tick_intervals == 0 {
 			peer.awaiting_pong_timer_tick_intervals = -1;
 			let ping = msgs::Ping { ponglen: 0, byteslen: 64 };
-			let msg: Message<<CMH::Target as CustomMessageReader>::CustomMessage> =
-				Message::Ping(ping);
+			let msg: Message<CMH::CustomMessage> = Message::Ping(ping);
 			self.enqueue_message(peer, msg);
 		}
 	}

@@ -17,6 +17,7 @@ use crate::onion_message::messenger::{MessageSendInstructions, Responder, Respon
 use crate::onion_message::packet::OnionMessageContents;
 use crate::prelude::*;
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
+use core::ops::Deref;
 
 // TLV record types for the `onionmsg_tlv` TLV stream as defined in BOLT 4.
 const OFFER_PATHS_REQ_TLV_TYPE: u64 = 75540;
@@ -86,6 +87,45 @@ pub trait AsyncPaymentsMessageHandler {
 	/// to another message.
 	fn release_pending_messages(&self) -> Vec<(AsyncPaymentsMessage, MessageSendInstructions)> {
 		vec![]
+	}
+}
+
+impl<T: AsyncPaymentsMessageHandler + ?Sized, A: Deref<Target = T>> AsyncPaymentsMessageHandler
+	for A
+{
+	fn handle_offer_paths_request(
+		&self, message: OfferPathsRequest, context: AsyncPaymentsContext,
+		responder: Option<Responder>,
+	) -> Option<(OfferPaths, ResponseInstruction)> {
+		self.deref().handle_offer_paths_request(message, context, responder)
+	}
+	fn handle_offer_paths(
+		&self, message: OfferPaths, context: AsyncPaymentsContext, responder: Option<Responder>,
+	) -> Option<(ServeStaticInvoice, ResponseInstruction)> {
+		self.deref().handle_offer_paths(message, context, responder)
+	}
+	fn handle_serve_static_invoice(
+		&self, message: ServeStaticInvoice, context: AsyncPaymentsContext,
+		responder: Option<Responder>,
+	) {
+		self.deref().handle_serve_static_invoice(message, context, responder)
+	}
+	fn handle_static_invoice_persisted(
+		&self, message: StaticInvoicePersisted, context: AsyncPaymentsContext,
+	) {
+		self.deref().handle_static_invoice_persisted(message, context)
+	}
+	fn handle_held_htlc_available(
+		&self, message: HeldHtlcAvailable, context: AsyncPaymentsContext,
+		responder: Option<Responder>,
+	) -> Option<(ReleaseHeldHtlc, ResponseInstruction)> {
+		self.deref().handle_held_htlc_available(message, context, responder)
+	}
+	fn handle_release_held_htlc(&self, message: ReleaseHeldHtlc, context: AsyncPaymentsContext) {
+		self.deref().handle_release_held_htlc(message, context)
+	}
+	fn release_pending_messages(&self) -> Vec<(AsyncPaymentsMessage, MessageSendInstructions)> {
+		self.deref().release_pending_messages()
 	}
 }
 
