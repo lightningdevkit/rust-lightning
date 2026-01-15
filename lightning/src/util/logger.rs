@@ -294,14 +294,17 @@ pub trait Logger {
 	fn log(&self, record: Record);
 }
 
+impl<T: Logger + ?Sized, L: Deref<Target = T>> Logger for L {
+	fn log(&self, record: Record) {
+		self.deref().log(record)
+	}
+}
+
 /// Adds relevant context to a [`Record`] before passing it to the wrapped [`Logger`].
 ///
 /// This is not exported to bindings users as lifetimes are problematic and there's little reason
 /// for this to be used downstream anyway.
-pub struct WithContext<'a, L: Deref>
-where
-	L::Target: Logger,
-{
+pub struct WithContext<'a, L: Logger> {
 	logger: &'a L,
 	peer_id: Option<PublicKey>,
 	channel_id: Option<ChannelId>,
@@ -309,10 +312,7 @@ where
 	payment_id: Option<PaymentId>,
 }
 
-impl<'a, L: Deref> Logger for WithContext<'a, L>
-where
-	L::Target: Logger,
-{
+impl<'a, L: Logger> Logger for WithContext<'a, L> {
 	fn log(&self, mut record: Record) {
 		if self.peer_id.is_some() && record.peer_id.is_none() {
 			record.peer_id = self.peer_id
@@ -330,10 +330,7 @@ where
 	}
 }
 
-impl<'a, L: Deref> WithContext<'a, L>
-where
-	L::Target: Logger,
-{
+impl<'a, L: Logger> WithContext<'a, L> {
 	/// Wraps the given logger, providing additional context to any logged records.
 	pub fn from(
 		logger: &'a L, peer_id: Option<PublicKey>, channel_id: Option<ChannelId>,

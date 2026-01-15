@@ -42,20 +42,14 @@ use std::collections::HashSet;
 /// [`ChainMonitor`]: lightning::chain::chainmonitor::ChainMonitor
 /// [`Watch::watch_channel`]: lightning::chain::Watch::watch_channel
 /// [`Filter`]: lightning::chain::Filter
-pub struct EsploraSyncClient<L: Deref>
-where
-	L::Target: Logger,
-{
+pub struct EsploraSyncClient<L: Logger> {
 	sync_state: MutexType<SyncState>,
 	queue: std::sync::Mutex<FilterQueue>,
 	client: EsploraClientType,
 	logger: L,
 }
 
-impl<L: Deref> EsploraSyncClient<L>
-where
-	L::Target: Logger,
-{
+impl<L: Logger> EsploraSyncClient<L> {
 	/// Returns a new [`EsploraSyncClient`] object.
 	pub fn new(server_url: String, logger: L) -> Self {
 		let builder = Builder::new(&server_url);
@@ -472,10 +466,7 @@ type EsploraClientType = AsyncClient;
 #[cfg(not(feature = "async-interface"))]
 type EsploraClientType = BlockingClient;
 
-impl<L: Deref> Filter for EsploraSyncClient<L>
-where
-	L::Target: Logger,
-{
+impl<L: Logger> Filter for EsploraSyncClient<L> {
 	fn register_tx(&self, txid: &Txid, _script_pubkey: &Script) {
 		let mut locked_queue = self.queue.lock().unwrap();
 		locked_queue.transactions.insert(*txid);

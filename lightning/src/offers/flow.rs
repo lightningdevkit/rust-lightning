@@ -10,7 +10,6 @@
 //! Provides data structures and functions for creating and managing Offers messages,
 //! facilitating communication, and handling BOLT12 messages and payments.
 
-use core::ops::Deref;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
 
@@ -74,10 +73,7 @@ use {
 ///
 /// [`OffersMessageFlow`] is parameterized by a [`MessageRouter`], which is responsible
 /// for finding message paths when initiating and retrying onion messages.
-pub struct OffersMessageFlow<MR: MessageRouter, L: Deref>
-where
-	L::Target: Logger,
-{
+pub struct OffersMessageFlow<MR: MessageRouter, L: Logger> {
 	chain_hash: ChainHash,
 	best_block: RwLock<BestBlock>,
 
@@ -106,10 +102,7 @@ where
 	logger: L,
 }
 
-impl<MR: MessageRouter, L: Deref> OffersMessageFlow<MR, L>
-where
-	L::Target: Logger,
-{
+impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 	/// Creates a new [`OffersMessageFlow`]
 	pub fn new(
 		chain_hash: ChainHash, best_block: BestBlock, our_network_pubkey: PublicKey,
@@ -264,10 +257,7 @@ const DEFAULT_ASYNC_RECEIVE_OFFER_EXPIRY: Duration = Duration::from_secs(365 * 2
 pub(crate) const TEST_DEFAULT_ASYNC_RECEIVE_OFFER_EXPIRY: Duration =
 	DEFAULT_ASYNC_RECEIVE_OFFER_EXPIRY;
 
-impl<MR: MessageRouter, L: Deref> OffersMessageFlow<MR, L>
-where
-	L::Target: Logger,
-{
+impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 	/// [`BlindedMessagePath`]s for an async recipient to communicate with this node and interactively
 	/// build [`Offer`]s and [`StaticInvoice`]s for receiving async payments.
 	///
@@ -427,10 +417,7 @@ pub enum HeldHtlcReplyPath {
 	},
 }
 
-impl<MR: MessageRouter, L: Deref> OffersMessageFlow<MR, L>
-where
-	L::Target: Logger,
-{
+impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 	/// Verifies an [`InvoiceRequest`] using the provided [`OffersContext`] or the [`InvoiceRequest::metadata`].
 	///
 	/// - If an [`OffersContext::InvoiceRequest`] with a `nonce` is provided, verification is performed using recipient context data.

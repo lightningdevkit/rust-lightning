@@ -866,7 +866,7 @@ impl OutboundPayments {
 
 impl OutboundPayments {
 	#[rustfmt::skip]
-	pub(super) fn send_payment<R: Router, ES: EntropySource, NS: NodeSigner, IH, SP, L: Deref>(
+	pub(super) fn send_payment<R: Router, ES: EntropySource, NS: NodeSigner, IH, SP, L: Logger>(
 		&self, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields, payment_id: PaymentId,
 		retry_strategy: Retry, route_params: RouteParameters, router: &R,
 		first_hops: Vec<ChannelDetails>, compute_inflight_htlcs: IH, entropy_source: &ES,
@@ -877,7 +877,6 @@ impl OutboundPayments {
 	where
 		IH: Fn() -> InFlightHtlcs,
 		SP: Fn(SendAlongPathArgs) -> Result<(), APIError>,
-		L::Target: Logger,
 	{
 		self.send_payment_for_non_bolt12_invoice(payment_id, payment_hash, recipient_onion, None, retry_strategy,
 			route_params, router, first_hops, &compute_inflight_htlcs, entropy_source, node_signer,
@@ -885,7 +884,7 @@ impl OutboundPayments {
 	}
 
 	#[rustfmt::skip]
-	pub(super) fn send_spontaneous_payment<R: Router, ES: EntropySource, NS: NodeSigner, IH, SP, L: Deref>(
+	pub(super) fn send_spontaneous_payment<R: Router, ES: EntropySource, NS: NodeSigner, IH, SP, L: Logger>(
 		&self, payment_preimage: Option<PaymentPreimage>, recipient_onion: RecipientOnionFields,
 		payment_id: PaymentId, retry_strategy: Retry, route_params: RouteParameters, router: &R,
 		first_hops: Vec<ChannelDetails>, inflight_htlcs: IH, entropy_source: &ES,
@@ -896,7 +895,6 @@ impl OutboundPayments {
 	where
 		IH: Fn() -> InFlightHtlcs,
 		SP: Fn(SendAlongPathArgs) -> Result<(), APIError>,
-		L::Target: Logger,
 	{
 		let preimage = payment_preimage
 			.unwrap_or_else(|| PaymentPreimage(entropy_source.get_secure_random_bytes()));
@@ -909,7 +907,7 @@ impl OutboundPayments {
 	}
 
 	#[rustfmt::skip]
-	pub(super) fn pay_for_bolt11_invoice<R: Router, ES: EntropySource, NS: NodeSigner, IH, SP, L: Deref>(
+	pub(super) fn pay_for_bolt11_invoice<R: Router, ES: EntropySource, NS: NodeSigner, IH, SP, L: Logger>(
 		&self, invoice: &Bolt11Invoice, payment_id: PaymentId,
 		amount_msats: Option<u64>,
 		route_params_config: RouteParametersConfig,
@@ -923,7 +921,6 @@ impl OutboundPayments {
 	where
 		IH: Fn() -> InFlightHtlcs,
 		SP: Fn(SendAlongPathArgs) -> Result<(), APIError>,
-		L::Target: Logger,
 	{
 		let payment_hash = invoice.payment_hash();
 
@@ -955,7 +952,7 @@ impl OutboundPayments {
 
 	#[rustfmt::skip]
 	pub(super) fn send_payment_for_bolt12_invoice<
-		R: Router, ES: EntropySource, NS: NodeSigner, NL: Deref, IH, SP, L: Deref,
+		R: Router, ES: EntropySource, NS: NodeSigner, NL: Deref, IH, SP, L: Logger,
 	>(
 		&self, invoice: &Bolt12Invoice, payment_id: PaymentId, router: &R,
 		first_hops: Vec<ChannelDetails>, features: Bolt12InvoiceFeatures, inflight_htlcs: IH,
@@ -968,7 +965,6 @@ impl OutboundPayments {
 		NL::Target: NodeIdLookUp,
 		IH: Fn() -> InFlightHtlcs,
 		SP: Fn(SendAlongPathArgs) -> Result<(), APIError>,
-		L::Target: Logger,
 	{
 
 		let (payment_hash, retry_strategy, params_config, _) = self
@@ -998,7 +994,7 @@ impl OutboundPayments {
 
 	#[rustfmt::skip]
 	fn send_payment_for_bolt12_invoice_internal<
-		R: Router, ES: EntropySource, NS: NodeSigner, NL: Deref, IH, SP, L: Deref,
+		R: Router, ES: EntropySource, NS: NodeSigner, NL: Deref, IH, SP, L: Logger,
 	>(
 		&self, payment_id: PaymentId, payment_hash: PaymentHash,
 		keysend_preimage: Option<PaymentPreimage>, invoice_request: Option<&InvoiceRequest>,
@@ -1013,7 +1009,6 @@ impl OutboundPayments {
 		NL::Target: NodeIdLookUp,
 		IH: Fn() -> InFlightHtlcs,
 		SP: Fn(SendAlongPathArgs) -> Result<(), APIError>,
-		L::Target: Logger,
 	{
 		// Advance any blinded path where the introduction node is our node.
 		if let Ok(our_node_id) = node_signer.get_node_id(Recipient::Node) {
@@ -1217,7 +1212,7 @@ impl OutboundPayments {
 		NL: Deref,
 		IH,
 		SP,
-		L: Deref,
+		L: Logger,
 	>(
 		&self, payment_id: PaymentId, hold_htlcs_at_next_hop: bool, router: &R,
 		first_hops: Vec<ChannelDetails>, inflight_htlcs: IH, entropy_source: &ES, node_signer: &NS,
@@ -1229,7 +1224,6 @@ impl OutboundPayments {
 		NL::Target: NodeIdLookUp,
 		IH: Fn() -> InFlightHtlcs,
 		SP: Fn(SendAlongPathArgs) -> Result<(), APIError>,
-		L::Target: Logger,
 	{
 		let (
 			payment_hash,
@@ -1300,7 +1294,7 @@ impl OutboundPayments {
 		SP,
 		IH,
 		FH,
-		L: Deref,
+		L: Logger,
 	>(
 		&self, router: &R, first_hops: FH, inflight_htlcs: IH, entropy_source: &ES,
 		node_signer: &NS, best_block_height: u32,
@@ -1311,7 +1305,6 @@ impl OutboundPayments {
 		SP: Fn(SendAlongPathArgs) -> Result<(), APIError>,
 		IH: Fn() -> InFlightHtlcs,
 		FH: Fn() -> Vec<ChannelDetails>,
-		L::Target: Logger,
 	{
 		let _single_thread = self.retry_lock.lock().unwrap();
 		let mut should_persist = false;
@@ -1410,14 +1403,13 @@ impl OutboundPayments {
 	}
 
 	#[rustfmt::skip]
-	fn find_initial_route<R: Router, NS: NodeSigner, IH, L: Deref>(
+	fn find_initial_route<R: Router, NS: NodeSigner, IH, L: Logger>(
 		&self, payment_id: PaymentId, payment_hash: PaymentHash, recipient_onion: &RecipientOnionFields,
 		keysend_preimage: Option<PaymentPreimage>, invoice_request: Option<&InvoiceRequest>,
 		route_params: &mut RouteParameters, router: &R, first_hops: &Vec<ChannelDetails>,
 		inflight_htlcs: &IH, node_signer: &NS, best_block_height: u32, logger: &WithContext<L>,
 	) -> Result<Route, RetryableSendFailure>
 	where
-		L::Target: Logger,
 		IH: Fn() -> InFlightHtlcs,
 	{
 		#[cfg(feature = "std")] {
@@ -1463,7 +1455,7 @@ impl OutboundPayments {
 	/// [`Event::PaymentPathFailed`]: crate::events::Event::PaymentPathFailed
 	/// [`Event::PaymentFailed`]: crate::events::Event::PaymentFailed
 	#[rustfmt::skip]
-	fn send_payment_for_non_bolt12_invoice<R: Router, NS: NodeSigner, ES: EntropySource, IH, SP, L: Deref>(
+	fn send_payment_for_non_bolt12_invoice<R: Router, NS: NodeSigner, ES: EntropySource, IH, SP, L: Logger>(
 		&self, payment_id: PaymentId, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields,
 		keysend_preimage: Option<PaymentPreimage>, retry_strategy: Retry, mut route_params: RouteParameters,
 		router: &R, first_hops: Vec<ChannelDetails>, inflight_htlcs: IH, entropy_source: &ES,
@@ -1472,7 +1464,6 @@ impl OutboundPayments {
 		logger: &WithContext<L>,
 	) -> Result<(), RetryableSendFailure>
 	where
-		L::Target: Logger,
 		IH: Fn() -> InFlightHtlcs,
 		SP: Fn(SendAlongPathArgs) -> Result<(), APIError>,
 	{
@@ -1506,7 +1497,7 @@ impl OutboundPayments {
 	}
 
 	#[rustfmt::skip]
-	fn find_route_and_send_payment<R: Router, NS: NodeSigner, ES: EntropySource, IH, SP, L: Deref>(
+	fn find_route_and_send_payment<R: Router, NS: NodeSigner, ES: EntropySource, IH, SP, L: Logger>(
 		&self, payment_hash: PaymentHash, payment_id: PaymentId, route_params: RouteParameters,
 		router: &R, first_hops: Vec<ChannelDetails>, inflight_htlcs: &IH, entropy_source: &ES,
 		node_signer: &NS, best_block_height: u32,
@@ -1514,7 +1505,6 @@ impl OutboundPayments {
 		send_payment_along_path: &SP, logger: &WithContext<L>,
 	)
 	where
-		L::Target: Logger,
 		IH: Fn() -> InFlightHtlcs,
 		SP: Fn(SendAlongPathArgs) -> Result<(), APIError>,
 	{
@@ -1665,7 +1655,7 @@ impl OutboundPayments {
 	}
 
 	#[rustfmt::skip]
-	fn handle_pay_route_err<R: Router, NS: NodeSigner, ES: EntropySource, IH, SP, L: Deref>(
+	fn handle_pay_route_err<R: Router, NS: NodeSigner, ES: EntropySource, IH, SP, L: Logger>(
 		&self, err: PaymentSendFailure, payment_id: PaymentId, payment_hash: PaymentHash, route: Route,
 		mut route_params: RouteParameters, onion_session_privs: Vec<[u8; 32]>, router: &R,
 		first_hops: Vec<ChannelDetails>, inflight_htlcs: &IH, entropy_source: &ES, node_signer: &NS,
@@ -1676,7 +1666,6 @@ impl OutboundPayments {
 	where
 		IH: Fn() -> InFlightHtlcs,
 		SP: Fn(SendAlongPathArgs) -> Result<(), APIError>,
-		L::Target: Logger,
 	{
 		match err {
 			PaymentSendFailure::AllFailedResendSafe(errs) => {
@@ -1726,15 +1715,13 @@ impl OutboundPayments {
 
 	fn push_path_failed_evs_and_scids<
 		I: ExactSizeIterator + Iterator<Item = Result<(), APIError>>,
-		L: Deref,
+		L: Logger,
 	>(
 		payment_id: PaymentId, payment_hash: PaymentHash, route_params: &mut RouteParameters,
 		paths: Vec<Path>, path_results: I,
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
 		logger: &WithContext<L>,
-	) where
-		L::Target: Logger,
-	{
+	) {
 		let mut events = pending_events.lock().unwrap();
 		debug_assert_eq!(paths.len(), path_results.len());
 		for (path, path_res) in paths.into_iter().zip(path_results) {
@@ -2201,14 +2188,13 @@ impl OutboundPayments {
 	}
 
 	#[rustfmt::skip]
-	pub(super) fn claim_htlc<L: Deref>(
+	pub(super) fn claim_htlc<L: Logger>(
 		&self, payment_id: PaymentId, payment_preimage: PaymentPreimage, bolt12_invoice: Option<PaidBolt12Invoice>,
 		session_priv: SecretKey, path: Path, from_onchain: bool, ev_completion_action: &mut Option<EventCompletionAction>,
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
 		logger: &WithContext<L>,
 	)
 	where
-		L::Target: Logger,
 	{
 		let mut session_priv_bytes = [0; 32];
 		session_priv_bytes.copy_from_slice(&session_priv[..]);
@@ -2367,15 +2353,13 @@ impl OutboundPayments {
 		});
 	}
 
-	pub(super) fn fail_htlc<L: Deref>(
+	pub(super) fn fail_htlc<L: Logger>(
 		&self, source: &HTLCSource, payment_hash: &PaymentHash, onion_error: &HTLCFailReason,
 		path: &Path, session_priv: &SecretKey, payment_id: &PaymentId,
 		probing_cookie_secret: [u8; 32], secp_ctx: &Secp256k1<secp256k1::All>,
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
 		completion_action: &mut Option<PaymentCompleteUpdate>, logger: &WithContext<L>,
-	) where
-		L::Target: Logger,
-	{
+	) {
 		#[cfg(any(test, feature = "_test_utils"))]
 		let DecodedOnionFailure {
 			network_update,
@@ -2604,12 +2588,10 @@ impl OutboundPayments {
 		invoice_requests
 	}
 
-	pub(super) fn insert_from_monitor_on_startup<L: Deref>(
+	pub(super) fn insert_from_monitor_on_startup<L: Logger>(
 		&self, payment_id: PaymentId, payment_hash: PaymentHash, session_priv_bytes: [u8; 32],
 		path: &Path, best_block_height: u32, logger: &WithContext<L>,
-	) where
-		L::Target: Logger,
-	{
+	) {
 		let path_amt = path.final_value_msat();
 		let path_fee = path.fee_msat();
 

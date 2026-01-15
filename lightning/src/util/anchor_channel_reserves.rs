@@ -275,10 +275,10 @@ pub fn can_support_additional_anchor_channel<
 	FilterRef: Deref,
 	B: BroadcasterInterface,
 	FE: FeeEstimator,
-	LoggerRef: Deref,
+	L: Logger,
 	PersistRef: Deref,
 	ES: EntropySource,
-	ChainMonitorRef: Deref<Target = ChainMonitor<ChannelSigner, FilterRef, B, FE, LoggerRef, PersistRef, ES>>,
+	ChainMonitorRef: Deref<Target = ChainMonitor<ChannelSigner, FilterRef, B, FE, L, PersistRef, ES>>,
 >(
 	context: &AnchorChannelReserveContext, utxos: &[Utxo], a_channel_manager: AChannelManagerRef,
 	chain_monitor: ChainMonitorRef,
@@ -286,7 +286,6 @@ pub fn can_support_additional_anchor_channel<
 where
 	AChannelManagerRef::Target: AChannelManager,
 	FilterRef::Target: Filter,
-	LoggerRef::Target: Logger,
 	PersistRef::Target: Persist<ChannelSigner>,
 {
 	let mut anchor_channels = new_hash_set();

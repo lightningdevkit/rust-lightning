@@ -40,7 +40,6 @@ use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey};
 
 use crate::io::{Cursor, Read};
-use core::ops::Deref;
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -983,13 +982,10 @@ mod fuzzy_onion_utils {
 		pub(crate) attribution_failed_channel: Option<u64>,
 	}
 
-	pub fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
+	pub fn process_onion_failure<T: secp256k1::Signing, L: Logger>(
 		secp_ctx: &Secp256k1<T>, logger: &L, htlc_source: &HTLCSource,
 		encrypted_packet: OnionErrorPacket,
-	) -> DecodedOnionFailure
-	where
-		L::Target: Logger,
-	{
+	) -> DecodedOnionFailure {
 		let (path, session_priv) = match htlc_source {
 			HTLCSource::OutboundRoute { ref path, ref session_priv, .. } => (path, session_priv),
 			_ => unreachable!(),
@@ -999,13 +995,10 @@ mod fuzzy_onion_utils {
 	}
 
 	/// Decodes the attribution data that we got back from upstream on a payment we sent.
-	pub fn decode_fulfill_attribution_data<T: secp256k1::Signing, L: Deref>(
+	pub fn decode_fulfill_attribution_data<T: secp256k1::Signing, L: Logger>(
 		secp_ctx: &Secp256k1<T>, logger: &L, path: &Path, outer_session_priv: &SecretKey,
 		mut attribution_data: AttributionData,
-	) -> Vec<u32>
-	where
-		L::Target: Logger,
-	{
+	) -> Vec<u32> {
 		let mut hold_times = Vec::new();
 
 		// Only consider hops in the regular path for attribution data. Blinded path attribution data isn't accessible.
@@ -1057,13 +1050,10 @@ pub(crate) use self::fuzzy_onion_utils::*;
 
 /// Process failure we got back from upstream on a payment we sent (implying htlc_source is an
 /// OutboundRoute).
-fn process_onion_failure_inner<T: secp256k1::Signing, L: Deref>(
+fn process_onion_failure_inner<T: secp256k1::Signing, L: Logger>(
 	secp_ctx: &Secp256k1<T>, logger: &L, path: &Path, session_priv: &SecretKey,
 	trampoline_session_priv_override: Option<SecretKey>, mut encrypted_packet: OnionErrorPacket,
-) -> DecodedOnionFailure
-where
-	L::Target: Logger,
-{
+) -> DecodedOnionFailure {
 	// Check that there is at least enough data for an hmac, otherwise none of the checking that we may do makes sense.
 	// Also prevent slice out of bounds further down.
 	if encrypted_packet.data.len() < 32 {
@@ -2124,12 +2114,9 @@ impl HTLCFailReason {
 		}
 	}
 
-	pub(super) fn decode_onion_failure<T: secp256k1::Signing, L: Deref>(
+	pub(super) fn decode_onion_failure<T: secp256k1::Signing, L: Logger>(
 		&self, secp_ctx: &Secp256k1<T>, logger: &L, htlc_source: &HTLCSource,
-	) -> DecodedOnionFailure
-	where
-		L::Target: Logger,
-	{
+	) -> DecodedOnionFailure {
 		match self.0 {
 			HTLCFailReasonRepr::LightningError { ref err, .. } => {
 				process_onion_failure(secp_ctx, logger, &htlc_source, err.clone())
