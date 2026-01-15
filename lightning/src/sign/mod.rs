@@ -1118,6 +1118,28 @@ pub trait SignerProvider {
 	fn get_shutdown_scriptpubkey(&self) -> Result<ShutdownScript, ()>;
 }
 
+impl<T: SignerProvider + ?Sized, SP: Deref<Target = T>> SignerProvider for SP {
+	type EcdsaSigner = T::EcdsaSigner;
+	#[cfg(taproot)]
+	type TaprootSigner = T::TaprootSigner;
+
+	fn generate_channel_keys_id(&self, inbound: bool, user_channel_id: u128) -> [u8; 32] {
+		self.deref().generate_channel_keys_id(inbound, user_channel_id)
+	}
+
+	fn derive_channel_signer(&self, channel_keys_id: [u8; 32]) -> Self::EcdsaSigner {
+		self.deref().derive_channel_signer(channel_keys_id)
+	}
+
+	fn get_destination_script(&self, channel_keys_id: [u8; 32]) -> Result<ScriptBuf, ()> {
+		self.deref().get_destination_script(channel_keys_id)
+	}
+
+	fn get_shutdown_scriptpubkey(&self) -> Result<ShutdownScript, ()> {
+		self.deref().get_shutdown_scriptpubkey()
+	}
+}
+
 /// A helper trait that describes an on-chain wallet capable of returning a (change) destination
 /// script.
 ///

@@ -264,21 +264,19 @@ where
 ///
 /// [`Event::BumpTransaction`]: crate::events::Event::BumpTransaction
 // Note that updates to documentation on this struct should be copied to the synchronous version.
-pub struct BumpTransactionEventHandlerSync<B: Deref, C: Deref, SP: Deref, L: Logger>
+pub struct BumpTransactionEventHandlerSync<B: Deref, C: Deref, SP: SignerProvider, L: Logger>
 where
 	B::Target: BroadcasterInterface,
 	C::Target: CoinSelectionSourceSync,
-	SP::Target: SignerProvider,
 {
 	bump_transaction_event_handler:
 		BumpTransactionEventHandler<B, CoinSelectionSourceSyncWrapper<C>, SP, L>,
 }
 
-impl<B: Deref, C: Deref, SP: Deref, L: Logger> BumpTransactionEventHandlerSync<B, C, SP, L>
+impl<B: Deref, C: Deref, SP: SignerProvider, L: Logger> BumpTransactionEventHandlerSync<B, C, SP, L>
 where
 	B::Target: BroadcasterInterface,
 	C::Target: CoinSelectionSourceSync,
-	SP::Target: SignerProvider,
 {
 	/// Constructs a new instance of [`BumpTransactionEventHandlerSync`].
 	pub fn new(broadcaster: B, utxo_source: C, signer_provider: SP, logger: L) -> Self {
