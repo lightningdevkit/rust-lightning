@@ -12,7 +12,6 @@ use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 
 use core::future::Future;
-use core::ops::Deref;
 use core::task::{Poll, Waker};
 
 use lightning::ln::msgs::DecodeError;
@@ -25,10 +24,7 @@ use lightning::util::wakers::Notifier;
 /// The maximum queue size we allow before starting to drop events.
 pub const MAX_EVENT_QUEUE_SIZE: usize = 1000;
 
-pub(crate) struct EventQueue<K: Deref + Clone>
-where
-	K::Target: KVStore,
-{
+pub(crate) struct EventQueue<K: KVStore + Clone> {
 	state: Mutex<QueueState>,
 	waker: Mutex<Option<Waker>>,
 	#[cfg(feature = "std")]
@@ -37,10 +33,7 @@ where
 	persist_notifier: Arc<Notifier>,
 }
 
-impl<K: Deref + Clone> EventQueue<K>
-where
-	K::Target: KVStore,
-{
+impl<K: KVStore + Clone> EventQueue<K> {
 	pub fn new(
 		queue: VecDeque<LiquidityEvent>, kv_store: K, persist_notifier: Arc<Notifier>,
 	) -> Self {
@@ -164,14 +157,9 @@ struct QueueState {
 
 // A guard type that will notify about new events when dropped.
 #[must_use]
-pub(crate) struct EventQueueNotifierGuard<'a, K: Deref + Clone>(&'a EventQueue<K>)
-where
-	K::Target: KVStore;
+pub(crate) struct EventQueueNotifierGuard<'a, K: KVStore + Clone>(&'a EventQueue<K>);
 
-impl<'a, K: Deref + Clone> EventQueueNotifierGuard<'a, K>
-where
-	K::Target: KVStore,
-{
+impl<'a, K: KVStore + Clone> EventQueueNotifierGuard<'a, K> {
 	pub fn enqueue<E: Into<LiquidityEvent>>(&self, event: E) {
 		let mut state_lock = self.0.state.lock().unwrap();
 		if state_lock.queue.len() < MAX_EVENT_QUEUE_SIZE {
@@ -183,10 +171,7 @@ where
 	}
 }
 
-impl<'a, K: Deref + Clone> Drop for EventQueueNotifierGuard<'a, K>
-where
-	K::Target: KVStore,
-{
+impl<'a, K: KVStore + Clone> Drop for EventQueueNotifierGuard<'a, K> {
 	fn drop(&mut self) {
 		let (should_notify, should_persist_notify) = {
 			let state_lock = self.0.state.lock().unwrap();
@@ -208,14 +193,9 @@ where
 	}
 }
 
-struct EventFuture<'a, K: Deref + Clone>(&'a EventQueue<K>)
-where
-	K::Target: KVStore;
+struct EventFuture<'a, K: KVStore + Clone>(&'a EventQueue<K>);
 
-impl<K: Deref + Clone> Future for EventFuture<'_, K>
-where
-	K::Target: KVStore,
-{
+impl<K: KVStore + Clone> Future for EventFuture<'_, K> {
 	type Output = LiquidityEvent;
 
 	fn poll(

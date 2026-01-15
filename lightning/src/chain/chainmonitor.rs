@@ -256,22 +256,20 @@ impl<ChannelSigner: EcdsaChannelSigner> Deref for LockedChannelMonitor<'_, Chann
 ///
 /// This is not exported to bindings users as async is not supported outside of Rust.
 pub struct AsyncPersister<
-	K: Deref + MaybeSend + MaybeSync + 'static,
+	K: KVStore + MaybeSend + MaybeSync + 'static,
 	S: FutureSpawner,
 	L: Logger + MaybeSend + MaybeSync + 'static,
 	ES: EntropySource + MaybeSend + MaybeSync + 'static,
 	SP: SignerProvider + MaybeSend + MaybeSync + 'static,
 	BI: BroadcasterInterface + MaybeSend + MaybeSync + 'static,
 	FE: FeeEstimator + MaybeSend + MaybeSync + 'static,
-> where
-	K::Target: KVStore + MaybeSync,
-{
+> {
 	persister: MonitorUpdatingPersisterAsync<K, S, L, ES, SP, BI, FE>,
 	event_notifier: Arc<Notifier>,
 }
 
 impl<
-		K: Deref + MaybeSend + MaybeSync + 'static,
+		K: KVStore + MaybeSend + MaybeSync + 'static,
 		S: FutureSpawner,
 		L: Logger + MaybeSend + MaybeSync + 'static,
 		ES: EntropySource + MaybeSend + MaybeSync + 'static,
@@ -279,8 +277,6 @@ impl<
 		BI: BroadcasterInterface + MaybeSend + MaybeSync + 'static,
 		FE: FeeEstimator + MaybeSend + MaybeSync + 'static,
 	> Deref for AsyncPersister<K, S, L, ES, SP, BI, FE>
-where
-	K::Target: KVStore + MaybeSync,
 {
 	type Target = Self;
 	fn deref(&self) -> &Self {
@@ -289,7 +285,7 @@ where
 }
 
 impl<
-		K: Deref + MaybeSend + MaybeSync + 'static,
+		K: KVStore + MaybeSend + MaybeSync + 'static,
 		S: FutureSpawner,
 		L: Logger + MaybeSend + MaybeSync + 'static,
 		ES: EntropySource + MaybeSend + MaybeSync + 'static,
@@ -298,7 +294,6 @@ impl<
 		FE: FeeEstimator + MaybeSend + MaybeSync + 'static,
 	> Persist<SP::EcdsaSigner> for AsyncPersister<K, S, L, ES, SP, BI, FE>
 where
-	K::Target: KVStore + MaybeSync,
 	SP::EcdsaSigner: MaybeSend + 'static,
 {
 	fn persist_new_channel(
@@ -380,7 +375,7 @@ pub struct ChainMonitor<
 }
 
 impl<
-		K: Deref + MaybeSend + MaybeSync + 'static,
+		K: KVStore + MaybeSend + MaybeSync + 'static,
 		S: FutureSpawner,
 		SP: SignerProvider + MaybeSend + MaybeSync + 'static,
 		C: Deref,
@@ -390,7 +385,6 @@ impl<
 		ES: EntropySource + MaybeSend + MaybeSync + 'static,
 	> ChainMonitor<SP::EcdsaSigner, C, T, F, L, AsyncPersister<K, S, L, ES, SP, T, F>, ES>
 where
-	K::Target: KVStore + MaybeSync,
 	C::Target: chain::Filter,
 	SP::EcdsaSigner: MaybeSend + 'static,
 {

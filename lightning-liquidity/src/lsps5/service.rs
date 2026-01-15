@@ -125,10 +125,9 @@ impl Default for LSPS5ServiceConfig {
 /// [`LSPS5ServiceEvent::SendWebhookNotification`]: super::event::LSPS5ServiceEvent::SendWebhookNotification
 /// [`app_name`]: super::msgs::LSPS5AppName
 /// [`lsps5.webhook_registered`]: super::msgs::WebhookNotificationMethod::LSPS5WebhookRegistered
-pub struct LSPS5ServiceHandler<CM: Deref, NS: NodeSigner, K: Deref + Clone, TP: Deref>
+pub struct LSPS5ServiceHandler<CM: Deref, NS: NodeSigner, K: KVStore + Clone, TP: Deref>
 where
 	CM::Target: AChannelManager,
-	K::Target: KVStore,
 	TP::Target: TimeProvider,
 {
 	config: LSPS5ServiceConfig,
@@ -143,10 +142,9 @@ where
 	persistence_in_flight: AtomicUsize,
 }
 
-impl<CM: Deref, NS: NodeSigner, K: Deref + Clone, TP: Deref> LSPS5ServiceHandler<CM, NS, K, TP>
+impl<CM: Deref, NS: NodeSigner, K: KVStore + Clone, TP: Deref> LSPS5ServiceHandler<CM, NS, K, TP>
 where
 	CM::Target: AChannelManager,
-	K::Target: KVStore,
 	TP::Target: TimeProvider,
 {
 	/// Constructs a `LSPS5ServiceHandler` using the given time provider.
@@ -692,11 +690,10 @@ where
 	}
 }
 
-impl<CM: Deref, NS: NodeSigner, K: Deref + Clone, TP: Deref> LSPSProtocolMessageHandler
+impl<CM: Deref, NS: NodeSigner, K: KVStore + Clone, TP: Deref> LSPSProtocolMessageHandler
 	for LSPS5ServiceHandler<CM, NS, K, TP>
 where
 	CM::Target: AChannelManager,
-	K::Target: KVStore,
 	TP::Target: TimeProvider,
 {
 	type ProtocolMessage = LSPS5Message;
