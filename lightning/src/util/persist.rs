@@ -589,7 +589,7 @@ fn poll_sync_future<F: Future>(future: F) -> F::Output {
 /// [`MonitorUpdatingPersister::cleanup_stale_updates`] function.
 pub struct MonitorUpdatingPersister<
 	K: Deref,
-	L: Deref,
+	L: Logger,
 	ES: EntropySource,
 	SP: Deref,
 	BI: BroadcasterInterface,
@@ -597,12 +597,11 @@ pub struct MonitorUpdatingPersister<
 >(MonitorUpdatingPersisterAsync<KVStoreSyncWrapper<K>, PanicingSpawner, L, ES, SP, BI, FE>)
 where
 	K::Target: KVStoreSync,
-	L::Target: Logger,
 	SP::Target: SignerProvider + Sized;
 
 impl<
 		K: Deref,
-		L: Deref,
+		L: Logger,
 		ES: EntropySource,
 		SP: Deref,
 		BI: BroadcasterInterface,
@@ -610,7 +609,6 @@ impl<
 	> MonitorUpdatingPersister<K, L, ES, SP, BI, FE>
 where
 	K::Target: KVStoreSync,
-	L::Target: Logger,
 	SP::Target: SignerProvider + Sized,
 {
 	/// Constructs a new [`MonitorUpdatingPersister`].
@@ -698,7 +696,7 @@ where
 impl<
 		ChannelSigner: EcdsaChannelSigner,
 		K: Deref,
-		L: Deref,
+		L: Logger,
 		ES: EntropySource,
 		SP: Deref,
 		BI: BroadcasterInterface,
@@ -706,7 +704,6 @@ impl<
 	> Persist<ChannelSigner> for MonitorUpdatingPersister<K, L, ES, SP, BI, FE>
 where
 	K::Target: KVStoreSync,
-	L::Target: Logger,
 	SP::Target: SignerProvider + Sized,
 {
 	/// Persists a new channel. This means writing the entire monitor to the
@@ -781,7 +778,7 @@ where
 pub struct MonitorUpdatingPersisterAsync<
 	K: Deref,
 	S: FutureSpawner,
-	L: Deref,
+	L: Logger,
 	ES: EntropySource,
 	SP: Deref,
 	BI: BroadcasterInterface,
@@ -789,20 +786,18 @@ pub struct MonitorUpdatingPersisterAsync<
 >(Arc<MonitorUpdatingPersisterAsyncInner<K, S, L, ES, SP, BI, FE>>)
 where
 	K::Target: KVStore,
-	L::Target: Logger,
 	SP::Target: SignerProvider + Sized;
 
 struct MonitorUpdatingPersisterAsyncInner<
 	K: Deref,
 	S: FutureSpawner,
-	L: Deref,
+	L: Logger,
 	ES: EntropySource,
 	SP: Deref,
 	BI: BroadcasterInterface,
 	FE: FeeEstimator,
 > where
 	K::Target: KVStore,
-	L::Target: Logger,
 	SP::Target: SignerProvider + Sized,
 {
 	kv_store: K,
@@ -819,7 +814,7 @@ struct MonitorUpdatingPersisterAsyncInner<
 impl<
 		K: Deref,
 		S: FutureSpawner,
-		L: Deref,
+		L: Logger,
 		ES: EntropySource,
 		SP: Deref,
 		BI: BroadcasterInterface,
@@ -827,7 +822,6 @@ impl<
 	> MonitorUpdatingPersisterAsync<K, S, L, ES, SP, BI, FE>
 where
 	K::Target: KVStore,
-	L::Target: Logger,
 	SP::Target: SignerProvider + Sized,
 {
 	/// Constructs a new [`MonitorUpdatingPersisterAsync`].
@@ -967,7 +961,7 @@ where
 impl<
 		K: Deref + MaybeSend + MaybeSync + 'static,
 		S: FutureSpawner,
-		L: Deref + MaybeSend + MaybeSync + 'static,
+		L: Logger + MaybeSend + MaybeSync + 'static,
 		ES: EntropySource + MaybeSend + MaybeSync + 'static,
 		SP: Deref + MaybeSend + MaybeSync + 'static,
 		BI: BroadcasterInterface + MaybeSend + MaybeSync + 'static,
@@ -975,7 +969,6 @@ impl<
 	> MonitorUpdatingPersisterAsync<K, S, L, ES, SP, BI, FE>
 where
 	K::Target: KVStore + MaybeSync,
-	L::Target: Logger,
 	SP::Target: SignerProvider + Sized,
 	<SP::Target as SignerProvider>::EcdsaSigner: MaybeSend + 'static,
 {
@@ -1056,7 +1049,7 @@ impl<F: Future<Output = Result<(), io::Error>> + MaybeSend> MaybeSendableFuture 
 impl<
 		K: Deref,
 		S: FutureSpawner,
-		L: Deref,
+		L: Logger,
 		ES: EntropySource,
 		SP: Deref,
 		BI: BroadcasterInterface,
@@ -1064,7 +1057,6 @@ impl<
 	> MonitorUpdatingPersisterAsyncInner<K, S, L, ES, SP, BI, FE>
 where
 	K::Target: KVStore,
-	L::Target: Logger,
 	SP::Target: SignerProvider + Sized,
 {
 	pub async fn read_channel_monitor_with_updates(

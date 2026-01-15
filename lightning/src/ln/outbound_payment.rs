@@ -837,20 +837,14 @@ pub(super) struct SendAlongPathArgs<'a> {
 	pub hold_htlc_at_next_hop: bool,
 }
 
-pub(super) struct OutboundPayments<L: Deref>
-where
-	L::Target: Logger,
-{
+pub(super) struct OutboundPayments<L: Logger> {
 	pub(super) pending_outbound_payments: Mutex<HashMap<PaymentId, PendingOutboundPayment>>,
 	awaiting_invoice: AtomicBool,
 	retry_lock: Mutex<()>,
 	logger: L,
 }
 
-impl<L: Deref> OutboundPayments<L>
-where
-	L::Target: Logger,
-{
+impl<L: Logger> OutboundPayments<L> {
 	pub(super) fn new(
 		pending_outbound_payments: HashMap<PaymentId, PendingOutboundPayment>, logger: L,
 	) -> Self {
@@ -1397,7 +1391,6 @@ where
 		inflight_htlcs: &IH, node_signer: &NS, best_block_height: u32,
 	) -> Result<Route, RetryableSendFailure>
 	where
-		L::Target: Logger,
 		IH: Fn() -> InFlightHtlcs,
 	{
 		#[cfg(feature = "std")] {
@@ -1451,7 +1444,6 @@ where
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>, send_payment_along_path: SP,
 	) -> Result<(), RetryableSendFailure>
 	where
-		L::Target: Logger,
 		IH: Fn() -> InFlightHtlcs,
 		SP: Fn(SendAlongPathArgs) -> Result<(), APIError>,
 	{
@@ -1492,7 +1484,6 @@ where
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>, send_payment_along_path: &SP,
 	)
 	where
-		L::Target: Logger,
 		IH: Fn() -> InFlightHtlcs,
 		SP: Fn(SendAlongPathArgs) -> Result<(), APIError>,
 	{

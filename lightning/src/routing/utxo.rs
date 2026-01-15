@@ -439,12 +439,10 @@ impl PendingChecks {
 		}
 	}
 
-	fn resolve_single_future<L: Deref>(
+	fn resolve_single_future<L: Logger>(
 		&self, graph: &NetworkGraph<L>, entry: Arc<Mutex<UtxoMessages>>,
 		new_messages: &mut Vec<MessageSendEvent>,
-	) where
-		L::Target: Logger,
-	{
+	) {
 		let (announcement, result, announce_a, announce_b, update_a, update_b);
 		{
 			let mut state = entry.lock().unwrap();
@@ -529,12 +527,9 @@ impl PendingChecks {
 		}
 	}
 
-	pub(super) fn check_resolved_futures<L: Deref>(
+	pub(super) fn check_resolved_futures<L: Logger>(
 		&self, graph: &NetworkGraph<L>,
-	) -> Vec<MessageSendEvent>
-	where
-		L::Target: Logger,
-	{
+	) -> Vec<MessageSendEvent> {
 		let mut completed_states = Vec::new();
 		{
 			let mut lck = self.internal.lock().unwrap();

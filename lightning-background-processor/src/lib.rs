@@ -201,10 +201,9 @@ pub enum GossipSync<
 	R: Deref<Target = RapidGossipSync<G, L>>,
 	G: Deref<Target = NetworkGraph<L>>,
 	U: Deref,
-	L: Deref,
+	L: Logger,
 > where
 	U::Target: UtxoLookup,
-	L::Target: Logger,
 {
 	/// Gossip sync via the lightning peer-to-peer network as defined by BOLT 7.
 	P2P(P),
@@ -219,11 +218,10 @@ impl<
 		R: Deref<Target = RapidGossipSync<G, L>>,
 		G: Deref<Target = NetworkGraph<L>>,
 		U: Deref,
-		L: Deref,
+		L: Logger,
 	> GossipSync<P, R, G, U, L>
 where
 	U::Target: UtxoLookup,
-	L::Target: Logger,
 {
 	fn network_graph(&self) -> Option<&G> {
 		match self {
@@ -261,11 +259,10 @@ impl<
 		P: Deref<Target = P2PGossipSync<G, U, L>>,
 		G: Deref<Target = NetworkGraph<L>>,
 		U: Deref,
-		L: Deref,
+		L: Logger,
 	> GossipSync<P, &RapidGossipSync<G, L>, G, U, L>
 where
 	U::Target: UtxoLookup,
-	L::Target: Logger,
 {
 	/// Initializes a new [`GossipSync::P2P`] variant.
 	pub fn p2p(gossip_sync: P) -> Self {
@@ -278,7 +275,7 @@ impl<
 		'a,
 		R: Deref<Target = RapidGossipSync<G, L>>,
 		G: Deref<Target = NetworkGraph<L>>,
-		L: Deref,
+		L: Logger,
 	>
 	GossipSync<
 		&P2PGossipSync<G, &'a (dyn UtxoLookup + Send + Sync), L>,
@@ -286,8 +283,7 @@ impl<
 		G,
 		&'a (dyn UtxoLookup + Send + Sync),
 		L,
-	> where
-	L::Target: Logger,
+	>
 {
 	/// Initializes a new [`GossipSync::Rapid`] variant.
 	pub fn rapid(gossip_sync: R) -> Self {
@@ -296,15 +292,14 @@ impl<
 }
 
 /// This is not exported to bindings users as the bindings concretize everything and have constructors for us
-impl<'a, L: Deref>
+impl<'a, L: Logger>
 	GossipSync<
 		&P2PGossipSync<&'a NetworkGraph<L>, &'a (dyn UtxoLookup + Send + Sync), L>,
 		&RapidGossipSync<&'a NetworkGraph<L>, L>,
 		&'a NetworkGraph<L>,
 		&'a (dyn UtxoLookup + Send + Sync),
 		L,
-	> where
-	L::Target: Logger,
+	>
 {
 	/// Initializes a new [`GossipSync::None`] variant.
 	pub fn none() -> Self {
@@ -312,10 +307,7 @@ impl<'a, L: Deref>
 	}
 }
 
-fn handle_network_graph_update<L: Deref>(network_graph: &NetworkGraph<L>, event: &Event)
-where
-	L::Target: Logger,
-{
+fn handle_network_graph_update<L: Logger>(network_graph: &NetworkGraph<L>, event: &Event) {
 	if let Event::PaymentPathFailed {
 		failure: PathFailure::OnPath { network_update: Some(ref upd) },
 		..
@@ -422,8 +414,7 @@ pub const NO_ONION_MESSENGER: Option<
 		dyn AOnionMessenger<
 				EntropySource = &(dyn EntropySource + Send + Sync),
 				NodeSigner = &(dyn lightning::sign::NodeSigner + Send + Sync),
-				Logger = dyn Logger + Send + Sync,
-				L = &'static (dyn Logger + Send + Sync),
+				Logger = &'static (dyn Logger + Send + Sync),
 				NodeIdLookUp = DynChannelManager,
 				NL = &'static DynChannelManager,
 				MessageRouter = &'static DynMessageRouter,
@@ -950,7 +941,7 @@ pub async fn process_events_async<
 	T: BroadcasterInterface,
 	F: FeeEstimator,
 	G: Deref<Target = NetworkGraph<L>>,
-	L: Deref,
+	L: Logger,
 	P: Deref,
 	EventHandlerFuture: core::future::Future<Output = Result<(), ReplayEvent>>,
 	EventHandler: Fn(Event) -> EventHandlerFuture,
@@ -980,7 +971,6 @@ pub async fn process_events_async<
 where
 	UL::Target: UtxoLookup,
 	CF::Target: chain::Filter,
-	L::Target: Logger,
 	P::Target: Persist<<CM::Target as AChannelManager>::Signer>,
 	CM::Target: AChannelManager,
 	OM::Target: AOnionMessenger,
@@ -1448,7 +1438,7 @@ pub async fn process_events_async_with_kv_store_sync<
 	T: BroadcasterInterface,
 	F: FeeEstimator,
 	G: Deref<Target = NetworkGraph<L>>,
-	L: Deref,
+	L: Logger,
 	P: Deref,
 	EventHandlerFuture: core::future::Future<Output = Result<(), ReplayEvent>>,
 	EventHandler: Fn(Event) -> EventHandlerFuture,
@@ -1478,7 +1468,6 @@ pub async fn process_events_async_with_kv_store_sync<
 where
 	UL::Target: UtxoLookup,
 	CF::Target: chain::Filter,
-	L::Target: Logger,
 	P::Target: Persist<<CM::Target as AChannelManager>::Signer>,
 	CM::Target: AChannelManager,
 	OM::Target: AOnionMessenger,

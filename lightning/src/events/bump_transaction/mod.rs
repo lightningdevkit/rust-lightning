@@ -442,10 +442,9 @@ pub trait WalletSource {
 ///
 /// This is not exported to bindings users as async is only supported in Rust.
 // Note that updates to documentation on this struct should be copied to the synchronous version.
-pub struct Wallet<W: Deref + MaybeSync + MaybeSend, L: Deref + MaybeSync + MaybeSend>
+pub struct Wallet<W: Deref + MaybeSync + MaybeSend, L: Logger + MaybeSync + MaybeSend>
 where
 	W::Target: WalletSource + MaybeSend,
-	L::Target: Logger + MaybeSend,
 {
 	source: W,
 	logger: L,
@@ -455,10 +454,9 @@ where
 	locked_utxos: Mutex<HashMap<OutPoint, ClaimId>>,
 }
 
-impl<W: Deref + MaybeSync + MaybeSend, L: Deref + MaybeSync + MaybeSend> Wallet<W, L>
+impl<W: Deref + MaybeSync + MaybeSend, L: Logger + MaybeSync + MaybeSend> Wallet<W, L>
 where
 	W::Target: WalletSource + MaybeSend,
-	L::Target: Logger + MaybeSend,
 {
 	/// Returns a new instance backed by the given [`WalletSource`] that serves as an implementation
 	/// of [`CoinSelectionSource`].
@@ -617,11 +615,10 @@ where
 	}
 }
 
-impl<W: Deref + MaybeSync + MaybeSend, L: Deref + MaybeSync + MaybeSend> CoinSelectionSource
+impl<W: Deref + MaybeSync + MaybeSend, L: Logger + MaybeSync + MaybeSend> CoinSelectionSource
 	for Wallet<W, L>
 where
 	W::Target: WalletSource + MaybeSend + MaybeSync,
-	L::Target: Logger + MaybeSend + MaybeSync,
 {
 	fn select_confirmed_utxos<'a>(
 		&'a self, claim_id: ClaimId, must_spend: Vec<Input>, must_pay_to: &'a [TxOut],
@@ -694,11 +691,10 @@ where
 ///
 /// [`Event::BumpTransaction`]: crate::events::Event::BumpTransaction
 // Note that updates to documentation on this struct should be copied to the synchronous version.
-pub struct BumpTransactionEventHandler<B: BroadcasterInterface, C: Deref, SP: Deref, L: Deref>
+pub struct BumpTransactionEventHandler<B: BroadcasterInterface, C: Deref, SP: Deref, L: Logger>
 where
 	C::Target: CoinSelectionSource,
 	SP::Target: SignerProvider,
-	L::Target: Logger,
 {
 	broadcaster: B,
 	utxo_source: C,
@@ -707,12 +703,11 @@ where
 	secp: Secp256k1<secp256k1::All>,
 }
 
-impl<B: BroadcasterInterface, C: Deref, SP: Deref, L: Deref>
+impl<B: BroadcasterInterface, C: Deref, SP: Deref, L: Logger>
 	BumpTransactionEventHandler<B, C, SP, L>
 where
 	C::Target: CoinSelectionSource,
 	SP::Target: SignerProvider,
-	L::Target: Logger,
 {
 	/// Returns a new instance capable of handling [`Event::BumpTransaction`] events.
 	///
