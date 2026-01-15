@@ -1555,10 +1555,7 @@ impl Readable for Option<RAAMonitorUpdateBlockingAction> {
 }
 
 /// State we hold per-peer.
-pub(super) struct PeerState<SP: Deref>
-where
-	SP::Target: SignerProvider,
-{
+pub(super) struct PeerState<SP: SignerProvider> {
 	/// `channel_id` -> `Channel`
 	///
 	/// Holds all channels where the peer is the counterparty.
@@ -1633,10 +1630,7 @@ where
 	peer_storage: Vec<u8>,
 }
 
-impl<SP: Deref> PeerState<SP>
-where
-	SP::Target: SignerProvider,
-{
+impl<SP: SignerProvider> PeerState<SP> {
 	/// Indicates that a peer meets the criteria where we're ok to remove it from our storage.
 	/// If true is passed for `require_disconnected`, the function will return false if we haven't
 	/// disconnected from the node already, ie. `PeerState::is_connected` is set to `true`.
@@ -1801,9 +1795,7 @@ pub trait AChannelManager {
 	/// A type implementing [`EcdsaChannelSigner`].
 	type Signer: EcdsaChannelSigner + Sized;
 	/// A type implementing [`SignerProvider`] for [`Self::Signer`].
-	type SignerProvider: SignerProvider<EcdsaSigner = Self::Signer> + ?Sized;
-	/// A type that may be dereferenced to [`Self::SignerProvider`].
-	type SP: Deref<Target = Self::SignerProvider>;
+	type SP: SignerProvider<EcdsaSigner = Self::Signer>;
 	/// A type implementing [`FeeEstimator`].
 	type FeeEstimator: FeeEstimator;
 	/// A type implementing [`Router`].
@@ -1833,23 +1825,21 @@ impl<
 		T: BroadcasterInterface,
 		ES: EntropySource,
 		NS: NodeSigner,
-		SP: Deref,
+		SP: SignerProvider,
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
 		L: Logger,
 	> AChannelManager for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 where
-	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-	SP::Target: SignerProvider,
+	M::Target: chain::Watch<SP::EcdsaSigner>,
 {
 	type Watch = M::Target;
 	type M = M;
 	type Broadcaster = T;
 	type EntropySource = ES;
 	type NodeSigner = NS;
-	type Signer = <SP::Target as SignerProvider>::EcdsaSigner;
-	type SignerProvider = SP::Target;
+	type Signer = SP::EcdsaSigner;
 	type SP = SP;
 	type FeeEstimator = F;
 	type Router = R;
@@ -2644,14 +2634,13 @@ pub struct ChannelManager<
 	T: BroadcasterInterface,
 	ES: EntropySource,
 	NS: NodeSigner,
-	SP: Deref,
+	SP: SignerProvider,
 	F: FeeEstimator,
 	R: Router,
 	MR: MessageRouter,
 	L: Logger,
 > where
-	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-	SP::Target: SignerProvider,
+	M::Target: chain::Watch<SP::EcdsaSigner>,
 {
 	config: RwLock<UserConfig>,
 	chain_hash: ChainHash,
@@ -3448,15 +3437,14 @@ impl<
 		T: BroadcasterInterface,
 		ES: EntropySource,
 		NS: NodeSigner,
-		SP: Deref,
+		SP: SignerProvider,
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
 		L: Logger,
 	> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 where
-	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-	SP::Target: SignerProvider,
+	M::Target: chain::Watch<SP::EcdsaSigner>,
 {
 	/// Constructs a new `ChannelManager` to hold several channels and route between them.
 	///
@@ -4490,10 +4478,7 @@ where
 	/// The same closure semantics as described in [`ChannelManager::locked_handle_force_close`] apply.
 	fn locked_handle_unfunded_close(
 		&self, err: ChannelError, chan: &mut Channel<SP>,
-	) -> (bool, MsgHandleErrInternal)
-	where
-		SP::Target: SignerProvider,
-	{
+	) -> (bool, MsgHandleErrInternal) {
 		let chan_id = chan.context().channel_id();
 		convert_channel_err_internal(err, chan_id, |reason, msg| {
 			let logger = WithChannelContext::from(&self.logger, chan.context(), None);
@@ -13486,15 +13471,14 @@ impl<
 		T: BroadcasterInterface,
 		ES: EntropySource,
 		NS: NodeSigner,
-		SP: Deref,
+		SP: SignerProvider,
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
 		L: Logger,
 	> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 where
-	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-	SP::Target: SignerProvider,
+	M::Target: chain::Watch<SP::EcdsaSigner>,
 {
 	#[cfg(not(c_bindings))]
 	create_offer_builder!(self, OfferBuilder<'_, DerivedMetadata, secp256k1::All>);
@@ -14356,15 +14340,14 @@ impl<
 		T: BroadcasterInterface,
 		ES: EntropySource,
 		NS: NodeSigner,
-		SP: Deref,
+		SP: SignerProvider,
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
 		L: Logger,
 	> BaseMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 where
-	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-	SP::Target: SignerProvider,
+	M::Target: chain::Watch<SP::EcdsaSigner>,
 {
 	fn provided_node_features(&self) -> NodeFeatures {
 		provided_node_features(&self.config.read().unwrap())
@@ -14720,15 +14703,14 @@ impl<
 		T: BroadcasterInterface,
 		ES: EntropySource,
 		NS: NodeSigner,
-		SP: Deref,
+		SP: SignerProvider,
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
 		L: Logger,
 	> EventsProvider for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 where
-	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-	SP::Target: SignerProvider,
+	M::Target: chain::Watch<SP::EcdsaSigner>,
 {
 	/// Processes events that must be periodically handled.
 	///
@@ -14748,15 +14730,14 @@ impl<
 		T: BroadcasterInterface,
 		ES: EntropySource,
 		NS: NodeSigner,
-		SP: Deref,
+		SP: SignerProvider,
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
 		L: Logger,
 	> chain::Listen for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 where
-	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-	SP::Target: SignerProvider,
+	M::Target: chain::Watch<SP::EcdsaSigner>,
 {
 	fn filtered_block_connected(&self, header: &Header, txdata: &TransactionData, height: u32) {
 		{
@@ -14802,15 +14783,14 @@ impl<
 		T: BroadcasterInterface,
 		ES: EntropySource,
 		NS: NodeSigner,
-		SP: Deref,
+		SP: SignerProvider,
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
 		L: Logger,
 	> chain::Confirm for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 where
-	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-	SP::Target: SignerProvider,
+	M::Target: chain::Watch<SP::EcdsaSigner>,
 {
 	#[rustfmt::skip]
 	fn transactions_confirmed(&self, header: &Header, txdata: &TransactionData, height: u32) {
@@ -14968,15 +14948,14 @@ impl<
 		T: BroadcasterInterface,
 		ES: EntropySource,
 		NS: NodeSigner,
-		SP: Deref,
+		SP: SignerProvider,
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
 		L: Logger,
 	> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 where
-	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-	SP::Target: SignerProvider,
+	M::Target: chain::Watch<SP::EcdsaSigner>,
 {
 	/// Calls a function which handles an on-chain event (blocks dis/connected, transactions
 	/// un/confirmed, etc) on each channel, handling any resulting errors or messages generated by
@@ -15323,15 +15302,14 @@ impl<
 		T: BroadcasterInterface,
 		ES: EntropySource,
 		NS: NodeSigner,
-		SP: Deref,
+		SP: SignerProvider,
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
 		L: Logger,
 	> ChannelMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 where
-	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-	SP::Target: SignerProvider,
+	M::Target: chain::Watch<SP::EcdsaSigner>,
 {
 	fn handle_open_channel(&self, counterparty_node_id: PublicKey, message: &msgs::OpenChannel) {
 		// Note that we never need to persist the updated ChannelManager for an inbound
@@ -15891,15 +15869,14 @@ impl<
 		T: BroadcasterInterface,
 		ES: EntropySource,
 		NS: NodeSigner,
-		SP: Deref,
+		SP: SignerProvider,
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
 		L: Logger,
 	> OffersMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 where
-	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-	SP::Target: SignerProvider,
+	M::Target: chain::Watch<SP::EcdsaSigner>,
 {
 	#[rustfmt::skip]
 	fn handle_message(
@@ -16102,15 +16079,14 @@ impl<
 		T: BroadcasterInterface,
 		ES: EntropySource,
 		NS: NodeSigner,
-		SP: Deref,
+		SP: SignerProvider,
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
 		L: Logger,
 	> AsyncPaymentsMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 where
-	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-	SP::Target: SignerProvider,
+	M::Target: chain::Watch<SP::EcdsaSigner>,
 {
 	fn handle_offer_paths_request(
 		&self, message: OfferPathsRequest, context: AsyncPaymentsContext,
@@ -16297,15 +16273,14 @@ impl<
 		T: BroadcasterInterface,
 		ES: EntropySource,
 		NS: NodeSigner,
-		SP: Deref,
+		SP: SignerProvider,
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
 		L: Logger,
 	> DNSResolverMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 where
-	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-	SP::Target: SignerProvider,
+	M::Target: chain::Watch<SP::EcdsaSigner>,
 {
 	fn handle_dnssec_query(
 		&self, _message: DNSSECQuery, _responder: Option<Responder>,
@@ -16358,15 +16333,14 @@ impl<
 		T: BroadcasterInterface,
 		ES: EntropySource,
 		NS: NodeSigner,
-		SP: Deref,
+		SP: SignerProvider,
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
 		L: Logger,
 	> NodeIdLookUp for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 where
-	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-	SP::Target: SignerProvider,
+	M::Target: chain::Watch<SP::EcdsaSigner>,
 {
 	fn next_node_id(&self, short_channel_id: u64) -> Option<PublicKey> {
 		self.short_to_chan_info.read().unwrap().get(&short_channel_id).map(|(pubkey, _)| *pubkey)
@@ -16867,15 +16841,14 @@ impl<
 		T: BroadcasterInterface,
 		ES: EntropySource,
 		NS: NodeSigner,
-		SP: Deref,
+		SP: SignerProvider,
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
 		L: Logger,
 	> Writeable for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 where
-	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-	SP::Target: SignerProvider,
+	M::Target: chain::Watch<SP::EcdsaSigner>,
 {
 	#[rustfmt::skip]
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
@@ -17227,14 +17200,13 @@ pub struct ChannelManagerReadArgs<
 	T: BroadcasterInterface,
 	ES: EntropySource,
 	NS: NodeSigner,
-	SP: Deref,
+	SP: SignerProvider,
 	F: FeeEstimator,
 	R: Router,
 	MR: MessageRouter,
 	L: Logger + Clone,
 > where
-	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-	SP::Target: SignerProvider,
+	M::Target: chain::Watch<SP::EcdsaSigner>,
 {
 	/// A cryptographically secure source of entropy.
 	pub entropy_source: ES,
@@ -17290,8 +17262,7 @@ pub struct ChannelManagerReadArgs<
 	/// this struct.
 	///
 	/// This is not exported to bindings users because we have no HashMap bindings
-	pub channel_monitors:
-		HashMap<ChannelId, &'a ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>>,
+	pub channel_monitors: HashMap<ChannelId, &'a ChannelMonitor<SP::EcdsaSigner>>,
 }
 
 impl<
@@ -17300,15 +17271,14 @@ impl<
 		T: BroadcasterInterface,
 		ES: EntropySource,
 		NS: NodeSigner,
-		SP: Deref,
+		SP: SignerProvider,
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
 		L: Logger + Clone,
 	> ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>
 where
-	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-	SP::Target: SignerProvider,
+	M::Target: chain::Watch<SP::EcdsaSigner>,
 {
 	/// Simple utility function to create a ChannelManagerReadArgs which creates the monitor
 	/// HashMap for you. This is primarily useful for C bindings where it is not practical to
@@ -17316,8 +17286,7 @@ where
 	pub fn new(
 		entropy_source: ES, node_signer: NS, signer_provider: SP, fee_estimator: F,
 		chain_monitor: M, tx_broadcaster: T, router: R, message_router: MR, logger: L,
-		config: UserConfig,
-		mut channel_monitors: Vec<&'a ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>>,
+		config: UserConfig, mut channel_monitors: Vec<&'a ChannelMonitor<SP::EcdsaSigner>>,
 	) -> Self {
 		Self {
 			entropy_source,
@@ -17379,7 +17348,7 @@ impl<
 		T: BroadcasterInterface,
 		ES: EntropySource,
 		NS: NodeSigner,
-		SP: Deref,
+		SP: SignerProvider,
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
@@ -17387,8 +17356,7 @@ impl<
 	> ReadableArgs<ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>>
 	for (BlockHash, Arc<ChannelManager<M, T, ES, NS, SP, F, R, MR, L>>)
 where
-	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-	SP::Target: SignerProvider,
+	M::Target: chain::Watch<SP::EcdsaSigner>,
 {
 	fn read<Reader: io::Read>(
 		reader: &mut Reader, args: ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>,
@@ -17405,7 +17373,7 @@ impl<
 		T: BroadcasterInterface,
 		ES: EntropySource,
 		NS: NodeSigner,
-		SP: Deref,
+		SP: SignerProvider,
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
@@ -17413,8 +17381,7 @@ impl<
 	> ReadableArgs<ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>>
 	for (BlockHash, ChannelManager<M, T, ES, NS, SP, F, R, MR, L>)
 where
-	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-	SP::Target: SignerProvider,
+	M::Target: chain::Watch<SP::EcdsaSigner>,
 {
 	fn read<Reader: io::Read>(
 		reader: &mut Reader, mut args: ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>,

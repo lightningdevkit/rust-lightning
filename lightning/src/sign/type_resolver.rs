@@ -1,32 +1,21 @@
 use crate::sign::{ChannelSigner, SignerProvider};
-use core::ops::Deref;
 
-pub(crate) enum ChannelSignerType<SP: Deref>
-where
-	SP::Target: SignerProvider,
-{
+pub(crate) enum ChannelSignerType<SP: SignerProvider> {
 	// in practice, this will only ever be an EcdsaChannelSigner (specifically, Writeable)
-	Ecdsa(<SP::Target as SignerProvider>::EcdsaSigner),
+	Ecdsa(SP::EcdsaSigner),
 	#[cfg(taproot)]
 	#[allow(unused)]
-	Taproot(<SP::Target as SignerProvider>::TaprootSigner),
+	Taproot(SP::TaprootSigner),
 }
 
 #[cfg(test)]
-impl<SP> std::fmt::Debug for ChannelSignerType<SP>
-where
-	SP: Deref,
-	SP::Target: SignerProvider,
-{
+impl<SP: SignerProvider> std::fmt::Debug for ChannelSignerType<SP> {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		f.debug_struct("ChannelSignerType").finish()
 	}
 }
 
-impl<SP: Deref> ChannelSignerType<SP>
-where
-	SP::Target: SignerProvider,
-{
+impl<SP: SignerProvider> ChannelSignerType<SP> {
 	pub(crate) fn as_ref(&self) -> &dyn ChannelSigner {
 		match self {
 			ChannelSignerType::Ecdsa(ecs) => ecs,
@@ -37,7 +26,7 @@ where
 	}
 
 	#[allow(unused)]
-	pub(crate) fn as_ecdsa(&self) -> Option<&<SP::Target as SignerProvider>::EcdsaSigner> {
+	pub(crate) fn as_ecdsa(&self) -> Option<&SP::EcdsaSigner> {
 		match self {
 			ChannelSignerType::Ecdsa(ecs) => Some(ecs),
 			_ => None,
@@ -45,9 +34,7 @@ where
 	}
 
 	#[allow(unused)]
-	pub(crate) fn as_mut_ecdsa(
-		&mut self,
-	) -> Option<&mut <SP::Target as SignerProvider>::EcdsaSigner> {
+	pub(crate) fn as_mut_ecdsa(&mut self) -> Option<&mut SP::EcdsaSigner> {
 		match self {
 			ChannelSignerType::Ecdsa(ecs) => Some(ecs),
 			_ => None,
