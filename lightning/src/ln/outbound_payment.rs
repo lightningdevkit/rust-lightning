@@ -40,7 +40,6 @@ use crate::util::ser::ReadableArgs;
 use crate::util::time::Instant;
 
 use core::fmt::{self, Display, Formatter};
-use core::ops::Deref;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 
@@ -948,7 +947,7 @@ impl<L: Logger> OutboundPayments<L> {
 
 	#[rustfmt::skip]
 	pub(super) fn send_payment_for_bolt12_invoice<
-		R: Router, ES: EntropySource, NS: NodeSigner, NL: Deref, IH, SP
+		R: Router, ES: EntropySource, NS: NodeSigner, NL: NodeIdLookUp, IH, SP
 	>(
 		&self, invoice: &Bolt12Invoice, payment_id: PaymentId, router: &R,
 		first_hops: Vec<ChannelDetails>, features: Bolt12InvoiceFeatures, inflight_htlcs: IH,
@@ -958,7 +957,6 @@ impl<L: Logger> OutboundPayments<L> {
 		send_payment_along_path: SP,
 	) -> Result<(), Bolt12PaymentError>
 	where
-		NL::Target: NodeIdLookUp,
 		IH: Fn() -> InFlightHtlcs,
 		SP: Fn(SendAlongPathArgs) -> Result<(), APIError>,
 	{
@@ -990,7 +988,7 @@ impl<L: Logger> OutboundPayments<L> {
 
 	#[rustfmt::skip]
 	fn send_payment_for_bolt12_invoice_internal<
-		R: Router, ES: EntropySource, NS: NodeSigner, NL: Deref, IH, SP
+		R: Router, ES: EntropySource, NS: NodeSigner, NL: NodeIdLookUp, IH, SP
 	>(
 		&self, payment_id: PaymentId, payment_hash: PaymentHash,
 		keysend_preimage: Option<PaymentPreimage>, invoice_request: Option<&InvoiceRequest>,
@@ -1002,7 +1000,6 @@ impl<L: Logger> OutboundPayments<L> {
 		send_payment_along_path: SP,
 	) -> Result<(), Bolt12PaymentError>
 	where
-		NL::Target: NodeIdLookUp,
 		IH: Fn() -> InFlightHtlcs,
 		SP: Fn(SendAlongPathArgs) -> Result<(), APIError>,
 	{
@@ -1204,21 +1201,16 @@ impl<L: Logger> OutboundPayments<L> {
 		R: Router,
 		ES: EntropySource,
 		NS: NodeSigner,
-		NL: Deref,
-		IH,
-		SP,
+		NL: NodeIdLookUp,
+		IH: Fn() -> InFlightHtlcs,
+		SP: Fn(SendAlongPathArgs) -> Result<(), APIError>,
 	>(
 		&self, payment_id: PaymentId, hold_htlcs_at_next_hop: bool, router: &R,
 		first_hops: Vec<ChannelDetails>, inflight_htlcs: IH, entropy_source: &ES, node_signer: &NS,
 		node_id_lookup: &NL, secp_ctx: &Secp256k1<secp256k1::All>, best_block_height: u32,
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
 		send_payment_along_path: SP,
-	) -> Result<(), Bolt12PaymentError>
-	where
-		NL::Target: NodeIdLookUp,
-		IH: Fn() -> InFlightHtlcs,
-		SP: Fn(SendAlongPathArgs) -> Result<(), APIError>,
-	{
+	) -> Result<(), Bolt12PaymentError> {
 		let (
 			payment_hash,
 			keysend_preimage,

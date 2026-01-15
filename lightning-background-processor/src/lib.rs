@@ -415,7 +415,6 @@ pub const NO_ONION_MESSENGER: Option<
 				EntropySource = &(dyn EntropySource + Send + Sync),
 				NodeSigner = &(dyn lightning::sign::NodeSigner + Send + Sync),
 				Logger = &'static (dyn Logger + Send + Sync),
-				NodeIdLookUp = DynChannelManager,
 				NL = &'static DynChannelManager,
 				MessageRouter = &'static DynMessageRouter,
 				OffersMessageHandler = lightning::ln::peer_handler::IgnoringMessageHandler,
