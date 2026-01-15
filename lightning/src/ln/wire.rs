@@ -15,6 +15,7 @@
 use crate::io;
 use crate::ln::msgs;
 use crate::util::ser::{LengthLimitedRead, LengthReadable, Readable, Writeable, Writer};
+use core::ops::Deref;
 
 /// Trait to be implemented by custom message (unrelated to the channel/gossip LN layers)
 /// decoders.
@@ -28,6 +29,15 @@ pub trait CustomMessageReader {
 	fn read<R: LengthLimitedRead>(
 		&self, message_type: u16, buffer: &mut R,
 	) -> Result<Option<Self::CustomMessage>, msgs::DecodeError>;
+}
+
+impl<T: CustomMessageReader + ?Sized, C: Deref<Target = T>> CustomMessageReader for C {
+	type CustomMessage = T::CustomMessage;
+	fn read<R: LengthLimitedRead>(
+		&self, message_type: u16, buffer: &mut R,
+	) -> Result<Option<Self::CustomMessage>, msgs::DecodeError> {
+		self.deref().read(message_type, buffer)
+	}
 }
 
 // TestEq is a dummy trait which requires PartialEq when built in testing, and otherwise is
@@ -244,23 +254,21 @@ impl<T: core::fmt::Debug + Type + TestEq> Message<T> {
 /// # Errors
 ///
 /// Returns an error if the message payload could not be decoded as the specified type.
-pub(crate) fn read<R: LengthLimitedRead, T, H: core::ops::Deref>(
+pub(crate) fn read<R: LengthLimitedRead, T, H: CustomMessageReader<CustomMessage = T>>(
 	buffer: &mut R, custom_reader: H,
 ) -> Result<Message<T>, (msgs::DecodeError, Option<u16>)>
 where
 	T: core::fmt::Debug + Type + Writeable,
-	H::Target: CustomMessageReader<CustomMessage = T>,
 {
 	let message_type = <u16 as Readable>::read(buffer).map_err(|e| (e, None))?;
 	do_read(buffer, message_type, custom_reader).map_err(|e| (e, Some(message_type)))
 }
 
-fn do_read<R: LengthLimitedRead, T, H: core::ops::Deref>(
+fn do_read<R: LengthLimitedRead, T, H: CustomMessageReader<CustomMessage = T>>(
 	buffer: &mut R, message_type: u16, custom_reader: H,
 ) -> Result<Message<T>, msgs::DecodeError>
 where
 	T: core::fmt::Debug + Type + Writeable,
-	H::Target: CustomMessageReader<CustomMessage = T>,
 {
 	match message_type {
 		msgs::Init::TYPE => {
@@ -876,7 +884,7 @@ mod tests {
 	#[test]
 	fn read_custom_message() {
 		let buffer = [35, 40];
-		let decoded_msg = read(&mut &buffer[..], &TestCustomMessageReader {}).unwrap();
+		let decoded_msg = read(&mut &buffer[..], TestCustomMessageReader {}).unwrap();
 		match decoded_msg {
 			Message::Custom(custom) => {
 				assert_eq!(custom.type_id(), CUSTOM_MESSAGE_TYPE);
@@ -889,7 +897,7 @@ mod tests {
 	#[test]
 	fn read_with_custom_reader_unknown_message_type() {
 		let buffer = [35, 42];
-		let decoded_msg = read(&mut &buffer[..], &TestCustomMessageReader {}).unwrap();
+		let decoded_msg = read(&mut &buffer[..], TestCustomMessageReader {}).unwrap();
 		match decoded_msg {
 			Message::Unknown(_) => {},
 			_ => panic!("Expected unknown message, found message type: {}", decoded_msg.type_id()),

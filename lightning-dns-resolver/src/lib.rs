@@ -6,7 +6,6 @@
 #![deny(rustdoc::private_intra_doc_links)]
 
 use std::net::SocketAddr;
-use std::ops::Deref;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -30,10 +29,7 @@ const WE_REQUIRE_32_OR_64_BIT_USIZE: u8 = 424242;
 
 /// A resolver which implements [`DNSResolverMessageHandler`] and replies to [`DNSSECQuery`]
 /// messages with with [`DNSSECProof`]s.
-pub struct OMDomainResolver<PH: Deref>
-where
-	PH::Target: DNSResolverMessageHandler,
-{
+pub struct OMDomainResolver<PH: DNSResolverMessageHandler> {
 	state: Arc<OMResolverState>,
 	proof_handler: Option<PH>,
 	runtime_handle: Mutex<Option<Handle>>,
@@ -56,10 +52,7 @@ impl OMDomainResolver<IgnoringMessageHandler> {
 	}
 }
 
-impl<PH: Deref> OMDomainResolver<PH>
-where
-	PH::Target: DNSResolverMessageHandler,
-{
+impl<PH: DNSResolverMessageHandler> OMDomainResolver<PH> {
 	/// Creates a new [`OMDomainResolver`] given the [`SocketAddr`] of a DNS resolver listening on
 	/// TCP (e.g. 8.8.8.8:53, 1.1.1.1:53 or your local DNS resolver).
 	///
@@ -103,10 +96,7 @@ where
 	}
 }
 
-impl<PH: Deref> DNSResolverMessageHandler for OMDomainResolver<PH>
-where
-	PH::Target: DNSResolverMessageHandler,
-{
+impl<PH: DNSResolverMessageHandler> DNSResolverMessageHandler for OMDomainResolver<PH> {
 	fn handle_dnssec_proof(&self, proof: DNSSECProof, context: DNSResolverContext) {
 		if let Some(proof_handler) = &self.proof_handler {
 			proof_handler.handle_dnssec_proof(proof, context);
@@ -169,7 +159,6 @@ mod test {
 	use lightning::ln::msgs::{
 		BaseMessageHandler, ChannelMessageHandler, Init, OnionMessageHandler,
 	};
-	use lightning::ln::peer_handler::IgnoringMessageHandler;
 	use lightning::offers::offer::Offer;
 	use lightning::onion_message::dns_resolution::{HumanReadableName, OMNameResolver};
 	use lightning::onion_message::messenger::{
@@ -184,7 +173,6 @@ mod test {
 	use lightning::expect_payment_claimed;
 	use lightning_types::string::UntrustedString;
 
-	use std::ops::Deref;
 	use std::sync::Mutex;
 	use std::time::{Duration, Instant, SystemTime};
 

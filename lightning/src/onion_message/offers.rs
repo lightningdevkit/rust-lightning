@@ -22,6 +22,7 @@ use crate::onion_message::packet::OnionMessageContents;
 use crate::util::logger::Logger;
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
 use core::fmt;
+use core::ops::Deref;
 
 use crate::prelude::*;
 
@@ -60,6 +61,17 @@ pub trait OffersMessageHandler {
 	/// another message. The latter should use the return value of [`Self::handle_message`].
 	fn release_pending_messages(&self) -> Vec<(OffersMessage, MessageSendInstructions)> {
 		vec![]
+	}
+}
+
+impl<T: OffersMessageHandler + ?Sized, O: Deref<Target = T>> OffersMessageHandler for O {
+	fn handle_message(
+		&self, message: OffersMessage, context: Option<OffersContext>, responder: Option<Responder>,
+	) -> Option<(OffersMessage, ResponseInstruction)> {
+		self.deref().handle_message(message, context, responder)
+	}
+	fn release_pending_messages(&self) -> Vec<(OffersMessage, MessageSendInstructions)> {
+		self.deref().release_pending_messages()
 	}
 }
 
