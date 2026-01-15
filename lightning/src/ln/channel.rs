@@ -93,7 +93,6 @@ use crate::prelude::*;
 use crate::sign::type_resolver::ChannelSignerType;
 #[cfg(any(test, fuzzing, debug_assertions))]
 use crate::sync::Mutex;
-use core::ops::Deref;
 use core::time::Duration;
 use core::{cmp, fmt, mem};
 
@@ -1002,12 +1001,9 @@ impl<'a, L: Logger> Logger for WithChannelContext<'a, L> {
 }
 
 impl<'a, 'b, L: Logger> WithChannelContext<'a, L> {
-	pub(super) fn from<S: Deref>(
+	pub(super) fn from<S: SignerProvider>(
 		logger: &'a L, context: &'b ChannelContext<S>, payment_hash: Option<PaymentHash>,
-	) -> Self
-	where
-		S::Target: SignerProvider,
-	{
+	) -> Self {
 		WithChannelContext {
 			logger,
 			peer_id: Some(context.counterparty_node_id),
@@ -1242,9 +1238,7 @@ struct HolderCommitmentPoint {
 
 impl HolderCommitmentPoint {
 	#[rustfmt::skip]
-	pub fn new<SP: Deref>(signer: &ChannelSignerType<SP>, secp_ctx: &Secp256k1<secp256k1::All>) -> Option<Self>
-		where SP::Target: SignerProvider
-	{
+	pub fn new<SP: SignerProvider>(signer: &ChannelSignerType<SP>, secp_ctx: &Secp256k1<secp256k1::All>) -> Option<Self> {
 		Some(HolderCommitmentPoint {
 			next_transaction_number: INITIAL_COMMITMENT_NUMBER,
 			previous_revoked_point: None,
@@ -1285,11 +1279,9 @@ impl HolderCommitmentPoint {
 
 	/// If we are pending advancing the next commitment point, this method tries asking the signer
 	/// again.
-	pub fn try_resolve_pending<SP: Deref, L: Logger>(
+	pub fn try_resolve_pending<SP: SignerProvider, L: Logger>(
 		&mut self, signer: &ChannelSignerType<SP>, secp_ctx: &Secp256k1<secp256k1::All>, logger: &L,
-	) where
-		SP::Target: SignerProvider,
-	{
+	) {
 		if !self.can_advance() {
 			let pending_next_point = signer
 				.as_ref()
@@ -1321,12 +1313,9 @@ impl HolderCommitmentPoint {
 	///
 	/// If our signer is ready to provide the next commitment point, the next call to `advance` will
 	/// succeed.
-	pub fn advance<SP: Deref, L: Logger>(
+	pub fn advance<SP: SignerProvider, L: Logger>(
 		&mut self, signer: &ChannelSignerType<SP>, secp_ctx: &Secp256k1<secp256k1::All>, logger: &L,
-	) -> Result<(), ()>
-	where
-		SP::Target: SignerProvider,
-	{
+	) -> Result<(), ()> {
 		if let Some(next_point) = self.pending_next_point {
 			*self = Self {
 				next_transaction_number: self.next_transaction_number - 1,
@@ -1442,19 +1431,13 @@ impl_writeable_tlv_based!(PendingChannelMonitorUpdate, {
 
 /// A payment channel with a counterparty throughout its life-cycle, encapsulating negotiation and
 /// funding phases.
-pub(super) struct Channel<SP: Deref>
-where
-	SP::Target: SignerProvider,
-{
+pub(super) struct Channel<SP: SignerProvider> {
 	phase: ChannelPhase<SP>,
 }
 
 /// The `ChannelPhase` enum describes the current phase in life of a lightning channel with each of
 /// its variants containing an appropriate channel struct.
-enum ChannelPhase<SP: Deref>
-where
-	SP::Target: SignerProvider,
-{
+enum ChannelPhase<SP: SignerProvider> {
 	Undefined,
 	UnfundedOutboundV1(OutboundV1Channel<SP>),
 	UnfundedInboundV1(InboundV1Channel<SP>),
@@ -1462,10 +1445,9 @@ where
 	Funded(FundedChannel<SP>),
 }
 
-impl<SP: Deref> Channel<SP>
+impl<SP: SignerProvider> Channel<SP>
 where
-	SP::Target: SignerProvider,
-	<SP::Target as SignerProvider>::EcdsaSigner: ChannelSigner,
+	SP::EcdsaSigner: ChannelSigner,
 {
 	pub fn context(&self) -> &ChannelContext<SP> {
 		match &self.phase {
@@ -2007,7 +1989,7 @@ where
 	#[rustfmt::skip]
 	pub fn funding_signed<L: Logger>(
 		&mut self, msg: &msgs::FundingSigned, best_block: BestBlock, signer_provider: &SP, logger: &L
-	) -> Result<(&mut FundedChannel<SP>, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>), ChannelError> {
+	) -> Result<(&mut FundedChannel<SP>, ChannelMonitor<SP::EcdsaSigner>), ChannelError> {
 		let phase = core::mem::replace(&mut self.phase, ChannelPhase::Undefined);
 		let result = if let ChannelPhase::UnfundedOutboundV1(chan) = phase {
 			let channel_state = chan.context.channel_state;
@@ -2277,7 +2259,7 @@ where
 	#[rustfmt::skip]
 	pub fn commitment_signed<F: FeeEstimator, L: Logger>(
 		&mut self, msg: &msgs::CommitmentSigned, best_block: BestBlock, signer_provider: &SP, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L
-	) -> Result<(Option<ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>>, Option<ChannelMonitorUpdate>), ChannelError> {
+	) -> Result<(Option<ChannelMonitor<SP::EcdsaSigner>>, Option<ChannelMonitorUpdate>), ChannelError> {
 		let phase = core::mem::replace(&mut self.phase, ChannelPhase::Undefined);
 		match phase {
 			ChannelPhase::UnfundedV2(chan) => {
@@ -2396,40 +2378,36 @@ where
 	}
 }
 
-impl<SP: Deref> From<OutboundV1Channel<SP>> for Channel<SP>
+impl<SP: SignerProvider> From<OutboundV1Channel<SP>> for Channel<SP>
 where
-	SP::Target: SignerProvider,
-	<SP::Target as SignerProvider>::EcdsaSigner: ChannelSigner,
+	SP::EcdsaSigner: ChannelSigner,
 {
 	fn from(channel: OutboundV1Channel<SP>) -> Self {
 		Channel { phase: ChannelPhase::UnfundedOutboundV1(channel) }
 	}
 }
 
-impl<SP: Deref> From<InboundV1Channel<SP>> for Channel<SP>
+impl<SP: SignerProvider> From<InboundV1Channel<SP>> for Channel<SP>
 where
-	SP::Target: SignerProvider,
-	<SP::Target as SignerProvider>::EcdsaSigner: ChannelSigner,
+	SP::EcdsaSigner: ChannelSigner,
 {
 	fn from(channel: InboundV1Channel<SP>) -> Self {
 		Channel { phase: ChannelPhase::UnfundedInboundV1(channel) }
 	}
 }
 
-impl<SP: Deref> From<PendingV2Channel<SP>> for Channel<SP>
+impl<SP: SignerProvider> From<PendingV2Channel<SP>> for Channel<SP>
 where
-	SP::Target: SignerProvider,
-	<SP::Target as SignerProvider>::EcdsaSigner: ChannelSigner,
+	SP::EcdsaSigner: ChannelSigner,
 {
 	fn from(channel: PendingV2Channel<SP>) -> Self {
 		Channel { phase: ChannelPhase::UnfundedV2(channel) }
 	}
 }
 
-impl<SP: Deref> From<FundedChannel<SP>> for Channel<SP>
+impl<SP: SignerProvider> From<FundedChannel<SP>> for Channel<SP>
 where
-	SP::Target: SignerProvider,
-	<SP::Target as SignerProvider>::EcdsaSigner: ChannelSigner,
+	SP::EcdsaSigner: ChannelSigner,
 {
 	fn from(channel: FundedChannel<SP>) -> Self {
 		Channel { phase: ChannelPhase::Funded(channel) }
@@ -2681,14 +2659,11 @@ impl FundingScope {
 	}
 
 	/// Constructs a `FundingScope` for splicing a channel.
-	fn for_splice<SP: Deref>(
+	fn for_splice<SP: SignerProvider>(
 		prev_funding: &Self, context: &ChannelContext<SP>, our_funding_contribution: SignedAmount,
 		their_funding_contribution: SignedAmount, counterparty_funding_pubkey: PublicKey,
 		our_new_holder_keys: ChannelPublicKeys,
-	) -> Self
-	where
-		SP::Target: SignerProvider,
-	{
+	) -> Self {
 		debug_assert!(our_funding_contribution.abs() <= SignedAmount::MAX_MONEY);
 		debug_assert!(their_funding_contribution.abs() <= SignedAmount::MAX_MONEY);
 
@@ -2877,12 +2852,9 @@ impl FundingNegotiation {
 }
 
 impl PendingFunding {
-	fn check_get_splice_locked<SP: Deref>(
+	fn check_get_splice_locked<SP: SignerProvider>(
 		&mut self, context: &ChannelContext<SP>, confirmed_funding_index: usize, height: u32,
-	) -> Option<msgs::SpliceLocked>
-	where
-		SP::Target: SignerProvider,
-	{
+	) -> Option<msgs::SpliceLocked> {
 		debug_assert!(confirmed_funding_index < self.negotiated_candidates.len());
 
 		let funding = &self.negotiated_candidates[confirmed_funding_index];
@@ -2988,10 +2960,7 @@ impl<'a> From<&'a Transaction> for ConfirmedTransaction<'a> {
 
 /// Contains everything about the channel including state, and various flags.
 #[cfg_attr(test, derive(Debug))]
-pub(super) struct ChannelContext<SP: Deref>
-where
-	SP::Target: SignerProvider,
-{
+pub(super) struct ChannelContext<SP: SignerProvider> {
 	config: LegacyChannelConfig,
 
 	// Track the previous `ChannelConfig` so that we can continue forwarding HTLCs that were
@@ -3280,10 +3249,7 @@ where
 
 /// A channel struct implementing this trait can receive an initial counterparty commitment
 /// transaction signature.
-trait InitialRemoteCommitmentReceiver<SP: Deref>
-where
-	SP::Target: SignerProvider,
-{
+trait InitialRemoteCommitmentReceiver<SP: SignerProvider> {
 	fn context(&self) -> &ChannelContext<SP>;
 
 	fn context_mut(&mut self) -> &mut ChannelContext<SP>;
@@ -3321,7 +3287,7 @@ where
 	fn initial_commitment_signed<L: Logger>(
 		&mut self, channel_id: ChannelId, counterparty_signature: Signature, holder_commitment_point: &mut HolderCommitmentPoint,
 		best_block: BestBlock, signer_provider: &SP, logger: &L,
-	) -> Result<(ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>, CommitmentTransaction), ChannelError> {
+	) -> Result<(ChannelMonitor<SP::EcdsaSigner>, CommitmentTransaction), ChannelError> {
 		let initial_commitment_tx = match self.check_counterparty_commitment_signature(&counterparty_signature, holder_commitment_point, logger) {
 			Ok(res) => res,
 			Err(ChannelError::Close(e)) => {
@@ -3409,10 +3375,7 @@ where
 	fn is_v2_established(&self) -> bool;
 }
 
-impl<SP: Deref> InitialRemoteCommitmentReceiver<SP> for OutboundV1Channel<SP>
-where
-	SP::Target: SignerProvider,
-{
+impl<SP: SignerProvider> InitialRemoteCommitmentReceiver<SP> for OutboundV1Channel<SP> {
 	fn context(&self) -> &ChannelContext<SP> {
 		&self.context
 	}
@@ -3438,10 +3401,7 @@ where
 	}
 }
 
-impl<SP: Deref> InitialRemoteCommitmentReceiver<SP> for InboundV1Channel<SP>
-where
-	SP::Target: SignerProvider,
-{
+impl<SP: SignerProvider> InitialRemoteCommitmentReceiver<SP> for InboundV1Channel<SP> {
 	fn context(&self) -> &ChannelContext<SP> {
 		&self.context
 	}
@@ -3467,10 +3427,7 @@ where
 	}
 }
 
-impl<SP: Deref> InitialRemoteCommitmentReceiver<SP> for FundedChannel<SP>
-where
-	SP::Target: SignerProvider,
-{
+impl<SP: SignerProvider> InitialRemoteCommitmentReceiver<SP> for FundedChannel<SP> {
 	fn context(&self) -> &ChannelContext<SP> {
 		&self.context
 	}
@@ -3505,10 +3462,7 @@ where
 	}
 }
 
-impl<SP: Deref> ChannelContext<SP>
-where
-	SP::Target: SignerProvider,
-{
+impl<SP: SignerProvider> ChannelContext<SP> {
 	#[rustfmt::skip]
 	fn new_for_inbound_channel<'a, ES: EntropySource, F: FeeEstimator, L: Logger>(
 		fee_estimator: &'a LowerBoundedFeeEstimator<F>,
@@ -3528,10 +3482,7 @@ where
 		msg_channel_reserve_satoshis: u64,
 		msg_push_msat: u64,
 		open_channel_fields: msgs::CommonOpenChannelFields,
-	) -> Result<(FundingScope, ChannelContext<SP>), ChannelError>
-		where
-			SP::Target: SignerProvider,
-	{
+	) -> Result<(FundingScope, ChannelContext<SP>), ChannelError> {
 		let logger = WithContext::from(logger, Some(counterparty_node_id), Some(open_channel_fields.temporary_channel_id), None);
 		let announce_for_forwarding = if (open_channel_fields.channel_flags & 1) == 1 { true } else { false };
 
@@ -3867,12 +3818,9 @@ where
 		temporary_channel_id_fn: Option<impl Fn(&ChannelPublicKeys) -> ChannelId>,
 		holder_selected_channel_reserve_satoshis: u64,
 		channel_keys_id: [u8; 32],
-		holder_signer: <SP::Target as SignerProvider>::EcdsaSigner,
+		holder_signer: SP::EcdsaSigner,
 		_logger: L,
-	) -> Result<(FundingScope, ChannelContext<SP>), APIError>
-		where
-			SP::Target: SignerProvider,
-	{
+	) -> Result<(FundingScope, ChannelContext<SP>), APIError> {
 		// This will be updated with the counterparty contribution if this is a dual-funded channel
 		let channel_value_satoshis = funding_satoshis;
 
@@ -6363,10 +6311,7 @@ where
 
 	fn get_initial_counterparty_commitment_signatures<L: Logger>(
 		&self, funding: &FundingScope, logger: &L,
-	) -> Option<(Signature, Vec<Signature>)>
-	where
-		SP::Target: SignerProvider,
-	{
+	) -> Option<(Signature, Vec<Signature>)> {
 		let mut commitment_number = self.counterparty_next_commitment_transaction_number;
 		let mut commitment_point = self.counterparty_next_commitment_point.unwrap();
 
@@ -6407,10 +6352,7 @@ where
 
 	fn get_initial_commitment_signed_v2<L: Logger>(
 		&self, funding: &FundingScope, logger: &L,
-	) -> Option<msgs::CommitmentSigned>
-	where
-		SP::Target: SignerProvider,
-	{
+	) -> Option<msgs::CommitmentSigned> {
 		let signatures = self.get_initial_counterparty_commitment_signatures(funding, logger);
 		if let Some((signature, htlc_signatures)) = signatures {
 			log_info!(logger, "Generated commitment_signed for peer",);
@@ -6750,13 +6692,10 @@ pub(super) struct FundingNegotiationContext {
 impl FundingNegotiationContext {
 	/// Prepare and start interactive transaction negotiation.
 	/// If error occurs, it is caused by our side, not the counterparty.
-	fn into_interactive_tx_constructor<SP: Deref, ES: EntropySource>(
+	fn into_interactive_tx_constructor<SP: SignerProvider, ES: EntropySource>(
 		mut self, context: &ChannelContext<SP>, funding: &FundingScope, signer_provider: &SP,
 		entropy_source: &ES, holder_node_id: PublicKey,
-	) -> Result<InteractiveTxConstructor, NegotiationError>
-	where
-		SP::Target: SignerProvider,
-	{
+	) -> Result<InteractiveTxConstructor, NegotiationError> {
 		debug_assert_eq!(
 			self.shared_funding_input.is_some(),
 			funding.channel_transaction_parameters.splice_parent_funding_txid.is_some(),
@@ -6860,10 +6799,7 @@ impl FundingNegotiationContext {
 // Holder designates channel data owned for the benefit of the user client.
 // Counterparty designates channel data owned by the another channel participant entity.
 #[cfg_attr(test, derive(Debug))]
-pub(super) struct FundedChannel<SP: Deref>
-where
-	SP::Target: SignerProvider,
-{
+pub(super) struct FundedChannel<SP: SignerProvider> {
 	pub funding: FundingScope,
 	pub context: ChannelContext<SP>,
 	holder_commitment_point: HolderCommitmentPoint,
@@ -7068,10 +7004,9 @@ pub struct SpliceFundingPromotion {
 	pub discarded_funding: Vec<FundingInfo>,
 }
 
-impl<SP: Deref> FundedChannel<SP>
+impl<SP: SignerProvider> FundedChannel<SP>
 where
-	SP::Target: SignerProvider,
-	<SP::Target as SignerProvider>::EcdsaSigner: EcdsaChannelSigner,
+	SP::EcdsaSigner: EcdsaChannelSigner,
 {
 	pub fn context(&self) -> &ChannelContext<SP> {
 		&self.context
@@ -7987,7 +7922,7 @@ where
 	pub fn initial_commitment_signed_v2<L: Logger>(
 		&mut self, msg: &msgs::CommitmentSigned, best_block: BestBlock, signer_provider: &SP,
 		logger: &L,
-	) -> Result<ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>, ChannelError> {
+	) -> Result<ChannelMonitor<SP::EcdsaSigner>, ChannelError> {
 		if let Some(signing_session) = self.context.interactive_tx_signing_session.as_ref() {
 			if signing_session.has_received_tx_signatures() {
 				let msg = "Received initial commitment_signed after peer's tx_signatures received!";
@@ -13411,10 +13346,7 @@ where
 }
 
 /// A not-yet-funded outbound (from holder) channel using V1 channel establishment.
-pub(super) struct OutboundV1Channel<SP: Deref>
-where
-	SP::Target: SignerProvider,
-{
+pub(super) struct OutboundV1Channel<SP: SignerProvider> {
 	pub funding: FundingScope,
 	pub context: ChannelContext<SP>,
 	pub unfunded_context: UnfundedChannelContext,
@@ -13424,10 +13356,7 @@ where
 	pub signer_pending_open_channel: bool,
 }
 
-impl<SP: Deref> OutboundV1Channel<SP>
-where
-	SP::Target: SignerProvider,
-{
+impl<SP: SignerProvider> OutboundV1Channel<SP> {
 	pub fn abandon_unfunded_chan(&mut self, closure_reason: ClosureReason) -> ShutdownResult {
 		self.context.force_shutdown(&self.funding, closure_reason)
 	}
@@ -13663,7 +13592,7 @@ where
 		mut self, msg: &msgs::FundingSigned, best_block: BestBlock, signer_provider: &SP,
 		logger: &L,
 	) -> Result<
-		(FundedChannel<SP>, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>),
+		(FundedChannel<SP>, ChannelMonitor<SP::EcdsaSigner>),
 		(OutboundV1Channel<SP>, ChannelError),
 	> {
 		if !self.funding.is_outbound() {
@@ -13767,10 +13696,7 @@ where
 }
 
 /// A not-yet-funded inbound (from counterparty) channel using V1 channel establishment.
-pub(super) struct InboundV1Channel<SP: Deref>
-where
-	SP::Target: SignerProvider,
-{
+pub(super) struct InboundV1Channel<SP: SignerProvider> {
 	pub funding: FundingScope,
 	pub context: ChannelContext<SP>,
 	pub unfunded_context: UnfundedChannelContext,
@@ -13808,10 +13734,7 @@ pub(super) fn channel_type_from_open_channel(
 	Ok(channel_type.clone())
 }
 
-impl<SP: Deref> InboundV1Channel<SP>
-where
-	SP::Target: SignerProvider,
-{
+impl<SP: SignerProvider> InboundV1Channel<SP> {
 	/// Creates a new channel from a remote sides' request for one.
 	/// Assumes chain_hash has already been checked and corresponds with what we expect!
 	#[rustfmt::skip]
@@ -13949,11 +13872,7 @@ where
 		mut self, msg: &msgs::FundingCreated, best_block: BestBlock, signer_provider: &SP,
 		logger: &L,
 	) -> Result<
-		(
-			FundedChannel<SP>,
-			Option<msgs::FundingSigned>,
-			ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>,
-		),
+		(FundedChannel<SP>, Option<msgs::FundingSigned>, ChannelMonitor<SP::EcdsaSigner>),
 		(Self, ChannelError),
 	> {
 		if self.funding.is_outbound() {
@@ -14058,10 +13977,7 @@ where
 }
 
 // A not-yet-funded channel using V2 channel establishment.
-pub(super) struct PendingV2Channel<SP: Deref>
-where
-	SP::Target: SignerProvider,
-{
+pub(super) struct PendingV2Channel<SP: SignerProvider> {
 	pub funding: FundingScope,
 	pub context: ChannelContext<SP>,
 	pub unfunded_context: UnfundedChannelContext,
@@ -14070,10 +13986,7 @@ where
 	pub interactive_tx_constructor: Option<InteractiveTxConstructor>,
 }
 
-impl<SP: Deref> PendingV2Channel<SP>
-where
-	SP::Target: SignerProvider,
-{
+impl<SP: SignerProvider> PendingV2Channel<SP> {
 	#[allow(dead_code)] // TODO(dual_funding): Remove once creating V2 channels is enabled.
 	#[rustfmt::skip]
 	pub fn new_outbound<ES: EntropySource, F: FeeEstimator, L: Logger>(
@@ -14480,10 +14393,7 @@ impl Readable for AnnouncementSigsState {
 	}
 }
 
-impl<SP: Deref> Writeable for FundedChannel<SP>
-where
-	SP::Target: SignerProvider,
-{
+impl<SP: SignerProvider> Writeable for FundedChannel<SP> {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		// Note that we write out as if remove_uncommitted_htlcs_and_mark_paused had just been
 		// called.
@@ -14972,10 +14882,8 @@ where
 	}
 }
 
-impl<'a, 'b, 'c, ES: EntropySource, SP: Deref>
+impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
 	ReadableArgs<(&'a ES, &'b SP, &'c ChannelTypeFeatures)> for FundedChannel<SP>
-where
-	SP::Target: SignerProvider,
 {
 	fn read<R: io::Read>(
 		reader: &mut R, args: (&'a ES, &'b SP, &'c ChannelTypeFeatures),

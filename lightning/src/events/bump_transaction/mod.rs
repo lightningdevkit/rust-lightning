@@ -691,10 +691,13 @@ where
 ///
 /// [`Event::BumpTransaction`]: crate::events::Event::BumpTransaction
 // Note that updates to documentation on this struct should be copied to the synchronous version.
-pub struct BumpTransactionEventHandler<B: BroadcasterInterface, C: Deref, SP: Deref, L: Logger>
-where
+pub struct BumpTransactionEventHandler<
+	B: BroadcasterInterface,
+	C: Deref,
+	SP: SignerProvider,
+	L: Logger,
+> where
 	C::Target: CoinSelectionSource,
-	SP::Target: SignerProvider,
 {
 	broadcaster: B,
 	utxo_source: C,
@@ -703,11 +706,10 @@ where
 	secp: Secp256k1<secp256k1::All>,
 }
 
-impl<B: BroadcasterInterface, C: Deref, SP: Deref, L: Logger>
+impl<B: BroadcasterInterface, C: Deref, SP: SignerProvider, L: Logger>
 	BumpTransactionEventHandler<B, C, SP, L>
 where
 	C::Target: CoinSelectionSource,
-	SP::Target: SignerProvider,
 {
 	/// Returns a new instance capable of handling [`Event::BumpTransaction`] events.
 	///

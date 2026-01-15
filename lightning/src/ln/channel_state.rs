@@ -22,8 +22,6 @@ use crate::types::features::{ChannelTypeFeatures, InitFeatures};
 use crate::types::payment::PaymentHash;
 use crate::util::config::ChannelConfig;
 
-use core::ops::Deref;
-
 /// Exposes the state of pending inbound HTLCs.
 ///
 /// At a high level, an HTLC being forwarded from one Lightning node to another Lightning node goes
@@ -524,13 +522,10 @@ impl ChannelDetails {
 		}
 	}
 
-	pub(super) fn from_channel<SP: Deref, F: FeeEstimator>(
+	pub(super) fn from_channel<SP: SignerProvider, F: FeeEstimator>(
 		channel: &Channel<SP>, best_block_height: u32, latest_features: InitFeatures,
 		fee_estimator: &LowerBoundedFeeEstimator<F>,
-	) -> Self
-	where
-		SP::Target: SignerProvider,
-	{
+	) -> Self {
 		let context = channel.context();
 		let funding = channel.funding();
 		let balance = channel.get_available_balances(fee_estimator);
