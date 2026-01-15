@@ -74,9 +74,8 @@ use {
 ///
 /// [`OffersMessageFlow`] is parameterized by a [`MessageRouter`], which is responsible
 /// for finding message paths when initiating and retrying onion messages.
-pub struct OffersMessageFlow<MR: Deref, L: Deref>
+pub struct OffersMessageFlow<MR: MessageRouter, L: Deref>
 where
-	MR::Target: MessageRouter,
 	L::Target: Logger,
 {
 	chain_hash: ChainHash,
@@ -107,9 +106,8 @@ where
 	logger: L,
 }
 
-impl<MR: Deref, L: Deref> OffersMessageFlow<MR, L>
+impl<MR: MessageRouter, L: Deref> OffersMessageFlow<MR, L>
 where
-	MR::Target: MessageRouter,
 	L::Target: Logger,
 {
 	/// Creates a new [`OffersMessageFlow`]
@@ -266,9 +264,8 @@ const DEFAULT_ASYNC_RECEIVE_OFFER_EXPIRY: Duration = Duration::from_secs(365 * 2
 pub(crate) const TEST_DEFAULT_ASYNC_RECEIVE_OFFER_EXPIRY: Duration =
 	DEFAULT_ASYNC_RECEIVE_OFFER_EXPIRY;
 
-impl<MR: Deref, L: Deref> OffersMessageFlow<MR, L>
+impl<MR: MessageRouter, L: Deref> OffersMessageFlow<MR, L>
 where
-	MR::Target: MessageRouter,
 	L::Target: Logger,
 {
 	/// [`BlindedMessagePath`]s for an async recipient to communicate with this node and interactively
@@ -430,9 +427,8 @@ pub enum HeldHtlcReplyPath {
 	},
 }
 
-impl<MR: Deref, L: Deref> OffersMessageFlow<MR, L>
+impl<MR: MessageRouter, L: Deref> OffersMessageFlow<MR, L>
 where
-	MR::Target: MessageRouter,
 	L::Target: Logger,
 {
 	/// Verifies an [`InvoiceRequest`] using the provided [`OffersContext`] or the [`InvoiceRequest::metadata`].
@@ -620,12 +616,9 @@ where
 	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 	///
 	/// See [`Self::create_offer_builder`] for more details on usage.
-	pub fn create_offer_builder_using_router<ME: Deref, ES: EntropySource>(
+	pub fn create_offer_builder_using_router<ME: MessageRouter, ES: EntropySource>(
 		&self, router: ME, entropy_source: ES, peers: Vec<MessageForwardNode>,
-	) -> Result<OfferBuilder<'_, DerivedMetadata, secp256k1::All>, Bolt12SemanticError>
-	where
-		ME::Target: MessageRouter,
-	{
+	) -> Result<OfferBuilder<'_, DerivedMetadata, secp256k1::All>, Bolt12SemanticError> {
 		let receive_key = self.get_receive_auth_key();
 		self.create_offer_builder_intern(&entropy_source, |node_id, context, secp_ctx| {
 			router
@@ -767,13 +760,10 @@ where
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	/// [`Event::PaymentFailed`]: crate::events::Event::PaymentFailed
 	/// [`RouteParameters::from_payment_params_and_value`]: crate::routing::router::RouteParameters::from_payment_params_and_value
-	pub fn create_refund_builder_using_router<ES: EntropySource, ME: Deref>(
+	pub fn create_refund_builder_using_router<ES: EntropySource, ME: MessageRouter>(
 		&self, router: ME, entropy_source: ES, amount_msats: u64, absolute_expiry: Duration,
 		payment_id: PaymentId, peers: Vec<MessageForwardNode>,
-	) -> Result<RefundBuilder<'_, secp256k1::All>, Bolt12SemanticError>
-	where
-		ME::Target: MessageRouter,
-	{
+	) -> Result<RefundBuilder<'_, secp256k1::All>, Bolt12SemanticError> {
 		let receive_key = self.get_receive_auth_key();
 		self.create_refund_builder_intern(
 			&entropy_source,
