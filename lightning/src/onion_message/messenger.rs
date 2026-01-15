@@ -72,9 +72,7 @@ pub trait AOnionMessenger {
 	/// A type implementing [`Logger`]
 	type Logger: Logger;
 	/// A type implementing [`NodeIdLookUp`]
-	type NodeIdLookUp: NodeIdLookUp + ?Sized;
-	/// A type that may be dereferenced to [`Self::NodeIdLookUp`]
-	type NL: Deref<Target = Self::NodeIdLookUp>;
+	type NL: NodeIdLookUp;
 	/// A type implementing [`MessageRouter`]
 	type MessageRouter: MessageRouter;
 	/// A type implementing [`OffersMessageHandler`]
@@ -113,7 +111,7 @@ impl<
 		ES: EntropySource,
 		NS: NodeSigner,
 		L: Logger,
-		NL: Deref,
+		NL: NodeIdLookUp,
 		MR: MessageRouter,
 		OMH: Deref,
 		APH: Deref,
@@ -121,7 +119,6 @@ impl<
 		CMH: Deref,
 	> AOnionMessenger for OnionMessenger<ES, NS, L, NL, MR, OMH, APH, DRH, CMH>
 where
-	NL::Target: NodeIdLookUp,
 	OMH::Target: OffersMessageHandler,
 	APH::Target: AsyncPaymentsMessageHandler,
 	DRH::Target: DNSResolverMessageHandler,
@@ -130,7 +127,6 @@ where
 	type EntropySource = ES;
 	type NodeSigner = NS;
 	type Logger = L;
-	type NodeIdLookUp = NL::Target;
 	type NL = NL;
 	type MessageRouter = MR;
 	type OffersMessageHandler = OMH::Target;
@@ -271,14 +267,13 @@ pub struct OnionMessenger<
 	ES: EntropySource,
 	NS: NodeSigner,
 	L: Logger,
-	NL: Deref,
+	NL: NodeIdLookUp,
 	MR: MessageRouter,
 	OMH: Deref,
 	APH: Deref,
 	DRH: Deref,
 	CMH: Deref,
 > where
-	NL::Target: NodeIdLookUp,
 	OMH::Target: OffersMessageHandler,
 	APH::Target: AsyncPaymentsMessageHandler,
 	DRH::Target: DNSResolverMessageHandler,
@@ -1037,16 +1032,13 @@ pub enum PeeledOnion<T: OnionMessageContents> {
 pub fn create_onion_message_resolving_destination<
 	ES: EntropySource,
 	NS: NodeSigner,
-	NL: Deref,
+	NL: NodeIdLookUp,
 	T: OnionMessageContents,
 >(
 	entropy_source: &ES, node_signer: &NS, node_id_lookup: &NL,
 	network_graph: &ReadOnlyNetworkGraph, secp_ctx: &Secp256k1<secp256k1::All>,
 	mut path: OnionMessagePath, contents: T, reply_path: Option<BlindedMessagePath>,
-) -> Result<(PublicKey, OnionMessage, Vec<SocketAddress>), SendError>
-where
-	NL::Target: NodeIdLookUp,
-{
+) -> Result<(PublicKey, OnionMessage, Vec<SocketAddress>), SendError> {
 	path.destination.resolve(network_graph);
 	create_onion_message(
 		entropy_source,
@@ -1070,14 +1062,16 @@ where
 /// - unless it can be resolved by [`NodeIdLookUp::next_node_id`].
 /// Use [`create_onion_message_resolving_destination`] instead to resolve the introduction node
 /// first with a [`ReadOnlyNetworkGraph`].
-pub fn create_onion_message<ES: EntropySource, NS: NodeSigner, NL: Deref, T: OnionMessageContents>(
+pub fn create_onion_message<
+	ES: EntropySource,
+	NS: NodeSigner,
+	NL: NodeIdLookUp,
+	T: OnionMessageContents,
+>(
 	entropy_source: &ES, node_signer: &NS, node_id_lookup: &NL,
 	secp_ctx: &Secp256k1<secp256k1::All>, path: OnionMessagePath, contents: T,
 	reply_path: Option<BlindedMessagePath>,
-) -> Result<(PublicKey, OnionMessage, Vec<SocketAddress>), SendError>
-where
-	NL::Target: NodeIdLookUp,
-{
+) -> Result<(PublicKey, OnionMessage, Vec<SocketAddress>), SendError> {
 	let OnionMessagePath { intermediate_nodes, mut destination, first_node_addresses } = path;
 	if let Destination::BlindedPath(ref path) = destination {
 		if path.blinded_hops().is_empty() {
@@ -1374,7 +1368,7 @@ impl<
 		ES: EntropySource,
 		NS: NodeSigner,
 		L: Logger,
-		NL: Deref,
+		NL: NodeIdLookUp,
 		MR: MessageRouter,
 		OMH: Deref,
 		APH: Deref,
@@ -1382,7 +1376,6 @@ impl<
 		CMH: Deref,
 	> OnionMessenger<ES, NS, L, NL, MR, OMH, APH, DRH, CMH>
 where
-	NL::Target: NodeIdLookUp,
 	OMH::Target: OffersMessageHandler,
 	APH::Target: AsyncPaymentsMessageHandler,
 	DRH::Target: DNSResolverMessageHandler,
@@ -2014,7 +2007,7 @@ impl<
 		ES: EntropySource,
 		NS: NodeSigner,
 		L: Logger,
-		NL: Deref,
+		NL: NodeIdLookUp,
 		MR: MessageRouter,
 		OMH: Deref,
 		APH: Deref,
@@ -2022,7 +2015,6 @@ impl<
 		CMH: Deref,
 	> EventsProvider for OnionMessenger<ES, NS, L, NL, MR, OMH, APH, DRH, CMH>
 where
-	NL::Target: NodeIdLookUp,
 	OMH::Target: OffersMessageHandler,
 	APH::Target: AsyncPaymentsMessageHandler,
 	DRH::Target: DNSResolverMessageHandler,
@@ -2131,7 +2123,7 @@ impl<
 		ES: EntropySource,
 		NS: NodeSigner,
 		L: Logger,
-		NL: Deref,
+		NL: NodeIdLookUp,
 		MR: MessageRouter,
 		OMH: Deref,
 		APH: Deref,
@@ -2139,7 +2131,6 @@ impl<
 		CMH: Deref,
 	> BaseMessageHandler for OnionMessenger<ES, NS, L, NL, MR, OMH, APH, DRH, CMH>
 where
-	NL::Target: NodeIdLookUp,
 	OMH::Target: OffersMessageHandler,
 	APH::Target: AsyncPaymentsMessageHandler,
 	DRH::Target: DNSResolverMessageHandler,
@@ -2199,7 +2190,7 @@ impl<
 		ES: EntropySource,
 		NS: NodeSigner,
 		L: Logger,
-		NL: Deref,
+		NL: NodeIdLookUp,
 		MR: MessageRouter,
 		OMH: Deref,
 		APH: Deref,
@@ -2207,7 +2198,6 @@ impl<
 		CMH: Deref,
 	> OnionMessageHandler for OnionMessenger<ES, NS, L, NL, MR, OMH, APH, DRH, CMH>
 where
-	NL::Target: NodeIdLookUp,
 	OMH::Target: OffersMessageHandler,
 	APH::Target: AsyncPaymentsMessageHandler,
 	DRH::Target: DNSResolverMessageHandler,

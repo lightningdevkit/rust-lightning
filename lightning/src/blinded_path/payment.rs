@@ -33,8 +33,6 @@ use crate::util::ser::{
 	Writeable, Writer,
 };
 
-use core::ops::Deref;
-
 #[allow(unused_imports)]
 use crate::prelude::*;
 
@@ -230,11 +228,10 @@ impl BlindedPaymentPath {
 	/// introduction node.
 	///
 	/// Will only modify `self` when returning `Ok`.
-	pub fn advance_path_by_one<NS: NodeSigner, NL: Deref, T>(
+	pub fn advance_path_by_one<NS: NodeSigner, NL: NodeIdLookUp, T>(
 		&mut self, node_signer: &NS, node_id_lookup: &NL, secp_ctx: &Secp256k1<T>,
 	) -> Result<(), ()>
 	where
-		NL::Target: NodeIdLookUp,
 		T: secp256k1::Signing + secp256k1::Verification,
 	{
 		let (next_node_id, control_tlvs_ss) =

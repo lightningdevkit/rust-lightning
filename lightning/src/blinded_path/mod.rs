@@ -88,10 +88,9 @@ impl NodeIdLookUp for EmptyNodeIdLookUp {
 	}
 }
 
-impl Deref for EmptyNodeIdLookUp {
-	type Target = EmptyNodeIdLookUp;
-	fn deref(&self) -> &Self {
-		self
+impl<T: NodeIdLookUp + ?Sized, N: Deref<Target = T>> NodeIdLookUp for N {
+	fn next_node_id(&self, short_channel_id: u64) -> Option<PublicKey> {
+		self.deref().next_node_id(short_channel_id)
 	}
 }
 

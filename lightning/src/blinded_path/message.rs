@@ -31,7 +31,6 @@ use crate::types::payment::PaymentHash;
 use crate::util::scid_utils;
 use crate::util::ser::{FixedLengthReader, LengthReadableArgs, Readable, Writeable, Writer};
 
-use core::ops::Deref;
 use core::time::Duration;
 use core::{cmp, mem};
 
@@ -192,11 +191,10 @@ impl BlindedMessagePath {
 	/// introduction node.
 	///
 	/// Will only modify `self` when returning `Ok`.
-	pub fn advance_path_by_one<NS: NodeSigner, NL: Deref, T>(
+	pub fn advance_path_by_one<NS: NodeSigner, NL: NodeIdLookUp, T>(
 		&mut self, node_signer: &NS, node_id_lookup: &NL, secp_ctx: &Secp256k1<T>,
 	) -> Result<(), ()>
 	where
-		NL::Target: NodeIdLookUp,
 		T: secp256k1::Signing + secp256k1::Verification,
 	{
 		let control_tlvs_ss = node_signer.ecdh(Recipient::Node, &self.0.blinding_point, None)?;

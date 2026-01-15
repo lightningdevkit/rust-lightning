@@ -203,12 +203,6 @@ mod test {
 			None
 		}
 	}
-	impl Deref for DummyNodeLookup {
-		type Target = DummyNodeLookup;
-		fn deref(&self) -> &DummyNodeLookup {
-			self
-		}
-	}
 
 	struct DirectlyConnectedRouter {}
 	impl MessageRouter for DirectlyConnectedRouter {
