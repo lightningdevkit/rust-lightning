@@ -243,12 +243,6 @@ mod test {
 			)])
 		}
 	}
-	impl Deref for DirectlyConnectedRouter {
-		type Target = DirectlyConnectedRouter;
-		fn deref(&self) -> &DirectlyConnectedRouter {
-			self
-		}
-	}
 
 	struct URIResolver {
 		resolved_uri: Mutex<Option<(HumanReadableName, PaymentId, String)>>,
