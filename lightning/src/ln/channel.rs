@@ -3563,13 +3563,6 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			return Err(ChannelError::close(format!("Configured with an unreasonable our_to_self_delay ({}) putting user funds at risks. It must be greater than {}", config.channel_handshake_config.our_to_self_delay, BREAKDOWN_TIMEOUT)));
 		}
 
-		// Check sanity of message fields:
-		if channel_value_satoshis > config.channel_handshake_limits.max_funding_satoshis {
-			return Err(ChannelError::close(format!(
-				"Per our config, funding must be at most {}. It was {}. Peer contribution: {}. Our contribution: {}",
-				config.channel_handshake_limits.max_funding_satoshis, channel_value_satoshis,
-				open_channel_fields.funding_satoshis, our_funding_satoshis)));
-		}
 		if channel_value_satoshis >= TOTAL_BITCOIN_SUPPLY_SATOSHIS {
 			return Err(ChannelError::close(format!("Funding must be smaller than the total bitcoin supply. It was {}", channel_value_satoshis)));
 		}
@@ -16046,10 +16039,7 @@ mod tests {
 		AwaitingChannelReadyFlags, ChannelState, FundedChannel, HTLCCandidate, HTLCInitiator,
 		HTLCUpdateAwaitingACK, InboundHTLCOutput, InboundHTLCState, InboundUpdateAdd,
 		InboundV1Channel, OutboundHTLCOutput, OutboundHTLCState, OutboundV1Channel,
-	};
-	use crate::ln::channel::{
-		MAX_FUNDING_SATOSHIS_NO_WUMBO, MIN_THEIR_CHAN_RESERVE_SATOSHIS,
-		TOTAL_BITCOIN_SUPPLY_SATOSHIS,
+		MIN_THEIR_CHAN_RESERVE_SATOSHIS,
 	};
 	use crate::ln::channel_keys::{RevocationBasepoint, RevocationKey};
 	use crate::ln::channelmanager::{self, HTLCSource, PaymentId};
@@ -16104,15 +16094,6 @@ mod tests {
 		assert!(ChannelState::FundingNegotiated(FundingNegotiatedFlags::new()) < ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new()));
 		assert!(ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new()) < ChannelState::ChannelReady(ChannelReadyFlags::new()));
 		assert!(ChannelState::ChannelReady(ChannelReadyFlags::new()) < ChannelState::ShutdownComplete);
-	}
-
-	#[test]
-	fn test_max_funding_satoshis_no_wumbo() {
-		assert_eq!(TOTAL_BITCOIN_SUPPLY_SATOSHIS, 21_000_000 * 100_000_000);
-		assert!(
-			MAX_FUNDING_SATOSHIS_NO_WUMBO <= TOTAL_BITCOIN_SUPPLY_SATOSHIS,
-			"MAX_FUNDING_SATOSHIS_NO_WUMBO is greater than all satoshis in existence"
-		);
 	}
 
 	#[cfg(ldk_test_vectors)]
