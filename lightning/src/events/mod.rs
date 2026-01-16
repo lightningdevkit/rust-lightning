@@ -577,7 +577,7 @@ pub enum HTLCHandlingFailureType {
 	},
 	/// We were responsible for pathfinding and forwarding of a trampoline payment, but failed to
 	/// do so. An example of such an instance is when we can't find a route to the specified
-	/// trampoline destination within.
+	/// trampoline destination.
 	TrampolineForward {
 		/// The set of HTLCs dispatched by our node in an attempt to complete the trampoline forward
 		/// which have failed.
