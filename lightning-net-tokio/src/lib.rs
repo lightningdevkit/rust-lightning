@@ -37,6 +37,7 @@ use lightning::ln::msgs::SocketAddress;
 use lightning::ln::peer_handler;
 use lightning::ln::peer_handler::APeerManager;
 use lightning::ln::peer_handler::SocketDescriptor as LnSocketTrait;
+use lightning::sign::EntropySource;
 
 use std::future::Future;
 use std::hash::Hash;
@@ -474,16 +475,18 @@ where
 	}
 }
 
-/// Same as [`connect_outbound`], using a SOCKS5 proxy
-pub async fn socks5_connect_outbound<PM: Deref + 'static + Send + Sync + Clone>(
-	peer_manager: PM, their_node_id: PublicKey, socks5_proxy_addr: SocketAddr, addr: SocketAddress,
-	user_pass: Option<(&str, &str)>,
+/// Routes [`connect_outbound`] through Tor. Implements stream isolation for each connection
+/// using a stream isolation parameter sourced from [`EntropySource::get_secure_random_bytes`].
+pub async fn tor_connect_outbound<PM: Deref + 'static + Send + Sync + Clone, ES: Deref>(
+	peer_manager: PM, their_node_id: PublicKey, addr: SocketAddress, tor_proxy_addr: SocketAddr,
+	entropy_source: ES,
 ) -> Option<impl std::future::Future<Output = ()>>
 where
 	PM::Target: APeerManager<Descriptor = SocketDescriptor>,
+	ES::Target: EntropySource,
 {
 	let connect_fut = async {
-		socks5_connect(socks5_proxy_addr, addr, user_pass).await.map(|s| s.into_std().unwrap())
+		tor_connect(addr, tor_proxy_addr, entropy_source).await.map(|s| s.into_std().unwrap())
 	};
 	if let Ok(Ok(stream)) =
 		time::timeout(Duration::from_secs(SOCKS5_CONNECT_OUTBOUND_TIMEOUT), connect_fut).await
@@ -494,9 +497,12 @@ where
 	}
 }
 
-async fn socks5_connect(
-	socks5_proxy_addr: SocketAddr, addr: SocketAddress, user_pass: Option<(&str, &str)>,
-) -> Result<TcpStream, ()> {
+async fn tor_connect<ES: Deref>(
+	addr: SocketAddress, tor_proxy_addr: SocketAddr, entropy_source: ES,
+) -> Result<TcpStream, ()>
+where
+	ES::Target: EntropySource,
+{
 	use std::io::{Cursor, Write};
 	use tokio::io::AsyncReadExt;
 
@@ -507,7 +513,6 @@ async fn socks5_connect(
 	// Constants defined in RFC 1928 and RFC 1929
 	const VERSION: u8 = 5;
 	const NMETHODS: u8 = 1;
-	const NO_AUTH: u8 = 0;
 	const USERNAME_PASSWORD_AUTH: u8 = 2;
 	const METHOD_SELECT_REPLY_LEN: usize = 2;
 	const USERNAME_PASSWORD_VERSION: u8 = 1;
@@ -518,48 +523,45 @@ async fn socks5_connect(
 	const ATYP_DOMAINNAME: u8 = 3;
 	const ATYP_IPV6: u8 = 4;
 	const SUCCESS: u8 = 0;
-	const USERNAME_MAX_LEN: usize = 255;
-	const PASSWORD_MAX_LEN: usize = 255;
 
-	const USERNAME_PASSWORD_REQUEST_MAX_LEN: usize = 1 /* VER */ + 1 /* ULEN */ + USERNAME_MAX_LEN /* UNAME max len */
-		+ 1 /* PLEN */ + PASSWORD_MAX_LEN /* PASSWD max len */;
+	// Tor extensions, see https://spec.torproject.org/socks-extensions.html for further details
+	const USERNAME: &[u8] = b"<torS0X>0";
+	const USERNAME_LEN: usize = USERNAME.len();
+	const PASSWORD_LEN: usize = 32;
+
+	const USERNAME_PASSWORD_REQUEST_LEN: usize =
+		1 /* VER */ + 1 /* ULEN */ + USERNAME_LEN + 1 /* PLEN */ + PASSWORD_LEN;
 	const SOCKS5_REQUEST_MAX_LEN: usize = 1 /* VER */ + 1 /* CMD */ + 1 /* RSV */ + 1 /* ATYP */
 		+ 1 /* HOSTNAME len */ + HOSTNAME_MAX_LEN /* HOSTNAME */ + 2 /* PORT */;
 
-	let selected_auth = if user_pass.is_some() { USERNAME_PASSWORD_AUTH } else { NO_AUTH };
-	let method_selection_request = [VERSION, NMETHODS, selected_auth];
-	let mut tcp_stream = TcpStream::connect(&socks5_proxy_addr).await.map_err(|_| ())?;
+	let method_selection_request = [VERSION, NMETHODS, USERNAME_PASSWORD_AUTH];
+	let mut tcp_stream = TcpStream::connect(&tor_proxy_addr).await.map_err(|_| ())?;
 	tokio::io::AsyncWriteExt::write_all(&mut tcp_stream, &method_selection_request)
 		.await
 		.map_err(|_| ())?;
 
 	let mut method_selection_reply = [0u8; METHOD_SELECT_REPLY_LEN];
 	tcp_stream.read_exact(&mut method_selection_reply).await.map_err(|_| ())?;
-	if method_selection_reply != [VERSION, selected_auth] {
+	if method_selection_reply != [VERSION, USERNAME_PASSWORD_AUTH] {
 		return Err(());
 	}
 
-	if let Some((username, password)) = user_pass {
-		if username.len() > USERNAME_MAX_LEN || password.len() > PASSWORD_MAX_LEN {
-			return Err(());
-		}
+	let password: [u8; PASSWORD_LEN] = entropy_source.get_secure_random_bytes();
+	let mut username_password_request = [0u8; USERNAME_PASSWORD_REQUEST_LEN];
+	let mut writer = Cursor::new(&mut username_password_request[..]);
+	writer.write_all(&[USERNAME_PASSWORD_VERSION, USERNAME_LEN as u8]).map_err(|_| ())?;
+	writer.write_all(USERNAME).map_err(|_| ())?;
+	writer.write_all(&[PASSWORD_LEN as u8]).map_err(|_| ())?;
+	writer.write_all(&password).map_err(|_| ())?;
+	debug_assert_eq!(writer.position() as usize, USERNAME_PASSWORD_REQUEST_LEN);
+	tokio::io::AsyncWriteExt::write_all(&mut tcp_stream, &username_password_request)
+		.await
+		.map_err(|_| ())?;
 
-		let mut username_password_request = [0u8; USERNAME_PASSWORD_REQUEST_MAX_LEN];
-		let mut writer = Cursor::new(&mut username_password_request[..]);
-		writer.write_all(&[USERNAME_PASSWORD_VERSION, username.len() as u8]).map_err(|_| ())?;
-		writer.write_all(username.as_bytes()).map_err(|_| ())?;
-		writer.write_all(&[password.len() as u8]).map_err(|_| ())?;
-		writer.write_all(password.as_bytes()).map_err(|_| ())?;
-		let pos = writer.position() as usize;
-		tokio::io::AsyncWriteExt::write_all(&mut tcp_stream, &username_password_request[..pos])
-			.await
-			.map_err(|_| ())?;
-
-		let mut username_password_reply = [0u8; USERNAME_PASSWORD_REPLY_LEN];
-		tcp_stream.read_exact(&mut username_password_reply).await.map_err(|_| ())?;
-		if username_password_reply != [USERNAME_PASSWORD_VERSION, SUCCESS] {
-			return Err(());
-		}
+	let mut username_password_reply = [0u8; USERNAME_PASSWORD_REPLY_LEN];
+	tcp_stream.read_exact(&mut username_password_reply).await.map_err(|_| ())?;
+	if username_password_reply != [USERNAME_PASSWORD_VERSION, SUCCESS] {
+		return Err(());
 	}
 
 	let mut socks5_request = [0u8; SOCKS5_REQUEST_MAX_LEN];
@@ -754,9 +756,6 @@ impl Hash for SocketDescriptor {
 
 #[cfg(test)]
 mod tests {
-	#[cfg(tor_socks5)]
-	use super::socks5_connect;
-
 	use bitcoin::constants::ChainHash;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 	use bitcoin::Network;
@@ -770,8 +769,6 @@ mod tests {
 	use tokio::sync::mpsc;
 
 	use std::mem;
-	#[cfg(tor_socks5)]
-	use std::net::SocketAddr;
 	use std::sync::atomic::{AtomicBool, Ordering};
 	use std::sync::{Arc, Mutex};
 	use std::time::Duration;
@@ -1093,34 +1090,40 @@ mod tests {
 		race_disconnect_accept().await;
 	}
 
-	#[cfg(tor_socks5)]
+	#[cfg(tor)]
 	#[tokio::test]
-	async fn test_socks5_connect() {
-		// Set TOR_SOCKS5_PROXY=127.0.0.1:9050
-		let socks5_proxy_addr: SocketAddr = std::env!("TOR_SOCKS5_PROXY").parse().unwrap();
+	async fn test_tor_connect() {
+		use super::tor_connect;
+		use lightning::sign::EntropySource;
+		use std::net::SocketAddr;
+
+		// Set TOR_PROXY=127.0.0.1:9050
+		let tor_proxy_addr: SocketAddr = std::env!("TOR_PROXY").parse().unwrap();
+
+		struct TestEntropySource;
+
+		impl EntropySource for TestEntropySource {
+			fn get_secure_random_bytes(&self) -> [u8; 32] {
+				[0xffu8; 32]
+			}
+		}
+
+		let entropy_source = TestEntropySource;
 
 		// Success cases
 
-		for (addr_str, user_pass) in [
+		for addr_str in [
 			// google.com
-			("142.250.189.196:80", None),
+			"142.250.189.196:80",
 			// google.com
-			("[2607:f8b0:4005:813::2004]:80", None),
+			"[2607:f8b0:4005:813::2004]:80",
 			// torproject.org
-			("torproject.org:80", None),
+			"torproject.org:80",
 			// torproject.org
-			("2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion:80", None),
-			// Same vectors as above, with a username and password
-			("142.250.189.196:80", Some(("<torS0X>0", ""))),
-			("[2607:f8b0:4005:813::2004]:80", Some(("<torS0X>0", "123"))),
-			("torproject.org:80", Some(("<torS0X>1abc", ""))),
-			(
-				"2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion:80",
-				Some(("<torS0X>1abc", "123")),
-			),
+			"2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion:80",
 		] {
 			let addr: SocketAddress = addr_str.parse().unwrap();
-			let tcp_stream = socks5_connect(socks5_proxy_addr, addr, user_pass).await.unwrap();
+			let tcp_stream = tor_connect(addr, tor_proxy_addr, &entropy_source).await.unwrap();
 			assert_eq!(
 				tcp_stream.try_read(&mut [0u8; 1]).unwrap_err().kind(),
 				std::io::ErrorKind::WouldBlock
@@ -1129,33 +1132,18 @@ mod tests {
 
 		// Failure cases
 
-		for (addr_str, user_pass) in [
+		for addr_str in [
 			// google.com, with some invalid port
-			("142.250.189.196:1234", None),
+			"142.250.189.196:1234",
 			// google.com, with some invalid port
-			("[2607:f8b0:4005:813::2004]:1234", None),
+			"[2607:f8b0:4005:813::2004]:1234",
 			// torproject.org, with some invalid port
-			("torproject.org:1234", None),
+			"torproject.org:1234",
 			// torproject.org, with a typo
-			("3gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion:80", None),
-			// Same vectors as above, with a username and password
-			("142.250.189.196:1234", Some(("<torS0X>0", ""))),
-			("[2607:f8b0:4005:813::2004]:1234", Some(("<torS0X>0", "123"))),
-			("torproject.org:1234", Some(("<torS0X>1abc", ""))),
-			(
-				"3gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion:80",
-				Some(("<torS0X>1abc", "123")),
-			),
-			/* TODO: Uncomment when format types 30 and 31 land in tor stable, see https://spec.torproject.org/socks-extensions.html,
-			   these are invalid usernames according to those standards.
-			("142.250.189.196:80", Some(("<torS0X>0abc", "123"))),
-			("[2607:f8b0:4005:813::2004]:80", Some(("<torS0X>1", "123"))),
-			("torproject.org:80", Some(("<torS0X>9", "123"))),
-			("2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion:80", Some(("<torS0X>", "123"))),
-			*/
+			"3gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion:80",
 		] {
 			let addr: SocketAddress = addr_str.parse().unwrap();
-			assert!(socks5_connect(socks5_proxy_addr, addr, user_pass).await.is_err());
+			assert!(tor_connect(addr, tor_proxy_addr, &entropy_source).await.is_err());
 		}
 	}
 }
