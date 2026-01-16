@@ -39,6 +39,7 @@ use crate::chain::channelmonitor::{
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::chain::{BestBlock, ChannelMonitorUpdateStatus, Filter, WatchedOutput};
 use crate::events::{self, Event, EventHandler, ReplayEvent};
+use crate::io;
 use crate::ln::channel_state::ChannelDetails;
 #[cfg(peer_storage)]
 use crate::ln::msgs::PeerStorage;
@@ -198,16 +199,23 @@ pub trait Persist<ChannelSigner: EcdsaChannelSigner> {
 	/// the monitor already exists in the archive.
 	fn archive_persisted_channel(&self, monitor_name: MonitorName);
 
-	/// Fetches the set of [`ChannelMonitorUpdate`]s, previously persisted with
-	/// [`Self::update_persisted_channel`], which have completed.
+	/// Returns the number of pending writes in the queue.
 	///
-	/// Returning an update here is equivalent to calling
-	/// [`ChainMonitor::channel_monitor_updated`]. Because of this, this method is defaulted and
-	/// hidden in the docs.
-	#[doc(hidden)]
-	fn get_and_clear_completed_updates(&self) -> Vec<(ChannelId, u64)> {
-		Vec::new()
+	/// This can be used to capture the queue size before persisting the channel manager,
+	/// then pass that count to [`Self::flush`] to only flush those specific updates.
+	fn pending_write_count(&self) -> usize {
+		0
 	}
+
+	/// Flushes pending writes to the underlying storage.
+	///
+	/// The `count` parameter specifies how many pending writes to flush.
+	///
+	/// For implementations that queue writes (returning [`ChannelMonitorUpdateStatus::InProgress`]
+	/// from persist methods), this method should write queued data to storage.
+	///
+	/// Returns the list of completed monitor updates (channel_id, update_id) that were flushed.
+	fn flush(&self, count: usize) -> Result<Vec<(ChannelId, u64)>, io::Error>;
 }
 
 struct MonitorHolder<ChannelSigner: EcdsaChannelSigner> {
@@ -272,7 +280,6 @@ pub struct AsyncPersister<
 	FE::Target: FeeEstimator,
 {
 	persister: MonitorUpdatingPersisterAsync<K, S, L, ES, SP, BI, FE>,
-	event_notifier: Arc<Notifier>,
 }
 
 impl<
@@ -320,8 +327,7 @@ where
 		&self, monitor_name: MonitorName,
 		monitor: &ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>,
 	) -> ChannelMonitorUpdateStatus {
-		let notifier = Arc::clone(&self.event_notifier);
-		self.persister.spawn_async_persist_new_channel(monitor_name, monitor, notifier);
+		self.persister.queue_new_channel(monitor_name, monitor);
 		ChannelMonitorUpdateStatus::InProgress
 	}
 
@@ -329,8 +335,7 @@ where
 		&self, monitor_name: MonitorName, monitor_update: Option<&ChannelMonitorUpdate>,
 		monitor: &ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>,
 	) -> ChannelMonitorUpdateStatus {
-		let notifier = Arc::clone(&self.event_notifier);
-		self.persister.spawn_async_update_channel(monitor_name, monitor_update, monitor, notifier);
+		self.persister.queue_channel_update(monitor_name, monitor_update, monitor);
 		ChannelMonitorUpdateStatus::InProgress
 	}
 
@@ -338,8 +343,12 @@ where
 		self.persister.spawn_async_archive_persisted_channel(monitor_name);
 	}
 
-	fn get_and_clear_completed_updates(&self) -> Vec<(ChannelId, u64)> {
-		self.persister.get_and_clear_completed_updates()
+	fn pending_write_count(&self) -> usize {
+		self.persister.pending_write_count()
+	}
+
+	fn flush(&self, count: usize) -> Result<Vec<(ChannelId, u64)>, io::Error> {
+		crate::util::persist::poll_sync_future(self.persister.flush(count))
 	}
 }
 
@@ -440,7 +449,6 @@ impl<
 		persister: MonitorUpdatingPersisterAsync<K, S, L, ES, SP, T, F>, _entropy_source: ES,
 		_our_peerstorage_encryption_key: PeerStorageKey,
 	) -> Self {
-		let event_notifier = Arc::new(Notifier::new());
 		Self {
 			monitors: RwLock::new(new_hash_map()),
 			chain_source,
@@ -450,8 +458,8 @@ impl<
 			_entropy_source,
 			pending_monitor_events: Mutex::new(Vec::new()),
 			highest_chain_height: AtomicUsize::new(0),
-			event_notifier: Arc::clone(&event_notifier),
-			persister: AsyncPersister { persister, event_notifier },
+			event_notifier: Arc::new(Notifier::new()),
+			persister: AsyncPersister { persister },
 			pending_send_only_events: Mutex::new(Vec::new()),
 			#[cfg(peer_storage)]
 			our_peerstorage_encryption_key: _our_peerstorage_encryption_key,
@@ -740,6 +748,30 @@ where
 				(*channel_id, holder.pending_monitor_updates.lock().unwrap().clone())
 			})
 			.collect()
+	}
+
+	/// Returns the number of pending writes in the persister queue.
+	///
+	/// This can be used to capture the queue size before persisting the channel manager,
+	/// then pass that count to [`Self::flush`] to only flush those specific updates.
+	pub fn pending_write_count(&self) -> usize {
+		self.persister.pending_write_count()
+	}
+
+	/// Flushes pending writes to the underlying storage.
+	///
+	/// If `count` is `Some(n)`, only the first `n` pending writes are flushed.
+	/// If `count` is `None`, all pending writes are flushed.
+	///
+	/// For persisters that queue writes (returning [`ChannelMonitorUpdateStatus::InProgress`]
+	/// from persist methods), this method writes queued data to storage and signals
+	/// completion to the channel manager via [`Self::channel_monitor_updated`].
+	pub fn flush(&self, count: usize) -> Result<(), io::Error> {
+		let completed = self.persister.flush(count)?;
+		for (channel_id, update_id) in completed {
+			let _ = self.channel_monitor_updated(channel_id, update_id);
+		}
+		Ok(())
 	}
 
 	#[cfg(any(test, feature = "_test_utils"))]
@@ -1497,9 +1529,6 @@ where
 	fn release_pending_monitor_events(
 		&self,
 	) -> Vec<(OutPoint, ChannelId, Vec<MonitorEvent>, PublicKey)> {
-		for (channel_id, update_id) in self.persister.get_and_clear_completed_updates() {
-			let _ = self.channel_monitor_updated(channel_id, update_id);
-		}
 		let mut pending_monitor_events = self.pending_monitor_events.lock().unwrap().split_off(0);
 		for monitor_state in self.monitors.read().unwrap().values() {
 			let monitor_events = monitor_state.monitor.get_and_clear_pending_monitor_events();
