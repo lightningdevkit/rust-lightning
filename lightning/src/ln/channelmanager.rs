@@ -16643,6 +16643,17 @@ pub fn provided_init_features(config: &UserConfig) -> InitFeatures {
 const SERIALIZATION_VERSION: u8 = 1;
 const MIN_SERIALIZATION_VERSION: u8 = 1;
 
+// We plan to start writing this version in 0.5.
+//
+// LDK 0.5+ will reconstruct the set of pending HTLCs from `Channel{Monitor}` data that started
+// being written in 0.3, ignoring legacy `ChannelManager` HTLC maps on read and not writing them.
+// LDK 0.5+ will automatically fail to read if the pending HTLC set cannot be reconstructed, i.e.
+// if we were last written with pending HTLCs on 0.2- or if the new 0.3+ fields are missing.
+//
+// If 0.3 or 0.4 reads this manager version, it knows that the legacy maps were not written and
+// acts accordingly.
+const RECONSTRUCT_HTLCS_FROM_CHANS_VERSION: u8 = 2;
+
 impl_writeable_tlv_based!(PhantomRouteHints, {
 	(2, channels, required_vec),
 	(4, phantom_scid, required),
@@ -17644,7 +17655,7 @@ where
 	fn read<Reader: io::Read>(
 		reader: &mut Reader, mut args: ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>,
 	) -> Result<Self, DecodeError> {
-		let _ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
+		let ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
 
 		let chain_hash: ChainHash = Readable::read(reader)?;
 		let best_block_height: u32 = Readable::read(reader)?;
@@ -17931,23 +17942,24 @@ where
 		}
 
 		const MAX_ALLOC_SIZE: usize = 1024 * 64;
-		let forward_htlcs_count: u64 = Readable::read(reader)?;
 		// Marked `_legacy` because in versions > 0.2 we are taking steps to remove the requirement of
 		// regularly persisting the `ChannelManager` and instead rebuild the set of HTLC forwards from
 		// `Channel{Monitor}` data. See `reconstruct_manager_from_monitors` usage below.
-		let mut forward_htlcs_legacy: HashMap<u64, Vec<HTLCForwardInfo>> =
-			hash_map_with_capacity(cmp::min(forward_htlcs_count as usize, 128));
-		for _ in 0..forward_htlcs_count {
-			let short_channel_id = Readable::read(reader)?;
-			let pending_forwards_count: u64 = Readable::read(reader)?;
-			let mut pending_forwards = Vec::with_capacity(cmp::min(
-				pending_forwards_count as usize,
-				MAX_ALLOC_SIZE / mem::size_of::<HTLCForwardInfo>(),
-			));
-			for _ in 0..pending_forwards_count {
-				pending_forwards.push(Readable::read(reader)?);
+		let mut forward_htlcs_legacy: HashMap<u64, Vec<HTLCForwardInfo>> = new_hash_map();
+		if ver < RECONSTRUCT_HTLCS_FROM_CHANS_VERSION {
+			let forward_htlcs_count: u64 = Readable::read(reader)?;
+			for _ in 0..forward_htlcs_count {
+				let short_channel_id = Readable::read(reader)?;
+				let pending_forwards_count: u64 = Readable::read(reader)?;
+				let mut pending_forwards = Vec::with_capacity(cmp::min(
+					pending_forwards_count as usize,
+					MAX_ALLOC_SIZE / mem::size_of::<HTLCForwardInfo>(),
+				));
+				for _ in 0..pending_forwards_count {
+					pending_forwards.push(Readable::read(reader)?);
+				}
+				forward_htlcs_legacy.insert(short_channel_id, pending_forwards);
 			}
-			forward_htlcs_legacy.insert(short_channel_id, pending_forwards);
 		}
 
 		let claimable_htlcs_count: u64 = Readable::read(reader)?;
@@ -18086,6 +18098,11 @@ where
 			(19, peer_storage_dir, optional_vec),
 			(21, async_receive_offer_cache, (default_value, async_receive_offer_cache)),
 		});
+		if (decode_update_add_htlcs_legacy.is_some() || pending_intercepted_htlcs_legacy.is_some())
+			&& ver >= RECONSTRUCT_HTLCS_FROM_CHANS_VERSION
+		{
+			return Err(DecodeError::InvalidValue);
+		}
 		let mut decode_update_add_htlcs_legacy =
 			decode_update_add_htlcs_legacy.unwrap_or_else(|| new_hash_map());
 		let mut pending_intercepted_htlcs_legacy =
@@ -18385,7 +18402,7 @@ where
 		// `reconstruct_manager_from_monitors` is set below. Currently it is only set in tests, randomly
 		// to ensure the legacy codepaths also have test coverage.
 		#[cfg(not(test))]
-		let reconstruct_manager_from_monitors = false;
+		let reconstruct_manager_from_monitors = ver >= RECONSTRUCT_HTLCS_FROM_CHANS_VERSION;
 		#[cfg(test)]
 		let reconstruct_manager_from_monitors = {
 			use core::hash::{BuildHasher, Hasher};
