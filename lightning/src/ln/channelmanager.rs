@@ -10051,6 +10051,16 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		}
 	}
 
+	#[cfg(test)]
+	pub(crate) fn test_holding_cell_outbound_htlc_forwards_count(
+		&self, cp_id: PublicKey, chan_id: ChannelId,
+	) -> usize {
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let peer_state = per_peer_state.get(&cp_id).map(|state| state.lock().unwrap()).unwrap();
+		let chan = peer_state.channel_by_id.get(&chan_id).and_then(|c| c.as_funded()).unwrap();
+		chan.holding_cell_outbound_htlc_forwards().len()
+	}
+
 	/// Completes channel resumption after locks have been released.
 	///
 	/// Processes the [`PostMonitorUpdateChanResume`] returned by
@@ -18430,6 +18440,20 @@ where
 					let mut peer_state_lock = peer_state_mtx.lock().unwrap();
 					let peer_state = &mut *peer_state_lock;
 					is_channel_closed = !peer_state.channel_by_id.contains_key(channel_id);
+					if reconstruct_manager_from_monitors {
+						if let Some(chan) = peer_state.channel_by_id.get(channel_id) {
+							if let Some(funded_chan) = chan.as_funded() {
+								for prev_hop in funded_chan.holding_cell_outbound_htlc_forwards() {
+									dedup_decode_update_add_htlcs(
+										&mut decode_update_add_htlcs,
+										&prev_hop,
+										"HTLC already forwarded to the outbound edge",
+										&args.logger,
+									);
+								}
+							}
+						}
+					}
 				}
 
 				for (htlc_source, (htlc, preimage_opt)) in monitor.get_all_current_outbound_htlcs()
