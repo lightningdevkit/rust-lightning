@@ -19514,6 +19514,9 @@ impl<
 						let payment_preimage = preimage_opt?;
 						let prev_htlcs = match &htlc_source {
 							HTLCSource::PreviousHopData(prev_hop) => vec![prev_hop],
+							HTLCSource::TrampolineForward { previous_hop_data, .. } => {
+								previous_hop_data.iter().collect()
+							},
 							// If it was an outbound payment, we've handled it above - if a preimage
 							// came in and we persisted the `ChannelManager` we either handled it
 							// and are good to go or the channel force-closed - we don't have to
