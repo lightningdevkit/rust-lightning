@@ -27,7 +27,6 @@ use crate::ln::types::ChannelId;
 use crate::routing::router::{PaymentParameters, RouteParameters};
 use crate::util::errors::APIError;
 use crate::util::ser::Writeable;
-use crate::util::test_channel_signer::SignerOp;
 
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::{Amount, OutPoint as BitcoinOutPoint, ScriptBuf, Transaction, TxOut};
@@ -138,7 +137,7 @@ fn test_v1_splice_in_negative_insufficient_inputs() {
 pub fn negotiate_splice_tx<'a, 'b, 'c, 'd>(
 	initiator: &'a Node<'b, 'c, 'd>, acceptor: &'a Node<'b, 'c, 'd>, channel_id: ChannelId,
 	initiator_contribution: SpliceContribution,
-) -> msgs::CommitmentSigned {
+) {
 	let new_funding_script =
 		complete_splice_handshake(initiator, acceptor, channel_id, initiator_contribution.clone());
 	complete_interactive_funding_negotiation(
@@ -190,7 +189,7 @@ pub fn complete_splice_handshake<'a, 'b, 'c, 'd>(
 pub fn complete_interactive_funding_negotiation<'a, 'b, 'c, 'd>(
 	initiator: &'a Node<'b, 'c, 'd>, acceptor: &'a Node<'b, 'c, 'd>, channel_id: ChannelId,
 	initiator_contribution: SpliceContribution, new_funding_script: ScriptBuf,
-) -> msgs::CommitmentSigned {
+) {
 	let node_id_initiator = initiator.node.get_our_node_id();
 	let node_id_acceptor = acceptor.node.get_our_node_id();
 
@@ -247,21 +246,16 @@ pub fn complete_interactive_funding_negotiation<'a, 'b, 'c, 'd>(
 			acceptor.node.handle_tx_add_output(node_id_initiator, &tx_add_output);
 		} else {
 			let mut msg_events = initiator.node.get_and_clear_pending_msg_events();
-			assert_eq!(
-				msg_events.len(),
-				if acceptor_sent_tx_complete { 2 } else { 1 },
-				"{msg_events:?}"
-			);
+			assert_eq!(msg_events.len(), 1, "{msg_events:?}");
 			if let MessageSendEvent::SendTxComplete { ref msg, .. } = msg_events.remove(0) {
 				acceptor.node.handle_tx_complete(node_id_initiator, msg);
 			} else {
 				panic!();
 			}
 			if acceptor_sent_tx_complete {
-				if let MessageSendEvent::UpdateHTLCs { mut updates, .. } = msg_events.remove(0) {
-					return updates.commitment_signed.remove(0);
-				}
-				panic!();
+				assert!(expected_initiator_inputs.is_empty());
+				assert!(expected_initiator_scripts.is_empty());
+				return;
 			}
 		}
 
@@ -277,25 +271,18 @@ pub fn complete_interactive_funding_negotiation<'a, 'b, 'c, 'd>(
 }
 
 pub fn sign_interactive_funding_tx<'a, 'b, 'c, 'd>(
-	initiator: &'a Node<'b, 'c, 'd>, acceptor: &'a Node<'b, 'c, 'd>,
-	initial_commit_sig_for_acceptor: msgs::CommitmentSigned, is_0conf: bool,
+	initiator: &'a Node<'b, 'c, 'd>, acceptor: &'a Node<'b, 'c, 'd>, is_0conf: bool,
 ) -> (Transaction, Option<(msgs::SpliceLocked, PublicKey)>) {
 	let node_id_initiator = initiator.node.get_our_node_id();
 	let node_id_acceptor = acceptor.node.get_our_node_id();
 
 	assert!(initiator.node.get_and_clear_pending_msg_events().is_empty());
-	acceptor.node.handle_commitment_signed(node_id_initiator, &initial_commit_sig_for_acceptor);
 
 	let msg_events = acceptor.node.get_and_clear_pending_msg_events();
-	assert_eq!(msg_events.len(), 2, "{msg_events:?}");
+	assert_eq!(msg_events.len(), 1, "{msg_events:?}");
 	if let MessageSendEvent::UpdateHTLCs { ref updates, .. } = &msg_events[0] {
 		let commitment_signed = &updates.commitment_signed[0];
 		initiator.node.handle_commitment_signed(node_id_acceptor, commitment_signed);
-	} else {
-		panic!();
-	}
-	if let MessageSendEvent::SendTxSignatures { ref msg, .. } = &msg_events[1] {
-		initiator.node.handle_tx_signatures(node_id_acceptor, msg);
 	} else {
 		panic!();
 	}
@@ -314,6 +301,23 @@ pub fn sign_interactive_funding_tx<'a, 'b, 'c, 'd>(
 			.funding_transaction_signed(&channel_id, &counterparty_node_id, partially_signed_tx)
 			.unwrap();
 	}
+
+	let msg_events = initiator.node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1, "{msg_events:?}");
+	if let MessageSendEvent::UpdateHTLCs { ref updates, .. } = &msg_events[0] {
+		acceptor.node.handle_commitment_signed(node_id_initiator, &updates.commitment_signed[0]);
+	} else {
+		panic!();
+	}
+
+	let msg_events = acceptor.node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1, "{msg_events:?}");
+	if let MessageSendEvent::SendTxSignatures { ref msg, .. } = &msg_events[0] {
+		initiator.node.handle_tx_signatures(node_id_acceptor, msg);
+	} else {
+		panic!();
+	}
+
 	let mut msg_events = initiator.node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), if is_0conf { 2 } else { 1 }, "{msg_events:?}");
 	if let MessageSendEvent::SendTxSignatures { ref msg, .. } = &msg_events[0] {
@@ -338,7 +342,7 @@ pub fn sign_interactive_funding_tx<'a, 'b, 'c, 'd>(
 		let mut initiator_txn = initiator.tx_broadcaster.txn_broadcast();
 		assert_eq!(initiator_txn.len(), 1);
 		let acceptor_txn = acceptor.tx_broadcaster.txn_broadcast();
-		assert_eq!(initiator_txn, acceptor_txn,);
+		assert_eq!(initiator_txn, acceptor_txn);
 		initiator_txn.remove(0)
 	};
 	(tx, splice_locked)
@@ -354,15 +358,14 @@ pub fn splice_channel<'a, 'b, 'c, 'd>(
 	let new_funding_script =
 		complete_splice_handshake(initiator, acceptor, channel_id, initiator_contribution.clone());
 
-	let initial_commit_sig_for_acceptor = complete_interactive_funding_negotiation(
+	complete_interactive_funding_negotiation(
 		initiator,
 		acceptor,
 		channel_id,
 		initiator_contribution,
 		new_funding_script,
 	);
-	let (splice_tx, splice_locked) =
-		sign_interactive_funding_tx(initiator, acceptor, initial_commit_sig_for_acceptor, false);
+	let (splice_tx, splice_locked) = sign_interactive_funding_tx(initiator, acceptor, false);
 	assert!(splice_locked.is_none());
 
 	expect_splice_pending_event(initiator, &node_id_acceptor);
@@ -650,15 +653,12 @@ fn do_test_splice_state_reset_on_disconnect(reload: bool) {
 	nodes[0].node.handle_tx_complete(node_id_1, &tx_complete);
 
 	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
-	assert_eq!(msg_events.len(), 2);
+	assert_eq!(msg_events.len(), 1);
 	if let MessageSendEvent::SendTxComplete { .. } = &msg_events[0] {
 	} else {
 		panic!("Unexpected event");
 	}
-	if let MessageSendEvent::UpdateHTLCs { .. } = &msg_events[1] {
-	} else {
-		panic!("Unexpected event");
-	}
+	let _ = get_event!(nodes[0], Event::FundingTransactionReadyForSigning);
 
 	if reload {
 		let encoded_monitor_0 = get_monitor!(nodes[0], channel_id).encode();
@@ -1129,9 +1129,14 @@ fn do_test_splice_reestablish(reload: bool, async_monitor_update: bool) {
 			},
 		],
 	};
-	let initial_commit_sig_for_acceptor =
-		negotiate_splice_tx(&nodes[0], &nodes[1], channel_id, initiator_contribution);
-	assert_eq!(initial_commit_sig_for_acceptor.htlc_signatures.len(), 1);
+	negotiate_splice_tx(&nodes[0], &nodes[1], channel_id, initiator_contribution);
+
+	// Node 0 should have a signing event to handle since they had a contribution in the splice.
+	// Node 1 won't and will immediately send their `commitment_signed`.
+	let signing_event = get_event!(nodes[0], Event::FundingTransactionReadyForSigning);
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+
+	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 	let initial_commit_sig_for_initiator = get_htlc_update_msgs(&nodes[1], &node_id_0);
 	assert_eq!(initial_commit_sig_for_initiator.commitment_signed.len(), 1);
 	assert_eq!(initial_commit_sig_for_initiator.commitment_signed[0].htlc_signatures.len(), 1);
@@ -1146,8 +1151,8 @@ fn do_test_splice_reestablish(reload: bool, async_monitor_update: bool) {
 		};
 	}
 
-	// Reestablishing now should force both nodes to retransmit their initial `commitment_signed`
-	// message as they were never delivered.
+	// Reestablishing now should force node 1 to retransmit their initial `commitment_signed`
+	// message as it was never delivered.
 	if reload {
 		let encoded_monitor_0 = get_monitor!(nodes[0], channel_id).encode();
 		reload_node!(
@@ -1181,12 +1186,30 @@ fn do_test_splice_reestablish(reload: bool, async_monitor_update: bool) {
 	}
 
 	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
-	reconnect_args.send_interactive_tx_commit_sig = (true, true);
+	reconnect_args.send_interactive_tx_commit_sig = (true, false);
 	reconnect_nodes(reconnect_args);
 
-	// The `commitment_signed` messages were delivered in the reestablishment, so we should expect
-	// to see a `RenegotiatedFunding` monitor update on both nodes.
+	// The `commitment_signed` message was only delivered to nodes[0] in the reestablishment, so we
+	// should expect to see a `RenegotiatedFunding` monitor update, but it won't actually be
+	// processed until nodes[0] approves the splice via `funding_transaction_signed`.
+	check_added_monitors(&nodes[0], 0);
+	check_added_monitors(&nodes[1], 0);
+
+	// Have node 0 sign, we should see its `commitment_signed` go out and the `RenegotiatedFunding`
+	// monitor update processed.
+	if let Event::FundingTransactionReadyForSigning { unsigned_transaction, .. } = signing_event {
+		let tx = nodes[0].wallet_source.sign_tx(unsigned_transaction).unwrap();
+		nodes[0].node.funding_transaction_signed(&channel_id, &node_id_1, tx).unwrap();
+	}
+	let _ = get_htlc_update_msgs(&nodes[0], &node_id_1);
 	check_added_monitors(&nodes[0], 1);
+
+	// Reconnect to make sure node 0 retransmits its `commitment_signed` as it was never delivered.
+	reconnect_nodes!(|reconnect_args: &mut ReconnectArgs| {
+		reconnect_args.send_interactive_tx_commit_sig = (false, true);
+	});
+
+	check_added_monitors(&nodes[0], 0);
 	check_added_monitors(&nodes[1], 1);
 
 	if async_monitor_update {
@@ -1203,38 +1226,22 @@ fn do_test_splice_reestablish(reload: bool, async_monitor_update: bool) {
 		chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
 	}
 
-	// Node 0 should have a signing event to handle since they had a contribution in the splice.
-	// Node 1 won't and will immediately send `tx_signatures`.
-	let _ = get_event!(nodes[0], Event::FundingTransactionReadyForSigning);
-	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
-	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
-	let _ = get_event_msg!(nodes[1], MessageSendEvent::SendTxSignatures, node_id_0);
+	// Node 1 should now send its `tx_signatures` as it goes first. Node 0 will wait to send theirs
+	// until they receive it.
+	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
+	let _ = get_event_msg!(&nodes[1], MessageSendEvent::SendTxSignatures, node_id_0);
 
-	// Reconnecting now should force node 1 to retransmit their `tx_signatures` since it was never
-	// delivered. Node 0 still hasn't called back with `funding_transaction_signed`, so its
-	// `tx_signatures` is not ready yet.
+	// Reconnect to make sure node 1 retransmits its `tx_signatures` as it was never delivered.
 	reconnect_nodes!(|reconnect_args: &mut ReconnectArgs| {
 		reconnect_args.send_interactive_tx_sigs = (true, false);
 	});
-	let _ = get_event!(nodes[0], Event::FundingTransactionReadyForSigning);
-
-	// Reconnect again to make sure node 1 doesn't retransmit `tx_signatures` unnecessarily as it
-	// was delivered in the previous reestablishment.
-	reconnect_nodes!(|_| {});
-
-	// Have node 0 sign, we should see its `tx_signatures` go out.
-	let event = get_event!(nodes[0], Event::FundingTransactionReadyForSigning);
-	if let Event::FundingTransactionReadyForSigning { unsigned_transaction, .. } = event {
-		let tx = nodes[0].wallet_source.sign_tx(unsigned_transaction).unwrap();
-		nodes[0].node.funding_transaction_signed(&channel_id, &node_id_1, tx).unwrap();
-	}
-	let _ = get_event_msg!(nodes[0], MessageSendEvent::SendTxSignatures, node_id_1);
-	expect_splice_pending_event(&nodes[0], &node_id_1);
+	let _ = get_event_msg!(&nodes[0], MessageSendEvent::SendTxSignatures, node_id_1);
 
 	// Reconnect to make sure node 0 retransmits its `tx_signatures` as it was never delivered.
 	reconnect_nodes!(|reconnect_args: &mut ReconnectArgs| {
 		reconnect_args.send_interactive_tx_sigs = (false, true);
 	});
+	expect_splice_pending_event(&nodes[0], &node_id_1);
 	expect_splice_pending_event(&nodes[1], &node_id_0);
 
 	// Reestablish the channel again to make sure node 0 doesn't retransmit `tx_signatures`
@@ -1482,25 +1489,22 @@ fn do_test_propose_splice_while_disconnected(reload: bool, use_0conf: bool) {
 		.unwrap();
 
 	// Negotiate the first splice to completion.
-	let initial_commit_sig = {
-		nodes[1].node.handle_splice_init(node_id_0, &splice_init);
-		let splice_ack = get_event_msg!(nodes[1], MessageSendEvent::SendSpliceAck, node_id_0);
-		nodes[0].node.handle_splice_ack(node_id_1, &splice_ack);
-		let new_funding_script = chan_utils::make_funding_redeemscript(
-			&splice_init.funding_pubkey,
-			&splice_ack.funding_pubkey,
-		)
-		.to_p2wsh();
-		complete_interactive_funding_negotiation(
-			&nodes[0],
-			&nodes[1],
-			channel_id,
-			node_0_contribution,
-			new_funding_script,
-		)
-	};
-	let (splice_tx, splice_locked) =
-		sign_interactive_funding_tx(&nodes[0], &nodes[1], initial_commit_sig, use_0conf);
+	nodes[1].node.handle_splice_init(node_id_0, &splice_init);
+	let splice_ack = get_event_msg!(nodes[1], MessageSendEvent::SendSpliceAck, node_id_0);
+	nodes[0].node.handle_splice_ack(node_id_1, &splice_ack);
+	let new_funding_script = chan_utils::make_funding_redeemscript(
+		&splice_init.funding_pubkey,
+		&splice_ack.funding_pubkey,
+	)
+	.to_p2wsh();
+	complete_interactive_funding_negotiation(
+		&nodes[0],
+		&nodes[1],
+		channel_id,
+		node_0_contribution,
+		new_funding_script,
+	);
+	let (splice_tx, splice_locked) = sign_interactive_funding_tx(&nodes[0], &nodes[1], use_0conf);
 	expect_splice_pending_event(&nodes[0], &node_id_1);
 	expect_splice_pending_event(&nodes[1], &node_id_0);
 
@@ -1624,25 +1628,22 @@ fn do_test_propose_splice_while_disconnected(reload: bool, use_0conf: bool) {
 	}
 
 	let splice_init = get_event_msg!(nodes[1], MessageSendEvent::SendSpliceInit, node_id_0);
-	let initial_commit_sig = {
-		nodes[0].node.handle_splice_init(node_id_1, &splice_init);
-		let splice_ack = get_event_msg!(nodes[0], MessageSendEvent::SendSpliceAck, node_id_1);
-		nodes[1].node.handle_splice_ack(node_id_0, &splice_ack);
-		let new_funding_script = chan_utils::make_funding_redeemscript(
-			&splice_init.funding_pubkey,
-			&splice_ack.funding_pubkey,
-		)
-		.to_p2wsh();
-		complete_interactive_funding_negotiation(
-			&nodes[1],
-			&nodes[0],
-			channel_id,
-			node_1_contribution,
-			new_funding_script,
-		)
-	};
-	let (splice_tx, splice_locked) =
-		sign_interactive_funding_tx(&nodes[1], &nodes[0], initial_commit_sig, use_0conf);
+	nodes[0].node.handle_splice_init(node_id_1, &splice_init);
+	let splice_ack = get_event_msg!(nodes[0], MessageSendEvent::SendSpliceAck, node_id_1);
+	nodes[1].node.handle_splice_ack(node_id_0, &splice_ack);
+	let new_funding_script = chan_utils::make_funding_redeemscript(
+		&splice_init.funding_pubkey,
+		&splice_ack.funding_pubkey,
+	)
+	.to_p2wsh();
+	complete_interactive_funding_negotiation(
+		&nodes[1],
+		&nodes[0],
+		channel_id,
+		node_1_contribution,
+		new_funding_script,
+	);
+	let (splice_tx, splice_locked) = sign_interactive_funding_tx(&nodes[1], &nodes[0], use_0conf);
 	expect_splice_pending_event(&nodes[0], &node_id_1);
 	expect_splice_pending_event(&nodes[1], &node_id_0);
 
@@ -1689,8 +1690,8 @@ fn disconnect_on_unexpected_interactive_tx_message() {
 
 	// Complete interactive-tx construction, but fail by having the acceptor send a duplicate
 	// tx_complete instead of commitment_signed.
-	let _ = negotiate_splice_tx(initiator, acceptor, channel_id, contribution.clone());
-
+	negotiate_splice_tx(initiator, acceptor, channel_id, contribution.clone());
+	let _ = get_event!(initiator, Event::FundingTransactionReadyForSigning);
 	let mut msg_events = acceptor.node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), 1);
 	assert!(matches!(msg_events.remove(0), MessageSendEvent::UpdateHTLCs { .. }));
@@ -1738,58 +1739,6 @@ fn fail_splice_on_interactive_tx_error() {
 	let _tx_complete =
 		get_event_msg!(acceptor, MessageSendEvent::SendTxComplete, node_id_initiator);
 	initiator.node.handle_tx_add_input(node_id_acceptor, &tx_add_input);
-
-	let event = get_event!(initiator, Event::SpliceFailed);
-	match event {
-		Event::SpliceFailed { contributed_inputs, .. } => {
-			assert_eq!(contributed_inputs.len(), 1);
-			assert_eq!(contributed_inputs[0], contribution.inputs()[0].outpoint());
-		},
-		_ => panic!("Expected Event::SpliceFailed"),
-	}
-
-	let tx_abort = get_event_msg!(initiator, MessageSendEvent::SendTxAbort, node_id_acceptor);
-	acceptor.node.handle_tx_abort(node_id_initiator, &tx_abort);
-
-	let tx_abort = get_event_msg!(acceptor, MessageSendEvent::SendTxAbort, node_id_initiator);
-	initiator.node.handle_tx_abort(node_id_acceptor, &tx_abort);
-
-	// Fail signing the commitment transaction, which prevents the initiator from sending
-	// tx_complete.
-	initiator.disable_channel_signer_op(
-		&node_id_acceptor,
-		&channel_id,
-		SignerOp::SignCounterpartyCommitment,
-	);
-	let _ = complete_splice_handshake(initiator, acceptor, channel_id, contribution.clone());
-
-	let tx_add_input =
-		get_event_msg!(initiator, MessageSendEvent::SendTxAddInput, node_id_acceptor);
-	acceptor.node.handle_tx_add_input(node_id_initiator, &tx_add_input);
-
-	let tx_complete = get_event_msg!(acceptor, MessageSendEvent::SendTxComplete, node_id_initiator);
-	initiator.node.handle_tx_complete(node_id_acceptor, &tx_complete);
-
-	let tx_add_input =
-		get_event_msg!(initiator, MessageSendEvent::SendTxAddInput, node_id_acceptor);
-	acceptor.node.handle_tx_add_input(node_id_initiator, &tx_add_input);
-
-	let tx_complete = get_event_msg!(acceptor, MessageSendEvent::SendTxComplete, node_id_initiator);
-	initiator.node.handle_tx_complete(node_id_acceptor, &tx_complete);
-
-	let tx_add_output =
-		get_event_msg!(initiator, MessageSendEvent::SendTxAddOutput, node_id_acceptor);
-	acceptor.node.handle_tx_add_output(node_id_initiator, &tx_add_output);
-
-	let tx_complete = get_event_msg!(acceptor, MessageSendEvent::SendTxComplete, node_id_initiator);
-	initiator.node.handle_tx_complete(node_id_acceptor, &tx_complete);
-
-	let tx_add_output =
-		get_event_msg!(initiator, MessageSendEvent::SendTxAddOutput, node_id_acceptor);
-	acceptor.node.handle_tx_add_output(node_id_initiator, &tx_add_output);
-
-	let tx_complete = get_event_msg!(acceptor, MessageSendEvent::SendTxComplete, node_id_initiator);
-	initiator.node.handle_tx_complete(node_id_acceptor, &tx_complete);
 
 	let event = get_event!(initiator, Event::SpliceFailed);
 	match event {

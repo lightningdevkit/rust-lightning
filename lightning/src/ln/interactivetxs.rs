@@ -649,7 +649,7 @@ impl InteractiveTxSigningSession {
 	/// unsigned transaction.
 	pub fn provide_holder_witnesses<C: bitcoin::secp256k1::Verification>(
 		&mut self, tx_signatures: TxSignatures, secp_ctx: &Secp256k1<C>,
-	) -> Result<(Option<TxSignatures>, Option<Transaction>), String> {
+	) -> Result<(), String> {
 		if self.holder_tx_signatures.is_some() {
 			return Err("Holder witnesses were already provided".to_string());
 		}
@@ -667,15 +667,7 @@ impl InteractiveTxSigningSession {
 
 		self.holder_tx_signatures = Some(tx_signatures);
 
-		let funding_tx_opt = self.maybe_finalize_funding_tx();
-		let holder_tx_signatures = (self.holder_sends_tx_signatures_first
-			|| self.has_received_tx_signatures())
-		.then(|| {
-			debug_assert!(self.has_received_commitment_signed);
-			self.holder_tx_signatures.clone().expect("Holder tx_signatures were just provided")
-		});
-
-		Ok((holder_tx_signatures, funding_tx_opt))
+		Ok(())
 	}
 
 	pub fn remote_inputs_count(&self) -> usize {
