@@ -39,8 +39,10 @@ use crate::offers::invoice::{
 	Bolt12Invoice, DerivedSigningPubkey, ExplicitSigningPubkey, InvoiceBuilder,
 	DEFAULT_RELATIVE_EXPIRY,
 };
+use crate::offers::invoice_error::InvoiceError;
 use crate::offers::invoice_request::{
-	InvoiceRequest, InvoiceRequestBuilder, InvoiceRequestVerifiedFromOffer, VerifiedInvoiceRequest,
+	CurrencyConversion, InvoiceRequest, InvoiceRequestBuilder, InvoiceRequestVerifiedFromOffer,
+	VerifiedInvoiceRequest,
 };
 use crate::offers::nonce::Nonce;
 use crate::offers::offer::{Amount, DerivedMetadata, Offer, OfferBuilder};
@@ -69,6 +71,32 @@ use {
 	crate::onion_message::dns_resolution::{DNSResolverMessage, DNSSECQuery, OMNameResolver},
 };
 
+/// Defines the events that can be optionally triggered when processing offers messages.
+///
+/// Once generated, these events are stored in the [`OffersMessageFlow`], where they can be
+/// manually inspected and responded to.
+pub enum OfferMessageFlowEvent {
+	/// Notifies that an [`InvoiceRequest`] has been received.
+	///
+	/// To respond to this message:
+	/// - Based on the variant of [`InvoiceRequestVerifiedFromOffer`], create the appropriate invoice builder:
+	///   - [`InvoiceRequestVerifiedFromOffer::DerivedKeys`] → use
+	///     [`OffersMessageFlow::create_invoice_builder_from_invoice_request_with_keys`]
+	///   - [`InvoiceRequestVerifiedFromOffer::ExplicitKeys`] → use
+	///     [`OffersMessageFlow::create_invoice_builder_from_invoice_request_without_keys`]
+	/// - After building the invoice, sign it and send it back using the provided reply path via
+	///   [`OffersMessageFlow::enqueue_invoice_using_reply_paths`].
+	///
+	/// If the invoice request is invalid, respond with an [`InvoiceError`] using
+	/// [`OffersMessageFlow::enqueue_invoice_error`].
+	InvoiceRequestReceived {
+		/// The received, verified invoice request.
+		invoice_request: InvoiceRequestVerifiedFromOffer,
+		/// The reply path to use when responding to the invoice request.
+		reply_path: BlindedMessagePath,
+	},
+}
+
 /// A BOLT12 offers code and flow utility provider, which facilitates
 /// BOLT12 builder generation and onion message handling.
 ///
@@ -91,6 +119,8 @@ where
 	secp_ctx: Secp256k1<secp256k1::All>,
 	message_router: MR,
 
+	pub(crate) enable_events: bool,
+
 	#[cfg(not(any(test, feature = "_test_utils")))]
 	pending_offers_messages: Mutex<Vec<(OffersMessage, MessageSendInstructions)>>,
 	#[cfg(any(test, feature = "_test_utils"))]
@@ -103,6 +133,8 @@ where
 	pub(crate) hrn_resolver: OMNameResolver,
 	#[cfg(feature = "dnssec")]
 	pending_dns_onion_messages: Mutex<Vec<(DNSResolverMessage, MessageSendInstructions)>>,
+
+	pending_flow_events: Mutex<Vec<OfferMessageFlowEvent>>,
 
 	logger: L,
 }
@@ -117,7 +149,7 @@ where
 		chain_hash: ChainHash, best_block: BestBlock, our_network_pubkey: PublicKey,
 		current_timestamp: u32, inbound_payment_key: inbound_payment::ExpandedKey,
 		receive_auth_key: ReceiveAuthKey, secp_ctx: Secp256k1<secp256k1::All>, message_router: MR,
-		logger: L,
+		enable_events: bool, logger: L,
 	) -> Self {
 		Self {
 			chain_hash,
@@ -132,6 +164,8 @@ where
 			secp_ctx,
 			message_router,
 
+			enable_events,
+
 			pending_offers_messages: Mutex::new(Vec::new()),
 			pending_async_payments_messages: Mutex::new(Vec::new()),
 
@@ -141,6 +175,8 @@ where
 			pending_dns_onion_messages: Mutex::new(Vec::new()),
 
 			async_receive_offer_cache: Mutex::new(AsyncReceiveOfferCache::new()),
+
+			pending_flow_events: Mutex::new(Vec::new()),
 
 			logger,
 		}
@@ -156,6 +192,18 @@ where
 	) -> Self {
 		self.async_receive_offer_cache = Mutex::new(async_receive_offer_cache);
 		self
+	}
+
+	/// Enables [`OfferMessageFlowEvent`] for this flow.
+	///
+	/// By default, events are not emitted when processing offers messages. Calling this method
+	/// sets the internal `enable_events` flag to `true`, allowing you to receive [`OfferMessageFlowEvent`]
+	/// such as [`OfferMessageFlowEvent::InvoiceRequestReceived`].
+	///
+	/// This is useful when you want to manually inspect, handle, or respond to incoming
+	/// offers messages rather than having them processed automatically.
+	pub fn enable_events(&mut self) {
+		self.enable_events = true;
 	}
 
 	/// Sets the [`BlindedMessagePath`]s that we will use as an async recipient to interactively build
@@ -414,6 +462,8 @@ pub enum InvreqResponseInstructions {
 		/// [`OffersMessageFlow::enqueue_invoice_request_to_forward`].
 		invoice_request: InvoiceRequest,
 	},
+	/// We are recipient of this payment, and should handle the response asynchronously.
+	AsynchronouslyHandleResponse,
 }
 
 /// Parameters for the reply path to a [`HeldHtlcAvailable`] onion message.
@@ -442,6 +492,7 @@ where
 	L::Target: Logger,
 {
 	/// Verifies an [`InvoiceRequest`] using the provided [`OffersContext`] or the [`InvoiceRequest::metadata`].
+	/// It also helps determine the response instructions, corresponding to the verified invoice request must be taken.
 	///
 	/// - If an [`OffersContext::InvoiceRequest`] with a `nonce` is provided, verification is performed using recipient context data.
 	/// - If no context is provided but the [`InvoiceRequest`] contains [`Offer`] metadata, verification is performed using that metadata.
@@ -454,6 +505,7 @@ where
 	/// - The verification process (via recipient context data or metadata) fails.
 	pub fn verify_invoice_request(
 		&self, invoice_request: InvoiceRequest, context: Option<OffersContext>,
+		responder: Responder,
 	) -> Result<InvreqResponseInstructions, ()> {
 		let secp_ctx = &self.secp_ctx;
 		let expanded_key = &self.inbound_payment_key;
@@ -487,7 +539,18 @@ where
 			None => invoice_request.verify_using_metadata(expanded_key, secp_ctx),
 		}?;
 
-		Ok(InvreqResponseInstructions::SendInvoice(invoice_request))
+		if self.enable_events {
+			self.pending_flow_events.lock().unwrap().push(
+				OfferMessageFlowEvent::InvoiceRequestReceived {
+					invoice_request,
+					reply_path: responder.into_blinded_path(),
+				},
+			);
+
+			Ok(InvreqResponseInstructions::AsynchronouslyHandleResponse)
+		} else {
+			Ok(InvreqResponseInstructions::SendInvoice(invoice_request))
+		}
 	}
 
 	/// Verifies a [`Bolt12Invoice`] using the provided [`OffersContext`] or the invoice's payer
@@ -974,18 +1037,23 @@ where
 	/// Returns a [`Bolt12SemanticError`] if:
 	/// - Valid blinded payment paths could not be generated for the [`Bolt12Invoice`].
 	/// - The [`InvoiceBuilder`] could not be created from the [`InvoiceRequest`].
-	pub fn create_invoice_builder_from_invoice_request_with_keys<'a, R: Deref, F>(
-		&self, router: &R, invoice_request: &'a VerifiedInvoiceRequest<DerivedSigningPubkey>,
+	pub fn create_invoice_builder_from_invoice_request_with_keys<'a, R: Deref, F, CC: Deref>(
+		&self, router: &R, currency_conversion: CC,
+		invoice_request: &'a VerifiedInvoiceRequest<DerivedSigningPubkey>,
 		usable_channels: Vec<ChannelDetails>, get_payment_info: F,
 	) -> Result<(InvoiceBuilder<'a, DerivedSigningPubkey>, MessageContext), Bolt12SemanticError>
 	where
 		R::Target: Router,
+		CC::Target: CurrencyConversion,
 		F: Fn(u64, u32) -> Result<(PaymentHash, PaymentSecret), Bolt12SemanticError>,
 	{
+		let conversion = &*currency_conversion;
 		let relative_expiry = DEFAULT_RELATIVE_EXPIRY.as_secs() as u32;
 
-		let amount_msats =
-			InvoiceBuilder::<DerivedSigningPubkey>::amount_msats(&invoice_request.inner)?;
+		let amount_msats = InvoiceBuilder::<DerivedSigningPubkey>::amount_msats(
+			&invoice_request.inner,
+			conversion,
+		)?;
 
 		let (payment_hash, payment_secret) = get_payment_info(amount_msats, relative_expiry)?;
 
@@ -1006,9 +1074,10 @@ where
 			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
 		#[cfg(feature = "std")]
-		let builder = invoice_request.respond_using_derived_keys(payment_paths, payment_hash);
+		let builder = invoice_request.respond_using_derived_keys(conversion, payment_paths, payment_hash);
 		#[cfg(not(feature = "std"))]
 		let builder = invoice_request.respond_using_derived_keys_no_std(
+			conversion,
 			payment_paths,
 			payment_hash,
 			Duration::from_secs(self.highest_seen_timestamp.load(Ordering::Acquire) as u64),
@@ -1034,18 +1103,23 @@ where
 	/// Returns a [`Bolt12SemanticError`] if:
 	/// - Valid blinded payment paths could not be generated for the [`Bolt12Invoice`].
 	/// - The [`InvoiceBuilder`] could not be created from the [`InvoiceRequest`].
-	pub fn create_invoice_builder_from_invoice_request_without_keys<'a, R: Deref, F>(
-		&self, router: &R, invoice_request: &'a VerifiedInvoiceRequest<ExplicitSigningPubkey>,
+	pub fn create_invoice_builder_from_invoice_request_without_keys<'a, R: Deref, F, CC: Deref>(
+		&self, router: &R, currency_conversion: CC,
+		invoice_request: &'a VerifiedInvoiceRequest<ExplicitSigningPubkey>,
 		usable_channels: Vec<ChannelDetails>, get_payment_info: F,
 	) -> Result<(InvoiceBuilder<'a, ExplicitSigningPubkey>, MessageContext), Bolt12SemanticError>
 	where
 		R::Target: Router,
+		CC::Target: CurrencyConversion,
 		F: Fn(u64, u32) -> Result<(PaymentHash, PaymentSecret), Bolt12SemanticError>,
 	{
+		let conversion = &*currency_conversion;
 		let relative_expiry = DEFAULT_RELATIVE_EXPIRY.as_secs() as u32;
 
-		let amount_msats =
-			InvoiceBuilder::<DerivedSigningPubkey>::amount_msats(&invoice_request.inner)?;
+		let amount_msats = InvoiceBuilder::<DerivedSigningPubkey>::amount_msats(
+			&invoice_request.inner,
+			conversion,
+		)?;
 
 		let (payment_hash, payment_secret) = get_payment_info(amount_msats, relative_expiry)?;
 
@@ -1066,9 +1140,10 @@ where
 			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
 		#[cfg(feature = "std")]
-		let builder = invoice_request.respond_with(payment_paths, payment_hash);
+		let builder = invoice_request.respond_with(conversion, payment_paths, payment_hash);
 		#[cfg(not(feature = "std"))]
 		let builder = invoice_request.respond_with_no_std(
+			conversion,
 			payment_paths,
 			payment_hash,
 			Duration::from_secs(self.highest_seen_timestamp.load(Ordering::Acquire) as u64),
@@ -1104,9 +1179,6 @@ where
 	/// The user must provide a list of [`MessageForwardNode`] that will be used to generate
 	/// valid reply paths for the counterparty to send back the corresponding [`Bolt12Invoice`]
 	/// or [`InvoiceError`].
-	///
-	/// [`InvoiceError`]: crate::offers::invoice_error::InvoiceError
-	/// [`supports_onion_messages`]: crate::types::features::Features::supports_onion_messages
 	pub fn enqueue_invoice_request(
 		&self, invoice_request: InvoiceRequest, payment_id: PaymentId, nonce: Nonce,
 		peers: Vec<MessageForwardNode>,
@@ -1143,22 +1215,21 @@ where
 		Ok(())
 	}
 
-	/// Enqueues the created [`Bolt12Invoice`] corresponding to a [`Refund`] to be sent
-	/// to the counterparty.
+	/// Enqueues the provided [`Bolt12Invoice`] to be sent directly to the specified
+	/// [`PublicKey`] `destination`.
 	///
-	/// # Peers
+	/// This method should be used when there are no available [`BlindedMessagePath`]s
+	/// for routing the [`Bolt12Invoice`] and the counterparty’s node ID is known.
 	///
-	/// The user must provide a list of [`MessageForwardNode`] that will be used to generate valid
-	/// reply paths for the counterparty to send back the corresponding [`InvoiceError`] if we fail
-	/// to create blinded reply paths
+	/// # Reply Path Requirement
 	///
-	/// [`InvoiceError`]: crate::offers::invoice_error::InvoiceError
-	/// [`supports_onion_messages`]: crate::types::features::Features::supports_onion_messages
-	pub fn enqueue_invoice(
-		&self, invoice: Bolt12Invoice, refund: &Refund, peers: Vec<MessageForwardNode>,
+	/// Reply paths are generated from the given `peers` to allow the counterparty to return
+	/// an [`InvoiceError`] in case they fail to process the invoice. If valid reply paths
+	/// cannot be constructed, this method returns a [`Bolt12SemanticError::MissingPaths`].
+	pub fn enqueue_invoice_using_node_id(
+		&self, invoice: Bolt12Invoice, destination: PublicKey, peers: Vec<MessageForwardNode>,
 	) -> Result<(), Bolt12SemanticError> {
 		let payment_hash = invoice.payment_hash();
-
 		let context = MessageContext::Offers(OffersContext::InboundPayment { payment_hash });
 
 		let reply_paths = self
@@ -1167,24 +1238,64 @@ where
 
 		let mut pending_offers_messages = self.pending_offers_messages.lock().unwrap();
 
-		if refund.paths().is_empty() {
-			for reply_path in reply_paths {
-				let instructions = MessageSendInstructions::WithSpecifiedReplyPath {
-					destination: Destination::Node(refund.payer_signing_pubkey()),
-					reply_path,
-				};
-				let message = OffersMessage::Invoice(invoice.clone());
-				pending_offers_messages.push((message, instructions));
-			}
-		} else {
-			let message = OffersMessage::Invoice(invoice);
-			enqueue_onion_message_with_reply_paths(
-				message,
-				refund.paths(),
-				reply_paths,
-				&mut pending_offers_messages,
-			);
+		for reply_path in reply_paths {
+			let instructions = MessageSendInstructions::WithSpecifiedReplyPath {
+				destination: Destination::Node(destination),
+				reply_path,
+			};
+			let message = OffersMessage::Invoice(invoice.clone());
+			pending_offers_messages.push((message, instructions));
 		}
+
+		Ok(())
+	}
+
+	/// Similar to [`Self::enqueue_invoice_using_node_id`], but uses [`BlindedMessagePath`]s
+	/// for routing the [`Bolt12Invoice`] instead of a direct node ID.
+	///
+	/// Useful when the counterparty expects to receive invoices through onion-routed paths
+	/// for privacy or anonymity.
+	///
+	/// For reply path requirements see [`Self::enqueue_invoice_using_node_id`].
+	pub fn enqueue_invoice_using_reply_paths(
+		&self, invoice: Bolt12Invoice, paths: &[BlindedMessagePath], peers: Vec<MessageForwardNode>,
+	) -> Result<(), Bolt12SemanticError> {
+		let payment_hash = invoice.payment_hash();
+		let context = MessageContext::Offers(OffersContext::InboundPayment { payment_hash });
+
+		let reply_paths = self
+			.create_blinded_paths(peers, context)
+			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
+
+		let mut pending_offers_messages = self.pending_offers_messages.lock().unwrap();
+
+		let message = OffersMessage::Invoice(invoice);
+		enqueue_onion_message_with_reply_paths(
+			message,
+			paths,
+			reply_paths,
+			&mut pending_offers_messages,
+		);
+
+		Ok(())
+	}
+
+	/// Enqueues an [`InvoiceError`] to be sent to the counterparty via a specified
+	/// [`BlindedMessagePath`].
+	///
+	/// Since this method returns the invoice error to the counterparty without
+	/// expecting back a response, we enqueue it without a reply path.
+	pub fn enqueue_invoice_error(
+		&self, invoice_error: InvoiceError, path: BlindedMessagePath,
+	) -> Result<(), Bolt12SemanticError> {
+		let mut pending_offers_messages = self.pending_offers_messages.lock().unwrap();
+
+		let instructions = MessageSendInstructions::WithoutReplyPath {
+			destination: Destination::BlindedPath(path),
+		};
+
+		let message = OffersMessage::InvoiceError(invoice_error);
+		pending_offers_messages.push((message, instructions));
 
 		Ok(())
 	}
@@ -1236,7 +1347,6 @@ where
 	/// contained within the provided [`StaticInvoice`].
 	///
 	/// [`ReleaseHeldHtlc`]: crate::onion_message::async_payments::ReleaseHeldHtlc
-	/// [`supports_onion_messages`]: crate::types::features::Features::supports_onion_messages
 	pub fn enqueue_held_htlc_available(
 		&self, invoice: &StaticInvoice, reply_path_params: HeldHtlcReplyPath,
 	) -> Result<(), Bolt12SemanticError> {
@@ -1314,8 +1424,6 @@ where
 	/// The user must provide a list of [`MessageForwardNode`] that will be used to generate
 	/// valid reply paths for the counterparty to send back the corresponding response for
 	/// the [`DNSSECQuery`] message.
-	///
-	/// [`supports_onion_messages`]: crate::types::features::Features::supports_onion_messages
 	#[cfg(feature = "dnssec")]
 	pub fn enqueue_dns_onion_message(
 		&self, message: DNSSECQuery, context: DNSResolverContext, dns_resolvers: Vec<Destination>,
@@ -1342,6 +1450,11 @@ where
 		Ok(())
 	}
 
+	/// Enqueues the generated [`OfferMessageFlowEvent`] to be processed.
+	pub fn enqueue_flow_event(&self, flow_event: OfferMessageFlowEvent) {
+		self.pending_flow_events.lock().unwrap().push(flow_event);
+	}
+
 	/// Gets the enqueued [`OffersMessage`] with their corresponding [`MessageSendInstructions`].
 	pub fn release_pending_offers_messages(&self) -> Vec<(OffersMessage, MessageSendInstructions)> {
 		core::mem::take(&mut self.pending_offers_messages.lock().unwrap())
@@ -1352,6 +1465,11 @@ where
 		&self,
 	) -> Vec<(AsyncPaymentsMessage, MessageSendInstructions)> {
 		core::mem::take(&mut self.pending_async_payments_messages.lock().unwrap())
+	}
+
+	/// Gets the enqueued [`OfferMessageFlowEvent`] to be processed.
+	pub fn release_pending_flow_events(&self) -> Vec<OfferMessageFlowEvent> {
+		core::mem::take(&mut self.pending_flow_events.lock().unwrap())
 	}
 
 	/// Gets the enqueued [`DNSResolverMessage`] with their corresponding [`MessageSendInstructions`].
