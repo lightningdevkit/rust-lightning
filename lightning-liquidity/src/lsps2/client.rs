@@ -13,7 +13,6 @@ use alloc::string::{String, ToString};
 use lightning::util::persist::KVStore;
 
 use core::default::Default;
-use core::ops::Deref;
 
 use crate::events::EventQueue;
 use crate::lsps0::ser::{LSPSProtocolMessageHandler, LSPSRequestId, LSPSResponseError};
@@ -68,11 +67,7 @@ impl PeerState {
 /// opened. Please refer to the [`bLIP-52 / LSPS2 specification`] for more information.
 ///
 /// [`bLIP-52 / LSPS2 specification`]: https://github.com/lightning/blips/blob/master/blip-0052.md#trust-models
-pub struct LSPS2ClientHandler<ES: Deref, K: Deref + Clone>
-where
-	ES::Target: EntropySource,
-	K::Target: KVStore,
-{
+pub struct LSPS2ClientHandler<ES: EntropySource, K: KVStore + Clone> {
 	entropy_source: ES,
 	pending_messages: Arc<MessageQueue>,
 	pending_events: Arc<EventQueue<K>>,
@@ -80,11 +75,7 @@ where
 	config: LSPS2ClientConfig,
 }
 
-impl<ES: Deref, K: Deref + Clone> LSPS2ClientHandler<ES, K>
-where
-	ES::Target: EntropySource,
-	K::Target: KVStore,
-{
+impl<ES: EntropySource, K: KVStore + Clone> LSPS2ClientHandler<ES, K> {
 	/// Constructs an `LSPS2ClientHandler`.
 	pub(crate) fn new(
 		entropy_source: ES, pending_messages: Arc<MessageQueue>,
@@ -375,10 +366,8 @@ where
 	}
 }
 
-impl<ES: Deref, K: Deref + Clone> LSPSProtocolMessageHandler for LSPS2ClientHandler<ES, K>
-where
-	ES::Target: EntropySource,
-	K::Target: KVStore,
+impl<ES: EntropySource, K: KVStore + Clone> LSPSProtocolMessageHandler
+	for LSPS2ClientHandler<ES, K>
 {
 	type ProtocolMessage = LSPS2Message;
 	const PROTOCOL_NUMBER: Option<u16> = Some(2);

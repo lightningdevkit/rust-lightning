@@ -273,8 +273,8 @@ pub fn can_support_additional_anchor_channel<
 	AChannelManagerRef: Deref,
 	ChannelSigner: EcdsaChannelSigner,
 	FilterRef: Deref,
-	BroadcasterRef: Deref,
-	EstimatorRef: Deref,
+	Broadcaster: BroadcasterInterface,
+	EstimatorRef: FeeEstimator,
 	LoggerRef: Deref,
 	PersistRef: Deref,
 	EntropySourceRef: Deref,
@@ -282,7 +282,7 @@ pub fn can_support_additional_anchor_channel<
 		Target = ChainMonitor<
 			ChannelSigner,
 			FilterRef,
-			BroadcasterRef,
+			Broadcaster,
 			EstimatorRef,
 			LoggerRef,
 			PersistRef,
@@ -296,8 +296,6 @@ pub fn can_support_additional_anchor_channel<
 where
 	AChannelManagerRef::Target: AChannelManager,
 	FilterRef::Target: Filter,
-	BroadcasterRef::Target: BroadcasterInterface,
-	EstimatorRef::Target: FeeEstimator,
 	LoggerRef::Target: Logger,
 	PersistRef::Target: Persist<ChannelSigner>,
 	EntropySourceRef::Target: EntropySource,
