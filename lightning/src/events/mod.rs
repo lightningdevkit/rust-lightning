@@ -738,7 +738,7 @@ pub struct HTLCLocator {
 	/// The `user_channel_id` for `channel_id`.
 	pub user_channel_id: Option<u128>,
 
-	/// The public key identify of the node that the HTLC was sent to or received from.
+	/// The public key identity of the node that the HTLC was sent to or received from.
 	pub node_id: Option<PublicKey>,
 }
 
@@ -2054,7 +2054,7 @@ impl Writeable for Event {
 					(15, legacy_next.node_id, option),
 					// HTLCs are written as required, rather than required_vec, so that they can be
 					// deserialized using default_value to fill in legacy fields which expects
-					// LengthReadable (requried_vec is WithoutLength).
+					// LengthReadable (required_vec is WithoutLength).
 					(17, *prev_htlcs, required),
 					(19, *next_htlcs, required),
 				});
