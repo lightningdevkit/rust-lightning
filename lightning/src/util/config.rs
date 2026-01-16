@@ -855,6 +855,111 @@ impl crate::util::ser::Readable for LegacyChannelConfig {
 	}
 }
 
+/// Flags which can be set on [`UserConfig::htlc_interception_flags`]. Each flag selects some set
+/// of HTLCs which are forwarded across this node to be intercepted instead, generating an
+/// [`Event::HTLCIntercepted`] instead of automatically forwarding the HTLC and allowing it to be
+/// forwarded or rejected manually.
+///
+/// [`Event::HTLCIntercepted`]: crate::events::Event::HTLCIntercepted
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum HTLCInterceptionFlags {
+	/// If this flag is set, LDK will intercept HTLCs that are attempting to be forwarded over fake
+	/// short channel ids generated via [`ChannelManager::get_intercept_scid`]. This allows you to
+	/// only intercept HTLCs which are specifically marked for interception by the invoice being
+	/// paid.
+	///
+	/// Note that because LDK is not aware of which channel the HTLC will be forwarded over at the
+	/// time of interception, only basic checks to ensure the fee the HTLC intends to pay is not
+	/// negative and a minimum CLTV delta between the incoming and outgoing HTLC edge are performed
+	/// before the [`Event::HTLCIntercepted`] is generated. You must validate the fee and CLTV
+	/// delta meets your requirements before forwarding the HTLC.
+	///
+	/// [`ChannelManager::get_intercept_scid`]: crate::ln::channelmanager::ChannelManager::get_intercept_scid
+	/// [`Event::HTLCIntercepted`]: crate::events::Event::HTLCIntercepted
+	ToInterceptSCIDs = 1 << 0,
+	/// If this flag is set, any attempts to forward a payment to a private channel while the
+	/// channel counterparty is offline will instead generate an [`Event::HTLCIntercepted`] which
+	/// must be handled the same as any other intercepted HTLC.
+	///
+	/// This is useful for LSPs that may need to wake the recipient node (e.g. via a mobile push
+	/// notification). Note that in this case you must ensure that you set a quick timeout to fail
+	/// the HTLC if the recipient node fails to come online (e.g. within 10 seconds).
+	///
+	/// Before interception, the HTLC is validated against the forwarding config of the outbound
+	/// channel to ensure it pays sufficient fee and meets the
+	/// [`ChannelConfig::cltv_expiry_delta`].
+	///
+	/// [`Event::HTLCIntercepted`]: crate::events::Event::HTLCIntercepted
+	ToOfflinePrivateChannels = 1 << 1,
+	/// If this flag is set, any attempts to forward a payment to a private channel while the
+	/// channel counterparty is online will instead generate an [`Event::HTLCIntercepted`] which
+	/// must be handled the same as any other intercepted HTLC.
+	///
+	/// This is the complement to [`Self::ToOfflinePrivateChannels`] and, together, they allow
+	/// intercepting all HTLCs destined for private channels. This may be useful for LSPs that wish
+	/// to take an additional fee paid by the recipient on all forwards to clients.
+	///
+	/// Before interception, the HTLC is validated against the forwarding config of the outbound
+	/// channel to ensure it pays sufficient fee and meets the
+	/// [`ChannelConfig::cltv_expiry_delta`].
+	///
+	/// [`Event::HTLCIntercepted`]: crate::events::Event::HTLCIntercepted
+	ToOnlinePrivateChannels = 1 << 2,
+	/// If this flag is set, any attempts to forward a payment to a publicly announced channel will
+	/// instead generate an [`Event::HTLCIntercepted`] which must be handled the same as any other
+	/// intercepted HTLC.
+	///
+	/// Before interception, the HTLC is validated against the forwarding config of the outbound
+	/// channel to ensure it pays sufficient fee and meets the
+	/// [`ChannelConfig::cltv_expiry_delta`].
+	///
+	/// [`Event::HTLCIntercepted`]: crate::events::Event::HTLCIntercepted
+	ToPublicChannels = 1 << 3,
+	/// If these flags are set, any attempts to forward a payment to a channel of ours or an fake
+	/// short channel id generated via [`ChannelManager::get_intercept_scid`] will instead generate
+	/// an [`Event::HTLCIntercepted`] which must be handled the same as any other intercepted HTLC.
+	///
+	/// In the case of intercept SCIDs, only basic checks to ensure the fee the HTLC intends to pay
+	/// is not negative and a minimum CLTV delta between the incoming and outgoing HTLC edge are
+	/// performed before the [`Event::HTLCIntercepted`] is generated. You must validate the fee and
+	/// CLTV delta meets your requirements before forwarding the HTLC.
+	///
+	/// [`ChannelManager::get_intercept_scid`]: crate::ln::channelmanager::ChannelManager::get_intercept_scid
+	/// [`Event::HTLCIntercepted`]: crate::events::Event::HTLCIntercepted
+	ToAllKnownSCIDs = Self::ToInterceptSCIDs as isize
+		| Self::ToOfflinePrivateChannels as isize
+		| Self::ToOnlinePrivateChannels as isize
+		| Self::ToPublicChannels as isize,
+	/// If this flag is set, any attempts to forward a payment to an unknown short channel id will
+	/// instead generate an [`Event::HTLCIntercepted`] which must be handled the same as any other
+	/// intercepted HTLC.
+	///
+	/// Note that because LDK is not aware of which channel the HTLC will be forwarded over at the
+	/// time of interception, only basic checks to ensure the fee the HTLC intends to pay is not
+	/// negative and a minimum CLTV delta between the incoming and outgoing HTLC edge are performed
+	/// before the [`Event::HTLCIntercepted`] is generated. You must validate the fee and CLTV
+	/// delta meets your requirements before forwarding the HTLC.
+	///
+	/// [`Event::HTLCIntercepted`]: crate::events::Event::HTLCIntercepted
+	ToUnknownSCIDs = 1 << 4,
+	/// If these flags are set, all HTLCs being forwarded over this node will instead generate an
+	/// [`Event::HTLCIntercepted`] which must be handled the same as any other intercepted HTLC.
+	///
+	/// In the case of intercept or unknown SCIDs, only basic checks to ensure the fee the HTLC
+	/// intends to pay is not negative and a minimum CLTV delta between the incoming and outgoing
+	/// HTLC edge are performed before the [`Event::HTLCIntercepted`] is generated. You must
+	/// validate the fee and CLTV delta meets your requirements before forwarding the HTLC.
+	///
+	/// [`Event::HTLCIntercepted`]: crate::events::Event::HTLCIntercepted
+	AllValidHTLCs = Self::ToAllKnownSCIDs as isize | Self::ToUnknownSCIDs as isize,
+}
+
+impl Into<u8> for HTLCInterceptionFlags {
+	fn into(self) -> u8 {
+		self as u8
+	}
+}
+
 /// Top-level config which holds ChannelHandshakeLimits and ChannelConfig.
 ///
 /// `Default::default()` provides sane defaults for most configurations
@@ -907,17 +1012,21 @@ pub struct UserConfig {
 	/// [`msgs::OpenChannel`]: crate::ln::msgs::OpenChannel
 	/// [`msgs::AcceptChannel`]: crate::ln::msgs::AcceptChannel
 	pub manually_accept_inbound_channels: bool,
-	///  If this is set to `true`, LDK will intercept HTLCs that are attempting to be forwarded over
-	///  fake short channel ids generated via [`ChannelManager::get_intercept_scid`]. Upon HTLC
-	///  intercept, LDK will generate an [`Event::HTLCIntercepted`] which MUST be handled by the user.
+	/// Flags consisting of OR'd values from [`HTLCInterceptionFlags`] which describe HTLCs
+	/// forwarded over this node to intercept. Any HTLCs which are intercepted will generate an
+	/// [`Event::HTLCIntercepted`] event which must be handled to forward or fail the HTLC.
 	///
-	///  Setting this to `true` may break backwards compatibility with LDK versions < 0.0.113.
+	/// Do NOT hold on to intercepted HTLCs for more than a few seconds, they must always be
+	/// forwarded or failed nearly immediately to avoid performing accidental denial of service
+	/// attacks against other lightning nodes and being punished appropriately by other nodes.
 	///
-	///  Default value: `false`
+	/// To ensure efficiency and reliable HTLC latency you should ensure you only intercept types
+	/// of HTLCs which you need to manually forward or reject.
 	///
-	/// [`ChannelManager::get_intercept_scid`]: crate::ln::channelmanager::ChannelManager::get_intercept_scid
+	/// Default value: `0` (indicating no HTLCs will be intercepted).
+	///
 	/// [`Event::HTLCIntercepted`]: crate::events::Event::HTLCIntercepted
-	pub accept_intercept_htlcs: bool,
+	pub htlc_interception_flags: u8,
 	/// If this is set to `true`, the user needs to manually pay [`Bolt12Invoice`]s when received.
 	///
 	/// When set to `true`, [`Event::InvoiceReceived`] will be generated for each received
@@ -984,7 +1093,7 @@ impl Default for UserConfig {
 			accept_forwards_to_priv_channels: false,
 			accept_inbound_channels: true,
 			manually_accept_inbound_channels: false,
-			accept_intercept_htlcs: false,
+			htlc_interception_flags: 0,
 			manually_handle_bolt12_invoices: false,
 			enable_dual_funded_channels: false,
 			enable_htlc_hold: false,
@@ -1007,7 +1116,7 @@ impl Readable for UserConfig {
 			accept_forwards_to_priv_channels: Readable::read(reader)?,
 			accept_inbound_channels: Readable::read(reader)?,
 			manually_accept_inbound_channels: Readable::read(reader)?,
-			accept_intercept_htlcs: Readable::read(reader)?,
+			htlc_interception_flags: Readable::read(reader)?,
 			manually_handle_bolt12_invoices: Readable::read(reader)?,
 			enable_dual_funded_channels: Readable::read(reader)?,
 			hold_outbound_htlcs_at_next_hop: Readable::read(reader)?,

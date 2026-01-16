@@ -60,7 +60,7 @@ use crate::sign::NodeSigner;
 use crate::sync::Mutex;
 use crate::types::features::Bolt12InvoiceFeatures;
 use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
-use crate::util::config::UserConfig;
+use crate::util::config::{HTLCInterceptionFlags, UserConfig};
 use crate::util::ser::Writeable;
 use bitcoin::constants::ChainHash;
 use bitcoin::network::Network;
@@ -3042,7 +3042,7 @@ fn intercepted_hold_htlc() {
 	recipient_cfg.channel_handshake_limits.force_announced_channel_preference = false;
 
 	let mut lsp_cfg = test_default_channel_config();
-	lsp_cfg.accept_intercept_htlcs = true;
+	lsp_cfg.htlc_interception_flags = HTLCInterceptionFlags::ToInterceptSCIDs as u8;
 	lsp_cfg.accept_forwards_to_priv_channels = true;
 	lsp_cfg.enable_htlc_hold = true;
 

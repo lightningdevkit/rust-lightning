@@ -38,6 +38,7 @@ use lightning::ln::peer_handler::CustomMessageHandler;
 use lightning::log_error;
 use lightning::routing::router::{RouteHint, RouteHintHop};
 use lightning::sign::NodeSigner;
+use lightning::util::config::HTLCInterceptionFlags;
 use lightning::util::errors::APIError;
 use lightning::util::logger::Logger;
 use lightning::util::test_utils::{TestBroadcaster, TestStore};
@@ -1157,7 +1158,7 @@ fn client_trusts_lsp_end_to_end_test() {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let mut service_node_config = test_default_channel_config();
-	service_node_config.accept_intercept_htlcs = true;
+	service_node_config.htlc_interception_flags = HTLCInterceptionFlags::ToInterceptSCIDs as u8;
 
 	let mut client_node_config = test_default_channel_config();
 	client_node_config.manually_accept_inbound_channels = true;
@@ -1630,7 +1631,7 @@ fn late_payment_forwarded_and_safe_after_force_close_does_not_broadcast() {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let mut service_node_config = test_default_channel_config();
-	service_node_config.accept_intercept_htlcs = true;
+	service_node_config.htlc_interception_flags = HTLCInterceptionFlags::ToInterceptSCIDs as u8;
 
 	let mut client_node_config = test_default_channel_config();
 	client_node_config.manually_accept_inbound_channels = true;
@@ -1821,7 +1822,7 @@ fn htlc_timeout_before_client_claim_results_in_handling_failed() {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let mut service_node_config = test_default_channel_config();
-	service_node_config.accept_intercept_htlcs = true;
+	service_node_config.htlc_interception_flags = HTLCInterceptionFlags::ToInterceptSCIDs as u8;
 
 	let mut client_node_config = test_default_channel_config();
 	client_node_config.manually_accept_inbound_channels = true;
@@ -2157,7 +2158,7 @@ fn client_trusts_lsp_partial_fee_does_not_trigger_broadcast() {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let mut service_node_config = test_default_channel_config();
-	service_node_config.accept_intercept_htlcs = true;
+	service_node_config.htlc_interception_flags = HTLCInterceptionFlags::ToInterceptSCIDs as u8;
 
 	let mut client_node_config = test_default_channel_config();
 	client_node_config.manually_accept_inbound_channels = true;
