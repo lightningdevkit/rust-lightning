@@ -1662,6 +1662,120 @@ impl OutboundPayments {
 		Ok(())
 	}
 
+	/// Errors immediately on [`RetryableSendFailure`] error conditions. Otherwise, further errors may
+	/// be surfaced asynchronously via [`Event::PaymentPathFailed`] and [`Event::PaymentFailed`].
+	///
+	/// [`Event::PaymentPathFailed`]: crate::events::Event::PaymentPathFailed
+	/// [`Event::PaymentFailed`]: crate::events::Event::PaymentFailed
+	pub(super) fn send_payment_for_trampoline_forward<
+		R: Router,
+		NS: NodeSigner,
+		ES: EntropySource,
+		IH,
+		SP,
+		L: Logger,
+	>(
+		&self, payment_id: PaymentId, payment_hash: PaymentHash,
+		trampoline_forward_info: TrampolineForwardInfo, retry_strategy: Retry,
+		mut route_params: RouteParameters, router: &R, first_hops: Vec<ChannelDetails>,
+		inflight_htlcs: IH, entropy_source: &ES, node_signer: &NS, best_block_height: u32,
+		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
+		send_payment_along_path: SP, logger: &WithContext<L>,
+	) -> Result<(), RetryableSendFailure>
+	where
+		IH: Fn() -> InFlightHtlcs,
+		SP: Fn(SendAlongPathArgs) -> Result<(), APIError>,
+	{
+		let inter_trampoline_payment_secret =
+			PaymentSecret(entropy_source.get_secure_random_bytes());
+		let recipient_onion = RecipientOnionFields::secret_only(
+			inter_trampoline_payment_secret,
+			trampoline_forward_info.next_hop_info.amount_msat,
+		);
+
+		let route = self.find_initial_route(
+			payment_id,
+			payment_hash,
+			&recipient_onion,
+			None,
+			None,
+			&mut route_params,
+			router,
+			&first_hops,
+			&inflight_htlcs,
+			node_signer,
+			best_block_height,
+			logger,
+		)?;
+
+		let onion_session_privs = self
+			.add_new_pending_payment(
+				payment_hash,
+				recipient_onion.clone(),
+				payment_id,
+				None,
+				&route,
+				Some(retry_strategy),
+				Some(route_params.payment_params.clone()),
+				entropy_source,
+				best_block_height,
+				None,
+				Some(trampoline_forward_info.clone()),
+			)
+			.map_err(|_| {
+				log_error!(
+					logger,
+					"Payment with id {} is already pending. New payment had payment hash {}",
+					payment_id,
+					payment_hash
+				);
+				RetryableSendFailure::DuplicatePayment
+			})?;
+
+		let res = self.pay_route_internal(
+			&route,
+			payment_hash,
+			&recipient_onion,
+			None,
+			None,
+			None,
+			Some(&trampoline_forward_info),
+			payment_id,
+			&onion_session_privs,
+			false,
+			node_signer,
+			best_block_height,
+			&send_payment_along_path,
+		);
+		log_info!(
+			logger,
+			"Sending payment with id {} and hash {} returned {:?}",
+			payment_id,
+			payment_hash,
+			res
+		);
+		if let Err(e) = res {
+			self.handle_pay_route_err(
+				e,
+				payment_id,
+				payment_hash,
+				route,
+				route_params,
+				onion_session_privs,
+				router,
+				first_hops,
+				&inflight_htlcs,
+				entropy_source,
+				node_signer,
+				best_block_height,
+				pending_events,
+				&send_payment_along_path,
+				logger,
+			);
+		}
+		Ok(())
+	}
+
 	#[rustfmt::skip]
 	fn find_route_and_send_payment<R: Router, NS: NodeSigner, ES: EntropySource, IH, SP, L: Logger>(
 		&self, payment_hash: PaymentHash, payment_id: PaymentId, route_params: RouteParameters,
