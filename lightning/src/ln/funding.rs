@@ -20,69 +20,82 @@ use crate::sign::{P2TR_KEY_PATH_WITNESS_WEIGHT, P2WPKH_WITNESS_WEIGHT};
 
 /// The components of a splice's funding transaction that are contributed by one party.
 #[derive(Debug, Clone)]
-pub enum SpliceContribution {
-	/// When funds are added to a channel.
-	SpliceIn {
-		/// The amount to contribute to the splice.
-		value: Amount,
+pub struct SpliceContribution {
+	/// The amount from [`inputs`] to contribute to the splice.
+	///
+	/// [`inputs`]: Self::inputs
+	value_added: Amount,
 
-		/// The inputs included in the splice's funding transaction to meet the contributed amount
-		/// plus fees. Any excess amount will be sent to a change output.
-		inputs: Vec<FundingTxInput>,
+	/// The inputs included in the splice's funding transaction to meet the contributed amount
+	/// plus fees. Any excess amount will be sent to a change output.
+	inputs: Vec<FundingTxInput>,
 
-		/// An optional change output script. This will be used if needed or, when not set,
-		/// generated using [`SignerProvider::get_destination_script`].
-		///
-		/// [`SignerProvider::get_destination_script`]: crate::sign::SignerProvider::get_destination_script
-		change_script: Option<ScriptBuf>,
-	},
-	/// When funds are removed from a channel.
-	SpliceOut {
-		/// The outputs to include in the splice's funding transaction. The total value of all
-		/// outputs plus fees will be the amount that is removed.
-		outputs: Vec<TxOut>,
-	},
+	/// The outputs to include in the splice's funding transaction. The total value of all
+	/// outputs plus fees will be the amount that is removed.
+	outputs: Vec<TxOut>,
+
+	/// An optional change output script. This will be used if needed or, when not set,
+	/// generated using [`SignerProvider::get_destination_script`].
+	///
+	/// [`SignerProvider::get_destination_script`]: crate::sign::SignerProvider::get_destination_script
+	change_script: Option<ScriptBuf>,
 }
 
 impl SpliceContribution {
-	pub(super) fn value(&self) -> SignedAmount {
-		match self {
-			SpliceContribution::SpliceIn { value, .. } => {
-				value.to_signed().unwrap_or(SignedAmount::MAX)
-			},
-			SpliceContribution::SpliceOut { outputs } => {
-				let value_removed = outputs
-					.iter()
-					.map(|txout| txout.value)
-					.sum::<Amount>()
-					.to_signed()
-					.unwrap_or(SignedAmount::MAX);
-				-value_removed
-			},
-		}
+	/// Creates a contribution for when funds are only added to a channel.
+	pub fn splice_in(
+		value_added: Amount, inputs: Vec<FundingTxInput>, change_script: Option<ScriptBuf>,
+	) -> Self {
+		Self { value_added, inputs, outputs: vec![], change_script }
+	}
+
+	/// Creates a contribution for when funds are only removed from a channel.
+	pub fn splice_out(outputs: Vec<TxOut>) -> Self {
+		Self { value_added: Amount::ZERO, inputs: vec![], outputs, change_script: None }
+	}
+
+	/// Creates a contribution for when funds are both added to and removed from a channel.
+	///
+	/// Note that `value_added` represents the value added by `inputs` but should not account for
+	/// value removed by `outputs`. The net value contributed can be obtained by calling
+	/// [`SpliceContribution::net_value`].
+	pub fn splice_in_and_out(
+		value_added: Amount, inputs: Vec<FundingTxInput>, outputs: Vec<TxOut>,
+		change_script: Option<ScriptBuf>,
+	) -> Self {
+		Self { value_added, inputs, outputs, change_script }
+	}
+
+	/// The net value contributed to a channel by the splice. If negative, more value will be
+	/// spliced out than spliced in.
+	pub fn net_value(&self) -> SignedAmount {
+		let value_added = self.value_added.to_signed().unwrap_or(SignedAmount::MAX);
+		let value_removed = self
+			.outputs
+			.iter()
+			.map(|txout| txout.value)
+			.sum::<Amount>()
+			.to_signed()
+			.unwrap_or(SignedAmount::MAX);
+
+		value_added - value_removed
+	}
+
+	pub(super) fn value_added(&self) -> Amount {
+		self.value_added
 	}
 
 	pub(super) fn inputs(&self) -> &[FundingTxInput] {
-		match self {
-			SpliceContribution::SpliceIn { inputs, .. } => &inputs[..],
-			SpliceContribution::SpliceOut { .. } => &[],
-		}
+		&self.inputs[..]
 	}
 
 	pub(super) fn outputs(&self) -> &[TxOut] {
-		match self {
-			SpliceContribution::SpliceIn { .. } => &[],
-			SpliceContribution::SpliceOut { outputs } => &outputs[..],
-		}
+		&self.outputs[..]
 	}
 
 	pub(super) fn into_tx_parts(self) -> (Vec<FundingTxInput>, Vec<TxOut>, Option<ScriptBuf>) {
-		match self {
-			SpliceContribution::SpliceIn { inputs, change_script, .. } => {
-				(inputs, vec![], change_script)
-			},
-			SpliceContribution::SpliceOut { outputs } => (vec![], outputs, None),
-		}
+		let SpliceContribution { value_added: _, inputs, outputs, change_script } = self;
+		(inputs, outputs, change_script)
 	}
 }
 
