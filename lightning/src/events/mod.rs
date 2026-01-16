@@ -601,7 +601,7 @@ impl_writeable_tlv_based_enum_upgradable!(HTLCHandlingFailureType,
 		(0, payment_hash, required),
 	},
 	(5, TrampolineForward) => {
-		(0, attempted_htlcs, required_vec),
+		(1, attempted_htlcs, required_vec),
 	},
 );
 
