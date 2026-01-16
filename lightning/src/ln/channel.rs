@@ -50,8 +50,8 @@ use crate::ln::channel_state::{
 	OutboundHTLCDetails, OutboundHTLCStateDetails,
 };
 use crate::ln::channelmanager::{
-	self, ChannelReadyOrder, FundingConfirmedMessage, HTLCFailureMsg, HTLCSource,
-	OpenChannelMessage, PaymentClaimDetails, PendingHTLCInfo, PendingHTLCStatus,
+	self, ChannelReadyOrder, FundingConfirmedMessage, HTLCFailureMsg, HTLCPreviousHopData,
+	HTLCSource, OpenChannelMessage, PaymentClaimDetails, PendingHTLCInfo, PendingHTLCStatus,
 	RAACommitmentOrder, SentHTLCId, BREAKDOWN_TIMEOUT, MAX_LOCAL_BREAKDOWN_TIMEOUT,
 	MIN_CLTV_EXPIRY_DELTA,
 };
@@ -7850,6 +7850,41 @@ where
 				_ => None,
 			})
 			.collect()
+	}
+
+	/// Useful when reconstructing the set of pending HTLC forwards when deserializing the
+	/// `ChannelManager`. We don't want to cache an HTLC as needing to be forwarded if it's already
+	/// present in the outbound edge, or else we'll double-forward.
+	pub(super) fn outbound_htlc_forwards(&self) -> impl Iterator<Item = HTLCPreviousHopData> + '_ {
+		let holding_cell_outbounds =
+			self.context.holding_cell_htlc_updates.iter().filter_map(|htlc| match htlc {
+				HTLCUpdateAwaitingACK::AddHTLC { source, .. } => match source {
+					HTLCSource::PreviousHopData(prev_hop_data) => Some(prev_hop_data.clone()),
+					_ => None,
+				},
+				_ => None,
+			});
+		let committed_outbounds =
+			self.context.pending_outbound_htlcs.iter().filter_map(|htlc| match &htlc.source {
+				HTLCSource::PreviousHopData(prev_hop_data) => Some(prev_hop_data.clone()),
+				_ => None,
+			});
+		holding_cell_outbounds.chain(committed_outbounds)
+	}
+
+	#[cfg(test)]
+	pub(super) fn test_holding_cell_outbound_htlc_forwards_count(&self) -> usize {
+		self.context
+			.holding_cell_htlc_updates
+			.iter()
+			.filter_map(|htlc| match htlc {
+				HTLCUpdateAwaitingACK::AddHTLC { source, .. } => match source {
+					HTLCSource::PreviousHopData(prev_hop_data) => Some(prev_hop_data.clone()),
+					_ => None,
+				},
+				_ => None,
+			})
+			.count()
 	}
 
 	/// Marks an outbound HTLC which we have received update_fail/fulfill/malformed

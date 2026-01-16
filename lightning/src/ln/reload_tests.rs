@@ -1320,6 +1320,117 @@ fn test_manager_persisted_post_outbound_edge_forward() {
 }
 
 #[test]
+fn test_manager_persisted_post_outbound_edge_holding_cell() {
+	// Test that we will not double-forward an HTLC after restart if it is already in the outbound
+	// edge's holding cell, which was previously broken.
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let persister;
+	let new_chain_monitor;
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let nodes_1_deserialized;
+	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	let chan_id_1 = create_announced_chan_between_nodes(&nodes, 0, 1).2;
+	let chan_id_2 = create_announced_chan_between_nodes(&nodes, 1, 2).2;
+	send_payment(&nodes[0], &[&nodes[1], &nodes[2]], 5000000);
+
+	// Lock in the HTLC from node_a <> node_b.
+	let amt_msat = 1000;
+	let (route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], amt_msat);
+	nodes[0].node.send_payment_with_route(route, payment_hash, RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
+	check_added_monitors(&nodes[0], 1);
+	let updates = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
+	do_commitment_signed_dance(&nodes[1], &nodes[0], &updates.commitment_signed, false, false);
+
+	// Send a 2nd HTLC node_c -> node_b, to force the first HTLC into the holding cell.
+	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
+	let (route_2, payment_hash_2, payment_preimage_2, payment_secret_2) = get_route_and_payment_hash!(nodes[2], nodes[1], amt_msat);
+	nodes[2].node.send_payment_with_route(route_2, payment_hash_2, RecipientOnionFields::secret_only(payment_secret_2), PaymentId(payment_hash_2.0)).unwrap();
+	let send_event =
+		SendEvent::from_event(nodes[2].node.get_and_clear_pending_msg_events().remove(0));
+	nodes[1].node.handle_update_add_htlc(nodes[2].node.get_our_node_id(), &send_event.msgs[0]);
+	nodes[1].node.handle_commitment_signed_batch_test(nodes[2].node.get_our_node_id(), &send_event.commitment_msg);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+	check_added_monitors(&nodes[1], 1);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+	// Add the HTLC to the outbound edge, node_b <> node_c. Force the outbound HTLC into the b<>c
+	// holding cell.
+	nodes[1].node.process_pending_htlc_forwards();
+	check_added_monitors(&nodes[1], 0);
+	assert_eq!(
+		nodes[1].node.test_holding_cell_outbound_htlc_forwards_count(nodes[2].node.get_our_node_id(), chan_id_2),
+		1
+	);
+
+	// Disconnect peers and reload the forwarding node_b.
+	nodes[0].node.peer_disconnected(nodes[1].node.get_our_node_id());
+	nodes[2].node.peer_disconnected(nodes[1].node.get_our_node_id());
+
+	let node_b_encoded = nodes[1].node.encode();
+	let chan_0_monitor_serialized = get_monitor!(nodes[1], chan_id_1).encode();
+	let chan_1_monitor_serialized = get_monitor!(nodes[1], chan_id_2).encode();
+	reload_node!(nodes[1], node_b_encoded, &[&chan_0_monitor_serialized, &chan_1_monitor_serialized], persister, new_chain_monitor, nodes_1_deserialized);
+
+	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
+	let (latest_update, _) = get_latest_mon_update_id(&nodes[1], chan_id_2);
+	nodes[1].chain_monitor.chain_monitor.force_channel_monitor_updated(chan_id_2, latest_update);
+
+	reconnect_nodes(ReconnectArgs::new(&nodes[1], &nodes[0]));
+
+	// Reconnect b<>c. Node_b has pending RAA + commitment_signed from the incomplete c->b
+	// commitment dance, plus an HTLC in the holding cell that will be released after the dance.
+	let mut reconnect_args = ReconnectArgs::new(&nodes[1], &nodes[2]);
+	reconnect_args.pending_raa = (false, true);
+	reconnect_args.pending_responding_commitment_signed = (false, true);
+	// Node_c needs a monitor update to catch up after processing node_b's reestablish.
+	reconnect_args.expect_renegotiated_funding_locked_monitor_update = (false, true);
+	// The holding cell HTLC will be released after the commitment dance - handle it below.
+	reconnect_args.allow_post_commitment_dance_msgs = (false, true);
+	reconnect_nodes(reconnect_args);
+
+	// The holding cell HTLC was released during the reconnect. Complete its commitment dance.
+	let holding_cell_htlc_msgs = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(holding_cell_htlc_msgs.len(), 1);
+	match &holding_cell_htlc_msgs[0] {
+		MessageSendEvent::UpdateHTLCs { node_id, updates, .. } => {
+			assert_eq!(*node_id, nodes[2].node.get_our_node_id());
+			assert_eq!(updates.update_add_htlcs.len(), 1);
+			nodes[2].node.handle_update_add_htlc(nodes[1].node.get_our_node_id(), &updates.update_add_htlcs[0]);
+			do_commitment_signed_dance(&nodes[2], &nodes[1], &updates.commitment_signed, false, false);
+		}
+		_ => panic!("Unexpected message: {:?}", holding_cell_htlc_msgs[0]),
+	}
+
+	// Ensure node_b won't double-forward the outbound HTLC (this was previously broken).
+	nodes[1].node.process_pending_htlc_forwards();
+	let msgs = nodes[1].node.get_and_clear_pending_msg_events();
+	assert!(msgs.is_empty(), "Expected 0 messages, got {:?}", msgs);
+
+	// The a->b->c HTLC is now committed on node_c. The c->b HTLC is committed on node_b.
+	// Both payments should now be claimable.
+	expect_and_process_pending_htlcs(&nodes[2], false);
+	expect_payment_claimable!(nodes[2], payment_hash, payment_secret, amt_msat, None, nodes[2].node.get_our_node_id());
+	expect_payment_claimable!(nodes[1], payment_hash_2, payment_secret_2, amt_msat, None, nodes[1].node.get_our_node_id());
+
+	// Claim the a->b->c payment on node_c.
+	let path: &[&[_]] = &[&[&nodes[1], &nodes[2]]];
+	do_claim_payment_along_route(ClaimAlongRouteArgs::new(&nodes[0], path, payment_preimage));
+	expect_payment_sent(&nodes[0], payment_preimage, None, true, true);
+
+	// Claim the c->b payment on node_b.
+	nodes[1].node.claim_funds(payment_preimage_2);
+	expect_payment_claimed!(nodes[1], payment_hash_2, amt_msat);
+	check_added_monitors(&nodes[1], 1);
+	let mut update = get_htlc_update_msgs(&nodes[1], &nodes[2].node.get_our_node_id());
+	nodes[2].node.handle_update_fulfill_htlc(nodes[1].node.get_our_node_id(), update.update_fulfill_htlcs.remove(0));
+	do_commitment_signed_dance(&nodes[2], &nodes[1], &update.commitment_signed, false, false);
+	expect_payment_sent(&nodes[2], payment_preimage_2, None, true, true);
+}
+
+#[test]
 fn test_reload_partial_funding_batch() {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);

@@ -10134,6 +10134,16 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		}
 	}
 
+	#[cfg(test)]
+	pub(crate) fn test_holding_cell_outbound_htlc_forwards_count(
+		&self, cp_id: PublicKey, chan_id: ChannelId,
+	) -> usize {
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let peer_state = per_peer_state.get(&cp_id).map(|state| state.lock().unwrap()).unwrap();
+		let chan = peer_state.channel_by_id.get(&chan_id).and_then(|c| c.as_funded()).unwrap();
+		chan.test_holding_cell_outbound_htlc_forwards_count()
+	}
+
 	/// Completes channel resumption after locks have been released.
 	///
 	/// Processes the [`PostMonitorUpdateChanResume`] returned by
@@ -18600,6 +18610,20 @@ impl<
 					let mut peer_state_lock = peer_state_mtx.lock().unwrap();
 					let peer_state = &mut *peer_state_lock;
 					is_channel_closed = !peer_state.channel_by_id.contains_key(channel_id);
+					if reconstruct_manager_from_monitors && !is_channel_closed {
+						if let Some(chan) = peer_state.channel_by_id.get(channel_id) {
+							if let Some(funded_chan) = chan.as_funded() {
+								for prev_hop in funded_chan.outbound_htlc_forwards() {
+									dedup_decode_update_add_htlcs(
+										&mut decode_update_add_htlcs,
+										&prev_hop,
+										"HTLC already forwarded to the outbound edge",
+										&args.logger,
+									);
+								}
+							}
+						}
+					}
 				}
 
 				for (htlc_source, (htlc, preimage_opt)) in monitor.get_all_current_outbound_htlcs()
@@ -18613,6 +18637,10 @@ impl<
 								info.prev_funding_outpoint == prev_hop_data.outpoint
 									&& info.prev_htlc_id == prev_hop_data.htlc_id
 							};
+							if !is_channel_closed {
+								continue;
+							}
+
 							// If `reconstruct_manager_from_monitors` is set, we always add all inbound committed
 							// HTLCs to `decode_update_add_htlcs` in the above loop, but we need to prune from
 							// those added HTLCs if they were already forwarded to the outbound edge. Otherwise,
@@ -18626,9 +18654,6 @@ impl<
 								);
 							}
 
-							if !is_channel_closed || reconstruct_manager_from_monitors {
-								continue;
-							}
 							// The ChannelMonitor is now responsible for this HTLC's
 							// failure/success and will let us know what its outcome is. If we
 							// still have an entry for this HTLC in `forward_htlcs_legacy`,
