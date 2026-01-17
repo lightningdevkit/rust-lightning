@@ -68,6 +68,19 @@ cargo +nightly fuzz run --features "libfuzzer_fuzz" msg_ping_target
 Note: If you encounter a `SIGKILL` during run/build check for OOM in kernel logs and consider
 increasing RAM size for VM.
 
+##### Fast builds for development
+
+The default build uses LTO and single codegen unit, which is slow. For faster iteration during
+development, use the `-D` (dev) flag:
+
+```shell
+cargo +nightly fuzz run --features "libfuzzer_fuzz" -D msg_ping_target
+```
+
+The `-D` flag builds in development mode with faster compilation (still has optimizations via
+`opt-level = 1`). The first build will be slow as it rebuilds the standard library with
+sanitizer instrumentation, but subsequent builds will be fast.
+
 If you wish to just generate fuzzing binary executables for `libFuzzer` and not run them:
 ```shell
 cargo +nightly fuzz build --features "libfuzzer_fuzz" msg_ping_target

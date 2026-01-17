@@ -299,8 +299,10 @@ impl chain::Watch<TestChannelSigner> for TestChainMonitor {
 				persisted_monitor: ser.0,
 				pending_monitors: Vec::new(),
 			},
-			Ok(chain::ChannelMonitorUpdateStatus::InProgress) => {
-				panic!("The test currently doesn't test initial-persistence via the async pipeline")
+			Ok(chain::ChannelMonitorUpdateStatus::InProgress) => LatestMonitorState {
+				persisted_monitor_id: monitor_id,
+				persisted_monitor: Vec::new(),
+				pending_monitors: vec![(monitor_id, ser.0)],
 			},
 			Ok(chain::ChannelMonitorUpdateStatus::UnrecoverableError) => panic!(),
 			Err(()) => panic!(),
@@ -706,6 +708,26 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 	let broadcast = Arc::new(TestBroadcaster {});
 	let router = FuzzRouter {};
 
+	// Read initial monitor styles from fuzz input (1 byte: 2 bits per node)
+	let initial_mon_styles = if !data.is_empty() { data[0] } else { 0 };
+	let mon_style = [
+		RefCell::new(if initial_mon_styles & 0b01 != 0 {
+			ChannelMonitorUpdateStatus::InProgress
+		} else {
+			ChannelMonitorUpdateStatus::Completed
+		}),
+		RefCell::new(if initial_mon_styles & 0b10 != 0 {
+			ChannelMonitorUpdateStatus::InProgress
+		} else {
+			ChannelMonitorUpdateStatus::Completed
+		}),
+		RefCell::new(if initial_mon_styles & 0b100 != 0 {
+			ChannelMonitorUpdateStatus::InProgress
+		} else {
+			ChannelMonitorUpdateStatus::Completed
+		}),
+	];
+
 	macro_rules! make_node {
 		($node_id: expr, $fee_estimator: expr) => {{
 			let logger: Arc<dyn Logger> =
@@ -725,7 +747,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 				logger.clone(),
 				$fee_estimator.clone(),
 				Arc::new(TestPersister {
-					update_ret: Mutex::new(ChannelMonitorUpdateStatus::Completed),
+					update_ret: Mutex::new(mon_style[$node_id as usize].borrow().clone()),
 				}),
 				Arc::clone(&keys_manager),
 			));
@@ -761,9 +783,6 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 			)
 		}};
 	}
-
-	let default_mon_style = RefCell::new(ChannelMonitorUpdateStatus::Completed);
-	let mon_style = [default_mon_style.clone(), default_mon_style.clone(), default_mon_style];
 
 	let reload_node = |ser: &Vec<u8>,
 	                   node_id: u8,
@@ -860,8 +879,21 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 	};
 
 	let mut channel_txn = Vec::new();
+	macro_rules! complete_all_pending_monitor_updates {
+		($monitor: expr) => {{
+			for (channel_id, state) in $monitor.latest_monitors.lock().unwrap().iter_mut() {
+				for (id, data) in state.pending_monitors.drain(..) {
+					$monitor.chain_monitor.channel_monitor_updated(*channel_id, id).unwrap();
+					if id >= state.persisted_monitor_id {
+						state.persisted_monitor_id = id;
+						state.persisted_monitor = data;
+					}
+				}
+			}
+		}};
+	}
 	macro_rules! make_channel {
-		($source: expr, $dest: expr, $dest_keys_manager: expr, $chan_id: expr) => {{
+		($source: expr, $dest: expr, $source_monitor: expr, $dest_monitor: expr, $dest_keys_manager: expr, $chan_id: expr) => {{
 			let init_dest = Init {
 				features: $dest.init_features(),
 				networks: None,
@@ -965,12 +997,14 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 				}
 			};
 			$dest.handle_funding_created($source.get_our_node_id(), &funding_created);
+			// Complete any pending monitor updates for dest after watch_channel
+			complete_all_pending_monitor_updates!($dest_monitor);
 
-			let funding_signed = {
+			let (funding_signed, channel_id) = {
 				let events = $dest.get_and_clear_pending_msg_events();
 				assert_eq!(events.len(), 1);
 				if let MessageSendEvent::SendFundingSigned { ref msg, .. } = events[0] {
-					msg.clone()
+					(msg.clone(), msg.channel_id.clone())
 				} else {
 					panic!("Wrong event type");
 				}
@@ -984,19 +1018,22 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 			}
 
 			$source.handle_funding_signed($dest.get_our_node_id(), &funding_signed);
+			// Complete any pending monitor updates for source after watch_channel
+			complete_all_pending_monitor_updates!($source_monitor);
+
 			let events = $source.get_and_clear_pending_events();
 			assert_eq!(events.len(), 1);
-			let channel_id = if let events::Event::ChannelPending {
+			if let events::Event::ChannelPending {
 				ref counterparty_node_id,
-				ref channel_id,
+				channel_id: ref event_channel_id,
 				..
 			} = events[0]
 			{
 				assert_eq!(counterparty_node_id, &$dest.get_our_node_id());
-				channel_id.clone()
+				assert_eq!(*event_channel_id, channel_id);
 			} else {
 				panic!("Wrong event type");
-			};
+			}
 
 			channel_id
 		}};
@@ -1087,8 +1124,8 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 
 	let mut nodes = [node_a, node_b, node_c];
 
-	let chan_1_id = make_channel!(nodes[0], nodes[1], keys_manager_b, 0);
-	let chan_2_id = make_channel!(nodes[1], nodes[2], keys_manager_c, 1);
+	let chan_1_id = make_channel!(nodes[0], nodes[1], monitor_a, monitor_b, keys_manager_b, 0);
+	let chan_2_id = make_channel!(nodes[1], nodes[2], monitor_b, monitor_c, keys_manager_c, 1);
 
 	for node in nodes.iter() {
 		confirm_txn!(node);
@@ -1124,7 +1161,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 		}};
 	}
 
-	let mut read_pos = 0;
+	let mut read_pos = 1; // First byte was consumed for initial mon_style
 	macro_rules! get_slice {
 		($len: expr) => {{
 			let slice_len = $len as usize;
