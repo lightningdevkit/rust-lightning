@@ -42,7 +42,6 @@ use crate::chain::package::{
 	HolderHTLCOutput, PackageSolvingData, PackageTemplate, RevokedHTLCOutput, RevokedOutput,
 };
 use crate::chain::transaction::{OutPoint, TransactionData};
-use crate::chain::Filter;
 use crate::chain::{BestBlock, WatchedOutput};
 use crate::events::bump_transaction::{AnchorDescriptor, BumpTransactionEvent};
 use crate::events::{ClosureReason, Event, EventHandler, ReplayEvent};
@@ -2125,8 +2124,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// calling `chain::Filter::register_output` and `chain::Filter::register_tx` until all outputs
 	/// have been registered.
 	#[rustfmt::skip]
-	pub fn load_outputs_to_watch<F: Deref, L: Logger>(&self, filter: &F, logger: &L)
-	where F::Target: chain::Filter {
+	pub fn load_outputs_to_watch<F: chain::Filter, L: Logger>(&self, filter: &F, logger: &L) {
 		let lock = self.inner.lock().unwrap();
 		let logger = WithChannelMonitor::from_impl(logger, &*lock, None);
 		for funding in core::iter::once(&lock.funding).chain(&lock.pending_funding) {

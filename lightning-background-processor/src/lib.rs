@@ -467,7 +467,6 @@ pub const NO_LIQUIDITY_MANAGER: Option<
 				NodeSigner = &(dyn lightning::sign::NodeSigner + Send + Sync),
 				AChannelManager = DynChannelManager,
 				CM = &DynChannelManager,
-				Filter = dyn chain::Filter + Send + Sync,
 				C = &(dyn chain::Filter + Send + Sync),
 				K = &DummyKVStore,
 				TimeProvider = dyn lightning_liquidity::utils::time::TimeProvider + Send + Sync,
@@ -490,7 +489,6 @@ pub const NO_LIQUIDITY_MANAGER_SYNC: Option<
 				NodeSigner = &(dyn lightning::sign::NodeSigner + Send + Sync),
 				AChannelManager = DynChannelManager,
 				CM = &DynChannelManager,
-				Filter = dyn chain::Filter + Send + Sync,
 				C = &(dyn chain::Filter + Send + Sync),
 				KVStoreSync = dyn lightning::util::persist::KVStoreSync + Send + Sync,
 				KS = &(dyn lightning::util::persist::KVStoreSync + Send + Sync),
@@ -931,7 +929,7 @@ use futures_util::{dummy_waker, Joiner, OptionalSelector, Selector, SelectorOutp
 pub async fn process_events_async<
 	'a,
 	UL: Deref,
-	CF: Deref,
+	CF: chain::Filter,
 	T: BroadcasterInterface,
 	F: FeeEstimator,
 	G: Deref<Target = NetworkGraph<L>>,
@@ -964,7 +962,6 @@ pub async fn process_events_async<
 ) -> Result<(), lightning::io::Error>
 where
 	UL::Target: UtxoLookup,
-	CF::Target: chain::Filter,
 	P::Target: Persist<<CM::Target as AChannelManager>::Signer>,
 	CM::Target: AChannelManager,
 	OM::Target: AOnionMessenger,
@@ -1427,7 +1424,7 @@ fn check_and_reset_sleeper<
 /// synchronous background persistence.
 pub async fn process_events_async_with_kv_store_sync<
 	UL: Deref,
-	CF: Deref,
+	CF: chain::Filter,
 	T: BroadcasterInterface,
 	F: FeeEstimator,
 	G: Deref<Target = NetworkGraph<L>>,
@@ -1460,7 +1457,6 @@ pub async fn process_events_async_with_kv_store_sync<
 ) -> Result<(), lightning::io::Error>
 where
 	UL::Target: UtxoLookup,
-	CF::Target: chain::Filter,
 	P::Target: Persist<<CM::Target as AChannelManager>::Signer>,
 	CM::Target: AChannelManager,
 	OM::Target: AOnionMessenger,
@@ -1537,7 +1533,7 @@ impl BackgroundProcessor {
 	pub fn start<
 		'a,
 		UL: 'static + Deref,
-		CF: 'static + Deref,
+		CF: 'static + chain::Filter,
 		T: 'static + BroadcasterInterface,
 		F: 'static + FeeEstimator + Send,
 		G: 'static + Deref<Target = NetworkGraph<L>>,
@@ -1570,7 +1566,6 @@ impl BackgroundProcessor {
 	) -> Self
 	where
 		UL::Target: 'static + UtxoLookup,
-		CF::Target: 'static + chain::Filter,
 		L::Target: 'static + Logger,
 		P::Target: 'static + Persist<<CM::Target as AChannelManager>::Signer>,
 		CM::Target: AChannelManager,
