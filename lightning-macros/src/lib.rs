@@ -405,65 +405,70 @@ pub fn xtest_inventory(_input: TokenStream) -> TokenStream {
 	TokenStream::from(expanded)
 }
 
-fn add_logs_to_stmt_list(s: &mut Vec<syn::Stmt>, methods_with_param: &[syn::Ident]) {
+struct AddLogsCtx<'a> {
+	methods_with_param: &'a [syn::Ident],
+	substructs_logged: &'a [syn::Ident],
+}
+
+fn add_logs_to_stmt_list(s: &mut Vec<syn::Stmt>, ctx: &AddLogsCtx) {
 	for stmt in s.iter_mut() {
 		match stmt {
-			syn::Stmt::Expr(ref mut expr, _) => add_logs_to_self_exprs(expr, methods_with_param),
+			syn::Stmt::Expr(ref mut expr, _) => add_logs_to_self_exprs(expr, ctx),
 			syn::Stmt::Local(syn::Local { init: Some(l), .. }) => {
-				add_logs_to_self_exprs(&mut *l.expr, methods_with_param);
+				add_logs_to_self_exprs(&mut *l.expr, ctx);
 				if let Some((_, e)) = &mut l.diverge {
-					add_logs_to_self_exprs(&mut *e, methods_with_param);
+					add_logs_to_self_exprs(&mut *e, ctx);
 				}
 			},
 			syn::Stmt::Local(syn::Local { init: None, .. }) => {},
 			syn::Stmt::Macro(_) => {},
 			syn::Stmt::Item(syn::Item::Fn(f)) => {
-				add_logs_to_stmt_list(&mut f.block.stmts, methods_with_param);
+				add_logs_to_stmt_list(&mut f.block.stmts, ctx);
 			},
 			syn::Stmt::Item(_) => {},
 		}
 	}
 }
 
-fn add_logs_to_self_exprs(e: &mut syn::Expr, methods_with_param: &[syn::Ident]) {
+fn add_logs_to_self_exprs(e: &mut syn::Expr, ctx: &AddLogsCtx) {
 	match e {
 		syn::Expr::Array(e) => {
 			for elem in e.elems.iter_mut() {
-				add_logs_to_self_exprs(elem, methods_with_param);
+				add_logs_to_self_exprs(elem, ctx);
 			}
 		},
 		syn::Expr::Assign(e) => {
-			add_logs_to_self_exprs(&mut *e.left, methods_with_param);
-			add_logs_to_self_exprs(&mut *e.right, methods_with_param);
+			add_logs_to_self_exprs(&mut *e.left, ctx);
+			add_logs_to_self_exprs(&mut *e.right, ctx);
 		},
 		syn::Expr::Async(e) => {
-			add_logs_to_stmt_list(&mut e.block.stmts, methods_with_param);
+			add_logs_to_stmt_list(&mut e.block.stmts, ctx);
 		},
 		syn::Expr::Await(e) => {
-			add_logs_to_self_exprs(&mut *e.base, methods_with_param);
+			add_logs_to_self_exprs(&mut *e.base, ctx);
 		},
 		syn::Expr::Binary(e) => {
-			add_logs_to_self_exprs(&mut *e.left, methods_with_param);
-			add_logs_to_self_exprs(&mut *e.right, methods_with_param);
+			add_logs_to_self_exprs(&mut *e.left, ctx);
+			add_logs_to_self_exprs(&mut *e.right, ctx);
 		},
 		syn::Expr::Block(e) => {
-			add_logs_to_stmt_list(&mut e.block.stmts, methods_with_param);
+			add_logs_to_stmt_list(&mut e.block.stmts, ctx);
 		},
 		syn::Expr::Break(e) => {
 			if let Some(e) = e.expr.as_mut() {
-				add_logs_to_self_exprs(&mut *e, methods_with_param);
+				add_logs_to_self_exprs(&mut *e, ctx);
 			}
 		},
 		syn::Expr::Call(e) => {
 			for a in e.args.iter_mut() {
-				add_logs_to_self_exprs(a, methods_with_param);
+				add_logs_to_self_exprs(a, ctx);
 			}
 		},
 		syn::Expr::Cast(e) => {
-			add_logs_to_self_exprs(&mut *e.expr, methods_with_param);
+			add_logs_to_self_exprs(&mut *e.expr, ctx);
 		},
 		syn::Expr::Closure(e) => {
-			add_logs_to_self_exprs(&mut *e.body, methods_with_param);
+			add_logs_to_self_exprs(&mut *e.body, ctx);
 		},
 		syn::Expr::Const(_) => {},
 		syn::Expr::Continue(e) => {
@@ -473,17 +478,17 @@ fn add_logs_to_self_exprs(e: &mut syn::Expr, methods_with_param: &[syn::Ident]) 
 			
 		},
 		syn::Expr::ForLoop(e) => {
-			add_logs_to_self_exprs(&mut *e.expr, methods_with_param);
-			add_logs_to_stmt_list(&mut e.body.stmts, methods_with_param);
+			add_logs_to_self_exprs(&mut *e.expr, ctx);
+			add_logs_to_stmt_list(&mut e.body.stmts, ctx);
 		},
 		syn::Expr::Group(e) => {
 			
 		},
 		syn::Expr::If(e) => {
-			add_logs_to_self_exprs(&mut *e.cond, methods_with_param);
-			add_logs_to_stmt_list(&mut e.then_branch.stmts, methods_with_param);
+			add_logs_to_self_exprs(&mut *e.cond, ctx);
+			add_logs_to_stmt_list(&mut e.then_branch.stmts, ctx);
 			if let Some((_, branch)) = e.else_branch.as_mut() {
-				add_logs_to_self_exprs(&mut *branch, methods_with_param);
+				add_logs_to_self_exprs(&mut *branch, ctx);
 			}
 		},
 		syn::Expr::Index(e) => {
@@ -493,41 +498,59 @@ fn add_logs_to_self_exprs(e: &mut syn::Expr, methods_with_param: &[syn::Ident]) 
 			
 		},
 		syn::Expr::Let(e) => {
-			add_logs_to_self_exprs(&mut *e.expr, methods_with_param);
+			add_logs_to_self_exprs(&mut *e.expr, ctx);
 		},
 		syn::Expr::Lit(e) => {
 			
 		},
 		syn::Expr::Loop(e) => {
-			add_logs_to_stmt_list(&mut e.body.stmts, methods_with_param);
+			add_logs_to_stmt_list(&mut e.body.stmts, ctx);
 		},
 		syn::Expr::Macro(e) => {
 			
 		},
 		syn::Expr::Match(e) => {
-			add_logs_to_self_exprs(&mut *e.expr, methods_with_param);
+			add_logs_to_self_exprs(&mut *e.expr, ctx);
 			for arm in e.arms.iter_mut() {
 				if let Some((_, e)) = arm.guard.as_mut() {
-					add_logs_to_self_exprs(&mut *e, methods_with_param);
+					add_logs_to_self_exprs(&mut *e, ctx);
 				}
-				add_logs_to_self_exprs(&mut *arm.body, methods_with_param);
+				add_logs_to_self_exprs(&mut *arm.body, ctx);
 			}
 		},
 		syn::Expr::MethodCall(e) => {
 			match &*e.receiver {
-				syn::Expr::Path(maybe_self_path) => {
+				syn::Expr::Path(path) => {
+					assert_eq!(path.path.segments.len(), 1, "Multiple segments should instead be parsed as a Field, below");
 					let is_self_call =
-						maybe_self_path.qself.is_none()
-						&& maybe_self_path.path.segments.len() == 1
-						&& maybe_self_path.path.segments[0].ident.to_string() == "self";
-					if is_self_call && methods_with_param.iter().any(|m| *m == e.method) {
+						path.qself.is_none()
+						&& path.path.segments.len() == 1
+						&& path.path.segments[0].ident.to_string() == "self";
+					if is_self_call && ctx.methods_with_param.iter().any(|m| *m == e.method) {
 						e.args.push(parse(quote!(logger).into()).unwrap());
 					}
 				},
-				_ => add_logs_to_self_exprs(&mut *e.receiver, methods_with_param),
+				syn::Expr::Field(field) => {
+					if let syn::Expr::Path(p) = &*field.base {
+						let is_self_call =
+							p.qself.is_none()
+							&& p.path.segments.len() == 1
+							&& p.path.segments[0].ident.to_string() == "self";
+						if let syn::Member::Named(field) = &field.member {
+							if is_self_call && ctx.substructs_logged.iter().any(|m| m == field) {
+								e.args.push(parse(quote!(logger).into()).unwrap());
+							}
+						} else {
+							add_logs_to_self_exprs(&mut *e.receiver, ctx);
+						}
+					} else {
+						add_logs_to_self_exprs(&mut *e.receiver, ctx);
+					}
+				},
+				_ => add_logs_to_self_exprs(&mut *e.receiver, ctx),
 			}
 			for a in e.args.iter_mut() {
-				add_logs_to_self_exprs(a, methods_with_param);
+				add_logs_to_self_exprs(a, ctx);
 			}
 		},
 		syn::Expr::Paren(e) => {
@@ -550,17 +573,17 @@ fn add_logs_to_self_exprs(e: &mut syn::Expr, methods_with_param: &[syn::Ident]) 
 		},
 		syn::Expr::Return(e) => {
 			if let Some(e) = e.expr.as_mut() {
-				add_logs_to_self_exprs(&mut *e, methods_with_param);
+				add_logs_to_self_exprs(&mut *e, ctx);
 			}
 		},
 		syn::Expr::Struct(e) => {
 			
 		},
 		syn::Expr::Try(e) => {
-			add_logs_to_self_exprs(&mut *e.expr, methods_with_param);
+			add_logs_to_self_exprs(&mut *e.expr, ctx);
 		},
 		syn::Expr::TryBlock(e) => {
-			add_logs_to_stmt_list(&mut e.block.stmts, methods_with_param);
+			add_logs_to_stmt_list(&mut e.block.stmts, ctx);
 		},
 		syn::Expr::Tuple(e) => {
 			
@@ -584,7 +607,61 @@ fn add_logs_to_self_exprs(e: &mut syn::Expr, methods_with_param: &[syn::Ident]) 
 	}
 }
 
-/// XXX
+/// This attribute, on an `impl` block, will add logging parameters transparently to every method
+/// in the `impl` block. It will also pass through the current logger to any calls to modified
+/// methods.
+///
+/// Provided attributes should be in the form `logger: LoggerType $(, substruct: subfield)*`
+/// where `LoggerType` is the type of the logger object which is required, and `subfield` is any
+/// number of fields (accessible through `self`) which have had their `impl` block(s) similarly
+/// modified.
+///
+/// For example, this translates:
+/// ```rust
+/// struct B;
+/// struct A { field_b: B }
+///
+/// #[proc_macro_attribute(logger: LogType, substruct: field_b)]
+/// impl A {
+///		fn f_a(&self) {
+///			logger.log();
+///		}
+/// 	fn f(&self) {
+///			self.f_a();
+///			self.field_b.f();
+/// 	}
+/// }
+///
+/// #[proc_macro_attribute(logger: LogType)]
+/// impl B {
+///		fn f(&self) {
+///			logger.log();
+///		}
+///	}
+/// ```
+///
+/// to this:
+///
+/// ```rust
+/// struct B;
+/// struct A { field_b: B }
+///
+/// impl A {
+///		fn f_a(&self, logger: &LogType) {
+///			logger.log();
+///		}
+/// 	fn f(&self, logger: &LogType) {
+///			self.f_a(logger);
+///			self.field_b.f(logger);
+/// 	}
+/// }
+///
+/// impl B {
+///		fn f(&self, logger: &LogType) {
+///			logger.log();
+///		}
+///	}
+/// ```
 #[proc_macro_attribute]
 pub fn add_logging(attrs: TokenStream, expr: TokenStream) -> TokenStream {
 	let mut im = if let Ok(parsed) = parse::<syn::Item>(expr) {
@@ -592,23 +669,69 @@ pub fn add_logging(attrs: TokenStream, expr: TokenStream) -> TokenStream {
 			im
 		} else {
 			return (quote! {
-				compile_error!("add_logging_internal can only be used on impl items")
+				compile_error!("add_logging can only be used on impl items")
 			})
 			.into();
 		}
 	} else {
 		return (quote! {
-			compile_error!("add_logging_internal can only be used on impl items")
+			compile_error!("add_logging can only be used on impl items")
 		})
 		.into();
 	};
-	let attrs: TokenStream2 = attrs.into();
+
+	let parsed_attrs = parse::<syn::AngleBracketedGenericArguments>(attrs);
+	let (logger_type, substructs_logged) = if let Ok(attrs) = &parsed_attrs {
+		if attrs.args.len() < 1 {
+			return (quote! {
+				compile_error!("add_logging must have at least the `logger: LoggerType` attribute")
+			})
+			.into();
+		}
+		let logger_ty = if let syn::GenericArgument::Type(ty) = &attrs.args[0] {
+			ty
+		} else {
+			return (quote! {
+				compile_error!("add_logging's attributes must start with `logger:`")
+			})
+			.into();
+		};
+		let mut substructs_logged = Vec::new();
+		for arg in attrs.args.iter().skip(1) {
+			if let syn::GenericArgument::AssocType(syn::AssocType { ident, ty: syn::Type::Path(p), .. }) = arg {
+				if ident.to_string() != "substruct" {
+					return (quote! {
+						compile_error!("add_logging's attributes must be in the form `logger: Logger $(, substruct: field)*")
+					})
+					.into();
+				}
+				if p.path.leading_colon.is_some() && p.path.segments.len() != 1 {
+					return (quote! {
+						compile_error!("add_logging's attributes must be in the form `logger: Logger $(, substruct: field)*")
+					})
+					.into();
+				}
+				substructs_logged.push(p.path.segments[0].ident.clone());
+			} else {
+				return (quote! {
+					compile_error!("add_logging's attributes must be in the form `logger: Logger $(, substruct: field)*")
+				})
+				.into();
+			}
+		}
+		(logger_ty, substructs_logged)
+	} else {
+		return (quote! {
+			compile_error!("add_logging's attributes must be in the form `logger: Logger $(, substruct: field)*")
+		})
+		.into();
+	};
 
 	let mut methods_added = Vec::new();
 	for item in im.items.iter_mut() {
 		if let syn::ImplItem::Fn(f) = item {
-			if let syn::Visibility::Public(_) = f.vis {
-			} else {
+			//if let syn::Visibility::Public(_) = f.vis {
+			//} else {
 				if f.sig.generics.lt_token.is_none() {
 					f.sig.generics.lt_token = Some(Default::default());
 					f.sig.generics.gt_token = Some(Default::default());
@@ -619,15 +742,20 @@ pub fn add_logging(attrs: TokenStream, expr: TokenStream) -> TokenStream {
 				}
 				let log_bound = parse(quote!(L::Target: Logger).into()).unwrap();
 				f.sig.generics.where_clause.as_mut().unwrap().predicates.push(log_bound);
-				f.sig.inputs.push(parse(quote!(logger: &#attrs).into()).unwrap());
+				f.sig.inputs.push(parse(quote!(logger: &#logger_type).into()).unwrap());
 				methods_added.push(f.sig.ident.clone());
-			}
+			//}
 		}
 	}
 
+	let ctx = AddLogsCtx {
+		methods_with_param: &methods_added[..],
+		substructs_logged: &substructs_logged,
+	};
+
 	for item in im.items.iter_mut() {
 		if let syn::ImplItem::Fn(f) = item {
-			add_logs_to_stmt_list(&mut f.block.stmts, &methods_added[..]);
+			add_logs_to_stmt_list(&mut f.block.stmts, &ctx);
 		}
 	}
 
