@@ -543,6 +543,8 @@ pub enum RetryableSendFailure {
 	///
 	/// [`BlindedPaymentPath`]: crate::blinded_path::payment::BlindedPaymentPath
 	OnionPacketSizeExceeded,
+	/// The provided [`RecipientOnionFields::custom_tlvs`] are of invalid range
+	InvalidCustomTlvs,
 }
 
 /// If a payment fails to send to a route, it can be in one of several states. This enum is returned
@@ -919,6 +921,7 @@ where
 	pub(super) fn pay_for_bolt11_invoice<R: Deref, ES: Deref, NS: Deref, IH, SP>(
 		&self, invoice: &Bolt11Invoice, payment_id: PaymentId,
 		amount_msats: Option<u64>,
+		custom_tlvs: Vec<(u64, Vec<u8>)>,
 		route_params_config: RouteParametersConfig,
 		retry_strategy: Retry,
 		router: &R,
@@ -942,7 +945,9 @@ where
 			(None, None) => return Err(Bolt11PaymentError::InvalidAmount),
 		};
 
-		let mut recipient_onion = RecipientOnionFields::secret_only(*invoice.payment_secret());
+		let mut recipient_onion = RecipientOnionFields::secret_only(*invoice.payment_secret())
+			.with_custom_tlvs(custom_tlvs)
+			.map_err(|_| Bolt11PaymentError::SendingFailed(RetryableSendFailure::InvalidCustomTlvs))?;
 		recipient_onion.payment_metadata = invoice.payment_metadata().map(|v| v.clone());
 
 		let payment_params = PaymentParameters::from_bolt11_invoice(invoice)
@@ -1061,6 +1066,7 @@ where
 					RetryableSendFailure::RouteNotFound => PaymentFailureReason::RouteNotFound,
 					RetryableSendFailure::DuplicatePayment => PaymentFailureReason::UnexpectedError,
 					RetryableSendFailure::OnionPacketSizeExceeded => PaymentFailureReason::UnexpectedError,
+					RetryableSendFailure::InvalidCustomTlvs => PaymentFailureReason::UnexpectedError,
 				};
 				self.abandon_payment(payment_id, reason, pending_events);
 				return Err(Bolt12PaymentError::SendingFailed(e));
