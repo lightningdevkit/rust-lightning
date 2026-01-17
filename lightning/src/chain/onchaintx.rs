@@ -479,16 +479,40 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 		events
 	}
 
+	/// Returns true if we are currently tracking any pending claim requests that are not fully
+	/// confirmed yet.
+	pub(super) fn has_pending_claims(&self) -> bool {
+		self.pending_claim_requests.len() != 0
+	}
+
+	pub(crate) fn is_output_spend_pending(&self, outpoint: &BitcoinOutPoint) -> bool {
+		self.claimable_outpoints.get(outpoint).is_some()
+	}
+
+	#[rustfmt::skip]
+	pub(crate) fn get_relevant_txids(&self) -> Vec<(Txid, u32, Option<BlockHash>)> {
+		let mut txids: Vec<(Txid, u32, Option<BlockHash>)> = self.onchain_events_awaiting_threshold_conf
+			.iter()
+			.map(|entry| (entry.txid, entry.height, entry.block_hash))
+			.collect();
+		txids.sort_unstable_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
+		txids.dedup_by_key(|(txid, _, _)| *txid);
+		txids
+	}
+}
+
+#[lightning_macros::add_logging(<crate::chain::channelmonitor::WithChannelMonitor<L>>)]
+impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 	/// Triggers rebroadcasts/fee-bumps of pending claims from a force-closed channel. This is
 	/// crucial in preventing certain classes of pinning attacks, detecting substantial mempool
 	/// feerate changes between blocks, and ensuring reliability if broadcasting fails. We recommend
 	/// invoking this every 30 seconds, or lower if running in an environment with spotty
 	/// connections, like on mobile.
 	#[rustfmt::skip]
-	pub(super) fn rebroadcast_pending_claims<B: Deref, F: Deref, L: Logger>(
+	pub(super) fn rebroadcast_pending_claims<B: Deref, F: Deref>(
 		&mut self, current_height: u32, feerate_strategy: FeerateStrategy, broadcaster: &B,
 		conf_target: ConfirmationTarget, destination_script: &Script,
-		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
+		fee_estimator: &LowerBoundedFeeEstimator<F>,
 	)
 	where
 		B::Target: BroadcasterInterface,
@@ -503,7 +527,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 		for (claim_id, request) in bump_requests {
 			self.generate_claim(
 				current_height, &request, &feerate_strategy, conf_target, destination_script,
-				fee_estimator, logger,
+				fee_estimator,
 			)
 				.map(|(_, new_feerate, claim)| {
 					let mut feerate_was_bumped = false;
@@ -539,12 +563,6 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 		}
 	}
 
-	/// Returns true if we are currently tracking any pending claim requests that are not fully
-	/// confirmed yet.
-	pub(super) fn has_pending_claims(&self) -> bool {
-		self.pending_claim_requests.len() != 0
-	}
-
 	/// Lightning security model (i.e being able to redeem/timeout HTLC or penalize counterparty
 	/// onchain) lays on the assumption of claim transactions getting confirmed before timelock
 	/// expiration (CSV or CLTV following cases). In case of high-fee spikes, claim tx may get stuck
@@ -554,10 +572,10 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 	/// Panics if there are signing errors, because signing operations in reaction to on-chain
 	/// events are not expected to fail, and if they do, we may lose funds.
 	#[rustfmt::skip]
-	fn generate_claim<F: Deref, L: Logger>(
+	fn generate_claim<F: Deref>(
 		&mut self, cur_height: u32, cached_request: &PackageTemplate,
 		feerate_strategy: &FeerateStrategy, conf_target: ConfirmationTarget,
-		destination_script: &Script, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
+		destination_script: &Script, fee_estimator: &LowerBoundedFeeEstimator<F>,
 	) -> Option<(u32, u64, OnchainClaim)>
 	where F::Target: FeeEstimator,
 	{
@@ -761,10 +779,10 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 	/// does not need to equal the current blockchain tip height, which should be provided via
 	/// `cur_height`, however it must never be higher than `cur_height`.
 	#[rustfmt::skip]
-	pub(super) fn update_claims_view_from_requests<B: Deref, F: Deref, L: Logger>(
+	pub(super) fn update_claims_view_from_requests<B: Deref, F: Deref>(
 		&mut self, mut requests: Vec<PackageTemplate>, conf_height: u32, cur_height: u32,
 		broadcaster: &B, conf_target: ConfirmationTarget, destination_script: &Script,
-		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L
+		fee_estimator: &LowerBoundedFeeEstimator<F>,
 	) where
 		B::Target: BroadcasterInterface,
 		F::Target: FeeEstimator,
@@ -852,7 +870,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 		for mut req in preprocessed_requests {
 			if let Some((new_timer, new_feerate, claim)) = self.generate_claim(
 				cur_height, &req, &FeerateStrategy::ForceBump, conf_target, destination_script,
-				&*fee_estimator, &*logger,
+				&*fee_estimator,
 			) {
 				req.set_timer(new_timer);
 				req.set_feerate(new_feerate);
@@ -912,10 +930,10 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 	/// confirmed. This does not need to equal the current blockchain tip height, which should be
 	/// provided via `cur_height`, however it must never be higher than `cur_height`.
 	#[rustfmt::skip]
-	pub(super) fn update_claims_view_from_matched_txn<B: Deref, F: Deref, L: Logger>(
+	pub(super) fn update_claims_view_from_matched_txn<B: Deref, F: Deref>(
 		&mut self, txn_matched: &[&Transaction], conf_height: u32, conf_hash: BlockHash,
 		cur_height: u32, broadcaster: &B, conf_target: ConfirmationTarget,
-		destination_script: &Script, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L
+		destination_script: &Script, fee_estimator: &LowerBoundedFeeEstimator<F>,
 	) where
 		B::Target: BroadcasterInterface,
 		F::Target: FeeEstimator,
@@ -1078,7 +1096,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 		for (claim_id, request) in bump_candidates.iter() {
 			if let Some((new_timer, new_feerate, bump_claim)) = self.generate_claim(
 				cur_height, &request, &FeerateStrategy::ForceBump, conf_target, destination_script,
-				&*fee_estimator, &*logger,
+				&*fee_estimator,
 			) {
 				match bump_claim {
 					OnchainClaim::Tx(bump_tx) => {
@@ -1110,14 +1128,13 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 	}
 
 	#[rustfmt::skip]
-	pub(super) fn transaction_unconfirmed<B: Deref, F: Deref, L: Logger>(
+	pub(super) fn transaction_unconfirmed<B: Deref, F: Deref>(
 		&mut self,
 		txid: &Txid,
 		broadcaster: &B,
 		conf_target: ConfirmationTarget,
 		destination_script: &Script,
 		fee_estimator: &LowerBoundedFeeEstimator<F>,
-		logger: &L,
 	) where
 		B::Target: BroadcasterInterface,
 		F::Target: FeeEstimator,
@@ -1132,15 +1149,15 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 
 		if let Some(height) = height {
 			self.blocks_disconnected(
-				height - 1, broadcaster, conf_target, destination_script, fee_estimator, logger,
+				height - 1, broadcaster, conf_target, destination_script, fee_estimator,
 			);
 		}
 	}
 
 	#[rustfmt::skip]
-	pub(super) fn blocks_disconnected<B: Deref, F: Deref, L: Logger>(
+	pub(super) fn blocks_disconnected<B: Deref, F: Deref>(
 		&mut self, new_best_height: u32, broadcaster: &B, conf_target: ConfirmationTarget,
-		destination_script: &Script, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
+		destination_script: &Script, fee_estimator: &LowerBoundedFeeEstimator<F>,
 	)
 		where B::Target: BroadcasterInterface,
 			F::Target: FeeEstimator,
@@ -1179,7 +1196,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 		for ((_claim_id, _), ref mut request) in bump_candidates.iter_mut() {
 			if let Some((new_timer, new_feerate, bump_claim)) = self.generate_claim(
 				new_best_height, &request, &FeerateStrategy::ForceBump, conf_target,
-				destination_script, fee_estimator, logger
+				destination_script, fee_estimator,
 			) {
 				request.set_timer(new_timer);
 				request.set_feerate(new_feerate);
@@ -1219,21 +1236,6 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 		for req in remove_request {
 			self.pending_claim_requests.remove(&req);
 		}
-	}
-
-	pub(crate) fn is_output_spend_pending(&self, outpoint: &BitcoinOutPoint) -> bool {
-		self.claimable_outpoints.get(outpoint).is_some()
-	}
-
-	#[rustfmt::skip]
-	pub(crate) fn get_relevant_txids(&self) -> Vec<(Txid, u32, Option<BlockHash>)> {
-		let mut txids: Vec<(Txid, u32, Option<BlockHash>)> = self.onchain_events_awaiting_threshold_conf
-			.iter()
-			.map(|entry| (entry.txid, entry.height, entry.block_hash))
-			.collect();
-		txids.sort_unstable_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
-		txids.dedup_by_key(|(txid, _, _)| *txid);
-		txids
 	}
 
 	pub(crate) fn provide_latest_holder_tx(&mut self, tx: HolderCommitmentTransaction) {

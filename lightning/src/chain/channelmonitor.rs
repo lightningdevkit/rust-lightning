@@ -4258,7 +4258,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				let conf_target = self.closure_conf_target();
 				self.onchain_tx_handler.update_claims_view_from_requests(
 					claim_reqs, self.best_block.height, self.best_block.height, broadcaster,
-					conf_target, &self.destination_script, fee_estimator, logger,
+					conf_target, &self.destination_script, fee_estimator,
 				);
 			}
 		}
@@ -4362,7 +4362,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		let conf_target = self.closure_conf_target();
 		self.onchain_tx_handler.update_claims_view_from_requests(
 			claimable_outpoints, self.best_block.height, self.best_block.height, broadcaster,
-			conf_target, &self.destination_script, fee_estimator, logger,
+			conf_target, &self.destination_script, fee_estimator,
 		);
 	}
 
@@ -5410,7 +5410,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			self.onchain_events_awaiting_threshold_conf.retain(|ref entry| entry.height <= height);
 			let conf_target = self.closure_conf_target();
 			self.onchain_tx_handler.blocks_disconnected(
-				height, &broadcaster, conf_target, &self.destination_script, fee_estimator, logger,
+				height, &broadcaster, conf_target, &self.destination_script, fee_estimator,
 			);
 			Vec::new()
 		} else { Vec::new() }
@@ -5895,11 +5895,11 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		let conf_target = self.closure_conf_target();
 		self.onchain_tx_handler.update_claims_view_from_requests(
 			claimable_outpoints, conf_height, self.best_block.height, broadcaster, conf_target,
-			&self.destination_script, fee_estimator, logger,
+			&self.destination_script, fee_estimator,
 		);
 		self.onchain_tx_handler.update_claims_view_from_matched_txn(
 			&txn_matched, conf_height, conf_hash, self.best_block.height, broadcaster, conf_target,
-			&self.destination_script, fee_estimator, logger,
+			&self.destination_script, fee_estimator,
 		);
 
 		// Determine new outputs to watch by comparing against previously known outputs to watch,
@@ -5961,7 +5961,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		let bounded_fee_estimator = LowerBoundedFeeEstimator::new(fee_estimator);
 		let conf_target = self.closure_conf_target();
 		self.onchain_tx_handler.blocks_disconnected(
-			new_height, &broadcaster, conf_target, &self.destination_script, &bounded_fee_estimator, logger
+			new_height, &broadcaster, conf_target, &self.destination_script, &bounded_fee_estimator,
 		);
 
 		// Only attempt to broadcast the new commitment after the `block_disconnected` call above so that
@@ -6020,7 +6020,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 		let conf_target = self.closure_conf_target();
 		self.onchain_tx_handler.transaction_unconfirmed(
-			txid, &broadcaster, conf_target, &self.destination_script, fee_estimator, logger
+			txid, &broadcaster, conf_target, &self.destination_script, fee_estimator,
 		);
 
 		// Only attempt to broadcast the new commitment after the `transaction_unconfirmed` call above so
@@ -6706,7 +6706,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		}
 
 		let channel_parameters = channel_parameters.unwrap_or_else(|| {
-			onchain_tx_handler.channel_parameters().clone()
+			onchain_tx_handler.channel_parameters.clone()
 		});
 
 		// Monitors for anchor outputs channels opened in v0.0.116 suffered from a bug in which the
