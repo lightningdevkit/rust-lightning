@@ -412,6 +412,16 @@ pub trait Filter {
 	fn register_output(&self, output: WatchedOutput);
 }
 
+impl<T: Filter + ?Sized, F: Deref<Target = T>> Filter for F {
+	fn register_tx(&self, txid: &Txid, script_pubkey: &Script) {
+		self.deref().register_tx(txid, script_pubkey)
+	}
+
+	fn register_output(&self, output: WatchedOutput) {
+		self.deref().register_output(output)
+	}
+}
+
 /// A transaction output watched by a [`ChannelMonitor`] for spends on-chain.
 ///
 /// Used to convey to a [`Filter`] such an output with a given spending condition. Any transaction
