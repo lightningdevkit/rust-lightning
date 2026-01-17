@@ -142,7 +142,6 @@ pub enum LSPS1ClientEvent {
 }
 
 /// An event which an LSPS1 server should take some action in response to.
-#[cfg(lsps1_service)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LSPS1ServiceEvent {
 	/// A client has selected the parameters to use from the supported options of the LSP
@@ -164,26 +163,6 @@ pub enum LSPS1ServiceEvent {
 		counterparty_node_id: PublicKey,
 		/// The order requested by the client.
 		order: LSPS1OrderParams,
-	},
-	/// A request from client to check the status of the payment.
-	///
-	/// An event to poll for checking payment status either onchain or lightning.
-	///
-	/// You must call [`LSPS1ServiceHandler::update_order_status`] to update the client
-	/// regarding the status of the payment and order.
-	///
-	/// **Note: ** This event will *not* be persisted across restarts.
-	///
-	/// [`LSPS1ServiceHandler::update_order_status`]: crate::lsps1::service::LSPS1ServiceHandler::update_order_status
-	CheckPaymentConfirmation {
-		/// An identifier that must be passed to [`LSPS1ServiceHandler::update_order_status`].
-		///
-		/// [`LSPS1ServiceHandler::update_order_status`]: crate::lsps1::service::LSPS1ServiceHandler::update_order_status
-		request_id: LSPSRequestId,
-		/// The node id of the client making the information request.
-		counterparty_node_id: PublicKey,
-		/// The order id of order with pending payment.
-		order_id: LSPS1OrderId,
 	},
 	/// If error is encountered, refund the amount if paid by the client.
 	///

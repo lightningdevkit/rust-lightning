@@ -6,9 +6,8 @@ use common::{create_service_and_client_nodes, get_lsps_message, LSPSNodes};
 
 use lightning_liquidity::events::LiquidityEvent;
 use lightning_liquidity::lsps0::event::LSPS0ClientEvent;
-#[cfg(lsps1_service)]
 use lightning_liquidity::lsps1::client::LSPS1ClientConfig;
-#[cfg(lsps1_service)]
+use lightning_liquidity::lsps1::msgs::LSPS1Options;
 use lightning_liquidity::lsps1::service::LSPS1ServiceConfig;
 use lightning_liquidity::lsps2::client::LSPS2ClientConfig;
 use lightning_liquidity::lsps2::service::LSPS2ServiceConfig;
@@ -33,11 +32,23 @@ fn list_protocols_integration_test() {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let promise_secret = [42; 32];
 	let lsps2_service_config = LSPS2ServiceConfig { promise_secret };
-	#[cfg(lsps1_service)]
-	let lsps1_service_config = LSPS1ServiceConfig { supported_options: None, token: None };
+	let lsps1_service_config = {
+		let supported_options = LSPS1Options {
+			min_required_channel_confirmations: 0,
+			min_funding_confirms_within_blocks: 6,
+			supports_zero_channel_reserve: true,
+			max_channel_expiry_blocks: 144,
+			min_initial_client_balance_sat: 10_000_000,
+			max_initial_client_balance_sat: 100_000_000,
+			min_initial_lsp_balance_sat: 100_000,
+			max_initial_lsp_balance_sat: 100_000_000,
+			min_channel_balance_sat: 100_000,
+			max_channel_balance_sat: 100_000_000,
+		};
+		LSPS1ServiceConfig { supported_options }
+	};
 	let lsps5_service_config = LSPS5ServiceConfig::default();
 	let service_config = LiquidityServiceConfig {
-		#[cfg(lsps1_service)]
 		lsps1_service_config: Some(lsps1_service_config),
 		lsps2_service_config: Some(lsps2_service_config),
 		lsps5_service_config: Some(lsps5_service_config),
@@ -45,14 +56,10 @@ fn list_protocols_integration_test() {
 	};
 
 	let lsps2_client_config = LSPS2ClientConfig::default();
-	#[cfg(lsps1_service)]
 	let lsps1_client_config: LSPS1ClientConfig = LSPS1ClientConfig { max_channel_fees_msat: None };
 	let lsps5_client_config = LSPS5ClientConfig::default();
 	let client_config = LiquidityClientConfig {
-		#[cfg(lsps1_service)]
 		lsps1_client_config: Some(lsps1_client_config),
-		#[cfg(not(lsps1_service))]
-		lsps1_client_config: None,
 		lsps2_client_config: Some(lsps2_client_config),
 		lsps5_client_config: Some(lsps5_client_config),
 	};
@@ -91,16 +98,12 @@ fn list_protocols_integration_test() {
 			protocols,
 		}) => {
 			assert_eq!(counterparty_node_id, client_node_id);
-			#[cfg(lsps1_service)]
 			{
 				assert!(protocols.contains(&1));
 				assert!(protocols.contains(&2));
 				assert!(protocols.contains(&5));
 				assert_eq!(protocols.len(), 3);
 			}
-
-			#[cfg(not(lsps1_service))]
-			assert_eq!(protocols, vec![2, 5]);
 		},
 		_ => panic!("Unexpected event"),
 	}
