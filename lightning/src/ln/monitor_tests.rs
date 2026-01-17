@@ -338,6 +338,7 @@ fn do_chanmon_claim_value_coop_close(keyed_anchors: bool, p2a_anchor: bool) {
 	assert_eq!(vec![Balance::ClaimableOnChannelClose {
 			balance_candidates: vec![HolderCommitmentTransactionBalance {
 				amount_satoshis: 1_000_000 - 1_000 - commitment_tx_fee - anchor_outputs_value,
+				amount_offchain_satoshis: Some(1_000_000 - 1_000),
 				transaction_fee_satoshis: commitment_tx_fee,
 			}],
 			confirmed_balance_candidate_index: 0,
@@ -350,6 +351,7 @@ fn do_chanmon_claim_value_coop_close(keyed_anchors: bool, p2a_anchor: bool) {
 	assert_eq!(vec![Balance::ClaimableOnChannelClose {
 			balance_candidates: vec![HolderCommitmentTransactionBalance {
 				amount_satoshis: 1_000,
+				amount_offchain_satoshis: Some(1_000),
 				transaction_fee_satoshis: 0,
 			}],
 			confirmed_balance_candidate_index: 0,
@@ -537,10 +539,12 @@ fn do_test_claim_value_force_close(keyed_anchors: bool, p2a_anchor: bool, prev_c
 	let commitment_tx_fee = chan_feerate as u64 *
 		(chan_utils::commitment_tx_base_weight(&channel_type_features) + 2 * chan_utils::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
 	let anchor_outputs_value = if keyed_anchors { 2 * channel::ANCHOR_OUTPUT_VALUE_SATOSHI } else { 0 };
-	let amount_satoshis = 1_000_000 - 3_000 - 4_000 - 1_000 - 3 - commitment_tx_fee - anchor_outputs_value - 1; /* msat amount that is burned to fees */
+	let amount_offchain_satoshis = 1_000_000 - 3_000 - 4_000 - 1_000 - 3 - 1 /* msat amount that is burned to fees */;
+	let amount_satoshis = amount_offchain_satoshis - commitment_tx_fee - anchor_outputs_value;
 	assert_eq!(sorted_vec(vec![Balance::ClaimableOnChannelClose {
 			balance_candidates: vec![HolderCommitmentTransactionBalance {
 				amount_satoshis,
+				amount_offchain_satoshis: Some(amount_offchain_satoshis),
 				// In addition to `commitment_tx_fee`, this also includes the dust HTLC, and the total msat amount rounded down from non-dust HTLCs
 				transaction_fee_satoshis: if p2a_anchor { 0 } else { 1_000_000 - 4_000 - 3_000 - 1_000 - amount_satoshis - anchor_outputs_value },
 			}],
@@ -554,6 +558,7 @@ fn do_test_claim_value_force_close(keyed_anchors: bool, p2a_anchor: bool, prev_c
 	assert_eq!(sorted_vec(vec![Balance::ClaimableOnChannelClose {
 			balance_candidates: vec![HolderCommitmentTransactionBalance {
 				amount_satoshis: 1_000,
+				amount_offchain_satoshis: Some(1_000),
 				transaction_fee_satoshis: 0,
 			}],
 			confirmed_balance_candidate_index: 0,
@@ -600,17 +605,19 @@ fn do_test_claim_value_force_close(keyed_anchors: bool, p2a_anchor: bool, prev_c
 	let commitment_tx_fee = chan_feerate as u64 *
 		(chan_utils::commitment_tx_base_weight(&channel_type_features) +
 		if prev_commitment_tx { 1 } else { 2 } * chan_utils::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
-	let amount_satoshis = 1_000_000 - // Channel funding value in satoshis
+	let amount_offchain_satoshis = 1_000_000 - // Channel funding value in satoshis
 				4_000 - // The to-be-failed HTLC value in satoshis
 				3_000 - // The claimed HTLC value in satoshis
 				1_000 - // The push_msat value in satoshis
 				3 - // The dust HTLC value in satoshis
-				commitment_tx_fee - // The commitment transaction fee with two HTLC outputs
-				anchor_outputs_value - // The anchor outputs value in satoshis
 				1; // The rounded up msat part of the one HTLC
+	let amount_satoshis = amount_offchain_satoshis -
+				commitment_tx_fee - // The commitment transaction fee with two HTLC outputs
+				anchor_outputs_value; // The anchor outputs value in satoshis
 	let mut a_expected_balances = vec![Balance::ClaimableOnChannelClose {
 			balance_candidates: vec![HolderCommitmentTransactionBalance {
-				amount_satoshis, // Channel funding value in satoshis
+				amount_satoshis,
+				amount_offchain_satoshis: Some(amount_offchain_satoshis),
 				// In addition to `commitment_tx_fee`, this also includes the dust HTLC, and the total msat amount rounded down from non-dust HTLCs
 				transaction_fee_satoshis: if p2a_anchor { 0 } else { 1_000_000 - 4_000 - 3_000 - 1_000 - amount_satoshis - anchor_outputs_value },
 			}],
@@ -629,6 +636,7 @@ fn do_test_claim_value_force_close(keyed_anchors: bool, p2a_anchor: bool, prev_c
 	assert_eq!(vec![Balance::ClaimableOnChannelClose {
 			balance_candidates: vec![HolderCommitmentTransactionBalance {
 				amount_satoshis: 1_000 + 3_000 + 4_000,
+				amount_offchain_satoshis: Some(1_000 + 3_000 + 4_000),
 				transaction_fee_satoshis: 0,
 			}],
 			confirmed_balance_candidate_index: 0,
@@ -1168,6 +1176,7 @@ fn test_no_preimage_inbound_htlc_balances() {
 	assert_eq!(sorted_vec(vec![Balance::ClaimableOnChannelClose {
 			balance_candidates: vec![HolderCommitmentTransactionBalance {
 				amount_satoshis: 1_000_000 - 500_000 - 10_000 - commitment_tx_fee,
+				amount_offchain_satoshis: Some(1_000_000 - 500_000 - 10_000),
 				transaction_fee_satoshis: commitment_tx_fee,
 			}],
 			confirmed_balance_candidate_index: 0,
@@ -1181,6 +1190,7 @@ fn test_no_preimage_inbound_htlc_balances() {
 	assert_eq!(sorted_vec(vec![Balance::ClaimableOnChannelClose {
 			balance_candidates: vec![HolderCommitmentTransactionBalance {
 				amount_satoshis: 500_000 - 20_000,
+				amount_offchain_satoshis: Some(500_000 - 20_000),
 				transaction_fee_satoshis: 0,
 			}],
 			confirmed_balance_candidate_index: 0,
@@ -1480,6 +1490,7 @@ fn do_test_revoked_counterparty_commitment_balances(keyed_anchors: bool, p2a_anc
 			Balance::ClaimableOnChannelClose {
 				balance_candidates: vec![HolderCommitmentTransactionBalance {
 					amount_satoshis: 100_000 - 5_000 - 4_000 - 3 - 2_000 + 3_000 - 1 /* rounded up msat parts of HTLCs */,
+					amount_offchain_satoshis: Some(100_000 - 5_000 - 4_000 - 3 - 2_000 + 3_000 - 1) /* rounded up msat parts of HTLCs */,
 					transaction_fee_satoshis: 0,
 				}],
 				confirmed_balance_candidate_index: 0,
@@ -2026,6 +2037,7 @@ fn do_test_revoked_counterparty_aggregated_claims(keyed_anchors: bool, p2a_ancho
 	assert_eq!(sorted_vec(vec![Balance::ClaimableOnChannelClose {
 			balance_candidates: vec![HolderCommitmentTransactionBalance {
 				amount_satoshis: 100_000 - 4_000 - 3_000 - 1 /* rounded up msat parts of HTLCs */,
+				amount_offchain_satoshis: Some(100_000 - 4_000 - 3_000 - 1) /* rounded up msat parts of HTLCs */,
 				transaction_fee_satoshis: 0,
 			}],
 			confirmed_balance_candidate_index: 0,
