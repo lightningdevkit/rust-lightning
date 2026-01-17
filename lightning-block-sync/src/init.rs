@@ -57,6 +57,7 @@ where
 /// use lightning::sign::{EntropySource, NodeSigner, SignerProvider};
 /// use lightning::util::config::UserConfig;
 /// use lightning::util::logger::Logger;
+/// use lightning::util::persist::KVStoreSync;
 /// use lightning::util::ser::ReadableArgs;
 ///
 /// use lightning_block_sync::*;
@@ -69,6 +70,7 @@ where
 /// 	NS: NodeSigner,
 /// 	SP: SignerProvider,
 /// 	T: BroadcasterInterface,
+/// 	K: KVStoreSync,
 /// 	F: FeeEstimator,
 /// 	R: Router,
 /// 	MR: MessageRouter,
@@ -83,6 +85,7 @@ where
 /// 	node_signer: &NS,
 /// 	signer_provider: &SP,
 /// 	tx_broadcaster: &T,
+/// 	kv_store: &K,
 /// 	fee_estimator: &F,
 /// 	router: &R,
 /// 	message_router: &MR,
@@ -104,13 +107,14 @@ where
 /// 			fee_estimator,
 /// 			chain_monitor,
 /// 			tx_broadcaster,
+/// 			kv_store,
 /// 			router,
 /// 			message_router,
 /// 			logger,
 /// 			config,
 /// 			vec![&mut monitor],
 /// 		);
-/// 		<(BlockHash, ChannelManager<&ChainMonitor<SP::EcdsaSigner, &C, &T, &F, &L, &P, &ES>, &T, &ES, &NS, &SP, &F, &R, &MR, &L>)>::read(
+/// 		<(BlockHash, ChannelManager<&ChainMonitor<SP::EcdsaSigner, &C, &T, &F, &L, &P, &ES>, &T, &K, &ES, &NS, &SP, &F, &R, &MR, &L>)>::read(
 /// 			&mut Cursor::new(&serialized_manager), read_args).unwrap()
 /// 	};
 ///

@@ -125,6 +125,10 @@ use crate::types::string::UntrustedString;
 use crate::util::config::{ChannelConfig, ChannelConfigOverrides, ChannelConfigUpdate, UserConfig};
 use crate::util::errors::APIError;
 use crate::util::logger::{Level, Logger, WithContext};
+use crate::util::persist::{
+	KVStoreSync, CHANNEL_MANAGER_PERSISTENCE_KEY, CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+	CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
+};
 use crate::util::scid_utils::fake_scid;
 use crate::util::ser::{
 	BigSize, FixedLengthReader, LengthReadable, MaybeReadable, Readable, ReadableArgs, VecWriter,
@@ -174,7 +178,6 @@ use crate::sync::{Arc, FairRwLock, LockHeldState, LockTestExt, Mutex, RwLock, Rw
 use bitcoin::hex::impl_fmt_traits;
 
 use core::borrow::Borrow;
-use core::cell::RefCell;
 use core::convert::Infallible;
 use core::ops::Deref;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -1733,9 +1736,10 @@ struct PendingInboundPayment {
 ///
 /// This is not exported to bindings users as type aliases aren't supported in most languages.
 #[cfg(not(c_bindings))]
-pub type SimpleArcChannelManager<M, T, F, L> = ChannelManager<
+pub type SimpleArcChannelManager<M, T, K, F, L> = ChannelManager<
 	Arc<M>,
 	Arc<T>,
+	Arc<K>,
 	Arc<KeysManager>,
 	Arc<KeysManager>,
 	Arc<KeysManager>,
@@ -1766,24 +1770,26 @@ pub type SimpleArcChannelManager<M, T, F, L> = ChannelManager<
 ///
 /// This is not exported to bindings users as type aliases aren't supported in most languages.
 #[cfg(not(c_bindings))]
-pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, 'i, M, T, F, L> = ChannelManager<
-	&'a M,
-	&'b T,
-	&'c KeysManager,
-	&'c KeysManager,
-	&'c KeysManager,
-	&'d F,
-	&'e DefaultRouter<
-		&'f NetworkGraph<&'g L>,
-		&'g L,
+pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, 'i, 'j, M, T, K, F, L> =
+	ChannelManager<
+		&'a M,
+		&'b T,
+		&'j K,
 		&'c KeysManager,
-		&'h RwLock<ProbabilisticScorer<&'f NetworkGraph<&'g L>, &'g L>>,
-		ProbabilisticScoringFeeParameters,
-		ProbabilisticScorer<&'f NetworkGraph<&'g L>, &'g L>,
-	>,
-	&'i DefaultMessageRouter<&'f NetworkGraph<&'g L>, &'g L, &'c KeysManager>,
-	&'g L,
->;
+		&'c KeysManager,
+		&'c KeysManager,
+		&'d F,
+		&'e DefaultRouter<
+			&'f NetworkGraph<&'g L>,
+			&'g L,
+			&'c KeysManager,
+			&'h RwLock<ProbabilisticScorer<&'f NetworkGraph<&'g L>, &'g L>>,
+			ProbabilisticScoringFeeParameters,
+			ProbabilisticScorer<&'f NetworkGraph<&'g L>, &'g L>,
+		>,
+		&'i DefaultMessageRouter<&'f NetworkGraph<&'g L>, &'g L, &'c KeysManager>,
+		&'g L,
+	>;
 
 /// A trivial trait which describes any [`ChannelManager`].
 ///
@@ -1798,6 +1804,10 @@ pub trait AChannelManager {
 	type Broadcaster: BroadcasterInterface + ?Sized;
 	/// A type that may be dereferenced to [`Self::Broadcaster`].
 	type T: Deref<Target = Self::Broadcaster>;
+	/// A type implementing [`KVStoreSync`].
+	type KVStore: KVStoreSync + ?Sized;
+	/// A type that may be dereferenced to [`Self::KVStore`].
+	type K: Deref<Target = Self::KVStore>;
 	/// A type implementing [`EntropySource`].
 	type EntropySource: EntropySource + ?Sized;
 	/// A type that may be dereferenced to [`Self::EntropySource`].
@@ -1834,6 +1844,7 @@ pub trait AChannelManager {
 	) -> &ChannelManager<
 		Self::M,
 		Self::T,
+		Self::K,
 		Self::ES,
 		Self::NS,
 		Self::SP,
@@ -1847,6 +1858,7 @@ pub trait AChannelManager {
 impl<
 		M: Deref,
 		T: Deref,
+		K: Deref,
 		ES: Deref,
 		NS: Deref,
 		SP: Deref,
@@ -1854,10 +1866,11 @@ impl<
 		R: Deref,
 		MR: Deref,
 		L: Deref,
-	> AChannelManager for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> AChannelManager for ChannelManager<M, T, K, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
+	K::Target: KVStoreSync,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -1870,6 +1883,8 @@ where
 	type M = M;
 	type Broadcaster = T::Target;
 	type T = T;
+	type KVStore = K::Target;
+	type K = K;
 	type EntropySource = ES::Target;
 	type ES = ES;
 	type NodeSigner = NS::Target;
@@ -1885,7 +1900,7 @@ where
 	type MR = MR;
 	type Logger = L::Target;
 	type L = L;
-	fn get_cm(&self) -> &ChannelManager<M, T, ES, NS, SP, F, R, MR, L> {
+	fn get_cm(&self) -> &ChannelManager<M, T, K, ES, NS, SP, F, R, MR, L> {
 		self
 	}
 }
@@ -1956,6 +1971,7 @@ where
 /// #     'a,
 /// #     L: lightning::util::logger::Logger,
 /// #     ES: lightning::sign::EntropySource,
+/// #     K: lightning::util::persist::KVStoreSync,
 /// #     S: for <'b> lightning::routing::scoring::LockableScore<'b, ScoreLookUp = SL>,
 /// #     SL: lightning::routing::scoring::ScoreLookUp<ScoreParams = SP>,
 /// #     SP: Sized,
@@ -1964,6 +1980,7 @@ where
 /// #     fee_estimator: &dyn lightning::chain::chaininterface::FeeEstimator,
 /// #     chain_monitor: &dyn lightning::chain::Watch<lightning::sign::InMemorySigner>,
 /// #     tx_broadcaster: &dyn lightning::chain::chaininterface::BroadcasterInterface,
+/// #     kv_store: &K,
 /// #     router: &lightning::routing::router::DefaultRouter<&NetworkGraph<&'a L>, &'a L, &ES, &S, SP, SL>,
 /// #     message_router: &lightning::onion_message::messenger::DefaultMessageRouter<&NetworkGraph<&'a L>, &'a L, &ES>,
 /// #     logger: &L,
@@ -1981,7 +1998,7 @@ where
 /// };
 /// let config = UserConfig::default();
 /// let channel_manager = ChannelManager::new(
-///     fee_estimator, chain_monitor, tx_broadcaster, router, message_router, logger,
+///     fee_estimator, chain_monitor, tx_broadcaster, kv_store, router, message_router, logger,
 ///     entropy_source, node_signer, signer_provider, config.clone(), params, current_timestamp,
 /// );
 ///
@@ -1989,10 +2006,10 @@ where
 /// let mut channel_monitors = read_channel_monitors();
 /// let args = ChannelManagerReadArgs::new(
 ///     entropy_source, node_signer, signer_provider, fee_estimator, chain_monitor, tx_broadcaster,
-///     router, message_router, logger, config, channel_monitors.iter().collect(),
+///     kv_store, router, message_router, logger, config, channel_monitors.iter().collect(),
 /// );
 /// let (block_hash, channel_manager) =
-///     <(BlockHash, ChannelManager<_, _, _, _, _, _, _, _, _>)>::read(&mut reader, args)?;
+///     <(BlockHash, ChannelManager<_, _, _, _, _, _, _, _, _, _>)>::read(&mut reader, args)?;
 ///
 /// // Update the ChannelManager and ChannelMonitors with the latest chain data
 /// // ...
@@ -2672,6 +2689,7 @@ where
 pub struct ChannelManager<
 	M: Deref,
 	T: Deref,
+	K: Deref,
 	ES: Deref,
 	NS: Deref,
 	SP: Deref,
@@ -2682,6 +2700,7 @@ pub struct ChannelManager<
 > where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
+	K::Target: KVStoreSync,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -2690,6 +2709,7 @@ pub struct ChannelManager<
 	MR::Target: MessageRouter,
 	L::Target: Logger,
 {
+	kv_store: K,
 	config: RwLock<UserConfig>,
 	chain_hash: ChainHash,
 	fee_estimator: LowerBoundedFeeEstimator<F>,
@@ -3373,27 +3393,40 @@ macro_rules! process_events_body {
 				return;
 			}
 
-			let mut result;
-
+			let pending_events;
 			{
-				// We'll acquire our total consistency lock so that we can be sure no other
-				// persists happen while processing monitor events.
-				let _read_guard = $self.total_consistency_lock.read().unwrap();
+				// Take write lock to process background/monitor events and persist before
+				// handing events to the user. This ensures if the handler crashes, events
+				// will be replayed on restart.
+				let _consistency_lock = $self.total_consistency_lock.write().unwrap();
 
 				// Because `handle_post_event_actions` may send `ChannelMonitorUpdate`s to the user we must
 				// ensure any startup-generated background events are handled first.
-				result = $self.process_background_events();
+				let _ = $self.process_background_events();
 
 				// TODO: This behavior should be documented. It's unintuitive that we query
 				// ChannelMonitors when clearing other events.
-				if $self.process_pending_monitor_events() {
-					result = NotifyOption::DoPersist;
-				}
-			}
+				$self.process_pending_monitor_events();
 
-			let pending_events = $self.pending_events.lock().unwrap().clone();
-			if !pending_events.is_empty() {
-				result = NotifyOption::DoPersist;
+				pending_events = $self.pending_events.lock().unwrap().clone();
+
+				// Persist while holding the write lock, before handling events.
+				// This ensures the persisted state includes the events we're about to handle.
+				let mut buf = Vec::new();
+				if $self.write_without_lock(&mut buf).is_ok() {
+					let _ = $self.kv_store.write(
+						CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+						CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
+						CHANNEL_MANAGER_PERSISTENCE_KEY,
+						buf,
+					);
+				}
+
+				// Commit all pending writes (including any queued monitor updates) atomically.
+				let _ = $self.kv_store.commit();
+
+				// Clear the persistence flag since we just persisted.
+				$self.needs_persist_flag.store(false, Ordering::Release);
 			}
 
 			let mut post_event_actions = Vec::new();
@@ -3434,16 +3467,6 @@ macro_rules! process_events_body {
 				// If we had some actions, go around again as we may have more events now
 				processed_all_events = false;
 			}
-
-			match result {
-				NotifyOption::DoPersist => {
-					$self.needs_persist_flag.store(true, Ordering::Release);
-					$self.event_persist_notifier.notify();
-				},
-				NotifyOption::SkipPersistHandleEvents =>
-					$self.event_persist_notifier.notify(),
-				NotifyOption::SkipPersistNoEvents => {},
-			}
 		}
 	}
 }
@@ -3470,6 +3493,7 @@ fn create_htlc_intercepted_event(
 impl<
 		M: Deref,
 		T: Deref,
+		K: Deref,
 		ES: Deref,
 		NS: Deref,
 		SP: Deref,
@@ -3477,10 +3501,11 @@ impl<
 		R: Deref,
 		MR: Deref,
 		L: Deref,
-	> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> ChannelManager<M, T, K, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
+	K::Target: KVStoreSync,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -3508,8 +3533,8 @@ where
 	/// [`params.best_block.block_hash`]: chain::BestBlock::block_hash
 	#[rustfmt::skip]
 	pub fn new(
-		fee_est: F, chain_monitor: M, tx_broadcaster: T, router: R, message_router: MR, logger: L,
-		entropy_source: ES, node_signer: NS, signer_provider: SP, config: UserConfig,
+		fee_est: F, chain_monitor: M, tx_broadcaster: T, kv_store: K, router: R, message_router: MR,
+		logger: L, entropy_source: ES, node_signer: NS, signer_provider: SP, config: UserConfig,
 		params: ChainParameters, current_timestamp: u32,
 	) -> Self
 	where
@@ -3528,6 +3553,7 @@ where
 		);
 
 		ChannelManager {
+			kv_store,
 			config: RwLock::new(config),
 			chain_hash: ChainHash::using_genesis_block(params.network),
 			fee_estimator: LowerBoundedFeeEstimator::new(fee_est),
@@ -13421,6 +13447,7 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 impl<
 		M: Deref,
 		T: Deref,
+		K: Deref,
 		ES: Deref,
 		NS: Deref,
 		SP: Deref,
@@ -13428,10 +13455,11 @@ impl<
 		R: Deref,
 		MR: Deref,
 		L: Deref,
-	> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> ChannelManager<M, T, K, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
+	K::Target: KVStoreSync,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -14287,6 +14315,7 @@ where
 impl<
 		M: Deref,
 		T: Deref,
+		K: Deref,
 		ES: Deref,
 		NS: Deref,
 		SP: Deref,
@@ -14294,10 +14323,11 @@ impl<
 		R: Deref,
 		MR: Deref,
 		L: Deref,
-	> BaseMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> BaseMessageHandler for ChannelManager<M, T, K, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
+	K::Target: KVStoreSync,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -14592,28 +14622,24 @@ where
 	/// `MessageSendEvent`s are intended to be broadcasted to all peers, they will be placed among
 	/// the `MessageSendEvent`s to the specific peer they were generated under.
 	fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> {
-		let events = RefCell::new(Vec::new());
-		PersistenceNotifierGuard::optionally_notify(self, || {
-			let mut result = NotifyOption::SkipPersistNoEvents;
+		// Take write lock for the entire operation to ensure atomic persist + event gathering.
+		let _consistency_lock = self.total_consistency_lock.write().unwrap();
 
-			// TODO: This behavior should be documented. It's unintuitive that we query
-			// ChannelMonitors when clearing other events.
-			if self.process_pending_monitor_events() {
-				result = NotifyOption::DoPersist;
-			}
+		// Process background events (normally done by PersistenceNotifierGuard).
+		let _ = self.process_background_events();
 
-			if self.check_free_holding_cells() {
-				result = NotifyOption::DoPersist;
-			}
-			if self.maybe_generate_initial_closing_signed() {
-				result = NotifyOption::DoPersist;
-			}
+		// TODO: This behavior should be documented. It's unintuitive that we query
+		// ChannelMonitors when clearing other events.
+		self.process_pending_monitor_events();
+		self.check_free_holding_cells();
+		self.maybe_generate_initial_closing_signed();
 
-			// Quiescence is an in-memory protocol, so we don't have to persist because of it.
-			self.maybe_send_stfu();
+		// Quiescence is an in-memory protocol, so we don't have to persist because of it.
+		self.maybe_send_stfu();
 
-			let mut is_any_peer_connected = false;
-			let mut pending_events = Vec::new();
+		let mut is_any_peer_connected = false;
+		let mut pending_events = Vec::new();
+		{
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			for (_cp_id, peer_state_mutex) in per_peer_state.iter() {
 				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
@@ -14625,26 +14651,37 @@ where
 					is_any_peer_connected = true
 				}
 			}
+		}
 
-			// Ensure that we are connected to some peers before getting broadcast messages.
-			if is_any_peer_connected {
-				let mut broadcast_msgs = self.pending_broadcast_messages.lock().unwrap();
-				pending_events.append(&mut broadcast_msgs);
-			}
+		// Ensure that we are connected to some peers before getting broadcast messages.
+		if is_any_peer_connected {
+			let mut broadcast_msgs = self.pending_broadcast_messages.lock().unwrap();
+			pending_events.append(&mut broadcast_msgs);
+		}
 
-			if !pending_events.is_empty() {
-				events.replace(pending_events);
-			}
+		// Serialize and persist while still holding the write lock, ensuring the persisted
+		// state matches the events we're about to return.
+		let mut buf = Vec::new();
+		if self.write_without_lock(&mut buf).is_ok() {
+			let _ = self.kv_store.write(
+				CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+				CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
+				CHANNEL_MANAGER_PERSISTENCE_KEY,
+				buf,
+			);
+		}
 
-			result
-		});
-		events.into_inner()
+		// Clear the persistence flag since we just persisted.
+		self.needs_persist_flag.store(false, Ordering::Release);
+
+		pending_events
 	}
 }
 
 impl<
 		M: Deref,
 		T: Deref,
+		K: Deref,
 		ES: Deref,
 		NS: Deref,
 		SP: Deref,
@@ -14652,10 +14689,11 @@ impl<
 		R: Deref,
 		MR: Deref,
 		L: Deref,
-	> EventsProvider for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> EventsProvider for ChannelManager<M, T, K, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
+	K::Target: KVStoreSync,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -14680,6 +14718,7 @@ where
 impl<
 		M: Deref,
 		T: Deref,
+		K: Deref,
 		ES: Deref,
 		NS: Deref,
 		SP: Deref,
@@ -14687,10 +14726,11 @@ impl<
 		R: Deref,
 		MR: Deref,
 		L: Deref,
-	> chain::Listen for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> chain::Listen for ChannelManager<M, T, K, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
+	K::Target: KVStoreSync,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -14741,6 +14781,7 @@ where
 impl<
 		M: Deref,
 		T: Deref,
+		K: Deref,
 		ES: Deref,
 		NS: Deref,
 		SP: Deref,
@@ -14748,10 +14789,11 @@ impl<
 		R: Deref,
 		MR: Deref,
 		L: Deref,
-	> chain::Confirm for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> chain::Confirm for ChannelManager<M, T, K, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
+	K::Target: KVStoreSync,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -14914,6 +14956,7 @@ pub(super) enum FundingConfirmedMessage {
 impl<
 		M: Deref,
 		T: Deref,
+		K: Deref,
 		ES: Deref,
 		NS: Deref,
 		SP: Deref,
@@ -14921,10 +14964,11 @@ impl<
 		R: Deref,
 		MR: Deref,
 		L: Deref,
-	> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> ChannelManager<M, T, K, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
+	K::Target: KVStoreSync,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -15221,6 +15265,266 @@ where
 		self.needs_persist_flag.swap(false, Ordering::AcqRel)
 	}
 
+	/// Serializes the [`ChannelManager`] to the given writer.
+	///
+	/// This method assumes that [`Self::total_consistency_lock`] is already held by the caller.
+	#[rustfmt::skip]
+	pub(crate) fn write_without_lock<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		write_ver_prefix!(writer, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
+
+		self.chain_hash.write(writer)?;
+		{
+			let best_block = self.best_block.read().unwrap();
+			best_block.height.write(writer)?;
+			best_block.block_hash.write(writer)?;
+		}
+
+		let per_peer_state = self.per_peer_state.write().unwrap();
+
+		let mut serializable_peer_count: u64 = 0;
+		{
+			let mut number_of_funded_channels = 0;
+			for (_, peer_state_mutex) in per_peer_state.iter() {
+				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+				let peer_state = &mut *peer_state_lock;
+				if !peer_state.ok_to_remove(false) {
+					serializable_peer_count += 1;
+				}
+
+				number_of_funded_channels += peer_state.channel_by_id
+					.values()
+					.filter_map(Channel::as_funded)
+					.filter(|chan| chan.context.can_resume_on_restart())
+					.count();
+			}
+
+			(number_of_funded_channels as u64).write(writer)?;
+
+			for (_, peer_state_mutex) in per_peer_state.iter() {
+				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+				let peer_state = &mut *peer_state_lock;
+				for channel in peer_state.channel_by_id
+					.values()
+					.filter_map(Channel::as_funded)
+					.filter(|channel| channel.context.can_resume_on_restart())
+				{
+					channel.write(writer)?;
+				}
+			}
+		}
+
+		{
+			let forward_htlcs = self.forward_htlcs.lock().unwrap();
+			(forward_htlcs.len() as u64).write(writer)?;
+			for (short_channel_id, pending_forwards) in forward_htlcs.iter() {
+				short_channel_id.write(writer)?;
+				(pending_forwards.len() as u64).write(writer)?;
+				for forward in pending_forwards {
+					forward.write(writer)?;
+				}
+			}
+		}
+
+		let mut decode_update_add_htlcs_opt = None;
+		let decode_update_add_htlcs = self.decode_update_add_htlcs.lock().unwrap();
+		if !decode_update_add_htlcs.is_empty() {
+			decode_update_add_htlcs_opt = Some(decode_update_add_htlcs);
+		}
+
+		let claimable_payments = self.claimable_payments.lock().unwrap();
+		let pending_outbound_payments = self.pending_outbound_payments.pending_outbound_payments.lock().unwrap();
+
+		let mut htlc_purposes: Vec<&events::PaymentPurpose> = Vec::new();
+		let mut htlc_onion_fields: Vec<&_> = Vec::new();
+		(claimable_payments.claimable_payments.len() as u64).write(writer)?;
+		for (payment_hash, payment) in claimable_payments.claimable_payments.iter() {
+			payment_hash.write(writer)?;
+			(payment.htlcs.len() as u64).write(writer)?;
+			for htlc in payment.htlcs.iter() {
+				htlc.write(writer)?;
+			}
+			htlc_purposes.push(&payment.purpose);
+			htlc_onion_fields.push(&payment.onion_fields);
+		}
+
+		let mut monitor_update_blocked_actions_per_peer = None;
+		let mut peer_states = Vec::new();
+		for (_, peer_state_mutex) in per_peer_state.iter() {
+			// Because we're holding the owning `per_peer_state` write lock here there's no chance
+			// of a lockorder violation deadlock - no other thread can be holding any
+			// per_peer_state lock at all.
+			peer_states.push(peer_state_mutex.unsafe_well_ordered_double_lock_self());
+		}
+
+		let mut peer_storage_dir: Vec<(&PublicKey, &Vec<u8>)> = Vec::new();
+
+		(serializable_peer_count).write(writer)?;
+		for ((peer_pubkey, _), peer_state) in per_peer_state.iter().zip(peer_states.iter()) {
+			// Peers which we have no channels to should be dropped once disconnected. As we
+			// disconnect all peers when shutting down and serializing the ChannelManager, we
+			// consider all peers as disconnected here. There's therefore no need write peers with
+			// no channels.
+			if !peer_state.ok_to_remove(false) {
+				peer_pubkey.write(writer)?;
+				peer_state.latest_features.write(writer)?;
+				peer_storage_dir.push((peer_pubkey, &peer_state.peer_storage));
+
+				if !peer_state.monitor_update_blocked_actions.is_empty() {
+					monitor_update_blocked_actions_per_peer
+						.get_or_insert_with(Vec::new)
+						.push((*peer_pubkey, &peer_state.monitor_update_blocked_actions));
+				}
+			}
+		}
+
+
+		// Since some FundingNegotiation variants are not persisted, any splice in such state must
+		// be failed upon reload. However, as the necessary information for the SpliceFailed event
+		// is not persisted, the event itself needs to be persisted even though it hasn't been
+		// emitted yet. These are removed after the events are written.
+		let mut events = self.pending_events.lock().unwrap();
+		let event_count = events.len();
+		for peer_state in peer_states.iter() {
+			for chan in peer_state.channel_by_id.values().filter_map(Channel::as_funded) {
+				if let Some(splice_funding_failed) = chan.maybe_splice_funding_failed() {
+					events.push_back((
+						events::Event::SpliceFailed {
+							channel_id: chan.context.channel_id(),
+							counterparty_node_id: chan.context.get_counterparty_node_id(),
+							user_channel_id: chan.context.get_user_id(),
+							abandoned_funding_txo: splice_funding_failed.funding_txo,
+							channel_type: splice_funding_failed.channel_type,
+							contributed_inputs: splice_funding_failed.contributed_inputs,
+							contributed_outputs: splice_funding_failed.contributed_outputs,
+						},
+						None,
+					));
+				}
+			}
+		}
+
+		// LDK versions prior to 0.0.115 don't support post-event actions, thus if there's no
+		// actions at all, skip writing the required TLV. Otherwise, pre-0.0.115 versions will
+		// refuse to read the new ChannelManager.
+		let events_not_backwards_compatible = events.iter().any(|(_, action)| action.is_some());
+		if events_not_backwards_compatible {
+			// If we're gonna write a even TLV that will overwrite our events anyway we might as
+			// well save the space and not write any events here.
+			0u64.write(writer)?;
+		} else {
+			(events.len() as u64).write(writer)?;
+			for (event, _) in events.iter() {
+				event.write(writer)?;
+			}
+		}
+
+		// LDK versions prior to 0.0.116 wrote the `pending_background_events`
+		// `MonitorUpdateRegeneratedOnStartup`s here, however there was never a reason to do so -
+		// the closing monitor updates were always effectively replayed on startup (either directly
+		// by calling `broadcast_latest_holder_commitment_txn` on a `ChannelMonitor` during
+		// deserialization or, in 0.0.115, by regenerating the monitor update itself).
+		0u64.write(writer)?;
+
+		// Prior to 0.0.111 we tracked node_announcement serials here, however that now happens in
+		// `PeerManager`, and thus we simply write the `highest_seen_timestamp` twice, which is
+		// likely to be identical.
+		(self.highest_seen_timestamp.load(Ordering::Acquire) as u32).write(writer)?;
+		(self.highest_seen_timestamp.load(Ordering::Acquire) as u32).write(writer)?;
+
+		// LDK versions prior to 0.0.104 wrote `pending_inbound_payments` here, with deprecated support
+		// for stateful inbound payments maintained until 0.0.116, after which no further inbound
+		// payments could have been written here.
+		(0 as u64).write(writer)?;
+
+		// For backwards compat, write the session privs and their total length.
+		let mut num_pending_outbounds_compat: u64 = 0;
+		for (_, outbound) in pending_outbound_payments.iter() {
+			if !outbound.is_fulfilled() && !outbound.abandoned() {
+				num_pending_outbounds_compat += outbound.remaining_parts() as u64;
+			}
+		}
+		num_pending_outbounds_compat.write(writer)?;
+		for (_, outbound) in pending_outbound_payments.iter() {
+			match outbound {
+				PendingOutboundPayment::Legacy { session_privs } |
+				PendingOutboundPayment::Retryable { session_privs, .. } => {
+					for session_priv in session_privs.iter() {
+						session_priv.write(writer)?;
+					}
+				}
+				PendingOutboundPayment::AwaitingInvoice { .. } => {},
+				PendingOutboundPayment::AwaitingOffer { .. } => {},
+				PendingOutboundPayment::InvoiceReceived { .. } => {},
+				PendingOutboundPayment::StaticInvoiceReceived { .. } => {},
+				PendingOutboundPayment::Fulfilled { .. } => {},
+				PendingOutboundPayment::Abandoned { .. } => {},
+			}
+		}
+
+		// Encode without retry info for 0.0.101 compatibility.
+		let mut pending_outbound_payments_no_retry: HashMap<PaymentId, HashSet<[u8; 32]>> = new_hash_map();
+		for (id, outbound) in pending_outbound_payments.iter() {
+			match outbound {
+				PendingOutboundPayment::Legacy { session_privs } |
+				PendingOutboundPayment::Retryable { session_privs, .. } => {
+					pending_outbound_payments_no_retry.insert(*id, session_privs.clone());
+				},
+				_ => {},
+			}
+		}
+
+		let mut pending_intercepted_htlcs = None;
+		let our_pending_intercepts = self.pending_intercepted_htlcs.lock().unwrap();
+		if our_pending_intercepts.len() != 0 {
+			pending_intercepted_htlcs = Some(our_pending_intercepts);
+		}
+
+		let mut pending_claiming_payments = Some(&claimable_payments.pending_claiming_payments);
+		if pending_claiming_payments.as_ref().unwrap().is_empty() {
+			// LDK versions prior to 0.0.113 do not know how to read the pending claimed payments
+			// map. Thus, if there are no entries we skip writing a TLV for it.
+			pending_claiming_payments = None;
+		}
+
+		let mut legacy_in_flight_monitor_updates: Option<HashMap<(&PublicKey, &OutPoint), &Vec<ChannelMonitorUpdate>>> = None;
+		let mut in_flight_monitor_updates: Option<HashMap<(&PublicKey, &ChannelId), &Vec<ChannelMonitorUpdate>>> = None;
+		for ((counterparty_id, _), peer_state) in per_peer_state.iter().zip(peer_states.iter()) {
+			for (channel_id, (funding_txo, updates)) in peer_state.in_flight_monitor_updates.iter() {
+				if !updates.is_empty() {
+					legacy_in_flight_monitor_updates.get_or_insert_with(|| new_hash_map())
+						.insert((counterparty_id, funding_txo), updates);
+					in_flight_monitor_updates.get_or_insert_with(|| new_hash_map())
+						.insert((counterparty_id, channel_id), updates);
+				}
+			}
+		}
+
+		write_tlv_fields!(writer, {
+			(1, pending_outbound_payments_no_retry, required),
+			(2, pending_intercepted_htlcs, option),
+			(3, pending_outbound_payments, required),
+			(4, pending_claiming_payments, option),
+			(5, self.our_network_pubkey, required),
+			(6, monitor_update_blocked_actions_per_peer, option),
+			(7, self.fake_scid_rand_bytes, required),
+			(8, if events_not_backwards_compatible { Some(&*events) } else { None }, option),
+			(9, htlc_purposes, required_vec),
+			(10, legacy_in_flight_monitor_updates, option),
+			(11, self.probing_cookie_secret, required),
+			(13, htlc_onion_fields, optional_vec),
+			(14, decode_update_add_htlcs_opt, option),
+			(15, self.inbound_payment_id_secret, required),
+			(17, in_flight_monitor_updates, option),
+			(19, peer_storage_dir, optional_vec),
+			(21, WithoutLength(&self.flow.writeable_async_receive_offer_cache()), required),
+		});
+
+		// Remove the SpliceFailed events added earlier.
+		events.truncate(event_count);
+
+		Ok(())
+	}
+
 	#[cfg(any(test, feature = "_test_utils"))]
 	pub fn get_event_or_persist_condvar_value(&self) -> bool {
 		self.event_persist_notifier.notify_pending()
@@ -15276,6 +15580,7 @@ where
 impl<
 		M: Deref,
 		T: Deref,
+		K: Deref,
 		ES: Deref,
 		NS: Deref,
 		SP: Deref,
@@ -15283,10 +15588,11 @@ impl<
 		R: Deref,
 		MR: Deref,
 		L: Deref,
-	> ChannelMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> ChannelMessageHandler for ChannelManager<M, T, K, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
+	K::Target: KVStoreSync,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -15851,6 +16157,7 @@ where
 impl<
 		M: Deref,
 		T: Deref,
+		K: Deref,
 		ES: Deref,
 		NS: Deref,
 		SP: Deref,
@@ -15858,10 +16165,11 @@ impl<
 		R: Deref,
 		MR: Deref,
 		L: Deref,
-	> OffersMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> OffersMessageHandler for ChannelManager<M, T, K, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
+	K::Target: KVStoreSync,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -16069,6 +16377,7 @@ where
 impl<
 		M: Deref,
 		T: Deref,
+		K: Deref,
 		ES: Deref,
 		NS: Deref,
 		SP: Deref,
@@ -16076,10 +16385,11 @@ impl<
 		R: Deref,
 		MR: Deref,
 		L: Deref,
-	> AsyncPaymentsMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> AsyncPaymentsMessageHandler for ChannelManager<M, T, K, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
+	K::Target: KVStoreSync,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -16271,6 +16581,7 @@ where
 impl<
 		M: Deref,
 		T: Deref,
+		K: Deref,
 		ES: Deref,
 		NS: Deref,
 		SP: Deref,
@@ -16278,10 +16589,11 @@ impl<
 		R: Deref,
 		MR: Deref,
 		L: Deref,
-	> DNSResolverMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> DNSResolverMessageHandler for ChannelManager<M, T, K, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
+	K::Target: KVStoreSync,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -16339,6 +16651,7 @@ where
 impl<
 		M: Deref,
 		T: Deref,
+		K: Deref,
 		ES: Deref,
 		NS: Deref,
 		SP: Deref,
@@ -16346,10 +16659,11 @@ impl<
 		R: Deref,
 		MR: Deref,
 		L: Deref,
-	> NodeIdLookUp for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> NodeIdLookUp for ChannelManager<M, T, K, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
+	K::Target: KVStoreSync,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -16855,6 +17169,7 @@ impl_writeable_tlv_based!(PendingInboundPayment, {
 impl<
 		M: Deref,
 		T: Deref,
+		K: Deref,
 		ES: Deref,
 		NS: Deref,
 		SP: Deref,
@@ -16862,10 +17177,11 @@ impl<
 		R: Deref,
 		MR: Deref,
 		L: Deref,
-	> Writeable for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> Writeable for ChannelManager<M, T, K, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
+	K::Target: KVStoreSync,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -16874,263 +17190,9 @@ where
 	MR::Target: MessageRouter,
 	L::Target: Logger,
 {
-	#[rustfmt::skip]
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		let _consistency_lock = self.total_consistency_lock.write().unwrap();
-
-		write_ver_prefix!(writer, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
-
-		self.chain_hash.write(writer)?;
-		{
-			let best_block = self.best_block.read().unwrap();
-			best_block.height.write(writer)?;
-			best_block.block_hash.write(writer)?;
-		}
-
-		let per_peer_state = self.per_peer_state.write().unwrap();
-
-		let mut serializable_peer_count: u64 = 0;
-		{
-			let mut number_of_funded_channels = 0;
-			for (_, peer_state_mutex) in per_peer_state.iter() {
-				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
-				let peer_state = &mut *peer_state_lock;
-				if !peer_state.ok_to_remove(false) {
-					serializable_peer_count += 1;
-				}
-
-				number_of_funded_channels += peer_state.channel_by_id
-					.values()
-					.filter_map(Channel::as_funded)
-					.filter(|chan| chan.context.can_resume_on_restart())
-					.count();
-			}
-
-			(number_of_funded_channels as u64).write(writer)?;
-
-			for (_, peer_state_mutex) in per_peer_state.iter() {
-				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
-				let peer_state = &mut *peer_state_lock;
-				for channel in peer_state.channel_by_id
-					.values()
-					.filter_map(Channel::as_funded)
-					.filter(|channel| channel.context.can_resume_on_restart())
-				{
-					channel.write(writer)?;
-				}
-			}
-		}
-
-		{
-			let forward_htlcs = self.forward_htlcs.lock().unwrap();
-			(forward_htlcs.len() as u64).write(writer)?;
-			for (short_channel_id, pending_forwards) in forward_htlcs.iter() {
-				short_channel_id.write(writer)?;
-				(pending_forwards.len() as u64).write(writer)?;
-				for forward in pending_forwards {
-					forward.write(writer)?;
-				}
-			}
-		}
-
-		let mut decode_update_add_htlcs_opt = None;
-		let decode_update_add_htlcs = self.decode_update_add_htlcs.lock().unwrap();
-		if !decode_update_add_htlcs.is_empty() {
-			decode_update_add_htlcs_opt = Some(decode_update_add_htlcs);
-		}
-
-		let claimable_payments = self.claimable_payments.lock().unwrap();
-		let pending_outbound_payments = self.pending_outbound_payments.pending_outbound_payments.lock().unwrap();
-
-		let mut htlc_purposes: Vec<&events::PaymentPurpose> = Vec::new();
-		let mut htlc_onion_fields: Vec<&_> = Vec::new();
-		(claimable_payments.claimable_payments.len() as u64).write(writer)?;
-		for (payment_hash, payment) in claimable_payments.claimable_payments.iter() {
-			payment_hash.write(writer)?;
-			(payment.htlcs.len() as u64).write(writer)?;
-			for htlc in payment.htlcs.iter() {
-				htlc.write(writer)?;
-			}
-			htlc_purposes.push(&payment.purpose);
-			htlc_onion_fields.push(&payment.onion_fields);
-		}
-
-		let mut monitor_update_blocked_actions_per_peer = None;
-		let mut peer_states = Vec::new();
-		for (_, peer_state_mutex) in per_peer_state.iter() {
-			// Because we're holding the owning `per_peer_state` write lock here there's no chance
-			// of a lockorder violation deadlock - no other thread can be holding any
-			// per_peer_state lock at all.
-			peer_states.push(peer_state_mutex.unsafe_well_ordered_double_lock_self());
-		}
-
-		let mut peer_storage_dir: Vec<(&PublicKey, &Vec<u8>)> = Vec::new();
-
-		(serializable_peer_count).write(writer)?;
-		for ((peer_pubkey, _), peer_state) in per_peer_state.iter().zip(peer_states.iter()) {
-			// Peers which we have no channels to should be dropped once disconnected. As we
-			// disconnect all peers when shutting down and serializing the ChannelManager, we
-			// consider all peers as disconnected here. There's therefore no need write peers with
-			// no channels.
-			if !peer_state.ok_to_remove(false) {
-				peer_pubkey.write(writer)?;
-				peer_state.latest_features.write(writer)?;
-				peer_storage_dir.push((peer_pubkey, &peer_state.peer_storage));
-
-				if !peer_state.monitor_update_blocked_actions.is_empty() {
-					monitor_update_blocked_actions_per_peer
-						.get_or_insert_with(Vec::new)
-						.push((*peer_pubkey, &peer_state.monitor_update_blocked_actions));
-				}
-			}
-		}
-
-
-		// Since some FundingNegotiation variants are not persisted, any splice in such state must
-		// be failed upon reload. However, as the necessary information for the SpliceFailed event
-		// is not persisted, the event itself needs to be persisted even though it hasn't been
-		// emitted yet. These are removed after the events are written.
-		let mut events = self.pending_events.lock().unwrap();
-		let event_count = events.len();
-		for peer_state in peer_states.iter() {
-			for chan in peer_state.channel_by_id.values().filter_map(Channel::as_funded) {
-				if let Some(splice_funding_failed) = chan.maybe_splice_funding_failed() {
-					events.push_back((
-						events::Event::SpliceFailed {
-							channel_id: chan.context.channel_id(),
-							counterparty_node_id: chan.context.get_counterparty_node_id(),
-							user_channel_id: chan.context.get_user_id(),
-							abandoned_funding_txo: splice_funding_failed.funding_txo,
-							channel_type: splice_funding_failed.channel_type,
-							contributed_inputs: splice_funding_failed.contributed_inputs,
-							contributed_outputs: splice_funding_failed.contributed_outputs,
-						},
-						None,
-					));
-				}
-			}
-		}
-
-		// LDK versions prior to 0.0.115 don't support post-event actions, thus if there's no
-		// actions at all, skip writing the required TLV. Otherwise, pre-0.0.115 versions will
-		// refuse to read the new ChannelManager.
-		let events_not_backwards_compatible = events.iter().any(|(_, action)| action.is_some());
-		if events_not_backwards_compatible {
-			// If we're gonna write a even TLV that will overwrite our events anyway we might as
-			// well save the space and not write any events here.
-			0u64.write(writer)?;
-		} else {
-			(events.len() as u64).write(writer)?;
-			for (event, _) in events.iter() {
-				event.write(writer)?;
-			}
-		}
-
-		// LDK versions prior to 0.0.116 wrote the `pending_background_events`
-		// `MonitorUpdateRegeneratedOnStartup`s here, however there was never a reason to do so -
-		// the closing monitor updates were always effectively replayed on startup (either directly
-		// by calling `broadcast_latest_holder_commitment_txn` on a `ChannelMonitor` during
-		// deserialization or, in 0.0.115, by regenerating the monitor update itself).
-		0u64.write(writer)?;
-
-		// Prior to 0.0.111 we tracked node_announcement serials here, however that now happens in
-		// `PeerManager`, and thus we simply write the `highest_seen_timestamp` twice, which is
-		// likely to be identical.
-		(self.highest_seen_timestamp.load(Ordering::Acquire) as u32).write(writer)?;
-		(self.highest_seen_timestamp.load(Ordering::Acquire) as u32).write(writer)?;
-
-		// LDK versions prior to 0.0.104 wrote `pending_inbound_payments` here, with deprecated support
-		// for stateful inbound payments maintained until 0.0.116, after which no further inbound
-		// payments could have been written here.
-		(0 as u64).write(writer)?;
-
-		// For backwards compat, write the session privs and their total length.
-		let mut num_pending_outbounds_compat: u64 = 0;
-		for (_, outbound) in pending_outbound_payments.iter() {
-			if !outbound.is_fulfilled() && !outbound.abandoned() {
-				num_pending_outbounds_compat += outbound.remaining_parts() as u64;
-			}
-		}
-		num_pending_outbounds_compat.write(writer)?;
-		for (_, outbound) in pending_outbound_payments.iter() {
-			match outbound {
-				PendingOutboundPayment::Legacy { session_privs } |
-				PendingOutboundPayment::Retryable { session_privs, .. } => {
-					for session_priv in session_privs.iter() {
-						session_priv.write(writer)?;
-					}
-				}
-				PendingOutboundPayment::AwaitingInvoice { .. } => {},
-				PendingOutboundPayment::AwaitingOffer { .. } => {},
-				PendingOutboundPayment::InvoiceReceived { .. } => {},
-				PendingOutboundPayment::StaticInvoiceReceived { .. } => {},
-				PendingOutboundPayment::Fulfilled { .. } => {},
-				PendingOutboundPayment::Abandoned { .. } => {},
-			}
-		}
-
-		// Encode without retry info for 0.0.101 compatibility.
-		let mut pending_outbound_payments_no_retry: HashMap<PaymentId, HashSet<[u8; 32]>> = new_hash_map();
-		for (id, outbound) in pending_outbound_payments.iter() {
-			match outbound {
-				PendingOutboundPayment::Legacy { session_privs } |
-				PendingOutboundPayment::Retryable { session_privs, .. } => {
-					pending_outbound_payments_no_retry.insert(*id, session_privs.clone());
-				},
-				_ => {},
-			}
-		}
-
-		let mut pending_intercepted_htlcs = None;
-		let our_pending_intercepts = self.pending_intercepted_htlcs.lock().unwrap();
-		if our_pending_intercepts.len() != 0 {
-			pending_intercepted_htlcs = Some(our_pending_intercepts);
-		}
-
-		let mut pending_claiming_payments = Some(&claimable_payments.pending_claiming_payments);
-		if pending_claiming_payments.as_ref().unwrap().is_empty() {
-			// LDK versions prior to 0.0.113 do not know how to read the pending claimed payments
-			// map. Thus, if there are no entries we skip writing a TLV for it.
-			pending_claiming_payments = None;
-		}
-
-		let mut legacy_in_flight_monitor_updates: Option<HashMap<(&PublicKey, &OutPoint), &Vec<ChannelMonitorUpdate>>> = None;
-		let mut in_flight_monitor_updates: Option<HashMap<(&PublicKey, &ChannelId), &Vec<ChannelMonitorUpdate>>> = None;
-		for ((counterparty_id, _), peer_state) in per_peer_state.iter().zip(peer_states.iter()) {
-			for (channel_id, (funding_txo, updates)) in peer_state.in_flight_monitor_updates.iter() {
-				if !updates.is_empty() {
-					legacy_in_flight_monitor_updates.get_or_insert_with(|| new_hash_map())
-						.insert((counterparty_id, funding_txo), updates);
-					in_flight_monitor_updates.get_or_insert_with(|| new_hash_map())
-						.insert((counterparty_id, channel_id), updates);
-				}
-			}
-		}
-
-		write_tlv_fields!(writer, {
-			(1, pending_outbound_payments_no_retry, required),
-			(2, pending_intercepted_htlcs, option),
-			(3, pending_outbound_payments, required),
-			(4, pending_claiming_payments, option),
-			(5, self.our_network_pubkey, required),
-			(6, monitor_update_blocked_actions_per_peer, option),
-			(7, self.fake_scid_rand_bytes, required),
-			(8, if events_not_backwards_compatible { Some(&*events) } else { None }, option),
-			(9, htlc_purposes, required_vec),
-			(10, legacy_in_flight_monitor_updates, option),
-			(11, self.probing_cookie_secret, required),
-			(13, htlc_onion_fields, optional_vec),
-			(14, decode_update_add_htlcs_opt, option),
-			(15, self.inbound_payment_id_secret, required),
-			(17, in_flight_monitor_updates, option),
-			(19, peer_storage_dir, optional_vec),
-			(21, WithoutLength(&self.flow.writeable_async_receive_offer_cache()), required),
-		});
-
-		// Remove the SpliceFailed events added earlier.
-		events.truncate(event_count);
-
-		Ok(())
+		self.write_without_lock(writer)
 	}
 }
 
@@ -17222,6 +17284,7 @@ pub struct ChannelManagerReadArgs<
 	'a,
 	M: Deref,
 	T: Deref,
+	K: Deref,
 	ES: Deref,
 	NS: Deref,
 	SP: Deref,
@@ -17232,6 +17295,7 @@ pub struct ChannelManagerReadArgs<
 > where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
+	K::Target: KVStoreSync,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -17266,6 +17330,10 @@ pub struct ChannelManagerReadArgs<
 	/// used to broadcast the latest local commitment transactions of channels which must be
 	/// force-closed during deserialization.
 	pub tx_broadcaster: T,
+
+	/// The key-value store for persisting the ChannelManager.
+	pub kv_store: K,
+
 	/// The router which will be used in the ChannelManager in the future for finding routes
 	/// on-the-fly for trampoline payments. Absent in private nodes that don't support forwarding.
 	///
@@ -17302,6 +17370,7 @@ impl<
 		'a,
 		M: Deref,
 		T: Deref,
+		K: Deref,
 		ES: Deref,
 		NS: Deref,
 		SP: Deref,
@@ -17309,10 +17378,11 @@ impl<
 		R: Deref,
 		MR: Deref,
 		L: Deref + Clone,
-	> ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>
+	> ChannelManagerReadArgs<'a, M, T, K, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
+	K::Target: KVStoreSync,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -17326,7 +17396,7 @@ where
 	/// populate a HashMap directly from C.
 	pub fn new(
 		entropy_source: ES, node_signer: NS, signer_provider: SP, fee_estimator: F,
-		chain_monitor: M, tx_broadcaster: T, router: R, message_router: MR, logger: L,
+		chain_monitor: M, tx_broadcaster: T, kv_store: K, router: R, message_router: MR, logger: L,
 		config: UserConfig,
 		mut channel_monitors: Vec<&'a ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>>,
 	) -> Self {
@@ -17337,6 +17407,7 @@ where
 			fee_estimator,
 			chain_monitor,
 			tx_broadcaster,
+			kv_store,
 			router,
 			message_router,
 			logger,
@@ -17390,6 +17461,7 @@ impl<
 		'a,
 		M: Deref,
 		T: Deref,
+		K: Deref,
 		ES: Deref,
 		NS: Deref,
 		SP: Deref,
@@ -17397,11 +17469,12 @@ impl<
 		R: Deref,
 		MR: Deref,
 		L: Deref + Clone,
-	> ReadableArgs<ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>>
-	for (BlockHash, Arc<ChannelManager<M, T, ES, NS, SP, F, R, MR, L>>)
+	> ReadableArgs<ChannelManagerReadArgs<'a, M, T, K, ES, NS, SP, F, R, MR, L>>
+	for (BlockHash, Arc<ChannelManager<M, T, K, ES, NS, SP, F, R, MR, L>>)
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
+	K::Target: KVStoreSync,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -17411,10 +17484,10 @@ where
 	L::Target: Logger,
 {
 	fn read<Reader: io::Read>(
-		reader: &mut Reader, args: ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>,
+		reader: &mut Reader, args: ChannelManagerReadArgs<'a, M, T, K, ES, NS, SP, F, R, MR, L>,
 	) -> Result<Self, DecodeError> {
 		let (blockhash, chan_manager) =
-			<(BlockHash, ChannelManager<M, T, ES, NS, SP, F, R, MR, L>)>::read(reader, args)?;
+			<(BlockHash, ChannelManager<M, T, K, ES, NS, SP, F, R, MR, L>)>::read(reader, args)?;
 		Ok((blockhash, Arc::new(chan_manager)))
 	}
 }
@@ -17423,6 +17496,7 @@ impl<
 		'a,
 		M: Deref,
 		T: Deref,
+		K: Deref,
 		ES: Deref,
 		NS: Deref,
 		SP: Deref,
@@ -17430,11 +17504,12 @@ impl<
 		R: Deref,
 		MR: Deref,
 		L: Deref + Clone,
-	> ReadableArgs<ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>>
-	for (BlockHash, ChannelManager<M, T, ES, NS, SP, F, R, MR, L>)
+	> ReadableArgs<ChannelManagerReadArgs<'a, M, T, K, ES, NS, SP, F, R, MR, L>>
+	for (BlockHash, ChannelManager<M, T, K, ES, NS, SP, F, R, MR, L>)
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
+	K::Target: KVStoreSync,
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	SP::Target: SignerProvider,
@@ -17444,7 +17519,7 @@ where
 	L::Target: Logger,
 {
 	fn read<Reader: io::Read>(
-		reader: &mut Reader, mut args: ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>,
+		reader: &mut Reader, mut args: ChannelManagerReadArgs<'a, M, T, K, ES, NS, SP, F, R, MR, L>,
 	) -> Result<Self, DecodeError> {
 		let _ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
 
@@ -18891,6 +18966,7 @@ where
 		.with_async_payments_offers_cache(async_receive_offer_cache);
 
 		let channel_manager = ChannelManager {
+			kv_store: args.kv_store,
 			chain_hash,
 			fee_estimator: bounded_fee_estimator,
 			chain_monitor: args.chain_monitor,

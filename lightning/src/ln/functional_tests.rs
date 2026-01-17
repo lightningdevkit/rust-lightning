@@ -4807,6 +4807,7 @@ pub fn test_key_derivation_params() {
 		message_router,
 		chain_monitor,
 		keys_manager: &keys_manager,
+		kv_store: &chanmon_cfgs[0].kv_store,
 		network_graph,
 		node_seed: seed,
 		override_init_features: alloc::rc::Rc::new(core::cell::RefCell::new(None)),

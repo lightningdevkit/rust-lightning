@@ -405,6 +405,7 @@ type DynSignerProvider = (dyn lightning::sign::SignerProvider<
 type DynChannelManager = lightning::ln::channelmanager::ChannelManager<
 	&'static (dyn chain::Watch<lightning::sign::InMemorySigner> + Send + Sync),
 	&'static (dyn BroadcasterInterface + Send + Sync),
+	&'static (dyn KVStoreSync + Send + Sync),
 	&'static (dyn EntropySource + Send + Sync),
 	&'static (dyn lightning::sign::NodeSigner + Send + Sync),
 	&'static DynSignerProvider,
@@ -856,11 +857,11 @@ use futures_util::{dummy_waker, Joiner, OptionalSelector, Selector, SelectorOutp
 /// # type ChainMonitor<B, F, FE> = lightning::chain::chainmonitor::ChainMonitor<lightning::sign::InMemorySigner, Arc<F>, Arc<B>, Arc<FE>, Arc<Logger>, Arc<StoreSync>, Arc<lightning::sign::KeysManager>>;
 /// # type NetworkGraph = lightning::routing::gossip::NetworkGraph<Arc<Logger>>;
 /// # type P2PGossipSync<UL> = lightning::routing::gossip::P2PGossipSync<Arc<NetworkGraph>, Arc<UL>, Arc<Logger>>;
-/// # type ChannelManager<B, F, FE> = lightning::ln::channelmanager::SimpleArcChannelManager<ChainMonitor<B, F, FE>, B, FE, Logger>;
+/// # type ChannelManager<B, F, FE> = lightning::ln::channelmanager::SimpleArcChannelManager<ChainMonitor<B, F, FE>, B, StoreSync, FE, Logger>;
 /// # type OnionMessenger<B, F, FE> = lightning::onion_message::messenger::OnionMessenger<Arc<lightning::sign::KeysManager>, Arc<lightning::sign::KeysManager>, Arc<Logger>, Arc<ChannelManager<B, F, FE>>, Arc<lightning::onion_message::messenger::DefaultMessageRouter<Arc<NetworkGraph>, Arc<Logger>, Arc<lightning::sign::KeysManager>>>, Arc<ChannelManager<B, F, FE>>, lightning::ln::peer_handler::IgnoringMessageHandler, lightning::ln::peer_handler::IgnoringMessageHandler, lightning::ln::peer_handler::IgnoringMessageHandler>;
 /// # type LiquidityManager<B, F, FE> = lightning_liquidity::LiquidityManager<Arc<lightning::sign::KeysManager>, Arc<lightning::sign::KeysManager>, Arc<ChannelManager<B, F, FE>>, Arc<F>, Arc<Store>, Arc<DefaultTimeProvider>, Arc<B>>;
 /// # type Scorer = RwLock<lightning::routing::scoring::ProbabilisticScorer<Arc<NetworkGraph>, Arc<Logger>>>;
-/// # type PeerManager<B, F, FE, UL> = lightning::ln::peer_handler::SimpleArcPeerManager<SocketDescriptor, ChainMonitor<B, F, FE>, B, FE, Arc<UL>, Logger, F, StoreSync>;
+/// # type PeerManager<B, F, FE, UL> = lightning::ln::peer_handler::SimpleArcPeerManager<SocketDescriptor, ChainMonitor<B, F, FE>, B, StoreSync, FE, Arc<UL>, Logger, F, StoreSync>;
 /// # type OutputSweeper<B, D, FE, F, O> = lightning::util::sweep::OutputSweeper<Arc<B>, Arc<D>, Arc<FE>, Arc<F>, Arc<Store>, Arc<Logger>, Arc<O>>;
 ///
 /// # struct Node<
@@ -2002,6 +2003,7 @@ mod tests {
 	type ChannelManager = channelmanager::ChannelManager<
 		Arc<ChainMonitor>,
 		Arc<test_utils::TestBroadcaster>,
+		Arc<Persister>,
 		Arc<KeysManager>,
 		Arc<KeysManager>,
 		Arc<KeysManager>,
@@ -2469,6 +2471,7 @@ mod tests {
 				Arc::clone(&fee_estimator),
 				Arc::clone(&chain_monitor),
 				Arc::clone(&tx_broadcaster),
+				Arc::clone(&kv_store),
 				Arc::clone(&router),
 				Arc::clone(&msg_router),
 				Arc::clone(&logger),
