@@ -229,6 +229,23 @@ pub enum PendingHTLCRouting {
 		/// [`ReleaseHeldHtlc`] onion message.
 		hold_htlc: Option<()>,
 	},
+	/// A dummy HTLC hop which does not represent a real routing decision.
+	///
+	/// Dummy HTLCs are introduced to extend a blinded path without adding a real hop.
+	/// When such an HTLC is received, the dummy layer is peeled, producing a new onion
+	/// packet which must be processed again. This process repeats until a non-dummy
+	/// routing decision is reached, which is guaranteed to be
+	/// [`PendingHTLCRouting::Receive`].
+	Dummy {
+		/// The onion packet obtained after removing the dummy layer.
+		///
+		/// This packet must be re-processed as if it were freshly received.
+		onion_packet: msgs::OnionPacket,
+		/// Forwarding context for this HTLC within a blinded path.
+		blinded: BlindedForward,
+		/// The absolute CLTV of the inbound HTLC.
+		incoming_cltv_expiry: Option<u32>,
+	},
 	/// An HTLC which should be forwarded on to another Trampoline node.
 	TrampolineForward {
 		/// The onion shared secret we build with the sender (or the preceding Trampoline node) used
@@ -352,6 +369,7 @@ impl PendingHTLCRouting {
 	fn blinded_failure(&self) -> Option<BlindedFailure> {
 		match self {
 			Self::Forward { blinded: Some(BlindedForward { failure, .. }), .. } => Some(*failure),
+			Self::Dummy { blinded: BlindedForward { failure, .. }, .. } => Some(*failure),
 			Self::TrampolineForward { blinded: Some(BlindedForward { failure, .. }), .. } => {
 				Some(*failure)
 			},
@@ -368,6 +386,7 @@ impl PendingHTLCRouting {
 	fn incoming_cltv_expiry(&self) -> Option<u32> {
 		match self {
 			Self::Forward { incoming_cltv_expiry, .. } => *incoming_cltv_expiry,
+			Self::Dummy { incoming_cltv_expiry, .. } => *incoming_cltv_expiry,
 			Self::TrampolineForward { incoming_cltv_expiry, .. } => Some(*incoming_cltv_expiry),
 			Self::Receive { incoming_cltv_expiry, .. } => Some(*incoming_cltv_expiry),
 			Self::ReceiveKeysend { incoming_cltv_expiry, .. } => Some(*incoming_cltv_expiry),
@@ -4897,6 +4916,11 @@ where
 	) -> Result<(), LocalHTLCFailureReason> {
 		let outgoing_scid = match next_packet_details.outgoing_connector {
 			HopConnector::ShortChannelId(scid) => scid,
+			HopConnector::Dummy => {
+				// Dummy hops are only used for path padding and must not reach HTLC processing.
+				debug_assert!(false, "Dummy hop reached HTLC handling.");
+				return Err(LocalHTLCFailureReason::InvalidOnionPayload);
+			}
 			HopConnector::Trampoline(_) => {
 				return Err(LocalHTLCFailureReason::InvalidTrampolineForward);
 			}
@@ -5027,6 +5051,20 @@ where
 			},
 			onion_utils::Hop::Forward { .. } | onion_utils::Hop::BlindedForward { .. } => {
 				create_fwd_pending_htlc_info(msg, decoded_hop, shared_secret, next_packet_pubkey_opt)
+			},
+			onion_utils::Hop::Dummy { .. } => {
+				debug_assert!(
+					false,
+					"Reached unreachable dummy-hop HTLC. Dummy hops are peeled in \
+					`process_pending_update_add_htlcs`, and the resulting HTLC is \
+					re-enqueued for processing. Hitting this means the peel-and-requeue \
+					step was missed."
+				);
+				return Err(InboundHTLCErr {
+					msg: "Failed to decode update add htlc onion",
+					reason: LocalHTLCFailureReason::InvalidOnionPayload,
+					err_data: Vec::new(),
+				})
 			},
 			onion_utils::Hop::TrampolineForward { .. } | onion_utils::Hop::TrampolineBlindedForward { .. } => {
 				create_fwd_pending_htlc_info(msg, decoded_hop, shared_secret, next_packet_pubkey_opt)
@@ -6798,6 +6836,7 @@ where
 	fn process_pending_update_add_htlcs(&self) -> bool {
 		let mut should_persist = false;
 		let mut decode_update_add_htlcs = new_hash_map();
+		let mut dummy_update_add_htlcs = new_hash_map();
 		mem::swap(&mut decode_update_add_htlcs, &mut self.decode_update_add_htlcs.lock().unwrap());
 
 		let get_htlc_failure_type = |outgoing_scid_opt: Option<u64>, payment_hash: PaymentHash| {
@@ -6861,7 +6900,36 @@ where
 						&*self.logger,
 						&self.secp_ctx,
 					) {
-						Ok(decoded_onion) => decoded_onion,
+						Ok(decoded_onion) => match decoded_onion {
+							(
+								onion_utils::Hop::Dummy {
+									dummy_hop_data,
+									next_hop_hmac,
+									new_packet_bytes,
+									..
+								},
+								Some(next_packet_details),
+							) => {
+								let new_update_add_htlc =
+									onion_utils::peel_dummy_hop_update_add_htlc(
+										update_add_htlc,
+										dummy_hop_data,
+										next_hop_hmac,
+										new_packet_bytes,
+										next_packet_details,
+										&*self.node_signer,
+										&self.secp_ctx,
+									);
+
+								dummy_update_add_htlcs
+									.entry(incoming_scid_alias)
+									.or_insert_with(Vec::new)
+									.push(new_update_add_htlc);
+
+								continue;
+							},
+							_ => decoded_onion,
+						},
 
 						Err((htlc_fail, reason)) => {
 							let failure_type = HTLCHandlingFailureType::InvalidOnion;
@@ -6874,6 +6942,13 @@ where
 				let outgoing_scid_opt =
 					next_packet_details_opt.as_ref().and_then(|d| match d.outgoing_connector {
 						HopConnector::ShortChannelId(scid) => Some(scid),
+						HopConnector::Dummy => {
+							debug_assert!(
+								false,
+								"Dummy hops must never be processed at this stage."
+							);
+							None
+						},
 						HopConnector::Trampoline(_) => None,
 					});
 				let shared_secret = next_hop.shared_secret().secret_bytes();
@@ -7017,6 +7092,19 @@ where
 				));
 			}
 		}
+
+		// Merge peeled dummy HTLCs into the existing decode queue so they can be
+		// processed in the next iteration. We avoid replacing the whole queue
+		// (e.g. via mem::swap) because other threads may have enqueued new HTLCs
+		// meanwhile; merging preserves everything safely.
+		if !dummy_update_add_htlcs.is_empty() {
+			let mut decode_update_add_htlc_source = self.decode_update_add_htlcs.lock().unwrap();
+
+			for (incoming_scid_alias, htlcs) in dummy_update_add_htlcs.into_iter() {
+				decode_update_add_htlc_source.entry(incoming_scid_alias).or_default().extend(htlcs);
+			}
+		}
+
 		should_persist
 	}
 
@@ -11832,6 +11920,13 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				for (forward_info, prev_htlc_id) in pending_forwards.drain(..) {
 					let scid = match forward_info.routing {
 						PendingHTLCRouting::Forward { short_channel_id, .. } => short_channel_id,
+						PendingHTLCRouting::Dummy { .. } => {
+							debug_assert!(
+								false,
+								"Dummy hops must never be processed at this stage."
+							);
+							0
+						},
 						PendingHTLCRouting::TrampolineForward { .. } => 0,
 						PendingHTLCRouting::Receive { .. } => 0,
 						PendingHTLCRouting::ReceiveKeysend { .. } => 0,
@@ -16492,6 +16587,11 @@ impl_writeable_tlv_based_enum!(PendingHTLCRouting,
 		(4, blinded, option),
 		(6, node_id, required),
 		(8, incoming_cltv_expiry, required),
+	},
+	(4, Dummy) => {
+		(0, onion_packet, required),
+		(1, blinded, required),
+		(2, incoming_cltv_expiry, option),
 	}
 );
 

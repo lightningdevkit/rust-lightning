@@ -12,6 +12,7 @@
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
 
+use crate::blinded_path::message::MAX_DUMMY_HOPS_COUNT;
 use crate::blinded_path::utils::{self, BlindedPathWithPadding};
 use crate::blinded_path::{BlindedHop, BlindedPath, IntroductionNode, NodeIdLookUp};
 use crate::crypto::streams::ChaChaDualPolyReadAdapter;
@@ -33,7 +34,6 @@ use crate::util::ser::{
 	Writeable, Writer,
 };
 
-use core::mem;
 use core::ops::Deref;
 
 #[allow(unused_imports)]
@@ -124,6 +124,74 @@ impl BlindedPaymentPath {
 	where
 		ES::Target: EntropySource,
 	{
+		BlindedPaymentPath::new_inner(
+			intermediate_nodes,
+			payee_node_id,
+			local_node_receive_key,
+			0,
+			None,
+			payee_tlvs,
+			htlc_maximum_msat,
+			min_final_cltv_expiry_delta,
+			entropy_source,
+			secp_ctx,
+		)
+	}
+
+	/// Same as [`BlindedPaymentPath::new`], but allows specifying a number of dummy hops.
+	///
+	/// Dummy TLVs allow callers to override the payment relay values used for dummy hops.
+	/// Any additional fees introduced by these dummy hops are ultimately paid to the final
+	/// recipient as part of the total amount.
+	///
+	/// This improves privacy by making path-length analysis based on fee and CLTV delta
+	/// values less reliable.
+	///
+	/// Note:
+	/// At most [`MAX_DUMMY_HOPS_COUNT`] dummy hops can be added to the blinded path.
+	pub fn new_with_dummy_hops<ES: Deref, T: secp256k1::Signing + secp256k1::Verification>(
+		intermediate_nodes: &[PaymentForwardNode], payee_node_id: PublicKey,
+		dummy_hop_count: usize, local_node_receive_key: ReceiveAuthKey, payee_tlvs: ReceiveTlvs,
+		htlc_maximum_msat: u64, min_final_cltv_expiry_delta: u16, entropy_source: ES,
+		secp_ctx: &Secp256k1<T>,
+	) -> Result<Self, ()>
+	where
+		ES::Target: EntropySource,
+	{
+		// TODO: Expose DummyTlvs in the public API instead of always using defaults.
+		let dummy_tlvs = DummyTlvs::default();
+
+		BlindedPaymentPath::new_inner(
+			intermediate_nodes,
+			payee_node_id,
+			local_node_receive_key,
+			dummy_hop_count,
+			Some(dummy_tlvs),
+			payee_tlvs,
+			htlc_maximum_msat,
+			min_final_cltv_expiry_delta,
+			entropy_source,
+			secp_ctx,
+		)
+	}
+
+	fn new_inner<ES: Deref, T: secp256k1::Signing + secp256k1::Verification>(
+		intermediate_nodes: &[PaymentForwardNode], payee_node_id: PublicKey,
+		local_node_receive_key: ReceiveAuthKey, dummy_hop_count: usize,
+		dummy_tlvs_opt: Option<DummyTlvs>, payee_tlvs: ReceiveTlvs, htlc_maximum_msat: u64,
+		min_final_cltv_expiry_delta: u16, entropy_source: ES, secp_ctx: &Secp256k1<T>,
+	) -> Result<Self, ()>
+	where
+		ES::Target: EntropySource,
+	{
+		debug_assert!(
+			(dummy_hop_count > 0) == dummy_tlvs_opt.is_some(),
+			"dummy_hop_count and dummy_tlvs must either both be present or both be absent"
+		);
+
+		let dummy_count = core::cmp::min(dummy_hop_count, MAX_DUMMY_HOPS_COUNT);
+		let dummy_tlvs = dummy_tlvs_opt.unwrap_or_default();
+
 		let introduction_node = IntroductionNode::NodeId(
 			intermediate_nodes.first().map_or(payee_node_id, |n| n.node_id),
 		);
@@ -133,10 +201,13 @@ impl BlindedPaymentPath {
 
 		let blinded_payinfo = compute_payinfo(
 			intermediate_nodes,
+			dummy_count,
+			&dummy_tlvs,
 			&payee_tlvs,
 			htlc_maximum_msat,
 			min_final_cltv_expiry_delta,
 		)?;
+
 		Ok(Self {
 			inner_path: BlindedPath {
 				introduction_node,
@@ -145,6 +216,8 @@ impl BlindedPaymentPath {
 					secp_ctx,
 					intermediate_nodes,
 					payee_node_id,
+					dummy_count,
+					dummy_tlvs,
 					payee_tlvs,
 					&blinding_secret,
 					local_node_receive_key,
@@ -191,28 +264,31 @@ impl BlindedPaymentPath {
 		NL::Target: NodeIdLookUp,
 		T: secp256k1::Signing + secp256k1::Verification,
 	{
-		match self.decrypt_intro_payload::<NS>(node_signer) {
-			Ok((
-				BlindedPaymentTlvs::Forward(ForwardTlvs { short_channel_id, .. }),
-				control_tlvs_ss,
-			)) => {
-				let next_node_id = match node_id_lookup.next_node_id(short_channel_id) {
-					Some(node_id) => node_id,
-					None => return Err(()),
-				};
-				let mut new_blinding_point = onion_utils::next_hop_pubkey(
-					secp_ctx,
-					self.inner_path.blinding_point,
-					control_tlvs_ss.as_ref(),
-				)
-				.map_err(|_| ())?;
-				mem::swap(&mut self.inner_path.blinding_point, &mut new_blinding_point);
-				self.inner_path.introduction_node = IntroductionNode::NodeId(next_node_id);
-				self.inner_path.blinded_hops.remove(0);
-				Ok(())
-			},
-			_ => Err(()),
-		}
+		let (next_node_id, control_tlvs_ss) =
+			match self.decrypt_intro_payload::<NS>(node_signer).map_err(|_| ())? {
+				(BlindedPaymentTlvs::Forward(ForwardTlvs { short_channel_id, .. }), ss) => {
+					let node_id = node_id_lookup.next_node_id(short_channel_id).ok_or(())?;
+					(node_id, ss)
+				},
+				(BlindedPaymentTlvs::Dummy(_), ss) => {
+					let node_id = node_signer.get_node_id(Recipient::Node)?;
+					(node_id, ss)
+				},
+				_ => return Err(()),
+			};
+
+		let new_blinding_point = onion_utils::next_hop_pubkey(
+			secp_ctx,
+			self.inner_path.blinding_point,
+			control_tlvs_ss.as_ref(),
+		)
+		.map_err(|_| ())?;
+
+		self.inner_path.blinding_point = new_blinding_point;
+		self.inner_path.introduction_node = IntroductionNode::NodeId(next_node_id);
+		self.inner_path.blinded_hops.remove(0);
+
+		Ok(())
 	}
 
 	pub(crate) fn decrypt_intro_payload<NS: Deref>(
@@ -234,9 +310,9 @@ impl BlindedPaymentPath {
 				.map_err(|_| ())?;
 
 		match (&readable, used_aad) {
-			(BlindedPaymentTlvs::Forward(_), false) | (BlindedPaymentTlvs::Receive(_), true) => {
-				Ok((readable, control_tlvs_ss))
-			},
+			(BlindedPaymentTlvs::Forward(_), false)
+			| (BlindedPaymentTlvs::Dummy(_), true)
+			| (BlindedPaymentTlvs::Receive(_), true) => Ok((readable, control_tlvs_ss)),
 			_ => Err(()),
 		}
 	}
@@ -328,6 +404,36 @@ pub struct TrampolineForwardTlvs {
 	pub next_blinding_override: Option<PublicKey>,
 }
 
+/// TLVs carried by a dummy hop within a blinded payment path.
+///
+/// Dummy hops do not correspond to real forwarding decisions, but are processed
+/// identically to real hops at the protocol level. The TLVs contained here define
+/// the relay requirements and constraints that must be satisfied for the payment
+/// to continue through this hop.
+///
+/// By enforcing realistic relay semantics on dummy hops, the payment path remains
+/// indistinguishable from a fully real route with respect to fees, CLTV deltas, and
+/// validation behavior.
+pub struct DummyTlvs {
+	/// Relay requirements (fees and CLTV delta) that must be satisfied when
+	/// processing this dummy hop.
+	pub payment_relay: PaymentRelay,
+	/// Constraints that apply to the payment when relaying over this dummy hop.
+	pub payment_constraints: PaymentConstraints,
+}
+
+impl Default for DummyTlvs {
+	fn default() -> Self {
+		let payment_relay =
+			PaymentRelay { cltv_expiry_delta: 0, fee_proportional_millionths: 0, fee_base_msat: 0 };
+
+		let payment_constraints =
+			PaymentConstraints { max_cltv_expiry: u32::MAX, htlc_minimum_msat: 0 };
+
+		Self { payment_relay, payment_constraints }
+	}
+}
+
 /// Data to construct a [`BlindedHop`] for receiving a payment. This payload is custom to LDK and
 /// may not be valid if received by another lightning implementation.
 #[derive(Clone, Debug)]
@@ -346,6 +452,8 @@ pub struct ReceiveTlvs {
 pub(crate) enum BlindedPaymentTlvs {
 	/// This blinded payment data is for a forwarding node.
 	Forward(ForwardTlvs),
+	/// This blinded payment data is dummy and is to be peeled by receiving node.
+	Dummy(DummyTlvs),
 	/// This blinded payment data is for the receiving node.
 	Receive(ReceiveTlvs),
 }
@@ -361,15 +469,17 @@ pub(crate) enum BlindedTrampolineTlvs {
 }
 
 // Used to include forward and receive TLVs in the same iterator for encoding.
+#[derive(Clone)]
 enum BlindedPaymentTlvsRef<'a> {
 	Forward(&'a ForwardTlvs),
+	Dummy(&'a DummyTlvs),
 	Receive(&'a ReceiveTlvs),
 }
 
 /// Parameters for relaying over a given [`BlindedHop`].
 ///
 /// [`BlindedHop`]: crate::blinded_path::BlindedHop
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PaymentRelay {
 	/// Number of blocks subtracted from an incoming HTLC's `cltv_expiry` for this [`BlindedHop`].
 	pub cltv_expiry_delta: u16,
@@ -383,7 +493,7 @@ pub struct PaymentRelay {
 /// Constraints for relaying over a given [`BlindedHop`].
 ///
 /// [`BlindedHop`]: crate::blinded_path::BlindedHop
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PaymentConstraints {
 	/// The maximum total CLTV that is acceptable when relaying a payment over this [`BlindedHop`].
 	pub max_cltv_expiry: u32,
@@ -512,6 +622,17 @@ impl Writeable for TrampolineForwardTlvs {
 	}
 }
 
+impl Writeable for DummyTlvs {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		encode_tlv_stream!(w, {
+			(10, self.payment_relay, required),
+			(12, self.payment_constraints, required),
+			(65539, (), required),
+		});
+		Ok(())
+	}
+}
+
 // Note: The `authentication` TLV field was removed in LDK v0.3 following
 // the introduction of `ReceiveAuthKey`-based authentication for inbound
 // `BlindedPaymentPaths`s. Because we do not support receiving to those
@@ -532,6 +653,7 @@ impl<'a> Writeable for BlindedPaymentTlvsRef<'a> {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		match self {
 			Self::Forward(tlvs) => tlvs.write(w)?,
+			Self::Dummy(tlvs) => tlvs.write(w)?,
 			Self::Receive(tlvs) => tlvs.write(w)?,
 		}
 		Ok(())
@@ -552,28 +674,41 @@ impl Readable for BlindedPaymentTlvs {
 			(14, features, (option, encoding: (BlindedHopFeatures, WithoutLength))),
 			(65536, payment_secret, option),
 			(65537, payment_context, option),
+			(65539, is_dummy, option)
 		});
 
-		if let Some(short_channel_id) = scid {
-			if payment_secret.is_some() {
-				return Err(DecodeError::InvalidValue);
-			}
-			Ok(BlindedPaymentTlvs::Forward(ForwardTlvs {
-				short_channel_id,
-				payment_relay: payment_relay.ok_or(DecodeError::InvalidValue)?,
-				payment_constraints: payment_constraints.0.unwrap(),
-				next_blinding_override,
-				features: features.unwrap_or_else(BlindedHopFeatures::empty),
-			}))
-		} else {
-			if payment_relay.is_some() || features.is_some() {
-				return Err(DecodeError::InvalidValue);
-			}
-			Ok(BlindedPaymentTlvs::Receive(ReceiveTlvs {
-				payment_secret: payment_secret.ok_or(DecodeError::InvalidValue)?,
-				payment_constraints: payment_constraints.0.unwrap(),
-				payment_context: payment_context.ok_or(DecodeError::InvalidValue)?,
-			}))
+		match (
+			scid,
+			next_blinding_override,
+			payment_relay,
+			features,
+			payment_secret,
+			payment_context,
+			is_dummy,
+		) {
+			(Some(short_channel_id), next_override, Some(relay), features, None, None, None) => {
+				Ok(BlindedPaymentTlvs::Forward(ForwardTlvs {
+					short_channel_id,
+					payment_relay: relay,
+					payment_constraints: payment_constraints.0.unwrap(),
+					next_blinding_override: next_override,
+					features: features.unwrap_or_else(BlindedHopFeatures::empty),
+				}))
+			},
+			(None, None, None, None, Some(secret), Some(context), None) => {
+				Ok(BlindedPaymentTlvs::Receive(ReceiveTlvs {
+					payment_secret: secret,
+					payment_constraints: payment_constraints.0.unwrap(),
+					payment_context: context,
+				}))
+			},
+			(None, None, Some(relay), None, None, None, Some(())) => {
+				Ok(BlindedPaymentTlvs::Dummy(DummyTlvs {
+					payment_relay: relay,
+					payment_constraints: payment_constraints.0.unwrap(),
+				}))
+			},
+			_ => return Err(DecodeError::InvalidValue),
 		}
 	}
 }
@@ -620,20 +755,45 @@ pub(crate) const PAYMENT_PADDING_ROUND_OFF: usize = 30;
 /// Construct blinded payment hops for the given `intermediate_nodes` and payee info.
 pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
 	secp_ctx: &Secp256k1<T>, intermediate_nodes: &[PaymentForwardNode], payee_node_id: PublicKey,
-	payee_tlvs: ReceiveTlvs, session_priv: &SecretKey, local_node_receive_key: ReceiveAuthKey,
+	dummy_count: usize, dummy_tlvs: DummyTlvs, payee_tlvs: ReceiveTlvs, session_priv: &SecretKey,
+	local_node_receive_key: ReceiveAuthKey,
 ) -> Vec<BlindedHop> {
 	let pks = intermediate_nodes
 		.iter()
 		.map(|node| (node.node_id, None))
+		.chain(core::iter::repeat((payee_node_id, Some(local_node_receive_key))).take(dummy_count))
 		.chain(core::iter::once((payee_node_id, Some(local_node_receive_key))));
 	let tlvs = intermediate_nodes
 		.iter()
 		.map(|node| BlindedPaymentTlvsRef::Forward(&node.tlvs))
+		.chain(core::iter::repeat(BlindedPaymentTlvsRef::Dummy(&dummy_tlvs)).take(dummy_count))
 		.chain(core::iter::once(BlindedPaymentTlvsRef::Receive(&payee_tlvs)));
 
 	let path = pks.zip(
 		tlvs.map(|tlv| BlindedPathWithPadding { tlvs: tlv, round_off: PAYMENT_PADDING_ROUND_OFF }),
 	);
+
+	// Debug invariant: all non-final hops must have identical serialized size.
+	#[cfg(debug_assertions)]
+	{
+		let mut iter = path.clone();
+		if let Some((_, first)) = iter.next() {
+			let remaining = iter.clone().count(); // includes intermediate + final
+
+			// At least one intermediate hop
+			if remaining > 1 {
+				let expected = first.serialized_length();
+
+				// skip final hop: take(remaining - 1)
+				for (_, hop) in iter.take(remaining - 1) {
+					debug_assert!(
+						hop.serialized_length() == expected,
+						"All intermediate blinded hops must have identical serialized size"
+					);
+				}
+			}
+		}
+	}
 
 	utils::construct_blinded_hops(secp_ctx, path, session_priv)
 }
@@ -694,14 +854,24 @@ where
 }
 
 pub(super) fn compute_payinfo(
-	intermediate_nodes: &[PaymentForwardNode], payee_tlvs: &ReceiveTlvs,
-	payee_htlc_maximum_msat: u64, min_final_cltv_expiry_delta: u16,
+	intermediate_nodes: &[PaymentForwardNode], dummy_count: usize, dummy_tlvs: &DummyTlvs,
+	payee_tlvs: &ReceiveTlvs, payee_htlc_maximum_msat: u64, min_final_cltv_expiry_delta: u16,
 ) -> Result<BlindedPayInfo, ()> {
-	let (aggregated_base_fee, aggregated_prop_fee) =
-		compute_aggregated_base_prop_fee(intermediate_nodes.iter().map(|node| RoutingFees {
+	let dummy_tlvs_iter = core::iter::repeat(dummy_tlvs).take(dummy_count);
+
+	let routing_fees = intermediate_nodes
+		.iter()
+		.map(|node| RoutingFees {
 			base_msat: node.tlvs.payment_relay.fee_base_msat,
 			proportional_millionths: node.tlvs.payment_relay.fee_proportional_millionths,
-		}))?;
+		})
+		.chain(dummy_tlvs_iter.clone().map(|tlvs| RoutingFees {
+			base_msat: tlvs.payment_relay.fee_base_msat,
+			proportional_millionths: tlvs.payment_relay.fee_proportional_millionths,
+		}));
+
+	let (aggregated_base_fee, aggregated_prop_fee) =
+		compute_aggregated_base_prop_fee(routing_fees)?;
 
 	let mut htlc_minimum_msat: u64 = 1;
 	let mut htlc_maximum_msat: u64 = 21_000_000 * 100_000_000 * 1_000; // Total bitcoin supply
@@ -729,6 +899,16 @@ pub(super) fn compute_payinfo(
 			&node.tlvs.payment_relay,
 		)
 		.ok_or(())?; // If underflow occurs, we cannot send to this hop without exceeding their max
+	}
+	for dummy_tlvs in dummy_tlvs_iter {
+		cltv_expiry_delta =
+			cltv_expiry_delta.checked_add(dummy_tlvs.payment_relay.cltv_expiry_delta).ok_or(())?;
+
+		htlc_minimum_msat = amt_to_forward_msat(
+			core::cmp::max(dummy_tlvs.payment_constraints.htlc_minimum_msat, htlc_minimum_msat),
+			&dummy_tlvs.payment_relay,
+		)
+		.unwrap_or(1); // If underflow occurs, we definitely reached this node's min
 	}
 	htlc_minimum_msat =
 		core::cmp::max(payee_tlvs.payment_constraints.htlc_minimum_msat, htlc_minimum_msat);
@@ -816,8 +996,8 @@ impl_writeable_tlv_based!(Bolt12RefundContext, {});
 #[cfg(test)]
 mod tests {
 	use crate::blinded_path::payment::{
-		Bolt12RefundContext, ForwardTlvs, PaymentConstraints, PaymentContext, PaymentForwardNode,
-		PaymentRelay, ReceiveTlvs,
+		Bolt12RefundContext, DummyTlvs, ForwardTlvs, PaymentConstraints, PaymentContext,
+		PaymentForwardNode, PaymentRelay, ReceiveTlvs,
 	};
 	use crate::ln::functional_test_utils::TEST_FINAL_CLTV;
 	use crate::types::features::BlindedHopFeatures;
@@ -873,9 +1053,15 @@ mod tests {
 			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
 		};
 		let htlc_maximum_msat = 100_000;
-		let blinded_payinfo =
-			super::compute_payinfo(&intermediate_nodes[..], &recv_tlvs, htlc_maximum_msat, 12)
-				.unwrap();
+		let blinded_payinfo = super::compute_payinfo(
+			&intermediate_nodes[..],
+			0,
+			&DummyTlvs::default(),
+			&recv_tlvs,
+			htlc_maximum_msat,
+			12,
+		)
+		.unwrap();
 		assert_eq!(blinded_payinfo.fee_base_msat, 201);
 		assert_eq!(blinded_payinfo.fee_proportional_millionths, 1001);
 		assert_eq!(blinded_payinfo.cltv_expiry_delta, 300);
@@ -890,8 +1076,15 @@ mod tests {
 			payment_constraints: PaymentConstraints { max_cltv_expiry: 0, htlc_minimum_msat: 1 },
 			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
 		};
-		let blinded_payinfo =
-			super::compute_payinfo(&[], &recv_tlvs, 4242, TEST_FINAL_CLTV as u16).unwrap();
+		let blinded_payinfo = super::compute_payinfo(
+			&[],
+			0,
+			&DummyTlvs::default(),
+			&recv_tlvs,
+			4242,
+			TEST_FINAL_CLTV as u16,
+		)
+		.unwrap();
 		assert_eq!(blinded_payinfo.fee_base_msat, 0);
 		assert_eq!(blinded_payinfo.fee_proportional_millionths, 0);
 		assert_eq!(blinded_payinfo.cltv_expiry_delta, TEST_FINAL_CLTV as u16);
@@ -950,6 +1143,8 @@ mod tests {
 		let htlc_maximum_msat = 100_000;
 		let blinded_payinfo = super::compute_payinfo(
 			&intermediate_nodes[..],
+			0,
+			&DummyTlvs::default(),
 			&recv_tlvs,
 			htlc_maximum_msat,
 			TEST_FINAL_CLTV as u16,
@@ -1009,6 +1204,8 @@ mod tests {
 		let htlc_minimum_msat = 3798;
 		assert!(super::compute_payinfo(
 			&intermediate_nodes[..],
+			0,
+			&DummyTlvs::default(),
 			&recv_tlvs,
 			htlc_minimum_msat - 1,
 			TEST_FINAL_CLTV as u16
@@ -1018,6 +1215,8 @@ mod tests {
 		let htlc_maximum_msat = htlc_minimum_msat + 1;
 		let blinded_payinfo = super::compute_payinfo(
 			&intermediate_nodes[..],
+			0,
+			&DummyTlvs::default(),
 			&recv_tlvs,
 			htlc_maximum_msat,
 			TEST_FINAL_CLTV as u16,
@@ -1078,6 +1277,8 @@ mod tests {
 
 		let blinded_payinfo = super::compute_payinfo(
 			&intermediate_nodes[..],
+			0,
+			&DummyTlvs::default(),
 			&recv_tlvs,
 			10_000,
 			TEST_FINAL_CLTV as u16,
