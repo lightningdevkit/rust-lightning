@@ -2784,17 +2784,13 @@ fn do_channel_holding_cell_serialize(disconnect: bool, reload_a: bool) {
 	}
 
 	// If we finish updating the monitor, we should free the holding cell right away (this did
-	// not occur prior to #756).
+	// not occur prior to #756). This should result in a new monitor update.
 	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
 	let (mon_id, _) = get_latest_mon_update_id(&nodes[0], chan_id);
 	nodes[0].chain_monitor.chain_monitor.force_channel_monitor_updated(chan_id, mon_id);
 	expect_payment_claimed!(nodes[0], payment_hash_0, 100_000);
-
-	// New outbound messages should be generated immediately upon a call to
-	// get_and_clear_pending_msg_events (but not before).
-	check_added_monitors(&nodes[0], 0);
-	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	check_added_monitors(&nodes[0], 1);
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
 
 	// Deliver the pending in-flight CS
@@ -3556,12 +3552,10 @@ fn do_test_blocked_chan_preimage_release(completion_mode: BlockedUpdateComplMode
 	}
 
 	// The event processing should release the last RAA update.
-	check_added_monitors(&nodes[1], 1);
-
-	// When we fetch the next update the message getter will generate the next update for nodes[2],
-	// generating a further monitor update.
+	// It should also generate the next update for nodes[2].
+	check_added_monitors(&nodes[1], 2);
 	let mut bs_htlc_fulfill = get_htlc_update_msgs(&nodes[1], &node_c_id);
-	check_added_monitors(&nodes[1], 1);
+	check_added_monitors(&nodes[1], 0);
 
 	nodes[2]
 		.node
@@ -5142,13 +5136,12 @@ fn test_mpp_claim_to_holding_cell() {
 	nodes[3].chain_monitor.chain_monitor.channel_monitor_updated(chan_4_id, latest_id).unwrap();
 	// Once we process monitor events (in this case by checking for the `PaymentClaimed` event, the
 	// RAA monitor update blocked above will be released.
+	// At the same time, the RAA monitor update completion will allow the C <-> D channel to
+	// generate its fulfill update.
 	expect_payment_claimed!(nodes[3], paymnt_hash_1, 500_000);
-	check_added_monitors(&nodes[3], 1);
-
-	// After the RAA monitor update completes, the C <-> D channel will be able to generate its
-	// fulfill updates as well.
+	check_added_monitors(&nodes[3], 2);
 	let mut c_claim = get_htlc_update_msgs(&nodes[3], &node_c_id);
-	check_added_monitors(&nodes[3], 1);
+	check_added_monitors(&nodes[3], 0);
 
 	// Finally, clear all the pending payments.
 	let path = [&[&nodes[1], &nodes[3]][..], &[&nodes[2], &nodes[3]][..]];
