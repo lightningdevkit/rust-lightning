@@ -1109,6 +1109,9 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 	let mut node_b_ser = nodes[1].encode();
 	let mut node_c_ser = nodes[2].encode();
 
+	let pending_payments = RefCell::new([Vec::new(), Vec::new(), Vec::new()]);
+	let resolved_payments = RefCell::new([Vec::new(), Vec::new(), Vec::new()]);
+
 	macro_rules! test_return {
 		() => {{
 			assert_eq!(nodes[0].list_channels().len(), 1);
@@ -1508,6 +1511,8 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 				let mut claim_set = new_hash_map();
 				let mut events = nodes[$node].get_and_clear_pending_events();
 				let had_events = !events.is_empty();
+				let mut pending_payments = pending_payments.borrow_mut();
+				let mut resolved_payments = resolved_payments.borrow_mut();
 				for event in events.drain(..) {
 					match event {
 						events::Event::PaymentClaimable { payment_hash, .. } => {
@@ -1519,11 +1524,32 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 								}
 							}
 						},
-						events::Event::PaymentSent { .. } => {},
+						events::Event::PaymentSent { payment_id, .. } => {
+							let sent_id = payment_id.unwrap();
+							let idx_opt =
+								pending_payments[$node].iter().position(|id| *id == sent_id);
+							if let Some(idx) = idx_opt {
+								pending_payments[$node].remove(idx);
+								resolved_payments[$node].push(sent_id);
+							} else {
+								assert!(resolved_payments[$node].contains(&sent_id));
+							}
+						},
+						events::Event::PaymentFailed { payment_id, .. } => {
+							let idx_opt =
+								pending_payments[$node].iter().position(|id| *id == payment_id);
+							if let Some(idx) = idx_opt {
+								pending_payments[$node].remove(idx);
+								resolved_payments[$node].push(payment_id);
+							} else if !resolved_payments[$node].contains(&payment_id) {
+								// Payment failed immediately on send, so it was never added to
+								// pending_payments. Add it to resolved_payments to track it.
+								resolved_payments[$node].push(payment_id);
+							}
+						},
 						events::Event::PaymentClaimed { .. } => {},
 						events::Event::PaymentPathSuccessful { .. } => {},
 						events::Event::PaymentPathFailed { .. } => {},
-						events::Event::PaymentFailed { .. } => {},
 						events::Event::ProbeSuccessful { .. }
 						| events::Event::ProbeFailed { .. } => {
 							// Even though we don't explicitly send probes, because probes are
@@ -1619,7 +1645,11 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 				let (secret, hash) = get_payment_secret_hash(dest, payment_ctr);
 				let mut id = PaymentId([0; 32]);
 				id.0[0..8].copy_from_slice(&payment_ctr.to_ne_bytes());
-				send_payment(source, dest, dest_chan_id, amt, secret, hash, id)
+				let succeeded = send_payment(source, dest, dest_chan_id, amt, secret, hash, id);
+				if succeeded {
+					pending_payments.borrow_mut()[source_idx].push(id);
+				}
+				succeeded
 			};
 		let send_noret = |source_idx, dest_idx, dest_chan_id, amt, payment_ctr: &mut u64| {
 			send(source_idx, dest_idx, dest_chan_id, amt, payment_ctr);
@@ -1638,7 +1668,20 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 			let (secret, hash) = get_payment_secret_hash(dest, payment_ctr);
 			let mut id = PaymentId([0; 32]);
 			id.0[0..8].copy_from_slice(&payment_ctr.to_ne_bytes());
-			send_hop_payment(source, middle, middle_scid, dest, dest_scid, amt, secret, hash, id);
+			let succeeded = send_hop_payment(
+				source,
+				middle,
+				middle_scid,
+				dest,
+				dest_scid,
+				amt,
+				secret,
+				hash,
+				id,
+			);
+			if succeeded {
+				pending_payments.borrow_mut()[source_idx].push(id);
+			}
 		};
 
 		let v = get_slice!(1)[0];
