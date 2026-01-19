@@ -538,20 +538,13 @@ type ChanMan<'a> = ChannelManager<
 >;
 
 #[inline]
-fn get_payment_secret_hash(
-	dest: &ChanMan, payment_ctr: &mut u64,
-) -> Option<(PaymentSecret, PaymentHash)> {
-	let mut payment_hash;
-	for _ in 0..256 {
-		*payment_ctr += 1;
-		payment_hash = PaymentHash(Sha256::hash(&[*payment_ctr as u8]).to_byte_array());
-		if let Ok(payment_secret) =
-			dest.create_inbound_payment_for_hash(payment_hash, None, 3600, None)
-		{
-			return Some((payment_secret, payment_hash));
-		}
-	}
-	None
+fn get_payment_secret_hash(dest: &ChanMan, payment_ctr: &mut u64) -> (PaymentSecret, PaymentHash) {
+	*payment_ctr += 1;
+	let payment_hash = PaymentHash(Sha256::hash(&[*payment_ctr as u8]).to_byte_array());
+	let payment_secret = dest
+		.create_inbound_payment_for_hash(payment_hash, None, 3600, None)
+		.expect("create_inbound_payment_for_hash failed");
+	(payment_secret, payment_hash)
 }
 
 #[inline]
@@ -565,12 +558,7 @@ fn send_noret(
 fn send_payment(
 	source: &ChanMan, dest: &ChanMan, dest_chan_id: u64, amt: u64, payment_ctr: &mut u64,
 ) -> bool {
-	let (payment_secret, payment_hash) =
-		if let Some((secret, hash)) = get_payment_secret_hash(dest, payment_ctr) {
-			(secret, hash)
-		} else {
-			return true;
-		};
+	let (payment_secret, payment_hash) = get_payment_secret_hash(dest, payment_ctr);
 	let mut payment_id = [0; 32];
 	payment_id[0..8].copy_from_slice(&payment_ctr.to_ne_bytes());
 	let (min_value_sendable, max_value_sendable) = source
@@ -627,12 +615,7 @@ fn send_hop_payment(
 	source: &ChanMan, middle: &ChanMan, middle_chan_id: u64, dest: &ChanMan, dest_chan_id: u64,
 	amt: u64, payment_ctr: &mut u64,
 ) -> bool {
-	let (payment_secret, payment_hash) =
-		if let Some((secret, hash)) = get_payment_secret_hash(dest, payment_ctr) {
-			(secret, hash)
-		} else {
-			return true;
-		};
+	let (payment_secret, payment_hash) = get_payment_secret_hash(dest, payment_ctr);
 	let mut payment_id = [0; 32];
 	payment_id[0..8].copy_from_slice(&payment_ctr.to_ne_bytes());
 	let (min_value_sendable, max_value_sendable) = source
