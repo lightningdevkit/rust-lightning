@@ -539,43 +539,40 @@ type ChanMan<'a> = ChannelManager<
 
 #[inline]
 fn get_payment_secret_hash(
-	dest: &ChanMan, payment_id: &mut u8,
+	dest: &ChanMan, payment_ctr: &mut u64,
 ) -> Option<(PaymentSecret, PaymentHash)> {
 	let mut payment_hash;
 	for _ in 0..256 {
-		payment_hash = PaymentHash(Sha256::hash(&[*payment_id; 1]).to_byte_array());
+		*payment_ctr += 1;
+		payment_hash = PaymentHash(Sha256::hash(&[*payment_ctr as u8]).to_byte_array());
 		if let Ok(payment_secret) =
 			dest.create_inbound_payment_for_hash(payment_hash, None, 3600, None)
 		{
 			return Some((payment_secret, payment_hash));
 		}
-		*payment_id = payment_id.wrapping_add(1);
 	}
 	None
 }
 
 #[inline]
 fn send_noret(
-	source: &ChanMan, dest: &ChanMan, dest_chan_id: u64, amt: u64, payment_id: &mut u8,
-	payment_idx: &mut u64,
+	source: &ChanMan, dest: &ChanMan, dest_chan_id: u64, amt: u64, payment_ctr: &mut u64,
 ) {
-	send_payment(source, dest, dest_chan_id, amt, payment_id, payment_idx);
+	send_payment(source, dest, dest_chan_id, amt, payment_ctr);
 }
 
 #[inline]
 fn send_payment(
-	source: &ChanMan, dest: &ChanMan, dest_chan_id: u64, amt: u64, payment_id: &mut u8,
-	payment_idx: &mut u64,
+	source: &ChanMan, dest: &ChanMan, dest_chan_id: u64, amt: u64, payment_ctr: &mut u64,
 ) -> bool {
 	let (payment_secret, payment_hash) =
-		if let Some((secret, hash)) = get_payment_secret_hash(dest, payment_id) {
+		if let Some((secret, hash)) = get_payment_secret_hash(dest, payment_ctr) {
 			(secret, hash)
 		} else {
 			return true;
 		};
 	let mut payment_id = [0; 32];
-	payment_id[0..8].copy_from_slice(&payment_idx.to_ne_bytes());
-	*payment_idx += 1;
+	payment_id[0..8].copy_from_slice(&payment_ctr.to_ne_bytes());
 	let (min_value_sendable, max_value_sendable) = source
 		.list_usable_channels()
 		.iter()
@@ -620,34 +617,24 @@ fn send_payment(
 #[inline]
 fn send_hop_noret(
 	source: &ChanMan, middle: &ChanMan, middle_chan_id: u64, dest: &ChanMan, dest_chan_id: u64,
-	amt: u64, payment_id: &mut u8, payment_idx: &mut u64,
+	amt: u64, payment_ctr: &mut u64,
 ) {
-	send_hop_payment(
-		source,
-		middle,
-		middle_chan_id,
-		dest,
-		dest_chan_id,
-		amt,
-		payment_id,
-		payment_idx,
-	);
+	send_hop_payment(source, middle, middle_chan_id, dest, dest_chan_id, amt, payment_ctr);
 }
 
 #[inline]
 fn send_hop_payment(
 	source: &ChanMan, middle: &ChanMan, middle_chan_id: u64, dest: &ChanMan, dest_chan_id: u64,
-	amt: u64, payment_id: &mut u8, payment_idx: &mut u64,
+	amt: u64, payment_ctr: &mut u64,
 ) -> bool {
 	let (payment_secret, payment_hash) =
-		if let Some((secret, hash)) = get_payment_secret_hash(dest, payment_id) {
+		if let Some((secret, hash)) = get_payment_secret_hash(dest, payment_ctr) {
 			(secret, hash)
 		} else {
 			return true;
 		};
 	let mut payment_id = [0; 32];
-	payment_id[0..8].copy_from_slice(&payment_idx.to_ne_bytes());
-	*payment_idx += 1;
+	payment_id[0..8].copy_from_slice(&payment_ctr.to_ne_bytes());
 	let (min_value_sendable, max_value_sendable) = source
 		.list_usable_channels()
 		.iter()
@@ -1138,8 +1125,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 	let chan_b = nodes[2].list_usable_channels()[0].short_channel_id.unwrap();
 	let chan_b_id = nodes[2].list_usable_channels()[0].channel_id;
 
-	let mut p_id: u8 = 0;
-	let mut p_idx: u64 = 0;
+	let mut p_ctr: u64 = 0;
 
 	let mut chan_a_disconnected = false;
 	let mut chan_b_disconnected = false;
@@ -1762,93 +1748,85 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 			0x27 => process_ev_noret!(2, false),
 
 			// 1/10th the channel size:
-			0x30 => send_noret(&nodes[0], &nodes[1], chan_a, 10_000_000, &mut p_id, &mut p_idx),
-			0x31 => send_noret(&nodes[1], &nodes[0], chan_a, 10_000_000, &mut p_id, &mut p_idx),
-			0x32 => send_noret(&nodes[1], &nodes[2], chan_b, 10_000_000, &mut p_id, &mut p_idx),
-			0x33 => send_noret(&nodes[2], &nodes[1], chan_b, 10_000_000, &mut p_id, &mut p_idx),
+			0x30 => send_noret(&nodes[0], &nodes[1], chan_a, 10_000_000, &mut p_ctr),
+			0x31 => send_noret(&nodes[1], &nodes[0], chan_a, 10_000_000, &mut p_ctr),
+			0x32 => send_noret(&nodes[1], &nodes[2], chan_b, 10_000_000, &mut p_ctr),
+			0x33 => send_noret(&nodes[2], &nodes[1], chan_b, 10_000_000, &mut p_ctr),
 			0x34 => send_hop_noret(
-				&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 10_000_000, &mut p_id, &mut p_idx,
+				&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 10_000_000, &mut p_ctr,
 			),
 			0x35 => send_hop_noret(
-				&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 10_000_000, &mut p_id, &mut p_idx,
+				&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 10_000_000, &mut p_ctr,
 			),
 
-			0x38 => send_noret(&nodes[0], &nodes[1], chan_a, 1_000_000, &mut p_id, &mut p_idx),
-			0x39 => send_noret(&nodes[1], &nodes[0], chan_a, 1_000_000, &mut p_id, &mut p_idx),
-			0x3a => send_noret(&nodes[1], &nodes[2], chan_b, 1_000_000, &mut p_id, &mut p_idx),
-			0x3b => send_noret(&nodes[2], &nodes[1], chan_b, 1_000_000, &mut p_id, &mut p_idx),
+			0x38 => send_noret(&nodes[0], &nodes[1], chan_a, 1_000_000, &mut p_ctr),
+			0x39 => send_noret(&nodes[1], &nodes[0], chan_a, 1_000_000, &mut p_ctr),
+			0x3a => send_noret(&nodes[1], &nodes[2], chan_b, 1_000_000, &mut p_ctr),
+			0x3b => send_noret(&nodes[2], &nodes[1], chan_b, 1_000_000, &mut p_ctr),
 			0x3c => send_hop_noret(
-				&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 1_000_000, &mut p_id, &mut p_idx,
+				&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 1_000_000, &mut p_ctr,
 			),
 			0x3d => send_hop_noret(
-				&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 1_000_000, &mut p_id, &mut p_idx,
+				&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 1_000_000, &mut p_ctr,
 			),
 
-			0x40 => send_noret(&nodes[0], &nodes[1], chan_a, 100_000, &mut p_id, &mut p_idx),
-			0x41 => send_noret(&nodes[1], &nodes[0], chan_a, 100_000, &mut p_id, &mut p_idx),
-			0x42 => send_noret(&nodes[1], &nodes[2], chan_b, 100_000, &mut p_id, &mut p_idx),
-			0x43 => send_noret(&nodes[2], &nodes[1], chan_b, 100_000, &mut p_id, &mut p_idx),
-			0x44 => send_hop_noret(
-				&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 100_000, &mut p_id, &mut p_idx,
-			),
-			0x45 => send_hop_noret(
-				&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 100_000, &mut p_id, &mut p_idx,
-			),
+			0x40 => send_noret(&nodes[0], &nodes[1], chan_a, 100_000, &mut p_ctr),
+			0x41 => send_noret(&nodes[1], &nodes[0], chan_a, 100_000, &mut p_ctr),
+			0x42 => send_noret(&nodes[1], &nodes[2], chan_b, 100_000, &mut p_ctr),
+			0x43 => send_noret(&nodes[2], &nodes[1], chan_b, 100_000, &mut p_ctr),
+			0x44 => {
+				send_hop_noret(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 100_000, &mut p_ctr)
+			},
+			0x45 => {
+				send_hop_noret(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 100_000, &mut p_ctr)
+			},
 
-			0x48 => send_noret(&nodes[0], &nodes[1], chan_a, 10_000, &mut p_id, &mut p_idx),
-			0x49 => send_noret(&nodes[1], &nodes[0], chan_a, 10_000, &mut p_id, &mut p_idx),
-			0x4a => send_noret(&nodes[1], &nodes[2], chan_b, 10_000, &mut p_id, &mut p_idx),
-			0x4b => send_noret(&nodes[2], &nodes[1], chan_b, 10_000, &mut p_id, &mut p_idx),
-			0x4c => send_hop_noret(
-				&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 10_000, &mut p_id, &mut p_idx,
-			),
-			0x4d => send_hop_noret(
-				&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 10_000, &mut p_id, &mut p_idx,
-			),
+			0x48 => send_noret(&nodes[0], &nodes[1], chan_a, 10_000, &mut p_ctr),
+			0x49 => send_noret(&nodes[1], &nodes[0], chan_a, 10_000, &mut p_ctr),
+			0x4a => send_noret(&nodes[1], &nodes[2], chan_b, 10_000, &mut p_ctr),
+			0x4b => send_noret(&nodes[2], &nodes[1], chan_b, 10_000, &mut p_ctr),
+			0x4c => {
+				send_hop_noret(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 10_000, &mut p_ctr)
+			},
+			0x4d => {
+				send_hop_noret(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 10_000, &mut p_ctr)
+			},
 
-			0x50 => send_noret(&nodes[0], &nodes[1], chan_a, 1_000, &mut p_id, &mut p_idx),
-			0x51 => send_noret(&nodes[1], &nodes[0], chan_a, 1_000, &mut p_id, &mut p_idx),
-			0x52 => send_noret(&nodes[1], &nodes[2], chan_b, 1_000, &mut p_id, &mut p_idx),
-			0x53 => send_noret(&nodes[2], &nodes[1], chan_b, 1_000, &mut p_id, &mut p_idx),
-			0x54 => send_hop_noret(
-				&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 1_000, &mut p_id, &mut p_idx,
-			),
-			0x55 => send_hop_noret(
-				&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 1_000, &mut p_id, &mut p_idx,
-			),
+			0x50 => send_noret(&nodes[0], &nodes[1], chan_a, 1_000, &mut p_ctr),
+			0x51 => send_noret(&nodes[1], &nodes[0], chan_a, 1_000, &mut p_ctr),
+			0x52 => send_noret(&nodes[1], &nodes[2], chan_b, 1_000, &mut p_ctr),
+			0x53 => send_noret(&nodes[2], &nodes[1], chan_b, 1_000, &mut p_ctr),
+			0x54 => {
+				send_hop_noret(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 1_000, &mut p_ctr)
+			},
+			0x55 => {
+				send_hop_noret(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 1_000, &mut p_ctr)
+			},
 
-			0x58 => send_noret(&nodes[0], &nodes[1], chan_a, 100, &mut p_id, &mut p_idx),
-			0x59 => send_noret(&nodes[1], &nodes[0], chan_a, 100, &mut p_id, &mut p_idx),
-			0x5a => send_noret(&nodes[1], &nodes[2], chan_b, 100, &mut p_id, &mut p_idx),
-			0x5b => send_noret(&nodes[2], &nodes[1], chan_b, 100, &mut p_id, &mut p_idx),
-			0x5c => send_hop_noret(
-				&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 100, &mut p_id, &mut p_idx,
-			),
-			0x5d => send_hop_noret(
-				&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 100, &mut p_id, &mut p_idx,
-			),
+			0x58 => send_noret(&nodes[0], &nodes[1], chan_a, 100, &mut p_ctr),
+			0x59 => send_noret(&nodes[1], &nodes[0], chan_a, 100, &mut p_ctr),
+			0x5a => send_noret(&nodes[1], &nodes[2], chan_b, 100, &mut p_ctr),
+			0x5b => send_noret(&nodes[2], &nodes[1], chan_b, 100, &mut p_ctr),
+			0x5c => {
+				send_hop_noret(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 100, &mut p_ctr)
+			},
+			0x5d => {
+				send_hop_noret(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 100, &mut p_ctr)
+			},
 
-			0x60 => send_noret(&nodes[0], &nodes[1], chan_a, 10, &mut p_id, &mut p_idx),
-			0x61 => send_noret(&nodes[1], &nodes[0], chan_a, 10, &mut p_id, &mut p_idx),
-			0x62 => send_noret(&nodes[1], &nodes[2], chan_b, 10, &mut p_id, &mut p_idx),
-			0x63 => send_noret(&nodes[2], &nodes[1], chan_b, 10, &mut p_id, &mut p_idx),
-			0x64 => send_hop_noret(
-				&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 10, &mut p_id, &mut p_idx,
-			),
-			0x65 => send_hop_noret(
-				&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 10, &mut p_id, &mut p_idx,
-			),
+			0x60 => send_noret(&nodes[0], &nodes[1], chan_a, 10, &mut p_ctr),
+			0x61 => send_noret(&nodes[1], &nodes[0], chan_a, 10, &mut p_ctr),
+			0x62 => send_noret(&nodes[1], &nodes[2], chan_b, 10, &mut p_ctr),
+			0x63 => send_noret(&nodes[2], &nodes[1], chan_b, 10, &mut p_ctr),
+			0x64 => send_hop_noret(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 10, &mut p_ctr),
+			0x65 => send_hop_noret(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 10, &mut p_ctr),
 
-			0x68 => send_noret(&nodes[0], &nodes[1], chan_a, 1, &mut p_id, &mut p_idx),
-			0x69 => send_noret(&nodes[1], &nodes[0], chan_a, 1, &mut p_id, &mut p_idx),
-			0x6a => send_noret(&nodes[1], &nodes[2], chan_b, 1, &mut p_id, &mut p_idx),
-			0x6b => send_noret(&nodes[2], &nodes[1], chan_b, 1, &mut p_id, &mut p_idx),
-			0x6c => send_hop_noret(
-				&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 1, &mut p_id, &mut p_idx,
-			),
-			0x6d => send_hop_noret(
-				&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 1, &mut p_id, &mut p_idx,
-			),
+			0x68 => send_noret(&nodes[0], &nodes[1], chan_a, 1, &mut p_ctr),
+			0x69 => send_noret(&nodes[1], &nodes[0], chan_a, 1, &mut p_ctr),
+			0x6a => send_noret(&nodes[1], &nodes[2], chan_b, 1, &mut p_ctr),
+			0x6b => send_noret(&nodes[2], &nodes[1], chan_b, 1, &mut p_ctr),
+			0x6c => send_hop_noret(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 1, &mut p_ctr),
+			0x6d => send_hop_noret(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 1, &mut p_ctr),
 
 			0x80 => {
 				let mut max_feerate = last_htlc_clear_fee_a;
@@ -2280,16 +2258,12 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 
 				// Finally, make sure that at least one end of each channel can make a substantial payment
 				assert!(
-					send_payment(&nodes[0], &nodes[1], chan_a, 10_000_000, &mut p_id, &mut p_idx)
-						|| send_payment(
-							&nodes[1], &nodes[0], chan_a, 10_000_000, &mut p_id, &mut p_idx
-						)
+					send_payment(&nodes[0], &nodes[1], chan_a, 10_000_000, &mut p_ctr)
+						|| send_payment(&nodes[1], &nodes[0], chan_a, 10_000_000, &mut p_ctr)
 				);
 				assert!(
-					send_payment(&nodes[1], &nodes[2], chan_b, 10_000_000, &mut p_id, &mut p_idx)
-						|| send_payment(
-							&nodes[2], &nodes[1], chan_b, 10_000_000, &mut p_id, &mut p_idx
-						)
+					send_payment(&nodes[1], &nodes[2], chan_b, 10_000_000, &mut p_ctr)
+						|| send_payment(&nodes[2], &nodes[1], chan_b, 10_000_000, &mut p_ctr)
 				);
 
 				last_htlc_clear_fee_a = fee_est_a.ret_val.load(atomic::Ordering::Acquire);
