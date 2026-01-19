@@ -10,6 +10,9 @@ extern crate criterion;
 
 pub mod fs_store;
 
+#[cfg(feature = "vss")]
+pub mod vss_store;
+
 mod utils;
 
 #[cfg(test)]
