@@ -604,15 +604,15 @@ fn send_payment(
 
 #[inline]
 fn send_hop_noret(
-	source: &ChanMan, middle: &ChanMan, middle_chan_id: u64, dest: &ChanMan, dest_chan_id: u64,
+	source: &ChanMan, middle: &ChanMan, middle_scid: u64, dest: &ChanMan, dest_scid: u64,
 	amt: u64, payment_ctr: &mut u64,
 ) {
-	send_hop_payment(source, middle, middle_chan_id, dest, dest_chan_id, amt, payment_ctr);
+	send_hop_payment(source, middle, middle_scid, dest, dest_scid, amt, payment_ctr);
 }
 
 #[inline]
 fn send_hop_payment(
-	source: &ChanMan, middle: &ChanMan, middle_chan_id: u64, dest: &ChanMan, dest_chan_id: u64,
+	source: &ChanMan, middle: &ChanMan, middle_scid: u64, dest: &ChanMan, dest_scid: u64,
 	amt: u64, payment_ctr: &mut u64,
 ) -> bool {
 	let (payment_secret, payment_hash) = get_payment_secret_hash(dest, payment_ctr);
@@ -621,7 +621,7 @@ fn send_hop_payment(
 	let (min_value_sendable, max_value_sendable) = source
 		.list_usable_channels()
 		.iter()
-		.find(|chan| chan.short_channel_id == Some(middle_chan_id))
+		.find(|chan| chan.short_channel_id == Some(middle_scid))
 		.map(|chan| (chan.next_outbound_htlc_minimum_msat, chan.next_outbound_htlc_limit_msat))
 		.unwrap_or((0, 0));
 	let first_hop_fee = 50_000;
@@ -635,7 +635,7 @@ fn send_hop_payment(
 				RouteHop {
 					pubkey: middle.get_our_node_id(),
 					node_features: middle.node_features(),
-					short_channel_id: middle_chan_id,
+					short_channel_id: middle_scid,
 					channel_features: middle.channel_features(),
 					fee_msat: first_hop_fee,
 					cltv_expiry_delta: 100,
@@ -644,7 +644,7 @@ fn send_hop_payment(
 				RouteHop {
 					pubkey: dest.get_our_node_id(),
 					node_features: dest.node_features(),
-					short_channel_id: dest_chan_id,
+					short_channel_id: dest_scid,
 					channel_features: dest.channel_features(),
 					fee_msat: amt,
 					cltv_expiry_delta: 200,
