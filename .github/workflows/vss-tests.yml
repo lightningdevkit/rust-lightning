@@ -1,0 +1,48 @@
+name: VSS Tests
+
+on: [push, pull_request]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:latest
+        ports:
+          - 5432:5432
+        env:
+          POSTGRES_DB: postgres
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          path: rust-lightning
+      - name: Checkout VSS
+        uses: actions/checkout@v3
+        with:
+          repository: lightningdevkit/vss-server
+          path: vss-server
+
+      - name: Build and Deploy VSS Server
+        run: |
+          cd vss-server/rust
+          cargo run server/vss-server-config.toml&
+      - name: Run VSS tests
+        run: |
+          ls -la
+          cd rust-lightning/lightning-persister
+          export TEST_VSS_BASE_URL="http://localhost:8080/vss"
+          RUSTFLAGS="--cfg vss_test" cargo test --features vss vss_store
