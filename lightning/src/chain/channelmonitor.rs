@@ -3798,7 +3798,17 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	}
 }
 
-#[lightning_macros::add_logging(WithChannelMonitor<L>)]
+#[lightning_macros::add_logging(
+	<WithChannelMonitor<L>,
+	substruct = onchain_tx_handler,
+	otherstruct = CounterpartyOfferedHTLCOutput,
+	otherstruct = CounterpartyReceivedHTLCOutput,
+	otherstruct = RevokedHTLCOutput,
+	otherstruct = RevokedOutput,
+	otherstruct = HolderHTLCOutput,
+	otherstruct = HolderFundingOutput,
+	otherstruct = PackageTemplate
+	>)]
 impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	/// Inserts a revocation secret into this channel monitor. Prunes old preimages if neither
 	/// needed by holder commitment transactions HTCLs nor by counterparty ones. Unless we haven't already seen
@@ -6706,7 +6716,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		}
 
 		let channel_parameters = channel_parameters.unwrap_or_else(|| {
-			onchain_tx_handler.channel_parameters.clone()
+			onchain_tx_handler.channel_transaction_parameters.clone()
 		});
 
 		// Monitors for anchor outputs channels opened in v0.0.116 suffered from a bug in which the
@@ -6723,7 +6733,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		let channel_id = channel_id.unwrap_or(ChannelId::v1_from_funding_outpoint(outpoint));
 
 		let (current_holder_commitment_tx, current_holder_htlc_data) = {
-			let holder_commitment_tx = onchain_tx_handler.current_holder_commitment_tx();
+			let holder_commitment_tx = &onchain_tx_handler.holder_commitment;
 
 			#[cfg(debug_assertions)]
 			let holder_signed_tx_copy = current_holder_signed_tx.clone();
@@ -6747,7 +6757,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 
 		let (prev_holder_commitment_tx, prev_holder_htlc_data) =
 			if let Some(prev_holder_signed_tx) = prev_holder_signed_tx {
-				let holder_commitment_tx = onchain_tx_handler.prev_holder_commitment_tx();
+				let holder_commitment_tx = &onchain_tx_handler.prev_holder_commitment;
 				if holder_commitment_tx.is_none() {
 					return Err(DecodeError::InvalidValue);
 				}
@@ -6761,7 +6771,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 				#[cfg(debug_assertions)] {
 					let mut stream = crate::util::ser::VecWriter(Vec::new());
 					write_legacy_holder_commitment_data(
-						&mut stream, &holder_commitment_tx.unwrap(), &holder_commitment_htlc_data
+						&mut stream, holder_commitment_tx.as_ref().unwrap(), &holder_commitment_htlc_data
 					).map_err(|_| DecodeError::InvalidValue)?;
 					let mut cursor = crate::io::Cursor::new(stream.0);
 					if holder_signed_tx_copy != <HolderSignedTx as Readable>::read(&mut cursor)? {
@@ -6769,7 +6779,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 					}
 				}
 
-				(holder_commitment_tx.cloned(), Some(holder_commitment_htlc_data))
+				(holder_commitment_tx.clone(), Some(holder_commitment_htlc_data))
 			} else {
 				(None, None)
 			};
