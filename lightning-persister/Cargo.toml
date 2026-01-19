@@ -17,11 +17,15 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 tokio = ["dep:tokio"]
+vss = ["dep:vss-client", "dep:tokio", "dep:rand", "dep:lightning-macros"]
 
 [dependencies]
 bitcoin = "0.32.2"
 lightning = { version = "0.3.0", path = "../lightning" }
+lightning-macros = { version = "0.2.0", path = "../lightning-macros", optional = true }
 tokio = { version = "1.35", optional = true, default-features = false, features = ["rt-multi-thread"] }
+vss-client = { package = "vss-client-ng", version = "0.4", optional = true }
+rand = { version = "0.9.2", default-features = false, features = ["thread_rng"], optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.48.0", default-features = false, features = ["Win32_Storage_FileSystem", "Win32_Foundation"] }
