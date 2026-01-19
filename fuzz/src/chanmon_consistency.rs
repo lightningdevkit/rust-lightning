@@ -155,9 +155,15 @@ impl MessageRouter for FuzzRouter {
 	}
 }
 
-pub struct TestBroadcaster {}
+pub struct TestBroadcaster {
+	txn_broadcasted: RefCell<Vec<Transaction>>,
+}
 impl BroadcasterInterface for TestBroadcaster {
-	fn broadcast_transactions(&self, _txs: &[&Transaction]) {}
+	fn broadcast_transactions(&self, txs: &[&Transaction]) {
+		for tx in txs {
+			self.txn_broadcasted.borrow_mut().push((*tx).clone());
+		}
+	}
 }
 
 pub struct VecWriter(pub Vec<u8>);
@@ -334,7 +340,7 @@ impl chain::Watch<TestChannelSigner> for TestChainMonitor {
 		deserialized_monitor
 			.update_monitor(
 				update,
-				&&TestBroadcaster {},
+				&&TestBroadcaster { txn_broadcasted: RefCell::new(Vec::new()) },
 				&&FuzzEstimator { ret_val: atomic::AtomicU32::new(253) },
 				&self.logger,
 			)
@@ -604,16 +610,16 @@ fn send_payment(
 
 #[inline]
 fn send_hop_noret(
-	source: &ChanMan, middle: &ChanMan, middle_scid: u64, dest: &ChanMan, dest_scid: u64,
-	amt: u64, payment_ctr: &mut u64,
+	source: &ChanMan, middle: &ChanMan, middle_scid: u64, dest: &ChanMan, dest_scid: u64, amt: u64,
+	payment_ctr: &mut u64,
 ) {
 	send_hop_payment(source, middle, middle_scid, dest, dest_scid, amt, payment_ctr);
 }
 
 #[inline]
 fn send_hop_payment(
-	source: &ChanMan, middle: &ChanMan, middle_scid: u64, dest: &ChanMan, dest_scid: u64,
-	amt: u64, payment_ctr: &mut u64,
+	source: &ChanMan, middle: &ChanMan, middle_scid: u64, dest: &ChanMan, dest_scid: u64, amt: u64,
+	payment_ctr: &mut u64,
 ) -> bool {
 	let (payment_secret, payment_hash) = get_payment_secret_hash(dest, payment_ctr);
 	let mut payment_id = [0; 32];
@@ -675,7 +681,7 @@ fn send_hop_payment(
 #[inline]
 pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 	let out = SearchingOutput::new(underlying_out);
-	let broadcast = Arc::new(TestBroadcaster {});
+	let broadcast = Arc::new(TestBroadcaster { txn_broadcasted: RefCell::new(Vec::new()) });
 	let router = FuzzRouter {};
 
 	// Read initial monitor styles from fuzz input (1 byte: 2 bits per node)
@@ -1097,6 +1103,10 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 	let chan_1_id = make_channel!(nodes[0], nodes[1], monitor_a, monitor_b, keys_manager_b, 0);
 	let chan_2_id = make_channel!(nodes[1], nodes[2], monitor_b, monitor_c, keys_manager_c, 1);
 
+	// Wipe the transactions-broadcasted set to make sure we don't broadcast any transactions
+	// during normal operation in `test_return`.
+	broadcast.txn_broadcasted.borrow_mut().clear();
+
 	for node in nodes.iter() {
 		confirm_txn!(node);
 	}
@@ -1126,6 +1136,11 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 			assert_eq!(nodes[0].list_channels().len(), 1);
 			assert_eq!(nodes[1].list_channels().len(), 2);
 			assert_eq!(nodes[2].list_channels().len(), 1);
+
+			// At no point should we have broadcasted any transactions after the initial channel
+			// opens.
+			assert!(broadcast.txn_broadcasted.borrow().is_empty());
+
 			return;
 		}};
 	}
