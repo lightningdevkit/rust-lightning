@@ -946,7 +946,7 @@ pub async fn process_events_async<
 	PM: Deref,
 	LM: Deref,
 	D: Deref,
-	O: Deref,
+	O: OutputSpender,
 	K: KVStore,
 	OS: Deref<Target = OutputSweeper<T, D, F, CF, K, L, O>>,
 	S: Deref<Target = SC>,
@@ -967,7 +967,6 @@ where
 	OM::Target: AOnionMessenger,
 	PM::Target: APeerManager,
 	LM::Target: ALiquidityManager,
-	O::Target: OutputSpender,
 	D::Target: ChangeDestinationSource,
 {
 	let async_event_handler = |event| {
@@ -1441,7 +1440,7 @@ pub async fn process_events_async_with_kv_store_sync<
 	PM: Deref,
 	LM: Deref,
 	D: Deref,
-	O: Deref,
+	O: OutputSpender,
 	K: Deref,
 	OS: Deref<Target = OutputSweeperSync<T, D, F, CF, K, L, O>>,
 	S: Deref<Target = SC>,
@@ -1462,7 +1461,6 @@ where
 	OM::Target: AOnionMessenger,
 	PM::Target: APeerManager,
 	LM::Target: ALiquidityManager,
-	O::Target: OutputSpender,
 	D::Target: ChangeDestinationSourceSync,
 	K::Target: KVStoreSync,
 {
@@ -1556,7 +1554,7 @@ impl BackgroundProcessor {
 		S: 'static + Deref<Target = SC> + Send + Sync,
 		SC: for<'b> WriteableScore<'b>,
 		D: 'static + Deref,
-		O: 'static + Deref,
+		O: 'static + OutputSpender,
 		K: 'static + Deref + Send,
 		OS: 'static + Deref<Target = OutputSweeperSync<T, D, F, CF, K, L, O>> + Send,
 	>(
@@ -1573,7 +1571,6 @@ impl BackgroundProcessor {
 		PM::Target: APeerManager,
 		LM::Target: ALiquidityManagerSync,
 		D::Target: ChangeDestinationSourceSync,
-		O::Target: 'static + OutputSpender,
 		K::Target: 'static + KVStoreSync,
 	{
 		let stop_thread = Arc::new(AtomicBool::new(false));

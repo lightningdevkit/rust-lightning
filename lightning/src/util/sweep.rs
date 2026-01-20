@@ -344,10 +344,9 @@ pub struct OutputSweeper<
 	F: Filter,
 	K: KVStore,
 	L: Logger,
-	O: Deref,
+	O: OutputSpender,
 > where
 	D::Target: ChangeDestinationSource,
-	O::Target: OutputSpender,
 {
 	sweeper_state: Mutex<SweeperState>,
 	pending_sweep: AtomicBool,
@@ -367,11 +366,10 @@ impl<
 		F: Filter,
 		K: KVStore,
 		L: Logger,
-		O: Deref,
+		O: OutputSpender,
 	> OutputSweeper<B, D, E, F, K, L, O>
 where
 	D::Target: ChangeDestinationSource,
-	O::Target: OutputSpender,
 {
 	/// Constructs a new [`OutputSweeper`].
 	///
@@ -721,11 +719,10 @@ impl<
 		F: Filter + Sync + Send,
 		K: KVStore,
 		L: Logger,
-		O: Deref,
+		O: OutputSpender,
 	> Listen for OutputSweeper<B, D, E, F, K, L, O>
 where
 	D::Target: ChangeDestinationSource,
-	O::Target: OutputSpender,
 {
 	fn filtered_block_connected(
 		&self, header: &Header, txdata: &chain::transaction::TransactionData, height: u32,
@@ -764,11 +761,10 @@ impl<
 		F: Filter + Sync + Send,
 		K: KVStore,
 		L: Logger,
-		O: Deref,
+		O: OutputSpender,
 	> Confirm for OutputSweeper<B, D, E, F, K, L, O>
 where
 	D::Target: ChangeDestinationSource,
-	O::Target: OutputSpender,
 {
 	fn transactions_confirmed(
 		&self, header: &Header, txdata: &chain::transaction::TransactionData, height: u32,
@@ -863,11 +859,10 @@ impl<
 		F: Filter + Sync + Send,
 		K: KVStore,
 		L: Logger,
-		O: Deref,
+		O: OutputSpender,
 	> ReadableArgs<(B, E, Option<F>, O, D, K, L)> for (BestBlock, OutputSweeper<B, D, E, F, K, L, O>)
 where
 	D::Target: ChangeDestinationSource,
-	O::Target: OutputSpender,
 {
 	#[inline]
 	fn read<R: io::Read>(
@@ -935,11 +930,10 @@ pub struct OutputSweeperSync<
 	F: Filter,
 	K: Deref,
 	L: Logger,
-	O: Deref,
+	O: OutputSpender,
 > where
 	D::Target: ChangeDestinationSourceSync,
 	K::Target: KVStoreSync,
-	O::Target: OutputSpender,
 {
 	sweeper:
 		OutputSweeper<B, ChangeDestinationSourceSyncWrapper<D>, E, F, KVStoreSyncWrapper<K>, L, O>,
@@ -952,12 +946,11 @@ impl<
 		F: Filter,
 		K: Deref,
 		L: Logger,
-		O: Deref,
+		O: OutputSpender,
 	> OutputSweeperSync<B, D, E, F, K, L, O>
 where
 	D::Target: ChangeDestinationSourceSync,
 	K::Target: KVStoreSync,
-	O::Target: OutputSpender,
 {
 	/// Constructs a new [`OutputSweeperSync`] instance.
 	///
@@ -1075,12 +1068,11 @@ impl<
 		F: Filter + Sync + Send,
 		K: Deref,
 		L: Logger,
-		O: Deref,
+		O: OutputSpender,
 	> Listen for OutputSweeperSync<B, D, E, F, K, L, O>
 where
 	D::Target: ChangeDestinationSourceSync,
 	K::Target: KVStoreSync,
-	O::Target: OutputSpender,
 {
 	fn filtered_block_connected(
 		&self, header: &Header, txdata: &chain::transaction::TransactionData, height: u32,
@@ -1100,12 +1092,11 @@ impl<
 		F: Filter + Sync + Send,
 		K: Deref,
 		L: Logger,
-		O: Deref,
+		O: OutputSpender,
 	> Confirm for OutputSweeperSync<B, D, E, F, K, L, O>
 where
 	D::Target: ChangeDestinationSourceSync,
 	K::Target: KVStoreSync,
-	O::Target: OutputSpender,
 {
 	fn transactions_confirmed(
 		&self, header: &Header, txdata: &chain::transaction::TransactionData, height: u32,
@@ -1133,13 +1124,12 @@ impl<
 		F: Filter + Sync + Send,
 		K: Deref,
 		L: Logger,
-		O: Deref,
+		O: OutputSpender,
 	> ReadableArgs<(B, E, Option<F>, O, D, K, L)>
 	for (BestBlock, OutputSweeperSync<B, D, E, F, K, L, O>)
 where
 	D::Target: ChangeDestinationSourceSync,
 	K::Target: KVStoreSync,
-	O::Target: OutputSpender,
 {
 	#[inline]
 	fn read<R: io::Read>(
