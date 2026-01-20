@@ -53,7 +53,7 @@ const TLV_INVREQ_METADATA: u64 = 0;
 // TODO: Invoice TLV types (168, 174, 176) could potentially be exported from invoice.rs
 const TLV_INVOICE_PAYMENT_HASH: u64 = 168;
 const TLV_INVOICE_FEATURES: u64 = 174;
-const TLV_INVOICE_NODE_ID: u64 = 176;
+const TLV_ISSUER_SIGNING_PUBKEY: u64 = 176;
 
 /// Human-readable prefix for payer proofs in bech32 encoding.
 pub const PAYER_PROOF_HRP: &str = "lnp";
@@ -116,7 +116,7 @@ pub struct PayerProof {
 struct PayerProofContents {
 	payer_id: PublicKey,
 	payment_hash: PaymentHash,
-	invoice_node_id: PublicKey,
+	issuer_signing_pubkey: PublicKey,
 	preimage: PaymentPreimage,
 	invoice_signature: Signature,
 	payer_signature: Signature,
@@ -144,7 +144,7 @@ struct PayerProofContents {
 /// Builds a [`PayerProof`] from a paid invoice and its preimage.
 ///
 /// By default, only the required fields are included (payer_id, payment_hash,
-/// invoice_node_id). Additional fields can be included for selective disclosure
+/// issuer_signing_pubkey). Additional fields can be included for selective disclosure
 /// using the `include_*` methods.
 pub struct PayerProofBuilder<'a> {
 	invoice: &'a Bolt12Invoice,
@@ -167,7 +167,7 @@ impl<'a> PayerProofBuilder<'a> {
 		let mut included_types = BTreeSet::new();
 		included_types.insert(INVOICE_REQUEST_PAYER_ID_TYPE);
 		included_types.insert(TLV_INVOICE_PAYMENT_HASH);
-		included_types.insert(TLV_INVOICE_NODE_ID);
+		included_types.insert(TLV_ISSUER_SIGNING_PUBKEY);
 
 		if invoice.invoice_features() != &Bolt12InvoiceFeatures::empty() {
 			included_types.insert(TLV_INVOICE_FEATURES);
@@ -243,7 +243,7 @@ impl<'a> PayerProofBuilder<'a> {
 			preimage: self.preimage,
 			payer_id: self.invoice.payer_signing_pubkey(),
 			payment_hash: self.invoice.payment_hash().clone(),
-			invoice_node_id: self.invoice.signing_pubkey(),
+			issuer_signing_pubkey: self.invoice.signing_pubkey(),
 			included_records,
 			disclosure,
 			invoice_features: if self.included_types.contains(&174) {
@@ -261,7 +261,7 @@ pub struct UnsignedPayerProof {
 	preimage: PaymentPreimage,
 	payer_id: PublicKey,
 	payment_hash: PaymentHash,
-	invoice_node_id: PublicKey,
+	issuer_signing_pubkey: PublicKey,
 	included_records: Vec<(u64, Vec<u8>)>,
 	disclosure: SelectiveDisclosure,
 	invoice_features: Option<Bolt12InvoiceFeatures>,
@@ -293,7 +293,7 @@ impl UnsignedPayerProof {
 			contents: PayerProofContents {
 				payer_id: self.payer_id,
 				payment_hash: self.payment_hash,
-				invoice_node_id: self.invoice_node_id,
+				issuer_signing_pubkey: self.issuer_signing_pubkey,
 				preimage: self.preimage,
 				invoice_signature: self.invoice_signature,
 				payer_signature,
@@ -399,7 +399,7 @@ impl PayerProof {
 		merkle::verify_signature(
 			&self.contents.invoice_signature,
 			&tagged_hash,
-			self.contents.invoice_node_id,
+			self.contents.issuer_signing_pubkey,
 		)
 		.map_err(|_| PayerProofError::InvalidInvoiceSignature)?;
 
@@ -430,9 +430,9 @@ impl PayerProof {
 		self.contents.payer_id
 	}
 
-	/// The invoice node ID (who was paid).
-	pub fn invoice_node_id(&self) -> PublicKey {
-		self.contents.invoice_node_id
+	/// The issuer's signing public key (the key that signed the invoice).
+	pub fn issuer_signing_pubkey(&self) -> PublicKey {
+		self.contents.issuer_signing_pubkey
 	}
 
 	/// The payment hash.
@@ -475,7 +475,7 @@ impl TryFrom<Vec<u8>> for PayerProof {
 
 		let mut payer_id: Option<PublicKey> = None;
 		let mut payment_hash: Option<PaymentHash> = None;
-		let mut invoice_node_id: Option<PublicKey> = None;
+		let mut issuer_signing_pubkey: Option<PublicKey> = None;
 		let mut invoice_signature: Option<Signature> = None;
 		let mut preimage: Option<PaymentPreimage> = None;
 		let mut payer_signature: Option<Signature> = None;
@@ -534,11 +534,11 @@ impl TryFrom<Vec<u8>> for PayerProof {
 					included_types.insert(tlv_type);
 					included_records.push((tlv_type, record.record_bytes.to_vec()));
 				},
-				TLV_INVOICE_NODE_ID => {
+				TLV_ISSUER_SIGNING_PUBKEY => {
 					let mut record_cursor = io::Cursor::new(record.record_bytes);
 					let _type: BigSize = Readable::read(&mut record_cursor)?;
 					let _len: BigSize = Readable::read(&mut record_cursor)?;
-					invoice_node_id = Some(Readable::read(&mut record_cursor)?);
+					issuer_signing_pubkey = Some(Readable::read(&mut record_cursor)?);
 					included_types.insert(tlv_type);
 					included_records.push((tlv_type, record.record_bytes.to_vec()));
 				},
@@ -634,9 +634,10 @@ impl TryFrom<Vec<u8>> for PayerProof {
 		let payment_hash = payment_hash.ok_or(Bolt12ParseError::InvalidSemantics(
 			crate::offers::parse::Bolt12SemanticError::MissingPaymentHash,
 		))?;
-		let invoice_node_id = invoice_node_id.ok_or(Bolt12ParseError::InvalidSemantics(
-			crate::offers::parse::Bolt12SemanticError::MissingSigningPubkey,
-		))?;
+		let issuer_signing_pubkey =
+			issuer_signing_pubkey.ok_or(Bolt12ParseError::InvalidSemantics(
+				crate::offers::parse::Bolt12SemanticError::MissingSigningPubkey,
+			))?;
 		let invoice_signature = invoice_signature.ok_or(Bolt12ParseError::InvalidSemantics(
 			crate::offers::parse::Bolt12SemanticError::MissingSignature,
 		))?;
@@ -667,7 +668,7 @@ impl TryFrom<Vec<u8>> for PayerProof {
 			contents: PayerProofContents {
 				payer_id,
 				payment_hash,
-				invoice_node_id,
+				issuer_signing_pubkey,
 				preimage,
 				invoice_signature,
 				payer_signature,
