@@ -382,6 +382,9 @@ macro_rules! offer_builder_methods { (
 	pub fn build($($self_mut)* $self: $self_type) -> Result<Offer, Bolt12SemanticError> {
 		match $self.offer.amount {
 			Some(Amount::Bitcoin { amount_msats }) => {
+				if amount_msats == 0 {
+					$self.offer.amount = None;
+				}
 				if amount_msats > MAX_VALUE_MSAT {
 					return Err(Bolt12SemanticError::InvalidAmount);
 				}
@@ -1158,11 +1161,12 @@ impl TryFrom<FullOfferTlvStream> for OfferContents {
 
 		let amount = match (currency, amount) {
 			(None, None) => None,
-			(None, Some(amount_msats)) if amount_msats > MAX_VALUE_MSAT => {
+			(None, Some(amount_msats)) if amount_msats == 0 || amount_msats > MAX_VALUE_MSAT => {
 				return Err(Bolt12SemanticError::InvalidAmount);
 			},
 			(None, Some(amount_msats)) => Some(Amount::Bitcoin { amount_msats }),
 			(Some(_), None) => return Err(Bolt12SemanticError::MissingAmount),
+			(Some(_), Some(0)) => return Err(Bolt12SemanticError::InvalidAmount),
 			(Some(iso4217_code), Some(amount)) => Some(Amount::Currency { iso4217_code, amount }),
 		};
 
@@ -1515,6 +1519,12 @@ mod tests {
 			Ok(_) => panic!("expected error"),
 			Err(e) => assert_eq!(e, Bolt12SemanticError::InvalidAmount),
 		}
+
+		// An amount of 0 is rejected per BOLT 12, so we map it to `None` instead.
+		match OfferBuilder::new(pubkey(42)).amount_msats(0).build() {
+			Ok(offer) => assert_eq!(offer.amount(), None),
+			Err(_) => panic!("expected offer"),
+		}
 	}
 
 	#[test]
@@ -1763,6 +1773,59 @@ mod tests {
 		match Offer::try_from(encoded_offer) {
 			Ok(_) => panic!("expected error"),
 			Err(e) => assert_eq!(e, Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::InvalidAmount)),
+		}
+
+		// An offer with amount=0 must be rejected per BOLT 12.
+		let mut tlv_stream = offer.as_tlv_stream();
+		tlv_stream.0.amount = Some(0);
+		tlv_stream.0.currency = None;
+
+		let mut encoded_offer = Vec::new();
+		tlv_stream.write(&mut encoded_offer).unwrap();
+
+		match Offer::try_from(encoded_offer) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(
+				e,
+				Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::InvalidAmount)
+			),
+		}
+
+		// An offer with amount=0 and a currency must also be rejected.
+		let mut tlv_stream = offer.as_tlv_stream();
+		tlv_stream.0.amount = Some(0);
+		tlv_stream.0.currency = Some(b"USD");
+
+		let mut encoded_offer = Vec::new();
+		tlv_stream.write(&mut encoded_offer).unwrap();
+
+		match Offer::try_from(encoded_offer) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(
+				e,
+				Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::InvalidAmount)
+			),
+		}
+
+		// BOLT 12 test vectors: verify rejection of offers with amount=0 from their
+		// bech32 encoding (see bolt12/offers-test.json).
+		match "lno1pqqq5qqkyyp4he0fg7pqje62jmnq78cr0ashv4q06qql58tyd9rhp3t2wuyugtq".parse::<Offer>()
+		{
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(
+				e,
+				Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::InvalidAmount)
+			),
+		}
+
+		match "lno1qcp4256ypqqq5qqkyyp4he0fg7pqje62jmnq78cr0ashv4q06qql58tyd9rhp3t2wuyugtq"
+			.parse::<Offer>()
+		{
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(
+				e,
+				Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::InvalidAmount)
+			),
 		}
 	}
 
