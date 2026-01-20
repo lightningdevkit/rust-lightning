@@ -19,13 +19,16 @@
 
 use alloc::collections::BTreeSet;
 
+use super::signer::derive_keys;
 use crate::io;
 use crate::io::Read;
+use crate::ln::inbound_payment::ExpandedKey;
 use crate::offers::invoice::{Bolt12Invoice, SIGNATURE_TAG};
 use crate::offers::invoice_request::INVOICE_REQUEST_PAYER_ID_TYPE;
 use crate::offers::merkle::{
 	self, SelectiveDisclosure, SelectiveDisclosureError, TaggedHash, TlvStream, SIGNATURE_TYPES,
 };
+use crate::offers::nonce::Nonce;
 use crate::offers::parse::Bech32Encode;
 use crate::types::features::Bolt12InvoiceFeatures;
 use crate::types::payment::{PaymentHash, PaymentPreimage};
@@ -309,6 +312,28 @@ impl UnsignedPayerProof {
 			},
 			merkle_root: self.disclosure.merkle_root,
 		})
+	}
+
+	/// Sign the proof using a key derived from an [`ExpandedKey`] and [`Nonce`].
+	///
+	/// This method derives the payer signing key using the same derivation scheme as invoice
+	/// requests with derived signing pubkeys. Use this when the invoice request was created
+	/// with `deriving_signing_pubkey` and you want to sign the payer proof with the same key.
+	///
+	/// The derived key must match the `payer_id` in the original invoice for the signature
+	/// to be valid.
+	pub fn sign_with_derived_key(
+		self, expanded_key: &ExpandedKey, nonce: Nonce, note: Option<&str>,
+	) -> Result<PayerProof, PayerProofError> {
+		let keys = derive_keys(nonce, expanded_key);
+
+		// Verify the derived key matches the expected payer_id
+		if keys.public_key() != self.payer_id {
+			return Err(PayerProofError::InvalidPayerSignature);
+		}
+
+		let secp_ctx = Secp256k1::new();
+		self.sign(|message| Ok(secp_ctx.sign_schnorr_no_aux_rand(message, &keys)), note)
 	}
 
 	/// Compute the payer signature message per BOLT 12 signature calculation.
