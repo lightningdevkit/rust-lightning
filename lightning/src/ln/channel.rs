@@ -6501,8 +6501,7 @@ fn get_v2_channel_reserve_satoshis(channel_value_satoshis: u64, dust_limit_satos
 fn check_splice_contribution_sufficient(
 	contribution: &SpliceContribution, is_initiator: bool, funding_feerate: FeeRate,
 ) -> Result<SignedAmount, String> {
-	let contribution_amount = contribution.value();
-	if contribution_amount < SignedAmount::ZERO {
+	if contribution.inputs().is_empty() {
 		let estimated_fee = Amount::from_sat(estimate_v2_funding_transaction_fee(
 			contribution.inputs(),
 			contribution.outputs(),
@@ -6511,20 +6510,25 @@ fn check_splice_contribution_sufficient(
 			funding_feerate.to_sat_per_kwu() as u32,
 		));
 
+		let contribution_amount = contribution.net_value();
 		contribution_amount
 			.checked_sub(
 				estimated_fee.to_signed().expect("fees should never exceed Amount::MAX_MONEY"),
 			)
-			.ok_or(format!("Our {contribution_amount} contribution plus the fee estimate exceeds the total bitcoin supply"))
+			.ok_or(format!(
+				"{estimated_fee} splice-out amount plus {} fee estimate exceeds the total bitcoin supply",
+				contribution_amount.unsigned_abs(),
+			))
 	} else {
 		check_v2_funding_inputs_sufficient(
-			contribution_amount.to_sat(),
+			contribution.value_added(),
 			contribution.inputs(),
+			contribution.outputs(),
 			is_initiator,
 			true,
 			funding_feerate.to_sat_per_kwu() as u32,
 		)
-		.map(|_| contribution_amount)
+		.map(|_| contribution.net_value())
 	}
 }
 
@@ -6583,16 +6587,16 @@ fn estimate_v2_funding_transaction_fee(
 /// Returns estimated (partial) fees as additional information
 #[rustfmt::skip]
 fn check_v2_funding_inputs_sufficient(
-	contribution_amount: i64, funding_inputs: &[FundingTxInput], is_initiator: bool,
-	is_splice: bool, funding_feerate_sat_per_1000_weight: u32,
-) -> Result<u64, String> {
-	let estimated_fee = estimate_v2_funding_transaction_fee(
-		funding_inputs, &[], is_initiator, is_splice, funding_feerate_sat_per_1000_weight,
-	);
+	contributed_input_value: Amount, funding_inputs: &[FundingTxInput], outputs: &[TxOut],
+	is_initiator: bool, is_splice: bool, funding_feerate_sat_per_1000_weight: u32,
+) -> Result<Amount, String> {
+	let estimated_fee = Amount::from_sat(estimate_v2_funding_transaction_fee(
+		funding_inputs, outputs, is_initiator, is_splice, funding_feerate_sat_per_1000_weight,
+	));
 
-	let mut total_input_sats = 0u64;
+	let mut total_input_value = Amount::ZERO;
 	for FundingTxInput { utxo, .. } in funding_inputs.iter() {
-		total_input_sats = total_input_sats.checked_add(utxo.output.value.to_sat())
+		total_input_value = total_input_value.checked_add(utxo.output.value)
 			.ok_or("Sum of input values is greater than the total bitcoin supply")?;
 	}
 
@@ -6607,13 +6611,11 @@ fn check_v2_funding_inputs_sufficient(
 	// TODO(splicing): refine check including the fact wether a change will be added or not.
 	// Can be done once dual funding preparation is included.
 
-	let minimal_input_amount_needed = contribution_amount.checked_add(estimated_fee as i64)
-		.ok_or(format!("Our {contribution_amount} contribution plus the fee estimate exceeds the total bitcoin supply"))?;
-	if i64::try_from(total_input_sats).map_err(|_| "Sum of input values is greater than the total bitcoin supply")?
-		< minimal_input_amount_needed
-	{
+	let minimal_input_amount_needed = contributed_input_value.checked_add(estimated_fee)
+		.ok_or(format!("{contributed_input_value} contribution plus {estimated_fee} fee estimate exceeds the total bitcoin supply"))?;
+	if total_input_value < minimal_input_amount_needed {
 		Err(format!(
-			"Total input amount {total_input_sats} is lower than needed for contribution {contribution_amount}, considering fees of {estimated_fee}. Need more inputs.",
+			"Total input amount {total_input_value} is lower than needed for splice-in contribution {contributed_input_value}, considering fees of {estimated_fee}. Need more inputs.",
 		))
 	} else {
 		Ok(estimated_fee)
@@ -6679,7 +6681,7 @@ impl FundingNegotiationContext {
 		};
 
 		// Optionally add change output
-		let change_value_opt = if self.our_funding_contribution > SignedAmount::ZERO {
+		let change_value_opt = if !self.our_funding_inputs.is_empty() {
 			match calculate_change_output_value(
 				&self,
 				self.shared_funding_input.is_some(),
@@ -6707,12 +6709,12 @@ impl FundingNegotiationContext {
 					},
 				}
 			};
-			let mut change_output =
-				TxOut { value: Amount::from_sat(change_value), script_pubkey: change_script };
+			let mut change_output = TxOut { value: change_value, script_pubkey: change_script };
 			let change_output_weight = get_output_weight(&change_output.script_pubkey).to_wu();
 			let change_output_fee =
 				fee_for_weight(self.funding_feerate_sat_per_1000_weight, change_output_weight);
-			let change_value_decreased_with_fee = change_value.saturating_sub(change_output_fee);
+			let change_value_decreased_with_fee =
+				change_value.to_sat().saturating_sub(change_output_fee);
 			// Check dust limit again
 			if change_value_decreased_with_fee > context.holder_dust_limit_satoshis {
 				change_output.value = Amount::from_sat(change_value_decreased_with_fee);
@@ -12070,7 +12072,7 @@ where
 			});
 		}
 
-		let our_funding_contribution = contribution.value();
+		let our_funding_contribution = contribution.net_value();
 		if our_funding_contribution == SignedAmount::ZERO {
 			return Err(APIError::APIMisuseError {
 				err: format!(
@@ -18525,6 +18527,13 @@ mod tests {
 		FundingTxInput::new_p2wpkh(prevtx, 0).unwrap()
 	}
 
+	fn funding_output_sats(output_value_sats: u64) -> TxOut {
+		TxOut {
+			value: Amount::from_sat(output_value_sats),
+			script_pubkey: ScriptBuf::new_p2wpkh(&WPubkeyHash::all_zeros()),
+		}
+	}
+
 	#[test]
 	#[rustfmt::skip]
 	fn test_check_v2_funding_inputs_sufficient() {
@@ -18535,16 +18544,83 @@ mod tests {
 			let expected_fee = if cfg!(feature = "grind_signatures") { 2278 } else { 2284 };
 			assert_eq!(
 				check_v2_funding_inputs_sufficient(
-					220_000,
+					Amount::from_sat(220_000),
 					&[
 						funding_input_sats(200_000),
 						funding_input_sats(100_000),
+					],
+					&[],
+					true,
+					true,
+					2000,
+				).unwrap(),
+				Amount::from_sat(expected_fee),
+			);
+		}
+
+		// Net splice-in
+		{
+			let expected_fee = if cfg!(feature = "grind_signatures") { 2526 } else { 2532 };
+			assert_eq!(
+				check_v2_funding_inputs_sufficient(
+					Amount::from_sat(220_000),
+					&[
+						funding_input_sats(200_000),
+						funding_input_sats(100_000),
+					],
+					&[
+						funding_output_sats(200_000),
 					],
 					true,
 					true,
 					2000,
 				).unwrap(),
-				expected_fee,
+				Amount::from_sat(expected_fee),
+			);
+		}
+
+		// Net splice-out
+		{
+			let expected_fee = if cfg!(feature = "grind_signatures") { 2526 } else { 2532 };
+			assert_eq!(
+				check_v2_funding_inputs_sufficient(
+					Amount::from_sat(220_000),
+					&[
+						funding_input_sats(200_000),
+						funding_input_sats(100_000),
+					],
+					&[
+						funding_output_sats(400_000),
+					],
+					true,
+					true,
+					2000,
+				).unwrap(),
+				Amount::from_sat(expected_fee),
+			);
+		}
+
+		// Net splice-out, inputs insufficient to cover fees
+		{
+			let expected_fee = if cfg!(feature = "grind_signatures") { 113670 } else { 113940 };
+			assert_eq!(
+				check_v2_funding_inputs_sufficient(
+					Amount::from_sat(220_000),
+					&[
+						funding_input_sats(200_000),
+						funding_input_sats(100_000),
+					],
+					&[
+						funding_output_sats(400_000),
+					],
+					true,
+					true,
+					90000,
+				),
+				Err(format!(
+					"Total input amount 0.00300000 BTC is lower than needed for splice-in contribution 0.00220000 BTC, considering fees of {}. Need more inputs.",
+					Amount::from_sat(expected_fee),
+				)),
 			);
 		}
 
@@ -18553,17 +18629,18 @@ mod tests {
 			let expected_fee = if cfg!(feature = "grind_signatures") { 1736 } else { 1740 };
 			assert_eq!(
 				check_v2_funding_inputs_sufficient(
-					220_000,
+					Amount::from_sat(220_000),
 					&[
 						funding_input_sats(100_000),
 					],
+					&[],
 					true,
 					true,
 					2000,
 				),
 				Err(format!(
-					"Total input amount 100000 is lower than needed for contribution 220000, considering fees of {}. Need more inputs.",
-					expected_fee,
+					"Total input amount 0.00100000 BTC is lower than needed for splice-in contribution 0.00220000 BTC, considering fees of {}. Need more inputs.",
+					Amount::from_sat(expected_fee),
 				)),
 			);
 		}
@@ -18573,16 +18650,17 @@ mod tests {
 			let expected_fee = if cfg!(feature = "grind_signatures") { 2278 } else { 2284 };
 			assert_eq!(
 				check_v2_funding_inputs_sufficient(
-					(300_000 - expected_fee - 20) as i64,
+					Amount::from_sat(300_000 - expected_fee - 20),
 					&[
 						funding_input_sats(200_000),
 						funding_input_sats(100_000),
 					],
+					&[],
 					true,
 					true,
 					2000,
 				).unwrap(),
-				expected_fee,
+				Amount::from_sat(expected_fee),
 			);
 		}
 
@@ -18591,18 +18669,19 @@ mod tests {
 			let expected_fee = if cfg!(feature = "grind_signatures") { 2506 } else { 2513 };
 			assert_eq!(
 				check_v2_funding_inputs_sufficient(
-					298032,
+					Amount::from_sat(298032),
 					&[
 						funding_input_sats(200_000),
 						funding_input_sats(100_000),
 					],
+					&[],
 					true,
 					true,
 					2200,
 				),
 				Err(format!(
-					"Total input amount 300000 is lower than needed for contribution 298032, considering fees of {}. Need more inputs.",
-					expected_fee
+					"Total input amount 0.00300000 BTC is lower than needed for splice-in contribution 0.00298032 BTC, considering fees of {}. Need more inputs.",
+					Amount::from_sat(expected_fee),
 				)),
 			);
 		}
@@ -18612,16 +18691,17 @@ mod tests {
 			let expected_fee = if cfg!(feature = "grind_signatures") { 1084 } else { 1088 };
 			assert_eq!(
 				check_v2_funding_inputs_sufficient(
-					(300_000 - expected_fee - 20) as i64,
+					Amount::from_sat(300_000 - expected_fee - 20),
 					&[
 						funding_input_sats(200_000),
 						funding_input_sats(100_000),
 					],
+					&[],
 					false,
 					false,
 					2000,
 				).unwrap(),
-				expected_fee,
+				Amount::from_sat(expected_fee),
 			);
 		}
 	}
