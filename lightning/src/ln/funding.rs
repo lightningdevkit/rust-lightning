@@ -19,7 +19,7 @@ use bitcoin::{
 use core::ops::Deref;
 
 use crate::events::bump_transaction::sync::CoinSelectionSourceSync;
-use crate::events::bump_transaction::{CoinSelectionSource, Input, Utxo};
+use crate::events::bump_transaction::{CoinSelection, CoinSelectionSource, Input, Utxo};
 use crate::ln::chan_utils::{
 	make_funding_redeemscript, BASE_INPUT_WEIGHT, EMPTY_SCRIPT_SIG_WEIGHT,
 	FUNDING_TRANSACTION_WITNESS_WEIGHT,
@@ -57,18 +57,15 @@ pub struct FundingTemplate {
 
 impl FundingTemplate {
 	/// Constructs a [`FundingTemplate`] for a splice using the provided shared input.
-	pub(super) fn new(
-		shared_input: Option<Input>, feerate: FeeRate, is_initiator: bool,
-	) -> Self {
+	pub(super) fn new(shared_input: Option<Input>, feerate: FeeRate, is_initiator: bool) -> Self {
 		Self { shared_input, feerate, is_initiator }
 	}
 }
 
 macro_rules! build_funding_contribution {
-    ($value_added:expr, $outputs:expr, $change_script:expr, $shared_input:expr, $feerate:expr, $is_initiator:expr, $wallet:ident, $($await:tt)*) => {{
+    ($value_added:expr, $outputs:expr, $shared_input:expr, $feerate:expr, $is_initiator:expr, $wallet:ident, $($await:tt)*) => {{
 		let value_added: Amount = $value_added;
 		let outputs: Vec<TxOut> = $outputs;
-		let change_script: Option<ScriptBuf> = $change_script;
 		let shared_input: Option<Input> = $shared_input;
 		let feerate: FeeRate = $feerate;
 		let is_initiator: bool = $is_initiator;
@@ -76,8 +73,8 @@ macro_rules! build_funding_contribution {
 		let value_removed = outputs.iter().map(|txout| txout.value).sum();
 		let is_splice = shared_input.is_some();
 
-		let inputs = if value_added == Amount::ZERO {
-			vec![]
+		let coin_selection = if value_added == Amount::ZERO {
+			CoinSelection { confirmed_utxos: vec![], change_output: None }
 		} else {
 			// Used for creating a redeem script for the new funding txo, since the funding pubkeys
 			// are unknown at this point. Only needed when selecting which UTXOs to include in the
@@ -98,17 +95,18 @@ macro_rules! build_funding_contribution {
 
 			let claim_id = None;
 			let must_spend = shared_input.map(|input| vec![input]).unwrap_or_default();
-			let selection = if outputs.is_empty() {
+			if outputs.is_empty() {
 				let must_pay_to = &[shared_output];
 				$wallet.select_confirmed_utxos(claim_id, must_spend, must_pay_to, feerate.to_sat_per_kwu() as u32, u64::MAX)$(.$await)*?
 			} else {
 				let must_pay_to: Vec<_> = outputs.iter().cloned().chain(core::iter::once(shared_output)).collect();
 				$wallet.select_confirmed_utxos(claim_id, must_spend, &must_pay_to, feerate.to_sat_per_kwu() as u32, u64::MAX)$(.$await)*?
-			};
-			selection.confirmed_utxos
+			}
 		};
 
 		// NOTE: Must NOT fail after UTXO selection
+
+		let CoinSelection { confirmed_utxos: inputs, change_output } = coin_selection;
 
 		let estimated_fee = estimate_transaction_fee(&inputs, &outputs, is_initiator, is_splice, feerate);
 
@@ -117,7 +115,7 @@ macro_rules! build_funding_contribution {
 			estimated_fee,
 			inputs,
 			outputs,
-			change_script,
+			change_output,
 			feerate,
 			is_initiator,
 			is_splice,
@@ -130,13 +128,8 @@ macro_rules! build_funding_contribution {
 impl FundingTemplate {
 	/// Creates a [`FundingContribution`] for adding funds to a channel using `wallet` to perform
 	/// coin selection.
-	///
-	/// An optional `change_script` may be given to use as a change output. If `None` and change is
-	/// needed, one will be generated using [`SignerProvider::get_destination_script`].
-	///
-	/// [`SignerProvider::get_destination_script`]: crate::sign::SignerProvider::get_destination_script
 	pub async fn splice_in<W: Deref + MaybeSend>(
-		self, change_script: Option<ScriptBuf>, value_added: Amount, wallet: W,
+		self, value_added: Amount, wallet: W,
 	) -> Result<FundingContribution, ()>
 	where
 		W::Target: CoinSelectionSource + MaybeSend,
@@ -145,18 +138,13 @@ impl FundingTemplate {
 			return Err(());
 		}
 		let FundingTemplate { shared_input, feerate, is_initiator } = self;
-		build_funding_contribution!(value_added, vec![], change_script, shared_input, feerate, is_initiator, wallet, await)
+		build_funding_contribution!(value_added, vec![], shared_input, feerate, is_initiator, wallet, await)
 	}
 
 	/// Creates a [`FundingContribution`] for adding funds to a channel using `wallet` to perform
 	/// coin selection.
-	///
-	/// An optional `change_script` may be given to use as a change output. If `None` and change is
-	/// needed, one will be generated using [`SignerProvider::get_destination_script`].
-	///
-	/// [`SignerProvider::get_destination_script`]: crate::sign::SignerProvider::get_destination_script
 	pub fn splice_in_sync<W: Deref>(
-		self, change_script: Option<ScriptBuf>, value_added: Amount, wallet: W,
+		self, value_added: Amount, wallet: W,
 	) -> Result<FundingContribution, ()>
 	where
 		W::Target: CoinSelectionSourceSync,
@@ -168,7 +156,6 @@ impl FundingTemplate {
 		build_funding_contribution!(
 			value_added,
 			vec![],
-			change_script,
 			shared_input,
 			feerate,
 			is_initiator,
@@ -188,7 +175,7 @@ impl FundingTemplate {
 			return Err(());
 		}
 		let FundingTemplate { shared_input, feerate, is_initiator } = self;
-		build_funding_contribution!(Amount::ZERO, outputs, None, shared_input, feerate, is_initiator, wallet, await)
+		build_funding_contribution!(Amount::ZERO, outputs, shared_input, feerate, is_initiator, wallet, await)
 	}
 
 	/// Creates a [`FundingContribution`] for removing funds from a channel using `wallet` to
@@ -206,7 +193,6 @@ impl FundingTemplate {
 		build_funding_contribution!(
 			Amount::ZERO,
 			outputs,
-			None,
 			shared_input,
 			feerate,
 			is_initiator,
@@ -216,14 +202,8 @@ impl FundingTemplate {
 
 	/// Creates a [`FundingContribution`] for both adding and removing funds from a channel using
 	/// `wallet` to perform coin selection.
-	///
-	/// An optional `change_script` may be given to use as a change output. If `None` and change is
-	/// needed, one will be generated using [`SignerProvider::get_destination_script`].
-	///
-	/// [`SignerProvider::get_destination_script`]: crate::sign::SignerProvider::get_destination_script
 	pub async fn splice_in_and_out<W: Deref + MaybeSend>(
-		self, change_script: Option<ScriptBuf>, value_added: Amount, outputs: Vec<TxOut>,
-		wallet: W,
+		self, value_added: Amount, outputs: Vec<TxOut>, wallet: W,
 	) -> Result<FundingContribution, ()>
 	where
 		W::Target: CoinSelectionSource + MaybeSend,
@@ -232,19 +212,13 @@ impl FundingTemplate {
 			return Err(());
 		}
 		let FundingTemplate { shared_input, feerate, is_initiator } = self;
-		build_funding_contribution!(value_added, outputs, change_script, shared_input, feerate, is_initiator, wallet, await)
+		build_funding_contribution!(value_added, outputs, shared_input, feerate, is_initiator, wallet, await)
 	}
 
 	/// Creates a [`FundingContribution`] for both adding and removing funds from a channel using
 	/// `wallet` to perform coin selection.
-	///
-	/// An optional `change_script` may be given to use as a change output. If `None` and change is
-	/// needed, one will be generated using [`SignerProvider::get_destination_script`].
-	///
-	/// [`SignerProvider::get_destination_script`]: crate::sign::SignerProvider::get_destination_script
 	pub fn splice_in_and_out_sync<W: Deref>(
-		self, change_script: Option<ScriptBuf>, value_added: Amount, outputs: Vec<TxOut>,
-		wallet: W,
+		self, value_added: Amount, outputs: Vec<TxOut>, wallet: W,
 	) -> Result<FundingContribution, ()>
 	where
 		W::Target: CoinSelectionSourceSync,
@@ -256,7 +230,6 @@ impl FundingTemplate {
 		build_funding_contribution!(
 			value_added,
 			outputs,
-			change_script,
 			shared_input,
 			feerate,
 			is_initiator,
@@ -334,11 +307,8 @@ pub struct FundingContribution {
 	/// will be the amount that is removed.
 	outputs: Vec<TxOut>,
 
-	/// An optional change output script. This will be used if needed or, when not set,
-	/// generated using [`SignerProvider::get_destination_script`].
-	///
-	/// [`SignerProvider::get_destination_script`]: crate::sign::SignerProvider::get_destination_script
-	change_script: Option<ScriptBuf>,
+	/// The output where any change will be sent.
+	change_output: Option<TxOut>,
 
 	/// The fee rate used to select `inputs`.
 	feerate: FeeRate,
@@ -356,7 +326,7 @@ impl_writeable_tlv_based!(FundingContribution, {
 	(3, estimated_fee, required),
 	(5, inputs, optional_vec),
 	(7, outputs, optional_vec),
-	(9, change_script, option),
+	(9, change_output, option),
 	(11, feerate, required),
 	(13, is_initiator, required),
 	(15, is_splice, required),
@@ -375,13 +345,20 @@ impl FundingContribution {
 		self.is_splice
 	}
 
-	pub(super) fn into_tx_parts(self) -> (Vec<FundingTxInput>, Vec<TxOut>, Option<ScriptBuf>) {
-		let FundingContribution { inputs, outputs, change_script, .. } = self;
-		(inputs, outputs, change_script)
+	pub(super) fn into_tx_parts(self) -> (Vec<FundingTxInput>, Vec<TxOut>) {
+		let FundingContribution { inputs, mut outputs, change_output, .. } = self;
+
+		if let Some(change_output) = change_output {
+			outputs.push(change_output);
+		}
+
+		(inputs, outputs)
 	}
 
 	pub(super) fn into_contributed_inputs_and_outputs(self) -> (Vec<OutPoint>, Vec<TxOut>) {
-		(self.inputs.into_iter().map(|input| input.utxo.outpoint).collect(), self.outputs)
+		let (inputs, outputs) = self.into_tx_parts();
+
+		(inputs.into_iter().map(|input| input.utxo.outpoint).collect(), outputs)
 	}
 
 	/// The net value contributed to a channel by the splice. If negative, more value will be
@@ -723,7 +700,7 @@ mod tests {
 					funding_input_sats(100_000),
 				],
 				outputs: vec![],
-				change_script: None,
+				change_output: None,
 				is_initiator: true,
 				is_splice: true,
 				feerate: FeeRate::from_sat_per_kwu(2000),
@@ -744,7 +721,7 @@ mod tests {
 				outputs: vec![
 					funding_output_sats(200_000),
 				],
-				change_script: None,
+				change_output: None,
 				is_initiator: true,
 				is_splice: true,
 				feerate: FeeRate::from_sat_per_kwu(2000),
@@ -765,7 +742,7 @@ mod tests {
 				outputs: vec![
 					funding_output_sats(400_000),
 				],
-				change_script: None,
+				change_output: None,
 				is_initiator: true,
 				is_splice: true,
 				feerate: FeeRate::from_sat_per_kwu(2000),
@@ -786,7 +763,7 @@ mod tests {
 				outputs: vec![
 					funding_output_sats(400_000),
 				],
-				change_script: None,
+				change_output: None,
 				is_initiator: true,
 				is_splice: true,
 				feerate: FeeRate::from_sat_per_kwu(90000),
@@ -810,7 +787,7 @@ mod tests {
 					funding_input_sats(100_000),
 				],
 				outputs: vec![],
-				change_script: None,
+				change_output: None,
 				is_initiator: true,
 				is_splice: true,
 				feerate: FeeRate::from_sat_per_kwu(2000),
@@ -835,7 +812,7 @@ mod tests {
 					funding_input_sats(100_000),
 				],
 				outputs: vec![],
-				change_script: None,
+				change_output: None,
 				is_initiator: true,
 				is_splice: true,
 				feerate: FeeRate::from_sat_per_kwu(2000),
@@ -854,7 +831,7 @@ mod tests {
 					funding_input_sats(100_000),
 				],
 				outputs: vec![],
-				change_script: None,
+				change_output: None,
 				is_initiator: true,
 				is_splice: true,
 				feerate: FeeRate::from_sat_per_kwu(2200),
@@ -879,7 +856,7 @@ mod tests {
 					funding_input_sats(100_000),
 				],
 				outputs: vec![],
-				change_script: None,
+				change_output: None,
 				is_initiator: false,
 				is_splice: false,
 				feerate: FeeRate::from_sat_per_kwu(2000),

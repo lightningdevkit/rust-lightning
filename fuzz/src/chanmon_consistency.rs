@@ -2083,7 +2083,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 					Ok(funding_template) => {
 						let wallet = WalletSync::new(&wallets[0], Arc::clone(&loggers[0]));
 						if let Ok(contribution) =
-							funding_template.splice_in_sync(None, Amount::from_sat(10_000), &wallet)
+							funding_template.splice_in_sync(Amount::from_sat(10_000), &wallet)
 						{
 							let _ = nodes[0].funding_contributed(
 								&chan_a_id,
@@ -2109,7 +2109,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 					Ok(funding_template) => {
 						let wallet = WalletSync::new(&wallets[1], Arc::clone(&loggers[1]));
 						if let Ok(contribution) =
-							funding_template.splice_in_sync(None, Amount::from_sat(10_000), &wallet)
+							funding_template.splice_in_sync(Amount::from_sat(10_000), &wallet)
 						{
 							let _ = nodes[1].funding_contributed(
 								&chan_a_id,
@@ -2135,7 +2135,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 					Ok(funding_template) => {
 						let wallet = WalletSync::new(&wallets[1], Arc::clone(&loggers[1]));
 						if let Ok(contribution) =
-							funding_template.splice_in_sync(None, Amount::from_sat(10_000), &wallet)
+							funding_template.splice_in_sync(Amount::from_sat(10_000), &wallet)
 						{
 							let _ = nodes[1].funding_contributed(
 								&chan_b_id,
@@ -2161,7 +2161,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 					Ok(funding_template) => {
 						let wallet = WalletSync::new(&wallets[2], Arc::clone(&loggers[2]));
 						if let Ok(contribution) =
-							funding_template.splice_in_sync(None, Amount::from_sat(10_000), &wallet)
+							funding_template.splice_in_sync(Amount::from_sat(10_000), &wallet)
 						{
 							let _ = nodes[2].funding_contributed(
 								&chan_b_id,

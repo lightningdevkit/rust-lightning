@@ -458,7 +458,7 @@ fn do_test_0_1_htlc_forward_after_splice(fail_htlc: bool) {
 	}];
 	let channel_id = ChannelId(chan_id_bytes_a);
 	let funding_contribution = initiate_splice_out(&nodes[0], &nodes[1], channel_id, outputs);
-	let splice_tx = splice_channel(&nodes[0], &nodes[1], channel_id, funding_contribution);
+	let (splice_tx, _) = splice_channel(&nodes[0], &nodes[1], channel_id, funding_contribution);
 	for node in nodes.iter() {
 		mine_transaction(node, &splice_tx);
 		connect_blocks(node, ANTI_REORG_DELAY - 1);

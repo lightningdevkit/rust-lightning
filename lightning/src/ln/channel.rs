@@ -2908,6 +2908,7 @@ impl_writeable_tlv_based!(PendingFunding, {
 enum FundingNegotiation {
 	AwaitingAck {
 		context: FundingNegotiationContext,
+		change_strategy: ChangeStrategy,
 		new_holder_funding_key: PublicKey,
 	},
 	ConstructingTransaction {
@@ -6680,10 +6681,17 @@ pub(super) struct FundingNegotiationContext {
 	/// The funding outputs we will be contributing to the channel.
 	#[allow(dead_code)] // TODO(dual_funding): Remove once contribution to V2 channels is enabled.
 	pub our_funding_outputs: Vec<TxOut>,
+}
+
+/// How the funding transaction's change is determined.
+#[derive(Debug)]
+pub(super) enum ChangeStrategy {
+	/// The change output, if any, is included in the FundingContribution's outputs.
+	FromCoinSelection,
+
 	/// The change output script. This will be used if needed or -- if not set -- generated using
 	/// `SignerProvider::get_destination_script`.
-	#[allow(dead_code)] // TODO(splicing): Remove once splicing is enabled.
-	pub change_script: Option<ScriptBuf>,
+	LegacyUserProvided(Option<ScriptBuf>),
 }
 
 impl FundingNegotiationContext {
@@ -6691,7 +6699,7 @@ impl FundingNegotiationContext {
 	/// If error occurs, it is caused by our side, not the counterparty.
 	fn into_interactive_tx_constructor<SP: SignerProvider, ES: EntropySource>(
 		mut self, context: &ChannelContext<SP>, funding: &FundingScope, signer_provider: &SP,
-		entropy_source: &ES, holder_node_id: PublicKey,
+		entropy_source: &ES, holder_node_id: PublicKey, change_strategy: ChangeStrategy,
 	) -> Result<InteractiveTxConstructor, NegotiationError> {
 		debug_assert_eq!(
 			self.shared_funding_input.is_some(),
@@ -6712,46 +6720,15 @@ impl FundingNegotiationContext {
 			script_pubkey: funding.get_funding_redeemscript().to_p2wsh(),
 		};
 
-		// Optionally add change output
-		let change_value_opt = if !self.our_funding_inputs.is_empty() {
-			match calculate_change_output_value(
-				&self,
-				self.shared_funding_input.is_some(),
-				&shared_funding_output.script_pubkey,
-				context.holder_dust_limit_satoshis,
-			) {
-				Ok(change_value_opt) => change_value_opt,
-				Err(reason) => {
-					return Err(self.into_negotiation_error(reason));
-				},
-			}
-		} else {
-			None
-		};
-
-		if let Some(change_value) = change_value_opt {
-			let change_script = if let Some(script) = self.change_script {
-				script
-			} else {
-				match signer_provider.get_destination_script(context.channel_keys_id) {
-					Ok(script) => script,
-					Err(_) => {
-						let reason = AbortReason::InternalError("Error getting change script");
-						return Err(self.into_negotiation_error(reason));
-					},
-				}
-			};
-			let mut change_output = TxOut { value: change_value, script_pubkey: change_script };
-			let change_output_weight = get_output_weight(&change_output.script_pubkey).to_wu();
-			let change_output_fee =
-				fee_for_weight(self.funding_feerate_sat_per_1000_weight, change_output_weight);
-			let change_value_decreased_with_fee =
-				change_value.to_sat().saturating_sub(change_output_fee);
-			// Check dust limit again
-			if change_value_decreased_with_fee > context.holder_dust_limit_satoshis {
-				change_output.value = Amount::from_sat(change_value_decreased_with_fee);
-				self.our_funding_outputs.push(change_output);
-			}
+		match self.calculate_change_output(
+			context,
+			signer_provider,
+			&shared_funding_output,
+			change_strategy,
+		) {
+			Ok(Some(change_output)) => self.our_funding_outputs.push(change_output),
+			Ok(None) => {},
+			Err(reason) => return Err(self.into_negotiation_error(reason)),
 		}
 
 		let constructor_args = InteractiveTxConstructorArgs {
@@ -6771,6 +6748,52 @@ impl FundingNegotiationContext {
 			outputs_to_contribute: self.our_funding_outputs,
 		};
 		InteractiveTxConstructor::new(constructor_args)
+	}
+
+	fn calculate_change_output<SP: SignerProvider>(
+		&self, context: &ChannelContext<SP>, signer_provider: &SP, shared_funding_output: &TxOut,
+		change_strategy: ChangeStrategy,
+	) -> Result<Option<TxOut>, AbortReason> {
+		if self.our_funding_inputs.is_empty() {
+			return Ok(None);
+		}
+
+		let change_script = match change_strategy {
+			ChangeStrategy::FromCoinSelection => return Ok(None),
+			ChangeStrategy::LegacyUserProvided(change_script) => change_script,
+		};
+
+		let change_value = calculate_change_output_value(
+			&self,
+			self.shared_funding_input.is_some(),
+			&shared_funding_output.script_pubkey,
+			context.holder_dust_limit_satoshis,
+		)?;
+
+		if let Some(change_value) = change_value {
+			let change_script = match change_script {
+				Some(script) => script,
+				None => match signer_provider.get_destination_script(context.channel_keys_id) {
+					Ok(script) => script,
+					Err(_) => {
+						return Err(AbortReason::InternalError("Error getting change script"))
+					},
+				},
+			};
+			let mut change_output = TxOut { value: change_value, script_pubkey: change_script };
+			let change_output_weight = get_output_weight(&change_output.script_pubkey).to_wu();
+			let change_output_fee =
+				fee_for_weight(self.funding_feerate_sat_per_1000_weight, change_output_weight);
+			let change_value_decreased_with_fee =
+				change_value.to_sat().saturating_sub(change_output_fee);
+			// Check dust limit again
+			if change_value_decreased_with_fee > context.holder_dust_limit_satoshis {
+				change_output.value = Amount::from_sat(change_value_decreased_with_fee);
+				return Ok(Some(change_output));
+			}
+		}
+
+		Ok(None)
 	}
 
 	fn into_negotiation_error(self, reason: AbortReason) -> NegotiationError {
@@ -12235,14 +12258,13 @@ where
 			shared_funding_input: Some(prev_funding_input),
 			our_funding_inputs,
 			our_funding_outputs,
-			change_script,
 		};
 
-		self.send_splice_init_internal(context)
+		self.send_splice_init_internal(context, ChangeStrategy::LegacyUserProvided(change_script))
 	}
 
 	fn send_splice_init_internal(
-		&mut self, context: FundingNegotiationContext,
+		&mut self, context: FundingNegotiationContext, change_strategy: ChangeStrategy,
 	) -> msgs::SpliceInit {
 		debug_assert!(self.pending_splice.is_none());
 		// Rotate the funding pubkey using the prev_funding_txid as a tweak
@@ -12263,8 +12285,11 @@ where
 		let funding_contribution_satoshis = context.our_funding_contribution.to_sat();
 		let locktime = context.funding_tx_locktime.to_consensus_u32();
 
-		let funding_negotiation =
-			FundingNegotiation::AwaitingAck { context, new_holder_funding_key: funding_pubkey };
+		let funding_negotiation = FundingNegotiation::AwaitingAck {
+			context,
+			change_strategy,
+			new_holder_funding_key: funding_pubkey,
+		};
 		self.pending_splice = Some(PendingFunding {
 			funding_negotiation: Some(funding_negotiation),
 			negotiated_candidates: vec![],
@@ -12490,7 +12515,6 @@ where
 			shared_funding_input: Some(prev_funding_input),
 			our_funding_inputs: Vec::new(),
 			our_funding_outputs: Vec::new(),
-			change_script: None,
 		};
 
 		let mut interactive_tx_constructor = funding_negotiation_context
@@ -12500,6 +12524,8 @@ where
 				signer_provider,
 				entropy_source,
 				holder_node_id.clone(),
+				// ChangeStrategy doesn't matter when no inputs are contributed
+				ChangeStrategy::FromCoinSelection,
 			)
 			.map_err(|err| {
 				ChannelError::WarnAndDisconnect(format!(
@@ -12550,11 +12576,11 @@ where
 		let pending_splice =
 			self.pending_splice.as_mut().expect("We should have returned an error earlier!");
 		// TODO: Good candidate for a let else statement once MSRV >= 1.65
-		let funding_negotiation_context =
-			if let Some(FundingNegotiation::AwaitingAck { context, .. }) =
+		let (funding_negotiation_context, change_strategy) =
+			if let Some(FundingNegotiation::AwaitingAck { context, change_strategy, .. }) =
 				pending_splice.funding_negotiation.take()
 			{
-				context
+				(context, change_strategy)
 			} else {
 				panic!("We should have returned an error earlier!");
 			};
@@ -12566,6 +12592,7 @@ where
 				signer_provider,
 				entropy_source,
 				holder_node_id.clone(),
+				change_strategy,
 			)
 			.map_err(|err| {
 				ChannelError::WarnAndDisconnect(format!(
@@ -12596,7 +12623,7 @@ where
 		let (funding_negotiation_context, new_holder_funding_key) = match &pending_splice
 			.funding_negotiation
 		{
-			Some(FundingNegotiation::AwaitingAck { context, new_holder_funding_key }) => {
+			Some(FundingNegotiation::AwaitingAck { context, new_holder_funding_key, .. }) => {
 				(context, new_holder_funding_key)
 			},
 			Some(FundingNegotiation::ConstructingTransaction { .. })
@@ -13523,7 +13550,7 @@ where
 						},
 					};
 					let funding_feerate_per_kw = contribution.feerate().to_sat_per_kwu() as u32;
-					let (our_funding_inputs, our_funding_outputs, change_script) = contribution.into_tx_parts();
+					let (our_funding_inputs, our_funding_outputs) = contribution.into_tx_parts();
 
 					let context = FundingNegotiationContext {
 						is_initiator,
@@ -13533,10 +13560,9 @@ where
 						shared_funding_input: Some(prev_funding_input),
 						our_funding_inputs,
 						our_funding_outputs,
-						change_script,
 					};
 
-					let splice_init = self.send_splice_init_internal(context);
+					let splice_init = self.send_splice_init_internal(context, ChangeStrategy::FromCoinSelection);
 					return Ok(Some(StfuResponse::SpliceInit(splice_init)));
 				},
 				#[cfg(any(test, fuzzing))]
@@ -14320,7 +14346,6 @@ impl<SP: SignerProvider> PendingV2Channel<SP> {
 			shared_funding_input: None,
 			our_funding_inputs: funding_inputs,
 			our_funding_outputs: Vec::new(),
-			change_script: None,
 		};
 		let chan = Self {
 			funding,
@@ -14467,7 +14492,6 @@ impl<SP: SignerProvider> PendingV2Channel<SP> {
 			shared_funding_input: None,
 			our_funding_inputs: our_funding_inputs.clone(),
 			our_funding_outputs: Vec::new(),
-			change_script: None,
 		};
 		let shared_funding_output = TxOut {
 			value: Amount::from_sat(funding.get_value_satoshis()),
