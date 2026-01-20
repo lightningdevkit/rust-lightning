@@ -1034,7 +1034,6 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger + MaybeSend + MaybeSync>
 				}
 				let contribution = SpliceContribution::splice_in(
 					Amount::from_sat(splice_in_sats.min(900_000)), // Cap at available funds minus fees
-					Some(wallet.get_change_script().unwrap()),
 				);
 				let _ = channelmanager.splice_channel(
 					&chan.channel_id,
