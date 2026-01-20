@@ -4897,6 +4897,11 @@ where
 	) -> Result<(), LocalHTLCFailureReason> {
 		let outgoing_scid = match next_packet_details.outgoing_connector {
 			HopConnector::ShortChannelId(scid) => scid,
+			HopConnector::Dummy => {
+				// Dummy hops are only used for path padding and must not reach HTLC processing.
+				debug_assert!(false, "Dummy hop reached HTLC handling.");
+				return Err(LocalHTLCFailureReason::InvalidOnionPayload);
+			}
 			HopConnector::Trampoline(_) => {
 				return Err(LocalHTLCFailureReason::InvalidTrampolineForward);
 			}
@@ -5027,6 +5032,20 @@ where
 			},
 			onion_utils::Hop::Forward { .. } | onion_utils::Hop::BlindedForward { .. } => {
 				create_fwd_pending_htlc_info(msg, decoded_hop, shared_secret, next_packet_pubkey_opt)
+			},
+			onion_utils::Hop::Dummy { .. } => {
+				debug_assert!(
+					false,
+					"Reached unreachable dummy-hop HTLC. Dummy hops are peeled in \
+					`process_pending_update_add_htlcs`, and the resulting HTLC is \
+					re-enqueued for processing. Hitting this means the peel-and-requeue \
+					step was missed."
+				);
+				return Err(InboundHTLCErr {
+					msg: "Failed to decode update add htlc onion",
+					reason: LocalHTLCFailureReason::InvalidOnionPayload,
+					err_data: Vec::new(),
+				})
 			},
 			onion_utils::Hop::TrampolineForward { .. } | onion_utils::Hop::TrampolineBlindedForward { .. } => {
 				create_fwd_pending_htlc_info(msg, decoded_hop, shared_secret, next_packet_pubkey_opt)
@@ -6798,6 +6817,7 @@ where
 	fn process_pending_update_add_htlcs(&self) -> bool {
 		let mut should_persist = false;
 		let mut decode_update_add_htlcs = new_hash_map();
+		let mut dummy_update_add_htlcs = new_hash_map();
 		mem::swap(&mut decode_update_add_htlcs, &mut self.decode_update_add_htlcs.lock().unwrap());
 
 		let get_htlc_failure_type = |outgoing_scid_opt: Option<u64>, payment_hash: PaymentHash| {
@@ -6861,7 +6881,36 @@ where
 						&*self.logger,
 						&self.secp_ctx,
 					) {
-						Ok(decoded_onion) => decoded_onion,
+						Ok(decoded_onion) => match decoded_onion {
+							(
+								onion_utils::Hop::Dummy {
+									dummy_hop_data,
+									next_hop_hmac,
+									new_packet_bytes,
+									..
+								},
+								Some(next_packet_details),
+							) => {
+								let new_update_add_htlc =
+									onion_utils::peel_dummy_hop_update_add_htlc(
+										update_add_htlc,
+										dummy_hop_data,
+										next_hop_hmac,
+										new_packet_bytes,
+										next_packet_details,
+										&*self.node_signer,
+										&self.secp_ctx,
+									);
+
+								dummy_update_add_htlcs
+									.entry(incoming_scid_alias)
+									.or_insert_with(Vec::new)
+									.push(new_update_add_htlc);
+
+								continue;
+							},
+							_ => decoded_onion,
+						},
 
 						Err((htlc_fail, reason)) => {
 							let failure_type = HTLCHandlingFailureType::InvalidOnion;
@@ -6874,6 +6923,13 @@ where
 				let outgoing_scid_opt =
 					next_packet_details_opt.as_ref().and_then(|d| match d.outgoing_connector {
 						HopConnector::ShortChannelId(scid) => Some(scid),
+						HopConnector::Dummy => {
+							debug_assert!(
+								false,
+								"Dummy hops must never be processed at this stage."
+							);
+							None
+						},
 						HopConnector::Trampoline(_) => None,
 					});
 				let shared_secret = next_hop.shared_secret().secret_bytes();
@@ -7017,6 +7073,19 @@ where
 				));
 			}
 		}
+
+		// Merge peeled dummy HTLCs into the existing decode queue so they can be
+		// processed in the next iteration. We avoid replacing the whole queue
+		// (e.g. via mem::swap) because other threads may have enqueued new HTLCs
+		// meanwhile; merging preserves everything safely.
+		if !dummy_update_add_htlcs.is_empty() {
+			let mut decode_update_add_htlc_source = self.decode_update_add_htlcs.lock().unwrap();
+
+			for (incoming_scid_alias, htlcs) in dummy_update_add_htlcs.into_iter() {
+				decode_update_add_htlc_source.entry(incoming_scid_alias).or_default().extend(htlcs);
+			}
+		}
+
 		should_persist
 	}
 

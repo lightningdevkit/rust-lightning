@@ -149,6 +149,14 @@ pub(super) fn create_fwd_pending_htlc_info(
 			(RoutingInfo::Direct { short_channel_id, new_packet_bytes, next_hop_hmac }, amt_to_forward, outgoing_cltv_value, intro_node_blinding_point,
 				next_blinding_override)
 		},
+		onion_utils::Hop::Dummy { .. } => {
+			debug_assert!(false, "Dummy hop should have been peeled earlier");
+			return Err(InboundHTLCErr {
+				msg: "Dummy Hop OnionHopData provided for us as an intermediary node",
+				reason: LocalHTLCFailureReason::InvalidOnionPayload,
+				err_data: Vec::new(),
+			})
+		},
 		onion_utils::Hop::Receive { .. } | onion_utils::Hop::BlindedReceive { .. } =>
 			return Err(InboundHTLCErr {
 				msg: "Final Node OnionHopData provided for us as an intermediary node",
@@ -365,6 +373,14 @@ pub(super) fn create_recv_pending_htlc_info(
 				msg: "Got blinded non final data with an HMAC of 0",
 			})
 		},
+		onion_utils::Hop::Dummy { .. } => {
+			debug_assert!(false, "Dummy hop should have been peeled earlier");
+			return Err(InboundHTLCErr {
+				reason: LocalHTLCFailureReason::InvalidOnionBlinding,
+				err_data: vec![0; 32],
+				msg: "Got blinded non final data with an HMAC of 0",
+			})
+		}
 		onion_utils::Hop::TrampolineForward { .. } | onion_utils::Hop::TrampolineBlindedForward { .. } => {
 			return Err(InboundHTLCErr {
 				reason: LocalHTLCFailureReason::InvalidOnionPayload,
@@ -480,7 +496,7 @@ where
 	L::Target: Logger,
 {
 	let (hop, next_packet_details_opt) =
-		decode_incoming_update_add_htlc_onion(msg, node_signer, logger, secp_ctx
+		decode_incoming_update_add_htlc_onion(msg, &*node_signer, &*logger, secp_ctx
 	).map_err(|(msg, failure_reason)| {
 		let (reason, err_data) = match msg {
 			HTLCFailureMsg::Malformed(_) => (failure_reason, Vec::new()),
@@ -518,6 +534,29 @@ where
 			// onion here and check it.
 			create_fwd_pending_htlc_info(msg, hop, shared_secret.secret_bytes(), Some(next_packet_pubkey))?
 		},
+		onion_utils::Hop::Dummy { dummy_hop_data, next_hop_hmac, new_packet_bytes, .. } => {
+			let next_packet_details = match next_packet_details_opt {
+				Some(next_packet_details) => next_packet_details,
+				// Dummy Hops should always include the next hop details
+				None => return Err(InboundHTLCErr {
+					msg: "Failed to decode update add htlc onion",
+					reason: LocalHTLCFailureReason::InvalidOnionPayload,
+					err_data: Vec::new(),
+				}),
+			};
+
+			let new_update_add_htlc = onion_utils::peel_dummy_hop_update_add_htlc(
+				msg,
+				dummy_hop_data,
+				next_hop_hmac,
+				new_packet_bytes,
+				next_packet_details,
+				&*node_signer,
+				secp_ctx
+			);
+
+			peel_payment_onion(&new_update_add_htlc, node_signer, logger, secp_ctx, cur_height, allow_skimmed_fees)?
+		},
 		_ => {
 			let shared_secret = hop.shared_secret().secret_bytes();
 			create_recv_pending_htlc_info(
@@ -532,6 +571,8 @@ where
 pub(super) enum HopConnector {
 	// scid-based routing
 	ShortChannelId(u64),
+	// Dummy hop for path padding
+	Dummy,
 	// Trampoline-based routing
 	#[allow(unused)]
 	Trampoline(PublicKey),
@@ -635,6 +676,22 @@ where
 				next_packet_pubkey, outgoing_connector: HopConnector::ShortChannelId(short_channel_id), outgoing_amt_msat: amt_to_forward,
 				outgoing_cltv_value
 			})
+		}
+		onion_utils::Hop::Dummy { dummy_hop_data: msgs::InboundOnionDummyPayload { ref payment_relay, ref payment_constraints, .. },  shared_secret, .. } => {
+			let (amt_to_forward, outgoing_cltv_value) = match check_blinded_forward(
+				msg.amount_msat, msg.cltv_expiry, &payment_relay, &payment_constraints, &BlindedHopFeatures::empty()
+			) {
+				Ok((amt, cltv)) => (amt, cltv),
+				Err(()) => {
+					return encode_relay_error("Underflow calculating outbound amount or cltv value for blinded forward",
+						LocalHTLCFailureReason::InvalidOnionBlinding, shared_secret.secret_bytes(), None, &[0; 32]);
+				}
+			};
+
+			let next_packet_pubkey = onion_utils::next_hop_pubkey(secp_ctx,
+				msg.onion_routing_packet.public_key.unwrap(), &shared_secret.secret_bytes());
+
+			Some(NextPacketDetails { next_packet_pubkey, outgoing_connector: HopConnector::Dummy, outgoing_amt_msat: amt_to_forward, outgoing_cltv_value })
 		}
 		onion_utils::Hop::TrampolineForward { next_trampoline_hop_data: msgs::InboundTrampolineForwardPayload { amt_to_forward, outgoing_cltv_value, next_trampoline }, trampoline_shared_secret, incoming_trampoline_public_key, .. } => {
 			let next_trampoline_packet_pubkey = onion_utils::next_hop_pubkey(secp_ctx,
