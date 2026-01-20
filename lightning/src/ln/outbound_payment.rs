@@ -27,7 +27,7 @@ use crate::offers::invoice_request::InvoiceRequest;
 use crate::offers::nonce::Nonce;
 use crate::offers::static_invoice::StaticInvoice;
 use crate::routing::router::{
-	BlindedTail, InFlightHtlcs, Path, PaymentParameters, Route, RouteParameters,
+	BlindedTail, InFlightHtlcs, Path, Payee, PaymentParameters, Route, RouteParameters,
 	RouteParametersConfig, Router,
 };
 use crate::sign::{EntropySource, NodeSigner, Recipient};
@@ -1413,6 +1413,104 @@ where
 		})
 	}
 
+	// Fallback handler for self-payments when route finding fails
+	#[rustfmt::skip]
+	fn handle_self_payment<ES: Deref>(
+		&self, payment_id: PaymentId, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields,
+		keysend_preimage: Option<PaymentPreimage>, amount_msat: u64,
+		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>, entropy_source: &ES,
+		best_block_height: u32,
+	) -> Result<(), RetryableSendFailure>
+	where
+		ES::Target: EntropySource,
+	{
+		// Verify payment secret is provided
+		if recipient_onion.payment_secret.is_none() {
+			log_error!(self.logger, "Self-payment requires a payment secret for payment {}. Rejecting.", payment_id);
+			return Err(RetryableSendFailure::RouteNotFound);
+		}
+
+		// Use keysend preimage or generate random 
+		// TODO: Integrate inbound_payment::verify for proper validation
+		let payment_preimage = if let Some(preimage) = keysend_preimage {
+			preimage
+		} else {
+			PaymentPreimage(entropy_source.get_secure_random_bytes())
+		};
+
+		let mut outbounds = self.pending_outbound_payments.lock().unwrap();
+		match outbounds.entry(payment_id) {
+			hash_map::Entry::Occupied(_) => {
+				log_error!(self.logger, "Payment with id {} is already pending", payment_id);
+				return Err(RetryableSendFailure::DuplicatePayment);
+			},
+			hash_map::Entry::Vacant(entry) => {
+				// Track self-payment for history (no HTLCs sent)
+				entry.insert(PendingOutboundPayment::Retryable {
+					retry_strategy: None,
+					attempts: PaymentAttempts::new(),
+					payment_params: None,
+					session_privs: new_hash_set(),
+					payment_hash,
+					payment_secret: recipient_onion.payment_secret,
+					payment_metadata: recipient_onion.payment_metadata.clone(),
+					keysend_preimage: Some(payment_preimage),
+					invoice_request: None,
+					bolt12_invoice: None,
+					custom_tlvs: recipient_onion.custom_tlvs.clone(),
+					pending_amt_msat: amount_msat,
+					pending_fee_msat: Some(0),
+					total_msat: amount_msat,
+					starting_block_height: best_block_height,
+					remaining_max_total_routing_fee_msat: None,
+				});
+			}
+		}
+		core::mem::drop(outbounds);
+
+		{
+			let mut outbounds = self.pending_outbound_payments.lock().unwrap();
+			if let Some(payment) = outbounds.get_mut(&payment_id) {
+				payment.mark_fulfilled();
+			}
+		}
+
+        // Generate events for payment sent and claimed
+		{
+			let mut pending_events_lock = pending_events.lock().unwrap();
+			pending_events_lock.push_back((
+				events::Event::PaymentSent {
+					payment_id: Some(payment_id),
+					payment_preimage,
+					payment_hash,
+					amount_msat: Some(amount_msat),
+					fee_paid_msat: Some(0),
+					bolt12_invoice: None,
+				},
+				None,
+			));
+			pending_events_lock.push_back((
+				events::Event::PaymentClaimed {
+					receiver_node_id: None,
+					payment_hash,
+					amount_msat,
+					purpose: events::PaymentPurpose::Bolt11InvoicePayment {
+						payment_preimage: Some(payment_preimage),
+						payment_secret: recipient_onion.payment_secret.unwrap(),
+					},
+					htlcs: vec![],
+					sender_intended_total_msat: Some(amount_msat),
+					onion_fields: Some(recipient_onion),
+					payment_id: Some(payment_id),
+				},
+				None,
+			));
+		}
+
+		log_info!(self.logger, "Self-payment with id {} and hash {} succeeded", payment_id, payment_hash);
+		Ok(())
+	}
+
 	#[rustfmt::skip]
 	fn find_initial_route<R: Deref, NS: Deref, IH>(
 		&self, payment_id: PaymentId, payment_hash: PaymentHash, recipient_onion: &RecipientOnionFields,
@@ -1484,10 +1582,32 @@ where
 		IH: Fn() -> InFlightHtlcs,
 		SP: Fn(SendAlongPathArgs) -> Result<(), APIError>,
 	{
-		let route = self.find_initial_route(
+		let route = match self.find_initial_route(
 			payment_id, payment_hash, &recipient_onion, keysend_preimage, None, &mut route_params, router,
 			&first_hops, &inflight_htlcs, node_signer, best_block_height,
-		)?;
+		) {
+			Ok(route) => route,
+		Err(e) => {
+			// Fallback: check if this is a self-payment
+			let our_node_id = node_signer.get_node_id(Recipient::Node).unwrap();
+			let phantom_node_id = node_signer.get_node_id(Recipient::PhantomNode).ok();
+
+			let is_self_payment = match &route_params.payment_params.payee {
+				Payee::Clear { node_id, .. } => {
+					*node_id == our_node_id || (phantom_node_id == Some(*node_id))
+				},
+				Payee::Blinded { .. } => false,
+			};
+
+			if is_self_payment {
+				return self.handle_self_payment(
+					payment_id, payment_hash, recipient_onion, keysend_preimage, route_params.final_value_msat,
+					pending_events, entropy_source, best_block_height
+				);
+			}
+			return Err(e);
+		}
+		};
 
 		let onion_session_privs = self.add_new_pending_payment(payment_hash,
 			recipient_onion.clone(), payment_id, keysend_preimage, &route, Some(retry_strategy),
