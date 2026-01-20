@@ -1863,7 +1863,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], underlying_out:
 			},
 
 			0xa0 => {
-				let contribution = SpliceContribution::splice_in(Amount::from_sat(10_000), None);
+				let contribution = SpliceContribution::splice_in(Amount::from_sat(10_000));
 				let feerate_sat_per_kw =
 					fee_estimators[0].ret_val.load(atomic::Ordering::Acquire);
 				let feerate = FeeRate::from_sat_per_kwu(feerate_sat_per_kw as u64);
@@ -1881,7 +1881,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], underlying_out:
 				}
 			},
 			0xa1 => {
-				let contribution = SpliceContribution::splice_in(Amount::from_sat(10_000), None);
+				let contribution = SpliceContribution::splice_in(Amount::from_sat(10_000));
 				let feerate_sat_per_kw =
 					fee_estimators[1].ret_val.load(atomic::Ordering::Acquire);
 				let feerate = FeeRate::from_sat_per_kwu(feerate_sat_per_kw as u64);
@@ -1899,7 +1899,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], underlying_out:
 				}
 			},
 			0xa2 => {
-				let contribution = SpliceContribution::splice_in(Amount::from_sat(10_000), None);
+				let contribution = SpliceContribution::splice_in(Amount::from_sat(10_000));
 				let feerate_sat_per_kw =
 					fee_estimators[1].ret_val.load(atomic::Ordering::Acquire);
 				let feerate = FeeRate::from_sat_per_kwu(feerate_sat_per_kw as u64);
@@ -1917,7 +1917,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], underlying_out:
 				}
 			},
 			0xa3 => {
-				let contribution = SpliceContribution::splice_in(Amount::from_sat(10_000), None);
+				let contribution = SpliceContribution::splice_in(Amount::from_sat(10_000));
 				let feerate_sat_per_kw =
 					fee_estimators[2].ret_val.load(atomic::Ordering::Acquire);
 				let feerate = FeeRate::from_sat_per_kwu(feerate_sat_per_kw as u64);

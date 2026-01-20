@@ -3446,7 +3446,6 @@ mod tests {
 			shared_funding_input: None,
 			our_funding_inputs: inputs,
 			our_funding_outputs: outputs,
-			change_script: None,
 		};
 		let gross_change =
 			total_inputs - total_outputs - context.our_funding_contribution.to_unsigned().unwrap();
