@@ -19,6 +19,8 @@
 
 use alloc::collections::BTreeSet;
 
+use crate::io;
+use crate::io::Read;
 use crate::offers::invoice::{Bolt12Invoice, SIGNATURE_TAG};
 use crate::offers::merkle::{
 	self, SelectiveDisclosure, SelectiveDisclosureError, TaggedHash, TlvStream, SIGNATURE_TYPES,
@@ -26,7 +28,7 @@ use crate::offers::merkle::{
 use crate::offers::parse::Bech32Encode;
 use crate::types::features::Bolt12InvoiceFeatures;
 use crate::types::payment::{PaymentHash, PaymentPreimage};
-use crate::util::ser::Writeable;
+use crate::util::ser::{BigSize, Readable, Writeable};
 
 use bitcoin::hashes::{sha256, Hash, HashEngine};
 use bitcoin::secp256k1::schnorr::Signature;
@@ -37,6 +39,21 @@ use core::time::Duration;
 
 #[allow(unused_imports)]
 use crate::prelude::*;
+
+// TLV type constants for payer proof fields (per BOLT 12 spec)
+const TLV_SIGNATURE: u64 = 240;
+const TLV_PREIMAGE: u64 = 242;
+const TLV_OMITTED_TLVS: u64 = 244;
+const TLV_MISSING_HASHES: u64 = 246;
+const TLV_LEAF_HASHES: u64 = 248;
+const TLV_PAYER_SIGNATURE: u64 = 250;
+
+// Required invoice TLV types
+const TLV_INVREQ_METADATA: u64 = 0;
+const TLV_INVREQ_PAYER_ID: u64 = 88;
+const TLV_INVOICE_PAYMENT_HASH: u64 = 168;
+const TLV_INVOICE_FEATURES: u64 = 174;
+const TLV_INVOICE_NODE_ID: u64 = 176;
 
 /// Human-readable prefix for payer proofs in bech32 encoding.
 pub const PAYER_PROOF_HRP: &str = "lnp";
@@ -58,11 +75,25 @@ pub enum PayerProofError {
 	MissingRequiredField(&'static str),
 	/// The proof contains invalid data.
 	InvalidData(&'static str),
+	/// The invreq_metadata field cannot be included (per spec).
+	InvreqMetadataNotAllowed,
+	/// The omitted_tlvs contains an included TLV type.
+	OmittedTlvsContainsIncluded,
+	/// The omitted_tlvs has too many trailing markers.
+	TooManyTrailingOmittedMarkers,
+	/// Error decoding the payer proof.
+	DecodeError(crate::ln::msgs::DecodeError),
 }
 
 impl From<SelectiveDisclosureError> for PayerProofError {
 	fn from(e: SelectiveDisclosureError) -> Self {
 		PayerProofError::MerkleError(e)
+	}
+}
+
+impl From<crate::ln::msgs::DecodeError> for PayerProofError {
+	fn from(e: crate::ln::msgs::DecodeError) -> Self {
+		PayerProofError::DecodeError(e)
 	}
 }
 
@@ -88,9 +119,12 @@ struct PayerProofContents {
 	payer_signature: Signature,
 	payer_note: Option<String>,
 
-	// Merkle reconstruction data
+	// Merkle reconstruction data (used during parsing)
+	#[allow(dead_code)]
 	leaf_hashes: Vec<sha256::Hash>,
+	#[allow(dead_code)]
 	omitted_tlvs: Vec<u64>,
+	#[allow(dead_code)]
 	missing_hashes: Vec<sha256::Hash>,
 
 	// Optional included fields from invoice
@@ -130,18 +164,36 @@ impl<'a> PayerProofBuilder<'a> {
 			return Err(PayerProofError::PreimageMismatch);
 		}
 
-		// Start with required types
+		// Start with required types (per BOLT 12 payer proof spec)
 		let mut included_types = BTreeSet::new();
-		included_types.insert(88); // invreq_payer_id (required)
-		included_types.insert(168); // invoice_payment_hash (required)
-		included_types.insert(176); // invoice_node_id (required)
+		included_types.insert(TLV_INVREQ_PAYER_ID); // invreq_payer_id (required)
+		included_types.insert(TLV_INVOICE_PAYMENT_HASH); // invoice_payment_hash (required)
+		included_types.insert(TLV_INVOICE_NODE_ID); // invoice_node_id (required)
 
-		// Include invoice_features if present
+		// Include invoice_features if present (per spec: "if present")
 		if invoice.invoice_features() != &Bolt12InvoiceFeatures::empty() {
-			included_types.insert(174);
+			included_types.insert(TLV_INVOICE_FEATURES);
 		}
 
 		Ok(Self { invoice, preimage, included_types })
+	}
+
+	/// Check if a TLV type is allowed to be included in the payer proof.
+	///
+	/// Per spec: MUST NOT include invreq_metadata (type 0).
+	fn is_type_allowed(tlv_type: u64) -> bool {
+		tlv_type != TLV_INVREQ_METADATA
+	}
+
+	/// Include a specific TLV type in the proof.
+	///
+	/// Returns an error if the type is not allowed (e.g., invreq_metadata).
+	pub fn include_type(mut self, tlv_type: u64) -> Result<Self, PayerProofError> {
+		if !Self::is_type_allowed(tlv_type) {
+			return Err(PayerProofError::InvreqMetadataNotAllowed);
+		}
+		self.included_types.insert(tlv_type);
+		Ok(self)
 	}
 
 	/// Include the offer description in the proof.
@@ -286,37 +338,67 @@ impl UnsignedPayerProof {
 	fn serialize_payer_proof(&self, payer_signature: &Signature, note: Option<&str>) -> Vec<u8> {
 		let mut bytes = Vec::new();
 
-		// Write included TLV records (invoice fields)
+		// Write included TLV records (invoice fields) - already in TLV format
 		for (_, record_bytes) in &self.included_records {
 			bytes.extend_from_slice(record_bytes);
 		}
 
 		// Write invoice signature (type 240)
+		// Format: BigSize(240) || BigSize(64) || sig
+		BigSize(TLV_SIGNATURE).write(&mut bytes).expect("Vec write should not fail");
+		BigSize(64).write(&mut bytes).expect("Vec write should not fail");
 		self.invoice_signature.write(&mut bytes).expect("Vec write should not fail");
 
 		// Write preimage (type 242)
+		// Format: BigSize(242) || BigSize(32) || preimage
+		BigSize(TLV_PREIMAGE).write(&mut bytes).expect("Vec write should not fail");
+		BigSize(32).write(&mut bytes).expect("Vec write should not fail");
 		bytes.extend_from_slice(&self.preimage.0);
 
-		// Write omitted_tlvs (type 244) - simplified encoding
-		for marker in &self.disclosure.omitted_tlvs {
-			bytes.extend_from_slice(&marker.to_be_bytes());
+		// Write omitted_tlvs (type 244)
+		// Format: BigSize(244) || BigSize(len) || BigSize(marker)*
+		if !self.disclosure.omitted_tlvs.is_empty() {
+			let mut omitted_bytes = Vec::new();
+			for marker in &self.disclosure.omitted_tlvs {
+				BigSize(*marker).write(&mut omitted_bytes).expect("Vec write should not fail");
+			}
+			BigSize(TLV_OMITTED_TLVS).write(&mut bytes).expect("Vec write should not fail");
+			BigSize(omitted_bytes.len() as u64)
+				.write(&mut bytes)
+				.expect("Vec write should not fail");
+			bytes.extend_from_slice(&omitted_bytes);
 		}
 
 		// Write missing_hashes (type 246)
-		for hash in &self.disclosure.missing_hashes {
-			bytes.extend_from_slice(hash.as_ref());
+		// Format: BigSize(246) || BigSize(len) || sha256*
+		if !self.disclosure.missing_hashes.is_empty() {
+			let len = self.disclosure.missing_hashes.len() * 32;
+			BigSize(TLV_MISSING_HASHES).write(&mut bytes).expect("Vec write should not fail");
+			BigSize(len as u64).write(&mut bytes).expect("Vec write should not fail");
+			for hash in &self.disclosure.missing_hashes {
+				bytes.extend_from_slice(hash.as_ref());
+			}
 		}
 
 		// Write leaf_hashes (type 248)
-		for hash in &self.disclosure.leaf_hashes {
-			bytes.extend_from_slice(hash.as_ref());
+		// Format: BigSize(248) || BigSize(len) || sha256*
+		if !self.disclosure.leaf_hashes.is_empty() {
+			let len = self.disclosure.leaf_hashes.len() * 32;
+			BigSize(TLV_LEAF_HASHES).write(&mut bytes).expect("Vec write should not fail");
+			BigSize(len as u64).write(&mut bytes).expect("Vec write should not fail");
+			for hash in &self.disclosure.leaf_hashes {
+				bytes.extend_from_slice(hash.as_ref());
+			}
 		}
 
 		// Write payer_signature (type 250)
+		// Format: BigSize(250) || BigSize(64 + note_len) || sig || note
+		let note_bytes = note.map(|n| n.as_bytes()).unwrap_or(&[]);
+		let payer_sig_len = 64 + note_bytes.len();
+		BigSize(TLV_PAYER_SIGNATURE).write(&mut bytes).expect("Vec write should not fail");
+		BigSize(payer_sig_len as u64).write(&mut bytes).expect("Vec write should not fail");
 		payer_signature.write(&mut bytes).expect("Vec write should not fail");
-		if let Some(n) = note {
-			bytes.extend_from_slice(n.as_bytes());
-		}
+		bytes.extend_from_slice(note_bytes);
 
 		bytes
 	}
@@ -413,13 +495,264 @@ impl AsRef<[u8]> for PayerProof {
 impl TryFrom<Vec<u8>> for PayerProof {
 	type Error = crate::offers::parse::Bolt12ParseError;
 
-	fn try_from(_bytes: Vec<u8>) -> Result<Self, Self::Error> {
-		// TODO: Implement proper parsing for PoC
-		// For now, just return an error as parsing is complex
-		Err(crate::offers::parse::Bolt12ParseError::Decode(
-			crate::ln::msgs::DecodeError::InvalidValue,
-		))
+	fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
+		use crate::ln::msgs::DecodeError;
+		use crate::offers::parse::Bolt12ParseError;
+
+		// Parse required fields
+		let mut payer_id: Option<PublicKey> = None;
+		let mut payment_hash: Option<PaymentHash> = None;
+		let mut invoice_node_id: Option<PublicKey> = None;
+		let mut invoice_signature: Option<Signature> = None;
+		let mut preimage: Option<PaymentPreimage> = None;
+		let mut payer_signature: Option<Signature> = None;
+		let mut payer_note: Option<String> = None;
+		let mut invoice_features: Option<Bolt12InvoiceFeatures> = None;
+
+		// Parse merkle reconstruction data
+		let mut leaf_hashes: Vec<sha256::Hash> = Vec::new();
+		let mut omitted_tlvs: Vec<u64> = Vec::new();
+		let mut missing_hashes: Vec<sha256::Hash> = Vec::new();
+
+		// Track included TLV types for validation
+		let mut included_types: BTreeSet<u64> = BTreeSet::new();
+
+		// Collect included TLV records for merkle reconstruction
+		let mut included_records: Vec<(u64, Vec<u8>)> = Vec::new();
+
+		// Parse TLV stream
+		for record in TlvStream::new(&bytes) {
+			let tlv_type = record.r#type;
+
+			match tlv_type {
+				TLV_INVREQ_PAYER_ID => {
+					let mut record_cursor = io::Cursor::new(record.record_bytes);
+					// Skip type and length
+					let _type: BigSize = Readable::read(&mut record_cursor)?;
+					let _len: BigSize = Readable::read(&mut record_cursor)?;
+					payer_id = Some(Readable::read(&mut record_cursor)?);
+					included_types.insert(tlv_type);
+					included_records.push((tlv_type, record.record_bytes.to_vec()));
+				},
+				TLV_INVOICE_PAYMENT_HASH => {
+					let mut record_cursor = io::Cursor::new(record.record_bytes);
+					let _type: BigSize = Readable::read(&mut record_cursor)?;
+					let _len: BigSize = Readable::read(&mut record_cursor)?;
+					payment_hash = Some(Readable::read(&mut record_cursor)?);
+					included_types.insert(tlv_type);
+					included_records.push((tlv_type, record.record_bytes.to_vec()));
+				},
+				TLV_INVOICE_FEATURES => {
+					let mut record_cursor = io::Cursor::new(record.record_bytes);
+					let _type: BigSize = Readable::read(&mut record_cursor)?;
+					let len: BigSize = Readable::read(&mut record_cursor)?;
+					let mut feature_bytes = vec![0u8; len.0 as usize];
+					record_cursor
+						.read_exact(&mut feature_bytes)
+						.map_err(|_| DecodeError::ShortRead)?;
+					invoice_features = Some(Bolt12InvoiceFeatures::from_le_bytes(feature_bytes));
+					included_types.insert(tlv_type);
+					included_records.push((tlv_type, record.record_bytes.to_vec()));
+				},
+				TLV_INVOICE_NODE_ID => {
+					let mut record_cursor = io::Cursor::new(record.record_bytes);
+					let _type: BigSize = Readable::read(&mut record_cursor)?;
+					let _len: BigSize = Readable::read(&mut record_cursor)?;
+					invoice_node_id = Some(Readable::read(&mut record_cursor)?);
+					included_types.insert(tlv_type);
+					included_records.push((tlv_type, record.record_bytes.to_vec()));
+				},
+				TLV_SIGNATURE => {
+					let mut record_cursor = io::Cursor::new(record.record_bytes);
+					let _type: BigSize = Readable::read(&mut record_cursor)?;
+					let _len: BigSize = Readable::read(&mut record_cursor)?;
+					invoice_signature = Some(Readable::read(&mut record_cursor)?);
+				},
+				TLV_PREIMAGE => {
+					let mut record_cursor = io::Cursor::new(record.record_bytes);
+					let _type: BigSize = Readable::read(&mut record_cursor)?;
+					let _len: BigSize = Readable::read(&mut record_cursor)?;
+					let mut preimage_bytes = [0u8; 32];
+					record_cursor
+						.read_exact(&mut preimage_bytes)
+						.map_err(|_| DecodeError::ShortRead)?;
+					preimage = Some(PaymentPreimage(preimage_bytes));
+				},
+				TLV_OMITTED_TLVS => {
+					let mut record_cursor = io::Cursor::new(record.record_bytes);
+					let _type: BigSize = Readable::read(&mut record_cursor)?;
+					let len: BigSize = Readable::read(&mut record_cursor)?;
+					let end_pos = record_cursor.position() + len.0;
+					while record_cursor.position() < end_pos {
+						let marker: BigSize = Readable::read(&mut record_cursor)?;
+						omitted_tlvs.push(marker.0);
+					}
+				},
+				TLV_MISSING_HASHES => {
+					let mut record_cursor = io::Cursor::new(record.record_bytes);
+					let _type: BigSize = Readable::read(&mut record_cursor)?;
+					let len: BigSize = Readable::read(&mut record_cursor)?;
+					let num_hashes = len.0 / 32;
+					for _ in 0..num_hashes {
+						let mut hash_bytes = [0u8; 32];
+						record_cursor
+							.read_exact(&mut hash_bytes)
+							.map_err(|_| DecodeError::ShortRead)?;
+						missing_hashes.push(sha256::Hash::from_byte_array(hash_bytes));
+					}
+				},
+				TLV_LEAF_HASHES => {
+					let mut record_cursor = io::Cursor::new(record.record_bytes);
+					let _type: BigSize = Readable::read(&mut record_cursor)?;
+					let len: BigSize = Readable::read(&mut record_cursor)?;
+					let num_hashes = len.0 / 32;
+					for _ in 0..num_hashes {
+						let mut hash_bytes = [0u8; 32];
+						record_cursor
+							.read_exact(&mut hash_bytes)
+							.map_err(|_| DecodeError::ShortRead)?;
+						leaf_hashes.push(sha256::Hash::from_byte_array(hash_bytes));
+					}
+				},
+				TLV_PAYER_SIGNATURE => {
+					let mut record_cursor = io::Cursor::new(record.record_bytes);
+					let _type: BigSize = Readable::read(&mut record_cursor)?;
+					let len: BigSize = Readable::read(&mut record_cursor)?;
+					payer_signature = Some(Readable::read(&mut record_cursor)?);
+					// Rest is the note (optional)
+					let note_len = len.0.saturating_sub(64);
+					if note_len > 0 {
+						let mut note_bytes = vec![0u8; note_len as usize];
+						record_cursor
+							.read_exact(&mut note_bytes)
+							.map_err(|_| DecodeError::ShortRead)?;
+						payer_note = Some(
+							String::from_utf8(note_bytes).map_err(|_| DecodeError::InvalidValue)?,
+						);
+					}
+				},
+				_ => {
+					// Other invoice TLV fields - collect for merkle reconstruction
+					if !SIGNATURE_TYPES.contains(&tlv_type) {
+						included_types.insert(tlv_type);
+						included_records.push((tlv_type, record.record_bytes.to_vec()));
+					}
+				},
+			}
+		}
+
+		// Validate required fields are present
+		let payer_id = payer_id.ok_or(Bolt12ParseError::InvalidSemantics(
+			crate::offers::parse::Bolt12SemanticError::MissingPayerSigningPubkey,
+		))?;
+		let payment_hash = payment_hash.ok_or(Bolt12ParseError::InvalidSemantics(
+			crate::offers::parse::Bolt12SemanticError::MissingPaymentHash,
+		))?;
+		let invoice_node_id = invoice_node_id.ok_or(Bolt12ParseError::InvalidSemantics(
+			crate::offers::parse::Bolt12SemanticError::MissingSigningPubkey,
+		))?;
+		let invoice_signature = invoice_signature.ok_or(Bolt12ParseError::InvalidSemantics(
+			crate::offers::parse::Bolt12SemanticError::MissingSignature,
+		))?;
+		let preimage = preimage.ok_or(Bolt12ParseError::Decode(DecodeError::InvalidValue))?;
+		let payer_signature = payer_signature.ok_or(Bolt12ParseError::InvalidSemantics(
+			crate::offers::parse::Bolt12SemanticError::MissingSignature,
+		))?;
+
+		// Validate omitted_tlvs (per spec requirements)
+		validate_omitted_tlvs_for_parsing(&omitted_tlvs, &included_types)
+			.map_err(|_| Bolt12ParseError::Decode(DecodeError::InvalidValue))?;
+
+		// Validate leaf_hashes count matches included non-signature TLVs
+		if leaf_hashes.len() != included_records.len() {
+			return Err(Bolt12ParseError::Decode(DecodeError::InvalidValue));
+		}
+
+		// Reconstruct merkle root from selective disclosure
+		let included_refs: Vec<(u64, &[u8])> =
+			included_records.iter().map(|(t, b)| (*t, b.as_slice())).collect();
+		let merkle_root = merkle::reconstruct_merkle_root(
+			&included_refs,
+			&leaf_hashes,
+			&omitted_tlvs,
+			&missing_hashes,
+		)
+		.map_err(|_| Bolt12ParseError::Decode(DecodeError::InvalidValue))?;
+
+		Ok(PayerProof {
+			bytes,
+			contents: PayerProofContents {
+				payer_id,
+				payment_hash,
+				invoice_node_id,
+				preimage,
+				invoice_signature,
+				payer_signature,
+				payer_note,
+				leaf_hashes,
+				omitted_tlvs,
+				missing_hashes,
+				offer_description: None,
+				offer_issuer: None,
+				invoice_amount: None,
+				invoice_created_at: None,
+				invoice_features,
+			},
+			merkle_root,
+		})
 	}
+}
+
+/// Validate omitted_tlvs markers during parsing.
+///
+/// Per spec:
+/// - MUST NOT contain 0
+/// - MUST NOT contain signature TLV element numbers (240-1000)
+/// - MUST be in strict ascending order
+/// - MUST NOT contain the number of an included TLV field
+/// - MUST NOT contain more than one number larger than the largest included non-signature TLV
+fn validate_omitted_tlvs_for_parsing(
+	omitted_tlvs: &[u64], included_types: &BTreeSet<u64>,
+) -> Result<(), PayerProofError> {
+	let mut prev = 0u64;
+	let mut trailing_count = 0;
+	let max_included = included_types.iter().copied().max().unwrap_or(0);
+
+	for &marker in omitted_tlvs {
+		// MUST NOT contain 0
+		if marker == 0 {
+			return Err(PayerProofError::InvalidData("omitted_tlvs contains 0"));
+		}
+
+		// MUST NOT contain signature TLV types
+		if SIGNATURE_TYPES.contains(&marker) {
+			return Err(PayerProofError::InvalidData("omitted_tlvs contains signature type"));
+		}
+
+		// MUST be strictly ascending
+		if marker <= prev {
+			return Err(PayerProofError::InvalidData("omitted_tlvs not strictly ascending"));
+		}
+
+		// MUST NOT contain included TLV types
+		if included_types.contains(&marker) {
+			return Err(PayerProofError::OmittedTlvsContainsIncluded);
+		}
+
+		// Count markers larger than largest included
+		if marker > max_included {
+			trailing_count += 1;
+		}
+
+		prev = marker;
+	}
+
+	// MUST NOT contain more than one number larger than largest included
+	if trailing_count > 1 {
+		return Err(PayerProofError::TooManyTrailingOmittedMarkers);
+	}
+
+	Ok(())
 }
 
 impl core::fmt::Display for PayerProof {
@@ -451,5 +784,156 @@ mod tests {
 		let disclosure = result.unwrap();
 		assert_eq!(disclosure.leaf_hashes.len(), 1); // One included TLV
 		assert!(!disclosure.missing_hashes.is_empty()); // Should have missing hashes for omitted
+	}
+
+	/// Test the omitted_tlvs marker algorithm per BOLT 12 payer proof spec.
+	///
+	/// From the spec example:
+	/// TLVs: 0 (omitted), 10 (included), 20 (omitted), 30 (omitted),
+	///       40 (included), 50 (omitted), 60 (omitted), 240 (signature)
+	///
+	/// Expected markers: [11, 12, 41, 42]
+	///
+	/// The algorithm:
+	/// - TLV 0 is always omitted and implicit (not in markers)
+	/// - For omitted TLV after included: marker = prev_included_type + 1
+	/// - For consecutive omitted TLVs: marker = prev_marker + 1
+	#[test]
+	fn test_omitted_markers_spec_example() {
+		// Build a synthetic TLV stream matching the spec example
+		// TLV format: type (BigSize) || length (BigSize) || value
+		let mut tlv_bytes = Vec::new();
+
+		// TLV 0: type=0, len=4, value=dummy
+		tlv_bytes.extend_from_slice(&[0x00, 0x04, 0x00, 0x00, 0x00, 0x00]);
+		// TLV 10: type=10, len=2, value=dummy
+		tlv_bytes.extend_from_slice(&[0x0a, 0x02, 0x00, 0x00]);
+		// TLV 20: type=20, len=2, value=dummy
+		tlv_bytes.extend_from_slice(&[0x14, 0x02, 0x00, 0x00]);
+		// TLV 30: type=30, len=2, value=dummy
+		tlv_bytes.extend_from_slice(&[0x1e, 0x02, 0x00, 0x00]);
+		// TLV 40: type=40, len=2, value=dummy
+		tlv_bytes.extend_from_slice(&[0x28, 0x02, 0x00, 0x00]);
+		// TLV 50: type=50, len=2, value=dummy
+		tlv_bytes.extend_from_slice(&[0x32, 0x02, 0x00, 0x00]);
+		// TLV 60: type=60, len=2, value=dummy
+		tlv_bytes.extend_from_slice(&[0x3c, 0x02, 0x00, 0x00]);
+
+		// Include types 10 and 40
+		let mut included = BTreeSet::new();
+		included.insert(10);
+		included.insert(40);
+
+		let disclosure = compute_selective_disclosure(&tlv_bytes, &included).unwrap();
+
+		// Per spec example, omitted_tlvs should be [11, 12, 41, 42]
+		assert_eq!(disclosure.omitted_tlvs, vec![11, 12, 41, 42]);
+
+		// leaf_hashes should have 2 entries (one for each included TLV)
+		assert_eq!(disclosure.leaf_hashes.len(), 2);
+	}
+
+	/// Test that the marker algorithm handles edge cases correctly.
+	#[test]
+	fn test_omitted_markers_edge_cases() {
+		// Test with only one included TLV at the start
+		let mut tlv_bytes = Vec::new();
+		tlv_bytes.extend_from_slice(&[0x00, 0x04, 0x00, 0x00, 0x00, 0x00]); // TLV 0
+		tlv_bytes.extend_from_slice(&[0x0a, 0x02, 0x00, 0x00]); // TLV 10
+		tlv_bytes.extend_from_slice(&[0x14, 0x02, 0x00, 0x00]); // TLV 20
+		tlv_bytes.extend_from_slice(&[0x1e, 0x02, 0x00, 0x00]); // TLV 30
+
+		let mut included = BTreeSet::new();
+		included.insert(10);
+
+		let disclosure = compute_selective_disclosure(&tlv_bytes, &included).unwrap();
+
+		// After included type 10, omitted types 20 and 30 get markers 11 and 12
+		assert_eq!(disclosure.omitted_tlvs, vec![11, 12]);
+	}
+
+	/// Test that all included TLVs produce no omitted markers (except implicit TLV0).
+	#[test]
+	fn test_omitted_markers_all_included() {
+		let mut tlv_bytes = Vec::new();
+		tlv_bytes.extend_from_slice(&[0x00, 0x04, 0x00, 0x00, 0x00, 0x00]); // TLV 0 (always omitted)
+		tlv_bytes.extend_from_slice(&[0x0a, 0x02, 0x00, 0x00]); // TLV 10
+		tlv_bytes.extend_from_slice(&[0x14, 0x02, 0x00, 0x00]); // TLV 20
+
+		let mut included = BTreeSet::new();
+		included.insert(10);
+		included.insert(20);
+
+		let disclosure = compute_selective_disclosure(&tlv_bytes, &included).unwrap();
+
+		// Only TLV 0 is omitted (implicit), so no markers needed
+		assert!(disclosure.omitted_tlvs.is_empty());
+	}
+
+	/// Test validation of omitted_tlvs - must not contain 0.
+	#[test]
+	fn test_validate_omitted_tlvs_rejects_zero() {
+		let omitted = vec![0, 5, 10];
+		let included: BTreeSet<u64> = [20, 30].iter().copied().collect();
+
+		let result = validate_omitted_tlvs_for_parsing(&omitted, &included);
+		assert!(matches!(result, Err(PayerProofError::InvalidData(_))));
+	}
+
+	/// Test validation of omitted_tlvs - must not contain signature types.
+	#[test]
+	fn test_validate_omitted_tlvs_rejects_signature_types() {
+		let omitted = vec![5, 10, 250]; // 250 is a signature type
+		let included: BTreeSet<u64> = [20, 30].iter().copied().collect();
+
+		let result = validate_omitted_tlvs_for_parsing(&omitted, &included);
+		assert!(matches!(result, Err(PayerProofError::InvalidData(_))));
+	}
+
+	/// Test validation of omitted_tlvs - must be strictly ascending.
+	#[test]
+	fn test_validate_omitted_tlvs_rejects_non_ascending() {
+		let omitted = vec![5, 10, 8]; // 8 is not strictly ascending after 10
+		let included: BTreeSet<u64> = [20, 30].iter().copied().collect();
+
+		let result = validate_omitted_tlvs_for_parsing(&omitted, &included);
+		assert!(matches!(result, Err(PayerProofError::InvalidData(_))));
+	}
+
+	/// Test validation of omitted_tlvs - must not contain included types.
+	#[test]
+	fn test_validate_omitted_tlvs_rejects_included_types() {
+		let omitted = vec![5, 20, 25]; // 20 is in included set
+		let included: BTreeSet<u64> = [20, 30].iter().copied().collect();
+
+		let result = validate_omitted_tlvs_for_parsing(&omitted, &included);
+		assert!(matches!(result, Err(PayerProofError::OmittedTlvsContainsIncluded)));
+	}
+
+	/// Test validation of omitted_tlvs - must not have too many trailing markers.
+	#[test]
+	fn test_validate_omitted_tlvs_rejects_too_many_trailing() {
+		let omitted = vec![5, 100, 101]; // 100 and 101 are both > max included (30)
+		let included: BTreeSet<u64> = [20, 30].iter().copied().collect();
+
+		let result = validate_omitted_tlvs_for_parsing(&omitted, &included);
+		assert!(matches!(result, Err(PayerProofError::TooManyTrailingOmittedMarkers)));
+	}
+
+	/// Test that valid omitted_tlvs pass validation.
+	#[test]
+	fn test_validate_omitted_tlvs_accepts_valid() {
+		let omitted = vec![5, 10, 35]; // All valid: ascending, no 0, no sig types, one trailing
+		let included: BTreeSet<u64> = [20, 30].iter().copied().collect();
+
+		let result = validate_omitted_tlvs_for_parsing(&omitted, &included);
+		assert!(result.is_ok());
+	}
+
+	/// Test that invreq_metadata (type 0) cannot be explicitly included.
+	#[test]
+	fn test_invreq_metadata_not_allowed() {
+		assert!(!PayerProofBuilder::<'_>::is_type_allowed(TLV_INVREQ_METADATA));
+		assert!(PayerProofBuilder::<'_>::is_type_allowed(TLV_INVREQ_PAYER_ID));
 	}
 }
