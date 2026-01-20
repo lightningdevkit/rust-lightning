@@ -444,10 +444,9 @@ fn build_tree_with_disclosure(
 			break;
 		}
 
-		let left_positions: Vec<_> = (0..num_leaves).step_by(step).collect();
-		let right_positions: Vec<_> = (offset..num_leaves).step_by(step).collect();
-
-		for (&left_pos, &right_pos) in left_positions.iter().zip(right_positions.iter()) {
+		for (left_pos, right_pos) in
+			(0..num_leaves).step_by(step).zip((offset..num_leaves).step_by(step))
+		{
 			let left_hash = hashes[left_pos];
 			let right_hash = hashes[right_pos];
 			let left_incl = is_included[left_pos];
