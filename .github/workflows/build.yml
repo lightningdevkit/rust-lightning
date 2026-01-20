@@ -320,3 +320,19 @@ jobs:
         run: cargo fmt --check
       - name: Run rustfmt checks on lightning-tests
         run: cd lightning-tests && cargo fmt --check
+  tor-connect:
+    runs-on: ubuntu-latest
+    env:
+      TOOLCHAIN: 1.75.0
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+      - name: Install tor
+        run: |
+          sudo apt install -y tor
+      - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ env.TOOLCHAIN }}
+      - name: Test tor connections using lightning-net-tokio
+        run: |
+          TOR_PROXY="127.0.0.1:9050" RUSTFLAGS="--cfg=tor" cargo test --verbose --color always -p lightning-net-tokio

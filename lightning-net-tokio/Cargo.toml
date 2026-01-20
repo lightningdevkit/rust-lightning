@@ -19,7 +19,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 [dependencies]
 bitcoin = "0.32.2"
 lightning = { version = "0.3.0", path = "../lightning" }
-tokio = { version = "1.35", features = [ "rt", "sync", "net", "time" ] }
+tokio = { version = "1.35", features = [ "rt", "sync", "net", "time", "io-util" ] }
 
 [dev-dependencies]
 tokio = { version = "1.35", features = [ "macros", "rt", "rt-multi-thread", "sync", "net", "time" ] }
