@@ -19,7 +19,7 @@ use bitcoin::{
 use core::ops::Deref;
 
 use crate::events::bump_transaction::sync::CoinSelectionSourceSync;
-use crate::events::bump_transaction::{CoinSelectionSource, Input, Utxo};
+use crate::events::bump_transaction::{CoinSelection, CoinSelectionSource, Input, Utxo};
 use crate::ln::chan_utils::{
 	make_funding_redeemscript, BASE_INPUT_WEIGHT, EMPTY_SCRIPT_SIG_WEIGHT,
 	FUNDING_TRANSACTION_WITNESS_WEIGHT,
@@ -44,23 +44,17 @@ pub struct SpliceContribution {
 	/// The outputs to include in the splice's funding transaction, whose amounts will be deducted
 	/// from the channel balance.
 	outputs: Vec<TxOut>,
-
-	/// An optional change output script. This will be used if needed or, when not set,
-	/// generated using [`SignerProvider::get_destination_script`].
-	///
-	/// [`SignerProvider::get_destination_script`]: crate::sign::SignerProvider::get_destination_script
-	change_script: Option<ScriptBuf>,
 }
 
 impl SpliceContribution {
 	/// Creates a contribution for when funds are only added to a channel.
-	pub fn splice_in(value_added: Amount, change_script: Option<ScriptBuf>) -> Self {
-		Self { value_added, outputs: vec![], change_script }
+	pub fn splice_in(value_added: Amount) -> Self {
+		Self { value_added, outputs: vec![] }
 	}
 
 	/// Creates a contribution for when funds are only removed from a channel.
 	pub fn splice_out(outputs: Vec<TxOut>) -> Self {
-		Self { value_added: Amount::ZERO, outputs, change_script: None }
+		Self { value_added: Amount::ZERO, outputs }
 	}
 
 	/// Creates a contribution for when funds are both added to and removed from a channel.
@@ -68,10 +62,8 @@ impl SpliceContribution {
 	/// Note that `value_added` represents the value added by `inputs` but should not account for
 	/// value removed by `outputs`. The net value contributed can be obtained by calling
 	/// [`SpliceContribution::net_value`].
-	pub fn splice_in_and_out(
-		value_added: Amount, outputs: Vec<TxOut>, change_script: Option<ScriptBuf>,
-	) -> Self {
-		Self { value_added, outputs, change_script }
+	pub fn splice_in_and_out(value_added: Amount, outputs: Vec<TxOut>) -> Self {
+		Self { value_added, outputs }
 	}
 
 	/// The net value contributed to a channel by the splice. If negative, more value will be
@@ -111,12 +103,6 @@ pub struct FundingTemplate {
 	/// The outputs to contribute to the funding transaction, excluding change.
 	outputs: Vec<TxOut>,
 
-	/// An optional change output script. This will be used if needed or, when not set,
-	/// generated using [`SignerProvider::get_destination_script`].
-	///
-	/// [`SignerProvider::get_destination_script`]: crate::sign::SignerProvider::get_destination_script
-	change_script: Option<ScriptBuf>,
-
 	/// The shared input, which, if present indicates the funding template is for a splice funding
 	/// transaction.
 	shared_input: Option<Input>,
@@ -132,10 +118,9 @@ pub struct FundingTemplate {
 impl_writeable_tlv_based!(FundingTemplate, {
 	(1, value_added, required),
 	(3, outputs, optional_vec),
-	(5, change_script, option),
-	(7, shared_input, option),
-	(9, feerate, required),
-	(11, is_initiator, required),
+	(5, shared_input, option),
+	(7, feerate, required),
+	(9, is_initiator, required),
 });
 
 impl FundingTemplate {
@@ -143,27 +128,20 @@ impl FundingTemplate {
 	pub(super) fn for_splice(
 		contribution: SpliceContribution, shared_input: Input, feerate: FeeRate,
 	) -> Self {
-		let SpliceContribution { value_added, outputs, change_script } = contribution;
-		Self {
-			value_added,
-			outputs,
-			change_script,
-			shared_input: Some(shared_input),
-			feerate,
-			is_initiator: true,
-		}
+		let SpliceContribution { value_added, outputs } = contribution;
+		Self { value_added, outputs, shared_input: Some(shared_input), feerate, is_initiator: true }
 	}
 }
 
 macro_rules! build_funding_contribution {
     ($self:ident, $wallet:ident, $($await:tt)*) => {{
-		let FundingTemplate { value_added, outputs, change_script, shared_input, feerate, is_initiator } = $self;
+		let FundingTemplate { value_added, outputs, shared_input, feerate, is_initiator } = $self;
 
 		let value_removed = outputs.iter().map(|txout| txout.value).sum();
 		let is_splice = shared_input.is_some();
 
-		let inputs = if value_added == Amount::ZERO {
-			vec![]
+		let coin_selection = if value_added == Amount::ZERO {
+			CoinSelection { confirmed_utxos: vec![], change_output: None }
 		} else {
 			// Used for creating a redeem script for the new funding txo, since the funding pubkeys
 			// are unknown at this point. Only needed when selecting which UTXOs to include in the
@@ -184,17 +162,18 @@ macro_rules! build_funding_contribution {
 
 			let claim_id = None;
 			let must_spend = shared_input.map(|input| vec![input]).unwrap_or_default();
-			let selection = if outputs.is_empty() {
+			if outputs.is_empty() {
 				let must_pay_to = &[shared_output];
 				$wallet.select_confirmed_utxos(claim_id, must_spend, must_pay_to, feerate.to_sat_per_kwu() as u32, u64::MAX)$(.$await)*?
 			} else {
 				let must_pay_to: Vec<_> = outputs.iter().cloned().chain(core::iter::once(shared_output)).collect();
 				$wallet.select_confirmed_utxos(claim_id, must_spend, &must_pay_to, feerate.to_sat_per_kwu() as u32, u64::MAX)$(.$await)*?
-			};
-			selection.confirmed_utxos
+			}
 		};
 
 		// NOTE: Must NOT fail after UTXO selection
+
+		let CoinSelection { confirmed_utxos: inputs, change_output } = coin_selection;
 
 		let estimated_fee = estimate_transaction_fee(&inputs, &outputs, is_initiator, is_splice, feerate);
 
@@ -203,7 +182,7 @@ macro_rules! build_funding_contribution {
 			estimated_fee,
 			inputs,
 			outputs,
-			change_script,
+			change_output,
 			feerate,
 			is_initiator,
 			is_splice,
@@ -300,11 +279,8 @@ pub struct FundingContribution {
 	/// will be the amount that is removed.
 	outputs: Vec<TxOut>,
 
-	/// An optional change output script. This will be used if needed or, when not set,
-	/// generated using [`SignerProvider::get_destination_script`].
-	///
-	/// [`SignerProvider::get_destination_script`]: crate::sign::SignerProvider::get_destination_script
-	change_script: Option<ScriptBuf>,
+	/// The output where any change will be sent.
+	change_output: Option<TxOut>,
 
 	/// The fee rate used to select `inputs`.
 	feerate: FeeRate,
@@ -322,7 +298,7 @@ impl_writeable_tlv_based!(FundingContribution, {
 	(3, estimated_fee, required),
 	(5, inputs, required_vec),
 	(7, outputs, required_vec),
-	(9, change_script, option),
+	(9, change_output, option),
 	(11, feerate, required),
 	(13, is_initiator, required),
 	(15, is_splice, required),
@@ -341,13 +317,20 @@ impl FundingContribution {
 		self.is_splice
 	}
 
-	pub(super) fn into_tx_parts(self) -> (Vec<FundingTxInput>, Vec<TxOut>, Option<ScriptBuf>) {
-		let FundingContribution { inputs, outputs, change_script, .. } = self;
-		(inputs, outputs, change_script)
+	pub(super) fn into_tx_parts(self) -> (Vec<FundingTxInput>, Vec<TxOut>) {
+		let FundingContribution { inputs, mut outputs, change_output, .. } = self;
+
+		if let Some(change_output) = change_output {
+			outputs.push(change_output);
+		}
+
+		(inputs, outputs)
 	}
 
 	pub(super) fn into_contributed_inputs_and_outputs(self) -> (Vec<OutPoint>, Vec<TxOut>) {
-		(self.inputs.into_iter().map(|input| input.utxo.outpoint).collect(), self.outputs)
+		let (inputs, outputs) = self.into_tx_parts();
+
+		(inputs.into_iter().map(|input| input.utxo.outpoint).collect(), outputs)
 	}
 
 	/// The net value contributed to a channel by the splice. If negative, more value will be
@@ -680,7 +663,7 @@ mod tests {
 					funding_input_sats(100_000),
 				],
 				outputs: vec![],
-				change_script: None,
+				change_output: None,
 				is_initiator: true,
 				is_splice: true,
 				feerate: FeeRate::from_sat_per_kwu(2000),
@@ -701,7 +684,7 @@ mod tests {
 				outputs: vec![
 					funding_output_sats(200_000),
 				],
-				change_script: None,
+				change_output: None,
 				is_initiator: true,
 				is_splice: true,
 				feerate: FeeRate::from_sat_per_kwu(2000),
@@ -722,7 +705,7 @@ mod tests {
 				outputs: vec![
 					funding_output_sats(400_000),
 				],
-				change_script: None,
+				change_output: None,
 				is_initiator: true,
 				is_splice: true,
 				feerate: FeeRate::from_sat_per_kwu(2000),
@@ -743,7 +726,7 @@ mod tests {
 				outputs: vec![
 					funding_output_sats(400_000),
 				],
-				change_script: None,
+				change_output: None,
 				is_initiator: true,
 				is_splice: true,
 				feerate: FeeRate::from_sat_per_kwu(90000),
@@ -767,7 +750,7 @@ mod tests {
 					funding_input_sats(100_000),
 				],
 				outputs: vec![],
-				change_script: None,
+				change_output: None,
 				is_initiator: true,
 				is_splice: true,
 				feerate: FeeRate::from_sat_per_kwu(2000),
@@ -792,7 +775,7 @@ mod tests {
 					funding_input_sats(100_000),
 				],
 				outputs: vec![],
-				change_script: None,
+				change_output: None,
 				is_initiator: true,
 				is_splice: true,
 				feerate: FeeRate::from_sat_per_kwu(2000),
@@ -811,7 +794,7 @@ mod tests {
 					funding_input_sats(100_000),
 				],
 				outputs: vec![],
-				change_script: None,
+				change_output: None,
 				is_initiator: true,
 				is_splice: true,
 				feerate: FeeRate::from_sat_per_kwu(2200),
@@ -836,7 +819,7 @@ mod tests {
 					funding_input_sats(100_000),
 				],
 				outputs: vec![],
-				change_script: None,
+				change_output: None,
 				is_initiator: false,
 				is_splice: false,
 				feerate: FeeRate::from_sat_per_kwu(2000),
