@@ -58,6 +58,10 @@ const TLV_INVOICE_NODE_ID: u64 = 176;
 /// Human-readable prefix for payer proofs in bech32 encoding.
 pub const PAYER_PROOF_HRP: &str = "lnp";
 
+/// Tag for payer signature computation per BOLT 12 signature calculation.
+/// Format: "lightning" || messagename || fieldname
+const PAYER_SIGNATURE_TAG: &str = concat!("lightning", "payer_proof", "payer_signature");
+
 /// Error when building or verifying a payer proof.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PayerProofError {
@@ -325,14 +329,36 @@ impl UnsignedPayerProof {
 		})
 	}
 
+	/// Compute the payer signature message per BOLT 12 signature calculation.
+	///
+	/// The message is computed as:
+	/// 1. inner_msg = SHA256(note || merkle_root)
+	/// 2. tag_hash = SHA256(PAYER_SIGNATURE_TAG)
+	/// 3. final_digest = SHA256(tag_hash || tag_hash || inner_msg)
+	///
+	/// This follows the standard BOLT 12 tagged hash mechanism for signatures,
+	/// where the `msg` parameter is SHA256(note || merkle_root) instead of just
+	/// the merkle root.
 	fn compute_payer_signature_message(note: Option<&str>, merkle_root: &sha256::Hash) -> Message {
-		let mut hasher = sha256::Hash::engine();
+		// Step 1: Compute inner message = SHA256(note || merkle_root)
+		let mut inner_hasher = sha256::Hash::engine();
 		if let Some(n) = note {
-			hasher.input(n.as_bytes());
+			inner_hasher.input(n.as_bytes());
 		}
-		hasher.input(merkle_root.as_ref());
-		let msg_hash = sha256::Hash::from_engine(hasher);
-		Message::from_digest(*msg_hash.as_byte_array())
+		inner_hasher.input(merkle_root.as_ref());
+		let inner_msg = sha256::Hash::from_engine(inner_hasher);
+
+		// Step 2: Compute tag hash
+		let tag_hash = sha256::Hash::hash(PAYER_SIGNATURE_TAG.as_bytes());
+
+		// Step 3: Apply tagged hash: SHA256(tag_hash || tag_hash || inner_msg)
+		let mut final_hasher = sha256::Hash::engine();
+		final_hasher.input(tag_hash.as_ref());
+		final_hasher.input(tag_hash.as_ref());
+		final_hasher.input(inner_msg.as_ref());
+		let final_digest = sha256::Hash::from_engine(final_hasher);
+
+		Message::from_digest(*final_digest.as_byte_array())
 	}
 
 	fn serialize_payer_proof(&self, payer_signature: &Signature, note: Option<&str>) -> Vec<u8> {
@@ -632,6 +658,10 @@ impl TryFrom<Vec<u8>> for PayerProof {
 					}
 				},
 				_ => {
+					// Per spec: payer proofs MUST NOT include invreq_metadata (type 0)
+					if tlv_type == TLV_INVREQ_METADATA {
+						return Err(Bolt12ParseError::Decode(DecodeError::InvalidValue));
+					}
 					// Other invoice TLV fields - collect for merkle reconstruction
 					if !SIGNATURE_TYPES.contains(&tlv_type) {
 						included_types.insert(tlv_type);
