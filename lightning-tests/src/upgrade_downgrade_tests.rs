@@ -455,7 +455,8 @@ fn do_test_0_1_htlc_forward_after_splice(fail_htlc: bool) {
 		value: Amount::from_sat(1_000),
 		script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
 	}]);
-	let splice_tx = splice_channel(&nodes[0], &nodes[1], ChannelId(chan_id_bytes_a), contribution);
+	let (splice_tx, _) =
+		splice_channel(&nodes[0], &nodes[1], ChannelId(chan_id_bytes_a), contribution);
 	for node in nodes.iter() {
 		mine_transaction(node, &splice_tx);
 		connect_blocks(node, ANTI_REORG_DELAY - 1);
