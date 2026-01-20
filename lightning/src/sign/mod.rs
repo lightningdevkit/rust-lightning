@@ -1063,6 +1063,23 @@ pub trait OutputSpender {
 	) -> Result<Transaction, ()>;
 }
 
+impl<T: OutputSpender + ?Sized, O: Deref<Target = T>> OutputSpender for O {
+	fn spend_spendable_outputs(
+		&self, descriptors: &[&SpendableOutputDescriptor], outputs: Vec<TxOut>,
+		change_destination_script: ScriptBuf, feerate_sat_per_1000_weight: u32,
+		locktime: Option<LockTime>, secp_ctx: &Secp256k1<All>,
+	) -> Result<Transaction, ()> {
+		self.deref().spend_spendable_outputs(
+			descriptors,
+			outputs,
+			change_destination_script,
+			feerate_sat_per_1000_weight,
+			locktime,
+			secp_ctx,
+		)
+	}
+}
+
 // Primarily needed in doctests because of https://github.com/rust-lang/rust/issues/67295
 /// A dynamic [`SignerProvider`] temporarily needed for doc tests.
 ///
