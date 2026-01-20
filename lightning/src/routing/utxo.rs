@@ -75,6 +75,15 @@ pub trait UtxoLookup {
 	) -> UtxoResult;
 }
 
+impl<T: UtxoLookup + ?Sized, U: Deref<Target = T>> UtxoLookup for U {
+	fn get_utxo(
+		&self, chain_hash: &ChainHash, short_channel_id: u64,
+		async_completion_notifier: Arc<Notifier>,
+	) -> UtxoResult {
+		self.deref().get_utxo(chain_hash, short_channel_id, async_completion_notifier)
+	}
+}
+
 enum ChannelAnnouncement {
 	Full(msgs::ChannelAnnouncement),
 	Unsigned(msgs::UnsignedChannelAnnouncement),
@@ -332,10 +341,10 @@ impl PendingChecks {
 	}
 
 	#[rustfmt::skip]
-	pub(super) fn check_channel_announcement<U: Deref>(&self,
+	pub(super) fn check_channel_announcement<U: UtxoLookup>(&self,
 		utxo_lookup: &Option<U>, msg: &msgs::UnsignedChannelAnnouncement,
 		full_msg: Option<&msgs::ChannelAnnouncement>
-	) -> Result<Option<Amount>, msgs::LightningError> where U::Target: UtxoLookup {
+	) -> Result<Option<Amount>, msgs::LightningError> {
 		let handle_result = |res| {
 			match res {
 				Ok(TxOut { value, script_pubkey }) => {

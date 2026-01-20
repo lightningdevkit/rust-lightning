@@ -319,10 +319,7 @@ impl MaybeReadable for NetworkUpdate {
 /// This network graph is then used for routing payments.
 /// Provides interface to help with initial routing sync by
 /// serving historical announcements.
-pub struct P2PGossipSync<G: Deref<Target = NetworkGraph<L>>, U: Deref, L: Logger>
-where
-	U::Target: UtxoLookup,
-{
+pub struct P2PGossipSync<G: Deref<Target = NetworkGraph<L>>, U: UtxoLookup, L: Logger> {
 	network_graph: G,
 	#[cfg(any(feature = "_test_utils", test))]
 	pub(super) utxo_lookup: Option<U>,
@@ -333,10 +330,7 @@ where
 	logger: L,
 }
 
-impl<G: Deref<Target = NetworkGraph<L>>, U: Deref, L: Logger> P2PGossipSync<G, U, L>
-where
-	U::Target: UtxoLookup,
-{
+impl<G: Deref<Target = NetworkGraph<L>>, U: UtxoLookup, L: Logger> P2PGossipSync<G, U, L> {
 	/// Creates a new tracker of the actual state of the network of channels and nodes,
 	/// assuming an existing [`NetworkGraph`].
 	///
@@ -534,10 +528,8 @@ pub fn verify_channel_announcement<C: Verification>(
 	Ok(())
 }
 
-impl<G: Deref<Target = NetworkGraph<L>>, U: Deref, L: Logger> RoutingMessageHandler
+impl<G: Deref<Target = NetworkGraph<L>>, U: UtxoLookup, L: Logger> RoutingMessageHandler
 	for P2PGossipSync<G, U, L>
-where
-	U::Target: UtxoLookup,
 {
 	fn handle_node_announcement(
 		&self, _their_node_id: Option<PublicKey>, msg: &msgs::NodeAnnouncement,
@@ -761,10 +753,8 @@ where
 	}
 }
 
-impl<G: Deref<Target = NetworkGraph<L>>, U: Deref, L: Logger> BaseMessageHandler
+impl<G: Deref<Target = NetworkGraph<L>>, U: UtxoLookup, L: Logger> BaseMessageHandler
 	for P2PGossipSync<G, U, L>
-where
-	U::Target: UtxoLookup,
 {
 	/// Initiates a stateless sync of routing gossip information with a peer
 	/// using [`gossip_queries`]. The default strategy used by this implementation
@@ -1972,12 +1962,9 @@ impl<L: Logger> NetworkGraph<L> {
 	///
 	/// If a [`UtxoLookup`] object is provided via `utxo_lookup`, it will be called to verify
 	/// the corresponding UTXO exists on chain and is correctly-formatted.
-	pub fn update_channel_from_announcement<U: Deref>(
+	pub fn update_channel_from_announcement<U: UtxoLookup>(
 		&self, msg: &msgs::ChannelAnnouncement, utxo_lookup: &Option<U>,
-	) -> Result<(), LightningError>
-	where
-		U::Target: UtxoLookup,
-	{
+	) -> Result<(), LightningError> {
 		self.pre_channel_announcement_validation_check(&msg.contents, utxo_lookup)?;
 		verify_channel_announcement(msg, &self.secp_ctx)?;
 		self.update_channel_from_unsigned_announcement_intern(&msg.contents, Some(msg), utxo_lookup)
@@ -2002,12 +1989,9 @@ impl<L: Logger> NetworkGraph<L> {
 	///
 	/// If a [`UtxoLookup`] object is provided via `utxo_lookup`, it will be called to verify
 	/// the corresponding UTXO exists on chain and is correctly-formatted.
-	pub fn update_channel_from_unsigned_announcement<U: Deref>(
+	pub fn update_channel_from_unsigned_announcement<U: UtxoLookup>(
 		&self, msg: &msgs::UnsignedChannelAnnouncement, utxo_lookup: &Option<U>,
-	) -> Result<(), LightningError>
-	where
-		U::Target: UtxoLookup,
-	{
+	) -> Result<(), LightningError> {
 		self.pre_channel_announcement_validation_check(&msg, utxo_lookup)?;
 		self.update_channel_from_unsigned_announcement_intern(msg, None, utxo_lookup)
 	}
@@ -2126,12 +2110,9 @@ impl<L: Logger> NetworkGraph<L> {
 	///
 	/// In those cases, this will return an `Err` that we can return immediately. Otherwise it will
 	/// return an `Ok(())`.
-	fn pre_channel_announcement_validation_check<U: Deref>(
+	fn pre_channel_announcement_validation_check<U: UtxoLookup>(
 		&self, msg: &msgs::UnsignedChannelAnnouncement, utxo_lookup: &Option<U>,
-	) -> Result<(), LightningError>
-	where
-		U::Target: UtxoLookup,
-	{
+	) -> Result<(), LightningError> {
 		let channels = self.channels.read().unwrap();
 
 		if let Some(chan) = channels.get(&msg.short_channel_id) {
@@ -2170,13 +2151,10 @@ impl<L: Logger> NetworkGraph<L> {
 	///
 	/// Generally [`Self::pre_channel_announcement_validation_check`] should have been called
 	/// first.
-	fn update_channel_from_unsigned_announcement_intern<U: Deref>(
+	fn update_channel_from_unsigned_announcement_intern<U: UtxoLookup>(
 		&self, msg: &msgs::UnsignedChannelAnnouncement,
 		full_msg: Option<&msgs::ChannelAnnouncement>, utxo_lookup: &Option<U>,
-	) -> Result<(), LightningError>
-	where
-		U::Target: UtxoLookup,
-	{
+	) -> Result<(), LightningError> {
 		if msg.node_id_1 == msg.node_id_2 || msg.bitcoin_key_1 == msg.bitcoin_key_2 {
 			return Err(LightningError {
 				err: "Channel announcement node had a channel with itself".to_owned(),

@@ -200,11 +200,9 @@ pub enum GossipSync<
 	P: Deref<Target = P2PGossipSync<G, U, L>>,
 	R: Deref<Target = RapidGossipSync<G, L>>,
 	G: Deref<Target = NetworkGraph<L>>,
-	U: Deref,
+	U: UtxoLookup,
 	L: Logger,
-> where
-	U::Target: UtxoLookup,
-{
+> {
 	/// Gossip sync via the lightning peer-to-peer network as defined by BOLT 7.
 	P2P(P),
 	/// Rapid gossip sync from a trusted server.
@@ -217,11 +215,9 @@ impl<
 		P: Deref<Target = P2PGossipSync<G, U, L>>,
 		R: Deref<Target = RapidGossipSync<G, L>>,
 		G: Deref<Target = NetworkGraph<L>>,
-		U: Deref,
+		U: UtxoLookup,
 		L: Logger,
 	> GossipSync<P, R, G, U, L>
-where
-	U::Target: UtxoLookup,
 {
 	fn network_graph(&self) -> Option<&G> {
 		match self {
@@ -258,11 +254,9 @@ where
 impl<
 		P: Deref<Target = P2PGossipSync<G, U, L>>,
 		G: Deref<Target = NetworkGraph<L>>,
-		U: Deref,
+		U: UtxoLookup,
 		L: Logger,
 	> GossipSync<P, &RapidGossipSync<G, L>, G, U, L>
-where
-	U::Target: UtxoLookup,
 {
 	/// Initializes a new [`GossipSync::P2P`] variant.
 	pub fn p2p(gossip_sync: P) -> Self {
@@ -928,7 +922,7 @@ use futures_util::{dummy_waker, Joiner, OptionalSelector, Selector, SelectorOutp
 ///```
 pub async fn process_events_async<
 	'a,
-	UL: Deref,
+	UL: UtxoLookup,
 	CF: chain::Filter,
 	T: BroadcasterInterface,
 	F: FeeEstimator,
@@ -961,7 +955,6 @@ pub async fn process_events_async<
 	sleeper: Sleeper, mobile_interruptable_platform: bool, fetch_time: FetchTime,
 ) -> Result<(), lightning::io::Error>
 where
-	UL::Target: UtxoLookup,
 	P::Target: Persist<<CM::Target as AChannelManager>::Signer>,
 	CM::Target: AChannelManager,
 	OM::Target: AOnionMessenger,
@@ -1422,7 +1415,7 @@ fn check_and_reset_sleeper<
 /// Async events processor that is based on [`process_events_async`] but allows for [`KVStoreSync`] to be used for
 /// synchronous background persistence.
 pub async fn process_events_async_with_kv_store_sync<
-	UL: Deref,
+	UL: UtxoLookup,
 	CF: chain::Filter,
 	T: BroadcasterInterface,
 	F: FeeEstimator,
@@ -1455,7 +1448,6 @@ pub async fn process_events_async_with_kv_store_sync<
 	sleeper: Sleeper, mobile_interruptable_platform: bool, fetch_time: FetchTime,
 ) -> Result<(), lightning::io::Error>
 where
-	UL::Target: UtxoLookup,
 	P::Target: Persist<<CM::Target as AChannelManager>::Signer>,
 	CM::Target: AChannelManager,
 	OM::Target: AOnionMessenger,
@@ -1530,7 +1522,7 @@ impl BackgroundProcessor {
 	/// [`NetworkGraph::write`]: lightning::routing::gossip::NetworkGraph#impl-Writeable
 	pub fn start<
 		'a,
-		UL: 'static + Deref,
+		UL: 'static + UtxoLookup,
 		CF: 'static + chain::Filter,
 		T: 'static + BroadcasterInterface,
 		F: 'static + FeeEstimator + Send,
@@ -1563,7 +1555,6 @@ impl BackgroundProcessor {
 		liquidity_manager: Option<LM>, sweeper: Option<OS>, logger: L, scorer: Option<S>,
 	) -> Self
 	where
-		UL::Target: 'static + UtxoLookup,
 		L::Target: 'static + Logger,
 		P::Target: 'static + Persist<<CM::Target as AChannelManager>::Signer>,
 		CM::Target: AChannelManager,

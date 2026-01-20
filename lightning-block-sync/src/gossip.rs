@@ -239,16 +239,6 @@ where
 	}
 }
 
-impl<S: FutureSpawner, Blocks: Deref + Send + Sync + Clone> Deref for GossipVerifier<S, Blocks>
-where
-	Blocks::Target: UtxoSource,
-{
-	type Target = Self;
-	fn deref(&self) -> &Self {
-		self
-	}
-}
-
 impl<S: FutureSpawner, Blocks: Deref + Send + Sync + Clone> UtxoLookup for GossipVerifier<S, Blocks>
 where
 	Blocks::Target: UtxoSource,
