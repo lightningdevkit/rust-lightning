@@ -22,6 +22,7 @@ use alloc::collections::BTreeSet;
 use crate::io;
 use crate::io::Read;
 use crate::offers::invoice::{Bolt12Invoice, SIGNATURE_TAG};
+use crate::offers::invoice_request::INVOICE_REQUEST_PAYER_ID_TYPE;
 use crate::offers::merkle::{
 	self, SelectiveDisclosure, SelectiveDisclosureError, TaggedHash, TlvStream, SIGNATURE_TYPES,
 };
@@ -48,7 +49,8 @@ const TLV_LEAF_HASHES: u64 = 248;
 const TLV_PAYER_SIGNATURE: u64 = 250;
 
 const TLV_INVREQ_METADATA: u64 = 0;
-const TLV_INVREQ_PAYER_ID: u64 = 88;
+// Note: Payer ID type (88) is imported as INVOICE_REQUEST_PAYER_ID_TYPE from invoice_request.rs
+// TODO: Invoice TLV types (168, 174, 176) could potentially be exported from invoice.rs
 const TLV_INVOICE_PAYMENT_HASH: u64 = 168;
 const TLV_INVOICE_FEATURES: u64 = 174;
 const TLV_INVOICE_NODE_ID: u64 = 176;
@@ -163,7 +165,7 @@ impl<'a> PayerProofBuilder<'a> {
 		}
 
 		let mut included_types = BTreeSet::new();
-		included_types.insert(TLV_INVREQ_PAYER_ID);
+		included_types.insert(INVOICE_REQUEST_PAYER_ID_TYPE);
 		included_types.insert(TLV_INVOICE_PAYMENT_HASH);
 		included_types.insert(TLV_INVOICE_NODE_ID);
 
@@ -504,7 +506,7 @@ impl TryFrom<Vec<u8>> for PayerProof {
 			prev_tlv_type = tlv_type;
 
 			match tlv_type {
-				TLV_INVREQ_PAYER_ID => {
+				INVOICE_REQUEST_PAYER_ID_TYPE => {
 					let mut record_cursor = io::Cursor::new(record.record_bytes);
 					let _type: BigSize = Readable::read(&mut record_cursor)?;
 					let _len: BigSize = Readable::read(&mut record_cursor)?;
@@ -915,7 +917,7 @@ mod tests {
 	#[test]
 	fn test_invreq_metadata_not_allowed() {
 		assert!(!PayerProofBuilder::<'_>::is_type_allowed(TLV_INVREQ_METADATA));
-		assert!(PayerProofBuilder::<'_>::is_type_allowed(TLV_INVREQ_PAYER_ID));
+		assert!(PayerProofBuilder::<'_>::is_type_allowed(INVOICE_REQUEST_PAYER_ID_TYPE));
 	}
 
 	/// Test that out-of-order TLVs are rejected during parsing.
