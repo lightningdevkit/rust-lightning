@@ -21,7 +21,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 bitcoin = "0.32.2"
 lightning = { version = "0.3.0", path = "../lightning" }
 tokio = { version = "1.35", features = [ "rt", "sync", "net", "time", "io-util" ] }
-arti-client = { version = "0.24", default-features = false, features = ["tokio", "rustls"] }
+arti-client = { version = "0.24", default-features = false, features = ["tokio", "rustls", "onion-service-client"] }
 tor-rtcompat = "0.24"
 
 [dev-dependencies]
