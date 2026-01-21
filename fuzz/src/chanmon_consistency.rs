@@ -1897,11 +1897,8 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 
 			0xa0 => {
 				let input = FundingTxInput::new_p2wpkh(coinbase_tx.clone(), 0).unwrap();
-				let contribution = SpliceContribution::SpliceIn {
-					value: Amount::from_sat(10_000),
-					inputs: vec![input],
-					change_script: None,
-				};
+				let contribution =
+					SpliceContribution::splice_in(Amount::from_sat(10_000), vec![input], None);
 				let funding_feerate_sat_per_kw = fee_est_a.ret_val.load(atomic::Ordering::Acquire);
 				if let Err(e) = nodes[0].splice_channel(
 					&chan_a_id,
@@ -1919,11 +1916,8 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 			},
 			0xa1 => {
 				let input = FundingTxInput::new_p2wpkh(coinbase_tx.clone(), 1).unwrap();
-				let contribution = SpliceContribution::SpliceIn {
-					value: Amount::from_sat(10_000),
-					inputs: vec![input],
-					change_script: None,
-				};
+				let contribution =
+					SpliceContribution::splice_in(Amount::from_sat(10_000), vec![input], None);
 				let funding_feerate_sat_per_kw = fee_est_b.ret_val.load(atomic::Ordering::Acquire);
 				if let Err(e) = nodes[1].splice_channel(
 					&chan_a_id,
@@ -1941,11 +1935,8 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 			},
 			0xa2 => {
 				let input = FundingTxInput::new_p2wpkh(coinbase_tx.clone(), 0).unwrap();
-				let contribution = SpliceContribution::SpliceIn {
-					value: Amount::from_sat(10_000),
-					inputs: vec![input],
-					change_script: None,
-				};
+				let contribution =
+					SpliceContribution::splice_in(Amount::from_sat(10_000), vec![input], None);
 				let funding_feerate_sat_per_kw = fee_est_b.ret_val.load(atomic::Ordering::Acquire);
 				if let Err(e) = nodes[1].splice_channel(
 					&chan_b_id,
@@ -1963,11 +1954,8 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 			},
 			0xa3 => {
 				let input = FundingTxInput::new_p2wpkh(coinbase_tx.clone(), 1).unwrap();
-				let contribution = SpliceContribution::SpliceIn {
-					value: Amount::from_sat(10_000),
-					inputs: vec![input],
-					change_script: None,
-				};
+				let contribution =
+					SpliceContribution::splice_in(Amount::from_sat(10_000), vec![input], None);
 				let funding_feerate_sat_per_kw = fee_est_c.ret_val.load(atomic::Ordering::Acquire);
 				if let Err(e) = nodes[2].splice_channel(
 					&chan_b_id,
@@ -1995,12 +1983,10 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 					.map(|chan| chan.outbound_capacity_msat)
 					.unwrap();
 				if outbound_capacity_msat >= 20_000_000 {
-					let contribution = SpliceContribution::SpliceOut {
-						outputs: vec![TxOut {
-							value: Amount::from_sat(MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS),
-							script_pubkey: coinbase_tx.output[0].script_pubkey.clone(),
-						}],
-					};
+					let contribution = SpliceContribution::splice_out(vec![TxOut {
+						value: Amount::from_sat(MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS),
+						script_pubkey: coinbase_tx.output[0].script_pubkey.clone(),
+					}]);
 					let funding_feerate_sat_per_kw =
 						fee_est_a.ret_val.load(atomic::Ordering::Acquire);
 					if let Err(e) = nodes[0].splice_channel(
@@ -2026,12 +2012,10 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 					.map(|chan| chan.outbound_capacity_msat)
 					.unwrap();
 				if outbound_capacity_msat >= 20_000_000 {
-					let contribution = SpliceContribution::SpliceOut {
-						outputs: vec![TxOut {
-							value: Amount::from_sat(MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS),
-							script_pubkey: coinbase_tx.output[1].script_pubkey.clone(),
-						}],
-					};
+					let contribution = SpliceContribution::splice_out(vec![TxOut {
+						value: Amount::from_sat(MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS),
+						script_pubkey: coinbase_tx.output[1].script_pubkey.clone(),
+					}]);
 					let funding_feerate_sat_per_kw =
 						fee_est_b.ret_val.load(atomic::Ordering::Acquire);
 					if let Err(e) = nodes[1].splice_channel(
@@ -2057,12 +2041,10 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 					.map(|chan| chan.outbound_capacity_msat)
 					.unwrap();
 				if outbound_capacity_msat >= 20_000_000 {
-					let contribution = SpliceContribution::SpliceOut {
-						outputs: vec![TxOut {
-							value: Amount::from_sat(MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS),
-							script_pubkey: coinbase_tx.output[1].script_pubkey.clone(),
-						}],
-					};
+					let contribution = SpliceContribution::splice_out(vec![TxOut {
+						value: Amount::from_sat(MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS),
+						script_pubkey: coinbase_tx.output[1].script_pubkey.clone(),
+					}]);
 					let funding_feerate_sat_per_kw =
 						fee_est_b.ret_val.load(atomic::Ordering::Acquire);
 					if let Err(e) = nodes[1].splice_channel(
@@ -2088,12 +2070,10 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 					.map(|chan| chan.outbound_capacity_msat)
 					.unwrap();
 				if outbound_capacity_msat >= 20_000_000 {
-					let contribution = SpliceContribution::SpliceOut {
-						outputs: vec![TxOut {
-							value: Amount::from_sat(MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS),
-							script_pubkey: coinbase_tx.output[2].script_pubkey.clone(),
-						}],
-					};
+					let contribution = SpliceContribution::splice_out(vec![TxOut {
+						value: Amount::from_sat(MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS),
+						script_pubkey: coinbase_tx.output[2].script_pubkey.clone(),
+					}]);
 					let funding_feerate_sat_per_kw =
 						fee_est_c.ret_val.load(atomic::Ordering::Acquire);
 					if let Err(e) = nodes[2].splice_channel(

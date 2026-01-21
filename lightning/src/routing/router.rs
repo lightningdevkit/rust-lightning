@@ -13,8 +13,8 @@ use bitcoin::secp256k1::{self, PublicKey, Secp256k1};
 use lightning_invoice::Bolt11Invoice;
 
 use crate::blinded_path::payment::{
-	BlindedPaymentPath, ForwardTlvs, PaymentConstraints, PaymentForwardNode, PaymentRelay,
-	ReceiveTlvs,
+	BlindedPaymentPath, DummyTlvs, ForwardTlvs, PaymentConstraints, PaymentForwardNode,
+	PaymentRelay, ReceiveTlvs,
 };
 use crate::blinded_path::{BlindedHop, Direction, IntroductionNode};
 use crate::crypto::chacha20::ChaCha20;
@@ -73,6 +73,9 @@ pub struct DefaultRouter<
 	scorer: S,
 	score_params: SP,
 }
+
+/// The number of dummy hops included in [`BlindedPaymentPath`]s created by [`DefaultRouter`].
+pub const DEFAULT_PAYMENT_DUMMY_HOPS: usize = 3;
 
 impl<
 		G: Deref<Target = NetworkGraph<L>>,
@@ -198,9 +201,9 @@ where
 				})
 			})
 			.map(|forward_node| {
-				BlindedPaymentPath::new(
-					&[forward_node], recipient, local_node_receive_key, tlvs.clone(), u64::MAX, MIN_FINAL_CLTV_EXPIRY_DELTA,
-					&*self.entropy_source, secp_ctx
+				BlindedPaymentPath::new_with_dummy_hops(
+					&[forward_node], recipient, &[DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS],
+					local_node_receive_key, tlvs.clone(), u64::MAX, MIN_FINAL_CLTV_EXPIRY_DELTA, &*self.entropy_source, secp_ctx
 				)
 			})
 			.take(MAX_PAYMENT_PATHS)
@@ -210,9 +213,9 @@ where
 			Ok(paths) if !paths.is_empty() => Ok(paths),
 			_ => {
 				if network_graph.nodes().contains_key(&NodeId::from_pubkey(&recipient)) {
-					BlindedPaymentPath::new(
-						&[], recipient, local_node_receive_key, tlvs, u64::MAX, MIN_FINAL_CLTV_EXPIRY_DELTA, &*self.entropy_source,
-						secp_ctx
+					BlindedPaymentPath::new_with_dummy_hops(
+						&[], recipient, &[DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS],
+						local_node_receive_key, tlvs, u64::MAX, MIN_FINAL_CLTV_EXPIRY_DELTA, &*self.entropy_source, secp_ctx
 					).map(|path| vec![path])
 				} else {
 					Err(())
