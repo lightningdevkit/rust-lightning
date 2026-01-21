@@ -85,6 +85,7 @@ use crate::util::errors::APIError;
 use crate::util::logger::{Logger, Record, WithContext};
 use crate::util::scid_utils::{block_from_scid, scid_from_parts};
 use crate::util::ser::{Readable, ReadableArgs, RequiredWrapper, Writeable, Writer};
+use crate::{impl_readable_for_vec, impl_writeable_for_vec};
 
 use alloc::collections::{btree_map, BTreeMap};
 
@@ -216,7 +217,7 @@ enum InboundHTLCState {
 		/// Used to rebuild `ChannelManager` HTLC state on restart. Previously the manager would track
 		/// and persist all HTLC forwards and receives itself, but newer LDK versions avoid relying on
 		/// its persistence and instead reconstruct state based on `Channel` and `ChannelMonitor` data.
-		update_add_htlc_opt: Option<msgs::UpdateAddHTLC>,
+		update_add_htlc: InboundUpdateAdd,
 	},
 	/// Removed by us and a new commitment_signed was sent (if we were AwaitingRemoteRevoke when we
 	/// created it we would have put it in the holding cell instead). When they next revoke_and_ack
@@ -306,6 +307,31 @@ impl InboundHTLCState {
 		}
 	}
 }
+
+/// A field of `InboundHTLCState::Committed` containing the HTLC's `update_add_htlc` message. If
+/// the HTLC is a forward and gets irrevocably committed to the outbound edge, we convert to
+/// `InboundUpdateAdd::Forwarded`, thus pruning the onion and not persisting it on every
+/// `ChannelManager` persist.
+///
+/// Useful for reconstructing the pending HTLC set on startup.
+#[derive(Debug)]
+enum InboundUpdateAdd {
+	/// The inbound committed HTLC's update_add_htlc message.
+	WithOnion { update_add_htlc: msgs::UpdateAddHTLC },
+	/// This HTLC was received pre-LDK 0.3, before we started persisting the onion for inbound
+	/// committed HTLCs.
+	Legacy,
+}
+
+impl_writeable_tlv_based_enum_upgradable!(InboundUpdateAdd,
+	(0, WithOnion) => {
+		(0, update_add_htlc, required),
+	},
+	(2, Legacy) => {},
+);
+
+impl_writeable_for_vec!(&InboundUpdateAdd);
+impl_readable_for_vec!(InboundUpdateAdd);
 
 #[cfg_attr(test, derive(Debug))]
 struct InboundHTLCOutput {
@@ -7856,12 +7882,14 @@ where
 		self.context
 			.pending_inbound_htlcs
 			.iter()
-			.filter_map(|htlc| match htlc.state {
-				InboundHTLCState::Committed { ref update_add_htlc_opt } => {
+			.filter_map(|htlc| match &htlc.state {
+				InboundHTLCState::Committed {
+					update_add_htlc: InboundUpdateAdd::WithOnion { update_add_htlc },
+				} => {
 					if htlc_resolution_in_holding_cell(htlc.htlc_id) {
 						return None;
 					}
-					update_add_htlc_opt.clone()
+					Some(update_add_htlc.clone())
 				},
 				_ => None,
 			})
@@ -8863,7 +8891,8 @@ where
 					false
 				};
 				if swap {
-					let mut state = InboundHTLCState::Committed { update_add_htlc_opt: None };
+					let mut state =
+						InboundHTLCState::Committed { update_add_htlc: InboundUpdateAdd::Legacy };
 					mem::swap(&mut state, &mut htlc.state);
 
 					if let InboundHTLCState::AwaitingRemoteRevokeToAnnounce(resolution) = state {
@@ -8904,9 +8933,8 @@ where
 										to_forward_infos.push((forward_info, htlc.htlc_id));
 										htlc.state = InboundHTLCState::Committed {
 											// HTLCs will only be in state `InboundHTLCResolution::Resolved` if they were
-											// received on an old pre-0.0.123 version of LDK. In this case, the HTLC is
-											// required to be resolved prior to upgrading to 0.1+ per CHANGELOG.md.
-											update_add_htlc_opt: None,
+											// received on LDK 0.1-.
+											update_add_htlc: InboundUpdateAdd::Legacy,
 										};
 									},
 								}
@@ -8915,7 +8943,9 @@ where
 								log_trace!(logger, " ...promoting inbound AwaitingAnnouncedRemoteRevoke {} to Committed", &htlc.payment_hash);
 								pending_update_adds.push(update_add_htlc.clone());
 								htlc.state = InboundHTLCState::Committed {
-									update_add_htlc_opt: Some(update_add_htlc),
+									update_add_htlc: InboundUpdateAdd::WithOnion {
+										update_add_htlc,
+									},
 								};
 							},
 						}
@@ -14602,7 +14632,7 @@ impl<SP: SignerProvider> Writeable for FundedChannel<SP> {
 			}
 		}
 		let mut removed_htlc_attribution_data: Vec<&Option<AttributionData>> = Vec::new();
-		let mut inbound_committed_update_adds: Vec<&Option<msgs::UpdateAddHTLC>> = Vec::new();
+		let mut inbound_committed_update_adds: Vec<&InboundUpdateAdd> = Vec::new();
 		(self.context.pending_inbound_htlcs.len() as u64 - dropped_inbound_htlcs).write(writer)?;
 		for htlc in self.context.pending_inbound_htlcs.iter() {
 			if let &InboundHTLCState::RemoteAnnounced(_) = &htlc.state {
@@ -14622,9 +14652,9 @@ impl<SP: SignerProvider> Writeable for FundedChannel<SP> {
 					2u8.write(writer)?;
 					htlc_resolution.write(writer)?;
 				},
-				&InboundHTLCState::Committed { ref update_add_htlc_opt } => {
+				&InboundHTLCState::Committed { ref update_add_htlc } => {
 					3u8.write(writer)?;
-					inbound_committed_update_adds.push(update_add_htlc_opt);
+					inbound_committed_update_adds.push(update_add_htlc);
 				},
 				&InboundHTLCState::LocalRemoved(ref removal_reason) => {
 					4u8.write(writer)?;
@@ -15093,7 +15123,7 @@ impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
 						};
 						InboundHTLCState::AwaitingAnnouncedRemoteRevoke(resolution)
 					},
-					3 => InboundHTLCState::Committed { update_add_htlc_opt: None },
+					3 => InboundHTLCState::Committed { update_add_htlc: InboundUpdateAdd::Legacy },
 					4 => {
 						let reason = match <u8 as Readable>::read(reader)? {
 							0 => InboundHTLCRemovalReason::FailRelay(msgs::OnionErrorPacket {
@@ -15399,7 +15429,7 @@ impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
 
 		let mut pending_outbound_held_htlc_flags_opt: Option<Vec<Option<()>>> = None;
 		let mut holding_cell_held_htlc_flags_opt: Option<Vec<Option<()>>> = None;
-		let mut inbound_committed_update_adds_opt: Option<Vec<Option<msgs::UpdateAddHTLC>>> = None;
+		let mut inbound_committed_update_adds_opt: Option<Vec<InboundUpdateAdd>> = None;
 		let mut holding_cell_accountable: Option<Vec<bool>> = None;
 		let mut pending_outbound_accountable: Option<Vec<bool>> = None;
 
@@ -15583,8 +15613,8 @@ impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
 		if let Some(update_adds) = inbound_committed_update_adds_opt {
 			let mut iter = update_adds.into_iter();
 			for htlc in pending_inbound_htlcs.iter_mut() {
-				if let InboundHTLCState::Committed { ref mut update_add_htlc_opt } = htlc.state {
-					*update_add_htlc_opt = iter.next().ok_or(DecodeError::InvalidValue)?;
+				if let InboundHTLCState::Committed { ref mut update_add_htlc } = htlc.state {
+					*update_add_htlc = iter.next().ok_or(DecodeError::InvalidValue)?;
 				}
 			}
 			if iter.next().is_some() {
@@ -15952,8 +15982,8 @@ mod tests {
 	use crate::ln::chan_utils::{self, commit_tx_fee_sat, ChannelTransactionParameters};
 	use crate::ln::channel::{
 		AwaitingChannelReadyFlags, ChannelState, FundedChannel, HTLCCandidate, HTLCInitiator,
-		HTLCUpdateAwaitingACK, InboundHTLCOutput, InboundHTLCState, InboundV1Channel,
-		OutboundHTLCOutput, OutboundHTLCState, OutboundV1Channel,
+		HTLCUpdateAwaitingACK, InboundHTLCOutput, InboundHTLCState, InboundUpdateAdd,
+		InboundV1Channel, OutboundHTLCOutput, OutboundHTLCState, OutboundV1Channel,
 	};
 	use crate::ln::channel::{
 		MAX_FUNDING_SATOSHIS_NO_WUMBO, MIN_THEIR_CHAN_RESERVE_SATOSHIS,
@@ -15995,6 +16025,10 @@ mod tests {
 	use bitcoin::transaction::{Transaction, TxOut, Version};
 	use bitcoin::{ScriptBuf, WPubkeyHash, WitnessProgram, WitnessVersion};
 	use std::cmp;
+
+	fn dummy_inbound_update_add() -> InboundUpdateAdd {
+		InboundUpdateAdd::Legacy
+	}
 
 	#[test]
 	#[rustfmt::skip]
@@ -16198,7 +16232,7 @@ mod tests {
 			amount_msat: htlc_amount_msat,
 			payment_hash: PaymentHash(Sha256::hash(&[42; 32]).to_byte_array()),
 			cltv_expiry: 300000000,
-			state: InboundHTLCState::Committed { update_add_htlc_opt: None },
+			state: InboundHTLCState::Committed { update_add_htlc: dummy_inbound_update_add()  },
 		});
 
 		node_a_chan.context.pending_outbound_htlcs.push(OutboundHTLCOutput {
@@ -17047,7 +17081,7 @@ mod tests {
 			amount_msat: 1000000,
 			cltv_expiry: 500,
 			payment_hash: PaymentHash::from(payment_preimage_0),
-			state: InboundHTLCState::Committed { update_add_htlc_opt: None },
+			state: InboundHTLCState::Committed { update_add_htlc: dummy_inbound_update_add() },
 		});
 
 		let payment_preimage_1 =
@@ -17057,7 +17091,7 @@ mod tests {
 			amount_msat: 2000000,
 			cltv_expiry: 501,
 			payment_hash: PaymentHash::from(payment_preimage_1),
-			state: InboundHTLCState::Committed { update_add_htlc_opt: None },
+			state: InboundHTLCState::Committed { update_add_htlc: dummy_inbound_update_add() },
 		});
 
 		let payment_preimage_2 =
@@ -17099,7 +17133,7 @@ mod tests {
 			amount_msat: 4000000,
 			cltv_expiry: 504,
 			payment_hash: PaymentHash::from(payment_preimage_4),
-			state: InboundHTLCState::Committed { update_add_htlc_opt: None },
+			state: InboundHTLCState::Committed { update_add_htlc: dummy_inbound_update_add() },
 		});
 
 		// commitment tx with all five HTLCs untrimmed (minimum feerate)
@@ -17488,7 +17522,7 @@ mod tests {
 			amount_msat: 2000000,
 			cltv_expiry: 501,
 			payment_hash: PaymentHash::from(payment_preimage_1),
-			state: InboundHTLCState::Committed { update_add_htlc_opt: None },
+			state: InboundHTLCState::Committed { update_add_htlc: dummy_inbound_update_add() },
 		});
 
 		chan.context.pending_outbound_htlcs.clear();
@@ -17741,7 +17775,7 @@ mod tests {
 			amount_msat: 5000000,
 			cltv_expiry: 920150,
 			payment_hash: PaymentHash::from(htlc_in_preimage),
-			state: InboundHTLCState::Committed { update_add_htlc_opt: None },
+			state: InboundHTLCState::Committed { update_add_htlc: dummy_inbound_update_add() },
 		}));
 
 		chan.context.pending_outbound_htlcs.extend(
@@ -17805,7 +17839,7 @@ mod tests {
 				amount_msat,
 				cltv_expiry: 920150,
 				payment_hash: PaymentHash::from(htlc_in_preimage),
-				state: InboundHTLCState::Committed { update_add_htlc_opt: None },
+				state: InboundHTLCState::Committed { update_add_htlc: dummy_inbound_update_add() },
 			},
 		));
 
@@ -17872,7 +17906,7 @@ mod tests {
 			amount_msat: 100000,
 			cltv_expiry: 920125,
 			payment_hash: htlc_0_in_hash,
-			state: InboundHTLCState::Committed { update_add_htlc_opt: None },
+			state: InboundHTLCState::Committed { update_add_htlc: dummy_inbound_update_add() },
 		});
 
 		let htlc_1_in_preimage =
@@ -17890,7 +17924,7 @@ mod tests {
 			amount_msat: 49900000,
 			cltv_expiry: 920125,
 			payment_hash: htlc_1_in_hash,
-			state: InboundHTLCState::Committed { update_add_htlc_opt: None },
+			state: InboundHTLCState::Committed { update_add_htlc: dummy_inbound_update_add() },
 		});
 
 		chan.context.pending_outbound_htlcs.extend(
@@ -17943,7 +17977,7 @@ mod tests {
 				amount_msat: 30000,
 				payment_hash,
 				cltv_expiry: 920125,
-				state: InboundHTLCState::Committed { update_add_htlc_opt: None },
+				state: InboundHTLCState::Committed { update_add_htlc: dummy_inbound_update_add() },
 			},
 		));
 
@@ -17985,7 +18019,7 @@ mod tests {
 				amount_msat: 29525,
 				payment_hash,
 				cltv_expiry: 920125,
-				state: InboundHTLCState::Committed { update_add_htlc_opt: None },
+				state: InboundHTLCState::Committed { update_add_htlc: dummy_inbound_update_add() },
 			},
 		));
 
@@ -18023,7 +18057,7 @@ mod tests {
 				amount_msat: 29525,
 				payment_hash,
 				cltv_expiry: 920125,
-				state: InboundHTLCState::Committed { update_add_htlc_opt: None },
+				state: InboundHTLCState::Committed { update_add_htlc: dummy_inbound_update_add() },
 			},
 		));
 
@@ -18061,7 +18095,7 @@ mod tests {
 				amount_msat: 29753,
 				payment_hash,
 				cltv_expiry: 920125,
-				state: InboundHTLCState::Committed { update_add_htlc_opt: None },
+				state: InboundHTLCState::Committed { update_add_htlc: dummy_inbound_update_add() },
 			},
 		));
 
@@ -18114,7 +18148,7 @@ mod tests {
 				amount_msat,
 				cltv_expiry,
 				payment_hash,
-				state: InboundHTLCState::Committed { update_add_htlc_opt: None },
+				state: InboundHTLCState::Committed { update_add_htlc: dummy_inbound_update_add() },
 			}),
 		);
 
