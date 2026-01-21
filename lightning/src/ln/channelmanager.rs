@@ -3438,6 +3438,10 @@ macro_rules! process_events_body {
 			}
 
 			if !post_event_actions.is_empty() {
+				// `handle_post_event_actions` may update channel state, so take the total
+				// consistency lock now similarly to other callers of `handle_post_event_actions`.
+				// Note that if it needs to wake the background processor for event handling or
+				// persistence it will do so directly.
 				let _read_guard = $self.total_consistency_lock.read().unwrap();
 				$self.handle_post_event_actions(post_event_actions);
 				// If we had some actions, go around again as we may have more events now
@@ -14315,6 +14319,10 @@ where
 	}
 
 	fn handle_post_event_actions<I: IntoIterator<Item = EventCompletionAction>>(&self, actions: I) {
+		debug_assert_ne!(
+			self.total_consistency_lock.held_by_thread(),
+			LockHeldState::NotHeldByThread
+		);
 		for action in actions.into_iter() {
 			match action {
 				EventCompletionAction::ReleaseRAAChannelMonitorUpdate {
