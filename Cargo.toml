@@ -9,6 +9,7 @@ members = [
     "lightning-block-sync",
     "lightning-invoice",
     "lightning-net-tokio",
+    "lightning-net-tor",
     "lightning-persister",
     "lightning-background-processor",
     "lightning-rapid-gossip-sync",
