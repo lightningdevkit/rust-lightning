@@ -4406,20 +4406,40 @@ pub fn create_chanmon_cfgs(node_count: usize) -> Vec<TestChanMonCfg> {
 pub fn create_chanmon_cfgs_with_legacy_keys(
 	node_count: usize, predefined_keys_ids: Option<Vec<[u8; 32]>>,
 ) -> Vec<TestChanMonCfg> {
+	create_chanmon_cfgs_internal(node_count, predefined_keys_ids, false)
+}
+
+pub fn create_phantom_chanmon_cfgs(node_count: usize) -> Vec<TestChanMonCfg> {
+	create_chanmon_cfgs_internal(node_count, None, true)
+}
+
+pub fn create_chanmon_cfgs_internal(
+	node_count: usize, predefined_keys_ids: Option<Vec<[u8; 32]>>, phantom: bool,
+) -> Vec<TestChanMonCfg> {
 	let mut chan_mon_cfgs = Vec::new();
+	let phantom_seed = if phantom { Some(&[42; 32]) } else { None };
 	for i in 0..node_count {
 		let tx_broadcaster = test_utils::TestBroadcaster::new(Network::Testnet);
 		let fee_estimator = test_utils::TestFeeEstimator::new(253);
 		let chain_source = test_utils::TestChainSource::new(Network::Testnet);
 		let logger = test_utils::TestLogger::with_id(format!("node {}", i));
 		let persister = test_utils::TestPersister::new();
-		let seed = [i as u8; 32];
-		let keys_manager = if predefined_keys_ids.is_some() {
+		let mut seed = [i as u8; 32];
+		if phantom {
+			// We would ideally randomize keys on every test run, but some tests fail in that case.
+			// Instead, we only randomize in the phantom case.
+			use core::hash::{BuildHasher, Hasher};
+			// Get a random value using the only std API to do so - the DefaultHasher
+			let rand_val = std::collections::hash_map::RandomState::new().build_hasher().finish();
+			seed[..8].copy_from_slice(&rand_val.to_ne_bytes());
+		}
+		let keys_manager = test_utils::TestKeysInterface::with_settings(
+			&seed,
+			Network::Testnet,
 			// Use legacy (V1) remote_key derivation for tests using legacy key sets.
-			test_utils::TestKeysInterface::with_v1_remote_key_derivation(&seed, Network::Testnet)
-		} else {
-			test_utils::TestKeysInterface::new(&seed, Network::Testnet)
-		};
+			predefined_keys_ids.is_some(),
+			phantom_seed,
+		);
 		let scorer = RwLock::new(test_utils::TestScorer::new());
 
 		// Set predefined keys_id if provided
