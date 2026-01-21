@@ -1954,6 +1954,7 @@ pub trait TestSignerFactory: Send + Sync {
 	/// Make a dynamic signer
 	fn make_signer(
 		&self, seed: &[u8; 32], now: Duration, v2_remote_key_derivation: bool,
+		phantom_seed: Option<&[u8; 32]>,
 	) -> Box<dyn DynKeysInterfaceTrait<EcdsaSigner = DynSigner>>;
 }
 
@@ -1963,12 +1964,13 @@ struct DefaultSignerFactory();
 impl TestSignerFactory for DefaultSignerFactory {
 	fn make_signer(
 		&self, seed: &[u8; 32], now: Duration, v2_remote_key_derivation: bool,
+		phantom_seed: Option<&[u8; 32]>,
 	) -> Box<dyn DynKeysInterfaceTrait<EcdsaSigner = DynSigner>> {
 		let phantom = sign::PhantomKeysManager::new(
 			seed,
 			now.as_secs(),
 			now.subsec_nanos(),
-			seed,
+			if let Some(provided_seed) = phantom_seed { provided_seed } else { seed },
 			v2_remote_key_derivation,
 		);
 		let dphantom = DynPhantomKeysInterface::new(phantom);
@@ -2000,7 +2002,7 @@ impl TestKeysInterface {
 		let factory = DefaultSignerFactory();
 
 		let now = Duration::from_secs(genesis_block(network).header.time as u64);
-		let backing = factory.make_signer(seed, now, true);
+		let backing = factory.make_signer(seed, now, true, None);
 		Self::build(backing)
 	}
 
@@ -2012,7 +2014,21 @@ impl TestKeysInterface {
 		let factory = DefaultSignerFactory();
 
 		let now = Duration::from_secs(genesis_block(network).header.time as u64);
-		let backing = factory.make_signer(seed, now, false);
+		let backing = factory.make_signer(seed, now, false, None);
+		Self::build(backing)
+	}
+
+	pub fn with_settings(
+		seed: &[u8; 32], network: Network, v1_derivation: bool, phantom_seed: Option<&[u8; 32]>,
+	) -> Self {
+		#[cfg(feature = "std")]
+		let factory = SIGNER_FACTORY.get();
+
+		#[cfg(not(feature = "std"))]
+		let factory = DefaultSignerFactory();
+
+		let now = Duration::from_secs(genesis_block(network).header.time as u64);
+		let backing = factory.make_signer(seed, now, !v1_derivation, phantom_seed);
 		Self::build(backing)
 	}
 
