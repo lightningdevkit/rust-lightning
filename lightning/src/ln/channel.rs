@@ -1902,10 +1902,11 @@ where
 		}
 	}
 
-	pub fn tx_complete<L: Deref>(
-		&mut self, msg: &msgs::TxComplete, logger: &L,
+	pub fn tx_complete<F: Deref, L: Deref>(
+		&mut self, msg: &msgs::TxComplete, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
 	) -> Result<TxCompleteResult, (ChannelError, Option<SpliceFundingFailed>)>
 	where
+		F::Target: FeeEstimator,
 		L::Target: Logger,
 	{
 		let tx_complete_action = match self.interactive_tx_constructor_mut() {
@@ -1954,7 +1955,7 @@ where
 		let funding_tx_signed = if !has_local_contribution {
 			let funding_txid = signing_session.unsigned_tx().tx().compute_txid();
 			if let ChannelPhase::Funded(chan) = &mut self.phase {
-				chan.funding_transaction_signed(funding_txid, vec![], 0, logger).ok()
+				chan.funding_transaction_signed(funding_txid, vec![], 0, fee_estimator, logger).ok()
 			} else {
 				None
 			}
@@ -2104,7 +2105,11 @@ where
 						funding.channel_transaction_parameters.funding_outpoint =
 							Some(funding_outpoint);
 						pending_splice.funding_negotiation =
-							Some(FundingNegotiation::AwaitingSignatures { is_initiator, funding });
+							Some(FundingNegotiation::AwaitingSignatures {
+								is_initiator,
+								funding,
+								initial_commitment_signed_from_counterparty: None,
+							});
 						interactive_tx_constructor
 					} else {
 						// Replace the taken state for later error handling
@@ -2193,9 +2198,33 @@ where
 					// which must always come after the initial commitment signed is sent.
 					.unwrap_or(true);
 				let res = if has_negotiated_pending_splice && !session_received_commitment_signed {
-					funded_channel
-						.splice_initial_commitment_signed(msg, fee_estimator, logger)
-						.map(|monitor_update_opt| (None, monitor_update_opt))
+					let has_holder_tx_signatures = funded_channel
+						.context
+						.interactive_tx_signing_session
+						.as_ref()
+						.map(|session| session.holder_tx_signatures().is_some())
+						.unwrap_or(false);
+
+					// We delay processing this until the user manually approves the splice via
+					// [`FundedChannel::funding_transaction_signed`], as otherwise, there would be a
+					// [`ChannelMonitorUpdateStep::RenegotiatedFunding`] committed that we would
+					// need to undo if they no longer wish to proceed.
+					if has_holder_tx_signatures {
+						funded_channel
+							.splice_initial_commitment_signed(msg, fee_estimator, logger)
+							.map(|monitor_update_opt| (None, monitor_update_opt))
+					} else {
+						let pending_splice = funded_channel.pending_splice.as_mut()
+							.expect("We have a pending splice negotiated");
+						let funding_negotiation = pending_splice.funding_negotiation.as_mut()
+							.expect("We have a pending splice negotiated");
+						if let FundingNegotiation::AwaitingSignatures {
+							ref mut initial_commitment_signed_from_counterparty, ..
+						} = funding_negotiation {
+							*initial_commitment_signed_from_counterparty = Some(msg.clone());
+						}
+						Ok((None, None))
+					}
 				} else {
 					funded_channel.commitment_signed(msg, fee_estimator, logger)
 						.map(|monitor_update_opt| (None, monitor_update_opt))
@@ -2679,6 +2708,17 @@ enum FundingNegotiation {
 	AwaitingSignatures {
 		funding: FundingScope,
 		is_initiator: bool,
+		/// The initial [`msgs::CommitmentSigned`] message received for the [`FundingScope`] above.
+		/// We delay processing this until the user manually approves the splice via
+		/// [`FundedChannel::funding_transaction_signed`], as otherwise, there would be a
+		/// [`ChannelMonitorUpdateStep::RenegotiatedFunding`] committed that we would need to undo
+		/// if they no longer wish to proceed.
+		///
+		/// Note that this doesn't need to be done with dual-funded channels as there is no
+		/// equivalent monitor update for them, and we can just force close the channel.
+		///
+		/// This field is not persisted as the message should be resent on reconnections.
+		initial_commitment_signed_from_counterparty: Option<msgs::CommitmentSigned>,
 	},
 }
 
@@ -2686,6 +2726,7 @@ impl_writeable_tlv_based_enum_upgradable!(FundingNegotiation,
 	(0, AwaitingSignatures) => {
 		(1, funding, required),
 		(3, is_initiator, required),
+		(_unused, initial_commitment_signed_from_counterparty, (static_value, None)),
 	},
 	unread_variants: AwaitingAck, ConstructingTransaction
 );
@@ -6834,7 +6875,7 @@ type BestBlockUpdatedRes = (
 );
 
 /// The result of handling a `tx_complete` message during interactive transaction construction.
-pub(crate) struct TxCompleteResult {
+pub(super) struct TxCompleteResult {
 	/// The message to send to the counterparty, if any.
 	pub interactive_tx_msg_send: Option<InteractiveTxMessageSend>,
 
@@ -6848,9 +6889,14 @@ pub(crate) struct TxCompleteResult {
 }
 
 /// The result of signing a funding transaction negotiated using the interactive-tx protocol.
-pub struct FundingTxSigned {
+pub(super) struct FundingTxSigned {
 	/// The initial `commitment_signed` message to send to the counterparty, if necessary.
 	pub commitment_signed: Option<msgs::CommitmentSigned>,
+
+	/// The result of processing a buffered initial commitment signed from our counterparty,
+	/// if any.
+	pub counterparty_initial_commitment_signed_result:
+		Option<Result<Option<ChannelMonitorUpdate>, ChannelError>>,
 
 	/// Signatures that should be sent to the counterparty, if necessary.
 	pub tx_signatures: Option<msgs::TxSignatures>,
@@ -9071,11 +9117,12 @@ where
 		}
 	}
 
-	pub fn funding_transaction_signed<L: Deref>(
+	pub fn funding_transaction_signed<F: Deref, L: Deref>(
 		&mut self, funding_txid_signed: Txid, witnesses: Vec<Witness>, best_block_height: u32,
-		logger: &L,
+		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
 	) -> Result<FundingTxSigned, APIError>
 	where
+		F::Target: FeeEstimator,
 		L::Target: Logger,
 	{
 		let signing_session =
@@ -9096,6 +9143,7 @@ where
 					// or we're waiting for our counterparty to send theirs first.
 					return Ok(FundingTxSigned {
 						commitment_signed: None,
+						counterparty_initial_commitment_signed_result: None,
 						tx_signatures: None,
 						funding_tx: None,
 						splice_negotiated: None,
@@ -9110,6 +9158,7 @@ where
 					// no longer have the signing session present.
 					return Ok(FundingTxSigned {
 						commitment_signed: None,
+						counterparty_initial_commitment_signed_result: None,
 						tx_signatures: None,
 						funding_tx: None,
 						splice_negotiated: None,
@@ -9179,8 +9228,30 @@ where
 			.unwrap_or(&self.funding);
 		let commitment_signed = self.context.get_initial_commitment_signed_v2(funding, &&logger);
 
+		// If we have a pending splice with a buffered initial commitment_signed from our
+		// counterparty, process it now that we have provided our signatures.
+		let counterparty_initial_commitment_signed_result = self
+			.pending_splice
+			.as_mut()
+			.and_then(|pending_splice| pending_splice.funding_negotiation.as_mut())
+			.and_then(|funding_negotiation| {
+				if let FundingNegotiation::AwaitingSignatures {
+					ref mut initial_commitment_signed_from_counterparty,
+					..
+				} = funding_negotiation
+				{
+					initial_commitment_signed_from_counterparty.take()
+				} else {
+					None
+				}
+			})
+			.map(|commit_sig| {
+				self.splice_initial_commitment_signed(&commit_sig, fee_estimator, &&logger)
+			});
+
 		Ok(FundingTxSigned {
 			commitment_signed,
+			counterparty_initial_commitment_signed_result,
 			tx_signatures,
 			funding_tx,
 			splice_negotiated,
@@ -9254,6 +9325,7 @@ where
 
 		Ok(FundingTxSigned {
 			commitment_signed: None,
+			counterparty_initial_commitment_signed_result: None,
 			tx_signatures: holder_tx_signatures,
 			funding_tx,
 			splice_negotiated,
