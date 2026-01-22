@@ -6444,138 +6444,129 @@ where
 
 			match peer_state.channel_by_id.entry(*channel_id) {
 				hash_map::Entry::Occupied(mut chan_entry) => {
-					match chan_entry.get_mut().as_funded_mut() {
-						Some(chan) => {
-							let txid = transaction.compute_txid();
-							let witnesses: Vec<_> = transaction
-								.input
-								.into_iter()
-								.map(|input| input.witness)
-								.filter(|witness| !witness.is_empty())
-								.collect();
-							let best_block_height = self.best_block.read().unwrap().height;
+					let txid = transaction.compute_txid();
+					let witnesses: Vec<_> = transaction
+						.input
+						.into_iter()
+						.map(|input| input.witness)
+						.filter(|witness| !witness.is_empty())
+						.collect();
+					let best_block_height = self.best_block.read().unwrap().height;
 
-							match chan.funding_transaction_signed(
-								txid,
-								witnesses,
-								best_block_height,
-								&self.fee_estimator,
-								&self.logger,
-							) {
-								Ok(FundingTxSigned {
-									commitment_signed,
-									counterparty_initial_commitment_signed_result,
-									tx_signatures,
-									funding_tx,
-									splice_negotiated,
-									splice_locked,
-								}) => {
-									if let Some(funding_tx) = funding_tx {
-										self.broadcast_interactive_funding(
-											chan,
-											&funding_tx,
-											&self.logger,
-										);
-									}
-									if let Some(splice_negotiated) = splice_negotiated {
-										self.pending_events.lock().unwrap().push_back((
-											events::Event::SplicePending {
-												channel_id: *channel_id,
-												counterparty_node_id: *counterparty_node_id,
-												user_channel_id: chan.context.get_user_id(),
-												new_funding_txo: splice_negotiated.funding_txo,
-												channel_type: splice_negotiated.channel_type,
-												new_funding_redeem_script: splice_negotiated
-													.funding_redeem_script,
-											},
-											None,
-										));
-									}
-
-									if chan.context.is_connected() {
-										if let Some(commitment_signed) = commitment_signed {
-											peer_state.pending_msg_events.push(
-												MessageSendEvent::UpdateHTLCs {
-													node_id: *counterparty_node_id,
-													channel_id: *channel_id,
-													updates: CommitmentUpdate {
-														commitment_signed: vec![commitment_signed],
-														update_add_htlcs: vec![],
-														update_fulfill_htlcs: vec![],
-														update_fail_htlcs: vec![],
-														update_fail_malformed_htlcs: vec![],
-														update_fee: None,
-													},
-												},
-											);
-										}
-										if let Some(tx_signatures) = tx_signatures {
-											peer_state.pending_msg_events.push(
-												MessageSendEvent::SendTxSignatures {
-													node_id: *counterparty_node_id,
-													msg: tx_signatures,
-												},
-											);
-										}
-										if let Some(splice_locked) = splice_locked {
-											peer_state.pending_msg_events.push(
-												MessageSendEvent::SendSpliceLocked {
-													node_id: *counterparty_node_id,
-													msg: splice_locked,
-												},
-											);
-										}
-									}
-
-									match counterparty_initial_commitment_signed_result {
-										Some(Ok(Some(monitor_update))) => {
-											let funding_txo = chan.funding.get_funding_txo();
-											if let Some(post_update_data) = self
-												.handle_new_monitor_update(
-													&mut peer_state.in_flight_monitor_updates,
-													&mut peer_state.monitor_update_blocked_actions,
-													&mut peer_state.pending_msg_events,
-													peer_state.is_connected,
-													chan,
-													funding_txo.unwrap(),
-													monitor_update,
-												) {
-												monitor_update_result = Some(Ok(post_update_data));
-											}
-										},
-										Some(Err(err)) => {
-											let (drop, err) = self
-												.locked_handle_funded_force_close(
-													&mut peer_state
-														.closed_channel_monitor_update_ids,
-													&mut peer_state.in_flight_monitor_updates,
-													err,
-													chan,
-												);
-											if drop {
-												chan_entry.remove_entry();
-											}
-
-											monitor_update_result = Some(Err(err));
-										},
-										Some(Ok(None)) | None => {},
-									}
-
-									funding_tx_signed_result = Ok(());
-								},
-								Err(err) => {
-									funding_tx_signed_result = Err(err);
-									return NotifyOption::SkipPersistNoEvents;
-								},
+					let chan = chan_entry.get_mut();
+					match chan.funding_transaction_signed(
+						txid,
+						witnesses,
+						best_block_height,
+						&self.fee_estimator,
+						&self.logger,
+					) {
+						Ok(FundingTxSigned {
+							commitment_signed,
+							counterparty_initial_commitment_signed_result,
+							tx_signatures,
+							funding_tx,
+							splice_negotiated,
+							splice_locked,
+						}) => {
+							if let Some(funding_tx) = funding_tx {
+								let funded_chan = chan.as_funded_mut().expect(
+									"Funding transactions ready for broadcast can only exist for funded channels",
+								);
+								self.broadcast_interactive_funding(
+									funded_chan,
+									&funding_tx,
+									&self.logger,
+								);
 							}
+							if let Some(splice_negotiated) = splice_negotiated {
+								self.pending_events.lock().unwrap().push_back((
+									events::Event::SplicePending {
+										channel_id: *channel_id,
+										counterparty_node_id: *counterparty_node_id,
+										user_channel_id: chan.context().get_user_id(),
+										new_funding_txo: splice_negotiated.funding_txo,
+										channel_type: splice_negotiated.channel_type,
+										new_funding_redeem_script: splice_negotiated
+											.funding_redeem_script,
+									},
+									None,
+								));
+							}
+
+							if chan.context().is_connected() {
+								if let Some(commitment_signed) = commitment_signed {
+									peer_state.pending_msg_events.push(
+										MessageSendEvent::UpdateHTLCs {
+											node_id: *counterparty_node_id,
+											channel_id: *channel_id,
+											updates: CommitmentUpdate {
+												commitment_signed: vec![commitment_signed],
+												update_add_htlcs: vec![],
+												update_fulfill_htlcs: vec![],
+												update_fail_htlcs: vec![],
+												update_fail_malformed_htlcs: vec![],
+												update_fee: None,
+											},
+										},
+									);
+								}
+								if let Some(tx_signatures) = tx_signatures {
+									peer_state.pending_msg_events.push(
+										MessageSendEvent::SendTxSignatures {
+											node_id: *counterparty_node_id,
+											msg: tx_signatures,
+										},
+									);
+								}
+								if let Some(splice_locked) = splice_locked {
+									peer_state.pending_msg_events.push(
+										MessageSendEvent::SendSpliceLocked {
+											node_id: *counterparty_node_id,
+											msg: splice_locked,
+										},
+									);
+								}
+							}
+
+							if let Some(funded_chan) = chan.as_funded_mut() {
+								match counterparty_initial_commitment_signed_result {
+									Some(Ok(Some(monitor_update))) => {
+										let funding_txo = funded_chan.funding.get_funding_txo();
+										if let Some(post_update_data) = self
+											.handle_new_monitor_update(
+												&mut peer_state.in_flight_monitor_updates,
+												&mut peer_state.monitor_update_blocked_actions,
+												&mut peer_state.pending_msg_events,
+												peer_state.is_connected,
+												funded_chan,
+												funding_txo.unwrap(),
+												monitor_update,
+											) {
+											monitor_update_result = Some(Ok(post_update_data));
+										}
+									},
+									Some(Err(err)) => {
+										let (drop, err) = self.locked_handle_funded_force_close(
+											&mut peer_state.closed_channel_monitor_update_ids,
+											&mut peer_state.in_flight_monitor_updates,
+											err,
+											funded_chan,
+										);
+										if drop {
+											chan_entry.remove_entry();
+										}
+
+										monitor_update_result = Some(Err(err));
+									},
+									Some(Ok(None)) | None => {},
+								}
+							}
+
+							funding_tx_signed_result = Ok(());
 						},
-						None => {
-							funding_tx_signed_result = Err(APIError::APIMisuseError {
-								err: format!(
-									"Channel with id {} not expecting funding signatures",
-									channel_id
-								),
-							});
+						Err(err) => {
+							funding_tx_signed_result = Err(err);
 							return NotifyOption::SkipPersistNoEvents;
 						},
 					}
