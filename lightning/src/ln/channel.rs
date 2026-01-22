@@ -1904,10 +1904,7 @@ where
 
 	pub fn tx_complete<L: Deref>(
 		&mut self, msg: &msgs::TxComplete, logger: &L,
-	) -> Result<
-		(Option<InteractiveTxMessageSend>, Option<msgs::CommitmentSigned>),
-		(ChannelError, Option<SpliceFundingFailed>),
-	>
+	) -> Result<TxCompleteResult, (ChannelError, Option<SpliceFundingFailed>)>
 	where
 		L::Target: Logger,
 	{
@@ -1934,13 +1931,38 @@ where
 		let funding_outpoint = if let Some(funding_outpoint) = negotiation_complete {
 			funding_outpoint
 		} else {
-			return Ok((interactive_tx_msg_send, None));
+			return Ok(TxCompleteResult {
+				interactive_tx_msg_send,
+				event_unsigned_tx: None,
+				funding_tx_signed: None,
+			});
 		};
 
-		let commitment_signed = self
-			.funding_tx_constructed(funding_outpoint, logger)
+		self.funding_tx_constructed(funding_outpoint)
 			.map_err(|abort_reason| self.fail_interactive_tx_negotiation(abort_reason, logger))?;
-		Ok((interactive_tx_msg_send, Some(commitment_signed)))
+
+		let signing_session = self
+			.context()
+			.interactive_tx_signing_session
+			.as_ref()
+			.expect("The signing session must have been initialized in funding_tx_constructed");
+		let has_local_contribution = signing_session.has_local_contribution();
+
+		let event_unsigned_tx =
+			has_local_contribution.then(|| signing_session.unsigned_tx().tx().clone());
+
+		let funding_tx_signed = if !has_local_contribution {
+			let funding_txid = signing_session.unsigned_tx().tx().compute_txid();
+			if let ChannelPhase::Funded(chan) = &mut self.phase {
+				chan.funding_transaction_signed(funding_txid, vec![], 0, logger).ok()
+			} else {
+				None
+			}
+		} else {
+			None
+		};
+
+		Ok(TxCompleteResult { interactive_tx_msg_send, event_unsigned_tx, funding_tx_signed })
 	}
 
 	pub fn tx_abort<L: Deref>(
@@ -2046,14 +2068,8 @@ where
 		result.map(|monitor| (self.as_funded_mut().expect("Channel should be funded"), monitor))
 	}
 
-	fn funding_tx_constructed<L: Deref>(
-		&mut self, funding_outpoint: OutPoint, logger: &L,
-	) -> Result<msgs::CommitmentSigned, AbortReason>
-	where
-		L::Target: Logger,
-	{
-		let logger = WithChannelContext::from(logger, self.context(), None);
-		let (interactive_tx_constructor, commitment_signed) = match &mut self.phase {
+	fn funding_tx_constructed(&mut self, funding_outpoint: OutPoint) -> Result<(), AbortReason> {
+		let interactive_tx_constructor = match &mut self.phase {
 			ChannelPhase::UnfundedV2(chan) => {
 				debug_assert_eq!(
 					chan.context.channel_state,
@@ -2072,77 +2088,31 @@ where
 				chan.funding.channel_transaction_parameters.funding_outpoint =
 					Some(funding_outpoint);
 
-				let interactive_tx_constructor = chan
-					.interactive_tx_constructor
+				chan.interactive_tx_constructor
 					.take()
-					.expect("PendingV2Channel::interactive_tx_constructor should be set");
-
-				let commitment_signed =
-					chan.context.get_initial_commitment_signed_v2(&chan.funding, &&logger);
-				let commitment_signed = match commitment_signed {
-					Some(commitment_signed) => commitment_signed,
-					// TODO(dual_funding): Support async signing
-					None => {
-						return Err(AbortReason::InternalError(
-							"Failed to compute commitment_signed signatures",
-						));
-					},
-				};
-
-				(interactive_tx_constructor, commitment_signed)
+					.expect("PendingV2Channel::interactive_tx_constructor should be set")
 			},
 			ChannelPhase::Funded(chan) => {
 				if let Some(pending_splice) = chan.pending_splice.as_mut() {
-					pending_splice
-						.funding_negotiation
-						.take()
-						.and_then(|funding_negotiation| {
-							if let FundingNegotiation::ConstructingTransaction {
-								funding,
-								interactive_tx_constructor,
-							} = funding_negotiation
-							{
-								let is_initiator = interactive_tx_constructor.is_initiator();
-								Some((is_initiator, funding, interactive_tx_constructor))
-							} else {
-								// Replace the taken state for later error handling
-								pending_splice.funding_negotiation = Some(funding_negotiation);
-								None
-							}
-						})
-						.ok_or_else(|| {
-							AbortReason::InternalError(
-								"Got a tx_complete message in an invalid state",
-							)
-						})
-						.and_then(|(is_initiator, mut funding, interactive_tx_constructor)| {
-							funding.channel_transaction_parameters.funding_outpoint =
-								Some(funding_outpoint);
-							match chan.context.get_initial_commitment_signed_v2(&funding, &&logger)
-							{
-								Some(commitment_signed) => {
-									// Advance the state
-									pending_splice.funding_negotiation =
-										Some(FundingNegotiation::AwaitingSignatures {
-											is_initiator,
-											funding,
-										});
-									Ok((interactive_tx_constructor, commitment_signed))
-								},
-								// TODO(splicing): Support async signing
-								None => {
-									// Restore the taken state for later error handling
-									pending_splice.funding_negotiation =
-										Some(FundingNegotiation::ConstructingTransaction {
-											funding,
-											interactive_tx_constructor,
-										});
-									Err(AbortReason::InternalError(
-										"Failed to compute commitment_signed signatures",
-									))
-								},
-							}
-						})?
+					let funding_negotiation = pending_splice.funding_negotiation.take();
+					if let Some(FundingNegotiation::ConstructingTransaction {
+						mut funding,
+						interactive_tx_constructor,
+					}) = funding_negotiation
+					{
+						let is_initiator = interactive_tx_constructor.is_initiator();
+						funding.channel_transaction_parameters.funding_outpoint =
+							Some(funding_outpoint);
+						pending_splice.funding_negotiation =
+							Some(FundingNegotiation::AwaitingSignatures { is_initiator, funding });
+						interactive_tx_constructor
+					} else {
+						// Replace the taken state for later error handling
+						pending_splice.funding_negotiation = funding_negotiation;
+						return Err(AbortReason::InternalError(
+							"Got a tx_complete message in an invalid state",
+						));
+					}
 				} else {
 					return Err(AbortReason::InternalError(
 						"Got a tx_complete message in an invalid state",
@@ -2159,7 +2129,7 @@ where
 
 		let signing_session = interactive_tx_constructor.into_signing_session();
 		self.context_mut().interactive_tx_signing_session = Some(signing_session);
-		Ok(commitment_signed)
+		Ok(())
 	}
 
 	pub fn force_shutdown(&mut self, closure_reason: ClosureReason) -> ShutdownResult {
@@ -2911,6 +2881,7 @@ where
 	/// send it first.
 	resend_order: RAACommitmentOrder,
 
+	monitor_pending_tx_signatures: bool,
 	monitor_pending_channel_ready: bool,
 	monitor_pending_revoke_and_ack: bool,
 	monitor_pending_commitment_signed: bool,
@@ -3642,6 +3613,7 @@ where
 
 			resend_order: RAACommitmentOrder::CommitmentFirst,
 
+			monitor_pending_tx_signatures: false,
 			monitor_pending_channel_ready: false,
 			monitor_pending_revoke_and_ack: false,
 			monitor_pending_commitment_signed: false,
@@ -3881,6 +3853,7 @@ where
 
 			resend_order: RAACommitmentOrder::CommitmentFirst,
 
+			monitor_pending_tx_signatures: false,
 			monitor_pending_channel_ready: false,
 			monitor_pending_revoke_and_ack: false,
 			monitor_pending_commitment_signed: false,
@@ -6860,8 +6833,25 @@ type BestBlockUpdatedRes = (
 	Option<msgs::AnnouncementSignatures>,
 );
 
+/// The result of handling a `tx_complete` message during interactive transaction construction.
+pub(crate) struct TxCompleteResult {
+	/// The message to send to the counterparty, if any.
+	pub interactive_tx_msg_send: Option<InteractiveTxMessageSend>,
+
+	/// If the negotiation completed and the holder has local contributions, this contains the
+	/// unsigned funding transaction for the `FundingTransactionReadyForSigning` event.
+	pub event_unsigned_tx: Option<Transaction>,
+
+	/// If the negotiation completed and the holder has no local contributions, this contains
+	/// the result of automatically calling `funding_transaction_signed` with empty witnesses.
+	pub funding_tx_signed: Option<FundingTxSigned>,
+}
+
 /// The result of signing a funding transaction negotiated using the interactive-tx protocol.
 pub struct FundingTxSigned {
+	/// The initial `commitment_signed` message to send to the counterparty, if necessary.
+	pub commitment_signed: Option<msgs::CommitmentSigned>,
+
 	/// Signatures that should be sent to the counterparty, if necessary.
 	pub tx_signatures: Option<msgs::TxSignatures>,
 
@@ -8051,6 +8041,7 @@ where
 			Vec::new(),
 			logger,
 		);
+		self.context.monitor_pending_tx_signatures = true;
 
 		Ok(self.push_ret_blockable_mon_update(monitor_update))
 	}
@@ -9104,6 +9095,7 @@ where
 					// Our `tx_signatures` either should've been the first time we processed them,
 					// or we're waiting for our counterparty to send theirs first.
 					return Ok(FundingTxSigned {
+						commitment_signed: None,
 						tx_signatures: None,
 						funding_tx: None,
 						splice_negotiated: None,
@@ -9117,6 +9109,7 @@ where
 					// We may be handling a duplicate call and the funding was already locked so we
 					// no longer have the signing session present.
 					return Ok(FundingTxSigned {
+						commitment_signed: None,
 						tx_signatures: None,
 						funding_tx: None,
 						splice_negotiated: None,
@@ -9178,7 +9171,21 @@ where
 			(None, None)
 		};
 
-		Ok(FundingTxSigned { tx_signatures, funding_tx, splice_negotiated, splice_locked })
+		let funding = self
+			.pending_splice
+			.as_ref()
+			.and_then(|pending_splice| pending_splice.funding_negotiation.as_ref())
+			.and_then(|funding_negotiation| funding_negotiation.as_funding())
+			.unwrap_or(&self.funding);
+		let commitment_signed = self.context.get_initial_commitment_signed_v2(funding, &&logger);
+
+		Ok(FundingTxSigned {
+			commitment_signed,
+			tx_signatures,
+			funding_tx,
+			splice_negotiated,
+			splice_locked,
+		})
 	}
 
 	pub fn tx_signatures<L: Deref>(
@@ -9246,6 +9253,7 @@ where
 		};
 
 		Ok(FundingTxSigned {
+			commitment_signed: None,
 			tx_signatures: holder_tx_signatures,
 			funding_tx,
 			splice_negotiated,
@@ -9451,6 +9459,25 @@ where
 		self.context.channel_state.clear_monitor_update_in_progress();
 		assert_eq!(self.blocked_monitor_updates_pending(), 0);
 
+		let mut tx_signatures = self
+			.context
+			.monitor_pending_tx_signatures
+			.then(|| ())
+			.and_then(|_| self.context.interactive_tx_signing_session.as_ref())
+			.and_then(|signing_session| signing_session.holder_tx_signatures().clone());
+		if tx_signatures.is_some() {
+			// We want to clear that the monitor update for our `tx_signatures` has completed, but
+			// we may still need to hold back the message until it's ready to be sent.
+			self.context.monitor_pending_tx_signatures = false;
+			let signing_session = self.context.interactive_tx_signing_session.as_ref()
+				.expect("We have a tx_signatures message so we must have a valid signing session");
+			if !signing_session.holder_sends_tx_signatures_first()
+				&& !signing_session.has_received_tx_signatures()
+			{
+				tx_signatures.take();
+			}
+		}
+
 		// If we're past (or at) the AwaitingChannelReady stage on an outbound (or V2-established) channel,
 		// try to (re-)broadcast the funding transaction as we may have declined to broadcast it when we
 		// first received the funding_signed.
@@ -9539,7 +9566,7 @@ where
 			match commitment_order { RAACommitmentOrder::CommitmentFirst => "commitment", RAACommitmentOrder::RevokeAndACKFirst => "RAA"});
 		MonitorRestoreUpdates {
 			raa, commitment_update, commitment_order, accepted_htlcs, failed_htlcs, finalized_claimed_htlcs,
-			pending_update_adds, funding_broadcastable, channel_ready, announcement_sigs, tx_signatures: None,
+			pending_update_adds, funding_broadcastable, channel_ready, announcement_sigs, tx_signatures,
 			channel_ready_order,
 		}
 	}
@@ -15074,6 +15101,9 @@ where
 		let pending_splice =
 			self.pending_splice.as_ref().filter(|_| !self.should_reset_pending_splice_state(false));
 
+		let monitor_pending_tx_signatures =
+			self.context.monitor_pending_tx_signatures.then_some(());
+
 		write_tlv_fields!(writer, {
 			(0, self.context.announcement_sigs, option),
 			// minimum_depth and counterparty_selected_channel_reserve_satoshis used to have a
@@ -15093,6 +15123,7 @@ where
 			(9, self.context.target_closing_feerate_sats_per_kw, option),
 			(10, monitor_pending_update_adds, option), // Added in 0.0.122
 			(11, self.context.monitor_pending_finalized_fulfills, required_vec),
+			(12, monitor_pending_tx_signatures, option), // Added in 0.3
 			(13, self.context.channel_creation_height, required),
 			(15, preimages, required_vec),
 			(17, self.context.announcement_sigs_state, required),
@@ -15524,6 +15555,8 @@ where
 		let mut holding_cell_accountable: Option<Vec<bool>> = None;
 		let mut pending_outbound_accountable: Option<Vec<bool>> = None;
 
+		let mut monitor_pending_tx_signatures: Option<()> = None;
+
 		read_tlv_fields!(reader, {
 			(0, announcement_sigs, option),
 			(1, minimum_depth, option),
@@ -15537,6 +15570,7 @@ where
 			(9, target_closing_feerate_sats_per_kw, option),
 			(10, monitor_pending_update_adds, option), // Added in 0.0.122
 			(11, monitor_pending_finalized_fulfills, optional_vec),
+			(12, monitor_pending_tx_signatures, option), // Added in 0.3
 			(13, channel_creation_height, required),
 			(15, preimages, required_vec), // The preimages transitioned from optional to required in 0.2
 			(17, announcement_sigs_state, required),
@@ -15949,6 +15983,7 @@ where
 
 				resend_order,
 
+				monitor_pending_tx_signatures: monitor_pending_tx_signatures.is_some(),
 				monitor_pending_channel_ready,
 				monitor_pending_revoke_and_ack,
 				monitor_pending_commitment_signed,

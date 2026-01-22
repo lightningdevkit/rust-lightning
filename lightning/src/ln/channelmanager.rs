@@ -6455,7 +6455,8 @@ where
 							&self.logger,
 						) {
 							Ok(FundingTxSigned {
-								tx_signatures: Some(tx_signatures),
+								commitment_signed,
+								tx_signatures,
 								funding_tx,
 								splice_negotiated,
 								splice_locked,
@@ -6481,35 +6482,44 @@ where
 										None,
 									));
 								}
-								peer_state.pending_msg_events.push(
-									MessageSendEvent::SendTxSignatures {
-										node_id: *counterparty_node_id,
-										msg: tx_signatures,
-									},
-								);
-								if let Some(splice_locked) = splice_locked {
-									peer_state.pending_msg_events.push(
-										MessageSendEvent::SendSpliceLocked {
-											node_id: *counterparty_node_id,
-											msg: splice_locked,
-										},
-									);
+								if chan.context.is_connected() {
+									if let Some(commitment_signed) = commitment_signed {
+										peer_state.pending_msg_events.push(
+											MessageSendEvent::UpdateHTLCs {
+												node_id: *counterparty_node_id,
+												channel_id: *channel_id,
+												updates: CommitmentUpdate {
+													commitment_signed: vec![commitment_signed],
+													update_add_htlcs: vec![],
+													update_fulfill_htlcs: vec![],
+													update_fail_htlcs: vec![],
+													update_fail_malformed_htlcs: vec![],
+													update_fee: None,
+												},
+											},
+										);
+									}
+									if let Some(tx_signatures) = tx_signatures {
+										peer_state.pending_msg_events.push(
+											MessageSendEvent::SendTxSignatures {
+												node_id: *counterparty_node_id,
+												msg: tx_signatures,
+											},
+										);
+									}
+									if let Some(splice_locked) = splice_locked {
+										peer_state.pending_msg_events.push(
+											MessageSendEvent::SendSpliceLocked {
+												node_id: *counterparty_node_id,
+												msg: splice_locked,
+											},
+										);
+									}
 								}
 								return NotifyOption::DoPersist;
 							},
 							Err(err) => {
 								result = Err(err);
-								return NotifyOption::SkipPersistNoEvents;
-							},
-							Ok(FundingTxSigned {
-								tx_signatures: None,
-								funding_tx,
-								splice_negotiated,
-								splice_locked,
-							}) => {
-								debug_assert!(funding_tx.is_none());
-								debug_assert!(splice_negotiated.is_none());
-								debug_assert!(splice_locked.is_none());
 								return NotifyOption::SkipPersistNoEvents;
 							},
 						}
@@ -10151,79 +10161,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			}
 		}
 
-		if let Some(signing_session) = (!channel.is_awaiting_monitor_update())
-			.then(|| ())
-			.and_then(|_| channel.context.interactive_tx_signing_session.as_mut())
-			.filter(|signing_session| signing_session.has_received_commitment_signed())
-			.filter(|signing_session| signing_session.holder_tx_signatures().is_none())
-		{
-			if signing_session.has_local_contribution() {
-				let mut pending_events = self.pending_events.lock().unwrap();
-				let unsigned_transaction = signing_session.unsigned_tx().tx().clone();
-				let event_action = (
-					Event::FundingTransactionReadyForSigning {
-						unsigned_transaction,
-						counterparty_node_id,
-						channel_id: channel.context.channel_id(),
-						user_channel_id: channel.context.get_user_id(),
-					},
-					None,
-				);
-
-				if !pending_events.contains(&event_action) {
-					pending_events.push_back(event_action);
-				}
-			} else {
-				let txid = signing_session.unsigned_tx().compute_txid();
-				let best_block_height = self.best_block.read().unwrap().height;
-				match channel.funding_transaction_signed(txid, vec![], best_block_height, &self.logger) {
-					Ok(FundingTxSigned {
-						tx_signatures: Some(tx_signatures),
-						funding_tx,
-						splice_negotiated,
-						splice_locked,
-					}) => {
-						if let Some(funding_tx) = funding_tx {
-							self.broadcast_interactive_funding(channel, &funding_tx, &self.logger);
-						}
-
-						if let Some(splice_negotiated) = splice_negotiated {
-							self.pending_events.lock().unwrap().push_back((
-								events::Event::SplicePending {
-									channel_id: channel.context.channel_id(),
-									counterparty_node_id,
-									user_channel_id: channel.context.get_user_id(),
-									new_funding_txo: splice_negotiated.funding_txo,
-									channel_type: splice_negotiated.channel_type,
-									new_funding_redeem_script: splice_negotiated.funding_redeem_script,
-								},
-								None,
-							));
-						}
-
-						if channel.context.is_connected() {
-							pending_msg_events.push(MessageSendEvent::SendTxSignatures {
-								node_id: counterparty_node_id,
-								msg: tx_signatures,
-							});
-							if let Some(splice_locked) = splice_locked {
-								pending_msg_events.push(MessageSendEvent::SendSpliceLocked {
-									node_id: counterparty_node_id,
-									msg: splice_locked,
-								});
-							}
-						}
-					},
-					Ok(FundingTxSigned { tx_signatures: None, .. }) => {
-						debug_assert!(false, "If our tx_signatures is empty, then we should send it first!");
-					},
-					Err(err) => {
-						log_warn!(logger, "Failed signing interactive funding transaction: {err:?}");
-					},
-				}
-			}
-		}
-
 		{
 			let mut pending_events = self.pending_events.lock().unwrap();
 			emit_channel_pending_event!(pending_events, channel);
@@ -11206,30 +11143,69 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			hash_map::Entry::Occupied(mut chan_entry) => {
 				let chan = chan_entry.get_mut();
 				match chan.tx_complete(msg, &self.logger) {
-					Ok((interactive_tx_msg_send, commitment_signed)) => {
-						let persist = if interactive_tx_msg_send.is_some() || commitment_signed.is_some() {
-							NotifyOption::SkipPersistHandleEvents
-						} else {
-							NotifyOption::SkipPersistNoEvents
-						};
-						if let Some(interactive_tx_msg_send) = interactive_tx_msg_send {
+					Ok(tx_complete_result) => {
+						let mut persist = NotifyOption::SkipPersistNoEvents;
+
+						if let Some(interactive_tx_msg_send) = tx_complete_result.interactive_tx_msg_send {
 							let msg_send_event = interactive_tx_msg_send.into_msg_send_event(counterparty_node_id);
 							peer_state.pending_msg_events.push(msg_send_event);
+							persist = NotifyOption::SkipPersistHandleEvents;
 						};
-						if let Some(commitment_signed) = commitment_signed {
-							peer_state.pending_msg_events.push(MessageSendEvent::UpdateHTLCs {
-								node_id: counterparty_node_id,
-								channel_id: msg.channel_id,
-								updates: CommitmentUpdate {
-									commitment_signed: vec![commitment_signed],
-									update_add_htlcs: vec![],
-									update_fulfill_htlcs: vec![],
-									update_fail_htlcs: vec![],
-									update_fail_malformed_htlcs: vec![],
-									update_fee: None,
+
+						if let Some(unsigned_transaction) = tx_complete_result.event_unsigned_tx {
+							self.pending_events.lock().unwrap().push_back((
+								events::Event::FundingTransactionReadyForSigning {
+									unsigned_transaction,
+									counterparty_node_id,
+									channel_id: msg.channel_id,
+									user_channel_id: chan.context().get_user_id(),
 								},
-							});
+								None,
+							));
+							//
+							// We have a successful signing session that we need to persist.
+							persist = NotifyOption::DoPersist;
 						}
+
+						if let Some(FundingTxSigned {
+							commitment_signed,
+							tx_signatures,
+							funding_tx,
+							splice_negotiated,
+							splice_locked,
+						}) = tx_complete_result.funding_tx_signed
+						{
+							// We shouldn't expect to see the splice negotiated or locked yet as we
+							// haven't exchanged `tx_signatures` at this point.
+							debug_assert!(funding_tx.is_none());
+							debug_assert!(splice_negotiated.is_none());
+							debug_assert!(splice_locked.is_none());
+
+							if let Some(commitment_signed) = commitment_signed {
+								peer_state.pending_msg_events.push(MessageSendEvent::UpdateHTLCs {
+									node_id: counterparty_node_id,
+									channel_id: msg.channel_id,
+									updates: CommitmentUpdate {
+										commitment_signed: vec![commitment_signed],
+										update_add_htlcs: vec![],
+										update_fulfill_htlcs: vec![],
+										update_fail_htlcs: vec![],
+										update_fail_malformed_htlcs: vec![],
+										update_fee: None,
+									},
+								});
+							}
+							if let Some(tx_signatures) = tx_signatures {
+								peer_state.pending_msg_events.push(MessageSendEvent::SendTxSignatures {
+									node_id: counterparty_node_id,
+									msg: tx_signatures,
+								});
+							}
+
+							// We have a successful signing session that we need to persist.
+							persist = NotifyOption::DoPersist;
+						}
+
 						Ok(persist)
 					},
 					Err((error, splice_funding_failed)) => {
@@ -11274,6 +11250,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					Some(chan) => {
 						let best_block_height = self.best_block.read().unwrap().height;
 						let FundingTxSigned {
+							commitment_signed,
 							tx_signatures,
 							funding_tx,
 							splice_negotiated,
@@ -11284,6 +11261,11 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							chan.tx_signatures(msg, best_block_height, &self.logger),
 							chan_entry
 						);
+
+						// We should never be sending a `commitment_signed` in response to their
+						// `tx_signatures`.
+						debug_assert!(commitment_signed.is_none());
+
 						if let Some(tx_signatures) = tx_signatures {
 							peer_state.pending_msg_events.push(MessageSendEvent::SendTxSignatures {
 								node_id: *counterparty_node_id,
@@ -19009,6 +18991,32 @@ where
 				match create_htlc_intercepted_event(*id, fwd) {
 					Ok(ev) => pending_events_read.push_back((ev, None)),
 					Err(()) => debug_assert!(false),
+				}
+			}
+		}
+
+		// We may need to regenerate [`Event::FundingTransactionReadyForSigning`] for channels that
+		// still need their holder `tx_signatures`.
+		for (counterparty_node_id, peer_state_mutex) in per_peer_state.iter() {
+			let peer_state = peer_state_mutex.lock().unwrap();
+			for (channel_id, chan) in peer_state.channel_by_id.iter() {
+				if let Some(signing_session) =
+					chan.context().interactive_tx_signing_session.as_ref()
+				{
+					if signing_session.holder_tx_signatures().is_none()
+						&& signing_session.has_local_contribution()
+					{
+						let unsigned_transaction = signing_session.unsigned_tx().tx().clone();
+						pending_events_read.push_back((
+							Event::FundingTransactionReadyForSigning {
+								unsigned_transaction,
+								counterparty_node_id: *counterparty_node_id,
+								channel_id: *channel_id,
+								user_channel_id: chan.context().get_user_id(),
+							},
+							None,
+						));
+					}
 				}
 			}
 		}

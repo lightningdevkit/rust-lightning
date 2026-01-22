@@ -1086,7 +1086,7 @@ macro_rules! get_event {
 		let ev = events.pop().unwrap();
 		match ev {
 			$event_type { .. } => ev,
-			_ => panic!("Unexpected event"),
+			_ => panic!("Unexpected event {ev:?}"),
 		}
 	}};
 }
