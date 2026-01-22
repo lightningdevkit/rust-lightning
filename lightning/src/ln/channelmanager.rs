@@ -556,6 +556,12 @@ impl ClaimableHTLC {
 		self.timer_ticks += 1;
 		self.timer_ticks >= MPP_TIMEOUT_TICKS
 	}
+
+	/// Returns a boolean indicating whether the HTLC has timed out on chain, accounting for a buffer
+	/// that gives us time to resolve it.
+	fn check_onchain_timeout(&self, height: u32, buffer: u32) -> bool {
+		height >= self.cltv_expiry - buffer
+	}
 }
 
 impl From<&ClaimableHTLC> for events::ClaimedHTLC {
@@ -15944,14 +15950,16 @@ impl<
 		}
 
 		if let Some(height) = height_opt {
+			// If height is approaching the number of blocks we think it takes us to get our
+			// commitment transaction confirmed before the HTLC expires, plus the number of blocks
+			// we generally consider it to take to do a commitment update, just give up on it and
+			// fail the HTLC.
 			self.claimable_payments.lock().unwrap().claimable_payments.retain(
 				|payment_hash, payment| {
 					payment.htlcs.retain(|htlc| {
-						// If height is approaching the number of blocks we think it takes us to get
-						// our commitment transaction confirmed before the HTLC expires, plus the
-						// number of blocks we generally consider it to take to do a commitment update,
-						// just give up on it and fail the HTLC.
-						if height >= htlc.cltv_expiry - HTLC_FAIL_BACK_BUFFER {
+						let htlc_timed_out =
+							htlc.check_onchain_timeout(height, HTLC_FAIL_BACK_BUFFER);
+						if htlc_timed_out {
 							let reason = LocalHTLCFailureReason::PaymentClaimBuffer;
 							timed_out_htlcs.push((
 								HTLCSource::PreviousHopData(htlc.prev_hop.clone()),
@@ -15964,10 +15972,8 @@ impl<
 									payment_hash: payment_hash.clone(),
 								},
 							));
-							false
-						} else {
-							true
 						}
+						!htlc_timed_out
 					});
 					!payment.htlcs.is_empty() // Only retain this entry if htlcs has at least one entry.
 				},
