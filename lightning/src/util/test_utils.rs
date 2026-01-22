@@ -1772,7 +1772,7 @@ impl TestNodeSigner {
 
 impl NodeSigner for TestNodeSigner {
 	fn get_expanded_key(&self) -> ExpandedKey {
-		unreachable!()
+		ExpandedKey::new([42; 32])
 	}
 
 	fn get_peer_storage_key(&self) -> PeerStorageKey {

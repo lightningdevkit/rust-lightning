@@ -14,7 +14,7 @@ use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
 
 use crate::blinded_path::utils::{self, BlindedPathWithPadding};
 use crate::blinded_path::{BlindedHop, BlindedPath, IntroductionNode, NodeIdLookUp};
-use crate::crypto::streams::ChaChaDualPolyReadAdapter;
+use crate::crypto::streams::{ChaChaTriPolyReadAdapter, TriPolyAADUsed};
 use crate::io;
 use crate::io::Cursor;
 use crate::ln::channel_state::CounterpartyForwardingInfo;
@@ -268,18 +268,20 @@ impl BlindedPaymentPath {
 			node_signer.ecdh(Recipient::Node, &self.inner_path.blinding_point, None)?;
 		let rho = onion_utils::gen_rho_from_shared_secret(&control_tlvs_ss.secret_bytes());
 		let receive_auth_key = node_signer.get_receive_auth_key();
+		let phantom_auth_key = node_signer.get_expanded_key().phantom_node_blinded_path_key;
+		let read_arg = (rho, receive_auth_key.0, phantom_auth_key);
+
 		let encrypted_control_tlvs =
 			&self.inner_path.blinded_hops.get(0).ok_or(())?.encrypted_payload;
 		let mut s = Cursor::new(encrypted_control_tlvs);
 		let mut reader = FixedLengthReader::new(&mut s, encrypted_control_tlvs.len() as u64);
-		let ChaChaDualPolyReadAdapter { readable, used_aad } =
-			ChaChaDualPolyReadAdapter::read(&mut reader, (rho, receive_auth_key.0))
-				.map_err(|_| ())?;
+		let ChaChaTriPolyReadAdapter { readable, used_aad } =
+			ChaChaTriPolyReadAdapter::read(&mut reader, read_arg).map_err(|_| ())?;
 
-		match (&readable, used_aad) {
-			(BlindedPaymentTlvs::Forward(_), false)
-			| (BlindedPaymentTlvs::Dummy(_), true)
-			| (BlindedPaymentTlvs::Receive(_), true) => Ok((readable, control_tlvs_ss)),
+		match (&readable, used_aad == TriPolyAADUsed::None) {
+			(BlindedPaymentTlvs::Forward(_), true)
+			| (BlindedPaymentTlvs::Dummy(_), false)
+			| (BlindedPaymentTlvs::Receive(_), false) => Ok((readable, control_tlvs_ss)),
 			_ => Err(()),
 		}
 	}
