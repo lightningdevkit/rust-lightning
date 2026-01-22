@@ -115,6 +115,11 @@ pub const OUTPUT_SWEEPER_PERSISTENCE_SECONDARY_NAMESPACE: &str = "";
 /// [`OutputSweeper`]: crate::util::sweep::OutputSweeper
 pub const OUTPUT_SWEEPER_PERSISTENCE_KEY: &str = "output_sweeper";
 
+/// The primary namespace under which [`ChannelManager`] incremental updates will be persisted.
+///
+/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+pub const CHANNEL_MANAGER_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE: &str = "manager_updates";
+
 /// A sentinel value to be prepended to monitors persisted by the [`MonitorUpdatingPersister`].
 ///
 /// This serves to prevent someone from accidentally loading such monitors (which may need
@@ -1553,6 +1558,115 @@ impl From<u64> for UpdateName {
 	fn from(value: u64) -> Self {
 		Self(value, value.to_string())
 	}
+}
+
+/// Reads the base [`ChannelManager`] and applies any pending incremental updates.
+///
+/// This should be called at startup to reconstruct the full [`ChannelManager`] state
+/// from the base snapshot plus any incremental updates that were written since.
+///
+/// # Usage
+///
+/// ```ignore
+/// let (block_hash, manager) = read_manager_with_updates(&kv_store, args)?;
+/// ```
+///
+/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+pub fn read_manager_with_updates<
+	'a,
+	K: Deref,
+	M: Deref,
+	T: Deref,
+	ES: Deref,
+	NS: Deref,
+	SP: Deref,
+	F: Deref,
+	R: Deref,
+	MR: Deref,
+	L: Deref + Clone,
+>(
+	kv_store: K,
+	args: crate::ln::channelmanager::ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>,
+) -> Result<
+	(BlockHash, crate::ln::channelmanager::ChannelManager<M, T, ES, NS, SP, F, R, MR, L>),
+	io::Error,
+>
+where
+	K::Target: KVStoreSync,
+	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
+	T::Target: BroadcasterInterface,
+	ES::Target: EntropySource,
+	NS::Target: crate::sign::NodeSigner,
+	SP::Target: SignerProvider,
+	F::Target: FeeEstimator,
+	R::Target: crate::routing::router::Router,
+	MR::Target: crate::onion_message::messenger::MessageRouter,
+	L::Target: Logger,
+{
+	use crate::ln::channelmanager::{
+		channel_manager_from_data, ChannelManagerData, ChannelManagerDataReadArgs,
+	};
+
+	// Stage 1: Read base manager data (deserialization only, no validation yet)
+	let manager_bytes = kv_store.read(
+		CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+		CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
+		CHANNEL_MANAGER_PERSISTENCE_KEY,
+	)?;
+
+	let mut data: ChannelManagerData<SP> = ChannelManagerData::read(
+		&mut &manager_bytes[..],
+		ChannelManagerDataReadArgs {
+			entropy_source: &args.entropy_source,
+			signer_provider: &args.signer_provider,
+			config: args.config.clone(),
+			logger: &args.logger,
+		},
+	)
+	.map_err(|_| {
+		io::Error::new(io::ErrorKind::InvalidData, "Failed to read ChannelManager data")
+	})?;
+
+	// List and sort updates by update_id
+	let update_keys = kv_store.list(CHANNEL_MANAGER_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE, "")?;
+
+	let base_update_id = data.get_update_id();
+	let mut update_ids: Vec<u64> = update_keys
+		.iter()
+		.filter_map(|s| s.parse().ok())
+		.filter(|id| *id > base_update_id)
+		.collect();
+	update_ids.sort();
+
+	// Apply updates at the data level (before Stage 2 validation)
+	for update_id in update_ids {
+		let update_bytes = kv_store.read(
+			CHANNEL_MANAGER_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
+			"",
+			&update_id.to_string(),
+		)?;
+
+		let update_data: ChannelManagerData<SP> = ChannelManagerData::read(
+			&mut &update_bytes[..],
+			ChannelManagerDataReadArgs {
+				entropy_source: &args.entropy_source,
+				signer_provider: &args.signer_provider,
+				config: args.config.clone(),
+				logger: &args.logger,
+			},
+		)
+		.map_err(|_| {
+			io::Error::new(io::ErrorKind::InvalidData, "Failed to read ChannelManager update data")
+		})?;
+
+		// Merge update into base data
+		data.apply_update(update_data);
+	}
+
+	// Stage 2: Validation and reconstruction from merged data
+	channel_manager_from_data(data, args).map_err(|_| {
+		io::Error::new(io::ErrorKind::InvalidData, "Failed to construct ChannelManager")
+	})
 }
 
 #[cfg(test)]

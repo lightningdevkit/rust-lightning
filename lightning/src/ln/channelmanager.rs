@@ -177,7 +177,7 @@ use core::borrow::Borrow;
 use core::cell::RefCell;
 use core::convert::Infallible;
 use core::ops::Deref;
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use core::time::Duration;
 use core::{cmp, mem};
 // Re-export this for use in the public API.
@@ -1635,6 +1635,7 @@ where
 	peer_storage: Vec<u8>,
 }
 
+/// Version byte for the incremental update format.
 impl<SP: Deref> PeerState<SP>
 where
 	SP::Target: SignerProvider,
@@ -2831,6 +2832,17 @@ pub struct ChannelManager<
 	#[cfg(any(test, feature = "_test_utils"))]
 	pub(super) per_peer_state: FairRwLock<HashMap<PublicKey, Mutex<PeerState<SP>>>>,
 
+	/// The latest incremental update ID for [`ChannelManager`] persistence.
+	/// Used to track which updates have been persisted.
+	/// Incremented each time an incremental update is written.
+	latest_update_id: AtomicU64,
+
+	/// Stores the last persisted serialized bytes for each peer state.
+	/// Used by `write_update` to detect which peers have changed since the last persist
+	/// by comparing current serialization to these stored bytes.
+	/// This enables incremental persistence without tracking mutations.
+	last_persisted_peer_bytes: Mutex<HashMap<PublicKey, Vec<u8>>>,
+
 	/// We only support using one of [`ChannelMonitorUpdateStatus::InProgress`] and
 	/// [`ChannelMonitorUpdateStatus::Completed`] without restarting. Because the API does not
 	/// otherwise directly enforce this, we enforce it in non-test builds here by storing which one
@@ -3571,6 +3583,9 @@ where
 			highest_seen_timestamp: AtomicUsize::new(current_timestamp as usize),
 
 			per_peer_state: FairRwLock::new(new_hash_map()),
+
+			latest_update_id: AtomicU64::new(0),
+			last_persisted_peer_bytes: Mutex::new(new_hash_map()),
 
 			#[cfg(not(any(test, feature = "_externalize_tests")))]
 			monitor_update_type: AtomicUsize::new(0),
@@ -16999,7 +17014,7 @@ impl<
 		R: Deref,
 		MR: Deref,
 		L: Deref,
-	> Writeable for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -17011,8 +17026,44 @@ where
 	MR::Target: MessageRouter,
 	L::Target: Logger,
 {
+	/// Writes an incremental update containing only the peer states that have been
+	/// modified since the last persist. This is used for efficient incremental
+	/// persistence on nodes with many channels.
+	///
+	/// The update uses the same serialization format as a full [`ChannelManager`] write,
+	/// but only includes dirty peer states. Global state (forward_htlcs, claimable_payments,
+	/// pending_events, etc.) is always fully included.
+	///
+	/// Returns the update ID which should be used as the filename for storage.
+	/// The update ID is monotonically increasing.
+	///
+	/// After calling this method, the dirty flags on all peer states are cleared.
+	///
+	/// # Usage
+	///
+	/// This method is intended for use with [`read_manager_with_updates`] which handles
+	/// the storage and recovery of incremental updates.
+	///
+	/// [`read_manager_with_updates`]: crate::util::persist::read_manager_with_updates
+	pub fn write_update<W: Writer>(&self, writer: &mut W) -> Result<u64, io::Error> {
+		// Increment the update ID before writing
+		let update_id = self.latest_update_id.fetch_add(1, Ordering::AcqRel) + 1;
+
+		// Write using the internal method with dirty_only=true
+		self.write_internal(writer, true)?;
+
+		Ok(update_id)
+	}
+
+	/// Internal method that writes the ChannelManager state.
+	///
+	/// If `changed_only` is true, only peer states that have changed since the last persist are written.
+	/// If `changed_only` is false, all peer states are written (for full serialization).
+	///
+	/// Change detection uses byte comparison: each peer's state is serialized and compared
+	/// to the previously persisted bytes stored in `last_persisted_peer_bytes`.
 	#[rustfmt::skip]
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write_internal<W: Writer>(&self, writer: &mut W, changed_only: bool) -> Result<(), io::Error> {
 		let _consistency_lock = self.total_consistency_lock.write().unwrap();
 
 		write_ver_prefix!(writer, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
@@ -17025,16 +17076,51 @@ where
 		}
 
 		let per_peer_state = self.per_peer_state.write().unwrap();
+		let mut last_persisted = self.last_persisted_peer_bytes.lock().unwrap();
 
-		let mut serializable_peer_count: u64 = 0;
+		// Serialize each peer's state and determine which ones to write
+		let mut peers_to_write: Vec<(&PublicKey, &Mutex<PeerState<SP>>)> = Vec::new();
+		let mut new_serialized_bytes: HashMap<PublicKey, Vec<u8>> = new_hash_map();
+
+		for (peer_pubkey, peer_mtx) in per_peer_state.iter() {
+			let peer = peer_mtx.lock().unwrap();
+			if peer.ok_to_remove(false) {
+				continue;
+			}
+
+			// Serialize this peer's state to bytes for comparison
+			let mut peer_bytes = Vec::new();
+			peer.latest_features.write(&mut peer_bytes).expect("Vec write can't fail");
+			peer.peer_storage.write(&mut peer_bytes).expect("Vec write can't fail");
+			peer.monitor_update_blocked_actions.write(&mut peer_bytes).expect("Vec write can't fail");
+			peer.in_flight_monitor_updates.write(&mut peer_bytes).expect("Vec write can't fail");
+			for channel in peer.channel_by_id.values().filter_map(Channel::as_funded).filter(|c| c.context.can_resume_on_restart()) {
+				channel.write(&mut peer_bytes).expect("Vec write can't fail");
+			}
+
+			let should_write = if changed_only {
+				// Compare to previously persisted bytes
+				match last_persisted.get(peer_pubkey) {
+					Some(prev_bytes) => &peer_bytes != prev_bytes,
+					None => true, // New peer, always write
+				}
+			} else {
+				true // Full write, always include
+			};
+
+			if should_write {
+				peers_to_write.push((peer_pubkey, peer_mtx));
+				new_serialized_bytes.insert(*peer_pubkey, peer_bytes);
+			}
+		}
+
+		let serializable_peer_count = peers_to_write.len() as u64;
+
 		{
 			let mut number_of_funded_channels = 0;
-			for (_, peer_state_mutex) in per_peer_state.iter() {
-				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
-				let peer_state = &mut *peer_state_lock;
-				if !peer_state.ok_to_remove(false) {
-					serializable_peer_count += 1;
-				}
+			for (_, peer_state_mutex) in &peers_to_write {
+				let peer_state_lock = peer_state_mutex.lock().unwrap();
+				let peer_state = &*peer_state_lock;
 
 				number_of_funded_channels += peer_state.channel_by_id
 					.values()
@@ -17045,9 +17131,9 @@ where
 
 			(number_of_funded_channels as u64).write(writer)?;
 
-			for (_, peer_state_mutex) in per_peer_state.iter() {
-				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
-				let peer_state = &mut *peer_state_lock;
+			for (_, peer_state_mutex) in &peers_to_write {
+				let peer_state_lock = peer_state_mutex.lock().unwrap();
+				let peer_state = &*peer_state_lock;
 				for channel in peer_state.channel_by_id
 					.values()
 					.filter_map(Channel::as_funded)
@@ -17094,7 +17180,7 @@ where
 
 		let mut monitor_update_blocked_actions_per_peer = None;
 		let mut peer_states = Vec::new();
-		for (_, peer_state_mutex) in per_peer_state.iter() {
+		for (_, peer_state_mutex) in &peers_to_write {
 			// Because we're holding the owning `per_peer_state` write lock here there's no chance
 			// of a lockorder violation deadlock - no other thread can be holding any
 			// per_peer_state lock at all.
@@ -17104,21 +17190,15 @@ where
 		let mut peer_storage_dir: Vec<(&PublicKey, &Vec<u8>)> = Vec::new();
 
 		(serializable_peer_count).write(writer)?;
-		for ((peer_pubkey, _), peer_state) in per_peer_state.iter().zip(peer_states.iter()) {
-			// Peers which we have no channels to should be dropped once disconnected. As we
-			// disconnect all peers when shutting down and serializing the ChannelManager, we
-			// consider all peers as disconnected here. There's therefore no need write peers with
-			// no channels.
-			if !peer_state.ok_to_remove(false) {
-				peer_pubkey.write(writer)?;
-				peer_state.latest_features.write(writer)?;
-				peer_storage_dir.push((peer_pubkey, &peer_state.peer_storage));
+		for ((peer_pubkey, _), peer_state) in peers_to_write.iter().zip(peer_states.iter()) {
+			peer_pubkey.write(writer)?;
+			peer_state.latest_features.write(writer)?;
+			peer_storage_dir.push((peer_pubkey, &peer_state.peer_storage));
 
-				if !peer_state.monitor_update_blocked_actions.is_empty() {
-					monitor_update_blocked_actions_per_peer
-						.get_or_insert_with(Vec::new)
-						.push((*peer_pubkey, &peer_state.monitor_update_blocked_actions));
-				}
+			if !peer_state.monitor_update_blocked_actions.is_empty() {
+				monitor_update_blocked_actions_per_peer
+					.get_or_insert_with(Vec::new)
+					.push((**peer_pubkey, &peer_state.monitor_update_blocked_actions));
 			}
 		}
 
@@ -17233,7 +17313,7 @@ where
 
 		let mut legacy_in_flight_monitor_updates: Option<HashMap<(&PublicKey, &OutPoint), &Vec<ChannelMonitorUpdate>>> = None;
 		let mut in_flight_monitor_updates: Option<HashMap<(&PublicKey, &ChannelId), &Vec<ChannelMonitorUpdate>>> = None;
-		for ((counterparty_id, _), peer_state) in per_peer_state.iter().zip(peer_states.iter()) {
+		for ((counterparty_id, _), peer_state) in peers_to_write.iter().zip(peer_states.iter()) {
 			for (channel_id, (funding_txo, updates)) in peer_state.in_flight_monitor_updates.iter() {
 				if !updates.is_empty() {
 					legacy_in_flight_monitor_updates.get_or_insert_with(|| new_hash_map())
@@ -17243,6 +17323,8 @@ where
 				}
 			}
 		}
+
+		let update_id = self.latest_update_id.load(Ordering::Acquire);
 
 		write_tlv_fields!(writer, {
 			(1, pending_outbound_payments_no_retry, required),
@@ -17262,12 +17344,52 @@ where
 			(17, in_flight_monitor_updates, option),
 			(19, peer_storage_dir, optional_vec),
 			(21, WithoutLength(&self.flow.writeable_async_receive_offer_cache()), required),
+			(23, update_id, required),
 		});
 
 		// Remove the SpliceFailed events added earlier.
 		events.truncate(event_count);
 
+		// Update stored bytes for the peers we wrote
+		for (peer_pubkey, bytes) in new_serialized_bytes {
+			last_persisted.insert(peer_pubkey, bytes);
+		}
+
 		Ok(())
+	}
+
+	/// Returns the latest update ID that was written.
+	/// Returns 0 if no updates have been written yet.
+	pub fn get_latest_update_id(&self) -> u64 {
+		self.latest_update_id.load(Ordering::Acquire)
+	}
+}
+
+impl<
+		M: Deref,
+		T: Deref,
+		ES: Deref,
+		NS: Deref,
+		SP: Deref,
+		F: Deref,
+		R: Deref,
+		MR: Deref,
+		L: Deref,
+	> Writeable for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+where
+	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
+	T::Target: BroadcasterInterface,
+	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
+	SP::Target: SignerProvider,
+	F::Target: FeeEstimator,
+	R::Target: Router,
+	MR::Target: MessageRouter,
+	L::Target: Logger,
+{
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		// Write all peer states (not just dirty ones) for full serialization
+		self.write_internal(writer, false)
 	}
 }
 
@@ -17350,19 +17472,22 @@ where
 	in_flight_monitor_updates: Option<HashMap<(PublicKey, ChannelId), Vec<ChannelMonitorUpdate>>>,
 	peer_storage_dir: Option<Vec<(PublicKey, Vec<u8>)>>,
 	async_receive_offer_cache: AsyncReceiveOfferCache,
+	/// The latest update_id for incremental persistence, from TLV field 23.
+	/// This is 0 for ChannelManagers written before incremental persistence was added.
+	update_id: u64,
 }
 
 /// Arguments for deserializing [`ChannelManagerData`].
-struct ChannelManagerDataReadArgs<'a, ES: Deref, SP: Deref, L: Deref>
+pub(crate) struct ChannelManagerDataReadArgs<'a, ES: Deref, SP: Deref, L: Deref>
 where
 	ES::Target: EntropySource,
 	SP::Target: SignerProvider,
 	L::Target: Logger,
 {
-	entropy_source: &'a ES,
-	signer_provider: &'a SP,
-	config: UserConfig,
-	logger: &'a L,
+	pub(crate) entropy_source: &'a ES,
+	pub(crate) signer_provider: &'a SP,
+	pub(crate) config: UserConfig,
+	pub(crate) logger: &'a L,
 }
 
 impl<'a, ES: Deref, SP: Deref, L: Deref> ReadableArgs<ChannelManagerDataReadArgs<'a, ES, SP, L>>
@@ -17519,6 +17644,7 @@ where
 		let mut inbound_payment_id_secret = None;
 		let mut peer_storage_dir: Option<Vec<(PublicKey, Vec<u8>)>> = None;
 		let mut async_receive_offer_cache: AsyncReceiveOfferCache = AsyncReceiveOfferCache::new();
+		let mut update_id: u64 = 0;
 		read_tlv_fields!(reader, {
 			(1, pending_outbound_payments_no_retry, option),
 			(2, pending_intercepted_htlcs, option),
@@ -17537,6 +17663,7 @@ where
 			(17, in_flight_monitor_updates, option),
 			(19, peer_storage_dir, optional_vec),
 			(21, async_receive_offer_cache, (default_value, async_receive_offer_cache)),
+			(23, update_id, (default_value, update_id)),
 		});
 
 		Ok(ChannelManagerData {
@@ -17567,7 +17694,95 @@ where
 			in_flight_monitor_updates,
 			peer_storage_dir,
 			async_receive_offer_cache,
+			update_id,
 		})
+	}
+}
+
+impl<SP: Deref> ChannelManagerData<SP>
+where
+	SP::Target: SignerProvider,
+{
+	/// Returns the update_id from this data.
+	pub(crate) fn get_update_id(&self) -> u64 {
+		self.update_id
+	}
+
+	/// Returns a reference to the channels in this data.
+	#[cfg(test)]
+	pub(crate) fn get_channels(&self) -> &Vec<FundedChannel<SP>> {
+		&self.channels
+	}
+
+	/// Applies an incremental update to this ChannelManagerData.
+	///
+	/// This merges the update's state into self:
+	/// - Channels: insert/replace channels from the update (keeps channels not in update unchanged)
+	/// - Global state: overwritten with update's state (it's more recent)
+	/// - Peer features/storage: merged
+	pub(crate) fn apply_update(&mut self, update: ChannelManagerData<SP>) {
+		// Merge channels: for each channel in update, insert/replace in our channel list
+		// First, build a map of our existing channels by (counterparty, channel_id)
+		let mut channel_map: HashMap<(PublicKey, ChannelId), FundedChannel<SP>> = self
+			.channels
+			.drain(..)
+			.map(|c| ((c.context.get_counterparty_node_id(), c.context.channel_id()), c))
+			.collect();
+
+		// Insert/replace channels from the update
+		for channel in update.channels {
+			let key = (channel.context.get_counterparty_node_id(), channel.context.channel_id());
+			channel_map.insert(key, channel);
+		}
+
+		// Convert back to vec
+		self.channels = channel_map.into_values().collect();
+
+		// Merge peer_init_features: update/insert peers from the update
+		let mut peer_features_map: HashMap<PublicKey, InitFeatures> =
+			self.peer_init_features.drain(..).collect();
+		for (peer_pubkey, features) in update.peer_init_features {
+			peer_features_map.insert(peer_pubkey, features);
+		}
+		self.peer_init_features = peer_features_map.into_iter().collect();
+
+		// Merge peer_storage_dir if present
+		if let Some(update_peer_storage) = update.peer_storage_dir {
+			let mut peer_storage_map: HashMap<PublicKey, Vec<u8>> =
+				self.peer_storage_dir.take().unwrap_or_default().into_iter().collect();
+			for (peer_pubkey, storage) in update_peer_storage {
+				peer_storage_map.insert(peer_pubkey, storage);
+			}
+			self.peer_storage_dir = Some(peer_storage_map.into_iter().collect());
+		}
+
+		// Overwrite global state with update's state (it's more recent)
+		self.chain_hash = update.chain_hash;
+		self.best_block_height = update.best_block_height;
+		self.best_block_hash = update.best_block_hash;
+		self.forward_htlcs = update.forward_htlcs;
+		self.claimable_htlcs = update.claimable_htlcs;
+		self.pending_events = update.pending_events;
+		self.highest_seen_timestamp = update.highest_seen_timestamp;
+		self.pending_outbound_payments_compat = update.pending_outbound_payments_compat;
+		self.pending_outbound_payments_no_retry = update.pending_outbound_payments_no_retry;
+		self.pending_intercepted_htlcs = update.pending_intercepted_htlcs;
+		self.pending_outbound_payments = update.pending_outbound_payments;
+		self.pending_claiming_payments = update.pending_claiming_payments;
+		self.received_network_pubkey = update.received_network_pubkey;
+		self.monitor_update_blocked_actions_per_peer =
+			update.monitor_update_blocked_actions_per_peer;
+		self.fake_scid_rand_bytes = update.fake_scid_rand_bytes;
+		self.events_override = update.events_override;
+		self.claimable_htlc_purposes = update.claimable_htlc_purposes;
+		self.legacy_in_flight_monitor_updates = update.legacy_in_flight_monitor_updates;
+		self.probing_cookie_secret = update.probing_cookie_secret;
+		self.claimable_htlc_onion_fields = update.claimable_htlc_onion_fields;
+		self.decode_update_add_htlcs = update.decode_update_add_htlcs;
+		self.inbound_payment_id_secret = update.inbound_payment_id_secret;
+		self.in_flight_monitor_updates = update.in_flight_monitor_updates;
+		self.async_receive_offer_cache = update.async_receive_offer_cache;
+		self.update_id = update.update_id;
 	}
 }
 
@@ -17850,6 +18065,7 @@ where
 			},
 		)?;
 
+		// Stage 2: Validation and reconstruction
 		channel_manager_from_data(data, args)
 	}
 }
@@ -17857,7 +18073,8 @@ where
 /// Constructs a `ChannelManager` from deserialized data.
 ///
 /// This is the second stage of deserialization, performing validation and reconstruction
-/// from the raw `ChannelManagerData`.
+/// from the raw `ChannelManagerData`. This function is also used when applying incremental
+/// updates during recovery.
 pub(crate) fn channel_manager_from_data<
 	'a,
 	M: Deref,
@@ -17943,25 +18160,25 @@ where
 				log_error!(logger, " The channel will be force-closed and the latest commitment transaction from the ChannelMonitor broadcast.");
 				if channel.context.get_latest_monitor_update_id() < monitor.get_latest_update_id() {
 					log_error!(logger, " The ChannelMonitor is at update_id {} but the ChannelManager is at update_id {}.",
-						monitor.get_latest_update_id(), channel.context.get_latest_monitor_update_id());
+							monitor.get_latest_update_id(), channel.context.get_latest_monitor_update_id());
 				}
 				if channel.get_cur_holder_commitment_transaction_number()
 					> monitor.get_cur_holder_commitment_number()
 				{
 					log_error!(logger, " The ChannelMonitor is at holder commitment number {} but the ChannelManager is at holder commitment number {}.",
-						monitor.get_cur_holder_commitment_number(), channel.get_cur_holder_commitment_transaction_number());
+							monitor.get_cur_holder_commitment_number(), channel.get_cur_holder_commitment_transaction_number());
 				}
 				if channel.get_revoked_counterparty_commitment_transaction_number()
 					> monitor.get_min_seen_secret()
 				{
 					log_error!(logger, " The ChannelMonitor is at revoked counterparty transaction number {} but the ChannelManager is at revoked counterparty transaction number {}.",
-						monitor.get_min_seen_secret(), channel.get_revoked_counterparty_commitment_transaction_number());
+							monitor.get_min_seen_secret(), channel.get_revoked_counterparty_commitment_transaction_number());
 				}
 				if channel.get_cur_counterparty_commitment_transaction_number()
 					> monitor.get_cur_counterparty_commitment_number()
 				{
 					log_error!(logger, " The ChannelMonitor is at counterparty commitment transaction number {} but the ChannelManager is at counterparty commitment transaction number {}.",
-						monitor.get_cur_counterparty_commitment_number(), channel.get_cur_counterparty_commitment_transaction_number());
+							monitor.get_cur_counterparty_commitment_number(), channel.get_cur_counterparty_commitment_transaction_number());
 				}
 				let shutdown_result = channel.force_shutdown(ClosureReason::OutdatedChannelManager);
 				if shutdown_result.unbroadcasted_batch_funding_txid.is_some() {
@@ -18032,7 +18249,7 @@ where
 							Some(*payment_hash),
 						);
 						log_info!(logger,
-							"Failing HTLC as it is missing in the ChannelMonitor but was present in the (stale) ChannelManager");
+								"Failing HTLC as it is missing in the ChannelMonitor but was present in the (stale) ChannelManager");
 						failed_htlcs.push((
 							channel_htlc_source.clone(),
 							*payment_hash,
@@ -18049,8 +18266,8 @@ where
 					monitor.get_latest_update_id(),
 				);
 				log_info!(logger, "Successfully loaded at update_id {} against monitor at update id {} with {} blocked updates",
-					channel.context.get_latest_monitor_update_id(),
-					monitor.get_latest_update_id(), channel.blocked_monitor_updates_pending());
+						channel.context.get_latest_monitor_update_id(),
+						monitor.get_latest_update_id(), channel.blocked_monitor_updates_pending());
 				if let Some(short_channel_id) = channel.funding.get_short_channel_id() {
 					short_to_chan_info.insert(
 						short_channel_id,
@@ -18248,8 +18465,8 @@ where
 	let mut pending_background_events = Vec::new();
 	macro_rules! handle_in_flight_updates {
 		($counterparty_node_id: expr, $chan_in_flight_upds: expr, $monitor: expr,
-		 $peer_state: expr, $logger: expr, $channel_info_log: expr
-		) => {{
+			 $peer_state: expr, $logger: expr, $channel_info_log: expr
+			) => {{
 			let mut max_in_flight_update_id = 0;
 			let starting_len = $chan_in_flight_upds.len();
 			$chan_in_flight_upds.retain(|upd| upd.update_id > $monitor.get_latest_update_id());
@@ -18341,7 +18558,7 @@ where
 					// If the channel is ahead of the monitor, return DangerousValue:
 					log_error!(logger, "A ChannelMonitor is stale compared to the current ChannelManager! This indicates a potentially-critical violation of the chain::Watch API!");
 					log_error!(logger, " The ChannelMonitor is at update_id {} with update_id through {} in-flight",
-						monitor.get_latest_update_id(), max_in_flight_update_id);
+							monitor.get_latest_update_id(), max_in_flight_update_id);
 					log_error!(
 						logger,
 						" but the ChannelManager is at update_id {}.",
@@ -18610,29 +18827,29 @@ where
 							&args.logger,
 						);
 						forward_htlcs_legacy.retain(|_, forwards| {
-							forwards.retain(|forward| {
-								if let HTLCForwardInfo::AddHTLC(htlc_info) = forward {
-									if pending_forward_matches_htlc(&htlc_info) {
-										log_info!(logger, "Removing pending to-forward HTLC with hash {} as it was forwarded to the closed channel {}",
-											&htlc.payment_hash, &monitor.channel_id());
-										false
-									} else { true }
-								} else { true }
-							});
-							!forwards.is_empty()
-						});
-						pending_intercepted_htlcs_legacy.retain(|intercepted_id, htlc_info| {
-							if pending_forward_matches_htlc(&htlc_info) {
-								log_info!(logger, "Removing pending intercepted HTLC with hash {} as it was forwarded to the closed channel {}",
-									&htlc.payment_hash, &monitor.channel_id());
-								pending_events_read.retain(|(event, _)| {
-									if let Event::HTLCIntercepted { intercept_id: ev_id, .. } = event {
-										intercepted_id != ev_id
+								forwards.retain(|forward| {
+									if let HTLCForwardInfo::AddHTLC(htlc_info) = forward {
+										if pending_forward_matches_htlc(&htlc_info) {
+											log_info!(logger, "Removing pending to-forward HTLC with hash {} as it was forwarded to the closed channel {}",
+												&htlc.payment_hash, &monitor.channel_id());
+											false
+										} else { true }
 									} else { true }
 								});
-								false
-							} else { true }
-						});
+								!forwards.is_empty()
+							});
+						pending_intercepted_htlcs_legacy.retain(|intercepted_id, htlc_info| {
+								if pending_forward_matches_htlc(&htlc_info) {
+									log_info!(logger, "Removing pending intercepted HTLC with hash {} as it was forwarded to the closed channel {}",
+										&htlc.payment_hash, &monitor.channel_id());
+									pending_events_read.retain(|(event, _)| {
+										if let Event::HTLCIntercepted { intercept_id: ev_id, .. } = event {
+											intercepted_id != ev_id
+										} else { true }
+									});
+									false
+								} else { true }
+							});
 					},
 					HTLCSource::OutboundRoute {
 						payment_id,
@@ -18741,107 +18958,107 @@ where
 			// payments.
 			let mut fail_read = false;
 			let outbound_claimed_htlcs_iter = monitor.get_all_current_outbound_htlcs()
-				.into_iter()
-				.filter_map(|(htlc_source, (htlc, preimage_opt))| {
-					if let HTLCSource::PreviousHopData(prev_hop) = &htlc_source {
-						if let Some(payment_preimage) = preimage_opt {
-							let inbound_edge_monitor = args.channel_monitors.get(&prev_hop.channel_id);
-							// Note that for channels which have gone to chain,
-							// `get_all_current_outbound_htlcs` is never pruned and always returns
-							// a constant set until the monitor is removed/archived. Thus, we
-							// want to skip replaying claims that have definitely been resolved
-							// on-chain.
+					.into_iter()
+					.filter_map(|(htlc_source, (htlc, preimage_opt))| {
+						if let HTLCSource::PreviousHopData(prev_hop) = &htlc_source {
+							if let Some(payment_preimage) = preimage_opt {
+								let inbound_edge_monitor = args.channel_monitors.get(&prev_hop.channel_id);
+								// Note that for channels which have gone to chain,
+								// `get_all_current_outbound_htlcs` is never pruned and always returns
+								// a constant set until the monitor is removed/archived. Thus, we
+								// want to skip replaying claims that have definitely been resolved
+								// on-chain.
 
-							// If the inbound monitor is not present, we assume it was fully
-							// resolved and properly archived, implying this payment had plenty
-							// of time to get claimed and we can safely skip any further
-							// attempts to claim it (they wouldn't succeed anyway as we don't
-							// have a monitor against which to do so).
-							let inbound_edge_monitor = if let Some(monitor) = inbound_edge_monitor {
-								monitor
-							} else {
-								return None;
-							};
-							// Second, if the inbound edge of the payment's monitor has been
-							// fully claimed we've had at least `ANTI_REORG_DELAY` blocks to
-							// get any PaymentForwarded event(s) to the user and assume that
-							// there's no need to try to replay the claim just for that.
-							let inbound_edge_balances = inbound_edge_monitor.get_claimable_balances();
-							if inbound_edge_balances.is_empty() {
-								return None;
-							}
-
-							if prev_hop.counterparty_node_id.is_none() {
-								// We no longer support claiming an HTLC where we don't have
-								// the counterparty_node_id available if the claim has to go to
-								// a closed channel. Its possible we can get away with it if
-								// the channel is not yet closed, but its by no means a
-								// guarantee.
-
-								// Thus, in this case we are a bit more aggressive with our
-								// pruning - if we have no use for the claim (because the
-								// inbound edge of the payment's monitor has already claimed
-								// the HTLC) we skip trying to replay the claim.
-								let htlc_payment_hash: PaymentHash = payment_preimage.into();
-								let balance_could_incl_htlc = |bal| match bal {
-									&Balance::ClaimableOnChannelClose { .. } => {
-										// The channel is still open, assume we can still
-										// claim against it
-										true
-									},
-									&Balance::MaybePreimageClaimableHTLC { payment_hash, .. } => {
-										payment_hash == htlc_payment_hash
-									},
-									_ => false,
+								// If the inbound monitor is not present, we assume it was fully
+								// resolved and properly archived, implying this payment had plenty
+								// of time to get claimed and we can safely skip any further
+								// attempts to claim it (they wouldn't succeed anyway as we don't
+								// have a monitor against which to do so).
+								let inbound_edge_monitor = if let Some(monitor) = inbound_edge_monitor {
+									monitor
+								} else {
+									return None;
 								};
-								let htlc_may_be_in_balances =
-									inbound_edge_balances.iter().any(balance_could_incl_htlc);
-								if !htlc_may_be_in_balances {
+								// Second, if the inbound edge of the payment's monitor has been
+								// fully claimed we've had at least `ANTI_REORG_DELAY` blocks to
+								// get any PaymentForwarded event(s) to the user and assume that
+								// there's no need to try to replay the claim just for that.
+								let inbound_edge_balances = inbound_edge_monitor.get_claimable_balances();
+								if inbound_edge_balances.is_empty() {
 									return None;
 								}
 
-								// First check if we're absolutely going to fail - if we need
-								// to replay this claim to get the preimage into the inbound
-								// edge monitor but the channel is closed (and thus we'll
-								// immediately panic if we call claim_funds_from_hop).
-								if short_to_chan_info.get(&prev_hop.prev_outbound_scid_alias).is_none() {
+								if prev_hop.counterparty_node_id.is_none() {
+									// We no longer support claiming an HTLC where we don't have
+									// the counterparty_node_id available if the claim has to go to
+									// a closed channel. Its possible we can get away with it if
+									// the channel is not yet closed, but its by no means a
+									// guarantee.
+
+									// Thus, in this case we are a bit more aggressive with our
+									// pruning - if we have no use for the claim (because the
+									// inbound edge of the payment's monitor has already claimed
+									// the HTLC) we skip trying to replay the claim.
+									let htlc_payment_hash: PaymentHash = payment_preimage.into();
+									let balance_could_incl_htlc = |bal| match bal {
+										&Balance::ClaimableOnChannelClose { .. } => {
+											// The channel is still open, assume we can still
+											// claim against it
+											true
+										},
+										&Balance::MaybePreimageClaimableHTLC { payment_hash, .. } => {
+											payment_hash == htlc_payment_hash
+										},
+										_ => false,
+									};
+									let htlc_may_be_in_balances =
+										inbound_edge_balances.iter().any(balance_could_incl_htlc);
+									if !htlc_may_be_in_balances {
+										return None;
+									}
+
+									// First check if we're absolutely going to fail - if we need
+									// to replay this claim to get the preimage into the inbound
+									// edge monitor but the channel is closed (and thus we'll
+									// immediately panic if we call claim_funds_from_hop).
+									if short_to_chan_info.get(&prev_hop.prev_outbound_scid_alias).is_none() {
+										log_error!(args.logger,
+											"We need to replay the HTLC claim for payment_hash {} (preimage {}) but cannot do so as the HTLC was forwarded prior to LDK 0.0.124.\
+											All HTLCs that were forwarded by LDK 0.0.123 and prior must be resolved prior to upgrading to LDK 0.1",
+											htlc_payment_hash,
+											payment_preimage,
+										);
+										fail_read = true;
+									}
+
+									// At this point we're confident we need the claim, but the
+									// inbound edge channel is still live. As long as this remains
+									// the case, we can conceivably proceed, but we run some risk
+									// of panicking at runtime. The user ideally should have read
+									// the release notes and we wouldn't be here, but we go ahead
+									// and let things run in the hope that it'll all just work out.
 									log_error!(args.logger,
-										"We need to replay the HTLC claim for payment_hash {} (preimage {}) but cannot do so as the HTLC was forwarded prior to LDK 0.0.124.\
-										All HTLCs that were forwarded by LDK 0.0.123 and prior must be resolved prior to upgrading to LDK 0.1",
+										"We need to replay the HTLC claim for payment_hash {} (preimage {}) but don't have all the required information to do so reliably.\
+										As long as the channel for the inbound edge of the forward remains open, this may work okay, but we may panic at runtime!\
+										All HTLCs that were forwarded by LDK 0.0.123 and prior must be resolved prior to upgrading to LDK 0.1\
+										Continuing anyway, though panics may occur!",
 										htlc_payment_hash,
 										payment_preimage,
 									);
-									fail_read = true;
 								}
 
-								// At this point we're confident we need the claim, but the
-								// inbound edge channel is still live. As long as this remains
-								// the case, we can conceivably proceed, but we run some risk
-								// of panicking at runtime. The user ideally should have read
-								// the release notes and we wouldn't be here, but we go ahead
-								// and let things run in the hope that it'll all just work out.
-								log_error!(args.logger,
-									"We need to replay the HTLC claim for payment_hash {} (preimage {}) but don't have all the required information to do so reliably.\
-									As long as the channel for the inbound edge of the forward remains open, this may work okay, but we may panic at runtime!\
-									All HTLCs that were forwarded by LDK 0.0.123 and prior must be resolved prior to upgrading to LDK 0.1\
-									Continuing anyway, though panics may occur!",
-									htlc_payment_hash,
-									payment_preimage,
-								);
-							}
-
-							Some((htlc_source, payment_preimage, htlc.amount_msat,
-								is_channel_closed, monitor.get_counterparty_node_id(),
-								monitor.get_funding_txo(), monitor.channel_id()))
-						} else { None }
-					} else {
-						// If it was an outbound payment, we've handled it above - if a preimage
-						// came in and we persisted the `ChannelManager` we either handled it and
-						// are good to go or the channel force-closed - we don't have to handle the
-						// channel still live case here.
-						None
-					}
-				});
+								Some((htlc_source, payment_preimage, htlc.amount_msat,
+									is_channel_closed, monitor.get_counterparty_node_id(),
+									monitor.get_funding_txo(), monitor.channel_id()))
+							} else { None }
+						} else {
+							// If it was an outbound payment, we've handled it above - if a preimage
+							// came in and we persisted the `ChannelManager` we either handled it and
+							// are good to go or the channel force-closed - we don't have to handle the
+							// channel still live case here.
+							None
+						}
+					});
 			for tuple in outbound_claimed_htlcs_iter {
 				pending_claims_to_replay.push(tuple);
 			}
@@ -18932,18 +19149,18 @@ where
 			}
 			if short_to_chan_info.get(&htlc.prev_hop.prev_outbound_scid_alias).is_some() {
 				log_error!(args.logger,
-					"We do not have the required information to claim a pending payment with payment hash {} reliably.\
-					As long as the channel for the inbound edge of the forward remains open, this may work okay, but we may panic at runtime!\
-					All HTLCs that were received by LDK 0.0.123 and prior must be resolved prior to upgrading to LDK 0.1\
-					Continuing anyway, though panics may occur!",
-					payment_hash,
-				);
+						"We do not have the required information to claim a pending payment with payment hash {} reliably.\
+						As long as the channel for the inbound edge of the forward remains open, this may work okay, but we may panic at runtime!\
+						All HTLCs that were received by LDK 0.0.123 and prior must be resolved prior to upgrading to LDK 0.1\
+						Continuing anyway, though panics may occur!",
+						payment_hash,
+					);
 			} else {
 				log_error!(args.logger,
-					"We do not have the required information to claim a pending payment with payment hash {}.\
-					All HTLCs that were received by LDK 0.0.123 and prior must be resolved prior to upgrading to LDK 0.1",
-					payment_hash,
-				);
+						"We do not have the required information to claim a pending payment with payment hash {}.\
+						All HTLCs that were received by LDK 0.0.123 and prior must be resolved prior to upgrading to LDK 0.1",
+						payment_hash,
+					);
 				return Err(DecodeError::InvalidValue);
 			}
 		}
@@ -19040,8 +19257,8 @@ where
 					{
 						if let Some(blocked_peer_state) = per_peer_state.get(blocked_node_id) {
 							log_trace!(logger,
-								"Holding the next revoke_and_ack from {} until the preimage is durably persisted in the inbound edge's ChannelMonitor",
-								blocked_channel_id);
+									"Holding the next revoke_and_ack from {} until the preimage is durably persisted in the inbound edge's ChannelMonitor",
+									blocked_channel_id);
 							blocked_peer_state
 								.lock()
 								.unwrap()
@@ -19194,6 +19411,10 @@ where
 		highest_seen_timestamp: AtomicUsize::new(data.highest_seen_timestamp as usize),
 
 		per_peer_state: FairRwLock::new(per_peer_state),
+
+		// Use the update_id from the serialized data (0 for pre-incremental-persistence managers)
+		latest_update_id: AtomicU64::new(data.update_id),
+		last_persisted_peer_bytes: Mutex::new(new_hash_map()),
 
 		#[cfg(not(any(test, feature = "_externalize_tests")))]
 		monitor_update_type: AtomicUsize::new(0),

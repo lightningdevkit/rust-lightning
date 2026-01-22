@@ -1563,3 +1563,131 @@ fn test_peer_storage() {
 	assert!(res.is_err());
 }
 
+#[test]
+fn test_incremental_update_only_includes_changed_channel() {
+	// Test that when a node has multiple channels and only one is modified by a payment,
+	// the incremental update (write_update) only includes that one changed channel.
+	// Change detection uses byte comparison of serialized peer state.
+	use crate::ln::channelmanager::{ChannelManagerData, ChannelManagerDataReadArgs};
+
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	// Create two channels for node 1: one with node 0, one with node 2
+	let _chan_0_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
+	let _chan_1_2 = create_announced_chan_between_nodes(&nodes, 1, 2);
+
+	// Both channels are now established. Write initial update to establish baseline.
+	// Since no persisted bytes exist yet, all peers will be included.
+	let mut initial_update = Vec::new();
+	let initial_update_id = nodes[1].node.write_update(&mut initial_update).unwrap();
+	assert!(initial_update_id > 0);
+
+	// Write full ChannelManager for size comparison
+	let full_manager_bytes = nodes[1].node.encode();
+	println!("Full ChannelManager size: {} bytes", full_manager_bytes.len());
+	println!("Initial update size (2 channels): {} bytes", initial_update.len());
+
+	// Verify the initial update contains 2 channels (both peers are new)
+	let initial_data: ChannelManagerData<_> = ChannelManagerData::read(
+		&mut &initial_update[..],
+		ChannelManagerDataReadArgs {
+			entropy_source: &nodes[1].keys_manager,
+			signer_provider: &nodes[1].keys_manager,
+			config: UserConfig::default(),
+			logger: &nodes[1].logger,
+		},
+	).unwrap();
+	assert_eq!(initial_data.get_channels().len(), 2, "Initial update should contain both channels");
+
+	// Now send a payment from node 0 to node 1 (only touches the 0<->1 channel on node 1)
+	let (payment_preimage, ..) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage);
+
+	// Write the incremental update for node 1
+	let mut incremental_update = Vec::new();
+	let incremental_update_id = nodes[1].node.write_update(&mut incremental_update).unwrap();
+	assert_eq!(incremental_update_id, initial_update_id + 1);
+
+	// Parse the incremental update to count channels
+	let incremental_data: ChannelManagerData<_> = ChannelManagerData::read(
+		&mut &incremental_update[..],
+		ChannelManagerDataReadArgs {
+			entropy_source: &nodes[1].keys_manager,
+			signer_provider: &nodes[1].keys_manager,
+			config: UserConfig::default(),
+			logger: &nodes[1].logger,
+		},
+	).unwrap();
+
+	// The incremental update should only contain 1 channel (the one that was modified)
+	println!("Incremental update size (1 channel dirty): {} bytes", incremental_update.len());
+	assert_eq!(incremental_data.get_channels().len(), 1,
+		"Incremental update should only contain the changed channel, not all channels");
+
+	// Write another update immediately without any changes to measure 0-channel update size
+	let mut zero_dirty_update = Vec::new();
+	let zero_dirty_update_id = nodes[1].node.write_update(&mut zero_dirty_update).unwrap();
+	println!("Incremental update size (0 channels dirty): {} bytes", zero_dirty_update.len());
+
+	// Verify it's the correct channel (the one with node 0)
+	let changed_channel = &incremental_data.get_channels()[0];
+	assert_eq!(changed_channel.context.get_counterparty_node_id(), nodes[0].node.get_our_node_id(),
+		"The changed channel should be the one with node 0");
+
+	// Now send a payment through the other channel (node 1 -> node 2)
+	let (payment_preimage_2, ..) = route_payment(&nodes[1], &[&nodes[2]], 500_000);
+	claim_payment(&nodes[1], &[&nodes[2]], payment_preimage_2);
+
+	// Write another incremental update
+	let mut second_incremental_update = Vec::new();
+	let second_update_id = nodes[1].node.write_update(&mut second_incremental_update).unwrap();
+	assert_eq!(second_update_id, zero_dirty_update_id + 1);
+
+	// Parse and verify only the second channel is now changed
+	let second_incremental_data: ChannelManagerData<_> = ChannelManagerData::read(
+		&mut &second_incremental_update[..],
+		ChannelManagerDataReadArgs {
+			entropy_source: &nodes[1].keys_manager,
+			signer_provider: &nodes[1].keys_manager,
+			config: UserConfig::default(),
+			logger: &nodes[1].logger,
+		},
+	).unwrap();
+
+	assert_eq!(second_incremental_data.get_channels().len(), 1,
+		"Second incremental update should only contain the newly changed channel");
+	let changed_channel_2 = &second_incremental_data.get_channels()[0];
+	assert_eq!(changed_channel_2.context.get_counterparty_node_id(), nodes[2].node.get_our_node_id(),
+		"The changed channel should now be the one with node 2");
+
+	// Test apply_update: simulate recovery by applying incremental updates to base data.
+	// Start with initial_data (has 2 channels at update_id 1), apply the two incremental updates.
+	let mut recovered_data: ChannelManagerData<_> = ChannelManagerData::read(
+		&mut &initial_update[..],
+		ChannelManagerDataReadArgs {
+			entropy_source: &nodes[1].keys_manager,
+			signer_provider: &nodes[1].keys_manager,
+			config: UserConfig::default(),
+			logger: &nodes[1].logger,
+		},
+	).unwrap();
+	assert_eq!(recovered_data.get_update_id(), initial_update_id);
+	assert_eq!(recovered_data.get_channels().len(), 2);
+
+	// Apply first incremental update (has 1 channel - the one modified by payment)
+	recovered_data.apply_update(incremental_data);
+	assert_eq!(recovered_data.get_update_id(), incremental_update_id,
+		"Update ID should be updated after apply_update");
+	assert_eq!(recovered_data.get_channels().len(), 2,
+		"Should still have 2 channels after merging (1 updated, 1 unchanged)");
+
+	// Apply second incremental update
+	recovered_data.apply_update(second_incremental_data);
+	assert_eq!(recovered_data.get_update_id(), second_update_id,
+		"Update ID should reflect the latest applied update");
+	assert_eq!(recovered_data.get_channels().len(), 2,
+		"Should still have 2 channels after second merge");
+}
