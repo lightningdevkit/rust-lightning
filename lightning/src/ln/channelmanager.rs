@@ -449,7 +449,7 @@ pub(super) enum PendingHTLCStatus {
 pub(super) struct PendingAddHTLCInfo {
 	pub(super) forward_info: PendingHTLCInfo,
 
-	// These fields are produced in `forward_htlcs()` and consumed in
+	// These fields are set before calling `forward_htlcs()` and consumed in
 	// `process_pending_htlc_forwards()` for constructing the
 	// `HTLCSource::PreviousHopData` for failed and forwarded
 	// HTLCs.
@@ -765,10 +765,6 @@ impl_writeable_tlv_based_enum!(SentHTLCId,
 		(0, session_priv, required),
 	},
 );
-
-// (src_outbound_scid_alias, src_counterparty_node_id, src_funding_outpoint, src_chan_id, src_user_chan_id)
-type PerSourcePendingForward =
-	(u64, PublicKey, OutPoint, ChannelId, u128, Vec<(PendingHTLCInfo, u64)>);
 
 type FailedHTLCForward = (HTLCSource, PaymentHash, HTLCFailReason, HTLCHandlingFailureType);
 
@@ -1421,7 +1417,7 @@ enum PostMonitorUpdateChanResume {
 		user_channel_id: u128,
 		unbroadcasted_batch_funding_txid: Option<Txid>,
 		update_actions: Vec<MonitorUpdateCompletionAction>,
-		htlc_forwards: Option<PerSourcePendingForward>,
+		htlc_forwards: Vec<PendingAddHTLCInfo>,
 		decode_update_add_htlcs: Option<(u64, Vec<msgs::UpdateAddHTLC>)>,
 		finalized_claimed_htlcs: Vec<(HTLCSource, Option<AttributionData>)>,
 		failed_htlcs: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
@@ -6798,15 +6794,16 @@ impl<
 			..payment.forward_info
 		};
 
-		let mut per_source_pending_forward = [(
-			payment.prev_outbound_scid_alias,
-			payment.prev_counterparty_node_id,
-			payment.prev_funding_outpoint,
-			payment.prev_channel_id,
-			payment.prev_user_channel_id,
-			vec![(pending_htlc_info, payment.prev_htlc_id)],
-		)];
-		self.forward_htlcs(&mut per_source_pending_forward);
+		let forward = [PendingAddHTLCInfo {
+			prev_outbound_scid_alias: payment.prev_outbound_scid_alias,
+			prev_htlc_id: payment.prev_htlc_id,
+			prev_counterparty_node_id: payment.prev_counterparty_node_id,
+			prev_channel_id: payment.prev_channel_id,
+			prev_funding_outpoint: payment.prev_funding_outpoint,
+			prev_user_channel_id: payment.prev_user_channel_id,
+			forward_info: pending_htlc_info,
+		}];
+		self.forward_htlcs(forward);
 		Ok(())
 	}
 
@@ -7037,7 +7034,7 @@ impl<
 					next_packet_details_opt.map(|d| d.next_packet_pubkey),
 				) {
 					Ok(info) => {
-						let to_pending_add = |info| PendingAddHTLCInfo {
+						let pending_add = PendingAddHTLCInfo {
 							prev_outbound_scid_alias: incoming_scid_alias,
 							prev_counterparty_node_id: incoming_counterparty_node_id,
 							prev_funding_outpoint: incoming_funding_txo,
@@ -7059,7 +7056,7 @@ impl<
 							Some(incoming_channel_id),
 							Some(update_add_htlc.payment_hash),
 						);
-						if info.routing.should_hold_htlc() {
+						if pending_add.forward_info.routing.should_hold_htlc() {
 							let mut held_htlcs = self.pending_intercepted_htlcs.lock().unwrap();
 							let intercept_id = intercept_id();
 							match held_htlcs.entry(intercept_id) {
@@ -7068,7 +7065,6 @@ impl<
 										logger,
 										"Intercepted held HTLC with id {intercept_id}, holding until the recipient is online"
 									);
-									let pending_add = to_pending_add(info);
 									entry.insert(pending_add);
 								},
 								hash_map::Entry::Occupied(_) => {
@@ -7085,7 +7081,6 @@ impl<
 								self.pending_intercepted_htlcs.lock().unwrap();
 							match pending_intercepts.entry(intercept_id) {
 								hash_map::Entry::Vacant(entry) => {
-									let pending_add = to_pending_add(info);
 									if let Ok(intercept_ev) =
 										create_htlc_intercepted_event(intercept_id, &pending_add)
 									{
@@ -7125,7 +7120,7 @@ impl<
 								},
 							}
 						} else {
-							htlc_forwards.push((info, update_add_htlc.htlc_id))
+							htlc_forwards.push(pending_add);
 						}
 					},
 					Err(inbound_err) => {
@@ -7145,15 +7140,7 @@ impl<
 
 			// Process all of the forwards and failures for the channel in which the HTLCs were
 			// proposed to as a batch.
-			let pending_forwards = (
-				incoming_scid_alias,
-				incoming_counterparty_node_id,
-				incoming_funding_txo,
-				incoming_channel_id,
-				incoming_user_channel_id,
-				htlc_forwards,
-			);
-			self.forward_htlcs(&mut [pending_forwards]);
+			self.forward_htlcs(htlc_forwards);
 			for (htlc_fail, failure_type, failure_reason) in htlc_fails.drain(..) {
 				let failure = match htlc_fail {
 					HTLCFailureMsg::Relay(fail_htlc) => HTLCForwardInfo::FailHTLC {
@@ -7247,7 +7234,7 @@ impl<
 
 		let mut new_events = VecDeque::new();
 		let mut failed_forwards = Vec::new();
-		let mut phantom_receives: Vec<PerSourcePendingForward> = Vec::new();
+		let mut phantom_receives: Vec<PendingAddHTLCInfo> = Vec::new();
 		let mut forward_htlcs = new_hash_map();
 		mem::swap(&mut forward_htlcs, &mut self.forward_htlcs.lock().unwrap());
 
@@ -7294,7 +7281,7 @@ impl<
 				None,
 			);
 		}
-		self.forward_htlcs(&mut phantom_receives);
+		self.forward_htlcs(phantom_receives);
 
 		if self.check_free_holding_cells() {
 			should_persist = NotifyOption::DoPersist;
@@ -7314,7 +7301,7 @@ impl<
 	fn forwarding_channel_not_found(
 		&self, forward_infos: impl Iterator<Item = HTLCForwardInfo>, short_chan_id: u64,
 		forwarding_counterparty: Option<PublicKey>, failed_forwards: &mut Vec<FailedHTLCForward>,
-		phantom_receives: &mut Vec<PerSourcePendingForward>,
+		phantom_receives: &mut Vec<PendingAddHTLCInfo>,
 	) {
 		for forward_info in forward_infos {
 			match forward_info {
@@ -7436,14 +7423,15 @@ impl<
 								current_height,
 							);
 							match create_res {
-								Ok(info) => phantom_receives.push((
+								Ok(info) => phantom_receives.push(PendingAddHTLCInfo {
+									forward_info: info,
 									prev_outbound_scid_alias,
+									prev_htlc_id,
 									prev_counterparty_node_id,
-									prev_funding_outpoint,
 									prev_channel_id,
+									prev_funding_outpoint,
 									prev_user_channel_id,
-									vec![(info, prev_htlc_id)],
-								)),
+								}),
 								Err(InboundHTLCErr { reason, err_data, msg }) => {
 									failure_handler(
 										msg,
@@ -7495,7 +7483,7 @@ impl<
 	fn process_forward_htlcs(
 		&self, short_chan_id: u64, pending_forwards: &mut Vec<HTLCForwardInfo>,
 		failed_forwards: &mut Vec<FailedHTLCForward>,
-		phantom_receives: &mut Vec<PerSourcePendingForward>,
+		phantom_receives: &mut Vec<PendingAddHTLCInfo>,
 	) {
 		let mut forwarding_counterparty = None;
 
@@ -9572,8 +9560,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	fn post_monitor_update_unlock(
 		&self, channel_id: ChannelId, counterparty_node_id: PublicKey, funding_txo: OutPoint,
 		user_channel_id: u128, unbroadcasted_batch_funding_txid: Option<Txid>,
-		update_actions: Vec<MonitorUpdateCompletionAction>,
-		htlc_forwards: Option<PerSourcePendingForward>,
+		update_actions: Vec<MonitorUpdateCompletionAction>, htlc_forwards: Vec<PendingAddHTLCInfo>,
 		decode_update_add_htlcs: Option<(u64, Vec<msgs::UpdateAddHTLC>)>,
 		finalized_claimed_htlcs: Vec<(HTLCSource, Option<AttributionData>)>,
 		failed_htlcs: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
@@ -9634,9 +9621,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 		self.handle_monitor_update_completion_actions(update_actions);
 
-		if let Some(forwards) = htlc_forwards {
-			self.forward_htlcs(&mut [forwards][..]);
-		}
+		self.forward_htlcs(htlc_forwards);
 		if let Some(decode) = decode_update_add_htlcs {
 			self.push_decode_update_add_htlcs(decode);
 		}
@@ -10263,7 +10248,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		channel_ready: Option<msgs::ChannelReady>, announcement_sigs: Option<msgs::AnnouncementSignatures>,
 		tx_signatures: Option<msgs::TxSignatures>, tx_abort: Option<msgs::TxAbort>,
 		channel_ready_order: ChannelReadyOrder,
-	) -> (Option<(u64, PublicKey, OutPoint, ChannelId, u128, Vec<(PendingHTLCInfo, u64)>)>, Option<(u64, Vec<msgs::UpdateAddHTLC>)>) {
+	) -> (Vec<PendingAddHTLCInfo>, Option<(u64, Vec<msgs::UpdateAddHTLC>)>) {
 		let logger = WithChannelContext::from(&self.logger, &channel.context, None);
 		log_trace!(logger, "Handling channel resumption with {} RAA, {} commitment update, {} pending forwards, {} pending update_add_htlcs, {}broadcasting funding, {} channel ready, {} announcement, {} tx_signatures, {} tx_abort",
 			if raa.is_some() { "an" } else { "no" },
@@ -10279,13 +10264,19 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let counterparty_node_id = channel.context.get_counterparty_node_id();
 		let outbound_scid_alias = channel.context.outbound_scid_alias();
 
-		let mut htlc_forwards = None;
+		let mut htlc_forwards = Vec::new();
 		if !pending_forwards.is_empty() {
-			htlc_forwards = Some((
-				outbound_scid_alias, channel.context.get_counterparty_node_id(),
-				channel.funding.get_funding_txo().unwrap(), channel.context.channel_id(),
-				channel.context.get_user_id(), pending_forwards
-			));
+			htlc_forwards = pending_forwards.into_iter().map(|(forward_info, prev_htlc_id)| {
+				PendingAddHTLCInfo {
+					forward_info,
+					prev_outbound_scid_alias: outbound_scid_alias,
+					prev_htlc_id,
+					prev_counterparty_node_id: counterparty_node_id,
+					prev_channel_id: channel.context.channel_id(),
+					prev_funding_outpoint: channel.funding.get_funding_txo().unwrap(),
+					prev_user_channel_id: channel.context.get_user_id(),
+				}
+			}).collect();
 		}
 		let mut decode_update_add_htlcs = None;
 		if !pending_update_adds.is_empty() {
@@ -12130,44 +12121,22 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	}
 
 	#[inline]
-	fn forward_htlcs(&self, per_source_pending_forwards: &mut [PerSourcePendingForward]) {
-		for &mut (
-			prev_outbound_scid_alias,
-			prev_counterparty_node_id,
-			prev_funding_outpoint,
-			prev_channel_id,
-			prev_user_channel_id,
-			ref mut pending_forwards,
-		) in per_source_pending_forwards
-		{
-			if !pending_forwards.is_empty() {
-				for (forward_info, prev_htlc_id) in pending_forwards.drain(..) {
-					let scid = match forward_info.routing {
-						PendingHTLCRouting::Forward { short_channel_id, .. } => short_channel_id,
-						PendingHTLCRouting::TrampolineForward { .. }
-						| PendingHTLCRouting::Receive { .. }
-						| PendingHTLCRouting::ReceiveKeysend { .. } => 0,
-					};
+	fn forward_htlcs<I: IntoIterator<Item = PendingAddHTLCInfo>>(&self, pending_forwards: I) {
+		for htlc in pending_forwards.into_iter() {
+			let scid = match htlc.forward_info.routing {
+				PendingHTLCRouting::Forward { short_channel_id, .. } => short_channel_id,
+				PendingHTLCRouting::TrampolineForward { .. }
+				| PendingHTLCRouting::Receive { .. }
+				| PendingHTLCRouting::ReceiveKeysend { .. } => 0,
+			};
 
-					let pending_add = PendingAddHTLCInfo {
-						prev_outbound_scid_alias,
-						prev_counterparty_node_id,
-						prev_funding_outpoint,
-						prev_channel_id,
-						prev_htlc_id,
-						prev_user_channel_id,
-						forward_info,
-					};
-
-					match self.forward_htlcs.lock().unwrap().entry(scid) {
-						hash_map::Entry::Occupied(mut entry) => {
-							entry.get_mut().push(HTLCForwardInfo::AddHTLC(pending_add));
-						},
-						hash_map::Entry::Vacant(entry) => {
-							entry.insert(vec![HTLCForwardInfo::AddHTLC(pending_add)]);
-						},
-					}
-				}
+			match self.forward_htlcs.lock().unwrap().entry(scid) {
+				hash_map::Entry::Occupied(mut entry) => {
+					entry.get_mut().push(HTLCForwardInfo::AddHTLC(htlc));
+				},
+				hash_map::Entry::Vacant(entry) => {
+					entry.insert(vec![HTLCForwardInfo::AddHTLC(htlc)]);
+				},
 			}
 		}
 	}
@@ -12502,7 +12471,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							Vec::new(), Vec::new(), None, responses.channel_ready, responses.announcement_sigs,
 							responses.tx_signatures, responses.tx_abort, responses.channel_ready_order,
 						);
-						debug_assert!(htlc_forwards.is_none());
+						debug_assert!(htlc_forwards.is_empty());
 						debug_assert!(decode_update_add_htlcs.is_none());
 						if let Some(upd) = channel_update {
 							peer_state.pending_msg_events.push(upd);
@@ -16563,15 +16532,7 @@ impl<
 						},
 					}
 				} else {
-					let mut per_source_pending_forward = [(
-						htlc.prev_outbound_scid_alias,
-						htlc.prev_counterparty_node_id,
-						htlc.prev_funding_outpoint,
-						htlc.prev_channel_id,
-						htlc.prev_user_channel_id,
-						vec![(htlc.forward_info, htlc.prev_htlc_id)],
-					)];
-					self.forward_htlcs(&mut per_source_pending_forward);
+					self.forward_htlcs([htlc]);
 				}
 			},
 			_ => return,
