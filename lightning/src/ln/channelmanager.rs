@@ -4729,7 +4729,9 @@ impl<
 		}
 	}
 
-	fn forward_needs_intercept_to_known_chan(&self, outbound_chan: &FundedChannel<SP>) -> bool {
+	fn forward_needs_intercept_to_known_chan(
+		&self, prev_chan_public: bool, outbound_chan: &FundedChannel<SP>,
+	) -> bool {
 		let intercept_flags = self.config.read().unwrap().htlc_interception_flags;
 		if !outbound_chan.context.should_announce() {
 			if outbound_chan.context.is_connected() {
@@ -4743,6 +4745,23 @@ impl<
 			}
 		} else {
 			if intercept_flags & (HTLCInterceptionFlags::ToPublicChannels as u8) != 0 {
+				return true;
+			}
+		}
+		if prev_chan_public {
+			if outbound_chan.context.should_announce() {
+				if intercept_flags & (HTLCInterceptionFlags::FromPublicToPublicChannels as u8) != 0
+				{
+					return true;
+				}
+			} else {
+				if intercept_flags & (HTLCInterceptionFlags::FromPublicToPrivateChannels as u8) != 0
+				{
+					return true;
+				}
+			}
+		} else {
+			if intercept_flags & (HTLCInterceptionFlags::FromPrivateChannels as u8) != 0 {
 				return true;
 			}
 		}
@@ -4839,7 +4858,7 @@ impl<
 	}
 
 	fn can_forward_htlc_should_intercept(
-		&self, msg: &msgs::UpdateAddHTLC, next_hop: &NextPacketDetails,
+		&self, msg: &msgs::UpdateAddHTLC, prev_chan_public: bool, next_hop: &NextPacketDetails,
 	) -> Result<bool, LocalHTLCFailureReason> {
 		let outgoing_scid = match next_hop.outgoing_connector {
 			HopConnector::ShortChannelId(scid) => scid,
@@ -4858,7 +4877,7 @@ impl<
 		// times we do it.
 		let intercept =
 			match self.do_funded_channel_callback(outgoing_scid, |chan: &mut FundedChannel<SP>| {
-				let intercept = self.forward_needs_intercept_to_known_chan(chan);
+				let intercept = self.forward_needs_intercept_to_known_chan(prev_chan_public, chan);
 				self.can_forward_htlc_to_outgoing_channel(chan, msg, next_hop, intercept)?;
 				Ok(intercept)
 			}) {
@@ -6869,34 +6888,29 @@ impl<
 		'outer_loop: for (incoming_scid_alias, update_add_htlcs) in decode_update_add_htlcs {
 			// If any decoded update_add_htlcs were processed, we need to persist.
 			should_persist = true;
-			let incoming_channel_details_opt = self.do_funded_channel_callback(
-				incoming_scid_alias,
-				|chan: &mut FundedChannel<SP>| {
-					let counterparty_node_id = chan.context.get_counterparty_node_id();
-					let channel_id = chan.context.channel_id();
-					let funding_txo = chan.funding.get_funding_txo().unwrap();
-					let user_channel_id = chan.context.get_user_id();
-					let accept_underpaying_htlcs = chan.context.config().accept_underpaying_htlcs;
-					(
-						counterparty_node_id,
-						channel_id,
-						funding_txo,
-						user_channel_id,
-						accept_underpaying_htlcs,
-					)
-				},
-			);
 			let (
 				incoming_counterparty_node_id,
 				incoming_channel_id,
 				incoming_funding_txo,
 				incoming_user_channel_id,
 				incoming_accept_underpaying_htlcs,
-			) = if let Some(incoming_channel_details) = incoming_channel_details_opt {
-				incoming_channel_details
-			} else {
+				incoming_chan_is_public,
+			) = match self.do_funded_channel_callback(
+				incoming_scid_alias,
+				|chan: &mut FundedChannel<SP>| {
+					(
+						chan.context.get_counterparty_node_id(),
+						chan.context.channel_id(),
+						chan.funding.get_funding_txo().unwrap(),
+						chan.context.get_user_id(),
+						chan.context.config().accept_underpaying_htlcs,
+						chan.context.should_announce(),
+					)
+				},
+			) {
+				Some(incoming_channel_details) => incoming_channel_details,
 				// The incoming channel no longer exists, HTLCs should be resolved onchain instead.
-				continue;
+				None => continue,
 			};
 
 			let mut htlc_forwards = Vec::new();
@@ -7016,9 +7030,11 @@ impl<
 				// Now process the HTLC on the outgoing channel if it's a forward.
 				let mut intercept_forward = false;
 				if let Some(next_packet_details) = next_packet_details_opt.as_ref() {
-					match self
-						.can_forward_htlc_should_intercept(&update_add_htlc, next_packet_details)
-					{
+					match self.can_forward_htlc_should_intercept(
+						&update_add_htlc,
+						incoming_chan_is_public,
+						next_packet_details,
+					) {
 						Err(reason) => {
 							fail_htlc_continue_to_next!(reason);
 						},
@@ -16492,9 +16508,29 @@ impl<
 				);
 				log_trace!(logger, "Releasing held htlc with intercept_id {}", intercept_id);
 
+				let prev_chan_public = {
+					let per_peer_state = self.per_peer_state.read().unwrap();
+					let peer_state = per_peer_state
+						.get(&htlc.prev_counterparty_node_id)
+						.map(|mtx| mtx.lock().unwrap());
+					let chan_state = peer_state
+						.as_ref()
+						.map(|state| state.channel_by_id.get(&htlc.prev_channel_id))
+						.flatten();
+					if let Some(chan_state) = chan_state {
+						chan_state.context().should_announce()
+					} else {
+						// If the inbound channel has closed since the HTLC was held, we really
+						// shouldn't forward it - forwarding it now would result in, at best,
+						// having to claim the HTLC on chain. Instead, drop the HTLC and let the
+						// counterparty claim their money on chain.
+						return;
+					}
+				};
+
 				let should_intercept = self
 					.do_funded_channel_callback(next_hop_scid, |chan| {
-						self.forward_needs_intercept_to_known_chan(chan)
+						self.forward_needs_intercept_to_known_chan(prev_chan_public, chan)
 					})
 					.unwrap_or_else(|| self.forward_needs_intercept_to_unknown_chan(next_hop_scid));
 
