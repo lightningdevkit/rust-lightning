@@ -2846,6 +2846,12 @@ pub struct ChannelManager<
 	/// [`ClaimablePayments`]' individual field docs for more info.
 	claimable_payments: Mutex<ClaimablePayments>,
 
+	/// The sets of trampoline payments which are in the process of being accumulated on inbound
+	/// channel(s).
+	///
+	/// Note: Not adding ChannelMangaer struct level docs because 4300 removes it.
+	awaiting_trampoline_forwards: Mutex<HashMap<PaymentHash, ClaimablePayment>>,
+
 	/// The set of outbound SCID aliases across all our channels, including unconfirmed channels
 	/// and some closed channels which reached a usable state prior to being closed. This is used
 	/// only to avoid duplicates, and is not persisted explicitly to disk, but rebuilt from the
@@ -3638,6 +3644,7 @@ impl<
 			forward_htlcs: Mutex::new(new_hash_map()),
 			decode_update_add_htlcs: Mutex::new(new_hash_map()),
 			claimable_payments: Mutex::new(ClaimablePayments { claimable_payments: new_hash_map(), pending_claiming_payments: new_hash_map() }),
+			awaiting_trampoline_forwards: Mutex::new(new_hash_map()),
 			pending_intercepted_htlcs: Mutex::new(new_hash_map()),
 			short_to_chan_info: FairRwLock::new(new_hash_map()),
 
@@ -8820,6 +8827,39 @@ impl<
 					true
 				},
 			);
+
+			self.awaiting_trampoline_forwards.lock().unwrap().retain(|payment_hash, payment| {
+				if payment.htlcs.is_empty() {
+					debug_assert!(false);
+					return false;
+				}
+				if let OnionPayload::Trampoline { .. } = payment.htlcs[0].onion_payload {
+					let mpp_timeout = check_mpp_timeout(payment);
+					if mpp_timeout {
+						let incoming_trampoline_shared_secret =
+							payment.htlcs[0].prev_hop.incoming_packet_shared_secret;
+						let previous_hop_data =
+							payment.htlcs.drain(..).map(|claimable| claimable.prev_hop).collect();
+
+						timed_out_mpp_htlcs.push((
+							HTLCSource::TrampolineForward {
+								previous_hop_data,
+								incoming_trampoline_shared_secret,
+								outbound_payment: None,
+							},
+							*payment_hash,
+							HTLCHandlingFailureType::TrampolineForward {},
+						));
+					}
+					!mpp_timeout
+				} else {
+					debug_assert!(
+						false,
+						"awaiting_trampoline_forwards should only contain trampolines"
+					);
+					true
+				}
+			});
 
 			for (htlc_source, payment_hash, failure_type) in timed_out_mpp_htlcs.drain(..) {
 				let failure_reason = LocalHTLCFailureReason::MPPTimeout;
@@ -15984,6 +16024,47 @@ impl<
 				},
 			);
 
+			self.awaiting_trampoline_forwards.lock().unwrap().retain(|payment_hash, payment| {
+				if payment.htlcs.is_empty() {
+					debug_assert!(false);
+					return false;
+				}
+				if let OnionPayload::Trampoline { .. } = payment.htlcs[0].onion_payload {
+					let htlc_timed_out = payment
+						.htlcs
+						.iter()
+						.any(|htlc| htlc.check_onchain_timeout(height, HTLC_FAIL_BACK_BUFFER));
+					if htlc_timed_out {
+						let incoming_trampoline_shared_secret =
+							payment.htlcs[0].prev_hop.incoming_packet_shared_secret;
+						let previous_hop_data =
+							payment.htlcs.drain(..).map(|claimable| claimable.prev_hop).collect();
+
+						let failure_reason = LocalHTLCFailureReason::CLTVExpiryTooSoon;
+						timed_out_htlcs.push((
+							HTLCSource::TrampolineForward {
+								previous_hop_data,
+								incoming_trampoline_shared_secret,
+								outbound_payment: None,
+							},
+							payment_hash.clone(),
+							HTLCFailReason::reason(
+								failure_reason,
+								self.get_htlc_inbound_temp_fail_data(failure_reason),
+							),
+							HTLCHandlingFailureType::TrampolineForward {},
+						));
+					}
+					!htlc_timed_out
+				} else {
+					debug_assert!(
+						false,
+						"awaiting_trampoline_forwards should only contain trampolines"
+					);
+					true
+				}
+			});
+
 			let mut intercepted_htlcs = self.pending_intercepted_htlcs.lock().unwrap();
 			intercepted_htlcs.retain(|_, htlc| {
 				if height >= htlc.forward_info.outgoing_cltv_value - HTLC_FAIL_BACK_BUFFER {
@@ -17800,6 +17881,8 @@ impl<
 			htlc_onion_fields.push(Some(&payment.onion_fields));
 		}
 
+		// TODO: write pending_trampoline_forwards
+
 		let mut monitor_update_blocked_actions_per_peer = None;
 		let mut peer_states = Vec::new();
 		for (_, peer_state_mutex) in per_peer_state.iter() {
@@ -19050,6 +19133,7 @@ impl<
 				peer_state.get_mut().unwrap().latest_features = latest_features;
 			}
 		}
+		// TODO: pending trampoline forwards?
 
 		// Post-deserialization processing
 		let mut decode_update_add_htlcs: HashMap<u64, Vec<msgs::UpdateAddHTLC>> = new_hash_map();
@@ -20013,6 +20097,7 @@ impl<
 				claimable_payments,
 				pending_claiming_payments,
 			}),
+			awaiting_trampoline_forwards: Mutex::new(new_hash_map()),
 			outbound_scid_aliases: Mutex::new(outbound_scid_aliases),
 			short_to_chan_info: FairRwLock::new(short_to_chan_info),
 			fake_scid_rand_bytes: fake_scid_rand_bytes.unwrap(),
