@@ -29,6 +29,7 @@ use crate::util::errors::APIError;
 use crate::util::ser::Writeable;
 
 use bitcoin::hashes::Hash;
+use bitcoin::secp256k1::ecdsa::Signature;
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::{Amount, OutPoint as BitcoinOutPoint, ScriptBuf, Transaction, TxOut, WPubkeyHash};
 
@@ -2220,4 +2221,234 @@ fn do_test_splice_with_inflight_htlc_forward_and_resolution(expire_scid_pre_forw
 fn test_splice_with_inflight_htlc_forward_and_resolution() {
 	do_test_splice_with_inflight_htlc_forward_and_resolution(true);
 	do_test_splice_with_inflight_htlc_forward_and_resolution(false);
+}
+
+#[test]
+fn test_splice_buffer_commitment_signed_until_funding_tx_signed() {
+	// Test that when the counterparty sends their initial `commitment_signed` before the user has
+	// called `funding_transaction_signed`, we buffer the message and process it at the end of
+	// `funding_transaction_signed`. This allows the user to cancel the splice negotiation if
+	// desired without having queued an irreversible monitor update.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	// Negotiate a splice-out where only the initiator (node 0) has a contribution.
+	// This means node 1 will send their commitment_signed immediately after tx_complete.
+	let initiator_contribution = SpliceContribution::splice_out(vec![TxOut {
+		value: Amount::from_sat(1_000),
+		script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
+	}]);
+	negotiate_splice_tx(&nodes[0], &nodes[1], channel_id, initiator_contribution);
+
+	// Node 0 (initiator with contribution) should have a signing event to handle.
+	let signing_event = get_event!(nodes[0], Event::FundingTransactionReadyForSigning);
+
+	// Node 1 (acceptor with no contribution) won't have a signing event and will immediately
+	// send their initial commitment_signed.
+	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+	let acceptor_commit_sig = get_htlc_update_msgs(&nodes[1], &node_id_0);
+
+	// Deliver the acceptor's commitment_signed to the initiator BEFORE the initiator has called
+	// funding_transaction_signed. The message should be buffered, not processed.
+	nodes[0].node.handle_commitment_signed(node_id_1, &acceptor_commit_sig.commitment_signed[0]);
+
+	// No monitor update should have happened since the message is buffered.
+	check_added_monitors(&nodes[0], 0);
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+
+	// Now handle the signing event and call `funding_transaction_signed`.
+	if let Event::FundingTransactionReadyForSigning {
+		channel_id: event_channel_id,
+		counterparty_node_id,
+		unsigned_transaction,
+		..
+	} = signing_event
+	{
+		assert_eq!(event_channel_id, channel_id);
+		assert_eq!(counterparty_node_id, node_id_1);
+
+		let partially_signed_tx = nodes[0].wallet_source.sign_tx(unsigned_transaction).unwrap();
+		nodes[0]
+			.node
+			.funding_transaction_signed(&channel_id, &node_id_1, partially_signed_tx)
+			.unwrap();
+	} else {
+		panic!("Expected FundingTransactionReadyForSigning event");
+	}
+
+	// After funding_transaction_signed:
+	// 1. The initiator should send their commitment_signed
+	// 2. The buffered commitment_signed from the acceptor should be processed (monitor update)
+	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1, "{msg_events:?}");
+	let initiator_commit_sig =
+		if let MessageSendEvent::UpdateHTLCs { ref updates, .. } = &msg_events[0] {
+			updates.commitment_signed[0].clone()
+		} else {
+			panic!("Expected UpdateHTLCs message");
+		};
+
+	// The buffered commitment_signed should have been processed, resulting in a monitor update.
+	check_added_monitors(&nodes[0], 1);
+
+	// Complete the rest of the flow normally.
+	nodes[1].node.handle_commitment_signed(node_id_0, &initiator_commit_sig);
+	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1, "{msg_events:?}");
+	if let MessageSendEvent::SendTxSignatures { ref msg, .. } = &msg_events[0] {
+		nodes[0].node.handle_tx_signatures(node_id_1, msg);
+	} else {
+		panic!("Expected SendTxSignatures message");
+	}
+	check_added_monitors(&nodes[1], 1);
+
+	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1, "{msg_events:?}");
+	if let MessageSendEvent::SendTxSignatures { ref msg, .. } = &msg_events[0] {
+		nodes[1].node.handle_tx_signatures(node_id_0, msg);
+	} else {
+		panic!("Expected SendTxSignatures message");
+	}
+
+	expect_splice_pending_event(&nodes[0], &node_id_1);
+	expect_splice_pending_event(&nodes[1], &node_id_0);
+
+	// Both nodes should broadcast the splice transaction.
+	let splice_tx = {
+		let mut txn_0 = nodes[0].tx_broadcaster.txn_broadcast();
+		assert_eq!(txn_0.len(), 1);
+		let txn_1 = nodes[1].tx_broadcaster.txn_broadcast();
+		assert_eq!(txn_0, txn_1);
+		txn_0.remove(0)
+	};
+
+	// Verify the channel is operational by sending a payment.
+	send_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+
+	// Lock the splice by confirming the transaction.
+	mine_transaction(&nodes[0], &splice_tx);
+	mine_transaction(&nodes[1], &splice_tx);
+	lock_splice_after_blocks(&nodes[0], &nodes[1], ANTI_REORG_DELAY - 1);
+
+	// Verify the channel is still operational by sending another payment.
+	send_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+}
+
+#[test]
+fn test_splice_buffer_invalid_commitment_signed_closes_channel() {
+	// Test that when the counterparty sends an invalid `commitment_signed` (with a bad signature)
+	// before the user has called `funding_transaction_signed`, the channel is closed with an error
+	// when `ChannelManager::funding_transaction_signed` processes the buffered message.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	// Negotiate a splice-out where only the initiator (node 0) has a contribution.
+	// This means node 1 will send their commitment_signed immediately after tx_complete.
+	let initiator_contribution = SpliceContribution::splice_out(vec![TxOut {
+		value: Amount::from_sat(1_000),
+		script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
+	}]);
+	negotiate_splice_tx(&nodes[0], &nodes[1], channel_id, initiator_contribution);
+
+	// Node 0 (initiator with contribution) should have a signing event to handle.
+	let signing_event = get_event!(nodes[0], Event::FundingTransactionReadyForSigning);
+
+	// Node 1 (acceptor with no contribution) won't have a signing event and will immediately
+	// send their initial commitment_signed.
+	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+	let mut acceptor_commit_sig = get_htlc_update_msgs(&nodes[1], &node_id_0);
+
+	// Invalidate the signature by modifying one byte. This will cause signature verification
+	// to fail when the buffered message is processed.
+	let original_sig = acceptor_commit_sig.commitment_signed[0].signature;
+	let mut sig_bytes = original_sig.serialize_compact();
+	sig_bytes[0] ^= 0x01; // Flip a bit to corrupt the signature
+	acceptor_commit_sig.commitment_signed[0].signature =
+		Signature::from_compact(&sig_bytes).unwrap();
+
+	// Deliver the acceptor's invalid commitment_signed to the initiator BEFORE the initiator has
+	// called funding_transaction_signed. The message should be buffered, not processed.
+	nodes[0].node.handle_commitment_signed(node_id_1, &acceptor_commit_sig.commitment_signed[0]);
+
+	// No monitor update should have happened since the message is buffered.
+	check_added_monitors(&nodes[0], 0);
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+
+	// Now handle the signing event and call `funding_transaction_signed`.
+	// This should process the buffered invalid commitment_signed and close the channel.
+	if let Event::FundingTransactionReadyForSigning {
+		channel_id: event_channel_id,
+		counterparty_node_id,
+		unsigned_transaction,
+		..
+	} = signing_event
+	{
+		assert_eq!(event_channel_id, channel_id);
+		assert_eq!(counterparty_node_id, node_id_1);
+
+		let partially_signed_tx = nodes[0].wallet_source.sign_tx(unsigned_transaction).unwrap();
+		nodes[0]
+			.node
+			.funding_transaction_signed(&channel_id, &node_id_1, partially_signed_tx)
+			.unwrap();
+	} else {
+		panic!("Expected FundingTransactionReadyForSigning event");
+	}
+
+	// After funding_transaction_signed:
+	// 1. The initiator sends its commitment_signed (UpdateHTLCs message).
+	// 2. The buffered invalid commitment_signed from the acceptor is processed, causing the
+	//    channel to close due to the invalid signature.
+	// We expect 3 message events: UpdateHTLCs, BroadcastChannelUpdate, and HandleError.
+	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 3, "{msg_events:?}");
+	match &msg_events[0] {
+		MessageSendEvent::UpdateHTLCs { ref updates, .. } => {
+			assert!(!updates.commitment_signed.is_empty());
+		},
+		_ => panic!("Expected UpdateHTLCs message, got {:?}", msg_events[0]),
+	}
+	match &msg_events[1] {
+		MessageSendEvent::HandleError {
+			action: msgs::ErrorAction::SendErrorMessage { ref msg },
+			..
+		} => {
+			assert!(msg.data.contains("Invalid commitment tx signature from peer"));
+		},
+		_ => panic!("Expected HandleError with SendErrorMessage, got {:?}", msg_events[1]),
+	}
+	match &msg_events[2] {
+		MessageSendEvent::BroadcastChannelUpdate { ref msg, .. } => {
+			assert_eq!(msg.contents.channel_flags & 2, 2);
+		},
+		_ => panic!("Expected BroadcastChannelUpdate, got {:?}", msg_events[2]),
+	}
+
+	let err = "Invalid commitment tx signature from peer".to_owned();
+	let reason = ClosureReason::ProcessingError { err };
+	check_closed_events(
+		&nodes[0],
+		&[ExpectedCloseEvent::from_id_reason(channel_id, false, reason)],
+	);
+	check_added_monitors(&nodes[0], 1);
 }
