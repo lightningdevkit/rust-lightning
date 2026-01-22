@@ -526,6 +526,7 @@ impl<T: MessageRouter + ?Sized, R: Deref<Target = T>> MessageRouter for R {
 pub struct DefaultMessageRouter<G: Deref<Target = NetworkGraph<L>>, L: Logger, ES: EntropySource> {
 	network_graph: G,
 	entropy_source: ES,
+	compact_paths: bool,
 }
 
 // Target total length (in hops) for blinded paths used outside of QR codes.
@@ -543,8 +544,24 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Logger, ES: EntropySource>
 	DefaultMessageRouter<G, L, ES>
 {
 	/// Creates a [`DefaultMessageRouter`] using the given [`NetworkGraph`].
+	///
+	/// Compact blinded paths are enabled by default. Use [`Self::with_compact_paths`] to
+	/// configure this behavior.
 	pub fn new(network_graph: G, entropy_source: ES) -> Self {
-		Self { network_graph, entropy_source }
+		Self { network_graph, entropy_source, compact_paths: true }
+	}
+
+	/// Creates a [`DefaultMessageRouter`] with configurable compact blinded paths behavior.
+	///
+	/// When `compact_paths` is `true`, blinded paths will use short channel IDs (SCIDs) instead
+	/// of full node pubkeys when possible, resulting in smaller serialization suitable for
+	/// space-constrained formats like QR codes. However, compact paths may fail to route if
+	/// the corresponding channel is closed or modified.
+	///
+	/// When `compact_paths` is `false`, blinded paths will always use full node IDs, which
+	/// are more stable for long-lived offers but result in larger encoded data.
+	pub fn with_compact_paths(network_graph: G, entropy_source: ES, compact_paths: bool) -> Self {
+		Self { network_graph, entropy_source, compact_paths }
 	}
 
 	pub(crate) fn create_blinded_paths_from_iter<
@@ -727,7 +744,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Logger, ES: EntropySource> MessageRo
 			peers.into_iter(),
 			&self.entropy_source,
 			secp_ctx,
-			false,
+			!self.compact_paths,
 		)
 	}
 }
