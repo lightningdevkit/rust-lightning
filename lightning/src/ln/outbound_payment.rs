@@ -677,6 +677,54 @@ pub enum ProbeSendFailure {
 	DuplicateProbe,
 }
 
+/// A validated, sorted set of custom TLVs for payment recipient onion fields.
+#[derive(Clone)]
+pub struct RecipientCustomTlvs(Vec<(u64, Vec<u8>)>);
+
+impl RecipientCustomTlvs {
+	/// Each TLV is provided as a `(u64, Vec<u8>)` for the type number and
+	/// serialized value respectively. TLV type numbers must be unique and
+	/// within the range reserved for custom types, i.e. >= 2^16, otherwise
+	/// this method will return `Err(())`.
+	///
+	/// This method will also error for TLV types in the experimental range
+	/// which have since been standardized within the protocol. This currently
+	/// includes 5482373484 (keysend) and 77_777 (invoice requests for async
+	/// payments).
+	pub fn new(mut tlvs: Vec<(u64, Vec<u8>)>) -> Result<Self, ()> {
+		tlvs.sort_unstable_by_key(|(typ, _)| *typ);
+		let mut prev_type = None;
+		for (typ, _) in tlvs.iter() {
+			if *typ < 1 << 16 {
+				return Err(());
+			}
+			if *typ == 5482373484 {
+				return Err(());
+			} // keysend
+			if *typ == 77_777 {
+				return Err(());
+			} // invoice requests for async payments
+			match prev_type {
+				Some(prev) if prev >= *typ => return Err(()),
+				_ => {},
+			}
+			prev_type = Some(*typ);
+		}
+
+		Ok(Self(tlvs))
+	}
+
+	/// Returns the inner TLV list.
+	pub(super) fn into_inner(self) -> Vec<(u64, Vec<u8>)> {
+		self.0
+	}
+
+	/// Borrow the inner TLV list.
+	pub fn as_slice(&self) -> &[(u64, Vec<u8>)] {
+		&self.0
+	}
+}
+
 /// Information which is provided, encrypted, to the payment recipient when sending HTLCs.
 ///
 /// This should generally be constructed with data communicated to us from the recipient (via a
@@ -739,31 +787,13 @@ impl RecipientOnionFields {
 		Self { payment_secret: None, payment_metadata: None, custom_tlvs: Vec::new() }
 	}
 
-	/// Creates a new [`RecipientOnionFields`] from an existing one, adding custom TLVs. Each
-	/// TLV is provided as a `(u64, Vec<u8>)` for the type number and serialized value
-	/// respectively. TLV type numbers must be unique and within the range
-	/// reserved for custom types, i.e. >= 2^16, otherwise this method will return `Err(())`.
-	///
-	/// This method will also error for types in the experimental range which have been
-	/// standardized within the protocol, which only includes 5482373484 (keysend) for now.
+	/// Creates a new [`RecipientOnionFields`] from an existing one, adding validated custom TLVs.
 	///
 	/// See [`Self::custom_tlvs`] for more info.
 	#[rustfmt::skip]
-	pub fn with_custom_tlvs(mut self, mut custom_tlvs: Vec<(u64, Vec<u8>)>) -> Result<Self, ()> {
-		custom_tlvs.sort_unstable_by_key(|(typ, _)| *typ);
-		let mut prev_type = None;
-		for (typ, _) in custom_tlvs.iter() {
-			if *typ < 1 << 16 { return Err(()); }
-			if *typ == 5482373484 { return Err(()); } // keysend
-			if *typ == 77_777 { return Err(()); } // invoice requests for async payments
-			match prev_type {
-				Some(prev) if prev >= *typ => return Err(()),
-				_ => {},
-			}
-			prev_type = Some(*typ);
-		}
-		self.custom_tlvs = custom_tlvs;
-		Ok(self)
+	pub fn with_custom_tlvs(mut self, custom_tlvs: RecipientCustomTlvs) -> Self {
+		self.custom_tlvs = custom_tlvs.into_inner();
+		self
 	}
 
 	/// Gets the custom TLVs that will be sent or have been received.
@@ -2815,8 +2845,8 @@ mod tests {
 	use crate::ln::channelmanager::{PaymentId, RecipientOnionFields};
 	use crate::ln::inbound_payment::ExpandedKey;
 	use crate::ln::outbound_payment::{
-		Bolt12PaymentError, OutboundPayments, PendingOutboundPayment, Retry, RetryableSendFailure,
-		StaleExpiration,
+		Bolt12PaymentError, OutboundPayments, PendingOutboundPayment, RecipientCustomTlvs, Retry,
+		RetryableSendFailure, StaleExpiration,
 	};
 	#[cfg(feature = "std")]
 	use crate::offers::invoice::DEFAULT_RELATIVE_EXPIRY;
@@ -2843,22 +2873,23 @@ mod tests {
 	fn test_recipient_onion_fields_with_custom_tlvs() {
 		let onion_fields = RecipientOnionFields::spontaneous_empty();
 
-		let bad_type_range_tlvs = vec![
+		let bad_type_range_tlvs = RecipientCustomTlvs::new(vec![
 			(0, vec![42]),
 			(1, vec![42; 32]),
-		];
-		assert!(onion_fields.clone().with_custom_tlvs(bad_type_range_tlvs).is_err());
+		]);
+		assert!(bad_type_range_tlvs.is_err());
 
-		let keysend_tlv = vec![
+		let keysend_tlv = RecipientCustomTlvs::new(vec![
 			(5482373484, vec![42; 32]),
-		];
-		assert!(onion_fields.clone().with_custom_tlvs(keysend_tlv).is_err());
+		]);
+		assert!(keysend_tlv.is_err());
 
-		let good_tlvs = vec![
+		let good_tlvs = RecipientCustomTlvs::new(vec![
 			((1 << 16) + 1, vec![42]),
 			((1 << 16) + 3, vec![42; 32]),
-		];
-		assert!(onion_fields.with_custom_tlvs(good_tlvs).is_ok());
+		]);
+		assert!(good_tlvs.is_ok());
+		onion_fields.with_custom_tlvs(good_tlvs.unwrap());
 	}
 
 	#[test]

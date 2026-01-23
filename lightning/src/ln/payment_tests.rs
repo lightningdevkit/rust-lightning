@@ -32,7 +32,7 @@ use crate::ln::msgs;
 use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, MessageSendEvent};
 use crate::ln::onion_utils::{self, LocalHTLCFailureReason};
 use crate::ln::outbound_payment::{
-	ProbeSendFailure, Retry, RetryableSendFailure, IDEMPOTENCY_TIMEOUT_TICKS,
+	ProbeSendFailure, RecipientCustomTlvs, Retry, RetryableSendFailure, IDEMPOTENCY_TIMEOUT_TICKS,
 };
 use crate::ln::types::ChannelId;
 use crate::routing::gossip::{EffectiveCapacity, RoutingFees};
@@ -4539,7 +4539,7 @@ fn test_retry_custom_tlvs() {
 
 	let custom_tlvs = vec![((1 << 16) + 1, vec![0x42u8; 16])];
 	let onion = RecipientOnionFields::secret_only(payment_secret);
-	let onion = onion.with_custom_tlvs(custom_tlvs.clone()).unwrap();
+	let onion = onion.with_custom_tlvs(RecipientCustomTlvs::new(custom_tlvs.clone()).unwrap());
 
 	nodes[0].router.expect_find_route(route_params.clone(), Ok(route.clone()));
 	nodes[0].node.send_payment(hash, onion, id, route_params.clone(), Retry::Attempts(1)).unwrap();
@@ -5079,8 +5079,7 @@ fn peel_payment_onion_custom_tlvs() {
 	let route_params = RouteParameters::from_payment_params_and_value(payment_params, amt_msat);
 	let route = functional_test_utils::get_route(&nodes[0], &route_params).unwrap();
 	let mut recipient_onion = RecipientOnionFields::spontaneous_empty()
-		.with_custom_tlvs(vec![(414141, vec![42; 1200])])
-		.unwrap();
+		.with_custom_tlvs(RecipientCustomTlvs::new(vec![(414141, vec![42; 1200])]).unwrap());
 	let prng_seed = chanmon_cfgs[0].keys_manager.get_secure_random_bytes();
 	let session_priv = SecretKey::from_slice(&prng_seed[..]).expect("RNG is busted");
 	let keysend_preimage = PaymentPreimage([42; 32]);
