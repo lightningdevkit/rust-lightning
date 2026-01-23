@@ -1219,6 +1219,11 @@ impl ClaimablePayment {
 			.map(|htlc| (htlc.prev_hop.channel_id, htlc.prev_hop.user_channel_id))
 			.collect()
 	}
+
+	/// Returns the total counterparty skimmed fee across all HTLCs.
+	fn total_counterparty_skimmed_msat(&self) -> u64 {
+		self.htlcs.iter().map(|htlc| htlc.counterparty_skimmed_fee_msat.unwrap_or(0)).sum()
+	}
 }
 
 /// Increments MPP timeout tick for all HTLCs and returns a boolean indicating whether the HTLC
@@ -7945,47 +7950,22 @@ impl<
 	}
 
 	// Checks whether an incoming htlc can be added to our [`claimable_payments`], and handles
-	// MPP accumulation. Returns a boolean that indicates whether we're modified our set of
-	// claimable_payments, and a result that indicates whether the all the parts of the htlc
-	// have successfully arrived.
+	// MPP accumulation. On successful add, returns Ok() with a boolean indicating whether all
+	// MPP parts have arrrived. Callers *MUST NOT* fail htlcs if Ok(..) is returned.
 	fn check_claimable_incoming_htlc(
-		&self, purpose: events::PaymentPurpose, receiver_node_id: PublicKey,
-		claimable_htlc: ClaimableHTLC, mut onion_fields: RecipientOnionFields,
-		payment_hash: PaymentHash,
-		new_events: &mut VecDeque<(Event, Option<EventCompletionAction>)>,
-	) -> (bool, Result<bool, ()>) {
-		let mut committed_to_claimable = false;
-		let is_keysend = purpose.is_keysend();
-		let mut claimable_payments = self.claimable_payments.lock().unwrap();
-		if claimable_payments.pending_claiming_payments.contains_key(&payment_hash) {
-			return (committed_to_claimable, Err(()));
-		}
-
-		let ref mut claimable_payment = claimable_payments
-			.claimable_payments
-			.entry(payment_hash)
-			// Note that if we insert here we MUST NOT fail_htlc!()
-			.or_insert_with(|| {
-				committed_to_claimable = true;
-				ClaimablePayment { purpose: purpose.clone(), htlcs: Vec::new(), onion_fields: None }
-			});
-		if purpose != claimable_payment.purpose {
-			let log_keysend = |keysend| if keysend { "keysend" } else { "non-keysend" };
-			log_trace!(self.logger, "Failing new {} HTLC with payment_hash {} as we already had an existing {} HTLC with the same payment hash", log_keysend(is_keysend), &payment_hash, log_keysend(!is_keysend));
-			return (committed_to_claimable, Err(()));
-		}
+		&self, claimable_payment: &mut ClaimablePayment, claimable_htlc: ClaimableHTLC,
+		mut onion_fields: RecipientOnionFields, payment_hash: PaymentHash,
+	) -> Result<bool, ()> {
 		if let Some(earlier_fields) = &mut claimable_payment.onion_fields {
 			if earlier_fields.check_merge(&mut onion_fields).is_err() {
-				return (committed_to_claimable, Err(()));
+				return Err(());
 			}
 		} else {
 			claimable_payment.onion_fields = Some(onion_fields);
 		}
 		let mut total_value = claimable_htlc.sender_intended_value;
-		let mut earliest_expiry = claimable_htlc.cltv_expiry;
 		for htlc in claimable_payment.htlcs.iter() {
 			total_value += htlc.sender_intended_value;
-			earliest_expiry = cmp::min(earliest_expiry, htlc.cltv_expiry);
 			if htlc.total_msat != claimable_htlc.total_msat {
 				log_trace!(self.logger, "Failing HTLCs with payment_hash {} as the HTLCs had inconsistent total values (eg {} and {})",
 										&payment_hash, claimable_htlc.total_msat, htlc.total_msat);
@@ -7998,19 +7978,15 @@ impl<
 		// The condition determining whether an MPP is complete must
 		// match exactly the condition used in `timer_tick_occurred`
 		if total_value >= msgs::MAX_VALUE_MSAT {
-			return (committed_to_claimable, Err(()));
+			return Err(());
 		} else if total_value - claimable_htlc.sender_intended_value >= claimable_htlc.total_msat {
 			log_trace!(
 				self.logger,
 				"Failing HTLC with payment_hash {} as payment is already claimable",
 				&payment_hash
 			);
-			return (committed_to_claimable, Err(()));
+			return Err(());
 		} else if total_value >= claimable_htlc.total_msat {
-			#[allow(unused_assignments)]
-			{
-				committed_to_claimable = true;
-			}
 			claimable_payment.htlcs.push(claimable_htlc);
 			let amount_msat = claimable_payment.htlcs.iter().map(|htlc| htlc.value).sum();
 			claimable_payment
@@ -8024,33 +8000,79 @@ impl<
 				.sum();
 			debug_assert!(total_value.saturating_sub(amount_msat) <= counterparty_skimmed_fee_msat);
 			claimable_payment.htlcs.sort();
-			let payment_id = claimable_payment.inbound_payment_id(&self.inbound_payment_id_secret);
-			new_events.push_back((
-				events::Event::PaymentClaimable {
-					receiver_node_id: Some(receiver_node_id),
-					payment_hash,
-					purpose,
-					amount_msat,
-					counterparty_skimmed_fee_msat,
-					receiving_channel_ids: claimable_payment.receiving_channel_ids(),
-					claim_deadline: Some(earliest_expiry - HTLC_FAIL_BACK_BUFFER),
-					onion_fields: claimable_payment.onion_fields.clone(),
-					payment_id: Some(payment_id),
-				},
-				None,
-			));
-			(committed_to_claimable, Ok(true))
+
+			Ok(true)
 		} else {
 			// Nothing to do - we haven't reached the total
 			// payment value yet, wait until we receive more
 			// MPP parts.
 			claimable_payment.htlcs.push(claimable_htlc);
-			#[allow(unused_assignments)]
-			{
-				committed_to_claimable = true;
-			}
-			(committed_to_claimable, Ok(false))
+			Ok(false)
 		}
+	}
+
+	// Handles the addition of a HTLC associated with a payment we're receiving. Err(bool) indicates
+	// whether we have failed after adding committing to the HTLC - callers should assert that this
+	// value is false.
+	fn handle_claimable_htlc(
+		&self, purpose: events::PaymentPurpose, claimable_htlc: ClaimableHTLC,
+		onion_fields: RecipientOnionFields, payment_hash: PaymentHash, receiver_node_id: PublicKey,
+		new_events: &mut VecDeque<(Event, Option<EventCompletionAction>)>,
+	) -> Result<(), bool> {
+		let mut committed_to_claimable = false;
+
+		let mut claimable_payments = self.claimable_payments.lock().unwrap();
+		if claimable_payments.pending_claiming_payments.contains_key(&payment_hash) {
+			return Err(committed_to_claimable);
+		}
+
+		let ref mut claimable_payment = claimable_payments
+			.claimable_payments
+			.entry(payment_hash)
+			// Note that if we insert here we MUST NOT fail_htlc!()
+			.or_insert_with(|| {
+				committed_to_claimable = true;
+				ClaimablePayment { purpose: purpose.clone(), htlcs: Vec::new(), onion_fields: None }
+			});
+
+		let is_keysend = purpose.is_keysend();
+		if purpose != claimable_payment.purpose {
+			let log_keysend = |keysend| if keysend { "keysend" } else { "non-keysend" };
+			log_trace!(self.logger, "Failing new {} HTLC with payment_hash {} as we already had an existing {} HTLC with the same payment hash", log_keysend(is_keysend), &payment_hash, log_keysend(!is_keysend));
+			return Err(committed_to_claimable);
+		}
+
+		if self
+			.check_claimable_incoming_htlc(
+				claimable_payment,
+				claimable_htlc,
+				onion_fields,
+				payment_hash,
+			)
+			.map_err(|_| committed_to_claimable)?
+		{
+			new_events.push_back((
+				events::Event::PaymentClaimable {
+					receiver_node_id: Some(receiver_node_id),
+					payment_hash,
+					purpose,
+					amount_msat: claimable_payment.htlcs.iter().map(|htlc| htlc.value).sum(),
+					counterparty_skimmed_fee_msat: claimable_payment
+						.total_counterparty_skimmed_msat(),
+					receiving_channel_ids: claimable_payment.receiving_channel_ids(),
+					claim_deadline: Some(
+						claimable_payment.htlcs.iter().map(|h| h.cltv_expiry).min().unwrap() // TODO: don't unwrap
+								- HTLC_FAIL_BACK_BUFFER,
+					),
+					onion_fields: claimable_payment.onion_fields.clone(),
+					payment_id: Some(
+						claimable_payment.inbound_payment_id(&self.inbound_payment_id_secret),
+					),
+				},
+				None,
+			));
+		}
+		Ok(())
 	}
 
 	fn process_receive_htlcs(
@@ -8189,7 +8211,8 @@ impl<
 					};
 
 					macro_rules! fail_htlc {
-						($htlc: expr, $payment_hash: expr) => {
+						($htlc: expr, $payment_hash: expr, $committed_to_claimable: expr) => {
+							debug_assert!(!$committed_to_claimable);
 							let err_data = invalid_payment_err_data(
 								htlc_value,
 								self.best_block.read().unwrap().height,
@@ -8216,27 +8239,6 @@ impl<
 							.expect("Failed to get node_id for phantom node recipient");
 					}
 
-					macro_rules! handle_incoming_htlc {
-						($purpose: expr, $receiver_node_id: expr, $claimable_htlc: expr, $onion_fields: expr,
-						$payment_hash: expr, $new_events: expr) => {{
-							let (committed_to_claimable, res) = self.check_claimable_incoming_htlc(
-								$purpose,
-								$receiver_node_id,
-								$claimable_htlc,
-								$onion_fields,
-								$payment_hash,
-								$new_events,
-							);
-							match res {
-								Ok(mpp_complete) => mpp_complete,
-								Err(_) => {
-									debug_assert!(!committed_to_claimable);
-									fail_htlc!(claimable_htlc, payment_hash);
-								},
-							}
-						}};
-					}
-
 					// Check that the payment hash and secret are known. Note that we
 					// MUST take care to handle the "unknown payment hash" and
 					// "incorrect payment secret" cases here identically or we'd expose
@@ -8256,7 +8258,7 @@ impl<
 								Ok(result) => result,
 								Err(()) => {
 									log_trace!(self.logger, "Failing new HTLC with payment_hash {} as payment verification failed", &payment_hash);
-									fail_htlc!(claimable_htlc, payment_hash);
+									fail_htlc!(claimable_htlc, payment_hash, false);
 								},
 							};
 							if let Some(min_final_cltv_expiry_delta) = min_final_cltv_expiry_delta {
@@ -8266,12 +8268,12 @@ impl<
 								if (cltv_expiry as u64) < expected_min_expiry_height {
 									log_trace!(self.logger, "Failing new HTLC with payment_hash {} as its CLTV expiry was too soon (had {}, earliest expected {})",
 									&payment_hash, cltv_expiry, expected_min_expiry_height);
-									fail_htlc!(claimable_htlc, payment_hash);
+									fail_htlc!(claimable_htlc, payment_hash, false);
 								}
 							}
 							payment_preimage
 						} else {
-							fail_htlc!(claimable_htlc, payment_hash);
+							fail_htlc!(claimable_htlc, payment_hash, false);
 						}
 					} else {
 						None
@@ -8287,17 +8289,20 @@ impl<
 							let purpose = match from_parts_res {
 								Ok(purpose) => purpose,
 								Err(()) => {
-									fail_htlc!(claimable_htlc, payment_hash);
+									fail_htlc!(claimable_htlc, payment_hash, false);
 								},
 							};
-							handle_incoming_htlc!(
+
+							if let Err(committed_to_claimable) = self.handle_claimable_htlc(
 								purpose,
-								receiver_node_id,
 								claimable_htlc,
 								onion_fields,
 								payment_hash,
-								new_events
-							);
+								receiver_node_id,
+								new_events,
+							) {
+								fail_htlc!(claimable_htlc, payment_hash, committed_to_claimable);
+							}
 						},
 						OnionPayload::Spontaneous(keysend_preimage) => {
 							let purpose = if let Some(PaymentContext::AsyncBolt12Offer(
@@ -8311,7 +8316,7 @@ impl<
 											false,
 											"We checked that payment_data is Some above"
 										);
-										fail_htlc!(claimable_htlc, payment_hash);
+										fail_htlc!(claimable_htlc, payment_hash, false);
 									},
 								};
 
@@ -8330,13 +8335,13 @@ impl<
 											verified_invreq.amount_msats()
 										{
 											if payment_data.total_msat < invreq_amt_msat {
-												fail_htlc!(claimable_htlc, payment_hash);
+												fail_htlc!(claimable_htlc, payment_hash, false);
 											}
 										}
 										verified_invreq
 									},
 									None => {
-										fail_htlc!(claimable_htlc, payment_hash);
+										fail_htlc!(claimable_htlc, payment_hash, false);
 									},
 								};
 								let payment_purpose_context =
@@ -8352,23 +8357,25 @@ impl<
 								match from_parts_res {
 									Ok(purpose) => purpose,
 									Err(()) => {
-										fail_htlc!(claimable_htlc, payment_hash);
+										fail_htlc!(claimable_htlc, payment_hash, false);
 									},
 								}
 							} else if payment_context.is_some() {
 								log_trace!(self.logger, "Failing new HTLC with payment_hash {}: received a keysend payment to a non-async payments context {:#?}", payment_hash, payment_context);
-								fail_htlc!(claimable_htlc, payment_hash);
+								fail_htlc!(claimable_htlc, payment_hash, false);
 							} else {
 								events::PaymentPurpose::SpontaneousPayment(keysend_preimage)
 							};
-							handle_incoming_htlc!(
+							if let Err(committed_to_claimable) = self.handle_claimable_htlc(
 								purpose,
-								receiver_node_id,
 								claimable_htlc,
 								onion_fields,
 								payment_hash,
-								new_events
-							);
+								receiver_node_id,
+								new_events,
+							) {
+								fail_htlc!(claimable_htlc, payment_hash, committed_to_claimable);
+							}
 						},
 						OnionPayload::Trampoline { .. } => {
 							todo!();
