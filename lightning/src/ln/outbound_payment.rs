@@ -170,7 +170,7 @@ pub(crate) enum PendingOutboundPayment {
 	},
 }
 
-#[derive(Clone)]
+#[derive(Clone, Eq, PartialEq)]
 pub(crate) struct NextTrampolineHopInfo {
 	/// The Trampoline packet to include for the next Trampoline hop.
 	pub(crate) onion_packet: TrampolineOnionPacket,
