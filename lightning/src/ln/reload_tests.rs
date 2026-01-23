@@ -1861,3 +1861,225 @@ fn outbound_removed_holding_cell_resolved_no_double_forward() {
 	// nodes[0] should now have received the fulfill and generate PaymentSent.
 	expect_payment_sent(&nodes[0], payment_preimage, None, true, true);
 }
+
+#[test]
+fn test_reload_node_with_preimage_in_monitor_claims_htlc() {
+	// Test that if a forwarding node has an HTLC that was irrevocably removed on the outbound edge
+	// via claim but is still forwarded-and-unresolved in the inbound edge, that HTLC will not be
+	// failed back on the inbound edge on reload.
+	//
+	// For context, the ChannelManager is moving towards reconstructing the pending inbound HTLC set
+	// from Channel data on startup. If we find an inbound HTLC that is flagged as already-forwarded,
+	// we then check that the HTLC is either (a) still present in the outbound edge or (b) removed
+	// from the outbound edge but with a preimage present in the corresponding ChannelMonitor,
+	// indicating that it was removed from the outbound edge via claim. If neither of those are the
+	// case, we infer that the HTLC was removed from the outbound edge via failure and fail the HTLC
+	// backwards.
+	//
+	// Here we ensure that inbound HTLCs in case (b) above will not be failed backwards on manager
+	// reload.
+
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let persister;
+	let new_chain_monitor;
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let nodes_1_deserialized;
+	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	let node_0_id = nodes[0].node.get_our_node_id();
+	let node_1_id = nodes[1].node.get_our_node_id();
+	let node_2_id = nodes[2].node.get_our_node_id();
+
+	let chan_0_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
+	let chan_1_2 = create_announced_chan_between_nodes(&nodes, 1, 2);
+
+	let chan_id_0_1 = chan_0_1.2;
+	let chan_id_1_2 = chan_1_2.2;
+
+	// Send a payment from nodes[0] to nodes[2] via nodes[1].
+	let (route, payment_hash, payment_preimage, payment_secret) =
+		get_route_and_payment_hash!(nodes[0], nodes[2], 1_000_000);
+	send_along_route_with_secret(
+		&nodes[0], route, &[&[&nodes[1], &nodes[2]]], 1_000_000, payment_hash, payment_secret,
+	);
+
+	// Claim the payment on nodes[2].
+	nodes[2].node.claim_funds(payment_preimage);
+	check_added_monitors(&nodes[2], 1);
+	expect_payment_claimed!(nodes[2], payment_hash, 1_000_000);
+
+	// Disconnect nodes[0] from nodes[1] BEFORE processing the fulfill.
+	// This prevents the claim from propagating back, leaving the inbound HTLC in ::Forwarded state.
+	nodes[0].node.peer_disconnected(node_1_id);
+	nodes[1].node.peer_disconnected(node_0_id);
+
+	// Process the fulfill from nodes[2] to nodes[1].
+	// This stores the preimage in nodes[1]'s monitor for chan_1_2.
+	let updates_2_1 = get_htlc_update_msgs(&nodes[2], &node_1_id);
+	nodes[1].node.handle_update_fulfill_htlc(node_2_id, updates_2_1.update_fulfill_htlcs[0].clone());
+	check_added_monitors(&nodes[1], 1);
+	do_commitment_signed_dance(&nodes[1], &nodes[2], &updates_2_1.commitment_signed, false, false);
+	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], Some(1000), false, false);
+
+	// Clear the holding cell's claim entry on chan_0_1 before serialization.
+	// This simulates a crash where the HTLC was fully removed from the outbound edge but is still
+	// present on the inbound edge without a resolution.
+	nodes[1].node.test_clear_channel_holding_cell(node_0_id, chan_id_0_1);
+
+	// At this point:
+	// - The inbound HTLC on nodes[1] (from nodes[0]) is in ::Forwarded state
+	// - The preimage IS in nodes[1]'s monitor for chan_1_2
+	// - The outbound HTLC to nodes[2] is resolved
+	//
+	// Serialize nodes[1] state and monitors before reloading.
+	let node_1_serialized = nodes[1].node.encode();
+	let mon_0_1_serialized = get_monitor!(nodes[1], chan_id_0_1).encode();
+	let mon_1_2_serialized = get_monitor!(nodes[1], chan_id_1_2).encode();
+
+	// Reload nodes[1].
+	// During deserialization, we track inbound HTLCs that purport to already be forwarded on the
+	// outbound edge. If any are entirely missing from the outbound edge with no preimage available,
+	// they will be failed backwards. Otherwise, as in this case where a preimage is available, the
+	// payment should be claimed backwards.
+	reload_node!(
+		nodes[1],
+		node_1_serialized,
+		&[&mon_0_1_serialized, &mon_1_2_serialized],
+		persister,
+		new_chain_monitor,
+		nodes_1_deserialized,
+		Some(true)
+	);
+
+	// When the claim is reconstructed during reload, a PaymentForwarded event is generated.
+	// This event has next_user_channel_id as None since the outbound HTLC was already removed.
+	// Fetching events triggers the pending monitor update (adding preimage) to be applied.
+	let events = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match &events[0] {
+		Event::PaymentForwarded { total_fee_earned_msat: Some(1000), .. } => {},
+		_ => panic!("Expected PaymentForwarded event"),
+	}
+	check_added_monitors(&nodes[1], 1);
+
+	// Reconnect nodes[1] to nodes[0]. The claim should be in nodes[1]'s holding cell.
+	let mut reconnect_args = ReconnectArgs::new(&nodes[1], &nodes[0]);
+	reconnect_args.pending_cell_htlc_claims = (0, 1);
+	reconnect_nodes(reconnect_args);
+
+	// nodes[0] should now have received the fulfill and generate PaymentSent.
+	expect_payment_sent(&nodes[0], payment_preimage, None, true, true);
+}
+
+#[test]
+fn test_reload_node_without_preimage_fails_htlc() {
+	// Test that if a forwarding node has an HTLC that was removed on the outbound edge via failure
+	// but is still forwarded-and-unresolved in the inbound edge, that HTLC will be correctly
+	// failed back on reload via the already_forwarded_htlcs mechanism.
+	//
+	// For context, the ChannelManager reconstructs the pending inbound HTLC set from Channel data
+	// on startup. If an inbound HTLC is present but flagged as already-forwarded, we check that
+	// the HTLC is either (a) still present in the outbound edge or (b) removed from the outbound
+	// edge but with a preimage present in the corresponding ChannelMonitor, indicating it was
+	// removed via claim. If neither, we infer the HTLC was removed via failure and fail it back.
+	//
+	// Here we test the failure case: no preimage is present, so the HTLC should be failed back.
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let persister;
+	let new_chain_monitor;
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let nodes_1_deserialized;
+	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	let node_0_id = nodes[0].node.get_our_node_id();
+	let node_1_id = nodes[1].node.get_our_node_id();
+	let node_2_id = nodes[2].node.get_our_node_id();
+
+	let chan_0_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
+	let chan_1_2 = create_announced_chan_between_nodes(&nodes, 1, 2);
+
+	let chan_id_0_1 = chan_0_1.2;
+	let chan_id_1_2 = chan_1_2.2;
+
+	// Send a payment from nodes[0] to nodes[2] via nodes[1].
+	let (route, payment_hash, _, payment_secret) =
+		get_route_and_payment_hash!(nodes[0], nodes[2], 1_000_000);
+	send_along_route_with_secret(
+		&nodes[0], route, &[&[&nodes[1], &nodes[2]]], 1_000_000, payment_hash, payment_secret,
+	);
+
+	// Disconnect nodes[0] from nodes[1] BEFORE processing the failure.
+	// This prevents the fail from propagating back, leaving the inbound HTLC in ::Forwarded state.
+	nodes[0].node.peer_disconnected(node_1_id);
+	nodes[1].node.peer_disconnected(node_0_id);
+
+	// Fail the payment on nodes[2] and process the failure to nodes[1].
+	// This removes the outbound HTLC and queues a fail in the holding cell.
+	nodes[2].node.fail_htlc_backwards(&payment_hash);
+	expect_and_process_pending_htlcs_and_htlc_handling_failed(
+		&nodes[2], &[HTLCHandlingFailureType::Receive { payment_hash }]
+	);
+	check_added_monitors(&nodes[2], 1);
+
+	let updates_2_1 = get_htlc_update_msgs(&nodes[2], &node_1_id);
+	nodes[1].node.handle_update_fail_htlc(node_2_id, &updates_2_1.update_fail_htlcs[0]);
+	do_commitment_signed_dance(&nodes[1], &nodes[2], &updates_2_1.commitment_signed, false, false);
+	expect_and_process_pending_htlcs_and_htlc_handling_failed(
+		&nodes[1], &[HTLCHandlingFailureType::Forward { node_id: Some(node_2_id), channel_id: chan_id_1_2 }]
+	);
+
+	// Clear the holding cell's fail entry on chan_0_1 before serialization.
+	// This simulates a crash where the HTLC was fully removed from the outbound edge but is still
+	// present on the inbound edge without a resolution. Otherwise, we would not be able to exercise
+	// the desired failure paths due to the holding cell failure resolution being present.
+	nodes[1].node.test_clear_channel_holding_cell(node_0_id, chan_id_0_1);
+
+	// Now serialize. The state has:
+	// - Inbound HTLC on chan_0_1 in ::Forwarded state
+	// - Outbound HTLC on chan_1_2 resolved (not present)
+	// - No preimage in monitors (it was a failure)
+	// - No holding cell entry for the fail (we cleared it)
+	let node_1_serialized = nodes[1].node.encode();
+	let mon_0_1_serialized = get_monitor!(nodes[1], chan_id_0_1).encode();
+	let mon_1_2_serialized = get_monitor!(nodes[1], chan_id_1_2).encode();
+
+	// Reload nodes[1].
+	// The already_forwarded_htlcs mechanism should detect:
+	// - Inbound HTLC is in ::Forwarded state
+	// - Outbound HTLC is not present in outbound channel
+	// - No preimage in monitors
+	// Therefore it should fail the HTLC backwards.
+	reload_node!(
+		nodes[1],
+		node_1_serialized,
+		&[&mon_0_1_serialized, &mon_1_2_serialized],
+		persister,
+		new_chain_monitor,
+		nodes_1_deserialized,
+		Some(true)
+	);
+
+	// After reload, nodes[1] should have generated an HTLCHandlingFailed event.
+	let events = nodes[1].node.get_and_clear_pending_events();
+	assert!(!events.is_empty(), "Expected HTLCHandlingFailed event");
+	for event in events {
+		match event {
+			Event::HTLCHandlingFailed { .. } => {},
+			_ => panic!("Unexpected event {:?}", event),
+		}
+	}
+
+	// Process the failure so it goes back into chan_0_1's holding cell.
+	nodes[1].node.process_pending_htlc_forwards();
+	check_added_monitors(&nodes[1], 0); // No monitor update yet (peer disconnected)
+
+	// Reconnect nodes[1] to nodes[0]. The fail should be in nodes[1]'s holding cell.
+	let mut reconnect_args = ReconnectArgs::new(&nodes[1], &nodes[0]);
+	reconnect_args.pending_cell_htlc_fails = (0, 1);
+	reconnect_nodes(reconnect_args);
+
+	// nodes[0] should now have received the failure and generate PaymentFailed.
+	expect_payment_failed_conditions(&nodes[0], payment_hash, false, PaymentFailedConditions::new());
+}

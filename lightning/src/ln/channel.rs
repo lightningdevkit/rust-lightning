@@ -314,8 +314,8 @@ impl InboundHTLCState {
 /// `ChannelManager` persist.
 ///
 /// Useful for reconstructing the pending HTLC set on startup.
-#[derive(Debug)]
-enum InboundUpdateAdd {
+#[derive(Debug, Clone)]
+pub(super) enum InboundUpdateAdd {
 	/// The inbound committed HTLC's update_add_htlc message.
 	WithOnion { update_add_htlc: msgs::UpdateAddHTLC },
 	/// This inbound HTLC is a forward that was irrevocably committed to the outbound edge, allowing
@@ -7885,7 +7885,9 @@ where
 	}
 
 	/// Useful for reconstructing the set of pending HTLCs when deserializing the `ChannelManager`.
-	pub(super) fn inbound_committed_unresolved_htlcs(&self) -> Vec<msgs::UpdateAddHTLC> {
+	pub(super) fn inbound_committed_unresolved_htlcs(
+		&self,
+	) -> Vec<(PaymentHash, InboundUpdateAdd)> {
 		// We don't want to return an HTLC as needing processing if it already has a resolution that's
 		// pending in the holding cell.
 		let htlc_resolution_in_holding_cell = |id: u64| -> bool {
@@ -7903,13 +7905,11 @@ where
 			.pending_inbound_htlcs
 			.iter()
 			.filter_map(|htlc| match &htlc.state {
-				InboundHTLCState::Committed {
-					update_add_htlc: InboundUpdateAdd::WithOnion { update_add_htlc },
-				} => {
+				InboundHTLCState::Committed { update_add_htlc } => {
 					if htlc_resolution_in_holding_cell(htlc.htlc_id) {
 						return None;
 					}
-					Some(update_add_htlc.clone())
+					Some((htlc.payment_hash, update_add_htlc.clone()))
 				},
 				_ => None,
 			})
@@ -7919,18 +7919,24 @@ where
 	/// Useful when reconstructing the set of pending HTLC forwards when deserializing the
 	/// `ChannelManager`. We don't want to cache an HTLC as needing to be forwarded if it's already
 	/// present in the outbound edge, or else we'll double-forward.
-	pub(super) fn outbound_htlc_forwards(&self) -> impl Iterator<Item = HTLCPreviousHopData> + '_ {
+	pub(super) fn outbound_htlc_forwards(
+		&self,
+	) -> impl Iterator<Item = (PaymentHash, HTLCPreviousHopData)> + '_ {
 		let holding_cell_outbounds =
 			self.context.holding_cell_htlc_updates.iter().filter_map(|htlc| match htlc {
-				HTLCUpdateAwaitingACK::AddHTLC { source, .. } => match source {
-					HTLCSource::PreviousHopData(prev_hop_data) => Some(prev_hop_data.clone()),
+				HTLCUpdateAwaitingACK::AddHTLC { source, payment_hash, .. } => match source {
+					HTLCSource::PreviousHopData(prev_hop_data) => {
+						Some((*payment_hash, prev_hop_data.clone()))
+					},
 					_ => None,
 				},
 				_ => None,
 			});
 		let committed_outbounds =
 			self.context.pending_outbound_htlcs.iter().filter_map(|htlc| match &htlc.source {
-				HTLCSource::PreviousHopData(prev_hop_data) => Some(prev_hop_data.clone()),
+				HTLCSource::PreviousHopData(prev_hop_data) => {
+					Some((htlc.payment_hash, prev_hop_data.clone()))
+				},
 				_ => None,
 			});
 		holding_cell_outbounds.chain(committed_outbounds)
@@ -7965,6 +7971,12 @@ where
 			}
 		}
 		debug_assert!(false, "If we go to prune an inbound HTLC it should be present")
+	}
+
+	/// Useful for testing crash scenarios where the holding cell is not persisted.
+	#[cfg(test)]
+	pub(super) fn test_clear_holding_cell(&mut self) {
+		self.context.holding_cell_htlc_updates.clear()
 	}
 
 	/// Marks an outbound HTLC which we have received update_fail/fulfill/malformed

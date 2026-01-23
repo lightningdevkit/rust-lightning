@@ -1425,6 +1425,23 @@ macro_rules! reload_node {
 			None
 		);
 	};
+	// Reload the node and have the `ChannelManager` use new codepaths that reconstruct its set of
+	// pending HTLCs from `Channel{Monitor}` data.
+	($node: expr, $chanman_encoded: expr, $monitors_encoded: expr, $persister:
+	 ident, $new_chain_monitor: ident, $new_channelmanager: ident, $reconstruct_pending_htlcs: expr
+	) => {
+		let config = $node.node.get_current_config();
+		_reload_node_inner!(
+			$node,
+			config,
+			$chanman_encoded,
+			$monitors_encoded,
+			$persister,
+			$new_chain_monitor,
+			$new_channelmanager,
+			$reconstruct_pending_htlcs
+		);
+	};
 }
 
 pub fn create_funding_transaction<'a, 'b, 'c>(
