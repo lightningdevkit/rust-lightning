@@ -1540,10 +1540,18 @@ fn test_channel_update_dont_forward_flag() {
 	create_unannounced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 500_000_000);
 
 	// Get the channel details for both channels
-	let public_channel = nodes[0].node.list_channels().into_iter()
-		.find(|c| c.counterparty.node_id == node_b_id).unwrap();
-	let private_channel = nodes[1].node.list_channels().into_iter()
-		.find(|c| c.counterparty.node_id == node_c_id).unwrap();
+	let public_channel = nodes[0]
+		.node
+		.list_channels()
+		.into_iter()
+		.find(|c| c.counterparty.node_id == node_b_id)
+		.unwrap();
+	let private_channel = nodes[1]
+		.node
+		.list_channels()
+		.into_iter()
+		.find(|c| c.counterparty.node_id == node_c_id)
+		.unwrap();
 
 	// Verify is_announced correctly reflects the channel type
 	assert!(public_channel.is_announced, "Public channel should have is_announced = true");
@@ -1552,42 +1560,55 @@ fn test_channel_update_dont_forward_flag() {
 	// Trigger channel_update by changing config on the public channel
 	let mut new_config = public_channel.config.unwrap();
 	new_config.forwarding_fee_base_msat += 10;
-	nodes[0].node.update_channel_config(&node_b_id, &[public_channel.channel_id], &new_config).unwrap();
+	nodes[0]
+		.node
+		.update_channel_config(&node_b_id, &[public_channel.channel_id], &new_config)
+		.unwrap();
 
 	// Get the channel_update for the public channel and verify dont_forward is NOT set
 	let events = nodes[0].node.get_and_clear_pending_msg_events();
-	let public_channel_update = events.iter().find_map(|e| {
-		if let MessageSendEvent::BroadcastChannelUpdate { ref msg, .. } = e {
-			Some(msg.clone())
-		} else {
-			None
-		}
-	}).expect("Expected BroadcastChannelUpdate for public channel");
+	let public_channel_update = events
+		.iter()
+		.find_map(|e| {
+			if let MessageSendEvent::BroadcastChannelUpdate { ref msg, .. } = e {
+				Some(msg.clone())
+			} else {
+				None
+			}
+		})
+		.expect("Expected BroadcastChannelUpdate for public channel");
 	// message_flags should be 1 (only must_be_one bit set, dont_forward NOT set)
 	assert_eq!(
-		public_channel_update.contents.message_flags & (1 << 1), 0,
+		public_channel_update.contents.message_flags & (1 << 1),
+		0,
 		"Public channel update should NOT have dont_forward bit set"
 	);
 	assert_eq!(
-		public_channel_update.contents.message_flags & 1, 1,
+		public_channel_update.contents.message_flags & 1,
+		1,
 		"Public channel update should have must_be_one bit set"
 	);
 
 	// Trigger channel_update by changing config on the private channel
 	let mut new_config = private_channel.config.unwrap();
 	new_config.forwarding_fee_base_msat += 10;
-	nodes[1].node.update_channel_config(&node_c_id, &[private_channel.channel_id], &new_config).unwrap();
+	nodes[1]
+		.node
+		.update_channel_config(&node_c_id, &[private_channel.channel_id], &new_config)
+		.unwrap();
 
 	// Get the channel_update for the private channel and verify dont_forward IS set
 	let private_channel_update =
 		get_event_msg!(nodes[1], MessageSendEvent::SendChannelUpdate, node_c_id);
 	// message_flags should have dont_forward bit set
 	assert_ne!(
-		private_channel_update.contents.message_flags & (1 << 1), 0,
+		private_channel_update.contents.message_flags & (1 << 1),
+		0,
 		"Private channel update should have dont_forward bit set"
 	);
 	assert_eq!(
-		private_channel_update.contents.message_flags & 1, 1,
+		private_channel_update.contents.message_flags & 1,
+		1,
 		"Private channel update should have must_be_one bit set"
 	);
 }
