@@ -89,9 +89,9 @@ use crate::ln::outbound_payment;
 #[cfg(any(test, feature = "_externalize_tests"))]
 use crate::ln::outbound_payment::PaymentSendFailure;
 use crate::ln::outbound_payment::{
-	Bolt11PaymentError, Bolt12PaymentError, OutboundPayments, PendingOutboundPayment,
-	ProbeSendFailure, RecipientCustomTlvs, RecipientOnionFields, Retry, RetryableInvoiceRequest,
-	RetryableSendFailure, SendAlongPathArgs, StaleExpiration,
+	Bolt11PaymentError, Bolt12PaymentError, NextTrampolineHopInfo, OutboundPayments,
+	PendingOutboundPayment, ProbeSendFailure, RecipientCustomTlvs, RecipientOnionFields, Retry,
+	RetryableInvoiceRequest, RetryableSendFailure, SendAlongPathArgs, StaleExpiration,
 };
 use crate::ln::types::ChannelId;
 use crate::offers::async_receive_offer_cache::AsyncReceiveOfferCache;
@@ -529,6 +529,8 @@ enum OnionPayload {
 	},
 	/// Contains the payer-provided preimage.
 	Spontaneous(PaymentPreimage),
+	/// Indicates that the incoming onion payload is for a trampoline forward.
+	Trampoline { next_hop_info: NextTrampolineHopInfo, next_trampoline: PublicKey },
 }
 
 /// HTLCs that are to us and can be failed/claimed by the user
@@ -8488,6 +8490,9 @@ impl<
 								events::PaymentPurpose::SpontaneousPayment(keysend_preimage)
 							};
 							check_total_value!(purpose);
+						},
+						OnionPayload::Trampoline { .. } => {
+							todo!();
 						},
 					}
 				},
@@ -17434,10 +17439,16 @@ impl_writeable_tlv_based!(HTLCPreviousHopData, {
 fn write_claimable_htlc<W: Writer>(
 	htlc: &ClaimableHTLC, total_mpp_value_msat: u64, writer: &mut W,
 ) -> Result<(), io::Error> {
-	let (payment_data, keysend_preimage) = match &htlc.onion_payload {
-		OnionPayload::Invoice { _legacy_hop_data } => (_legacy_hop_data.as_ref(), None),
-		OnionPayload::Spontaneous(preimage) => (None, Some(preimage)),
+	let (payment_data, keysend_preimage, trampoline_next_hop, trampoline_next_node) = match &htlc
+		.onion_payload
+	{
+		OnionPayload::Invoice { _legacy_hop_data } => (_legacy_hop_data.as_ref(), None, None, None),
+		OnionPayload::Spontaneous(preimage) => (None, Some(preimage), None, None),
+		OnionPayload::Trampoline { next_hop_info, next_trampoline } => {
+			(None, None, Some(next_hop_info), Some(next_trampoline))
+		},
 	};
+
 	write_tlv_fields!(writer, {
 		(0, htlc.prev_hop, required),
 		(1, total_mpp_value_msat, required),
@@ -17448,6 +17459,8 @@ fn write_claimable_htlc<W: Writer>(
 		(6, htlc.cltv_expiry, required),
 		(8, keysend_preimage, option),
 		(10, htlc.counterparty_skimmed_fee_msat, option),
+		(12, trampoline_next_hop, option),
+		(14, trampoline_next_node, option)
 	});
 	Ok(())
 }
@@ -17465,17 +17478,26 @@ impl Readable for (ClaimableHTLC, u64) {
 			(6, cltv_expiry, required),
 			(8, keysend_preimage, option),
 			(10, counterparty_skimmed_fee_msat, option),
+			(12, trampoline_next_hop, option),
+			(14, trampoline_next_node, option)
 		});
 		let payment_data: Option<msgs::FinalOnionHopData> = payment_data_opt;
 		let value = value_ser.0.unwrap();
-		let onion_payload = match keysend_preimage {
-			Some(p) => {
+		let onion_payload = match (keysend_preimage, trampoline_next_hop) {
+			(Some(p), None) => {
 				if payment_data.is_some() {
 					return Err(DecodeError::InvalidValue)
 				}
 				OnionPayload::Spontaneous(p)
 			},
-			None => OnionPayload::Invoice { _legacy_hop_data: payment_data },
+			(None, None) => OnionPayload::Invoice { _legacy_hop_data: payment_data },
+			(None, Some(trampoline_next_hop)) => {
+				OnionPayload::Trampoline {
+				next_hop_info: trampoline_next_hop,
+				next_trampoline: trampoline_next_node.ok_or(DecodeError::InvalidValue)?,
+				}
+			},
+			_ => return Err(DecodeError::InvalidValue),
 		};
 		Ok((ClaimableHTLC {
 			prev_hop: prev_hop.0.unwrap(),
