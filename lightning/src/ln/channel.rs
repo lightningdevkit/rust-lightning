@@ -315,8 +315,8 @@ impl InboundHTLCState {
 /// `ChannelManager` persist.
 ///
 /// Useful for reconstructing the pending HTLC set on startup.
-#[derive(Debug)]
-enum InboundUpdateAdd {
+#[derive(Debug, Clone)]
+pub(super) enum InboundUpdateAdd {
 	/// The inbound committed HTLC's update_add_htlc message.
 	WithOnion { update_add_htlc: msgs::UpdateAddHTLC },
 	/// This inbound HTLC is a forward that was irrevocably committed to the outbound edge, allowing
@@ -7828,7 +7828,9 @@ where
 	}
 
 	/// Useful for reconstructing the set of pending HTLCs when deserializing the `ChannelManager`.
-	pub(super) fn inbound_committed_unresolved_htlcs(&self) -> Vec<msgs::UpdateAddHTLC> {
+	pub(super) fn inbound_committed_unresolved_htlcs(
+		&self,
+	) -> Vec<(PaymentHash, InboundUpdateAdd)> {
 		// We don't want to return an HTLC as needing processing if it already has a resolution that's
 		// pending in the holding cell.
 		let htlc_resolution_in_holding_cell = |id: u64| -> bool {
@@ -7846,13 +7848,11 @@ where
 			.pending_inbound_htlcs
 			.iter()
 			.filter_map(|htlc| match &htlc.state {
-				InboundHTLCState::Committed {
-					update_add_htlc: InboundUpdateAdd::WithOnion { update_add_htlc },
-				} => {
+				InboundHTLCState::Committed { update_add_htlc } => {
 					if htlc_resolution_in_holding_cell(htlc.htlc_id) {
 						return None;
 					}
-					Some(update_add_htlc.clone())
+					Some((htlc.payment_hash, update_add_htlc.clone()))
 				},
 				_ => None,
 			})
