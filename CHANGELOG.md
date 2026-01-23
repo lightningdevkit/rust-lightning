@@ -1,3 +1,9 @@
+# 0.1.9 - Jan 26, 2026 - "Electrum Confirmations"
+
+## Bug Fixes
+ * The presence of unconfirmed transactions no longer causes
+   `ElectrumSyncClient` to spuriously fail to sync (#4341).
+
 # 0.1.8 - Dec 2, 2025 - "Async Update Completion"
 
 ## Bug Fixes
