@@ -3409,6 +3409,7 @@ fn create_htlc_intercepted_event(
 		inbound_amount_msat,
 		expected_outbound_amount_msat: pending_add.forward_info.outgoing_amt_msat,
 		intercept_id,
+		outgoing_htlc_expiry_block_height: Some(pending_add.forward_info.outgoing_cltv_value),
 	})
 }
 

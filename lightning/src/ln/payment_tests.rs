@@ -2277,6 +2277,7 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 	// Check that we generate the PaymentIntercepted event when an intercept forward is detected.
 	let events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
+	let expected_cltv = nodes[0].best_block_info().1 + TEST_FINAL_CLTV + 1;
 	let (intercept_id, outbound_amt) = match events[0] {
 		crate::events::Event::HTLCIntercepted {
 			intercept_id,
@@ -2284,10 +2285,12 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 			payment_hash,
 			inbound_amount_msat,
 			requested_next_hop_scid: short_channel_id,
+			outgoing_htlc_expiry_block_height,
 		} => {
 			assert_eq!(payment_hash, hash);
 			assert_eq!(inbound_amount_msat, route.get_total_amount() + route.get_total_fees());
 			assert_eq!(short_channel_id, intercept_scid);
+			assert_eq!(outgoing_htlc_expiry_block_height.unwrap(), expected_cltv);
 			(intercept_id, expected_outbound_amount_msat)
 		},
 		_ => panic!(),
@@ -2356,6 +2359,7 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 			assert_eq!(events.len(), 1);
 			SendEvent::from_event(events.remove(0))
 		};
+		assert_eq!(payment_event.msgs[0].cltv_expiry, expected_cltv);
 		nodes[2].node.handle_update_add_htlc(node_b_id, &payment_event.msgs[0]);
 		let commitment = &payment_event.commitment_msg;
 		do_commitment_signed_dance(&nodes[2], &nodes[1], commitment, false, true);

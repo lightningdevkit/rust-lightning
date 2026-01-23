@@ -1287,6 +1287,13 @@ pub enum Event {
 		/// [`Self::HTLCIntercepted::inbound_amount_msat`]) or subtract it as required. Further,
 		/// LDK will not stop you from forwarding more than you received.
 		expected_outbound_amount_msat: u64,
+		/// The block height at which the forwarded HTLC sent to our peer will time out. In
+		/// practice, LDK will refuse to forward an HTLC several blocks before this height (as if
+		/// we attempted to forward an HTLC at this height we'd run some risk that our peer
+		/// force-closes the channel immediately).
+		///
+		/// This will only be `None` for events generated or serialized by LDK 0.2 or prior.
+		outgoing_htlc_expiry_block_height: Option<u32>,
 	},
 	/// Used to indicate that an output which you should know how to spend was confirmed on chain
 	/// and is now spendable.
@@ -2017,11 +2024,13 @@ impl Writeable for Event {
 				inbound_amount_msat,
 				expected_outbound_amount_msat,
 				intercept_id,
+				outgoing_htlc_expiry_block_height,
 			} => {
 				6u8.write(writer)?;
 				let intercept_scid = InterceptNextHop::FakeScid { requested_next_hop_scid };
 				write_tlv_fields!(writer, {
 					(0, intercept_id, required),
+					(1, outgoing_htlc_expiry_block_height, option),
 					(2, intercept_scid, required),
 					(4, payment_hash, required),
 					(6, inbound_amount_msat, required),
@@ -2526,8 +2535,10 @@ impl MaybeReadable for Event {
 					InterceptNextHop::FakeScid { requested_next_hop_scid: 0 };
 				let mut inbound_amount_msat = 0;
 				let mut expected_outbound_amount_msat = 0;
+				let mut outgoing_htlc_expiry_block_height = None;
 				read_tlv_fields!(reader, {
 					(0, intercept_id, required),
+					(1, outgoing_htlc_expiry_block_height, option),
 					(2, requested_next_hop_scid, required),
 					(4, payment_hash, required),
 					(6, inbound_amount_msat, required),
@@ -2542,6 +2553,7 @@ impl MaybeReadable for Event {
 					inbound_amount_msat,
 					expected_outbound_amount_msat,
 					intercept_id,
+					outgoing_htlc_expiry_block_height,
 				}))
 			},
 			7u8 => {
