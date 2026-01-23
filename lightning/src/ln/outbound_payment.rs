@@ -11,7 +11,7 @@
 
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash;
-use bitcoin::secp256k1::{self, Secp256k1, SecretKey};
+use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
 use lightning_invoice::Bolt11Invoice;
 
 use crate::blinded_path::{IntroductionNode, NodeIdLookUp};
@@ -21,7 +21,7 @@ use crate::ln::channelmanager::{
 	EventCompletionAction, HTLCSource, OptionalBolt11PaymentParams, PaymentCompleteUpdate,
 	PaymentId,
 };
-use crate::ln::msgs::DecodeError;
+use crate::ln::msgs::{DecodeError, TrampolineOnionPacket};
 use crate::ln::onion_utils;
 use crate::ln::onion_utils::{DecodedOnionFailure, HTLCFailReason};
 use crate::offers::invoice::{Bolt12Invoice, DerivedSigningPubkey, InvoiceBuilder};
@@ -166,6 +166,25 @@ pub(crate) enum PendingOutboundPayment {
 		total_msat: Option<u64>,
 	},
 }
+
+#[derive(Clone, Eq, PartialEq)]
+pub(crate) struct NextTrampolineHopInfo {
+	/// The Trampoline packet to include for the next Trampoline hop.
+	pub(crate) onion_packet: TrampolineOnionPacket,
+	/// If blinded, the current_path_key to set at the next Trampoline hop.
+	pub(crate) blinding_point: Option<PublicKey>,
+	/// The amount that the next trampoline is expecting to receive.
+	pub(crate) amount_msat: u64,
+	/// The cltv expiry height that the next trampoline is expecting.
+	pub(crate) cltv_expiry_height: u32,
+}
+
+impl_writeable_tlv_based!(NextTrampolineHopInfo, {
+	(1, onion_packet, required),
+	(3, blinding_point, option),
+	(5, amount_msat, required),
+	(7, cltv_expiry_height, required),
+});
 
 #[derive(Clone)]
 pub(crate) struct RetryableInvoiceRequest {
