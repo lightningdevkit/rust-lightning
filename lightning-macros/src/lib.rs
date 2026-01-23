@@ -11,22 +11,20 @@
 
 //! Proc macros used by LDK
 
-#![cfg_attr(not(test), no_std)]
 #![deny(missing_docs)]
 #![forbid(unsafe_code)]
 #![deny(rustdoc::broken_intra_doc_links)]
 #![deny(rustdoc::private_intra_doc_links)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-extern crate alloc;
+use std::string::ToString;
 
-use alloc::string::ToString;
 use proc_macro::{Delimiter, Group, TokenStream, TokenTree};
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
+use syn::parse::Parser;
 use syn::spanned::Spanned;
-use syn::{parse, ImplItemFn, Token};
-use syn::{parse_macro_input, Item};
+use syn::{parse, parse_macro_input, ImplItemFn, Item, Token};
 
 fn add_async_method(mut parsed: ImplItemFn) -> TokenStream {
 	let output = quote! {
@@ -399,4 +397,358 @@ pub fn xtest_inventory(_input: TokenStream) -> TokenStream {
 	};
 
 	TokenStream::from(expanded)
+}
+
+fn add_logs_to_macro_call(m: &mut syn::Macro) {
+	// Many macros just take a bunch of exprs as arguments, separated by commas.
+	// In that case, we optimistically edit the args as if they're exprs.
+	let parser = syn::punctuated::Punctuated::<syn::Expr, syn::Token![,]>::parse_terminated;
+	if let Ok(mut parsed) = parser.parse(m.tokens.clone().into()) {
+		for expr in parsed.iter_mut() {
+			add_logs_to_self_exprs(expr);
+		}
+		m.tokens = quote! { #parsed }.into();
+	}
+}
+
+fn add_logs_to_stmt_list(s: &mut Vec<syn::Stmt>) {
+	for stmt in s.iter_mut() {
+		match stmt {
+			syn::Stmt::Expr(ref mut expr, _) => add_logs_to_self_exprs(expr),
+			syn::Stmt::Local(syn::Local { init, .. }) => {
+				if let Some(l) = init {
+					add_logs_to_self_exprs(&mut *l.expr);
+					if let Some((_, e)) = &mut l.diverge {
+						add_logs_to_self_exprs(&mut *e);
+					}
+				}
+			},
+			syn::Stmt::Macro(m) => add_logs_to_macro_call(&mut m.mac),
+			syn::Stmt::Item(syn::Item::Fn(f)) => {
+				add_logs_to_stmt_list(&mut f.block.stmts);
+			},
+			syn::Stmt::Item(_) => {},
+		}
+	}
+}
+
+fn add_logs_to_self_exprs(e: &mut syn::Expr) {
+	match e {
+		syn::Expr::Array(e) => {
+			for elem in e.elems.iter_mut() {
+				add_logs_to_self_exprs(elem);
+			}
+		},
+		syn::Expr::Assign(e) => {
+			add_logs_to_self_exprs(&mut *e.left);
+			add_logs_to_self_exprs(&mut *e.right);
+		},
+		syn::Expr::Async(e) => {
+			add_logs_to_stmt_list(&mut e.block.stmts);
+		},
+		syn::Expr::Await(e) => {
+			add_logs_to_self_exprs(&mut *e.base);
+		},
+		syn::Expr::Binary(e) => {
+			add_logs_to_self_exprs(&mut *e.left);
+			add_logs_to_self_exprs(&mut *e.right);
+		},
+		syn::Expr::Block(e) => {
+			add_logs_to_stmt_list(&mut e.block.stmts);
+		},
+		syn::Expr::Break(e) => {
+			if let Some(e) = e.expr.as_mut() {
+				add_logs_to_self_exprs(&mut *e);
+			}
+		},
+		syn::Expr::Call(e) => {
+			let mut needs_log_param = false;
+			if let syn::Expr::Path(p) = &*e.func {
+				if p.path.segments.len() == 2 && p.path.segments[0].ident == "Self" {
+					needs_log_param = true;
+				}
+			} else {
+				add_logs_to_self_exprs(&mut *e.func);
+			}
+			for a in e.args.iter_mut() {
+				add_logs_to_self_exprs(a);
+			}
+			if needs_log_param {
+				e.args.push(parse(quote!(logger).into()).unwrap());
+			}
+		},
+		syn::Expr::Cast(e) => {
+			add_logs_to_self_exprs(&mut *e.expr);
+		},
+		syn::Expr::Closure(e) => {
+			add_logs_to_self_exprs(&mut *e.body);
+		},
+		syn::Expr::Const(_) => {},
+		syn::Expr::Continue(_) => {},
+		syn::Expr::Field(e) => {
+			add_logs_to_self_exprs(&mut *e.base);
+		},
+		syn::Expr::ForLoop(e) => {
+			add_logs_to_self_exprs(&mut *e.expr);
+			add_logs_to_stmt_list(&mut e.body.stmts);
+		},
+		syn::Expr::Group(e) => {
+			add_logs_to_self_exprs(&mut *e.expr);
+		},
+		syn::Expr::If(e) => {
+			add_logs_to_self_exprs(&mut *e.cond);
+			add_logs_to_stmt_list(&mut e.then_branch.stmts);
+			if let Some((_, branch)) = e.else_branch.as_mut() {
+				add_logs_to_self_exprs(&mut *branch);
+			}
+		},
+		syn::Expr::Index(e) => {
+			add_logs_to_self_exprs(&mut *e.expr);
+			add_logs_to_self_exprs(&mut *e.index);
+		},
+		syn::Expr::Infer(_) => {},
+		syn::Expr::Let(e) => {
+			add_logs_to_self_exprs(&mut *e.expr);
+		},
+		syn::Expr::Lit(_) => {},
+		syn::Expr::Loop(e) => {
+			add_logs_to_stmt_list(&mut e.body.stmts);
+		},
+		syn::Expr::Macro(e) => {
+			add_logs_to_macro_call(&mut e.mac);
+		},
+		syn::Expr::Match(e) => {
+			add_logs_to_self_exprs(&mut *e.expr);
+			for arm in e.arms.iter_mut() {
+				if let Some((_, e)) = arm.guard.as_mut() {
+					add_logs_to_self_exprs(&mut *e);
+				}
+				add_logs_to_self_exprs(&mut *arm.body);
+			}
+		},
+		syn::Expr::MethodCall(e) => {
+			match &*e.receiver {
+				syn::Expr::Path(path) => {
+					assert_eq!(
+						path.path.segments.len(),
+						1,
+						"Multiple segments should instead be parsed as a Field, below"
+					);
+					let is_self_call = path.qself.is_none()
+						&& path.path.segments.len() == 1
+						&& path.path.segments[0].ident == "self";
+					if is_self_call {
+						e.args.push(parse(quote!(logger).into()).unwrap());
+					}
+				},
+				_ => add_logs_to_self_exprs(&mut *e.receiver),
+			}
+			for a in e.args.iter_mut() {
+				add_logs_to_self_exprs(a);
+			}
+		},
+		syn::Expr::Paren(e) => {
+			add_logs_to_self_exprs(&mut *e.expr);
+		},
+		syn::Expr::Path(_) => {},
+		syn::Expr::Range(e) => {
+			if let Some(start) = e.start.as_mut() {
+				add_logs_to_self_exprs(start);
+			}
+			if let Some(end) = e.end.as_mut() {
+				add_logs_to_self_exprs(end);
+			}
+		},
+		syn::Expr::RawAddr(e) => {
+			add_logs_to_self_exprs(&mut *e.expr);
+		},
+		syn::Expr::Reference(e) => {
+			add_logs_to_self_exprs(&mut *e.expr);
+		},
+		syn::Expr::Repeat(e) => {
+			add_logs_to_self_exprs(&mut *e.expr);
+			add_logs_to_self_exprs(&mut *e.len);
+		},
+		syn::Expr::Return(e) => {
+			if let Some(e) = e.expr.as_mut() {
+				add_logs_to_self_exprs(&mut *e);
+			}
+		},
+		syn::Expr::Struct(e) => {
+			for field in e.fields.iter_mut() {
+				add_logs_to_self_exprs(&mut field.expr);
+			}
+			if let Some(rest) = e.rest.as_mut() {
+				add_logs_to_self_exprs(rest);
+			}
+		},
+		syn::Expr::Try(e) => {
+			add_logs_to_self_exprs(&mut *e.expr);
+		},
+		syn::Expr::TryBlock(e) => {
+			add_logs_to_stmt_list(&mut e.block.stmts);
+		},
+		syn::Expr::Tuple(e) => {
+			for elem in e.elems.iter_mut() {
+				add_logs_to_self_exprs(elem);
+			}
+		},
+		syn::Expr::Unary(e) => {
+			add_logs_to_self_exprs(&mut *e.expr);
+		},
+		syn::Expr::Unsafe(e) => {
+			add_logs_to_stmt_list(&mut e.block.stmts);
+		},
+		syn::Expr::Verbatim(_) => {
+			panic!("Need to update syn to parse some new syntax");
+		},
+		syn::Expr::While(e) => {
+			add_logs_to_self_exprs(&mut *e.cond);
+			add_logs_to_stmt_list(&mut e.body.stmts);
+		},
+		syn::Expr::Yield(e) => {
+			if let Some(e) = e.expr.as_mut() {
+				add_logs_to_self_exprs(&mut *e);
+			}
+		},
+		_ => {},
+	}
+}
+
+/// This attribute, on an `impl` block, will add logging parameters transparently to every method
+/// in the `impl` block. It will also pass through the current logger to any calls to method calls
+/// of the form `self.*()`.
+///
+/// Provided attributes should be in the form `logger: LoggerType` where `LoggerType` is the type
+/// of the logger object which is required.
+///
+/// For example, this translates:
+/// ```rust
+/// use std::ops::Deref;
+///
+/// struct B;
+/// struct A { field_b: B }
+///
+/// trait Logger {}
+///
+/// struct LogType<L>(L);
+/// impl<L> LogType<L> {
+///		fn log(&self) {}
+///	}
+///
+/// #[lightning_macros::add_logging(LogType<L>)]
+/// impl A {
+///		fn f_a(&self) {
+///			logger.log();
+///		}
+/// 	fn f(&self) {
+///			self.f_a();
+///			self.field_b.f(logger); // Note you'll have to pass the logger manually here
+/// 	}
+/// }
+///
+/// #[lightning_macros::add_logging(LogType<L>)]
+/// impl B {
+///		fn f(&self) {
+///			logger.log();
+///		}
+///	}
+/// ```
+///
+/// to this:
+///
+/// ```rust
+/// use std::ops::Deref;
+///
+/// struct B;
+/// struct A { field_b: B }
+///
+/// trait Logger {}
+///
+/// struct LogType<L>(L);
+/// impl<L> LogType<L> {
+///		fn log(&self) {}
+///	}
+///
+/// impl A {
+///		fn f_a<L: Deref>(&self, logger: &LogType<L>) where L::Target: Logger {
+///			logger.log();
+///		}
+/// 	fn f<L: Deref>(&self, logger: &LogType<L>) where L::Target: Logger {
+///			self.f_a(logger);
+///			self.field_b.f(logger); // Note you'll have to pass the logger manually here
+/// 	}
+/// }
+///
+/// impl B {
+///		fn f<L: Deref>(&self, logger: &LogType<L>) where L::Target: Logger {
+///			logger.log();
+///		}
+///	}
+/// ```
+#[proc_macro_attribute]
+pub fn add_logging(attrs: TokenStream, expr: TokenStream) -> TokenStream {
+	let mut im = if let Ok(parsed) = parse::<syn::Item>(expr) {
+		if let syn::Item::Impl(im) = parsed {
+			im
+		} else {
+			return (quote! {
+				compile_error!("add_logging can only be used on impl items")
+			})
+			.into();
+		}
+	} else {
+		return (quote! {
+			compile_error!("add_logging can only be used on impl items")
+		})
+		.into();
+	};
+
+	let logger_type = if let Ok(ty) = parse::<syn::Type>(attrs) {
+		ty
+	} else {
+		return (quote! {
+			compile_error!("add_logging's attributes must be in the form `LoggerType`")
+		})
+		.into();
+	};
+
+	for item in im.items.iter_mut() {
+		if let syn::ImplItem::Fn(f) = item {
+			// In some rare cases, manually taking a logger may be required to specify appropriate
+			// lifetimes. Detect such cases and avoid adding a redundant logger.
+			let have_logger = f.sig.inputs.iter().any(|inp| {
+				if let syn::FnArg::Typed(syn::PatType { pat, .. }) = inp {
+					if let syn::Pat::Ident(syn::PatIdent { ident, .. }) = &**pat {
+						ident == "logger"
+					} else {
+						false
+					}
+				} else {
+					false
+				}
+			});
+			if !have_logger {
+				if f.sig.generics.lt_token.is_none() {
+					f.sig.generics.lt_token = Some(Default::default());
+					f.sig.generics.gt_token = Some(Default::default());
+				}
+				f.sig.generics.params.push(parse(quote!(L: Deref).into()).unwrap());
+				if f.sig.generics.where_clause.is_none() {
+					f.sig.generics.where_clause = Some(parse(quote!(where).into()).unwrap());
+				}
+				let log_bound = parse(quote!(L::Target: Logger).into()).unwrap();
+				f.sig.generics.where_clause.as_mut().unwrap().predicates.push(log_bound);
+				f.sig.inputs.push(parse(quote!(logger: &#logger_type).into()).unwrap());
+			}
+		}
+	}
+
+	for item in im.items.iter_mut() {
+		if let syn::ImplItem::Fn(f) = item {
+			add_logs_to_stmt_list(&mut f.block.stmts);
+		}
+	}
+
+	quote! { #im }.into()
 }
