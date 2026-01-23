@@ -1520,3 +1520,112 @@ fn test_0conf_ann_sigs_racing_conf() {
 	let as_announcement = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(as_announcement.len(), 1);
 }
+
+#[test]
+fn test_channel_update_dont_forward_flag() {
+	// Test that the `dont_forward` bit (bit 1 of message_flags) is set correctly:
+	// - For private channels: message_flags should have bit 1 set (value 3 = must_be_one + dont_forward)
+	// - For public channels: message_flags should NOT have bit 1 set (value 1 = must_be_one only)
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let node_b_id = nodes[1].node.get_our_node_id();
+	let node_c_id = nodes[2].node.get_our_node_id();
+
+	// Create a public (announced) channel between nodes[0] and nodes[1]
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 500_000_000);
+
+	// Create a private (unannounced) channel between nodes[1] and nodes[2]
+	create_unannounced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 500_000_000);
+
+	// Get the channel details for both channels
+	let public_channel = nodes[0].node.list_channels().into_iter()
+		.find(|c| c.counterparty.node_id == node_b_id).unwrap();
+	let private_channel = nodes[1].node.list_channels().into_iter()
+		.find(|c| c.counterparty.node_id == node_c_id).unwrap();
+
+	// Verify is_announced correctly reflects the channel type
+	assert!(public_channel.is_announced, "Public channel should have is_announced = true");
+	assert!(!private_channel.is_announced, "Private channel should have is_announced = false");
+
+	// Trigger channel_update by changing config on the public channel
+	let mut new_config = public_channel.config.unwrap();
+	new_config.forwarding_fee_base_msat += 10;
+	nodes[0].node.update_channel_config(&node_b_id, &[public_channel.channel_id], &new_config).unwrap();
+
+	// Get the channel_update for the public channel and verify dont_forward is NOT set
+	let events = nodes[0].node.get_and_clear_pending_msg_events();
+	let public_channel_update = events.iter().find_map(|e| {
+		if let MessageSendEvent::BroadcastChannelUpdate { ref msg, .. } = e {
+			Some(msg.clone())
+		} else {
+			None
+		}
+	}).expect("Expected BroadcastChannelUpdate for public channel");
+	// message_flags should be 1 (only must_be_one bit set, dont_forward NOT set)
+	assert_eq!(
+		public_channel_update.contents.message_flags & (1 << 1), 0,
+		"Public channel update should NOT have dont_forward bit set"
+	);
+	assert_eq!(
+		public_channel_update.contents.message_flags & 1, 1,
+		"Public channel update should have must_be_one bit set"
+	);
+
+	// Trigger channel_update by changing config on the private channel
+	let mut new_config = private_channel.config.unwrap();
+	new_config.forwarding_fee_base_msat += 10;
+	nodes[1].node.update_channel_config(&node_c_id, &[private_channel.channel_id], &new_config).unwrap();
+
+	// Get the channel_update for the private channel and verify dont_forward IS set
+	let private_channel_update =
+		get_event_msg!(nodes[1], MessageSendEvent::SendChannelUpdate, node_c_id);
+	// message_flags should have dont_forward bit set
+	assert_ne!(
+		private_channel_update.contents.message_flags & (1 << 1), 0,
+		"Private channel update should have dont_forward bit set"
+	);
+	assert_eq!(
+		private_channel_update.contents.message_flags & 1, 1,
+		"Private channel update should have must_be_one bit set"
+	);
+}
+
+#[test]
+fn test_unknown_channel_update_with_dont_forward_logs_warning() {
+	use bitcoin::constants::ChainHash;
+	use bitcoin::secp256k1::ecdsa::Signature;
+	use bitcoin::secp256k1::ffi::Signature as FFISignature;
+	use bitcoin::Network;
+
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let unknown_scid = 42;
+	let msg = msgs::ChannelUpdate {
+		signature: Signature::from(unsafe { FFISignature::new() }),
+		contents: msgs::UnsignedChannelUpdate {
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
+			short_channel_id: unknown_scid,
+			timestamp: 0,
+			message_flags: 1 | (1 << 1), // must_be_one + dont_forward
+			channel_flags: 0,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: msgs::MAX_VALUE_MSAT,
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new(),
+		},
+	};
+
+	nodes[0].node.handle_channel_update(nodes[1].node.get_our_node_id(), &msg);
+	nodes[0].logger.assert_log_contains(
+		"lightning::ln::channelmanager",
+		"Received channel_update for unknown channel",
+		1,
+	);
+}
