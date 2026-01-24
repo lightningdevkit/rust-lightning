@@ -9,8 +9,7 @@ use common::{
 
 use lightning::events::{ClosureReason, Event};
 use lightning::get_event_msg;
-use lightning::ln::channelmanager::PaymentId;
-use lightning::ln::channelmanager::Retry;
+use lightning::ln::channelmanager::{OptionalPaymentParams, PaymentId};
 use lightning::ln::functional_test_utils::*;
 use lightning::ln::msgs::BaseMessageHandler;
 use lightning::ln::msgs::ChannelMessageHandler;
@@ -1213,8 +1212,7 @@ fn client_trusts_lsp_end_to_end_test() {
 			&invoice,
 			PaymentId(invoice.payment_hash().to_byte_array()),
 			None,
-			Default::default(),
-			Retry::Attempts(3),
+			OptionalPaymentParams::default(),
 		)
 		.unwrap();
 
@@ -1686,8 +1684,7 @@ fn late_payment_forwarded_and_safe_after_force_close_does_not_broadcast() {
 			&invoice,
 			PaymentId(invoice.payment_hash().to_byte_array()),
 			None,
-			Default::default(),
-			Retry::Attempts(3),
+			OptionalPaymentParams::default(),
 		)
 		.unwrap();
 
@@ -1877,8 +1874,7 @@ fn htlc_timeout_before_client_claim_results_in_handling_failed() {
 			&invoice,
 			PaymentId(invoice.payment_hash().to_byte_array()),
 			None,
-			Default::default(),
-			Retry::Attempts(3),
+			OptionalPaymentParams::default(),
 		)
 		.unwrap();
 
@@ -2214,8 +2210,7 @@ fn client_trusts_lsp_partial_fee_does_not_trigger_broadcast() {
 			&invoice,
 			PaymentId(invoice.payment_hash().to_byte_array()),
 			None,
-			Default::default(),
-			Retry::Attempts(3),
+			OptionalPaymentParams::default(),
 		)
 		.unwrap();
 
