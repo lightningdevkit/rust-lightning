@@ -1365,6 +1365,9 @@ impl OutboundPayments {
 			}
 			core::mem::drop(outbounds);
 			if let Some((payment_hash, payment_id, route_params)) = retry_id_route_params {
+				let logger =
+					WithContext::for_payment(&logger, None, None, Some(payment_hash), payment_id);
+				let logger = &logger;
 				self.find_route_and_send_payment(
 					payment_hash,
 					payment_id,
@@ -1810,7 +1813,7 @@ impl OutboundPayments {
 	#[rustfmt::skip]
 	pub(super) fn send_probe<ES: Deref, NS: Deref, F>(
 		&self, path: Path, probing_cookie_secret: [u8; 32], entropy_source: &ES, node_signer: &NS,
-		best_block_height: u32, send_payment_along_path: F
+		best_block_height: u32, send_payment_along_path: F,
 	) -> Result<(PaymentHash, PaymentId), ProbeSendFailure>
 	where
 		ES::Target: EntropySource,

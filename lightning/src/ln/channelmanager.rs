@@ -5192,6 +5192,13 @@ where
 		let prng_seed = self.entropy_source.get_secure_random_bytes();
 		let session_priv = SecretKey::from_slice(&session_priv_bytes[..]).expect("RNG is busted");
 
+		let logger = WithContext::for_payment(
+			&self.logger,
+			path.hops.first().map(|hop| hop.pubkey),
+			None,
+			Some(*payment_hash),
+			payment_id,
+		);
 		let (onion_packet, htlc_msat, htlc_cltv) = onion_utils::create_payment_onion(
 			&self.secp_ctx,
 			&path,
@@ -5205,8 +5212,6 @@ where
 			prng_seed,
 		)
 		.map_err(|e| {
-			let first_hop_key = Some(path.hops.first().unwrap().pubkey);
-			let logger = WithContext::from(&self.logger, first_hop_key, None, Some(*payment_hash));
 			log_error!(logger, "Failed to build an onion for path");
 			e
 		})?;
@@ -5217,9 +5222,6 @@ where
 
 			let (counterparty_node_id, id) = match first_chan {
 				None => {
-					let first_hop_key = Some(path.hops.first().unwrap().pubkey);
-					let logger =
-						WithContext::from(&self.logger, first_hop_key, None, Some(*payment_hash));
 					log_error!(logger, "Failed to find first-hop for payment hash {payment_hash}");
 					return Err(APIError::ChannelUnavailable {
 						err: "No channel available with first hop!".to_owned(),
@@ -5228,12 +5230,9 @@ where
 				Some((cp_id, chan_id)) => (cp_id, chan_id),
 			};
 
-			let logger = WithContext::from(
-				&self.logger,
-				Some(counterparty_node_id),
-				Some(id),
-				Some(*payment_hash),
-			);
+			// Add the channel id to the logger that already has the rest filled in.
+			let logger_ref = &logger;
+			let logger = WithContext::from(&logger_ref, None, Some(id), None);
 			log_trace!(
 				logger,
 				"Attempting to send payment along path with next hop {first_chan_scid}"
@@ -5256,11 +5255,6 @@ where
 							});
 						}
 						let funding_txo = chan.funding.get_funding_txo().unwrap();
-						let logger = WithChannelContext::from(
-							&self.logger,
-							&chan.context,
-							Some(*payment_hash),
-						);
 						let htlc_source = HTLCSource::OutboundRoute {
 							path: path.clone(),
 							session_priv: session_priv.clone(),
@@ -5354,7 +5348,8 @@ where
 		});
 		if route.route_params.is_none() { route.route_params = Some(route_params.clone()); }
 		let router = FixedRouter::new(route);
-		let logger = WithContext::from(&self.logger, None, None, Some(payment_hash));
+		let logger =
+			WithContext::for_payment(&self.logger, None, None, Some(payment_hash), payment_id);
 		self.pending_outbound_payments
 			.send_payment(payment_hash, recipient_onion, payment_id, Retry::Attempts(0),
 				route_params, &&router, self.list_usable_channels(), || self.compute_inflight_htlcs(),
@@ -5419,7 +5414,7 @@ where
 			best_block_height,
 			&self.pending_events,
 			|args| self.send_payment_along_path(args),
-			&WithContext::from(&self.logger, None, None, Some(payment_hash)),
+			&WithContext::for_payment(&self.logger, None, None, Some(payment_hash), payment_id),
 		)
 	}
 
@@ -5504,6 +5499,7 @@ where
 	) -> Result<(), Bolt11PaymentError> {
 		let best_block_height = self.best_block.read().unwrap().height;
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+		let payment_hash = invoice.payment_hash();
 		self.pending_outbound_payments.pay_for_bolt11_invoice(
 			invoice,
 			payment_id,
@@ -5518,7 +5514,7 @@ where
 			best_block_height,
 			&self.pending_events,
 			|args| self.send_payment_along_path(args),
-			&WithContext::from(&self.logger, None, None, Some(invoice.payment_hash())),
+			&WithContext::for_payment(&self.logger, None, None, Some(payment_hash), payment_id),
 		)
 	}
 
@@ -5571,7 +5567,7 @@ where
 			best_block_height,
 			&self.pending_events,
 			|args| self.send_payment_along_path(args),
-			&WithContext::from(&self.logger, None, None, None),
+			&WithContext::for_payment(&self.logger, None, None, None, payment_id),
 		)
 	}
 
@@ -5628,6 +5624,7 @@ where
 	) -> Result<(), Bolt12PaymentError> {
 		let mut res = Ok(());
 		PersistenceNotifierGuard::optionally_notify(self, || {
+			let logger = WithContext::for_payment(&self.logger, None, None, None, payment_id);
 			let best_block_height = self.best_block.read().unwrap().height;
 			let features = self.bolt12_invoice_features();
 			let outbound_pmts_res = self.pending_outbound_payments.static_invoice_received(
@@ -5660,7 +5657,7 @@ where
 					self.send_payment_for_static_invoice_no_persist(payment_id, channels, true)
 				{
 					log_trace!(
-						self.logger,
+						logger,
 						"Failed to send held HTLC with payment id {}: {:?}",
 						payment_id,
 						e
@@ -5752,7 +5749,7 @@ where
 			best_block_height,
 			&self.pending_events,
 			|args| self.send_payment_along_path(args),
-			&WithContext::from(&self.logger, None, None, None),
+			&WithContext::for_payment(&self.logger, None, None, None, payment_id),
 		)
 	}
 
@@ -5846,7 +5843,7 @@ where
 			best_block_height,
 			&self.pending_events,
 			|args| self.send_payment_along_path(args),
-			&WithContext::from(&self.logger, None, None, payment_hash),
+			&WithContext::for_payment(&self.logger, None, None, payment_hash, payment_id),
 		)
 	}
 
@@ -8652,7 +8649,13 @@ where
 		// being fully configured. See the docs for `ChannelManagerReadArgs` for more.
 		match source {
 			HTLCSource::OutboundRoute { ref path, ref session_priv, ref payment_id, .. } => {
-				let logger = WithContext::from(&self.logger, None, None, Some(*payment_hash));
+				let logger = WithContext::for_payment(
+					&self.logger,
+					path.hops.first().map(|hop| hop.pubkey),
+					None,
+					Some(*payment_hash),
+					*payment_id,
+				);
 				self.pending_outbound_payments.fail_htlc(
 					source,
 					payment_hash,
@@ -9346,6 +9349,13 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						counterparty_node_id: path.hops[0].pubkey,
 					})
 				};
+				let logger = WithContext::for_payment(
+					&self.logger,
+					path.hops.first().map(|hop| hop.pubkey),
+					None,
+					Some(payment_preimage.into()),
+					payment_id,
+				);
 				self.pending_outbound_payments.claim_htlc(
 					payment_id,
 					payment_preimage,
@@ -9355,7 +9365,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					from_onchain,
 					&mut ev_completion_action,
 					&self.pending_events,
-					&WithContext::from(&self.logger, None, None, Some(payment_preimage.into())),
+					&logger,
 				);
 				// If an event was generated, `claim_htlc` set `ev_completion_action` to None, if
 				// not, we should go ahead and run it now (as the claim was duplicative), at least
@@ -16118,8 +16128,8 @@ where
 					Err(()) => return None,
 				};
 
-				let logger = WithContext::from(
-					&self.logger, None, None, Some(invoice.payment_hash()),
+				let logger = WithContext::for_payment(
+					&self.logger, None, None, Some(invoice.payment_hash()), payment_id,
 				);
 
 				if self.config.read().unwrap().manually_handle_bolt12_invoices {

@@ -21,6 +21,7 @@ use core::fmt::Display;
 use core::fmt::Write;
 use core::ops::Deref;
 
+use crate::ln::channelmanager::PaymentId;
 use crate::ln::types::ChannelId;
 #[cfg(c_bindings)]
 use crate::prelude::*; // Needed for String
@@ -124,12 +125,18 @@ pub struct Record<$($args)?> {
 	pub file: &'static str,
 	/// The line containing the message.
 	pub line: u32,
-	/// The payment hash. Since payment_hash is not repeated in the message body, include it in the log output so
-	/// entries remain clear.
+	/// The payment hash.
 	///
-	/// Note that this is only filled in for logs pertaining to a specific payment, and will be
-	/// `None` for logs which are not directly related to a payment.
+	/// Since payment_hash is generally not repeated in the message body, you should ensure you log
+	/// it so that entries remain clear.
+	///
+	/// Note that payments don't always have a [`PaymentHash`] immediately - when paying BOLT 12
+	/// offers the [`PaymentHash`] is only selected a ways into the payment process. Thus, when
+	/// searching your logs for specific payments you should also search for the relevant
+	/// [`Self::payment_id`].
 	pub payment_hash: Option<PaymentHash>,
+	/// The payment id if the log pertained to a payment with an ID.
+	pub payment_id: Option<PaymentId>,
 }
 
 impl<$($args)?> Record<$($args)?> {
@@ -138,14 +145,13 @@ impl<$($args)?> Record<$($args)?> {
 	/// This is not exported to bindings users as fmt can't be used in C
 	#[inline]
 	pub fn new<$($nonstruct_args)?>(
-		level: Level, peer_id: Option<PublicKey>, channel_id: Option<ChannelId>,
-		args: fmt::Arguments<'a>, module_path: &'static str, file: &'static str, line: u32,
-		payment_hash: Option<PaymentHash>
+		level: Level, args: fmt::Arguments<'a>, module_path: &'static str, file: &'static str,
+		line: u32,
 	) -> Record<$($args)?> {
 		Record {
 			level,
-			peer_id,
-			channel_id,
+			peer_id: None,
+			channel_id: None,
 			#[cfg(not(c_bindings))]
 			args,
 			#[cfg(c_bindings)]
@@ -153,7 +159,8 @@ impl<$($args)?> Record<$($args)?> {
 			module_path,
 			file,
 			line,
-			payment_hash,
+			payment_hash: None,
+			payment_id: None,
 		}
 	}
 }
@@ -295,14 +302,11 @@ pub struct WithContext<'a, L: Deref>
 where
 	L::Target: Logger,
 {
-	/// The logger to delegate to after adding context to the record.
 	logger: &'a L,
-	/// The node id of the peer pertaining to the logged record.
 	peer_id: Option<PublicKey>,
-	/// The channel id of the channel pertaining to the logged record.
 	channel_id: Option<ChannelId>,
-	/// The payment hash of the payment pertaining to the logged record.
 	payment_hash: Option<PaymentHash>,
+	payment_id: Option<PaymentId>,
 }
 
 impl<'a, L: Deref> Logger for WithContext<'a, L>
@@ -319,6 +323,9 @@ where
 		if self.payment_hash.is_some() {
 			record.payment_hash = self.payment_hash;
 		}
+		if self.payment_id.is_some() {
+			record.payment_id = self.payment_id;
+		}
 		self.logger.log(record)
 	}
 }
@@ -332,7 +339,16 @@ where
 		logger: &'a L, peer_id: Option<PublicKey>, channel_id: Option<ChannelId>,
 		payment_hash: Option<PaymentHash>,
 	) -> Self {
-		WithContext { logger, peer_id, channel_id, payment_hash }
+		WithContext { logger, peer_id, channel_id, payment_hash, payment_id: None }
+	}
+
+	/// Wraps the given logger, providing additional context to any logged records.
+	pub fn for_payment(
+		logger: &'a L, peer_id: Option<PublicKey>, channel_id: Option<ChannelId>,
+		payment_hash: Option<PaymentHash>, payment_id: PaymentId,
+	) -> Self {
+		let payment_id = Some(payment_id);
+		WithContext { logger, peer_id, channel_id, payment_hash, payment_id }
 	}
 }
 
