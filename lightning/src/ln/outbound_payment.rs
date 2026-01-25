@@ -837,22 +837,15 @@ pub(super) struct SendAlongPathArgs<'a> {
 	pub hold_htlc_at_next_hop: bool,
 }
 
-pub(super) struct OutboundPayments<L: Deref>
-where
-	L::Target: Logger,
-{
+pub(super) struct OutboundPayments {
 	pub(super) pending_outbound_payments: Mutex<HashMap<PaymentId, PendingOutboundPayment>>,
 	awaiting_invoice: AtomicBool,
 	retry_lock: Mutex<()>,
-	logger: L,
 }
 
-impl<L: Deref> OutboundPayments<L>
-where
-	L::Target: Logger,
-{
+impl OutboundPayments {
 	pub(super) fn new(
-		pending_outbound_payments: HashMap<PaymentId, PendingOutboundPayment>, logger: L,
+		pending_outbound_payments: HashMap<PaymentId, PendingOutboundPayment>,
 	) -> Self {
 		let has_invoice_requests = pending_outbound_payments.values().any(|payment| {
 			matches!(
@@ -867,10 +860,12 @@ where
 			pending_outbound_payments: Mutex::new(pending_outbound_payments),
 			awaiting_invoice: AtomicBool::new(has_invoice_requests),
 			retry_lock: Mutex::new(()),
-			logger,
 		}
 	}
+}
 
+#[lightning_macros::add_logging(crate::util::logger::WithContext<L>)]
+impl OutboundPayments {
 	#[rustfmt::skip]
 	pub(super) fn send_payment<R: Deref, ES: Deref, NS: Deref, IH, SP>(
 		&self, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields, payment_id: PaymentId,
@@ -1102,7 +1097,7 @@ where
 			best_block_height, &send_payment_along_path
 		);
 		log_info!(
-			self.logger, "Sending payment with id {} and hash {} returned {:?}", payment_id,
+			logger, "Sending payment with id {} and hash {} returned {:?}", payment_id,
 			payment_hash, result
 		);
 		if let Err(e) = result {
@@ -1428,7 +1423,7 @@ where
 	{
 		#[cfg(feature = "std")] {
 			if has_expired(&route_params) {
-				log_error!(self.logger, "Payment with id {} and hash {} had expired before we started paying",
+				log_error!(logger, "Payment with id {} and hash {} had expired before we started paying",
 					payment_id, payment_hash);
 				return Err(RetryableSendFailure::PaymentExpired)
 			}
@@ -1438,7 +1433,7 @@ where
 			route_params, recipient_onion, keysend_preimage, invoice_request, best_block_height
 		)
 			.map_err(|()| {
-				log_error!(self.logger, "Can't construct an onion packet without exceeding 1300-byte onion \
+				log_error!(logger, "Can't construct an onion packet without exceeding 1300-byte onion \
 					hop_data length for payment with id {} and hash {}", payment_id, payment_hash);
 				RetryableSendFailure::OnionPacketSizeExceeded
 			})?;
@@ -1448,7 +1443,7 @@ where
 			Some(&first_hops.iter().collect::<Vec<_>>()), inflight_htlcs(),
 			payment_hash, payment_id,
 		).map_err(|_| {
-			log_error!(self.logger, "Failed to find route for payment with id {} and hash {}",
+			log_error!(logger, "Failed to find route for payment with id {} and hash {}",
 				payment_id, payment_hash);
 			RetryableSendFailure::RouteNotFound
 		})?;
@@ -1493,7 +1488,7 @@ where
 			recipient_onion.clone(), payment_id, keysend_preimage, &route, Some(retry_strategy),
 			Some(route_params.payment_params.clone()), entropy_source, best_block_height, None)
 			.map_err(|_| {
-				log_error!(self.logger, "Payment with id {} is already pending. New payment had payment hash {}",
+				log_error!(logger, "Payment with id {} is already pending. New payment had payment hash {}",
 					payment_id, payment_hash);
 				RetryableSendFailure::DuplicatePayment
 			})?;
@@ -1501,7 +1496,7 @@ where
 		let res = self.pay_route_internal(&route, payment_hash, &recipient_onion,
 			keysend_preimage, None, None, payment_id, None, &onion_session_privs, false, node_signer,
 			best_block_height, &send_payment_along_path);
-		log_info!(self.logger, "Sending payment with id {} and hash {} returned {:?}",
+		log_info!(logger, "Sending payment with id {} and hash {} returned {:?}",
 			payment_id, payment_hash, res);
 		if let Err(e) = res {
 			self.handle_pay_route_err(
@@ -1530,7 +1525,7 @@ where
 	{
 		#[cfg(feature = "std")] {
 			if has_expired(&route_params) {
-				log_error!(self.logger, "Payment params expired on retry, abandoning payment {}", &payment_id);
+				log_error!(logger, "Payment params expired on retry, abandoning payment {}", &payment_id);
 				self.abandon_payment(payment_id, PaymentFailureReason::PaymentExpired, pending_events);
 				return
 			}
@@ -1543,7 +1538,7 @@ where
 		) {
 			Ok(route) => route,
 			Err(e) => {
-				log_error!(self.logger, "Failed to find a route on retry, abandoning payment {}: {:#?}", &payment_id, e);
+				log_error!(logger, "Failed to find a route on retry, abandoning payment {}: {:#?}", &payment_id, e);
 				self.abandon_payment(payment_id, PaymentFailureReason::RouteNotFound, pending_events);
 				return
 			}
@@ -1557,7 +1552,7 @@ where
 
 		for path in route.paths.iter() {
 			if path.hops.len() == 0 {
-				log_error!(self.logger, "Unusable path in route (path.hops.len() must be at least 1");
+				log_error!(logger, "Unusable path in route (path.hops.len() must be at least 1");
 				self.abandon_payment(payment_id, PaymentFailureReason::UnexpectedError, pending_events);
 				return
 			}
@@ -1590,13 +1585,13 @@ where
 							const RETRY_OVERFLOW_PERCENTAGE: u64 = 10;
 							let retry_amt_msat = route.get_total_amount();
 							if retry_amt_msat + *pending_amt_msat > *total_msat * (100 + RETRY_OVERFLOW_PERCENTAGE) / 100 {
-								log_error!(self.logger, "retry_amt_msat of {} will put pending_amt_msat (currently: {}) more than 10% over total_payment_amt_msat of {}", retry_amt_msat, pending_amt_msat, total_msat);
+								log_error!(logger, "retry_amt_msat of {} will put pending_amt_msat (currently: {}) more than 10% over total_payment_amt_msat of {}", retry_amt_msat, pending_amt_msat, total_msat);
 								abandon_with_entry!(payment, PaymentFailureReason::UnexpectedError);
 								return
 							}
 
 							if !payment.get().is_retryable_now() {
-								log_error!(self.logger, "Retries exhausted for payment id {}", &payment_id);
+								log_error!(logger, "Retries exhausted for payment id {}", &payment_id);
 								abandon_with_entry!(payment, PaymentFailureReason::RetriesExhausted);
 								return
 							}
@@ -1625,38 +1620,38 @@ where
 							(total_msat, recipient_onion, keysend_preimage, onion_session_privs, invoice_request, bolt12_invoice.cloned())
 						},
 						PendingOutboundPayment::Legacy { .. } => {
-							log_error!(self.logger, "Unable to retry payments that were initially sent on LDK versions prior to 0.0.102");
+							log_error!(logger, "Unable to retry payments that were initially sent on LDK versions prior to 0.0.102");
 							return
 						},
 						PendingOutboundPayment::AwaitingInvoice { .. }
 							| PendingOutboundPayment::AwaitingOffer { .. } =>
 						{
-							log_error!(self.logger, "Payment not yet sent");
+							log_error!(logger, "Payment not yet sent");
 							debug_assert!(false);
 							return
 						},
 						PendingOutboundPayment::InvoiceReceived { .. } => {
-							log_error!(self.logger, "Payment already initiating");
+							log_error!(logger, "Payment already initiating");
 							debug_assert!(false);
 							return
 						},
 						PendingOutboundPayment::StaticInvoiceReceived { .. } => {
-							log_error!(self.logger, "Payment already initiating");
+							log_error!(logger, "Payment already initiating");
 							debug_assert!(false);
 							return
 						},
 						PendingOutboundPayment::Fulfilled { .. } => {
-							log_error!(self.logger, "Payment already completed");
+							log_error!(logger, "Payment already completed");
 							return
 						},
 						PendingOutboundPayment::Abandoned { .. } => {
-							log_error!(self.logger, "Payment already abandoned (with some HTLCs still pending)");
+							log_error!(logger, "Payment already abandoned (with some HTLCs still pending)");
 							return
 						},
 					}
 				},
 				hash_map::Entry::Vacant(_) => {
-					log_error!(self.logger, "Payment with ID {} not found", &payment_id);
+					log_error!(logger, "Payment with ID {} not found", &payment_id);
 					return
 				}
 			}
@@ -1664,7 +1659,7 @@ where
 		let res = self.pay_route_internal(&route, payment_hash, &recipient_onion, keysend_preimage,
 			invoice_request.as_ref(), bolt12_invoice.as_ref(), payment_id, Some(total_msat),
 			&onion_session_privs, false, node_signer, best_block_height, &send_payment_along_path);
-		log_info!(self.logger, "Result retrying payment id {}: {:?}", &payment_id, res);
+		log_info!(logger, "Result retrying payment id {}: {:?}", &payment_id, res);
 		if let Err(e) = res {
 			self.handle_pay_route_err(
 				e, payment_id, payment_hash, route, route_params, onion_session_privs, router, first_hops,
@@ -1693,7 +1688,7 @@ where
 		match err {
 			PaymentSendFailure::AllFailedResendSafe(errs) => {
 				self.remove_session_privs(payment_id, route.paths.iter().zip(onion_session_privs.iter()));
-				Self::push_path_failed_evs_and_scids(payment_id, payment_hash, &mut route_params, route.paths, errs.into_iter().map(|e| Err(e)), &self.logger, pending_events);
+				Self::push_path_failed_evs_and_scids(payment_id, payment_hash, &mut route_params, route.paths, errs.into_iter().map(|e| Err(e)), pending_events);
 				self.find_route_and_send_payment(payment_hash, payment_id, route_params, router, first_hops, inflight_htlcs, entropy_source, node_signer, best_block_height, pending_events, send_payment_along_path);
 			},
 			PaymentSendFailure::PartialFailure { failed_paths_retry: Some(mut retry), results, .. } => {
@@ -1710,7 +1705,7 @@ where
 						}
 					});
 				self.remove_session_privs(payment_id, failed_paths);
-				Self::push_path_failed_evs_and_scids(payment_id, payment_hash, &mut retry, route.paths, results.into_iter(), &self.logger, pending_events);
+				Self::push_path_failed_evs_and_scids(payment_id, payment_hash, &mut retry, route.paths, results.into_iter(), pending_events);
 				// Some paths were sent, even if we failed to send the full MPP value our recipient may
 				// misbehave and claim the funds, at which point we have to consider the payment sent, so
 				// return `Ok()` here, ignoring any retry errors.
@@ -1722,13 +1717,13 @@ where
 				// initial HTLC-Add messages yet.
 			},
 			PaymentSendFailure::PathParameterError(results) => {
-				log_error!(self.logger, "Failed to send to route due to parameter error in a single path. Your router is buggy");
+				log_error!(logger, "Failed to send to route due to parameter error in a single path. Your router is buggy");
 				self.remove_session_privs(payment_id, route.paths.iter().zip(onion_session_privs.iter()));
-				Self::push_path_failed_evs_and_scids(payment_id, payment_hash, &mut route_params, route.paths, results.into_iter(), &self.logger, pending_events);
+				Self::push_path_failed_evs_and_scids(payment_id, payment_hash, &mut route_params, route.paths, results.into_iter(), pending_events);
 				self.abandon_payment(payment_id, PaymentFailureReason::UnexpectedError, pending_events);
 			},
 			PaymentSendFailure::ParameterError(e) => {
-				log_error!(self.logger, "Failed to send to route due to parameter error: {:?}. Your router is buggy", e);
+				log_error!(logger, "Failed to send to route due to parameter error: {:?}. Your router is buggy", e);
 				self.remove_session_privs(payment_id, route.paths.iter().zip(onion_session_privs.iter()));
 				self.abandon_payment(payment_id, PaymentFailureReason::UnexpectedError, pending_events);
 			},
@@ -1740,7 +1735,7 @@ where
 		I: ExactSizeIterator + Iterator<Item = Result<(), APIError>>,
 	>(
 		payment_id: PaymentId, payment_hash: PaymentHash, route_params: &mut RouteParameters,
-		paths: Vec<Path>, path_results: I, logger: &L,
+		paths: Vec<Path>, path_results: I,
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
 	) {
 		let mut events = pending_events.lock().unwrap();
@@ -2228,7 +2223,7 @@ where
 		if let hash_map::Entry::Occupied(mut payment) = outbounds.entry(payment_id) {
 			if !payment.get().is_fulfilled() {
 				let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0).to_byte_array());
-				log_info!(self.logger, "Payment with id {} and hash {} sent!", payment_id, payment_hash);
+				log_info!(logger, "Payment with id {} and hash {} sent!", payment_id, payment_hash);
 				let fee_paid_msat = payment.get().get_pending_fee_msat();
 				let amount_msat = payment.get().total_msat();
 				pending_events.push_back((events::Event::PaymentSent {
@@ -2258,7 +2253,7 @@ where
 				}
 			}
 		} else {
-			log_trace!(self.logger, "Received duplicative fulfill for HTLC with payment_preimage {}", &payment_preimage);
+			log_trace!(logger, "Received duplicative fulfill for HTLC with payment_preimage {}", &payment_preimage);
 		}
 	}
 
@@ -2395,7 +2390,7 @@ where
 			failed_within_blinded_path,
 			hold_times,
 			..
-		} = onion_error.decode_onion_failure(secp_ctx, &self.logger, &source);
+		} = onion_error.decode_onion_failure(secp_ctx, &logger, &source);
 		#[cfg(not(any(test, feature = "_test_utils")))]
 		let DecodedOnionFailure {
 			network_update,
@@ -2404,7 +2399,7 @@ where
 			failed_within_blinded_path,
 			hold_times,
 			..
-		} = onion_error.decode_onion_failure(secp_ctx, &self.logger, &source);
+		} = onion_error.decode_onion_failure(secp_ctx, &logger, &source);
 
 		let payment_is_probe = payment_is_probe(payment_hash, &payment_id, probing_cookie_secret);
 		let mut session_priv_bytes = [0; 32];
@@ -2429,7 +2424,7 @@ where
 			if let hash_map::Entry::Occupied(mut payment) = outbounds.entry(*payment_id) {
 				if !payment.get_mut().remove(&session_priv_bytes, Some(&path)) {
 					log_trace!(
-						self.logger,
+						logger,
 						"Received duplicative fail for HTLC with payment_hash {}",
 						&payment_hash
 					);
@@ -2437,7 +2432,7 @@ where
 				}
 				if payment.get().is_fulfilled() {
 					log_trace!(
-						self.logger,
+						logger,
 						"Received failure of HTLC with payment_hash {} after payment completion",
 						&payment_hash
 					);
@@ -2485,18 +2480,13 @@ where
 				is_retryable_now
 			} else {
 				log_trace!(
-					self.logger,
-					"Received duplicative fail for HTLC with payment_hash {}",
-					&payment_hash
+					logger,
+					"Received duplicative fail for HTLC with payment_hash {payment_hash}"
 				);
 				return;
 			};
 		core::mem::drop(outbounds);
-		log_trace!(
-			self.logger,
-			"Failing outbound payment HTLC with payment_hash {}",
-			&payment_hash
-		);
+		log_trace!(logger, "Failing outbound payment HTLC with payment_hash {payment_hash}");
 
 		let path_failure = {
 			if payment_is_probe {
@@ -2670,12 +2660,12 @@ where
 						entry.get_mut().insert(session_priv_bytes, &path)
 					},
 				};
-				log_info!(self.logger, "{} a pending payment path for {} msat for session priv {} on an existing pending payment with payment hash {}",
+				log_info!(logger, "{} a pending payment path for {} msat for session priv {} on an existing pending payment with payment hash {}",
 					if newly_added { "Added" } else { "Had" }, path_amt, log_bytes!(session_priv_bytes), payment_hash);
 			},
 			hash_map::Entry::Vacant(entry) => {
 				entry.insert(new_retryable!());
-				log_info!(self.logger, "Added a pending payment for {} msat with payment hash {} for path with session priv {}",
+				log_info!(logger, "Added a pending payment for {} msat with payment hash {} for path with session priv {}",
 					path_amt, payment_hash,  log_bytes!(session_priv_bytes));
 			},
 		}
@@ -2834,6 +2824,7 @@ mod tests {
 	use crate::types::payment::{PaymentHash, PaymentPreimage};
 	use crate::util::errors::APIError;
 	use crate::util::hash_tables::new_hash_map;
+	use crate::util::logger::WithContext;
 	use crate::util::test_utils;
 
 	use alloc::collections::VecDeque;
@@ -2871,7 +2862,9 @@ mod tests {
 	#[rustfmt::skip]
 	fn do_fails_paying_after_expiration(on_retry: bool) {
 		let logger = test_utils::TestLogger::new();
-		let outbound_payments = OutboundPayments::new(new_hash_map(), &logger);
+		let logger_ref = &logger;
+		let log = WithContext::from(&logger_ref, None, None, Some(PaymentHash([0; 32])));
+		let outbound_payments = OutboundPayments::new(new_hash_map());
 		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &logger));
 		let scorer = RwLock::new(test_utils::TestScorer::new());
 		let router = test_utils::TestRouter::new(network_graph, &logger, &scorer);
@@ -2889,11 +2882,11 @@ mod tests {
 			outbound_payments.add_new_pending_payment(PaymentHash([0; 32]), RecipientOnionFields::spontaneous_empty(),
 				PaymentId([0; 32]), None, &Route { paths: vec![], route_params: None },
 				Some(Retry::Attempts(1)), Some(expired_route_params.payment_params.clone()),
-				&&keys_manager, 0, None).unwrap();
+				&&keys_manager, 0, None, &log).unwrap();
 			outbound_payments.find_route_and_send_payment(
 				PaymentHash([0; 32]), PaymentId([0; 32]), expired_route_params, &&router, vec![],
 				&|| InFlightHtlcs::new(), &&keys_manager, &&keys_manager, 0, &pending_events,
-				&|_| Ok(()));
+				&|_| Ok(()), &log);
 			let events = pending_events.lock().unwrap();
 			assert_eq!(events.len(), 1);
 			if let Event::PaymentFailed { ref reason, .. } = events[0].0 {
@@ -2903,7 +2896,7 @@ mod tests {
 			let err = outbound_payments.send_payment(
 				PaymentHash([0; 32]), RecipientOnionFields::spontaneous_empty(), PaymentId([0; 32]),
 				Retry::Attempts(0), expired_route_params, &&router, vec![], || InFlightHtlcs::new(),
-				&&keys_manager, &&keys_manager, 0, &pending_events, |_| Ok(())).unwrap_err();
+				&&keys_manager, &&keys_manager, 0, &pending_events, |_| Ok(()), &log).unwrap_err();
 			if let RetryableSendFailure::PaymentExpired = err { } else { panic!("Unexpected error"); }
 		}
 	}
@@ -2916,7 +2909,9 @@ mod tests {
 	#[rustfmt::skip]
 	fn do_find_route_error(on_retry: bool) {
 		let logger = test_utils::TestLogger::new();
-		let outbound_payments = OutboundPayments::new(new_hash_map(), &logger);
+		let logger_ref = &logger;
+		let log = WithContext::from(&logger_ref, None, None, Some(PaymentHash([0; 32])));
+		let outbound_payments = OutboundPayments::new(new_hash_map());
 		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &logger));
 		let scorer = RwLock::new(test_utils::TestScorer::new());
 		let router = test_utils::TestRouter::new(network_graph, &logger, &scorer);
@@ -2933,11 +2928,11 @@ mod tests {
 			outbound_payments.add_new_pending_payment(PaymentHash([0; 32]), RecipientOnionFields::spontaneous_empty(),
 				PaymentId([0; 32]), None, &Route { paths: vec![], route_params: None },
 				Some(Retry::Attempts(1)), Some(route_params.payment_params.clone()),
-				&&keys_manager, 0, None).unwrap();
+				&&keys_manager, 0, None, &log).unwrap();
 			outbound_payments.find_route_and_send_payment(
 				PaymentHash([0; 32]), PaymentId([0; 32]), route_params, &&router, vec![],
 				&|| InFlightHtlcs::new(), &&keys_manager, &&keys_manager, 0, &pending_events,
-				&|_| Ok(()));
+				&|_| Ok(()), &log);
 			let events = pending_events.lock().unwrap();
 			assert_eq!(events.len(), 1);
 			if let Event::PaymentFailed { .. } = events[0].0 { } else { panic!("Unexpected event"); }
@@ -2945,7 +2940,7 @@ mod tests {
 			let err = outbound_payments.send_payment(
 				PaymentHash([0; 32]), RecipientOnionFields::spontaneous_empty(), PaymentId([0; 32]),
 				Retry::Attempts(0), route_params, &&router, vec![], || InFlightHtlcs::new(),
-				&&keys_manager, &&keys_manager, 0, &pending_events, |_| Ok(())).unwrap_err();
+				&&keys_manager, &&keys_manager, 0, &pending_events, |_| Ok(()), &log).unwrap_err();
 			if let RetryableSendFailure::RouteNotFound = err {
 			} else { panic!("Unexpected error"); }
 		}
@@ -2955,7 +2950,9 @@ mod tests {
 	#[rustfmt::skip]
 	fn initial_send_payment_path_failed_evs() {
 		let logger = test_utils::TestLogger::new();
-		let outbound_payments = OutboundPayments::new(new_hash_map(), &logger);
+		let logger_ref = &logger;
+		let log = WithContext::from(&logger_ref, None, None, Some(PaymentHash([0; 32])));
+		let outbound_payments = OutboundPayments::new(new_hash_map());
 		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &logger));
 		let scorer = RwLock::new(test_utils::TestScorer::new());
 		let router = test_utils::TestRouter::new(network_graph, &logger, &scorer);
@@ -2995,7 +2992,7 @@ mod tests {
 			PaymentHash([0; 32]), RecipientOnionFields::spontaneous_empty(), PaymentId([0; 32]),
 			Retry::Attempts(0), route_params.clone(), &&router, vec![], || InFlightHtlcs::new(),
 			&&keys_manager, &&keys_manager, 0, &pending_events,
-			|_| Err(APIError::ChannelUnavailable { err: "test".to_owned() })).unwrap();
+			|_| Err(APIError::ChannelUnavailable { err: "test".to_owned() }), &log).unwrap();
 		let mut events = pending_events.lock().unwrap();
 		assert_eq!(events.len(), 2);
 		if let Event::PaymentPathFailed {
@@ -3013,7 +3010,7 @@ mod tests {
 			PaymentHash([0; 32]), RecipientOnionFields::spontaneous_empty(), PaymentId([0; 32]),
 			Retry::Attempts(0), route_params.clone(), &&router, vec![], || InFlightHtlcs::new(),
 			&&keys_manager, &&keys_manager, 0, &pending_events,
-			|_| Err(APIError::MonitorUpdateInProgress)).unwrap();
+			|_| Err(APIError::MonitorUpdateInProgress), &log).unwrap();
 		assert_eq!(pending_events.lock().unwrap().len(), 0);
 
 		// Ensure that any other error will result in a PaymentPathFailed event but no blamed scid.
@@ -3021,7 +3018,7 @@ mod tests {
 			PaymentHash([0; 32]), RecipientOnionFields::spontaneous_empty(), PaymentId([1; 32]),
 			Retry::Attempts(0), route_params.clone(), &&router, vec![], || InFlightHtlcs::new(),
 			&&keys_manager, &&keys_manager, 0, &pending_events,
-			|_| Err(APIError::APIMisuseError { err: "test".to_owned() })).unwrap();
+			|_| Err(APIError::APIMisuseError { err: "test".to_owned() }), &log).unwrap();
 		let events = pending_events.lock().unwrap();
 		assert_eq!(events.len(), 2);
 		if let Event::PaymentPathFailed {
@@ -3038,32 +3035,34 @@ mod tests {
 	fn removes_stale_awaiting_invoice_using_absolute_timeout() {
 		let pending_events = Mutex::new(VecDeque::new());
 		let logger = test_utils::TestLogger::new();
-		let outbound_payments = OutboundPayments::new(new_hash_map(), &logger);
+		let logger_ref = &logger;
+		let log = WithContext::from(&logger_ref, None, None, Some(PaymentHash([0; 32])));
+		let outbound_payments = OutboundPayments::new(new_hash_map());
 		let payment_id = PaymentId([0; 32]);
 		let absolute_expiry = 100;
 		let tick_interval = 10;
 		let expiration = StaleExpiration::AbsoluteTimeout(Duration::from_secs(absolute_expiry));
 
-		assert!(!outbound_payments.has_pending_payments());
+		assert!(!outbound_payments.has_pending_payments(&log));
 		assert!(
 			outbound_payments.add_new_awaiting_invoice(
-				payment_id, expiration, Retry::Attempts(0), RouteParametersConfig::default(), None,
+				payment_id, expiration, Retry::Attempts(0), RouteParametersConfig::default(), None, &log,
 			).is_ok()
 		);
-		assert!(outbound_payments.has_pending_payments());
+		assert!(outbound_payments.has_pending_payments(&log));
 
 		for seconds_since_epoch in (0..absolute_expiry).step_by(tick_interval) {
 			let duration_since_epoch = Duration::from_secs(seconds_since_epoch);
-			outbound_payments.remove_stale_payments(duration_since_epoch, &pending_events);
+			outbound_payments.remove_stale_payments(duration_since_epoch, &pending_events, &log);
 
-			assert!(outbound_payments.has_pending_payments());
+			assert!(outbound_payments.has_pending_payments(&log));
 			assert!(pending_events.lock().unwrap().is_empty());
 		}
 
 		let duration_since_epoch = Duration::from_secs(absolute_expiry);
-		outbound_payments.remove_stale_payments(duration_since_epoch, &pending_events);
+		outbound_payments.remove_stale_payments(duration_since_epoch, &pending_events, &log);
 
-		assert!(!outbound_payments.has_pending_payments());
+		assert!(!outbound_payments.has_pending_payments(&log));
 		assert!(!pending_events.lock().unwrap().is_empty());
 		assert_eq!(
 			pending_events.lock().unwrap().pop_front(),
@@ -3077,14 +3076,14 @@ mod tests {
 
 		assert!(
 			outbound_payments.add_new_awaiting_invoice(
-				payment_id, expiration, Retry::Attempts(0), RouteParametersConfig::default(), None,
+				payment_id, expiration, Retry::Attempts(0), RouteParametersConfig::default(), None, &log,
 			).is_ok()
 		);
-		assert!(outbound_payments.has_pending_payments());
+		assert!(outbound_payments.has_pending_payments(&log));
 
 		assert!(
 			outbound_payments.add_new_awaiting_invoice(
-				payment_id, expiration, Retry::Attempts(0), RouteParametersConfig::default(), None,
+				payment_id, expiration, Retry::Attempts(0), RouteParametersConfig::default(), None, &log,
 			).is_err()
 		);
 	}
@@ -3094,31 +3093,33 @@ mod tests {
 	fn removes_stale_awaiting_invoice_using_timer_ticks() {
 		let pending_events = Mutex::new(VecDeque::new());
 		let logger = test_utils::TestLogger::new();
-		let outbound_payments = OutboundPayments::new(new_hash_map(), &logger);
+		let logger_ref = &logger;
+		let log = WithContext::from(&logger_ref, None, None, Some(PaymentHash([0; 32])));
+		let outbound_payments = OutboundPayments::new(new_hash_map());
 		let payment_id = PaymentId([0; 32]);
 		let timer_ticks = 3;
 		let expiration = StaleExpiration::TimerTicks(timer_ticks);
 
-		assert!(!outbound_payments.has_pending_payments());
+		assert!(!outbound_payments.has_pending_payments(&log));
 		assert!(
 			outbound_payments.add_new_awaiting_invoice(
-				payment_id, expiration, Retry::Attempts(0), RouteParametersConfig::default(), None,
+				payment_id, expiration, Retry::Attempts(0), RouteParametersConfig::default(), None, &log,
 			).is_ok()
 		);
-		assert!(outbound_payments.has_pending_payments());
+		assert!(outbound_payments.has_pending_payments(&log));
 
 		for i in 0..timer_ticks {
 			let duration_since_epoch = Duration::from_secs(i * 60);
-			outbound_payments.remove_stale_payments(duration_since_epoch, &pending_events);
+			outbound_payments.remove_stale_payments(duration_since_epoch, &pending_events, &log);
 
-			assert!(outbound_payments.has_pending_payments());
+			assert!(outbound_payments.has_pending_payments(&log));
 			assert!(pending_events.lock().unwrap().is_empty());
 		}
 
 		let duration_since_epoch = Duration::from_secs(timer_ticks * 60);
-		outbound_payments.remove_stale_payments(duration_since_epoch, &pending_events);
+		outbound_payments.remove_stale_payments(duration_since_epoch, &pending_events, &log);
 
-		assert!(!outbound_payments.has_pending_payments());
+		assert!(!outbound_payments.has_pending_payments(&log));
 		assert!(!pending_events.lock().unwrap().is_empty());
 		assert_eq!(
 			pending_events.lock().unwrap().pop_front(),
@@ -3132,14 +3133,14 @@ mod tests {
 
 		assert!(
 			outbound_payments.add_new_awaiting_invoice(
-				payment_id, expiration, Retry::Attempts(0), RouteParametersConfig::default(), None,
+				payment_id, expiration, Retry::Attempts(0), RouteParametersConfig::default(), None, &log,
 			).is_ok()
 		);
-		assert!(outbound_payments.has_pending_payments());
+		assert!(outbound_payments.has_pending_payments(&log));
 
 		assert!(
 			outbound_payments.add_new_awaiting_invoice(
-				payment_id, expiration, Retry::Attempts(0), RouteParametersConfig::default(), None,
+				payment_id, expiration, Retry::Attempts(0), RouteParametersConfig::default(), None, &log,
 			).is_err()
 		);
 	}
@@ -3149,22 +3150,24 @@ mod tests {
 	fn removes_abandoned_awaiting_invoice() {
 		let pending_events = Mutex::new(VecDeque::new());
 		let logger = test_utils::TestLogger::new();
-		let outbound_payments = OutboundPayments::new(new_hash_map(), &logger);
+		let logger_ref = &logger;
+		let log = WithContext::from(&logger_ref, None, None, Some(PaymentHash([0; 32])));
+		let outbound_payments = OutboundPayments::new(new_hash_map());
 		let payment_id = PaymentId([0; 32]);
 		let expiration = StaleExpiration::AbsoluteTimeout(Duration::from_secs(100));
 
-		assert!(!outbound_payments.has_pending_payments());
+		assert!(!outbound_payments.has_pending_payments(&log));
 		assert!(
 			outbound_payments.add_new_awaiting_invoice(
-				payment_id, expiration, Retry::Attempts(0), RouteParametersConfig::default(), None,
+				payment_id, expiration, Retry::Attempts(0), RouteParametersConfig::default(), None, &log,
 			).is_ok()
 		);
-		assert!(outbound_payments.has_pending_payments());
+		assert!(outbound_payments.has_pending_payments(&log));
 
 		outbound_payments.abandon_payment(
-			payment_id, PaymentFailureReason::UserAbandoned, &pending_events
+			payment_id, PaymentFailureReason::UserAbandoned, &pending_events, &log
 		);
-		assert!(!outbound_payments.has_pending_payments());
+		assert!(!outbound_payments.has_pending_payments(&log));
 		assert!(!pending_events.lock().unwrap().is_empty());
 		assert_eq!(
 			pending_events.lock().unwrap().pop_front(),
@@ -3180,6 +3183,8 @@ mod tests {
 	#[rustfmt::skip]
 	fn fails_sending_payment_for_expired_bolt12_invoice() {
 		let logger = test_utils::TestLogger::new();
+		let logger_ref = &logger;
+		let log = WithContext::from(&logger_ref, None, None, Some(PaymentHash([0; 32])));
 		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &logger));
 		let scorer = RwLock::new(test_utils::TestScorer::new());
 		let router = test_utils::TestRouter::new(network_graph, &logger, &scorer);
@@ -3189,16 +3194,16 @@ mod tests {
 		let nonce = Nonce([0; 16]);
 
 		let pending_events = Mutex::new(VecDeque::new());
-		let outbound_payments = OutboundPayments::new(new_hash_map(), &logger);
+		let outbound_payments = OutboundPayments::new(new_hash_map());
 		let payment_id = PaymentId([0; 32]);
 		let expiration = StaleExpiration::AbsoluteTimeout(Duration::from_secs(100));
 
 		assert!(
 			outbound_payments.add_new_awaiting_invoice(
-				payment_id, expiration, Retry::Attempts(0), RouteParametersConfig::default(), None,
+				payment_id, expiration, Retry::Attempts(0), RouteParametersConfig::default(), None, &log,
 			).is_ok()
 		);
-		assert!(outbound_payments.has_pending_payments());
+		assert!(outbound_payments.has_pending_payments(&log));
 
 		let created_at = now() - DEFAULT_RELATIVE_EXPIRY;
 		let invoice = OfferBuilder::new(recipient_pubkey())
@@ -3214,11 +3219,11 @@ mod tests {
 			outbound_payments.send_payment_for_bolt12_invoice(
 				&invoice, payment_id, &&router, vec![], Bolt12InvoiceFeatures::empty(),
 				|| InFlightHtlcs::new(), &&keys_manager, &&keys_manager, &EmptyNodeIdLookUp {},
-				&secp_ctx, 0, &pending_events, |_| panic!()
+				&secp_ctx, 0, &pending_events, |_| panic!(), &log
 			),
 			Err(Bolt12PaymentError::SendingFailed(RetryableSendFailure::PaymentExpired)),
 		);
-		assert!(!outbound_payments.has_pending_payments());
+		assert!(!outbound_payments.has_pending_payments(&log));
 
 		let payment_hash = Some(invoice.payment_hash());
 		let reason = Some(PaymentFailureReason::PaymentExpired);
@@ -3235,6 +3240,8 @@ mod tests {
 	#[rustfmt::skip]
 	fn fails_finding_route_for_bolt12_invoice() {
 		let logger = test_utils::TestLogger::new();
+		let logger_ref = &logger;
+		let log = WithContext::from(&logger_ref, None, None, Some(PaymentHash([0; 32])));
 		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &logger));
 		let scorer = RwLock::new(test_utils::TestScorer::new());
 		let router = test_utils::TestRouter::new(network_graph, &logger, &scorer);
@@ -3242,7 +3249,7 @@ mod tests {
 		let keys_manager = test_utils::TestKeysInterface::new(&[0; 32], Network::Testnet);
 
 		let pending_events = Mutex::new(VecDeque::new());
-		let outbound_payments = OutboundPayments::new(new_hash_map(), &logger);
+		let outbound_payments = OutboundPayments::new(new_hash_map());
 		let expanded_key = ExpandedKey::new([42; 32]);
 		let nonce = Nonce([0; 16]);
 		let payment_id = PaymentId([0; 32]);
@@ -3262,10 +3269,10 @@ mod tests {
 		assert!(
 			outbound_payments.add_new_awaiting_invoice(
 				payment_id, expiration, Retry::Attempts(0),
-				route_params_config, None,
+				route_params_config, None, &log,
 			).is_ok()
 		);
-		assert!(outbound_payments.has_pending_payments());
+		assert!(outbound_payments.has_pending_payments(&log));
 
 		let route_params = RouteParameters::from_payment_params_and_value(
 			PaymentParameters::from_bolt12_invoice(&invoice),
@@ -3277,11 +3284,11 @@ mod tests {
 			outbound_payments.send_payment_for_bolt12_invoice(
 				&invoice, payment_id, &&router, vec![], Bolt12InvoiceFeatures::empty(),
 				|| InFlightHtlcs::new(), &&keys_manager, &&keys_manager, &EmptyNodeIdLookUp {},
-				&secp_ctx, 0, &pending_events, |_| panic!()
+				&secp_ctx, 0, &pending_events, |_| panic!(), &log
 			),
 			Err(Bolt12PaymentError::SendingFailed(RetryableSendFailure::RouteNotFound)),
 		);
-		assert!(!outbound_payments.has_pending_payments());
+		assert!(!outbound_payments.has_pending_payments(&log));
 
 		let payment_hash = Some(invoice.payment_hash());
 		let reason = Some(PaymentFailureReason::RouteNotFound);
@@ -3298,6 +3305,8 @@ mod tests {
 	#[rustfmt::skip]
 	fn sends_payment_for_bolt12_invoice() {
 		let logger = test_utils::TestLogger::new();
+		let logger_ref = &logger;
+		let log = WithContext::from(&logger_ref, None, None, Some(PaymentHash([0; 32])));
 		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &logger));
 		let scorer = RwLock::new(test_utils::TestScorer::new());
 		let router = test_utils::TestRouter::new(network_graph, &logger, &scorer);
@@ -3305,7 +3314,7 @@ mod tests {
 		let keys_manager = test_utils::TestKeysInterface::new(&[0; 32], Network::Testnet);
 
 		let pending_events = Mutex::new(VecDeque::new());
-		let outbound_payments = OutboundPayments::new(new_hash_map(), &logger);
+		let outbound_payments = OutboundPayments::new(new_hash_map());
 		let expanded_key = ExpandedKey::new([42; 32]);
 		let nonce = Nonce([0; 16]);
 		let payment_id = PaymentId([0; 32]);
@@ -3348,47 +3357,47 @@ mod tests {
 			})
 		);
 
-		assert!(!outbound_payments.has_pending_payments());
+		assert!(!outbound_payments.has_pending_payments(&log));
 		assert_eq!(
 			outbound_payments.send_payment_for_bolt12_invoice(
 				&invoice, payment_id, &&router, vec![], Bolt12InvoiceFeatures::empty(),
 				|| InFlightHtlcs::new(), &&keys_manager, &&keys_manager, &EmptyNodeIdLookUp {},
-				&secp_ctx, 0, &pending_events, |_| panic!()
+				&secp_ctx, 0, &pending_events, |_| panic!(), &log
 			),
 			Err(Bolt12PaymentError::UnexpectedInvoice),
 		);
-		assert!(!outbound_payments.has_pending_payments());
+		assert!(!outbound_payments.has_pending_payments(&log));
 		assert!(pending_events.lock().unwrap().is_empty());
 
 		let route_params_config = RouteParametersConfig::default().with_max_total_routing_fee_msat(1234);
 
 		assert!(
 			outbound_payments.add_new_awaiting_invoice(
-				payment_id, expiration, Retry::Attempts(0), route_params_config, None,
+				payment_id, expiration, Retry::Attempts(0), route_params_config, None, &log,
 			).is_ok()
 		);
-		assert!(outbound_payments.has_pending_payments());
+		assert!(outbound_payments.has_pending_payments(&log));
 
 		assert_eq!(
 			outbound_payments.send_payment_for_bolt12_invoice(
 				&invoice, payment_id, &&router, vec![], Bolt12InvoiceFeatures::empty(),
 				|| InFlightHtlcs::new(), &&keys_manager, &&keys_manager, &EmptyNodeIdLookUp {},
-				&secp_ctx, 0, &pending_events, |_| Ok(())
+				&secp_ctx, 0, &pending_events, |_| Ok(()), &log
 			),
 			Ok(()),
 		);
-		assert!(outbound_payments.has_pending_payments());
+		assert!(outbound_payments.has_pending_payments(&log));
 		assert!(pending_events.lock().unwrap().is_empty());
 
 		assert_eq!(
 			outbound_payments.send_payment_for_bolt12_invoice(
 				&invoice, payment_id, &&router, vec![], Bolt12InvoiceFeatures::empty(),
 				|| InFlightHtlcs::new(), &&keys_manager, &&keys_manager, &EmptyNodeIdLookUp {},
-				&secp_ctx, 0, &pending_events, |_| panic!()
+				&secp_ctx, 0, &pending_events, |_| panic!(), &log
 			),
 			Err(Bolt12PaymentError::DuplicateInvoice),
 		);
-		assert!(outbound_payments.has_pending_payments());
+		assert!(outbound_payments.has_pending_payments(&log));
 		assert!(pending_events.lock().unwrap().is_empty());
 	}
 
@@ -3414,7 +3423,9 @@ mod tests {
 	fn time_out_unreleased_async_payments() {
 		let pending_events = Mutex::new(VecDeque::new());
 		let logger = test_utils::TestLogger::new();
-		let outbound_payments = OutboundPayments::new(new_hash_map(), &logger);
+		let logger_ref = &logger;
+		let log = WithContext::from(&logger_ref, None, None, Some(PaymentHash([0; 32])));
+		let outbound_payments = OutboundPayments::new(new_hash_map());
 		let payment_id = PaymentId([0; 32]);
 		let absolute_expiry = 60;
 
@@ -3440,7 +3451,7 @@ mod tests {
 		core::mem::drop(outbounds);
 
 		// The payment will not be removed if it isn't expired yet.
-		outbound_payments.remove_stale_payments(Duration::from_secs(absolute_expiry), &pending_events);
+		outbound_payments.remove_stale_payments(Duration::from_secs(absolute_expiry), &pending_events, &log);
 		let outbounds = outbound_payments.pending_outbound_payments.lock().unwrap();
 		assert_eq!(outbounds.len(), 1);
 		let events = pending_events.lock().unwrap();
@@ -3448,7 +3459,7 @@ mod tests {
 		core::mem::drop(outbounds);
 		core::mem::drop(events);
 
-		outbound_payments.remove_stale_payments(Duration::from_secs(absolute_expiry + 1), &pending_events);
+		outbound_payments.remove_stale_payments(Duration::from_secs(absolute_expiry + 1), &pending_events, &log);
 		let outbounds = outbound_payments.pending_outbound_payments.lock().unwrap();
 		assert_eq!(outbounds.len(), 0);
 		let events = pending_events.lock().unwrap();
@@ -3465,7 +3476,9 @@ mod tests {
 	fn abandon_unreleased_async_payment() {
 		let pending_events = Mutex::new(VecDeque::new());
 		let logger = test_utils::TestLogger::new();
-		let outbound_payments = OutboundPayments::new(new_hash_map(), &logger);
+		let logger_ref = &logger;
+		let log = WithContext::from(&logger_ref, None, None, Some(PaymentHash([0; 32])));
+		let outbound_payments = OutboundPayments::new(new_hash_map());
 		let payment_id = PaymentId([0; 32]);
 		let absolute_expiry = 60;
 
@@ -3491,7 +3504,7 @@ mod tests {
 		core::mem::drop(outbounds);
 
 		outbound_payments.abandon_payment(
-			payment_id, PaymentFailureReason::UserAbandoned, &pending_events
+			payment_id, PaymentFailureReason::UserAbandoned, &pending_events, &log
 		);
 		let outbounds = outbound_payments.pending_outbound_payments.lock().unwrap();
 		assert_eq!(outbounds.len(), 0);
