@@ -264,7 +264,11 @@ jobs:
       - name: Pin the syn and regex dependencies
         run: |
           cd fuzz && cargo update -p regex --precise "1.9.6" && cargo update -p syn --precise "2.0.106" && cargo update -p quote --precise "1.0.41"
+          cargo update -p proc-macro2 --precise "1.0.103" --verbose && cargo update -p serde_json --precise "1.0.145" --verbose
+          cargo update -p itoa --precise "1.0.15" --verbose && cargo update -p ryu --precise "1.0.20" --verbose
           cd write-seeds && cargo update -p regex --precise "1.9.6" && cargo update -p syn --precise "2.0.106" && cargo update -p quote --precise "1.0.41"
+          cargo update -p proc-macro2 --precise "1.0.103" --verbose && cargo update -p serde_json --precise "1.0.145" --verbose
+          cargo update -p itoa --precise "1.0.15" --verbose && cargo update -p ryu --precise "1.0.20" --verbose
       - name: Sanity check fuzz targets on Rust ${{ env.TOOLCHAIN }}
         run: |
           cd fuzz

@@ -7,6 +7,8 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
+//! Low-level onion manipulation logic and fields
+
 use super::msgs::OnionErrorPacket;
 use crate::blinded_path::BlindedHop;
 use crate::crypto::chacha20::ChaCha20;
@@ -979,48 +981,101 @@ mod fuzzy_onion_utils {
 		#[cfg(test)]
 		pub(crate) attribution_failed_channel: Option<u64>,
 	}
+
+	pub fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
+		secp_ctx: &Secp256k1<T>, logger: &L, htlc_source: &HTLCSource,
+		encrypted_packet: OnionErrorPacket,
+	) -> DecodedOnionFailure
+	where
+		L::Target: Logger,
+	{
+		let (path, primary_session_priv) = match htlc_source {
+			HTLCSource::OutboundRoute { ref path, ref session_priv, .. } => (path, session_priv),
+			_ => unreachable!(),
+		};
+
+		if path.has_trampoline_hops() {
+			// If we have Trampoline hops, the outer onion session_priv is a hash of the inner one.
+			let session_priv_hash =
+				Sha256::hash(&primary_session_priv.secret_bytes()).to_byte_array();
+			let outer_session_priv =
+				SecretKey::from_slice(&session_priv_hash[..]).expect("You broke SHA-256!");
+			process_onion_failure_inner(
+				secp_ctx,
+				logger,
+				path,
+				&outer_session_priv,
+				Some(primary_session_priv),
+				encrypted_packet,
+			)
+		} else {
+			process_onion_failure_inner(
+				secp_ctx,
+				logger,
+				path,
+				primary_session_priv,
+				None,
+				encrypted_packet,
+			)
+		}
+	}
+
+	/// Decodes the attribution data that we got back from upstream on a payment we sent.
+	pub fn decode_fulfill_attribution_data<T: secp256k1::Signing, L: Deref>(
+		secp_ctx: &Secp256k1<T>, logger: &L, path: &Path, outer_session_priv: &SecretKey,
+		mut attribution_data: AttributionData,
+	) -> Vec<u32>
+	where
+		L::Target: Logger,
+	{
+		let mut hold_times = Vec::new();
+
+		// Only consider hops in the regular path for attribution data. Blinded path attribution data isn't accessible.
+		let shared_secrets =
+			construct_onion_keys_generic(secp_ctx, &path.hops, None, outer_session_priv)
+				.map(|(shared_secret, _, _, _, _)| shared_secret);
+
+		// Path length can reach 27 hops, but attribution data can only be conveyed back to the sender from the first 20
+		// hops. Determine the number of hops to be used for attribution data.
+		let attributable_hop_count = usize::min(path.hops.len(), MAX_HOPS);
+
+		for (route_hop_idx, shared_secret) in
+			shared_secrets.enumerate().take(attributable_hop_count)
+		{
+			attribution_data.crypt(shared_secret.as_ref());
+
+			// Calculate position relative to the last attributable hop. The last attributable hop is at position 0. We need
+			// to look at the chain of HMACs that does include all data up to the last attributable hop. Hold times beyond
+			// the last attributable hop will not be available.
+			let position = attributable_hop_count - route_hop_idx - 1;
+			let res = attribution_data.verify(&Vec::new(), shared_secret.as_ref(), position);
+			match res {
+				Ok(hold_time) => {
+					hold_times.push(hold_time);
+
+					// Shift attribution data to prepare for processing the next hop.
+					attribution_data.shift_left();
+				},
+				Err(()) => {
+					// We will hit this if there is a node on the path that does not support fulfill attribution data.
+					log_debug!(
+						logger,
+						"Invalid fulfill HMAC in attribution data for node at pos {}",
+						route_hop_idx
+					);
+
+					break;
+				},
+			}
+		}
+
+		hold_times
+	}
 }
 #[cfg(fuzzing)]
 pub use self::fuzzy_onion_utils::*;
 #[cfg(not(fuzzing))]
 pub(crate) use self::fuzzy_onion_utils::*;
-
-pub fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
-	secp_ctx: &Secp256k1<T>, logger: &L, htlc_source: &HTLCSource,
-	encrypted_packet: OnionErrorPacket,
-) -> DecodedOnionFailure
-where
-	L::Target: Logger,
-{
-	let (path, primary_session_priv) = match htlc_source {
-		HTLCSource::OutboundRoute { ref path, ref session_priv, .. } => (path, session_priv),
-		_ => unreachable!(),
-	};
-
-	if path.has_trampoline_hops() {
-		// If we have Trampoline hops, the outer onion session_priv is a hash of the inner one.
-		let session_priv_hash = Sha256::hash(&primary_session_priv.secret_bytes()).to_byte_array();
-		let outer_session_priv =
-			SecretKey::from_slice(&session_priv_hash[..]).expect("You broke SHA-256!");
-		process_onion_failure_inner(
-			secp_ctx,
-			logger,
-			path,
-			&outer_session_priv,
-			Some(primary_session_priv),
-			encrypted_packet,
-		)
-	} else {
-		process_onion_failure_inner(
-			secp_ctx,
-			logger,
-			path,
-			primary_session_priv,
-			None,
-			encrypted_packet,
-		)
-	}
-}
 
 /// Process failure we got back from upstream on a payment we sent (implying htlc_source is an
 /// OutboundRoute).
@@ -1464,56 +1519,6 @@ where
 			attribution_failed_channel,
 		}
 	}
-}
-
-/// Decodes the attribution data that we got back from upstream on a payment we sent.
-pub fn decode_fulfill_attribution_data<T: secp256k1::Signing, L: Deref>(
-	secp_ctx: &Secp256k1<T>, logger: &L, path: &Path, outer_session_priv: &SecretKey,
-	mut attribution_data: AttributionData,
-) -> Vec<u32>
-where
-	L::Target: Logger,
-{
-	let mut hold_times = Vec::new();
-
-	// Only consider hops in the regular path for attribution data. Blinded path attribution data isn't accessible.
-	let shared_secrets =
-		construct_onion_keys_generic(secp_ctx, &path.hops, None, outer_session_priv)
-			.map(|(shared_secret, _, _, _, _)| shared_secret);
-
-	// Path length can reach 27 hops, but attribution data can only be conveyed back to the sender from the first 20
-	// hops. Determine the number of hops to be used for attribution data.
-	let attributable_hop_count = usize::min(path.hops.len(), MAX_HOPS);
-
-	for (route_hop_idx, shared_secret) in shared_secrets.enumerate().take(attributable_hop_count) {
-		attribution_data.crypt(shared_secret.as_ref());
-
-		// Calculate position relative to the last attributable hop. The last attributable hop is at position 0. We need
-		// to look at the chain of HMACs that does include all data up to the last attributable hop. Hold times beyond
-		// the last attributable hop will not be available.
-		let position = attributable_hop_count - route_hop_idx - 1;
-		let res = attribution_data.verify(&Vec::new(), shared_secret.as_ref(), position);
-		match res {
-			Ok(hold_time) => {
-				hold_times.push(hold_time);
-
-				// Shift attribution data to prepare for processing the next hop.
-				attribution_data.shift_left();
-			},
-			Err(()) => {
-				// We will hit this if there is a node on the path that does not support fulfill attribution data.
-				log_debug!(
-					logger,
-					"Invalid fulfill HMAC in attribution data for node at pos {}",
-					route_hop_idx
-				);
-
-				break;
-			},
-		}
-	}
-
-	hold_times
 }
 
 const BADONION: u16 = 0x8000;
@@ -2520,6 +2525,7 @@ where
 }
 
 /// Build a payment onion, returning the first hop msat and cltv values as well.
+///
 /// `cur_block_height` should be set to the best known block height + 1.
 pub fn create_payment_onion<T: secp256k1::Signing>(
 	secp_ctx: &Secp256k1<T>, path: &Path, session_priv: &SecretKey, total_msat: u64,
@@ -2708,22 +2714,28 @@ fn decode_next_hop<T, R: ReadableArgs<T>, N: NextPacketBytes>(
 	}
 }
 
-pub const HOLD_TIME_LEN: usize = 4;
-pub const MAX_HOPS: usize = 20;
-pub const HMAC_LEN: usize = 4;
+pub(crate) const HOLD_TIME_LEN: usize = 4;
+pub(crate) const MAX_HOPS: usize = 20;
+pub(crate) const HMAC_LEN: usize = 4;
 
 // Define the number of HMACs in the attributable data block. For the first node, there are 20 HMACs, and then for every
 // subsequent node, the number of HMACs decreases by 1. 20 + 19 + 18 + ... + 1 = 20 * 21 / 2 = 210.
-pub const HMAC_COUNT: usize = MAX_HOPS * (MAX_HOPS + 1) / 2;
+pub(crate) const HMAC_COUNT: usize = MAX_HOPS * (MAX_HOPS + 1) / 2;
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
+/// Attribution data allows the sender of an HTLC to identify which hop failed an HTLC robustly,
+/// preventing earlier hops from corrupting the HTLC failure information (or at least allowing the
+/// sender to identify the earliest hop which corrupted HTLC failure information).
+///
+/// Additionally, it allows a sender to identify how long each hop along a path held an HTLC, with
+/// 100ms granularity.
 pub struct AttributionData {
-	pub hold_times: [u8; MAX_HOPS * HOLD_TIME_LEN],
-	pub hmacs: [u8; HMAC_LEN * HMAC_COUNT],
+	hold_times: [u8; MAX_HOPS * HOLD_TIME_LEN],
+	hmacs: [u8; HMAC_LEN * HMAC_COUNT],
 }
 
 impl AttributionData {
-	pub fn new() -> Self {
+	pub(crate) fn new() -> Self {
 		Self { hold_times: [0; MAX_HOPS * HOLD_TIME_LEN], hmacs: [0; HMAC_LEN * HMAC_COUNT] }
 	}
 }
@@ -2772,7 +2784,7 @@ impl AttributionData {
 
 	/// Writes the HMACs corresponding to the given position that have been added already by downstream hops. Position is
 	/// relative to the final node. The final node is at position 0.
-	pub fn write_downstream_hmacs(&self, position: usize, w: &mut HmacEngine<Sha256>) {
+	pub(crate) fn write_downstream_hmacs(&self, position: usize, w: &mut HmacEngine<Sha256>) {
 		// Set the index to the first downstream HMAC that we need to include. Note that we skip the first MAX_HOPS HMACs
 		// because this is space reserved for the HMACs that we are producing for the current node.
 		let mut hmac_idx = MAX_HOPS + MAX_HOPS - position - 1;

@@ -9,10 +9,12 @@ use lightning::{
 	ln::{
 		channelmanager::{HTLCSource, PaymentId},
 		msgs::OnionErrorPacket,
+		onion_utils,
 	},
 	routing::router::{BlindedTail, Path, RouteHop, TrampolineHop},
 	types::features::{ChannelFeatures, NodeFeatures},
 	util::logger::Logger,
+	util::ser::Readable,
 };
 
 // Imports that need to be added manually
@@ -126,19 +128,18 @@ fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 	let failure_data = get_slice!(failure_len);
 
 	let attribution_data = if get_bool!() {
-		Some(lightning::ln::AttributionData {
-			hold_times: get_slice!(80).try_into().unwrap(),
-			hmacs: get_slice!(840).try_into().unwrap(),
-		})
+		let mut bytes = get_slice!(80 + 840);
+		let data: onion_utils::AttributionData = Readable::read(&mut bytes).unwrap();
+		Some(data)
 	} else {
 		None
 	};
 	let encrypted_packet =
 		OnionErrorPacket { data: failure_data.into(), attribution_data: attribution_data.clone() };
-	lightning::ln::process_onion_failure(&secp_ctx, &logger, &htlc_source, encrypted_packet);
+	onion_utils::process_onion_failure(&secp_ctx, &logger, &htlc_source, encrypted_packet);
 
 	if let Some(attribution_data) = attribution_data {
-		lightning::ln::decode_fulfill_attribution_data(
+		onion_utils::decode_fulfill_attribution_data(
 			&secp_ctx,
 			&logger,
 			&path,

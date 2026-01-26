@@ -8876,7 +8876,6 @@ where
 							update_fail_htlcs.len() + update_fail_malformed_htlcs.len(),
 							&self.context.channel_id);
 					} else {
-						debug_assert!(htlcs_to_fail.is_empty());
 						let reason = if self.context.channel_state.is_local_stfu_sent() {
 							"exits quiescence"
 						} else if self.context.channel_state.is_monitor_update_in_progress() {
