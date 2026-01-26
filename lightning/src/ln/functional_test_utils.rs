@@ -3486,7 +3486,7 @@ pub fn send_along_route_with_secret<'a, 'b, 'c>(
 	payment_id
 }
 
-fn fail_payment_along_path<'a, 'b, 'c>(expected_path: &[&Node<'a, 'b, 'c>]) {
+pub fn fail_payment_along_path<'a, 'b, 'c>(expected_path: &[&Node<'a, 'b, 'c>]) {
 	let origin_node_id = expected_path[0].node.get_our_node_id();
 
 	// iterate from the receiving node to the origin node and handle update fail htlc.
