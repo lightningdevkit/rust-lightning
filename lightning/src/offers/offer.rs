@@ -2528,5 +2528,12 @@ mod bolt12_tests {
 			"lno1pgx9getnwss8vetrw3hhyucsespjgef743p5fzqq9nqxh0ah7y87rzv3ud0eleps9kl2d5348hq2k8qzqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgqpqqqqqqqqqqqqqqqqqqqqqqqqqqqzqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqqzq3zyg3zyg3zygszqqqqyqqqqsqqvpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqsq".parse::<Offer>(),
 			Err(Bolt12ParseError::Decode(DecodeError::InvalidValue)),
 		);
+
+		// Bech32 padding exceeds 4-bit limit (BOLT 12 test vector)
+		// See: https://github.com/lightning/bolts/pull/1312
+		assert!(matches!(
+			"lno1zcss9mk8y3wkklfvevcrszlmu23kfrxh49px20665dqwmn4p72pkseseq".parse::<Offer>(),
+			Err(Bolt12ParseError::InvalidPadding(_))
+		));
 	}
 }

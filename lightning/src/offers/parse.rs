@@ -12,7 +12,7 @@
 use crate::io;
 use crate::ln::msgs::DecodeError;
 use crate::util::ser::CursorReadable;
-use bech32::primitives::decode::CheckedHrpstringError;
+use bech32::primitives::decode::{CheckedHrpstringError, PaddingError};
 use bitcoin::secp256k1;
 
 #[allow(unused_imports)]
@@ -75,6 +75,10 @@ mod sealed {
 			if hrp.lowercase_char_iter().ne(Self::BECH32_HRP.chars()) {
 				return Err(Bolt12ParseError::InvalidBech32Hrp);
 			}
+
+			// Validate that bech32 padding is valid per BIP-173:
+			// "Any incomplete group at the end MUST be 4 bits or less, MUST be all zeroes"
+			parsed.validate_segwit_padding()?;
 
 			let data = parsed.byte_iter().collect::<Vec<u8>>();
 			Self::try_from(data)
@@ -145,6 +149,11 @@ pub enum Bolt12ParseError {
 	Bech32(
 		/// This is not exported to bindings users as the details don't matter much
 		CheckedHrpstringError,
+	),
+	/// The bech32 data has invalid padding per BIP-173 (more than 4 bits or non-zero padding).
+	InvalidPadding(
+		/// This is not exported to bindings users as the details don't matter much
+		PaddingError,
 	),
 	/// The bech32 decoded string could not be decoded as the expected message type.
 	Decode(DecodeError),
@@ -229,6 +238,12 @@ pub enum Bolt12SemanticError {
 impl From<CheckedHrpstringError> for Bolt12ParseError {
 	fn from(error: CheckedHrpstringError) -> Self {
 		Self::Bech32(error)
+	}
+}
+
+impl From<PaddingError> for Bolt12ParseError {
+	fn from(error: PaddingError) -> Self {
+		Self::InvalidPadding(error)
 	}
 }
 
@@ -326,7 +341,7 @@ mod bolt12_tests {
 
 #[cfg(test)]
 mod tests {
-	use super::Bolt12ParseError;
+	use super::{Bolt12ParseError, PaddingError};
 	use crate::ln::msgs::DecodeError;
 	use crate::offers::offer::Offer;
 	use bech32::primitives::decode::{CharError, CheckedHrpstringError, UncheckedHrpstringError};
@@ -369,6 +384,17 @@ mod tests {
 		match encoded_offer.parse::<Offer>() {
 			Ok(_) => panic!("Valid offer: {}", encoded_offer),
 			Err(e) => assert_eq!(e, Bolt12ParseError::Decode(DecodeError::InvalidValue)),
+		}
+	}
+
+	#[test]
+	fn fails_parsing_bech32_encoded_offer_with_invalid_padding() {
+		// BOLT 12 test vector for invalid bech32 padding
+		// See: https://github.com/lightning/bolts/pull/1312
+		let encoded_offer = "lno1zcss9mk8y3wkklfvevcrszlmu23kfrxh49px20665dqwmn4p72pkseseq";
+		match encoded_offer.parse::<Offer>() {
+			Ok(_) => panic!("Valid offer: {}", encoded_offer),
+			Err(e) => assert_eq!(e, Bolt12ParseError::InvalidPadding(PaddingError::TooMuch)),
 		}
 	}
 }
