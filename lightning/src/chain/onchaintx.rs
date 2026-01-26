@@ -34,7 +34,6 @@ use crate::ln::chan_utils::{
 };
 use crate::ln::msgs::DecodeError;
 use crate::sign::{ecdsa::EcdsaChannelSigner, EntropySource, HTLCDescriptor, SignerProvider};
-use crate::util::logger::Logger;
 use crate::util::ser::{
 	MaybeReadable, Readable, ReadableArgs, UpgradableRequired, Writeable, Writer,
 };
@@ -485,10 +484,10 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 	/// invoking this every 30 seconds, or lower if running in an environment with spotty
 	/// connections, like on mobile.
 	#[rustfmt::skip]
-	pub(super) fn rebroadcast_pending_claims<B: Deref, F: Deref, L: Logger>(
+	pub(super) fn rebroadcast_pending_claims<B: Deref, F: Deref>(
 		&mut self, current_height: u32, feerate_strategy: FeerateStrategy, broadcaster: &B,
 		conf_target: ConfirmationTarget, destination_script: &Script,
-		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
+		fee_estimator: &LowerBoundedFeeEstimator<F>,
 	)
 	where
 		B::Target: BroadcasterInterface,
@@ -497,13 +496,13 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 		let mut bump_requests = Vec::with_capacity(self.pending_claim_requests.len());
 		for (claim_id, request) in self.pending_claim_requests.iter() {
 			let inputs = request.outpoints();
-			log_info!(logger, "Triggering rebroadcast/fee-bump for request with inputs {:?}", inputs);
+			log_info!("Triggering rebroadcast/fee-bump for request with inputs {:?}", inputs);
 			bump_requests.push((*claim_id, request.clone()));
 		}
 		for (claim_id, request) in bump_requests {
 			self.generate_claim(
 				current_height, &request, &feerate_strategy, conf_target, destination_script,
-				fee_estimator, logger,
+				fee_estimator,
 			)
 				.map(|(_, new_feerate, claim)| {
 					let mut feerate_was_bumped = false;
@@ -515,15 +514,15 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 						OnchainClaim::Tx(tx) => {
 							if tx.is_fully_signed() {
 								let log_start = if feerate_was_bumped { "Broadcasting RBF-bumped" } else { "Rebroadcasting" };
-								log_info!(logger, "{} onchain {}", log_start, log_tx!(tx.0));
+								log_info!("{} onchain {}", log_start, log_tx!(tx.0));
 								broadcaster.broadcast_transactions(&[&tx.0]);
 							} else {
-								log_info!(logger, "Waiting for signature of unsigned onchain transaction {}", tx.0.compute_txid());
+								log_info!("Waiting for signature of unsigned onchain transaction {}", tx.0.compute_txid());
 							}
 						},
 						OnchainClaim::Event(event) => {
 							let log_start = if feerate_was_bumped { "Yielding fee-bumped" } else { "Replaying" };
-							log_info!(logger, "{} onchain event to spend inputs {:?}", log_start,
+							log_info!("{} onchain event to spend inputs {:?}", log_start,
 								request.outpoints());
 							#[cfg(debug_assertions)] {
 								debug_assert!(request.requires_external_funding());
@@ -554,10 +553,10 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 	/// Panics if there are signing errors, because signing operations in reaction to on-chain
 	/// events are not expected to fail, and if they do, we may lose funds.
 	#[rustfmt::skip]
-	fn generate_claim<F: Deref, L: Logger>(
+	fn generate_claim<F: Deref>(
 		&mut self, cur_height: u32, cached_request: &PackageTemplate,
 		feerate_strategy: &FeerateStrategy, conf_target: ConfirmationTarget,
-		destination_script: &Script, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
+		destination_script: &Script, fee_estimator: &LowerBoundedFeeEstimator<F>
 	) -> Option<(u32, u64, OnchainClaim)>
 	where F::Target: FeeEstimator,
 	{
@@ -622,12 +621,12 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 			let predicted_weight = cached_request.package_weight(destination_script);
 			if let Some((output_value, new_feerate)) = cached_request.compute_package_output(
 				predicted_weight, destination_script.minimal_non_dust().to_sat(),
-				feerate_strategy, conf_target, fee_estimator, logger,
+				feerate_strategy, conf_target, fee_estimator,
 			) {
 				assert!(new_feerate != 0);
 
 				let transaction = cached_request.maybe_finalize_malleable_package(
-					cur_height, self, Amount::from_sat(output_value), destination_script.into(), logger
+					cur_height, self, Amount::from_sat(output_value), destination_script.into()
 				).unwrap();
 				assert!(predicted_weight >= transaction.0.weight().to_wu());
 				return Some((new_timer, new_feerate, OnchainClaim::Tx(transaction)));
@@ -640,7 +639,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 			debug_assert_eq!(inputs.len(), 1);
 
 			if !cached_request.requires_external_funding() {
-				return cached_request.maybe_finalize_untractable_package(self, logger)
+				return cached_request.maybe_finalize_untractable_package(self)
 					.map(|tx| (new_timer, 0, OnchainClaim::Tx(tx)))
 			}
 
@@ -761,16 +760,16 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 	/// does not need to equal the current blockchain tip height, which should be provided via
 	/// `cur_height`, however it must never be higher than `cur_height`.
 	#[rustfmt::skip]
-	pub(super) fn update_claims_view_from_requests<B: Deref, F: Deref, L: Logger>(
+	pub(super) fn update_claims_view_from_requests<B: Deref, F: Deref>(
 		&mut self, mut requests: Vec<PackageTemplate>, conf_height: u32, cur_height: u32,
 		broadcaster: &B, conf_target: ConfirmationTarget, destination_script: &Script,
-		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L
+		fee_estimator: &LowerBoundedFeeEstimator<F>,
 	) where
 		B::Target: BroadcasterInterface,
 		F::Target: FeeEstimator,
 	{
 		if !requests.is_empty() {
-			log_debug!(logger, "Updating claims view at height {} with {} claim requests", cur_height, requests.len());
+			log_debug!("Updating claims view at height {} with {} claim requests", cur_height, requests.len());
 		}
 
 		// First drop any duplicate claims.
@@ -787,14 +786,14 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 				}
 			}
 			if all_outpoints_claiming {
-				log_info!(logger, "Ignoring second claim for outpoint {}:{}, already registered its claiming request",
+				log_info!("Ignoring second claim for outpoint {}:{}, already registered its claiming request",
 					req.outpoints()[0].txid, req.outpoints()[0].vout);
 				false
 			} else {
 				let timelocked_equivalent_package = self.locktimed_packages.iter().map(|v| v.1.iter()).flatten()
 					.find(|locked_package| locked_package.outpoints() == req.outpoints());
 				if let Some(package) = timelocked_equivalent_package {
-					log_info!(logger, "Ignoring second claim for outpoint {}:{}, we already have one which we're waiting on a timelock at {} for.",
+					log_info!("Ignoring second claim for outpoint {}:{}, we already have one which we're waiting on a timelock at {} for.",
 						req.outpoints()[0].txid, req.outpoints()[0].vout, package.package_locktime(cur_height));
 					false
 				} else {
@@ -823,9 +822,9 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 		for req in requests {
 			let package_locktime = req.package_locktime(cur_height);
 			if package_locktime > cur_height {
-				log_info!(logger, "Delaying claim of package until its timelock at {} (current height {}), the following outpoints are spent:", package_locktime, cur_height);
+				log_info!("Delaying claim of package until its timelock at {} (current height {}), the following outpoints are spent:", package_locktime, cur_height);
 				for outpoint in req.outpoints() {
-					log_info!(logger, "  Outpoint {}", outpoint);
+					log_info!("  Outpoint {}", outpoint);
 				}
 				self.locktimed_packages.entry(package_locktime).or_default().push(req);
 			} else {
@@ -836,13 +835,12 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 		// Claim everything up to and including `cur_height`.
 		let remaining_locked_packages = self.locktimed_packages.split_off(&(cur_height + 1));
 		if !self.locktimed_packages.is_empty() {
-			log_debug!(logger,
-				"Updating claims view at height {} with {} locked packages available for claim",
+			log_debug!("Updating claims view at height {} with {} locked packages available for claim",
 				cur_height,
 				self.locktimed_packages.len());
 		}
 		for (pop_height, mut entry) in self.locktimed_packages.iter_mut() {
-			log_trace!(logger, "Restoring delayed claim of package(s) at their timelock at {}.", pop_height);
+			log_trace!("Restoring delayed claim of package(s) at their timelock at {}.", pop_height);
 			preprocessed_requests.append(&mut entry);
 		}
 		self.locktimed_packages = remaining_locked_packages;
@@ -852,7 +850,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 		for mut req in preprocessed_requests {
 			if let Some((new_timer, new_feerate, claim)) = self.generate_claim(
 				cur_height, &req, &FeerateStrategy::ForceBump, conf_target, destination_script,
-				&*fee_estimator, &*logger,
+				&*fee_estimator
 			) {
 				req.set_timer(new_timer);
 				req.set_feerate(new_feerate);
@@ -862,15 +860,15 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 				let claim_id = match claim {
 					OnchainClaim::Tx(tx) => {
 						if tx.is_fully_signed() {
-							log_info!(logger, "Broadcasting onchain {}", log_tx!(tx.0));
+							log_info!("Broadcasting onchain {}", log_tx!(tx.0));
 							broadcaster.broadcast_transactions(&[&tx.0]);
 						} else {
-							log_info!(logger, "Waiting for signature of unsigned onchain transaction {}", tx.0.compute_txid());
+							log_info!("Waiting for signature of unsigned onchain transaction {}", tx.0.compute_txid());
 						}
 						ClaimId(tx.0.compute_txid().to_byte_array())
 					},
 					OnchainClaim::Event(claim_event) => {
-						log_info!(logger, "Yielding onchain event to spend inputs {:?}", req.outpoints());
+						log_info!("Yielding onchain event to spend inputs {:?}", req.outpoints());
 						let claim_id = match claim_event {
 							ClaimEvent::BumpCommitment { ref commitment_tx, .. } =>
 								// For commitment claims, we can just use their txid as it should
@@ -895,7 +893,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 				debug_assert!(cfg!(fuzzing) || self.pending_claim_requests.get(&claim_id).is_none());
 				for (k, outpoint_confirmation_height) in req.outpoints_and_creation_heights() {
 					let creation_height = outpoint_confirmation_height.unwrap_or(conf_height);
-					log_info!(logger, "Registering claiming request for {}:{}, which exists as of height {creation_height}", k.txid, k.vout);
+					log_info!("Registering claiming request for {}:{}, which exists as of height {creation_height}", k.txid, k.vout);
 					self.claimable_outpoints.insert(k.clone(), (claim_id, creation_height));
 				}
 				self.pending_claim_requests.insert(claim_id, req);
@@ -912,10 +910,10 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 	/// confirmed. This does not need to equal the current blockchain tip height, which should be
 	/// provided via `cur_height`, however it must never be higher than `cur_height`.
 	#[rustfmt::skip]
-	pub(super) fn update_claims_view_from_matched_txn<B: Deref, F: Deref, L: Logger>(
+	pub(super) fn update_claims_view_from_matched_txn<B: Deref, F: Deref>(
 		&mut self, txn_matched: &[&Transaction], conf_height: u32, conf_hash: BlockHash,
 		cur_height: u32, broadcaster: &B, conf_target: ConfirmationTarget,
-		destination_script: &Script, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L
+		destination_script: &Script, fee_estimator: &LowerBoundedFeeEstimator<F>,
 	) where
 		B::Target: BroadcasterInterface,
 		F::Target: FeeEstimator,
@@ -923,7 +921,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 		let mut have_logged_intro = false;
 		let mut maybe_log_intro = || {
 			if !have_logged_intro {
-				log_debug!(logger, "Updating claims view at height {} with {} matched transactions in block {}", cur_height, txn_matched.len(), conf_height);
+				log_debug!("Updating claims view at height {} with {} matched transactions in block {}", cur_height, txn_matched.len(), conf_height);
 				have_logged_intro = true;
 			}
 		};
@@ -1039,7 +1037,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 						// been aggregated in a single tx and claimed so atomically
 						if let Some(request) = self.pending_claim_requests.remove(&claim_id) {
 							for outpoint in request.outpoints() {
-								log_debug!(logger, "Removing claim tracking for {} due to maturation of claim package {}.",
+								log_debug!("Removing claim tracking for {} due to maturation of claim package {}.",
 									outpoint, log_bytes!(claim_id.0));
 								self.claimable_outpoints.remove(outpoint);
 							}
@@ -1052,8 +1050,8 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 						}
 					},
 					OnchainEvent::ContentiousOutpoint { package } => {
-						log_debug!(logger, "Removing claim tracking due to maturation of claim tx for outpoints:");
-						log_debug!(logger, " {:?}", package.outpoints());
+						log_debug!("Removing claim tracking due to maturation of claim tx for outpoints:");
+						log_debug!(" {:?}", package.outpoints());
 						self.claimable_outpoints.remove(package.outpoints()[0]);
 					}
 				}
@@ -1072,26 +1070,26 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 		// Build, bump and rebroadcast tx accordingly
 		if !bump_candidates.is_empty() {
 			maybe_log_intro();
-			log_trace!(logger, "Bumping {} candidates", bump_candidates.len());
+			log_trace!("Bumping {} candidates", bump_candidates.len());
 		}
 
 		for (claim_id, request) in bump_candidates.iter() {
 			if let Some((new_timer, new_feerate, bump_claim)) = self.generate_claim(
 				cur_height, &request, &FeerateStrategy::ForceBump, conf_target, destination_script,
-				&*fee_estimator, &*logger,
+				&*fee_estimator,
 			) {
 				match bump_claim {
 					OnchainClaim::Tx(bump_tx) => {
 						if bump_tx.is_fully_signed() {
-							log_info!(logger, "Broadcasting RBF-bumped onchain {}", log_tx!(bump_tx.0));
+							log_info!("Broadcasting RBF-bumped onchain {}", log_tx!(bump_tx.0));
 							broadcaster.broadcast_transactions(&[&bump_tx.0]);
 						} else {
-							log_info!(logger, "Waiting for signature of RBF-bumped unsigned onchain transaction {}",
+							log_info!("Waiting for signature of RBF-bumped unsigned onchain transaction {}",
 								bump_tx.0.compute_txid());
 						}
 					},
 					OnchainClaim::Event(claim_event) => {
-						log_info!(logger, "Yielding RBF-bumped onchain event to spend inputs {:?}", request.outpoints());
+						log_info!("Yielding RBF-bumped onchain event to spend inputs {:?}", request.outpoints());
 						#[cfg(debug_assertions)] {
 							let num_existing = self.pending_claim_events.iter().
 								filter(|entry| entry.0 == *claim_id).count();
@@ -1110,14 +1108,13 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 	}
 
 	#[rustfmt::skip]
-	pub(super) fn transaction_unconfirmed<B: Deref, F: Deref, L: Logger>(
+	pub(super) fn transaction_unconfirmed<B: Deref, F: Deref>(
 		&mut self,
 		txid: &Txid,
 		broadcaster: &B,
 		conf_target: ConfirmationTarget,
 		destination_script: &Script,
 		fee_estimator: &LowerBoundedFeeEstimator<F>,
-		logger: &L,
 	) where
 		B::Target: BroadcasterInterface,
 		F::Target: FeeEstimator,
@@ -1132,15 +1129,15 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 
 		if let Some(height) = height {
 			self.blocks_disconnected(
-				height - 1, broadcaster, conf_target, destination_script, fee_estimator, logger,
+				height - 1, broadcaster, conf_target, destination_script, fee_estimator,
 			);
 		}
 	}
 
 	#[rustfmt::skip]
-	pub(super) fn blocks_disconnected<B: Deref, F: Deref, L: Logger>(
+	pub(super) fn blocks_disconnected<B: Deref, F: Deref>(
 		&mut self, new_best_height: u32, broadcaster: &B, conf_target: ConfirmationTarget,
-		destination_script: &Script, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
+		destination_script: &Script, fee_estimator: &LowerBoundedFeeEstimator<F>,
 	)
 		where B::Target: BroadcasterInterface,
 			F::Target: FeeEstimator,
@@ -1179,21 +1176,21 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 		for ((_claim_id, _), ref mut request) in bump_candidates.iter_mut() {
 			if let Some((new_timer, new_feerate, bump_claim)) = self.generate_claim(
 				new_best_height, &request, &FeerateStrategy::ForceBump, conf_target,
-				destination_script, fee_estimator, logger
+				destination_script, fee_estimator
 			) {
 				request.set_timer(new_timer);
 				request.set_feerate(new_feerate);
 				match bump_claim {
 					OnchainClaim::Tx(bump_tx) => {
 						if bump_tx.is_fully_signed() {
-							log_info!(logger, "Broadcasting onchain {}", log_tx!(bump_tx.0));
+							log_info!("Broadcasting onchain {}", log_tx!(bump_tx.0));
 							broadcaster.broadcast_transactions(&[&bump_tx.0]);
 						} else {
-							log_info!(logger, "Waiting for signature of unsigned onchain transaction {}", bump_tx.0.compute_txid());
+							log_info!("Waiting for signature of unsigned onchain transaction {}", bump_tx.0.compute_txid());
 						}
 					},
 					OnchainClaim::Event(claim_event) => {
-						log_info!(logger, "Yielding onchain event after reorg to spend inputs {:?}", request.outpoints());
+						log_info!("Yielding onchain event after reorg to spend inputs {:?}", request.outpoints());
 						#[cfg(debug_assertions)] {
 							let num_existing = self.pending_claim_events.iter()
 								.filter(|entry| entry.0 == *_claim_id).count();
@@ -1283,7 +1280,7 @@ mod tests {
 	use crate::ln::functional_test_utils::create_dummy_block;
 	use crate::sign::{ChannelDerivationParameters, ChannelSigner, HTLCDescriptor, InMemorySigner};
 	use crate::types::payment::{PaymentHash, PaymentPreimage};
-	use crate::util::test_utils::{TestBroadcaster, TestFeeEstimator, TestLogger};
+	use crate::util::test_utils::{TestBroadcaster, TestFeeEstimator};
 
 	use super::OnchainTxHandler;
 
@@ -1384,7 +1381,6 @@ mod tests {
 
 		let fee_estimator = TestFeeEstimator::new(253);
 		let fee_estimator = LowerBoundedFeeEstimator::new(&fee_estimator);
-		let logger = TestLogger::new();
 
 		// Request claiming of each HTLC on the holder's commitment, with current block height 1.
 		let holder_commit = tx_handler.current_holder_commitment_tx();
@@ -1421,7 +1417,6 @@ mod tests {
 			ConfirmationTarget::UrgentOnChainSweep,
 			&destination_script,
 			&fee_estimator,
-			&logger,
 		);
 
 		// HTLC-Timeouts should be broadcast for the HTLCs with expiries at heights 0 and 1. The
@@ -1445,7 +1440,6 @@ mod tests {
 			ConfirmationTarget::UrgentOnChainSweep,
 			&destination_script,
 			&fee_estimator,
-			&logger,
 		);
 
 		// The final HTLC-Timeout should now be broadcast.
