@@ -56,7 +56,7 @@ use core::str::FromStr;
 #[cfg(feature = "std")]
 use std::net::SocketAddr;
 
-use crate::crypto::streams::ChaChaTriPolyReadAdapter;
+use crate::crypto::streams::{ChaChaTriPolyReadAdapter, TriPolyAADUsed};
 use crate::util::base32;
 use crate::util::logger;
 use crate::util::ser::{
@@ -3939,14 +3939,13 @@ impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPaylo
 							features,
 							next_blinding_override,
 						}),
-					used_aad_a,
-					used_aad_b,
+					used_aad,
 				} => {
 					if amt.is_some()
 						|| cltv_value.is_some() || total_msat.is_some()
 						|| keysend_preimage.is_some()
 						|| invoice_request.is_some()
-						|| used_aad_a || used_aad_b
+						|| used_aad != TriPolyAADUsed::NoAAD
 					{
 						return Err(DecodeError::InvalidValue);
 					}
@@ -3962,14 +3961,13 @@ impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPaylo
 				ChaChaTriPolyReadAdapter {
 					readable:
 						BlindedPaymentTlvs::Dummy(DummyTlvs { payment_relay, payment_constraints }),
-					used_aad_a,
-					used_aad_b,
+					used_aad,
 				} => {
 					if amt.is_some()
 						|| cltv_value.is_some() || total_msat.is_some()
 						|| keysend_preimage.is_some()
 						|| invoice_request.is_some()
-						|| (!used_aad_a && !used_aad_b)
+						|| used_aad == TriPolyAADUsed::NoAAD
 					{
 						return Err(DecodeError::InvalidValue);
 					}
@@ -3981,10 +3979,9 @@ impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPaylo
 				},
 				ChaChaTriPolyReadAdapter {
 					readable: BlindedPaymentTlvs::Receive(receive_tlvs),
-					used_aad_a,
-					used_aad_b,
+					used_aad,
 				} => {
-					if !used_aad_a && !used_aad_b {
+					if used_aad == TriPolyAADUsed::NoAAD {
 						return Err(DecodeError::InvalidValue);
 					}
 
@@ -4112,14 +4109,13 @@ impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundTrampoline
 							features,
 							next_blinding_override,
 						}),
-					used_aad_a,
-					used_aad_b,
+					used_aad,
 				} => {
 					if amt.is_some()
 						|| cltv_value.is_some() || total_msat.is_some()
 						|| keysend_preimage.is_some()
 						|| invoice_request.is_some()
-						|| used_aad_a || used_aad_b
+						|| used_aad != TriPolyAADUsed::NoAAD
 					{
 						return Err(DecodeError::InvalidValue);
 					}
@@ -4134,10 +4130,9 @@ impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundTrampoline
 				},
 				ChaChaTriPolyReadAdapter {
 					readable: BlindedTrampolineTlvs::Receive(receive_tlvs),
-					used_aad_a,
-					used_aad_b,
+					used_aad,
 				} => {
-					if !used_aad_a && !used_aad_b {
+					if used_aad == TriPolyAADUsed::NoAAD {
 						return Err(DecodeError::InvalidValue);
 					}
 
