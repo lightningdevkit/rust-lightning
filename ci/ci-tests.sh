@@ -17,6 +17,18 @@ function PIN_RELEASE_DEPS {
 	# Starting with version 1.39.0, the `tokio` crate has an MSRV of rustc 1.70.0
 	[ "$RUSTC_MINOR_VERSION" -lt 70 ] && cargo update -p tokio --precise "1.38.1" --verbose
 
+	# Starting with version 1.0.104, the `proc-macro2` crate has an MSRV of rustc 1.68
+	[ "$RUSTC_MINOR_VERSION" -lt 68 ] && cargo update -p proc-macro2 --precise "1.0.103" --verbose
+
+	# Starting with version 1.0.146, the `serde_json` crate has an MSRV of rustc 1.68
+	[ "$RUSTC_MINOR_VERSION" -lt 68 ] && cargo update -p serde_json --precise "1.0.145" --verbose
+
+	# Starting with version 1.0.16, the `itoa` crate has an MSRV of rustc 1.68
+	[ "$RUSTC_MINOR_VERSION" -lt 68 ] && cargo update -p itoa --precise "1.0.15" --verbose
+
+	# Starting with version 1.0.21, the `ryu` crate has an MSRV of rustc 1.68
+	[ "$RUSTC_MINOR_VERSION" -lt 68 ] && cargo update -p ryu --precise "1.0.20" --verbose
+
 	return 0 # Don't fail the script if our rustc is higher than the last check
 }
 
@@ -62,6 +74,7 @@ pushd lightning-tests
 [ "$RUSTC_MINOR_VERSION" -lt 68 ] && cargo update -p syn --precise "2.0.106" --verbose
 [ "$RUSTC_MINOR_VERSION" -lt 68 ] && cargo update -p quote --precise "1.0.41" --verbose
 [ "$RUSTC_MINOR_VERSION" -lt 65 ] && cargo update -p regex --precise "1.9.6" --verbose
+[ "$RUSTC_MINOR_VERSION" -lt 68 ] && cargo update -p proc-macro2 --precise "1.0.103" --verbose
 cargo test
 [ "$CI_MINIMIZE_DISK_USAGE" != "" ] && cargo clean
 popd
