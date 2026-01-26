@@ -2580,7 +2580,7 @@ fn no_double_pay_with_stale_channelmanager() {
 
 #[test]
 fn creates_and_pays_for_phantom_offer() {
-	// XXX: share expanded key
+	// Tests that we can pay a "phantom offer" to any participating node.
 	let mut chanmon_cfgs = create_chanmon_cfgs(1);
 	chanmon_cfgs.append(&mut create_phantom_chanmon_cfgs(2));
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
@@ -2618,70 +2618,51 @@ fn creates_and_pays_for_phantom_offer() {
 	assert_eq!(b_path_count, 1);
 	assert_eq!(c_path_count, 1);
 
-	// First, pay via node B
-	let payment_id = PaymentId([1; 32]);
-	nodes[0].node.pay_for_offer(&offer, None, payment_id, Default::default()).unwrap();
-	expect_recent_payment!(nodes[0], RecentPaymentDetails::AwaitingInvoice, payment_id);
+	// Pay twice, first via node B (the node that actually built the offer) then pay via node C
+	// (which won't have seen the offer until it receives the invoice_request).
+	for (payment_id, recipient) in [([1; 32], &nodes[1]), ([2; 32], &nodes[2])] {
+		let payment_id = PaymentId(payment_id);
+		nodes[0].node.pay_for_offer(&offer, None, payment_id, Default::default()).unwrap();
+		expect_recent_payment!(nodes[0], RecentPaymentDetails::AwaitingInvoice, payment_id);
 
-	let onion_message = nodes[0].onion_messenger.next_onion_message_for_peer(node_b_id).unwrap();
-	let _discard = nodes[0].onion_messenger.next_onion_message_for_peer(node_c_id).unwrap();
-	nodes[1].onion_messenger.handle_onion_message(node_a_id, &onion_message);
+		let recipient_id = recipient.node.get_our_node_id();
+		let non_recipient_id = if node_b_id == recipient_id {
+			node_c_id
+		} else {
+			node_b_id
+		};
 
-	let (invoice_request, _) = extract_invoice_request(&nodes[1], &onion_message);
-	let payment_context = PaymentContext::Bolt12Offer(Bolt12OfferContext {
-		offer_id: offer.id(),
-		invoice_request: InvoiceRequestFields {
-			payer_signing_pubkey: invoice_request.payer_signing_pubkey(),
-			quantity: None,
-			payer_note_truncated: None,
-			human_readable_name: None,
-		},
-	});
+		let onion_message =
+			nodes[0].onion_messenger.next_onion_message_for_peer(recipient_id).unwrap();
+		let _discard =
+			nodes[0].onion_messenger.next_onion_message_for_peer(non_recipient_id).unwrap();
+		recipient.onion_messenger.handle_onion_message(node_a_id, &onion_message);
 
-	let onion_message = nodes[1].onion_messenger.next_onion_message_for_peer(node_a_id).unwrap();
-	nodes[0].onion_messenger.handle_onion_message(node_b_id, &onion_message);
+		let (invoice_request, _) = extract_invoice_request(&recipient, &onion_message);
+		let payment_context = PaymentContext::Bolt12Offer(Bolt12OfferContext {
+			offer_id: offer.id(),
+			invoice_request: InvoiceRequestFields {
+				payer_signing_pubkey: invoice_request.payer_signing_pubkey(),
+				quantity: None,
+				payer_note_truncated: None,
+				human_readable_name: None,
+			},
+		});
 
-	let (invoice, _) = extract_invoice(&nodes[0], &onion_message);
-	assert_eq!(invoice.amount_msats(), 10_000_000);
+		let onion_message =
+			recipient.onion_messenger.next_onion_message_for_peer(node_a_id).unwrap();
+		nodes[0].onion_messenger.handle_onion_message(recipient_id, &onion_message);
 
-	route_bolt12_payment(&nodes[0], &[&nodes[1]], &invoice);
-	expect_recent_payment!(&nodes[0], RecentPaymentDetails::Pending, payment_id);
+		let (invoice, _) = extract_invoice(&nodes[0], &onion_message);
+		assert_eq!(invoice.amount_msats(), 10_000_000);
 
-	claim_bolt12_payment(&nodes[0], &[&nodes[1]], payment_context, &invoice);
-	expect_recent_payment!(&nodes[0], RecentPaymentDetails::Fulfilled, payment_id);
+		route_bolt12_payment(&nodes[0], &[recipient], &invoice);
+		expect_recent_payment!(&nodes[0], RecentPaymentDetails::Pending, payment_id);
 
-	// Then pay again via node C
-	assert!(nodes[0].onion_messenger.next_onion_message_for_peer(node_b_id).is_none());
-	assert!(nodes[0].onion_messenger.next_onion_message_for_peer(node_c_id).is_none());
+		claim_bolt12_payment(&nodes[0], &[recipient], payment_context, &invoice);
+		expect_recent_payment!(&nodes[0], RecentPaymentDetails::Fulfilled, payment_id);
 
-	let payment_id = PaymentId([2; 32]);
-	nodes[0].node.pay_for_offer(&offer, None, payment_id, Default::default()).unwrap();
-	expect_recent_payment!(nodes[0], RecentPaymentDetails::AwaitingInvoice, payment_id);
-
-	let onion_message = nodes[0].onion_messenger.next_onion_message_for_peer(node_c_id).unwrap();
-	let _discard = nodes[0].onion_messenger.next_onion_message_for_peer(node_b_id).unwrap();
-	nodes[2].onion_messenger.handle_onion_message(node_a_id, &onion_message);
-
-	let (invoice_request, _) = extract_invoice_request(&nodes[2], &onion_message);
-	let payment_context = PaymentContext::Bolt12Offer(Bolt12OfferContext {
-		offer_id: offer.id(),
-		invoice_request: InvoiceRequestFields {
-			payer_signing_pubkey: invoice_request.payer_signing_pubkey(),
-			quantity: None,
-			payer_note_truncated: None,
-			human_readable_name: None,
-		},
-	});
-
-	let onion_message = nodes[2].onion_messenger.next_onion_message_for_peer(node_a_id).unwrap();
-	nodes[0].onion_messenger.handle_onion_message(node_c_id, &onion_message);
-
-	let (invoice, _) = extract_invoice(&nodes[0], &onion_message);
-	assert_eq!(invoice.amount_msats(), 10_000_000);
-
-	route_bolt12_payment(&nodes[0], &[&nodes[2]], &invoice);
-	expect_recent_payment!(&nodes[0], RecentPaymentDetails::Pending, payment_id);
-
-	claim_bolt12_payment(&nodes[0], &[&nodes[2]], payment_context, &invoice);
-	expect_recent_payment!(&nodes[0], RecentPaymentDetails::Fulfilled, payment_id);
+		assert!(nodes[0].onion_messenger.next_onion_message_for_peer(node_b_id).is_none());
+		assert!(nodes[0].onion_messenger.next_onion_message_for_peer(node_c_id).is_none());
+	}
 }
