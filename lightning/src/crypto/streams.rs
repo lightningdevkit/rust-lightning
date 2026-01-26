@@ -84,6 +84,18 @@ pub(crate) fn chachapoly_encrypt_with_swapped_aad(
 	plaintext
 }
 
+#[derive(PartialEq, Eq)]
+pub(crate) enum TriPolyAADUsed {
+	/// No AAD was used.
+	///
+	/// The HMAC validated with standard ChaCha20Poly1305.
+	NoAAD,
+	/// The HMAC vlidated using the first AAD provided.
+	A,
+	/// The HMAC vlidated using the second AAD provided.
+	B,
+}
+
 /// Enables the use of the serialization macros for objects that need to be simultaneously decrypted
 /// and deserialized. This allows us to avoid an intermediate Vec allocation.
 ///
@@ -98,8 +110,7 @@ pub(crate) fn chachapoly_encrypt_with_swapped_aad(
 /// like classic ChaCha20Poly1305 for the non-AAD-containing MAC.
 pub(crate) struct ChaChaTriPolyReadAdapter<R: Readable> {
 	pub readable: R,
-	pub used_aad_a: bool,
-	pub used_aad_b: bool,
+	pub used_aad: TriPolyAADUsed,
 }
 
 impl<T: Readable> LengthReadableArgs<([u8; 32], [u8; 32], [u8; 32])>
@@ -165,11 +176,11 @@ impl<T: Readable> LengthReadableArgs<([u8; 32], [u8; 32], [u8; 32])>
 		let mut tag = [0 as u8; 16];
 		r.read_exact(&mut tag)?;
 		if fixed_time_eq(&mac.result(), &tag) {
-			Ok(Self { readable, used_aad_a: false, used_aad_b: false })
+			Ok(Self { readable, used_aad: TriPolyAADUsed::NoAAD })
 		} else if fixed_time_eq(&mac_aad_a.result(), &tag) {
-			Ok(Self { readable, used_aad_a: true, used_aad_b: false })
+			Ok(Self { readable, used_aad: TriPolyAADUsed::A })
 		} else if fixed_time_eq(&mac_aad_b.result(), &tag) {
-			Ok(Self { readable, used_aad_a: false, used_aad_b: true })
+			Ok(Self { readable, used_aad: TriPolyAADUsed::B })
 		} else {
 			return Err(DecodeError::InvalidValue);
 		}

@@ -19,7 +19,7 @@ use super::offers::OffersMessage;
 use crate::blinded_path::message::{
 	BlindedMessagePath, DummyTlv, ForwardTlvs, NextMessageHop, ReceiveTlvs,
 };
-use crate::crypto::streams::{ChaChaPolyWriteAdapter, ChaChaTriPolyReadAdapter};
+use crate::crypto::streams::{ChaChaPolyWriteAdapter, ChaChaTriPolyReadAdapter, TriPolyAADUsed};
 use crate::ln::inbound_payment::ExpandedKey;
 use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils;
@@ -337,29 +337,28 @@ impl<H: CustomOnionMessageHandler + ?Sized, L: Logger + ?Sized>
 			None => return Err(DecodeError::InvalidValue),
 			Some(ChaChaTriPolyReadAdapter {
 				readable: ControlTlvs::Forward(tlvs),
-				used_aad_a,
-				used_aad_b,
+				used_aad,
 			}) => {
-				if used_aad_a || used_aad_b || message_type.is_some() {
+				if used_aad != TriPolyAADUsed::NoAAD || message_type.is_some() {
 					return Err(DecodeError::InvalidValue);
 				}
 				Ok(Payload::Forward(ForwardControlTlvs::Unblinded(tlvs)))
 			},
 			Some(ChaChaTriPolyReadAdapter {
 				readable: ControlTlvs::Dummy,
-				used_aad_a,
-				used_aad_b,
-			}) => Ok(Payload::Dummy { control_tlvs_authenticated: used_aad_a || used_aad_b }),
+				used_aad,
+			}) => Ok(Payload::Dummy {
+				control_tlvs_authenticated: used_aad != TriPolyAADUsed::NoAAD,
+			}),
 			Some(ChaChaTriPolyReadAdapter {
 				readable: ControlTlvs::Receive(tlvs),
-				used_aad_a,
-				used_aad_b,
+				used_aad,
 			}) => Ok(Payload::Receive {
 				control_tlvs: ReceiveControlTlvs::Unblinded(tlvs),
 				reply_path,
 				message: message.ok_or(DecodeError::InvalidValue)?,
-				control_tlvs_from_local_node: used_aad_a,
-				control_tlvs_from_phantom_participant: used_aad_b,
+				control_tlvs_from_local_node: used_aad == TriPolyAADUsed::A,
+				control_tlvs_from_phantom_participant: used_aad == TriPolyAADUsed::B,
 			}),
 		}
 	}
