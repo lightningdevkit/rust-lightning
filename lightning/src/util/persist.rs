@@ -374,6 +374,195 @@ where
 	}
 }
 
+/// An opaque token used for paginated listing operations.
+///
+/// This token should be treated as an opaque value by callers. Pass the token returned from
+/// one `list_paginated` call to the next call to continue pagination. The internal format
+/// is implementation-defined and may change between versions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PageToken(pub String);
+
+/// Represents the response from a paginated `list` operation.
+///
+/// Contains the list of keys and a token for retrieving the next page of results.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaginatedListResponse {
+	/// A vector of keys, ordered from most recently created to least recently created.
+	pub keys: Vec<String>,
+
+	/// A token that can be passed to the next call to continue pagination.
+	///
+	/// Is `None` if there are no more pages to retrieve.
+	pub next_page_token: Option<PageToken>,
+}
+
+/// Provides an interface that allows storage and retrieval of persisted values that are associated
+/// with given keys, with support for pagination.
+///
+/// In order to avoid collisions, the key space is segmented based on the given `primary_namespace`s
+/// and `secondary_namespace`s. Implementations of this trait are free to handle them in different
+/// ways, as long as per-namespace key uniqueness is asserted.
+///
+/// Keys and namespaces are required to be valid ASCII strings in the range of
+/// [`KVSTORE_NAMESPACE_KEY_ALPHABET`] and no longer than [`KVSTORE_NAMESPACE_KEY_MAX_LEN`]. Empty
+/// primary namespaces and secondary namespaces (`""`) are considered valid; however, if
+/// `primary_namespace` is empty, `secondary_namespace` must also be empty. This means that concerns
+/// should always be separated by primary namespace first, before secondary namespaces are used.
+/// While the number of primary namespaces will be relatively small and determined at compile time,
+/// there may be many secondary namespaces per primary namespace. Note that per-namespace uniqueness
+/// needs to also hold for keys *and* namespaces in any given namespace, i.e., conflicts between keys
+/// and equally named primary or secondary namespaces must be avoided.
+///
+/// **Note:** This trait extends the functionality of [`KVStoreSync`] by adding support for
+/// paginated listing of keys in creation order. This is useful when dealing with a large number
+/// of keys that cannot be efficiently retrieved all at once.
+///
+/// For an asynchronous version of this trait, see [`PaginatedKVStore`].
+pub trait PaginatedKVStoreSync: KVStoreSync {
+	/// Returns a paginated list of keys that are stored under the given `secondary_namespace` in
+	/// `primary_namespace`, ordered from most recently created to least recently created.
+	///
+	/// Implementations must return keys in reverse creation order (newest first). How creation
+	/// order is tracked is implementation-defined (e.g., storing creation timestamps, using an
+	/// incrementing ID, or another mechanism). Creation order (not last-updated order) is used
+	/// to prevent race conditions during pagination: if keys were ordered by update time, a key
+	/// updated mid-pagination could shift position, causing it to be skipped or returned twice
+	/// across pages.
+	///
+	/// If `page_token` is provided, listing continues from where the previous page left off.
+	/// If `None`, listing starts from the most recently created entry. The `next_page_token`
+	/// in the returned [`PaginatedListResponse`] can be passed to subsequent calls to fetch
+	/// the next page.
+	///
+	/// Implementations must generate a [`PageToken`] that encodes enough information to resume
+	/// listing from the correct position. The token should encode the creation timestamp (or
+	/// sequence number) and key name of the last returned entry. Tokens must remain valid across
+	/// multiple calls within a reasonable timeframe. If the entry referenced by a token has been
+	/// deleted, implementations should resume from the next valid position rather than failing.
+	/// Tokens are scoped to a specific `(primary_namespace, secondary_namespace)` pair and should
+	/// not be used across different namespace pairs.
+	///
+	/// Returns an empty list if `primary_namespace` or `secondary_namespace` is unknown or if
+	/// there are no more keys to return.
+	fn list_paginated(
+		&self, primary_namespace: &str, secondary_namespace: &str, page_token: Option<PageToken>,
+	) -> Result<PaginatedListResponse, io::Error>;
+}
+
+/// A wrapper around a [`PaginatedKVStoreSync`] that implements the [`PaginatedKVStore`] trait.
+/// It is not necessary to use this type directly.
+#[derive(Clone)]
+pub struct PaginatedKVStoreSyncWrapper<K: Deref>(pub K)
+where
+	K::Target: PaginatedKVStoreSync;
+
+/// This is not exported to bindings users as async is only supported in Rust.
+impl<K: Deref> KVStore for PaginatedKVStoreSyncWrapper<K>
+where
+	K::Target: PaginatedKVStoreSync,
+{
+	fn read(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
+	) -> impl Future<Output = Result<Vec<u8>, io::Error>> + 'static + MaybeSend {
+		let res = self.0.read(primary_namespace, secondary_namespace, key);
+
+		async move { res }
+	}
+
+	fn write(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: Vec<u8>,
+	) -> impl Future<Output = Result<(), io::Error>> + 'static + MaybeSend {
+		let res = self.0.write(primary_namespace, secondary_namespace, key, buf);
+
+		async move { res }
+	}
+
+	fn remove(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, lazy: bool,
+	) -> impl Future<Output = Result<(), io::Error>> + 'static + MaybeSend {
+		let res = self.0.remove(primary_namespace, secondary_namespace, key, lazy);
+
+		async move { res }
+	}
+
+	fn list(
+		&self, primary_namespace: &str, secondary_namespace: &str,
+	) -> impl Future<Output = Result<Vec<String>, io::Error>> + 'static + MaybeSend {
+		let res = self.0.list(primary_namespace, secondary_namespace);
+
+		async move { res }
+	}
+}
+
+/// This is not exported to bindings users as async is only supported in Rust.
+impl<K: Deref> PaginatedKVStore for PaginatedKVStoreSyncWrapper<K>
+where
+	K::Target: PaginatedKVStoreSync,
+{
+	fn list_paginated(
+		&self, primary_namespace: &str, secondary_namespace: &str, page_token: Option<PageToken>,
+	) -> impl Future<Output = Result<PaginatedListResponse, io::Error>> + 'static + MaybeSend {
+		let res = self.0.list_paginated(primary_namespace, secondary_namespace, page_token);
+
+		async move { res }
+	}
+}
+
+/// Provides an interface that allows storage and retrieval of persisted values that are associated
+/// with given keys, with support for pagination.
+///
+/// In order to avoid collisions, the key space is segmented based on the given `primary_namespace`s
+/// and `secondary_namespace`s. Implementations of this trait are free to handle them in different
+/// ways, as long as per-namespace key uniqueness is asserted.
+///
+/// Keys and namespaces are required to be valid ASCII strings in the range of
+/// [`KVSTORE_NAMESPACE_KEY_ALPHABET`] and no longer than [`KVSTORE_NAMESPACE_KEY_MAX_LEN`]. Empty
+/// primary namespaces and secondary namespaces (`""`) are considered valid; however, if
+/// `primary_namespace` is empty, `secondary_namespace` must also be empty. This means that concerns
+/// should always be separated by primary namespace first, before secondary namespaces are used.
+/// While the number of primary namespaces will be relatively small and determined at compile time,
+/// there may be many secondary namespaces per primary namespace. Note that per-namespace uniqueness
+/// needs to also hold for keys *and* namespaces in any given namespace, i.e., conflicts between keys
+/// and equally named primary or secondary namespaces must be avoided.
+///
+/// **Note:** This trait extends the functionality of [`KVStore`] by adding support for
+/// paginated listing of keys in creation order. This is useful when dealing with a large number
+/// of keys that cannot be efficiently retrieved all at once.
+///
+/// For a synchronous version of this trait, see [`PaginatedKVStoreSync`].
+///
+/// This is not exported to bindings users as async is only supported in Rust.
+pub trait PaginatedKVStore: KVStore {
+	/// Returns a paginated list of keys that are stored under the given `secondary_namespace` in
+	/// `primary_namespace`, ordered from most recently created to least recently created.
+	///
+	/// Implementations must return keys in reverse creation order (newest first). How creation
+	/// order is tracked is implementation-defined (e.g., storing creation timestamps, using an
+	/// incrementing ID, or another mechanism). Creation order (not last-updated order) is used
+	/// to prevent race conditions during pagination: if keys were ordered by update time, a key
+	/// updated mid-pagination could shift position, causing it to be skipped or returned twice
+	/// across pages.
+	///
+	/// If `page_token` is provided, listing continues from where the previous page left off.
+	/// If `None`, listing starts from the most recently created entry. The `next_page_token`
+	/// in the returned [`PaginatedListResponse`] can be passed to subsequent calls to fetch
+	/// the next page.
+	///
+	/// Implementations must generate a [`PageToken`] that encodes enough information to resume
+	/// listing from the correct position. The token should encode the creation timestamp (or
+	/// sequence number) and key name of the last returned entry. Tokens must remain valid across
+	/// multiple calls within a reasonable timeframe. If the entry referenced by a token has been
+	/// deleted, implementations should resume from the next valid position rather than failing.
+	/// Tokens are scoped to a specific `(primary_namespace, secondary_namespace)` pair and should
+	/// not be used across different namespace pairs.
+	///
+	/// Returns an empty list if `primary_namespace` or `secondary_namespace` is unknown or if
+	/// there are no more keys to return.
+	fn list_paginated(
+		&self, primary_namespace: &str, secondary_namespace: &str, page_token: Option<PageToken>,
+	) -> impl Future<Output = Result<PaginatedListResponse, io::Error>> + 'static + MaybeSend;
+}
+
 /// Provides additional interface methods that are required for [`KVStore`]-to-[`KVStore`]
 /// data migration.
 pub trait MigratableKVStore: KVStoreSync {
@@ -1546,7 +1735,7 @@ mod tests {
 	use crate::ln::msgs::BaseMessageHandler;
 	use crate::sync::Arc;
 	use crate::util::test_channel_signer::TestChannelSigner;
-	use crate::util::test_utils::{self, TestStore};
+	use crate::util::test_utils::{self, TestPaginatedStore, TestStore};
 	use bitcoin::hashes::hex::FromHex;
 	use core::cmp;
 
@@ -1955,5 +2144,79 @@ mod tests {
 	fn kvstore_trait_object_usage() {
 		let store: Arc<dyn KVStoreSync + Send + Sync> = Arc::new(TestStore::new(false));
 		assert!(persist_fn::<_, TestChannelSigner>(Arc::clone(&store)));
+	}
+
+	#[test]
+	fn paginated_store_basic_operations() {
+		let store = TestPaginatedStore::new(10);
+
+		// Write some data
+		store.write("ns1", "ns2", "key1", vec![1, 2, 3]).unwrap();
+		store.write("ns1", "ns2", "key2", vec![4, 5, 6]).unwrap();
+
+		// Read it back
+		assert_eq!(KVStoreSync::read(&store, "ns1", "ns2", "key1").unwrap(), vec![1, 2, 3]);
+		assert_eq!(KVStoreSync::read(&store, "ns1", "ns2", "key2").unwrap(), vec![4, 5, 6]);
+
+		// List should return keys in descending order
+		let response = store.list_paginated("ns1", "ns2", None).unwrap();
+		assert_eq!(response.keys, vec!["key2", "key1"]);
+		assert!(response.next_page_token.is_none());
+
+		// Remove a key
+		KVStoreSync::remove(&store, "ns1", "ns2", "key1", false).unwrap();
+		assert!(KVStoreSync::read(&store, "ns1", "ns2", "key1").is_err());
+	}
+
+	#[test]
+	fn paginated_store_pagination() {
+		let store = TestPaginatedStore::new(2);
+
+		// Write 5 items with different order values
+		for i in 0..5i64 {
+			store.write("ns", "", &format!("key{i}"), vec![i as u8]).unwrap();
+		}
+
+		// First page should have 2 items (most recently created first: key4, key3)
+		let page1 = store.list_paginated("ns", "", None).unwrap();
+		assert_eq!(page1.keys.len(), 2);
+		assert_eq!(page1.keys, vec!["key4", "key3"]);
+		assert!(page1.next_page_token.is_some());
+
+		// Second page
+		let page2 = store.list_paginated("ns", "", page1.next_page_token).unwrap();
+		assert_eq!(page2.keys.len(), 2);
+		assert_eq!(page2.keys, vec!["key2", "key1"]);
+		assert!(page2.next_page_token.is_some());
+
+		// Third page (last item)
+		let page3 = store.list_paginated("ns", "", page2.next_page_token).unwrap();
+		assert_eq!(page3.keys.len(), 1);
+		assert_eq!(page3.keys, vec!["key0"]);
+		assert!(page3.next_page_token.is_none());
+	}
+
+	#[test]
+	fn paginated_store_update_preserves_order() {
+		let store = TestPaginatedStore::new(10);
+
+		// Write items with specific order values
+		store.write("ns", "", "key1", vec![1]).unwrap();
+		store.write("ns", "", "key2", vec![2]).unwrap();
+		store.write("ns", "", "key3", vec![3]).unwrap();
+
+		// Verify initial order (newest first)
+		let response = store.list_paginated("ns", "", None).unwrap();
+		assert_eq!(response.keys, vec!["key3", "key2", "key1"]);
+
+		// Update key1 with a new order value that would put it first if used
+		store.write("ns", "", "key1", vec![1, 1]).unwrap();
+
+		// Verify data was updated
+		assert_eq!(KVStoreSync::read(&store, "ns", "", "key1").unwrap(), vec![1, 1]);
+
+		// Verify order is unchanged - creation order should have been preserved
+		let response = store.list_paginated("ns", "", None).unwrap();
+		assert_eq!(response.keys, vec!["key3", "key2", "key1"]);
 	}
 }
