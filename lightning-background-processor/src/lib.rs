@@ -1152,6 +1152,11 @@ where
 
 		let mut futures = Joiner::new();
 
+		// Capture the number of pending monitor writes before persisting the channel manager.
+		// We'll only flush this many writes after the manager is persisted, to avoid flushing
+		// monitor updates that arrived after the manager state was captured.
+		let pending_monitor_writes = chain_monitor.pending_monitor_operation_count();
+
 		if channel_manager.get_cm().get_and_clear_needs_persistence() {
 			log_trace!(logger, "Persisting ChannelManager...");
 
@@ -1349,6 +1354,13 @@ where
 			res?;
 		}
 
+		// Flush the monitor writes that were pending before we persisted the channel manager.
+		// Any writes that arrived after are left in the queue for the next iteration.
+		if pending_monitor_writes > 0 {
+			log_trace!(logger, "Flushing {} monitor writes", pending_monitor_writes);
+			chain_monitor.flush(pending_monitor_writes);
+		}
+
 		match check_and_reset_sleeper(&mut last_onion_message_handler_call, || {
 			sleeper(ONION_MESSAGE_HANDLER_TIMER)
 		}) {
@@ -1413,6 +1425,14 @@ where
 			channel_manager.get_cm().encode(),
 		)
 		.await?;
+
+	// Flush all pending monitor writes after final channel manager persistence.
+	let pending_monitor_writes = chain_monitor.pending_monitor_operation_count();
+	if pending_monitor_writes > 0 {
+		log_trace!(logger, "Flushing {} monitor writes on shutdown", pending_monitor_writes);
+		chain_monitor.flush(pending_monitor_writes);
+	}
+
 	if let Some(ref scorer) = scorer {
 		kv_store
 			.write(
@@ -1722,6 +1742,10 @@ impl BackgroundProcessor {
 					channel_manager.get_cm().timer_tick_occurred();
 					last_freshness_call = Instant::now();
 				}
+
+				// Capture the number of pending monitor writes before persisting the channel manager.
+				let pending_monitor_writes = chain_monitor.pending_monitor_operation_count();
+
 				if channel_manager.get_cm().get_and_clear_needs_persistence() {
 					log_trace!(logger, "Persisting ChannelManager...");
 					(kv_store.write(
@@ -1731,6 +1755,12 @@ impl BackgroundProcessor {
 						channel_manager.get_cm().encode(),
 					))?;
 					log_trace!(logger, "Done persisting ChannelManager.");
+				}
+
+				// Flush the monitor writes that were pending before we persisted the channel manager.
+				if pending_monitor_writes > 0 {
+					log_trace!(logger, "Flushing {} monitor writes", pending_monitor_writes);
+					chain_monitor.flush(pending_monitor_writes);
 				}
 
 				if let Some(liquidity_manager) = liquidity_manager.as_ref() {
@@ -1853,6 +1883,18 @@ impl BackgroundProcessor {
 				CHANNEL_MANAGER_PERSISTENCE_KEY,
 				channel_manager.get_cm().encode(),
 			)?;
+
+			// Flush all pending monitor writes after final channel manager persistence.
+			let pending_monitor_writes = chain_monitor.pending_monitor_operation_count();
+			if pending_monitor_writes > 0 {
+				log_trace!(
+					logger,
+					"Flushing {} monitor writes on shutdown",
+					pending_monitor_writes
+				);
+				chain_monitor.flush(pending_monitor_writes);
+			}
+
 			if let Some(ref scorer) = scorer {
 				kv_store.write(
 					SCORER_PERSISTENCE_PRIMARY_NAMESPACE,
