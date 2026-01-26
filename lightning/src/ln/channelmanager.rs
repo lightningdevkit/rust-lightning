@@ -14096,6 +14096,7 @@ where
 			let end = channel_list[start..]
 				.iter()
 				.position(|chan| chan.counterparty.node_id != counterparty_node_id)
+				.map(|pos| start + pos)
 				.unwrap_or(channel_list.len());
 
 			let peer_chans = &channel_list[start..end];
