@@ -132,9 +132,11 @@ impl BestBlock {
 
 impl_writeable_tlv_based!(BestBlock, {
 	(0, block_hash, required),
-	(1, previous_blocks_read, (legacy, [Option<BlockHash>; ANTI_REORG_DELAY as usize * 2], |us: &BestBlock| Some(us.previous_blocks))),
+	// Note that any change to the previous_blocks array length will change the serialization
+	// format and thus it is specified without constants here.
+	(1, previous_blocks_read, (legacy, [Option<BlockHash>; 6 * 2], |us: &BestBlock| Some(us.previous_blocks))),
 	(2, height, required),
-	(unused, previous_blocks, (static_value, previous_blocks_read.unwrap_or([None; ANTI_REORG_DELAY as usize * 2]))),
+	(unused, previous_blocks, (static_value, previous_blocks_read.unwrap_or([None; 6 * 2]))),
 });
 
 /// The `Listen` trait is used to notify when blocks have been connected or disconnected from the
