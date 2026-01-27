@@ -147,6 +147,7 @@ pub(crate) struct RevokedOutput {
 	outpoint_confirmation_height: Option<u32>,
 }
 
+#[lightning_macros::add_logging(<crate::chain::channelmonitor::WithChannelMonitor<L>>)]
 impl RevokedOutput {
 	#[rustfmt::skip]
 	pub(crate) fn build(
@@ -210,6 +211,7 @@ pub(crate) struct RevokedHTLCOutput {
 	outpoint_confirmation_height: Option<u32>,
 }
 
+#[lightning_macros::add_logging(<crate::chain::channelmonitor::WithChannelMonitor<L>>)]
 impl RevokedHTLCOutput {
 	pub(crate) fn build(
 		per_commitment_point: PublicKey, per_commitment_key: SecretKey,
@@ -272,6 +274,7 @@ pub(crate) struct CounterpartyOfferedHTLCOutput {
 	outpoint_confirmation_height: Option<u32>,
 }
 
+#[lightning_macros::add_logging(<crate::chain::channelmonitor::WithChannelMonitor<L>>)]
 impl CounterpartyOfferedHTLCOutput {
 	pub(crate) fn build(
 		per_commitment_point: PublicKey, preimage: PaymentPreimage, htlc: HTLCOutputInCommitment,
@@ -373,6 +376,7 @@ pub(crate) struct CounterpartyReceivedHTLCOutput {
 	outpoint_confirmation_height: Option<u32>,
 }
 
+#[lightning_macros::add_logging(<crate::chain::channelmonitor::WithChannelMonitor<L>>)]
 impl CounterpartyReceivedHTLCOutput {
 	pub(crate) fn build(
 		per_commitment_point: PublicKey, htlc: HTLCOutputInCommitment,
@@ -469,6 +473,7 @@ pub(crate) struct HolderHTLCOutput {
 	outpoint_confirmation_height: Option<u32>,
 }
 
+#[lightning_macros::add_logging(<crate::chain::channelmonitor::WithChannelMonitor<L>, otherstruct = OnchainTxHandler>)]
 impl HolderHTLCOutput {
 	#[rustfmt::skip]
 	pub(crate) fn build(
@@ -640,6 +645,7 @@ pub(crate) struct HolderFundingOutput {
 	pub(crate) channel_parameters: Option<ChannelTransactionParameters>,
 }
 
+#[lightning_macros::add_logging(<crate::chain::channelmonitor::WithChannelMonitor<L>, otherstruct = OnchainTxHandler>)]
 impl HolderFundingOutput {
 	pub(crate) fn build(
 		commitment_tx: HolderCommitmentTransaction,
@@ -739,6 +745,7 @@ pub(crate) enum PackageSolvingData {
 	HolderFundingOutput(HolderFundingOutput),
 }
 
+#[lightning_macros::add_logging(<crate::chain::channelmonitor::WithChannelMonitor<L>, otherstruct = HolderFundingOutput, otherstruct = HolderHTLCOutput, otherstruct = OnchainTxHandler>)]
 impl PackageSolvingData {
 	#[rustfmt::skip]
 	fn amount(&self) -> u64 {
@@ -994,11 +1001,14 @@ impl PackageSolvingData {
 	fn get_maybe_finalized_tx<Signer: EcdsaChannelSigner>(&self, outpoint: &BitcoinOutPoint, onchain_handler: &mut OnchainTxHandler<Signer>) -> Option<MaybeSignedTransaction> {
 		match self {
 			PackageSolvingData::HolderHTLCOutput(ref outp) => {
+				let outp: &HolderHTLCOutput = outp;
+
 				debug_assert!(!outp.channel_type_features.supports_anchors_zero_fee_htlc_tx());
 				debug_assert!(!outp.channel_type_features.supports_anchor_zero_fee_commitments());
 				outp.get_maybe_signed_htlc_tx(onchain_handler, outpoint)
 			}
 			PackageSolvingData::HolderFundingOutput(ref outp) => {
+				let outp: &HolderFundingOutput = outp;
 				Some(outp.get_maybe_signed_commitment_tx(onchain_handler))
 			}
 			_ => { panic!("API Error!"); }
@@ -1026,44 +1036,44 @@ impl PackageSolvingData {
 			_ => None,
 		}
 	}
+}
 
-	#[rustfmt::skip]
-	fn map_output_type_flags(&self) -> PackageMalleability {
-		// We classify claims into not-mergeable (i.e. transactions that have to be broadcasted
-		// as-is) or merge-able (i.e. transactions we can merge with others and claim in batches),
-		// which we then sub-categorize into pinnable (where our counterparty could potentially
-		// also claim the transaction right now) or unpinnable (where only we can claim this
-		// output). We assume we are claiming in a timely manner.
-		match self {
-			PackageSolvingData::RevokedOutput(RevokedOutput { .. }) =>
-				PackageMalleability::Malleable(AggregationCluster::Unpinnable),
-			PackageSolvingData::RevokedHTLCOutput(RevokedHTLCOutput { htlc, .. }) => {
-				if htlc.offered {
+#[rustfmt::skip]
+fn map_output_type_flags(data: &PackageSolvingData) -> PackageMalleability {
+	// We classify claims into not-mergeable (i.e. transactions that have to be broadcasted
+	// as-is) or merge-able (i.e. transactions we can merge with others and claim in batches),
+	// which we then sub-categorize into pinnable (where our counterparty could potentially
+	// also claim the transaction right now) or unpinnable (where only we can claim this
+	// output). We assume we are claiming in a timely manner.
+	match data {
+		PackageSolvingData::RevokedOutput(RevokedOutput { .. }) =>
+			PackageMalleability::Malleable(AggregationCluster::Unpinnable),
+		PackageSolvingData::RevokedHTLCOutput(RevokedHTLCOutput { htlc, .. }) => {
+			if htlc.offered {
+				PackageMalleability::Malleable(AggregationCluster::Unpinnable)
+			} else {
+				PackageMalleability::Malleable(AggregationCluster::Pinnable)
+			}
+		},
+		PackageSolvingData::CounterpartyOfferedHTLCOutput(..) =>
+			PackageMalleability::Malleable(AggregationCluster::Unpinnable),
+		PackageSolvingData::CounterpartyReceivedHTLCOutput(..) =>
+			PackageMalleability::Malleable(AggregationCluster::Pinnable),
+		PackageSolvingData::HolderHTLCOutput(ref outp) => {
+			let free_htlcs = outp.channel_type_features.supports_anchors_zero_fee_htlc_tx();
+			let free_commits = outp.channel_type_features.supports_anchor_zero_fee_commitments();
+
+			if free_htlcs || free_commits {
+				if outp.preimage.is_some() {
 					PackageMalleability::Malleable(AggregationCluster::Unpinnable)
 				} else {
 					PackageMalleability::Malleable(AggregationCluster::Pinnable)
 				}
-			},
-			PackageSolvingData::CounterpartyOfferedHTLCOutput(..) =>
-				PackageMalleability::Malleable(AggregationCluster::Unpinnable),
-			PackageSolvingData::CounterpartyReceivedHTLCOutput(..) =>
-				PackageMalleability::Malleable(AggregationCluster::Pinnable),
-			PackageSolvingData::HolderHTLCOutput(ref outp) => {
-				let free_htlcs = outp.channel_type_features.supports_anchors_zero_fee_htlc_tx();
-				let free_commits = outp.channel_type_features.supports_anchor_zero_fee_commitments();
-
-				if free_htlcs || free_commits {
-					if outp.preimage.is_some() {
-						PackageMalleability::Malleable(AggregationCluster::Unpinnable)
-					} else {
-						PackageMalleability::Malleable(AggregationCluster::Pinnable)
-					}
-				} else {
-					PackageMalleability::Untractable
-				}
-			},
-			PackageSolvingData::HolderFundingOutput(..) => PackageMalleability::Untractable,
-		}
+			} else {
+				PackageMalleability::Untractable
+			}
+		},
+		PackageSolvingData::HolderFundingOutput(..) => PackageMalleability::Untractable,
 	}
 }
 
@@ -1180,6 +1190,7 @@ impl PartialEq for PackageTemplate {
 	}
 }
 
+#[lightning_macros::add_logging(<crate::chain::channelmonitor::WithChannelMonitor<L>, otherstruct = HolderHTLCOutput, otherstruct = PackageSolvingData>)]
 impl PackageTemplate {
 	#[rustfmt::skip]
 	pub(crate) fn can_merge_with(&self, other: &PackageTemplate, cur_height: u32) -> bool {
@@ -1203,16 +1214,16 @@ impl PackageTemplate {
 				{
 					for i in 0..self.inputs.len() {
 						for j in 0..i {
-							debug_assert!(self.inputs[i].1.is_possibly_from_same_tx_tree(&self.inputs[j].1));
+							debug_assert!(self.inputs[i].1.is_possibly_from_same_tx_tree(&self.inputs[j].1, logger));
 						}
 					}
 					for i in 0..other.inputs.len() {
 						for j in 0..i {
-							assert!(other.inputs[i].1.is_possibly_from_same_tx_tree(&other.inputs[j].1));
+							assert!(other.inputs[i].1.is_possibly_from_same_tx_tree(&other.inputs[j].1, logger));
 						}
 					}
 				}
-				if !self.inputs[0].1.is_possibly_from_same_tx_tree(&other.inputs[0].1) {
+				if !self.inputs[0].1.is_possibly_from_same_tx_tree(&other.inputs[0].1, logger) {
 					debug_assert!(false, "We shouldn't have packages from different tx trees");
 					return false;
 				}
@@ -1266,10 +1277,13 @@ impl PackageTemplate {
 	pub(crate) fn outpoints(&self) -> Vec<&BitcoinOutPoint> {
 		self.inputs.iter().map(|(o, _)| o).collect()
 	}
-	pub(crate) fn outpoints_and_creation_heights(
-		&self,
-	) -> impl Iterator<Item = (&BitcoinOutPoint, Option<u32>)> {
-		self.inputs.iter().map(|(o, p)| (o, p.input_confirmation_height()))
+	pub(crate) fn outpoints_and_creation_heights<'a, L: Deref>(
+		&'a self, logger: &'a crate::chain::channelmonitor::WithChannelMonitor<L>,
+	) -> impl Iterator<Item = (&'a BitcoinOutPoint, Option<u32>)>
+	where
+		L::Target: Logger,
+	{
+		self.inputs.iter().map(move |(o, p): &(_, PackageSolvingData) | (o, p.input_confirmation_height(logger)))
 	}
 
 	pub(crate) fn inputs(&self) -> impl ExactSizeIterator<Item = &PackageSolvingData> {
@@ -1331,22 +1345,24 @@ impl PackageTemplate {
 	pub(crate) fn package_amount(&self) -> u64 {
 		let mut amounts = 0;
 		for (_, outp) in self.inputs.iter() {
+			let outp: &PackageSolvingData = outp;
 			amounts += outp.amount();
 		}
 		amounts
 	}
 	#[rustfmt::skip]
 	fn signed_locktime(&self) -> Option<u32> {
-		let signed_locktime = self.inputs.iter().find_map(|(_, outp)| outp.signed_locktime());
+		let signed_locktime = self.inputs.iter().find_map(|(_, outp): &(_, PackageSolvingData)| outp.signed_locktime());
 		#[cfg(debug_assertions)]
 		for (_, outp) in &self.inputs {
+			let outp: &PackageSolvingData = outp;
 			debug_assert!(outp.signed_locktime().is_none() || outp.signed_locktime() == signed_locktime);
 		}
 		signed_locktime
 	}
 	#[rustfmt::skip]
 	pub(crate) fn package_locktime(&self, current_height: u32) -> u32 {
-		let minimum_locktime = self.inputs.iter().filter_map(|(_, outp)| outp.minimum_locktime()).max();
+		let minimum_locktime = self.inputs.iter().filter_map(|(_, outp): &(_, PackageSolvingData)| outp.minimum_locktime()).max();
 
 		if let Some(signed_locktime) = self.signed_locktime() {
 			debug_assert!(minimum_locktime.is_none());
@@ -1359,6 +1375,7 @@ impl PackageTemplate {
 		let mut inputs_weight = 0;
 		let mut witnesses_weight = 2; // count segwit flags
 		for (_, outp) in self.inputs.iter() {
+			let outp: &PackageSolvingData = outp;
 			// previous_out_point: 36 bytes ; var_int: 1 byte ; sequence: 4 bytes
 			inputs_weight += 41 * WITNESS_SCALE_FACTOR;
 			witnesses_weight += outp.weight();
@@ -1378,6 +1395,7 @@ impl PackageTemplate {
 		for (previous_output, input) in &self.inputs {
 			match input {
 				PackageSolvingData::HolderHTLCOutput(ref outp) => {
+					let outp: &HolderHTLCOutput = outp;
 					let free_htlcs = outp.channel_type_features.supports_anchors_zero_fee_htlc_tx();
 					let free_commitments =
 						outp.channel_type_features.supports_anchor_zero_fee_commitments();
@@ -1392,9 +1410,9 @@ impl PackageTemplate {
 		htlcs
 	}
 	#[rustfmt::skip]
-	pub(crate) fn maybe_finalize_malleable_package<L: Logger, Signer: EcdsaChannelSigner>(
+	pub(crate) fn maybe_finalize_malleable_package<Signer: EcdsaChannelSigner>(
 		&self, current_height: u32, onchain_handler: &mut OnchainTxHandler<Signer>, value: Amount,
-		destination_script: ScriptBuf, logger: &L
+		destination_script: ScriptBuf,
 	) -> Option<MaybeSignedTransaction> {
 		debug_assert!(self.is_malleable());
 		let mut bumped_tx = Transaction {
@@ -1407,20 +1425,23 @@ impl PackageTemplate {
 			}],
 		};
 		for (outpoint, outp) in self.inputs.iter() {
+			let outp: &PackageSolvingData = outp;
 			bumped_tx.input.push(outp.as_tx_input(*outpoint));
 		}
 		for (i, (outpoint, out)) in self.inputs.iter().enumerate() {
+			let out: &PackageSolvingData = out;
 			log_debug!(logger, "Adding claiming input for outpoint {}:{}", outpoint.txid, outpoint.vout);
 			if !out.finalize_input(&mut bumped_tx, i, onchain_handler) { continue; }
 		}
 		Some(MaybeSignedTransaction(bumped_tx))
 	}
 	#[rustfmt::skip]
-	pub(crate) fn maybe_finalize_untractable_package<L: Logger, Signer: EcdsaChannelSigner>(
-		&self, onchain_handler: &mut OnchainTxHandler<Signer>, logger: &L,
+	pub(crate) fn maybe_finalize_untractable_package<Signer: EcdsaChannelSigner>(
+		&self, onchain_handler: &mut OnchainTxHandler<Signer>,
 	) -> Option<MaybeSignedTransaction> {
 		debug_assert!(!self.is_malleable());
 		if let Some((outpoint, outp)) = self.inputs.first() {
+			let outp: &PackageSolvingData = outp;
 			if let Some(final_tx) = outp.get_maybe_finalized_tx(outpoint, onchain_handler) {
 				log_debug!(logger, "Adding claiming input for outpoint {}:{}", outpoint.txid, outpoint.vout);
 				return Some(final_tx);
@@ -1512,9 +1533,9 @@ impl PackageTemplate {
 	/// which was used to generate the value. Will not return less than `dust_limit_sats` for the
 	/// value.
 	#[rustfmt::skip]
-	pub(crate) fn compute_package_output<F: Deref, L: Logger>(
+	pub(crate) fn compute_package_output<F: Deref>(
 		&self, predicted_weight: u64, dust_limit_sats: u64, feerate_strategy: &FeerateStrategy,
-		conf_target: ConfirmationTarget, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
+		conf_target: ConfirmationTarget, fee_estimator: &LowerBoundedFeeEstimator<F>,
 	) -> Option<(u64, u64)>
 	where F::Target: FeeEstimator,
 	{
@@ -1592,7 +1613,7 @@ impl PackageTemplate {
 		txid: Txid, vout: u32, input_solving_data: PackageSolvingData,
 		counterparty_spendable_height: u32,
 	) -> Self {
-		let malleability = PackageSolvingData::map_output_type_flags(&input_solving_data);
+		let malleability = map_output_type_flags(&input_solving_data);
 		let inputs = vec![(BitcoinOutPoint { txid, vout }, input_solving_data)];
 		PackageTemplate {
 			inputs,
@@ -1633,7 +1654,7 @@ impl Readable for PackageTemplate {
 			inputs.push((outpoint, rev_outp));
 		}
 		let malleability = if let Some((_, lead_input)) = inputs.first() {
-			PackageSolvingData::map_output_type_flags(&lead_input)
+			map_output_type_flags(&lead_input)
 		} else { return Err(DecodeError::InvalidValue); };
 		let mut counterparty_spendable_height = 0;
 		let mut feerate_previous = 0;

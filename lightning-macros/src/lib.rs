@@ -11,7 +11,6 @@
 
 //! Proc macros used by LDK
 
-#![cfg_attr(not(test), no_std)]
 #![deny(missing_docs)]
 #![forbid(unsafe_code)]
 #![deny(rustdoc::broken_intra_doc_links)]
@@ -20,13 +19,19 @@
 
 extern crate alloc;
 
-use alloc::string::ToString;
+use std::collections::HashMap;
+use std::string::ToString;
+use std::vec::Vec;
+
 use proc_macro::{Delimiter, Group, TokenStream, TokenTree};
 use proc_macro2::TokenStream as TokenStream2;
-use quote::quote;
+
+use quote::{quote, ToTokens};
+
 use syn::spanned::Spanned;
 use syn::{parse, ImplItemFn, Token};
 use syn::{parse_macro_input, Item};
+use syn::parse::Parser;
 
 fn add_async_method(mut parsed: ImplItemFn) -> TokenStream {
 	let output = quote! {
@@ -399,4 +404,532 @@ pub fn xtest_inventory(_input: TokenStream) -> TokenStream {
 	};
 
 	TokenStream::from(expanded)
+}
+
+struct AddLogsCtx<'a, 'b> {
+	methods_with_param: &'a [syn::Ident],
+	substructs_logged: &'a [syn::Ident],
+	otherstructs_logged: &'a [syn::Ident],
+	parent: Option<&'b AddLogsCtx<'a, 'b>>,
+	var_types: HashMap<syn::Ident, syn::Ident>,
+}
+
+impl<'a, 'b> AddLogsCtx<'a, 'b> {
+	fn push_var_ctx(&'b self) -> AddLogsCtx<'a, 'b> {
+		AddLogsCtx {
+			methods_with_param: self.methods_with_param,
+			substructs_logged: self.substructs_logged,
+			otherstructs_logged: self.otherstructs_logged,
+			parent: Some(self),
+			var_types: HashMap::new(),
+		}
+	}
+
+	fn resolve_var(&self, var: &syn::Ident) -> Option<&syn::Ident> {
+		let mut ctx = self;
+		loop {
+			if let Some(res) = ctx.var_types.get(var) {
+				return Some(res);
+			}
+			if let Some(parent) = ctx.parent {
+				ctx = parent;
+			} else {
+				return None;
+			}
+		}
+	}
+}
+
+fn process_var_decl(pat: &syn::Pat, ty: &syn::Type, ctx: &mut AddLogsCtx) {
+	if let syn::Pat::Ident(name) = pat {
+		if let syn::Type::Path(p) = ty {
+			if p.path.segments.len() == 1 {
+				ctx.var_types.insert(name.ident.clone(), p.path.segments[0].ident.clone());
+			}
+		} else if let syn::Type::Reference(r) = ty {
+			if let syn::Type::Path(p) = &*r.elem {
+				if p.path.segments.len() == 1 {
+					ctx.var_types.insert(name.ident.clone(), p.path.segments[0].ident.clone());
+				}
+			} else if let syn::Type::Reference(r) = &*r.elem {
+				if let syn::Type::Path(p) = &*r.elem {
+					if p.path.segments.len() == 1 {
+						ctx.var_types.insert(name.ident.clone(), p.path.segments[0].ident.clone());
+					}
+				}
+			}
+		}
+	} else if let syn::Pat::Tuple(names) = pat {
+		if let syn::Type::Tuple(types) = ty {
+			assert_eq!(names.elems.len(), types.elems.len());
+			for (name, ty) in names.elems.iter().zip(types.elems.iter()) {
+				process_var_decl(name, ty, ctx);
+			}
+		} else if let syn::Type::Reference(r) = ty {
+			if let syn::Type::Tuple(types) = &*r.elem {
+				assert_eq!(names.elems.len(), types.elems.len());
+				for (name, ty) in names.elems.iter().zip(types.elems.iter()) {
+					process_var_decl(name, ty, ctx);
+				}
+			} else if let syn::Type::Reference(r) = &*r.elem {
+				if let syn::Type::Tuple(types) = &*r.elem {
+					assert_eq!(names.elems.len(), types.elems.len());
+					for (name, ty) in names.elems.iter().zip(types.elems.iter()) {
+						process_var_decl(name, ty, ctx);
+					}
+				}
+			}
+		}
+	}
+}
+
+fn add_logs_to_macro_call(m: &mut syn::Macro, ctx: &mut AddLogsCtx) {
+	// Many macros just take a bunch of exprs as arguments, separated by commas.
+	// In that case, we optimistically edit the args as if they're exprs.
+	let parser = syn::punctuated::Punctuated::<syn::Expr, syn::Token![,]>::parse_terminated;
+	if let Ok(mut parsed) = parser.parse(m.tokens.clone().into()) {
+		for expr in parsed.iter_mut() {
+			add_logs_to_self_exprs(expr, ctx);
+		}
+		m.tokens = quote! { #parsed }.into();
+	}
+}
+
+fn add_logs_to_stmt_list(s: &mut Vec<syn::Stmt>, ctx: &mut AddLogsCtx) {
+	for stmt in s.iter_mut() {
+		match stmt {
+			syn::Stmt::Expr(ref mut expr, _) => add_logs_to_self_exprs(expr, ctx),
+			syn::Stmt::Local(syn::Local { pat, init, .. }) => {
+				if let syn::Pat::Type(t) = pat {
+					process_var_decl(&*t.pat, &*t.ty, ctx);
+				}
+				if let Some(l) = init {
+					add_logs_to_self_exprs(&mut *l.expr, ctx);
+					if let Some((_, e)) = &mut l.diverge {
+						add_logs_to_self_exprs(&mut *e, ctx);
+					}
+				}
+			},
+			syn::Stmt::Macro(m) => add_logs_to_macro_call(&mut m.mac, ctx),
+			syn::Stmt::Item(syn::Item::Fn(f)) => {
+				add_logs_to_stmt_list(&mut f.block.stmts, ctx);
+			},
+			syn::Stmt::Item(_) => {},
+		}
+	}
+}
+
+fn add_logs_to_self_exprs(e: &mut syn::Expr, ctx: &mut AddLogsCtx) {
+	match e {
+		syn::Expr::Array(e) => {
+			for elem in e.elems.iter_mut() {
+				add_logs_to_self_exprs(elem, ctx);
+			}
+		},
+		syn::Expr::Assign(e) => {
+			add_logs_to_self_exprs(&mut *e.left, ctx);
+			add_logs_to_self_exprs(&mut *e.right, ctx);
+		},
+		syn::Expr::Async(e) => {
+			add_logs_to_stmt_list(&mut e.block.stmts, ctx);
+		},
+		syn::Expr::Await(e) => {
+			add_logs_to_self_exprs(&mut *e.base, ctx);
+		},
+		syn::Expr::Binary(e) => {
+			add_logs_to_self_exprs(&mut *e.left, ctx);
+			add_logs_to_self_exprs(&mut *e.right, ctx);
+		},
+		syn::Expr::Block(e) => {
+			let mut ctx = ctx.push_var_ctx();
+			add_logs_to_stmt_list(&mut e.block.stmts, &mut ctx);
+		},
+		syn::Expr::Break(e) => {
+			if let Some(e) = e.expr.as_mut() {
+				add_logs_to_self_exprs(&mut *e, ctx);
+			}
+		},
+		syn::Expr::Call(e) => {
+			let mut needs_log_param = false;
+			if let syn::Expr::Path(p) = &*e.func {
+				if p.path.segments.len() == 2 && ctx.otherstructs_logged.iter().any(|m| *m == p.path.segments[0].ident) {
+					needs_log_param = true;
+				}
+			} else {
+				add_logs_to_self_exprs(&mut *e.func, ctx);
+			}
+			for a in e.args.iter_mut() {
+				add_logs_to_self_exprs(a, ctx);
+			}
+			if needs_log_param {
+				e.args.push(parse(quote!(logger).into()).unwrap());
+			}
+		},
+		syn::Expr::Cast(e) => {
+			add_logs_to_self_exprs(&mut *e.expr, ctx);
+		},
+		syn::Expr::Closure(e) => {
+			let mut ctx = ctx.push_var_ctx();
+			for pat in e.inputs.iter() {
+				if let syn::Pat::Type(t) = pat {
+					process_var_decl(&*t.pat, &*t.ty, &mut ctx);
+				}
+			}
+			add_logs_to_self_exprs(&mut *e.body, &mut ctx);
+		},
+		syn::Expr::Const(_) => {},
+		syn::Expr::Continue(_) => {},
+		syn::Expr::Field(e) => {
+			add_logs_to_self_exprs(&mut *e.base, ctx);
+		},
+		syn::Expr::ForLoop(e) => {
+			add_logs_to_self_exprs(&mut *e.expr, ctx);
+			let mut ctx = ctx.push_var_ctx();
+			add_logs_to_stmt_list(&mut e.body.stmts, &mut ctx);
+		},
+		syn::Expr::Group(e) => {
+			
+		},
+		syn::Expr::If(e) => {
+			add_logs_to_self_exprs(&mut *e.cond, ctx);
+			let mut if_ctx = ctx.push_var_ctx();
+			add_logs_to_stmt_list(&mut e.then_branch.stmts, &mut if_ctx);
+			if let Some((_, branch)) = e.else_branch.as_mut() {
+				let mut ctx = ctx.push_var_ctx();
+				add_logs_to_self_exprs(&mut *branch, &mut ctx);
+			}
+		},
+		syn::Expr::Index(e) => {
+			add_logs_to_self_exprs(&mut *e.expr, ctx);
+			add_logs_to_self_exprs(&mut *e.index, ctx);
+		},
+		syn::Expr::Infer(e) => {
+			
+		},
+		syn::Expr::Let(e) => {
+			if let syn::Pat::Type(t) = &*e.pat {
+				process_var_decl(&*t.pat, &*t.ty, ctx);
+			}
+			add_logs_to_self_exprs(&mut *e.expr, ctx);
+		},
+		syn::Expr::Lit(_) => {},
+		syn::Expr::Loop(e) => {
+			let mut ctx = ctx.push_var_ctx();
+			add_logs_to_stmt_list(&mut e.body.stmts, &mut ctx);
+		},
+		syn::Expr::Macro(e) => {
+			add_logs_to_macro_call(&mut e.mac, ctx);
+		},
+		syn::Expr::Match(e) => {
+			add_logs_to_self_exprs(&mut *e.expr, ctx);
+			for arm in e.arms.iter_mut() {
+				if let Some((_, e)) = arm.guard.as_mut() {
+					add_logs_to_self_exprs(&mut *e, ctx);
+				}
+				add_logs_to_self_exprs(&mut *arm.body, ctx);
+			}
+		},
+		syn::Expr::MethodCall(e) => {
+			match &*e.receiver {
+				syn::Expr::Path(path) => {
+					assert_eq!(path.path.segments.len(), 1, "Multiple segments should instead be parsed as a Field, below");
+					let is_self_call =
+						path.qself.is_none()
+						&& path.path.segments.len() == 1
+						&& path.path.segments[0].ident.to_string() == "self";
+					if is_self_call && ctx.methods_with_param.iter().any(|m| *m == e.method) {
+						e.args.push(parse(quote!(logger).into()).unwrap());
+					}
+					if let Some(varty) = ctx.resolve_var(&path.path.segments[0].ident) {
+						if ctx.otherstructs_logged.iter().any(|m| m == varty) {
+							if e.method != "clone" {
+								e.args.push(parse(quote!(logger).into()).unwrap());
+							}
+						}
+					}
+				},
+				syn::Expr::Field(field) => {
+					if let syn::Expr::Path(p) = &*field.base {
+						let is_self_call =
+							p.qself.is_none()
+							&& p.path.segments.len() == 1
+							&& p.path.segments[0].ident.to_string() == "self";
+						if let syn::Member::Named(field) = &field.member {
+							if is_self_call && ctx.substructs_logged.iter().any(|m| m == field) {
+								e.args.push(parse(quote!(logger).into()).unwrap());
+							}
+						} else {
+							add_logs_to_self_exprs(&mut *e.receiver, ctx);
+						}
+					} else {
+						add_logs_to_self_exprs(&mut *e.receiver, ctx);
+					}
+				},
+				_ => add_logs_to_self_exprs(&mut *e.receiver, ctx),
+			}
+			for a in e.args.iter_mut() {
+				add_logs_to_self_exprs(a, ctx);
+			}
+		},
+		syn::Expr::Paren(e) => {
+			add_logs_to_self_exprs(&mut *e.expr, ctx);
+		},
+		syn::Expr::Path(_) => {},
+		syn::Expr::Range(e) => {
+			if let Some(start) = e.start.as_mut() {
+				add_logs_to_self_exprs(start, ctx);
+			}
+			if let Some(end) = e.end.as_mut() {
+				add_logs_to_self_exprs(end, ctx);
+			}
+		},
+		syn::Expr::RawAddr(e) => {
+			
+		},
+		syn::Expr::Reference(e) => {
+			add_logs_to_self_exprs(&mut *e.expr, ctx);
+		},
+		syn::Expr::Repeat(e) => {
+			add_logs_to_self_exprs(&mut *e.expr, ctx);
+			add_logs_to_self_exprs(&mut *e.len, ctx);
+		},
+		syn::Expr::Return(e) => {
+			if let Some(e) = e.expr.as_mut() {
+				add_logs_to_self_exprs(&mut *e, ctx);
+			}
+		},
+		syn::Expr::Struct(e) => {
+			for field in e.fields.iter_mut() {
+				add_logs_to_self_exprs(&mut field.expr, ctx);
+			}
+			if let Some(rest) = e.rest.as_mut() {
+				add_logs_to_self_exprs(rest, ctx);
+			}
+		},
+		syn::Expr::Try(e) => {
+			add_logs_to_self_exprs(&mut *e.expr, ctx);
+		},
+		syn::Expr::TryBlock(e) => {
+			let mut ctx = ctx.push_var_ctx();
+			add_logs_to_stmt_list(&mut e.block.stmts, &mut ctx);
+		},
+		syn::Expr::Tuple(e) => {
+			for elem in e.elems.iter_mut() {
+				add_logs_to_self_exprs(elem, ctx);
+			}
+		},
+		syn::Expr::Unary(e) => {
+			add_logs_to_self_exprs(&mut *e.expr, ctx);
+		},
+		syn::Expr::Unsafe(e) => {
+			
+		},
+		syn::Expr::Verbatim(e) => {
+			
+		},
+		syn::Expr::While(e) => {
+			
+		},
+		syn::Expr::Yield(e) => {
+			
+		},
+		_ => {},
+	}
+}
+
+/// This attribute, on an `impl` block, will add logging parameters transparently to every method
+/// in the `impl` block. It will also pass through the current logger to any calls to modified
+/// methods.
+///
+/// Provided attributes should be in the form `logger: LoggerType $(, substruct: subfield)*`
+/// where `LoggerType` is the type of the logger object which is required, and `subfield` is any
+/// number of fields (accessible through `self`) which have had their `impl` block(s) similarly
+/// modified.
+///
+/// For example, this translates:
+/// ```rust
+/// struct B;
+/// struct A { field_b: B }
+///
+/// #[proc_macro_attribute(logger: LogType, substruct: field_b)]
+/// impl A {
+///		fn f_a(&self) {
+///			logger.log();
+///		}
+/// 	fn f(&self) {
+///			self.f_a();
+///			self.field_b.f();
+/// 	}
+/// }
+///
+/// #[proc_macro_attribute(logger: LogType)]
+/// impl B {
+///		fn f(&self) {
+///			logger.log();
+///		}
+///	}
+/// ```
+///
+/// to this:
+///
+/// ```rust
+/// struct B;
+/// struct A { field_b: B }
+///
+/// impl A {
+///		fn f_a(&self, logger: &LogType) {
+///			logger.log();
+///		}
+/// 	fn f(&self, logger: &LogType) {
+///			self.f_a(logger);
+///			self.field_b.f(logger);
+/// 	}
+/// }
+///
+/// impl B {
+///		fn f(&self, logger: &LogType) {
+///			logger.log();
+///		}
+///	}
+/// ```
+#[proc_macro_attribute]
+pub fn add_logging(attrs: TokenStream, expr: TokenStream) -> TokenStream {
+	let mut im = if let Ok(parsed) = parse::<syn::Item>(expr) {
+		if let syn::Item::Impl(im) = parsed {
+			im
+		} else {
+			return (quote! {
+				compile_error!("add_logging can only be used on impl items")
+			})
+			.into();
+		}
+	} else {
+		return (quote! {
+			compile_error!("add_logging can only be used on impl items")
+		})
+		.into();
+	};
+
+	let parsed_attrs = parse::<syn::AngleBracketedGenericArguments>(attrs);
+	let (logger_type, substructs_logged, otherstructs_logged) = if let Ok(attrs) = &parsed_attrs {
+		if attrs.args.len() < 1 {
+			return (quote! {
+				compile_error!("add_logging must have at least the `logger: LoggerType` attribute")
+			})
+			.into();
+		}
+		let logger_ty = if let syn::GenericArgument::Type(ty) = &attrs.args[0] {
+			ty
+		} else {
+			return (quote! {
+				compile_error!("add_logging's attributes must start with `logger:`")
+			})
+			.into();
+		};
+		let mut substructs_logged = Vec::new();
+		let mut otherstructs_logged = Vec::new();
+		for arg in attrs.args.iter().skip(1) {
+			if let syn::GenericArgument::AssocType(syn::AssocType { ident, ty: syn::Type::Path(p), .. }) = arg {
+				match ident.to_string().as_str() {
+					// XXX: fix all these error strings
+					"substruct" => {
+						if p.path.leading_colon.is_some() && p.path.segments.len() != 1 {
+							return (quote! {
+								compile_error!("add_logging's attributes must be in the form `logger: Logger $(, substruct: field)*")
+							})
+							.into();
+						}
+						substructs_logged.push(p.path.segments[0].ident.clone());
+					},
+					"otherstruct" => {
+						if p.path.leading_colon.is_some() && p.path.segments.len() != 1 {
+							return (quote! {
+								compile_error!("add_logging's attributes must be in the form `logger: Logger $(, substruct: field)*")
+							})
+							.into();
+						}
+						otherstructs_logged.push(p.path.segments[0].ident.clone());
+					},
+					_ => return quote! {
+						compile_error!("add_logging's attributes must be in the form `logger: Logger $(, substruct: field)*")
+					}.into(),
+				}
+			} else {
+				return (quote! {
+					compile_error!("add_logging's attributes must be in the form `logger: Logger $(, substruct: field)*")
+				})
+				.into();
+			}
+		}
+
+		if let syn::Type::Path(p) = &*im.self_ty {
+			if p.path.segments.len() == 1{
+				otherstructs_logged.push(p.path.segments[0].ident.clone());
+			}
+		}
+
+		(logger_ty, substructs_logged, otherstructs_logged)
+	} else {
+		return (quote! {
+			compile_error!("add_logging's attributes must be in the form `logger: Logger $(, substruct: field)*")
+		})
+		.into();
+	};
+
+	let mut methods_added = Vec::new();
+	for item in im.items.iter_mut() {
+		if let syn::ImplItem::Fn(f) = item {
+			// In some rare cases, manually taking a logger may be required to specify appropriate
+			// lifetimes. Detect such cases and avoid adding a redundant logger.
+			let have_logger = f.sig.inputs.iter().any(|inp| {
+				if let syn::FnArg::Typed(syn::PatType { pat, .. }) = inp {
+					if let syn::Pat::Ident(syn::PatIdent { ident, .. }) = &**pat {
+						ident == "logger"
+					} else {
+						false
+					}
+				} else {
+					false
+				}
+			});
+			if !have_logger {
+				if f.sig.generics.lt_token.is_none() {
+					f.sig.generics.lt_token = Some(Default::default());
+					f.sig.generics.gt_token = Some(Default::default());
+				}
+				f.sig.generics.params.push(parse(quote!(L: Deref).into()).unwrap());
+				if f.sig.generics.where_clause.is_none() {
+					f.sig.generics.where_clause = Some(parse(quote!(where).into()).unwrap());
+				}
+				let log_bound = parse(quote!(L::Target: Logger).into()).unwrap();
+				f.sig.generics.where_clause.as_mut().unwrap().predicates.push(log_bound);
+				f.sig.inputs.push(parse(quote!(logger: &#logger_type).into()).unwrap());
+				methods_added.push(f.sig.ident.clone());
+			}
+		}
+	}
+
+	let ctx = AddLogsCtx {
+		methods_with_param: &methods_added[..],
+		substructs_logged: &substructs_logged,
+		otherstructs_logged: &otherstructs_logged,
+		parent: None,
+		var_types: HashMap::new(),
+	};
+
+	for item in im.items.iter_mut() {
+		if let syn::ImplItem::Fn(f) = item {
+			if ctx.methods_with_param.contains(&f.sig.ident) {
+				let mut ctx = ctx.push_var_ctx();
+				for input in f.sig.inputs.iter() {
+					if let syn::FnArg::Typed(ty) = input {
+						process_var_decl(&*ty.pat, &*ty.ty, &mut ctx);
+					}
+				}
+				add_logs_to_stmt_list(&mut f.block.stmts, &mut ctx);
+			}
+		}
+	}
+
+	quote! { #im }.into()
 }
