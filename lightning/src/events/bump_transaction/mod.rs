@@ -790,7 +790,7 @@ where
 				package_target_feerate_sat_per_1000_weight);
 			self.broadcaster.broadcast_transactions(&[(
 				&commitment_tx,
-				TransactionType::Commitment { channel_id },
+				TransactionType::UnilateralClose { channel_id },
 			)]);
 			return Ok(());
 		}
@@ -959,8 +959,8 @@ where
 				commitment_tx.compute_txid()
 			);
 			self.broadcaster.broadcast_transactions(&[
-				(&commitment_tx, TransactionType::Commitment { channel_id }),
-				(&anchor_tx, TransactionType::Anchor { channel_id }),
+				(&commitment_tx, TransactionType::UnilateralClose { channel_id }),
+				(&anchor_tx, TransactionType::AnchorBump { channel_id }),
 			]);
 			return Ok(());
 		}
@@ -1196,7 +1196,7 @@ where
 			log_info!(self.logger, "Broadcasting {}", log_tx!(htlc_tx));
 			self.broadcaster.broadcast_transactions(&[(
 				&htlc_tx,
-				TransactionType::HtlcResolution { channel_id },
+				TransactionType::UnilateralClose { channel_id },
 			)]);
 		}
 

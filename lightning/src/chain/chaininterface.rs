@@ -33,19 +33,19 @@ pub enum TransactionType {
 		/// A single funding transaction may establish multiple channels when using batch funding.
 		channel_ids: Vec<ChannelId>,
 	},
-	/// A cooperative close transaction mutually agreed upon by both parties.
+	/// A transaction cooperatively closing a channel.
 	CooperativeClose {
 		/// The ID of the channel being closed.
 		channel_id: ChannelId,
 	},
-	/// A commitment transaction being broadcast to force-close the channel.
-	Commitment {
+	/// A transaction being broadcast to force-close the channel.
+	UnilateralClose {
 		/// The ID of the channel being force-closed.
 		channel_id: ChannelId,
 	},
-	/// An anchor transaction used for CPFP fee-bumping a commitment transaction.
-	Anchor {
-		/// The ID of the channel whose commitment transaction is being fee-bumped.
+	/// An anchor bumping transaction used for CPFP fee-bumping a closing transaction.
+	AnchorBump {
+		/// The ID of the channel whose closing transaction is being fee-bumped.
 		channel_id: ChannelId,
 	},
 	/// A transaction claiming outputs from a commitment transaction (HTLC claims, penalty/justice).
@@ -53,12 +53,10 @@ pub enum TransactionType {
 		/// The ID of the channel from which outputs are being claimed.
 		channel_id: ChannelId,
 	},
-	/// An HTLC resolution transaction (HTLC-timeout or HTLC-success) for anchor channels.
-	HtlcResolution {
-		/// The ID of the channel whose HTLCs are being resolved.
-		channel_id: ChannelId,
-	},
-	/// A transaction sweeping spendable outputs to the user's wallet.
+	/// A transaction genered by the [`OutputSweeper`], sweeping [`SpendableOutputDescriptor`]s to the user's wallet.
+	///
+	/// [`OutputSweeper`]: crate::util::sweep::OutputSweeper
+	/// [`SpendableOutputDescriptor`]: crate::sign::SpendableOutputDescriptor
 	Sweep {
 		/// The IDs of the channels from which outputs are being swept, if known.
 		///
