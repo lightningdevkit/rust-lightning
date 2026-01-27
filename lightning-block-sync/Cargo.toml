@@ -16,9 +16,9 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
-rest-client = [ "serde_json", "bitreq" ]
-rpc-client = [ "serde_json", "bitreq" ]
-tokio = [ "dep:tokio", "bitreq/async" ]
+rest-client = [ "serde_json", "dep:bitreq" ]
+rpc-client = [ "serde_json", "dep:bitreq" ]
+tokio = [ "dep:tokio", "bitreq?/async" ]
 
 [dependencies]
 bitcoin = "0.32.2"
