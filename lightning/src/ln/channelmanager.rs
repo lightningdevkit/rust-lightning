@@ -6548,7 +6548,10 @@ where
 			"Broadcasting signed interactive funding transaction {}",
 			funding_tx.compute_txid()
 		);
-		self.tx_broadcaster.broadcast_transactions(&[(funding_tx, BroadcastType::Funding)]);
+		self.tx_broadcaster.broadcast_transactions(&[(
+			funding_tx,
+			BroadcastType::Funding { channel_ids: vec![channel.context().channel_id()] },
+		)]);
 		{
 			let mut pending_events = self.pending_events.lock().unwrap();
 			emit_channel_pending_event!(pending_events, channel);
@@ -9463,6 +9466,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				let removed_batch_state = funding_batch_states.remove(&txid).into_iter().flatten();
 				let per_peer_state = self.per_peer_state.read().unwrap();
 				let mut batch_funding_tx = None;
+				let mut batch_channel_ids = Vec::new();
 				for (channel_id, counterparty_node_id, _) in removed_batch_state {
 					if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
 						let mut peer_state = peer_state_mutex.lock().unwrap();
@@ -9473,6 +9477,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								funded_chan.context.unbroadcasted_funding(&funded_chan.funding)
 							});
 							funded_chan.set_batch_ready();
+							batch_channel_ids.push(channel_id);
 
 							let mut pending_events = self.pending_events.lock().unwrap();
 							emit_channel_pending_event!(pending_events, funded_chan);
@@ -9481,7 +9486,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				}
 				if let Some(tx) = batch_funding_tx {
 					log_info!(self.logger, "Broadcasting batch funding tx {}", tx.compute_txid());
-					self.tx_broadcaster.broadcast_transactions(&[(&tx, BroadcastType::Funding)]);
+					self.tx_broadcaster.broadcast_transactions(&[(
+						&tx,
+						BroadcastType::Funding { channel_ids: batch_channel_ids },
+					)]);
 				}
 			}
 		}
@@ -10147,7 +10155,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				};
 			} else {
 				log_info!(logger, "Broadcasting funding transaction with txid {}", tx.compute_txid());
-				self.tx_broadcaster.broadcast_transactions(&[(&tx, BroadcastType::Funding)]);
+				self.tx_broadcaster.broadcast_transactions(&[(
+					&tx,
+					BroadcastType::Funding { channel_ids: vec![channel.context.channel_id()] },
+				)]);
 			}
 		}
 
@@ -11608,8 +11619,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		mem::drop(per_peer_state);
 		if let Some((broadcast_tx, err)) = tx_err {
 			log_info!(logger, "Broadcasting {}", log_tx!(broadcast_tx));
-			self.tx_broadcaster
-				.broadcast_transactions(&[(&broadcast_tx, BroadcastType::CooperativeClose)]);
+			self.tx_broadcaster.broadcast_transactions(&[(
+				&broadcast_tx,
+				BroadcastType::CooperativeClose { channel_id: msg.channel_id },
+			)]);
 			let _ = self.handle_error(err, *counterparty_node_id);
 		}
 		Ok(())
@@ -12938,7 +12951,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						log_info!(logger, "Broadcasting closing tx {}", log_tx!(broadcast_tx));
 						self.tx_broadcaster.broadcast_transactions(&[(
 							&broadcast_tx,
-							BroadcastType::CooperativeClose,
+							BroadcastType::CooperativeClose { channel_id },
 						)]);
 					}
 				} else {
@@ -13057,6 +13070,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 									if let Some((tx, shutdown_res)) = tx_shutdown_result_opt {
 										// We're done with this channel. We got a closing_signed and sent back
 										// a closing_signed with a closing transaction to broadcast.
+										let channel_id = funded_chan.context.channel_id();
 										let err = self.locked_handle_funded_coop_close(
 											&mut peer_state.closed_channel_monitor_update_ids,
 											&mut peer_state.in_flight_monitor_updates,
@@ -13068,7 +13082,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 										log_info!(logger, "Broadcasting {}", log_tx!(tx));
 										self.tx_broadcaster.broadcast_transactions(&[(
 											&tx,
-											BroadcastType::CooperativeClose,
+											BroadcastType::CooperativeClose { channel_id },
 										)]);
 										false
 									} else {

@@ -15,6 +15,7 @@
 
 use core::{cmp, ops::Deref};
 
+use crate::ln::types::ChannelId;
 use crate::prelude::*;
 
 use bitcoin::transaction::Transaction;
@@ -23,22 +24,47 @@ use bitcoin::transaction::Transaction;
 ///
 /// This is used to provide context about the type of transaction being broadcast, which may be
 /// useful for logging, filtering, or prioritization purposes.
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub enum BroadcastType {
 	/// A funding transaction establishing a new channel.
-	Funding,
+	Funding {
+		/// The IDs of the channels being funded.
+		///
+		/// A single funding transaction may establish multiple channels when using batch funding.
+		channel_ids: Vec<ChannelId>,
+	},
 	/// A cooperative close transaction mutually agreed upon by both parties.
-	CooperativeClose,
+	CooperativeClose {
+		/// The ID of the channel being closed.
+		channel_id: ChannelId,
+	},
 	/// A commitment transaction being broadcast to force-close the channel.
-	Commitment,
+	Commitment {
+		/// The ID of the channel being force-closed.
+		channel_id: ChannelId,
+	},
 	/// An anchor transaction used for CPFP fee-bumping a commitment transaction.
-	Anchor,
+	Anchor {
+		/// The ID of the channel whose commitment transaction is being fee-bumped.
+		channel_id: ChannelId,
+	},
 	/// A transaction claiming outputs from a commitment transaction (HTLC claims, penalty/justice).
-	Claim,
+	Claim {
+		/// The ID of the channel from which outputs are being claimed.
+		channel_id: ChannelId,
+	},
 	/// An HTLC resolution transaction (HTLC-timeout or HTLC-success) for anchor channels.
-	HtlcResolution,
+	HtlcResolution {
+		/// The ID of the channel whose HTLCs are being resolved.
+		channel_id: ChannelId,
+	},
 	/// A transaction sweeping spendable outputs to the user's wallet.
-	Sweep,
+	Sweep {
+		/// The IDs of the channels from which outputs are being swept, if known.
+		///
+		/// A single sweep transaction may aggregate outputs from multiple channels.
+		channel_ids: Vec<ChannelId>,
+	},
 }
 
 // TODO: Define typed abstraction over feerates to handle their conversions.

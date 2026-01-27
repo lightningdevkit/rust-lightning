@@ -2023,23 +2023,24 @@ where
 		// (for example when a forwarded HTLC nears expiry). Broadcasting funding after a
 		// close could then confirm the commitment and trigger unintended on‑chain handling.
 		// To avoid this, we check ChannelManager’s view (`is_channel_ready`) before broadcasting.
-		let channel_id_opt = jit_channel.get_channel_id();
-		if let Some(ch_id) = channel_id_opt {
+		if let Some(ch_id) = jit_channel.get_channel_id() {
 			let is_channel_ready = self
 				.channel_manager
 				.get_cm()
 				.list_channels()
 				.into_iter()
 				.any(|cd| cd.channel_id == ch_id && cd.is_channel_ready);
+
 			if !is_channel_ready {
 				return;
 			}
-		} else {
-			return;
-		}
 
-		if let Some(funding_tx) = jit_channel.get_funding_tx() {
-			self.tx_broadcaster.broadcast_transactions(&[(funding_tx, BroadcastType::Funding)]);
+			if let Some(funding_tx) = jit_channel.get_funding_tx() {
+				self.tx_broadcaster.broadcast_transactions(&[(
+					funding_tx,
+					BroadcastType::Funding { channel_ids: vec![ch_id] },
+				)]);
+			}
 		}
 	}
 }

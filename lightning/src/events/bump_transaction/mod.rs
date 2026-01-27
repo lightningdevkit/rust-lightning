@@ -765,9 +765,9 @@ where
 	/// transaction spending an anchor output of the commitment transaction to bump its fee and
 	/// broadcasts them to the network as a package.
 	async fn handle_channel_close(
-		&self, claim_id: ClaimId, package_target_feerate_sat_per_1000_weight: u32,
-		commitment_tx: &Transaction, commitment_tx_fee_sat: u64,
-		anchor_descriptor: &AnchorDescriptor,
+		&self, channel_id: ChannelId, claim_id: ClaimId,
+		package_target_feerate_sat_per_1000_weight: u32, commitment_tx: &Transaction,
+		commitment_tx_fee_sat: u64, anchor_descriptor: &AnchorDescriptor,
 	) -> Result<(), ()> {
 		let channel_type = &anchor_descriptor
 			.channel_derivation_parameters
@@ -788,7 +788,10 @@ where
 			log_debug!(self.logger, "Pre-signed commitment {} already has feerate {} sat/kW above required {} sat/kW, broadcasting.",
 				commitment_tx.compute_txid(), commitment_tx_feerate_sat_per_1000_weight,
 				package_target_feerate_sat_per_1000_weight);
-			self.broadcaster.broadcast_transactions(&[(&commitment_tx, BroadcastType::Commitment)]);
+			self.broadcaster.broadcast_transactions(&[(
+				&commitment_tx,
+				BroadcastType::Commitment { channel_id },
+			)]);
 			return Ok(());
 		}
 
@@ -956,8 +959,8 @@ where
 				commitment_tx.compute_txid()
 			);
 			self.broadcaster.broadcast_transactions(&[
-				(&commitment_tx, BroadcastType::Commitment),
-				(&anchor_tx, BroadcastType::Anchor),
+				(&commitment_tx, BroadcastType::Commitment { channel_id }),
+				(&anchor_tx, BroadcastType::Anchor { channel_id }),
 			]);
 			return Ok(());
 		}
@@ -966,7 +969,7 @@ where
 	/// Handles a [`BumpTransactionEvent::HTLCResolution`] event variant by producing a
 	/// fully-signed, fee-bumped HTLC transaction that is broadcast to the network.
 	async fn handle_htlc_resolution(
-		&self, claim_id: ClaimId, target_feerate_sat_per_1000_weight: u32,
+		&self, channel_id: ChannelId, claim_id: ClaimId, target_feerate_sat_per_1000_weight: u32,
 		htlc_descriptors: &[HTLCDescriptor], tx_lock_time: LockTime,
 	) -> Result<(), ()> {
 		let channel_type = &htlc_descriptors[0]
@@ -1191,7 +1194,10 @@ where
 			}
 
 			log_info!(self.logger, "Broadcasting {}", log_tx!(htlc_tx));
-			self.broadcaster.broadcast_transactions(&[(&htlc_tx, BroadcastType::HtlcResolution)]);
+			self.broadcaster.broadcast_transactions(&[(
+				&htlc_tx,
+				BroadcastType::HtlcResolution { channel_id },
+			)]);
 		}
 
 		Ok(())
@@ -1201,6 +1207,7 @@ where
 	pub async fn handle_event(&self, event: &BumpTransactionEvent) {
 		match event {
 			BumpTransactionEvent::ChannelClose {
+				channel_id,
 				claim_id,
 				package_target_feerate_sat_per_1000_weight,
 				commitment_tx,
@@ -1215,6 +1222,7 @@ where
 					commitment_tx.compute_txid()
 				);
 				self.handle_channel_close(
+					*channel_id,
 					*claim_id,
 					*package_target_feerate_sat_per_1000_weight,
 					commitment_tx,
@@ -1231,6 +1239,7 @@ where
 				});
 			},
 			BumpTransactionEvent::HTLCResolution {
+				channel_id,
 				claim_id,
 				target_feerate_sat_per_1000_weight,
 				htlc_descriptors,
@@ -1244,6 +1253,7 @@ where
 					log_iter!(htlc_descriptors.iter().map(|d| d.outpoint()))
 				);
 				self.handle_htlc_resolution(
+					*channel_id,
 					*claim_id,
 					*target_feerate_sat_per_1000_weight,
 					htlc_descriptors,

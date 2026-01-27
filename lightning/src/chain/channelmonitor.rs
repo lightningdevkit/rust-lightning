@@ -1904,8 +1904,9 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 			initial_holder_commitment_tx.trust().commitment_number();
 
 		let onchain_tx_handler = OnchainTxHandler::new(
-			channel_parameters.channel_value_satoshis, channel_keys_id, destination_script.into(),
-			keys, channel_parameters.clone(), initial_holder_commitment_tx.clone(), secp_ctx
+			channel_id, channel_parameters.channel_value_satoshis, channel_keys_id,
+			destination_script.into(), keys, channel_parameters.clone(),
+			initial_holder_commitment_tx.clone(), secp_ctx,
 		);
 
 		let funding_outpoint = channel_parameters.funding_outpoint
