@@ -3,7 +3,7 @@
 
 use crate::async_poll::{MultiResultFuturePoller, ResultFuture};
 use crate::poll::{ChainPoller, Poll, Validate, ValidatedBlockHeader};
-use crate::{BlockData, BlockSource, BlockSourceResult, ChainNotifier, HeaderCache};
+use crate::{BlockData, BlockSource, BlockSourceResult, Cache, ChainNotifier, HeaderCache};
 
 use bitcoin::block::Header;
 use bitcoin::network::Network;
@@ -153,8 +153,9 @@ where
 		// Disconnect any stale blocks, but keep them in the cache for the next iteration.
 		let (common_ancestor, connected_blocks) = {
 			let chain_listener = &DynamicChainListener(chain_listener);
+			let mut cache_wrapper = HeaderCacheNoDisconnect(&mut header_cache);
 			let mut chain_notifier =
-				ChainNotifier { header_cache: &mut header_cache, chain_listener };
+				ChainNotifier { header_cache: &mut cache_wrapper, chain_listener };
 			let difference = chain_notifier
 				.find_difference_from_best_block(best_header, old_best_block, &mut chain_poller)
 				.await?;
@@ -189,7 +190,9 @@ where
 		const NO_BLOCK: Option<(u32, crate::poll::ValidatedBlock)> = None;
 		let mut fetched_blocks = [NO_BLOCK; MAX_BLOCKS_AT_ONCE];
 		for ((header, block_res), result) in results.into_iter().zip(fetched_blocks.iter_mut()) {
-			*result = Some((header.height, block_res?));
+			let block = block_res?;
+			header_cache.block_connected(header.block_hash, *header);
+			*result = Some((header.height, block));
 		}
 		debug_assert!(fetched_blocks.iter().take(most_connected_blocks.len()).all(|r| r.is_some()));
 		// TODO: When our MSRV is 1.82, use is_sorted_by_key
@@ -242,10 +245,34 @@ impl<'a, L: chain::Listen + ?Sized> chain::Listen for DynamicChainListener<'a, L
 	}
 }
 
+/// Wrapper around HeaderCache that ignores `blocks_disconnected` calls, retaining disconnected
+/// blocks in the cache. This is useful during initial sync to keep headers available across
+/// multiple listeners.
+struct HeaderCacheNoDisconnect<'a>(&'a mut HeaderCache);
+
+impl<'a> crate::Cache for &mut HeaderCacheNoDisconnect<'a> {
+	fn look_up(&self, block_hash: &bitcoin::hash_types::BlockHash) -> Option<&ValidatedBlockHeader> {
+		self.0.look_up(block_hash)
+	}
+
+	fn insert_during_diff(&mut self, block_hash: bitcoin::hash_types::BlockHash, block_header: ValidatedBlockHeader) {
+		self.0.insert_during_diff(block_hash, block_header);
+	}
+
+	fn block_connected(&mut self, block_hash: bitcoin::hash_types::BlockHash, block_header: ValidatedBlockHeader) {
+		self.0.block_connected(block_hash, block_header);
+	}
+
+	fn blocks_disconnected(&mut self, _fork_point: &ValidatedBlockHeader) {
+		// Intentionally ignore disconnections to retain blocks in cache
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
 	use crate::test_utils::{Blockchain, MockChainListener};
+	use crate::Cache;
 
 	#[tokio::test]
 	async fn sync_from_same_chain() {
@@ -266,7 +293,13 @@ mod tests {
 			(chain.best_block_at_height(3), &listener_3 as &dyn chain::Listen),
 		];
 		match synchronize_listeners(&chain, Network::Bitcoin, listeners).await {
-			Ok((_, header)) => assert_eq!(header, chain.tip()),
+			Ok((cache, header)) => {
+				assert_eq!(header, chain.tip());
+				assert!(cache.look_up(&chain.at_height(1).block_hash).is_some());
+				assert!(cache.look_up(&chain.at_height(2).block_hash).is_some());
+				assert!(cache.look_up(&chain.at_height(3).block_hash).is_some());
+				assert!(cache.look_up(&chain.at_height(4).block_hash).is_some());
+			},
 			Err(e) => panic!("Unexpected error: {:?}", e),
 		}
 	}
@@ -297,7 +330,15 @@ mod tests {
 			(fork_chain_3.best_block(), &listener_3 as &dyn chain::Listen),
 		];
 		match synchronize_listeners(&main_chain, Network::Bitcoin, listeners).await {
-			Ok((_, header)) => assert_eq!(header, main_chain.tip()),
+			Ok((cache, header)) => {
+				assert_eq!(header, main_chain.tip());
+				assert!(cache.look_up(&main_chain.at_height(1).block_hash).is_some());
+				assert!(cache.look_up(&main_chain.at_height(2).block_hash).is_some());
+				assert!(cache.look_up(&main_chain.at_height(3).block_hash).is_some());
+				assert!(cache.look_up(&fork_chain_1.at_height(2).block_hash).is_none());
+				assert!(cache.look_up(&fork_chain_2.at_height(3).block_hash).is_none());
+				assert!(cache.look_up(&fork_chain_3.at_height(4).block_hash).is_none());
+			},
 			Err(e) => panic!("Unexpected error: {:?}", e),
 		}
 	}
@@ -331,7 +372,16 @@ mod tests {
 			(fork_chain_3.best_block(), &listener_3 as &dyn chain::Listen),
 		];
 		match synchronize_listeners(&main_chain, Network::Bitcoin, listeners).await {
-			Ok((_, header)) => assert_eq!(header, main_chain.tip()),
+			Ok((cache, header)) => {
+				assert_eq!(header, main_chain.tip());
+				assert!(cache.look_up(&main_chain.at_height(1).block_hash).is_some());
+				assert!(cache.look_up(&main_chain.at_height(2).block_hash).is_some());
+				assert!(cache.look_up(&main_chain.at_height(3).block_hash).is_some());
+				assert!(cache.look_up(&main_chain.at_height(4).block_hash).is_some());
+				assert!(cache.look_up(&fork_chain_1.at_height(2).block_hash).is_none());
+				assert!(cache.look_up(&fork_chain_1.at_height(3).block_hash).is_none());
+				assert!(cache.look_up(&fork_chain_1.at_height(4).block_hash).is_none());
+			},
 			Err(e) => panic!("Unexpected error: {:?}", e),
 		}
 	}
