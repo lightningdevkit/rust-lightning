@@ -152,6 +152,7 @@ where
 	let mut chain_listeners_at_height = Vec::new();
 	let mut most_connected_blocks = Vec::new();
 	let mut header_cache = HeaderCache::new();
+	header_cache.retain_on_disconnect = true;
 	for (old_best_block, chain_listener) in chain_listeners.drain(..) {
 		// Disconnect any stale blocks, but keep them in the cache for the next iteration.
 		let (common_ancestor, connected_blocks) = {
@@ -192,7 +193,9 @@ where
 		const NO_BLOCK: Option<(u32, crate::poll::ValidatedBlock)> = None;
 		let mut fetched_blocks = [NO_BLOCK; MAX_BLOCKS_AT_ONCE];
 		for ((header, block_res), result) in results.into_iter().zip(fetched_blocks.iter_mut()) {
-			*result = Some((header.height, block_res?));
+			let block = block_res?;
+			header_cache.block_connected(header.block_hash, *header);
+			*result = Some((header.height, block));
 		}
 		debug_assert!(fetched_blocks.iter().take(most_connected_blocks.len()).all(|r| r.is_some()));
 		// TODO: When our MSRV is 1.82, use is_sorted_by_key
@@ -225,6 +228,7 @@ where
 			.truncate(most_connected_blocks.len().saturating_sub(MAX_BLOCKS_AT_ONCE));
 	}
 
+	header_cache.retain_on_disconnect = false;
 	Ok((header_cache, best_header))
 }
 
@@ -267,7 +271,13 @@ mod tests {
 			(chain.best_block_at_height(3), &listener_3 as &dyn chain::Listen),
 		];
 		match synchronize_listeners(&chain, Network::Bitcoin, listeners).await {
-			Ok((_, header)) => assert_eq!(header, chain.tip()),
+			Ok((cache, header)) => {
+				assert_eq!(header, chain.tip());
+				assert!(cache.look_up(&chain.at_height(1).block_hash).is_some());
+				assert!(cache.look_up(&chain.at_height(2).block_hash).is_some());
+				assert!(cache.look_up(&chain.at_height(3).block_hash).is_some());
+				assert!(cache.look_up(&chain.at_height(4).block_hash).is_some());
+			},
 			Err(e) => panic!("Unexpected error: {:?}", e),
 		}
 	}
@@ -298,7 +308,15 @@ mod tests {
 			(fork_chain_3.best_block(), &listener_3 as &dyn chain::Listen),
 		];
 		match synchronize_listeners(&main_chain, Network::Bitcoin, listeners).await {
-			Ok((_, header)) => assert_eq!(header, main_chain.tip()),
+			Ok((cache, header)) => {
+				assert_eq!(header, main_chain.tip());
+				assert!(cache.look_up(&main_chain.at_height(1).block_hash).is_some());
+				assert!(cache.look_up(&main_chain.at_height(2).block_hash).is_some());
+				assert!(cache.look_up(&main_chain.at_height(3).block_hash).is_some());
+				assert!(cache.look_up(&fork_chain_1.at_height(2).block_hash).is_none());
+				assert!(cache.look_up(&fork_chain_2.at_height(3).block_hash).is_none());
+				assert!(cache.look_up(&fork_chain_3.at_height(4).block_hash).is_none());
+			},
 			Err(e) => panic!("Unexpected error: {:?}", e),
 		}
 	}
@@ -332,7 +350,16 @@ mod tests {
 			(fork_chain_3.best_block(), &listener_3 as &dyn chain::Listen),
 		];
 		match synchronize_listeners(&main_chain, Network::Bitcoin, listeners).await {
-			Ok((_, header)) => assert_eq!(header, main_chain.tip()),
+			Ok((cache, header)) => {
+				assert_eq!(header, main_chain.tip());
+				assert!(cache.look_up(&main_chain.at_height(1).block_hash).is_some());
+				assert!(cache.look_up(&main_chain.at_height(2).block_hash).is_some());
+				assert!(cache.look_up(&main_chain.at_height(3).block_hash).is_some());
+				assert!(cache.look_up(&main_chain.at_height(4).block_hash).is_some());
+				assert!(cache.look_up(&fork_chain_1.at_height(2).block_hash).is_none());
+				assert!(cache.look_up(&fork_chain_1.at_height(3).block_hash).is_none());
+				assert!(cache.look_up(&fork_chain_1.at_height(4).block_hash).is_none());
+			},
 			Err(e) => panic!("Unexpected error: {:?}", e),
 		}
 	}

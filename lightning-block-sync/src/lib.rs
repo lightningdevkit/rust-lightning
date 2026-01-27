@@ -193,12 +193,15 @@ pub const HEADER_CACHE_LIMIT: u32 = 6 * 24 * 7;
 /// Retains only the latest [`HEADER_CACHE_LIMIT`] block headers based on height.
 pub struct HeaderCache {
 	headers: std::collections::HashMap<BlockHash, ValidatedBlockHeader>,
+	/// When set, [`Self::blocks_disconnected`] will not evict headers above the fork point.
+	/// This is used during initial sync to retain headers across multiple listeners.
+	retain_on_disconnect: bool,
 }
 
 impl HeaderCache {
 	/// Creates a new empty header cache.
 	pub fn new() -> Self {
-		Self { headers: std::collections::HashMap::new() }
+		Self { headers: std::collections::HashMap::new(), retain_on_disconnect: false }
 	}
 
 	/// Retrieves the block header keyed by the given block hash.
@@ -234,9 +237,12 @@ impl HeaderCache {
 	/// Called when blocks have been disconnected from the best chain. Only the fork point
 	/// (best common ancestor) is provided.
 	///
-	/// Once disconnected, a block's header is no longer needed and thus can be removed.
+	/// Once disconnected, unless [`Self::retain_on_disconnect`] is set, a block's header is no
+	/// longer needed and thus can be removed.
 	pub(crate) fn blocks_disconnected(&mut self, fork_point: &ValidatedBlockHeader) {
-		self.headers.retain(|_, block_info| block_info.height <= fork_point.height);
+		if !self.retain_on_disconnect {
+			self.headers.retain(|_, block_info| block_info.height <= fork_point.height);
+		}
 	}
 }
 
