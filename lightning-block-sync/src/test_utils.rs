@@ -1,6 +1,7 @@
 use crate::poll::{Validate, ValidatedBlockHeader};
 use crate::{
-	BlockData, BlockHeaderData, BlockSource, BlockSourceError, BlockSourceResult, UnboundedCache,
+	BlockData, BlockHeaderData, BlockSource, BlockSourceError, BlockSourceResult, Cache,
+	HeaderCache,
 };
 
 use bitcoin::block::{Block, Header, Version};
@@ -144,12 +145,12 @@ impl Blockchain {
 		self.blocks.pop()
 	}
 
-	pub fn header_cache(&self, heights: std::ops::RangeInclusive<usize>) -> UnboundedCache {
-		let mut cache = UnboundedCache::new();
+	pub fn header_cache(&self, heights: std::ops::RangeInclusive<usize>) -> HeaderCache {
+		let mut cache = HeaderCache::new();
 		for i in heights {
 			let value = self.at_height(i);
 			let key = value.header.block_hash();
-			assert!(cache.insert(key, value).is_none());
+			cache.block_connected(key, value);
 		}
 		cache
 	}
