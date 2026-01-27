@@ -28,7 +28,7 @@ use crate::util::persist::{
 	OUTPUT_SWEEPER_PERSISTENCE_PRIMARY_NAMESPACE, OUTPUT_SWEEPER_PERSISTENCE_SECONDARY_NAMESPACE,
 };
 use crate::util::ser::{Readable, ReadableArgs, Writeable};
-use crate::{impl_writeable_tlv_based, log_debug, log_error};
+use crate::{log_debug, log_error};
 
 use bitcoin::block::Header;
 use bitcoin::locktime::absolute::LockTime;
