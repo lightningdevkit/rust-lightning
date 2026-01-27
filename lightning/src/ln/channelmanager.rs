@@ -13446,7 +13446,7 @@ macro_rules! create_offer_builder { ($self: ident, $builder: ty) => {
 		let mut peers = Vec::with_capacity(other_nodes_channels.len() + 1);
 		peers.push(($self.get_our_node_id(), $self.get_peers_for_blinded_path()));
 		for (node_id, peer_chans) in other_nodes_channels {
-			peers.push((node_id, Self::channel_details_to_forward_node(peer_chans)));
+			peers.push((node_id, Self::channel_details_to_forward_nodes(peer_chans)));
 		}
 
 		let builder = $self.flow.create_phantom_offer_builder(
@@ -14084,7 +14084,9 @@ where
 		now
 	}
 
-	fn channel_details_to_forward_node(
+	/// Converts a list of channels to a list of peers which may be suitable to receive onion
+	/// messages through.
+	fn channel_details_to_forward_nodes(
 		mut channel_list: Vec<ChannelDetails>,
 	) -> Vec<MessageForwardNode> {
 		channel_list.sort_unstable_by_key(|chan| chan.counterparty.node_id);
