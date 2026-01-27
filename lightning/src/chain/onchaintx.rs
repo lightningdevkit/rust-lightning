@@ -23,7 +23,9 @@ use bitcoin::transaction::OutPoint as BitcoinOutPoint;
 use bitcoin::transaction::Transaction;
 
 use crate::chain::chaininterface::ConfirmationTarget;
-use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator, LowerBoundedFeeEstimator};
+use crate::chain::chaininterface::{
+	BroadcastType, BroadcasterInterface, FeeEstimator, LowerBoundedFeeEstimator,
+};
 use crate::chain::channelmonitor::ANTI_REORG_DELAY;
 use crate::chain::package::{PackageSolvingData, PackageTemplate};
 use crate::chain::transaction::MaybeSignedTransaction;
@@ -516,7 +518,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 							if tx.is_fully_signed() {
 								let log_start = if feerate_was_bumped { "Broadcasting RBF-bumped" } else { "Rebroadcasting" };
 								log_info!(logger, "{} onchain {}", log_start, log_tx!(tx.0));
-								broadcaster.broadcast_transactions(&[&tx.0]);
+								broadcaster.broadcast_transactions(&[(&tx.0, BroadcastType::Claim)]);
 							} else {
 								log_info!(logger, "Waiting for signature of unsigned onchain transaction {}", tx.0.compute_txid());
 							}
@@ -863,7 +865,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 					OnchainClaim::Tx(tx) => {
 						if tx.is_fully_signed() {
 							log_info!(logger, "Broadcasting onchain {}", log_tx!(tx.0));
-							broadcaster.broadcast_transactions(&[&tx.0]);
+							broadcaster.broadcast_transactions(&[(&tx.0, BroadcastType::Claim)]);
 						} else {
 							log_info!(logger, "Waiting for signature of unsigned onchain transaction {}", tx.0.compute_txid());
 						}
@@ -1084,7 +1086,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 					OnchainClaim::Tx(bump_tx) => {
 						if bump_tx.is_fully_signed() {
 							log_info!(logger, "Broadcasting RBF-bumped onchain {}", log_tx!(bump_tx.0));
-							broadcaster.broadcast_transactions(&[&bump_tx.0]);
+							broadcaster.broadcast_transactions(&[(&bump_tx.0, BroadcastType::Claim)]);
 						} else {
 							log_info!(logger, "Waiting for signature of RBF-bumped unsigned onchain transaction {}",
 								bump_tx.0.compute_txid());
@@ -1187,7 +1189,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 					OnchainClaim::Tx(bump_tx) => {
 						if bump_tx.is_fully_signed() {
 							log_info!(logger, "Broadcasting onchain {}", log_tx!(bump_tx.0));
-							broadcaster.broadcast_transactions(&[&bump_tx.0]);
+							broadcaster.broadcast_transactions(&[(&bump_tx.0, BroadcastType::Claim)]);
 						} else {
 							log_info!(logger, "Waiting for signature of unsigned onchain transaction {}", bump_tx.0.compute_txid());
 						}

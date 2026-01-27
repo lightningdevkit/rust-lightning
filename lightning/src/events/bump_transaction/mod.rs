@@ -18,7 +18,7 @@ use core::future::Future;
 use core::ops::Deref;
 
 use crate::chain::chaininterface::{
-	compute_feerate_sat_per_1000_weight, fee_for_weight, BroadcasterInterface,
+	compute_feerate_sat_per_1000_weight, fee_for_weight, BroadcastType, BroadcasterInterface,
 };
 use crate::chain::ClaimId;
 use crate::io_extras::sink;
@@ -788,7 +788,7 @@ where
 			log_debug!(self.logger, "Pre-signed commitment {} already has feerate {} sat/kW above required {} sat/kW, broadcasting.",
 				commitment_tx.compute_txid(), commitment_tx_feerate_sat_per_1000_weight,
 				package_target_feerate_sat_per_1000_weight);
-			self.broadcaster.broadcast_transactions(&[&commitment_tx]);
+			self.broadcaster.broadcast_transactions(&[(&commitment_tx, BroadcastType::Commitment)]);
 			return Ok(());
 		}
 
@@ -955,7 +955,10 @@ where
 				anchor_txid,
 				commitment_tx.compute_txid()
 			);
-			self.broadcaster.broadcast_transactions(&[&commitment_tx, &anchor_tx]);
+			self.broadcaster.broadcast_transactions(&[
+				(&commitment_tx, BroadcastType::Commitment),
+				(&anchor_tx, BroadcastType::Anchor),
+			]);
 			return Ok(());
 		}
 	}
@@ -1188,7 +1191,7 @@ where
 			}
 
 			log_info!(self.logger, "Broadcasting {}", log_tx!(htlc_tx));
-			self.broadcaster.broadcast_transactions(&[&htlc_tx]);
+			self.broadcaster.broadcast_transactions(&[(&htlc_tx, BroadcastType::HtlcResolution)]);
 		}
 
 		Ok(())

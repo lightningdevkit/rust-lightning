@@ -40,7 +40,7 @@ use crate::prelude::{new_hash_map, HashMap};
 use crate::sync::{Arc, Mutex, MutexGuard, RwLock};
 use crate::utils::async_poll::dummy_waker;
 
-use lightning::chain::chaininterface::BroadcasterInterface;
+use lightning::chain::chaininterface::{BroadcastType, BroadcasterInterface};
 use lightning::events::HTLCHandlingFailureType;
 use lightning::ln::channelmanager::{AChannelManager, FailureCode, InterceptId};
 use lightning::ln::msgs::{ErrorAction, LightningError};
@@ -2039,7 +2039,7 @@ where
 		}
 
 		if let Some(funding_tx) = jit_channel.get_funding_tx() {
-			self.tx_broadcaster.broadcast_transactions(&[funding_tx]);
+			self.tx_broadcaster.broadcast_transactions(&[(funding_tx, BroadcastType::Funding)]);
 		}
 	}
 }

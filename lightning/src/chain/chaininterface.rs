@@ -19,6 +19,28 @@ use crate::prelude::*;
 
 use bitcoin::transaction::Transaction;
 
+/// Represents the class of transaction being broadcast.
+///
+/// This is used to provide context about the type of transaction being broadcast, which may be
+/// useful for logging, filtering, or prioritization purposes.
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+pub enum BroadcastType {
+	/// A funding transaction establishing a new channel.
+	Funding,
+	/// A cooperative close transaction mutually agreed upon by both parties.
+	CooperativeClose,
+	/// A commitment transaction being broadcast to force-close the channel.
+	Commitment,
+	/// An anchor transaction used for CPFP fee-bumping a commitment transaction.
+	Anchor,
+	/// A transaction claiming outputs from a commitment transaction (HTLC claims, penalty/justice).
+	Claim,
+	/// An HTLC resolution transaction (HTLC-timeout or HTLC-success) for anchor channels.
+	HtlcResolution,
+	/// A transaction sweeping spendable outputs to the user's wallet.
+	Sweep,
+}
+
 // TODO: Define typed abstraction over feerates to handle their conversions.
 pub(crate) fn compute_feerate_sat_per_1000_weight(fee_sat: u64, weight: u64) -> u32 {
 	(fee_sat * 1000 / weight).try_into().unwrap_or(u32::max_value())
@@ -45,7 +67,10 @@ pub trait BroadcasterInterface {
 	///
 	/// Bitcoin transaction packages are defined in BIP 331 and here:
 	/// <https://github.com/bitcoin/bitcoin/blob/master/doc/policy/packages.md>
-	fn broadcast_transactions(&self, txs: &[&Transaction]);
+	///
+	/// Each transaction is paired with a [`BroadcastType`] indicating the class of transaction
+	/// being broadcast, which may be useful for logging, filtering, or prioritization.
+	fn broadcast_transactions(&self, txs: &[(&Transaction, BroadcastType)]);
 }
 
 /// An enum that represents the priority at which we want a transaction to confirm used for feerate

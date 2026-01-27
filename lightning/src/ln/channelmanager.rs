@@ -39,7 +39,7 @@ use crate::blinded_path::payment::{AsyncBolt12OfferContext, Bolt12OfferContext, 
 use crate::blinded_path::NodeIdLookUp;
 use crate::chain;
 use crate::chain::chaininterface::{
-	BroadcasterInterface, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator,
+	BroadcastType, BroadcasterInterface, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator,
 };
 use crate::chain::channelmonitor::{
 	Balance, ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, MonitorEvent,
@@ -6548,7 +6548,7 @@ where
 			"Broadcasting signed interactive funding transaction {}",
 			funding_tx.compute_txid()
 		);
-		self.tx_broadcaster.broadcast_transactions(&[funding_tx]);
+		self.tx_broadcaster.broadcast_transactions(&[(funding_tx, BroadcastType::Funding)]);
 		{
 			let mut pending_events = self.pending_events.lock().unwrap();
 			emit_channel_pending_event!(pending_events, channel);
@@ -9481,7 +9481,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				}
 				if let Some(tx) = batch_funding_tx {
 					log_info!(self.logger, "Broadcasting batch funding tx {}", tx.compute_txid());
-					self.tx_broadcaster.broadcast_transactions(&[&tx]);
+					self.tx_broadcaster.broadcast_transactions(&[(&tx, BroadcastType::Funding)]);
 				}
 			}
 		}
@@ -10147,7 +10147,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				};
 			} else {
 				log_info!(logger, "Broadcasting funding transaction with txid {}", tx.compute_txid());
-				self.tx_broadcaster.broadcast_transactions(&[&tx]);
+				self.tx_broadcaster.broadcast_transactions(&[(&tx, BroadcastType::Funding)]);
 			}
 		}
 
@@ -11608,7 +11608,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		mem::drop(per_peer_state);
 		if let Some((broadcast_tx, err)) = tx_err {
 			log_info!(logger, "Broadcasting {}", log_tx!(broadcast_tx));
-			self.tx_broadcaster.broadcast_transactions(&[&broadcast_tx]);
+			self.tx_broadcaster
+				.broadcast_transactions(&[(&broadcast_tx, BroadcastType::CooperativeClose)]);
 			let _ = self.handle_error(err, *counterparty_node_id);
 		}
 		Ok(())
@@ -12935,7 +12936,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					}
 					if let Some(broadcast_tx) = msgs.signed_closing_tx {
 						log_info!(logger, "Broadcasting closing tx {}", log_tx!(broadcast_tx));
-						self.tx_broadcaster.broadcast_transactions(&[&broadcast_tx]);
+						self.tx_broadcaster.broadcast_transactions(&[(
+							&broadcast_tx,
+							BroadcastType::CooperativeClose,
+						)]);
 					}
 				} else {
 					// We don't know how to handle a channel_ready or signed_closing_tx for a
@@ -13062,7 +13066,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 										handle_errors.push((*cp_id, Err(err)));
 
 										log_info!(logger, "Broadcasting {}", log_tx!(tx));
-										self.tx_broadcaster.broadcast_transactions(&[&tx]);
+										self.tx_broadcaster.broadcast_transactions(&[(
+											&tx,
+											BroadcastType::CooperativeClose,
+										)]);
 										false
 									} else {
 										true

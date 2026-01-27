@@ -8,7 +8,9 @@
 //! [`SpendableOutputDescriptor`]s, i.e., persists them in a given [`KVStoreSync`] and regularly retries
 //! sweeping them.
 
-use crate::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator};
+use crate::chain::chaininterface::{
+	BroadcastType, BroadcasterInterface, ConfirmationTarget, FeeEstimator,
+};
 use crate::chain::channelmonitor::{ANTI_REORG_DELAY, ARCHIVAL_DELAY_BLOCKS};
 use crate::chain::{self, BestBlock, Confirm, Filter, Listen, WatchedOutput};
 use crate::io;
@@ -582,7 +584,7 @@ where
 
 		// Persistence completely successfully. If we have a spending transaction, we broadcast it.
 		if let Some(spending_tx) = spending_tx {
-			self.broadcaster.broadcast_transactions(&[&spending_tx]);
+			self.broadcaster.broadcast_transactions(&[(&spending_tx, BroadcastType::Sweep)]);
 		}
 
 		Ok(())
