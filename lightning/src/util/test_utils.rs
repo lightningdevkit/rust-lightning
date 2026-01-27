@@ -12,9 +12,9 @@ use crate::blinded_path::message::{BlindedMessagePath, MessageForwardNode};
 use crate::blinded_path::payment::{BlindedPaymentPath, ReceiveTlvs};
 use crate::chain;
 use crate::chain::chaininterface;
-use crate::chain::chaininterface::ConfirmationTarget;
 #[cfg(any(test, feature = "_externalize_tests"))]
 use crate::chain::chaininterface::FEERATE_FLOOR_SATS_PER_KW;
+use crate::chain::chaininterface::{ConfirmationTarget, TransactionType};
 use crate::chain::chainmonitor::{ChainMonitor, Persist};
 use crate::chain::channelmonitor::{
 	ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, MonitorEvent,
@@ -1154,7 +1154,7 @@ impl TestBroadcaster {
 }
 
 impl chaininterface::BroadcasterInterface for TestBroadcaster {
-	fn broadcast_transactions(&self, txs: &[&Transaction]) {
+	fn broadcast_transactions(&self, txs: &[(&Transaction, TransactionType)]) {
 		// Assert that any batch of transactions of length greater than 1 is sorted
 		// topologically, and is a `child-with-parents` package as defined in
 		// <https://github.com/bitcoin/bitcoin/blob/master/doc/policy/packages.md>.
@@ -1165,21 +1165,23 @@ impl chaininterface::BroadcasterInterface for TestBroadcaster {
 		// Right now LDK only ever broadcasts packages of length 2.
 		assert!(txs.len() <= 2);
 		if txs.len() == 2 {
-			let parent_txid = txs[0].compute_txid();
+			let parent_txid = txs[0].0.compute_txid();
 			assert!(txs[1]
+				.0
 				.input
 				.iter()
 				.map(|input| input.previous_output.txid)
 				.any(|txid| txid == parent_txid));
-			let child_txid = txs[1].compute_txid();
+			let child_txid = txs[1].0.compute_txid();
 			assert!(txs[0]
+				.0
 				.input
 				.iter()
 				.map(|input| input.previous_output.txid)
 				.all(|txid| txid != child_txid));
 		}
 
-		for tx in txs {
+		for (tx, _broadcast_type) in txs {
 			let lock_time = tx.lock_time.to_consensus_u32();
 			assert!(lock_time < 1_500_000_000);
 			if tx.lock_time.is_block_height()
@@ -1195,7 +1197,7 @@ impl chaininterface::BroadcasterInterface for TestBroadcaster {
 				}
 			}
 		}
-		let owned_txs: Vec<Transaction> = txs.iter().map(|tx| (*tx).clone()).collect();
+		let owned_txs: Vec<Transaction> = txs.iter().map(|(tx, _)| (*tx).clone()).collect();
 		self.txn_broadcasted.lock().unwrap().extend(owned_txs);
 	}
 }

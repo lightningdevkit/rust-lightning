@@ -36,7 +36,9 @@ use bitcoin::WPubkeyHash;
 use lightning::blinded_path::message::{BlindedMessagePath, MessageContext, MessageForwardNode};
 use lightning::blinded_path::payment::{BlindedPaymentPath, ReceiveTlvs};
 use lightning::chain;
-use lightning::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator};
+use lightning::chain::chaininterface::{
+	TransactionType, BroadcasterInterface, ConfirmationTarget, FeeEstimator,
+};
 use lightning::chain::channelmonitor::{ChannelMonitor, MonitorEvent};
 use lightning::chain::transaction::OutPoint;
 use lightning::chain::{
@@ -159,8 +161,8 @@ pub struct TestBroadcaster {
 	txn_broadcasted: RefCell<Vec<Transaction>>,
 }
 impl BroadcasterInterface for TestBroadcaster {
-	fn broadcast_transactions(&self, txs: &[&Transaction]) {
-		for tx in txs {
+	fn broadcast_transactions(&self, txs: &[(&Transaction, TransactionType)]) {
+		for (tx, _broadcast_type) in txs {
 			self.txn_broadcasted.borrow_mut().push((*tx).clone());
 		}
 	}

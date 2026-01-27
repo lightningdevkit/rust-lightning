@@ -1879,8 +1879,9 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 			initial_holder_commitment_tx.trust().commitment_number();
 
 		let onchain_tx_handler = OnchainTxHandler::new(
-			channel_parameters.channel_value_satoshis, channel_keys_id, destination_script.into(),
-			keys, channel_parameters.clone(), initial_holder_commitment_tx.clone(), secp_ctx
+			channel_id, channel_parameters.channel_value_satoshis, channel_keys_id,
+			destination_script.into(), keys, channel_parameters.clone(),
+			initial_holder_commitment_tx.clone(), secp_ctx,
 		);
 
 		let funding_outpoint = channel_parameters.funding_outpoint
@@ -6491,7 +6492,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 				return Err(DecodeError::InvalidValue);
 			}
 		}
-		let onchain_tx_handler: OnchainTxHandler<SP::EcdsaSigner> = ReadableArgs::read(
+		let mut onchain_tx_handler: OnchainTxHandler<SP::EcdsaSigner> = ReadableArgs::read(
 			reader, (entropy_source, signer_provider, channel_value_satoshis, channel_keys_id)
 		)?;
 
@@ -6587,6 +6588,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		}
 
 		let channel_id = channel_id.unwrap_or(ChannelId::v1_from_funding_outpoint(outpoint));
+		onchain_tx_handler.set_channel_id(channel_id);
 
 		let (current_holder_commitment_tx, current_holder_htlc_data) = {
 			let holder_commitment_tx = onchain_tx_handler.current_holder_commitment_tx();

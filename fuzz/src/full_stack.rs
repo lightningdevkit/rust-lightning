@@ -35,7 +35,9 @@ use lightning::ln::funding::{FundingTxInput, SpliceContribution};
 use lightning::blinded_path::message::{BlindedMessagePath, MessageContext, MessageForwardNode};
 use lightning::blinded_path::payment::{BlindedPaymentPath, ReceiveTlvs};
 use lightning::chain;
-use lightning::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator};
+use lightning::chain::chaininterface::{
+	TransactionType, BroadcasterInterface, ConfirmationTarget, FeeEstimator,
+};
 use lightning::chain::chainmonitor;
 use lightning::chain::transaction::OutPoint;
 use lightning::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Listen};
@@ -187,8 +189,8 @@ struct TestBroadcaster {
 	txn_broadcasted: Mutex<Vec<Transaction>>,
 }
 impl BroadcasterInterface for TestBroadcaster {
-	fn broadcast_transactions(&self, txs: &[&Transaction]) {
-		let owned_txs: Vec<Transaction> = txs.iter().map(|tx| (*tx).clone()).collect();
+	fn broadcast_transactions(&self, txs: &[(&Transaction, TransactionType)]) {
+		let owned_txs: Vec<Transaction> = txs.iter().map(|(tx, _)| (*tx).clone()).collect();
 		self.txn_broadcasted.lock().unwrap().extend(owned_txs);
 	}
 }
