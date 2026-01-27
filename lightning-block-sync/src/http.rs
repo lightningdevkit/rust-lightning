@@ -3,6 +3,9 @@
 
 use serde_json;
 
+#[cfg(feature = "tokio")]
+use bitreq::RequestExt;
+
 use std::convert::TryFrom;
 use std::fmt;
 use std::net::{SocketAddr, ToSocketAddrs};
@@ -78,9 +81,14 @@ impl<'a> std::net::ToSocketAddrs for &'a HttpEndpoint {
 	}
 }
 
+/// Maximum number of cached connections in the connection pool.
+const MAX_CONNECTIONS: usize = 10;
+
 /// Client for making HTTP requests.
 pub(crate) struct HttpClient {
 	address: SocketAddr,
+	#[cfg(feature = "tokio")]
+	client: bitreq::Client,
 }
 
 impl HttpClient {
@@ -96,13 +104,17 @@ impl HttpClient {
 			Some(address) => address,
 		};
 
-		// Verify reachability by attempting a connection (matches original behavior).
+		// Verify reachability by attempting a connection.
 		let stream = std::net::TcpStream::connect_timeout(&address, TCP_STREAM_TIMEOUT)?;
 		stream.set_read_timeout(Some(TCP_STREAM_TIMEOUT))?;
 		stream.set_write_timeout(Some(TCP_STREAM_TIMEOUT))?;
 		drop(stream);
 
-		Ok(Self { address })
+		Ok(Self {
+			address,
+			#[cfg(feature = "tokio")]
+			client: bitreq::Client::new(MAX_CONNECTIONS),
+		})
 	}
 
 	/// Sends a `GET` request for a resource identified by `uri` at the `host`.
@@ -186,9 +198,9 @@ impl HttpClient {
 	}
 
 	/// Sends an HTTP request message and reads the response, returning its body.
-	async fn send_request(&mut self, request: bitreq::Request) -> std::io::Result<Vec<u8>> {
+	async fn send_request(&self, request: bitreq::Request) -> std::io::Result<Vec<u8>> {
 		#[cfg(feature = "tokio")]
-		let response = request.send_async().await.map_err(bitreq_to_io_error)?;
+		let response = request.send_async_with_client(&self.client).await.map_err(bitreq_to_io_error)?;
 		#[cfg(not(feature = "tokio"))]
 		let response = request.send().map_err(bitreq_to_io_error)?;
 
@@ -216,7 +228,8 @@ fn bitreq_to_io_error(err: bitreq::Error) -> std::io::Error {
 		| bitreq::Error::MalformedChunkLength
 		| bitreq::Error::MalformedChunkEnd
 		| bitreq::Error::MalformedContentLength
-		| bitreq::Error::InvalidUtf8InResponse => ErrorKind::InvalidData,
+		| bitreq::Error::InvalidUtf8InResponse
+		| bitreq::Error::InvalidUtf8InBody(_) => ErrorKind::InvalidData,
 		bitreq::Error::AddressNotFound | bitreq::Error::HttpsFeatureNotEnabled => {
 			ErrorKind::InvalidInput
 		},
@@ -321,16 +334,24 @@ mod endpoint_tests {
 #[cfg(test)]
 pub(crate) mod client_tests {
 	use super::*;
-	use std::io::BufRead;
-	use std::io::Write;
+	use std::io::{BufRead, Read, Write};
 
 	/// Server for handling HTTP client requests with a stock response.
 	pub struct HttpServer {
 		address: std::net::SocketAddr,
-		#[allow(dead_code)]
-		handler: std::thread::JoinHandle<()>,
-		#[allow(dead_code)]
+		handler: Option<std::thread::JoinHandle<()>>,
 		shutdown: std::sync::Arc<std::sync::atomic::AtomicBool>,
+	}
+
+	impl Drop for HttpServer {
+		fn drop(&mut self) {
+			self.shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+			// Make a connection to unblock the listener's accept() call
+			let _ = std::net::TcpStream::connect(self.address);
+			if let Some(handler) = self.handler.take() {
+				let _ = handler.join();
+			}
+		}
 	}
 
 	/// Body of HTTP response messages.
@@ -409,39 +430,75 @@ pub(crate) mod client_tests {
 			let shutdown_signaled = std::sync::Arc::clone(&shutdown);
 			let handler = std::thread::spawn(move || {
 				for stream in listener.incoming() {
-					let mut stream = stream.unwrap();
-					stream.set_write_timeout(Some(TCP_STREAM_TIMEOUT)).unwrap();
-
-					let lines_read = std::io::BufReader::new(&stream)
-						.lines()
-						.take_while(|line| !line.as_ref().unwrap().is_empty())
-						.count();
-					if lines_read == 0 {
-						continue;
+					if shutdown_signaled.load(std::sync::atomic::Ordering::SeqCst) {
+						return;
 					}
 
-					for chunk in response.as_bytes().chunks(16) {
+					let stream = stream.unwrap();
+					stream.set_write_timeout(Some(TCP_STREAM_TIMEOUT)).unwrap();
+					stream.set_read_timeout(Some(TCP_STREAM_TIMEOUT)).unwrap();
+
+					let mut reader = std::io::BufReader::new(stream);
+
+					// Handle multiple requests on the same connection (keep-alive)
+					loop {
 						if shutdown_signaled.load(std::sync::atomic::Ordering::SeqCst) {
 							return;
-						} else {
-							if let Err(_) = stream.write(chunk) {
+						}
+
+						// Read request headers
+						let mut lines_read = 0;
+						let mut content_length: usize = 0;
+						loop {
+							let mut line = String::new();
+							match reader.read_line(&mut line) {
+								Ok(0) => break, // eof
+								Ok(_) => {
+									if line == "\r\n" || line == "\n" {
+										break; // end of headers
+									}
+									// Parse content_length for POST body handling
+									if let Some(value) = line.strip_prefix("Content-Length:") {
+										content_length = value.trim().parse().unwrap_or(0);
+									}
+									lines_read += 1;
+								},
+								Err(_) => break, // Read error or timeout
+							}
+						}
+
+						if lines_read == 0 {
+							break; // No request received, connection closed
+						}
+
+						// Consume request body if present (needed for POST keep-alive)
+						if content_length > 0 {
+							let mut body = vec![0u8; content_length];
+							if reader.read_exact(&mut body).is_err() {
 								break;
 							}
-							if let Err(_) = stream.flush() {
+						}
+
+						// Send response
+						let stream = reader.get_mut();
+						let mut write_error = false;
+						for chunk in response.as_bytes().chunks(16) {
+							if shutdown_signaled.load(std::sync::atomic::Ordering::SeqCst) {
+								return;
+							}
+							if stream.write(chunk).is_err() || stream.flush().is_err() {
+								write_error = true;
 								break;
 							}
+						}
+						if write_error {
+							break;
 						}
 					}
 				}
 			});
 
-			Self { address, handler, shutdown }
-		}
-
-		#[allow(dead_code)]
-		fn shutdown(self) {
-			self.shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
-			self.handler.join().unwrap();
+			Self { address, handler: Some(handler), shutdown }
 		}
 
 		pub fn endpoint(&self) -> HttpEndpoint {
