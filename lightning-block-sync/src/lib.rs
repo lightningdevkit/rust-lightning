@@ -176,7 +176,7 @@ where
 {
 	chain_tip: ValidatedBlockHeader,
 	chain_poller: P,
-	chain_notifier: ChainNotifier<UnboundedCache, L>,
+	chain_notifier: ChainNotifier<HeaderCache, L>,
 }
 
 /// The `Cache` trait defines behavior for managing a block header cache, where block headers are
@@ -204,34 +204,50 @@ pub(crate) trait Cache {
 	fn blocks_disconnected(&mut self, fork_point: &ValidatedBlockHeader);
 }
 
-/// Unbounded cache of block headers keyed by block hash.
-pub type UnboundedCache = std::collections::HashMap<BlockHash, ValidatedBlockHeader>;
+/// The maximum number of [`ValidatedBlockHeader`]s stored in a [`HeaderCache`].
+pub const HEADER_CACHE_LIMIT: u32 = 6 * 24 * 7;
 
-impl Cache for UnboundedCache {
-	fn look_up(&self, block_hash: &BlockHash) -> Option<&ValidatedBlockHeader> {
-		self.get(block_hash)
-	}
+/// Bounded cache of block headers keyed by block hash.
+///
+/// Retains only the latest [`HEADER_CACHE_LIMIT`] block headers based on height.
+pub struct HeaderCache(std::collections::HashMap<BlockHash, ValidatedBlockHeader>);
 
-	fn block_connected(&mut self, block_hash: BlockHash, block_header: ValidatedBlockHeader) {
-		self.insert(block_hash, block_header);
-	}
-
-	fn blocks_disconnected(&mut self, fork_point: &ValidatedBlockHeader) {
-		self.retain(|_, block_info| block_info.height < fork_point.height);
+impl HeaderCache {
+	/// Creates a new empty header cache.
+	pub fn new() -> Self {
+		Self(std::collections::HashMap::new())
 	}
 }
 
-impl Cache for &mut UnboundedCache {
+impl Cache for HeaderCache {
 	fn look_up(&self, block_hash: &BlockHash) -> Option<&ValidatedBlockHeader> {
-		self.get(block_hash)
+		self.0.get(block_hash)
 	}
 
 	fn block_connected(&mut self, block_hash: BlockHash, block_header: ValidatedBlockHeader) {
-		self.insert(block_hash, block_header);
+		self.0.insert(block_hash, block_header);
+
+		// Remove headers older than a week.
+		let cutoff_height = block_header.height.saturating_sub(HEADER_CACHE_LIMIT);
+		self.0.retain(|_, header| header.height >= cutoff_height);
 	}
 
 	fn blocks_disconnected(&mut self, fork_point: &ValidatedBlockHeader) {
-		self.retain(|_, block_info| block_info.height < fork_point.height);
+		self.0.retain(|_, block_info| block_info.height <= fork_point.height);
+	}
+}
+
+impl Cache for &mut HeaderCache {
+	fn look_up(&self, block_hash: &BlockHash) -> Option<&ValidatedBlockHeader> {
+		self.0.get(block_hash)
+	}
+
+	fn block_connected(&mut self, block_hash: BlockHash, block_header: ValidatedBlockHeader) {
+		(*self).block_connected(block_hash, block_header);
+	}
+
+	fn blocks_disconnected(&mut self, fork_point: &ValidatedBlockHeader) {
+		self.0.retain(|_, block_info| block_info.height <= fork_point.height);
 	}
 }
 
@@ -250,7 +266,7 @@ where
 	///
 	/// [`poll_best_tip`]: SpvClient::poll_best_tip
 	pub fn new(
-		chain_tip: ValidatedBlockHeader, chain_poller: P, header_cache: UnboundedCache,
+		chain_tip: ValidatedBlockHeader, chain_poller: P, header_cache: HeaderCache,
 		chain_listener: L,
 	) -> Self {
 		let chain_notifier = ChainNotifier { header_cache, chain_listener };
@@ -490,7 +506,7 @@ mod spv_client_tests {
 		let best_tip = chain.at_height(1);
 
 		let poller = poll::ChainPoller::new(&mut chain, Network::Testnet);
-		let cache = UnboundedCache::new();
+		let cache = HeaderCache::new();
 		let mut listener = NullChainListener {};
 		let mut client = SpvClient::new(best_tip, poller, cache, &mut listener);
 		match client.poll_best_tip().await {
@@ -509,7 +525,7 @@ mod spv_client_tests {
 		let common_tip = chain.tip();
 
 		let poller = poll::ChainPoller::new(&mut chain, Network::Testnet);
-		let cache = UnboundedCache::new();
+		let cache = HeaderCache::new();
 		let mut listener = NullChainListener {};
 		let mut client = SpvClient::new(common_tip, poller, cache, &mut listener);
 		match client.poll_best_tip().await {
@@ -529,7 +545,7 @@ mod spv_client_tests {
 		let old_tip = chain.at_height(1);
 
 		let poller = poll::ChainPoller::new(&mut chain, Network::Testnet);
-		let cache = UnboundedCache::new();
+		let cache = HeaderCache::new();
 		let mut listener = NullChainListener {};
 		let mut client = SpvClient::new(old_tip, poller, cache, &mut listener);
 		match client.poll_best_tip().await {
@@ -549,7 +565,7 @@ mod spv_client_tests {
 		let old_tip = chain.at_height(1);
 
 		let poller = poll::ChainPoller::new(&mut chain, Network::Testnet);
-		let cache = UnboundedCache::new();
+		let cache = HeaderCache::new();
 		let mut listener = NullChainListener {};
 		let mut client = SpvClient::new(old_tip, poller, cache, &mut listener);
 		match client.poll_best_tip().await {
@@ -569,7 +585,7 @@ mod spv_client_tests {
 		let old_tip = chain.at_height(1);
 
 		let poller = poll::ChainPoller::new(&mut chain, Network::Testnet);
-		let cache = UnboundedCache::new();
+		let cache = HeaderCache::new();
 		let mut listener = NullChainListener {};
 		let mut client = SpvClient::new(old_tip, poller, cache, &mut listener);
 		match client.poll_best_tip().await {
@@ -590,7 +606,7 @@ mod spv_client_tests {
 		let worse_tip = chain.tip();
 
 		let poller = poll::ChainPoller::new(&mut chain, Network::Testnet);
-		let cache = UnboundedCache::new();
+		let cache = HeaderCache::new();
 		let mut listener = NullChainListener {};
 		let mut client = SpvClient::new(best_tip, poller, cache, &mut listener);
 		match client.poll_best_tip().await {
