@@ -204,9 +204,12 @@ pub(crate) trait Cache {
 	fn blocks_disconnected(&mut self, fork_point: &ValidatedBlockHeader);
 }
 
+/// The maximum number of [`ValidatedBlockHeader`]s stored in a [`HeaderCache`].
+pub const HEADER_CACHE_LIMIT: u32 = 6 * 24 * 7;
+
 /// Bounded cache of block headers keyed by block hash.
 ///
-/// Retains only the last `ANTI_REORG_DELAY * 2` block headers based on height.
+/// Retains only the latest [`HEADER_CACHE_LIMIT`] block headers based on height.
 pub struct HeaderCache(std::collections::HashMap<BlockHash, ValidatedBlockHeader>);
 
 impl HeaderCache {
@@ -225,7 +228,7 @@ impl Cache for HeaderCache {
 		self.0.insert(block_hash, block_header);
 
 		// Remove headers older than a week.
-		let cutoff_height = block_header.height.saturating_sub(6 * 24 * 7);
+		let cutoff_height = block_header.height.saturating_sub(HEADER_CACHE_LIMIT);
 		self.0.retain(|_, header| header.height >= cutoff_height);
 	}
 
