@@ -566,3 +566,45 @@ impl ClaimId {
 		ClaimId(Sha256::from_engine(engine).to_byte_array())
 	}
 }
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use bitcoin::hashes::Hash;
+
+	#[test]
+	fn test_best_block() {
+		let hash1 = BlockHash::from_slice(&[1; 32]).unwrap();
+		let mut chain_a = BestBlock::new(hash1, 100);
+		let mut chain_b = BestBlock::new(hash1, 100);
+
+		// Test get_hash_at_height on initial block
+		assert_eq!(chain_a.get_hash_at_height(100), Some(hash1));
+		assert_eq!(chain_a.get_hash_at_height(101), None);
+		assert_eq!(chain_a.get_hash_at_height(99), None);
+
+		// Test find_common_ancestor with identical blocks
+		assert_eq!(chain_a.find_common_ancestor(&chain_b), Some((hash1, 100)));
+
+		let hash2 = BlockHash::from_slice(&[2; 32]).unwrap();
+		chain_a.advance(hash2);
+		assert_eq!(chain_a.height, 101);
+		assert_eq!(chain_a.block_hash, hash2);
+		assert_eq!(chain_a.previous_blocks[0], Some(hash1));
+		assert_eq!(chain_a.get_hash_at_height(101), Some(hash2));
+		assert_eq!(chain_a.get_hash_at_height(100), Some(hash1));
+
+		// Test find_common_ancestor with different heights
+		assert_eq!(chain_a.find_common_ancestor(&chain_b), Some((hash1, 100)));
+
+		// Test find_common_ancestor with diverged chains but the same height
+		let hash_b3 = BlockHash::from_slice(&[33; 32]).unwrap();
+		chain_b.advance(hash_b3);
+		assert_eq!(chain_a.find_common_ancestor(&chain_b), Some((hash1, 100)));
+
+		// Test find_common_ancestor with no common history
+		let hash_other = BlockHash::from_slice(&[99; 32]).unwrap();
+		let chain_c = BestBlock::new(hash_other, 200);
+		assert_eq!(chain_a.find_common_ancestor(&chain_c), None);
+	}
+}
