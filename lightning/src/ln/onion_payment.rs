@@ -111,6 +111,7 @@ enum RoutingInfo {
 		next_hop_hmac: [u8; 32],
 		shared_secret: SharedSecret,
 		current_path_key: Option<PublicKey>,
+		incoming_multipath_data: Option<msgs::FinalOnionHopData>,
 	},
 }
 
@@ -167,14 +168,15 @@ pub(super) fn create_fwd_pending_htlc_info(
 				reason: LocalHTLCFailureReason::InvalidOnionPayload,
 				err_data: Vec::new(),
 			}),
-		onion_utils::Hop::TrampolineForward { next_trampoline_hop_data, next_trampoline_hop_hmac, new_trampoline_packet_bytes, trampoline_shared_secret, .. } => {
+		onion_utils::Hop::TrampolineForward { outer_hop_data, next_trampoline_hop_data, next_trampoline_hop_hmac, new_trampoline_packet_bytes, trampoline_shared_secret, .. } => {
 			(
 				RoutingInfo::Trampoline {
 					next_trampoline: next_trampoline_hop_data.next_trampoline,
 					new_packet_bytes: new_trampoline_packet_bytes,
 					next_hop_hmac: next_trampoline_hop_hmac,
 					shared_secret: trampoline_shared_secret,
-					current_path_key: None
+					current_path_key: None,
+					incoming_multipath_data: outer_hop_data.multipath_trampoline_data,
 				},
 				next_trampoline_hop_data.amt_to_forward,
 				next_trampoline_hop_data.outgoing_cltv_value,
@@ -200,7 +202,8 @@ pub(super) fn create_fwd_pending_htlc_info(
 					new_packet_bytes: new_trampoline_packet_bytes,
 					next_hop_hmac: next_trampoline_hop_hmac,
 					shared_secret: trampoline_shared_secret,
-					current_path_key: outer_hop_data.current_path_key
+					current_path_key: outer_hop_data.current_path_key,
+					incoming_multipath_data: outer_hop_data.multipath_trampoline_data,
 				},
 				amt_to_forward,
 				outgoing_cltv_value,
@@ -233,7 +236,7 @@ pub(super) fn create_fwd_pending_htlc_info(
 					}),
 			}
 		}
-		RoutingInfo::Trampoline { next_trampoline, new_packet_bytes, next_hop_hmac, shared_secret, current_path_key } => {
+		RoutingInfo::Trampoline { next_trampoline, new_packet_bytes, next_hop_hmac, shared_secret, current_path_key, incoming_multipath_data: multipath_trampoline_data } => {
 			let next_trampoline_packet_pubkey = match next_packet_pubkey_opt {
 				Some(Ok(pubkey)) => pubkey,
 				_ => return Err(InboundHTLCErr {
@@ -260,7 +263,8 @@ pub(super) fn create_fwd_pending_htlc_info(
 						failure: intro_node_blinding_point
 							.map(|_| BlindedFailure::FromIntroductionNode)
 							.unwrap_or(BlindedFailure::FromBlindedNode),
-					})
+					}),
+				incoming_multipath_data: multipath_trampoline_data,
 			}
 		}
 	};
