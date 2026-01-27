@@ -10,9 +10,13 @@
 //! Tests for asynchronous signing. These tests verify that the channel state machine behaves
 //! properly with a signer implementation that asynchronously derives signatures.
 
+use crate::events::bump_transaction::sync::WalletSourceSync;
+use crate::ln::funding::SpliceContribution;
+use crate::ln::splicing_tests::negotiate_splice_tx;
 use crate::prelude::*;
 use crate::util::ser::Writeable;
 use bitcoin::secp256k1::Secp256k1;
+use bitcoin::{Amount, TxOut};
 
 use crate::chain::channelmonitor::LATENCY_GRACE_PERIOD_BLOCKS;
 use crate::chain::ChannelMonitorUpdateStatus;
@@ -1549,4 +1553,106 @@ fn test_async_force_close_on_invalid_secret_for_stale_state() {
 	check_added_monitors(&nodes[1], 1);
 	check_closed_broadcast(&nodes[1], 1, true);
 	check_closed_event(&nodes[1], 1, closure_reason, &[node_id_0], 100_000);
+}
+
+#[test]
+fn test_async_splice_initial_commit_sig() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
+	send_payment(&nodes[0], &[&nodes[1]], 1_000);
+
+	let (initiator, acceptor) = (&nodes[0], &nodes[1]);
+	let initiator_node_id = initiator.node.get_our_node_id();
+	let acceptor_node_id = acceptor.node.get_our_node_id();
+
+	initiator.disable_channel_signer_op(
+		&acceptor_node_id,
+		&channel_id,
+		SignerOp::SignCounterpartyCommitment,
+	);
+	acceptor.disable_channel_signer_op(
+		&initiator_node_id,
+		&channel_id,
+		SignerOp::SignCounterpartyCommitment,
+	);
+
+	// Negotiate a splice up until the signature exchange.
+	let contribution = SpliceContribution::splice_out(vec![TxOut {
+		value: Amount::from_sat(1_000),
+		script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
+	}]);
+	negotiate_splice_tx(initiator, acceptor, channel_id, contribution);
+
+	assert!(initiator.node.get_and_clear_pending_msg_events().is_empty());
+	assert!(acceptor.node.get_and_clear_pending_msg_events().is_empty());
+
+	// Have the initiator sign the funding transaction. We won't see their initial commitment signed
+	// go out until their signer returns.
+	let event = get_event!(initiator, Event::FundingTransactionReadyForSigning);
+	if let Event::FundingTransactionReadyForSigning { unsigned_transaction, .. } = event {
+		let partially_signed_tx = initiator.wallet_source.sign_tx(unsigned_transaction).unwrap();
+		initiator
+			.node
+			.funding_transaction_signed(&channel_id, &acceptor_node_id, partially_signed_tx)
+			.unwrap();
+	}
+
+	assert!(initiator.node.get_and_clear_pending_msg_events().is_empty());
+	assert!(acceptor.node.get_and_clear_pending_msg_events().is_empty());
+
+	initiator.enable_channel_signer_op(
+		&acceptor_node_id,
+		&channel_id,
+		SignerOp::SignCounterpartyCommitment,
+	);
+	initiator.node.signer_unblocked(None);
+
+	// Have the acceptor process the message. They should be able to send their `tx_signatures` as
+	// they go first, but it is held back as their initial `commitment_signed` is not ready yet.
+	let initiator_commit_sig = get_htlc_update_msgs(initiator, &acceptor_node_id);
+	acceptor
+		.node
+		.handle_commitment_signed(initiator_node_id, &initiator_commit_sig.commitment_signed[0]);
+	check_added_monitors(acceptor, 1);
+	assert!(acceptor.node.get_and_clear_pending_msg_events().is_empty());
+
+	// Reestablish the channel to make sure the acceptor doesn't attempt to retransmit any messages
+	// that are not ready yet.
+	initiator.node.peer_disconnected(acceptor_node_id);
+	acceptor.node.peer_disconnected(initiator_node_id);
+	reconnect_nodes(ReconnectArgs::new(initiator, acceptor));
+
+	// Re-enable the acceptor's signer. We should see both their initial `commitment_signed` and
+	// `tx_signatures` go out.
+	acceptor.enable_channel_signer_op(
+		&initiator_node_id,
+		&channel_id,
+		SignerOp::SignCounterpartyCommitment,
+	);
+	acceptor.node.signer_unblocked(None);
+
+	let msg_events = acceptor.node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 2, "{msg_events:?}");
+	if let MessageSendEvent::UpdateHTLCs { updates, .. } = &msg_events[0] {
+		initiator.node.handle_commitment_signed(acceptor_node_id, &updates.commitment_signed[0]);
+		check_added_monitors(initiator, 1);
+	} else {
+		panic!("Unexpected event");
+	}
+	if let MessageSendEvent::SendTxSignatures { msg, .. } = &msg_events[1] {
+		initiator.node.handle_tx_signatures(acceptor_node_id, &msg);
+	} else {
+		panic!("Unexpected event");
+	}
+
+	let tx_signatures =
+		get_event_msg!(initiator, MessageSendEvent::SendTxSignatures, acceptor_node_id);
+	acceptor.node.handle_tx_signatures(initiator_node_id, &tx_signatures);
+
+	let _ = get_event!(initiator, Event::SplicePending);
+	let _ = get_event!(acceptor, Event::SplicePending);
 }
