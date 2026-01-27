@@ -82,6 +82,7 @@ impl<'a> std::net::ToSocketAddrs for &'a HttpEndpoint {
 }
 
 /// Maximum number of cached connections in the connection pool.
+#[cfg(feature = "tokio")]
 const MAX_CONNECTIONS: usize = 10;
 
 /// Client for making HTTP requests.
