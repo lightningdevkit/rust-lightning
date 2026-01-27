@@ -170,18 +170,13 @@ pub enum BlockData {
 /// sources for the best chain tip. During this process it detects any chain forks, determines which
 /// constitutes the best chain, and updates the listener accordingly with any blocks that were
 /// connected or disconnected since the last poll.
-///
-/// Block headers for the best chain are maintained in the parameterized cache, allowing for a
-/// custom cache eviction policy. This offers flexibility to those sensitive to resource usage.
-/// Hence, there is a trade-off between a lower memory footprint and potentially increased network
-/// I/O as headers are re-fetched during fork detection.
-pub struct SpvClient<'a, P: Poll, C: Cache, L: Deref>
+pub struct SpvClient<P: Poll, L: Deref>
 where
 	L::Target: chain::Listen,
 {
 	chain_tip: ValidatedBlockHeader,
 	chain_poller: P,
-	chain_notifier: ChainNotifier<'a, C, L>,
+	chain_notifier: ChainNotifier<UnboundedCache, L>,
 }
 
 /// The `Cache` trait defines behavior for managing a block header cache, where block headers are
@@ -194,7 +189,7 @@ where
 /// Implementations may define how long to retain headers such that it's unlikely they will ever be
 /// needed to disconnect a block.  In cases where block sources provide access to headers on stale
 /// forks reliably, caches may be entirely unnecessary.
-pub trait Cache {
+pub(crate) trait Cache {
 	/// Retrieves the block header keyed by the given block hash.
 	fn look_up(&self, block_hash: &BlockHash) -> Option<&ValidatedBlockHeader>;
 
@@ -226,7 +221,21 @@ impl Cache for UnboundedCache {
 	}
 }
 
-impl<'a, P: Poll, C: Cache, L: Deref> SpvClient<'a, P, C, L>
+impl Cache for &mut UnboundedCache {
+	fn look_up(&self, block_hash: &BlockHash) -> Option<&ValidatedBlockHeader> {
+		self.get(block_hash)
+	}
+
+	fn block_connected(&mut self, block_hash: BlockHash, block_header: ValidatedBlockHeader) {
+		self.insert(block_hash, block_header);
+	}
+
+	fn blocks_disconnected(&mut self, fork_point: &ValidatedBlockHeader) {
+		self.retain(|_, block_info| block_info.height < fork_point.height);
+	}
+}
+
+impl<P: Poll, L: Deref> SpvClient<P, L>
 where
 	L::Target: chain::Listen,
 {
@@ -241,7 +250,7 @@ where
 	///
 	/// [`poll_best_tip`]: SpvClient::poll_best_tip
 	pub fn new(
-		chain_tip: ValidatedBlockHeader, chain_poller: P, header_cache: &'a mut C,
+		chain_tip: ValidatedBlockHeader, chain_poller: P, header_cache: UnboundedCache,
 		chain_listener: L,
 	) -> Self {
 		let chain_notifier = ChainNotifier { header_cache, chain_listener };
@@ -295,15 +304,15 @@ where
 /// Notifies [listeners] of blocks that have been connected or disconnected from the chain.
 ///
 /// [listeners]: lightning::chain::Listen
-pub struct ChainNotifier<'a, C: Cache, L: Deref>
+pub(crate) struct ChainNotifier<C: Cache, L: Deref>
 where
 	L::Target: chain::Listen,
 {
 	/// Cache for looking up headers before fetching from a block source.
-	header_cache: &'a mut C,
+	pub(crate) header_cache: C,
 
 	/// Listener that will be notified of connected or disconnected blocks.
-	chain_listener: L,
+	pub(crate) chain_listener: L,
 }
 
 /// Changes made to the chain between subsequent polls that transformed it from having one chain tip
@@ -321,7 +330,7 @@ struct ChainDifference {
 	connected_blocks: Vec<ValidatedBlockHeader>,
 }
 
-impl<'a, C: Cache, L: Deref> ChainNotifier<'a, C, L>
+impl<C: Cache, L: Deref> ChainNotifier<C, L>
 where
 	L::Target: chain::Listen,
 {
@@ -481,9 +490,9 @@ mod spv_client_tests {
 		let best_tip = chain.at_height(1);
 
 		let poller = poll::ChainPoller::new(&mut chain, Network::Testnet);
-		let mut cache = UnboundedCache::new();
+		let cache = UnboundedCache::new();
 		let mut listener = NullChainListener {};
-		let mut client = SpvClient::new(best_tip, poller, &mut cache, &mut listener);
+		let mut client = SpvClient::new(best_tip, poller, cache, &mut listener);
 		match client.poll_best_tip().await {
 			Err(e) => {
 				assert_eq!(e.kind(), BlockSourceErrorKind::Persistent);
@@ -500,9 +509,9 @@ mod spv_client_tests {
 		let common_tip = chain.tip();
 
 		let poller = poll::ChainPoller::new(&mut chain, Network::Testnet);
-		let mut cache = UnboundedCache::new();
+		let cache = UnboundedCache::new();
 		let mut listener = NullChainListener {};
-		let mut client = SpvClient::new(common_tip, poller, &mut cache, &mut listener);
+		let mut client = SpvClient::new(common_tip, poller, cache, &mut listener);
 		match client.poll_best_tip().await {
 			Err(e) => panic!("Unexpected error: {:?}", e),
 			Ok((chain_tip, blocks_connected)) => {
@@ -520,9 +529,9 @@ mod spv_client_tests {
 		let old_tip = chain.at_height(1);
 
 		let poller = poll::ChainPoller::new(&mut chain, Network::Testnet);
-		let mut cache = UnboundedCache::new();
+		let cache = UnboundedCache::new();
 		let mut listener = NullChainListener {};
-		let mut client = SpvClient::new(old_tip, poller, &mut cache, &mut listener);
+		let mut client = SpvClient::new(old_tip, poller, cache, &mut listener);
 		match client.poll_best_tip().await {
 			Err(e) => panic!("Unexpected error: {:?}", e),
 			Ok((chain_tip, blocks_connected)) => {
@@ -540,9 +549,9 @@ mod spv_client_tests {
 		let old_tip = chain.at_height(1);
 
 		let poller = poll::ChainPoller::new(&mut chain, Network::Testnet);
-		let mut cache = UnboundedCache::new();
+		let cache = UnboundedCache::new();
 		let mut listener = NullChainListener {};
-		let mut client = SpvClient::new(old_tip, poller, &mut cache, &mut listener);
+		let mut client = SpvClient::new(old_tip, poller, cache, &mut listener);
 		match client.poll_best_tip().await {
 			Err(e) => panic!("Unexpected error: {:?}", e),
 			Ok((chain_tip, blocks_connected)) => {
@@ -560,9 +569,9 @@ mod spv_client_tests {
 		let old_tip = chain.at_height(1);
 
 		let poller = poll::ChainPoller::new(&mut chain, Network::Testnet);
-		let mut cache = UnboundedCache::new();
+		let cache = UnboundedCache::new();
 		let mut listener = NullChainListener {};
-		let mut client = SpvClient::new(old_tip, poller, &mut cache, &mut listener);
+		let mut client = SpvClient::new(old_tip, poller, cache, &mut listener);
 		match client.poll_best_tip().await {
 			Err(e) => panic!("Unexpected error: {:?}", e),
 			Ok((chain_tip, blocks_connected)) => {
@@ -581,9 +590,9 @@ mod spv_client_tests {
 		let worse_tip = chain.tip();
 
 		let poller = poll::ChainPoller::new(&mut chain, Network::Testnet);
-		let mut cache = UnboundedCache::new();
+		let cache = UnboundedCache::new();
 		let mut listener = NullChainListener {};
-		let mut client = SpvClient::new(best_tip, poller, &mut cache, &mut listener);
+		let mut client = SpvClient::new(best_tip, poller, cache, &mut listener);
 		match client.poll_best_tip().await {
 			Err(e) => panic!("Unexpected error: {:?}", e),
 			Ok((chain_tip, blocks_connected)) => {
