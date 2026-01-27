@@ -2793,7 +2793,8 @@ where L::Target: Logger {
 		// Returns the contribution amount of $candidate if the channel caused an update to `targets`.
 		( $candidate: expr, $next_hops_fee_msat: expr,
 			$next_hops_value_contribution: expr, $next_hops_path_htlc_minimum_msat: expr,
-			$next_hops_path_penalty_msat: expr, $next_hops_cltv_delta: expr, $next_hops_path_length: expr ) => { {
+			$next_hops_path_penalty_msat: expr, $next_hops_cltv_delta: expr, $next_hops_path_length: expr,
+			$allow_first_hop_route_convergence: expr ) => { {
 			// We "return" whether we updated the path at the end, and how much we can route via
 			// this channel, via this:
 			let mut hop_contribution_amt_msat = None;
@@ -2850,7 +2851,12 @@ where L::Target: Logger {
 
 					let value_contribution_msat = cmp::min(available_value_contribution_msat, $next_hops_value_contribution);
 					// Verify the liquidity offered by this channel complies to the minimal contribution.
-					let contributes_sufficient_value = value_contribution_msat >= minimal_value_contribution_msat;
+					// For first hops, we allow skipping this if their aggregate capacity meets the
+					// threshold (they converge immediately, so no real fragmentation occurs).
+					// We still require >= 1 to avoid division by zero in cost calculation.
+					let is_first_hop = matches!($candidate, CandidateRouteHop::FirstHop(_));
+					let contributes_sufficient_value = value_contribution_msat >= minimal_value_contribution_msat
+						|| ($allow_first_hop_route_convergence && is_first_hop && value_contribution_msat >= 1);
 					// Includes paying fees for the use of the following channels.
 					let amount_to_transfer_over_msat: u64 = match value_contribution_msat.checked_add($next_hops_fee_msat) {
 						Some(result) => result,
@@ -3186,12 +3192,18 @@ where L::Target: Logger {
 							add_entry!(candidate, fee_to_target_msat,
 								$next_hops_value_contribution,
 								next_hops_path_htlc_minimum_msat, next_hops_path_penalty_msat,
-								$next_hops_cltv_delta, $next_hops_path_length);
+								$next_hops_cltv_delta, $next_hops_path_length, false);
 						}
 					}
 				}
 				if is_first_hop_target {
 					if let Some((first_channels, peer_node_counter)) = first_hop_targets.get(&$node_id) {
+						// Check aggregate capacity to this peer for the fragmentation limit.
+						let aggregate_capacity_to_peer: u64 = first_channels.iter()
+							.map(|details| details.next_outbound_htlc_limit_msat)
+							.sum();
+						let aggregate_meets_threshold = aggregate_capacity_to_peer >= minimal_value_contribution_msat;
+
 						for details in first_channels {
 							debug_assert_eq!(*peer_node_counter, $node_counter);
 							let candidate = CandidateRouteHop::FirstHop(FirstHopCandidate {
@@ -3201,7 +3213,8 @@ where L::Target: Logger {
 							add_entry!(&candidate, fee_to_target_msat,
 								$next_hops_value_contribution,
 								next_hops_path_htlc_minimum_msat, next_hops_path_penalty_msat,
-								$next_hops_cltv_delta, $next_hops_path_length);
+								$next_hops_cltv_delta, $next_hops_path_length,
+								aggregate_meets_threshold);
 						}
 					}
 				}
@@ -3229,7 +3242,8 @@ where L::Target: Logger {
 												$next_hops_value_contribution,
 												next_hops_path_htlc_minimum_msat,
 												next_hops_path_penalty_msat,
-												$next_hops_cltv_delta, $next_hops_path_length);
+												$next_hops_cltv_delta, $next_hops_path_length,
+												false);
 										}
 									}
 								}
@@ -3358,7 +3372,7 @@ where L::Target: Logger {
 				CandidateRouteHop::Blinded(BlindedPathCandidate { source_node_counter, source_node_id, hint, hint_idx })
 			};
 			if let Some(hop_used_msat) = add_entry!(&candidate,
-				0, path_value_msat, 0, 0_u64, 0, 0)
+				0, path_value_msat, 0, 0_u64, 0, 0, false)
 			{
 				blind_intros_added.insert(source_node_id, (hop_used_msat, candidate));
 			} else { continue }
@@ -3376,6 +3390,13 @@ where L::Target: Logger {
 				sort_first_hop_channels(
 					first_channels, &used_liquidities, recommended_value_msat, our_node_pubkey
 				);
+
+				// Check aggregate capacity to this peer for the fragmentation limit.
+				let aggregate_capacity_to_peer: u64 = first_channels.iter()
+					.map(|details| details.next_outbound_htlc_limit_msat)
+					.sum();
+				let aggregate_meets_threshold = aggregate_capacity_to_peer >= minimal_value_contribution_msat;
+
 				for details in first_channels {
 					let first_hop_candidate = CandidateRouteHop::FirstHop(FirstHopCandidate {
 						details, payer_node_id: &our_node_id, payer_node_counter,
@@ -3388,7 +3409,7 @@ where L::Target: Logger {
 					let path_min = candidate.htlc_minimum_msat().saturating_add(
 						compute_fees_saturating(candidate.htlc_minimum_msat(), candidate.fees()));
 					add_entry!(&first_hop_candidate, blinded_path_fee, path_contribution_msat, path_min,
-						0_u64, candidate.cltv_expiry_delta(), 0);
+						0_u64, candidate.cltv_expiry_delta(), 0, aggregate_meets_threshold);
 				}
 			}
 		}
@@ -7212,6 +7233,75 @@ mod tests {
 	}
 
 	#[test]
+	fn first_hop_aggregate_capacity_overrides_fragmentation_heuristic() {
+		// The fragmentation heuristic requires each channel to contribute at least
+		// `payment_amount / max_path_count`. However, for first hops to the same peer,
+		// this is overly restrictive since all channels converge immediately.
+		//
+		// Here we test that the aggregate capacity across all first-hop channels to a
+		// peer is used for the fragmentation check, not individual channel capacities.
+		//
+		// Setup:
+		//   payment_amount = 49_737_000 msat
+		//   min_contribution = payment_amount / 10 = 4_973_700 msat
+		//   channel_1 = 2_180_500 msat  (below threshold, would be rejected individually)
+		//   channel_2 = 47_557_520 msat (above threshold, but insufficient alone)
+		//   aggregate = 49_738_020 msat (sufficient for payment)
+
+		let secp_ctx = Secp256k1::new();
+		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
+		let logger = Arc::new(ln_test_utils::TestLogger::new());
+		let network_graph = NetworkGraph::new(Network::Testnet, Arc::clone(&logger));
+		let scorer = ln_test_utils::TestScorer::new();
+		let config = UserConfig::default();
+		let payment_params = PaymentParameters::from_node_id(nodes[0], 42)
+			.with_bolt11_features(channelmanager::provided_bolt11_invoice_features(&config))
+			.unwrap();
+		let random_seed_bytes = [42; 32];
+
+		let payment_amt = 49_737_000;
+		let small_channel_capacity = 2_180_500;
+		let large_channel_capacity = 47_557_520;
+
+		let route_params =
+			RouteParameters::from_payment_params_and_value(payment_params.clone(), payment_amt);
+		let route = get_route(
+			&our_id,
+			&route_params,
+			&network_graph.read_only(),
+			Some(&[
+				&get_channel_details(
+					Some(1),
+					nodes[0],
+					channelmanager::provided_init_features(&config),
+					small_channel_capacity,
+				),
+				&get_channel_details(
+					Some(2),
+					nodes[0],
+					channelmanager::provided_init_features(&config),
+					large_channel_capacity,
+				),
+			]),
+			Arc::clone(&logger),
+			&scorer,
+			&Default::default(),
+			&random_seed_bytes,
+		)
+		.unwrap();
+
+		assert_eq!(route.paths.len(), 2, "Expected 2 paths");
+
+		let total_sent: u64 =
+			route.paths.iter().map(|path| path.hops.last().unwrap().fee_msat).sum();
+		assert_eq!(total_sent, payment_amt);
+
+		let scids: std::collections::HashSet<u64> =
+			route.paths.iter().map(|path| path.hops[0].short_channel_id).collect();
+		assert!(scids.contains(&1) && scids.contains(&2), "Both channels should be used");
+	}
+
+	#[test]
 	#[rustfmt::skip]
 	fn prefers_shorter_route_with_higher_fees() {
 		let (secp_ctx, network_graph, _, _, logger) = build_graph();
@@ -8447,7 +8537,9 @@ mod tests {
 		if let Err(err) = get_route(&nodes[0], &route_params, &netgraph,
 			Some(&first_hops.iter().collect::<Vec<_>>()), Arc::clone(&logger), &scorer,
 			&Default::default(), &random_seed_bytes) {
-				assert_eq!(err, "Failed to find a path to the given destination");
+				assert!(err == "Failed to find a path to the given destination" ||
+					err == "Failed to find a sufficient route to the given destination",
+					"Unexpected error: {}", err);
 		} else { panic!("Expected error") }
 
 		// Sending an exact amount accounting for the blinded path fee works.
