@@ -230,7 +230,7 @@ impl Cache for HeaderCache {
 	}
 
 	fn blocks_disconnected(&mut self, fork_point: &ValidatedBlockHeader) {
-		self.0.retain(|_, block_info| block_info.height < fork_point.height);
+		self.0.retain(|_, block_info| block_info.height <= fork_point.height);
 	}
 }
 
@@ -244,7 +244,7 @@ impl Cache for &mut HeaderCache {
 	}
 
 	fn blocks_disconnected(&mut self, fork_point: &ValidatedBlockHeader) {
-		self.0.retain(|_, block_info| block_info.height < fork_point.height);
+		self.0.retain(|_, block_info| block_info.height <= fork_point.height);
 	}
 }
 
