@@ -18,7 +18,7 @@ use core::future::Future;
 use core::ops::Deref;
 
 use crate::chain::chaininterface::{
-	compute_feerate_sat_per_1000_weight, fee_for_weight, BroadcastType, BroadcasterInterface,
+	compute_feerate_sat_per_1000_weight, fee_for_weight, BroadcasterInterface, TransactionType,
 };
 use crate::chain::ClaimId;
 use crate::io_extras::sink;
@@ -790,7 +790,7 @@ where
 				package_target_feerate_sat_per_1000_weight);
 			self.broadcaster.broadcast_transactions(&[(
 				&commitment_tx,
-				BroadcastType::Commitment { channel_id },
+				TransactionType::Commitment { channel_id },
 			)]);
 			return Ok(());
 		}
@@ -959,8 +959,8 @@ where
 				commitment_tx.compute_txid()
 			);
 			self.broadcaster.broadcast_transactions(&[
-				(&commitment_tx, BroadcastType::Commitment { channel_id }),
-				(&anchor_tx, BroadcastType::Anchor { channel_id }),
+				(&commitment_tx, TransactionType::Commitment { channel_id }),
+				(&anchor_tx, TransactionType::Anchor { channel_id }),
 			]);
 			return Ok(());
 		}
@@ -1196,7 +1196,7 @@ where
 			log_info!(self.logger, "Broadcasting {}", log_tx!(htlc_tx));
 			self.broadcaster.broadcast_transactions(&[(
 				&htlc_tx,
-				BroadcastType::HtlcResolution { channel_id },
+				TransactionType::HtlcResolution { channel_id },
 			)]);
 		}
 

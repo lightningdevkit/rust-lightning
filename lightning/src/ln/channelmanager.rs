@@ -39,7 +39,8 @@ use crate::blinded_path::payment::{AsyncBolt12OfferContext, Bolt12OfferContext, 
 use crate::blinded_path::NodeIdLookUp;
 use crate::chain;
 use crate::chain::chaininterface::{
-	BroadcastType, BroadcasterInterface, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator,
+	BroadcasterInterface, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator,
+	TransactionType,
 };
 use crate::chain::channelmonitor::{
 	Balance, ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, MonitorEvent,
@@ -6550,7 +6551,7 @@ where
 		);
 		self.tx_broadcaster.broadcast_transactions(&[(
 			funding_tx,
-			BroadcastType::Funding { channel_ids: vec![channel.context().channel_id()] },
+			TransactionType::Funding { channel_ids: vec![channel.context().channel_id()] },
 		)]);
 		{
 			let mut pending_events = self.pending_events.lock().unwrap();
@@ -9488,7 +9489,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					log_info!(self.logger, "Broadcasting batch funding tx {}", tx.compute_txid());
 					self.tx_broadcaster.broadcast_transactions(&[(
 						&tx,
-						BroadcastType::Funding { channel_ids: batch_channel_ids },
+						TransactionType::Funding { channel_ids: batch_channel_ids },
 					)]);
 				}
 			}
@@ -10157,7 +10158,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				log_info!(logger, "Broadcasting funding transaction with txid {}", tx.compute_txid());
 				self.tx_broadcaster.broadcast_transactions(&[(
 					&tx,
-					BroadcastType::Funding { channel_ids: vec![channel.context.channel_id()] },
+					TransactionType::Funding { channel_ids: vec![channel.context.channel_id()] },
 				)]);
 			}
 		}
@@ -11621,7 +11622,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			log_info!(logger, "Broadcasting {}", log_tx!(broadcast_tx));
 			self.tx_broadcaster.broadcast_transactions(&[(
 				&broadcast_tx,
-				BroadcastType::CooperativeClose { channel_id: msg.channel_id },
+				TransactionType::CooperativeClose { channel_id: msg.channel_id },
 			)]);
 			let _ = self.handle_error(err, *counterparty_node_id);
 		}
@@ -12951,7 +12952,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						log_info!(logger, "Broadcasting closing tx {}", log_tx!(broadcast_tx));
 						self.tx_broadcaster.broadcast_transactions(&[(
 							&broadcast_tx,
-							BroadcastType::CooperativeClose { channel_id },
+							TransactionType::CooperativeClose { channel_id },
 						)]);
 					}
 				} else {
@@ -13082,7 +13083,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 										log_info!(logger, "Broadcasting {}", log_tx!(tx));
 										self.tx_broadcaster.broadcast_transactions(&[(
 											&tx,
-											BroadcastType::CooperativeClose { channel_id },
+											TransactionType::CooperativeClose { channel_id },
 										)]);
 										false
 									} else {

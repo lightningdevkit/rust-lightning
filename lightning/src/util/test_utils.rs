@@ -14,7 +14,7 @@ use crate::chain;
 use crate::chain::chaininterface;
 #[cfg(any(test, feature = "_externalize_tests"))]
 use crate::chain::chaininterface::FEERATE_FLOOR_SATS_PER_KW;
-use crate::chain::chaininterface::{BroadcastType, ConfirmationTarget};
+use crate::chain::chaininterface::{ConfirmationTarget, TransactionType};
 use crate::chain::chainmonitor::{ChainMonitor, Persist};
 use crate::chain::channelmonitor::{
 	ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, MonitorEvent,
@@ -1154,7 +1154,7 @@ impl TestBroadcaster {
 }
 
 impl chaininterface::BroadcasterInterface for TestBroadcaster {
-	fn broadcast_transactions(&self, txs: &[(&Transaction, BroadcastType)]) {
+	fn broadcast_transactions(&self, txs: &[(&Transaction, TransactionType)]) {
 		// Assert that any batch of transactions of length greater than 1 is sorted
 		// topologically, and is a `child-with-parents` package as defined in
 		// <https://github.com/bitcoin/bitcoin/blob/master/doc/policy/packages.md>.

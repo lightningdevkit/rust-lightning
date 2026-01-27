@@ -25,7 +25,7 @@ use bitcoin::transaction::Transaction;
 /// This is used to provide context about the type of transaction being broadcast, which may be
 /// useful for logging, filtering, or prioritization purposes.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub enum BroadcastType {
+pub enum TransactionType {
 	/// A funding transaction establishing a new channel.
 	Funding {
 		/// The IDs of the channels being funded.
@@ -94,9 +94,9 @@ pub trait BroadcasterInterface {
 	/// Bitcoin transaction packages are defined in BIP 331 and here:
 	/// <https://github.com/bitcoin/bitcoin/blob/master/doc/policy/packages.md>
 	///
-	/// Each transaction is paired with a [`BroadcastType`] indicating the class of transaction
+	/// Each transaction is paired with a [`TransactionType`] indicating the class of transaction
 	/// being broadcast, which may be useful for logging, filtering, or prioritization.
-	fn broadcast_transactions(&self, txs: &[(&Transaction, BroadcastType)]);
+	fn broadcast_transactions(&self, txs: &[(&Transaction, TransactionType)]);
 }
 
 /// An enum that represents the priority at which we want a transaction to confirm used for feerate

@@ -9,7 +9,7 @@
 //! sweeping them.
 
 use crate::chain::chaininterface::{
-	BroadcastType, BroadcasterInterface, ConfirmationTarget, FeeEstimator,
+	BroadcasterInterface, ConfirmationTarget, FeeEstimator, TransactionType,
 };
 use crate::chain::channelmonitor::{ANTI_REORG_DELAY, ARCHIVAL_DELAY_BLOCKS};
 use crate::chain::{self, BestBlock, Confirm, Filter, Listen, WatchedOutput};
@@ -597,7 +597,7 @@ where
 		// Persistence completely successfully. If we have a spending transaction, we broadcast it.
 		if let Some((spending_tx, channel_ids)) = spending_tx_and_chan_id {
 			self.broadcaster
-				.broadcast_transactions(&[(&spending_tx, BroadcastType::Sweep { channel_ids })]);
+				.broadcast_transactions(&[(&spending_tx, TransactionType::Sweep { channel_ids })]);
 		}
 
 		Ok(())

@@ -37,7 +37,7 @@ use lightning::blinded_path::message::{BlindedMessagePath, MessageContext, Messa
 use lightning::blinded_path::payment::{BlindedPaymentPath, ReceiveTlvs};
 use lightning::chain;
 use lightning::chain::chaininterface::{
-	BroadcastType, BroadcasterInterface, ConfirmationTarget, FeeEstimator,
+	TransactionType, BroadcasterInterface, ConfirmationTarget, FeeEstimator,
 };
 use lightning::chain::channelmonitor::{ChannelMonitor, MonitorEvent};
 use lightning::chain::transaction::OutPoint;
@@ -161,7 +161,7 @@ pub struct TestBroadcaster {
 	txn_broadcasted: RefCell<Vec<Transaction>>,
 }
 impl BroadcasterInterface for TestBroadcaster {
-	fn broadcast_transactions(&self, txs: &[(&Transaction, BroadcastType)]) {
+	fn broadcast_transactions(&self, txs: &[(&Transaction, TransactionType)]) {
 		for (tx, _broadcast_type) in txs {
 			self.txn_broadcasted.borrow_mut().push((*tx).clone());
 		}
