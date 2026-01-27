@@ -2,13 +2,11 @@
 //! endpoint.
 
 use crate::gossip::UtxoSource;
-use crate::http::{HttpClient, HttpEndpoint, HttpError, JsonResponse};
+use crate::http::{HttpClient, HttpClientError, JsonResponse};
 use crate::{BlockData, BlockHeaderData, BlockSource, BlockSourceResult};
 
 use bitcoin::hash_types::BlockHash;
 use bitcoin::OutPoint;
-
-use std::sync::Mutex;
 
 use serde_json;
 
@@ -36,14 +34,56 @@ impl fmt::Display for RpcError {
 
 impl Error for RpcError {}
 
+/// Error type for RPC client operations.
+#[derive(Debug)]
+pub enum RpcClientError {
+	/// An HTTP client error (transport or HTTP error).
+	Http(HttpClientError),
+	/// An RPC error returned by the server.
+	Rpc(RpcError),
+	/// Invalid data in the response.
+	InvalidData(String),
+}
+
+impl std::error::Error for RpcClientError {
+	fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+		match self {
+			RpcClientError::Http(e) => Some(e),
+			RpcClientError::Rpc(e) => Some(e),
+			RpcClientError::InvalidData(_) => None,
+		}
+	}
+}
+
+impl fmt::Display for RpcClientError {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		match self {
+			RpcClientError::Http(e) => write!(f, "HTTP error: {}", e),
+			RpcClientError::Rpc(e) => write!(f, "{}", e),
+			RpcClientError::InvalidData(msg) => write!(f, "invalid data: {}", msg),
+		}
+	}
+}
+
+impl From<HttpClientError> for RpcClientError {
+	fn from(e: HttpClientError) -> Self {
+		RpcClientError::Http(e)
+	}
+}
+
+impl From<RpcError> for RpcClientError {
+	fn from(e: RpcError) -> Self {
+		RpcClientError::Rpc(e)
+	}
+}
+
 /// A simple RPC client for calling methods using HTTP `POST`.
 ///
 /// Implements [`BlockSource`] and may return an `Err` containing [`RpcError`]. See
 /// [`RpcClient::call_method`] for details.
 pub struct RpcClient {
 	basic_auth: String,
-	endpoint: HttpEndpoint,
-	client: Mutex<Option<HttpClient>>,
+	client: HttpClient,
 	id: AtomicUsize,
 }
 
@@ -51,85 +91,64 @@ impl RpcClient {
 	/// Creates a new RPC client connected to the given endpoint with the provided credentials. The
 	/// credentials should be a base64 encoding of a user name and password joined by a colon, as is
 	/// required for HTTP basic access authentication.
-	pub fn new(credentials: &str, endpoint: HttpEndpoint) -> Self {
+	///
+	/// The base URL should include the scheme, host, and port (e.g., "http://127.0.0.1:8332").
+	pub fn new(credentials: &str, base_url: String) -> Self {
 		Self {
 			basic_auth: "Basic ".to_string() + credentials,
-			endpoint,
-			client: Mutex::new(None),
+			client: HttpClient::new(base_url),
 			id: AtomicUsize::new(0),
 		}
 	}
 
 	/// Calls a method with the response encoded in JSON format and interpreted as type `T`.
-	///
-	/// When an `Err` is returned, [`std::io::Error::into_inner`] may contain an [`RpcError`] if
-	/// [`std::io::Error::kind`] is [`std::io::ErrorKind::Other`].
 	pub async fn call_method<T>(
 		&self, method: &str, params: &[serde_json::Value],
-	) -> std::io::Result<T>
+	) -> Result<T, RpcClientError>
 	where
 		JsonResponse: TryFrom<Vec<u8>, Error = std::io::Error> + TryInto<T, Error = std::io::Error>,
 	{
-		let host = format!("{}:{}", self.endpoint.host(), self.endpoint.port());
-		let uri = self.endpoint.path();
 		let content = serde_json::json!({
 			"method": method,
 			"params": params,
 			"id": &self.id.fetch_add(1, Ordering::AcqRel).to_string()
 		});
 
-		let reserved_client = self.client.lock().unwrap().take();
-		let mut client = if let Some(client) = reserved_client {
-			client
-		} else {
-			HttpClient::connect(&self.endpoint)?
-		};
-		let http_response =
-			client.post::<JsonResponse>(&uri, &host, &self.basic_auth, content).await;
-		*self.client.lock().unwrap() = Some(client);
+		let http_response = self.client.post::<JsonResponse>("/", &self.basic_auth, content).await;
 
 		let mut response = match http_response {
 			Ok(JsonResponse(response)) => response,
-			Err(e) if e.kind() == std::io::ErrorKind::Other => {
-				match e.get_ref().unwrap().downcast_ref::<HttpError>() {
-					Some(http_error) => match JsonResponse::try_from(http_error.contents.clone()) {
-						Ok(JsonResponse(response)) => response,
-						Err(_) => Err(e)?,
-					},
-					None => Err(e)?,
+			Err(HttpClientError::Http(http_error)) => {
+				// Try to parse the error body as JSON-RPC response
+				match JsonResponse::try_from(http_error.contents.clone()) {
+					Ok(JsonResponse(response)) => response,
+					Err(_) => return Err(HttpClientError::Http(http_error).into()),
 				}
 			},
-			Err(e) => Err(e)?,
+			Err(e) => return Err(e.into()),
 		};
 
 		if !response.is_object() {
-			return Err(std::io::Error::new(
-				std::io::ErrorKind::InvalidData,
-				"expected JSON object",
-			));
+			return Err(RpcClientError::InvalidData("expected JSON object".to_string()));
 		}
 
 		let error = &response["error"];
 		if !error.is_null() {
-			// TODO: Examine error code for a more precise std::io::ErrorKind.
 			let rpc_error = RpcError {
 				code: error["code"].as_i64().unwrap_or(-1),
 				message: error["message"].as_str().unwrap_or("unknown error").to_string(),
 			};
-			return Err(std::io::Error::new(std::io::ErrorKind::Other, rpc_error));
+			return Err(rpc_error.into());
 		}
 
 		let result = match response.get_mut("result") {
 			Some(result) => result.take(),
-			None => {
-				return Err(std::io::Error::new(
-					std::io::ErrorKind::InvalidData,
-					"expected JSON result",
-				))
-			},
+			None => return Err(RpcClientError::InvalidData("expected JSON result".to_string())),
 		};
 
-		JsonResponse(result).try_into()
+		JsonResponse(result)
+			.try_into()
+			.map_err(|e: std::io::Error| RpcClientError::InvalidData(e.to_string()))
 	}
 }
 
@@ -212,7 +231,10 @@ mod tests {
 		let client = RpcClient::new(CREDENTIALS, server.endpoint());
 
 		match client.call_method::<u64>("getblockcount", &[]).await {
-			Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::Other),
+			Err(RpcClientError::Http(HttpClientError::Http(e))) => {
+				assert_eq!(e.status_code, 404);
+			},
+			Err(e) => panic!("Unexpected error type: {:?}", e),
 			Ok(_) => panic!("Expected error"),
 		}
 	}
@@ -224,10 +246,10 @@ mod tests {
 		let client = RpcClient::new(CREDENTIALS, server.endpoint());
 
 		match client.call_method::<u64>("getblockcount", &[]).await {
-			Err(e) => {
-				assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
-				assert_eq!(e.get_ref().unwrap().to_string(), "expected JSON object");
+			Err(RpcClientError::InvalidData(msg)) => {
+				assert_eq!(msg, "expected JSON object");
 			},
+			Err(e) => panic!("Unexpected error type: {:?}", e),
 			Ok(_) => panic!("Expected error"),
 		}
 	}
@@ -242,12 +264,11 @@ mod tests {
 
 		let invalid_block_hash = serde_json::json!("foo");
 		match client.call_method::<u64>("getblock", &[invalid_block_hash]).await {
-			Err(e) => {
-				assert_eq!(e.kind(), std::io::ErrorKind::Other);
-				let rpc_error: Box<RpcError> = e.into_inner().unwrap().downcast().unwrap();
+			Err(RpcClientError::Rpc(rpc_error)) => {
 				assert_eq!(rpc_error.code, -8);
 				assert_eq!(rpc_error.message, "invalid parameter");
 			},
+			Err(e) => panic!("Unexpected error type: {:?}", e),
 			Ok(_) => panic!("Expected error"),
 		}
 	}
@@ -259,10 +280,10 @@ mod tests {
 		let client = RpcClient::new(CREDENTIALS, server.endpoint());
 
 		match client.call_method::<u64>("getblockcount", &[]).await {
-			Err(e) => {
-				assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
-				assert_eq!(e.get_ref().unwrap().to_string(), "expected JSON result");
+			Err(RpcClientError::InvalidData(msg)) => {
+				assert_eq!(msg, "expected JSON result");
 			},
+			Err(e) => panic!("Unexpected error type: {:?}", e),
 			Ok(_) => panic!("Expected error"),
 		}
 	}
@@ -274,10 +295,10 @@ mod tests {
 		let client = RpcClient::new(CREDENTIALS, server.endpoint());
 
 		match client.call_method::<u64>("getblockcount", &[]).await {
-			Err(e) => {
-				assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
-				assert_eq!(e.get_ref().unwrap().to_string(), "not a number");
+			Err(RpcClientError::InvalidData(msg)) => {
+				assert!(msg.contains("not a number"));
 			},
+			Err(e) => panic!("Unexpected error type: {:?}", e),
 			Ok(_) => panic!("Expected error"),
 		}
 	}
