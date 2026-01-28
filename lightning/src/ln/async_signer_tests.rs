@@ -36,12 +36,9 @@ fn test_open_channel() {
 
 fn do_test_open_channel(zero_conf: bool) {
 	// Simulate acquiring the commitment point for `open_channel` and `accept_channel` asynchronously.
-	let mut manually_accept_config = test_default_channel_config();
-	manually_accept_config.manually_accept_inbound_channels = zero_conf;
-
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(manually_accept_config)]);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -88,8 +85,15 @@ fn do_test_open_channel(zero_conf: bool) {
 			ev => panic!("Expected OpenChannelRequest, not {:?}", ev),
 		}
 	} else {
-		let msgs = nodes[1].node.get_and_clear_pending_msg_events();
-		assert!(msgs.is_empty(), "Expected no message events; got {:?}", msgs);
+		let events = nodes[1].node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 1, "Expected one event, got {}", events.len());
+		match &events[0] {
+			Event::OpenChannelRequest { temporary_channel_id, .. } => nodes[1]
+				.node
+				.accept_inbound_channel(temporary_channel_id, &node_a_id, 0, None)
+				.unwrap(),
+			ev => panic!("Expected OpenChannelRequest, not {:?}", ev),
+		}
 	}
 
 	let channel_id_1 = {
@@ -130,7 +134,7 @@ fn do_test_funding_created(signer_ops: Vec<SignerOp>) {
 
 	// nodes[0] --- open_channel --> nodes[1]
 	let mut open_chan_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
-	nodes[1].node.handle_open_channel(node_a_id, &open_chan_msg);
+	handle_and_accept_open_channel(&nodes[1], node_a_id, &open_chan_msg);
 
 	// nodes[0] <-- accept_channel --- nodes[1]
 	nodes[0].node.handle_accept_channel(
@@ -207,7 +211,7 @@ fn do_test_funding_signed(signer_ops: Vec<SignerOp>) {
 
 	// nodes[0] --- open_channel --> nodes[1]
 	let mut open_chan_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
-	nodes[1].node.handle_open_channel(node_a_id, &open_chan_msg);
+	handle_and_accept_open_channel(&nodes[1], node_a_id, &open_chan_msg);
 
 	// nodes[0] <-- accept_channel --- nodes[1]
 	nodes[0].node.handle_accept_channel(
@@ -364,7 +368,6 @@ fn test_funding_signed_0conf() {
 fn do_test_funding_signed_0conf(signer_ops: Vec<SignerOp>) {
 	// Simulate acquiring the signature for `funding_signed` asynchronously for a zero-conf channel.
 	let mut manually_accept_config = test_default_channel_config();
-	manually_accept_config.manually_accept_inbound_channels = true;
 
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -998,7 +1001,6 @@ fn do_test_async_holder_signatures(keyed_anchors: bool, p2a_anchor: bool, remote
 	let mut config = test_default_channel_config();
 	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = keyed_anchors;
 	config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
-	config.manually_accept_inbound_channels = keyed_anchors || p2a_anchor;
 
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);

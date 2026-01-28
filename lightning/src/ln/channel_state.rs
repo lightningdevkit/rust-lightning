@@ -368,14 +368,11 @@ pub struct ChannelDetails {
 	/// [`outbound_capacity_msat`]: ChannelDetails::outbound_capacity_msat
 	pub unspendable_punishment_reserve: Option<u64>,
 	/// The `user_channel_id` value passed in to [`ChannelManager::create_channel`] for outbound
-	/// channels, or to [`ChannelManager::accept_inbound_channel`] for inbound channels if
-	/// [`UserConfig::manually_accept_inbound_channels`] config flag is set to true. Otherwise
-	/// `user_channel_id` will be randomized for an inbound channel.  This may be zero for objects
-	/// serialized with LDK versions prior to 0.0.113.
+	/// channels, or to [`ChannelManager::accept_inbound_channel`] for inbound channels.
+	///  This may be zero for objects serialized with LDK versions prior to 0.0.113.
 	///
 	/// [`ChannelManager::create_channel`]: crate::ln::channelmanager::ChannelManager::create_channel
 	/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
-	/// [`UserConfig::manually_accept_inbound_channels`]: crate::util::config::UserConfig::manually_accept_inbound_channels
 	pub user_channel_id: u128,
 	/// The currently negotiated fee rate denominated in satoshi per 1000 weight units,
 	/// which is applied to commitment and HTLC transactions.
