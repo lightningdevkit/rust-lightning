@@ -13,7 +13,6 @@ use crate::chain::chaininterface::FEERATE_FLOOR_SATS_PER_KW;
 use crate::chain::channelmonitor::{ANTI_REORG_DELAY, LATENCY_GRACE_PERIOD_BLOCKS};
 use crate::chain::transaction::OutPoint;
 use crate::chain::ChannelMonitorUpdateStatus;
-use crate::events::bump_transaction::sync::{WalletSourceSync, WalletSync};
 use crate::events::{ClosureReason, Event, FundingInfo, HTLCHandlingFailureType};
 use crate::ln::chan_utils;
 use crate::ln::channel::CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY;
@@ -26,6 +25,7 @@ use crate::ln::types::ChannelId;
 use crate::routing::router::{PaymentParameters, RouteParameters};
 use crate::util::errors::APIError;
 use crate::util::ser::Writeable;
+use crate::util::wallet_utils::{WalletSourceSync, WalletSync};
 
 use crate::sync::Arc;
 

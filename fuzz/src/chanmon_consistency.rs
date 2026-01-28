@@ -44,7 +44,6 @@ use lightning::chain::{
 	chainmonitor, channelmonitor, BestBlock, ChannelMonitorUpdateStatus, Confirm, Watch,
 };
 use lightning::events;
-use lightning::events::bump_transaction::sync::{WalletSourceSync, WalletSync};
 use lightning::ln::channel::{
 	FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE, MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS,
 };
@@ -80,6 +79,7 @@ use lightning::util::logger::Logger;
 use lightning::util::ser::{LengthReadable, ReadableArgs, Writeable, Writer};
 use lightning::util::test_channel_signer::{EnforcementState, TestChannelSigner};
 use lightning::util::test_utils::TestWalletSource;
+use lightning::util::wallet_utils::{WalletSourceSync, WalletSync};
 
 use lightning_invoice::RawBolt11Invoice;
 

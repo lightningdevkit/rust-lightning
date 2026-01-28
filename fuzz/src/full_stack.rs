@@ -40,7 +40,6 @@ use lightning::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget,
 use lightning::chain::chainmonitor;
 use lightning::chain::transaction::OutPoint;
 use lightning::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Listen};
-use lightning::events::bump_transaction::sync::{WalletSourceSync, WalletSync};
 use lightning::events::Event;
 use lightning::ln::channel_state::ChannelDetails;
 use lightning::ln::channelmanager::{
@@ -73,6 +72,7 @@ use lightning::util::logger::Logger;
 use lightning::util::ser::{Readable, Writeable};
 use lightning::util::test_channel_signer::{EnforcementState, TestChannelSigner};
 use lightning::util::test_utils::TestWalletSource;
+use lightning::util::wallet_utils::{WalletSourceSync, WalletSync};
 
 use lightning_invoice::RawBolt11Invoice;
 

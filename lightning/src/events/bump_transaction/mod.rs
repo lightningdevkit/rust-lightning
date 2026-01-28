@@ -822,9 +822,7 @@ where
 mod tests {
 	use super::*;
 
-	use crate::events::bump_transaction::sync::{
-		BumpTransactionEventHandlerSync, CoinSelectionSourceSync,
-	};
+	use crate::events::bump_transaction::sync::BumpTransactionEventHandlerSync;
 	use crate::io::Cursor;
 	use crate::ln::chan_utils::ChannelTransactionParameters;
 	use crate::ln::channel::ANCHOR_OUTPUT_VALUE_SATOSHI;
@@ -833,6 +831,7 @@ mod tests {
 	use crate::types::features::ChannelTypeFeatures;
 	use crate::util::ser::Readable;
 	use crate::util::test_utils::{TestBroadcaster, TestLogger};
+	use crate::util::wallet_utils::CoinSelectionSourceSync;
 	use crate::util::wallet_utils::Utxo;
 
 	use bitcoin::constants::WITNESS_SCALE_FACTOR;
