@@ -668,10 +668,9 @@ impl InteractiveTxSigningSession {
 		self.holder_tx_signatures = Some(tx_signatures);
 
 		let funding_tx_opt = self.maybe_finalize_funding_tx();
-		let holder_tx_signatures = (self.holder_sends_tx_signatures_first
-			|| self.has_received_tx_signatures())
+		let holder_tx_signatures = (self.has_received_commitment_signed
+			&& (self.holder_sends_tx_signatures_first || self.has_received_tx_signatures()))
 		.then(|| {
-			debug_assert!(self.has_received_commitment_signed);
 			self.holder_tx_signatures.clone().expect("Holder tx_signatures were just provided")
 		});
 
