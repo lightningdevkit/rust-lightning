@@ -16026,7 +16026,8 @@ mod tests {
 
 		// Create Node A's channel pointing to Node B's pubkey
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
-		let config = UserConfig::default();
+		let mut config = UserConfig::default();
+		config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = false;
 		let mut node_a_chan = OutboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider, node_b_node_id, &channelmanager::provided_init_features(&config), 10000000, 100000, 42, &config, 0, 42, None, &logger).unwrap();
 
 		// Create Node B's channel by receiving Node A's open_channel message
@@ -16116,7 +16117,8 @@ mod tests {
 		let logger = TestLogger::new();
 
 		let node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
-		let config = UserConfig::default();
+		let mut config = UserConfig::default();
+		config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = false;
 		let mut chan = OutboundV1Channel::<&TestKeysInterface>::new(&fee_est, &&keys_provider, &&keys_provider, node_id, &channelmanager::provided_init_features(&config), 10000000, 100000, 42, &config, 0, 42, None, &logger).unwrap();
 
 		let commitment_tx_fee_0_htlcs = commit_tx_fee_sat(chan.context.feerate_per_kw, 0, chan.funding.get_channel_type()) * 1000;

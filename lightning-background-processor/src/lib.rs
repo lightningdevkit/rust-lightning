@@ -2447,6 +2447,8 @@ mod tests {
 			));
 			let best_block = BestBlock::from_network(network);
 			let params = ChainParameters { network, best_block };
+			let mut config = UserConfig::default();
+			config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = false;
 			let manager = Arc::new(ChannelManager::new(
 				Arc::clone(&fee_estimator),
 				Arc::clone(&chain_monitor),
@@ -2457,7 +2459,7 @@ mod tests {
 				Arc::clone(&keys_manager),
 				Arc::clone(&keys_manager),
 				Arc::clone(&keys_manager),
-				UserConfig::default(),
+				config,
 				params,
 				genesis_block.header.time,
 			));

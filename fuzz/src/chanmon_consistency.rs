@@ -710,8 +710,8 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 			config.channel_config.forwarding_fee_proportional_millionths = 0;
 			config.channel_handshake_config.announce_for_forwarding = true;
 			config.reject_inbound_splices = false;
-			if anchors {
-				config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+			if !anchors {
+				config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = false;
 			}
 			let network = Network::Bitcoin;
 			let best_block_timestamp = genesis_block(network).header.time;
@@ -760,8 +760,8 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 		config.channel_config.forwarding_fee_proportional_millionths = 0;
 		config.channel_handshake_config.announce_for_forwarding = true;
 		config.reject_inbound_splices = false;
-		if anchors {
-			config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+		if !anchors {
+			config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = false;
 		}
 
 		let mut monitors = new_hash_map();

@@ -172,8 +172,7 @@ fn test_0conf_limiting() {
 
 #[test]
 fn test_inbound_anchors_manual_acceptance() {
-	let mut anchors_cfg = test_default_channel_config();
-	anchors_cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+	let anchors_cfg = test_default_anchors_channel_config();
 	do_test_manual_inbound_accept_with_override(anchors_cfg, None);
 }
 
@@ -191,9 +190,7 @@ fn test_inbound_anchors_config_overridden() {
 		update_overrides: None,
 	};
 
-	let mut anchors_cfg = test_default_channel_config();
-	anchors_cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
-
+	let mut anchors_cfg = test_default_anchors_channel_config();
 	let accept_message = do_test_manual_inbound_accept_with_override(anchors_cfg, Some(overrides));
 	assert_eq!(accept_message.common_fields.max_htlc_value_in_flight_msat, 5_000_000);
 	assert_eq!(accept_message.common_fields.htlc_minimum_msat, 1_000);
@@ -1066,6 +1063,7 @@ pub fn test_user_configurable_csv_delay() {
 pub fn test_accept_inbound_channel_config_override() {
 	let mut conf = UserConfig::default();
 	conf.channel_handshake_config.minimum_depth = 1;
+	conf.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = false;
 
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);

@@ -1,0 +1,18 @@
+# API Updates
+
+ * `ChannelHandshakeConfig::negotiate_anchors_zero_fee_htlc_tx`
+   now defaults to `true` (previously `false`). This means anchor output channels
+   will be negotiated by default for all new channels if the counterparty supports
+   it, requiring users to maintain an on-chain reserve for fee bumping in the
+   event of force-closes.
+
+ * All inbound channels now require manual acceptance.
+   `UserConfig::manually_accept_inbound_channels` has been removed, and
+   `Event::OpenChannelRequest` will now always be generated for inbound channel
+   requests. Users must handle this event and call either
+   `ChannelManager::accept_inbound_channel` (or
+   `accept_inbound_channel_from_trusted_peer_0conf` for zero-conf channels) to
+   accept the channel, or `ChannelManager::force_close_broadcasting_latest_txn`
+   to reject it. This ensures users can verify they have sufficient on-chain
+   funds before accepting channels with anchor outputs.
+

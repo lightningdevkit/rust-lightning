@@ -4534,6 +4534,7 @@ pub fn create_node_cfgs_with_node_id_message_router<'a>(
 
 pub fn test_default_channel_config() -> UserConfig {
 	let mut default_config = UserConfig::default();
+	default_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = false;
 	// Set cltv_expiry_delta slightly lower to keep the final CLTV values inside one byte in our
 	// tests so that our script-length checks don't fail (see ACCEPTED_HTLC_SCRIPT_WEIGHT).
 	default_config.channel_config.cltv_expiry_delta = MIN_CLTV_EXPIRY_DELTA;

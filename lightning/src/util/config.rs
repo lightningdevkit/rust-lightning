@@ -178,7 +178,7 @@ pub struct ChannelHandshakeConfig {
 	/// counterparties that do not support the `anchors_zero_fee_htlc_tx` option; we will simply
 	/// fall back to a `static_remote_key` channel.
 	///
-	/// Default value: `false` (This value is likely to change to `true` in the future.)
+	/// Default value: `true`
 	///
 	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 	/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
@@ -252,7 +252,7 @@ impl Default for ChannelHandshakeConfig {
 			announce_for_forwarding: false,
 			commit_upfront_shutdown_pubkey: true,
 			their_channel_reserve_proportional_millionths: 10_000,
-			negotiate_anchors_zero_fee_htlc_tx: false,
+			negotiate_anchors_zero_fee_htlc_tx: true,
 			negotiate_anchor_zero_fee_commitments: false,
 			our_max_accepted_htlcs: 50,
 		}
