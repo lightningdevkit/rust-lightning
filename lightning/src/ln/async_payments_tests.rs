@@ -3059,7 +3059,6 @@ fn intercepted_hold_htlc() {
 	let chanmon_cfgs = create_chanmon_cfgs(4);
 	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
 	let (sender_cfg, mut recipient_cfg) = (often_offline_node_cfg(), often_offline_node_cfg());
-	recipient_cfg.manually_accept_inbound_channels = true;
 	recipient_cfg.channel_handshake_limits.force_announced_channel_preference = false;
 
 	let mut lsp_cfg = test_default_channel_config();

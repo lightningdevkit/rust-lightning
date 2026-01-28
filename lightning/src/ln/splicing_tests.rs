@@ -1527,7 +1527,6 @@ fn do_test_propose_splice_while_disconnected(reload: bool, use_0conf: bool) {
 	let (chain_monitor_0a, chain_monitor_0b, chain_monitor_1a, chain_monitor_1b);
 	let mut config = test_default_channel_config();
 	if use_0conf {
-		config.manually_accept_inbound_channels = true;
 		config.channel_handshake_limits.trust_own_funding_0conf = true;
 	}
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
@@ -2074,6 +2073,7 @@ fn fail_quiescent_action_on_channel_close() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let config = test_default_anchors_channel_config();
+
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
