@@ -1984,6 +1984,26 @@ mod tests {
 	const EVENT_DEADLINE: Duration =
 		Duration::from_millis(5 * (FRESHNESS_TIMER.as_millis() as u64));
 
+	/// Reads a directory and returns only non-`.tmp` files.
+	/// The file system may return files in any order, and during persistence
+	/// operations there may be temporary `.tmp` files present.
+	fn list_monitor_files(dir: &str) -> Vec<std::fs::DirEntry> {
+		std::fs::read_dir(dir)
+			.unwrap()
+			.filter_map(|entry| {
+				let entry = entry.unwrap();
+				let path_str = entry.path().to_str().unwrap().to_lowercase();
+				// Skip any .tmp files that may exist during persistence.
+				// On Windows, ReplaceFileW creates backup files with .TMP (uppercase).
+				if path_str.ends_with(".tmp") {
+					None
+				} else {
+					Some(entry)
+				}
+			})
+			.collect()
+	}
+
 	#[derive(Clone, Hash, PartialEq, Eq)]
 	struct TestDescriptor {}
 	impl SocketDescriptor for TestDescriptor {
@@ -3787,30 +3807,20 @@ mod tests {
 		);
 
 		let dir = format!("{}_persister_1/monitors", &persist_dir);
-		let mut mons = std::fs::read_dir(&dir).unwrap();
-		let mut mon = mons.next().unwrap().unwrap();
-		if mon.path().to_str().unwrap().ends_with(".tmp") {
-			mon = mons.next().unwrap().unwrap();
-			assert_eq!(mon.path().extension(), None);
-		}
-		assert!(mons.next().is_none());
+		let mut mons = list_monitor_files(&dir);
+		assert_eq!(mons.len(), 1);
+		let mon = mons.pop().unwrap();
 
 		// Because the channel wasn't funded, we'll archive the ChannelMonitor immedaitely after
 		// its force-closed (at least on node B, which didn't put their money into it).
 		nodes[1].node.force_close_all_channels_broadcasting_latest_txn("".to_owned());
 		loop {
-			let mut mons = std::fs::read_dir(&dir).unwrap();
-			if let Some(new_mon) = mons.next() {
-				let mut new_mon = new_mon.unwrap();
-				if new_mon.path().to_str().unwrap().ends_with(".tmp") {
-					new_mon = mons.next().unwrap().unwrap();
-					assert_eq!(new_mon.path().extension(), None);
-				}
-				assert_eq!(new_mon.path(), mon.path());
-				assert!(mons.next().is_none());
-			} else {
+			let mons = list_monitor_files(&dir);
+			if mons.is_empty() {
 				break;
 			}
+			assert_eq!(mons.len(), 1);
+			assert_eq!(mons[0].path(), mon.path());
 		}
 
 		bp.stop().unwrap();
@@ -3855,30 +3865,20 @@ mod tests {
 		));
 
 		let dir = format!("{}_persister_1/monitors", &persist_dir);
-		let mut mons = std::fs::read_dir(&dir).unwrap();
-		let mut mon = mons.next().unwrap().unwrap();
-		if mon.path().to_str().unwrap().ends_with(".tmp") {
-			mon = mons.next().unwrap().unwrap();
-			assert_eq!(mon.path().extension(), None);
-		}
-		assert!(mons.next().is_none());
+		let mut mons = list_monitor_files(&dir);
+		assert_eq!(mons.len(), 1);
+		let mon = mons.pop().unwrap();
 
 		// Because the channel wasn't funded, we'll archive the ChannelMonitor immedaitely after
 		// its force-closed (at least on node B, which didn't put their money into it).
 		nodes[1].node.force_close_all_channels_broadcasting_latest_txn("".to_owned());
 		loop {
-			let mut mons = std::fs::read_dir(&dir).unwrap();
-			if let Some(new_mon) = mons.next() {
-				let mut new_mon = new_mon.unwrap();
-				if new_mon.path().to_str().unwrap().ends_with(".tmp") {
-					new_mon = mons.next().unwrap().unwrap();
-					assert_eq!(new_mon.path().extension(), None);
-				}
-				assert_eq!(new_mon.path(), mon.path());
-				assert!(mons.next().is_none());
-			} else {
+			let mons = list_monitor_files(&dir);
+			if mons.is_empty() {
 				break;
 			}
+			assert_eq!(mons.len(), 1);
+			assert_eq!(mons[0].path(), mon.path());
 			tokio::task::yield_now().await;
 		}
 
