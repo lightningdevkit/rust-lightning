@@ -17334,10 +17334,10 @@ where
 	pending_outbound_payments_no_retry: Option<HashMap<PaymentId, HashSet<[u8; 32]>>>,
 	pending_intercepted_htlcs: Option<HashMap<InterceptId, PendingAddHTLCInfo>>,
 	pending_outbound_payments: Option<HashMap<PaymentId, PendingOutboundPayment>>,
-	pending_claiming_payments: Option<HashMap<PaymentHash, ClaimingPayment>>,
+	pending_claiming_payments: HashMap<PaymentHash, ClaimingPayment>,
 	received_network_pubkey: Option<PublicKey>,
 	monitor_update_blocked_actions_per_peer:
-		Option<Vec<(PublicKey, BTreeMap<ChannelId, Vec<MonitorUpdateCompletionAction>>)>>,
+		Vec<(PublicKey, BTreeMap<ChannelId, Vec<MonitorUpdateCompletionAction>>)>,
 	fake_scid_rand_bytes: Option<[u8; 32]>,
 	events_override: Option<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
 	claimable_htlc_purposes: Option<Vec<events::PaymentPurpose>>,
@@ -17553,9 +17553,10 @@ where
 			pending_outbound_payments_no_retry,
 			pending_intercepted_htlcs,
 			pending_outbound_payments,
-			pending_claiming_payments,
+			pending_claiming_payments: pending_claiming_payments.unwrap(),
 			received_network_pubkey,
-			monitor_update_blocked_actions_per_peer,
+			monitor_update_blocked_actions_per_peer: monitor_update_blocked_actions_per_peer
+				.unwrap(),
 			fake_scid_rand_bytes,
 			events_override,
 			claimable_htlc_purposes,
@@ -19003,7 +19004,7 @@ where
 		let bounded_fee_estimator = LowerBoundedFeeEstimator::new(args.fee_estimator);
 
 		for (node_id, monitor_update_blocked_actions) in
-			data.monitor_update_blocked_actions_per_peer.unwrap()
+			data.monitor_update_blocked_actions_per_peer
 		{
 			if let Some(peer_state) = per_peer_state.get(&node_id) {
 				for (channel_id, actions) in monitor_update_blocked_actions.iter() {
@@ -19164,7 +19165,7 @@ where
 			decode_update_add_htlcs: Mutex::new(decode_update_add_htlcs),
 			claimable_payments: Mutex::new(ClaimablePayments {
 				claimable_payments,
-				pending_claiming_payments: data.pending_claiming_payments.unwrap(),
+				pending_claiming_payments: data.pending_claiming_payments,
 			}),
 			outbound_scid_aliases: Mutex::new(outbound_scid_aliases),
 			short_to_chan_info: FairRwLock::new(short_to_chan_info),
