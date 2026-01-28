@@ -139,7 +139,7 @@ where
 	L::Target: Logger + MaybeSend + MaybeSync,
 {
 	fn select_confirmed_utxos(
-		&self, claim_id: ClaimId, must_spend: Vec<Input>, must_pay_to: &[TxOut],
+		&self, claim_id: Option<ClaimId>, must_spend: Vec<Input>, must_pay_to: &[TxOut],
 		target_feerate_sat_per_1000_weight: u32, max_tx_weight: u64,
 	) -> Result<CoinSelection, ()> {
 		let fut = self.wallet.select_confirmed_utxos(
@@ -218,7 +218,7 @@ pub trait CoinSelectionSourceSync {
 	///
 	/// [`ChannelMonitor::rebroadcast_pending_claims`]: crate::chain::channelmonitor::ChannelMonitor::rebroadcast_pending_claims
 	fn select_confirmed_utxos(
-		&self, claim_id: ClaimId, must_spend: Vec<Input>, must_pay_to: &[TxOut],
+		&self, claim_id: Option<ClaimId>, must_spend: Vec<Input>, must_pay_to: &[TxOut],
 		target_feerate_sat_per_1000_weight: u32, max_tx_weight: u64,
 	) -> Result<CoinSelection, ()>;
 
@@ -251,7 +251,7 @@ where
 	T::Target: CoinSelectionSourceSync,
 {
 	fn select_confirmed_utxos<'a>(
-		&'a self, claim_id: ClaimId, must_spend: Vec<Input>, must_pay_to: &'a [TxOut],
+		&'a self, claim_id: Option<ClaimId>, must_spend: Vec<Input>, must_pay_to: &'a [TxOut],
 		target_feerate_sat_per_1000_weight: u32, max_tx_weight: u64,
 	) -> impl Future<Output = Result<CoinSelection, ()>> + MaybeSend + 'a {
 		let coins = self.0.select_confirmed_utxos(
