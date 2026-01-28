@@ -11,10 +11,7 @@
 
 use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::PublicKey;
-use bitcoin::{
-	Amount, FeeRate, OutPoint, Script, ScriptBuf, Sequence, SignedAmount, Transaction, TxOut,
-	WScriptHash, Weight,
-};
+use bitcoin::{Amount, FeeRate, OutPoint, ScriptBuf, SignedAmount, TxOut, WScriptHash, Weight};
 
 use core::ops::Deref;
 
@@ -27,10 +24,9 @@ use crate::ln::msgs;
 use crate::ln::types::ChannelId;
 use crate::ln::LN_MAX_MSG_LEN;
 use crate::prelude::*;
-use crate::sign::{P2TR_KEY_PATH_WITNESS_WEIGHT, P2WPKH_WITNESS_WEIGHT};
 use crate::util::async_poll::MaybeSend;
 use crate::util::wallet_utils::{
-	CoinSelection, CoinSelectionSource, CoinSelectionSourceSync, Input, Utxo,
+	CoinSelection, CoinSelectionSource, CoinSelectionSourceSync, Input,
 };
 
 /// A template for contributing to a channel's splice funding transaction.
@@ -443,172 +439,7 @@ impl FundingContribution {
 
 /// An input to contribute to a channel's funding transaction either when using the v2 channel
 /// establishment protocol or when splicing.
-#[derive(Debug, Clone)]
-pub struct FundingTxInput {
-	/// The unspent [`TxOut`] found in [`prevtx`].
-	///
-	/// [`TxOut`]: bitcoin::TxOut
-	/// [`prevtx`]: Self::prevtx
-	pub(crate) utxo: Utxo,
-
-	/// The transaction containing the unspent [`TxOut`] referenced by [`utxo`].
-	///
-	/// [`TxOut`]: bitcoin::TxOut
-	/// [`utxo`]: Self::utxo
-	pub(crate) prevtx: Transaction,
-}
-
-impl_writeable_tlv_based!(FundingTxInput, {
-	(1, utxo, required),
-	(3, _sequence, (legacy, Sequence,
-		|read_val: Option<&Sequence>| {
-			if let Some(sequence) = read_val {
-				// Utxo contains sequence now, so update it if the value read here differs since
-				// this indicates Utxo::sequence was read with default_value
-				let utxo: &mut Utxo = utxo.0.as_mut().expect("utxo is required");
-				if utxo.sequence != *sequence {
-					utxo.sequence = *sequence;
-				}
-			}
-			Ok(())
-		},
-		|input: &FundingTxInput| Some(input.utxo.sequence))),
-	(5, prevtx, required),
-});
-
-impl FundingTxInput {
-	fn new<F: FnOnce(&bitcoin::Script) -> bool>(
-		prevtx: Transaction, vout: u32, witness_weight: Weight, script_filter: F,
-	) -> Result<Self, ()> {
-		Ok(FundingTxInput {
-			utxo: Utxo {
-				outpoint: bitcoin::OutPoint { txid: prevtx.compute_txid(), vout },
-				output: prevtx
-					.output
-					.get(vout as usize)
-					.filter(|output| script_filter(&output.script_pubkey))
-					.ok_or(())?
-					.clone(),
-				satisfaction_weight: EMPTY_SCRIPT_SIG_WEIGHT + witness_weight.to_wu(),
-				sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
-			},
-			prevtx,
-		})
-	}
-
-	/// Creates an input spending a P2WPKH output from the given `prevtx` at index `vout`.
-	///
-	/// Uses [`Sequence::ENABLE_RBF_NO_LOCKTIME`] as the [`TxIn::sequence`], which can be overridden
-	/// by [`set_sequence`].
-	///
-	/// Returns `Err` if no such output exists in `prevtx` at index `vout`.
-	///
-	/// [`TxIn::sequence`]: bitcoin::TxIn::sequence
-	/// [`set_sequence`]: Self::set_sequence
-	pub fn new_p2wpkh(prevtx: Transaction, vout: u32) -> Result<Self, ()> {
-		let witness_weight = Weight::from_wu(P2WPKH_WITNESS_WEIGHT)
-			- if cfg!(feature = "grind_signatures") {
-				// Guarantees a low R signature
-				Weight::from_wu(1)
-			} else {
-				Weight::ZERO
-			};
-		FundingTxInput::new(prevtx, vout, witness_weight, Script::is_p2wpkh)
-	}
-
-	/// Creates an input spending a P2WSH output from the given `prevtx` at index `vout`.
-	///
-	/// Requires passing the weight of witness needed to satisfy the output's script.
-	///
-	/// Uses [`Sequence::ENABLE_RBF_NO_LOCKTIME`] as the [`TxIn::sequence`], which can be overridden
-	/// by [`set_sequence`].
-	///
-	/// Returns `Err` if no such output exists in `prevtx` at index `vout`.
-	///
-	/// [`TxIn::sequence`]: bitcoin::TxIn::sequence
-	/// [`set_sequence`]: Self::set_sequence
-	pub fn new_p2wsh(prevtx: Transaction, vout: u32, witness_weight: Weight) -> Result<Self, ()> {
-		FundingTxInput::new(prevtx, vout, witness_weight, Script::is_p2wsh)
-	}
-
-	/// Creates an input spending a P2TR output from the given `prevtx` at index `vout`.
-	///
-	/// This is meant for inputs spending a taproot output using the key path. See
-	/// [`new_p2tr_script_spend`] for when spending using a script path.
-	///
-	/// Uses [`Sequence::ENABLE_RBF_NO_LOCKTIME`] as the [`TxIn::sequence`], which can be overridden
-	/// by [`set_sequence`].
-	///
-	/// Returns `Err` if no such output exists in `prevtx` at index `vout`.
-	///
-	/// [`new_p2tr_script_spend`]: Self::new_p2tr_script_spend
-	///
-	/// [`TxIn::sequence`]: bitcoin::TxIn::sequence
-	/// [`set_sequence`]: Self::set_sequence
-	pub fn new_p2tr_key_spend(prevtx: Transaction, vout: u32) -> Result<Self, ()> {
-		let witness_weight = Weight::from_wu(P2TR_KEY_PATH_WITNESS_WEIGHT);
-		FundingTxInput::new(prevtx, vout, witness_weight, Script::is_p2tr)
-	}
-
-	/// Creates an input spending a P2TR output from the given `prevtx` at index `vout`.
-	///
-	/// Requires passing the weight of witness needed to satisfy a script path of the taproot
-	/// output. See [`new_p2tr_key_spend`] for when spending using the key path.
-	///
-	/// Uses [`Sequence::ENABLE_RBF_NO_LOCKTIME`] as the [`TxIn::sequence`], which can be overridden
-	/// by [`set_sequence`].
-	///
-	/// Returns `Err` if no such output exists in `prevtx` at index `vout`.
-	///
-	/// [`new_p2tr_key_spend`]: Self::new_p2tr_key_spend
-	///
-	/// [`TxIn::sequence`]: bitcoin::TxIn::sequence
-	/// [`set_sequence`]: Self::set_sequence
-	pub fn new_p2tr_script_spend(
-		prevtx: Transaction, vout: u32, witness_weight: Weight,
-	) -> Result<Self, ()> {
-		FundingTxInput::new(prevtx, vout, witness_weight, Script::is_p2tr)
-	}
-
-	#[cfg(test)]
-	pub(crate) fn new_p2pkh(prevtx: Transaction, vout: u32) -> Result<Self, ()> {
-		FundingTxInput::new(prevtx, vout, Weight::ZERO, Script::is_p2pkh)
-	}
-
-	/// The outpoint of the UTXO being spent.
-	pub fn outpoint(&self) -> bitcoin::OutPoint {
-		self.utxo.outpoint
-	}
-
-	/// The unspent output.
-	pub fn output(&self) -> &TxOut {
-		&self.utxo.output
-	}
-
-	/// The sequence number to use in the [`TxIn`].
-	///
-	/// [`TxIn`]: bitcoin::TxIn
-	pub fn sequence(&self) -> Sequence {
-		self.utxo.sequence
-	}
-
-	/// Sets the sequence number to use in the [`TxIn`].
-	///
-	/// [`TxIn`]: bitcoin::TxIn
-	pub fn set_sequence(&mut self, sequence: Sequence) {
-		self.utxo.sequence = sequence;
-	}
-
-	/// Converts the [`FundingTxInput`] into a [`Utxo`].
-	pub fn into_utxo(self) -> Utxo {
-		self.utxo
-	}
-
-	/// Converts the [`FundingTxInput`] into a [`TxOut`].
-	pub fn into_output(self) -> TxOut {
-		self.utxo.output
-	}
-}
+pub type FundingTxInput = crate::util::wallet_utils::ConfirmedUtxo;
 
 #[cfg(test)]
 mod tests {
