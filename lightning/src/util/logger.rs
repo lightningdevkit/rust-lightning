@@ -314,16 +314,16 @@ where
 	L::Target: Logger,
 {
 	fn log(&self, mut record: Record) {
-		if self.peer_id.is_some() {
+		if self.peer_id.is_some() && record.peer_id.is_none() {
 			record.peer_id = self.peer_id
 		};
-		if self.channel_id.is_some() {
+		if self.channel_id.is_some() && record.channel_id.is_none() {
 			record.channel_id = self.channel_id;
 		}
-		if self.payment_hash.is_some() {
+		if self.payment_hash.is_some() && record.payment_hash.is_none() {
 			record.payment_hash = self.payment_hash;
 		}
-		if self.payment_id.is_some() {
+		if self.payment_id.is_some() && record.payment_id.is_none() {
 			record.payment_id = self.payment_id;
 		}
 		self.logger.log(record)
