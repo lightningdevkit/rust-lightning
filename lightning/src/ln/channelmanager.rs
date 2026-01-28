@@ -17921,7 +17921,7 @@ where
 	L::Target: Logger,
 {
 	fn read<Reader: io::Read>(
-		reader: &mut Reader, mut args: ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>,
+		reader: &mut Reader, args: ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>,
 	) -> Result<Self, DecodeError> {
 		// Stage 1: Pure deserialization into DTO
 		let data: ChannelManagerData<SP> = ChannelManagerData::read(
@@ -17935,6 +17935,44 @@ where
 		)?;
 
 		// Stage 2: Validation and reconstruction
+		ChannelManager::from_channel_manager_data(data, args)
+	}
+}
+
+impl<
+		M: Deref,
+		T: Deref,
+		ES: Deref,
+		NS: Deref,
+		SP: Deref,
+		F: Deref,
+		R: Deref,
+		MR: Deref,
+		L: Deref + Clone,
+	> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+where
+	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
+	T::Target: BroadcasterInterface,
+	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
+	SP::Target: SignerProvider,
+	F::Target: FeeEstimator,
+	R::Target: Router,
+	MR::Target: MessageRouter,
+	L::Target: Logger,
+{
+	/// Constructs a `ChannelManager` from deserialized data and runtime dependencies.
+	///
+	/// This is the second stage of deserialization, taking the raw [`ChannelManagerData`] and combining it with the
+	/// provided [`ChannelManagerReadArgs`] to produce a fully functional `ChannelManager`.
+	///
+	/// This method performs validation, reconciliation with [`ChannelMonitor`]s, and reconstruction of internal state.
+	/// It may close channels if monitors are ahead of the serialized state, and will replay any pending
+	/// [`ChannelMonitorUpdate`]s.
+	pub(super) fn from_channel_manager_data(
+		data: ChannelManagerData<SP>,
+		mut args: ChannelManagerReadArgs<'_, M, T, ES, NS, SP, F, R, MR, L>,
+	) -> Result<(BlockHash, Self), DecodeError> {
 		let ChannelManagerData {
 			chain_hash,
 			best_block_height,
