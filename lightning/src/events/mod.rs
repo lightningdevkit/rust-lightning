@@ -1818,10 +1818,11 @@ pub enum Event {
 		/// [`ChannelManager::respond_to_static_invoice_request`]: crate::ln::channelmanager::ChannelManager::respond_to_static_invoice_request
 		invoice_request: InvoiceRequest,
 	},
-	/// Indicates that funding is needed for a channel splice or a dual-funded channel open.
+	/// Indicates that funding is needed for a channel splice.
 	///
 	/// The client should build a [`FundingContribution`] from the provided [`FundingTemplate`] and
-	/// pass it to [`ChannelManager::funding_contributed`].
+	/// pass it to [`ChannelManager::funding_contributed`]. If the method is not called, it will
+	/// have the effect of canceling the splice.
 	///
 	/// [`FundingContribution`]: crate::ln::funding::FundingContribution
 	/// [`ChannelManager::funding_contributed`]: crate::ln::channelmanager::ChannelManager::funding_contributed
