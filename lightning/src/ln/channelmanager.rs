@@ -10106,6 +10106,19 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			.count()
 	}
 
+	#[cfg(test)]
+	/// Clears holding cell claim and fail entries for a channel, useful for testing crash scenarios
+	/// where the holding cell is not persisted.
+	pub(crate) fn test_clear_channel_holding_cell_htlc_resolutions(
+		&self, cp_id: PublicKey, chan_id: ChannelId,
+	) {
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let mut peer_state = per_peer_state.get(&cp_id).map(|state| state.lock().unwrap()).unwrap();
+		let chan =
+			peer_state.channel_by_id.get_mut(&chan_id).and_then(|c| c.as_funded_mut()).unwrap();
+		chan.clear_holding_cell_htlc_resolutions();
+	}
+
 	/// Completes channel resumption after locks have been released.
 	///
 	/// Processes the [`PostMonitorUpdateChanResume`] returned by

@@ -7891,6 +7891,15 @@ where
 		}
 	}
 
+	/// Clears the holding cell's claim and fail entries (but not add entries). Useful for testing
+	/// crash scenarios where the holding cell is not persisted.
+	#[cfg(test)]
+	pub(super) fn clear_holding_cell_htlc_resolutions(&mut self) {
+		self.context
+			.holding_cell_htlc_updates
+			.retain(|update| matches!(update, HTLCUpdateAwaitingACK::AddHTLC { .. }));
+	}
+
 	/// Marks an outbound HTLC which we have received update_fail/fulfill/malformed
 	#[inline]
 	fn mark_outbound_htlc_removed(
