@@ -1695,7 +1695,7 @@ fn route_blinding_spec_test_vector() {
 			}
 			Ok(SharedSecret::new(other_key, &node_secret))
 		}
-		fn get_expanded_key(&self) -> ExpandedKey { unreachable!() }
+		fn get_expanded_key(&self) -> ExpandedKey { ExpandedKey::new([42; 32]) }
 		fn get_node_id(&self, _recipient: Recipient) -> Result<PublicKey, ()> { unreachable!() }
 		fn sign_invoice(
 			&self, _invoice: &RawBolt11Invoice, _recipient: Recipient,
@@ -2010,7 +2010,7 @@ fn test_trampoline_inbound_payment_decoding() {
 			}
 			Ok(SharedSecret::new(other_key, &node_secret))
 		}
-		fn get_expanded_key(&self) -> ExpandedKey { unreachable!() }
+		fn get_expanded_key(&self) -> ExpandedKey { ExpandedKey::new([42; 32]) }
 		fn get_node_id(&self, _recipient: Recipient) -> Result<PublicKey, ()> { unreachable!() }
 		fn sign_invoice(
 			&self, _invoice: &RawBolt11Invoice, _recipient: Recipient,
