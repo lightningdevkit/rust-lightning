@@ -823,9 +823,8 @@ where
 mod tests {
 	use super::*;
 
-	use crate::events::bump_transaction::sync::{
-		BumpTransactionEventHandlerSync, CoinSelectionSourceSync,
-	};
+	use crate::events::bump_transaction::sync::BumpTransactionEventHandlerSync;
+	use crate::util::wallet_utils::CoinSelectionSourceSync;
 	use crate::io::Cursor;
 	use crate::sync::Mutex;
 	use crate::util::wallet_utils::Utxo;

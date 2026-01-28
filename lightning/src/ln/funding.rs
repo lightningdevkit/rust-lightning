@@ -18,7 +18,6 @@ use bitcoin::{
 
 use core::ops::Deref;
 
-use crate::events::bump_transaction::sync::CoinSelectionSourceSync;
 use crate::ln::chan_utils::{
 	make_funding_redeemscript, BASE_INPUT_WEIGHT, EMPTY_SCRIPT_SIG_WEIGHT,
 	FUNDING_TRANSACTION_WITNESS_WEIGHT,
@@ -30,7 +29,9 @@ use crate::ln::LN_MAX_MSG_LEN;
 use crate::prelude::*;
 use crate::sign::{P2TR_KEY_PATH_WITNESS_WEIGHT, P2WPKH_WITNESS_WEIGHT};
 use crate::util::async_poll::MaybeSend;
-use crate::util::wallet_utils::{CoinSelection, CoinSelectionSource, Input, Utxo};
+use crate::util::wallet_utils::{
+	CoinSelection, CoinSelectionSource, CoinSelectionSourceSync, Input, Utxo,
+};
 
 /// The components of a splice's funding transaction that are contributed by one party.
 #[derive(Debug, Clone)]

@@ -46,8 +46,8 @@ use lightning_0_0_125::routing::router as router_0_0_125;
 use lightning_0_0_125::util::ser::Writeable as _;
 
 use lightning::chain::channelmonitor::{ANTI_REORG_DELAY, HTLC_FAIL_BACK_BUFFER};
-use lightning::events::bump_transaction::sync::WalletSourceSync;
 use lightning::events::{ClosureReason, Event, HTLCHandlingFailureType};
+use lightning::util::wallet_utils::WalletSourceSync;
 use lightning::ln::functional_test_utils::*;
 use lightning::ln::funding::SpliceContribution;
 use lightning::ln::msgs::BaseMessageHandler as _;

@@ -13,9 +13,8 @@
 use crate::chain::channelmonitor::ChannelMonitor;
 use crate::chain::transaction::OutPoint;
 use crate::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Listen, Watch};
-use crate::events::bump_transaction::sync::{
-	BumpTransactionEventHandlerSync, WalletSourceSync, WalletSync,
-};
+use crate::events::bump_transaction::sync::BumpTransactionEventHandlerSync;
+use crate::util::wallet_utils::{WalletSourceSync, WalletSync};
 use crate::events::bump_transaction::BumpTransactionEvent;
 use crate::events::{
 	ClaimedHTLC, ClosureReason, Event, HTLCHandlingFailureType, PaidBolt12Invoice, PathFailure,

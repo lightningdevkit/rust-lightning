@@ -21,8 +21,7 @@ use crate::chain::channelmonitor::{
 };
 use crate::chain::transaction::OutPoint;
 use crate::chain::WatchedOutput;
-use crate::events::bump_transaction::sync::WalletSourceSync;
-use crate::util::wallet_utils::{ConfirmedUtxo, Utxo};
+use crate::util::wallet_utils::{ConfirmedUtxo, Utxo, WalletSourceSync};
 #[cfg(any(test, feature = "_externalize_tests"))]
 use crate::ln::chan_utils::CommitmentTransaction;
 use crate::ln::channel_state::ChannelDetails;
