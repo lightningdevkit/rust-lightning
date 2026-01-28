@@ -327,16 +327,13 @@ enum InboundUpdateAdd {
 		blinded_failure: Option<BlindedFailure>,
 		outbound_hop: OutboundHop,
 	},
-	/// This HTLC was received pre-LDK 0.3, before we started persisting the onion for inbound
-	/// committed HTLCs.
-	Legacy,
 }
 
 impl_writeable_tlv_based_enum_upgradable!(InboundUpdateAdd,
 	(0, WithOnion) => {
 		(0, update_add_htlc, required),
 	},
-	(2, Legacy) => {},
+	// 2 was previously used for the ::Legacy variant, used for HTLCs received on LDK 0.1-.
 	(4, Forwarded) => {
 		(0, incoming_packet_shared_secret, required),
 		(2, outbound_hop, required),
@@ -7876,17 +7873,6 @@ where
 		Ok(())
 	}
 
-	/// Returns true if any committed inbound HTLCs were received pre-LDK 0.3 and cannot be used
-	/// during `ChannelManager` deserialization to reconstruct the set of pending HTLCs.
-	pub(super) fn has_legacy_inbound_htlcs(&self) -> bool {
-		self.context.pending_inbound_htlcs.iter().any(|htlc| {
-			matches!(
-				&htlc.state,
-				InboundHTLCState::Committed { update_add_htlc: InboundUpdateAdd::Legacy }
-			)
-		})
-	}
-
 	/// Returns committed inbound HTLCs whose onion has not yet been decoded and processed. Useful
 	/// for reconstructing the set of pending HTLCs when deserializing the `ChannelManager`.
 	pub(super) fn inbound_htlcs_pending_decode(
@@ -8986,7 +8972,10 @@ where
 				};
 				if swap {
 					let mut state =
-						InboundHTLCState::Committed { update_add_htlc: InboundUpdateAdd::Legacy };
+						InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailMalformed {
+							sha256_of_onion: [0; 32],
+							failure_code: 0,
+						});
 					mem::swap(&mut state, &mut htlc.state);
 
 					if let InboundHTLCState::AwaitingRemoteRevokeToAnnounce(update_add) = state {
@@ -15226,7 +15215,7 @@ impl<'a, 'b, 'c, 'd, ES: EntropySource, SP: SignerProvider, L: Logger>
 							})?;
 						InboundHTLCState::AwaitingAnnouncedRemoteRevoke(update_add_htlc)
 					},
-					3 => InboundHTLCState::Committed { update_add_htlc: InboundUpdateAdd::Legacy },
+					3 => InboundHTLCState::Committed { update_add_htlc: dummy_inbound_update_add() },
 					4 => {
 						let reason = match <u8 as Readable>::read(reader)? {
 							0 => InboundHTLCRemovalReason::FailRelay(msgs::OnionErrorPacket {
@@ -16077,6 +16066,23 @@ pub(crate) fn hold_time_since(send_timestamp: Option<Duration>) -> Option<u32> {
 	})
 }
 
+fn dummy_inbound_update_add() -> InboundUpdateAdd {
+	let txid_hash = Sha256d::from_bytes_ref(&[0; 32]);
+	InboundUpdateAdd::Forwarded {
+		incoming_packet_shared_secret: [0; 32],
+		phantom_shared_secret: None,
+		trampoline_shared_secret: None,
+		blinded_failure: None,
+		outbound_hop: OutboundHop {
+			amt_msat: 0,
+			channel_id: ChannelId([0; 32]),
+			funding_txo: OutPoint { txid: Txid::from_raw_hash(*txid_hash), index: 0 },
+			node_id: PublicKey::from_slice(&[2; 33]).unwrap(),
+			user_channel_id: 0,
+		},
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use crate::chain::chaininterface::LowerBoundedFeeEstimator;
@@ -16084,8 +16090,8 @@ mod tests {
 	use crate::chain::BestBlock;
 	use crate::ln::chan_utils::{self, commit_tx_fee_sat, ChannelTransactionParameters};
 	use crate::ln::channel::{
-		AwaitingChannelReadyFlags, ChannelState, FundedChannel, HTLCCandidate, HTLCInitiator,
-		HTLCUpdateAwaitingACK, InboundHTLCOutput, InboundHTLCState, InboundUpdateAdd,
+		dummy_inbound_update_add, AwaitingChannelReadyFlags, ChannelState, FundedChannel,
+		HTLCCandidate, HTLCInitiator, HTLCUpdateAwaitingACK, InboundHTLCOutput, InboundHTLCState,
 		InboundV1Channel, OutboundHTLCOutput, OutboundHTLCState, OutboundV1Channel,
 		MIN_THEIR_CHAN_RESERVE_SATOSHIS,
 	};
@@ -16125,10 +16131,6 @@ mod tests {
 	use bitcoin::transaction::{Transaction, TxOut, Version};
 	use bitcoin::{ScriptBuf, WPubkeyHash, WitnessProgram, WitnessVersion};
 	use std::cmp;
-
-	fn dummy_inbound_update_add() -> InboundUpdateAdd {
-		InboundUpdateAdd::Legacy
-	}
 
 	#[test]
 	#[rustfmt::skip]

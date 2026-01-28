@@ -18702,10 +18702,6 @@ impl<
 					is_channel_closed = !peer_state.channel_by_id.contains_key(channel_id);
 					if let Some(chan) = peer_state.channel_by_id.get(channel_id) {
 						if let Some(funded_chan) = chan.as_funded() {
-							// Legacy HTLCs are from pre-LDK 0.3 and cannot be reconstructed.
-							if funded_chan.has_legacy_inbound_htlcs() {
-								return Err(DecodeError::InvalidValue);
-							}
 							// Reconstruct `ChannelManager::decode_update_add_htlcs` from the serialized
 							// `Channel` as part of removing the requirement to regularly persist the
 							// `ChannelManager`.
