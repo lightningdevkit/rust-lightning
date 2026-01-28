@@ -302,9 +302,6 @@ pub(super) enum InboundUpdateAdd {
 		/// [`Event::PaymentForwarded`]: crate::events::Event::PaymentForwarded
 		outbound_amt_msat: u64,
 	},
-	/// This HTLC was received pre-LDK 0.3, before we started persisting the onion for inbound
-	/// committed HTLCs.
-	Legacy,
 }
 
 impl_writeable_tlv_based_enum_upgradable!(InboundUpdateAdd,
@@ -315,7 +312,7 @@ impl_writeable_tlv_based_enum_upgradable!(InboundUpdateAdd,
 		(0, hop_data, required),
 		(2, outbound_amt_msat, required),
 	},
-	(4, Legacy) => {},
+	// 4 was previously used for the ::Legacy variant, used for HTLCs received on LDK 0.1-.
 );
 
 impl_writeable_for_vec!(&InboundUpdateAdd);
@@ -8855,7 +8852,10 @@ where
 				};
 				if swap {
 					let mut state =
-						InboundHTLCState::Committed { update_add_htlc: InboundUpdateAdd::Legacy };
+						InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailMalformed {
+							sha256_of_onion: [0; 32],
+							failure_code: 0,
+						});
 					mem::swap(&mut state, &mut htlc.state);
 
 					if let InboundHTLCState::AwaitingRemoteRevokeToAnnounce(update_add) = state {
@@ -15219,6 +15219,23 @@ where
 	}
 }
 
+fn dummy_prev_hop_data() -> HTLCPreviousHopData {
+	let txid_hash = Sha256d::from_bytes_ref(&[0; 32]);
+	HTLCPreviousHopData {
+		prev_outbound_scid_alias: 0,
+		user_channel_id: None,
+		htlc_id: 0,
+		incoming_packet_shared_secret: [0; 32],
+		phantom_shared_secret: None,
+		trampoline_shared_secret: None,
+		blinded_failure: None,
+		channel_id: ChannelId([0; 32]),
+		outpoint: OutPoint { txid: Txid::from_raw_hash(*txid_hash), index: 0 },
+		counterparty_node_id: None,
+		cltv_expiry: None,
+	}
+}
+
 impl<'a, 'b, 'c, 'd, ES: Deref, SP: Deref, L: Deref>
 	ReadableArgs<(&'a ES, &'b SP, &'c L, &'d ChannelTypeFeatures)> for FundedChannel<SP>
 where
@@ -15294,7 +15311,10 @@ where
 							})?;
 						InboundHTLCState::AwaitingAnnouncedRemoteRevoke(update_add_htlc)
 					},
-					3 => InboundHTLCState::Committed { update_add_htlc: InboundUpdateAdd::Legacy },
+					3 => InboundHTLCState::Committed { update_add_htlc: InboundUpdateAdd::Forwarded {
+						hop_data: dummy_prev_hop_data(),
+						outbound_amt_msat: 0,
+					}},
 					4 => {
 						let reason = match <u8 as Readable>::read(reader)? {
 							0 => InboundHTLCRemovalReason::FailRelay(msgs::OnionErrorPacket {
@@ -16148,7 +16168,7 @@ mod tests {
 	use crate::chain::BestBlock;
 	use crate::ln::chan_utils::{self, commit_tx_fee_sat, ChannelTransactionParameters};
 	use crate::ln::channel::{
-		AwaitingChannelReadyFlags, ChannelId, ChannelState, FundedChannel, HTLCCandidate,
+		dummy_prev_hop_data, AwaitingChannelReadyFlags, ChannelState, FundedChannel, HTLCCandidate,
 		HTLCInitiator, HTLCUpdateAwaitingACK, InboundHTLCOutput, InboundHTLCState,
 		InboundUpdateAdd, InboundV1Channel, OutboundHTLCOutput, OutboundHTLCState,
 		OutboundV1Channel,
@@ -16158,7 +16178,7 @@ mod tests {
 		TOTAL_BITCOIN_SUPPLY_SATOSHIS,
 	};
 	use crate::ln::channel_keys::{RevocationBasepoint, RevocationKey};
-	use crate::ln::channelmanager::{self, HTLCPreviousHopData, HTLCSource, PaymentId};
+	use crate::ln::channelmanager::{self, HTLCSource, PaymentId};
 	use crate::ln::funding::FundingTxInput;
 	use crate::ln::msgs;
 	use crate::ln::msgs::{ChannelUpdate, UnsignedChannelUpdate, MAX_VALUE_MSAT};
@@ -16182,7 +16202,6 @@ mod tests {
 	use bitcoin::amount::Amount;
 	use bitcoin::constants::ChainHash;
 	use bitcoin::hashes::sha256::Hash as Sha256;
-	use bitcoin::hashes::sha256d::Hash as Sha256d;
 	use bitcoin::hashes::Hash;
 	use bitcoin::hex::FromHex;
 	use bitcoin::locktime::absolute::LockTime;
@@ -16192,26 +16211,8 @@ mod tests {
 	use bitcoin::secp256k1::{ecdsa::Signature, Secp256k1};
 	use bitcoin::secp256k1::{PublicKey, SecretKey};
 	use bitcoin::transaction::{Transaction, TxOut, Version};
-	use bitcoin::Txid;
 	use bitcoin::{ScriptBuf, WPubkeyHash, WitnessProgram, WitnessVersion};
 	use std::cmp;
-
-	fn dummy_prev_hop_data() -> HTLCPreviousHopData {
-		let txid_hash = Sha256d::from_bytes_ref(&[0; 32]);
-		HTLCPreviousHopData {
-			prev_outbound_scid_alias: 0,
-			user_channel_id: None,
-			htlc_id: 0,
-			incoming_packet_shared_secret: [0; 32],
-			phantom_shared_secret: None,
-			trampoline_shared_secret: None,
-			blinded_failure: None,
-			channel_id: ChannelId([0; 32]),
-			outpoint: OutPoint { txid: Txid::from_raw_hash(*txid_hash), index: 0 },
-			counterparty_node_id: None,
-			cltv_expiry: None,
-		}
-	}
 
 	#[test]
 	#[rustfmt::skip]

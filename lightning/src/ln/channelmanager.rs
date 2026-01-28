@@ -18435,9 +18435,6 @@ where
 											outbound_amt_msat,
 										));
 									},
-									InboundUpdateAdd::Legacy => {
-										return Err(DecodeError::InvalidValue)
-									},
 								}
 							}
 						}
