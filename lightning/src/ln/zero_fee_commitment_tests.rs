@@ -371,7 +371,7 @@ fn test_anchor_tx_too_big() {
 		- EMPTY_WITNESS_WEIGHT
 		- P2WSH_TXOUT_WEIGHT;
 	nodes[1].logger.assert_log(
-		"lightning::events::bump_transaction",
+		"lightning::util::wallet_utils",
 		format!(
 			"Insufficient funds to meet target feerate {} sat/kW while remaining under {} WU",
 			FEERATE, max_coin_selection_weight
@@ -405,7 +405,7 @@ fn test_anchor_tx_too_big() {
 	assert_eq!(txns[1].input.len(), 2);
 	assert_eq!(txns[1].output.len(), 1);
 	nodes[1].logger.assert_log(
-		"lightning::events::bump_transaction",
+		"lightning::util::wallet_utils",
 		format!(
 			"Insufficient funds to meet target feerate {} sat/kW while remaining under {} WU",
 			FEERATE, max_coin_selection_weight
