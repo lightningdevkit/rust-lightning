@@ -104,71 +104,59 @@ pub struct LiquidityClientConfig {
 /// languages.
 pub trait ALiquidityManager {
 	/// A type implementing [`EntropySource`]
-	type EntropySource: EntropySource + ?Sized;
-	/// A type that may be dereferenced to [`Self::EntropySource`].
-	type ES: Deref<Target = Self::EntropySource> + Clone;
+	type EntropySource: EntropySource + Clone;
 	/// A type implementing [`NodeSigner`]
-	type NodeSigner: NodeSigner + ?Sized;
-	/// A type that may be dereferenced to [`Self::NodeSigner`].
-	type NS: Deref<Target = Self::NodeSigner> + Clone;
+	type NodeSigner: NodeSigner + Clone;
 	/// A type implementing [`AChannelManager`]
 	type AChannelManager: AChannelManager + ?Sized;
 	/// A type that may be dereferenced to [`Self::AChannelManager`].
 	type CM: Deref<Target = Self::AChannelManager> + Clone;
 	/// A type implementing [`Filter`].
-	type Filter: Filter + ?Sized;
-	/// A type that may be dereferenced to [`Self::Filter`].
-	type C: Deref<Target = Self::Filter> + Clone;
+	type C: Filter + Clone;
 	/// A type implementing [`KVStore`].
-	type KVStore: KVStore + ?Sized;
-	/// A type that may be dereferenced to [`Self::KVStore`].
-	type K: Deref<Target = Self::KVStore> + Clone;
+	type K: KVStore + Clone;
 	/// A type implementing [`TimeProvider`].
 	type TimeProvider: TimeProvider + ?Sized;
 	/// A type that may be dereferenced to [`Self::TimeProvider`].
 	type TP: Deref<Target = Self::TimeProvider> + Clone;
 	/// A type implementing [`BroadcasterInterface`].
-	type BroadcasterInterface: BroadcasterInterface + ?Sized;
-	/// A type that may be dereferenced to [`Self::BroadcasterInterface`].
-	type T: Deref<Target = Self::BroadcasterInterface> + Clone;
+	type BroadcasterInterface: BroadcasterInterface + Clone;
 	/// Returns a reference to the actual [`LiquidityManager`] object.
 	fn get_lm(
 		&self,
-	) -> &LiquidityManager<Self::ES, Self::NS, Self::CM, Self::C, Self::K, Self::TP, Self::T>;
+	) -> &LiquidityManager<
+		Self::EntropySource,
+		Self::NodeSigner,
+		Self::CM,
+		Self::C,
+		Self::K,
+		Self::TP,
+		Self::BroadcasterInterface,
+	>;
 }
 
 impl<
-		ES: Deref + Clone,
-		NS: Deref + Clone,
+		ES: EntropySource + Clone,
+		NS: NodeSigner + Clone,
 		CM: Deref + Clone,
-		C: Deref + Clone,
-		K: Deref + Clone,
+		C: Filter + Clone,
+		K: KVStore + Clone,
 		TP: Deref + Clone,
-		T: Deref + Clone,
+		T: BroadcasterInterface + Clone,
 	> ALiquidityManager for LiquidityManager<ES, NS, CM, C, K, TP, T>
 where
-	ES::Target: EntropySource,
-	NS::Target: NodeSigner,
 	CM::Target: AChannelManager,
-	C::Target: Filter,
-	K::Target: KVStore,
 	TP::Target: TimeProvider,
-	T::Target: BroadcasterInterface,
 {
-	type EntropySource = ES::Target;
-	type ES = ES;
-	type NodeSigner = NS::Target;
-	type NS = NS;
+	type EntropySource = ES;
+	type NodeSigner = NS;
 	type AChannelManager = CM::Target;
 	type CM = CM;
-	type Filter = C::Target;
 	type C = C;
-	type KVStore = K::Target;
 	type K = K;
 	type TimeProvider = TP::Target;
 	type TP = TP;
-	type BroadcasterInterface = T::Target;
-	type T = T;
+	type BroadcasterInterface = T;
 	fn get_lm(&self) -> &LiquidityManager<ES, NS, CM, C, K, TP, T> {
 		self
 	}
@@ -180,21 +168,15 @@ where
 /// languages.
 pub trait ALiquidityManagerSync {
 	/// A type implementing [`EntropySource`]
-	type EntropySource: EntropySource + ?Sized;
-	/// A type that may be dereferenced to [`Self::EntropySource`].
-	type ES: Deref<Target = Self::EntropySource> + Clone;
+	type EntropySource: EntropySource + Clone;
 	/// A type implementing [`NodeSigner`]
-	type NodeSigner: NodeSigner + ?Sized;
-	/// A type that may be dereferenced to [`Self::NodeSigner`].
-	type NS: Deref<Target = Self::NodeSigner> + Clone;
+	type NodeSigner: NodeSigner + Clone;
 	/// A type implementing [`AChannelManager`]
 	type AChannelManager: AChannelManager + ?Sized;
 	/// A type that may be dereferenced to [`Self::AChannelManager`].
 	type CM: Deref<Target = Self::AChannelManager> + Clone;
 	/// A type implementing [`Filter`].
-	type Filter: Filter + ?Sized;
-	/// A type that may be dereferenced to [`Self::Filter`].
-	type C: Deref<Target = Self::Filter> + Clone;
+	type C: Filter + Clone;
 	/// A type implementing [`KVStoreSync`].
 	type KVStoreSync: KVStoreSync + ?Sized;
 	/// A type that may be dereferenced to [`Self::KVStoreSync`].
@@ -204,72 +186,70 @@ pub trait ALiquidityManagerSync {
 	/// A type that may be dereferenced to [`Self::TimeProvider`].
 	type TP: Deref<Target = Self::TimeProvider> + Clone;
 	/// A type implementing [`BroadcasterInterface`].
-	type BroadcasterInterface: BroadcasterInterface + ?Sized;
-	/// A type that may be dereferenced to [`Self::BroadcasterInterface`].
-	type T: Deref<Target = Self::BroadcasterInterface> + Clone;
+	type BroadcasterInterface: BroadcasterInterface + Clone;
 	/// Returns the inner async [`LiquidityManager`] for testing purposes.
 	#[cfg(any(test, feature = "_test_utils"))]
 	fn get_lm_async(
 		&self,
 	) -> &LiquidityManager<
-		Self::ES,
-		Self::NS,
+		Self::EntropySource,
+		Self::NodeSigner,
 		Self::CM,
 		Self::C,
 		KVStoreSyncWrapper<Self::KS>,
 		Self::TP,
-		Self::T,
+		Self::BroadcasterInterface,
 	>;
 	/// Returns a reference to the actual [`LiquidityManager`] object.
 	fn get_lm(
 		&self,
-	) -> &LiquidityManagerSync<Self::ES, Self::NS, Self::CM, Self::C, Self::KS, Self::TP, Self::T>;
+	) -> &LiquidityManagerSync<
+		Self::EntropySource,
+		Self::NodeSigner,
+		Self::CM,
+		Self::C,
+		Self::KS,
+		Self::TP,
+		Self::BroadcasterInterface,
+	>;
 }
 
 impl<
-		ES: Deref + Clone,
-		NS: Deref + Clone,
+		ES: EntropySource + Clone,
+		NS: NodeSigner + Clone,
 		CM: Deref + Clone,
-		C: Deref + Clone,
+		C: Filter + Clone,
 		KS: Deref + Clone,
 		TP: Deref + Clone,
-		T: Deref + Clone,
+		T: BroadcasterInterface + Clone,
 	> ALiquidityManagerSync for LiquidityManagerSync<ES, NS, CM, C, KS, TP, T>
 where
-	ES::Target: EntropySource,
-	NS::Target: NodeSigner,
 	CM::Target: AChannelManager,
-	C::Target: Filter,
 	KS::Target: KVStoreSync,
 	TP::Target: TimeProvider,
-	T::Target: BroadcasterInterface,
 {
-	type EntropySource = ES::Target;
-	type ES = ES;
-	type NodeSigner = NS::Target;
-	type NS = NS;
+	type EntropySource = ES;
+	type NodeSigner = NS;
 	type AChannelManager = CM::Target;
 	type CM = CM;
-	type Filter = C::Target;
 	type C = C;
 	type KVStoreSync = KS::Target;
 	type KS = KS;
 	type TimeProvider = TP::Target;
 	type TP = TP;
-	type BroadcasterInterface = T::Target;
-	type T = T;
+	type BroadcasterInterface = T;
 	/// Returns the inner async [`LiquidityManager`] for testing purposes.
 	#[cfg(any(test, feature = "_test_utils"))]
 	fn get_lm_async(
 		&self,
 	) -> &LiquidityManager<
-		Self::ES,
-		Self::NS,
+		Self::EntropySource,
+		Self::NodeSigner,
 		Self::CM,
 		Self::C,
 		KVStoreSyncWrapper<Self::KS>,
 		Self::TP,
-		Self::T,
+		Self::BroadcasterInterface,
 	> {
 		&self.inner
 	}
@@ -298,21 +278,16 @@ where
 /// [`Event::HTLCHandlingFailed`]: lightning::events::Event::HTLCHandlingFailed
 /// [`Event::PaymentForwarded`]: lightning::events::Event::PaymentForwarded
 pub struct LiquidityManager<
-	ES: Deref + Clone,
-	NS: Deref + Clone,
+	ES: EntropySource + Clone,
+	NS: NodeSigner + Clone,
 	CM: Deref + Clone,
-	C: Deref + Clone,
-	K: Deref + Clone,
+	C: Filter + Clone,
+	K: KVStore + Clone,
 	TP: Deref + Clone,
-	T: Deref + Clone,
+	T: BroadcasterInterface + Clone,
 > where
-	ES::Target: EntropySource,
-	NS::Target: NodeSigner,
 	CM::Target: AChannelManager,
-	C::Target: Filter,
-	K::Target: KVStore,
 	TP::Target: TimeProvider,
-	T::Target: BroadcasterInterface,
 {
 	pending_messages: Arc<MessageQueue>,
 	pending_events: Arc<EventQueue<K>>,
@@ -337,20 +312,15 @@ pub struct LiquidityManager<
 
 #[cfg(feature = "time")]
 impl<
-		ES: Deref + Clone,
-		NS: Deref + Clone,
+		ES: EntropySource + Clone,
+		NS: NodeSigner + Clone,
 		CM: Deref + Clone,
-		C: Deref + Clone,
-		K: Deref + Clone,
-		T: Deref + Clone,
+		C: Filter + Clone,
+		K: KVStore + Clone,
+		T: BroadcasterInterface + Clone,
 	> LiquidityManager<ES, NS, CM, C, K, DefaultTimeProvider, T>
 where
-	ES::Target: EntropySource,
-	NS::Target: NodeSigner,
 	CM::Target: AChannelManager,
-	C::Target: Filter,
-	K::Target: KVStore,
-	T::Target: BroadcasterInterface,
 {
 	/// Constructor for the [`LiquidityManager`] using the default system clock
 	///
@@ -378,22 +348,17 @@ where
 }
 
 impl<
-		ES: Deref + Clone,
-		NS: Deref + Clone,
+		ES: EntropySource + Clone,
+		NS: NodeSigner + Clone,
 		CM: Deref + Clone,
-		C: Deref + Clone,
-		K: Deref + Clone,
+		C: Filter + Clone,
+		K: KVStore + Clone,
 		TP: Deref + Clone,
-		T: Deref + Clone,
+		T: BroadcasterInterface + Clone,
 	> LiquidityManager<ES, NS, CM, C, K, TP, T>
 where
-	ES::Target: EntropySource,
-	NS::Target: NodeSigner,
 	CM::Target: AChannelManager,
-	C::Target: Filter,
-	K::Target: KVStore,
 	TP::Target: TimeProvider,
-	T::Target: BroadcasterInterface,
 {
 	/// Constructor for the [`LiquidityManager`] with a custom time provider.
 	///
@@ -805,22 +770,17 @@ where
 }
 
 impl<
-		ES: Deref + Clone,
-		NS: Deref + Clone,
+		ES: EntropySource + Clone,
+		NS: NodeSigner + Clone,
 		CM: Deref + Clone,
-		C: Deref + Clone,
-		K: Deref + Clone,
+		C: Filter + Clone,
+		K: KVStore + Clone,
 		TP: Deref + Clone,
-		T: Deref + Clone,
+		T: BroadcasterInterface + Clone,
 	> CustomMessageReader for LiquidityManager<ES, NS, CM, C, K, TP, T>
 where
-	ES::Target: EntropySource,
-	NS::Target: NodeSigner,
 	CM::Target: AChannelManager,
-	C::Target: Filter,
-	K::Target: KVStore,
 	TP::Target: TimeProvider,
-	T::Target: BroadcasterInterface,
 {
 	type CustomMessage = RawLSPSMessage;
 
@@ -837,22 +797,17 @@ where
 }
 
 impl<
-		ES: Deref + Clone,
-		NS: Deref + Clone,
+		ES: EntropySource + Clone,
+		NS: NodeSigner + Clone,
 		CM: Deref + Clone,
-		C: Deref + Clone,
-		K: Deref + Clone,
+		C: Filter + Clone,
+		K: KVStore + Clone,
 		TP: Deref + Clone,
-		T: Deref + Clone,
+		T: BroadcasterInterface + Clone,
 	> CustomMessageHandler for LiquidityManager<ES, NS, CM, C, K, TP, T>
 where
-	ES::Target: EntropySource,
-	NS::Target: NodeSigner,
 	CM::Target: AChannelManager,
-	C::Target: Filter,
-	K::Target: KVStore,
 	TP::Target: TimeProvider,
-	T::Target: BroadcasterInterface,
 {
 	fn handle_custom_message(
 		&self, msg: Self::CustomMessage, sender_node_id: PublicKey,
@@ -971,22 +926,17 @@ where
 }
 
 impl<
-		ES: Deref + Clone,
-		NS: Deref + Clone,
+		ES: EntropySource + Clone,
+		NS: NodeSigner + Clone,
 		CM: Deref + Clone,
-		C: Deref + Clone,
-		K: Deref + Clone,
+		C: Filter + Clone,
+		K: KVStore + Clone,
 		TP: Deref + Clone,
-		T: Deref + Clone,
+		T: BroadcasterInterface + Clone,
 	> Listen for LiquidityManager<ES, NS, CM, C, K, TP, T>
 where
-	ES::Target: EntropySource,
-	NS::Target: NodeSigner,
 	CM::Target: AChannelManager,
-	C::Target: Filter,
-	K::Target: KVStore,
 	TP::Target: TimeProvider,
-	T::Target: BroadcasterInterface,
 {
 	fn filtered_block_connected(
 		&self, header: &bitcoin::block::Header, txdata: &chain::transaction::TransactionData,
@@ -1017,22 +967,17 @@ where
 }
 
 impl<
-		ES: Deref + Clone,
-		NS: Deref + Clone,
+		ES: EntropySource + Clone,
+		NS: NodeSigner + Clone,
 		CM: Deref + Clone,
-		C: Deref + Clone,
-		K: Deref + Clone,
+		C: Filter + Clone,
+		K: KVStore + Clone,
 		TP: Deref + Clone,
-		T: Deref + Clone,
+		T: BroadcasterInterface + Clone,
 	> Confirm for LiquidityManager<ES, NS, CM, C, K, TP, T>
 where
-	ES::Target: EntropySource,
-	NS::Target: NodeSigner,
 	CM::Target: AChannelManager,
-	C::Target: Filter,
-	K::Target: KVStore,
 	TP::Target: TimeProvider,
-	T::Target: BroadcasterInterface,
 {
 	fn transactions_confirmed(
 		&self, _header: &bitcoin::block::Header, _txdata: &chain::transaction::TransactionData,
@@ -1063,41 +1008,33 @@ where
 /// A synchroneous wrapper around [`LiquidityManager`] to be used in contexts where async is not
 /// available.
 pub struct LiquidityManagerSync<
-	ES: Deref + Clone,
-	NS: Deref + Clone,
+	ES: EntropySource + Clone,
+	NS: NodeSigner + Clone,
 	CM: Deref + Clone,
-	C: Deref + Clone,
+	C: Filter + Clone,
 	KS: Deref + Clone,
 	TP: Deref + Clone,
-	T: Deref + Clone,
+	T: BroadcasterInterface + Clone,
 > where
-	ES::Target: EntropySource,
-	NS::Target: NodeSigner,
 	CM::Target: AChannelManager,
-	C::Target: Filter,
 	KS::Target: KVStoreSync,
 	TP::Target: TimeProvider,
-	T::Target: BroadcasterInterface,
 {
 	inner: LiquidityManager<ES, NS, CM, C, KVStoreSyncWrapper<KS>, TP, T>,
 }
 
 #[cfg(feature = "time")]
 impl<
-		ES: Deref + Clone,
-		NS: Deref + Clone,
+		ES: EntropySource + Clone,
+		NS: NodeSigner + Clone,
 		CM: Deref + Clone,
-		C: Deref + Clone,
+		C: Filter + Clone,
 		KS: Deref + Clone,
-		T: Deref + Clone,
+		T: BroadcasterInterface + Clone,
 	> LiquidityManagerSync<ES, NS, CM, C, KS, DefaultTimeProvider, T>
 where
-	ES::Target: EntropySource,
-	NS::Target: NodeSigner,
 	CM::Target: AChannelManager,
 	KS::Target: KVStoreSync,
-	C::Target: Filter,
-	T::Target: BroadcasterInterface,
 {
 	/// Constructor for the [`LiquidityManagerSync`] using the default system clock
 	///
@@ -1136,22 +1073,18 @@ where
 }
 
 impl<
-		ES: Deref + Clone,
-		NS: Deref + Clone,
+		ES: EntropySource + Clone,
+		NS: NodeSigner + Clone,
 		CM: Deref + Clone,
-		C: Deref + Clone,
+		C: Filter + Clone,
 		KS: Deref + Clone,
 		TP: Deref + Clone,
-		T: Deref + Clone,
+		T: BroadcasterInterface + Clone,
 	> LiquidityManagerSync<ES, NS, CM, C, KS, TP, T>
 where
-	ES::Target: EntropySource,
-	NS::Target: NodeSigner,
 	CM::Target: AChannelManager,
-	C::Target: Filter,
 	KS::Target: KVStoreSync,
 	TP::Target: TimeProvider,
-	T::Target: BroadcasterInterface,
 {
 	/// Constructor for the [`LiquidityManagerSync`] with a custom time provider.
 	///
@@ -1306,22 +1239,18 @@ where
 }
 
 impl<
-		ES: Deref + Clone,
-		NS: Deref + Clone,
+		ES: EntropySource + Clone,
+		NS: NodeSigner + Clone,
 		CM: Deref + Clone,
-		C: Deref + Clone,
+		C: Filter + Clone,
 		KS: Deref + Clone,
 		TP: Deref + Clone,
-		T: Deref + Clone,
+		T: BroadcasterInterface + Clone,
 	> CustomMessageReader for LiquidityManagerSync<ES, NS, CM, C, KS, TP, T>
 where
-	ES::Target: EntropySource,
-	NS::Target: NodeSigner,
 	CM::Target: AChannelManager,
-	C::Target: Filter,
 	KS::Target: KVStoreSync,
 	TP::Target: TimeProvider,
-	T::Target: BroadcasterInterface,
 {
 	type CustomMessage = RawLSPSMessage;
 
@@ -1333,22 +1262,18 @@ where
 }
 
 impl<
-		ES: Deref + Clone,
-		NS: Deref + Clone,
+		ES: EntropySource + Clone,
+		NS: NodeSigner + Clone,
 		CM: Deref + Clone,
-		C: Deref + Clone,
+		C: Filter + Clone,
 		KS: Deref + Clone,
 		TP: Deref + Clone,
-		T: Deref + Clone,
+		T: BroadcasterInterface + Clone,
 	> CustomMessageHandler for LiquidityManagerSync<ES, NS, CM, C, KS, TP, T>
 where
-	ES::Target: EntropySource,
-	NS::Target: NodeSigner,
 	CM::Target: AChannelManager,
-	C::Target: Filter,
 	KS::Target: KVStoreSync,
 	TP::Target: TimeProvider,
-	T::Target: BroadcasterInterface,
 {
 	fn handle_custom_message(
 		&self, msg: Self::CustomMessage, sender_node_id: PublicKey,
@@ -1380,22 +1305,18 @@ where
 }
 
 impl<
-		ES: Deref + Clone,
-		NS: Deref + Clone,
+		ES: EntropySource + Clone,
+		NS: NodeSigner + Clone,
 		CM: Deref + Clone,
-		C: Deref + Clone,
+		C: Filter + Clone,
 		KS: Deref + Clone,
 		TP: Deref + Clone,
-		T: Deref + Clone,
+		T: BroadcasterInterface + Clone,
 	> Listen for LiquidityManagerSync<ES, NS, CM, C, KS, TP, T>
 where
-	ES::Target: EntropySource,
-	NS::Target: NodeSigner,
 	CM::Target: AChannelManager,
-	C::Target: Filter,
 	KS::Target: KVStoreSync,
 	TP::Target: TimeProvider,
-	T::Target: BroadcasterInterface,
 {
 	fn filtered_block_connected(
 		&self, header: &bitcoin::block::Header, txdata: &chain::transaction::TransactionData,
@@ -1410,22 +1331,18 @@ where
 }
 
 impl<
-		ES: Deref + Clone,
-		NS: Deref + Clone,
+		ES: EntropySource + Clone,
+		NS: NodeSigner + Clone,
 		CM: Deref + Clone,
-		C: Deref + Clone,
+		C: Filter + Clone,
 		KS: Deref + Clone,
 		TP: Deref + Clone,
-		T: Deref + Clone,
+		T: BroadcasterInterface + Clone,
 	> Confirm for LiquidityManagerSync<ES, NS, CM, C, KS, TP, T>
 where
-	ES::Target: EntropySource,
-	NS::Target: NodeSigner,
 	CM::Target: AChannelManager,
-	C::Target: Filter,
 	KS::Target: KVStoreSync,
 	TP::Target: TimeProvider,
-	T::Target: BroadcasterInterface,
 {
 	fn transactions_confirmed(
 		&self, header: &bitcoin::block::Header, txdata: &chain::transaction::TransactionData,

@@ -33,8 +33,6 @@ use crate::util::ser::{
 	Writeable, Writer,
 };
 
-use core::ops::Deref;
-
 #[allow(unused_imports)]
 use crate::prelude::*;
 
@@ -87,13 +85,10 @@ pub struct BlindedPaymentPath {
 
 impl BlindedPaymentPath {
 	/// Create a one-hop blinded path for a payment.
-	pub fn one_hop<ES: Deref, T: secp256k1::Signing + secp256k1::Verification>(
+	pub fn one_hop<ES: EntropySource, T: secp256k1::Signing + secp256k1::Verification>(
 		payee_node_id: PublicKey, local_node_receive_key: ReceiveAuthKey, payee_tlvs: ReceiveTlvs,
 		min_final_cltv_expiry_delta: u16, entropy_source: ES, secp_ctx: &Secp256k1<T>,
-	) -> Result<Self, ()>
-	where
-		ES::Target: EntropySource,
-	{
+	) -> Result<Self, ()> {
 		// This value is not considered in pathfinding for 1-hop blinded paths, because it's intended to
 		// be in relation to a specific channel.
 		let htlc_maximum_msat = u64::max_value();
@@ -115,14 +110,11 @@ impl BlindedPaymentPath {
 	/// * [`BlindedPayInfo`] calculation results in an integer overflow
 	/// * any unknown features are required in the provided [`ForwardTlvs`]
 	//  TODO: make all payloads the same size with padding + add dummy hops
-	pub fn new<ES: Deref, T: secp256k1::Signing + secp256k1::Verification>(
+	pub fn new<ES: EntropySource, T: secp256k1::Signing + secp256k1::Verification>(
 		intermediate_nodes: &[PaymentForwardNode], payee_node_id: PublicKey,
 		local_node_receive_key: ReceiveAuthKey, payee_tlvs: ReceiveTlvs, htlc_maximum_msat: u64,
 		min_final_cltv_expiry_delta: u16, entropy_source: ES, secp_ctx: &Secp256k1<T>,
-	) -> Result<Self, ()>
-	where
-		ES::Target: EntropySource,
-	{
+	) -> Result<Self, ()> {
 		BlindedPaymentPath::new_inner(
 			intermediate_nodes,
 			payee_node_id,
@@ -147,15 +139,15 @@ impl BlindedPaymentPath {
 	///
 	/// TODO: Add end-to-end tests validating fee aggregation, CLTV deltas, and
 	/// HTLC bounds when dummy hops are present, before exposing this API publicly.
-	pub(crate) fn new_with_dummy_hops<ES: Deref, T: secp256k1::Signing + secp256k1::Verification>(
+	pub(crate) fn new_with_dummy_hops<
+		ES: EntropySource,
+		T: secp256k1::Signing + secp256k1::Verification,
+	>(
 		intermediate_nodes: &[PaymentForwardNode], payee_node_id: PublicKey,
 		dummy_tlvs: &[DummyTlvs], local_node_receive_key: ReceiveAuthKey, payee_tlvs: ReceiveTlvs,
 		htlc_maximum_msat: u64, min_final_cltv_expiry_delta: u16, entropy_source: ES,
 		secp_ctx: &Secp256k1<T>,
-	) -> Result<Self, ()>
-	where
-		ES::Target: EntropySource,
-	{
+	) -> Result<Self, ()> {
 		BlindedPaymentPath::new_inner(
 			intermediate_nodes,
 			payee_node_id,
@@ -169,15 +161,12 @@ impl BlindedPaymentPath {
 		)
 	}
 
-	fn new_inner<ES: Deref, T: secp256k1::Signing + secp256k1::Verification>(
+	fn new_inner<ES: EntropySource, T: secp256k1::Signing + secp256k1::Verification>(
 		intermediate_nodes: &[PaymentForwardNode], payee_node_id: PublicKey,
 		local_node_receive_key: ReceiveAuthKey, dummy_tlvs: &[DummyTlvs], payee_tlvs: ReceiveTlvs,
 		htlc_maximum_msat: u64, min_final_cltv_expiry_delta: u16, entropy_source: ES,
 		secp_ctx: &Secp256k1<T>,
-	) -> Result<Self, ()>
-	where
-		ES::Target: EntropySource,
-	{
+	) -> Result<Self, ()> {
 		let introduction_node = IntroductionNode::NodeId(
 			intermediate_nodes.first().map_or(payee_node_id, |n| n.node_id),
 		);
@@ -239,12 +228,10 @@ impl BlindedPaymentPath {
 	/// introduction node.
 	///
 	/// Will only modify `self` when returning `Ok`.
-	pub fn advance_path_by_one<NS: Deref, NL: Deref, T>(
+	pub fn advance_path_by_one<NS: NodeSigner, NL: NodeIdLookUp, T>(
 		&mut self, node_signer: &NS, node_id_lookup: &NL, secp_ctx: &Secp256k1<T>,
 	) -> Result<(), ()>
 	where
-		NS::Target: NodeSigner,
-		NL::Target: NodeIdLookUp,
 		T: secp256k1::Signing + secp256k1::Verification,
 	{
 		let (next_node_id, control_tlvs_ss) =
@@ -274,12 +261,9 @@ impl BlindedPaymentPath {
 		Ok(())
 	}
 
-	pub(crate) fn decrypt_intro_payload<NS: Deref>(
+	pub(crate) fn decrypt_intro_payload<NS: NodeSigner>(
 		&self, node_signer: &NS,
-	) -> Result<(BlindedPaymentTlvs, SharedSecret), ()>
-	where
-		NS::Target: NodeSigner,
-	{
+	) -> Result<(BlindedPaymentTlvs, SharedSecret), ()> {
 		let control_tlvs_ss =
 			node_signer.ecdh(Recipient::Node, &self.inner_path.blinding_point, None)?;
 		let rho = onion_utils::gen_rho_from_shared_secret(&control_tlvs_ss.secret_bytes());

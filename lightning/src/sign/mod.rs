@@ -878,7 +878,20 @@ pub trait EntropySource {
 	fn get_secure_random_bytes(&self) -> [u8; 32];
 }
 
+impl<T: EntropySource + ?Sized, E: Deref<Target = T>> EntropySource for E {
+	fn get_secure_random_bytes(&self) -> [u8; 32] {
+		self.deref().get_secure_random_bytes()
+	}
+}
+
 /// A trait that can handle cryptographic operations at the scope level of a node.
+///
+/// Instantiations of this trait should generally be shared by reference across the lightning
+/// node's components, e.g. the [`NodeSigner`]s provided to [`PeerManager`] and [`ChannelManager`],
+/// etc. MUST all return the same value for a given input.
+///
+/// [`PeerManager`]: crate::ln::peer_handler::PeerManager
+/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 pub trait NodeSigner {
 	/// Get the [`ExpandedKey`] which provides cryptographic material for various Lightning Network operations.
 	///
@@ -992,6 +1005,42 @@ pub trait NodeSigner {
 	fn sign_message(&self, msg: &[u8]) -> Result<String, ()>;
 }
 
+impl<T: NodeSigner + ?Sized, N: Deref<Target = T>> NodeSigner for N {
+	fn get_expanded_key(&self) -> ExpandedKey {
+		self.deref().get_expanded_key()
+	}
+	fn get_peer_storage_key(&self) -> PeerStorageKey {
+		self.deref().get_peer_storage_key()
+	}
+	fn get_receive_auth_key(&self) -> ReceiveAuthKey {
+		self.deref().get_receive_auth_key()
+	}
+	fn get_node_id(&self, recipient: Recipient) -> Result<PublicKey, ()> {
+		self.deref().get_node_id(recipient)
+	}
+	fn ecdh(
+		&self, recipient: Recipient, other_key: &PublicKey, tweak: Option<&Scalar>,
+	) -> Result<SharedSecret, ()> {
+		self.deref().ecdh(recipient, other_key, tweak)
+	}
+	fn sign_invoice(
+		&self, invoice: &RawBolt11Invoice, recipient: Recipient,
+	) -> Result<RecoverableSignature, ()> {
+		self.deref().sign_invoice(invoice, recipient)
+	}
+	fn sign_bolt12_invoice(
+		&self, invoice: &UnsignedBolt12Invoice,
+	) -> Result<schnorr::Signature, ()> {
+		self.deref().sign_bolt12_invoice(invoice)
+	}
+	fn sign_gossip_message(&self, msg: UnsignedGossipMessage) -> Result<Signature, ()> {
+		self.deref().sign_gossip_message(msg)
+	}
+	fn sign_message(&self, msg: &[u8]) -> Result<String, ()> {
+		self.deref().sign_message(msg)
+	}
+}
+
 /// A trait that describes a wallet capable of creating a spending [`Transaction`] from a set of
 /// [`SpendableOutputDescriptor`]s.
 pub trait OutputSpender {
@@ -1014,6 +1063,23 @@ pub trait OutputSpender {
 	) -> Result<Transaction, ()>;
 }
 
+impl<T: OutputSpender + ?Sized, O: Deref<Target = T>> OutputSpender for O {
+	fn spend_spendable_outputs(
+		&self, descriptors: &[&SpendableOutputDescriptor], outputs: Vec<TxOut>,
+		change_destination_script: ScriptBuf, feerate_sat_per_1000_weight: u32,
+		locktime: Option<LockTime>, secp_ctx: &Secp256k1<All>,
+	) -> Result<Transaction, ()> {
+		self.deref().spend_spendable_outputs(
+			descriptors,
+			outputs,
+			change_destination_script,
+			feerate_sat_per_1000_weight,
+			locktime,
+			secp_ctx,
+		)
+	}
+}
+
 // Primarily needed in doctests because of https://github.com/rust-lang/rust/issues/67295
 /// A dynamic [`SignerProvider`] temporarily needed for doc tests.
 ///
@@ -1033,6 +1099,13 @@ pub type DynSignerProvider =
 pub type DynSignerProvider = dyn SignerProvider<EcdsaSigner = InMemorySigner>;
 
 /// A trait that can return signer instances for individual channels.
+///
+/// Instantiations of this trait should generally be shared by reference across the lightning
+/// node's components. E.g., it would be unsafe to provide a different [`SignerProvider`] to
+/// [`ChannelManager`] vs [`MonitorUpdatingPersister`].
+///
+/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+/// [`MonitorUpdatingPersister`]: crate::util::persist::MonitorUpdatingPersister
 pub trait SignerProvider {
 	/// A type which implements [`EcdsaChannelSigner`] which will be returned by [`Self::derive_channel_signer`].
 	type EcdsaSigner: EcdsaChannelSigner;
@@ -1074,6 +1147,28 @@ pub trait SignerProvider {
 	/// This method should return a different value each time it is called, to avoid linking
 	/// on-chain funds across channels as controlled to the same user.
 	fn get_shutdown_scriptpubkey(&self) -> Result<ShutdownScript, ()>;
+}
+
+impl<T: SignerProvider + ?Sized, SP: Deref<Target = T>> SignerProvider for SP {
+	type EcdsaSigner = T::EcdsaSigner;
+	#[cfg(taproot)]
+	type TaprootSigner = T::TaprootSigner;
+
+	fn generate_channel_keys_id(&self, inbound: bool, user_channel_id: u128) -> [u8; 32] {
+		self.deref().generate_channel_keys_id(inbound, user_channel_id)
+	}
+
+	fn derive_channel_signer(&self, channel_keys_id: [u8; 32]) -> Self::EcdsaSigner {
+		self.deref().derive_channel_signer(channel_keys_id)
+	}
+
+	fn get_destination_script(&self, channel_keys_id: [u8; 32]) -> Result<ScriptBuf, ()> {
+		self.deref().get_destination_script(channel_keys_id)
+	}
+
+	fn get_shutdown_scriptpubkey(&self) -> Result<ShutdownScript, ()> {
+		self.deref().get_shutdown_scriptpubkey()
+	}
 }
 
 /// A helper trait that describes an on-chain wallet capable of returning a (change) destination

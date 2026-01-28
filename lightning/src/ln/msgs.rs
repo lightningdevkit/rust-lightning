@@ -2075,6 +2075,26 @@ pub trait BaseMessageHandler {
 		-> Result<(), ()>;
 }
 
+impl<T: BaseMessageHandler + ?Sized, B: Deref<Target = T>> BaseMessageHandler for B {
+	fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> {
+		self.deref().get_and_clear_pending_msg_events()
+	}
+	fn peer_disconnected(&self, their_node_id: PublicKey) {
+		self.deref().peer_disconnected(their_node_id)
+	}
+	fn provided_node_features(&self) -> NodeFeatures {
+		self.deref().provided_node_features()
+	}
+	fn provided_init_features(&self, their_node_id: PublicKey) -> InitFeatures {
+		self.deref().provided_init_features(their_node_id)
+	}
+	fn peer_connected(
+		&self, their_node_id: PublicKey, msg: &Init, inbound: bool,
+	) -> Result<(), ()> {
+		self.deref().peer_connected(their_node_id, msg, inbound)
+	}
+}
+
 /// A trait to describe an object which can receive channel messages.
 ///
 /// Messages MAY be called in parallel when they originate from different `their_node_ids`, however
@@ -2215,6 +2235,137 @@ pub trait ChannelMessageHandler: BaseMessageHandler {
 	fn message_received(&self);
 }
 
+impl<T: ChannelMessageHandler + ?Sized, C: Deref<Target = T>> ChannelMessageHandler for C {
+	fn handle_open_channel(&self, their_node_id: PublicKey, msg: &OpenChannel) {
+		self.deref().handle_open_channel(their_node_id, msg)
+	}
+	fn handle_open_channel_v2(&self, their_node_id: PublicKey, msg: &OpenChannelV2) {
+		self.deref().handle_open_channel_v2(their_node_id, msg)
+	}
+	fn handle_accept_channel(&self, their_node_id: PublicKey, msg: &AcceptChannel) {
+		self.deref().handle_accept_channel(their_node_id, msg)
+	}
+	fn handle_accept_channel_v2(&self, their_node_id: PublicKey, msg: &AcceptChannelV2) {
+		self.deref().handle_accept_channel_v2(their_node_id, msg)
+	}
+	fn handle_funding_created(&self, their_node_id: PublicKey, msg: &FundingCreated) {
+		self.deref().handle_funding_created(their_node_id, msg)
+	}
+	fn handle_funding_signed(&self, their_node_id: PublicKey, msg: &FundingSigned) {
+		self.deref().handle_funding_signed(their_node_id, msg)
+	}
+	fn handle_channel_ready(&self, their_node_id: PublicKey, msg: &ChannelReady) {
+		self.deref().handle_channel_ready(their_node_id, msg)
+	}
+	fn handle_peer_storage(&self, their_node_id: PublicKey, msg: PeerStorage) {
+		self.deref().handle_peer_storage(their_node_id, msg)
+	}
+	fn handle_peer_storage_retrieval(&self, their_node_id: PublicKey, msg: PeerStorageRetrieval) {
+		self.deref().handle_peer_storage_retrieval(their_node_id, msg)
+	}
+	fn handle_shutdown(&self, their_node_id: PublicKey, msg: &Shutdown) {
+		self.deref().handle_shutdown(their_node_id, msg)
+	}
+	fn handle_closing_signed(&self, their_node_id: PublicKey, msg: &ClosingSigned) {
+		self.deref().handle_closing_signed(their_node_id, msg)
+	}
+	#[cfg(simple_close)]
+	fn handle_closing_complete(&self, their_node_id: PublicKey, msg: ClosingComplete) {
+		self.deref().handle_closing_complete(their_node_id, msg)
+	}
+	#[cfg(simple_close)]
+	fn handle_closing_sig(&self, their_node_id: PublicKey, msg: ClosingSig) {
+		self.deref().handle_closing_sig(their_node_id, msg)
+	}
+	fn handle_stfu(&self, their_node_id: PublicKey, msg: &Stfu) {
+		self.deref().handle_stfu(their_node_id, msg)
+	}
+	fn handle_splice_init(&self, their_node_id: PublicKey, msg: &SpliceInit) {
+		self.deref().handle_splice_init(their_node_id, msg)
+	}
+	fn handle_splice_ack(&self, their_node_id: PublicKey, msg: &SpliceAck) {
+		self.deref().handle_splice_ack(their_node_id, msg)
+	}
+	fn handle_splice_locked(&self, their_node_id: PublicKey, msg: &SpliceLocked) {
+		self.deref().handle_splice_locked(their_node_id, msg)
+	}
+	fn handle_tx_add_input(&self, their_node_id: PublicKey, msg: &TxAddInput) {
+		self.deref().handle_tx_add_input(their_node_id, msg)
+	}
+	fn handle_tx_add_output(&self, their_node_id: PublicKey, msg: &TxAddOutput) {
+		self.deref().handle_tx_add_output(their_node_id, msg)
+	}
+	fn handle_tx_remove_input(&self, their_node_id: PublicKey, msg: &TxRemoveInput) {
+		self.deref().handle_tx_remove_input(their_node_id, msg)
+	}
+	fn handle_tx_remove_output(&self, their_node_id: PublicKey, msg: &TxRemoveOutput) {
+		self.deref().handle_tx_remove_output(their_node_id, msg)
+	}
+	fn handle_tx_complete(&self, their_node_id: PublicKey, msg: &TxComplete) {
+		self.deref().handle_tx_complete(their_node_id, msg)
+	}
+	fn handle_tx_signatures(&self, their_node_id: PublicKey, msg: &TxSignatures) {
+		self.deref().handle_tx_signatures(their_node_id, msg)
+	}
+	fn handle_tx_init_rbf(&self, their_node_id: PublicKey, msg: &TxInitRbf) {
+		self.deref().handle_tx_init_rbf(their_node_id, msg)
+	}
+	fn handle_tx_ack_rbf(&self, their_node_id: PublicKey, msg: &TxAckRbf) {
+		self.deref().handle_tx_ack_rbf(their_node_id, msg)
+	}
+	fn handle_tx_abort(&self, their_node_id: PublicKey, msg: &TxAbort) {
+		self.deref().handle_tx_abort(their_node_id, msg)
+	}
+	fn handle_update_add_htlc(&self, their_node_id: PublicKey, msg: &UpdateAddHTLC) {
+		self.deref().handle_update_add_htlc(their_node_id, msg)
+	}
+	fn handle_update_fulfill_htlc(&self, their_node_id: PublicKey, msg: UpdateFulfillHTLC) {
+		self.deref().handle_update_fulfill_htlc(their_node_id, msg)
+	}
+	fn handle_update_fail_htlc(&self, their_node_id: PublicKey, msg: &UpdateFailHTLC) {
+		self.deref().handle_update_fail_htlc(their_node_id, msg)
+	}
+	fn handle_update_fail_malformed_htlc(
+		&self, their_node_id: PublicKey, msg: &UpdateFailMalformedHTLC,
+	) {
+		self.deref().handle_update_fail_malformed_htlc(their_node_id, msg)
+	}
+	fn handle_commitment_signed(&self, their_node_id: PublicKey, msg: &CommitmentSigned) {
+		self.deref().handle_commitment_signed(their_node_id, msg)
+	}
+	fn handle_commitment_signed_batch(
+		&self, their_node_id: PublicKey, channel_id: ChannelId, batch: Vec<CommitmentSigned>,
+	) {
+		self.deref().handle_commitment_signed_batch(their_node_id, channel_id, batch)
+	}
+	fn handle_revoke_and_ack(&self, their_node_id: PublicKey, msg: &RevokeAndACK) {
+		self.deref().handle_revoke_and_ack(their_node_id, msg)
+	}
+	fn handle_update_fee(&self, their_node_id: PublicKey, msg: &UpdateFee) {
+		self.deref().handle_update_fee(their_node_id, msg)
+	}
+	fn handle_announcement_signatures(
+		&self, their_node_id: PublicKey, msg: &AnnouncementSignatures,
+	) {
+		self.deref().handle_announcement_signatures(their_node_id, msg)
+	}
+	fn handle_channel_reestablish(&self, their_node_id: PublicKey, msg: &ChannelReestablish) {
+		self.deref().handle_channel_reestablish(their_node_id, msg)
+	}
+	fn handle_channel_update(&self, their_node_id: PublicKey, msg: &ChannelUpdate) {
+		self.deref().handle_channel_update(their_node_id, msg)
+	}
+	fn handle_error(&self, their_node_id: PublicKey, msg: &ErrorMessage) {
+		self.deref().handle_error(their_node_id, msg)
+	}
+	fn get_chain_hashes(&self) -> Option<Vec<ChainHash>> {
+		self.deref().get_chain_hashes()
+	}
+	fn message_received(&self) {
+		self.deref().message_received()
+	}
+}
+
 /// A trait to describe an object which can receive routing messages.
 ///
 /// # Implementor DoS Warnings
@@ -2289,6 +2440,57 @@ pub trait RoutingMessageHandler: BaseMessageHandler {
 	fn processing_queue_high(&self) -> bool;
 }
 
+impl<T: RoutingMessageHandler + ?Sized, R: Deref<Target = T>> RoutingMessageHandler for R {
+	fn handle_node_announcement(
+		&self, their_node_id: Option<PublicKey>, msg: &NodeAnnouncement,
+	) -> Result<bool, LightningError> {
+		self.deref().handle_node_announcement(their_node_id, msg)
+	}
+	fn handle_channel_announcement(
+		&self, their_node_id: Option<PublicKey>, msg: &ChannelAnnouncement,
+	) -> Result<bool, LightningError> {
+		self.deref().handle_channel_announcement(their_node_id, msg)
+	}
+	fn handle_channel_update(
+		&self, their_node_id: Option<PublicKey>, msg: &ChannelUpdate,
+	) -> Result<Option<(NodeId, NodeId)>, LightningError> {
+		self.deref().handle_channel_update(their_node_id, msg)
+	}
+	fn get_next_channel_announcement(
+		&self, starting_point: u64,
+	) -> Option<(ChannelAnnouncement, Option<ChannelUpdate>, Option<ChannelUpdate>)> {
+		self.deref().get_next_channel_announcement(starting_point)
+	}
+	fn get_next_node_announcement(
+		&self, starting_point: Option<&NodeId>,
+	) -> Option<NodeAnnouncement> {
+		self.deref().get_next_node_announcement(starting_point)
+	}
+	fn handle_reply_channel_range(
+		&self, their_node_id: PublicKey, msg: ReplyChannelRange,
+	) -> Result<(), LightningError> {
+		self.deref().handle_reply_channel_range(their_node_id, msg)
+	}
+	fn handle_reply_short_channel_ids_end(
+		&self, their_node_id: PublicKey, msg: ReplyShortChannelIdsEnd,
+	) -> Result<(), LightningError> {
+		self.deref().handle_reply_short_channel_ids_end(their_node_id, msg)
+	}
+	fn handle_query_channel_range(
+		&self, their_node_id: PublicKey, msg: QueryChannelRange,
+	) -> Result<(), LightningError> {
+		self.deref().handle_query_channel_range(their_node_id, msg)
+	}
+	fn handle_query_short_channel_ids(
+		&self, their_node_id: PublicKey, msg: QueryShortChannelIds,
+	) -> Result<(), LightningError> {
+		self.deref().handle_query_short_channel_ids(their_node_id, msg)
+	}
+	fn processing_queue_high(&self) -> bool {
+		self.deref().processing_queue_high()
+	}
+}
+
 /// A handler for received [`OnionMessage`]s and for providing generated ones to send.
 pub trait OnionMessageHandler: BaseMessageHandler {
 	/// Handle an incoming `onion_message` message from the given peer.
@@ -2305,12 +2507,26 @@ pub trait OnionMessageHandler: BaseMessageHandler {
 	fn timer_tick_occurred(&self);
 }
 
+impl<T: OnionMessageHandler + ?Sized, O: Deref<Target = T>> OnionMessageHandler for O {
+	fn handle_onion_message(&self, peer_node_id: PublicKey, msg: &OnionMessage) {
+		self.deref().handle_onion_message(peer_node_id, msg)
+	}
+	fn next_onion_message_for_peer(&self, peer_node_id: PublicKey) -> Option<OnionMessage> {
+		self.deref().next_onion_message_for_peer(peer_node_id)
+	}
+	fn timer_tick_occurred(&self) {
+		self.deref().timer_tick_occurred()
+	}
+}
+
 /// A handler which can only be used to send messages.
 ///
 /// This is implemented by [`ChainMonitor`].
 ///
 /// [`ChainMonitor`]: crate::chain::chainmonitor::ChainMonitor
 pub trait SendOnlyMessageHandler: BaseMessageHandler {}
+
+impl<T: SendOnlyMessageHandler + ?Sized, S: Deref<Target = T>> SendOnlyMessageHandler for S {}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 /// Information communicated in the onion to the recipient for multi-part tracking and proof that
@@ -3637,10 +3853,7 @@ impl<'a> Writeable for OutboundTrampolinePayload<'a> {
 	}
 }
 
-impl<NS: Deref> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPayload
-where
-	NS::Target: NodeSigner,
-{
+impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPayload {
 	fn read<R: Read>(r: &mut R, args: (Option<PublicKey>, NS)) -> Result<Self, DecodeError> {
 		let (update_add_blinding_point, node_signer) = args;
 
@@ -3824,10 +4037,7 @@ where
 	}
 }
 
-impl<NS: Deref> ReadableArgs<(Option<PublicKey>, NS)> for InboundTrampolinePayload
-where
-	NS::Target: NodeSigner,
-{
+impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundTrampolinePayload {
 	fn read<R: Read>(r: &mut R, args: (Option<PublicKey>, NS)) -> Result<Self, DecodeError> {
 		let (update_add_blinding_point, node_signer) = args;
 		let receive_auth_key = node_signer.get_receive_auth_key();

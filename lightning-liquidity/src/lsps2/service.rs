@@ -702,11 +702,9 @@ macro_rules! get_or_insert_peer_state_entry {
 }
 
 /// The main object allowing to send and receive bLIP-52 / LSPS2 messages.
-pub struct LSPS2ServiceHandler<CM: Deref, K: Deref + Clone, T: Deref>
+pub struct LSPS2ServiceHandler<CM: Deref, K: KVStore + Clone, T: BroadcasterInterface>
 where
 	CM::Target: AChannelManager,
-	K::Target: KVStore,
-	T::Target: BroadcasterInterface,
 {
 	channel_manager: CM,
 	kv_store: K,
@@ -721,11 +719,9 @@ where
 	persistence_in_flight: AtomicUsize,
 }
 
-impl<CM: Deref, K: Deref + Clone, T: Deref + Clone> LSPS2ServiceHandler<CM, K, T>
+impl<CM: Deref, K: KVStore + Clone, T: BroadcasterInterface + Clone> LSPS2ServiceHandler<CM, K, T>
 where
 	CM::Target: AChannelManager,
-	K::Target: KVStore,
-	T::Target: BroadcasterInterface,
 {
 	/// Constructs a `LSPS2ServiceHandler`.
 	pub(crate) fn new(
@@ -2044,12 +2040,10 @@ where
 	}
 }
 
-impl<CM: Deref, K: Deref + Clone, T: Deref + Clone> LSPSProtocolMessageHandler
+impl<CM: Deref, K: KVStore + Clone, T: BroadcasterInterface + Clone> LSPSProtocolMessageHandler
 	for LSPS2ServiceHandler<CM, K, T>
 where
 	CM::Target: AChannelManager,
-	K::Target: KVStore,
-	T::Target: BroadcasterInterface,
 {
 	type ProtocolMessage = LSPS2Message;
 	const PROTOCOL_NUMBER: Option<u16> = Some(2);
@@ -2119,20 +2113,21 @@ fn calculate_amount_to_forward_per_htlc(
 
 /// A synchroneous wrapper around [`LSPS2ServiceHandler`] to be used in contexts where async is not
 /// available.
-pub struct LSPS2ServiceHandlerSync<'a, CM: Deref, K: Deref + Clone, T: Deref + Clone>
-where
+pub struct LSPS2ServiceHandlerSync<
+	'a,
+	CM: Deref,
+	K: KVStore + Clone,
+	T: BroadcasterInterface + Clone,
+> where
 	CM::Target: AChannelManager,
-	K::Target: KVStore,
-	T::Target: BroadcasterInterface,
 {
 	inner: &'a LSPS2ServiceHandler<CM, K, T>,
 }
 
-impl<'a, CM: Deref, K: Deref + Clone, T: Deref + Clone> LSPS2ServiceHandlerSync<'a, CM, K, T>
+impl<'a, CM: Deref, K: KVStore + Clone, T: BroadcasterInterface + Clone>
+	LSPS2ServiceHandlerSync<'a, CM, K, T>
 where
 	CM::Target: AChannelManager,
-	K::Target: KVStore,
-	T::Target: BroadcasterInterface,
 {
 	pub(crate) fn from_inner(inner: &'a LSPS2ServiceHandler<CM, K, T>) -> Self {
 		Self { inner }

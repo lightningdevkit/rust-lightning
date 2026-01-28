@@ -57,15 +57,13 @@ pub use lightning_types::routing::{RouteHint, RouteHintHop};
 /// payment, and thus an `Err` is returned.
 pub struct DefaultRouter<
 	G: Deref<Target = NetworkGraph<L>>,
-	L: Deref,
-	ES: Deref,
+	L: Logger,
+	ES: EntropySource,
 	S: Deref,
 	SP: Sized,
 	Sc: ScoreLookUp<ScoreParams = SP>,
 > where
-	L::Target: Logger,
 	S::Target: for<'a> LockableScore<'a, ScoreLookUp = Sc>,
-	ES::Target: EntropySource,
 {
 	network_graph: G,
 	logger: L,
@@ -79,16 +77,14 @@ pub const DEFAULT_PAYMENT_DUMMY_HOPS: usize = 3;
 
 impl<
 		G: Deref<Target = NetworkGraph<L>>,
-		L: Deref,
-		ES: Deref,
+		L: Logger,
+		ES: EntropySource,
 		S: Deref,
 		SP: Sized,
 		Sc: ScoreLookUp<ScoreParams = SP>,
 	> DefaultRouter<G, L, ES, S, SP, Sc>
 where
-	L::Target: Logger,
 	S::Target: for<'a> LockableScore<'a, ScoreLookUp = Sc>,
-	ES::Target: EntropySource,
 {
 	/// Creates a new router.
 	pub fn new(
@@ -100,16 +96,14 @@ where
 
 impl<
 		G: Deref<Target = NetworkGraph<L>>,
-		L: Deref,
-		ES: Deref,
+		L: Logger,
+		ES: EntropySource,
 		S: Deref,
 		SP: Sized,
 		Sc: ScoreLookUp<ScoreParams = SP>,
 	> Router for DefaultRouter<G, L, ES, S, SP, Sc>
 where
-	L::Target: Logger,
 	S::Target: for<'a> LockableScore<'a, ScoreLookUp = Sc>,
-	ES::Target: EntropySource,
 {
 	#[rustfmt::skip]
 	fn find_route(
@@ -121,7 +115,7 @@ where
 	) -> Result<Route, &'static str> {
 		let random_seed_bytes = self.entropy_source.get_secure_random_bytes();
 		find_route(
-			payer, params, &self.network_graph, first_hops, &*self.logger,
+			payer, params, &self.network_graph, first_hops, &self.logger,
 			&ScorerAccountingForInFlightHtlcs::new(self.scorer.read_lock(), &inflight_htlcs),
 			&self.score_params,
 			&random_seed_bytes
@@ -203,7 +197,7 @@ where
 			.map(|forward_node| {
 				BlindedPaymentPath::new_with_dummy_hops(
 					&[forward_node], recipient, &[DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS],
-					local_node_receive_key, tlvs.clone(), u64::MAX, MIN_FINAL_CLTV_EXPIRY_DELTA, &*self.entropy_source, secp_ctx
+					local_node_receive_key, tlvs.clone(), u64::MAX, MIN_FINAL_CLTV_EXPIRY_DELTA, &self.entropy_source, secp_ctx
 				)
 			})
 			.take(MAX_PAYMENT_PATHS)
@@ -215,7 +209,7 @@ where
 				if network_graph.nodes().contains_key(&NodeId::from_pubkey(&recipient)) {
 					BlindedPaymentPath::new_with_dummy_hops(
 						&[], recipient, &[DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS],
-						local_node_receive_key, tlvs, u64::MAX, MIN_FINAL_CLTV_EXPIRY_DELTA, &*self.entropy_source, secp_ctx
+						local_node_receive_key, tlvs, u64::MAX, MIN_FINAL_CLTV_EXPIRY_DELTA, &self.entropy_source, secp_ctx
 					).map(|path| vec![path])
 				} else {
 					Err(())
@@ -293,6 +287,45 @@ pub trait Router {
 		first_hops: Vec<ChannelDetails>, tlvs: ReceiveTlvs, amount_msats: Option<u64>,
 		secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedPaymentPath>, ()>;
+}
+
+impl<T: Router + ?Sized, R: Deref<Target = T>> Router for R {
+	fn find_route(
+		&self, payer: &PublicKey, route_params: &RouteParameters,
+		first_hops: Option<&[&ChannelDetails]>, inflight_htlcs: InFlightHtlcs,
+	) -> Result<Route, &'static str> {
+		self.deref().find_route(payer, route_params, first_hops, inflight_htlcs)
+	}
+
+	fn find_route_with_id(
+		&self, payer: &PublicKey, route_params: &RouteParameters,
+		first_hops: Option<&[&ChannelDetails]>, inflight_htlcs: InFlightHtlcs,
+		payment_hash: PaymentHash, payment_id: PaymentId,
+	) -> Result<Route, &'static str> {
+		self.deref().find_route_with_id(
+			payer,
+			route_params,
+			first_hops,
+			inflight_htlcs,
+			payment_hash,
+			payment_id,
+		)
+	}
+
+	fn create_blinded_payment_paths<S: secp256k1::Signing + secp256k1::Verification>(
+		&self, recipient: PublicKey, local_node_receive_key: ReceiveAuthKey,
+		first_hops: Vec<ChannelDetails>, tlvs: ReceiveTlvs, amount_msats: Option<u64>,
+		secp_ctx: &Secp256k1<S>,
+	) -> Result<Vec<BlindedPaymentPath>, ()> {
+		self.deref().create_blinded_payment_paths(
+			recipient,
+			local_node_receive_key,
+			first_hops,
+			tlvs,
+			amount_msats,
+			secp_ctx,
+		)
+	}
 }
 
 /// [`ScoreLookUp`] implementation that factors in in-flight HTLC liquidity.
@@ -1948,12 +1981,11 @@ impl<'a> NodeCounters<'a> {
 /// Calculates the introduction point for each blinded path in the given [`PaymentParameters`], if
 /// they can be found.
 #[rustfmt::skip]
-fn calculate_blinded_path_intro_points<'a, L: Deref>(
+fn calculate_blinded_path_intro_points<'a, L: Logger>(
 	payment_params: &PaymentParameters, node_counters: &'a NodeCounters,
 	network_graph: &ReadOnlyNetworkGraph, logger: &L, our_node_id: NodeId,
 	first_hop_targets: &HashMap<NodeId, (Vec<&ChannelDetails>, u32)>,
-) -> Result<Vec<Option<(&'a NodeId, u32)>>, &'static str>
-where L::Target: Logger {
+) -> Result<Vec<Option<(&'a NodeId, u32)>>, &'static str> {
 	let introduction_node_id_cache = payment_params.payee.blinded_route_hints().iter()
 		.map(|path| {
 			match path.introduction_node() {
@@ -2454,12 +2486,11 @@ fn sort_first_hop_channels(
 /// [`Event::PaymentPathFailed`]: crate::events::Event::PaymentPathFailed
 /// [`NetworkGraph`]: crate::routing::gossip::NetworkGraph
 #[rustfmt::skip]
-pub fn find_route<L: Deref, GL: Deref, S: ScoreLookUp>(
+pub fn find_route<L: Logger, GL: Logger, S: ScoreLookUp>(
 	our_node_pubkey: &PublicKey, route_params: &RouteParameters,
 	network_graph: &NetworkGraph<GL>, first_hops: Option<&[&ChannelDetails]>, logger: L,
 	scorer: &S, score_params: &S::ScoreParams, random_seed_bytes: &[u8; 32]
-) -> Result<Route, &'static str>
-where L::Target: Logger, GL::Target: Logger {
+) -> Result<Route, &'static str> {
 	let graph_lock = network_graph.read_only();
 	let mut route = get_route(our_node_pubkey, &route_params, &graph_lock, first_hops, logger,
 		scorer, score_params, random_seed_bytes)?;
@@ -2468,12 +2499,11 @@ where L::Target: Logger, GL::Target: Logger {
 }
 
 #[rustfmt::skip]
-pub(crate) fn get_route<L: Deref, S: ScoreLookUp>(
+pub(crate) fn get_route<L: Logger, S: ScoreLookUp>(
 	our_node_pubkey: &PublicKey, route_params: &RouteParameters, network_graph: &ReadOnlyNetworkGraph,
 	first_hops: Option<&[&ChannelDetails]>, logger: L, scorer: &S, score_params: &S::ScoreParams,
 	_random_seed_bytes: &[u8; 32]
-) -> Result<Route, &'static str>
-where L::Target: Logger {
+) -> Result<Route, &'static str> {
 
 	let payment_params = &route_params.payment_params;
 	let max_path_length = core::cmp::min(payment_params.max_path_length, MAX_PATH_LENGTH_ESTIMATE);
@@ -3857,11 +3887,10 @@ fn add_random_cltv_offset(route: &mut Route, payment_params: &PaymentParameters,
 ///
 /// Re-uses logic from `find_route`, so the restrictions described there also apply here.
 #[rustfmt::skip]
-pub fn build_route_from_hops<L: Deref, GL: Deref>(
+pub fn build_route_from_hops<L: Logger, GL: Logger>(
 	our_node_pubkey: &PublicKey, hops: &[PublicKey], route_params: &RouteParameters,
 	network_graph: &NetworkGraph<GL>, logger: L, random_seed_bytes: &[u8; 32]
-) -> Result<Route, &'static str>
-where L::Target: Logger, GL::Target: Logger {
+) -> Result<Route, &'static str> {
 	let graph_lock = network_graph.read_only();
 	let mut route = build_route_from_hops_internal(our_node_pubkey, hops, &route_params,
 		&graph_lock, logger, random_seed_bytes)?;
@@ -3870,10 +3899,10 @@ where L::Target: Logger, GL::Target: Logger {
 }
 
 #[rustfmt::skip]
-fn build_route_from_hops_internal<L: Deref>(
+fn build_route_from_hops_internal<L: Logger>(
 	our_node_pubkey: &PublicKey, hops: &[PublicKey], route_params: &RouteParameters,
 	network_graph: &ReadOnlyNetworkGraph, logger: L, random_seed_bytes: &[u8; 32],
-) -> Result<Route, &'static str> where L::Target: Logger {
+) -> Result<Route, &'static str> {
 
 	struct HopScorer {
 		our_node_id: NodeId,
