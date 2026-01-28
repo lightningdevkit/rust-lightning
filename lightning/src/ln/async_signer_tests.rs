@@ -10,7 +10,6 @@
 //! Tests for asynchronous signing. These tests verify that the channel state machine behaves
 //! properly with a signer implementation that asynchronously derives signatures.
 
-use crate::events::bump_transaction::sync::WalletSourceSync;
 use crate::ln::splicing_tests::{initiate_splice_out, negotiate_splice_tx};
 use crate::prelude::*;
 use crate::util::ser::Writeable;
@@ -31,6 +30,7 @@ use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::sign::SignerProvider;
 use crate::util::logger::Logger;
 use crate::util::test_channel_signer::SignerOp;
+use crate::util::wallet_utils::WalletSourceSync;
 
 #[test]
 fn test_open_channel() {

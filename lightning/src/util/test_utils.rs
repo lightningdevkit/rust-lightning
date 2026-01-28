@@ -21,7 +21,6 @@ use crate::chain::channelmonitor::{
 };
 use crate::chain::transaction::OutPoint;
 use crate::chain::WatchedOutput;
-use crate::events::bump_transaction::sync::WalletSourceSync;
 #[cfg(any(test, feature = "_externalize_tests"))]
 use crate::ln::chan_utils::CommitmentTransaction;
 use crate::ln::channel_state::ChannelDetails;
@@ -61,7 +60,7 @@ use crate::util::persist::{KVStore, KVStoreSync, MonitorName};
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
 use crate::util::test_channel_signer::{EnforcementState, TestChannelSigner};
 use crate::util::wakers::Notifier;
-use crate::util::wallet_utils::{ConfirmedUtxo, Utxo};
+use crate::util::wallet_utils::{ConfirmedUtxo, Utxo, WalletSourceSync};
 
 use bitcoin::amount::Amount;
 use bitcoin::block::Block;
