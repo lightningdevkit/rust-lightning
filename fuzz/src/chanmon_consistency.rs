@@ -712,7 +712,6 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 			config.reject_inbound_splices = false;
 			if anchors {
 				config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
-				config.manually_accept_inbound_channels = true;
 			}
 			let network = Network::Bitcoin;
 			let best_block_timestamp = genesis_block(network).header.time;
@@ -763,7 +762,6 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 		config.reject_inbound_splices = false;
 		if anchors {
 			config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
-			config.manually_accept_inbound_channels = true;
 		}
 
 		let mut monitors = new_hash_map();
@@ -874,30 +872,28 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 
 			$dest.handle_open_channel($source.get_our_node_id(), &open_channel);
 			let accept_channel = {
-				if anchors {
-					let events = $dest.get_and_clear_pending_events();
-					assert_eq!(events.len(), 1);
-					if let events::Event::OpenChannelRequest {
-						ref temporary_channel_id,
-						ref counterparty_node_id,
-						..
-					} = events[0]
-					{
-						let mut random_bytes = [0u8; 16];
-						random_bytes
-							.copy_from_slice(&$dest_keys_manager.get_secure_random_bytes()[..16]);
-						let user_channel_id = u128::from_be_bytes(random_bytes);
-						$dest
-							.accept_inbound_channel(
-								temporary_channel_id,
-								counterparty_node_id,
-								user_channel_id,
-								None,
-							)
-							.unwrap();
-					} else {
-						panic!("Wrong event type");
-					}
+				let events = $dest.get_and_clear_pending_events();
+				assert_eq!(events.len(), 1);
+				if let events::Event::OpenChannelRequest {
+					ref temporary_channel_id,
+					ref counterparty_node_id,
+					..
+				} = events[0]
+				{
+					let mut random_bytes = [0u8; 16];
+					random_bytes
+						.copy_from_slice(&$dest_keys_manager.get_secure_random_bytes()[..16]);
+					let user_channel_id = u128::from_be_bytes(random_bytes);
+					$dest
+						.accept_inbound_channel(
+							temporary_channel_id,
+							counterparty_node_id,
+							user_channel_id,
+							None,
+						)
+						.unwrap();
+				} else {
+					panic!("Wrong event type");
 				}
 				let events = $dest.get_and_clear_pending_msg_events();
 				assert_eq!(events.len(), 1);

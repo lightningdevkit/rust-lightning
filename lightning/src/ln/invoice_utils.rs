@@ -1052,7 +1052,7 @@ mod test {
 			.create_channel(node_a_id, 1_000_000, 500_000_000, 42, None, Some(private_chan_cfg))
 			.unwrap();
 		let open_channel = get_event_msg!(nodes[2], MessageSendEvent::SendOpenChannel, node_a_id);
-		nodes[0].node.handle_open_channel(node_c_id, &open_channel);
+		handle_and_accept_open_channel(&nodes[0], node_c_id, &open_channel);
 		let accept_channel =
 			get_event_msg!(nodes[0], MessageSendEvent::SendAcceptChannel, node_c_id);
 		nodes[2].node.handle_accept_channel(node_a_id, &accept_channel);
@@ -1583,7 +1583,7 @@ mod test {
 			.create_channel(node_d_id, 1_000_000, 500_000_000, 42, None, Some(private_chan_cfg))
 			.unwrap();
 		let open_channel = get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, node_d_id);
-		nodes[3].node.handle_open_channel(nodes[1].node.get_our_node_id(), &open_channel);
+		handle_and_accept_open_channel(&nodes[3], node_b_id, &open_channel);
 		let accept_channel =
 			get_event_msg!(nodes[3], MessageSendEvent::SendAcceptChannel, node_b_id);
 		nodes[1].node.handle_accept_channel(nodes[3].node.get_our_node_id(), &accept_channel);

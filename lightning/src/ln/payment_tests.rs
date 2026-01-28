@@ -1020,7 +1020,6 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 
 	let mut manually_accept_config = test_default_channel_config();
-	manually_accept_config.manually_accept_inbound_channels = true;
 
 	let persist_1;
 	let chain_monitor_1;
@@ -2210,7 +2209,6 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 
 	let mut zero_conf_chan_config = test_default_channel_config();
-	zero_conf_chan_config.manually_accept_inbound_channels = true;
 	let mut intercept_forwards_config = test_default_channel_config();
 	intercept_forwards_config.htlc_interception_flags =
 		HTLCInterceptionFlags::ToInterceptSCIDs as u8;
@@ -4959,7 +4957,6 @@ fn test_htlc_forward_considers_anchor_outputs_value() {
 	//    balance to dip below the reserve when considering the value of anchor outputs.
 	let mut config = test_default_channel_config();
 	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
-	config.manually_accept_inbound_channels = true;
 	config.channel_config.forwarding_fee_base_msat = 0;
 	config.channel_config.forwarding_fee_proportional_millionths = 0;
 

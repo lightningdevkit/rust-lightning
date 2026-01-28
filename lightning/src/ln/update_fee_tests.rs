@@ -388,8 +388,6 @@ pub fn do_test_update_fee_that_funder_cannot_afford(channel_type_features: Chann
 	let mut default_config = test_default_channel_config();
 	if channel_type_features == ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies() {
 		default_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
-		// this setting is also needed to create an anchor channel
-		default_config.manually_accept_inbound_channels = true;
 	}
 
 	let node_chanmgrs = create_node_chanmgrs(
@@ -898,6 +896,17 @@ pub fn test_chan_init_feerate_unaffordability() {
 		get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 	open_channel_msg.push_msat += 1;
 	nodes[1].node.handle_open_channel(node_a_id, &open_channel_msg);
+	let events = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match &events[0] {
+		Event::OpenChannelRequest { temporary_channel_id, counterparty_node_id, .. } => {
+			assert!(nodes[1]
+				.node
+				.accept_inbound_channel(temporary_channel_id, counterparty_node_id, 42, None,)
+				.is_err());
+		},
+		_ => panic!("Unexpected event"),
+	}
 
 	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), 1);
@@ -1029,7 +1038,6 @@ pub fn do_cannot_afford_on_holding_cell_release(
 		100;
 	if channel_type_features.supports_anchors_zero_fee_htlc_tx() {
 		default_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
-		default_config.manually_accept_inbound_channels = true;
 	}
 
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -1372,7 +1380,6 @@ pub fn test_zero_fee_commitments_no_update_fee() {
 	// they'll disconnect and warn if they receive them.
 	let mut cfg = test_default_channel_config();
 	cfg.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
-	cfg.manually_accept_inbound_channels = true;
 
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);

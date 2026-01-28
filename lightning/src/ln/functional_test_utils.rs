@@ -30,7 +30,7 @@ use crate::ln::channelmanager::{
 	RAACommitmentOrder, MIN_CLTV_EXPIRY_DELTA,
 };
 use crate::ln::funding::FundingTxInput;
-use crate::ln::msgs;
+use crate::ln::msgs::{self, OpenChannel};
 use crate::ln::msgs::{
 	BaseMessageHandler, ChannelMessageHandler, MessageSendEvent, RoutingMessageHandler,
 };
@@ -1552,7 +1552,6 @@ pub fn sign_funding_transaction<'a, 'b, 'c>(
 	tx
 }
 
-// Receiver must have been initialized with manually_accept_inbound_channels set to true.
 pub fn open_zero_conf_channel<'a, 'b, 'c, 'd>(
 	initiator: &'a Node<'b, 'c, 'd>, receiver: &'a Node<'b, 'c, 'd>,
 	initiator_config: Option<UserConfig>,
@@ -1600,7 +1599,6 @@ pub fn exchange_open_accept_zero_conf_chan<'a, 'b, 'c, 'd>(
 	accept_channel.common_fields.temporary_channel_id
 }
 
-// Receiver must have been initialized with manually_accept_inbound_channels set to true.
 pub fn open_zero_conf_channel_with_value<'a, 'b, 'c, 'd>(
 	initiator: &'a Node<'b, 'c, 'd>, receiver: &'a Node<'b, 'c, 'd>,
 	initiator_config: Option<UserConfig>, channel_value_sat: u64, push_msat: u64,
@@ -1698,18 +1696,8 @@ pub fn exchange_open_accept_chan<'a, 'b, 'c>(
 			.user_channel_id,
 		42
 	);
-	node_b.node.handle_open_channel(node_a_id, &open_channel_msg);
-	if node_b.node.get_current_config().manually_accept_inbound_channels {
-		let events = node_b.node.get_and_clear_pending_events();
-		assert_eq!(events.len(), 1);
-		match &events[0] {
-			Event::OpenChannelRequest { temporary_channel_id, counterparty_node_id, .. } => node_b
-				.node
-				.accept_inbound_channel(temporary_channel_id, counterparty_node_id, 42, None)
-				.unwrap(),
-			_ => panic!("Unexpected event"),
-		};
-	}
+	handle_and_accept_open_channel(&node_b, node_a_id, &open_channel_msg);
+
 	let accept_channel_msg = get_event_msg!(node_b, MessageSendEvent::SendAcceptChannel, node_a_id);
 	assert_eq!(accept_channel_msg.common_fields.temporary_channel_id, create_chan_id);
 	node_a.node.handle_accept_channel(node_b_id, &accept_channel_msg);
@@ -1990,7 +1978,8 @@ pub fn create_unannounced_chan_between_nodes_with_value<'a, 'b, 'c, 'd>(
 		.create_channel(node_b_id, channel_value, push_msat, 42, None, Some(no_announce_cfg))
 		.unwrap();
 	let open_channel = get_event_msg!(nodes[a], MessageSendEvent::SendOpenChannel, node_b_id);
-	nodes[b].node.handle_open_channel(node_a_id, &open_channel);
+	handle_and_accept_open_channel(&nodes[b], node_a_id, &open_channel);
+
 	let accept_channel = get_event_msg!(nodes[b], MessageSendEvent::SendAcceptChannel, node_a_id);
 	nodes[a].node.handle_accept_channel(node_b_id, &accept_channel);
 
@@ -2056,6 +2045,20 @@ pub fn create_unannounced_chan_between_nodes_with_value<'a, 'b, 'c, 'd>(
 	assert!(found_b);
 
 	(as_channel_ready, tx)
+}
+
+pub fn handle_and_accept_open_channel(node: &Node, counterparty_id: PublicKey, msg: &OpenChannel) {
+	node.node.handle_open_channel(counterparty_id, &msg);
+	let events = node.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match &events[0] {
+		Event::OpenChannelRequest { temporary_channel_id, counterparty_node_id, .. } => {
+			node.node
+				.accept_inbound_channel(temporary_channel_id, counterparty_node_id, 42, None)
+				.unwrap();
+		},
+		_ => panic!("Unexpected event"),
+	};
 }
 
 pub fn update_nodes_with_chan_announce<'a, 'b, 'c, 'd>(
@@ -4551,7 +4554,6 @@ pub fn test_default_channel_config() -> UserConfig {
 pub fn test_default_anchors_channel_config() -> UserConfig {
 	let mut config = test_default_channel_config();
 	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
-	config.manually_accept_inbound_channels = true;
 	config
 }
 
@@ -5559,7 +5561,8 @@ pub fn create_batch_channel_funding<'a, 'b, 'c>(
 			.unwrap();
 		let open_channel_msg =
 			get_event_msg!(funding_node, MessageSendEvent::SendOpenChannel, other_node_id);
-		other_node.node.handle_open_channel(funding_node_id, &open_channel_msg);
+		handle_and_accept_open_channel(other_node, funding_node_id, &open_channel_msg);
+
 		let accept_channel_msg =
 			get_event_msg!(other_node, MessageSendEvent::SendAcceptChannel, funding_node_id);
 		funding_node.node.handle_accept_channel(other_node_id, &accept_channel_msg);

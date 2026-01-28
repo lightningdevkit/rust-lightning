@@ -1164,7 +1164,6 @@ pub fn do_test_multiple_package_conflicts(p2a_anchor: bool) {
 	// transaction.
 	user_cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 	user_cfg.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
-	user_cfg.manually_accept_inbound_channels = true;
 
 	let configs = [Some(user_cfg.clone()), Some(user_cfg.clone()), Some(user_cfg)];
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &configs);
@@ -2506,7 +2505,7 @@ pub fn test_peer_disconnected_before_funding_broadcasted() {
 	let expected_temporary_channel_id =
 		nodes[0].node.create_channel(node_b_id, 1_000_000, 500_000_000, 42, None, None).unwrap();
 	let open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
-	nodes[1].node.handle_open_channel(node_a_id, &open_channel);
+	handle_and_accept_open_channel(&nodes[1], node_a_id, &open_channel);
 	let accept_channel = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, node_a_id);
 	nodes[0].node.handle_accept_channel(node_b_id, &accept_channel);
 
@@ -6365,11 +6364,11 @@ pub fn test_bump_penalty_txn_on_revoked_htlcs() {
 
 		assert_eq!(
 			node_txn[1].input[0].previous_output,
-			revoked_htlc_txn[1].input[0].previous_output
+			revoked_htlc_txn[0].input[0].previous_output
 		);
 		assert_eq!(
 			node_txn[1].input[1].previous_output,
-			revoked_htlc_txn[0].input[0].previous_output
+			revoked_htlc_txn[1].input[0].previous_output
 		);
 
 		// node_txn[3] spends the revoked outputs from the revoked_htlc_txn (which only have one
@@ -6787,7 +6786,7 @@ pub fn test_override_0msat_htlc_minimum() {
 	let res = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 	assert_eq!(res.common_fields.htlc_minimum_msat, 1);
 
-	nodes[1].node.handle_open_channel(node_a_id, &res);
+	handle_and_accept_open_channel(&nodes[1], node_a_id, &res);
 	let res = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, node_a_id);
 	assert_eq!(res.common_fields.htlc_minimum_msat, 1);
 }
@@ -7566,7 +7565,7 @@ pub fn test_pre_lockin_no_chan_closed_update() {
 	// Create an initial channel
 	nodes[0].node.create_channel(node_b_id, 100000, 10001, 42, None, None).unwrap();
 	let mut open_chan_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
-	nodes[1].node.handle_open_channel(node_a_id, &open_chan_msg);
+	handle_and_accept_open_channel(&nodes[1], node_a_id, &open_chan_msg);
 	let accept_chan_msg = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, node_a_id);
 	nodes[0].node.handle_accept_channel(node_b_id, &accept_chan_msg);
 
@@ -7885,9 +7884,8 @@ pub fn test_peer_funding_sidechannel() {
 	let node_b_id = nodes[1].node.get_our_node_id();
 
 	let temp_chan_id_ab = exchange_open_accept_chan(&nodes[0], &nodes[1], 1_000_000, 0);
-	let temp_chan_id_ca = exchange_open_accept_chan(&nodes[1], &nodes[0], 1_000_000, 0);
-
 	let (_, tx, funding_output) = create_funding_transaction(&nodes[0], &node_b_id, 1_000_000, 42);
+	let temp_chan_id_ba = exchange_open_accept_chan(&nodes[1], &nodes[0], 1_000_000, 0);
 
 	let cs_funding_events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(cs_funding_events.len(), 1);
@@ -7899,7 +7897,7 @@ pub fn test_peer_funding_sidechannel() {
 	let output_idx = funding_output.index;
 	nodes[1]
 		.node
-		.funding_transaction_generated_unchecked(temp_chan_id_ca, node_a_id, tx.clone(), output_idx)
+		.funding_transaction_generated_unchecked(temp_chan_id_ba, node_a_id, tx.clone(), output_idx)
 		.unwrap();
 	let funding_created_msg =
 		get_event_msg!(nodes[1], MessageSendEvent::SendFundingCreated, node_a_id);
@@ -8603,7 +8601,7 @@ fn do_test_max_dust_htlc_exposure(
 	if on_holder_tx {
 		open_channel.common_fields.dust_limit_satoshis = 546;
 	}
-	nodes[1].node.handle_open_channel(node_a_id, &open_channel);
+	handle_and_accept_open_channel(&nodes[1], node_a_id, &open_channel);
 	let mut accept_channel =
 		get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, node_a_id);
 	nodes[0].node.handle_accept_channel(node_b_id, &accept_channel);
@@ -9158,7 +9156,6 @@ fn do_test_nondust_htlc_fees_dust_exposure_delta(features: ChannelTypeFeatures) 
 	if features == ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies() {
 		default_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 		// in addition to the one above, this setting is also needed to create an anchor channel
-		default_config.manually_accept_inbound_channels = true;
 	}
 
 	// Set node 1's max dust htlc exposure to 1msat below `expected_dust_exposure_msat`
@@ -9566,7 +9563,7 @@ pub fn test_remove_expired_outbound_unfunded_channels() {
 		nodes[0].node.create_channel(node_b_id, 100_000, 0, 42, None, None).unwrap();
 	let open_channel_message =
 		get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
-	nodes[1].node.handle_open_channel(node_a_id, &open_channel_message);
+	handle_and_accept_open_channel(&nodes[1], node_a_id, &open_channel_message);
 	let accept_channel_message =
 		get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, node_a_id);
 	nodes[0].node.handle_accept_channel(node_b_id, &accept_channel_message);
@@ -9630,7 +9627,7 @@ pub fn test_remove_expired_inbound_unfunded_channels() {
 		nodes[0].node.create_channel(node_b_id, 100_000, 0, 42, None, None).unwrap();
 	let open_channel_message =
 		get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
-	nodes[1].node.handle_open_channel(node_a_id, &open_channel_message);
+	handle_and_accept_open_channel(&nodes[1], node_a_id, &open_channel_message);
 	let accept_channel_message =
 		get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, node_a_id);
 	nodes[0].node.handle_accept_channel(node_b_id, &accept_channel_message);
@@ -9689,9 +9686,6 @@ fn do_test_manual_broadcast_skips_commitment_until_funding(
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let mut chan_config = test_default_channel_config();
-	if zero_conf_open {
-		chan_config.manually_accept_inbound_channels = true;
-	}
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(chan_config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 

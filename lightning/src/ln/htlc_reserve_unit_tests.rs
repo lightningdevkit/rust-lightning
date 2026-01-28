@@ -59,7 +59,7 @@ fn do_test_counterparty_no_reserve(send_from_initiator: bool) {
 		open_channel_message.channel_reserve_satoshis = 0;
 		open_channel_message.common_fields.max_htlc_value_in_flight_msat = 100_000_000;
 	}
-	nodes[1].node.handle_open_channel(node_a_id, &open_channel_message);
+	handle_and_accept_open_channel(&nodes[1], node_a_id, &open_channel_message);
 
 	// Extract the channel accept message from node1 to node0
 	let mut accept_channel_message =
@@ -785,7 +785,6 @@ fn test_fee_spike_violation_fails_htlc() {
 fn test_zero_fee_commitments_no_fee_spike_buffer() {
 	let mut cfg = test_default_channel_config();
 	cfg.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
-	cfg.manually_accept_inbound_channels = true;
 
 	do_test_fee_spike_buffer(Some(cfg), false)
 }
@@ -2144,7 +2143,6 @@ pub fn do_test_dust_limit_fee_accounting(can_afford: bool) {
 
 	let mut default_config = test_default_channel_config();
 	default_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
-	default_config.manually_accept_inbound_channels = true;
 
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs =

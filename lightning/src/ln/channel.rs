@@ -17516,7 +17516,6 @@ mod tests {
 		// Node id for alice and bob doesn't matter to our test vectors.
 		let bob_node_id = crate::util::test_utils::pubkey(2);
 		let mut config = UserConfig::default();
-		config.manually_accept_inbound_channels = true;
 		config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
 
 		let mut chan = OutboundV1Channel::<&Keys>::new(
