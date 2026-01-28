@@ -20,14 +20,13 @@ use crate::prelude::*;
 use crate::sign::SignerProvider;
 use crate::util::async_poll::{dummy_waker, MaybeSend, MaybeSync};
 use crate::util::logger::Logger;
+use crate::util::wallet_utils::{
+	CoinSelection, CoinSelectionSource, Input, Utxo, Wallet, WalletSource,
+};
 
 use bitcoin::{OutPoint, Psbt, ScriptBuf, Transaction, TxOut};
 
-use super::BumpTransactionEvent;
-use super::{
-	BumpTransactionEventHandler, CoinSelection, CoinSelectionSource, Input, Utxo, Wallet,
-	WalletSource,
-};
+use super::{BumpTransactionEvent, BumpTransactionEventHandler};
 
 /// An alternative to [`CoinSelectionSourceSync`] that can be implemented and used along
 /// [`WalletSync`] to provide a default implementation to [`CoinSelectionSourceSync`].
