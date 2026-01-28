@@ -301,16 +301,13 @@ pub(super) enum InboundUpdateAdd {
 		/// [`Event::PaymentForwarded`]: crate::events::Event::PaymentForwarded
 		outbound_amt_msat: u64,
 	},
-	/// This HTLC was received pre-LDK 0.3, before we started persisting the onion for inbound
-	/// committed HTLCs.
-	Legacy,
 }
 
 impl_writeable_tlv_based_enum_upgradable!(InboundUpdateAdd,
 	(0, WithOnion) => {
 		(0, update_add_htlc, required),
 	},
-	(2, Legacy) => {},
+	// 2 was previously used for the ::Legacy variant, used for HTLCs received on LDK 0.1-.
 	(4, Forwarded) => {
 		(0, hop_data, required),
 		(2, outbound_amt_msat, required),
@@ -8905,7 +8902,10 @@ where
 				};
 				if swap {
 					let mut state =
-						InboundHTLCState::Committed { update_add_htlc: InboundUpdateAdd::Legacy };
+						InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailMalformed {
+							sha256_of_onion: [0; 32],
+							failure_code: 0,
+						});
 					mem::swap(&mut state, &mut htlc.state);
 
 					if let InboundHTLCState::AwaitingRemoteRevokeToAnnounce(update_add) = state {
@@ -15069,6 +15069,23 @@ impl<SP: SignerProvider> Writeable for FundedChannel<SP> {
 	}
 }
 
+fn dummy_prev_hop_data() -> HTLCPreviousHopData {
+	let txid_hash = Sha256d::from_bytes_ref(&[0; 32]);
+	HTLCPreviousHopData {
+		prev_outbound_scid_alias: 0,
+		user_channel_id: None,
+		htlc_id: 0,
+		incoming_packet_shared_secret: [0; 32],
+		phantom_shared_secret: None,
+		trampoline_shared_secret: None,
+		blinded_failure: None,
+		channel_id: ChannelId([0; 32]),
+		outpoint: OutPoint { txid: Txid::from_raw_hash(*txid_hash), index: 0 },
+		counterparty_node_id: None,
+		cltv_expiry: None,
+	}
+}
+
 impl<'a, 'b, 'c, 'd, ES: EntropySource, SP: SignerProvider, L: Logger>
 	ReadableArgs<(&'a ES, &'b SP, &'c L, &'d ChannelTypeFeatures)> for FundedChannel<SP>
 {
@@ -15140,7 +15157,10 @@ impl<'a, 'b, 'c, 'd, ES: EntropySource, SP: SignerProvider, L: Logger>
 							})?;
 						InboundHTLCState::AwaitingAnnouncedRemoteRevoke(update_add_htlc)
 					},
-					3 => InboundHTLCState::Committed { update_add_htlc: InboundUpdateAdd::Legacy },
+					3 => InboundHTLCState::Committed { update_add_htlc: InboundUpdateAdd::Forwarded {
+						hop_data: dummy_prev_hop_data(),
+						outbound_amt_msat: 0,
+					}},
 					4 => {
 						let reason = match <u8 as Readable>::read(reader)? {
 							0 => InboundHTLCRemovalReason::FailRelay(msgs::OnionErrorPacket {
@@ -15998,9 +16018,10 @@ mod tests {
 	use crate::chain::BestBlock;
 	use crate::ln::chan_utils::{self, commit_tx_fee_sat, ChannelTransactionParameters};
 	use crate::ln::channel::{
-		AwaitingChannelReadyFlags, ChannelState, FundedChannel, HTLCCandidate, HTLCInitiator,
-		HTLCUpdateAwaitingACK, InboundHTLCOutput, InboundHTLCState, InboundUpdateAdd,
-		InboundV1Channel, OutboundHTLCOutput, OutboundHTLCState, OutboundV1Channel,
+		dummy_prev_hop_data, AwaitingChannelReadyFlags, ChannelState, FundedChannel, HTLCCandidate,
+		HTLCInitiator, HTLCUpdateAwaitingACK, InboundHTLCOutput, InboundHTLCState,
+		InboundUpdateAdd, InboundV1Channel, OutboundHTLCOutput, OutboundHTLCState,
+		OutboundV1Channel,
 	};
 	use crate::ln::channel::{
 		MAX_FUNDING_SATOSHIS_NO_WUMBO, MIN_THEIR_CHAN_RESERVE_SATOSHIS,
@@ -16044,7 +16065,7 @@ mod tests {
 	use std::cmp;
 
 	fn dummy_inbound_update_add() -> InboundUpdateAdd {
-		InboundUpdateAdd::Legacy
+		InboundUpdateAdd::Forwarded { hop_data: dummy_prev_hop_data(), outbound_amt_msat: 0 }
 	}
 
 	#[test]

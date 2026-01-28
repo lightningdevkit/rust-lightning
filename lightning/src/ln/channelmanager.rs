@@ -18613,9 +18613,6 @@ impl<
 											.or_insert_with(Vec::new)
 											.push((hop_data, outbound_amt_msat));
 									},
-									InboundUpdateAdd::Legacy => {
-										return Err(DecodeError::InvalidValue)
-									},
 								}
 							}
 						}
