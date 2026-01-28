@@ -655,20 +655,6 @@ mod tests {
 		let node_a_announce = get_signed_node_announcement(|_| {}, node_1_privkey, &secp_ctx);
 		let node_b_announce = get_signed_node_announcement(|_| {}, node_2_privkey, &secp_ctx);
 
-		// Note that we have to set the "direction" flag correctly on both messages
-		let chan_update_a =
-			get_signed_channel_update(|msg| msg.channel_flags = 0, node_1_privkey, &secp_ctx);
-		let chan_update_b =
-			get_signed_channel_update(|msg| msg.channel_flags = 1, node_2_privkey, &secp_ctx);
-		let chan_update_c = get_signed_channel_update(
-			|msg| {
-				msg.channel_flags = 1;
-				msg.timestamp += 1;
-			},
-			node_2_privkey,
-			&secp_ctx,
-		);
-
 		(
 			valid_announcement,
 			chain_source,
@@ -676,9 +662,17 @@ mod tests {
 			good_script,
 			node_a_announce,
 			node_b_announce,
-			chan_update_a,
-			chan_update_b,
-			chan_update_c,
+			get_signed_channel_update(|msg| msg.channel_flags = 0, node_1_privkey, &secp_ctx),
+			get_signed_channel_update(|msg| msg.channel_flags = 1, node_2_privkey, &secp_ctx),
+			// Note that we have to set the "direction" flag correctly on both messages
+			get_signed_channel_update(
+				|msg| {
+					msg.channel_flags = 1;
+					msg.timestamp += 1;
+				},
+				node_2_privkey,
+				&secp_ctx,
+			),
 		)
 	}
 
@@ -687,6 +681,7 @@ mod tests {
 		// Check that async lookups which resolve quicker than the future is returned to the
 		// `get_utxo` call can read it still resolve properly.
 		let (valid_announcement, chain_source, network_graph, good_script, ..) = get_test_objects();
+		let scid = valid_announcement.contents.short_channel_id;
 
 		let notifier = Arc::new(Notifier::new());
 		let future = UtxoFuture::new(Arc::clone(&notifier));
@@ -699,11 +694,7 @@ mod tests {
 		network_graph
 			.update_channel_from_announcement(&valid_announcement, &Some(&chain_source))
 			.unwrap();
-		assert!(network_graph
-			.read_only()
-			.channels()
-			.get(&valid_announcement.contents.short_channel_id)
-			.is_some());
+		assert!(network_graph.read_only().channels().get(&scid).is_some());
 	}
 
 	#[test]
@@ -718,6 +709,8 @@ mod tests {
 			node_b_announce,
 			..,
 		) = get_test_objects();
+		let scid = valid_announcement.contents.short_channel_id;
+		let node_id_1 = valid_announcement.contents.node_id_1;
 
 		let notifier = Arc::new(Notifier::new());
 		let future = UtxoFuture::new(Arc::clone(&notifier));
@@ -730,30 +723,18 @@ mod tests {
 				.err,
 			"Channel being checked async"
 		);
-		assert!(network_graph
-			.read_only()
-			.channels()
-			.get(&valid_announcement.contents.short_channel_id)
-			.is_none());
+		assert!(network_graph.read_only().channels().get(&scid).is_none());
 
 		future.resolve(Ok(TxOut { value: Amount::ZERO, script_pubkey: good_script }));
 		assert!(notifier.notify_pending());
 		network_graph.pending_checks.check_resolved_futures(&network_graph);
-		network_graph
-			.read_only()
-			.channels()
-			.get(&valid_announcement.contents.short_channel_id)
-			.unwrap();
-		network_graph
-			.read_only()
-			.channels()
-			.get(&valid_announcement.contents.short_channel_id)
-			.unwrap();
+		network_graph.read_only().channels().get(&scid).unwrap();
+		network_graph.read_only().channels().get(&scid).unwrap();
 
 		assert!(network_graph
 			.read_only()
 			.nodes()
-			.get(&valid_announcement.contents.node_id_1)
+			.get(&node_id_1)
 			.unwrap()
 			.announcement_info
 			.is_none());
@@ -764,7 +745,7 @@ mod tests {
 		assert!(network_graph
 			.read_only()
 			.nodes()
-			.get(&valid_announcement.contents.node_id_1)
+			.get(&node_id_1)
 			.unwrap()
 			.announcement_info
 			.is_some());
@@ -774,6 +755,7 @@ mod tests {
 	fn test_invalid_async_lookup() {
 		// Test an async lookup which returns an incorrect script
 		let (valid_announcement, chain_source, network_graph, ..) = get_test_objects();
+		let scid = valid_announcement.contents.short_channel_id;
 
 		let notifier = Arc::new(Notifier::new());
 		let future = UtxoFuture::new(Arc::clone(&notifier));
@@ -786,27 +768,20 @@ mod tests {
 				.err,
 			"Channel being checked async"
 		);
-		assert!(network_graph
-			.read_only()
-			.channels()
-			.get(&valid_announcement.contents.short_channel_id)
-			.is_none());
+		assert!(network_graph.read_only().channels().get(&scid).is_none());
 
 		let value = Amount::from_sat(1_000_000);
 		future.resolve(Ok(TxOut { value, script_pubkey: bitcoin::ScriptBuf::new() }));
 		assert!(notifier.notify_pending());
 		network_graph.pending_checks.check_resolved_futures(&network_graph);
-		assert!(network_graph
-			.read_only()
-			.channels()
-			.get(&valid_announcement.contents.short_channel_id)
-			.is_none());
+		assert!(network_graph.read_only().channels().get(&scid).is_none());
 	}
 
 	#[test]
 	fn test_failing_async_lookup() {
 		// Test an async lookup which returns an error
 		let (valid_announcement, chain_source, network_graph, ..) = get_test_objects();
+		let scid = valid_announcement.contents.short_channel_id;
 
 		let notifier = Arc::new(Notifier::new());
 		let future = UtxoFuture::new(Arc::clone(&notifier));
@@ -819,20 +794,12 @@ mod tests {
 				.err,
 			"Channel being checked async"
 		);
-		assert!(network_graph
-			.read_only()
-			.channels()
-			.get(&valid_announcement.contents.short_channel_id)
-			.is_none());
+		assert!(network_graph.read_only().channels().get(&scid).is_none());
 
 		future.resolve(Err(UtxoLookupError::UnknownTx));
 		assert!(notifier.notify_pending());
 		network_graph.pending_checks.check_resolved_futures(&network_graph);
-		assert!(network_graph
-			.read_only()
-			.channels()
-			.get(&valid_announcement.contents.short_channel_id)
-			.is_none());
+		assert!(network_graph.read_only().channels().get(&scid).is_none());
 	}
 
 	#[test]
@@ -850,6 +817,7 @@ mod tests {
 			chan_update_b,
 			..,
 		) = get_test_objects();
+		let scid = valid_announcement.contents.short_channel_id;
 
 		let notifier = Arc::new(Notifier::new());
 		let future = UtxoFuture::new(Arc::clone(&notifier));
@@ -862,11 +830,7 @@ mod tests {
 				.err,
 			"Channel being checked async"
 		);
-		assert!(network_graph
-			.read_only()
-			.channels()
-			.get(&valid_announcement.contents.short_channel_id)
-			.is_none());
+		assert!(network_graph.read_only().channels().get(&scid).is_none());
 
 		assert_eq!(
 			network_graph.update_node_from_announcement(&node_a_announce).unwrap_err().err,
@@ -892,20 +856,8 @@ mod tests {
 		assert!(notifier.notify_pending());
 		network_graph.pending_checks.check_resolved_futures(&network_graph);
 
-		assert!(network_graph
-			.read_only()
-			.channels()
-			.get(&valid_announcement.contents.short_channel_id)
-			.unwrap()
-			.one_to_two
-			.is_some());
-		assert!(network_graph
-			.read_only()
-			.channels()
-			.get(&valid_announcement.contents.short_channel_id)
-			.unwrap()
-			.two_to_one
-			.is_some());
+		assert!(network_graph.read_only().channels().get(&scid).unwrap().one_to_two.is_some());
+		assert!(network_graph.read_only().channels().get(&scid).unwrap().two_to_one.is_some());
 
 		assert!(network_graph
 			.read_only()
@@ -939,6 +891,7 @@ mod tests {
 			chan_update_c,
 			..,
 		) = get_test_objects();
+		let scid = valid_announcement.contents.short_channel_id;
 
 		let notifier = Arc::new(Notifier::new());
 		let future = UtxoFuture::new(Arc::clone(&notifier));
@@ -951,11 +904,7 @@ mod tests {
 				.err,
 			"Channel being checked async"
 		);
-		assert!(network_graph
-			.read_only()
-			.channels()
-			.get(&valid_announcement.contents.short_channel_id)
-			.is_none());
+		assert!(network_graph.read_only().channels().get(&scid).is_none());
 
 		assert_eq!(
 			network_graph.update_channel(&chan_update_a).unwrap_err().err,
@@ -978,25 +927,13 @@ mod tests {
 
 		assert_eq!(chan_update_a.contents.timestamp, chan_update_b.contents.timestamp);
 		let graph_lock = network_graph.read_only();
-		assert!(
-			graph_lock
-				.channels()
-				.get(&valid_announcement.contents.short_channel_id)
-				.as_ref()
-				.unwrap()
-				.one_to_two
-				.as_ref()
-				.unwrap()
-				.last_update != graph_lock
-				.channels()
-				.get(&valid_announcement.contents.short_channel_id)
-				.as_ref()
-				.unwrap()
-				.two_to_one
-				.as_ref()
-				.unwrap()
-				.last_update
-		);
+		#[rustfmt::skip]
+		let one_to_two_update =
+			graph_lock.channels().get(&scid).as_ref().unwrap().one_to_two.as_ref().unwrap().last_update;
+		#[rustfmt::skip]
+		let two_to_one_update =
+			graph_lock.channels().get(&scid).as_ref().unwrap().two_to_one.as_ref().unwrap().last_update;
+		assert!(one_to_two_update != two_to_one_update);
 	}
 
 	#[test]
@@ -1004,6 +941,7 @@ mod tests {
 		// Test that a pending async lookup will prevent a second async lookup from flying, but
 		// only if the channel_announcement message is identical.
 		let (valid_announcement, chain_source, network_graph, good_script, ..) = get_test_objects();
+		let scid = valid_announcement.contents.short_channel_id;
 
 		let notifier_a = Arc::new(Notifier::new());
 		let future = UtxoFuture::new(Arc::clone(&notifier_a));
@@ -1056,7 +994,7 @@ mod tests {
 		assert!(!network_graph
 			.read_only()
 			.channels()
-			.get(&valid_announcement.contents.short_channel_id)
+			.get(&scid)
 			.unwrap()
 			.announcement_message
 			.as_ref()
