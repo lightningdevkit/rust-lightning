@@ -2821,6 +2821,7 @@ impl_writeable_tlv_based!(SpliceInstructions, {
 
 #[derive(Debug)]
 pub(crate) enum QuiescentAction {
+	// Deprecated in favor of the Splice variant and no longer produced as of LDK 0.3.
 	LegacySplice(SpliceInstructions),
 	Splice {
 		contribution: FundingContribution,
