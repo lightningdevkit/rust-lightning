@@ -37,8 +37,8 @@ use crate::sign::{
 	ChannelDerivationParameters, HTLCDescriptor, SignerProvider, P2WPKH_WITNESS_WEIGHT,
 };
 use crate::sync::Mutex;
-use crate::util::async_poll::{MaybeSend, MaybeSync};
 use crate::util::logger::Logger;
+use crate::util::native_async::{MaybeSend, MaybeSync};
 
 use bitcoin::amount::Amount;
 use bitcoin::consensus::Encodable;
