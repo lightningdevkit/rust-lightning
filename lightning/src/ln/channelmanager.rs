@@ -17231,22 +17231,17 @@ pub(super) struct ChannelManagerData<SP: SignerProvider> {
 	peer_init_features: Vec<(PublicKey, InitFeatures)>,
 	pending_events_read: VecDeque<(events::Event, Option<EventCompletionAction>)>,
 	highest_seen_timestamp: u32,
-	pending_outbound_payments_compat: HashMap<PaymentId, PendingOutboundPayment>,
-	pending_outbound_payments_no_retry: Option<HashMap<PaymentId, HashSet<[u8; 32]>>>,
 	// Marked `_legacy` because in versions > 0.2 we are taking steps to remove the requirement of
 	// regularly persisting the `ChannelManager` and instead rebuild the set of HTLC forwards from
 	// `Channel{Monitor}` data. See [`ChannelManager::read`].
 	pending_intercepted_htlcs_legacy: Option<HashMap<InterceptId, PendingAddHTLCInfo>>,
-	pending_outbound_payments: Option<HashMap<PaymentId, PendingOutboundPayment>>,
+	pending_outbound_payments: HashMap<PaymentId, PendingOutboundPayment>,
 	pending_claiming_payments: HashMap<PaymentHash, ClaimingPayment>,
 	received_network_pubkey: Option<PublicKey>,
 	monitor_update_blocked_actions_per_peer:
 		Vec<(PublicKey, BTreeMap<ChannelId, Vec<MonitorUpdateCompletionAction>>)>,
 	fake_scid_rand_bytes: Option<[u8; 32]>,
-	events_override: Option<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
 	claimable_htlc_purposes: Option<Vec<events::PaymentPurpose>>,
-	legacy_in_flight_monitor_updates:
-		Option<HashMap<(PublicKey, OutPoint), Vec<ChannelMonitorUpdate>>>,
 	probing_cookie_secret: Option<[u8; 32]>,
 	claimable_htlc_onion_fields: Option<Vec<Option<RecipientOnionFields>>>,
 	// Marked `_legacy` because in versions > 0.2 we are taking steps to remove the requirement of
@@ -17443,6 +17438,49 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 			(21, async_receive_offer_cache, (default_value, async_receive_offer_cache)),
 		});
 
+		// Merge legacy pending_outbound_payments fields into a single HashMap.
+		// Priority: pending_outbound_payments (TLV 3) > pending_outbound_payments_no_retry (TLV 1)
+		//           > pending_outbound_payments_compat (non-TLV legacy)
+		let pending_outbound_payments = if let Some(payments) = pending_outbound_payments {
+			payments
+		} else if let Some(mut pending_outbound_payments_no_retry) =
+			pending_outbound_payments_no_retry
+		{
+			let mut outbounds = new_hash_map();
+			for (id, session_privs) in pending_outbound_payments_no_retry.drain() {
+				outbounds.insert(id, PendingOutboundPayment::Legacy { session_privs });
+			}
+			outbounds
+		} else {
+			pending_outbound_payments_compat
+		};
+
+		// Merge legacy in-flight monitor updates (keyed by OutPoint) into the new format (keyed by
+		// ChannelId).
+		if let Some(legacy_in_flight_upds) = legacy_in_flight_monitor_updates {
+			// We should never serialize an empty map.
+			if legacy_in_flight_upds.is_empty() {
+				return Err(DecodeError::InvalidValue);
+			}
+			if in_flight_monitor_updates.is_none() {
+				let in_flight_upds = in_flight_monitor_updates.get_or_insert_with(new_hash_map);
+				for ((counterparty_node_id, funding_txo), updates) in legacy_in_flight_upds {
+					// All channels with legacy in flight monitor updates are v1 channels.
+					let channel_id = ChannelId::v1_from_funding_outpoint(funding_txo);
+					in_flight_upds.insert((counterparty_node_id, channel_id), updates);
+				}
+			} else if in_flight_monitor_updates.as_ref().unwrap().is_empty() {
+				// Both TLVs present - the new one takes precedence but must not be empty.
+				return Err(DecodeError::InvalidValue);
+			}
+		}
+
+		// Resolve events_override: if present, it replaces pending_events.
+		let mut pending_events_read = pending_events_read;
+		if let Some(events) = events_override {
+			pending_events_read = events;
+		}
+
 		Ok(ChannelManagerData {
 			chain_hash,
 			best_block_height,
@@ -17453,8 +17491,6 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 			peer_init_features,
 			pending_events_read,
 			highest_seen_timestamp,
-			pending_outbound_payments_compat,
-			pending_outbound_payments_no_retry,
 			pending_intercepted_htlcs_legacy,
 			pending_outbound_payments,
 			// unwrap safety: pending_claiming_payments is guaranteed to be `Some` after read_tlv_fields
@@ -17464,9 +17500,7 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 			monitor_update_blocked_actions_per_peer: monitor_update_blocked_actions_per_peer
 				.unwrap(),
 			fake_scid_rand_bytes,
-			events_override,
 			claimable_htlc_purposes,
-			legacy_in_flight_monitor_updates,
 			probing_cookie_secret,
 			claimable_htlc_onion_fields,
 			decode_update_add_htlcs_legacy,
@@ -17752,17 +17786,13 @@ impl<
 			peer_init_features,
 			mut pending_events_read,
 			highest_seen_timestamp,
-			pending_outbound_payments_compat,
-			pending_outbound_payments_no_retry,
 			pending_intercepted_htlcs_legacy,
-			mut pending_outbound_payments,
+			pending_outbound_payments,
 			pending_claiming_payments,
 			received_network_pubkey,
 			monitor_update_blocked_actions_per_peer,
 			mut fake_scid_rand_bytes,
-			events_override,
 			claimable_htlc_purposes,
-			legacy_in_flight_monitor_updates,
 			mut probing_cookie_secret,
 			claimable_htlc_onion_fields,
 			decode_update_add_htlcs_legacy,
@@ -18071,51 +18101,16 @@ impl<
 			inbound_payment_id_secret = Some(args.entropy_source.get_secure_random_bytes());
 		}
 
-		if let Some(events) = events_override {
-			pending_events_read = events;
-		}
-
 		if !channel_closures.is_empty() {
 			pending_events_read.append(&mut channel_closures);
 		}
 
-		if pending_outbound_payments.is_none() && pending_outbound_payments_no_retry.is_none() {
-			pending_outbound_payments = Some(pending_outbound_payments_compat);
-		} else if pending_outbound_payments.is_none() {
-			let mut outbounds = new_hash_map();
-			for (id, session_privs) in pending_outbound_payments_no_retry.unwrap().drain() {
-				outbounds.insert(id, PendingOutboundPayment::Legacy { session_privs });
-			}
-			pending_outbound_payments = Some(outbounds);
-		}
-		let pending_outbounds = OutboundPayments::new(pending_outbound_payments.unwrap());
+		let pending_outbounds = OutboundPayments::new(pending_outbound_payments);
 
 		if let Some(peer_storage_dir) = peer_storage_dir {
 			for (peer_pubkey, peer_storage) in peer_storage_dir {
 				if let Some(peer_state) = per_peer_state.get_mut(&peer_pubkey) {
 					peer_state.get_mut().unwrap().peer_storage = peer_storage;
-				}
-			}
-		}
-
-		// Handle transitioning from the legacy TLV to the new one on upgrades.
-		if let Some(legacy_in_flight_upds) = legacy_in_flight_monitor_updates {
-			// We should never serialize an empty map.
-			if legacy_in_flight_upds.is_empty() {
-				return Err(DecodeError::InvalidValue);
-			}
-			if in_flight_monitor_updates.is_none() {
-				let in_flight_upds =
-					in_flight_monitor_updates.get_or_insert_with(|| new_hash_map());
-				for ((counterparty_node_id, funding_txo), updates) in legacy_in_flight_upds {
-					// All channels with legacy in flight monitor updates are v1 channels.
-					let channel_id = ChannelId::v1_from_funding_outpoint(funding_txo);
-					in_flight_upds.insert((counterparty_node_id, channel_id), updates);
-				}
-			} else {
-				// We should never serialize an empty map.
-				if in_flight_monitor_updates.as_ref().unwrap().is_empty() {
-					return Err(DecodeError::InvalidValue);
 				}
 			}
 		}
