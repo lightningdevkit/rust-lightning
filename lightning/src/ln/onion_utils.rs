@@ -17,7 +17,7 @@ use crate::ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS;
 use crate::ln::channelmanager::HTLCSource;
 use crate::ln::msgs::{self, DecodeError, InboundOnionDummyPayload, OnionPacket, UpdateAddHTLC};
 use crate::ln::onion_payment::{HopConnector, NextPacketDetails};
-use crate::ln::outbound_payment::RecipientOnionFields;
+use crate::ln::outbound_payment::{NextTrampolineHopInfo, RecipientOnionFields};
 use crate::ln::types::ChannelId;
 use crate::ln::wire::Encode;
 use crate::ln::LN_MAX_MSG_LEN;
@@ -2764,6 +2764,51 @@ pub(super) fn compute_trampoline_session_priv(outer_onion_session_priv: &SecretK
 	SecretKey::from_slice(&session_priv_hash[..]).expect("You broke SHA-256!")
 }
 
+/// Builds a payment onion for an inter-trampoline forward.
+/// `cur_block_height` should be set to the best known block height + 1.
+#[allow(dead_code)]
+pub(crate) fn create_trampoline_forward_onion<T: secp256k1::Signing>(
+	secp_ctx: &Secp256k1<T>, path: &Path, session_priv: &SecretKey, payment_hash: &PaymentHash,
+	recipient_onion: &RecipientOnionFields, trampoline_forward_info: &NextTrampolineHopInfo,
+	cur_block_height: u32, prng_seed: [u8; 32],
+) -> Result<(msgs::OnionPacket, u64, u32), APIError> {
+	// Inter-trampoline payments should always be cleartext because we need to know the node id
+	// that we need to route to. LDK does not currently support the legacy "trampoline to blinded
+	// path" approach, where we get a blinded path to pay inside of our trampoline onion.
+	debug_assert!(path.blinded_tail.is_none(), "trampoline should not be blinded");
+	debug_assert_eq!(
+		path.final_value_msat(),
+		trampoline_forward_info.amount_msat,
+		"trampoline path is not equal to next trampoline's required amount"
+	);
+
+	let mut res: Vec<msgs::OutboundOnionPayload> = Vec::with_capacity(path.hops.len());
+	let tail = TailDetails::ForwardToTrampoline {
+		trampoline_packet: trampoline_forward_info.onion_packet.clone(),
+		current_path_key: trampoline_forward_info.blinding_point,
+		trampoline_expiry_height: trampoline_forward_info.cltv_expiry_height,
+	};
+	let (value_msat, cltv) = build_onion_payloads_callback(
+		path.hops.iter(),
+		Some(tail),
+		recipient_onion,
+		cur_block_height,
+		&None,
+		None,
+		|action, payload| match action {
+			PayloadCallbackAction::PushBack => res.push(payload),
+			PayloadCallbackAction::PushFront => res.insert(0, payload),
+		},
+	)?;
+
+	let onion_keys = construct_onion_keys(&secp_ctx, &path, session_priv);
+	let onion_packet =
+		construct_onion_packet(res, onion_keys, prng_seed, payment_hash).map_err(|_| {
+			APIError::InvalidRoute { err: "Route size too large considering onion data".to_owned() }
+		})?;
+	Ok((onion_packet, value_msat, cltv))
+}
+
 /// Build a payment onion, returning the first hop msat and cltv values as well.
 /// `cur_block_height` should be set to the best known block height + 1.
 pub(crate) fn create_payment_onion_internal<T: secp256k1::Signing>(
@@ -4538,5 +4583,137 @@ mod tests {
 			},
 			_ => panic!("Expected InvalidRoute error, got {:?}", err),
 		}
+	}
+
+	fn mock_trampoline_packet() -> msgs::TrampolineOnionPacket {
+		let secp_ctx = Secp256k1::new();
+		msgs::TrampolineOnionPacket {
+			version: 0,
+			public_key: PublicKey::from_secret_key(&secp_ctx, &get_test_session_key()),
+			hop_data: vec![1; 650],
+			hmac: [2; 32],
+		}
+	}
+
+	fn trampoline_test_hop(scid: u64, fee_msat: u64, cltv_expiry_delta: u32) -> RouteHop {
+		let secp_ctx = Secp256k1::new();
+		RouteHop {
+			pubkey: PublicKey::from_secret_key(&secp_ctx, &get_test_session_key()),
+			channel_features: ChannelFeatures::empty(),
+			node_features: NodeFeatures::empty(),
+			short_channel_id: scid,
+			fee_msat,
+			cltv_expiry_delta,
+			maybe_announced_channel: true,
+		}
+	}
+
+	#[test]
+	fn trampoline_forward_onion_cltv() {
+		// Assuming a block height of 800_000, and the expectation that we pass current block height
+		// +1 into our onion building, validate that trampoline expiry can't be our current height.
+		do_trampoline_forward_onion_cltv_test(800_001, 800_000, true);
+		do_trampoline_forward_onion_cltv_test(800_001, 800_001, false);
+		do_trampoline_forward_onion_cltv_test(800_001, 800_500, false);
+	}
+
+	// Builds a trampoline forward onion over a two hop path to a next trampoline that is
+	// expecting `trampoline_cltv_expiry`. Expects an error if `expect_stale_err` is set,
+	// otherwise asserts that the trampoline entrypoint is declared the exact tail expiry and
+	// receives an HTLC with exactly that expiry.
+	fn do_trampoline_forward_onion_cltv_test(
+		cur_block_height: u32, trampoline_cltv_expiry: u32, expect_stale_err: bool,
+	) {
+		let secp_ctx = Secp256k1::new();
+		let session_priv = get_test_session_key();
+		let payment_hash = PaymentHash([0; 32]);
+		let recipient_onion =
+			RecipientOnionFields::secret_only(crate::types::payment::PaymentSecret([42; 32]), 5000);
+		let (first_hop_delta, last_hop_delta) = (40, 144);
+		let path = Path {
+			hops: vec![
+				trampoline_test_hop(0, 100, first_hop_delta),
+				trampoline_test_hop(1, 5000, last_hop_delta),
+			],
+			blinded_tail: None,
+		};
+		let next_hop_info = NextTrampolineHopInfo {
+			onion_packet: mock_trampoline_packet(),
+			blinding_point: None,
+			amount_msat: 5000,
+			cltv_expiry_height: trampoline_cltv_expiry,
+		};
+
+		let onion_res = create_trampoline_forward_onion(
+			&secp_ctx,
+			&path,
+			&session_priv,
+			&payment_hash,
+			&recipient_onion,
+			&next_hop_info,
+			cur_block_height,
+			[0; 32],
+		);
+
+		let mut payloads: Vec<msgs::OutboundOnionPayload> = Vec::new();
+		let payload_res = build_onion_payloads_callback(
+			path.hops.iter(),
+			Some(TailDetails::ForwardToTrampoline {
+				trampoline_packet: mock_trampoline_packet(),
+				current_path_key: None,
+				trampoline_expiry_height: next_hop_info.cltv_expiry_height,
+			}),
+			&recipient_onion,
+			cur_block_height,
+			&None,
+			None,
+			|action, payload| match action {
+				PayloadCallbackAction::PushBack => payloads.push(payload),
+				PayloadCallbackAction::PushFront => payloads.insert(0, payload),
+			},
+		);
+
+		if expect_stale_err {
+			assert!(matches!(onion_res, Err(APIError::InvalidRoute { .. })));
+			assert!(matches!(payload_res, Err(APIError::InvalidRoute { .. })));
+			return;
+		}
+
+		let (value_msat, cltv) = payload_res.unwrap();
+		let (_, onion_value_msat, onion_cltv) = onion_res.unwrap();
+		assert_eq!(onion_value_msat, value_msat);
+		assert_eq!(onion_cltv, cltv);
+
+		// The trampoline entrypoint must be told exactly the expiry that the original sender
+		// requested for it, without the final route hop's delta added on top.
+		match &payloads[1] {
+			msgs::OutboundOnionPayload::TrampolineEntrypoint {
+				amt_to_forward,
+				outgoing_cltv_value,
+				..
+			} => {
+				assert_eq!(*amt_to_forward, 5000);
+				assert_eq!(*outgoing_cltv_value, trampoline_cltv_expiry);
+			},
+			_ => panic!("expected trampoline entrypoint payload"),
+		}
+
+		// The regular forwarding hop must deliver exactly the trampoline's expected expiry;
+		// the last hop's route delta is not added on top of it.
+		match &payloads[0] {
+			msgs::OutboundOnionPayload::Forward {
+				short_channel_id,
+				amt_to_forward,
+				outgoing_cltv_value,
+			} => {
+				assert_eq!(*short_channel_id, 1);
+				assert_eq!(*amt_to_forward, 5000);
+				assert_eq!(*outgoing_cltv_value, trampoline_cltv_expiry);
+			},
+			_ => panic!("expected forward payload"),
+		}
+
+		assert_eq!(value_msat, 5100);
+		assert_eq!(cltv, trampoline_cltv_expiry + first_hop_delta);
 	}
 }
