@@ -348,10 +348,16 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 			entry.write(writer)?;
 		}
 
-		write_tlv_fields!(writer, {
-			(1, self.channel_id, required),
-		});
+		write_tlv_fields!(writer, {});
 		Ok(())
+	}
+
+	// `ChannelMonitor`s already track the `channel_id`, however, due to the derserialization order
+	// there we can't make use of `ReadableArgs` to hand it into `OnchainTxHandler`'s
+	// deserialization logic directly. Instead we opt to initialize it with 0s and override it
+	// after reading the respective field via this method.
+	pub(crate) fn set_channel_id(&mut self, channel_id: ChannelId) {
+		self.channel_id = channel_id;
 	}
 }
 
@@ -426,18 +432,13 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			}
 		}
 
-		let mut channel_id = None;
-		read_tlv_fields!(reader, {
-			(1, channel_id, option),
-		});
+		read_tlv_fields!(reader, {});
 
-		// For backwards compatibility with monitors serialized before channel_id was added,
-		// we derive a channel_id from the funding outpoint if not present.
-		let channel_id = channel_id.or_else(|| {
-			channel_parameters.funding_outpoint
-				.map(|op| ChannelId::v1_from_funding_outpoint(op))
-		}) // funding_outpoint must be known during intialization.
-		.ok_or(DecodeError::InvalidValue)?;
+		// `ChannelMonitor`s already track the `channel_id`, however, due to the derserialization
+		// order there we can't make use of `ReadableArgs` to hand it in directly. Instead we opt
+		// to initialize it with 0s and override it after reading the respective field via
+		// `OnchainTxHandler::set_channel_id`.
+		let channel_id = ChannelId([0u8; 32]);
 
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
