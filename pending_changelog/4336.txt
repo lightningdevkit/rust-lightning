@@ -1,0 +1,5 @@
+Forward Compatibility
+=====================
+
+* Downgrading from 0.3 will not be possible while a splice is pending when using async monitor
+  updates.
