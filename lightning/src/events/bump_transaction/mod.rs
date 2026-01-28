@@ -425,9 +425,12 @@ pub trait CoinSelectionSource {
 	/// which UTXOs to double spend is left to the implementation, but it must strive to keep the
 	/// set of other claims being double spent to a minimum.
 	///
+	/// If `claim_id` is not set, then the selection should be treated as if it were for a unique
+	/// claim and must NOT be double-spent rather than being kept to a minimum.
+	///
 	/// [`ChannelMonitor::rebroadcast_pending_claims`]: crate::chain::channelmonitor::ChannelMonitor::rebroadcast_pending_claims
 	fn select_confirmed_utxos<'a>(
-		&'a self, claim_id: ClaimId, must_spend: Vec<Input>, must_pay_to: &'a [TxOut],
+		&'a self, claim_id: Option<ClaimId>, must_spend: Vec<Input>, must_pay_to: &'a [TxOut],
 		target_feerate_sat_per_1000_weight: u32, max_tx_weight: u64,
 	) -> impl Future<Output = Result<CoinSelection, ()>> + MaybeSend + 'a;
 	/// Signs and provides the full witness for all inputs within the transaction known to the
@@ -492,7 +495,7 @@ where
 	// TODO: Do we care about cleaning this up once the UTXOs have a confirmed spend? We can do so
 	// by checking whether any UTXOs that exist in the map are no longer returned in
 	// `list_confirmed_utxos`.
-	locked_utxos: Mutex<HashMap<OutPoint, ClaimId>>,
+	locked_utxos: Mutex<HashMap<OutPoint, Option<ClaimId>>>,
 }
 
 impl<W: Deref + MaybeSync + MaybeSend, L: Logger + MaybeSync + MaybeSend> Wallet<W, L>
@@ -514,11 +517,13 @@ where
 	/// least 1 satoshi at the current feerate, otherwise, we'll only attempt to spend those which
 	/// contribute at least twice their fee.
 	async fn select_confirmed_utxos_internal(
-		&self, utxos: &[Utxo], claim_id: ClaimId, force_conflicting_utxo_spend: bool,
+		&self, utxos: &[Utxo], claim_id: Option<ClaimId>, force_conflicting_utxo_spend: bool,
 		tolerate_high_network_feerates: bool, target_feerate_sat_per_1000_weight: u32,
 		preexisting_tx_weight: u64, input_amount_sat: Amount, target_amount_sat: Amount,
 		max_tx_weight: u64,
 	) -> Result<CoinSelection, ()> {
+		debug_assert!(!(claim_id.is_none() && force_conflicting_utxo_spend));
+
 		// P2WSH and P2TR outputs are both the heaviest-weight standard outputs at 34 bytes
 		let max_coin_selection_weight = max_tx_weight
 			.checked_sub(preexisting_tx_weight + P2WSH_TXOUT_WEIGHT)
@@ -538,7 +543,12 @@ where
 				.iter()
 				.filter_map(|utxo| {
 					if let Some(utxo_claim_id) = locked_utxos.get(&utxo.outpoint) {
-						if *utxo_claim_id != claim_id && !force_conflicting_utxo_spend {
+						// TODO(splicing): For splicing (i.e., claim_id.is_none()), ideally we'd
+						// allow force_conflicting_utxo_spend for an RBF attempt. However, we'd need
+						// something similar to a ClaimId to identify a splice.
+						if (utxo_claim_id.is_none() || claim_id.is_none())
+							|| (*utxo_claim_id != claim_id && !force_conflicting_utxo_spend)
+						{
 							log_trace!(
 								self.logger,
 								"Skipping UTXO {} to prevent conflicting spend",
@@ -678,7 +688,7 @@ where
 	W::Target: WalletSource + MaybeSend + MaybeSync,
 {
 	fn select_confirmed_utxos<'a>(
-		&'a self, claim_id: ClaimId, must_spend: Vec<Input>, must_pay_to: &'a [TxOut],
+		&'a self, claim_id: Option<ClaimId>, must_spend: Vec<Input>, must_pay_to: &'a [TxOut],
 		target_feerate_sat_per_1000_weight: u32, max_tx_weight: u64,
 	) -> impl Future<Output = Result<CoinSelection, ()>> + MaybeSend + 'a {
 		async move {
@@ -703,6 +713,9 @@ where
 
 			let configs = [(false, false), (false, true), (true, false), (true, true)];
 			for (force_conflicting_utxo_spend, tolerate_high_network_feerates) in configs {
+				if claim_id.is_none() && force_conflicting_utxo_spend {
+					continue;
+				}
 				log_debug!(
 					self.logger,
 					"Attempting coin selection targeting {} sat/kW (force_conflicting_utxo_spend = {}, tolerate_high_network_feerates = {})",
@@ -874,7 +887,7 @@ where
 			let coin_selection: CoinSelection = self
 				.utxo_source
 				.select_confirmed_utxos(
-					claim_id,
+					Some(claim_id),
 					must_spend,
 					&[],
 					package_target_feerate_sat_per_1000_weight,
@@ -1137,7 +1150,7 @@ where
 			let coin_selection: CoinSelection = match self
 				.utxo_source
 				.select_confirmed_utxos(
-					utxo_id,
+					Some(utxo_id),
 					must_spend,
 					&htlc_tx.output,
 					target_feerate_sat_per_1000_weight,
@@ -1358,7 +1371,7 @@ mod tests {
 	}
 	impl CoinSelectionSourceSync for TestCoinSelectionSource {
 		fn select_confirmed_utxos(
-			&self, _claim_id: ClaimId, must_spend: Vec<Input>, _must_pay_to: &[TxOut],
+			&self, _claim_id: Option<ClaimId>, must_spend: Vec<Input>, _must_pay_to: &[TxOut],
 			target_feerate_sat_per_1000_weight: u32, _max_tx_weight: u64,
 		) -> Result<CoinSelection, ()> {
 			let mut expected_selects = self.expected_selects.lock().unwrap();
