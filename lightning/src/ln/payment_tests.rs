@@ -45,6 +45,7 @@ use crate::sign::EntropySource;
 use crate::types::features::{Bolt11InvoiceFeatures, ChannelTypeFeatures};
 use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::types::string::UntrustedString;
+use crate::util::config::HTLCInterceptionFlags;
 use crate::util::errors::APIError;
 use crate::util::ser::Writeable;
 use crate::util::test_utils;
@@ -2210,7 +2211,8 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 	let mut zero_conf_chan_config = test_default_channel_config();
 	zero_conf_chan_config.manually_accept_inbound_channels = true;
 	let mut intercept_forwards_config = test_default_channel_config();
-	intercept_forwards_config.accept_intercept_htlcs = true;
+	intercept_forwards_config.htlc_interception_flags =
+		HTLCInterceptionFlags::ToInterceptSCIDs as u8;
 
 	let configs = [None, Some(intercept_forwards_config), Some(zero_conf_chan_config)];
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &configs);
@@ -2275,6 +2277,7 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 	// Check that we generate the PaymentIntercepted event when an intercept forward is detected.
 	let events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
+	let expected_cltv = nodes[0].best_block_info().1 + TEST_FINAL_CLTV + 1;
 	let (intercept_id, outbound_amt) = match events[0] {
 		crate::events::Event::HTLCIntercepted {
 			intercept_id,
@@ -2282,10 +2285,12 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 			payment_hash,
 			inbound_amount_msat,
 			requested_next_hop_scid: short_channel_id,
+			outgoing_htlc_expiry_block_height,
 		} => {
 			assert_eq!(payment_hash, hash);
 			assert_eq!(inbound_amount_msat, route.get_total_amount() + route.get_total_fees());
 			assert_eq!(short_channel_id, intercept_scid);
+			assert_eq!(outgoing_htlc_expiry_block_height.unwrap(), expected_cltv);
 			(intercept_id, expected_outbound_amount_msat)
 		},
 		_ => panic!(),
@@ -2354,6 +2359,7 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 			assert_eq!(events.len(), 1);
 			SendEvent::from_event(events.remove(0))
 		};
+		assert_eq!(payment_event.msgs[0].cltv_expiry, expected_cltv);
 		nodes[2].node.handle_update_add_htlc(node_b_id, &payment_event.msgs[0]);
 		let commitment = &payment_event.commitment_msg;
 		do_commitment_signed_dance(&nodes[2], &nodes[1], commitment, false, true);
@@ -2435,7 +2441,8 @@ fn do_accept_underpaying_htlcs_config(num_mpp_parts: usize) {
 
 	let max_in_flight_percent = 10;
 	let mut intercept_forwards_config = test_default_channel_config();
-	intercept_forwards_config.accept_intercept_htlcs = true;
+	intercept_forwards_config.htlc_interception_flags =
+		HTLCInterceptionFlags::ToInterceptSCIDs as u8;
 	intercept_forwards_config
 		.channel_handshake_config
 		.max_inbound_htlc_value_in_flight_percent_of_channel = max_in_flight_percent;

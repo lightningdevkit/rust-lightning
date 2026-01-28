@@ -84,6 +84,9 @@ pub mod functional_tests;
 #[cfg(any(test, feature = "_externalize_tests"))]
 #[allow(unused_mut)]
 pub mod htlc_reserve_unit_tests;
+#[cfg(any(test, feature = "_externalize_tests"))]
+#[allow(unused_mut)]
+pub mod interception_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
 mod max_payment_path_len_tests;
