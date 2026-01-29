@@ -21,7 +21,7 @@ use bitcoin::network::Network;
 use bitcoin::opcodes;
 use bitcoin::script::{Builder, ScriptBuf};
 use bitcoin::transaction::Version;
-use bitcoin::transaction::{Transaction, TxOut};
+use bitcoin::transaction::{Transaction, TxIn, TxOut};
 
 use bitcoin::hash_types::{BlockHash, Txid};
 use bitcoin::hashes::sha256::Hash as Sha256;
@@ -30,6 +30,8 @@ use bitcoin::hashes::Hash as _;
 use bitcoin::hex::FromHex;
 use bitcoin::WPubkeyHash;
 
+use lightning::ln::funding::{FundingTxInput, SpliceContribution};
+
 use lightning::blinded_path::message::{BlindedMessagePath, MessageContext, MessageForwardNode};
 use lightning::blinded_path::payment::{BlindedPaymentPath, ReceiveTlvs};
 use lightning::chain;
@@ -37,6 +39,7 @@ use lightning::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget,
 use lightning::chain::chainmonitor;
 use lightning::chain::transaction::OutPoint;
 use lightning::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Listen};
+use lightning::events::bump_transaction::sync::WalletSourceSync;
 use lightning::events::Event;
 use lightning::ln::channel_state::ChannelDetails;
 use lightning::ln::channelmanager::{
@@ -62,11 +65,11 @@ use lightning::sign::{
 };
 use lightning::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::util::config::{ChannelConfig, UserConfig};
-use lightning::util::errors::APIError;
 use lightning::util::hash_tables::*;
 use lightning::util::logger::Logger;
 use lightning::util::ser::{Readable, Writeable};
 use lightning::util::test_channel_signer::{EnforcementState, TestChannelSigner};
+use lightning::util::test_utils::TestWalletSource;
 
 use lightning_invoice::RawBolt11Invoice;
 
@@ -648,6 +651,26 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 	let mut pending_funding_generation: Vec<(ChannelId, PublicKey, u64, ScriptBuf)> = Vec::new();
 	let mut pending_funding_signatures = new_hash_map();
 
+	// Set up a wallet with a coinbase transaction for splice funding
+	let wallet_secret = SecretKey::from_slice(&[
+		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+		0, 2,
+	])
+	.unwrap();
+	let wallet = TestWalletSource::new(wallet_secret);
+	let coinbase_tx = Transaction {
+		version: Version::TWO,
+		lock_time: LockTime::ZERO,
+		input: vec![TxIn { ..Default::default() }],
+		output: vec![TxOut {
+			value: Amount::from_sat(1_000_000),
+			script_pubkey: wallet.get_change_script().unwrap(),
+		}],
+	};
+	let coinbase_txid = coinbase_tx.compute_txid();
+	wallet
+		.add_utxo(bitcoin::OutPoint { txid: coinbase_txid, vout: 0 }, Amount::from_sat(1_000_000));
+
 	loop {
 		match get_slice!(1)[0] {
 			0 => {
@@ -985,6 +1008,71 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 				rng_output.copy_from_slice(&get_slice!(32));
 				*keys_manager.rng_output.borrow_mut() = rng_output;
 			},
+			// Splice-in: add funds to a channel
+			50 => {
+				let mut channels = channelmanager.list_channels();
+				let channel_id_idx = get_slice!(1)[0] as usize;
+				if channel_id_idx >= channels.len() {
+					return;
+				}
+				channels.sort_by(|a, b| a.channel_id.cmp(&b.channel_id));
+				let chan = &channels[channel_id_idx];
+				// Only splice funded channels
+				if chan.funding_txo.is_none() {
+					continue;
+				}
+				let splice_in_sats = slice_to_be24(get_slice!(3)) as u64;
+				if splice_in_sats == 0 {
+					continue;
+				}
+				// Create a funding input from the coinbase transaction
+				if let Ok(input) = FundingTxInput::new_p2wpkh(coinbase_tx.clone(), 0) {
+					let contribution = SpliceContribution::splice_in(
+						Amount::from_sat(splice_in_sats.min(900_000)), // Cap at available funds minus fees
+						vec![input],
+						Some(wallet.get_change_script().unwrap()),
+					);
+					let _ = channelmanager.splice_channel(
+						&chan.channel_id,
+						&chan.counterparty.node_id,
+						contribution,
+						253, // funding_feerate_per_kw
+						None,
+					);
+				}
+			},
+			// Splice-out: remove funds from a channel
+			51 => {
+				let mut channels = channelmanager.list_channels();
+				let channel_id_idx = get_slice!(1)[0] as usize;
+				if channel_id_idx >= channels.len() {
+					return;
+				}
+				channels.sort_by(|a, b| a.channel_id.cmp(&b.channel_id));
+				let chan = &channels[channel_id_idx];
+				// Only splice funded channels with sufficient capacity
+				if chan.funding_txo.is_none() || chan.channel_value_satoshis < 20_000 {
+					continue;
+				}
+				let splice_out_sats = slice_to_be24(get_slice!(3)) as u64;
+				if splice_out_sats == 0 {
+					continue;
+				}
+				// Cap splice-out at a reasonable portion of channel capacity
+				let max_splice_out = chan.channel_value_satoshis / 4;
+				let splice_out_sats = splice_out_sats.min(max_splice_out).max(546); // At least dust limit
+				let contribution = SpliceContribution::splice_out(vec![TxOut {
+					value: Amount::from_sat(splice_out_sats),
+					script_pubkey: wallet.get_change_script().unwrap(),
+				}]);
+				let _ = channelmanager.splice_channel(
+					&chan.channel_id,
+					&chan.counterparty.node_id,
+					contribution,
+					253, // funding_feerate_per_kw
+					None,
+				);
+			},
 			_ => return,
 		}
 		loss_detector.handler.process_events();
@@ -1012,6 +1100,26 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 					if !intercepted_htlcs.contains(&intercept_id) {
 						intercepted_htlcs.push(intercept_id);
 					}
+				},
+				Event::FundingTransactionReadyForSigning {
+					channel_id,
+					counterparty_node_id,
+					unsigned_transaction,
+					..
+				} => {
+					// Sign the funding transaction and provide it back to the channel manager
+					let signed_tx = wallet.sign_tx(unsigned_transaction).unwrap();
+					let _ = channelmanager.funding_transaction_signed(
+						&channel_id,
+						&counterparty_node_id,
+						signed_tx,
+					);
+				},
+				Event::SplicePending { .. } => {
+					// Splice negotiation completed, waiting for confirmation
+				},
+				Event::SpliceFailed { .. } => {
+					// Splice failed, inputs can be re-spent
 				},
 				_ => {},
 			}
@@ -1578,6 +1686,221 @@ fn gossip_exchange_seed() -> Vec<u8> {
 	test
 }
 
+fn splice_seed() -> Vec<u8> {
+	// This seed sets up a channel between two peers and attempts a splice-in operation that becomes
+	// locked.
+	let mut test = Vec::new();
+
+	// our network key
+	ext_from_hex("0100000000000000000000000000000000000000000000000000000000000000", &mut test);
+	// config
+	ext_from_hex("000000000090000000000000000064000100000000000100ffff0000000000000000ffffffffffffffffffffffffffffffff0000000000000000ffffffffffffffff000000ffffffff00ffff1a000400010000020400000000040200000a08ffffffffffffffff000100000000000000", &mut test);
+
+	// new outbound connection with id 0
+	ext_from_hex("00", &mut test);
+	// peer's pubkey
+	ext_from_hex("030000000000000000000000000000000000000000000000000000000000000002", &mut test);
+	// inbound read from peer id 0 of len 50
+	ext_from_hex("030032", &mut test);
+	// noise act two (0||pubkey||mac)
+	ext_from_hex("00 030000000000000000000000000000000000000000000000000000000000000002 03000000000000000000000000000000", &mut test);
+
+	// inbound read from peer id 0 of len 18
+	ext_from_hex("030012", &mut test);
+	// message header indicating message length 28 (init with extended features for splicing)
+	// init message = type(2) + global_len(2) + global(2) + features_len(2) + features(20) = 28 = 0x1c
+	ext_from_hex("001c 03000000000000000000000000000000", &mut test);
+	// inbound read from peer id 0 of len 44 (28 message + 16 MAC)
+	ext_from_hex("03002c", &mut test);
+	// init message (type 16) with splicing (bit 155) and quiescence (bit 35) enabled
+	// Features: 20 bytes with bit 155 (splicing) and bit 35 (quiescence) set
+	// Wire format (big-endian): 0x08 at byte 0 for bit 155, zeros for bytes 1-11, original 8 bytes at 12-19
+	// 20 bytes = 08 + 11 zeros + 8 original bytes = 080000000000000000000000 + aaa210aa2a0a9aaa
+	ext_from_hex("0010 00021aaa 0014 080000000000000000000000aaa210aa2a0a9aaa 03000000000000000000000000000000", &mut test);
+
+	// inbound read from peer id 0 of len 18
+	ext_from_hex("030012", &mut test);
+	// message header indicating message length 327
+	ext_from_hex("0147 03000000000000000000000000000000", &mut test);
+	// inbound read from peer id 0 of len 254
+	ext_from_hex("0300fe", &mut test);
+	// beginning of open_channel message
+	ext_from_hex("0020 6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000 ff4f00f805273c1b203bb5ebf8436bfde57b3be8c2f5e95d9491dbb181909679 000000000000c350 0000000000000000 0000000000000162 ffffffffffffffff 0000000000000222 0000000000000000 000000fd 0006 01e3 030000000000000000000000000000000000000000000000000000000000000001 030000000000000000000000000000000000000000000000000000000000000002 030000000000000000000000000000000000000000000000000000000000000003 030000000000000000000000000000000000000000000000000000000000000004", &mut test);
+	// inbound read from peer id 0 of len 89
+	ext_from_hex("030059", &mut test);
+	// rest of open_channel and mac
+	ext_from_hex("030000000000000000000000000000000000000000000000000000000000000005 020900000000000000000000000000000000000000000000000000000000000000 01 0000 01021000 03000000000000000000000000000000", &mut test);
+
+	// client should now respond with accept_channel
+
+	// inbound read from peer id 0 of len 18
+	ext_from_hex("030012", &mut test);
+	// message header indicating message length 132
+	ext_from_hex("0084 03000000000000000000000000000000", &mut test);
+	// inbound read from peer id 0 of len 148
+	ext_from_hex("030094", &mut test);
+	// funding_created and mac
+	ext_from_hex("0022 ff4f00f805273c1b203bb5ebf8436bfde57b3be8c2f5e95d9491dbb181909679 c000000000000000000000000000000000000000000000000000000000000000 0000 00000000000000000000000000000000000000000000000000000000000000dc0100000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
+	// client should now respond with funding_signed
+
+	// connect a block with one transaction of len 94
+	ext_from_hex("0c005e", &mut test);
+	// the funding transaction
+	ext_from_hex("020000000100000000000000000000000000000000000000000000000000000000000000000000000000ffffffff0150c3000000000000220020530000000000000000000000000000000000000000000000000000000000000000000000", &mut test);
+	// connect blocks to confirm the funding transaction (need minimum_depth confirmations)
+	for _ in 0..12 {
+		ext_from_hex("0c0000", &mut test);
+	}
+	// by now client should have sent a channel_ready
+
+	// inbound read from peer id 0 of len 18
+	ext_from_hex("030012", &mut test);
+	// message header indicating message length 67
+	ext_from_hex("0043 03000000000000000000000000000000", &mut test);
+	// inbound read from peer id 0 of len 83
+	ext_from_hex("030053", &mut test);
+	// channel_ready and mac
+	ext_from_hex("0024 c000000000000000000000000000000000000000000000000000000000000000 020800000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
+
+	// Channel is now established and ready for splicing!
+
+	// Initiate splice-in on channel 0 (opcode 50)
+	// Format: 50 <channel_idx:1> <splice_amount:3>
+	// Channel index 0, splice amount 0x010000 (65536 sats)
+	ext_from_hex("32 00 010000", &mut test);
+
+	// After splice_channel is called, we should receive a SendStfu event.
+	// The peer needs to respond with stfu to acknowledge quiescence.
+	// inbound read from peer id 0 of len 18
+	ext_from_hex("030012", &mut test);
+	// message header indicating message length 35 (stfu message: type(2) + channel_id(32) + initiator(1) = 35 = 0x23)
+	ext_from_hex("0023 03000000000000000000000000000000", &mut test);
+	// inbound read from peer id 0 of len 51 (35 message + 16 MAC)
+	ext_from_hex("030033", &mut test);
+	// stfu message (type 2): channel_id (32 bytes) + initiator (1 byte) + mac
+	// channel_id = c000...0000, initiator = 0 (peer is not initiator, responding to our stfu)
+	ext_from_hex("0002 c000000000000000000000000000000000000000000000000000000000000000 00 03000000000000000000000000000000", &mut test);
+
+	// After receiving peer's stfu, we send SpliceInit. Peer responds with SpliceAck.
+	// Message type IDs: SpliceAck = 81 (0x0051)
+	// inbound read from peer id 0 of len 18
+	ext_from_hex("030012", &mut test);
+	// message header indicating message length 75 (SpliceAck: type(2) + channel_id(32) + funding_contribution(8) + funding_pubkey(33) = 75 = 0x4b)
+	ext_from_hex("004b 03000000000000000000000000000000", &mut test);
+	// inbound read from peer id 0 of len 91 (75 message + 16 MAC)
+	ext_from_hex("03005b", &mut test);
+	// SpliceAck message (type 81 = 0x0051): channel_id + funding_contribution + funding_pubkey + mac
+	// channel_id = c000...0000, funding_contribution = 0 (i64), funding_pubkey = valid 33-byte compressed pubkey
+	ext_from_hex("0051 c000000000000000000000000000000000000000000000000000000000000000 0000000000000000 030000000000000000000000000000000000000000000000000000000000000001 03000000000000000000000000000000", &mut test);
+
+	// Now we're in interactive tx negotiation. We send TxAddInput for our new funding input.
+	// Peer responds with TxComplete (they have no inputs/outputs to add).
+	// Message type IDs: TxComplete = 70 (0x0046)
+	// inbound read from peer id 0 of len 18
+	ext_from_hex("030012", &mut test);
+	// message header indicating message length 34 (TxComplete: type(2) + channel_id(32) = 34 = 0x22)
+	ext_from_hex("0022 03000000000000000000000000000000", &mut test);
+	// inbound read from peer id 0 of len 50 (34 message + 16 MAC)
+	ext_from_hex("030032", &mut test);
+	// TxComplete message (type 70 = 0x0046): channel_id + mac
+	ext_from_hex("0046 c000000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
+
+	// After peer's first TxComplete, we send another TxAddInput (for the shared input - existing funding).
+	// We also send TxAddOutput for the new funding output.
+	// Peer needs to respond with another TxComplete.
+	// inbound read from peer id 0 of len 18
+	ext_from_hex("030012", &mut test);
+	// message header indicating message length 34 (TxComplete)
+	ext_from_hex("0022 03000000000000000000000000000000", &mut test);
+	// inbound read from peer id 0 of len 50 (34 message + 16 MAC)
+	ext_from_hex("030032", &mut test);
+	// TxComplete message
+	ext_from_hex("0046 c000000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
+
+	// We continue sending our inputs/outputs, peer continues with TxComplete.
+	// inbound read from peer id 0 of len 18
+	ext_from_hex("030012", &mut test);
+	// message header indicating message length 34 (TxComplete)
+	ext_from_hex("0022 03000000000000000000000000000000", &mut test);
+	// inbound read from peer id 0 of len 50 (34 message + 16 MAC)
+	ext_from_hex("030032", &mut test);
+	// TxComplete message
+	ext_from_hex("0046 c000000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
+
+	// More TxComplete responses as we add our outputs
+	// inbound read from peer id 0 of len 18
+	ext_from_hex("030012", &mut test);
+	// message header indicating message length 34 (TxComplete)
+	ext_from_hex("0022 03000000000000000000000000000000", &mut test);
+	// inbound read from peer id 0 of len 50 (34 message + 16 MAC)
+	ext_from_hex("030032", &mut test);
+	// TxComplete message
+	ext_from_hex("0046 c000000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
+
+	// After we send our TxComplete, the interactive tx negotiation completes.
+	// Both sides now need to exchange commitment_signed messages.
+	// Message type IDs: CommitmentSigned = 132 (0x0084)
+	// For splice, we need to include the funding_txid TLV.
+	// Message format: type(2) + channel_id(32) + signature(64) + num_htlcs(2) + TLV(type=0, len=32, txid=32) = 134 bytes
+	// The signature must encode the sighash first byte (f7) in r, following the fuzz pattern.
+	// inbound read from peer id 0 of len 18
+	ext_from_hex("030012", &mut test);
+	// message header indicating message length 134 (0x86)
+	ext_from_hex("0086 03000000000000000000000000000000", &mut test);
+	// inbound read from peer id 0 of len 150 (134 message + 16 MAC)
+	ext_from_hex("030096", &mut test);
+	// CommitmentSigned message with proper signature (r=f7, s=01...) and funding_txid TLV
+	// signature r encodes sighash first byte f7, s follows the pattern from funding_created
+	// TLV type 1 (odd/optional) for funding_txid as per impl_writeable_msg!(CommitmentSigned, ...)
+	// Note: txid is encoded in reverse byte order (Bitcoin standard), so to get display 0000...0033, encode 3300...0000
+	ext_from_hex("0084 c000000000000000000000000000000000000000000000000000000000000000 00000000000000000000000000000000000000000000000000000000000000f7 0100000000000000000000000000000000000000000000000000000000000000 0000 01 20 3300000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
+
+	// After commitment_signed exchange, we need to exchange tx_signatures.
+	// Message type IDs: TxSignatures = 71 (0x0047)
+	// TxSignatures: type(2) + channel_id(32) + txid(32) + num_witnesses(2) + TLV(type=0, len=64, shared_input_sig)
+	// With shared_input_signature: 2 + 32 + 32 + 2 + 1 + 1 + 64 = 134 = 0x86
+	// inbound read from peer id 0 of len 18
+	ext_from_hex("030012", &mut test);
+	// message header indicating message length 134 (0x86)
+	ext_from_hex("0086 03000000000000000000000000000000", &mut test);
+	// inbound read from peer id 0 of len 150 (134 message + 16 MAC)
+	ext_from_hex("030096", &mut test);
+	// TxSignatures message with shared_input_signature TLV (type 0)
+	// txid must match the splice funding txid (0x33 in reverse byte order)
+	// shared_input_signature: 64-byte fuzz signature for the shared input
+	ext_from_hex("0047 c000000000000000000000000000000000000000000000000000000000000000 3300000000000000000000000000000000000000000000000000000000000000 0000 00 40 00000000000000000000000000000000000000000000000000000000000000dc 0100000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
+
+	// Connect a block with the splice funding transaction to confirm it
+	// The splice funding tx: version(4) + input_count(1) + txid(32) + vout(4) + script_len(1) + sequence(4)
+	//                       + output_count(1) + value(8) + script_len(1) + script(34) + locktime(4) = 94 bytes = 0x5e
+	// Transaction structure from FundingTransactionReadyForSigning:
+	// - Input: spending c000...00:0 with sequence 0xfffffffd
+	// - Output: 115536 sats to OP_0 PUSH32 6e00...00
+	// - Locktime: 13
+	ext_from_hex("0c005e", &mut test);
+	ext_from_hex("02000000 01 c000000000000000000000000000000000000000000000000000000000000000 00000000 00 fdffffff 01 50c3010000000000 22 00206e00000000000000000000000000000000000000000000000000000000000000 0d000000", &mut test);
+
+	// Connect additional blocks to reach minimum_depth confirmations
+	for _ in 0..5 {
+		ext_from_hex("0c0000", &mut test);
+	}
+
+	// After confirmation, exchange splice_locked messages.
+	// Message type IDs: SpliceLocked = 77 (0x004d)
+	// SpliceLocked: type(2) + channel_id(32) + splice_txid(32) = 66 = 0x42
+	// inbound read from peer id 0 of len 18
+	ext_from_hex("030012", &mut test);
+	// message header indicating message length 66
+	ext_from_hex("0042 03000000000000000000000000000000", &mut test);
+	// inbound read from peer id 0 of len 82 (66 message + 16 MAC)
+	ext_from_hex("030052", &mut test);
+	// SpliceLocked message (type 77 = 0x004d): channel_id + splice_txid + mac
+	// splice_txid must match the splice funding txid (0x33 in reverse byte order)
+	ext_from_hex("004d c000000000000000000000000000000000000000000000000000000000000000 3300000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
+
+	test
+}
+
 pub fn write_fst_seeds(path: &str) {
 	use std::fs::File;
 	use std::io::Write;
@@ -1589,6 +1912,10 @@ pub fn write_fst_seeds(path: &str) {
 	let mut f = File::create(path.to_owned() + "/gossip_exchange_seed").unwrap();
 	let gossip_exchange = gossip_exchange_seed();
 	f.write_all(&gossip_exchange).unwrap();
+
+	let mut f = File::create(path.to_owned() + "/splice_seed").unwrap();
+	let splice = splice_seed();
+	f.write_all(&splice).unwrap();
 }
 
 #[cfg(test)]
@@ -1665,5 +1992,39 @@ mod tests {
 		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Sending message to all peers except Some(PublicKey(0000000000000000000000000000000000000000000000000000000000000002ff00000000000000000000000000000000000000000000000000000000000002)) or the announced channel's counterparties: ChannelAnnouncement { node_signature_1: 3026020200b202200303030303030303030303030303030303030303030303030303030303030303, node_signature_2: 3026020200b202200202020202020202020202020202020202020202020202020202020202020202, bitcoin_signature_1: 3026020200b202200303030303030303030303030303030303030303030303030303030303030303, bitcoin_signature_2: 3026020200b202200202020202020202020202020202020202020202020202020202020202020202, contents: UnsignedChannelAnnouncement { features: [], chain_hash: 6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000, short_channel_id: 42, node_id_1: NodeId(030303030303030303030303030303030303030303030303030303030303030303), node_id_2: NodeId(020202020202020202020202020202020202020202020202020202020202020202), bitcoin_key_1: NodeId(030303030303030303030303030303030303030303030303030303030303030303), bitcoin_key_2: NodeId(020202020202020202020202020202020202020202020202020202020202020202), excess_data: [] } }".to_string())), Some(&1));
 		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Sending message to all peers except Some(PublicKey(0000000000000000000000000000000000000000000000000000000000000002ff00000000000000000000000000000000000000000000000000000000000002)): ChannelUpdate { signature: 3026020200a602200303030303030303030303030303030303030303030303030303030303030303, contents: UnsignedChannelUpdate { chain_hash: 6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000, short_channel_id: 42, timestamp: 44, message_flags: 1, channel_flags: 0, cltv_expiry_delta: 40, htlc_minimum_msat: 0, htlc_maximum_msat: 100000000, fee_base_msat: 0, fee_proportional_millionths: 0, excess_data: [] } }".to_string())), Some(&1));
 		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Sending message to all peers except Some(PublicKey(0000000000000000000000000000000000000000000000000000000000000002ff00000000000000000000000000000000000000000000000000000000000002)) or the announced node: NodeAnnouncement { signature: 302502012802200303030303030303030303030303030303030303030303030303030303030303, contents: UnsignedNodeAnnouncement { features: [], timestamp: 43, node_id: NodeId(030303030303030303030303030303030303030303030303030303030303030303), rgb: [0, 0, 0], alias: NodeAlias([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), addresses: [], excess_address_data: [], excess_data: [] } }".to_string())), Some(&1));
+	}
+
+	#[test]
+	fn test_splice_seed() {
+		let test = super::splice_seed();
+
+		let logger = Arc::new(TrackingLogger { lines: Mutex::new(HashMap::new()) });
+		super::do_test(&test, &(Arc::clone(&logger) as Arc<dyn Logger>));
+
+		let log_entries = logger.lines.lock().unwrap();
+
+		// Channel open
+		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendAcceptChannel event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 for channel ff4f00f805273c1b203bb5ebf8436bfde57b3be8c2f5e95d9491dbb181909679".to_string())), Some(&1));
+		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendFundingSigned event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 for channel c000000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&1));
+		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendChannelReady event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 for channel c000000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&1));
+
+		// Quiescence
+		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendStfu event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 for channel c000000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&1));
+
+		// Splice handshake
+		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendSpliceInit event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 for channel c000000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&1));
+
+		// Interactive transaction negotiation
+		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendTxAddInput event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 for channel c000000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&2)); // One for the shared input, one for the wallet input
+		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendTxAddOutput event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 for channel c000000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&2)); // One for the shared output, one for the change output
+		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendTxComplete event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 for channel c000000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&1));
+
+		// Transaction signing
+		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling UpdateHTLCs event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 with 0 adds, 0 fulfills, 0 fails, 1 commits for channel c000000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&1));
+		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendTxSignatures event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 for channel c000000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&1));
+
+		// Splice locked
+		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendSpliceLocked event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 for channel c000000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&1));
+		assert_eq!(log_entries.get(&("lightning::ln::channel".to_string(), "Promoting splice funding txid 0000000000000000000000000000000000000000000000000000000000000033".to_string())), Some(&1));
 	}
 }
