@@ -46,8 +46,8 @@ use lightning_0_0_125::routing::router as router_0_0_125;
 use lightning_0_0_125::util::ser::Writeable as _;
 
 use lightning::chain::channelmonitor::{ANTI_REORG_DELAY, HTLC_FAIL_BACK_BUFFER};
-use lightning::events::bump_transaction::sync::WalletSourceSync;
 use lightning::events::{ClosureReason, Event, HTLCHandlingFailureType};
+use lightning::util::wallet_utils::WalletSourceSync;
 use lightning::ln::functional_test_utils::*;
 use lightning::ln::funding::SpliceContribution;
 use lightning::ln::msgs::BaseMessageHandler as _;
@@ -455,7 +455,8 @@ fn do_test_0_1_htlc_forward_after_splice(fail_htlc: bool) {
 		value: Amount::from_sat(1_000),
 		script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
 	}]);
-	let splice_tx = splice_channel(&nodes[0], &nodes[1], ChannelId(chan_id_bytes_a), contribution);
+	let (splice_tx, _) =
+		splice_channel(&nodes[0], &nodes[1], ChannelId(chan_id_bytes_a), contribution);
 	for node in nodes.iter() {
 		mine_transaction(node, &splice_tx);
 		connect_blocks(node, ANTI_REORG_DELAY - 1);
