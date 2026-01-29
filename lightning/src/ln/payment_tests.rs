@@ -5414,3 +5414,71 @@ fn max_out_mpp_path() {
 	check_added_monitors(&nodes[0], 2); // one monitor update per MPP part
 	nodes[0].node.get_and_clear_pending_msg_events();
 }
+
+#[test]
+fn test_self_payment() {
+	let chanmon_cfgs = create_chanmon_cfgs(1);
+	let node_cfgs = create_node_cfgs(1, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(1, &node_cfgs, &[None]);
+	let nodes = create_network(1, &node_cfgs, &node_chanmgrs);
+
+	let (payment_hash, payment_secret) =
+		nodes[0].node.create_inbound_payment(Some(100_000), 3600, None).unwrap();
+	let amount_msats = 100_000;
+	let payment_id = PaymentId([1; 32]);
+
+	let route_params = RouteParameters {
+		payment_params: PaymentParameters::from_node_id(nodes[0].node.get_our_node_id(), 0),
+		final_value_msat: amount_msats,
+		max_total_routing_fee_msat: None,
+	};
+
+	let recipient_onion_fields = RecipientOnionFields::secret_only(payment_secret);
+
+	// Attempt to send payment to ourselves
+	nodes[0]
+		.node
+		.send_payment(
+			payment_hash,
+			recipient_onion_fields,
+			payment_id,
+			route_params,
+			Retry::Attempts(0),
+		)
+		.unwrap();
+
+	// Process pending events
+	let events = nodes[0].node.get_and_clear_pending_events();
+
+	// Should generate both PaymentSent and PaymentClaimed events
+	let mut payment_sent_found = false;
+	let mut payment_claimed_found = false;
+
+	for event in events {
+		match event {
+			Event::PaymentSent {
+				payment_id: Some(pid),
+				payment_hash: ph,
+				fee_paid_msat: _,
+				..
+			} => {
+				assert_eq!(pid, payment_id);
+				assert_eq!(ph, payment_hash);
+				payment_sent_found = true;
+			},
+			Event::PaymentClaimed { payment_hash: ph, amount_msat: amt, .. } => {
+				assert_eq!(ph, payment_hash);
+				assert_eq!(amt, amount_msats);
+				payment_claimed_found = true;
+			},
+			_ => {},
+		}
+	}
+
+	assert!(payment_sent_found, "PaymentSent event not found");
+	assert!(payment_claimed_found, "PaymentClaimed event not found");
+
+	// Verify payment is now in recent payments
+	let recent_payments = nodes[0].node.list_recent_payments();
+	assert!(!recent_payments.is_empty(), "Self-payment not found in recent payments");
+}
