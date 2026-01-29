@@ -88,9 +88,60 @@ jobs:
         run: |
             echo "BITCOIND_EXE=$( pwd )/bin/bitcoind-${{ runner.os }}-${{ runner.arch }}" >> "$GITHUB_ENV"
             echo "ELECTRS_EXE=$( pwd )/bin/electrs-${{ runner.os }}-${{ runner.arch }}" >> "$GITHUB_ENV"
-      - name: Run CI script
-        shell: bash # Default on Winblows is powershell
-        run: CI_ENV=1 CI_MINIMIZE_DISK_USAGE=1 ./ci/ci-tests.sh
+      - name: Check workspace (except lightning-transaction-sync)
+        shell: bash
+        run: CI_ENV=1 CI_MINIMIZE_DISK_USAGE=1 ./ci/ci-tests.sh workspace-check
+      - name: Test workspace (except lightning-transaction-sync)
+        shell: bash
+        run: CI_ENV=1 CI_MINIMIZE_DISK_USAGE=1 ./ci/ci-tests.sh workspace-tests
+      - name: Test upgrade from prior LDK versions
+        shell: bash
+        run: CI_ENV=1 CI_MINIMIZE_DISK_USAGE=1 ./ci/ci-tests.sh ldk-upgrade-tests
+      - name: Check and build docs for workspace members
+        shell: bash
+        run: CI_ENV=1 CI_MINIMIZE_DISK_USAGE=1 ./ci/ci-tests.sh workspace-member-checks
+      - name: Test lightning with dnssec feature
+        shell: bash
+        run: CI_ENV=1 CI_MINIMIZE_DISK_USAGE=1 ./ci/ci-tests.sh lightning-dnssec
+      - name: Test Block Sync Clients with features
+        shell: bash
+        run: CI_ENV=1 CI_MINIMIZE_DISK_USAGE=1 ./ci/ci-tests.sh block-sync-tests
+      - name: Check Transaction Sync Clients
+        shell: bash
+        run: CI_ENV=1 CI_MINIMIZE_DISK_USAGE=1 ./ci/ci-tests.sh tx-sync-checks
+      - name: Test Transaction Sync Clients
+        shell: bash
+        run: CI_ENV=1 CI_MINIMIZE_DISK_USAGE=1 ./ci/ci-tests.sh tx-sync-tests
+      - name: Test lightning-persister with tokio
+        shell: bash
+        run: CI_ENV=1 CI_MINIMIZE_DISK_USAGE=1 ./ci/ci-tests.sh persister-tests
+      - name: Test Custom Message Macros
+        shell: bash
+        run: CI_ENV=1 CI_MINIMIZE_DISK_USAGE=1 ./ci/ci-tests.sh custom-message-tests
+      - name: Test backtrace-debug builds
+        shell: bash
+        run: CI_ENV=1 CI_MINIMIZE_DISK_USAGE=1 ./ci/ci-tests.sh lightning-backtrace
+      - name: Test no_std builds
+        shell: bash
+        run: CI_ENV=1 CI_MINIMIZE_DISK_USAGE=1 ./ci/ci-tests.sh no-std-tests
+      - name: Test c_bindings builds
+        shell: bash
+        run: CI_ENV=1 CI_MINIMIZE_DISK_USAGE=1 ./ci/ci-tests.sh c-bindings-tests
+      - name: Test other crate-specific builds
+        shell: bash
+        run: CI_ENV=1 CI_MINIMIZE_DISK_USAGE=1 ./ci/ci-tests.sh other-crate-specific
+      - name: Check no_std downstream crate
+        shell: bash
+        run: CI_ENV=1 CI_MINIMIZE_DISK_USAGE=1 ./ci/ci-tests.sh no-std-check
+      - name: Check MSRV with release pins only
+        shell: bash
+        run: CI_ENV=1 CI_MINIMIZE_DISK_USAGE=1 ./ci/ci-tests.sh msrv-no-dev-deps-check
+      - name: Build no_std for ARM Embedded
+        shell: bash
+        run: CI_ENV=1 CI_MINIMIZE_DISK_USAGE=1 ./ci/ci-tests.sh no-std-check-arm
+      - name: Test cfg-flag builds
+        shell: bash
+        run: CI_ENV=1 CI_MINIMIZE_DISK_USAGE=1 ./ci/ci-tests.sh cfg-flag-tests
 
   coverage:
     needs: fuzz
