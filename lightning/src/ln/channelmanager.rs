@@ -17441,19 +17441,18 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 		// Merge legacy pending_outbound_payments fields into a single HashMap.
 		// Priority: pending_outbound_payments (TLV 3) > pending_outbound_payments_no_retry (TLV 1)
 		//           > pending_outbound_payments_compat (non-TLV legacy)
-		let pending_outbound_payments = if let Some(payments) = pending_outbound_payments {
-			payments
-		} else if let Some(mut pending_outbound_payments_no_retry) =
-			pending_outbound_payments_no_retry
-		{
-			let mut outbounds = new_hash_map();
-			for (id, session_privs) in pending_outbound_payments_no_retry.drain() {
-				outbounds.insert(id, PendingOutboundPayment::Legacy { session_privs });
-			}
-			outbounds
-		} else {
-			pending_outbound_payments_compat
-		};
+		let pending_outbound_payments = pending_outbound_payments
+			.or_else(|| {
+				pending_outbound_payments_no_retry.map(|no_retry| {
+					no_retry
+						.into_iter()
+						.map(|(id, session_privs)| {
+							(id, PendingOutboundPayment::Legacy { session_privs })
+						})
+						.collect()
+				})
+			})
+			.unwrap_or(pending_outbound_payments_compat);
 
 		// Merge legacy in-flight monitor updates (keyed by OutPoint) into the new format (keyed by
 		// ChannelId).
@@ -17462,24 +17461,30 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 			if legacy_in_flight_upds.is_empty() {
 				return Err(DecodeError::InvalidValue);
 			}
-			if in_flight_monitor_updates.is_none() {
-				let in_flight_upds = in_flight_monitor_updates.get_or_insert_with(new_hash_map);
-				for ((counterparty_node_id, funding_txo), updates) in legacy_in_flight_upds {
+			match &in_flight_monitor_updates {
+				None => {
+					// Convert legacy format (OutPoint) to new format (ChannelId).
 					// All channels with legacy in flight monitor updates are v1 channels.
-					let channel_id = ChannelId::v1_from_funding_outpoint(funding_txo);
-					in_flight_upds.insert((counterparty_node_id, channel_id), updates);
-				}
-			} else if in_flight_monitor_updates.as_ref().unwrap().is_empty() {
-				// Both TLVs present - the new one takes precedence but must not be empty.
-				return Err(DecodeError::InvalidValue);
+					in_flight_monitor_updates = Some(
+						legacy_in_flight_upds
+							.into_iter()
+							.map(|((counterparty_node_id, funding_txo), updates)| {
+								let channel_id = ChannelId::v1_from_funding_outpoint(funding_txo);
+								((counterparty_node_id, channel_id), updates)
+							})
+							.collect(),
+					);
+				},
+				Some(upds) if upds.is_empty() => {
+					// Both TLVs present but new one is empty - invalid.
+					return Err(DecodeError::InvalidValue);
+				},
+				Some(_) => {}, // New format takes precedence, nothing to do.
 			}
 		}
 
 		// Resolve events_override: if present, it replaces pending_events.
-		let mut pending_events_read = pending_events_read;
-		if let Some(events) = events_override {
-			pending_events_read = events;
-		}
+		let pending_events_read = events_override.unwrap_or(pending_events_read);
 
 		Ok(ChannelManagerData {
 			chain_hash,
