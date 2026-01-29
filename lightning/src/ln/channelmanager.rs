@@ -1700,6 +1700,25 @@ pub(super) enum OpenChannelMessageRef<'a> {
 	V2(&'a msgs::OpenChannelV2),
 }
 
+impl<'a> OpenChannelMessageRef<'a> {
+	pub(super) fn channel_parameters(&self) -> msgs::ChannelParameters {
+		let (common_fields, channel_reserve_satoshis) = match self {
+			Self::V1(msg) => (&msg.common_fields, Some(msg.channel_reserve_satoshis)),
+			Self::V2(msg) => (&msg.common_fields, None),
+		};
+		msgs::ChannelParameters {
+			dust_limit_satoshis: common_fields.dust_limit_satoshis,
+			max_htlc_value_in_flight_msat: common_fields.max_htlc_value_in_flight_msat,
+			htlc_minimum_msat: common_fields.htlc_minimum_msat,
+			commitment_feerate_sat_per_1000_weight: common_fields
+				.commitment_feerate_sat_per_1000_weight,
+			to_self_delay: common_fields.to_self_delay,
+			max_accepted_htlcs: common_fields.max_accepted_htlcs,
+			channel_reserve_satoshis,
+		}
+	}
+}
+
 /// A not-yet-accepted inbound (from counterparty) channel. Once
 /// accepted, the parameters will be used to construct a channel.
 pub(super) struct InboundChannelRequest {
@@ -10857,7 +10876,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				},
 				channel_type,
 				is_announced,
-				params: common_fields.channel_parameters(),
+				params: msg.channel_parameters(),
 			},
 			None,
 		));
