@@ -48,13 +48,6 @@ use crate::prelude::*;
 use crate::sync::{Arc, Mutex};
 use bitcoin::hashes::Hash;
 
-fn get_latest_mon_update_id<'a, 'b, 'c>(
-	node: &Node<'a, 'b, 'c>, channel_id: ChannelId,
-) -> (u64, u64) {
-	let monitor_id_state = node.chain_monitor.latest_monitor_update_id.lock().unwrap();
-	monitor_id_state.get(&channel_id).unwrap().clone()
-}
-
 #[test]
 fn test_monitor_and_persister_update_fail() {
 	// Test that if both updating the `ChannelMonitor` and persisting the updated
