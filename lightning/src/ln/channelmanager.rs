@@ -18558,7 +18558,7 @@ impl<
 						if let Some(chan) = peer_state.channel_by_id.get(channel_id) {
 							if let Some(funded_chan) = chan.as_funded() {
 								let inbound_committed_update_adds =
-									funded_chan.get_inbound_committed_update_adds();
+									funded_chan.inbound_committed_unresolved_htlcs();
 								if !inbound_committed_update_adds.is_empty() {
 									// Reconstruct `ChannelManager::decode_update_add_htlcs` from the serialized
 									// `Channel`, as part of removing the requirement to regularly persist the

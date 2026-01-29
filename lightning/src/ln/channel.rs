@@ -7839,12 +7839,28 @@ where
 	}
 
 	/// Useful for reconstructing the set of pending HTLCs when deserializing the `ChannelManager`.
-	pub(super) fn get_inbound_committed_update_adds(&self) -> Vec<msgs::UpdateAddHTLC> {
+	pub(super) fn inbound_committed_unresolved_htlcs(&self) -> Vec<msgs::UpdateAddHTLC> {
+		// We don't want to return an HTLC as needing processing if it already has a resolution that's
+		// pending in the holding cell.
+		let htlc_resolution_in_holding_cell = |id: u64| -> bool {
+			self.context.holding_cell_htlc_updates.iter().any(|holding_cell_htlc| {
+				match holding_cell_htlc {
+					HTLCUpdateAwaitingACK::ClaimHTLC { htlc_id, .. } => *htlc_id == id,
+					HTLCUpdateAwaitingACK::FailHTLC { htlc_id, .. } => *htlc_id == id,
+					HTLCUpdateAwaitingACK::FailMalformedHTLC { htlc_id, .. } => *htlc_id == id,
+					HTLCUpdateAwaitingACK::AddHTLC { .. } => false,
+				}
+			})
+		};
+
 		self.context
 			.pending_inbound_htlcs
 			.iter()
 			.filter_map(|htlc| match htlc.state {
 				InboundHTLCState::Committed { ref update_add_htlc_opt } => {
+					if htlc_resolution_in_holding_cell(htlc.htlc_id) {
+						return None;
+					}
 					update_add_htlc_opt.clone()
 				},
 				_ => None,
