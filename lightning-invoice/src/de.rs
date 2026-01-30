@@ -16,7 +16,7 @@ use crate::Bolt11Bech32;
 use bitcoin::hashes::sha256;
 use bitcoin::hashes::Hash;
 use bitcoin::{PubkeyHash, ScriptHash, WitnessVersion};
-use lightning_types::payment::PaymentSecret;
+use lightning_types::payment::{PaymentHash, PaymentSecret};
 use lightning_types::routing::{RouteHint, RouteHintHop, RoutingFees};
 
 use bitcoin::secp256k1::ecdsa::{RecoverableSignature, RecoveryId};
@@ -86,6 +86,18 @@ impl FromBase32 for PaymentSecret {
 		}
 		let data_bytes = <[u8; 32]>::from_base32(field_data)?;
 		Ok(PaymentSecret(data_bytes))
+	}
+}
+
+impl FromBase32 for PaymentHash {
+	type Err = Bolt11ParseError;
+
+	fn from_base32(field_data: &[Fe32]) -> Result<Self, Self::Err> {
+		if field_data.len() != 52 {
+			return Err(Bolt11ParseError::InvalidSliceLength(field_data.len(), 52, "PaymentHash"));
+		}
+		let data_bytes = <[u8; 32]>::from_base32(field_data)?;
+		Ok(PaymentHash(data_bytes))
 	}
 }
 
@@ -540,7 +552,7 @@ impl FromBase32 for TaggedField {
 
 		match tag.to_u8() {
 			constants::TAG_PAYMENT_HASH => {
-				Ok(TaggedField::PaymentHash(Sha256::from_base32(field_data)?))
+				Ok(TaggedField::PaymentHash(PaymentHash::from_base32(field_data)?))
 			},
 			constants::TAG_DESCRIPTION => {
 				Ok(TaggedField::Description(Description::from_base32(field_data)?))
@@ -1068,8 +1080,9 @@ mod test {
 		use crate::TaggedField::*;
 		use crate::{
 			Bolt11InvoiceSignature, Currency, PositiveTimestamp, RawBolt11Invoice, RawDataPart,
-			RawHrp, Sha256, SiPrefix, SignedRawBolt11Invoice,
+			RawHrp, SiPrefix, SignedRawBolt11Invoice,
 		};
+		use bitcoin::hex::FromHex;
 		use bitcoin::secp256k1::ecdsa::{RecoverableSignature, RecoveryId};
 		use lightning_types::features::Bolt11InvoiceFeatures;
 
@@ -1077,45 +1090,51 @@ mod test {
 		let expected_features =
 			Bolt11InvoiceFeatures::from_le_bytes(vec![0, 130, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8]);
 		let invoice_str = "lnbc25m1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5vdhkven9v5sxyetpdeessp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs9q5sqqqqqqqqqqqqqqqpqsq67gye39hfg3zd8rgc80k32tvy9xk2xunwm5lzexnvpx6fd77en8qaq424dxgt56cag2dpt359k3ssyhetktkpqh24jqnjyw6uqd08sgptq44qu";
-		let invoice =
-			SignedRawBolt11Invoice {
-				raw_invoice: RawBolt11Invoice {
-					hrp: RawHrp {
-						currency: Currency::Bitcoin,
-						raw_amount: Some(25),
-						si_prefix: Some(SiPrefix::Milli),
-					},
-					data: RawDataPart {
-						timestamp: PositiveTimestamp::from_unix_timestamp(1496314658).unwrap(),
-						tagged_fields: vec ! [
-								PaymentHash(Sha256(sha256::Hash::from_str(
-									"0001020304050607080900010203040506070809000102030405060708090102"
-								).unwrap())).into(),
+		let invoice = SignedRawBolt11Invoice {
+			raw_invoice: RawBolt11Invoice {
+				hrp: RawHrp {
+					currency: Currency::Bitcoin,
+					raw_amount: Some(25),
+					si_prefix: Some(SiPrefix::Milli),
+				},
+				data: RawDataPart {
+					timestamp: PositiveTimestamp::from_unix_timestamp(1496314658).unwrap(),
+					tagged_fields: vec ! [
+								crate::TaggedField::PaymentHash(crate::PaymentHash(
+									<[u8; 32]>::try_from(
+										Vec::from_hex(
+											"0001020304050607080900010203040506070809000102030405060708090102",
+										)
+										.unwrap(),
+									)
+									.unwrap(),
+								))
+								.into(),
 								Description(crate::Description::new("coffee beans".to_owned()).unwrap()).into(),
 								PaymentSecret(crate::PaymentSecret([17; 32])).into(),
 								Features(expected_features).into()],
-					},
 				},
-				hash: [
-					0xb1, 0x96, 0x46, 0xc3, 0xbc, 0x56, 0x76, 0x1d, 0x20, 0x65, 0x6e, 0x0e, 0x32,
-					0xec, 0xd2, 0x69, 0x27, 0xb7, 0x62, 0x6e, 0x2a, 0x8b, 0xe6, 0x97, 0x71, 0x9f,
-					0xf8, 0x7e, 0x44, 0x54, 0x55, 0xb9,
-				],
-				signature: Bolt11InvoiceSignature(
-					RecoverableSignature::from_compact(
-						&[
-							0xd7, 0x90, 0x4c, 0xc4, 0xb7, 0x4a, 0x22, 0x26, 0x9c, 0x68, 0xc1, 0xdf,
-							0x68, 0xa9, 0x6c, 0x21, 0x4d, 0x65, 0x1b, 0x93, 0x76, 0xe9, 0xf1, 0x64,
-							0xd3, 0x60, 0x4d, 0xa4, 0xb7, 0xde, 0xcc, 0xce, 0x0e, 0x82, 0xaa, 0xab,
-							0x4c, 0x85, 0xd3, 0x58, 0xea, 0x14, 0xd0, 0xae, 0x34, 0x2d, 0xa3, 0x08,
-							0x12, 0xf9, 0x5d, 0x97, 0x60, 0x82, 0xea, 0xac, 0x81, 0x39, 0x11, 0xda,
-							0xe0, 0x1a, 0xf3, 0xc1,
-						],
-						RecoveryId::from_i32(1).unwrap(),
-					)
-					.unwrap(),
-				),
-			};
+			},
+			hash: [
+				0xb1, 0x96, 0x46, 0xc3, 0xbc, 0x56, 0x76, 0x1d, 0x20, 0x65, 0x6e, 0x0e, 0x32, 0xec,
+				0xd2, 0x69, 0x27, 0xb7, 0x62, 0x6e, 0x2a, 0x8b, 0xe6, 0x97, 0x71, 0x9f, 0xf8, 0x7e,
+				0x44, 0x54, 0x55, 0xb9,
+			],
+			signature: Bolt11InvoiceSignature(
+				RecoverableSignature::from_compact(
+					&[
+						0xd7, 0x90, 0x4c, 0xc4, 0xb7, 0x4a, 0x22, 0x26, 0x9c, 0x68, 0xc1, 0xdf,
+						0x68, 0xa9, 0x6c, 0x21, 0x4d, 0x65, 0x1b, 0x93, 0x76, 0xe9, 0xf1, 0x64,
+						0xd3, 0x60, 0x4d, 0xa4, 0xb7, 0xde, 0xcc, 0xce, 0x0e, 0x82, 0xaa, 0xab,
+						0x4c, 0x85, 0xd3, 0x58, 0xea, 0x14, 0xd0, 0xae, 0x34, 0x2d, 0xa3, 0x08,
+						0x12, 0xf9, 0x5d, 0x97, 0x60, 0x82, 0xea, 0xac, 0x81, 0x39, 0x11, 0xda,
+						0xe0, 0x1a, 0xf3, 0xc1,
+					],
+					RecoveryId::from_i32(1).unwrap(),
+				)
+				.unwrap(),
+			),
+		};
 		assert_eq!(invoice_str, invoice.to_string());
 		assert_eq!(invoice_str.parse(), Ok(invoice));
 	}
@@ -1125,8 +1144,9 @@ mod test {
 		use crate::TaggedField::*;
 		use crate::{
 			Bolt11InvoiceSignature, Currency, PositiveTimestamp, RawBolt11Invoice, RawDataPart,
-			RawHrp, Sha256, SignedRawBolt11Invoice,
+			RawHrp, SignedRawBolt11Invoice,
 		};
+		use bitcoin::hex::FromHex;
 		use bitcoin::secp256k1::ecdsa::{RecoverableSignature, RecoveryId};
 
 		assert_eq!(
@@ -1143,9 +1163,16 @@ mod test {
 					data: RawDataPart {
 					timestamp: PositiveTimestamp::from_unix_timestamp(1496314658).unwrap(),
 					tagged_fields: vec ! [
-						PaymentHash(Sha256(sha256::Hash::from_str(
-							"0001020304050607080900010203040506070809000102030405060708090102"
-						).unwrap())).into(),
+						crate::TaggedField::PaymentHash(crate::PaymentHash(
+							<[u8; 32]>::try_from(
+								Vec::from_hex(
+									"0001020304050607080900010203040506070809000102030405060708090102",
+								)
+								.unwrap(),
+							)
+							.unwrap(),
+						))
+						.into(),
 						Description(
 							crate::Description::new(
 								"Please consider supporting this project".to_owned()
@@ -1289,9 +1316,10 @@ mod test {
 		use crate::TaggedField::*;
 		use crate::{
 			Bolt11Invoice, Bolt11InvoiceFeatures, Bolt11InvoiceSignature, Currency,
-			PositiveTimestamp, RawBolt11Invoice, RawDataPart, RawHrp, RawTaggedField, Sha256,
+			PositiveTimestamp, RawBolt11Invoice, RawDataPart, RawHrp, RawTaggedField,
 			SignedRawBolt11Invoice,
 		};
+		use bitcoin::hex::FromHex;
 		use bitcoin::secp256k1::ecdsa::{RecoverableSignature, RecoveryId};
 		use bitcoin::secp256k1::PublicKey;
 		use lightning_types::routing::{RouteHint, RouteHintHop, RoutingFees};
@@ -1310,10 +1338,13 @@ mod test {
 		}
 
 		// Invoice fields
-		let payment_hash = sha256::Hash::from_str(
-			"0001020304050607080900010203040506070809000102030405060708090102",
-		)
-		.unwrap();
+		let payment_hash = crate::PaymentHash(
+			<[u8; 32]>::try_from(
+				Vec::from_hex("0001020304050607080900010203040506070809000102030405060708090102")
+					.unwrap(),
+			)
+			.unwrap(),
+		);
 		let description = "A".repeat(639);
 		let fallback_addr = crate::Fallback::SegWitProgram {
 			version: bitcoin::WitnessVersion::V0,
@@ -1346,7 +1377,7 @@ mod test {
 			data: RawDataPart {
 				timestamp: PositiveTimestamp::from_unix_timestamp(1496314658).unwrap(),
 				tagged_fields: vec![
-					PaymentHash(Sha256(payment_hash)).into(),
+					crate::TaggedField::PaymentHash(payment_hash).into(),
 					Description(crate::Description::new(description).unwrap()).into(),
 					PayeePubKey(crate::PayeePubKey(payee_pk)).into(),
 					ExpiryTime(crate::ExpiryTime(std::time::Duration::from_secs(u64::MAX))).into(),
@@ -1413,5 +1444,19 @@ mod test {
 		);
 		assert!(parse_is_code_length_err(&too_long));
 		assert!(!parse_is_code_length_err(&too_long[..too_long.len() - 1]));
+	}
+
+	#[test]
+	fn test_payment_hash_from_base32_invalid_len() {
+		use crate::PaymentHash;
+
+		// PaymentHash must be 52 base32 characters (32 bytes).
+		// Test with 51 characters (too short).
+		let input = vec![Fe32::try_from(0).unwrap(); 51];
+		assert!(PaymentHash::from_base32(&input).is_err());
+
+		// Test with 53 characters (too long).
+		let input = vec![Fe32::try_from(0).unwrap(); 53];
+		assert!(PaymentHash::from_base32(&input).is_err());
 	}
 }

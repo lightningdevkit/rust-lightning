@@ -189,7 +189,7 @@ impl Checksum for Bolt11Bech32 {
 ///
 /// use lightning_types::payment::PaymentSecret;
 ///
-/// use lightning_invoice::{Currency, InvoiceBuilder};
+/// use lightning_invoice::{Currency, InvoiceBuilder, PaymentHash};
 ///
 /// # #[cfg(not(feature = "std"))]
 /// # fn main() {}
@@ -203,7 +203,7 @@ impl Checksum for Bolt11Bech32 {
 /// 	][..]
 ///	).unwrap();
 ///
-/// let payment_hash = sha256::Hash::from_slice(&[0; 32][..]).unwrap();
+/// let payment_hash = PaymentHash([0; 32]);
 /// let payment_secret = PaymentSecret([42u8; 32]);
 ///
 /// let invoice = InvoiceBuilder::new(Currency::Bitcoin)
@@ -521,7 +521,7 @@ impl Ord for RawTaggedField {
 #[allow(missing_docs)]
 #[derive(Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub enum TaggedField {
-	PaymentHash(Sha256),
+	PaymentHash(PaymentHash),
 	Description(Description),
 	PayeePubKey(PayeePubKey),
 	DescriptionHash(Sha256),
@@ -793,8 +793,8 @@ impl<D: tb::Bool, T: tb::Bool, C: tb::Bool, S: tb::Bool, M: tb::Bool>
 	InvoiceBuilder<D, tb::False, T, C, S, M>
 {
 	/// Set the payment hash. This function is only available if no payment hash was set.
-	pub fn payment_hash(mut self, hash: sha256::Hash) -> InvoiceBuilder<D, tb::True, T, C, S, M> {
-		self.tagged_fields.push(TaggedField::PaymentHash(Sha256(hash)));
+	pub fn payment_hash(mut self, hash: PaymentHash) -> InvoiceBuilder<D, tb::True, T, C, S, M> {
+		self.tagged_fields.push(TaggedField::PaymentHash(hash));
 		self.set_flags()
 	}
 }
@@ -1158,7 +1158,7 @@ impl RawBolt11Invoice {
 		self.data.tagged_fields.iter().filter_map(match_raw)
 	}
 
-	pub fn payment_hash(&self) -> Option<&Sha256> {
+	pub fn payment_hash(&self) -> Option<&PaymentHash> {
 		find_extract!(self.known_tagged_fields(), TaggedField::PaymentHash(ref x), x)
 	}
 
@@ -1461,8 +1461,7 @@ impl Bolt11Invoice {
 
 	/// Returns the hash to which we will receive the preimage on completion of the payment
 	pub fn payment_hash(&self) -> PaymentHash {
-		let hash = self.signed_invoice.payment_hash().expect("checked by constructor").0;
-		PaymentHash(hash.to_byte_array())
+		*self.signed_invoice.payment_hash().expect("checked by constructor")
 	}
 
 	/// Return the description or a hash of it for longer ones
@@ -1925,10 +1924,7 @@ impl<'de> Deserialize<'de> for Bolt11Invoice {
 
 #[cfg(test)]
 mod test {
-	use bitcoin::hashes::sha256;
 	use bitcoin::ScriptBuf;
-	use std::str::FromStr;
-
 	#[test]
 	fn test_system_time_bounds_assumptions() {
 		assert_eq!(
@@ -1940,16 +1936,22 @@ mod test {
 	#[test]
 	fn test_calc_invoice_hash() {
 		use crate::TaggedField::*;
-		use crate::{Currency, PositiveTimestamp, RawBolt11Invoice, RawDataPart, RawHrp};
+		use crate::{
+			Currency, PaymentHash, PositiveTimestamp, RawBolt11Invoice, RawDataPart, RawHrp,
+		};
+		use bitcoin::hex::FromHex;
 
 		let invoice = RawBolt11Invoice {
 			hrp: RawHrp { currency: Currency::Bitcoin, raw_amount: None, si_prefix: None },
 			data: RawDataPart {
 				timestamp: PositiveTimestamp::from_unix_timestamp(1496314658).unwrap(),
 				tagged_fields: vec![
-					PaymentHash(crate::Sha256(
-						sha256::Hash::from_str(
-							"0001020304050607080900010203040506070809000102030405060708090102",
+					crate::TaggedField::PaymentHash(PaymentHash(
+						<[u8; 32]>::try_from(
+							Vec::from_hex(
+								"0001020304050607080900010203040506070809000102030405060708090102",
+							)
+							.unwrap(),
 						)
 						.unwrap(),
 					))
@@ -1978,51 +1980,58 @@ mod test {
 	fn test_check_signature() {
 		use crate::TaggedField::*;
 		use crate::{
-			Bolt11InvoiceSignature, Currency, PositiveTimestamp, RawBolt11Invoice, RawDataPart,
-			RawHrp, Sha256, SignedRawBolt11Invoice,
+			Bolt11InvoiceSignature, Currency, PaymentHash, PositiveTimestamp, RawBolt11Invoice,
+			RawDataPart, RawHrp, SignedRawBolt11Invoice,
 		};
+		use bitcoin::hex::FromHex;
 		use bitcoin::secp256k1::ecdsa::{RecoverableSignature, RecoveryId};
 		use bitcoin::secp256k1::Secp256k1;
 		use bitcoin::secp256k1::{PublicKey, SecretKey};
 
-		let invoice =
-			SignedRawBolt11Invoice {
-				raw_invoice: RawBolt11Invoice {
-					hrp: RawHrp { currency: Currency::Bitcoin, raw_amount: None, si_prefix: None },
-					data: RawDataPart {
-						timestamp: PositiveTimestamp::from_unix_timestamp(1496314658).unwrap(),
-						tagged_fields: vec ! [
-						PaymentHash(Sha256(sha256::Hash::from_str(
-							"0001020304050607080900010203040506070809000102030405060708090102"
-						).unwrap())).into(),
+		let invoice = SignedRawBolt11Invoice {
+			raw_invoice: RawBolt11Invoice {
+				hrp: RawHrp { currency: Currency::Bitcoin, raw_amount: None, si_prefix: None },
+				data: RawDataPart {
+					timestamp: PositiveTimestamp::from_unix_timestamp(1496314658).unwrap(),
+					tagged_fields: vec ! [
+						crate::TaggedField::PaymentHash(PaymentHash(
+							<[u8; 32]>::try_from(
+								Vec::from_hex(
+									"0001020304050607080900010203040506070809000102030405060708090102",
+								)
+								.unwrap(),
+							)
+							.unwrap(),
+						))
+						.into(),
 						Description(
 							crate::Description::new(
 								"Please consider supporting this project".to_owned()
 							).unwrap()
 						).into(),
 					],
-					},
 				},
-				hash: [
-					0xc3, 0xd4, 0xe8, 0x3f, 0x64, 0x6f, 0xa7, 0x9a, 0x39, 0x3d, 0x75, 0x27, 0x7b,
-					0x1d, 0x85, 0x8d, 0xb1, 0xd1, 0xf7, 0xab, 0x71, 0x37, 0xdc, 0xb7, 0x83, 0x5d,
-					0xb2, 0xec, 0xd5, 0x18, 0xe1, 0xc9,
-				],
-				signature: Bolt11InvoiceSignature(
-					RecoverableSignature::from_compact(
-						&[
-							0x38u8, 0xec, 0x68, 0x91, 0x34, 0x5e, 0x20, 0x41, 0x45, 0xbe, 0x8a,
-							0x3a, 0x99, 0xde, 0x38, 0xe9, 0x8a, 0x39, 0xd6, 0xa5, 0x69, 0x43, 0x4e,
-							0x18, 0x45, 0xc8, 0xaf, 0x72, 0x05, 0xaf, 0xcf, 0xcc, 0x7f, 0x42, 0x5f,
-							0xcd, 0x14, 0x63, 0xe9, 0x3c, 0x32, 0x88, 0x1e, 0xad, 0x0d, 0x6e, 0x35,
-							0x6d, 0x46, 0x7e, 0xc8, 0xc0, 0x25, 0x53, 0xf9, 0xaa, 0xb1, 0x5e, 0x57,
-							0x38, 0xb1, 0x1f, 0x12, 0x7f,
-						],
-						RecoveryId::from_i32(0).unwrap(),
-					)
-					.unwrap(),
-				),
-			};
+			},
+			hash: [
+				0xc3, 0xd4, 0xe8, 0x3f, 0x64, 0x6f, 0xa7, 0x9a, 0x39, 0x3d, 0x75, 0x27, 0x7b, 0x1d,
+				0x85, 0x8d, 0xb1, 0xd1, 0xf7, 0xab, 0x71, 0x37, 0xdc, 0xb7, 0x83, 0x5d, 0xb2, 0xec,
+				0xd5, 0x18, 0xe1, 0xc9,
+			],
+			signature: Bolt11InvoiceSignature(
+				RecoverableSignature::from_compact(
+					&[
+						0x38u8, 0xec, 0x68, 0x91, 0x34, 0x5e, 0x20, 0x41, 0x45, 0xbe, 0x8a, 0x3a,
+						0x99, 0xde, 0x38, 0xe9, 0x8a, 0x39, 0xd6, 0xa5, 0x69, 0x43, 0x4e, 0x18,
+						0x45, 0xc8, 0xaf, 0x72, 0x05, 0xaf, 0xcf, 0xcc, 0x7f, 0x42, 0x5f, 0xcd,
+						0x14, 0x63, 0xe9, 0x3c, 0x32, 0x88, 0x1e, 0xad, 0x0d, 0x6e, 0x35, 0x6d,
+						0x46, 0x7e, 0xc8, 0xc0, 0x25, 0x53, 0xf9, 0xaa, 0xb1, 0x5e, 0x57, 0x38,
+						0xb1, 0x1f, 0x12, 0x7f,
+					],
+					RecoveryId::from_i32(0).unwrap(),
+				)
+				.unwrap(),
+			),
+		};
 
 		assert!(invoice.check_signature());
 
@@ -2050,9 +2059,10 @@ mod test {
 	fn test_check_feature_bits() {
 		use crate::TaggedField::*;
 		use crate::{
-			Bolt11Invoice, Bolt11SemanticError, Currency, PositiveTimestamp, RawBolt11Invoice,
-			RawDataPart, RawHrp, Sha256,
+			Bolt11Invoice, Bolt11SemanticError, Currency, PaymentHash, PositiveTimestamp,
+			RawBolt11Invoice, RawDataPart, RawHrp,
 		};
+		use bitcoin::hex::FromHex;
 		use bitcoin::secp256k1::Secp256k1;
 		use bitcoin::secp256k1::SecretKey;
 		use lightning_types::features::Bolt11InvoiceFeatures;
@@ -2064,9 +2074,12 @@ mod test {
 			data: RawDataPart {
 				timestamp: PositiveTimestamp::from_unix_timestamp(1496314658).unwrap(),
 				tagged_fields: vec![
-					PaymentHash(Sha256(
-						sha256::Hash::from_str(
-							"0001020304050607080900010203040506070809000102030405060708090102",
+					crate::TaggedField::PaymentHash(PaymentHash(
+						<[u8; 32]>::try_from(
+							Vec::from_hex(
+								"0001020304050607080900010203040506070809000102030405060708090102",
+							)
+							.unwrap(),
 						)
 						.unwrap(),
 					))
@@ -2174,7 +2187,7 @@ mod test {
 
 		let builder = InvoiceBuilder::new(Currency::Bitcoin)
 			.description("Test".into())
-			.payment_hash(sha256::Hash::from_slice(&[0; 32][..]).unwrap())
+			.payment_hash(PaymentHash([0; 32]))
 			.duration_since_epoch(Duration::from_secs(1234567));
 
 		let invoice = builder.clone().amount_milli_satoshis(1500).build_raw().unwrap();
@@ -2196,7 +2209,7 @@ mod test {
 		use std::iter::FromIterator;
 
 		let builder = InvoiceBuilder::new(Currency::Bitcoin)
-			.payment_hash(sha256::Hash::from_slice(&[0; 32][..]).unwrap())
+			.payment_hash(PaymentHash([0; 32]))
 			.duration_since_epoch(Duration::from_secs(1234567))
 			.min_final_cltv_expiry_delta(144);
 
@@ -2300,7 +2313,7 @@ mod test {
 			.private_route(route_1.clone())
 			.private_route(route_2.clone())
 			.description_hash(sha256::Hash::from_slice(&[3; 32][..]).unwrap())
-			.payment_hash(sha256::Hash::from_slice(&[21; 32][..]).unwrap())
+			.payment_hash(PaymentHash([21; 32]))
 			.payment_secret(PaymentSecret([42; 32]))
 			.basic_mpp();
 
@@ -2361,7 +2374,7 @@ mod test {
 
 		let signed_invoice = InvoiceBuilder::new(Currency::Bitcoin)
 			.description("Test".into())
-			.payment_hash(sha256::Hash::from_slice(&[0; 32][..]).unwrap())
+			.payment_hash(PaymentHash([0; 32]))
 			.payment_secret(PaymentSecret([0; 32]))
 			.duration_since_epoch(Duration::from_secs(1234567))
 			.build_raw()
@@ -2387,7 +2400,7 @@ mod test {
 
 		let signed_invoice = InvoiceBuilder::new(Currency::Bitcoin)
 			.description("Test".into())
-			.payment_hash(sha256::Hash::from_slice(&[0; 32][..]).unwrap())
+			.payment_hash(PaymentHash([0; 32]))
 			.payment_secret(PaymentSecret([0; 32]))
 			.duration_since_epoch(Duration::from_secs(1234567))
 			.build_raw()
@@ -2428,13 +2441,13 @@ mod test {
 
 	#[test]
 	fn raw_tagged_field_ordering() {
-		use crate::{
-			sha256, Description, Fe32, RawTaggedField, Sha256, TaggedField, UntrustedString,
-		};
+		use crate::{Description, Fe32, PaymentHash, RawTaggedField, TaggedField, UntrustedString};
+		use bitcoin::hex::FromHex;
 
-		let field10 = RawTaggedField::KnownSemantics(TaggedField::PaymentHash(Sha256(
-			sha256::Hash::from_str(
-				"0001020304050607080900010203040506070809000102030405060708090102",
+		let field10 = RawTaggedField::KnownSemantics(crate::TaggedField::PaymentHash(PaymentHash(
+			<[u8; 32]>::try_from(
+				Vec::from_hex("0001020304050607080900010203040506070809000102030405060708090102")
+					.unwrap(),
 			)
 			.unwrap(),
 		)));

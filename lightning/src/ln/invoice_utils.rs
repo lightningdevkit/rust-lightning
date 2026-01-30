@@ -18,7 +18,6 @@ use crate::sign::{EntropySource, NodeSigner, Recipient};
 use crate::types::payment::PaymentHash;
 use crate::util::logger::{Logger, Record};
 use alloc::collections::{btree_map, BTreeMap};
-use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::PublicKey;
 #[cfg(not(feature = "std"))]
 use core::iter::Iterator;
@@ -228,7 +227,7 @@ where
 
 	let mut invoice = invoice
 		.duration_since_epoch(duration_since_epoch)
-		.payment_hash(Hash::from_slice(&payment_hash.0).unwrap())
+		.payment_hash(payment_hash)
 		.payment_secret(payment_secret)
 		.min_final_cltv_expiry_delta(
 			// Add a buffer of 3 to the delta if present, otherwise use LDK's minimum.
@@ -1257,7 +1256,8 @@ mod test {
 			Duration::from_secs(genesis_timestamp),
 		)
 		.unwrap();
-		let (payment_hash, payment_secret) = (invoice.payment_hash(), *invoice.payment_secret());
+		let payment_hash = invoice.payment_hash();
+		let payment_secret = *invoice.payment_secret();
 		let payment_preimage = if user_generated_pmt_hash {
 			user_payment_preimage
 		} else {
