@@ -41,6 +41,7 @@ use bitcoin::secp256k1::ecdsa;
 use bitcoin::secp256k1::schnorr;
 use bitcoin::secp256k1::{PublicKey, SecretKey};
 use bitcoin::transaction::{OutPoint, Transaction, TxOut};
+use bitcoin::FeeRate;
 use bitcoin::{consensus, Sequence, TxIn, Weight, Witness};
 
 use dnssec_prover::rr::Name;
@@ -1415,6 +1416,19 @@ impl Readable for Weight {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let wu: u64 = Readable::read(r)?;
 		Ok(Weight::from_wu(wu))
+	}
+}
+
+impl Writeable for FeeRate {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.to_sat_per_kwu().write(w)
+	}
+}
+
+impl Readable for FeeRate {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let sat_kwu: u64 = Readable::read(r)?;
+		Ok(FeeRate::from_sat_per_kwu(sat_kwu))
 	}
 }
 
