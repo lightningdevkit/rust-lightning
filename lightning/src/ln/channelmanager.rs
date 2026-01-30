@@ -17234,7 +17234,7 @@ pub(super) struct ChannelManagerData<SP: SignerProvider> {
 	// Marked `_legacy` because in versions > 0.2 we are taking steps to remove the requirement of
 	// regularly persisting the `ChannelManager` and instead rebuild the set of HTLC forwards from
 	// `Channel{Monitor}` data. See [`ChannelManager::read`].
-	pending_intercepted_htlcs_legacy: Option<HashMap<InterceptId, PendingAddHTLCInfo>>,
+	pending_intercepted_htlcs_legacy: HashMap<InterceptId, PendingAddHTLCInfo>,
 	pending_outbound_payments: HashMap<PaymentId, PendingOutboundPayment>,
 	pending_claiming_payments: HashMap<PaymentHash, ClaimingPayment>,
 	received_network_pubkey: Option<PublicKey>,
@@ -17247,7 +17247,7 @@ pub(super) struct ChannelManagerData<SP: SignerProvider> {
 	// Marked `_legacy` because in versions > 0.2 we are taking steps to remove the requirement of
 	// regularly persisting the `ChannelManager` and instead rebuild the set of HTLC forwards from
 	// `Channel{Monitor}` data. See [`ChannelManager::read`].
-	decode_update_add_htlcs_legacy: Option<HashMap<u64, Vec<msgs::UpdateAddHTLC>>>,
+	decode_update_add_htlcs_legacy: HashMap<u64, Vec<msgs::UpdateAddHTLC>>,
 	inbound_payment_id_secret: Option<[u8; 32]>,
 	in_flight_monitor_updates: Option<HashMap<(PublicKey, ChannelId), Vec<ChannelMonitorUpdate>>>,
 	peer_storage_dir: Option<Vec<(PublicKey, Vec<u8>)>>,
@@ -17496,7 +17496,8 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 			peer_init_features,
 			pending_events_read,
 			highest_seen_timestamp,
-			pending_intercepted_htlcs_legacy,
+			pending_intercepted_htlcs_legacy: pending_intercepted_htlcs_legacy
+				.unwrap_or_else(new_hash_map),
 			pending_outbound_payments,
 			// unwrap safety: pending_claiming_payments is guaranteed to be `Some` after read_tlv_fields
 			pending_claiming_payments: pending_claiming_payments.unwrap(),
@@ -17508,7 +17509,8 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 			claimable_htlc_purposes,
 			probing_cookie_secret,
 			claimable_htlc_onion_fields,
-			decode_update_add_htlcs_legacy,
+			decode_update_add_htlcs_legacy: decode_update_add_htlcs_legacy
+				.unwrap_or_else(new_hash_map),
 			inbound_payment_id_secret,
 			in_flight_monitor_updates,
 			peer_storage_dir,
@@ -17791,7 +17793,7 @@ impl<
 			peer_init_features,
 			mut pending_events_read,
 			highest_seen_timestamp,
-			pending_intercepted_htlcs_legacy,
+			mut pending_intercepted_htlcs_legacy,
 			pending_outbound_payments,
 			pending_claiming_payments,
 			received_network_pubkey,
@@ -17800,17 +17802,12 @@ impl<
 			claimable_htlc_purposes,
 			mut probing_cookie_secret,
 			claimable_htlc_onion_fields,
-			decode_update_add_htlcs_legacy,
+			mut decode_update_add_htlcs_legacy,
 			mut inbound_payment_id_secret,
 			mut in_flight_monitor_updates,
 			peer_storage_dir,
 			async_receive_offer_cache,
 		} = data;
-
-		let mut pending_intercepted_htlcs_legacy =
-			pending_intercepted_htlcs_legacy.unwrap_or_else(new_hash_map);
-		let mut decode_update_add_htlcs_legacy =
-			decode_update_add_htlcs_legacy.unwrap_or_else(new_hash_map);
 
 		let empty_peer_state = || PeerState {
 			channel_by_id: new_hash_map(),
