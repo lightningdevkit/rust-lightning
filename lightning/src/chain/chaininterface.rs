@@ -15,9 +15,55 @@
 
 use core::{cmp, ops::Deref};
 
+use crate::ln::types::ChannelId;
 use crate::prelude::*;
 
 use bitcoin::transaction::Transaction;
+
+/// Represents the class of transaction being broadcast.
+///
+/// This is used to provide context about the type of transaction being broadcast, which may be
+/// useful for logging, filtering, or prioritization purposes.
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub enum TransactionType {
+	/// A funding transaction establishing a new channel.
+	Funding {
+		/// The IDs of the channels being funded.
+		///
+		/// A single funding transaction may establish multiple channels when using batch funding.
+		channel_ids: Vec<ChannelId>,
+	},
+	/// A transaction cooperatively closing a channel.
+	CooperativeClose {
+		/// The ID of the channel being closed.
+		channel_id: ChannelId,
+	},
+	/// A transaction being broadcast to force-close the channel.
+	UnilateralClose {
+		/// The ID of the channel being force-closed.
+		channel_id: ChannelId,
+	},
+	/// An anchor bumping transaction used for CPFP fee-bumping a closing transaction.
+	AnchorBump {
+		/// The ID of the channel whose closing transaction is being fee-bumped.
+		channel_id: ChannelId,
+	},
+	/// A transaction claiming outputs from a commitment transaction (HTLC claims, penalty/justice).
+	Claim {
+		/// The ID of the channel from which outputs are being claimed.
+		channel_id: ChannelId,
+	},
+	/// A transaction genered by the [`OutputSweeper`], sweeping [`SpendableOutputDescriptor`]s to the user's wallet.
+	///
+	/// [`OutputSweeper`]: crate::util::sweep::OutputSweeper
+	/// [`SpendableOutputDescriptor`]: crate::sign::SpendableOutputDescriptor
+	Sweep {
+		/// The IDs of the channels from which outputs are being swept, if known.
+		///
+		/// A single sweep transaction may aggregate outputs from multiple channels.
+		channel_ids: Vec<ChannelId>,
+	},
+}
 
 // TODO: Define typed abstraction over feerates to handle their conversions.
 pub(crate) fn compute_feerate_sat_per_1000_weight(fee_sat: u64, weight: u64) -> u32 {
@@ -45,7 +91,10 @@ pub trait BroadcasterInterface {
 	///
 	/// Bitcoin transaction packages are defined in BIP 331 and here:
 	/// <https://github.com/bitcoin/bitcoin/blob/master/doc/policy/packages.md>
-	fn broadcast_transactions(&self, txs: &[&Transaction]);
+	///
+	/// Each transaction is paired with a [`TransactionType`] indicating the class of transaction
+	/// being broadcast, which may be useful for logging, filtering, or prioritization.
+	fn broadcast_transactions(&self, txs: &[(&Transaction, TransactionType)]);
 }
 
 /// An enum that represents the priority at which we want a transaction to confirm used for feerate
