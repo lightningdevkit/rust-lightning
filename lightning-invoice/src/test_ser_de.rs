@@ -1,7 +1,11 @@
 use crate::de::FromBase32;
 use crate::ser::{Base32Iterable, Base32Len};
-use crate::{sha256, PayeePubKey, PaymentSecret, PositiveTimestamp, RawDataPart, Sha256};
+use crate::{
+	sha256, PayeePubKey, PaymentHash, PaymentSecret, PositiveTimestamp, RawDataPart,
+	RawTaggedField, Sha256, TaggedField,
+};
 use bech32::Fe32;
+use bitcoin::hex::FromHex;
 use core::fmt::Debug;
 use std::str::FromStr;
 
@@ -173,11 +177,12 @@ fn bolt11_invoice_features() {
 
 #[test]
 fn raw_tagged_field() {
-	use crate::TaggedField::PaymentHash;
-
-	let field = PaymentHash(Sha256(
-		sha256::Hash::from_str("0001020304050607080900010203040506070809000102030405060708090102")
-			.unwrap(),
+	let field = TaggedField::PaymentHash(PaymentHash(
+		<[u8; 32]>::try_from(
+			Vec::from_hex("0001020304050607080900010203040506070809000102030405060708090102")
+				.unwrap(),
+		)
+		.unwrap(),
 	));
 	ser_de_test(field, "pp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypq");
 }
@@ -202,17 +207,15 @@ fn description() {
 
 #[test]
 fn raw_data_part() {
-	use crate::TaggedField::PaymentHash;
-
 	let raw_data_part = RawDataPart {
 		timestamp: PositiveTimestamp::from_unix_timestamp(10000).unwrap(),
-		tagged_fields: vec![PaymentHash(Sha256(
-			sha256::Hash::from_str(
-				"0001020304050607080900010203040506070809000102030405060708090102",
+		tagged_fields: vec![RawTaggedField::KnownSemantics(TaggedField::PaymentHash(PaymentHash(
+			<[u8; 32]>::try_from(
+				Vec::from_hex("0001020304050607080900010203040506070809000102030405060708090102")
+					.unwrap(),
 			)
 			.unwrap(),
-		))
-		.into()],
+		)))],
 	};
 	ser_de_test(raw_data_part, "qqqqfcspp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypq");
 }

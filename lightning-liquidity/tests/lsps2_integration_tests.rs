@@ -145,7 +145,7 @@ fn create_jit_invoice(
 	let currency = Network::Bitcoin.into();
 	let mut invoice_builder = InvoiceBuilder::new(currency)
 		.description(description.to_string())
-		.payment_hash(payment_hash)
+		.payment_hash(PaymentHash(payment_hash.to_byte_array()))
 		.payment_secret(payment_secret)
 		.current_timestamp()
 		.min_final_cltv_expiry_delta(min_final_cltv_expiry_delta.into())
