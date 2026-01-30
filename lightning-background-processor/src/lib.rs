@@ -1160,7 +1160,15 @@ where
 		// monitor updates that arrived after the manager state was captured.
 		let pending_monitor_writes = chain_monitor.pending_operation_count();
 
-		if channel_manager.get_cm().get_and_clear_needs_persistence() {
+		// Only persist the ChannelManager if there are pending monitor writes. This ensures
+		// that monitor updates are always preceded by a fresh ChannelManager state on disk,
+		// and avoids unnecessarily blocking event handling for non-critical ChannelManager
+		// writes when there are no monitor updates to flush.
+		// We check pending_monitor_writes first to avoid clearing the persistence flag when
+		// we're not actually going to persist.
+		if pending_monitor_writes > 0
+			&& channel_manager.get_cm().get_and_clear_needs_persistence()
+		{
 			log_trace!(logger, "Persisting ChannelManager...");
 
 			let fut = async {
@@ -1761,7 +1769,15 @@ impl BackgroundProcessor {
 				// Capture the number of pending monitor writes before persisting the channel manager.
 				let pending_monitor_writes = chain_monitor.pending_operation_count();
 
-				if channel_manager.get_cm().get_and_clear_needs_persistence() {
+				// Only persist the ChannelManager if there are pending monitor writes. This ensures
+				// that monitor updates are always preceded by a fresh ChannelManager state on disk,
+				// and avoids unnecessarily blocking event handling for non-critical ChannelManager
+				// writes when there are no monitor updates to flush.
+				// We check pending_monitor_writes first to avoid clearing the persistence flag when
+				// we're not actually going to persist.
+				if pending_monitor_writes > 0
+					&& channel_manager.get_cm().get_and_clear_needs_persistence()
+				{
 					log_trace!(logger, "Persisting ChannelManager...");
 					(kv_store.write(
 						CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
