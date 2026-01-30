@@ -23,6 +23,7 @@ use crate::ln::channelmanager::{
 use crate::ln::onion_utils;
 use crate::ln::onion_utils::{DecodedOnionFailure, HTLCFailReason};
 use crate::offers::invoice::{Bolt12Invoice, DerivedSigningPubkey, InvoiceBuilder};
+use crate::offers::invoice_request::CurrencyConversion;
 use crate::offers::invoice_request::InvoiceRequest;
 use crate::offers::nonce::Nonce;
 use crate::offers::static_invoice::StaticInvoice;
@@ -1119,13 +1120,15 @@ impl OutboundPayments {
 		Ok(())
 	}
 
-	pub(super) fn static_invoice_received<ES: Deref>(
-		&self, invoice: &StaticInvoice, payment_id: PaymentId, features: Bolt12InvoiceFeatures,
-		best_block_height: u32, duration_since_epoch: Duration, entropy_source: ES,
+	pub(super) fn static_invoice_received<ES: Deref, CC: Deref>(
+		&self, invoice: &StaticInvoice, currency_conversion: CC, payment_id: PaymentId,
+		features: Bolt12InvoiceFeatures, best_block_height: u32, duration_since_epoch: Duration,
+		entropy_source: ES,
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
 	) -> Result<(), Bolt12PaymentError>
 	where
 		ES::Target: EntropySource,
+		CC::Target: CurrencyConversion,
 	{
 		macro_rules! abandon_with_entry {
 			($payment: expr, $reason: expr) => {
@@ -1172,6 +1175,7 @@ impl OutboundPayments {
 
 					let amount_msat = match InvoiceBuilder::<DerivedSigningPubkey>::amount_msats(
 						invreq,
+						currency_conversion,
 					) {
 						Ok(amt) => amt,
 						Err(_) => {
@@ -3234,7 +3238,7 @@ mod tests {
 			.build().unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
 			.build_and_sign().unwrap()
-			.respond_with_no_std(payment_paths(), payment_hash(), created_at).unwrap()
+			.respond_with_no_conversion(payment_paths(), payment_hash(), created_at).unwrap()
 			.build().unwrap()
 			.sign(recipient_sign).unwrap();
 
@@ -3283,7 +3287,7 @@ mod tests {
 			.build().unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
 			.build_and_sign().unwrap()
-			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap()
+			.respond_with_no_conversion(payment_paths(), payment_hash(), now()).unwrap()
 			.build().unwrap()
 			.sign(recipient_sign).unwrap();
 
@@ -3348,7 +3352,7 @@ mod tests {
 			.build().unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
 			.build_and_sign().unwrap()
-			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap()
+			.respond_with_no_conversion(payment_paths(), payment_hash(), now()).unwrap()
 			.build().unwrap()
 			.sign(recipient_sign).unwrap();
 
