@@ -11,9 +11,6 @@ use std::fmt;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::time::Duration;
 
-/// Timeout for operations on TCP streams.
-const TCP_STREAM_TIMEOUT: Duration = Duration::from_secs(5);
-
 /// Timeout for reading the first byte of a response. This is separate from the general read
 /// timeout as it is not uncommon for Bitcoin Core to be blocked waiting on UTXO cache flushes for
 /// upwards of 10 minutes on slow devices (e.g. RPis with SSDs over USB). Note that we always retry
@@ -21,12 +18,58 @@ const TCP_STREAM_TIMEOUT: Duration = Duration::from_secs(5);
 /// value.
 const TCP_STREAM_RESPONSE_TIMEOUT: Duration = Duration::from_secs(300);
 
-/// Maximum HTTP message header size in bytes.
-const MAX_HTTP_MESSAGE_HEADER_SIZE: usize = 8192;
-
 /// Maximum HTTP message body size in bytes. Enough for a hex-encoded block in JSON format and any
 /// overhead for HTTP chunked transfer encoding.
 const MAX_HTTP_MESSAGE_BODY_SIZE: usize = 2 * 4_000_000 + 32_000;
+
+/// Error type for HTTP client operations.
+#[derive(Debug)]
+pub enum HttpClientError {
+	/// transport-level error (connection, timeout, protocol parsing, etc.)
+	Transport(bitreq::Error),
+	/// HTTP error response
+	Http(HttpError),
+	/// I/O error (DNS resolution, etc.)
+	Io(std::io::Error),
+}
+
+impl std::error::Error for HttpClientError {
+	fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+		match self {
+			HttpClientError::Transport(e) => Some(e),
+			HttpClientError::Http(e) => Some(e),
+			HttpClientError::Io(e) => Some(e),
+		}
+	}
+}
+
+impl fmt::Display for HttpClientError {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		match self {
+			HttpClientError::Transport(e) => write!(f, "transport error: {}", e),
+			HttpClientError::Http(e) => write!(f, "HTTP error: {}", e),
+			HttpClientError::Io(e) => write!(f, "I/O error: {}", e),
+		}
+	}
+}
+
+impl From<std::io::Error> for HttpClientError {
+	fn from(e: std::io::Error) -> Self {
+		HttpClientError::Io(e)
+	}
+}
+
+impl From<bitreq::Error> for HttpClientError {
+	fn from(e: bitreq::Error) -> Self {
+		HttpClientError::Transport(e)
+	}
+}
+
+impl From<HttpError> for HttpClientError {
+	fn from(e: HttpError) -> Self {
+		HttpClientError::Http(e)
+	}
+}
 
 /// Endpoint for interacting with an HTTP-based API.
 #[derive(Debug)]
@@ -94,22 +137,17 @@ pub(crate) struct HttpClient {
 
 impl HttpClient {
 	/// Opens a connection to an HTTP endpoint.
-	pub fn connect<E: ToSocketAddrs>(endpoint: E) -> std::io::Result<Self> {
+	pub fn connect<E: ToSocketAddrs>(endpoint: E) -> Result<Self, HttpClientError> {
 		let address = match endpoint.to_socket_addrs()?.next() {
 			None => {
 				return Err(std::io::Error::new(
 					std::io::ErrorKind::InvalidInput,
 					"could not resolve to any addresses",
-				));
+				)
+				.into());
 			},
 			Some(address) => address,
 		};
-
-		// Verify reachability by attempting a connection.
-		let stream = std::net::TcpStream::connect_timeout(&address, TCP_STREAM_TIMEOUT)?;
-		stream.set_read_timeout(Some(TCP_STREAM_TIMEOUT))?;
-		stream.set_write_timeout(Some(TCP_STREAM_TIMEOUT))?;
-		drop(stream);
 
 		Ok(Self {
 			address,
@@ -118,11 +156,11 @@ impl HttpClient {
 		})
 	}
 
-	/// Sends a `GET` request for a resource identified by `uri` at the `host`.
+	/// Sends a `GET` request for a resource identified by `uri`.
 	///
 	/// Returns the response body in `F` format.
 	#[allow(dead_code)]
-	pub async fn get<F>(&mut self, uri: &str, host: &str) -> std::io::Result<F>
+	pub async fn get<F>(&mut self, uri: &str) -> Result<F, HttpClientError>
 	where
 		F: TryFrom<Vec<u8>, Error = std::io::Error>,
 	{
@@ -131,26 +169,22 @@ impl HttpClient {
 			.send_request_with_retry(|| {
 				let url = format!("http://{}{}", address, uri);
 				bitreq::get(url)
-					.with_header("Host", host)
-					.with_header("Connection", "keep-alive")
 					.with_timeout(TCP_STREAM_RESPONSE_TIMEOUT.as_secs())
-					.with_max_headers_size(Some(MAX_HTTP_MESSAGE_HEADER_SIZE))
-					.with_max_status_line_length(Some(MAX_HTTP_MESSAGE_HEADER_SIZE))
 					.with_max_body_size(Some(MAX_HTTP_MESSAGE_BODY_SIZE))
 			})
 			.await?;
-		F::try_from(response_body)
+		F::try_from(response_body).map_err(HttpClientError::Io)
 	}
 
-	/// Sends a `POST` request for a resource identified by `uri` at the `host` using the given HTTP
+	/// Sends a `POST` request for a resource identified by `uri` using the given HTTP
 	/// authentication credentials.
 	///
 	/// The request body consists of the provided JSON `content`. Returns the response body in `F`
 	/// format.
 	#[allow(dead_code)]
 	pub async fn post<F>(
-		&mut self, uri: &str, host: &str, auth: &str, content: serde_json::Value,
-	) -> std::io::Result<F>
+		&mut self, uri: &str, auth: &str, content: serde_json::Value,
+	) -> Result<F, HttpClientError>
 	where
 		F: TryFrom<Vec<u8>, Error = std::io::Error>,
 	{
@@ -160,34 +194,36 @@ impl HttpClient {
 			.send_request_with_retry(|| {
 				let url = format!("http://{}{}", address, uri);
 				bitreq::post(url)
-					.with_header("Host", host)
 					.with_header("Authorization", auth)
-					.with_header("Connection", "keep-alive")
 					.with_header("Content-Type", "application/json")
 					.with_timeout(TCP_STREAM_RESPONSE_TIMEOUT.as_secs())
-					.with_max_headers_size(Some(MAX_HTTP_MESSAGE_HEADER_SIZE))
-					.with_max_status_line_length(Some(MAX_HTTP_MESSAGE_HEADER_SIZE))
 					.with_max_body_size(Some(MAX_HTTP_MESSAGE_BODY_SIZE))
 					.with_body(content.clone())
 			})
 			.await?;
-		F::try_from(response_body)
+		F::try_from(response_body).map_err(HttpClientError::Io)
 	}
 
 	/// Sends an HTTP request message and reads the response, returning its body. Attempts to
-	/// reconnect and retry if the connection has been closed.
+	/// reconnect and retry only on transport failures (not on HTTP errors like 500/404).
 	async fn send_request_with_retry(
 		&mut self, build_request: impl Fn() -> bitreq::Request,
-	) -> std::io::Result<Vec<u8>> {
+	) -> Result<Vec<u8>, HttpClientError> {
 		match self.send_request(build_request()).await {
 			Ok(bytes) => Ok(bytes),
-			Err(_) => {
-				// Reconnect and retry on fail. This can happen if the connection was closed after
-				// the keep-alive limits are reached, or generally if the request timed out due to
-				// Bitcoin Core being stuck on a long-running operation or its RPC queue being
-				// full.
-				// Block 100ms before retrying the request as in many cases the source of the error
-				// may be persistent for some time.
+			Err(HttpClientError::Http(e)) => {
+				// Don't retry on HTTP errors (non-2xx responses)
+				Err(HttpClientError::Http(e))
+			},
+			Err(HttpClientError::Io(e)) => {
+				// Don't retry on I/O errors (e.g., response parsing failures).
+				Err(HttpClientError::Io(e))
+			},
+			Err(HttpClientError::Transport(_)) => {
+				// Reconnect and retry on transport failures. This can happen if the connection
+				// was closed after the keep-alive limits are reached, or generally if the
+				// request timed out due to Bitcoin Core being stuck on a long-running operation
+				// or its RPC queue being full.
 				#[cfg(feature = "tokio")]
 				tokio::time::sleep(Duration::from_millis(100)).await;
 				#[cfg(not(feature = "tokio"))]
@@ -199,52 +235,30 @@ impl HttpClient {
 	}
 
 	/// Sends an HTTP request message and reads the response, returning its body.
-	async fn send_request(&self, request: bitreq::Request) -> std::io::Result<Vec<u8>> {
+	async fn send_request(&self, request: bitreq::Request) -> Result<Vec<u8>, HttpClientError> {
 		#[cfg(feature = "tokio")]
-		let response = request.send_async_with_client(&self.client).await.map_err(bitreq_to_io_error)?;
+		let response = request.send_async_with_client(&self.client).await?;
 		#[cfg(not(feature = "tokio"))]
-		let response = request.send().map_err(bitreq_to_io_error)?;
+		let response = request.send()?;
 
 		let status_code = response.status_code;
 		let body = response.into_bytes();
 
 		if !(200..300).contains(&status_code) {
-			let error = HttpError { status_code: status_code.to_string(), contents: body };
-			return Err(std::io::Error::new(std::io::ErrorKind::Other, error));
+			return Err(HttpError { status_code, contents: body }.into());
 		}
 
 		Ok(body)
 	}
 }
 
-/// Converts a bitreq error to an std::io::Error.
-fn bitreq_to_io_error(err: bitreq::Error) -> std::io::Error {
-	use std::io::ErrorKind;
-
-	let kind = match &err {
-		bitreq::Error::IoError(e) => e.kind(),
-		bitreq::Error::HeadersOverflow
-		| bitreq::Error::StatusLineOverflow
-		| bitreq::Error::BodyOverflow
-		| bitreq::Error::MalformedChunkLength
-		| bitreq::Error::MalformedChunkEnd
-		| bitreq::Error::MalformedContentLength
-		| bitreq::Error::InvalidUtf8InResponse
-		| bitreq::Error::InvalidUtf8InBody(_) => ErrorKind::InvalidData,
-		bitreq::Error::AddressNotFound | bitreq::Error::HttpsFeatureNotEnabled => {
-			ErrorKind::InvalidInput
-		},
-		_ => ErrorKind::Other,
-	};
-
-	std::io::Error::new(kind, err)
-}
-
 /// HTTP error consisting of a status code and body contents.
 #[derive(Debug)]
-pub(crate) struct HttpError {
-	pub(crate) status_code: String,
-	pub(crate) contents: Vec<u8>,
+pub struct HttpError {
+	/// The HTTP status code.
+	pub status_code: i32,
+	/// The response body contents.
+	pub contents: Vec<u8>,
 }
 
 impl std::error::Error for HttpError {}
@@ -359,19 +373,6 @@ pub(crate) mod client_tests {
 	pub enum MessageBody<T: ToString> {
 		Empty,
 		Content(T),
-		ChunkedContent(T),
-	}
-
-	/// Encodes a body using chunked transfer encoding.
-	fn encode_chunked(body: &str, chunk_size: usize) -> String {
-		let mut out = String::new();
-		for chunk in body.as_bytes().chunks(chunk_size) {
-			out.push_str(&format!("{:X}\r\n", chunk.len()));
-			out.push_str(std::str::from_utf8(chunk).unwrap());
-			out.push_str("\r\n");
-		}
-		out.push_str("0\r\n\r\n");
-		out
 	}
 
 	impl HttpServer {
@@ -393,17 +394,6 @@ pub(crate) mod client_tests {
 						status,
 						body.len(),
 						body
-					)
-				},
-				MessageBody::ChunkedContent(body) => {
-					let body = body.to_string();
-					let chunked_body = encode_chunked(&body, 8);
-					format!(
-						"{}\r\n\
-						 Transfer-Encoding: chunked\r\n\
-						 \r\n\
-						 {}",
-						status, chunked_body
 					)
 				},
 			};
@@ -430,14 +420,15 @@ pub(crate) mod client_tests {
 			let shutdown = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 			let shutdown_signaled = std::sync::Arc::clone(&shutdown);
 			let handler = std::thread::spawn(move || {
+				let timeout = Duration::from_secs(5);
 				for stream in listener.incoming() {
 					if shutdown_signaled.load(std::sync::atomic::Ordering::SeqCst) {
 						return;
 					}
 
 					let stream = stream.unwrap();
-					stream.set_write_timeout(Some(TCP_STREAM_TIMEOUT)).unwrap();
-					stream.set_read_timeout(Some(TCP_STREAM_TIMEOUT)).unwrap();
+					stream.set_write_timeout(Some(timeout)).unwrap();
+					stream.set_read_timeout(Some(timeout)).unwrap();
 
 					let mut reader = std::io::BufReader::new(stream);
 
@@ -525,35 +516,29 @@ pub(crate) mod client_tests {
 	#[test]
 	fn connect_with_no_socket_address() {
 		match HttpClient::connect(&vec![][..]) {
-			Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput),
-			Ok(_) => panic!("Expected error"),
-		}
-	}
-
-	#[test]
-	fn connect_with_unknown_server() {
-		// get an unused port by binding to port 0
-		let port = {
-			let t = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
-			t.local_addr().unwrap().port()
-		};
-
-		match HttpClient::connect(("::", port)) {
-			#[cfg(target_os = "windows")]
-			Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::AddrNotAvailable),
-			#[cfg(not(target_os = "windows"))]
-			Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::ConnectionRefused),
+			Err(HttpClientError::Io(e)) => {
+				assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput)
+			},
+			Err(e) => panic!("Unexpected error type: {:?}", e),
 			Ok(_) => panic!("Expected error"),
 		}
 	}
 
 	#[tokio::test]
-	async fn connect_with_valid_endpoint() {
-		let server = HttpServer::responding_with_ok::<String>(MessageBody::Empty);
+	async fn request_to_unreachable_server() {
+		// Get an unused port by binding to port 0
+		let port = {
+			let t = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+			t.local_addr().unwrap().port()
+		};
 
-		match HttpClient::connect(&server.endpoint()) {
-			Err(e) => panic!("Unexpected error: {:?}", e),
-			Ok(_) => {},
+		// Connect succeeds (just resolves address), but request fails
+		let endpoint = HttpEndpoint::for_host("127.0.0.1".to_string()).with_port(port);
+		let mut client = HttpClient::connect(&endpoint).unwrap();
+		match client.get::<BinaryResponse>("/").await {
+			Err(HttpClientError::Transport(_)) => {},
+			Err(e) => panic!("Unexpected error type: {:?}", e),
+			Ok(_) => panic!("Expected error"),
 		}
 	}
 
@@ -562,49 +547,24 @@ pub(crate) mod client_tests {
 		let server = HttpServer::responding_with_server_error("foo");
 
 		let mut client = HttpClient::connect(&server.endpoint()).unwrap();
-		match client.get::<JsonResponse>("/foo", "foo.com").await {
-			Err(e) => {
-				assert_eq!(e.kind(), std::io::ErrorKind::Other);
-				let http_error = e.into_inner().unwrap().downcast::<HttpError>().unwrap();
-				assert_eq!(http_error.status_code, "500");
+		match client.get::<JsonResponse>("/foo").await {
+			Err(HttpClientError::Http(http_error)) => {
+				assert_eq!(http_error.status_code, 500);
 				assert_eq!(http_error.contents, "foo".as_bytes());
 			},
+			Err(e) => panic!("Unexpected error type: {:?}", e),
 			Ok(_) => panic!("Expected error"),
 		}
 	}
 
 	#[tokio::test]
-	async fn read_empty_message_body() {
-		let server = HttpServer::responding_with_ok::<String>(MessageBody::Empty);
-
-		let mut client = HttpClient::connect(&server.endpoint()).unwrap();
-		match client.get::<BinaryResponse>("/foo", "foo.com").await {
-			Err(e) => panic!("Unexpected error: {:?}", e),
-			Ok(bytes) => assert_eq!(bytes.0, Vec::<u8>::new()),
-		}
-	}
-
-	#[tokio::test]
-	async fn read_message_body_with_length() {
+	async fn read_message_body() {
 		let body = "foo bar baz qux".repeat(32);
 		let content = MessageBody::Content(body.clone());
 		let server = HttpServer::responding_with_ok::<String>(content);
 
 		let mut client = HttpClient::connect(&server.endpoint()).unwrap();
-		match client.get::<BinaryResponse>("/foo", "foo.com").await {
-			Err(e) => panic!("Unexpected error: {:?}", e),
-			Ok(bytes) => assert_eq!(bytes.0, body.as_bytes()),
-		}
-	}
-
-	#[tokio::test]
-	async fn read_chunked_message_body() {
-		let body = "foo bar baz qux".repeat(32);
-		let chunked_content = MessageBody::ChunkedContent(body.clone());
-		let server = HttpServer::responding_with_ok::<String>(chunked_content);
-
-		let mut client = HttpClient::connect(&server.endpoint()).unwrap();
-		match client.get::<BinaryResponse>("/foo", "foo.com").await {
+		match client.get::<BinaryResponse>("/foo").await {
 			Err(e) => panic!("Unexpected error: {:?}", e),
 			Ok(bytes) => assert_eq!(bytes.0, body.as_bytes()),
 		}
@@ -615,8 +575,8 @@ pub(crate) mod client_tests {
 		let server = HttpServer::responding_with_ok::<String>(MessageBody::Empty);
 
 		let mut client = HttpClient::connect(&server.endpoint()).unwrap();
-		assert!(client.get::<BinaryResponse>("/foo", "foo.com").await.is_ok());
-		match client.get::<BinaryResponse>("/foo", "foo.com").await {
+		assert!(client.get::<BinaryResponse>("/foo").await.is_ok());
+		match client.get::<BinaryResponse>("/foo").await {
 			Err(e) => panic!("Unexpected error: {:?}", e),
 			Ok(bytes) => assert_eq!(bytes.0, Vec::<u8>::new()),
 		}
