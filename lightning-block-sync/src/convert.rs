@@ -73,7 +73,7 @@ impl From<RpcClientError> for BlockSourceError {
 			// RPC errors are transient
 			// e.g. "block not found" should not stop polling
 			RpcClientError::Rpc(_) => BlockSourceError::transient(e),
-			// Malformed response data is persistent 
+			// Malformed response data is persistent
 			RpcClientError::InvalidData(_) => BlockSourceError::persistent(e),
 		}
 	}
