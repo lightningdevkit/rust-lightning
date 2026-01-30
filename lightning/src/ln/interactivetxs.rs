@@ -39,7 +39,6 @@ use crate::ln::types::ChannelId;
 use crate::sign::{EntropySource, P2TR_KEY_PATH_WITNESS_WEIGHT, P2WPKH_WITNESS_WEIGHT};
 
 use core::fmt::Display;
-use core::ops::Deref;
 
 /// The number of received `tx_add_input` messages during a negotiation at which point the
 /// negotiation MUST be failed.
@@ -1989,10 +1988,9 @@ macro_rules! do_state_transition {
 	}};
 }
 
-fn generate_holder_serial_id<ES: Deref>(entropy_source: &ES, is_initiator: bool) -> SerialId
-where
-	ES::Target: EntropySource,
-{
+fn generate_holder_serial_id<ES: EntropySource>(
+	entropy_source: &ES, is_initiator: bool,
+) -> SerialId {
 	let rand_bytes = entropy_source.get_secure_random_bytes();
 	let mut serial_id_bytes = [0u8; 8];
 	serial_id_bytes.copy_from_slice(&rand_bytes[..8]);
@@ -2008,10 +2006,7 @@ pub(super) enum HandleTxCompleteValue {
 	NegotiationComplete(Option<InteractiveTxMessageSend>, OutPoint),
 }
 
-pub(super) struct InteractiveTxConstructorArgs<'a, ES: Deref>
-where
-	ES::Target: EntropySource,
-{
+pub(super) struct InteractiveTxConstructorArgs<'a, ES: EntropySource> {
 	pub entropy_source: &'a ES,
 	pub holder_node_id: PublicKey,
 	pub counterparty_node_id: PublicKey,
@@ -2030,10 +2025,9 @@ impl InteractiveTxConstructor {
 	///
 	/// If the holder is the initiator, they need to send the first message which is a `TxAddInput`
 	/// message.
-	pub fn new<ES: Deref>(args: InteractiveTxConstructorArgs<ES>) -> Result<Self, NegotiationError>
-	where
-		ES::Target: EntropySource,
-	{
+	pub fn new<ES: EntropySource>(
+		args: InteractiveTxConstructorArgs<ES>,
+	) -> Result<Self, NegotiationError> {
 		let InteractiveTxConstructorArgs {
 			entropy_source,
 			holder_node_id,
@@ -2428,7 +2422,6 @@ mod tests {
 		OutPoint, PubkeyHash, ScriptBuf, Sequence, SignedAmount, Transaction, TxIn, TxOut,
 		WPubkeyHash,
 	};
-	use core::ops::Deref;
 
 	use super::{
 		get_output_weight, ConstructedTransaction, InteractiveTxSigningSession, TxInMetadata,
@@ -2498,19 +2491,15 @@ mod tests {
 		do_test_interactive_tx_constructor_internal(session, &&entropy_source);
 	}
 
-	fn do_test_interactive_tx_constructor_with_entropy_source<ES: Deref>(
+	fn do_test_interactive_tx_constructor_with_entropy_source<ES: EntropySource>(
 		session: TestSession, entropy_source: ES,
-	) where
-		ES::Target: EntropySource,
-	{
+	) {
 		do_test_interactive_tx_constructor_internal(session, &entropy_source);
 	}
 
-	fn do_test_interactive_tx_constructor_internal<ES: Deref>(
+	fn do_test_interactive_tx_constructor_internal<ES: EntropySource>(
 		session: TestSession, entropy_source: &ES,
-	) where
-		ES::Target: EntropySource,
-	{
+	) {
 		let channel_id = ChannelId(entropy_source.get_secure_random_bytes());
 		let funding_tx_locktime = AbsoluteLockTime::from_height(1337).unwrap();
 		let holder_node_id = PublicKey::from_secret_key(

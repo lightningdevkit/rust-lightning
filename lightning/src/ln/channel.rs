@@ -93,7 +93,6 @@ use crate::prelude::*;
 use crate::sign::type_resolver::ChannelSignerType;
 #[cfg(any(test, fuzzing, debug_assertions))]
 use crate::sync::Mutex;
-use core::ops::Deref;
 use core::time::Duration;
 use core::{cmp, fmt, mem};
 
@@ -985,20 +984,14 @@ impl ChannelError {
 	}
 }
 
-pub(super) struct WithChannelContext<'a, L: Deref>
-where
-	L::Target: Logger,
-{
+pub(super) struct WithChannelContext<'a, L: Logger> {
 	pub logger: &'a L,
 	pub peer_id: Option<PublicKey>,
 	pub channel_id: Option<ChannelId>,
 	pub payment_hash: Option<PaymentHash>,
 }
 
-impl<'a, L: Deref> Logger for WithChannelContext<'a, L>
-where
-	L::Target: Logger,
-{
+impl<'a, L: Logger> Logger for WithChannelContext<'a, L> {
 	fn log(&self, mut record: Record) {
 		record.peer_id = self.peer_id;
 		record.channel_id = self.channel_id;
@@ -1007,16 +1000,10 @@ where
 	}
 }
 
-impl<'a, 'b, L: Deref> WithChannelContext<'a, L>
-where
-	L::Target: Logger,
-{
-	pub(super) fn from<S: Deref>(
+impl<'a, 'b, L: Logger> WithChannelContext<'a, L> {
+	pub(super) fn from<S: SignerProvider>(
 		logger: &'a L, context: &'b ChannelContext<S>, payment_hash: Option<PaymentHash>,
-	) -> Self
-	where
-		S::Target: SignerProvider,
-	{
+	) -> Self {
 		WithChannelContext {
 			logger,
 			peer_id: Some(context.counterparty_node_id),
@@ -1251,9 +1238,7 @@ struct HolderCommitmentPoint {
 
 impl HolderCommitmentPoint {
 	#[rustfmt::skip]
-	pub fn new<SP: Deref>(signer: &ChannelSignerType<SP>, secp_ctx: &Secp256k1<secp256k1::All>) -> Option<Self>
-		where SP::Target: SignerProvider
-	{
+	pub fn new<SP: SignerProvider>(signer: &ChannelSignerType<SP>, secp_ctx: &Secp256k1<secp256k1::All>) -> Option<Self> {
 		Some(HolderCommitmentPoint {
 			next_transaction_number: INITIAL_COMMITMENT_NUMBER,
 			previous_revoked_point: None,
@@ -1294,12 +1279,9 @@ impl HolderCommitmentPoint {
 
 	/// If we are pending advancing the next commitment point, this method tries asking the signer
 	/// again.
-	pub fn try_resolve_pending<SP: Deref, L: Deref>(
+	pub fn try_resolve_pending<SP: SignerProvider, L: Logger>(
 		&mut self, signer: &ChannelSignerType<SP>, secp_ctx: &Secp256k1<secp256k1::All>, logger: &L,
-	) where
-		SP::Target: SignerProvider,
-		L::Target: Logger,
-	{
+	) {
 		if !self.can_advance() {
 			let pending_next_point = signer
 				.as_ref()
@@ -1331,13 +1313,9 @@ impl HolderCommitmentPoint {
 	///
 	/// If our signer is ready to provide the next commitment point, the next call to `advance` will
 	/// succeed.
-	pub fn advance<SP: Deref, L: Deref>(
+	pub fn advance<SP: SignerProvider, L: Logger>(
 		&mut self, signer: &ChannelSignerType<SP>, secp_ctx: &Secp256k1<secp256k1::All>, logger: &L,
-	) -> Result<(), ()>
-	where
-		SP::Target: SignerProvider,
-		L::Target: Logger,
-	{
+	) -> Result<(), ()> {
 		if let Some(next_point) = self.pending_next_point {
 			*self = Self {
 				next_transaction_number: self.next_transaction_number - 1,
@@ -1453,19 +1431,13 @@ impl_writeable_tlv_based!(PendingChannelMonitorUpdate, {
 
 /// A payment channel with a counterparty throughout its life-cycle, encapsulating negotiation and
 /// funding phases.
-pub(super) struct Channel<SP: Deref>
-where
-	SP::Target: SignerProvider,
-{
+pub(super) struct Channel<SP: SignerProvider> {
 	phase: ChannelPhase<SP>,
 }
 
 /// The `ChannelPhase` enum describes the current phase in life of a lightning channel with each of
 /// its variants containing an appropriate channel struct.
-enum ChannelPhase<SP: Deref>
-where
-	SP::Target: SignerProvider,
-{
+enum ChannelPhase<SP: SignerProvider> {
 	Undefined,
 	UnfundedOutboundV1(OutboundV1Channel<SP>),
 	UnfundedInboundV1(InboundV1Channel<SP>),
@@ -1473,10 +1445,9 @@ where
 	Funded(FundedChannel<SP>),
 }
 
-impl<SP: Deref> Channel<SP>
+impl<SP: SignerProvider> Channel<SP>
 where
-	SP::Target: SignerProvider,
-	<SP::Target as SignerProvider>::EcdsaSigner: ChannelSigner,
+	SP::EcdsaSigner: ChannelSigner,
 {
 	pub fn context(&self) -> &ChannelContext<SP> {
 		match &self.phase {
@@ -1619,9 +1590,9 @@ where
 	}
 
 	#[rustfmt::skip]
-	pub fn signer_maybe_unblocked<L: Deref, CBP>(
+	pub fn signer_maybe_unblocked<L: Logger, CBP>(
 		&mut self, chain_hash: ChainHash, logger: &L, path_for_release_htlc: CBP
-	) -> Result<Option<SignerResumeUpdates>, ChannelError> where L::Target: Logger, CBP: Fn(u64) -> BlindedMessagePath {
+	) -> Result<Option<SignerResumeUpdates>, ChannelError> where CBP: Fn(u64) -> BlindedMessagePath {
 		match &mut self.phase {
 			ChannelPhase::Undefined => unreachable!(),
 			ChannelPhase::Funded(chan) => chan.signer_maybe_unblocked(logger, path_for_release_htlc).map(|r| Some(r)),
@@ -1664,10 +1635,7 @@ where
 	/// Should be called when the peer is disconnected. Returns true if the channel can be resumed
 	/// when the peer reconnects (via [`Self::peer_connected_get_handshake`]). If not, the channel
 	/// must be immediately closed.
-	pub fn peer_disconnected_is_resumable<L: Deref>(&mut self, logger: &L) -> DisconnectResult
-	where
-		L::Target: Logger,
-	{
+	pub fn peer_disconnected_is_resumable<L: Logger>(&mut self, logger: &L) -> DisconnectResult {
 		let is_resumable = match &mut self.phase {
 			ChannelPhase::Undefined => unreachable!(),
 			ChannelPhase::Funded(chan) => {
@@ -1721,9 +1689,9 @@ where
 	/// Should be called when the peer re-connects, returning an initial message which we should
 	/// send our peer to begin the channel reconnection process.
 	#[rustfmt::skip]
-	pub fn peer_connected_get_handshake<L: Deref>(
+	pub fn peer_connected_get_handshake<L: Logger>(
 		&mut self, chain_hash: ChainHash, logger: &L,
-	) -> ReconnectionMsg where L::Target: Logger {
+	) -> ReconnectionMsg {
 		match &mut self.phase {
 			ChannelPhase::Undefined => unreachable!(),
 			ChannelPhase::Funded(chan) =>
@@ -1757,14 +1725,10 @@ where
 	}
 
 	#[rustfmt::skip]
-	pub fn maybe_handle_error_without_close<F: Deref, L: Deref>(
+	pub fn maybe_handle_error_without_close<F: FeeEstimator, L: Logger>(
 		&mut self, chain_hash: ChainHash, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
 		user_config: &UserConfig, their_features: &InitFeatures,
-	) -> Result<Option<OpenChannelMessage>, ()>
-	where
-		F::Target: FeeEstimator,
-		L::Target: Logger,
-	{
+	) -> Result<Option<OpenChannelMessage>, ()> {
 		match &mut self.phase {
 			ChannelPhase::Undefined => unreachable!(),
 			ChannelPhase::Funded(_) => Ok(None),
@@ -1797,12 +1761,9 @@ where
 		}
 	}
 
-	fn fail_interactive_tx_negotiation<L: Deref>(
+	fn fail_interactive_tx_negotiation<L: Logger>(
 		&mut self, reason: AbortReason, logger: &L,
-	) -> (ChannelError, Option<SpliceFundingFailed>)
-	where
-		L::Target: Logger,
-	{
+	) -> (ChannelError, Option<SpliceFundingFailed>) {
 		let logger = WithChannelContext::from(logger, &self.context(), None);
 		log_info!(logger, "Failed interactive transaction negotiation: {reason}");
 
@@ -1826,12 +1787,9 @@ where
 		(ChannelError::Abort(reason), splice_funding_failed)
 	}
 
-	pub fn tx_add_input<L: Deref>(
+	pub fn tx_add_input<L: Logger>(
 		&mut self, msg: &msgs::TxAddInput, logger: &L,
-	) -> Result<InteractiveTxMessageSend, (ChannelError, Option<SpliceFundingFailed>)>
-	where
-		L::Target: Logger,
-	{
+	) -> Result<InteractiveTxMessageSend, (ChannelError, Option<SpliceFundingFailed>)> {
 		match self.interactive_tx_constructor_mut() {
 			Some(interactive_tx_constructor) => interactive_tx_constructor
 				.handle_tx_add_input(msg)
@@ -1845,12 +1803,9 @@ where
 		}
 	}
 
-	pub fn tx_add_output<L: Deref>(
+	pub fn tx_add_output<L: Logger>(
 		&mut self, msg: &msgs::TxAddOutput, logger: &L,
-	) -> Result<InteractiveTxMessageSend, (ChannelError, Option<SpliceFundingFailed>)>
-	where
-		L::Target: Logger,
-	{
+	) -> Result<InteractiveTxMessageSend, (ChannelError, Option<SpliceFundingFailed>)> {
 		match self.interactive_tx_constructor_mut() {
 			Some(interactive_tx_constructor) => interactive_tx_constructor
 				.handle_tx_add_output(msg)
@@ -1864,12 +1819,9 @@ where
 		}
 	}
 
-	pub fn tx_remove_input<L: Deref>(
+	pub fn tx_remove_input<L: Logger>(
 		&mut self, msg: &msgs::TxRemoveInput, logger: &L,
-	) -> Result<InteractiveTxMessageSend, (ChannelError, Option<SpliceFundingFailed>)>
-	where
-		L::Target: Logger,
-	{
+	) -> Result<InteractiveTxMessageSend, (ChannelError, Option<SpliceFundingFailed>)> {
 		match self.interactive_tx_constructor_mut() {
 			Some(interactive_tx_constructor) => interactive_tx_constructor
 				.handle_tx_remove_input(msg)
@@ -1883,12 +1835,9 @@ where
 		}
 	}
 
-	pub fn tx_remove_output<L: Deref>(
+	pub fn tx_remove_output<L: Logger>(
 		&mut self, msg: &msgs::TxRemoveOutput, logger: &L,
-	) -> Result<InteractiveTxMessageSend, (ChannelError, Option<SpliceFundingFailed>)>
-	where
-		L::Target: Logger,
-	{
+	) -> Result<InteractiveTxMessageSend, (ChannelError, Option<SpliceFundingFailed>)> {
 		match self.interactive_tx_constructor_mut() {
 			Some(interactive_tx_constructor) => interactive_tx_constructor
 				.handle_tx_remove_output(msg)
@@ -1902,13 +1851,9 @@ where
 		}
 	}
 
-	pub fn tx_complete<F: Deref, L: Deref>(
+	pub fn tx_complete<F: FeeEstimator, L: Logger>(
 		&mut self, msg: &msgs::TxComplete, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
-	) -> Result<TxCompleteResult, (ChannelError, Option<SpliceFundingFailed>)>
-	where
-		F::Target: FeeEstimator,
-		L::Target: Logger,
-	{
+	) -> Result<TxCompleteResult, (ChannelError, Option<SpliceFundingFailed>)> {
 		let tx_complete_action = match self.interactive_tx_constructor_mut() {
 			Some(interactive_tx_constructor) => interactive_tx_constructor
 				.handle_tx_complete(msg)
@@ -1973,12 +1918,9 @@ where
 		Ok(TxCompleteResult { interactive_tx_msg_send, event_unsigned_tx, funding_tx_signed })
 	}
 
-	pub fn tx_abort<L: Deref>(
+	pub fn tx_abort<L: Logger>(
 		&mut self, msg: &msgs::TxAbort, logger: &L,
-	) -> Result<(Option<msgs::TxAbort>, Option<SpliceFundingFailed>), ChannelError>
-	where
-		L::Target: Logger,
-	{
+	) -> Result<(Option<msgs::TxAbort>, Option<SpliceFundingFailed>), ChannelError> {
 		// If we have not sent a `tx_abort` message for this negotiation previously, we need to echo
 		// back a tx_abort message according to the spec:
 		//   https://github.com/lightning/bolts/blob/247e83d/02-peer-protocol.md?plain=1#L560-L561
@@ -2045,12 +1987,9 @@ where
 	}
 
 	#[rustfmt::skip]
-	pub fn funding_signed<L: Deref>(
+	pub fn funding_signed<L: Logger>(
 		&mut self, msg: &msgs::FundingSigned, best_block: BestBlock, signer_provider: &SP, logger: &L
-	) -> Result<(&mut FundedChannel<SP>, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>), ChannelError>
-	where
-		L::Target: Logger
-	{
+	) -> Result<(&mut FundedChannel<SP>, ChannelMonitor<SP::EcdsaSigner>), ChannelError> {
 		let phase = core::mem::replace(&mut self.phase, ChannelPhase::Undefined);
 		let result = if let ChannelPhase::UnfundedOutboundV1(chan) = phase {
 			let channel_state = chan.context.channel_state;
@@ -2144,14 +2083,10 @@ where
 		Ok(())
 	}
 
-	pub fn funding_transaction_signed<F: Deref, L: Deref>(
+	pub fn funding_transaction_signed<F: FeeEstimator, L: Logger>(
 		&mut self, funding_txid_signed: Txid, witnesses: Vec<Witness>, best_block_height: u32,
 		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
-	) -> Result<FundingTxSigned, APIError>
-	where
-		F::Target: FeeEstimator,
-		L::Target: Logger,
-	{
+	) -> Result<FundingTxSigned, APIError> {
 		let (context, funding, pending_splice) = match &mut self.phase {
 			ChannelPhase::Undefined => unreachable!(),
 			ChannelPhase::UnfundedV2(channel) => (&mut channel.context, &channel.funding, None),
@@ -2322,13 +2257,9 @@ where
 	}
 
 	#[rustfmt::skip]
-	pub fn commitment_signed<F: Deref, L: Deref>(
+	pub fn commitment_signed<F: FeeEstimator, L: Logger>(
 		&mut self, msg: &msgs::CommitmentSigned, best_block: BestBlock, signer_provider: &SP, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L
-	) -> Result<(Option<ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>>, Option<ChannelMonitorUpdate>), ChannelError>
-	where
-		F::Target: FeeEstimator,
-		L::Target: Logger
-	{
+	) -> Result<(Option<ChannelMonitor<SP::EcdsaSigner>>, Option<ChannelMonitorUpdate>), ChannelError> {
 		let phase = core::mem::replace(&mut self.phase, ChannelPhase::Undefined);
 		match phase {
 			ChannelPhase::UnfundedV2(chan) => {
@@ -2424,12 +2355,9 @@ where
 	/// Doesn't bother handling the
 	/// if-we-removed-it-already-but-haven't-fully-resolved-they-can-still-send-an-inbound-HTLC
 	/// corner case properly.
-	pub fn get_available_balances<F: Deref>(
+	pub fn get_available_balances<F: FeeEstimator>(
 		&self, fee_estimator: &LowerBoundedFeeEstimator<F>,
-	) -> AvailableBalances
-	where
-		F::Target: FeeEstimator,
-	{
+	) -> AvailableBalances {
 		match &self.phase {
 			ChannelPhase::Undefined => unreachable!(),
 			ChannelPhase::Funded(chan) => chan.get_available_balances(fee_estimator),
@@ -2450,40 +2378,36 @@ where
 	}
 }
 
-impl<SP: Deref> From<OutboundV1Channel<SP>> for Channel<SP>
+impl<SP: SignerProvider> From<OutboundV1Channel<SP>> for Channel<SP>
 where
-	SP::Target: SignerProvider,
-	<SP::Target as SignerProvider>::EcdsaSigner: ChannelSigner,
+	SP::EcdsaSigner: ChannelSigner,
 {
 	fn from(channel: OutboundV1Channel<SP>) -> Self {
 		Channel { phase: ChannelPhase::UnfundedOutboundV1(channel) }
 	}
 }
 
-impl<SP: Deref> From<InboundV1Channel<SP>> for Channel<SP>
+impl<SP: SignerProvider> From<InboundV1Channel<SP>> for Channel<SP>
 where
-	SP::Target: SignerProvider,
-	<SP::Target as SignerProvider>::EcdsaSigner: ChannelSigner,
+	SP::EcdsaSigner: ChannelSigner,
 {
 	fn from(channel: InboundV1Channel<SP>) -> Self {
 		Channel { phase: ChannelPhase::UnfundedInboundV1(channel) }
 	}
 }
 
-impl<SP: Deref> From<PendingV2Channel<SP>> for Channel<SP>
+impl<SP: SignerProvider> From<PendingV2Channel<SP>> for Channel<SP>
 where
-	SP::Target: SignerProvider,
-	<SP::Target as SignerProvider>::EcdsaSigner: ChannelSigner,
+	SP::EcdsaSigner: ChannelSigner,
 {
 	fn from(channel: PendingV2Channel<SP>) -> Self {
 		Channel { phase: ChannelPhase::UnfundedV2(channel) }
 	}
 }
 
-impl<SP: Deref> From<FundedChannel<SP>> for Channel<SP>
+impl<SP: SignerProvider> From<FundedChannel<SP>> for Channel<SP>
 where
-	SP::Target: SignerProvider,
-	<SP::Target as SignerProvider>::EcdsaSigner: ChannelSigner,
+	SP::EcdsaSigner: ChannelSigner,
 {
 	fn from(channel: FundedChannel<SP>) -> Self {
 		Channel { phase: ChannelPhase::Funded(channel) }
@@ -2735,14 +2659,11 @@ impl FundingScope {
 	}
 
 	/// Constructs a `FundingScope` for splicing a channel.
-	fn for_splice<SP: Deref>(
+	fn for_splice<SP: SignerProvider>(
 		prev_funding: &Self, context: &ChannelContext<SP>, our_funding_contribution: SignedAmount,
 		their_funding_contribution: SignedAmount, counterparty_funding_pubkey: PublicKey,
 		our_new_holder_keys: ChannelPublicKeys,
-	) -> Self
-	where
-		SP::Target: SignerProvider,
-	{
+	) -> Self {
 		debug_assert!(our_funding_contribution.abs() <= SignedAmount::MAX_MONEY);
 		debug_assert!(their_funding_contribution.abs() <= SignedAmount::MAX_MONEY);
 
@@ -2931,12 +2852,9 @@ impl FundingNegotiation {
 }
 
 impl PendingFunding {
-	fn check_get_splice_locked<SP: Deref>(
+	fn check_get_splice_locked<SP: SignerProvider>(
 		&mut self, context: &ChannelContext<SP>, confirmed_funding_index: usize, height: u32,
-	) -> Option<msgs::SpliceLocked>
-	where
-		SP::Target: SignerProvider,
-	{
+	) -> Option<msgs::SpliceLocked> {
 		debug_assert!(confirmed_funding_index < self.negotiated_candidates.len());
 
 		let funding = &self.negotiated_candidates[confirmed_funding_index];
@@ -3042,10 +2960,7 @@ impl<'a> From<&'a Transaction> for ConfirmedTransaction<'a> {
 
 /// Contains everything about the channel including state, and various flags.
 #[cfg_attr(test, derive(Debug))]
-pub(super) struct ChannelContext<SP: Deref>
-where
-	SP::Target: SignerProvider,
-{
+pub(super) struct ChannelContext<SP: SignerProvider> {
 	config: LegacyChannelConfig,
 
 	// Track the previous `ChannelConfig` so that we can continue forwarding HTLCs that were
@@ -3334,10 +3249,7 @@ where
 
 /// A channel struct implementing this trait can receive an initial counterparty commitment
 /// transaction signature.
-trait InitialRemoteCommitmentReceiver<SP: Deref>
-where
-	SP::Target: SignerProvider,
-{
+trait InitialRemoteCommitmentReceiver<SP: SignerProvider> {
 	fn context(&self) -> &ChannelContext<SP>;
 
 	fn context_mut(&mut self) -> &mut ChannelContext<SP>;
@@ -3349,9 +3261,9 @@ where
 	fn received_msg(&self) -> &'static str;
 
 	#[rustfmt::skip]
-	fn check_counterparty_commitment_signature<L: Deref>(
+	fn check_counterparty_commitment_signature<L: Logger>(
 		&self, sig: &Signature, holder_commitment_point: &HolderCommitmentPoint, logger: &L
-	) -> Result<CommitmentTransaction, ChannelError> where L::Target: Logger {
+	) -> Result<CommitmentTransaction, ChannelError> {
 		let funding_script = self.funding().get_funding_redeemscript();
 
 		let commitment_data = self.context().build_commitment_transaction(self.funding(),
@@ -3372,13 +3284,10 @@ where
 	}
 
 	#[rustfmt::skip]
-	fn initial_commitment_signed<L: Deref>(
+	fn initial_commitment_signed<L: Logger>(
 		&mut self, channel_id: ChannelId, counterparty_signature: Signature, holder_commitment_point: &mut HolderCommitmentPoint,
 		best_block: BestBlock, signer_provider: &SP, logger: &L,
-	) -> Result<(ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>, CommitmentTransaction), ChannelError>
-	where
-		L::Target: Logger
-	{
+	) -> Result<(ChannelMonitor<SP::EcdsaSigner>, CommitmentTransaction), ChannelError> {
 		let initial_commitment_tx = match self.check_counterparty_commitment_signature(&counterparty_signature, holder_commitment_point, logger) {
 			Ok(res) => res,
 			Err(ChannelError::Close(e)) => {
@@ -3466,10 +3375,7 @@ where
 	fn is_v2_established(&self) -> bool;
 }
 
-impl<SP: Deref> InitialRemoteCommitmentReceiver<SP> for OutboundV1Channel<SP>
-where
-	SP::Target: SignerProvider,
-{
+impl<SP: SignerProvider> InitialRemoteCommitmentReceiver<SP> for OutboundV1Channel<SP> {
 	fn context(&self) -> &ChannelContext<SP> {
 		&self.context
 	}
@@ -3495,10 +3401,7 @@ where
 	}
 }
 
-impl<SP: Deref> InitialRemoteCommitmentReceiver<SP> for InboundV1Channel<SP>
-where
-	SP::Target: SignerProvider,
-{
+impl<SP: SignerProvider> InitialRemoteCommitmentReceiver<SP> for InboundV1Channel<SP> {
 	fn context(&self) -> &ChannelContext<SP> {
 		&self.context
 	}
@@ -3524,10 +3427,7 @@ where
 	}
 }
 
-impl<SP: Deref> InitialRemoteCommitmentReceiver<SP> for FundedChannel<SP>
-where
-	SP::Target: SignerProvider,
-{
+impl<SP: SignerProvider> InitialRemoteCommitmentReceiver<SP> for FundedChannel<SP> {
 	fn context(&self) -> &ChannelContext<SP> {
 		&self.context
 	}
@@ -3562,12 +3462,9 @@ where
 	}
 }
 
-impl<SP: Deref> ChannelContext<SP>
-where
-	SP::Target: SignerProvider,
-{
+impl<SP: SignerProvider> ChannelContext<SP> {
 	#[rustfmt::skip]
-	fn new_for_inbound_channel<'a, ES: Deref, F: Deref, L: Deref>(
+	fn new_for_inbound_channel<'a, ES: EntropySource, F: FeeEstimator, L: Logger>(
 		fee_estimator: &'a LowerBoundedFeeEstimator<F>,
 		entropy_source: &'a ES,
 		signer_provider: &'a SP,
@@ -3585,13 +3482,7 @@ where
 		msg_channel_reserve_satoshis: u64,
 		msg_push_msat: u64,
 		open_channel_fields: msgs::CommonOpenChannelFields,
-	) -> Result<(FundingScope, ChannelContext<SP>), ChannelError>
-		where
-			ES::Target: EntropySource,
-			F::Target: FeeEstimator,
-			L::Target: Logger,
-			SP::Target: SignerProvider,
-	{
+	) -> Result<(FundingScope, ChannelContext<SP>), ChannelError> {
 		let logger = WithContext::from(logger, Some(counterparty_node_id), Some(open_channel_fields.temporary_channel_id), None);
 		let announce_for_forwarding = if (open_channel_fields.channel_flags & 1) == 1 { true } else { false };
 
@@ -3912,7 +3803,7 @@ where
 	}
 
 	#[rustfmt::skip]
-	fn new_for_outbound_channel<'a, ES: Deref, F: Deref, L: Deref>(
+	fn new_for_outbound_channel<'a, ES: EntropySource, F: FeeEstimator, L: Logger>(
 		fee_estimator: &'a LowerBoundedFeeEstimator<F>,
 		entropy_source: &'a ES,
 		signer_provider: &'a SP,
@@ -3927,15 +3818,9 @@ where
 		temporary_channel_id_fn: Option<impl Fn(&ChannelPublicKeys) -> ChannelId>,
 		holder_selected_channel_reserve_satoshis: u64,
 		channel_keys_id: [u8; 32],
-		holder_signer: <SP::Target as SignerProvider>::EcdsaSigner,
+		holder_signer: SP::EcdsaSigner,
 		_logger: L,
-	) -> Result<(FundingScope, ChannelContext<SP>), APIError>
-		where
-			ES::Target: EntropySource,
-			F::Target: FeeEstimator,
-			SP::Target: SignerProvider,
-			L::Target: Logger,
-	{
+	) -> Result<(FundingScope, ChannelContext<SP>), APIError> {
 		// This will be updated with the counterparty contribution if this is a dual-funded channel
 		let channel_value_satoshis = funding_satoshis;
 
@@ -4543,12 +4428,9 @@ where
 	/// Returns a maximum "sane" fee rate used to reason about our dust exposure.
 	/// Will be Some if the `channel_type`'s dust exposure depends on its commitment fee rate, and
 	/// None otherwise.
-	fn get_dust_exposure_limiting_feerate<F: Deref>(
+	fn get_dust_exposure_limiting_feerate<F: FeeEstimator>(
 		&self, fee_estimator: &LowerBoundedFeeEstimator<F>, channel_type: &ChannelTypeFeatures,
-	) -> Option<u32>
-	where
-		F::Target: FeeEstimator,
-	{
+	) -> Option<u32> {
 		if channel_type.supports_anchor_zero_fee_commitments() {
 			None
 		} else {
@@ -4945,13 +4827,10 @@ where
 		Ok(ret)
 	}
 
-	fn validate_update_add_htlc<F: Deref>(
+	fn validate_update_add_htlc<F: FeeEstimator>(
 		&self, funding: &FundingScope, msg: &msgs::UpdateAddHTLC,
 		fee_estimator: &LowerBoundedFeeEstimator<F>,
-	) -> Result<(), ChannelError>
-	where
-		F::Target: FeeEstimator,
-	{
+	) -> Result<(), ChannelError> {
 		if msg.amount_msat > funding.get_value_satoshis() * 1000 {
 			return Err(ChannelError::close(
 				"Remote side tried to send more than the total value of the channel".to_owned(),
@@ -5063,13 +4942,10 @@ where
 		Ok(())
 	}
 
-	fn validate_update_fee<F: Deref>(
+	fn validate_update_fee<F: FeeEstimator>(
 		&self, funding: &FundingScope, fee_estimator: &LowerBoundedFeeEstimator<F>,
 		new_feerate_per_kw: u32,
-	) -> Result<(), ChannelError>
-	where
-		F::Target: FeeEstimator,
-	{
+	) -> Result<(), ChannelError> {
 		// Check that we won't be pushed over our dust exposure limit by the feerate increase.
 		let dust_exposure_limiting_feerate =
 			self.get_dust_exposure_limiting_feerate(&fee_estimator, funding.get_channel_type());
@@ -5141,17 +5017,13 @@ where
 		Ok(())
 	}
 
-	fn validate_commitment_signed<F: Deref, L: Deref>(
+	fn validate_commitment_signed<F: FeeEstimator, L: Logger>(
 		&self, funding: &FundingScope, transaction_number: u64, commitment_point: PublicKey,
 		msg: &msgs::CommitmentSigned, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
 	) -> Result<
 		(HolderCommitmentTransaction, Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)>),
 		ChannelError,
-	>
-	where
-		F::Target: FeeEstimator,
-		L::Target: Logger,
-	{
+	> {
 		let funding_script = funding.get_funding_redeemscript();
 
 		let commitment_data = self.build_commitment_transaction(
@@ -5273,14 +5145,10 @@ where
 		Ok((holder_commitment_tx, commitment_data.htlcs_included))
 	}
 
-	fn can_send_update_fee<F: Deref, L: Deref>(
+	fn can_send_update_fee<F: FeeEstimator, L: Logger>(
 		&self, funding: &FundingScope, feerate_per_kw: u32,
 		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
-	) -> bool
-	where
-		F::Target: FeeEstimator,
-		L::Target: Logger,
-	{
+	) -> bool {
 		// Before proposing a feerate update, check that we can actually afford the new fee.
 		let dust_exposure_limiting_feerate =
 			self.get_dust_exposure_limiting_feerate(&fee_estimator, funding.get_channel_type());
@@ -5355,12 +5223,9 @@ where
 		return true;
 	}
 
-	fn can_accept_incoming_htlc<L: Deref>(
+	fn can_accept_incoming_htlc<L: Logger>(
 		&self, funding: &FundingScope, dust_exposure_limiting_feerate: Option<u32>, logger: &L,
-	) -> Result<(), LocalHTLCFailureReason>
-	where
-		L::Target: Logger,
-	{
+	) -> Result<(), LocalHTLCFailureReason> {
 		// The fee spike buffer (an additional nondust HTLC) we keep for the remote if the channel
 		// is not zero fee. This deviates from the spec because the fee spike buffer requirement
 		// doesn't exist on the receiver's side, only on the sender's.
@@ -5486,9 +5351,7 @@ where
 	/// which peer generated this transaction and "to whom" this transaction flows.
 	#[inline]
 	#[rustfmt::skip]
-	fn build_commitment_transaction<L: Deref>(&self, funding: &FundingScope, commitment_number: u64, per_commitment_point: &PublicKey, local: bool, generated_by_local: bool, logger: &L) -> CommitmentData<'_>
-		where L::Target: Logger
-	{
+	fn build_commitment_transaction<L: Logger>(&self, funding: &FundingScope, commitment_number: u64, per_commitment_point: &PublicKey, local: bool, generated_by_local: bool, logger: &L) -> CommitmentData<'_> {
 		let broadcaster_dust_limit_sat = if local { self.holder_dust_limit_satoshis } else { self.counterparty_dust_limit_satoshis };
 		let feerate_per_kw = self.get_commitment_feerate(funding, generated_by_local);
 
@@ -5860,12 +5723,9 @@ where
 	}
 
 	#[rustfmt::skip]
-	fn get_available_balances_for_scope<F: Deref>(
+	fn get_available_balances_for_scope<F: FeeEstimator>(
 		&self, funding: &FundingScope, fee_estimator: &LowerBoundedFeeEstimator<F>,
-	) -> AvailableBalances
-	where
-		F::Target: FeeEstimator,
-	{
+	) -> AvailableBalances {
 		let context = &self;
 		// Note that we have to handle overflow due to the case mentioned in the docs in general
 		// here.
@@ -6344,10 +6204,10 @@ where
 
 	/// Only allowed after [`FundingScope::channel_transaction_parameters`] is set.
 	#[rustfmt::skip]
-	fn get_funding_signed_msg<L: Deref>(
+	fn get_funding_signed_msg<L: Logger>(
 		&mut self, channel_parameters: &ChannelTransactionParameters, logger: &L,
 		counterparty_initial_commitment_tx: CommitmentTransaction,
-	) -> Option<msgs::FundingSigned> where L::Target: Logger {
+	) -> Option<msgs::FundingSigned> {
 		let counterparty_trusted_tx = counterparty_initial_commitment_tx.trust();
 		let counterparty_initial_bitcoin_tx = counterparty_trusted_tx.built_transaction();
 		log_trace!(logger, "Initial counterparty tx for channel {} is: txid {} tx {}",
@@ -6384,13 +6244,10 @@ where
 	/// of the channel type we tried, not of our ability to open any channel at all. We can see if a
 	/// downgrade of channel features would be possible so that we can still open the channel.
 	#[rustfmt::skip]
-	pub(crate) fn maybe_downgrade_channel_features<F: Deref>(
+	pub(crate) fn maybe_downgrade_channel_features<F: FeeEstimator>(
 		&mut self, funding: &mut FundingScope, fee_estimator: &LowerBoundedFeeEstimator<F>,
 		user_config: &UserConfig, their_features: &InitFeatures,
-	) -> Result<(), ()>
-	where
-		F::Target: FeeEstimator
-	{
+	) -> Result<(), ()> {
 		if !funding.is_outbound() ||
 			!matches!(
 				self.channel_state, ChannelState::NegotiatingFunding(flags)
@@ -6452,13 +6309,9 @@ where
 		}
 	}
 
-	fn get_initial_counterparty_commitment_signatures<L: Deref>(
+	fn get_initial_counterparty_commitment_signatures<L: Logger>(
 		&self, funding: &FundingScope, logger: &L,
-	) -> Option<(Signature, Vec<Signature>)>
-	where
-		SP::Target: SignerProvider,
-		L::Target: Logger,
-	{
+	) -> Option<(Signature, Vec<Signature>)> {
 		let mut commitment_number = self.counterparty_next_commitment_transaction_number;
 		let mut commitment_point = self.counterparty_next_commitment_point.unwrap();
 
@@ -6497,13 +6350,9 @@ where
 		}
 	}
 
-	fn get_initial_commitment_signed_v2<L: Deref>(
+	fn get_initial_commitment_signed_v2<L: Logger>(
 		&self, funding: &FundingScope, logger: &L,
-	) -> Option<msgs::CommitmentSigned>
-	where
-		SP::Target: SignerProvider,
-		L::Target: Logger,
-	{
+	) -> Option<msgs::CommitmentSigned> {
 		let signatures = self.get_initial_counterparty_commitment_signatures(funding, logger);
 		if let Some((signature, htlc_signatures)) = signatures {
 			log_info!(logger, "Generated commitment_signed for peer",);
@@ -6549,13 +6398,10 @@ where
 	}
 
 	#[rustfmt::skip]
-	fn check_for_funding_tx_confirmed<L: Deref>(
+	fn check_for_funding_tx_confirmed<L: Logger>(
 		&mut self, funding: &mut FundingScope, block_hash: &BlockHash, height: u32,
 		index_in_block: usize, tx: &mut ConfirmedTransaction, logger: &L,
-	) -> Result<bool, ClosureReason>
-	where
-		L::Target: Logger,
-	{
+	) -> Result<bool, ClosureReason> {
 		let funding_txo = match funding.get_funding_txo() {
 			Some(funding_txo) => funding_txo,
 			None => {
@@ -6846,14 +6692,10 @@ pub(super) struct FundingNegotiationContext {
 impl FundingNegotiationContext {
 	/// Prepare and start interactive transaction negotiation.
 	/// If error occurs, it is caused by our side, not the counterparty.
-	fn into_interactive_tx_constructor<SP: Deref, ES: Deref>(
+	fn into_interactive_tx_constructor<SP: SignerProvider, ES: EntropySource>(
 		mut self, context: &ChannelContext<SP>, funding: &FundingScope, signer_provider: &SP,
 		entropy_source: &ES, holder_node_id: PublicKey,
-	) -> Result<InteractiveTxConstructor, NegotiationError>
-	where
-		SP::Target: SignerProvider,
-		ES::Target: EntropySource,
-	{
+	) -> Result<InteractiveTxConstructor, NegotiationError> {
 		debug_assert_eq!(
 			self.shared_funding_input.is_some(),
 			funding.channel_transaction_parameters.splice_parent_funding_txid.is_some(),
@@ -6957,10 +6799,7 @@ impl FundingNegotiationContext {
 // Holder designates channel data owned for the benefit of the user client.
 // Counterparty designates channel data owned by the another channel participant entity.
 #[cfg_attr(test, derive(Debug))]
-pub(super) struct FundedChannel<SP: Deref>
-where
-	SP::Target: SignerProvider,
-{
+pub(super) struct FundedChannel<SP: SignerProvider> {
 	pub funding: FundingScope,
 	pub context: ChannelContext<SP>,
 	holder_commitment_point: HolderCommitmentPoint,
@@ -7165,10 +7004,9 @@ pub struct SpliceFundingPromotion {
 	pub discarded_funding: Vec<FundingInfo>,
 }
 
-impl<SP: Deref> FundedChannel<SP>
+impl<SP: SignerProvider> FundedChannel<SP>
 where
-	SP::Target: SignerProvider,
-	<SP::Target as SignerProvider>::EcdsaSigner: EcdsaChannelSigner,
+	SP::EcdsaSigner: EcdsaChannelSigner,
 {
 	pub fn context(&self) -> &ChannelContext<SP> {
 		&self.context
@@ -7335,11 +7173,10 @@ where
 	}
 
 	#[rustfmt::skip]
-	fn check_remote_fee<F: Deref, L: Deref>(
+	fn check_remote_fee<F: FeeEstimator, L: Logger>(
 		channel_type: &ChannelTypeFeatures, fee_estimator: &LowerBoundedFeeEstimator<F>,
 		feerate_per_kw: u32, cur_feerate_per_kw: Option<u32>, logger: &L
-	) -> Result<(), ChannelError> where F::Target: FeeEstimator, L::Target: Logger,
-	{
+	) -> Result<(), ChannelError> {
 		if channel_type.supports_anchor_zero_fee_commitments() {
 			if feerate_per_kw != 0 {
 				let err = "Zero Fee Channels must never attempt to use a fee".to_owned();
@@ -7489,11 +7326,9 @@ where
 	///
 	/// The HTLC claim will end up in the holding cell (because the caller must ensure the peer is
 	/// disconnected).
-	pub fn claim_htlc_while_disconnected_dropping_mon_update_legacy<L: Deref>(
+	pub fn claim_htlc_while_disconnected_dropping_mon_update_legacy<L: Logger>(
 		&mut self, htlc_id_arg: u64, payment_preimage_arg: PaymentPreimage, logger: &L,
-	) where
-		L::Target: Logger,
-	{
+	) {
 		// Assert that we'll add the HTLC claim to the holding cell in `get_update_fulfill_htlc`
 		// (see equivalent if condition there).
 		assert!(!self.context.channel_state.can_generate_new_commitment());
@@ -7506,14 +7341,11 @@ where
 		}
 	}
 
-	fn get_update_fulfill_htlc<L: Deref>(
+	fn get_update_fulfill_htlc<L: Logger>(
 		&mut self, htlc_id_arg: u64, payment_preimage_arg: PaymentPreimage,
 		payment_info: Option<PaymentClaimDetails>, attribution_data: Option<AttributionData>,
 		logger: &L,
-	) -> UpdateFulfillFetch
-	where
-		L::Target: Logger,
-	{
+	) -> UpdateFulfillFetch {
 		// Either ChannelReady got set (which means it won't be unset) or there is no way any
 		// caller thought we could have something claimed (cause we wouldn't have accepted in an
 		// incoming HTLC anyway). If we got to ShutdownComplete, callers aren't allowed to call us,
@@ -7660,14 +7492,11 @@ where
 		UpdateFulfillFetch::NewClaim { monitor_update, htlc_value_msat, update_blocked: false }
 	}
 
-	pub fn get_update_fulfill_htlc_and_commit<L: Deref>(
+	pub fn get_update_fulfill_htlc_and_commit<L: Logger>(
 		&mut self, htlc_id: u64, payment_preimage: PaymentPreimage,
 		payment_info: Option<PaymentClaimDetails>, attribution_data: Option<AttributionData>,
 		logger: &L,
-	) -> UpdateFulfillCommitFetch
-	where
-		L::Target: Logger,
-	{
+	) -> UpdateFulfillCommitFetch {
 		let release_cs_monitor = self.context.blocked_monitor_updates.is_empty();
 		match self.get_update_fulfill_htlc(
 			htlc_id,
@@ -7727,12 +7556,9 @@ where
 
 	/// Returns `Err` (always with [`ChannelError::Ignore`]) if the HTLC could not be failed (e.g.
 	/// if it was already resolved). Otherwise returns `Ok`.
-	pub fn queue_fail_htlc<L: Deref>(
+	pub fn queue_fail_htlc<L: Logger>(
 		&mut self, htlc_id_arg: u64, err_packet: msgs::OnionErrorPacket, logger: &L,
-	) -> Result<(), ChannelError>
-	where
-		L::Target: Logger,
-	{
+	) -> Result<(), ChannelError> {
 		self.fail_htlc(htlc_id_arg, err_packet, true, logger)
 			.map(|msg_opt| assert!(msg_opt.is_none(), "We forced holding cell?"))
 	}
@@ -7741,12 +7567,9 @@ where
 	/// want to fail blinded HTLCs where we are not the intro node.
 	///
 	/// See [`Self::queue_fail_htlc`] for more info.
-	pub fn queue_fail_malformed_htlc<L: Deref>(
+	pub fn queue_fail_malformed_htlc<L: Logger>(
 		&mut self, htlc_id_arg: u64, failure_code: u16, sha256_of_onion: [u8; 32], logger: &L,
-	) -> Result<(), ChannelError>
-	where
-		L::Target: Logger,
-	{
+	) -> Result<(), ChannelError> {
 		self.fail_htlc(htlc_id_arg, (sha256_of_onion, failure_code), true, logger)
 			.map(|msg_opt| assert!(msg_opt.is_none(), "We forced holding cell?"))
 	}
@@ -7754,10 +7577,10 @@ where
 	/// Returns `Err` (always with [`ChannelError::Ignore`]) if the HTLC could not be failed (e.g.
 	/// if it was already resolved). Otherwise returns `Ok`.
 	#[rustfmt::skip]
-	fn fail_htlc<L: Deref, E: FailHTLCContents + Clone>(
+	fn fail_htlc<L: Logger, E: FailHTLCContents + Clone>(
 		&mut self, htlc_id_arg: u64, err_contents: E, mut force_holding_cell: bool,
 		logger: &L
-	) -> Result<Option<E::Message>, ChannelError> where L::Target: Logger {
+	) -> Result<Option<E::Message>, ChannelError> {
 		if !matches!(self.context.channel_state, ChannelState::ChannelReady(_)) {
 			panic!("Was asked to fail an HTLC when channel was not in an operational state");
 		}
@@ -7864,14 +7687,10 @@ where
 	/// and the channel is now usable (and public), this may generate an announcement_signatures to
 	/// reply with.
 	#[rustfmt::skip]
-	pub fn channel_ready<NS: Deref, L: Deref>(
+	pub fn channel_ready<NS: NodeSigner, L: Logger>(
 		&mut self, msg: &msgs::ChannelReady, node_signer: &NS, chain_hash: ChainHash,
 		user_config: &UserConfig, best_block: &BestBlock, logger: &L
-	) -> Result<Option<msgs::AnnouncementSignatures>, ChannelError>
-	where
-		NS::Target: NodeSigner,
-		L::Target: Logger
-	{
+	) -> Result<Option<msgs::AnnouncementSignatures>, ChannelError> {
 		if self.context.channel_state.is_peer_disconnected() {
 			self.context.workaround_lnd_bug_4006 = Some(msg.clone());
 			return Err(ChannelError::Ignore("Peer sent channel_ready when we needed a channel_reestablish. The peer is likely lnd, see https://github.com/lightningnetwork/lnd/issues/4006".to_owned()));
@@ -7946,9 +7765,9 @@ where
 	}
 
 	#[rustfmt::skip]
-	pub fn update_add_htlc<F: Deref>(
+	pub fn update_add_htlc<F: FeeEstimator>(
 		&mut self, msg: &msgs::UpdateAddHTLC, fee_estimator: &LowerBoundedFeeEstimator<F>,
-	) -> Result<(), ChannelError> where F::Target: FeeEstimator {
+	) -> Result<(), ChannelError> {
 		if self.context.channel_state.is_remote_stfu_sent() || self.context.channel_state.is_quiescent() {
 			return Err(ChannelError::WarnAndDisconnect("Got add HTLC message while quiescent".to_owned()));
 		}
@@ -8100,13 +7919,10 @@ where
 		Ok(())
 	}
 
-	pub fn initial_commitment_signed_v2<L: Deref>(
+	pub fn initial_commitment_signed_v2<L: Logger>(
 		&mut self, msg: &msgs::CommitmentSigned, best_block: BestBlock, signer_provider: &SP,
 		logger: &L,
-	) -> Result<ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>, ChannelError>
-	where
-		L::Target: Logger,
-	{
+	) -> Result<ChannelMonitor<SP::EcdsaSigner>, ChannelError> {
 		if let Some(signing_session) = self.context.interactive_tx_signing_session.as_ref() {
 			if signing_session.has_received_tx_signatures() {
 				let msg = "Received initial commitment_signed after peer's tx_signatures received!";
@@ -8170,14 +7986,10 @@ where
 	/// Note that our `commitment_signed` send did not include a monitor update. This is due to:
 	///   1. Updates cannot be made since the state machine is paused until `tx_signatures`.
 	///   2. We're still able to abort negotiation until `tx_signatures`.
-	fn splice_initial_commitment_signed<F: Deref, L: Deref>(
+	fn splice_initial_commitment_signed<F: FeeEstimator, L: Logger>(
 		&mut self, msg: &msgs::CommitmentSigned, fee_estimator: &LowerBoundedFeeEstimator<F>,
 		logger: &L,
-	) -> Result<Option<ChannelMonitorUpdate>, ChannelError>
-	where
-		F::Target: FeeEstimator,
-		L::Target: Logger,
-	{
+	) -> Result<Option<ChannelMonitorUpdate>, ChannelError> {
 		debug_assert!(self
 			.context
 			.interactive_tx_signing_session
@@ -8288,14 +8100,10 @@ where
 		(nondust_htlc_sources, dust_htlcs)
 	}
 
-	pub fn commitment_signed<F: Deref, L: Deref>(
+	pub fn commitment_signed<F: FeeEstimator, L: Logger>(
 		&mut self, msg: &msgs::CommitmentSigned, fee_estimator: &LowerBoundedFeeEstimator<F>,
 		logger: &L,
-	) -> Result<Option<ChannelMonitorUpdate>, ChannelError>
-	where
-		F::Target: FeeEstimator,
-		L::Target: Logger,
-	{
+	) -> Result<Option<ChannelMonitorUpdate>, ChannelError> {
 		self.commitment_signed_check_state()?;
 
 		if !self.pending_funding().is_empty() {
@@ -8332,14 +8140,10 @@ where
 		self.commitment_signed_update_monitor(update, logger)
 	}
 
-	pub fn commitment_signed_batch<F: Deref, L: Deref>(
+	pub fn commitment_signed_batch<F: FeeEstimator, L: Logger>(
 		&mut self, batch: Vec<msgs::CommitmentSigned>, fee_estimator: &LowerBoundedFeeEstimator<F>,
 		logger: &L,
-	) -> Result<Option<ChannelMonitorUpdate>, ChannelError>
-	where
-		F::Target: FeeEstimator,
-		L::Target: Logger,
-	{
+	) -> Result<Option<ChannelMonitorUpdate>, ChannelError> {
 		self.commitment_signed_check_state()?;
 
 		let mut messages = BTreeMap::new();
@@ -8437,12 +8241,9 @@ where
 		Ok(())
 	}
 
-	fn commitment_signed_update_monitor<L: Deref>(
+	fn commitment_signed_update_monitor<L: Logger>(
 		&mut self, mut update: ChannelMonitorUpdateStep, logger: &L,
-	) -> Result<Option<ChannelMonitorUpdate>, ChannelError>
-	where
-		L::Target: Logger,
-	{
+	) -> Result<Option<ChannelMonitorUpdate>, ChannelError> {
 		if self
 			.holder_commitment_point
 			.advance(&self.context.holder_signer, &self.context.secp_ctx, logger)
@@ -8586,13 +8387,9 @@ where
 	/// Public version of the below, checking relevant preconditions first.
 	/// If we're not in a state where freeing the holding cell makes sense, this is a no-op and
 	/// returns `(None, Vec::new())`.
-	pub fn maybe_free_holding_cell_htlcs<F: Deref, L: Deref>(
+	pub fn maybe_free_holding_cell_htlcs<F: FeeEstimator, L: Logger>(
 		&mut self, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
-	) -> (Option<ChannelMonitorUpdate>, Vec<(HTLCSource, PaymentHash)>)
-	where
-		F::Target: FeeEstimator,
-		L::Target: Logger,
-	{
+	) -> (Option<ChannelMonitorUpdate>, Vec<(HTLCSource, PaymentHash)>) {
 		if matches!(self.context.channel_state, ChannelState::ChannelReady(_))
 			&& self.context.channel_state.can_generate_new_commitment()
 		{
@@ -8604,13 +8401,9 @@ where
 
 	/// Frees any pending commitment updates in the holding cell, generating the relevant messages
 	/// for our counterparty.
-	fn free_holding_cell_htlcs<F: Deref, L: Deref>(
+	fn free_holding_cell_htlcs<F: FeeEstimator, L: Logger>(
 		&mut self, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
-	) -> (Option<ChannelMonitorUpdate>, Vec<(HTLCSource, PaymentHash)>)
-	where
-		F::Target: FeeEstimator,
-		L::Target: Logger,
-	{
+	) -> (Option<ChannelMonitorUpdate>, Vec<(HTLCSource, PaymentHash)>) {
 		assert!(matches!(self.context.channel_state, ChannelState::ChannelReady(_)));
 		assert!(!self.context.channel_state.is_monitor_update_in_progress());
 		assert!(!self.context.channel_state.is_quiescent());
@@ -8813,7 +8606,7 @@ where
 	///
 	/// [`HeldHtlcAvailable`]: crate::onion_message::async_payments::HeldHtlcAvailable
 	/// [`ReleaseHeldHtlc`]: crate::onion_message::async_payments::ReleaseHeldHtlc
-	pub fn revoke_and_ack<F: Deref, L: Deref>(
+	pub fn revoke_and_ack<F: FeeEstimator, L: Logger>(
 		&mut self, msg: &msgs::RevokeAndACK, fee_estimator: &LowerBoundedFeeEstimator<F>,
 		logger: &L, hold_mon_update: bool,
 	) -> Result<
@@ -8823,11 +8616,7 @@ where
 			Option<ChannelMonitorUpdate>,
 		),
 		ChannelError,
-	>
-	where
-		F::Target: FeeEstimator,
-		L::Target: Logger,
-	{
+	> {
 		if self.context.channel_state.is_quiescent() {
 			return Err(ChannelError::WarnAndDisconnect(
 				"Got revoke_and_ack message while quiescent".to_owned(),
@@ -9238,13 +9027,10 @@ where
 		}
 	}
 
-	fn on_tx_signatures_exchange<'a, L: Deref>(
+	fn on_tx_signatures_exchange<'a, L: Logger>(
 		&mut self, funding_tx: Transaction, best_block_height: u32,
 		logger: &WithChannelContext<'a, L>,
-	) -> (Option<SpliceFundingNegotiated>, Option<msgs::SpliceLocked>)
-	where
-		L::Target: Logger,
-	{
+	) -> (Option<SpliceFundingNegotiated>, Option<msgs::SpliceLocked>) {
 		debug_assert!(!self.context.channel_state.is_monitor_update_in_progress());
 		debug_assert!(!self.context.channel_state.is_awaiting_remote_revoke());
 
@@ -9296,12 +9082,9 @@ where
 		}
 	}
 
-	pub fn tx_signatures<L: Deref>(
+	pub fn tx_signatures<L: Logger>(
 		&mut self, msg: &msgs::TxSignatures, best_block_height: u32, logger: &L,
-	) -> Result<FundingTxSigned, ChannelError>
-	where
-		L::Target: Logger,
-	{
+	) -> Result<FundingTxSigned, ChannelError> {
 		let signing_session = if let Some(signing_session) =
 			self.context.interactive_tx_signing_session.as_mut()
 		{
@@ -9373,12 +9156,9 @@ where
 	/// Queues up an outbound update fee by placing it in the holding cell. You should call
 	/// [`Self::maybe_free_holding_cell_htlcs`] in order to actually generate and send the
 	/// commitment update.
-	pub fn queue_update_fee<F: Deref, L: Deref>(
+	pub fn queue_update_fee<F: FeeEstimator, L: Logger>(
 		&mut self, feerate_per_kw: u32, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
-	) where
-		F::Target: FeeEstimator,
-		L::Target: Logger,
-	{
+	) {
 		let msg_opt = self.send_update_fee(feerate_per_kw, true, fee_estimator, logger);
 		assert!(msg_opt.is_none(), "We forced holding cell?");
 	}
@@ -9391,12 +9171,10 @@ where
 	/// You MUST call [`Self::send_commitment_no_state_update`] prior to any other calls on this
 	/// [`FundedChannel`] if `force_holding_cell` is false.
 	#[rustfmt::skip]
-	fn send_update_fee<F: Deref, L: Deref>(
+	fn send_update_fee<F: FeeEstimator, L: Logger>(
 		&mut self, feerate_per_kw: u32, mut force_holding_cell: bool,
 		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L
-	) -> Option<msgs::UpdateFee>
-	where F::Target: FeeEstimator, L::Target: Logger
-	{
+	) -> Option<msgs::UpdateFee> {
 		if !self.funding.is_outbound() {
 			panic!("Cannot send fee from inbound channel");
 		}
@@ -9446,7 +9224,7 @@ where
 	/// completed.
 	/// May return `Err(())`, which implies [`ChannelContext::force_shutdown`] should be called immediately.
 	#[rustfmt::skip]
-	fn remove_uncommitted_htlcs_and_mark_paused<L: Deref>(&mut self, logger: &L) -> Result<(), ()> where L::Target: Logger {
+	fn remove_uncommitted_htlcs_and_mark_paused<L: Logger>(&mut self, logger: &L) -> Result<(), ()> {
 		assert!(!matches!(self.context.channel_state, ChannelState::ShutdownComplete));
 		if !self.context.can_resume_on_reconnect() {
 			return Err(())
@@ -9532,14 +9310,12 @@ where
 	/// [`ChannelManager`]: super::channelmanager::ChannelManager
 	/// [`chain::Watch`]: crate::chain::Watch
 	/// [`ChannelMonitorUpdateStatus::InProgress`]: crate::chain::ChannelMonitorUpdateStatus::InProgress
-	fn monitor_updating_paused<L: Deref>(
+	fn monitor_updating_paused<L: Logger>(
 		&mut self, resend_raa: bool, resend_commitment: bool, resend_channel_ready: bool,
 		pending_forwards: Vec<(PendingHTLCInfo, u64)>,
 		pending_fails: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
 		pending_finalized_claimed_htlcs: Vec<(HTLCSource, Option<AttributionData>)>, logger: &L,
-	) where
-		L::Target: Logger,
-	{
+	) {
 		log_trace!(logger, "Pausing channel monitor updates");
 
 		self.context.monitor_pending_revoke_and_ack |= resend_raa;
@@ -9555,13 +9331,11 @@ where
 	/// successfully and we should restore normal operation. Returns messages which should be sent
 	/// to the remote side.
 	#[rustfmt::skip]
-	pub fn monitor_updating_restored<L: Deref, NS: Deref, CBP>(
+	pub fn monitor_updating_restored<L: Logger, NS: NodeSigner, CBP>(
 		&mut self, logger: &L, node_signer: &NS, chain_hash: ChainHash,
 		user_config: &UserConfig, best_block_height: u32, path_for_release_htlc: CBP
 	) -> MonitorRestoreUpdates
 	where
-		L::Target: Logger,
-		NS::Target: NodeSigner,
 		CBP: Fn(u64) -> BlindedMessagePath
 	{
 		assert!(self.context.channel_state.is_monitor_update_in_progress());
@@ -9709,9 +9483,7 @@ where
 	}
 
 	#[rustfmt::skip]
-	pub fn update_fee<F: Deref, L: Deref>(&mut self, fee_estimator: &LowerBoundedFeeEstimator<F>, msg: &msgs::UpdateFee, logger: &L) -> Result<(), ChannelError>
-		where F::Target: FeeEstimator, L::Target: Logger
-	{
+	pub fn update_fee<F: FeeEstimator, L: Logger>(&mut self, fee_estimator: &LowerBoundedFeeEstimator<F>, msg: &msgs::UpdateFee, logger: &L) -> Result<(), ChannelError> {
 		if self.funding.is_outbound() {
 			return Err(ChannelError::close("Non-funding remote tried to update channel fee".to_owned()));
 		}
@@ -9737,9 +9509,9 @@ where
 	/// Indicates that the signer may have some signatures for us, so we should retry if we're
 	/// blocked.
 	#[rustfmt::skip]
-	pub fn signer_maybe_unblocked<L: Deref, CBP>(
+	pub fn signer_maybe_unblocked<L: Logger, CBP>(
 		&mut self, logger: &L, path_for_release_htlc: CBP
-	) -> Result<SignerResumeUpdates, ChannelError> where L::Target: Logger, CBP: Fn(u64) -> BlindedMessagePath {
+	) -> Result<SignerResumeUpdates, ChannelError> where CBP: Fn(u64) -> BlindedMessagePath {
 		if let Some((commitment_number, commitment_secret)) = self.context.signer_pending_stale_state_verification.clone() {
 			if let Ok(expected_point) = self.context.holder_signer.as_ref()
 				.get_per_commitment_point(commitment_number, &self.context.secp_ctx)
@@ -9849,11 +9621,10 @@ where
 		})
 	}
 
-	fn get_last_revoke_and_ack<CBP, L: Deref>(
+	fn get_last_revoke_and_ack<CBP, L: Logger>(
 		&mut self, path_for_release_htlc: CBP, logger: &L,
 	) -> Option<msgs::RevokeAndACK>
 	where
-		L::Target: Logger,
 		CBP: Fn(u64) -> BlindedMessagePath,
 	{
 		debug_assert!(
@@ -9908,12 +9679,9 @@ where
 	}
 
 	/// Gets the last commitment update for immediate sending to our peer.
-	fn get_last_commitment_update_for_send<L: Deref>(
+	fn get_last_commitment_update_for_send<L: Logger>(
 		&mut self, logger: &L,
-	) -> Result<msgs::CommitmentUpdate, ()>
-	where
-		L::Target: Logger,
-	{
+	) -> Result<msgs::CommitmentUpdate, ()> {
 		let mut update_add_htlcs = Vec::new();
 		let mut update_fulfill_htlcs = Vec::new();
 		let mut update_fail_htlcs = Vec::new();
@@ -10025,10 +9793,7 @@ where
 		}
 	}
 
-	fn panic_on_stale_state<L: Deref>(logger: &L)
-	where
-		L::Target: Logger,
-	{
+	fn panic_on_stale_state<L: Logger>(logger: &L) {
 		macro_rules! log_and_panic {
 			($err_msg: expr) => {
 				log_error!(logger, $err_msg);
@@ -10047,14 +9812,12 @@ where
 	/// May panic if some calls other than message-handling calls (which will all Err immediately)
 	/// have been called between remove_uncommitted_htlcs_and_mark_paused and this call.
 	#[rustfmt::skip]
-	pub fn channel_reestablish<L: Deref, NS: Deref, CBP>(
+	pub fn channel_reestablish<L: Logger, NS: NodeSigner, CBP>(
 		&mut self, msg: &msgs::ChannelReestablish, logger: &L, node_signer: &NS,
 		chain_hash: ChainHash, user_config: &UserConfig, best_block: &BestBlock,
 		path_for_release_htlc: CBP,
 	) -> Result<ReestablishResponses, ChannelError>
 	where
-		L::Target: Logger,
-		NS::Target: NodeSigner,
 		CBP: Fn(u64) -> BlindedMessagePath
 	{
 		if !self.context.channel_state.is_peer_disconnected() {
@@ -10433,12 +10196,9 @@ where
 	/// Calculates and returns our minimum and maximum closing transaction fee amounts, in whole
 	/// satoshis. The amounts remain consistent unless a peer disconnects/reconnects or we restart,
 	/// at which point they will be recalculated.
-	fn calculate_closing_fee_limits<F: Deref>(
+	fn calculate_closing_fee_limits<F: FeeEstimator>(
 		&mut self, fee_estimator: &LowerBoundedFeeEstimator<F>,
-	) -> (u64, u64)
-	where
-		F::Target: FeeEstimator,
-	{
+	) -> (u64, u64) {
 		if let Some((min, max)) = self.context.closing_fee_limits {
 			return (min, max);
 		}
@@ -10525,12 +10285,9 @@ where
 		Ok(())
 	}
 
-	pub fn maybe_propose_closing_signed<F: Deref, L: Deref>(
+	pub fn maybe_propose_closing_signed<F: FeeEstimator, L: Logger>(
 		&mut self, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
 	) -> Result<(Option<msgs::ClosingSigned>, Option<(Transaction, ShutdownResult)>), ChannelError>
-	where
-		F::Target: FeeEstimator,
-		L::Target: Logger,
 	{
 		// If we're waiting on a monitor persistence, that implies we're also waiting to send some
 		// message to our counterparty (probably a `revoke_and_ack`). In such a case, we shouldn't
@@ -10610,16 +10367,13 @@ where
 		}
 	}
 
-	pub fn shutdown<L: Deref>(
+	pub fn shutdown<L: Logger>(
 		&mut self, logger: &L, signer_provider: &SP, their_features: &InitFeatures,
 		msg: &msgs::Shutdown,
 	) -> Result<
 		(Option<msgs::Shutdown>, Option<ChannelMonitorUpdate>, Vec<(HTLCSource, PaymentHash)>),
 		ChannelError,
-	>
-	where
-		L::Target: Logger,
-	{
+	> {
 		if self.context.channel_state.is_peer_disconnected() {
 			return Err(ChannelError::close(
 				"Peer sent shutdown when we needed a channel_reestablish".to_owned(),
@@ -10791,13 +10545,10 @@ where
 		tx
 	}
 
-	fn get_closing_signed_msg<L: Deref>(
+	fn get_closing_signed_msg<L: Logger>(
 		&mut self, closing_tx: &ClosingTransaction, skip_remote_output: bool, fee_satoshis: u64,
 		min_fee_satoshis: u64, max_fee_satoshis: u64, logger: &L,
-	) -> Option<msgs::ClosingSigned>
-	where
-		L::Target: Logger,
-	{
+	) -> Option<msgs::ClosingSigned> {
 		let sig = match &self.context.holder_signer {
 			ChannelSignerType::Ecdsa(ecdsa) => ecdsa
 				.sign_closing_transaction(
@@ -10852,13 +10603,10 @@ where
 		}
 	}
 
-	pub fn closing_signed<F: Deref, L: Deref>(
+	pub fn closing_signed<F: FeeEstimator, L: Logger>(
 		&mut self, fee_estimator: &LowerBoundedFeeEstimator<F>, msg: &msgs::ClosingSigned,
 		logger: &L,
 	) -> Result<(Option<msgs::ClosingSigned>, Option<(Transaction, ShutdownResult)>), ChannelError>
-	where
-		F::Target: FeeEstimator,
-		L::Target: Logger,
 	{
 		if self.is_shutdown_pending_signature() {
 			return Err(ChannelError::Warn(String::from("Remote end sent us a closing_signed while fully shutdown and just waiting on the final closing signature")));
@@ -11102,13 +10850,9 @@ where
 	/// When this function is called, the HTLC is already irrevocably committed to the channel;
 	/// this function determines whether to fail the HTLC, or forward / claim it.
 	#[rustfmt::skip]
-	pub fn can_accept_incoming_htlc<F: Deref, L: Deref>(
+	pub fn can_accept_incoming_htlc<F: FeeEstimator, L: Logger>(
 		&self, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: L
-	) -> Result<(), LocalHTLCFailureReason>
-	where
-		F::Target: FeeEstimator,
-		L::Target: Logger
-	{
+	) -> Result<(), LocalHTLCFailureReason> {
 		if self.context.channel_state.is_local_shutdown_sent() {
 			return Err(LocalHTLCFailureReason::ChannelClosed)
 		}
@@ -11319,9 +11063,7 @@ where
 	}
 
 	#[rustfmt::skip]
-	fn check_get_channel_ready<L: Deref>(&mut self, height: u32, logger: &L) -> Option<msgs::ChannelReady>
-		where L::Target: Logger
-	{
+	fn check_get_channel_ready<L: Logger>(&mut self, height: u32, logger: &L) -> Option<msgs::ChannelReady> {
 		// Called:
 		//  * always when a new block/transactions are confirmed with the new height
 		//  * when funding is signed with a height of 0
@@ -11378,9 +11120,9 @@ where
 	}
 
 	#[rustfmt::skip]
-	fn get_channel_ready<L: Deref>(
+	fn get_channel_ready<L: Logger>(
 		&mut self, logger: &L
-	) -> Option<msgs::ChannelReady> where L::Target: Logger {
+	) -> Option<msgs::ChannelReady> {
 		if self.holder_commitment_point.can_advance() {
 			self.context.signer_pending_channel_ready = false;
 			Some(msgs::ChannelReady {
@@ -11400,14 +11142,10 @@ where
 	}
 
 	/// Returns `Some` if a splice [`FundingScope`] was promoted.
-	fn maybe_promote_splice_funding<NS: Deref, L: Deref>(
+	fn maybe_promote_splice_funding<NS: NodeSigner, L: Logger>(
 		&mut self, node_signer: &NS, chain_hash: ChainHash, user_config: &UserConfig,
 		block_height: u32, logger: &L,
-	) -> Option<SpliceFundingPromotion>
-	where
-		NS::Target: NodeSigner,
-		L::Target: Logger,
-	{
+	) -> Option<SpliceFundingPromotion> {
 		debug_assert!(self.pending_splice.is_some());
 
 		let pending_splice = self.pending_splice.as_mut().unwrap();
@@ -11521,14 +11259,10 @@ where
 	/// In the first case, we store the confirmation height and calculating the short channel id.
 	/// In the second, we simply return an Err indicating we need to be force-closed now.
 	#[rustfmt::skip]
-	pub fn transactions_confirmed<NS: Deref, L: Deref>(
+	pub fn transactions_confirmed<NS: NodeSigner, L: Logger>(
 		&mut self, block_hash: &BlockHash, height: u32, txdata: &TransactionData,
 		chain_hash: ChainHash, node_signer: &NS, user_config: &UserConfig, logger: &L
-	) -> Result<(Option<FundingConfirmedMessage>, Option<msgs::AnnouncementSignatures>), ClosureReason>
-	where
-		NS::Target: NodeSigner,
-		L::Target: Logger
-	{
+	) -> Result<(Option<FundingConfirmedMessage>, Option<msgs::AnnouncementSignatures>), ClosureReason> {
 		for &(index_in_block, tx) in txdata.iter() {
 			let mut confirmed_tx = ConfirmedTransaction::from(tx);
 
@@ -11619,14 +11353,10 @@ where
 	///
 	/// May return some HTLCs (and their payment_hash) which have timed out and should be failed
 	/// back.
-	pub fn best_block_updated<NS: Deref, L: Deref>(
+	pub fn best_block_updated<NS: NodeSigner, L: Logger>(
 		&mut self, height: u32, highest_header_time: Option<u32>, chain_hash: ChainHash,
 		node_signer: &NS, user_config: &UserConfig, logger: &L,
-	) -> Result<BestBlockUpdatedRes, ClosureReason>
-	where
-		NS::Target: NodeSigner,
-		L::Target: Logger,
-	{
+	) -> Result<BestBlockUpdatedRes, ClosureReason> {
 		self.do_best_block_updated(
 			height,
 			highest_header_time,
@@ -11636,14 +11366,10 @@ where
 	}
 
 	#[rustfmt::skip]
-	fn do_best_block_updated<NS: Deref, L: Deref>(
+	fn do_best_block_updated<NS: NodeSigner, L: Logger>(
 		&mut self, height: u32, highest_header_time: Option<u32>,
 		chain_node_signer: Option<(ChainHash, &NS, &UserConfig)>, logger: &L
-	) -> Result<(Option<FundingConfirmedMessage>, Vec<(HTLCSource, PaymentHash)>, Option<msgs::AnnouncementSignatures>), ClosureReason>
-	where
-		NS::Target: NodeSigner,
-		L::Target: Logger
-	{
+	) -> Result<(Option<FundingConfirmedMessage>, Vec<(HTLCSource, PaymentHash)>, Option<msgs::AnnouncementSignatures>), ClosureReason> {
 		let mut timed_out_htlcs = Vec::new();
 		// This mirrors the check in ChannelManager::decode_update_add_htlc_onion, refusing to
 		// forward an HTLC when our counterparty should almost certainly just fail it for expiring
@@ -11819,12 +11545,9 @@ where
 	/// before the channel has reached channel_ready or splice_locked, and we can just wait for more
 	/// blocks.
 	#[rustfmt::skip]
-	pub fn transaction_unconfirmed<L: Deref>(
+	pub fn transaction_unconfirmed<L: Logger>(
 		&mut self, txid: &Txid, logger: &L,
-	) -> Result<(), ClosureReason>
-	where
-		L::Target: Logger,
-	{
+	) -> Result<(), ClosureReason> {
 		let unconfirmed_funding = self
 			.funding_and_pending_funding_iter_mut()
 			.find(|funding| funding.get_funding_txid() == Some(*txid));
@@ -11869,9 +11592,9 @@ where
 	///
 	/// [`ChannelReady`]: crate::ln::msgs::ChannelReady
 	#[rustfmt::skip]
-	fn get_channel_announcement<NS: Deref>(
+	fn get_channel_announcement<NS: NodeSigner>(
 		&self, node_signer: &NS, chain_hash: ChainHash, user_config: &UserConfig,
-	) -> Result<msgs::UnsignedChannelAnnouncement, ChannelError> where NS::Target: NodeSigner {
+	) -> Result<msgs::UnsignedChannelAnnouncement, ChannelError> {
 		if !self.context.config.announce_for_forwarding {
 			return Err(ChannelError::Ignore("Channel is not available for public announcements".to_owned()));
 		}
@@ -11901,14 +11624,10 @@ where
 	}
 
 	#[rustfmt::skip]
-	fn get_announcement_sigs<NS: Deref, L: Deref>(
+	fn get_announcement_sigs<NS: NodeSigner, L: Logger>(
 		&mut self, node_signer: &NS, chain_hash: ChainHash, user_config: &UserConfig,
 		best_block_height: u32, logger: &L
-	) -> Option<msgs::AnnouncementSignatures>
-	where
-		NS::Target: NodeSigner,
-		L::Target: Logger
-	{
+	) -> Option<msgs::AnnouncementSignatures> {
 		if self.funding.funding_tx_confirmation_height == 0 || self.funding.funding_tx_confirmation_height + 5 > best_block_height {
 			return None;
 		}
@@ -11975,9 +11694,9 @@ where
 	/// Signs the given channel announcement, returning a ChannelError::Ignore if no keys are
 	/// available.
 	#[rustfmt::skip]
-	fn sign_channel_announcement<NS: Deref>(
+	fn sign_channel_announcement<NS: NodeSigner>(
 		&self, node_signer: &NS, announcement: msgs::UnsignedChannelAnnouncement
-	) -> Result<msgs::ChannelAnnouncement, ChannelError> where NS::Target: NodeSigner {
+	) -> Result<msgs::ChannelAnnouncement, ChannelError> {
 		if let Some((their_node_sig, their_bitcoin_sig)) = self.context.announcement_sigs {
 			let our_node_key = NodeId::from_pubkey(&node_signer.get_node_id(Recipient::Node)
 				.map_err(|_| ChannelError::Ignore("Signer failed to retrieve own public key".to_owned()))?);
@@ -12012,10 +11731,10 @@ where
 	/// channel_announcement message which we can broadcast and storing our counterparty's
 	/// signatures for later reconstruction/rebroadcast of the channel_announcement.
 	#[rustfmt::skip]
-	pub fn announcement_signatures<NS: Deref>(
+	pub fn announcement_signatures<NS: NodeSigner>(
 		&mut self, node_signer: &NS, chain_hash: ChainHash, best_block_height: u32,
 		msg: &msgs::AnnouncementSignatures, user_config: &UserConfig
-	) -> Result<msgs::ChannelAnnouncement, ChannelError> where NS::Target: NodeSigner {
+	) -> Result<msgs::ChannelAnnouncement, ChannelError> {
 		let announcement = self.get_channel_announcement(node_signer, chain_hash, user_config)?;
 
 		let msghash = hash_to_message!(&Sha256d::hash(&announcement.encode()[..])[..]);
@@ -12043,9 +11762,9 @@ where
 	/// Gets a signed channel_announcement for this channel, if we previously received an
 	/// announcement_signatures from our counterparty.
 	#[rustfmt::skip]
-	pub fn get_signed_channel_announcement<NS: Deref>(
+	pub fn get_signed_channel_announcement<NS: NodeSigner>(
 		&self, node_signer: &NS, chain_hash: ChainHash, best_block_height: u32, user_config: &UserConfig
-	) -> Option<msgs::ChannelAnnouncement> where NS::Target: NodeSigner {
+	) -> Option<msgs::ChannelAnnouncement> {
 		if self.funding.funding_tx_confirmation_height == 0 || self.funding.funding_tx_confirmation_height + 5 > best_block_height {
 			return None;
 		}
@@ -12115,7 +11834,7 @@ where
 	/// May panic if called on a channel that wasn't immediately-previously
 	/// self.remove_uncommitted_htlcs_and_mark_paused()'d
 	#[rustfmt::skip]
-	fn get_channel_reestablish<L: Deref>(&mut self, logger: &L) -> msgs::ChannelReestablish where L::Target: Logger {
+	fn get_channel_reestablish<L: Logger>(&mut self, logger: &L) -> msgs::ChannelReestablish {
 		assert!(self.context.channel_state.is_peer_disconnected());
 		assert_ne!(self.context.counterparty_next_commitment_transaction_number, INITIAL_COMMITMENT_NUMBER);
 		// This is generally the first function which gets called on any given channel once we're
@@ -12172,13 +11891,10 @@ where
 	///   Includes the witness weight for this input (e.g. P2WPKH_WITNESS_WEIGHT=109 for typical P2WPKH inputs).
 	/// - `change_script`: an option change output script. If `None` and needed, one will be
 	///   generated by `SignerProvider::get_destination_script`.
-	pub fn splice_channel<L: Deref>(
+	pub fn splice_channel<L: Logger>(
 		&mut self, contribution: SpliceContribution, funding_feerate_per_kw: u32, locktime: u32,
 		logger: &L,
-	) -> Result<Option<msgs::Stfu>, APIError>
-	where
-		L::Target: Logger,
-	{
+	) -> Result<Option<msgs::Stfu>, APIError> {
 		if self.holder_commitment_point.current_point().is_none() {
 			return Err(APIError::APIMisuseError {
 				err: format!(
@@ -12521,14 +12237,10 @@ where
 		Ok(())
 	}
 
-	pub(crate) fn splice_init<ES: Deref, L: Deref>(
+	pub(crate) fn splice_init<ES: EntropySource, L: Logger>(
 		&mut self, msg: &msgs::SpliceInit, our_funding_contribution_satoshis: i64,
 		signer_provider: &SP, entropy_source: &ES, holder_node_id: &PublicKey, logger: &L,
-	) -> Result<msgs::SpliceAck, ChannelError>
-	where
-		ES::Target: EntropySource,
-		L::Target: Logger,
-	{
+	) -> Result<msgs::SpliceAck, ChannelError> {
 		let our_funding_contribution = SignedAmount::from_sat(our_funding_contribution_satoshis);
 		let splice_funding = self.validate_splice_init(msg, our_funding_contribution)?;
 
@@ -12592,14 +12304,10 @@ where
 		})
 	}
 
-	pub(crate) fn splice_ack<ES: Deref, L: Deref>(
+	pub(crate) fn splice_ack<ES: EntropySource, L: Logger>(
 		&mut self, msg: &msgs::SpliceAck, signer_provider: &SP, entropy_source: &ES,
 		holder_node_id: &PublicKey, logger: &L,
-	) -> Result<Option<InteractiveTxMessageSend>, ChannelError>
-	where
-		ES::Target: EntropySource,
-		L::Target: Logger,
-	{
+	) -> Result<Option<InteractiveTxMessageSend>, ChannelError> {
 		let splice_funding = self.validate_splice_ack(msg)?;
 
 		log_info!(
@@ -12746,14 +12454,10 @@ where
 		Ok((holder_balance_floor, counterparty_balance_floor))
 	}
 
-	pub fn splice_locked<NS: Deref, L: Deref>(
+	pub fn splice_locked<NS: NodeSigner, L: Logger>(
 		&mut self, msg: &msgs::SpliceLocked, node_signer: &NS, chain_hash: ChainHash,
 		user_config: &UserConfig, block_height: u32, logger: &L,
-	) -> Result<Option<SpliceFundingPromotion>, ChannelError>
-	where
-		NS::Target: NodeSigner,
-		L::Target: Logger,
-	{
+	) -> Result<Option<SpliceFundingPromotion>, ChannelError> {
 		log_info!(logger, "Received splice_locked txid {} from our peer", msg.splice_txid,);
 
 		let pending_splice = match self.pending_splice.as_mut() {
@@ -12794,16 +12498,12 @@ where
 	/// Queues up an outbound HTLC to send by placing it in the holding cell. You should call
 	/// [`Self::maybe_free_holding_cell_htlcs`] in order to actually generate and send the
 	/// commitment update.
-	pub fn queue_add_htlc<F: Deref, L: Deref>(
+	pub fn queue_add_htlc<F: FeeEstimator, L: Logger>(
 		&mut self, amount_msat: u64, payment_hash: PaymentHash, cltv_expiry: u32,
 		source: HTLCSource, onion_routing_packet: msgs::OnionPacket, skimmed_fee_msat: Option<u64>,
 		blinding_point: Option<PublicKey>, accountable: bool,
 		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
-	) -> Result<(), (LocalHTLCFailureReason, String)>
-	where
-		F::Target: FeeEstimator,
-		L::Target: Logger,
-	{
+	) -> Result<(), (LocalHTLCFailureReason, String)> {
 		self.send_htlc(
 			amount_msat,
 			payment_hash,
@@ -12843,16 +12543,12 @@ where
 	/// on this [`FundedChannel`] if `force_holding_cell` is false.
 	///
 	/// `Err`'s will always be temporary channel failures.
-	fn send_htlc<F: Deref, L: Deref>(
+	fn send_htlc<F: FeeEstimator, L: Logger>(
 		&mut self, amount_msat: u64, payment_hash: PaymentHash, cltv_expiry: u32,
 		source: HTLCSource, onion_routing_packet: msgs::OnionPacket, mut force_holding_cell: bool,
 		skimmed_fee_msat: Option<u64>, blinding_point: Option<PublicKey>, hold_htlc: bool,
 		accountable: bool, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
-	) -> Result<bool, (LocalHTLCFailureReason, String)>
-	where
-		F::Target: FeeEstimator,
-		L::Target: Logger,
-	{
+	) -> Result<bool, (LocalHTLCFailureReason, String)> {
 		if !matches!(self.context.channel_state, ChannelState::ChannelReady(_))
 			|| self.context.channel_state.is_local_shutdown_sent()
 			|| self.context.channel_state.is_remote_shutdown_sent()
@@ -12960,12 +12656,9 @@ where
 	}
 
 	#[rustfmt::skip]
-	pub(super) fn get_available_balances<F: Deref>(
+	pub(super) fn get_available_balances<F: FeeEstimator>(
 		&self, fee_estimator: &LowerBoundedFeeEstimator<F>,
-	) -> AvailableBalances
-	where
-		F::Target: FeeEstimator,
-	{
+	) -> AvailableBalances {
 		core::iter::once(&self.funding)
 			.chain(self.pending_funding().iter())
 			.map(|funding| self.context.get_available_balances_for_scope(funding, fee_estimator))
@@ -12980,10 +12673,7 @@ where
 			.expect("At least one FundingScope is always provided")
 	}
 
-	fn build_commitment_no_status_check<L: Deref>(&mut self, logger: &L) -> ChannelMonitorUpdate
-	where
-		L::Target: Logger,
-	{
+	fn build_commitment_no_status_check<L: Logger>(&mut self, logger: &L) -> ChannelMonitorUpdate {
 		log_trace!(logger, "Updating HTLC state for a newly-sent commitment_signed...");
 		// We can upgrade the status of some HTLCs that are waiting on a commitment, even if we
 		// fail to generate this, we still are at least at a position where upgrading their status
@@ -13101,12 +12791,9 @@ where
 	}
 
 	#[rustfmt::skip]
-	fn build_commitment_no_state_update<L: Deref>(
+	fn build_commitment_no_state_update<L: Logger>(
 		&self, funding: &FundingScope, logger: &L,
-	) -> (Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)>, CommitmentTransaction)
-	where
-		L::Target: Logger,
-	{
+	) -> (Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)>, CommitmentTransaction) {
 		let commitment_data = self.context.build_commitment_transaction(
 			funding, self.context.counterparty_next_commitment_transaction_number,
 			&self.context.counterparty_next_commitment_point.unwrap(), false, true, logger,
@@ -13118,12 +12805,9 @@ where
 
 	/// Only fails in case of signer rejection. Used for channel_reestablish commitment_signed
 	/// generation when we shouldn't change HTLC/channel state.
-	fn send_commitment_no_state_update<L: Deref>(
+	fn send_commitment_no_state_update<L: Logger>(
 		&self, logger: &L,
-	) -> Result<Vec<msgs::CommitmentSigned>, ChannelError>
-	where
-		L::Target: Logger,
-	{
+	) -> Result<Vec<msgs::CommitmentSigned>, ChannelError> {
 		core::iter::once(&self.funding)
 			.chain(self.pending_funding().iter())
 			.map(|funding| self.send_commitment_no_state_update_for_funding(funding, logger))
@@ -13131,12 +12815,9 @@ where
 	}
 
 	#[rustfmt::skip]
-	fn send_commitment_no_state_update_for_funding<L: Deref>(
+	fn send_commitment_no_state_update_for_funding<L: Logger>(
 		&self, funding: &FundingScope, logger: &L,
-	) -> Result<msgs::CommitmentSigned, ChannelError>
-	where
-		L::Target: Logger,
-	{
+	) -> Result<msgs::CommitmentSigned, ChannelError> {
 		// Get the fee tests from `build_commitment_no_state_update`
 		#[cfg(any(test, fuzzing))]
 		self.build_commitment_no_state_update(funding, logger);
@@ -13199,16 +12880,12 @@ where
 	///
 	/// Shorthand for calling [`Self::send_htlc`] followed by a commitment update, see docs on
 	/// [`Self::send_htlc`] and [`Self::build_commitment_no_state_update`] for more info.
-	pub fn send_htlc_and_commit<F: Deref, L: Deref>(
+	pub fn send_htlc_and_commit<F: FeeEstimator, L: Logger>(
 		&mut self, amount_msat: u64, payment_hash: PaymentHash, cltv_expiry: u32,
 		source: HTLCSource, onion_routing_packet: msgs::OnionPacket, skimmed_fee_msat: Option<u64>,
 		hold_htlc: bool, accountable: bool, fee_estimator: &LowerBoundedFeeEstimator<F>,
 		logger: &L,
-	) -> Result<Option<ChannelMonitorUpdate>, ChannelError>
-	where
-		F::Target: FeeEstimator,
-		L::Target: Logger,
-	{
+	) -> Result<Option<ChannelMonitorUpdate>, ChannelError> {
 		let send_res = self.send_htlc(
 			amount_msat,
 			payment_hash,
@@ -13261,17 +12938,14 @@ where
 
 	/// Begins the shutdown process, getting a message for the remote peer and returning all
 	/// holding cell HTLCs for payment failure.
-	pub fn get_shutdown<L: Deref>(
+	pub fn get_shutdown<L: Logger>(
 		&mut self, signer_provider: &SP, their_features: &InitFeatures,
 		target_feerate_sats_per_kw: Option<u32>, override_shutdown_script: Option<ShutdownScript>,
 		logger: &L,
 	) -> Result<
 		(msgs::Shutdown, Option<ChannelMonitorUpdate>, Vec<(HTLCSource, PaymentHash)>),
 		APIError,
-	>
-	where
-		L::Target: Logger,
-	{
+	> {
 		let logger = WithChannelContext::from(logger, &self.context, None);
 
 		if self.context.channel_state.is_local_stfu_sent()
@@ -13423,12 +13097,9 @@ where
 	}
 
 	#[rustfmt::skip]
-	pub fn propose_quiescence<L: Deref>(
+	pub fn propose_quiescence<L: Logger>(
 		&mut self, logger: &L, action: QuiescentAction,
-	) -> Result<Option<msgs::Stfu>, &'static str>
-	where
-		L::Target: Logger,
-	{
+	) -> Result<Option<msgs::Stfu>, &'static str> {
 		log_debug!(logger, "Attempting to initiate quiescence");
 
 		if !self.context.is_usable() {
@@ -13464,10 +13135,7 @@ where
 
 	// Assumes we are either awaiting quiescence or our counterparty has requested quiescence.
 	#[rustfmt::skip]
-	pub fn send_stfu<L: Deref>(&mut self, logger: &L) -> Result<msgs::Stfu, &'static str>
-	where
-		L::Target: Logger,
-	{
+	pub fn send_stfu<L: Logger>(&mut self, logger: &L) -> Result<msgs::Stfu, &'static str> {
 		debug_assert!(!self.context.channel_state.is_local_stfu_sent());
 		debug_assert!(
 			self.context.channel_state.is_awaiting_quiescence()
@@ -13502,9 +13170,9 @@ where
 	}
 
 	#[rustfmt::skip]
-	pub fn stfu<L: Deref>(
+	pub fn stfu<L: Logger>(
 		&mut self, msg: &msgs::Stfu, logger: &L
-	) -> Result<Option<StfuResponse>, ChannelError> where L::Target: Logger {
+	) -> Result<Option<StfuResponse>, ChannelError> {
 		if self.context.channel_state.is_quiescent() {
 			return Err(ChannelError::Warn("Channel is already quiescent".to_owned()));
 		}
@@ -13605,12 +13273,9 @@ where
 		Ok(None)
 	}
 
-	pub fn try_send_stfu<L: Deref>(
+	pub fn try_send_stfu<L: Logger>(
 		&mut self, logger: &L,
-	) -> Result<Option<msgs::Stfu>, ChannelError>
-	where
-		L::Target: Logger,
-	{
+	) -> Result<Option<msgs::Stfu>, ChannelError> {
 		// We must never see both stfu flags set, we always set the quiescent flag instead.
 		debug_assert!(
 			!(self.context.channel_state.is_local_stfu_sent()
@@ -13681,10 +13346,7 @@ where
 }
 
 /// A not-yet-funded outbound (from holder) channel using V1 channel establishment.
-pub(super) struct OutboundV1Channel<SP: Deref>
-where
-	SP::Target: SignerProvider,
-{
+pub(super) struct OutboundV1Channel<SP: SignerProvider> {
 	pub funding: FundingScope,
 	pub context: ChannelContext<SP>,
 	pub unfunded_context: UnfundedChannelContext,
@@ -13694,25 +13356,18 @@ where
 	pub signer_pending_open_channel: bool,
 }
 
-impl<SP: Deref> OutboundV1Channel<SP>
-where
-	SP::Target: SignerProvider,
-{
+impl<SP: SignerProvider> OutboundV1Channel<SP> {
 	pub fn abandon_unfunded_chan(&mut self, closure_reason: ClosureReason) -> ShutdownResult {
 		self.context.force_shutdown(&self.funding, closure_reason)
 	}
 
 	#[allow(dead_code)] // TODO(dual_funding): Remove once opending V2 channels is enabled.
 	#[rustfmt::skip]
-	pub fn new<ES: Deref, F: Deref, L: Deref>(
+	pub fn new<ES: EntropySource, F: FeeEstimator, L: Logger>(
 		fee_estimator: &LowerBoundedFeeEstimator<F>, entropy_source: &ES, signer_provider: &SP, counterparty_node_id: PublicKey, their_features: &InitFeatures,
 		channel_value_satoshis: u64, push_msat: u64, user_id: u128, config: &UserConfig, current_chain_height: u32,
 		outbound_scid_alias: u64, temporary_channel_id: Option<ChannelId>, logger: L
-	) -> Result<OutboundV1Channel<SP>, APIError>
-	where ES::Target: EntropySource,
-	      F::Target: FeeEstimator,
-	      L::Target: Logger,
-	{
+	) -> Result<OutboundV1Channel<SP>, APIError> {
 		let holder_selected_channel_reserve_satoshis = get_holder_selected_channel_reserve_satoshis(channel_value_satoshis, config);
 		if holder_selected_channel_reserve_satoshis < MIN_CHAN_DUST_LIMIT_SATOSHIS {
 			// Protocol level safety check in place, although it should never happen because
@@ -13759,7 +13414,7 @@ where
 
 	/// Only allowed after [`FundingScope::channel_transaction_parameters`] is set.
 	#[rustfmt::skip]
-	fn get_funding_created_msg<L: Deref>(&mut self, logger: &L) -> Option<msgs::FundingCreated> where L::Target: Logger {
+	fn get_funding_created_msg<L: Logger>(&mut self, logger: &L) -> Option<msgs::FundingCreated> {
 		let commitment_data = self.context.build_commitment_transaction(&self.funding,
 			self.context.counterparty_next_commitment_transaction_number,
 			&self.context.counterparty_next_commitment_point.unwrap(), false, false, logger);
@@ -13804,8 +13459,8 @@ where
 	/// Do NOT broadcast the funding transaction until after a successful funding_signed call!
 	/// If an Err is returned, it is a ChannelError::Close.
 	#[rustfmt::skip]
-	pub fn get_funding_created<L: Deref>(&mut self, funding_transaction: Transaction, funding_txo: OutPoint, is_batch_funding: bool, logger: &L)
-	-> Result<Option<msgs::FundingCreated>, (Self, ChannelError)> where L::Target: Logger {
+	pub fn get_funding_created<L: Logger>(&mut self, funding_transaction: Transaction, funding_txo: OutPoint, is_batch_funding: bool, logger: &L)
+	-> Result<Option<msgs::FundingCreated>, (Self, ChannelError)> {
 		if !self.funding.is_outbound() {
 			panic!("Tried to create outbound funding_created message on an inbound channel!");
 		}
@@ -13844,14 +13499,10 @@ where
 	/// not of our ability to open any channel at all. Thus, on error, we should first call this
 	/// and see if we get a new `OpenChannel` message, otherwise the channel is failed.
 	#[rustfmt::skip]
-	pub(crate) fn maybe_handle_error_without_close<F: Deref, L: Deref>(
+	pub(crate) fn maybe_handle_error_without_close<F: FeeEstimator, L: Logger>(
 		&mut self, chain_hash: ChainHash, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
 		user_config: &UserConfig, their_features: &InitFeatures,
-	) -> Result<msgs::OpenChannel, ()>
-	where
-		F::Target: FeeEstimator,
-		L::Target: Logger,
-	{
+	) -> Result<msgs::OpenChannel, ()> {
 		self.context.maybe_downgrade_channel_features(
 			&mut self.funding, fee_estimator, user_config, their_features,
 		)?;
@@ -13865,9 +13516,9 @@ where
 	}
 
 	#[rustfmt::skip]
-	pub fn get_open_channel<L: Deref>(
+	pub fn get_open_channel<L: Logger>(
 		&mut self, chain_hash: ChainHash, _logger: &L
-	) -> Option<msgs::OpenChannel> where L::Target: Logger {
+	) -> Option<msgs::OpenChannel> {
 		if !self.funding.is_outbound() {
 			panic!("Tried to open a channel for an inbound channel?");
 		}
@@ -13937,16 +13588,13 @@ where
 
 	/// Handles a funding_signed message from the remote end.
 	/// If this call is successful, broadcast the funding transaction (and not before!)
-	pub fn funding_signed<L: Deref>(
+	pub fn funding_signed<L: Logger>(
 		mut self, msg: &msgs::FundingSigned, best_block: BestBlock, signer_provider: &SP,
 		logger: &L,
 	) -> Result<
-		(FundedChannel<SP>, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>),
+		(FundedChannel<SP>, ChannelMonitor<SP::EcdsaSigner>),
 		(OutboundV1Channel<SP>, ChannelError),
-	>
-	where
-		L::Target: Logger,
-	{
+	> {
 		if !self.funding.is_outbound() {
 			let err = "Received funding_signed for an inbound channel?";
 			return Err((self, ChannelError::close(err.to_owned())));
@@ -14010,9 +13658,9 @@ where
 	/// Indicates that the signer may have some signatures for us, so we should retry if we're
 	/// blocked.
 	#[rustfmt::skip]
-	pub fn signer_maybe_unblocked<L: Deref>(
+	pub fn signer_maybe_unblocked<L: Logger>(
 		&mut self, chain_hash: ChainHash, logger: &L
-	) -> (Option<msgs::OpenChannel>, Option<msgs::FundingCreated>) where L::Target: Logger {
+	) -> (Option<msgs::OpenChannel>, Option<msgs::FundingCreated>) {
 		// If we were pending a commitment point, retry the signer and advance to an
 		// available state.
 		if self.unfunded_context.holder_commitment_point.is_none() {
@@ -14048,10 +13696,7 @@ where
 }
 
 /// A not-yet-funded inbound (from counterparty) channel using V1 channel establishment.
-pub(super) struct InboundV1Channel<SP: Deref>
-where
-	SP::Target: SignerProvider,
-{
+pub(super) struct InboundV1Channel<SP: SignerProvider> {
 	pub funding: FundingScope,
 	pub context: ChannelContext<SP>,
 	pub unfunded_context: UnfundedChannelContext,
@@ -14089,23 +13734,16 @@ pub(super) fn channel_type_from_open_channel(
 	Ok(channel_type.clone())
 }
 
-impl<SP: Deref> InboundV1Channel<SP>
-where
-	SP::Target: SignerProvider,
-{
+impl<SP: SignerProvider> InboundV1Channel<SP> {
 	/// Creates a new channel from a remote sides' request for one.
 	/// Assumes chain_hash has already been checked and corresponds with what we expect!
 	#[rustfmt::skip]
-	pub fn new<ES: Deref, F: Deref, L: Deref>(
+	pub fn new<ES: EntropySource, F: FeeEstimator, L: Logger>(
 		fee_estimator: &LowerBoundedFeeEstimator<F>, entropy_source: &ES, signer_provider: &SP,
 		counterparty_node_id: PublicKey, our_supported_features: &ChannelTypeFeatures,
 		their_features: &InitFeatures, msg: &msgs::OpenChannel, user_id: u128, config: &UserConfig,
 		current_chain_height: u32, logger: &L, is_0conf: bool,
-	) -> Result<InboundV1Channel<SP>, ChannelError>
-		where ES::Target: EntropySource,
-			  F::Target: FeeEstimator,
-			  L::Target: Logger,
-	{
+	) -> Result<InboundV1Channel<SP>, ChannelError> {
 		let logger = WithContext::from(logger, Some(counterparty_node_id), Some(msg.common_fields.temporary_channel_id), None);
 
 		// First check the channel type is known, failing before we do anything else if we don't
@@ -14153,10 +13791,7 @@ where
 	/// should be sent back to the counterparty node.
 	///
 	/// [`msgs::AcceptChannel`]: crate::ln::msgs::AcceptChannel
-	pub fn accept_inbound_channel<L: Deref>(&mut self, logger: &L) -> Option<msgs::AcceptChannel>
-	where
-		L::Target: Logger,
-	{
+	pub fn accept_inbound_channel<L: Logger>(&mut self, logger: &L) -> Option<msgs::AcceptChannel> {
 		if self.funding.is_outbound() {
 			panic!("Tried to send accept_channel for an outbound channel?");
 		}
@@ -14179,9 +13814,9 @@ where
 	///
 	/// [`msgs::AcceptChannel`]: crate::ln::msgs::AcceptChannel
 	#[rustfmt::skip]
-	fn generate_accept_channel_message<L: Deref>(
+	fn generate_accept_channel_message<L: Logger>(
 		&mut self, _logger: &L
-	) -> Option<msgs::AcceptChannel> where L::Target: Logger {
+	) -> Option<msgs::AcceptChannel> {
 		let first_per_commitment_point = match self.unfunded_context.holder_commitment_point {
 			Some(holder_commitment_point) if holder_commitment_point.can_advance() => {
 				self.signer_pending_accept_channel = false;
@@ -14227,29 +13862,19 @@ where
 	///
 	/// [`msgs::AcceptChannel`]: crate::ln::msgs::AcceptChannel
 	#[cfg(test)]
-	pub fn get_accept_channel_message<L: Deref>(
+	pub fn get_accept_channel_message<L: Logger>(
 		&mut self, logger: &L,
-	) -> Option<msgs::AcceptChannel>
-	where
-		L::Target: Logger,
-	{
+	) -> Option<msgs::AcceptChannel> {
 		self.generate_accept_channel_message(logger)
 	}
 
-	pub fn funding_created<L: Deref>(
+	pub fn funding_created<L: Logger>(
 		mut self, msg: &msgs::FundingCreated, best_block: BestBlock, signer_provider: &SP,
 		logger: &L,
 	) -> Result<
-		(
-			FundedChannel<SP>,
-			Option<msgs::FundingSigned>,
-			ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>,
-		),
+		(FundedChannel<SP>, Option<msgs::FundingSigned>, ChannelMonitor<SP::EcdsaSigner>),
 		(Self, ChannelError),
-	>
-	where
-		L::Target: Logger,
-	{
+	> {
 		if self.funding.is_outbound() {
 			let err = "Received funding_created for an outbound channel?";
 			return Err((self, ChannelError::close(err.to_owned())));
@@ -14333,9 +13958,9 @@ where
 	/// Indicates that the signer may have some signatures for us, so we should retry if we're
 	/// blocked.
 	#[rustfmt::skip]
-	pub fn signer_maybe_unblocked<L: Deref>(
+	pub fn signer_maybe_unblocked<L: Logger>(
 		&mut self, logger: &L
-	) -> Option<msgs::AcceptChannel> where L::Target: Logger {
+	) -> Option<msgs::AcceptChannel> {
 		if self.unfunded_context.holder_commitment_point.is_none() {
 			self.unfunded_context.holder_commitment_point = HolderCommitmentPoint::new(&self.context.holder_signer, &self.context.secp_ctx);
 		}
@@ -14352,10 +13977,7 @@ where
 }
 
 // A not-yet-funded channel using V2 channel establishment.
-pub(super) struct PendingV2Channel<SP: Deref>
-where
-	SP::Target: SignerProvider,
-{
+pub(super) struct PendingV2Channel<SP: SignerProvider> {
 	pub funding: FundingScope,
 	pub context: ChannelContext<SP>,
 	pub unfunded_context: UnfundedChannelContext,
@@ -14364,23 +13986,16 @@ where
 	pub interactive_tx_constructor: Option<InteractiveTxConstructor>,
 }
 
-impl<SP: Deref> PendingV2Channel<SP>
-where
-	SP::Target: SignerProvider,
-{
+impl<SP: SignerProvider> PendingV2Channel<SP> {
 	#[allow(dead_code)] // TODO(dual_funding): Remove once creating V2 channels is enabled.
 	#[rustfmt::skip]
-	pub fn new_outbound<ES: Deref, F: Deref, L: Deref>(
+	pub fn new_outbound<ES: EntropySource, F: FeeEstimator, L: Logger>(
 		fee_estimator: &LowerBoundedFeeEstimator<F>, entropy_source: &ES, signer_provider: &SP,
 		counterparty_node_id: PublicKey, their_features: &InitFeatures, funding_satoshis: u64,
 		funding_inputs: Vec<FundingTxInput>, user_id: u128, config: &UserConfig,
 		current_chain_height: u32, outbound_scid_alias: u64, funding_confirmation_target: ConfirmationTarget,
 		logger: L,
-	) -> Result<Self, APIError>
-	where ES::Target: EntropySource,
-	      F::Target: FeeEstimator,
-	      L::Target: Logger,
-	{
+	) -> Result<Self, APIError> {
 		let channel_keys_id = signer_provider.generate_channel_keys_id(false, user_id);
 		let holder_signer = signer_provider.derive_channel_signer(channel_keys_id);
 
@@ -14443,13 +14058,10 @@ where
 	/// If we receive an error message, it may only be a rejection of the channel type we tried,
 	/// not of our ability to open any channel at all. Thus, on error, we should first call this
 	/// and see if we get a new `OpenChannelV2` message, otherwise the channel is failed.
-	pub(crate) fn maybe_handle_error_without_close<F: Deref>(
+	pub(crate) fn maybe_handle_error_without_close<F: FeeEstimator>(
 		&mut self, chain_hash: ChainHash, fee_estimator: &LowerBoundedFeeEstimator<F>,
 		user_config: &UserConfig, their_features: &InitFeatures,
-	) -> Result<msgs::OpenChannelV2, ()>
-	where
-		F::Target: FeeEstimator,
-	{
+	) -> Result<msgs::OpenChannelV2, ()> {
 		self.context.maybe_downgrade_channel_features(
 			&mut self.funding,
 			fee_estimator,
@@ -14519,16 +14131,12 @@ where
 	/// TODO(dual_funding): Allow contributions, pass intended amount and inputs
 	#[allow(dead_code)] // TODO(dual_funding): Remove once V2 channels is enabled.
 	#[rustfmt::skip]
-	pub fn new_inbound<ES: Deref, F: Deref, L: Deref>(
+	pub fn new_inbound<ES: EntropySource, F: FeeEstimator, L: Logger>(
 		fee_estimator: &LowerBoundedFeeEstimator<F>, entropy_source: &ES, signer_provider: &SP,
 		holder_node_id: PublicKey, counterparty_node_id: PublicKey, our_supported_features: &ChannelTypeFeatures,
 		their_features: &InitFeatures, msg: &msgs::OpenChannelV2,
 		user_id: u128, config: &UserConfig, current_chain_height: u32, logger: &L,
-	) -> Result<Self, ChannelError>
-		where ES::Target: EntropySource,
-			  F::Target: FeeEstimator,
-			  L::Target: Logger,
-	{
+	) -> Result<Self, ChannelError> {
 		// TODO(dual_funding): Take these as input once supported
 		let (our_funding_contribution, our_funding_contribution_sats) = (SignedAmount::ZERO, 0u64);
 		let our_funding_inputs = Vec::new();
@@ -14785,10 +14393,7 @@ impl Readable for AnnouncementSigsState {
 	}
 }
 
-impl<SP: Deref> Writeable for FundedChannel<SP>
-where
-	SP::Target: SignerProvider,
-{
+impl<SP: SignerProvider> Writeable for FundedChannel<SP> {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		// Note that we write out as if remove_uncommitted_htlcs_and_mark_paused had just been
 		// called.
@@ -15277,11 +14882,8 @@ where
 	}
 }
 
-impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c ChannelTypeFeatures)>
-	for FundedChannel<SP>
-where
-	ES::Target: EntropySource,
-	SP::Target: SignerProvider,
+impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
+	ReadableArgs<(&'a ES, &'b SP, &'c ChannelTypeFeatures)> for FundedChannel<SP>
 {
 	fn read<R: io::Read>(
 		reader: &mut R, args: (&'a ES, &'b SP, &'c ChannelTypeFeatures),

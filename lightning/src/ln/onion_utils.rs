@@ -40,7 +40,6 @@ use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey};
 
 use crate::io::{Cursor, Read};
-use core::ops::Deref;
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -983,13 +982,10 @@ mod fuzzy_onion_utils {
 		pub(crate) attribution_failed_channel: Option<u64>,
 	}
 
-	pub fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
+	pub fn process_onion_failure<T: secp256k1::Signing, L: Logger>(
 		secp_ctx: &Secp256k1<T>, logger: &L, htlc_source: &HTLCSource,
 		encrypted_packet: OnionErrorPacket,
-	) -> DecodedOnionFailure
-	where
-		L::Target: Logger,
-	{
+	) -> DecodedOnionFailure {
 		let (path, session_priv) = match htlc_source {
 			HTLCSource::OutboundRoute { ref path, ref session_priv, .. } => (path, session_priv),
 			_ => unreachable!(),
@@ -999,13 +995,10 @@ mod fuzzy_onion_utils {
 	}
 
 	/// Decodes the attribution data that we got back from upstream on a payment we sent.
-	pub fn decode_fulfill_attribution_data<T: secp256k1::Signing, L: Deref>(
+	pub fn decode_fulfill_attribution_data<T: secp256k1::Signing, L: Logger>(
 		secp_ctx: &Secp256k1<T>, logger: &L, path: &Path, outer_session_priv: &SecretKey,
 		mut attribution_data: AttributionData,
-	) -> Vec<u32>
-	where
-		L::Target: Logger,
-	{
+	) -> Vec<u32> {
 		let mut hold_times = Vec::new();
 
 		// Only consider hops in the regular path for attribution data. Blinded path attribution data isn't accessible.
@@ -1057,13 +1050,10 @@ pub(crate) use self::fuzzy_onion_utils::*;
 
 /// Process failure we got back from upstream on a payment we sent (implying htlc_source is an
 /// OutboundRoute).
-fn process_onion_failure_inner<T: secp256k1::Signing, L: Deref>(
+fn process_onion_failure_inner<T: secp256k1::Signing, L: Logger>(
 	secp_ctx: &Secp256k1<T>, logger: &L, path: &Path, session_priv: &SecretKey,
 	trampoline_session_priv_override: Option<SecretKey>, mut encrypted_packet: OnionErrorPacket,
-) -> DecodedOnionFailure
-where
-	L::Target: Logger,
-{
+) -> DecodedOnionFailure {
 	// Check that there is at least enough data for an hmac, otherwise none of the checking that we may do makes sense.
 	// Also prevent slice out of bounds further down.
 	if encrypted_packet.data.len() < 32 {
@@ -2124,12 +2114,9 @@ impl HTLCFailReason {
 		}
 	}
 
-	pub(super) fn decode_onion_failure<T: secp256k1::Signing, L: Deref>(
+	pub(super) fn decode_onion_failure<T: secp256k1::Signing, L: Logger>(
 		&self, secp_ctx: &Secp256k1<T>, logger: &L, htlc_source: &HTLCSource,
-	) -> DecodedOnionFailure
-	where
-		L::Target: Logger,
-	{
+	) -> DecodedOnionFailure {
 		match self.0 {
 			HTLCFailReasonRepr::LightningError { ref err, .. } => {
 				process_onion_failure(secp_ctx, logger, &htlc_source, err.clone())
@@ -2322,13 +2309,10 @@ pub(crate) enum OnionDecodeErr {
 	},
 }
 
-pub(crate) fn decode_next_payment_hop<NS: Deref>(
+pub(crate) fn decode_next_payment_hop<NS: NodeSigner>(
 	recipient: Recipient, hop_pubkey: &PublicKey, hop_data: &[u8], hmac_bytes: [u8; 32],
 	payment_hash: PaymentHash, blinding_point: Option<PublicKey>, node_signer: NS,
-) -> Result<Hop, OnionDecodeErr>
-where
-	NS::Target: NodeSigner,
-{
+) -> Result<Hop, OnionDecodeErr> {
 	let blinded_node_id_tweak = blinding_point.map(|bp| {
 		let blinded_tlvs_ss = node_signer.ecdh(recipient, &bp, None).unwrap().secret_bytes();
 		let mut hmac = HmacEngine::<Sha256>::new(b"blinded_node_id");
@@ -2343,7 +2327,7 @@ where
 		hop_data,
 		hmac_bytes,
 		Some(payment_hash),
-		(blinding_point, &(*node_signer)),
+		(blinding_point, &node_signer),
 	);
 	match decoded_hop {
 		Ok((next_hop_data, Some((next_hop_hmac, FixedSizeOnionPacket(new_packet_bytes))))) => {
@@ -2417,7 +2401,7 @@ where
 					&hop_data.trampoline_packet.hop_data,
 					hop_data.trampoline_packet.hmac,
 					Some(payment_hash),
-					(blinding_point, node_signer),
+					(blinding_point, &node_signer),
 				);
 				match decoded_trampoline_hop {
 					Ok((
@@ -2555,14 +2539,11 @@ where
 ///
 /// This function performs no validation and does not enqueue or forward the HTLC.
 /// It only reconstructs the next `UpdateAddHTLC` for further local processing.
-pub(super) fn peel_dummy_hop_update_add_htlc<NS: Deref, T: secp256k1::Verification>(
+pub(super) fn peel_dummy_hop_update_add_htlc<NS: NodeSigner, T: secp256k1::Verification>(
 	msg: &UpdateAddHTLC, dummy_hop_data: InboundOnionDummyPayload, next_hop_hmac: [u8; 32],
 	new_packet_bytes: [u8; ONION_DATA_LEN], next_packet_details: NextPacketDetails,
 	node_signer: NS, secp_ctx: &Secp256k1<T>,
-) -> UpdateAddHTLC
-where
-	NS::Target: NodeSigner,
-{
+) -> UpdateAddHTLC {
 	let NextPacketDetails {
 		next_packet_pubkey,
 		outgoing_amt_msat,

@@ -25,6 +25,8 @@ use crate::ln::types::ChannelId;
 use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::sign::HTLCDescriptor;
 
+use core::ops::Deref;
+
 #[allow(unused_imports)]
 use crate::prelude::*;
 
@@ -346,6 +348,28 @@ pub trait Watch<ChannelSigner: EcdsaChannelSigner> {
 	) -> Vec<(OutPoint, ChannelId, Vec<MonitorEvent>, PublicKey)>;
 }
 
+impl<ChannelSigner: EcdsaChannelSigner, T: Watch<ChannelSigner> + ?Sized, W: Deref<Target = T>>
+	Watch<ChannelSigner> for W
+{
+	fn watch_channel(
+		&self, channel_id: ChannelId, monitor: ChannelMonitor<ChannelSigner>,
+	) -> Result<ChannelMonitorUpdateStatus, ()> {
+		self.deref().watch_channel(channel_id, monitor)
+	}
+
+	fn update_channel(
+		&self, channel_id: ChannelId, update: &ChannelMonitorUpdate,
+	) -> ChannelMonitorUpdateStatus {
+		self.deref().update_channel(channel_id, update)
+	}
+
+	fn release_pending_monitor_events(
+		&self,
+	) -> Vec<(OutPoint, ChannelId, Vec<MonitorEvent>, PublicKey)> {
+		self.deref().release_pending_monitor_events()
+	}
+}
+
 /// The `Filter` trait defines behavior for indicating chain activity of interest pertaining to
 /// channels.
 ///
@@ -386,6 +410,16 @@ pub trait Filter {
 	/// This may be used, for example, to monitor for when a funding output is spent (by any
 	/// transaction).
 	fn register_output(&self, output: WatchedOutput);
+}
+
+impl<T: Filter + ?Sized, F: Deref<Target = T>> Filter for F {
+	fn register_tx(&self, txid: &Txid, script_pubkey: &Script) {
+		self.deref().register_tx(txid, script_pubkey)
+	}
+
+	fn register_output(&self, output: WatchedOutput) {
+		self.deref().register_output(output)
+	}
 }
 
 /// A transaction output watched by a [`ChannelMonitor`] for spends on-chain.

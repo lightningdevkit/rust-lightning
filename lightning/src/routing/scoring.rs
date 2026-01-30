@@ -479,10 +479,7 @@ impl ReadableArgs<u64> for FixedPenaltyScorer {
 /// [`liquidity_offset_half_life`]: ProbabilisticScoringDecayParameters::liquidity_offset_half_life
 /// [`historical_liquidity_penalty_multiplier_msat`]: ProbabilisticScoringFeeParameters::historical_liquidity_penalty_multiplier_msat
 /// [`historical_liquidity_penalty_amount_multiplier_msat`]: ProbabilisticScoringFeeParameters::historical_liquidity_penalty_amount_multiplier_msat
-pub struct ProbabilisticScorer<G: Deref<Target = NetworkGraph<L>>, L: Deref>
-where
-	L::Target: Logger,
-{
+pub struct ProbabilisticScorer<G: Deref<Target = NetworkGraph<L>>, L: Logger> {
 	decay_params: ProbabilisticScoringDecayParameters,
 	network_graph: G,
 	logger: L,
@@ -964,10 +961,7 @@ struct DirectedChannelLiquidity<
 	last_datapoint_time: T,
 }
 
-impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> ProbabilisticScorer<G, L>
-where
-	L::Target: Logger,
-{
+impl<G: Deref<Target = NetworkGraph<L>>, L: Logger> ProbabilisticScorer<G, L> {
 	/// Creates a new scorer using the given scoring parameters for sending payments from a node
 	/// through a network graph.
 	pub fn new(
@@ -1593,9 +1587,9 @@ impl<
 {
 	/// Adjusts the channel liquidity balance bounds when failing to route `amount_msat`.
 	#[rustfmt::skip]
-	fn failed_at_channel<Log: Deref>(
+	fn failed_at_channel<Log: Logger>(
 		&mut self, amount_msat: u64, duration_since_epoch: Duration, chan_descr: fmt::Arguments, logger: &Log
-	) where Log::Target: Logger {
+	) {
 		let existing_max_msat = self.max_liquidity_msat();
 		if amount_msat < existing_max_msat {
 			log_debug!(logger, "Setting max liquidity of {} from {} to {}", chan_descr, existing_max_msat, amount_msat);
@@ -1610,9 +1604,9 @@ impl<
 
 	/// Adjusts the channel liquidity balance bounds when failing to route `amount_msat` downstream.
 	#[rustfmt::skip]
-	fn failed_downstream<Log: Deref>(
+	fn failed_downstream<Log: Logger>(
 		&mut self, amount_msat: u64, duration_since_epoch: Duration, chan_descr: fmt::Arguments, logger: &Log
-	) where Log::Target: Logger {
+	) {
 		let existing_min_msat = self.min_liquidity_msat();
 		if amount_msat > existing_min_msat {
 			log_debug!(logger, "Setting min liquidity of {} from {} to {}", existing_min_msat, chan_descr, amount_msat);
@@ -1627,9 +1621,9 @@ impl<
 
 	/// Adjusts the channel liquidity balance bounds when successfully routing `amount_msat`.
 	#[rustfmt::skip]
-	fn successful<Log: Deref>(&mut self,
+	fn successful<Log: Logger>(&mut self,
 		amount_msat: u64, duration_since_epoch: Duration, chan_descr: fmt::Arguments, logger: &Log
-	) where Log::Target: Logger {
+	) {
 		let max_liquidity_msat = self.max_liquidity_msat().checked_sub(amount_msat).unwrap_or(0);
 		log_debug!(logger, "Subtracting {} from max liquidity of {} (setting it to {})", amount_msat, chan_descr, max_liquidity_msat);
 		self.set_max_liquidity_msat(max_liquidity_msat, duration_since_epoch);
@@ -1669,10 +1663,7 @@ impl<
 	}
 }
 
-impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> ScoreLookUp for ProbabilisticScorer<G, L>
-where
-	L::Target: Logger,
-{
+impl<G: Deref<Target = NetworkGraph<L>>, L: Logger> ScoreLookUp for ProbabilisticScorer<G, L> {
 	type ScoreParams = ProbabilisticScoringFeeParameters;
 	#[rustfmt::skip]
 	fn channel_penalty_msat(
@@ -1735,10 +1726,7 @@ where
 	}
 }
 
-impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> ScoreUpdate for ProbabilisticScorer<G, L>
-where
-	L::Target: Logger,
-{
+impl<G: Deref<Target = NetworkGraph<L>>, L: Logger> ScoreUpdate for ProbabilisticScorer<G, L> {
 	#[rustfmt::skip]
 	fn payment_path_failed(&mut self, path: &Path, short_channel_id: u64, duration_since_epoch: Duration) {
 		let amount_msat = path.final_value_msat();
@@ -1836,18 +1824,12 @@ where
 ///
 /// Note that only the locally acquired data is persisted. After a restart, the external scores will be lost and must be
 /// resupplied.
-pub struct CombinedScorer<G: Deref<Target = NetworkGraph<L>>, L: Deref>
-where
-	L::Target: Logger,
-{
+pub struct CombinedScorer<G: Deref<Target = NetworkGraph<L>>, L: Logger> {
 	local_only_scorer: ProbabilisticScorer<G, L>,
 	scorer: ProbabilisticScorer<G, L>,
 }
 
-impl<G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref + Clone> CombinedScorer<G, L>
-where
-	L::Target: Logger,
-{
+impl<G: Deref<Target = NetworkGraph<L>> + Clone, L: Logger + Clone> CombinedScorer<G, L> {
 	/// Create a new combined scorer with the given local scorer.
 	#[rustfmt::skip]
 	pub fn new(local_scorer: ProbabilisticScorer<G, L>) -> Self {
@@ -1889,10 +1871,7 @@ where
 	}
 }
 
-impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> ScoreLookUp for CombinedScorer<G, L>
-where
-	L::Target: Logger,
-{
+impl<G: Deref<Target = NetworkGraph<L>>, L: Logger> ScoreLookUp for CombinedScorer<G, L> {
 	type ScoreParams = ProbabilisticScoringFeeParameters;
 
 	fn channel_penalty_msat(
@@ -1903,10 +1882,7 @@ where
 	}
 }
 
-impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> ScoreUpdate for CombinedScorer<G, L>
-where
-	L::Target: Logger,
-{
+impl<G: Deref<Target = NetworkGraph<L>>, L: Logger> ScoreUpdate for CombinedScorer<G, L> {
 	fn payment_path_failed(
 		&mut self, path: &Path, short_channel_id: u64, duration_since_epoch: Duration,
 	) {
@@ -1935,20 +1911,14 @@ where
 	}
 }
 
-impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> Writeable for CombinedScorer<G, L>
-where
-	L::Target: Logger,
-{
+impl<G: Deref<Target = NetworkGraph<L>>, L: Logger> Writeable for CombinedScorer<G, L> {
 	fn write<W: crate::util::ser::Writer>(&self, writer: &mut W) -> Result<(), crate::io::Error> {
 		self.local_only_scorer.write(writer)
 	}
 }
 
 #[cfg(c_bindings)]
-impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> Score for ProbabilisticScorer<G, L> where
-	L::Target: Logger
-{
-}
+impl<G: Deref<Target = NetworkGraph<L>>, L: Logger> Score for ProbabilisticScorer<G, L> {}
 
 #[cfg(feature = "std")]
 #[inline]
@@ -2520,20 +2490,15 @@ mod bucketed_history {
 	}
 }
 
-impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> Writeable for ProbabilisticScorer<G, L>
-where
-	L::Target: Logger,
-{
+impl<G: Deref<Target = NetworkGraph<L>>, L: Logger> Writeable for ProbabilisticScorer<G, L> {
 	#[inline]
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		self.channel_liquidities.write(w)
 	}
 }
 
-impl<G: Deref<Target = NetworkGraph<L>>, L: Deref>
+impl<G: Deref<Target = NetworkGraph<L>>, L: Logger>
 	ReadableArgs<(ProbabilisticScoringDecayParameters, G, L)> for ProbabilisticScorer<G, L>
-where
-	L::Target: Logger,
 {
 	#[inline]
 	#[rustfmt::skip]

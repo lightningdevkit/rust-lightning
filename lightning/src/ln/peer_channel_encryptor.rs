@@ -30,8 +30,6 @@ use crate::crypto::chacha20poly1305rfc::ChaCha20Poly1305RFC;
 use crate::crypto::utils::hkdf_extract_expand_twice;
 use crate::util::ser::VecWriter;
 
-use core::ops::Deref;
-
 /// Maximum Lightning message data length according to
 /// [BOLT-8](https://github.com/lightning/bolts/blob/v1.0/08-transport.md#lightning-message-specification)
 /// and [BOLT-1](https://github.com/lightning/bolts/blob/master/01-messaging.md#lightning-message-format):
@@ -52,10 +50,7 @@ const NOISE_H: [u8; 32] = [
 	0x4b, 0xb4, 0x20, 0xd8, 0x9d, 0x2a, 0x04, 0x8a, 0x3c, 0x4f, 0x4c, 0x09, 0x2e, 0x37, 0xb6, 0x76,
 ];
 
-enum NoiseSecretKey<'a, 'b, NS: Deref>
-where
-	NS::Target: NodeSigner,
-{
+enum NoiseSecretKey<'a, 'b, NS: NodeSigner> {
 	InMemory(&'a SecretKey),
 	NodeSigner(&'b NS),
 }
@@ -130,10 +125,7 @@ impl PeerChannelEncryptor {
 		}
 	}
 
-	pub fn new_inbound<NS: Deref>(node_signer: &NS) -> PeerChannelEncryptor
-	where
-		NS::Target: NodeSigner,
-	{
+	pub fn new_inbound<NS: NodeSigner>(node_signer: &NS) -> PeerChannelEncryptor {
 		let mut sha = Sha256::engine();
 		sha.input(&NOISE_H);
 		let our_node_id = node_signer.get_node_id(Recipient::Node).unwrap();
@@ -248,12 +240,9 @@ impl PeerChannelEncryptor {
 	}
 
 	#[inline]
-	fn inbound_noise_act<'a, 'b, NS: Deref>(
+	fn inbound_noise_act<'a, 'b, NS: NodeSigner>(
 		state: &mut BidirectionalNoiseState, act: &[u8], secret_key: NoiseSecretKey<'a, 'b, NS>,
-	) -> Result<(PublicKey, [u8; 32]), LightningError>
-	where
-		NS::Target: NodeSigner,
-	{
+	) -> Result<(PublicKey, [u8; 32]), LightningError> {
 		assert_eq!(act.len(), 50);
 
 		if act[0] != 0 {
@@ -327,13 +316,10 @@ impl PeerChannelEncryptor {
 		}
 	}
 
-	pub fn process_act_one_with_keys<C: secp256k1::Signing, NS: Deref>(
+	pub fn process_act_one_with_keys<C: secp256k1::Signing, NS: NodeSigner>(
 		&mut self, act_one: &[u8], node_signer: &NS, our_ephemeral: SecretKey,
 		secp_ctx: &Secp256k1<C>,
-	) -> Result<[u8; 50], LightningError>
-	where
-		NS::Target: NodeSigner,
-	{
+	) -> Result<[u8; 50], LightningError> {
 		assert_eq!(act_one.len(), 50);
 
 		match self.noise_state {
@@ -372,12 +358,9 @@ impl PeerChannelEncryptor {
 		}
 	}
 
-	pub fn process_act_two<NS: Deref>(
+	pub fn process_act_two<NS: NodeSigner>(
 		&mut self, act_two: &[u8], node_signer: &NS,
-	) -> Result<([u8; 66], PublicKey), LightningError>
-	where
-		NS::Target: NodeSigner,
-	{
+	) -> Result<([u8; 66], PublicKey), LightningError> {
 		assert_eq!(act_two.len(), 50);
 
 		let final_hkdf;

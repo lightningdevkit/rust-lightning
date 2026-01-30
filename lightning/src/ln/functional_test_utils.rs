@@ -732,15 +732,15 @@ pub trait NodeHolder {
 	fn node(
 		&self,
 	) -> &ChannelManager<
-		<Self::CM as AChannelManager>::M,
-		<Self::CM as AChannelManager>::T,
-		<Self::CM as AChannelManager>::ES,
-		<Self::CM as AChannelManager>::NS,
+		<Self::CM as AChannelManager>::Watch,
+		<Self::CM as AChannelManager>::Broadcaster,
+		<Self::CM as AChannelManager>::EntropySource,
+		<Self::CM as AChannelManager>::NodeSigner,
 		<Self::CM as AChannelManager>::SP,
-		<Self::CM as AChannelManager>::F,
-		<Self::CM as AChannelManager>::R,
-		<Self::CM as AChannelManager>::MR,
-		<Self::CM as AChannelManager>::L,
+		<Self::CM as AChannelManager>::FeeEstimator,
+		<Self::CM as AChannelManager>::Router,
+		<Self::CM as AChannelManager>::MessageRouter,
+		<Self::CM as AChannelManager>::Logger,
 	>;
 	fn chain_monitor(&self) -> Option<&test_utils::TestChainMonitor<'_>>;
 }
@@ -749,15 +749,15 @@ impl<H: NodeHolder> NodeHolder for &H {
 	fn node(
 		&self,
 	) -> &ChannelManager<
-		<Self::CM as AChannelManager>::M,
-		<Self::CM as AChannelManager>::T,
-		<Self::CM as AChannelManager>::ES,
-		<Self::CM as AChannelManager>::NS,
+		<Self::CM as AChannelManager>::Watch,
+		<Self::CM as AChannelManager>::Broadcaster,
+		<Self::CM as AChannelManager>::EntropySource,
+		<Self::CM as AChannelManager>::NodeSigner,
 		<Self::CM as AChannelManager>::SP,
-		<Self::CM as AChannelManager>::F,
-		<Self::CM as AChannelManager>::R,
-		<Self::CM as AChannelManager>::MR,
-		<Self::CM as AChannelManager>::L,
+		<Self::CM as AChannelManager>::FeeEstimator,
+		<Self::CM as AChannelManager>::Router,
+		<Self::CM as AChannelManager>::MessageRouter,
+		<Self::CM as AChannelManager>::Logger,
 	> {
 		(*self).node()
 	}

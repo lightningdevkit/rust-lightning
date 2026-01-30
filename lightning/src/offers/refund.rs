@@ -110,7 +110,6 @@ use bitcoin::constants::ChainHash;
 use bitcoin::network::Network;
 use bitcoin::secp256k1::{self, PublicKey, Secp256k1};
 use core::hash::{Hash, Hasher};
-use core::ops::Deref;
 use core::str::FromStr;
 use core::time::Duration;
 
@@ -624,13 +623,10 @@ macro_rules! respond_with_derived_signing_pubkey_methods { ($self: ident, $build
 	///
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	#[cfg(feature = "std")]
-	pub fn respond_using_derived_keys<ES: Deref>(
+	pub fn respond_using_derived_keys<ES: EntropySource>(
 		&$self, payment_paths: Vec<BlindedPaymentPath>, payment_hash: PaymentHash,
 		expanded_key: &ExpandedKey, entropy_source: ES
-	) -> Result<$builder, Bolt12SemanticError>
-	where
-		ES::Target: EntropySource,
-	{
+	) -> Result<$builder, Bolt12SemanticError> {
 		let created_at = std::time::SystemTime::now()
 			.duration_since(std::time::SystemTime::UNIX_EPOCH)
 			.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH");
@@ -648,13 +644,10 @@ macro_rules! respond_with_derived_signing_pubkey_methods { ($self: ident, $build
 	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 	///
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
-	pub fn respond_using_derived_keys_no_std<ES: Deref>(
+	pub fn respond_using_derived_keys_no_std<ES: EntropySource>(
 		&$self, payment_paths: Vec<BlindedPaymentPath>, payment_hash: PaymentHash,
 		created_at: core::time::Duration, expanded_key: &ExpandedKey, entropy_source: ES
-	) -> Result<$builder, Bolt12SemanticError>
-	where
-		ES::Target: EntropySource,
-	{
+	) -> Result<$builder, Bolt12SemanticError> {
 		if $self.features().requires_unknown_bits() {
 			return Err(Bolt12SemanticError::UnknownRequiredFeatures);
 		}

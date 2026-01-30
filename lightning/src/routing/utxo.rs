@@ -75,6 +75,15 @@ pub trait UtxoLookup {
 	) -> UtxoResult;
 }
 
+impl<T: UtxoLookup + ?Sized, U: Deref<Target = T>> UtxoLookup for U {
+	fn get_utxo(
+		&self, chain_hash: &ChainHash, short_channel_id: u64,
+		async_completion_notifier: Arc<Notifier>,
+	) -> UtxoResult {
+		self.deref().get_utxo(chain_hash, short_channel_id, async_completion_notifier)
+	}
+}
+
 enum ChannelAnnouncement {
 	Full(msgs::ChannelAnnouncement),
 	Unsigned(msgs::UnsignedChannelAnnouncement),
@@ -352,13 +361,10 @@ impl PendingChecks {
 		Ok(())
 	}
 
-	pub(super) fn check_channel_announcement<U: Deref>(
+	pub(super) fn check_channel_announcement<U: UtxoLookup>(
 		&self, utxo_lookup: &Option<U>, msg: &msgs::UnsignedChannelAnnouncement,
 		full_msg: Option<&msgs::ChannelAnnouncement>,
-	) -> Result<Option<Amount>, msgs::LightningError>
-	where
-		U::Target: UtxoLookup,
-	{
+	) -> Result<Option<Amount>, msgs::LightningError> {
 		let handle_result = |res| match res {
 			Ok(TxOut { value, script_pubkey }) => {
 				let expected_script = make_funding_redeemscript_from_slices(
@@ -491,12 +497,10 @@ impl PendingChecks {
 		}
 	}
 
-	fn resolve_single_future<L: Deref>(
+	fn resolve_single_future<L: Logger>(
 		&self, graph: &NetworkGraph<L>, entry: Arc<Mutex<UtxoMessages>>,
 		new_messages: &mut Vec<MessageSendEvent>,
-	) where
-		L::Target: Logger,
-	{
+	) {
 		let (announcement, result, announce_a, announce_b, update_a, update_b);
 		{
 			let mut state = entry.lock().unwrap();
@@ -581,12 +585,9 @@ impl PendingChecks {
 		}
 	}
 
-	pub(super) fn check_resolved_futures<L: Deref>(
+	pub(super) fn check_resolved_futures<L: Logger>(
 		&self, graph: &NetworkGraph<L>,
-	) -> Vec<MessageSendEvent>
-	where
-		L::Target: Logger,
-	{
+	) -> Vec<MessageSendEvent> {
 		let mut completed_states = Vec::new();
 		{
 			let mut lck = self.internal.lock().unwrap();

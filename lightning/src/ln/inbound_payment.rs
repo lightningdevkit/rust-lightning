@@ -27,8 +27,6 @@ use crate::util::logger::Logger;
 #[allow(unused_imports)]
 use crate::prelude::*;
 
-use core::ops::Deref;
-
 pub(crate) const IV_LEN: usize = 16;
 const METADATA_LEN: usize = 16;
 const METADATA_KEY_LEN: usize = 32;
@@ -143,13 +141,10 @@ fn min_final_cltv_expiry_delta_from_metadata(bytes: [u8; METADATA_LEN]) -> u16 {
 ///
 /// [phantom node payments]: crate::sign::PhantomKeysManager
 /// [`NodeSigner::get_expanded_key`]: crate::sign::NodeSigner::get_expanded_key
-pub fn create<ES: Deref>(
+pub fn create<ES: EntropySource>(
 	keys: &ExpandedKey, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32,
 	entropy_source: &ES, current_time: u64, min_final_cltv_expiry_delta: Option<u16>,
-) -> Result<(PaymentHash, PaymentSecret), ()>
-where
-	ES::Target: EntropySource,
-{
+) -> Result<(PaymentHash, PaymentSecret), ()> {
 	let metadata_bytes = construct_metadata_bytes(
 		min_value_msat,
 		if min_final_cltv_expiry_delta.is_some() {
@@ -345,13 +340,10 @@ fn construct_payment_secret(
 /// [`NodeSigner::get_expanded_key`]: crate::sign::NodeSigner::get_expanded_key
 /// [`create_inbound_payment`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment
 /// [`create_inbound_payment_for_hash`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment_for_hash
-pub(super) fn verify<L: Deref>(
+pub(super) fn verify<L: Logger>(
 	payment_hash: PaymentHash, payment_data: &msgs::FinalOnionHopData, highest_seen_timestamp: u64,
 	keys: &ExpandedKey, logger: &L,
-) -> Result<(Option<PaymentPreimage>, Option<u16>), ()>
-where
-	L::Target: Logger,
-{
+) -> Result<(Option<PaymentPreimage>, Option<u16>), ()> {
 	let (iv_bytes, metadata_bytes) = decrypt_metadata(payment_data.payment_secret, keys);
 
 	let payment_type_res =

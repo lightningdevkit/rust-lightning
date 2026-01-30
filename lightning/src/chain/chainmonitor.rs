@@ -37,7 +37,7 @@ use crate::chain::channelmonitor::{
 	WithChannelMonitor,
 };
 use crate::chain::transaction::{OutPoint, TransactionData};
-use crate::chain::{BestBlock, ChannelMonitorUpdateStatus, Filter, WatchedOutput};
+use crate::chain::{BestBlock, ChannelMonitorUpdateStatus, WatchedOutput};
 use crate::events::{self, Event, EventHandler, ReplayEvent};
 use crate::ln::channel_state::ChannelDetails;
 #[cfg(peer_storage)]
@@ -256,41 +256,27 @@ impl<ChannelSigner: EcdsaChannelSigner> Deref for LockedChannelMonitor<'_, Chann
 ///
 /// This is not exported to bindings users as async is not supported outside of Rust.
 pub struct AsyncPersister<
-	K: Deref + MaybeSend + MaybeSync + 'static,
+	K: KVStore + MaybeSend + MaybeSync + 'static,
 	S: FutureSpawner,
-	L: Deref + MaybeSend + MaybeSync + 'static,
-	ES: Deref + MaybeSend + MaybeSync + 'static,
-	SP: Deref + MaybeSend + MaybeSync + 'static,
-	BI: Deref + MaybeSend + MaybeSync + 'static,
-	FE: Deref + MaybeSend + MaybeSync + 'static,
-> where
-	K::Target: KVStore + MaybeSync,
-	L::Target: Logger,
-	ES::Target: EntropySource + Sized,
-	SP::Target: SignerProvider + Sized,
-	BI::Target: BroadcasterInterface,
-	FE::Target: FeeEstimator,
-{
+	L: Logger + MaybeSend + MaybeSync + 'static,
+	ES: EntropySource + MaybeSend + MaybeSync + 'static,
+	SP: SignerProvider + MaybeSend + MaybeSync + 'static,
+	BI: BroadcasterInterface + MaybeSend + MaybeSync + 'static,
+	FE: FeeEstimator + MaybeSend + MaybeSync + 'static,
+> {
 	persister: MonitorUpdatingPersisterAsync<K, S, L, ES, SP, BI, FE>,
 	event_notifier: Arc<Notifier>,
 }
 
 impl<
-		K: Deref + MaybeSend + MaybeSync + 'static,
+		K: KVStore + MaybeSend + MaybeSync + 'static,
 		S: FutureSpawner,
-		L: Deref + MaybeSend + MaybeSync + 'static,
-		ES: Deref + MaybeSend + MaybeSync + 'static,
-		SP: Deref + MaybeSend + MaybeSync + 'static,
-		BI: Deref + MaybeSend + MaybeSync + 'static,
-		FE: Deref + MaybeSend + MaybeSync + 'static,
+		L: Logger + MaybeSend + MaybeSync + 'static,
+		ES: EntropySource + MaybeSend + MaybeSync + 'static,
+		SP: SignerProvider + MaybeSend + MaybeSync + 'static,
+		BI: BroadcasterInterface + MaybeSend + MaybeSync + 'static,
+		FE: FeeEstimator + MaybeSend + MaybeSync + 'static,
 	> Deref for AsyncPersister<K, S, L, ES, SP, BI, FE>
-where
-	K::Target: KVStore + MaybeSync,
-	L::Target: Logger,
-	ES::Target: EntropySource + Sized,
-	SP::Target: SignerProvider + Sized,
-	BI::Target: BroadcasterInterface,
-	FE::Target: FeeEstimator,
 {
 	type Target = Self;
 	fn deref(&self) -> &Self {
@@ -299,26 +285,19 @@ where
 }
 
 impl<
-		K: Deref + MaybeSend + MaybeSync + 'static,
+		K: KVStore + MaybeSend + MaybeSync + 'static,
 		S: FutureSpawner,
-		L: Deref + MaybeSend + MaybeSync + 'static,
-		ES: Deref + MaybeSend + MaybeSync + 'static,
-		SP: Deref + MaybeSend + MaybeSync + 'static,
-		BI: Deref + MaybeSend + MaybeSync + 'static,
-		FE: Deref + MaybeSend + MaybeSync + 'static,
-	> Persist<<SP::Target as SignerProvider>::EcdsaSigner> for AsyncPersister<K, S, L, ES, SP, BI, FE>
+		L: Logger + MaybeSend + MaybeSync + 'static,
+		ES: EntropySource + MaybeSend + MaybeSync + 'static,
+		SP: SignerProvider + MaybeSend + MaybeSync + 'static,
+		BI: BroadcasterInterface + MaybeSend + MaybeSync + 'static,
+		FE: FeeEstimator + MaybeSend + MaybeSync + 'static,
+	> Persist<SP::EcdsaSigner> for AsyncPersister<K, S, L, ES, SP, BI, FE>
 where
-	K::Target: KVStore + MaybeSync,
-	L::Target: Logger,
-	ES::Target: EntropySource + Sized,
-	SP::Target: SignerProvider + Sized,
-	BI::Target: BroadcasterInterface,
-	FE::Target: FeeEstimator,
-	<SP::Target as SignerProvider>::EcdsaSigner: MaybeSend + 'static,
+	SP::EcdsaSigner: MaybeSend + 'static,
 {
 	fn persist_new_channel(
-		&self, monitor_name: MonitorName,
-		monitor: &ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>,
+		&self, monitor_name: MonitorName, monitor: &ChannelMonitor<SP::EcdsaSigner>,
 	) -> ChannelMonitorUpdateStatus {
 		let notifier = Arc::clone(&self.event_notifier);
 		self.persister.spawn_async_persist_new_channel(monitor_name, monitor, notifier);
@@ -327,7 +306,7 @@ where
 
 	fn update_persisted_channel(
 		&self, monitor_name: MonitorName, monitor_update: Option<&ChannelMonitorUpdate>,
-		monitor: &ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>,
+		monitor: &ChannelMonitor<SP::EcdsaSigner>,
 	) -> ChannelMonitorUpdateStatus {
 		let notifier = Arc::clone(&self.event_notifier);
 		self.persister.spawn_async_update_channel(monitor_name, monitor_update, monitor, notifier);
@@ -361,19 +340,14 @@ where
 /// [`rebroadcast_pending_claims`]: Self::rebroadcast_pending_claims
 pub struct ChainMonitor<
 	ChannelSigner: EcdsaChannelSigner,
-	C: Deref,
-	T: Deref,
-	F: Deref,
-	L: Deref,
+	C: chain::Filter,
+	T: BroadcasterInterface,
+	F: FeeEstimator,
+	L: Logger,
 	P: Deref,
-	ES: Deref,
+	ES: EntropySource,
 > where
-	C::Target: chain::Filter,
-	T::Target: BroadcasterInterface,
-	F::Target: FeeEstimator,
-	L::Target: Logger,
 	P::Target: Persist<ChannelSigner>,
-	ES::Target: EntropySource,
 {
 	monitors: RwLock<HashMap<ChannelId, MonitorHolder<ChannelSigner>>>,
 	chain_source: Option<C>,
@@ -400,32 +374,17 @@ pub struct ChainMonitor<
 }
 
 impl<
-		K: Deref + MaybeSend + MaybeSync + 'static,
+		K: KVStore + MaybeSend + MaybeSync + 'static,
 		S: FutureSpawner,
-		SP: Deref + MaybeSend + MaybeSync + 'static,
-		C: Deref,
-		T: Deref + MaybeSend + MaybeSync + 'static,
-		F: Deref + MaybeSend + MaybeSync + 'static,
-		L: Deref + MaybeSend + MaybeSync + 'static,
-		ES: Deref + MaybeSend + MaybeSync + 'static,
-	>
-	ChainMonitor<
-		<SP::Target as SignerProvider>::EcdsaSigner,
-		C,
-		T,
-		F,
-		L,
-		AsyncPersister<K, S, L, ES, SP, T, F>,
-		ES,
-	> where
-	K::Target: KVStore + MaybeSync,
-	SP::Target: SignerProvider + Sized,
-	C::Target: chain::Filter,
-	T::Target: BroadcasterInterface,
-	F::Target: FeeEstimator,
-	L::Target: Logger,
-	ES::Target: EntropySource + Sized,
-	<SP::Target as SignerProvider>::EcdsaSigner: MaybeSend + 'static,
+		SP: SignerProvider + MaybeSend + MaybeSync + 'static,
+		C: chain::Filter,
+		T: BroadcasterInterface + MaybeSend + MaybeSync + 'static,
+		F: FeeEstimator + MaybeSend + MaybeSync + 'static,
+		L: Logger + MaybeSend + MaybeSync + 'static,
+		ES: EntropySource + MaybeSend + MaybeSync + 'static,
+	> ChainMonitor<SP::EcdsaSigner, C, T, F, L, AsyncPersister<K, S, L, ES, SP, T, F>, ES>
+where
+	SP::EcdsaSigner: MaybeSend + 'static,
 {
 	/// Creates a new `ChainMonitor` used to watch on-chain activity pertaining to channels.
 	///
@@ -461,20 +420,15 @@ impl<
 
 impl<
 		ChannelSigner: EcdsaChannelSigner,
-		C: Deref,
-		T: Deref,
-		F: Deref,
-		L: Deref,
+		C: chain::Filter,
+		T: BroadcasterInterface,
+		F: FeeEstimator,
+		L: Logger,
 		P: Deref,
-		ES: Deref,
+		ES: EntropySource,
 	> ChainMonitor<ChannelSigner, C, T, F, L, P, ES>
 where
-	C::Target: chain::Filter,
-	T::Target: BroadcasterInterface,
-	F::Target: FeeEstimator,
-	L::Target: Logger,
 	P::Target: Persist<ChannelSigner>,
-	ES::Target: EntropySource,
 {
 	/// Dispatches to per-channel monitors, which are responsible for updating their on-chain view
 	/// of a channel and reacting accordingly based on transactions in the given chain data. See
@@ -895,8 +849,8 @@ where
 		let monitors = self.monitors.read().unwrap();
 		for (_, monitor_holder) in &*monitors {
 			monitor_holder.monitor.rebroadcast_pending_claims(
-				&*self.broadcaster,
-				&*self.fee_estimator,
+				&self.broadcaster,
+				&self.fee_estimator,
 				&self.logger,
 			)
 		}
@@ -911,16 +865,16 @@ where
 		if let Some(channel_id) = monitor_opt {
 			if let Some(monitor_holder) = monitors.get(&channel_id) {
 				monitor_holder.monitor.signer_unblocked(
-					&*self.broadcaster,
-					&*self.fee_estimator,
+					&self.broadcaster,
+					&self.fee_estimator,
 					&self.logger,
 				)
 			}
 		} else {
 			for (_, monitor_holder) in &*monitors {
 				monitor_holder.monitor.signer_unblocked(
-					&*self.broadcaster,
-					&*self.fee_estimator,
+					&self.broadcaster,
+					&self.fee_estimator,
 					&self.logger,
 				)
 			}
@@ -1108,20 +1062,15 @@ where
 
 impl<
 		ChannelSigner: EcdsaChannelSigner,
-		C: Deref,
-		T: Deref,
-		F: Deref,
-		L: Deref,
+		C: chain::Filter,
+		T: BroadcasterInterface,
+		F: FeeEstimator,
+		L: Logger,
 		P: Deref,
-		ES: Deref,
+		ES: EntropySource,
 	> BaseMessageHandler for ChainMonitor<ChannelSigner, C, T, F, L, P, ES>
 where
-	C::Target: chain::Filter,
-	T::Target: BroadcasterInterface,
-	F::Target: FeeEstimator,
-	L::Target: Logger,
 	P::Target: Persist<ChannelSigner>,
-	ES::Target: EntropySource,
 {
 	fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> {
 		let mut pending_events = self.pending_send_only_events.lock().unwrap();
@@ -1147,39 +1096,29 @@ where
 
 impl<
 		ChannelSigner: EcdsaChannelSigner,
-		C: Deref,
-		T: Deref,
-		F: Deref,
-		L: Deref,
+		C: chain::Filter,
+		T: BroadcasterInterface,
+		F: FeeEstimator,
+		L: Logger,
 		P: Deref,
-		ES: Deref,
+		ES: EntropySource,
 	> SendOnlyMessageHandler for ChainMonitor<ChannelSigner, C, T, F, L, P, ES>
 where
-	C::Target: chain::Filter,
-	T::Target: BroadcasterInterface,
-	F::Target: FeeEstimator,
-	L::Target: Logger,
 	P::Target: Persist<ChannelSigner>,
-	ES::Target: EntropySource,
 {
 }
 
 impl<
 		ChannelSigner: EcdsaChannelSigner,
-		C: Deref,
-		T: Deref,
-		F: Deref,
-		L: Deref,
+		C: chain::Filter,
+		T: BroadcasterInterface,
+		F: FeeEstimator,
+		L: Logger,
 		P: Deref,
-		ES: Deref,
+		ES: EntropySource,
 	> chain::Listen for ChainMonitor<ChannelSigner, C, T, F, L, P, ES>
 where
-	C::Target: chain::Filter,
-	T::Target: BroadcasterInterface,
-	F::Target: FeeEstimator,
-	L::Target: Logger,
 	P::Target: Persist<ChannelSigner>,
-	ES::Target: EntropySource,
 {
 	fn filtered_block_connected(&self, header: &Header, txdata: &TransactionData, height: u32) {
 		log_debug!(
@@ -1193,8 +1132,8 @@ where
 				header,
 				txdata,
 				height,
-				&*self.broadcaster,
-				&*self.fee_estimator,
+				&self.broadcaster,
+				&self.fee_estimator,
 				&self.logger,
 			)
 		});
@@ -1220,8 +1159,8 @@ where
 		for monitor_state in monitor_states.values() {
 			monitor_state.monitor.blocks_disconnected(
 				fork_point,
-				&*self.broadcaster,
-				&*self.fee_estimator,
+				&self.broadcaster,
+				&self.fee_estimator,
 				&self.logger,
 			);
 		}
@@ -1230,20 +1169,15 @@ where
 
 impl<
 		ChannelSigner: EcdsaChannelSigner,
-		C: Deref,
-		T: Deref,
-		F: Deref,
-		L: Deref,
+		C: chain::Filter,
+		T: BroadcasterInterface,
+		F: FeeEstimator,
+		L: Logger,
 		P: Deref,
-		ES: Deref,
+		ES: EntropySource,
 	> chain::Confirm for ChainMonitor<ChannelSigner, C, T, F, L, P, ES>
 where
-	C::Target: chain::Filter,
-	T::Target: BroadcasterInterface,
-	F::Target: FeeEstimator,
-	L::Target: Logger,
 	P::Target: Persist<ChannelSigner>,
-	ES::Target: EntropySource,
 {
 	fn transactions_confirmed(&self, header: &Header, txdata: &TransactionData, height: u32) {
 		log_debug!(
@@ -1258,8 +1192,8 @@ where
 				header,
 				txdata,
 				height,
-				&*self.broadcaster,
-				&*self.fee_estimator,
+				&self.broadcaster,
+				&self.fee_estimator,
 				&self.logger,
 			)
 		});
@@ -1273,8 +1207,8 @@ where
 		for monitor_state in monitor_states.values() {
 			monitor_state.monitor.transaction_unconfirmed(
 				txid,
-				&*self.broadcaster,
-				&*self.fee_estimator,
+				&self.broadcaster,
+				&self.fee_estimator,
 				&self.logger,
 			);
 		}
@@ -1294,8 +1228,8 @@ where
 			monitor.best_block_updated(
 				header,
 				height,
-				&*self.broadcaster,
-				&*self.fee_estimator,
+				&self.broadcaster,
+				&self.fee_estimator,
 				&self.logger,
 			)
 		});
@@ -1325,20 +1259,15 @@ where
 
 impl<
 		ChannelSigner: EcdsaChannelSigner,
-		C: Deref,
-		T: Deref,
-		F: Deref,
-		L: Deref,
+		C: chain::Filter,
+		T: BroadcasterInterface,
+		F: FeeEstimator,
+		L: Logger,
 		P: Deref,
-		ES: Deref,
+		ES: EntropySource,
 	> chain::Watch<ChannelSigner> for ChainMonitor<ChannelSigner, C, T, F, L, P, ES>
 where
-	C::Target: chain::Filter,
-	T::Target: BroadcasterInterface,
-	F::Target: FeeEstimator,
-	L::Target: Logger,
 	P::Target: Persist<ChannelSigner>,
-	ES::Target: EntropySource,
 {
 	fn watch_channel(
 		&self, channel_id: ChannelId, monitor: ChannelMonitor<ChannelSigner>,
@@ -1521,20 +1450,15 @@ where
 
 impl<
 		ChannelSigner: EcdsaChannelSigner,
-		C: Deref,
-		T: Deref,
-		F: Deref,
-		L: Deref,
+		C: chain::Filter,
+		T: BroadcasterInterface,
+		F: FeeEstimator,
+		L: Logger,
 		P: Deref,
-		ES: Deref,
+		ES: EntropySource,
 	> events::EventsProvider for ChainMonitor<ChannelSigner, C, T, F, L, P, ES>
 where
-	C::Target: chain::Filter,
-	T::Target: BroadcasterInterface,
-	F::Target: FeeEstimator,
-	L::Target: Logger,
 	P::Target: Persist<ChannelSigner>,
-	ES::Target: EntropySource,
 {
 	/// Processes [`SpendableOutputs`] events produced from each [`ChannelMonitor`] upon maturity.
 	///

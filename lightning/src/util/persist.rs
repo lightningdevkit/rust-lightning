@@ -202,16 +202,6 @@ pub struct KVStoreSyncWrapper<K: Deref>(pub K)
 where
 	K::Target: KVStoreSync;
 
-impl<K: Deref> Deref for KVStoreSyncWrapper<K>
-where
-	K::Target: KVStoreSync,
-{
-	type Target = Self;
-	fn deref(&self) -> &Self::Target {
-		self
-	}
-}
-
 /// This is not exported to bindings users as async is only supported in Rust.
 impl<K: Deref> KVStore for KVStoreSyncWrapper<K>
 where
@@ -268,6 +258,10 @@ where
 /// namespace, i.e., conflicts between keys and equally named
 /// primary namespaces/secondary namespaces must be avoided.
 ///
+/// Instantiations of this trait should generally be shared by reference across the lightning
+/// node's components. E.g., it would be unsafe to provide a different [`KVStore`] to
+/// [`OutputSweeper`] vs [`MonitorUpdatingPersister`].
+///
 /// **Note:** Users migrating custom persistence backends from the pre-v0.0.117 `KVStorePersister`
 /// interface can use a concatenation of `[{primary_namespace}/[{secondary_namespace}/]]{key}` to
 /// recover a `key` compatible with the data model previously assumed by `KVStorePersister::persist`.
@@ -275,6 +269,9 @@ where
 /// For a synchronous version of this trait, see [`KVStoreSync`].
 ///
 /// This is not exported to bindings users as async is only supported in Rust.
+///
+/// [`OutputSweeper`]: crate::util::sweep::OutputSweeper
+/// [`MonitorUpdatingPersister`]: crate::util::persist::MonitorUpdatingPersister
 // Note that updates to documentation on this trait should be copied to the synchronous version.
 pub trait KVStore {
 	/// Returns the data stored for the given `primary_namespace`, `secondary_namespace`, and
@@ -345,6 +342,36 @@ pub trait KVStore {
 	fn list(
 		&self, primary_namespace: &str, secondary_namespace: &str,
 	) -> impl Future<Output = Result<Vec<String>, io::Error>> + 'static + MaybeSend;
+}
+
+impl<K> KVStore for K
+where
+	K: Deref,
+	K::Target: KVStore,
+{
+	fn read(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
+	) -> impl Future<Output = Result<Vec<u8>, io::Error>> + 'static + MaybeSend {
+		self.deref().read(primary_namespace, secondary_namespace, key)
+	}
+
+	fn write(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: Vec<u8>,
+	) -> impl Future<Output = Result<(), io::Error>> + 'static + MaybeSend {
+		self.deref().write(primary_namespace, secondary_namespace, key, buf)
+	}
+
+	fn remove(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, lazy: bool,
+	) -> impl Future<Output = Result<(), io::Error>> + 'static + MaybeSend {
+		self.deref().remove(primary_namespace, secondary_namespace, key, lazy)
+	}
+
+	fn list(
+		&self, primary_namespace: &str, secondary_namespace: &str,
+	) -> impl Future<Output = Result<Vec<String>, io::Error>> + 'static + MaybeSend {
+		self.deref().list(primary_namespace, secondary_namespace)
+	}
 }
 
 /// Provides additional interface methods that are required for [`KVStore`]-to-[`KVStore`]
@@ -445,13 +472,11 @@ impl<ChannelSigner: EcdsaChannelSigner, K: KVStoreSync + ?Sized> Persist<Channel
 }
 
 /// Read previously persisted [`ChannelMonitor`]s from the store.
-pub fn read_channel_monitors<K: Deref, ES: Deref, SP: Deref>(
+pub fn read_channel_monitors<K: Deref, ES: EntropySource, SP: SignerProvider>(
 	kv_store: K, entropy_source: ES, signer_provider: SP,
-) -> Result<Vec<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>)>, io::Error>
+) -> Result<Vec<(BlockHash, ChannelMonitor<SP::EcdsaSigner>)>, io::Error>
 where
 	K::Target: KVStoreSync,
-	ES::Target: EntropySource + Sized,
-	SP::Target: SignerProvider + Sized,
 {
 	let mut res = Vec::new();
 
@@ -459,13 +484,13 @@ where
 		CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
 		CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
 	)? {
-		match <Option<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>)>>::read(
+		match <Option<(BlockHash, ChannelMonitor<SP::EcdsaSigner>)>>::read(
 			&mut io::Cursor::new(kv_store.read(
 				CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
 				CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
 				&stored_key,
 			)?),
-			(&*entropy_source, &*signer_provider),
+			(&entropy_source, &signer_provider),
 		) {
 			Ok(Some((block_hash, channel_monitor))) => {
 				let monitor_name = MonitorName::from_str(&stored_key)?;
@@ -588,26 +613,27 @@ fn poll_sync_future<F: Future>(future: F) -> F::Output {
 /// If you have many stale updates stored (such as after a crash with pending lazy deletes), and
 /// would like to get rid of them, consider using the
 /// [`MonitorUpdatingPersister::cleanup_stale_updates`] function.
-pub struct MonitorUpdatingPersister<K: Deref, L: Deref, ES: Deref, SP: Deref, BI: Deref, FE: Deref>(
-	MonitorUpdatingPersisterAsync<KVStoreSyncWrapper<K>, PanicingSpawner, L, ES, SP, BI, FE>,
-)
+pub struct MonitorUpdatingPersister<
+	K: Deref,
+	L: Logger,
+	ES: EntropySource,
+	SP: SignerProvider,
+	BI: BroadcasterInterface,
+	FE: FeeEstimator,
+>(MonitorUpdatingPersisterAsync<KVStoreSyncWrapper<K>, PanicingSpawner, L, ES, SP, BI, FE>)
 where
-	K::Target: KVStoreSync,
-	L::Target: Logger,
-	ES::Target: EntropySource + Sized,
-	SP::Target: SignerProvider + Sized,
-	BI::Target: BroadcasterInterface,
-	FE::Target: FeeEstimator;
+	K::Target: KVStoreSync;
 
-impl<K: Deref, L: Deref, ES: Deref, SP: Deref, BI: Deref, FE: Deref>
-	MonitorUpdatingPersister<K, L, ES, SP, BI, FE>
+impl<
+		K: Deref,
+		L: Logger,
+		ES: EntropySource,
+		SP: SignerProvider,
+		BI: BroadcasterInterface,
+		FE: FeeEstimator,
+	> MonitorUpdatingPersister<K, L, ES, SP, BI, FE>
 where
 	K::Target: KVStoreSync,
-	L::Target: Logger,
-	ES::Target: EntropySource + Sized,
-	SP::Target: SignerProvider + Sized,
-	BI::Target: BroadcasterInterface,
-	FE::Target: FeeEstimator,
 {
 	/// Constructs a new [`MonitorUpdatingPersister`].
 	///
@@ -651,10 +677,7 @@ where
 	/// Reads all stored channel monitors, along with any stored updates for them.
 	pub fn read_all_channel_monitors_with_updates(
 		&self,
-	) -> Result<
-		Vec<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>)>,
-		io::Error,
-	> {
+	) -> Result<Vec<(BlockHash, ChannelMonitor<SP::EcdsaSigner>)>, io::Error> {
 		poll_sync_future(self.0.read_all_channel_monitors_with_updates())
 	}
 
@@ -675,8 +698,7 @@ where
 	/// function to accomplish this. Take care to limit the number of parallel readers.
 	pub fn read_channel_monitor_with_updates(
 		&self, monitor_key: &str,
-	) -> Result<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>), io::Error>
-	{
+	) -> Result<(BlockHash, ChannelMonitor<SP::EcdsaSigner>), io::Error> {
 		poll_sync_future(self.0.read_channel_monitor_with_updates(monitor_key))
 	}
 
@@ -694,19 +716,14 @@ where
 impl<
 		ChannelSigner: EcdsaChannelSigner,
 		K: Deref,
-		L: Deref,
-		ES: Deref,
-		SP: Deref,
-		BI: Deref,
-		FE: Deref,
+		L: Logger,
+		ES: EntropySource,
+		SP: SignerProvider,
+		BI: BroadcasterInterface,
+		FE: FeeEstimator,
 	> Persist<ChannelSigner> for MonitorUpdatingPersister<K, L, ES, SP, BI, FE>
 where
 	K::Target: KVStoreSync,
-	L::Target: Logger,
-	ES::Target: EntropySource + Sized,
-	SP::Target: SignerProvider + Sized,
-	BI::Target: BroadcasterInterface,
-	FE::Target: FeeEstimator,
 {
 	/// Persists a new channel. This means writing the entire monitor to the
 	/// parametrized [`KVStoreSync`].
@@ -778,38 +795,24 @@ where
 /// [`ChainMonitor`]: crate::chain::chainmonitor::ChainMonitor
 /// [`ChainMonitor::new_async_beta`]: crate::chain::chainmonitor::ChainMonitor::new_async_beta
 pub struct MonitorUpdatingPersisterAsync<
-	K: Deref,
+	K: KVStore,
 	S: FutureSpawner,
-	L: Deref,
-	ES: Deref,
-	SP: Deref,
-	BI: Deref,
-	FE: Deref,
->(Arc<MonitorUpdatingPersisterAsyncInner<K, S, L, ES, SP, BI, FE>>)
-where
-	K::Target: KVStore,
-	L::Target: Logger,
-	ES::Target: EntropySource + Sized,
-	SP::Target: SignerProvider + Sized,
-	BI::Target: BroadcasterInterface,
-	FE::Target: FeeEstimator;
+	L: Logger,
+	ES: EntropySource,
+	SP: SignerProvider,
+	BI: BroadcasterInterface,
+	FE: FeeEstimator,
+>(Arc<MonitorUpdatingPersisterAsyncInner<K, S, L, ES, SP, BI, FE>>);
 
 struct MonitorUpdatingPersisterAsyncInner<
-	K: Deref,
+	K: KVStore,
 	S: FutureSpawner,
-	L: Deref,
-	ES: Deref,
-	SP: Deref,
-	BI: Deref,
-	FE: Deref,
-> where
-	K::Target: KVStore,
-	L::Target: Logger,
-	ES::Target: EntropySource + Sized,
-	SP::Target: SignerProvider + Sized,
-	BI::Target: BroadcasterInterface,
-	FE::Target: FeeEstimator,
-{
+	L: Logger,
+	ES: EntropySource,
+	SP: SignerProvider,
+	BI: BroadcasterInterface,
+	FE: FeeEstimator,
+> {
 	kv_store: K,
 	async_completed_updates: Mutex<Vec<(ChannelId, u64)>>,
 	future_spawner: S,
@@ -821,15 +824,15 @@ struct MonitorUpdatingPersisterAsyncInner<
 	fee_estimator: FE,
 }
 
-impl<K: Deref, S: FutureSpawner, L: Deref, ES: Deref, SP: Deref, BI: Deref, FE: Deref>
-	MonitorUpdatingPersisterAsync<K, S, L, ES, SP, BI, FE>
-where
-	K::Target: KVStore,
-	L::Target: Logger,
-	ES::Target: EntropySource + Sized,
-	SP::Target: SignerProvider + Sized,
-	BI::Target: BroadcasterInterface,
-	FE::Target: FeeEstimator,
+impl<
+		K: KVStore,
+		S: FutureSpawner,
+		L: Logger,
+		ES: EntropySource,
+		SP: SignerProvider,
+		BI: BroadcasterInterface,
+		FE: FeeEstimator,
+	> MonitorUpdatingPersisterAsync<K, S, L, ES, SP, BI, FE>
 {
 	/// Constructs a new [`MonitorUpdatingPersisterAsync`].
 	///
@@ -862,10 +865,7 @@ where
 	/// deserialization as well.
 	pub async fn read_all_channel_monitors_with_updates(
 		&self,
-	) -> Result<
-		Vec<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>)>,
-		io::Error,
-	> {
+	) -> Result<Vec<(BlockHash, ChannelMonitor<SP::EcdsaSigner>)>, io::Error> {
 		let primary = CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE;
 		let secondary = CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE;
 		let monitor_list = self.0.kv_store.list(primary, secondary).await?;
@@ -896,10 +896,7 @@ where
 	/// `Arc` that can live for `'static` and be sent and accessed across threads.
 	pub async fn read_all_channel_monitors_with_updates_parallel(
 		self: &Arc<Self>,
-	) -> Result<
-		Vec<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>)>,
-		io::Error,
-	>
+	) -> Result<Vec<(BlockHash, ChannelMonitor<SP::EcdsaSigner>)>, io::Error>
 	where
 		K: MaybeSend + MaybeSync + 'static,
 		L: MaybeSend + MaybeSync + 'static,
@@ -907,7 +904,7 @@ where
 		SP: MaybeSend + MaybeSync + 'static,
 		BI: MaybeSend + MaybeSync + 'static,
 		FE: MaybeSend + MaybeSync + 'static,
-		<SP::Target as SignerProvider>::EcdsaSigner: MaybeSend,
+		SP::EcdsaSigner: MaybeSend,
 	{
 		let primary = CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE;
 		let secondary = CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE;
@@ -949,8 +946,7 @@ where
 	/// function to accomplish this. Take care to limit the number of parallel readers.
 	pub async fn read_channel_monitor_with_updates(
 		&self, monitor_key: &str,
-	) -> Result<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>), io::Error>
-	{
+	) -> Result<(BlockHash, ChannelMonitor<SP::EcdsaSigner>), io::Error> {
 		self.0.read_channel_monitor_with_updates(monitor_key).await
 	}
 
@@ -966,26 +962,19 @@ where
 }
 
 impl<
-		K: Deref + MaybeSend + MaybeSync + 'static,
+		K: KVStore + MaybeSend + MaybeSync + 'static,
 		S: FutureSpawner,
-		L: Deref + MaybeSend + MaybeSync + 'static,
-		ES: Deref + MaybeSend + MaybeSync + 'static,
-		SP: Deref + MaybeSend + MaybeSync + 'static,
-		BI: Deref + MaybeSend + MaybeSync + 'static,
-		FE: Deref + MaybeSend + MaybeSync + 'static,
+		L: Logger + MaybeSend + MaybeSync + 'static,
+		ES: EntropySource + MaybeSend + MaybeSync + 'static,
+		SP: SignerProvider + MaybeSend + MaybeSync + 'static,
+		BI: BroadcasterInterface + MaybeSend + MaybeSync + 'static,
+		FE: FeeEstimator + MaybeSend + MaybeSync + 'static,
 	> MonitorUpdatingPersisterAsync<K, S, L, ES, SP, BI, FE>
 where
-	K::Target: KVStore + MaybeSync,
-	L::Target: Logger,
-	ES::Target: EntropySource + Sized,
-	SP::Target: SignerProvider + Sized,
-	BI::Target: BroadcasterInterface,
-	FE::Target: FeeEstimator,
-	<SP::Target as SignerProvider>::EcdsaSigner: MaybeSend + 'static,
+	SP::EcdsaSigner: MaybeSend + 'static,
 {
 	pub(crate) fn spawn_async_persist_new_channel(
-		&self, monitor_name: MonitorName,
-		monitor: &ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>,
+		&self, monitor_name: MonitorName, monitor: &ChannelMonitor<SP::EcdsaSigner>,
 		notifier: Arc<Notifier>,
 	) {
 		let inner = Arc::clone(&self.0);
@@ -1012,8 +1001,7 @@ where
 
 	pub(crate) fn spawn_async_update_channel(
 		&self, monitor_name: MonitorName, update: Option<&ChannelMonitorUpdate>,
-		monitor: &ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>,
-		notifier: Arc<Notifier>,
+		monitor: &ChannelMonitor<SP::EcdsaSigner>, notifier: Arc<Notifier>,
 	) {
 		let inner = Arc::clone(&self.0);
 		// Note that `update_persisted_channel` is a sync method which calls all the way through to
@@ -1057,20 +1045,19 @@ where
 trait MaybeSendableFuture: Future<Output = Result<(), io::Error>> + MaybeSend {}
 impl<F: Future<Output = Result<(), io::Error>> + MaybeSend> MaybeSendableFuture for F {}
 
-impl<K: Deref, S: FutureSpawner, L: Deref, ES: Deref, SP: Deref, BI: Deref, FE: Deref>
-	MonitorUpdatingPersisterAsyncInner<K, S, L, ES, SP, BI, FE>
-where
-	K::Target: KVStore,
-	L::Target: Logger,
-	ES::Target: EntropySource + Sized,
-	SP::Target: SignerProvider + Sized,
-	BI::Target: BroadcasterInterface,
-	FE::Target: FeeEstimator,
+impl<
+		K: KVStore,
+		S: FutureSpawner,
+		L: Logger,
+		ES: EntropySource,
+		SP: SignerProvider,
+		BI: BroadcasterInterface,
+		FE: FeeEstimator,
+	> MonitorUpdatingPersisterAsyncInner<K, S, L, ES, SP, BI, FE>
 {
 	pub async fn read_channel_monitor_with_updates(
 		&self, monitor_key: &str,
-	) -> Result<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>), io::Error>
-	{
+	) -> Result<(BlockHash, ChannelMonitor<SP::EcdsaSigner>), io::Error> {
 		match self.maybe_read_channel_monitor_with_updates(monitor_key).await? {
 			Some(res) => Ok(res),
 			None => Err(io::Error::new(
@@ -1087,10 +1074,7 @@ where
 
 	async fn maybe_read_channel_monitor_with_updates(
 		&self, monitor_key: &str,
-	) -> Result<
-		Option<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>)>,
-		io::Error,
-	> {
+	) -> Result<Option<(BlockHash, ChannelMonitor<SP::EcdsaSigner>)>, io::Error> {
 		let monitor_name = MonitorName::from_str(monitor_key)?;
 		let read_future = pin!(self.maybe_read_monitor(&monitor_name, monitor_key));
 		let list_future = pin!(self
@@ -1134,10 +1118,7 @@ where
 	/// Read a channel monitor.
 	async fn maybe_read_monitor(
 		&self, monitor_name: &MonitorName, monitor_key: &str,
-	) -> Result<
-		Option<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>)>,
-		io::Error,
-	> {
+	) -> Result<Option<(BlockHash, ChannelMonitor<SP::EcdsaSigner>)>, io::Error> {
 		let primary = CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE;
 		let secondary = CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE;
 		let monitor_bytes = self.kv_store.read(primary, secondary, monitor_key).await?;
@@ -1146,9 +1127,9 @@ where
 		if monitor_cursor.get_ref().starts_with(MONITOR_UPDATING_PERSISTER_PREPEND_SENTINEL) {
 			monitor_cursor.set_position(MONITOR_UPDATING_PERSISTER_PREPEND_SENTINEL.len() as u64);
 		}
-		match <Option<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>)>>::read(
+		match <Option<(BlockHash, ChannelMonitor<SP::EcdsaSigner>)>>::read(
 			&mut monitor_cursor,
-			(&*self.entropy_source, &*self.signer_provider),
+			(&self.entropy_source, &self.signer_provider),
 		) {
 			Ok(None) => Ok(None),
 			Ok(Some((blockhash, channel_monitor))) => {

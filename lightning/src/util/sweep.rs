@@ -337,15 +337,16 @@ impl_writeable_tlv_based_enum!(OutputSpendStatus,
 ///
 /// [`Event::SpendableOutputs`]: crate::events::Event::SpendableOutputs
 // Note that updates to documentation on this struct should be copied to the synchronous version.
-pub struct OutputSweeper<B: Deref, D: Deref, E: Deref, F: Deref, K: Deref, L: Deref, O: Deref>
-where
-	B::Target: BroadcasterInterface,
+pub struct OutputSweeper<
+	B: BroadcasterInterface,
+	D: Deref,
+	E: FeeEstimator,
+	F: Filter,
+	K: KVStore,
+	L: Logger,
+	O: OutputSpender,
+> where
 	D::Target: ChangeDestinationSource,
-	E::Target: FeeEstimator,
-	F::Target: Filter,
-	K::Target: KVStore,
-	L::Target: Logger,
-	O::Target: OutputSpender,
 {
 	sweeper_state: Mutex<SweeperState>,
 	pending_sweep: AtomicBool,
@@ -358,16 +359,17 @@ where
 	logger: L,
 }
 
-impl<B: Deref, D: Deref, E: Deref, F: Deref, K: Deref, L: Deref, O: Deref>
-	OutputSweeper<B, D, E, F, K, L, O>
+impl<
+		B: BroadcasterInterface,
+		D: Deref,
+		E: FeeEstimator,
+		F: Filter,
+		K: KVStore,
+		L: Logger,
+		O: OutputSpender,
+	> OutputSweeper<B, D, E, F, K, L, O>
 where
-	B::Target: BroadcasterInterface,
 	D::Target: ChangeDestinationSource,
-	E::Target: FeeEstimator,
-	F::Target: Filter,
-	K::Target: KVStore,
-	L::Target: Logger,
-	O::Target: OutputSpender,
 {
 	/// Constructs a new [`OutputSweeper`].
 	///
@@ -710,16 +712,17 @@ where
 	}
 }
 
-impl<B: Deref, D: Deref, E: Deref, F: Deref, K: Deref, L: Deref, O: Deref> Listen
-	for OutputSweeper<B, D, E, F, K, L, O>
+impl<
+		B: BroadcasterInterface,
+		D: Deref,
+		E: FeeEstimator,
+		F: Filter + Sync + Send,
+		K: KVStore,
+		L: Logger,
+		O: OutputSpender,
+	> Listen for OutputSweeper<B, D, E, F, K, L, O>
 where
-	B::Target: BroadcasterInterface,
 	D::Target: ChangeDestinationSource,
-	E::Target: FeeEstimator,
-	F::Target: Filter + Sync + Send,
-	K::Target: KVStore,
-	L::Target: Logger,
-	O::Target: OutputSpender,
 {
 	fn filtered_block_connected(
 		&self, header: &Header, txdata: &chain::transaction::TransactionData, height: u32,
@@ -751,16 +754,17 @@ where
 	}
 }
 
-impl<B: Deref, D: Deref, E: Deref, F: Deref, K: Deref, L: Deref, O: Deref> Confirm
-	for OutputSweeper<B, D, E, F, K, L, O>
+impl<
+		B: BroadcasterInterface,
+		D: Deref,
+		E: FeeEstimator,
+		F: Filter + Sync + Send,
+		K: KVStore,
+		L: Logger,
+		O: OutputSpender,
+	> Confirm for OutputSweeper<B, D, E, F, K, L, O>
 where
-	B::Target: BroadcasterInterface,
 	D::Target: ChangeDestinationSource,
-	E::Target: FeeEstimator,
-	F::Target: Filter + Sync + Send,
-	K::Target: KVStore,
-	L::Target: Logger,
-	O::Target: OutputSpender,
 {
 	fn transactions_confirmed(
 		&self, header: &Header, txdata: &chain::transaction::TransactionData, height: u32,
@@ -848,16 +852,17 @@ pub enum SpendingDelay {
 	},
 }
 
-impl<B: Deref, D: Deref, E: Deref, F: Deref, K: Deref, L: Deref, O: Deref>
-	ReadableArgs<(B, E, Option<F>, O, D, K, L)> for (BestBlock, OutputSweeper<B, D, E, F, K, L, O>)
+impl<
+		B: BroadcasterInterface,
+		D: Deref,
+		E: FeeEstimator,
+		F: Filter + Sync + Send,
+		K: KVStore,
+		L: Logger,
+		O: OutputSpender,
+	> ReadableArgs<(B, E, Option<F>, O, D, K, L)> for (BestBlock, OutputSweeper<B, D, E, F, K, L, O>)
 where
-	B::Target: BroadcasterInterface,
 	D::Target: ChangeDestinationSource,
-	E::Target: FeeEstimator,
-	F::Target: Filter + Sync + Send,
-	K::Target: KVStore,
-	L::Target: Logger,
-	O::Target: OutputSpender,
 {
 	#[inline]
 	fn read<R: io::Read>(
@@ -918,30 +923,34 @@ where
 ///
 /// [`Event::SpendableOutputs`]: crate::events::Event::SpendableOutputs
 // Note that updates to documentation on this struct should be copied to the asynchronous version.
-pub struct OutputSweeperSync<B: Deref, D: Deref, E: Deref, F: Deref, K: Deref, L: Deref, O: Deref>
-where
-	B::Target: BroadcasterInterface,
+pub struct OutputSweeperSync<
+	B: BroadcasterInterface,
+	D: Deref,
+	E: FeeEstimator,
+	F: Filter,
+	K: Deref,
+	L: Logger,
+	O: OutputSpender,
+> where
 	D::Target: ChangeDestinationSourceSync,
-	E::Target: FeeEstimator,
-	F::Target: Filter,
 	K::Target: KVStoreSync,
-	L::Target: Logger,
-	O::Target: OutputSpender,
 {
 	sweeper:
 		OutputSweeper<B, ChangeDestinationSourceSyncWrapper<D>, E, F, KVStoreSyncWrapper<K>, L, O>,
 }
 
-impl<B: Deref, D: Deref, E: Deref, F: Deref, K: Deref, L: Deref, O: Deref>
-	OutputSweeperSync<B, D, E, F, K, L, O>
+impl<
+		B: BroadcasterInterface,
+		D: Deref,
+		E: FeeEstimator,
+		F: Filter,
+		K: Deref,
+		L: Logger,
+		O: OutputSpender,
+	> OutputSweeperSync<B, D, E, F, K, L, O>
 where
-	B::Target: BroadcasterInterface,
 	D::Target: ChangeDestinationSourceSync,
-	E::Target: FeeEstimator,
-	F::Target: Filter,
 	K::Target: KVStoreSync,
-	L::Target: Logger,
-	O::Target: OutputSpender,
 {
 	/// Constructs a new [`OutputSweeperSync`] instance.
 	///
@@ -1052,16 +1061,18 @@ where
 	}
 }
 
-impl<B: Deref, D: Deref, E: Deref, F: Deref, K: Deref, L: Deref, O: Deref> Listen
-	for OutputSweeperSync<B, D, E, F, K, L, O>
+impl<
+		B: BroadcasterInterface,
+		D: Deref,
+		E: FeeEstimator,
+		F: Filter + Sync + Send,
+		K: Deref,
+		L: Logger,
+		O: OutputSpender,
+	> Listen for OutputSweeperSync<B, D, E, F, K, L, O>
 where
-	B::Target: BroadcasterInterface,
 	D::Target: ChangeDestinationSourceSync,
-	E::Target: FeeEstimator,
-	F::Target: Filter + Sync + Send,
 	K::Target: KVStoreSync,
-	L::Target: Logger,
-	O::Target: OutputSpender,
 {
 	fn filtered_block_connected(
 		&self, header: &Header, txdata: &chain::transaction::TransactionData, height: u32,
@@ -1074,16 +1085,18 @@ where
 	}
 }
 
-impl<B: Deref, D: Deref, E: Deref, F: Deref, K: Deref, L: Deref, O: Deref> Confirm
-	for OutputSweeperSync<B, D, E, F, K, L, O>
+impl<
+		B: BroadcasterInterface,
+		D: Deref,
+		E: FeeEstimator,
+		F: Filter + Sync + Send,
+		K: Deref,
+		L: Logger,
+		O: OutputSpender,
+	> Confirm for OutputSweeperSync<B, D, E, F, K, L, O>
 where
-	B::Target: BroadcasterInterface,
 	D::Target: ChangeDestinationSourceSync,
-	E::Target: FeeEstimator,
-	F::Target: Filter + Sync + Send,
 	K::Target: KVStoreSync,
-	L::Target: Logger,
-	O::Target: OutputSpender,
 {
 	fn transactions_confirmed(
 		&self, header: &Header, txdata: &chain::transaction::TransactionData, height: u32,
@@ -1104,16 +1117,19 @@ where
 	}
 }
 
-impl<B: Deref, D: Deref, E: Deref, F: Deref, K: Deref, L: Deref, O: Deref>
-	ReadableArgs<(B, E, Option<F>, O, D, K, L)> for (BestBlock, OutputSweeperSync<B, D, E, F, K, L, O>)
+impl<
+		B: BroadcasterInterface,
+		D: Deref,
+		E: FeeEstimator,
+		F: Filter + Sync + Send,
+		K: Deref,
+		L: Logger,
+		O: OutputSpender,
+	> ReadableArgs<(B, E, Option<F>, O, D, K, L)>
+	for (BestBlock, OutputSweeperSync<B, D, E, F, K, L, O>)
 where
-	B::Target: BroadcasterInterface,
 	D::Target: ChangeDestinationSourceSync,
-	E::Target: FeeEstimator,
-	F::Target: Filter + Sync + Send,
 	K::Target: KVStoreSync,
-	L::Target: Logger,
-	O::Target: OutputSpender,
 {
 	#[inline]
 	fn read<R: io::Read>(

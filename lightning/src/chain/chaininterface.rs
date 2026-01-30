@@ -48,6 +48,12 @@ pub trait BroadcasterInterface {
 	fn broadcast_transactions(&self, txs: &[&Transaction]);
 }
 
+impl<T: BroadcasterInterface + ?Sized, B: Deref<Target = T>> BroadcasterInterface for B {
+	fn broadcast_transactions(&self, txs: &[&Transaction]) {
+		self.deref().broadcast_transactions(txs)
+	}
+}
+
 /// An enum that represents the priority at which we want a transaction to confirm used for feerate
 /// estimation.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -181,6 +187,12 @@ pub trait FeeEstimator {
 	fn get_est_sat_per_1000_weight(&self, confirmation_target: ConfirmationTarget) -> u32;
 }
 
+impl<T: FeeEstimator + ?Sized, F: Deref<Target = T>> FeeEstimator for F {
+	fn get_est_sat_per_1000_weight(&self, confirmation_target: ConfirmationTarget) -> u32 {
+		self.deref().get_est_sat_per_1000_weight(confirmation_target)
+	}
+}
+
 /// Minimum relay fee as required by bitcoin network mempool policy.
 pub const INCREMENTAL_RELAY_FEE_SAT_PER_1000_WEIGHT: u64 = 253;
 /// Minimum feerate that takes a sane approach to bitcoind weight-to-vbytes rounding.
@@ -188,19 +200,14 @@ pub const INCREMENTAL_RELAY_FEE_SAT_PER_1000_WEIGHT: u64 = 253;
 /// <https://github.com/ElementsProject/lightning/commit/2e687b9b352c9092b5e8bd4a688916ac50b44af0>
 pub const FEERATE_FLOOR_SATS_PER_KW: u32 = 253;
 
-/// Wraps a `Deref` to a `FeeEstimator` so that any fee estimations provided by it
-/// are bounded below by `FEERATE_FLOOR_SATS_PER_KW` (253 sats/KW).
+/// Wraps a [`FeeEstimator`] so that any fee estimations provided by it are bounded below by
+/// `FEERATE_FLOOR_SATS_PER_KW` (253 sats/KW).
 ///
 /// Note that this does *not* implement [`FeeEstimator`] to make it harder to accidentally mix the
 /// two.
-pub(crate) struct LowerBoundedFeeEstimator<F: Deref>(pub F)
-where
-	F::Target: FeeEstimator;
+pub(crate) struct LowerBoundedFeeEstimator<F: FeeEstimator>(pub F);
 
-impl<F: Deref> LowerBoundedFeeEstimator<F>
-where
-	F::Target: FeeEstimator,
-{
+impl<F: FeeEstimator> LowerBoundedFeeEstimator<F> {
 	/// Creates a new `LowerBoundedFeeEstimator` which wraps the provided fee_estimator
 	pub fn new(fee_estimator: F) -> Self {
 		LowerBoundedFeeEstimator(fee_estimator)
