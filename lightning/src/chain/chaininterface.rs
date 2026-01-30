@@ -63,6 +63,11 @@ pub enum TransactionType {
 		/// A single sweep transaction may aggregate outputs from multiple channels.
 		channel_ids: Vec<ChannelId>,
 	},
+	/// A splice transaction modifying an existing channel's funding.
+	Splice {
+		/// The ID of the channel being spliced.
+		channel_id: ChannelId,
+	},
 }
 
 // TODO: Define typed abstraction over feerates to handle their conversions.

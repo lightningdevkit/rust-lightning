@@ -28,7 +28,7 @@ use bitcoin::{secp256k1, sighash, FeeRate, Sequence, TxIn};
 
 use crate::blinded_path::message::BlindedMessagePath;
 use crate::chain::chaininterface::{
-	fee_for_weight, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator,
+	fee_for_weight, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator, TransactionType,
 };
 use crate::chain::channelmonitor::{
 	ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, CommitmentHTLCData,
@@ -6865,8 +6865,8 @@ pub struct FundingTxSigned {
 	/// Signatures that should be sent to the counterparty, if necessary.
 	pub tx_signatures: Option<msgs::TxSignatures>,
 
-	/// The fully-signed funding transaction to be broadcast.
-	pub funding_tx: Option<Transaction>,
+	/// The fully-signed funding transaction to be broadcast, along with the transaction type.
+	pub funding_tx: Option<(Transaction, TransactionType)>,
 
 	/// Information about the completed funding negotiation.
 	pub splice_negotiated: Option<SpliceFundingNegotiated>,
@@ -9178,6 +9178,15 @@ where
 			(None, None)
 		};
 
+		let funding_tx = funding_tx.map(|tx| {
+			let tx_type = if splice_negotiated.is_some() {
+				TransactionType::Splice { channel_id: self.context.channel_id }
+			} else {
+				TransactionType::Funding { channel_ids: vec![self.context.channel_id] }
+			};
+			(tx, tx_type)
+		});
+
 		Ok(FundingTxSigned { tx_signatures, funding_tx, splice_negotiated, splice_locked })
 	}
 
@@ -9244,6 +9253,15 @@ where
 		} else {
 			(None, None)
 		};
+
+		let funding_tx = funding_tx.map(|tx| {
+			let tx_type = if splice_negotiated.is_some() {
+				TransactionType::Splice { channel_id: self.context.channel_id }
+			} else {
+				TransactionType::Funding { channel_ids: vec![self.context.channel_id] }
+			};
+			(tx, tx_type)
+		});
 
 		Ok(FundingTxSigned {
 			tx_signatures: holder_tx_signatures,

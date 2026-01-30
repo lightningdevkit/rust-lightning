@@ -6459,10 +6459,11 @@ where
 								splice_negotiated,
 								splice_locked,
 							}) => {
-								if let Some(funding_tx) = funding_tx {
+								if let Some((funding_tx, tx_type)) = funding_tx {
 									self.broadcast_interactive_funding(
 										chan,
 										&funding_tx,
+										Some(tx_type),
 										&self.logger,
 									);
 								}
@@ -6539,7 +6540,8 @@ where
 	}
 
 	fn broadcast_interactive_funding(
-		&self, channel: &mut FundedChannel<SP>, funding_tx: &Transaction, logger: &L,
+		&self, channel: &mut FundedChannel<SP>, funding_tx: &Transaction,
+		transaction_type: Option<TransactionType>, logger: &L,
 	) {
 		let logger = WithChannelContext::from(logger, channel.context(), None);
 		log_info!(
@@ -6547,10 +6549,10 @@ where
 			"Broadcasting signed interactive funding transaction {}",
 			funding_tx.compute_txid()
 		);
-		self.tx_broadcaster.broadcast_transactions(&[(
-			funding_tx,
-			TransactionType::Funding { channel_ids: vec![channel.context().channel_id()] },
-		)]);
+		let tx_type = transaction_type.unwrap_or_else(|| TransactionType::Funding {
+			channel_ids: vec![channel.context().channel_id()],
+		});
+		self.tx_broadcaster.broadcast_transactions(&[(funding_tx, tx_type)]);
 		{
 			let mut pending_events = self.pending_events.lock().unwrap();
 			emit_channel_pending_event!(pending_events, channel);
@@ -10287,8 +10289,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						splice_negotiated,
 						splice_locked,
 					}) => {
-						if let Some(funding_tx) = funding_tx {
-							self.broadcast_interactive_funding(channel, &funding_tx, &self.logger);
+						if let Some((funding_tx, tx_type)) = funding_tx {
+							self.broadcast_interactive_funding(channel, &funding_tx, Some(tx_type), &self.logger);
 						}
 
 						if let Some(splice_negotiated) = splice_negotiated {
@@ -11400,8 +11402,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								msg: splice_locked,
 							});
 						}
-						if let Some(ref funding_tx) = funding_tx {
-							self.broadcast_interactive_funding(chan, funding_tx, &self.logger);
+						if let Some((ref funding_tx, ref tx_type)) = funding_tx {
+							self.broadcast_interactive_funding(chan, funding_tx, Some(tx_type.clone()), &self.logger);
 						}
 						if let Some(splice_negotiated) = splice_negotiated {
 							self.pending_events.lock().unwrap().push_back((
