@@ -991,6 +991,17 @@ fn test_unsupported_anysegwit_upfront_shutdown_script() {
 	let mut open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 	open_channel.common_fields.shutdown_scriptpubkey = Some(anysegwit_shutdown_script.clone());
 	nodes[1].node.handle_open_channel(node_a_id, &open_channel);
+	let events = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match &events[0] {
+		Event::OpenChannelRequest { temporary_channel_id, counterparty_node_id, .. } => {
+			assert!(nodes[1]
+				.node
+				.accept_inbound_channel(temporary_channel_id, counterparty_node_id, 42, None,)
+				.is_err());
+		},
+		_ => panic!("Unexpected event"),
+	};
 
 	let events = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
@@ -1019,7 +1030,8 @@ fn test_unsupported_anysegwit_upfront_shutdown_script() {
 	// Check script when handling an accept_channel message
 	nodes[0].node.create_channel(node_b_id, 100000, 10001, 42, None, None).unwrap();
 	let open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
-	nodes[1].node.handle_open_channel(node_a_id, &open_channel);
+	handle_and_accept_open_channel(&nodes[1], node_a_id, &open_channel);
+
 	let mut accept_channel =
 		get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, node_a_id);
 	accept_channel.common_fields.shutdown_scriptpubkey = Some(anysegwit_shutdown_script.clone());
@@ -1057,6 +1069,17 @@ fn test_invalid_upfront_shutdown_script() {
 	open_channel.common_fields.shutdown_scriptpubkey =
 		Some(Builder::new().push_int(0).push_slice(&[0, 0]).into_script());
 	nodes[1].node.handle_open_channel(node_a_id, &open_channel);
+	let events = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match &events[0] {
+		Event::OpenChannelRequest { temporary_channel_id, counterparty_node_id, .. } => {
+			assert!(nodes[1]
+				.node
+				.accept_inbound_channel(temporary_channel_id, counterparty_node_id, 42, None,)
+				.is_err());
+		},
+		_ => panic!("Unexpected event"),
+	};
 
 	let events = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);

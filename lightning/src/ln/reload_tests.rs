@@ -253,7 +253,7 @@ fn test_manager_serialize_deserialize_events() {
 	let node_a = nodes.remove(0);
 	let node_b = nodes.remove(0);
 	node_a.node.create_channel(node_b.node.get_our_node_id(), channel_value, push_msat, 42, None, None).unwrap();
-	node_b.node.handle_open_channel(node_a.node.get_our_node_id(), &get_event_msg!(node_a, MessageSendEvent::SendOpenChannel, node_b.node.get_our_node_id()));
+	handle_and_accept_open_channel(&node_b, node_a.node.get_our_node_id(), &get_event_msg!(node_a, MessageSendEvent::SendOpenChannel, node_b.node.get_our_node_id()));
 	node_a.node.handle_accept_channel(node_b.node.get_our_node_id(), &get_event_msg!(node_b, MessageSendEvent::SendAcceptChannel, node_a.node.get_our_node_id()));
 
 	let (temporary_channel_id, tx, funding_output) = create_funding_transaction(&node_a, &node_b.node.get_our_node_id(), channel_value, 42);

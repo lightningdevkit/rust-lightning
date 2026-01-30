@@ -318,10 +318,8 @@ fn do_chanmon_claim_value_coop_close(keyed_anchors: bool, p2a_anchor: bool) {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let mut user_config = test_default_channel_config();
 	user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
-	user_config.manually_accept_inbound_channels = true;
 	user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = keyed_anchors;
 	user_config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
-	user_config.manually_accept_inbound_channels = keyed_anchors || p2a_anchor;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config.clone()), Some(user_config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
@@ -472,7 +470,6 @@ fn do_test_claim_value_force_close(keyed_anchors: bool, p2a_anchor: bool, prev_c
 	let mut user_config = test_default_channel_config();
 	user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = keyed_anchors;
 	user_config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
-	user_config.manually_accept_inbound_channels = keyed_anchors || p2a_anchor;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config.clone()), Some(user_config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
@@ -871,7 +868,6 @@ fn do_test_balances_on_local_commitment_htlcs(keyed_anchors: bool, p2a_anchor: b
 	let mut user_config = test_default_channel_config();
 	user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = keyed_anchors;
 	user_config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
-	user_config.manually_accept_inbound_channels = keyed_anchors || p2a_anchor;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config.clone()), Some(user_config)]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
@@ -1382,7 +1378,6 @@ fn do_test_revoked_counterparty_commitment_balances(keyed_anchors: bool, p2a_anc
 	let mut user_config = test_default_channel_config();
 	user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = keyed_anchors;
 	user_config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
-	user_config.manually_accept_inbound_channels = keyed_anchors || p2a_anchor;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config.clone()), Some(user_config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
@@ -1686,7 +1681,6 @@ fn do_test_revoked_counterparty_htlc_tx_balances(keyed_anchors: bool, p2a_anchor
 	let mut user_config = test_default_channel_config();
 	user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = keyed_anchors;
 	user_config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
-	user_config.manually_accept_inbound_channels = keyed_anchors || p2a_anchor;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config.clone()), Some(user_config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
@@ -1976,7 +1970,6 @@ fn do_test_revoked_counterparty_aggregated_claims(keyed_anchors: bool, p2a_ancho
 	let mut user_config = test_default_channel_config();
 	user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = keyed_anchors;
 	user_config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
-	user_config.manually_accept_inbound_channels = keyed_anchors || p2a_anchor;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config.clone()), Some(user_config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
@@ -2253,7 +2246,6 @@ fn do_test_claimable_balance_correct_while_payment_pending(outbound_payment: boo
 	let mut user_config = test_default_channel_config();
 	user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = keyed_anchors;
 	user_config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
-	user_config.manually_accept_inbound_channels = keyed_anchors || p2a_anchor;
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[Some(user_config.clone()), Some(user_config.clone()), Some(user_config)]);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
@@ -2401,7 +2393,6 @@ fn do_test_monitor_rebroadcast_pending_claims(keyed_anchors: bool, p2a_anchor: b
 	let mut config = test_default_channel_config();
 	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = keyed_anchors;
 	config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
-	config.manually_accept_inbound_channels = keyed_anchors || p2a_anchor;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
@@ -2527,7 +2518,6 @@ fn do_test_yield_anchors_events(have_htlcs: bool, p2a_anchor: bool) {
 	anchors_config.channel_handshake_config.announce_for_forwarding = true;
 	anchors_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 	anchors_config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
-	anchors_config.manually_accept_inbound_channels = true;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(anchors_config.clone()), Some(anchors_config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
@@ -2729,7 +2719,6 @@ fn do_test_anchors_aggregated_revoked_htlc_tx(p2a_anchor: bool) {
 
 	let mut anchors_config = test_default_channel_config();
 	anchors_config.channel_handshake_config.announce_for_forwarding = true;
-	anchors_config.manually_accept_inbound_channels = true;
 	anchors_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 	anchors_config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(anchors_config.clone()), Some(anchors_config.clone())]);
@@ -3036,7 +3025,6 @@ fn do_test_anchors_monitor_fixes_counterparty_payment_script_on_reload(confirm_c
 	let chain_monitor;
 	let mut user_config = test_default_channel_config();
 	user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
-	user_config.manually_accept_inbound_channels = true;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config.clone()), Some(user_config.clone())]);
 	let node_deserialized;
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
@@ -3127,7 +3115,6 @@ fn do_test_monitor_claims_with_random_signatures(keyed_anchors: bool, p2a_anchor
 	let mut user_config = test_default_channel_config();
 	user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = keyed_anchors;
 	user_config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
-	user_config.manually_accept_inbound_channels = keyed_anchors || p2a_anchor;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config.clone()), Some(user_config)]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
@@ -3418,7 +3405,6 @@ fn do_test_lost_preimage_monitor_events(on_counterparty_tx: bool, p2a_anchor: bo
 	// Here we test that losing `MonitorEvent`s that contain HTLC resolution preimages does not
 	// cause us to lose funds or miss a `PaymentSent` event.
 	let mut cfg = test_default_channel_config();
-	cfg.manually_accept_inbound_channels = true;
 	cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 	cfg.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
 	let cfgs = [Some(cfg.clone()), Some(cfg.clone()), Some(cfg.clone())];
@@ -3600,7 +3586,6 @@ fn do_test_lost_timeout_monitor_events(confirm_tx: CommitmentType, dust_htlcs: b
 	// Here we test that losing `MonitorEvent`s that contain HTLC resolution via timeouts does not
 	// cause us to lose a `PaymentFailed` event.
 	let mut cfg = test_default_channel_config();
-	cfg.manually_accept_inbound_channels = true;
 	cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 	cfg.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
 	let cfgs = [Some(cfg.clone()), Some(cfg.clone()), Some(cfg.clone())];

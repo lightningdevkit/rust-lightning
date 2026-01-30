@@ -404,7 +404,12 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 		nodes[0].node.peer_connected(nodes[1].node.get_our_node_id(), &Init {
 			features: nodes[1].node.init_features(), networks: None, remote_network_address: None
 		}, true).unwrap();
+		nodes[1].node.peer_connected(nodes[0].node.get_our_node_id(), &Init {
+			features: nodes[0].node.init_features(), networks: None, remote_network_address: None
+		}, true).unwrap();
 	}
+	let _ = nodes[1].node.get_and_clear_pending_msg_events();
+
 	create_announced_chan_between_nodes(&nodes, 0, 1);
 	send_payment(&nodes[0], &[&nodes[1]], 8000000);
 }
@@ -828,7 +833,6 @@ fn do_test_retries_own_commitment_broadcast_after_reorg(keyed_anchors: bool, p2a
 	let mut config = test_default_channel_config();
 	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = keyed_anchors;
 	config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
-	config.manually_accept_inbound_channels = keyed_anchors || p2a_anchor;
 	let persister;
 	let new_chain_monitor;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config.clone())]);
@@ -985,7 +989,6 @@ fn do_test_split_htlc_expiry_tracking(use_third_htlc: bool, reorg_out: bool, p2a
 	// This test relies on being able to consolidate HTLC claims into a single transaction, which
 	// requires anchors:
 	let mut config = test_default_channel_config();
-	config.manually_accept_inbound_channels = true;
 	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 	config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
 

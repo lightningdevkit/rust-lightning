@@ -2465,6 +2465,8 @@ mod tests {
 			));
 			let best_block = BestBlock::from_network(network);
 			let params = ChainParameters { network, best_block };
+			let mut config = UserConfig::default();
+			config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = false;
 			let manager = Arc::new(ChannelManager::new(
 				Arc::clone(&fee_estimator),
 				Arc::clone(&chain_monitor),
@@ -2475,7 +2477,7 @@ mod tests {
 				Arc::clone(&keys_manager),
 				Arc::clone(&keys_manager),
 				Arc::clone(&keys_manager),
-				UserConfig::default(),
+				config,
 				params,
 				genesis_block.header.time,
 			));
@@ -2628,6 +2630,25 @@ mod tests {
 				$node_b.node.get_our_node_id()
 			);
 			$node_b.node.handle_open_channel($node_a.node.get_our_node_id(), &msg_a);
+			let events = $node_b.node.get_and_clear_pending_events();
+			assert_eq!(events.len(), 1);
+			match &events[0] {
+				Event::OpenChannelRequest {
+					temporary_channel_id, counterparty_node_id, ..
+				} => {
+					$node_b
+						.node
+						.accept_inbound_channel(
+							temporary_channel_id,
+							counterparty_node_id,
+							42,
+							None,
+						)
+						.unwrap();
+				},
+				_ => panic!("Unexpected event"),
+			};
+
 			let msg_b = get_event_msg!(
 				$node_b,
 				MessageSendEvent::SendAcceptChannel,

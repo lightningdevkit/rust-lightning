@@ -2128,10 +2128,8 @@ fn do_during_funding_monitor_fail(
 	let node_b_id = nodes[1].node.get_our_node_id();
 
 	nodes[0].node.create_channel(node_b_id, 100000, 10001, 43, None, None).unwrap();
-	nodes[1].node.handle_open_channel(
-		node_a_id,
-		&get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id),
-	);
+	let open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
+	handle_and_accept_open_channel(&nodes[1], node_a_id, &open_channel_msg);
 	nodes[0].node.handle_accept_channel(
 		node_b_id,
 		&get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, node_a_id),
@@ -3217,7 +3215,6 @@ fn do_test_outbound_reload_without_init_mon(use_0conf: bool) {
 	let new_chain_monitor;
 
 	let mut chan_config = test_default_channel_config();
-	chan_config.manually_accept_inbound_channels = true;
 	chan_config.channel_handshake_limits.trust_own_funding_0conf = true;
 
 	let node_chanmgrs =
@@ -3327,7 +3324,6 @@ fn do_test_inbound_reload_without_init_mon(use_0conf: bool, lock_commitment: boo
 	let new_chain_monitor;
 
 	let mut chan_config = test_default_channel_config();
-	chan_config.manually_accept_inbound_channels = true;
 	chan_config.channel_handshake_limits.trust_own_funding_0conf = true;
 
 	let node_chanmgrs =
