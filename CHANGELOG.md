@@ -1,4 +1,4 @@
-# 0.2.1 - Jan 26, 2025 - "Electrum Confirmations Logged"
+# 0.2.1 - Jan 29, 2025 - "Electrum Confirmations Logged"
 
 ## API Updates
  * The `AttributionData` struct is now public, correcting an issue where it was
