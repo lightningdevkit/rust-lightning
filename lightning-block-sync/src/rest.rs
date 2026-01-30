@@ -3,7 +3,7 @@
 
 use crate::convert::GetUtxosResponse;
 use crate::gossip::UtxoSource;
-use crate::http::{BinaryResponse, HttpClient, HttpEndpoint, JsonResponse};
+use crate::http::{BinaryResponse, HttpClient, HttpClientError, HttpEndpoint, JsonResponse};
 use crate::{BlockData, BlockHeaderData, BlockSource, BlockSourceResult};
 
 use bitcoin::hash_types::BlockHash;
@@ -29,11 +29,10 @@ impl RestClient {
 	}
 
 	/// Requests a resource encoded in `F` format and interpreted as type `T`.
-	pub async fn request_resource<F, T>(&self, resource_path: &str) -> std::io::Result<T>
+	pub async fn request_resource<F, T>(&self, resource_path: &str) -> Result<T, HttpClientError>
 	where
 		F: TryFrom<Vec<u8>, Error = std::io::Error> + TryInto<T, Error = std::io::Error>,
 	{
-		let host = format!("{}:{}", self.endpoint.host(), self.endpoint.port());
 		let uri = format!("{}/{}", self.endpoint.path().trim_end_matches("/"), resource_path);
 		let reserved_client = self.client.lock().unwrap().take();
 		let mut client = if let Some(client) = reserved_client {
@@ -41,7 +40,7 @@ impl RestClient {
 		} else {
 			HttpClient::connect(&self.endpoint)?
 		};
-		let res = client.get::<F>(&uri, &host).await?.try_into();
+		let res = client.get::<F>(&uri).await?.try_into().map_err(HttpClientError::Io);
 		*self.client.lock().unwrap() = Some(client);
 		res
 	}
@@ -126,7 +125,8 @@ mod tests {
 		let client = RestClient::new(server.endpoint());
 
 		match client.request_resource::<BinaryResponse, u32>("/").await {
-			Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::Other),
+			Err(HttpClientError::Http(e)) => assert_eq!(e.status_code, 404),
+			Err(e) => panic!("Unexpected error type: {:?}", e),
 			Ok(_) => panic!("Expected error"),
 		}
 	}
@@ -137,7 +137,8 @@ mod tests {
 		let client = RestClient::new(server.endpoint());
 
 		match client.request_resource::<BinaryResponse, u32>("/").await {
-			Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::InvalidData),
+			Err(HttpClientError::Io(_)) => {},
+			Err(e) => panic!("Unexpected error type: {:?}", e),
 			Ok(_) => panic!("Expected error"),
 		}
 	}
