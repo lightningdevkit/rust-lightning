@@ -1614,7 +1614,7 @@ fn test_channel_update_dont_forward_flag() {
 }
 
 #[test]
-fn test_unknown_channel_update_with_dont_forward_logs_warning() {
+fn test_unknown_channel_update_with_dont_forward_logs_debug() {
 	use bitcoin::constants::ChainHash;
 	use bitcoin::secp256k1::ecdsa::Signature;
 	use bitcoin::secp256k1::ffi::Signature as FFISignature;

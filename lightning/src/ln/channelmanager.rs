@@ -12291,7 +12291,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			None => {
 				// It's not a local channel
 				if msg.contents.message_flags & (1 << 1) != 0 {
-					log_warn!(self.logger, "Received channel_update for unknown channel {} with dont_forward set.\n\tYou may wish to check if an incorrect tx_index was passed to chain::Confirm::transactions_confirmed.", msg.contents.short_channel_id);
+					log_debug!(self.logger, "Received channel_update for unknown channel {} with dont_forward set. You may wish to check if an incorrect tx_index was passed to chain::Confirm::transactions_confirmed.", msg.contents.short_channel_id);
 				}
 				return Ok(NotifyOption::SkipPersistNoEvents)
 			}
