@@ -2719,7 +2719,7 @@ pub struct ChannelManager<
 	/// See `PendingOutboundPayment` documentation for more info.
 	///
 	/// See `ChannelManager` struct-level documentation for lock order requirements.
-	pending_outbound_payments: OutboundPayments<L>,
+	pending_outbound_payments: OutboundPayments,
 
 	/// SCID/SCID Alias -> forward infos. Key of 0 means payments received.
 	///
@@ -3977,7 +3977,7 @@ where
 			best_block: RwLock::new(params.best_block),
 
 			outbound_scid_aliases: Mutex::new(new_hash_set()),
-			pending_outbound_payments: OutboundPayments::new(new_hash_map(), logger.clone()),
+			pending_outbound_payments: OutboundPayments::new(new_hash_map()),
 			forward_htlcs: Mutex::new(new_hash_map()),
 			decode_update_add_htlcs: Mutex::new(new_hash_map()),
 			claimable_payments: Mutex::new(ClaimablePayments { claimable_payments: new_hash_map(), pending_claiming_payments: new_hash_map() }),
@@ -4707,6 +4707,12 @@ where
 	/// the channel. This will spend the channel's funding transaction output, effectively replacing
 	/// it with a new one.
 	///
+	/// # Required Feature Flags
+	///
+	/// Initiating a splice requires that the channel counterparty supports splicing. Any
+	/// channel (no matter the type) can be spliced, as long as the counterparty is currently
+	/// connected.
+	///
 	/// # Arguments
 	///
 	/// Provide a `contribution` to determine if value is spliced in or out. The splice initiator is
@@ -4767,8 +4773,17 @@ where
 			Err(e) => return Err(e),
 		};
 
-		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
-		let peer_state = &mut *peer_state_lock;
+		let mut peer_state = peer_state_mutex.lock().unwrap();
+		if !peer_state.latest_features.supports_splicing() {
+			return Err(APIError::ChannelUnavailable {
+				err: "Peer does not support splicing".to_owned(),
+			});
+		}
+		if !peer_state.latest_features.supports_quiescence() {
+			return Err(APIError::ChannelUnavailable {
+				err: "Peer does not support quiescence, a splicing prerequisite".to_owned(),
+			});
+		}
 
 		// Look for the channel
 		match peer_state.channel_by_id.entry(*channel_id) {
@@ -5384,11 +5399,12 @@ where
 		});
 		if route.route_params.is_none() { route.route_params = Some(route_params.clone()); }
 		let router = FixedRouter::new(route);
+		let logger = WithContext::from(&self.logger, None, None, Some(payment_hash));
 		self.pending_outbound_payments
 			.send_payment(payment_hash, recipient_onion, payment_id, Retry::Attempts(0),
 				route_params, &&router, self.list_usable_channels(), || self.compute_inflight_htlcs(),
 				&self.entropy_source, &self.node_signer, best_block_height,
-				&self.pending_events, |args| self.send_payment_along_path(args))
+				&self.pending_events, |args| self.send_payment_along_path(args), &logger)
 	}
 
 	/// Sends a payment to the route found using the provided [`RouteParameters`], retrying failed
@@ -5448,6 +5464,7 @@ where
 			best_block_height,
 			&self.pending_events,
 			|args| self.send_payment_along_path(args),
+			&WithContext::from(&self.logger, None, None, Some(payment_hash)),
 		)
 	}
 
@@ -5532,6 +5549,7 @@ where
 	) -> Result<(), Bolt11PaymentError> {
 		let best_block_height = self.best_block.read().unwrap().height;
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+		let payment_hash = PaymentHash(invoice.payment_hash().to_byte_array());
 		self.pending_outbound_payments.pay_for_bolt11_invoice(
 			invoice,
 			payment_id,
@@ -5546,6 +5564,7 @@ where
 			best_block_height,
 			&self.pending_events,
 			|args| self.send_payment_along_path(args),
+			&WithContext::from(&self.logger, None, None, Some(payment_hash)),
 		)
 	}
 
@@ -5615,6 +5634,7 @@ where
 			best_block_height,
 			&self.pending_events,
 			|args| self.send_payment_along_path(args),
+			&WithContext::from(&self.logger, None, None, None),
 		)
 	}
 
@@ -5797,6 +5817,7 @@ where
 			best_block_height,
 			&self.pending_events,
 			|args| self.send_payment_along_path(args),
+			&WithContext::from(&self.logger, None, None, None),
 		)
 	}
 
@@ -5875,6 +5896,7 @@ where
 	) -> Result<PaymentHash, RetryableSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height;
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+		let payment_hash = payment_preimage.map(|preimage| preimage.into());
 		self.pending_outbound_payments.send_spontaneous_payment(
 			payment_preimage,
 			recipient_onion,
@@ -5889,6 +5911,7 @@ where
 			best_block_height,
 			&self.pending_events,
 			|args| self.send_payment_along_path(args),
+			&WithContext::from(&self.logger, None, None, payment_hash),
 		)
 	}
 
@@ -7148,6 +7171,7 @@ where
 			best_block_height,
 			&self.pending_events,
 			|args| self.send_payment_along_path(args),
+			&WithContext::from(&self.logger, None, None, None),
 		);
 		if needs_persist {
 			should_persist = NotifyOption::DoPersist;
@@ -8523,6 +8547,7 @@ where
 		// being fully configured. See the docs for `ChannelManagerReadArgs` for more.
 		match source {
 			HTLCSource::OutboundRoute { ref path, ref session_priv, ref payment_id, .. } => {
+				let logger = WithContext::from(&self.logger, None, None, Some(*payment_hash));
 				self.pending_outbound_payments.fail_htlc(
 					source,
 					payment_hash,
@@ -8534,6 +8559,7 @@ where
 					&self.secp_ctx,
 					&self.pending_events,
 					&mut from_monitor_update_completion,
+					&logger,
 				);
 				if let Some(update) = from_monitor_update_completion {
 					// If `fail_htlc` didn't `take` the post-event action, we should go ahead and
@@ -9214,6 +9240,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					from_onchain,
 					&mut ev_completion_action,
 					&self.pending_events,
+					&WithContext::from(&self.logger, None, None, Some(payment_preimage.into())),
 				);
 				// If an event was generated, `claim_htlc` set `ev_completion_action` to None, if
 				// not, we should go ahead and run it now (as the claim was duplicative), at least
@@ -17151,8 +17178,7 @@ where
 			}
 			pending_outbound_payments = Some(outbounds);
 		}
-		let pending_outbounds =
-			OutboundPayments::new(pending_outbound_payments.unwrap(), args.logger.clone());
+		let pending_outbounds = OutboundPayments::new(pending_outbound_payments.unwrap());
 
 		for (peer_pubkey, peer_storage) in peer_storage_dir {
 			if let Some(peer_state) = per_peer_state.get_mut(&peer_pubkey) {
@@ -17458,6 +17484,7 @@ where
 								session_priv_bytes,
 								&path,
 								best_block_height,
+								&logger,
 							);
 						}
 					}
@@ -17557,6 +17584,7 @@ where
 										true,
 										&mut compl_action,
 										&pending_events,
+										&logger,
 									);
 									// If the completion action was not consumed, then there was no
 									// payment to claim, and we need to tell the `ChannelMonitor`
@@ -17601,8 +17629,10 @@ where
 						}
 					}
 					for (htlc_source, payment_hash) in monitor.get_onchain_failed_outbound_htlcs() {
+						let logger =
+							WithChannelMonitor::from(&args.logger, monitor, Some(payment_hash));
 						log_info!(
-							args.logger,
+							logger,
 							"Failing HTLC with payment hash {} as it was resolved on-chain.",
 							payment_hash
 						);
@@ -17671,6 +17701,11 @@ where
 									// inbound edge of the payment's monitor has already claimed
 									// the HTLC) we skip trying to replay the claim.
 									let htlc_payment_hash: PaymentHash = payment_preimage.into();
+									let logger = WithChannelMonitor::from(
+										&args.logger,
+										monitor,
+										Some(htlc_payment_hash),
+									);
 									let balance_could_incl_htlc = |bal| match bal {
 										&Balance::ClaimableOnChannelClose { .. } => {
 											// The channel is still open, assume we can still
@@ -17693,7 +17728,7 @@ where
 									// edge monitor but the channel is closed (and thus we'll
 									// immediately panic if we call claim_funds_from_hop).
 									if short_to_chan_info.get(&prev_hop.prev_outbound_scid_alias).is_none() {
-										log_error!(args.logger,
+										log_error!(logger,
 											"We need to replay the HTLC claim for payment_hash {} (preimage {}) but cannot do so as the HTLC was forwarded prior to LDK 0.0.124.\
 											All HTLCs that were forwarded by LDK 0.0.123 and prior must be resolved prior to upgrading to LDK 0.1",
 											htlc_payment_hash,
@@ -17708,7 +17743,7 @@ where
 									// of panicking at runtime. The user ideally should have read
 									// the release notes and we wouldn't be here, but we go ahead
 									// and let things run in the hope that it'll all just work out.
-									log_error!(args.logger,
+									log_error!(logger,
 										"We need to replay the HTLC claim for payment_hash {} (preimage {}) but don't have all the required information to do so reliably.\
 										As long as the channel for the inbound edge of the forward remains open, this may work okay, but we may panic at runtime!\
 										All HTLCs that were forwarded by LDK 0.0.123 and prior must be resolved prior to upgrading to LDK 0.1\
