@@ -568,6 +568,14 @@ where
 	fn handle_channel_update(
 		&self, _their_node_id: Option<PublicKey>, msg: &msgs::ChannelUpdate,
 	) -> Result<Option<(NodeId, NodeId)>, LightningError> {
+		// Ignore channel updates with dont_forward bit set - these are for private channels
+		// and shouldn't be gossiped or stored in the network graph
+		if msg.contents.message_flags & (1 << 1) != 0 {
+			return Err(LightningError {
+				err: "Ignoring channel_update with dont_forward bit set".to_owned(),
+				action: ErrorAction::IgnoreAndLog(Level::Debug),
+			});
+		}
 		match self.network_graph.update_channel(msg) {
 			Ok(nodes) if msg.contents.excess_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY => Ok(nodes),
 			Ok(_) => Ok(None),
@@ -3339,6 +3347,65 @@ pub(crate) mod tests {
 			Ok(_) => panic!(),
 			Err(e) => assert_eq!(e.err, "Channel update chain hash does not match genesis hash"),
 		};
+	}
+
+	#[test]
+	fn handling_channel_update_with_dont_forward_flag() {
+		// Test that channel updates with the dont_forward bit set are rejected
+		let secp_ctx = Secp256k1::new();
+		let logger = test_utils::TestLogger::new();
+		let chain_source = test_utils::TestChainSource::new(Network::Testnet);
+		let network_graph = NetworkGraph::new(Network::Testnet, &logger);
+		let gossip_sync = P2PGossipSync::new(&network_graph, Some(&chain_source), &logger);
+
+		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
+		let node_1_pubkey = PublicKey::from_secret_key(&secp_ctx, node_1_privkey);
+		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
+
+		// First announce a channel so we have something to update
+		let good_script = get_channel_script(&secp_ctx);
+		*chain_source.utxo_ret.lock().unwrap() = UtxoResult::Sync(Ok(TxOut {
+			value: Amount::from_sat(1000_000),
+			script_pubkey: good_script.clone(),
+		}));
+
+		let valid_channel_announcement =
+			get_signed_channel_announcement(|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
+		gossip_sync
+			.handle_channel_announcement(Some(node_1_pubkey), &valid_channel_announcement)
+			.unwrap();
+
+		// Create a channel update with dont_forward bit set (bit 1 of message_flags)
+		let dont_forward_update = get_signed_channel_update(
+			|unsigned_channel_update| {
+				unsigned_channel_update.message_flags = 1 | (1 << 1); // must_be_one + dont_forward
+			},
+			node_1_privkey,
+			&secp_ctx,
+		);
+
+		// The update should be rejected because dont_forward is set
+		match gossip_sync.handle_channel_update(Some(node_1_pubkey), &dont_forward_update) {
+			Ok(_) => panic!("Expected channel update with dont_forward to be rejected"),
+			Err(e) => {
+				assert_eq!(e.err, "Ignoring channel_update with dont_forward bit set");
+				match e.action {
+					crate::ln::msgs::ErrorAction::IgnoreAndLog(level) => {
+						assert_eq!(level, crate::util::logger::Level::Debug)
+					},
+					_ => panic!("Expected IgnoreAndLog action"),
+				}
+			},
+		};
+
+		// Verify the update was not applied to the network graph
+		let channels = network_graph.read_only();
+		let channel =
+			channels.channels().get(&valid_channel_announcement.contents.short_channel_id).unwrap();
+		assert!(
+			channel.one_to_two.is_none(),
+			"Channel update with dont_forward should not be stored in network graph"
+		);
 	}
 
 	#[test]
