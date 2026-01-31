@@ -24,30 +24,73 @@ PIN_RELEASE_DEPS # pin the release dependencies in our main workspace
 
 export RUST_BACKTRACE=1
 
-echo -e "\n\nChecking the workspace, except lightning-transaction-sync."
-cargo check --verbose --color always
+# All steps in order, matching the original script flow
+ALL_STEPS="
+workspace-check
+workspace-tests
+ldk-upgrade-tests
+workspace-member-checks
+lightning-dnssec
+block-sync-tests
+tx-sync-checks
+tx-sync-tests
+persister-tests
+custom-message-tests
+lightning-backtrace
+no-std-tests
+c-bindings-tests
+other-crate-specific
+no-std-check
+msrv-no-dev-deps-check
+no-std-check-arm
+cfg-flag-tests
+"
+
+# If a step name is passed, run just that step. Otherwise run all.
+if [ -n "$1" ]; then
+	STEPS_TO_RUN="$1"
+else
+	STEPS_TO_RUN="$ALL_STEPS"
+fi
 
 WORKSPACE_MEMBERS=( $(cat Cargo.toml | tr '\n' '\r' | sed 's/\r    //g' | tr '\r' '\n' | grep '^members =' | sed 's/members.*=.*\[//' | tr -d '"' | tr ',' ' ') )
 
+for STEP in $STEPS_TO_RUN; do
+case "$STEP" in
+
+workspace-check)
+echo -e "\n\nChecking the workspace, except lightning-transaction-sync."
+cargo check --verbose --color always
+;;
+
+workspace-tests)
 echo -e "\n\nTesting the workspace, except lightning-transaction-sync."
 cargo test --verbose --color always
+;;
 
+ldk-upgrade-tests)
 echo -e "\n\nTesting upgrade from prior versions of LDK"
 pushd lightning-tests
 cargo test
 popd
+;;
 
+workspace-member-checks)
 echo -e "\n\nChecking and building docs for all workspace members individually..."
 for DIR in "${WORKSPACE_MEMBERS[@]}"; do
 	cargo check -p "$DIR" --verbose --color always
 	cargo doc -p "$DIR" --document-private-items
 done
+;;
 
+lightning-dnssec)
 echo -e "\n\nChecking and testing lightning with features"
 cargo test -p lightning --verbose --color always --features dnssec
 cargo check -p lightning --verbose --color always --features dnssec
 cargo doc -p lightning --document-private-items --features dnssec
+;;
 
+block-sync-tests)
 echo -e "\n\nChecking and testing Block Sync Clients with features"
 
 cargo test -p lightning-block-sync --verbose --color always --features rest-client
@@ -58,13 +101,17 @@ cargo test -p lightning-block-sync --verbose --color always --features rpc-clien
 cargo check -p lightning-block-sync --verbose --color always --features rpc-client,rest-client
 cargo test -p lightning-block-sync --verbose --color always --features rpc-client,rest-client,tokio
 cargo check -p lightning-block-sync --verbose --color always --features rpc-client,rest-client,tokio
+;;
 
+tx-sync-checks)
 echo -e "\n\nChecking Transaction Sync Clients with features."
 cargo check -p lightning-transaction-sync --verbose --color always --features esplora-blocking
 cargo check -p lightning-transaction-sync --verbose --color always --features esplora-async
 cargo check -p lightning-transaction-sync --verbose --color always --features esplora-async-https
 cargo check -p lightning-transaction-sync --verbose --color always --features electrum
+;;
 
+tx-sync-tests)
 if [ -z "$CI_ENV" ] && [[ -z "$BITCOIND_EXE" || -z "$ELECTRS_EXE" ]]; then
 	echo -e "\n\nSkipping testing Transaction Sync Clients due to BITCOIND_EXE or ELECTRS_EXE being unset."
 	cargo check -p lightning-transaction-sync --tests
@@ -75,19 +122,27 @@ else
 	cargo test -p lightning-transaction-sync --verbose --color always --features esplora-async-https
 	cargo test -p lightning-transaction-sync --verbose --color always --features electrum
 fi
+;;
 
+persister-tests)
 echo -e "\n\nChecking and testing lightning-persister with features"
 cargo test -p lightning-persister --verbose --color always --features tokio
 cargo check -p lightning-persister --verbose --color always --features tokio
 cargo doc -p lightning-persister --document-private-items --features tokio
+;;
 
+custom-message-tests)
 echo -e "\n\nTest Custom Message Macros"
 cargo test -p lightning-custom-message --verbose --color always
 [ "$CI_MINIMIZE_DISK_USAGE" != "" ] && cargo clean
+;;
 
+lightning-backtrace)
 echo -e "\n\nTest backtrace-debug builds"
 cargo test -p lightning --verbose --color always --features backtrace
+;;
 
+no-std-tests)
 echo -e "\n\nTesting no_std builds"
 for DIR in lightning-invoice lightning-rapid-gossip-sync lightning-liquidity; do
 	cargo test -p $DIR --verbose --color always --no-default-features
@@ -95,7 +150,9 @@ done
 
 cargo test -p lightning --verbose --color always --no-default-features
 cargo test -p lightning-background-processor --verbose --color always --no-default-features
+;;
 
+c-bindings-tests)
 echo -e "\n\nTesting c_bindings builds"
 # Note that because `$RUSTFLAGS` is not passed through to doctest builds we cannot selectively
 # disable doctests in `c_bindings` so we skip doctests entirely here.
@@ -110,35 +167,45 @@ done
 # disable doctests in `c_bindings` so we skip doctests entirely here.
 RUSTFLAGS="$RUSTFLAGS --cfg=c_bindings" cargo test -p lightning-background-processor --verbose --color always --no-default-features --lib --bins --tests
 RUSTFLAGS="$RUSTFLAGS --cfg=c_bindings" cargo test -p lightning --verbose --color always --no-default-features --lib --bins --tests
+;;
 
+other-crate-specific)
 echo -e "\n\nTesting other crate-specific builds"
 # Note that outbound_commitment_test only runs in this mode because of hardcoded signature values
 RUSTFLAGS="$RUSTFLAGS --cfg=ldk_test_vectors" cargo test -p lightning --verbose --color always --no-default-features --features=std
 # This one only works for lightning-invoice
 # check that compile with no_std and serde works in lightning-invoice
 cargo test -p lightning-invoice --verbose --color always --no-default-features --features serde
+;;
 
+no-std-check)
 echo -e "\n\nTesting no_std build on a downstream no-std crate"
 # check no-std compatibility across dependencies
 pushd no-std-check
 cargo check --verbose --color always
 [ "$CI_MINIMIZE_DISK_USAGE" != "" ] && cargo clean
 popd
+;;
 
+msrv-no-dev-deps-check)
 # Test that we can build downstream code with only the "release pins".
 pushd msrv-no-dev-deps-check
 PIN_RELEASE_DEPS
 cargo check
 [ "$CI_MINIMIZE_DISK_USAGE" != "" ] && cargo clean
 popd
+;;
 
+no-std-check-arm)
 if [ -f "$(which arm-none-eabi-gcc)" ]; then
 	pushd no-std-check
 	cargo build --target=thumbv7m-none-eabi
 	[ "$CI_MINIMIZE_DISK_USAGE" != "" ] && cargo clean
 	popd
 fi
+;;
 
+cfg-flag-tests)
 echo -e "\n\nTest cfg-flag builds"
 RUSTFLAGS="--cfg=taproot" cargo test --verbose --color always -p lightning
 [ "$CI_MINIMIZE_DISK_USAGE" != "" ] && cargo clean
@@ -147,3 +214,12 @@ RUSTFLAGS="--cfg=simple_close" cargo test --verbose --color always -p lightning
 RUSTFLAGS="--cfg=lsps1_service" cargo test --verbose --color always -p lightning-liquidity
 [ "$CI_MINIMIZE_DISK_USAGE" != "" ] && cargo clean
 RUSTFLAGS="--cfg=peer_storage" cargo test --verbose --color always -p lightning
+;;
+
+*)
+echo "Unknown step: $STEP"
+exit 1
+;;
+
+esac
+done
