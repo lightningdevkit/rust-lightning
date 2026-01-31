@@ -1,3 +1,29 @@
+# 0.2.1 - Jan 29, 2025 - "Electrum Confirmations Logged"
+
+## API Updates
+ * The `AttributionData` struct is now public, correcting an issue where it was
+   accidentally sealed preventing construction of some messages (#4268).
+ * The async background processor now exits even if work remains to be done as
+   soon as the sleeper returns the exit flag (#4259).
+
+## Bug Fixes
+ * The presence of unconfirmed transactions no longer causes
+   `ElectrumSyncClient` to spuriously fail to sync (#4341).
+ * `ChannelManager::splice_channel` now properly fails immediately if the
+   peer does not support splicing (#4262, #4274).
+ * A spurious debug assertion was removed which could fail in cases where an
+   HTLC fails to be forwarded after being accepted (#4312).
+ * Many log calls related to outbound payments were corrected to include a
+   `payment_hash` field (#4342).
+
+
+# 0.1.9 - Jan 26, 2026 - "Electrum Confirmations"
+
+## Bug Fixes
+ * The presence of unconfirmed transactions no longer causes
+   `ElectrumSyncClient` to spuriously fail to sync (#4341).
+
+
 # 0.2 - Dec 2, 2025 - "Natively Asynchronous Splicing"
 
 ## API Updates
