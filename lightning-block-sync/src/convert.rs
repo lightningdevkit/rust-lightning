@@ -1,4 +1,6 @@
-use crate::http::{BinaryResponse, JsonResponse};
+use crate::http::{BinaryResponse, HttpClientError, JsonResponse};
+#[cfg(feature = "rpc-client")]
+use crate::rpc::RpcClientError;
 use crate::utils::hex_to_work;
 use crate::{BlockHeaderData, BlockSourceError};
 
@@ -31,6 +33,48 @@ impl From<io::Error> for BlockSourceError {
 			io::ErrorKind::InvalidData => BlockSourceError::persistent(e),
 			io::ErrorKind::InvalidInput => BlockSourceError::persistent(e),
 			_ => BlockSourceError::transient(e),
+		}
+	}
+}
+
+/// Conversion from `HttpClientError` into `BlockSourceError`.
+impl From<HttpClientError> for BlockSourceError {
+	fn from(e: HttpClientError) -> BlockSourceError {
+		match &e {
+			// Transport errors (connection, timeout, etc.) are transient
+			HttpClientError::Transport(_) => BlockSourceError::transient(e),
+			// HTTP non-2xx errors are transient - e.g. "not found" must not stop polling
+			HttpClientError::Http(_) => BlockSourceError::transient(e),
+			// I/O errors follow the same logic as std::io::Error
+			HttpClientError::Io(io_error) => match io_error.kind() {
+				io::ErrorKind::InvalidData => BlockSourceError::persistent(e),
+				io::ErrorKind::InvalidInput => BlockSourceError::persistent(e),
+				_ => BlockSourceError::transient(e),
+			},
+		}
+	}
+}
+
+/// Conversion from `RpcClientError` into `BlockSourceError`.
+#[cfg(feature = "rpc-client")]
+impl From<RpcClientError> for BlockSourceError {
+	fn from(e: RpcClientError) -> BlockSourceError {
+		match &e {
+			RpcClientError::Http(http_error) => match http_error {
+				HttpClientError::Transport(_) => BlockSourceError::transient(e),
+				// HTTP non-2xx errors are transient
+				HttpClientError::Http(_) => BlockSourceError::transient(e),
+				HttpClientError::Io(io_error) => match io_error.kind() {
+					io::ErrorKind::InvalidData => BlockSourceError::persistent(e),
+					io::ErrorKind::InvalidInput => BlockSourceError::persistent(e),
+					_ => BlockSourceError::transient(e),
+				},
+			},
+			// RPC errors are transient
+			// e.g. "block not found" should not stop polling
+			RpcClientError::Rpc(_) => BlockSourceError::transient(e),
+			// Malformed response data is persistent
+			RpcClientError::InvalidData(_) => BlockSourceError::persistent(e),
 		}
 	}
 }
