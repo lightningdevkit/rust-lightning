@@ -1,0 +1,6 @@
+## API Updates
+
+* `RecentPaymentDetails::Pending` now includes `inflight_msat`, tracking the
+  amount currently locked in HTLCs. The difference `total_msat - inflight_msat`
+  is the amount waiting to retry. Reserve both from spendable balance to avoid
+  balance flicker during payment retries (#3374).

@@ -3179,6 +3179,11 @@ pub enum RecentPaymentDetails {
 		/// Total amount (in msat, excluding fees) across all paths for this payment,
 		/// not just the amount currently inflight.
 		total_msat: u64,
+		/// Amount (in msat) currently locked in HTLCs.
+		///
+		/// `total_msat - inflight_msat` gives the amount waiting to be retried
+		/// Reserve both from spendable balance.
+		inflight_msat: u64,
 	},
 	/// When a pending payment is fulfilled, we continue tracking it until all pending HTLCs have
 	/// been resolved. Upon receiving [`Event::PaymentSent`], we delay for a few minutes before the
@@ -3884,11 +3889,12 @@ where
 				PendingOutboundPayment::StaticInvoiceReceived { .. } => {
 					Some(RecentPaymentDetails::AwaitingInvoice { payment_id: *payment_id })
 				},
-				PendingOutboundPayment::Retryable { payment_hash, total_msat, .. } => {
+				PendingOutboundPayment::Retryable { payment_hash, total_msat, pending_amt_msat, .. } => {
 					Some(RecentPaymentDetails::Pending {
 						payment_id: *payment_id,
 						payment_hash: *payment_hash,
 						total_msat: *total_msat,
+						inflight_msat: *pending_amt_msat,
 					})
 				},
 				PendingOutboundPayment::Abandoned { payment_hash, .. } => {

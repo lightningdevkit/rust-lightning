@@ -2098,8 +2098,16 @@ fn test_trivial_inflight_htlc_tracking() {
 	}
 	let pending_payments = nodes[0].node.list_recent_payments();
 	assert_eq!(pending_payments.len(), 1);
-	let details = RecentPaymentDetails::Pending { payment_id, payment_hash, total_msat: 500000 };
-	assert_eq!(pending_payments[0], details);
+	match &pending_payments[0] {
+		RecentPaymentDetails::Pending {
+			payment_id: pid, payment_hash: ph, total_msat: tm, ..
+		} => {
+			assert_eq!(*pid, payment_id);
+			assert_eq!(*ph, payment_hash);
+			assert_eq!(*tm, 500000);
+		},
+		_ => panic!("Expected Pending payment details"),
+	}
 
 	// Now, let's claim the payment. This should result in the used liquidity to return `None`.
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
@@ -2139,6 +2147,39 @@ fn test_trivial_inflight_htlc_tracking() {
 
 	let pending_payments = nodes[0].node.list_recent_payments();
 	assert_eq!(pending_payments.len(), 0);
+}
+
+#[test]
+fn test_pending_payment_tracking() {
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes(&nodes, 0, 1);
+	create_announced_chan_between_nodes(&nodes, 1, 2);
+
+	let payment_amt = 100_000;
+	let (payment_preimage, _payment_hash, _, payment_id) =
+		route_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_amt);
+
+	let pending_payments = nodes[0].node.list_recent_payments();
+	assert_eq!(pending_payments.len(), 1);
+	match &pending_payments[0] {
+		RecentPaymentDetails::Pending { payment_id: pid, total_msat, inflight_msat, .. } => {
+			assert_eq!(*pid, payment_id);
+			assert_eq!(*total_msat, payment_amt);
+			assert_eq!(*inflight_msat, payment_amt);
+		},
+		_ => panic!("Expected Pending payment details"),
+	}
+
+	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
+
+	for _ in 0..=IDEMPOTENCY_TIMEOUT_TICKS {
+		nodes[0].node.timer_tick_occurred();
+	}
+	assert!(nodes[0].node.list_recent_payments().is_empty());
 }
 
 #[test]
