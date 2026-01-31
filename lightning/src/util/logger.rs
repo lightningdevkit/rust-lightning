@@ -15,6 +15,8 @@
 
 use bitcoin::secp256k1::PublicKey;
 
+#[cfg(all(feature = "std", test))]
+use core::cell::RefCell;
 use core::cmp;
 use core::fmt;
 use core::fmt::Display;
@@ -24,7 +26,7 @@ use core::ops::Deref;
 use crate::ln::channelmanager::PaymentId;
 use crate::ln::types::ChannelId;
 #[cfg(c_bindings)]
-use crate::prelude::*; // Needed for String
+use crate::prelude::*;
 use crate::types::payment::PaymentHash;
 
 static LOG_LEVEL_NAMES: [&'static str; 6] = ["GOSSIP", "TRACE", "DEBUG", "INFO", "WARN", "ERROR"];
@@ -196,6 +198,16 @@ impl<$($args)?> Display for Record<$($args)?> {
 
 		#[cfg(test)]
 		{
+			// Read spans from TLS and format them before the message
+			#[cfg(feature = "std")]
+			{
+				let spans: Vec<&'static str> = TLS_LOGGER
+					.with(|cell| cell.borrow().iter().map(|span| *span).collect());
+				if !spans.is_empty() {
+					write!(f, " [{}]", spans.join("->"))?;
+				}
+			}
+
 			write!(f, " {}", self.args)?;
 
 			let mut open_bracket_written = false;
@@ -397,14 +409,78 @@ impl<T: fmt::Display, I: core::iter::Iterator<Item = T> + Clone> fmt::Display fo
 	}
 }
 
+#[cfg(all(feature = "std", test))]
+thread_local! {
+	/// The thread-local stack of span names.
+	pub static TLS_LOGGER: RefCell<Vec<&'static str>> = const { RefCell::new(Vec::new()) };
+}
+
+/// A scope which pushes a span name on a thread-local stack for the duration of the scope.
+/// In non-test builds, this is a no-op.
+pub struct LoggerScope<'a> {
+	_marker: core::marker::PhantomData<&'a ()>,
+}
+
+impl<'a> LoggerScope<'a> {
+	/// Pushes a span name onto the thread-local span stack.
+	/// In non-test builds, this is a no-op.
+	pub fn new(span: &'static str) -> Self {
+		#[cfg(all(feature = "std", test))]
+		TLS_LOGGER.with(|cell| {
+			let mut stack = cell.borrow_mut();
+			stack.push(span);
+		});
+		#[cfg(not(all(feature = "std", test)))]
+		let _ = span;
+
+		LoggerScope { _marker: core::marker::PhantomData }
+	}
+}
+
+impl<'a> Drop for LoggerScope<'a> {
+	fn drop(&mut self) {
+		#[cfg(all(feature = "std", test))]
+		// Use try_with to avoid panicking if TLS is being destroyed
+		let _ = TLS_LOGGER.try_with(|cell| {
+			let mut stack = cell.borrow_mut();
+			stack.pop();
+		});
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use crate::ln::types::ChannelId;
 	use crate::sync::Arc;
 	use crate::types::payment::PaymentHash;
-	use crate::util::logger::{Level, Logger, WithContext};
+	use crate::util::logger::{Level, Logger, LoggerScope, WithContext};
 	use crate::util::test_utils::TestLogger;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
+	use lightning_macros::log_scope;
+
+	#[test]
+	fn logger_scope() {
+		let logger = TestLogger::new();
+		let _scope = LoggerScope::new("test_logger_scope");
+		log_info!(logger, "Info");
+		logger.assert_log_formatted_contains("[test_logger_scope]", 1);
+	}
+
+	#[test]
+	#[log_scope(name = "test_logger_scope_proc_macro")]
+	fn logger_scope_proc_macro() {
+		let logger = TestLogger::new();
+		log_info!(logger, "Info");
+		logger.assert_log_formatted_contains("[test_logger_scope_proc_macro]", 1);
+	}
+
+	#[test]
+	#[log_scope]
+	fn logger_scope_proc_macro_no_name() {
+		let logger = TestLogger::new();
+		log_info!(logger, "Info");
+		logger.assert_log_formatted_contains("[logger_scope_proc_macro_no_name]", 1);
+	}
 
 	#[test]
 	fn test_level_show() {
