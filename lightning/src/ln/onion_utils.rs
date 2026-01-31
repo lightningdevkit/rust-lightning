@@ -11,7 +11,6 @@
 
 use super::msgs::OnionErrorPacket;
 use crate::blinded_path::BlindedHop;
-use crate::crypto::chacha20::ChaCha20;
 use crate::crypto::streams::ChaChaReader;
 use crate::events::HTLCHandlingFailureReason;
 use crate::ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS;
@@ -38,6 +37,7 @@ use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::secp256k1;
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey};
+use chacha20_poly1305::chacha20::{ChaCha20, Key, Nonce};
 
 use crate::io::{Cursor, Read};
 
@@ -707,8 +707,8 @@ pub(super) fn construct_onion_packet(
 ) -> Result<msgs::OnionPacket, ()> {
 	let mut packet_data = [0; ONION_DATA_LEN];
 
-	let mut chacha = ChaCha20::new(&prng_seed, &[0; 8]);
-	chacha.process(&[0; ONION_DATA_LEN], &mut packet_data);
+	let mut chacha = ChaCha20::new(Key::new(prng_seed), Nonce::new([0; 12]), 0);
+	chacha.apply_keystream(&mut packet_data);
 
 	debug_assert_eq!(payloads.len(), onion_keys.len(), "Payloads and keys must have equal lengths");
 
@@ -745,8 +745,8 @@ pub(super) fn construct_trampoline_onion_packet(
 	}
 
 	let mut packet_data = vec![0u8; packet_length];
-	let mut chacha = ChaCha20::new(&prng_seed, &[0; 8]);
-	chacha.process_in_place(&mut packet_data);
+	let mut chacha = ChaCha20::new(Key::new(prng_seed), Nonce::new([0; 12]), 0);
+	chacha.apply_keystream(&mut packet_data);
 
 	construct_onion_packet_with_init_noise::<_, _>(
 		payloads,
@@ -765,8 +765,8 @@ pub(super) fn construct_onion_packet_with_writable_hopdata<HD: Writeable>(
 ) -> Result<msgs::OnionPacket, ()> {
 	let mut packet_data = [0; ONION_DATA_LEN];
 
-	let mut chacha = ChaCha20::new(&prng_seed, &[0; 8]);
-	chacha.process(&[0; ONION_DATA_LEN], &mut packet_data);
+	let mut chacha = ChaCha20::new(Key::new(prng_seed), Nonce::new([0; 12]), 0);
+	chacha.apply_keystream(&mut packet_data);
 
 	let packet = FixedSizeOnionPacket(packet_data);
 	construct_onion_packet_with_init_noise::<_, _>(
@@ -804,8 +804,8 @@ pub(crate) fn construct_onion_message_packet<HD: Writeable, P: Packet<Data = Vec
 ) -> Result<P, ()> {
 	let mut packet_data = vec![0; packet_data_len];
 
-	let mut chacha = ChaCha20::new(&prng_seed, &[0; 8]);
-	chacha.process_in_place(&mut packet_data);
+	let mut chacha = ChaCha20::new(Key::new(prng_seed), Nonce::new([0; 12]), 0);
+	chacha.apply_keystream(&mut packet_data);
 
 	construct_onion_packet_with_init_noise::<_, _>(payloads, onion_keys, packet_data, None)
 }
@@ -821,12 +821,9 @@ fn construct_onion_packet_with_init_noise<HD: Writeable, P: Packet>(
 
 		let mut pos = 0;
 		for (i, (payload, keys)) in payloads.iter().zip(onion_keys.iter()).enumerate() {
-			let mut chacha = ChaCha20::new(&keys.rho, &[0u8; 8]);
-			// TODO: Batch this.
-			for _ in 0..(packet_data.len() - pos) {
-				let mut dummy = [0; 1];
-				chacha.process_in_place(&mut dummy); // We don't have a seek function :(
-			}
+			// Seek to the position in the keystream where we want to start encrypting
+			let seek_pos = (packet_data.len() - pos) as u32;
+			let mut chacha = ChaCha20::new(Key::new(keys.rho), Nonce::new([0; 12]), seek_pos);
 
 			let mut payload_len = LengthCalculatingWriter(0);
 			payload.write(&mut payload_len).expect("Failed to calculate length");
@@ -840,7 +837,7 @@ fn construct_onion_packet_with_init_noise<HD: Writeable, P: Packet>(
 			}
 
 			res.resize(pos, 0u8);
-			chacha.process_in_place(&mut res);
+			chacha.apply_keystream(&mut res);
 		}
 		res
 	};
@@ -855,8 +852,8 @@ fn construct_onion_packet_with_init_noise<HD: Writeable, P: Packet>(
 		packet_data[0..payload_len.0].copy_from_slice(&payload.encode()[..]);
 		packet_data[payload_len.0..(payload_len.0 + 32)].copy_from_slice(&hmac_res);
 
-		let mut chacha = ChaCha20::new(&keys.rho, &[0u8; 8]);
-		chacha.process_in_place(packet_data);
+		let mut chacha = ChaCha20::new(Key::new(keys.rho), Nonce::new([0; 12]), 0);
+		chacha.apply_keystream(packet_data);
 
 		if i == 0 {
 			let stop_index = packet_data.len();
@@ -878,8 +875,8 @@ fn construct_onion_packet_with_init_noise<HD: Writeable, P: Packet>(
 /// Encrypts/decrypts a failure packet.
 fn crypt_failure_packet(shared_secret: &[u8], packet: &mut OnionErrorPacket) {
 	let ammag = gen_ammag_from_shared_secret(&shared_secret);
-	let mut chacha = ChaCha20::new(&ammag, &[0u8; 8]);
-	chacha.process_in_place(&mut packet.data);
+	let mut chacha = ChaCha20::new(Key::new(ammag), Nonce::new([0; 12]), 0);
+	chacha.apply_keystream(&mut packet.data);
 
 	if let Some(ref mut attribution_data) = packet.attribution_data {
 		attribution_data.crypt(shared_secret);
@@ -2700,7 +2697,7 @@ fn decode_next_hop<T, R: ReadableArgs<T>, N: NextPacketBytes>(
 		});
 	}
 
-	let mut chacha = ChaCha20::new(&rho, &[0u8; 8]);
+	let mut chacha = ChaCha20::new(Key::new(rho), Nonce::new([0; 12]), 0);
 	let mut chacha_stream = ChaChaReader { chacha: &mut chacha, read: Cursor::new(&hop_data[..]) };
 	match R::read(&mut chacha_stream, read_args) {
 		Err(err) => {
@@ -2765,7 +2762,7 @@ fn decode_next_hop<T, R: ReadableArgs<T>, N: NextPacketBytes>(
 				}
 				// Once we've emptied the set of bytes our peer gave us, encrypt 0 bytes until we
 				// fill the onion hop data we'll forward to our next-hop peer.
-				chacha_stream.chacha.process_in_place(&mut new_packet_bytes.as_mut()[read_pos..]);
+				chacha_stream.chacha.apply_keystream(&mut new_packet_bytes.as_mut()[read_pos..]);
 				return Ok((msg, Some((hmac, new_packet_bytes)))); // This packet needs forwarding
 			}
 		},
@@ -2807,9 +2804,9 @@ impl AttributionData {
 	/// Encrypts or decrypts the attribution data using the provided shared secret.
 	pub(crate) fn crypt(&mut self, shared_secret: &[u8]) {
 		let ammagext = gen_ammagext_from_shared_secret(&shared_secret);
-		let mut chacha = ChaCha20::new(&ammagext, &[0u8; 8]);
-		chacha.process_in_place(&mut self.hold_times);
-		chacha.process_in_place(&mut self.hmacs);
+		let mut chacha = ChaCha20::new(Key::new(ammagext), Nonce::new([0; 12]), 0);
+		chacha.apply_keystream(&mut self.hold_times);
+		chacha.apply_keystream(&mut self.hmacs);
 	}
 
 	/// Adds the current node's HMACs for all possible positions to this packet.
