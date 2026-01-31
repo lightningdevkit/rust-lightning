@@ -25,8 +25,8 @@ use bitcoin::secp256k1;
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::secp256k1::{PublicKey, SecretKey};
+use chacha20_poly1305::{ChaCha20Poly1305, Key, Nonce};
 
-use crate::crypto::chacha20poly1305rfc::ChaCha20Poly1305RFC;
 use crate::crypto::utils::hkdf_extract_expand_twice;
 use crate::util::ser::VecWriter;
 
@@ -150,10 +150,10 @@ impl PeerChannelEncryptor {
 	fn encrypt_with_ad(res: &mut [u8], n: u64, key: &[u8; 32], h: &[u8], plaintext: &[u8]) {
 		let mut nonce = [0; 12];
 		nonce[4..].copy_from_slice(&n.to_le_bytes()[..]);
+		res[0..plaintext.len()].copy_from_slice(plaintext);
 
-		let mut chacha = ChaCha20Poly1305RFC::new(key, &nonce, h);
-		let mut tag = [0; 16];
-		chacha.encrypt(plaintext, &mut res[0..plaintext.len()], &mut tag);
+		let chacha = ChaCha20Poly1305::new(Key::new(*key), Nonce::new(nonce));
+		let tag = chacha.encrypt(&mut res[0..plaintext.len()], Some(h));
 		res[plaintext.len()..].copy_from_slice(&tag);
 	}
 
@@ -166,9 +166,8 @@ impl PeerChannelEncryptor {
 		let mut nonce = [0; 12];
 		nonce[4..].copy_from_slice(&n.to_le_bytes()[..]);
 
-		let mut chacha = ChaCha20Poly1305RFC::new(key, &nonce, h);
-		let mut tag = [0; 16];
-		chacha.encrypt_full_message_in_place(&mut res[offset..], &mut tag);
+		let chacha = ChaCha20Poly1305::new(Key::new(*key), Nonce::new(nonce));
+		let tag = chacha.encrypt(&mut res[offset..], Some(h));
 		res.extend_from_slice(&tag);
 	}
 
@@ -178,9 +177,11 @@ impl PeerChannelEncryptor {
 		let mut nonce = [0; 12];
 		nonce[4..].copy_from_slice(&n.to_le_bytes()[..]);
 
-		let mut chacha = ChaCha20Poly1305RFC::new(key, &nonce, h);
+		let chacha = ChaCha20Poly1305::new(Key::new(*key), Nonce::new(nonce));
 		let (inout, tag) = inout.split_at_mut(inout.len() - 16);
-		if chacha.check_decrypt_in_place(inout, tag).is_err() {
+		let mut decrypt_tag = [0; 16];
+		decrypt_tag.copy_from_slice(tag);
+		if chacha.decrypt(inout, decrypt_tag, Some(h)).is_err() {
 			return Err(LightningError {
 				err: "Bad MAC".to_owned(),
 				action: msgs::ErrorAction::DisconnectPeer { msg: None },
@@ -197,9 +198,13 @@ impl PeerChannelEncryptor {
 		nonce[4..].copy_from_slice(&n.to_le_bytes()[..]);
 
 		let (data, hmac) = cyphertext.split_at(cyphertext.len() - 16);
+		let mut tag = [0; 16];
+		tag.copy_from_slice(hmac);
+		res.copy_from_slice(data);
+
 		let mac_check =
-			ChaCha20Poly1305RFC::new(key, &nonce, h).variable_time_decrypt(&data, res, hmac);
-		mac_check.map_err(|()| LightningError {
+			ChaCha20Poly1305::new(Key::new(*key), Nonce::new(nonce)).decrypt(res, tag, Some(h));
+		mac_check.map_err(|_| LightningError {
 			err: "Bad MAC".to_owned(),
 			action: msgs::ErrorAction::DisconnectPeer { msg: None },
 		})

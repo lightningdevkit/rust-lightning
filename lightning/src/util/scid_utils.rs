@@ -73,12 +73,12 @@ pub fn scid_from_parts(
 /// 3) payments intended to be intercepted will route using a fake scid (this is typically used so
 ///    the forwarding node can open a JIT channel to the next hop)
 pub(crate) mod fake_scid {
-	use crate::crypto::chacha20::ChaCha20;
 	use crate::prelude::*;
 	use crate::sign::EntropySource;
 	use crate::util::scid_utils;
 	use bitcoin::constants::ChainHash;
 	use bitcoin::Network;
+	use chacha20_poly1305::chacha20::{ChaCha20, Key, Nonce};
 
 	const TEST_SEGWIT_ACTIVATION_HEIGHT: u32 = 1;
 	const MAINNET_SEGWIT_ACTIVATION_HEIGHT: u32 = 481_824;
@@ -150,15 +150,15 @@ pub(crate) mod fake_scid {
 		fn get_encrypted_vout(
 			&self, block_height: u32, tx_index: u32, fake_scid_rand_bytes: &[u8; 32],
 		) -> u8 {
-			let mut salt = [0 as u8; 8];
+			let mut salt = [0 as u8; 12];
 			let block_height_bytes = block_height.to_be_bytes();
 			salt[0..4].copy_from_slice(&block_height_bytes);
 			let tx_index_bytes = tx_index.to_be_bytes();
 			salt[4..8].copy_from_slice(&tx_index_bytes);
 
-			let mut chacha = ChaCha20::new(fake_scid_rand_bytes, &salt);
+			let mut chacha = ChaCha20::new(Key::new(*fake_scid_rand_bytes), Nonce::new(salt), 0);
 			let mut vout_byte = [*self as u8];
-			chacha.process_in_place(&mut vout_byte);
+			chacha.apply_keystream(&mut vout_byte);
 			vout_byte[0] & NAMESPACE_ID_BITMASK
 		}
 	}
@@ -242,7 +242,7 @@ pub(crate) mod fake_scid {
 			let namespace = Namespace::Phantom;
 			let fake_scid_rand_bytes = [0; 32];
 			let testnet_genesis = ChainHash::using_genesis_block(Network::Testnet);
-			let valid_encrypted_vout = namespace.get_encrypted_vout(0, 0, &fake_scid_rand_bytes);
+			let valid_encrypted_vout = namespace.get_encrypted_vout(1, 0, &fake_scid_rand_bytes);
 			let valid_fake_scid =
 				scid_utils::scid_from_parts(1, 0, valid_encrypted_vout as u64).unwrap();
 			assert!(is_valid_phantom(&fake_scid_rand_bytes, valid_fake_scid, &testnet_genesis));
@@ -255,7 +255,7 @@ pub(crate) mod fake_scid {
 			let namespace = Namespace::Intercept;
 			let fake_scid_rand_bytes = [0; 32];
 			let testnet_genesis = ChainHash::using_genesis_block(Network::Testnet);
-			let valid_encrypted_vout = namespace.get_encrypted_vout(0, 0, &fake_scid_rand_bytes);
+			let valid_encrypted_vout = namespace.get_encrypted_vout(1, 0, &fake_scid_rand_bytes);
 			let valid_fake_scid =
 				scid_utils::scid_from_parts(1, 0, valid_encrypted_vout as u64).unwrap();
 			assert!(is_valid_intercept(&fake_scid_rand_bytes, valid_fake_scid, &testnet_genesis));

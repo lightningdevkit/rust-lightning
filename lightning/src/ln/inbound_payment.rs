@@ -13,12 +13,12 @@ use bitcoin::hashes::cmp::fixed_time_eq;
 use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::{Hash, HashEngine};
+use chacha20_poly1305::chacha20::{ChaCha20, Key, Nonce};
 
-use crate::crypto::chacha20::ChaCha20;
 use crate::crypto::utils::hkdf_extract_expand_6x;
 use crate::ln::msgs;
 use crate::ln::msgs::MAX_VALUE_MSAT;
-use crate::offers::nonce::Nonce;
+use crate::offers::nonce::Nonce as LocalNonce;
 use crate::sign::EntropySource;
 use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::util::errors::APIError;
@@ -90,8 +90,13 @@ impl ExpandedKey {
 
 	/// Encrypts or decrypts the given `bytes`. Used for data included in an offer message's
 	/// metadata (e.g., payment id).
-	pub(crate) fn crypt_for_offer(&self, mut bytes: [u8; 32], nonce: Nonce) -> [u8; 32] {
-		ChaCha20::encrypt_single_block_in_place(&self.offers_encryption_key, &nonce.0, &mut bytes);
+	pub(crate) fn crypt_for_offer(&self, mut bytes: [u8; 32], nonce: LocalNonce) -> [u8; 32] {
+		ChaCha20::new_from_block(
+			Key::new(self.offers_encryption_key),
+			Nonce::new(nonce.0[4..].try_into().unwrap()),
+			u32::from_le_bytes(nonce.0[..4].try_into().unwrap()),
+		)
+		.apply_keystream(&mut bytes);
 		bytes
 	}
 }
@@ -295,12 +300,14 @@ fn construct_payment_secret(
 	let (iv_slice, encrypted_metadata_slice) = payment_secret_bytes.split_at_mut(IV_LEN);
 	iv_slice.copy_from_slice(iv_bytes);
 
-	ChaCha20::encrypt_single_block(
-		metadata_key,
-		iv_bytes,
-		encrypted_metadata_slice,
-		metadata_bytes,
-	);
+	encrypted_metadata_slice.copy_from_slice(metadata_bytes);
+	ChaCha20::new_from_block(
+		Key::new(*metadata_key),
+		Nonce::new(iv_bytes[4..].try_into().unwrap()),
+		u32::from_le_bytes(iv_bytes[..4].try_into().unwrap()),
+	)
+	.apply_keystream(encrypted_metadata_slice);
+
 	PaymentSecret(payment_secret_bytes)
 }
 
@@ -479,12 +486,13 @@ fn decrypt_metadata(
 	iv_bytes.copy_from_slice(iv_slice);
 
 	let mut metadata_bytes: [u8; METADATA_LEN] = [0; METADATA_LEN];
-	ChaCha20::encrypt_single_block(
-		&keys.metadata_key,
-		&iv_bytes,
-		&mut metadata_bytes,
-		encrypted_metadata_bytes,
-	);
+	metadata_bytes.copy_from_slice(encrypted_metadata_bytes);
+	ChaCha20::new_from_block(
+		Key::new(keys.metadata_key),
+		Nonce::new(iv_bytes[4..].try_into().unwrap()),
+		u32::from_le_bytes(iv_bytes[..4].try_into().unwrap()),
+	)
+	.apply_keystream(&mut metadata_bytes);
 
 	(iv_bytes, metadata_bytes)
 }
