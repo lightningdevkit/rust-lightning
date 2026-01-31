@@ -32,7 +32,7 @@ use crate::ln::msgs;
 use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, MessageSendEvent};
 use crate::ln::onion_utils::{self, LocalHTLCFailureReason};
 use crate::ln::outbound_payment::{
-	ProbeSendFailure, Retry, RetryableSendFailure, IDEMPOTENCY_TIMEOUT_TICKS,
+	ProbeSendFailure, RecipientCustomTlvs, Retry, RetryableSendFailure, IDEMPOTENCY_TIMEOUT_TICKS,
 };
 use crate::ln::types::ChannelId;
 use crate::routing::gossip::{EffectiveCapacity, RoutingFees};
@@ -4539,7 +4539,7 @@ fn test_retry_custom_tlvs() {
 
 	let custom_tlvs = vec![((1 << 16) + 1, vec![0x42u8; 16])];
 	let onion = RecipientOnionFields::secret_only(payment_secret);
-	let onion = onion.with_custom_tlvs(custom_tlvs.clone()).unwrap();
+	let onion = onion.with_custom_tlvs(RecipientCustomTlvs::new(custom_tlvs.clone()).unwrap());
 
 	nodes[0].router.expect_find_route(route_params.clone(), Ok(route.clone()));
 	nodes[0].node.send_payment(hash, onion, id, route_params.clone(), Retry::Attempts(1)).unwrap();
@@ -5079,8 +5079,7 @@ fn peel_payment_onion_custom_tlvs() {
 	let route_params = RouteParameters::from_payment_params_and_value(payment_params, amt_msat);
 	let route = functional_test_utils::get_route(&nodes[0], &route_params).unwrap();
 	let mut recipient_onion = RecipientOnionFields::spontaneous_empty()
-		.with_custom_tlvs(vec![(414141, vec![42; 1200])])
-		.unwrap();
+		.with_custom_tlvs(RecipientCustomTlvs::new(vec![(414141, vec![42; 1200])]).unwrap());
 	let prng_seed = chanmon_cfgs[0].keys_manager.get_secure_random_bytes();
 	let session_priv = SecretKey::from_slice(&prng_seed[..]).expect("RNG is busted");
 	let keysend_preimage = PaymentPreimage([42; 32]);
@@ -5404,11 +5403,10 @@ fn max_out_mpp_path() {
 		..Default::default()
 	};
 	let invoice = nodes[2].node.create_bolt11_invoice(invoice_params).unwrap();
-	let route_params_cfg = crate::routing::router::RouteParametersConfig::default();
+	let optional_params = crate::ln::channelmanager::OptionalBolt11PaymentParams::default();
 
 	let id = PaymentId([42; 32]);
-	let retry = Retry::Attempts(0);
-	nodes[0].node.pay_for_bolt11_invoice(&invoice, id, None, route_params_cfg, retry).unwrap();
+	nodes[0].node.pay_for_bolt11_invoice(&invoice, id, None, optional_params).unwrap();
 
 	assert!(nodes[0].node.list_recent_payments().len() == 1);
 	check_added_monitors(&nodes[0], 2); // one monitor update per MPP part

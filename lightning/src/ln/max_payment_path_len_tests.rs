@@ -23,7 +23,9 @@ use crate::ln::msgs;
 use crate::ln::msgs::{BaseMessageHandler, OnionMessageHandler};
 use crate::ln::onion_utils;
 use crate::ln::onion_utils::MIN_FINAL_VALUE_ESTIMATE_WITH_OVERPAY;
-use crate::ln::outbound_payment::{RecipientOnionFields, Retry, RetryableSendFailure};
+use crate::ln::outbound_payment::{
+	RecipientCustomTlvs, RecipientOnionFields, Retry, RetryableSendFailure,
+};
 use crate::prelude::*;
 use crate::routing::router::{
 	PaymentParameters, RouteParameters, DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA,
@@ -259,9 +261,9 @@ fn one_hop_blinded_path_with_custom_tlv() {
 		- final_payload_len_without_custom_tlv;
 
 	// Check that we can send the maximum custom TLV with 1 blinded hop.
-	let max_sized_onion = RecipientOnionFields::spontaneous_empty()
-		.with_custom_tlvs(vec![(CUSTOM_TLV_TYPE, vec![42; max_custom_tlv_len])])
-		.unwrap();
+	let max_sized_onion = RecipientOnionFields::spontaneous_empty().with_custom_tlvs(
+		RecipientCustomTlvs::new(vec![(CUSTOM_TLV_TYPE, vec![42; max_custom_tlv_len])]).unwrap(),
+	);
 	let id = PaymentId(payment_hash.0);
 	let no_retry = Retry::Attempts(0);
 	nodes[1]
@@ -385,9 +387,9 @@ fn blinded_path_with_custom_tlv() {
 		- reserved_packet_bytes_without_custom_tlv;
 
 	// Check that we can send the maximum custom TLV size with 0 intermediate unblinded hops.
-	let max_sized_onion = RecipientOnionFields::spontaneous_empty()
-		.with_custom_tlvs(vec![(CUSTOM_TLV_TYPE, vec![42; max_custom_tlv_len])])
-		.unwrap();
+	let max_sized_onion = RecipientOnionFields::spontaneous_empty().with_custom_tlvs(
+		RecipientCustomTlvs::new(vec![(CUSTOM_TLV_TYPE, vec![42; max_custom_tlv_len])]).unwrap(),
+	);
 	let no_retry = Retry::Attempts(0);
 	let id = PaymentId(payment_hash.0);
 	nodes[1]

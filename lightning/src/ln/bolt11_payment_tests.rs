@@ -10,11 +10,10 @@
 //! Tests for verifying the correct end-to-end handling of BOLT11 payments, including metadata propagation.
 
 use crate::events::Event;
-use crate::ln::channelmanager::{PaymentId, Retry};
+use crate::ln::channelmanager::{OptionalBolt11PaymentParams, PaymentId};
 use crate::ln::functional_test_utils::*;
 use crate::ln::msgs::ChannelMessageHandler;
 use crate::ln::outbound_payment::Bolt11PaymentError;
-use crate::routing::router::RouteParametersConfig;
 use crate::sign::{NodeSigner, Recipient};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash;
@@ -55,8 +54,7 @@ fn payment_metadata_end_to_end_for_invoice_with_amount() {
 		&invoice,
 		PaymentId(payment_hash.0),
 		Some(100),
-		RouteParametersConfig::default(),
-		Retry::Attempts(0),
+		OptionalBolt11PaymentParams::default(),
 	) {
 		Err(Bolt11PaymentError::InvalidAmount) => (),
 		_ => panic!("Unexpected result"),
@@ -68,8 +66,7 @@ fn payment_metadata_end_to_end_for_invoice_with_amount() {
 			&invoice,
 			PaymentId(payment_hash.0),
 			None,
-			RouteParametersConfig::default(),
-			Retry::Attempts(0),
+			OptionalBolt11PaymentParams::default(),
 		)
 		.unwrap();
 
@@ -123,8 +120,7 @@ fn payment_metadata_end_to_end_for_invoice_with_no_amount() {
 		&invoice,
 		PaymentId(payment_hash.0),
 		None,
-		RouteParametersConfig::default(),
-		Retry::Attempts(0),
+		OptionalBolt11PaymentParams::default(),
 	) {
 		Err(Bolt11PaymentError::InvalidAmount) => (),
 		_ => panic!("Unexpected result"),
@@ -136,8 +132,7 @@ fn payment_metadata_end_to_end_for_invoice_with_no_amount() {
 			&invoice,
 			PaymentId(payment_hash.0),
 			Some(50_000),
-			RouteParametersConfig::default(),
-			Retry::Attempts(0),
+			OptionalBolt11PaymentParams::default(),
 		)
 		.unwrap();
 

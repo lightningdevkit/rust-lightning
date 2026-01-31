@@ -22,7 +22,7 @@ use crate::ln::msgs::{
 };
 use crate::ln::onion_payment;
 use crate::ln::onion_utils::{self, LocalHTLCFailureReason};
-use crate::ln::outbound_payment::{Retry, IDEMPOTENCY_TIMEOUT_TICKS};
+use crate::ln::outbound_payment::{RecipientCustomTlvs, Retry, IDEMPOTENCY_TIMEOUT_TICKS};
 use crate::ln::types::ChannelId;
 use crate::offers::invoice::UnsignedBolt12Invoice;
 use crate::prelude::*;
@@ -1431,8 +1431,7 @@ fn custom_tlvs_to_blinded_path() {
 	);
 
 	let recipient_onion_fields = RecipientOnionFields::spontaneous_empty()
-		.with_custom_tlvs(vec![((1 << 16) + 1, vec![42, 42])])
-		.unwrap();
+		.with_custom_tlvs(RecipientCustomTlvs::new(vec![((1 << 16) + 1, vec![42, 42])]).unwrap());
 	nodes[0].node.send_payment(payment_hash, recipient_onion_fields.clone(),
 		PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
 	check_added_monitors(&nodes[0], 1);
