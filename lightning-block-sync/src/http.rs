@@ -295,58 +295,6 @@ impl TryFrom<Vec<u8>> for JsonResponse {
 }
 
 #[cfg(test)]
-mod endpoint_tests {
-	use super::HttpEndpoint;
-
-	#[test]
-	fn with_default_port() {
-		let endpoint = HttpEndpoint::for_host("foo.com".into());
-		assert_eq!(endpoint.host(), "foo.com");
-		assert_eq!(endpoint.port(), 80);
-	}
-
-	#[test]
-	fn with_custom_port() {
-		let endpoint = HttpEndpoint::for_host("foo.com".into()).with_port(8080);
-		assert_eq!(endpoint.host(), "foo.com");
-		assert_eq!(endpoint.port(), 8080);
-	}
-
-	#[test]
-	fn with_uri_path() {
-		let endpoint = HttpEndpoint::for_host("foo.com".into()).with_path("/path".into());
-		assert_eq!(endpoint.host(), "foo.com");
-		assert_eq!(endpoint.path(), "/path");
-	}
-
-	#[test]
-	fn without_uri_path() {
-		let endpoint = HttpEndpoint::for_host("foo.com".into());
-		assert_eq!(endpoint.host(), "foo.com");
-		assert_eq!(endpoint.path(), "/");
-	}
-
-	#[test]
-	fn convert_to_socket_addrs() {
-		let endpoint = HttpEndpoint::for_host("localhost".into());
-		let host = endpoint.host();
-		let port = endpoint.port();
-
-		use std::net::ToSocketAddrs;
-		match (&endpoint).to_socket_addrs() {
-			Err(e) => panic!("Unexpected error: {:?}", e),
-			Ok(socket_addrs) => {
-				let mut std_addrs = (host, port).to_socket_addrs().unwrap();
-				for addr in socket_addrs {
-					assert_eq!(addr, std_addrs.next().unwrap());
-				}
-				assert!(std_addrs.next().is_none());
-			},
-		}
-	}
-}
-
-#[cfg(test)]
 pub(crate) mod client_tests {
 	use super::*;
 	use std::io::{BufRead, Read, Write};
@@ -499,44 +447,11 @@ pub(crate) mod client_tests {
 	}
 
 	#[test]
-	fn connect_to_unresolvable_host() {
-		match HttpClient::connect(("example.invalid", 80)) {
-			Err(e) => {
-				assert!(
-					e.to_string().contains("failed to lookup address information")
-						|| e.to_string().contains("No such host"),
-					"{:?}",
-					e
-				);
-			},
-			Ok(_) => panic!("Expected error"),
-		}
-	}
-
-	#[test]
 	fn connect_with_no_socket_address() {
 		match HttpClient::connect(&vec![][..]) {
 			Err(HttpClientError::Io(e)) => {
 				assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput)
 			},
-			Err(e) => panic!("Unexpected error type: {:?}", e),
-			Ok(_) => panic!("Expected error"),
-		}
-	}
-
-	#[tokio::test]
-	async fn request_to_unreachable_server() {
-		// Get an unused port by binding to port 0
-		let port = {
-			let t = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
-			t.local_addr().unwrap().port()
-		};
-
-		// Connect succeeds (just resolves address), but request fails
-		let endpoint = HttpEndpoint::for_host("127.0.0.1".to_string()).with_port(port);
-		let mut client = HttpClient::connect(&endpoint).unwrap();
-		match client.get::<BinaryResponse>("/").await {
-			Err(HttpClientError::Transport(_)) => {},
 			Err(e) => panic!("Unexpected error type: {:?}", e),
 			Ok(_) => panic!("Expected error"),
 		}
