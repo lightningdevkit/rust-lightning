@@ -18,9 +18,15 @@ fn get_test_tuples() -> Vec<(String, SignedRawBolt11Invoice, bool, bool)> {
 			InvoiceBuilder::new(Currency::Bitcoin)
 				.duration_since_epoch(Duration::from_secs(1496314658))
 				.payment_secret(PaymentSecret([0x11; 32]))
-				.payment_hash(sha256::Hash::from_str(
-						"0001020304050607080900010203040506070809000102030405060708090102"
-				).unwrap())
+				.payment_hash(lightning_invoice::PaymentHash(
+					<[u8; 32]>::try_from(
+						Vec::from_hex(
+							"0001020304050607080900010203040506070809000102030405060708090102",
+						)
+						.unwrap(),
+					)
+					.unwrap(),
+				))
 				.description("Please consider supporting this project".to_owned())
 				.build_raw()
 				.unwrap()
@@ -39,9 +45,15 @@ fn get_test_tuples() -> Vec<(String, SignedRawBolt11Invoice, bool, bool)> {
 				.amount_milli_satoshis(250_000_000)
 				.duration_since_epoch(Duration::from_secs(1496314658))
 				.payment_secret(PaymentSecret([0x11; 32]))
-				.payment_hash(sha256::Hash::from_str(
-					"0001020304050607080900010203040506070809000102030405060708090102"
-				).unwrap())
+				.payment_hash(lightning_invoice::PaymentHash(
+				<[u8; 32]>::try_from(
+					Vec::from_hex(
+						"0001020304050607080900010203040506070809000102030405060708090102",
+					)
+					.unwrap(),
+				)
+				.unwrap(),
+			))
 				.description("1 cup coffee".to_owned())
 				.expiry_time(Duration::from_secs(60))
 				.build_raw()
@@ -61,9 +73,15 @@ fn get_test_tuples() -> Vec<(String, SignedRawBolt11Invoice, bool, bool)> {
 				.amount_milli_satoshis(250_000_000)
 				.duration_since_epoch(Duration::from_secs(1496314658))
 				.payment_secret(PaymentSecret([0x11; 32]))
-				.payment_hash(sha256::Hash::from_str(
-					"0001020304050607080900010203040506070809000102030405060708090102"
-				).unwrap())
+				.payment_hash(lightning_invoice::PaymentHash(
+				<[u8; 32]>::try_from(
+					Vec::from_hex(
+						"0001020304050607080900010203040506070809000102030405060708090102",
+					)
+					.unwrap(),
+				)
+				.unwrap(),
+			))
 				.description("ナンセンス 1杯".to_owned())
 				.expiry_time(Duration::from_secs(60))
 				.build_raw()
@@ -84,9 +102,15 @@ fn get_test_tuples() -> Vec<(String, SignedRawBolt11Invoice, bool, bool)> {
 				.duration_since_epoch(Duration::from_secs(1496314658))
 				.description_hash(sha256::Hash::hash(b"One piece of chocolate cake, one icecream cone, one pickle, one slice of swiss cheese, one slice of salami, one lollypop, one piece of cherry pie, one sausage, one cupcake, and one slice of watermelon"))
 				.payment_secret(PaymentSecret([0x11; 32]))
-				.payment_hash(sha256::Hash::from_str(
-					"0001020304050607080900010203040506070809000102030405060708090102"
-				).unwrap())
+				.payment_hash(lightning_invoice::PaymentHash(
+				<[u8; 32]>::try_from(
+					Vec::from_hex(
+						"0001020304050607080900010203040506070809000102030405060708090102",
+					)
+					.unwrap(),
+				)
+				.unwrap(),
+			))
 				.build_raw()
 				.unwrap()
 				.sign(|_| {
@@ -105,9 +129,15 @@ fn get_test_tuples() -> Vec<(String, SignedRawBolt11Invoice, bool, bool)> {
 				.duration_since_epoch(Duration::from_secs(1496314658))
 				.description_hash(sha256::Hash::hash(b"One piece of chocolate cake, one icecream cone, one pickle, one slice of swiss cheese, one slice of salami, one lollypop, one piece of cherry pie, one sausage, one cupcake, and one slice of watermelon"))
 				.payment_secret(PaymentSecret([0x11; 32]))
-				.payment_hash(sha256::Hash::from_str(
-					"0001020304050607080900010203040506070809000102030405060708090102"
-				).unwrap())
+				.payment_hash(lightning_invoice::PaymentHash(
+				<[u8; 32]>::try_from(
+					Vec::from_hex(
+						"0001020304050607080900010203040506070809000102030405060708090102",
+					)
+					.unwrap(),
+				)
+				.unwrap(),
+			))
 				.fallback(Fallback::PubKeyHash(PubkeyHash::from_slice(&[49, 114, 181, 101, 79, 102, 131, 200, 251, 20, 105, 89, 211, 71, 206, 48, 60, 174, 76, 167]).unwrap()))
 				.build_raw()
 				.unwrap()
@@ -127,9 +157,15 @@ fn get_test_tuples() -> Vec<(String, SignedRawBolt11Invoice, bool, bool)> {
 				.duration_since_epoch(Duration::from_secs(1496314658))
 				.description_hash(sha256::Hash::hash(b"One piece of chocolate cake, one icecream cone, one pickle, one slice of swiss cheese, one slice of salami, one lollypop, one piece of cherry pie, one sausage, one cupcake, and one slice of watermelon"))
 				.payment_secret(PaymentSecret([0x11; 32]))
-				.payment_hash(sha256::Hash::from_str(
-					"0001020304050607080900010203040506070809000102030405060708090102"
-				).unwrap())
+				.payment_hash(lightning_invoice::PaymentHash(
+				<[u8; 32]>::try_from(
+					Vec::from_hex(
+						"0001020304050607080900010203040506070809000102030405060708090102",
+					)
+					.unwrap(),
+				)
+				.unwrap(),
+			))
 				.fallback(Fallback::PubKeyHash(PubkeyHash::from_slice(&[4, 182, 31, 125, 193, 234, 13, 201, 148, 36, 70, 76, 196, 6, 77, 197, 100, 217, 30, 137]).unwrap()))
 				.private_route(RouteHint(vec![RouteHintHop {
 					src_node_id: PublicKey::from_slice(&<Vec<u8>>::from_hex(
@@ -166,9 +202,15 @@ fn get_test_tuples() -> Vec<(String, SignedRawBolt11Invoice, bool, bool)> {
 				.duration_since_epoch(Duration::from_secs(1496314658))
 				.description_hash(sha256::Hash::hash(b"One piece of chocolate cake, one icecream cone, one pickle, one slice of swiss cheese, one slice of salami, one lollypop, one piece of cherry pie, one sausage, one cupcake, and one slice of watermelon"))
 				.payment_secret(PaymentSecret([0x11; 32]))
-				.payment_hash(sha256::Hash::from_str(
-					"0001020304050607080900010203040506070809000102030405060708090102"
-				).unwrap())
+				.payment_hash(lightning_invoice::PaymentHash(
+				<[u8; 32]>::try_from(
+					Vec::from_hex(
+						"0001020304050607080900010203040506070809000102030405060708090102",
+					)
+					.unwrap(),
+				)
+				.unwrap(),
+			))
 				.fallback(Fallback::ScriptHash(ScriptHash::from_slice(&[143, 85, 86, 59, 154, 25, 243, 33, 194, 17, 233, 185, 243, 140, 223, 104, 110, 160, 120, 69]).unwrap()))
 				.build_raw()
 				.unwrap()
@@ -188,9 +230,15 @@ fn get_test_tuples() -> Vec<(String, SignedRawBolt11Invoice, bool, bool)> {
 				.duration_since_epoch(Duration::from_secs(1496314658))
 				.description_hash(sha256::Hash::hash(b"One piece of chocolate cake, one icecream cone, one pickle, one slice of swiss cheese, one slice of salami, one lollypop, one piece of cherry pie, one sausage, one cupcake, and one slice of watermelon"))
 				.payment_secret(PaymentSecret([0x11; 32]))
-				.payment_hash(sha256::Hash::from_str(
-					"0001020304050607080900010203040506070809000102030405060708090102"
-				).unwrap())
+				.payment_hash(lightning_invoice::PaymentHash(
+				<[u8; 32]>::try_from(
+					Vec::from_hex(
+						"0001020304050607080900010203040506070809000102030405060708090102",
+					)
+					.unwrap(),
+				)
+				.unwrap(),
+			))
 				.fallback(Fallback::SegWitProgram { version: WitnessVersion::V0,
 					program: vec![117, 30, 118, 232, 25, 145, 150, 212, 84, 148, 28, 69, 209, 179, 163, 35, 241, 67, 59, 214]
 				})
@@ -212,9 +260,15 @@ fn get_test_tuples() -> Vec<(String, SignedRawBolt11Invoice, bool, bool)> {
 				.duration_since_epoch(Duration::from_secs(1496314658))
 				.description_hash(sha256::Hash::hash(b"One piece of chocolate cake, one icecream cone, one pickle, one slice of swiss cheese, one slice of salami, one lollypop, one piece of cherry pie, one sausage, one cupcake, and one slice of watermelon"))
 				.payment_secret(PaymentSecret([0x11; 32]))
-				.payment_hash(sha256::Hash::from_str(
-					"0001020304050607080900010203040506070809000102030405060708090102"
-				).unwrap())
+				.payment_hash(lightning_invoice::PaymentHash(
+				<[u8; 32]>::try_from(
+					Vec::from_hex(
+						"0001020304050607080900010203040506070809000102030405060708090102",
+					)
+					.unwrap(),
+				)
+				.unwrap(),
+			))
 				.fallback(Fallback::SegWitProgram { version: WitnessVersion::V0,
 					program: vec![24, 99, 20, 60, 20, 197, 22, 104, 4, 189, 25, 32, 51, 86, 218, 19, 108, 152, 86, 120, 205, 77, 39, 161, 184, 198, 50, 150, 4, 144, 50, 98]
 				})
@@ -235,9 +289,15 @@ fn get_test_tuples() -> Vec<(String, SignedRawBolt11Invoice, bool, bool)> {
 				.amount_milli_satoshis(967878534)
 				.duration_since_epoch(Duration::from_secs(1572468703))
 				.payment_secret(PaymentSecret([0x11; 32]))
-				.payment_hash(sha256::Hash::from_str(
-					"462264ede7e14047e9b249da94fefc47f41f7d02ee9b091815a5506bc8abf75f"
-				).unwrap())
+				.payment_hash(lightning_invoice::PaymentHash(
+					<[u8; 32]>::try_from(
+						Vec::from_hex(
+							"462264ede7e14047e9b249da94fefc47f41f7d02ee9b091815a5506bc8abf75f",
+						)
+						.unwrap(),
+					)
+					.unwrap(),
+				))
 				.expiry_time(Duration::from_secs(604800))
 				.min_final_cltv_expiry_delta(10)
 				.description("Blockstream Store: 88.85 USD for Blockstream Ledger Nano S x 1, \"Back In My Day\" Sticker x 2, \"I Got Lightning Working\" Sticker x 2 and 1 more items".to_owned())
@@ -267,9 +327,15 @@ fn get_test_tuples() -> Vec<(String, SignedRawBolt11Invoice, bool, bool)> {
 				.amount_milli_satoshis(2_500_000_000)
 				.duration_since_epoch(Duration::from_secs(1496314658))
 				.payment_secret(PaymentSecret([0x11; 32]))
-				.payment_hash(sha256::Hash::from_str(
-					"0001020304050607080900010203040506070809000102030405060708090102"
-				).unwrap())
+				.payment_hash(lightning_invoice::PaymentHash(
+				<[u8; 32]>::try_from(
+					Vec::from_hex(
+						"0001020304050607080900010203040506070809000102030405060708090102",
+					)
+					.unwrap(),
+				)
+				.unwrap(),
+			))
 				.description("coffee beans".to_owned())
 				.build_raw()
 				.unwrap()
@@ -288,9 +354,15 @@ fn get_test_tuples() -> Vec<(String, SignedRawBolt11Invoice, bool, bool)> {
 				.amount_milli_satoshis(2_500_000_000)
 				.duration_since_epoch(Duration::from_secs(1496314658))
 				.payment_secret(PaymentSecret([0x11; 32]))
-				.payment_hash(sha256::Hash::from_str(
-					"0001020304050607080900010203040506070809000102030405060708090102"
-				).unwrap())
+				.payment_hash(lightning_invoice::PaymentHash(
+				<[u8; 32]>::try_from(
+					Vec::from_hex(
+						"0001020304050607080900010203040506070809000102030405060708090102",
+					)
+					.unwrap(),
+				)
+				.unwrap(),
+			))
 				.description("coffee beans".to_owned())
 				.build_raw()
 				.unwrap()
@@ -309,9 +381,15 @@ fn get_test_tuples() -> Vec<(String, SignedRawBolt11Invoice, bool, bool)> {
 				.amount_milli_satoshis(2_500_000_000)
 				.duration_since_epoch(Duration::from_secs(1496314658))
 				.payment_secret(PaymentSecret([0x11; 32]))
-				.payment_hash(sha256::Hash::from_str(
-					"0001020304050607080900010203040506070809000102030405060708090102"
-				).unwrap())
+				.payment_hash(lightning_invoice::PaymentHash(
+				<[u8; 32]>::try_from(
+					Vec::from_hex(
+						"0001020304050607080900010203040506070809000102030405060708090102",
+					)
+					.unwrap(),
+				)
+				.unwrap(),
+			))
 				.description("coffee beans".to_owned())
 				.build_raw()
 				.unwrap()
@@ -329,9 +407,15 @@ fn get_test_tuples() -> Vec<(String, SignedRawBolt11Invoice, bool, bool)> {
 			InvoiceBuilder::new(Currency::Bitcoin)
 				.amount_milli_satoshis(1_000_000_000)
 				.duration_since_epoch(Duration::from_secs(1496314658))
-				.payment_hash(sha256::Hash::from_str(
-					"0001020304050607080900010203040506070809000102030405060708090102"
-				).unwrap())
+				.payment_hash(lightning_invoice::PaymentHash(
+				<[u8; 32]>::try_from(
+					Vec::from_hex(
+						"0001020304050607080900010203040506070809000102030405060708090102",
+					)
+					.unwrap(),
+				)
+				.unwrap(),
+			))
 				.description("payment metadata inside".to_owned())
 				.payment_metadata(<Vec<u8>>::from_hex("01fafaf0").unwrap())
 				.require_payment_metadata()
@@ -355,9 +439,15 @@ fn get_test_tuples() -> Vec<(String, SignedRawBolt11Invoice, bool, bool)> {
 			InvoiceBuilder::new(Currency::Bitcoin)
 				.amount_milli_satoshis(1_000_000_000)
 				.duration_since_epoch(Duration::from_secs(1496314658))
-				.payment_hash(sha256::Hash::from_str(
-					"0001020304050607080900010203040506070809000102030405060708090102"
-				).unwrap())
+				.payment_hash(lightning_invoice::PaymentHash(
+				<[u8; 32]>::try_from(
+					Vec::from_hex(
+						"0001020304050607080900010203040506070809000102030405060708090102",
+					)
+					.unwrap(),
+				)
+				.unwrap(),
+			))
 				.description("payment metadata inside".to_owned())
 				.payment_metadata(<Vec<u8>>::from_hex("01fafaf0").unwrap())
 				.require_payment_metadata()
@@ -378,9 +468,15 @@ fn get_test_tuples() -> Vec<(String, SignedRawBolt11Invoice, bool, bool)> {
 			InvoiceBuilder::new(Currency::Bitcoin)
 				.duration_since_epoch(Duration::from_secs(1496314658))
 				.payment_secret(PaymentSecret([0x11; 32]))
-				.payment_hash(sha256::Hash::from_str(
-					"0001020304050607080900010203040506070809000102030405060708090102"
-				).unwrap())
+				.payment_hash(lightning_invoice::PaymentHash(
+				<[u8; 32]>::try_from(
+					Vec::from_hex(
+						"0001020304050607080900010203040506070809000102030405060708090102",
+					)
+					.unwrap(),
+				)
+				.unwrap(),
+			))
 				.description("Please consider supporting this project".to_owned())
 				.build_raw()
 				.unwrap()

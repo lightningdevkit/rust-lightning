@@ -7,9 +7,9 @@ use bech32::{ByteIterExt, Fe32, Fe32IterExt};
 
 use super::{
 	constants, Bolt11Invoice, Bolt11InvoiceFeatures, Bolt11InvoiceSignature, Currency, Description,
-	ExpiryTime, Fallback, MinFinalCltvExpiryDelta, PayeePubKey, PaymentSecret, PositiveTimestamp,
-	PrivateRoute, RawDataPart, RawHrp, RawTaggedField, RouteHintHop, Sha256, SiPrefix,
-	SignedRawBolt11Invoice, TaggedField,
+	ExpiryTime, Fallback, MinFinalCltvExpiryDelta, PayeePubKey, PaymentHash, PaymentSecret,
+	PositiveTimestamp, PrivateRoute, RawDataPart, RawHrp, RawTaggedField, RouteHintHop, Sha256,
+	SiPrefix, SignedRawBolt11Invoice, TaggedField,
 };
 
 macro_rules! define_iterator_enum {
@@ -90,6 +90,18 @@ impl Base32Iterable for PaymentSecret {
 }
 
 impl Base32Len for PaymentSecret {
+	fn base32_len(&self) -> usize {
+		52
+	}
+}
+
+impl Base32Iterable for PaymentHash {
+	fn fe_iter<'s>(&'s self) -> impl Iterator<Item = Fe32> + 's {
+		self.0[..].fe_iter()
+	}
+}
+
+impl Base32Len for PaymentHash {
 	fn base32_len(&self) -> usize {
 		52
 	}

@@ -13241,7 +13241,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let mut invoice = invoice
 			.duration_since_epoch(duration_since_epoch)
 			.payee_pub_key(self.get_our_node_id())
-			.payment_hash(Hash::from_slice(&payment_hash.0).unwrap())
+			.payment_hash(payment_hash)
 			.payment_secret(payment_secret)
 			.basic_mpp()
 			.min_final_cltv_expiry_delta(
@@ -16015,8 +16015,9 @@ impl<
 					Err(()) => return None,
 				};
 
+				let payment_hash = invoice.payment_hash();
 				let logger = WithContext::for_payment(
-					&self.logger, None, None, Some(invoice.payment_hash()), payment_id,
+					&self.logger, None, None, Some(payment_hash), payment_id,
 				);
 
 				if self.config.read().unwrap().manually_handle_bolt12_invoices {
