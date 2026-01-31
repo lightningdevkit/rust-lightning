@@ -3053,10 +3053,14 @@ pub fn expect_payment_sent<CM: AChannelManager, H: NodeHolder<CM = CM>>(
 			assert_eq!(expected_payment_preimage, *payment_preimage);
 			assert_eq!(expected_payment_hash, *payment_hash);
 			assert!(amount_msat.is_some());
-			if let Some(expected_fee_msat) = expected_fee_msat_opt {
-				assert_eq!(*fee_paid_msat, expected_fee_msat);
-			} else {
-				assert!(fee_paid_msat.is_some());
+			// For per-path claims the overall fee may be reported via subsequent
+			// `PaymentPathSuccessful` events rather than on the initial `PaymentSent`.
+			if !expect_per_path_claims {
+				if let Some(expected_fee_msat) = expected_fee_msat_opt {
+					assert_eq!(*fee_paid_msat, expected_fee_msat);
+				} else {
+					assert!(fee_paid_msat.is_some());
+				}
 			}
 			invoice = bolt12_invoice.clone();
 			payment_id.unwrap()
@@ -3074,6 +3078,20 @@ pub fn expect_payment_sent<CM: AChannelManager, H: NodeHolder<CM = CM>>(
 				},
 				_ => panic!("Unexpected event"),
 			}
+		}
+	}
+
+	// If we expected per-path claims and a specific fee, verify the total fee by
+	// summing the `fee_msat` of each successful path event
+	if expect_per_path_claims {
+		if let Some(Some(expected_fee_msat)) = expected_fee_msat_opt {
+			let mut total_fee_msat: u64 = 0;
+			for ev in &path_events {
+				if let Event::PaymentPathSuccessful { ref path, .. } = ev {
+					total_fee_msat = total_fee_msat.saturating_add(path.fee_msat());
+				}
+			}
+			assert_eq!(total_fee_msat, expected_fee_msat);
 		}
 	}
 	(invoice, path_events)

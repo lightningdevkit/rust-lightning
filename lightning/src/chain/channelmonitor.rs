@@ -54,7 +54,7 @@ use crate::ln::channel_keys::{
 	DelayedPaymentBasepoint, DelayedPaymentKey, HtlcBasepoint, HtlcKey, RevocationBasepoint,
 	RevocationKey,
 };
-use crate::ln::channelmanager::{HTLCSource, PaymentClaimDetails, SentHTLCId};
+use crate::ln::channelmanager::{HTLCSource, PaymentClaimDetails, PaymentId, SentHTLCId};
 use crate::ln::msgs::DecodeError;
 use crate::ln::types::ChannelId;
 use crate::sign::{
@@ -925,6 +925,9 @@ pub enum Balance {
 		claimable_height: u32,
 		/// The payment hash whose preimage our counterparty needs to claim this HTLC.
 		payment_hash: PaymentHash,
+		/// The payment ID for outbound HTLCs, enabling grouping of MPPs.
+		/// `None` for forwarded HTLCs or if the channel monitor was created before this feature.
+		payment_id: Option<PaymentId>,
 		/// Whether this HTLC represents a payment which was sent outbound from us. Otherwise it
 		/// represents an HTLC which was forwarded (and should, thus, have a corresponding inbound
 		/// edge on another channel).
@@ -2792,15 +2795,16 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					source: BalanceSource::Htlc,
 				});
 			} else {
-				let outbound_payment = match source {
+				let (outbound_payment, payment_id) = match source {
 					None => panic!("Outbound HTLCs should have a source"),
-					Some(&HTLCSource::PreviousHopData(_)) => false,
-					Some(&HTLCSource::OutboundRoute { .. }) => true,
+					Some(&HTLCSource::PreviousHopData(_)) => (false, None),
+					Some(&HTLCSource::OutboundRoute { payment_id, .. }) => (true, Some(payment_id)),
 				};
 				return Some(Balance::MaybeTimeoutClaimableHTLC {
 					amount_satoshis: htlc.amount_msat / 1000,
 					claimable_height: htlc.cltv_expiry,
 					payment_hash: htlc.payment_hash,
+					payment_id,
 					outbound_payment,
 				});
 			}
@@ -3004,10 +3008,10 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 					htlc.amount_msat
 				} else { htlc.amount_msat % 1000 };
 				if htlc.offered {
-					let outbound_payment = match source {
+					let (outbound_payment, payment_id) = match source {
 						None => panic!("Outbound HTLCs should have a source"),
-						Some(HTLCSource::PreviousHopData(_)) => false,
-						Some(HTLCSource::OutboundRoute { .. }) => true,
+						Some(HTLCSource::PreviousHopData(_)) => (false, None),
+						Some(HTLCSource::OutboundRoute { payment_id, .. }) => (true, Some(*payment_id)),
 					};
 					if outbound_payment {
 						outbound_payment_htlc_rounded_msat += rounded_value_msat;
@@ -3019,6 +3023,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 							amount_satoshis: htlc.amount_msat / 1000,
 							claimable_height: htlc.cltv_expiry,
 							payment_hash: htlc.payment_hash,
+							payment_id,
 							outbound_payment,
 						});
 					}

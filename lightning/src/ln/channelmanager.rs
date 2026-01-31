@@ -578,7 +578,7 @@ impl Ord for ClaimableHTLC {
 /// a payment and ensure idempotency in LDK.
 ///
 /// This is not exported to bindings users as we just use [u8; 32] directly
-#[derive(Hash, Copy, Clone, PartialEq, Eq)]
+#[derive(Hash, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PaymentId(pub [u8; Self::LENGTH]);
 
 impl PaymentId {
@@ -1844,7 +1844,7 @@ pub trait AChannelManager {
 	/// A type implementing [`MessageRouter`].
 	type MessageRouter: MessageRouter;
 	/// A type implementing [`Logger`].
-	type Logger: Logger;
+	type Logger: Logger + Deref;
 	/// Returns a reference to the actual [`ChannelManager`] object.
 	fn get_cm(
 		&self,
@@ -1870,7 +1870,7 @@ impl<
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
-		L: Logger,
+		L: Logger + Deref,
 	> AChannelManager for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 {
 	type Watch = M;
@@ -2637,7 +2637,7 @@ pub struct ChannelManager<
 	F: FeeEstimator,
 	R: Router,
 	MR: MessageRouter,
-	L: Logger,
+	L: Logger + Deref,
 > {
 	config: RwLock<UserConfig>,
 	chain_hash: ChainHash,
@@ -3082,6 +3082,45 @@ const MAX_PEER_STORAGE_SIZE: usize = 1024;
 /// many peers we reject new (inbound) connections.
 const MAX_NO_CHANNEL_PEERS: usize = 250;
 
+/// A detailed breakdown of the balance across all channels.
+///
+/// Includes spendable balance, pending HTLCs and funds awaiting confirmation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BalanceDetails {
+	/// Total balance available to spend immediately on new outbound payments (msats)
+	///
+	/// Excludes funds reserved for pending outbound payments waiting to retry and
+	/// unconfirmed balances from channel closes.
+	pub spendable_msat: u64,
+
+	/// The total balance claimable from open channels (msats)
+	///
+	/// This is what would be received if all channels closed cooperatively right now.
+	/// Outbound HTLCs are in separate outputs and already excluded from this amount.
+	pub claimable_on_channel_close_msat: u64,
+
+	/// The total amount currently locked in outbound HTLCs (msats)
+	///
+	/// These funds are in flight for outgoing payments and cannot be used until the
+	/// HTLCs either complete or time out. Already excluded from `claimable_on_channel_close_msat`.
+	pub pending_outbound_htlc_msat: u64,
+
+	/// The total amount reserved for pending outbound payments that are waiting to retry (msats)
+	///
+	/// Calculated as `total_msat` minus `inflight_msat` for retryable payments.
+	/// These funds remain in the balance but are allocated to retry attempts,
+	/// so they reduce `spendable_msat`.
+	pub pending_outbound_waiting_retry_msat: u64,
+
+	/// The total amount in pending inbound HTLCs (msats)
+	///
+	/// Incoming payments that have not been fully confirmed yet.
+	pub pending_inbound_htlc_msat: u64,
+
+	/// Funds from closed channels awaiting confirmation (msats)
+	pub awaiting_confirmations_msat: u64,
+}
+
 /// Used by [`ChannelManager::list_recent_payments`] to express the status of recent payments.
 /// These include payments that have yet to find a successful path, or have unresolved HTLCs.
 #[derive(Debug, PartialEq)]
@@ -3106,6 +3145,23 @@ pub enum RecentPaymentDetails {
 		/// Total amount (in msat, excluding fees) across all paths for this payment,
 		/// not just the amount currently inflight.
 		total_msat: u64,
+		/// Amount (in msat) currently locked in HTLCs that are in-flight.
+		///
+		/// When calculating spendable balance, wallet implementations should reserve both
+		/// `inflight_msat` (funds currently locked in HTLCs) and the difference
+		/// `total_msat - inflight_msat` (funds allocated but waiting to be retried) to
+		/// prevent balance flicker as payments are retried.
+		inflight_msat: u64,
+		/// Whether this payment is still eligible for automatic retries.
+		///
+		/// When `false`, LDK has given up retrying this payment, but HTLCs may still be in-flight.
+		///  In this case:
+		/// - `inflight_msat` still reflects locked funds in pending HTLCs
+		/// - `total_msat - inflight_msat` will be zero i.e., no funds waiting to retry
+		/// - The payment transitions to [`RecentPaymentDetails::Abandoned`] once all HTLCs resolve
+		///
+		/// Wallets can use this to distinguish active payments from stuck or abandoned ones
+		is_retryable: bool,
 	},
 	/// When a pending payment is fulfilled, we continue tracking it until all pending HTLCs have
 	/// been resolved. Upon receiving [`Event::PaymentSent`], we delay for a few minutes before the
@@ -3136,8 +3192,57 @@ pub enum RecentPaymentDetails {
 	},
 }
 
-/// Route hints used in constructing invoices for [phantom node payents].
-///
+// Helper function for calculating pending payment amounts.
+pub(crate) fn collect_pending_payment_state<L: Deref>(
+	balances: &[Balance], recent_payments: &[RecentPaymentDetails], logger: &L,
+) -> HashMap<PaymentId, (u64, bool)>
+where
+	L::Target: Logger,
+{
+	let mut inflight_map = HashMap::default();
+	let mut retryable_map = HashMap::default();
+
+	// Collect all pending payments from ChannelManager
+	for payment in recent_payments {
+		if let RecentPaymentDetails::Pending { payment_id, inflight_msat, is_retryable, .. } =
+			payment
+		{
+			inflight_map.insert(*payment_id, *inflight_msat);
+			retryable_map.insert(*payment_id, *is_retryable);
+		}
+	}
+
+	// Collect payment IDs that are already tracked
+	let tracked_payment_ids: HashSet<PaymentId> = inflight_map.keys().copied().collect();
+
+	// Add any orphaned HTLCs from ChannelMonitor that aren't in pending payments
+	for balance in balances {
+		match balance {
+			Balance::MaybeTimeoutClaimableHTLC {
+				amount_satoshis,
+				payment_id: Some(payment_id),
+				..
+			} => {
+				if !tracked_payment_ids.contains(payment_id) {
+					let amount_msat = amount_satoshis * 1000;
+					log_debug!(logger, "Found HTLC on-chain for payment {:?} ({}msat) that is not tracked in pending payments", payment_id, amount_msat);
+					*inflight_map.entry(*payment_id).or_insert(0) += amount_msat;
+					retryable_map.entry(*payment_id).or_insert(false);
+				}
+			},
+			_ => {},
+		}
+	}
+
+	let mut result = HashMap::default();
+	for (payment_id, inflight_msat) in inflight_map {
+		let is_retryable = retryable_map.get(&payment_id).copied().unwrap_or(false);
+		result.insert(payment_id, (inflight_msat, is_retryable));
+	}
+
+	result
+}
+
 /// [phantom node payments]: crate::sign::PhantomKeysManager
 #[derive(Clone)]
 pub struct PhantomRouteHints {
@@ -3417,7 +3522,7 @@ impl<
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
-		L: Logger,
+		L: Logger + std::ops::Deref,
 	> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 {
 	/// Constructs a new `ChannelManager` to hold several channels and route between them.
@@ -3815,11 +3920,14 @@ impl<
 				PendingOutboundPayment::StaticInvoiceReceived { .. } => {
 					Some(RecentPaymentDetails::AwaitingInvoice { payment_id: *payment_id })
 				},
-				PendingOutboundPayment::Retryable { payment_hash, total_msat, .. } => {
+				PendingOutboundPayment::Retryable { payment_hash, total_msat, pending_amt_msat, .. } => {
+					let is_retryable = pending_outbound_payment.is_retryable_now();
 					Some(RecentPaymentDetails::Pending {
 						payment_id: *payment_id,
 						payment_hash: *payment_hash,
 						total_msat: *total_msat,
+						inflight_msat: *pending_amt_msat,
+						is_retryable,
 					})
 				},
 				PendingOutboundPayment::Abandoned { payment_hash, .. } => {
@@ -3831,6 +3939,119 @@ impl<
 				PendingOutboundPayment::Legacy { .. } => None
 			})
 			.collect()
+	}
+
+	/// Returns the total spendable balance across all channels, in msats.
+	///
+	/// This is the amount available for new outbound payments, excluding funds locked in
+	/// pending HTLCs and unconfirmed balances.
+	///
+	/// Takes `balances` from [`ChainMonitor::get_claimable_balances`] for atomicity.
+	///
+	/// [`ChainMonitor::get_claimable_balances`]: crate::chain::chainmonitor::ChainMonitor::get_claimable_balances
+	pub fn get_spendable_balance_msat(&self, balances: &[Balance]) -> u64 {
+		let breakdown = self.get_balance_details(balances);
+		breakdown.spendable_msat
+	}
+
+	/// Returns a detailed breakdown of balance across all channels.
+	///
+	/// Includes spendable balance, pending HTLCs and funds awaiting confirmation.
+	///
+	/// Takes `balances` from [`ChainMonitor::get_claimable_balances`] for atomicity.
+	///
+	/// [`ChainMonitor::get_claimable_balances`]: crate::chain::chainmonitor::ChainMonitor::get_claimable_balances
+	pub fn get_balance_details(&self, balances: &[Balance]) -> BalanceDetails {
+		use crate::chain::channelmonitor::Balance;
+
+		let recent_payments = self.list_recent_payments();
+
+		let mut claimable_on_channel_close_msat: u64 = 0;
+		let mut pending_inbound_htlc_msat: u64 = 0;
+		let mut awaiting_confirmations_msat: u64 = 0;
+
+		for balance in balances {
+			match balance {
+				Balance::ClaimableOnChannelClose {
+					balance_candidates,
+					confirmed_balance_candidate_index,
+					..
+				} => {
+					let amount_satoshis = if *confirmed_balance_candidate_index != 0 {
+						balance_candidates[*confirmed_balance_candidate_index].amount_satoshis
+					} else {
+						balance_candidates.last().map(|b| b.amount_satoshis).unwrap_or(0)
+					};
+					claimable_on_channel_close_msat += amount_satoshis * 1000;
+				},
+				Balance::ClaimableAwaitingConfirmations { amount_satoshis, .. } => {
+					awaiting_confirmations_msat += amount_satoshis * 1000;
+				},
+				Balance::ContentiousClaimable { amount_satoshis, .. } => {
+					// These are inbound HTLCs we can claim
+					pending_inbound_htlc_msat += amount_satoshis * 1000;
+				},
+				Balance::MaybeTimeoutClaimableHTLC {
+					amount_satoshis, outbound_payment, ..
+				} => {
+					if !outbound_payment {
+						pending_inbound_htlc_msat += amount_satoshis * 1000;
+					}
+				},
+				Balance::MaybePreimageClaimableHTLC { amount_satoshis, .. } => {
+					pending_inbound_htlc_msat += amount_satoshis * 1000;
+				},
+				Balance::CounterpartyRevokedOutputClaimable { amount_satoshis, .. } => {
+					awaiting_confirmations_msat += amount_satoshis * 1000;
+				},
+			}
+		}
+
+		// Calculate pending outbound amounts from ChannelMonitor balances, catching orphaned HTLCs.
+		let payment_state =
+			collect_pending_payment_state(&balances, &recent_payments, &&self.logger);
+
+		let mut pending_outbound_htlc_msat: u64 = 0;
+		let mut pending_outbound_waiting_retry_msat: u64 = 0;
+
+		for (payment_id, (inflight_msat, is_retryable)) in payment_state.iter() {
+			pending_outbound_htlc_msat += inflight_msat;
+
+			if *is_retryable {
+				// Find the total amount from ChannelManager for this payment
+				let total_msat = recent_payments
+					.iter()
+					.find_map(|p| {
+						if let RecentPaymentDetails::Pending {
+							payment_id: pid, total_msat, ..
+						} = p
+						{
+							if pid == payment_id {
+								return Some(*total_msat);
+							}
+						}
+						None
+					})
+					.unwrap_or(*inflight_msat);
+
+				// Amount waiting to be retried
+				let waiting = total_msat.saturating_sub(*inflight_msat);
+				pending_outbound_waiting_retry_msat += waiting;
+			}
+		}
+
+		// Outbound HTLCs already excluded from claimable balance, only subtract funds waiting retry.
+		let spendable_msat =
+			claimable_on_channel_close_msat.saturating_sub(pending_outbound_waiting_retry_msat);
+
+		BalanceDetails {
+			spendable_msat,
+			claimable_on_channel_close_msat,
+			pending_outbound_htlc_msat,
+			pending_outbound_waiting_retry_msat,
+			pending_inbound_htlc_msat,
+			awaiting_confirmations_msat,
+		}
 	}
 
 	fn close_channel_internal(
@@ -13726,7 +13947,7 @@ impl<
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
-		L: Logger,
+		L: Logger + Deref,
 	> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 {
 	#[cfg(not(c_bindings))]
@@ -14633,7 +14854,7 @@ impl<
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
-		L: Logger,
+		L: Logger + Deref,
 	> BaseMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 {
 	fn provided_node_features(&self) -> NodeFeatures {
@@ -14994,7 +15215,7 @@ impl<
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
-		L: Logger,
+		L: Logger + Deref,
 	> EventsProvider for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 {
 	/// Processes events that must be periodically handled.
@@ -15019,7 +15240,7 @@ impl<
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
-		L: Logger,
+		L: Logger + Deref,
 	> chain::Listen for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 {
 	fn filtered_block_connected(&self, header: &Header, txdata: &TransactionData, height: u32) {
@@ -15070,7 +15291,7 @@ impl<
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
-		L: Logger,
+		L: Logger + Deref,
 	> chain::Confirm for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 {
 	#[rustfmt::skip]
@@ -15233,7 +15454,7 @@ impl<
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
-		L: Logger,
+		L: Logger + Deref,
 	> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 {
 	/// Calls a function which handles an on-chain event (blocks dis/connected, transactions
@@ -15585,7 +15806,7 @@ impl<
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
-		L: Logger,
+		L: Logger + Deref,
 	> ChannelMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 {
 	fn handle_open_channel(&self, counterparty_node_id: PublicKey, message: &msgs::OpenChannel) {
@@ -16150,7 +16371,7 @@ impl<
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
-		L: Logger,
+		L: Logger + Deref,
 	> OffersMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 {
 	#[rustfmt::skip]
@@ -16358,7 +16579,7 @@ impl<
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
-		L: Logger,
+		L: Logger + Deref,
 	> AsyncPaymentsMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 {
 	fn handle_offer_paths_request(
@@ -16593,7 +16814,7 @@ impl<
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
-		L: Logger,
+		L: Logger + Deref,
 	> DNSResolverMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 {
 	fn handle_dnssec_query(
@@ -16651,7 +16872,7 @@ impl<
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
-		L: Logger,
+		L: Logger + Deref,
 	> NodeIdLookUp for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 {
 	fn next_node_id(&self, short_channel_id: u64) -> Option<PublicKey> {
@@ -17168,7 +17389,7 @@ impl<
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
-		L: Logger,
+		L: Logger + Deref,
 	> Writeable for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 {
 	#[rustfmt::skip]
@@ -17513,7 +17734,7 @@ struct ChannelManagerDataReadArgs<
 	ES: EntropySource,
 	NS: NodeSigner,
 	SP: SignerProvider,
-	L: Logger,
+	L: Logger + Deref,
 > {
 	entropy_source: &'a ES,
 	node_signer: &'a NS,
@@ -17522,7 +17743,7 @@ struct ChannelManagerDataReadArgs<
 	logger: &'a L,
 }
 
-impl<'a, ES: EntropySource, NS: NodeSigner, SP: SignerProvider, L: Logger>
+impl<'a, ES: EntropySource, NS: NodeSigner, SP: SignerProvider, L: Logger + Deref>
 	ReadableArgs<ChannelManagerDataReadArgs<'a, ES, NS, SP, L>> for ChannelManagerData<SP>
 {
 	fn read<R: io::Read>(
@@ -17904,7 +18125,7 @@ pub struct ChannelManagerReadArgs<
 	F: FeeEstimator,
 	R: Router,
 	MR: MessageRouter,
-	L: Logger + Clone,
+	L: Logger + Deref + Clone,
 > {
 	/// A cryptographically secure source of entropy.
 	pub entropy_source: ES,
@@ -17982,7 +18203,7 @@ impl<
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
-		L: Logger + Clone,
+		L: Logger + Deref + Clone,
 	> ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>
 {
 	/// Simple utility function to create a ChannelManagerReadArgs which creates the monitor
@@ -18059,7 +18280,7 @@ impl<
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
-		L: Logger + Clone,
+		L: Logger + Deref + Clone,
 	> ReadableArgs<ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>>
 	for (BlockHash, Arc<ChannelManager<M, T, ES, NS, SP, F, R, MR, L>>)
 {
@@ -18082,7 +18303,7 @@ impl<
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
-		L: Logger + Clone,
+		L: Logger + Deref + Clone,
 	> ReadableArgs<ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>>
 	for (BlockHash, ChannelManager<M, T, ES, NS, SP, F, R, MR, L>)
 {
@@ -18115,7 +18336,7 @@ impl<
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
-		L: Logger + Clone,
+		L: Logger + Deref + Clone,
 	> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 {
 	/// Constructs a `ChannelManager` from deserialized data and runtime dependencies.
@@ -19861,6 +20082,174 @@ mod tests {
 	use bitcoin::secp256k1::ecdh::SharedSecret;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 	use core::sync::atomic::Ordering;
+
+	#[test]
+	fn test_collect_pending_payment_state() {
+		use crate::chain::channelmonitor::Balance;
+		use crate::ln::channelmanager::{collect_pending_payment_state, RecentPaymentDetails};
+		use crate::util::test_utils;
+
+		let logger = test_utils::TestLogger::new();
+
+		// Test empty case
+		let result = collect_pending_payment_state(&[], &[], &&logger);
+		assert!(result.is_empty());
+
+		// Create test data
+		let payment_id_1 = PaymentId([1; 32]);
+		let payment_id_2 = PaymentId([2; 32]);
+		let payment_id_3 = PaymentId([3; 32]);
+		let payment_hash = PaymentHash([0; 32]);
+
+		// Case 1: Payment tracked in ChannelManager with 5000 msat inflight
+		{
+			let pending_payment = RecentPaymentDetails::Pending {
+				payment_id: payment_id_1,
+				payment_hash,
+				total_msat: 10_000,
+				inflight_msat: 5_000,
+				is_retryable: true,
+			};
+
+			// Balance showing HTLC for the same payment (should be ignored - use ChannelManager's view)
+			let balance_for_tracked_payment = Balance::MaybeTimeoutClaimableHTLC {
+				amount_satoshis: 10, // 10_000 msat
+				claimable_height: 100,
+				payment_hash,
+				payment_id: Some(payment_id_1),
+				outbound_payment: true,
+			};
+
+			let result = collect_pending_payment_state(
+				&[balance_for_tracked_payment],
+				&[pending_payment],
+				&&logger,
+			);
+
+			// Should use ChannelManager's inflight_msat, not the balance
+			let (inflight_msat, is_retryable) = result.get(&payment_id_1).unwrap();
+			assert_eq!(*inflight_msat, 5_000);
+			assert!(*is_retryable);
+			assert_eq!(result.len(), 1);
+		}
+
+		// Case 2: Orphaned HTLC in Balance without corresponding pending payment
+		// (e.g., after crash/restart)
+		{
+			let orphaned_balance = Balance::MaybeTimeoutClaimableHTLC {
+				amount_satoshis: 20, // 20_000 msat
+				claimable_height: 100,
+				payment_hash,
+				payment_id: Some(payment_id_2),
+				outbound_payment: true,
+			};
+
+			let result = collect_pending_payment_state(&[orphaned_balance], &[], &&logger);
+
+			// Should include the orphaned HTLC
+			let (inflight_msat, is_retryable) = result.get(&payment_id_2).unwrap();
+			assert_eq!(*inflight_msat, 20_000);
+			assert!(!*is_retryable); // Orphaned HTLCs are not retryable
+			assert_eq!(result.len(), 1);
+		}
+
+		// Case 3: Multiple HTLCs for orphaned payment should be summed
+		{
+			let orphaned_balance_1 = Balance::MaybeTimeoutClaimableHTLC {
+				amount_satoshis: 10,
+				claimable_height: 100,
+				payment_hash,
+				payment_id: Some(payment_id_3),
+				outbound_payment: true,
+			};
+			let orphaned_balance_2 = Balance::MaybeTimeoutClaimableHTLC {
+				amount_satoshis: 15,
+				claimable_height: 100,
+				payment_hash,
+				payment_id: Some(payment_id_3),
+				outbound_payment: true,
+			};
+
+			let result = collect_pending_payment_state(
+				&[orphaned_balance_1, orphaned_balance_2],
+				&[],
+				&&logger,
+			);
+
+			// Should sum both orphaned HTLCs
+			let (inflight_msat, is_retryable) = result.get(&payment_id_3).unwrap();
+			assert_eq!(*inflight_msat, 25_000);
+			assert!(!*is_retryable); // Orphaned HTLCs are not retryable
+			assert_eq!(result.len(), 1);
+		}
+
+		// Case 4: Mix of tracked and orphaned payments
+		{
+			let pending_payment = RecentPaymentDetails::Pending {
+				payment_id: payment_id_1,
+				payment_hash,
+				total_msat: 10_000,
+				inflight_msat: 5_000,
+				is_retryable: true,
+			};
+
+			let balance_for_tracked_payment = Balance::MaybeTimeoutClaimableHTLC {
+				amount_satoshis: 10,
+				claimable_height: 100,
+				payment_hash,
+				payment_id: Some(payment_id_1),
+				outbound_payment: true,
+			};
+
+			let orphaned_balance = Balance::MaybeTimeoutClaimableHTLC {
+				amount_satoshis: 20,
+				claimable_height: 100,
+				payment_hash,
+				payment_id: Some(payment_id_2),
+				outbound_payment: true,
+			};
+
+			let result = collect_pending_payment_state(
+				&[balance_for_tracked_payment, orphaned_balance],
+				&[pending_payment],
+				&&logger,
+			);
+
+			// Should have both: payment_id_1 from ChannelManager, payment_id_2 from Balance
+			let (inflight_msat_1, is_retryable_1) = result.get(&payment_id_1).unwrap();
+			assert_eq!(*inflight_msat_1, 5_000); // From ChannelManager
+			assert!(*is_retryable_1);
+			let (inflight_msat_2, is_retryable_2) = result.get(&payment_id_2).unwrap();
+			assert_eq!(*inflight_msat_2, 20_000); // Orphaned
+			assert!(!*is_retryable_2);
+			assert_eq!(result.len(), 2);
+		}
+
+		// Case 5: Balance without payment_id should be ignored
+		{
+			let balance_no_payment_id = Balance::MaybeTimeoutClaimableHTLC {
+				amount_satoshis: 30,
+				claimable_height: 100,
+				payment_hash,
+				payment_id: None,
+				outbound_payment: true,
+			};
+
+			let result = collect_pending_payment_state(&[balance_no_payment_id], &[], &&logger);
+			assert!(result.is_empty());
+		}
+
+		// Case 6: Non-pending payment should be ignored
+		{
+			let fulfilled_payment = RecentPaymentDetails::Fulfilled {
+				payment_id: payment_id_1,
+				payment_hash: Some(payment_hash),
+			};
+
+			let result = collect_pending_payment_state(&[], &[fulfilled_payment], &&logger);
+			assert!(result.is_empty());
+		}
+	}
 
 	#[test]
 	#[rustfmt::skip]
