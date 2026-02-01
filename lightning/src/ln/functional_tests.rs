@@ -7205,7 +7205,7 @@ pub fn test_simple_mpp() {
 	let chan_4_id = create_announced_chan_between_nodes(&nodes, 2, 3).0.contents.short_channel_id;
 
 	let (mut route, payment_hash, payment_preimage, payment_secret) =
-		get_route_and_payment_hash!(&nodes[0], nodes[3], 100000);
+		get_route_and_payment_hash!(&nodes[0], nodes[3], 100_000);
 	let path = route.paths[0].clone();
 	route.paths.push(path);
 	route.paths[0].hops[0].pubkey = node_b_id;
@@ -7214,6 +7214,7 @@ pub fn test_simple_mpp() {
 	route.paths[1].hops[0].pubkey = node_c_id;
 	route.paths[1].hops[0].short_channel_id = chan_2_id;
 	route.paths[1].hops[1].short_channel_id = chan_4_id;
+	route.route_params.as_mut().unwrap().final_value_msat = 200_000;
 	let paths: &[&[_]] = &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]];
 	send_along_route_with_secret(&nodes[0], route, paths, 200_000, payment_hash, payment_secret);
 	claim_payment_along_route(ClaimAlongRouteArgs::new(&nodes[0], paths, payment_preimage));
