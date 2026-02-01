@@ -138,7 +138,7 @@ fn process_fields(group: Group) -> proc_macro::TokenStream {
 			if let TokenTree::Group(group) = ty_info {
 				let first_group_tok = group.stream().into_iter().next().unwrap();
 				if let TokenTree::Ident(ident) = first_group_tok {
-					if ident.to_string() == "legacy" {
+					if ident.to_string() == "legacy" || ident.to_string() == "custom" {
 						continue;
 					}
 				}
@@ -155,13 +155,13 @@ fn process_fields(group: Group) -> proc_macro::TokenStream {
 	computed_fields
 }
 
-/// Scans a match statement for legacy fields which should be skipped.
+/// Scans a match statement for legacy or custom fields which should be skipped.
 ///
 /// This is used internally in LDK's TLV serialization logic and is not expected to be used by
 /// other crates.
 ///
 /// Wraps a `match self {..}` statement and scans the fields in the match patterns (in the form
-/// `ref $field_name: $field_ty`) for types marked `legacy`, skipping those fields.
+/// `ref $field_name: $field_ty`) for types marked `legacy` or `custom`, skipping those fields.
 ///
 /// Specifically, it expects input like the following, simply dropping `field3` and the
 /// `: $field_ty` after each field name.
