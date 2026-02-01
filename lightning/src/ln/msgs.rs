@@ -3753,7 +3753,7 @@ impl<'a> Writeable for OutboundOnionPayload<'a> {
 				ref invoice_request,
 				ref custom_tlvs,
 			} => {
-				// We need to update [`ln::outbound_payment::RecipientOnionFields::with_custom_tlvs`]
+				// We need to update [`ln::outbound_payments::RecipientCustomTlvs::new`]
 				// to reject any reserved types in the experimental range if new ones are ever
 				// standardized.
 				let invoice_request_tlv = invoice_request.map(|invreq| (77_777, invreq.encode())); // TODO: update TLV type once the async payments spec is merged
