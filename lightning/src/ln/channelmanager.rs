@@ -5350,7 +5350,7 @@ impl<
 	/// using [`ChannelMonitorUpdateStatus::InProgress`]), the payment may be lost on restart. See
 	/// [`ChannelManager::list_recent_payments`] for more information.
 	///
-	/// Routes are automatically found using the [`Router] provided on startup. To fix a route for a
+	/// Routes are automatically found using the [`Router`] provided on startup. To fix a route for a
 	/// particular payment, use [`Self::send_payment_with_route`] or match the [`PaymentId`] passed to
 	/// [`Router::find_route_with_id`].
 	///
