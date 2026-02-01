@@ -894,6 +894,80 @@ impl OutboundPayments {
 	}
 }
 
+/// Validate that a [`Route`] picked by our [`Router`] is sane for the [`RouteParameters`] used to
+/// request it. Failure here indicates a critical bug in the [`Router`].
+fn validate_found_route<L: Logger>(
+	route: &mut Route, route_params: &RouteParameters, logger: &WithContext<L>,
+) -> Result<(), ()> {
+	if route.route_params.as_ref() != Some(route_params) {
+		debug_assert!(
+			false,
+			"Routers are expected to return a Route which includes the requested RouteParameters. Got {:?}, expected {route_params:?}",
+			route.route_params
+		);
+		log_error!(
+			logger,
+			"Routers are expected to return a Route which includes the requested RouteParameters. Got {:?}, expected {route_params:?}",
+			route.route_params
+		);
+		route.route_params = Some(route_params.clone());
+	}
+
+	// Check that the path returned actually pays less than the max fee we set.
+	if let Some(max_total_fee) = route_params.max_total_routing_fee_msat {
+		let payment_amount = route.get_total_amount();
+		let max_payment_amount = route_params.final_value_msat.saturating_add(max_total_fee);
+		if payment_amount > max_payment_amount {
+			debug_assert!(
+				false,
+				"Router returned an attempt to pay more ({payment_amount}msat) than the limit we gave it ({max_payment_amount}msat). Your router is critically buggy!"
+			);
+			log_error!(
+				logger,
+				"Router returned an attempt to pay more ({payment_amount}msat) than the limit we gave it ({max_payment_amount}msat). Your router is critically buggy!"
+			);
+			return Err(());
+		}
+	}
+
+	// Test that the route doesn't contain any "extra" MPP parts - while we're allows to
+	// overshoot the `final_value_msat` specified in the `route_params`, we aren't allowed to
+	// have any MPP parts which aren't needed to meet `route_params.final_value_msat`.
+	let min_mpp_part = route.paths.iter().map(|h| h.final_value_msat()).min().unwrap_or(0);
+	if route.get_total_amount() - min_mpp_part >= route_params.final_value_msat {
+		debug_assert!(
+			false,
+			"Router returned an attempt to include more MPP parts than needed. The smallest MPP part ({min_mpp_part}msat) was not needed for a payment of {}msat. Your router is critically buggy!",
+			route_params.final_value_msat
+		);
+		log_error!(
+			logger,
+			"Router returned an attempt to include more MPP parts than needed. The smallest MPP part ({min_mpp_part}msat) was not needed for a payment of {}msat. Your router is critically buggy!",
+			route_params.final_value_msat
+		);
+		return Err(());
+	}
+
+	if route.paths.is_empty() {
+		debug_assert!(false, "Selected route had no paths");
+		log_error!(logger, "Selected route had no paths, your router is buggy!");
+		return Err(());
+	}
+
+	for path in route.paths.iter() {
+		if path.hops.is_empty() {
+			debug_assert!(false, "Unusable path in route (path.hops.len() must be at least 1)");
+			log_error!(
+				logger,
+				"Unusable path in route (path.hops.len() must be at least 1). Your router is buggy!"
+			);
+			return Err(());
+		}
+	}
+
+	Ok(())
+}
+
 impl OutboundPayments {
 	#[rustfmt::skip]
 	pub(super) fn send_payment<R: Router, ES: EntropySource, NS: NodeSigner, IH, SP, L: Logger>(
@@ -1462,12 +1536,8 @@ impl OutboundPayments {
 			RetryableSendFailure::RouteNotFound
 		})?;
 
-		if route.route_params.as_ref() != Some(route_params) {
-			debug_assert!(false,
-				"Routers are expected to return a Route which includes the requested RouteParameters. Got {:?}, expected {:?}",
-				route.route_params, route_params);
-			route.route_params = Some(route_params.clone());
-		}
+		validate_found_route(&mut route, route_params, logger)
+			.map_err(|()| RetryableSendFailure::RouteNotFound)?;
 
 		Ok(route)
 	}
@@ -1552,18 +1622,9 @@ impl OutboundPayments {
 			}
 		};
 
-		if route.route_params.as_ref() != Some(&route_params) {
-			debug_assert!(false,
-				"Routers are expected to return a Route which includes the requested RouteParameters");
-			route.route_params = Some(route_params.clone());
-		}
-
-		for path in route.paths.iter() {
-			if path.hops.len() == 0 {
-				log_error!(logger, "Unusable path in route (path.hops.len() must be at least 1");
-				self.abandon_payment(payment_id, PaymentFailureReason::UnexpectedError, pending_events);
-				return
-			}
+		if validate_found_route(&mut route, &route_params, logger).is_err() {
+			self.abandon_payment(payment_id, PaymentFailureReason::RouteNotFound, pending_events);
+			return
 		}
 
 		macro_rules! abandon_with_entry {
@@ -2967,7 +3028,7 @@ mod tests {
 		let sender_pk = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let receiver_pk = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[43; 32]).unwrap());
 		let payment_params = PaymentParameters::from_node_id(sender_pk, 0);
-		let route_params = RouteParameters::from_payment_params_and_value(payment_params.clone(), 0);
+		let route_params = RouteParameters::from_payment_params_and_value(payment_params.clone(), 1);
 		let failed_scid = 42;
 		let route = Route {
 			paths: vec![Path { hops: vec![RouteHop {
@@ -2975,7 +3036,7 @@ mod tests {
 				node_features: NodeFeatures::empty(),
 				short_channel_id: failed_scid,
 				channel_features: ChannelFeatures::empty(),
-				fee_msat: 0,
+				fee_msat: 1,
 				cltv_expiry_delta: 0,
 				maybe_announced_channel: true,
 			}], blinded_tail: None }],
