@@ -1284,7 +1284,10 @@ mod test {
 
 		let payment_hash = invoice.payment_hash();
 		let id = PaymentId(payment_hash.0);
-		let onion = RecipientOnionFields::secret_only(*invoice.payment_secret());
+		let onion = RecipientOnionFields::secret_only(
+			*invoice.payment_secret(),
+			invoice.amount_milli_satoshis().unwrap(),
+		);
 		nodes[0].node.send_payment(payment_hash, onion, id, params, Retry::Attempts(0)).unwrap();
 		check_added_monitors(&nodes[0], 1);
 
