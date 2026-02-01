@@ -163,7 +163,7 @@ fn do_test_htlc_interception_flags(
 		None => {},
 	}
 
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, amt_msat);
 	let payment_id = PaymentId(payment_hash.0);
 	nodes[0].node.send_payment_with_route(route, payment_hash, onion, payment_id).unwrap();
 	check_added_monitors(&nodes[0], 1);

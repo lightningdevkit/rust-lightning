@@ -146,7 +146,7 @@ fn mpp_retry() {
 	let mut route_params = route.route_params.clone().unwrap();
 
 	nodes[0].router.expect_find_route(route_params.clone(), Ok(route.clone()));
-	let onion = RecipientOnionFields::secret_only(pay_secret);
+	let onion = RecipientOnionFields::secret_only(pay_secret, amt_msat * 2);
 	let retry = Retry::Attempts(1);
 	nodes[0].node.send_payment(hash, onion, id, route_params.clone(), retry).unwrap();
 	check_added_monitors(&nodes[0], 2); // one monitor per path
@@ -264,7 +264,7 @@ fn mpp_retry_overpay() {
 	let mut route_params = route.route_params.clone().unwrap();
 
 	nodes[0].router.expect_find_route(route_params.clone(), Ok(route.clone()));
-	let onion = RecipientOnionFields::secret_only(pay_secret);
+	let onion = RecipientOnionFields::secret_only(pay_secret, amt_msat);
 	let retry = Retry::Attempts(1);
 	nodes[0].node.send_payment(hash, onion, id, route_params.clone(), retry).unwrap();
 	check_added_monitors(&nodes[0], 2); // one monitor per path
@@ -366,7 +366,7 @@ fn do_mpp_receive_timeout(send_partial_mpp: bool) {
 	route.route_params.as_mut().unwrap().final_value_msat *= 2;
 
 	// Initiate the MPP payment.
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, 200_000);
 	nodes[0].node.send_payment_with_route(route, hash, onion, PaymentId(hash.0)).unwrap();
 	check_added_monitors(&nodes[0], 2); // one monitor per path
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -461,7 +461,7 @@ fn do_test_keysend_payments(public_node: bool) {
 
 	{
 		let preimage = Some(PaymentPreimage([42; 32]));
-		let onion = RecipientOnionFields::spontaneous_empty();
+		let onion = RecipientOnionFields::spontaneous_empty(10000);
 		let retry = Retry::Attempts(1);
 		let id = PaymentId([42; 32]);
 		nodes[0].node.send_spontaneous_payment(preimage, onion, id, route_params, retry).unwrap();
@@ -511,7 +511,7 @@ fn test_mpp_keysend() {
 
 	let preimage = Some(PaymentPreimage([42; 32]));
 	let payment_secret = PaymentSecret([42; 32]);
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, recv_value);
 	let retry = Retry::Attempts(0);
 	let id = PaymentId([42; 32]);
 	let hash =
@@ -554,7 +554,7 @@ fn test_fulfill_hold_times() {
 
 	let preimage = Some(PaymentPreimage([42; 32]));
 	let payment_secret = PaymentSecret([42; 32]);
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, recv_value);
 	let retry = Retry::Attempts(0);
 	let id = PaymentId([42; 32]);
 	let hash =
@@ -624,7 +624,7 @@ fn test_reject_mpp_keysend_htlc_mismatching_secret() {
 	let payment_id_0 = PaymentId(nodes[0].keys_manager.backing.get_secure_random_bytes());
 	nodes[0].router.expect_find_route(route.route_params.clone().unwrap(), Ok(route.clone()));
 	let params = route.route_params.clone().unwrap();
-	let onion = RecipientOnionFields::spontaneous_empty();
+	let onion = RecipientOnionFields::spontaneous_empty(amount);
 	let retry = Retry::Attempts(0);
 	nodes[0].node.send_spontaneous_payment(preimage, onion, payment_id_0, params, retry).unwrap();
 	check_added_monitors(&nodes[0], 1);
@@ -672,7 +672,7 @@ fn test_reject_mpp_keysend_htlc_mismatching_secret() {
 	let payment_id_1 = PaymentId(nodes[0].keys_manager.backing.get_secure_random_bytes());
 	nodes[0].router.expect_find_route(route.route_params.clone().unwrap(), Ok(route.clone()));
 
-	let onion = RecipientOnionFields::spontaneous_empty();
+	let onion = RecipientOnionFields::spontaneous_empty(amount);
 	let params = route.route_params.clone().unwrap();
 	let retry = Retry::Attempts(0);
 	nodes[0].node.send_spontaneous_payment(preimage, onion, payment_id_1, params, retry).unwrap();
@@ -761,7 +761,7 @@ fn no_pending_leak_on_initial_send_failure() {
 	nodes[0].node.peer_disconnected(node_b_id);
 	nodes[1].node.peer_disconnected(node_a_id);
 
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, 100_000);
 	let payment_id = PaymentId(payment_hash.0);
 	let res = nodes[0].node.send_payment_with_route(route, payment_hash, onion, payment_id);
 	unwrap_send_err!(nodes[0], res, true, APIError::ChannelUnavailable { ref err },
@@ -814,7 +814,7 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 		send_along_route(&nodes[0], route.clone(), &[&nodes[1], &nodes[2]], 1_000_000);
 
 	let route_params = route.route_params.unwrap().clone();
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, amt_msat);
 	let id = PaymentId(payment_hash.0);
 	nodes[0].node.send_payment(payment_hash, onion, id, route_params, Retry::Attempts(1)).unwrap();
 	check_added_monitors(&nodes[0], 1);
@@ -996,7 +996,7 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 		nodes[1].node.timer_tick_occurred();
 	}
 
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, 1_000_000);
 	// Check that we cannot retry a fulfilled payment
 	nodes[0]
 		.node
@@ -1004,7 +1004,7 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 		.unwrap_err();
 	// ...but if we send with a different PaymentId the payment should fly
 	let id = PaymentId(payment_hash.0);
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, 1_000_000);
 	nodes[0].node.send_payment_with_route(new_route.clone(), payment_hash, onion, id).unwrap();
 	check_added_monitors(&nodes[0], 1);
 
@@ -1173,7 +1173,7 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 	// If we attempt to retry prior to the HTLC-Timeout (or commitment transaction, for dust HTLCs)
 	// confirming, we will fail as it's considered still-pending...
 	let (new_route, _, _, _) = get_route_and_payment_hash!(nodes[0], nodes[2], amt);
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, amt);
 	match nodes[0].node.send_payment_with_route(new_route.clone(), hash, onion, payment_id) {
 		Err(RetryableSendFailure::DuplicatePayment) => {},
 		_ => panic!("Unexpected error"),
@@ -1193,7 +1193,7 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 	node_a_ser = nodes[0].node.encode();
 
 	// After the payment failed, we're free to send it again.
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, amt);
 	nodes[0].node.send_payment_with_route(new_route.clone(), hash, onion, payment_id).unwrap();
 	assert!(!nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 
@@ -1210,13 +1210,13 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 
 	// Now resend the payment, delivering the HTLC and actually claiming it this time. This ensures
 	// the payment is not (spuriously) listed as still pending.
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, amt);
 	nodes[0].node.send_payment_with_route(new_route.clone(), hash, onion, payment_id).unwrap();
 	check_added_monitors(&nodes[0], 1);
 	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], amt, hash, payment_secret);
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
 
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, amt);
 	match nodes[0].node.send_payment_with_route(new_route.clone(), hash, onion, payment_id) {
 		Err(RetryableSendFailure::DuplicatePayment) => {},
 		_ => panic!("Unexpected error"),
@@ -1238,7 +1238,7 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 
 	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
 
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, amt);
 	match nodes[0].node.send_payment_with_route(new_route, hash, onion, payment_id) {
 		Err(RetryableSendFailure::DuplicatePayment) => {},
 		_ => panic!("Unexpected error"),
@@ -1531,7 +1531,7 @@ fn get_ldk_payment_preimage() {
 		&Default::default(),
 		&random_seed_bytes,
 	);
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, amt_msat);
 	let id = PaymentId(payment_hash.0);
 	nodes[0].node.send_payment_with_route(route.unwrap(), payment_hash, onion, id).unwrap();
 	check_added_monitors(&nodes[0], 1);
@@ -1884,7 +1884,7 @@ fn claimed_send_payment_idempotent() {
 		() => {
 			// If we try to resend a new payment with a different payment_hash but with the same
 			// payment_id, it should be rejected.
-			let onion = RecipientOnionFields::secret_only(second_payment_secret);
+			let onion = RecipientOnionFields::secret_only(second_payment_secret, 100_000);
 			let send_result =
 				nodes[0].node.send_payment_with_route(route.clone(), hash_b, onion, payment_id);
 			match send_result {
@@ -1896,7 +1896,7 @@ fn claimed_send_payment_idempotent() {
 			// also be rejected.
 			let send_result = nodes[0].node.send_spontaneous_payment(
 				None,
-				RecipientOnionFields::spontaneous_empty(),
+				RecipientOnionFields::spontaneous_empty(100_000),
 				payment_id,
 				route.route_params.clone().unwrap(),
 				Retry::Attempts(0),
@@ -1940,7 +1940,7 @@ fn claimed_send_payment_idempotent() {
 		nodes[0].node.timer_tick_occurred();
 	}
 
-	let onion = RecipientOnionFields::secret_only(second_payment_secret);
+	let onion = RecipientOnionFields::secret_only(second_payment_secret, 100_000);
 	nodes[0].node.send_payment_with_route(route, hash_b, onion, payment_id).unwrap();
 	check_added_monitors(&nodes[0], 1);
 	pass_along_route(&nodes[0], &[&[&nodes[1]]], 100_000, hash_b, second_payment_secret);
@@ -1967,7 +1967,7 @@ fn abandoned_send_payment_idempotent() {
 		() => {
 			// If we try to resend a new payment with a different payment_hash but with the same
 			// payment_id, it should be rejected.
-			let onion = RecipientOnionFields::secret_only(second_payment_secret);
+			let onion = RecipientOnionFields::secret_only(second_payment_secret, 100_000);
 			let send_result =
 				nodes[0].node.send_payment_with_route(route.clone(), hash_b, onion, payment_id);
 			match send_result {
@@ -1979,7 +1979,7 @@ fn abandoned_send_payment_idempotent() {
 			// also be rejected.
 			let send_result = nodes[0].node.send_spontaneous_payment(
 				None,
-				RecipientOnionFields::spontaneous_empty(),
+				RecipientOnionFields::spontaneous_empty(100_000),
 				payment_id,
 				route.route_params.clone().unwrap(),
 				Retry::Attempts(0),
@@ -2009,7 +2009,7 @@ fn abandoned_send_payment_idempotent() {
 
 	// However, we can reuse the PaymentId immediately after we `abandon_payment` upon passing the
 	// failed payment back.
-	let onion = RecipientOnionFields::secret_only(second_payment_secret);
+	let onion = RecipientOnionFields::secret_only(second_payment_secret, 100_000);
 	nodes[0].node.send_payment_with_route(route, hash_b, onion, payment_id).unwrap();
 	check_added_monitors(&nodes[0], 1);
 	pass_along_route(&nodes[0], &[&[&nodes[1]]], 100_000, hash_b, second_payment_secret);
@@ -2177,12 +2177,12 @@ fn test_holding_cell_inflight_htlcs() {
 	// Queue up two payments - one will be delivered right away, one immediately goes into the
 	// holding cell as nodes[0] is AwaitingRAA.
 	{
-		let onion = RecipientOnionFields::secret_only(payment_secret_1);
+		let onion = RecipientOnionFields::secret_only(payment_secret_1, 1000000);
 		let id = PaymentId(payment_hash_1.0);
 		nodes[0].node.send_payment_with_route(route.clone(), payment_hash_1, onion, id).unwrap();
 		check_added_monitors(&nodes[0], 1);
 
-		let onion = RecipientOnionFields::secret_only(payment_secret_2);
+		let onion = RecipientOnionFields::secret_only(payment_secret_2, 1000000);
 		let id = PaymentId(payment_hash_2.0);
 		nodes[0].node.send_payment_with_route(route, payment_hash_2, onion, id).unwrap();
 		check_added_monitors(&nodes[0], 0);
@@ -2272,7 +2272,7 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 
 	let (hash, payment_secret) =
 		nodes[2].node.create_inbound_payment(Some(amt_msat), 60 * 60, None).unwrap();
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, amt_msat);
 	let id = PaymentId(hash.0);
 	nodes[0].node.send_payment_with_route(route.clone(), hash, onion, id).unwrap();
 	let payment_event = {
@@ -2508,7 +2508,7 @@ fn do_accept_underpaying_htlcs_config(num_mpp_parts: usize) {
 	let (payment_hash, payment_secret) =
 		nodes[2].node.create_inbound_payment(Some(amt_msat), 60 * 60, None).unwrap();
 
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, amt_msat);
 	let id = PaymentId(payment_hash.0);
 	nodes[0].node.send_payment(payment_hash, onion, id, route_params, Retry::Attempts(0)).unwrap();
 
@@ -2720,7 +2720,7 @@ fn do_automatic_retries(test: AutoRetry) {
 
 	if test == AutoRetry::Success {
 		// Test that we can succeed on the first retry.
-		let onion = RecipientOnionFields::secret_only(payment_secret);
+		let onion = RecipientOnionFields::secret_only(payment_secret, amt_msat);
 		let id = PaymentId(hash.0);
 		let retry = Retry::Attempts(1);
 		nodes[0].node.send_payment(hash, onion, id, route_params, retry).unwrap();
@@ -2746,7 +2746,7 @@ fn do_automatic_retries(test: AutoRetry) {
 			preimage,
 		));
 	} else if test == AutoRetry::Spontaneous {
-		let onion = RecipientOnionFields::spontaneous_empty();
+		let onion = RecipientOnionFields::spontaneous_empty(amt_msat);
 		let id = PaymentId(hash.0);
 		nodes[0]
 			.node
@@ -2771,7 +2771,7 @@ fn do_automatic_retries(test: AutoRetry) {
 		claim_payment_along_route(ClaimAlongRouteArgs::new(&nodes[0], &[path], preimage));
 	} else if test == AutoRetry::FailAttempts {
 		// Ensure ChannelManager will not retry a payment if it has run out of payment attempts.
-		let onion = RecipientOnionFields::secret_only(payment_secret);
+		let onion = RecipientOnionFields::secret_only(payment_secret, amt_msat);
 		let id = PaymentId(hash.0);
 		nodes[0].node.send_payment(hash, onion, id, route_params, Retry::Attempts(1)).unwrap();
 		pass_failed_attempt_with_retry_along_path!(channel_id_2, true);
@@ -2792,7 +2792,7 @@ fn do_automatic_retries(test: AutoRetry) {
 		#[cfg(feature = "std")]
 		{
 			// Ensure ChannelManager will not retry a payment if it times out due to Retry::Timeout.
-			let onion = RecipientOnionFields::secret_only(payment_secret);
+			let onion = RecipientOnionFields::secret_only(payment_secret, amt_msat);
 			let id = PaymentId(hash.0);
 			let retry = Retry::Timeout(Duration::from_secs(60));
 			nodes[0].node.send_payment(hash, onion, id, route_params, retry).unwrap();
@@ -2820,7 +2820,7 @@ fn do_automatic_retries(test: AutoRetry) {
 	} else if test == AutoRetry::FailOnRestart {
 		// Ensure ChannelManager will not retry a payment after restart, even if there were retry
 		// attempts remaining prior to restart.
-		let onion = RecipientOnionFields::secret_only(payment_secret);
+		let onion = RecipientOnionFields::secret_only(payment_secret, amt_msat);
 		let id = PaymentId(hash.0);
 		nodes[0].node.send_payment(hash, onion, id, route_params, Retry::Attempts(2)).unwrap();
 		pass_failed_attempt_with_retry_along_path!(channel_id_2, true);
@@ -2854,7 +2854,7 @@ fn do_automatic_retries(test: AutoRetry) {
 			_ => panic!("Unexpected event"),
 		}
 	} else if test == AutoRetry::FailOnRetry {
-		let onion = RecipientOnionFields::secret_only(payment_secret);
+		let onion = RecipientOnionFields::secret_only(payment_secret, amt_msat);
 		let id = PaymentId(hash.0);
 		nodes[0].node.send_payment(hash, onion, id, route_params, Retry::Attempts(1)).unwrap();
 		pass_failed_attempt_with_retry_along_path!(channel_id_2, true);
@@ -3016,7 +3016,7 @@ fn auto_retry_partial_failure() {
 	nodes[0].router.expect_find_route(retry_2_params, Ok(retry_2_route));
 
 	// Send a payment that will partially fail on send, then partially fail on retry, then succeed.
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, amt_msat);
 	let id = PaymentId(payment_hash.0);
 	nodes[0].node.send_payment(payment_hash, onion, id, route_params, Retry::Attempts(3)).unwrap();
 
@@ -3178,7 +3178,7 @@ fn auto_retry_zero_attempts_send_error() {
 	};
 	nodes[0].router.expect_find_route(route_params.clone(), Ok(send_route));
 
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, amt_msat);
 	let id = PaymentId(payment_hash.0);
 	nodes[0].node.send_payment(payment_hash, onion, id, route_params, Retry::Attempts(0)).unwrap();
 
@@ -3226,7 +3226,7 @@ fn fails_paying_after_rejected_by_payee() {
 		.unwrap();
 	let route_params = RouteParameters::from_payment_params_and_value(payment_params, amt_msat);
 
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, amt_msat);
 	let id = PaymentId(payment_hash.0);
 	nodes[0].node.send_payment(payment_hash, onion, id, route_params, Retry::Attempts(1)).unwrap();
 	check_added_monitors(&nodes[0], 1);
@@ -3342,7 +3342,9 @@ fn retry_multi_path_single_failed_payment() {
 		scorer.expect_usage(chans[1].short_channel_id.unwrap(), usage);
 	}
 
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	// Note that while we actaully pay amt_msat + 1, we should really set the onion amount to
+	// amt_msat as that's what we built a route for.
+	let onion = RecipientOnionFields::secret_only(payment_secret, amt_msat + 1);
 	let id = PaymentId(payment_hash.0);
 	nodes[0].node.send_payment(payment_hash, onion, id, route_params, Retry::Attempts(1)).unwrap();
 	let events = nodes[0].node.get_and_clear_pending_events();
@@ -3423,7 +3425,7 @@ fn immediate_retry_on_failure() {
 	route.route_params = Some(retry_params.clone());
 	nodes[0].router.expect_find_route(retry_params, Ok(route.clone()));
 
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, amt_msat);
 	let id = PaymentId(payment_hash.0);
 	nodes[0].node.send_payment(payment_hash, onion, id, route_params, Retry::Attempts(1)).unwrap();
 	let events = nodes[0].node.get_and_clear_pending_events();
@@ -3562,7 +3564,7 @@ fn no_extra_retries_on_back_to_back_fail() {
 	// We can't use the commitment_signed_dance macro helper because in this test we'll be sending
 	// two HTLCs back-to-back on the same channel, and the macro only expects to handle one at a
 	// time.
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, amt_msat);
 	let id = PaymentId(payment_hash.0);
 	nodes[0].node.send_payment(payment_hash, onion, id, route_params, Retry::Attempts(1)).unwrap();
 
@@ -3807,7 +3809,7 @@ fn test_simple_partial_retry() {
 	// We can't use the commitment_signed_dance macro helper because in this test we'll be sending
 	// two HTLCs back-to-back on the same channel, and the macro only expects to handle one at a
 	// time.
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, amt_msat);
 	let id = PaymentId(payment_hash.0);
 	nodes[0].node.send_payment(payment_hash, onion, id, route_params, Retry::Attempts(1)).unwrap();
 	let first_htlc = SendEvent::from_node(&nodes[0]);
@@ -4009,7 +4011,7 @@ fn test_threaded_payment_retries() {
 	};
 	nodes[0].router.expect_find_route(route_params.clone(), Ok(route.clone()));
 
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, amt_msat);
 	let id = PaymentId(payment_hash.0);
 	let retry = Retry::Attempts(0xdeadbeef);
 	nodes[0].node.send_payment(payment_hash, onion, id, route_params.clone(), retry).unwrap();
@@ -4320,7 +4322,7 @@ fn do_claim_from_closed_chan(fail_payment: bool) {
 	let final_cltv = nodes[0].best_block_info().1 + TEST_FINAL_CLTV + 8 + 1;
 
 	nodes[0].router.expect_find_route(route_params.clone(), Ok(route.clone()));
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, amt_msat);
 	let id = PaymentId(hash.0);
 	nodes[0].node.send_payment(hash, onion, id, route_params, Retry::Attempts(1)).unwrap();
 
@@ -4489,6 +4491,7 @@ fn do_test_custom_tlvs(spontaneous: bool, even_tlvs: bool, known_tlvs: bool) {
 		payment_secret: if spontaneous { None } else { Some(payment_secret) },
 		payment_metadata: None,
 		custom_tlvs: custom_tlvs.clone(),
+		total_mpp_amount_msat: amt_msat,
 	};
 	if spontaneous {
 		let params = route.route_params.unwrap();
@@ -4569,7 +4572,7 @@ fn test_retry_custom_tlvs() {
 	let mut route_params = route.route_params.clone().unwrap();
 
 	let custom_tlvs = vec![((1 << 16) + 1, vec![0x42u8; 16])];
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, amt_msat);
 	let onion = onion.with_custom_tlvs(RecipientCustomTlvs::new(custom_tlvs.clone()).unwrap());
 
 	nodes[0].router.expect_find_route(route_params.clone(), Ok(route.clone()));
@@ -4701,6 +4704,7 @@ fn do_test_custom_tlvs_consistency(
 		payment_secret: Some(payment_secret),
 		payment_metadata: None,
 		custom_tlvs: first_tlvs,
+		total_mpp_amount_msat: amt_msat,
 	};
 	let session_privs =
 		nodes[0].node.test_add_new_pending_payment(hash, onion.clone(), id, &route).unwrap();
@@ -4726,6 +4730,7 @@ fn do_test_custom_tlvs_consistency(
 		payment_secret: Some(payment_secret),
 		payment_metadata: None,
 		custom_tlvs: second_tlvs,
+		total_mpp_amount_msat: amt_msat,
 	};
 	let path_b = &route.paths[1];
 	let priv_b = session_privs[1];
@@ -4850,6 +4855,7 @@ fn do_test_payment_metadata_consistency(do_reload: bool, do_modify: bool) {
 		payment_secret: Some(payment_secret),
 		payment_metadata: Some(payment_metadata),
 		custom_tlvs: vec![],
+		total_mpp_amount_msat: amt_msat,
 	};
 	let retry = Retry::Attempts(1);
 	nodes[0].node.send_payment(payment_hash, onion, payment_id, route_params, retry).unwrap();
@@ -5043,7 +5049,10 @@ fn test_htlc_forward_considers_anchor_outputs_value() {
 		nodes[2],
 		sendable_balance_msat + anchor_outpus_value_msat
 	);
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(
+		payment_secret,
+		sendable_balance_msat + anchor_outpus_value_msat,
+	);
 	let id = PaymentId(payment_hash.0);
 	nodes[0].node.send_payment_with_route(route, payment_hash, onion, id).unwrap();
 	check_added_monitors(&nodes[0], 1);
@@ -5108,7 +5117,7 @@ fn peel_payment_onion_custom_tlvs() {
 	let payment_params = PaymentParameters::for_keysend(node_b_id, TEST_FINAL_CLTV, false);
 	let route_params = RouteParameters::from_payment_params_and_value(payment_params, amt_msat);
 	let route = functional_test_utils::get_route(&nodes[0], &route_params).unwrap();
-	let mut recipient_onion = RecipientOnionFields::spontaneous_empty()
+	let mut recipient_onion = RecipientOnionFields::spontaneous_empty(amt_msat)
 		.with_custom_tlvs(RecipientCustomTlvs::new(vec![(414141, vec![42; 1200])]).unwrap());
 	let prng_seed = chanmon_cfgs[0].keys_manager.get_secure_random_bytes();
 	let session_priv = SecretKey::from_slice(&prng_seed[..]).expect("RNG is busted");
@@ -5203,7 +5212,7 @@ fn test_non_strict_forwarding() {
 	for i in 0..4 {
 		let (payment_preimage, payment_hash, payment_secret) =
 			get_payment_preimage_hash(&nodes[2], Some(payment_value), None);
-		let onion = RecipientOnionFields::secret_only(payment_secret);
+		let onion = RecipientOnionFields::secret_only(payment_secret, payment_value);
 		let id = PaymentId(payment_hash.0);
 		nodes[0].node.send_payment_with_route(route.clone(), payment_hash, onion, id).unwrap();
 		check_added_monitors(&nodes[0], 1);
@@ -5242,7 +5251,7 @@ fn test_non_strict_forwarding() {
 	// Send a 5th payment which will fail.
 	let (_, payment_hash, payment_secret) =
 		get_payment_preimage_hash(&nodes[2], Some(payment_value), None);
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, payment_value);
 	let id = PaymentId(payment_hash.0);
 	nodes[0].node.send_payment_with_route(route.clone(), payment_hash, onion, id).unwrap();
 
@@ -5303,7 +5312,7 @@ fn remove_pending_outbounds_on_buggy_router() {
 	nodes[0].router.expect_find_route(route_params.clone(), Ok(route.clone()));
 
 	// Send the payment with one retry allowed, but the payment should still fail
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, amt_msat);
 	let retry = Retry::Attempts(1);
 	nodes[0].node.send_payment(payment_hash, onion, payment_id, route_params, retry).unwrap();
 	let events = nodes[0].node.get_and_clear_pending_events();
@@ -5379,7 +5388,7 @@ fn pay_route_without_params() {
 		get_route_and_payment_hash!(nodes[0], nodes[1], payment_params, amt_msat);
 	route.route_params.take();
 
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, amt_msat);
 	let id = PaymentId(hash.0);
 	nodes[0].node.send_payment_with_route(route, hash, onion, id).unwrap();
 

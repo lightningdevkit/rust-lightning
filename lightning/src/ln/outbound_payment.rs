@@ -21,6 +21,7 @@ use crate::ln::channelmanager::{
 	EventCompletionAction, HTLCSource, OptionalBolt11PaymentParams, PaymentCompleteUpdate,
 	PaymentId,
 };
+use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils;
 use crate::ln::onion_utils::{DecodedOnionFailure, HTLCFailReason};
 use crate::offers::invoice::{Bolt12Invoice, DerivedSigningPubkey, InvoiceBuilder};
@@ -44,8 +45,10 @@ use core::fmt::{self, Display, Formatter};
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 
+use crate::io;
 use crate::prelude::*;
 use crate::sync::Mutex;
+use crate::util::ser;
 
 /// The number of ticks of [`ChannelManager::timer_tick_occurred`] until we time-out the idempotency
 /// of payments by [`PaymentId`]. See [`OutboundPayments::remove_stale_payments`].
@@ -758,33 +761,83 @@ pub struct RecipientOnionFields {
 	pub payment_metadata: Option<Vec<u8>>,
 	/// See [`Self::custom_tlvs`] for more info.
 	pub(super) custom_tlvs: Vec<(u64, Vec<u8>)>,
+	/// The total payment amount which is being sent.
+	///
+	/// This is communicated to the recipient as an indication that they should delay claiming the
+	/// payment until they've received multiple payment parts totaling at least this amount.
+	///
+	/// Note that in order to properly communicate this, the recipient must either be paid using
+	/// blinded paths or a [`Self::payment_secret`] must be set.
+	pub total_mpp_amount_msat: u64,
 }
 
-impl_writeable_tlv_based!(RecipientOnionFields, {
-	(0, payment_secret, option),
-	(1, custom_tlvs, optional_vec),
-	(2, payment_metadata, option),
-});
+impl ser::Writeable for RecipientOnionFields {
+	fn write<W: ser::Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		write_tlv_fields!(writer, {
+			(0, self.payment_secret, option),
+			(1, self.custom_tlvs, optional_vec),
+			(2, self.payment_metadata, option),
+			(3, self.total_mpp_amount_msat, required),
+		});
+		Ok(())
+	}
+}
+
+impl ser::ReadableArgs<u64> for RecipientOnionFields {
+	fn read<R: io::Read>(
+		reader: &mut R, default_total_mpp_amount_msat: u64,
+	) -> Result<Self, DecodeError> {
+		_init_and_read_len_prefixed_tlv_fields!(reader, {
+			(0, payment_secret, option),
+			(1, custom_tlvs, optional_vec),
+			(2, payment_metadata, option),
+			// Added and always written in LDK 0.3
+			(3, total_mpp_amount_msat, option),
+		});
+		Ok(Self {
+			payment_secret,
+			custom_tlvs: custom_tlvs.unwrap_or(Vec::new()),
+			payment_metadata,
+			total_mpp_amount_msat: total_mpp_amount_msat.unwrap_or(default_total_mpp_amount_msat),
+		})
+	}
+}
 
 impl RecipientOnionFields {
-	/// Creates a [`RecipientOnionFields`] from only a [`PaymentSecret`]. This is the most common
-	/// set of onion fields for today's BOLT11 invoices - most nodes require a [`PaymentSecret`]
-	/// but do not require or provide any further data.
+	/// Creates a [`RecipientOnionFields`] from only a [`PaymentSecret`] and total MPP amount. This
+	/// is the most common set of onion fields for today's BOLT11 invoices - most nodes require a
+	/// [`PaymentSecret`] but do not require or provide any further data.
 	#[rustfmt::skip]
-	pub fn secret_only(payment_secret: PaymentSecret) -> Self {
-		Self { payment_secret: Some(payment_secret), payment_metadata: None, custom_tlvs: Vec::new() }
+	pub fn secret_only(payment_secret: PaymentSecret, total_mpp_amount_msat: u64) -> Self {
+		Self {
+			payment_secret: Some(payment_secret),
+			payment_metadata: None,
+			custom_tlvs: Vec::new(),
+			total_mpp_amount_msat,
+		}
 	}
 
-	/// Creates a new [`RecipientOnionFields`] with no fields. This generally does not create
-	/// payable HTLCs except for single-path spontaneous payments, i.e. this should generally
-	/// only be used for calls to [`ChannelManager::send_spontaneous_payment`]. If you are sending
-	/// a spontaneous MPP this will not work as all MPP require payment secrets; you may
-	/// instead want to use [`RecipientOnionFields::secret_only`].
+	/// Creates a new [`RecipientOnionFields`] with no fields but the total MPP amount. This is
+	/// useful when paying a blinded path, where the `payment_secret` and `payment_metadata` are
+	/// not provided but rather stored transparently in the blinded path itself.
+	///
+	/// Otherwise, this generally does not create payable HTLCs except for single-path spontaneous
+	/// payments, i.e. those for calls to [`ChannelManager::send_spontaneous_payment`].
+	///
+	/// Note that due to protocol limitations, in non-blinded-path cases, you cannot make an MPP
+	/// payment without a `payment_secret`. Thus, in such cases `total_mpp_amount_msat` is ignored.
+	/// If you intend to send a spontaneous MPP you may instead want to use
+	/// [`RecipientOnionFields::secret_only`].
 	///
 	/// [`ChannelManager::send_spontaneous_payment`]: super::channelmanager::ChannelManager::send_spontaneous_payment
 	/// [`RecipientOnionFields::secret_only`]: RecipientOnionFields::secret_only
-	pub fn spontaneous_empty() -> Self {
-		Self { payment_secret: None, payment_metadata: None, custom_tlvs: Vec::new() }
+	pub fn spontaneous_empty(total_mpp_amount_msat: u64) -> Self {
+		Self {
+			payment_secret: None,
+			payment_metadata: None,
+			custom_tlvs: Vec::new(),
+			total_mpp_amount_msat,
+		}
 	}
 
 	/// Creates a new [`RecipientOnionFields`] from an existing one, adding validated custom TLVs.
@@ -837,6 +890,9 @@ impl RecipientOnionFields {
 	pub(super) fn check_merge(&mut self, further_htlc_fields: &mut Self) -> Result<(), ()> {
 		if self.payment_secret != further_htlc_fields.payment_secret { return Err(()); }
 		if self.payment_metadata != further_htlc_fields.payment_metadata { return Err(()); }
+		if self.total_mpp_amount_msat != further_htlc_fields.total_mpp_amount_msat {
+			return Err(());
+		}
 
 		let tlvs = &mut self.custom_tlvs;
 		let further_tlvs = &mut further_htlc_fields.custom_tlvs;
@@ -984,8 +1040,9 @@ impl OutboundPayments {
 			(None, None) => return Err(Bolt11PaymentError::InvalidAmount),
 		};
 
-		let mut recipient_onion = RecipientOnionFields::secret_only(*invoice.payment_secret())
-			.with_custom_tlvs(optional_params.custom_tlvs);
+		let mut recipient_onion =
+			RecipientOnionFields::secret_only(*invoice.payment_secret(), amount)
+				.with_custom_tlvs(optional_params.custom_tlvs);
 		recipient_onion.payment_metadata = invoice.payment_metadata().map(|v| v.clone());
 
 		let payment_params = PaymentParameters::from_bolt11_invoice(invoice)
@@ -1084,6 +1141,7 @@ impl OutboundPayments {
 			payment_secret: None,
 			payment_metadata: None,
 			custom_tlvs: vec![],
+			total_mpp_amount_msat: route_params.final_value_msat,
 		};
 		let route = match self.find_initial_route(
 			payment_id, payment_hash, &recipient_onion, keysend_preimage, invoice_request,
@@ -1224,7 +1282,7 @@ impl OutboundPayments {
 
 					if let Err(()) = onion_utils::set_max_path_length(
 						&mut route_params,
-						&RecipientOnionFields::spontaneous_empty(),
+						&RecipientOnionFields::spontaneous_empty(amount_msat),
 						Some(keysend_preimage),
 						Some(invreq),
 						best_block_height,
@@ -1620,6 +1678,7 @@ impl OutboundPayments {
 								payment_secret: *payment_secret,
 								payment_metadata: payment_metadata.clone(),
 								custom_tlvs: custom_tlvs.clone(),
+								total_mpp_amount_msat: total_msat,
 							};
 							let keysend_preimage = *keysend_preimage;
 							let invoice_request = invoice_request.clone();
@@ -1824,15 +1883,16 @@ impl OutboundPayments {
 		}
 
 		let route = Route { paths: vec![path], route_params: None };
+		let recipient_onion_fields =
+			RecipientOnionFields::secret_only(payment_secret, route.get_total_amount());
 		let onion_session_privs = self.add_new_pending_payment(payment_hash,
-			RecipientOnionFields::secret_only(payment_secret), payment_id, None, &route, None, None,
+			recipient_onion_fields.clone(), payment_id, None, &route, None, None,
 			entropy_source, best_block_height, None
 		).map_err(|e| {
 			debug_assert!(matches!(e, PaymentSendFailure::DuplicatePayment));
 			ProbeSendFailure::DuplicateProbe
 		})?;
 
-		let recipient_onion_fields = RecipientOnionFields::spontaneous_empty();
 		match self.pay_route_internal(&route, payment_hash, &recipient_onion_fields,
 			None, None, None, payment_id, None, &onion_session_privs, false, node_signer,
 			best_block_height, &send_payment_along_path
@@ -2847,7 +2907,7 @@ mod tests {
 	#[test]
 	#[rustfmt::skip]
 	fn test_recipient_onion_fields_with_custom_tlvs() {
-		let onion_fields = RecipientOnionFields::spontaneous_empty();
+		let onion_fields = RecipientOnionFields::spontaneous_empty(42);
 
 		let bad_type_range_tlvs = RecipientCustomTlvs::new(vec![
 			(0, vec![42]),
@@ -2895,7 +2955,7 @@ mod tests {
 		let expired_route_params = RouteParameters::from_payment_params_and_value(payment_params, 0);
 		let pending_events = Mutex::new(VecDeque::new());
 		if on_retry {
-			outbound_payments.add_new_pending_payment(PaymentHash([0; 32]), RecipientOnionFields::spontaneous_empty(),
+			outbound_payments.add_new_pending_payment(PaymentHash([0; 32]), RecipientOnionFields::spontaneous_empty(0),
 				PaymentId([0; 32]), None, &Route { paths: vec![], route_params: None },
 				Some(Retry::Attempts(1)), Some(expired_route_params.payment_params.clone()),
 				&&keys_manager, 0, None).unwrap();
@@ -2910,7 +2970,7 @@ mod tests {
 			} else { panic!("Unexpected event"); }
 		} else {
 			let err = outbound_payments.send_payment(
-				PaymentHash([0; 32]), RecipientOnionFields::spontaneous_empty(), PaymentId([0; 32]),
+				PaymentHash([0; 32]), RecipientOnionFields::spontaneous_empty(0), PaymentId([0; 32]),
 				Retry::Attempts(0), expired_route_params, &&router, vec![], || InFlightHtlcs::new(),
 				&&keys_manager, &&keys_manager, 0, &pending_events, |_| Ok(()), &log).unwrap_err();
 			if let RetryableSendFailure::PaymentExpired = err { } else { panic!("Unexpected error"); }
@@ -2941,7 +3001,7 @@ mod tests {
 
 		let pending_events = Mutex::new(VecDeque::new());
 		if on_retry {
-			outbound_payments.add_new_pending_payment(PaymentHash([0; 32]), RecipientOnionFields::spontaneous_empty(),
+			outbound_payments.add_new_pending_payment(PaymentHash([0; 32]), RecipientOnionFields::spontaneous_empty(0),
 				PaymentId([0; 32]), None, &Route { paths: vec![], route_params: None },
 				Some(Retry::Attempts(1)), Some(route_params.payment_params.clone()),
 				&&keys_manager, 0, None).unwrap();
@@ -2954,7 +3014,7 @@ mod tests {
 			if let Event::PaymentFailed { .. } = events[0].0 { } else { panic!("Unexpected event"); }
 		} else {
 			let err = outbound_payments.send_payment(
-				PaymentHash([0; 32]), RecipientOnionFields::spontaneous_empty(), PaymentId([0; 32]),
+				PaymentHash([0; 32]), RecipientOnionFields::spontaneous_empty(0), PaymentId([0; 32]),
 				Retry::Attempts(0), route_params, &&router, vec![], || InFlightHtlcs::new(),
 				&&keys_manager, &&keys_manager, 0, &pending_events, |_| Ok(()), &log).unwrap_err();
 			if let RetryableSendFailure::RouteNotFound = err {
@@ -3005,7 +3065,7 @@ mod tests {
 		// PaymentPathFailed event.
 		let pending_events = Mutex::new(VecDeque::new());
 		outbound_payments.send_payment(
-			PaymentHash([0; 32]), RecipientOnionFields::spontaneous_empty(), PaymentId([0; 32]),
+			PaymentHash([0; 32]), RecipientOnionFields::spontaneous_empty(1), PaymentId([0; 32]),
 			Retry::Attempts(0), route_params.clone(), &&router, vec![], || InFlightHtlcs::new(),
 			&&keys_manager, &&keys_manager, 0, &pending_events,
 			|_| Err(APIError::ChannelUnavailable { err: "test".to_owned() }), &log).unwrap();
@@ -3023,7 +3083,7 @@ mod tests {
 
 		// Ensure that a MonitorUpdateInProgress "error" will not result in a PaymentPathFailed event.
 		outbound_payments.send_payment(
-			PaymentHash([0; 32]), RecipientOnionFields::spontaneous_empty(), PaymentId([0; 32]),
+			PaymentHash([0; 32]), RecipientOnionFields::spontaneous_empty(1), PaymentId([0; 32]),
 			Retry::Attempts(0), route_params.clone(), &&router, vec![], || InFlightHtlcs::new(),
 			&&keys_manager, &&keys_manager, 0, &pending_events,
 			|_| Err(APIError::MonitorUpdateInProgress), &log).unwrap();
@@ -3031,7 +3091,7 @@ mod tests {
 
 		// Ensure that any other error will result in a PaymentPathFailed event but no blamed scid.
 		outbound_payments.send_payment(
-			PaymentHash([0; 32]), RecipientOnionFields::spontaneous_empty(), PaymentId([1; 32]),
+			PaymentHash([0; 32]), RecipientOnionFields::spontaneous_empty(1), PaymentId([1; 32]),
 			Retry::Attempts(0), route_params.clone(), &&router, vec![], || InFlightHtlcs::new(),
 			&&keys_manager, &&keys_manager, 0, &pending_events,
 			|_| Err(APIError::APIMisuseError { err: "test".to_owned() }), &log).unwrap();

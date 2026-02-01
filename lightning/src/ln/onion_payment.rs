@@ -879,7 +879,7 @@ mod tests {
 		let total_amt_msat = 1000;
 		let cur_height = 1000;
 		let pay_secret = PaymentSecret([99; 32]);
-		let recipient_onion = RecipientOnionFields::secret_only(pay_secret);
+		let recipient_onion = RecipientOnionFields::secret_only(pay_secret, total_amt_msat);
 		let preimage_bytes = [43; 32];
 		let preimage = PaymentPreimage(preimage_bytes);
 		let rhash_bytes = Sha256::hash(&preimage_bytes).to_byte_array();

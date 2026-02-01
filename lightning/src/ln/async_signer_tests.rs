@@ -296,7 +296,7 @@ fn do_test_async_commitment_signature_for_commitment_signed_revoke_and_ack(
 
 	let (route, our_payment_hash, _our_payment_preimage, our_payment_secret) =
 		get_route_and_payment_hash!(src, dst, 8000000);
-	let recipient_fields = RecipientOnionFields::secret_only(our_payment_secret);
+	let recipient_fields = RecipientOnionFields::secret_only(our_payment_secret, 8000000);
 	let payment_id = PaymentId(our_payment_hash.0);
 	src.node
 		.send_payment_with_route(route, our_payment_hash, recipient_fields, payment_id)
@@ -520,7 +520,7 @@ fn do_test_async_raa_peer_disconnect(
 
 	let (route, our_payment_hash, _our_payment_preimage, our_payment_secret) =
 		get_route_and_payment_hash!(src, dst, 8000000);
-	let recipient_fields = RecipientOnionFields::secret_only(our_payment_secret);
+	let recipient_fields = RecipientOnionFields::secret_only(our_payment_secret, 8000000);
 	let payment_id = PaymentId(our_payment_hash.0);
 	src.node
 		.send_payment_with_route(route, our_payment_hash, recipient_fields, payment_id)
@@ -669,7 +669,7 @@ fn do_test_async_commitment_signature_peer_disconnect(
 
 	let (route, our_payment_hash, _our_payment_preimage, our_payment_secret) =
 		get_route_and_payment_hash!(src, dst, 8000000);
-	let recipient_fields = RecipientOnionFields::secret_only(our_payment_secret);
+	let recipient_fields = RecipientOnionFields::secret_only(our_payment_secret, 8000000);
 	let payment_id = PaymentId(our_payment_hash.0);
 	src.node
 		.send_payment_with_route(route, our_payment_hash, recipient_fields, payment_id)
@@ -804,7 +804,7 @@ fn do_test_async_commitment_signature_ordering(monitor_update_failure: bool) {
 	// to the peer.
 	let (route, payment_hash_2, payment_preimage_2, payment_secret_2) =
 		get_route_and_payment_hash!(nodes[0], nodes[1], 1000000);
-	let recipient_fields = RecipientOnionFields::secret_only(payment_secret_2);
+	let recipient_fields = RecipientOnionFields::secret_only(payment_secret_2, 1000000);
 	let payment_id = PaymentId(payment_hash_2.0);
 	nodes[0]
 		.node
@@ -1343,14 +1343,14 @@ fn test_no_disconnect_while_async_revoke_and_ack_expecting_remote_commitment_sig
 	// We'll send a payment from both nodes to each other.
 	let (route1, payment_hash1, _, payment_secret1) =
 		get_route_and_payment_hash!(&nodes[0], &nodes[1], payment_amount);
-	let onion1 = RecipientOnionFields::secret_only(payment_secret1);
+	let onion1 = RecipientOnionFields::secret_only(payment_secret1, payment_amount);
 	let payment_id1 = PaymentId(payment_hash1.0);
 	nodes[0].node.send_payment_with_route(route1, payment_hash1, onion1, payment_id1).unwrap();
 	check_added_monitors(&nodes[0], 1);
 
 	let (route2, payment_hash2, _, payment_secret2) =
 		get_route_and_payment_hash!(&nodes[1], &nodes[0], payment_amount);
-	let onion2 = RecipientOnionFields::secret_only(payment_secret2);
+	let onion2 = RecipientOnionFields::secret_only(payment_secret2, payment_amount);
 	let payment_id2 = PaymentId(payment_hash2.0);
 	nodes[1].node.send_payment_with_route(route2, payment_hash2, onion2, payment_id2).unwrap();
 	check_added_monitors(&nodes[1], 1);

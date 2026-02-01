@@ -87,6 +87,7 @@ fn large_payment_metadata() {
 		payment_secret: Some(payment_secret),
 		payment_metadata: Some(payment_metadata.clone()),
 		custom_tlvs: Vec::new(),
+		total_mpp_amount_msat: amt_msat,
 	};
 	let route_params = route_0_1.route_params.clone().unwrap();
 	let id = PaymentId(payment_hash.0);
@@ -128,6 +129,7 @@ fn large_payment_metadata() {
 	// If our payment_metadata contains 1 additional byte, we'll fail prior to pathfinding.
 	let mut too_large_onion = max_sized_onion.clone();
 	too_large_onion.payment_metadata.as_mut().map(|mut md| md.push(42));
+	too_large_onion.total_mpp_amount_msat = MIN_FINAL_VALUE_ESTIMATE_WITH_OVERPAY;
 
 	// First confirm we'll fail to create the onion packet directly.
 	let secp_ctx = Secp256k1::signing_only();
@@ -167,6 +169,7 @@ fn large_payment_metadata() {
 		payment_secret: Some(payment_secret_2),
 		payment_metadata: Some(two_hop_metadata.clone()),
 		custom_tlvs: Vec::new(),
+		total_mpp_amount_msat: amt_msat,
 	};
 	let mut route_params_0_2 = route_0_2.route_params.clone().unwrap();
 	route_params_0_2.payment_params.max_path_length = 2;
@@ -261,7 +264,7 @@ fn one_hop_blinded_path_with_custom_tlv() {
 		- final_payload_len_without_custom_tlv;
 
 	// Check that we can send the maximum custom TLV with 1 blinded hop.
-	let max_sized_onion = RecipientOnionFields::spontaneous_empty().with_custom_tlvs(
+	let max_sized_onion = RecipientOnionFields::spontaneous_empty(amt_msat).with_custom_tlvs(
 		RecipientCustomTlvs::new(vec![(CUSTOM_TLV_TYPE, vec![42; max_custom_tlv_len])]).unwrap(),
 	);
 	let id = PaymentId(payment_hash.0);
@@ -369,7 +372,7 @@ fn blinded_path_with_custom_tlv() {
 	let reserved_packet_bytes_without_custom_tlv: usize = onion_utils::build_onion_payloads(
 		&route.paths[0],
 		MIN_FINAL_VALUE_ESTIMATE_WITH_OVERPAY,
-		&RecipientOnionFields::spontaneous_empty(),
+		&RecipientOnionFields::spontaneous_empty(MIN_FINAL_VALUE_ESTIMATE_WITH_OVERPAY),
 		nodes[0].best_block_info().1 + DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA,
 		&None,
 		None,
@@ -387,7 +390,7 @@ fn blinded_path_with_custom_tlv() {
 		- reserved_packet_bytes_without_custom_tlv;
 
 	// Check that we can send the maximum custom TLV size with 0 intermediate unblinded hops.
-	let max_sized_onion = RecipientOnionFields::spontaneous_empty().with_custom_tlvs(
+	let max_sized_onion = RecipientOnionFields::spontaneous_empty(amt_msat).with_custom_tlvs(
 		RecipientCustomTlvs::new(vec![(CUSTOM_TLV_TYPE, vec![42; max_custom_tlv_len])]).unwrap(),
 	);
 	let no_retry = Retry::Attempts(0);
@@ -420,10 +423,12 @@ fn blinded_path_with_custom_tlv() {
 		.unwrap_err();
 	assert_eq!(err, RetryableSendFailure::OnionPacketSizeExceeded);
 
-	// Confirm that we can't construct an onion packet given this too-large custom TLV.
+	// Confirm that we can't construct an onion packet given this too-large custom TLV (as long as
+	// we actually use the amount the payment logic uses when validating).
 	let secp_ctx = Secp256k1::signing_only();
 	route.paths[0].hops[0].fee_msat = MIN_FINAL_VALUE_ESTIMATE_WITH_OVERPAY;
 	route.paths[0].hops[0].cltv_expiry_delta = DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA;
+	too_large_onion.total_mpp_amount_msat = MIN_FINAL_VALUE_ESTIMATE_WITH_OVERPAY;
 	let err = onion_utils::create_payment_onion(
 		&secp_ctx,
 		&route.paths[0],

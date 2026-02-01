@@ -32,7 +32,7 @@ fn test_accountable_forwarding_with_override(
 		PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), TEST_FINAL_CLTV),
 		100_000,
 	);
-	let onion_fields = RecipientOnionFields::secret_only(payment_secret);
+	let onion_fields = RecipientOnionFields::secret_only(payment_secret, 100_000);
 	let payment_id = PaymentId(payment_hash.0);
 	nodes[0]
 		.node

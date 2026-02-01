@@ -68,7 +68,7 @@ fn chanmon_fail_from_stale_commitment() {
 
 	let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], 1_000_000);
 	nodes[0].node.send_payment_with_route(route, payment_hash,
-		RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
+		RecipientOnionFields::secret_only(payment_secret, 1_000_000), PaymentId(payment_hash.0)).unwrap();
 	check_added_monitors(&nodes[0], 1);
 
 	let bs_txn = get_local_commitment_txn!(nodes[1], chan_id_2);
@@ -881,7 +881,7 @@ fn do_test_balances_on_local_commitment_htlcs(keyed_anchors: bool, p2a_anchor: b
 	let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 10_000_000);
 	let htlc_cltv_timeout = nodes[0].best_block_info().1 + TEST_FINAL_CLTV + 1; // Note ChannelManager adds one to CLTV timeouts for safety
 	nodes[0].node.send_payment_with_route(route, payment_hash,
-		RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
+		RecipientOnionFields::secret_only(payment_secret, 10_000_000), PaymentId(payment_hash.0)).unwrap();
 	check_added_monitors(&nodes[0], 1);
 
 	let updates = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
@@ -893,7 +893,7 @@ fn do_test_balances_on_local_commitment_htlcs(keyed_anchors: bool, p2a_anchor: b
 
 	let (route_2, payment_hash_2, payment_preimage_2, payment_secret_2) = get_route_and_payment_hash!(nodes[0], nodes[1], 20_000_000);
 	nodes[0].node.send_payment_with_route(route_2, payment_hash_2,
-		RecipientOnionFields::secret_only(payment_secret_2), PaymentId(payment_hash_2.0)).unwrap();
+		RecipientOnionFields::secret_only(payment_secret_2, 20_000_000), PaymentId(payment_hash_2.0)).unwrap();
 	check_added_monitors(&nodes[0], 1);
 
 	let updates = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
@@ -3630,7 +3630,7 @@ fn do_test_lost_timeout_monitor_events(confirm_tx: CommitmentType, dust_htlcs: b
 
 	let (route, hash_b, _, payment_secret_b) =
 		get_route_and_payment_hash!(nodes[1], nodes[2], amt);
-	let onion = RecipientOnionFields::secret_only(payment_secret_b);
+	let onion = RecipientOnionFields::secret_only(payment_secret_b, amt);
 	nodes[1].node.send_payment_with_route(route, hash_b, onion, PaymentId(hash_b.0)).unwrap();
 	check_added_monitors(&nodes[1], 1);
 
