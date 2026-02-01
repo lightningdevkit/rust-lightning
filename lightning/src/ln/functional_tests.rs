@@ -1986,7 +1986,7 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(
 	// on nodes[2]'s RAA.
 	let (route, fourth_payment_hash, _, fourth_payment_secret) =
 		get_route_and_payment_hash!(nodes[1], nodes[2], 1000000);
-	let onion = RecipientOnionFields::secret_only(fourth_payment_secret);
+	let onion = RecipientOnionFields::secret_only(fourth_payment_secret, 1000000);
 	let id = PaymentId(fourth_payment_hash.0);
 	nodes[1].node.send_payment_with_route(route, fourth_payment_hash, onion, id).unwrap();
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
@@ -2209,7 +2209,7 @@ pub fn fail_backward_pending_htlc_upon_channel_failure() {
 	{
 		let (route, payment_hash, _, payment_secret) =
 			get_route_and_payment_hash!(nodes[0], nodes[1], 50_000);
-		let onion = RecipientOnionFields::secret_only(payment_secret);
+		let onion = RecipientOnionFields::secret_only(payment_secret, 50_000);
 		let id = PaymentId(payment_hash.0);
 		nodes[0].node.send_payment_with_route(route, payment_hash, onion, id).unwrap();
 		check_added_monitors(&nodes[0], 1);
@@ -2227,7 +2227,7 @@ pub fn fail_backward_pending_htlc_upon_channel_failure() {
 	let (route, failed_payment_hash, _, failed_payment_secret) =
 		get_route_and_payment_hash!(nodes[0], nodes[1], 50_000);
 	{
-		let onion = RecipientOnionFields::secret_only(failed_payment_secret);
+		let onion = RecipientOnionFields::secret_only(failed_payment_secret, 50_000);
 		let id = PaymentId(failed_payment_hash.0);
 		nodes[0].node.send_payment_with_route(route, failed_payment_hash, onion, id).unwrap();
 		check_added_monitors(&nodes[0], 0);
@@ -2243,7 +2243,7 @@ pub fn fail_backward_pending_htlc_upon_channel_failure() {
 		let secp_ctx = Secp256k1::new();
 		let session_priv = SecretKey::from_slice(&[42; 32]).unwrap();
 		let current_height = nodes[1].node.best_block.read().unwrap().height + 1;
-		let recipient_onion_fields = RecipientOnionFields::secret_only(payment_secret);
+		let recipient_onion_fields = RecipientOnionFields::secret_only(payment_secret, 50_000);
 		let (onion_payloads, _amount_msat, cltv_expiry) = onion_utils::build_onion_payloads(
 			&route.paths[0],
 			50_000,
@@ -2372,7 +2372,7 @@ pub fn test_force_close_fail_back() {
 		get_route_and_payment_hash!(nodes[0], nodes[2], 1000000);
 
 	let mut payment_event = {
-		let onion = RecipientOnionFields::secret_only(our_payment_secret);
+		let onion = RecipientOnionFields::secret_only(our_payment_secret, 1000000);
 		let id = PaymentId(our_payment_hash.0);
 		nodes[0].node.send_payment_with_route(route, our_payment_hash, onion, id).unwrap();
 		check_added_monitors(&nodes[0], 1);
@@ -2658,7 +2658,7 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8, simulate_broken
 		get_route_and_payment_hash!(nodes[0], nodes[1], 1_000_000);
 
 	let payment_event = {
-		let onion = RecipientOnionFields::secret_only(payment_secret_1);
+		let onion = RecipientOnionFields::secret_only(payment_secret_1, 1_000_000);
 		let id = PaymentId(payment_hash_1.0);
 		nodes[0].node.send_payment_with_route(route, payment_hash_1, onion, id).unwrap();
 		check_added_monitors(&nodes[0], 1);
@@ -3073,7 +3073,7 @@ pub fn test_drop_messages_peer_disconnect_dual_htlc() {
 	// Now try to send a second payment which will fail to send
 	let (route, payment_hash_2, payment_preimage_2, payment_secret_2) =
 		get_route_and_payment_hash!(nodes[0], nodes[1], 1000000);
-	let onion = RecipientOnionFields::secret_only(payment_secret_2);
+	let onion = RecipientOnionFields::secret_only(payment_secret_2, 1000000);
 	let id = PaymentId(payment_hash_2.0);
 	nodes[0].node.send_payment_with_route(route, payment_hash_2, onion, id).unwrap();
 	check_added_monitors(&nodes[0], 1);
@@ -3262,7 +3262,7 @@ fn do_test_htlc_timeout(send_partial_mpp: bool) {
 		// indicates there are more HTLCs coming.
 		let cur_height = CHAN_CONFIRM_DEPTH + 1; // route_payment calls send_payment, which adds 1 to the current height. So we do the same here to match.
 		let payment_id = PaymentId([42; 32]);
-		let onion = RecipientOnionFields::secret_only(payment_secret);
+		let onion = RecipientOnionFields::secret_only(payment_secret, 100000);
 		let session_privs = nodes[0]
 			.node
 			.test_add_new_pending_payment(our_payment_hash, onion, payment_id, &route)
@@ -3273,7 +3273,7 @@ fn do_test_htlc_timeout(send_partial_mpp: bool) {
 			.test_send_payment_along_path(
 				&route.paths[0],
 				&our_payment_hash,
-				RecipientOnionFields::secret_only(payment_secret),
+				RecipientOnionFields::secret_only(payment_secret, 200_000),
 				200_000,
 				cur_height,
 				payment_id,
@@ -3362,7 +3362,7 @@ fn do_test_holding_cell_htlc_add_timeouts(forwarded_htlc: bool) {
 	// Route a first payment to get the 1 -> 2 channel in awaiting_raa...
 	let (route, first_payment_hash, _, first_payment_secret) =
 		get_route_and_payment_hash!(nodes[1], nodes[2], 100000);
-	let onion = RecipientOnionFields::secret_only(first_payment_secret);
+	let onion = RecipientOnionFields::secret_only(first_payment_secret, 100000);
 	let id = PaymentId(first_payment_hash.0);
 	nodes[1].node.send_payment_with_route(route, first_payment_hash, onion, id).unwrap();
 	assert_eq!(nodes[1].node.get_and_clear_pending_msg_events().len(), 1);
@@ -3372,7 +3372,7 @@ fn do_test_holding_cell_htlc_add_timeouts(forwarded_htlc: bool) {
 	let sending_node = if forwarded_htlc { &nodes[0] } else { &nodes[1] };
 	let (route, second_payment_hash, _, second_payment_secret) =
 		get_route_and_payment_hash!(sending_node, nodes[2], 100000);
-	let onion = RecipientOnionFields::secret_only(second_payment_secret);
+	let onion = RecipientOnionFields::secret_only(second_payment_secret, 100000);
 	let id = PaymentId(second_payment_hash.0);
 	sending_node.node.send_payment_with_route(route, second_payment_hash, onion, id).unwrap();
 
@@ -4986,7 +4986,8 @@ fn do_htlc_claim_current_remote_commitment_only(use_dust: bool) {
 
 	let (route, payment_hash, _, payment_secret) =
 		get_route_and_payment_hash!(nodes[0], nodes[1], if use_dust { 50000 } else { 3000000 });
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion =
+		RecipientOnionFields::secret_only(payment_secret, if use_dust { 50000 } else { 3000000 });
 	let id = PaymentId(payment_hash.0);
 	nodes[0].node.send_payment_with_route(route, payment_hash, onion, id).unwrap();
 	check_added_monitors(&nodes[0], 1);
@@ -5149,7 +5150,7 @@ pub fn test_fail_holding_cell_htlc_upon_free() {
 		get_route_and_payment_hash!(nodes[0], nodes[1], max_can_send);
 
 	// Send a payment which passes reserve checks but gets stuck in the holding cell.
-	let onion = RecipientOnionFields::secret_only(our_payment_secret);
+	let onion = RecipientOnionFields::secret_only(our_payment_secret, max_can_send);
 	let id = PaymentId(our_payment_hash.0);
 	nodes[0].node.send_payment_with_route(route.clone(), our_payment_hash, onion, id).unwrap();
 	chan_stat = get_channel_value_stat!(nodes[0], nodes[1], chan.2);
@@ -5253,14 +5254,14 @@ pub fn test_free_and_fail_holding_cell_htlcs() {
 		get_route_and_payment_hash!(nodes[0], nodes[1], amt_2);
 
 	// Send 2 payments which pass reserve checks but get stuck in the holding cell.
-	let onion = RecipientOnionFields::secret_only(payment_secret_1);
+	let onion = RecipientOnionFields::secret_only(payment_secret_1, amt_1);
 	let id_1 = PaymentId(payment_hash_1.0);
 	nodes[0].node.send_payment_with_route(route_1, payment_hash_1, onion, id_1).unwrap();
 	chan_stat = get_channel_value_stat!(nodes[0], nodes[1], chan.2);
 	assert_eq!(chan_stat.holding_cell_outbound_amount_msat, amt_1);
 
 	let id_2 = PaymentId(nodes[0].keys_manager.get_secure_random_bytes());
-	let onion = RecipientOnionFields::secret_only(payment_secret_2);
+	let onion = RecipientOnionFields::secret_only(payment_secret_2, amt_2);
 	nodes[0].node.send_payment_with_route(route_2.clone(), payment_hash_2, onion, id_2).unwrap();
 	chan_stat = get_channel_value_stat!(nodes[0], nodes[1], chan.2);
 	assert_eq!(chan_stat.holding_cell_outbound_amount_msat, amt_1 + amt_2);
@@ -5399,7 +5400,7 @@ pub fn test_fail_holding_cell_htlc_upon_free_multihop() {
 	let (route, our_payment_hash, _, our_payment_secret) =
 		get_route_and_payment_hash!(nodes[0], nodes[2], max_can_send);
 	let payment_event = {
-		let onion = RecipientOnionFields::secret_only(our_payment_secret);
+		let onion = RecipientOnionFields::secret_only(our_payment_secret, max_can_send);
 		let id = PaymentId(our_payment_hash.0);
 		nodes[0].node.send_payment_with_route(route, our_payment_hash, onion, id).unwrap();
 		check_added_monitors(&nodes[0], 1);
@@ -5507,7 +5508,7 @@ pub fn test_update_fulfill_htlc_bolt2_after_malformed_htlc_message_must_forward_
 
 	//First hop
 	let mut payment_event = {
-		let onion = RecipientOnionFields::secret_only(our_payment_secret);
+		let onion = RecipientOnionFields::secret_only(our_payment_secret, 100000);
 		let id = PaymentId(our_payment_hash.0);
 		nodes[0].node.send_payment_with_route(route, our_payment_hash, onion, id).unwrap();
 		check_added_monitors(&nodes[0], 1);
@@ -5620,7 +5621,7 @@ pub fn test_channel_failed_after_message_with_badonion_node_perm_bits_set() {
 
 	// First hop
 	let mut payment_event = {
-		let onion = RecipientOnionFields::secret_only(our_payment_secret);
+		let onion = RecipientOnionFields::secret_only(our_payment_secret, 100_000);
 		let id = PaymentId(our_payment_hash.0);
 		nodes[0].node.send_payment_with_route(route, our_payment_hash, onion, id).unwrap();
 		check_added_monitors(&nodes[0], 1);
@@ -5967,7 +5968,7 @@ pub fn test_check_htlc_underpaying() {
 		.node
 		.create_inbound_payment_for_hash(our_payment_hash, Some(100_000), 7200, None)
 		.unwrap();
-	let onion = RecipientOnionFields::secret_only(our_payment_secret);
+	let onion = RecipientOnionFields::secret_only(our_payment_secret, route.get_total_amount());
 	let id = PaymentId(our_payment_hash.0);
 	nodes[0].node.send_payment_with_route(route, our_payment_hash, onion, id).unwrap();
 	check_added_monitors(&nodes[0], 1);
@@ -6906,7 +6907,7 @@ pub fn test_onion_value_mpp_set_calculation() {
 
 	// Send payment
 	let id = PaymentId(nodes[0].keys_manager.backing.get_secure_random_bytes());
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, total_msat);
 	let onion_session_privs =
 		nodes[0].node.test_add_new_pending_payment(hash, onion.clone(), id, &route).unwrap();
 	let amt = Some(total_msat);
@@ -6939,7 +6940,7 @@ pub fn test_onion_value_mpp_set_calculation() {
 				&route.paths[0],
 				&session_priv,
 			);
-			let recipient_onion_fields = RecipientOnionFields::secret_only(payment_secret);
+			let recipient_onion_fields = RecipientOnionFields::secret_only(payment_secret, 100_000);
 			let (mut onion_payloads, _, _) = onion_utils::build_onion_payloads(
 				&route.paths[0],
 				100_000,
@@ -7044,10 +7045,10 @@ fn do_test_overshoot_mpp(msat_amounts: &[u64], total_msat: u64) {
 
 	// Send payment with manually set total_msat
 	let id = PaymentId(nodes[src_idx].keys_manager.backing.get_secure_random_bytes());
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, total_msat);
 	let onion_session_privs =
 		nodes[src_idx].node.test_add_new_pending_payment(hash, onion, id, &route).unwrap();
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, total_msat);
 	let amt = Some(total_msat);
 	nodes[src_idx]
 		.node
@@ -7135,7 +7136,7 @@ pub fn test_preimage_storage() {
 		let (payment_hash, payment_secret) =
 			nodes[1].node.create_inbound_payment(Some(100_000), 7200, None).unwrap();
 		let (route, _, _, _) = get_route_and_payment_hash!(nodes[0], nodes[1], 100_000);
-		let onion = RecipientOnionFields::secret_only(payment_secret);
+		let onion = RecipientOnionFields::secret_only(payment_secret, 100_000);
 		let id = PaymentId(payment_hash.0);
 		nodes[0].node.send_payment_with_route(route, payment_hash, onion, id).unwrap();
 
@@ -7227,20 +7228,20 @@ pub fn test_bad_secret_hash() {
 	let expected_err_data = [0, 0, 0, 0, 0, 1, 0x86, 0xa0, 0, 0, 0, CHAN_CONFIRM_DEPTH as u8];
 
 	// Send a payment with the right payment hash but the wrong payment secret
-	let onion = RecipientOnionFields::secret_only(random_secret);
+	let onion = RecipientOnionFields::secret_only(random_secret, 100_000);
 	let id = PaymentId(our_payment_hash.0);
 	nodes[0].node.send_payment_with_route(route.clone(), our_payment_hash, onion, id).unwrap();
 	handle_unknown_invalid_payment_data!(our_payment_hash);
 	expect_payment_failed!(nodes[0], our_payment_hash, true, expected_err_code, expected_err_data);
 
 	// Send a payment with a random payment hash, but the right payment secret
-	let onion = RecipientOnionFields::secret_only(our_payment_secret);
+	let onion = RecipientOnionFields::secret_only(our_payment_secret, 100_000);
 	nodes[0].node.send_payment_with_route(route.clone(), random_hash, onion, id).unwrap();
 	handle_unknown_invalid_payment_data!(random_hash);
 	expect_payment_failed!(nodes[0], random_hash, true, expected_err_code, expected_err_data);
 
 	// Send a payment with a random payment hash and random payment secret
-	let onion = RecipientOnionFields::secret_only(random_secret);
+	let onion = RecipientOnionFields::secret_only(random_secret, 100_000);
 	nodes[0].node.send_payment_with_route(route, random_hash, onion, id).unwrap();
 	handle_unknown_invalid_payment_data!(random_hash);
 	expect_payment_failed!(nodes[0], random_hash, true, expected_err_code, expected_err_data);
@@ -7467,7 +7468,7 @@ pub fn test_concurrent_monitor_claim() {
 	// Route another payment to generate another update with still previous HTLC pending
 	let (route, payment_hash, _, payment_secret) =
 		get_route_and_payment_hash!(nodes[1], nodes[0], 3000000);
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, 3000000);
 	let id = PaymentId(payment_hash.0);
 	nodes[1].node.send_payment_with_route(route, payment_hash, onion, id).unwrap();
 	check_added_monitors(&nodes[1], 1);
@@ -8203,7 +8204,7 @@ fn do_test_dup_htlc_second_rejected(test_for_second_fail_panic: bool) {
 		get_payment_preimage_hash!(&nodes[1]);
 
 	{
-		let onion = RecipientOnionFields::secret_only(our_payment_secret);
+		let onion = RecipientOnionFields::secret_only(our_payment_secret, 10_000);
 		let id = PaymentId(our_payment_hash.0);
 		nodes[0].node.send_payment_with_route(route.clone(), our_payment_hash, onion, id).unwrap();
 		check_added_monitors(&nodes[0], 1);
@@ -8219,7 +8220,7 @@ fn do_test_dup_htlc_second_rejected(test_for_second_fail_panic: bool) {
 
 	{
 		// Note that we use a different PaymentId here to allow us to duplicativly pay
-		let onion = RecipientOnionFields::secret_only(our_payment_secret);
+		let onion = RecipientOnionFields::secret_only(our_payment_secret, 10_000);
 		let id = PaymentId(our_payment_secret.0);
 		nodes[0].node.send_payment_with_route(route, our_payment_hash, onion, id).unwrap();
 		check_added_monitors(&nodes[0], 1);
@@ -8359,10 +8360,10 @@ pub fn test_inconsistent_mpp_params() {
 		// ultimately have, just not right away.
 		let mut dup_route = route.clone();
 		dup_route.paths.push(route.paths[1].clone());
-		let onion = RecipientOnionFields::secret_only(payment_secret);
+		let onion = RecipientOnionFields::secret_only(payment_secret, 15_000_000);
 		nodes[0].node.test_add_new_pending_payment(hash, onion, id, &dup_route).unwrap()
 	};
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, 15_000_000);
 	let path_a = &route.paths[0];
 	let real_amt = 15_000_000;
 	let priv_a = session_privs[0];
@@ -8380,7 +8381,7 @@ pub fn test_inconsistent_mpp_params() {
 	assert!(nodes[3].node.get_and_clear_pending_events().is_empty());
 
 	let path_b = &route.paths[1];
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, 14_000_000);
 	let amt_b = 14_000_000;
 	let priv_b = session_privs[1];
 	nodes[0]
@@ -8440,7 +8441,7 @@ pub fn test_inconsistent_mpp_params() {
 	let conditions = PaymentFailedConditions::new().mpp_parts_remain();
 	expect_payment_failed_conditions(&nodes[0], hash, true, conditions);
 
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, real_amt);
 	let path_b = &route.paths[1];
 	let priv_c = session_privs[2];
 	nodes[0]
@@ -8508,7 +8509,7 @@ pub fn test_double_partial_claim() {
 	pass_failed_payment_back(&nodes[0], paths, false, hash, reason);
 
 	// nodes[1] now retries one of the two paths...
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, 15_000_000);
 	let id = PaymentId(hash.0);
 	nodes[0].node.send_payment_with_route(route, hash, onion, id).unwrap();
 	check_added_monitors(&nodes[0], 2);
@@ -8740,12 +8741,18 @@ fn do_test_max_dust_htlc_exposure(
 		};
 		// With default dust exposure: 5000 sats
 		if on_holder_tx {
-			let onion = RecipientOnionFields::secret_only(payment_secret);
+			let onion = RecipientOnionFields::secret_only(
+				payment_secret,
+				dust_outbound_htlc_on_holder_tx_msat,
+			);
 			let id = PaymentId(payment_hash.0);
 			let res = nodes[0].node.send_payment_with_route(route, payment_hash, onion, id);
 			unwrap_send_err!(nodes[0], res, true, APIError::ChannelUnavailable { .. }, {});
 		} else {
-			let onion = RecipientOnionFields::secret_only(payment_secret);
+			let onion = RecipientOnionFields::secret_only(
+				payment_secret,
+				dust_htlc_on_counterparty_tx_msat + 1,
+			);
 			let id = PaymentId(payment_hash.0);
 			let res = nodes[0].node.send_payment_with_route(route, payment_hash, onion, id);
 			unwrap_send_err!(nodes[0], res, true, APIError::ChannelUnavailable { .. }, {});
@@ -8759,7 +8766,7 @@ fn do_test_max_dust_htlc_exposure(
 		let (route, payment_hash, _, payment_secret) =
 			get_route_and_payment_hash!(nodes[1], nodes[0], amount_msats);
 
-		let onion = RecipientOnionFields::secret_only(payment_secret);
+		let onion = RecipientOnionFields::secret_only(payment_secret, amount_msats);
 		let id = PaymentId(payment_hash.0);
 		nodes[1].node.send_payment_with_route(route, payment_hash, onion, id).unwrap();
 		check_added_monitors(&nodes[1], 1);
@@ -8798,7 +8805,7 @@ fn do_test_max_dust_htlc_exposure(
 		// to cross the threshold.
 		for _ in 0..AT_FEE_OUTBOUND_HTLCS {
 			let (_, hash, payment_secret) = get_payment_preimage_hash(&nodes[1], Some(1_000), None);
-			let onion = RecipientOnionFields::secret_only(payment_secret);
+			let onion = RecipientOnionFields::secret_only(payment_secret, route.get_total_amount());
 			let id = PaymentId(hash.0);
 			nodes[0].node.send_payment_with_route(route.clone(), hash, onion, id).unwrap();
 		}
@@ -9028,7 +9035,7 @@ pub fn test_nondust_htlc_excess_fees_are_dust() {
 	// Send an additional non-dust htlc from 1 to 0, and check the complaint
 	let (route, payment_hash, _, payment_secret) =
 		get_route_and_payment_hash!(nodes[1], nodes[0], dust_limit * 2);
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, route.get_total_amount());
 	let id = PaymentId(payment_hash.0);
 	nodes[1].node.send_payment_with_route(route, payment_hash, onion, id).unwrap();
 	check_added_monitors(&nodes[1], 1);
@@ -9064,7 +9071,7 @@ pub fn test_nondust_htlc_excess_fees_are_dust() {
 	assert_eq!(nodes[1].node.list_channels()[0].pending_outbound_htlcs.len(), 0);
 
 	// Send an additional non-dust htlc from 0 to 1 using the pre-calculated route above, and check the immediate complaint
-	let onion = RecipientOnionFields::secret_only(payment_secret_0_1);
+	let onion = RecipientOnionFields::secret_only(payment_secret_0_1, route_0_1.get_total_amount());
 	let id = PaymentId(payment_hash_0_1.0);
 	let res = nodes[0].node.send_payment_with_route(route_0_1, payment_hash_0_1, onion, id);
 	unwrap_send_err!(nodes[0], res, true, APIError::ChannelUnavailable { .. }, {});
@@ -9082,7 +9089,7 @@ pub fn test_nondust_htlc_excess_fees_are_dust() {
 	create_announced_chan_between_nodes(&nodes, 2, 0);
 	let (route, payment_hash, _, payment_secret) =
 		get_route_and_payment_hash!(nodes[2], nodes[1], dust_limit * 2);
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, route.get_total_amount());
 	nodes[2].node.send_payment_with_route(route, payment_hash, onion, PaymentId([0; 32])).unwrap();
 	check_added_monitors(&nodes[2], 1);
 	let send = SendEvent::from_node(&nodes[2]);
@@ -9204,7 +9211,7 @@ fn do_test_nondust_htlc_fees_dust_exposure_delta(features: ChannelTypeFeatures) 
 	// Send an additional non-dust htlc from 0 to 1, and check the complaint
 	let (route, payment_hash, _, payment_secret) =
 		get_route_and_payment_hash!(nodes[0], nodes[1], NON_DUST_HTLC_MSAT);
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, NON_DUST_HTLC_MSAT);
 	let id = PaymentId(payment_hash.0);
 	nodes[0].node.send_payment_with_route(route, payment_hash, onion, id).unwrap();
 	check_added_monitors(&nodes[0], 1);
@@ -9286,7 +9293,7 @@ fn do_test_nondust_htlc_fees_dust_exposure_delta(features: ChannelTypeFeatures) 
 	nodes[1].node.update_partial_channel_config(&node_a_id, &[chan_id], &update).unwrap();
 
 	// Send an additional non-dust htlc from 1 to 0 using the pre-calculated route above, and check the immediate complaint
-	let onion = RecipientOnionFields::secret_only(payment_secret_1_0);
+	let onion = RecipientOnionFields::secret_only(payment_secret_1_0, NON_DUST_HTLC_MSAT);
 	let id = PaymentId(payment_hash_1_0.0);
 	let res = nodes[1].node.send_payment_with_route(route_1_0, payment_hash_1_0, onion, id);
 	unwrap_send_err!(nodes[1], res, true, APIError::ChannelUnavailable { .. }, {});
@@ -9369,7 +9376,7 @@ fn do_payment_with_custom_min_final_cltv_expiry(valid_delta: bool, use_user_hash
 		(hash, nodes[1].node.get_payment_preimage(hash, payment_secret).unwrap(), payment_secret)
 	};
 	let route = get_route!(nodes[0], payment_parameters, recv_value).unwrap();
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, recv_value);
 	nodes[0].node.send_payment_with_route(route, hash, onion, PaymentId(hash.0)).unwrap();
 	check_added_monitors(&nodes[0], 1);
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -9846,7 +9853,7 @@ fn do_test_multi_post_event_actions(do_reload: bool) {
 	let (route, payment_hash_3, _, payment_secret_3) =
 		get_route_and_payment_hash!(nodes[1], nodes[0], 100_000);
 	let payment_id = PaymentId(payment_hash_3.0);
-	let onion = RecipientOnionFields::secret_only(payment_secret_3);
+	let onion = RecipientOnionFields::secret_only(payment_secret_3, 100_000);
 	nodes[1].node.send_payment_with_route(route, payment_hash_3, onion, payment_id).unwrap();
 	check_added_monitors(&nodes[1], 1);
 
@@ -9957,7 +9964,7 @@ pub fn test_dust_exposure_holding_cell_assertion() {
 	// messages (leaving B waiting on C's RAA) the next HTLC will go into B's holding cell.
 	let (route_bc, payment_hash_bc, _payment_preimage_bc, payment_secret_bc) =
 		get_route_and_payment_hash!(nodes[1], nodes[2], DUST_HTLC_VALUE_MSAT);
-	let onion_bc = RecipientOnionFields::secret_only(payment_secret_bc);
+	let onion_bc = RecipientOnionFields::secret_only(payment_secret_bc, DUST_HTLC_VALUE_MSAT);
 	let id = PaymentId(payment_hash_bc.0);
 	nodes[1].node.send_payment_with_route(route_bc, payment_hash_bc, onion_bc, id).unwrap();
 	check_added_monitors(&nodes[1], 1);
@@ -9977,7 +9984,7 @@ pub fn test_dust_exposure_holding_cell_assertion() {
 		.unwrap();
 	let (route_ac, payment_hash_cell, _, payment_secret_ac) =
 		get_route_and_payment_hash!(nodes[0], nodes[2], payment_params_ac, DUST_HTLC_VALUE_MSAT);
-	let onion_ac = RecipientOnionFields::secret_only(payment_secret_ac);
+	let onion_ac = RecipientOnionFields::secret_only(payment_secret_ac, DUST_HTLC_VALUE_MSAT);
 	let id = PaymentId(payment_hash_cell.0);
 	nodes[0].node.send_payment_with_route(route_ac, payment_hash_cell, onion_ac, id).unwrap();
 	check_added_monitors(&nodes[0], 1);
@@ -10000,7 +10007,7 @@ pub fn test_dust_exposure_holding_cell_assertion() {
 	// its holding cell as it would be over-exposed to dust.
 	let (route_cb, payment_hash_cb, payment_preimage_cb, payment_secret_cb) =
 		get_route_and_payment_hash!(nodes[2], nodes[1], DUST_HTLC_VALUE_MSAT);
-	let onion_cb = RecipientOnionFields::secret_only(payment_secret_cb);
+	let onion_cb = RecipientOnionFields::secret_only(payment_secret_cb, DUST_HTLC_VALUE_MSAT);
 	let id = PaymentId(payment_hash_cb.0);
 	nodes[2].node.send_payment_with_route(route_cb, payment_hash_cb, onion_cb, id).unwrap();
 	check_added_monitors(&nodes[2], 1);

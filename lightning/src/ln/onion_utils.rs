@@ -219,6 +219,7 @@ impl<'a, 'b> OnionPayload<'a, 'b> for msgs::OutboundOnionPayload<'a> {
 		recipient_onion: &'a RecipientOnionFields, keysend_preimage: Option<PaymentPreimage>,
 		sender_intended_htlc_amt_msat: u64, total_msat: u64, cltv_expiry_height: u32,
 	) -> Result<Self::ReceiveType, APIError> {
+		debug_assert_eq!(total_msat, recipient_onion.total_mpp_amount_msat);
 		Ok(Self::Receive {
 			payment_data: recipient_onion
 				.payment_secret
@@ -257,6 +258,7 @@ impl<'a, 'b> OnionPayload<'a, 'b> for msgs::OutboundOnionPayload<'a> {
 		total_msat: u64, amt_to_forward: u64, outgoing_cltv_value: u32,
 		recipient_onion: &'a RecipientOnionFields, packet: msgs::TrampolineOnionPacket,
 	) -> Result<Self, APIError> {
+		debug_assert_eq!(total_msat, recipient_onion.total_mpp_amount_msat);
 		Ok(Self::TrampolineEntrypoint {
 			amt_to_forward,
 			outgoing_cltv_value,
@@ -443,6 +445,8 @@ pub(super) fn build_onion_payloads<'a>(
 	invoice_request: Option<&'a InvoiceRequest>,
 	trampoline_packet: Option<msgs::TrampolineOnionPacket>,
 ) -> Result<(Vec<msgs::OutboundOnionPayload<'a>>, u64, u32), APIError> {
+	debug_assert_eq!(total_msat, recipient_onion.total_mpp_amount_msat);
+
 	let mut res: Vec<msgs::OutboundOnionPayload> = Vec::with_capacity(
 		path.hops.len() + path.blinded_tail.as_ref().map_or(0, |t| t.hops.len()),
 	);
@@ -513,6 +517,8 @@ where
 	let mut cur_value_msat = 0u64;
 	let mut cur_cltv = starting_htlc_offset;
 	let mut last_hop_id = None;
+
+	debug_assert_eq!(total_msat, recipient_onion.total_mpp_amount_msat);
 
 	for (idx, hop) in hops.rev().enumerate() {
 		// First hop gets special values so that it can check, on receipt, that everything is
@@ -661,11 +667,15 @@ pub(crate) fn set_max_path_length(
 		maybe_announced_channel: false,
 	};
 	let mut num_reserved_bytes: usize = 0;
+	// TODO: Find a way to avoid `clone`ing the whole recipient onion without re-adding the
+	// explicit amount parameter to build_onion_payloads_callback.
+	let mut recipient_onion_with_excess_value = recipient_onion.clone();
+	recipient_onion_with_excess_value.total_mpp_amount_msat = final_value_msat_with_overpay_buffer;
 	let build_payloads_res = build_onion_payloads_callback(
 		core::iter::once(&unblinded_route_hop),
 		blinded_tail_opt,
 		final_value_msat_with_overpay_buffer,
-		&recipient_onion,
+		&recipient_onion_with_excess_value,
 		best_block_height,
 		&keysend_preimage,
 		invoice_request,
@@ -2623,10 +2633,19 @@ pub(crate) fn create_payment_onion_internal<T: secp256k1::Signing>(
 	prng_seed: [u8; 32], trampoline_session_priv_override: Option<SecretKey>,
 	trampoline_prng_seed_override: Option<[u8; 32]>,
 ) -> Result<(msgs::OnionPacket, u64, u32), APIError> {
+	debug_assert_eq!(total_msat, recipient_onion.total_mpp_amount_msat);
+
 	let mut outer_total_msat = total_msat;
 	let mut outer_starting_htlc_offset = cur_block_height;
 	let mut trampoline_packet_option = None;
 
+	let mut trampoline_outer_onion = RecipientOnionFields {
+		payment_secret: recipient_onion.payment_secret,
+		total_mpp_amount_msat: recipient_onion.total_mpp_amount_msat,
+		payment_metadata: None,
+		custom_tlvs: Vec::new(),
+	};
+	let mut outer_onion = recipient_onion;
 	if let Some(blinded_tail) = &path.blinded_tail {
 		if !blinded_tail.trampoline_hops.is_empty() {
 			let trampoline_payloads;
@@ -2638,6 +2657,7 @@ pub(crate) fn create_payment_onion_internal<T: secp256k1::Signing>(
 					cur_block_height,
 					keysend_preimage,
 				)?;
+			trampoline_outer_onion.total_mpp_amount_msat = outer_total_msat;
 
 			let trampoline_session_priv = trampoline_session_priv_override
 				.unwrap_or_else(|| compute_trampoline_session_priv(session_priv));
@@ -2657,13 +2677,14 @@ pub(crate) fn create_payment_onion_internal<T: secp256k1::Signing>(
 			})?;
 
 			trampoline_packet_option = Some(trampoline_packet);
+			outer_onion = &trampoline_outer_onion;
 		}
 	}
 
 	let (onion_payloads, htlc_msat, htlc_cltv) = build_onion_payloads(
 		&path,
 		outer_total_msat,
-		recipient_onion,
+		outer_onion,
 		outer_starting_htlc_offset,
 		keysend_preimage,
 		invoice_request,
@@ -4029,7 +4050,7 @@ mod tests {
 			max_total_routing_fee_msat: Some(u64::MAX),
 		};
 		route_params.payment_params.max_total_cltv_expiry_delta = u32::MAX;
-		let recipient_onion = RecipientOnionFields::spontaneous_empty();
+		let recipient_onion = RecipientOnionFields::spontaneous_empty(u64::MAX);
 		set_max_path_length(&mut route_params, &recipient_onion, None, None, 42).unwrap();
 	}
 

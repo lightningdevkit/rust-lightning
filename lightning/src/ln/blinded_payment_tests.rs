@@ -187,7 +187,7 @@ fn do_one_hop_blinded_path(success: bool) {
 		PaymentParameters::blinded(vec![blinded_path]),
 		amt_msat,
 	);
-	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(),
+	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(amt_msat),
 	PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
 	check_added_monitors(&nodes[0], 1);
 	pass_along_route(&nodes[0], &[&[&nodes[1]]], amt_msat, payment_hash, payment_secret);
@@ -243,7 +243,7 @@ fn one_hop_blinded_path_with_dummy_hops() {
 		.node
 		.send_payment(
 			payment_hash,
-			RecipientOnionFields::spontaneous_empty(),
+			RecipientOnionFields::spontaneous_empty(amt_msat),
 			PaymentId(payment_hash.0),
 			route_params,
 			Retry::Attempts(0),
@@ -307,7 +307,7 @@ fn mpp_to_one_hop_blinded_path() {
 		PaymentParameters::blinded(vec![blinded_path]).with_bolt12_features(bolt12_features).unwrap(),
 		amt_msat,
 	);
-	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
+	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(amt_msat), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
 	check_added_monitors(&nodes[0], 2);
 
 	let expected_route: &[&[&Node]] = &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]];
@@ -399,7 +399,7 @@ fn mpp_to_three_hop_blinded_paths() {
 		RouteParameters::from_payment_params_and_value(pay_params, amt_msat)
 	};
 
-	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(),
+	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(amt_msat),
 		PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
 	check_added_monitors(&nodes[0], 2);
 
@@ -464,7 +464,7 @@ fn do_forward_checks_failure(check: ForwardCheckFail, intro_fails: bool) {
 
 	let route = get_route(&nodes[0], &route_params).unwrap();
 	node_cfgs[0].router.expect_find_route(route_params.clone(), Ok(route.clone()));
-	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
+	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(amt_msat), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
 	check_added_monitors(&nodes[0], 1);
 
 	macro_rules! cause_error {
@@ -474,7 +474,7 @@ fn do_forward_checks_failure(check: ForwardCheckFail, intro_fails: bool) {
 					$update_add.cltv_expiry = 10; // causes outbound CLTV expiry to underflow
 				},
 				ForwardCheckFail::ForwardPayloadEncodedAsReceive => {
-					let recipient_onion_fields = RecipientOnionFields::spontaneous_empty();
+					let recipient_onion_fields = RecipientOnionFields::spontaneous_empty(amt_msat);
 					let session_priv = SecretKey::from_slice(&[3; 32]).unwrap();
 					let mut onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv);
 					let cur_height = nodes[0].best_block_info().1;
@@ -594,7 +594,7 @@ fn failed_backwards_to_intro_node() {
 		nodes.iter().skip(1).map(|n| n.node.get_our_node_id()).collect(), &[&chan_upd_1_2],
 		&chanmon_cfgs[2].keys_manager);
 
-	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
+	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(amt_msat), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
 	check_added_monitors(&nodes[0], 1);
 
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -680,7 +680,7 @@ fn do_forward_fail_in_process_pending_htlc_fwds(check: ProcessPendingHTLCsCheck,
 		nodes.iter().skip(1).map(|n| n.node.get_our_node_id()).collect(), &[&chan_upd_1_2, &chan_upd_2_3],
 		&chanmon_cfgs[2].keys_manager);
 
-	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
+	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(amt_msat), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
 	check_added_monitors(&nodes[0], 1);
 
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -790,7 +790,7 @@ fn do_blinded_intercept_payment(intercept_node_fails: bool) {
 		nodes.iter().skip(1).map(|n| n.node.get_our_node_id()).collect(), &[&intercept_chan_upd],
 		&chanmon_cfgs[2].keys_manager);
 
-	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(),
+	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(amt_msat),
 	PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
 	check_added_monitors(&nodes[0], 1);
 	let payment_event = {
@@ -865,7 +865,7 @@ fn two_hop_blinded_path_success() {
 		nodes.iter().skip(1).map(|n| n.node.get_our_node_id()).collect(), &[&chan_upd_1_2],
 		&chanmon_cfgs[2].keys_manager);
 
-	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
+	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(amt_msat), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
 	check_added_monitors(&nodes[0], 1);
 	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], amt_msat, payment_hash, payment_secret);
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
@@ -895,7 +895,7 @@ fn three_hop_blinded_path_success() {
 		nodes.iter().skip(2).map(|n| n.node.get_our_node_id()).collect(),
 		&[&chan_upd_2_3, &chan_upd_3_4], &chanmon_cfgs[4].keys_manager);
 
-	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
+	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(amt_msat), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
 	check_added_monitors(&nodes[0], 1);
 	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[2], &nodes[3], &nodes[4]]], amt_msat, payment_hash, payment_secret);
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2], &nodes[3], &nodes[4]], payment_preimage);
@@ -920,7 +920,7 @@ fn three_hop_blinded_path_fail() {
 		nodes.iter().skip(1).map(|n| n.node.get_our_node_id()).collect(),
 		&[&chan_upd_1_2, &chan_upd_2_3], &chanmon_cfgs[3].keys_manager);
 
-	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
+	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(amt_msat), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
 	check_added_monitors(&nodes[0], 1);
 	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[2], &nodes[3]]], amt_msat, payment_hash, payment_secret);
 
@@ -1021,7 +1021,7 @@ fn do_multi_hop_receiver_fail(check: ReceiveCheckFail) {
 		find_route(&nodes[0], &route_params).unwrap()
 	};
 	node_cfgs[0].router.expect_find_route(route_params.clone(), Ok(route.clone()));
-	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
+	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(amt_msat), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
 	check_added_monitors(&nodes[0], 1);
 
 	let mut payment_event_0_1 = {
@@ -1064,7 +1064,7 @@ fn do_multi_hop_receiver_fail(check: ReceiveCheckFail) {
 			let session_priv = SecretKey::from_slice(&session_priv).unwrap();
 			let mut onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv);
 			let cur_height = nodes[0].best_block_info().1;
-			let recipient_onion_fields = RecipientOnionFields::spontaneous_empty();
+			let recipient_onion_fields = RecipientOnionFields::spontaneous_empty(amt_msat);
 			let (mut onion_payloads, ..) = onion_utils::build_onion_payloads(
 				&route.paths[0], amt_msat, &recipient_onion_fields, cur_height, &None, None, None).unwrap();
 
@@ -1210,7 +1210,7 @@ fn blinded_path_retries() {
 		RouteParameters::from_payment_params_and_value(pay_params, amt_msat)
 	};
 
-	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params.clone(), Retry::Attempts(2)).unwrap();
+	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(amt_msat), PaymentId(payment_hash.0), route_params.clone(), Retry::Attempts(2)).unwrap();
 	check_added_monitors(&nodes[0], 1);
 	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[3]]], amt_msat, payment_hash, payment_secret);
 
@@ -1309,7 +1309,7 @@ fn min_htlc() {
 	assert_eq!(min_htlc_msat,
 		route_params.payment_params.payee.blinded_route_hints()[0].payinfo.htlc_minimum_msat);
 
-	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params.clone(), Retry::Attempts(0)).unwrap();
+	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(min_htlc_msat), PaymentId(payment_hash.0), route_params.clone(), Retry::Attempts(0)).unwrap();
 	check_added_monitors(&nodes[0], 1);
 	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[2], &nodes[3]]], min_htlc_msat, payment_hash, payment_secret);
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2], &nodes[3]], payment_preimage);
@@ -1322,7 +1322,7 @@ fn min_htlc() {
 		route_hints[0].payinfo.htlc_minimum_msat -= 1;
 	} else { panic!() }
 	route_params.final_value_msat -= 1;
-	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
+	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(route_params.final_value_msat), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
 	check_added_monitors(&nodes[0], 1);
 
 	let mut payment_event_0_1 = {
@@ -1387,7 +1387,7 @@ fn conditionally_round_fwd_amt() {
 		&chanmon_cfgs[4].keys_manager);
 	route_params.max_total_routing_fee_msat = None;
 
-	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
+	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(amt_msat), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
 	check_added_monitors(&nodes[0], 1);
 	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[2], &nodes[3], &nodes[4]]], amt_msat, payment_hash, payment_secret);
 	nodes[4].node.claim_funds(payment_preimage);
@@ -1432,7 +1432,7 @@ fn custom_tlvs_to_blinded_path() {
 		amt_msat,
 	);
 
-	let recipient_onion_fields = RecipientOnionFields::spontaneous_empty()
+	let recipient_onion_fields = RecipientOnionFields::spontaneous_empty(amt_msat)
 		.with_custom_tlvs(RecipientCustomTlvs::new(vec![((1 << 16) + 1, vec![42, 42])]).unwrap());
 	nodes[0].node.send_payment(payment_hash, recipient_onion_fields.clone(),
 		PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
@@ -1487,7 +1487,7 @@ fn fails_receive_tlvs_authentication() {
 	);
 
 	// Test authentication works normally.
-	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
+	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(amt_msat), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
 	check_added_monitors(&nodes[0], 1);
 	pass_along_route(&nodes[0], &[&[&nodes[1]]], amt_msat, payment_hash, payment_secret);
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage);
@@ -1517,7 +1517,7 @@ fn fails_receive_tlvs_authentication() {
 		amt_msat,
 	);
 
-	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
+	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(amt_msat), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
 	check_added_monitors(&nodes[0], 1);
 
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -1574,7 +1574,7 @@ fn blinded_payment_path_padding() {
 
 	let route_params = RouteParameters::from_payment_params_and_value(PaymentParameters::blinded(vec![blinded_path]), amt_msat);
 
-	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
+	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(amt_msat), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
 	check_added_monitors(&nodes[0], 1);
 	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[2], &nodes[3], &nodes[4]]], amt_msat, payment_hash, payment_secret);
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2], &nodes[3], &nodes[4]], payment_preimage);
@@ -1681,7 +1681,7 @@ fn route_blinding_spec_test_vector() {
 		}),
 	};
 	let cur_height = 747_000;
-	let (bob_onion, _, _) = onion_utils::create_payment_onion(&secp_ctx, &path, &session_priv, amt_msat, &RecipientOnionFields::spontaneous_empty(), cur_height, &PaymentHash([0; 32]), &None, None, [0; 32]).unwrap();
+	let (bob_onion, _, _) = onion_utils::create_payment_onion(&secp_ctx, &path, &session_priv, amt_msat, &RecipientOnionFields::spontaneous_empty(amt_msat), cur_height, &PaymentHash([0; 32]), &None, None, [0; 32]).unwrap();
 
 	struct TestEcdhSigner {
 		node_secret: SecretKey,
@@ -1904,7 +1904,7 @@ fn test_combined_trampoline_onion_creation_vectors() {
 
 	let amt_msat = 150_000_000;
 	let cur_height = 800_000;
-	let recipient_onion_fields = RecipientOnionFields::secret_only(payment_secret);
+	let recipient_onion_fields = RecipientOnionFields::secret_only(payment_secret, amt_msat);
 	let (bob_onion, htlc_msat, htlc_cltv) = onion_utils::create_payment_onion_internal(&secp_ctx, &path, &outer_session_key, amt_msat, &recipient_onion_fields, cur_height, &associated_data, &None, None, outer_onion_prng_seed, Some(session_priv), Some([0; 32])).unwrap();
 
 	let outer_onion_packet_hex = bob_onion.encode().to_lower_hex_string();
@@ -1995,7 +1995,7 @@ fn test_trampoline_inbound_payment_decoding() {
 
 	let amt_msat = 150_000_001;
 	let cur_height = 800_001;
-	let recipient_onion_fields = RecipientOnionFields::secret_only(payment_secret);
+	let recipient_onion_fields = RecipientOnionFields::secret_only(payment_secret, amt_msat);
 	let (bob_onion, _, _) = onion_utils::create_payment_onion(&secp_ctx, &path, &session_priv, amt_msat, &recipient_onion_fields, cur_height, &PaymentHash([0; 32]), &None, None, [0; 32]).unwrap();
 
 	struct TestEcdhSigner {
@@ -2166,12 +2166,11 @@ fn test_trampoline_forward_payload_encoded_as_receive() {
 		route_params: None,
 	};
 
-	nodes[0].node.send_payment_with_route(route.clone(), payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0)).unwrap();
+	nodes[0].node.send_payment_with_route(route.clone(), payment_hash, RecipientOnionFields::spontaneous_empty(amt_msat), PaymentId(payment_hash.0)).unwrap();
 	check_added_monitors(&nodes[0], 1);
 
 	let replacement_onion = {
 		// create a substitute onion where the last Trampoline hop is a forward
-		let recipient_onion_fields = RecipientOnionFields::spontaneous_empty();
 
 		let mut blinded_tail = route.paths[0].blinded_tail.clone().unwrap();
 
@@ -2181,6 +2180,7 @@ fn test_trampoline_forward_payload_encoded_as_receive() {
 			encrypted_payload: vec![],
 		});
 
+		let recipient_onion_fields = RecipientOnionFields::spontaneous_empty(amt_msat);
 		let (mut trampoline_payloads, outer_total_msat, outer_starting_htlc_offset) = onion_utils::build_trampoline_onion_payloads(&blinded_tail, amt_msat, &recipient_onion_fields, 32, &None).unwrap();
 
 		// pop the last dummy hop
@@ -2195,6 +2195,7 @@ fn test_trampoline_forward_payload_encoded_as_receive() {
 			None,
 		).unwrap();
 
+		let recipient_onion_fields = RecipientOnionFields::spontaneous_empty(outer_total_msat);
 		let (outer_payloads, _, _) = onion_utils::build_onion_payloads(&route.paths[0], outer_total_msat, &recipient_onion_fields, outer_starting_htlc_offset, &None, None, Some(trampoline_packet)).unwrap();
 		let outer_onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route.clone().paths[0], &outer_session_priv);
 		let outer_packet = onion_utils::construct_onion_packet(
@@ -2331,7 +2332,7 @@ fn do_test_trampoline_single_hop_receive(success: bool) {
 		route_params: None,
 	};
 
-	nodes[0].node.send_payment_with_route(route.clone(), payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0)).unwrap();
+	nodes[0].node.send_payment_with_route(route.clone(), payment_hash, RecipientOnionFields::spontaneous_empty(amt_msat), PaymentId(payment_hash.0)).unwrap();
 	check_added_monitors(&nodes[0], 1);
 
 	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], amt_msat, payment_hash, payment_secret);
@@ -2477,7 +2478,7 @@ fn replacement_onion(
 ) -> msgs::OnionPacket {
 	let outer_session_priv = SecretKey::from_slice(&override_random_bytes[..]).unwrap();
 	let trampoline_session_priv = onion_utils::compute_trampoline_session_priv(&outer_session_priv);
-	let recipient_onion_fields = RecipientOnionFields::spontaneous_empty();
+	let recipient_onion_fields = RecipientOnionFields::spontaneous_empty(original_amt_msat);
 
 	let blinded_tail = route.paths[0].blinded_tail.clone().unwrap();
 
@@ -2525,6 +2526,7 @@ fn replacement_onion(
 
 	// Use a different session key to construct the replacement onion packet. Note that the
 	// sender isn't aware of this and won't be able to decode the fulfill hold times.
+	let recipient_onion_fields = RecipientOnionFields::spontaneous_empty(outer_total_msat);
 	let (mut outer_payloads, _, _) = onion_utils::build_onion_payloads(
 		&route.paths[0],
 		outer_total_msat,
@@ -2650,7 +2652,7 @@ fn do_test_trampoline_relay(blinded: bool, test_case: TrampolineTestCase) {
 		.send_payment_with_route(
 			route.clone(),
 			payment_hash,
-			RecipientOnionFields::spontaneous_empty(),
+			RecipientOnionFields::spontaneous_empty(original_amt_msat),
 			PaymentId(payment_hash.0),
 		)
 		.unwrap();
@@ -2832,7 +2834,7 @@ fn test_trampoline_forward_rejection() {
 		route_params: None,
 	};
 
-	nodes[0].node.send_payment_with_route(route.clone(), payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0)).unwrap();
+	nodes[0].node.send_payment_with_route(route.clone(), payment_hash, RecipientOnionFields::spontaneous_empty(amt_msat), PaymentId(payment_hash.0)).unwrap();
 
 	check_added_monitors(&nodes[0], 1);
 
