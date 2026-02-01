@@ -2309,6 +2309,7 @@ fn test_path_paused_mpp() {
 	route.paths[1].hops[0].pubkey = node_c_id;
 	route.paths[1].hops[0].short_channel_id = chan_2_ann.contents.short_channel_id;
 	route.paths[1].hops[1].short_channel_id = chan_4_id;
+	route.route_params.as_mut().unwrap().final_value_msat *= 2;
 
 	// Set it so that the first monitor update (for the path 0 -> 1 -> 3) succeeds, but the second
 	// (for the path 0 -> 2 -> 3) fails.
@@ -4252,7 +4253,7 @@ fn do_test_partial_claim_mon_update_compl_actions(reload_a: bool, reload_b: bool
 	let chan_4_scid = chan_4_update.contents.short_channel_id;
 
 	let (mut route, payment_hash, preimage, payment_secret) =
-		get_route_and_payment_hash!(&nodes[0], nodes[3], 100000);
+		get_route_and_payment_hash!(&nodes[0], nodes[3], 100_000);
 	let path = route.paths[0].clone();
 	route.paths.push(path);
 	route.paths[0].hops[0].pubkey = node_b_id;
@@ -4261,6 +4262,8 @@ fn do_test_partial_claim_mon_update_compl_actions(reload_a: bool, reload_b: bool
 	route.paths[1].hops[0].pubkey = node_c_id;
 	route.paths[1].hops[0].short_channel_id = chan_2_scid;
 	route.paths[1].hops[1].short_channel_id = chan_4_scid;
+	route.route_params.as_mut().unwrap().final_value_msat *= 2;
+
 	let paths = &[&[&nodes[1], &nodes[3]][..], &[&nodes[2], &nodes[3]][..]];
 	send_along_route_with_secret(&nodes[0], route, paths, 200_000, payment_hash, payment_secret);
 

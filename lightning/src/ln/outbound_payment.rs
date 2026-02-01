@@ -894,6 +894,30 @@ impl OutboundPayments {
 	}
 }
 
+/// Validate that a [`Route`] picked by our [`Router`] is sane for the [`RouteParameters`] used to
+/// request it. Failure here indicates a critical bug in the [`Router`].
+fn validate_found_route<L: Logger>(
+	route: &mut Route, route_params: &RouteParameters, logger: &WithContext<L>,
+) -> Result<(), ()> {
+	if route.route_params.as_ref() != Some(route_params) {
+		debug_assert!(
+			false,
+			"Routers are expected to return a Route which includes the requested RouteParameters. Got {:?}, expected {route_params:?}",
+			route.route_params
+		);
+		log_error!(
+			logger,
+			"Routers are expected to return a Route which includes the requested RouteParameters. Got {:?}, expected {route_params:?}",
+			route.route_params
+		);
+		route.route_params = Some(route_params.clone());
+	}
+
+	route.debug_assert_route_meets_params(logger)?;
+
+	Ok(())
+}
+
 impl OutboundPayments {
 	#[rustfmt::skip]
 	pub(super) fn send_payment<R: Router, ES: EntropySource, NS: NodeSigner, IH, SP, L: Logger>(
@@ -1462,12 +1486,8 @@ impl OutboundPayments {
 			RetryableSendFailure::RouteNotFound
 		})?;
 
-		if route.route_params.as_ref() != Some(route_params) {
-			debug_assert!(false,
-				"Routers are expected to return a Route which includes the requested RouteParameters. Got {:?}, expected {:?}",
-				route.route_params, route_params);
-			route.route_params = Some(route_params.clone());
-		}
+		validate_found_route(&mut route, route_params, logger)
+			.map_err(|()| RetryableSendFailure::RouteNotFound)?;
 
 		Ok(route)
 	}
@@ -1552,18 +1572,9 @@ impl OutboundPayments {
 			}
 		};
 
-		if route.route_params.as_ref() != Some(&route_params) {
-			debug_assert!(false,
-				"Routers are expected to return a Route which includes the requested RouteParameters");
-			route.route_params = Some(route_params.clone());
-		}
-
-		for path in route.paths.iter() {
-			if path.hops.len() == 0 {
-				log_error!(logger, "Unusable path in route (path.hops.len() must be at least 1");
-				self.abandon_payment(payment_id, PaymentFailureReason::UnexpectedError, pending_events);
-				return
-			}
+		if validate_found_route(&mut route, &route_params, logger).is_err() {
+			self.abandon_payment(payment_id, PaymentFailureReason::RouteNotFound, pending_events);
+			return
 		}
 
 		macro_rules! abandon_with_entry {
@@ -2967,7 +2978,7 @@ mod tests {
 		let sender_pk = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let receiver_pk = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[43; 32]).unwrap());
 		let payment_params = PaymentParameters::from_node_id(sender_pk, 0);
-		let route_params = RouteParameters::from_payment_params_and_value(payment_params.clone(), 0);
+		let route_params = RouteParameters::from_payment_params_and_value(payment_params.clone(), 1);
 		let failed_scid = 42;
 		let route = Route {
 			paths: vec![Path { hops: vec![RouteHop {
@@ -2975,7 +2986,7 @@ mod tests {
 				node_features: NodeFeatures::empty(),
 				short_channel_id: failed_scid,
 				channel_features: ChannelFeatures::empty(),
-				fee_msat: 0,
+				fee_msat: 1,
 				cltv_expiry_delta: 0,
 				maybe_announced_channel: true,
 			}], blinded_tail: None }],

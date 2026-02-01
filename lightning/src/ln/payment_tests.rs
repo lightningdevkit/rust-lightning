@@ -97,6 +97,8 @@ fn mpp_failure() {
 	route.paths[1].hops[0].pubkey = node_c_id;
 	route.paths[1].hops[0].short_channel_id = chan_2_id;
 	route.paths[1].hops[1].short_channel_id = chan_4_id;
+	route.route_params.as_mut().unwrap().final_value_msat *= 2;
+
 	let paths: &[&[_]] = &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]];
 	send_along_route_with_secret(&nodes[0], route, paths, 200_000, payment_hash, payment_secret);
 	fail_payment_along_route(&nodes[0], paths, false, payment_hash);
@@ -137,6 +139,7 @@ fn mpp_retry() {
 	route.paths[1].hops[0].pubkey = node_c_id;
 	route.paths[1].hops[0].short_channel_id = chan_2_update.contents.short_channel_id;
 	route.paths[1].hops[1].short_channel_id = chan_4_update.contents.short_channel_id;
+	route.route_params.as_mut().unwrap().final_value_msat *= 2;
 
 	// Initiate the MPP payment.
 	let id = PaymentId(hash.0);
@@ -360,6 +363,7 @@ fn do_mpp_receive_timeout(send_partial_mpp: bool) {
 	route.paths[1].hops[0].pubkey = node_c_id;
 	route.paths[1].hops[0].short_channel_id = chan_2_update.contents.short_channel_id;
 	route.paths[1].hops[1].short_channel_id = chan_4_update.contents.short_channel_id;
+	route.route_params.as_mut().unwrap().final_value_msat *= 2;
 
 	// Initiate the MPP payment.
 	let onion = RecipientOnionFields::secret_only(payment_secret);

@@ -20368,6 +20368,7 @@ mod tests {
 		route.paths[1].hops[0].pubkey = nodes[2].node.get_our_node_id();
 		route.paths[1].hops[0].short_channel_id = chan_2_id;
 		route.paths[1].hops[1].short_channel_id = chan_4_id;
+		route.route_params.as_mut().unwrap().final_value_msat *= 2;
 
 		nodes[0].node.send_payment_with_route(route, payment_hash,
 			RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0)).unwrap();
