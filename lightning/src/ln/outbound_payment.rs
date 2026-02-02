@@ -133,6 +133,11 @@ pub(crate) enum PendingOutboundPayment {
 		pending_fee_msat: Option<u64>,
 		/// The total payment amount across all paths, used to verify that a retry is not overpaying.
 		total_msat: u64,
+		/// The total payment amount which is set in the onion.
+		///
+		/// This is generally equal to [`Self::Retryable::total_msat`] but may differ when making
+		/// payments which are sent MPP from different sources.
+		onion_total_msat: u64,
 		/// Our best known block height at the time this payment was initiated.
 		starting_block_height: u32,
 		remaining_max_total_routing_fee_msat: Option<u64>,
@@ -1656,7 +1661,7 @@ impl OutboundPayments {
 					match payment.get() {
 						PendingOutboundPayment::Retryable {
 							total_msat, keysend_preimage, payment_secret, payment_metadata,
-							custom_tlvs, pending_amt_msat, invoice_request, ..
+							custom_tlvs, pending_amt_msat, invoice_request, onion_total_msat, ..
 						} => {
 							const RETRY_OVERFLOW_PERCENTAGE: u64 = 10;
 							let retry_amt_msat = route.get_total_amount();
@@ -1676,7 +1681,7 @@ impl OutboundPayments {
 								payment_secret: *payment_secret,
 								payment_metadata: payment_metadata.clone(),
 								custom_tlvs: custom_tlvs.clone(),
-								total_mpp_amount_msat: *total_msat,
+								total_mpp_amount_msat: *onion_total_msat,
 							};
 							let keysend_preimage = *keysend_preimage;
 							let invoice_request = invoice_request.clone();
@@ -1992,6 +1997,7 @@ impl OutboundPayments {
 			custom_tlvs: recipient_onion.custom_tlvs,
 			starting_block_height: best_block_height,
 			total_msat: route.get_total_amount(),
+			onion_total_msat: recipient_onion.total_mpp_amount_msat,
 			remaining_max_total_routing_fee_msat:
 				route.route_params.as_ref().and_then(|p| p.max_total_routing_fee_msat),
 		};
@@ -2699,6 +2705,7 @@ impl OutboundPayments {
 					pending_amt_msat: path_amt,
 					pending_fee_msat: Some(path_fee),
 					total_msat: path_amt,
+					onion_total_msat: path_amt,
 					starting_block_height: best_block_height,
 					remaining_max_total_routing_fee_msat: None, // only used for retries, and we'll never retry on startup
 				}
@@ -2781,6 +2788,21 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 		(9, custom_tlvs, optional_vec),
 		(10, starting_block_height, required),
 		(11, remaining_max_total_routing_fee_msat, option),
+		(12, onion_total_msat, (custom, u64,
+			// Once we get here, `total_msat` will have been read (or we'll fail to read)
+			|read_val: Option<u64>| Ok(read_val.unwrap_or(total_msat.0.unwrap())),
+			|us: &PendingOutboundPayment| {
+				match us {
+					PendingOutboundPayment::Retryable { total_msat, onion_total_msat, .. } => {
+						if total_msat != onion_total_msat {
+							Some(*onion_total_msat)
+						} else {
+							None
+						}
+					},
+					_ => unreachable!(),
+				}
+			})),
 		(13, invoice_request, option),
 		(15, bolt12_invoice, option),
 		(not_written, retry_strategy, (static_value, None)),
