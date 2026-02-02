@@ -1488,6 +1488,66 @@ where
 	}
 }
 
+/// A trivial trait which describes any [`ChainMonitor`].
+///
+/// This is not exported to bindings users as general cover traits aren't useful in other
+/// languages.
+pub trait AChainMonitor {
+	/// A type implementing [`EcdsaChannelSigner`].
+	type Signer: EcdsaChannelSigner + Sized;
+	/// A type implementing [`chain::Filter`].
+	type Filter: chain::Filter;
+	/// A type implementing [`BroadcasterInterface`].
+	type Broadcaster: BroadcasterInterface;
+	/// A type implementing [`FeeEstimator`].
+	type FeeEstimator: FeeEstimator;
+	/// A type implementing [`Logger`].
+	type Logger: Logger;
+	/// A type that derefs to [`Persist`].
+	type Persister: Deref<Target = Self::PersisterTarget>;
+	/// The target of [`Self::Persister`].
+	type PersisterTarget: Persist<Self::Signer> + ?Sized;
+	/// A type implementing [`EntropySource`].
+	type EntropySource: EntropySource;
+	/// Returns a reference to the actual [`ChainMonitor`] object.
+	fn get_cm(
+		&self,
+	) -> &ChainMonitor<
+		Self::Signer,
+		Self::Filter,
+		Self::Broadcaster,
+		Self::FeeEstimator,
+		Self::Logger,
+		Self::Persister,
+		Self::EntropySource,
+	>;
+}
+
+impl<
+		ChannelSigner: EcdsaChannelSigner,
+		C: chain::Filter,
+		T: BroadcasterInterface,
+		F: FeeEstimator,
+		L: Logger,
+		P: Deref,
+		ES: EntropySource,
+	> AChainMonitor for ChainMonitor<ChannelSigner, C, T, F, L, P, ES>
+where
+	P::Target: Persist<ChannelSigner>,
+{
+	type Signer = ChannelSigner;
+	type Filter = C;
+	type Broadcaster = T;
+	type FeeEstimator = F;
+	type Logger = L;
+	type Persister = P;
+	type PersisterTarget = P::Target;
+	type EntropySource = ES;
+	fn get_cm(&self) -> &ChainMonitor<ChannelSigner, C, T, F, L, P, ES> {
+		self
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use crate::chain::channelmonitor::ANTI_REORG_DELAY;
