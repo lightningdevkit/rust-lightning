@@ -14,7 +14,7 @@ use crate::blinded_path::payment::{
 use crate::blinded_path::utils::is_padded;
 use crate::blinded_path::{self, BlindedHop};
 use crate::events::{Event, HTLCHandlingFailureType, PaymentFailureReason};
-use crate::ln::channelmanager::{self, HTLCFailureMsg, PaymentId, RecipientOnionFields};
+use crate::ln::channelmanager::{self, HTLCFailureMsg, PaymentId};
 use crate::ln::functional_test_utils::*;
 use crate::ln::inbound_payment::ExpandedKey;
 use crate::ln::msgs::{
@@ -22,7 +22,9 @@ use crate::ln::msgs::{
 };
 use crate::ln::onion_payment;
 use crate::ln::onion_utils::{self, LocalHTLCFailureReason};
-use crate::ln::outbound_payment::{RecipientCustomTlvs, Retry, IDEMPOTENCY_TIMEOUT_TICKS};
+use crate::ln::outbound_payment::{
+	RecipientCustomTlvs, RecipientOnionFields, Retry, IDEMPOTENCY_TIMEOUT_TICKS,
+};
 use crate::ln::types::ChannelId;
 use crate::offers::invoice::UnsignedBolt12Invoice;
 use crate::prelude::*;

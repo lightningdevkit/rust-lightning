@@ -14,12 +14,13 @@
 use crate::chain::ChannelMonitorUpdateStatus;
 use crate::events::{ClosureReason, Event, HTLCHandlingFailureType, PaymentFailureReason};
 use crate::ln::channel::CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY;
-use crate::ln::channelmanager::{PaymentId, RecipientOnionFields, MIN_CLTV_EXPIRY_DELTA};
+use crate::ln::channelmanager::{PaymentId, MIN_CLTV_EXPIRY_DELTA};
 use crate::ln::msgs;
 use crate::ln::msgs::{
 	BaseMessageHandler, ChannelMessageHandler, ErrorAction, MessageSendEvent, RoutingMessageHandler,
 };
 use crate::ln::onion_utils::LocalHTLCFailureReason;
+use crate::ln::outbound_payment::RecipientOnionFields;
 use crate::ln::types::ChannelId;
 use crate::routing::gossip::RoutingFees;
 use crate::routing::router::{PaymentParameters, RouteHint, RouteHintHop};

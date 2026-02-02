@@ -9,11 +9,10 @@
 
 //! Tests for verifying the correct relay of accountable signals between nodes.
 
-use crate::ln::channelmanager::{
-	HTLCForwardInfo, PaymentId, PendingAddHTLCInfo, PendingHTLCInfo, RecipientOnionFields, Retry,
-};
+use crate::ln::channelmanager::{HTLCForwardInfo, PaymentId, PendingAddHTLCInfo, PendingHTLCInfo};
 use crate::ln::functional_test_utils::*;
 use crate::ln::msgs::ChannelMessageHandler;
+use crate::ln::outbound_payment::{RecipientOnionFields, Retry};
 use crate::routing::router::{PaymentParameters, RouteParameters};
 
 fn test_accountable_forwarding_with_override(

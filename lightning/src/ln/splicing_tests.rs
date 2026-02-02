@@ -17,12 +17,11 @@ use crate::events::bump_transaction::sync::WalletSourceSync;
 use crate::events::{ClosureReason, Event, FundingInfo, HTLCHandlingFailureType};
 use crate::ln::chan_utils;
 use crate::ln::channel::CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY;
-use crate::ln::channelmanager::{
-	provided_init_features, PaymentId, RecipientOnionFields, BREAKDOWN_TIMEOUT,
-};
+use crate::ln::channelmanager::{provided_init_features, PaymentId, BREAKDOWN_TIMEOUT};
 use crate::ln::functional_test_utils::*;
 use crate::ln::funding::{FundingTxInput, SpliceContribution};
 use crate::ln::msgs::{self, BaseMessageHandler, ChannelMessageHandler, MessageSendEvent};
+use crate::ln::outbound_payment::RecipientOnionFields;
 use crate::ln::types::ChannelId;
 use crate::routing::router::{PaymentParameters, RouteParameters};
 use crate::util::errors::APIError;

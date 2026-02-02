@@ -33,14 +33,15 @@ use crate::ln::channel::{
 	MIN_CHAN_DUST_LIMIT_SATOSHIS, UNFUNDED_CHANNEL_AGE_LIMIT_TICKS,
 };
 use crate::ln::channelmanager::{
-	PaymentId, RAACommitmentOrder, RecipientOnionFields, BREAKDOWN_TIMEOUT, DISABLE_GOSSIP_TICKS,
-	ENABLE_GOSSIP_TICKS, MIN_CLTV_EXPIRY_DELTA,
+	PaymentId, RAACommitmentOrder, BREAKDOWN_TIMEOUT, DISABLE_GOSSIP_TICKS, ENABLE_GOSSIP_TICKS,
+	MIN_CLTV_EXPIRY_DELTA,
 };
 use crate::ln::msgs;
 use crate::ln::msgs::{
 	BaseMessageHandler, ChannelMessageHandler, ErrorAction, MessageSendEvent, RoutingMessageHandler,
 };
 use crate::ln::onion_utils::LocalHTLCFailureReason;
+use crate::ln::outbound_payment::RecipientOnionFields;
 use crate::ln::types::ChannelId;
 use crate::ln::{chan_utils, onion_utils};
 use crate::routing::gossip::{NetworkGraph, NetworkUpdate};

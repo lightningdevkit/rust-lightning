@@ -6774,8 +6774,9 @@ mod tests {
 		DelayedPaymentBasepoint, DelayedPaymentKey, HtlcBasepoint, RevocationBasepoint,
 		RevocationKey,
 	};
-	use crate::ln::channelmanager::{HTLCSource, PaymentId, RecipientOnionFields};
+	use crate::ln::channelmanager::{HTLCSource, PaymentId};
 	use crate::ln::functional_test_utils::*;
+	use crate::ln::outbound_payment::RecipientOnionFields;
 	use crate::ln::script::ShutdownScript;
 	use crate::ln::types::ChannelId;
 	use crate::sign::{ChannelSigner, InMemorySigner};

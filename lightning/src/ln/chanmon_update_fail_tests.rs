@@ -19,11 +19,12 @@ use crate::chain::transaction::OutPoint;
 use crate::chain::{ChannelMonitorUpdateStatus, Listen, Watch};
 use crate::events::{ClosureReason, Event, HTLCHandlingFailureType, PaymentPurpose};
 use crate::ln::channel::AnnouncementSigsState;
-use crate::ln::channelmanager::{PaymentId, RAACommitmentOrder, RecipientOnionFields, Retry};
+use crate::ln::channelmanager::{PaymentId, RAACommitmentOrder};
 use crate::ln::msgs;
 use crate::ln::msgs::{
 	BaseMessageHandler, ChannelMessageHandler, MessageSendEvent, RoutingMessageHandler,
 };
+use crate::ln::outbound_payment::{RecipientOnionFields, Retry};
 use crate::ln::types::ChannelId;
 use crate::routing::router::{PaymentParameters, RouteParameters};
 use crate::sign::NodeSigner;

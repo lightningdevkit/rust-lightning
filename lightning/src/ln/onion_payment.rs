@@ -750,10 +750,11 @@ pub(super) fn check_incoming_htlc_cltv(
 
 #[cfg(test)]
 mod tests {
-	use crate::ln::channelmanager::{RecipientOnionFields, MIN_CLTV_EXPIRY_DELTA};
+	use crate::ln::channelmanager::MIN_CLTV_EXPIRY_DELTA;
 	use crate::ln::functional_test_utils::TEST_FINAL_CLTV;
 	use crate::ln::msgs;
 	use crate::ln::onion_utils::create_payment_onion;
+	use crate::ln::outbound_payment::RecipientOnionFields;
 	use crate::ln::types::ChannelId;
 	use crate::routing::router::{Path, RouteHop};
 	use crate::types::features::{ChannelFeatures, NodeFeatures};

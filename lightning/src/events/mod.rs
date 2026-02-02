@@ -24,9 +24,10 @@ use crate::blinded_path::payment::{
 };
 use crate::chain::transaction;
 use crate::ln::channel::FUNDING_CONF_DEADLINE_BLOCKS;
-use crate::ln::channelmanager::{InterceptId, PaymentId, RecipientOnionFields};
+use crate::ln::channelmanager::{InterceptId, PaymentId};
 use crate::ln::msgs;
 use crate::ln::onion_utils::LocalHTLCFailureReason;
+use crate::ln::outbound_payment::RecipientOnionFields;
 use crate::ln::types::ChannelId;
 use crate::offers::invoice::Bolt12Invoice;
 use crate::offers::invoice_request::InvoiceRequest;
@@ -662,7 +663,7 @@ pub enum PaymentFailureReason {
 	#[cfg_attr(feature = "std", doc = "")]
 	#[cfg_attr(
 		feature = "std",
-		doc = "[`Retry::Timeout`]: crate::ln::channelmanager::Retry::Timeout"
+		doc = "[`Retry::Timeout`]: crate::ln::outbound_payment::Retry::Timeout"
 	)]
 	RetriesExhausted,
 	/// Either the BOLT 12 invoice was expired by the time we received it or the payment expired while
@@ -1082,7 +1083,7 @@ pub enum Event {
 	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
 	/// returning `Err(ReplayEvent ())`) and will be persisted across restarts.
 	///
-	/// [`Retry`]: crate::ln::channelmanager::Retry
+	/// [`Retry`]: crate::ln::outbound_payment::Retry
 	/// [`ChannelManager::abandon_payment`]: crate::ln::channelmanager::ChannelManager::abandon_payment
 	PaymentFailed {
 		/// The `payment_id` passed to [`ChannelManager::send_payment`].

@@ -26,13 +26,14 @@ use crate::ln::channel::{
 };
 use crate::ln::channelmanager::{
 	HTLCForwardInfo, PaymentId, PendingAddHTLCInfo, PendingHTLCRouting, RecentPaymentDetails,
-	RecipientOnionFields, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA, MPP_TIMEOUT_TICKS,
+	BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA, MPP_TIMEOUT_TICKS,
 };
 use crate::ln::msgs;
 use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, MessageSendEvent};
 use crate::ln::onion_utils::{self, LocalHTLCFailureReason};
 use crate::ln::outbound_payment::{
-	ProbeSendFailure, RecipientCustomTlvs, Retry, RetryableSendFailure, IDEMPOTENCY_TIMEOUT_TICKS,
+	ProbeSendFailure, RecipientCustomTlvs, RecipientOnionFields, Retry, RetryableSendFailure,
+	IDEMPOTENCY_TIMEOUT_TICKS,
 };
 use crate::ln::types::ChannelId;
 use crate::routing::gossip::{EffectiveCapacity, RoutingFees};
