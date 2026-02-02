@@ -907,7 +907,6 @@ pub(super) struct SendAlongPathArgs<'a> {
 	pub path: &'a Path,
 	pub payment_hash: &'a PaymentHash,
 	pub recipient_onion: &'a RecipientOnionFields,
-	pub total_value: u64,
 	pub cur_height: u32,
 	pub payment_id: PaymentId,
 	pub keysend_preimage: &'a Option<PaymentPreimage>,
@@ -1186,7 +1185,7 @@ impl OutboundPayments {
 
 		let result = self.pay_route_internal(
 			&route, payment_hash, &recipient_onion, keysend_preimage, invoice_request, Some(&bolt12_invoice), payment_id,
-			Some(route_params.final_value_msat), &onion_session_privs, hold_htlcs_at_next_hop, node_signer,
+			&onion_session_privs, hold_htlcs_at_next_hop, node_signer,
 			best_block_height, &send_payment_along_path
 		);
 		log_info!(
@@ -1577,7 +1576,7 @@ impl OutboundPayments {
 			})?;
 
 		let res = self.pay_route_internal(&route, payment_hash, &recipient_onion,
-			keysend_preimage, None, None, payment_id, None, &onion_session_privs, false, node_signer,
+			keysend_preimage, None, None, payment_id, &onion_session_privs, false, node_signer,
 			best_block_height, &send_payment_along_path);
 		log_info!(logger, "Sending payment with id {} and hash {} returned {:?}",
 			payment_id, payment_hash, res);
@@ -1644,7 +1643,7 @@ impl OutboundPayments {
 				}
 			}
 		}
-		let (total_msat, recipient_onion, keysend_preimage, onion_session_privs, invoice_request, bolt12_invoice) = {
+		let (recipient_onion, keysend_preimage, onion_session_privs, invoice_request, bolt12_invoice) = {
 			let mut outbounds = self.pending_outbound_payments.lock().unwrap();
 			match outbounds.entry(payment_id) {
 				hash_map::Entry::Occupied(mut payment) => {
@@ -1667,12 +1666,11 @@ impl OutboundPayments {
 								return
 							}
 
-							let total_msat = *total_msat;
 							let recipient_onion = RecipientOnionFields {
 								payment_secret: *payment_secret,
 								payment_metadata: payment_metadata.clone(),
 								custom_tlvs: custom_tlvs.clone(),
-								total_mpp_amount_msat: total_msat,
+								total_mpp_amount_msat: *total_msat,
 							};
 							let keysend_preimage = *keysend_preimage;
 							let invoice_request = invoice_request.clone();
@@ -1689,7 +1687,7 @@ impl OutboundPayments {
 							payment.get_mut().increment_attempts();
 							let bolt12_invoice = payment.get().bolt12_invoice();
 
-							(total_msat, recipient_onion, keysend_preimage, onion_session_privs, invoice_request, bolt12_invoice.cloned())
+							(recipient_onion, keysend_preimage, onion_session_privs, invoice_request, bolt12_invoice.cloned())
 						},
 						PendingOutboundPayment::Legacy { .. } => {
 							log_error!(logger, "Unable to retry payments that were initially sent on LDK versions prior to 0.0.102");
@@ -1729,7 +1727,7 @@ impl OutboundPayments {
 			}
 		};
 		let res = self.pay_route_internal(&route, payment_hash, &recipient_onion, keysend_preimage,
-			invoice_request.as_ref(), bolt12_invoice.as_ref(), payment_id, Some(total_msat),
+			invoice_request.as_ref(), bolt12_invoice.as_ref(), payment_id,
 			&onion_session_privs, false, node_signer, best_block_height, &send_payment_along_path);
 		log_info!(logger, "Result retrying payment id {}: {:?}", &payment_id, res);
 		if let Err(e) = res {
@@ -1888,7 +1886,7 @@ impl OutboundPayments {
 		})?;
 
 		match self.pay_route_internal(&route, payment_hash, &recipient_onion_fields,
-			None, None, None, payment_id, None, &onion_session_privs, false, node_signer,
+			None, None, None, payment_id, &onion_session_privs, false, node_signer,
 			best_block_height, &send_payment_along_path
 		) {
 			Ok(()) => Ok((payment_hash, payment_id)),
@@ -2133,7 +2131,7 @@ impl OutboundPayments {
 	fn pay_route_internal<NS: NodeSigner, F>(
 		&self, route: &Route, payment_hash: PaymentHash, recipient_onion: &RecipientOnionFields,
 		keysend_preimage: Option<PaymentPreimage>, invoice_request: Option<&InvoiceRequest>, bolt12_invoice: Option<&PaidBolt12Invoice>,
-		payment_id: PaymentId, recv_value_msat: Option<u64>, onion_session_privs: &Vec<[u8; 32]>,
+		payment_id: PaymentId, onion_session_privs: &Vec<[u8; 32]>,
 		hold_htlcs_at_next_hop: bool, node_signer: &NS, best_block_height: u32, send_payment_along_path: &F
 	) -> Result<(), PaymentSendFailure>
 	where
@@ -2147,7 +2145,6 @@ impl OutboundPayments {
 		{
 			return Err(PaymentSendFailure::ParameterError(APIError::APIMisuseError{err: "Payment secret is required for multi-path payments".to_owned()}));
 		}
-		let mut total_value = 0;
 		let our_node_id = node_signer.get_node_id(Recipient::Node).unwrap(); // TODO no unwrap
 		let mut path_errs = Vec::with_capacity(route.paths.len());
 		'path_check: for path in route.paths.iter() {
@@ -2170,14 +2167,10 @@ impl OutboundPayments {
 					continue 'path_check;
 				}
 			}
-			total_value += path.final_value_msat();
 			path_errs.push(Ok(()));
 		}
 		if path_errs.iter().any(|e| e.is_err()) {
 			return Err(PaymentSendFailure::PathParameterError(path_errs));
-		}
-		if let Some(amt_msat) = recv_value_msat {
-			total_value = amt_msat;
 		}
 
 		let cur_height = best_block_height + 1;
@@ -2185,7 +2178,7 @@ impl OutboundPayments {
 		debug_assert_eq!(route.paths.len(), onion_session_privs.len());
 		for (path, session_priv_bytes) in route.paths.iter().zip(onion_session_privs.iter()) {
 			let path_res = send_payment_along_path(SendAlongPathArgs {
-				path: &path, payment_hash: &payment_hash, recipient_onion, total_value,
+				path: &path, payment_hash: &payment_hash, recipient_onion,
 				cur_height, payment_id, keysend_preimage: &keysend_preimage, invoice_request,
 				bolt12_invoice, hold_htlc_at_next_hop: hold_htlcs_at_next_hop,
 				session_priv_bytes: *session_priv_bytes
@@ -2246,7 +2239,7 @@ impl OutboundPayments {
 	#[rustfmt::skip]
 	pub(super) fn test_send_payment_internal<NS: NodeSigner, F>(
 		&self, route: &Route, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields,
-		keysend_preimage: Option<PaymentPreimage>, payment_id: PaymentId, recv_value_msat: Option<u64>,
+		keysend_preimage: Option<PaymentPreimage>, payment_id: PaymentId,
 		onion_session_privs: Vec<[u8; 32]>, node_signer: &NS, best_block_height: u32,
 		send_payment_along_path: F
 	) -> Result<(), PaymentSendFailure>
@@ -2254,7 +2247,7 @@ impl OutboundPayments {
 		F: Fn(SendAlongPathArgs) -> Result<(), APIError>,
 	{
 		self.pay_route_internal(route, payment_hash, &recipient_onion,
-			keysend_preimage, None, None, payment_id, recv_value_msat, &onion_session_privs,
+			keysend_preimage, None, None, payment_id, &onion_session_privs,
 			false, node_signer, best_block_height, &send_payment_along_path)
 			.map_err(|e| { self.remove_outbound_if_all_failed(payment_id, &e); e })
 	}
