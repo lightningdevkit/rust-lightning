@@ -686,6 +686,20 @@ pub struct OptionalBolt11PaymentParams {
 	/// will ultimately fail once all pending paths have failed (generating an
 	/// [`Event::PaymentFailed`]).
 	pub retry_strategy: Retry,
+	/// If the payment being made from this node is part of a larger MPP payment from multiple
+	/// nodes (i.e. because a single payment is being made from multiple wallets), you can specify
+	/// the total amount being paid here.
+	///
+	/// If this is set, it must be at least the [`Bolt11Invoice::amount_milli_satoshis`] for the
+	/// invoice provided to [`ChannelManager::pay_for_bolt11_invoice`]. Further, if this is set,
+	/// the `amount_msats` provided to [`ChannelManager::pay_for_bolt11_invoice`] is allowed to be
+	/// lower than [`Bolt11Invoice::amount_milli_satoshis`] (as the payment we're making may be a
+	/// small part of the amount needed to meet the invoice's minimum).
+	///
+	/// If this is lower than the `amount_msats` passed to
+	/// [`ChannelManager::pay_for_bolt11_invoice`] the call will fail with
+	/// [`Bolt11PaymentError::InvalidAmount`].
+	pub declared_total_mpp_value_msat_override: Option<u64>,
 }
 
 impl Default for OptionalBolt11PaymentParams {
@@ -697,6 +711,7 @@ impl Default for OptionalBolt11PaymentParams {
 			retry_strategy: Retry::Timeout(core::time::Duration::from_secs(2)),
 			#[cfg(not(feature = "std"))]
 			retry_strategy: Retry::Attempts(3),
+			declared_total_mpp_value_msat_override: None,
 		}
 	}
 }
@@ -5478,10 +5493,19 @@ impl<
 	/// The invoice's `payment_hash().0` serves as a reliable choice for the `payment_id`.
 	///
 	/// # Handling Invoice Amounts
-	/// Some invoices include a specific amount, while others require you to specify one.
-	/// - If the invoice **includes** an amount, user may provide an amount greater or equal to it
-	/// to allow for overpayments.
-	/// - If the invoice **doesn't include** an amount, you'll need to specify `amount_msats`.
+	/// Some invoices require a specific minimum amount (which can be fetched with
+	/// [`Bolt11Invoice::amount_milli_satoshis`]) while others allow you to pay any amount.
+	///
+	/// - If the invoice **includes** an amount, `amount_msats` may be `None` to pay exactly
+	///   [`Bolt11Invoice::amount_milli_satoshis`] or may be `Some` with a value greater than or
+	///   equal to the [`Bolt11Invoice::amount_milli_satoshis`] to allow for deliberate overpayment
+	///   (e.g. for "tips").
+	/// - If the invoice **doesn't include** an amount, `amount_msats` must be `Some`.
+	///
+	/// In the special case that
+	/// [`OptionalBolt11PaymentParams::declared_total_mpp_value_msat_override`] is set,
+	/// `amount_msats` may be `Some` and lower than [`Bolt11Invoice::amount_milli_satoshis`]. See
+	/// the parameter for more details.
 	///
 	/// If these conditions aren’t met, the function will return [`Bolt11PaymentError::InvalidAmount`].
 	///

@@ -690,6 +690,7 @@ mod test {
 			custom_tlvs: custom_tlvs.clone(),
 			route_params_config: RouteParametersConfig::default(),
 			retry_strategy: Retry::Attempts(0),
+			declared_total_mpp_value_msat_override: None,
 		};
 
 		nodes[0]

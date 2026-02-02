@@ -627,7 +627,12 @@ pub(crate) enum PaymentSendFailure {
 #[derive(Debug)]
 pub enum Bolt11PaymentError {
 	/// Incorrect amount was provided to [`ChannelManager::pay_for_bolt11_invoice`].
-	/// This happens when the user-provided amount is less than an amount specified in the [`Bolt11Invoice`].
+	///
+	/// This happens when the payment amount (either the [`ChannelManager::pay_for_bolt11_invoice`]
+	/// `amount` or [`OptionalBolt11PaymentParams::declared_total_mpp_value_msat_override`]) is less than
+	/// [`Bolt11Invoice::amount_milli_satoshis`] or the amount set at
+	/// [`OptionalBolt11PaymentParams::declared_total_mpp_value_msat_override`] was lower than the
+	/// explicit amount provided to [`ChannelManager::pay_for_bolt11_invoice`].
 	///
 	/// [`Bolt11Invoice`]: lightning_invoice::Bolt11Invoice
 	/// [`ChannelManager::pay_for_bolt11_invoice`]: crate::ln::channelmanager::ChannelManager::pay_for_bolt11_invoice
@@ -1037,9 +1042,11 @@ impl OutboundPayments {
 	{
 		let payment_hash = invoice.payment_hash();
 
+		let partial_payment = optional_params.declared_total_mpp_value_msat_override.is_some();
 		let amount = match (invoice.amount_milli_satoshis(), amount_msats) {
 			(Some(amt), None) | (None, Some(amt)) => amt,
-			(Some(inv_amt), Some(user_amt)) if user_amt < inv_amt => return Err(Bolt11PaymentError::InvalidAmount),
+			(Some(inv_amt), Some(user_amt)) if user_amt < inv_amt && !partial_payment =>
+				return Err(Bolt11PaymentError::InvalidAmount),
 			(Some(_), Some(user_amt)) => user_amt,
 			(None, None) => return Err(Bolt11PaymentError::InvalidAmount),
 		};
@@ -1048,6 +1055,16 @@ impl OutboundPayments {
 			RecipientOnionFields::secret_only(*invoice.payment_secret(), amount)
 				.with_custom_tlvs(optional_params.custom_tlvs);
 		recipient_onion.payment_metadata = invoice.payment_metadata().map(|v| v.clone());
+
+		if let Some(mpp_amt) = optional_params.declared_total_mpp_value_msat_override {
+			if mpp_amt < amount {
+				return Err(Bolt11PaymentError::InvalidAmount);
+			}
+			if invoice.amount_milli_satoshis().is_some_and(|invoice_amt| mpp_amt < invoice_amt) {
+				return Err(Bolt11PaymentError::InvalidAmount);
+			}
+			recipient_onion.total_mpp_amount_msat = mpp_amt;
+		}
 
 		let payment_params = PaymentParameters::from_bolt11_invoice(invoice)
 			.with_user_config_ignoring_fee_limit(optional_params.route_params_config);

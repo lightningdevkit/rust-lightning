@@ -38,8 +38,7 @@ use crate::ln::outbound_payment::{
 use crate::ln::types::ChannelId;
 use crate::routing::gossip::{EffectiveCapacity, RoutingFees};
 use crate::routing::router::{
-	get_route, Path, PaymentParameters, Route, RouteHint, RouteHintHop, RouteHop, RouteParameters,
-	Router,
+	Path, PaymentParameters, Route, RouteHint, RouteHintHop, RouteHop, RouteParameters, Router,
 };
 use crate::routing::scoring::ChannelUsage;
 use crate::sign::EntropySource;
@@ -49,11 +48,8 @@ use crate::types::string::UntrustedString;
 use crate::util::config::HTLCInterceptionFlags;
 use crate::util::errors::APIError;
 use crate::util::ser::Writeable;
-use crate::util::test_utils;
-
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash;
-use bitcoin::network::Network;
 use bitcoin::secp256k1::{Secp256k1, SecretKey};
 
 use crate::prelude::*;
@@ -1503,7 +1499,6 @@ fn get_ldk_payment_preimage() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
 
 	create_announced_chan_between_nodes(&nodes, 0, 1);
@@ -1516,24 +1511,11 @@ fn get_ldk_payment_preimage() {
 	let payment_params = PaymentParameters::from_node_id(node_b_id, TEST_FINAL_CLTV)
 		.with_bolt11_features(nodes[1].node.bolt11_invoice_features())
 		.unwrap();
-	let scorer = test_utils::TestScorer::new();
-	let keys_manager = test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
-	let random_seed_bytes = keys_manager.get_secure_random_bytes();
 	let route_params = RouteParameters::from_payment_params_and_value(payment_params, amt_msat);
-	let first_hops = nodes[0].node.list_usable_channels();
-	let route = get_route(
-		&node_a_id,
-		&route_params,
-		&nodes[0].network_graph.read_only(),
-		Some(&first_hops.iter().collect::<Vec<_>>()),
-		nodes[0].logger,
-		&scorer,
-		&Default::default(),
-		&random_seed_bytes,
-	);
+	let route = get_route(&nodes[0], &route_params).unwrap();
 	let onion = RecipientOnionFields::secret_only(payment_secret, amt_msat);
 	let id = PaymentId(payment_hash.0);
-	nodes[0].node.send_payment_with_route(route.unwrap(), payment_hash, onion, id).unwrap();
+	nodes[0].node.send_payment_with_route(route, payment_hash, onion, id).unwrap();
 	check_added_monitors(&nodes[0], 1);
 
 	// Make sure to use `get_payment_preimage`
@@ -2238,9 +2220,6 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 	let node_b_id = nodes[1].node.get_our_node_id();
 	let node_c_id = nodes[2].node.get_our_node_id();
 
-	let scorer = test_utils::TestScorer::new();
-	let random_seed_bytes = chanmon_cfgs[0].keys_manager.get_secure_random_bytes();
-
 	let _ = create_announced_chan_between_nodes(&nodes, 0, 1).2;
 
 	let amt_msat = 100_000;
@@ -2258,17 +2237,7 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 		.with_bolt11_features(nodes[2].node.bolt11_invoice_features())
 		.unwrap();
 	let route_params = RouteParameters::from_payment_params_and_value(payment_params, amt_msat);
-	let route = get_route(
-		&node_a_id,
-		&route_params,
-		&nodes[0].network_graph.read_only(),
-		None,
-		nodes[0].logger,
-		&scorer,
-		&Default::default(),
-		&random_seed_bytes,
-	)
-	.unwrap();
+	let route = get_route(&nodes[0], &route_params).unwrap();
 
 	let (hash, payment_secret) =
 		nodes[2].node.create_inbound_payment(Some(amt_msat), 60 * 60, None).unwrap();
@@ -5447,4 +5416,450 @@ fn max_out_mpp_path() {
 	assert!(nodes[0].node.list_recent_payments().len() == 1);
 	check_added_monitors(&nodes[0], 2); // one monitor update per MPP part
 	nodes[0].node.get_and_clear_pending_msg_events();
+}
+
+fn do_bolt11_multi_node_mpp(use_bolt11_pay: bool) {
+	// Test that multiple nodes can collaborate to pay a single BOLT 11 invoice, with each node
+	// paying a portion of the total invoice amount. This is useful for scenarios like:
+	// - Paying from multiple wallets (e.g., ecash wallets with funds in multiple mints)
+	// - Graduated wallets (funds split between trusted and self-custodial wallets)
+
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	// Create channels: A<>C and B<>C
+	create_announced_chan_between_nodes(&nodes, 0, 2);
+	create_announced_chan_between_nodes(&nodes, 1, 2);
+
+	// Node C creates a BOLT 11 invoice for 100_000 msat
+	let invoice_amt_msat = 100_000;
+	let invoice_params = crate::ln::channelmanager::Bolt11InvoiceParameters {
+		amount_msats: Some(invoice_amt_msat),
+		..Default::default()
+	};
+	let invoice = nodes[2].node.create_bolt11_invoice(invoice_params).unwrap();
+	let pmt_hash = invoice.payment_hash();
+
+	// Node A pays 60_000 msat (part of the total)
+	let node_a_payment_amt = 60_000;
+	let payment_id_a = PaymentId([1; 32]);
+	if use_bolt11_pay {
+		let params = crate::ln::channelmanager::OptionalBolt11PaymentParams {
+			declared_total_mpp_value_msat_override: Some(invoice_amt_msat),
+			..Default::default()
+		};
+		nodes[0]
+			.node
+			.pay_for_bolt11_invoice(&invoice, payment_id_a, Some(node_a_payment_amt), params)
+			.unwrap();
+	} else {
+		let onion = RecipientOnionFields::secret_only(*invoice.payment_secret(), invoice_amt_msat);
+		let pay_params = PaymentParameters::from_bolt11_invoice(&invoice);
+		let route_params =
+			RouteParameters::from_payment_params_and_value(pay_params, node_a_payment_amt);
+		let retry = Retry::Attempts(0);
+		nodes[0].node.send_payment(pmt_hash, onion, payment_id_a, route_params, retry).unwrap();
+	}
+	check_added_monitors(&nodes[0], 1);
+
+	// Node B pays 40_000 msat (the remaining part)
+	let node_b_payment_amt = 40_000;
+	let payment_id_b = PaymentId([2; 32]);
+	let optional_params_b = crate::ln::channelmanager::OptionalBolt11PaymentParams {
+		declared_total_mpp_value_msat_override: Some(invoice_amt_msat),
+		..Default::default()
+	};
+	nodes[1]
+		.node
+		.pay_for_bolt11_invoice(&invoice, payment_id_b, Some(node_b_payment_amt), optional_params_b)
+		.unwrap();
+	check_added_monitors(&nodes[1], 1);
+
+	let payment_event_a = SendEvent::from_node(&nodes[0]);
+	nodes[2].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &payment_event_a.msgs[0]);
+	do_commitment_signed_dance(&nodes[2], &nodes[0], &payment_event_a.commitment_msg, false, false);
+
+	let payment_event_b = SendEvent::from_node(&nodes[1]);
+	nodes[2].node.handle_update_add_htlc(nodes[1].node.get_our_node_id(), &payment_event_b.msgs[0]);
+	do_commitment_signed_dance(&nodes[2], &nodes[1], &payment_event_b.commitment_msg, false, false);
+
+	// Process the pending HTLCs on node C and generate the PaymentClaimable event
+	assert!(nodes[2].node.get_and_clear_pending_events().is_empty());
+	expect_and_process_pending_htlcs(&nodes[2], false);
+	let events = nodes[2].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	let payment_preimage = match &events[0] {
+		Event::PaymentClaimable {
+			payment_hash,
+			amount_msat,
+			onion_fields,
+			purpose: PaymentPurpose::Bolt11InvoicePayment { payment_preimage, .. },
+			..
+		} => {
+			assert_eq!(*payment_hash, invoice.payment_hash());
+			assert_eq!(*amount_msat, invoice_amt_msat);
+			assert_eq!(onion_fields.as_ref().unwrap().total_mpp_amount_msat, invoice_amt_msat);
+			payment_preimage.unwrap()
+		},
+		_ => panic!("Unexpected event: {:?}", events[0]),
+	};
+
+	nodes[2].node.claim_funds(payment_preimage);
+
+	expect_payment_claimed!(nodes[2], invoice.payment_hash(), invoice_amt_msat);
+	check_added_monitors(&nodes[2], 2);
+
+	// Get the fulfill messages from C to both A and B
+	let mut events_c = nodes[2].node.get_and_clear_pending_msg_events();
+	assert_eq!(events_c.len(), 2);
+
+	// Handle fulfill message from C to A
+	let fulfill_idx_a = events_c
+		.iter()
+		.position(|ev| {
+			if let MessageSendEvent::UpdateHTLCs { node_id, .. } = ev {
+				*node_id == nodes[0].node.get_our_node_id()
+			} else {
+				false
+			}
+		})
+		.unwrap();
+	let fulfill_idx_b = 1 - fulfill_idx_a;
+
+	if let MessageSendEvent::UpdateHTLCs { ref updates, .. } = events_c[fulfill_idx_a] {
+		nodes[0].node.handle_update_fulfill_htlc(
+			nodes[2].node.get_our_node_id(),
+			updates.update_fulfill_htlcs[0].clone(),
+		);
+		do_commitment_signed_dance(&nodes[0], &nodes[2], &updates.commitment_signed, false, false);
+	}
+
+	let payment_sent = nodes[0].node.get_and_clear_pending_events();
+	check_added_monitors(&nodes[0], 1);
+
+	assert_eq!(payment_sent.len(), 2, "{payment_sent:?}");
+	if let Event::PaymentSent { payment_id, payment_hash, amount_msat, fee_paid_msat, .. } =
+		&payment_sent[0]
+	{
+		assert_eq!(*payment_id, Some(payment_id_a));
+		assert_eq!(*payment_hash, invoice.payment_hash());
+		assert_eq!(*amount_msat, Some(node_a_payment_amt));
+		assert_eq!(*fee_paid_msat, Some(0));
+	} else {
+		panic!("{payment_sent:?}");
+	}
+	if let Event::PaymentPathSuccessful { payment_id, .. } = &payment_sent[1] {
+		assert_eq!(*payment_id, payment_id_a);
+	} else {
+		panic!("{payment_sent:?}");
+	}
+
+	// Handle fulfill message from C to B
+	if let MessageSendEvent::UpdateHTLCs { ref updates, .. } = events_c[fulfill_idx_b] {
+		nodes[1].node.handle_update_fulfill_htlc(
+			nodes[2].node.get_our_node_id(),
+			updates.update_fulfill_htlcs[0].clone(),
+		);
+		do_commitment_signed_dance(&nodes[1], &nodes[2], &updates.commitment_signed, false, false);
+	}
+
+	let payment_sent = nodes[1].node.get_and_clear_pending_events();
+	check_added_monitors(&nodes[1], 1);
+
+	assert_eq!(payment_sent.len(), 2, "{payment_sent:?}");
+	if let Event::PaymentSent { payment_id, payment_hash, amount_msat, fee_paid_msat, .. } =
+		&payment_sent[0]
+	{
+		assert_eq!(*payment_id, Some(payment_id_b));
+		assert_eq!(*payment_hash, invoice.payment_hash());
+		assert_eq!(*amount_msat, Some(node_b_payment_amt));
+		assert_eq!(*fee_paid_msat, Some(0));
+	} else {
+		panic!("{payment_sent:?}");
+	}
+	if let Event::PaymentPathSuccessful { payment_id, .. } = &payment_sent[1] {
+		assert_eq!(*payment_id, payment_id_b);
+	} else {
+		panic!("{payment_sent:?}");
+	}
+}
+
+#[test]
+fn bolt11_multi_node_mpp() {
+	do_bolt11_multi_node_mpp(true);
+	do_bolt11_multi_node_mpp(false);
+}
+
+#[test]
+fn bolt11_multi_node_mpp_with_retry() {
+	// Test that multi-node MPP payments work correctly when one node's initial payment attempt
+	// fails and needs to be retried. Node A pays through an intermediate node C, whose first
+	// forwarding attempt fails (due to insufficient fee on the injected route). After A
+	// automatically retries with a corrected route, and B's direct payment also arrives at D,
+	// D can claim the full payment.
+	//
+	// Network topology: A(0) -> C(2) -> D(3), B(1) -> D(3)
+
+	let chanmon_cfgs = create_chanmon_cfgs(4);
+	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
+	let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
+
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
+	let node_c_id = nodes[2].node.get_our_node_id();
+	let node_d_id = nodes[3].node.get_our_node_id();
+
+	// Create channels: A<>C, C<>D, B<>D
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 2, 10_000_000, 0);
+	let chan_c_d = create_announced_chan_between_nodes_with_value(&nodes, 2, 3, 10_000_000, 0);
+	let chan_c_d_scid = chan_c_d.0.contents.short_channel_id;
+	create_announced_chan_between_nodes(&nodes, 1, 3);
+
+	// Sync all nodes to the same block height, since create_announced_chan_between_nodes only
+	// connects blocks on the two nodes involved in each channel.
+	let max_height = nodes.iter().map(|n| n.best_block_info().1).max().unwrap();
+	for node in &nodes {
+		let height = node.best_block_info().1;
+		if height < max_height {
+			connect_blocks(node, max_height - height);
+		}
+	}
+
+	// Node D creates a BOLT 11 invoice for 100_000 msat
+	let invoice_amt_msat = 100_000;
+	let invoice_params = crate::ln::channelmanager::Bolt11InvoiceParameters {
+		amount_msats: Some(invoice_amt_msat),
+		..Default::default()
+	};
+	let invoice = nodes[3].node.create_bolt11_invoice(invoice_params).unwrap();
+
+	// Construct the RouteParameters that pay_for_bolt11_invoice will generate internally,
+	// then use get_route to compute a natural route from A through C to D.
+	let node_a_payment_amt = 60_000;
+	let payment_params = PaymentParameters::from_bolt11_invoice(&invoice);
+	let route_params =
+		RouteParameters::from_payment_params_and_value(payment_params.clone(), node_a_payment_amt);
+
+	let mut route = get_route(&nodes[0], &route_params).unwrap();
+	assert_eq!(route.paths.len(), 1);
+	assert_eq!(route.paths[0].hops.len(), 2); // A -> C -> D
+	let expected_fee = route.paths[0].hops[0].fee_msat;
+
+	// First route for A: same path but with fee_msat=0 at C to trigger a forwarding failure
+	let mut first_route = route.clone();
+	first_route.paths[0].hops[0].fee_msat = 0;
+	first_route.route_params = Some(route_params.clone());
+	nodes[0].router.expect_find_route(route_params.clone(), Ok(first_route));
+
+	// Retry route for A: the natural route with correct fees (will succeed)
+	let mut retry_payment_params = payment_params.clone();
+	retry_payment_params.previously_failed_channels = vec![chan_c_d_scid];
+	let retry_route_params = RouteParameters {
+		final_value_msat: node_a_payment_amt,
+		payment_params: retry_payment_params,
+		max_total_routing_fee_msat: route_params.max_total_routing_fee_msat,
+	};
+	route.route_params = Some(retry_route_params.clone());
+	nodes[0].router.expect_find_route(retry_route_params, Ok(route));
+
+	// Node A pays 60_000 msat (part of the total) with retry enabled
+	let payment_id_a = PaymentId([1; 32]);
+	let optional_params_a = crate::ln::channelmanager::OptionalBolt11PaymentParams {
+		declared_total_mpp_value_msat_override: Some(invoice_amt_msat),
+		retry_strategy: Retry::Attempts(1),
+		..Default::default()
+	};
+	nodes[0]
+		.node
+		.pay_for_bolt11_invoice(&invoice, payment_id_a, Some(node_a_payment_amt), optional_params_a)
+		.unwrap();
+	check_added_monitors(&nodes[0], 1);
+
+	// Node B pays 40_000 msat (the remaining part)
+	let node_b_payment_amt = 40_000;
+	let payment_id_b = PaymentId([2; 32]);
+	let optional_params_b = crate::ln::channelmanager::OptionalBolt11PaymentParams {
+		declared_total_mpp_value_msat_override: Some(invoice_amt_msat),
+		..Default::default()
+	};
+	nodes[1]
+		.node
+		.pay_for_bolt11_invoice(&invoice, payment_id_b, Some(node_b_payment_amt), optional_params_b)
+		.unwrap();
+	check_added_monitors(&nodes[1], 1);
+
+	// Forward B's HTLC directly to D first (it will be held pending at D)
+	let payment_event_b = SendEvent::from_node(&nodes[1]);
+	nodes[3].node.handle_update_add_htlc(node_b_id, &payment_event_b.msgs[0]);
+	do_commitment_signed_dance(&nodes[3], &nodes[1], &payment_event_b.commitment_msg, false, false);
+
+	// Forward A's first HTLC to C
+	let payment_event_a = SendEvent::from_node(&nodes[0]);
+	nodes[2].node.handle_update_add_htlc(node_a_id, &payment_event_a.msgs[0]);
+	do_commitment_signed_dance(&nodes[2], &nodes[0], &payment_event_a.commitment_msg, false, false);
+
+	// C tries to forward to D but fails (fee too low)
+	expect_and_process_pending_htlcs(&nodes[2], false);
+	let next_hop_failure =
+		HTLCHandlingFailureType::Forward { node_id: Some(node_d_id), channel_id: chan_c_d.2 };
+	expect_htlc_handling_failed_destinations!(
+		nodes[2].node.get_and_clear_pending_events(),
+		core::slice::from_ref(&next_hop_failure)
+	);
+	check_added_monitors(&nodes[2], 1);
+
+	// C sends update_fail_htlc back to A
+	let c_fail_updates = get_htlc_update_msgs(&nodes[2], &node_a_id);
+	assert_eq!(c_fail_updates.update_fail_htlcs.len(), 1);
+	nodes[0].node.handle_update_fail_htlc(node_c_id, &c_fail_updates.update_fail_htlcs[0]);
+	do_commitment_signed_dance(
+		&nodes[0],
+		&nodes[2],
+		&c_fail_updates.commitment_signed,
+		false,
+		false,
+	);
+
+	// A receives PaymentPathFailed (not permanent, can retry)
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match &events[0] {
+		Event::PaymentPathFailed { payment_hash, payment_failed_permanently, .. } => {
+			assert_eq!(*payment_hash, invoice.payment_hash());
+			assert!(!payment_failed_permanently);
+		},
+		_ => panic!("Expected PaymentPathFailed, got: {:?}", events[0]),
+	}
+
+	// A automatically retries by processing pending HTLC forwards
+	nodes[0].node.process_pending_htlc_forwards();
+	let retry_event = SendEvent::from_node(&nodes[0]);
+	check_added_monitors(&nodes[0], 1);
+
+	// Forward retry HTLC from A to C
+	nodes[2].node.handle_update_add_htlc(node_a_id, &retry_event.msgs[0]);
+	do_commitment_signed_dance(&nodes[2], &nodes[0], &retry_event.commitment_msg, false, false);
+
+	// C successfully forwards to D this time
+	expect_and_process_pending_htlcs(&nodes[2], false);
+	check_added_monitors(&nodes[2], 1);
+	let c_forward = get_htlc_update_msgs(&nodes[2], &node_d_id);
+	nodes[3].node.handle_update_add_htlc(node_c_id, &c_forward.update_add_htlcs[0]);
+	do_commitment_signed_dance(&nodes[3], &nodes[2], &c_forward.commitment_signed, false, false);
+
+	// D now has both HTLCs (A's retry via C and B's direct). Process and claim.
+	assert!(nodes[3].node.get_and_clear_pending_events().is_empty());
+	expect_and_process_pending_htlcs(&nodes[3], false);
+	let events = nodes[3].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	let payment_preimage = match &events[0] {
+		Event::PaymentClaimable {
+			payment_hash,
+			amount_msat,
+			onion_fields,
+			purpose: PaymentPurpose::Bolt11InvoicePayment { payment_preimage, .. },
+			..
+		} => {
+			assert_eq!(*payment_hash, invoice.payment_hash());
+			assert_eq!(*amount_msat, invoice_amt_msat);
+			assert_eq!(onion_fields.as_ref().unwrap().total_mpp_amount_msat, invoice_amt_msat);
+			payment_preimage.unwrap()
+		},
+		_ => panic!("Unexpected event: {:?}", events[0]),
+	};
+
+	nodes[3].node.claim_funds(payment_preimage);
+
+	expect_payment_claimed!(nodes[3], invoice.payment_hash(), invoice_amt_msat);
+	check_added_monitors(&nodes[3], 2);
+
+	// Get the fulfill messages from D to both C (for A) and B
+	let mut events_d = nodes[3].node.get_and_clear_pending_msg_events();
+	assert_eq!(events_d.len(), 2);
+
+	// Find which event goes to C and which to B
+	let fulfill_idx_c = events_d
+		.iter()
+		.position(|ev| {
+			if let MessageSendEvent::UpdateHTLCs { node_id, .. } = ev {
+				*node_id == node_c_id
+			} else {
+				false
+			}
+		})
+		.unwrap();
+	let fulfill_idx_b = 1 - fulfill_idx_c;
+
+	// Handle fulfill from D to C (intermediate node). C persists the preimage to
+	// the upstream A<>C channel monitor, generates a PaymentForwarded event, and
+	// queues a fulfill message for A.
+	if let MessageSendEvent::UpdateHTLCs { ref updates, .. } = events_d[fulfill_idx_c] {
+		nodes[2]
+			.node
+			.handle_update_fulfill_htlc(node_d_id, updates.update_fulfill_htlcs[0].clone());
+		expect_payment_forwarded!(nodes[2], nodes[0], nodes[3], Some(expected_fee), false, false);
+		check_added_monitors(&nodes[2], 1);
+
+		// C has a pending fulfill to send to A; retrieve it before the C<>D dance
+		let c_fulfill = get_htlc_update_msgs(&nodes[2], &node_a_id);
+
+		do_commitment_signed_dance(&nodes[2], &nodes[3], &updates.commitment_signed, false, false);
+
+		// Forward the fulfill from C to A
+		nodes[0]
+			.node
+			.handle_update_fulfill_htlc(node_c_id, c_fulfill.update_fulfill_htlcs[0].clone());
+		do_commitment_signed_dance(
+			&nodes[0],
+			&nodes[2],
+			&c_fulfill.commitment_signed,
+			false,
+			false,
+		);
+	}
+
+	let payment_sent_a = nodes[0].node.get_and_clear_pending_events();
+	check_added_monitors(&nodes[0], 1);
+
+	assert_eq!(payment_sent_a.len(), 2, "{payment_sent_a:?}");
+	if let Event::PaymentSent { payment_id, payment_hash, amount_msat, .. } = &payment_sent_a[0] {
+		assert_eq!(*payment_id, Some(payment_id_a));
+		assert_eq!(*payment_hash, invoice.payment_hash());
+		assert_eq!(*amount_msat, Some(node_a_payment_amt));
+	} else {
+		panic!("{payment_sent_a:?}");
+	}
+	if let Event::PaymentPathSuccessful { payment_id, .. } = &payment_sent_a[1] {
+		assert_eq!(*payment_id, payment_id_a);
+	} else {
+		panic!("{payment_sent_a:?}");
+	}
+
+	// Handle fulfill from D to B
+	if let MessageSendEvent::UpdateHTLCs { ref updates, .. } = events_d[fulfill_idx_b] {
+		nodes[1]
+			.node
+			.handle_update_fulfill_htlc(node_d_id, updates.update_fulfill_htlcs[0].clone());
+		do_commitment_signed_dance(&nodes[1], &nodes[3], &updates.commitment_signed, false, false);
+	}
+
+	let payment_sent_b = nodes[1].node.get_and_clear_pending_events();
+	check_added_monitors(&nodes[1], 1);
+
+	assert_eq!(payment_sent_b.len(), 2, "{payment_sent_b:?}");
+	if let Event::PaymentSent { payment_id, payment_hash, amount_msat, .. } = &payment_sent_b[0] {
+		assert_eq!(*payment_id, Some(payment_id_b));
+		assert_eq!(*payment_hash, invoice.payment_hash());
+		assert_eq!(*amount_msat, Some(node_b_payment_amt));
+	} else {
+		panic!("{payment_sent_b:?}");
+	}
+	if let Event::PaymentPathSuccessful { payment_id, .. } = &payment_sent_b[1] {
+		assert_eq!(*payment_id, payment_id_b);
+	} else {
+		panic!("{payment_sent_b:?}");
+	}
 }
