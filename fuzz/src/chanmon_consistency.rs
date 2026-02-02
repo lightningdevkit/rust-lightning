@@ -37,7 +37,7 @@ use lightning::blinded_path::message::{BlindedMessagePath, MessageContext, Messa
 use lightning::blinded_path::payment::{BlindedPaymentPath, ReceiveTlvs};
 use lightning::chain;
 use lightning::chain::chaininterface::{
-	TransactionType, BroadcasterInterface, ConfirmationTarget, FeeEstimator,
+	BroadcasterInterface, ConfirmationTarget, FeeEstimator, TransactionType,
 };
 use lightning::chain::channelmonitor::{ChannelMonitor, MonitorEvent};
 use lightning::chain::transaction::OutPoint;
