@@ -5442,3 +5442,160 @@ fn max_out_mpp_path() {
 	check_added_monitors(&nodes[0], 2); // one monitor update per MPP part
 	nodes[0].node.get_and_clear_pending_msg_events();
 }
+
+#[test]
+fn bolt11_multi_node_mpp() {
+	// Test that multiple nodes can collaborate to pay a single BOLT 11 invoice, with each node
+	// paying a portion of the total invoice amount. This is useful for scenarios like:
+	// - Paying from multiple wallets (e.g., ecash wallets with funds in multiple mints)
+	// - Graduated wallets (funds split between trusted and self-custodial wallets)
+
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	// Create channels: A<>C and B<>C
+	create_announced_chan_between_nodes(&nodes, 0, 2);
+	create_announced_chan_between_nodes(&nodes, 1, 2);
+
+	// Node C creates a BOLT 11 invoice for 100_000 msat
+	let invoice_amt_msat = 100_000;
+	let invoice_params = crate::ln::channelmanager::Bolt11InvoiceParameters {
+		amount_msats: Some(invoice_amt_msat),
+		..Default::default()
+	};
+	let invoice = nodes[2].node.create_bolt11_invoice(invoice_params).unwrap();
+
+	// Node A pays 60_000 msat (part of the total)
+	let node_a_payment_amt = 60_000;
+	let payment_id_a = PaymentId([1; 32]);
+	let optional_params_a = crate::ln::channelmanager::OptionalBolt11PaymentParams {
+		declared_total_mpp_value_override: Some(invoice_amt_msat),
+		..Default::default()
+	};
+	nodes[0]
+		.node
+		.pay_for_bolt11_invoice(&invoice, payment_id_a, Some(node_a_payment_amt), optional_params_a)
+		.unwrap();
+	check_added_monitors(&nodes[0], 1);
+
+	// Node B pays 40_000 msat (the remaining part)
+	let node_b_payment_amt = 40_000;
+	let payment_id_b = PaymentId([2; 32]);
+	let optional_params_b = crate::ln::channelmanager::OptionalBolt11PaymentParams {
+		declared_total_mpp_value_override: Some(invoice_amt_msat),
+		..Default::default()
+	};
+	nodes[1]
+		.node
+		.pay_for_bolt11_invoice(&invoice, payment_id_b, Some(node_b_payment_amt), optional_params_b)
+		.unwrap();
+	check_added_monitors(&nodes[1], 1);
+
+	let payment_event_a = SendEvent::from_node(&nodes[0]);
+	nodes[2].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &payment_event_a.msgs[0]);
+	do_commitment_signed_dance(&nodes[2], &nodes[0], &payment_event_a.commitment_msg, false, false);
+
+	let payment_event_b = SendEvent::from_node(&nodes[1]);
+	nodes[2].node.handle_update_add_htlc(nodes[1].node.get_our_node_id(), &payment_event_b.msgs[0]);
+	do_commitment_signed_dance(&nodes[2], &nodes[1], &payment_event_b.commitment_msg, false, false);
+
+	// Process the pending HTLCs on node C and generate the PaymentClaimable event
+	assert!(nodes[2].node.get_and_clear_pending_events().is_empty());
+	expect_and_process_pending_htlcs(&nodes[2], false);
+	let events = nodes[2].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	let payment_preimage = match &events[0] {
+		Event::PaymentClaimable {
+			payment_hash,
+			amount_msat,
+			purpose: PaymentPurpose::Bolt11InvoicePayment { payment_preimage, .. },
+			..
+		} => {
+			assert_eq!(*payment_hash, invoice.payment_hash());
+			assert_eq!(*amount_msat, invoice_amt_msat);
+			payment_preimage.unwrap()
+		},
+		_ => panic!("Unexpected event: {:?}", events[0]),
+	};
+
+	nodes[2].node.claim_funds(payment_preimage);
+
+	expect_payment_claimed!(nodes[2], invoice.payment_hash(), invoice_amt_msat);
+	check_added_monitors(&nodes[2], 2);
+
+	// Get the fulfill messages from C to both A and B
+	let mut events_c = nodes[2].node.get_and_clear_pending_msg_events();
+	assert_eq!(events_c.len(), 2);
+
+	// Handle fulfill message from C to A
+	let fulfill_idx_a = events_c
+		.iter()
+		.position(|ev| {
+			if let MessageSendEvent::UpdateHTLCs { node_id, .. } = ev {
+				*node_id == nodes[0].node.get_our_node_id()
+			} else {
+				false
+			}
+		})
+		.unwrap();
+	let fulfill_idx_b = 1 - fulfill_idx_a;
+
+	if let MessageSendEvent::UpdateHTLCs { ref updates, .. } = events_c[fulfill_idx_a] {
+		nodes[0].node.handle_update_fulfill_htlc(
+			nodes[2].node.get_our_node_id(),
+			updates.update_fulfill_htlcs[0].clone(),
+		);
+		do_commitment_signed_dance(&nodes[0], &nodes[2], &updates.commitment_signed, false, false);
+	}
+
+	let payment_sent = nodes[0].node.get_and_clear_pending_events();
+	check_added_monitors(&nodes[0], 1);
+
+	assert_eq!(payment_sent.len(), 2, "{payment_sent:?}");
+	if let Event::PaymentSent { payment_id, payment_hash, amount_msat, fee_paid_msat, .. } =
+		&payment_sent[0]
+	{
+		assert_eq!(*payment_id, Some(payment_id_a));
+		assert_eq!(*payment_hash, invoice.payment_hash());
+		assert_eq!(*amount_msat, Some(node_a_payment_amt));
+		assert_eq!(*fee_paid_msat, Some(0));
+	} else {
+		panic!("{payment_sent:?}");
+	}
+	if let Event::PaymentPathSuccessful { payment_id, .. } = &payment_sent[1] {
+		assert_eq!(*payment_id, payment_id_a);
+	} else {
+		panic!("{payment_sent:?}");
+	}
+
+	// Handle fulfill message from C to B
+	if let MessageSendEvent::UpdateHTLCs { ref updates, .. } = events_c[fulfill_idx_b] {
+		nodes[1].node.handle_update_fulfill_htlc(
+			nodes[2].node.get_our_node_id(),
+			updates.update_fulfill_htlcs[0].clone(),
+		);
+		do_commitment_signed_dance(&nodes[1], &nodes[2], &updates.commitment_signed, false, false);
+	}
+
+	let payment_sent = nodes[1].node.get_and_clear_pending_events();
+	check_added_monitors(&nodes[1], 1);
+
+	assert_eq!(payment_sent.len(), 2, "{payment_sent:?}");
+	if let Event::PaymentSent { payment_id, payment_hash, amount_msat, fee_paid_msat, .. } =
+		&payment_sent[0]
+	{
+		assert_eq!(*payment_id, Some(payment_id_b));
+		assert_eq!(*payment_hash, invoice.payment_hash());
+		assert_eq!(*amount_msat, Some(node_b_payment_amt));
+		assert_eq!(*fee_paid_msat, Some(0));
+	} else {
+		panic!("{payment_sent:?}");
+	}
+	if let Event::PaymentPathSuccessful { payment_id, .. } = &payment_sent[1] {
+		assert_eq!(*payment_id, payment_id_b);
+	} else {
+		panic!("{payment_sent:?}");
+	}
+}
