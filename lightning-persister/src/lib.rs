@@ -9,6 +9,7 @@
 extern crate criterion;
 
 pub mod fs_store;
+pub mod fs_store_v2;
 
 mod fs_store_common;
 mod utils;
