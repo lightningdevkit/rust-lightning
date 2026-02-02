@@ -17819,6 +17819,15 @@ pub struct ChannelManagerReadArgs<
 	///
 	/// This is not exported to bindings users because we have no HashMap bindings
 	pub channel_monitors: HashMap<ChannelId, &'a ChannelMonitor<SP::EcdsaSigner>>,
+
+	/// Whether the `ChannelManager` should attempt to reconstruct its set of pending HTLCs from
+	/// `Channel{Monitor}` data rather than its own persisted maps, which is planned to become
+	/// the default behavior in upcoming versions.
+	///
+	/// If `None`, whether we reconstruct or use the legacy maps will be decided randomly during
+	/// `ChannelManager::from_channel_manager_data`.
+	#[cfg(test)]
+	pub reconstruct_manager_from_monitors: Option<bool>,
 }
 
 impl<
@@ -17856,6 +17865,8 @@ impl<
 			channel_monitors: hash_map_from_iter(
 				channel_monitors.drain(..).map(|monitor| (monitor.channel_id(), monitor)),
 			),
+			#[cfg(test)]
+			reconstruct_manager_from_monitors: None,
 		}
 	}
 }
@@ -18553,26 +18564,30 @@ impl<
 		#[cfg(not(test))]
 		let reconstruct_manager_from_monitors = false;
 		#[cfg(test)]
-		let reconstruct_manager_from_monitors = {
-			use core::hash::{BuildHasher, Hasher};
+		let reconstruct_manager_from_monitors =
+			args.reconstruct_manager_from_monitors.unwrap_or_else(|| {
+				use core::hash::{BuildHasher, Hasher};
 
-			match std::env::var("LDK_TEST_REBUILD_MGR_FROM_MONITORS") {
-				Ok(val) => match val.as_str() {
-					"1" => true,
-					"0" => false,
-					_ => panic!("LDK_TEST_REBUILD_MGR_FROM_MONITORS must be 0 or 1, got: {}", val),
-				},
-				Err(_) => {
-					let rand_val =
-						std::collections::hash_map::RandomState::new().build_hasher().finish();
-					if rand_val % 2 == 0 {
-						true
-					} else {
-						false
-					}
-				},
-			}
-		};
+				match std::env::var("LDK_TEST_REBUILD_MGR_FROM_MONITORS") {
+					Ok(val) => match val.as_str() {
+						"1" => true,
+						"0" => false,
+						_ => panic!(
+							"LDK_TEST_REBUILD_MGR_FROM_MONITORS must be 0 or 1, got: {}",
+							val
+						),
+					},
+					Err(_) => {
+						let rand_val =
+							std::collections::hash_map::RandomState::new().build_hasher().finish();
+						if rand_val % 2 == 0 {
+							true
+						} else {
+							false
+						}
+					},
+				}
+			});
 
 		// If there's any preimages for forwarded HTLCs hanging around in ChannelMonitors we
 		// should ensure we try them again on the inbound edge. We put them here and do so after we

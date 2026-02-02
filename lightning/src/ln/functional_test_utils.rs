@@ -911,6 +911,8 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 						tx_broadcaster: &broadcaster,
 						logger: &self.logger,
 						channel_monitors,
+						#[cfg(test)]
+						reconstruct_manager_from_monitors: None,
 					},
 				)
 				.unwrap();
@@ -1309,7 +1311,7 @@ fn check_claimed_htlcs_match_route<'a, 'b, 'c>(
 
 pub fn _reload_node<'a, 'b, 'c>(
 	node: &'a Node<'a, 'b, 'c>, config: UserConfig, chanman_encoded: &[u8],
-	monitors_encoded: &[&[u8]],
+	monitors_encoded: &[&[u8]], _reconstruct_manager_from_monitors: Option<bool>,
 ) -> TestChannelManager<'b, 'c> {
 	let mut monitors_read = Vec::with_capacity(monitors_encoded.len());
 	for encoded in monitors_encoded {
@@ -1343,6 +1345,8 @@ pub fn _reload_node<'a, 'b, 'c>(
 				tx_broadcaster: node.tx_broadcaster,
 				logger: node.logger,
 				channel_monitors,
+				#[cfg(test)]
+				reconstruct_manager_from_monitors: _reconstruct_manager_from_monitors,
 			},
 		)
 		.unwrap()
@@ -1378,7 +1382,7 @@ macro_rules! reload_node {
 		$node.chain_monitor = &$new_chain_monitor;
 
 		$new_channelmanager =
-			_reload_node(&$node, $new_config, &chanman_encoded, $monitors_encoded);
+			_reload_node(&$node, $new_config, &chanman_encoded, $monitors_encoded, None);
 		$node.node = &$new_channelmanager;
 		$node.onion_messenger.set_offers_handler(&$new_channelmanager);
 		$node.onion_messenger.set_async_payments_handler(&$new_channelmanager);
