@@ -18626,47 +18626,49 @@ impl<
 					}
 				}
 
-				for (htlc_source, (htlc, preimage_opt)) in monitor.get_all_current_outbound_htlcs()
-				{
-					let logger =
-						WithChannelMonitor::from(&args.logger, monitor, Some(htlc.payment_hash));
-					let htlc_id = SentHTLCId::from_source(&htlc_source);
-					match htlc_source {
-						HTLCSource::PreviousHopData(prev_hop_data) => {
-							let pending_forward_matches_htlc = |info: &PendingAddHTLCInfo| {
-								info.prev_funding_outpoint == prev_hop_data.outpoint
-									&& info.prev_htlc_id == prev_hop_data.htlc_id
-							};
-							if !is_channel_closed {
-								continue;
-							}
+				if is_channel_closed {
+					for (htlc_source, (htlc, preimage_opt)) in
+						monitor.get_all_current_outbound_htlcs()
+					{
+						let logger = WithChannelMonitor::from(
+							&args.logger,
+							monitor,
+							Some(htlc.payment_hash),
+						);
+						let htlc_id = SentHTLCId::from_source(&htlc_source);
+						match htlc_source {
+							HTLCSource::PreviousHopData(prev_hop_data) => {
+								let pending_forward_matches_htlc = |info: &PendingAddHTLCInfo| {
+									info.prev_funding_outpoint == prev_hop_data.outpoint
+										&& info.prev_htlc_id == prev_hop_data.htlc_id
+								};
 
-							// If `reconstruct_manager_from_monitors` is set, we always add all inbound committed
-							// HTLCs to `decode_update_add_htlcs` in the above loop, but we need to prune from
-							// those added HTLCs if they were already forwarded to the outbound edge. Otherwise,
-							// we'll double-forward.
-							if reconstruct_manager_from_monitors {
+								// If `reconstruct_manager_from_monitors` is set, we always add all inbound committed
+								// HTLCs to `decode_update_add_htlcs` in the above loop, but we need to prune from
+								// those added HTLCs if they were already forwarded to the outbound edge. Otherwise,
+								// we'll double-forward.
+								if reconstruct_manager_from_monitors {
+									dedup_decode_update_add_htlcs(
+										&mut decode_update_add_htlcs,
+										&prev_hop_data,
+										"HTLC already forwarded to the outbound edge",
+										&&logger,
+									);
+								}
+
+								// The ChannelMonitor is now responsible for this HTLC's
+								// failure/success and will let us know what its outcome is. If we
+								// still have an entry for this HTLC in `forward_htlcs_legacy`,
+								// `pending_intercepted_htlcs_legacy`, or
+								// `decode_update_add_htlcs_legacy`, we were apparently not persisted
+								// after the monitor was when forwarding the payment.
 								dedup_decode_update_add_htlcs(
-									&mut decode_update_add_htlcs,
+									&mut decode_update_add_htlcs_legacy,
 									&prev_hop_data,
-									"HTLC already forwarded to the outbound edge",
+									"HTLC was forwarded to the closed channel",
 									&&logger,
 								);
-							}
-
-							// The ChannelMonitor is now responsible for this HTLC's
-							// failure/success and will let us know what its outcome is. If we
-							// still have an entry for this HTLC in `forward_htlcs_legacy`,
-							// `pending_intercepted_htlcs_legacy`, or
-							// `decode_update_add_htlcs_legacy`, we were apparently not persisted
-							// after the monitor was when forwarding the payment.
-							dedup_decode_update_add_htlcs(
-								&mut decode_update_add_htlcs_legacy,
-								&prev_hop_data,
-								"HTLC was forwarded to the closed channel",
-								&&logger,
-							);
-							forward_htlcs_legacy.retain(|_, forwards| {
+								forward_htlcs_legacy.retain(|_, forwards| {
 								forwards.retain(|forward| {
 									if let HTLCForwardInfo::AddHTLC(htlc_info) = forward {
 										if pending_forward_matches_htlc(&htlc_info) {
@@ -18678,7 +18680,7 @@ impl<
 								});
 								!forwards.is_empty()
 							});
-							pending_intercepted_htlcs_legacy.retain(|intercepted_id, htlc_info| {
+								pending_intercepted_htlcs_legacy.retain(|intercepted_id, htlc_info| {
 								if pending_forward_matches_htlc(&htlc_info) {
 									log_info!(logger, "Removing pending intercepted HTLC with hash {} as it was forwarded to the closed channel {}",
 										&htlc.payment_hash, &monitor.channel_id());
@@ -18690,113 +18692,111 @@ impl<
 									false
 								} else { true }
 							});
-						},
-						HTLCSource::OutboundRoute {
-							payment_id,
-							session_priv,
-							path,
-							bolt12_invoice,
-							..
-						} => {
-							if !is_channel_closed {
-								continue;
-							}
-							if let Some(preimage) = preimage_opt {
-								let pending_events = Mutex::new(pending_events_read);
-								let update = PaymentCompleteUpdate {
-									counterparty_node_id: monitor.get_counterparty_node_id(),
-									channel_funding_outpoint: monitor.get_funding_txo(),
-									channel_id: monitor.channel_id(),
-									htlc_id,
-								};
-								let mut compl_action = Some(
+							},
+							HTLCSource::OutboundRoute {
+								payment_id,
+								session_priv,
+								path,
+								bolt12_invoice,
+								..
+							} => {
+								if let Some(preimage) = preimage_opt {
+									let pending_events = Mutex::new(pending_events_read);
+									let update = PaymentCompleteUpdate {
+										counterparty_node_id: monitor.get_counterparty_node_id(),
+										channel_funding_outpoint: monitor.get_funding_txo(),
+										channel_id: monitor.channel_id(),
+										htlc_id,
+									};
+									let mut compl_action = Some(
 									EventCompletionAction::ReleasePaymentCompleteChannelMonitorUpdate(update)
 								);
-								pending_outbounds.claim_htlc(
-									payment_id,
-									preimage,
-									bolt12_invoice,
-									session_priv,
-									path,
-									true,
-									&mut compl_action,
-									&pending_events,
-									&logger,
-								);
-								// If the completion action was not consumed, then there was no
-								// payment to claim, and we need to tell the `ChannelMonitor`
-								// we don't need to hear about the HTLC again, at least as long
-								// as the PaymentSent event isn't still sitting around in our
-								// event queue.
-								let have_action = if compl_action.is_some() {
-									let pending_events = pending_events.lock().unwrap();
-									pending_events.iter().any(|(_, act)| *act == compl_action)
-								} else {
-									false
-								};
-								if !have_action && compl_action.is_some() {
-									let mut peer_state = per_peer_state
+									pending_outbounds.claim_htlc(
+										payment_id,
+										preimage,
+										bolt12_invoice,
+										session_priv,
+										path,
+										true,
+										&mut compl_action,
+										&pending_events,
+										&logger,
+									);
+									// If the completion action was not consumed, then there was no
+									// payment to claim, and we need to tell the `ChannelMonitor`
+									// we don't need to hear about the HTLC again, at least as long
+									// as the PaymentSent event isn't still sitting around in our
+									// event queue.
+									let have_action = if compl_action.is_some() {
+										let pending_events = pending_events.lock().unwrap();
+										pending_events.iter().any(|(_, act)| *act == compl_action)
+									} else {
+										false
+									};
+									if !have_action && compl_action.is_some() {
+										let mut peer_state = per_peer_state
 										.get(&counterparty_node_id)
 										.map(|state| state.lock().unwrap())
 										.expect(
 											"Channels originating a preimage must have peer state",
 										);
-									let update_id = peer_state
+										let update_id = peer_state
 										.closed_channel_monitor_update_ids
 										.get_mut(channel_id)
 										.expect(
 											"Channels originating a preimage must have a monitor",
 										);
-									// Note that for channels closed pre-0.1, the latest
-									// update_id is `u64::MAX`.
-									*update_id = update_id.saturating_add(1);
+										// Note that for channels closed pre-0.1, the latest
+										// update_id is `u64::MAX`.
+										*update_id = update_id.saturating_add(1);
 
-									pending_background_events.push(
-										BackgroundEvent::MonitorUpdateRegeneratedOnStartup {
-											counterparty_node_id: monitor
-												.get_counterparty_node_id(),
-											funding_txo: monitor.get_funding_txo(),
-											channel_id: monitor.channel_id(),
-											update: ChannelMonitorUpdate {
-												update_id: *update_id,
-												channel_id: Some(monitor.channel_id()),
-												updates: vec![
+										pending_background_events.push(
+											BackgroundEvent::MonitorUpdateRegeneratedOnStartup {
+												counterparty_node_id: monitor
+													.get_counterparty_node_id(),
+												funding_txo: monitor.get_funding_txo(),
+												channel_id: monitor.channel_id(),
+												update: ChannelMonitorUpdate {
+													update_id: *update_id,
+													channel_id: Some(monitor.channel_id()),
+													updates: vec![
 													ChannelMonitorUpdateStep::ReleasePaymentComplete {
 														htlc: htlc_id,
 													},
 												],
+												},
 											},
-										},
-									);
+										);
+									}
+									pending_events_read = pending_events.into_inner().unwrap();
 								}
-								pending_events_read = pending_events.into_inner().unwrap();
-							}
-						},
+							},
+						}
 					}
-				}
-				for (htlc_source, payment_hash) in monitor.get_onchain_failed_outbound_htlcs() {
-					let logger =
-						WithChannelMonitor::from(&args.logger, monitor, Some(payment_hash));
-					log_info!(
-						logger,
-						"Failing HTLC with payment hash {} as it was resolved on-chain.",
-						payment_hash
-					);
-					let completion_action = Some(PaymentCompleteUpdate {
-						counterparty_node_id: monitor.get_counterparty_node_id(),
-						channel_funding_outpoint: monitor.get_funding_txo(),
-						channel_id: monitor.channel_id(),
-						htlc_id: SentHTLCId::from_source(&htlc_source),
-					});
+					for (htlc_source, payment_hash) in monitor.get_onchain_failed_outbound_htlcs() {
+						let logger =
+							WithChannelMonitor::from(&args.logger, monitor, Some(payment_hash));
+						log_info!(
+							logger,
+							"Failing HTLC with payment hash {} as it was resolved on-chain.",
+							payment_hash
+						);
+						let completion_action = Some(PaymentCompleteUpdate {
+							counterparty_node_id: monitor.get_counterparty_node_id(),
+							channel_funding_outpoint: monitor.get_funding_txo(),
+							channel_id: monitor.channel_id(),
+							htlc_id: SentHTLCId::from_source(&htlc_source),
+						});
 
-					failed_htlcs.push((
-						htlc_source,
-						payment_hash,
-						monitor.get_counterparty_node_id(),
-						monitor.channel_id(),
-						LocalHTLCFailureReason::OnChainTimeout,
-						completion_action,
-					));
+						failed_htlcs.push((
+							htlc_source,
+							payment_hash,
+							monitor.get_counterparty_node_id(),
+							monitor.channel_id(),
+							LocalHTLCFailureReason::OnChainTimeout,
+							completion_action,
+						));
+					}
 				}
 
 				// Whether the downstream channel was closed or not, try to re-apply any payment
