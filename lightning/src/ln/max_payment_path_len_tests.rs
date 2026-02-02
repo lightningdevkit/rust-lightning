@@ -139,7 +139,6 @@ fn large_payment_metadata() {
 		&secp_ctx,
 		&route_0_1.paths[0],
 		&test_utils::privkey(42),
-		MIN_FINAL_VALUE_ESTIMATE_WITH_OVERPAY,
 		&too_large_onion,
 		nodes[0].best_block_info().1 + DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA,
 		&payment_hash,
@@ -369,9 +368,8 @@ fn blinded_path_with_custom_tlv() {
 	// Calculate the maximum custom TLV value size where a valid onion packet is still possible.
 	const CUSTOM_TLV_TYPE: u64 = 65537;
 	let mut route = get_route(&nodes[1], &route_params).unwrap();
-	let reserved_packet_bytes_without_custom_tlv: usize = onion_utils::build_onion_payloads(
+	let reserved_packet_bytes_without_custom_tlv: usize = onion_utils::test_build_onion_payloads(
 		&route.paths[0],
-		MIN_FINAL_VALUE_ESTIMATE_WITH_OVERPAY,
 		&RecipientOnionFields::spontaneous_empty(MIN_FINAL_VALUE_ESTIMATE_WITH_OVERPAY),
 		nodes[0].best_block_info().1 + DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA,
 		&None,
@@ -433,7 +431,6 @@ fn blinded_path_with_custom_tlv() {
 		&secp_ctx,
 		&route.paths[0],
 		&test_utils::privkey(42),
-		MIN_FINAL_VALUE_ESTIMATE_WITH_OVERPAY,
 		&too_large_onion,
 		nodes[0].best_block_info().1 + DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA,
 		&payment_hash,
