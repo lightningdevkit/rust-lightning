@@ -20,7 +20,6 @@ use bitcoin::secp256k1::PublicKey;
 
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, MonitorEvent};
 use crate::chain::transaction::{OutPoint, TransactionData};
-use crate::impl_writeable_tlv_based;
 use crate::ln::types::ChannelId;
 use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::sign::HTLCDescriptor;
