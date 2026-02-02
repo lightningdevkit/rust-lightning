@@ -5088,7 +5088,7 @@ impl<
 			chain_hash: self.chain_hash,
 			short_channel_id,
 			timestamp: chan.context.get_update_time_counter(),
-			message_flags: 1, // Only must_be_one
+			message_flags: 1 | if !chan.context.should_announce() { 1 << 1 } else { 0 }, // must_be_one + dont_forward
 			channel_flags: (!were_node_one) as u8 | ((!enabled as u8) << 1),
 			cltv_expiry_delta: chan.context.get_cltv_expiry_delta(),
 			htlc_minimum_msat: chan.context.get_counterparty_htlc_minimum_msat(),
@@ -12274,6 +12274,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			Some((cp_id, chan_id)) => (cp_id.clone(), chan_id.clone()),
 			None => {
 				// It's not a local channel
+				if msg.contents.message_flags & (1 << 1) != 0 {
+					log_debug!(self.logger, "Received channel_update for unknown channel {} with dont_forward set. You may wish to check if an incorrect tx_index was passed to chain::Confirm::transactions_confirmed.", msg.contents.short_channel_id);
+				}
 				return Ok(NotifyOption::SkipPersistNoEvents)
 			}
 		};
