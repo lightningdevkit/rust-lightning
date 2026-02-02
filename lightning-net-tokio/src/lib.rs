@@ -384,6 +384,16 @@ where
 	PM::Target: APeerManager<Descriptor = SocketDescriptor>,
 {
 	let remote_addr = get_addr_from_stream(&stream);
+	setup_outbound_internal(peer_manager, their_node_id, stream, remote_addr)
+}
+
+fn setup_outbound_internal<PM: Deref + 'static + Send + Sync + Clone>(
+	peer_manager: PM, their_node_id: PublicKey, stream: StdTcpStream,
+	remote_addr: Option<SocketAddress>,
+) -> impl std::future::Future<Output = ()>
+where
+	PM::Target: APeerManager<Descriptor = SocketDescriptor>,
+{
 	let (reader, mut write_receiver, read_receiver, us) = Connection::new(stream);
 	#[cfg(test)]
 	let last_us = Arc::clone(&us);
@@ -478,8 +488,15 @@ where
 /// Routes [`connect_outbound`] through Tor. Implements stream isolation for each connection
 /// using a stream isolation parameter sourced from [`EntropySource::get_secure_random_bytes`].
 ///
+/// The `addr` parameter will be set to the [`PeerDetails::socket_address`] for that peer in
+/// [`PeerManager::list_peers`], and if it is not a private IPV4 or IPV6 address, it will also
+/// reported to the peer in our init message.
+///
 /// Returns a future (as the fn is async) that yields another future, see [`connect_outbound`] for
 /// details on this return value.
+///
+/// [`PeerDetails::socket_address`]: lightning::ln::peer_handler::PeerDetails::socket_address
+/// [`PeerManager::list_peers`]: lightning::ln::peer_handler::PeerManager::list_peers
 pub async fn tor_connect_outbound<PM: Deref + 'static + Send + Sync + Clone, ES: EntropySource>(
 	peer_manager: PM, their_node_id: PublicKey, addr: SocketAddress, tor_proxy_addr: SocketAddr,
 	entropy_source: ES,
@@ -488,12 +505,14 @@ where
 	PM::Target: APeerManager<Descriptor = SocketDescriptor>,
 {
 	let connect_fut = async {
-		tor_connect(addr, tor_proxy_addr, entropy_source).await.map(|s| s.into_std().unwrap())
+		tor_connect(addr.clone(), tor_proxy_addr, entropy_source)
+			.await
+			.map(|s| s.into_std().unwrap())
 	};
 	if let Ok(Ok(stream)) =
 		time::timeout(Duration::from_secs(TOR_CONNECT_OUTBOUND_TIMEOUT), connect_fut).await
 	{
-		Some(setup_outbound(peer_manager, their_node_id, stream))
+		Some(setup_outbound_internal(peer_manager, their_node_id, stream, Some(addr)))
 	} else {
 		None
 	}
