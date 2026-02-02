@@ -13276,7 +13276,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								});
 								notify = NotifyOption::SkipPersistHandleEvents;
 							},
-							Err((msg, _action)) => log_trace!(logger, "{}", msg),
+							Err(action) => log_trace!(logger, "Failed to propose quiescence for: {:?}", action),
 						}
 					} else {
 						result = Err(APIError::APIMisuseError {
