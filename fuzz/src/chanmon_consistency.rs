@@ -28,7 +28,8 @@ use bitcoin::transaction::Version;
 use bitcoin::transaction::{Transaction, TxOut};
 use bitcoin::FeeRate;
 
-use bitcoin::hash_types::BlockHash;
+use bitcoin::block::Header;
+use bitcoin::hash_types::{BlockHash, Txid};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hashes::Hash as TraitImport;
@@ -96,6 +97,7 @@ use lightning::util::dyn_signer::DynSigner;
 
 use std::cell::RefCell;
 use std::cmp;
+use std::collections::HashSet;
 use std::mem;
 use std::sync::atomic;
 use std::sync::{Arc, Mutex};
@@ -168,6 +170,46 @@ impl BroadcasterInterface for TestBroadcaster {
 		for (tx, _broadcast_type) in txs {
 			self.txn_broadcasted.borrow_mut().push((*tx).clone());
 		}
+	}
+}
+
+struct ChainState {
+	blocks: Vec<(Header, Vec<Transaction>)>,
+	confirmed_txids: HashSet<Txid>,
+}
+
+impl ChainState {
+	fn new() -> Self {
+		let genesis_hash = genesis_block(Network::Bitcoin).block_hash();
+		let genesis_header = create_dummy_header(genesis_hash, 42);
+		Self { blocks: vec![(genesis_header, Vec::new())], confirmed_txids: HashSet::new() }
+	}
+
+	fn tip_height(&self) -> u32 {
+		(self.blocks.len() - 1) as u32
+	}
+
+	fn confirm_tx(&mut self, tx: Transaction) -> bool {
+		let txid = tx.compute_txid();
+		if self.confirmed_txids.contains(&txid) {
+			return false;
+		}
+		self.confirmed_txids.insert(txid);
+
+		let prev_hash = self.blocks.last().unwrap().0.block_hash();
+		let header = create_dummy_header(prev_hash, 42);
+		self.blocks.push((header, vec![tx]));
+
+		for _ in 0..5 {
+			let prev_hash = self.blocks.last().unwrap().0.block_hash();
+			let header = create_dummy_header(prev_hash, 42);
+			self.blocks.push((header, Vec::new()));
+		}
+		true
+	}
+
+	fn block_at(&self, height: u32) -> &(Header, Vec<Transaction>) {
+		&self.blocks[height as usize]
 	}
 }
 
@@ -326,7 +368,8 @@ impl EntropySource for KeyProvider {
 	fn get_secure_random_bytes(&self) -> [u8; 32] {
 		let id = self.rand_bytes_id.fetch_add(1, atomic::Ordering::Relaxed);
 		#[rustfmt::skip]
-		let mut res = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 11, self.node_secret[31]];
+		let mut res = [self.node_secret[31], 11, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 11, self.node_secret[31]];
+		res[2..6].copy_from_slice(&id.to_le_bytes());
 		res[30 - 4..30].copy_from_slice(&id.to_le_bytes());
 		res
 	}
@@ -752,7 +795,9 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 	data: &[u8], underlying_out: Out, anchors: bool,
 ) {
 	let out = SearchingOutput::new(underlying_out);
-	let broadcast = Arc::new(TestBroadcaster { txn_broadcasted: RefCell::new(Vec::new()) });
+	let broadcast_a = Arc::new(TestBroadcaster { txn_broadcasted: RefCell::new(Vec::new()) });
+	let broadcast_b = Arc::new(TestBroadcaster { txn_broadcasted: RefCell::new(Vec::new()) });
+	let broadcast_c = Arc::new(TestBroadcaster { txn_broadcasted: RefCell::new(Vec::new()) });
 	let router = FuzzRouter {};
 
 	// Read initial monitor styles from fuzz input (1 byte: 2 bits per node)
@@ -775,8 +820,13 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 		}),
 	];
 
+	let mut chain_state = ChainState::new();
+	let mut node_height_a: u32 = 0;
+	let mut node_height_b: u32 = 0;
+	let mut node_height_c: u32 = 0;
+
 	macro_rules! make_node {
-		($node_id: expr, $fee_estimator: expr) => {{
+		($node_id: expr, $fee_estimator: expr, $broadcaster: expr) => {{
 			let logger: Arc<dyn Logger + MaybeSend + MaybeSync> =
 				Arc::new(test_logger::TestLogger::new($node_id.to_string(), out.clone()));
 			let node_secret = SecretKey::from_slice(&[
@@ -790,7 +840,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 				enforcement_states: Mutex::new(new_hash_map()),
 			});
 			let monitor = Arc::new(TestChainMonitor::new(
-				broadcast.clone(),
+				$broadcaster.clone(),
 				logger.clone(),
 				$fee_estimator.clone(),
 				Arc::new(TestPersister {
@@ -813,7 +863,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 				ChannelManager::new(
 					$fee_estimator.clone(),
 					monitor.clone(),
-					broadcast.clone(),
+					$broadcaster.clone(),
 					&router,
 					&router,
 					Arc::clone(&logger),
@@ -836,12 +886,13 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 	                   old_monitors: &TestChainMonitor,
 	                   mut use_old_mons,
 	                   keys,
-	                   fee_estimator| {
+	                   fee_estimator,
+	                   broadcaster: Arc<TestBroadcaster>| {
 		let keys_manager = Arc::clone(keys);
 		let logger: Arc<dyn Logger + MaybeSend + MaybeSync> =
 			Arc::new(test_logger::TestLogger::new(node_id.to_string(), out.clone()));
 		let chain_monitor = Arc::new(TestChainMonitor::new(
-			broadcast.clone(),
+			broadcaster.clone(),
 			logger.clone(),
 			Arc::clone(fee_estimator),
 			Arc::new(TestPersister {
@@ -903,7 +954,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 			signer_provider: keys_manager,
 			fee_estimator: Arc::clone(fee_estimator),
 			chain_monitor: chain_monitor.clone(),
-			tx_broadcaster: broadcast.clone(),
+			tx_broadcaster: broadcaster,
 			router: &router,
 			message_router: &router,
 			logger,
@@ -924,7 +975,6 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 		res
 	};
 
-	let mut channel_txn = Vec::new();
 	macro_rules! complete_all_pending_monitor_updates {
 		($monitor: expr) => {{
 			for (channel_id, state) in $monitor.latest_monitors.lock().unwrap().iter_mut() {
@@ -1028,7 +1078,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 							tx.clone(),
 						)
 						.unwrap();
-					channel_txn.push(tx);
+					chain_state.confirm_tx(tx);
 				} else {
 					panic!("Wrong event type");
 				}
@@ -1083,20 +1133,6 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 			}
 
 			channel_id
-		}};
-	}
-
-	macro_rules! confirm_txn {
-		($node: expr) => {{
-			let chain_hash = genesis_block(Network::Bitcoin).block_hash();
-			let mut header = create_dummy_header(chain_hash, 42);
-			let txdata: Vec<_> =
-				channel_txn.iter().enumerate().map(|(i, tx)| (i + 1, tx)).collect();
-			$node.transactions_confirmed(&header, &txdata, 1);
-			for _ in 2..100 {
-				header = create_dummy_header(header.block_hash(), 42);
-			}
-			$node.best_block_updated(&header, 99);
 		}};
 	}
 
@@ -1161,9 +1197,9 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 
 	// 3 nodes is enough to hit all the possible cases, notably unknown-source-unknown-dest
 	// forwarding.
-	let (node_a, mut monitor_a, keys_manager_a, logger_a) = make_node!(0, fee_est_a);
-	let (node_b, mut monitor_b, keys_manager_b, logger_b) = make_node!(1, fee_est_b);
-	let (node_c, mut monitor_c, keys_manager_c, logger_c) = make_node!(2, fee_est_c);
+	let (node_a, mut monitor_a, keys_manager_a, logger_a) = make_node!(0, fee_est_a, broadcast_a);
+	let (node_b, mut monitor_b, keys_manager_b, logger_b) = make_node!(1, fee_est_b, broadcast_b);
+	let (node_c, mut monitor_c, keys_manager_c, logger_c) = make_node!(2, fee_est_c, broadcast_c);
 
 	let mut nodes = [node_a, node_b, node_c];
 	let loggers = [logger_a, logger_b, logger_c];
@@ -1192,11 +1228,35 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 
 	// Wipe the transactions-broadcasted set to make sure we don't broadcast any transactions
 	// during normal operation in `test_return`.
-	broadcast.txn_broadcasted.borrow_mut().clear();
+	broadcast_a.txn_broadcasted.borrow_mut().clear();
+	broadcast_b.txn_broadcasted.borrow_mut().clear();
+	broadcast_c.txn_broadcasted.borrow_mut().clear();
 
-	for node in nodes.iter() {
-		confirm_txn!(node);
-	}
+	let sync_with_chain_state = |chain_state: &ChainState,
+	                             node: &ChannelManager<_, _, _, _, _, _, _, _, _>,
+	                             node_height: &mut u32,
+	                             num_blocks: Option<u32>| {
+		let target_height = if let Some(num_blocks) = num_blocks {
+			std::cmp::min(*node_height + num_blocks, chain_state.tip_height())
+		} else {
+			chain_state.tip_height()
+		};
+
+		while *node_height < target_height {
+			*node_height += 1;
+			let (header, txn) = chain_state.block_at(*node_height);
+			let txdata: Vec<_> = txn.iter().enumerate().map(|(i, tx)| (i + 1, tx)).collect();
+			if !txdata.is_empty() {
+				node.transactions_confirmed(header, &txdata, *node_height);
+			}
+			node.best_block_updated(header, *node_height);
+		}
+	};
+
+	// Sync all nodes to tip to lock the funding.
+	sync_with_chain_state(&mut chain_state, &nodes[0], &mut node_height_a, None);
+	sync_with_chain_state(&mut chain_state, &nodes[1], &mut node_height_b, None);
+	sync_with_chain_state(&mut chain_state, &nodes[2], &mut node_height_c, None);
 
 	lock_fundings!(nodes);
 
@@ -1246,9 +1306,11 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 			assert_eq!(nodes[1].list_channels().len(), 6);
 			assert_eq!(nodes[2].list_channels().len(), 3);
 
-			// At no point should we have broadcasted any transactions after the initial channel
-			// opens.
-			assert!(broadcast.txn_broadcasted.borrow().is_empty());
+			// All broadcasters should be empty (all broadcast transactions should be handled
+			// explicitly).
+			assert!(broadcast_a.txn_broadcasted.borrow().is_empty());
+			assert!(broadcast_b.txn_broadcasted.borrow().is_empty());
+			assert!(broadcast_c.txn_broadcasted.borrow().is_empty());
 
 			return;
 		}};
@@ -1316,6 +1378,10 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 							*node_id == a_id
 						},
 						MessageSendEvent::SendTxAbort { ref node_id, .. } => {
+							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
+							*node_id == a_id
+						},
+						MessageSendEvent::SendTxSignatures { ref node_id, .. } => {
 							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
 							*node_id == a_id
 						},
@@ -1500,6 +1566,14 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 								if dest.get_our_node_id() == *node_id {
 									out.locked_write(format!("Delivering tx_abort from node {} to node {}.\n", $node, idx).as_bytes());
 									dest.handle_tx_abort(nodes[$node].get_our_node_id(), msg);
+								}
+							}
+						},
+						MessageSendEvent::SendTxSignatures { ref node_id, ref msg } => {
+							for (idx, dest) in nodes.iter().enumerate() {
+								if dest.get_our_node_id() == *node_id {
+									out.locked_write(format!("Delivering tx_signatures from node {} to node {}.\n", $node, idx).as_bytes());
+									dest.handle_tx_signatures(nodes[$node].get_our_node_id(), msg);
 								}
 							}
 						},
@@ -1704,7 +1778,18 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 								)
 								.unwrap();
 						},
-						events::Event::SplicePending { .. } => {},
+						events::Event::SplicePending { new_funding_txo, .. } => {
+							let broadcaster = match $node {
+								0 => &broadcast_a,
+								1 => &broadcast_b,
+								_ => &broadcast_c,
+							};
+							let mut txs = broadcaster.txn_broadcasted.borrow_mut();
+							assert!(txs.len() >= 1);
+							let splice_tx = txs.remove(0);
+							assert_eq!(new_funding_txo.txid, splice_tx.compute_txid());
+							chain_state.confirm_tx(splice_tx);
+						},
 						events::Event::SpliceFailed { .. } => {},
 
 						_ => {
@@ -2369,6 +2454,15 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 				}
 			},
 
+			// Sync node by 1 block to cover confirmation of a transaction.
+			0xa8 => sync_with_chain_state(&mut chain_state, &nodes[0], &mut node_height_a, Some(1)),
+			0xa9 => sync_with_chain_state(&mut chain_state, &nodes[1], &mut node_height_b, Some(1)),
+			0xaa => sync_with_chain_state(&mut chain_state, &nodes[2], &mut node_height_c, Some(1)),
+			// Sync node to chain tip to cover confirmation of a transaction post-reorg-risk.
+			0xab => sync_with_chain_state(&mut chain_state, &nodes[0], &mut node_height_a, None),
+			0xac => sync_with_chain_state(&mut chain_state, &nodes[1], &mut node_height_b, None),
+			0xad => sync_with_chain_state(&mut chain_state, &nodes[2], &mut node_height_c, None),
+
 			0xb0 | 0xb1 | 0xb2 => {
 				// Restart node A, picking among the in-flight `ChannelMonitor`s to use based on
 				// the value of `v` we're matching.
@@ -2382,8 +2476,15 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 					ab_events.clear();
 					ba_events.clear();
 				}
-				let (new_node_a, new_monitor_a) =
-					reload_node(&node_a_ser, 0, &monitor_a, v, &keys_manager_a, &fee_est_a);
+				let (new_node_a, new_monitor_a) = reload_node(
+					&node_a_ser,
+					0,
+					&monitor_a,
+					v,
+					&keys_manager_a,
+					&fee_est_a,
+					broadcast_a.clone(),
+				);
 				nodes[0] = new_node_a;
 				monitor_a = new_monitor_a;
 			},
@@ -2404,8 +2505,15 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 					bc_events.clear();
 					cb_events.clear();
 				}
-				let (new_node_b, new_monitor_b) =
-					reload_node(&node_b_ser, 1, &monitor_b, v, &keys_manager_b, &fee_est_b);
+				let (new_node_b, new_monitor_b) = reload_node(
+					&node_b_ser,
+					1,
+					&monitor_b,
+					v,
+					&keys_manager_b,
+					&fee_est_b,
+					broadcast_b.clone(),
+				);
 				nodes[1] = new_node_b;
 				monitor_b = new_monitor_b;
 			},
@@ -2422,8 +2530,15 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 					bc_events.clear();
 					cb_events.clear();
 				}
-				let (new_node_c, new_monitor_c) =
-					reload_node(&node_c_ser, 2, &monitor_c, v, &keys_manager_c, &fee_est_c);
+				let (new_node_c, new_monitor_c) = reload_node(
+					&node_c_ser,
+					2,
+					&monitor_c,
+					v,
+					&keys_manager_c,
+					&fee_est_c,
+					broadcast_c.clone(),
+				);
 				nodes[2] = new_node_c;
 				monitor_c = new_monitor_c;
 			},
