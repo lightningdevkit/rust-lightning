@@ -3342,9 +3342,7 @@ fn retry_multi_path_single_failed_payment() {
 		scorer.expect_usage(chans[1].short_channel_id.unwrap(), usage);
 	}
 
-	// Note that while we actaully pay amt_msat + 1, we should really set the onion amount to
-	// amt_msat as that's what we built a route for.
-	let onion = RecipientOnionFields::secret_only(payment_secret, amt_msat + 1);
+	let onion = RecipientOnionFields::secret_only(payment_secret, amt_msat);
 	let id = PaymentId(payment_hash.0);
 	nodes[0].node.send_payment(payment_hash, onion, id, route_params, Retry::Attempts(1)).unwrap();
 	let events = nodes[0].node.get_and_clear_pending_events();
@@ -4713,7 +4711,7 @@ fn do_test_custom_tlvs_consistency(
 	let priv_a = session_privs[0];
 	nodes[0]
 		.node
-		.test_send_payment_along_path(path_a, &hash, onion, amt_msat, cur_height, id, &None, priv_a)
+		.test_send_payment_along_path(path_a, &hash, onion, cur_height, id, &None, priv_a)
 		.unwrap();
 	check_added_monitors(&nodes[0], 1);
 
@@ -4736,7 +4734,7 @@ fn do_test_custom_tlvs_consistency(
 	let priv_b = session_privs[1];
 	nodes[0]
 		.node
-		.test_send_payment_along_path(path_b, &hash, onion, amt_msat, cur_height, id, &None, priv_b)
+		.test_send_payment_along_path(path_b, &hash, onion, cur_height, id, &None, priv_b)
 		.unwrap();
 	check_added_monitors(&nodes[0], 1);
 
@@ -5128,7 +5126,6 @@ fn peel_payment_onion_custom_tlvs() {
 		&secp_ctx,
 		&route.paths[0],
 		&session_priv,
-		amt_msat,
 		&recipient_onion,
 		nodes[0].best_block_info().1,
 		&payment_hash,

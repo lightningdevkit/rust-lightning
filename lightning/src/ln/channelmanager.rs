@@ -5153,15 +5153,14 @@ impl<
 	#[cfg(any(test, feature = "_externalize_tests"))]
 	pub(crate) fn test_send_payment_along_path(
 		&self, path: &Path, payment_hash: &PaymentHash, recipient_onion: RecipientOnionFields,
-		total_value: u64, cur_height: u32, payment_id: PaymentId,
-		keysend_preimage: &Option<PaymentPreimage>, session_priv_bytes: [u8; 32],
+		cur_height: u32, payment_id: PaymentId, keysend_preimage: &Option<PaymentPreimage>,
+		session_priv_bytes: [u8; 32],
 	) -> Result<(), APIError> {
 		let _lck = self.total_consistency_lock.read().unwrap();
 		self.send_payment_along_path(SendAlongPathArgs {
 			path,
 			payment_hash,
 			recipient_onion: &recipient_onion,
-			total_value,
 			cur_height,
 			payment_id,
 			keysend_preimage,
@@ -5177,7 +5176,6 @@ impl<
 			path,
 			payment_hash,
 			recipient_onion,
-			total_value,
 			cur_height,
 			payment_id,
 			keysend_preimage,
@@ -5202,7 +5200,6 @@ impl<
 			&self.secp_ctx,
 			&path,
 			&session_priv,
-			total_value,
 			recipient_onion,
 			cur_height,
 			payment_hash,
@@ -5421,7 +5418,7 @@ impl<
 	pub(super) fn test_send_payment_internal(
 		&self, route: &Route, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields,
 		keysend_preimage: Option<PaymentPreimage>, payment_id: PaymentId,
-		recv_value_msat: Option<u64>, onion_session_privs: Vec<[u8; 32]>,
+		onion_session_privs: Vec<[u8; 32]>,
 	) -> Result<(), PaymentSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height;
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
@@ -5431,7 +5428,6 @@ impl<
 			recipient_onion,
 			keysend_preimage,
 			payment_id,
-			recv_value_msat,
 			onion_session_privs,
 			&self.node_signer,
 			best_block_height,
@@ -20074,7 +20070,7 @@ mod tests {
 		let session_privs = nodes[0].node.test_add_new_pending_payment(our_payment_hash,
 			RecipientOnionFields::secret_only(payment_secret, 200_000), payment_id, &mpp_route).unwrap();
 		nodes[0].node.test_send_payment_along_path(&mpp_route.paths[0], &our_payment_hash,
-			RecipientOnionFields::secret_only(payment_secret, 200_000), 200_000, cur_height, payment_id, &None, session_privs[0]).unwrap();
+			RecipientOnionFields::secret_only(payment_secret, 200_000), cur_height, payment_id, &None, session_privs[0]).unwrap();
 		check_added_monitors(&nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
@@ -20110,7 +20106,7 @@ mod tests {
 
 		// Send the second half of the original MPP payment.
 		nodes[0].node.test_send_payment_along_path(&mpp_route.paths[1], &our_payment_hash,
-			RecipientOnionFields::secret_only(payment_secret, 200_000), 200_000, cur_height, payment_id, &None, session_privs[1]).unwrap();
+			RecipientOnionFields::secret_only(payment_secret, 200_000), cur_height, payment_id, &None, session_privs[1]).unwrap();
 		check_added_monitors(&nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
@@ -20358,7 +20354,7 @@ mod tests {
 		let session_privs = nodes[0].node.test_add_new_pending_payment(mismatch_payment_hash,
 			RecipientOnionFields::spontaneous_empty(10_000), PaymentId(mismatch_payment_hash.0), &route).unwrap();
 		nodes[0].node.test_send_payment_internal(&route, mismatch_payment_hash,
-			RecipientOnionFields::spontaneous_empty(10_000), Some(test_preimage), PaymentId(mismatch_payment_hash.0), None, session_privs).unwrap();
+			RecipientOnionFields::spontaneous_empty(10_000), Some(test_preimage), PaymentId(mismatch_payment_hash.0), session_privs).unwrap();
 		check_added_monitors(&nodes[0], 1);
 
 		let updates = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());

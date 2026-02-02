@@ -25,7 +25,7 @@ use crate::ln::msgs::{
 	OutboundOnionPayload, OutboundTrampolinePayload,
 };
 use crate::ln::onion_utils::{
-	self, build_onion_payloads, construct_onion_keys, LocalHTLCFailureReason,
+	self, construct_onion_keys, test_build_onion_payloads, LocalHTLCFailureReason,
 };
 use crate::ln::outbound_payment::RecipientOnionFields;
 use crate::ln::wire::Encode;
@@ -527,7 +527,7 @@ fn test_onion_failure() {
 			let recipient_fields = RecipientOnionFields::spontaneous_empty(40000);
 			let path = &route.paths[0];
 			let (mut onion_payloads, _htlc_msat, _htlc_cltv) =
-				build_onion_payloads(path, 40000, &recipient_fields, cur_height, &None, None, None)
+				test_build_onion_payloads(path, &recipient_fields, cur_height, &None, None, None)
 					.unwrap();
 			let mut new_payloads = Vec::new();
 			for payload in onion_payloads.drain(..) {
@@ -569,7 +569,7 @@ fn test_onion_failure() {
 			let recipient_fields = RecipientOnionFields::spontaneous_empty(40000);
 			let path = &route.paths[0];
 			let (mut onion_payloads, _htlc_msat, _htlc_cltv) =
-				build_onion_payloads(path, 40000, &recipient_fields, cur_height, &None, None, None)
+				test_build_onion_payloads(path, &recipient_fields, cur_height, &None, None, None)
 					.unwrap();
 			let mut new_payloads = Vec::new();
 			for payload in onion_payloads.drain(..) {
@@ -1288,7 +1288,7 @@ fn test_onion_failure() {
 			let recipient_fields = RecipientOnionFields::spontaneous_empty(40000);
 			let path = &route.paths[0];
 			let (onion_payloads, _, htlc_cltv) =
-				build_onion_payloads(path, 40000, &recipient_fields, height, &None, None, None)
+				test_build_onion_payloads(path, &recipient_fields, height, &None, None, None)
 					.unwrap();
 			let onion_packet = onion_utils::construct_onion_packet(
 				onion_payloads,
@@ -1841,8 +1841,7 @@ fn test_always_create_tlv_format_onion_payloads() {
 	let recipient_fields = RecipientOnionFields::spontaneous_empty(40000);
 	let path = &route.paths[0];
 	let (onion_payloads, _htlc_msat, _htlc_cltv) =
-		build_onion_payloads(path, 40000, &recipient_fields, cur_height, &None, None, None)
-			.unwrap();
+		test_build_onion_payloads(path, &recipient_fields, cur_height, &None, None, None).unwrap();
 
 	match onion_payloads[0] {
 		msgs::OutboundOnionPayload::Forward { .. } => {},
@@ -1978,7 +1977,6 @@ fn test_trampoline_onion_payload_assembly_values() {
 	let (trampoline_payloads, outer_total_msat, outer_starting_htlc_offset) =
 		onion_utils::build_trampoline_onion_payloads(
 			&path.blinded_tail.as_ref().unwrap(),
-			amt_msat,
 			&recipient_onion_fields,
 			cur_height,
 			&None,
@@ -2041,9 +2039,8 @@ fn test_trampoline_onion_payload_assembly_values() {
 
 	let recipient_onion_fields =
 		RecipientOnionFields::secret_only(payment_secret, outer_total_msat);
-	let (outer_payloads, total_msat, total_htlc_offset) = build_onion_payloads(
+	let (outer_payloads, total_msat, total_htlc_offset) = test_build_onion_payloads(
 		&path,
-		outer_total_msat,
 		&recipient_onion_fields,
 		outer_starting_htlc_offset,
 		&None,
@@ -2080,7 +2077,6 @@ fn test_trampoline_onion_payload_assembly_values() {
 		&Secp256k1::new(),
 		&path,
 		&session_priv,
-		amt_msat,
 		&recipient_onion_fields,
 		cur_height,
 		&payment_hash,
@@ -2540,9 +2536,8 @@ fn test_phantom_invalid_onion_payload() {
 						construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv);
 					let recipient_onion_fields =
 						RecipientOnionFields::secret_only(payment_secret, msgs::MAX_VALUE_MSAT + 1);
-					let (mut onion_payloads, _, _) = build_onion_payloads(
+					let (mut onion_payloads, _, _) = test_build_onion_payloads(
 						&route.paths[0],
-						msgs::MAX_VALUE_MSAT + 1,
 						&recipient_onion_fields,
 						height + 1,
 						&None,

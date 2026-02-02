@@ -1558,7 +1558,7 @@ fn test_htlc_localremoved_persistence() {
 	let session_privs = nodes[0].node.test_add_new_pending_payment(mismatch_payment_hash,
 		RecipientOnionFields::spontaneous_empty(10_000), PaymentId(mismatch_payment_hash.0), &route).unwrap();
 	nodes[0].node.test_send_payment_internal(&route, mismatch_payment_hash,
-		RecipientOnionFields::spontaneous_empty(10_000), Some(test_preimage), PaymentId(mismatch_payment_hash.0), None, session_privs).unwrap();
+		RecipientOnionFields::spontaneous_empty(10_000), Some(test_preimage), PaymentId(mismatch_payment_hash.0), session_privs).unwrap();
 	check_added_monitors(&nodes[0], 1);
 
 	let updates = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());

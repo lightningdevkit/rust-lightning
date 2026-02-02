@@ -2284,9 +2284,8 @@ pub fn fail_backward_pending_htlc_upon_channel_failure() {
 		let session_priv = SecretKey::from_slice(&[42; 32]).unwrap();
 		let current_height = nodes[1].node.best_block.read().unwrap().height + 1;
 		let recipient_onion_fields = RecipientOnionFields::secret_only(payment_secret, 50_000);
-		let (onion_payloads, _amount_msat, cltv_expiry) = onion_utils::build_onion_payloads(
+		let (onion_payloads, _amount_msat, cltv_expiry) = onion_utils::test_build_onion_payloads(
 			&route.paths[0],
-			50_000,
 			&recipient_onion_fields,
 			current_height,
 			&None,
@@ -3321,7 +3320,6 @@ fn do_test_htlc_timeout(send_partial_mpp: bool) {
 				&route.paths[0],
 				&our_payment_hash,
 				RecipientOnionFields::secret_only(payment_secret, 200_000),
-				200_000,
 				cur_height,
 				payment_id,
 				&None,
@@ -7011,10 +7009,9 @@ pub fn test_onion_value_mpp_set_calculation() {
 	let onion = RecipientOnionFields::secret_only(payment_secret, total_msat);
 	let onion_session_privs =
 		nodes[0].node.test_add_new_pending_payment(hash, onion.clone(), id, &route).unwrap();
-	let amt = Some(total_msat);
 	nodes[0]
 		.node
-		.test_send_payment_internal(&route, hash, onion, None, id, amt, onion_session_privs)
+		.test_send_payment_internal(&route, hash, onion, None, id, onion_session_privs)
 		.unwrap();
 	check_added_monitors(&nodes[0], expected_paths.len());
 
@@ -7042,9 +7039,8 @@ pub fn test_onion_value_mpp_set_calculation() {
 				&session_priv,
 			);
 			let recipient_onion_fields = RecipientOnionFields::secret_only(payment_secret, 100_000);
-			let (mut onion_payloads, _, _) = onion_utils::build_onion_payloads(
+			let (mut onion_payloads, _, _) = onion_utils::test_build_onion_payloads(
 				&route.paths[0],
-				100_000,
 				&recipient_onion_fields,
 				height + 1,
 				&None,
@@ -7150,10 +7146,9 @@ fn do_test_overshoot_mpp(msat_amounts: &[u64], total_msat: u64) {
 	let onion_session_privs =
 		nodes[src_idx].node.test_add_new_pending_payment(hash, onion, id, &route).unwrap();
 	let onion = RecipientOnionFields::secret_only(payment_secret, total_msat);
-	let amt = Some(total_msat);
 	nodes[src_idx]
 		.node
-		.test_send_payment_internal(&route, hash, onion, None, id, amt, onion_session_privs)
+		.test_send_payment_internal(&route, hash, onion, None, id, onion_session_privs)
 		.unwrap();
 	check_added_monitors(&nodes[src_idx], expected_paths.len());
 
@@ -8488,7 +8483,7 @@ pub fn test_inconsistent_mpp_params() {
 	let priv_a = session_privs[0];
 	nodes[0]
 		.node
-		.test_send_payment_along_path(path_a, &hash, onion, real_amt, cur_height, id, &None, priv_a)
+		.test_send_payment_along_path(path_a, &hash, onion, cur_height, id, &None, priv_a)
 		.unwrap();
 	check_added_monitors(&nodes[0], 1);
 
@@ -8501,11 +8496,10 @@ pub fn test_inconsistent_mpp_params() {
 
 	let path_b = &route.paths[1];
 	let onion = RecipientOnionFields::secret_only(payment_secret, 14_000_000);
-	let amt_b = 14_000_000;
 	let priv_b = session_privs[1];
 	nodes[0]
 		.node
-		.test_send_payment_along_path(path_b, &hash, onion, amt_b, cur_height, id, &None, priv_b)
+		.test_send_payment_along_path(path_b, &hash, onion, cur_height, id, &None, priv_b)
 		.unwrap();
 	check_added_monitors(&nodes[0], 1);
 
@@ -8565,7 +8559,7 @@ pub fn test_inconsistent_mpp_params() {
 	let priv_c = session_privs[2];
 	nodes[0]
 		.node
-		.test_send_payment_along_path(path_b, &hash, onion, real_amt, cur_height, id, &None, priv_c)
+		.test_send_payment_along_path(path_b, &hash, onion, cur_height, id, &None, priv_c)
 		.unwrap();
 	check_added_monitors(&nodes[0], 1);
 

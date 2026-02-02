@@ -822,9 +822,8 @@ pub fn do_test_fee_spike_buffer(cfg: Option<UserConfig>, htlc_fails: bool) {
 	let onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route.paths[0], &session_priv);
 	let recipient_onion_fields =
 		RecipientOnionFields::secret_only(payment_secret, payment_amt_msat);
-	let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(
+	let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::test_build_onion_payloads(
 		&route.paths[0],
-		payment_amt_msat,
 		&recipient_onion_fields,
 		cur_height,
 		&None,
@@ -1070,9 +1069,8 @@ pub fn test_chan_reserve_violation_inbound_htlc_outbound_channel() {
 	let cur_height = nodes[1].node.best_block.read().unwrap().height + 1;
 	let onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route.paths[0], &session_priv);
 	let recipient_onion_fields = RecipientOnionFields::secret_only(payment_secret, 700_000);
-	let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(
+	let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::test_build_onion_payloads(
 		&route.paths[0],
-		700_000,
 		&recipient_onion_fields,
 		cur_height,
 		&None,
@@ -1255,9 +1253,8 @@ pub fn test_chan_reserve_violation_inbound_htlc_inbound_chan() {
 	let cur_height = nodes[0].node.best_block.read().unwrap().height + 1;
 	let onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route_2.paths[0], &session_priv);
 	let recipient_onion_fields = RecipientOnionFields::spontaneous_empty(recv_value_2);
-	let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(
+	let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::test_build_onion_payloads(
 		&route_2.paths[0],
-		recv_value_2,
 		&recipient_onion_fields,
 		cur_height,
 		&None,
@@ -1645,9 +1642,8 @@ pub fn test_update_add_htlc_bolt2_receiver_check_max_htlc_limit() {
 		&session_priv,
 	);
 	let recipient_onion_fields = RecipientOnionFields::secret_only(our_payment_secret, send_amt);
-	let (onion_payloads, _htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(
+	let (onion_payloads, _htlc_msat, htlc_cltv) = onion_utils::test_build_onion_payloads(
 		&route.paths[0],
-		send_amt,
 		&recipient_onion_fields,
 		cur_height,
 		&None,
@@ -2247,9 +2243,8 @@ pub fn do_test_dust_limit_fee_accounting(can_afford: bool) {
 		onion_utils::construct_onion_keys(&secp_ctx, &route_0_1.paths[0], &session_priv);
 	let recipient_onion_fields =
 		RecipientOnionFields::secret_only(payment_secret_0_1, HTLC_AMT_SAT * 1000);
-	let (onion_payloads, amount_msat, cltv_expiry) = onion_utils::build_onion_payloads(
+	let (onion_payloads, amount_msat, cltv_expiry) = onion_utils::test_build_onion_payloads(
 		&route_0_1.paths[0],
-		HTLC_AMT_SAT * 1000,
 		&recipient_onion_fields,
 		cur_height,
 		&None,
