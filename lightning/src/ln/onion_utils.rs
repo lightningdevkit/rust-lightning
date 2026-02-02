@@ -2460,7 +2460,10 @@ pub(crate) fn decode_next_payment_hop<NS: NodeSigner>(
 					&hop_data.trampoline_packet.hop_data,
 					hop_data.trampoline_packet.hmac,
 					Some(payment_hash),
-					(blinding_point, &node_signer),
+					// When we have a trampoline packet, the current_path_key in our outer onion
+					// payload plays the role of the update_add_htlc blinding_point for the inner
+					// onion.
+					(hop_data.current_path_key, node_signer),
 				);
 				match decoded_trampoline_hop {
 					Ok((
