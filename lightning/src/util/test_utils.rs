@@ -1126,30 +1126,49 @@ unsafe impl Send for TestStore {}
 
 pub struct TestBroadcaster {
 	pub txn_broadcasted: Mutex<Vec<Transaction>>,
+	pub txn_types: Mutex<Vec<TransactionType>>,
 	pub blocks: Arc<Mutex<Vec<(Block, u32)>>>,
 }
 
 impl TestBroadcaster {
 	pub fn new(network: Network) -> Self {
 		let txn_broadcasted = Mutex::new(Vec::new());
+		let txn_types = Mutex::new(Vec::new());
 		let blocks = Arc::new(Mutex::new(vec![(genesis_block(network), 0)]));
-		Self { txn_broadcasted, blocks }
+		Self { txn_broadcasted, txn_types, blocks }
 	}
 
 	pub fn with_blocks(blocks: Arc<Mutex<Vec<(Block, u32)>>>) -> Self {
 		let txn_broadcasted = Mutex::new(Vec::new());
-		Self { txn_broadcasted, blocks }
+		let txn_types = Mutex::new(Vec::new());
+		Self { txn_broadcasted, txn_types, blocks }
 	}
 
 	pub fn txn_broadcast(&self) -> Vec<Transaction> {
+		self.txn_types.lock().unwrap().clear();
 		self.txn_broadcasted.lock().unwrap().split_off(0)
 	}
 
 	pub fn unique_txn_broadcast(&self) -> Vec<Transaction> {
 		let mut txn = self.txn_broadcasted.lock().unwrap().split_off(0);
+		self.txn_types.lock().unwrap().clear();
 		let mut seen = new_hash_set();
 		txn.retain(|tx| seen.insert(tx.compute_txid()));
 		txn
+	}
+
+	/// Returns all broadcast transactions with their types, clearing both internal lists.
+	pub fn txn_broadcast_with_types(&self) -> Vec<(Transaction, TransactionType)> {
+		let txn = self.txn_broadcasted.lock().unwrap().split_off(0);
+		let types = self.txn_types.lock().unwrap().split_off(0);
+		assert_eq!(txn.len(), types.len(), "Transaction and type vectors out of sync");
+		txn.into_iter().zip(types.into_iter()).collect()
+	}
+
+	/// Clears both the transaction and type vectors.
+	pub fn clear(&self) {
+		self.txn_broadcasted.lock().unwrap().clear();
+		self.txn_types.lock().unwrap().clear();
 	}
 }
 
@@ -1198,7 +1217,10 @@ impl chaininterface::BroadcasterInterface for TestBroadcaster {
 			}
 		}
 		let owned_txs: Vec<Transaction> = txs.iter().map(|(tx, _)| (*tx).clone()).collect();
+		let owned_types: Vec<TransactionType> =
+			txs.iter().map(|(_, tx_type)| tx_type.clone()).collect();
 		self.txn_broadcasted.lock().unwrap().extend(owned_txs);
+		self.txn_types.lock().unwrap().extend(owned_types);
 	}
 }
 

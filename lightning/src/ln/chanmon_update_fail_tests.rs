@@ -86,6 +86,7 @@ fn test_monitor_and_persister_update_fail() {
 	let persister = test_utils::TestPersister::new();
 	let tx_broadcaster = TestBroadcaster {
 		txn_broadcasted: Mutex::new(Vec::new()),
+		txn_types: Mutex::new(Vec::new()),
 		// Because we will connect a block at height 200 below, we need the TestBroadcaster to know
 		// that we are at height 200 so that it doesn't think we're violating the time lock
 		// requirements of transactions broadcasted at that point.

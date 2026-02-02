@@ -9,7 +9,7 @@
 
 #![cfg_attr(not(test), allow(unused_imports))]
 
-use crate::chain::chaininterface::FEERATE_FLOOR_SATS_PER_KW;
+use crate::chain::chaininterface::{TransactionType, FEERATE_FLOOR_SATS_PER_KW};
 use crate::chain::channelmonitor::{ANTI_REORG_DELAY, LATENCY_GRACE_PERIOD_BLOCKS};
 use crate::chain::transaction::OutPoint;
 use crate::chain::ChannelMonitorUpdateStatus;
@@ -333,11 +333,18 @@ pub fn sign_interactive_funding_tx<'a, 'b, 'c, 'd>(
 	check_added_monitors(&acceptor, 1);
 
 	let tx = {
-		let mut initiator_txn = initiator.tx_broadcaster.txn_broadcast();
+		let mut initiator_txn = initiator.tx_broadcaster.txn_broadcast_with_types();
 		assert_eq!(initiator_txn.len(), 1);
-		let acceptor_txn = acceptor.tx_broadcaster.txn_broadcast();
-		assert_eq!(initiator_txn, acceptor_txn,);
-		initiator_txn.remove(0)
+		let acceptor_txn = acceptor.tx_broadcaster.txn_broadcast_with_types();
+		assert_eq!(initiator_txn, acceptor_txn);
+		let (tx, tx_type) = initiator_txn.remove(0);
+		// Verify transaction type is Splice
+		assert!(
+			matches!(tx_type, TransactionType::Splice { .. }),
+			"Expected TransactionType::Splice, got {:?}",
+			tx_type
+		);
+		tx
 	};
 	(tx, splice_locked)
 }

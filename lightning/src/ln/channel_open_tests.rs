@@ -1699,7 +1699,7 @@ pub fn test_invalid_funding_tx() {
 
 	assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
 	assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap()[0], tx);
-	nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().clear();
+	nodes[0].tx_broadcaster.clear();
 
 	let expected_err = "funding tx had wrong script/value or output index";
 	confirm_transaction_at(&nodes[1], &tx, 1);
