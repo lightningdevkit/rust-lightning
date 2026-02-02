@@ -33,6 +33,7 @@ use crate::prelude::*;
 pub mod chaininterface;
 pub mod chainmonitor;
 pub mod channelmonitor;
+pub mod deferred;
 pub(crate) mod onchaintx;
 pub(crate) mod package;
 pub mod transaction;

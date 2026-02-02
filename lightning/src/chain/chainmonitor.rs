@@ -1488,10 +1488,12 @@ where
 	}
 }
 
-/// A trivial trait which describes any [`ChainMonitor`].
+/// A trivial trait which describes any [`ChainMonitor`] or [`DeferredChainMonitor`].
 ///
 /// This is not exported to bindings users as general cover traits aren't useful in other
 /// languages.
+///
+/// [`DeferredChainMonitor`]: crate::chain::deferred::DeferredChainMonitor
 pub trait AChainMonitor {
 	/// A type implementing [`EcdsaChannelSigner`].
 	type Signer: EcdsaChannelSigner + Sized;
@@ -1521,6 +1523,24 @@ pub trait AChainMonitor {
 		Self::Persister,
 		Self::EntropySource,
 	>;
+
+	/// Returns the number of pending monitor operations queued for later execution.
+	///
+	/// For monitors that process operations immediately (like [`ChainMonitor`]), this
+	/// always returns 0.
+	fn pending_operation_count(&self) -> usize;
+
+	/// Flushes pending monitor operations.
+	///
+	/// # Arguments
+	///
+	/// * `count` - The maximum number of operations to flush. If `count` is greater than
+	///   the number of pending operations, all pending operations are flushed.
+	/// * `logger` - Logger for error messages during flush operations.
+	///
+	/// For monitors that process operations immediately (like [`ChainMonitor`]), this
+	/// is a no-op.
+	fn flush(&self, count: usize, logger: &Self::Logger);
 }
 
 impl<
@@ -1545,6 +1565,15 @@ where
 	type EntropySource = ES;
 	fn get_cm(&self) -> &ChainMonitor<ChannelSigner, C, T, F, L, P, ES> {
 		self
+	}
+
+	fn pending_operation_count(&self) -> usize {
+		// ChainMonitor processes operations immediately, so there are never any pending.
+		0
+	}
+
+	fn flush(&self, _count: usize, _logger: &L) {
+		// No-op: ChainMonitor processes operations immediately.
 	}
 }
 
