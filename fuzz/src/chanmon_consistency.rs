@@ -79,7 +79,7 @@ use lightning::util::errors::APIError;
 use lightning::util::hash_tables::*;
 use lightning::util::logger::Logger;
 use lightning::util::ser::{LengthReadable, ReadableArgs, Writeable, Writer};
-use lightning::util::test_channel_signer::{EnforcementState, TestChannelSigner};
+use lightning::util::test_channel_signer::{EnforcementState, SignerOp, TestChannelSigner};
 use lightning::util::test_utils::TestWalletSource;
 
 use lightning_invoice::RawBolt11Invoice;
@@ -448,6 +448,14 @@ impl SignerProvider for KeyProvider {
 	}
 }
 
+// Since this fuzzer is only concerned with live-channel operations, we don't need to worry about
+// any signer operations that come after a force close.
+const SUPPORTED_SIGNER_OPS: [SignerOp; 3] = [
+	SignerOp::SignCounterpartyCommitment,
+	SignerOp::GetPerCommitmentPoint,
+	SignerOp::ReleaseCommitmentSecret,
+];
+
 impl KeyProvider {
 	fn make_enforcement_state_cell(
 		&self, commitment_seed: [u8; 32],
@@ -459,6 +467,22 @@ impl KeyProvider {
 		}
 		let cell = revoked_commitments.get(&commitment_seed).unwrap();
 		Arc::clone(cell)
+	}
+
+	fn disable_supported_ops_for_all_signers(&self) {
+		let enforcement_states = self.enforcement_states.lock().unwrap();
+		for (_, state) in enforcement_states.iter() {
+			for signer_op in SUPPORTED_SIGNER_OPS {
+				state.lock().unwrap().disabled_signer_ops.insert(signer_op);
+			}
+		}
+	}
+
+	fn enable_op_for_all_signers(&self, signer_op: SignerOp) {
+		let enforcement_states = self.enforcement_states.lock().unwrap();
+		for (_, state) in enforcement_states.iter() {
+			state.lock().unwrap().disabled_signer_ops.remove(&signer_op);
+		}
 	}
 }
 
@@ -2404,6 +2428,46 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 				monitor_c = new_monitor_c;
 			},
 
+			0xc0 => keys_manager_a.disable_supported_ops_for_all_signers(),
+			0xc1 => keys_manager_b.disable_supported_ops_for_all_signers(),
+			0xc2 => keys_manager_c.disable_supported_ops_for_all_signers(),
+			0xc3 => {
+				keys_manager_a.enable_op_for_all_signers(SignerOp::SignCounterpartyCommitment);
+				nodes[0].signer_unblocked(None);
+			},
+			0xc4 => {
+				keys_manager_b.enable_op_for_all_signers(SignerOp::SignCounterpartyCommitment);
+				nodes[1].signer_unblocked(None);
+			},
+			0xc5 => {
+				keys_manager_c.enable_op_for_all_signers(SignerOp::SignCounterpartyCommitment);
+				nodes[2].signer_unblocked(None);
+			},
+			0xc6 => {
+				keys_manager_a.enable_op_for_all_signers(SignerOp::GetPerCommitmentPoint);
+				nodes[0].signer_unblocked(None);
+			},
+			0xc7 => {
+				keys_manager_b.enable_op_for_all_signers(SignerOp::GetPerCommitmentPoint);
+				nodes[1].signer_unblocked(None);
+			},
+			0xc8 => {
+				keys_manager_c.enable_op_for_all_signers(SignerOp::GetPerCommitmentPoint);
+				nodes[2].signer_unblocked(None);
+			},
+			0xc9 => {
+				keys_manager_a.enable_op_for_all_signers(SignerOp::ReleaseCommitmentSecret);
+				nodes[0].signer_unblocked(None);
+			},
+			0xca => {
+				keys_manager_b.enable_op_for_all_signers(SignerOp::ReleaseCommitmentSecret);
+				nodes[1].signer_unblocked(None);
+			},
+			0xcb => {
+				keys_manager_c.enable_op_for_all_signers(SignerOp::ReleaseCommitmentSecret);
+				nodes[2].signer_unblocked(None);
+			},
+
 			0xf0 => {
 				for id in &chan_ab_ids {
 					complete_monitor_update(&monitor_a, id, &complete_first);
@@ -2503,6 +2567,15 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 					nodes[2].peer_connected(nodes[1].get_our_node_id(), &init_1, false).unwrap();
 					peers_bc_disconnected = false;
 				}
+
+				for op in SUPPORTED_SIGNER_OPS {
+					keys_manager_a.enable_op_for_all_signers(op);
+					keys_manager_b.enable_op_for_all_signers(op);
+					keys_manager_c.enable_op_for_all_signers(op);
+				}
+				nodes[0].signer_unblocked(None);
+				nodes[1].signer_unblocked(None);
+				nodes[2].signer_unblocked(None);
 
 				macro_rules! process_all_events {
 					() => { {
