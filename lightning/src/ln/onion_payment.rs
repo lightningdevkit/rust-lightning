@@ -779,7 +779,7 @@ mod tests {
 		let charlie_pk = PublicKey::from_secret_key(&secp_ctx, &charlie.get_node_secret_key());
 
 		let (
-			session_priv, total_amt_msat, cur_height, mut recipient_onion, keysend_preimage, payment_hash,
+			session_priv, _total_amt_msat, cur_height, mut recipient_onion, keysend_preimage, payment_hash,
 			prng_seed, hops, ..
 		) = payment_onion_args(bob_pk, charlie_pk);
 
@@ -788,8 +788,8 @@ mod tests {
 
 		let path = Path { hops, blinded_tail: None, };
 		let onion_keys = super::onion_utils::construct_onion_keys(&secp_ctx, &path, &session_priv);
-		let (onion_payloads, ..) = super::onion_utils::build_onion_payloads(
-			&path, total_amt_msat, &recipient_onion, cur_height + 1, &Some(keysend_preimage), None, None
+		let (onion_payloads, ..) = super::onion_utils::test_build_onion_payloads(
+			&path, &recipient_onion, cur_height + 1, &Some(keysend_preimage), None, None
 		).unwrap();
 
 		assert!(super::onion_utils::construct_onion_packet(
@@ -817,7 +817,7 @@ mod tests {
 		};
 
 		let (onion, amount_msat, cltv_expiry) = create_payment_onion(
-			&secp_ctx, &path, &session_priv, total_amt_msat, &recipient_onion,
+			&secp_ctx, &path, &session_priv, &recipient_onion,
 			cur_height, &payment_hash, &Some(preimage), None, prng_seed
 		).unwrap();
 
