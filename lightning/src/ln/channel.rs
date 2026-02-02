@@ -12214,8 +12214,7 @@ where
 		}
 
 		self.propose_quiescence(logger, QuiescentAction::Splice { contribution, locktime }).map_err(
-			|(e, action)| {
-				log_error!(logger, "{}", e);
+			|action| {
 				// FIXME: Any better way to do this?
 				if let QuiescentAction::Splice { contribution, .. } = action {
 					let (contributed_inputs, contributed_outputs) =
@@ -13355,14 +13354,19 @@ where
 	#[rustfmt::skip]
 	pub fn propose_quiescence<L: Logger>(
 		&mut self, logger: &L, action: QuiescentAction,
-	) -> Result<Option<msgs::Stfu>, (&'static str, QuiescentAction)> {
+	) -> Result<Option<msgs::Stfu>, QuiescentAction> {
 		log_debug!(logger, "Attempting to initiate quiescence");
 
 		if !self.context.is_usable() {
-			return Err(("Channel is not in a usable state to propose quiescence", action));
+			log_debug!(logger, "Channel is not in a usable state to propose quiescence");
+			return Err(action);
 		}
 		if self.quiescent_action.is_some() {
-			return Err(("Channel already has a pending quiescent action and cannot start another", action));
+			log_debug!(
+				logger,
+				"Channel already has a pending quiescent action and cannot start another",
+			);
+			return Err(action);
 		}
 
 		self.quiescent_action = Some(action);
