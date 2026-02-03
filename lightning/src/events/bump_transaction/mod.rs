@@ -34,7 +34,8 @@ use crate::ln::types::ChannelId;
 use crate::prelude::*;
 use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::sign::{
-	ChannelDerivationParameters, HTLCDescriptor, SignerProvider, P2WPKH_WITNESS_WEIGHT,
+	ChannelDerivationParameters, HTLCDescriptor, SignerProvider, P2TR_KEY_PATH_WITNESS_WEIGHT,
+	P2WPKH_WITNESS_WEIGHT,
 };
 use crate::sync::Mutex;
 use crate::util::async_poll::{MaybeSend, MaybeSync};
@@ -43,6 +44,7 @@ use crate::util::logger::Logger;
 use bitcoin::amount::Amount;
 use bitcoin::consensus::Encodable;
 use bitcoin::constants::WITNESS_SCALE_FACTOR;
+use bitcoin::key::TweakedPublicKey;
 use bitcoin::locktime::absolute::LockTime;
 use bitcoin::policy::MAX_STANDARD_TX_WEIGHT;
 use bitcoin::secp256k1;
@@ -330,6 +332,17 @@ impl Utxo {
 			outpoint,
 			output: TxOut { value, script_pubkey: ScriptBuf::new_p2wpkh(pubkey_hash) },
 			satisfaction_weight: EMPTY_SCRIPT_SIG_WEIGHT + P2WPKH_WITNESS_WEIGHT,
+		}
+	}
+
+	/// Returns a `Utxo` with the `satisfaction_weight` estimate for a keypath spend of a SegWit v1 P2TR output.
+	pub fn new_v1_p2tr(
+		outpoint: OutPoint, value: Amount, tweaked_public_key: TweakedPublicKey,
+	) -> Self {
+		Self {
+			outpoint,
+			output: TxOut { value, script_pubkey: ScriptBuf::new_p2tr_tweaked(tweaked_public_key) },
+			satisfaction_weight: EMPTY_SCRIPT_SIG_WEIGHT + P2TR_KEY_PATH_WITNESS_WEIGHT,
 		}
 	}
 }
@@ -1272,7 +1285,9 @@ mod tests {
 
 	use bitcoin::hashes::Hash;
 	use bitcoin::hex::FromHex;
-	use bitcoin::{Network, ScriptBuf, Transaction, Txid};
+	use bitcoin::{
+		Network, ScriptBuf, Transaction, Txid, WitnessProgram, WitnessVersion, XOnlyPublicKey,
+	};
 
 	struct TestCoinSelectionSource {
 		// (commitment + anchor value, commitment + input weight, target feerate, result)
@@ -1388,5 +1403,31 @@ mod tests {
 			},
 			pending_htlcs: Vec::new(),
 		});
+	}
+
+	#[test]
+	fn test_utxo_new_v1_p2tr() {
+		// Transaction 33e794d097969002ee05d336686fc03c9e15a597c1b9827669460fac98799036
+		let p2tr_tx: Transaction = bitcoin::consensus::deserialize(&<Vec<u8>>::from_hex("01000000000101d1f1c1f8cdf6759167b90f52c9ad358a369f95284e841d7a2536cef31c0549580100000000fdffffff020000000000000000316a2f49206c696b65205363686e6f7272207369677320616e6420492063616e6e6f74206c69652e204062697462756734329e06010000000000225120a37c3903c8d0db6512e2b40b0dffa05e5a3ab73603ce8c9c4b7771e5412328f90140a60c383f71bac0ec919b1d7dbc3eb72dd56e7aa99583615564f9f99b8ae4e837b758773a5b2e4c51348854c8389f008e05029db7f464a5ff2e01d5e6e626174affd30a00").unwrap()).unwrap();
+
+		let script_pubkey = &p2tr_tx.output[1].script_pubkey;
+		assert_eq!(script_pubkey.witness_version(), Some(WitnessVersion::V1));
+		let witness_bytes = &script_pubkey.as_bytes()[2..];
+		let witness_program = WitnessProgram::new(WitnessVersion::V1, witness_bytes).unwrap();
+		let tweaked_key = TweakedPublicKey::dangerous_assume_tweaked(
+			XOnlyPublicKey::from_slice(&witness_program.program().as_bytes()).unwrap(),
+		);
+
+		let utxo = Utxo::new_v1_p2tr(
+			OutPoint { txid: p2tr_tx.compute_txid(), vout: 1 },
+			p2tr_tx.output[1].value,
+			tweaked_key,
+		);
+		assert_eq!(utxo.output, p2tr_tx.output[1]);
+		assert_eq!(
+			utxo.satisfaction_weight,
+			1 /* empty script_sig */ * WITNESS_SCALE_FACTOR as u64 +
+			1 /* witness items */ + 1 /* schnorr sig len */ + 64 /* schnorr sig */
+		);
 	}
 }
