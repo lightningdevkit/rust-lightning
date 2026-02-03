@@ -66,11 +66,9 @@ impl From<RpcClientError> for BlockSourceError {
 		match e {
 			RpcClientError::Http(http_err) => match http_err {
 				// Transport errors (connection, timeout, etc.) are transient
-				HttpClientError::Transport(err) => {
-					BlockSourceError::transient(RpcClientError::Http(HttpClientError::Transport(
-						err,
-					)))
-				},
+				HttpClientError::Transport(err) => BlockSourceError::transient(
+					RpcClientError::Http(HttpClientError::Transport(err)),
+				),
 				// 5xx errors are transient (server issues), others are persistent (client errors)
 				HttpClientError::Http(http) => {
 					if (500..600).contains(&http.status_code) {
