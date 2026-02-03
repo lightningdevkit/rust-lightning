@@ -44,6 +44,7 @@ pub(crate) struct NextCommitmentStats {
 
 pub(crate) struct ChannelStats {
 	pub commitment_stats: NextCommitmentStats,
+	pub available_balances: crate::ln::channel::AvailableBalances,
 }
 
 fn commit_plus_htlc_tx_fees_msat(
@@ -294,7 +295,7 @@ fn get_next_commitment_stats(
 	})
 }
 
-pub(crate) fn get_available_balances(
+fn get_available_balances(
 	is_outbound_from_holder: bool, channel_value_satoshis: u64, value_to_holder_msat: u64,
 	pending_htlcs: &[HTLCAmountDirection], feerate_per_kw: u32,
 	dust_exposure_limiting_feerate: Option<u32>, max_dust_htlc_exposure_msat: u64,
@@ -523,10 +524,10 @@ pub(crate) fn get_available_balances(
 pub(crate) trait TxBuilder {
 	fn get_channel_stats(
 		&self, local: bool, is_outbound_from_holder: bool, channel_value_satoshis: u64,
-		value_to_holder_msat: u64, next_commitment_htlcs: &[HTLCAmountDirection],
+		value_to_holder_msat: u64, pending_htlcs: &[HTLCAmountDirection],
 		addl_nondust_htlc_count: usize, feerate_per_kw: u32,
-		dust_exposure_limiting_feerate: Option<u32>, broadcaster_dust_limit_satoshis: u64,
-		channel_type: &ChannelTypeFeatures,
+		dust_exposure_limiting_feerate: Option<u32>, max_dust_htlc_exposure_msat: u64,
+		channel_constraints: ChannelConstraints, channel_type: &ChannelTypeFeatures,
 	) -> Result<ChannelStats, ()>;
 	fn build_commitment_transaction<L: Logger>(
 		&self, local: bool, commitment_number: u64, per_commitment_point: &PublicKey,
@@ -541,25 +542,52 @@ pub(crate) struct SpecTxBuilder {}
 impl TxBuilder for SpecTxBuilder {
 	fn get_channel_stats(
 		&self, local: bool, is_outbound_from_holder: bool, channel_value_satoshis: u64,
-		value_to_holder_msat: u64, next_commitment_htlcs: &[HTLCAmountDirection],
+		value_to_holder_msat: u64, pending_htlcs: &[HTLCAmountDirection],
 		addl_nondust_htlc_count: usize, feerate_per_kw: u32,
-		dust_exposure_limiting_feerate: Option<u32>, broadcaster_dust_limit_satoshis: u64,
-		channel_type: &ChannelTypeFeatures,
+		dust_exposure_limiting_feerate: Option<u32>, max_dust_htlc_exposure_msat: u64,
+		channel_constraints: ChannelConstraints, channel_type: &ChannelTypeFeatures,
 	) -> Result<ChannelStats, ()> {
-		let commitment_stats = get_next_commitment_stats(
-			local,
+		let commitment_stats = if local {
+			get_next_commitment_stats(
+				true,
+				is_outbound_from_holder,
+				channel_value_satoshis,
+				value_to_holder_msat,
+				pending_htlcs,
+				addl_nondust_htlc_count,
+				feerate_per_kw,
+				dust_exposure_limiting_feerate,
+				channel_constraints.holder_dust_limit_satoshis,
+				channel_type,
+			)?
+		} else {
+			get_next_commitment_stats(
+				false,
+				is_outbound_from_holder,
+				channel_value_satoshis,
+				value_to_holder_msat,
+				pending_htlcs,
+				addl_nondust_htlc_count,
+				feerate_per_kw,
+				dust_exposure_limiting_feerate,
+				channel_constraints.counterparty_dust_limit_satoshis,
+				channel_type,
+			)?
+		};
+
+		let available_balances = get_available_balances(
 			is_outbound_from_holder,
 			channel_value_satoshis,
 			value_to_holder_msat,
-			next_commitment_htlcs,
-			addl_nondust_htlc_count,
+			pending_htlcs,
 			feerate_per_kw,
 			dust_exposure_limiting_feerate,
-			broadcaster_dust_limit_satoshis,
+			max_dust_htlc_exposure_msat,
+			channel_constraints,
 			channel_type,
-		)?;
+		);
 
-		Ok(ChannelStats { commitment_stats })
+		Ok(ChannelStats { commitment_stats, available_balances })
 	}
 	fn build_commitment_transaction<L: Logger>(
 		&self, local: bool, commitment_number: u64, per_commitment_point: &PublicKey,
