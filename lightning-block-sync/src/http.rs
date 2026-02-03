@@ -27,9 +27,9 @@ const MAX_HTTP_MESSAGE_BODY_SIZE: usize = 2 * 4_000_000 + 32_000;
 pub enum HttpClientError {
 	/// transport-level error (connection, timeout, protocol parsing, etc.)
 	Transport(bitreq::Error),
-	/// HTTP error response
+	/// HTTP error response (non-2xx status code)
 	Http(HttpError),
-	/// I/O error (DNS resolution, etc.)
+	/// Response parsing/conversion error
 	Io(std::io::Error),
 }
 

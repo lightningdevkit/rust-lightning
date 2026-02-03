@@ -40,17 +40,21 @@ impl From<io::Error> for BlockSourceError {
 /// Conversion from `HttpClientError` into `BlockSourceError`.
 impl From<HttpClientError> for BlockSourceError {
 	fn from(e: HttpClientError) -> BlockSourceError {
-		match &e {
+		match e {
 			// Transport errors (connection, timeout, etc.) are transient
-			HttpClientError::Transport(_) => BlockSourceError::transient(e),
-			// HTTP non-2xx errors are transient - e.g. "not found" must not stop polling
-			HttpClientError::Http(_) => BlockSourceError::transient(e),
-			// I/O errors follow the same logic as std::io::Error
-			HttpClientError::Io(io_error) => match io_error.kind() {
-				io::ErrorKind::InvalidData => BlockSourceError::persistent(e),
-				io::ErrorKind::InvalidInput => BlockSourceError::persistent(e),
-				_ => BlockSourceError::transient(e),
+			HttpClientError::Transport(err) => {
+				BlockSourceError::transient(HttpClientError::Transport(err))
 			},
+			// 5xx errors are transient (server issues), others are persistent (client errors)
+			HttpClientError::Http(http_err) => {
+				if (500..600).contains(&http_err.status_code) {
+					BlockSourceError::transient(HttpClientError::Http(http_err))
+				} else {
+					BlockSourceError::persistent(HttpClientError::Http(http_err))
+				}
+			},
+			// Delegate to existing From<io::Error> implementation
+			HttpClientError::Io(io_err) => BlockSourceError::from(io_err),
 		}
 	}
 }
@@ -59,22 +63,36 @@ impl From<HttpClientError> for BlockSourceError {
 #[cfg(feature = "rpc-client")]
 impl From<RpcClientError> for BlockSourceError {
 	fn from(e: RpcClientError) -> BlockSourceError {
-		match &e {
-			RpcClientError::Http(http_error) => match http_error {
-				HttpClientError::Transport(_) => BlockSourceError::transient(e),
-				// HTTP non-2xx errors are transient
-				HttpClientError::Http(_) => BlockSourceError::transient(e),
-				HttpClientError::Io(io_error) => match io_error.kind() {
-					io::ErrorKind::InvalidData => BlockSourceError::persistent(e),
-					io::ErrorKind::InvalidInput => BlockSourceError::persistent(e),
-					_ => BlockSourceError::transient(e),
+		match e {
+			RpcClientError::Http(http_err) => match http_err {
+				// Transport errors (connection, timeout, etc.) are transient
+				HttpClientError::Transport(err) => {
+					BlockSourceError::transient(RpcClientError::Http(HttpClientError::Transport(
+						err,
+					)))
 				},
+				// 5xx errors are transient (server issues), others are persistent (client errors)
+				HttpClientError::Http(http) => {
+					if (500..600).contains(&http.status_code) {
+						BlockSourceError::transient(RpcClientError::Http(HttpClientError::Http(
+							http,
+						)))
+					} else {
+						BlockSourceError::persistent(RpcClientError::Http(HttpClientError::Http(
+							http,
+						)))
+					}
+				},
+				HttpClientError::Io(io_err) => BlockSourceError::from(io_err),
 			},
-			// RPC errors are transient
-			// e.g. "block not found" should not stop polling
-			RpcClientError::Rpc(_) => BlockSourceError::transient(e),
+			// RPC errors (e.g. "block not found") are transient
+			RpcClientError::Rpc(rpc_err) => {
+				BlockSourceError::transient(RpcClientError::Rpc(rpc_err))
+			},
 			// Malformed response data is persistent
-			RpcClientError::InvalidData(_) => BlockSourceError::persistent(e),
+			RpcClientError::InvalidData(msg) => {
+				BlockSourceError::persistent(RpcClientError::InvalidData(msg))
+			},
 		}
 	}
 }
