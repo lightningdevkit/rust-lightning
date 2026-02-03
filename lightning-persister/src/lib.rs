@@ -10,6 +10,7 @@ extern crate criterion;
 
 pub mod fs_store;
 
+mod fs_store_common;
 mod utils;
 
 #[cfg(test)]
