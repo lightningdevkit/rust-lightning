@@ -44,6 +44,7 @@ pub(crate) struct NextCommitmentStats {
 
 pub(crate) struct OnchainStats {
 	pub commitment_stats: NextCommitmentStats,
+	pub available_balances: crate::ln::channel::AvailableBalances,
 }
 
 fn commit_plus_htlc_tx_fees_msat(
@@ -296,7 +297,7 @@ fn get_next_commitment_stats(
 	})
 }
 
-pub(crate) fn get_available_balances(
+fn get_available_balances(
 	is_outbound_from_holder: bool, channel_value_satoshis: u64, value_to_holder_msat: u64,
 	pending_htlcs: &[HTLCAmountDirection], feerate_per_kw: u32,
 	dust_exposure_limiting_feerate: Option<u32>, max_dust_htlc_exposure_msat: u64,
@@ -526,10 +527,11 @@ pub(crate) fn get_available_balances(
 pub(crate) trait TxBuilder {
 	fn get_onchain_stats(
 		&self, local: bool, is_outbound_from_holder: bool, channel_value_satoshis: u64,
-		value_to_holder_msat: u64, next_commitment_htlcs: &[HTLCAmountDirection],
+		value_to_holder_msat: u64, pending_htlcs: &[HTLCAmountDirection],
 		addl_nondust_htlc_count: usize, feerate_per_kw: u32,
-		dust_exposure_limiting_feerate: Option<u32>, broadcaster_dust_limit_satoshis: u64,
-		channel_type: &ChannelTypeFeatures,
+		dust_exposure_limiting_feerate: Option<u32>, max_dust_htlc_exposure_msat: u64,
+		holder_channel_constraints: ChannelConstraints,
+		counterparty_channel_constraints: ChannelConstraints, channel_type: &ChannelTypeFeatures,
 	) -> Result<OnchainStats, ()>;
 	fn build_commitment_transaction<L: Logger>(
 		&self, local: bool, commitment_number: u64, per_commitment_point: &PublicKey,
@@ -544,25 +546,54 @@ pub(crate) struct SpecTxBuilder {}
 impl TxBuilder for SpecTxBuilder {
 	fn get_onchain_stats(
 		&self, local: bool, is_outbound_from_holder: bool, channel_value_satoshis: u64,
-		value_to_holder_msat: u64, next_commitment_htlcs: &[HTLCAmountDirection],
+		value_to_holder_msat: u64, pending_htlcs: &[HTLCAmountDirection],
 		addl_nondust_htlc_count: usize, feerate_per_kw: u32,
-		dust_exposure_limiting_feerate: Option<u32>, broadcaster_dust_limit_satoshis: u64,
-		channel_type: &ChannelTypeFeatures,
+		dust_exposure_limiting_feerate: Option<u32>, max_dust_htlc_exposure_msat: u64,
+		holder_channel_constraints: ChannelConstraints,
+		counterparty_channel_constraints: ChannelConstraints, channel_type: &ChannelTypeFeatures,
 	) -> Result<OnchainStats, ()> {
-		let commitment_stats = get_next_commitment_stats(
-			local,
+		let commitment_stats = if local {
+			get_next_commitment_stats(
+				true,
+				is_outbound_from_holder,
+				channel_value_satoshis,
+				value_to_holder_msat,
+				pending_htlcs,
+				addl_nondust_htlc_count,
+				feerate_per_kw,
+				dust_exposure_limiting_feerate,
+				holder_channel_constraints.dust_limit_satoshis,
+				channel_type,
+			)?
+		} else {
+			get_next_commitment_stats(
+				false,
+				is_outbound_from_holder,
+				channel_value_satoshis,
+				value_to_holder_msat,
+				pending_htlcs,
+				addl_nondust_htlc_count,
+				feerate_per_kw,
+				dust_exposure_limiting_feerate,
+				counterparty_channel_constraints.dust_limit_satoshis,
+				channel_type,
+			)?
+		};
+
+		let available_balances = get_available_balances(
 			is_outbound_from_holder,
 			channel_value_satoshis,
 			value_to_holder_msat,
-			next_commitment_htlcs,
-			addl_nondust_htlc_count,
+			pending_htlcs,
 			feerate_per_kw,
 			dust_exposure_limiting_feerate,
-			broadcaster_dust_limit_satoshis,
+			max_dust_htlc_exposure_msat,
+			holder_channel_constraints,
+			counterparty_channel_constraints,
 			channel_type,
-		)?;
+		);
 
-		Ok(OnchainStats { commitment_stats })
+		Ok(OnchainStats { commitment_stats, available_balances })
 	}
 	fn build_commitment_transaction<L: Logger>(
 		&self, local: bool, commitment_number: u64, per_commitment_point: &PublicKey,
