@@ -117,7 +117,7 @@ fn commit_plus_htlc_tx_fees_msat(
 	(total_fees_msat, extra_accepted_htlc_total_fees_msat)
 }
 
-fn subtract_addl_outputs(
+pub(crate) fn checked_sub_anchor_outputs(
 	is_outbound_from_holder: bool, value_to_self_after_htlcs_msat: u64,
 	value_to_remote_after_htlcs_msat: u64, channel_type: &ChannelTypeFeatures,
 ) -> Result<(u64, u64), ()> {
@@ -126,13 +126,6 @@ fn subtract_addl_outputs(
 	} else {
 		0
 	};
-
-	// We MUST use checked subs here, as the funder's balance is not guaranteed to be greater
-	// than or equal to `total_anchors_sat`.
-	//
-	// This is because when the remote party sends an `update_fee` message, we build the new
-	// commitment transaction *before* checking whether the remote party's balance is enough to
-	// cover the total anchor sum.
 
 	if is_outbound_from_holder {
 		Ok((
@@ -144,6 +137,29 @@ fn subtract_addl_outputs(
 			value_to_self_after_htlcs_msat,
 			value_to_remote_after_htlcs_msat.checked_sub(total_anchors_sat * 1000).ok_or(())?,
 		))
+	}
+}
+
+pub(crate) fn saturating_sub_anchor_outputs(
+	is_outbound_from_holder: bool, value_to_self_after_htlcs: u64,
+	value_to_remote_after_htlcs: u64, channel_type: &ChannelTypeFeatures,
+) -> (u64, u64) {
+	let total_anchors_sat = if channel_type.supports_anchors_zero_fee_htlc_tx() {
+		ANCHOR_OUTPUT_VALUE_SATOSHI * 2
+	} else {
+		0
+	};
+
+	if is_outbound_from_holder {
+		(
+			value_to_self_after_htlcs.saturating_sub(total_anchors_sat * 1000),
+			value_to_remote_after_htlcs,
+		)
+	} else {
+		(
+			value_to_self_after_htlcs,
+			value_to_remote_after_htlcs.saturating_sub(total_anchors_sat * 1000),
+		)
 	}
 }
 
@@ -192,8 +208,16 @@ fn get_next_commitment_stats(
 		value_to_counterparty_msat.checked_sub(inbound_htlcs_value_msat).ok_or(())?;
 
 	// Subtract the anchors from the channel funder
+
+	// We MUST use checked subs here, as the funder's balance is not guaranteed to be greater
+	// than or equal to `total_anchors_sat`.
+	//
+	// This is because when the remote party sends an `update_fee` message, we build the new
+	// commitment transaction *before* checking whether the remote party's balance is enough to
+	// cover the total anchor sum.
+
 	let (holder_balance_before_fee_msat, counterparty_balance_before_fee_msat) =
-		subtract_addl_outputs(
+		checked_sub_anchor_outputs(
 			is_outbound_from_holder,
 			value_to_holder_after_htlcs_msat,
 			value_to_counterparty_after_htlcs_msat,
@@ -270,10 +294,6 @@ pub(crate) trait TxBuilder {
 		dust_exposure_limiting_feerate: Option<u32>, broadcaster_dust_limit_satoshis: u64,
 		channel_type: &ChannelTypeFeatures,
 	) -> Result<ChannelStats, ()>;
-	fn subtract_non_htlc_outputs(
-		&self, is_outbound_from_holder: bool, value_to_self_after_htlcs: u64,
-		value_to_remote_after_htlcs: u64, channel_type: &ChannelTypeFeatures,
-	) -> (u64, u64);
 	fn build_commitment_transaction<L: Logger>(
 		&self, local: bool, commitment_number: u64, per_commitment_point: &PublicKey,
 		channel_parameters: &ChannelTransactionParameters, secp_ctx: &Secp256k1<secp256k1::All>,
@@ -306,36 +326,6 @@ impl TxBuilder for SpecTxBuilder {
 		)?;
 
 		Ok(ChannelStats { commitment_stats })
-	}
-	fn subtract_non_htlc_outputs(
-		&self, is_outbound_from_holder: bool, value_to_self_after_htlcs: u64,
-		value_to_remote_after_htlcs: u64, channel_type: &ChannelTypeFeatures,
-	) -> (u64, u64) {
-		let total_anchors_sat = if channel_type.supports_anchors_zero_fee_htlc_tx() {
-			ANCHOR_OUTPUT_VALUE_SATOSHI * 2
-		} else {
-			0
-		};
-
-		let mut local_balance_before_fee_msat = value_to_self_after_htlcs;
-		let mut remote_balance_before_fee_msat = value_to_remote_after_htlcs;
-
-		// We MUST use saturating subs here, as the funder's balance is not guaranteed to be greater
-		// than or equal to `total_anchors_sat`.
-		//
-		// This is because when the remote party sends an `update_fee` message, we build the new
-		// commitment transaction *before* checking whether the remote party's balance is enough to
-		// cover the total anchor sum.
-
-		if is_outbound_from_holder {
-			local_balance_before_fee_msat =
-				local_balance_before_fee_msat.saturating_sub(total_anchors_sat * 1000);
-		} else {
-			remote_balance_before_fee_msat =
-				remote_balance_before_fee_msat.saturating_sub(total_anchors_sat * 1000);
-		}
-
-		(local_balance_before_fee_msat, remote_balance_before_fee_msat)
 	}
 	fn build_commitment_transaction<L: Logger>(
 		&self, local: bool, commitment_number: u64, per_commitment_point: &PublicKey,
@@ -402,8 +392,16 @@ impl TxBuilder for SpecTxBuilder {
 			.unwrap()
 			.checked_sub(remote_htlc_total_msat)
 			.unwrap();
-		let (local_balance_before_fee_msat, remote_balance_before_fee_msat) = self
-			.subtract_non_htlc_outputs(
+
+		// We MUST use saturating subs here, as the funder's balance is not guaranteed to be greater
+		// than or equal to `total_anchors_sat`.
+		//
+		// This is because when the remote party sends an `update_fee` message, we build the new
+		// commitment transaction *before* checking whether the remote party's balance is enough to
+		// cover the total anchor sum.
+
+		let (local_balance_before_fee_msat, remote_balance_before_fee_msat) =
+			saturating_sub_anchor_outputs(
 				channel_parameters.is_outbound_from_holder,
 				value_to_self_after_htlcs_msat,
 				value_to_remote_after_htlcs_msat,

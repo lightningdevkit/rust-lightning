@@ -71,7 +71,10 @@ use crate::ln::types::ChannelId;
 use crate::offers::static_invoice::StaticInvoice;
 use crate::routing::gossip::NodeId;
 use crate::sign::ecdsa::EcdsaChannelSigner;
-use crate::sign::tx_builder::{ChannelStats, HTLCAmountDirection, SpecTxBuilder, TxBuilder};
+use crate::sign::tx_builder::{
+	saturating_sub_anchor_outputs, ChannelStats, HTLCAmountDirection, SpecTxBuilder,
+	TxBuilder,
+};
 use crate::sign::{ChannelSigner, EntropySource, NodeSigner, Recipient, SignerProvider};
 use crate::types::features::{ChannelTypeFeatures, InitFeatures};
 use crate::types::payment::{PaymentHash, PaymentPreimage};
@@ -5914,8 +5917,8 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		);
 		let htlc_stats = context.get_pending_htlc_stats(funding, None, dust_exposure_limiting_feerate);
 
-		// Subtract any non-HTLC outputs from the local and remote balances
-		let (local_balance_before_fee_msat, remote_balance_before_fee_msat) = SpecTxBuilder {}.subtract_non_htlc_outputs(
+		// Subtract anchor outputs from the local and remote balances
+		let (local_balance_before_fee_msat, remote_balance_before_fee_msat) = saturating_sub_anchor_outputs(
 			funding.is_outbound(),
 			funding.value_to_self_msat.saturating_sub(htlc_stats.pending_outbound_htlcs_value_msat),
 			(funding.get_value_satoshis() * 1000).checked_sub(funding.value_to_self_msat).unwrap().saturating_sub(htlc_stats.pending_inbound_htlcs_value_msat),
