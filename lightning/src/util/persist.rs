@@ -258,10 +258,6 @@ where
 /// namespace, i.e., conflicts between keys and equally named
 /// primary namespaces/secondary namespaces must be avoided.
 ///
-/// Instantiations of this trait should generally be shared by reference across the lightning
-/// node's components. E.g., it would be unsafe to provide a different [`KVStore`] to
-/// [`OutputSweeper`] vs [`MonitorUpdatingPersister`].
-///
 /// **Note:** Users migrating custom persistence backends from the pre-v0.0.117 `KVStorePersister`
 /// interface can use a concatenation of `[{primary_namespace}/[{secondary_namespace}/]]{key}` to
 /// recover a `key` compatible with the data model previously assumed by `KVStorePersister::persist`.
@@ -269,9 +265,6 @@ where
 /// For a synchronous version of this trait, see [`KVStoreSync`].
 ///
 /// This is not exported to bindings users as async is only supported in Rust.
-///
-/// [`OutputSweeper`]: crate::util::sweep::OutputSweeper
-/// [`MonitorUpdatingPersister`]: crate::util::persist::MonitorUpdatingPersister
 // Note that updates to documentation on this trait should be copied to the synchronous version.
 pub trait KVStore {
 	/// Returns the data stored for the given `primary_namespace`, `secondary_namespace`, and
