@@ -54,11 +54,59 @@ impl DecayingAverage {
 	}
 }
 
+/// Approximates an [`Self::avg_weeks`]-week average by tracking a decaying average over a larger
+/// [`Self::window_weeks`] window to smooth out volatility.
+struct AggregatedWindowAverage {
+	start_timestamp_unix_secs: u64,
+	avg_weeks: u8,
+	window_weeks: u8,
+	window_duration: Duration,
+	aggregated_revenue_decaying: DecayingAverage,
+}
+
+impl AggregatedWindowAverage {
+	fn new(avg_weeks: u8, window_weeks: u8, start_timestamp_unix_secs: u64) -> Self {
+		let window_duration = Duration::from_secs(60 * 60 * 24 * 7 * window_weeks as u64);
+		AggregatedWindowAverage {
+			start_timestamp_unix_secs,
+			avg_weeks,
+			window_weeks,
+			window_duration,
+			aggregated_revenue_decaying: DecayingAverage::new(
+				start_timestamp_unix_secs,
+				window_duration,
+			),
+		}
+	}
+
+	fn add_value(&mut self, value: i64, timestamp: u64) -> Result<i64, ()> {
+		self.aggregated_revenue_decaying.add_value(value, timestamp)
+	}
+
+	fn value_at_timestamp(&mut self, timestamp_unix_secs: u64) -> Result<i64, ()> {
+		if timestamp_unix_secs < self.start_timestamp_unix_secs {
+			return Err(());
+		}
+
+		let num_windows = (self.window_weeks / self.avg_weeks) as f64;
+		let elapsed = (timestamp_unix_secs - self.start_timestamp_unix_secs) as f64;
+		let warmup_factor = 1.0 - (-elapsed / self.window_duration.as_secs_f64()).exp();
+		let divisor = f64::max(num_windows * warmup_factor, 1.0);
+
+		Ok((self.aggregated_revenue_decaying.value_at_timestamp(timestamp_unix_secs)? as f64
+			/ divisor)
+			.round() as i64)
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use std::time::Duration;
 
-	use crate::ln::resource_manager::DecayingAverage;
+	use crate::{
+		crypto::chacha20::ChaCha20,
+		ln::resource_manager::{AggregatedWindowAverage, DecayingAverage},
+	};
 
 	const WINDOW: Duration = Duration::from_secs(2016 * 10 * 60);
 
@@ -122,5 +170,91 @@ mod tests {
 
 		current_timestamp += avg.half_life as u64;
 		assert_eq!(avg.value_at_timestamp(current_timestamp).unwrap(), 1016 / 2);
+	}
+
+	#[test]
+	fn test_aggregated_window_average() {
+		let avg_weeks: u8 = 2;
+		let window_weeks: u8 = 12;
+		let num_windows = (window_weeks / avg_weeks) as usize;
+		let week_secs: u64 = 60 * 60 * 24 * 7;
+		let sum_window_secs = avg_weeks as u64 * week_secs;
+
+		let num_points: usize = 50_000;
+		let duration_weeks: u64 = 120;
+		let skip_weeks: u64 = 10;
+		let duration_secs = duration_weeks * week_secs;
+		let start_timestamp: u64 = 0;
+
+		let mut prng = ChaCha20::new(&[42u8; 32], &[0u8; 12]);
+		let mut timestamps = Vec::with_capacity(num_points);
+		let mut values = Vec::with_capacity(num_points);
+		for _ in 0..num_points {
+			let mut buf = [0u8; 8];
+			prng.process_in_place(&mut buf);
+			let ts_offset = u64::from_le_bytes(buf) % duration_secs;
+			timestamps.push(start_timestamp + ts_offset);
+
+			let mut buf = [0u8; 4];
+			prng.process_in_place(&mut buf);
+			let val = (u32::from_le_bytes(buf) % 49_001 + 1_000) as i64;
+			values.push(val);
+		}
+
+		let mut indices: Vec<usize> = (0..num_points).collect();
+		indices.sort_by_key(|&i| timestamps[i]);
+		let sorted_ts: Vec<u64> = indices.iter().map(|&i| timestamps[i]).collect();
+		let sorted_vals: Vec<i64> = indices.iter().map(|&i| values[i]).collect();
+
+		let mut avg = AggregatedWindowAverage::new(avg_weeks, window_weeks, start_timestamp);
+		let mut data_idx = 0;
+
+		for w in 1..=duration_weeks {
+			let sample_time = start_timestamp + w * week_secs;
+
+			// Add all data points up to this sample time.
+			while data_idx < num_points && sorted_ts[data_idx] <= sample_time {
+				avg.add_value(sorted_vals[data_idx], sorted_ts[data_idx]).unwrap();
+				data_idx += 1;
+			}
+
+			let approx_avg = avg.value_at_timestamp(sample_time).unwrap();
+
+			let mut window_sums = Vec::with_capacity(num_windows);
+			for i in 0..num_windows {
+				let window_end = sample_time - i as u64 * sum_window_secs;
+				if window_end < sum_window_secs + start_timestamp {
+					break;
+				}
+				let window_start = window_end - sum_window_secs;
+				let window_sum: i64 = sorted_ts
+					.iter()
+					.zip(sorted_vals.iter())
+					.filter(|(&t, _)| t > window_start && t <= window_end)
+					.map(|(_, &v)| v)
+					.sum();
+				window_sums.push(window_sum);
+			}
+
+			let actual_avg = if window_sums.is_empty() {
+				0
+			} else {
+				(window_sums.iter().sum::<i64>() as f64 / window_sums.len() as f64).round() as i64
+			};
+
+			let error_pct = if actual_avg != 0 {
+				(approx_avg - actual_avg) as f64 / actual_avg as f64 * 100.0
+			} else {
+				0.0
+			};
+
+			if w >= skip_weeks {
+				assert!(
+					error_pct.abs() < 3.0,
+					"week {w}: error {error_pct:.2}% exceeds 3% \
+					 (approx={approx_avg}, actual={actual_avg})"
+				);
+			}
+		}
 	}
 }
