@@ -3731,23 +3731,6 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		debug_assert!(our_funding_satoshis == 0 || msg_push_msat == 0);
 		let value_to_self_msat = our_funding_satoshis * 1000 + msg_push_msat;
 
-		// check if the funder's amount for the initial commitment tx is sufficient
-		// for full fee payment plus a few HTLCs to ensure the channel will be useful.
-		let funders_amount_msat = open_channel_fields.funding_satoshis * 1000 - msg_push_msat;
-		let commit_tx_fee_sat = SpecTxBuilder {}.commit_tx_fee_sat(open_channel_fields.commitment_feerate_sat_per_1000_weight, MIN_AFFORDABLE_HTLC_COUNT, &channel_type);
-		// Subtract any non-HTLC outputs from the remote balance
-		let (_, remote_balance_before_fee_msat) = SpecTxBuilder {}.subtract_non_htlc_outputs(false, value_to_self_msat, funders_amount_msat, &channel_type);
-		if remote_balance_before_fee_msat / 1000 < commit_tx_fee_sat {
-			return Err(ChannelError::close(format!("Funding amount ({} sats) can't even pay fee for initial commitment transaction fee of {} sats.", funders_amount_msat / 1000, commit_tx_fee_sat)));
-		}
-
-		let to_remote_satoshis = remote_balance_before_fee_msat / 1000 - commit_tx_fee_sat;
-		// While it's reasonable for us to not meet the channel reserve initially (if they don't
-		// want to push much to us), our counterparty should always have more than our reserve.
-		if to_remote_satoshis < holder_selected_channel_reserve_satoshis {
-			return Err(ChannelError::close("Insufficient funding amount for initial reserve".to_owned()));
-		}
-
 		let counterparty_shutdown_scriptpubkey = if their_features.supports_upfront_shutdown_script() {
 			match &open_channel_fields.shutdown_scriptpubkey {
 				&Some(ref script) => {
@@ -3948,6 +3931,33 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			interactive_tx_signing_session: None,
 		};
 
+		// check if the funder's amount for the initial commitment tx is sufficient
+		// for full fee payment plus a few HTLCs to ensure the channel will be useful.
+		let funders_amount_msat = funding.get_value_satoshis() * 1000 - funding.get_value_to_self_msat();
+		let htlc_candidate = None;
+		let include_counterparty_unknown_htlcs = false;
+		let addl_nondust_htlc_count = MIN_AFFORDABLE_HTLC_COUNT;
+		let dust_exposure_limiting_feerate = channel_context.get_dust_exposure_limiting_feerate(&fee_estimator, funding.get_channel_type());
+		let remote_stats = channel_context.get_next_remote_commitment_stats(
+			&funding,
+			htlc_candidate,
+			include_counterparty_unknown_htlcs,
+			addl_nondust_htlc_count,
+			channel_context.feerate_per_kw,
+			dust_exposure_limiting_feerate
+		).map_err(|()| ChannelError::close(format!("Funding amount ({} sats) can't even pay fee for two anchors on the initial commitment transaction", funders_amount_msat / 1000)))?;
+
+		if remote_stats.commitment_stats.counterparty_balance_before_fee_msat / 1000 < remote_stats.commitment_stats.commit_tx_fee_sat {
+			return Err(ChannelError::close(format!("Funding amount ({} sats) can't even pay fee for initial commitment transaction fee of {} sats.", funders_amount_msat / 1000, remote_stats.commitment_stats.commit_tx_fee_sat)));
+		}
+
+		let to_remote_satoshis = remote_stats.commitment_stats.counterparty_balance_before_fee_msat / 1000 - remote_stats.commitment_stats.commit_tx_fee_sat;
+		// While it's reasonable for us to not meet the channel reserve initially (if they don't
+		// want to push much to us), our counterparty should always have more than our reserve.
+		if to_remote_satoshis < funding.holder_selected_channel_reserve_satoshis {
+			return Err(ChannelError::close("Insufficient funding amount for initial reserve".to_owned()));
+		}
+
 		Ok((funding, channel_context))
 	}
 
@@ -3998,17 +4008,6 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		);
 
 		let value_to_self_msat = channel_value_satoshis * 1000 - push_msat;
-		let commit_tx_fee_sat = SpecTxBuilder {}.commit_tx_fee_sat(commitment_feerate, MIN_AFFORDABLE_HTLC_COUNT, &channel_type);
-		// Subtract any non-HTLC outputs from the local balance
-		let (local_balance_before_fee_msat, _) = SpecTxBuilder {}.subtract_non_htlc_outputs(
-			true,
-			value_to_self_msat,
-			push_msat,
-			&channel_type,
-		);
-		if local_balance_before_fee_msat / 1000 < commit_tx_fee_sat {
-			return Err(APIError::APIMisuseError{ err: format!("Funding amount ({}) can't even pay fee for initial commitment transaction fee of {}.", value_to_self_msat / 1000, commit_tx_fee_sat) });
-		}
 
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
@@ -4181,6 +4180,23 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 
 			interactive_tx_signing_session: None,
 		};
+
+		let htlc_candidate = None;
+		let include_counterparty_unknown_htlcs = false;
+		let addl_nondust_htlc_count = MIN_AFFORDABLE_HTLC_COUNT;
+		let dust_exposure_limiting_feerate = channel_context.get_dust_exposure_limiting_feerate(&fee_estimator, funding.get_channel_type());
+		let local_stats = channel_context.get_next_local_commitment_stats(
+			&funding,
+			htlc_candidate,
+			include_counterparty_unknown_htlcs,
+			addl_nondust_htlc_count,
+			channel_context.feerate_per_kw,
+			dust_exposure_limiting_feerate,
+		).map_err(|()| APIError::APIMisuseError { err: format!("Funding amount ({} sats) can't even pay fee for two anchors on the initial commitment transaction", funding.get_value_to_self_msat() / 1000)})?;
+
+		if local_stats.commitment_stats.holder_balance_before_fee_msat / 1000 < local_stats.commitment_stats.commit_tx_fee_sat {
+			return Err(APIError::APIMisuseError{ err: format!("Funding amount ({}) can't even pay fee for initial commitment transaction fee of {}.", funding.get_value_to_self_msat() / 1000, local_stats.commitment_stats.commit_tx_fee_sat) });
+		}
 
 		Ok((funding, channel_context))
 	}
@@ -5771,10 +5787,10 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		}
 
 		let extra_nondust_htlc_on_counterparty_tx_dust_exposure_msat = excess_feerate_opt.map(|excess_feerate| {
-			let extra_htlc_commit_tx_fee_sat = SpecTxBuilder {}.commit_tx_fee_sat(excess_feerate, on_counterparty_tx_accepted_nondust_htlcs + 1 + on_counterparty_tx_offered_nondust_htlcs, funding.get_channel_type());
+			let extra_htlc_commit_tx_fee_sat = chan_utils::commit_tx_fee_sat(excess_feerate, on_counterparty_tx_accepted_nondust_htlcs + 1 + on_counterparty_tx_offered_nondust_htlcs, funding.get_channel_type());
 			let extra_htlc_htlc_tx_fees_sat = chan_utils::htlc_tx_fees_sat(excess_feerate, on_counterparty_tx_accepted_nondust_htlcs + 1, on_counterparty_tx_offered_nondust_htlcs, funding.get_channel_type());
 
-			let commit_tx_fee_sat = SpecTxBuilder {}.commit_tx_fee_sat(excess_feerate, on_counterparty_tx_accepted_nondust_htlcs + on_counterparty_tx_offered_nondust_htlcs, funding.get_channel_type());
+			let commit_tx_fee_sat = chan_utils::commit_tx_fee_sat(excess_feerate, on_counterparty_tx_accepted_nondust_htlcs + on_counterparty_tx_offered_nondust_htlcs, funding.get_channel_type());
 			let htlc_tx_fees_sat = chan_utils::htlc_tx_fees_sat(excess_feerate, on_counterparty_tx_accepted_nondust_htlcs, on_counterparty_tx_offered_nondust_htlcs, funding.get_channel_type());
 
 			let extra_htlc_dust_exposure = on_counterparty_tx_dust_exposure_msat + (extra_htlc_commit_tx_fee_sat + extra_htlc_htlc_tx_fees_sat) * 1000;
@@ -6112,7 +6128,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		}
 
 		let num_htlcs = included_htlcs + addl_htlcs;
-		SpecTxBuilder {}.commit_tx_fee_sat(context.feerate_per_kw, num_htlcs, funding.get_channel_type()) * 1000
+		chan_utils::commit_tx_fee_sat(context.feerate_per_kw, num_htlcs, funding.get_channel_type()) * 1000
 	}
 
 	/// Get the commitment tx fee for the remote's next commitment transaction based on the number of
@@ -6189,7 +6205,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		}
 
 		let num_htlcs = included_htlcs + addl_htlcs;
-		SpecTxBuilder {}.commit_tx_fee_sat(context.feerate_per_kw, num_htlcs, funding.get_channel_type()) * 1000
+		chan_utils::commit_tx_fee_sat(context.feerate_per_kw, num_htlcs, funding.get_channel_type()) * 1000
 	}
 
 	#[rustfmt::skip]
@@ -17088,7 +17104,7 @@ mod tests {
 			ChannelPublicKeys, CounterpartyChannelTransactionParameters,
 			HolderCommitmentTransaction,
 		};
-		use crate::ln::channel::HTLCOutputInCommitment;
+		use crate::ln::channel::{HTLCOutputInCommitment, PredictedNextFee};
 		use crate::ln::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint};
 		use crate::sign::{ecdsa::EcdsaChannelSigner, ChannelDerivationParameters, HTLCDescriptor};
 		use crate::sync::Arc;
@@ -17217,6 +17233,8 @@ mod tests {
 		macro_rules! test_commitment {
 			( $counterparty_sig_hex: expr, $sig_hex: expr, $tx_hex: expr, $($remain:tt)* ) => {
 				chan.funding.channel_transaction_parameters.channel_type_features = ChannelTypeFeatures::only_static_remote_key();
+				chan.funding.next_local_fee = Mutex::new(PredictedNextFee::default());
+				chan.funding.next_remote_fee = Mutex::new(PredictedNextFee::default());
 				test_commitment_common!(chan, logger, secp_ctx, signer, holder_pubkeys, per_commitment_point, $counterparty_sig_hex, $sig_hex, $tx_hex, &ChannelTypeFeatures::only_static_remote_key(), $($remain)*);
 			};
 		}
@@ -17224,6 +17242,8 @@ mod tests {
 		macro_rules! test_commitment_with_anchors {
 			( $counterparty_sig_hex: expr, $sig_hex: expr, $tx_hex: expr, $($remain:tt)* ) => {
 				chan.funding.channel_transaction_parameters.channel_type_features = ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
+				chan.funding.next_local_fee = Mutex::new(PredictedNextFee::default());
+				chan.funding.next_remote_fee = Mutex::new(PredictedNextFee::default());
 				test_commitment_common!(chan, logger, secp_ctx, signer, holder_pubkeys, per_commitment_point, $counterparty_sig_hex, $sig_hex, $tx_hex, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(), $($remain)*);
 			};
 		}

@@ -169,7 +169,6 @@ fn get_next_commitment_stats(
 	if channel_type.supports_anchor_zero_fee_commitments() {
 		debug_assert_eq!(feerate_per_kw, 0);
 		debug_assert_eq!(excess_feerate, 0);
-		debug_assert_eq!(addl_nondust_htlc_count, 0);
 	}
 
 	// Calculate inbound htlc count
@@ -271,9 +270,6 @@ pub(crate) trait TxBuilder {
 		dust_exposure_limiting_feerate: Option<u32>, broadcaster_dust_limit_satoshis: u64,
 		channel_type: &ChannelTypeFeatures,
 	) -> Result<ChannelStats, ()>;
-	fn commit_tx_fee_sat(
-		&self, feerate_per_kw: u32, nondust_htlc_count: usize, channel_type: &ChannelTypeFeatures,
-	) -> u64;
 	fn subtract_non_htlc_outputs(
 		&self, is_outbound_from_holder: bool, value_to_self_after_htlcs: u64,
 		value_to_remote_after_htlcs: u64, channel_type: &ChannelTypeFeatures,
@@ -310,11 +306,6 @@ impl TxBuilder for SpecTxBuilder {
 		)?;
 
 		Ok(ChannelStats { commitment_stats })
-	}
-	fn commit_tx_fee_sat(
-		&self, feerate_per_kw: u32, nondust_htlc_count: usize, channel_type: &ChannelTypeFeatures,
-	) -> u64 {
-		commit_tx_fee_sat(feerate_per_kw, nondust_htlc_count, channel_type)
 	}
 	fn subtract_non_htlc_outputs(
 		&self, is_outbound_from_holder: bool, value_to_self_after_htlcs: u64,
@@ -399,7 +390,7 @@ impl TxBuilder for SpecTxBuilder {
 		// The value going to each party MUST be 0 or positive, even if all HTLCs pending in the
 		// commitment clear by failure.
 
-		let commit_tx_fee_sat = self.commit_tx_fee_sat(
+		let commit_tx_fee_sat = commit_tx_fee_sat(
 			feerate_per_kw,
 			htlcs_in_tx.len(),
 			&channel_parameters.channel_type_features,
