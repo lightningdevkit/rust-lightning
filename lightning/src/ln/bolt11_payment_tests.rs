@@ -15,8 +15,6 @@ use crate::ln::functional_test_utils::*;
 use crate::ln::msgs::ChannelMessageHandler;
 use crate::ln::outbound_payment::Bolt11PaymentError;
 use crate::sign::{NodeSigner, Recipient};
-use bitcoin::hashes::sha256::Hash as Sha256;
-use bitcoin::hashes::Hash;
 use lightning_invoice::{Bolt11Invoice, Currency, InvoiceBuilder};
 use std::time::SystemTime;
 
@@ -38,7 +36,7 @@ fn payment_metadata_end_to_end_for_invoice_with_amount() {
 	let timestamp = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap();
 	let invoice = InvoiceBuilder::new(Currency::Bitcoin)
 		.description("test".into())
-		.payment_hash(Sha256::from_slice(&payment_hash.0).unwrap())
+		.payment_hash(payment_hash)
 		.payment_secret(payment_secret)
 		.duration_since_epoch(timestamp)
 		.min_final_cltv_expiry_delta(144)
@@ -105,7 +103,7 @@ fn payment_metadata_end_to_end_for_invoice_with_no_amount() {
 	let timestamp = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap();
 	let invoice = InvoiceBuilder::new(Currency::Bitcoin)
 		.description("test".into())
-		.payment_hash(Sha256::from_slice(&payment_hash.0).unwrap())
+		.payment_hash(payment_hash)
 		.payment_secret(payment_secret)
 		.duration_since_epoch(timestamp)
 		.min_final_cltv_expiry_delta(144)

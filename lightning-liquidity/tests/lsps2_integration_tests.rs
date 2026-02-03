@@ -46,7 +46,6 @@ use lightning_invoice::{Bolt11Invoice, InvoiceBuilder, RoutingFees};
 
 use lightning_types::payment::PaymentHash;
 
-use bitcoin::hashes::{sha256, Hash};
 use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 use bitcoin::Network;
 use lightning_types::payment::PaymentPreimage;
@@ -136,10 +135,6 @@ fn create_jit_invoice(
 		htlc_minimum_msat: None,
 		htlc_maximum_msat: None,
 	}]);
-
-	let payment_hash = sha256::Hash::from_slice(&payment_hash.0).map_err(|e| {
-		log_error!(node.logger, "Invalid payment hash: {:?}", e);
-	})?;
 
 	let currency = Network::Bitcoin.into();
 	let mut invoice_builder = InvoiceBuilder::new(currency)
