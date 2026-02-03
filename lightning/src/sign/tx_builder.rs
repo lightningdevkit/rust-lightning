@@ -21,7 +21,7 @@ pub(crate) struct HTLCAmountDirection {
 }
 
 impl HTLCAmountDirection {
-	fn is_dust(
+	pub(crate) fn is_dust(
 		&self, local: bool, feerate_per_kw: u32, broadcaster_dust_limit_satoshis: u64,
 		channel_type: &ChannelTypeFeatures,
 	) -> bool {
@@ -162,7 +162,7 @@ pub(crate) fn saturating_sub_anchor_outputs(
 	}
 }
 
-fn get_dust_buffer_feerate(feerate_per_kw: u32) -> u32 {
+pub(crate) fn get_dust_buffer_feerate(feerate_per_kw: u32) -> u32 {
 	// When calculating our exposure to dust HTLCs, we assume that the channel feerate
 	// may, at any point, increase by at least 10 sat/vB (i.e 2530 sat/kWU) or 25%,
 	// whichever is higher. This ensures that we aren't suddenly exposed to significantly
