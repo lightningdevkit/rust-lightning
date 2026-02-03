@@ -17224,18 +17224,10 @@ pub(super) struct ChannelManagerData<SP: SignerProvider> {
 	best_block_height: u32,
 	best_block_hash: BlockHash,
 	channels: Vec<FundedChannel<SP>>,
-	// Marked `_legacy` because in versions > 0.2 we are taking steps to remove the requirement of
-	// regularly persisting the `ChannelManager` and instead rebuild the set of HTLC forwards from
-	// `Channel{Monitor}` data. See [`ChannelManager::read`].
-	forward_htlcs_legacy: HashMap<u64, Vec<HTLCForwardInfo>>,
 	claimable_htlcs_list: Vec<(PaymentHash, Vec<ClaimableHTLC>)>,
 	peer_init_features: Vec<(PublicKey, InitFeatures)>,
 	pending_events_read: VecDeque<(events::Event, Option<EventCompletionAction>)>,
 	highest_seen_timestamp: u32,
-	// Marked `_legacy` because in versions > 0.2 we are taking steps to remove the requirement of
-	// regularly persisting the `ChannelManager` and instead rebuild the set of HTLC forwards from
-	// `Channel{Monitor}` data. See [`ChannelManager::read`].
-	pending_intercepted_htlcs_legacy: HashMap<InterceptId, PendingAddHTLCInfo>,
 	pending_outbound_payments: HashMap<PaymentId, PendingOutboundPayment>,
 	pending_claiming_payments: HashMap<PaymentHash, ClaimingPayment>,
 	received_network_pubkey: Option<PublicKey>,
@@ -17245,14 +17237,16 @@ pub(super) struct ChannelManagerData<SP: SignerProvider> {
 	claimable_htlc_purposes: Option<Vec<events::PaymentPurpose>>,
 	probing_cookie_secret: Option<[u8; 32]>,
 	claimable_htlc_onion_fields: Option<Vec<Option<RecipientOnionFields>>>,
-	// Marked `_legacy` because in versions > 0.2 we are taking steps to remove the requirement of
-	// regularly persisting the `ChannelManager` and instead rebuild the set of HTLC forwards from
-	// `Channel{Monitor}` data. See [`ChannelManager::read`].
-	decode_update_add_htlcs_legacy: HashMap<u64, Vec<msgs::UpdateAddHTLC>>,
 	inbound_payment_id_secret: Option<[u8; 32]>,
 	in_flight_monitor_updates: Option<HashMap<(PublicKey, ChannelId), Vec<ChannelMonitorUpdate>>>,
 	peer_storage_dir: Option<Vec<(PublicKey, Vec<u8>)>>,
 	async_receive_offer_cache: AsyncReceiveOfferCache,
+	// Marked `_legacy` because in versions > 0.2 we are taking steps to remove the requirement of
+	// regularly persisting the `ChannelManager` and instead rebuild the set of HTLC forwards from
+	// `Channel{Monitor}` data.
+	forward_htlcs_legacy: HashMap<u64, Vec<HTLCForwardInfo>>,
+	pending_intercepted_htlcs_legacy: HashMap<InterceptId, PendingAddHTLCInfo>,
+	decode_update_add_htlcs_legacy: HashMap<u64, Vec<msgs::UpdateAddHTLC>>,
 }
 
 /// Arguments for deserializing [`ChannelManagerData`].
