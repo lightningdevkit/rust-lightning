@@ -17398,9 +17398,9 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 		let mut probing_cookie_secret: Option<[u8; 32]> = None;
 		let mut claimable_htlc_purposes = None;
 		let mut claimable_htlc_onion_fields = None;
-		let mut pending_claiming_payments = Some(new_hash_map());
+		let mut pending_claiming_payments = None;
 		let mut monitor_update_blocked_actions_per_peer: Option<Vec<(_, BTreeMap<_, Vec<_>>)>> =
-			Some(Vec::new());
+			None;
 		let mut events_override = None;
 		let mut legacy_in_flight_monitor_updates: Option<
 			HashMap<(PublicKey, OutPoint), Vec<ChannelMonitorUpdate>>,
@@ -17494,12 +17494,10 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 			pending_intercepted_htlcs_legacy: pending_intercepted_htlcs_legacy
 				.unwrap_or_else(new_hash_map),
 			pending_outbound_payments,
-			// unwrap safety: pending_claiming_payments is guaranteed to be `Some` after read_tlv_fields
-			pending_claiming_payments: pending_claiming_payments.unwrap(),
+			pending_claiming_payments: pending_claiming_payments.unwrap_or_else(new_hash_map),
 			received_network_pubkey,
-			// unwrap safety: monitor_update_blocked_actions_per_peer is guaranteed to be `Some` after read_tlv_fields
 			monitor_update_blocked_actions_per_peer: monitor_update_blocked_actions_per_peer
-				.unwrap(),
+				.unwrap_or_else(Vec::new),
 			fake_scid_rand_bytes,
 			claimable_htlc_purposes,
 			probing_cookie_secret,
