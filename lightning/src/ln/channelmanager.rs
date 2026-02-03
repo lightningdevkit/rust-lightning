@@ -17928,15 +17928,6 @@ pub struct ChannelManagerReadArgs<
 	///
 	/// This is not exported to bindings users because we have no HashMap bindings
 	pub channel_monitors: HashMap<ChannelId, &'a ChannelMonitor<SP::EcdsaSigner>>,
-
-	/// Whether the `ChannelManager` should attempt to reconstruct its set of pending HTLCs from
-	/// `Channel{Monitor}` data rather than its own persisted maps, which is planned to become
-	/// the default behavior in upcoming versions.
-	///
-	/// If `None`, whether we reconstruct or use the legacy maps will be decided randomly during
-	/// `ChannelManager::from_channel_manager_data`.
-	#[cfg(test)]
-	pub reconstruct_manager_from_monitors: Option<bool>,
 }
 
 impl<
@@ -17974,8 +17965,6 @@ impl<
 			channel_monitors: hash_map_from_iter(
 				channel_monitors.drain(..).map(|monitor| (monitor.channel_id(), monitor)),
 			),
-			#[cfg(test)]
-			reconstruct_manager_from_monitors: None,
 		}
 	}
 }
