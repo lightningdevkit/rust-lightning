@@ -12,9 +12,10 @@
 //! claim outputs on-chain.
 
 use crate::events::{Event, HTLCHandlingFailureReason, HTLCHandlingFailureType};
-use crate::ln::channelmanager::{PaymentId, RecipientOnionFields};
+use crate::ln::channelmanager::PaymentId;
 use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler};
 use crate::ln::onion_utils::LocalHTLCFailureReason;
+use crate::ln::outbound_payment::RecipientOnionFields;
 use crate::routing::router::PaymentParameters;
 use crate::util::config::HTLCInterceptionFlags;
 

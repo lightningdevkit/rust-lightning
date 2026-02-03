@@ -16,8 +16,7 @@ use crate::events::{Event, HTLCHandlingFailureType, PathFailure, PaymentFailureR
 use crate::ln::channel::EXPIRE_PREV_CONFIG_TICKS;
 use crate::ln::channelmanager::{
 	FailureCode, HTLCForwardInfo, PaymentId, PendingAddHTLCInfo, PendingHTLCInfo,
-	PendingHTLCRouting, RecipientOnionFields, CLTV_FAR_FAR_AWAY, DISABLE_GOSSIP_TICKS,
-	MIN_CLTV_EXPIRY_DELTA,
+	PendingHTLCRouting, CLTV_FAR_FAR_AWAY, DISABLE_GOSSIP_TICKS, MIN_CLTV_EXPIRY_DELTA,
 };
 use crate::ln::functional_test_utils::test_default_channel_config;
 use crate::ln::msgs;
@@ -28,6 +27,7 @@ use crate::ln::msgs::{
 use crate::ln::onion_utils::{
 	self, build_onion_payloads, construct_onion_keys, LocalHTLCFailureReason,
 };
+use crate::ln::outbound_payment::RecipientOnionFields;
 use crate::ln::wire::Encode;
 use crate::routing::gossip::{NetworkUpdate, RoutingFees};
 use crate::routing::router::{

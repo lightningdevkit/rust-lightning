@@ -49,7 +49,6 @@ use lightning::ln::channel::{
 use lightning::ln::channel_state::ChannelDetails;
 use lightning::ln::channelmanager::{
 	ChainParameters, ChannelManager, ChannelManagerReadArgs, PaymentId, RecentPaymentDetails,
-	RecipientOnionFields,
 };
 use lightning::ln::functional_test_utils::*;
 use lightning::ln::funding::{FundingTxInput, SpliceContribution};
@@ -58,6 +57,7 @@ use lightning::ln::msgs::{
 	BaseMessageHandler, ChannelMessageHandler, CommitmentUpdate, Init, MessageSendEvent,
 	UpdateAddHTLC,
 };
+use lightning::ln::outbound_payment::RecipientOnionFields;
 use lightning::ln::script::ShutdownScript;
 use lightning::ln::types::ChannelId;
 use lightning::offers::invoice::UnsignedBolt12Invoice;

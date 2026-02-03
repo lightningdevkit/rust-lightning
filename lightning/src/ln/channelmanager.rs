@@ -84,9 +84,12 @@ use crate::ln::onion_utils::{process_fulfill_attribution_data, AttributionData};
 use crate::ln::our_peer_storage::{EncryptedOurPeerStorage, PeerStorageMonitorHolder};
 #[cfg(test)]
 use crate::ln::outbound_payment;
+#[cfg(any(test, feature = "_externalize_tests"))]
+use crate::ln::outbound_payment::PaymentSendFailure;
 use crate::ln::outbound_payment::{
-	OutboundPayments, PendingOutboundPayment, RecipientCustomTlvs, RetryableInvoiceRequest,
-	SendAlongPathArgs, StaleExpiration,
+	Bolt11PaymentError, Bolt12PaymentError, OutboundPayments, PendingOutboundPayment,
+	ProbeSendFailure, RecipientCustomTlvs, RecipientOnionFields, Retry, RetryableInvoiceRequest,
+	RetryableSendFailure, SendAlongPathArgs, StaleExpiration,
 };
 use crate::ln::types::ChannelId;
 use crate::offers::async_receive_offer_cache::AsyncReceiveOfferCache;
@@ -175,6 +178,7 @@ use crate::prelude::*;
 use crate::sync::{Arc, FairRwLock, LockHeldState, LockTestExt, Mutex, RwLock, RwLockReadGuard};
 use bitcoin::hex::impl_fmt_traits;
 
+use crate::ln::script::ShutdownScript;
 use core::borrow::Borrow;
 use core::cell::RefCell;
 use core::convert::Infallible;
@@ -182,14 +186,6 @@ use core::ops::Deref;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::time::Duration;
 use core::{cmp, mem};
-// Re-export this for use in the public API.
-#[cfg(any(test, feature = "_externalize_tests"))]
-pub(crate) use crate::ln::outbound_payment::PaymentSendFailure;
-pub use crate::ln::outbound_payment::{
-	Bolt11PaymentError, Bolt12PaymentError, ProbeSendFailure, RecipientOnionFields, Retry,
-	RetryableSendFailure,
-};
-use crate::ln::script::ShutdownScript;
 
 // We hold various information about HTLC relay in the HTLC objects in Channel itself:
 //
@@ -2262,7 +2258,8 @@ impl<
 /// # use bitcoin::hashes::Hash;
 /// # use lightning::events::{Event, EventsProvider};
 /// # use lightning::types::payment::PaymentHash;
-/// # use lightning::ln::channelmanager::{AChannelManager, OptionalBolt11PaymentParams, PaymentId, RecentPaymentDetails, Retry};
+/// # use lightning::ln::channelmanager::{AChannelManager, OptionalBolt11PaymentParams, PaymentId, RecentPaymentDetails};
+/// # use lightning::ln::outbound_payment::Retry;
 /// # use lightning_invoice::Bolt11Invoice;
 /// #
 /// # fn example<T: AChannelManager>(
@@ -2420,7 +2417,8 @@ impl<
 /// ```
 /// # use core::time::Duration;
 /// # use lightning::events::{Event, EventsProvider};
-/// # use lightning::ln::channelmanager::{AChannelManager, PaymentId, RecentPaymentDetails, Retry};
+/// # use lightning::ln::channelmanager::{AChannelManager, PaymentId, RecentPaymentDetails};
+/// # use lightning::ln::outbound_payment::Retry;
 /// # use lightning::offers::parse::Bolt12SemanticError;
 /// # use lightning::routing::router::RouteParametersConfig;
 /// #

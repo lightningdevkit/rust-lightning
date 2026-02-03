@@ -7,7 +7,7 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-//! Utilities to send payments and manage outbound payment information.
+//! This module contains various types which are used to configure or process outbound payments.
 
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash;
@@ -2805,8 +2805,9 @@ mod tests {
 
 	use crate::blinded_path::EmptyNodeIdLookUp;
 	use crate::events::{Event, PathFailure, PaymentFailureReason};
-	use crate::ln::channelmanager::{PaymentId, RecipientOnionFields};
+	use crate::ln::channelmanager::PaymentId;
 	use crate::ln::inbound_payment::ExpandedKey;
+	use crate::ln::outbound_payment::RecipientOnionFields;
 	use crate::ln::outbound_payment::{
 		Bolt12PaymentError, OutboundPayments, PendingOutboundPayment, RecipientCustomTlvs, Retry,
 		RetryableSendFailure, StaleExpiration,

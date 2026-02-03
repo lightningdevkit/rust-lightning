@@ -19,9 +19,10 @@ use crate::blinded_path::payment::{
 use crate::blinded_path::{BlindedHop, Direction, IntroductionNode};
 use crate::crypto::chacha20::ChaCha20;
 use crate::ln::channel_state::ChannelDetails;
-use crate::ln::channelmanager::{PaymentId, RecipientOnionFields, MIN_FINAL_CLTV_EXPIRY_DELTA};
+use crate::ln::channelmanager::{PaymentId, MIN_FINAL_CLTV_EXPIRY_DELTA};
 use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
 use crate::ln::onion_utils;
+use crate::ln::outbound_payment::RecipientOnionFields;
 use crate::offers::invoice::Bolt12Invoice;
 use crate::offers::static_invoice::StaticInvoice;
 use crate::routing::gossip::{
@@ -1036,8 +1037,6 @@ impl PaymentParameters {
 	/// whether your router will be allowed to find a multi-part route for this payment. If you
 	/// set `allow_mpp` to true, you should ensure a payment secret is set on send, likely via
 	/// [`RecipientOnionFields::secret_only`].
-	///
-	/// [`RecipientOnionFields::secret_only`]: crate::ln::channelmanager::RecipientOnionFields::secret_only
 	#[rustfmt::skip]
 	pub fn for_keysend(payee_pubkey: PublicKey, final_cltv_expiry_delta: u32, allow_mpp: bool) -> Self {
 		Self::from_node_id(payee_pubkey, final_cltv_expiry_delta)

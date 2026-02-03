@@ -43,13 +43,14 @@ use lightning::events::bump_transaction::sync::WalletSourceSync;
 use lightning::events::Event;
 use lightning::ln::channel_state::ChannelDetails;
 use lightning::ln::channelmanager::{
-	ChainParameters, ChannelManager, InterceptId, PaymentId, RecipientOnionFields, Retry,
+	ChainParameters, ChannelManager, InterceptId, PaymentId,
 };
 use lightning::ln::functional_test_utils::*;
 use lightning::ln::inbound_payment::ExpandedKey;
 use lightning::ln::peer_handler::{
 	IgnoringMessageHandler, MessageHandler, PeerManager, SocketDescriptor,
 };
+use lightning::ln::outbound_payment::{RecipientOnionFields, Retry};
 use lightning::ln::script::ShutdownScript;
 use lightning::ln::types::ChannelId;
 use lightning::offers::invoice::UnsignedBolt12Invoice;

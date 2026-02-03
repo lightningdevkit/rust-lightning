@@ -18,10 +18,7 @@ use crate::events::{
 	PaymentFailureReason, PaymentPurpose,
 };
 use crate::ln::blinded_payment_tests::{fail_blinded_htlc_backwards, get_blinded_route_parameters};
-use crate::ln::channelmanager::{
-	Bolt12PaymentError, OptionalOfferPaymentParams, PaymentId, RecipientOnionFields,
-	MIN_CLTV_EXPIRY_DELTA,
-};
+use crate::ln::channelmanager::{OptionalOfferPaymentParams, PaymentId, MIN_CLTV_EXPIRY_DELTA};
 use crate::ln::functional_test_utils::*;
 use crate::ln::inbound_payment;
 use crate::ln::msgs;
@@ -30,6 +27,7 @@ use crate::ln::msgs::{
 };
 use crate::ln::offers_tests;
 use crate::ln::onion_utils::LocalHTLCFailureReason;
+use crate::ln::outbound_payment::{Bolt12PaymentError, RecipientOnionFields};
 use crate::ln::outbound_payment::{
 	PendingOutboundPayment, Retry, TEST_ASYNC_PAYMENT_TIMEOUT_RELATIVE_EXPIRY,
 };

@@ -27,7 +27,7 @@ use crate::ln::chan_utils::{
 };
 use crate::ln::channelmanager::{
 	AChannelManager, ChainParameters, ChannelManager, ChannelManagerReadArgs, PaymentId,
-	RAACommitmentOrder, RecipientOnionFields, MIN_CLTV_EXPIRY_DELTA,
+	RAACommitmentOrder, MIN_CLTV_EXPIRY_DELTA,
 };
 use crate::ln::funding::FundingTxInput;
 use crate::ln::msgs;
@@ -35,6 +35,7 @@ use crate::ln::msgs::{
 	BaseMessageHandler, ChannelMessageHandler, MessageSendEvent, RoutingMessageHandler,
 };
 use crate::ln::onion_utils::LocalHTLCFailureReason;
+use crate::ln::outbound_payment::RecipientOnionFields;
 use crate::ln::outbound_payment::Retry;
 use crate::ln::peer_handler::IgnoringMessageHandler;
 use crate::ln::types::ChannelId;
