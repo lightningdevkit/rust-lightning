@@ -911,8 +911,6 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 						tx_broadcaster: &broadcaster,
 						logger: &self.logger,
 						channel_monitors,
-						#[cfg(test)]
-						reconstruct_manager_from_monitors: None,
 					},
 				)
 				.unwrap();
@@ -1311,7 +1309,7 @@ fn check_claimed_htlcs_match_route<'a, 'b, 'c>(
 
 pub fn _reload_node<'a, 'b, 'c>(
 	node: &'a Node<'a, 'b, 'c>, config: UserConfig, chanman_encoded: &[u8],
-	monitors_encoded: &[&[u8]], _reconstruct_manager_from_monitors: Option<bool>,
+	monitors_encoded: &[&[u8]],
 ) -> TestChannelManager<'b, 'c> {
 	let mut monitors_read = Vec::with_capacity(monitors_encoded.len());
 	for encoded in monitors_encoded {
@@ -1345,8 +1343,6 @@ pub fn _reload_node<'a, 'b, 'c>(
 				tx_broadcaster: node.tx_broadcaster,
 				logger: node.logger,
 				channel_monitors,
-				#[cfg(test)]
-				reconstruct_manager_from_monitors: _reconstruct_manager_from_monitors,
 			},
 		)
 		.unwrap()
@@ -1368,7 +1364,7 @@ pub fn _reload_node<'a, 'b, 'c>(
 #[macro_export]
 macro_rules! _reload_node_inner {
 	($node: expr, $new_config: expr, $chanman_encoded: expr, $monitors_encoded: expr, $persister:
-	 ident, $new_chain_monitor: ident, $new_channelmanager: ident, $reconstruct_pending_htlcs: expr
+	 ident, $new_chain_monitor: ident, $new_channelmanager: ident
 	) => {
 		let chanman_encoded = $chanman_encoded;
 
@@ -1388,7 +1384,6 @@ macro_rules! _reload_node_inner {
 			$new_config,
 			&chanman_encoded,
 			$monitors_encoded,
-			$reconstruct_pending_htlcs,
 		);
 		$node.node = &$new_channelmanager;
 		$node.onion_messenger.set_offers_handler(&$new_channelmanager);
@@ -1408,8 +1403,7 @@ macro_rules! reload_node {
 			$monitors_encoded,
 			$persister,
 			$new_chain_monitor,
-			$new_channelmanager,
-			None
+			$new_channelmanager
 		);
 	};
 	// Reload the node with the new provided config
@@ -1421,25 +1415,7 @@ macro_rules! reload_node {
 			$monitors_encoded,
 			$persister,
 			$new_chain_monitor,
-			$new_channelmanager,
-			None
-		);
-	};
-	// Reload the node and have the `ChannelManager` use new codepaths that reconstruct its set of
-	// pending HTLCs from `Channel{Monitor}` data.
-	($node: expr, $chanman_encoded: expr, $monitors_encoded: expr, $persister:
-	 ident, $new_chain_monitor: ident, $new_channelmanager: ident, $reconstruct_pending_htlcs: expr
-	) => {
-		let config = $node.node.get_current_config();
-		$crate::_reload_node_inner!(
-			$node,
-			config,
-			$chanman_encoded,
-			$monitors_encoded,
-			$persister,
-			$new_chain_monitor,
-			$new_channelmanager,
-			$reconstruct_pending_htlcs
+			$new_channelmanager
 		);
 	};
 }
