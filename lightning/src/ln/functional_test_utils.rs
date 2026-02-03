@@ -1366,8 +1366,10 @@ pub fn _reload_node<'a, 'b, 'c>(
 }
 
 #[macro_export]
-macro_rules! reload_node {
-	($node: expr, $new_config: expr, $chanman_encoded: expr, $monitors_encoded: expr, $persister: ident, $new_chain_monitor: ident, $new_channelmanager: ident) => {
+macro_rules! _reload_node_inner {
+	($node: expr, $new_config: expr, $chanman_encoded: expr, $monitors_encoded: expr, $persister:
+	 ident, $new_chain_monitor: ident, $new_channelmanager: ident, $reconstruct_pending_htlcs: expr
+	) => {
 		let chanman_encoded = $chanman_encoded;
 
 		$persister = $crate::util::test_utils::TestPersister::new();
@@ -1381,22 +1383,46 @@ macro_rules! reload_node {
 		);
 		$node.chain_monitor = &$new_chain_monitor;
 
-		$new_channelmanager =
-			_reload_node(&$node, $new_config, &chanman_encoded, $monitors_encoded, None);
+		$new_channelmanager = _reload_node(
+			&$node,
+			$new_config,
+			&chanman_encoded,
+			$monitors_encoded,
+			$reconstruct_pending_htlcs,
+		);
 		$node.node = &$new_channelmanager;
 		$node.onion_messenger.set_offers_handler(&$new_channelmanager);
 		$node.onion_messenger.set_async_payments_handler(&$new_channelmanager);
 	};
+}
+
+#[macro_export]
+macro_rules! reload_node {
+	// Reload the node using the node's current config
 	($node: expr, $chanman_encoded: expr, $monitors_encoded: expr, $persister: ident, $new_chain_monitor: ident, $new_channelmanager: ident) => {
 		let config = $node.node.get_current_config();
-		reload_node!(
+		_reload_node_inner!(
 			$node,
 			config,
 			$chanman_encoded,
 			$monitors_encoded,
 			$persister,
 			$new_chain_monitor,
-			$new_channelmanager
+			$new_channelmanager,
+			None
+		);
+	};
+	// Reload the node with the new provided config
+	($node: expr, $new_config: expr, $chanman_encoded: expr, $monitors_encoded: expr, $persister: ident, $new_chain_monitor: ident, $new_channelmanager: ident) => {
+		_reload_node_inner!(
+			$node,
+			$new_config,
+			$chanman_encoded,
+			$monitors_encoded,
+			$persister,
+			$new_chain_monitor,
+			$new_channelmanager,
+			None
 		);
 	};
 }
