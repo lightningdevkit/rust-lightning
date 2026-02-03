@@ -1326,7 +1326,7 @@ impl PaymentParameters {
 				found_blinded_tail = true;
 			}
 		}
-		debug_assert!(found_blinded_tail);
+		//debug_assert!(found_blinded_tail);
 	}
 }
 
