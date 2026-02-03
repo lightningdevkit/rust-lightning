@@ -4721,7 +4721,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		);
 		let next_value_to_self_msat = self.get_next_commitment_value_to_self_msat(true, funding);
 
-		let ret = SpecTxBuilder {}.get_next_commitment_stats(
+		let ret = SpecTxBuilder {}.get_onchain_stats(
 			true,
 			funding.is_outbound(),
 			funding.get_value_satoshis(),
@@ -4744,7 +4744,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 				};
 			} else {
 				let predicted_stats = SpecTxBuilder {}
-					.get_next_commitment_stats(
+					.get_onchain_stats(
 						true,
 						funding.is_outbound(),
 						funding.get_value_satoshis(),
@@ -4780,7 +4780,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		);
 		let next_value_to_self_msat = self.get_next_commitment_value_to_self_msat(false, funding);
 
-		let ret = SpecTxBuilder {}.get_next_commitment_stats(
+		let ret = SpecTxBuilder {}.get_onchain_stats(
 			false,
 			funding.is_outbound(),
 			funding.get_value_satoshis(),
@@ -4803,7 +4803,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 				};
 			} else {
 				let predicted_stats = SpecTxBuilder {}
-					.get_next_commitment_stats(
+					.get_onchain_stats(
 						false,
 						funding.is_outbound(),
 						funding.get_value_satoshis(),
@@ -5422,7 +5422,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 
 		let value_to_self_msat = (funding.value_to_self_msat + value_to_self_claimed_msat).checked_sub(value_to_remote_claimed_msat).unwrap();
 
-		let (tx, stats) = SpecTxBuilder {}.build_commitment_transaction(
+		let (tx, _stats) = SpecTxBuilder {}.build_commitment_transaction(
 			local,
 			commitment_number,
 			per_commitment_point,
@@ -5438,7 +5438,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		{
 			let PredictedNextFee { predicted_feerate, predicted_nondust_htlc_count, predicted_fee_sat } = if local { *funding.next_local_fee.lock().unwrap() } else { *funding.next_remote_fee.lock().unwrap() };
 			if predicted_feerate == tx.negotiated_feerate_per_kw() && predicted_nondust_htlc_count == tx.nondust_htlcs().len() {
-				assert_eq!(predicted_fee_sat, stats.commit_tx_fee_sat);
+				assert_eq!(predicted_fee_sat, _stats.commit_tx_fee_sat);
 			}
 		}
 		#[cfg(debug_assertions)]
@@ -5450,10 +5450,10 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			} else {
 				funding.counterparty_max_commitment_tx_output.lock().unwrap()
 			};
-			debug_assert!(broadcaster_max_commitment_tx_output.0 <= stats.local_balance_before_fee_msat || stats.local_balance_before_fee_msat / 1000 >= funding.counterparty_selected_channel_reserve_satoshis.unwrap());
-			broadcaster_max_commitment_tx_output.0 = cmp::max(broadcaster_max_commitment_tx_output.0, stats.local_balance_before_fee_msat);
-			debug_assert!(broadcaster_max_commitment_tx_output.1 <= stats.remote_balance_before_fee_msat || stats.remote_balance_before_fee_msat / 1000 >= funding.holder_selected_channel_reserve_satoshis);
-			broadcaster_max_commitment_tx_output.1 = cmp::max(broadcaster_max_commitment_tx_output.1, stats.remote_balance_before_fee_msat);
+			debug_assert!(broadcaster_max_commitment_tx_output.0 <= _stats.local_balance_before_fee_msat || _stats.local_balance_before_fee_msat / 1000 >= funding.counterparty_selected_channel_reserve_satoshis.unwrap());
+			broadcaster_max_commitment_tx_output.0 = cmp::max(broadcaster_max_commitment_tx_output.0, _stats.local_balance_before_fee_msat);
+			debug_assert!(broadcaster_max_commitment_tx_output.1 <= _stats.remote_balance_before_fee_msat || _stats.remote_balance_before_fee_msat / 1000 >= funding.holder_selected_channel_reserve_satoshis);
+			broadcaster_max_commitment_tx_output.1 = cmp::max(broadcaster_max_commitment_tx_output.1, _stats.remote_balance_before_fee_msat);
 		}
 
 
