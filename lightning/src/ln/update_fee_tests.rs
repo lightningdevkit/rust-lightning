@@ -882,8 +882,13 @@ pub fn test_chan_init_feerate_unaffordability() {
 		MIN_AFFORDABLE_HTLC_COUNT as u64,
 		&channel_type_features,
 	);
-	assert_eq!(nodes[0].node.create_channel(node_b_id, 100_000, push_amt + 1, 42, None, None).unwrap_err(),
-		APIError::APIMisuseError { err: "Funding amount (356) can't even pay fee for initial commitment transaction fee of 357.".to_string() });
+	assert_eq!(
+		nodes[0].node.create_channel(node_b_id, 100_000, push_amt + 1, 42, None, None).unwrap_err(),
+		APIError::APIMisuseError {
+			err: "Funding amount (356) can't even pay fee for initial commitment transaction."
+				.to_string()
+		}
+	);
 
 	// During open, we don't have a "counterparty channel reserve" to check against, so that
 	// requirement only comes into play on the open_channel handling side.

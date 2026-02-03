@@ -1,5 +1,4 @@
 //! Defines the `TxBuilder` trait, and the `SpecTxBuilder` type
-#![allow(dead_code)]
 
 use core::cmp;
 
@@ -34,38 +33,17 @@ impl HTLCAmountDirection {
 }
 
 pub(crate) struct NextCommitmentStats {
-	pub is_outbound_from_holder: bool,
-	pub inbound_htlcs_count: usize,
-	pub inbound_htlcs_value_msat: u64,
-	pub holder_balance_before_fee_msat: u64,
-	pub counterparty_balance_before_fee_msat: u64,
-	pub nondust_htlc_count: usize,
-	pub commit_tx_fee_sat: u64,
+	pub holder_balance_msat: u64,
+	pub counterparty_balance_msat: u64,
 	pub dust_exposure_msat: u64,
+	#[cfg(any(test, fuzzing))]
+	pub nondust_htlc_count: usize,
+	#[cfg(any(test, fuzzing))]
+	pub commit_tx_fee_sat: u64,
 }
 
 pub(crate) struct ChannelStats {
 	pub commitment_stats: NextCommitmentStats,
-}
-
-impl NextCommitmentStats {
-	pub(crate) fn get_holder_counterparty_balances_incl_fee_msat(&self) -> Result<(u64, u64), ()> {
-		if self.is_outbound_from_holder {
-			Ok((
-				self.holder_balance_before_fee_msat
-					.checked_sub(self.commit_tx_fee_sat * 1000)
-					.ok_or(())?,
-				self.counterparty_balance_before_fee_msat,
-			))
-		} else {
-			Ok((
-				self.holder_balance_before_fee_msat,
-				self.counterparty_balance_before_fee_msat
-					.checked_sub(self.commit_tx_fee_sat * 1000)
-					.ok_or(())?,
-			))
-		}
-	}
 }
 
 fn commit_plus_htlc_tx_fees_msat(
@@ -238,9 +216,6 @@ fn get_next_commitment_stats(
 		debug_assert_eq!(feerate_per_kw, 0);
 	}
 
-	// Calculate inbound htlc count
-	let inbound_htlcs_count = next_commitment_htlcs.iter().filter(|htlc| !htlc.outbound).count();
-
 	// Calculate balances after htlcs
 	let value_to_counterparty_msat =
 		(channel_value_satoshis * 1000).checked_sub(value_to_holder_msat).ok_or(())?;
@@ -296,15 +271,26 @@ fn get_next_commitment_stats(
 		channel_type,
 	);
 
+	let (holder_balance_msat, counterparty_balance_msat) = if is_outbound_from_holder {
+		(
+			holder_balance_before_fee_msat.checked_sub(commit_tx_fee_sat * 1000).ok_or(())?,
+			counterparty_balance_before_fee_msat,
+		)
+	} else {
+		(
+			holder_balance_before_fee_msat,
+			counterparty_balance_before_fee_msat.checked_sub(commit_tx_fee_sat * 1000).ok_or(())?,
+		)
+	};
+
 	Ok(NextCommitmentStats {
-		is_outbound_from_holder,
-		inbound_htlcs_count,
-		inbound_htlcs_value_msat,
-		holder_balance_before_fee_msat,
-		counterparty_balance_before_fee_msat,
-		nondust_htlc_count: nondust_htlc_count + addl_nondust_htlc_count,
-		commit_tx_fee_sat,
+		holder_balance_msat,
+		counterparty_balance_msat,
 		dust_exposure_msat,
+		#[cfg(any(test, fuzzing))]
+		nondust_htlc_count: nondust_htlc_count + addl_nondust_htlc_count,
+		#[cfg(any(test, fuzzing))]
+		commit_tx_fee_sat,
 	})
 }
 
