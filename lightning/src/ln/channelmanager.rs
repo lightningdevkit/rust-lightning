@@ -17236,7 +17236,7 @@ pub(super) struct ChannelManagerData<SP: SignerProvider> {
 	fake_scid_rand_bytes: Option<[u8; 32]>,
 	probing_cookie_secret: Option<[u8; 32]>,
 	inbound_payment_id_secret: Option<[u8; 32]>,
-	in_flight_monitor_updates: Option<HashMap<(PublicKey, ChannelId), Vec<ChannelMonitorUpdate>>>,
+	in_flight_monitor_updates: HashMap<(PublicKey, ChannelId), Vec<ChannelMonitorUpdate>>,
 	peer_storage_dir: Vec<(PublicKey, Vec<u8>)>,
 	async_receive_offer_cache: AsyncReceiveOfferCache,
 	// Marked `_legacy` because in versions > 0.2 we are taking steps to remove the requirement of
@@ -17581,7 +17581,7 @@ impl<'a, ES: EntropySource, NS: NodeSigner, SP: SignerProvider, L: Logger>
 			decode_update_add_htlcs_legacy: decode_update_add_htlcs_legacy
 				.unwrap_or_else(new_hash_map),
 			inbound_payment_id_secret,
-			in_flight_monitor_updates,
+			in_flight_monitor_updates: in_flight_monitor_updates.unwrap_or_default(),
 			peer_storage_dir: peer_storage_dir.unwrap_or_default(),
 			async_receive_offer_cache,
 		})
@@ -18258,22 +18258,20 @@ impl<
 						.get(chan_id)
 						.expect("We already checked for monitor presence when loading channels");
 					let mut max_in_flight_update_id = monitor.get_latest_update_id();
-					if let Some(in_flight_upds) = &mut in_flight_monitor_updates {
-						if let Some(mut chan_in_flight_upds) =
-							in_flight_upds.remove(&(*counterparty_id, *chan_id))
-						{
-							max_in_flight_update_id = cmp::max(
-								max_in_flight_update_id,
-								handle_in_flight_updates!(
-									*counterparty_id,
-									chan_in_flight_upds,
-									monitor,
-									peer_state,
-									logger,
-									""
-								),
-							);
-						}
+					if let Some(mut chan_in_flight_upds) =
+						in_flight_monitor_updates.remove(&(*counterparty_id, *chan_id))
+					{
+						max_in_flight_update_id = cmp::max(
+							max_in_flight_update_id,
+							handle_in_flight_updates!(
+								*counterparty_id,
+								chan_in_flight_upds,
+								monitor,
+								peer_state,
+								logger,
+								""
+							),
+						);
 					}
 					if funded_chan.get_latest_unblocked_monitor_update_id()
 						> max_in_flight_update_id
@@ -18302,44 +18300,38 @@ impl<
 			}
 		}
 
-		if let Some(in_flight_upds) = in_flight_monitor_updates {
-			for ((counterparty_id, channel_id), mut chan_in_flight_updates) in in_flight_upds {
-				let logger =
-					WithContext::from(&args.logger, Some(counterparty_id), Some(channel_id), None);
-				if let Some(monitor) = args.channel_monitors.get(&channel_id) {
-					// Now that we've removed all the in-flight monitor updates for channels that are
-					// still open, we need to replay any monitor updates that are for closed channels,
-					// creating the neccessary peer_state entries as we go.
-					let peer_state_mutex = per_peer_state
-						.entry(counterparty_id)
-						.or_insert_with(|| Mutex::new(empty_peer_state()));
-					let mut peer_state = peer_state_mutex.lock().unwrap();
-					handle_in_flight_updates!(
-						counterparty_id,
-						chan_in_flight_updates,
-						monitor,
-						peer_state,
-						logger,
-						"closed "
-					);
-				} else {
-					log_error!(logger, "A ChannelMonitor is missing even though we have in-flight updates for it! This indicates a potentially-critical violation of the chain::Watch API!");
-					log_error!(
-						logger,
-						" The ChannelMonitor for channel {} is missing.",
-						channel_id
-					);
-					log_error!(logger, " The chain::Watch API *requires* that monitors are persisted durably before returning,");
-					log_error!(logger, " client applications must ensure that ChannelMonitor data is always available and the latest to avoid funds loss!");
-					log_error!(logger, " Without the latest ChannelMonitor we cannot continue without risking funds.");
-					log_error!(logger, " Please ensure the chain::Watch API requirements are met and file a bug report at https://github.com/lightningdevkit/rust-lightning");
-					log_error!(
-						logger,
-						" Pending in-flight updates are: {:?}",
-						chan_in_flight_updates
-					);
-					return Err(DecodeError::InvalidValue);
-				}
+		for ((counterparty_id, channel_id), mut chan_in_flight_updates) in in_flight_monitor_updates
+		{
+			let logger =
+				WithContext::from(&args.logger, Some(counterparty_id), Some(channel_id), None);
+			if let Some(monitor) = args.channel_monitors.get(&channel_id) {
+				// Now that we've removed all the in-flight monitor updates for channels that are
+				// still open, we need to replay any monitor updates that are for closed channels,
+				// creating the neccessary peer_state entries as we go.
+				let peer_state_mutex = per_peer_state
+					.entry(counterparty_id)
+					.or_insert_with(|| Mutex::new(empty_peer_state()));
+				let mut peer_state = peer_state_mutex.lock().unwrap();
+				handle_in_flight_updates!(
+					counterparty_id,
+					chan_in_flight_updates,
+					monitor,
+					peer_state,
+					logger,
+					"closed "
+				);
+			} else {
+				log_error!(logger, "A ChannelMonitor is missing even though we have in-flight updates for it! This indicates a potentially-critical violation of the chain::Watch API!");
+				log_error!(logger, " The ChannelMonitor for channel {} is missing.", channel_id);
+				log_error!(logger, " The chain::Watch API *requires* that monitors are persisted durably before returning,");
+				log_error!(logger, " client applications must ensure that ChannelMonitor data is always available and the latest to avoid funds loss!");
+				log_error!(
+					logger,
+					" Without the latest ChannelMonitor we cannot continue without risking funds."
+				);
+				log_error!(logger, " Please ensure the chain::Watch API requirements are met and file a bug report at https://github.com/lightningdevkit/rust-lightning");
+				log_error!(logger, " Pending in-flight updates are: {:?}", chan_in_flight_updates);
+				return Err(DecodeError::InvalidValue);
 			}
 		}
 
