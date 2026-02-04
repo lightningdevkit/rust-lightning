@@ -15,12 +15,23 @@ use core::{f64, time::Duration};
 
 use crate::{
 	ln::types::ChannelId,
-	prelude::Vec,
+	prelude::{hash_map::Entry, new_hash_map, HashMap, Vec},
 	util::math::{expf64, powf64, roundf64},
 };
 
 /// The minimum number of slots required for the general bucket to function.
 const MIN_GENERAL_BUCKET_SLOTS: u16 = 5;
+
+/// Which bucket's resources a pending HTLC is holding, recorded so that those resources
+/// are released on resolution.
+#[derive(Clone, PartialEq, Eq, Debug)]
+enum BucketAssigned {
+	/// The specific general bucket slot indices occupied, as returned by
+	/// [`GeneralBucket::available_slots`].
+	General(Vec<u16>),
+	Congestion,
+	Protected,
+}
 
 /// The general bucket of a channel, available to all forwarding traffic.
 ///
@@ -118,7 +129,7 @@ impl GeneralBucket {
 	}
 
 	/// Frees the given slots, which must be exactly the slots the HTLC being removed previously
-	/// occupied.
+	/// occupied (as recorded in its [`PendingHTLC`]).
 	fn remove_htlc(&mut self, slots: &[u16]) {
 		self.set_slots_occupied(slots, false);
 	}
@@ -165,8 +176,8 @@ fn derive_channel_salt(node_salt: &[u8; 32], incoming_channel_id: ChannelId) -> 
 ///
 /// Different from [`GeneralBucket`], there is no per-channel-pair slot assignment, so any HTLC
 /// admitted simply consumes slots and its amount from the shared totals. Admission is gated
-/// before the HTLC gets here. For congestion, it is gated by the incoming channel's congestion
-/// checks and for protected bucket it is restricted to peers with reputation.
+/// before the HTLC gets here. For congestion, it is gated by [`Channel::can_use_incoming_congestion_slot`]
+/// and for protected bucket it is restricted to peers with reputation.
 struct BucketResources {
 	slots_allocated: u16,
 	slots_used: u16,
@@ -213,6 +224,195 @@ impl BucketResources {
 		self.slots_used -= 1;
 		self.liquidity_used -= htlc_amount_msat;
 		Ok(())
+	}
+}
+
+/// A pending HTLC tracked against the outgoing channel.
+#[derive(Debug, Clone)]
+struct PendingHTLC {
+	incoming_amount_msat: u64,
+	fee: u64,
+	/// The accountable signal we set on the outgoing HTLC. Only accountable HTLCs can affect a
+	/// channel's reputation.
+	outgoing_accountable: bool,
+	added_at_unix_seconds: u64,
+	/// The worst-case reputation damage this HTLC can do if held until its expiry.
+	in_flight_risk: u64,
+	bucket: BucketAssigned,
+}
+
+#[derive(Debug, PartialEq, Eq, Hash)]
+struct HtlcRef {
+	incoming_channel_id: ChannelId,
+	htlc_id: u64,
+}
+
+/// Per-channel state. Note that this tracks state for the channel in the two roles that we use it.
+/// As an incoming link, we track the revenue this channel has earned us. As an outgoing
+/// link, we track the reputation this channel has accrued. Tracked this way because when evaluating
+/// a HTLC forward, we compare the reputation of the outgoing channel to the revenue of the incoming
+/// channel (+ the risk of the current pending HTLCs the outgoing channel has).
+struct Channel {
+	/// The reputation this channel has accrued as an outgoing link.
+	outgoing_reputation: DecayingAverage,
+
+	/// The revenue this channel has earned us as an incoming link.
+	incoming_revenue: SmoothedDecayingAverage,
+
+	/// HTLC Ref incoming channel -> pending HTLC outgoing.
+	/// It tracks all the pending HTLCs where this channel is the outgoing link.
+	pending_htlcs: HashMap<HtlcRef, PendingHTLC>,
+
+	/// Bucket resources as an incoming channel
+	// Tracked as incoming because when we look at a HTLC forward, we evaluate whether the
+	// outgoing channel can take up resources in the incoming channel.
+	incoming_general_bucket: GeneralBucket,
+	incoming_congestion_bucket: BucketResources,
+	incoming_protected_bucket: BucketResources,
+
+	/// Channel id -> unix seconds timestamp
+	/// Tracks which channels have misused the congestion bucket and the unix timestamp.
+	last_congestion_misuse: HashMap<ChannelId, u64>,
+}
+
+impl Channel {
+	/// Creates a channel, splitting its slot and liquidity limits across the three buckets by the
+	/// given percentages. The protected bucket takes whatever is left over, so `general_pct` and
+	/// `congestion_pct` must add up to at most 100.
+	fn new(
+		channel_id: ChannelId, node_salt: &[u8; 32], max_accepted_htlcs: u16,
+		max_htlc_value_in_flight_msat: u64, general_pct: u8, congestion_pct: u8,
+		reputation_window: Duration, revenue_week_avg_duration: Duration, timestamp_unix_secs: u64,
+	) -> Result<Self, ()> {
+		const REVENUE_WEEK_MULTIPLIER: u8 = 6;
+
+		let general_slots = (max_accepted_htlcs * general_pct as u16 + 50) / 100;
+		let general_liquidity =
+			((max_htlc_value_in_flight_msat as u128 * general_pct as u128 + 50) / 100) as u64;
+
+		let congestion_slots = (max_accepted_htlcs * congestion_pct as u16 + 50) / 100;
+		let congestion_liquidity =
+			((max_htlc_value_in_flight_msat as u128 * congestion_pct as u128 + 50) / 100) as u64;
+
+		let protected_slots = max_accepted_htlcs - general_slots - congestion_slots;
+		let protected_liquidity =
+			max_htlc_value_in_flight_msat - general_liquidity - congestion_liquidity;
+
+		Ok(Channel {
+			outgoing_reputation: DecayingAverage::new(timestamp_unix_secs, reputation_window),
+			incoming_revenue: SmoothedDecayingAverage::new(
+				revenue_week_avg_duration,
+				REVENUE_WEEK_MULTIPLIER,
+				timestamp_unix_secs,
+			),
+			pending_htlcs: new_hash_map(),
+			incoming_general_bucket: GeneralBucket::new(
+				channel_id,
+				node_salt,
+				general_slots,
+				general_liquidity,
+			)?,
+			incoming_congestion_bucket: BucketResources::new(
+				congestion_slots,
+				congestion_liquidity,
+			),
+			incoming_protected_bucket: BucketResources::new(protected_slots, protected_liquidity),
+			last_congestion_misuse: new_hash_map(),
+		})
+	}
+
+	/// Returns whether the outgoing channel can use the congestion bucket for the specified HTLC
+	/// The HTLC is eligible if:
+	/// - Congestion bucket resources are available
+	/// - The outgoing channel does not have any pending HTLCs in the congestion bucket already
+	/// - The outgoing channel has not misused the congestion bucket in the last two weeks
+	/// - The HTLC amount fits in the slot.
+	fn can_use_incoming_congestion_slot(
+		&mut self, outgoing_channel: &Channel, incoming_amount_msat: u64, at_timestamp: u64,
+	) -> bool {
+		if self.incoming_congestion_bucket.slots_allocated == 0 {
+			return false;
+		}
+
+		let congestion_resources_available =
+			self.incoming_congestion_bucket.resources_available(incoming_amount_msat);
+		let misused_congestion = self.has_misused_congestion(
+			outgoing_channel.incoming_general_bucket.channel_id,
+			at_timestamp,
+		);
+
+		let below_liquidity_limit = incoming_amount_msat
+			<= self.incoming_congestion_bucket.liquidity_allocated
+				/ self.incoming_congestion_bucket.slots_allocated as u64;
+
+		let pending_htlcs_in_congestion = outgoing_channel.pending_htlcs_in_congestion();
+
+		congestion_resources_available
+			&& !pending_htlcs_in_congestion
+			&& !misused_congestion
+			&& below_liquidity_limit
+	}
+
+	/// Marks that an outgoing channel misused the congestion bucket.
+	fn misused_congestion(&mut self, channel_id: ChannelId, misuse_timestamp: u64) {
+		self.last_congestion_misuse.insert(channel_id, misuse_timestamp);
+	}
+
+	// Returns whether the outgoing channel has misused the congestion bucket in the last two
+	// weeks.
+	fn has_misused_congestion(
+		&mut self, outgoing_channel_id: ChannelId, at_timestamp: u64,
+	) -> bool {
+		match self.last_congestion_misuse.entry(outgoing_channel_id) {
+			Entry::Vacant(_) => false,
+			Entry::Occupied(last_misuse) => {
+				let timestamp = u64::max(at_timestamp, *last_misuse.get());
+				// If the last misuse of the congestion bucket was over more than two
+				// weeks ago, remove the entry.
+				const TWO_WEEKS: u64 = 2016 * 10 * 60;
+				let since_last_misuse = timestamp - last_misuse.get();
+				if since_last_misuse < TWO_WEEKS {
+					true
+				} else {
+					last_misuse.remove();
+					false
+				}
+			},
+		}
+	}
+
+	/// Returns whether the outgoing channel's reputation is sufficient to use *our* protected
+	/// bucket.
+	///
+	/// The outgoing channel's reputation must exceed the revenue this incoming channel has earned
+	/// us, after subtracting the risk of all of its in-flight accountable HTLCs plus this one.
+	fn sufficient_reputation(
+		&self, outgoing_channel: &Channel, in_flight_htlc_risk: u64, at_timestamp: u64,
+	) -> bool {
+		let outgoing_reputation =
+			outgoing_channel.outgoing_reputation.value_at_timestamp(at_timestamp);
+		let incoming_revenue_threshold = self.incoming_revenue.value_at_timestamp(at_timestamp);
+		let outgoing_channel_in_flight_risk = outgoing_channel.outgoing_in_flight_risk();
+
+		outgoing_reputation
+			.saturating_sub(i64::try_from(outgoing_channel_in_flight_risk).unwrap_or(i64::MAX))
+			.saturating_sub(i64::try_from(in_flight_htlc_risk).unwrap_or(i64::MAX))
+			>= incoming_revenue_threshold
+	}
+
+	/// Returns whether this channel has any pending HTLCs in a congestion bucket.
+	fn pending_htlcs_in_congestion(&self) -> bool {
+		self.pending_htlcs
+			.values()
+			.any(|pending_htlc| pending_htlc.bucket == BucketAssigned::Congestion)
+	}
+
+	fn outgoing_in_flight_risk(&self) -> u64 {
+		// We only account the in-flight risk for HTLCs that are accountable
+		self.pending_htlcs
+			.iter()
+			.map(|htlc| if htlc.1.outgoing_accountable { htlc.1.in_flight_risk } else { 0 })
+			.sum()
 	}
 }
 
