@@ -522,6 +522,8 @@ where
 		preexisting_tx_weight: u64, input_amount_sat: Amount, target_amount_sat: Amount,
 		max_tx_weight: u64,
 	) -> Result<CoinSelection, ()> {
+		debug_assert!(!(claim_id.is_none() && force_conflicting_utxo_spend));
+
 		// P2WSH and P2TR outputs are both the heaviest-weight standard outputs at 34 bytes
 		let max_coin_selection_weight = max_tx_weight
 			.checked_sub(preexisting_tx_weight + P2WSH_TXOUT_WEIGHT)
@@ -708,6 +710,9 @@ where
 
 			let configs = [(false, false), (false, true), (true, false), (true, true)];
 			for (force_conflicting_utxo_spend, tolerate_high_network_feerates) in configs {
+				if claim_id.is_none() && force_conflicting_utxo_spend {
+					continue;
+				}
 				log_debug!(
 					self.logger,
 					"Attempting coin selection targeting {} sat/kW (force_conflicting_utxo_spend = {}, tolerate_high_network_feerates = {})",
