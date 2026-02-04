@@ -2278,12 +2278,12 @@ impl WalletSourceSync for TestWalletSource {
 			.collect())
 	}
 
-	fn get_prevtx(&self, utxo: &Utxo) -> Result<Transaction, ()> {
+	fn get_prevtx(&self, outpoint: bitcoin::OutPoint) -> Result<Transaction, ()> {
 		self.utxos
 			.lock()
 			.unwrap()
 			.iter()
-			.find(|confirmed_utxo| confirmed_utxo.utxo == *utxo)
+			.find(|confirmed_utxo| confirmed_utxo.utxo.outpoint == outpoint)
 			.map(|ConfirmedUtxo { prevtx, .. }| prevtx.clone())
 			.ok_or(())
 	}

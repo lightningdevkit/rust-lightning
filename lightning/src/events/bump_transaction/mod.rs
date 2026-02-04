@@ -453,9 +453,9 @@ pub trait WalletSource {
 		&'a self,
 	) -> impl Future<Output = Result<Vec<Utxo>, ()>> + MaybeSend + 'a;
 
-	/// Returns the previous transaction containing the UTXO.
+	/// Returns the previous transaction containing the UTXO referenced by the outpoint.
 	fn get_prevtx<'a>(
-		&'a self, utxo: &Utxo,
+		&'a self, outpoint: OutPoint,
 	) -> impl Future<Output = Result<Transaction, ()>> + MaybeSend + 'a;
 
 	/// Returns a script to use for change above dust resulting from a successful coin selection
@@ -651,7 +651,7 @@ where
 
 		let mut confirmed_utxos = Vec::with_capacity(selected_utxos.len());
 		for (utxo, _) in selected_utxos {
-			let prevtx = self.source.get_prevtx(&utxo).await?;
+			let prevtx = self.source.get_prevtx(utxo.outpoint).await?;
 			let prevtx_id = prevtx.compute_txid();
 			if prevtx_id != utxo.outpoint.txid
 				|| prevtx.output.get(utxo.outpoint.vout as usize).is_none()
