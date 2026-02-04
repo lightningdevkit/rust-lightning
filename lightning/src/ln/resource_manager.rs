@@ -161,6 +161,61 @@ fn derive_channel_salt(node_salt: &[u8; 32], incoming_channel_id: ChannelId) -> 
 	sha256::Hash::from_engine(engine).to_byte_array()
 }
 
+/// Bucket resources used for congestion and protected buckets.
+///
+/// Different from [`GeneralBucket`], there is no per-channel-pair slot assignment, so any HTLC
+/// admitted simply consumes slots and its amount from the shared totals. Admission is gated
+/// before the HTLC gets here. For congestion, it is gated by the incoming channel's congestion
+/// checks and for protected bucket it is restricted to peers with reputation.
+struct BucketResources {
+	slots_allocated: u16,
+	slots_used: u16,
+	liquidity_allocated: u64,
+	liquidity_used: u64,
+}
+
+impl BucketResources {
+	fn new(slots_allocated: u16, liquidity_allocated: u64) -> Self {
+		BucketResources { slots_allocated, slots_used: 0, liquidity_allocated, liquidity_used: 0 }
+	}
+
+	fn resources_available(&self, htlc_amount_msat: u64) -> bool {
+		return (self.liquidity_used + htlc_amount_msat <= self.liquidity_allocated)
+			&& (self.slots_used < self.slots_allocated);
+	}
+
+	fn add_htlc(&mut self, htlc_amount_msat: u64) -> Result<(), ()> {
+		if !self.resources_available(htlc_amount_msat) {
+			return Err(());
+		}
+
+		self.slots_used += 1;
+		self.liquidity_used += htlc_amount_msat;
+		debug_assert!(
+			self.slots_used <= self.slots_allocated,
+			"slots_used {} exceeded slots_allocated {}",
+			self.slots_used,
+			self.slots_allocated
+		);
+		debug_assert!(
+			self.liquidity_used <= self.liquidity_allocated,
+			"liquidity_used {} exceeded liquidity_allocated {}",
+			self.liquidity_used,
+			self.liquidity_allocated
+		);
+		Ok(())
+	}
+
+	fn remove_htlc(&mut self, htlc_amount_msat: u64) -> Result<(), ()> {
+		if self.slots_used == 0 || self.liquidity_used < htlc_amount_msat {
+			return Err(());
+		}
+		self.slots_used -= 1;
+		self.liquidity_used -= htlc_amount_msat;
+		Ok(())
+	}
+}
+
 /// A weighted average that decays over a specified window. It is a decaying average with a
 /// half-life of `window * ln(2)`.
 ///
@@ -269,7 +324,8 @@ mod tests {
 
 	use crate::{
 		ln::resource_manager::{
-			assign_slots_for_channel, DecayingAverage, GeneralBucket, SmoothedDecayingAverage,
+			assign_slots_for_channel, BucketResources, DecayingAverage, GeneralBucket,
+			SmoothedDecayingAverage,
 		},
 		ln::types::ChannelId,
 		sign::EntropySource,
@@ -439,6 +495,60 @@ mod tests {
 
 		general_bucket.remove_htlc(&slots);
 		assert!(!general_bucket.slots_occupied[slot_occupied as usize]);
+	}
+
+	fn test_bucket_resources() -> BucketResources {
+		BucketResources {
+			slots_allocated: 10,
+			slots_used: 0,
+			liquidity_allocated: 100_000,
+			liquidity_used: 0,
+		}
+	}
+
+	#[test]
+	fn test_bucket_resources_add_htlc() {
+		let mut bucket_resources = test_bucket_resources();
+		let available_liquidity = bucket_resources.liquidity_allocated;
+		assert!(bucket_resources.add_htlc(available_liquidity + 1000).is_err());
+
+		assert!(bucket_resources.add_htlc(21_000).is_ok());
+		assert!(bucket_resources.add_htlc(42_000).is_ok());
+		assert_eq!(bucket_resources.slots_used, 2);
+		assert_eq!(bucket_resources.liquidity_used, 63_000);
+	}
+
+	#[test]
+	fn test_bucket_resources_add_htlc_over_resources_available() {
+		// Test trying to go over slot limit
+		let mut bucket_resources = test_bucket_resources();
+		let slots_available = bucket_resources.slots_allocated;
+		for _ in 0..slots_available {
+			assert!(bucket_resources.add_htlc(10).is_ok());
+		}
+		assert_eq!(bucket_resources.slots_used, slots_available);
+		assert!(bucket_resources.add_htlc(10).is_err());
+
+		// Test trying to go over liquidity limit
+		let mut bucket = test_bucket_resources();
+		assert!(bucket.add_htlc(bucket.liquidity_allocated - 1000).is_ok());
+		assert!(bucket.add_htlc(2000).is_err());
+	}
+
+	#[test]
+	fn test_bucket_resources_remove_htlc() {
+		let mut bucket_resources = test_bucket_resources();
+
+		// If no resources have been used, removing HTLC should fail
+		assert!(bucket_resources.remove_htlc(100).is_err());
+
+		bucket_resources.add_htlc(1000).unwrap();
+		// Test failure if it tries to remove amount over what is currently in use.
+		assert!(bucket_resources.remove_htlc(1001).is_err());
+
+		assert!(bucket_resources.remove_htlc(1000).is_ok());
+		assert_eq!(bucket_resources.slots_used, 0);
+		assert_eq!(bucket_resources.liquidity_used, 0);
 	}
 
 	#[test]
