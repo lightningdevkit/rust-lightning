@@ -10,13 +10,79 @@
 #![allow(dead_code)]
 
 use bitcoin::hashes::{sha256::Hash as Sha256Hash, Hash};
-use core::time::Duration;
+use core::{fmt::Display, time::Duration};
 use hashbrown::hash_map::Entry;
 
 use crate::{
 	ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS,
 	prelude::{new_hash_map, HashMap},
+	sign::EntropySource,
 };
+
+/// A trait for managing channel resources and making HTLC forwarding decisions.
+pub trait ResourceManager {
+	/// Registers a new channel with the resource manager for tracking.
+	///
+	/// This should be called when a channel becomes ready for forwarding
+	fn add_channel(
+		&self, channel_id: u64, max_htlc_value_in_flight_msat: u64, max_accepted_htlcs: u16,
+	) -> Result<(), ()>;
+
+	/// Removes a channel from the resource manager.
+	///
+	/// This should be called when a channel is closing.
+	fn remove_channel(&self, channel_id: u64) -> Result<(), ()>;
+
+	/// Evaluates whether an HTLC should be forwarded and updates resource tracking.
+	///
+	/// This is called when deciding whether to accept and forward an incoming HTLC. The
+	/// implementation determines if sufficient resources are available on the incoming
+	/// channel and whether the outgoing channel is suitable for forwarding.
+	///
+	/// Returns a [`ForwardingOutcome`] indicating the forwarding decision:
+	/// - `ForwardingOutcome::Forward(accountable)`: The HTLC should be forwarded. The boolean
+	///   flag indicates the accountable signal to use for the outgoing HTLC.
+	/// - `ForwardingOutcome::Fail`: The HTLC should be failed back to the sender.
+	fn add_htlc<ES: EntropySource>(
+		&self, incoming_channel_id: u64, incoming_amount_msat: u64, incoming_cltv_expiry: u32,
+		outgoing_channel_id: u64, outgoing_amount_msat: u64, incoming_accountable: bool,
+		htlc_id: u64, height_added: u32, added_at: u64, entropy_source: &ES,
+	) -> Result<ForwardingOutcome, ()>;
+
+	/// Records the resolution of a forwarded HTLC.
+	///
+	/// This must be called when an HTLC previously accepted via [`add_htlc`] is resolved,
+	/// either successfully settled or failed. This allows the implementation to release
+	/// resources and update any internal tracking state.
+	///
+	/// [`add_htlc`]: ResourceManager::add_htlc
+	fn resolve_htlc(
+		&self, incoming_channel_id: u64, htlc_id: u64, outgoing_channel_id: u64, settled: bool,
+		resolved_at: u64,
+	) -> Result<(), ()>;
+}
+
+/// The outcome of an HTLC forwarding decision.
+#[derive(PartialEq, Eq, Debug)]
+pub enum ForwardingOutcome {
+	/// Forward the HTLC with the specified accountable signal.
+	Forward(bool),
+	/// Fail to forward the HTLC.
+	Fail,
+}
+
+impl Display for ForwardingOutcome {
+	fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+		match self {
+			ForwardingOutcome::Forward(signal) => {
+				write!(f, "Forward as {}", if *signal { "accountable " } else { "unaccountable" })
+			},
+			ForwardingOutcome::Fail => {
+				write!(f, "Fail")
+			},
+		}
+	}
+}
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 enum BucketAssigned {
