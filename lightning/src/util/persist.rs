@@ -19,7 +19,7 @@ use bitcoin::{BlockHash, Txid};
 use core::convert::Infallible;
 use core::future::Future;
 use core::ops::Deref;
-use core::pin::pin;
+use core::pin::{pin, Pin};
 use core::str::FromStr;
 use core::task;
 
@@ -119,6 +119,54 @@ pub const OUTPUT_SWEEPER_PERSISTENCE_KEY: &str = "output_sweeper";
 /// updates applied to be current) with another implementation.
 pub const MONITOR_UPDATING_PERSISTER_PREPEND_SENTINEL: &[u8] = &[0xFF; 2];
 
+/// An entry in a batch write operation.
+pub struct BatchWriteEntry {
+	/// The primary namespace for this write.
+	pub primary_namespace: String,
+	/// The secondary namespace for this write.
+	pub secondary_namespace: String,
+	/// The key to write to.
+	pub key: String,
+	/// The data to write.
+	pub buf: Vec<u8>,
+}
+
+impl BatchWriteEntry {
+	/// Creates a new batch write entry.
+	pub fn new(
+		primary_namespace: impl Into<String>, secondary_namespace: impl Into<String>,
+		key: impl Into<String>, buf: Vec<u8>,
+	) -> Self {
+		Self {
+			primary_namespace: primary_namespace.into(),
+			secondary_namespace: secondary_namespace.into(),
+			key: key.into(),
+			buf,
+		}
+	}
+}
+
+/// The result of a batch write operation.
+#[derive(Debug)]
+pub struct BatchWriteResult {
+	/// The number of writes that completed successfully.
+	pub successful_writes: usize,
+	/// The error that occurred, if any. If `None`, all writes succeeded.
+	pub error: Option<io::Error>,
+}
+
+impl BatchWriteResult {
+	/// Returns `true` if all writes succeeded.
+	pub fn is_ok(&self) -> bool {
+		self.error.is_none()
+	}
+
+	/// Returns the error if one occurred, consuming the result.
+	pub fn err(self) -> Option<io::Error> {
+		self.error
+	}
+}
+
 /// Provides an interface that allows storage and retrieval of persisted values that are associated
 /// with given keys.
 ///
@@ -191,6 +239,31 @@ pub trait KVStoreSync {
 	fn list(
 		&self, primary_namespace: &str, secondary_namespace: &str,
 	) -> Result<Vec<String>, io::Error>;
+	/// Persists multiple key-value pairs in a single batch operation.
+	///
+	/// Processes writes in order. Non-atomic: if an error occurs, earlier writes may have already
+	/// been persisted and will not be rolled back. However, writes after the failed one are never
+	/// started.
+	///
+	/// The default implementation iterates through entries and calls [`Self::write`] for each one.
+	/// Implementations may override for optimized batch operations.
+	fn write_batch(&self, entries: Vec<BatchWriteEntry>) -> BatchWriteResult {
+		let mut successful_writes = 0;
+		for entry in entries {
+			match self.write(
+				&entry.primary_namespace,
+				&entry.secondary_namespace,
+				&entry.key,
+				entry.buf,
+			) {
+				Ok(()) => successful_writes += 1,
+				Err(e) => {
+					return BatchWriteResult { successful_writes, error: Some(e) };
+				},
+			}
+		}
+		BatchWriteResult { successful_writes, error: None }
+	}
 }
 
 /// A wrapper around a [`KVStoreSync`] that implements the [`KVStore`] trait. It is not necessary to use this type
@@ -244,6 +317,13 @@ where
 	) -> impl Future<Output = Result<Vec<String>, io::Error>> + 'static + MaybeSend {
 		let res = self.0.list(primary_namespace, secondary_namespace);
 
+		async move { res }
+	}
+
+	fn write_batch(
+		&self, entries: Vec<BatchWriteEntry>,
+	) -> impl Future<Output = BatchWriteResult> + 'static + MaybeSend {
+		let res = self.0.write_batch(entries);
 		async move { res }
 	}
 }
@@ -343,6 +423,48 @@ pub trait KVStore {
 	fn list(
 		&self, primary_namespace: &str, secondary_namespace: &str,
 	) -> impl Future<Output = Result<Vec<String>, io::Error>> + 'static + MaybeSend;
+	/// Persists multiple key-value pairs in a single batch operation.
+	///
+	/// Processes writes in order, awaiting each write before starting the next. Non-atomic: if an
+	/// error occurs, earlier writes may have already been persisted and will not be rolled back.
+	/// However, writes after the failed one are never started.
+	///
+	/// Note that similar to [`Self::write`], ordering is maintained: all writes in the batch are
+	/// ordered relative to each other and to concurrent writes.
+	///
+	/// The default implementation calls [`Self::write`] for each entry sequentially.
+	fn write_batch(
+		&self, entries: Vec<BatchWriteEntry>,
+	) -> impl Future<Output = BatchWriteResult> + 'static + MaybeSend {
+		// Capture all write futures synchronously to maintain ordering
+		// (version numbers are assigned when write() is called, not when awaited)
+		let write_futures: Vec<Pin<Box<dyn Future<Output = Result<(), io::Error>> + Send>>> =
+			entries
+				.into_iter()
+				.map(|entry| {
+					let fut = self.write(
+						&entry.primary_namespace,
+						&entry.secondary_namespace,
+						&entry.key,
+						entry.buf,
+					);
+					Box::pin(fut) as Pin<Box<dyn Future<Output = Result<(), io::Error>> + Send>>
+				})
+				.collect();
+
+		async move {
+			let mut successful_writes = 0;
+			for write_future in write_futures {
+				match write_future.await {
+					Ok(()) => successful_writes += 1,
+					Err(e) => {
+						return BatchWriteResult { successful_writes, error: Some(e) };
+					},
+				}
+			}
+			BatchWriteResult { successful_writes, error: None }
+		}
+	}
 }
 
 /// Provides additional interface methods that are required for [`KVStore`]-to-[`KVStore`]
