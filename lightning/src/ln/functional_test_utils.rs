@@ -4532,7 +4532,7 @@ pub fn create_node_cfgs_with_node_id_message_router<'a>(
 	)
 }
 
-pub fn test_default_channel_config() -> UserConfig {
+pub fn test_legacy_channel_config() -> UserConfig {
 	let mut default_config = UserConfig::default();
 	default_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = false;
 	// Set cltv_expiry_delta slightly lower to keep the final CLTV values inside one byte in our
@@ -4552,8 +4552,8 @@ pub fn test_default_channel_config() -> UserConfig {
 	default_config
 }
 
-pub fn test_default_anchors_channel_config() -> UserConfig {
-	let mut config = test_default_channel_config();
+pub fn test_default_channel_config() -> UserConfig {
+	let mut config = test_legacy_channel_config();
 	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 	config
 }

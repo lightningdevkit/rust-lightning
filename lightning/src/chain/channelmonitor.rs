@@ -6808,7 +6808,8 @@ mod tests {
 		// updates is handled correctly in such conditions.
 		let chanmon_cfgs = create_chanmon_cfgs(3);
 		let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
-		let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+		let legacy_cfg = test_legacy_channel_config();
+		let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg.clone()), Some(legacy_cfg)]);
 		let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 		let channel = create_announced_chan_between_nodes(&nodes, 0, 1);
 		create_announced_chan_between_nodes(&nodes, 1, 2);

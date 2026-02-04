@@ -172,7 +172,7 @@ fn test_0conf_limiting() {
 
 #[test]
 fn test_inbound_anchors_manual_acceptance() {
-	let anchors_cfg = test_default_anchors_channel_config();
+	let anchors_cfg = test_default_channel_config();
 	do_test_manual_inbound_accept_with_override(anchors_cfg, None);
 }
 
@@ -190,7 +190,7 @@ fn test_inbound_anchors_config_overridden() {
 		update_overrides: None,
 	};
 
-	let mut anchors_cfg = test_default_anchors_channel_config();
+	let mut anchors_cfg = test_default_channel_config();
 	let accept_message = do_test_manual_inbound_accept_with_override(anchors_cfg, Some(overrides));
 	assert_eq!(accept_message.common_fields.max_htlc_value_in_flight_msat, 5_000_000);
 	assert_eq!(accept_message.common_fields.htlc_minimum_msat, 1_000);
@@ -306,9 +306,8 @@ fn test_zero_fee_commitments_downgrade_to_static_remote() {
 	// are supported (but not accepted), but not legacy anchors.
 	let mut initiator_cfg = test_default_channel_config();
 	initiator_cfg.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
-	initiator_cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 
-	let mut receiver_cfg = test_default_channel_config();
+	let mut receiver_cfg = test_legacy_channel_config();
 	receiver_cfg.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
 
 	let start_type = ChannelTypeFeatures::anchors_zero_fee_commitments();
@@ -367,9 +366,8 @@ fn do_test_channel_type_downgrade(
 fn test_no_channel_downgrade() {
 	// Tests that the local node will not retry when a `option_static_remote` channel is
 	// rejected by a peer that advertises support for the feature.
-	let initiator_cfg = test_default_channel_config();
+	let initiator_cfg = test_legacy_channel_config();
 	let mut receiver_cfg = test_default_channel_config();
-	receiver_cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -459,11 +457,11 @@ fn test_channel_resumption_fail_post_funding() {
 pub fn test_insane_channel_opens() {
 	// Stand up a network of 2 nodes
 	use crate::ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS;
-	let mut cfg = UserConfig::default();
-	cfg.channel_handshake_limits.max_funding_satoshis = TOTAL_BITCOIN_SUPPLY_SATOSHIS + 1;
+	let mut legacy_cfg = test_legacy_channel_config();
+	legacy_cfg.channel_handshake_limits.max_funding_satoshis = TOTAL_BITCOIN_SUPPLY_SATOSHIS + 1;
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(cfg.clone())]);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(legacy_cfg.clone())]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
@@ -473,7 +471,7 @@ pub fn test_insane_channel_opens() {
 	// funding satoshis
 	let channel_value_sat = 31337; // same as funding satoshis
 	let channel_reserve_satoshis =
-		get_holder_selected_channel_reserve_satoshis(channel_value_sat, &cfg);
+		get_holder_selected_channel_reserve_satoshis(channel_value_sat, &legacy_cfg);
 	let push_msat = (channel_value_sat - channel_reserve_satoshis) * 1000;
 
 	// Have node0 initiate a channel to node1 with aforementioned parameters

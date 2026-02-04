@@ -1687,7 +1687,12 @@ mod tests {
 	fn test_chainsync_triggers_distributed_monitor_persistence() {
 		let chanmon_cfgs = create_chanmon_cfgs(3);
 		let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
-		let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+		let legacy_cfg = test_legacy_channel_config();
+		let node_chanmgrs = create_node_chanmgrs(
+			3,
+			&node_cfgs,
+			&[Some(legacy_cfg.clone()), Some(legacy_cfg.clone()), Some(legacy_cfg)],
+		);
 		let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 		let node_a_id = nodes[0].node.get_our_node_id();

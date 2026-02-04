@@ -385,16 +385,13 @@ pub fn do_test_update_fee_that_funder_cannot_afford(channel_type_features: Chann
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 
-	let mut default_config = test_default_channel_config();
+	let mut cfg = test_legacy_channel_config();
 	if channel_type_features == ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies() {
-		default_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+		cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 	}
 
-	let node_chanmgrs = create_node_chanmgrs(
-		2,
-		&node_cfgs,
-		&[Some(default_config.clone()), Some(default_config.clone())],
-	);
+	let node_chanmgrs =
+		create_node_chanmgrs(2, &node_cfgs, &[Some(cfg.clone()), Some(cfg.clone())]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
@@ -411,8 +408,7 @@ pub fn do_test_update_fee_that_funder_cannot_afford(channel_type_features: Chann
 	);
 	let channel_id = chan.2;
 	let secp_ctx = Secp256k1::new();
-	let bs_channel_reserve_sats =
-		get_holder_selected_channel_reserve_satoshis(channel_value, &default_config);
+	let bs_channel_reserve_sats = get_holder_selected_channel_reserve_satoshis(channel_value, &cfg);
 	let (anchor_outputs_value_sats, outputs_num_no_htlcs) =
 		if channel_type_features.supports_anchors_zero_fee_htlc_tx() {
 			(ANCHOR_OUTPUT_VALUE_SATOSHI * 2, 4)
@@ -546,13 +542,12 @@ pub fn test_update_fee_that_saturates_subs() {
 	// on the commitment transaction that is greater than her balance, we saturate the subtractions,
 	// and force close the channel.
 
-	let mut default_config = test_default_channel_config();
+	let mut cfg = test_legacy_channel_config();
 	let secp_ctx = Secp256k1::new();
 
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs =
-		create_node_chanmgrs(2, &node_cfgs, &[Some(default_config.clone()), Some(default_config)]);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(cfg.clone()), Some(cfg)]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
@@ -868,7 +863,9 @@ pub fn test_chan_init_feerate_unaffordability() {
 	let mut chanmon_cfgs = create_chanmon_cfgs(2);
 	let feerate_per_kw = *chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap();
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs =
+		create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
@@ -1033,16 +1030,14 @@ pub fn do_cannot_afford_on_holding_cell_release(
 	// update_fee from its holding cell, we do not generate any msg events
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 
-	let mut default_config = test_default_channel_config();
-	default_config.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel =
-		100;
+	let mut cfg = test_legacy_channel_config();
+	cfg.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 100;
 	if channel_type_features.supports_anchors_zero_fee_htlc_tx() {
-		default_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+		cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 	}
 
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs =
-		create_node_chanmgrs(2, &node_cfgs, &[Some(default_config.clone()), Some(default_config)]);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(cfg.clone()), Some(cfg)]);
 
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
@@ -1219,13 +1214,12 @@ pub fn do_can_afford_given_trimmed_htlcs(inequality_regions: core::cmp::Ordering
 
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 
-	let mut default_config = test_default_channel_config();
-	default_config.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel =
-		100;
+	let mut legacy_cfg = test_legacy_channel_config();
+	legacy_cfg.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 100;
 
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs =
-		create_node_chanmgrs(2, &node_cfgs, &[Some(default_config.clone()), Some(default_config)]);
+		create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
 
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 

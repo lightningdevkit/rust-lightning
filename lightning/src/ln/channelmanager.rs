@@ -20398,7 +20398,7 @@ mod tests {
 	fn test_trigger_lnd_force_close() {
 		let chanmon_cfg = create_chanmon_cfgs(2);
 		let node_cfg = create_node_cfgs(2, &chanmon_cfg);
-		let user_config = test_default_channel_config();
+		let user_config = test_legacy_channel_config();
 		let node_chanmgr = create_node_chanmgrs(2, &node_cfg, &[Some(user_config.clone()), Some(user_config)]);
 		let nodes = create_network(2, &node_cfg, &node_chanmgr);
 		let message = "Channel force-closed".to_owned();
