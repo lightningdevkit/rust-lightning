@@ -9,14 +9,103 @@
 
 #![allow(dead_code)]
 
-use core::time::Duration;
+use core::{fmt::Display, time::Duration};
 
 use crate::{
 	crypto::chacha20::ChaCha20,
 	ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS,
 	prelude::{hash_map::Entry, new_hash_map, HashMap},
 	sign::EntropySource,
+	sync::Mutex,
 };
+
+/// Resolution time in seconds that is considered "good". HTLCs resolved within this period are
+/// considered normal and are rewarded in the reputation score. HTLCs resolved slower than this
+/// will incur an opportunity cost to penalize slow resolving payments.
+const ACCEPTABLE_RESOLUTION_PERIOD_SECS: u8 = 90;
+
+/// The maximum time (in seconds) that a HTLC can be held. Corresponds to the largest cltv delta
+/// allowed in the protocol which is 2016 blocks. Assuming 10 minute blocks, this is roughly 2
+/// weeks.
+const REVENUE_WINDOW: u64 = 2016 * 10 * 60;
+
+/// Configuration parameters for the resource manager.
+///
+/// This configuration controls how the resource manager allocates channel resources (HTLC slots
+/// and liquidity) across three buckets (general, congestion, and protected).
+pub struct ResourceManagerConfig {
+	/// The percentage of channel resources allocated to the general bucket.
+	/// The general bucket is available to all traffic with basic denial-of-service protections.
+	///
+	/// Default: 40%
+	pub general_allocation_pct: u8,
+
+	/// The percentage of channel resources allocated to the congestion bucket.
+	/// The congestion bucket is used when the general bucket is saturated. It allows an outgoing
+	/// channel that does not have reputation to have a chance of getting the HTLC forwarded.
+	///
+	/// Default: 20%
+	pub congestion_allocation_pct: u8,
+
+	/// The amount of time a HTLC is allowed to resolve in that classifies as "good" behavior.
+	/// HTLCs resolved within this period are rewarded in the reputation score. HTLCs resolved
+	/// slower than this will incur an opportunity cost penalty.
+	///
+	/// Default: 90 seconds
+	pub resolution_period: Duration,
+
+	/// The rolling window over which we track the revenue on the incoming channel.
+	///
+	/// This corresponds to the largest cltv delta from the current block height that a node will
+	/// allow a HTLC to set before failing it with `expiry_too_far`. Assuming 10 minute blocks,
+	/// the default 2016 blocks is roughly 2 weeks.
+	///
+	/// Default: 2016 blocks * 10 minutes = ~2 weeks
+	pub revenue_window: Duration,
+
+	/// A multiplier applied to [`revenue_window`] to determine the rolling window over which an
+	/// outgoing channel's forwarding history is considered when calculating reputation. The
+	/// outgoing channel reputation is tracked over a period of `revenue_window * reputation_multiplier`.
+	///
+	/// Default: 12 (meaning reputation is tracked over 12 * 2 weeks = 24 weeks)
+	///
+	/// [`revenue_window`]: Self::revenue_window
+	pub reputation_multiplier: u8,
+}
+
+impl Default for ResourceManagerConfig {
+	fn default() -> ResourceManagerConfig {
+		Self {
+			general_allocation_pct: 40,
+			congestion_allocation_pct: 20,
+			resolution_period: Duration::from_secs(ACCEPTABLE_RESOLUTION_PERIOD_SECS.into()),
+			revenue_window: Duration::from_secs(REVENUE_WINDOW),
+			reputation_multiplier: 12,
+		}
+	}
+}
+
+/// The outcome of an HTLC forwarding decision.
+#[derive(PartialEq, Eq, Debug)]
+pub enum ForwardingOutcome {
+	/// Forward the HTLC with the specified accountable signal.
+	Forward(bool),
+	/// Fail to forward the HTLC.
+	Fail,
+}
+
+impl Display for ForwardingOutcome {
+	fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+		match self {
+			ForwardingOutcome::Forward(signal) => {
+				write!(f, "Forward as {}", if *signal { "accountable" } else { "unaccountable" })
+			},
+			ForwardingOutcome::Fail => {
+				write!(f, "Fail")
+			},
+		}
+	}
+}
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 enum BucketAssigned {
@@ -402,6 +491,16 @@ impl Channel {
 		Ok(congestion_resources_available && !misused_congestion && below_liquidity_limit)
 	}
 
+	fn pending_htlcs_in_congestion(&self, channel_id: u64) -> bool {
+		self.pending_htlcs
+			.iter()
+			.find(|(htlc_ref, pending_htlc)| {
+				htlc_ref.incoming_channel_id == channel_id
+					&& pending_htlc.bucket == BucketAssigned::Congestion
+			})
+			.is_some()
+	}
+
 	fn sufficient_reputation(
 		&mut self, in_flight_htlc_risk: u64, outgoing_reputation: i64,
 		outgoing_in_flight_risk: u64, at_timestamp: u64,
@@ -412,6 +511,286 @@ impl Channel {
 			.saturating_sub(i64::try_from(outgoing_in_flight_risk).unwrap_or(i64::MAX))
 			.saturating_sub(i64::try_from(in_flight_htlc_risk).unwrap_or(i64::MAX))
 			>= incoming_revenue_threshold)
+	}
+
+	fn outgoing_in_flight_risk(&self) -> u64 {
+		// We only account the in-flight risk for HTLCs that are accountable
+		self.pending_htlcs
+			.iter()
+			.map(|htlc| if htlc.1.outgoing_accountable { htlc.1.in_flight_risk } else { 0 })
+			.sum()
+	}
+}
+
+/// An implementation for managing channel resources and informing HTLC forwarding decisions. It
+/// implements the core of the mitigation as proposed in https://github.com/lightning/bolts/pull/1280.
+pub struct DefaultResourceManager {
+	config: ResourceManagerConfig,
+	channels: Mutex<HashMap<u64, Channel>>,
+}
+
+impl DefaultResourceManager {
+	pub fn new(config: ResourceManagerConfig) -> Self {
+		DefaultResourceManager { config, channels: Mutex::new(new_hash_map()) }
+	}
+
+	// To calculate the risk of pending HTLCs, we assume they will resolve in the worst
+	// possible case. Here we assume block times of 10 minutes.
+	fn htlc_in_flight_risk(&self, fee: u64, incoming_cltv_expiry: u32, height_added: u32) -> u64 {
+		let maximum_hold_time = (incoming_cltv_expiry.saturating_sub(height_added)) * 10 * 60;
+		self.opportunity_cost(Duration::from_secs(maximum_hold_time as u64), fee)
+	}
+
+	fn opportunity_cost(&self, resolution_time: Duration, fee_msat: u64) -> u64 {
+		let resolution_period = self.config.resolution_period.as_secs_f64();
+		let opportunity_cost = 0_f64
+			.max((resolution_time.as_secs_f64() - resolution_period) / resolution_period)
+			* fee_msat as f64;
+
+		opportunity_cost.round() as u64
+	}
+
+	fn effective_fees(
+		&self, fee_msat: u64, resolution_time: Duration, accountable: bool, settled: bool,
+	) -> i64 {
+		let fee = i64::try_from(fee_msat).unwrap_or(i64::MAX);
+		if accountable {
+			let opportunity_cost =
+				i64::try_from(self.opportunity_cost(resolution_time, fee_msat)).unwrap_or(i64::MAX);
+			if settled {
+				fee - opportunity_cost
+			} else {
+				-opportunity_cost
+			}
+		} else {
+			if settled && resolution_time <= self.config.resolution_period {
+				fee
+			} else {
+				0
+			}
+		}
+	}
+}
+
+impl DefaultResourceManager {
+	/// Registers a new channel with the resource manager for tracking.
+	///
+	/// This should be called when a channel becomes ready for forwarding
+	pub fn add_channel(
+		&self, channel_id: u64, max_htlc_value_in_flight_msat: u64, max_accepted_htlcs: u16,
+		timestamp_unix_secs: u64,
+	) -> Result<(), ()> {
+		let mut channels_lock = self.channels.lock().unwrap();
+		let revenue_window_weeks_avg = self.config.revenue_window.as_secs() / (60 * 60 * 24 * 7);
+		match channels_lock.entry(channel_id) {
+			Entry::Vacant(entry) => {
+				let channel = Channel::new(
+					channel_id,
+					max_htlc_value_in_flight_msat,
+					max_accepted_htlcs,
+					self.config.general_allocation_pct,
+					self.config.congestion_allocation_pct,
+					self.config.revenue_window * self.config.reputation_multiplier as u32,
+					self.config.reputation_multiplier,
+					revenue_window_weeks_avg as u8,
+					timestamp_unix_secs,
+				)?;
+				entry.insert(channel);
+				Ok(())
+			},
+			Entry::Occupied(_) => Ok(()),
+		}
+	}
+
+	/// Removes a channel from the resource manager.
+	///
+	/// This should be called when a channel is closing.
+	pub fn remove_channel(&self, channel_id: u64) -> Result<(), ()> {
+		let mut channels_lock = self.channels.lock().unwrap();
+		channels_lock.remove(&channel_id);
+
+		// Remove slots assigned to channel being removed across all other channels.
+		for (_, channel) in channels_lock.iter_mut() {
+			channel.general_bucket.remove_channel_slots(channel_id);
+		}
+		Ok(())
+	}
+
+	/// Evaluates whether an HTLC should be forwarded and updates resource tracking.
+	///
+	/// This is called when deciding whether to accept and forward an incoming HTLC. The
+	/// implementation determines if sufficient resources are available on the incoming
+	/// channel and whether the outgoing channel is suitable for forwarding.
+	///
+	/// Returns a [`ForwardingOutcome`] indicating the forwarding decision:
+	/// - `ForwardingOutcome::Forward(accountable)`: The HTLC should be forwarded. The boolean
+	///   flag indicates the accountable signal to use for the outgoing HTLC.
+	/// - `ForwardingOutcome::Fail`: The HTLC should be failed back to the sender.
+	pub fn add_htlc<ES: EntropySource>(
+		&self, incoming_channel_id: u64, incoming_amount_msat: u64, incoming_cltv_expiry: u32,
+		outgoing_channel_id: u64, outgoing_amount_msat: u64, incoming_accountable: bool,
+		htlc_id: u64, height_added: u32, added_at: u64, entropy_source: &ES,
+	) -> Result<ForwardingOutcome, ()> {
+		if (outgoing_amount_msat > incoming_amount_msat) || (height_added >= incoming_cltv_expiry) {
+			return Err(());
+		}
+
+		let mut channels_lock = self.channels.lock().unwrap();
+
+		let htlc_ref = HtlcRef { incoming_channel_id, htlc_id };
+		let outgoing_channel = channels_lock.get_mut(&outgoing_channel_id).ok_or(())?;
+
+		if outgoing_channel.pending_htlcs.get(&htlc_ref).is_some() {
+			return Err(());
+		}
+
+		let outgoing_reputation =
+			outgoing_channel.outgoing_reputation.value_at_timestamp(added_at)?;
+
+		let outgoing_in_flight_risk: u64 = outgoing_channel.outgoing_in_flight_risk();
+		let fee = incoming_amount_msat - outgoing_amount_msat;
+		let in_flight_htlc_risk = self.htlc_in_flight_risk(fee, incoming_cltv_expiry, height_added);
+		let pending_htlcs_in_congestion =
+			outgoing_channel.pending_htlcs_in_congestion(incoming_channel_id);
+
+		let incoming_channel = channels_lock.get_mut(&incoming_channel_id).ok_or(())?;
+
+		let (accountable, bucket_assigned) = if !incoming_accountable {
+			if incoming_channel.general_available(
+				incoming_amount_msat,
+				outgoing_channel_id,
+				entropy_source,
+			)? {
+				(false, BucketAssigned::General)
+			} else if incoming_channel.sufficient_reputation(
+				in_flight_htlc_risk,
+				outgoing_reputation,
+				outgoing_in_flight_risk,
+				added_at,
+			)? && incoming_channel
+				.protected_bucket
+				.resources_available(incoming_amount_msat)
+			{
+				(true, BucketAssigned::Protected)
+			} else if incoming_channel.congestion_eligible(
+				pending_htlcs_in_congestion,
+				incoming_amount_msat,
+				outgoing_channel_id,
+				added_at,
+			)? {
+				(true, BucketAssigned::Congestion)
+			} else {
+				return Ok(ForwardingOutcome::Fail);
+			}
+		} else {
+			// If the incoming HTLC is accountable, we only forward it if the outgoing
+			// channel has sufficient reputation, otherwise we fail it.
+			if incoming_channel.sufficient_reputation(
+				in_flight_htlc_risk,
+				outgoing_reputation,
+				outgoing_in_flight_risk,
+				added_at,
+			)? {
+				if incoming_channel.protected_bucket.resources_available(incoming_amount_msat) {
+					(true, BucketAssigned::Protected)
+				} else if incoming_channel.general_available(
+					incoming_amount_msat,
+					outgoing_channel_id,
+					entropy_source,
+				)? {
+					(true, BucketAssigned::General)
+				} else {
+					return Ok(ForwardingOutcome::Fail);
+				}
+			} else {
+				return Ok(ForwardingOutcome::Fail);
+			}
+		};
+
+		match bucket_assigned {
+			BucketAssigned::General => {
+				incoming_channel.general_bucket.add_htlc(
+					outgoing_channel_id,
+					incoming_amount_msat,
+					entropy_source,
+				)?;
+			},
+			BucketAssigned::Congestion => {
+				incoming_channel.congestion_bucket.add_htlc(incoming_amount_msat)?;
+			},
+			BucketAssigned::Protected => {
+				incoming_channel.protected_bucket.add_htlc(incoming_amount_msat)?;
+			},
+		}
+
+		let outgoing_channel = channels_lock.get_mut(&outgoing_channel_id).ok_or(())?;
+		let pending_htlc = PendingHTLC {
+			incoming_amount_msat,
+			fee,
+			outgoing_accountable: accountable,
+			added_at_unix_seconds: added_at,
+			in_flight_risk: in_flight_htlc_risk,
+			bucket: bucket_assigned,
+		};
+		outgoing_channel.pending_htlcs.insert(htlc_ref, pending_htlc);
+
+		Ok(ForwardingOutcome::Forward(accountable))
+	}
+
+	/// Records the resolution of a forwarded HTLC.
+	///
+	/// This must be called for HTLCs where [`add_htlc`] returned [`ForwardingOutcome::Forward`].
+	/// It reports if the HTLC was successfully settled or failed. This allows the implementation
+	/// to release resources and update any internal tracking state.
+	///
+	/// [`add_htlc`]: DefaultResourceManager::add_htlc
+	pub fn resolve_htlc(
+		&self, incoming_channel_id: u64, htlc_id: u64, outgoing_channel_id: u64, settled: bool,
+		resolved_at: u64,
+	) -> Result<(), ()> {
+		let mut channels_lock = self.channels.lock().unwrap();
+		let outgoing_channel = channels_lock.get_mut(&outgoing_channel_id).ok_or(())?;
+
+		let htlc_ref = HtlcRef { incoming_channel_id, htlc_id };
+		let pending_htlc = outgoing_channel.pending_htlcs.remove(&htlc_ref).ok_or(())?;
+
+		if resolved_at < pending_htlc.added_at_unix_seconds {
+			return Err(());
+		}
+		let resolution_time = Duration::from_secs(resolved_at - pending_htlc.added_at_unix_seconds);
+		let effective_fee = self.effective_fees(
+			pending_htlc.fee,
+			resolution_time,
+			pending_htlc.outgoing_accountable,
+			settled,
+		);
+		outgoing_channel.outgoing_reputation.add_value(effective_fee, resolved_at)?;
+
+		let incoming_channel = channels_lock.get_mut(&incoming_channel_id).ok_or(())?;
+		match pending_htlc.bucket {
+			BucketAssigned::General => incoming_channel
+				.general_bucket
+				.remove_htlc(outgoing_channel_id, pending_htlc.incoming_amount_msat)?,
+			BucketAssigned::Congestion => {
+				// Mark that congestion bucket was misused if it took more than the valid
+				// resolution period
+				if resolution_time > self.config.resolution_period {
+					incoming_channel.misused_congestion(outgoing_channel_id, resolved_at);
+				}
+
+				incoming_channel.congestion_bucket.remove_htlc(pending_htlc.incoming_amount_msat)?
+			},
+			BucketAssigned::Protected => {
+				incoming_channel.protected_bucket.remove_htlc(pending_htlc.incoming_amount_msat)?
+			},
+		}
+
+		if settled {
+			let fee: i64 = i64::try_from(pending_htlc.fee).unwrap_or(i64::MAX);
+			incoming_channel.incoming_revenue.add_value(fee, resolved_at)?;
+		}
+
+		Ok(())
 	}
 }
 
@@ -505,16 +884,19 @@ impl AggregatedWindowAverage {
 
 #[cfg(test)]
 mod tests {
-	use std::time::Duration;
+	use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 	use crate::{
 		crypto::chacha20::ChaCha20,
 		ln::{
 			channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS,
 			resource_manager::{
-				AggregatedWindowAverage, BucketResources, Channel, DecayingAverage, GeneralBucket,
+				AggregatedWindowAverage, BucketAssigned, BucketResources, Channel, DecayingAverage,
+				DefaultResourceManager, ForwardingOutcome, GeneralBucket, HtlcRef,
+				ResourceManagerConfig,
 			},
 		},
+		sign::EntropySource,
 		util::test_utils::TestKeysInterface,
 	};
 	use bitcoin::Network;
@@ -729,6 +1111,21 @@ mod tests {
 		assert_eq!(bucket_resources.liquidity_used, 0);
 	}
 
+	fn test_channel(config: &ResourceManagerConfig) -> Channel {
+		Channel::new(
+			0,
+			100_000,
+			100,
+			config.general_allocation_pct,
+			config.congestion_allocation_pct,
+			config.revenue_window * config.reputation_multiplier as u32,
+			config.reputation_multiplier,
+			2,
+			SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+		)
+		.unwrap()
+	}
+
 	#[test]
 	fn test_invalid_channel_configs() {
 		// (max_inflight, max_accepted_htlcs, general_pct, congestion_pct, protected_pct)
@@ -759,6 +1156,1016 @@ mod tests {
 			)
 			.is_err());
 		}
+	}
+
+	#[test]
+	fn test_misuse_congestion_bucket() {
+		let config = ResourceManagerConfig::default();
+		let mut channel = test_channel(&config);
+		let misusing_channel = 1;
+
+		let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+		assert_eq!(channel.has_misused_congestion(misusing_channel, now).unwrap(), false);
+
+		channel.misused_congestion(misusing_channel, now);
+		assert_eq!(channel.has_misused_congestion(misusing_channel, now + 5).unwrap(), true,);
+
+		// Congestion misuse is taken into account if the bucket has been misused in the last 2
+		// weeks. Test that after 2 weeks since last misuse, it returns that the bucket has not
+		// been misused.
+		let two_weeks = config.revenue_window.as_secs();
+		assert_eq!(
+			channel.has_misused_congestion(misusing_channel, now + two_weeks).unwrap(),
+			false
+		);
+	}
+
+	#[test]
+	fn test_opportunity_cost() {
+		let config = ResourceManagerConfig::default();
+		let resource_manager = DefaultResourceManager::new(config);
+
+		// Less than resolution_period has zero cost.
+		assert_eq!(resource_manager.opportunity_cost(Duration::from_secs(10), 100), 0);
+
+		// Above resolution period it is gradually incremented.
+		assert_eq!(resource_manager.opportunity_cost(Duration::from_secs(91), 100), 1);
+		assert_eq!(resource_manager.opportunity_cost(Duration::from_secs(135), 100), 50);
+		assert_eq!(resource_manager.opportunity_cost(Duration::from_secs(180), 100), 100);
+
+		// Multiple periods above resolution_period charges multiples of fee.
+		assert_eq!(resource_manager.opportunity_cost(Duration::from_secs(900), 100), 900);
+	}
+
+	#[test]
+	fn test_effective_fees() {
+		let config = ResourceManagerConfig::default();
+		let fast_resolve = config.resolution_period / 2;
+		let slow_resolve = config.resolution_period * 3;
+
+		let resource_manager = DefaultResourceManager::new(config);
+
+		let accountable = true;
+		let settled = true;
+		let cases = vec![
+			(1000, fast_resolve, accountable, settled, 1000),
+			(1000, slow_resolve, accountable, settled, -1000),
+			(1000, fast_resolve, accountable, !settled, 0),
+			(1000, slow_resolve, accountable, !settled, -2000),
+			// Unaccountable HTLCs do not affect negatively
+			(1000, fast_resolve, !accountable, settled, 1000),
+			(1000, slow_resolve, !accountable, settled, 0),
+			(1000, fast_resolve, !accountable, !settled, 0),
+			(1000, slow_resolve, !accountable, !settled, 0),
+		];
+
+		for (fee_msat, hold_time, accountable, settled, expected) in cases {
+			let result = resource_manager.effective_fees(fee_msat, hold_time, accountable, settled);
+			assert_eq!(result, expected, "Case failed: fee_msat={fee_msat:?}, hold_time={hold_time:?}, accountable={accountable:?}, settled={settled:?}");
+		}
+	}
+
+	const INCOMING_SCID: u64 = 100;
+	const OUTGOING_SCID: u64 = 200;
+	const INCOMING_SCID_2: u64 = 101;
+	const OUTGOING_SCID_2: u64 = 201;
+	const HTLC_AMOUNT: u64 = 10_000_000;
+	const FEE_AMOUNT: u64 = 1_000;
+	const CURRENT_HEIGHT: u32 = 1000;
+	const CLTV_EXPIRY: u32 = 1144;
+
+	fn create_test_resource_manager_with_channel_pairs(n_pairs: u8) -> DefaultResourceManager {
+		let config = ResourceManagerConfig::default();
+		let rm = DefaultResourceManager::new(config);
+		let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+		for i in 0..n_pairs {
+			rm.add_channel(INCOMING_SCID + i as u64, 5_000_000_000, 114, now).unwrap();
+			rm.add_channel(OUTGOING_SCID + i as u64, 5_000_000_000, 114, now).unwrap();
+		}
+		rm
+	}
+
+	fn create_test_resource_manager_with_channels() -> DefaultResourceManager {
+		create_test_resource_manager_with_channel_pairs(1)
+	}
+
+	fn add_test_htlc<ES: EntropySource>(
+		rm: &DefaultResourceManager, accountable: bool, htlc_id: u64, added_at: Option<u64>,
+		entropy_source: &ES,
+	) -> Result<ForwardingOutcome, ()> {
+		rm.add_htlc(
+			INCOMING_SCID,
+			HTLC_AMOUNT + FEE_AMOUNT,
+			CLTV_EXPIRY,
+			OUTGOING_SCID,
+			HTLC_AMOUNT,
+			accountable,
+			htlc_id,
+			CURRENT_HEIGHT,
+			added_at.unwrap_or(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()),
+			entropy_source,
+		)
+	}
+
+	fn add_reputation(rm: &DefaultResourceManager, outgoing_scid: u64, target_reputation: i64) {
+		let mut channels = rm.channels.lock().unwrap();
+		let outgoing_channel = channels.get_mut(&outgoing_scid).unwrap();
+		let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+		outgoing_channel.outgoing_reputation.add_value(target_reputation, now).unwrap();
+	}
+
+	fn fill_general_bucket(rm: &DefaultResourceManager, incoming_scid: u64) {
+		let mut channels = rm.channels.lock().unwrap();
+		let incoming_channel = channels.get_mut(&incoming_scid).unwrap();
+		for slot in incoming_channel.general_bucket.slots_occupied.iter_mut() {
+			*slot = Some(0);
+		}
+	}
+
+	fn fill_congestion_bucket(rm: &DefaultResourceManager, incoming_scid: u64) {
+		let mut channels = rm.channels.lock().unwrap();
+		let incoming_channel = channels.get_mut(&incoming_scid).unwrap();
+		let slots_allocated = incoming_channel.congestion_bucket.slots_allocated;
+		let liquidity_allocated = incoming_channel.congestion_bucket.liquidity_allocated;
+		incoming_channel.congestion_bucket.slots_used = slots_allocated;
+		incoming_channel.congestion_bucket.liquidity_used = liquidity_allocated;
+	}
+
+	fn fill_protected_bucket(rm: &DefaultResourceManager, incoming_scid: u64) {
+		let mut channels = rm.channels.lock().unwrap();
+		let incoming_channel = channels.get_mut(&incoming_scid).unwrap();
+		let slots_allocated = incoming_channel.protected_bucket.slots_allocated;
+		let liquidity_allocated = incoming_channel.protected_bucket.liquidity_allocated;
+		incoming_channel.protected_bucket.slots_used = slots_allocated;
+		incoming_channel.protected_bucket.liquidity_used = liquidity_allocated;
+	}
+
+	fn mark_congestion_misused(
+		rm: &DefaultResourceManager, incoming_scid: u64, outgoing_scid: u64,
+	) {
+		let mut channels = rm.channels.lock().unwrap();
+		let incoming_channel = channels.get_mut(&incoming_scid).unwrap();
+		let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+		incoming_channel.misused_congestion(outgoing_scid, now);
+	}
+
+	fn get_htlc_bucket(
+		rm: &DefaultResourceManager, incoming_channel_id: u64, htlc_id: u64,
+		outgoing_channel_id: u64,
+	) -> Option<BucketAssigned> {
+		let channels = rm.channels.lock().unwrap();
+		let htlc_ref = HtlcRef { incoming_channel_id, htlc_id };
+		let htlc = channels.get(&outgoing_channel_id).unwrap().pending_htlcs.get(&htlc_ref);
+		htlc.map(|htlc| htlc.bucket.clone())
+	}
+
+	fn count_pending_htlcs(rm: &DefaultResourceManager, outgoing_scid: u64) -> usize {
+		let channels = rm.channels.lock().unwrap();
+		channels.get(&outgoing_scid).unwrap().pending_htlcs.len()
+	}
+
+	fn assert_general_bucket_slots_used(
+		rm: &DefaultResourceManager, incoming_scid: u64, outgoing_scid: u64, expected_count: usize,
+	) {
+		let channels = rm.channels.lock().unwrap();
+		let channel = channels.get(&incoming_scid).unwrap();
+		let slots = &channel.general_bucket.channels_slots.get(&outgoing_scid).unwrap().0;
+		let used_count = slots
+			.iter()
+			.filter(|slot_idx| {
+				channel.general_bucket.slots_occupied[**slot_idx as usize] == Some(outgoing_scid)
+			})
+			.count();
+		assert_eq!(used_count, expected_count);
+	}
+
+	fn test_congestion_eligible(rm: &DefaultResourceManager, incoming_htlc_amount: u64) -> bool {
+		let mut channels_lock = rm.channels.lock().unwrap();
+		let outgoing_channel = channels_lock.get_mut(&OUTGOING_SCID).unwrap();
+		let pending_htlcs_in_congestion =
+			outgoing_channel.pending_htlcs_in_congestion(INCOMING_SCID);
+
+		let incoming_channel = channels_lock.get_mut(&INCOMING_SCID).unwrap();
+		incoming_channel
+			.congestion_eligible(
+				pending_htlcs_in_congestion,
+				incoming_htlc_amount,
+				OUTGOING_SCID,
+				SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+			)
+			.unwrap()
+	}
+
+	#[test]
+	fn test_not_congestion_eligible() {
+		// Test not congestion eligible for:
+		// - Outgoing channel already has HTLC in congestion bucket.
+		// - Congestion bucket is full
+		// - Congestion bucket was misused
+		let cases = vec![
+			|rm: &DefaultResourceManager| {
+				fill_general_bucket(&rm, INCOMING_SCID);
+				let htlc_id = 1;
+				let entropy_source = TestKeysInterface::new(&[0; 32], Network::Testnet);
+				add_test_htlc(&rm, false, htlc_id, None, &entropy_source).unwrap();
+				assert_eq!(
+					get_htlc_bucket(&rm, INCOMING_SCID, htlc_id, OUTGOING_SCID).unwrap(),
+					BucketAssigned::Congestion
+				);
+			},
+			|rm: &DefaultResourceManager| {
+				fill_congestion_bucket(rm, INCOMING_SCID);
+			},
+			|rm: &DefaultResourceManager| {
+				mark_congestion_misused(rm, INCOMING_SCID, OUTGOING_SCID);
+			},
+		];
+
+		for case_setup in cases {
+			let rm = create_test_resource_manager_with_channels();
+			case_setup(&rm);
+			assert_eq!(test_congestion_eligible(&rm, HTLC_AMOUNT + FEE_AMOUNT), false);
+		}
+	}
+
+	#[test]
+	fn test_congestion_eligible_htlc_over_slot_limit() {
+		let rm = create_test_resource_manager_with_channels();
+		assert!(test_congestion_eligible(&rm, HTLC_AMOUNT + FEE_AMOUNT));
+
+		// Get the congestion bucket's per-slot limit
+		let channels = rm.channels.lock().unwrap();
+		let incoming_channel = channels.get(&INCOMING_SCID).unwrap();
+		let slot_limit = incoming_channel.congestion_bucket.liquidity_allocated
+			/ incoming_channel.congestion_bucket.slots_allocated as u64;
+		drop(channels);
+
+		// Try to add HTLC that exceeds the slot limit
+		let htlc_amount_over_limit = slot_limit + 1000;
+		assert!(!test_congestion_eligible(&rm, htlc_amount_over_limit));
+	}
+
+	fn test_sufficient_reputation(rm: &DefaultResourceManager) -> bool {
+		let mut channels_lock = rm.channels.lock().unwrap();
+		let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+
+		let outgoing_channel = channels_lock.get_mut(&OUTGOING_SCID).unwrap();
+		let outgoing_reputation =
+			outgoing_channel.outgoing_reputation.value_at_timestamp(now).unwrap();
+		let outgoing_in_flight_risk: u64 = outgoing_channel.outgoing_in_flight_risk();
+		let fee = FEE_AMOUNT;
+		let in_flight_htlc_risk = rm.htlc_in_flight_risk(fee, CLTV_EXPIRY, CURRENT_HEIGHT);
+
+		let incoming_channel = channels_lock.get_mut(&INCOMING_SCID).unwrap();
+		incoming_channel
+			.sufficient_reputation(
+				in_flight_htlc_risk,
+				outgoing_reputation,
+				outgoing_in_flight_risk,
+				now,
+			)
+			.unwrap()
+	}
+
+	#[test]
+	fn test_insufficient_reputation_outgoing_in_flight_risk() {
+		let rm = create_test_resource_manager_with_channels();
+		let entropy_source = TestKeysInterface::new(&[0; 32], Network::Testnet);
+		let reputation = 50_000_000;
+		add_reputation(&rm, OUTGOING_SCID, reputation);
+
+		// Successfully add unaccountable HTLC that should not count in the outgoing
+		// accumulated outgoing in-flight risk.
+		assert!(add_test_htlc(&rm, false, 0, None, &entropy_source).is_ok());
+
+		let current_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+		let high_cltv_expiry = CURRENT_HEIGHT + 2000;
+
+		// Add accountable HTLC that will add 49_329_633 to the in-flight risk. This is based
+		// on the 3700 and CLTV delta added.
+		assert!(rm
+			.add_htlc(
+				INCOMING_SCID,
+				HTLC_AMOUNT + 3700,
+				high_cltv_expiry,
+				OUTGOING_SCID,
+				HTLC_AMOUNT,
+				true,
+				1,
+				CURRENT_HEIGHT,
+				current_time,
+				&entropy_source,
+			)
+			.is_ok());
+
+		// Since we have added an accountable HTLC with in-fligh risk that is close to the
+		// reputation we added, the next accountable HTLC we try to add should fail.
+		assert_eq!(test_sufficient_reputation(&rm), false);
+	}
+
+	#[test]
+	fn test_insufficient_reputation_higher_incoming_revenue_threshold() {
+		let rm = create_test_resource_manager_with_channels();
+		add_reputation(&rm, OUTGOING_SCID, 10_000);
+
+		let current_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+		let mut channels = rm.channels.lock().unwrap();
+		let incoming_channel = channels.get_mut(&INCOMING_SCID).unwrap();
+		// Add revenue to incoming channel so that it goes above outgoing's reputation
+		incoming_channel.incoming_revenue.add_value(50_000, current_time).unwrap();
+		drop(channels);
+
+		assert_eq!(test_sufficient_reputation(&rm), false);
+	}
+
+	#[test]
+	fn test_sufficient_reputation_exactly_at_threshold() {
+		let rm = create_test_resource_manager_with_channels();
+
+		let in_flight_risk = rm.htlc_in_flight_risk(FEE_AMOUNT, CLTV_EXPIRY, CURRENT_HEIGHT);
+		let current_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+		let mut channels = rm.channels.lock().unwrap();
+
+		// Set incoming revenue threshold
+		let threshold = 10_000_000;
+		let incoming_channel = channels.get_mut(&INCOMING_SCID).unwrap();
+		incoming_channel.incoming_revenue.add_value(threshold, current_time).unwrap();
+
+		// Set outgoing reputation to match threshold plus in-flight risk
+		let reputation_needed = threshold + i64::try_from(in_flight_risk).unwrap();
+		let outgoing_channel = channels.get_mut(&OUTGOING_SCID).unwrap();
+		outgoing_channel.outgoing_reputation.add_value(reputation_needed, current_time).unwrap();
+		drop(channels);
+
+		assert_eq!(test_sufficient_reputation(&rm), true);
+	}
+
+	#[test]
+	fn test_add_htlc_unaccountable_forwarding_decisions() {
+		struct TestCase {
+			description: &'static str,
+			setup: fn(&DefaultResourceManager),
+			expected_outcome: ForwardingOutcome,
+			expected_bucket: Option<BucketAssigned>,
+		}
+
+		let cases = vec![
+			TestCase {
+				description: "general bucket available",
+				setup: |_rm| {},
+				expected_outcome: ForwardingOutcome::Forward(false),
+				expected_bucket: Some(BucketAssigned::General),
+			},
+			TestCase {
+				description: "general full, sufficient reputation goes to protected",
+				setup: |rm| {
+					add_reputation(rm, OUTGOING_SCID, HTLC_AMOUNT as i64);
+					fill_general_bucket(rm, INCOMING_SCID);
+				},
+				expected_outcome: ForwardingOutcome::Forward(true),
+				expected_bucket: Some(BucketAssigned::Protected),
+			},
+			TestCase {
+				description: "general full, insufficient reputation goes to congestion",
+				setup: |rm| fill_general_bucket(rm, INCOMING_SCID),
+				expected_outcome: ForwardingOutcome::Forward(true),
+				expected_bucket: Some(BucketAssigned::Congestion),
+			},
+			TestCase {
+				description: "congestion misused recently fails",
+				setup: |rm| {
+					fill_general_bucket(rm, INCOMING_SCID);
+					mark_congestion_misused(rm, INCOMING_SCID, OUTGOING_SCID);
+				},
+				expected_outcome: ForwardingOutcome::Fail,
+				expected_bucket: None,
+			},
+		];
+
+		let entropy_source = TestKeysInterface::new(&[0; 32], Network::Testnet);
+		let htlc_id = 1;
+		for case in cases {
+			let rm = create_test_resource_manager_with_channels();
+			(case.setup)(&rm);
+
+			let result = add_test_htlc(&rm, false, htlc_id, None, &entropy_source);
+			assert!(result.is_ok(), "case '{}': add_htlc returned Err", case.description);
+			assert_eq!(
+				result.unwrap(),
+				case.expected_outcome,
+				"case '{}': unexpected forwarding outcome",
+				case.description
+			);
+			assert_eq!(
+				get_htlc_bucket(&rm, INCOMING_SCID, htlc_id, OUTGOING_SCID),
+				case.expected_bucket,
+				"case '{}': unexpected bucket assignment",
+				case.description
+			);
+		}
+	}
+
+	#[test]
+	fn test_add_htlc_unaccountable_congestion_already_has_htlc() {
+		let rm = create_test_resource_manager_with_channels();
+		let entropy_source = TestKeysInterface::new(&[0; 32], Network::Testnet);
+		fill_general_bucket(&rm, INCOMING_SCID);
+
+		// With general bucket full, adding HTLC here should go to congestion bucket.
+		let mut htlc_id = 1;
+		let result_1 = add_test_htlc(&rm, false, htlc_id, None, &entropy_source);
+		assert!(result_1.is_ok());
+		assert_eq!(result_1.unwrap(), ForwardingOutcome::Forward(true));
+		assert_eq!(
+			get_htlc_bucket(&rm, INCOMING_SCID, htlc_id, OUTGOING_SCID).unwrap(),
+			BucketAssigned::Congestion
+		);
+
+		// Adding a second HTLC should fail because outgoing channel is already using a slot in
+		// the congestion bucket and it does not have sufficient reputation to get into the
+		// protected bucket.
+		htlc_id = 2;
+		let result_2 = add_test_htlc(&rm, false, htlc_id, None, &entropy_source);
+		assert_eq!(result_2.unwrap(), ForwardingOutcome::Fail);
+		assert!(get_htlc_bucket(&rm, INCOMING_SCID, htlc_id, OUTGOING_SCID).is_none());
+	}
+
+	#[test]
+	fn test_add_htlc_accountable_forwarding_decisions() {
+		struct TestCase {
+			description: &'static str,
+			setup: fn(&DefaultResourceManager),
+			expected_outcome: ForwardingOutcome,
+			expected_bucket: Option<BucketAssigned>,
+		}
+
+		let cases = vec![
+			TestCase {
+				description: "sufficient reputation goes to protected",
+				setup: |rm| add_reputation(rm, OUTGOING_SCID, HTLC_AMOUNT as i64),
+				expected_outcome: ForwardingOutcome::Forward(true),
+				expected_bucket: Some(BucketAssigned::Protected),
+			},
+			TestCase {
+				description: "insufficient reputation fails",
+				setup: |_rm| {},
+				expected_outcome: ForwardingOutcome::Fail,
+				expected_bucket: None,
+			},
+			TestCase {
+				description: "sufficient reputation, protected full, falls back to general",
+				setup: |rm| {
+					add_reputation(rm, OUTGOING_SCID, HTLC_AMOUNT as i64);
+					fill_protected_bucket(rm, INCOMING_SCID);
+				},
+				expected_outcome: ForwardingOutcome::Forward(true),
+				expected_bucket: Some(BucketAssigned::General),
+			},
+			TestCase {
+				description: "sufficient reputation, protected and general full, fails",
+				setup: |rm| {
+					add_reputation(rm, OUTGOING_SCID, HTLC_AMOUNT as i64);
+					fill_general_bucket(rm, INCOMING_SCID);
+					fill_protected_bucket(rm, INCOMING_SCID);
+				},
+				expected_outcome: ForwardingOutcome::Fail,
+				expected_bucket: None,
+			},
+		];
+
+		let entropy_source = TestKeysInterface::new(&[0; 32], Network::Testnet);
+		let htlc_id = 1;
+
+		for case in cases {
+			let rm = create_test_resource_manager_with_channels();
+			(case.setup)(&rm);
+
+			let result = add_test_htlc(&rm, true, htlc_id, None, &entropy_source);
+			assert!(result.is_ok(), "case '{}': add_htlc returned Err", case.description);
+			assert_eq!(
+				result.unwrap(),
+				case.expected_outcome,
+				"case '{}': unexpected forwarding outcome",
+				case.description
+			);
+			assert_eq!(
+				get_htlc_bucket(&rm, INCOMING_SCID, htlc_id, OUTGOING_SCID),
+				case.expected_bucket,
+				"case '{}': unexpected bucket assignment",
+				case.description
+			);
+		}
+	}
+
+	#[test]
+	fn test_add_htlc_stores_correct_pending_htlc_data() {
+		let rm = create_test_resource_manager_with_channels();
+		let entropy_source = TestKeysInterface::new(&[0; 32], Network::Testnet);
+
+		let current_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+		let htlc_id = 42;
+		let result = rm.add_htlc(
+			INCOMING_SCID,
+			HTLC_AMOUNT + FEE_AMOUNT,
+			CLTV_EXPIRY,
+			OUTGOING_SCID,
+			HTLC_AMOUNT,
+			false,
+			htlc_id,
+			CURRENT_HEIGHT,
+			current_time,
+			&entropy_source,
+		);
+		assert!(result.is_ok());
+
+		let channels = rm.channels.lock().unwrap();
+		let htlc_ref = HtlcRef { incoming_channel_id: INCOMING_SCID, htlc_id };
+		let pending_htlc = channels.get(&OUTGOING_SCID).unwrap().pending_htlcs.get(&htlc_ref);
+		assert!(pending_htlc.is_some());
+		// HTLC should only get added to pending list for outgoing channel
+		assert!(channels.get(&INCOMING_SCID).unwrap().pending_htlcs.get(&htlc_ref).is_none());
+
+		let pending_htlc = pending_htlc.unwrap();
+		assert_eq!(pending_htlc.incoming_amount_msat, HTLC_AMOUNT + FEE_AMOUNT);
+		assert_eq!(pending_htlc.fee, FEE_AMOUNT);
+		assert_eq!(pending_htlc.added_at_unix_seconds, current_time);
+
+		let expected_in_flight_risk =
+			rm.htlc_in_flight_risk(FEE_AMOUNT, CLTV_EXPIRY, CURRENT_HEIGHT);
+		assert_eq!(pending_htlc.in_flight_risk, expected_in_flight_risk);
+	}
+
+	#[test]
+	fn test_resolve_htlc_unaccountable_outcomes() {
+		struct TestCase {
+			hold_time: Duration,
+			settled: bool,
+			expected_reputation: i64,
+			expected_revenue: i64,
+		}
+
+		let config = ResourceManagerConfig::default();
+		let fast_resolve = config.resolution_period / 2;
+		let slow_resolve = config.resolution_period * 3;
+
+		let cases = vec![
+			TestCase {
+				hold_time: fast_resolve,
+				settled: true,
+				expected_reputation: FEE_AMOUNT as i64, // effective_fee = fee
+				expected_revenue: FEE_AMOUNT as i64,
+			},
+			TestCase {
+				hold_time: slow_resolve,
+				settled: true,
+				expected_reputation: 0,              // effective_fee = 0 (slow unaccountable)
+				expected_revenue: FEE_AMOUNT as i64, // revenue increases regardless of speed
+			},
+			TestCase {
+				hold_time: fast_resolve,
+				settled: false,
+				expected_reputation: 0,
+				expected_revenue: 0,
+			},
+			TestCase {
+				hold_time: slow_resolve,
+				settled: false,
+				expected_reputation: 0,
+				expected_revenue: 0,
+			},
+		];
+
+		let entropy_source = TestKeysInterface::new(&[0; 32], Network::Testnet);
+
+		for case in &cases {
+			let rm = create_test_resource_manager_with_channels();
+			let htlc_id = 1;
+
+			assert_eq!(
+				add_test_htlc(&rm, false, htlc_id, None, &entropy_source).unwrap(),
+				ForwardingOutcome::Forward(false),
+			);
+
+			let resolved_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
+				+ case.hold_time.as_secs();
+			rm.resolve_htlc(INCOMING_SCID, htlc_id, OUTGOING_SCID, case.settled, resolved_at)
+				.unwrap();
+
+			let channels = rm.channels.lock().unwrap();
+			assert_eq!(
+				channels.get(&OUTGOING_SCID).unwrap().outgoing_reputation.value,
+				case.expected_reputation,
+			);
+			assert_eq!(
+				channels
+					.get(&INCOMING_SCID)
+					.unwrap()
+					.incoming_revenue
+					.aggregated_revenue_decaying
+					.value,
+				case.expected_revenue,
+			);
+		}
+	}
+
+	#[test]
+	fn test_resolve_htlc_congestion_outcomes() {
+		let entropy_source = TestKeysInterface::new(&[0; 32], Network::Testnet);
+		let config = ResourceManagerConfig::default();
+		let fast_resolve = config.resolution_period / 2;
+		let slow_resolve = config.resolution_period * 3;
+
+		let rm = create_test_resource_manager_with_channels();
+		fill_general_bucket(&rm, INCOMING_SCID);
+		let mut htlc_id = 1;
+		assert_eq!(
+			add_test_htlc(&rm, false, htlc_id, None, &entropy_source).unwrap(),
+			ForwardingOutcome::Forward(true),
+		);
+		assert_eq!(
+			get_htlc_bucket(&rm, INCOMING_SCID, htlc_id, OUTGOING_SCID).unwrap(),
+			BucketAssigned::Congestion,
+		);
+
+		let resolved_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
+			+ fast_resolve.as_secs();
+		rm.resolve_htlc(INCOMING_SCID, htlc_id, OUTGOING_SCID, false, resolved_at).unwrap();
+
+		let mut channels = rm.channels.lock().unwrap();
+		let incoming = channels.get_mut(&INCOMING_SCID).unwrap();
+
+		// The HTLC in congestion bucket resolved fast so it does not count as having misused the
+		// congestion bucket.
+		assert!(!incoming.has_misused_congestion(OUTGOING_SCID, resolved_at).unwrap());
+		assert_eq!(incoming.congestion_bucket.slots_used, 0);
+
+		drop(channels);
+
+		// Since it does not count as congestion misused, this HTLC can be added to congestion
+		htlc_id += 1;
+		let added_at = resolved_at;
+		assert_eq!(
+			add_test_htlc(&rm, false, htlc_id, Some(added_at), &entropy_source).unwrap(),
+			ForwardingOutcome::Forward(true),
+		);
+		assert_eq!(
+			get_htlc_bucket(&rm, INCOMING_SCID, htlc_id, OUTGOING_SCID).unwrap(),
+			BucketAssigned::Congestion,
+		);
+
+		// Slow resolution
+		let resolved_at = added_at + slow_resolve.as_secs();
+		rm.resolve_htlc(INCOMING_SCID, htlc_id, OUTGOING_SCID, false, resolved_at).unwrap();
+
+		let mut channels = rm.channels.lock().unwrap();
+		let incoming = channels.get_mut(&INCOMING_SCID).unwrap();
+
+		// The HTLC in congestion bucket resolved slowly so it does count as having misused the
+		// congestion bucket.
+		assert!(incoming.has_misused_congestion(OUTGOING_SCID, resolved_at).unwrap());
+
+		drop(channels);
+
+		// Congestion was misused so trying to add an HTLC should fail because the channel does
+		// not have reputation to get into protected.
+		htlc_id += 1;
+		let added_at = resolved_at;
+		assert_eq!(
+			add_test_htlc(&rm, false, htlc_id, Some(added_at), &entropy_source).unwrap(),
+			ForwardingOutcome::Fail,
+		);
+
+		let mut channels = rm.channels.lock().unwrap();
+		let incoming = channels.get_mut(&INCOMING_SCID).unwrap();
+
+		// After two weeks, the misused entry should be removed and congestion bucket should be
+		// available again for use.
+		let after_two_weeks = added_at + config.revenue_window.as_secs();
+		assert!(!incoming.has_misused_congestion(OUTGOING_SCID, after_two_weeks).unwrap());
+		assert!(incoming.last_congestion_misuse.get(&OUTGOING_SCID).is_none());
+
+		drop(channels);
+
+		htlc_id += 1;
+		assert_eq!(
+			add_test_htlc(&rm, false, htlc_id, Some(after_two_weeks), &entropy_source).unwrap(),
+			ForwardingOutcome::Forward(true),
+		);
+	}
+
+	#[test]
+	fn test_resolve_htlc_accountable_outcomes() {
+		let rm = create_test_resource_manager_with_channels();
+		let entropy_source = TestKeysInterface::new(&[0; 32], Network::Testnet);
+		let fast_resolve = rm.config.resolution_period / 2;
+		let accountable = true;
+
+		add_reputation(&rm, OUTGOING_SCID, HTLC_AMOUNT as i64);
+
+		let mut htlc_id = 1;
+		let added_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+		assert_eq!(
+			add_test_htlc(&rm, accountable, htlc_id, Some(added_at), &entropy_source).unwrap(),
+			ForwardingOutcome::Forward(true),
+		);
+		assert_eq!(
+			get_htlc_bucket(&rm, INCOMING_SCID, htlc_id, OUTGOING_SCID).unwrap(),
+			BucketAssigned::Protected,
+		);
+
+		let get_reputation = |at_timestamp: u64| -> i64 {
+			let mut channels = rm.channels.lock().unwrap();
+			channels
+				.get_mut(&OUTGOING_SCID)
+				.unwrap()
+				.outgoing_reputation
+				.value_at_timestamp(at_timestamp)
+				.unwrap()
+		};
+
+		// Check fast settled resolution adds to reputation
+		let resolved_at = added_at + fast_resolve.as_secs();
+		let current_rep = get_reputation(resolved_at);
+
+		rm.resolve_htlc(INCOMING_SCID, htlc_id, OUTGOING_SCID, true, resolved_at).unwrap();
+
+		let reputation_after_fast_resolve = get_reputation(resolved_at);
+		assert_eq!(reputation_after_fast_resolve, (current_rep + FEE_AMOUNT as i64));
+
+		let mut channels = rm.channels.lock().unwrap();
+		let revenue = channels
+			.get_mut(&INCOMING_SCID)
+			.unwrap()
+			.incoming_revenue
+			.value_at_timestamp(resolved_at)
+			.unwrap();
+		assert_eq!(revenue, FEE_AMOUNT as i64,);
+		drop(channels);
+
+		// Fast failing accountable HTLC does not affect reputation
+		htlc_id += 1;
+		let added_at = resolved_at;
+		assert_eq!(
+			add_test_htlc(&rm, accountable, htlc_id, Some(added_at), &entropy_source).unwrap(),
+			ForwardingOutcome::Forward(true),
+		);
+		assert_eq!(
+			get_htlc_bucket(&rm, INCOMING_SCID, htlc_id, OUTGOING_SCID).unwrap(),
+			BucketAssigned::Protected,
+		);
+
+		let resolved_at = added_at + fast_resolve.as_secs();
+		let reputation_before_resolve = get_reputation(resolved_at);
+
+		rm.resolve_htlc(INCOMING_SCID, htlc_id, OUTGOING_SCID, false, resolved_at).unwrap();
+
+		assert_eq!(get_reputation(resolved_at), reputation_before_resolve);
+
+		// Slow resolution should decrease reputation by effective fee
+		let slow_resolve = rm.config.resolution_period * 10;
+		let added_at = resolved_at;
+		assert_eq!(
+			add_test_htlc(&rm, accountable, htlc_id, Some(added_at), &entropy_source).unwrap(),
+			ForwardingOutcome::Forward(true),
+		);
+		assert_eq!(
+			get_htlc_bucket(&rm, INCOMING_SCID, htlc_id, OUTGOING_SCID).unwrap(),
+			BucketAssigned::Protected,
+		);
+
+		let resolved_at = added_at + slow_resolve.as_secs();
+		let reputation_before_slow_resolve = get_reputation(resolved_at);
+		let effective_fee_slow_resolve = rm.effective_fees(FEE_AMOUNT, slow_resolve, true, true);
+		rm.resolve_htlc(INCOMING_SCID, htlc_id, OUTGOING_SCID, true, resolved_at).unwrap();
+		let reputation_after_slow_resolve = get_reputation(resolved_at);
+
+		assert_eq!(
+			reputation_after_slow_resolve,
+			reputation_before_slow_resolve + effective_fee_slow_resolve
+		);
+	}
+
+	#[test]
+	fn test_multi_channel_general_bucket_saturation_flow() {
+		let rm = create_test_resource_manager_with_channel_pairs(2);
+		let entropy_source = TestKeysInterface::new(&[0; 32], Network::Testnet);
+
+		// Fill general bucket (it should have been assigned 5 slots)
+		let mut htlc_ids = Vec::new();
+		for i in 1..=5 {
+			let result = add_test_htlc(&rm, false, i, None, &entropy_source);
+			assert!(result.is_ok());
+			assert_eq!(result.unwrap(), ForwardingOutcome::Forward(false));
+			assert_eq!(
+				get_htlc_bucket(&rm, INCOMING_SCID, i, OUTGOING_SCID).unwrap(),
+				BucketAssigned::General
+			);
+			htlc_ids.push(i);
+		}
+		assert_general_bucket_slots_used(&rm, INCOMING_SCID, OUTGOING_SCID, 5);
+
+		// With the 5 slots in the general bucket used, the 6th HTLC goes to congestion
+		let result = add_test_htlc(&rm, false, 6, None, &entropy_source);
+		assert!(result.is_ok());
+		assert_eq!(result.unwrap(), ForwardingOutcome::Forward(true));
+		assert_eq!(
+			get_htlc_bucket(&rm, INCOMING_SCID, 6, OUTGOING_SCID).unwrap(),
+			BucketAssigned::Congestion
+		);
+
+		// 7th HTLC fails because it is already using a congestion slot and channel does not
+		// have sufficient reputation to get into protected bucket.
+		let result = add_test_htlc(&rm, false, 7, None, &entropy_source);
+		assert_eq!(result.unwrap(), ForwardingOutcome::Fail);
+		assert!(get_htlc_bucket(&rm, INCOMING_SCID, 7, OUTGOING_SCID).is_none());
+
+		// Resolve 3 HTLCs that were assigned to the general bucket. It should end up with 2 in
+		// general and one in congestion.
+		let resolved_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+		rm.resolve_htlc(INCOMING_SCID, htlc_ids[0], OUTGOING_SCID, true, resolved_at).unwrap();
+		rm.resolve_htlc(INCOMING_SCID, htlc_ids[2], OUTGOING_SCID, true, resolved_at).unwrap();
+		rm.resolve_htlc(INCOMING_SCID, htlc_ids[4], OUTGOING_SCID, true, resolved_at).unwrap();
+		assert_general_bucket_slots_used(&rm, INCOMING_SCID, OUTGOING_SCID, 2);
+		assert_eq!(count_pending_htlcs(&rm, OUTGOING_SCID), 3);
+
+		// Adding more HTLCs should now use the freed general slots.
+		for i in 8..=10 {
+			let result = add_test_htlc(&rm, false, i, None, &entropy_source);
+			assert!(result.is_ok());
+			assert_eq!(result.unwrap(), ForwardingOutcome::Forward(false));
+			assert_eq!(
+				get_htlc_bucket(&rm, INCOMING_SCID, i, OUTGOING_SCID).unwrap(),
+				BucketAssigned::General
+			);
+		}
+		assert_general_bucket_slots_used(&rm, INCOMING_SCID, OUTGOING_SCID, 5);
+
+		// Adding HTLCs to a different outgoing channel should get 5 other slots. NOTE: this
+		// could potentially fail if the 2 outgoing channels get assigned the same slot. Could
+		// check before that they do have different general slots.
+		for i in 11..=15 {
+			let result = rm.add_htlc(
+				INCOMING_SCID,
+				HTLC_AMOUNT + FEE_AMOUNT,
+				CLTV_EXPIRY,
+				OUTGOING_SCID_2,
+				HTLC_AMOUNT,
+				false,
+				i,
+				CURRENT_HEIGHT,
+				SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+				&entropy_source,
+			);
+			assert!(result.is_ok());
+			assert_eq!(
+				get_htlc_bucket(&rm, INCOMING_SCID, i, OUTGOING_SCID_2).unwrap(),
+				BucketAssigned::General
+			);
+		}
+		assert_general_bucket_slots_used(&rm, INCOMING_SCID, OUTGOING_SCID_2, 5);
+
+		// Different incoming uses its own bucket
+		for i in 16..=20 {
+			let result = rm.add_htlc(
+				INCOMING_SCID_2,
+				HTLC_AMOUNT + FEE_AMOUNT,
+				CLTV_EXPIRY,
+				OUTGOING_SCID,
+				HTLC_AMOUNT,
+				false,
+				i,
+				CURRENT_HEIGHT,
+				SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+				&entropy_source,
+			);
+			assert!(result.is_ok());
+			assert_eq!(
+				get_htlc_bucket(&rm, INCOMING_SCID_2, i, OUTGOING_SCID).unwrap(),
+				BucketAssigned::General
+			);
+		}
+
+		// Verify original channel pair still has 5 slots used
+		assert_general_bucket_slots_used(&rm, INCOMING_SCID, OUTGOING_SCID, 5);
+	}
+
+	#[test]
+	fn test_multi_channel_bucket_fallback_with_earned_reputation() {
+		let entropy_source = TestKeysInterface::new(&[2; 32], Network::Testnet);
+		let rm = create_test_resource_manager_with_channel_pairs(2);
+		let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+
+		let add_htlc_between =
+			|incoming_scid: u64, outgoing_scid: u64, accountable: bool, htlc_id: u64| {
+				rm.add_htlc(
+					incoming_scid,
+					HTLC_AMOUNT + FEE_AMOUNT,
+					CLTV_EXPIRY,
+					outgoing_scid,
+					HTLC_AMOUNT,
+					accountable,
+					htlc_id,
+					CURRENT_HEIGHT,
+					now,
+					&entropy_source,
+				)
+			};
+
+		// Build a revenue threshold of 5000 on INCOMING_SCID.
+		for i in 1..=5_u64 {
+			assert_eq!(
+				add_htlc_between(INCOMING_SCID, OUTGOING_SCID_2, false, i).unwrap(),
+				ForwardingOutcome::Forward(false),
+			);
+			rm.resolve_htlc(INCOMING_SCID, i, OUTGOING_SCID_2, true, now).unwrap();
+		}
+
+		// Use all generate slots available in INCOMING_SCID for both outgoing channels.
+		for i in 6..=10_u64 {
+			assert_eq!(
+				add_htlc_between(INCOMING_SCID, OUTGOING_SCID, false, i).unwrap(),
+				ForwardingOutcome::Forward(false),
+			);
+		}
+		for i in 11..=15_u64 {
+			assert_eq!(
+				add_htlc_between(INCOMING_SCID, OUTGOING_SCID_2, false, i).unwrap(),
+				ForwardingOutcome::Forward(false),
+			);
+		}
+		let mut htlc_id = 16_u64;
+
+		// Acquire a congestion slot for both outgoing channels. Reputation has not been earned
+		// yet, so unaccountable HTLCs fall to congestion.
+		let congestion_htlc_outgoing = htlc_id;
+		assert_eq!(
+			add_htlc_between(INCOMING_SCID, OUTGOING_SCID, false, congestion_htlc_outgoing)
+				.unwrap(),
+			ForwardingOutcome::Forward(true),
+		);
+		assert_eq!(
+			get_htlc_bucket(&rm, INCOMING_SCID, congestion_htlc_outgoing, OUTGOING_SCID).unwrap(),
+			BucketAssigned::Congestion,
+		);
+		htlc_id += 1;
+
+		let congestion_htlc_outgoing_2 = htlc_id;
+		assert_eq!(
+			add_htlc_between(INCOMING_SCID, OUTGOING_SCID_2, false, congestion_htlc_outgoing_2)
+				.unwrap(),
+			ForwardingOutcome::Forward(true),
+		);
+		assert_eq!(
+			get_htlc_bucket(&rm, INCOMING_SCID, congestion_htlc_outgoing_2, OUTGOING_SCID_2)
+				.unwrap(),
+			BucketAssigned::Congestion,
+		);
+		htlc_id += 1;
+
+		// Build reputation for OUTGOING_SCID channel but not for OUTGOING_SCID_2.
+		let rep_fee = 200_000_u64;
+		let rep_htlc_amount = 1_000_000_u64;
+		for i in htlc_id..htlc_id + 10 {
+			assert_eq!(
+				rm.add_htlc(
+					INCOMING_SCID_2,
+					rep_htlc_amount + rep_fee,
+					CLTV_EXPIRY,
+					OUTGOING_SCID,
+					rep_htlc_amount,
+					false,
+					i,
+					CURRENT_HEIGHT,
+					now,
+					&entropy_source,
+				)
+				.unwrap(),
+				ForwardingOutcome::Forward(false),
+			);
+			rm.resolve_htlc(INCOMING_SCID_2, i, OUTGOING_SCID, true, now).unwrap();
+		}
+		htlc_id += 10;
+
+		// Accountable HTLC forwarding decisions diverge based on earned reputation.
+		//
+		// - OUTGOING_SCID has reputation so accountable HTLC will get access to protected
+		// bucket.
+		// - OUTGOING_SCID_2 does not have reputation so it should fail.
+		assert_eq!(
+			add_htlc_between(INCOMING_SCID, OUTGOING_SCID, true, htlc_id).unwrap(),
+			ForwardingOutcome::Forward(true),
+		);
+		assert_eq!(
+			get_htlc_bucket(&rm, INCOMING_SCID, htlc_id, OUTGOING_SCID).unwrap(),
+			BucketAssigned::Protected,
+		);
+		htlc_id += 1;
+
+		assert_eq!(
+			add_htlc_between(INCOMING_SCID, OUTGOING_SCID_2, true, htlc_id).unwrap(),
+			ForwardingOutcome::Fail,
+		);
+		assert!(get_htlc_bucket(&rm, INCOMING_SCID, htlc_id, OUTGOING_SCID_2).is_none());
 	}
 
 	#[test]
