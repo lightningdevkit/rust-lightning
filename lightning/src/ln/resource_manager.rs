@@ -20,6 +20,26 @@ use crate::{
 /// The minimum number of slots required for the general bucket to function.
 const MIN_GENERAL_BUCKET_SLOTS: u16 = 5;
 
+/// The minimum number of accepted HTLCs required for a channel to be added to the resource
+/// manager. With the default bucket allocations of 40%/20%/40% (general/congestion/protected),
+/// the general bucket (40%) needs at least 5 usable HTLC slots to function effectively. To
+/// ensure the general bucket gets 5 slots at its 40% share, we need at least 12 total HTLC
+/// slots.
+const MIN_ACCEPTED_HTLCS: u16 = 12;
+
+/// The minimum `max_htlc_value_in_flight_msat` required for a channel to be added to the resource
+/// manager. This corresponds to the default `min_funding_satoshis` of 1000 in
+/// [`crate::util::config::ChannelHandshakeLimits`], which is the smallest channel size LDK will
+/// accept.
+const MIN_MAX_IN_FLIGHT_MSAT: u64 = 1_000_000;
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+enum BucketAssigned {
+	General,
+	Congestion,
+	Protected,
+}
+
 struct GeneralBucket {
 	/// Our SCID
 	scid: u64,
@@ -253,6 +273,175 @@ impl BucketResources {
 		self.slots_used -= 1;
 		self.liquidity_used -= htlc_amount_msat;
 		Ok(())
+	}
+}
+
+struct BucketAllocations {
+	general_slots: u16,
+	general_liquidity: u64,
+	congestion_slots: u16,
+	congestion_liquidity: u64,
+	protected_slots: u16,
+	protected_liquidity: u64,
+}
+
+fn bucket_allocations(
+	max_accepted_htlcs: u16, max_htlc_value_in_flight_msat: u64, general_pct: u8,
+	congestion_pct: u8,
+) -> BucketAllocations {
+	let general_slots = (max_accepted_htlcs as f64 * general_pct as f64 / 100.0).round() as u16;
+	let general_liquidity =
+		(max_htlc_value_in_flight_msat as f64 * general_pct as f64 / 100.0).round() as u64;
+
+	let congestion_slots =
+		(max_accepted_htlcs as f64 * congestion_pct as f64 / 100.0).round() as u16;
+	let congestion_liquidity =
+		(max_htlc_value_in_flight_msat as f64 * congestion_pct as f64 / 100.0).round() as u64;
+
+	let protected_slots = max_accepted_htlcs - general_slots - congestion_slots;
+	let protected_liquidity =
+		max_htlc_value_in_flight_msat - general_liquidity - congestion_liquidity;
+
+	BucketAllocations {
+		general_slots,
+		general_liquidity,
+		congestion_slots,
+		congestion_liquidity,
+		protected_slots,
+		protected_liquidity,
+	}
+}
+
+#[derive(Debug, Clone)]
+struct PendingHTLC {
+	incoming_amount_msat: u64,
+	fee: u64,
+	outgoing_accountable: bool,
+	added_at_unix_seconds: u64,
+	in_flight_risk: u64,
+	bucket: BucketAssigned,
+}
+
+#[derive(Debug, PartialEq, Eq, Hash)]
+struct HtlcRef {
+	incoming_channel_id: u64,
+	htlc_id: u64,
+}
+
+struct Channel {
+	/// The reputation this channel has accrued as an outgoing link.
+	outgoing_reputation: DecayingAverage,
+
+	/// The revenue this channel has earned us as an incoming link.
+	incoming_revenue: AggregatedWindowAverage,
+
+	/// HTLC Ref incoming channel -> pending HTLC outgoing.
+	/// It tracks all the pending HTLCs where this channel is the outgoing link.
+	pending_htlcs: HashMap<HtlcRef, PendingHTLC>,
+
+	general_bucket: GeneralBucket,
+	congestion_bucket: BucketResources,
+	/// SCID -> unix seconds timestamp
+	/// Tracks which channels have misused the congestion bucket and the unix timestamp.
+	last_congestion_misuse: HashMap<u64, u64>,
+	protected_bucket: BucketResources,
+}
+
+impl Channel {
+	fn new(
+		scid: u64, bucket_allocations: BucketAllocations, reputation_window: Duration,
+		revenue_week_avg_duration: Duration, timestamp_unix_secs: u64,
+	) -> Result<Self, ()> {
+		const REVENUE_WEEK_MULTIPLIER: u8 = 6;
+
+		Ok(Channel {
+			outgoing_reputation: DecayingAverage::new(timestamp_unix_secs, reputation_window),
+			incoming_revenue: AggregatedWindowAverage::new(
+				revenue_week_avg_duration,
+				REVENUE_WEEK_MULTIPLIER,
+				timestamp_unix_secs,
+			),
+			pending_htlcs: new_hash_map(),
+			general_bucket: GeneralBucket::new(
+				scid,
+				bucket_allocations.general_slots,
+				bucket_allocations.general_liquidity,
+			)?,
+			congestion_bucket: BucketResources::new(
+				bucket_allocations.congestion_slots,
+				bucket_allocations.congestion_liquidity,
+			),
+			last_congestion_misuse: new_hash_map(),
+			protected_bucket: BucketResources::new(
+				bucket_allocations.protected_slots,
+				bucket_allocations.protected_liquidity,
+			),
+		})
+	}
+
+	fn general_available<ES: EntropySource>(
+		&mut self, incoming_amount_msat: u64, outgoing_channel_id: u64, entropy_source: &ES,
+	) -> Result<bool, ()> {
+		self.general_bucket.can_add_htlc(outgoing_channel_id, incoming_amount_msat, entropy_source)
+	}
+
+	fn congestion_eligible(
+		&mut self, pending_htlcs_in_congestion: bool, incoming_amount_msat: u64,
+		outgoing_channel_id: u64, at_timestamp: u64,
+	) -> bool {
+		!pending_htlcs_in_congestion
+			&& self.can_add_htlc_congestion(outgoing_channel_id, incoming_amount_msat, at_timestamp)
+	}
+
+	fn misused_congestion(&mut self, channel_id: u64, misuse_timestamp: u64) {
+		self.last_congestion_misuse.insert(channel_id, misuse_timestamp);
+	}
+
+	// Returns whether the outgoing channel has misused the congestion bucket in the last two
+	// weeks.
+	fn has_misused_congestion(&mut self, outgoing_scid: u64, at_timestamp: u64) -> bool {
+		match self.last_congestion_misuse.entry(outgoing_scid) {
+			Entry::Vacant(_) => false,
+			Entry::Occupied(last_misuse) => {
+				let timestamp = u64::max(at_timestamp, *last_misuse.get());
+				// If the last misuse of the congestion bucket was over more than two
+				// weeks ago, remove the entry.
+				const TWO_WEEKS: u64 = 2016 * 10 * 60;
+				let since_last_misuse = timestamp - last_misuse.get();
+				if since_last_misuse < TWO_WEEKS {
+					true
+				} else {
+					last_misuse.remove();
+					false
+				}
+			},
+		}
+	}
+
+	fn can_add_htlc_congestion(
+		&mut self, channel_id: u64, htlc_amount_msat: u64, at_timestamp: u64,
+	) -> bool {
+		let congestion_resources_available =
+			self.congestion_bucket.resources_available(htlc_amount_msat);
+		let misused_congestion = self.has_misused_congestion(channel_id, at_timestamp);
+
+		let below_liquidity_limit = htlc_amount_msat
+			<= self.congestion_bucket.liquidity_allocated
+				/ self.congestion_bucket.slots_allocated as u64;
+
+		congestion_resources_available && !misused_congestion && below_liquidity_limit
+	}
+
+	fn sufficient_reputation(
+		&mut self, in_flight_htlc_risk: u64, outgoing_reputation: i64,
+		outgoing_in_flight_risk: u64, at_timestamp: u64,
+	) -> bool {
+		let incoming_revenue_threshold = self.incoming_revenue.value_at_timestamp(at_timestamp);
+
+		outgoing_reputation
+			.saturating_sub(i64::try_from(outgoing_in_flight_risk).unwrap_or(i64::MAX))
+			.saturating_sub(i64::try_from(in_flight_htlc_risk).unwrap_or(i64::MAX))
+			>= incoming_revenue_threshold
 	}
 }
 
