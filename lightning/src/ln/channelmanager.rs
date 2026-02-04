@@ -1077,6 +1077,7 @@ enum BackgroundEvent {
 		counterparty_node_id: PublicKey,
 		funding_txo: OutPoint,
 		channel_id: ChannelId,
+		highest_update_id_completed: u64,
 	},
 }
 
@@ -6413,8 +6414,23 @@ where
 				BackgroundEvent::MonitorUpdateRegeneratedOnStartup { counterparty_node_id, funding_txo, channel_id, update } => {
 					self.apply_post_close_monitor_update(counterparty_node_id, channel_id, funding_txo, update);
 				},
-				BackgroundEvent::MonitorUpdatesComplete { counterparty_node_id, funding_txo, channel_id } => {
-					self.channel_monitor_updated(&funding_txo, &channel_id, None, Some(&counterparty_node_id));
+				BackgroundEvent::MonitorUpdatesComplete {
+					counterparty_node_id,
+					funding_txo,
+					channel_id,
+					highest_update_id_completed,
+				} => {
+					// Now that we can finally handle the background event, remove all in-flight
+					// monitor updates for this channel that we've known to complete, as they have
+					// already been persisted to the monitor and can be applied to our internal
+					// state such that the channel resumes operation if no new updates have been
+					// made since.
+					self.channel_monitor_updated(
+						&funding_txo,
+						&channel_id,
+						Some(highest_update_id_completed),
+						Some(&counterparty_node_id),
+					);
 				},
 			}
 		}
@@ -13911,39 +13927,58 @@ where
 			($counterparty_node_id: expr, $chan_in_flight_upds: expr, $funding_txo: expr,
 			 $monitor: expr, $peer_state: expr, $logger: expr, $channel_info_log: expr
 			) => { {
+				// When all in-flight updates have completed after we were last serialized, we
+				// need to remove them. However, we can't guarantee that the next serialization
+				// will have happened after processing the
+				// `BackgroundEvent::MonitorUpdatesComplete`, so removing them now could lead to the
+				// channel never being resumed as the event would not be regenerated after another
+				// reload. At the same time, we don't want to resume the channel now because there
+				// may be post-update actions to handle. Therefore, we're forced to keep tracking
+				// the completed in-flight updates (but only when they have all completed) until we
+				// are processing the `BackgroundEvent::MonitorUpdatesComplete`.
 				let mut max_in_flight_update_id = 0;
-				let starting_len =  $chan_in_flight_upds.len();
-				$chan_in_flight_upds.retain(|upd| upd.update_id > $monitor.get_latest_update_id());
-				if $chan_in_flight_upds.len() < starting_len {
+				let num_updates_completed = $chan_in_flight_upds
+					.iter()
+					.filter(|update| {
+						max_in_flight_update_id = cmp::max(max_in_flight_update_id, update.update_id);
+						update.update_id <= $monitor.get_latest_update_id()
+					})
+					.count();
+				if num_updates_completed > 0 {
 					log_debug!(
 						$logger,
 						"{} ChannelMonitorUpdates completed after ChannelManager was last serialized",
-						starting_len - $chan_in_flight_upds.len()
+						num_updates_completed,
 					);
 				}
-				for update in $chan_in_flight_upds.iter() {
-					log_debug!($logger, "Replaying ChannelMonitorUpdate {} for {}channel {}",
-						update.update_id, $channel_info_log, &$monitor.channel_id());
-					max_in_flight_update_id = cmp::max(max_in_flight_update_id, update.update_id);
-					pending_background_events.push(
-						BackgroundEvent::MonitorUpdateRegeneratedOnStartup {
-							counterparty_node_id: $counterparty_node_id,
-							funding_txo: $funding_txo,
-							channel_id: $monitor.channel_id(),
-							update: update.clone(),
-						});
-				}
-				if $chan_in_flight_upds.is_empty() {
-					// We had some updates to apply, but it turns out they had completed before we
-					// were serialized, we just weren't notified of that. Thus, we may have to run
-					// the completion actions for any monitor updates, but otherwise are done.
+				let all_updates_completed = num_updates_completed == $chan_in_flight_upds.len();
+
+				if all_updates_completed {
+					log_debug!($logger, "All monitor updates completed since the ChannelManager was last serialized");
 					pending_background_events.push(
 						BackgroundEvent::MonitorUpdatesComplete {
 							counterparty_node_id: $counterparty_node_id,
 							funding_txo: $funding_txo,
 							channel_id: $monitor.channel_id(),
+							highest_update_id_completed: max_in_flight_update_id,
 						});
 				} else {
+					$chan_in_flight_upds.retain(|update| {
+						let replay = update.update_id > $monitor.get_latest_update_id();
+						if replay {
+							log_debug!($logger, "Replaying ChannelMonitorUpdate {} for {}channel {}",
+								update.update_id, $channel_info_log, &$monitor.channel_id());
+							pending_background_events.push(
+								BackgroundEvent::MonitorUpdateRegeneratedOnStartup {
+									counterparty_node_id: $counterparty_node_id,
+									funding_txo: $funding_txo,
+									channel_id: $monitor.channel_id(),
+									update: update.clone(),
+								}
+							);
+						}
+						replay
+					});
 					$peer_state.closed_channel_monitor_update_ids.entry($monitor.channel_id())
 						.and_modify(|v| *v = cmp::max(max_in_flight_update_id, *v))
 						.or_insert(max_in_flight_update_id);
