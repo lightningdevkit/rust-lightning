@@ -256,6 +256,55 @@ fn derive_channel_salt(node_salt: &[u8; 32], outgoing_scid: u64) -> [u8; 32] {
 	sha256::Hash::from_engine(engine).to_byte_array()
 }
 
+struct BucketResources {
+	slots_allocated: u16,
+	slots_used: u16,
+	liquidity_allocated: u64,
+	liquidity_used: u64,
+}
+
+impl BucketResources {
+	fn new(slots_allocated: u16, liquidity_allocated: u64) -> Self {
+		BucketResources { slots_allocated, slots_used: 0, liquidity_allocated, liquidity_used: 0 }
+	}
+
+	fn resources_available(&self, htlc_amount_msat: u64) -> bool {
+		return (self.liquidity_used + htlc_amount_msat <= self.liquidity_allocated)
+			&& (self.slots_used < self.slots_allocated);
+	}
+
+	fn add_htlc(&mut self, htlc_amount_msat: u64) -> Result<(), ()> {
+		if !self.resources_available(htlc_amount_msat) {
+			return Err(());
+		}
+
+		self.slots_used += 1;
+		self.liquidity_used += htlc_amount_msat;
+		debug_assert!(
+			self.slots_used <= self.slots_allocated,
+			"slots_used {} exceeded slots_allocated {}",
+			self.slots_used,
+			self.slots_allocated
+		);
+		debug_assert!(
+			self.liquidity_used <= self.liquidity_allocated,
+			"liquidity_used {} exceeded liquidity_allocated {}",
+			self.liquidity_used,
+			self.liquidity_allocated
+		);
+		Ok(())
+	}
+
+	fn remove_htlc(&mut self, htlc_amount_msat: u64) -> Result<(), ()> {
+		if self.slots_used == 0 || self.liquidity_used < htlc_amount_msat {
+			return Err(());
+		}
+		self.slots_used -= 1;
+		self.liquidity_used -= htlc_amount_msat;
+		Ok(())
+	}
+}
+
 /// A weighted average that decays over a specified window.
 ///
 /// It enables tracking of historical behavior without storing individual data points.
@@ -354,7 +403,7 @@ mod tests {
 		crypto::chacha20::ChaCha20,
 		ln::resource_manager::{
 			assign_slots_for_channel, slot_index, slot_used, AggregatedWindowAverage,
-			DecayingAverage, GeneralBucket,
+			BucketResources, DecayingAverage, GeneralBucket,
 		},
 		sign::EntropySource,
 		util::test_utils::TestKeysInterface,
@@ -531,6 +580,60 @@ mod tests {
 		assert!(!general_bucket.is_slot_occupied(slot_occupied));
 		let channel_slots = general_bucket.channels_slots.get(&scid).unwrap();
 		assert!(channel_slots.iter().all(|entry| !slot_used(*entry)));
+	}
+
+	fn test_bucket_resources() -> BucketResources {
+		BucketResources {
+			slots_allocated: 10,
+			slots_used: 0,
+			liquidity_allocated: 100_000,
+			liquidity_used: 0,
+		}
+	}
+
+	#[test]
+	fn test_bucket_resources_add_htlc() {
+		let mut bucket_resources = test_bucket_resources();
+		let available_liquidity = bucket_resources.liquidity_allocated;
+		assert!(bucket_resources.add_htlc(available_liquidity + 1000).is_err());
+
+		assert!(bucket_resources.add_htlc(21_000).is_ok());
+		assert!(bucket_resources.add_htlc(42_000).is_ok());
+		assert_eq!(bucket_resources.slots_used, 2);
+		assert_eq!(bucket_resources.liquidity_used, 63_000);
+	}
+
+	#[test]
+	fn test_bucket_resources_add_htlc_over_resources_available() {
+		// Test trying to go over slot limit
+		let mut bucket_resources = test_bucket_resources();
+		let slots_available = bucket_resources.slots_allocated;
+		for _ in 0..slots_available {
+			assert!(bucket_resources.add_htlc(10).is_ok());
+		}
+		assert_eq!(bucket_resources.slots_used, slots_available);
+		assert!(bucket_resources.add_htlc(10).is_err());
+
+		// Test trying to go over liquidity limit
+		let mut bucket = test_bucket_resources();
+		assert!(bucket.add_htlc(bucket.liquidity_allocated - 1000).is_ok());
+		assert!(bucket.add_htlc(2000).is_err());
+	}
+
+	#[test]
+	fn test_bucket_resources_remove_htlc() {
+		let mut bucket_resources = test_bucket_resources();
+
+		// If no resources have been used, removing HTLC should fail
+		assert!(bucket_resources.remove_htlc(100).is_err());
+
+		bucket_resources.add_htlc(1000).unwrap();
+		// Test failure if it tries to remove amount over what is currently in use.
+		assert!(bucket_resources.remove_htlc(1001).is_err());
+
+		assert!(bucket_resources.remove_htlc(1000).is_ok());
+		assert_eq!(bucket_resources.slots_used, 0);
+		assert_eq!(bucket_resources.liquidity_used, 0);
 	}
 
 	#[test]
