@@ -1,6 +1,6 @@
 [package]
 name = "lightning-custom-message"
-version = "0.2.0+git"
+version = "0.3.0+git"
 authors = ["Jeffrey Czyz"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/lightningdevkit/rust-lightning"
