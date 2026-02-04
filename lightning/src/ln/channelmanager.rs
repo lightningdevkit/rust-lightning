@@ -17239,7 +17239,7 @@ pub(super) struct ChannelManagerData<SP: SignerProvider> {
 	claimable_htlc_onion_fields: Option<Vec<Option<RecipientOnionFields>>>,
 	inbound_payment_id_secret: Option<[u8; 32]>,
 	in_flight_monitor_updates: Option<HashMap<(PublicKey, ChannelId), Vec<ChannelMonitorUpdate>>>,
-	peer_storage_dir: Option<Vec<(PublicKey, Vec<u8>)>>,
+	peer_storage_dir: Vec<(PublicKey, Vec<u8>)>,
 	async_receive_offer_cache: AsyncReceiveOfferCache,
 	// Marked `_legacy` because in versions > 0.2 we are taking steps to remove the requirement of
 	// regularly persisting the `ChannelManager` and instead rebuild the set of HTLC forwards from
@@ -17506,7 +17506,7 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 				.unwrap_or_else(new_hash_map),
 			inbound_payment_id_secret,
 			in_flight_monitor_updates,
-			peer_storage_dir,
+			peer_storage_dir: peer_storage_dir.unwrap_or_default(),
 			async_receive_offer_cache,
 		})
 	}
@@ -18102,11 +18102,9 @@ impl<
 
 		let pending_outbounds = OutboundPayments::new(pending_outbound_payments);
 
-		if let Some(peer_storage_dir) = peer_storage_dir {
-			for (peer_pubkey, peer_storage) in peer_storage_dir {
-				if let Some(peer_state) = per_peer_state.get_mut(&peer_pubkey) {
-					peer_state.get_mut().unwrap().peer_storage = peer_storage;
-				}
+		for (peer_pubkey, peer_storage) in peer_storage_dir {
+			if let Some(peer_state) = per_peer_state.get_mut(&peer_pubkey) {
+				peer_state.get_mut().unwrap().peer_storage = peer_storage;
 			}
 		}
 
