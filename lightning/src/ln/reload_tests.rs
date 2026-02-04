@@ -1420,3 +1420,84 @@ fn test_peer_storage() {
 	assert!(res.is_err());
 }
 
+#[test]
+fn test_hold_completed_inflight_monitor_updates_upon_manager_reload() {
+	// Test that if a `ChannelMonitorUpdate` completes after the `ChannelManager` is serialized,
+	// but before it is deserialized, we hold any completed in-flight updates until background event
+	// processing. Previously, we would remove completed monitor updates from
+	// `in_flight_monitor_updates` during deserialization, relying on
+	// [`ChannelManager::process_background_events`] to eventually be called before the
+	// `ChannelManager` is serialized again such that the channel is resumed and further updates can
+	// be made.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let (persister_a, persister_b);
+	let (chain_monitor_a, chain_monitor_b);
+
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes_0_deserialized_a;
+	let nodes_0_deserialized_b;
+
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
+
+	send_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+
+	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
+
+	// Send a payment that will be pending due to an async monitor update.
+	let (route, payment_hash, _, payment_secret) =
+		get_route_and_payment_hash!(nodes[0], nodes[1], 1_000_000);
+	let payment_id = PaymentId(payment_hash.0);
+	let onion = RecipientOnionFields::secret_only(payment_secret);
+	nodes[0].node.send_payment_with_route(route, payment_hash, onion, payment_id).unwrap();
+	check_added_monitors(&nodes[0], 1);
+
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+	// Serialize the ChannelManager while the monitor update is still in-flight.
+	let node_0_serialized = nodes[0].node.encode();
+
+	// Now complete the monitor update by calling force_channel_monitor_updated.
+	// This updates the monitor's state, but the ChannelManager still thinks it's pending.
+	let (_, latest_update_id) = nodes[0].chain_monitor.get_latest_mon_update_id(chan_id);
+	nodes[0].chain_monitor.chain_monitor.force_channel_monitor_updated(chan_id, latest_update_id);
+	let monitor_serialized_updated = get_monitor!(nodes[0], chan_id).encode();
+
+	// Reload the node with the updated monitor. Upon deserialization, the ChannelManager will
+	// detect that the monitor update completed (monitor's update_id >= the in-flight update_id)
+	// and queue a `BackgroundEvent::MonitorUpdatesComplete`.
+	nodes[0].node.peer_disconnected(nodes[1].node.get_our_node_id());
+	nodes[1].node.peer_disconnected(nodes[0].node.get_our_node_id());
+	reload_node!(
+		nodes[0],
+		test_default_channel_config(),
+		&node_0_serialized,
+		&[&monitor_serialized_updated[..]],
+		persister_a,
+		chain_monitor_a,
+		nodes_0_deserialized_a
+	);
+
+	// If we serialize again, even though we haven't processed any background events yet, we should
+	// still see the `BackgroundEvent::MonitorUpdatesComplete` be regenerated on startup.
+	let node_0_serialized = nodes[0].node.encode();
+	reload_node!(
+		nodes[0],
+		test_default_channel_config(),
+		&node_0_serialized,
+		&[&monitor_serialized_updated[..]],
+		persister_b,
+		chain_monitor_b,
+		nodes_0_deserialized_b
+	);
+
+	// Reconnect the nodes. We should finally see the `update_add_htlc` go out, as the reconnection
+	// should first process `BackgroundEvent::MonitorUpdatesComplete, allowing the channel to be
+	// resumed.
+	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
+	reconnect_args.pending_htlc_adds = (0, 1);
+	reconnect_nodes(reconnect_args);
+}
+
