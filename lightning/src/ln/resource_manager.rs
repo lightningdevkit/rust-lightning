@@ -204,6 +204,43 @@ impl GeneralBucket {
 	}
 }
 
+struct BucketResources {
+	slots_allocated: u16,
+	slots_used: u16,
+	liquidity_allocated: u64,
+	liquidity_used: u64,
+}
+
+impl BucketResources {
+	fn new(slots_allocated: u16, liquidity_allocated: u64) -> Self {
+		BucketResources { slots_allocated, slots_used: 0, liquidity_allocated, liquidity_used: 0 }
+	}
+
+	fn resources_available(&self, htlc_amount_msat: u64) -> bool {
+		return (self.liquidity_used + htlc_amount_msat <= self.liquidity_allocated)
+			&& (self.slots_used < self.slots_allocated);
+	}
+
+	fn add_htlc(&mut self, htlc_amount_msat: u64) -> Result<(), ()> {
+		if !self.resources_available(htlc_amount_msat) {
+			return Err(());
+		}
+
+		self.slots_used += 1;
+		self.liquidity_used += htlc_amount_msat;
+		Ok(())
+	}
+
+	fn remove_htlc(&mut self, htlc_amount_msat: u64) -> Result<(), ()> {
+		if self.slots_used == 0 || self.liquidity_used < htlc_amount_msat {
+			return Err(());
+		}
+		self.slots_used -= 1;
+		self.liquidity_used -= htlc_amount_msat;
+		Ok(())
+	}
+}
+
 /// A weighted average that decays over a specified window.
 ///
 /// It enables tracking of historical behavior without storing individual data points.
@@ -322,7 +359,9 @@ mod tests {
 	use bitcoin::Network;
 
 	use crate::{
-		ln::resource_manager::{AggregatedWindowAverage, DecayingAverage, GeneralBucket},
+		ln::resource_manager::{
+			AggregatedWindowAverage, BucketResources, DecayingAverage, GeneralBucket,
+		},
 		sign::EntropySource,
 		util::test_utils::TestKeysInterface,
 	};
@@ -499,6 +538,77 @@ mod tests {
 		let channel_slots = general_bucket.channels_slots.get(&scid).unwrap();
 		assert_eq!(channel_slots.0.iter().find(|slot| slot.0 == slot_occupied).unwrap().1, false);
 		assert_eq!(general_bucket.slots_occupied[slot_occupied as usize], false);
+	}
+
+	fn test_bucket_resources() -> BucketResources {
+		BucketResources {
+			slots_allocated: 10,
+			slots_used: 0,
+			liquidity_allocated: 100_000,
+			liquidity_used: 0,
+		}
+	}
+
+	#[test]
+	fn test_bucket_resources_add_htlc() {
+		let mut bucket_resources = test_bucket_resources();
+		let available_liquidity = bucket_resources.liquidity_allocated;
+		assert!(bucket_resources.add_htlc(available_liquidity + 1000).is_err());
+
+		assert!(bucket_resources.add_htlc(21_000).is_ok());
+		assert!(bucket_resources.add_htlc(42_000).is_ok());
+		assert_eq!(bucket_resources.slots_used, 2);
+		assert_eq!(bucket_resources.liquidity_used, 63_000);
+	}
+
+	#[test]
+	fn test_bucket_resources_add_htlc_over_resources_available() {
+		struct TestCase {
+			setup: fn(&mut BucketResources),
+			htlc_amount: u64,
+		}
+
+		// Use all available slots
+		let case_1 = TestCase {
+			setup: |bucket: &mut BucketResources| {
+				let slots_available = bucket.slots_allocated;
+				for _ in 0..slots_available {
+					assert!(bucket.add_htlc(10).is_ok());
+				}
+				assert_eq!(bucket.slots_used, slots_available);
+			},
+			htlc_amount: 10,
+		};
+		// Use liquidity and then try to go over limit
+		let case_2 = TestCase {
+			setup: |bucket: &mut BucketResources| {
+				assert!(bucket.add_htlc(bucket.liquidity_allocated - 1000).is_ok());
+			},
+			htlc_amount: 2000,
+		};
+
+		let cases = vec![case_1, case_2];
+		for case in cases {
+			let mut bucket_resources = test_bucket_resources();
+			(case.setup)(&mut bucket_resources);
+			assert!(bucket_resources.add_htlc(case.htlc_amount).is_err());
+		}
+	}
+
+	#[test]
+	fn test_bucket_resources_remove_htlc() {
+		let mut bucket_resources = test_bucket_resources();
+
+		// If no resources have been used, removing HTLC should fail
+		assert!(bucket_resources.remove_htlc(100).is_err());
+
+		bucket_resources.add_htlc(1000).unwrap();
+		// Test failure if it tries to remove amount over what is currently in use.
+		assert!(bucket_resources.remove_htlc(1001).is_err());
+
+		assert!(bucket_resources.remove_htlc(1000).is_ok());
+		assert_eq!(bucket_resources.slots_used, 0);
+		assert_eq!(bucket_resources.liquidity_used, 0);
 	}
 
 	#[test]
