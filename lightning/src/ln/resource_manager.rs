@@ -13,9 +13,17 @@ use core::time::Duration;
 
 use crate::{
 	crypto::chacha20::ChaCha20,
+	ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS,
 	prelude::{hash_map::Entry, new_hash_map, HashMap},
 	sign::EntropySource,
 };
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+enum BucketAssigned {
+	General,
+	Congestion,
+	Protected,
+}
 
 struct GeneralBucket {
 	/// Our SCID
@@ -234,6 +242,181 @@ impl BucketResources {
 	}
 }
 
+#[derive(Debug, Clone)]
+struct PendingHTLC {
+	incoming_amount_msat: u64,
+	fee: u64,
+	outgoing_accountable: bool,
+	added_at_unix_seconds: u64,
+	in_flight_risk: u64,
+	bucket: BucketAssigned,
+}
+
+#[derive(Debug, PartialEq, Eq, Hash)]
+struct HtlcRef {
+	incoming_channel_id: u64,
+	htlc_id: u64,
+}
+
+struct Channel {
+	/// The reputation this channel has accrued as an outgoing link.
+	outgoing_reputation: DecayingAverage,
+
+	/// The revenue this channel has earned us as an incoming link.
+	incoming_revenue: AggregatedWindowAverage,
+
+	/// HTLC Ref incoming channel -> pending HTLC outgoing.
+	/// It tracks all the pending HTLCs where this channel is the outgoing link.
+	pending_htlcs: HashMap<HtlcRef, PendingHTLC>,
+
+	general_bucket: GeneralBucket,
+	congestion_bucket: BucketResources,
+	/// SCID -> unix seconds timestamp
+	/// Tracks which channels have misused the congestion bucket and the unix timestamp.
+	last_congestion_misuse: HashMap<u64, u64>,
+	protected_bucket: BucketResources,
+}
+
+impl Channel {
+	fn new(
+		scid: u64, max_htlc_value_in_flight_msat: u64, max_accepted_htlcs: u16,
+		general_bucket_pct: u8, congestion_bucket_pct: u8, reputation_window: Duration,
+		revenue_window_weeks: u8, revenue_week_avg: u8, timestamp_unix_secs: u64,
+	) -> Result<Self, ()> {
+		let max_in_flight_sat = max_htlc_value_in_flight_msat / 1000;
+		if max_accepted_htlcs > 483 || max_in_flight_sat >= TOTAL_BITCOIN_SUPPLY_SATOSHIS {
+			return Err(());
+		}
+
+		if max_accepted_htlcs < 12 || max_in_flight_sat < 1000 {
+			return Err(());
+		}
+
+		if general_bucket_pct + congestion_bucket_pct >= 100 {
+			return Err(());
+		}
+
+		let general_bucket_slots_allocated =
+			(max_accepted_htlcs as f64 * general_bucket_pct as f64 / 100.0).round() as u16;
+		let general_bucket_liquidity_allocated =
+			(max_htlc_value_in_flight_msat as f64 * general_bucket_pct as f64 / 100.0).round()
+				as u64;
+
+		let congestion_bucket_slots_allocated =
+			(max_accepted_htlcs as f64 * congestion_bucket_pct as f64 / 100.0).round() as u16;
+		let congestion_bucket_liquidity_allocated =
+			(max_htlc_value_in_flight_msat as f64 * congestion_bucket_pct as f64 / 100.0).round()
+				as u64;
+
+		let protected_bucket_slots_allocated =
+			max_accepted_htlcs - general_bucket_slots_allocated - congestion_bucket_slots_allocated;
+		let protected_bucket_liquidity_allocated = max_htlc_value_in_flight_msat
+			- general_bucket_liquidity_allocated
+			- congestion_bucket_liquidity_allocated;
+
+		Ok(Channel {
+			outgoing_reputation: DecayingAverage::new(timestamp_unix_secs, reputation_window),
+			incoming_revenue: AggregatedWindowAverage::new(
+				revenue_week_avg,
+				revenue_window_weeks,
+				timestamp_unix_secs,
+			),
+			pending_htlcs: new_hash_map(),
+			general_bucket: GeneralBucket::new(
+				scid,
+				general_bucket_slots_allocated,
+				general_bucket_liquidity_allocated,
+			),
+			congestion_bucket: BucketResources::new(
+				congestion_bucket_slots_allocated,
+				congestion_bucket_liquidity_allocated,
+			),
+			last_congestion_misuse: new_hash_map(),
+			protected_bucket: BucketResources::new(
+				protected_bucket_slots_allocated,
+				protected_bucket_liquidity_allocated,
+			),
+		})
+	}
+
+	fn general_available<ES: EntropySource>(
+		&mut self, incoming_amount_msat: u64, outgoing_channel_id: u64, entropy_source: &ES,
+	) -> Result<bool, ()> {
+		Ok(self.general_bucket.can_add_htlc(
+			outgoing_channel_id,
+			incoming_amount_msat,
+			entropy_source,
+		)?)
+	}
+
+	fn congestion_eligible(
+		&mut self, pending_htlcs_in_congestion: bool, incoming_amount_msat: u64,
+		outgoing_channel_id: u64, at_timestamp: u64,
+	) -> Result<bool, ()> {
+		Ok(!pending_htlcs_in_congestion
+			&& self.can_add_htlc_congestion(
+				outgoing_channel_id,
+				incoming_amount_msat,
+				at_timestamp,
+			)?)
+	}
+
+	fn misused_congestion(&mut self, channel_id: u64, misuse_timestamp: u64) {
+		self.last_congestion_misuse.insert(channel_id, misuse_timestamp);
+	}
+
+	// Returns whether the outgoing channel has misused the congestion bucket in the last two
+	// weeks.
+	fn has_misused_congestion(
+		&mut self, outgoing_scid: u64, at_timestamp: u64,
+	) -> Result<bool, ()> {
+		match self.last_congestion_misuse.entry(outgoing_scid) {
+			Entry::Vacant(_) => Ok(false),
+			Entry::Occupied(last_misuse) => {
+				if at_timestamp < *last_misuse.get() {
+					return Err(());
+				}
+				// If the last misuse of the congestion bucket was over more than two
+				// weeks ago, remove the entry.
+				const TWO_WEEKS: u64 = 2016 * 10 * 60;
+				let since_last_misuse = at_timestamp - last_misuse.get();
+				if since_last_misuse < TWO_WEEKS {
+					return Ok(true);
+				} else {
+					last_misuse.remove();
+					return Ok(false);
+				}
+			},
+		}
+	}
+
+	fn can_add_htlc_congestion(
+		&mut self, channel_id: u64, htlc_amount_msat: u64, at_timestamp: u64,
+	) -> Result<bool, ()> {
+		let congestion_resources_available =
+			self.congestion_bucket.resources_available(htlc_amount_msat);
+		let misused_congestion = self.has_misused_congestion(channel_id, at_timestamp)?;
+
+		let below_liquidity_limit = htlc_amount_msat
+			<= self.congestion_bucket.liquidity_allocated
+				/ self.congestion_bucket.slots_allocated as u64;
+
+		Ok(congestion_resources_available && !misused_congestion && below_liquidity_limit)
+	}
+
+	fn sufficient_reputation(
+		&mut self, in_flight_htlc_risk: u64, outgoing_reputation: i64,
+		outgoing_in_flight_risk: u64, at_timestamp: u64,
+	) -> Result<bool, ()> {
+		let incoming_revenue_threshold = self.incoming_revenue.value_at_timestamp(at_timestamp)?;
+
+		Ok(outgoing_reputation
+			.saturating_sub(i64::try_from(outgoing_in_flight_risk).unwrap_or(i64::MAX))
+			.saturating_sub(i64::try_from(in_flight_htlc_risk).unwrap_or(i64::MAX))
+			>= incoming_revenue_threshold)
+	}
+}
+
 /// A weighted average that decays over a specified window.
 ///
 /// It enables tracking of historical behavior without storing individual data points.
@@ -330,9 +513,12 @@ mod tests {
 
 	use crate::{
 		crypto::chacha20::ChaCha20,
-		ln::resource_manager::{
-			assign_slots_for_channel, AggregatedWindowAverage, BucketResources, DecayingAverage,
-			GeneralBucket,
+		ln::{
+			channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS,
+			resource_manager::{
+				assign_slots_for_channel, AggregatedWindowAverage, BucketResources, Channel,
+				DecayingAverage, GeneralBucket,
+			},
 		},
 		util::test_utils::TestKeysInterface,
 	};
@@ -564,6 +750,38 @@ mod tests {
 		assert!(bucket_resources.remove_htlc(1000).is_ok());
 		assert_eq!(bucket_resources.slots_used, 0);
 		assert_eq!(bucket_resources.liquidity_used, 0);
+	}
+
+	#[test]
+	fn test_invalid_channel_configs() {
+		// (max_inflight, max_accepted_htlcs, general_pct, congestion_pct, protected_pct)
+		let cases: Vec<(u64, u16, u8, u8)> = vec![
+			// Invalid max_accepted_htlcs (> 483)
+			(100_000, 500, 40, 20),
+			// Invalid max_htlc_value_in_flight_msat (>= total bitcoin supply)
+			(TOTAL_BITCOIN_SUPPLY_SATOSHIS * 1000 + 1, 483, 40, 20),
+			// Invalid bucket percentages
+			(100_000, 483, 70, 50),
+			// Invalid max_accepted_htlcs (< 12)
+			(100_000_000, 11, 40, 20),
+			// Invalid max_htlc_value_in_flight_msat (< 1000 sats)
+			(999_999, 100, 40, 20),
+		];
+
+		for (max_inflight, max_htlcs, general_pct, congestion_pct) in cases {
+			assert!(Channel::new(
+				0,
+				max_inflight,
+				max_htlcs,
+				general_pct,
+				congestion_pct,
+				WINDOW,
+				12,
+				2,
+				0,
+			)
+			.is_err());
+		}
 	}
 
 	#[test]
