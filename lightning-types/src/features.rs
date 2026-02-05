@@ -166,7 +166,7 @@ mod sealed {
 			// Byte 6
 			ZeroConf,
 			// Byte 7
-			Trampoline | SimpleClose | SpliceProduction | SplicePrototype,
+			Trampoline | SimpleClose | Splice,
 			// Byte 8 - 16
 			,,,,,,,,,
 			// Byte 17
@@ -195,7 +195,7 @@ mod sealed {
 			// Byte 6
 			ZeroConf | Keysend,
 			// Byte 7
-			Trampoline | SimpleClose | SpliceProduction | SplicePrototype,
+			Trampoline | SimpleClose | Splice,
 			// Byte 8 - 16
 			,,,,,,,,,
 			// Byte 17
@@ -687,14 +687,14 @@ mod sealed {
 	);
 	define_feature!(
 		63,
-		SpliceProduction,
+		Splice,
 		[InitContext, NodeContext],
 		"Feature flags for channel splicing.",
-		set_splicing_production_optional,
-		set_splicing_production_required,
-		clear_splicing_production,
-		supports_splicing_production,
-		requires_splicing_production
+		set_splicing_optional,
+		set_splicing_required,
+		clear_splicing,
+		supports_splicing,
+		requires_splicing
 	);
 	// By default, allocate enough bytes to cover up to Splice. Update this as new features are
 	// added which we expect to appear commonly across contexts.
@@ -720,17 +720,6 @@ mod sealed {
 		clear_htlc_hold,
 		supports_htlc_hold,
 		requires_htlc_hold
-	);
-	define_feature!(
-		63, // Actually the SpliceProduction feature
-		SplicePrototype,
-		[InitContext, NodeContext],
-		"Feature flags for channel splicing.",
-		set_splicing_optional,
-		set_splicing_required,
-		clear_splicing,
-		supports_splicing,
-		requires_splicing
 	);
 	define_feature!(
 		259,
