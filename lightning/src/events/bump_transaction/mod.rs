@@ -377,7 +377,7 @@ impl CoinSelection {
 		self.confirmed_utxos.iter().map(|ConfirmedUtxo { utxo, .. }| utxo.satisfaction_weight).sum()
 	}
 
-	fn amount(&self) -> Amount {
+	fn input_amount(&self) -> Amount {
 		self.confirmed_utxos.iter().map(|ConfirmedUtxo { utxo, .. }| utxo.output.value).sum()
 	}
 }
@@ -902,7 +902,7 @@ where
 			let input_satisfaction_weight = coin_selection.satisfaction_weight();
 			let total_satisfaction_weight =
 				anchor_input_witness_weight + EMPTY_SCRIPT_SIG_WEIGHT + input_satisfaction_weight;
-			let total_input_amount = must_spend_amount + coin_selection.amount();
+			let total_input_amount = must_spend_amount + coin_selection.input_amount();
 
 			self.process_coin_selection(&mut anchor_tx, &coin_selection);
 			let anchor_txid = anchor_tx.compute_txid();
@@ -1156,7 +1156,7 @@ where
 			#[cfg(debug_assertions)]
 			let total_satisfaction_weight = must_spend_satisfaction_weight + input_satisfaction_weight;
 			#[cfg(debug_assertions)]
-			let input_value = coin_selection.amount().to_sat();
+			let input_value = coin_selection.input_amount().to_sat();
 			#[cfg(debug_assertions)]
 			let total_input_amount = must_spend_amount + input_value;
 
