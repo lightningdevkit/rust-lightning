@@ -73,6 +73,13 @@ impl TaggedHash {
 		self.merkle_root
 	}
 
+	/// Creates a tagged hash from a pre-computed merkle root.
+	pub(super) fn from_merkle_root(tag: &'static str, merkle_root: sha256::Hash) -> Self {
+		let tag_hash = sha256::Hash::hash(tag.as_bytes());
+		let digest = Message::from_digest(tagged_hash(tag_hash, merkle_root).to_byte_array());
+		Self { tag, merkle_root, digest }
+	}
+
 	pub(super) fn to_bytes(&self) -> [u8; 32] {
 		*self.digest.as_ref()
 	}
@@ -289,10 +296,10 @@ use alloc::collections::BTreeSet;
 /// Error during selective disclosure operations.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SelectiveDisclosureError {
-	/// The omitted_tlvs markers are not in strict ascending order.
-	InvalidOmittedTlvsOrder,
-	/// The omitted_tlvs contains an invalid marker (0 or signature type).
-	InvalidOmittedTlvsMarker,
+	/// The omitted markers are not in strict ascending order.
+	InvalidOmittedMarkersOrder,
+	/// The omitted markers contain an invalid marker (0 or signature type).
+	InvalidOmittedMarkersMarker,
 	/// The leaf_hashes count doesn't match included TLVs.
 	LeafHashCountMismatch,
 	/// Insufficient missing_hashes to reconstruct the tree.
@@ -312,7 +319,7 @@ pub struct SelectiveDisclosure {
 	/// Nonce hashes for included TLVs (in TLV type order).
 	pub leaf_hashes: Vec<sha256::Hash>,
 	/// Marker numbers for omitted TLVs (excluding implicit TLV0).
-	pub omitted_tlvs: Vec<u64>,
+	pub omitted_markers: Vec<u64>,
 	/// Minimal merkle hashes for omitted subtrees.
 	pub missing_hashes: Vec<sha256::Hash>,
 	/// The complete merkle root.
@@ -331,7 +338,7 @@ struct TlvMerkleData {
 ///
 /// This builds the full merkle tree and extracts the data needed for a payer proof:
 /// - `leaf_hashes`: nonce hashes for included TLVs
-/// - `omitted_tlvs`: marker numbers for omitted TLVs
+/// - `omitted_markers`: marker numbers for omitted TLVs
 /// - `missing_hashes`: minimal merkle hashes for omitted subtrees
 ///
 /// # Arguments
@@ -375,13 +382,13 @@ pub(super) fn compute_selective_disclosure(
 
 	let leaf_hashes: Vec<_> =
 		tlv_data.iter().filter(|d| d.is_included).map(|d| d.nonce_hash).collect();
-	let omitted_tlvs = compute_omitted_markers(&tlv_data);
+	let omitted_markers = compute_omitted_markers(&tlv_data);
 	let (merkle_root, missing_hashes) = build_tree_with_disclosure(&tlv_data, &branch_tag);
 
-	Ok(SelectiveDisclosure { leaf_hashes, omitted_tlvs, missing_hashes, merkle_root })
+	Ok(SelectiveDisclosure { leaf_hashes, omitted_markers, missing_hashes, merkle_root })
 }
 
-/// Compute omitted_tlvs marker numbers per BOLT 12 payer proof spec.
+/// Compute omitted markers per BOLT 12 payer proof spec.
 fn compute_omitted_markers(tlv_data: &[TlvMerkleData]) -> Vec<u64> {
 	let mut markers = Vec::new();
 	let mut prev_included_type: Option<u64> = None;
@@ -501,17 +508,17 @@ fn build_tree_with_disclosure(
 ///
 /// The `missing_hashes` must be in ascending type order per spec.
 pub(super) fn reconstruct_merkle_root<'a>(
-	included_records: &[(u64, &'a [u8])], leaf_hashes: &[sha256::Hash], omitted_tlvs: &[u64],
+	included_records: &[(u64, &'a [u8])], leaf_hashes: &[sha256::Hash], omitted_markers: &[u64],
 	missing_hashes: &[sha256::Hash],
 ) -> Result<sha256::Hash, SelectiveDisclosureError> {
-	validate_omitted_tlvs(omitted_tlvs)?;
+	validate_omitted_markers(omitted_markers)?;
 
 	if included_records.len() != leaf_hashes.len() {
 		return Err(SelectiveDisclosureError::LeafHashCountMismatch);
 	}
 
 	let included_types: Vec<u64> = included_records.iter().map(|(t, _)| *t).collect();
-	let positions = reconstruct_positions(&included_types, omitted_tlvs);
+	let positions = reconstruct_positions(&included_types, omitted_markers);
 
 	let total_tlvs = positions.len();
 	let num_leaves = total_tlvs * 2;
@@ -679,17 +686,17 @@ pub(super) fn reconstruct_merkle_root<'a>(
 	hashes[0].ok_or(SelectiveDisclosureError::InsufficientMissingHashes)
 }
 
-fn validate_omitted_tlvs(markers: &[u64]) -> Result<(), SelectiveDisclosureError> {
+fn validate_omitted_markers(markers: &[u64]) -> Result<(), SelectiveDisclosureError> {
 	let mut prev = 0u64;
 	for &marker in markers {
 		if marker == 0 {
-			return Err(SelectiveDisclosureError::InvalidOmittedTlvsMarker);
+			return Err(SelectiveDisclosureError::InvalidOmittedMarkersMarker);
 		}
 		if SIGNATURE_TYPES.contains(&marker) {
-			return Err(SelectiveDisclosureError::InvalidOmittedTlvsMarker);
+			return Err(SelectiveDisclosureError::InvalidOmittedMarkersMarker);
 		}
 		if marker <= prev {
-			return Err(SelectiveDisclosureError::InvalidOmittedTlvsOrder);
+			return Err(SelectiveDisclosureError::InvalidOmittedMarkersOrder);
 		}
 		prev = marker;
 	}
@@ -758,16 +765,6 @@ fn reconstruct_positions(included_types: &[u64], omitted_markers: &[u64]) -> Vec
 	}
 
 	positions
-}
-
-/// Creates a TaggedHash directly from a merkle root (for payer proof verification).
-impl TaggedHash {
-	/// Creates a tagged hash from a pre-computed merkle root.
-	pub(super) fn from_merkle_root(tag: &'static str, merkle_root: sha256::Hash) -> Self {
-		let tag_hash = sha256::Hash::hash(tag.as_bytes());
-		let digest = Message::from_digest(tagged_hash(tag_hash, merkle_root).to_byte_array());
-		Self { tag, merkle_root, digest }
-	}
 }
 
 #[cfg(test)]
@@ -1069,7 +1066,7 @@ mod tests {
 		let disclosure = super::compute_selective_disclosure(&tlv_bytes, &included).unwrap();
 
 		// Verify markers match spec example
-		assert_eq!(disclosure.omitted_tlvs, vec![11, 12, 41, 42]);
+		assert_eq!(disclosure.omitted_markers, vec![11, 12, 41, 42]);
 
 		// Verify leaf_hashes count matches included TLVs
 		assert_eq!(disclosure.leaf_hashes.len(), 2);
@@ -1084,7 +1081,7 @@ mod tests {
 		let reconstructed = super::reconstruct_merkle_root(
 			&included_records,
 			&disclosure.leaf_hashes,
-			&disclosure.omitted_tlvs,
+			&disclosure.omitted_markers,
 			&disclosure.missing_hashes,
 		)
 		.unwrap();
@@ -1150,7 +1147,7 @@ mod tests {
 		let reconstructed = super::reconstruct_merkle_root(
 			&included_records,
 			&disclosure.leaf_hashes,
-			&disclosure.omitted_tlvs,
+			&disclosure.omitted_markers,
 			&disclosure.missing_hashes,
 		)
 		.unwrap();
@@ -1182,7 +1179,7 @@ mod tests {
 		let result = super::reconstruct_merkle_root(
 			&included_records,
 			&disclosure.leaf_hashes,
-			&disclosure.omitted_tlvs,
+			&disclosure.omitted_markers,
 			&[], // Wrong!
 		);
 

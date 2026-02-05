@@ -46,7 +46,7 @@ use crate::prelude::*;
 
 const TLV_SIGNATURE: u64 = 240;
 const TLV_PREIMAGE: u64 = 242;
-const TLV_OMITTED_TLVS: u64 = 244;
+const TLV_OMITTED_MARKERS: u64 = 244;
 const TLV_MISSING_HASHES: u64 = 246;
 const TLV_LEAF_HASHES: u64 = 248;
 const TLV_PAYER_SIGNATURE: u64 = 250;
@@ -84,9 +84,9 @@ pub enum PayerProofError {
 	InvalidData(&'static str),
 	/// The invreq_metadata field cannot be included (per spec).
 	InvreqMetadataNotAllowed,
-	/// The omitted_tlvs contains an included TLV type.
-	OmittedTlvsContainsIncluded,
-	/// The omitted_tlvs has too many trailing markers.
+	/// The omitted_markers contains an included TLV type.
+	OmittedMarkersContainIncluded,
+	/// The omitted_markers has too many trailing markers.
 	TooManyTrailingOmittedMarkers,
 	/// Error decoding the payer proof.
 	DecodeError(crate::ln::msgs::DecodeError),
@@ -128,7 +128,7 @@ struct PayerProofContents {
 	#[allow(dead_code)]
 	leaf_hashes: Vec<sha256::Hash>,
 	#[allow(dead_code)]
-	omitted_tlvs: Vec<u64>,
+	omitted_markers: Vec<u64>,
 	#[allow(dead_code)]
 	missing_hashes: Vec<sha256::Hash>,
 
@@ -302,7 +302,7 @@ impl UnsignedPayerProof {
 				payer_signature,
 				payer_note: note.map(String::from),
 				leaf_hashes: self.disclosure.leaf_hashes,
-				omitted_tlvs: self.disclosure.omitted_tlvs,
+				omitted_markers: self.disclosure.omitted_markers,
 				missing_hashes: self.disclosure.missing_hashes,
 				offer_description: None,
 				offer_issuer: None,
@@ -371,12 +371,12 @@ impl UnsignedPayerProof {
 		BigSize(32).write(&mut bytes).expect("Vec write should not fail");
 		bytes.extend_from_slice(&self.preimage.0);
 
-		if !self.disclosure.omitted_tlvs.is_empty() {
+		if !self.disclosure.omitted_markers.is_empty() {
 			let mut omitted_bytes = Vec::new();
-			for marker in &self.disclosure.omitted_tlvs {
+			for marker in &self.disclosure.omitted_markers {
 				BigSize(*marker).write(&mut omitted_bytes).expect("Vec write should not fail");
 			}
-			BigSize(TLV_OMITTED_TLVS).write(&mut bytes).expect("Vec write should not fail");
+			BigSize(TLV_OMITTED_MARKERS).write(&mut bytes).expect("Vec write should not fail");
 			BigSize(omitted_bytes.len() as u64)
 				.write(&mut bytes)
 				.expect("Vec write should not fail");
@@ -508,7 +508,7 @@ impl TryFrom<Vec<u8>> for PayerProof {
 		let mut invoice_features: Option<Bolt12InvoiceFeatures> = None;
 
 		let mut leaf_hashes: Vec<sha256::Hash> = Vec::new();
-		let mut omitted_tlvs: Vec<u64> = Vec::new();
+		let mut omitted_markers: Vec<u64> = Vec::new();
 		let mut missing_hashes: Vec<sha256::Hash> = Vec::new();
 
 		let mut included_types: BTreeSet<u64> = BTreeSet::new();
@@ -583,14 +583,14 @@ impl TryFrom<Vec<u8>> for PayerProof {
 						.map_err(|_| DecodeError::ShortRead)?;
 					preimage = Some(PaymentPreimage(preimage_bytes));
 				},
-				TLV_OMITTED_TLVS => {
+				TLV_OMITTED_MARKERS => {
 					let mut record_cursor = io::Cursor::new(record.record_bytes);
 					let _type: BigSize = Readable::read(&mut record_cursor)?;
 					let len: BigSize = Readable::read(&mut record_cursor)?;
 					let end_pos = record_cursor.position() + len.0;
 					while record_cursor.position() < end_pos {
 						let marker: BigSize = Readable::read(&mut record_cursor)?;
-						omitted_tlvs.push(marker.0);
+						omitted_markers.push(marker.0);
 					}
 				},
 				TLV_MISSING_HASHES => {
@@ -671,7 +671,7 @@ impl TryFrom<Vec<u8>> for PayerProof {
 			crate::offers::parse::Bolt12SemanticError::MissingSignature,
 		))?;
 
-		validate_omitted_tlvs_for_parsing(&omitted_tlvs, &included_types)
+		validate_omitted_markers_for_parsing(&omitted_markers, &included_types)
 			.map_err(|_| Bolt12ParseError::Decode(DecodeError::InvalidValue))?;
 
 		if leaf_hashes.len() != included_records.len() {
@@ -683,7 +683,7 @@ impl TryFrom<Vec<u8>> for PayerProof {
 		let merkle_root = merkle::reconstruct_merkle_root(
 			&included_refs,
 			&leaf_hashes,
-			&omitted_tlvs,
+			&omitted_markers,
 			&missing_hashes,
 		)
 		.map_err(|_| Bolt12ParseError::Decode(DecodeError::InvalidValue))?;
@@ -699,7 +699,7 @@ impl TryFrom<Vec<u8>> for PayerProof {
 				payer_signature,
 				payer_note,
 				leaf_hashes,
-				omitted_tlvs,
+				omitted_markers,
 				missing_hashes,
 				offer_description: None,
 				offer_issuer: None,
@@ -712,7 +712,7 @@ impl TryFrom<Vec<u8>> for PayerProof {
 	}
 }
 
-/// Validate omitted_tlvs markers during parsing.
+/// Validate omitted markers during parsing.
 ///
 /// Per spec:
 /// - MUST NOT contain 0
@@ -720,32 +720,32 @@ impl TryFrom<Vec<u8>> for PayerProof {
 /// - MUST be in strict ascending order
 /// - MUST NOT contain the number of an included TLV field
 /// - MUST NOT contain more than one number larger than the largest included non-signature TLV
-fn validate_omitted_tlvs_for_parsing(
-	omitted_tlvs: &[u64], included_types: &BTreeSet<u64>,
+fn validate_omitted_markers_for_parsing(
+	omitted_markers: &[u64], included_types: &BTreeSet<u64>,
 ) -> Result<(), PayerProofError> {
 	let mut prev = 0u64;
 	let mut trailing_count = 0;
 	let max_included = included_types.iter().copied().max().unwrap_or(0);
 
-	for &marker in omitted_tlvs {
+	for &marker in omitted_markers {
 		// MUST NOT contain 0
 		if marker == 0 {
-			return Err(PayerProofError::InvalidData("omitted_tlvs contains 0"));
+			return Err(PayerProofError::InvalidData("omitted_markers contains 0"));
 		}
 
 		// MUST NOT contain signature TLV types
 		if SIGNATURE_TYPES.contains(&marker) {
-			return Err(PayerProofError::InvalidData("omitted_tlvs contains signature type"));
+			return Err(PayerProofError::InvalidData("omitted_markers contains signature type"));
 		}
 
 		// MUST be strictly ascending
 		if marker <= prev {
-			return Err(PayerProofError::InvalidData("omitted_tlvs not strictly ascending"));
+			return Err(PayerProofError::InvalidData("omitted_markers not strictly ascending"));
 		}
 
 		// MUST NOT contain included TLV types
 		if included_types.contains(&marker) {
-			return Err(PayerProofError::OmittedTlvsContainsIncluded);
+			return Err(PayerProofError::OmittedMarkersContainIncluded);
 		}
 
 		// Count markers larger than largest included
@@ -795,7 +795,7 @@ mod tests {
 		assert!(!disclosure.missing_hashes.is_empty()); // Should have missing hashes for omitted
 	}
 
-	/// Test the omitted_tlvs marker algorithm per BOLT 12 payer proof spec.
+	/// Test the omitted_markers marker algorithm per BOLT 12 payer proof spec.
 	///
 	/// From the spec example:
 	/// TLVs: 0 (omitted), 10 (included), 20 (omitted), 30 (omitted),
@@ -835,8 +835,8 @@ mod tests {
 
 		let disclosure = compute_selective_disclosure(&tlv_bytes, &included).unwrap();
 
-		// Per spec example, omitted_tlvs should be [11, 12, 41, 42]
-		assert_eq!(disclosure.omitted_tlvs, vec![11, 12, 41, 42]);
+		// Per spec example, omitted_markers should be [11, 12, 41, 42]
+		assert_eq!(disclosure.omitted_markers, vec![11, 12, 41, 42]);
 
 		// leaf_hashes should have 2 entries (one for each included TLV)
 		assert_eq!(disclosure.leaf_hashes.len(), 2);
@@ -858,7 +858,7 @@ mod tests {
 		let disclosure = compute_selective_disclosure(&tlv_bytes, &included).unwrap();
 
 		// After included type 10, omitted types 20 and 30 get markers 11 and 12
-		assert_eq!(disclosure.omitted_tlvs, vec![11, 12]);
+		assert_eq!(disclosure.omitted_markers, vec![11, 12]);
 	}
 
 	/// Test that all included TLVs produce no omitted markers (except implicit TLV0).
@@ -876,66 +876,66 @@ mod tests {
 		let disclosure = compute_selective_disclosure(&tlv_bytes, &included).unwrap();
 
 		// Only TLV 0 is omitted (implicit), so no markers needed
-		assert!(disclosure.omitted_tlvs.is_empty());
+		assert!(disclosure.omitted_markers.is_empty());
 	}
 
-	/// Test validation of omitted_tlvs - must not contain 0.
+	/// Test validation of omitted_markers - must not contain 0.
 	#[test]
-	fn test_validate_omitted_tlvs_rejects_zero() {
+	fn test_validate_omitted_markers_rejects_zero() {
 		let omitted = vec![0, 5, 10];
 		let included: BTreeSet<u64> = [20, 30].iter().copied().collect();
 
-		let result = validate_omitted_tlvs_for_parsing(&omitted, &included);
+		let result = validate_omitted_markers_for_parsing(&omitted, &included);
 		assert!(matches!(result, Err(PayerProofError::InvalidData(_))));
 	}
 
-	/// Test validation of omitted_tlvs - must not contain signature types.
+	/// Test validation of omitted_markers - must not contain signature types.
 	#[test]
-	fn test_validate_omitted_tlvs_rejects_signature_types() {
+	fn test_validate_omitted_markers_rejects_signature_types() {
 		let omitted = vec![5, 10, 250]; // 250 is a signature type
 		let included: BTreeSet<u64> = [20, 30].iter().copied().collect();
 
-		let result = validate_omitted_tlvs_for_parsing(&omitted, &included);
+		let result = validate_omitted_markers_for_parsing(&omitted, &included);
 		assert!(matches!(result, Err(PayerProofError::InvalidData(_))));
 	}
 
-	/// Test validation of omitted_tlvs - must be strictly ascending.
+	/// Test validation of omitted_markers - must be strictly ascending.
 	#[test]
-	fn test_validate_omitted_tlvs_rejects_non_ascending() {
+	fn test_validate_omitted_markers_rejects_non_ascending() {
 		let omitted = vec![5, 10, 8]; // 8 is not strictly ascending after 10
 		let included: BTreeSet<u64> = [20, 30].iter().copied().collect();
 
-		let result = validate_omitted_tlvs_for_parsing(&omitted, &included);
+		let result = validate_omitted_markers_for_parsing(&omitted, &included);
 		assert!(matches!(result, Err(PayerProofError::InvalidData(_))));
 	}
 
-	/// Test validation of omitted_tlvs - must not contain included types.
+	/// Test validation of omitted_markers - must not contain included types.
 	#[test]
-	fn test_validate_omitted_tlvs_rejects_included_types() {
+	fn test_validate_omitted_markers_rejects_included_types() {
 		let omitted = vec![5, 20, 25]; // 20 is in included set
 		let included: BTreeSet<u64> = [20, 30].iter().copied().collect();
 
-		let result = validate_omitted_tlvs_for_parsing(&omitted, &included);
-		assert!(matches!(result, Err(PayerProofError::OmittedTlvsContainsIncluded)));
+		let result = validate_omitted_markers_for_parsing(&omitted, &included);
+		assert!(matches!(result, Err(PayerProofError::OmittedMarkersContainIncluded)));
 	}
 
-	/// Test validation of omitted_tlvs - must not have too many trailing markers.
+	/// Test validation of omitted_markers - must not have too many trailing markers.
 	#[test]
-	fn test_validate_omitted_tlvs_rejects_too_many_trailing() {
+	fn test_validate_omitted_markers_rejects_too_many_trailing() {
 		let omitted = vec![5, 100, 101]; // 100 and 101 are both > max included (30)
 		let included: BTreeSet<u64> = [20, 30].iter().copied().collect();
 
-		let result = validate_omitted_tlvs_for_parsing(&omitted, &included);
+		let result = validate_omitted_markers_for_parsing(&omitted, &included);
 		assert!(matches!(result, Err(PayerProofError::TooManyTrailingOmittedMarkers)));
 	}
 
-	/// Test that valid omitted_tlvs pass validation.
+	/// Test that valid omitted_markers pass validation.
 	#[test]
-	fn test_validate_omitted_tlvs_accepts_valid() {
+	fn test_validate_omitted_markers_accepts_valid() {
 		let omitted = vec![5, 10, 35]; // All valid: ascending, no 0, no sig types, one trailing
 		let included: BTreeSet<u64> = [20, 30].iter().copied().collect();
 
-		let result = validate_omitted_tlvs_for_parsing(&omitted, &included);
+		let result = validate_omitted_markers_for_parsing(&omitted, &included);
 		assert!(result.is_ok());
 	}
 
