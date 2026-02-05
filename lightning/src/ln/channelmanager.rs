@@ -13419,7 +13419,7 @@ macro_rules! create_offer_builder { ($self: ident, $builder: ty) => {
 	/// [`Offer`]. Note that if this is less than the number of participating nodes (i.e.
 	/// `other_nodes_channels.len() + 1`) not all nodes will participate in receiving funds.
 	/// Because the parameterized [`MessageRouter`] will only get a chance to limit the number of
-	/// paths *per-node*, it is important to set this for offers which will be included in a QR
+	/// paths *per-node*, it is important to set this for offers that will be included in a QR
 	/// code.
 	///
 	/// See [`Self::create_offer_builder`] for more details on the blinded path construction.
