@@ -183,7 +183,7 @@ impl_writeable_tlv_based!(RevokedOutput, {
 	(12, on_counterparty_tx_csv, required),
 	// Unused since 0.1, this setting causes downgrades to before 0.1 to refuse to
 	// aggregate `RevokedOutput` claims, which is the more conservative stance.
-	(14, is_counterparty_balance_on_anchors, (legacy, (), |_| Some(()))),
+	(14, is_counterparty_balance_on_anchors, (legacy, (), |_| Ok(()), |_| Some(()))),
 	(15, channel_parameters, (option: ReadableArgs, None)), // Added in 0.2.
 });
 
