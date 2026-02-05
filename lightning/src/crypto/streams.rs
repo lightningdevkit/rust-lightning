@@ -1,7 +1,4 @@
-use crate::crypto::chacha20::ChaCha20;
-use crate::crypto::chacha20poly1305rfc::ChaCha20Poly1305RFC;
 use crate::crypto::fixed_time_eq;
-use crate::crypto::poly1305::Poly1305;
 
 use crate::io::{self, Read, Write};
 use crate::ln::msgs::DecodeError;
@@ -10,6 +7,10 @@ use crate::util::ser::{
 };
 
 use alloc::vec::Vec;
+use chacha20_poly1305::{
+	chacha20::{ChaCha20, Key, Nonce},
+	poly1305::Poly1305,
+};
 
 pub(crate) struct ChaChaReader<'a, R: io::Read> {
 	pub chacha: &'a mut ChaCha20,
@@ -19,7 +20,7 @@ impl<'a, R: io::Read> io::Read for ChaChaReader<'a, R> {
 	fn read(&mut self, dest: &mut [u8]) -> Result<usize, io::Error> {
 		let res = self.read.read(dest)?;
 		if res > 0 {
-			self.chacha.process_in_place(&mut dest[0..res]);
+			self.chacha.apply_keystream(&mut dest[..res]);
 		}
 		Ok(res)
 	}
@@ -42,11 +43,20 @@ impl<'a, W: Writeable> ChaChaPolyWriteAdapter<'a, W> {
 impl<'a, T: Writeable> Writeable for ChaChaPolyWriteAdapter<'a, T> {
 	// Simultaneously write and encrypt Self::writeable.
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		let mut chacha = ChaCha20Poly1305RFC::new(&self.rho, &[0; 12], &[]);
-		let mut chacha_stream = ChaChaPolyWriter { chacha: &mut chacha, write: w };
+		let mut chacha = ChaCha20::new(Key::new(self.rho), Nonce::new([0; 12]), 0);
+		let mut mac_key = [0u8; 64];
+		chacha.apply_keystream(&mut mac_key);
+
+		#[cfg(not(fuzzing))]
+		let mac = Poly1305::new(mac_key[..32].try_into().unwrap());
+		#[cfg(fuzzing)]
+		let mac = Poly1305::new(self.rho);
+
+		let mut chacha_stream =
+			ChaChaPolyWriter { chacha: &mut chacha, poly: mac, write_len: 0, write: w };
 		self.writeable.write(&mut chacha_stream)?;
-		let mut tag = [0 as u8; 16];
-		chacha.finish_and_get_tag(&mut tag);
+
+		let tag = chacha_stream.finish_and_get_tag();
 		tag.write(w)?;
 
 		Ok(())
@@ -62,12 +72,12 @@ impl<'a, T: Writeable> Writeable for ChaChaPolyWriteAdapter<'a, T> {
 pub(crate) fn chachapoly_encrypt_with_swapped_aad(
 	mut plaintext: Vec<u8>, key: [u8; 32], aad: [u8; 32],
 ) -> Vec<u8> {
-	let mut chacha = ChaCha20::new(&key[..], &[0; 12]);
+	let mut chacha = ChaCha20::new(Key::new(key), Nonce::new([0; 12]), 0);
 	let mut mac_key = [0u8; 64];
-	chacha.process_in_place(&mut mac_key);
+	chacha.apply_keystream(&mut mac_key);
 
-	let mut mac = Poly1305::new(&mac_key[..32]);
-	chacha.process_in_place(&mut plaintext[..]);
+	let mut mac = Poly1305::new(mac_key[..32].try_into().unwrap());
+	chacha.apply_keystream(&mut plaintext[..]);
 	mac.input(&plaintext[..]);
 
 	if plaintext.len() % 16 != 0 {
@@ -80,7 +90,7 @@ pub(crate) fn chachapoly_encrypt_with_swapped_aad(
 	mac.input(&(plaintext.len() as u64).to_le_bytes());
 	mac.input(&32u64.to_le_bytes());
 
-	plaintext.extend_from_slice(&mac.result());
+	plaintext.extend_from_slice(&mac.tag());
 	plaintext
 }
 
@@ -93,7 +103,7 @@ pub(crate) fn chachapoly_encrypt_with_swapped_aad(
 ///
 /// Note that we do *not* use the provided AAD as the standard ChaCha20Poly1305 AAD as that would
 /// require placing it first and prevent us from avoiding redundant Poly1305 rounds. Instead, the
-/// ChaCha20Poly1305 MAC check is tweaked to move the AAD to *after* the the contents being
+/// ChaCha20Poly1305 MAC check is tweaked to move the AAD to *after* the contents being
 /// checked, effectively treating the contents as the AAD for the AAD-containing MAC but behaving
 /// like classic ChaCha20Poly1305 for the non-AAD-containing MAC.
 pub(crate) struct ChaChaDualPolyReadAdapter<R: Readable> {
@@ -113,25 +123,33 @@ impl<T: Readable> LengthReadableArgs<([u8; 32], [u8; 32])> for ChaChaDualPolyRea
 		}
 		let (key, aad) = params;
 
-		let mut chacha = ChaCha20::new(&key[..], &[0; 12]);
+		let mut chacha = ChaCha20::new(Key::new(key), Nonce::new([0; 12]), 0);
 		let mut mac_key = [0u8; 64];
-		chacha.process_in_place(&mut mac_key);
+		chacha.apply_keystream(&mut mac_key);
 
 		#[cfg(not(fuzzing))]
-		let mut mac = Poly1305::new(&mac_key[..32]);
+		let mut mac = Poly1305::new(mac_key[..32].try_into().unwrap());
+		#[cfg(not(fuzzing))]
+		let mut mac_aad = Poly1305::new(mac_key[..32].try_into().unwrap());
 		#[cfg(fuzzing)]
-		let mut mac = Poly1305::new(&key);
+		let mut mac = Poly1305::new(key);
+		#[cfg(fuzzing)]
+		let mut mac_aad = Poly1305::new(key);
 
 		let decrypted_len = r.remaining_bytes() - 16;
 		let s = FixedLengthReader::new(r, decrypted_len);
-		let mut chacha_stream =
-			ChaChaDualPolyReader { chacha: &mut chacha, poly: &mut mac, read_len: 0, read: s };
+		let mut chacha_stream = ChaChaDualPolyReader {
+			chacha: &mut chacha,
+			poly: &mut mac,
+			poly_aad: &mut mac_aad,
+			read_len: 0,
+			read: s,
+		};
 
 		let readable: T = Readable::read(&mut chacha_stream)?;
 		while chacha_stream.read.bytes_remain() {
 			let mut buf = [0; 256];
 			if chacha_stream.read(&mut buf)? == 0 {
-				// Reached EOF
 				return Err(DecodeError::ShortRead);
 			}
 		}
@@ -139,10 +157,10 @@ impl<T: Readable> LengthReadableArgs<([u8; 32], [u8; 32])> for ChaChaDualPolyRea
 		let read_len = chacha_stream.read_len;
 
 		if read_len % 16 != 0 {
-			mac.input(&[0; 16][0..16 - (read_len % 16)]);
+			let padding = &[0; 16][0..16 - (read_len % 16)];
+			mac.input(padding);
+			mac_aad.input(padding);
 		}
-
-		let mut mac_aad = mac;
 
 		mac_aad.input(&aad[..]);
 		// Note that we don't need to pad the AAD since its a multiple of 16 bytes
@@ -155,11 +173,11 @@ impl<T: Readable> LengthReadableArgs<([u8; 32], [u8; 32])> for ChaChaDualPolyRea
 		mac.input(&0u64.to_le_bytes());
 		mac.input(&(read_len as u64).to_le_bytes());
 
-		let mut tag = [0 as u8; 16];
+		let mut tag = [0u8; 16];
 		r.read_exact(&mut tag)?;
-		if fixed_time_eq(&mac.result(), &tag) {
+		if fixed_time_eq(&mac.tag(), &tag) {
 			Ok(Self { readable, used_aad: false })
-		} else if fixed_time_eq(&mac_aad.result(), &tag) {
+		} else if fixed_time_eq(&mac_aad.tag(), &tag) {
 			Ok(Self { readable, used_aad: true })
 		} else {
 			return Err(DecodeError::InvalidValue);
@@ -170,6 +188,7 @@ impl<T: Readable> LengthReadableArgs<([u8; 32], [u8; 32])> for ChaChaDualPolyRea
 struct ChaChaDualPolyReader<'a, R: Read> {
 	chacha: &'a mut ChaCha20,
 	poly: &'a mut Poly1305,
+	poly_aad: &'a mut Poly1305,
 	read_len: usize,
 	pub read: R,
 }
@@ -177,12 +196,13 @@ struct ChaChaDualPolyReader<'a, R: Read> {
 impl<'a, R: Read> Read for ChaChaDualPolyReader<'a, R> {
 	// Decrypts bytes from Self::read into `dest`.
 	// After all reads complete, the caller must compare the expected tag with
-	// the result of `Poly1305::result()`.
+	// the result of `Poly1305::tag()`
 	fn read(&mut self, dest: &mut [u8]) -> Result<usize, io::Error> {
 		let res = self.read.read(dest)?;
 		if res > 0 {
-			self.poly.input(&dest[0..res]);
-			self.chacha.process_in_place(&mut dest[0..res]);
+			self.poly.input(&dest[..res]);
+			self.poly_aad.input(&dest[..res]);
+			self.chacha.apply_keystream(&mut dest[..res]);
 			self.read_len += res;
 		}
 		Ok(res)
@@ -204,19 +224,36 @@ impl<T: Readable> LengthReadableArgs<[u8; 32]> for ChaChaPolyReadAdapter<T> {
 			return Err(DecodeError::InvalidValue);
 		}
 
-		let mut chacha = ChaCha20Poly1305RFC::new(&secret, &[0; 12], &[]);
+		let mut chacha = ChaCha20::new(Key::new(secret), Nonce::new([0; 12]), 0);
+		let mut mac_key = [0u8; 64];
+		chacha.apply_keystream(&mut mac_key);
+
+		#[cfg(not(fuzzing))]
+		let mut mac = Poly1305::new(mac_key[..32].try_into().unwrap());
+		#[cfg(fuzzing)]
+		let mut mac = Poly1305::new(secret);
+
 		let decrypted_len = r.remaining_bytes() - 16;
 		let s = FixedLengthReader::new(r, decrypted_len);
-		let mut chacha_stream = ChaChaPolyReader { chacha: &mut chacha, read: s };
+		let mut chacha_stream = ChaChaPolyReader::new(&mut chacha, &mut mac, s);
 		let readable: T = Readable::read(&mut chacha_stream)?;
 		while chacha_stream.read.bytes_remain() {
 			let mut buf = [0; 256];
 			chacha_stream.read(&mut buf)?;
 		}
 
-		let mut tag = [0 as u8; 16];
+		let read_len = chacha_stream.read_len();
+		drop(chacha_stream);
+
+		if read_len % 16 != 0 {
+			mac.input(&[0; 16][0..16 - (read_len % 16)]);
+		}
+		mac.input(&0u64.to_le_bytes());
+		mac.input(&(read_len as u64).to_le_bytes());
+
+		let mut tag = [0u8; 16];
 		r.read_exact(&mut tag)?;
-		if !chacha.finish_and_check_tag(&tag) {
+		if !fixed_time_eq(&mac.tag(), &tag) {
 			return Err(DecodeError::InvalidValue);
 		}
 
@@ -224,20 +261,32 @@ impl<T: Readable> LengthReadableArgs<[u8; 32]> for ChaChaPolyReadAdapter<T> {
 	}
 }
 
-/// Enables simultaneously reading and decrypting a ChaCha20Poly1305RFC stream from a std::io::Read.
+/// Enables simultaneously reading and decrypting a ChaCha20Poly1305 stream from a std::io::Read.
 struct ChaChaPolyReader<'a, R: Read> {
-	pub chacha: &'a mut ChaCha20Poly1305RFC,
+	chacha: &'a mut ChaCha20,
+	poly: &'a mut Poly1305,
+	read_len: usize,
 	pub read: R,
+}
+
+impl<'a, R: Read> ChaChaPolyReader<'a, R> {
+	fn new(chacha: &'a mut ChaCha20, poly: &'a mut Poly1305, read: R) -> Self {
+		Self { chacha, poly, read_len: 0, read }
+	}
+
+	fn read_len(&self) -> usize {
+		self.read_len
+	}
 }
 
 impl<'a, R: Read> Read for ChaChaPolyReader<'a, R> {
 	// Decrypt bytes from Self::read into `dest`.
-	// `ChaCha20Poly1305RFC::finish_and_check_tag` must be called to check the tag after all reads
-	// complete.
 	fn read(&mut self, dest: &mut [u8]) -> Result<usize, io::Error> {
 		let res = self.read.read(dest)?;
 		if res > 0 {
-			self.chacha.decrypt_in_place(&mut dest[0..res]);
+			self.poly.input(&dest[..res]);
+			self.chacha.apply_keystream(&mut dest[..res]);
+			self.read_len += res;
 		}
 		Ok(res)
 	}
@@ -245,14 +294,26 @@ impl<'a, R: Read> Read for ChaChaPolyReader<'a, R> {
 
 /// Enables simultaneously writing and encrypting a byte stream into a Writer.
 struct ChaChaPolyWriter<'a, W: Writer> {
-	pub chacha: &'a mut ChaCha20Poly1305RFC,
+	chacha: &'a mut ChaCha20,
+	poly: Poly1305,
+	write_len: usize,
 	pub write: &'a mut W,
+}
+
+impl<'a, W: Writer> ChaChaPolyWriter<'a, W> {
+	/// Finish encrypting and return the 16-byte authentication tag.
+	fn finish_and_get_tag(mut self) -> [u8; 16] {
+		if self.write_len % 16 != 0 {
+			self.poly.input(&[0; 16][0..16 - (self.write_len % 16)]);
+		}
+		self.poly.input(&0u64.to_le_bytes());
+		self.poly.input(&(self.write_len as u64).to_le_bytes());
+		self.poly.tag()
+	}
 }
 
 impl<'a, W: Writer> Writer for ChaChaPolyWriter<'a, W> {
 	// Encrypt then write bytes from `src` into Self::write.
-	// `ChaCha20Poly1305RFC::finish_and_get_tag` can be called to retrieve the tag after all writes
-	// complete.
 	fn write_all(&mut self, src: &[u8]) -> Result<(), io::Error> {
 		let mut src_idx = 0;
 		while src_idx < src.len() {
@@ -260,8 +321,10 @@ impl<'a, W: Writer> Writer for ChaChaPolyWriter<'a, W> {
 			let bytes_written = (&mut write_buffer[..])
 				.write(&src[src_idx..])
 				.expect("In-memory writes can't fail");
-			self.chacha.encrypt_in_place(&mut write_buffer[..bytes_written]);
+			self.chacha.apply_keystream(&mut write_buffer[..bytes_written]);
+			self.poly.input(&write_buffer[..bytes_written]);
 			self.write.write_all(&write_buffer[..bytes_written])?;
+			self.write_len += bytes_written;
 			src_idx += bytes_written;
 		}
 		Ok(())

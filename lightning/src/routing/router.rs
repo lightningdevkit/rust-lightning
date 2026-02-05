@@ -10,6 +10,7 @@
 //! The router finds paths within a [`NetworkGraph`] for a payment.
 
 use bitcoin::secp256k1::{self, PublicKey, Secp256k1};
+use chacha20_poly1305::chacha20::{ChaCha20, Key, Nonce};
 use lightning_invoice::Bolt11Invoice;
 
 use crate::blinded_path::payment::{
@@ -17,7 +18,6 @@ use crate::blinded_path::payment::{
 	PaymentRelay, ReceiveTlvs,
 };
 use crate::blinded_path::{BlindedHop, Direction, IntroductionNode};
-use crate::crypto::chacha20::ChaCha20;
 use crate::ln::channel_state::ChannelDetails;
 use crate::ln::channelmanager::{PaymentId, MIN_FINAL_CLTV_EXPIRY_DELTA};
 use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
@@ -3820,11 +3820,11 @@ fn add_random_cltv_offset(route: &mut Route, payment_params: &PaymentParameters,
 		}
 
 		// Init PRNG with the path-dependant nonce, which is static for private paths.
-		let mut prng = ChaCha20::new(random_seed_bytes, &path_nonce);
+		let mut prng = ChaCha20::new(Key::new(*random_seed_bytes), Nonce::new(path_nonce), 0);
 		let mut random_path_bytes = [0u8; ::core::mem::size_of::<usize>()];
 
 		// Pick a random path length in [1 .. 3]
-		prng.process_in_place(&mut random_path_bytes);
+		prng.apply_keystream(&mut random_path_bytes);
 		let random_walk_length = usize::from_be_bytes(random_path_bytes).wrapping_rem(3).wrapping_add(1);
 
 		for random_hop in 0..random_walk_length {
@@ -3835,7 +3835,7 @@ fn add_random_cltv_offset(route: &mut Route, payment_params: &PaymentParameters,
 			if let Some(cur_node_id) = cur_hop {
 				if let Some(cur_node) = network_nodes.get(&cur_node_id) {
 					// Randomly choose the next unvisited hop.
-					prng.process_in_place(&mut random_path_bytes);
+					prng.apply_keystream(&mut random_path_bytes);
 					if let Some(random_channel) = usize::from_be_bytes(random_path_bytes)
 						.checked_rem(cur_node.channels.len())
 						.and_then(|index| cur_node.channels.get(index))
@@ -3956,7 +3956,6 @@ mod tests {
 	use crate::blinded_path::payment::{BlindedPayInfo, BlindedPaymentPath};
 	use crate::blinded_path::BlindedHop;
 	use crate::chain::transaction::OutPoint;
-	use crate::crypto::chacha20::ChaCha20;
 	use crate::ln::chan_utils::make_funding_redeemscript;
 	use crate::ln::channel_state::{ChannelCounterparty, ChannelDetails, ChannelShutdownState};
 	use crate::ln::channelmanager;
@@ -3993,6 +3992,7 @@ mod tests {
 	use bitcoin::secp256k1::Secp256k1;
 	use bitcoin::secp256k1::{PublicKey, SecretKey};
 	use bitcoin::transaction::TxOut;
+	use chacha20_poly1305::chacha20::{ChaCha20, Key, Nonce};
 
 	use crate::io::Cursor;
 	use crate::prelude::*;
@@ -7584,10 +7584,10 @@ mod tests {
 
 		for p in route.paths {
 			// 1. Select random observation point
-			let mut prng = ChaCha20::new(&random_seed_bytes, &[0u8; 12]);
+			let mut prng = ChaCha20::new(Key::new(random_seed_bytes), Nonce::new([0u8; 12]), 0);
 			let mut random_bytes = [0u8; ::core::mem::size_of::<usize>()];
 
-			prng.process_in_place(&mut random_bytes);
+			prng.apply_keystream(&mut random_bytes);
 			let random_path_index = usize::from_be_bytes(random_bytes).wrapping_rem(p.hops.len());
 			let observation_point = NodeId::from_pubkey(&p.hops.get(random_path_index).unwrap().pubkey);
 
