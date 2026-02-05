@@ -166,7 +166,7 @@ mod sealed {
 			// Byte 6
 			ZeroConf,
 			// Byte 7
-			Trampoline | SimpleClose | SpliceProduction,
+			Trampoline | SimpleClose | SpliceProduction | SplicePrototype,
 			// Byte 8 - 16
 			,,,,,,,,,
 			// Byte 17
@@ -174,7 +174,7 @@ mod sealed {
 			// Byte 18
 			,
 			// Byte 19
-			HtlcHold | SplicePrototype,
+			HtlcHold,
 		]
 	);
 	define_context!(
@@ -195,7 +195,7 @@ mod sealed {
 			// Byte 6
 			ZeroConf | Keysend,
 			// Byte 7
-			Trampoline | SimpleClose | SpliceProduction,
+			Trampoline | SimpleClose | SpliceProduction | SplicePrototype,
 			// Byte 8 - 16
 			,,,,,,,,,
 			// Byte 17
@@ -203,7 +203,7 @@ mod sealed {
 			// Byte 18
 			,
 			// Byte 19
-			HtlcHold | SplicePrototype,
+			HtlcHold,
 			// Byte 20 - 31
 			,,,,,,,,,,,,
 			// Byte 32
@@ -722,7 +722,7 @@ mod sealed {
 		requires_htlc_hold
 	);
 	define_feature!(
-		155, // Splice prototype feature bit as listed in https://github.com/lightning/bolts/issues/605#issuecomment-877237519.
+		63, // Actually the SpliceProduction feature
 		SplicePrototype,
 		[InitContext, NodeContext],
 		"Feature flags for channel splicing.",
@@ -1441,8 +1441,8 @@ mod tests {
 			// - onion_messages
 			// - option_channel_type | option_scid_alias
 			// - option_zeroconf
-			// - option_simple_close | option_splice
-			assert_eq!(node_features.flags.len(), 20);
+			// - option_simple_close
+			assert_eq!(node_features.flags.len(), 8);
 			assert_eq!(node_features.flags[0], 0b00000001);
 			assert_eq!(node_features.flags[1], 0b01010001);
 			assert_eq!(node_features.flags[2], 0b10001010);
@@ -1450,19 +1450,7 @@ mod tests {
 			assert_eq!(node_features.flags[4], 0b10001000);
 			assert_eq!(node_features.flags[5], 0b10100000);
 			assert_eq!(node_features.flags[6], 0b00001000);
-			assert_eq!(node_features.flags[7], 0b00100000);
-			assert_eq!(node_features.flags[8], 0b00000000);
-			assert_eq!(node_features.flags[9], 0b00000000);
-			assert_eq!(node_features.flags[10], 0b00000000);
-			assert_eq!(node_features.flags[11], 0b00000000);
-			assert_eq!(node_features.flags[12], 0b00000000);
-			assert_eq!(node_features.flags[13], 0b00000000);
-			assert_eq!(node_features.flags[14], 0b00000000);
-			assert_eq!(node_features.flags[15], 0b00000000);
-			assert_eq!(node_features.flags[16], 0b00000000);
-			assert_eq!(node_features.flags[17], 0b00000000);
-			assert_eq!(node_features.flags[18], 0b00000000);
-			assert_eq!(node_features.flags[19], 0b00001000);
+			assert_eq!(node_features.flags[7], 0b10100000);
 		}
 
 		// Check that cleared flags are kept blank when converting back:
