@@ -862,6 +862,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 				txn_broadcasted: Mutex::new(
 					self.tx_broadcaster.txn_broadcasted.lock().unwrap().clone(),
 				),
+				txn_types: Mutex::new(self.tx_broadcaster.txn_types.lock().unwrap().clone()),
 				blocks: Arc::new(Mutex::new(self.tx_broadcaster.blocks.lock().unwrap().clone())),
 			};
 
@@ -1539,7 +1540,7 @@ pub fn sign_funding_transaction<'a, 'b, 'c>(
 
 	assert_eq!(node_a.tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
 	assert_eq!(node_a.tx_broadcaster.txn_broadcasted.lock().unwrap()[0], tx);
-	node_a.tx_broadcaster.txn_broadcasted.lock().unwrap().clear();
+	node_a.tx_broadcaster.clear();
 
 	// Ensure that funding_transaction_generated is idempotent.
 	assert!(node_a
@@ -1642,10 +1643,8 @@ pub fn open_zero_conf_channel_with_value<'a, 'b, 'c, 'd>(
 			check_added_monitors(&initiator, 1);
 
 			assert_eq!(initiator.tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
-			assert_eq!(
-				initiator.tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0)[0],
-				tx
-			);
+			assert_eq!(initiator.tx_broadcaster.txn_broadcasted.lock().unwrap()[0], tx);
+			initiator.tx_broadcaster.clear();
 
 			as_channel_ready =
 				get_event_msg!(initiator, MessageSendEvent::SendChannelReady, receiver_node_id);
@@ -2015,7 +2014,7 @@ pub fn create_unannounced_chan_between_nodes_with_value<'a, 'b, 'c, 'd>(
 
 	assert_eq!(nodes[a].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
 	assert_eq!(nodes[a].tx_broadcaster.txn_broadcasted.lock().unwrap()[0], tx);
-	nodes[a].tx_broadcaster.txn_broadcasted.lock().unwrap().clear();
+	nodes[a].tx_broadcaster.clear();
 
 	let conf_height =
 		core::cmp::max(nodes[a].best_block_info().1 + 1, nodes[b].best_block_info().1 + 1);

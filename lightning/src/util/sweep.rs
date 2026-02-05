@@ -8,7 +8,9 @@
 //! [`SpendableOutputDescriptor`]s, i.e., persists them in a given [`KVStoreSync`] and regularly retries
 //! sweeping them.
 
-use crate::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator};
+use crate::chain::chaininterface::{
+	BroadcasterInterface, ConfirmationTarget, FeeEstimator, TransactionType,
+};
 use crate::chain::channelmonitor::{ANTI_REORG_DELAY, ARCHIVAL_DELAY_BLOCKS};
 use crate::chain::{self, BestBlock, Confirm, Filter, Listen, WatchedOutput};
 use crate::io;
@@ -26,7 +28,7 @@ use crate::util::persist::{
 	OUTPUT_SWEEPER_PERSISTENCE_PRIMARY_NAMESPACE, OUTPUT_SWEEPER_PERSISTENCE_SECONDARY_NAMESPACE,
 };
 use crate::util::ser::{Readable, ReadableArgs, Writeable};
-use crate::{impl_writeable_tlv_based, log_debug, log_error};
+use crate::{log_debug, log_error};
 
 use bitcoin::block::Header;
 use bitcoin::locktime::absolute::LockTime;
@@ -525,66 +527,79 @@ where
 			self.change_destination_source.get_change_destination_script().await?;
 
 		// Sweep the outputs.
-		let spending_tx = self
-			.update_state(|sweeper_state| -> Result<(Option<Transaction>, bool), ()> {
-				let cur_height = sweeper_state.best_block.height;
-				let cur_hash = sweeper_state.best_block.block_hash;
+		let spending_tx_and_chan_id = self
+			.update_state(
+				|sweeper_state| -> Result<(Option<(Transaction, Vec<ChannelId>)>, bool), ()> {
+					let cur_height = sweeper_state.best_block.height;
+					let cur_hash = sweeper_state.best_block.block_hash;
 
-				let respend_descriptors_set: HashSet<&SpendableOutputDescriptor> = sweeper_state
-					.outputs
-					.iter()
-					.filter(|o| filter_fn(*o, cur_height))
-					.map(|o| &o.descriptor)
-					.collect();
+					let respend_descriptors_set: HashSet<&SpendableOutputDescriptor> =
+						sweeper_state
+							.outputs
+							.iter()
+							.filter(|o| filter_fn(*o, cur_height))
+							.map(|o| &o.descriptor)
+							.collect();
 
-				// we first collect into a set to avoid duplicates and to "randomize" the order
-				// in which outputs are spent. Then we collect into a vec as that is what
-				// `spend_outputs` requires.
-				let respend_descriptors: Vec<&SpendableOutputDescriptor> =
-					respend_descriptors_set.into_iter().collect();
+					// we first collect into a set to avoid duplicates and to "randomize" the order
+					// in which outputs are spent. Then we collect into a vec as that is what
+					// `spend_outputs` requires.
+					let respend_descriptors: Vec<&SpendableOutputDescriptor> =
+						respend_descriptors_set.into_iter().collect();
 
-				// Generate the spending transaction and broadcast it.
-				if !respend_descriptors.is_empty() {
-					let spending_tx = self
-						.spend_outputs(
-							&sweeper_state,
-							&respend_descriptors,
-							change_destination_script,
-						)
-						.map_err(|e| {
-							log_error!(self.logger, "Error spending outputs: {:?}", e);
-						})?;
+					// Generate the spending transaction and broadcast it.
+					if !respend_descriptors.is_empty() {
+						let spending_tx = self
+							.spend_outputs(
+								&sweeper_state,
+								&respend_descriptors,
+								change_destination_script,
+							)
+							.map_err(|e| {
+								log_error!(self.logger, "Error spending outputs: {:?}", e);
+							})?;
 
-					log_debug!(
-						self.logger,
-						"Generating and broadcasting sweeping transaction {}",
-						spending_tx.compute_txid()
-					);
+						log_debug!(
+							self.logger,
+							"Generating and broadcasting sweeping transaction {}",
+							spending_tx.compute_txid()
+						);
 
-					// As we didn't modify the state so far, the same filter_fn yields the same elements as
-					// above.
-					let respend_outputs =
-						sweeper_state.outputs.iter_mut().filter(|o| filter_fn(&**o, cur_height));
-					for output_info in respend_outputs {
-						if let Some(filter) = self.chain_data_source.as_ref() {
-							let watched_output = output_info.to_watched_output(cur_hash);
-							filter.register_output(watched_output);
+						// As we didn't modify the state so far, the same filter_fn yields the same elements as
+						// above.
+						let respend_outputs = sweeper_state
+							.outputs
+							.iter_mut()
+							.filter(|o| filter_fn(&**o, cur_height));
+						let mut channel_ids = Vec::new();
+						for output_info in respend_outputs {
+							if let Some(filter) = self.chain_data_source.as_ref() {
+								let watched_output = output_info.to_watched_output(cur_hash);
+								filter.register_output(watched_output);
+							}
+
+							if let Some(channel_id) = output_info.channel_id {
+								if !channel_ids.contains(&channel_id) {
+									channel_ids.push(channel_id);
+								}
+							}
+
+							output_info.status.broadcast(cur_hash, cur_height, spending_tx.clone());
+							sweeper_state.dirty = true;
 						}
 
-						output_info.status.broadcast(cur_hash, cur_height, spending_tx.clone());
-						sweeper_state.dirty = true;
+						Ok((Some((spending_tx, channel_ids)), false))
+					} else {
+						Ok((None, false))
 					}
-
-					Ok((Some(spending_tx), false))
-				} else {
-					Ok((None, false))
-				}
-			})
+				},
+			)
 			.await?;
 
 		// Persistence completely successfully. If we have a spending transaction, we broadcast it.
-		if let Some(spending_tx) = spending_tx {
-			self.broadcaster.broadcast_transactions(&[&spending_tx]);
+		if let Some((spending_tx, channel_ids)) = spending_tx_and_chan_id {
+			self.broadcaster
+				.broadcast_transactions(&[(&spending_tx, TransactionType::Sweep { channel_ids })]);
 		}
 
 		Ok(())

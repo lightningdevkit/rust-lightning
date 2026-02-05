@@ -496,7 +496,7 @@ fn updates_shutdown_wait() {
 	assert!(nodes[0].node.list_channels().is_empty());
 
 	assert_eq!(nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
-	nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clear();
+	nodes[1].tx_broadcaster.clear();
 	close_channel(&nodes[1], &nodes[2], &chan_2.2, chan_2.3, true);
 
 	assert!(nodes[1].node.list_channels().is_empty());
@@ -626,7 +626,7 @@ fn do_htlc_fail_async_shutdown(blinded_recipient: bool) {
 	assert!(nodes[0].node.list_channels().is_empty());
 
 	assert_eq!(nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
-	nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clear();
+	nodes[1].tx_broadcaster.clear();
 	close_channel(&nodes[1], &nodes[2], &chan_2.2, chan_2.3, true);
 	assert!(nodes[1].node.list_channels().is_empty());
 	assert!(nodes[2].node.list_channels().is_empty());
@@ -843,7 +843,7 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 	assert!(nodes[0].node.list_channels().is_empty());
 
 	assert_eq!(nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
-	nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clear();
+	nodes[1].tx_broadcaster.clear();
 	close_channel(&nodes[1], &nodes[2], &chan_2.2, chan_2.3, true);
 
 	assert!(nodes[1].node.list_channels().is_empty());

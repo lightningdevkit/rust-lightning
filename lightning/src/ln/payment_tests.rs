@@ -839,7 +839,7 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	let as_commitment_tx = get_local_commitment_txn!(nodes[0], chan_id)[0].clone();
 	if confirm_before_reload {
 		mine_transaction(&nodes[0], &as_commitment_tx);
-		nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().clear();
+		nodes[0].tx_broadcaster.clear();
 	}
 
 	// The ChannelMonitor should always be the latest version, as we're required to persist it
@@ -894,7 +894,7 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 				&node_b_id)) }, &[node_a_id], 100000);
 			check_added_monitors(&nodes[1], 1);
 			assert_eq!(nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
-			nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clear();
+			nodes[1].tx_broadcaster.clear();
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -955,7 +955,7 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	} else {
 		confirm_transaction(&nodes[0], &first_htlc_timeout_tx);
 	}
-	nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().clear();
+	nodes[0].tx_broadcaster.clear();
 	let conditions = PaymentFailedConditions::new().from_mon_update();
 	expect_payment_failed_conditions(&nodes[0], payment_hash, false, conditions);
 

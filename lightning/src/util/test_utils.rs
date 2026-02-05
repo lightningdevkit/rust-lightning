@@ -12,9 +12,9 @@ use crate::blinded_path::message::{BlindedMessagePath, MessageForwardNode};
 use crate::blinded_path::payment::{BlindedPaymentPath, ReceiveTlvs};
 use crate::chain;
 use crate::chain::chaininterface;
-use crate::chain::chaininterface::ConfirmationTarget;
 #[cfg(any(test, feature = "_externalize_tests"))]
 use crate::chain::chaininterface::FEERATE_FLOOR_SATS_PER_KW;
+use crate::chain::chaininterface::{ConfirmationTarget, TransactionType};
 use crate::chain::chainmonitor::{ChainMonitor, Persist};
 use crate::chain::channelmonitor::{
 	ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, MonitorEvent,
@@ -1126,35 +1126,54 @@ unsafe impl Send for TestStore {}
 
 pub struct TestBroadcaster {
 	pub txn_broadcasted: Mutex<Vec<Transaction>>,
+	pub txn_types: Mutex<Vec<TransactionType>>,
 	pub blocks: Arc<Mutex<Vec<(Block, u32)>>>,
 }
 
 impl TestBroadcaster {
 	pub fn new(network: Network) -> Self {
 		let txn_broadcasted = Mutex::new(Vec::new());
+		let txn_types = Mutex::new(Vec::new());
 		let blocks = Arc::new(Mutex::new(vec![(genesis_block(network), 0)]));
-		Self { txn_broadcasted, blocks }
+		Self { txn_broadcasted, txn_types, blocks }
 	}
 
 	pub fn with_blocks(blocks: Arc<Mutex<Vec<(Block, u32)>>>) -> Self {
 		let txn_broadcasted = Mutex::new(Vec::new());
-		Self { txn_broadcasted, blocks }
+		let txn_types = Mutex::new(Vec::new());
+		Self { txn_broadcasted, txn_types, blocks }
 	}
 
 	pub fn txn_broadcast(&self) -> Vec<Transaction> {
+		self.txn_types.lock().unwrap().clear();
 		self.txn_broadcasted.lock().unwrap().split_off(0)
 	}
 
 	pub fn unique_txn_broadcast(&self) -> Vec<Transaction> {
 		let mut txn = self.txn_broadcasted.lock().unwrap().split_off(0);
+		self.txn_types.lock().unwrap().clear();
 		let mut seen = new_hash_set();
 		txn.retain(|tx| seen.insert(tx.compute_txid()));
 		txn
 	}
+
+	/// Returns all broadcast transactions with their types, clearing both internal lists.
+	pub fn txn_broadcast_with_types(&self) -> Vec<(Transaction, TransactionType)> {
+		let txn = self.txn_broadcasted.lock().unwrap().split_off(0);
+		let types = self.txn_types.lock().unwrap().split_off(0);
+		assert_eq!(txn.len(), types.len(), "Transaction and type vectors out of sync");
+		txn.into_iter().zip(types.into_iter()).collect()
+	}
+
+	/// Clears both the transaction and type vectors.
+	pub fn clear(&self) {
+		self.txn_broadcasted.lock().unwrap().clear();
+		self.txn_types.lock().unwrap().clear();
+	}
 }
 
 impl chaininterface::BroadcasterInterface for TestBroadcaster {
-	fn broadcast_transactions(&self, txs: &[&Transaction]) {
+	fn broadcast_transactions(&self, txs: &[(&Transaction, TransactionType)]) {
 		// Assert that any batch of transactions of length greater than 1 is sorted
 		// topologically, and is a `child-with-parents` package as defined in
 		// <https://github.com/bitcoin/bitcoin/blob/master/doc/policy/packages.md>.
@@ -1165,21 +1184,23 @@ impl chaininterface::BroadcasterInterface for TestBroadcaster {
 		// Right now LDK only ever broadcasts packages of length 2.
 		assert!(txs.len() <= 2);
 		if txs.len() == 2 {
-			let parent_txid = txs[0].compute_txid();
+			let parent_txid = txs[0].0.compute_txid();
 			assert!(txs[1]
+				.0
 				.input
 				.iter()
 				.map(|input| input.previous_output.txid)
 				.any(|txid| txid == parent_txid));
-			let child_txid = txs[1].compute_txid();
+			let child_txid = txs[1].0.compute_txid();
 			assert!(txs[0]
+				.0
 				.input
 				.iter()
 				.map(|input| input.previous_output.txid)
 				.all(|txid| txid != child_txid));
 		}
 
-		for tx in txs {
+		for (tx, _broadcast_type) in txs {
 			let lock_time = tx.lock_time.to_consensus_u32();
 			assert!(lock_time < 1_500_000_000);
 			if tx.lock_time.is_block_height()
@@ -1195,8 +1216,11 @@ impl chaininterface::BroadcasterInterface for TestBroadcaster {
 				}
 			}
 		}
-		let owned_txs: Vec<Transaction> = txs.iter().map(|tx| (*tx).clone()).collect();
+		let owned_txs: Vec<Transaction> = txs.iter().map(|(tx, _)| (*tx).clone()).collect();
+		let owned_types: Vec<TransactionType> =
+			txs.iter().map(|(_, tx_type)| tx_type.clone()).collect();
 		self.txn_broadcasted.lock().unwrap().extend(owned_txs);
+		self.txn_types.lock().unwrap().extend(owned_types);
 	}
 }
 

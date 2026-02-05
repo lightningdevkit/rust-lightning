@@ -28,7 +28,7 @@ use bitcoin::{secp256k1, sighash, FeeRate, Sequence, TxIn};
 
 use crate::blinded_path::message::BlindedMessagePath;
 use crate::chain::chaininterface::{
-	fee_for_weight, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator,
+	fee_for_weight, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator, TransactionType,
 };
 use crate::chain::channelmonitor::{
 	ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, CommitmentHTLCData,
@@ -2103,6 +2103,8 @@ where
 			},
 		};
 
+		let channel_id = context.channel_id;
+
 		let signing_session = if let Some(signing_session) =
 			context.interactive_tx_signing_session.as_mut()
 		{
@@ -2212,6 +2214,15 @@ where
 		} else {
 			(None, None)
 		};
+
+		let funding_tx = funding_tx.map(|tx| {
+			let tx_type = if splice_negotiated.is_some() {
+				TransactionType::Splice { channel_id }
+			} else {
+				TransactionType::Funding { channel_ids: vec![channel_id] }
+			};
+			(tx, tx_type)
+		});
 
 		// If we have a pending splice with a buffered initial commitment signed from our
 		// counterparty, process it now that we have provided our signatures.
@@ -6919,8 +6930,8 @@ pub(super) struct FundingTxSigned {
 	/// Signatures that should be sent to the counterparty, if necessary.
 	pub tx_signatures: Option<msgs::TxSignatures>,
 
-	/// The fully-signed funding transaction to be broadcast.
-	pub funding_tx: Option<Transaction>,
+	/// The fully-signed funding transaction to be broadcast, along with the transaction type.
+	pub funding_tx: Option<(Transaction, TransactionType)>,
 
 	/// Information about the completed funding negotiation.
 	pub splice_negotiated: Option<SpliceFundingNegotiated>,
@@ -9142,6 +9153,15 @@ where
 		} else {
 			(None, None)
 		};
+
+		let funding_tx = funding_tx.map(|tx| {
+			let tx_type = if splice_negotiated.is_some() {
+				TransactionType::Splice { channel_id: self.context.channel_id }
+			} else {
+				TransactionType::Funding { channel_ids: vec![self.context.channel_id] }
+			};
+			(tx, tx_type)
+		});
 
 		Ok(FundingTxSigned {
 			commitment_signed: None,

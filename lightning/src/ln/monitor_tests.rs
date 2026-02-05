@@ -1209,7 +1209,7 @@ fn test_no_preimage_inbound_htlc_balances() {
 		}, a_received_htlc_balance.clone(), a_sent_htlc_balance.clone()]);
 
 	mine_transaction(&nodes[0], &as_txn[0]);
-	nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().clear();
+	nodes[0].tx_broadcaster.clear();
 	check_closed_broadcast!(nodes[0], true);
 	check_added_monitors(&nodes[0], 1);
 	check_closed_event(&nodes[0], 1, ClosureReason::CommitmentTxConfirmed, &[nodes[1].node.get_our_node_id()], 1000000);
@@ -1256,7 +1256,7 @@ fn test_no_preimage_inbound_htlc_balances() {
 	bs_pre_spend_claims.retain(|e| if let Balance::ClaimableAwaitingConfirmations { .. } = e { false } else { true });
 
 	// The next few blocks for B look the same as for A, though for the opposite HTLC
-	nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clear();
+	nodes[1].tx_broadcaster.clear();
 	connect_blocks(&nodes[1], TEST_FINAL_CLTV - (ANTI_REORG_DELAY - 1));
 	expect_htlc_failure_conditions(nodes[1].node.get_and_clear_pending_events(), &[HTLCHandlingFailureType::Receive { payment_hash: to_b_failed_payment_hash }]);
 	nodes[1].node.process_pending_htlc_forwards();
