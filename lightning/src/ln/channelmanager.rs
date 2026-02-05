@@ -10569,7 +10569,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			// If this peer already has some channels, a new channel won't increase our number of peers
 			// with unfunded channels, so as long as we aren't over the maximum number of unfunded
 			// channels per-peer we can accept channels from a peer with existing ones.
-			if is_only_peer_channel && peers_without_funded_channels >= MAX_UNFUNDED_CHANNEL_PEERS {
+			if is_only_peer_channel && peers_without_funded_channels > MAX_UNFUNDED_CHANNEL_PEERS {
 				let send_msg_err_event = MessageSendEvent::HandleError {
 					node_id: channel.context().get_counterparty_node_id(),
 					action: msgs::ErrorAction::SendErrorMessage {

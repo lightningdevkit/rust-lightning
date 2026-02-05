@@ -110,7 +110,7 @@ fn test_0conf_limiting() {
 	};
 
 	// First, get us up to MAX_UNFUNDED_CHANNEL_PEERS so we can test at the edge
-	for _ in 0..MAX_UNFUNDED_CHANNEL_PEERS - 1 {
+	for _ in 0..MAX_UNFUNDED_CHANNEL_PEERS {
 		let random_pk = PublicKey::from_secret_key(
 			&nodes[0].node.secp_ctx,
 			&SecretKey::from_slice(&nodes[1].keys_manager.get_secure_random_bytes()).unwrap(),
