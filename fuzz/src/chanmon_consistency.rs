@@ -570,15 +570,21 @@ fn get_payment_secret_hash(dest: &ChanMan, payment_ctr: &mut u64) -> (PaymentSec
 
 #[inline]
 fn send_payment(
-	source: &ChanMan, dest: &ChanMan, dest_chan_id: u64, amt: u64, payment_secret: PaymentSecret,
-	payment_hash: PaymentHash, payment_id: PaymentId,
+	source: &ChanMan, dest: &ChanMan, dest_chan_id: ChannelId, amt: u64,
+	payment_secret: PaymentSecret, payment_hash: PaymentHash, payment_id: PaymentId,
 ) -> bool {
-	let (min_value_sendable, max_value_sendable) = source
+	let (min_value_sendable, max_value_sendable, dest_scid) = source
 		.list_usable_channels()
 		.iter()
-		.find(|chan| chan.short_channel_id == Some(dest_chan_id))
-		.map(|chan| (chan.next_outbound_htlc_minimum_msat, chan.next_outbound_htlc_limit_msat))
-		.unwrap_or((0, 0));
+		.find(|chan| chan.channel_id == dest_chan_id)
+		.map(|chan| {
+			(
+				chan.next_outbound_htlc_minimum_msat,
+				chan.next_outbound_htlc_limit_msat,
+				chan.short_channel_id.unwrap_or(0),
+			)
+		})
+		.unwrap_or((0, 0, 0));
 	let route_params = RouteParameters::from_payment_params_and_value(
 		PaymentParameters::from_node_id(source.get_our_node_id(), TEST_FINAL_CLTV),
 		amt,
@@ -588,7 +594,7 @@ fn send_payment(
 			hops: vec![RouteHop {
 				pubkey: dest.get_our_node_id(),
 				node_features: dest.node_features(),
-				short_channel_id: dest_chan_id,
+				short_channel_id: dest_scid,
 				channel_features: dest.channel_features(),
 				fee_msat: amt,
 				cltv_expiry_delta: 200,
@@ -615,15 +621,28 @@ fn send_payment(
 
 #[inline]
 fn send_hop_payment(
-	source: &ChanMan, middle: &ChanMan, middle_scid: u64, dest: &ChanMan, dest_scid: u64, amt: u64,
-	payment_secret: PaymentSecret, payment_hash: PaymentHash, payment_id: PaymentId,
+	source: &ChanMan, middle: &ChanMan, middle_chan_id: ChannelId, dest: &ChanMan,
+	dest_chan_id: ChannelId, amt: u64, payment_secret: PaymentSecret, payment_hash: PaymentHash,
+	payment_id: PaymentId,
 ) -> bool {
-	let (min_value_sendable, max_value_sendable) = source
+	let (min_value_sendable, max_value_sendable, middle_scid) = source
 		.list_usable_channels()
 		.iter()
-		.find(|chan| chan.short_channel_id == Some(middle_scid))
-		.map(|chan| (chan.next_outbound_htlc_minimum_msat, chan.next_outbound_htlc_limit_msat))
-		.unwrap_or((0, 0));
+		.find(|chan| chan.channel_id == middle_chan_id)
+		.map(|chan| {
+			(
+				chan.next_outbound_htlc_minimum_msat,
+				chan.next_outbound_htlc_limit_msat,
+				chan.short_channel_id.unwrap_or(0),
+			)
+		})
+		.unwrap_or((0, 0, 0));
+	let dest_scid = dest
+		.list_channels()
+		.iter()
+		.find(|chan| chan.channel_id == dest_chan_id)
+		.and_then(|chan| chan.short_channel_id)
+		.unwrap_or(0);
 	let first_hop_fee = 50_000;
 	let route_params = RouteParameters::from_payment_params_and_value(
 		PaymentParameters::from_node_id(source.get_our_node_id(), TEST_FINAL_CLTV),
@@ -674,10 +693,10 @@ fn send_hop_payment(
 /// Send an MPP payment directly from source to dest using multiple channels.
 #[inline]
 fn send_mpp_payment(
-	source: &ChanMan, dest: &ChanMan, dest_scids: &[u64], amt: u64, payment_secret: PaymentSecret,
-	payment_hash: PaymentHash, payment_id: PaymentId,
+	source: &ChanMan, dest: &ChanMan, dest_chan_ids: &[ChannelId], amt: u64,
+	payment_secret: PaymentSecret, payment_hash: PaymentHash, payment_id: PaymentId,
 ) -> bool {
-	let num_paths = dest_scids.len();
+	let num_paths = dest_chan_ids.len();
 	if num_paths == 0 {
 		return false;
 	}
@@ -685,7 +704,16 @@ fn send_mpp_payment(
 	let amt_per_path = amt / num_paths as u64;
 	let mut paths = Vec::with_capacity(num_paths);
 
-	for (i, &dest_scid) in dest_scids.iter().enumerate() {
+	let dest_chans = dest.list_channels();
+	let dest_scids = dest_chan_ids.iter().map(|chan_id| {
+		dest_chans
+			.iter()
+			.find(|chan| chan.channel_id == *chan_id)
+			.and_then(|chan| chan.short_channel_id)
+			.unwrap()
+	});
+
+	for (i, dest_scid) in dest_scids.enumerate() {
 		let path_amt = if i == num_paths - 1 {
 			amt - amt_per_path * (num_paths as u64 - 1)
 		} else {
@@ -723,11 +751,12 @@ fn send_mpp_payment(
 /// Supports multiple channels on either or both hops.
 #[inline]
 fn send_mpp_hop_payment(
-	source: &ChanMan, middle: &ChanMan, middle_scids: &[u64], dest: &ChanMan, dest_scids: &[u64],
-	amt: u64, payment_secret: PaymentSecret, payment_hash: PaymentHash, payment_id: PaymentId,
+	source: &ChanMan, middle: &ChanMan, middle_chan_ids: &[ChannelId], dest: &ChanMan,
+	dest_chan_ids: &[ChannelId], amt: u64, payment_secret: PaymentSecret,
+	payment_hash: PaymentHash, payment_id: PaymentId,
 ) -> bool {
 	// Create paths by pairing middle_scids with dest_scids
-	let num_paths = middle_scids.len().max(dest_scids.len());
+	let num_paths = middle_chan_ids.len().max(dest_chan_ids.len());
 	if num_paths == 0 {
 		return false;
 	}
@@ -736,6 +765,30 @@ fn send_mpp_hop_payment(
 	let amt_per_path = amt / num_paths as u64;
 	let fee_per_path = first_hop_fee / num_paths as u64;
 	let mut paths = Vec::with_capacity(num_paths);
+
+	let middle_chans = middle.list_channels();
+	let middle_scids: Vec<_> = middle_chan_ids
+		.iter()
+		.map(|chan_id| {
+			middle_chans
+				.iter()
+				.find(|chan| chan.channel_id == *chan_id)
+				.and_then(|chan| chan.short_channel_id)
+				.unwrap()
+		})
+		.collect();
+
+	let dest_chans = dest.list_channels();
+	let dest_scids: Vec<_> = dest_chan_ids
+		.iter()
+		.map(|chan_id| {
+			dest_chans
+				.iter()
+				.find(|chan| chan.channel_id == *chan_id)
+				.and_then(|chan| chan.short_channel_id)
+				.unwrap()
+		})
+		.collect();
 
 	for i in 0..num_paths {
 		let middle_scid = middle_scids[i % middle_scids.len()];
@@ -1131,8 +1184,6 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 			} else {
 				panic!("Wrong event type");
 			}
-
-			channel_id
 		}};
 	}
 
@@ -1215,16 +1266,12 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 	// Fuzz mode uses XOR-based hashing (all bytes XOR to one byte), and
 	// versions 0-5 cause collisions between A-B and B-C channel pairs
 	// (e.g., A-B with Version(1) collides with B-C with Version(3)).
-	let chan_ab_ids = [
-		make_channel!(nodes[0], nodes[1], monitor_a, monitor_b, keys_manager_b, 1),
-		make_channel!(nodes[0], nodes[1], monitor_a, monitor_b, keys_manager_b, 2),
-		make_channel!(nodes[0], nodes[1], monitor_a, monitor_b, keys_manager_b, 3),
-	];
-	let chan_bc_ids = [
-		make_channel!(nodes[1], nodes[2], monitor_b, monitor_c, keys_manager_c, 4),
-		make_channel!(nodes[1], nodes[2], monitor_b, monitor_c, keys_manager_c, 5),
-		make_channel!(nodes[1], nodes[2], monitor_b, monitor_c, keys_manager_c, 6),
-	];
+	make_channel!(nodes[0], nodes[1], monitor_a, monitor_b, keys_manager_b, 1);
+	make_channel!(nodes[0], nodes[1], monitor_a, monitor_b, keys_manager_b, 2);
+	make_channel!(nodes[0], nodes[1], monitor_a, monitor_b, keys_manager_b, 3);
+	make_channel!(nodes[1], nodes[2], monitor_b, monitor_c, keys_manager_c, 4);
+	make_channel!(nodes[1], nodes[2], monitor_b, monitor_c, keys_manager_c, 5);
+	make_channel!(nodes[1], nodes[2], monitor_b, monitor_c, keys_manager_c, 6);
 
 	// Wipe the transactions-broadcasted set to make sure we don't broadcast any transactions
 	// during normal operation in `test_return`.
@@ -1260,29 +1307,19 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 
 	lock_fundings!(nodes);
 
-	// Get SCIDs for all A-B channels (from node A's perspective)
-	let node_a_chans: Vec<_> = nodes[0].list_usable_channels();
-	let chan_ab_scids: [u64; 3] = [
-		node_a_chans[0].short_channel_id.unwrap(),
-		node_a_chans[1].short_channel_id.unwrap(),
-		node_a_chans[2].short_channel_id.unwrap(),
-	];
-	let chan_ab_chan_ids: [ChannelId; 3] =
-		[node_a_chans[0].channel_id, node_a_chans[1].channel_id, node_a_chans[2].channel_id];
-	// Get SCIDs for all B-C channels (from node C's perspective)
-	let node_c_chans: Vec<_> = nodes[2].list_usable_channels();
-	let chan_bc_scids: [u64; 3] = [
-		node_c_chans[0].short_channel_id.unwrap(),
-		node_c_chans[1].short_channel_id.unwrap(),
-		node_c_chans[2].short_channel_id.unwrap(),
-	];
-	let chan_bc_chan_ids: [ChannelId; 3] =
-		[node_c_chans[0].channel_id, node_c_chans[1].channel_id, node_c_chans[2].channel_id];
+	// Get channel IDs for all A-B channels (from node A's perspective)
+	let chan_ab_ids = {
+		let node_a_chans = nodes[0].list_usable_channels();
+		[node_a_chans[0].channel_id, node_a_chans[1].channel_id, node_a_chans[2].channel_id]
+	};
+	// Get channel IDs for all B-C channels (from node C's perspective)
+	let chan_bc_ids = {
+		let node_c_chans = nodes[2].list_usable_channels();
+		[node_c_chans[0].channel_id, node_c_chans[1].channel_id, node_c_chans[2].channel_id]
+	};
 	// Keep old names for backward compatibility in existing code
-	let chan_a = chan_ab_scids[0];
-	let chan_a_id = chan_ab_chan_ids[0];
-	let chan_b = chan_bc_scids[0];
-	let chan_b_id = chan_bc_chan_ids[0];
+	let chan_a_id = chan_ab_ids[0];
+	let chan_b_id = chan_bc_ids[0];
 
 	let mut p_ctr: u64 = 0;
 
@@ -1870,9 +1907,9 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 
 		let send_hop_noret = |source_idx: usize,
 		                      middle_idx: usize,
-		                      middle_scid: u64,
+		                      middle_chan_id: ChannelId,
 		                      dest_idx: usize,
-		                      dest_scid: u64,
+		                      dest_chan_id: ChannelId,
 		                      amt: u64,
 		                      payment_ctr: &mut u64| {
 			let source = &nodes[source_idx];
@@ -1884,9 +1921,9 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 			let succeeded = send_hop_payment(
 				source,
 				middle,
-				middle_scid,
+				middle_chan_id,
 				dest,
-				dest_scid,
+				dest_chan_id,
 				amt,
 				secret,
 				hash,
@@ -1900,7 +1937,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 		// Direct MPP payment (no hop)
 		let send_mpp_direct = |source_idx: usize,
 		                       dest_idx: usize,
-		                       dest_scids: &[u64],
+		                       dest_chan_ids: &[ChannelId],
 		                       amt: u64,
 		                       payment_ctr: &mut u64| {
 			let source = &nodes[source_idx];
@@ -1908,7 +1945,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 			let (secret, hash) = get_payment_secret_hash(dest, payment_ctr);
 			let mut id = PaymentId([0; 32]);
 			id.0[0..8].copy_from_slice(&payment_ctr.to_ne_bytes());
-			let succeeded = send_mpp_payment(source, dest, dest_scids, amt, secret, hash, id);
+			let succeeded = send_mpp_payment(source, dest, dest_chan_ids, amt, secret, hash, id);
 			if succeeded {
 				pending_payments.borrow_mut()[source_idx].push(id);
 			}
@@ -1917,9 +1954,9 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 		// MPP payment via hop - splits payment across multiple channels on either or both hops
 		let send_mpp_hop = |source_idx: usize,
 		                    middle_idx: usize,
-		                    middle_scids: &[u64],
+		                    middle_chan_ids: &[ChannelId],
 		                    dest_idx: usize,
-		                    dest_scids: &[u64],
+		                    dest_chan_ids: &[ChannelId],
 		                    amt: u64,
 		                    payment_ctr: &mut u64| {
 			let source = &nodes[source_idx];
@@ -1931,9 +1968,9 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 			let succeeded = send_mpp_hop_payment(
 				source,
 				middle,
-				middle_scids,
+				middle_chan_ids,
 				dest,
-				dest_scids,
+				dest_chan_ids,
 				amt,
 				secret,
 				hash,
@@ -2072,73 +2109,75 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 			0x27 => process_ev_noret!(2, false),
 
 			// 1/10th the channel size:
-			0x30 => send_noret(0, 1, chan_a, 10_000_000, &mut p_ctr),
-			0x31 => send_noret(1, 0, chan_a, 10_000_000, &mut p_ctr),
-			0x32 => send_noret(1, 2, chan_b, 10_000_000, &mut p_ctr),
-			0x33 => send_noret(2, 1, chan_b, 10_000_000, &mut p_ctr),
-			0x34 => send_hop_noret(0, 1, chan_a, 2, chan_b, 10_000_000, &mut p_ctr),
-			0x35 => send_hop_noret(2, 1, chan_b, 0, chan_a, 10_000_000, &mut p_ctr),
+			0x30 => send_noret(0, 1, chan_a_id, 10_000_000, &mut p_ctr),
+			0x31 => send_noret(1, 0, chan_a_id, 10_000_000, &mut p_ctr),
+			0x32 => send_noret(1, 2, chan_b_id, 10_000_000, &mut p_ctr),
+			0x33 => send_noret(2, 1, chan_b_id, 10_000_000, &mut p_ctr),
+			0x34 => send_hop_noret(0, 1, chan_a_id, 2, chan_b_id, 10_000_000, &mut p_ctr),
+			0x35 => send_hop_noret(2, 1, chan_b_id, 0, chan_a_id, 10_000_000, &mut p_ctr),
 
-			0x38 => send_noret(0, 1, chan_a, 1_000_000, &mut p_ctr),
-			0x39 => send_noret(1, 0, chan_a, 1_000_000, &mut p_ctr),
-			0x3a => send_noret(1, 2, chan_b, 1_000_000, &mut p_ctr),
-			0x3b => send_noret(2, 1, chan_b, 1_000_000, &mut p_ctr),
-			0x3c => send_hop_noret(0, 1, chan_a, 2, chan_b, 1_000_000, &mut p_ctr),
-			0x3d => send_hop_noret(2, 1, chan_b, 0, chan_a, 1_000_000, &mut p_ctr),
+			0x38 => send_noret(0, 1, chan_a_id, 1_000_000, &mut p_ctr),
+			0x39 => send_noret(1, 0, chan_a_id, 1_000_000, &mut p_ctr),
+			0x3a => send_noret(1, 2, chan_b_id, 1_000_000, &mut p_ctr),
+			0x3b => send_noret(2, 1, chan_b_id, 1_000_000, &mut p_ctr),
+			0x3c => send_hop_noret(0, 1, chan_a_id, 2, chan_b_id, 1_000_000, &mut p_ctr),
+			0x3d => send_hop_noret(2, 1, chan_b_id, 0, chan_a_id, 1_000_000, &mut p_ctr),
 
-			0x40 => send_noret(0, 1, chan_a, 100_000, &mut p_ctr),
-			0x41 => send_noret(1, 0, chan_a, 100_000, &mut p_ctr),
-			0x42 => send_noret(1, 2, chan_b, 100_000, &mut p_ctr),
-			0x43 => send_noret(2, 1, chan_b, 100_000, &mut p_ctr),
-			0x44 => send_hop_noret(0, 1, chan_a, 2, chan_b, 100_000, &mut p_ctr),
-			0x45 => send_hop_noret(2, 1, chan_b, 0, chan_a, 100_000, &mut p_ctr),
+			0x40 => send_noret(0, 1, chan_a_id, 100_000, &mut p_ctr),
+			0x41 => send_noret(1, 0, chan_a_id, 100_000, &mut p_ctr),
+			0x42 => send_noret(1, 2, chan_b_id, 100_000, &mut p_ctr),
+			0x43 => send_noret(2, 1, chan_b_id, 100_000, &mut p_ctr),
+			0x44 => send_hop_noret(0, 1, chan_a_id, 2, chan_b_id, 100_000, &mut p_ctr),
+			0x45 => send_hop_noret(2, 1, chan_b_id, 0, chan_a_id, 100_000, &mut p_ctr),
 
-			0x48 => send_noret(0, 1, chan_a, 10_000, &mut p_ctr),
-			0x49 => send_noret(1, 0, chan_a, 10_000, &mut p_ctr),
-			0x4a => send_noret(1, 2, chan_b, 10_000, &mut p_ctr),
-			0x4b => send_noret(2, 1, chan_b, 10_000, &mut p_ctr),
-			0x4c => send_hop_noret(0, 1, chan_a, 2, chan_b, 10_000, &mut p_ctr),
-			0x4d => send_hop_noret(2, 1, chan_b, 0, chan_a, 10_000, &mut p_ctr),
+			0x48 => send_noret(0, 1, chan_a_id, 10_000, &mut p_ctr),
+			0x49 => send_noret(1, 0, chan_a_id, 10_000, &mut p_ctr),
+			0x4a => send_noret(1, 2, chan_b_id, 10_000, &mut p_ctr),
+			0x4b => send_noret(2, 1, chan_b_id, 10_000, &mut p_ctr),
+			0x4c => send_hop_noret(0, 1, chan_a_id, 2, chan_b_id, 10_000, &mut p_ctr),
+			0x4d => send_hop_noret(2, 1, chan_b_id, 0, chan_a_id, 10_000, &mut p_ctr),
 
-			0x50 => send_noret(0, 1, chan_a, 1_000, &mut p_ctr),
-			0x51 => send_noret(1, 0, chan_a, 1_000, &mut p_ctr),
-			0x52 => send_noret(1, 2, chan_b, 1_000, &mut p_ctr),
-			0x53 => send_noret(2, 1, chan_b, 1_000, &mut p_ctr),
-			0x54 => send_hop_noret(0, 1, chan_a, 2, chan_b, 1_000, &mut p_ctr),
-			0x55 => send_hop_noret(2, 1, chan_b, 0, chan_a, 1_000, &mut p_ctr),
+			0x50 => send_noret(0, 1, chan_a_id, 1_000, &mut p_ctr),
+			0x51 => send_noret(1, 0, chan_a_id, 1_000, &mut p_ctr),
+			0x52 => send_noret(1, 2, chan_b_id, 1_000, &mut p_ctr),
+			0x53 => send_noret(2, 1, chan_b_id, 1_000, &mut p_ctr),
+			0x54 => send_hop_noret(0, 1, chan_a_id, 2, chan_b_id, 1_000, &mut p_ctr),
+			0x55 => send_hop_noret(2, 1, chan_b_id, 0, chan_a_id, 1_000, &mut p_ctr),
 
-			0x58 => send_noret(0, 1, chan_a, 100, &mut p_ctr),
-			0x59 => send_noret(1, 0, chan_a, 100, &mut p_ctr),
-			0x5a => send_noret(1, 2, chan_b, 100, &mut p_ctr),
-			0x5b => send_noret(2, 1, chan_b, 100, &mut p_ctr),
-			0x5c => send_hop_noret(0, 1, chan_a, 2, chan_b, 100, &mut p_ctr),
-			0x5d => send_hop_noret(2, 1, chan_b, 0, chan_a, 100, &mut p_ctr),
+			0x58 => send_noret(0, 1, chan_a_id, 100, &mut p_ctr),
+			0x59 => send_noret(1, 0, chan_a_id, 100, &mut p_ctr),
+			0x5a => send_noret(1, 2, chan_b_id, 100, &mut p_ctr),
+			0x5b => send_noret(2, 1, chan_b_id, 100, &mut p_ctr),
+			0x5c => send_hop_noret(0, 1, chan_a_id, 2, chan_b_id, 100, &mut p_ctr),
+			0x5d => send_hop_noret(2, 1, chan_b_id, 0, chan_a_id, 100, &mut p_ctr),
 
-			0x60 => send_noret(0, 1, chan_a, 10, &mut p_ctr),
-			0x61 => send_noret(1, 0, chan_a, 10, &mut p_ctr),
-			0x62 => send_noret(1, 2, chan_b, 10, &mut p_ctr),
-			0x63 => send_noret(2, 1, chan_b, 10, &mut p_ctr),
-			0x64 => send_hop_noret(0, 1, chan_a, 2, chan_b, 10, &mut p_ctr),
-			0x65 => send_hop_noret(2, 1, chan_b, 0, chan_a, 10, &mut p_ctr),
+			0x60 => send_noret(0, 1, chan_a_id, 10, &mut p_ctr),
+			0x61 => send_noret(1, 0, chan_a_id, 10, &mut p_ctr),
+			0x62 => send_noret(1, 2, chan_b_id, 10, &mut p_ctr),
+			0x63 => send_noret(2, 1, chan_b_id, 10, &mut p_ctr),
+			0x64 => send_hop_noret(0, 1, chan_a_id, 2, chan_b_id, 10, &mut p_ctr),
+			0x65 => send_hop_noret(2, 1, chan_b_id, 0, chan_a_id, 10, &mut p_ctr),
 
-			0x68 => send_noret(0, 1, chan_a, 1, &mut p_ctr),
-			0x69 => send_noret(1, 0, chan_a, 1, &mut p_ctr),
-			0x6a => send_noret(1, 2, chan_b, 1, &mut p_ctr),
-			0x6b => send_noret(2, 1, chan_b, 1, &mut p_ctr),
-			0x6c => send_hop_noret(0, 1, chan_a, 2, chan_b, 1, &mut p_ctr),
-			0x6d => send_hop_noret(2, 1, chan_b, 0, chan_a, 1, &mut p_ctr),
+			0x68 => send_noret(0, 1, chan_a_id, 1, &mut p_ctr),
+			0x69 => send_noret(1, 0, chan_a_id, 1, &mut p_ctr),
+			0x6a => send_noret(1, 2, chan_b_id, 1, &mut p_ctr),
+			0x6b => send_noret(2, 1, chan_b_id, 1, &mut p_ctr),
+			0x6c => send_hop_noret(0, 1, chan_a_id, 2, chan_b_id, 1, &mut p_ctr),
+			0x6d => send_hop_noret(2, 1, chan_b_id, 0, chan_a_id, 1, &mut p_ctr),
 
 			// MPP payments
 			// 0x70: direct MPP from 0 to 1 (multi A-B channels)
-			0x70 => send_mpp_direct(0, 1, &chan_ab_scids, 1_000_000, &mut p_ctr),
+			0x70 => send_mpp_direct(0, 1, &chan_ab_ids, 1_000_000, &mut p_ctr),
 			// 0x71: MPP 0->1->2, multi channels on first hop (A-B)
-			0x71 => send_mpp_hop(0, 1, &chan_ab_scids, 2, &[chan_b], 1_000_000, &mut p_ctr),
+			0x71 => send_mpp_hop(0, 1, &chan_ab_ids, 2, &[chan_b_id], 1_000_000, &mut p_ctr),
 			// 0x72: MPP 0->1->2, multi channels on both hops (A-B and B-C)
-			0x72 => send_mpp_hop(0, 1, &chan_ab_scids, 2, &chan_bc_scids, 1_000_000, &mut p_ctr),
+			0x72 => send_mpp_hop(0, 1, &chan_ab_ids, 2, &chan_bc_ids, 1_000_000, &mut p_ctr),
 			// 0x73: MPP 0->1->2, multi channels on second hop (B-C)
-			0x73 => send_mpp_hop(0, 1, &[chan_a], 2, &chan_bc_scids, 1_000_000, &mut p_ctr),
+			0x73 => send_mpp_hop(0, 1, &[chan_a_id], 2, &chan_bc_ids, 1_000_000, &mut p_ctr),
 			// 0x74: direct MPP from 0 to 1, multi parts over single channel
-			0x74 => send_mpp_direct(0, 1, &[chan_a, chan_a, chan_a], 1_000_000, &mut p_ctr),
+			0x74 => {
+				send_mpp_direct(0, 1, &[chan_a_id, chan_a_id, chan_a_id], 1_000_000, &mut p_ctr)
+			},
 
 			0x80 => {
 				let mut max_feerate = last_htlc_clear_fee_a;
@@ -2762,16 +2801,16 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 				}
 
 				// Finally, make sure that at least one end of each channel can make a substantial payment
-				for &scid in &chan_ab_scids {
+				for &chan_id in &chan_ab_ids {
 					assert!(
-						send(0, 1, scid, 10_000_000, &mut p_ctr)
-							|| send(1, 0, scid, 10_000_000, &mut p_ctr)
+						send(0, 1, chan_id, 10_000_000, &mut p_ctr)
+							|| send(1, 0, chan_id, 10_000_000, &mut p_ctr)
 					);
 				}
-				for &scid in &chan_bc_scids {
+				for &chan_id in &chan_bc_ids {
 					assert!(
-						send(1, 2, scid, 10_000_000, &mut p_ctr)
-							|| send(2, 1, scid, 10_000_000, &mut p_ctr)
+						send(1, 2, chan_id, 10_000_000, &mut p_ctr)
+							|| send(2, 1, chan_id, 10_000_000, &mut p_ctr)
 					);
 				}
 
