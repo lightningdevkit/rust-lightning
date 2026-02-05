@@ -7,13 +7,15 @@ use common::{get_lsps_message, LSPSNodes};
 
 use lightning::ln::peer_handler::CustomMessageHandler;
 use lightning_liquidity::events::LiquidityEvent;
+use lightning_liquidity::lsps0::ser::LSPSDateTime;
 use lightning_liquidity::lsps1::client::LSPS1ClientConfig;
 use lightning_liquidity::lsps1::event::LSPS1ClientEvent;
 use lightning_liquidity::lsps1::event::LSPS1ServiceEvent;
 use lightning_liquidity::lsps1::msgs::{
-	LSPS1OnchainPaymentInfo, LSPS1Options, LSPS1OrderParams, LSPS1PaymentInfo,
+	LSPS1ChannelInfo, LSPS1OnchainPaymentInfo, LSPS1Options, LSPS1OrderParams, LSPS1PaymentInfo,
+	LSPS1PaymentState,
 };
-use lightning_liquidity::lsps1::service::LSPS1ServiceConfig;
+use lightning_liquidity::lsps1::service::{LSPS1ServiceConfig, PaymentMethod};
 use lightning_liquidity::utils::time::DefaultTimeProvider;
 use lightning_liquidity::{LiquidityClientConfig, LiquidityManagerSync, LiquidityServiceConfig};
 
@@ -23,7 +25,7 @@ use lightning::ln::functional_test_utils::{
 use lightning::util::test_utils::{TestBroadcaster, TestStore};
 
 use bitcoin::secp256k1::PublicKey;
-use bitcoin::{Address, Network};
+use bitcoin::{Address, Network, OutPoint};
 
 use std::str::FromStr;
 use std::sync::Arc;
@@ -550,7 +552,7 @@ fn lsps1_invalid_token_error() {
 	let create_order_id = client_handler.create_order(
 		&service_node_id,
 		order_params.clone(),
-		Some(refund_onchain_address),
+		Some(refund_onchain_address.clone()),
 	);
 	let create_order = get_lsps_message!(client_node, service_node_id);
 
@@ -564,10 +566,13 @@ fn lsps1_invalid_token_error() {
 			request_id,
 			counterparty_node_id,
 			order,
+			refund_onchain_address: refund_addr,
+			..
 		}) = request_for_payment_event
 		{
 			assert_eq!(counterparty_node_id, client_node_id);
 			assert_eq!(order, order_params);
+			assert_eq!(refund_addr, Some(refund_onchain_address));
 			request_id
 		} else {
 			panic!("Unexpected event: expected RequestForPaymentDetails");
@@ -598,5 +603,286 @@ fn lsps1_invalid_token_error() {
 		assert_eq!(error.code, 102); // LSPS1_CREATE_ORDER_REQUEST_UNRECOGNIZED_OR_STALE_TOKEN_ERROR_CODE
 	} else {
 		panic!("Unexpected event: expected OrderRequestFailed");
+	}
+}
+
+#[test]
+fn lsps1_order_state_transitions() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let supported_options = LSPS1Options {
+		min_required_channel_confirmations: 0,
+		min_funding_confirms_within_blocks: 6,
+		supports_zero_channel_reserve: true,
+		max_channel_expiry_blocks: 144,
+		min_initial_client_balance_sat: 10_000_000,
+		max_initial_client_balance_sat: 100_000_000,
+		min_initial_lsp_balance_sat: 100_000,
+		max_initial_lsp_balance_sat: 100_000_000,
+		min_channel_balance_sat: 100_000,
+		max_channel_balance_sat: 100_000_000,
+	};
+
+	let LSPSNodes { service_node, client_node } =
+		setup_test_lsps1_nodes(nodes, supported_options.clone());
+	let service_node_id = service_node.inner.node.get_our_node_id();
+	let client_node_id = client_node.inner.node.get_our_node_id();
+	let client_handler = client_node.liquidity_manager.lsps1_client_handler().unwrap();
+	let service_handler = service_node.liquidity_manager.lsps1_service_handler().unwrap();
+
+	// Create an order
+	let order_params = LSPS1OrderParams {
+		lsp_balance_sat: 100_000,
+		client_balance_sat: 10_000_000,
+		required_channel_confirmations: 0,
+		funding_confirms_within_blocks: 6,
+		channel_expiry_blocks: 144,
+		token: None,
+		announce_channel: true,
+	};
+
+	let refund_onchain_address =
+		Address::from_str("bc1p5uvtaxzkjwvey2tfy49k5vtqfpjmrgm09cvs88ezyy8h2zv7jhas9tu4yr")
+			.unwrap()
+			.assume_checked();
+	let create_order_id = client_handler.create_order(
+		&service_node_id,
+		order_params.clone(),
+		Some(refund_onchain_address),
+	);
+	let create_order = get_lsps_message!(client_node, service_node_id);
+
+	service_node.liquidity_manager.handle_custom_message(create_order, client_node_id).unwrap();
+
+	let request_for_payment_event = service_node.liquidity_manager.next_event().unwrap();
+	let request_id =
+		if let LiquidityEvent::LSPS1Service(LSPS1ServiceEvent::RequestForPaymentDetails {
+			request_id,
+			..
+		}) = request_for_payment_event
+		{
+			request_id
+		} else {
+			panic!("Unexpected event");
+		};
+
+	// Send payment details with onchain payment option
+	let json_str = r#"{
+		"state": "EXPECT_PAYMENT",
+		"expires_at": "2035-01-01T00:00:00Z",
+		"fee_total_sat": "9999",
+		"order_total_sat": "200999",
+		"address": "bc1p5uvtaxzkjwvey2tfy49k5vtqfpjmrgm09cvs88ezyy8h2zv7jhas9tu4yr",
+		"min_onchain_payment_confirmations": 1,
+		"min_fee_for_0conf": 253
+	}"#;
+
+	let onchain: LSPS1OnchainPaymentInfo =
+		serde_json::from_str(json_str).expect("Failed to parse JSON");
+	let payment_info = LSPS1PaymentInfo { bolt11: None, bolt12: None, onchain: Some(onchain) };
+	service_handler
+		.send_payment_details(request_id.clone(), client_node_id, payment_info.clone())
+		.unwrap();
+
+	let create_order_response = get_lsps_message!(service_node, client_node_id);
+	client_node
+		.liquidity_manager
+		.handle_custom_message(create_order_response, service_node_id)
+		.unwrap();
+
+	let order_created_event = client_node.liquidity_manager.next_event().unwrap();
+	let order_id = if let LiquidityEvent::LSPS1Client(LSPS1ClientEvent::OrderCreated {
+		request_id,
+		order_id,
+		payment,
+		..
+	}) = order_created_event
+	{
+		assert_eq!(request_id, create_order_id);
+		// Initially, payment state should be ExpectPayment
+		assert_eq!(payment.onchain.as_ref().unwrap().state, LSPS1PaymentState::ExpectPayment);
+		order_id
+	} else {
+		panic!("Unexpected event");
+	};
+
+	// Test order_payment_received: mark the order as paid
+	service_handler
+		.order_payment_received(client_node_id, order_id.clone(), PaymentMethod::Onchain)
+		.unwrap();
+
+	// Client checks order status - should see payment state as Paid
+	let _check_order_id = client_handler.check_order_status(&service_node_id, order_id.clone());
+	let check_order = get_lsps_message!(client_node, service_node_id);
+	service_node.liquidity_manager.handle_custom_message(check_order, client_node_id).unwrap();
+	let order_response = get_lsps_message!(service_node, client_node_id);
+	client_node.liquidity_manager.handle_custom_message(order_response, service_node_id).unwrap();
+
+	let order_status_event = client_node.liquidity_manager.next_event().unwrap();
+	if let LiquidityEvent::LSPS1Client(LSPS1ClientEvent::OrderStatus { payment, channel, .. }) =
+		order_status_event
+	{
+		// Payment state should be Paid
+		assert_eq!(payment.onchain.as_ref().unwrap().state, LSPS1PaymentState::Paid);
+		// No channel info yet (order state is still Created internally)
+		assert!(channel.is_none());
+	} else {
+		panic!("Unexpected event");
+	}
+
+	// Test order_channel_opened: mark the channel as opened
+	let channel_info = LSPS1ChannelInfo {
+		funded_at: LSPSDateTime::from_str("2035-01-01T00:00:00Z").unwrap(),
+		funding_outpoint: OutPoint::from_str(
+			"0301e0480b374b32851a9462db29dc19fe830a7f7d7a88b81612b9d42099c0ae:0",
+		)
+		.unwrap(),
+		expires_at: LSPSDateTime::from_str("2036-01-01T00:00:00Z").unwrap(),
+	};
+	service_handler
+		.order_channel_opened(client_node_id, order_id.clone(), channel_info.clone())
+		.unwrap();
+
+	// Client checks order status - should see Completed state with channel info
+	let _check_order_id = client_handler.check_order_status(&service_node_id, order_id.clone());
+	let check_order = get_lsps_message!(client_node, service_node_id);
+	service_node.liquidity_manager.handle_custom_message(check_order, client_node_id).unwrap();
+	let order_response = get_lsps_message!(service_node, client_node_id);
+	client_node.liquidity_manager.handle_custom_message(order_response, service_node_id).unwrap();
+
+	let order_status_event = client_node.liquidity_manager.next_event().unwrap();
+	if let LiquidityEvent::LSPS1Client(LSPS1ClientEvent::OrderStatus { channel, .. }) =
+		order_status_event
+	{
+		// Channel info should be present (indicates Completed state)
+		assert_eq!(channel, Some(channel_info));
+	} else {
+		panic!("Unexpected event");
+	}
+}
+
+#[test]
+fn lsps1_order_failed_and_refunded() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let supported_options = LSPS1Options {
+		min_required_channel_confirmations: 0,
+		min_funding_confirms_within_blocks: 6,
+		supports_zero_channel_reserve: true,
+		max_channel_expiry_blocks: 144,
+		min_initial_client_balance_sat: 10_000_000,
+		max_initial_client_balance_sat: 100_000_000,
+		min_initial_lsp_balance_sat: 100_000,
+		max_initial_lsp_balance_sat: 100_000_000,
+		min_channel_balance_sat: 100_000,
+		max_channel_balance_sat: 100_000_000,
+	};
+
+	let LSPSNodes { service_node, client_node } =
+		setup_test_lsps1_nodes(nodes, supported_options.clone());
+	let service_node_id = service_node.inner.node.get_our_node_id();
+	let client_node_id = client_node.inner.node.get_our_node_id();
+	let client_handler = client_node.liquidity_manager.lsps1_client_handler().unwrap();
+	let service_handler = service_node.liquidity_manager.lsps1_service_handler().unwrap();
+
+	// Create an order
+	let order_params = LSPS1OrderParams {
+		lsp_balance_sat: 100_000,
+		client_balance_sat: 10_000_000,
+		required_channel_confirmations: 0,
+		funding_confirms_within_blocks: 6,
+		channel_expiry_blocks: 144,
+		token: None,
+		announce_channel: true,
+	};
+
+	let refund_onchain_address =
+		Address::from_str("bc1p5uvtaxzkjwvey2tfy49k5vtqfpjmrgm09cvs88ezyy8h2zv7jhas9tu4yr")
+			.unwrap()
+			.assume_checked();
+	let create_order_id = client_handler.create_order(
+		&service_node_id,
+		order_params.clone(),
+		Some(refund_onchain_address),
+	);
+	let create_order = get_lsps_message!(client_node, service_node_id);
+
+	service_node.liquidity_manager.handle_custom_message(create_order, client_node_id).unwrap();
+
+	let request_for_payment_event = service_node.liquidity_manager.next_event().unwrap();
+	let request_id =
+		if let LiquidityEvent::LSPS1Service(LSPS1ServiceEvent::RequestForPaymentDetails {
+			request_id,
+			..
+		}) = request_for_payment_event
+		{
+			request_id
+		} else {
+			panic!("Unexpected event");
+		};
+
+	// Send payment details
+	let json_str = r#"{
+		"state": "EXPECT_PAYMENT",
+		"expires_at": "2035-01-01T00:00:00Z",
+		"fee_total_sat": "9999",
+		"order_total_sat": "200999",
+		"address": "bc1p5uvtaxzkjwvey2tfy49k5vtqfpjmrgm09cvs88ezyy8h2zv7jhas9tu4yr",
+		"min_onchain_payment_confirmations": 1,
+		"min_fee_for_0conf": 253
+	}"#;
+
+	let onchain: LSPS1OnchainPaymentInfo =
+		serde_json::from_str(json_str).expect("Failed to parse JSON");
+	let payment_info = LSPS1PaymentInfo { bolt11: None, bolt12: None, onchain: Some(onchain) };
+	service_handler
+		.send_payment_details(request_id.clone(), client_node_id, payment_info.clone())
+		.unwrap();
+
+	let create_order_response = get_lsps_message!(service_node, client_node_id);
+	client_node
+		.liquidity_manager
+		.handle_custom_message(create_order_response, service_node_id)
+		.unwrap();
+
+	let order_created_event = client_node.liquidity_manager.next_event().unwrap();
+	let order_id = if let LiquidityEvent::LSPS1Client(LSPS1ClientEvent::OrderCreated {
+		request_id,
+		order_id,
+		..
+	}) = order_created_event
+	{
+		assert_eq!(request_id, create_order_id);
+		order_id
+	} else {
+		panic!("Unexpected event");
+	};
+
+	// Test order_failed_and_refunded: mark the order as failed
+	service_handler.order_failed_and_refunded(client_node_id, order_id.clone()).unwrap();
+
+	// Client checks order status - should see Failed state with Refunded payment
+	let _check_order_id = client_handler.check_order_status(&service_node_id, order_id.clone());
+	let check_order = get_lsps_message!(client_node, service_node_id);
+	service_node.liquidity_manager.handle_custom_message(check_order, client_node_id).unwrap();
+	let order_response = get_lsps_message!(service_node, client_node_id);
+	client_node.liquidity_manager.handle_custom_message(order_response, service_node_id).unwrap();
+
+	let order_status_event = client_node.liquidity_manager.next_event().unwrap();
+	if let LiquidityEvent::LSPS1Client(LSPS1ClientEvent::OrderStatus { payment, channel, .. }) =
+		order_status_event
+	{
+		// Payment state should be Refunded (indicates Failed state)
+		assert_eq!(payment.onchain.as_ref().unwrap().state, LSPS1PaymentState::Refunded);
+		// No channel info
+		assert!(channel.is_none());
+	} else {
+		panic!("Unexpected event");
 	}
 }
