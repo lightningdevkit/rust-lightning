@@ -14083,8 +14083,8 @@ impl<
 					short_channel_id: peer_chans
 						.iter()
 						.filter(|chan| chan.is_usable)
-						.filter_map(|chan| chan.short_channel_id)
-						.min(),
+						.min_by_key(|chan| chan.short_channel_id)
+						.and_then(|chan| chan.get_inbound_payment_scid()),
 				})
 			}
 			start = end;
