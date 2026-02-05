@@ -117,7 +117,19 @@ pub struct FundingTxInput {
 
 impl_writeable_tlv_based!(FundingTxInput, {
 	(1, utxo, required),
-	(3, _sequence, (legacy, Sequence, |_| Ok(()), |input: &FundingTxInput| Some(input.utxo.sequence))),
+	(3, _sequence, (legacy, Sequence,
+		|read_val: Option<&Sequence>| {
+			if let Some(sequence) = read_val {
+				// Utxo contains sequence now, so update it if the value read here differs since
+				// this indicates Utxo::sequence was read with default_value
+				let utxo: &mut Utxo = utxo.0.as_mut().expect("utxo is required");
+				if utxo.sequence != *sequence {
+					utxo.sequence = *sequence;
+				}
+			}
+			Ok(())
+		},
+		|input: &FundingTxInput| Some(input.utxo.sequence))),
 	(5, prevtx, required),
 });
 
