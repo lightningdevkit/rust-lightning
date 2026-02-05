@@ -419,7 +419,7 @@ fn test_fee_failures() {
 	// malleated the payment before forwarding, taking funds when they shouldn't have. However,
 	// because we ignore channel update contents, we will still blame the 2nd channel.
 	let (_, payment_hash, payment_secret) = get_payment_preimage_hash!(nodes[2]);
-	let short_channel_id = channels[1].0.contents.short_channel_id;
+	let short_channel_id = route.paths[0].hops[1].short_channel_id;
 	run_onion_failure_test(
 		"fee_insufficient",
 		100,
@@ -510,7 +510,7 @@ fn test_onion_failure() {
 	};
 
 	// intermediate node failure
-	let short_channel_id = channels[1].0.contents.short_channel_id;
+	let short_channel_id = route.paths[0].hops[1].short_channel_id;
 	run_onion_failure_test(
 		"invalid_realm",
 		0,
@@ -552,7 +552,7 @@ fn test_onion_failure() {
 	);
 
 	// final node failure
-	let short_channel_id = channels[1].0.contents.short_channel_id;
+	let short_channel_id = route.paths[0].hops[1].short_channel_id;
 	run_onion_failure_test(
 		"invalid_realm",
 		3,
@@ -815,7 +815,7 @@ fn test_onion_failure() {
 
 	// Our immediate peer sent UpdateFailMalformedHTLC because it couldn't understand the onion in
 	// the UpdateAddHTLC that we sent.
-	let short_channel_id = channels[0].0.contents.short_channel_id;
+	let short_channel_id = route.paths[0].hops[0].short_channel_id;
 	run_onion_failure_test(
 		"invalid_onion_version",
 		0,
@@ -870,7 +870,7 @@ fn test_onion_failure() {
 		Some(HTLCHandlingFailureType::InvalidOnion),
 	);
 
-	let short_channel_id = channels[1].0.contents.short_channel_id;
+	let short_channel_id = route.paths[0].hops[1].short_channel_id;
 	let chan_update = ChannelUpdate::dummy(short_channel_id);
 
 	let mut err_data = Vec::new();
@@ -941,7 +941,7 @@ fn test_onion_failure() {
 		Some(next_hop_failure.clone()),
 	);
 
-	let short_channel_id = channels[1].0.contents.short_channel_id;
+	let short_channel_id = route.paths[0].hops[1].short_channel_id;
 	run_onion_failure_test_with_fail_intercept(
 		"permanent_channel_failure",
 		100,
@@ -974,7 +974,7 @@ fn test_onion_failure() {
 		Some(next_hop_failure.clone()),
 	);
 
-	let short_channel_id = channels[1].0.contents.short_channel_id;
+	let short_channel_id = route.paths[0].hops[1].short_channel_id;
 	run_onion_failure_test_with_fail_intercept(
 		"required_channel_feature_missing",
 		100,
@@ -1026,7 +1026,7 @@ fn test_onion_failure() {
 		Some(HTLCHandlingFailureType::InvalidForward { requested_forward_scid: short_channel_id }),
 	);
 
-	let short_channel_id = channels[1].0.contents.short_channel_id;
+	let short_channel_id = route.paths[0].hops[1].short_channel_id;
 	let amt_to_forward = {
 		let (per_peer_state, mut peer_state);
 		let chan = get_channel_ref!(nodes[1], nodes[2], per_peer_state, peer_state, channels[1].2);
@@ -1064,7 +1064,7 @@ fn test_onion_failure() {
 
 	// We ignore channel update contents in onion errors, so will blame the 2nd channel even though
 	// the first node is the one that messed up.
-	let short_channel_id = channels[1].0.contents.short_channel_id;
+	let short_channel_id = route.paths[0].hops[1].short_channel_id;
 	run_onion_failure_test(
 		"fee_insufficient",
 		100,
@@ -1083,7 +1083,7 @@ fn test_onion_failure() {
 		Some(next_hop_failure.clone()),
 	);
 
-	let short_channel_id = channels[1].0.contents.short_channel_id;
+	let short_channel_id = route.paths[0].hops[1].short_channel_id;
 	run_onion_failure_test(
 		"incorrect_cltv_expiry",
 		100,
@@ -1103,7 +1103,7 @@ fn test_onion_failure() {
 		Some(next_hop_failure.clone()),
 	);
 
-	let short_channel_id = channels[1].0.contents.short_channel_id;
+	let short_channel_id = route.paths[0].hops[1].short_channel_id;
 	run_onion_failure_test(
 		"expiry_too_soon",
 		100,
@@ -1190,7 +1190,7 @@ fn test_onion_failure() {
 		true,
 		Some(LocalHTLCFailureReason::FinalIncorrectCLTVExpiry),
 		None,
-		Some(channels[1].0.contents.short_channel_id),
+		Some(route.paths[0].hops[1].short_channel_id),
 		Some(HTLCHandlingFailureType::Receive { payment_hash }),
 	);
 
@@ -1220,11 +1220,11 @@ fn test_onion_failure() {
 		true,
 		Some(LocalHTLCFailureReason::FinalIncorrectHTLCAmount),
 		None,
-		Some(channels[1].0.contents.short_channel_id),
+		Some(route.paths[0].hops[1].short_channel_id),
 		Some(HTLCHandlingFailureType::Receive { payment_hash }),
 	);
 
-	let short_channel_id = channels[1].0.contents.short_channel_id;
+	let short_channel_id = route.paths[0].hops[1].short_channel_id;
 	run_onion_failure_test(
 		"channel_disabled",
 		100,
@@ -1386,7 +1386,7 @@ fn test_onion_failure() {
 			node_id: route.paths[0].hops[1].pubkey,
 			is_permanent: true,
 		}),
-		Some(channels[1].0.contents.short_channel_id),
+		Some(route.paths[0].hops[1].short_channel_id),
 		None,
 	);
 
@@ -1455,10 +1455,10 @@ fn test_onion_failure() {
 		true,
 		Some(LocalHTLCFailureReason::TemporaryChannelFailure),
 		Some(NetworkUpdate::ChannelFailure {
-			short_channel_id: channels[1].0.contents.short_channel_id,
+			short_channel_id: route.paths[0].hops[1].short_channel_id,
 			is_permanent: false,
 		}),
-		Some(channels[1].0.contents.short_channel_id),
+		Some(route.paths[0].hops[1].short_channel_id),
 		Some(next_hop_failure.clone()),
 	);
 	run_onion_failure_test_with_fail_intercept(
@@ -1505,10 +1505,10 @@ fn test_onion_failure() {
 		true,
 		Some(LocalHTLCFailureReason::TemporaryChannelFailure),
 		Some(NetworkUpdate::ChannelFailure {
-			short_channel_id: channels[1].0.contents.short_channel_id,
+			short_channel_id: route.paths[0].hops[1].short_channel_id,
 			is_permanent: false,
 		}),
-		Some(channels[1].0.contents.short_channel_id),
+		Some(route.paths[0].hops[1].short_channel_id),
 		None,
 	);
 	run_onion_failure_test(
