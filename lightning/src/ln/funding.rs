@@ -129,15 +129,6 @@ pub struct FundingTemplate {
 	is_initiator: bool,
 }
 
-impl_writeable_tlv_based!(FundingTemplate, {
-	(1, value_added, required),
-	(3, outputs, optional_vec),
-	(5, change_script, option),
-	(7, shared_input, option),
-	(9, feerate, required),
-	(11, is_initiator, required),
-});
-
 impl FundingTemplate {
 	/// Constructs a [`FundingTemplate`] for a splice using the provided shared input.
 	pub(super) fn for_splice(
