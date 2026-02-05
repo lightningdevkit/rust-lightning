@@ -323,18 +323,6 @@ impl_writeable_tlv_based_enum!(LSPS1PaymentState,
 	(4, Refunded) => {}
 );
 
-/// Details regarding a detected on-chain payment.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
-pub struct LSPS1OnchainPayment {
-	/// The outpoint of the payment.
-	pub outpoint: String,
-	/// The amount of satoshi paid.
-	#[serde(with = "string_amount")]
-	pub sat: u64,
-	/// Indicates if the LSP regards the transaction as sufficiently confirmed.
-	pub confirmed: bool,
-}
-
 /// Details regarding the state of an ordered channel.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct LSPS1ChannelInfo {
