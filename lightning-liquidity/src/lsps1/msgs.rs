@@ -310,7 +310,12 @@ impl_writeable_tlv_based!(LSPS1OnchainPaymentInfo, {
 pub enum LSPS1PaymentState {
 	/// A payment is expected.
 	ExpectPayment,
-	/// A sufficient payment has been received.
+	/// A payment has been received but the channel has not yet been opened.
+	///
+	/// This indicates the LSP has received the payment (e.g., Lightning HTLC held,
+	/// or on-chain transaction detected) but has not yet published the funding transaction.
+	Hold,
+	/// A sufficient payment has been received and the channel has been opened.
 	Paid,
 	/// The payment has been refunded.
 	#[serde(alias = "CANCELLED")]
@@ -319,8 +324,9 @@ pub enum LSPS1PaymentState {
 
 impl_writeable_tlv_based_enum!(LSPS1PaymentState,
 	(0, ExpectPayment) => {},
-	(2, Paid) => {},
-	(4, Refunded) => {}
+	(2, Hold) => {},
+	(4, Paid) => {},
+	(6, Refunded) => {}
 );
 
 /// Details regarding the state of an ordered channel.
