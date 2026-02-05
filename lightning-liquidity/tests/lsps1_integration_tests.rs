@@ -725,8 +725,8 @@ fn lsps1_order_state_transitions() {
 	if let LiquidityEvent::LSPS1Client(LSPS1ClientEvent::OrderStatus { payment, channel, .. }) =
 		order_status_event
 	{
-		// Payment state should be Paid
-		assert_eq!(payment.onchain.as_ref().unwrap().state, LSPS1PaymentState::Paid);
+		// Payment state should be Hold (payment received but channel not yet opened)
+		assert_eq!(payment.onchain.as_ref().unwrap().state, LSPS1PaymentState::Hold);
 		// No channel info yet (order state is still Created internally)
 		assert!(channel.is_none());
 	} else {
@@ -754,9 +754,11 @@ fn lsps1_order_state_transitions() {
 	client_node.liquidity_manager.handle_custom_message(order_response, service_node_id).unwrap();
 
 	let order_status_event = client_node.liquidity_manager.next_event().unwrap();
-	if let LiquidityEvent::LSPS1Client(LSPS1ClientEvent::OrderStatus { channel, .. }) =
+	if let LiquidityEvent::LSPS1Client(LSPS1ClientEvent::OrderStatus { payment, channel, .. }) =
 		order_status_event
 	{
+		// Payment state should now be Paid (channel has been opened)
+		assert_eq!(payment.onchain.as_ref().unwrap().state, LSPS1PaymentState::Paid);
 		// Channel info should be present (indicates Completed state)
 		assert_eq!(channel, Some(channel_info));
 	} else {

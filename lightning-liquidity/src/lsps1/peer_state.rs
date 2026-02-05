@@ -102,17 +102,17 @@ impl ChannelOrderState {
 
 	/// Transition: ExpectingPayment -> OrderPaid
 	///
-	/// Updates the specified payment method's state to PAID.
+	/// Updates the specified payment method's state to HOLD.
 	pub(super) fn payment_received(
 		&mut self, method: PaymentMethod,
 	) -> Result<(), ChannelOrderStateError> {
 		match self {
 			ChannelOrderState::ExpectingPayment { payment_details } => {
-				// Update the payment state for the specified method
+				// Update the payment state for the specified method to HOLD
 				let method_exists = match method {
 					PaymentMethod::Bolt11 => {
 						if let Some(ref mut bolt11) = payment_details.bolt11 {
-							bolt11.state = LSPS1PaymentState::Paid;
+							bolt11.state = LSPS1PaymentState::Hold;
 							true
 						} else {
 							false
@@ -120,7 +120,7 @@ impl ChannelOrderState {
 					},
 					PaymentMethod::Bolt12 => {
 						if let Some(ref mut bolt12) = payment_details.bolt12 {
-							bolt12.state = LSPS1PaymentState::Paid;
+							bolt12.state = LSPS1PaymentState::Hold;
 							true
 						} else {
 							false
@@ -128,7 +128,7 @@ impl ChannelOrderState {
 					},
 					PaymentMethod::Onchain => {
 						if let Some(ref mut onchain) = payment_details.onchain {
-							onchain.state = LSPS1PaymentState::Paid;
+							onchain.state = LSPS1PaymentState::Hold;
 							true
 						} else {
 							false
@@ -152,13 +152,33 @@ impl ChannelOrderState {
 	}
 
 	/// Transition: OrderPaid -> CompletedAndChannelOpened
+	///
+	/// Updates payment states from HOLD to PAID.
 	pub(super) fn channel_opened(
 		&mut self, channel_info: LSPS1ChannelInfo,
 	) -> Result<(), ChannelOrderStateError> {
 		match self {
 			ChannelOrderState::OrderPaid { payment_details } => {
+				// Update payment states from HOLD to PAID
+				let mut paid_details = payment_details.clone();
+				if let Some(ref mut bolt11) = paid_details.bolt11 {
+					if bolt11.state == LSPS1PaymentState::Hold {
+						bolt11.state = LSPS1PaymentState::Paid;
+					}
+				}
+				if let Some(ref mut bolt12) = paid_details.bolt12 {
+					if bolt12.state == LSPS1PaymentState::Hold {
+						bolt12.state = LSPS1PaymentState::Paid;
+					}
+				}
+				if let Some(ref mut onchain) = paid_details.onchain {
+					if onchain.state == LSPS1PaymentState::Hold {
+						onchain.state = LSPS1PaymentState::Paid;
+					}
+				}
+
 				*self = ChannelOrderState::CompletedAndChannelOpened {
-					payment_details: payment_details.clone(),
+					payment_details: paid_details,
 					channel_info,
 				};
 				Ok(())
@@ -524,7 +544,8 @@ mod tests {
 
 		assert!(matches!(state, ChannelOrderState::OrderPaid { .. }));
 		assert_eq!(state.order_state(), LSPS1OrderState::Created);
-		assert_eq!(state.payment_details().bolt11.as_ref().unwrap().state, LSPS1PaymentState::Paid);
+		// Payment state should be HOLD (not PAID) until channel is opened
+		assert_eq!(state.payment_details().bolt11.as_ref().unwrap().state, LSPS1PaymentState::Hold);
 	}
 
 	// Test valid transition: ExpectingPayment -> OrderPaid via payment_received (Onchain)
@@ -536,9 +557,10 @@ mod tests {
 		state.payment_received(PaymentMethod::Onchain).unwrap();
 
 		assert!(matches!(state, ChannelOrderState::OrderPaid { .. }));
+		// Payment state should be HOLD (not PAID) until channel is opened
 		assert_eq!(
 			state.payment_details().onchain.as_ref().unwrap().state,
-			LSPS1PaymentState::Paid
+			LSPS1PaymentState::Hold
 		);
 	}
 
@@ -549,12 +571,17 @@ mod tests {
 		let mut state = ChannelOrderState::new(payment_info);
 		state.payment_received(PaymentMethod::Bolt11).unwrap();
 
+		// Verify payment state is HOLD before channel opens
+		assert_eq!(state.payment_details().bolt11.as_ref().unwrap().state, LSPS1PaymentState::Hold);
+
 		let channel_info = create_test_channel_info();
 		state.channel_opened(channel_info.clone()).unwrap();
 
 		assert!(matches!(state, ChannelOrderState::CompletedAndChannelOpened { .. }));
 		assert_eq!(state.order_state(), LSPS1OrderState::Completed);
 		assert_eq!(state.channel_info(), Some(&channel_info));
+		// Payment state should now be PAID after channel is opened
+		assert_eq!(state.payment_details().bolt11.as_ref().unwrap().state, LSPS1PaymentState::Paid);
 	}
 
 	// Test valid transition: ExpectingPayment -> FailedAndRefunded
@@ -580,10 +607,14 @@ mod tests {
 		let mut state = ChannelOrderState::new(payment_info);
 		state.payment_received(PaymentMethod::Bolt11).unwrap();
 
+		// Verify payment state is HOLD before failure
+		assert_eq!(state.payment_details().bolt11.as_ref().unwrap().state, LSPS1PaymentState::Hold);
+
 		state.mark_failed_and_refunded().unwrap();
 
 		assert!(matches!(state, ChannelOrderState::FailedAndRefunded { .. }));
 		assert_eq!(state.order_state(), LSPS1OrderState::Failed);
+		// Payment state should now be REFUNDED
 		assert_eq!(
 			state.payment_details().bolt11.as_ref().unwrap().state,
 			LSPS1PaymentState::Refunded
