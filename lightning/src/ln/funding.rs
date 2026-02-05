@@ -305,6 +305,14 @@ impl FundingContribution {
 		self.is_splice
 	}
 
+	pub(super) fn contributed_inputs(&self) -> impl Iterator<Item = OutPoint> + '_ {
+		self.inputs.iter().map(|input| input.utxo.outpoint)
+	}
+
+	pub(super) fn contributed_outputs(&self) -> impl Iterator<Item = &TxOut> + '_ {
+		self.outputs.iter().chain(self.change_output.iter())
+	}
+
 	pub(super) fn into_tx_parts(self) -> (Vec<FundingTxInput>, Vec<TxOut>) {
 		let FundingContribution { inputs, mut outputs, change_output, .. } = self;
 
@@ -319,6 +327,24 @@ impl FundingContribution {
 		let (inputs, outputs) = self.into_tx_parts();
 
 		(inputs.into_iter().map(|input| input.utxo.outpoint).collect(), outputs)
+	}
+
+	pub(super) fn into_unique_contributions<'a>(
+		self, existing_inputs: impl Iterator<Item = OutPoint>,
+		existing_outputs: impl Iterator<Item = &'a TxOut>,
+	) -> Option<(Vec<OutPoint>, Vec<TxOut>)> {
+		let (mut inputs, mut outputs) = self.into_contributed_inputs_and_outputs();
+		for existing in existing_inputs {
+			inputs.retain(|input| *input != existing);
+		}
+		for existing in existing_outputs {
+			outputs.retain(|output| *output != *existing);
+		}
+		if inputs.is_empty() && outputs.is_empty() {
+			None
+		} else {
+			Some((inputs, outputs))
+		}
 	}
 
 	/// Validates that the funding inputs are suitable for use in the interactive transaction

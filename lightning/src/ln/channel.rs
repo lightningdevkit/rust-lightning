@@ -3050,6 +3050,35 @@ pub(crate) enum QuiescentAction {
 	DoNothing,
 }
 
+pub(super) enum QuiescentError {
+	DoNothing,
+	DiscardFunding { inputs: Vec<bitcoin::OutPoint>, outputs: Vec<bitcoin::TxOut> },
+	FailSplice(SpliceFundingFailed),
+}
+
+impl From<QuiescentAction> for QuiescentError {
+	fn from(action: QuiescentAction) -> Self {
+		match action {
+			QuiescentAction::LegacySplice(_) => {
+				debug_assert!(false);
+				QuiescentError::DoNothing
+			},
+			QuiescentAction::Splice { contribution, .. } => {
+				let (contributed_inputs, contributed_outputs) =
+					contribution.into_contributed_inputs_and_outputs();
+				return QuiescentError::FailSplice(SpliceFundingFailed {
+					funding_txo: None,
+					channel_type: None,
+					contributed_inputs,
+					contributed_outputs,
+				});
+			},
+			#[cfg(any(test, fuzzing, feature = "_test_utils"))]
+			QuiescentAction::DoNothing => QuiescentError::DoNothing,
+		}
+	}
+}
+
 pub(crate) enum StfuResponse {
 	Stfu(msgs::Stfu),
 	SpliceInit(msgs::SpliceInit),
@@ -12215,8 +12244,57 @@ where
 
 	pub fn funding_contributed<L: Logger>(
 		&mut self, contribution: FundingContribution, locktime: LockTime, logger: &L,
-	) -> Result<Option<msgs::Stfu>, SpliceFundingFailed> {
+	) -> Result<Option<msgs::Stfu>, QuiescentError> {
 		debug_assert!(contribution.is_splice());
+
+		if let Some(QuiescentAction::Splice { contribution: existing, .. }) = &self.quiescent_action
+		{
+			return match contribution.into_unique_contributions(
+				existing.contributed_inputs(),
+				existing.contributed_outputs(),
+			) {
+				None => Err(QuiescentError::DoNothing),
+				Some((inputs, outputs)) => Err(QuiescentError::DiscardFunding { inputs, outputs }),
+			};
+		}
+
+		let initiated_funding_negotiation = self
+			.pending_splice
+			.as_ref()
+			.and_then(|pending_splice| pending_splice.funding_negotiation.as_ref())
+			.filter(|funding_negotiation| funding_negotiation.is_initiator());
+
+		if let Some(funding_negotiation) = initiated_funding_negotiation {
+			let unique_contributions = match funding_negotiation {
+				FundingNegotiation::AwaitingAck { context, .. } => contribution
+					.into_unique_contributions(
+						context.contributed_inputs(),
+						context.contributed_outputs(),
+					),
+				FundingNegotiation::ConstructingTransaction {
+					interactive_tx_constructor, ..
+				} => contribution.into_unique_contributions(
+					interactive_tx_constructor.contributed_inputs(),
+					interactive_tx_constructor.contributed_outputs(),
+				),
+				FundingNegotiation::AwaitingSignatures { .. } => {
+					let session = self
+						.context
+						.interactive_tx_signing_session
+						.as_ref()
+						.expect("pending splice awaiting signatures");
+					contribution.into_unique_contributions(
+						session.contributed_inputs(),
+						session.contributed_outputs(),
+					)
+				},
+			};
+
+			return match unique_contributions {
+				None => Err(QuiescentError::DoNothing),
+				Some((inputs, outputs)) => Err(QuiescentError::DiscardFunding { inputs, outputs }),
+			};
+		}
 
 		if let Err(e) = contribution.validate().and_then(|()| {
 			// For splice-out, our_funding_contribution is adjusted to cover fees if there
@@ -12229,37 +12307,15 @@ where
 			let (contributed_inputs, contributed_outputs) =
 				contribution.into_contributed_inputs_and_outputs();
 
-			return Err(SpliceFundingFailed {
+			return Err(QuiescentError::FailSplice(SpliceFundingFailed {
 				funding_txo: None,
 				channel_type: None,
 				contributed_inputs,
 				contributed_outputs,
-			});
+			}));
 		}
 
-		self.propose_quiescence(logger, QuiescentAction::Splice { contribution, locktime }).map_err(
-			|action| {
-				// FIXME: Any better way to do this?
-				if let QuiescentAction::Splice { contribution, .. } = action {
-					let (contributed_inputs, contributed_outputs) =
-						contribution.into_contributed_inputs_and_outputs();
-					SpliceFundingFailed {
-						funding_txo: None,
-						channel_type: None,
-						contributed_inputs,
-						contributed_outputs,
-					}
-				} else {
-					debug_assert!(false);
-					SpliceFundingFailed {
-						funding_txo: None,
-						channel_type: None,
-						contributed_inputs: vec![],
-						contributed_outputs: vec![],
-					}
-				}
-			},
-		)
+		self.propose_quiescence(logger, QuiescentAction::Splice { contribution, locktime })
 	}
 
 	fn send_splice_init(&mut self, instructions: SpliceInstructions) -> msgs::SpliceInit {
@@ -13382,19 +13438,19 @@ where
 	#[rustfmt::skip]
 	pub fn propose_quiescence<L: Logger>(
 		&mut self, logger: &L, action: QuiescentAction,
-	) -> Result<Option<msgs::Stfu>, QuiescentAction> {
+	) -> Result<Option<msgs::Stfu>, QuiescentError> {
 		log_debug!(logger, "Attempting to initiate quiescence");
 
 		if !self.context.is_usable() {
 			log_debug!(logger, "Channel is not in a usable state to propose quiescence");
-			return Err(action);
+			return Err(action.into());
 		}
 		if self.quiescent_action.is_some() {
 			log_debug!(
 				logger,
 				"Channel already has a pending quiescent action and cannot start another",
 			);
-			return Err(action);
+			return Err(action.into());
 		}
 		// Since we don't have a pending quiescent action, we should never be in a state where we
 		// sent `stfu` without already having become quiescent.
