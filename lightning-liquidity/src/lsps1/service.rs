@@ -22,11 +22,12 @@ use super::event::LSPS1ServiceEvent;
 use super::msgs::{
 	LSPS1ChannelInfo, LSPS1CreateOrderRequest, LSPS1CreateOrderResponse, LSPS1GetInfoResponse,
 	LSPS1GetOrderRequest, LSPS1Message, LSPS1Options, LSPS1OrderId, LSPS1OrderParams,
-	LSPS1OrderState, LSPS1PaymentInfo, LSPS1Request, LSPS1Response,
+	LSPS1PaymentInfo, LSPS1Request, LSPS1Response,
 	LSPS1_CREATE_ORDER_REQUEST_ORDER_MISMATCH_ERROR_CODE,
 	LSPS1_CREATE_ORDER_REQUEST_UNRECOGNIZED_OR_STALE_TOKEN_ERROR_CODE,
 	LSPS1_GET_ORDER_REQUEST_ORDER_NOT_FOUND_ERROR_CODE,
 };
+pub use super::peer_state::PaymentMethod;
 use super::peer_state::PeerState;
 use crate::message_queue::MessageQueue;
 
@@ -387,13 +388,12 @@ where
 						should_persist |= peer_state_lock.needs_persist();
 
 						let response = LSPS1Response::CreateOrder(LSPS1CreateOrderResponse {
-							order: order.order_params,
 							order_id,
-
-							order_state: order.order_state,
-							created_at: order.created_at,
-							payment: order.payment_details,
-							channel: order.channel_details,
+							order_state: order.order_state(),
+							created_at: order.created_at.clone(),
+							payment: order.payment_details().clone(),
+							channel: order.channel_details().cloned(),
+							order: order.order_params,
 						});
 						let msg = LSPS1Message::Response(request_id, response).into();
 						message_queue_notifier.enqueue(&counterparty_node_id, msg);
@@ -496,10 +496,10 @@ where
 				let response = LSPS1Response::GetOrder(LSPS1CreateOrderResponse {
 					order_id: params.order_id,
 					order: order.order_params.clone(),
-					order_state: order.order_state.clone(),
+					order_state: order.order_state(),
 					created_at: order.created_at.clone(),
-					payment: order.payment_details.clone(),
-					channel: order.channel_details.clone(),
+					payment: order.payment_details().clone(),
+					channel: order.channel_details().cloned(),
 				});
 				let msg = LSPS1Message::Response(request_id, response).into();
 				message_queue_notifier.enqueue(&counterparty_node_id, msg);
@@ -524,23 +524,108 @@ where
 		}
 	}
 
-	/// Used by LSP to give details to client regarding the status of channel opening.
+	/// Marks an order as paid after payment has been received.
 	///
-	/// The LSP continously polls for checking payment confirmation on-chain or Lightning
-	/// and then responds to client request.
-	pub async fn update_order_status(
-		&self, counterparty_node_id: PublicKey, order_id: LSPS1OrderId,
-		order_state: LSPS1OrderState, channel_details: Option<LSPS1ChannelInfo>,
+	/// This should be called when the LSP detects that a Lightning payment has arrived or an
+	/// on-chain payment has been confirmed.
+	///
+	/// This should be called before opening the channel and the channel should not be opened if
+	/// this returns an error.
+	///
+	/// Note that in the case of a lightning payment, we expect the payment to have been received
+	/// (i.e. LDK's [`Event::PaymentClaimable`]) but not claimed (i.e. calling LDK's
+	/// [`ChannelManager::claim_funds`]), allowing the payment to be returned to the sender if
+	/// channel opening fails.
+	///
+	/// [`Event::PaymentClaimable`]: lightning::events::Event::PaymentClaimable
+	/// [`ChannelManager::claim_funds`]: lightning::ln::channelmanager::ChannelManager::claim_funds
+	pub async fn order_payment_received(
+		&self, counterparty_node_id: PublicKey, order_id: LSPS1OrderId, method: PaymentMethod,
 	) -> Result<(), APIError> {
 		let mut should_persist = false;
 		match self.per_peer_state.read().unwrap().get(&counterparty_node_id) {
 			Some(inner_state_lock) => {
 				let mut peer_state_lock = inner_state_lock.lock().unwrap();
-				peer_state_lock.update_order(&order_id, order_state, channel_details).map_err(
-					|e| APIError::APIMisuseError {
-						err: format!("Failed to update order: {:?}", e),
-					},
-				)?;
+				peer_state_lock.order_payment_received(&order_id, method).map_err(|e| {
+					APIError::APIMisuseError { err: format!("Failed to update order: {}", e) }
+				})?;
+				should_persist |= peer_state_lock.needs_persist();
+			},
+			None => {
+				return Err(APIError::APIMisuseError {
+					err: format!("No existing state with counterparty {}", counterparty_node_id),
+				});
+			},
+		}
+
+		if should_persist {
+			self.persist_peer_state(counterparty_node_id).await.map_err(|e| {
+				APIError::APIMisuseError {
+					err: format!(
+						"Failed to persist peer state for {}: {}",
+						counterparty_node_id, e
+					),
+				}
+			})?;
+		}
+
+		Ok(())
+	}
+
+	/// Marks an order as completed after the channel has been opened.
+	///
+	/// This should be called when the LSP has successfully published the funding
+	/// transaction for the channel.
+	pub async fn order_channel_opened(
+		&self, counterparty_node_id: PublicKey, order_id: LSPS1OrderId,
+		channel_info: LSPS1ChannelInfo,
+	) -> Result<(), APIError> {
+		let mut should_persist = false;
+		match self.per_peer_state.read().unwrap().get(&counterparty_node_id) {
+			Some(inner_state_lock) => {
+				let mut peer_state_lock = inner_state_lock.lock().unwrap();
+				peer_state_lock.order_channel_opened(&order_id, channel_info).map_err(|e| {
+					APIError::APIMisuseError { err: format!("Failed to update order: {}", e) }
+				})?;
+				should_persist |= peer_state_lock.needs_persist();
+			},
+			None => {
+				return Err(APIError::APIMisuseError {
+					err: format!("No existing state with counterparty {}", counterparty_node_id),
+				});
+			},
+		}
+
+		if should_persist {
+			self.persist_peer_state(counterparty_node_id).await.map_err(|e| {
+				APIError::APIMisuseError {
+					err: format!(
+						"Failed to persist peer state for {}: {}",
+						counterparty_node_id, e
+					),
+				}
+			})?;
+		}
+
+		Ok(())
+	}
+
+	/// Marks an order as failed and refunded.
+	///
+	/// This should be called when:
+	/// - We require onchain payment and the client didn't provide a `refund_onchain_address`.
+	/// - The order expires without payment
+	/// - The channel open fails after payment and the LSP must refund
+	pub async fn order_failed_and_refunded(
+		&self, counterparty_node_id: PublicKey, order_id: LSPS1OrderId,
+	) -> Result<(), APIError> {
+		let mut should_persist = false;
+		match self.per_peer_state.read().unwrap().get(&counterparty_node_id) {
+			Some(inner_state_lock) => {
+				let mut peer_state_lock = inner_state_lock.lock().unwrap();
+				peer_state_lock.order_failed_and_refunded(&order_id).map_err(|e| {
+					APIError::APIMisuseError { err: format!("Failed to update order: {}", e) }
+				})?;
 				should_persist |= peer_state_lock.needs_persist();
 			},
 			None => {
@@ -670,19 +755,54 @@ where
 		self.inner.invalid_token_provided(counterparty_node_id, request_id)
 	}
 
-	/// Used by LSP to give details to client regarding the status of channel opening.
+	/// Marks an order as paid after payment has been received.
 	///
-	/// Wraps [`LSPS1ServiceHandler::update_order_status`].
-	pub fn update_order_status(
-		&self, counterparty_node_id: PublicKey, order_id: LSPS1OrderId,
-		order_state: LSPS1OrderState, channel_details: Option<LSPS1ChannelInfo>,
+	/// Wraps [`LSPS1ServiceHandler::order_payment_received`].
+	pub fn order_payment_received(
+		&self, counterparty_node_id: PublicKey, order_id: LSPS1OrderId, method: PaymentMethod,
 	) -> Result<(), APIError> {
-		let mut fut = pin!(self.inner.update_order_status(
-			counterparty_node_id,
-			order_id,
-			order_state,
-			channel_details
-		));
+		let mut fut =
+			pin!(self.inner.order_payment_received(counterparty_node_id, order_id, method));
+
+		let mut waker = dummy_waker();
+		let mut ctx = task::Context::from_waker(&mut waker);
+		match fut.as_mut().poll(&mut ctx) {
+			task::Poll::Ready(result) => result,
+			task::Poll::Pending => {
+				// In a sync context, we can't wait for the future to complete.
+				unreachable!("Should not be pending in a sync context");
+			},
+		}
+	}
+
+	/// Marks an order as completed after the channel has been opened.
+	///
+	/// Wraps [`LSPS1ServiceHandler::order_channel_opened`].
+	pub fn order_channel_opened(
+		&self, counterparty_node_id: PublicKey, order_id: LSPS1OrderId,
+		channel_info: LSPS1ChannelInfo,
+	) -> Result<(), APIError> {
+		let mut fut =
+			pin!(self.inner.order_channel_opened(counterparty_node_id, order_id, channel_info));
+
+		let mut waker = dummy_waker();
+		let mut ctx = task::Context::from_waker(&mut waker);
+		match fut.as_mut().poll(&mut ctx) {
+			task::Poll::Ready(result) => result,
+			task::Poll::Pending => {
+				// In a sync context, we can't wait for the future to complete.
+				unreachable!("Should not be pending in a sync context");
+			},
+		}
+	}
+
+	/// Marks an order as failed and refunded.
+	///
+	/// Wraps [`LSPS1ServiceHandler::order_failed_and_refunded`].
+	pub fn order_failed_and_refunded(
+		&self, counterparty_node_id: PublicKey, order_id: LSPS1OrderId,
+	) -> Result<(), APIError> {
+		let mut fut = pin!(self.inner.order_failed_and_refunded(counterparty_node_id, order_id));
 
 		let mut waker = dummy_waker();
 		let mut ctx = task::Context::from_waker(&mut waker);
