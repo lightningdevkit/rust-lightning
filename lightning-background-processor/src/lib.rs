@@ -57,11 +57,10 @@ use lightning::sign::{
 use lightning::util::async_poll::MaybeSend;
 use lightning::util::logger::Logger;
 use lightning::util::persist::{
-	KVStore, KVStoreSync, KVStoreSyncWrapper, CHANNEL_MANAGER_PERSISTENCE_KEY,
-	CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE, CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
-	NETWORK_GRAPH_PERSISTENCE_KEY, NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE,
-	NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE, SCORER_PERSISTENCE_KEY,
-	SCORER_PERSISTENCE_PRIMARY_NAMESPACE, SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
+	KVStore, KVStoreSync, KVStoreSyncWrapper, NETWORK_GRAPH_PERSISTENCE_KEY,
+	NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE, NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE,
+	SCORER_PERSISTENCE_KEY, SCORER_PERSISTENCE_PRIMARY_NAMESPACE,
+	SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
 };
 use lightning::util::sweep::{OutputSweeper, OutputSweeperSync};
 use lightning::util::wakers::Future;
@@ -1150,44 +1149,13 @@ where
 			None => {},
 		}
 
-		let mut futures = Joiner::new();
+		// Type A is unused but needed for inference - we use the same boxed future type as other slots
+		let mut futures: Joiner<lightning::io::Error, core::pin::Pin<Box<dyn core::future::Future<Output = Result<(), lightning::io::Error>> + Send + 'static>>, _, _, _, _> = Joiner::new();
 
-		// Capture the number of pending monitor writes before persisting the channel manager.
-		// We'll only flush this many writes after the manager is persisted, to avoid flushing
-		// monitor updates that arrived after the manager state was captured.
+		// Capture the number of pending monitor writes and whether manager needs persistence.
+		// We'll flush monitors and manager together in a single batch after other tasks complete.
 		let pending_monitor_writes = chain_monitor.pending_write_count();
-
-		if channel_manager.get_cm().get_and_clear_needs_persistence() {
-			log_trace!(logger, "Persisting ChannelManager...");
-
-			let fut = async {
-				kv_store
-					.write(
-						CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
-						CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
-						CHANNEL_MANAGER_PERSISTENCE_KEY,
-						channel_manager.get_cm().encode(),
-					)
-					.await
-			};
-			// TODO: Once our MSRV is 1.68 we should be able to drop the Box
-			let mut fut = Box::pin(fut);
-
-			// Because persisting the ChannelManager is important to avoid accidental
-			// force-closures, go ahead and poll the future once before we do slightly more
-			// CPU-intensive tasks in the form of NetworkGraph pruning or scorer time-stepping
-			// below. This will get it moving but won't block us for too long if the underlying
-			// future is actually async.
-			use core::future::Future;
-			let mut waker = dummy_waker();
-			let mut ctx = task::Context::from_waker(&mut waker);
-			match core::pin::Pin::new(&mut fut).poll(&mut ctx) {
-				task::Poll::Ready(res) => futures.set_a_res(res),
-				task::Poll::Pending => futures.set_a(fut),
-			}
-
-			log_trace!(logger, "Done persisting ChannelManager.");
-		}
+		let needs_manager_persist = channel_manager.get_cm().get_and_clear_needs_persistence();
 
 		// Note that we want to archive stale ChannelMonitors and run a network graph prune once
 		// not long after startup before falling back to their usual infrequent runs. This avoids
@@ -1354,11 +1322,13 @@ where
 			res?;
 		}
 
-		// Flush the monitor writes that were pending before we persisted the channel manager.
-		// Any writes that arrived after are left in the queue for the next iteration.
-		if pending_monitor_writes > 0 {
-			match chain_monitor.flush(pending_monitor_writes) {
-				Ok(()) => log_trace!(logger, "Flushed {} monitor writes", pending_monitor_writes),
+		// Flush monitors and manager together in a single batch.
+		// Any monitor writes that arrived after are left in the queue for the next iteration.
+		if pending_monitor_writes > 0 || needs_manager_persist {
+			log_trace!(logger, "Persisting ChannelManager and flushing {} monitor writes...", pending_monitor_writes);
+			let manager_bytes = channel_manager.get_cm().encode();
+			match chain_monitor.flush(pending_monitor_writes, manager_bytes) {
+				Ok(()) => log_trace!(logger, "Flushed ChannelManager and {} monitor writes", pending_monitor_writes),
 				Err(e) => log_error!(logger, "Failed to flush chain monitor: {}", e),
 			}
 		}
@@ -1416,25 +1386,18 @@ where
 	}
 	log_trace!(logger, "Terminating background processor.");
 
-	// After we exit, ensure we persist the ChannelManager one final time - this avoids
-	// some races where users quit while channel updates were in-flight, with
-	// ChannelMonitor update(s) persisted without a corresponding ChannelManager update.
-	kv_store
-		.write(
-			CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
-			CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
-			CHANNEL_MANAGER_PERSISTENCE_KEY,
-			channel_manager.get_cm().encode(),
-		)
-		.await?;
-
-	// Flush all pending monitor writes after final channel manager persistence.
+	// After we exit, ensure we persist the ChannelManager one final time along with any
+	// pending monitor writes - this avoids some races where users quit while channel updates
+	// were in-flight, with ChannelMonitor update(s) persisted without a corresponding
+	// ChannelManager update.
 	let pending_monitor_writes = chain_monitor.pending_write_count();
-	if pending_monitor_writes > 0 {
-		match chain_monitor.flush(pending_monitor_writes) {
-			Ok(()) => log_trace!(logger, "Flushed {} monitor writes", pending_monitor_writes),
-			Err(e) => log_error!(logger, "Failed to flush chain monitor: {}", e),
-		}
+	let manager_bytes = channel_manager.get_cm().encode();
+	match chain_monitor.flush(pending_monitor_writes, manager_bytes) {
+		Ok(()) => log_trace!(logger, "Final flush: ChannelManager and {} monitor writes", pending_monitor_writes),
+		Err(e) => {
+			log_error!(logger, "Failed final flush: {}", e);
+			return Err(e);
+		},
 	}
 
 	if let Some(ref scorer) = scorer {
@@ -1746,25 +1709,17 @@ impl BackgroundProcessor {
 					channel_manager.get_cm().timer_tick_occurred();
 					last_freshness_call = Instant::now();
 				}
-				// Capture the number of pending monitor writes before persisting the channel manager.
+				// Capture the number of pending monitor writes and whether manager needs persistence.
 				let pending_monitor_writes = chain_monitor.pending_write_count();
+				let needs_manager_persist = channel_manager.get_cm().get_and_clear_needs_persistence();
 
-				if channel_manager.get_cm().get_and_clear_needs_persistence() {
-					log_trace!(logger, "Persisting ChannelManager...");
-					(kv_store.write(
-						CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
-						CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
-						CHANNEL_MANAGER_PERSISTENCE_KEY,
-						channel_manager.get_cm().encode(),
-					))?;
-					log_trace!(logger, "Done persisting ChannelManager.");
-				}
-
-				// Flush the monitor writes that were pending before we persisted the channel manager.
-				if pending_monitor_writes > 0 {
-					match chain_monitor.flush(pending_monitor_writes) {
+				// Flush monitors and manager together in a single batch.
+				if pending_monitor_writes > 0 || needs_manager_persist {
+					log_trace!(logger, "Persisting ChannelManager and flushing {} monitor writes...", pending_monitor_writes);
+					let manager_bytes = channel_manager.get_cm().encode();
+					match chain_monitor.flush(pending_monitor_writes, manager_bytes) {
 						Ok(()) => {
-							log_trace!(logger, "Flushed {} monitor writes", pending_monitor_writes)
+							log_trace!(logger, "Flushed ChannelManager and {} monitor writes", pending_monitor_writes)
 						},
 						Err(e) => log_error!(logger, "Failed to flush chain monitor: {}", e),
 					}
@@ -1881,25 +1836,20 @@ impl BackgroundProcessor {
 				}
 			}
 
-			// After we exit, ensure we persist the ChannelManager one final time - this avoids
-			// some races where users quit while channel updates were in-flight, with
-			// ChannelMonitor update(s) persisted without a corresponding ChannelManager update.
-			kv_store.write(
-				CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
-				CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
-				CHANNEL_MANAGER_PERSISTENCE_KEY,
-				channel_manager.get_cm().encode(),
-			)?;
-
-			// Flush all pending monitor writes after final channel manager persistence.
+			// After we exit, ensure we persist the ChannelManager one final time along with any
+			// pending monitor writes - this avoids some races where users quit while channel updates
+			// were in-flight, with ChannelMonitor update(s) persisted without a corresponding
+			// ChannelManager update.
 			let pending_monitor_writes = chain_monitor.pending_write_count();
-			if pending_monitor_writes > 0 {
-				match chain_monitor.flush(pending_monitor_writes) {
-					Ok(()) => {
-						log_trace!(logger, "Flushed {} monitor writes", pending_monitor_writes)
-					},
-					Err(e) => log_error!(logger, "Failed to flush chain monitor: {}", e),
-				}
+			let manager_bytes = channel_manager.get_cm().encode();
+			match chain_monitor.flush(pending_monitor_writes, manager_bytes) {
+				Ok(()) => {
+					log_trace!(logger, "Final flush: ChannelManager and {} monitor writes", pending_monitor_writes)
+				},
+				Err(e) => {
+					log_error!(logger, "Failed final flush: {}", e);
+					return Err(e.into());
+				},
 			}
 
 			if let Some(ref scorer) = scorer {

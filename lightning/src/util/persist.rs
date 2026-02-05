@@ -563,8 +563,15 @@ impl<ChannelSigner: EcdsaChannelSigner, K: KVStoreSync + ?Sized> Persist<Channel
 		);
 	}
 
-	fn flush(&self, _count: usize) -> Result<Vec<(ChannelId, u64)>, io::Error> {
-		// KVStoreSync implementations persist immediately, so there's nothing to flush.
+	fn flush(&self, _count: usize, channel_manager_bytes: Vec<u8>) -> Result<Vec<(ChannelId, u64)>, io::Error> {
+		// KVStoreSync implementations persist immediately, so there's nothing to flush
+		// for monitors. However, we still need to persist the channel manager.
+		self.write(
+			CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+			CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
+			CHANNEL_MANAGER_PERSISTENCE_KEY,
+			channel_manager_bytes,
+		)?;
 		Ok(Vec::new())
 	}
 }
@@ -902,8 +909,8 @@ where
 		self.0.pending_write_count()
 	}
 
-	fn flush(&self, count: usize) -> Result<Vec<(ChannelId, u64)>, io::Error> {
-		poll_sync_future(self.0.flush(count))
+	fn flush(&self, count: usize, channel_manager_bytes: Vec<u8>) -> Result<Vec<(ChannelId, u64)>, io::Error> {
+		poll_sync_future(self.0.flush(count, channel_manager_bytes))
 	}
 }
 
@@ -1116,14 +1123,19 @@ where
 
 	/// Flushes pending writes to the underlying [`KVStore`].
 	///
-	/// If `count` is `Some(n)`, only the first `n` pending writes are flushed.
-	/// If `count` is `None`, all pending writes are flushed.
+	/// The `count` parameter specifies how many pending monitor writes to flush.
+	/// The `channel_manager_bytes` parameter contains the serialized channel manager to persist.
+	///
+	/// The channel manager is always written first in the batch, before any monitor writes,
+	/// to ensure proper ordering (manager state should be at least as recent as monitors on disk).
 	///
 	/// This method should be called after one or more calls that queue persist operations
 	/// to actually write the data to storage.
 	///
 	/// Returns the list of completed monitor updates (channel_id, update_id) that were flushed.
-	pub async fn flush(&self, count: usize) -> Result<Vec<(ChannelId, u64)>, io::Error> {
+	pub async fn flush(
+		&self, count: usize, channel_manager_bytes: Vec<u8>,
+	) -> Result<Vec<(ChannelId, u64)>, io::Error> {
 		let pending = {
 			let mut queue = self.0.pending_writes.lock().unwrap();
 			let n = count.min(queue.len());
@@ -1131,7 +1143,15 @@ where
 		};
 
 		// Phase 1: Collect all batch entries
-		let mut batch_entries = Vec::with_capacity(pending.len());
+		// Channel manager goes FIRST to ensure it's written before monitors
+		let mut batch_entries = Vec::with_capacity(pending.len() + 1);
+		batch_entries.push(BatchWriteEntry::new(
+			CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+			CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
+			CHANNEL_MANAGER_PERSISTENCE_KEY,
+			channel_manager_bytes,
+		));
+
 		let mut stale_cleanups = Vec::new();
 
 		for (i, write) in pending.iter().enumerate() {
@@ -1164,29 +1184,30 @@ where
 		}
 
 		// Phase 2: Execute batch write
-		let successful_writes = if !batch_entries.is_empty() {
-			let result = self.0.kv_store.write_batch(batch_entries).await;
-			if let Some(err) = result.error {
-				// Re-queue failed and subsequent writes
-				let failed_writes =
-					pending.into_iter().skip(result.successful_writes).collect::<Vec<_>>();
-				if !failed_writes.is_empty() {
-					let mut queue = self.0.pending_writes.lock().unwrap();
-					// Prepend failed writes back to the front of the queue
-					for write in failed_writes.into_iter().rev() {
-						queue.insert(0, write);
-					}
+		let result = self.0.kv_store.write_batch(batch_entries).await;
+		if let Some(err) = result.error {
+			// The first entry is the channel manager, so successful_writes includes it
+			// Monitor writes start at index 1, so subtract 1 to get monitor success count
+			let successful_monitor_writes =
+				if result.successful_writes > 0 { result.successful_writes - 1 } else { 0 };
+			// Re-queue failed and subsequent monitor writes
+			let failed_writes =
+				pending.into_iter().skip(successful_monitor_writes).collect::<Vec<_>>();
+			if !failed_writes.is_empty() {
+				let mut queue = self.0.pending_writes.lock().unwrap();
+				// Prepend failed writes back to the front of the queue
+				for write in failed_writes.into_iter().rev() {
+					queue.insert(0, write);
 				}
-				return Err(err);
 			}
-			result.successful_writes
-		} else {
-			0
-		};
+			return Err(err);
+		}
+		// Subtract 1 for the channel manager entry to get monitor success count
+		let successful_monitor_writes = result.successful_writes.saturating_sub(1);
 
 		// Phase 3: Cleanup stale updates (only for successfully written monitors)
 		for (i, monitor_key, start, end) in stale_cleanups {
-			if i < successful_writes {
+			if i < successful_monitor_writes {
 				for update_id in start..end {
 					let update_name = UpdateName::from(update_id);
 					// Lazy delete - ignore errors as this is just cleanup
@@ -1207,7 +1228,7 @@ where
 		// Phase 4: Return completions for successful writes only
 		let completions = pending
 			.into_iter()
-			.take(successful_writes)
+			.take(successful_monitor_writes)
 			.map(|write| match write {
 				PendingWrite::FullMonitor { completion, .. } => completion,
 				PendingWrite::Update { completion, .. } => completion,

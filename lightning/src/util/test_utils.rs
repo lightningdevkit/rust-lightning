@@ -825,7 +825,7 @@ impl<Signer: sign::ecdsa::EcdsaChannelSigner> Persist<Signer> for WatchtowerPers
 		);
 	}
 
-	fn flush(&self, _count: usize) -> Result<Vec<(ChannelId, u64)>, io::Error> {
+	fn flush(&self, _count: usize, _channel_manager_bytes: Vec<u8>) -> Result<Vec<(ChannelId, u64)>, io::Error> {
 		Ok(Vec::new())
 	}
 }
@@ -892,7 +892,7 @@ impl<Signer: sign::ecdsa::EcdsaChannelSigner> Persist<Signer> for TestPersister 
 		self.chain_sync_monitor_persistences.lock().unwrap().retain(|x| x != &monitor_name);
 	}
 
-	fn flush(&self, _count: usize) -> Result<Vec<(ChannelId, u64)>, io::Error> {
+	fn flush(&self, _count: usize, _channel_manager_bytes: Vec<u8>) -> Result<Vec<(ChannelId, u64)>, io::Error> {
 		Ok(Vec::new())
 	}
 }

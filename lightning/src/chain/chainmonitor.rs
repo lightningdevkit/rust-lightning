@@ -209,13 +209,17 @@ pub trait Persist<ChannelSigner: EcdsaChannelSigner> {
 
 	/// Flushes pending writes to the underlying storage.
 	///
-	/// The `count` parameter specifies how many pending writes to flush.
+	/// The `count` parameter specifies how many pending monitor writes to flush.
+	/// The `channel_manager_bytes` parameter contains the serialized channel manager to persist.
+	///
+	/// The channel manager is always written first in the batch, before any monitor writes,
+	/// to ensure proper ordering (manager state should be at least as recent as monitors on disk).
 	///
 	/// For implementations that queue writes (returning [`ChannelMonitorUpdateStatus::InProgress`]
 	/// from persist methods), this method should write queued data to storage.
 	///
 	/// Returns the list of completed monitor updates (channel_id, update_id) that were flushed.
-	fn flush(&self, count: usize) -> Result<Vec<(ChannelId, u64)>, io::Error>;
+	fn flush(&self, count: usize, channel_manager_bytes: Vec<u8>) -> Result<Vec<(ChannelId, u64)>, io::Error>;
 }
 
 struct MonitorHolder<ChannelSigner: EcdsaChannelSigner> {
@@ -347,8 +351,8 @@ where
 		self.persister.pending_write_count()
 	}
 
-	fn flush(&self, count: usize) -> Result<Vec<(ChannelId, u64)>, io::Error> {
-		crate::util::persist::poll_sync_future(self.persister.flush(count))
+	fn flush(&self, count: usize, channel_manager_bytes: Vec<u8>) -> Result<Vec<(ChannelId, u64)>, io::Error> {
+		crate::util::persist::poll_sync_future(self.persister.flush(count, channel_manager_bytes))
 	}
 }
 
@@ -760,14 +764,17 @@ where
 
 	/// Flushes pending writes to the underlying storage.
 	///
-	/// If `count` is `Some(n)`, only the first `n` pending writes are flushed.
-	/// If `count` is `None`, all pending writes are flushed.
+	/// The `count` parameter specifies how many pending monitor writes to flush.
+	/// The `channel_manager_bytes` parameter contains the serialized channel manager to persist.
+	///
+	/// The channel manager is always written first in the batch, before any monitor writes,
+	/// to ensure proper ordering (manager state should be at least as recent as monitors on disk).
 	///
 	/// For persisters that queue writes (returning [`ChannelMonitorUpdateStatus::InProgress`]
 	/// from persist methods), this method writes queued data to storage and signals
 	/// completion to the channel manager via [`Self::channel_monitor_updated`].
-	pub fn flush(&self, count: usize) -> Result<(), io::Error> {
-		let completed = self.persister.flush(count)?;
+	pub fn flush(&self, count: usize, channel_manager_bytes: Vec<u8>) -> Result<(), io::Error> {
+		let completed = self.persister.flush(count, channel_manager_bytes)?;
 		for (channel_id, update_id) in completed {
 			let _ = self.channel_monitor_updated(channel_id, update_id);
 		}
