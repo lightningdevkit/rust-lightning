@@ -678,7 +678,7 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 		&self, entropy_source: ES, per_node_peers: Vec<(PublicKey, Vec<MessageForwardNode>)>,
 		path_count_limit: usize,
 	) -> Result<OfferBuilder<'_, DerivedMetadata, secp256k1::All>, Bolt12SemanticError> {
-		self.create_offer_builder_intern(&*entropy_source, |_, context, _| {
+		self.create_offer_builder_intern(entropy_source, |_, context, _| {
 			self.blinded_paths_for_phantom_offer(per_node_peers, path_count_limit, context)
 				.map_err(|_| Bolt12SemanticError::MissingPaths)
 		})

@@ -13436,7 +13436,7 @@ macro_rules! create_offer_builder { ($self: ident, $builder: ty) => {
 		}
 
 		let builder = $self.flow.create_phantom_offer_builder(
-			&*$self.entropy_source, peers, path_count_limit
+			&$self.entropy_source, peers, path_count_limit
 		)?;
 
 		Ok(builder.into())
