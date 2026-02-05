@@ -13073,11 +13073,11 @@ where
 		log_debug!(logger, "Attempting to initiate quiescence");
 
 		if !self.context.is_usable() {
-			log_error!(logger, "Channel is not in a usable state to propose quiescence");
+			log_debug!(logger, "Channel is not in a usable state to propose quiescence");
 			return Err(action);
 		}
 		if self.quiescent_action.is_some() {
-			log_error!(
+			log_debug!(
 				logger,
 				"Channel already has a pending quiescent action and cannot start another",
 			);
