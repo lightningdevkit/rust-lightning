@@ -339,7 +339,7 @@ impl<H: CustomOnionMessageHandler + ?Sized, L: Logger + ?Sized>
 				readable: ControlTlvs::Forward(tlvs),
 				used_aad,
 			}) => {
-				if used_aad != TriPolyAADUsed::NoAAD || message_type.is_some() {
+				if used_aad != TriPolyAADUsed::None || message_type.is_some() {
 					return Err(DecodeError::InvalidValue);
 				}
 				Ok(Payload::Forward(ForwardControlTlvs::Unblinded(tlvs)))
@@ -348,7 +348,7 @@ impl<H: CustomOnionMessageHandler + ?Sized, L: Logger + ?Sized>
 				readable: ControlTlvs::Dummy,
 				used_aad,
 			}) => Ok(Payload::Dummy {
-				control_tlvs_authenticated: used_aad != TriPolyAADUsed::NoAAD,
+				control_tlvs_authenticated: used_aad != TriPolyAADUsed::None,
 			}),
 			Some(ChaChaTriPolyReadAdapter {
 				readable: ControlTlvs::Receive(tlvs),
@@ -357,8 +357,8 @@ impl<H: CustomOnionMessageHandler + ?Sized, L: Logger + ?Sized>
 				control_tlvs: ReceiveControlTlvs::Unblinded(tlvs),
 				reply_path,
 				message: message.ok_or(DecodeError::InvalidValue)?,
-				control_tlvs_from_local_node: used_aad == TriPolyAADUsed::A,
-				control_tlvs_from_phantom_participant: used_aad == TriPolyAADUsed::B,
+				control_tlvs_from_local_node: used_aad == TriPolyAADUsed::First,
+				control_tlvs_from_phantom_participant: used_aad == TriPolyAADUsed::Second,
 			}),
 		}
 	}

@@ -278,7 +278,7 @@ impl BlindedPaymentPath {
 		let ChaChaTriPolyReadAdapter { readable, used_aad } =
 			ChaChaTriPolyReadAdapter::read(&mut reader, read_arg).map_err(|_| ())?;
 
-		match (&readable, used_aad == TriPolyAADUsed::NoAAD) {
+		match (&readable, used_aad == TriPolyAADUsed::None) {
 			(BlindedPaymentTlvs::Forward(_), true)
 			| (BlindedPaymentTlvs::Dummy(_), false)
 			| (BlindedPaymentTlvs::Receive(_), false) => Ok((readable, control_tlvs_ss)),

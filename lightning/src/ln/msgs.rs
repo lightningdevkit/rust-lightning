@@ -3945,7 +3945,7 @@ impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPaylo
 						|| cltv_value.is_some() || total_msat.is_some()
 						|| keysend_preimage.is_some()
 						|| invoice_request.is_some()
-						|| used_aad != TriPolyAADUsed::NoAAD
+						|| used_aad != TriPolyAADUsed::None
 					{
 						return Err(DecodeError::InvalidValue);
 					}
@@ -3967,7 +3967,7 @@ impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPaylo
 						|| cltv_value.is_some() || total_msat.is_some()
 						|| keysend_preimage.is_some()
 						|| invoice_request.is_some()
-						|| used_aad == TriPolyAADUsed::NoAAD
+						|| used_aad == TriPolyAADUsed::None
 					{
 						return Err(DecodeError::InvalidValue);
 					}
@@ -3981,7 +3981,7 @@ impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPaylo
 					readable: BlindedPaymentTlvs::Receive(receive_tlvs),
 					used_aad,
 				} => {
-					if used_aad == TriPolyAADUsed::NoAAD {
+					if used_aad == TriPolyAADUsed::None {
 						return Err(DecodeError::InvalidValue);
 					}
 
@@ -4115,7 +4115,7 @@ impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundTrampoline
 						|| cltv_value.is_some() || total_msat.is_some()
 						|| keysend_preimage.is_some()
 						|| invoice_request.is_some()
-						|| used_aad != TriPolyAADUsed::NoAAD
+						|| used_aad != TriPolyAADUsed::None
 					{
 						return Err(DecodeError::InvalidValue);
 					}
@@ -4132,7 +4132,7 @@ impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundTrampoline
 					readable: BlindedTrampolineTlvs::Receive(receive_tlvs),
 					used_aad,
 				} => {
-					if used_aad == TriPolyAADUsed::NoAAD {
+					if used_aad == TriPolyAADUsed::None {
 						return Err(DecodeError::InvalidValue);
 					}
 
