@@ -1130,60 +1130,91 @@ where
 			queue.drain(..n).collect::<Vec<_>>()
 		};
 
-		let mut completed = Vec::new();
-		for write in pending {
+		// Phase 1: Collect all batch entries
+		let mut batch_entries = Vec::with_capacity(pending.len());
+		let mut stale_cleanups = Vec::new();
+
+		for (i, write) in pending.iter().enumerate() {
 			match write {
 				PendingWrite::FullMonitor {
 					monitor_key,
 					monitor_bytes,
-					completion,
 					stale_update_cleanup,
+					..
 				} => {
-					self.0
-						.kv_store
-						.write(
-							CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
-							CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
-							&monitor_key,
-							monitor_bytes,
-						)
-						.await?;
-					completed.push(completion);
-
-					// Clean up stale updates after successfully writing a full monitor
+					batch_entries.push(BatchWriteEntry::new(
+						CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+						CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+						monitor_key.clone(),
+						monitor_bytes.clone(),
+					));
 					if let Some((start, end)) = stale_update_cleanup {
-						for update_id in start..end {
-							let update_name = UpdateName::from(update_id);
-							// Lazy delete - ignore errors as this is just cleanup
-							let _ = self
-								.0
-								.kv_store
-								.remove(
-									CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
-									&monitor_key,
-									update_name.as_str(),
-									true,
-								)
-								.await;
-						}
+						stale_cleanups.push((i, monitor_key.clone(), *start, *end));
 					}
 				},
-				PendingWrite::Update { monitor_key, update_key, update_bytes, completion } => {
-					self.0
-						.kv_store
-						.write(
-							CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
-							&monitor_key,
-							&update_key,
-							update_bytes,
-						)
-						.await?;
-					completed.push(completion);
+				PendingWrite::Update { monitor_key, update_key, update_bytes, .. } => {
+					batch_entries.push(BatchWriteEntry::new(
+						CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
+						monitor_key.clone(),
+						update_key.clone(),
+						update_bytes.clone(),
+					));
 				},
 			}
 		}
 
-		Ok(completed)
+		// Phase 2: Execute batch write
+		let successful_writes = if !batch_entries.is_empty() {
+			let result = self.0.kv_store.write_batch(batch_entries).await;
+			if let Some(err) = result.error {
+				// Re-queue failed and subsequent writes
+				let failed_writes =
+					pending.into_iter().skip(result.successful_writes).collect::<Vec<_>>();
+				if !failed_writes.is_empty() {
+					let mut queue = self.0.pending_writes.lock().unwrap();
+					// Prepend failed writes back to the front of the queue
+					for write in failed_writes.into_iter().rev() {
+						queue.insert(0, write);
+					}
+				}
+				return Err(err);
+			}
+			result.successful_writes
+		} else {
+			0
+		};
+
+		// Phase 3: Cleanup stale updates (only for successfully written monitors)
+		for (i, monitor_key, start, end) in stale_cleanups {
+			if i < successful_writes {
+				for update_id in start..end {
+					let update_name = UpdateName::from(update_id);
+					// Lazy delete - ignore errors as this is just cleanup
+					let _ = self
+						.0
+						.kv_store
+						.remove(
+							CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
+							&monitor_key,
+							update_name.as_str(),
+							true,
+						)
+						.await;
+				}
+			}
+		}
+
+		// Phase 4: Return completions for successful writes only
+		let completions = pending
+			.into_iter()
+			.take(successful_writes)
+			.map(|write| match write {
+				PendingWrite::FullMonitor { completion, .. } => completion,
+				PendingWrite::Update { completion, .. } => completion,
+			})
+			.collect();
+
+		Ok(completions)
 	}
 }
 
