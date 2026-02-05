@@ -9,15 +9,21 @@
 
 #![allow(dead_code)]
 
-use bitcoin::hashes::{sha256::Hash as Sha256Hash, Hash};
+use bitcoin::{
+	hashes::{sha256::Hash as Sha256Hash, Hash},
+	io::Read,
+};
 use core::{fmt::Display, time::Duration};
 use hashbrown::hash_map::Entry;
 
 use crate::{
+	io,
 	ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS,
+	ln::msgs::DecodeError,
 	prelude::{new_hash_map, HashMap},
 	sign::EntropySource,
 	sync::Mutex,
+	util::ser::{Readable, Writeable, Writer},
 };
 
 /// A trait for managing channel resources and making HTLC forwarding decisions.
@@ -137,6 +143,15 @@ impl Default for ResourceManagerConfig {
 	}
 }
 
+impl_writeable_tlv_based!(ResourceManagerConfig, {
+	(1, general_allocation_pct, required),
+	(3, congestion_allocation_pct, required),
+	(5, protected_allocation_pct, required),
+	(7, resolution_period, required),
+	(9, revenue_window, required),
+	(11, reputation_multiplier, required),
+});
+
 /// The outcome of an HTLC forwarding decision.
 #[derive(PartialEq, Eq, Debug)]
 pub enum ForwardingOutcome {
@@ -165,6 +180,12 @@ enum BucketAssigned {
 	Congestion,
 	Protected,
 }
+
+impl_writeable_tlv_based_enum!(BucketAssigned,
+	(1, General) => {},
+	(3, Congestion) => {},
+	(5, Protected) => {},
+);
 
 struct GeneralBucket {
 	/// Our SCID
@@ -355,6 +376,47 @@ impl GeneralBucket {
 	}
 }
 
+impl Writeable for GeneralBucket {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		let channel_info: HashMap<u64, [u8; 32]> =
+			self.channels_slots.iter().map(|(scid, (_slots, salt))| (*scid, *salt)).collect();
+
+		write_tlv_fields!(writer, {
+			(1, self.scid, required),
+			(3, self.total_slots, required),
+			(5, self.total_liquidity, required),
+			(7, channel_info, required),
+		});
+		Ok(())
+	}
+}
+
+impl Readable for GeneralBucket {
+	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		_init_and_read_len_prefixed_tlv_fields!(reader, {
+			(1, our_scid, required),
+			(3, general_total_slots, required),
+			(5, general_total_liquidity, required),
+			(7, channel_info, required),
+		});
+
+		let mut general_bucket = GeneralBucket::new(
+			our_scid.0.unwrap(),
+			general_total_slots.0.unwrap(),
+			general_total_liquidity.0.unwrap(),
+		);
+
+		let channel_info: HashMap<u64, [u8; 32]> = channel_info.0.unwrap();
+		for (outgoing_scid, salt) in channel_info {
+			general_bucket
+				.assign_slots_for_channel(outgoing_scid, salt)
+				.map_err(|_| DecodeError::InvalidValue)?;
+		}
+
+		Ok(general_bucket)
+	}
+}
+
 struct BucketResources {
 	slots_allocated: u16,
 	slots_used: u16,
@@ -392,6 +454,31 @@ impl BucketResources {
 	}
 }
 
+impl Writeable for BucketResources {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		write_tlv_fields!(writer, {
+			(1, self.slots_allocated, required),
+			(3, self.liquidity_allocated, required),
+		});
+		Ok(())
+	}
+}
+
+impl Readable for BucketResources {
+	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		_init_and_read_len_prefixed_tlv_fields!(reader, {
+			(1, slots_allocated, required),
+			(3, liquidity_allocated, required),
+		});
+		Ok(BucketResources {
+			slots_allocated: slots_allocated.0.unwrap(),
+			slots_used: 0,
+			liquidity_allocated: liquidity_allocated.0.unwrap(),
+			liquidity_used: 0,
+		})
+	}
+}
+
 #[derive(Debug, Clone)]
 struct PendingHTLC {
 	incoming_amount_msat: u64,
@@ -403,11 +490,26 @@ struct PendingHTLC {
 	bucket: BucketAssigned,
 }
 
+impl_writeable_tlv_based!(PendingHTLC, {
+	(1, incoming_amount_msat, required),
+	(3, fee, required),
+	(5, outgoing_channel, required),
+	(7, outgoing_accountable, required),
+	(9, added_at_unix_seconds, required),
+	(11, in_flight_risk, required),
+	(13, bucket, required),
+});
+
 #[derive(Debug, PartialEq, Eq, Hash)]
 struct HtlcRef {
 	incoming_channel_id: u64,
 	htlc_id: u64,
 }
+
+impl_writeable_tlv_based!(HtlcRef, {
+	(1, incoming_channel_id, required),
+	(3, htlc_id, required),
+});
 
 struct Channel {
 	/// The reputation this channel has accrued as an outgoing link.
@@ -572,6 +674,46 @@ impl Channel {
 			.iter()
 			.map(|htlc| if htlc.1.outgoing_accountable { htlc.1.in_flight_risk } else { 0 })
 			.sum()
+	}
+}
+
+impl Writeable for Channel {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		write_tlv_fields!(writer, {
+			(1, self.outgoing_reputation, required),
+			(3, self.incoming_revenue, required),
+			(5, self.pending_htlcs, required),
+			(7, self.general_bucket, required),
+			(9, self.congestion_bucket, required),
+			(11, self.last_congestion_misuse, required),
+			(13, self.protected_bucket, required),
+		});
+
+		Ok(())
+	}
+}
+
+impl Readable for Channel {
+	fn read<R: Read>(reader: &mut R) -> Result<Channel, DecodeError> {
+		_init_and_read_len_prefixed_tlv_fields!(reader, {
+			(1, outgoing_reputation, required),
+			(3, incoming_revenue, required),
+			(5, pending_htlcs, required),
+			(7, general_bucket, required),
+			(9, congestion_bucket, required),
+			(11, last_congestion_misuse, required),
+			(13, protected_bucket, required),
+		});
+
+		Ok(Channel {
+			outgoing_reputation: outgoing_reputation.0.unwrap(),
+			incoming_revenue: incoming_revenue.0.unwrap(),
+			pending_htlcs: pending_htlcs.0.unwrap(),
+			general_bucket: general_bucket.0.unwrap(),
+			congestion_bucket: congestion_bucket.0.unwrap(),
+			last_congestion_misuse: last_congestion_misuse.0.unwrap(),
+			protected_bucket: protected_bucket.0.unwrap(),
+		})
 	}
 }
 
@@ -832,6 +974,69 @@ impl ResourceManager for DefaultResourceManager {
 	}
 }
 
+impl Writeable for DefaultResourceManager {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		let channels = self.channels.lock().unwrap();
+		write_tlv_fields!(writer, {
+			(1, self.config, required),
+			(3, channels, required),
+		});
+		Ok(())
+	}
+}
+
+impl Readable for DefaultResourceManager {
+	fn read<R: Read>(reader: &mut R) -> Result<DefaultResourceManager, DecodeError> {
+		_init_and_read_len_prefixed_tlv_fields!(reader, {
+			(1, config, required),
+			(3, channels, required),
+		});
+
+		let mut channels: HashMap<u64, Channel> = channels.0.unwrap();
+		let mut pending_htlcs: HashMap<u64, Vec<PendingHTLC>> = new_hash_map();
+
+		for (_, channel) in channels.iter() {
+			for (htlc_ref, htlc) in channel.pending_htlcs.iter() {
+				pending_htlcs
+					.entry(htlc_ref.incoming_channel_id)
+					.or_insert_with(|| Vec::new())
+					.push(htlc.clone());
+			}
+		}
+
+		// Replay pending HTLCs to restore bucket usage.
+		for (incoming_channel, htlcs) in pending_htlcs.iter() {
+			let incoming_channel =
+				channels.get_mut(incoming_channel).ok_or(DecodeError::InvalidValue)?;
+
+			for htlc in htlcs {
+				match htlc.bucket {
+					BucketAssigned::General => {
+						incoming_channel
+							.general_bucket
+							.add_htlc(htlc.outgoing_channel, htlc.incoming_amount_msat, None)
+							.map_err(|_| DecodeError::InvalidValue)?;
+					},
+					BucketAssigned::Congestion => {
+						incoming_channel
+							.congestion_bucket
+							.add_htlc(htlc.incoming_amount_msat)
+							.map_err(|_| DecodeError::InvalidValue)?;
+					},
+					BucketAssigned::Protected => {
+						incoming_channel
+							.protected_bucket
+							.add_htlc(htlc.incoming_amount_msat)
+							.map_err(|_| DecodeError::InvalidValue)?;
+					},
+				}
+			}
+		}
+
+		Ok(DefaultResourceManager { config: config.0.unwrap(), channels: Mutex::new(channels) })
+	}
+}
+
 /// A weighted average that decays over a specified window.
 ///
 /// It enables tracking of historical behavior without storing individual data points.
@@ -898,6 +1103,34 @@ struct AggregatedWindowAverage {
 	aggregated_revenue_decaying: DecayingAverage,
 }
 
+impl Writeable for DecayingAverage {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		write_tlv_fields!(writer, {
+			(1, self.value, required),
+			(3, self.last_updated_unix_secs, required),
+			(5, self.window, required),
+		});
+		Ok(())
+	}
+}
+
+impl Readable for DecayingAverage {
+	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		_init_and_read_len_prefixed_tlv_fields!(reader, {
+			(1, value, required),
+			(3, last_updated_unix_secs, required),
+			(5, window, required),
+		});
+		let window = window.0.unwrap();
+		Ok(DecayingAverage {
+			value: value.0.unwrap(),
+			last_updated_unix_secs: last_updated_unix_secs.0.unwrap(),
+			window,
+			decay_rate: 0.5_f64.powf(2.0 / window.as_secs_f64()),
+		})
+	}
+}
+
 impl AggregatedWindowAverage {
 	fn new(window: Duration, window_count: u8, start_timestamp_unix_secs: u64) -> Self {
 		AggregatedWindowAverage {
@@ -943,6 +1176,13 @@ impl AggregatedWindowAverage {
 	}
 }
 
+impl_writeable_tlv_based!(AggregatedWindowAverage, {
+	(1, start_timestamp_unix_secs, required),
+	(3, window_count, required),
+	(5, window_duration, required),
+	(7, aggregated_revenue_decaying, required),
+});
+
 #[cfg(test)]
 mod tests {
 	use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -956,7 +1196,10 @@ mod tests {
 			ResourceManagerConfig,
 		},
 		sign::EntropySource,
-		util::test_utils::TestKeysInterface,
+		util::{
+			ser::{Readable, Writeable},
+			test_utils::TestKeysInterface,
+		},
 	};
 
 	const WINDOW: Duration = Duration::from_secs(2016 * 10 * 60);
@@ -1897,6 +2140,111 @@ mod tests {
 
 		// Verify original channel pair still has 5 slots used
 		assert_general_bucket_slots_used(&rm, INCOMING_SCID, OUTGOING_SCID, 5);
+	}
+
+	#[test]
+	fn test_simple_manager_serialize_deserialize() {
+		let rm = create_test_resource_manager_with_channels();
+		let entropy_source = TestKeysInterface::new(&[0; 32], Network::Testnet);
+
+		// Add 7 HTLCs (5 in general, 1 in congestion and 1 in protected)
+		for i in 1..=5 {
+			add_test_htlc(&rm, false, i, &entropy_source).unwrap();
+		}
+		let congestion_htlc_amount = 25_000;
+		let fee = 1000;
+		rm.add_htlc(
+			INCOMING_SCID,
+			congestion_htlc_amount + fee,
+			CLTV_EXPIRY,
+			OUTGOING_SCID,
+			congestion_htlc_amount,
+			false,
+			6,
+			CURRENT_HEIGHT,
+			SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+			&entropy_source,
+		)
+		.unwrap();
+
+		let reputation = 50_000_000;
+		add_reputation(&rm, OUTGOING_SCID, reputation);
+		add_test_htlc(&rm, true, 7, &entropy_source).unwrap();
+
+		let serialized_rm = rm.encode();
+
+		let channels = rm.channels.lock().unwrap();
+		let expected_incoming_channel = channels.get(&INCOMING_SCID).unwrap();
+		let revenue = expected_incoming_channel.incoming_revenue.aggregated_revenue_decaying.value;
+
+		let deserialized_rm = DefaultResourceManager::read(&mut serialized_rm.as_slice()).unwrap();
+		let deserialized_channels = deserialized_rm.channels.lock().unwrap();
+		assert_eq!(2, deserialized_channels.len());
+
+		let incoming_channel = deserialized_channels.get(&INCOMING_SCID).unwrap();
+		let outgoing_channel = deserialized_channels.get(&OUTGOING_SCID).unwrap();
+		assert_eq!(7, outgoing_channel.pending_htlcs.len());
+		assert_eq!(0, incoming_channel.pending_htlcs.len());
+
+		// Check the 7 pending HTLCs that were on the outgoing channel
+		let assert_htlc = |htlc_ref: HtlcRef,
+		                   amount: u64,
+		                   fee: u64,
+		                   accountable: bool,
+		                   bucket: BucketAssigned| {
+			assert!(outgoing_channel.pending_htlcs.get(&htlc_ref).is_some());
+			let htlc = outgoing_channel.pending_htlcs.get(&htlc_ref).unwrap();
+			assert_eq!(htlc.outgoing_channel, OUTGOING_SCID);
+			assert_eq!(htlc.incoming_amount_msat, amount + fee);
+			assert_eq!(htlc.fee, fee);
+			assert_eq!(htlc.outgoing_accountable, accountable);
+			assert_eq!(htlc.bucket, bucket);
+		};
+
+		// Check 5 HTLCs in general bucket
+		for i in 1..=5 {
+			let htlc_ref = HtlcRef { incoming_channel_id: INCOMING_SCID, htlc_id: i };
+			assert_htlc(htlc_ref, HTLC_AMOUNT, FEE_AMOUNT, false, BucketAssigned::General);
+		}
+		let htlc_ref = HtlcRef { incoming_channel_id: INCOMING_SCID, htlc_id: 6 };
+		assert_htlc(htlc_ref, congestion_htlc_amount, fee, true, BucketAssigned::Congestion);
+
+		let htlc_ref = HtlcRef { incoming_channel_id: INCOMING_SCID, htlc_id: 7 };
+		assert_htlc(htlc_ref, HTLC_AMOUNT, FEE_AMOUNT, true, BucketAssigned::Protected);
+
+		// Check outgoing reputation
+		assert_eq!(outgoing_channel.outgoing_reputation.value, reputation);
+
+		drop(deserialized_channels);
+		assert_general_bucket_slots_used(&deserialized_rm, INCOMING_SCID, OUTGOING_SCID, 5);
+
+		// Check incoming revenue
+		let deserialized_channels = deserialized_rm.channels.lock().unwrap();
+		let incoming_channel = deserialized_channels.get(&INCOMING_SCID).unwrap();
+		assert_eq!(incoming_channel.incoming_revenue.aggregated_revenue_decaying.value, revenue);
+
+		let congestion_bucket = &incoming_channel.congestion_bucket;
+		assert_eq!(congestion_bucket.slots_used, 1);
+		assert_eq!(congestion_bucket.liquidity_used, congestion_htlc_amount + fee);
+		assert_eq!(
+			congestion_bucket.slots_allocated,
+			expected_incoming_channel.congestion_bucket.slots_allocated
+		);
+		assert_eq!(
+			congestion_bucket.liquidity_used,
+			expected_incoming_channel.congestion_bucket.liquidity_used
+		);
+		let protected_bucket = &incoming_channel.protected_bucket;
+		assert_eq!(protected_bucket.slots_used, 1);
+		assert_eq!(protected_bucket.liquidity_used, HTLC_AMOUNT + FEE_AMOUNT);
+		assert_eq!(
+			protected_bucket.slots_allocated,
+			expected_incoming_channel.protected_bucket.slots_allocated
+		);
+		assert_eq!(
+			protected_bucket.liquidity_used,
+			expected_incoming_channel.protected_bucket.liquidity_used
+		);
 	}
 
 	#[test]
