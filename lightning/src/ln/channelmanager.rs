@@ -17224,7 +17224,7 @@ pub(super) struct ChannelManagerData<SP: SignerProvider> {
 	best_block_height: u32,
 	best_block_hash: BlockHash,
 	channels: Vec<FundedChannel<SP>>,
-	claimable_htlcs_list: Vec<(PaymentHash, Vec<ClaimableHTLC>)>,
+	claimable_payments: HashMap<PaymentHash, ClaimablePayment>,
 	peer_init_features: Vec<(PublicKey, InitFeatures)>,
 	pending_events_read: VecDeque<(events::Event, Option<EventCompletionAction>)>,
 	highest_seen_timestamp: u32,
@@ -17234,9 +17234,7 @@ pub(super) struct ChannelManagerData<SP: SignerProvider> {
 	monitor_update_blocked_actions_per_peer:
 		Vec<(PublicKey, BTreeMap<ChannelId, Vec<MonitorUpdateCompletionAction>>)>,
 	fake_scid_rand_bytes: Option<[u8; 32]>,
-	claimable_htlc_purposes: Option<Vec<events::PaymentPurpose>>,
 	probing_cookie_secret: Option<[u8; 32]>,
-	claimable_htlc_onion_fields: Option<Vec<Option<RecipientOnionFields>>>,
 	inbound_payment_id_secret: Option<[u8; 32]>,
 	in_flight_monitor_updates: Option<HashMap<(PublicKey, ChannelId), Vec<ChannelMonitorUpdate>>>,
 	peer_storage_dir: Vec<(PublicKey, Vec<u8>)>,
@@ -17250,18 +17248,25 @@ pub(super) struct ChannelManagerData<SP: SignerProvider> {
 }
 
 /// Arguments for deserializing [`ChannelManagerData`].
-struct ChannelManagerDataReadArgs<'a, ES: EntropySource, SP: SignerProvider, L: Logger> {
+struct ChannelManagerDataReadArgs<
+	'a,
+	ES: EntropySource,
+	NS: NodeSigner,
+	SP: SignerProvider,
+	L: Logger,
+> {
 	entropy_source: &'a ES,
+	node_signer: &'a NS,
 	signer_provider: &'a SP,
 	config: UserConfig,
 	logger: &'a L,
 }
 
-impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
-	ReadableArgs<ChannelManagerDataReadArgs<'a, ES, SP, L>> for ChannelManagerData<SP>
+impl<'a, ES: EntropySource, NS: NodeSigner, SP: SignerProvider, L: Logger>
+	ReadableArgs<ChannelManagerDataReadArgs<'a, ES, NS, SP, L>> for ChannelManagerData<SP>
 {
 	fn read<R: io::Read>(
-		reader: &mut R, args: ChannelManagerDataReadArgs<'a, ES, SP, L>,
+		reader: &mut R, args: ChannelManagerDataReadArgs<'a, ES, NS, SP, L>,
 	) -> Result<Self, DecodeError> {
 		let _ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
 
@@ -17481,13 +17486,86 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 		// Resolve events_override: if present, it replaces pending_events.
 		let pending_events_read = events_override.unwrap_or(pending_events_read);
 
+		// Combine claimable_htlcs_list with their purposes and onion fields. For very old data
+		// (pre-0.0.107) that lacks purposes, reconstruct them from legacy hop data.
+		let expanded_inbound_key = args.node_signer.get_expanded_key();
+
+		let mut claimable_payments = hash_map_with_capacity(claimable_htlcs_list.len());
+		if let Some(purposes) = claimable_htlc_purposes {
+			if purposes.len() != claimable_htlcs_list.len() {
+				return Err(DecodeError::InvalidValue);
+			}
+			if let Some(onion_fields) = claimable_htlc_onion_fields {
+				if onion_fields.len() != claimable_htlcs_list.len() {
+					return Err(DecodeError::InvalidValue);
+				}
+				for (purpose, (onion, (payment_hash, htlcs))) in purposes
+					.into_iter()
+					.zip(onion_fields.into_iter().zip(claimable_htlcs_list.into_iter()))
+				{
+					let claimable = ClaimablePayment { purpose, htlcs, onion_fields: onion };
+					let existing_payment = claimable_payments.insert(payment_hash, claimable);
+					if existing_payment.is_some() {
+						return Err(DecodeError::InvalidValue);
+					}
+				}
+			} else {
+				for (purpose, (payment_hash, htlcs)) in
+					purposes.into_iter().zip(claimable_htlcs_list.into_iter())
+				{
+					let claimable = ClaimablePayment { purpose, htlcs, onion_fields: None };
+					let existing_payment = claimable_payments.insert(payment_hash, claimable);
+					if existing_payment.is_some() {
+						return Err(DecodeError::InvalidValue);
+					}
+				}
+			}
+		} else {
+			// LDK versions prior to 0.0.107 did not write a `pending_htlc_purposes`, but do
+			// include a `_legacy_hop_data` in the `OnionPayload`.
+			for (payment_hash, htlcs) in claimable_htlcs_list.into_iter() {
+				if htlcs.is_empty() {
+					return Err(DecodeError::InvalidValue);
+				}
+				let purpose = match &htlcs[0].onion_payload {
+					OnionPayload::Invoice { _legacy_hop_data } => {
+						if let Some(hop_data) = _legacy_hop_data {
+							events::PaymentPurpose::Bolt11InvoicePayment {
+								payment_preimage: match inbound_payment::verify(
+									payment_hash,
+									&hop_data,
+									0,
+									&expanded_inbound_key,
+									&args.logger,
+								) {
+									Ok((payment_preimage, _)) => payment_preimage,
+									Err(()) => {
+										log_error!(args.logger, "Failed to read claimable payment data for HTLC with payment hash {} - was not a pending inbound payment and didn't match our payment key", &payment_hash);
+										return Err(DecodeError::InvalidValue);
+									},
+								},
+								payment_secret: hop_data.payment_secret,
+							}
+						} else {
+							return Err(DecodeError::InvalidValue);
+						}
+					},
+					OnionPayload::Spontaneous(payment_preimage) => {
+						events::PaymentPurpose::SpontaneousPayment(*payment_preimage)
+					},
+				};
+				claimable_payments
+					.insert(payment_hash, ClaimablePayment { purpose, htlcs, onion_fields: None });
+			}
+		}
+
 		Ok(ChannelManagerData {
 			chain_hash,
 			best_block_height,
 			best_block_hash,
 			channels,
 			forward_htlcs_legacy,
-			claimable_htlcs_list,
+			claimable_payments,
 			peer_init_features,
 			pending_events_read,
 			highest_seen_timestamp,
@@ -17499,9 +17577,7 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 			monitor_update_blocked_actions_per_peer: monitor_update_blocked_actions_per_peer
 				.unwrap_or_else(Vec::new),
 			fake_scid_rand_bytes,
-			claimable_htlc_purposes,
 			probing_cookie_secret,
-			claimable_htlc_onion_fields,
 			decode_update_add_htlcs_legacy: decode_update_add_htlcs_legacy
 				.unwrap_or_else(new_hash_map),
 			inbound_payment_id_secret,
@@ -17741,6 +17817,7 @@ impl<
 			reader,
 			ChannelManagerDataReadArgs {
 				entropy_source: &args.entropy_source,
+				node_signer: &args.node_signer,
 				signer_provider: &args.signer_provider,
 				config: args.config.clone(),
 				logger: &args.logger,
@@ -17782,7 +17859,7 @@ impl<
 			best_block_hash,
 			channels,
 			mut forward_htlcs_legacy,
-			mut claimable_htlcs_list,
+			claimable_payments,
 			peer_init_features,
 			mut pending_events_read,
 			highest_seen_timestamp,
@@ -17792,9 +17869,7 @@ impl<
 			received_network_pubkey,
 			monitor_update_blocked_actions_per_peer,
 			mut fake_scid_rand_bytes,
-			claimable_htlc_purposes,
 			mut probing_cookie_secret,
-			claimable_htlc_onion_fields,
 			mut decode_update_add_htlcs_legacy,
 			mut inbound_payment_id_secret,
 			mut in_flight_monitor_updates,
@@ -18738,77 +18813,6 @@ impl<
 			}
 		}
 
-		let expanded_inbound_key = args.node_signer.get_expanded_key();
-
-		let mut claimable_payments = hash_map_with_capacity(claimable_htlcs_list.len());
-		if let Some(purposes) = claimable_htlc_purposes {
-			if purposes.len() != claimable_htlcs_list.len() {
-				return Err(DecodeError::InvalidValue);
-			}
-			if let Some(onion_fields) = claimable_htlc_onion_fields {
-				if onion_fields.len() != claimable_htlcs_list.len() {
-					return Err(DecodeError::InvalidValue);
-				}
-				for (purpose, (onion, (payment_hash, htlcs))) in purposes
-					.into_iter()
-					.zip(onion_fields.into_iter().zip(claimable_htlcs_list.into_iter()))
-				{
-					let claimable = ClaimablePayment { purpose, htlcs, onion_fields: onion };
-					let existing_payment = claimable_payments.insert(payment_hash, claimable);
-					if existing_payment.is_some() {
-						return Err(DecodeError::InvalidValue);
-					}
-				}
-			} else {
-				for (purpose, (payment_hash, htlcs)) in
-					purposes.into_iter().zip(claimable_htlcs_list.into_iter())
-				{
-					let claimable = ClaimablePayment { purpose, htlcs, onion_fields: None };
-					let existing_payment = claimable_payments.insert(payment_hash, claimable);
-					if existing_payment.is_some() {
-						return Err(DecodeError::InvalidValue);
-					}
-				}
-			}
-		} else {
-			// LDK versions prior to 0.0.107 did not write a `pending_htlc_purposes`, but do
-			// include a `_legacy_hop_data` in the `OnionPayload`.
-			for (payment_hash, htlcs) in claimable_htlcs_list.drain(..) {
-				if htlcs.is_empty() {
-					return Err(DecodeError::InvalidValue);
-				}
-				let purpose = match &htlcs[0].onion_payload {
-					OnionPayload::Invoice { _legacy_hop_data } => {
-						if let Some(hop_data) = _legacy_hop_data {
-							events::PaymentPurpose::Bolt11InvoicePayment {
-								payment_preimage: match inbound_payment::verify(
-									payment_hash,
-									&hop_data,
-									0,
-									&expanded_inbound_key,
-									&args.logger,
-								) {
-									Ok((payment_preimage, _)) => payment_preimage,
-									Err(()) => {
-										log_error!(args.logger, "Failed to read claimable payment data for HTLC with payment hash {} - was not a pending inbound payment and didn't match our payment key", &payment_hash);
-										return Err(DecodeError::InvalidValue);
-									},
-								},
-								payment_secret: hop_data.payment_secret,
-							}
-						} else {
-							return Err(DecodeError::InvalidValue);
-						}
-					},
-					OnionPayload::Spontaneous(payment_preimage) => {
-						events::PaymentPurpose::SpontaneousPayment(*payment_preimage)
-					},
-				};
-				claimable_payments
-					.insert(payment_hash, ClaimablePayment { purpose, htlcs, onion_fields: None });
-			}
-		}
-
 		// Similar to the above cases for forwarded payments, if we have any pending inbound HTLCs
 		// which haven't yet been claimed, we may be missing counterparty_node_id info and would
 		// panic if we attempted to claim them at this point.
@@ -18838,6 +18842,8 @@ impl<
 
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&args.entropy_source.get_secure_random_bytes());
+
+		let expanded_inbound_key = args.node_signer.get_expanded_key();
 
 		let our_network_pubkey = match args.node_signer.get_node_id(Recipient::Node) {
 			Ok(key) => key,
