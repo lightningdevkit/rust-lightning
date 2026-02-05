@@ -308,6 +308,14 @@ impl FundingContribution {
 		self.is_splice
 	}
 
+	pub(super) fn contributed_inputs(&self) -> impl Iterator<Item = OutPoint> + '_ {
+		self.inputs.iter().map(|input| input.utxo.outpoint)
+	}
+
+	pub(super) fn contributed_outputs(&self) -> impl Iterator<Item = &TxOut> + '_ {
+		self.outputs.iter().chain(self.change_output.iter())
+	}
+
 	pub(super) fn into_tx_parts(self) -> (Vec<FundingTxInput>, Vec<TxOut>) {
 		let FundingContribution { inputs, mut outputs, change_output, .. } = self;
 
