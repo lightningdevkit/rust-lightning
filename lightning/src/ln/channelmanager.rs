@@ -17224,50 +17224,49 @@ pub(super) struct ChannelManagerData<SP: SignerProvider> {
 	best_block_height: u32,
 	best_block_hash: BlockHash,
 	channels: Vec<FundedChannel<SP>>,
-	// Marked `_legacy` because in versions > 0.2 we are taking steps to remove the requirement of
-	// regularly persisting the `ChannelManager` and instead rebuild the set of HTLC forwards from
-	// `Channel{Monitor}` data. See [`ChannelManager::read`].
-	forward_htlcs_legacy: HashMap<u64, Vec<HTLCForwardInfo>>,
-	claimable_htlcs_list: Vec<(PaymentHash, Vec<ClaimableHTLC>)>,
+	claimable_payments: HashMap<PaymentHash, ClaimablePayment>,
 	peer_init_features: Vec<(PublicKey, InitFeatures)>,
 	pending_events_read: VecDeque<(events::Event, Option<EventCompletionAction>)>,
 	highest_seen_timestamp: u32,
-	// Marked `_legacy` because in versions > 0.2 we are taking steps to remove the requirement of
-	// regularly persisting the `ChannelManager` and instead rebuild the set of HTLC forwards from
-	// `Channel{Monitor}` data. See [`ChannelManager::read`].
-	pending_intercepted_htlcs_legacy: HashMap<InterceptId, PendingAddHTLCInfo>,
 	pending_outbound_payments: HashMap<PaymentId, PendingOutboundPayment>,
 	pending_claiming_payments: HashMap<PaymentHash, ClaimingPayment>,
 	received_network_pubkey: Option<PublicKey>,
 	monitor_update_blocked_actions_per_peer:
 		Vec<(PublicKey, BTreeMap<ChannelId, Vec<MonitorUpdateCompletionAction>>)>,
 	fake_scid_rand_bytes: Option<[u8; 32]>,
-	claimable_htlc_purposes: Option<Vec<events::PaymentPurpose>>,
 	probing_cookie_secret: Option<[u8; 32]>,
-	claimable_htlc_onion_fields: Option<Vec<Option<RecipientOnionFields>>>,
+	inbound_payment_id_secret: Option<[u8; 32]>,
+	in_flight_monitor_updates: HashMap<(PublicKey, ChannelId), Vec<ChannelMonitorUpdate>>,
+	peer_storage_dir: Vec<(PublicKey, Vec<u8>)>,
+	async_receive_offer_cache: AsyncReceiveOfferCache,
 	// Marked `_legacy` because in versions > 0.2 we are taking steps to remove the requirement of
 	// regularly persisting the `ChannelManager` and instead rebuild the set of HTLC forwards from
-	// `Channel{Monitor}` data. See [`ChannelManager::read`].
+	// `Channel{Monitor}` data.
+	forward_htlcs_legacy: HashMap<u64, Vec<HTLCForwardInfo>>,
+	pending_intercepted_htlcs_legacy: HashMap<InterceptId, PendingAddHTLCInfo>,
 	decode_update_add_htlcs_legacy: HashMap<u64, Vec<msgs::UpdateAddHTLC>>,
-	inbound_payment_id_secret: Option<[u8; 32]>,
-	in_flight_monitor_updates: Option<HashMap<(PublicKey, ChannelId), Vec<ChannelMonitorUpdate>>>,
-	peer_storage_dir: Option<Vec<(PublicKey, Vec<u8>)>>,
-	async_receive_offer_cache: AsyncReceiveOfferCache,
 }
 
 /// Arguments for deserializing [`ChannelManagerData`].
-struct ChannelManagerDataReadArgs<'a, ES: EntropySource, SP: SignerProvider, L: Logger> {
+struct ChannelManagerDataReadArgs<
+	'a,
+	ES: EntropySource,
+	NS: NodeSigner,
+	SP: SignerProvider,
+	L: Logger,
+> {
 	entropy_source: &'a ES,
+	node_signer: &'a NS,
 	signer_provider: &'a SP,
 	config: UserConfig,
 	logger: &'a L,
 }
 
-impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
-	ReadableArgs<ChannelManagerDataReadArgs<'a, ES, SP, L>> for ChannelManagerData<SP>
+impl<'a, ES: EntropySource, NS: NodeSigner, SP: SignerProvider, L: Logger>
+	ReadableArgs<ChannelManagerDataReadArgs<'a, ES, NS, SP, L>> for ChannelManagerData<SP>
 {
 	fn read<R: io::Read>(
-		reader: &mut R, args: ChannelManagerDataReadArgs<'a, ES, SP, L>,
+		reader: &mut R, args: ChannelManagerDataReadArgs<'a, ES, NS, SP, L>,
 	) -> Result<Self, DecodeError> {
 		let _ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
 
@@ -17404,9 +17403,9 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 		let mut probing_cookie_secret: Option<[u8; 32]> = None;
 		let mut claimable_htlc_purposes = None;
 		let mut claimable_htlc_onion_fields = None;
-		let mut pending_claiming_payments = Some(new_hash_map());
+		let mut pending_claiming_payments = None;
 		let mut monitor_update_blocked_actions_per_peer: Option<Vec<(_, BTreeMap<_, Vec<_>>)>> =
-			Some(Vec::new());
+			None;
 		let mut events_override = None;
 		let mut legacy_in_flight_monitor_updates: Option<
 			HashMap<(PublicKey, OutPoint), Vec<ChannelMonitorUpdate>>,
@@ -17487,34 +17486,103 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 		// Resolve events_override: if present, it replaces pending_events.
 		let pending_events_read = events_override.unwrap_or(pending_events_read);
 
+		// Combine claimable_htlcs_list with their purposes and onion fields. For very old data
+		// (pre-0.0.107) that lacks purposes, reconstruct them from legacy hop data.
+		let expanded_inbound_key = args.node_signer.get_expanded_key();
+
+		let mut claimable_payments = hash_map_with_capacity(claimable_htlcs_list.len());
+		if let Some(purposes) = claimable_htlc_purposes {
+			if purposes.len() != claimable_htlcs_list.len() {
+				return Err(DecodeError::InvalidValue);
+			}
+			if let Some(onion_fields) = claimable_htlc_onion_fields {
+				if onion_fields.len() != claimable_htlcs_list.len() {
+					return Err(DecodeError::InvalidValue);
+				}
+				for (purpose, (onion, (payment_hash, htlcs))) in purposes
+					.into_iter()
+					.zip(onion_fields.into_iter().zip(claimable_htlcs_list.into_iter()))
+				{
+					let claimable = ClaimablePayment { purpose, htlcs, onion_fields: onion };
+					let existing_payment = claimable_payments.insert(payment_hash, claimable);
+					if existing_payment.is_some() {
+						return Err(DecodeError::InvalidValue);
+					}
+				}
+			} else {
+				for (purpose, (payment_hash, htlcs)) in
+					purposes.into_iter().zip(claimable_htlcs_list.into_iter())
+				{
+					let claimable = ClaimablePayment { purpose, htlcs, onion_fields: None };
+					let existing_payment = claimable_payments.insert(payment_hash, claimable);
+					if existing_payment.is_some() {
+						return Err(DecodeError::InvalidValue);
+					}
+				}
+			}
+		} else {
+			// LDK versions prior to 0.0.107 did not write a `pending_htlc_purposes`, but do
+			// include a `_legacy_hop_data` in the `OnionPayload`.
+			for (payment_hash, htlcs) in claimable_htlcs_list.into_iter() {
+				if htlcs.is_empty() {
+					return Err(DecodeError::InvalidValue);
+				}
+				let purpose = match &htlcs[0].onion_payload {
+					OnionPayload::Invoice { _legacy_hop_data } => {
+						if let Some(hop_data) = _legacy_hop_data {
+							events::PaymentPurpose::Bolt11InvoicePayment {
+								payment_preimage: match inbound_payment::verify(
+									payment_hash,
+									&hop_data,
+									0,
+									&expanded_inbound_key,
+									&args.logger,
+								) {
+									Ok((payment_preimage, _)) => payment_preimage,
+									Err(()) => {
+										log_error!(args.logger, "Failed to read claimable payment data for HTLC with payment hash {} - was not a pending inbound payment and didn't match our payment key", &payment_hash);
+										return Err(DecodeError::InvalidValue);
+									},
+								},
+								payment_secret: hop_data.payment_secret,
+							}
+						} else {
+							return Err(DecodeError::InvalidValue);
+						}
+					},
+					OnionPayload::Spontaneous(payment_preimage) => {
+						events::PaymentPurpose::SpontaneousPayment(*payment_preimage)
+					},
+				};
+				claimable_payments
+					.insert(payment_hash, ClaimablePayment { purpose, htlcs, onion_fields: None });
+			}
+		}
+
 		Ok(ChannelManagerData {
 			chain_hash,
 			best_block_height,
 			best_block_hash,
 			channels,
 			forward_htlcs_legacy,
-			claimable_htlcs_list,
+			claimable_payments,
 			peer_init_features,
 			pending_events_read,
 			highest_seen_timestamp,
 			pending_intercepted_htlcs_legacy: pending_intercepted_htlcs_legacy
 				.unwrap_or_else(new_hash_map),
 			pending_outbound_payments,
-			// unwrap safety: pending_claiming_payments is guaranteed to be `Some` after read_tlv_fields
-			pending_claiming_payments: pending_claiming_payments.unwrap(),
+			pending_claiming_payments: pending_claiming_payments.unwrap_or_else(new_hash_map),
 			received_network_pubkey,
-			// unwrap safety: monitor_update_blocked_actions_per_peer is guaranteed to be `Some` after read_tlv_fields
 			monitor_update_blocked_actions_per_peer: monitor_update_blocked_actions_per_peer
-				.unwrap(),
+				.unwrap_or_else(Vec::new),
 			fake_scid_rand_bytes,
-			claimable_htlc_purposes,
 			probing_cookie_secret,
-			claimable_htlc_onion_fields,
 			decode_update_add_htlcs_legacy: decode_update_add_htlcs_legacy
 				.unwrap_or_else(new_hash_map),
 			inbound_payment_id_secret,
-			in_flight_monitor_updates,
-			peer_storage_dir,
+			in_flight_monitor_updates: in_flight_monitor_updates.unwrap_or_default(),
+			peer_storage_dir: peer_storage_dir.unwrap_or_default(),
 			async_receive_offer_cache,
 		})
 	}
@@ -17749,6 +17817,7 @@ impl<
 			reader,
 			ChannelManagerDataReadArgs {
 				entropy_source: &args.entropy_source,
+				node_signer: &args.node_signer,
 				signer_provider: &args.signer_provider,
 				config: args.config.clone(),
 				logger: &args.logger,
@@ -17790,7 +17859,7 @@ impl<
 			best_block_hash,
 			channels,
 			mut forward_htlcs_legacy,
-			mut claimable_htlcs_list,
+			claimable_payments,
 			peer_init_features,
 			mut pending_events_read,
 			highest_seen_timestamp,
@@ -17800,9 +17869,7 @@ impl<
 			received_network_pubkey,
 			monitor_update_blocked_actions_per_peer,
 			mut fake_scid_rand_bytes,
-			claimable_htlc_purposes,
 			mut probing_cookie_secret,
-			claimable_htlc_onion_fields,
 			mut decode_update_add_htlcs_legacy,
 			mut inbound_payment_id_secret,
 			mut in_flight_monitor_updates,
@@ -18110,11 +18177,9 @@ impl<
 
 		let pending_outbounds = OutboundPayments::new(pending_outbound_payments);
 
-		if let Some(peer_storage_dir) = peer_storage_dir {
-			for (peer_pubkey, peer_storage) in peer_storage_dir {
-				if let Some(peer_state) = per_peer_state.get_mut(&peer_pubkey) {
-					peer_state.get_mut().unwrap().peer_storage = peer_storage;
-				}
+		for (peer_pubkey, peer_storage) in peer_storage_dir {
+			if let Some(peer_state) = per_peer_state.get_mut(&peer_pubkey) {
+				peer_state.get_mut().unwrap().peer_storage = peer_storage;
 			}
 		}
 
@@ -18193,22 +18258,20 @@ impl<
 						.get(chan_id)
 						.expect("We already checked for monitor presence when loading channels");
 					let mut max_in_flight_update_id = monitor.get_latest_update_id();
-					if let Some(in_flight_upds) = &mut in_flight_monitor_updates {
-						if let Some(mut chan_in_flight_upds) =
-							in_flight_upds.remove(&(*counterparty_id, *chan_id))
-						{
-							max_in_flight_update_id = cmp::max(
-								max_in_flight_update_id,
-								handle_in_flight_updates!(
-									*counterparty_id,
-									chan_in_flight_upds,
-									monitor,
-									peer_state,
-									logger,
-									""
-								),
-							);
-						}
+					if let Some(mut chan_in_flight_upds) =
+						in_flight_monitor_updates.remove(&(*counterparty_id, *chan_id))
+					{
+						max_in_flight_update_id = cmp::max(
+							max_in_flight_update_id,
+							handle_in_flight_updates!(
+								*counterparty_id,
+								chan_in_flight_upds,
+								monitor,
+								peer_state,
+								logger,
+								""
+							),
+						);
 					}
 					if funded_chan.get_latest_unblocked_monitor_update_id()
 						> max_in_flight_update_id
@@ -18237,44 +18300,38 @@ impl<
 			}
 		}
 
-		if let Some(in_flight_upds) = in_flight_monitor_updates {
-			for ((counterparty_id, channel_id), mut chan_in_flight_updates) in in_flight_upds {
-				let logger =
-					WithContext::from(&args.logger, Some(counterparty_id), Some(channel_id), None);
-				if let Some(monitor) = args.channel_monitors.get(&channel_id) {
-					// Now that we've removed all the in-flight monitor updates for channels that are
-					// still open, we need to replay any monitor updates that are for closed channels,
-					// creating the neccessary peer_state entries as we go.
-					let peer_state_mutex = per_peer_state
-						.entry(counterparty_id)
-						.or_insert_with(|| Mutex::new(empty_peer_state()));
-					let mut peer_state = peer_state_mutex.lock().unwrap();
-					handle_in_flight_updates!(
-						counterparty_id,
-						chan_in_flight_updates,
-						monitor,
-						peer_state,
-						logger,
-						"closed "
-					);
-				} else {
-					log_error!(logger, "A ChannelMonitor is missing even though we have in-flight updates for it! This indicates a potentially-critical violation of the chain::Watch API!");
-					log_error!(
-						logger,
-						" The ChannelMonitor for channel {} is missing.",
-						channel_id
-					);
-					log_error!(logger, " The chain::Watch API *requires* that monitors are persisted durably before returning,");
-					log_error!(logger, " client applications must ensure that ChannelMonitor data is always available and the latest to avoid funds loss!");
-					log_error!(logger, " Without the latest ChannelMonitor we cannot continue without risking funds.");
-					log_error!(logger, " Please ensure the chain::Watch API requirements are met and file a bug report at https://github.com/lightningdevkit/rust-lightning");
-					log_error!(
-						logger,
-						" Pending in-flight updates are: {:?}",
-						chan_in_flight_updates
-					);
-					return Err(DecodeError::InvalidValue);
-				}
+		for ((counterparty_id, channel_id), mut chan_in_flight_updates) in in_flight_monitor_updates
+		{
+			let logger =
+				WithContext::from(&args.logger, Some(counterparty_id), Some(channel_id), None);
+			if let Some(monitor) = args.channel_monitors.get(&channel_id) {
+				// Now that we've removed all the in-flight monitor updates for channels that are
+				// still open, we need to replay any monitor updates that are for closed channels,
+				// creating the neccessary peer_state entries as we go.
+				let peer_state_mutex = per_peer_state
+					.entry(counterparty_id)
+					.or_insert_with(|| Mutex::new(empty_peer_state()));
+				let mut peer_state = peer_state_mutex.lock().unwrap();
+				handle_in_flight_updates!(
+					counterparty_id,
+					chan_in_flight_updates,
+					monitor,
+					peer_state,
+					logger,
+					"closed "
+				);
+			} else {
+				log_error!(logger, "A ChannelMonitor is missing even though we have in-flight updates for it! This indicates a potentially-critical violation of the chain::Watch API!");
+				log_error!(logger, " The ChannelMonitor for channel {} is missing.", channel_id);
+				log_error!(logger, " The chain::Watch API *requires* that monitors are persisted durably before returning,");
+				log_error!(logger, " client applications must ensure that ChannelMonitor data is always available and the latest to avoid funds loss!");
+				log_error!(
+					logger,
+					" Without the latest ChannelMonitor we cannot continue without risking funds."
+				);
+				log_error!(logger, " Please ensure the chain::Watch API requirements are met and file a bug report at https://github.com/lightningdevkit/rust-lightning");
+				log_error!(logger, " Pending in-flight updates are: {:?}", chan_in_flight_updates);
+				return Err(DecodeError::InvalidValue);
 			}
 		}
 
@@ -18748,77 +18805,6 @@ impl<
 			}
 		}
 
-		let expanded_inbound_key = args.node_signer.get_expanded_key();
-
-		let mut claimable_payments = hash_map_with_capacity(claimable_htlcs_list.len());
-		if let Some(purposes) = claimable_htlc_purposes {
-			if purposes.len() != claimable_htlcs_list.len() {
-				return Err(DecodeError::InvalidValue);
-			}
-			if let Some(onion_fields) = claimable_htlc_onion_fields {
-				if onion_fields.len() != claimable_htlcs_list.len() {
-					return Err(DecodeError::InvalidValue);
-				}
-				for (purpose, (onion, (payment_hash, htlcs))) in purposes
-					.into_iter()
-					.zip(onion_fields.into_iter().zip(claimable_htlcs_list.into_iter()))
-				{
-					let claimable = ClaimablePayment { purpose, htlcs, onion_fields: onion };
-					let existing_payment = claimable_payments.insert(payment_hash, claimable);
-					if existing_payment.is_some() {
-						return Err(DecodeError::InvalidValue);
-					}
-				}
-			} else {
-				for (purpose, (payment_hash, htlcs)) in
-					purposes.into_iter().zip(claimable_htlcs_list.into_iter())
-				{
-					let claimable = ClaimablePayment { purpose, htlcs, onion_fields: None };
-					let existing_payment = claimable_payments.insert(payment_hash, claimable);
-					if existing_payment.is_some() {
-						return Err(DecodeError::InvalidValue);
-					}
-				}
-			}
-		} else {
-			// LDK versions prior to 0.0.107 did not write a `pending_htlc_purposes`, but do
-			// include a `_legacy_hop_data` in the `OnionPayload`.
-			for (payment_hash, htlcs) in claimable_htlcs_list.drain(..) {
-				if htlcs.is_empty() {
-					return Err(DecodeError::InvalidValue);
-				}
-				let purpose = match &htlcs[0].onion_payload {
-					OnionPayload::Invoice { _legacy_hop_data } => {
-						if let Some(hop_data) = _legacy_hop_data {
-							events::PaymentPurpose::Bolt11InvoicePayment {
-								payment_preimage: match inbound_payment::verify(
-									payment_hash,
-									&hop_data,
-									0,
-									&expanded_inbound_key,
-									&args.logger,
-								) {
-									Ok((payment_preimage, _)) => payment_preimage,
-									Err(()) => {
-										log_error!(args.logger, "Failed to read claimable payment data for HTLC with payment hash {} - was not a pending inbound payment and didn't match our payment key", &payment_hash);
-										return Err(DecodeError::InvalidValue);
-									},
-								},
-								payment_secret: hop_data.payment_secret,
-							}
-						} else {
-							return Err(DecodeError::InvalidValue);
-						}
-					},
-					OnionPayload::Spontaneous(payment_preimage) => {
-						events::PaymentPurpose::SpontaneousPayment(*payment_preimage)
-					},
-				};
-				claimable_payments
-					.insert(payment_hash, ClaimablePayment { purpose, htlcs, onion_fields: None });
-			}
-		}
-
 		// Similar to the above cases for forwarded payments, if we have any pending inbound HTLCs
 		// which haven't yet been claimed, we may be missing counterparty_node_id info and would
 		// panic if we attempted to claim them at this point.
@@ -18848,6 +18834,8 @@ impl<
 
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&args.entropy_source.get_secure_random_bytes());
+
+		let expanded_inbound_key = args.node_signer.get_expanded_key();
 
 		let our_network_pubkey = match args.node_signer.get_node_id(Recipient::Node) {
 			Ok(key) => key,
