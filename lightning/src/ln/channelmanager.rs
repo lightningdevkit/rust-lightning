@@ -8140,9 +8140,11 @@ impl<
 	/// Free the background events, generally called from [`PersistenceNotifierGuard`] constructors.
 	///
 	/// Expects the caller to have a total_consistency_lock read lock.
-	#[rustfmt::skip]
 	fn process_background_events(&self) -> NotifyOption {
-		debug_assert_ne!(self.total_consistency_lock.held_by_thread(), LockHeldState::NotHeldByThread);
+		debug_assert_ne!(
+			self.total_consistency_lock.held_by_thread(),
+			LockHeldState::NotHeldByThread
+		);
 
 		self.background_events_processed_since_startup.store(true, Ordering::Release);
 
@@ -8154,8 +8156,18 @@ impl<
 
 		for event in background_events.drain(..) {
 			match event {
-				BackgroundEvent::MonitorUpdateRegeneratedOnStartup { counterparty_node_id, funding_txo, channel_id, update } => {
-					self.apply_post_close_monitor_update(counterparty_node_id, channel_id, funding_txo, update);
+				BackgroundEvent::MonitorUpdateRegeneratedOnStartup {
+					counterparty_node_id,
+					funding_txo,
+					channel_id,
+					update,
+				} => {
+					self.apply_post_close_monitor_update(
+						counterparty_node_id,
+						channel_id,
+						funding_txo,
+						update,
+					);
 				},
 				BackgroundEvent::MonitorUpdatesComplete {
 					counterparty_node_id,
