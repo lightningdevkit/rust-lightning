@@ -247,6 +247,8 @@ fn estimate_transaction_fee(
 			// The weight of the funding output, a P2WSH output
 			// NOTE: The witness script hash given here is irrelevant as it's a fixed size and we just want
 			// to calculate the contributed weight, so we use an all-zero hash.
+			//
+			// TODO(taproot): Needs to consider different weights based on channel type
 			.saturating_add(
 				get_output_weight(&ScriptBuf::new_p2wsh(&WScriptHash::from_raw_hash(
 					Hash::all_zeros(),
