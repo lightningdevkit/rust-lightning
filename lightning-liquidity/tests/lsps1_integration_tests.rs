@@ -886,3 +886,254 @@ fn lsps1_order_failed_and_refunded() {
 		panic!("Unexpected event");
 	}
 }
+
+#[test]
+fn lsps1_expired_orders_are_pruned_and_not_persisted() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	// Create shared KV store for service node that will persist across restarts
+	let service_kv_store = Arc::new(TestStore::new(false));
+	let client_kv_store = Arc::new(TestStore::new(false));
+
+	let supported_options = LSPS1Options {
+		min_required_channel_confirmations: 0,
+		min_funding_confirms_within_blocks: 6,
+		supports_zero_channel_reserve: true,
+		max_channel_expiry_blocks: 144,
+		min_initial_client_balance_sat: 10_000_000,
+		max_initial_client_balance_sat: 100_000_000,
+		min_initial_lsp_balance_sat: 100_000,
+		max_initial_lsp_balance_sat: 100_000_000,
+		min_channel_balance_sat: 100_000,
+		max_channel_balance_sat: 100_000_000,
+	};
+
+	let service_config = LiquidityServiceConfig {
+		lsps1_service_config: Some(LSPS1ServiceConfig {
+			supported_options: supported_options.clone(),
+		}),
+		lsps2_service_config: None,
+		lsps5_service_config: None,
+		advertise_service: true,
+	};
+	let time_provider: Arc<dyn TimeProvider + Send + Sync> = Arc::new(DefaultTimeProvider);
+
+	// Variables to carry state between scopes
+	let client_node_id: PublicKey;
+	let expected_order_id: LSPS1OrderId;
+
+	// First scope: Create an order with EXPIRED payment details
+	{
+		let LSPSNodes { service_node, client_node } = setup_test_lsps1_nodes_with_kv_stores(
+			nodes,
+			Arc::clone(&service_kv_store),
+			Arc::clone(&client_kv_store),
+			supported_options.clone(),
+		);
+
+		let service_node_id = service_node.inner.node.get_our_node_id();
+		client_node_id = client_node.inner.node.get_our_node_id();
+
+		let client_handler = client_node.liquidity_manager.lsps1_client_handler().unwrap();
+		let service_handler = service_node.liquidity_manager.lsps1_service_handler().unwrap();
+
+		// Create an order
+		let order_params = LSPS1OrderParams {
+			lsp_balance_sat: 100_000,
+			client_balance_sat: 10_000_000,
+			required_channel_confirmations: 0,
+			funding_confirms_within_blocks: 6,
+			channel_expiry_blocks: 144,
+			token: None,
+			announce_channel: true,
+		};
+
+		let refund_onchain_address =
+			Address::from_str("bc1p5uvtaxzkjwvey2tfy49k5vtqfpjmrgm09cvs88ezyy8h2zv7jhas9tu4yr")
+				.unwrap()
+				.assume_checked();
+		let create_order_id = client_handler.create_order(
+			&service_node_id,
+			order_params.clone(),
+			Some(refund_onchain_address),
+		);
+		let create_order = get_lsps_message!(client_node, service_node_id);
+
+		service_node.liquidity_manager.handle_custom_message(create_order, client_node_id).unwrap();
+
+		let request_for_payment_event = service_node.liquidity_manager.next_event().unwrap();
+		let request_id =
+			if let LiquidityEvent::LSPS1Service(LSPS1ServiceEvent::RequestForPaymentDetails {
+				request_id,
+				..
+			}) = request_for_payment_event
+			{
+				request_id
+			} else {
+				panic!("Unexpected event");
+			};
+
+		// Send payment details with EXPIRED expiry time (in the past)
+		let json_str = r#"{
+			"state": "EXPECT_PAYMENT",
+			"expires_at": "2020-01-01T00:00:00Z",
+			"fee_total_sat": "9999",
+			"order_total_sat": "200999",
+			"address": "bc1p5uvtaxzkjwvey2tfy49k5vtqfpjmrgm09cvs88ezyy8h2zv7jhas9tu4yr",
+			"min_onchain_payment_confirmations": 1,
+			"min_fee_for_0conf": 253
+		}"#;
+
+		let onchain: LSPS1OnchainPaymentInfo =
+			serde_json::from_str(json_str).expect("Failed to parse JSON");
+		let payment_info = LSPS1PaymentInfo { bolt11: None, bolt12: None, onchain: Some(onchain) };
+		service_handler
+			.send_payment_details(request_id.clone(), client_node_id, payment_info.clone())
+			.unwrap();
+
+		let create_order_response = get_lsps_message!(service_node, client_node_id);
+		client_node
+			.liquidity_manager
+			.handle_custom_message(create_order_response, service_node_id)
+			.unwrap();
+
+		let order_created_event = client_node.liquidity_manager.next_event().unwrap();
+		expected_order_id = if let LiquidityEvent::LSPS1Client(LSPS1ClientEvent::OrderCreated {
+			request_id,
+			order_id,
+			..
+		}) = order_created_event
+		{
+			assert_eq!(request_id, create_order_id);
+			order_id
+		} else {
+			panic!("Unexpected event");
+		};
+
+		// Verify the order exists by querying it (before persist is called)
+		let _check_order_id =
+			client_handler.check_order_status(&service_node_id, expected_order_id.clone());
+		let check_order = get_lsps_message!(client_node, service_node_id);
+		service_node.liquidity_manager.handle_custom_message(check_order, client_node_id).unwrap();
+		let order_response = get_lsps_message!(service_node, client_node_id);
+		client_node
+			.liquidity_manager
+			.handle_custom_message(order_response, service_node_id)
+			.unwrap();
+
+		// Should get the order status (order exists before pruning)
+		let order_status_event = client_node.liquidity_manager.next_event().unwrap();
+		assert!(matches!(
+			order_status_event,
+			LiquidityEvent::LSPS1Client(LSPS1ClientEvent::OrderStatus { .. })
+		));
+
+		// Now call persist - this should prune the expired order since expires_at is in the past
+		// (prune_expired_request_state is called during persist)
+		service_node.liquidity_manager.persist().unwrap();
+
+		// Try to query the order again - it should fail (order not found)
+		let _check_order_id =
+			client_handler.check_order_status(&service_node_id, expected_order_id.clone());
+		let check_order = get_lsps_message!(client_node, service_node_id);
+
+		// This should return an error response since the order was pruned
+		service_node
+			.liquidity_manager
+			.handle_custom_message(check_order, client_node_id)
+			.unwrap_err();
+
+		let error_response = get_lsps_message!(service_node, client_node_id);
+		client_node
+			.liquidity_manager
+			.handle_custom_message(error_response, service_node_id)
+			.unwrap_err();
+
+		// Should get an error event (order not found)
+		let error_event = client_node.liquidity_manager.next_event().unwrap();
+		if let LiquidityEvent::LSPS1Client(LSPS1ClientEvent::OrderRequestFailed { error, .. }) =
+			error_event
+		{
+			// Error code 101 is LSPS1_GET_ORDER_REQUEST_ORDER_NOT_FOUND_ERROR_CODE
+			assert_eq!(error.code, 101);
+		} else {
+			panic!("Expected OrderRequestFailed event");
+		}
+
+		// All node objects are dropped at the end of this scope
+	}
+
+	// Second scope: Restart and verify pruned order is NOT recovered
+	{
+		let node_chanmgrs_restart = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes_restart = create_network(2, &node_cfgs, &node_chanmgrs_restart);
+
+		let service_transaction_broadcaster = Arc::new(TestBroadcaster::new(Network::Testnet));
+		let client_transaction_broadcaster = Arc::new(TestBroadcaster::new(Network::Testnet));
+
+		let restarted_service_lm = LiquidityManagerSync::new_with_custom_time_provider(
+			nodes_restart[0].keys_manager,
+			nodes_restart[0].keys_manager,
+			nodes_restart[0].node,
+			Arc::clone(&service_kv_store),
+			service_transaction_broadcaster,
+			Some(service_config),
+			None,
+			Arc::clone(&time_provider),
+		)
+		.unwrap();
+
+		let lsps1_client_config = LSPS1ClientConfig { max_channel_fees_msat: None };
+		let client_config = LiquidityClientConfig {
+			lsps1_client_config: Some(lsps1_client_config),
+			lsps2_client_config: None,
+			lsps5_client_config: None,
+		};
+
+		let client_lm = LiquidityManagerSync::new_with_custom_time_provider(
+			nodes_restart[1].keys_manager,
+			nodes_restart[1].keys_manager,
+			nodes_restart[1].node,
+			Arc::clone(&client_kv_store),
+			client_transaction_broadcaster,
+			None,
+			Some(client_config),
+			time_provider,
+		)
+		.unwrap();
+
+		let service_node_id = nodes_restart[0].node.get_our_node_id();
+
+		// Try to query the previously pruned order - it should NOT be recovered
+		let client_handler = client_lm.lsps1_client_handler().unwrap();
+		let _check_order_id =
+			client_handler.check_order_status(&service_node_id, expected_order_id.clone());
+
+		let pending_client_msgs = client_lm.get_and_clear_pending_msg();
+		assert_eq!(pending_client_msgs.len(), 1);
+		let (_, request_msg) = pending_client_msgs.into_iter().next().unwrap();
+
+		// This should return an error since the order was pruned and not persisted
+		restarted_service_lm.handle_custom_message(request_msg, client_node_id).unwrap_err();
+
+		let pending_service_msgs = restarted_service_lm.get_and_clear_pending_msg();
+		assert_eq!(pending_service_msgs.len(), 1);
+		let (_, response_msg) = pending_service_msgs.into_iter().next().unwrap();
+
+		client_lm.handle_custom_message(response_msg, service_node_id).unwrap_err();
+
+		// Should get an error event (order not found after restart)
+		let error_event = client_lm.next_event().unwrap();
+		if let LiquidityEvent::LSPS1Client(LSPS1ClientEvent::OrderRequestFailed { error, .. }) =
+			error_event
+		{
+			// Error code 101 is LSPS1_GET_ORDER_REQUEST_ORDER_NOT_FOUND_ERROR_CODE
+			assert_eq!(error.code, 101);
+		} else {
+			panic!("Expected OrderRequestFailed event after restart, got: {:?}", error_event);
+		}
+	}
+}
