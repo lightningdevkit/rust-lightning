@@ -5619,6 +5619,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					self.pending_events.push(Event::SpendableOutputs {
 						outputs: vec![descriptor],
 						channel_id: Some(self.channel_id()),
+						counterparty_node_id: Some(self.counterparty_node_id),
 					});
 					self.spendable_txids_confirmed.push(entry.txid);
 				},

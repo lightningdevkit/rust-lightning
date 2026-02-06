@@ -3430,7 +3430,7 @@ macro_rules! check_spendable_outputs {
 		let secp_ctx = Secp256k1::new();
 		for event in events.drain(..) {
 			match event {
-				Event::SpendableOutputs { mut outputs, channel_id: _ } => {
+				Event::SpendableOutputs { mut outputs, channel_id: _, counterparty_node_id: _ } => {
 					for outp in outputs.drain(..) {
 						let script =
 							Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script();

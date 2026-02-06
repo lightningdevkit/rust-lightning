@@ -3110,7 +3110,7 @@ mod tests {
 		let event =
 			receiver.recv_timeout(EVENT_DEADLINE).expect("Events not handled within deadline");
 		match event {
-			Event::SpendableOutputs { outputs, channel_id } => {
+			Event::SpendableOutputs { outputs, channel_id, counterparty_node_id: _ } => {
 				nodes[0]
 					.sweeper
 					.track_spendable_outputs(outputs, channel_id, false, Some(153))
