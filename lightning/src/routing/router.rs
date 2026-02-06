@@ -9054,7 +9054,7 @@ mod tests {
 		assert_eq!(route.paths.len(), 1);
 		assert_eq!(route.get_total_amount(), amt_msat);
 		assert_eq!(route.paths[0].hops.len(), 2);
-		assert_eq!(route.paths[0].hops[0].short_channel_id, 1);
+		assert_eq!(route.paths[0].hops[0].short_channel_id, 44);
 		assert_eq!(route.paths[0].hops[1].short_channel_id, 45);
 		assert_eq!(route.get_total_fees(), 123);
 	}
