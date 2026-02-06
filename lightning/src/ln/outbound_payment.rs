@@ -913,57 +913,7 @@ fn validate_found_route<L: Logger>(
 		route.route_params = Some(route_params.clone());
 	}
 
-	// Check that the path returned actually pays less than the max fee we set.
-	if let Some(max_total_fee) = route_params.max_total_routing_fee_msat {
-		let payment_amount = route.get_total_amount();
-		let max_payment_amount = route_params.final_value_msat.saturating_add(max_total_fee);
-		if payment_amount > max_payment_amount {
-			debug_assert!(
-				false,
-				"Router returned an attempt to pay more ({payment_amount}msat) than the limit we gave it ({max_payment_amount}msat). Your router is critically buggy!"
-			);
-			log_error!(
-				logger,
-				"Router returned an attempt to pay more ({payment_amount}msat) than the limit we gave it ({max_payment_amount}msat). Your router is critically buggy!"
-			);
-			return Err(());
-		}
-	}
-
-	// Test that the route doesn't contain any "extra" MPP parts - while we're allows to
-	// overshoot the `final_value_msat` specified in the `route_params`, we aren't allowed to
-	// have any MPP parts which aren't needed to meet `route_params.final_value_msat`.
-	let min_mpp_part = route.paths.iter().map(|h| h.final_value_msat()).min().unwrap_or(0);
-	if route.get_total_amount() - min_mpp_part >= route_params.final_value_msat {
-		debug_assert!(
-			false,
-			"Router returned an attempt to include more MPP parts than needed. The smallest MPP part ({min_mpp_part}msat) was not needed for a payment of {}msat. Your router is critically buggy!",
-			route_params.final_value_msat
-		);
-		log_error!(
-			logger,
-			"Router returned an attempt to include more MPP parts than needed. The smallest MPP part ({min_mpp_part}msat) was not needed for a payment of {}msat. Your router is critically buggy!",
-			route_params.final_value_msat
-		);
-		return Err(());
-	}
-
-	if route.paths.is_empty() {
-		debug_assert!(false, "Selected route had no paths");
-		log_error!(logger, "Selected route had no paths, your router is buggy!");
-		return Err(());
-	}
-
-	for path in route.paths.iter() {
-		if path.hops.is_empty() {
-			debug_assert!(false, "Unusable path in route (path.hops.len() must be at least 1)");
-			log_error!(
-				logger,
-				"Unusable path in route (path.hops.len() must be at least 1). Your router is buggy!"
-			);
-			return Err(());
-		}
-	}
+	route.debug_assert_route_meets_params(logger)?;
 
 	Ok(())
 }
