@@ -489,7 +489,7 @@ where
 /// using a stream isolation parameter sourced from [`EntropySource::get_secure_random_bytes`].
 ///
 /// The `addr` parameter will be set to the [`PeerDetails::socket_address`] for that peer in
-/// [`PeerManager::list_peers`], and if it is not a private IPV4 or IPV6 address, it will also
+/// [`PeerManager::list_peers`], and if it is not a private IPv4 or IPv6 address, it will also
 /// reported to the peer in our init message.
 ///
 /// Returns a future (as the fn is async) that yields another future, see [`connect_outbound`] for
@@ -791,7 +791,7 @@ mod tests {
 	use lightning::ln::types::ChannelId;
 	use lightning::routing::gossip::NodeId;
 	use lightning::types::features::*;
-	use lightning::util::test_utils::TestNodeSigner;
+	use lightning::util::test_utils::{TestLogger, TestNodeSigner};
 
 	use tokio::sync::mpsc;
 
@@ -799,13 +799,6 @@ mod tests {
 	use std::sync::atomic::{AtomicBool, Ordering};
 	use std::sync::{Arc, Mutex};
 	use std::time::Duration;
-
-	pub struct TestLogger();
-	impl lightning::util::logger::Logger for TestLogger {
-		fn log(&self, record: lightning::util::logger::Record) {
-			println!("{}", record);
-		}
-	}
 
 	struct MsgHandler {
 		expected_pubkey: PublicKey,
@@ -1000,7 +993,7 @@ mod tests {
 			a_msg_handler,
 			0,
 			&[1; 32],
-			Arc::new(TestLogger()),
+			Arc::new(TestLogger::new()),
 			Arc::new(TestNodeSigner::new(a_key)),
 		));
 
@@ -1024,7 +1017,7 @@ mod tests {
 			b_msg_handler,
 			0,
 			&[2; 32],
-			Arc::new(TestLogger()),
+			Arc::new(TestLogger::new()),
 			Arc::new(TestNodeSigner::new(b_key)),
 		));
 
@@ -1087,7 +1080,7 @@ mod tests {
 			a_msg_handler,
 			0,
 			&[1; 32],
-			Arc::new(TestLogger()),
+			Arc::new(TestLogger::new()),
 			Arc::new(TestNodeSigner::new(a_key)),
 		));
 
@@ -1172,5 +1165,137 @@ mod tests {
 			let addr: SocketAddress = addr_str.parse().unwrap();
 			assert!(tor_connect(addr, tor_proxy_addr, &entropy_source).await.is_err());
 		}
+	}
+
+	async fn test_remote_address_with_override(b_addr_override: Option<SocketAddress>) {
+		let secp_ctx = Secp256k1::new();
+		let a_key = SecretKey::from_slice(&[1; 32]).unwrap();
+		let b_key = SecretKey::from_slice(&[1; 32]).unwrap();
+		let a_pub = PublicKey::from_secret_key(&secp_ctx, &a_key);
+		let b_pub = PublicKey::from_secret_key(&secp_ctx, &b_key);
+
+		let (a_connected_sender, mut a_connected) = mpsc::channel(1);
+		let (a_disconnected_sender, _a_disconnected) = mpsc::channel(1);
+		let a_handler = Arc::new(MsgHandler {
+			expected_pubkey: b_pub,
+			pubkey_connected: a_connected_sender,
+			pubkey_disconnected: a_disconnected_sender,
+			disconnected_flag: AtomicBool::new(false),
+			msg_events: Mutex::new(Vec::new()),
+		});
+		let a_msg_handler = MessageHandler {
+			chan_handler: Arc::clone(&a_handler),
+			route_handler: Arc::clone(&a_handler),
+			onion_message_handler: Arc::new(IgnoringMessageHandler {}),
+			custom_message_handler: Arc::new(IgnoringMessageHandler {}),
+			send_only_message_handler: Arc::new(IgnoringMessageHandler {}),
+		};
+		let a_logger = Arc::new(TestLogger::new());
+		let a_manager = Arc::new(PeerManager::new(
+			a_msg_handler,
+			0,
+			&[1; 32],
+			Arc::clone(&a_logger),
+			Arc::new(TestNodeSigner::new(a_key)),
+		));
+
+		let (b_connected_sender, mut b_connected) = mpsc::channel(1);
+		let (b_disconnected_sender, _b_disconnected) = mpsc::channel(1);
+		let b_handler = Arc::new(MsgHandler {
+			expected_pubkey: a_pub,
+			pubkey_connected: b_connected_sender,
+			pubkey_disconnected: b_disconnected_sender,
+			disconnected_flag: AtomicBool::new(false),
+			msg_events: Mutex::new(Vec::new()),
+		});
+		let b_msg_handler = MessageHandler {
+			chan_handler: Arc::clone(&b_handler),
+			route_handler: Arc::clone(&b_handler),
+			onion_message_handler: Arc::new(IgnoringMessageHandler {}),
+			custom_message_handler: Arc::new(IgnoringMessageHandler {}),
+			send_only_message_handler: Arc::new(IgnoringMessageHandler {}),
+		};
+		let b_logger = Arc::new(TestLogger::new());
+		let b_manager = Arc::new(PeerManager::new(
+			b_msg_handler,
+			0,
+			&[2; 32],
+			Arc::clone(&b_logger),
+			Arc::new(TestNodeSigner::new(b_key)),
+		));
+
+		// We bind on localhost, hoping the environment is properly configured with a local
+		// address. This may not always be the case in containers and the like, so if this test is
+		// failing for you check that you have a loopback interface and it is configured with
+		// 127.0.0.1.
+		let (conn_a, conn_b) = make_tcp_connection();
+
+		// Given that `make_tcp_connection` binds the peer to 127.0.0.1,
+		// `get_addr_from_stream` always returns a private address, and will not be reported to the peer
+		// in the init message.
+		let b_addr = b_addr_override
+			.clone()
+			.unwrap_or_else(|| super::get_addr_from_stream(&conn_a).unwrap());
+		let _fut_a = super::setup_outbound_internal(
+			Arc::clone(&a_manager),
+			b_pub,
+			conn_a,
+			Some(b_addr.clone()),
+		);
+		let _fut_b = super::setup_inbound(Arc::clone(&b_manager), conn_b);
+
+		tokio::time::timeout(Duration::from_secs(10), a_connected.recv()).await.unwrap();
+		tokio::time::timeout(Duration::from_secs(1), b_connected.recv()).await.unwrap();
+
+		// Check `PeerDetails::socket_address`
+
+		let mut peers = a_manager.list_peers();
+		assert_eq!(peers.len(), 1);
+		let peer = peers.pop().unwrap();
+		assert_eq!(peer.socket_address, Some(b_addr));
+
+		// Check the init message sent to the peer
+
+		let mainnet_hash = ChainHash::using_genesis_block(Network::Testnet);
+		let a_init_msg = Init {
+			features: InitFeatures::empty(),
+			networks: Some(vec![mainnet_hash]),
+			// We set it to the override here because addresses from the stream are private addresses,
+			// so they are filtered out and not reported to the peer
+			remote_network_address: b_addr_override,
+		};
+		a_logger.assert_log(
+			"lightning::ln::peer_handler",
+			format!("Enqueueing message Init({:?})", a_init_msg),
+			1,
+		);
+	}
+
+	#[tokio::test]
+	async fn test_remote_address() {
+		// Test that the remote address of the peer passed to `setup_outbound_internal` is set correctly in the
+		// corresponding `PeerDetails::socket_address` returned from `PeerManager::list_peers`, and if it is
+		// not a private address, that it is reported to the peer in the init message.
+
+		// This tests a private address read from `get_addr_from_stream`
+		test_remote_address_with_override(None).await;
+		// Make sure these are not private IPv4 or IPv6 addresses; we assert they are present in the init message
+		test_remote_address_with_override(Some(SocketAddress::TcpIpV4 {
+			addr: [0xab; 4],
+			port: 0xabab,
+		}))
+		.await;
+		test_remote_address_with_override(Some(SocketAddress::TcpIpV6 {
+			addr: [0x2a; 16],
+			port: 0x2a2a,
+		}))
+		.await;
+		let torproject_onion_addr_str =
+			"2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion:80";
+		let torproject_onion_addr: SocketAddress = torproject_onion_addr_str.parse().unwrap();
+		test_remote_address_with_override(Some(torproject_onion_addr)).await;
+		let torproject_addr_str = "torproject.org:80";
+		let torproject_addr: SocketAddress = torproject_addr_str.parse().unwrap();
+		test_remote_address_with_override(Some(torproject_addr)).await;
 	}
 }
