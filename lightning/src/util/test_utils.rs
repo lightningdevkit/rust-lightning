@@ -581,6 +581,11 @@ impl<'a> TestChainMonitor<'a> {
 		self.added_monitors.lock().unwrap().push((channel_id, monitor));
 		self.chain_monitor.load_existing_monitor(channel_id, new_monitor)
 	}
+
+	pub fn get_latest_mon_update_id(&self, channel_id: ChannelId) -> (u64, u64) {
+		let monitor_id_state = self.latest_monitor_update_id.lock().unwrap();
+		monitor_id_state.get(&channel_id).unwrap().clone()
+	}
 }
 impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 	fn watch_channel(
