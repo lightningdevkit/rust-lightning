@@ -1595,7 +1595,7 @@ fn test_hold_completed_inflight_monitor_updates_upon_manager_reload() {
 	let (route, payment_hash, _, payment_secret) =
 		get_route_and_payment_hash!(nodes[0], nodes[1], 1_000_000);
 	let payment_id = PaymentId(payment_hash.0);
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, 1_000_000);
 	nodes[0].node.send_payment_with_route(route, payment_hash, onion, payment_id).unwrap();
 	check_added_monitors(&nodes[0], 1);
 
