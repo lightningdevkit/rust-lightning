@@ -1383,7 +1383,7 @@ macro_rules! _reload_node_inner {
 		);
 		$node.chain_monitor = &$new_chain_monitor;
 
-		$new_channelmanager = _reload_node(
+		$new_channelmanager = $crate::ln::functional_test_utils::_reload_node(
 			&$node,
 			$new_config,
 			&chanman_encoded,
@@ -1401,7 +1401,7 @@ macro_rules! reload_node {
 	// Reload the node using the node's current config
 	($node: expr, $chanman_encoded: expr, $monitors_encoded: expr, $persister: ident, $new_chain_monitor: ident, $new_channelmanager: ident) => {
 		let config = $node.node.get_current_config();
-		_reload_node_inner!(
+		$crate::_reload_node_inner!(
 			$node,
 			config,
 			$chanman_encoded,
@@ -1414,7 +1414,7 @@ macro_rules! reload_node {
 	};
 	// Reload the node with the new provided config
 	($node: expr, $new_config: expr, $chanman_encoded: expr, $monitors_encoded: expr, $persister: ident, $new_chain_monitor: ident, $new_channelmanager: ident) => {
-		_reload_node_inner!(
+		$crate::_reload_node_inner!(
 			$node,
 			$new_config,
 			$chanman_encoded,
@@ -1431,7 +1431,7 @@ macro_rules! reload_node {
 	 ident, $new_chain_monitor: ident, $new_channelmanager: ident, $reconstruct_pending_htlcs: expr
 	) => {
 		let config = $node.node.get_current_config();
-		_reload_node_inner!(
+		$crate::_reload_node_inner!(
 			$node,
 			config,
 			$chanman_encoded,
@@ -2971,7 +2971,7 @@ pub fn check_payment_claimable(
 #[cfg(any(test, ldk_bench, feature = "_test_utils"))]
 macro_rules! expect_payment_claimable {
 	($node: expr, $expected_payment_hash: expr, $expected_payment_secret: expr, $expected_recv_value: expr) => {
-		expect_payment_claimable!(
+		$crate::expect_payment_claimable!(
 			$node,
 			$expected_payment_hash,
 			$expected_payment_secret,
