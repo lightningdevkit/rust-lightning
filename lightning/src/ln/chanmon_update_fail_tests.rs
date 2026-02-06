@@ -4715,6 +4715,9 @@ fn test_single_channel_multiple_mpp() {
 				}
 				have_event = true;
 			}
+			if !have_event {
+				std::thread::yield_now();
+			}
 		}
 	});
 
