@@ -12,7 +12,6 @@ members = [
     "lightning-persister",
     "lightning-background-processor",
     "lightning-rapid-gossip-sync",
-    "lightning-custom-message",
     "lightning-macros",
     "lightning-dns-resolver",
     "lightning-liquidity",
