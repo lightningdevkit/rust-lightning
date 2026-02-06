@@ -27,7 +27,7 @@ use crate::ln::channelmanager::{
 	AChannelManager, ChainParameters, ChannelManager, ChannelManagerReadArgs, PaymentId,
 	RAACommitmentOrder, MIN_CLTV_EXPIRY_DELTA,
 };
-use crate::ln::funding::FundingTxInput;
+use crate::ln::funding::{FundingContribution, FundingTxInput};
 use crate::ln::msgs;
 use crate::ln::msgs::{
 	BaseMessageHandler, ChannelMessageHandler, MessageSendEvent, RoutingMessageHandler,
@@ -3196,6 +3196,25 @@ pub fn expect_splice_pending_event<'a, 'b, 'c, 'd>(
 		crate::events::Event::SplicePending { channel_id, counterparty_node_id, .. } => {
 			assert_eq!(*expected_counterparty_node_id, *counterparty_node_id);
 			*channel_id
+		},
+		_ => panic!("Unexpected event"),
+	}
+}
+
+#[cfg(any(test, ldk_bench, feature = "_test_utils"))]
+pub fn expect_splice_failed_events<'a, 'b, 'c, 'd>(
+	node: &'a Node<'b, 'c, 'd>, expected_channel_id: &ChannelId,
+	funding_contribution: FundingContribution,
+) {
+	let events = node.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match &events[0] {
+		Event::SpliceFailed { channel_id, contributed_inputs, contributed_outputs, .. } => {
+			assert_eq!(*expected_channel_id, *channel_id);
+			let (expected_inputs, expected_outputs) =
+				funding_contribution.into_contributed_inputs_and_outputs();
+			assert_eq!(*contributed_inputs, expected_inputs);
+			assert_eq!(*contributed_outputs, expected_outputs);
 		},
 		_ => panic!("Unexpected event"),
 	}
