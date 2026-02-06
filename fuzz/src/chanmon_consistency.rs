@@ -658,6 +658,125 @@ fn send_hop_payment(
 	}
 }
 
+/// Send an MPP payment directly from source to dest using multiple channels.
+#[inline]
+fn send_mpp_payment(
+	source: &ChanMan, dest: &ChanMan, dest_scids: &[u64], amt: u64, payment_secret: PaymentSecret,
+	payment_hash: PaymentHash, payment_id: PaymentId,
+) -> bool {
+	let num_paths = dest_scids.len();
+	if num_paths == 0 {
+		return false;
+	}
+
+	let amt_per_path = amt / num_paths as u64;
+	let mut paths = Vec::with_capacity(num_paths);
+
+	for (i, &dest_scid) in dest_scids.iter().enumerate() {
+		let path_amt = if i == num_paths - 1 {
+			amt - amt_per_path * (num_paths as u64 - 1)
+		} else {
+			amt_per_path
+		};
+
+		paths.push(Path {
+			hops: vec![RouteHop {
+				pubkey: dest.get_our_node_id(),
+				node_features: dest.node_features(),
+				short_channel_id: dest_scid,
+				channel_features: dest.channel_features(),
+				fee_msat: path_amt,
+				cltv_expiry_delta: 200,
+				maybe_announced_channel: true,
+			}],
+			blinded_tail: None,
+		});
+	}
+
+	let route_params = RouteParameters::from_payment_params_and_value(
+		PaymentParameters::from_node_id(dest.get_our_node_id(), TEST_FINAL_CLTV),
+		amt,
+	);
+	let route = Route { paths, route_params: Some(route_params) };
+	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let res = source.send_payment_with_route(route, payment_hash, onion, payment_id);
+	match res {
+		Err(_) => false,
+		Ok(()) => check_payment_send_events(source, payment_id),
+	}
+}
+
+/// Send an MPP payment from source to dest via middle node.
+/// Supports multiple channels on either or both hops.
+#[inline]
+fn send_mpp_hop_payment(
+	source: &ChanMan, middle: &ChanMan, middle_scids: &[u64], dest: &ChanMan, dest_scids: &[u64],
+	amt: u64, payment_secret: PaymentSecret, payment_hash: PaymentHash, payment_id: PaymentId,
+) -> bool {
+	// Create paths by pairing middle_scids with dest_scids
+	let num_paths = middle_scids.len().max(dest_scids.len());
+	if num_paths == 0 {
+		return false;
+	}
+
+	let first_hop_fee = 50_000;
+	let amt_per_path = amt / num_paths as u64;
+	let fee_per_path = first_hop_fee / num_paths as u64;
+	let mut paths = Vec::with_capacity(num_paths);
+
+	for i in 0..num_paths {
+		let middle_scid = middle_scids[i % middle_scids.len()];
+		let dest_scid = dest_scids[i % dest_scids.len()];
+
+		let path_amt = if i == num_paths - 1 {
+			amt - amt_per_path * (num_paths as u64 - 1)
+		} else {
+			amt_per_path
+		};
+		let path_fee = if i == num_paths - 1 {
+			first_hop_fee - fee_per_path * (num_paths as u64 - 1)
+		} else {
+			fee_per_path
+		};
+
+		paths.push(Path {
+			hops: vec![
+				RouteHop {
+					pubkey: middle.get_our_node_id(),
+					node_features: middle.node_features(),
+					short_channel_id: middle_scid,
+					channel_features: middle.channel_features(),
+					fee_msat: path_fee,
+					cltv_expiry_delta: 100,
+					maybe_announced_channel: true,
+				},
+				RouteHop {
+					pubkey: dest.get_our_node_id(),
+					node_features: dest.node_features(),
+					short_channel_id: dest_scid,
+					channel_features: dest.channel_features(),
+					fee_msat: path_amt,
+					cltv_expiry_delta: 200,
+					maybe_announced_channel: true,
+				},
+			],
+			blinded_tail: None,
+		});
+	}
+
+	let route_params = RouteParameters::from_payment_params_and_value(
+		PaymentParameters::from_node_id(dest.get_our_node_id(), TEST_FINAL_CLTV),
+		amt,
+	);
+	let route = Route { paths, route_params: Some(route_params) };
+	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let res = source.send_payment_with_route(route, payment_hash, onion, payment_id);
+	match res {
+		Err(_) => false,
+		Ok(()) => check_payment_send_events(source, payment_id),
+	}
+}
+
 #[inline]
 pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 	let out = SearchingOutput::new(underlying_out);
@@ -1726,6 +1845,53 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 			}
 		};
 
+		// Direct MPP payment (no hop)
+		let send_mpp_direct = |source_idx: usize,
+		                       dest_idx: usize,
+		                       dest_scids: &[u64],
+		                       amt: u64,
+		                       payment_ctr: &mut u64| {
+			let source = &nodes[source_idx];
+			let dest = &nodes[dest_idx];
+			let (secret, hash) = get_payment_secret_hash(dest, payment_ctr);
+			let mut id = PaymentId([0; 32]);
+			id.0[0..8].copy_from_slice(&payment_ctr.to_ne_bytes());
+			let succeeded = send_mpp_payment(source, dest, dest_scids, amt, secret, hash, id);
+			if succeeded {
+				pending_payments.borrow_mut()[source_idx].push(id);
+			}
+		};
+
+		// MPP payment via hop - splits payment across multiple channels on either or both hops
+		let send_mpp_hop = |source_idx: usize,
+		                    middle_idx: usize,
+		                    middle_scids: &[u64],
+		                    dest_idx: usize,
+		                    dest_scids: &[u64],
+		                    amt: u64,
+		                    payment_ctr: &mut u64| {
+			let source = &nodes[source_idx];
+			let middle = &nodes[middle_idx];
+			let dest = &nodes[dest_idx];
+			let (secret, hash) = get_payment_secret_hash(dest, payment_ctr);
+			let mut id = PaymentId([0; 32]);
+			id.0[0..8].copy_from_slice(&payment_ctr.to_ne_bytes());
+			let succeeded = send_mpp_hop_payment(
+				source,
+				middle,
+				middle_scids,
+				dest,
+				dest_scids,
+				amt,
+				secret,
+				hash,
+				id,
+			);
+			if succeeded {
+				pending_payments.borrow_mut()[source_idx].push(id);
+			}
+		};
+
 		let v = get_slice!(1)[0];
 		out.locked_write(format!("READ A BYTE! HANDLING INPUT {:x}...........\n", v).as_bytes());
 		match v {
@@ -1909,6 +2075,18 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 			0x6b => send_noret(2, 1, chan_b, 1, &mut p_ctr),
 			0x6c => send_hop_noret(0, 1, chan_a, 2, chan_b, 1, &mut p_ctr),
 			0x6d => send_hop_noret(2, 1, chan_b, 0, chan_a, 1, &mut p_ctr),
+
+			// MPP payments
+			// 0x70: direct MPP from 0 to 1 (multi A-B channels)
+			0x70 => send_mpp_direct(0, 1, &chan_ab_scids, 1_000_000, &mut p_ctr),
+			// 0x71: MPP 0->1->2, multi channels on first hop (A-B)
+			0x71 => send_mpp_hop(0, 1, &chan_ab_scids, 2, &[chan_b], 1_000_000, &mut p_ctr),
+			// 0x72: MPP 0->1->2, multi channels on both hops (A-B and B-C)
+			0x72 => send_mpp_hop(0, 1, &chan_ab_scids, 2, &chan_bc_scids, 1_000_000, &mut p_ctr),
+			// 0x73: MPP 0->1->2, multi channels on second hop (B-C)
+			0x73 => send_mpp_hop(0, 1, &[chan_a], 2, &chan_bc_scids, 1_000_000, &mut p_ctr),
+			// 0x74: direct MPP from 0 to 1, multi parts over single channel
+			0x74 => send_mpp_direct(0, 1, &[chan_a, chan_a, chan_a], 1_000_000, &mut p_ctr),
 
 			0x80 => {
 				let mut max_feerate = last_htlc_clear_fee_a;
