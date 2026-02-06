@@ -895,8 +895,13 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 		} => {
 			assert_eq!(node_id, node_b_id);
 			nodes[1].node.handle_error(node_a_id, msg);
-			check_closed_event(&nodes[1], 1, ClosureReason::CounterpartyForceClosed { peer_msg: UntrustedString(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}",
-				&node_b_id)) }, &[node_a_id], 100000);
+			let peer_msg = format!(
+				"Got a message for a channel from the wrong node! No such channel_id {} for the passed counterparty_node_id {}",
+				chan_id, node_b_id
+			);
+			let reason =
+				ClosureReason::CounterpartyForceClosed { peer_msg: UntrustedString(peer_msg) };
+			check_closed_event(&nodes[1], 1, reason, &[node_a_id], 100000);
 			check_added_monitors(&nodes[1], 1);
 			assert_eq!(nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
 			nodes[1].tx_broadcaster.clear();
@@ -1101,11 +1106,12 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 		} => {
 			assert_eq!(node_id, node_b_id);
 			nodes[1].node.handle_error(node_a_id, msg);
-			let msg = format!(
-				"Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}",
-				&node_b_id
+			let peer_msg = format!(
+				"Got a message for a channel from the wrong node! No such channel_id {} for the passed counterparty_node_id {}",
+				chan_id, node_b_id
 			);
-			let reason = ClosureReason::CounterpartyForceClosed { peer_msg: UntrustedString(msg) };
+			let reason =
+				ClosureReason::CounterpartyForceClosed { peer_msg: UntrustedString(peer_msg) };
 			check_closed_event(&nodes[1], 1, reason, &[node_a_id], 100000);
 			check_added_monitors(&nodes[1], 1);
 			bs_commitment_tx = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);

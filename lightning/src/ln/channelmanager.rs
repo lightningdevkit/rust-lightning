@@ -939,6 +939,7 @@ struct MsgHandleErrInternal {
 	shutdown_finish: Option<(ShutdownResult, Option<(msgs::ChannelUpdate, NodeId, NodeId)>)>,
 	tx_abort: Option<msgs::TxAbort>,
 }
+
 impl MsgHandleErrInternal {
 	fn send_err_msg_no_close(err: String, channel_id: ChannelId) -> Self {
 		Self {
@@ -952,6 +953,20 @@ impl MsgHandleErrInternal {
 			shutdown_finish: None,
 			tx_abort: None,
 		}
+	}
+
+	fn no_such_peer(counterparty_node_id: &PublicKey, channel_id: ChannelId) -> Self {
+		let err =
+			format!("No such peer for the passed counterparty_node_id {counterparty_node_id}");
+		Self::send_err_msg_no_close(err, channel_id)
+	}
+
+	fn no_such_channel_for_peer(counterparty_node_id: &PublicKey, channel_id: ChannelId) -> Self {
+		let err = format!(
+			"Got a message for a channel from the wrong node! No such channel_id {} for the passed counterparty_node_id {}",
+			channel_id, counterparty_node_id
+		);
+		Self::send_err_msg_no_close(err, channel_id)
 	}
 
 	fn from_no_close(err: msgs::LightningError) -> Self {
@@ -10812,9 +10827,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
 			debug_assert!(false);
-			MsgHandleErrInternal::send_err_msg_no_close(
-					format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}"),
-					common_fields.temporary_channel_id)
+			MsgHandleErrInternal::no_such_peer(
+				counterparty_node_id,
+				common_fields.temporary_channel_id,
+			)
 		})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
@@ -10884,7 +10900,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			let peer_state_mutex = per_peer_state.get(counterparty_node_id)
 				.ok_or_else(|| {
 					debug_assert!(false);
-					MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}"), msg.common_fields.temporary_channel_id)
+					MsgHandleErrInternal::no_such_peer(counterparty_node_id, msg.common_fields.temporary_channel_id)
 				})?;
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
@@ -10905,7 +10921,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						}
 					}
 				},
-				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.common_fields.temporary_channel_id))
+				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::no_such_channel_for_peer(counterparty_node_id, msg.common_fields.temporary_channel_id))
 			}
 		};
 		let mut pending_events = self.pending_events.lock().unwrap();
@@ -10925,49 +10941,59 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let best_block = *self.best_block.read().unwrap();
 
 		let per_peer_state = self.per_peer_state.read().unwrap();
-		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
-			.ok_or_else(|| {
-				debug_assert!(false);
-				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}"), msg.temporary_channel_id)
-			})?;
+		let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
+			debug_assert!(false);
+			MsgHandleErrInternal::no_such_peer(counterparty_node_id, msg.temporary_channel_id)
+		})?;
 
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
-		let (mut chan, funding_msg_opt, monitor) =
-			match peer_state.channel_by_id.remove(&msg.temporary_channel_id)
-				.map(Channel::into_unfunded_inbound_v1)
-			{
-				Some(Ok(inbound_chan)) => {
-					let logger = WithChannelContext::from(&self.logger, &inbound_chan.context, None);
-					match inbound_chan.funding_created(msg, best_block, &self.signer_provider, &&logger) {
-						Ok(res) => res,
-						Err((inbound_chan, err)) => {
-							// We've already removed this inbound channel from the map in `PeerState`
-							// above so at this point we just need to clean up any lingering entries
-							// concerning this channel as it is safe to do so.
-							debug_assert!(matches!(err, ChannelError::Close(_)));
-							let mut chan = Channel::from(inbound_chan);
-							return Err(self.locked_handle_force_close(
+		let (mut chan, funding_msg_opt, monitor) = match peer_state
+			.channel_by_id
+			.remove(&msg.temporary_channel_id)
+			.map(Channel::into_unfunded_inbound_v1)
+		{
+			Some(Ok(inbound_chan)) => {
+				let logger = WithChannelContext::from(&self.logger, &inbound_chan.context, None);
+				match inbound_chan.funding_created(msg, best_block, &self.signer_provider, &&logger)
+				{
+					Ok(res) => res,
+					Err((inbound_chan, err)) => {
+						// We've already removed this inbound channel from the map in `PeerState`
+						// above so at this point we just need to clean up any lingering entries
+						// concerning this channel as it is safe to do so.
+						debug_assert!(matches!(err, ChannelError::Close(_)));
+						let mut chan = Channel::from(inbound_chan);
+						return Err(self
+							.locked_handle_force_close(
 								&mut peer_state.closed_channel_monitor_update_ids,
 								&mut peer_state.in_flight_monitor_updates,
 								err,
 								&mut chan,
-							).1);
-						},
-					}
-				},
-				Some(Err(mut chan)) => {
-					let err_msg = format!("Got an unexpected funding_created message from peer with counterparty_node_id {}", counterparty_node_id);
-					let err = ChannelError::close(err_msg);
-					return Err(self.locked_handle_force_close(
+							)
+							.1);
+					},
+				}
+			},
+			Some(Err(mut chan)) => {
+				let err_msg = format!("Got an unexpected funding_created message from peer with counterparty_node_id {}", counterparty_node_id);
+				let err = ChannelError::close(err_msg);
+				return Err(self
+					.locked_handle_force_close(
 						&mut peer_state.closed_channel_monitor_update_ids,
 						&mut peer_state.in_flight_monitor_updates,
 						err,
 						&mut chan,
-					).1);
-				},
-				None => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.temporary_channel_id))
-			};
+					)
+					.1);
+			},
+			None => {
+				return Err(MsgHandleErrInternal::no_such_channel_for_peer(
+					counterparty_node_id,
+					msg.temporary_channel_id,
+				))
+			},
+		};
 
 		let funded_channel_id = chan.context.channel_id();
 
@@ -11114,7 +11140,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let peer_state_mutex = per_peer_state.get(&counterparty_node_id)
 			.ok_or_else(|| {
 				debug_assert!(false);
-				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}"), ChannelId([0; 32]))
+				MsgHandleErrInternal::no_such_peer(&counterparty_node_id, ChannelId([0; 32]))
 			})?;
 
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
@@ -11152,7 +11178,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
 			.ok_or_else(|| {
 				debug_assert!(false);
-				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}"), msg.channel_id)
+				MsgHandleErrInternal::no_such_peer(counterparty_node_id, msg.channel_id)
 			})?;
 
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
@@ -11209,10 +11235,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
 			debug_assert!(false);
-			MsgHandleErrInternal::send_err_msg_no_close(
-				format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}"),
-				channel_id,
-			)
+			MsgHandleErrInternal::no_such_peer(counterparty_node_id, channel_id)
 		})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
@@ -11228,26 +11251,27 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					Err((error, splice_funding_failed)) => {
 						if let Some(splice_funding_failed) = splice_funding_failed {
 							let pending_events = &mut self.pending_events.lock().unwrap();
-							pending_events.push_back((events::Event::SpliceFailed {
-								channel_id,
-								counterparty_node_id: *counterparty_node_id,
-								user_channel_id: channel.context().get_user_id(),
-								abandoned_funding_txo: splice_funding_failed.funding_txo,
-								channel_type: splice_funding_failed.channel_type.clone(),
-								contributed_inputs: splice_funding_failed.contributed_inputs,
-								contributed_outputs: splice_funding_failed.contributed_outputs,
-							}, None));
+							pending_events.push_back((
+								events::Event::SpliceFailed {
+									channel_id,
+									counterparty_node_id: *counterparty_node_id,
+									user_channel_id: channel.context().get_user_id(),
+									abandoned_funding_txo: splice_funding_failed.funding_txo,
+									channel_type: splice_funding_failed.channel_type.clone(),
+									contributed_inputs: splice_funding_failed.contributed_inputs,
+									contributed_outputs: splice_funding_failed.contributed_outputs,
+								},
+								None,
+							));
 						}
 						Err(MsgHandleErrInternal::from_chan_no_close(error, channel_id))
 					},
 				}
 			},
-			hash_map::Entry::Vacant(_) => {
-				Err(MsgHandleErrInternal::send_err_msg_no_close(format!(
-					"Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}",
-					counterparty_node_id), channel_id)
-				)
-			}
+			hash_map::Entry::Vacant(_) => Err(MsgHandleErrInternal::no_such_channel_for_peer(
+				counterparty_node_id,
+				channel_id,
+			)),
 		}
 	}
 
@@ -11289,9 +11313,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let peer_state_mutex = per_peer_state.get(&counterparty_node_id)
 			.ok_or_else(|| {
 				debug_assert!(false);
-				MsgHandleErrInternal::send_err_msg_no_close(
-					format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}"),
-					msg.channel_id)
+				MsgHandleErrInternal::no_such_peer(&counterparty_node_id, msg.channel_id)
 			})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
@@ -11386,7 +11408,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				}
 			},
 			hash_map::Entry::Vacant(_) => {
-				Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
+				Err(MsgHandleErrInternal::no_such_channel_for_peer(&counterparty_node_id, msg.channel_id))
 			}
 		}
 	}
@@ -11398,9 +11420,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
 			.ok_or_else(|| {
 				debug_assert!(false);
-				MsgHandleErrInternal::send_err_msg_no_close(
-					format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}"),
-					msg.channel_id)
+				MsgHandleErrInternal::no_such_peer(counterparty_node_id, msg.channel_id)
 			})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
@@ -11467,7 +11487,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				Ok(())
 			},
 			hash_map::Entry::Vacant(_) => {
-				Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
+				Err(MsgHandleErrInternal::no_such_channel_for_peer(counterparty_node_id, msg.channel_id))
 			}
 		}
 	}
@@ -11479,9 +11499,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
 			.ok_or_else(|| {
 				debug_assert!(false);
-				MsgHandleErrInternal::send_err_msg_no_close(
-					format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}"),
-					msg.channel_id)
+				MsgHandleErrInternal::no_such_peer(counterparty_node_id, msg.channel_id)
 			})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
@@ -11519,7 +11537,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				Ok(persist)
 			},
 			hash_map::Entry::Vacant(_) => {
-				Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
+				Err(MsgHandleErrInternal::no_such_channel_for_peer(counterparty_node_id, msg.channel_id))
 			}
 		}
 	}
@@ -11532,7 +11550,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
 			.ok_or_else(|| {
 				debug_assert!(false);
-				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}"), msg.channel_id)
+				MsgHandleErrInternal::no_such_peer(counterparty_node_id, msg.channel_id)
 			})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
@@ -11583,7 +11601,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				}
 			},
 			hash_map::Entry::Vacant(_) => {
-				Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
+				Err(MsgHandleErrInternal::no_such_channel_for_peer(counterparty_node_id, msg.channel_id))
 			}
 		}
 	}
@@ -11596,13 +11614,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
 				debug_assert!(false);
-				MsgHandleErrInternal::send_err_msg_no_close(
-					format!(
-						"Can't find a peer matching the passed counterparty node_id {}",
-						counterparty_node_id
-					),
-					msg.channel_id,
-				)
+				MsgHandleErrInternal::no_such_peer(counterparty_node_id, msg.channel_id)
 			})?;
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
@@ -11681,7 +11693,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					},
 				}
 			} else {
-				return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id));
+				return Err(MsgHandleErrInternal::no_such_channel_for_peer(
+					counterparty_node_id,
+					msg.channel_id,
+				));
 			}
 		}
 		for htlc_source in dropped_htlcs.drain(..) {
@@ -11703,13 +11718,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
 			debug_assert!(false);
-			MsgHandleErrInternal::send_err_msg_no_close(
-				format!(
-					"Can't find a peer matching the passed counterparty node_id {}",
-					counterparty_node_id
-				),
-				msg.channel_id,
-			)
+			MsgHandleErrInternal::no_such_peer(counterparty_node_id, msg.channel_id)
 		})?;
 		let logger;
 		let tx_err: Option<(_, Result<Infallible, _>)> = {
@@ -11724,10 +11733,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							try_channel_entry!(self, peer_state, res, chan_entry);
 						debug_assert_eq!(tx_shutdown_result.is_some(), chan.is_shutdown());
 						if let Some(msg) = closing_signed {
-							peer_state.pending_msg_events.push(MessageSendEvent::SendClosingSigned {
-								node_id: counterparty_node_id.clone(),
-								msg,
-							});
+							peer_state.pending_msg_events.push(
+								MessageSendEvent::SendClosingSigned {
+									node_id: counterparty_node_id.clone(),
+									msg,
+								},
+							);
 						}
 						if let Some((tx, close_res)) = tx_shutdown_result {
 							// We're done with this channel, we've got a signed closing transaction and
@@ -11735,18 +11746,34 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							// also implies there are no pending HTLCs left on the channel, so we can
 							// fully delete it from tracking (the channel monitor is still around to
 							// watch for old state broadcasts)!
-							let err = self.locked_handle_funded_coop_close(&mut peer_state.closed_channel_monitor_update_ids, &mut peer_state.in_flight_monitor_updates, close_res, chan);
+							let err = self.locked_handle_funded_coop_close(
+								&mut peer_state.closed_channel_monitor_update_ids,
+								&mut peer_state.in_flight_monitor_updates,
+								close_res,
+								chan,
+							);
 							chan_entry.remove();
 							Some((tx, Err(err)))
 						} else {
 							None
 						}
 					} else {
-						return try_channel_entry!(self, peer_state, Err(ChannelError::close(
-							"Got a closing_signed message for an unfunded channel!".into())), chan_entry);
+						return try_channel_entry!(
+							self,
+							peer_state,
+							Err(ChannelError::close(
+								"Got a closing_signed message for an unfunded channel!".into()
+							)),
+							chan_entry
+						);
 					}
 				},
-				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
+				hash_map::Entry::Vacant(_) => {
+					return Err(MsgHandleErrInternal::no_such_channel_for_peer(
+						counterparty_node_id,
+						msg.channel_id,
+					))
+				},
 			}
 		};
 		mem::drop(per_peer_state);
@@ -11796,7 +11823,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
 			.ok_or_else(|| {
 				debug_assert!(false);
-				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}"), msg.channel_id)
+				MsgHandleErrInternal::no_such_peer(counterparty_node_id, msg.channel_id)
 			})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
@@ -11809,7 +11836,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						"Got an update_add_htlc message for an unfunded channel!".into())), chan_entry);
 				}
 			},
-			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
+			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::no_such_channel_for_peer(counterparty_node_id, msg.channel_id))
 		}
 		Ok(())
 	}
@@ -11823,28 +11850,32 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
 				debug_assert!(false);
-				MsgHandleErrInternal::send_err_msg_no_close(
-					format!(
-						"Can't find a peer matching the passed counterparty node_id {}",
-						counterparty_node_id
-					),
-					msg.channel_id,
-				)
+				MsgHandleErrInternal::no_such_peer(counterparty_node_id, msg.channel_id)
 			})?;
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
 			match peer_state.channel_by_id.entry(msg.channel_id) {
 				hash_map::Entry::Occupied(mut chan_entry) => {
 					if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
-						let res = try_channel_entry!(self, peer_state, chan.update_fulfill_htlc(&msg), chan_entry);
+						let res = try_channel_entry!(
+							self,
+							peer_state,
+							chan.update_fulfill_htlc(&msg),
+							chan_entry
+						);
 						if let HTLCSource::PreviousHopData(prev_hop) = &res.0 {
-							let logger = WithChannelContext::from(&self.logger, &chan.context, None);
+							let logger =
+								WithChannelContext::from(&self.logger, &chan.context, None);
 							log_trace!(logger,
 								"Holding the next revoke_and_ack until the preimage is durably persisted in the inbound edge's ChannelMonitor",
 								);
-							peer_state.actions_blocking_raa_monitor_updates.entry(msg.channel_id)
+							peer_state
+								.actions_blocking_raa_monitor_updates
+								.entry(msg.channel_id)
 								.or_insert_with(Vec::new)
-								.push(RAAMonitorUpdateBlockingAction::from_prev_hop_data(&prev_hop));
+								.push(RAAMonitorUpdateBlockingAction::from_prev_hop_data(
+									&prev_hop,
+								));
 						}
 						// Note that we do not need to push an `actions_blocking_raa_monitor_updates`
 						// entry here, even though we *do* need to block the next RAA monitor update.
@@ -11852,15 +11883,30 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						// `ReleaseRAAChannelMonitorUpdate` action to the event generated when the
 						// outbound HTLC is claimed. This is guaranteed to all complete before we
 						// process the RAA as messages are processed from single peers serially.
-						funding_txo = chan.funding.get_funding_txo().expect("We won't accept a fulfill until funded");
+						funding_txo = chan
+							.funding
+							.get_funding_txo()
+							.expect("We won't accept a fulfill until funded");
 						next_user_channel_id = chan.context.get_user_id();
 						res
 					} else {
-						return try_channel_entry!(self, peer_state, Err(ChannelError::close(
-							"Got an update_fulfill_htlc message for an unfunded channel!".into())), chan_entry);
+						return try_channel_entry!(
+							self,
+							peer_state,
+							Err(ChannelError::close(
+								"Got an update_fulfill_htlc message for an unfunded channel!"
+									.into()
+							)),
+							chan_entry
+						);
 					}
 				},
-				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
+				hash_map::Entry::Vacant(_) => {
+					return Err(MsgHandleErrInternal::no_such_channel_for_peer(
+						counterparty_node_id,
+						msg.channel_id,
+					))
+				},
 			}
 		};
 		self.claim_funds_internal(
@@ -11888,7 +11934,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
 			.ok_or_else(|| {
 				debug_assert!(false);
-				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}"), msg.channel_id)
+				MsgHandleErrInternal::no_such_peer(counterparty_node_id, msg.channel_id)
 			})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
@@ -11901,7 +11947,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						"Got an update_fail_htlc message for an unfunded channel!".into())), chan_entry);
 				}
 			},
-			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
+			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::no_such_channel_for_peer(counterparty_node_id, msg.channel_id))
 		}
 		Ok(())
 	}
@@ -11914,7 +11960,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
 			.ok_or_else(|| {
 				debug_assert!(false);
-				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}"), msg.channel_id)
+				MsgHandleErrInternal::no_such_peer(counterparty_node_id, msg.channel_id)
 			})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
@@ -11932,7 +11978,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				}
 				Ok(())
 			},
-			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
+			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::no_such_channel_for_peer(counterparty_node_id, msg.channel_id))
 		}
 	}
 
@@ -11943,7 +11989,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
 			.ok_or_else(|| {
 				debug_assert!(false);
-				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}"), msg.channel_id)
+				MsgHandleErrInternal::no_such_peer(counterparty_node_id, msg.channel_id)
 			})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
@@ -11998,7 +12044,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				}
 				Ok(())
 			},
-			hash_map::Entry::Vacant(_) => Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
+			hash_map::Entry::Vacant(_) => Err(MsgHandleErrInternal::no_such_channel_for_peer(counterparty_node_id, msg.channel_id))
 		}
 	}
 
@@ -12008,7 +12054,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
 			.ok_or_else(|| {
 				debug_assert!(false);
-				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}"), channel_id)
+				MsgHandleErrInternal::no_such_peer(counterparty_node_id, channel_id)
 			})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
@@ -12040,7 +12086,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				}
 				Ok(())
 			},
-			hash_map::Entry::Vacant(_) => Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), channel_id))
+			hash_map::Entry::Vacant(_) => Err(MsgHandleErrInternal::no_such_channel_for_peer(counterparty_node_id, channel_id))
 		}
 	}
 
@@ -12150,7 +12196,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			let mut peer_state_lock = per_peer_state.get(counterparty_node_id)
 				.ok_or_else(|| {
 					debug_assert!(false);
-					MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}"), msg.channel_id)
+					MsgHandleErrInternal::no_such_peer(counterparty_node_id, msg.channel_id)
 				}).map(|mtx| mtx.lock().unwrap())?;
 			let peer_state = &mut *peer_state_lock;
 			match peer_state.channel_by_id.entry(msg.channel_id) {
@@ -12186,7 +12232,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							"Got a revoke_and_ack message for an unfunded channel!".into())), chan_entry);
 					}
 				},
-				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
+				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::no_such_channel_for_peer(counterparty_node_id, msg.channel_id))
 			}
 		};
 		self.fail_holding_cell_htlcs(htlcs_to_fail, msg.channel_id, counterparty_node_id);
@@ -12203,7 +12249,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
 			.ok_or_else(|| {
 				debug_assert!(false);
-				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}"), msg.channel_id)
+				MsgHandleErrInternal::no_such_peer(counterparty_node_id, msg.channel_id)
 			})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
@@ -12217,7 +12263,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						"Got an update_fee message for an unfunded channel!".into())), chan_entry);
 				}
 			},
-			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
+			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::no_such_channel_for_peer(counterparty_node_id, msg.channel_id))
 		}
 		Ok(())
 	}
@@ -12227,9 +12273,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
 			debug_assert!(false);
-			MsgHandleErrInternal::send_err_msg_no_close(
-				format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}"),
-				msg.channel_id
+			MsgHandleErrInternal::no_such_peer(counterparty_node_id, msg.channel_id
 			)
 		})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
@@ -12275,9 +12319,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					return try_channel_entry!(self, peer_state, err, chan_entry);
 				}
 			},
-			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(
-				format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id),
-				msg.channel_id
+			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::no_such_channel_for_peer(counterparty_node_id, msg.channel_id
 			))
 		}
 	}
@@ -12288,7 +12330,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
 			.ok_or_else(|| {
 				debug_assert!(false);
-				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}"), msg.channel_id)
+				MsgHandleErrInternal::no_such_peer(counterparty_node_id, msg.channel_id)
 			})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
@@ -12318,7 +12360,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						"Got an announcement_signatures message for an unfunded channel!".into())), chan_entry);
 				}
 			},
-			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
+			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::no_such_channel_for_peer(counterparty_node_id, msg.channel_id))
 		}
 		Ok(())
 	}
@@ -12387,9 +12429,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			let peer_state_mutex = per_peer_state.get(counterparty_node_id)
 				.ok_or_else(|| {
 					debug_assert!(false);
-					MsgHandleErrInternal::send_err_msg_no_close(
-						format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}"),
-						msg.channel_id
+					MsgHandleErrInternal::no_such_peer(counterparty_node_id, msg.channel_id
 					)
 				})?;
 			let logger = WithContext::from(&self.logger, Some(*counterparty_node_id), Some(msg.channel_id), None);
@@ -12478,9 +12518,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							my_current_funding_locked: None,
 						},
 					});
-					return Err(MsgHandleErrInternal::send_err_msg_no_close(
-						format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}",
-							counterparty_node_id), msg.channel_id)
+					return Err(MsgHandleErrInternal::no_such_channel_for_peer(counterparty_node_id, msg.channel_id)
 					)
 				}
 			}
@@ -12506,7 +12544,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
 			.ok_or_else(|| {
 				debug_assert!(false);
-				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}"), msg.channel_id)
+				MsgHandleErrInternal::no_such_peer(counterparty_node_id, msg.channel_id)
 			})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
@@ -12516,10 +12554,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 		// Look for the channel
 		match peer_state.channel_by_id.entry(msg.channel_id) {
-			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!(
-					"Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}, channel_id {}",
-					counterparty_node_id, msg.channel_id,
-				), msg.channel_id)),
+			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::no_such_channel_for_peer(counterparty_node_id, msg.channel_id)),
 			hash_map::Entry::Occupied(mut chan_entry) => {
 				if self.config.read().unwrap().reject_inbound_splices {
 					let err = ChannelError::WarnAndDisconnect(
@@ -12553,17 +12588,14 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
 			.ok_or_else(|| {
 				debug_assert!(false);
-				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}"), msg.channel_id)
+				MsgHandleErrInternal::no_such_peer(counterparty_node_id, msg.channel_id)
 			})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 
 		// Look for the channel
 		match peer_state.channel_by_id.entry(msg.channel_id) {
-			hash_map::Entry::Vacant(_) => Err(MsgHandleErrInternal::send_err_msg_no_close(format!(
-					"Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}",
-					counterparty_node_id
-				), msg.channel_id)),
+			hash_map::Entry::Vacant(_) => Err(MsgHandleErrInternal::no_such_channel_for_peer(counterparty_node_id, msg.channel_id)),
 			hash_map::Entry::Occupied(mut chan_entry) => {
 				if let Some(ref mut funded_channel) = chan_entry.get_mut().as_funded_mut() {
 					let splice_ack_res = funded_channel.splice_ack(
@@ -12588,13 +12620,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
 			debug_assert!(false);
-			MsgHandleErrInternal::send_err_msg_no_close(
-				format!(
-					"Can't find a peer matching the passed counterparty node_id {}",
-					counterparty_node_id
-				),
-				msg.channel_id,
-			)
+			MsgHandleErrInternal::no_such_peer(counterparty_node_id, msg.channel_id)
 		})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
@@ -12602,11 +12628,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		// Look for the channel
 		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Vacant(_) => {
-				let err = format!(
-					"Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}",
+				return Err(MsgHandleErrInternal::no_such_channel_for_peer(
 					counterparty_node_id,
-				);
-				return Err(MsgHandleErrInternal::send_err_msg_no_close(err, msg.channel_id));
+					msg.channel_id,
+				));
 			},
 			hash_map::Entry::Occupied(mut chan_entry) => {
 				if let Some(chan) = chan_entry.get_mut().as_funded_mut() {

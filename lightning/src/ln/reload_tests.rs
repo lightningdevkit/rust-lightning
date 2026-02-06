@@ -691,7 +691,11 @@ fn do_test_data_loss_protect(reconnect_panicing: bool, substantially_old: bool, 
 		if let MessageSendEvent::HandleError { ref action, .. } = nodes[0].node.get_and_clear_pending_msg_events()[1] {
 			match action {
 				&ErrorAction::SendErrorMessage { ref msg } => {
-					assert_eq!(msg.data, format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", &nodes[1].node.get_our_node_id()));
+					let peer_msg = format!(
+						"Got a message for a channel from the wrong node! No such channel_id {} for the passed counterparty_node_id {}",
+						chan.2, nodes[1].node.get_our_node_id()
+					);
+					assert_eq!(msg.data, peer_msg);
 					err_msgs_0.push(msg.clone());
 				},
 				_ => panic!("Unexpected event!"),
@@ -703,8 +707,12 @@ fn do_test_data_loss_protect(reconnect_panicing: bool, substantially_old: bool, 
 		nodes[1].node.handle_error(nodes[0].node.get_our_node_id(), &err_msgs_0[0]);
 		assert!(nodes[1].node.list_usable_channels().is_empty());
 		check_added_monitors(&nodes[1], 1);
-		check_closed_event(&nodes[1], 1, ClosureReason::CounterpartyForceClosed { peer_msg: UntrustedString(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", &nodes[1].node.get_our_node_id())) }
-			, &[nodes[0].node.get_our_node_id()], 1000000);
+		let peer_msg = format!(
+			"Got a message for a channel from the wrong node! No such channel_id {} for the passed counterparty_node_id {}",
+			chan.2, nodes[1].node.get_our_node_id()
+		);
+		let reason = ClosureReason::CounterpartyForceClosed { peer_msg: UntrustedString(peer_msg) };
+		check_closed_event(&nodes[1], 1, reason, &[nodes[0].node.get_our_node_id()], 1000000);
 		check_closed_broadcast!(nodes[1], false);
 	}
 }
