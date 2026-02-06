@@ -45,19 +45,36 @@ use lightning_0_0_125::ln::msgs::ChannelMessageHandler as _;
 use lightning_0_0_125::routing::router as router_0_0_125;
 use lightning_0_0_125::util::ser::Writeable as _;
 
-use lightning::chain::channelmonitor::{ANTI_REORG_DELAY, HTLC_FAIL_BACK_BUFFER};
-use lightning::events::bump_transaction::sync::WalletSourceSync;
-use lightning::events::{ClosureReason, Event, HTLCHandlingFailureType};
-use lightning::ln::functional_test_utils::*;
-use lightning::ln::funding::SpliceContribution;
-use lightning::ln::msgs::BaseMessageHandler as _;
-use lightning::ln::msgs::ChannelMessageHandler as _;
-use lightning::ln::msgs::MessageSendEvent;
-use lightning::ln::splicing_tests::*;
-use lightning::ln::types::ChannelId;
-use lightning::sign::OutputSpender;
+use lightning_0_3::events::bump_transaction::sync::WalletSourceSync as _;
+use lightning_0_3::events::{
+	Event as Event_0_3, HTLCHandlingFailureType as HTLCHandlingFailureType_0_3,
+};
+use lightning_0_3::expect_payment_claimable as expect_payment_claimable_0_3;
+use lightning_0_3::get_event_msg as get_event_msg_0_3;
+use lightning_0_3::ln::functional_test_utils as lightning_0_3_utils;
+use lightning_0_3::ln::functional_test_utils::{
+	PaymentFailedConditions as PaymentFailedConditions_0_3, ReconnectArgs as ReconnectArgs_0_3,
+	SendEvent as SendEvent_0_3,
+};
+use lightning_0_3::ln::funding::SpliceContribution as SpliceContribution_0_3;
+use lightning_0_3::ln::msgs::BaseMessageHandler as _;
+use lightning_0_3::ln::msgs::ChannelMessageHandler as _;
+use lightning_0_3::ln::msgs::MessageSendEvent as MessageSendEvent_0_3;
+use lightning_0_3::ln::splicing_tests::lock_splice as lock_splice_0_3;
+use lightning_0_3::ln::splicing_tests::splice_channel as splice_channel_0_3;
+use lightning_0_3::ln::types::ChannelId as ChannelId_0_3;
+use lightning_0_3::reload_node as reload_node_0_3;
+use lightning_0_3::types::payment::{
+	PaymentHash as PaymentHash_0_3, PaymentPreimage as PaymentPreimage_0_3,
+	PaymentSecret as PaymentSecret_0_3,
+};
 
-use lightning_types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
+use lightning::chain::channelmonitor::{ANTI_REORG_DELAY, HTLC_FAIL_BACK_BUFFER};
+use lightning::check_spends;
+use lightning::events::{ClosureReason, Event};
+use lightning::ln::functional_test_utils as lightning_local_utils;
+use lightning::reload_node;
+use lightning::sign::OutputSpender;
 
 use bitcoin::script::Builder;
 use bitcoin::secp256k1::Secp256k1;
@@ -68,7 +85,7 @@ use std::sync::Arc;
 #[test]
 fn simple_upgrade() {
 	// Tests a simple case of upgrading from LDK 0.1 with a pending payment
-	let (node_a_ser, node_b_ser, mon_a_ser, mon_b_ser, preimage);
+	let (node_a_ser, node_b_ser, mon_a_ser, mon_b_ser, preimage_bytes);
 	{
 		let chanmon_cfgs = lightning_0_1_utils::create_chanmon_cfgs(2);
 		let node_cfgs = lightning_0_1_utils::create_node_cfgs(2, &chanmon_cfgs);
@@ -79,7 +96,7 @@ fn simple_upgrade() {
 
 		let payment_preimage =
 			lightning_0_1_utils::route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
-		preimage = PaymentPreimage(payment_preimage.0 .0);
+		preimage_bytes = payment_preimage.0 .0;
 
 		node_a_ser = nodes[0].node.encode();
 		node_b_ser = nodes[1].node.encode();
@@ -89,26 +106,43 @@ fn simple_upgrade() {
 
 	// Create a dummy node to reload over with the 0.1 state
 
-	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+	let mut chanmon_cfgs = lightning_0_3_utils::create_chanmon_cfgs(2);
 
 	// Our TestChannelSigner will fail as we're jumping ahead, so disable its state-based checks
 	chanmon_cfgs[0].keys_manager.disable_all_state_policy_checks = true;
 	chanmon_cfgs[1].keys_manager.disable_all_state_policy_checks = true;
 
-	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_cfgs = lightning_0_3_utils::create_node_cfgs(2, &chanmon_cfgs);
 	let (persister_a, persister_b, chain_mon_a, chain_mon_b);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let node_chanmgrs = lightning_0_3_utils::create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let (node_a, node_b);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let mut nodes = lightning_0_3_utils::create_network(2, &node_cfgs, &node_chanmgrs);
 
-	let config = test_default_channel_config();
+	let config = lightning_0_3_utils::test_default_channel_config();
 	let a_mons = &[&mon_a_ser[..]];
-	reload_node!(nodes[0], config.clone(), &node_a_ser, a_mons, persister_a, chain_mon_a, node_a);
-	reload_node!(nodes[1], config, &node_b_ser, &[&mon_b_ser], persister_b, chain_mon_b, node_b);
+	reload_node_0_3!(
+		nodes[0],
+		config.clone(),
+		&node_a_ser,
+		a_mons,
+		persister_a,
+		chain_mon_a,
+		node_a
+	);
+	reload_node_0_3!(
+		nodes[1],
+		config,
+		&node_b_ser,
+		&[&mon_b_ser],
+		persister_b,
+		chain_mon_b,
+		node_b
+	);
 
-	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
+	lightning_0_3_utils::reconnect_nodes(ReconnectArgs_0_3::new(&nodes[0], &nodes[1]));
 
-	claim_payment(&nodes[0], &[&nodes[1]], preimage);
+	let preimage = PaymentPreimage_0_3(preimage_bytes);
+	lightning_0_3_utils::claim_payment(&nodes[0], &[&nodes[1]], preimage);
 }
 
 #[test]
@@ -228,7 +262,7 @@ fn test_125_dangling_post_update_actions() {
 
 	// Create a dummy node to reload over with the 0.0.125 state
 
-	let mut chanmon_cfgs = create_chanmon_cfgs(4);
+	let mut chanmon_cfgs = lightning_local_utils::create_chanmon_cfgs(4);
 
 	// Our TestChannelSigner will fail as we're jumping ahead, so disable its state-based checks
 	chanmon_cfgs[0].keys_manager.disable_all_state_policy_checks = true;
@@ -236,14 +270,15 @@ fn test_125_dangling_post_update_actions() {
 	chanmon_cfgs[2].keys_manager.disable_all_state_policy_checks = true;
 	chanmon_cfgs[3].keys_manager.disable_all_state_policy_checks = true;
 
-	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
+	let node_cfgs = lightning_local_utils::create_node_cfgs(4, &chanmon_cfgs);
 	let (persister, chain_mon);
-	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
+	let node_chanmgrs =
+		lightning_local_utils::create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
 	let node;
-	let mut nodes = create_network(4, &node_cfgs, &node_chanmgrs);
+	let mut nodes = lightning_local_utils::create_network(4, &node_cfgs, &node_chanmgrs);
 
 	// Finally, reload the node in the latest LDK. This previously failed.
-	let config = test_default_channel_config();
+	let config = lightning_local_utils::test_default_channel_config();
 	reload_node!(nodes[3], config, &node_d_ser, &[&mon_ser], persister, chain_mon, node);
 }
 
@@ -283,14 +318,14 @@ fn test_0_1_legacy_remote_key_derivation() {
 	}
 
 	// Create a dummy node to reload over with the 0.1 state
-	let chanmon_cfgs = create_chanmon_cfgs(2);
-	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let chanmon_cfgs = lightning_local_utils::create_chanmon_cfgs(2);
+	let node_cfgs = lightning_local_utils::create_node_cfgs(2, &chanmon_cfgs);
 	let (persister_a, persister_b, chain_mon_a, chain_mon_b);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let node_chanmgrs = lightning_local_utils::create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let (node_a, node_b);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let mut nodes = lightning_local_utils::create_network(2, &node_cfgs, &node_chanmgrs);
 
-	let config = test_default_channel_config();
+	let config = lightning_local_utils::test_default_channel_config();
 	let a_mons = &[&mon_a_ser[..]];
 	reload_node!(nodes[0], config.clone(), &node_a_ser, a_mons, persister_a, chain_mon_a, node_a);
 	reload_node!(nodes[1], config, &node_b_ser, &[&mon_b_ser], persister_b, chain_mon_b, node_b);
@@ -299,13 +334,13 @@ fn test_0_1_legacy_remote_key_derivation() {
 
 	let node_b_id = nodes[1].node.get_our_node_id();
 
-	mine_transaction(&nodes[0], &commitment_tx[0]);
+	lightning_local_utils::mine_transaction(&nodes[0], &commitment_tx[0]);
 	let reason = ClosureReason::CommitmentTxConfirmed;
-	check_closed_event(&nodes[0], 1, reason, &[node_b_id], 100_000);
-	check_added_monitors(&nodes[0], 1);
-	check_closed_broadcast(&nodes[0], 1, false);
+	lightning_local_utils::check_closed_event(&nodes[0], 1, reason, &[node_b_id], 100_000);
+	lightning_local_utils::check_added_monitors(&nodes[0], 1);
+	lightning_local_utils::check_closed_broadcast(&nodes[0], 1, false);
 
-	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
+	lightning_local_utils::connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
 	let mut spendable_event = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
 	assert_eq!(spendable_event.len(), 1);
 	if let Event::SpendableOutputs { outputs, channel_id: ev_id, counterparty_node_id: _ } =
@@ -422,7 +457,7 @@ fn do_test_0_1_htlc_forward_after_splice(fail_htlc: bool) {
 	}
 
 	// Create a dummy node to reload over with the 0.1 state
-	let mut chanmon_cfgs = create_chanmon_cfgs(3);
+	let mut chanmon_cfgs = lightning_0_3_utils::create_chanmon_cfgs(3);
 
 	// Our TestChannelSigner will fail as we're jumping ahead, so disable its state-based checks
 	chanmon_cfgs[0].keys_manager.disable_all_state_policy_checks = true;
@@ -433,73 +468,105 @@ fn do_test_0_1_htlc_forward_after_splice(fail_htlc: bool) {
 	chanmon_cfgs[1].tx_broadcaster.blocks = node_b_blocks;
 	chanmon_cfgs[2].tx_broadcaster.blocks = node_c_blocks;
 
-	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_cfgs = lightning_0_3_utils::create_node_cfgs(3, &chanmon_cfgs);
 	let (persister_a, persister_b, persister_c, chain_mon_a, chain_mon_b, chain_mon_c);
-	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let node_chanmgrs =
+		lightning_0_3_utils::create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 	let (node_a, node_b, node_c);
-	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let mut nodes = lightning_0_3_utils::create_network(3, &node_cfgs, &node_chanmgrs);
 
-	let config = test_default_channel_config();
+	let config = lightning_0_3_utils::test_default_channel_config();
 	let a_mons = &[&mon_a_1_ser[..]];
-	reload_node!(nodes[0], config.clone(), &node_a_ser, a_mons, persister_a, chain_mon_a, node_a);
+	reload_node_0_3!(
+		nodes[0],
+		config.clone(),
+		&node_a_ser,
+		a_mons,
+		persister_a,
+		chain_mon_a,
+		node_a
+	);
 	let b_mons = &[&mon_b_1_ser[..], &mon_b_2_ser[..]];
-	reload_node!(nodes[1], config.clone(), &node_b_ser, b_mons, persister_b, chain_mon_b, node_b);
+	reload_node_0_3!(
+		nodes[1],
+		config.clone(),
+		&node_b_ser,
+		b_mons,
+		persister_b,
+		chain_mon_b,
+		node_b
+	);
 	let c_mons = &[&mon_c_1_ser[..]];
-	reload_node!(nodes[2], config, &node_c_ser, c_mons, persister_c, chain_mon_c, node_c);
+	reload_node_0_3!(nodes[2], config, &node_c_ser, c_mons, persister_c, chain_mon_c, node_c);
 
-	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
-	let mut reconnect_b_c_args = ReconnectArgs::new(&nodes[1], &nodes[2]);
+	lightning_0_3_utils::reconnect_nodes(ReconnectArgs_0_3::new(&nodes[0], &nodes[1]));
+	let mut reconnect_b_c_args = ReconnectArgs_0_3::new(&nodes[1], &nodes[2]);
 	reconnect_b_c_args.send_channel_ready = (true, true);
 	reconnect_b_c_args.send_announcement_sigs = (true, true);
-	reconnect_nodes(reconnect_b_c_args);
+	lightning_0_3_utils::reconnect_nodes(reconnect_b_c_args);
 
-	let contribution = SpliceContribution::splice_out(vec![TxOut {
+	let contribution = SpliceContribution_0_3::splice_out(vec![TxOut {
 		value: Amount::from_sat(1_000),
 		script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
 	}]);
-	let splice_tx = splice_channel(&nodes[0], &nodes[1], ChannelId(chan_id_bytes_a), contribution);
+	let splice_tx =
+		splice_channel_0_3(&nodes[0], &nodes[1], ChannelId_0_3(chan_id_bytes_a), contribution);
 	for node in nodes.iter() {
-		mine_transaction(node, &splice_tx);
-		connect_blocks(node, ANTI_REORG_DELAY - 1);
+		lightning_0_3_utils::mine_transaction(node, &splice_tx);
+		lightning_0_3_utils::connect_blocks(node, ANTI_REORG_DELAY - 1);
 	}
 
-	let splice_locked = get_event_msg!(nodes[0], MessageSendEvent::SendSpliceLocked, node_b_id);
-	lock_splice(&nodes[0], &nodes[1], &splice_locked, false);
+	let splice_locked =
+		get_event_msg_0_3!(nodes[0], MessageSendEvent_0_3::SendSpliceLocked, node_b_id);
+	lock_splice_0_3(&nodes[0], &nodes[1], &splice_locked, false);
 
 	for node in nodes.iter() {
-		connect_blocks(node, EXTRA_BLOCKS_BEFORE_FAIL - ANTI_REORG_DELAY);
+		lightning_0_3_utils::connect_blocks(node, EXTRA_BLOCKS_BEFORE_FAIL - ANTI_REORG_DELAY);
 	}
 
 	// Now release the HTLC to be failed back to node A
 	nodes[1].node.process_pending_htlc_forwards();
 
-	let pay_secret = PaymentSecret(payment_secret_bytes);
-	let pay_hash = PaymentHash(payment_hash_bytes);
-	let pay_preimage = PaymentPreimage(payment_preimage_bytes);
+	let pay_secret = PaymentSecret_0_3(payment_secret_bytes);
+	let pay_hash = PaymentHash_0_3(payment_hash_bytes);
+	let pay_preimage = PaymentPreimage_0_3(payment_preimage_bytes);
 
 	if fail_htlc {
-		let failure = HTLCHandlingFailureType::Forward {
+		let failure = HTLCHandlingFailureType_0_3::Forward {
 			node_id: Some(node_c_id),
-			channel_id: ChannelId(chan_id_bytes_b),
+			channel_id: ChannelId_0_3(chan_id_bytes_b),
 		};
-		expect_and_process_pending_htlcs_and_htlc_handling_failed(&nodes[1], &[failure]);
-		check_added_monitors(&nodes[1], 1);
+		lightning_0_3_utils::expect_and_process_pending_htlcs_and_htlc_handling_failed(
+			&nodes[1],
+			&[failure],
+		);
+		lightning_0_3_utils::check_added_monitors(&nodes[1], 1);
 
-		let updates = get_htlc_update_msgs(&nodes[1], &node_a_id);
+		let updates = lightning_0_3_utils::get_htlc_update_msgs(&nodes[1], &node_a_id);
 		nodes[0].node.handle_update_fail_htlc(node_b_id, &updates.update_fail_htlcs[0]);
-		do_commitment_signed_dance(&nodes[0], &nodes[1], &updates.commitment_signed, false, false);
-		let conditions = PaymentFailedConditions::new();
-		expect_payment_failed_conditions(&nodes[0], pay_hash, false, conditions);
+		lightning_0_3_utils::do_commitment_signed_dance(
+			&nodes[0],
+			&nodes[1],
+			&updates.commitment_signed,
+			false,
+			false,
+		);
+		let conditions = PaymentFailedConditions_0_3::new();
+		lightning_0_3_utils::expect_payment_failed_conditions(
+			&nodes[0], pay_hash, false, conditions,
+		);
 	} else {
-		check_added_monitors(&nodes[1], 1);
-		let forward_event = SendEvent::from_node(&nodes[1]);
+		lightning_0_3_utils::check_added_monitors(&nodes[1], 1);
+		let forward_event = SendEvent_0_3::from_node(&nodes[1]);
 		nodes[2].node.handle_update_add_htlc(node_b_id, &forward_event.msgs[0]);
 		let commitment = &forward_event.commitment_msg;
-		do_commitment_signed_dance(&nodes[2], &nodes[1], commitment, false, false);
+		lightning_0_3_utils::do_commitment_signed_dance(
+			&nodes[2], &nodes[1], commitment, false, false,
+		);
 
-		expect_and_process_pending_htlcs(&nodes[2], false);
-		expect_payment_claimable!(nodes[2], pay_hash, pay_secret, 1_000_000);
-		claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], pay_preimage);
+		lightning_0_3_utils::expect_and_process_pending_htlcs(&nodes[2], false);
+		expect_payment_claimable_0_3!(nodes[2], pay_hash, pay_secret, 1_000_000);
+		lightning_0_3_utils::claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], pay_preimage);
 	}
 }
 
@@ -634,32 +701,49 @@ fn do_upgrade_mid_htlc_forward(test: MidHtlcForwardCase) {
 	}
 
 	// Create a dummy node to reload over with the 0.2 state
-	let mut chanmon_cfgs = create_chanmon_cfgs(3);
+	let mut chanmon_cfgs = lightning_0_3_utils::create_chanmon_cfgs(3);
 
 	// Our TestChannelSigner will fail as we're jumping ahead, so disable its state-based checks
 	chanmon_cfgs[0].keys_manager.disable_all_state_policy_checks = true;
 	chanmon_cfgs[1].keys_manager.disable_all_state_policy_checks = true;
 	chanmon_cfgs[2].keys_manager.disable_all_state_policy_checks = true;
 
-	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_cfgs = lightning_0_3_utils::create_node_cfgs(3, &chanmon_cfgs);
 	let (persister_a, persister_b, persister_c, chain_mon_a, chain_mon_b, chain_mon_c);
-	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let node_chanmgrs =
+		lightning_0_3_utils::create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 	let (node_a, node_b, node_c);
-	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let mut nodes = lightning_0_3_utils::create_network(3, &node_cfgs, &node_chanmgrs);
 
-	let config = test_default_channel_config();
+	let config = lightning_0_3_utils::test_default_channel_config();
 	let a_mons = &[&mon_a_1_ser[..]];
-	reload_node!(nodes[0], config.clone(), &node_a_ser, a_mons, persister_a, chain_mon_a, node_a);
+	reload_node_0_3!(
+		nodes[0],
+		config.clone(),
+		&node_a_ser,
+		a_mons,
+		persister_a,
+		chain_mon_a,
+		node_a
+	);
 	let b_mons = &[&mon_b_1_ser[..], &mon_b_2_ser[..]];
-	reload_node!(nodes[1], config.clone(), &node_b_ser, b_mons, persister_b, chain_mon_b, node_b);
+	reload_node_0_3!(
+		nodes[1],
+		config.clone(),
+		&node_b_ser,
+		b_mons,
+		persister_b,
+		chain_mon_b,
+		node_b
+	);
 	let c_mons = &[&mon_c_1_ser[..]];
-	reload_node!(nodes[2], config, &node_c_ser, c_mons, persister_c, chain_mon_c, node_c);
+	reload_node_0_3!(nodes[2], config, &node_c_ser, c_mons, persister_c, chain_mon_c, node_c);
 
-	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
-	let mut reconnect_b_c_args = ReconnectArgs::new(&nodes[1], &nodes[2]);
+	lightning_0_3_utils::reconnect_nodes(ReconnectArgs_0_3::new(&nodes[0], &nodes[1]));
+	let mut reconnect_b_c_args = ReconnectArgs_0_3::new(&nodes[1], &nodes[2]);
 	reconnect_b_c_args.send_channel_ready = (true, true);
 	reconnect_b_c_args.send_announcement_sigs = (true, true);
-	reconnect_nodes(reconnect_b_c_args);
+	lightning_0_3_utils::reconnect_nodes(reconnect_b_c_args);
 
 	// Now release the HTLC from node_b to node_c, to be claimed back to node_a
 	nodes[1].node.process_pending_htlc_forwards();
@@ -668,7 +752,7 @@ fn do_upgrade_mid_htlc_forward(test: MidHtlcForwardCase) {
 		let events = nodes[1].node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
 		let (intercept_id, expected_outbound_amt_msat) = match events[0] {
-			Event::HTLCIntercepted { intercept_id, expected_outbound_amount_msat, .. } => {
+			Event_0_3::HTLCIntercepted { intercept_id, expected_outbound_amount_msat, .. } => {
 				(intercept_id, expected_outbound_amount_msat)
 			},
 			_ => panic!(),
@@ -677,7 +761,7 @@ fn do_upgrade_mid_htlc_forward(test: MidHtlcForwardCase) {
 			.node
 			.forward_intercepted_htlc(
 				intercept_id,
-				&ChannelId(chan_id_bytes_b_c),
+				&ChannelId_0_3(chan_id_bytes_b_c),
 				nodes[2].node.get_our_node_id(),
 				expected_outbound_amt_msat,
 			)
@@ -685,17 +769,17 @@ fn do_upgrade_mid_htlc_forward(test: MidHtlcForwardCase) {
 		nodes[1].node.process_pending_htlc_forwards();
 	}
 
-	let pay_secret = PaymentSecret(payment_secret_bytes);
-	let pay_hash = PaymentHash(payment_hash_bytes);
-	let pay_preimage = PaymentPreimage(payment_preimage_bytes);
+	let pay_secret = PaymentSecret_0_3(payment_secret_bytes);
+	let pay_hash = PaymentHash_0_3(payment_hash_bytes);
+	let pay_preimage = PaymentPreimage_0_3(payment_preimage_bytes);
 
-	check_added_monitors(&nodes[1], 1);
-	let forward_event = SendEvent::from_node(&nodes[1]);
+	lightning_0_3_utils::check_added_monitors(&nodes[1], 1);
+	let forward_event = SendEvent_0_3::from_node(&nodes[1]);
 	nodes[2].node.handle_update_add_htlc(node_b_id, &forward_event.msgs[0]);
 	let commitment = &forward_event.commitment_msg;
-	do_commitment_signed_dance(&nodes[2], &nodes[1], commitment, false, false);
+	lightning_0_3_utils::do_commitment_signed_dance(&nodes[2], &nodes[1], commitment, false, false);
 
-	expect_and_process_pending_htlcs(&nodes[2], false);
-	expect_payment_claimable!(nodes[2], pay_hash, pay_secret, 1_000_000);
-	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], pay_preimage);
+	lightning_0_3_utils::expect_and_process_pending_htlcs(&nodes[2], false);
+	expect_payment_claimable_0_3!(nodes[2], pay_hash, pay_secret, 1_000_000);
+	lightning_0_3_utils::claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], pay_preimage);
 }

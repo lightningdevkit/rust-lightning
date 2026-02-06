@@ -15,6 +15,7 @@ lightning-types = { path = "../lightning-types", features = ["_test_utils"] }
 lightning-invoice = { path = "../lightning-invoice", default-features = false }
 lightning-macros = { path = "../lightning-macros" }
 lightning = { path = "../lightning", features = ["_test_utils"] }
+lightning_0_3 = { package = "lightning", git = "https://github.com/valentinewallace/rust-lightning", branch = "2026-02-dedup-htlc-fwd-data", features = ["_test_utils"] }
 lightning_0_2 = { package = "lightning", version = "0.2.0", features = ["_test_utils"] }
 lightning_0_1 = { package = "lightning", version = "0.1.7", features = ["_test_utils"] }
 lightning_0_0_125 = { package = "lightning", version = "0.0.125", features = ["_test_utils"] }
