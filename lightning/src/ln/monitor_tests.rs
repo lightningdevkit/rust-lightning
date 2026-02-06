@@ -2209,7 +2209,7 @@ fn do_test_revoked_counterparty_aggregated_claims(keyed_anchors: bool, p2a_ancho
 	let spendable_output_events = nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events();
 	assert_eq!(spendable_output_events.len(), 2);
 	for event in spendable_output_events {
-		if let Event::SpendableOutputs { outputs, channel_id: _ } = event {
+		if let Event::SpendableOutputs { outputs, channel_id: _, counterparty_node_id: _ } = event {
 			assert_eq!(outputs.len(), 1);
 			let spend_tx = nodes[1].keys_manager.backing.spend_spendable_outputs(
 				&[&outputs[0]], Vec::new(), ScriptBuf::new_op_return(&[]), 253, None, &Secp256k1::new(),
@@ -2992,7 +2992,7 @@ fn do_test_anchors_aggregated_revoked_htlc_tx(p2a_anchor: bool) {
 	// - 1 static to_remote output.
 	assert_eq!(spendable_output_events.len(), 4);
 	for event in spendable_output_events {
-		if let Event::SpendableOutputs { outputs, channel_id } = event {
+		if let Event::SpendableOutputs { outputs, channel_id, counterparty_node_id: _ } = event {
 			assert_eq!(outputs.len(), 1);
 			assert!([chan_b.2, chan_a.2].contains(&channel_id.unwrap()));
 			let spend_tx = nodes[0].keys_manager.backing.spend_spendable_outputs(

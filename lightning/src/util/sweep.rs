@@ -32,7 +32,7 @@ use crate::{log_debug, log_error};
 
 use bitcoin::block::Header;
 use bitcoin::locktime::absolute::LockTime;
-use bitcoin::secp256k1::Secp256k1;
+use bitcoin::secp256k1::{PublicKey, Secp256k1};
 use bitcoin::{BlockHash, ScriptBuf, Transaction, Txid};
 
 use core::future::Future;
@@ -55,6 +55,13 @@ pub struct TrackedSpendableOutput {
 	///
 	/// Will be `None` if no `channel_id` was given to [`OutputSweeper::track_spendable_outputs`]
 	pub channel_id: Option<ChannelId>,
+	/// The `node_id` of the channel counterparty.
+	///
+	/// Will be `None` if no `counterparty_node_id` was given to
+	/// [`OutputSweeper::track_spendable_outputs`].
+	///
+	/// This will be `None` for outputs tracked with LDK 0.2 and prior.
+	pub counterparty_node_id: Option<PublicKey>,
 	/// The current status of the output spend.
 	pub status: OutputSpendStatus,
 }
@@ -93,6 +100,7 @@ impl TrackedSpendableOutput {
 impl_writeable_tlv_based!(TrackedSpendableOutput, {
 	(0, descriptor, required),
 	(2, channel_id, option),
+	(3, counterparty_node_id, option),
 	(4, status, required),
 });
 
@@ -413,7 +421,8 @@ where
 	/// [`Event::SpendableOutputs`]: crate::events::Event::SpendableOutputs
 	pub async fn track_spendable_outputs(
 		&self, output_descriptors: Vec<SpendableOutputDescriptor>, channel_id: Option<ChannelId>,
-		exclude_static_outputs: bool, delay_until_height: Option<u32>,
+		counterparty_node_id: Option<PublicKey>, exclude_static_outputs: bool,
+		delay_until_height: Option<u32>,
 	) -> Result<(), ()> {
 		let mut relevant_descriptors = output_descriptors
 			.into_iter()
@@ -432,6 +441,7 @@ where
 				let output_info = TrackedSpendableOutput {
 					descriptor,
 					channel_id,
+					counterparty_node_id,
 					status: OutputSpendStatus::PendingInitialBroadcast {
 						delayed_until_height: delay_until_height,
 					},
@@ -529,7 +539,7 @@ where
 		// Sweep the outputs.
 		let spending_tx_and_chan_id = self
 			.update_state(
-				|sweeper_state| -> Result<(Option<(Transaction, Vec<ChannelId>)>, bool), ()> {
+				|sweeper_state| -> Result<(Option<(Transaction, Vec<(PublicKey, ChannelId)>)>, bool), ()> {
 					let cur_height = sweeper_state.best_block.height;
 					let cur_hash = sweeper_state.best_block.block_hash;
 
@@ -571,16 +581,20 @@ where
 							.outputs
 							.iter_mut()
 							.filter(|o| filter_fn(&**o, cur_height));
-						let mut channel_ids = Vec::new();
+						let mut channels = Vec::new();
 						for output_info in respend_outputs {
 							if let Some(filter) = self.chain_data_source.as_ref() {
 								let watched_output = output_info.to_watched_output(cur_hash);
 								filter.register_output(watched_output);
 							}
 
-							if let Some(channel_id) = output_info.channel_id {
-								if !channel_ids.contains(&channel_id) {
-									channel_ids.push(channel_id);
+							if let (Some(counterparty_node_id), Some(channel_id)) =
+								(output_info.counterparty_node_id, output_info.channel_id)
+							{
+								if !channels.iter().any(|(cp, ch)| {
+									*cp == counterparty_node_id && *ch == channel_id
+								}) {
+									channels.push((counterparty_node_id, channel_id));
 								}
 							}
 
@@ -588,7 +602,7 @@ where
 							sweeper_state.dirty = true;
 						}
 
-						Ok((Some((spending_tx, channel_ids)), false))
+						Ok((Some((spending_tx, channels)), false))
 					} else {
 						Ok((None, false))
 					}
@@ -597,9 +611,9 @@ where
 			.await?;
 
 		// Persistence completely successfully. If we have a spending transaction, we broadcast it.
-		if let Some((spending_tx, channel_ids)) = spending_tx_and_chan_id {
+		if let Some((spending_tx, channels)) = spending_tx_and_chan_id {
 			self.broadcaster
-				.broadcast_transactions(&[(&spending_tx, TransactionType::Sweep { channel_ids })]);
+				.broadcast_transactions(&[(&spending_tx, TransactionType::Sweep { channels })]);
 		}
 
 		Ok(())
@@ -1010,11 +1024,13 @@ where
 	/// [`Event::SpendableOutputs`]: crate::events::Event::SpendableOutputs
 	pub fn track_spendable_outputs(
 		&self, output_descriptors: Vec<SpendableOutputDescriptor>, channel_id: Option<ChannelId>,
-		exclude_static_outputs: bool, delay_until_height: Option<u32>,
+		counterparty_node_id: Option<PublicKey>, exclude_static_outputs: bool,
+		delay_until_height: Option<u32>,
 	) -> Result<(), ()> {
 		let mut fut = pin!(self.sweeper.track_spendable_outputs(
 			output_descriptors,
 			channel_id,
+			counterparty_node_id,
 			exclude_static_outputs,
 			delay_until_height,
 		));

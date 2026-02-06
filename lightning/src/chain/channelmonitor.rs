@@ -1879,8 +1879,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 			initial_holder_commitment_tx.trust().commitment_number();
 
 		let onchain_tx_handler = OnchainTxHandler::new(
-			channel_id, channel_parameters.channel_value_satoshis, channel_keys_id,
-			destination_script.into(), keys, channel_parameters.clone(),
+			channel_id, counterparty_node_id, channel_parameters.channel_value_satoshis,
+			channel_keys_id, destination_script.into(), keys, channel_parameters.clone(),
 			initial_holder_commitment_tx.clone(), secp_ctx,
 		);
 
@@ -5619,6 +5619,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					self.pending_events.push(Event::SpendableOutputs {
 						outputs: vec![descriptor],
 						channel_id: Some(self.channel_id()),
+						counterparty_node_id: Some(self.counterparty_node_id),
 					});
 					self.spendable_txids_confirmed.push(entry.txid);
 				},
@@ -6643,6 +6644,8 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			};
 
 		let dummy_node_id = PublicKey::from_slice(&[2; 33]).unwrap();
+		onchain_tx_handler
+			.set_counterparty_node_id(counterparty_node_id.unwrap_or(dummy_node_id));
 		let monitor = ChannelMonitor::from_impl(ChannelMonitorImpl {
 			funding: FundingScope {
 				channel_parameters,

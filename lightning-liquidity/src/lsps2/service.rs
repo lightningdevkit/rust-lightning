@@ -2020,21 +2020,22 @@ where
 		// close could then confirm the commitment and trigger unintended on‑chain handling.
 		// To avoid this, we check ChannelManager’s view (`is_channel_ready`) before broadcasting.
 		if let Some(ch_id) = jit_channel.get_channel_id() {
-			let is_channel_ready = self
+			let channel_details = self
 				.channel_manager
 				.get_cm()
 				.list_channels()
 				.into_iter()
-				.any(|cd| cd.channel_id == ch_id && cd.is_channel_ready);
+				.find(|cd| cd.channel_id == ch_id && cd.is_channel_ready);
 
-			if !is_channel_ready {
-				return;
-			}
+			let counterparty_node_id = match channel_details {
+				Some(cd) => cd.counterparty.node_id,
+				None => return,
+			};
 
 			if let Some(funding_tx) = jit_channel.get_funding_tx() {
 				self.tx_broadcaster.broadcast_transactions(&[(
 					funding_tx,
-					TransactionType::Funding { channel_ids: vec![ch_id] },
+					TransactionType::Funding { channels: vec![(counterparty_node_id, ch_id)] },
 				)]);
 			}
 		}

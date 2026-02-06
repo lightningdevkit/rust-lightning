@@ -308,7 +308,9 @@ fn test_0_1_legacy_remote_key_derivation() {
 	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
 	let mut spendable_event = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
 	assert_eq!(spendable_event.len(), 1);
-	if let Event::SpendableOutputs { outputs, channel_id: ev_id } = spendable_event.pop().unwrap() {
+	if let Event::SpendableOutputs { outputs, channel_id: ev_id, counterparty_node_id: _ } =
+		spendable_event.pop().unwrap()
+	{
 		assert_eq!(ev_id.unwrap().0, channel_id);
 		assert_eq!(outputs.len(), 1);
 		let spk = Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script();

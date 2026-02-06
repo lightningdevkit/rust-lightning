@@ -334,14 +334,22 @@ pub fn sign_interactive_funding_tx<'a, 'b, 'c, 'd>(
 	let tx = {
 		let mut initiator_txn = initiator.tx_broadcaster.txn_broadcast_with_types();
 		assert_eq!(initiator_txn.len(), 1);
-		let acceptor_txn = acceptor.tx_broadcaster.txn_broadcast_with_types();
-		assert_eq!(initiator_txn, acceptor_txn);
-		let (tx, tx_type) = initiator_txn.remove(0);
-		// Verify transaction type is Splice
+		let mut acceptor_txn = acceptor.tx_broadcaster.txn_broadcast_with_types();
+		assert_eq!(acceptor_txn.len(), 1);
+		// Compare transactions only (not types, as counterparty_node_id differs per perspective)
+		assert_eq!(initiator_txn[0].0, acceptor_txn[0].0);
+		let (tx, initiator_tx_type) = initiator_txn.remove(0);
+		let (_, acceptor_tx_type) = acceptor_txn.remove(0);
+		// Verify transaction types are Splice for both nodes
 		assert!(
-			matches!(tx_type, TransactionType::Splice { .. }),
+			matches!(initiator_tx_type, TransactionType::Splice { .. }),
 			"Expected TransactionType::Splice, got {:?}",
-			tx_type
+			initiator_tx_type
+		);
+		assert!(
+			matches!(acceptor_tx_type, TransactionType::Splice { .. }),
+			"Expected TransactionType::Splice, got {:?}",
+			acceptor_tx_type
 		);
 		tx
 	};

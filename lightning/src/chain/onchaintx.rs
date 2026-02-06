@@ -18,7 +18,7 @@ use bitcoin::hashes::Hash;
 use bitcoin::locktime::absolute::LockTime;
 use bitcoin::script::{Script, ScriptBuf};
 use bitcoin::secp256k1;
-use bitcoin::secp256k1::{ecdsa::Signature, Secp256k1};
+use bitcoin::secp256k1::{ecdsa::Signature, PublicKey, Secp256k1};
 use bitcoin::transaction::OutPoint as BitcoinOutPoint;
 use bitcoin::transaction::Transaction;
 
@@ -224,6 +224,7 @@ pub(crate) enum FeerateStrategy {
 #[derive(Clone)]
 pub struct OnchainTxHandler<ChannelSigner: EcdsaChannelSigner> {
 	channel_id: ChannelId,
+	counterparty_node_id: PublicKey,
 	channel_value_satoshis: u64,   // Deprecated as of 0.2.
 	channel_keys_id: [u8; 32],     // Deprecated as of 0.2.
 	destination_script: ScriptBuf, // Deprecated as of 0.2.
@@ -287,6 +288,7 @@ impl<ChannelSigner: EcdsaChannelSigner> PartialEq for OnchainTxHandler<ChannelSi
 	fn eq(&self, other: &Self) -> bool {
 		// `signer`, `secp_ctx`, and `pending_claim_events` are excluded on purpose.
 		self.channel_id == other.channel_id &&
+			self.counterparty_node_id == other.counterparty_node_id &&
 			self.channel_value_satoshis == other.channel_value_satoshis &&
 			self.channel_keys_id == other.channel_keys_id &&
 			self.destination_script == other.destination_script &&
@@ -357,6 +359,14 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 	// after reading the respective field via this method.
 	pub(crate) fn set_channel_id(&mut self, channel_id: ChannelId) {
 		self.channel_id = channel_id;
+	}
+
+	// `ChannelMonitor`s already track the `counterparty_node_id`, however, due to the
+	// deserialization order there we can't make use of `ReadableArgs` to hand it into
+	// `OnchainTxHandler`'s deserialization logic directly. Instead we opt to initialize it with a
+	// dummy key and override it after reading the respective field via this method.
+	pub(crate) fn set_counterparty_node_id(&mut self, counterparty_node_id: PublicKey) {
+		self.counterparty_node_id = counterparty_node_id;
 	}
 }
 
@@ -433,17 +443,20 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 
 		read_tlv_fields!(reader, {});
 
-		// `ChannelMonitor`s already track the `channel_id`, however, due to the derserialization
-		// order there we can't make use of `ReadableArgs` to hand it in directly. Instead we opt
-		// to initialize it with 0s and override it after reading the respective field via
-		// `OnchainTxHandler::set_channel_id`.
+		// `ChannelMonitor`s already track the `channel_id` and `counterparty_node_id`, however, due
+		// to the deserialization order there we can't make use of `ReadableArgs` to hand them in
+		// directly. Instead we opt to initialize them with dummy values and override them after
+		// reading the respective fields via `OnchainTxHandler::set_channel_id` and
+		// `OnchainTxHandler::set_counterparty_node_id`.
 		let channel_id = ChannelId([0u8; 32]);
+		let counterparty_node_id = PublicKey::from_slice(&[2; 33]).unwrap();
 
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
 
 		Ok(OnchainTxHandler {
 			channel_id,
+			counterparty_node_id,
 			channel_value_satoshis,
 			channel_keys_id,
 			destination_script,
@@ -463,13 +476,14 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 
 impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 	pub(crate) fn new(
-		channel_id: ChannelId, channel_value_satoshis: u64, channel_keys_id: [u8; 32],
-		destination_script: ScriptBuf, signer: ChannelSigner,
+		channel_id: ChannelId, counterparty_node_id: PublicKey, channel_value_satoshis: u64,
+		channel_keys_id: [u8; 32], destination_script: ScriptBuf, signer: ChannelSigner,
 		channel_parameters: ChannelTransactionParameters,
 		holder_commitment: HolderCommitmentTransaction, secp_ctx: Secp256k1<secp256k1::All>,
 	) -> Self {
 		OnchainTxHandler {
 			channel_id,
+			counterparty_node_id,
 			channel_value_satoshis,
 			channel_keys_id,
 			destination_script,
@@ -533,7 +547,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 							if tx.is_fully_signed() {
 								let log_start = if feerate_was_bumped { "Broadcasting RBF-bumped" } else { "Rebroadcasting" };
 								log_info!(logger, "{} onchain {}", log_start, log_tx!(tx.0));
-								broadcaster.broadcast_transactions(&[(&tx.0, TransactionType::Claim { channel_id: self.channel_id })]);
+								broadcaster.broadcast_transactions(&[(&tx.0, TransactionType::Claim { counterparty_node_id: self.counterparty_node_id, channel_id: self.channel_id })]);
 							} else {
 								log_info!(logger, "Waiting for signature of unsigned onchain transaction {}", tx.0.compute_txid());
 							}
@@ -875,7 +889,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 					OnchainClaim::Tx(tx) => {
 						if tx.is_fully_signed() {
 							log_info!(logger, "Broadcasting onchain {}", log_tx!(tx.0));
-							broadcaster.broadcast_transactions(&[(&tx.0, TransactionType::Claim { channel_id: self.channel_id })]);
+							broadcaster.broadcast_transactions(&[(&tx.0, TransactionType::Claim { counterparty_node_id: self.counterparty_node_id, channel_id: self.channel_id })]);
 						} else {
 							log_info!(logger, "Waiting for signature of unsigned onchain transaction {}", tx.0.compute_txid());
 						}
@@ -1093,7 +1107,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 					OnchainClaim::Tx(bump_tx) => {
 						if bump_tx.is_fully_signed() {
 							log_info!(logger, "Broadcasting RBF-bumped onchain {}", log_tx!(bump_tx.0));
-							broadcaster.broadcast_transactions(&[(&bump_tx.0, TransactionType::Claim { channel_id: self.channel_id })]);
+							broadcaster.broadcast_transactions(&[(&bump_tx.0, TransactionType::Claim { counterparty_node_id: self.counterparty_node_id, channel_id: self.channel_id })]);
 						} else {
 							log_info!(logger, "Waiting for signature of RBF-bumped unsigned onchain transaction {}",
 								bump_tx.0.compute_txid());
@@ -1190,7 +1204,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 					OnchainClaim::Tx(bump_tx) => {
 						if bump_tx.is_fully_signed() {
 							log_info!(logger, "Broadcasting onchain {}", log_tx!(bump_tx.0));
-							broadcaster.broadcast_transactions(&[(&bump_tx.0, TransactionType::Claim { channel_id: self.channel_id })]);
+							broadcaster.broadcast_transactions(&[(&bump_tx.0, TransactionType::Claim { counterparty_node_id: self.counterparty_node_id, channel_id: self.channel_id })]);
 						} else {
 							log_info!(logger, "Waiting for signature of unsigned onchain transaction {}", bump_tx.0.compute_txid());
 						}
@@ -1368,8 +1382,10 @@ mod tests {
 		}
 		let holder_commit = HolderCommitmentTransaction::dummy(1000000, funding_outpoint, nondust_htlcs);
 		let destination_script = ScriptBuf::new();
+		let counterparty_node_id = PublicKey::from_slice(&[2; 33]).unwrap();
 		let mut tx_handler = OnchainTxHandler::new(
 			ChannelId::from_bytes([0; 32]),
+			counterparty_node_id,
 			1000000,
 			[0; 32],
 			destination_script.clone(),
