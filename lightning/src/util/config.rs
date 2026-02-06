@@ -1041,6 +1041,28 @@ pub struct UserConfig {
 	/// [`ChannelManager::send_payment_for_bolt12_invoice`]: crate::ln::channelmanager::ChannelManager::send_payment_for_bolt12_invoice
 	/// [`ChannelManager::abandon_payment`]: crate::ln::channelmanager::ChannelManager::abandon_payment
 	pub manually_handle_bolt12_invoices: bool,
+	/// If this is set to `true`, the user needs to manually handle incoming BOLT12
+	/// [`InvoiceRequest`]s.
+	///
+	/// When set to `true`, [`Event::InvoiceRequestReceived`] will be generated for each received
+	/// [`InvoiceRequest`] instead of automatically creating and sending a [`Bolt12Invoice`].
+	///
+	/// This is useful for LSP clients using LSPS2 (JIT channels) with BOLT12, where the invoice
+	/// needs to include blinded payment paths through the LSP's intercept SCID. The user can
+	/// construct custom blinded payment paths via
+	/// [`OffersMessageFlow::create_blinded_payment_paths_for_intercept_scid`], build the invoice
+	/// via [`OffersMessageFlow::create_invoice_builder_from_invoice_request_with_custom_payment_paths`],
+	/// and send it back via [`ChannelManager::send_invoice_for_request`].
+	///
+	/// Default value: `false`
+	///
+	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
+	/// [`Event::InvoiceRequestReceived`]: crate::events::Event::InvoiceRequestReceived
+	/// [`OffersMessageFlow::create_blinded_payment_paths_for_intercept_scid`]: crate::offers::flow::OffersMessageFlow::create_blinded_payment_paths_for_intercept_scid
+	/// [`OffersMessageFlow::create_invoice_builder_from_invoice_request_with_custom_payment_paths`]: crate::offers::flow::OffersMessageFlow::create_invoice_builder_from_invoice_request_with_custom_payment_paths
+	/// [`ChannelManager::send_invoice_for_request`]: crate::ln::channelmanager::ChannelManager::send_invoice_for_request
+	pub manually_handle_bolt12_invoice_requests: bool,
 	/// If this is set to `true`, dual-funded channels will be enabled.
 	///
 	/// Default value: `false`
@@ -1095,6 +1117,7 @@ impl Default for UserConfig {
 			manually_accept_inbound_channels: false,
 			htlc_interception_flags: 0,
 			manually_handle_bolt12_invoices: false,
+			manually_handle_bolt12_invoice_requests: false,
 			enable_dual_funded_channels: false,
 			enable_htlc_hold: false,
 			hold_outbound_htlcs_at_next_hop: false,
@@ -1118,6 +1141,7 @@ impl Readable for UserConfig {
 			manually_accept_inbound_channels: Readable::read(reader)?,
 			htlc_interception_flags: Readable::read(reader)?,
 			manually_handle_bolt12_invoices: Readable::read(reader)?,
+			manually_handle_bolt12_invoice_requests: Readable::read(reader)?,
 			enable_dual_funded_channels: Readable::read(reader)?,
 			hold_outbound_htlcs_at_next_hop: Readable::read(reader)?,
 			enable_htlc_hold: Readable::read(reader)?,

@@ -32,6 +32,7 @@ use bitcoin::secp256k1::Secp256k1;
 use bitcoin::secp256k1::{PublicKey, SecretKey};
 use bitcoin::{secp256k1, Sequence, SignedAmount};
 
+use crate::blinded_path::message::MessageContext;
 use crate::blinded_path::message::{
 	AsyncPaymentsContext, BlindedMessagePath, MessageForwardNode, OffersContext,
 };
@@ -5577,6 +5578,41 @@ impl<
 			responder.clone(),
 		);
 		self.flow.enqueue_static_invoice(invoice, responder)
+	}
+
+	/// Sends a [`Bolt12Invoice`] in response to an [`Event::InvoiceRequestReceived`].
+	///
+	/// This is used when [`UserConfig::manually_handle_bolt12_invoice_requests`] is set to `true`,
+	/// allowing the user to construct a custom invoice (e.g., with blinded payment paths through
+	/// an LSP's intercept SCID for LSPS2 JIT channels) and send it back to the payer.
+	///
+	/// The `responder` and `context` should come from the [`Event::InvoiceRequestReceived`]
+	/// event and the invoice builder (e.g., via
+	/// [`OffersMessageFlow::create_invoice_builder_from_invoice_request_with_custom_payment_paths`]),
+	/// respectively.
+	///
+	/// [`Event::InvoiceRequestReceived`]: crate::events::Event::InvoiceRequestReceived
+	/// [`UserConfig::manually_handle_bolt12_invoice_requests`]: crate::util::config::UserConfig::manually_handle_bolt12_invoice_requests
+	/// [`OffersMessageFlow::create_invoice_builder_from_invoice_request_with_custom_payment_paths`]: crate::offers::flow::OffersMessageFlow::create_invoice_builder_from_invoice_request_with_custom_payment_paths
+	pub fn send_invoice_for_request(
+		&self, invoice: Bolt12Invoice, context: MessageContext, responder: Responder,
+	) {
+		self.flow.enqueue_invoice_for_request(invoice, context, responder);
+	}
+
+	/// Returns a reference to the [`OffersMessageFlow`], which provides methods for creating
+	/// BOLT12 offers, invoices, and related blinded paths.
+	///
+	/// This is useful when manually handling invoice requests (see
+	/// [`UserConfig::manually_handle_bolt12_invoice_requests`]) to access methods like
+	/// [`OffersMessageFlow::create_blinded_payment_paths_for_intercept_scid`] and
+	/// [`OffersMessageFlow::create_invoice_builder_from_invoice_request_with_custom_payment_paths`].
+	///
+	/// [`UserConfig::manually_handle_bolt12_invoice_requests`]: crate::util::config::UserConfig::manually_handle_bolt12_invoice_requests
+	/// [`OffersMessageFlow::create_blinded_payment_paths_for_intercept_scid`]: crate::offers::flow::OffersMessageFlow::create_blinded_payment_paths_for_intercept_scid
+	/// [`OffersMessageFlow::create_invoice_builder_from_invoice_request_with_custom_payment_paths`]: crate::offers::flow::OffersMessageFlow::create_invoice_builder_from_invoice_request_with_custom_payment_paths
+	pub fn offers_handler(&self) -> &OffersMessageFlow<MR, L> {
+		&self.flow
 	}
 
 	fn initiate_async_payment(
@@ -15992,6 +16028,9 @@ impl<
 					None => return None,
 				};
 
+				let manually_handle = self.config.read().unwrap().manually_handle_bolt12_invoice_requests;
+				let saved_context = if manually_handle { context.clone() } else { None };
+
 				let invoice_request = match self.flow.verify_invoice_request(invoice_request, context) {
 					Ok(InvreqResponseInstructions::SendInvoice(invoice_request)) => invoice_request,
 					Ok(InvreqResponseInstructions::SendStaticInvoice { recipient_id, invoice_slot, invoice_request }) => {
@@ -16003,6 +16042,22 @@ impl<
 					},
 					Err(_) => return None,
 				};
+
+				if manually_handle {
+					let inner_request = match invoice_request {
+						InvoiceRequestVerifiedFromOffer::DerivedKeys(ref request) => request.inner.clone(),
+						InvoiceRequestVerifiedFromOffer::ExplicitKeys(ref request) => request.inner.clone(),
+					};
+					self.pending_events.lock().unwrap().push_back((
+						Event::InvoiceRequestReceived {
+							invoice_request: inner_request,
+							context: saved_context,
+							responder,
+						},
+						None,
+					));
+					return None;
+				}
 
 				let get_payment_info = |amount_msats, relative_expiry| {
 					self.create_inbound_payment(
