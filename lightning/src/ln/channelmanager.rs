@@ -98,7 +98,9 @@ use crate::offers::async_receive_offer_cache::AsyncReceiveOfferCache;
 use crate::offers::flow::{HeldHtlcReplyPath, InvreqResponseInstructions, OffersMessageFlow};
 use crate::offers::invoice::{Bolt12Invoice, UnsignedBolt12Invoice};
 use crate::offers::invoice_error::InvoiceError;
-use crate::offers::invoice_request::{InvoiceRequest, InvoiceRequestVerifiedFromOffer};
+use crate::offers::invoice_request::{
+	InvoiceRequest, InvoiceRequestFields, InvoiceRequestVerifiedFromOffer,
+};
 use crate::offers::nonce::Nonce;
 use crate::offers::offer::{Offer, OfferFromHrn};
 use crate::offers::parse::Bolt12SemanticError;
@@ -5598,6 +5600,81 @@ impl<
 		&self, invoice: Bolt12Invoice, context: MessageContext, responder: Responder,
 	) {
 		self.flow.enqueue_invoice_for_request(invoice, context, responder);
+	}
+
+	/// Creates and sends a BOLT12 invoice in response to an [`Event::InvoiceRequestReceived`],
+	/// allowing to construct blinded payment paths for a specific [`InterceptId`] through an LSP.
+	///
+	/// This is a convenience method that combines the steps of verifying the invoice request,
+	/// creating an inbound payment, building blinded payment paths with the given intercept SCID,
+	/// constructing the invoice, and sending it back via the responder.
+	///
+	/// Returns the [`Bolt12Invoice`] that was sent on success, or a [`Bolt12SemanticError`] on
+	/// failure.
+	///
+	/// [`Event::InvoiceRequestReceived`]: crate::events::Event::InvoiceRequestReceived
+	pub fn send_bolt12_invoice_for_intercept_scid(
+		&self, invoice_request: InvoiceRequest, context: Option<OffersContext>,
+		responder: Responder, lsp_node_id: PublicKey, intercept_scid: u64, cltv_expiry_delta: u16,
+		invoice_expiry_secs: u32,
+	) -> Result<Bolt12Invoice, Bolt12SemanticError> {
+		let verified = self
+			.flow
+			.verify_invoice_request(invoice_request, context)
+			.map_err(|_| Bolt12SemanticError::InvalidMetadata)?;
+
+		let invoice_request = match verified {
+			InvreqResponseInstructions::SendInvoice(
+				InvoiceRequestVerifiedFromOffer::DerivedKeys(request),
+			) => request,
+			_ => return Err(Bolt12SemanticError::InvalidMetadata),
+		};
+
+		let amount_msats =
+			invoice_request.amount_msats().ok_or(Bolt12SemanticError::MissingAmount)?;
+
+		let (payment_hash, payment_secret) = self
+			.create_inbound_payment(Some(amount_msats), invoice_expiry_secs, None)
+			.map_err(|_| Bolt12SemanticError::InvalidAmount)?;
+
+		let payment_context = PaymentContext::Bolt12Offer(Bolt12OfferContext {
+			offer_id: invoice_request.offer_id,
+			invoice_request: InvoiceRequestFields {
+				payer_signing_pubkey: invoice_request.payer_signing_pubkey(),
+				quantity: invoice_request.quantity(),
+				payer_note_truncated: invoice_request
+					.payer_note()
+					.map(|note| UntrustedString(note.to_string())),
+				human_readable_name: invoice_request.offer_from_hrn().clone(),
+			},
+		});
+
+		let payment_paths = self
+			.flow
+			.create_blinded_payment_paths_for_intercept_scid(
+				&self.entropy_source,
+				lsp_node_id,
+				intercept_scid,
+				cltv_expiry_delta,
+				payment_secret,
+				payment_context,
+				amount_msats,
+				invoice_expiry_secs,
+			)
+			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
+
+		let (builder, reply_context) =
+			self.flow.create_invoice_builder_from_invoice_request_with_custom_payment_paths(
+				&invoice_request,
+				payment_paths,
+				payment_hash,
+			)?;
+
+		let invoice = builder.build_and_sign(&self.secp_ctx)?;
+
+		self.flow.enqueue_invoice_for_request(invoice.clone(), reply_context, responder);
+
+		Ok(invoice)
 	}
 
 	/// Returns a reference to the [`OffersMessageFlow`], which provides methods for creating
