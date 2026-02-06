@@ -2548,6 +2548,16 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 
 				process_all_events!();
 
+				// Verify no payments are stuck - all should have resolved
+				for (idx, pending) in pending_payments.borrow().iter().enumerate() {
+					assert!(
+						pending.is_empty(),
+						"Node {} has {} stuck pending payments after settling all state",
+						idx,
+						pending.len()
+					);
+				}
+
 				// Finally, make sure that at least one end of each channel can make a substantial payment
 				for &scid in &chan_ab_scids {
 					assert!(
