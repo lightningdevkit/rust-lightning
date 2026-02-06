@@ -3844,8 +3844,9 @@ impl<
 		{
 			let per_peer_state = self.per_peer_state.read().unwrap();
 
-			let peer_state_mutex = per_peer_state.get(counterparty_node_id)
-				.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}") })?;
+			let peer_state_mutex = per_peer_state
+				.get(counterparty_node_id)
+				.ok_or_else(|| APIError::no_such_peer(counterparty_node_id))?;
 
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
@@ -3909,12 +3910,7 @@ impl<
 					}
 				},
 				hash_map::Entry::Vacant(_) => {
-					return Err(APIError::ChannelUnavailable {
-						err: format!(
-							"Channel with id {} not found for the passed counterparty node_id {}",
-							chan_id, counterparty_node_id,
-						),
-					});
+					return Err(APIError::no_such_channel_for_peer(chan_id, counterparty_node_id));
 				},
 			}
 		}
@@ -4209,11 +4205,7 @@ impl<
 	) -> Result<(), APIError> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex =
-			per_peer_state.get(peer_node_id).ok_or_else(|| APIError::ChannelUnavailable {
-				err: format!(
-					"Can't find a peer matching the passed counterparty node_id {peer_node_id}",
-				),
-			})?;
+			per_peer_state.get(peer_node_id).ok_or_else(|| APIError::no_such_peer(peer_node_id))?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 		let logger = WithContext::from(&self.logger, Some(*peer_node_id), Some(*channel_id), None);
@@ -4257,11 +4249,7 @@ impl<
 			// events anyway.
 			Ok(())
 		} else {
-			Err(APIError::ChannelUnavailable {
-				err: format!(
-					"Channel with id {channel_id} not found for the passed counterparty node_id {peer_node_id}",
-				),
-			})
+			Err(APIError::no_such_channel_for_peer(channel_id, peer_node_id))
 		}
 	}
 
@@ -4605,11 +4593,10 @@ impl<
 	) -> Result<(), APIError> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 
-		let peer_state_mutex = match per_peer_state.get(counterparty_node_id).ok_or_else(|| {
-			APIError::ChannelUnavailable {
-				err: format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}"),
-			}
-		}) {
+		let peer_state_mutex = match per_peer_state
+			.get(counterparty_node_id)
+			.ok_or_else(|| APIError::no_such_peer(counterparty_node_id))
+		{
 			Ok(p) => p,
 			Err(e) => return Err(e),
 		};
@@ -4654,12 +4641,9 @@ impl<
 					})
 				}
 			},
-			hash_map::Entry::Vacant(_) => Err(APIError::ChannelUnavailable {
-				err: format!(
-					"Channel with id {} not found for the passed counterparty node_id {}",
-					channel_id, counterparty_node_id,
-				),
-			}),
+			hash_map::Entry::Vacant(_) => {
+				Err(APIError::no_such_channel_for_peer(channel_id, counterparty_node_id))
+			},
 		}
 	}
 
@@ -4685,11 +4669,10 @@ impl<
 	) -> Result<(), APIError> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 
-		let peer_state_mutex = match per_peer_state.get(counterparty_node_id).ok_or_else(|| {
-			APIError::ChannelUnavailable {
-				err: format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}"),
-			}
-		}) {
+		let peer_state_mutex = match per_peer_state
+			.get(counterparty_node_id)
+			.ok_or_else(|| APIError::no_such_peer(counterparty_node_id))
+		{
 			Ok(p) => p,
 			Err(e) => return Err(e),
 		};
@@ -4742,12 +4725,9 @@ impl<
 					})
 				}
 			},
-			hash_map::Entry::Vacant(_) => Err(APIError::ChannelUnavailable {
-				err: format!(
-					"Channel with id {} not found for the passed counterparty node_id {}",
-					channel_id, counterparty_node_id,
-				),
-			}),
+			hash_map::Entry::Vacant(_) => {
+				Err(APIError::no_such_channel_for_peer(channel_id, counterparty_node_id))
+			},
 		}
 	}
 
@@ -5965,12 +5945,12 @@ impl<
 	/// which checks the correctness of the funding transaction given the associated channel.
 	#[rustfmt::skip]
 	fn funding_transaction_generated_intern<FundingOutput: FnMut(&OutboundV1Channel<SP>) -> Result<OutPoint, &'static str>>(
-		&self, temporary_channel_id: ChannelId, counterparty_node_id: PublicKey, funding_transaction: Transaction, is_batch_funding: bool,
-		mut find_funding_output: FundingOutput, is_manual_broadcast: bool,
-	) -> Result<(), APIError> {
+			&self, temporary_channel_id: ChannelId, counterparty_node_id: PublicKey, funding_transaction: Transaction, is_batch_funding: bool,
+			mut find_funding_output: FundingOutput, is_manual_broadcast: bool,
+		) -> Result<(), APIError> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(&counterparty_node_id)
-			.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}") })?;
+			.ok_or_else(|| APIError::no_such_peer(&counterparty_node_id))?;
 
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
@@ -6410,9 +6390,7 @@ impl<
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			let peer_state_mutex_opt = per_peer_state.get(counterparty_node_id);
 			if peer_state_mutex_opt.is_none() {
-				funding_tx_signed_result = Err(APIError::ChannelUnavailable {
-					err: format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}")
-				});
+				funding_tx_signed_result = Err(APIError::no_such_peer(counterparty_node_id));
 				return NotifyOption::SkipPersistNoEvents;
 			}
 
@@ -6550,12 +6528,8 @@ impl<
 					}
 				},
 				hash_map::Entry::Vacant(_) => {
-					funding_tx_signed_result = Err(APIError::ChannelUnavailable {
-						err: format!(
-							"Channel with id {} not found for the passed counterparty node_id {}",
-							channel_id, counterparty_node_id
-						),
-					});
+					funding_tx_signed_result =
+						Err(APIError::no_such_channel_for_peer(channel_id, counterparty_node_id));
 					return NotifyOption::SkipPersistNoEvents;
 				},
 			}
@@ -6638,15 +6612,16 @@ impl<
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
-			.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}") })?;
+			.ok_or_else(|| APIError::no_such_peer(counterparty_node_id))?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 
 		for channel_id in channel_ids {
 			if !peer_state.has_channel(channel_id) {
-				return Err(APIError::ChannelUnavailable {
-					err: format!("Channel with id {} not found for the passed counterparty node_id {}", channel_id, counterparty_node_id),
-				});
+				return Err(APIError::no_such_channel_for_peer(
+					channel_id,
+					counterparty_node_id,
+				));
 			};
 		}
 		for channel_id in channel_ids {
@@ -6741,12 +6716,9 @@ impl<
 
 		let outbound_scid_alias = {
 			let peer_state_lock = self.per_peer_state.read().unwrap();
-			let peer_state_mutex =
-				peer_state_lock.get(&next_node_id).ok_or_else(|| APIError::ChannelUnavailable {
-					err: format!(
-						"Can't find a peer matching the passed counterparty node_id {next_node_id}"
-					),
-				})?;
+			let peer_state_mutex = peer_state_lock
+				.get(&next_node_id)
+				.ok_or_else(|| APIError::no_such_peer(&next_node_id))?;
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
 			match peer_state.channel_by_id.get(next_hop_channel_id) {
@@ -6779,11 +6751,10 @@ impl<
 						logger,
 						"Channel not found when attempting to forward intercepted HTLC"
 					);
-					return Err(APIError::ChannelUnavailable {
-						err: format!(
-						"Channel with id {next_hop_channel_id} not found for the passed counterparty node_id {next_node_id}"
-					),
-					});
+					return Err(APIError::no_such_channel_for_peer(
+						next_hop_channel_id,
+						&next_node_id,
+					));
 				},
 			}
 		};
@@ -10565,11 +10536,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
 			log_error!(logger, "Can't find peer matching the passed counterparty node_id");
-
-			let err_str = format!(
-				"Can't find a peer matching the passed counterparty node_id {counterparty_node_id}"
-			);
-			APIError::ChannelUnavailable { err: err_str }
+			APIError::no_such_peer(counterparty_node_id)
 		})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
@@ -13236,9 +13203,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			let peer_state_mutex_opt = per_peer_state.get(counterparty_node_id);
 			if peer_state_mutex_opt.is_none() {
-				result = Err(APIError::ChannelUnavailable {
-					err: format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}")
-				});
+				result = Err(APIError::no_such_peer(counterparty_node_id));
 				return notify;
 			}
 
@@ -13272,10 +13237,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					}
 				},
 				hash_map::Entry::Vacant(_) => {
-					result = Err(APIError::ChannelUnavailable {
-						err: format!("Channel with id {} not found for the passed counterparty node_id {}",
-							channel_id, counterparty_node_id),
-					});
+					result = Err(APIError::no_such_channel_for_peer(
+						channel_id,
+						counterparty_node_id,
+					));
 				},
 			}
 
@@ -13293,9 +13258,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let initiator = {
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			let peer_state_mutex = per_peer_state.get(counterparty_node_id)
-				.ok_or_else(|| APIError::ChannelUnavailable {
-					err: format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}")
-				})?;
+				.ok_or_else(|| APIError::no_such_peer(counterparty_node_id))?;
 			let mut peer_state = peer_state_mutex.lock().unwrap();
 			match peer_state.channel_by_id.entry(*channel_id) {
 				hash_map::Entry::Occupied(mut chan_entry) => {
@@ -13307,10 +13270,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						})
 					}
 				},
-				hash_map::Entry::Vacant(_) => return Err(APIError::ChannelUnavailable {
-					err: format!("Channel with id {} not found for the passed counterparty node_id {}",
-						channel_id, counterparty_node_id),
-				}),
+				hash_map::Entry::Vacant(_) => {
+					return Err(APIError::no_such_channel_for_peer(
+						channel_id,
+						counterparty_node_id,
+					))
+				},
 			}
 		};
 		self.check_free_holding_cells();
@@ -20340,13 +20305,13 @@ mod tests {
 
 	#[rustfmt::skip]
 	fn check_unkown_peer_error<T>(res_err: Result<T, APIError>, expected_public_key: PublicKey) {
-		let expected_message = format!("Can't find a peer matching the passed counterparty node_id {}", expected_public_key);
+		let expected_message = format!("No such peer for the passed counterparty_node_id {}", expected_public_key);
 		check_api_error_message(expected_message, res_err)
 	}
 
 	#[rustfmt::skip]
 	fn check_channel_unavailable_error<T>(res_err: Result<T, APIError>, expected_channel_id: ChannelId, peer_node_id: PublicKey) {
-		let expected_message = format!("Channel with id {} not found for the passed counterparty node_id {}", expected_channel_id, peer_node_id);
+		let expected_message = format!("No such channel_id {} for the passed counterparty_node_id {}", expected_channel_id, peer_node_id);
 		check_api_error_message(expected_message, res_err)
 	}
 
