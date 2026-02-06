@@ -1270,6 +1270,13 @@ pub fn check_added_monitors<CM: AChannelManager, H: NodeHolder<CM = CM>>(node: &
 	}
 }
 
+pub fn get_latest_mon_update_id<'a, 'b, 'c>(
+	node: &Node<'a, 'b, 'c>, channel_id: ChannelId,
+) -> (u64, u64) {
+	let monitor_id_state = node.chain_monitor.latest_monitor_update_id.lock().unwrap();
+	monitor_id_state.get(&channel_id).unwrap().clone()
+}
+
 fn claimed_htlc_matches_path<'a, 'b, 'c>(
 	origin_node: &Node<'a, 'b, 'c>, path: &[&Node<'a, 'b, 'c>], htlc: &ClaimedHTLC,
 ) -> bool {
@@ -1355,8 +1362,10 @@ pub fn _reload_node<'a, 'b, 'c>(
 }
 
 #[macro_export]
-macro_rules! reload_node {
-	($node: expr, $new_config: expr, $chanman_encoded: expr, $monitors_encoded: expr, $persister: ident, $new_chain_monitor: ident, $new_channelmanager: ident) => {
+macro_rules! _reload_node_inner {
+	($node: expr, $new_config: expr, $chanman_encoded: expr, $monitors_encoded: expr, $persister:
+	 ident, $new_chain_monitor: ident, $new_channelmanager: ident
+	) => {
 		let chanman_encoded = $chanman_encoded;
 
 		$persister = $crate::util::test_utils::TestPersister::new();
@@ -1370,17 +1379,38 @@ macro_rules! reload_node {
 		);
 		$node.chain_monitor = &$new_chain_monitor;
 
-		$new_channelmanager =
-			_reload_node(&$node, $new_config, &chanman_encoded, $monitors_encoded);
+		$new_channelmanager = $crate::ln::functional_test_utils::_reload_node(
+			&$node,
+			$new_config,
+			&chanman_encoded,
+			$monitors_encoded,
+		);
 		$node.node = &$new_channelmanager;
 		$node.onion_messenger.set_offers_handler(&$new_channelmanager);
 		$node.onion_messenger.set_async_payments_handler(&$new_channelmanager);
 	};
+}
+
+#[macro_export]
+macro_rules! reload_node {
+	// Reload the node using the node's current config
 	($node: expr, $chanman_encoded: expr, $monitors_encoded: expr, $persister: ident, $new_chain_monitor: ident, $new_channelmanager: ident) => {
 		let config = $node.node.get_current_config();
-		reload_node!(
+		$crate::_reload_node_inner!(
 			$node,
 			config,
+			$chanman_encoded,
+			$monitors_encoded,
+			$persister,
+			$new_chain_monitor,
+			$new_channelmanager
+		);
+	};
+	// Reload the node with the new provided config
+	($node: expr, $new_config: expr, $chanman_encoded: expr, $monitors_encoded: expr, $persister: ident, $new_chain_monitor: ident, $new_channelmanager: ident) => {
+		$crate::_reload_node_inner!(
+			$node,
+			$new_config,
 			$chanman_encoded,
 			$monitors_encoded,
 			$persister,
@@ -2914,7 +2944,7 @@ pub fn check_payment_claimable(
 #[cfg(any(test, ldk_bench, feature = "_test_utils"))]
 macro_rules! expect_payment_claimable {
 	($node: expr, $expected_payment_hash: expr, $expected_payment_secret: expr, $expected_recv_value: expr) => {
-		expect_payment_claimable!(
+		$crate::expect_payment_claimable!(
 			$node,
 			$expected_payment_hash,
 			$expected_payment_secret,
@@ -5172,6 +5202,9 @@ pub struct ReconnectArgs<'a, 'b, 'c, 'd> {
 	pub pending_cell_htlc_claims: (usize, usize),
 	pub pending_cell_htlc_fails: (usize, usize),
 	pub pending_raa: (bool, bool),
+	/// If true, don't assert that pending messages are empty after the commitment dance completes.
+	/// Useful when holding cell HTLCs will be released and need to be handled by the caller.
+	pub allow_post_commitment_dance_msgs: (bool, bool),
 }
 
 impl<'a, 'b, 'c, 'd> ReconnectArgs<'a, 'b, 'c, 'd> {
@@ -5194,6 +5227,7 @@ impl<'a, 'b, 'c, 'd> ReconnectArgs<'a, 'b, 'c, 'd> {
 			pending_cell_htlc_claims: (0, 0),
 			pending_cell_htlc_fails: (0, 0),
 			pending_raa: (false, false),
+			allow_post_commitment_dance_msgs: (false, false),
 		}
 	}
 }
@@ -5219,6 +5253,7 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 		pending_raa,
 		pending_responding_commitment_signed,
 		pending_responding_commitment_signed_dup_monitor,
+		allow_post_commitment_dance_msgs,
 	} = args;
 	connect_nodes(node_a, node_b);
 	let reestablish_1 = get_chan_reestablish_msgs!(node_a, node_b);
@@ -5402,11 +5437,13 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 					get_event_msg!(node_a, MessageSendEvent::SendRevokeAndACK, node_b_id);
 				// No commitment_signed so get_event_msg's assert(len == 1) passes
 				node_b.node.handle_revoke_and_ack(node_a_id, &as_revoke_and_ack);
-				assert!(node_b.node.get_and_clear_pending_msg_events().is_empty());
 				check_added_monitors(
 					&node_b,
 					if pending_responding_commitment_signed_dup_monitor.0 { 0 } else { 1 },
 				);
+				if !allow_post_commitment_dance_msgs.0 {
+					assert!(node_b.node.get_and_clear_pending_msg_events().is_empty());
+				}
 			}
 		} else {
 			assert!(chan_msgs.2.is_none());
@@ -5516,11 +5553,13 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 					get_event_msg!(node_b, MessageSendEvent::SendRevokeAndACK, node_a_id);
 				// No commitment_signed so get_event_msg's assert(len == 1) passes
 				node_a.node.handle_revoke_and_ack(node_b_id, &bs_revoke_and_ack);
-				assert!(node_a.node.get_and_clear_pending_msg_events().is_empty());
 				check_added_monitors(
 					&node_a,
 					if pending_responding_commitment_signed_dup_monitor.1 { 0 } else { 1 },
 				);
+				if !allow_post_commitment_dance_msgs.1 {
+					assert!(node_a.node.get_and_clear_pending_msg_events().is_empty());
+				}
 			}
 		} else {
 			assert!(chan_msgs.2.is_none());

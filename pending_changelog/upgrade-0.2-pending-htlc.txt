@@ -1,0 +1,9 @@
+Backwards Compatibility
+=======================
+
+ * Upgrading directly from 0.2 to 0.5 with pending HTLC forwards is not supported.
+   If you have pending HTLC forwards when upgrading from 0.2, you must first upgrade
+   to 0.3, forward the HTLCs (completing at least the outbound commitment), then
+   upgrade to 0.5. Attempting to upgrade directly from 0.2 to 0.5 with pending HTLC
+   forwards will result in a `DecodeError::InvalidValue` when reading the
+   `ChannelManager`.
