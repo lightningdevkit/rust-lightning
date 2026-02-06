@@ -78,10 +78,10 @@ use bitcoin::hashes::{Hash, HashEngine};
 ///
 /// [BOLT 1] specifies a custom message type range for use with experimental or application-specific
 /// messages. `CustomMessageHandler` allows for user-defined handling of such types. See the
-/// [`lightning_custom_message`] crate for tools useful in composing more than one custom handler.
+/// [`util::custom_message`] module for tools useful in composing more than one custom handler.
 ///
 /// [BOLT 1]: https://github.com/lightning/bolts/blob/master/01-messaging.md
-/// [`lightning_custom_message`]: https://docs.rs/lightning_custom_message/latest/lightning_custom_message
+/// [`util::custom_message`]: crate::util::custom_message
 pub trait CustomMessageHandler: wire::CustomMessageReader {
 	/// Handles the given message sent from `sender_node_id`, possibly producing messages for
 	/// [`CustomMessageHandler::get_and_clear_pending_msg`] to return and thus for [`PeerManager`]
