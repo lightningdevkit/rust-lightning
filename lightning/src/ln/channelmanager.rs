@@ -10227,7 +10227,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				},
 			}
 
-			// TODO(dual_funding): For async signing support we need to hold back `tx_signatures` until the `commitment_signed` is ready.
 			if let Some(msg) = tx_signatures {
 				pending_msg_events.push(MessageSendEvent::SendTxSignatures {
 					node_id: counterparty_node_id,
@@ -12925,6 +12924,24 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					if let Some(msg) = msgs.funding_signed {
 						pending_msg_events
 							.push(MessageSendEvent::SendFundingSigned { node_id, msg });
+					}
+					if let Some(msg) = msgs.funding_commit_sig {
+						pending_msg_events.push(MessageSendEvent::UpdateHTLCs {
+							node_id,
+							channel_id,
+							updates: CommitmentUpdate {
+								update_add_htlcs: vec![],
+								update_fulfill_htlcs: vec![],
+								update_fail_htlcs: vec![],
+								update_fail_malformed_htlcs: vec![],
+								update_fee: None,
+								commitment_signed: vec![msg],
+							},
+						});
+					}
+					if let Some(msg) = msgs.tx_signatures {
+						pending_msg_events
+							.push(MessageSendEvent::SendTxSignatures { node_id, msg });
 					}
 					if let Some(msg) = msgs.closing_signed {
 						pending_msg_events
