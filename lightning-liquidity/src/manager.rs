@@ -48,6 +48,7 @@ use lightning::ln::channelmanager::{AChannelManager, ChainParameters};
 use lightning::ln::msgs::{ErrorAction, LightningError};
 use lightning::ln::peer_handler::CustomMessageHandler;
 use lightning::ln::wire::CustomMessageReader;
+use lightning::onion_message::messenger::OnionMessageInterceptor;
 use lightning::sign::{EntropySource, NodeSigner};
 use lightning::util::logger::Level;
 use lightning::util::persist::{KVStore, KVStoreSync, KVStoreSyncWrapper};
@@ -330,6 +331,7 @@ where
 		chain_params: Option<ChainParameters>, kv_store: K, transaction_broadcaster: T,
 		service_config: Option<LiquidityServiceConfig>,
 		client_config: Option<LiquidityClientConfig>,
+		onion_message_interceptor: Option<Arc<dyn OnionMessageInterceptor + Send + Sync>>,
 	) -> Result<Self, lightning::io::Error> {
 		Self::new_with_custom_time_provider(
 			entropy_source,
@@ -342,6 +344,7 @@ where
 			service_config,
 			client_config,
 			DefaultTimeProvider,
+			onion_message_interceptor,
 		)
 		.await
 	}
@@ -373,6 +376,7 @@ where
 		chain_source: Option<C>, chain_params: Option<ChainParameters>, kv_store: K,
 		service_config: Option<LiquidityServiceConfig>,
 		client_config: Option<LiquidityClientConfig>, time_provider: TP,
+		onion_message_interceptor: Option<Arc<dyn OnionMessageInterceptor + Send + Sync>>,
 	) -> Result<Self, lightning::io::Error> {
 		let pending_msgs_or_needs_persist_notifier = Arc::new(Notifier::new());
 		let pending_messages =
@@ -415,6 +419,7 @@ where
 					kv_store.clone(),
 					transaction_broadcaster.clone(),
 					lsps2_service_config.clone(),
+					onion_message_interceptor.clone(),
 				)?)
 			} else {
 				None
@@ -1044,6 +1049,7 @@ where
 		chain_params: Option<ChainParameters>, kv_store_sync: KS, transaction_broadcaster: T,
 		service_config: Option<LiquidityServiceConfig>,
 		client_config: Option<LiquidityClientConfig>,
+		onion_message_interceptor: Option<Arc<dyn OnionMessageInterceptor + Send + Sync>>,
 	) -> Result<Self, lightning::io::Error> {
 		let kv_store = KVStoreSyncWrapper(kv_store_sync);
 
@@ -1057,6 +1063,7 @@ where
 			transaction_broadcaster,
 			service_config,
 			client_config,
+			onion_message_interceptor,
 		));
 
 		let mut waker = dummy_waker();
@@ -1094,6 +1101,7 @@ where
 		chain_params: Option<ChainParameters>, kv_store_sync: KS, transaction_broadcaster: T,
 		service_config: Option<LiquidityServiceConfig>,
 		client_config: Option<LiquidityClientConfig>, time_provider: TP,
+		onion_message_interceptor: Option<Arc<dyn OnionMessageInterceptor + Send + Sync>>,
 	) -> Result<Self, lightning::io::Error> {
 		let kv_store = KVStoreSyncWrapper(kv_store_sync);
 		let mut fut = pin!(LiquidityManager::new_with_custom_time_provider(
@@ -1107,6 +1115,7 @@ where
 			service_config,
 			client_config,
 			time_provider,
+			onion_message_interceptor,
 		));
 
 		let mut waker = dummy_waker();

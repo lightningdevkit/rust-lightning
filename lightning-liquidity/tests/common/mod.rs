@@ -47,6 +47,7 @@ fn build_service_and_client_nodes<'a, 'b, 'c>(
 		Some(service_config),
 		None,
 		Arc::clone(&time_provider),
+		None,
 	)
 	.unwrap();
 
@@ -61,6 +62,7 @@ fn build_service_and_client_nodes<'a, 'b, 'c>(
 		None,
 		Some(client_config),
 		time_provider,
+		None,
 	)
 	.unwrap();
 

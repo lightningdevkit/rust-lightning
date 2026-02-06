@@ -45,6 +45,7 @@ use lightning::events::HTLCHandlingFailureType;
 use lightning::ln::channelmanager::{AChannelManager, FailureCode, InterceptId};
 use lightning::ln::msgs::{ErrorAction, LightningError};
 use lightning::ln::types::ChannelId;
+use lightning::onion_message::messenger::OnionMessageInterceptor;
 use lightning::util::errors::APIError;
 use lightning::util::logger::Level;
 use lightning::util::ser::Writeable;
@@ -717,6 +718,7 @@ where
 	total_pending_requests: AtomicUsize,
 	config: LSPS2ServiceConfig,
 	persistence_in_flight: AtomicUsize,
+	onion_message_interceptor: Option<Arc<dyn OnionMessageInterceptor + Send + Sync>>,
 }
 
 impl<CM: Deref, K: KVStore + Clone, T: BroadcasterInterface + Clone> LSPS2ServiceHandler<CM, K, T>
@@ -728,6 +730,7 @@ where
 		per_peer_state: HashMap<PublicKey, Mutex<PeerState>>, pending_messages: Arc<MessageQueue>,
 		pending_events: Arc<EventQueue<K>>, channel_manager: CM, kv_store: K, tx_broadcaster: T,
 		config: LSPS2ServiceConfig,
+		onion_message_interceptor: Option<Arc<dyn OnionMessageInterceptor + Send + Sync>>,
 	) -> Result<Self, lightning::io::Error> {
 		let mut peer_by_intercept_scid = new_hash_map();
 		let mut peer_by_channel_id = new_hash_map();
@@ -756,6 +759,14 @@ where
 			}
 		}
 
+		// Register all peers with active intercept SCIDs for onion message interception,
+		// so that messages for offline peers are held rather than dropped.
+		if let Some(ref interceptor) = onion_message_interceptor {
+			for node_id in peer_by_intercept_scid.values() {
+				interceptor.register_peer_for_interception(*node_id);
+			}
+		}
+
 		Ok(Self {
 			pending_messages,
 			pending_events,
@@ -768,6 +779,7 @@ where
 			kv_store,
 			tx_broadcaster,
 			config,
+			onion_message_interceptor,
 		})
 	}
 
@@ -919,6 +931,10 @@ where
 							let mut peer_by_intercept_scid =
 								self.peer_by_intercept_scid.write().unwrap();
 							peer_by_intercept_scid.insert(intercept_scid, *counterparty_node_id);
+						}
+
+						if let Some(ref interceptor) = self.onion_message_interceptor {
+							interceptor.register_peer_for_interception(*counterparty_node_id);
 						}
 
 						let outbound_jit_channel = OutboundJITChannel::new(
