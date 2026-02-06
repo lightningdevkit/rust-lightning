@@ -14204,6 +14204,7 @@ impl<
 	pub fn push_pending_event(&self, event: events::Event) {
 		let mut events = self.pending_events.lock().unwrap();
 		events.push_back((event, None));
+		self.event_persist_notifier.notify();
 	}
 
 	#[cfg(test)]
