@@ -286,6 +286,39 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 		self.create_blinded_paths(peers, context)
 	}
 
+	fn blinded_paths_for_phantom_offer(
+		&self, per_node_peers: Vec<(PublicKey, Vec<MessageForwardNode>)>, path_count_limit: usize,
+		context: MessageContext,
+	) -> Result<Vec<BlindedMessagePath>, ()> {
+		let receive_key = ReceiveAuthKey(self.inbound_payment_key.phantom_node_blinded_path_key);
+		let secp_ctx = &self.secp_ctx;
+
+		let mut per_node_paths: Vec<_> = per_node_peers
+			.into_iter()
+			.filter_map(|(recipient, peers)| {
+				self.message_router
+					.create_blinded_paths(recipient, receive_key, context.clone(), peers, secp_ctx)
+					.ok()
+			})
+			.collect();
+
+		let mut res = Vec::new();
+		while res.len() < path_count_limit && !per_node_paths.is_empty() {
+			for node_paths in per_node_paths.iter_mut() {
+				if let Some(path) = node_paths.pop() {
+					res.push(path);
+				}
+			}
+			per_node_paths.retain(|node_paths| !node_paths.is_empty());
+		}
+
+		if res.is_empty() {
+			Err(())
+		} else {
+			Ok(res)
+		}
+	}
+
 	/// Creates a collection of blinded paths by delegating to
 	/// [`MessageRouter::create_blinded_paths`].
 	///
@@ -559,8 +592,7 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 
 	/// Creates an [`OfferBuilder`] such that the [`Offer`] it builds is recognized by the
 	/// [`OffersMessageFlow`], and any corresponding [`InvoiceRequest`] can be verified using
-	/// [`Self::verify_invoice_request`]. The offer will expire at `absolute_expiry` if `Some`,
-	/// or will not expire if `None`.
+	/// [`Self::verify_invoice_request`].
 	///
 	/// # Privacy
 	///
@@ -632,6 +664,25 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 		self.create_offer_builder_intern(&entropy_source, |_, _, _| {
 			Ok(message_paths_to_always_online_node)
 		})
+	}
+
+	/// Creates an [`OfferBuilder`] such that the [`Offer`] it builds is recognized by any
+	/// [`OffersMessageFlow`] using the same [`ExpandedKey`] (provided in the constructor as
+	/// `inbound_payment_key`), and any corresponding [`InvoiceRequest`] can be verified using
+	/// [`Self::verify_invoice_request`].
+	///
+	/// See [`Self::create_offer_builder`] for more details on privacy and limitations.
+	///
+	/// [`ExpandedKey`]: inbound_payment::ExpandedKey
+	pub fn create_phantom_offer_builder<ES: EntropySource>(
+		&self, entropy_source: ES, per_node_peers: Vec<(PublicKey, Vec<MessageForwardNode>)>,
+		path_count_limit: usize,
+	) -> Result<OfferBuilder<'_, DerivedMetadata, secp256k1::All>, Bolt12SemanticError> {
+		self.create_offer_builder_intern(entropy_source, |_, context, _| {
+			self.blinded_paths_for_phantom_offer(per_node_peers, path_count_limit, context)
+				.map_err(|_| Bolt12SemanticError::MissingPaths)
+		})
+		.map(|(builder, _)| builder)
 	}
 
 	fn create_refund_builder_intern<ES: EntropySource, PF, I>(

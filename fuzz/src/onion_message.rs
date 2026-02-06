@@ -260,7 +260,7 @@ impl NodeSigner for KeyProvider {
 	}
 
 	fn get_expanded_key(&self) -> ExpandedKey {
-		unreachable!()
+		ExpandedKey::new([42; 32])
 	}
 
 	fn sign_invoice(
