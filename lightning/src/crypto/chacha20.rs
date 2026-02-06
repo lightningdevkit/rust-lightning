@@ -321,6 +321,7 @@ mod fuzzy_chacha {
 		) {
 			debug_assert_eq!(dest.len(), src.len());
 			debug_assert!(dest.len() <= 32);
+			dest.copy_from_slice(src);
 		}
 
 		pub fn encrypt_single_block_in_place(
