@@ -273,6 +273,7 @@ pub struct OnionMessenger<
 	dns_resolver_handler: DRH,
 	custom_handler: CMH,
 	intercept_messages_for_offline_peers: bool,
+	peers_registered_for_interception: Mutex<HashSet<PublicKey>>,
 	pending_intercepted_msgs_events: Mutex<Vec<Event>>,
 	pending_peer_connected_events: Mutex<Vec<Event>>,
 	pending_events_processor: AtomicBool,
@@ -1449,6 +1450,7 @@ impl<
 			dns_resolver_handler: dns_resolver,
 			custom_handler,
 			intercept_messages_for_offline_peers,
+			peers_registered_for_interception: Mutex::new(new_hash_set()),
 			pending_intercepted_msgs_events: Mutex::new(Vec::new()),
 			pending_peer_connected_events: Mutex::new(Vec::new()),
 			pending_events_processor: AtomicBool::new(false),
@@ -1464,6 +1466,37 @@ impl<
 	#[cfg(any(test, feature = "_test_utils"))]
 	pub fn set_async_payments_handler(&mut self, async_payments_handler: APH) {
 		self.async_payments_handler = async_payments_handler;
+	}
+
+	/// Registers a peer for onion message interception.
+	///
+	/// When an onion message needs to be forwarded to a registered peer that is currently offline,
+	/// an [`Event::OnionMessageIntercepted`] will be generated, allowing the message to be stored
+	/// and forwarded later when the peer reconnects.
+	///
+	/// Similarly, when a registered peer connects, an [`Event::OnionMessagePeerConnected`] will
+	/// be generated.
+	///
+	/// This is useful for services like LSPS2 that need to intercept onion messages for specific
+	/// peers (e.g., those with active JIT channel sessions) without enabling blanket interception
+	/// for all offline peers via [`Self::new_with_offline_peer_interception`].
+	///
+	/// Use [`Self::deregister_peer_for_interception`] to stop intercepting messages for this peer.
+	///
+	/// [`Event::OnionMessageIntercepted`]: crate::events::Event::OnionMessageIntercepted
+	/// [`Event::OnionMessagePeerConnected`]: crate::events::Event::OnionMessagePeerConnected
+	pub fn register_peer_for_interception(&self, peer_node_id: PublicKey) {
+		self.peers_registered_for_interception.lock().unwrap().insert(peer_node_id);
+	}
+
+	/// Deregisters a peer from onion message interception.
+	///
+	/// After this call, onion messages for this peer will no longer be intercepted (unless
+	/// blanket interception is enabled via [`Self::new_with_offline_peer_interception`]).
+	///
+	/// Returns whether the peer was previously registered.
+	pub fn deregister_peer_for_interception(&self, peer_node_id: &PublicKey) -> bool {
+		self.peers_registered_for_interception.lock().unwrap().remove(peer_node_id)
 	}
 
 	/// Sends an [`OnionMessage`] based on its [`MessageSendInstructions`].
@@ -1682,6 +1715,9 @@ impl<
 			.entry(next_node_id)
 			.or_insert_with(|| OnionMessageRecipient::ConnectedPeer(VecDeque::new()));
 
+		let should_intercept = self.intercept_messages_for_offline_peers
+			|| self.peers_registered_for_interception.lock().unwrap().contains(&next_node_id);
+
 		match message_recipients.entry(next_node_id) {
 			hash_map::Entry::Occupied(mut e)
 				if matches!(e.get(), OnionMessageRecipient::ConnectedPeer(..)) =>
@@ -1695,7 +1731,7 @@ impl<
 				);
 				Ok(())
 			},
-			_ if self.intercept_messages_for_offline_peers => {
+			_ if should_intercept => {
 				log_trace!(
 					self.logger,
 					"Generating OnionMessageIntercepted event for peer {} {}",
@@ -2138,7 +2174,9 @@ impl<
 					.or_insert_with(|| OnionMessageRecipient::ConnectedPeer(VecDeque::new()))
 					.mark_connected();
 			}
-			if self.intercept_messages_for_offline_peers {
+			let is_registered =
+				self.peers_registered_for_interception.lock().unwrap().contains(&their_node_id);
+			if self.intercept_messages_for_offline_peers || is_registered {
 				let mut pending_peer_connected_events =
 					self.pending_peer_connected_events.lock().unwrap();
 				pending_peer_connected_events
