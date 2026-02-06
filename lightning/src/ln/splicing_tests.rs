@@ -548,7 +548,8 @@ fn do_test_splice_state_reset_on_disconnect(reload: bool) {
 		value: Amount::from_sat(1_000),
 		script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
 	}];
-	let _ = initiate_splice_out(&nodes[0], &nodes[1], channel_id, outputs.clone());
+	let funding_contribution =
+		initiate_splice_out(&nodes[0], &nodes[1], channel_id, outputs.clone());
 
 	// Attempt a splice negotiation that only goes up to receiving `splice_init`. Reconnecting
 	// should implicitly abort the negotiation and reset the splice state such that we're able to
@@ -586,14 +587,15 @@ fn do_test_splice_state_reset_on_disconnect(reload: bool) {
 		nodes[1].node.peer_disconnected(node_id_0);
 	}
 
-	let _event = get_event!(nodes[0], Event::SpliceFailed);
+	expect_splice_failed_events(&nodes[0], &channel_id, funding_contribution);
 
 	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
 	reconnect_args.send_channel_ready = (true, true);
 	reconnect_args.send_announcement_sigs = (true, true);
 	reconnect_nodes(reconnect_args);
 
-	let _ = initiate_splice_out(&nodes[0], &nodes[1], channel_id, outputs.clone());
+	let funding_contribution =
+		initiate_splice_out(&nodes[0], &nodes[1], channel_id, outputs.clone());
 
 	// Attempt a splice negotiation that ends mid-construction of the funding transaction.
 	// Reconnecting should implicitly abort the negotiation and reset the splice state such that
@@ -636,14 +638,15 @@ fn do_test_splice_state_reset_on_disconnect(reload: bool) {
 		nodes[1].node.peer_disconnected(node_id_0);
 	}
 
-	let _event = get_event!(nodes[0], Event::SpliceFailed);
+	expect_splice_failed_events(&nodes[0], &channel_id, funding_contribution);
 
 	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
 	reconnect_args.send_channel_ready = (true, true);
 	reconnect_args.send_announcement_sigs = (true, true);
 	reconnect_nodes(reconnect_args);
 
-	let _ = initiate_splice_out(&nodes[0], &nodes[1], channel_id, outputs.clone());
+	let funding_contribution =
+		initiate_splice_out(&nodes[0], &nodes[1], channel_id, outputs.clone());
 
 	// Attempt a splice negotiation that ends before the initial `commitment_signed` messages are
 	// exchanged. The node missing the other's `commitment_signed` upon reconnecting should
@@ -717,7 +720,7 @@ fn do_test_splice_state_reset_on_disconnect(reload: bool) {
 
 	let tx_abort = get_event_msg!(nodes[0], MessageSendEvent::SendTxAbort, node_id_1);
 	nodes[1].node.handle_tx_abort(node_id_0, &tx_abort);
-	let _event = get_event!(nodes[0], Event::SpliceFailed);
+	expect_splice_failed_events(&nodes[0], &channel_id, funding_contribution);
 
 	// Attempt a splice negotiation that completes, (i.e. `tx_signatures` are exchanged). Reconnecting
 	// should not abort the negotiation or reset the splice state.
@@ -778,7 +781,8 @@ fn test_config_reject_inbound_splices() {
 		value: Amount::from_sat(1_000),
 		script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
 	}];
-	let _ = initiate_splice_out(&nodes[0], &nodes[1], channel_id, outputs.clone());
+	let funding_contribution =
+		initiate_splice_out(&nodes[0], &nodes[1], channel_id, outputs.clone());
 
 	let stfu = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
 	nodes[1].node.handle_stfu(node_id_0, &stfu);
@@ -799,7 +803,7 @@ fn test_config_reject_inbound_splices() {
 	nodes[0].node.peer_disconnected(node_id_1);
 	nodes[1].node.peer_disconnected(node_id_0);
 
-	let _event = get_event!(nodes[0], Event::SpliceFailed);
+	expect_splice_failed_events(&nodes[0], &channel_id, funding_contribution);
 
 	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
 	reconnect_args.send_channel_ready = (true, true);
@@ -2035,14 +2039,7 @@ fn fail_splice_on_interactive_tx_error() {
 		get_event_msg!(acceptor, MessageSendEvent::SendTxComplete, node_id_initiator);
 	initiator.node.handle_tx_add_input(node_id_acceptor, &tx_add_input);
 
-	let event = get_event!(initiator, Event::SpliceFailed);
-	match event {
-		Event::SpliceFailed { contributed_inputs, .. } => {
-			assert_eq!(contributed_inputs.len(), 1);
-			assert_eq!(contributed_inputs[0], funding_contribution.into_tx_parts().0[0].outpoint());
-		},
-		_ => panic!("Expected Event::SpliceFailed"),
-	}
+	expect_splice_failed_events(initiator, &channel_id, funding_contribution);
 
 	// We exit quiescence upon sending `tx_abort`, so we should see the holding cell be immediately
 	// freed.
@@ -2113,14 +2110,7 @@ fn fail_splice_on_tx_abort() {
 	let tx_abort = get_event_msg!(acceptor, MessageSendEvent::SendTxAbort, node_id_initiator);
 	initiator.node.handle_tx_abort(node_id_acceptor, &tx_abort);
 
-	let event = get_event!(initiator, Event::SpliceFailed);
-	match event {
-		Event::SpliceFailed { contributed_inputs, .. } => {
-			assert_eq!(contributed_inputs.len(), 1);
-			assert_eq!(contributed_inputs[0], funding_contribution.into_tx_parts().0[0].outpoint());
-		},
-		_ => panic!("Expected Event::SpliceFailed"),
-	}
+	expect_splice_failed_events(initiator, &channel_id, funding_contribution);
 
 	// We exit quiescence upon receiving `tx_abort`, so we should see our `tx_abort` echo and the
 	// holding cell be immediately freed.
