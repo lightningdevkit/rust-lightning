@@ -539,7 +539,7 @@ where
 		// Sweep the outputs.
 		let spending_tx_and_chan_id = self
 			.update_state(
-				|sweeper_state| -> Result<(Option<(Transaction, Vec<ChannelId>)>, bool), ()> {
+				|sweeper_state| -> Result<(Option<(Transaction, Vec<(PublicKey, ChannelId)>)>, bool), ()> {
 					let cur_height = sweeper_state.best_block.height;
 					let cur_hash = sweeper_state.best_block.block_hash;
 
@@ -581,16 +581,20 @@ where
 							.outputs
 							.iter_mut()
 							.filter(|o| filter_fn(&**o, cur_height));
-						let mut channel_ids = Vec::new();
+						let mut channels = Vec::new();
 						for output_info in respend_outputs {
 							if let Some(filter) = self.chain_data_source.as_ref() {
 								let watched_output = output_info.to_watched_output(cur_hash);
 								filter.register_output(watched_output);
 							}
 
-							if let Some(channel_id) = output_info.channel_id {
-								if !channel_ids.contains(&channel_id) {
-									channel_ids.push(channel_id);
+							if let (Some(counterparty_node_id), Some(channel_id)) =
+								(output_info.counterparty_node_id, output_info.channel_id)
+							{
+								if !channels.iter().any(|(cp, ch)| {
+									*cp == counterparty_node_id && *ch == channel_id
+								}) {
+									channels.push((counterparty_node_id, channel_id));
 								}
 							}
 
@@ -598,7 +602,7 @@ where
 							sweeper_state.dirty = true;
 						}
 
-						Ok((Some((spending_tx, channel_ids)), false))
+						Ok((Some((spending_tx, channels)), false))
 					} else {
 						Ok((None, false))
 					}
@@ -607,9 +611,9 @@ where
 			.await?;
 
 		// Persistence completely successfully. If we have a spending transaction, we broadcast it.
-		if let Some((spending_tx, channel_ids)) = spending_tx_and_chan_id {
+		if let Some((spending_tx, channels)) = spending_tx_and_chan_id {
 			self.broadcaster
-				.broadcast_transactions(&[(&spending_tx, TransactionType::Sweep { channel_ids })]);
+				.broadcast_transactions(&[(&spending_tx, TransactionType::Sweep { channels })]);
 		}
 
 		Ok(())

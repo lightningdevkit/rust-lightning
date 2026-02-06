@@ -18,6 +18,7 @@ use core::{cmp, ops::Deref};
 use crate::ln::types::ChannelId;
 use crate::prelude::*;
 
+use bitcoin::secp256k1::PublicKey;
 use bitcoin::transaction::Transaction;
 
 /// Represents the class of transaction being broadcast.
@@ -33,10 +34,10 @@ pub enum TransactionType {
 	///
 	/// [`ChannelManager::funding_transaction_generated`]: crate::ln::channelmanager::ChannelManager::funding_transaction_generated
 	Funding {
-		/// The IDs of the channels being funded.
+		/// The counterparty node IDs and channel IDs of the channels being funded.
 		///
 		/// A single funding transaction may establish multiple channels when using batch funding.
-		channel_ids: Vec<ChannelId>,
+		channels: Vec<(PublicKey, ChannelId)>,
 	},
 	/// A transaction cooperatively closing a channel.
 	///
@@ -45,6 +46,8 @@ pub enum TransactionType {
 	///
 	/// [`ChannelManager::close_channel`]: crate::ln::channelmanager::ChannelManager::close_channel
 	CooperativeClose {
+		/// The `node_id` of the channel counterparty.
+		counterparty_node_id: PublicKey,
 		/// The ID of the channel being closed.
 		channel_id: ChannelId,
 	},
@@ -56,6 +59,8 @@ pub enum TransactionType {
 	///
 	/// [`ChannelManager::force_close_broadcasting_latest_txn`]: crate::ln::channelmanager::ChannelManager::force_close_broadcasting_latest_txn
 	UnilateralClose {
+		/// The `node_id` of the channel counterparty.
+		counterparty_node_id: PublicKey,
 		/// The ID of the channel being force-closed.
 		channel_id: ChannelId,
 	},
@@ -66,6 +71,8 @@ pub enum TransactionType {
 	///
 	/// [`BumpTransactionEvent`]: crate::events::bump_transaction::BumpTransactionEvent
 	AnchorBump {
+		/// The `node_id` of the channel counterparty.
+		counterparty_node_id: PublicKey,
 		/// The ID of the channel whose closing transaction is being fee-bumped.
 		channel_id: ChannelId,
 	},
@@ -81,6 +88,8 @@ pub enum TransactionType {
 	/// [`ChannelMonitor`]: crate::chain::ChannelMonitor
 	/// [`Event::SpendableOutputs`]: crate::events::Event::SpendableOutputs
 	Claim {
+		/// The `node_id` of the channel counterparty.
+		counterparty_node_id: PublicKey,
 		/// The ID of the channel from which outputs are being claimed.
 		channel_id: ChannelId,
 	},
@@ -90,10 +99,10 @@ pub enum TransactionType {
 	/// [`OutputSweeper`]: crate::util::sweep::OutputSweeper
 	/// [`SpendableOutputDescriptor`]: crate::sign::SpendableOutputDescriptor
 	Sweep {
-		/// The IDs of the channels from which outputs are being swept, if known.
+		/// The counterparty node IDs and channel IDs from which outputs are being swept, if known.
 		///
 		/// A single sweep transaction may aggregate outputs from multiple channels.
-		channel_ids: Vec<ChannelId>,
+		channels: Vec<(PublicKey, ChannelId)>,
 	},
 	/// A splice transaction modifying an existing channel's funding.
 	///
@@ -101,6 +110,8 @@ pub enum TransactionType {
 	///
 	/// [`ChannelManager::splice_channel`]: crate::ln::channelmanager::ChannelManager::splice_channel
 	Splice {
+		/// The `node_id` of the channel counterparty.
+		counterparty_node_id: PublicKey,
 		/// The ID of the channel being spliced.
 		channel_id: ChannelId,
 	},

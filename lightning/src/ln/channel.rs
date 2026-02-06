@@ -2110,6 +2110,7 @@ where
 		};
 
 		let channel_id = context.channel_id;
+		let counterparty_node_id = context.counterparty_node_id;
 
 		let signing_session = if let Some(signing_session) =
 			context.interactive_tx_signing_session.as_mut()
@@ -2223,9 +2224,9 @@ where
 
 		let funding_tx = funding_tx.map(|tx| {
 			let tx_type = if splice_negotiated.is_some() {
-				TransactionType::Splice { channel_id }
+				TransactionType::Splice { counterparty_node_id, channel_id }
 			} else {
-				TransactionType::Funding { channel_ids: vec![channel_id] }
+				TransactionType::Funding { channels: vec![(counterparty_node_id, channel_id)] }
 			};
 			(tx, tx_type)
 		});
@@ -9168,9 +9169,14 @@ where
 
 		let funding_tx = funding_tx.map(|tx| {
 			let tx_type = if splice_negotiated.is_some() {
-				TransactionType::Splice { channel_id: self.context.channel_id }
+				TransactionType::Splice {
+					counterparty_node_id: self.context.counterparty_node_id,
+					channel_id: self.context.channel_id,
+				}
 			} else {
-				TransactionType::Funding { channel_ids: vec![self.context.channel_id] }
+				TransactionType::Funding {
+					channels: vec![(self.context.counterparty_node_id, self.context.channel_id)],
+				}
 			};
 			(tx, tx_type)
 		});
