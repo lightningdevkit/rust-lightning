@@ -1,3 +1,20 @@
+# 0.2.2 - Feb 6, 2025 - "An Async Splicing Production"
+
+## API Updates
+ * The `SplicePrototype` feature flag has been updated to refer to feature bit
+   63 - the same as `SpliceProduction`. This resolves a compatibility issue with
+   eclair nodes due to the use of the same splicing feature flag (155) they were
+   using for a pre-standardization version of splicing (#4387).
+
+## Bug Fixes
+ * Async `ChannelMonitorUpdate` persistence operations which complete, but are
+   not marked as complete in a persisted `ChannelManager` prior to restart,
+   followed immediately by a block connection and then another restart could
+   result in some channel operations hanging leading for force-closures (#4377).
+ * A debug assertion failure reachable when receiving an invalid splicing
+   message from a peer was fixed (#4383).
+
+
 # 0.2.1 - Jan 29, 2025 - "Electrum Confirmations Logged"
 
 ## API Updates
