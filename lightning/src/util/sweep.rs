@@ -32,7 +32,7 @@ use crate::{log_debug, log_error};
 
 use bitcoin::block::Header;
 use bitcoin::locktime::absolute::LockTime;
-use bitcoin::secp256k1::Secp256k1;
+use bitcoin::secp256k1::{PublicKey, Secp256k1};
 use bitcoin::{BlockHash, ScriptBuf, Transaction, Txid};
 
 use core::future::Future;
@@ -55,6 +55,13 @@ pub struct TrackedSpendableOutput {
 	///
 	/// Will be `None` if no `channel_id` was given to [`OutputSweeper::track_spendable_outputs`]
 	pub channel_id: Option<ChannelId>,
+	/// The `node_id` of the channel counterparty.
+	///
+	/// Will be `None` if no `counterparty_node_id` was given to
+	/// [`OutputSweeper::track_spendable_outputs`].
+	///
+	/// This will be `None` for outputs tracked with LDK 0.2 and prior.
+	pub counterparty_node_id: Option<PublicKey>,
 	/// The current status of the output spend.
 	pub status: OutputSpendStatus,
 }
@@ -93,6 +100,7 @@ impl TrackedSpendableOutput {
 impl_writeable_tlv_based!(TrackedSpendableOutput, {
 	(0, descriptor, required),
 	(2, channel_id, option),
+	(3, counterparty_node_id, option),
 	(4, status, required),
 });
 
@@ -413,7 +421,8 @@ where
 	/// [`Event::SpendableOutputs`]: crate::events::Event::SpendableOutputs
 	pub async fn track_spendable_outputs(
 		&self, output_descriptors: Vec<SpendableOutputDescriptor>, channel_id: Option<ChannelId>,
-		exclude_static_outputs: bool, delay_until_height: Option<u32>,
+		counterparty_node_id: Option<PublicKey>, exclude_static_outputs: bool,
+		delay_until_height: Option<u32>,
 	) -> Result<(), ()> {
 		let mut relevant_descriptors = output_descriptors
 			.into_iter()
@@ -432,6 +441,7 @@ where
 				let output_info = TrackedSpendableOutput {
 					descriptor,
 					channel_id,
+					counterparty_node_id,
 					status: OutputSpendStatus::PendingInitialBroadcast {
 						delayed_until_height: delay_until_height,
 					},
@@ -1010,11 +1020,13 @@ where
 	/// [`Event::SpendableOutputs`]: crate::events::Event::SpendableOutputs
 	pub fn track_spendable_outputs(
 		&self, output_descriptors: Vec<SpendableOutputDescriptor>, channel_id: Option<ChannelId>,
-		exclude_static_outputs: bool, delay_until_height: Option<u32>,
+		counterparty_node_id: Option<PublicKey>, exclude_static_outputs: bool,
+		delay_until_height: Option<u32>,
 	) -> Result<(), ()> {
 		let mut fut = pin!(self.sweeper.track_spendable_outputs(
 			output_descriptors,
 			channel_id,
+			counterparty_node_id,
 			exclude_static_outputs,
 			delay_until_height,
 		));
