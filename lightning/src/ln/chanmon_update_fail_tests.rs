@@ -45,8 +45,8 @@ use crate::ln::functional_test_utils::*;
 
 use crate::util::test_utils;
 
-use crate::prelude::*;
 use crate::sync::{Arc, Mutex};
+use crate::{prelude::*, test_scope};
 use bitcoin::hashes::Hash;
 
 fn get_latest_mon_update_id<'a, 'b, 'c>(
@@ -3768,6 +3768,8 @@ fn test_inverted_mon_completion_order() {
 fn do_test_durable_preimages_on_closed_channel(
 	close_chans_before_reload: bool, close_only_a: bool, hold_post_reload_mon_update: bool,
 ) {
+	test_scope!("Setup");
+
 	// Test that we can apply a `ChannelMonitorUpdate` with a payment preimage even if the channel
 	// is force-closed between when we generate the update on reload and when we go to handle the
 	// update or prior to generating the update at all.
@@ -3794,6 +3796,8 @@ fn do_test_durable_preimages_on_closed_channel(
 	let chan_id_ab = create_announced_chan_between_nodes(&nodes, 0, 1).2;
 	let chan_id_bc = create_announced_chan_between_nodes(&nodes, 1, 2).2;
 
+	test_scope!("Route payment");
+
 	// Route a payment from A, through B, to C, then claim it on C. Once we pass B the
 	// `update_fulfill_htlc` we have a monitor update for both of B's channels. We complete the one
 	// on the B<->C channel but leave the A<->B monitor update pending, then reload B.
@@ -3805,6 +3809,8 @@ fn do_test_durable_preimages_on_closed_channel(
 	nodes[2].node.claim_funds(payment_preimage);
 	check_added_monitors(&nodes[2], 1);
 	expect_payment_claimed!(nodes[2], payment_hash, 1_000_000);
+
+	test_scope!("Handle fulfill from C to B");
 
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 	let mut cs_updates = get_htlc_update_msgs(&nodes[2], &node_b_id);
@@ -3818,6 +3824,8 @@ fn do_test_durable_preimages_on_closed_channel(
 	// Now step the Commitment Signed Dance between B and C forward a bit, ensuring we won't get
 	// the preimage when the nodes reconnect, at which point we have to ensure we get it from the
 	// ChannelMonitor.
+	test_scope!("Step commitment_signed from B to C forward");
+
 	nodes[1].node.handle_commitment_signed_batch_test(node_c_id, &cs_updates.commitment_signed);
 	check_added_monitors(&nodes[1], 1);
 	let _ = get_revoke_commit_msgs(&nodes[1], &node_c_id);
@@ -3826,6 +3834,8 @@ fn do_test_durable_preimages_on_closed_channel(
 
 	if close_chans_before_reload {
 		if !close_only_a {
+			test_scope!("Force close B<->C channel");
+
 			chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 			let message = "Channel force-closed".to_owned();
 			nodes[1]
@@ -3838,6 +3848,8 @@ fn do_test_durable_preimages_on_closed_channel(
 			check_closed_event(&nodes[1], 1, reason, &[node_c_id], 100000);
 		}
 
+		test_scope!("Force close A<->B channel");
+
 		chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 		let message = "Channel force-closed".to_owned();
 		nodes[1]
@@ -3849,6 +3861,8 @@ fn do_test_durable_preimages_on_closed_channel(
 			ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
 		check_closed_event(&nodes[1], 1, reason, &[node_a_id], 100000);
 	}
+
+	test_scope!("Reload");
 
 	// Now reload node B
 	let manager_b = nodes[1].node.encode();
@@ -3866,6 +3880,8 @@ fn do_test_durable_preimages_on_closed_channel(
 			assert_eq!(bs_close_txn.len(), 3);
 		}
 	}
+
+	test_scope!("Force close A<->B channel from A");
 
 	let err_msg = "Channel force-closed".to_owned();
 	let reason = ClosureReason::HolderForceClosed {
@@ -3885,6 +3901,8 @@ fn do_test_durable_preimages_on_closed_channel(
 
 	// After a timer tick a payment preimage ChannelMonitorUpdate is applied to the A<->B
 	// ChannelMonitor (possible twice), even though the channel has since been closed.
+	test_scope!("Timer tick to apply preimage monitor update");
+
 	check_added_monitors(&nodes[1], 0);
 	let mons_added = if close_chans_before_reload {
 		if !close_only_a {
@@ -3909,6 +3927,8 @@ fn do_test_durable_preimages_on_closed_channel(
 	check_added_monitors(&nodes[1], mons_added);
 
 	// Finally, check that B created a payment preimage transaction and close out the payment.
+	test_scope!("Check preimage txn and complete payment");
+
 	let bs_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 	assert_eq!(bs_txn.len(), if close_chans_before_reload && !close_only_a { 2 } else { 1 });
 	let bs_preimage_tx = bs_txn
@@ -3922,6 +3942,7 @@ fn do_test_durable_preimages_on_closed_channel(
 	expect_payment_sent(&nodes[0], payment_preimage, None, true, true);
 
 	if !close_chans_before_reload || close_only_a {
+		test_scope!("Reconnect nodes B and C");
 		// Make sure the B<->C channel is still alive and well by sending a payment over it.
 		let mut reconnect_args = ReconnectArgs::new(&nodes[1], &nodes[2]);
 		reconnect_args.pending_responding_commitment_signed.1 = true;
@@ -3936,6 +3957,7 @@ fn do_test_durable_preimages_on_closed_channel(
 
 	// Once the blocked `ChannelMonitorUpdate` *finally* completes, the pending
 	// `PaymentForwarded` event will finally be released.
+	test_scope!("Complete blocked ChannelMonitorUpdate");
 	let (_, ab_update_id) = get_latest_mon_update_id(&nodes[1], chan_id_ab);
 	nodes[1].chain_monitor.chain_monitor.force_channel_monitor_updated(chan_id_ab, ab_update_id);
 
@@ -3953,6 +3975,8 @@ fn do_test_durable_preimages_on_closed_channel(
 	if !close_chans_before_reload || close_only_a {
 		// Once we call `process_pending_events` the final `ChannelMonitor` for the B<->C channel
 		// will fly, removing the payment preimage from it.
+		test_scope!("Process pending events to complete B<->C monitor update");
+
 		check_added_monitors(&nodes[1], 1);
 		assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 		send_payment(&nodes[1], &[&nodes[2]], 100_000);

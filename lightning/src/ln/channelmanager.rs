@@ -31,6 +31,7 @@ use bitcoin::hashes::{Hash, HashEngine, HmacEngine};
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::secp256k1::{PublicKey, SecretKey};
 use bitcoin::{secp256k1, Sequence, SignedAmount};
+use lightning_macros::log_scope;
 
 use crate::blinded_path::message::{
 	AsyncPaymentsContext, BlindedMessagePath, MessageForwardNode, OffersContext,
@@ -3939,6 +3940,7 @@ impl<
 	/// [`ChannelCloseMinimum`]: crate::chain::chaininterface::ConfirmationTarget::ChannelCloseMinimum
 	/// [`NonAnchorChannelFee`]: crate::chain::chaininterface::ConfirmationTarget::NonAnchorChannelFee
 	/// [`SendShutdown`]: MessageSendEvent::SendShutdown
+	#[log_scope]
 	pub fn close_channel(
 		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey,
 	) -> Result<(), APIError> {
@@ -3975,6 +3977,7 @@ impl<
 	/// [`NonAnchorChannelFee`]: crate::chain::chaininterface::ConfirmationTarget::NonAnchorChannelFee
 	/// [`ChannelHandshakeConfig::commit_upfront_shutdown_pubkey`]: crate::util::config::ChannelHandshakeConfig::commit_upfront_shutdown_pubkey
 	/// [`SendShutdown`]: MessageSendEvent::SendShutdown
+	#[log_scope]
 	pub fn close_channel_with_feerate_and_script(
 		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey,
 		target_feerate_sats_per_1000_weight: Option<u32>, shutdown_script: Option<ShutdownScript>,
@@ -4269,6 +4272,7 @@ impl<
 	///
 	/// Fails if `channel_id` is unknown to the manager, or if the `counterparty_node_id`
 	/// isn't the counterparty of the corresponding channel.
+	#[log_scope]
 	pub fn force_close_broadcasting_latest_txn(
 		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey, error_message: String,
 	) -> Result<(), APIError> {
@@ -4280,6 +4284,7 @@ impl<
 	///
 	/// The provided `error_message` is sent to connected peers for closing channels and should
 	/// be a human-readable description of what went wrong.
+	#[log_scope]
 	pub fn force_close_all_channels_broadcasting_latest_txn(&self, error_message: String) {
 		for chan in self.list_channels() {
 			let _ = self.force_close_broadcasting_latest_txn(
@@ -4562,6 +4567,7 @@ impl<
 	/// emitted with the new funding output. At this point, a new splice can be negotiated by
 	/// calling `splice_channel` again on this channel.
 	#[rustfmt::skip]
+	#[log_scope]
 	pub fn splice_channel(
 		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey,
 		contribution: SpliceContribution, funding_feerate_per_kw: u32, locktime: Option<u32>,
@@ -5293,6 +5299,7 @@ impl<
 	/// LDK will not automatically retry this payment, though it may be manually re-sent after an
 	/// [`Event::PaymentFailed`] is generated.
 	#[rustfmt::skip]
+	#[log_scope]
 	pub fn send_payment_with_route(
 		&self, mut route: Route, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields,
 		payment_id: PaymentId
@@ -5355,6 +5362,7 @@ impl<
 	/// [`UpdateHTLCs`]: MessageSendEvent::UpdateHTLCs
 	/// [`PeerManager::process_events`]: crate::ln::peer_handler::PeerManager::process_events
 	/// [`ChannelMonitorUpdateStatus::InProgress`]: crate::chain::ChannelMonitorUpdateStatus::InProgress
+	#[log_scope]
 	pub fn send_payment(
 		&self, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields,
 		payment_id: PaymentId, route_params: RouteParameters, retry_strategy: Retry,
@@ -5454,6 +5462,7 @@ impl<
 	/// # Custom Routing Parameters
 	/// Users can customize routing parameters via [`RouteParametersConfig`].
 	/// To use default settings, call the function with [`RouteParametersConfig::default`].
+	#[log_scope]
 	pub fn pay_for_bolt11_invoice(
 		&self, invoice: &Bolt11Invoice, payment_id: PaymentId, amount_msats: Option<u64>,
 		optional_params: OptionalBolt11PaymentParams,
@@ -5498,6 +5507,7 @@ impl<
 	/// whether or not the payment was successful.
 	///
 	/// [timer tick]: Self::timer_tick_occurred
+	#[log_scope]
 	pub fn send_payment_for_bolt12_invoice(
 		&self, invoice: &Bolt12Invoice, context: Option<&OffersContext>,
 	) -> Result<(), Bolt12PaymentError> {
@@ -5756,6 +5766,7 @@ impl<
 	/// [`ChannelManager`], another [`Event::PaymentFailed`] may be generated.
 	///
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
+	#[log_scope]
 	pub fn abandon_payment(&self, payment_id: PaymentId) {
 		self.abandon_payment_with_reason(payment_id, PaymentFailureReason::UserAbandoned)
 	}
@@ -5782,6 +5793,7 @@ impl<
 	///
 	/// [`send_payment`]: Self::send_payment
 	/// [`PaymentParameters::for_keysend`]: crate::routing::router::PaymentParameters::for_keysend
+	#[log_scope]
 	pub fn send_spontaneous_payment(
 		&self, payment_preimage: Option<PaymentPreimage>, recipient_onion: RecipientOnionFields,
 		payment_id: PaymentId, route_params: RouteParameters, retry_strategy: Retry,
@@ -5810,6 +5822,7 @@ impl<
 	/// Send a payment that is probing the given route for liquidity. We calculate the
 	/// [`PaymentHash`] of probes based on a static secret and a random [`PaymentId`], which allows
 	/// us to easily discern them from real payments.
+	#[log_scope]
 	pub fn send_probe(&self, path: Path) -> Result<(PaymentHash, PaymentId), ProbeSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height;
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
@@ -5836,6 +5849,7 @@ impl<
 	/// amount to the given `node_id`.
 	///
 	/// See [`ChannelManager::send_preflight_probes`] for more information.
+	#[log_scope]
 	pub fn send_spontaneous_preflight_probes(
 		&self, node_id: PublicKey, amount_msat: u64, final_cltv_expiry_delta: u32,
 		liquidity_limit_multiplier: Option<u64>,
@@ -5862,6 +5876,7 @@ impl<
 	/// payment. To mitigate this issue, channels with available liquidity less than the required
 	/// amount times the given `liquidity_limit_multiplier` won't be used to send pre-flight
 	/// probes. If `None` is given as `liquidity_limit_multiplier`, it defaults to `3`.
+	#[log_scope]
 	pub fn send_preflight_probes(
 		&self, route_params: RouteParameters, liquidity_limit_multiplier: Option<u64>,
 	) -> Result<Vec<(PaymentHash, PaymentId)>, ProbeSendFailure> {
@@ -7226,6 +7241,7 @@ impl<
 	///
 	/// Users implementing their own background processing logic should call this in irregular,
 	/// randomly-distributed intervals.
+	#[log_scope]
 	pub fn process_pending_htlc_forwards(&self) {
 		if self
 			.pending_htlc_forwards_processor
@@ -8257,6 +8273,7 @@ impl<
 	///
 	/// [`ChannelUpdate`]: msgs::ChannelUpdate
 	/// [`ChannelConfig`]: crate::util::config::ChannelConfig
+	#[log_scope]
 	pub fn timer_tick_occurred(&self) {
 		PersistenceNotifierGuard::optionally_notify(self, || {
 			let mut should_persist = NotifyOption::SkipPersistNoEvents;
@@ -8809,6 +8826,7 @@ impl<
 	/// [`create_inbound_payment`]: Self::create_inbound_payment
 	/// [`create_inbound_payment_for_hash`]: Self::create_inbound_payment_for_hash
 	/// [`claim_funds_with_known_custom_tlvs`]: Self::claim_funds_with_known_custom_tlvs
+	#[log_scope]
 	pub fn claim_funds(&self, payment_preimage: PaymentPreimage) {
 		self.claim_payment_internal(payment_preimage, false);
 	}
@@ -8822,6 +8840,7 @@ impl<
 	/// claim, otherwise you may unintentionally agree to some protocol you do not understand.
 	///
 	/// [`claim_funds`]: Self::claim_funds
+	#[log_scope]
 	pub fn claim_funds_with_known_custom_tlvs(&self, payment_preimage: PaymentPreimage) {
 		self.claim_payment_internal(payment_preimage, true);
 	}
@@ -9793,6 +9812,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	/// Returns a tuple of `(update_completed, all_updates_completed)`:
 	/// - `update_completed`: whether this specific monitor update finished persisting
 	/// - `all_updates_completed`: whether all in-flight updates for this channel are now complete
+	#[log_scope]
 	fn handle_new_monitor_update_locked_actions_handled_by_caller(
 		&self,
 		in_flight_monitor_updates: &mut BTreeMap<ChannelId, (OutPoint, Vec<ChannelMonitorUpdate>)>,
@@ -9849,6 +9869,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	/// to process after locks are released.
 	///
 	/// Returns `Some` if all in-flight updates are complete.
+	#[log_scope]
 	fn handle_post_close_monitor_update(
 		&self,
 		in_flight_monitor_updates: &mut BTreeMap<ChannelId, (OutPoint, Vec<ChannelMonitorUpdate>)>,
@@ -9943,6 +9964,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	///
 	/// Note: This method takes individual fields from [`PeerState`] rather than the whole struct
 	/// to avoid borrow checker issues when the channel is borrowed from `peer_state.channel_by_id`.
+	#[log_scope]
 	fn handle_new_monitor_update(
 		&self,
 		in_flight_monitor_updates: &mut BTreeMap<ChannelId, (OutPoint, Vec<ChannelMonitorUpdate>)>,
@@ -10382,6 +10404,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	///
 	/// [`Event::OpenChannelRequest`]: events::Event::OpenChannelRequest
 	/// [`Event::ChannelClosed::user_channel_id`]: events::Event::ChannelClosed::user_channel_id
+	#[log_scope]
 	pub fn accept_inbound_channel(
 		&self, temporary_channel_id: &ChannelId, counterparty_node_id: &PublicKey,
 		user_channel_id: u128, config_overrides: Option<ChannelConfigOverrides>,
@@ -13647,6 +13670,7 @@ impl<
 	/// [`BlindedMessagePath`]: crate::blinded_path::message::BlindedMessagePath
 	/// [`Bolt12Invoice::payment_paths`]: crate::offers::invoice::Bolt12Invoice::payment_paths
 	/// [Avoiding Duplicate Payments]: #avoiding-duplicate-payments
+	#[log_scope]
 	pub fn pay_for_offer(
 		&self, offer: &Offer, amount_msats: Option<u64>, payment_id: PaymentId,
 		optional_params: OptionalOfferPaymentParams,
@@ -13676,6 +13700,7 @@ impl<
 
 	/// Pays for an [`Offer`] which was built by resolving a human readable name. It is otherwise
 	/// identical to [`Self::pay_for_offer`].
+	#[log_scope]
 	pub fn pay_for_offer_from_hrn(
 		&self, offer: &OfferFromHrn, amount_msats: u64, payment_id: PaymentId,
 		optional_params: OptionalOfferPaymentParams,
@@ -13718,6 +13743,7 @@ impl<
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	/// [`InvoiceRequest::quantity`]: crate::offers::invoice_request::InvoiceRequest::quantity
+	#[log_scope]
 	pub fn pay_for_offer_with_quantity(
 		&self, offer: &Offer, amount_msats: Option<u64>, payment_id: PaymentId,
 		optional_params: OptionalOfferPaymentParams, quantity: u64,
@@ -13879,6 +13905,7 @@ impl<
 	/// [`PaymentFailureReason::InvoiceRequestRejected`]: crate::events::PaymentFailureReason::InvoiceRequestRejected
 	#[cfg(feature = "dnssec")]
 	#[deprecated(note = "Use bitcoin-payment-instructions and pay_for_offer_from_hrn instead")]
+	#[log_scope]
 	pub fn pay_for_offer_from_human_readable_name(
 		&self, name: HumanReadableName, amount_msats: u64, payment_id: PaymentId,
 		optional_params: OptionalOfferPaymentParams, dns_resolvers: Vec<Destination>,
@@ -14180,6 +14207,7 @@ impl<
 	}
 
 	#[cfg(any(test, feature = "_test_utils"))]
+	#[log_scope]
 	pub fn get_and_clear_pending_events(&self) -> Vec<events::Event> {
 		let events = core::cell::RefCell::new(Vec::new());
 		let event_handler = |event: events::Event| Ok(events.borrow_mut().push(event));

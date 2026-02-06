@@ -20,12 +20,13 @@
 
 extern crate alloc;
 
+use alloc::string::String;
 use alloc::string::ToString;
 use proc_macro::{Delimiter, Group, TokenStream, TokenTree};
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::spanned::Spanned;
-use syn::{parse, ImplItemFn, Token};
+use syn::{parse, parse2, Expr, ExprLit, ImplItemFn, Lit, Token};
 use syn::{parse_macro_input, Item};
 
 fn add_async_method(mut parsed: ImplItemFn) -> TokenStream {
@@ -399,4 +400,48 @@ pub fn xtest_inventory(_input: TokenStream) -> TokenStream {
 	};
 
 	TokenStream::from(expanded)
+}
+
+/// Adds a logging scope at the top of a method.
+/// In non-test builds, this is a no-op.
+#[proc_macro_attribute]
+pub fn log_scope(attrs: TokenStream, meth: TokenStream) -> TokenStream {
+	let attrs: TokenStream2 = parse_macro_input!(attrs as TokenStream2);
+	let mut name_attr: Option<String> = None;
+	if !attrs.is_empty() {
+		// Expect something like `name = "foo"`
+		let expr: Expr = parse2(attrs.clone()).expect("invalid attribute syntax");
+
+		if let Expr::Assign(assign) = expr {
+			// Check left-hand side is `name`.
+			if let Expr::Path(path) = *assign.left {
+				if path.path.is_ident("name") {
+					if let Expr::Lit(ExprLit { lit: Lit::Str(s), .. }) = *assign.right {
+						name_attr = Some(s.value());
+					}
+				}
+			}
+		}
+	}
+
+	let mut meth = if let Ok(parsed) = parse::<syn::ItemFn>(meth) {
+		parsed
+	} else {
+		return (quote! {
+			compile_error!("log_scope can only be set on methods")
+		})
+		.into();
+	};
+
+	// Use the attribute name if present, otherwise fall back to the function name
+	let name = name_attr.unwrap_or_else(|| meth.sig.ident.to_string());
+
+	// Only create the LoggerScope in test builds
+	let stmt = quote! {
+		#[cfg(test)]
+		let _logging_context = crate::util::logger::LoggerScope::new(#name);
+	};
+
+	meth.block.stmts.insert(0, parse(stmt.into()).unwrap());
+	quote! { #meth }.into()
 }
