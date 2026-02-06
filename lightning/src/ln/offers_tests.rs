@@ -2572,3 +2572,88 @@ fn no_double_pay_with_stale_channelmanager() {
 	// generated in response to the duplicate invoice.
 	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
 }
+
+/// Checks that when `manually_handle_bolt12_invoice_requests` is enabled, an
+/// `Event::InvoiceRequestReceived` is emitted instead of automatically creating an invoice, and
+/// that `send_bolt12_invoice_for_intercept_scid` can be used to create and send a BOLT12 invoice
+/// with blinded payment paths using an intercept SCID (as used in LSPS2 JIT channels).
+#[test]
+fn creates_bolt12_invoice_with_intercept_scid_blinded_paths() {
+	let mut manually_handle_cfg = test_default_channel_config();
+	manually_handle_cfg.manually_handle_bolt12_invoice_requests = true;
+
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(manually_handle_cfg), None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000);
+
+	let alice = &nodes[0];
+	let alice_id = alice.node.get_our_node_id();
+	let bob = &nodes[1];
+	let bob_id = bob.node.get_our_node_id();
+
+	// Alice creates an offer with manual invoice request handling enabled.
+	let offer = alice.node
+		.create_offer_builder().unwrap()
+		.amount_msats(10_000_000)
+		.build().unwrap();
+
+	// Bob pays for the offer, which sends an InvoiceRequest to Alice.
+	let payment_id = PaymentId([1; 32]);
+	bob.node.pay_for_offer(&offer, None, payment_id, Default::default()).unwrap();
+	expect_recent_payment!(bob, RecentPaymentDetails::AwaitingInvoice, payment_id);
+
+	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
+	alice.onion_messenger.handle_onion_message(bob_id, &onion_message);
+
+	// Since manually_handle_bolt12_invoice_requests is true, Alice should NOT auto-create an
+	// invoice.
+	assert!(alice.onion_messenger.next_onion_message_for_peer(bob_id).is_none());
+
+	// Instead, Alice should get an InvoiceRequestReceived event.
+	let mut events = alice.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+
+	let (invoice_request, context, responder) = match events.pop().unwrap() {
+		Event::InvoiceRequestReceived { invoice_request, context, responder } => {
+			(invoice_request, context, responder)
+		},
+		_ => panic!("Expected Event::InvoiceRequestReceived"),
+	};
+
+	// Alice creates a BOLT12 invoice with blinded payment paths using an intercept SCID,
+	// simulating the LSPS2 JIT channel flow where Bob acts as the LSP introduction node.
+	let intercept_scid = 42u64;
+	let cltv_expiry_delta = 144u16;
+	let invoice_expiry_secs = 3600u32;
+
+	let invoice = alice.node.send_bolt12_invoice_for_intercept_scid(
+		invoice_request,
+		context,
+		responder,
+		bob_id,
+		intercept_scid,
+		cltv_expiry_delta,
+		invoice_expiry_secs,
+	).unwrap();
+
+	// Verify the invoice has the correct structure.
+	assert_eq!(invoice.amount_msats(), 10_000_000);
+	assert!(!invoice.payment_paths().is_empty());
+	for path in invoice.payment_paths() {
+		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(bob_id));
+	}
+
+	// Verify the invoice is sent back to Bob as an onion message.
+	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
+
+	// Extract and verify the invoice Bob would receive.
+	let (received_invoice, _) = extract_invoice(bob, &onion_message);
+	assert_eq!(received_invoice.amount_msats(), 10_000_000);
+	assert!(!received_invoice.payment_paths().is_empty());
+	for path in received_invoice.payment_paths() {
+		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(bob_id));
+	}
+}

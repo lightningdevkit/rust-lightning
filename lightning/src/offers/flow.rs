@@ -22,7 +22,7 @@ use crate::blinded_path::message::{
 };
 use crate::blinded_path::payment::{
 	AsyncBolt12OfferContext, BlindedPaymentPath, Bolt12OfferContext, Bolt12RefundContext,
-	PaymentConstraints, PaymentContext, ReceiveTlvs,
+	ForwardTlvs, PaymentConstraints, PaymentContext, PaymentForwardNode, PaymentRelay, ReceiveTlvs,
 };
 use crate::chain::channelmonitor::LATENCY_GRACE_PERIOD_BLOCKS;
 
@@ -31,7 +31,9 @@ use crate::prelude::*;
 
 use crate::chain::BestBlock;
 use crate::ln::channel_state::ChannelDetails;
-use crate::ln::channelmanager::{InterceptId, PaymentId, CLTV_FAR_FAR_AWAY};
+use crate::ln::channelmanager::{
+	InterceptId, PaymentId, CLTV_FAR_FAR_AWAY, MIN_FINAL_CLTV_EXPIRY_DELTA,
+};
 use crate::ln::inbound_payment;
 use crate::offers::async_receive_offer_cache::AsyncReceiveOfferCache;
 use crate::offers::invoice::{
@@ -58,6 +60,7 @@ use crate::onion_message::packet::OnionMessageContents;
 use crate::routing::router::Router;
 use crate::sign::{EntropySource, ReceiveAuthKey};
 use crate::sync::{Mutex, RwLock};
+use crate::types::features::BlindedHopFeatures;
 use crate::types::payment::{PaymentHash, PaymentSecret};
 use crate::util::logger::Logger;
 use crate::util::ser::Writeable;
@@ -335,6 +338,79 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 			amount_msats,
 			secp_ctx,
 		)
+	}
+
+	/// Creates a [`BlindedPaymentPath`] that goes through an LSP's intercept SCID.
+	///
+	/// This is intended for use with LSPS2 (JIT channels) and BOLT12 invoices. The resulting
+	/// blinded payment path has the LSP as the introduction node, with the `intercept_scid`
+	/// encoded in the [`ForwardTlvs`] so that the LSP can intercept the HTLC and open a JIT
+	/// channel to the client.
+	///
+	/// Fee parameters in the blinded path are set to zero since LSPS2 takes fees via fee
+	/// skimming rather than through relay fees.
+	///
+	/// The caller is expected to obtain `payment_secret` from
+	/// [`ChannelManager::create_inbound_payment`] and pass the corresponding `payment_hash`
+	/// when building the invoice via
+	/// [`Self::create_invoice_builder_from_invoice_request_with_custom_payment_paths`].
+	///
+	/// [`ChannelManager::create_inbound_payment`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment
+	pub fn create_blinded_payment_paths_for_intercept_scid<ES: EntropySource>(
+		&self, entropy_source: ES, lsp_node_id: PublicKey, intercept_scid: u64,
+		cltv_expiry_delta: u16, payment_secret: PaymentSecret, payment_context: PaymentContext,
+		amount_msats: u64, relative_expiry_seconds: u32,
+	) -> Result<Vec<BlindedPaymentPath>, ()> {
+		let secp_ctx = &self.secp_ctx;
+		let receive_auth_key = self.receive_auth_key;
+		let payee_node_id = self.get_our_node_id();
+
+		// Assume shorter than usual block times to avoid spuriously failing payments too early.
+		const SECONDS_PER_BLOCK: u32 = 9 * 60;
+		let relative_expiry_blocks = relative_expiry_seconds / SECONDS_PER_BLOCK;
+		let max_cltv_expiry = core::cmp::max(relative_expiry_blocks, CLTV_FAR_FAR_AWAY)
+			.saturating_add(LATENCY_GRACE_PERIOD_BLOCKS)
+			.saturating_add(self.best_block.read().unwrap().height);
+
+		let payee_tlvs = ReceiveTlvs {
+			payment_secret,
+			payment_constraints: PaymentConstraints { max_cltv_expiry, htlc_minimum_msat: 1 },
+			payment_context,
+		};
+
+		// Build the forwarding node representing the LSP. The payment constraints for the
+		// forwarding hop extend the max CLTV expiry by the hop's delta.
+		let forward_node = PaymentForwardNode {
+			tlvs: ForwardTlvs {
+				short_channel_id: intercept_scid,
+				payment_relay: PaymentRelay {
+					cltv_expiry_delta,
+					fee_base_msat: 0,
+					fee_proportional_millionths: 0,
+				},
+				payment_constraints: PaymentConstraints {
+					max_cltv_expiry: max_cltv_expiry.saturating_add(cltv_expiry_delta as u32),
+					htlc_minimum_msat: 0,
+				},
+				features: BlindedHopFeatures::empty(),
+				next_blinding_override: None,
+			},
+			node_id: lsp_node_id,
+			htlc_maximum_msat: amount_msats,
+		};
+
+		let path = BlindedPaymentPath::new(
+			&[forward_node],
+			payee_node_id,
+			receive_auth_key,
+			payee_tlvs,
+			amount_msats,
+			MIN_FINAL_CLTV_EXPIRY_DELTA,
+			entropy_source,
+			secp_ctx,
+		)?;
+
+		Ok(vec![path])
 	}
 
 	#[cfg(test)]
@@ -1032,6 +1108,43 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 		Ok((builder, context))
 	}
 
+	/// Creates an [`InvoiceBuilder<DerivedSigningPubkey>`] for the provided
+	/// [`VerifiedInvoiceRequest<DerivedSigningPubkey>`] using pre-built blinded payment paths.
+	///
+	/// This is intended for use with LSPS2 (JIT channels) where the blinded payment paths are
+	/// constructed via [`Self::create_blinded_payment_paths_for_intercept_scid`] rather than
+	/// through the [`Router`].
+	///
+	/// The caller is expected to:
+	/// 1. Call [`ChannelManager::create_inbound_payment`] to obtain both a `payment_hash` and
+	///    `payment_secret`.
+	/// 2. Use the `payment_secret` when constructing blinded payment paths via
+	///    [`Self::create_blinded_payment_paths_for_intercept_scid`].
+	/// 3. Pass the resulting `payment_paths` and `payment_hash` to this method.
+	///
+	/// Returns the invoice builder along with a [`MessageContext`] that can later be used to
+	/// respond to the counterparty.
+	///
+	/// [`ChannelManager::create_inbound_payment`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment
+	pub fn create_invoice_builder_from_invoice_request_with_custom_payment_paths<'a>(
+		&self, invoice_request: &'a VerifiedInvoiceRequest<DerivedSigningPubkey>,
+		payment_paths: Vec<BlindedPaymentPath>, payment_hash: PaymentHash,
+	) -> Result<(InvoiceBuilder<'a, DerivedSigningPubkey>, MessageContext), Bolt12SemanticError> {
+		#[cfg(feature = "std")]
+		let builder = invoice_request.respond_using_derived_keys(payment_paths, payment_hash);
+		#[cfg(not(feature = "std"))]
+		let builder = invoice_request.respond_using_derived_keys_no_std(
+			payment_paths,
+			payment_hash,
+			Duration::from_secs(self.highest_seen_timestamp.load(Ordering::Acquire) as u64),
+		);
+		let builder = builder.map(|b| InvoiceBuilder::from(b).allow_mpp())?;
+
+		let context = MessageContext::Offers(OffersContext::InboundPayment { payment_hash });
+
+		Ok((builder, context))
+	}
+
 	/// Enqueues the created [`InvoiceRequest`] to be sent to the counterparty.
 	///
 	/// # Payment
@@ -1181,6 +1294,30 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 			reply_path: Some(reply_path.into_blinded_path()),
 		};
 		pending_offers_messages.push((message, instructions));
+	}
+
+	/// Enqueues a [`Bolt12Invoice`] to be sent back to a payer in response to an
+	/// [`InvoiceRequest`] that was manually handled.
+	///
+	/// This is used when [`UserConfig::manually_handle_bolt12_invoice_requests`] is set to `true`,
+	/// typically for LSPS2 JIT channels where custom blinded payment paths are needed.
+	///
+	/// The `context` should be obtained from
+	/// [`Self::create_invoice_builder_from_invoice_request_with_custom_payment_paths`], and the
+	/// `responder` should come from the [`Event::InvoiceRequestReceived`] event.
+	///
+	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+	/// [`UserConfig::manually_handle_bolt12_invoice_requests`]: crate::util::config::UserConfig::manually_handle_bolt12_invoice_requests
+	/// [`Event::InvoiceRequestReceived`]: crate::events::Event::InvoiceRequestReceived
+	pub fn enqueue_invoice_for_request(
+		&self, invoice: Bolt12Invoice, context: MessageContext, responder: Responder,
+	) {
+		let message = OffersMessage::Invoice(invoice);
+		let instructions = responder.respond_with_reply_path(context);
+		self.pending_offers_messages
+			.lock()
+			.unwrap()
+			.push((message, instructions.into_instructions()));
 	}
 
 	/// Enqueues `held_htlc_available` onion messages to be sent to the payee via the reply paths

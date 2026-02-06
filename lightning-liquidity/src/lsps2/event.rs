@@ -49,7 +49,27 @@ pub enum LSPS2ClientEvent {
 	/// When the invoice is paid, the LSP will open a channel with the previously agreed upon
 	/// parameters to you.
 	///
-	/// **Note: ** This event will *not* be persisted across restarts.
+	/// ## BOLT11
+	/// For BOLT11 invoices, use `intercept_scid` and `cltv_expiry_delta` in a route hint
+	/// pointing to the LSP (`counterparty_node_id`).
+	///
+	/// ## BOLT12
+	/// For BOLT12 invoices, the same parameters are used to construct blinded payment paths
+	/// through the LSP:
+	/// - `counterparty_node_id` is the introduction node (LSP) of the blinded payment path
+	/// - `intercept_scid` is used as `ForwardTlvs::short_channel_id` in the blinded path
+	/// - `cltv_expiry_delta` is used as `PaymentRelay::cltv_expiry_delta` in the blinded path
+	/// - Fee parameters should be set to zero (fees are taken via fee skimming in LSPS2)
+	///
+	/// Use [`OffersMessageFlow::create_blinded_payment_paths_for_intercept_scid`] to construct
+	/// the blinded payment paths, and
+	/// [`OffersMessageFlow::create_invoice_builder_from_invoice_request_with_custom_payment_paths`]
+	/// to build the BOLT12 invoice with those paths.
+	///
+	/// [`OffersMessageFlow::create_blinded_payment_paths_for_intercept_scid`]: lightning::offers::flow::OffersMessageFlow::create_blinded_payment_paths_for_intercept_scid
+	/// [`OffersMessageFlow::create_invoice_builder_from_invoice_request_with_custom_payment_paths`]: lightning::offers::flow::OffersMessageFlow::create_invoice_builder_from_invoice_request_with_custom_payment_paths
+	///
+	/// **Note:** This event will *not* be persisted across restarts.
 	InvoiceParametersReady {
 		/// The identifier of the issued bLIP-52 / LSPS2 `buy` request, as returned by
 		/// [`LSPS2ClientHandler::select_opening_params`].
@@ -59,10 +79,14 @@ pub enum LSPS2ClientEvent {
 		/// [`LSPS2ClientHandler::select_opening_params`]: crate::lsps2::client::LSPS2ClientHandler::select_opening_params
 		request_id: LSPSRequestId,
 		/// The node id of the LSP.
+		///
+		/// For BOLT12, this is used as the introduction node of the blinded payment path.
 		counterparty_node_id: PublicKey,
-		/// The intercept short channel id to use in the route hint.
+		/// The intercept short channel id to use in the route hint (BOLT11) or as the
+		/// `ForwardTlvs::short_channel_id` in a blinded payment path (BOLT12).
 		intercept_scid: u64,
-		/// The `cltv_expiry_delta` to use in the route hint.
+		/// The `cltv_expiry_delta` to use in the route hint (BOLT11) or as the
+		/// `PaymentRelay::cltv_expiry_delta` in a blinded payment path (BOLT12).
 		cltv_expiry_delta: u32,
 		/// The initial payment size you specified.
 		payment_size_msat: Option<u64>,
