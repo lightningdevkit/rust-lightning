@@ -1089,6 +1089,7 @@ fn lsps2_service_handler_persistence_across_restarts() {
 			Some(service_config),
 			None,
 			time_provider,
+			None,
 		)
 		.unwrap();
 

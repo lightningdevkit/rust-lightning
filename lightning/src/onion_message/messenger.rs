@@ -125,6 +125,54 @@ impl<
 	}
 }
 
+/// A trait for registering specific peers for onion message interception.
+///
+/// When a peer is registered for interception and is currently offline, any onion messages
+/// intended to be forwarded to them will generate an [`Event::OnionMessageIntercepted`] instead
+/// of being dropped. When a registered peer connects, an [`Event::OnionMessagePeerConnected`]
+/// will be generated.
+///
+/// [`OnionMessenger`] implements this trait, but it is also useful as a trait object to allow
+/// external components (e.g., an LSPS2 service) to register peers for interception without
+/// needing to know the concrete [`OnionMessenger`] type.
+///
+/// [`Event::OnionMessageIntercepted`]: crate::events::Event::OnionMessageIntercepted
+/// [`Event::OnionMessagePeerConnected`]: crate::events::Event::OnionMessagePeerConnected
+pub trait OnionMessageInterceptor {
+	/// Registers a peer for onion message interception.
+	///
+	/// See [`OnionMessenger::register_peer_for_interception`] for more details.
+	fn register_peer_for_interception(&self, peer_node_id: PublicKey);
+
+	/// Deregisters a peer from onion message interception.
+	///
+	/// See [`OnionMessenger::deregister_peer_for_interception`] for more details.
+	///
+	/// Returns whether the peer was previously registered.
+	fn deregister_peer_for_interception(&self, peer_node_id: &PublicKey) -> bool;
+}
+
+impl<
+		ES: EntropySource,
+		NS: NodeSigner,
+		L: Logger,
+		NL: NodeIdLookUp,
+		MR: MessageRouter,
+		OMH: OffersMessageHandler,
+		APH: AsyncPaymentsMessageHandler,
+		DRH: DNSResolverMessageHandler,
+		CMH: CustomOnionMessageHandler,
+	> OnionMessageInterceptor for OnionMessenger<ES, NS, L, NL, MR, OMH, APH, DRH, CMH>
+{
+	fn register_peer_for_interception(&self, peer_node_id: PublicKey) {
+		OnionMessenger::register_peer_for_interception(self, peer_node_id)
+	}
+
+	fn deregister_peer_for_interception(&self, peer_node_id: &PublicKey) -> bool {
+		OnionMessenger::deregister_peer_for_interception(self, peer_node_id)
+	}
+}
+
 /// A sender, receiver and forwarder of [`OnionMessage`]s.
 ///
 /// # Handling Messages
