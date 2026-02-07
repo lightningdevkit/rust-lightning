@@ -6861,7 +6861,14 @@ where
 		'outer_loop: for (incoming_scid_alias, update_add_htlcs) in decode_update_add_htlcs {
 			// If any decoded update_add_htlcs were processed, we need to persist.
 			should_persist = true;
-			let incoming_channel_details_opt = self.do_funded_channel_callback(
+			let (
+				incoming_counterparty_node_id,
+				incoming_channel_id,
+				incoming_funding_txo,
+				incoming_user_channel_id,
+				incoming_accept_underpaying_htlcs,
+				incoming_chan_is_public,
+			) = match self.do_funded_channel_callback(
 				incoming_scid_alias,
 				|chan: &mut FundedChannel<SP>| {
 					(
@@ -6873,19 +6880,10 @@ where
 						chan.context.should_announce(),
 					)
 				},
-			);
-			let (
-				incoming_counterparty_node_id,
-				incoming_channel_id,
-				incoming_funding_txo,
-				incoming_user_channel_id,
-				incoming_accept_underpaying_htlcs,
-				incoming_chan_is_public,
-			) = if let Some(incoming_channel_details) = incoming_channel_details_opt {
-				incoming_channel_details
-			} else {
+			) {
+				Some(incoming_channel_details) => incoming_channel_details,
 				// The incoming channel no longer exists, HTLCs should be resolved onchain instead.
-				continue;
+				None => continue,
 			};
 
 			let mut htlc_forwards = Vec::new();
