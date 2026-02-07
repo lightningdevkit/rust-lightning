@@ -212,7 +212,7 @@ fn mpp_retry_overpay() {
 	let chanmon_cfgs = create_chanmon_cfgs(4);
 	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
 
-	let mut user_config = test_default_channel_config();
+	let mut user_config = test_legacy_channel_config();
 	user_config.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 100;
 	let mut limited_1 = user_config.clone();
 	limited_1.channel_handshake_config.our_htlc_minimum_msat = 35_000_000;
@@ -782,7 +782,12 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let persister;
 	let new_chain_monitor;
-	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs = create_node_chanmgrs(
+		3,
+		&node_cfgs,
+		&[Some(legacy_cfg.clone()), Some(legacy_cfg.clone()), Some(legacy_cfg)],
+	);
 	let node_a_reload;
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
@@ -1019,8 +1024,7 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 
-	let mut manually_accept_config = test_default_channel_config();
-	manually_accept_config.manually_accept_inbound_channels = true;
+	let mut legacy_cfg = test_legacy_channel_config();
 
 	let persist_1;
 	let chain_monitor_1;
@@ -1029,8 +1033,7 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 	let persist_3;
 	let chain_monitor_3;
 
-	let node_chanmgrs =
-		create_node_chanmgrs(3, &node_cfgs, &[None, Some(manually_accept_config), None]);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, Some(legacy_cfg), None]);
 	let node_a_1;
 	let node_a_2;
 	let node_a_3;
@@ -1255,7 +1258,9 @@ fn do_test_dup_htlc_onchain_doesnt_fail_on_reload(
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let persister;
 	let chain_monitor;
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs =
+		create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
 	let node_a_reload;
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
@@ -2210,7 +2215,6 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 
 	let mut zero_conf_chan_config = test_default_channel_config();
-	zero_conf_chan_config.manually_accept_inbound_channels = true;
 	let mut intercept_forwards_config = test_default_channel_config();
 	intercept_forwards_config.htlc_interception_flags =
 		HTLCInterceptionFlags::ToInterceptSCIDs as u8;
@@ -2869,7 +2873,9 @@ fn auto_retry_partial_failure() {
 	// Test that we'll retry appropriately on send partial failure and retry partial failure.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs =
+		create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
@@ -3114,7 +3120,9 @@ fn auto_retry_partial_failure() {
 fn auto_retry_zero_attempts_send_error() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs =
+		create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -4110,7 +4118,9 @@ fn do_no_missing_sent_on_reload(persist_manager_with_payment: bool, at_midpoint:
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let (persist_a, persist_b, persist_c);
 	let (chain_monitor_a, chain_monitor_b, chain_monitor_c);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs =
+		create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
 	let (node_a_1, node_a_2, node_a_3);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
@@ -4251,7 +4261,17 @@ fn do_claim_from_closed_chan(fail_payment: bool) {
 	// CLTVs on the paths to different value resulting in a different claim deadline.
 	let chanmon_cfgs = create_chanmon_cfgs(4);
 	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs = create_node_chanmgrs(
+		4,
+		&node_cfgs,
+		&[
+			Some(legacy_cfg.clone()),
+			Some(legacy_cfg.clone()),
+			Some(legacy_cfg.clone()),
+			Some(legacy_cfg),
+		],
+	);
 	let mut nodes = create_network(4, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
@@ -4959,7 +4979,6 @@ fn test_htlc_forward_considers_anchor_outputs_value() {
 	//    balance to dip below the reserve when considering the value of anchor outputs.
 	let mut config = test_default_channel_config();
 	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
-	config.manually_accept_inbound_channels = true;
 	config.channel_config.forwarding_fee_base_msat = 0;
 	config.channel_config.forwarding_fee_proportional_millionths = 0;
 
@@ -5142,7 +5161,7 @@ fn test_non_strict_forwarding() {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 
-	let mut config = test_default_channel_config();
+	let mut config = test_legacy_channel_config();
 	config.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 100;
 	let configs = [Some(config.clone()), Some(config.clone()), Some(config)];
 

@@ -272,7 +272,9 @@ pub fn test_duplicate_htlc_different_direction_onchain() {
 	// in opposite directions, even with the same payment secret.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs =
+		create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -399,7 +401,9 @@ pub fn test_duplicate_htlc_different_direction_onchain() {
 pub fn test_inbound_outbound_capacity_is_not_zero() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs =
+		create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let _ = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000);
@@ -437,7 +441,12 @@ fn do_test_fail_back_before_backwards_timeout(post_fail_back_action: PostFailBac
 	// just before the upstream timeout expires
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs = create_node_chanmgrs(
+		3,
+		&node_cfgs,
+		&[Some(legacy_cfg.clone()), Some(legacy_cfg.clone()), Some(legacy_cfg)],
+	);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	for node in nodes.iter() {
@@ -563,7 +572,18 @@ pub fn channel_monitor_network_test() {
 	// tests that ChannelMonitor is able to recover from various states.
 	let chanmon_cfgs = create_chanmon_cfgs(5);
 	let node_cfgs = create_node_cfgs(5, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(5, &node_cfgs, &[None, None, None, None, None]);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs = create_node_chanmgrs(
+		5,
+		&node_cfgs,
+		&[
+			Some(legacy_cfg.clone()),
+			Some(legacy_cfg.clone()),
+			Some(legacy_cfg.clone()),
+			Some(legacy_cfg.clone()),
+			Some(legacy_cfg),
+		],
+	);
 	let nodes = create_network(5, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
@@ -796,11 +816,11 @@ pub fn channel_monitor_network_test() {
 #[xtest(feature = "_externalize_tests")]
 pub fn test_justice_tx_htlc_timeout() {
 	// Test justice txn built on revoked HTLC-Timeout tx, against both sides
-	let mut alice_config = test_default_channel_config();
+	let mut alice_config = test_legacy_channel_config();
 	alice_config.channel_handshake_config.announce_for_forwarding = true;
 	alice_config.channel_handshake_limits.force_announced_channel_preference = false;
 	alice_config.channel_handshake_config.our_to_self_delay = 6 * 24 * 5;
-	let mut bob_config = test_default_channel_config();
+	let mut bob_config = test_legacy_channel_config();
 	bob_config.channel_handshake_config.announce_for_forwarding = true;
 	bob_config.channel_handshake_limits.force_announced_channel_preference = false;
 	bob_config.channel_handshake_config.our_to_self_delay = 6 * 24 * 3;
@@ -884,11 +904,11 @@ pub fn test_justice_tx_htlc_timeout() {
 #[xtest(feature = "_externalize_tests")]
 pub fn test_justice_tx_htlc_success() {
 	// Test justice txn built on revoked HTLC-Success tx, against both sides
-	let mut alice_config = test_default_channel_config();
+	let mut alice_config = test_legacy_channel_config();
 	alice_config.channel_handshake_config.announce_for_forwarding = true;
 	alice_config.channel_handshake_limits.force_announced_channel_preference = false;
 	alice_config.channel_handshake_config.our_to_self_delay = 6 * 24 * 5;
-	let mut bob_config = test_default_channel_config();
+	let mut bob_config = test_legacy_channel_config();
 	bob_config.channel_handshake_config.announce_for_forwarding = true;
 	bob_config.channel_handshake_limits.force_announced_channel_preference = false;
 	bob_config.channel_handshake_config.our_to_self_delay = 6 * 24 * 3;
@@ -961,7 +981,9 @@ pub fn revoked_output_claim() {
 	// transaction is broadcast by its counterparty
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs =
+		create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
@@ -1012,7 +1034,9 @@ fn do_test_forming_justice_tx_from_monitor_updates(broadcast_initial_commitment:
 		WatchtowerPersister::new(destination_script1),
 	];
 	let node_cfgs = create_node_cfgs_with_persisters(2, &chanmon_cfgs, persisters.iter().collect());
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs =
+		create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
@@ -1075,7 +1099,9 @@ pub fn claim_htlc_outputs() {
 	let mut chanmon_cfgs = create_chanmon_cfgs(2);
 	chanmon_cfgs[0].keys_manager.disable_revocation_policy_check = true;
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs =
+		create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
@@ -1164,7 +1190,6 @@ pub fn do_test_multiple_package_conflicts(p2a_anchor: bool) {
 	// transaction.
 	user_cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 	user_cfg.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
-	user_cfg.manually_accept_inbound_channels = true;
 
 	let configs = [Some(user_cfg.clone()), Some(user_cfg.clone()), Some(user_cfg)];
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &configs);
@@ -1389,7 +1414,12 @@ pub fn test_htlc_on_chain_success() {
 
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs = create_node_chanmgrs(
+		3,
+		&node_cfgs,
+		&[Some(legacy_cfg.clone()), Some(legacy_cfg.clone()), Some(legacy_cfg)],
+	);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
@@ -1636,7 +1666,12 @@ fn do_test_htlc_on_chain_timeout(connect_style: ConnectStyle) {
 
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs = create_node_chanmgrs(
+		3,
+		&node_cfgs,
+		&[Some(legacy_cfg.clone()), Some(legacy_cfg.clone()), Some(legacy_cfg)],
+	);
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
@@ -1887,7 +1922,12 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(
 	//   commitment_signed) we will be free to fail/fulfill the HTLC backwards.
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs = create_node_chanmgrs(
+		3,
+		&node_cfgs,
+		&[Some(legacy_cfg.clone()), Some(legacy_cfg.clone()), Some(legacy_cfg)],
+	);
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
@@ -2306,7 +2346,9 @@ pub fn test_htlc_ignore_latest_remote_commitment() {
 	// ignored if we cannot claim them. This originally tickled an invalid unwrap().
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs =
+		create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
@@ -2358,7 +2400,12 @@ pub fn test_force_close_fail_back() {
 	// Check which HTLCs are failed-backwards on channel force-closure
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs = create_node_chanmgrs(
+		3,
+		&node_cfgs,
+		&[Some(legacy_cfg.clone()), Some(legacy_cfg.clone()), Some(legacy_cfg)],
+	);
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
@@ -2506,7 +2553,7 @@ pub fn test_peer_disconnected_before_funding_broadcasted() {
 	let expected_temporary_channel_id =
 		nodes[0].node.create_channel(node_b_id, 1_000_000, 500_000_000, 42, None, None).unwrap();
 	let open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
-	nodes[1].node.handle_open_channel(node_a_id, &open_channel);
+	handle_and_accept_open_channel(&nodes[1], node_a_id, &open_channel);
 	let accept_channel = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, node_a_id);
 	nodes[0].node.handle_accept_channel(node_b_id, &accept_channel);
 
@@ -3470,7 +3517,9 @@ pub fn test_claim_sizeable_push_msat() {
 	// Incidentally test SpendableOutput event generation due to detection of to_local output on commitment tx
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs =
+		create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
@@ -3507,7 +3556,9 @@ pub fn test_claim_on_remote_sizeable_push_msat() {
 	// to_remote output is encumbered by a P2WPKH
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs =
+		create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
@@ -3549,7 +3600,9 @@ pub fn test_claim_on_remote_revoked_sizeable_push_msat() {
 
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs =
+		create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
@@ -3582,7 +3635,9 @@ pub fn test_claim_on_remote_revoked_sizeable_push_msat() {
 pub fn test_static_spendable_outputs_preimage_tx() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs =
+		create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
@@ -3632,7 +3687,9 @@ pub fn test_static_spendable_outputs_preimage_tx() {
 pub fn test_static_spendable_outputs_timeout_tx() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs =
+		create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
@@ -3743,7 +3800,9 @@ pub fn test_static_spendable_outputs_justice_tx_revoked_htlc_timeout_tx() {
 	let mut chanmon_cfgs = create_chanmon_cfgs(2);
 	chanmon_cfgs[0].keys_manager.disable_revocation_policy_check = true;
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs =
+		create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
@@ -3822,7 +3881,9 @@ pub fn test_static_spendable_outputs_justice_tx_revoked_htlc_success_tx() {
 	let mut chanmon_cfgs = create_chanmon_cfgs(2);
 	chanmon_cfgs[1].keys_manager.disable_revocation_policy_check = true;
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs =
+		create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
@@ -3909,7 +3970,12 @@ pub fn test_onchain_to_onchain_claim() {
 
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs = create_node_chanmgrs(
+		3,
+		&node_cfgs,
+		&[Some(legacy_cfg.clone()), Some(legacy_cfg.clone()), Some(legacy_cfg)],
+	);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
@@ -4055,7 +4121,7 @@ pub fn test_duplicate_payment_hash_one_failure_one_success() {
 	let node_cfgs = create_node_cfgs(5, &chanmon_cfgs);
 	// When this test was written, the default base fee floated based on the HTLC count.
 	// It is now fixed, so we simply set the fee to the expected value here.
-	let mut config = test_default_channel_config();
+	let mut config = test_legacy_channel_config();
 	config.channel_config.forwarding_fee_base_msat = 196;
 
 	let configs = [
@@ -4236,7 +4302,9 @@ pub fn test_duplicate_payment_hash_one_failure_one_success() {
 pub fn test_dynamic_spendable_outputs_local_htlc_success_tx() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs =
+		create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
@@ -4305,7 +4373,7 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 	let node_cfgs = create_node_cfgs(6, &chanmon_cfgs);
 	// When this test was written, the default base fee floated based on the HTLC count.
 	// It is now fixed, so we simply set the fee to the expected value here.
-	let mut config = test_default_channel_config();
+	let mut config = test_legacy_channel_config();
 	config.channel_config.forwarding_fee_base_msat = 196;
 
 	let configs = [
@@ -4723,7 +4791,9 @@ pub fn test_fail_backwards_previous_remote_announce() {
 pub fn test_dynamic_spendable_outputs_local_htlc_timeout_tx() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs =
+		create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -4816,7 +4886,12 @@ pub fn test_key_derivation_params() {
 	node_cfgs.remove(0);
 	node_cfgs.insert(0, node);
 
-	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs = create_node_chanmgrs(
+		3,
+		&node_cfgs,
+		&[Some(legacy_cfg.clone()), Some(legacy_cfg.clone()), Some(legacy_cfg)],
+	);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -4933,7 +5008,9 @@ pub fn test_static_output_closing_tx() {
 fn do_htlc_claim_local_commitment_only(use_dust: bool) {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs =
+		create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
@@ -4977,7 +5054,9 @@ fn do_htlc_claim_local_commitment_only(use_dust: bool) {
 fn do_htlc_claim_current_remote_commitment_only(use_dust: bool) {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs =
+		create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -5016,7 +5095,12 @@ fn do_htlc_claim_current_remote_commitment_only(use_dust: bool) {
 fn do_htlc_claim_previous_remote_commitment_only(use_dust: bool, check_revoke_no_close: bool) {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs = create_node_chanmgrs(
+		3,
+		&node_cfgs,
+		&[Some(legacy_cfg.clone()), Some(legacy_cfg.clone()), Some(legacy_cfg)],
+	);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
@@ -5108,7 +5192,9 @@ pub fn htlc_claim_single_commitment_only_b() {
 pub fn test_fail_holding_cell_htlc_upon_free() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs =
+		create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
@@ -5207,7 +5293,9 @@ pub fn test_fail_holding_cell_htlc_upon_free() {
 pub fn test_free_and_fail_holding_cell_htlcs() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs =
+		create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
@@ -5350,7 +5438,7 @@ pub fn test_fail_holding_cell_htlc_upon_free_multihop() {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	// Avoid having to include routing fees in calculations
-	let mut config = test_default_channel_config();
+	let mut config = test_legacy_channel_config();
 	config.channel_config.forwarding_fee_base_msat = 0;
 	config.channel_config.forwarding_fee_proportional_millionths = 0;
 	let node_chanmgrs = create_node_chanmgrs(
@@ -5717,7 +5805,9 @@ fn do_test_failure_delay_dust_htlc_local_commitment(announce_latest: bool) {
 	let mut chanmon_cfgs = create_chanmon_cfgs(2);
 	chanmon_cfgs[0].keys_manager.disable_revocation_policy_check = true;
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs =
+		create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
@@ -5825,7 +5915,12 @@ fn do_test_sweep_outbound_htlc_failure_update(revoked: bool, local: bool) {
 
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs = create_node_chanmgrs(
+		3,
+		&node_cfgs,
+		&[Some(legacy_cfg.clone()), Some(legacy_cfg.clone()), Some(legacy_cfg)],
+	);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -6131,7 +6226,9 @@ pub fn test_bump_penalty_txn_on_revoked_commitment() {
 
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs =
+		create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
@@ -6238,7 +6335,9 @@ pub fn test_bump_penalty_txn_on_revoked_htlcs() {
 	let mut chanmon_cfgs = create_chanmon_cfgs(2);
 	chanmon_cfgs[1].keys_manager.disable_revocation_policy_check = true;
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs =
+		create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
@@ -6365,11 +6464,11 @@ pub fn test_bump_penalty_txn_on_revoked_htlcs() {
 
 		assert_eq!(
 			node_txn[1].input[0].previous_output,
-			revoked_htlc_txn[1].input[0].previous_output
+			revoked_htlc_txn[0].input[0].previous_output
 		);
 		assert_eq!(
 			node_txn[1].input[1].previous_output,
-			revoked_htlc_txn[0].input[0].previous_output
+			revoked_htlc_txn[1].input[0].previous_output
 		);
 
 		// node_txn[3] spends the revoked outputs from the revoked_htlc_txn (which only have one
@@ -6440,7 +6539,9 @@ pub fn test_bump_penalty_txn_on_remote_commitment() {
 
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs =
+		create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let remote_txn = {
@@ -6787,7 +6888,7 @@ pub fn test_override_0msat_htlc_minimum() {
 	let res = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 	assert_eq!(res.common_fields.htlc_minimum_msat, 1);
 
-	nodes[1].node.handle_open_channel(node_a_id, &res);
+	handle_and_accept_open_channel(&nodes[1], node_a_id, &res);
 	let res = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, node_a_id);
 	assert_eq!(res.common_fields.htlc_minimum_msat, 1);
 }
@@ -7361,7 +7462,9 @@ pub fn test_concurrent_monitor_claim() {
 
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs =
+		create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
@@ -7566,7 +7669,7 @@ pub fn test_pre_lockin_no_chan_closed_update() {
 	// Create an initial channel
 	nodes[0].node.create_channel(node_b_id, 100000, 10001, 42, None, None).unwrap();
 	let mut open_chan_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
-	nodes[1].node.handle_open_channel(node_a_id, &open_chan_msg);
+	handle_and_accept_open_channel(&nodes[1], node_a_id, &open_chan_msg);
 	let accept_chan_msg = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, node_a_id);
 	nodes[0].node.handle_accept_channel(node_b_id, &accept_chan_msg);
 
@@ -7603,7 +7706,9 @@ pub fn test_htlc_no_detection() {
 
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs =
+		create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -7670,7 +7775,12 @@ fn do_test_onchain_htlc_settlement_after_close(
 	// 6) Bob claims the offered output on the broadcasted commitment.
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs = create_node_chanmgrs(
+		3,
+		&node_cfgs,
+		&[Some(legacy_cfg.clone()), Some(legacy_cfg.clone()), Some(legacy_cfg)],
+	);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
@@ -7885,9 +7995,8 @@ pub fn test_peer_funding_sidechannel() {
 	let node_b_id = nodes[1].node.get_our_node_id();
 
 	let temp_chan_id_ab = exchange_open_accept_chan(&nodes[0], &nodes[1], 1_000_000, 0);
-	let temp_chan_id_ca = exchange_open_accept_chan(&nodes[1], &nodes[0], 1_000_000, 0);
-
 	let (_, tx, funding_output) = create_funding_transaction(&nodes[0], &node_b_id, 1_000_000, 42);
+	let temp_chan_id_ba = exchange_open_accept_chan(&nodes[1], &nodes[0], 1_000_000, 0);
 
 	let cs_funding_events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(cs_funding_events.len(), 1);
@@ -7899,7 +8008,7 @@ pub fn test_peer_funding_sidechannel() {
 	let output_idx = funding_output.index;
 	nodes[1]
 		.node
-		.funding_transaction_generated_unchecked(temp_chan_id_ca, node_a_id, tx.clone(), output_idx)
+		.funding_transaction_generated_unchecked(temp_chan_id_ba, node_a_id, tx.clone(), output_idx)
 		.unwrap();
 	let funding_created_msg =
 		get_event_msg!(nodes[1], MessageSendEvent::SendFundingCreated, node_a_id);
@@ -7979,7 +8088,12 @@ pub fn test_error_chans_closed() {
 	// we can test various edge cases around it to ensure we don't regress.
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs = create_node_chanmgrs(
+		3,
+		&node_cfgs,
+		&[Some(legacy_cfg.clone()), Some(legacy_cfg.clone()), Some(legacy_cfg)],
+	);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -8078,7 +8192,12 @@ fn do_test_tx_confirmed_skipping_blocks_immediate_broadcast(test_height_before_t
 	// aren't broadcasting transactions too early (ie not broadcasting them at all).
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs = create_node_chanmgrs(
+		3,
+		&node_cfgs,
+		&[Some(legacy_cfg.clone()), Some(legacy_cfg.clone()), Some(legacy_cfg)],
+	);
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	*nodes[0].connect_style.borrow_mut() = ConnectStyle::BestBlockFirstSkippingBlocks;
@@ -8553,7 +8672,7 @@ fn do_test_max_dust_htlc_exposure(
 	// might be available again for HTLC processing once the dust bandwidth has cleared up.
 
 	let chanmon_cfgs = create_chanmon_cfgs(2);
-	let mut config = test_default_channel_config();
+	let mut config = test_legacy_channel_config();
 
 	// We hard-code the feerate values here but they're re-calculated furter down and asserted.
 	// If the values ever change below these constants should simply be updated.
@@ -8603,7 +8722,7 @@ fn do_test_max_dust_htlc_exposure(
 	if on_holder_tx {
 		open_channel.common_fields.dust_limit_satoshis = 546;
 	}
-	nodes[1].node.handle_open_channel(node_a_id, &open_channel);
+	handle_and_accept_open_channel(&nodes[1], node_a_id, &open_channel);
 	let mut accept_channel =
 		get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, node_a_id);
 	nodes[0].node.handle_accept_channel(node_b_id, &accept_channel);
@@ -8939,7 +9058,7 @@ pub fn test_nondust_htlc_excess_fees_are_dust() {
 	}
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 
-	let mut config = test_default_channel_config();
+	let mut config = test_legacy_channel_config();
 	// Set the dust limit to the default value
 	config.channel_config.max_dust_htlc_exposure = MaxDustHTLCExposure::FeeRateMultiplier(10_000);
 	// Make sure the HTLC limits don't get in the way
@@ -9154,11 +9273,10 @@ fn do_test_nondust_htlc_fees_dust_exposure_delta(features: ChannelTypeFeatures) 
 		assert_eq!(expected_dust_exposure_msat, 528_492);
 	}
 
-	let mut default_config = test_default_channel_config();
+	let mut default_config = test_legacy_channel_config();
 	if features == ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies() {
 		default_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 		// in addition to the one above, this setting is also needed to create an anchor channel
-		default_config.manually_accept_inbound_channels = true;
 	}
 
 	// Set node 1's max dust htlc exposure to 1msat below `expected_dust_exposure_msat`
@@ -9566,7 +9684,7 @@ pub fn test_remove_expired_outbound_unfunded_channels() {
 		nodes[0].node.create_channel(node_b_id, 100_000, 0, 42, None, None).unwrap();
 	let open_channel_message =
 		get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
-	nodes[1].node.handle_open_channel(node_a_id, &open_channel_message);
+	handle_and_accept_open_channel(&nodes[1], node_a_id, &open_channel_message);
 	let accept_channel_message =
 		get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, node_a_id);
 	nodes[0].node.handle_accept_channel(node_b_id, &accept_channel_message);
@@ -9630,7 +9748,7 @@ pub fn test_remove_expired_inbound_unfunded_channels() {
 		nodes[0].node.create_channel(node_b_id, 100_000, 0, 42, None, None).unwrap();
 	let open_channel_message =
 		get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
-	nodes[1].node.handle_open_channel(node_a_id, &open_channel_message);
+	handle_and_accept_open_channel(&nodes[1], node_a_id, &open_channel_message);
 	let accept_channel_message =
 		get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, node_a_id);
 	nodes[0].node.handle_accept_channel(node_b_id, &accept_channel_message);
@@ -9688,10 +9806,7 @@ fn do_test_manual_broadcast_skips_commitment_until_funding(
 	// forced to broadcast using `ChannelMonitor::broadcast_latest_holder_commitment_txn`.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let mut chan_config = test_default_channel_config();
-	if zero_conf_open {
-		chan_config.manually_accept_inbound_channels = true;
-	}
+	let mut chan_config = test_legacy_channel_config();
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(chan_config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
@@ -9919,7 +10034,7 @@ pub fn test_dust_exposure_holding_cell_assertion() {
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 
 	// Configure nodes with specific dust limits
-	let mut config = test_default_channel_config();
+	let mut config = test_legacy_channel_config();
 	// Use a fixed dust exposure limit to make the test simpler
 	const DUST_HTLC_VALUE_MSAT: u64 = 500_000;
 	config.channel_config.max_dust_htlc_exposure = MaxDustHTLCExposure::FixedLimitMsat(5_000_000);

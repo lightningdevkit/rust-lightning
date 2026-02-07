@@ -1587,10 +1587,10 @@ pub(super) struct PeerState<SP: SignerProvider> {
 	pub(super) channel_by_id: HashMap<ChannelId, Channel<SP>>,
 	/// `temporary_channel_id` -> `InboundChannelRequest`.
 	///
-	/// When manual channel acceptance is enabled, this holds all unaccepted inbound channels where
-	/// the peer is the counterparty. If the channel is accepted, then the entry in this table is
-	/// removed, and an InboundV1Channel is created and placed in the `inbound_v1_channel_by_id` table. If
-	/// the channel is rejected, then the entry is simply removed.
+	/// Holds all unaccepted inbound channels where the peer is the counterparty.
+	/// If the channel is accepted, then the entry in this table is removed and a Channel is
+	/// created and placed in the `channel_by_id` table. If the channel is rejected, then
+	/// the entry is simply removed.
 	pub(super) inbound_channel_request_by_id: HashMap<ChannelId, InboundChannelRequest>,
 	/// The latest `InitFeatures` we heard from the peer.
 	latest_features: InitFeatures,
@@ -2033,7 +2033,7 @@ impl<
 ///
 /// ## Opening Channels
 ///
-/// To an open a channel with a peer, call [`create_channel`]. This will initiate the process of
+/// To open a channel with a peer, call [`create_channel`]. This will initiate the process of
 /// opening an outbound channel, which requires self-funding when handling
 /// [`Event::FundingGenerationReady`].
 ///
@@ -2097,9 +2097,8 @@ impl<
 ///
 /// ## Accepting Channels
 ///
-/// Inbound channels are initiated by peers and are automatically accepted unless [`ChannelManager`]
-/// has [`UserConfig::manually_accept_inbound_channels`] set. In that case, the channel may be
-/// either accepted or rejected when handling [`Event::OpenChannelRequest`].
+/// Inbound channels are initiated by peers and must be manually accepted or rejected when
+/// handling [`Event::OpenChannelRequest`].
 ///
 /// ```
 /// # use bitcoin::secp256k1::PublicKey;
@@ -5350,7 +5349,7 @@ impl<
 	/// using [`ChannelMonitorUpdateStatus::InProgress`]), the payment may be lost on restart. See
 	/// [`ChannelManager::list_recent_payments`] for more information.
 	///
-	/// Routes are automatically found using the [`Router] provided on startup. To fix a route for a
+	/// Routes are automatically found using the [`Router`] provided on startup. To fix a route for a
 	/// particular payment, use [`Self::send_payment_with_route`] or match the [`PaymentId`] passed to
 	/// [`Router::find_route_with_id`].
 	///
@@ -10427,7 +10426,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		)
 	}
 
-	/// Accepts a request to open a channel after a [`events::Event::OpenChannelRequest`], treating
+	/// Accepts a request to open a channel after a [`Event::OpenChannelRequest`], treating
 	/// it as confirmed immediately.
 	///
 	/// The `user_channel_id` parameter will be provided back in
@@ -10614,7 +10613,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			// If this peer already has some channels, a new channel won't increase our number of peers
 			// with unfunded channels, so as long as we aren't over the maximum number of unfunded
 			// channels per-peer we can accept channels from a peer with existing ones.
-			if is_only_peer_channel && peers_without_funded_channels >= MAX_UNFUNDED_CHANNEL_PEERS {
+			if is_only_peer_channel && peers_without_funded_channels > MAX_UNFUNDED_CHANNEL_PEERS {
 				let send_msg_err_event = MessageSendEvent::HandleError {
 					node_id: channel.context().get_counterparty_node_id(),
 					action: msgs::ErrorAction::SendErrorMessage {
@@ -10717,8 +10716,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		num_unfunded_channels + peer.inbound_channel_request_by_id.len()
 	}
 
-	#[rustfmt::skip]
-	fn internal_open_channel(&self, counterparty_node_id: &PublicKey, msg: OpenChannelMessageRef<'_>) -> Result<(), MsgHandleErrInternal> {
+	fn internal_open_channel(
+		&self, counterparty_node_id: &PublicKey, msg: OpenChannelMessageRef<'_>,
+	) -> Result<(), MsgHandleErrInternal> {
 		let common_fields = match msg {
 			OpenChannelMessageRef::V1(msg) => &msg.common_fields,
 			OpenChannelMessageRef::V2(msg) => &msg.common_fields,
@@ -10729,49 +10729,37 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		// Note that the ChannelManager is NOT re-persisted on disk after this, so any changes are
 		// likely to be lost on restart!
 		if common_fields.chain_hash != self.chain_hash {
-			return Err(MsgHandleErrInternal::send_err_msg_no_close("Unknown genesis block hash".to_owned(),
-				 common_fields.temporary_channel_id));
+			return Err(MsgHandleErrInternal::send_err_msg_no_close(
+				"Unknown genesis block hash".to_owned(),
+				common_fields.temporary_channel_id,
+			));
 		}
 
 		if !self.config.read().unwrap().accept_inbound_channels {
-			return Err(MsgHandleErrInternal::send_err_msg_no_close("No inbound channels accepted".to_owned(),
-				 common_fields.temporary_channel_id));
+			return Err(MsgHandleErrInternal::send_err_msg_no_close(
+				"No inbound channels accepted".to_owned(),
+				common_fields.temporary_channel_id,
+			));
 		}
 
-		// Get the number of peers with channels, but without funded ones. We don't care too much
-		// about peers that never open a channel, so we filter by peers that have at least one
-		// channel, and then limit the number of those with unfunded channels.
-		let channeled_peers_without_funding =
-			self.peers_without_funded_channels(|node| node.total_channel_count() > 0);
-
 		let per_peer_state = self.per_peer_state.read().unwrap();
-		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
-		    .ok_or_else(|| {
-				debug_assert!(false);
-				MsgHandleErrInternal::send_err_msg_no_close(
+		let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
+			debug_assert!(false);
+			MsgHandleErrInternal::send_err_msg_no_close(
 					format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}"),
 					common_fields.temporary_channel_id)
-			})?;
+		})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 
-		// If this peer already has some channels, a new channel won't increase our number of peers
-		// with unfunded channels, so as long as we aren't over the maximum number of unfunded
-		// channels per-peer we can accept channels from a peer with existing ones.
-		if peer_state.total_channel_count() == 0 &&
-			channeled_peers_without_funding >= MAX_UNFUNDED_CHANNEL_PEERS &&
-			!self.config.read().unwrap().manually_accept_inbound_channels
+		let best_block_height = self.best_block.read().unwrap().height;
+		if Self::unfunded_channel_count(peer_state, best_block_height)
+			>= MAX_UNFUNDED_CHANS_PER_PEER
 		{
 			return Err(MsgHandleErrInternal::send_err_msg_no_close(
-				"Have too many peers with unfunded channels, not accepting new ones".to_owned(),
-				common_fields.temporary_channel_id));
-		}
-
-		let best_block_height = self.best_block.read().unwrap().height;
-		if Self::unfunded_channel_count(peer_state, best_block_height) >= MAX_UNFUNDED_CHANS_PER_PEER {
-			return Err(MsgHandleErrInternal::send_err_msg_no_close(
 				format!("Refusing more than {} unfunded channels.", MAX_UNFUNDED_CHANS_PER_PEER),
-				common_fields.temporary_channel_id));
+				common_fields.temporary_channel_id,
+			));
 		}
 
 		let channel_id = common_fields.temporary_channel_id;
@@ -10779,20 +10767,20 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		if channel_exists {
 			return Err(MsgHandleErrInternal::send_err_msg_no_close(
 				"temporary_channel_id collision for the same peer!".to_owned(),
-				common_fields.temporary_channel_id));
+				common_fields.temporary_channel_id,
+			));
 		}
 
-		// We can get the channel type at this point already as we'll need it immediately in both the
-		// manual and the automatic acceptance cases.
-		let channel_type = channel::channel_type_from_open_channel(
-			common_fields, &self.channel_type_features()
-		).map_err(|e| MsgHandleErrInternal::from_chan_no_close(e, common_fields.temporary_channel_id))?;
+		let channel_type =
+			channel::channel_type_from_open_channel(common_fields, &self.channel_type_features())
+				.map_err(|e| {
+				MsgHandleErrInternal::from_chan_no_close(e, common_fields.temporary_channel_id)
+			})?;
 
-		// If we're doing manual acceptance checks on the channel, then defer creation until we're sure we want to accept.
-		if self.config.read().unwrap().manually_accept_inbound_channels {
-			let mut pending_events = self.pending_events.lock().unwrap();
-			let is_announced = (common_fields.channel_flags & 1) == 1;
-			pending_events.push_back((events::Event::OpenChannelRequest {
+		let mut pending_events = self.pending_events.lock().unwrap();
+		let is_announced = (common_fields.channel_flags & 1) == 1;
+		pending_events.push_back((
+			events::Event::OpenChannelRequest {
 				temporary_channel_id: common_fields.temporary_channel_id,
 				counterparty_node_id: *counterparty_node_id,
 				funding_satoshis: common_fields.funding_satoshis,
@@ -10803,67 +10791,19 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				channel_type,
 				is_announced,
 				params: common_fields.channel_parameters(),
-			}, None));
-			peer_state.inbound_channel_request_by_id.insert(channel_id, InboundChannelRequest {
+			},
+			None,
+		));
+		peer_state.inbound_channel_request_by_id.insert(
+			channel_id,
+			InboundChannelRequest {
 				open_channel_msg: match msg {
 					OpenChannelMessageRef::V1(msg) => OpenChannelMessage::V1(msg.clone()),
 					OpenChannelMessageRef::V2(msg) => OpenChannelMessage::V2(msg.clone()),
 				},
 				ticks_remaining: UNACCEPTED_INBOUND_CHANNEL_AGE_LIMIT_TICKS,
-			});
-			return Ok(());
-		}
-
-		// Otherwise create the channel right now.
-		let mut random_bytes = [0u8; 16];
-		random_bytes.copy_from_slice(&self.entropy_source.get_secure_random_bytes()[..16]);
-		let user_channel_id = u128::from_be_bytes(random_bytes);
-
-		if channel_type.requires_zero_conf() {
-			return Err(MsgHandleErrInternal::send_err_msg_no_close("No zero confirmation channels accepted".to_owned(), common_fields.temporary_channel_id));
-		}
-		if channel_type.requires_anchors_zero_fee_htlc_tx() || channel_type.requires_anchor_zero_fee_commitments() {
-			return Err(MsgHandleErrInternal::send_err_msg_no_close("No channels with anchor outputs accepted".to_owned(), common_fields.temporary_channel_id));
-		}
-
-		let (mut channel, message_send_event) = match msg {
-			OpenChannelMessageRef::V1(msg) => {
-				let mut channel = InboundV1Channel::new(
-					&self.fee_estimator, &self.entropy_source, &self.signer_provider, *counterparty_node_id,
-					&self.channel_type_features(), &peer_state.latest_features, msg, user_channel_id,
-					&self.config.read().unwrap(), best_block_height, &self.logger, /*is_0conf=*/false
-				).map_err(|e| MsgHandleErrInternal::from_chan_no_close(e, msg.common_fields.temporary_channel_id))?;
-				let logger = WithChannelContext::from(&self.logger, &channel.context, None);
-				let message_send_event = channel.accept_inbound_channel(&&logger).map(|msg| {
-					MessageSendEvent::SendAcceptChannel {
-						node_id: *counterparty_node_id,
-						msg,
-					}
-				});
-				(Channel::from(channel), message_send_event)
 			},
-			OpenChannelMessageRef::V2(msg) => {
-				let channel = PendingV2Channel::new_inbound(
-					&self.fee_estimator, &self.entropy_source, &self.signer_provider,
-					self.get_our_node_id(), *counterparty_node_id, &self.channel_type_features(),
-					&peer_state.latest_features, msg, user_channel_id,
-					&self.config.read().unwrap(), best_block_height, &self.logger,
-				).map_err(|e| MsgHandleErrInternal::from_chan_no_close(e, msg.common_fields.temporary_channel_id))?;
-				let message_send_event = MessageSendEvent::SendAcceptChannelV2 {
-					node_id: *counterparty_node_id,
-					msg: channel.accept_inbound_dual_funded_channel(),
-				};
-				(Channel::from(channel), Some(message_send_event))
-			},
-		};
-
-		let outbound_scid_alias = self.create_and_insert_outbound_scid_alias();
-		channel.context_mut().set_outbound_scid_alias(outbound_scid_alias);
-
-		if let Some(message_send_event) = message_send_event {
-			peer_state.pending_msg_events.push(message_send_event);
-		}
-		peer_state.channel_by_id.insert(channel.context().channel_id(), channel);
+		);
 
 		Ok(())
 	}
@@ -20258,7 +20198,7 @@ mod tests {
 
 		let mut funding_tx = None;
 		for idx in 0..super::MAX_UNFUNDED_CHANS_PER_PEER {
-			nodes[1].node.handle_open_channel(nodes[0].node.get_our_node_id(), &open_channel_msg);
+			handle_and_accept_open_channel(&nodes[1], nodes[0].node.get_our_node_id(), &open_channel_msg);
 			let accept_channel = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
 
 			if idx == 0 {
@@ -20332,11 +20272,22 @@ mod tests {
 		// open channels.
 		assert!(peer_pks.len() > super::MAX_UNFUNDED_CHANNEL_PEERS - 1);
 		for i in 0..super::MAX_UNFUNDED_CHANNEL_PEERS - 1 {
-			nodes[1].node.handle_open_channel(peer_pks[i], &open_channel_msg);
+			handle_and_accept_open_channel(&nodes[1], peer_pks[i], &open_channel_msg);
 			get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, peer_pks[i]);
 			open_channel_msg.common_fields.temporary_channel_id = ChannelId::temporary_from_entropy_source(&nodes[0].keys_manager);
 		}
 		nodes[1].node.handle_open_channel(last_random_pk, &open_channel_msg);
+		let events = nodes[1].node.get_and_clear_pending_events();
+		match events[0] {
+			Event::OpenChannelRequest { temporary_channel_id, .. } => {
+				assert!(nodes[1]
+					.node
+					.accept_inbound_channel(&temporary_channel_id, &last_random_pk, 23, None,)
+					.is_err())
+			},
+			_ => panic!("Unexpected event"),
+		}
+
 		assert_eq!(get_err_msg(&nodes[1], &last_random_pk).channel_id,
 			open_channel_msg.common_fields.temporary_channel_id);
 
@@ -20354,7 +20305,7 @@ mod tests {
 
 		// Further, because the first channel was funded, we can open another channel with
 		// last_random_pk.
-		nodes[1].node.handle_open_channel(last_random_pk, &open_channel_msg);
+		handle_and_accept_open_channel(&nodes[1], last_random_pk, &open_channel_msg);
 		get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, last_random_pk);
 	}
 
@@ -20537,7 +20488,7 @@ mod tests {
 	fn test_trigger_lnd_force_close() {
 		let chanmon_cfg = create_chanmon_cfgs(2);
 		let node_cfg = create_node_cfgs(2, &chanmon_cfg);
-		let user_config = test_default_channel_config();
+		let user_config = test_legacy_channel_config();
 		let node_chanmgr = create_node_chanmgrs(2, &node_cfg, &[Some(user_config.clone()), Some(user_config)]);
 		let nodes = create_network(2, &node_cfg, &node_chanmgr);
 		let message = "Channel force-closed".to_owned();
@@ -20715,6 +20666,16 @@ pub mod bench {
 		}, false).unwrap();
 		node_a.create_channel(node_b.get_our_node_id(), 8_000_000, 100_000_000, 42, None, None).unwrap();
 		node_b.handle_open_channel(node_a.get_our_node_id(), &get_event_msg!(node_a_holder, MessageSendEvent::SendOpenChannel, node_b.get_our_node_id()));
+		let events = node_b.get_and_clear_pending_events();
+		assert_eq!(events.len(), 1);
+		match &events[0] {
+			Event::OpenChannelRequest { temporary_channel_id, counterparty_node_id, .. } => {
+				node_b
+					.accept_inbound_channel(temporary_channel_id, counterparty_node_id, 42, None)
+					.unwrap();
+			},
+			_ => panic!("Unexpected event"),
+		};
 		node_a.handle_accept_channel(node_b.get_our_node_id(), &get_event_msg!(node_b_holder, MessageSendEvent::SendAcceptChannel, node_a.get_our_node_id()));
 
 		let tx;
