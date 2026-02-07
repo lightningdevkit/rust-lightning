@@ -964,8 +964,8 @@ pub enum HTLCInterceptionFlags {
 	/// public channel will instead generate an [`Event::HTLCIntercepted`] which must be handled
 	/// the same as any other intercepted HTLC.
 	///
-	/// This primarily exists for completeness, and generally interception of of HTLCs between
-	/// public channels is *strongly* discouraged.
+	/// This primarily exists for completeness, and generally interception of HTLCs between public
+	/// channels is *strongly* discouraged.
 	///
 	/// Note that HTLCs which do not pay the configured fee rate or do not meet the
 	/// [`ChannelConfig::cltv_expiry_delta`] will fail and not be intercepted.
