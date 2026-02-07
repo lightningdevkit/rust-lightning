@@ -51,6 +51,7 @@ use crate::sign::{ChannelSigner, PeerStorageKey};
 use crate::sync::RwLock;
 use crate::types::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use crate::util::async_poll::MaybeSend;
+use crate::util::atomic_counter::AtomicCounter;
 use crate::util::config::UserConfig;
 use crate::util::dyn_signer::{
 	DynKeysInterface, DynKeysInterfaceTrait, DynPhantomKeysInterface, DynSigner,
@@ -58,7 +59,7 @@ use crate::util::dyn_signer::{
 use crate::util::logger::{Logger, Record};
 #[cfg(feature = "std")]
 use crate::util::mut_global::MutGlobal;
-use crate::util::persist::{KVStore, KVStoreSync, MonitorName};
+use crate::util::persist::{KVStore, KVStoreSync, MonitorName, PageToken, PaginatedListResponse};
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
 use crate::util::test_channel_signer::{EnforcementState, TestChannelSigner};
 use crate::util::wakers::Notifier;
@@ -1128,6 +1129,122 @@ impl KVStoreSync for TestStore {
 
 unsafe impl Sync for TestStore {}
 unsafe impl Send for TestStore {}
+
+/// A simple in-memory implementation of [`PaginatedKVStoreSync`] for testing.
+///
+/// [`PaginatedKVStoreSync`]: crate::util::persist::PaginatedKVStoreSync
+pub struct TestPaginatedStore {
+	data: Mutex<HashMap<(String, String, String), (i64, Vec<u8>)>>,
+	page_size: usize,
+	time_counter: AtomicCounter,
+}
+
+impl TestPaginatedStore {
+	/// Creates a new `TestPaginatedStore` with the given page size.
+	pub fn new(page_size: usize) -> Self {
+		Self { data: Mutex::new(new_hash_map()), page_size, time_counter: AtomicCounter::new() }
+	}
+}
+
+impl KVStoreSync for TestPaginatedStore {
+	fn read(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
+	) -> Result<Vec<u8>, io::Error> {
+		let data = self.data.lock().unwrap();
+		data.get(&(primary_namespace.to_string(), secondary_namespace.to_string(), key.to_string()))
+			.map(|(_, v)| v.clone())
+			.ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "key not found"))
+	}
+
+	fn write(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: Vec<u8>,
+	) -> Result<(), io::Error> {
+		let mut data = self.data.lock().unwrap();
+		let order = self.time_counter.next() as i64;
+		let key_tuple =
+			(primary_namespace.to_string(), secondary_namespace.to_string(), key.to_string());
+		// Only use order for new entries; preserve existing order on updates
+		let order_to_use =
+			data.get(&key_tuple).map(|(existing_order, _)| *existing_order).unwrap_or(order);
+		data.insert(key_tuple, (order_to_use, buf));
+		Ok(())
+	}
+
+	fn remove(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, _lazy: bool,
+	) -> Result<(), io::Error> {
+		let mut data = self.data.lock().unwrap();
+		data.remove(&(
+			primary_namespace.to_string(),
+			secondary_namespace.to_string(),
+			key.to_string(),
+		));
+		Ok(())
+	}
+
+	fn list(
+		&self, primary_namespace: &str, secondary_namespace: &str,
+	) -> Result<Vec<String>, io::Error> {
+		let mut all_keys = Vec::new();
+		let mut page_token = None;
+		loop {
+			let response = crate::util::persist::PaginatedKVStoreSync::list_paginated(
+				self,
+				primary_namespace,
+				secondary_namespace,
+				page_token,
+			)?;
+			all_keys.extend(response.keys);
+			match response.next_page_token {
+				Some(token) => page_token = Some(token),
+				None => break,
+			}
+		}
+		Ok(all_keys)
+	}
+}
+
+impl crate::util::persist::PaginatedKVStoreSync for TestPaginatedStore {
+	fn list_paginated(
+		&self, primary_namespace: &str, secondary_namespace: &str, page_token: Option<PageToken>,
+	) -> Result<PaginatedListResponse, io::Error> {
+		let data = self.data.lock().unwrap();
+		let mut entries: Vec<_> = data
+			.iter()
+			.filter(|((pn, sn, _), _)| pn == primary_namespace && sn == secondary_namespace)
+			.map(|((_, _, k), (t, _))| (k.clone(), *t))
+			.collect();
+
+		// Sort by time descending, then by key
+		entries.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+
+		// Apply pagination: find the first entry AFTER the given key in sort order.
+		// This implementation uses the last key as the page token.
+		let start_idx = if let Some(PageToken(ref last_key)) = page_token {
+			// Find the position of this key and start after it
+			entries.iter().position(|(k, _)| k == last_key).map(|pos| pos + 1).unwrap_or(0)
+		} else {
+			0
+		};
+
+		let page_entries: Vec<_> =
+			entries.into_iter().skip(start_idx).take(self.page_size).collect();
+
+		let next_page_token = if page_entries.len() == self.page_size {
+			page_entries.last().map(|(k, _)| PageToken(k.clone()))
+		} else {
+			None
+		};
+
+		Ok(PaginatedListResponse {
+			keys: page_entries.into_iter().map(|(k, _)| k).collect(),
+			next_page_token,
+		})
+	}
+}
+
+unsafe impl Sync for TestPaginatedStore {}
+unsafe impl Send for TestPaginatedStore {}
 
 pub struct TestBroadcaster {
 	pub txn_broadcasted: Mutex<Vec<Transaction>>,
