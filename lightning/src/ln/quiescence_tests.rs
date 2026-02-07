@@ -98,7 +98,7 @@ fn allow_shutdown_while_awaiting_quiescence(local_shutdown: bool) {
 	let payment_amount = 1_000_000;
 	let (route, payment_hash, _, payment_secret) =
 		get_route_and_payment_hash!(local_node, remote_node, payment_amount);
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, payment_amount);
 	let payment_id = PaymentId(payment_hash.0);
 	local_node.node.send_payment_with_route(route, payment_hash, onion, payment_id).unwrap();
 	check_added_monitors(&local_node, 1);
@@ -304,7 +304,7 @@ fn test_quiescence_on_final_revoke_and_ack_pending_monitor_update() {
 	let payment_amount = 1_000_000;
 	let (route, payment_hash, _, payment_secret) =
 		get_route_and_payment_hash!(&nodes[0], &nodes[1], payment_amount);
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, payment_amount);
 	let payment_id = PaymentId(payment_hash.0);
 	nodes[0].node.send_payment_with_route(route, payment_hash, onion, payment_id).unwrap();
 	check_added_monitors(&nodes[0], 1);
@@ -370,7 +370,7 @@ fn quiescence_updates_go_to_holding_cell(fail_htlc: bool) {
 
 	let (route1, payment_hash1, payment_preimage1, payment_secret1) =
 		get_route_and_payment_hash!(&nodes[1], &nodes[0], payment_amount);
-	let onion1 = RecipientOnionFields::secret_only(payment_secret1);
+	let onion1 = RecipientOnionFields::secret_only(payment_secret1, payment_amount);
 	let payment_id1 = PaymentId(payment_hash1.0);
 	nodes[1].node.send_payment_with_route(route1, payment_hash1, onion1, payment_id1).unwrap();
 	check_added_monitors(&nodes[1], 0);
@@ -380,7 +380,7 @@ fn quiescence_updates_go_to_holding_cell(fail_htlc: bool) {
 	// allowed to make updates.
 	let (route2, payment_hash2, payment_preimage2, payment_secret2) =
 		get_route_and_payment_hash!(&nodes[0], &nodes[1], payment_amount);
-	let onion2 = RecipientOnionFields::secret_only(payment_secret2);
+	let onion2 = RecipientOnionFields::secret_only(payment_secret2, payment_amount);
 	let payment_id2 = PaymentId(payment_hash2.0);
 	nodes[0].node.send_payment_with_route(route2, payment_hash2, onion2, payment_id2).unwrap();
 	check_added_monitors(&nodes[0], 1);

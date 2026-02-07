@@ -585,7 +585,7 @@ fn send_payment(
 		}],
 		route_params: Some(route_params.clone()),
 	};
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, amt);
 	let res = source.send_payment_with_route(route, payment_hash, onion, payment_id);
 	match res {
 		Err(err) => {
@@ -642,7 +642,7 @@ fn send_hop_payment(
 		}],
 		route_params: Some(route_params.clone()),
 	};
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, amt);
 	let res = source.send_payment_with_route(route, payment_hash, onion, payment_id);
 	match res {
 		Err(err) => {
