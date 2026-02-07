@@ -2731,7 +2731,7 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 	(5, AwaitingInvoice) => {
 		(0, expiration, required),
 		(2, retry_strategy, required),
-		(4, _max_total_routing_fee_msat, (legacy, u64,
+		(4, _max_total_routing_fee_msat, (legacy, u64, |_| Ok(()),
 			|us: &PendingOutboundPayment| match us {
 				PendingOutboundPayment::AwaitingInvoice { route_params_config, .. } => route_params_config.max_total_routing_fee_msat,
 				_ => None,
@@ -2748,7 +2748,7 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 	(7, InvoiceReceived) => {
 		(0, payment_hash, required),
 		(2, retry_strategy, required),
-		(4, _max_total_routing_fee_msat, (legacy, u64,
+		(4, _max_total_routing_fee_msat, (legacy, u64, |_| Ok(()),
 			|us: &PendingOutboundPayment| match us {
 				PendingOutboundPayment::InvoiceReceived { route_params_config, .. } => route_params_config.max_total_routing_fee_msat,
 				_ => None,
@@ -2779,7 +2779,7 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 	(11, AwaitingOffer) => {
 		(0, expiration, required),
 		(2, retry_strategy, required),
-		(4, _max_total_routing_fee_msat, (legacy, u64,
+		(4, _max_total_routing_fee_msat, (legacy, u64, |_| Ok(()),
 			|us: &PendingOutboundPayment| match us {
 				PendingOutboundPayment::AwaitingOffer { route_params_config, .. } => route_params_config.max_total_routing_fee_msat,
 				_ => None,
