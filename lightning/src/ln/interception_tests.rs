@@ -154,10 +154,7 @@ fn do_test_htlc_interception_flags(
 		},
 		Some(ForwardingMod::CLTVBelowConfig) => {
 			route.paths[0].hops[0].cltv_expiry_delta = 6 * 12;
-			assert!(
-				should_intercept,
-				"No reason to test failing if we aren't trying to intercept",
-			);
+			assert!(should_intercept, "No reason to test failing if we aren't trying to intercept");
 		},
 		Some(ForwardingMod::CLTVBelowMin) => {
 			route.paths[0].hops[0].cltv_expiry_delta = 6;
