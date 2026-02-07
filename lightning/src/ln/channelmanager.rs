@@ -10110,7 +10110,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					forward_info,
 					prev_outbound_scid_alias: outbound_scid_alias,
 					prev_htlc_id,
-					prev_counterparty_node_id: channel.context.get_counterparty_node_id(),
+					prev_counterparty_node_id: counterparty_node_id,
 					prev_channel_id: channel.context.channel_id(),
 					prev_funding_outpoint: channel.funding.get_funding_txo().unwrap(),
 					prev_user_channel_id: channel.context.get_user_id(),
