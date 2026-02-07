@@ -7,6 +7,7 @@ on:
   pull_request:
     branches-ignore:
       - master
+    types: [opened, synchronize, reopened, labeled, unlabeled]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -26,19 +27,33 @@ jobs:
           cd ext-functional-test-demo
           cargo test --verbose --color always
           cargo test --verbose --color always --features test-broken
+  # Determines CI configuration based on trigger type.
+  # - Push to main or full-test label: full matrix + all steps (incl. fuzz, coverage, benchmark)
+  # - Other pushes/pull_requests: self-hosted/1.75.0 + core steps only
+  ci-config:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.config.outputs.matrix }}
+      run_all: ${{ steps.config.outputs.run_all }}
+    steps:
+      - name: Determine matrix and scope
+        id: config
+        run: |
+          FULL_MATRIX='{"include":[{"platform":"self-hosted","toolchain":"stable"},{"platform":"self-hosted","toolchain":"beta"},{"platform":"self-hosted","toolchain":"1.75.0"},{"platform":"windows-latest","toolchain":"stable"},{"platform":"macos-latest","toolchain":"stable"},{"platform":"macos-latest","toolchain":"1.75.0"}]}'
+          CORE_MATRIX='{"include":[{"platform":"self-hosted","toolchain":"1.75.0"}]}'
+          if [[ "${{ github.ref }}" == "refs/heads/main" || "${{ contains(github.event.pull_request.labels.*.name, 'full-test') }}" == "true" ]]; then
+            echo "matrix=$FULL_MATRIX" >> "$GITHUB_OUTPUT"
+            echo "run_all=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "matrix=$CORE_MATRIX" >> "$GITHUB_OUTPUT"
+            echo "run_all=false" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
+    needs: ci-config
     strategy:
       fail-fast: false
-      matrix:
-        platform: [ self-hosted, windows-latest, macos-latest ]
-        toolchain: [ stable, beta, 1.75.0 ] # 1.75.0 is the MSRV for all crates
-        exclude:
-          - platform: windows-latest
-            toolchain: 1.75.0
-          - platform: windows-latest
-            toolchain: beta
-          - platform: macos-latest
-            toolchain: beta
+      matrix: ${{ fromJson(needs.ci-config.outputs.matrix) }}
     runs-on: ${{ matrix.platform }}
     steps:
       - name: Checkout source code
@@ -88,12 +103,89 @@ jobs:
         run: |
             echo "BITCOIND_EXE=$( pwd )/bin/bitcoind-${{ runner.os }}-${{ runner.arch }}" >> "$GITHUB_ENV"
             echo "ELECTRS_EXE=$( pwd )/bin/electrs-${{ runner.os }}-${{ runner.arch }}" >> "$GITHUB_ENV"
-      - name: Run CI script
-        shell: bash # Default on Winblows is powershell
-        run: CI_ENV=1 CI_MINIMIZE_DISK_USAGE=1 ./ci/ci-tests.sh
+      # --- Core steps (always run) ---
+      - name: Check workspace (except lightning-transaction-sync)
+        shell: bash
+        run: CI_ENV=1 CI_MINIMIZE_DISK_USAGE=1 ./ci/ci-tests.sh check-workspace
+      - name: Test workspace (except lightning-transaction-sync)
+        shell: bash
+        run: CI_ENV=1 CI_MINIMIZE_DISK_USAGE=1 ./ci/ci-tests.sh test-workspace
+      - name: Test upgrade from prior LDK versions
+        shell: bash
+        run: CI_ENV=1 CI_MINIMIZE_DISK_USAGE=1 ./ci/ci-tests.sh test-ldk-upgrade
+      - name: Check and build docs for workspace members
+        shell: bash
+        run: CI_ENV=1 CI_MINIMIZE_DISK_USAGE=1 ./ci/ci-tests.sh check-workspace-members
+      # --- Label-gated: block-sync ---
+      - name: Test lightning with dnssec feature
+        if: needs.ci-config.outputs.run_all == 'true' || contains(github.event.pull_request.labels.*.name, 'block-sync')
+        shell: bash
+        run: CI_ENV=1 CI_MINIMIZE_DISK_USAGE=1 ./ci/ci-tests.sh test-lightning-dnssec
+      - name: Test Block Sync Clients with features
+        if: needs.ci-config.outputs.run_all == 'true' || contains(github.event.pull_request.labels.*.name, 'block-sync')
+        shell: bash
+        run: CI_ENV=1 CI_MINIMIZE_DISK_USAGE=1 ./ci/ci-tests.sh test-lightning-block-sync
+      - name: Check Transaction Sync Clients
+        if: needs.ci-config.outputs.run_all == 'true' || contains(github.event.pull_request.labels.*.name, 'block-sync')
+        shell: bash
+        run: CI_ENV=1 CI_MINIMIZE_DISK_USAGE=1 ./ci/ci-tests.sh check-lightning-transaction-sync
+      - name: Test Transaction Sync Clients
+        if: needs.ci-config.outputs.run_all == 'true' || contains(github.event.pull_request.labels.*.name, 'block-sync')
+        shell: bash
+        run: CI_ENV=1 CI_MINIMIZE_DISK_USAGE=1 ./ci/ci-tests.sh test-lightning-transaction-sync
+      # --- Label-gated: full-test ---
+      - name: Test lightning-persister with tokio
+        if: needs.ci-config.outputs.run_all == 'true'
+        shell: bash
+        run: CI_ENV=1 CI_MINIMIZE_DISK_USAGE=1 ./ci/ci-tests.sh test-lightning-persister
+      - name: Test Custom Message Macros
+        if: needs.ci-config.outputs.run_all == 'true'
+        shell: bash
+        run: CI_ENV=1 CI_MINIMIZE_DISK_USAGE=1 ./ci/ci-tests.sh test-lightning-custom-message
+      - name: Test backtrace-debug builds
+        if: needs.ci-config.outputs.run_all == 'true'
+        shell: bash
+        run: CI_ENV=1 CI_MINIMIZE_DISK_USAGE=1 ./ci/ci-tests.sh test-lightning-backtrace
+      - name: Test other crate-specific builds
+        if: needs.ci-config.outputs.run_all == 'true'
+        shell: bash
+        run: CI_ENV=1 CI_MINIMIZE_DISK_USAGE=1 ./ci/ci-tests.sh test-crate-specific
+      # --- Label-gated: no-std ---
+      - name: Test no_std builds
+        if: needs.ci-config.outputs.run_all == 'true' || contains(github.event.pull_request.labels.*.name, 'no-std')
+        shell: bash
+        run: CI_ENV=1 CI_MINIMIZE_DISK_USAGE=1 ./ci/ci-tests.sh test-no-std
+      - name: Check no_std downstream crate
+        if: needs.ci-config.outputs.run_all == 'true' || contains(github.event.pull_request.labels.*.name, 'no-std')
+        shell: bash
+        run: CI_ENV=1 CI_MINIMIZE_DISK_USAGE=1 ./ci/ci-tests.sh check-no-std
+      - name: Check MSRV with release pins only
+        if: needs.ci-config.outputs.run_all == 'true' || contains(github.event.pull_request.labels.*.name, 'no-std')
+        shell: bash
+        run: CI_ENV=1 CI_MINIMIZE_DISK_USAGE=1 ./ci/ci-tests.sh check-msrv-no-dev-deps
+      - name: Build no_std for ARM Embedded
+        if: needs.ci-config.outputs.run_all == 'true' || contains(github.event.pull_request.labels.*.name, 'no-std')
+        shell: bash
+        run: CI_ENV=1 CI_MINIMIZE_DISK_USAGE=1 ./ci/ci-tests.sh build-no-std-arm
+      # --- Label-gated: c-bindings ---
+      - name: Test c_bindings builds
+        if: needs.ci-config.outputs.run_all == 'true' || contains(github.event.pull_request.labels.*.name, 'c-bindings')
+        shell: bash
+        run: CI_ENV=1 CI_MINIMIZE_DISK_USAGE=1 ./ci/ci-tests.sh test-c-bindings
+      # --- Label-gated: cfg-flags ---
+      - name: Test cfg-flag builds
+        if: needs.ci-config.outputs.run_all == 'true' || contains(github.event.pull_request.labels.*.name, 'cfg-flags')
+        shell: bash
+        run: CI_ENV=1 CI_MINIMIZE_DISK_USAGE=1 ./ci/ci-tests.sh test-cfg-flags
+      # --- Verify all steps ran (only when run_all) ---
+      - name: Verify all CI steps ran
+        if: needs.ci-config.outputs.run_all == 'true'
+        shell: bash
+        run: ./ci/ci-tests.sh --verify-complete
 
   coverage:
-    needs: fuzz
+    needs: [ci-config, fuzz]
+    if: needs.ci-config.outputs.run_all == 'true'
     strategy:
       fail-fast: false
     runs-on: self-hosted
@@ -131,6 +223,8 @@ jobs:
           ./codecov --verbose upload-process --disable-search --fail-on-error -f fuzz-codecov.json -t "f421b687-4dc2-4387-ac3d-dc3b2528af57" -F 'fuzzing'
 
   benchmark:
+    needs: ci-config
+    if: needs.ci-config.outputs.run_all == 'true'
     runs-on: ubuntu-latest
     env:
       TOOLCHAIN: stable
@@ -241,6 +335,8 @@ jobs:
         run: ci/check-docsrs.sh
 
   fuzz:
+    needs: ci-config
+    if: needs.ci-config.outputs.run_all == 'true'
     runs-on: self-hosted
     env:
       TOOLCHAIN: 1.75
