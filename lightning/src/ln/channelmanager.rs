@@ -452,7 +452,7 @@ pub(super) enum PendingHTLCStatus {
 pub(super) struct PendingAddHTLCInfo {
 	pub(super) forward_info: PendingHTLCInfo,
 
-	// These fields are produced in `forward_htlcs()` and consumed in
+	// These fields are set before calling `forward_htlcs()` and consumed in
 	// `process_pending_htlc_forwards()` for constructing the
 	// `HTLCSource::PreviousHopData` for failed and forwarded
 	// HTLCs.
