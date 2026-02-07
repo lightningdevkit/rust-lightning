@@ -131,7 +131,7 @@ fn test_htlc_claim_chunking() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &configs);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	let coinbase_tx = provide_anchor_utxo_reserves(&nodes, 50, Amount::from_sat(500));
+	let coinbase_tx = provide_utxo_reserves(&nodes, 50, Amount::from_sat(500));
 
 	const CHAN_CAPACITY: u64 = 10_000_000;
 	let (_, _, chan_id, _funding_tx) = create_announced_chan_between_nodes_with_value(
@@ -322,7 +322,7 @@ fn test_anchor_tx_too_big() {
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 
-	let _coinbase_tx_a = provide_anchor_utxo_reserves(&nodes, 50, Amount::from_sat(500));
+	let _coinbase_tx_a = provide_utxo_reserves(&nodes, 50, Amount::from_sat(500));
 
 	const CHAN_CAPACITY: u64 = 10_000_000;
 	let (_, _, chan_id, _funding_tx) = create_announced_chan_between_nodes_with_value(
