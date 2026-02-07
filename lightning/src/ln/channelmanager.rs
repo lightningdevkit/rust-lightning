@@ -30,7 +30,7 @@ use bitcoin::hashes::{Hash, HashEngine, HmacEngine};
 
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::secp256k1::{PublicKey, SecretKey};
-use bitcoin::{secp256k1, Sequence, SignedAmount};
+use bitcoin::{secp256k1, FeeRate, Sequence, SignedAmount};
 
 use crate::blinded_path::message::{
 	AsyncPaymentsContext, BlindedMessagePath, MessageForwardNode, OffersContext,
@@ -57,6 +57,7 @@ use crate::events::{FundingInfo, PaidBolt12Invoice};
 use crate::ln::chan_utils::selected_commitment_sat_per_1000_weight;
 #[cfg(any(test, fuzzing))]
 use crate::ln::channel::QuiescentAction;
+use crate::ln::channel::QuiescentError;
 use crate::ln::channel::{
 	self, hold_time_since, Channel, ChannelError, ChannelUpdateStatus, DisconnectResult,
 	FundedChannel, FundingTxSigned, InboundV1Channel, OutboundV1Channel, PendingV2Channel,
@@ -64,7 +65,7 @@ use crate::ln::channel::{
 	WithChannelContext,
 };
 use crate::ln::channel_state::ChannelDetails;
-use crate::ln::funding::SpliceContribution;
+use crate::ln::funding::{FundingContribution, SpliceContribution};
 use crate::ln::inbound_payment;
 use crate::ln::interactivetxs::InteractiveTxMessageSend;
 use crate::ln::msgs;
@@ -4157,8 +4158,16 @@ impl<
 						user_channel_id: shutdown_res.user_channel_id,
 						abandoned_funding_txo: splice_funding_failed.funding_txo,
 						channel_type: splice_funding_failed.channel_type,
-						contributed_inputs: splice_funding_failed.contributed_inputs,
-						contributed_outputs: splice_funding_failed.contributed_outputs,
+					},
+					None,
+				));
+				pending_events.push_back((
+					events::Event::DiscardFunding {
+						channel_id: shutdown_res.channel_id,
+						funding_info: FundingInfo::Contribution {
+							inputs: splice_funding_failed.contributed_inputs,
+							outputs: splice_funding_failed.contributed_outputs,
+						},
 					},
 					None,
 				));
@@ -4543,13 +4552,13 @@ impl<
 	///
 	/// Provide a `contribution` to determine if value is spliced in or out. The splice initiator is
 	/// responsible for paying fees for common fields, shared inputs, and shared outputs along with
-	/// any contributed inputs and outputs. Fees are determined using `funding_feerate_per_kw` and
-	/// must be covered by the supplied inputs for splice-in or the channel balance for splice-out.
-	///
-	/// An optional `locktime` for the funding transaction may be specified. If not given, the
-	/// current best block height is used.
+	/// any contributed inputs and outputs. Fees are determined using `feerate` and must be covered
+	/// by the supplied inputs for splice-in or the channel balance for splice-out.
 	///
 	/// # Events
+	///
+	/// [`Event::FundingNeeded`] will be generated upon success and must be handled for the splice
+	/// to be initiated.
 	///
 	/// Once the funding transaction has been constructed, an [`Event::SplicePending`] will be
 	/// emitted. At this point, any inputs contributed to the splice can only be re-spent if an
@@ -4568,12 +4577,12 @@ impl<
 	#[rustfmt::skip]
 	pub fn splice_channel(
 		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey,
-		contribution: SpliceContribution, funding_feerate_per_kw: u32, locktime: Option<u32>,
+		contribution: SpliceContribution, feerate: FeeRate,
 	) -> Result<(), APIError> {
 		let mut res = Ok(());
 		PersistenceNotifierGuard::optionally_notify(self, || {
 			let result = self.internal_splice_channel(
-				channel_id, counterparty_node_id, contribution, funding_feerate_per_kw, locktime
+				channel_id, counterparty_node_id, contribution, feerate,
 			);
 			res = result;
 			match res {
@@ -4586,7 +4595,7 @@ impl<
 
 	fn internal_splice_channel(
 		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey,
-		contribution: SpliceContribution, funding_feerate_per_kw: u32, locktime: Option<u32>,
+		contribution: SpliceContribution, feerate: FeeRate,
 	) -> Result<(), APIError> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 
@@ -4614,21 +4623,42 @@ impl<
 		// Look for the channel
 		match peer_state.channel_by_id.entry(*channel_id) {
 			hash_map::Entry::Occupied(mut chan_phase_entry) => {
-				let locktime = locktime.unwrap_or_else(|| self.current_best_block().height);
 				if let Some(chan) = chan_phase_entry.get_mut().as_funded_mut() {
-					let logger = WithChannelContext::from(&self.logger, &chan.context, None);
-					let msg_opt = chan.splice_channel(
-						contribution,
-						funding_feerate_per_kw,
-						locktime,
-						&&logger,
-					)?;
-					if let Some(msg) = msg_opt {
-						peer_state.pending_msg_events.push(MessageSendEvent::SendStfu {
-							node_id: *counterparty_node_id,
-							msg,
+					let pending_events = self.pending_events.lock().unwrap();
+					let awaiting_splice_funding = pending_events
+						.iter()
+						.find(|(event, _)| {
+							matches!(
+								event,
+								events::Event::FundingNeeded {
+									channel_id: splice_channel_id,
+									counterparty_node_id: splice_counterparty_node_id,
+									..
+								} if splice_channel_id == channel_id && splice_counterparty_node_id == counterparty_node_id)
+						})
+						.is_some();
+					drop(pending_events);
+
+					if awaiting_splice_funding {
+						return Err(APIError::APIMisuseError {
+							err: format!(
+								"Already awaiting splice funding for channel {}",
+								channel_id
+							),
 						});
 					}
+
+					let funding_template = chan.splice_channel(contribution, feerate)?;
+					let mut pending_events = self.pending_events.lock().unwrap();
+					pending_events.push_back((
+						events::Event::FundingNeeded {
+							channel_id: chan.context.channel_id(),
+							user_channel_id: chan.context.get_user_id(),
+							counterparty_node_id: chan.context.get_counterparty_node_id(),
+							funding_template,
+						},
+						None,
+					));
 					Ok(())
 				} else {
 					Err(APIError::ChannelUnavailable {
@@ -4710,8 +4740,16 @@ impl<
 								user_channel_id: chan.context.get_user_id(),
 								abandoned_funding_txo: splice_funding_failed.funding_txo,
 								channel_type: splice_funding_failed.channel_type,
-								contributed_inputs: splice_funding_failed.contributed_inputs,
-								contributed_outputs: splice_funding_failed.contributed_outputs,
+							},
+							None,
+						));
+						pending_events.push_back((
+							events::Event::DiscardFunding {
+								channel_id: *channel_id,
+								funding_info: FundingInfo::Contribution {
+									inputs: splice_funding_failed.contributed_inputs,
+									outputs: splice_funding_failed.contributed_outputs,
+								},
 							},
 							None,
 						));
@@ -6342,6 +6380,180 @@ impl<
 				let _ = self.handle_error(err, counterparty_node_id);
 			}
 		}
+		result
+	}
+
+	/// Adds or removes funds from the given channel as specified by a [`FundingContribution`].
+	///
+	/// Used to handle an [`Event::FundingNeeded`] by constructing a [`FundingContribution`] from a
+	/// [`FundingTemplate`] and passing it here. See [`FundingTemplate::build`] and
+	/// [`FundingTemplate::build_sync`].
+	///
+	/// Calling this method will commence the process of creating a new funding transaction for the
+	/// channel. An [`Event::FundingTransactionReadyForSigning`] will be generated once the
+	/// transaction is successfully constructed interactively with the counterparty.
+	/// If unsuccessful, an [`Event::SpliceFailed`] will be surfaced instead.
+	///
+	/// An optional `locktime` for the funding transaction may be specified. If not given, the
+	/// current best block height is used.
+	///
+	/// Returns [`ChannelUnavailable`] when a channel is not found or an incorrect
+	/// `counterparty_node_id` is provided.
+	///
+	/// Returns [`APIMisuseError`] when a channel is not in a state where it is expecting funding
+	/// contribution.
+	///
+	/// [`FundingTemplate`]: crate::ln::funding::FundingTemplate
+	/// [`FundingTemplate::build`]: crate::ln::funding::FundingTemplate::build
+	/// [`FundingTemplate::build_sync`]: crate::ln::funding::FundingTemplate::build_sync
+	/// [`ChannelUnavailable`]: APIError::ChannelUnavailable
+	/// [`APIMisuseError`]: APIError::APIMisuseError
+	pub fn funding_contributed(
+		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey,
+		contribution: FundingContribution, locktime: Option<u32>,
+	) -> Result<(), APIError> {
+		let mut result = Ok(());
+		PersistenceNotifierGuard::optionally_notify(self, || {
+			let per_peer_state = self.per_peer_state.read().unwrap();
+			let peer_state_mutex_opt = per_peer_state.get(counterparty_node_id);
+			if peer_state_mutex_opt.is_none() {
+				let (inputs, outputs) = contribution.into_contributed_inputs_and_outputs();
+				let pending_events = &mut self.pending_events.lock().unwrap();
+				pending_events.push_back((
+					events::Event::DiscardFunding {
+						channel_id: *channel_id,
+						funding_info: FundingInfo::Contribution { inputs, outputs },
+					},
+					None,
+				));
+				result = Err(APIError::ChannelUnavailable {
+					err: format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}")
+				});
+				return NotifyOption::SkipPersistNoEvents;
+			}
+
+			let mut peer_state = peer_state_mutex_opt.unwrap().lock().unwrap();
+
+			match peer_state.channel_by_id.get_mut(channel_id) {
+				Some(channel) => match channel.as_funded_mut() {
+					Some(chan) => {
+						let locktime = bitcoin::absolute::LockTime::from_consensus(
+							locktime.unwrap_or_else(|| self.current_best_block().height),
+						);
+						let logger = WithChannelContext::from(&self.logger, chan.context(), None);
+						match chan.funding_contributed(contribution, locktime, &&logger) {
+							Ok(msg_opt) => {
+								if let Some(msg) = msg_opt {
+									peer_state.pending_msg_events.push(
+										MessageSendEvent::SendStfu {
+											node_id: *counterparty_node_id,
+											msg,
+										},
+									);
+								}
+							},
+							Err(QuiescentError::DoNothing) => {
+								result = Err(APIError::APIMisuseError {
+									err: format!(
+										"Duplicate funding contribution for channel {}",
+										channel_id
+									),
+								});
+							},
+							Err(QuiescentError::DiscardFunding { inputs, outputs }) => {
+								let pending_events = &mut self.pending_events.lock().unwrap();
+								pending_events.push_back((
+									events::Event::DiscardFunding {
+										channel_id: *channel_id,
+										funding_info: FundingInfo::Contribution { inputs, outputs },
+									},
+									None,
+								));
+								result = Err(APIError::APIMisuseError {
+									err: format!(
+										"Channel {} already has a pending funding contribution",
+										channel_id
+									),
+								});
+							},
+							Err(QuiescentError::FailSplice(SpliceFundingFailed {
+								funding_txo,
+								channel_type,
+								contributed_inputs,
+								contributed_outputs,
+							})) => {
+								let pending_events = &mut self.pending_events.lock().unwrap();
+								pending_events.push_back((
+									events::Event::SpliceFailed {
+										channel_id: *channel_id,
+										counterparty_node_id: *counterparty_node_id,
+										user_channel_id: channel.context().get_user_id(),
+										abandoned_funding_txo: funding_txo,
+										channel_type,
+									},
+									None,
+								));
+								pending_events.push_back((
+									events::Event::DiscardFunding {
+										channel_id: *channel_id,
+										funding_info: FundingInfo::Contribution {
+											inputs: contributed_inputs,
+											outputs: contributed_outputs,
+										},
+									},
+									None,
+								));
+								result = Err(APIError::APIMisuseError {
+									err: format!(
+										"Channel {} cannot accept funding contribution",
+										channel_id
+									),
+								});
+							},
+						}
+
+						return NotifyOption::DoPersist;
+					},
+					None => {
+						let (inputs, outputs) = contribution.into_contributed_inputs_and_outputs();
+						let pending_events = &mut self.pending_events.lock().unwrap();
+						pending_events.push_back((
+							events::Event::DiscardFunding {
+								channel_id: *channel_id,
+								funding_info: FundingInfo::Contribution { inputs, outputs },
+							},
+							None,
+						));
+						result = Err(APIError::APIMisuseError {
+							err: format!(
+								"Channel with id {} not expecting funding contribution",
+								channel_id
+							),
+						});
+						return NotifyOption::SkipPersistNoEvents;
+					},
+				},
+				None => {
+					let (inputs, outputs) = contribution.into_contributed_inputs_and_outputs();
+					let pending_events = &mut self.pending_events.lock().unwrap();
+					pending_events.push_back((
+						events::Event::DiscardFunding {
+							channel_id: *channel_id,
+							funding_info: FundingInfo::Contribution { inputs, outputs },
+						},
+						None,
+					));
+					result = Err(APIError::ChannelUnavailable {
+						err: format!(
+							"Channel with id {} not found for the passed counterparty node_id {}",
+							channel_id, counterparty_node_id
+						),
+					});
+					return NotifyOption::SkipPersistNoEvents;
+				},
+			}
+		});
+
 		result
 	}
 
@@ -11227,9 +11439,17 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								user_channel_id: channel.context().get_user_id(),
 								abandoned_funding_txo: splice_funding_failed.funding_txo,
 								channel_type: splice_funding_failed.channel_type.clone(),
-								contributed_inputs: splice_funding_failed.contributed_inputs,
-								contributed_outputs: splice_funding_failed.contributed_outputs,
 							}, None));
+							pending_events.push_back((
+								events::Event::DiscardFunding {
+									channel_id,
+									funding_info: FundingInfo::Contribution {
+										inputs: splice_funding_failed.contributed_inputs,
+										outputs: splice_funding_failed.contributed_outputs,
+									},
+								},
+								None,
+							));
 						}
 						Err(MsgHandleErrInternal::from_chan_no_close(error, channel_id))
 					},
@@ -11370,9 +11590,17 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								user_channel_id: chan.context().get_user_id(),
 								abandoned_funding_txo: splice_funding_failed.funding_txo,
 								channel_type: splice_funding_failed.channel_type.clone(),
-								contributed_inputs: splice_funding_failed.contributed_inputs,
-								contributed_outputs: splice_funding_failed.contributed_outputs,
 							}, None));
+							pending_events.push_back((
+								events::Event::DiscardFunding {
+									channel_id: msg.channel_id,
+									funding_info: FundingInfo::Contribution {
+										inputs: splice_funding_failed.contributed_inputs,
+										outputs: splice_funding_failed.contributed_outputs,
+									},
+								},
+								None,
+							));
 						}
 						Err(MsgHandleErrInternal::from_chan_no_close(error, msg.channel_id))
 					},
@@ -11504,9 +11732,17 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						user_channel_id: chan_entry.get().context().get_user_id(),
 						abandoned_funding_txo: splice_funding_failed.funding_txo,
 						channel_type: splice_funding_failed.channel_type,
-						contributed_inputs: splice_funding_failed.contributed_inputs,
-						contributed_outputs: splice_funding_failed.contributed_outputs,
 					}, None));
+					pending_events.push_back((
+						events::Event::DiscardFunding {
+							channel_id: msg.channel_id,
+							funding_info: FundingInfo::Contribution {
+								inputs: splice_funding_failed.contributed_inputs,
+								outputs: splice_funding_failed.contributed_outputs,
+							},
+						},
+						None,
+					));
 				}
 
 				Ok(persist)
@@ -13231,7 +13467,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								});
 								notify = NotifyOption::SkipPersistHandleEvents;
 							},
-							Err(msg) => log_trace!(logger, "{}", msg),
+							Err(e) => {
+								debug_assert!(matches!(e, QuiescentError::DoNothing));
+								log_trace!(logger, "Failed to propose quiescence");
+							},
 						}
 					} else {
 						result = Err(APIError::APIMisuseError {
@@ -14253,6 +14492,17 @@ impl<
 		events.pop_front().map(|(e, _)| e)
 	}
 
+	#[cfg(any(test, feature = "_test_utils"))]
+	pub fn push_pending_msg_event(
+		&self, counterparty_node_id: &PublicKey, msg_event: MessageSendEvent,
+	) {
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		if let Some(peer_state_mutex) = per_peer_state.get(counterparty_node_id) {
+			let mut peer_state = peer_state_mutex.lock().unwrap();
+			peer_state.pending_msg_events.push(msg_event);
+		}
+	}
+
 	#[cfg(test)]
 	pub fn has_pending_payments(&self) -> bool {
 		self.pending_outbound_payments.has_pending_payments()
@@ -14505,8 +14755,13 @@ impl<
 								user_channel_id: chan.context().get_user_id(),
 								abandoned_funding_txo: splice_funding_failed.funding_txo,
 								channel_type: splice_funding_failed.channel_type,
-								contributed_inputs: splice_funding_failed.contributed_inputs,
-								contributed_outputs: splice_funding_failed.contributed_outputs,
+							});
+							splice_failed_events.push(events::Event::DiscardFunding {
+								channel_id: chan.context().channel_id(),
+								funding_info: FundingInfo::Contribution {
+									inputs: splice_funding_failed.contributed_inputs,
+									outputs: splice_funding_failed.contributed_outputs,
+								},
 							});
 						}
 
@@ -17109,9 +17364,9 @@ impl<
 		let our_pending_intercepts = self.pending_intercepted_htlcs.lock().unwrap();
 
 		// Since some FundingNegotiation variants are not persisted, any splice in such state must
-		// be failed upon reload. However, as the necessary information for the SpliceFailed event
-		// is not persisted, the event itself needs to be persisted even though it hasn't been
-		// emitted yet. These are removed after the events are written.
+		// be failed upon reload. However, as the necessary information for the SpliceFailed and
+		// DiscardFunding events is not persisted, the events need to be persisted even though they
+		// haven't been emitted yet. These are removed after the events are written.
 		let mut events = self.pending_events.lock().unwrap();
 		let event_count = events.len();
 		for peer_state in peer_states.iter() {
@@ -17124,8 +17379,16 @@ impl<
 							user_channel_id: chan.context.get_user_id(),
 							abandoned_funding_txo: splice_funding_failed.funding_txo,
 							channel_type: splice_funding_failed.channel_type,
-							contributed_inputs: splice_funding_failed.contributed_inputs,
-							contributed_outputs: splice_funding_failed.contributed_outputs,
+						},
+						None,
+					));
+					events.push_back((
+						events::Event::DiscardFunding {
+							channel_id: chan.context().channel_id(),
+							funding_info: FundingInfo::Contribution {
+								inputs: splice_funding_failed.contributed_inputs,
+								outputs: splice_funding_failed.contributed_outputs,
+							},
 						},
 						None,
 					));
@@ -17248,7 +17511,7 @@ impl<
 			(21, WithoutLength(&self.flow.writeable_async_receive_offer_cache()), required),
 		});
 
-		// Remove the SpliceFailed events added earlier.
+		// Remove the SpliceFailed and DiscardFunding events added earlier.
 		events.truncate(event_count);
 
 		Ok(())

@@ -24,7 +24,6 @@ use crate::chain::chaininterface::FeeEstimator;
 use crate::chain::chainmonitor::ChainMonitor;
 use crate::chain::chainmonitor::Persist;
 use crate::chain::Filter;
-use crate::events::bump_transaction::Utxo;
 use crate::ln::chan_utils::max_htlcs;
 use crate::ln::channelmanager::AChannelManager;
 use crate::prelude::new_hash_set;
@@ -32,6 +31,7 @@ use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::sign::EntropySource;
 use crate::types::features::ChannelTypeFeatures;
 use crate::util::logger::Logger;
+use crate::util::wallet_utils::Utxo;
 use bitcoin::constants::WITNESS_SCALE_FACTOR;
 use bitcoin::Amount;
 use bitcoin::FeeRate;
@@ -315,7 +315,7 @@ where
 #[cfg(test)]
 mod test {
 	use super::*;
-	use bitcoin::{OutPoint, ScriptBuf, TxOut, Txid};
+	use bitcoin::{OutPoint, ScriptBuf, Sequence, TxOut, Txid};
 	use std::str::FromStr;
 
 	#[test]
@@ -343,6 +343,7 @@ mod test {
 			},
 			output: TxOut { value: amount, script_pubkey: ScriptBuf::new() },
 			satisfaction_weight: 1 * 4 + (1 + 1 + 72 + 1 + 33),
+			sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
 		}
 	}
 

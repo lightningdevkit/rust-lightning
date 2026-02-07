@@ -1943,14 +1943,14 @@ impl Readable for HTLCFailReason {
 
 impl_writeable_tlv_based_enum!(HTLCFailReasonRepr,
 	(0, LightningError) => {
-		(0, data, (legacy, Vec<u8>, |us|
+		(0, data, (legacy, Vec<u8>, |_| Ok(()), |us|
 			if let &HTLCFailReasonRepr::LightningError { err: msgs::OnionErrorPacket { ref data, .. }, .. } = us {
 				Some(data)
 			} else {
 				None
 			})
 		),
-		(1, attribution_data, (legacy, AttributionData, |us|
+		(1, attribution_data, (legacy, AttributionData, |_| Ok(()), |us|
 			if let &HTLCFailReasonRepr::LightningError { err: msgs::OnionErrorPacket { ref attribution_data, .. }, .. } = us {
 				attribution_data.as_ref()
 			} else {
@@ -1961,7 +1961,7 @@ impl_writeable_tlv_based_enum!(HTLCFailReasonRepr,
 		(_unused, err, (static_value, msgs::OnionErrorPacket { data: data.ok_or(DecodeError::InvalidValue)?, attribution_data })),
 	},
 	(1, Reason) => {
-		(0, _failure_code, (legacy, u16,
+		(0, _failure_code, (legacy, u16, |_| Ok(()),
 			|r: &HTLCFailReasonRepr| match r {
 				HTLCFailReasonRepr::LightningError{ .. } => None,
 				HTLCFailReasonRepr::Reason{ failure_reason, .. } => Some(failure_reason.failure_code())
