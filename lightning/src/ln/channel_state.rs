@@ -607,9 +607,9 @@ impl_writeable_tlv_based!(ChannelDetails, {
 	(10, channel_value_satoshis, required),
 	(12, unspendable_punishment_reserve, option),
 	// Note that _user_channel_id_low is used below, but rustc warns anyway
-	(14, _user_channel_id_low, (legacy, u64,
+	(14, _user_channel_id_low, (legacy, u64, |_| Ok(()),
 		|us: &ChannelDetails| Some(us.user_channel_id as u64))),
-	(16, _balance_msat, (legacy, u64, |us: &ChannelDetails| Some(us.next_outbound_htlc_limit_msat))),
+	(16, _balance_msat, (legacy, u64, |_| Ok(()), |us: &ChannelDetails| Some(us.next_outbound_htlc_limit_msat))),
 	(18, outbound_capacity_msat, required),
 	(19, next_outbound_htlc_limit_msat, (default_value, outbound_capacity_msat)),
 	(20, inbound_capacity_msat, required),
@@ -623,7 +623,7 @@ impl_writeable_tlv_based!(ChannelDetails, {
 	(33, inbound_htlc_minimum_msat, option),
 	(35, inbound_htlc_maximum_msat, option),
 	// Note that _user_channel_id_high is used below, but rustc warns anyway
-	(37, _user_channel_id_high, (legacy, u64,
+	(37, _user_channel_id_high, (legacy, u64, |_| Ok(()),
 		|us: &ChannelDetails| Some((us.user_channel_id >> 64) as u64))),
 	(39, feerate_sat_per_1000_weight, option),
 	(41, channel_shutdown_state, option),

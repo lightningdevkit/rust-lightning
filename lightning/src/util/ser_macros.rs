@@ -45,7 +45,7 @@ macro_rules! _encode_tlv {
 			field.write($stream)?;
 		}
 	};
-	($stream: expr, $optional_type: expr, $optional_field: expr, (legacy, $fieldty: ty, $write: expr) $(, $self: ident)?) => { {
+	($stream: expr, $optional_type: expr, $optional_field: expr, (legacy, $fieldty: ty, $read: expr, $write: expr) $(, $self: ident)?) => { {
 		let value: Option<_> = $write($($self)?);
 		#[cfg(debug_assertions)]
 		{
@@ -62,6 +62,9 @@ macro_rules! _encode_tlv {
 			}
 		}
 		$crate::_encode_tlv!($stream, $optional_type, value, option);
+	} };
+	($stream: expr, $optional_type: expr, $optional_field: expr, (custom, $fieldty: ty, $read: expr, $write: expr) $(, $self: ident)?) => { {
+		$crate::_encode_tlv!($stream, $optional_type, $optional_field, (legacy, $fieldty, $read, $write) $(, $self)?);
 	} };
 	($stream: expr, $type: expr, $field: expr, optional_vec $(, $self: ident)?) => {
 		if !$field.is_empty() {
@@ -229,8 +232,11 @@ macro_rules! _get_varint_length_prefixed_tlv_length {
 			$len.0 += field_len;
 		}
 	};
-	($len: expr, $optional_type: expr, $optional_field: expr, (legacy, $fieldty: ty, $write: expr) $(, $self: ident)?) => {
+	($len: expr, $optional_type: expr, $optional_field: expr, (legacy, $fieldty: ty, $read: expr, $write: expr) $(, $self: ident)?) => {
 		$crate::_get_varint_length_prefixed_tlv_length!($len, $optional_type, $write($($self)?), option);
+	};
+	($len: expr, $optional_type: expr, $optional_field: expr, (custom, $fieldty: ty, $read: expr, $write: expr) $(, $self: ident)?) => {
+		$crate::_get_varint_length_prefixed_tlv_length!($len, $optional_type, $optional_field, (legacy, $fieldty, $read, $write) $(, $self)?);
 	};
 	($len: expr, $type: expr, $field: expr, optional_vec $(, $self: ident)?) => {
 		if !$field.is_empty() {
@@ -314,8 +320,18 @@ macro_rules! _check_decoded_tlv_order {
 	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, (option, explicit_type: $fieldty: ty)) => {{
 		// no-op
 	}};
-	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, (legacy, $fieldty: ty, $write: expr)) => {{
+	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, (legacy, $fieldty: ty, $read: expr, $write: expr)) => {{
 		// no-op
+	}};
+	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, (custom, $fieldty: ty, $read: expr, $write: expr) $(, $self: ident)?) => {{
+		// Note that $type may be 0 making the second comparison always false
+		#[allow(unused_comparisons)]
+		let invalid_order =
+			($last_seen_type.is_none() || $last_seen_type.unwrap() < $type) && $typ.0 > $type;
+		if invalid_order {
+			let read_result: Result<_, DecodeError> = $read(None);
+			$field = read_result?.into();
+		}
 	}};
 	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, (required, explicit_type: $fieldty: ty)) => {{
 		_check_decoded_tlv_order!($last_seen_type, $typ, $type, $field, required);
@@ -382,8 +398,19 @@ macro_rules! _check_missing_tlv {
 	($last_seen_type: expr, $type: expr, $field: ident, (option, explicit_type: $fieldty: ty)) => {{
 		// no-op
 	}};
-	($last_seen_type: expr, $type: expr, $field: ident, (legacy, $fieldty: ty, $write: expr)) => {{
-		// no-op
+	($last_seen_type: expr, $type: expr, $field: ident, (legacy, $fieldty: ty, $read: expr, $write: expr)) => {{
+		use $crate::ln::msgs::DecodeError;
+		let read_result: Result<(), DecodeError> = $read($field.as_ref());
+		read_result?;
+	}};
+	($last_seen_type: expr, $type: expr, $field: ident, (custom, $fieldty: ty, $read: expr, $write: expr)) => {{
+		// Note that $type may be 0 making the second comparison always false
+		#[allow(unused_comparisons)]
+		let missing_req_type = $last_seen_type.is_none() || $last_seen_type.unwrap() < $type;
+		if missing_req_type {
+			let read_result: Result<_, DecodeError> = $read(None);
+			$field = read_result?.into();
+		}
 	}};
 	($last_seen_type: expr, $type: expr, $field: ident, (required, explicit_type: $fieldty: ty)) => {{
 		_check_missing_tlv!($last_seen_type, $type, $field, required);
@@ -438,8 +465,14 @@ macro_rules! _decode_tlv {
 		let _field: &Option<$fieldty> = &$field;
 		$crate::_decode_tlv!($outer_reader, $reader, $field, option);
 	}};
-	($outer_reader: expr, $reader: expr, $field: ident, (legacy, $fieldty: ty, $write: expr)) => {{
+	($outer_reader: expr, $reader: expr, $field: ident, (legacy, $fieldty: ty, $read: expr, $write: expr)) => {{
 		$crate::_decode_tlv!($outer_reader, $reader, $field, (option, explicit_type: $fieldty));
+	}};
+	($outer_reader: expr, $reader: expr, $field: ident, (custom, $fieldty: ty, $read: expr, $write: expr)) => {{
+		let read_field: $fieldty;
+		$crate::_decode_tlv!($outer_reader, $reader, read_field, required);
+		let read_result: Result<_, DecodeError> = $read(Some(read_field));
+		$field = read_result?.into();
 	}};
 	($outer_reader: expr, $reader: expr, $field: ident, (required, explicit_type: $fieldty: ty)) => {{
 		let _field: &$fieldty = &$field;
@@ -827,8 +860,11 @@ macro_rules! _init_tlv_based_struct_field {
 	($field: ident, option) => {
 		$field
 	};
-	($field: ident, (legacy, $fieldty: ty, $write: expr)) => {
+	($field: ident, (legacy, $fieldty: ty, $read: expr, $write: expr)) => {
 		$crate::_init_tlv_based_struct_field!($field, option)
+	};
+	($field: ident, (custom, $fieldty: ty, $read: expr, $write: expr)) => {
+		$crate::_init_tlv_based_struct_field!($field, required)
 	};
 	($field: ident, (option: $trait: ident $(, $read_arg: expr)?)) => {
 		$crate::_init_tlv_based_struct_field!($field, option)
@@ -893,8 +929,11 @@ macro_rules! _init_tlv_field_var {
 	($field: ident, (option, explicit_type: $fieldty: ty)) => {
 		let mut $field: Option<$fieldty> = None;
 	};
-	($field: ident, (legacy, $fieldty: ty, $write: expr)) => {
+	($field: ident, (legacy, $fieldty: ty, $read: expr, $write: expr)) => {
 		$crate::_init_tlv_field_var!($field, (option, explicit_type: $fieldty));
+	};
+	($field: ident, (custom, $fieldty: ty, $read: expr, $write: expr)) => {
+		$crate::_init_tlv_field_var!($field, required);
 	};
 	($field: ident, (required, explicit_type: $fieldty: ty)) => {
 		let mut $field = $crate::util::ser::RequiredWrapper::<$fieldty>(None);
@@ -975,10 +1014,18 @@ macro_rules! _decode_and_build {
 ///    [`MaybeReadable`], requiring the TLV to be present.
 /// If `$fieldty` is `optional_vec`, then `$field` is a [`Vec`], which needs to have its individual elements serialized.
 ///    Note that for `optional_vec` no bytes are written if the vec is empty
-/// If `$fieldty` is `(legacy, $ty, $write)` then, when writing, the function $write will be
+/// If `$fieldty` is `(legacy, $ty, $read, $write)` then, when writing, the function $write will be
 ///    called with the object being serialized and a returned `Option` and is written as a TLV if
-///    `Some`. When reading, an optional field of type `$ty` is read (which can be used in later
-///    `default_value` or `static_value` fields by referring to the value by name).
+///    `Some`. When reading, an optional field of type `$ty` is read, and after all TLV fields are
+///    read, the `$read` closure is called with the `Option<&$ty>` value. The `$read` closure should
+///    return a `Result<(), DecodeError>`. Legacy field values can be used in later
+///    `default_value` or `static_value` fields by referring to the value by name.
+/// If `$fieldty` is `(custom, $ty, $read, $write)` then, when writing, the same behavior as
+///    `legacy`, above is used. When reading, if a TLV is present, it is read as `$ty` and the
+///    `$read` method is called with `Some(decoded_$ty_object)`. If no TLV is present, the field
+///    will be initialized by calling `$read(None)`. `$read` should return a
+///    `Result<field type, DecodeError>` (note that the processed field type may differ from `$ty`;
+///    `$ty` is the type as de/serialized, not necessarily the actual field type).
 ///
 /// For example,
 /// ```
@@ -996,7 +1043,7 @@ macro_rules! _decode_and_build {
 /// 	(1, tlv_default_integer, (default_value, 7)),
 /// 	(2, tlv_optional_integer, option),
 /// 	(3, tlv_vec_type_integer, optional_vec),
-/// 	(4, unwritten_type, (legacy, u32, |us: &LightningMessage| Some(us.tlv_integer))),
+/// 	(4, unwritten_type, (legacy, u32, |_| Ok(()), |us: &LightningMessage| Some(us.tlv_integer))),
 /// 	(_unused, tlv_upgraded_integer, (static_value, unwritten_type.unwrap_or(0) * 2))
 /// });
 /// ```
@@ -1888,7 +1935,7 @@ mod tests {
 		new_field: (u8, u8),
 	}
 	impl_writeable_tlv_based!(ExpandedField, {
-		(0, old_field, (legacy, u8, |us: &ExpandedField| Some(us.new_field.0))),
+		(0, old_field, (legacy, u8, |_| Ok(()), |us: &ExpandedField| Some(us.new_field.0))),
 		(1, new_field, (default_value, (old_field.ok_or(DecodeError::InvalidValue)?, 0))),
 	});
 
