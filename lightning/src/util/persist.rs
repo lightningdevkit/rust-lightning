@@ -1532,6 +1532,7 @@ impl From<u64> for UpdateName {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::chain::channelmonitor::ChannelMonitorUpdateStep;
 	use crate::chain::ChannelMonitorUpdateStatus;
 	use crate::check_closed_broadcast;
 	use crate::events::ClosureReason;
@@ -1935,6 +1936,130 @@ mod tests {
 			UpdateName::from(1).as_str()
 		)
 		.is_err());
+	}
+
+	// Test that a monitor with a legacy u64::MAX update_id (from pre-0.1 LDK) can still be read
+	// and applied correctly on startup. LDK prior to 0.1 used u64::MAX as a sentinel update_id
+	// for all ChannelMonitorUpdates generated after a channel was closed. We no longer generate
+	// these, but must still handle them for nodes upgrading from older versions.
+	#[test]
+	fn legacy_closed_channel_update_id_upgrade() {
+		let test_max_pending_updates = 7;
+		let chanmon_cfgs = create_chanmon_cfgs(3);
+		let kv_store_0 = TestStore::new(false);
+		let persister_0 = MonitorUpdatingPersister::new(
+			&kv_store_0,
+			&chanmon_cfgs[0].logger,
+			test_max_pending_updates,
+			&chanmon_cfgs[0].keys_manager,
+			&chanmon_cfgs[0].keys_manager,
+			&chanmon_cfgs[0].tx_broadcaster,
+			&chanmon_cfgs[0].fee_estimator,
+		);
+		let kv_store_1 = TestStore::new(false);
+		let persister_1 = MonitorUpdatingPersister::new(
+			&kv_store_1,
+			&chanmon_cfgs[1].logger,
+			test_max_pending_updates,
+			&chanmon_cfgs[1].keys_manager,
+			&chanmon_cfgs[1].keys_manager,
+			&chanmon_cfgs[1].tx_broadcaster,
+			&chanmon_cfgs[1].fee_estimator,
+		);
+		let mut node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let chain_mon_0 = test_utils::TestChainMonitor::new(
+			Some(&chanmon_cfgs[0].chain_source),
+			&chanmon_cfgs[0].tx_broadcaster,
+			&chanmon_cfgs[0].logger,
+			&chanmon_cfgs[0].fee_estimator,
+			&persister_0,
+			&chanmon_cfgs[0].keys_manager,
+		);
+		let chain_mon_1 = test_utils::TestChainMonitor::new(
+			Some(&chanmon_cfgs[1].chain_source),
+			&chanmon_cfgs[1].tx_broadcaster,
+			&chanmon_cfgs[1].logger,
+			&chanmon_cfgs[1].fee_estimator,
+			&persister_1,
+			&chanmon_cfgs[1].keys_manager,
+		);
+		node_cfgs[0].chain_monitor = chain_mon_0;
+		node_cfgs[1].chain_monitor = chain_mon_1;
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+		// Create a channel and send a payment to build up real monitor data.
+		let _ = create_announced_chan_between_nodes(&nodes, 0, 1);
+		send_payment(&nodes[0], &vec![&nodes[1]][..], 8_000_000);
+
+		// Read the current monitor state before we inject the legacy update.
+		let persisted_chan_data = persister_0.read_all_channel_monitors_with_updates().unwrap();
+		assert_eq!(persisted_chan_data.len(), 1);
+		let (_, monitor) = &persisted_chan_data[0];
+		let monitor_name = monitor.persistence_key();
+		let pre_legacy_update_id = monitor.get_latest_update_id();
+		assert!(pre_legacy_update_id < u64::MAX);
+
+		// Construct a legacy ChannelForceClosed update with update_id = u64::MAX, simulating
+		// what a pre-0.1 LDK node would have written to the store after force-closing a channel.
+		let legacy_update = ChannelMonitorUpdate {
+			update_id: u64::MAX,
+			updates: vec![ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast: true }],
+			channel_id: None, // Pre-0.0.121 updates had no channel_id
+		};
+		KVStoreSync::write(
+			&kv_store_0,
+			CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
+			&monitor_name.to_string(),
+			UpdateName::from(u64::MAX).as_str(),
+			legacy_update.encode(),
+		)
+		.unwrap();
+
+		// Verify the legacy update file is present in the store.
+		let updates_list = KVStoreSync::list(
+			&kv_store_0,
+			CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
+			&monitor_name.to_string(),
+		)
+		.unwrap();
+		assert!(updates_list.iter().any(|name| name == UpdateName::from(u64::MAX).as_str()));
+
+		// Now read the monitors with updates. The legacy update should be found and applied.
+		let persisted_chan_data = persister_0.read_all_channel_monitors_with_updates().unwrap();
+		assert_eq!(persisted_chan_data.len(), 1);
+		let (_, upgraded_monitor) = &persisted_chan_data[0];
+
+		// After applying the legacy force-close update, the monitor's latest_update_id should
+		// be u64::MAX.
+		assert_eq!(upgraded_monitor.get_latest_update_id(), u64::MAX);
+
+		// Now simulate a full monitor re-persist (as would happen during normal operation after
+		// startup, e.g., when a new update triggers a full monitor write). Write the upgraded
+		// monitor back to the store so the on-disk state reflects the applied legacy update.
+		KVStoreSync::write(
+			&kv_store_0,
+			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+			&monitor_name.to_string(),
+			upgraded_monitor.encode(),
+		)
+		.unwrap();
+
+		// Now cleanup_stale_updates should remove the legacy update, since the persisted
+		// monitor's latest_update_id (u64::MAX) >= the update's id (u64::MAX).
+		persister_0.cleanup_stale_updates(false).unwrap();
+
+		let updates_list = KVStoreSync::list(
+			&kv_store_0,
+			CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
+			&monitor_name.to_string(),
+		)
+		.unwrap();
+		assert!(
+			updates_list.is_empty(),
+			"All updates including the legacy u64::MAX update should have been cleaned up"
+		);
 	}
 
 	fn persist_fn<P: Deref, ChannelSigner: EcdsaChannelSigner>(_persist: P) -> bool
