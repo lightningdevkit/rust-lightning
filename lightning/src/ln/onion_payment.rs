@@ -438,7 +438,7 @@ pub(super) fn create_recv_pending_htlc_info(
 			payment_data,
 			payment_preimage,
 			payment_metadata,
-			incoming_cltv_expiry: onion_cltv_expiry,
+			incoming_cltv_expiry: cltv_expiry,
 			custom_tlvs,
 			requires_blinded_error,
 			has_recipient_created_payment_secret,
@@ -450,7 +450,7 @@ pub(super) fn create_recv_pending_htlc_info(
 			payment_data: data,
 			payment_metadata,
 			payment_context,
-			incoming_cltv_expiry: onion_cltv_expiry,
+			incoming_cltv_expiry: cltv_expiry,
 			phantom_shared_secret,
 			trampoline_shared_secret,
 			custom_tlvs,
@@ -842,7 +842,7 @@ mod tests {
 			PendingHTLCRouting::ReceiveKeysend { payment_preimage, payment_data, incoming_cltv_expiry, .. } => {
 				assert_eq!(payment_preimage, preimage);
 				assert_eq!(peeled2.outgoing_amt_msat, recipient_amount);
-				assert_eq!(incoming_cltv_expiry, peeled2.outgoing_cltv_value);
+				assert_eq!(incoming_cltv_expiry, msg.cltv_expiry);
 				let msgs::FinalOnionHopData{total_msat, payment_secret} = payment_data.unwrap();
 				assert_eq!(total_msat, total_amt_msat);
 				assert_eq!(payment_secret, pay_secret);
