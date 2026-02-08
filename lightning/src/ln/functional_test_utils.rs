@@ -1602,6 +1602,109 @@ pub fn exchange_open_accept_zero_conf_chan<'a, 'b, 'c, 'd>(
 	accept_channel.common_fields.temporary_channel_id
 }
 
+pub fn exchange_open_accept_zero_reserve_chan<'a, 'b, 'c, 'd>(
+	initiator: &'a Node<'b, 'c, 'd>, receiver: &'a Node<'b, 'c, 'd>, channel_value_sat: u64,
+	push_msat: u64,
+) -> ChannelId {
+	let receiver_node_id = receiver.node.get_our_node_id();
+	let initiator_node_id = initiator.node.get_our_node_id();
+
+	initiator
+		.node
+		.create_channel(receiver_node_id, channel_value_sat, push_msat, 42, None, None)
+		.unwrap();
+	let open_channel =
+		get_event_msg!(initiator, MessageSendEvent::SendOpenChannel, receiver_node_id);
+
+	receiver.node.handle_open_channel(initiator_node_id, &open_channel);
+	let events = receiver.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		Event::OpenChannelRequest { temporary_channel_id, .. } => {
+			receiver
+				.node
+				.accept_inbound_channel_from_trusted_peer(
+					&temporary_channel_id,
+					&initiator_node_id,
+					0,
+					false,
+					true,
+					None,
+				)
+				.unwrap();
+		},
+		_ => panic!("Unexpected event"),
+	};
+
+	let accept_channel =
+		get_event_msg!(receiver, MessageSendEvent::SendAcceptChannel, initiator_node_id);
+	assert_eq!(accept_channel.channel_reserve_satoshis, 0);
+	initiator.node.handle_accept_channel(receiver_node_id, &accept_channel);
+
+	accept_channel.common_fields.temporary_channel_id
+}
+
+pub fn create_zero_reserve_chan_between_nodes_with_value_init<'a, 'b, 'c>(
+	node_a: &Node<'a, 'b, 'c>, node_b: &Node<'a, 'b, 'c>, channel_value: u64, push_msat: u64,
+) -> Transaction {
+	let create_chan_id =
+		exchange_open_accept_zero_reserve_chan(node_a, node_b, channel_value, push_msat);
+	sign_funding_transaction(node_a, node_b, channel_value, create_chan_id)
+}
+
+pub fn create_zero_reserve_chan_between_nodes_with_value_a<'a, 'b, 'c: 'd, 'd>(
+	node_a: &'a Node<'b, 'c, 'd>, node_b: &'a Node<'b, 'c, 'd>, channel_value: u64, push_msat: u64,
+) -> ((msgs::ChannelReady, msgs::AnnouncementSignatures), ChannelId, Transaction) {
+	let tx = create_zero_reserve_chan_between_nodes_with_value_init(
+		node_a,
+		node_b,
+		channel_value,
+		push_msat,
+	);
+	let (msgs, chan_id) = create_chan_between_nodes_with_value_confirm(node_a, node_b, &tx);
+	(msgs, chan_id, tx)
+}
+
+pub fn create_zero_reserve_chan_between_nodes_with_value<'a, 'b, 'c: 'd, 'd>(
+	node_a: &'a Node<'b, 'c, 'd>, node_b: &'a Node<'b, 'c, 'd>, channel_value: u64, push_msat: u64,
+) -> (msgs::ChannelAnnouncement, msgs::ChannelUpdate, msgs::ChannelUpdate, ChannelId, Transaction) {
+	let (channel_ready, channel_id, tx) = create_zero_reserve_chan_between_nodes_with_value_a(
+		node_a,
+		node_b,
+		channel_value,
+		push_msat,
+	);
+	let (announcement, as_update, bs_update) =
+		create_chan_between_nodes_with_value_b(node_a, node_b, &channel_ready);
+	(announcement, as_update, bs_update, channel_id, tx)
+}
+
+pub fn create_announced_zero_reserve_chan_between_nodes_with_value<'a, 'b, 'c: 'd, 'd>(
+	nodes: &'a Vec<Node<'b, 'c, 'd>>, a: usize, b: usize, channel_value: u64, push_msat: u64,
+) -> (msgs::ChannelUpdate, msgs::ChannelUpdate, ChannelId, Transaction) {
+	let chan_announcement = create_zero_reserve_chan_between_nodes_with_value(
+		&nodes[a],
+		&nodes[b],
+		channel_value,
+		push_msat,
+	);
+	update_nodes_with_chan_announce(
+		nodes,
+		a,
+		b,
+		&chan_announcement.0,
+		&chan_announcement.1,
+		&chan_announcement.2,
+	);
+	(chan_announcement.1, chan_announcement.2, chan_announcement.3, chan_announcement.4)
+}
+
+pub fn create_announced_zero_reserve_chan_between_nodes<'a, 'b, 'c: 'd, 'd>(
+	nodes: &'a Vec<Node<'b, 'c, 'd>>, a: usize, b: usize,
+) -> (msgs::ChannelUpdate, msgs::ChannelUpdate, ChannelId, Transaction) {
+	create_announced_zero_reserve_chan_between_nodes_with_value(nodes, a, b, 100000, 10001)
+}
+
 // Receiver must have been initialized with manually_accept_inbound_channels set to true.
 pub fn open_zero_conf_channel_with_value<'a, 'b, 'c, 'd>(
 	initiator: &'a Node<'b, 'c, 'd>, receiver: &'a Node<'b, 'c, 'd>,
