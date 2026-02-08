@@ -10,6 +10,7 @@
 //! Various user-configurable channel limits and settings which ChannelManager
 //! applies for you.
 
+use crate::chain::channelmonitor::CLTV_CLAIM_BUFFER;
 use crate::ln::channel::MAX_FUNDING_SATOSHIS_NO_WUMBO;
 use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, MAX_LOCAL_BREAKDOWN_TIMEOUT};
 
@@ -593,6 +594,26 @@ pub struct ChannelConfig {
 	/// [`NonAnchorChannelFee`]: crate::chain::chaininterface::ConfirmationTarget::NonAnchorChannelFee
 	/// [`ChannelCloseMinimum`]: crate::chain::chaininterface::ConfirmationTarget::ChannelCloseMinimum
 	pub force_close_avoidance_max_fee_satoshis: u64,
+	/// The number of blocks before an inbound HTLC's CLTV expiry at which we will force-close the
+	/// channel in order to claim it on-chain with an HTLC-Success transaction. This applies when
+	/// we have the preimage for the HTLC (i.e., it is a claimable HTLC that we forwarded).
+	///
+	/// Increasing this value gives you more tolerance for your own downtime at the expense of
+	/// being less tolerant of counterparty unresponsiveness (more force-closes). When set higher,
+	/// you force-close earlier, leaving more blocks to get the commitment transaction and
+	/// HTLC-Success transaction confirmed on-chain.
+	///
+	/// Note that when changing this value, you should also ensure that
+	/// [`cltv_expiry_delta`] is large enough to accommodate the new buffer.
+	///
+	/// Default value: [`CLTV_CLAIM_BUFFER`] (36 blocks)
+	///
+	/// Minimum value: [`CLTV_CLAIM_BUFFER`] (Any values less than this will be treated as
+	///                [`CLTV_CLAIM_BUFFER`] instead.)
+	///
+	/// [`cltv_expiry_delta`]: ChannelConfig::cltv_expiry_delta
+	/// [`CLTV_CLAIM_BUFFER`]: crate::chain::channelmonitor::CLTV_CLAIM_BUFFER
+	pub force_close_claimable_htlc_cltv_buffer: u32,
 	/// If set, allows this channel's counterparty to skim an additional fee off this node's inbound
 	/// HTLCs. Useful for liquidity providers to offload on-chain channel costs to end users.
 	///
@@ -650,6 +671,11 @@ impl ChannelConfig {
 		{
 			self.force_close_avoidance_max_fee_satoshis = force_close_avoidance_max_fee_satoshis;
 		}
+		if let Some(force_close_claimable_htlc_cltv_buffer) =
+			update.force_close_claimable_htlc_cltv_buffer
+		{
+			self.force_close_claimable_htlc_cltv_buffer = force_close_claimable_htlc_cltv_buffer;
+		}
 		if let Some(accept_underpaying_htlcs) = update.accept_underpaying_htlcs {
 			self.accept_underpaying_htlcs = accept_underpaying_htlcs;
 		}
@@ -665,6 +691,7 @@ impl Default for ChannelConfig {
 			cltv_expiry_delta: 6 * 12, // 6 blocks/hour * 12 hours
 			max_dust_htlc_exposure: MaxDustHTLCExposure::FeeRateMultiplier(10000),
 			force_close_avoidance_max_fee_satoshis: 1000,
+			force_close_claimable_htlc_cltv_buffer: CLTV_CLAIM_BUFFER,
 			accept_underpaying_htlcs: false,
 		}
 	}
@@ -687,6 +714,7 @@ impl crate::util::ser::Writeable for ChannelConfig {
 			// LegacyChannelConfig. To make sure that serialization is not compatible with this one, we use
 			// the next required type of 10, which if seen by the old serialization will always fail.
 			(10, self.force_close_avoidance_max_fee_satoshis, required),
+			(11, self.force_close_claimable_htlc_cltv_buffer, (default_value, CLTV_CLAIM_BUFFER)),
 		});
 		Ok(())
 	}
@@ -701,6 +729,7 @@ impl crate::util::ser::Readable for ChannelConfig {
 		let mut max_dust_htlc_exposure_msat = None;
 		let mut max_dust_htlc_exposure_enum = None;
 		let mut force_close_avoidance_max_fee_satoshis = 1000;
+		let mut force_close_claimable_htlc_cltv_buffer = CLTV_CLAIM_BUFFER;
 		read_tlv_fields!(reader, {
 			(0, forwarding_fee_proportional_millionths, required),
 			(1, accept_underpaying_htlcs, (default_value, false)),
@@ -710,6 +739,7 @@ impl crate::util::ser::Readable for ChannelConfig {
 			// Has always been written, but became optionally read in 0.0.116
 			(6, max_dust_htlc_exposure_msat, option),
 			(10, force_close_avoidance_max_fee_satoshis, required),
+			(11, force_close_claimable_htlc_cltv_buffer, (default_value, CLTV_CLAIM_BUFFER)),
 		});
 		let max_dust_htlc_fixed_limit = max_dust_htlc_exposure_msat.unwrap_or(5_000_000);
 		let max_dust_htlc_exposure_msat = max_dust_htlc_exposure_enum
@@ -721,6 +751,7 @@ impl crate::util::ser::Readable for ChannelConfig {
 			cltv_expiry_delta,
 			max_dust_htlc_exposure: max_dust_htlc_exposure_msat,
 			force_close_avoidance_max_fee_satoshis,
+			force_close_claimable_htlc_cltv_buffer,
 		})
 	}
 }
@@ -747,6 +778,10 @@ pub struct ChannelConfigUpdate {
 	/// funds. See [`ChannelConfig::force_close_avoidance_max_fee_satoshis`].
 	pub force_close_avoidance_max_fee_satoshis: Option<u64>,
 
+	/// The number of blocks before an inbound HTLC's CLTV expiry at which we will force-close to claim it
+	/// on-chain. See [`ChannelConfig::force_close_claimable_htlc_cltv_buffer`].
+	pub force_close_claimable_htlc_cltv_buffer: Option<u32>,
+
 	/// If set, allows this channel's counterparty to skim an additional fee off this node's inbound HTLCs. See
 	/// [`ChannelConfig::accept_underpaying_htlcs`].
 	pub accept_underpaying_htlcs: Option<bool>,
@@ -763,6 +798,9 @@ impl From<ChannelConfig> for ChannelConfigUpdate {
 			max_dust_htlc_exposure_msat: Some(config.max_dust_htlc_exposure),
 			force_close_avoidance_max_fee_satoshis: Some(
 				config.force_close_avoidance_max_fee_satoshis,
+			),
+			force_close_claimable_htlc_cltv_buffer: Some(
+				config.force_close_claimable_htlc_cltv_buffer,
 			),
 			accept_underpaying_htlcs: Some(config.accept_underpaying_htlcs),
 		}
@@ -846,6 +884,7 @@ impl crate::util::ser::Readable for LegacyChannelConfig {
 				max_dust_htlc_exposure: max_dust_htlc_exposure_msat,
 				cltv_expiry_delta,
 				force_close_avoidance_max_fee_satoshis,
+				force_close_claimable_htlc_cltv_buffer: CLTV_CLAIM_BUFFER,
 				forwarding_fee_base_msat,
 				accept_underpaying_htlcs: false,
 			},

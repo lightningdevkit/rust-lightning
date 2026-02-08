@@ -278,9 +278,9 @@ pub(crate) const MAX_BLOCKS_FOR_CONF: u32 = 18;
 /// If an HTLC expires within this many blocks, force-close the channel to broadcast the
 /// HTLC-Success transaction.
 ///
-/// This is two times [`MAX_BLOCKS_FOR_CONF`] as we need to first get the commitment transaction
-/// confirmed, then get an HTLC transaction confirmed.
-pub(crate) const CLTV_CLAIM_BUFFER: u32 = MAX_BLOCKS_FOR_CONF * 2;
+/// This accounts for the time needed to first get the commitment transaction confirmed, then get
+/// an HTLC transaction confirmed.
+pub const CLTV_CLAIM_BUFFER: u32 = MAX_BLOCKS_FOR_CONF * 2;
 /// Number of blocks by which point we expect our counterparty to have seen new blocks on the
 /// network and done a full update_fail_htlc/commitment_signed dance (+ we've updated all our
 /// copies of ChannelMonitors, including watchtowers). We could enforce the contract by failing
@@ -706,6 +706,10 @@ pub(crate) enum ChannelMonitorUpdateStep {
 	ReleasePaymentComplete {
 		htlc: SentHTLCId,
 	},
+	/// Used to update the configurable force-close CLTV buffer for claimable HTLCs.
+	ChannelConfigUpdated {
+		force_close_claimable_htlc_cltv_buffer: u32,
+	},
 }
 
 impl ChannelMonitorUpdateStep {
@@ -723,6 +727,7 @@ impl ChannelMonitorUpdateStep {
 			ChannelMonitorUpdateStep::RenegotiatedFunding { .. } => "RenegotiatedFunding",
 			ChannelMonitorUpdateStep::RenegotiatedFundingLocked { .. } => "RenegotiatedFundingLocked",
 			ChannelMonitorUpdateStep::ReleasePaymentComplete { .. } => "ReleasePaymentComplete",
+			ChannelMonitorUpdateStep::ChannelConfigUpdated { .. } => "ChannelConfigUpdated",
 		}
 	}
 }
@@ -776,6 +781,9 @@ impl_writeable_tlv_based_enum_upgradable!(ChannelMonitorUpdateStep,
 	},
 	(12, RenegotiatedFundingLocked) => {
 		(1, funding_txid, required),
+	},
+	(14, ChannelConfigUpdated) => {
+		(1, force_close_claimable_htlc_cltv_buffer, required),
 	},
 );
 
@@ -1233,6 +1241,10 @@ pub(crate) struct ChannelMonitorImpl<Signer: EcdsaChannelSigner> {
 	their_cur_per_commitment_points: Option<(u64, PublicKey, Option<PublicKey>)>,
 
 	on_holder_tx_csv: u16,
+
+	/// The configurable number of blocks before an inbound HTLC's CLTV expiry at which we will
+	/// force-close the channel to claim it on-chain. Defaults to [`CLTV_CLAIM_BUFFER`].
+	force_close_claimable_htlc_cltv_buffer: u32,
 
 	commitment_secrets: CounterpartyCommitmentSecrets,
 	/// We cannot identify HTLC-Success or HTLC-Timeout transactions by themselves on the chain.
@@ -1754,6 +1766,7 @@ pub(crate) fn write_chanmon_internal<Signer: EcdsaChannelSigner, W: Writer>(
 		(34, channel_monitor.alternative_funding_confirmed, option),
 		(35, channel_monitor.is_manual_broadcast, required),
 		(37, channel_monitor.funding_seen_onchain, required),
+		(39, channel_monitor.force_close_claimable_htlc_cltv_buffer, (default_value, CLTV_CLAIM_BUFFER)),
 	});
 
 	Ok(())
@@ -1859,6 +1872,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		initial_holder_commitment_tx: HolderCommitmentTransaction, best_block: BestBlock,
 		counterparty_node_id: PublicKey, channel_id: ChannelId,
 		is_manual_broadcast: bool,
+		force_close_claimable_htlc_cltv_buffer: u32,
 	) -> ChannelMonitor<Signer> {
 
 		assert!(commitment_transaction_number_obscure_factor <= (1 << 48));
@@ -1926,6 +1940,11 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 			their_cur_per_commitment_points: None,
 
 			on_holder_tx_csv: counterparty_channel_parameters.selected_contest_delay,
+
+			force_close_claimable_htlc_cltv_buffer: core::cmp::max(
+				force_close_claimable_htlc_cltv_buffer,
+				CLTV_CLAIM_BUFFER,
+			),
 
 			commitment_secrets: CounterpartyCommitmentSecrets::new(),
 			counterparty_commitment_txn_on_chain: new_hash_map(),
@@ -4280,6 +4299,13 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					log_trace!(logger, "HTLC {htlc:?} permanently and fully resolved");
 					self.htlcs_resolved_to_user.insert(*htlc);
 				},
+				ChannelMonitorUpdateStep::ChannelConfigUpdated { force_close_claimable_htlc_cltv_buffer } => {
+					log_trace!(logger, "Updating ChannelMonitor force_close_claimable_htlc_cltv_buffer to {}", force_close_claimable_htlc_cltv_buffer);
+					self.force_close_claimable_htlc_cltv_buffer = core::cmp::max(
+						*force_close_claimable_htlc_cltv_buffer,
+						CLTV_CLAIM_BUFFER,
+					);
+				},
 			}
 		}
 
@@ -4312,6 +4338,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				ChannelMonitorUpdateStep::PaymentPreimage { .. } => {},
 				ChannelMonitorUpdateStep::ChannelForceClosed { .. } => {},
 				ChannelMonitorUpdateStep::ReleasePaymentComplete { .. } => {},
+				ChannelMonitorUpdateStep::ChannelConfigUpdated { .. } =>
+					is_pre_close_update = true,
 			}
 		}
 
@@ -5952,7 +5980,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					// on-chain for an expired HTLC.
 					let htlc_outbound = $holder_tx == htlc.offered;
 					if ( htlc_outbound && htlc.cltv_expiry + LATENCY_GRACE_PERIOD_BLOCKS <= height) ||
-					   (!htlc_outbound && htlc.cltv_expiry <= height + CLTV_CLAIM_BUFFER && self.payment_preimages.contains_key(&htlc.payment_hash)) {
+					   (!htlc_outbound && htlc.cltv_expiry <= height + self.force_close_claimable_htlc_cltv_buffer && self.payment_preimages.contains_key(&htlc.payment_hash)) {
 						log_info!(logger, "Force-closing channel due to {} HTLC timeout - HTLC with payment hash {} expires at {}", if htlc_outbound { "outbound" } else { "inbound"}, htlc.payment_hash, htlc.cltv_expiry);
 						return Some(htlc.payment_hash);
 					}
@@ -6520,6 +6548,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		let mut alternative_funding_confirmed = None;
 		let mut is_manual_broadcast = RequiredWrapper(None);
 		let mut funding_seen_onchain = RequiredWrapper(None);
+		let mut force_close_claimable_htlc_cltv_buffer = CLTV_CLAIM_BUFFER;
 		read_tlv_fields!(reader, {
 			(1, funding_spend_confirmed, option),
 			(3, htlcs_resolved_on_chain, optional_vec),
@@ -6542,6 +6571,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			(34, alternative_funding_confirmed, option),
 			(35, is_manual_broadcast, (default_value, false)),
 			(37, funding_seen_onchain, (default_value, true)),
+			(39, force_close_claimable_htlc_cltv_buffer, (default_value, CLTV_CLAIM_BUFFER)),
 		});
 		// Note that `payment_preimages_with_info` was added (and is always written) in LDK 0.1, so
 		// we can use it to determine if this monitor was last written by LDK 0.1 or later.
@@ -6681,6 +6711,8 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 
 			on_holder_tx_csv,
 
+			force_close_claimable_htlc_cltv_buffer,
+
 			commitment_secrets,
 			counterparty_commitment_txn_on_chain,
 			counterparty_hash_commitment_number,
@@ -6761,7 +6793,7 @@ mod tests {
 	use crate::chain::chaininterface::LowerBoundedFeeEstimator;
 	use crate::events::ClosureReason;
 
-	use super::ChannelMonitorUpdateStep;
+	use super::{ChannelMonitorUpdateStep, CLTV_CLAIM_BUFFER};
 	use crate::chain::channelmonitor::{ChannelMonitor, WithChannelMonitor};
 	use crate::chain::package::{
 		weight_offered_htlc, weight_received_htlc, weight_revoked_offered_htlc,
@@ -6996,7 +7028,7 @@ mod tests {
 		let monitor = ChannelMonitor::new(
 			Secp256k1::new(), keys, Some(shutdown_script.into_inner()), 0, &ScriptBuf::new(),
 			&channel_parameters, true, 0, HolderCommitmentTransaction::dummy(0, funding_outpoint, Vec::new()),
-			best_block, dummy_key, channel_id, false,
+			best_block, dummy_key, channel_id, false, CLTV_CLAIM_BUFFER,
 		);
 
 		let nondust_htlcs = preimages_slice_to_htlcs!(preimages[0..10]);
@@ -7257,7 +7289,7 @@ mod tests {
 		let monitor = ChannelMonitor::new(
 			Secp256k1::new(), keys, Some(shutdown_script.into_inner()), 0, &ScriptBuf::new(),
 			&channel_parameters, true, 0, HolderCommitmentTransaction::dummy(0, funding_outpoint, Vec::new()),
-			best_block, dummy_key, channel_id, false,
+			best_block, dummy_key, channel_id, false, CLTV_CLAIM_BUFFER,
 		);
 
 		let chan_id = monitor.inner.lock().unwrap().channel_id();

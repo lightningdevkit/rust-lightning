@@ -1119,6 +1119,7 @@ pub fn test_manually_accept_inbound_channel_request() {
 			cltv_expiry_delta: None,
 			max_dust_htlc_exposure_msat: None,
 			force_close_avoidance_max_fee_satoshis: None,
+			force_close_claimable_htlc_cltv_buffer: None,
 			accept_underpaying_htlcs: None,
 		}),
 	};
