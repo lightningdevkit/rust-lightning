@@ -512,6 +512,7 @@ pub struct RouteHop {
 	/// to reach this node.
 	pub channel_features: ChannelFeatures,
 	/// The fee taken on this hop (for paying for the use of the *next* channel in the path).
+	///
 	/// If this is the last hop in [`Path::hops`]:
 	/// * if we're sending to a [`BlindedPaymentPath`], this is the fee paid for use of the entire
 	///   blinded path (including any Trampoline hops)
@@ -557,8 +558,9 @@ pub struct TrampolineHop {
 	/// the entire blinded path.
 	pub fee_msat: u64,
 	/// The CLTV delta added for this hop.
+	///
 	/// If this is the last Trampoline hop within [`BlindedTail`], this is the CLTV delta for the entire
-	/// blinded path.
+	/// blinded path (including the [`BlindedTail::excess_final_cltv_expiry_delta`]).
 	pub cltv_expiry_delta: u32,
 }
 
