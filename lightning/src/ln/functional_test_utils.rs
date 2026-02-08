@@ -2137,6 +2137,129 @@ pub fn update_nodes_with_chan_announce<'a, 'b, 'c, 'd>(
 	}
 }
 
+pub fn handle_and_accept_open_zero_reserve_channel(
+	node: &Node, counterparty_id: PublicKey, msg: &OpenChannel,
+) {
+	node.node.handle_open_channel(counterparty_id, &msg);
+	let events = node.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match &events[0] {
+		Event::OpenChannelRequest { temporary_channel_id, counterparty_node_id, .. } => {
+			node.node
+				.accept_inbound_channel_from_trusted_peer(
+					temporary_channel_id,
+					counterparty_node_id,
+					42,
+					false,
+					true,
+					None,
+				)
+				.unwrap();
+		},
+		_ => panic!("Unexpected event"),
+	};
+}
+
+pub fn exchange_open_accept_zero_reserve_chan<'a, 'b, 'c, 'd>(
+	node_a: &'a Node<'b, 'c, 'd>, node_b: &'a Node<'b, 'c, 'd>, channel_value: u64, push_msat: u64,
+) -> ChannelId {
+	let node_a_id = node_a.node.get_our_node_id();
+	let node_b_id = node_b.node.get_our_node_id();
+
+	let create_chan_id =
+		node_a.node.create_channel(node_b_id, channel_value, push_msat, 42, None, None).unwrap();
+	let open_channel_msg = get_event_msg!(node_a, MessageSendEvent::SendOpenChannel, node_b_id);
+	assert_eq!(open_channel_msg.common_fields.temporary_channel_id, create_chan_id);
+	assert_eq!(
+		node_a
+			.node
+			.list_channels()
+			.iter()
+			.find(|channel| channel.channel_id == create_chan_id)
+			.unwrap()
+			.user_channel_id,
+		42
+	);
+	handle_and_accept_open_zero_reserve_channel(&node_b, node_a_id, &open_channel_msg);
+
+	let accept_channel_msg = get_event_msg!(node_b, MessageSendEvent::SendAcceptChannel, node_a_id);
+	assert_eq!(accept_channel_msg.common_fields.temporary_channel_id, create_chan_id);
+	node_a.node.handle_accept_channel(node_b_id, &accept_channel_msg);
+	assert_ne!(
+		node_b
+			.node
+			.list_channels()
+			.iter()
+			.find(|channel| channel.channel_id == create_chan_id)
+			.unwrap()
+			.user_channel_id,
+		0
+	);
+
+	create_chan_id
+}
+
+pub fn create_zero_reserve_chan_between_nodes_with_value_init<'a, 'b, 'c>(
+	node_a: &Node<'a, 'b, 'c>, node_b: &Node<'a, 'b, 'c>, channel_value: u64, push_msat: u64,
+) -> Transaction {
+	let create_chan_id =
+		exchange_open_accept_zero_reserve_chan(node_a, node_b, channel_value, push_msat);
+	sign_funding_transaction(node_a, node_b, channel_value, create_chan_id)
+}
+
+pub fn create_zero_reserve_chan_between_nodes_with_value_a<'a, 'b, 'c: 'd, 'd>(
+	node_a: &'a Node<'b, 'c, 'd>, node_b: &'a Node<'b, 'c, 'd>, channel_value: u64, push_msat: u64,
+) -> ((msgs::ChannelReady, msgs::AnnouncementSignatures), ChannelId, Transaction) {
+	let tx = create_zero_reserve_chan_between_nodes_with_value_init(
+		node_a,
+		node_b,
+		channel_value,
+		push_msat,
+	);
+	let (msgs, chan_id) = create_chan_between_nodes_with_value_confirm(node_a, node_b, &tx);
+	(msgs, chan_id, tx)
+}
+
+pub fn create_zero_reserve_chan_between_nodes_with_value<'a, 'b, 'c: 'd, 'd>(
+	node_a: &'a Node<'b, 'c, 'd>, node_b: &'a Node<'b, 'c, 'd>, channel_value: u64, push_msat: u64,
+) -> (msgs::ChannelAnnouncement, msgs::ChannelUpdate, msgs::ChannelUpdate, ChannelId, Transaction) {
+	let (channel_ready, channel_id, tx) = create_zero_reserve_chan_between_nodes_with_value_a(
+		node_a,
+		node_b,
+		channel_value,
+		push_msat,
+	);
+	let (announcement, as_update, bs_update) =
+		create_chan_between_nodes_with_value_b(node_a, node_b, &channel_ready);
+	(announcement, as_update, bs_update, channel_id, tx)
+}
+
+pub fn create_announced_zero_reserve_chan_between_nodes_with_value<'a, 'b, 'c: 'd, 'd>(
+	nodes: &'a Vec<Node<'b, 'c, 'd>>, a: usize, b: usize, channel_value: u64, push_msat: u64,
+) -> (msgs::ChannelUpdate, msgs::ChannelUpdate, ChannelId, Transaction) {
+	let chan_announcement = create_zero_reserve_chan_between_nodes_with_value(
+		&nodes[a],
+		&nodes[b],
+		channel_value,
+		push_msat,
+	);
+	update_nodes_with_chan_announce(
+		nodes,
+		a,
+		b,
+		&chan_announcement.0,
+		&chan_announcement.1,
+		&chan_announcement.2,
+	);
+	(chan_announcement.1, chan_announcement.2, chan_announcement.3, chan_announcement.4)
+}
+
+pub fn create_announced_zero_reserve_chan_between_nodes<'a, 'b, 'c: 'd, 'd>(
+	nodes: &'a Vec<Node<'b, 'c, 'd>>, a: usize, b: usize,
+) -> (msgs::ChannelUpdate, msgs::ChannelUpdate, ChannelId, Transaction) {
+	create_announced_zero_reserve_chan_between_nodes_with_value(nodes, a, b, 100000, 10001)
+}
+
 pub fn do_check_spends<F: Fn(&bitcoin::transaction::OutPoint) -> Option<TxOut>>(
 	tx: &Transaction, get_output: F,
 ) {
