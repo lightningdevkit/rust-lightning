@@ -3637,6 +3637,9 @@ pub(crate) fn get_route<L: Logger, S: ScoreLookUp>(
 
 	// Step (5).
 	if payment_paths.len() == 0 {
+		if matches!(payment_params.payee, Payee::Blinded { .. }) {
+			return Err("Failed to find a path to the given destination: all provided blinded path route hints were exhausted");
+		}
 		return Err("Failed to find a path to the given destination");
 	}
 
@@ -8475,7 +8478,7 @@ mod tests {
 		if let Err(err) = get_route(&nodes[0], &route_params, &netgraph,
 			Some(&first_hops.iter().collect::<Vec<_>>()), Arc::clone(&logger), &scorer,
 			&Default::default(), &random_seed_bytes) {
-				assert_eq!(err, "Failed to find a path to the given destination");
+				assert_eq!(err, "Failed to find a path to the given destination: all provided blinded path route hints were exhausted");
 		} else { panic!("Expected error") }
 
 		// Sending an exact amount accounting for the blinded path fee works.
@@ -8587,7 +8590,7 @@ mod tests {
 		if let Err(err) = get_route(
 			&our_id, &route_params, &netgraph, None, Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes
 		) {
-			assert_eq!(err, "Failed to find a path to the given destination");
+			assert_eq!(err, "Failed to find a path to the given destination: all provided blinded path route hints were exhausted");
 		} else { panic!() }
 	}
 
@@ -8635,7 +8638,7 @@ mod tests {
 		if let Err(err) = get_route(
 			&our_id, &route_params, &netgraph, None, Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes
 		) {
-			assert_eq!(err, "Failed to find a path to the given destination");
+			assert_eq!(err, "Failed to find a path to the given destination: all provided blinded path route hints were exhausted");
 		} else { panic!() }
 	}
 
@@ -8706,7 +8709,11 @@ mod tests {
 			&our_id, &route_params, &netgraph, Some(&first_hops.iter().collect::<Vec<_>>()),
 			Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes
 		) {
-			assert_eq!(err, "Failed to find a path to the given destination");
+			if blinded_payee {
+				assert_eq!(err, "Failed to find a path to the given destination: all provided blinded path route hints were exhausted");
+			} else {
+				assert_eq!(err, "Failed to find a path to the given destination");
+			}
 		} else { panic!() }
 	}
 
@@ -8852,7 +8859,7 @@ mod tests {
 			Arc::clone(&logger), &scorer, &ProbabilisticScoringFeeParameters::default(),
 			&random_seed_bytes
 		) {
-			assert_eq!(err, "Failed to find a path to the given destination");
+			assert_eq!(err, "Failed to find a path to the given destination: all provided blinded path route hints were exhausted");
 		} else { panic!() }
 	}
 
