@@ -416,7 +416,7 @@ pub(super) fn construct_trampoline_onion_keys<T: secp256k1::Signing>(
 pub(super) fn build_trampoline_onion_payloads<'a>(
 	blinded_tail: &'a BlindedTail, recipient_onion: &'a RecipientOnionFields,
 	starting_htlc_offset: u32, keysend_preimage: &Option<PaymentPreimage>,
-) -> Result<(Vec<msgs::OutboundTrampolinePayload<'a>>, u64, u32), APIError> {
+) -> Result<(Vec<msgs::OutboundTrampolinePayload<'a>>, u64), APIError> {
 	let mut res: Vec<msgs::OutboundTrampolinePayload> =
 		Vec::with_capacity(blinded_tail.trampoline_hops.len() + blinded_tail.hops.len());
 	let blinded_tail_with_hop_iter = BlindedTailDetails::DirectEntry {
@@ -426,7 +426,7 @@ pub(super) fn build_trampoline_onion_payloads<'a>(
 		excess_final_cltv_expiry_delta: blinded_tail.excess_final_cltv_expiry_delta,
 	};
 
-	let (value_msat, cltv) = build_onion_payloads_callback(
+	let (value_msat, _) = build_onion_payloads_callback(
 		blinded_tail.trampoline_hops.iter(),
 		Some(blinded_tail_with_hop_iter),
 		recipient_onion,
@@ -438,7 +438,7 @@ pub(super) fn build_trampoline_onion_payloads<'a>(
 			PayloadCallbackAction::PushFront => res.insert(0, payload),
 		},
 	)?;
-	Ok((res, value_msat, cltv))
+	Ok((res, value_msat))
 }
 
 /// returns the hop data, as well as the first-hop value_msat and CLTV value we should send.
@@ -539,11 +539,7 @@ where
 		// exactly as it should be (and the next hop isn't trying to probe to find out if we're
 		// the intended recipient).
 		let value_msat = if cur_value_msat == 0 { hop.fee_msat() } else { cur_value_msat };
-		let cltv = if cur_cltv == starting_htlc_offset {
-			hop.cltv_expiry_delta().saturating_add(starting_htlc_offset)
-		} else {
-			cur_cltv
-		};
+		let cltv = hop.cltv_expiry_delta().saturating_add(cur_cltv);
 		if idx == 0 {
 			match blinded_tail.take() {
 				Some(BlindedTailDetails::DirectEntry {
@@ -591,7 +587,7 @@ where
 						PayloadCallbackAction::PushBack,
 						OP::new_trampoline_entry(
 							final_value_msat + hop.fee_msat(),
-							cur_cltv,
+							cltv,
 							&recipient_onion,
 							trampoline_packet,
 						)?,
@@ -610,7 +606,7 @@ where
 					err: "Next hop ID must be known for non-final hops".to_string(),
 				})?,
 				value_msat,
-				cltv,
+				cur_cltv,
 			);
 			callback(PayloadCallbackAction::PushFront, payload);
 		}
@@ -2638,8 +2634,6 @@ pub(crate) fn create_payment_onion_internal<T: secp256k1::Signing>(
 	prng_seed: [u8; 32], trampoline_session_priv_override: Option<SecretKey>,
 	trampoline_prng_seed_override: Option<[u8; 32]>,
 ) -> Result<(msgs::OnionPacket, u64, u32), APIError> {
-	let mut outer_starting_htlc_offset = cur_block_height;
-
 	// If we're paying to a recipient through a trampoline, we use the `payment_secret` provided in
 	// `recipient_onion` as the MPP identifier for the trampoline entry point, allowing it to
 	// detect when when it has received all the MPP parts.
@@ -2661,13 +2655,12 @@ pub(crate) fn create_payment_onion_internal<T: secp256k1::Signing>(
 		if !blinded_tail.trampoline_hops.is_empty() {
 			let trampoline_payloads;
 			let outer_total_msat;
-			(trampoline_payloads, outer_total_msat, outer_starting_htlc_offset) =
-				build_trampoline_onion_payloads(
-					&blinded_tail,
-					recipient_onion,
-					cur_block_height,
-					keysend_preimage,
-				)?;
+			(trampoline_payloads, outer_total_msat) = build_trampoline_onion_payloads(
+				&blinded_tail,
+				recipient_onion,
+				cur_block_height,
+				keysend_preimage,
+			)?;
 			trampoline_outer_onion.total_mpp_amount_msat = outer_total_msat;
 
 			let trampoline_session_priv = trampoline_session_priv_override
@@ -2698,7 +2691,7 @@ pub(crate) fn create_payment_onion_internal<T: secp256k1::Signing>(
 	let (onion_payloads, htlc_msat, htlc_cltv) = build_onion_payloads(
 		&path,
 		outer_onion,
-		outer_starting_htlc_offset,
+		cur_block_height,
 		keysend_preimage,
 		invoice_request,
 		trampoline_packet_option,

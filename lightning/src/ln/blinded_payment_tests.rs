@@ -1852,7 +1852,7 @@ fn test_combined_trampoline_onion_creation_vectors() {
 				short_channel_id: (572330 << 40) + (42 << 16) + 2821,
 				channel_features: ChannelFeatures::empty(),
 				fee_msat: 153_000,
-				cltv_expiry_delta: 0,
+				cltv_expiry_delta: 24 + 36,
 				maybe_announced_channel: false,
 			},
 		],
@@ -1947,7 +1947,7 @@ fn test_trampoline_inbound_payment_decoding() {
 				short_channel_id: (572330 << 40) + (42 << 16) + 2821,
 				channel_features: ChannelFeatures::empty(),
 				fee_msat: 150_153_000,
-				cltv_expiry_delta: 0,
+				cltv_expiry_delta: 24 + 36,
 				maybe_announced_channel: false,
 			},
 		],
@@ -2115,7 +2115,7 @@ fn test_trampoline_forward_payload_encoded_as_receive() {
 		blinded_path::utils::construct_blinded_hops(
 			&secp_ctx, path.into_iter(), &trampoline_session_priv,
 		)
-  };
+	};
 
 	let route = Route {
 		paths: vec![Path {
@@ -2138,7 +2138,7 @@ fn test_trampoline_forward_payload_encoded_as_receive() {
 					short_channel_id: bob_carol_scid,
 					channel_features: ChannelFeatures::empty(),
 					fee_msat: 0,
-					cltv_expiry_delta: 48,
+					cltv_expiry_delta: 24 + 39,
 					maybe_announced_channel: false,
 				}
 			],
@@ -2149,7 +2149,7 @@ fn test_trampoline_forward_payload_encoded_as_receive() {
 						pubkey: carol_node_id,
 						node_features: Features::empty(),
 						fee_msat: amt_msat,
-						cltv_expiry_delta: 24,
+						cltv_expiry_delta: 24 + 39,
 					},
 				],
 				hops: carol_blinded_hops,
@@ -2176,7 +2176,7 @@ fn test_trampoline_forward_payload_encoded_as_receive() {
 		});
 
 		let recipient_onion_fields = RecipientOnionFields::spontaneous_empty(amt_msat);
-		let (mut trampoline_payloads, outer_total_msat, outer_starting_htlc_offset) = onion_utils::build_trampoline_onion_payloads(&blinded_tail, &recipient_onion_fields, 32, &None).unwrap();
+		let (mut trampoline_payloads, outer_total_msat) = onion_utils::build_trampoline_onion_payloads(&blinded_tail, &recipient_onion_fields, 32, &None).unwrap();
 
 		// pop the last dummy hop
 		trampoline_payloads.pop();
@@ -2191,7 +2191,7 @@ fn test_trampoline_forward_payload_encoded_as_receive() {
 		).unwrap();
 
 		let recipient_onion_fields = RecipientOnionFields::spontaneous_empty(outer_total_msat);
-		let (outer_payloads, _, _) = onion_utils::test_build_onion_payloads(&route.paths[0], &recipient_onion_fields, outer_starting_htlc_offset, &None, None, Some(trampoline_packet)).unwrap();
+		let (outer_payloads, _, _) = onion_utils::test_build_onion_payloads(&route.paths[0], &recipient_onion_fields, 32, &None, None, Some(trampoline_packet)).unwrap();
 		let outer_onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route.clone().paths[0], &outer_session_priv);
 		let outer_packet = onion_utils::construct_onion_packet(
 			outer_payloads,
@@ -2304,7 +2304,7 @@ fn do_test_trampoline_single_hop_receive(success: bool) {
 					short_channel_id: bob_carol_scid,
 					channel_features: ChannelFeatures::empty(),
 					fee_msat: 0,
-					cltv_expiry_delta: 48,
+					cltv_expiry_delta: 104 + 39,
 					maybe_announced_channel: false,
 				}
 			],
@@ -2315,7 +2315,7 @@ fn do_test_trampoline_single_hop_receive(success: bool) {
 						pubkey: carol_node_id,
 						node_features: Features::empty(),
 						fee_msat: amt_msat,
-						cltv_expiry_delta: 104,
+						cltv_expiry_delta: 104 + 39,
 					},
 				],
 				hops: blinded_path.blinded_hops().to_vec(),
@@ -2423,8 +2423,8 @@ fn test_trampoline_blinded_receive() {
 /// Creates a blinded tail where Carol receives via a blinded path.
 fn create_blinded_tail(
 	secp_ctx: &Secp256k1<All>, override_random_bytes: [u8; 32], carol_node_id: PublicKey,
-	carol_auth_key: ReceiveAuthKey, trampoline_cltv_expiry_delta: u32, final_value_msat: u64,
-	payment_secret: PaymentSecret,
+	carol_auth_key: ReceiveAuthKey, trampoline_cltv_expiry_delta: u32,
+	excess_final_cltv_delta: u32, final_value_msat: u64, payment_secret: PaymentSecret,
 ) -> BlindedTail {
 	let outer_session_priv = SecretKey::from_slice(&override_random_bytes).unwrap();
 	let trampoline_session_priv = onion_utils::compute_trampoline_session_priv(&outer_session_priv);
@@ -2455,11 +2455,11 @@ fn create_blinded_tail(
 			pubkey: carol_node_id,
 			node_features: Features::empty(),
 			fee_msat: final_value_msat,
-			cltv_expiry_delta: trampoline_cltv_expiry_delta,
+			cltv_expiry_delta: trampoline_cltv_expiry_delta + excess_final_cltv_delta,
 		}],
 		hops: carol_blinded_hops,
 		blinding_point: carol_blinding_point,
-		excess_final_cltv_expiry_delta: 39,
+		excess_final_cltv_expiry_delta: excess_final_cltv_delta,
 		final_value_msat,
 	}
 }
@@ -2468,8 +2468,9 @@ fn create_blinded_tail(
 // payloads that send to unblinded receives and invalid payloads.
 fn replacement_onion(
 	test_case: TrampolineTestCase, secp_ctx: &Secp256k1<All>, override_random_bytes: [u8; 32],
-	route: Route, original_amt_msat: u64, starting_htlc_offset: u32, original_trampoline_cltv: u32,
-	payment_hash: PaymentHash, payment_secret: PaymentSecret, blinded: bool,
+	route: Route, original_amt_msat: u64, starting_htlc_offset: u32, excess_final_cltv: u32,
+	original_trampoline_cltv: u32, payment_hash: PaymentHash, payment_secret: PaymentSecret,
+	blinded: bool,
 ) -> msgs::OnionPacket {
 	let outer_session_priv = SecretKey::from_slice(&override_random_bytes[..]).unwrap();
 	let trampoline_session_priv = onion_utils::compute_trampoline_session_priv(&outer_session_priv);
@@ -2480,8 +2481,8 @@ fn replacement_onion(
 	// Rebuild our trampoline packet from the original route. If we want to test Carol receiving
 	// as an unblinded trampoline hop, we switch out her inner trampoline onion with a direct
 	// receive payload because LDK doesn't support unblinded trampoline receives.
-	let (trampoline_packet, outer_total_msat, outer_starting_htlc_offset) = {
-		let (mut trampoline_payloads, outer_total_msat, outer_starting_htlc_offset) =
+	let (trampoline_packet, outer_total_msat) = {
+		let (mut trampoline_payloads, outer_total_msat) =
 			onion_utils::build_trampoline_onion_payloads(
 				&blinded_tail,
 				&recipient_onion_fields,
@@ -2497,7 +2498,9 @@ fn replacement_onion(
 					total_msat: original_amt_msat,
 				}),
 				sender_intended_htlc_amt_msat: original_amt_msat,
-				cltv_expiry_height: original_trampoline_cltv + starting_htlc_offset,
+				cltv_expiry_height: original_trampoline_cltv
+					+ starting_htlc_offset
+					+ excess_final_cltv,
 			}];
 		}
 
@@ -2515,7 +2518,7 @@ fn replacement_onion(
 		)
 		.unwrap();
 
-		(trampoline_packet, outer_total_msat, outer_starting_htlc_offset)
+		(trampoline_packet, outer_total_msat)
 	};
 
 	// Use a different session key to construct the replacement onion packet. Note that the
@@ -2524,7 +2527,7 @@ fn replacement_onion(
 	let (mut outer_payloads, _, _) = onion_utils::test_build_onion_payloads(
 		&route.paths[0],
 		&recipient_onion_fields,
-		outer_starting_htlc_offset,
+		starting_htlc_offset,
 		&None,
 		None,
 		Some(trampoline_packet),
@@ -2542,7 +2545,7 @@ fn replacement_onion(
 			..
 		} => {
 			*amt_to_forward = test_case.outer_onion_amt(original_amt_msat);
-			let outer_cltv = original_trampoline_cltv + starting_htlc_offset;
+			let outer_cltv = original_trampoline_cltv + starting_htlc_offset + excess_final_cltv;
 			*outgoing_cltv_value = test_case.outer_onion_cltv(outer_cltv);
 		},
 		_ => panic!("final payload is not trampoline entrypoint"),
@@ -2577,11 +2580,9 @@ fn do_test_trampoline_relay(blinded: bool, test_case: TrampolineTestCase) {
 	let alice_bob_chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
 	let bob_carol_chan = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
 
+	let starting_htlc_offset = (TOTAL_NODE_COUNT as u32) * CHAN_CONFIRM_DEPTH + 1;
 	for i in 0..TOTAL_NODE_COUNT {
-		connect_blocks(
-			&nodes[i],
-			(TOTAL_NODE_COUNT as u32) * CHAN_CONFIRM_DEPTH + 1 - nodes[i].best_block_info().1,
-		);
+		connect_blocks(&nodes[i], starting_htlc_offset - nodes[i].best_block_info().1);
 	}
 
 	let alice_node_id = nodes[0].node.get_our_node_id();
@@ -2592,8 +2593,11 @@ fn do_test_trampoline_relay(blinded: bool, test_case: TrampolineTestCase) {
 	let bob_carol_scid = get_scid_from_channel_id(&nodes[1], bob_carol_chan.2);
 
 	let original_amt_msat = 1000;
-	let original_trampoline_cltv = 72;
-	let starting_htlc_offset = 32;
+	// Note that for TrampolineTestCase::OuterCLTVLessThanTrampoline to work properly,
+	// (starting_htlc_offset + excess_final_cltv) / 2 < (starting_htlc_offset + excess_final_cltv + original_trampoline_cltv)
+	// otherwise dividing the CLTV value by 2 won't kick us under the outer trampoline CLTV.
+	let original_trampoline_cltv = 42;
+	let excess_final_cltv = 70;
 
 	let (payment_preimage, payment_hash, payment_secret) =
 		get_payment_preimage_hash(&nodes[2], Some(original_amt_msat), None);
@@ -2620,7 +2624,7 @@ fn do_test_trampoline_relay(blinded: bool, test_case: TrampolineTestCase) {
 					short_channel_id: bob_carol_scid,
 					channel_features: ChannelFeatures::empty(),
 					fee_msat: 0,
-					cltv_expiry_delta: 48,
+					cltv_expiry_delta: original_trampoline_cltv + excess_final_cltv,
 					maybe_announced_channel: false,
 				},
 			],
@@ -2633,6 +2637,7 @@ fn do_test_trampoline_relay(blinded: bool, test_case: TrampolineTestCase) {
 				carol_node_id,
 				nodes[2].keys_manager.get_receive_auth_key(),
 				original_trampoline_cltv,
+				excess_final_cltv,
 				original_amt_msat,
 				payment_secret,
 			)),
@@ -2675,6 +2680,7 @@ fn do_test_trampoline_relay(blinded: bool, test_case: TrampolineTestCase) {
 			original_amt_msat,
 			starting_htlc_offset,
 			original_trampoline_cltv,
+			excess_final_cltv,
 			payment_hash,
 			payment_secret,
 			blinded,
@@ -2691,8 +2697,9 @@ fn do_test_trampoline_relay(blinded: bool, test_case: TrampolineTestCase) {
 	);
 
 	let amt_bytes = test_case.outer_onion_amt(original_amt_msat).to_be_bytes();
-	let cltv_bytes =
-		test_case.outer_onion_cltv(original_trampoline_cltv + starting_htlc_offset).to_be_bytes();
+	let cltv_bytes = test_case
+		.outer_onion_cltv(original_trampoline_cltv + starting_htlc_offset + excess_final_cltv)
+		.to_be_bytes();
 	let payment_failure = test_case.payment_failed_conditions(&amt_bytes, &cltv_bytes).map(|p| {
 		if blinded {
 			PaymentFailedConditions::new()
@@ -2706,7 +2713,8 @@ fn do_test_trampoline_relay(blinded: bool, test_case: TrampolineTestCase) {
 			.without_claimable_event()
 			.expect_failure(HTLCHandlingFailureType::Receive { payment_hash })
 	} else {
-		args.with_payment_secret(payment_secret)
+		let htlc_cltv = starting_htlc_offset + original_trampoline_cltv + excess_final_cltv;
+		args.with_payment_secret(payment_secret).with_payment_claimable_cltv(htlc_cltv)
 	};
 
 	do_pass_along_path(args);
@@ -2792,7 +2800,7 @@ fn test_trampoline_forward_rejection() {
 					short_channel_id: bob_carol_scid,
 					channel_features: ChannelFeatures::empty(),
 					fee_msat: 0,
-					cltv_expiry_delta: 48,
+					cltv_expiry_delta: 24 + 24 + 39,
 					maybe_announced_channel: false,
 				}
 			],
@@ -2811,7 +2819,7 @@ fn test_trampoline_forward_rejection() {
 						pubkey: alice_node_id,
 						node_features: Features::empty(),
 						fee_msat: amt_msat,
-						cltv_expiry_delta: 24,
+						cltv_expiry_delta: 24 + 39,
 					},
 				],
 				hops: vec![BlindedHop{
