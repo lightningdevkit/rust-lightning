@@ -1058,6 +1058,160 @@ where
 
 		Ok(ChannelMonitorUpdateStatus::Completed)
 	}
+
+	fn watch_channel_internal(
+		&self, channel_id: ChannelId, monitor: ChannelMonitor<ChannelSigner>,
+	) -> Result<ChannelMonitorUpdateStatus, ()> {
+		let logger = WithChannelMonitor::from(&self.logger, &monitor, None);
+		let mut monitors = self.monitors.write().unwrap();
+		let entry = match monitors.entry(channel_id) {
+			hash_map::Entry::Occupied(_) => {
+				log_error!(logger, "Failed to add new channel data: channel monitor for given channel ID is already present");
+				return Err(());
+			},
+			hash_map::Entry::Vacant(e) => e,
+		};
+		log_trace!(logger, "Got new ChannelMonitor");
+		let update_id = monitor.get_latest_update_id();
+		let mut pending_monitor_updates = Vec::new();
+		let persist_res = self.persister.persist_new_channel(monitor.persistence_key(), &monitor);
+		match persist_res {
+			ChannelMonitorUpdateStatus::InProgress => {
+				log_info!(logger, "Persistence of new ChannelMonitor in progress",);
+				pending_monitor_updates.push(update_id);
+			},
+			ChannelMonitorUpdateStatus::Completed => {
+				log_info!(logger, "Persistence of new ChannelMonitor completed",);
+			},
+			ChannelMonitorUpdateStatus::UnrecoverableError => {
+				let err_str = "ChannelMonitor[Update] persistence failed unrecoverably. This indicates we cannot continue normal operation and must shut down.";
+				log_error!(logger, "{}", err_str);
+				panic!("{}", err_str);
+			},
+		}
+		if let Some(ref chain_source) = self.chain_source {
+			monitor.load_outputs_to_watch(chain_source, &self.logger);
+		}
+		entry.insert(MonitorHolder {
+			monitor,
+			pending_monitor_updates: Mutex::new(pending_monitor_updates),
+		});
+		Ok(persist_res)
+	}
+
+	fn update_channel_internal(
+		&self, channel_id: ChannelId, update: &ChannelMonitorUpdate,
+	) -> ChannelMonitorUpdateStatus {
+		// `ChannelMonitorUpdate`'s `channel_id` is `None` prior to 0.0.121 and all channels in those
+		// versions are V1-established. For 0.0.121+ the `channel_id` fields is always `Some`.
+		debug_assert_eq!(update.channel_id.unwrap(), channel_id);
+		// Update the monitor that watches the channel referred to by the given outpoint.
+		let monitors = self.monitors.read().unwrap();
+		match monitors.get(&channel_id) {
+			None => {
+				let logger = WithContext::from(&self.logger, None, Some(channel_id), None);
+				log_error!(logger, "Failed to update channel monitor: no such monitor registered");
+
+				// We should never ever trigger this from within ChannelManager. Technically a
+				// user could use this object with some proxying in between which makes this
+				// possible, but in tests and fuzzing, this should be a panic.
+				#[cfg(debug_assertions)]
+				panic!("ChannelManager generated a channel update for a channel that was not yet registered!");
+				#[cfg(not(debug_assertions))]
+				ChannelMonitorUpdateStatus::InProgress
+			},
+			Some(monitor_state) => {
+				let monitor = &monitor_state.monitor;
+				let logger = WithChannelMonitor::from(&self.logger, &monitor, None);
+				log_trace!(logger, "Updating ChannelMonitor to id {}", update.update_id,);
+
+				// We hold a `pending_monitor_updates` lock through `update_monitor` to ensure we
+				// have well-ordered updates from the users' point of view. See the
+				// `pending_monitor_updates` docs for more.
+				let mut pending_monitor_updates =
+					monitor_state.pending_monitor_updates.lock().unwrap();
+				let update_res = monitor.update_monitor(
+					update,
+					&self.broadcaster,
+					&self.fee_estimator,
+					&self.logger,
+				);
+
+				let update_id = update.update_id;
+				let persist_res = if update_res.is_err() {
+					// Even if updating the monitor returns an error, the monitor's state will
+					// still be changed. Therefore, we should persist the updated monitor despite the error.
+					// We don't want to persist a `monitor_update` which results in a failure to apply later
+					// while reading `channel_monitor` with updates from storage. Instead, we should persist
+					// the entire `channel_monitor` here.
+					log_warn!(logger, "Failed to update ChannelMonitor. Going ahead and persisting the entire ChannelMonitor");
+					self.persister.update_persisted_channel(
+						monitor.persistence_key(),
+						None,
+						monitor,
+					)
+				} else {
+					self.persister.update_persisted_channel(
+						monitor.persistence_key(),
+						Some(update),
+						monitor,
+					)
+				};
+				match persist_res {
+					ChannelMonitorUpdateStatus::InProgress => {
+						pending_monitor_updates.push(update_id);
+						log_debug!(
+							logger,
+							"Persistence of ChannelMonitorUpdate id {:?} in progress",
+							update_id,
+						);
+					},
+					ChannelMonitorUpdateStatus::Completed => {
+						log_debug!(
+							logger,
+							"Persistence of ChannelMonitorUpdate id {:?} completed",
+							update_id,
+						);
+					},
+					ChannelMonitorUpdateStatus::UnrecoverableError => {
+						// Take the monitors lock for writing so that we poison it and any future
+						// operations going forward fail immediately.
+						core::mem::drop(pending_monitor_updates);
+						core::mem::drop(monitors);
+						let _poison = self.monitors.write().unwrap();
+						let err_str = "ChannelMonitor[Update] persistence failed unrecoverably. This indicates we cannot continue normal operation and must shut down.";
+						log_error!(logger, "{}", err_str);
+						panic!("{}", err_str);
+					},
+				}
+
+				// We may need to start monitoring for any alternative funding transactions.
+				if let Some(ref chain_source) = self.chain_source {
+					for (funding_outpoint, funding_script) in
+						update.internal_renegotiated_funding_data()
+					{
+						log_trace!(
+							logger,
+							"Registering renegotiated funding outpoint {} with the filter to monitor confirmations and spends",
+							funding_outpoint
+						);
+						chain_source.register_tx(&funding_outpoint.txid, &funding_script);
+						chain_source.register_output(WatchedOutput {
+							block_hash: None,
+							outpoint: funding_outpoint,
+							script_pubkey: funding_script,
+						});
+					}
+				}
+
+				if update_res.is_err() {
+					ChannelMonitorUpdateStatus::InProgress
+				} else {
+					persist_res
+				}
+			},
+		}
+	}
 }
 
 impl<
@@ -1272,155 +1426,13 @@ where
 	fn watch_channel(
 		&self, channel_id: ChannelId, monitor: ChannelMonitor<ChannelSigner>,
 	) -> Result<ChannelMonitorUpdateStatus, ()> {
-		let logger = WithChannelMonitor::from(&self.logger, &monitor, None);
-		let mut monitors = self.monitors.write().unwrap();
-		let entry = match monitors.entry(channel_id) {
-			hash_map::Entry::Occupied(_) => {
-				log_error!(logger, "Failed to add new channel data: channel monitor for given channel ID is already present");
-				return Err(());
-			},
-			hash_map::Entry::Vacant(e) => e,
-		};
-		log_trace!(logger, "Got new ChannelMonitor");
-		let update_id = monitor.get_latest_update_id();
-		let mut pending_monitor_updates = Vec::new();
-		let persist_res = self.persister.persist_new_channel(monitor.persistence_key(), &monitor);
-		match persist_res {
-			ChannelMonitorUpdateStatus::InProgress => {
-				log_info!(logger, "Persistence of new ChannelMonitor in progress",);
-				pending_monitor_updates.push(update_id);
-			},
-			ChannelMonitorUpdateStatus::Completed => {
-				log_info!(logger, "Persistence of new ChannelMonitor completed",);
-			},
-			ChannelMonitorUpdateStatus::UnrecoverableError => {
-				let err_str = "ChannelMonitor[Update] persistence failed unrecoverably. This indicates we cannot continue normal operation and must shut down.";
-				log_error!(logger, "{}", err_str);
-				panic!("{}", err_str);
-			},
-		}
-		if let Some(ref chain_source) = self.chain_source {
-			monitor.load_outputs_to_watch(chain_source, &self.logger);
-		}
-		entry.insert(MonitorHolder {
-			monitor,
-			pending_monitor_updates: Mutex::new(pending_monitor_updates),
-		});
-		Ok(persist_res)
+		self.watch_channel_internal(channel_id, monitor)
 	}
 
 	fn update_channel(
 		&self, channel_id: ChannelId, update: &ChannelMonitorUpdate,
 	) -> ChannelMonitorUpdateStatus {
-		// `ChannelMonitorUpdate`'s `channel_id` is `None` prior to 0.0.121 and all channels in those
-		// versions are V1-established. For 0.0.121+ the `channel_id` fields is always `Some`.
-		debug_assert_eq!(update.channel_id.unwrap(), channel_id);
-		// Update the monitor that watches the channel referred to by the given outpoint.
-		let monitors = self.monitors.read().unwrap();
-		match monitors.get(&channel_id) {
-			None => {
-				let logger = WithContext::from(&self.logger, None, Some(channel_id), None);
-				log_error!(logger, "Failed to update channel monitor: no such monitor registered");
-
-				// We should never ever trigger this from within ChannelManager. Technically a
-				// user could use this object with some proxying in between which makes this
-				// possible, but in tests and fuzzing, this should be a panic.
-				#[cfg(debug_assertions)]
-				panic!("ChannelManager generated a channel update for a channel that was not yet registered!");
-				#[cfg(not(debug_assertions))]
-				ChannelMonitorUpdateStatus::InProgress
-			},
-			Some(monitor_state) => {
-				let monitor = &monitor_state.monitor;
-				let logger = WithChannelMonitor::from(&self.logger, &monitor, None);
-				log_trace!(logger, "Updating ChannelMonitor to id {}", update.update_id,);
-
-				// We hold a `pending_monitor_updates` lock through `update_monitor` to ensure we
-				// have well-ordered updates from the users' point of view. See the
-				// `pending_monitor_updates` docs for more.
-				let mut pending_monitor_updates =
-					monitor_state.pending_monitor_updates.lock().unwrap();
-				let update_res = monitor.update_monitor(
-					update,
-					&self.broadcaster,
-					&self.fee_estimator,
-					&self.logger,
-				);
-
-				let update_id = update.update_id;
-				let persist_res = if update_res.is_err() {
-					// Even if updating the monitor returns an error, the monitor's state will
-					// still be changed. Therefore, we should persist the updated monitor despite the error.
-					// We don't want to persist a `monitor_update` which results in a failure to apply later
-					// while reading `channel_monitor` with updates from storage. Instead, we should persist
-					// the entire `channel_monitor` here.
-					log_warn!(logger, "Failed to update ChannelMonitor. Going ahead and persisting the entire ChannelMonitor");
-					self.persister.update_persisted_channel(
-						monitor.persistence_key(),
-						None,
-						monitor,
-					)
-				} else {
-					self.persister.update_persisted_channel(
-						monitor.persistence_key(),
-						Some(update),
-						monitor,
-					)
-				};
-				match persist_res {
-					ChannelMonitorUpdateStatus::InProgress => {
-						pending_monitor_updates.push(update_id);
-						log_debug!(
-							logger,
-							"Persistence of ChannelMonitorUpdate id {:?} in progress",
-							update_id,
-						);
-					},
-					ChannelMonitorUpdateStatus::Completed => {
-						log_debug!(
-							logger,
-							"Persistence of ChannelMonitorUpdate id {:?} completed",
-							update_id,
-						);
-					},
-					ChannelMonitorUpdateStatus::UnrecoverableError => {
-						// Take the monitors lock for writing so that we poison it and any future
-						// operations going forward fail immediately.
-						core::mem::drop(pending_monitor_updates);
-						core::mem::drop(monitors);
-						let _poison = self.monitors.write().unwrap();
-						let err_str = "ChannelMonitor[Update] persistence failed unrecoverably. This indicates we cannot continue normal operation and must shut down.";
-						log_error!(logger, "{}", err_str);
-						panic!("{}", err_str);
-					},
-				}
-
-				// We may need to start monitoring for any alternative funding transactions.
-				if let Some(ref chain_source) = self.chain_source {
-					for (funding_outpoint, funding_script) in
-						update.internal_renegotiated_funding_data()
-					{
-						log_trace!(
-							logger,
-							"Registering renegotiated funding outpoint {} with the filter to monitor confirmations and spends",
-							funding_outpoint
-						);
-						chain_source.register_tx(&funding_outpoint.txid, &funding_script);
-						chain_source.register_output(WatchedOutput {
-							block_hash: None,
-							outpoint: funding_outpoint,
-							script_pubkey: funding_script,
-						});
-					}
-				}
-
-				if update_res.is_err() {
-					ChannelMonitorUpdateStatus::InProgress
-				} else {
-					persist_res
-				}
-			},
-		}
+		self.update_channel_internal(channel_id, update)
 	}
 
 	fn release_pending_monitor_events(
