@@ -2696,6 +2696,7 @@ pub(crate) fn create_payment_onion_internal<T: secp256k1::Signing>(
 		invoice_request,
 		trampoline_packet_option,
 	)?;
+	debug_assert_eq!(htlc_cltv - cur_block_height, path.total_cltv_expiry_delta());
 
 	let onion_keys = construct_onion_keys(&secp_ctx, &path, session_priv);
 	let onion_packet = construct_onion_packet(onion_payloads, onion_keys, prng_seed, payment_hash)

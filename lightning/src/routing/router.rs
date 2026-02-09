@@ -644,6 +644,12 @@ impl Path {
 		}
 	}
 
+	/// Gets the total CLTV expiry delta which will be added to the current block height (plus some
+	/// extra headroom) when sending the HTLC
+	pub fn total_cltv_expiry_delta(&self) -> u32 {
+		self.hops.iter().map(|hop| hop.cltv_expiry_delta).sum()
+	}
+
 	/// True if this [`Path`] has at least one Trampoline hop.
 	pub fn has_trampoline_hops(&self) -> bool {
 		self.blinded_tail.as_ref().is_some_and(|bt| !bt.trampoline_hops.is_empty())
