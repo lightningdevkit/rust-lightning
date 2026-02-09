@@ -559,7 +559,7 @@ where
 								OP::new_blinded_receive(
 									final_value_msat,
 									recipient_onion.total_mpp_amount_msat,
-									cur_cltv + excess_final_cltv_expiry_delta,
+									starting_htlc_offset + excess_final_cltv_expiry_delta,
 									&blinded_hop.encrypted_payload,
 									blinding_point.take(),
 									*keysend_preimage,
