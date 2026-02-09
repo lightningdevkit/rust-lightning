@@ -658,6 +658,125 @@ fn send_hop_payment(
 	}
 }
 
+/// Send an MPP payment directly from source to dest using multiple channels.
+#[inline]
+fn send_mpp_payment(
+	source: &ChanMan, dest: &ChanMan, dest_scids: &[u64], amt: u64, payment_secret: PaymentSecret,
+	payment_hash: PaymentHash, payment_id: PaymentId,
+) -> bool {
+	let num_paths = dest_scids.len();
+	if num_paths == 0 {
+		return false;
+	}
+
+	let amt_per_path = amt / num_paths as u64;
+	let mut paths = Vec::with_capacity(num_paths);
+
+	for (i, &dest_scid) in dest_scids.iter().enumerate() {
+		let path_amt = if i == num_paths - 1 {
+			amt - amt_per_path * (num_paths as u64 - 1)
+		} else {
+			amt_per_path
+		};
+
+		paths.push(Path {
+			hops: vec![RouteHop {
+				pubkey: dest.get_our_node_id(),
+				node_features: dest.node_features(),
+				short_channel_id: dest_scid,
+				channel_features: dest.channel_features(),
+				fee_msat: path_amt,
+				cltv_expiry_delta: 200,
+				maybe_announced_channel: true,
+			}],
+			blinded_tail: None,
+		});
+	}
+
+	let route_params = RouteParameters::from_payment_params_and_value(
+		PaymentParameters::from_node_id(dest.get_our_node_id(), TEST_FINAL_CLTV),
+		amt,
+	);
+	let route = Route { paths, route_params: Some(route_params) };
+	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let res = source.send_payment_with_route(route, payment_hash, onion, payment_id);
+	match res {
+		Err(_) => false,
+		Ok(()) => check_payment_send_events(source, payment_id),
+	}
+}
+
+/// Send an MPP payment from source to dest via middle node.
+/// Supports multiple channels on either or both hops.
+#[inline]
+fn send_mpp_hop_payment(
+	source: &ChanMan, middle: &ChanMan, middle_scids: &[u64], dest: &ChanMan, dest_scids: &[u64],
+	amt: u64, payment_secret: PaymentSecret, payment_hash: PaymentHash, payment_id: PaymentId,
+) -> bool {
+	// Create paths by pairing middle_scids with dest_scids
+	let num_paths = middle_scids.len().max(dest_scids.len());
+	if num_paths == 0 {
+		return false;
+	}
+
+	let first_hop_fee = 50_000;
+	let amt_per_path = amt / num_paths as u64;
+	let fee_per_path = first_hop_fee / num_paths as u64;
+	let mut paths = Vec::with_capacity(num_paths);
+
+	for i in 0..num_paths {
+		let middle_scid = middle_scids[i % middle_scids.len()];
+		let dest_scid = dest_scids[i % dest_scids.len()];
+
+		let path_amt = if i == num_paths - 1 {
+			amt - amt_per_path * (num_paths as u64 - 1)
+		} else {
+			amt_per_path
+		};
+		let path_fee = if i == num_paths - 1 {
+			first_hop_fee - fee_per_path * (num_paths as u64 - 1)
+		} else {
+			fee_per_path
+		};
+
+		paths.push(Path {
+			hops: vec![
+				RouteHop {
+					pubkey: middle.get_our_node_id(),
+					node_features: middle.node_features(),
+					short_channel_id: middle_scid,
+					channel_features: middle.channel_features(),
+					fee_msat: path_fee,
+					cltv_expiry_delta: 100,
+					maybe_announced_channel: true,
+				},
+				RouteHop {
+					pubkey: dest.get_our_node_id(),
+					node_features: dest.node_features(),
+					short_channel_id: dest_scid,
+					channel_features: dest.channel_features(),
+					fee_msat: path_amt,
+					cltv_expiry_delta: 200,
+					maybe_announced_channel: true,
+				},
+			],
+			blinded_tail: None,
+		});
+	}
+
+	let route_params = RouteParameters::from_payment_params_and_value(
+		PaymentParameters::from_node_id(dest.get_our_node_id(), TEST_FINAL_CLTV),
+		amt,
+	);
+	let route = Route { paths, route_params: Some(route_params) };
+	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let res = source.send_payment_with_route(route, payment_hash, onion, payment_id);
+	match res {
+		Err(_) => false,
+		Ok(()) => check_payment_send_events(source, payment_id),
+	}
+}
+
 #[inline]
 pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 	let out = SearchingOutput::new(underlying_out);
@@ -846,8 +965,8 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 			}
 		}};
 	}
-	macro_rules! make_channel {
-		($source: expr, $dest: expr, $source_monitor: expr, $dest_monitor: expr, $dest_keys_manager: expr, $chan_id: expr) => {{
+	macro_rules! connect_peers {
+		($source: expr, $dest: expr) => {{
 			let init_dest = Init {
 				features: $dest.init_features(),
 				networks: None,
@@ -860,7 +979,10 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 				remote_network_address: None,
 			};
 			$dest.peer_connected($source.get_our_node_id(), &init_src, false).unwrap();
-
+		}};
+	}
+	macro_rules! make_channel {
+		($source: expr, $dest: expr, $source_monitor: expr, $dest_monitor: expr, $dest_keys_manager: expr, $chan_id: expr) => {{
 			$source.create_channel($dest.get_our_node_id(), 100_000, 42, 0, None, None).unwrap();
 			let open_channel = {
 				let events = $source.get_and_clear_pending_msg_events();
@@ -1076,8 +1198,26 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 
 	let mut nodes = [node_a, node_b, node_c];
 
-	let chan_1_id = make_channel!(nodes[0], nodes[1], monitor_a, monitor_b, keys_manager_b, 0);
-	let chan_2_id = make_channel!(nodes[1], nodes[2], monitor_b, monitor_c, keys_manager_c, 1);
+	// Connect peers first, then create channels
+	connect_peers!(nodes[0], nodes[1]);
+	connect_peers!(nodes[1], nodes[2]);
+
+	// Create 3 channels between A-B and 3 channels between B-C (6 total).
+	//
+	// Use version numbers 1-6 to avoid txid collisions under fuzz hashing.
+	// Fuzz mode uses XOR-based hashing (all bytes XOR to one byte), and
+	// versions 0-5 cause collisions between A-B and B-C channel pairs
+	// (e.g., A-B with Version(1) collides with B-C with Version(3)).
+	let chan_ab_ids = [
+		make_channel!(nodes[0], nodes[1], monitor_a, monitor_b, keys_manager_b, 1),
+		make_channel!(nodes[0], nodes[1], monitor_a, monitor_b, keys_manager_b, 2),
+		make_channel!(nodes[0], nodes[1], monitor_a, monitor_b, keys_manager_b, 3),
+	];
+	let chan_bc_ids = [
+		make_channel!(nodes[1], nodes[2], monitor_b, monitor_c, keys_manager_c, 4),
+		make_channel!(nodes[1], nodes[2], monitor_b, monitor_c, keys_manager_c, 5),
+		make_channel!(nodes[1], nodes[2], monitor_b, monitor_c, keys_manager_c, 6),
+	];
 
 	// Wipe the transactions-broadcasted set to make sure we don't broadcast any transactions
 	// during normal operation in `test_return`.
@@ -1089,15 +1229,34 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 
 	lock_fundings!(nodes);
 
-	let chan_a = nodes[0].list_usable_channels()[0].short_channel_id.unwrap();
-	let chan_a_id = nodes[0].list_usable_channels()[0].channel_id;
-	let chan_b = nodes[2].list_usable_channels()[0].short_channel_id.unwrap();
-	let chan_b_id = nodes[2].list_usable_channels()[0].channel_id;
+	// Get SCIDs for all A-B channels (from node A's perspective)
+	let node_a_chans: Vec<_> = nodes[0].list_usable_channels();
+	let chan_ab_scids: [u64; 3] = [
+		node_a_chans[0].short_channel_id.unwrap(),
+		node_a_chans[1].short_channel_id.unwrap(),
+		node_a_chans[2].short_channel_id.unwrap(),
+	];
+	let chan_ab_chan_ids: [ChannelId; 3] =
+		[node_a_chans[0].channel_id, node_a_chans[1].channel_id, node_a_chans[2].channel_id];
+	// Get SCIDs for all B-C channels (from node C's perspective)
+	let node_c_chans: Vec<_> = nodes[2].list_usable_channels();
+	let chan_bc_scids: [u64; 3] = [
+		node_c_chans[0].short_channel_id.unwrap(),
+		node_c_chans[1].short_channel_id.unwrap(),
+		node_c_chans[2].short_channel_id.unwrap(),
+	];
+	let chan_bc_chan_ids: [ChannelId; 3] =
+		[node_c_chans[0].channel_id, node_c_chans[1].channel_id, node_c_chans[2].channel_id];
+	// Keep old names for backward compatibility in existing code
+	let chan_a = chan_ab_scids[0];
+	let chan_a_id = chan_ab_chan_ids[0];
+	let chan_b = chan_bc_scids[0];
+	let chan_b_id = chan_bc_chan_ids[0];
 
 	let mut p_ctr: u64 = 0;
 
-	let mut chan_a_disconnected = false;
-	let mut chan_b_disconnected = false;
+	let mut peers_ab_disconnected = false;
+	let mut peers_bc_disconnected = false;
 	let mut ab_events = Vec::new();
 	let mut ba_events = Vec::new();
 	let mut bc_events = Vec::new();
@@ -1112,9 +1271,9 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 
 	macro_rules! test_return {
 		() => {{
-			assert_eq!(nodes[0].list_channels().len(), 1);
-			assert_eq!(nodes[1].list_channels().len(), 2);
-			assert_eq!(nodes[2].list_channels().len(), 1);
+			assert_eq!(nodes[0].list_channels().len(), 3);
+			assert_eq!(nodes[1].list_channels().len(), 6);
+			assert_eq!(nodes[2].list_channels().len(), 3);
 
 			// At no point should we have broadcasted any transactions after the initial channel
 			// opens.
@@ -1682,6 +1841,53 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 			}
 		};
 
+		// Direct MPP payment (no hop)
+		let send_mpp_direct = |source_idx: usize,
+		                       dest_idx: usize,
+		                       dest_scids: &[u64],
+		                       amt: u64,
+		                       payment_ctr: &mut u64| {
+			let source = &nodes[source_idx];
+			let dest = &nodes[dest_idx];
+			let (secret, hash) = get_payment_secret_hash(dest, payment_ctr);
+			let mut id = PaymentId([0; 32]);
+			id.0[0..8].copy_from_slice(&payment_ctr.to_ne_bytes());
+			let succeeded = send_mpp_payment(source, dest, dest_scids, amt, secret, hash, id);
+			if succeeded {
+				pending_payments.borrow_mut()[source_idx].push(id);
+			}
+		};
+
+		// MPP payment via hop - splits payment across multiple channels on either or both hops
+		let send_mpp_hop = |source_idx: usize,
+		                    middle_idx: usize,
+		                    middle_scids: &[u64],
+		                    dest_idx: usize,
+		                    dest_scids: &[u64],
+		                    amt: u64,
+		                    payment_ctr: &mut u64| {
+			let source = &nodes[source_idx];
+			let middle = &nodes[middle_idx];
+			let dest = &nodes[dest_idx];
+			let (secret, hash) = get_payment_secret_hash(dest, payment_ctr);
+			let mut id = PaymentId([0; 32]);
+			id.0[0..8].copy_from_slice(&payment_ctr.to_ne_bytes());
+			let succeeded = send_mpp_hop_payment(
+				source,
+				middle,
+				middle_scids,
+				dest,
+				dest_scids,
+				amt,
+				secret,
+				hash,
+				id,
+			);
+			if succeeded {
+				pending_payments.borrow_mut()[source_idx].push(id);
+			}
+		};
+
 		let v = get_slice!(1)[0];
 		out.locked_write(format!("READ A BYTE! HANDLING INPUT {:x}...........\n", v).as_bytes());
 		match v {
@@ -1707,29 +1913,45 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 				*mon_style[2].borrow_mut() = ChannelMonitorUpdateStatus::Completed;
 			},
 
-			0x08 => complete_all_monitor_updates(&monitor_a, &chan_1_id),
-			0x09 => complete_all_monitor_updates(&monitor_b, &chan_1_id),
-			0x0a => complete_all_monitor_updates(&monitor_b, &chan_2_id),
-			0x0b => complete_all_monitor_updates(&monitor_c, &chan_2_id),
+			0x08 => {
+				for id in &chan_ab_ids {
+					complete_all_monitor_updates(&monitor_a, id);
+				}
+			},
+			0x09 => {
+				for id in &chan_ab_ids {
+					complete_all_monitor_updates(&monitor_b, id);
+				}
+			},
+			0x0a => {
+				for id in &chan_bc_ids {
+					complete_all_monitor_updates(&monitor_b, id);
+				}
+			},
+			0x0b => {
+				for id in &chan_bc_ids {
+					complete_all_monitor_updates(&monitor_c, id);
+				}
+			},
 
 			0x0c => {
-				if !chan_a_disconnected {
+				if !peers_ab_disconnected {
 					nodes[0].peer_disconnected(nodes[1].get_our_node_id());
 					nodes[1].peer_disconnected(nodes[0].get_our_node_id());
-					chan_a_disconnected = true;
+					peers_ab_disconnected = true;
 					drain_msg_events_on_disconnect!(0);
 				}
 			},
 			0x0d => {
-				if !chan_b_disconnected {
+				if !peers_bc_disconnected {
 					nodes[1].peer_disconnected(nodes[2].get_our_node_id());
 					nodes[2].peer_disconnected(nodes[1].get_our_node_id());
-					chan_b_disconnected = true;
+					peers_bc_disconnected = true;
 					drain_msg_events_on_disconnect!(2);
 				}
 			},
 			0x0e => {
-				if chan_a_disconnected {
+				if peers_ab_disconnected {
 					let init_1 = Init {
 						features: nodes[1].init_features(),
 						networks: None,
@@ -1742,11 +1964,11 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 						remote_network_address: None,
 					};
 					nodes[1].peer_connected(nodes[0].get_our_node_id(), &init_0, false).unwrap();
-					chan_a_disconnected = false;
+					peers_ab_disconnected = false;
 				}
 			},
 			0x0f => {
-				if chan_b_disconnected {
+				if peers_bc_disconnected {
 					let init_2 = Init {
 						features: nodes[2].init_features(),
 						networks: None,
@@ -1759,7 +1981,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 						remote_network_address: None,
 					};
 					nodes[2].peer_connected(nodes[1].get_our_node_id(), &init_1, false).unwrap();
-					chan_b_disconnected = false;
+					peers_bc_disconnected = false;
 				}
 			},
 
@@ -1849,6 +2071,18 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 			0x6b => send_noret(2, 1, chan_b, 1, &mut p_ctr),
 			0x6c => send_hop_noret(0, 1, chan_a, 2, chan_b, 1, &mut p_ctr),
 			0x6d => send_hop_noret(2, 1, chan_b, 0, chan_a, 1, &mut p_ctr),
+
+			// MPP payments
+			// 0x70: direct MPP from 0 to 1 (multi A-B channels)
+			0x70 => send_mpp_direct(0, 1, &chan_ab_scids, 1_000_000, &mut p_ctr),
+			// 0x71: MPP 0->1->2, multi channels on first hop (A-B)
+			0x71 => send_mpp_hop(0, 1, &chan_ab_scids, 2, &[chan_b], 1_000_000, &mut p_ctr),
+			// 0x72: MPP 0->1->2, multi channels on both hops (A-B and B-C)
+			0x72 => send_mpp_hop(0, 1, &chan_ab_scids, 2, &chan_bc_scids, 1_000_000, &mut p_ctr),
+			// 0x73: MPP 0->1->2, multi channels on second hop (B-C)
+			0x73 => send_mpp_hop(0, 1, &[chan_a], 2, &chan_bc_scids, 1_000_000, &mut p_ctr),
+			// 0x74: direct MPP from 0 to 1, multi parts over single channel
+			0x74 => send_mpp_direct(0, 1, &[chan_a, chan_a, chan_a], 1_000_000, &mut p_ctr),
 
 			0x80 => {
 				let mut max_feerate = last_htlc_clear_fee_a;
@@ -2095,9 +2329,9 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 			0xb0 | 0xb1 | 0xb2 => {
 				// Restart node A, picking among the in-flight `ChannelMonitor`s to use based on
 				// the value of `v` we're matching.
-				if !chan_a_disconnected {
+				if !peers_ab_disconnected {
 					nodes[1].peer_disconnected(nodes[0].get_our_node_id());
-					chan_a_disconnected = true;
+					peers_ab_disconnected = true;
 					push_excess_b_events!(
 						nodes[1].get_and_clear_pending_msg_events().drain(..),
 						Some(0)
@@ -2113,16 +2347,16 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 			0xb3..=0xbb => {
 				// Restart node B, picking among the in-flight `ChannelMonitor`s to use based on
 				// the value of `v` we're matching.
-				if !chan_a_disconnected {
+				if !peers_ab_disconnected {
 					nodes[0].peer_disconnected(nodes[1].get_our_node_id());
-					chan_a_disconnected = true;
+					peers_ab_disconnected = true;
 					nodes[0].get_and_clear_pending_msg_events();
 					ab_events.clear();
 					ba_events.clear();
 				}
-				if !chan_b_disconnected {
+				if !peers_bc_disconnected {
 					nodes[2].peer_disconnected(nodes[1].get_our_node_id());
-					chan_b_disconnected = true;
+					peers_bc_disconnected = true;
 					nodes[2].get_and_clear_pending_msg_events();
 					bc_events.clear();
 					cb_events.clear();
@@ -2135,9 +2369,9 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 			0xbc | 0xbd | 0xbe => {
 				// Restart node C, picking among the in-flight `ChannelMonitor`s to use based on
 				// the value of `v` we're matching.
-				if !chan_b_disconnected {
+				if !peers_bc_disconnected {
 					nodes[1].peer_disconnected(nodes[2].get_our_node_id());
-					chan_b_disconnected = true;
+					peers_bc_disconnected = true;
 					push_excess_b_events!(
 						nodes[1].get_and_clear_pending_msg_events().drain(..),
 						Some(2)
@@ -2151,28 +2385,76 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 				monitor_c = new_monitor_c;
 			},
 
-			0xf0 => complete_monitor_update(&monitor_a, &chan_1_id, &complete_first),
-			0xf1 => complete_monitor_update(&monitor_a, &chan_1_id, &complete_second),
-			0xf2 => complete_monitor_update(&monitor_a, &chan_1_id, &Vec::pop),
+			0xf0 => {
+				for id in &chan_ab_ids {
+					complete_monitor_update(&monitor_a, id, &complete_first);
+				}
+			},
+			0xf1 => {
+				for id in &chan_ab_ids {
+					complete_monitor_update(&monitor_a, id, &complete_second);
+				}
+			},
+			0xf2 => {
+				for id in &chan_ab_ids {
+					complete_monitor_update(&monitor_a, id, &Vec::pop);
+				}
+			},
 
-			0xf4 => complete_monitor_update(&monitor_b, &chan_1_id, &complete_first),
-			0xf5 => complete_monitor_update(&monitor_b, &chan_1_id, &complete_second),
-			0xf6 => complete_monitor_update(&monitor_b, &chan_1_id, &Vec::pop),
+			0xf4 => {
+				for id in &chan_ab_ids {
+					complete_monitor_update(&monitor_b, id, &complete_first);
+				}
+			},
+			0xf5 => {
+				for id in &chan_ab_ids {
+					complete_monitor_update(&monitor_b, id, &complete_second);
+				}
+			},
+			0xf6 => {
+				for id in &chan_ab_ids {
+					complete_monitor_update(&monitor_b, id, &Vec::pop);
+				}
+			},
 
-			0xf8 => complete_monitor_update(&monitor_b, &chan_2_id, &complete_first),
-			0xf9 => complete_monitor_update(&monitor_b, &chan_2_id, &complete_second),
-			0xfa => complete_monitor_update(&monitor_b, &chan_2_id, &Vec::pop),
+			0xf8 => {
+				for id in &chan_bc_ids {
+					complete_monitor_update(&monitor_b, id, &complete_first);
+				}
+			},
+			0xf9 => {
+				for id in &chan_bc_ids {
+					complete_monitor_update(&monitor_b, id, &complete_second);
+				}
+			},
+			0xfa => {
+				for id in &chan_bc_ids {
+					complete_monitor_update(&monitor_b, id, &Vec::pop);
+				}
+			},
 
-			0xfc => complete_monitor_update(&monitor_c, &chan_2_id, &complete_first),
-			0xfd => complete_monitor_update(&monitor_c, &chan_2_id, &complete_second),
-			0xfe => complete_monitor_update(&monitor_c, &chan_2_id, &Vec::pop),
+			0xfc => {
+				for id in &chan_bc_ids {
+					complete_monitor_update(&monitor_c, id, &complete_first);
+				}
+			},
+			0xfd => {
+				for id in &chan_bc_ids {
+					complete_monitor_update(&monitor_c, id, &complete_second);
+				}
+			},
+			0xfe => {
+				for id in &chan_bc_ids {
+					complete_monitor_update(&monitor_c, id, &Vec::pop);
+				}
+			},
 
 			0xff => {
 				// Test that no channel is in a stuck state where neither party can send funds even
 				// after we resolve all pending events.
 
 				// First, make sure peers are all connected to each other
-				if chan_a_disconnected {
+				if peers_ab_disconnected {
 					let init_1 = Init {
 						features: nodes[1].init_features(),
 						networks: None,
@@ -2185,9 +2467,9 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 						remote_network_address: None,
 					};
 					nodes[1].peer_connected(nodes[0].get_our_node_id(), &init_0, false).unwrap();
-					chan_a_disconnected = false;
+					peers_ab_disconnected = false;
 				}
-				if chan_b_disconnected {
+				if peers_bc_disconnected {
 					let init_2 = Init {
 						features: nodes[2].init_features(),
 						networks: None,
@@ -2200,7 +2482,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 						remote_network_address: None,
 					};
 					nodes[2].peer_connected(nodes[1].get_our_node_id(), &init_1, false).unwrap();
-					chan_b_disconnected = false;
+					peers_bc_disconnected = false;
 				}
 
 				macro_rules! process_all_events {
@@ -2211,10 +2493,14 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 								panic!("It may take may iterations to settle the state, but it should not take forever");
 							}
 							// Next, make sure no monitor updates are pending
-							complete_all_monitor_updates(&monitor_a, &chan_1_id);
-							complete_all_monitor_updates(&monitor_b, &chan_1_id);
-							complete_all_monitor_updates(&monitor_b, &chan_2_id);
-							complete_all_monitor_updates(&monitor_c, &chan_2_id);
+							for id in &chan_ab_ids {
+								complete_all_monitor_updates(&monitor_a, id);
+								complete_all_monitor_updates(&monitor_b, id);
+							}
+							for id in &chan_bc_ids {
+								complete_all_monitor_updates(&monitor_b, id);
+								complete_all_monitor_updates(&monitor_c, id);
+							}
 							// Then, make sure any current forwards make their way to their destination
 							if process_msg_events!(0, false, ProcessMessages::AllMessages) {
 								last_pass_no_updates = false;
@@ -2258,15 +2544,29 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 
 				process_all_events!();
 
+				// Verify no payments are stuck - all should have resolved
+				for (idx, pending) in pending_payments.borrow().iter().enumerate() {
+					assert!(
+						pending.is_empty(),
+						"Node {} has {} stuck pending payments after settling all state",
+						idx,
+						pending.len()
+					);
+				}
+
 				// Finally, make sure that at least one end of each channel can make a substantial payment
-				assert!(
-					send(0, 1, chan_a, 10_000_000, &mut p_ctr)
-						|| send(1, 0, chan_a, 10_000_000, &mut p_ctr)
-				);
-				assert!(
-					send(1, 2, chan_b, 10_000_000, &mut p_ctr)
-						|| send(2, 1, chan_b, 10_000_000, &mut p_ctr)
-				);
+				for &scid in &chan_ab_scids {
+					assert!(
+						send(0, 1, scid, 10_000_000, &mut p_ctr)
+							|| send(1, 0, scid, 10_000_000, &mut p_ctr)
+					);
+				}
+				for &scid in &chan_bc_scids {
+					assert!(
+						send(1, 2, scid, 10_000_000, &mut p_ctr)
+							|| send(2, 1, scid, 10_000_000, &mut p_ctr)
+					);
+				}
 
 				last_htlc_clear_fee_a = fee_est_a.ret_val.load(atomic::Ordering::Acquire);
 				last_htlc_clear_fee_b = fee_est_b.ret_val.load(atomic::Ordering::Acquire);
