@@ -254,7 +254,7 @@ fn test_manager_serialize_deserialize_events() {
 	let node_a = nodes.remove(0);
 	let node_b = nodes.remove(0);
 	node_a.node.create_channel(node_b.node.get_our_node_id(), channel_value, push_msat, 42, None, None).unwrap();
-	node_b.node.handle_open_channel(node_a.node.get_our_node_id(), &get_event_msg!(node_a, MessageSendEvent::SendOpenChannel, node_b.node.get_our_node_id()));
+	handle_and_accept_open_channel(&node_b, node_a.node.get_our_node_id(), &get_event_msg!(node_a, MessageSendEvent::SendOpenChannel, node_b.node.get_our_node_id()));
 	node_a.node.handle_accept_channel(node_b.node.get_our_node_id(), &get_event_msg!(node_b, MessageSendEvent::SendAcceptChannel, node_a.node.get_our_node_id()));
 
 	let (temporary_channel_id, tx, funding_output) = create_funding_transaction(&node_a, &node_b.node.get_our_node_id(), channel_value, 42);
@@ -368,7 +368,8 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	let persister;
 	let new_chain_monitor;
 
-	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg.clone()), Some(legacy_cfg.clone()), Some(legacy_cfg)]);
 	let nodes_0_deserialized;
 	let mut nodes = create_network(4, &node_cfgs, &node_chanmgrs);
 
@@ -523,7 +524,8 @@ fn do_test_data_loss_protect(reconnect_panicing: bool, substantially_old: bool, 
 	let persister;
 	let new_chain_monitor;
 
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
 	let nodes_0_deserialized;
 
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
@@ -931,7 +933,7 @@ fn do_forwarded_payment_no_manager_persistence(use_cs_commitment: bool, claim_ht
 	let persister;
 	let new_chain_monitor;
 
-	let mut intercept_forwards_config = test_default_channel_config();
+	let mut intercept_forwards_config = test_legacy_channel_config();
 	intercept_forwards_config.htlc_interception_flags =
 		HTLCInterceptionFlags::ToInterceptSCIDs as u8;
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, Some(intercept_forwards_config), None]);
@@ -1109,7 +1111,8 @@ fn removed_payment_no_manager_persistence() {
 	let persister;
 	let new_chain_monitor;
 
-	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg.clone()), Some(legacy_cfg)]);
 	let nodes_1_deserialized;
 
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
@@ -1326,7 +1329,8 @@ fn test_reload_partial_funding_batch() {
 	let new_persister;
 	let new_chain_monitor;
 
-	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg.clone()), Some(legacy_cfg)]);
 	let new_channel_manager;
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
@@ -1461,7 +1465,8 @@ fn test_peer_storage() {
 	let (persister, chain_monitor);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let nodes_0_deserialized;
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
@@ -1512,7 +1517,7 @@ fn test_peer_storage() {
 	// TODO: Handle the case where we've completely forgotten about an active channel.
 	reload_node!(
 		nodes[0],
-		test_default_channel_config(),
+		test_legacy_channel_config(),
 		&nodes_0_serialized,
 		&[&old_state_monitor[..]],
 		persister,

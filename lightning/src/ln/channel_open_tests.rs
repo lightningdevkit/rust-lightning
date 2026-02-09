@@ -62,7 +62,7 @@ fn test_outbound_chans_unlimited() {
 	let mut open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b);
 
 	for _ in 0..MAX_UNFUNDED_CHANS_PER_PEER {
-		nodes[1].node.handle_open_channel(node_a, &open_channel_msg);
+		handle_and_accept_open_channel(&nodes[1], node_a, &open_channel_msg);
 		get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, node_a);
 		open_channel_msg.common_fields.temporary_channel_id =
 			ChannelId::temporary_from_entropy_source(&nodes[0].keys_manager);
@@ -90,13 +90,10 @@ fn test_outbound_chans_unlimited() {
 
 #[test]
 fn test_0conf_limiting() {
-	// Tests that we properly limit inbound channels when we have the manual-channel-acceptance
-	// flag set and (sometimes) accept channels as 0conf.
+	// Tests that we properly limit inbound channels but accept channels as 0conf.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let mut settings = test_default_channel_config();
-	settings.manually_accept_inbound_channels = true;
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(settings)]);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	// Note that create_network connects the nodes together for us
@@ -110,24 +107,14 @@ fn test_0conf_limiting() {
 	};
 
 	// First, get us up to MAX_UNFUNDED_CHANNEL_PEERS so we can test at the edge
-	for _ in 0..MAX_UNFUNDED_CHANNEL_PEERS - 1 {
+	for _ in 0..MAX_UNFUNDED_CHANNEL_PEERS {
 		let random_pk = PublicKey::from_secret_key(
 			&nodes[0].node.secp_ctx,
 			&SecretKey::from_slice(&nodes[1].keys_manager.get_secure_random_bytes()).unwrap(),
 		);
 		nodes[1].node.peer_connected(random_pk, init_msg, true).unwrap();
 
-		nodes[1].node.handle_open_channel(random_pk, &open_channel_msg);
-		let events = nodes[1].node.get_and_clear_pending_events();
-		match events[0] {
-			Event::OpenChannelRequest { temporary_channel_id, .. } => {
-				nodes[1]
-					.node
-					.accept_inbound_channel(&temporary_channel_id, &random_pk, 23, None)
-					.unwrap();
-			},
-			_ => panic!("Unexpected event"),
-		}
+		handle_and_accept_open_channel(&nodes[1], random_pk, &open_channel_msg);
 		get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, random_pk);
 		open_channel_msg.common_fields.temporary_channel_id =
 			ChannelId::temporary_from_entropy_source(&nodes[0].keys_manager);
@@ -185,13 +172,12 @@ fn test_0conf_limiting() {
 
 #[test]
 fn test_inbound_anchors_manual_acceptance() {
-	let mut anchors_cfg = test_default_channel_config();
-	anchors_cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+	let anchors_cfg = test_default_channel_config();
 	do_test_manual_inbound_accept_with_override(anchors_cfg, None);
 }
 
 #[test]
-fn test_inbound_anchors_manual_acceptance_overridden() {
+fn test_inbound_anchors_config_overridden() {
 	let overrides = ChannelConfigOverrides {
 		handshake_overrides: Some(ChannelHandshakeConfigUpdate {
 			max_inbound_htlc_value_in_flight_percent_of_channel: Some(5),
@@ -205,8 +191,6 @@ fn test_inbound_anchors_manual_acceptance_overridden() {
 	};
 
 	let mut anchors_cfg = test_default_channel_config();
-	anchors_cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
-
 	let accept_message = do_test_manual_inbound_accept_with_override(anchors_cfg, Some(overrides));
 	assert_eq!(accept_message.common_fields.max_htlc_value_in_flight_msat, 5_000_000);
 	assert_eq!(accept_message.common_fields.htlc_minimum_msat, 1_000);
@@ -226,15 +210,12 @@ fn test_inbound_zero_fee_commitments_manual_acceptance() {
 fn do_test_manual_inbound_accept_with_override(
 	start_cfg: UserConfig, config_overrides: Option<ChannelConfigOverrides>,
 ) -> AcceptChannel {
-	let mut mannual_accept_cfg = start_cfg.clone();
-	mannual_accept_cfg.manually_accept_inbound_channels = true;
-
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(
 		3,
 		&node_cfgs,
-		&[Some(start_cfg.clone()), Some(start_cfg.clone()), Some(mannual_accept_cfg.clone())],
+		&[Some(start_cfg.clone()), Some(start_cfg.clone()), Some(start_cfg)],
 	);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
@@ -242,22 +223,6 @@ fn do_test_manual_inbound_accept_with_override(
 	let node_b = nodes[1].node.get_our_node_id();
 	nodes[0].node.create_channel(node_b, 100_000, 0, 42, None, None).unwrap();
 	let open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b);
-
-	nodes[1].node.handle_open_channel(node_a, &open_channel_msg);
-	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
-	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
-	match &msg_events[0] {
-		MessageSendEvent::HandleError { node_id, action } => {
-			assert_eq!(*node_id, node_a);
-			match action {
-				ErrorAction::SendErrorMessage { msg } => {
-					assert_eq!(msg.data, "No channels with anchor outputs accepted".to_owned())
-				},
-				_ => panic!("Unexpected error action"),
-			}
-		},
-		_ => panic!("Unexpected event"),
-	}
 
 	nodes[2].node.handle_open_channel(node_a, &open_channel_msg);
 	let events = nodes[2].node.get_and_clear_pending_events();
@@ -281,7 +246,6 @@ fn test_anchors_zero_fee_htlc_tx_downgrade() {
 
 	let mut receiver_cfg = test_default_channel_config();
 	receiver_cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
-	receiver_cfg.manually_accept_inbound_channels = true;
 
 	let start_type = ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
 	let end_type = ChannelTypeFeatures::only_static_remote_key();
@@ -303,7 +267,6 @@ fn test_scid_privacy_downgrade() {
 	receiver_cfg.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
 	receiver_cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 	receiver_cfg.channel_handshake_config.negotiate_scid_privacy = true;
-	receiver_cfg.manually_accept_inbound_channels = true;
 
 	let mut start_type = ChannelTypeFeatures::anchors_zero_fee_commitments();
 	start_type.set_scid_privacy_required();
@@ -328,7 +291,6 @@ fn test_zero_fee_commitments_downgrade() {
 	let mut receiver_cfg = test_default_channel_config();
 	receiver_cfg.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
 	receiver_cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
-	receiver_cfg.manually_accept_inbound_channels = true;
 
 	let start_type = ChannelTypeFeatures::anchors_zero_fee_commitments();
 	let downgrade_types = vec![
@@ -344,11 +306,9 @@ fn test_zero_fee_commitments_downgrade_to_static_remote() {
 	// are supported (but not accepted), but not legacy anchors.
 	let mut initiator_cfg = test_default_channel_config();
 	initiator_cfg.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
-	initiator_cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 
-	let mut receiver_cfg = test_default_channel_config();
+	let mut receiver_cfg = test_legacy_channel_config();
 	receiver_cfg.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
-	receiver_cfg.manually_accept_inbound_channels = true;
 
 	let start_type = ChannelTypeFeatures::anchors_zero_fee_commitments();
 	let end_type = ChannelTypeFeatures::only_static_remote_key();
@@ -406,10 +366,8 @@ fn do_test_channel_type_downgrade(
 fn test_no_channel_downgrade() {
 	// Tests that the local node will not retry when a `option_static_remote` channel is
 	// rejected by a peer that advertises support for the feature.
-	let initiator_cfg = test_default_channel_config();
+	let initiator_cfg = test_legacy_channel_config();
 	let mut receiver_cfg = test_default_channel_config();
-	receiver_cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
-	receiver_cfg.manually_accept_inbound_channels = true;
 
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -469,7 +427,7 @@ fn test_channel_resumption_fail_post_funding() {
 
 	nodes[0].node.create_channel(node_b_id, 1_000_000, 0, 42, None, None).unwrap();
 	let open_chan = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
-	nodes[1].node.handle_open_channel(node_a_id, &open_chan);
+	handle_and_accept_open_channel(&nodes[1], node_a_id, &open_chan);
 	let accept_chan = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, node_a_id);
 	nodes[0].node.handle_accept_channel(node_b_id, &accept_chan);
 
@@ -499,11 +457,11 @@ fn test_channel_resumption_fail_post_funding() {
 pub fn test_insane_channel_opens() {
 	// Stand up a network of 2 nodes
 	use crate::ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS;
-	let mut cfg = UserConfig::default();
-	cfg.channel_handshake_limits.max_funding_satoshis = TOTAL_BITCOIN_SUPPLY_SATOSHIS + 1;
+	let mut legacy_cfg = test_legacy_channel_config();
+	legacy_cfg.channel_handshake_limits.max_funding_satoshis = TOTAL_BITCOIN_SUPPLY_SATOSHIS + 1;
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(cfg.clone())]);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(legacy_cfg.clone())]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
@@ -513,7 +471,7 @@ pub fn test_insane_channel_opens() {
 	// funding satoshis
 	let channel_value_sat = 31337; // same as funding satoshis
 	let channel_reserve_satoshis =
-		get_holder_selected_channel_reserve_satoshis(channel_value_sat, &cfg);
+		get_holder_selected_channel_reserve_satoshis(channel_value_sat, &legacy_cfg);
 	let push_msat = (channel_value_sat - channel_reserve_satoshis) * 1000;
 
 	// Have node0 initiate a channel to node1 with aforementioned parameters
@@ -529,6 +487,22 @@ pub fn test_insane_channel_opens() {
 		|expected_error_str: &str, message_mutator: fn(msgs::OpenChannel) -> msgs::OpenChannel| {
 			let open_channel_mutated = message_mutator(open_channel_message.clone());
 			nodes[1].node.handle_open_channel(node_a_id, &open_channel_mutated);
+			let events = nodes[1].node.get_and_clear_pending_events();
+			match events[0] {
+				Event::OpenChannelRequest {
+					temporary_channel_id, counterparty_node_id, ..
+				} => match nodes[1].node.accept_inbound_channel(
+					&temporary_channel_id,
+					&counterparty_node_id,
+					42,
+					None,
+				) {
+					Err(_) => {},
+					_ => panic!(),
+				},
+				_ => panic!("Unexpected event"),
+			}
+
 			let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
 			assert_eq!(msg_events.len(), 1);
 			let expected_regex = regex::Regex::new(expected_error_str).unwrap();
@@ -625,7 +599,6 @@ pub fn test_insane_channel_opens() {
 #[xtest(feature = "_externalize_tests")]
 fn test_insane_zero_fee_channel_open() {
 	let mut cfg = UserConfig::default();
-	cfg.manually_accept_inbound_channels = true;
 	cfg.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
 
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -746,7 +719,7 @@ fn do_test_sanity_on_in_flight_opens(steps: u8) {
 	if steps & 0x0f == 1 {
 		return;
 	}
-	nodes[1].node.handle_open_channel(node_a_id, &open_channel);
+	handle_and_accept_open_channel(&nodes[1], node_a_id, &open_channel);
 	let accept_channel = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, node_a_id);
 
 	if steps & 0x0f == 2 {
@@ -925,17 +898,24 @@ pub fn bolt2_open_channel_sane_dust_limit() {
 	node0_to_1_send_open_channel.channel_reserve_satoshis = 100001;
 
 	nodes[1].node.handle_open_channel(node_a_id, &node0_to_1_send_open_channel);
-	let events = nodes[1].node.get_and_clear_pending_msg_events();
-	let err_msg = match events[0] {
-		MessageSendEvent::HandleError {
-			action: ErrorAction::SendErrorMessage { ref msg }, ..
-		} => msg.clone(),
+	let events = nodes[1].node.get_and_clear_pending_events();
+	match events[0] {
+		Event::OpenChannelRequest { temporary_channel_id, counterparty_node_id, .. } => match nodes
+			[1]
+		.node
+		.accept_inbound_channel(&temporary_channel_id, &counterparty_node_id, 42, None)
+		{
+			Err(APIError::ChannelUnavailable { err }) => assert_eq!(
+				err,
+				"dust_limit_satoshis (547) is greater than the implementation limit (546)"
+			),
+			_ => panic!(),
+		},
 		_ => panic!("Unexpected event"),
-	};
-	assert_eq!(
-		err_msg.data,
-		"dust_limit_satoshis (547) is greater than the implementation limit (546)"
-	);
+	}
+	let events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	assert!(matches!(events[0], MessageSendEvent::HandleError { .. }));
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -1022,7 +1002,7 @@ pub fn test_user_configurable_csv_delay() {
 	// We test msg.to_self_delay <= config.their_to_self_delay is enforced in Chanel::accept_channel()
 	nodes[0].node.create_channel(node_b_id, 1000000, 1000000, 42, None, None).unwrap();
 	let open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
-	nodes[1].node.handle_open_channel(node_a_id, &open_channel);
+	handle_and_accept_open_channel(&nodes[1], node_a_id, &open_channel);
 
 	let mut accept_channel =
 		get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, node_a_id);
@@ -1078,24 +1058,20 @@ pub fn test_user_configurable_csv_delay() {
 }
 
 #[xtest(feature = "_externalize_tests")]
-pub fn test_manually_accept_inbound_channel_request() {
-	let mut manually_accept_conf = UserConfig::default();
-	manually_accept_conf.manually_accept_inbound_channels = true;
-	manually_accept_conf.channel_handshake_config.minimum_depth = 1;
+pub fn test_accept_inbound_channel_config_override() {
+	let mut conf = UserConfig::default();
+	conf.channel_handshake_config.minimum_depth = 1;
+	conf.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = false;
 
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs =
-		create_node_chanmgrs(2, &node_cfgs, &[None, Some(manually_accept_conf.clone())]);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(conf.clone())]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
 
-	nodes[0]
-		.node
-		.create_channel(node_b_id, 100000, 10001, 42, None, Some(manually_accept_conf))
-		.unwrap();
+	nodes[0].node.create_channel(node_b_id, 100000, 10001, 42, None, Some(conf)).unwrap();
 	let res = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 
 	nodes[1].node.handle_open_channel(node_a_id, &res);
@@ -1203,28 +1179,19 @@ pub fn test_manually_accept_inbound_channel_request() {
 }
 
 #[xtest(feature = "_externalize_tests")]
-pub fn test_manually_reject_inbound_channel_request() {
-	let mut manually_accept_conf = UserConfig::default();
-	manually_accept_conf.manually_accept_inbound_channels = true;
+pub fn test_reject_inbound_channel_request() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs =
-		create_node_chanmgrs(2, &node_cfgs, &[None, Some(manually_accept_conf.clone())]);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
 
-	nodes[0]
-		.node
-		.create_channel(node_b_id, 100000, 10001, 42, None, Some(manually_accept_conf))
-		.unwrap();
+	nodes[0].node.create_channel(node_b_id, 100000, 10001, 42, None, None).unwrap();
 	let res = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 
 	nodes[1].node.handle_open_channel(node_a_id, &res);
-
-	// Assert that `nodes[1]` has no `MessageSendEvent::SendAcceptChannel` in `msg_events` before
-	// rejecting the inbound channel request.
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	let err = "Channel force-closed".to_string();
 	let events = nodes[1].node.get_and_clear_pending_events();
@@ -1254,29 +1221,19 @@ pub fn test_manually_reject_inbound_channel_request() {
 
 #[xtest(feature = "_externalize_tests")]
 pub fn test_can_not_accept_inbound_channel_twice() {
-	let mut manually_accept_conf = UserConfig::default();
-	manually_accept_conf.manually_accept_inbound_channels = true;
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs =
-		create_node_chanmgrs(2, &node_cfgs, &[None, Some(manually_accept_conf.clone())]);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
 
-	nodes[0]
-		.node
-		.create_channel(node_b_id, 100000, 10001, 42, None, Some(manually_accept_conf))
-		.unwrap();
+	nodes[0].node.create_channel(node_b_id, 100000, 10001, 42, None, None).unwrap();
 	let res = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 
 	nodes[1].node.handle_open_channel(node_a_id, &res);
-
-	// Assert that `nodes[1]` has no `MessageSendEvent::SendAcceptChannel` in `msg_events` before
-	// accepting the inbound channel request.
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
-
 	let events = nodes[1].node.get_and_clear_pending_events();
 	match events[0] {
 		Event::OpenChannelRequest { temporary_channel_id, .. } => {
@@ -1359,7 +1316,7 @@ pub fn test_duplicate_temporary_channel_id_from_different_peers() {
 
 	// Assert that `nodes[0]` can accept both `OpenChannel` requests, even though they use the same
 	// `temporary_channel_id` as they are from different peers.
-	nodes[0].node.handle_open_channel(node_b_id, &open_chan_msg_chan_1_0);
+	handle_and_accept_open_channel(&nodes[0], node_b_id, &open_chan_msg_chan_1_0);
 	{
 		let events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
@@ -1375,7 +1332,7 @@ pub fn test_duplicate_temporary_channel_id_from_different_peers() {
 		}
 	}
 
-	nodes[0].node.handle_open_channel(node_c_id, &open_chan_msg_chan_2_0);
+	handle_and_accept_open_channel(&nodes[0], node_c_id, &open_chan_msg_chan_2_0);
 	{
 		let events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
@@ -1416,7 +1373,8 @@ pub fn test_duplicate_funding_err_in_funding() {
 	let mut open_chan_msg = get_event_msg!(nodes[2], MessageSendEvent::SendOpenChannel, node_b_id);
 	let node_c_temp_chan_id = open_chan_msg.common_fields.temporary_channel_id;
 	open_chan_msg.common_fields.temporary_channel_id = real_channel_id;
-	nodes[1].node.handle_open_channel(node_c_id, &open_chan_msg);
+	handle_and_accept_open_channel(&nodes[1], node_c_id, &open_chan_msg);
+
 	let mut accept_chan_msg =
 		get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, node_c_id);
 	accept_chan_msg.common_fields.temporary_channel_id = node_c_temp_chan_id;
@@ -1461,7 +1419,7 @@ pub fn test_duplicate_chan_id() {
 	// Create an initial channel
 	nodes[0].node.create_channel(node_b_id, 100000, 10001, 42, None, None).unwrap();
 	let mut open_chan_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
-	nodes[1].node.handle_open_channel(node_a_id, &open_chan_msg);
+	handle_and_accept_open_channel(&nodes[1], node_a_id, &open_chan_msg);
 	nodes[0].node.handle_accept_channel(
 		node_b_id,
 		&get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, node_a_id),
@@ -1548,7 +1506,7 @@ pub fn test_duplicate_chan_id() {
 	// Now try to create a second channel which has a duplicate funding output.
 	nodes[0].node.create_channel(node_b_id, 100000, 10001, 42, None, None).unwrap();
 	let open_chan_2_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
-	nodes[1].node.handle_open_channel(node_a_id, &open_chan_2_msg);
+	handle_and_accept_open_channel(&nodes[1], node_a_id, &open_chan_2_msg);
 	nodes[0].node.handle_accept_channel(
 		node_b_id,
 		&get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, node_a_id),
@@ -1652,10 +1610,8 @@ pub fn test_invalid_funding_tx() {
 	let node_b_id = nodes[1].node.get_our_node_id();
 
 	nodes[0].node.create_channel(node_b_id, 100_000, 10_000, 42, None, None).unwrap();
-	nodes[1].node.handle_open_channel(
-		node_a_id,
-		&get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id),
-	);
+	let open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
+	handle_and_accept_open_channel(&nodes[1], node_a_id, &open_channel_msg);
 	nodes[0].node.handle_accept_channel(
 		node_b_id,
 		&get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, node_a_id),
@@ -1769,10 +1725,9 @@ pub fn test_coinbase_funding_tx() {
 
 	nodes[0].node.create_channel(node_b_id, 100000, 10001, 42, None, None).unwrap();
 	let open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
+	handle_and_accept_open_channel(&nodes[1], node_a_id, &open_channel);
 
-	nodes[1].node.handle_open_channel(node_a_id, &open_channel);
 	let accept_channel = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, node_a_id);
-
 	nodes[0].node.handle_accept_channel(node_b_id, &accept_channel);
 
 	// Create the coinbase funding transaction.
@@ -1831,7 +1786,8 @@ pub fn test_non_final_funding_tx() {
 		nodes[0].node.create_channel(node_b_id, 100_000, 0, 42, None, None).unwrap();
 	let open_channel_message =
 		get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
-	nodes[1].node.handle_open_channel(node_a_id, &open_channel_message);
+	handle_and_accept_open_channel(&nodes[1], node_a_id, &open_channel_message);
+
 	let accept_channel_message =
 		get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, node_a_id);
 	nodes[0].node.handle_accept_channel(node_b_id, &accept_channel_message);
@@ -1890,7 +1846,7 @@ pub fn test_non_final_funding_tx_within_headroom() {
 		nodes[0].node.create_channel(node_b_id, 100_000, 0, 42, None, None).unwrap();
 	let open_channel_message =
 		get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
-	nodes[1].node.handle_open_channel(node_a_id, &open_channel_message);
+	handle_and_accept_open_channel(&nodes[1], node_a_id, &open_channel_message);
 	let accept_channel_message =
 		get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, node_a_id);
 	nodes[0].node.handle_accept_channel(node_b_id, &accept_channel_message);
@@ -2364,7 +2320,6 @@ pub fn test_accept_inbound_channel_errors_queued() {
 	let mut config0 = test_default_channel_config();
 	let mut config1 = config0.clone();
 	config1.channel_handshake_limits.their_to_self_delay = 1000;
-	config1.manually_accept_inbound_channels = true;
 	config0.channel_handshake_config.our_to_self_delay = 2000;
 
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -2410,8 +2365,8 @@ pub fn test_manual_funding_abandon() {
 
 	assert!(nodes[0].node.create_channel(node_b_id, 100_000, 0, 42, None, None).is_ok());
 	let open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
+	handle_and_accept_open_channel(&nodes[1], node_a_id, &open_channel);
 
-	nodes[1].node.handle_open_channel(node_a_id, &open_channel);
 	let accept_channel = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, node_a_id);
 
 	nodes[0].node.handle_accept_channel(node_b_id, &accept_channel);
@@ -2459,10 +2414,9 @@ pub fn test_funding_signed_event() {
 
 	assert!(nodes[0].node.create_channel(node_b_id, 100_000, 0, 42, None, None).is_ok());
 	let open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
+	handle_and_accept_open_channel(&nodes[1], node_a_id, &open_channel);
 
-	nodes[1].node.handle_open_channel(node_a_id, &open_channel);
 	let accept_channel = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, node_a_id);
-
 	nodes[0].node.handle_accept_channel(node_b_id, &accept_channel);
 	let (temp_channel_id, tx, funding_outpoint) =
 		create_funding_transaction(&nodes[0], &node_b_id, 100_000, 42);

@@ -1657,7 +1657,9 @@ mod tests {
 		);
 		node_cfgs[0].chain_monitor = chain_mon_0;
 		node_cfgs[1].chain_monitor = chain_mon_1;
-		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let legacy_cfg = test_legacy_channel_config();
+		let node_chanmgrs =
+			create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 		// Check that the persisted channel data is empty before any channels are

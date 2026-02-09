@@ -448,7 +448,7 @@ fn test_scid_privacy_negotiation() {
 		.as_ref()
 		.unwrap()
 		.supports_scid_privacy());
-	nodes[1].node.handle_open_channel(node_a_id, &second_open_channel);
+	handle_and_accept_open_channel(&nodes[1], node_a_id, &second_open_channel);
 	nodes[0].node.handle_accept_channel(
 		node_b_id,
 		&get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, node_a_id),
@@ -501,7 +501,7 @@ fn test_inbound_scid_privacy() {
 
 	assert!(open_channel.common_fields.channel_type.as_ref().unwrap().requires_scid_privacy());
 
-	nodes[2].node.handle_open_channel(node_b_id, &open_channel);
+	handle_and_accept_open_channel(&nodes[2], node_b_id, &open_channel);
 	let accept_channel = get_event_msg!(nodes[2], MessageSendEvent::SendAcceptChannel, node_b_id);
 	nodes[1].node.handle_accept_channel(node_c_id, &accept_channel);
 
@@ -781,7 +781,6 @@ fn test_simple_0conf_channel() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let mut chan_config = test_default_channel_config();
-	chan_config.manually_accept_inbound_channels = true;
 
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(chan_config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
@@ -800,7 +799,6 @@ fn test_0conf_channel_with_async_monitor() {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let mut chan_config = test_default_channel_config();
-	chan_config.manually_accept_inbound_channels = true;
 	let node_chanmgrs =
 		create_node_chanmgrs(3, &node_cfgs, &[None, Some(chan_config.clone()), None]);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
@@ -997,7 +995,6 @@ fn test_0conf_close_no_early_chan_update() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let mut chan_config = test_default_channel_config();
-	chan_config.manually_accept_inbound_channels = true;
 
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(chan_config.clone())]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
@@ -1024,7 +1021,6 @@ fn test_public_0conf_channel() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let mut chan_config = test_default_channel_config();
-	chan_config.manually_accept_inbound_channels = true;
 
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(chan_config.clone())]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
@@ -1086,7 +1082,6 @@ fn test_0conf_channel_reorg() {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let mut chan_config = test_default_channel_config();
-	chan_config.manually_accept_inbound_channels = true;
 
 	let node_chanmgrs =
 		create_node_chanmgrs(3, &node_cfgs, &[None, None, Some(chan_config.clone())]);
@@ -1314,7 +1309,7 @@ fn test_zero_conf_accept_reject() {
 	let mut channel_type_features = ChannelTypeFeatures::only_static_remote_key();
 	channel_type_features.set_zero_conf_required();
 
-	// 1. Check we reject zero conf channels by default
+	// Check we can accept zero conf channels via the right method
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -1322,42 +1317,8 @@ fn test_zero_conf_accept_reject() {
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
 
+	// 1. First try the non-0conf method to manually accept
 	nodes[0].node.create_channel(node_b_id, 100000, 10001, 42, None, None).unwrap();
-	let mut open_channel_msg =
-		get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
-
-	open_channel_msg.common_fields.channel_type = Some(channel_type_features.clone());
-
-	nodes[1].node.handle_open_channel(node_a_id, &open_channel_msg);
-
-	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
-	match msg_events[0] {
-		MessageSendEvent::HandleError {
-			action: ErrorAction::SendErrorMessage { ref msg, .. },
-			..
-		} => {
-			assert_eq!(msg.data, "No zero confirmation channels accepted".to_owned());
-		},
-		_ => panic!(),
-	}
-
-	// 2. Check we can manually accept zero conf channels via the right method
-	let mut manually_accept_conf = UserConfig::default();
-	manually_accept_conf.manually_accept_inbound_channels = true;
-
-	let chanmon_cfgs = create_chanmon_cfgs(2);
-	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs =
-		create_node_chanmgrs(2, &node_cfgs, &[None, Some(manually_accept_conf.clone())]);
-	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let node_a_id = nodes[0].node.get_our_node_id();
-	let node_b_id = nodes[1].node.get_our_node_id();
-
-	// 2.1 First try the non-0conf method to manually accept
-	nodes[0]
-		.node
-		.create_channel(node_b_id, 100000, 10001, 42, None, Some(manually_accept_conf.clone()))
-		.unwrap();
 	let mut open_channel_msg =
 		get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 
@@ -1392,11 +1353,8 @@ fn test_zero_conf_accept_reject() {
 		_ => panic!(),
 	}
 
-	// 2.2 Try again with the 0conf method to manually accept
-	nodes[0]
-		.node
-		.create_channel(node_b_id, 100000, 10001, 42, None, Some(manually_accept_conf))
-		.unwrap();
+	// 2. Try again with the 0conf method to manually accept
+	nodes[0].node.create_channel(node_b_id, 100000, 10001, 42, None, None).unwrap();
 	let mut open_channel_msg =
 		get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 
@@ -1439,7 +1397,6 @@ fn test_connect_before_funding() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 
 	let mut manually_accept_conf = test_default_channel_config();
-	manually_accept_conf.manually_accept_inbound_channels = true;
 
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(manually_accept_conf)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
@@ -1492,7 +1449,6 @@ fn test_0conf_ann_sigs_racing_conf() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let mut chan_config = test_default_channel_config();
-	chan_config.manually_accept_inbound_channels = true;
 
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(chan_config.clone())]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);

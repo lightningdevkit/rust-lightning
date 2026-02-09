@@ -30,14 +30,14 @@ pub struct ChannelHandshakeConfig {
 	/// both parties have exchanged `splice_locked`.
 	///
 	/// A lower-bound of `1` is applied, requiring all channels to have a confirmed commitment
-	/// transaction before operation. If you wish to accept channels with zero confirmations, see
-	/// [`UserConfig::manually_accept_inbound_channels`] and
+	/// transaction before operation. If you wish to accept channels with zero confirmations,
+	/// manually accept them via [`Event::OpenChannelRequest`] using
 	/// [`ChannelManager::accept_inbound_channel_from_trusted_peer_0conf`].
 	///
 	/// Default value: `6`
 	///
-	/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
 	/// [`ChannelManager::accept_inbound_channel_from_trusted_peer_0conf`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel_from_trusted_peer_0conf
+	/// [`Event::OpenChannelRequest`]: crate::events::Event::OpenChannelRequest
 	pub minimum_depth: u32,
 	/// Set to the number of blocks we require our counterparty to wait to claim their money (ie
 	/// the number of blocks we have to punish our counterparty if they broadcast a revoked
@@ -162,15 +162,13 @@ pub struct ChannelHandshakeConfig {
 	///                will be treated as one million instead, although channel negotiations will
 	///                fail in that case.)
 	pub their_channel_reserve_proportional_millionths: u32,
-	/// If set, we attempt to negotiate the `anchors_zero_fee_htlc_tx`option for all future
+	/// If set, we attempt to negotiate the `anchors_zero_fee_htlc_tx` option for all future
 	/// channels. This feature requires having a reserve of onchain funds readily available to bump
 	/// transactions in the event of a channel force close to avoid the possibility of losing funds.
 	///
-	/// Note that if you wish accept inbound channels with anchor outputs, you must enable
-	/// [`UserConfig::manually_accept_inbound_channels`] and manually accept them with
-	/// [`ChannelManager::accept_inbound_channel`]. This is done to give you the chance to check
-	/// whether your reserve of onchain funds is enough to cover the fees for all existing and new
-	/// channels featuring anchor outputs in the event of a force close.
+	/// Upon receiving an [`Event::OpenChannelRequest`] for a channel of this type, you must
+	/// check whether your reserve of onchain funds is enough to cover the fees for all existing
+	/// and new channels featuring anchor outputs in the event of a force close.
 	///
 	/// If this option is set, channels may be created that will not be readable by LDK versions
 	/// prior to 0.0.116, causing [`ChannelManager`]'s read method to return a
@@ -180,11 +178,12 @@ pub struct ChannelHandshakeConfig {
 	/// counterparties that do not support the `anchors_zero_fee_htlc_tx` option; we will simply
 	/// fall back to a `static_remote_key` channel.
 	///
-	/// Default value: `false` (This value is likely to change to `true` in the future.)
+	/// Default value: `true`
 	///
 	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 	/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
 	/// [`DecodeError::InvalidValue`]: crate::ln::msgs::DecodeError::InvalidValue
+	/// [`Event::OpenChannelRequest`]: crate::events::Event::OpenChannelRequest
 	pub negotiate_anchors_zero_fee_htlc_tx: bool,
 
 	/// If set, we attempt to negotiate the `zero_fee_commitments` option for all future channels.
@@ -198,11 +197,9 @@ pub struct ChannelHandshakeConfig {
 	/// funds readily available to bump transactions in the event of a channel force close to avoid
 	/// the possibility of losing funds.
 	///
-	/// Note that if you wish accept inbound channels with anchor outputs, you must enable
-	/// [`UserConfig::manually_accept_inbound_channels`] and manually accept them with
-	/// [`ChannelManager::accept_inbound_channel`]. This is done to give you the chance to check
-	/// whether your reserve of onchain funds is enough to cover the fees for all existing and new
-	/// channels featuring anchor outputs in the event of a force close.
+	/// Upon receiving an [`Event::OpenChannelRequest`] for a channel of this type, you must
+	/// check whether your reserve of onchain funds is enough to cover the fees for all existing
+	/// and new channels featuring anchor outputs in the event of a force close.
 	///
 	/// If this option is set, channels may be created that will not be readable by LDK versions
 	/// prior to 0.2, causing [`ChannelManager`]'s read method to return a
@@ -224,6 +221,7 @@ pub struct ChannelHandshakeConfig {
 	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 	/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
 	/// [`DecodeError::InvalidValue`]: crate::ln::msgs::DecodeError::InvalidValue
+	/// [`Event::OpenChannelRequest`]: crate::events::Event::OpenChannelRequest
 	pub negotiate_anchor_zero_fee_commitments: bool,
 
 	/// The maximum number of HTLCs in-flight from our counterparty towards us at the same time.
@@ -254,7 +252,7 @@ impl Default for ChannelHandshakeConfig {
 			announce_for_forwarding: false,
 			commit_upfront_shutdown_pubkey: true,
 			their_channel_reserve_proportional_millionths: 10_000,
-			negotiate_anchors_zero_fee_htlc_tx: false,
+			negotiate_anchors_zero_fee_htlc_tx: true,
 			negotiate_anchor_zero_fee_commitments: false,
 			our_max_accepted_htlcs: 50,
 		}
@@ -998,20 +996,6 @@ pub struct UserConfig {
 	///
 	/// Default value: `true`
 	pub accept_inbound_channels: bool,
-	/// If this is set to `true`, the user needs to manually accept inbound requests to open a new
-	/// channel.
-	///
-	/// When set to `true`, [`Event::OpenChannelRequest`] will be triggered once a request to open a
-	/// new inbound channel is received through a [`msgs::OpenChannel`] message. In that case, a
-	/// [`msgs::AcceptChannel`] message will not be sent back to the counterparty node unless the
-	/// user explicitly chooses to accept the request.
-	///
-	/// Default value: `false`
-	///
-	/// [`Event::OpenChannelRequest`]: crate::events::Event::OpenChannelRequest
-	/// [`msgs::OpenChannel`]: crate::ln::msgs::OpenChannel
-	/// [`msgs::AcceptChannel`]: crate::ln::msgs::AcceptChannel
-	pub manually_accept_inbound_channels: bool,
 	/// Flags consisting of OR'd values from [`HTLCInterceptionFlags`] which describe HTLCs
 	/// forwarded over this node to intercept. Any HTLCs which are intercepted will generate an
 	/// [`Event::HTLCIntercepted`] event which must be handled to forward or fail the HTLC.
@@ -1092,7 +1076,6 @@ impl Default for UserConfig {
 			channel_config: ChannelConfig::default(),
 			accept_forwards_to_priv_channels: false,
 			accept_inbound_channels: true,
-			manually_accept_inbound_channels: false,
 			htlc_interception_flags: 0,
 			manually_handle_bolt12_invoices: false,
 			enable_dual_funded_channels: false,
@@ -1115,7 +1098,6 @@ impl Readable for UserConfig {
 			channel_config: Readable::read(reader)?,
 			accept_forwards_to_priv_channels: Readable::read(reader)?,
 			accept_inbound_channels: Readable::read(reader)?,
-			manually_accept_inbound_channels: Readable::read(reader)?,
 			htlc_interception_flags: Readable::read(reader)?,
 			manually_handle_bolt12_invoices: Readable::read(reader)?,
 			enable_dual_funded_channels: Readable::read(reader)?,

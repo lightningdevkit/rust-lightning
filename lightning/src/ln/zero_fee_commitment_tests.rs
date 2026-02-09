@@ -18,7 +18,6 @@ fn test_p2a_anchor_values_under_trims_and_rounds() {
 	let mut user_cfg = test_default_channel_config();
 	user_cfg.channel_handshake_config.our_htlc_minimum_msat = 1;
 	user_cfg.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
-	user_cfg.manually_accept_inbound_channels = true;
 
 	let configs = [Some(user_cfg.clone()), Some(user_cfg)];
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &configs);
@@ -125,7 +124,6 @@ fn test_htlc_claim_chunking() {
 	user_cfg.channel_handshake_config.our_htlc_minimum_msat = 1;
 	user_cfg.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
 	user_cfg.channel_handshake_config.our_max_accepted_htlcs = 114;
-	user_cfg.manually_accept_inbound_channels = true;
 
 	let configs = [Some(user_cfg.clone()), Some(user_cfg)];
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &configs);
@@ -314,7 +312,6 @@ fn test_anchor_tx_too_big() {
 	user_cfg.channel_handshake_config.our_htlc_minimum_msat = 1;
 	user_cfg.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
 	user_cfg.channel_handshake_config.our_max_accepted_htlcs = 114;
-	user_cfg.manually_accept_inbound_channels = true;
 
 	let configs = [Some(user_cfg.clone()), Some(user_cfg)];
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &configs);

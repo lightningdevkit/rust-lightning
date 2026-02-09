@@ -44,15 +44,13 @@ use lightning::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Listen};
 use lightning::events::bump_transaction::sync::WalletSourceSync;
 use lightning::events::Event;
 use lightning::ln::channel_state::ChannelDetails;
-use lightning::ln::channelmanager::{
-	ChainParameters, ChannelManager, InterceptId, PaymentId,
-};
+use lightning::ln::channelmanager::{ChainParameters, ChannelManager, InterceptId, PaymentId};
 use lightning::ln::functional_test_utils::*;
 use lightning::ln::inbound_payment::ExpandedKey;
+use lightning::ln::outbound_payment::{RecipientOnionFields, Retry};
 use lightning::ln::peer_handler::{
 	IgnoringMessageHandler, MessageHandler, PeerManager, SocketDescriptor,
 };
-use lightning::ln::outbound_payment::{RecipientOnionFields, Retry};
 use lightning::ln::script::ShutdownScript;
 use lightning::ln::types::ChannelId;
 use lightning::offers::invoice::UnsignedBolt12Invoice;
@@ -1124,6 +1122,17 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 				Event::SpliceFailed { .. } => {
 					// Splice failed, inputs can be re-spent
 				},
+				Event::OpenChannelRequest {
+					temporary_channel_id, counterparty_node_id, ..
+				} => {
+					let _ = loss_detector.manager.accept_inbound_channel(
+						&temporary_channel_id,
+						&counterparty_node_id,
+						0,
+						None,
+					);
+					loss_detector.handler.process_events();
+				},
 				_ => {},
 			}
 		}
@@ -1161,7 +1170,7 @@ fn two_peer_forwarding_seed() -> Vec<u8> {
 	// our network key
 	ext_from_hex("0100000000000000000000000000000000000000000000000000000000000000", &mut test);
 	// config
-	ext_from_hex("000000000090000000000000000064000100000000000100ffff0000000000000000ffffffffffffffffffffffffffffffff0000000000000000ffffffffffffffff000000ffffffff00ffff1a000400010000020400000000040200000a08ffffffffffffffff000100000000000000", &mut test);
+	ext_from_hex("000000000090000000000000000064000100000000000100ffff0000000000000000ffffffffffffffffffffffffffffffff0000000000000000ffffffffffffffff000000ffffffff00ffff1a000400010000020400000000040200000a08ffffffffffffffff0001000000000000", &mut test);
 
 	// new outbound connection with id 0
 	ext_from_hex("00", &mut test);
@@ -1615,7 +1624,7 @@ fn gossip_exchange_seed() -> Vec<u8> {
 	// our network key
 	ext_from_hex("0100000000000000000000000000000000000000000000000000000000000000", &mut test);
 	// config
-	ext_from_hex("000000000090000000000000000064000100000000000100ffff0000000000000000ffffffffffffffffffffffffffffffff0000000000000000ffffffffffffffff000000ffffffff00ffff1a000400010000020400000000040200000a08ffffffffffffffff000100000000000000", &mut test);
+	ext_from_hex("000000000090000000000000000064000100000000000100ffff0000000000000000ffffffffffffffffffffffffffffffff0000000000000000ffffffffffffffff000000ffffffff00ffff1a000400010000020400000000040200000a08ffffffffffffffff0001000000000000", &mut test);
 
 	// new outbound connection with id 0
 	ext_from_hex("00", &mut test);
@@ -1697,7 +1706,7 @@ fn splice_seed() -> Vec<u8> {
 	// our network key
 	ext_from_hex("0100000000000000000000000000000000000000000000000000000000000000", &mut test);
 	// config
-	ext_from_hex("000000000090000000000000000064000100000000000100ffff0000000000000000ffffffffffffffffffffffffffffffff0000000000000000ffffffffffffffff000000ffffffff00ffff1a000400010000020400000000040200000a08ffffffffffffffff000100000000000000", &mut test);
+	ext_from_hex("000000000090000000000000000064000100000000000100ffff0000000000000000ffffffffffffffffffffffffffffffff0000000000000000ffffffffffffffff000000ffffffff00ffff1a000400010000020400000000040200000a08ffffffffffffffff0001000000000000", &mut test);
 
 	// new outbound connection with id 0
 	ext_from_hex("00", &mut test);

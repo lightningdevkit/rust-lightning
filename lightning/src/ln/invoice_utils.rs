@@ -1052,7 +1052,7 @@ mod test {
 			.create_channel(node_a_id, 1_000_000, 500_000_000, 42, None, Some(private_chan_cfg))
 			.unwrap();
 		let open_channel = get_event_msg!(nodes[2], MessageSendEvent::SendOpenChannel, node_a_id);
-		nodes[0].node.handle_open_channel(node_c_id, &open_channel);
+		handle_and_accept_open_channel(&nodes[0], node_c_id, &open_channel);
 		let accept_channel =
 			get_event_msg!(nodes[0], MessageSendEvent::SendAcceptChannel, node_c_id);
 		nodes[2].node.handle_accept_channel(node_a_id, &accept_channel);
@@ -1125,7 +1125,8 @@ mod test {
 	fn test_channels_with_lower_inbound_capacity_than_invoice_amt_hints_filtering() {
 		let chanmon_cfgs = create_chanmon_cfgs(3);
 		let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
-		let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+		let legacy_cfg = test_legacy_channel_config();
+		let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[Some(legacy_cfg), None, None]);
 		let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 		let chan_1_0 = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 0, 100_000, 0);
 		let chan_2_0 = create_unannounced_chan_between_nodes_with_value(&nodes, 2, 0, 1_000_000, 0);
@@ -1583,7 +1584,7 @@ mod test {
 			.create_channel(node_d_id, 1_000_000, 500_000_000, 42, None, Some(private_chan_cfg))
 			.unwrap();
 		let open_channel = get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, node_d_id);
-		nodes[3].node.handle_open_channel(nodes[1].node.get_our_node_id(), &open_channel);
+		handle_and_accept_open_channel(&nodes[3], node_b_id, &open_channel);
 		let accept_channel =
 			get_event_msg!(nodes[3], MessageSendEvent::SendAcceptChannel, node_b_id);
 		nodes[1].node.handle_accept_channel(nodes[3].node.get_our_node_id(), &accept_channel);
@@ -1731,7 +1732,9 @@ mod test {
 		chanmon_cfgs[1].keys_manager.backing = make_dyn_keys_interface(&seed_1);
 		chanmon_cfgs[2].keys_manager.backing = make_dyn_keys_interface(&seed_2);
 		let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
-		let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
+		let legacy_cfg = test_legacy_channel_config();
+		let node_chanmgrs =
+			create_node_chanmgrs(4, &node_cfgs, &[Some(legacy_cfg), None, None, None]);
 		let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
 
 		let chan_0_2 = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 2, 1_000_000, 0);
