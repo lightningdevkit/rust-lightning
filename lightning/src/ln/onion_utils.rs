@@ -1019,12 +1019,32 @@ mod fuzzy_onion_utils {
 		secp_ctx: &Secp256k1<T>, logger: &L, htlc_source: &HTLCSource,
 		encrypted_packet: OnionErrorPacket,
 	) -> DecodedOnionFailure {
-		let (path, session_priv) = match htlc_source {
-			HTLCSource::OutboundRoute { ref path, ref session_priv, .. } => (path, session_priv),
-			_ => unreachable!(),
-		};
+		match htlc_source {
+			HTLCSource::OutboundRoute { ref path, ref session_priv, .. } => {
+				process_onion_failure_inner(
+					secp_ctx,
+					logger,
+					&path,
+					&session_priv,
+					None,
+					encrypted_packet,
+				)
+			},
+			HTLCSource::TrampolineForward { outbound_payment, .. } => {
+				let dispatch = outbound_payment.as_ref()
+					.expect("processing trampoline onion failure for forward with no outbound payment details");
 
-		process_onion_failure_inner(secp_ctx, logger, path, &session_priv, None, encrypted_packet)
+				process_onion_failure_inner(
+					secp_ctx,
+					logger,
+					&dispatch.path,
+					&dispatch.session_priv,
+					None,
+					encrypted_packet,
+				)
+			},
+			_ => unreachable!(),
+		}
 	}
 
 	/// Decodes the attribution data that we got back from upstream on a payment we sent.
@@ -2144,6 +2164,21 @@ impl HTLCFailReason {
 	pub(super) fn decode_onion_failure<T: secp256k1::Signing, L: Logger>(
 		&self, secp_ctx: &Secp256k1<T>, logger: &L, htlc_source: &HTLCSource,
 	) -> DecodedOnionFailure {
+		macro_rules! decoded_onion_failure {
+			($short_channel_id:expr, $failure_reason:expr, $data:expr) => {
+				DecodedOnionFailure {
+					network_update: None,
+					payment_failed_permanently: false,
+					short_channel_id: $short_channel_id,
+					failed_within_blinded_path: false,
+					hold_times: Vec::new(),
+					onion_error_code: Some($failure_reason),
+					onion_error_data: Some($data.clone()),
+					#[cfg(test)]
+					attribution_failed_channel: None,
+				}
+			};
+		}
 		match self.0 {
 			HTLCFailReasonRepr::LightningError { ref err, .. } => {
 				process_onion_failure(secp_ctx, logger, &htlc_source, err.clone())
@@ -2155,20 +2190,19 @@ impl HTLCFailReason {
 				// failures here, but that would be insufficient as find_route
 				// generally ignores its view of our own channels as we provide them via
 				// ChannelDetails.
-				if let &HTLCSource::OutboundRoute { ref path, .. } = htlc_source {
-					DecodedOnionFailure {
-						network_update: None,
-						payment_failed_permanently: false,
-						short_channel_id: Some(path.hops[0].short_channel_id),
-						failed_within_blinded_path: false,
-						hold_times: Vec::new(),
-						onion_error_code: Some(*failure_reason),
-						onion_error_data: Some(data.clone()),
-						#[cfg(test)]
-						attribution_failed_channel: None,
-					}
-				} else {
-					unreachable!();
+				match htlc_source {
+					&HTLCSource::OutboundRoute { ref path, .. } => {
+						decoded_onion_failure!(
+							(Some(path.hops[0].short_channel_id)),
+							*failure_reason,
+							data
+						)
+					},
+					&HTLCSource::TrampolineForward { ref outbound_payment, .. } => {
+						debug_assert!(outbound_payment.is_none());
+						decoded_onion_failure!(None, *failure_reason, data)
+					},
+					_ => unreachable!(),
 				}
 			},
 		}
