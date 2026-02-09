@@ -10161,7 +10161,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			if let Some(chan) =
 				peer_state.channel_by_id.get_mut(&source.channel_id).and_then(|c| c.as_funded_mut())
 			{
-				chan.prune_inbound_htlc_onion(source.htlc_id, source, outbound_amt_msat);
+				chan.prune_inbound_htlc_onion(source.htlc_id, &source, outbound_amt_msat);
 			}
 		}
 	}

@@ -50,10 +50,10 @@ use crate::ln::channel_state::{
 	OutboundHTLCDetails, OutboundHTLCStateDetails,
 };
 use crate::ln::channelmanager::{
-	self, ChannelReadyOrder, FundingConfirmedMessage, HTLCFailureMsg, HTLCPreviousHopData,
-	HTLCSource, OpenChannelMessage, PaymentClaimDetails, PendingHTLCInfo, PendingHTLCStatus,
-	RAACommitmentOrder, SentHTLCId, BREAKDOWN_TIMEOUT, MAX_LOCAL_BREAKDOWN_TIMEOUT,
-	MIN_CLTV_EXPIRY_DELTA,
+	self, BlindedFailure, ChannelReadyOrder, FundingConfirmedMessage, HTLCFailureMsg,
+	HTLCPreviousHopData, HTLCSource, OpenChannelMessage, PaymentClaimDetails, PendingHTLCInfo,
+	PendingHTLCStatus, RAACommitmentOrder, SentHTLCId, BREAKDOWN_TIMEOUT,
+	MAX_LOCAL_BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA,
 };
 use crate::ln::funding::{FundingTxInput, SpliceContribution};
 use crate::ln::interactivetxs::{
@@ -320,12 +320,16 @@ enum InboundUpdateAdd {
 	WithOnion { update_add_htlc: msgs::UpdateAddHTLC },
 	/// This inbound HTLC is a forward that was irrevocably committed to the outbound edge, allowing
 	/// its onion to be pruned and no longer persisted.
+	///
+	/// Contains data that is useful if we need to fail or claim this HTLC backwards after a restart
+	/// and it's missing in the outbound edge.
 	Forwarded {
-		/// Useful if we need to fail or claim this HTLC backwards after restart, if it's missing in the
-		/// outbound edge.
-		hop_data: HTLCPreviousHopData,
-		/// Useful if we need to claim this HTLC backwards after a restart and it's missing in the
-		/// outbound edge, to generate an accurate [`Event::PaymentForwarded`].
+		incoming_packet_shared_secret: [u8; 32],
+		phantom_shared_secret: Option<[u8; 32]>,
+		trampoline_shared_secret: Option<[u8; 32]>,
+		blinded_failure: Option<BlindedFailure>,
+		/// Useful for generating an accurate [`Event::PaymentForwarded`], if we need to claim this
+		/// HTLC post-restart.
 		///
 		/// [`Event::PaymentForwarded`]: crate::events::Event::PaymentForwarded
 		outbound_amt_msat: u64,
@@ -341,8 +345,11 @@ impl_writeable_tlv_based_enum_upgradable!(InboundUpdateAdd,
 	},
 	(2, Legacy) => {},
 	(4, Forwarded) => {
-		(0, hop_data, required),
+		(0, incoming_packet_shared_secret, required),
 		(2, outbound_amt_msat, required),
+		(4, phantom_shared_secret, option),
+		(6, trampoline_shared_secret, option),
+		(8, blinded_failure, option),
 	},
 );
 
@@ -7927,14 +7934,42 @@ where
 			})
 		};
 
+		let prev_outbound_scid_alias = self.context.outbound_scid_alias();
+		let user_channel_id = self.context.get_user_id();
+		let channel_id = self.context.channel_id();
+		let outpoint = self.funding_outpoint();
+		let counterparty_node_id = self.context.get_counterparty_node_id();
+
 		self.context.pending_inbound_htlcs.iter().filter_map(move |htlc| match &htlc.state {
 			InboundHTLCState::Committed {
-				update_add_htlc: InboundUpdateAdd::Forwarded { hop_data, outbound_amt_msat },
+				update_add_htlc:
+					InboundUpdateAdd::Forwarded {
+						incoming_packet_shared_secret,
+						phantom_shared_secret,
+						trampoline_shared_secret,
+						blinded_failure,
+						outbound_amt_msat,
+					},
 			} => {
 				if htlc_resolution_in_holding_cell(htlc.htlc_id) {
 					return None;
 				}
-				Some((htlc.payment_hash, hop_data.clone(), *outbound_amt_msat))
+				// The reconstructed `HTLCPreviousHopData` is used to fail or claim the HTLC backwards
+				// post-restart, if it is missing in the outbound edge.
+				let hop_data = HTLCPreviousHopData {
+					prev_outbound_scid_alias,
+					user_channel_id: Some(user_channel_id),
+					htlc_id: htlc.htlc_id,
+					incoming_packet_shared_secret: *incoming_packet_shared_secret,
+					phantom_shared_secret: *phantom_shared_secret,
+					trampoline_shared_secret: *trampoline_shared_secret,
+					blinded_failure: *blinded_failure,
+					channel_id,
+					outpoint,
+					counterparty_node_id: Some(counterparty_node_id),
+					cltv_expiry: Some(htlc.cltv_expiry),
+				};
+				Some((htlc.payment_hash, hop_data, *outbound_amt_msat))
 			},
 			_ => None,
 		})
@@ -7984,12 +8019,18 @@ where
 	/// This inbound HTLC was irrevocably forwarded to the outbound edge, so we no longer need to
 	/// persist its onion.
 	pub(super) fn prune_inbound_htlc_onion(
-		&mut self, htlc_id: u64, hop_data: HTLCPreviousHopData, outbound_amt_msat: u64,
+		&mut self, htlc_id: u64, hop_data: &HTLCPreviousHopData, outbound_amt_msat: u64,
 	) {
 		for htlc in self.context.pending_inbound_htlcs.iter_mut() {
 			if htlc.htlc_id == htlc_id {
 				if let InboundHTLCState::Committed { ref mut update_add_htlc } = htlc.state {
-					*update_add_htlc = InboundUpdateAdd::Forwarded { hop_data, outbound_amt_msat };
+					*update_add_htlc = InboundUpdateAdd::Forwarded {
+						incoming_packet_shared_secret: hop_data.incoming_packet_shared_secret,
+						phantom_shared_secret: hop_data.phantom_shared_secret,
+						trampoline_shared_secret: hop_data.trampoline_shared_secret,
+						blinded_failure: hop_data.blinded_failure,
+						outbound_amt_msat,
+					};
 					return;
 				}
 			}
