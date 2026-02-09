@@ -18930,10 +18930,6 @@ impl<
 					let htlc_id = SentHTLCId::from_source(&htlc_source);
 					match htlc_source {
 						HTLCSource::PreviousHopData(prev_hop_data) => {
-							let pending_forward_matches_htlc = |info: &PendingAddHTLCInfo| {
-								info.prev_funding_outpoint == prev_hop_data.outpoint
-									&& info.prev_htlc_id == prev_hop_data.htlc_id
-							};
 							// If `reconstruct_manager_from_monitors` is set, we always add all inbound committed
 							// HTLCs to `decode_update_add_htlcs` in the above loop, but we need to prune from
 							// those added HTLCs if they were already forwarded to the outbound edge. Otherwise,
@@ -18950,42 +18946,17 @@ impl<
 							if !is_channel_closed || reconstruct_manager_from_monitors {
 								continue;
 							}
-							// The ChannelMonitor is now responsible for this HTLC's
-							// failure/success and will let us know what its outcome is. If we
-							// still have an entry for this HTLC in `forward_htlcs_legacy`,
-							// `pending_intercepted_htlcs_legacy`, or
-							// `decode_update_add_htlcs_legacy`, we were apparently not persisted
-							// after the monitor was when forwarding the payment.
-							dedup_decode_update_add_htlcs(
+
+							reconcile_pending_htlcs_with_monitor(
+								&mut forward_htlcs_legacy,
+								&mut pending_events_read,
+								&mut pending_intercepted_htlcs_legacy,
 								&mut decode_update_add_htlcs_legacy,
-								&prev_hop_data,
-								"HTLC was forwarded to the closed channel",
-								&&logger,
-							);
-							forward_htlcs_legacy.retain(|_, forwards| {
-								forwards.retain(|forward| {
-									if let HTLCForwardInfo::AddHTLC(htlc_info) = forward {
-										if pending_forward_matches_htlc(&htlc_info) {
-											log_info!(logger, "Removing pending to-forward HTLC with hash {} as it was forwarded to the closed channel {}",
-												&htlc.payment_hash, &monitor.channel_id());
-											false
-										} else { true }
-									} else { true }
-								});
-								!forwards.is_empty()
-							});
-							pending_intercepted_htlcs_legacy.retain(|intercepted_id, htlc_info| {
-								if pending_forward_matches_htlc(&htlc_info) {
-									log_info!(logger, "Removing pending intercepted HTLC with hash {} as it was forwarded to the closed channel {}",
-										&htlc.payment_hash, &monitor.channel_id());
-									pending_events_read.retain(|(event, _)| {
-										if let Event::HTLCIntercepted { intercept_id: ev_id, .. } = event {
-											intercepted_id != ev_id
-										} else { true }
-									});
-									false
-								} else { true }
-							});
+								prev_hop_data,
+								&logger,
+								htlc.payment_hash,
+								monitor.channel_id(),
+							)
 						},
 						HTLCSource::TrampolineForward { .. } => todo!(),
 						HTLCSource::OutboundRoute {
@@ -19833,6 +19804,57 @@ impl<
 
 		Ok((best_block_hash, channel_manager))
 	}
+}
+
+/// Removes pending HTLC entries that the ChannelMonitor has already taken responsibility for,
+/// cleaning up state mismatches that can occur during restart.
+fn reconcile_pending_htlcs_with_monitor(
+	forward_htlcs_legacy: &mut HashMap<u64, Vec<HTLCForwardInfo>>,
+	pending_events_read: &mut VecDeque<(Event, Option<EventCompletionAction>)>,
+	pending_intercepted_htlcs_legacy: &mut HashMap<InterceptId, PendingAddHTLCInfo>,
+	decode_update_add_htlcs_legacy: &mut HashMap<u64, Vec<msgs::UpdateAddHTLC>>,
+	prev_hop_data: HTLCPreviousHopData, logger: &impl Logger, payment_hash: PaymentHash,
+	channel_id: ChannelId,
+) {
+	let pending_forward_matches_htlc = |info: &PendingAddHTLCInfo| {
+		info.prev_funding_outpoint == prev_hop_data.outpoint
+			&& info.prev_htlc_id == prev_hop_data.htlc_id
+	};
+
+	// The ChannelMonitor is now responsible for this HTLC's failure/success and will let us know
+	// what its outcome is. If we still have an entry for this HTLC in `forward_htlcs_legacy`,
+	// `pending_intercepted_htlcs_legacy`, or `decode_update_add_htlcs_legacy`, we were apparently
+	// not persisted after the monitor was when forwarding the payment.
+	dedup_decode_update_add_htlcs(
+		decode_update_add_htlcs_legacy,
+		&prev_hop_data,
+		"HTLC was forwarded to the closed channel",
+		&&logger,
+	);
+	forward_htlcs_legacy.retain(|_, forwards| {
+		forwards.retain(|forward| {
+			if let HTLCForwardInfo::AddHTLC(htlc_info) = forward {
+				if pending_forward_matches_htlc(&htlc_info) {
+					log_info!(logger, "Removing pending to-forward HTLC with hash {} as it was forwarded to the closed channel {}",
+						&payment_hash, &channel_id);
+					false
+				} else { true }
+			} else { true }
+		});
+		!forwards.is_empty()
+	});
+	pending_intercepted_htlcs_legacy.retain(|intercepted_id, htlc_info| {
+		if pending_forward_matches_htlc(&htlc_info) {
+			log_info!(logger, "Removing pending intercepted HTLC with hash {} as it was forwarded to the closed channel {}",
+				&payment_hash, &channel_id);
+			pending_events_read.retain(|(event, _)| {
+				if let Event::HTLCIntercepted { intercept_id: ev_id, .. } = event {
+					intercepted_id != ev_id
+				} else { true }
+			});
+			false
+		} else { true }
+	});
 }
 
 #[cfg(test)]
