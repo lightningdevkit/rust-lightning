@@ -1019,12 +1019,32 @@ mod fuzzy_onion_utils {
 		secp_ctx: &Secp256k1<T>, logger: &L, htlc_source: &HTLCSource,
 		encrypted_packet: OnionErrorPacket,
 	) -> DecodedOnionFailure {
-		let (path, session_priv) = match htlc_source {
-			HTLCSource::OutboundRoute { ref path, ref session_priv, .. } => (path, session_priv),
-			_ => unreachable!(),
-		};
+		match htlc_source {
+			HTLCSource::OutboundRoute { ref path, ref session_priv, .. } => {
+				process_onion_failure_inner(
+					secp_ctx,
+					logger,
+					&path,
+					&session_priv,
+					None,
+					encrypted_packet,
+				)
+			},
+			HTLCSource::TrampolineForward { outbound_payment, .. } => {
+				let dispatch = outbound_payment.as_ref()
+					.expect("processing trampoline onion failure for forward with no outbound payment details");
 
-		process_onion_failure_inner(secp_ctx, logger, path, &session_priv, None, encrypted_packet)
+				process_onion_failure_inner(
+					secp_ctx,
+					logger,
+					&dispatch.path,
+					&dispatch.session_priv,
+					None,
+					encrypted_packet,
+				)
+			},
+			_ => unreachable!(),
+		}
 	}
 
 	/// Decodes the attribution data that we got back from upstream on a payment we sent.
