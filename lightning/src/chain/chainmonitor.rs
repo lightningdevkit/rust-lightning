@@ -60,11 +60,20 @@ use crate::util::persist::{KVStore, MonitorName, MonitorUpdatingPersisterAsync};
 use crate::util::ser::{VecWriter, Writeable};
 use crate::util::wakers::{Future, Notifier};
 
+use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 #[cfg(peer_storage)]
 use core::iter::Cycle;
 use core::ops::Deref;
 use core::sync::atomic::{AtomicUsize, Ordering};
+
+/// A pending operation queued for later execution when `ChainMonitor` is in deferred mode.
+enum PendingMonitorOp<ChannelSigner: EcdsaChannelSigner> {
+	/// A new monitor to insert and persist.
+	NewMonitor { channel_id: ChannelId, monitor: ChannelMonitor<ChannelSigner>, update_id: u64 },
+	/// An update to apply and persist.
+	Update { channel_id: ChannelId, update: ChannelMonitorUpdate },
+}
 
 /// `Persist` defines behavior for persisting channel monitors: this could mean
 /// writing once to disk, and/or uploading to one or more backup services.
@@ -374,6 +383,8 @@ pub struct ChainMonitor<
 
 	/// When `true`, [`chain::Watch`] operations are queued rather than executed immediately.
 	deferred: bool,
+	/// Queued monitor operations awaiting flush. Unused when `deferred` is `false`.
+	pending_ops: Mutex<VecDeque<PendingMonitorOp<ChannelSigner>>>,
 }
 
 impl<
@@ -395,6 +406,18 @@ where
 	/// [`MonitorUpdatingPersisterAsync`] and thus allows persistence to be completed async.
 	///
 	/// Note that async monitor updating is considered beta, and bugs may be triggered by its use.
+	///
+	/// When `deferred` is `true`, [`chain::Watch::watch_channel`] and
+	/// [`chain::Watch::update_channel`] calls are not executed immediately. Instead, they are
+	/// queued internally and must be flushed by the caller via [`Self::flush`]. Use
+	/// [`Self::pending_operation_count`] to check how many operations are queued, then call
+	/// [`Self::flush`] to process them. This allows the caller to ensure that the
+	/// [`ChannelManager`] is persisted before its associated monitors, avoiding the risk of
+	/// force closures from a crash between monitor and channel manager persistence.
+	///
+	/// When `deferred` is `false`, monitor operations are executed inline as usual.
+	///
+	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 	///
 	/// This is not exported to bindings users as async is not supported outside of Rust.
 	pub fn new_async_beta(
@@ -418,6 +441,7 @@ where
 			#[cfg(peer_storage)]
 			our_peerstorage_encryption_key: _our_peerstorage_encryption_key,
 			deferred,
+			pending_ops: Mutex::new(VecDeque::new()),
 		}
 	}
 }
@@ -602,6 +626,16 @@ where
 	/// is obtained by the [`ChannelManager`] through [`NodeSigner`] to decrypt peer backups.
 	/// Using an inconsistent or incorrect key will result in the inability to decrypt previously encrypted backups.
 	///
+	/// When `deferred` is `true`, [`chain::Watch::watch_channel`] and
+	/// [`chain::Watch::update_channel`] calls are not executed immediately. Instead, they are
+	/// queued internally and must be flushed by the caller via [`Self::flush`]. Use
+	/// [`Self::pending_operation_count`] to check how many operations are queued, then call
+	/// [`Self::flush`] to process them. This allows the caller to ensure that the
+	/// [`ChannelManager`] is persisted before its associated monitors, avoiding the risk of
+	/// force closures from a crash between monitor and channel manager persistence.
+	///
+	/// When `deferred` is `false`, monitor operations are executed inline as usual.
+	///
 	/// [`NodeSigner`]: crate::sign::NodeSigner
 	/// [`NodeSigner::get_peer_storage_key`]: crate::sign::NodeSigner::get_peer_storage_key
 	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
@@ -624,6 +658,7 @@ where
 			#[cfg(peer_storage)]
 			our_peerstorage_encryption_key: _our_peerstorage_encryption_key,
 			deferred,
+			pending_ops: Mutex::new(VecDeque::new()),
 		}
 	}
 
@@ -1217,6 +1252,82 @@ where
 			},
 		}
 	}
+
+	/// Returns the number of pending monitor operations queued for later execution.
+	///
+	/// When the `ChainMonitor` is constructed with `deferred` set to `true`,
+	/// [`chain::Watch::watch_channel`] and [`chain::Watch::update_channel`] calls are queued
+	/// instead of being executed immediately. Call this method to determine how many operations
+	/// are waiting, then pass the result to [`Self::flush`] to process them.
+	pub fn pending_operation_count(&self) -> usize {
+		self.pending_ops.lock().unwrap().len()
+	}
+
+	/// Flushes up to `count` pending monitor operations that were queued while the
+	/// `ChainMonitor` operates in deferred mode.
+	///
+	/// A typical usage pattern is to call [`Self::pending_operation_count`], persist the
+	/// [`ChannelManager`], then pass the count to this method to flush the queued operations.
+	///
+	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+	pub fn flush(&self, count: usize, logger: &L) {
+		if count > 0 {
+			log_info!(logger, "Flushing up to {} monitor operations", count);
+		}
+		for _ in 0..count {
+			let mut queue = self.pending_ops.lock().unwrap();
+			let op = match queue.pop_front() {
+				Some(op) => op,
+				None => return,
+			};
+
+			let (channel_id, update_id, status) = match op {
+				PendingMonitorOp::NewMonitor { channel_id, monitor, update_id } => {
+					let logger = WithChannelMonitor::from(logger, &monitor, None);
+					log_trace!(logger, "Flushing new monitor");
+					// Hold `pending_ops` across the internal call so that
+					// `watch_channel` (which checks `monitors` + `pending_ops`
+					// atomically) cannot race with this insertion.
+					match self.watch_channel_internal(channel_id, monitor) {
+						Ok(status) => {
+							drop(queue);
+							(channel_id, update_id, status)
+						},
+						Err(()) => {
+							// `watch_channel` checks both `pending_ops` and `monitors`
+							// for duplicates before queueing, so this is unreachable.
+							unreachable!();
+						},
+					}
+				},
+				PendingMonitorOp::Update { channel_id, update } => {
+					let logger = WithContext::from(logger, None, Some(channel_id), None);
+					log_trace!(logger, "Flushing monitor update {}", update.update_id);
+					// Release `pending_ops` before the internal call so that
+					// concurrent `update_channel` queuing is not blocked.
+					drop(queue);
+					let update_id = update.update_id;
+					let status = self.update_channel_internal(channel_id, &update);
+					(channel_id, update_id, status)
+				},
+			};
+
+			match status {
+				ChannelMonitorUpdateStatus::Completed => {
+					let logger = WithContext::from(logger, None, Some(channel_id), None);
+					if let Err(e) = self.channel_monitor_updated(channel_id, update_id) {
+						log_error!(logger, "channel_monitor_updated failed: {:?}", e);
+					}
+				},
+				ChannelMonitorUpdateStatus::InProgress => {},
+				ChannelMonitorUpdateStatus::UnrecoverableError => {
+					// Neither watch_channel_internal nor update_channel_internal
+					// return UnrecoverableError.
+					unreachable!();
+				},
+			}
+		}
+	}
 }
 
 impl<
@@ -1435,7 +1546,24 @@ where
 			return self.watch_channel_internal(channel_id, monitor);
 		}
 
-		unimplemented!();
+		let update_id = monitor.get_latest_update_id();
+		// Atomically check for duplicates in both the pending queue and the
+		// flushed monitor set. Lock order: `pending_ops` before `monitors`
+		// (see `pending_ops` field doc).
+		let mut pending_ops = self.pending_ops.lock().unwrap();
+		let monitors = self.monitors.read().unwrap();
+		if monitors.contains_key(&channel_id) {
+			return Err(());
+		}
+		let already_pending = pending_ops.iter().any(|op| match op {
+			PendingMonitorOp::NewMonitor { channel_id: id, .. } => *id == channel_id,
+			_ => false,
+		});
+		if already_pending {
+			return Err(());
+		}
+		pending_ops.push_back(PendingMonitorOp::NewMonitor { channel_id, monitor, update_id });
+		Ok(ChannelMonitorUpdateStatus::InProgress)
 	}
 
 	fn update_channel(
@@ -1445,7 +1573,9 @@ where
 			return self.update_channel_internal(channel_id, update);
 		}
 
-		unimplemented!();
+		let mut pending_ops = self.pending_ops.lock().unwrap();
+		pending_ops.push_back(PendingMonitorOp::Update { channel_id, update: update.clone() });
+		ChannelMonitorUpdateStatus::InProgress
 	}
 
 	fn release_pending_monitor_events(
@@ -1575,12 +1705,34 @@ where
 
 #[cfg(test)]
 mod tests {
-	use crate::chain::channelmonitor::ANTI_REORG_DELAY;
+	use super::ChainMonitor;
+	use crate::chain::channelmonitor::{ChannelMonitorUpdate, ANTI_REORG_DELAY};
+	use crate::chain::transaction::OutPoint;
 	use crate::chain::{ChannelMonitorUpdateStatus, Watch};
 	use crate::events::{ClosureReason, Event};
+	use crate::ln::chan_utils::{
+		ChannelTransactionParameters, CounterpartyChannelTransactionParameters,
+		HolderCommitmentTransaction,
+	};
+	use crate::ln::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint, RevocationBasepoint};
 	use crate::ln::functional_test_utils::*;
 	use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, MessageSendEvent};
+	use crate::ln::script::ShutdownScript;
+	use crate::ln::types::ChannelId;
+	use crate::sign::{ChannelSigner, InMemorySigner, NodeSigner};
+	use crate::types::features::ChannelTypeFeatures;
+	use crate::util::dyn_signer::DynSigner;
+	use crate::util::test_channel_signer::TestChannelSigner;
+	use crate::util::test_utils::{
+		TestBroadcaster, TestChainSource, TestFeeEstimator, TestKeysInterface, TestLogger,
+		TestPersister,
+	};
 	use crate::{expect_payment_path_successful, get_event_msg};
+	use bitcoin::hash_types::Txid;
+	use bitcoin::hashes::Hash;
+	use bitcoin::script::ScriptBuf;
+	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
+	use bitcoin::Network;
 
 	const CHAINSYNC_MONITOR_PARTITION_FACTOR: u32 = 5;
 
@@ -1837,5 +1989,229 @@ mod tests {
 			core::mem::drop(nodes);
 		})
 		.is_err());
+	}
+
+	/// Concrete `ChainMonitor` type wired to the standard test utilities in deferred mode.
+	type TestDeferredChainMonitor<'a> = ChainMonitor<
+		TestChannelSigner,
+		&'a TestChainSource,
+		&'a TestBroadcaster,
+		&'a TestFeeEstimator,
+		&'a TestLogger,
+		&'a TestPersister,
+		&'a TestKeysInterface,
+	>;
+
+	/// Creates a minimal `ChannelMonitorUpdate` with no actual update steps.
+	fn dummy_update(update_id: u64, channel_id: ChannelId) -> ChannelMonitorUpdate {
+		ChannelMonitorUpdate { updates: vec![], update_id, channel_id: Some(channel_id) }
+	}
+
+	/// Creates a minimal `ChannelMonitor<TestChannelSigner>` for the given `channel_id`.
+	fn dummy_monitor(
+		channel_id: ChannelId,
+	) -> crate::chain::channelmonitor::ChannelMonitor<TestChannelSigner> {
+		let secp_ctx = Secp256k1::new();
+		let dummy_key =
+			PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
+		let keys = InMemorySigner::new(
+			SecretKey::from_slice(&[41; 32]).unwrap(),
+			SecretKey::from_slice(&[41; 32]).unwrap(),
+			SecretKey::from_slice(&[41; 32]).unwrap(),
+			SecretKey::from_slice(&[41; 32]).unwrap(),
+			true,
+			SecretKey::from_slice(&[41; 32]).unwrap(),
+			SecretKey::from_slice(&[41; 32]).unwrap(),
+			[41; 32],
+			[0; 32],
+			[0; 32],
+		);
+		let counterparty_pubkeys = crate::ln::chan_utils::ChannelPublicKeys {
+			funding_pubkey: dummy_key,
+			revocation_basepoint: RevocationBasepoint::from(dummy_key),
+			payment_point: dummy_key,
+			delayed_payment_basepoint: DelayedPaymentBasepoint::from(dummy_key),
+			htlc_basepoint: HtlcBasepoint::from(dummy_key),
+		};
+		let funding_outpoint = OutPoint { txid: Txid::all_zeros(), index: u16::MAX };
+		let channel_parameters = ChannelTransactionParameters {
+			holder_pubkeys: keys.pubkeys(&secp_ctx),
+			holder_selected_contest_delay: 66,
+			is_outbound_from_holder: true,
+			counterparty_parameters: Some(CounterpartyChannelTransactionParameters {
+				pubkeys: counterparty_pubkeys,
+				selected_contest_delay: 67,
+			}),
+			funding_outpoint: Some(funding_outpoint),
+			splice_parent_funding_txid: None,
+			channel_type_features: ChannelTypeFeatures::only_static_remote_key(),
+			channel_value_satoshis: 0,
+		};
+		let shutdown_script = ShutdownScript::new_p2wpkh_from_pubkey(dummy_key);
+		let best_block = crate::chain::BestBlock::from_network(Network::Testnet);
+		let signer = TestChannelSigner::new(DynSigner::new(keys));
+		crate::chain::channelmonitor::ChannelMonitor::new(
+			secp_ctx,
+			signer,
+			Some(shutdown_script.into_inner()),
+			0,
+			&ScriptBuf::new(),
+			&channel_parameters,
+			true,
+			0,
+			HolderCommitmentTransaction::dummy(0, funding_outpoint, Vec::new()),
+			best_block,
+			dummy_key,
+			channel_id,
+			false,
+		)
+	}
+
+	fn create_deferred_chain_monitor<'a>(
+		chain_source: &'a TestChainSource, broadcaster: &'a TestBroadcaster,
+		logger: &'a TestLogger, fee_est: &'a TestFeeEstimator, persister: &'a TestPersister,
+		keys: &'a TestKeysInterface,
+	) -> TestDeferredChainMonitor<'a> {
+		ChainMonitor::new(
+			Some(chain_source),
+			broadcaster,
+			logger,
+			fee_est,
+			persister,
+			keys,
+			keys.get_peer_storage_key(),
+			true,
+		)
+	}
+
+	/// Tests queueing and flushing of both `watch_channel` and `update_channel` operations
+	/// when `ChainMonitor` is in deferred mode, verifying that operations flow through to
+	/// `Persist` and that `channel_monitor_updated` is called on `Completed` status.
+	#[test]
+	fn test_queue_and_flush() {
+		let broadcaster = TestBroadcaster::new(Network::Testnet);
+		let fee_est = TestFeeEstimator::new(253);
+		let logger = TestLogger::new();
+		let persister = TestPersister::new();
+		let chain_source = TestChainSource::new(Network::Testnet);
+		let keys = TestKeysInterface::new(&[0; 32], Network::Testnet);
+		let deferred = create_deferred_chain_monitor(
+			&chain_source,
+			&broadcaster,
+			&logger,
+			&fee_est,
+			&persister,
+			&keys,
+		);
+
+		// Queue starts empty.
+		assert_eq!(deferred.pending_operation_count(), 0);
+
+		// Queue a watch_channel, verifying InProgress status.
+		let chan = ChannelId::from_bytes([1u8; 32]);
+		let status = Watch::watch_channel(&deferred, chan, dummy_monitor(chan));
+		assert_eq!(status, Ok(ChannelMonitorUpdateStatus::InProgress));
+		assert_eq!(deferred.pending_operation_count(), 1);
+
+		// Nothing persisted yet — operations are only queued.
+		assert!(persister.new_channel_persistences.lock().unwrap().is_empty());
+
+		// Queue two updates after the watch. Update IDs must be sequential (starting
+		// from 1 since the initial monitor has update_id 0).
+		assert_eq!(
+			Watch::update_channel(&deferred, chan, &dummy_update(1, chan)),
+			ChannelMonitorUpdateStatus::InProgress
+		);
+		assert_eq!(
+			Watch::update_channel(&deferred, chan, &dummy_update(2, chan)),
+			ChannelMonitorUpdateStatus::InProgress
+		);
+		assert_eq!(deferred.pending_operation_count(), 3);
+
+		// Flush 2 of 3: persist_new_channel returns Completed (triggers
+		// channel_monitor_updated), update_persisted_channel returns InProgress (does not).
+		persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
+		persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
+		deferred.flush(2, &&logger);
+
+		assert_eq!(deferred.pending_operation_count(), 1);
+
+		// persist_new_channel was called for the watch.
+		assert_eq!(persister.new_channel_persistences.lock().unwrap().len(), 1);
+
+		// Because persist_new_channel returned Completed, channel_monitor_updated was called,
+		// so update_id 0 should no longer be pending.
+		let pending = deferred.list_pending_monitor_updates();
+		#[cfg(not(c_bindings))]
+		let pending_for_chan = pending.get(&chan).unwrap();
+		#[cfg(c_bindings)]
+		let pending_for_chan = &pending.iter().find(|(chan_id, _)| *chan_id == chan).unwrap().1;
+		assert!(!pending_for_chan.contains(&0));
+
+		// update_persisted_channel was called for update_id 1, and because it returned
+		// InProgress, update_id 1 remains pending.
+		let monitor_name = deferred.get_monitor(chan).unwrap().persistence_key();
+		assert!(persister
+			.offchain_monitor_updates
+			.lock()
+			.unwrap()
+			.get(&monitor_name)
+			.unwrap()
+			.contains(&1));
+		assert!(pending_for_chan.contains(&1));
+
+		// Flush remaining: update_persisted_channel returns Completed (default), triggers
+		// channel_monitor_updated.
+		deferred.flush(1, &&logger);
+		assert_eq!(deferred.pending_operation_count(), 0);
+
+		// update_persisted_channel was called for update_id 2.
+		assert!(persister
+			.offchain_monitor_updates
+			.lock()
+			.unwrap()
+			.get(&monitor_name)
+			.unwrap()
+			.contains(&2));
+
+		// update_id 1 is still pending from the InProgress earlier, but update_id 2 was
+		// completed in this flush so it is no longer pending.
+		let pending = deferred.list_pending_monitor_updates();
+		#[cfg(not(c_bindings))]
+		let pending_for_chan = pending.get(&chan).unwrap();
+		#[cfg(c_bindings)]
+		let pending_for_chan = &pending.iter().find(|(chan_id, _)| *chan_id == chan).unwrap().1;
+		assert!(pending_for_chan.contains(&1));
+		assert!(!pending_for_chan.contains(&2));
+
+		// Flushing an empty queue is a no-op.
+		let persist_count_before = persister.new_channel_persistences.lock().unwrap().len();
+		deferred.flush(5, &&logger);
+		assert_eq!(persister.new_channel_persistences.lock().unwrap().len(), persist_count_before);
+	}
+
+	/// Tests that `ChainMonitor` in deferred mode properly defers `watch_channel` and
+	/// `update_channel` operations, verifying correctness through a complete channel open
+	/// and payment flow. Operations are auto-flushed via the `TestChainMonitor`
+	/// `release_pending_monitor_events` helper.
+	#[test]
+	fn test_deferred_monitor_payment() {
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs_deferred(2, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+		let chain_monitor_a = &nodes[0].chain_monitor.chain_monitor;
+		let chain_monitor_b = &nodes[1].chain_monitor.chain_monitor;
+
+		create_announced_chan_between_nodes(&nodes, 0, 1);
+
+		let (preimage, _hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 10_000);
+		claim_payment(&nodes[0], &[&nodes[1]], preimage);
+
+		assert_eq!(chain_monitor_a.list_monitors().len(), 1);
+		assert_eq!(chain_monitor_b.list_monitors().len(), 1);
+		assert_eq!(chain_monitor_a.pending_operation_count(), 0);
+		assert_eq!(chain_monitor_b.pending_operation_count(), 0);
 	}
 }
