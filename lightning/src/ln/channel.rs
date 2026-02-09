@@ -2847,15 +2847,21 @@ impl FundingScope {
 			counterparty_selected_channel_reserve_satoshis,
 			holder_selected_channel_reserve_satoshis,
 			#[cfg(debug_assertions)]
-			holder_max_commitment_tx_output: Mutex::new((
-				post_value_to_self_msat,
-				(post_channel_value * 1000).saturating_sub(post_value_to_self_msat),
-			)),
+			holder_max_commitment_tx_output: {
+				let prev = *prev_funding.holder_max_commitment_tx_output.lock().unwrap();
+				Mutex::new((
+					prev.0.saturating_add_signed(our_funding_contribution.to_sat() * 1000),
+					prev.1.saturating_add_signed(their_funding_contribution.to_sat() * 1000),
+				))
+			},
 			#[cfg(debug_assertions)]
-			counterparty_max_commitment_tx_output: Mutex::new((
-				post_value_to_self_msat,
-				(post_channel_value * 1000).saturating_sub(post_value_to_self_msat),
-			)),
+			counterparty_max_commitment_tx_output: {
+				let prev = *prev_funding.counterparty_max_commitment_tx_output.lock().unwrap();
+				Mutex::new((
+					prev.0.saturating_add_signed(our_funding_contribution.to_sat() * 1000),
+					prev.1.saturating_add_signed(their_funding_contribution.to_sat() * 1000),
+				))
+			},
 			#[cfg(any(test, fuzzing))]
 			next_local_fee: Mutex::new(PredictedNextFee::default()),
 			#[cfg(any(test, fuzzing))]
