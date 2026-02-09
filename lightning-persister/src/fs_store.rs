@@ -560,15 +560,15 @@ fn dir_entry_is_key(dir_entry: &fs::DirEntry) -> Result<bool, lightning::io::Err
 		}
 	}
 
-	let metadata = dir_entry.metadata()?;
+	let file_type = dir_entry.file_type()?;
 
 	// We allow the presence of directories in the empty primary namespace and just skip them.
-	if metadata.is_dir() {
+	if file_type.is_dir() {
 		return Ok(false);
 	}
 
 	// If we otherwise don't find a file at the given path something went wrong.
-	if !metadata.is_file() {
+	if !file_type.is_file() {
 		debug_assert!(
 			false,
 			"Failed to list keys at path {}: file couldn't be accessed.",
