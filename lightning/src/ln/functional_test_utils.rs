@@ -4499,6 +4499,7 @@ pub fn create_chanmon_cfgs_internal(
 fn create_node_cfgs_internal<'a, F>(
 	node_count: usize, chanmon_cfgs: &'a Vec<TestChanMonCfg>,
 	persisters: Vec<&'a impl test_utils::SyncPersist>, message_router_constructor: F,
+	deferred: bool,
 ) -> Vec<NodeCfg<'a>>
 where
 	F: Fn(
@@ -4511,14 +4512,25 @@ where
 	for i in 0..node_count {
 		let cfg = &chanmon_cfgs[i];
 		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &cfg.logger));
-		let chain_monitor = test_utils::TestChainMonitor::new(
-			Some(&cfg.chain_source),
-			&cfg.tx_broadcaster,
-			&cfg.logger,
-			&cfg.fee_estimator,
-			persisters[i],
-			&cfg.keys_manager,
-		);
+		let chain_monitor = if deferred {
+			test_utils::TestChainMonitor::new_deferred(
+				Some(&cfg.chain_source),
+				&cfg.tx_broadcaster,
+				&cfg.logger,
+				&cfg.fee_estimator,
+				persisters[i],
+				&cfg.keys_manager,
+			)
+		} else {
+			test_utils::TestChainMonitor::new(
+				Some(&cfg.chain_source),
+				&cfg.tx_broadcaster,
+				&cfg.logger,
+				&cfg.fee_estimator,
+				persisters[i],
+				&cfg.keys_manager,
+			)
+		};
 
 		let seed = [i as u8; 32];
 		nodes.push(NodeCfg {
@@ -4555,6 +4567,20 @@ pub fn create_node_cfgs<'a>(
 		chanmon_cfgs,
 		persisters,
 		test_utils::TestMessageRouter::new_default,
+		false,
+	)
+}
+
+pub fn create_node_cfgs_deferred<'a>(
+	node_count: usize, chanmon_cfgs: &'a Vec<TestChanMonCfg>,
+) -> Vec<NodeCfg<'a>> {
+	let persisters = chanmon_cfgs.iter().map(|c| &c.persister).collect();
+	create_node_cfgs_internal(
+		node_count,
+		chanmon_cfgs,
+		persisters,
+		test_utils::TestMessageRouter::new_default,
+		true,
 	)
 }
 
@@ -4567,6 +4593,7 @@ pub fn create_node_cfgs_with_persisters<'a>(
 		chanmon_cfgs,
 		persisters,
 		test_utils::TestMessageRouter::new_default,
+		false,
 	)
 }
 
@@ -4579,6 +4606,7 @@ pub fn create_node_cfgs_with_node_id_message_router<'a>(
 		chanmon_cfgs,
 		persisters,
 		test_utils::TestMessageRouter::new_node_id_router,
+		false,
 	)
 }
 
