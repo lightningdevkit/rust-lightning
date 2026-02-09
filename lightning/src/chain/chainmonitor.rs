@@ -371,6 +371,9 @@ pub struct ChainMonitor<
 
 	#[cfg(peer_storage)]
 	our_peerstorage_encryption_key: PeerStorageKey,
+
+	/// When `true`, [`chain::Watch`] operations are queued rather than executed immediately.
+	deferred: bool,
 }
 
 impl<
@@ -397,7 +400,7 @@ where
 	pub fn new_async_beta(
 		chain_source: Option<C>, broadcaster: T, logger: L, feeest: F,
 		persister: MonitorUpdatingPersisterAsync<K, S, L, ES, SP, T, F>, _entropy_source: ES,
-		_our_peerstorage_encryption_key: PeerStorageKey,
+		_our_peerstorage_encryption_key: PeerStorageKey, deferred: bool,
 	) -> Self {
 		let event_notifier = Arc::new(Notifier::new());
 		Self {
@@ -414,6 +417,7 @@ where
 			pending_send_only_events: Mutex::new(Vec::new()),
 			#[cfg(peer_storage)]
 			our_peerstorage_encryption_key: _our_peerstorage_encryption_key,
+			deferred,
 		}
 	}
 }
@@ -603,7 +607,7 @@ where
 	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 	pub fn new(
 		chain_source: Option<C>, broadcaster: T, logger: L, feeest: F, persister: P,
-		_entropy_source: ES, _our_peerstorage_encryption_key: PeerStorageKey,
+		_entropy_source: ES, _our_peerstorage_encryption_key: PeerStorageKey, deferred: bool,
 	) -> Self {
 		Self {
 			monitors: RwLock::new(new_hash_map()),
@@ -619,6 +623,7 @@ where
 			pending_send_only_events: Mutex::new(Vec::new()),
 			#[cfg(peer_storage)]
 			our_peerstorage_encryption_key: _our_peerstorage_encryption_key,
+			deferred,
 		}
 	}
 
