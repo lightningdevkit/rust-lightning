@@ -315,7 +315,7 @@ impl InboundHTLCState {
 ///
 /// Useful for reconstructing the pending HTLC set on startup.
 #[derive(Debug, Clone)]
-pub(super) enum InboundUpdateAdd {
+enum InboundUpdateAdd {
 	/// The inbound committed HTLC's update_add_htlc message.
 	WithOnion { update_add_htlc: msgs::UpdateAddHTLC },
 	/// This inbound HTLC is a forward that was irrevocably committed to the outbound edge, allowing
@@ -7885,10 +7885,35 @@ where
 		Ok(())
 	}
 
-	/// Useful for reconstructing the set of pending HTLCs when deserializing the `ChannelManager`.
-	pub(super) fn inbound_committed_unresolved_htlcs(
+	/// Returns true if any committed inbound HTLCs were received pre-LDK 0.3 and cannot be used
+	/// during `ChannelManager` deserialization to reconstruct the set of pending HTLCs.
+	pub(super) fn has_legacy_inbound_htlcs(&self) -> bool {
+		self.context.pending_inbound_htlcs.iter().any(|htlc| {
+			matches!(
+				&htlc.state,
+				InboundHTLCState::Committed { update_add_htlc: InboundUpdateAdd::Legacy }
+			)
+		})
+	}
+
+	/// Returns committed inbound HTLCs whose onion has not yet been decoded and processed. Useful
+	/// for reconstructing the set of pending HTLCs when deserializing the `ChannelManager`.
+	pub(super) fn inbound_htlcs_pending_decode(
 		&self,
-	) -> Vec<(PaymentHash, InboundUpdateAdd)> {
+	) -> impl Iterator<Item = msgs::UpdateAddHTLC> + '_ {
+		self.context.pending_inbound_htlcs.iter().filter_map(|htlc| match &htlc.state {
+			InboundHTLCState::Committed {
+				update_add_htlc: InboundUpdateAdd::WithOnion { update_add_htlc },
+			} => Some(update_add_htlc.clone()),
+			_ => None,
+		})
+	}
+
+	/// Returns committed inbound HTLCs that have been forwarded but not yet fully resolved. Useful
+	/// when reconstructing the set of pending HTLCs when deserializing the `ChannelManager`.
+	pub(super) fn inbound_forwarded_htlcs(
+		&self,
+	) -> impl Iterator<Item = (PaymentHash, HTLCPreviousHopData, u64)> + '_ {
 		// We don't want to return an HTLC as needing processing if it already has a resolution that's
 		// pending in the holding cell.
 		let htlc_resolution_in_holding_cell = |id: u64| -> bool {
@@ -7902,19 +7927,17 @@ where
 			})
 		};
 
-		self.context
-			.pending_inbound_htlcs
-			.iter()
-			.filter_map(|htlc| match &htlc.state {
-				InboundHTLCState::Committed { update_add_htlc } => {
-					if htlc_resolution_in_holding_cell(htlc.htlc_id) {
-						return None;
-					}
-					Some((htlc.payment_hash, update_add_htlc.clone()))
-				},
-				_ => None,
-			})
-			.collect()
+		self.context.pending_inbound_htlcs.iter().filter_map(move |htlc| match &htlc.state {
+			InboundHTLCState::Committed {
+				update_add_htlc: InboundUpdateAdd::Forwarded { hop_data, outbound_amt_msat },
+			} => {
+				if htlc_resolution_in_holding_cell(htlc.htlc_id) {
+					return None;
+				}
+				Some((htlc.payment_hash, hop_data.clone(), *outbound_amt_msat))
+			},
+			_ => None,
+		})
 	}
 
 	/// Useful when reconstructing the set of pending HTLC forwards when deserializing the

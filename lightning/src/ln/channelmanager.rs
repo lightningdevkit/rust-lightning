@@ -59,9 +59,9 @@ use crate::ln::chan_utils::selected_commitment_sat_per_1000_weight;
 use crate::ln::channel::QuiescentAction;
 use crate::ln::channel::{
 	self, hold_time_since, Channel, ChannelError, ChannelUpdateStatus, DisconnectResult,
-	FundedChannel, FundingTxSigned, InboundUpdateAdd, InboundV1Channel, OutboundV1Channel,
-	PendingV2Channel, ReconnectionMsg, ShutdownResult, SpliceFundingFailed, StfuResponse,
-	UpdateFulfillCommitFetch, WithChannelContext,
+	FundedChannel, FundingTxSigned, InboundV1Channel, OutboundV1Channel, PendingV2Channel,
+	ReconnectionMsg, ShutdownResult, SpliceFundingFailed, StfuResponse, UpdateFulfillCommitFetch,
+	WithChannelContext,
 };
 use crate::ln::channel_state::ChannelDetails;
 use crate::ln::funding::SpliceContribution;
@@ -10185,10 +10185,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state = per_peer_state.get(&cp_id).map(|state| state.lock().unwrap()).unwrap();
 		let chan = peer_state.channel_by_id.get(&chan_id).and_then(|c| c.as_funded()).unwrap();
-		chan.inbound_committed_unresolved_htlcs()
-			.iter()
-			.filter(|(_, htlc)| matches!(htlc, InboundUpdateAdd::WithOnion { .. }))
-			.count()
+		chan.inbound_htlcs_pending_decode().count()
 	}
 
 	#[cfg(test)]
@@ -18626,33 +18623,27 @@ impl<
 					if reconstruct_manager_from_monitors {
 						if let Some(chan) = peer_state.channel_by_id.get(channel_id) {
 							if let Some(funded_chan) = chan.as_funded() {
+								// Legacy HTLCs are from pre-LDK 0.3 and cannot be reconstructed.
+								if funded_chan.has_legacy_inbound_htlcs() {
+									return Err(DecodeError::InvalidValue);
+								}
+								// Reconstruct `ChannelManager::decode_update_add_htlcs` from the serialized
+								// `Channel` as part of removing the requirement to regularly persist the
+								// `ChannelManager`.
 								let scid_alias = funded_chan.context.outbound_scid_alias();
-								let inbound_committed_update_adds =
-									funded_chan.inbound_committed_unresolved_htlcs();
-								for (payment_hash, htlc) in inbound_committed_update_adds {
-									match htlc {
-										InboundUpdateAdd::WithOnion { update_add_htlc } => {
-											// Reconstruct `ChannelManager::decode_update_add_htlcs` from the serialized
-											// `Channel` as part of removing the requirement to regularly persist the
-											// `ChannelManager`.
-											decode_update_add_htlcs
-												.entry(scid_alias)
-												.or_insert_with(Vec::new)
-												.push(update_add_htlc);
-										},
-										InboundUpdateAdd::Forwarded {
-											hop_data,
-											outbound_amt_msat,
-										} => {
-											already_forwarded_htlcs
-												.entry((hop_data.channel_id, payment_hash))
-												.or_insert_with(Vec::new)
-												.push((hop_data, outbound_amt_msat));
-										},
-										InboundUpdateAdd::Legacy => {
-											return Err(DecodeError::InvalidValue)
-										},
-									}
+								for update_add_htlc in funded_chan.inbound_htlcs_pending_decode() {
+									decode_update_add_htlcs
+										.entry(scid_alias)
+										.or_insert_with(Vec::new)
+										.push(update_add_htlc);
+								}
+								for (payment_hash, hop_data, outbound_amt_msat) in
+									funded_chan.inbound_forwarded_htlcs()
+								{
+									already_forwarded_htlcs
+										.entry((hop_data.channel_id, payment_hash))
+										.or_insert_with(Vec::new)
+										.push((hop_data, outbound_amt_msat));
 								}
 							}
 						}
