@@ -739,6 +739,17 @@ impl Route {
 					return Err(());
 				}
 
+				let total_cltv_delta = path.total_cltv_expiry_delta();
+				if total_cltv_delta > route_params.payment_params.max_total_cltv_expiry_delta {
+					let err = format!(
+						"Path had a total CLTV of {total_cltv_delta} which is greater than the maximum we're allowed {}",
+						route_params.payment_params.max_total_cltv_expiry_delta,
+					);
+					debug_assert!(false, "{}", err);
+					log_error!(logger, "{}", err);
+					return Err(());
+				}
+
 				if path.hops.len() > route_params.payment_params.max_path_length.into() {
 					let err = format!(
 						"Path had a length of {}, which is greater than the maximum we're allowed ({})",
@@ -750,6 +761,21 @@ impl Route {
 					log_error!(logger, "{}", err);
 					// This is a bug, but there's not a material safety risk to making this
 					// payment, so we don't bother to error here.
+				}
+
+				if let Some(tail) = &path.blinded_tail {
+					let trampoline_cltv_sum =
+						tail.trampoline_hops.iter().map(|hop| hop.cltv_expiry_delta).sum();
+					let min_cltv =
+						tail.excess_final_cltv_expiry_delta.saturating_add(trampoline_cltv_sum);
+					let last_hop_cltv_delta = path.hops.last().unwrap().cltv_expiry_delta;
+					if min_cltv > last_hop_cltv_delta {
+						let err = format!(
+							"Path had a total trampoline and excess blinded path CLTV of {min_cltv}, which is less than the total last-hop CLTV delta of {last_hop_cltv_delta}"
+						);
+						debug_assert!(false, "{}", err);
+						log_error!(logger, "{}", err);
+					}
 				}
 			}
 		}
