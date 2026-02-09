@@ -597,6 +597,7 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 		Arc::new(TestPersister { update_ret: Mutex::new(ChannelMonitorUpdateStatus::Completed) }),
 		Arc::clone(&keys_manager),
 		keys_manager.get_peer_storage_key(),
+		false,
 	));
 
 	let network = Network::Bitcoin;
