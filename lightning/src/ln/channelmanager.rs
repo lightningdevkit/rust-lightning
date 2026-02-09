@@ -18958,7 +18958,39 @@ impl<
 								monitor.channel_id(),
 							)
 						},
-						HTLCSource::TrampolineForward { .. } => todo!(),
+						HTLCSource::TrampolineForward { previous_hop_data, .. } => {
+							// If `reconstruct_manager_from_monitors` is set, we always add all inbound committed
+							// HTLCs to `decode_update_add_htlcs` in the above loop, but we need to prune from
+							// those added HTLCs if they were already forwarded to the outbound edge. Otherwise,
+							// we'll double-forward.
+							for prev_hop_data in previous_hop_data.iter() {
+								if reconstruct_manager_from_monitors {
+									dedup_decode_update_add_htlcs(
+										&mut decode_update_add_htlcs,
+										prev_hop_data,
+										"HTLC already forwarded to the outbound edge",
+										&&logger,
+									);
+								}
+							}
+
+							if !is_channel_closed || reconstruct_manager_from_monitors {
+								continue;
+							}
+
+							for prev_hop_data in previous_hop_data {
+								reconcile_pending_htlcs_with_monitor(
+									&mut forward_htlcs_legacy,
+									&mut pending_events_read,
+									&mut pending_intercepted_htlcs_legacy,
+									&mut decode_update_add_htlcs_legacy,
+									prev_hop_data,
+									&logger,
+									htlc.payment_hash,
+									monitor.channel_id(),
+								);
+							}
+						},
 						HTLCSource::OutboundRoute {
 							payment_id,
 							session_priv,
