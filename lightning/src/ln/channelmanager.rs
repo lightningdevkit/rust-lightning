@@ -5239,6 +5239,16 @@ impl<
 							&self.fee_estimator,
 							&&logger,
 						);
+						// Intercept temporary local failures (e.g., HTLC slots full,
+						// balance constraint) before they go through break_channel_entry!
+						// which would convert them to ChannelUnavailable. Return
+						// ChannelBusy instead so the payment can be retried later.
+						let send_res = match send_res {
+							Err(ChannelError::Ignore(msg)) => {
+								return Err(APIError::ChannelBusy { err: msg });
+							},
+							other => other,
+						};
 						match break_channel_entry!(self, peer_state, send_res, chan_entry) {
 							Some(monitor_update) => {
 								let (update_completed, completion_data) = self

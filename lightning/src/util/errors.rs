@@ -57,6 +57,14 @@ pub enum APIError {
 	/// [`chain::Watch::update_channel`]: crate::chain::Watch::update_channel
 	/// [`ChannelMonitorUpdateStatus::InProgress`]: crate::chain::ChannelMonitorUpdateStatus::InProgress
 	MonitorUpdateInProgress,
+	/// The channel is temporarily busy and cannot process the request right now (e.g., all HTLC
+	/// slots are full, or a temporary balance constraint prevents forwarding). The condition is
+	/// expected to resolve on its own and the payment will be retried automatically if a retry
+	/// strategy is set.
+	ChannelBusy {
+		/// A human-readable error message
+		err: String,
+	},
 	/// [`SignerProvider::get_shutdown_scriptpubkey`] returned a shutdown scriptpubkey incompatible
 	/// with the channel counterparty as negotiated in [`InitFeatures`].
 	///
@@ -80,6 +88,9 @@ impl fmt::Debug for APIError {
 			},
 			APIError::InvalidRoute { ref err } => write!(f, "Invalid route provided: {}", err),
 			APIError::ChannelUnavailable { ref err } => write!(f, "Channel unavailable: {}", err),
+			APIError::ChannelBusy { ref err } => {
+				write!(f, "Channel busy: {}", err)
+			},
 			APIError::MonitorUpdateInProgress => f.write_str(
 				"Client indicated a channel monitor update is in progress but not yet complete",
 			),
@@ -100,4 +111,5 @@ impl_writeable_tlv_based_enum_upgradable!(APIError,
 	(6, ChannelUnavailable) => { (0, err, required), },
 	(8, MonitorUpdateInProgress) => {},
 	(10, IncompatibleShutdownScript) => { (0, script, required), },
+	(12, ChannelBusy) => { (0, err, required), },
 );

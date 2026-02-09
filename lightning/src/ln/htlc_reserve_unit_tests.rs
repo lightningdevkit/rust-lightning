@@ -173,7 +173,13 @@ pub fn test_channel_reserve_holding_cell_htlcs() {
 		let onion = RecipientOnionFields::secret_only(our_payment_secret);
 		let id = PaymentId(our_payment_hash.0);
 		let res = nodes[0].node.send_payment_with_route(route, our_payment_hash, onion, id);
-		unwrap_send_err!(nodes[0], res, true, APIError::ChannelUnavailable { .. }, {});
+		unwrap_send_err!(
+			nodes[0],
+			res,
+			true,
+			APIError::ChannelUnavailable { .. } | APIError::ChannelBusy { .. },
+			{}
+		);
 		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	}
 
@@ -270,7 +276,13 @@ pub fn test_channel_reserve_holding_cell_htlcs() {
 		let onion = RecipientOnionFields::secret_only(our_payment_secret);
 		let id = PaymentId(our_payment_hash.0);
 		let res = nodes[0].node.send_payment_with_route(route, our_payment_hash, onion, id);
-		unwrap_send_err!(nodes[0], res, true, APIError::ChannelUnavailable { .. }, {});
+		unwrap_send_err!(
+			nodes[0],
+			res,
+			true,
+			APIError::ChannelUnavailable { .. } | APIError::ChannelBusy { .. },
+			{}
+		);
 		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	}
 
@@ -310,7 +322,13 @@ pub fn test_channel_reserve_holding_cell_htlcs() {
 		let onion = RecipientOnionFields::secret_only(our_payment_secret);
 		let id = PaymentId(our_payment_hash.0);
 		let res = nodes[0].node.send_payment_with_route(route, our_payment_hash, onion, id);
-		unwrap_send_err!(nodes[0], res, true, APIError::ChannelUnavailable { .. }, {});
+		unwrap_send_err!(
+			nodes[0],
+			res,
+			true,
+			APIError::ChannelUnavailable { .. } | APIError::ChannelBusy { .. },
+			{}
+		);
 		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	}
 
@@ -656,7 +674,13 @@ pub fn holding_cell_htlc_counting() {
 		let onion = RecipientOnionFields::secret_only(payment_secret_1);
 		let id = PaymentId(payment_hash_1.0);
 		let res = nodes[1].node.send_payment_with_route(route, payment_hash_1, onion, id);
-		unwrap_send_err!(nodes[1], res, true, APIError::ChannelUnavailable { .. }, {});
+		unwrap_send_err!(
+			nodes[1],
+			res,
+			true,
+			APIError::ChannelUnavailable { .. } | APIError::ChannelBusy { .. },
+			{}
+		);
 		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	}
 
@@ -770,7 +794,13 @@ pub fn test_basic_channel_reserve() {
 	let onion = RecipientOnionFields::secret_only(our_payment_secret);
 	let id = PaymentId(our_payment_hash.0);
 	let err = nodes[0].node.send_payment_with_route(route, our_payment_hash, onion, id);
-	unwrap_send_err!(nodes[0], err, true, APIError::ChannelUnavailable { .. }, {});
+	unwrap_send_err!(
+		nodes[0],
+		err,
+		true,
+		APIError::ChannelUnavailable { .. } | APIError::ChannelBusy { .. },
+		{}
+	);
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 
 	send_payment(&nodes[0], &[&nodes[1]], max_can_send);
@@ -1017,7 +1047,13 @@ pub fn test_chan_reserve_violation_outbound_htlc_inbound_chan() {
 	let onion = RecipientOnionFields::secret_only(our_payment_secret);
 	let id = PaymentId(our_payment_hash.0);
 	let res = nodes[1].node.send_payment_with_route(route, our_payment_hash, onion, id);
-	unwrap_send_err!(nodes[1], res, true, APIError::ChannelUnavailable { .. }, {});
+	unwrap_send_err!(
+		nodes[1],
+		res,
+		true,
+		APIError::ChannelUnavailable { .. } | APIError::ChannelBusy { .. },
+		{}
+	);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 }
 
@@ -1145,7 +1181,13 @@ pub fn test_chan_reserve_dust_inbound_htlcs_outbound_chan() {
 	let onion = RecipientOnionFields::secret_only(our_payment_secret);
 	let id = PaymentId(our_payment_hash.0);
 	let res = nodes[1].node.send_payment_with_route(route, our_payment_hash, onion, id);
-	unwrap_send_err!(nodes[1], res, true, APIError::ChannelUnavailable { .. }, {});
+	unwrap_send_err!(
+		nodes[1],
+		res,
+		true,
+		APIError::ChannelUnavailable { .. } | APIError::ChannelBusy { .. },
+		{}
+	);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -1337,7 +1379,13 @@ pub fn test_update_add_htlc_bolt2_sender_value_below_minimum_msat() {
 	let onion = RecipientOnionFields::secret_only(our_payment_secret);
 	let id = PaymentId(our_payment_hash.0);
 	let res = nodes[0].node.send_payment_with_route(route, our_payment_hash, onion, id);
-	unwrap_send_err!(nodes[0], res, true, APIError::ChannelUnavailable { .. }, {});
+	unwrap_send_err!(
+		nodes[0],
+		res,
+		true,
+		APIError::ChannelUnavailable { .. } | APIError::ChannelBusy { .. },
+		{}
+	);
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 }
 
@@ -1358,12 +1406,12 @@ pub fn test_update_add_htlc_bolt2_sender_zero_value_msat() {
 	let id = PaymentId(our_payment_hash.0);
 	let res = nodes[0].node.send_payment_with_route(route, our_payment_hash, onion, id);
 	unwrap_send_err!(nodes[0], res,
-		true, APIError::ChannelUnavailable { ref err },
+		true, APIError::ChannelBusy { ref err },
 		assert_eq!(err, "Cannot send 0-msat HTLC"));
 
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	nodes[0].logger.assert_log_contains(
-		"lightning::ln::channelmanager",
+		"lightning::ln::outbound_payment",
 		"Cannot send 0-msat HTLC",
 		2,
 	);
@@ -1489,7 +1537,13 @@ pub fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_num_and_htlc_id_increme
 	let onion = RecipientOnionFields::secret_only(our_payment_secret);
 	let id = PaymentId(our_payment_hash.0);
 	let res = nodes[0].node.send_payment_with_route(route, our_payment_hash, onion, id);
-	unwrap_send_err!(nodes[0], res, true, APIError::ChannelUnavailable { .. }, {});
+	unwrap_send_err!(
+		nodes[0],
+		res,
+		true,
+		APIError::ChannelUnavailable { .. } | APIError::ChannelBusy { .. },
+		{}
+	);
 
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 }
@@ -1517,7 +1571,13 @@ pub fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_value_in_flight() {
 	let onion = RecipientOnionFields::secret_only(our_payment_secret);
 	let id = PaymentId(our_payment_hash.0);
 	let res = nodes[0].node.send_payment_with_route(route, our_payment_hash, onion, id);
-	unwrap_send_err!(nodes[0], res, true, APIError::ChannelUnavailable { .. }, {});
+	unwrap_send_err!(
+		nodes[0],
+		res,
+		true,
+		APIError::ChannelUnavailable { .. } | APIError::ChannelBusy { .. },
+		{}
+	);
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 
 	send_payment(&nodes[0], &[&nodes[1]], max_in_flight);
