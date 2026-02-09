@@ -725,6 +725,17 @@ impl Route {
 					return Err(());
 				}
 
+				let total_cltv_delta = path.total_cltv_expiry_delta();
+				if total_cltv_delta > route_params.payment_params.max_total_cltv_expiry_delta {
+					let err = format!(
+						"Path had a total CLTV of {total_cltv_delta} which is greater than the maximum we're allowed {}",
+						route_params.payment_params.max_total_cltv_expiry_delta,
+					);
+					debug_assert!(false, "{}", err);
+					log_error!(logger, "{}", err);
+					return Err(());
+				}
+
 				if path.hops.len() > route_params.payment_params.max_path_length.into() {
 					let err = format!(
 						"Path had a length of {}, which is greater than the maximum we're allowed ({})",
@@ -736,6 +747,38 @@ impl Route {
 					log_error!(logger, "{}", err);
 					// This is a bug, but there's not a material safety risk to making this
 					// payment, so we don't bother to error here.
+				}
+
+				if let Some(tail) = &path.blinded_tail {
+					let trampoline_cltv_sum: u32 =
+						tail.trampoline_hops.iter().map(|hop| hop.cltv_expiry_delta).sum();
+					let last_hop_cltv_delta = path.hops.last().unwrap().cltv_expiry_delta;
+					if trampoline_cltv_sum > last_hop_cltv_delta {
+						let err = format!(
+							"Path had a total trampoline CLTV of {trampoline_cltv_sum}, which is less than the total last-hop CLTV delta of {last_hop_cltv_delta}"
+						);
+						debug_assert!(false, "{}", err);
+						log_error!(logger, "{}", err);
+					}
+					let last_trampoline_cltv_opt =
+						tail.trampoline_hops.last().map(|h| h.cltv_expiry_delta);
+					let last_trampoline_cltv = last_trampoline_cltv_opt.unwrap_or(u32::MAX);
+					if tail.excess_final_cltv_expiry_delta > last_trampoline_cltv {
+						let err = format!(
+							"Last trampoline CLTV of {last_trampoline_cltv} is less than the excess blinded path cltv of {}",
+							tail.excess_final_cltv_expiry_delta
+						);
+						debug_assert!(false, "{}", err);
+						log_error!(logger, "{}", err);
+					}
+					if tail.excess_final_cltv_expiry_delta > last_hop_cltv_delta {
+						let err = format!(
+							"Last path hop CLTV of {last_hop_cltv_delta} is less than the excess blinded path cltv of {}",
+							tail.excess_final_cltv_expiry_delta
+						);
+						debug_assert!(false, "{}", err);
+						log_error!(logger, "{}", err);
+					}
 				}
 			}
 

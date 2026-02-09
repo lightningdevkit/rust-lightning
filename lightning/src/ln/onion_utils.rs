@@ -539,8 +539,8 @@ where
 		// exactly as it should be (and the next hop isn't trying to probe to find out if we're
 		// the intended recipient).
 		let value_msat = if cur_value_msat == 0 { hop.fee_msat() } else { cur_value_msat };
-		let cltv = hop.cltv_expiry_delta().saturating_add(cur_cltv);
 		if idx == 0 {
+			let declared_incoming_cltv = hop.cltv_expiry_delta().saturating_add(cur_cltv);
 			match blinded_tail.take() {
 				Some(BlindedTailDetails::DirectEntry {
 					blinding_point,
@@ -587,7 +587,7 @@ where
 						PayloadCallbackAction::PushBack,
 						OP::new_trampoline_entry(
 							final_value_msat + hop.fee_msat(),
-							cltv,
+							declared_incoming_cltv,
 							&recipient_onion,
 							trampoline_packet,
 						)?,
@@ -596,7 +596,12 @@ where
 				None => {
 					callback(
 						PayloadCallbackAction::PushBack,
-						OP::new_receive(&recipient_onion, *keysend_preimage, value_msat, cltv)?,
+						OP::new_receive(
+							&recipient_onion,
+							*keysend_preimage,
+							value_msat,
+							declared_incoming_cltv,
+						)?,
 					);
 				},
 			}
