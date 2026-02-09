@@ -536,6 +536,7 @@ impl<'a> TestChainMonitor<'a> {
 				persister,
 				keys_manager,
 				keys_manager.get_peer_storage_key(),
+				false,
 			),
 			keys_manager,
 			expect_channel_force_closed: Mutex::new(None),
