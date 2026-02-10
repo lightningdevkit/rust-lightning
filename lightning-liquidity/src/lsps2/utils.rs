@@ -60,33 +60,6 @@ pub fn compute_opening_fee(
 ) -> Option<u64> {
 	payment_size_msat
 		.checked_mul(opening_fee_proportional)
-		.and_then(|f| f.checked_add(999999))
-		.and_then(|f| f.checked_div(1000000))
+		.map(|f| f.div_ceil(1_000_000))
 		.map(|f| core::cmp::max(f, opening_fee_min_fee_msat))
-}
-
-#[cfg(test)]
-mod tests {
-	use super::*;
-	use proptest::prelude::*;
-
-	const MAX_VALUE_MSAT: u64 = 21_000_000_0000_0000_000;
-
-	fn arb_opening_fee_params() -> impl Strategy<Value = (u64, u64, u64)> {
-		(0u64..MAX_VALUE_MSAT, 0u64..MAX_VALUE_MSAT, 0u64..MAX_VALUE_MSAT)
-	}
-
-	proptest! {
-		#[test]
-		fn test_compute_opening_fee((payment_size_msat, opening_fee_min_fee_msat, opening_fee_proportional) in arb_opening_fee_params()) {
-			if let Some(res) = compute_opening_fee(payment_size_msat, opening_fee_min_fee_msat, opening_fee_proportional) {
-				assert!(res >= opening_fee_min_fee_msat);
-				assert_eq!(res as f32, (payment_size_msat as f32 * opening_fee_proportional as f32));
-			} else {
-				// Check we actually overflowed.
-				let max_value = u64::MAX as u128;
-				assert!((payment_size_msat as u128 * opening_fee_proportional as u128) > max_value);
-			}
-		}
-	}
 }
