@@ -12,7 +12,7 @@ use crate::io_extras::sink;
 use crate::prelude::*;
 
 use bitcoin::absolute::LockTime as AbsoluteLockTime;
-use bitcoin::amount::{Amount, SignedAmount};
+use bitcoin::amount::Amount;
 use bitcoin::consensus::Encodable;
 use bitcoin::constants::WITNESS_SCALE_FACTOR;
 use bitcoin::ecdsa::Signature as BitcoinSignature;
@@ -31,7 +31,7 @@ use crate::ln::chan_utils::{
 	BASE_INPUT_WEIGHT, EMPTY_SCRIPT_SIG_WEIGHT, FUNDING_TRANSACTION_WITNESS_WEIGHT,
 	SEGWIT_MARKER_FLAG_WEIGHT,
 };
-use crate::ln::channel::{FundingNegotiationContext, TOTAL_BITCOIN_SUPPLY_SATOSHIS};
+use crate::ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS;
 use crate::ln::funding::FundingTxInput;
 use crate::ln::msgs;
 use crate::ln::msgs::{MessageSendEvent, SerialId, TxSignatures};
@@ -2313,102 +2313,16 @@ impl InteractiveTxConstructor {
 	}
 }
 
-/// Determine whether a change output should be added, and if yes, of what size, considering our
-/// given inputs and outputs, and intended contribution. Takes into account the fees and the dust
-/// limit.
-///
-/// Three outcomes are possible:
-/// - Inputs are sufficient for intended contribution, fees, and a larger-than-dust change:
-///   `Ok(Some(change_amount))`
-/// - Inputs are sufficient for intended contribution and fees, and a change output isn't needed:
-///   `Ok(None)`
-/// - Inputs are not sufficient to cover contribution and fees:
-///   `Err(AbortReason::InsufficientFees)`
-///
-/// Parameters:
-/// - `context` - Context of the funding negotiation, including non-shared inputs and feerate.
-/// - `is_splice` - Whether we splicing an existing channel or dual-funding a new one.
-/// - `shared_output_funding_script` - The script of the shared output.
-/// - `funding_outputs` - Our funding outputs.
-/// - `change_output_dust_limit` - The dust limit (in sats) to consider.
-pub(super) fn calculate_change_output_value(
-	context: &FundingNegotiationContext, is_splice: bool, shared_output_funding_script: &ScriptBuf,
-	change_output_dust_limit: u64,
-) -> Result<Option<Amount>, AbortReason> {
-	let mut total_input_value = Amount::ZERO;
-	let mut our_funding_inputs_weight = 0u64;
-	for FundingTxInput { utxo, .. } in context.our_funding_inputs.iter() {
-		total_input_value = total_input_value.checked_add(utxo.output.value).unwrap_or(Amount::MAX);
-
-		let weight = BASE_INPUT_WEIGHT + utxo.satisfaction_weight;
-		our_funding_inputs_weight = our_funding_inputs_weight.saturating_add(weight);
-	}
-
-	let funding_outputs = &context.our_funding_outputs;
-	let total_output_value = funding_outputs
-		.iter()
-		.fold(Amount::ZERO, |total, out| total.checked_add(out.value).unwrap_or(Amount::MAX));
-
-	let our_funding_outputs_weight = funding_outputs.iter().fold(0u64, |weight, out| {
-		weight.saturating_add(get_output_weight(&out.script_pubkey).to_wu())
-	});
-	let mut weight = our_funding_outputs_weight.saturating_add(our_funding_inputs_weight);
-
-	// If we are the initiator, we must pay for the weight of the funding output and
-	// all common fields in the funding transaction.
-	if context.is_initiator {
-		weight = weight.saturating_add(get_output_weight(shared_output_funding_script).to_wu());
-		weight = weight.saturating_add(TX_COMMON_FIELDS_WEIGHT);
-		if is_splice {
-			// TODO(taproot): Needs to consider different weights based on channel type
-			weight = weight.saturating_add(BASE_INPUT_WEIGHT);
-			weight = weight.saturating_add(EMPTY_SCRIPT_SIG_WEIGHT);
-			weight = weight.saturating_add(FUNDING_TRANSACTION_WITNESS_WEIGHT);
-			#[cfg(feature = "grind_signatures")]
-			{
-				// Guarantees a low R signature
-				weight -= 1;
-			}
-		}
-	}
-
-	let contributed_fees =
-		Amount::from_sat(fee_for_weight(context.funding_feerate_sat_per_1000_weight, weight));
-
-	let contributed_input_value =
-		context.our_funding_contribution + total_output_value.to_signed().unwrap();
-	assert!(contributed_input_value > SignedAmount::ZERO);
-	let contributed_input_value = contributed_input_value.unsigned_abs();
-
-	let total_input_value_less_fees =
-		total_input_value.checked_sub(contributed_fees).unwrap_or(Amount::ZERO);
-	if total_input_value_less_fees < contributed_input_value {
-		// Not enough to cover contribution plus fees
-		return Err(AbortReason::InsufficientFees);
-	}
-
-	let remaining_value = total_input_value_less_fees
-		.checked_sub(contributed_input_value)
-		.expect("remaining_value should not be negative");
-	if remaining_value.to_sat() < change_output_dust_limit {
-		// Enough to cover contribution plus fees, but leftover is below dust limit; no change
-		Ok(None)
-	} else {
-		// Enough to have over-dust change
-		Ok(Some(remaining_value))
-	}
-}
-
 #[cfg(test)]
 mod tests {
 	use crate::chain::chaininterface::{fee_for_weight, FEERATE_FLOOR_SATS_PER_KW};
-	use crate::ln::channel::{FundingNegotiationContext, TOTAL_BITCOIN_SUPPLY_SATOSHIS};
+	use crate::ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS;
 	use crate::ln::funding::FundingTxInput;
 	use crate::ln::interactivetxs::{
-		calculate_change_output_value, generate_holder_serial_id, AbortReason,
-		HandleTxCompleteValue, InteractiveTxConstructor, InteractiveTxConstructorArgs,
-		InteractiveTxMessageSend, SharedOwnedInput, SharedOwnedOutput, MAX_INPUTS_OUTPUTS_COUNT,
-		MAX_RECEIVED_TX_ADD_INPUT_COUNT, MAX_RECEIVED_TX_ADD_OUTPUT_COUNT,
+		generate_holder_serial_id, AbortReason, HandleTxCompleteValue, InteractiveTxConstructor,
+		InteractiveTxConstructorArgs, InteractiveTxMessageSend, SharedOwnedInput,
+		SharedOwnedOutput, MAX_INPUTS_OUTPUTS_COUNT, MAX_RECEIVED_TX_ADD_INPUT_COUNT,
+		MAX_RECEIVED_TX_ADD_OUTPUT_COUNT,
 	};
 	use crate::ln::types::ChannelId;
 	use crate::sign::EntropySource;
@@ -2423,8 +2337,7 @@ mod tests {
 	use bitcoin::transaction::Version;
 	use bitcoin::{opcodes, WScriptHash, Weight, XOnlyPublicKey};
 	use bitcoin::{
-		OutPoint, PubkeyHash, ScriptBuf, Sequence, SignedAmount, Transaction, TxIn, TxOut,
-		WPubkeyHash,
+		OutPoint, PubkeyHash, ScriptBuf, Sequence, Transaction, TxIn, TxOut, WPubkeyHash,
 	};
 
 	use super::{
@@ -3386,118 +3299,6 @@ mod tests {
 		// Initiators should have even serial id, non-initiators should have odd serial id.
 		assert_eq!(generate_holder_serial_id(&&entropy_source, true) % 2, 0);
 		assert_eq!(generate_holder_serial_id(&&entropy_source, false) % 2, 1)
-	}
-
-	#[test]
-	fn test_calculate_change_output_value_open() {
-		let input_prevouts = [
-			TxOut {
-				value: Amount::from_sat(70_000),
-				script_pubkey: ScriptBuf::new_p2wpkh(&WPubkeyHash::all_zeros()),
-			},
-			TxOut {
-				value: Amount::from_sat(60_000),
-				script_pubkey: ScriptBuf::new_p2wpkh(&WPubkeyHash::all_zeros()),
-			},
-		];
-		let inputs = input_prevouts
-			.iter()
-			.map(|txout| {
-				let prevtx = Transaction {
-					input: Vec::new(),
-					output: vec![(*txout).clone()],
-					lock_time: AbsoluteLockTime::ZERO,
-					version: Version::TWO,
-				};
-
-				FundingTxInput::new_p2wpkh(prevtx, 0).unwrap()
-			})
-			.collect();
-		let txout = TxOut { value: Amount::from_sat(10_000), script_pubkey: ScriptBuf::new() };
-		let outputs = vec![txout];
-		let funding_feerate_sat_per_1000_weight = 3000;
-
-		let total_inputs: Amount = input_prevouts.iter().map(|o| o.value).sum();
-		let total_outputs: Amount = outputs.iter().map(|o| o.value).sum();
-		let fees = if cfg!(feature = "grind_signatures") {
-			Amount::from_sat(1734)
-		} else {
-			Amount::from_sat(1740)
-		};
-		let common_fees = Amount::from_sat(234);
-
-		// There is leftover for change
-		let context = FundingNegotiationContext {
-			is_initiator: true,
-			our_funding_contribution: SignedAmount::from_sat(110_000),
-			funding_tx_locktime: AbsoluteLockTime::ZERO,
-			funding_feerate_sat_per_1000_weight,
-			shared_funding_input: None,
-			our_funding_inputs: inputs,
-			our_funding_outputs: outputs,
-		};
-		let gross_change =
-			total_inputs - total_outputs - context.our_funding_contribution.to_unsigned().unwrap();
-		assert_eq!(
-			calculate_change_output_value(&context, false, &ScriptBuf::new(), 300),
-			Ok(Some(gross_change - fees - common_fees)),
-		);
-
-		// There is leftover for change, without common fees
-		let context = FundingNegotiationContext { is_initiator: false, ..context };
-		assert_eq!(
-			calculate_change_output_value(&context, false, &ScriptBuf::new(), 300),
-			Ok(Some(gross_change - fees)),
-		);
-
-		// Insufficient inputs, no leftover
-		let context = FundingNegotiationContext {
-			is_initiator: false,
-			our_funding_contribution: SignedAmount::from_sat(130_000),
-			..context
-		};
-		assert_eq!(
-			calculate_change_output_value(&context, false, &ScriptBuf::new(), 300),
-			Err(AbortReason::InsufficientFees),
-		);
-
-		// Very small leftover
-		let context = FundingNegotiationContext {
-			is_initiator: false,
-			our_funding_contribution: SignedAmount::from_sat(118_000),
-			..context
-		};
-		assert_eq!(
-			calculate_change_output_value(&context, false, &ScriptBuf::new(), 300),
-			Ok(None),
-		);
-
-		// Small leftover, but not dust
-		let context = FundingNegotiationContext {
-			is_initiator: false,
-			our_funding_contribution: SignedAmount::from_sat(117_992),
-			..context
-		};
-		let gross_change =
-			total_inputs - total_outputs - context.our_funding_contribution.to_unsigned().unwrap();
-		assert_eq!(
-			calculate_change_output_value(&context, false, &ScriptBuf::new(), 100),
-			Ok(Some(gross_change - fees)),
-		);
-
-		// Larger fee, smaller change
-		let context = FundingNegotiationContext {
-			is_initiator: true,
-			our_funding_contribution: SignedAmount::from_sat(110_000),
-			funding_feerate_sat_per_1000_weight: funding_feerate_sat_per_1000_weight * 3,
-			..context
-		};
-		let gross_change =
-			total_inputs - total_outputs - context.our_funding_contribution.to_unsigned().unwrap();
-		assert_eq!(
-			calculate_change_output_value(&context, false, &ScriptBuf::new(), 300),
-			Ok(Some(gross_change - fees * 3 - common_fees * 3)),
-		);
 	}
 
 	fn do_verify_tx_signatures(

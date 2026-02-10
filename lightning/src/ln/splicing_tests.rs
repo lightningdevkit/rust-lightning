@@ -1763,7 +1763,7 @@ fn do_test_propose_splice_while_disconnected(reload: bool, use_0conf: bool) {
 		value: Amount::from_sat(splice_out_sat),
 		script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
 	}];
-	let node_0_funding_contribution =
+	let mut node_0_funding_contribution =
 		initiate_splice_out(&nodes[0], &nodes[1], channel_id, node_0_outputs);
 
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
@@ -1772,7 +1772,7 @@ fn do_test_propose_splice_while_disconnected(reload: bool, use_0conf: bool) {
 		value: Amount::from_sat(splice_out_sat),
 		script_pubkey: nodes[1].wallet_source.get_change_script().unwrap(),
 	}];
-	let node_1_funding_contribution =
+	let mut node_1_funding_contribution =
 		initiate_splice_out(&nodes[1], &nodes[0], channel_id, node_1_outputs);
 
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
@@ -1796,6 +1796,21 @@ fn do_test_propose_splice_while_disconnected(reload: bool, use_0conf: bool) {
 			chain_monitor_1a,
 			node_1a
 		);
+
+		// quiescent_action is not persisted, so re-propose the splice after reload.
+		let node_0_outputs = vec![TxOut {
+			value: Amount::from_sat(splice_out_sat),
+			script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
+		}];
+		node_0_funding_contribution =
+			initiate_splice_out(&nodes[0], &nodes[1], channel_id, node_0_outputs);
+
+		let node_1_outputs = vec![TxOut {
+			value: Amount::from_sat(splice_out_sat),
+			script_pubkey: nodes[1].wallet_source.get_change_script().unwrap(),
+		}];
+		node_1_funding_contribution =
+			initiate_splice_out(&nodes[1], &nodes[0], channel_id, node_1_outputs);
 	}
 
 	// Reconnect the nodes. Both nodes should attempt quiescence as the initiator, but only one will
