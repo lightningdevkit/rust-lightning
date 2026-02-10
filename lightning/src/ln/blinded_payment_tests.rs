@@ -2472,6 +2472,7 @@ fn replacement_onion(
 	original_trampoline_cltv: u32, payment_hash: PaymentHash, payment_secret: PaymentSecret,
 	blinded: bool,
 ) -> msgs::OnionPacket {
+	assert!(!blinded || !matches!(test_case, TrampolineTestCase::Success));
 	let outer_session_priv = SecretKey::from_slice(&override_random_bytes[..]).unwrap();
 	let trampoline_session_priv = onion_utils::compute_trampoline_session_priv(&outer_session_priv);
 	let recipient_onion_fields = RecipientOnionFields::spontaneous_empty(original_amt_msat);
@@ -2671,21 +2672,26 @@ fn do_test_trampoline_relay(blinded: bool, test_case: TrampolineTestCase) {
 	// Replace the onion to test different scenarios:
 	// - If !blinded: Creates a payload sending to an unblinded trampoline
 	// - If blinded: Modifies outer onion to create outer/inner mismatches if testing failures
-	update_message.map(|msg| {
-		msg.onion_routing_packet = replacement_onion(
-			test_case,
-			&secp_ctx,
-			override_random_bytes,
-			route,
-			original_amt_msat,
-			starting_htlc_offset,
-			original_trampoline_cltv,
-			excess_final_cltv,
-			payment_hash,
-			payment_secret,
-			blinded,
-		)
-	});
+	if !blinded || !matches!(test_case, TrampolineTestCase::Success) {
+		update_message.map(|msg| {
+			msg.onion_routing_packet = replacement_onion(
+				test_case,
+				&secp_ctx,
+				override_random_bytes,
+				route,
+				original_amt_msat,
+				// Our internal send payment helpers add one block to the current height to
+				// create our payments. Do the same here so that our replacement onion will have
+				// the right cltv.
+				starting_htlc_offset + 1,
+				original_trampoline_cltv,
+				excess_final_cltv,
+				payment_hash,
+				payment_secret,
+				blinded,
+			)
+		});
+	}
 
 	let route: &[&Node] = &[&nodes[1], &nodes[2]];
 	let args = PassAlongPathArgs::new(
@@ -2696,10 +2702,9 @@ fn do_test_trampoline_relay(blinded: bool, test_case: TrampolineTestCase) {
 		first_message_event,
 	);
 
+	let final_cltv_height = original_trampoline_cltv + starting_htlc_offset + excess_final_cltv + 1;
 	let amt_bytes = test_case.outer_onion_amt(original_amt_msat).to_be_bytes();
-	let cltv_bytes = test_case
-		.outer_onion_cltv(original_trampoline_cltv + starting_htlc_offset + excess_final_cltv)
-		.to_be_bytes();
+	let cltv_bytes = test_case.outer_onion_cltv(final_cltv_height).to_be_bytes();
 	let payment_failure = test_case.payment_failed_conditions(&amt_bytes, &cltv_bytes).map(|p| {
 		if blinded {
 			PaymentFailedConditions::new()
@@ -2713,8 +2718,7 @@ fn do_test_trampoline_relay(blinded: bool, test_case: TrampolineTestCase) {
 			.without_claimable_event()
 			.expect_failure(HTLCHandlingFailureType::Receive { payment_hash })
 	} else {
-		let htlc_cltv = starting_htlc_offset + original_trampoline_cltv + excess_final_cltv;
-		args.with_payment_secret(payment_secret).with_payment_claimable_cltv(htlc_cltv)
+		args.with_payment_secret(payment_secret).with_payment_claimable_cltv(final_cltv_height)
 	};
 
 	do_pass_along_path(args);
