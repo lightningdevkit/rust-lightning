@@ -764,14 +764,29 @@ impl Route {
 				}
 
 				if let Some(tail) = &path.blinded_tail {
-					let trampoline_cltv_sum =
+					let trampoline_cltv_sum: u32 =
 						tail.trampoline_hops.iter().map(|hop| hop.cltv_expiry_delta).sum();
-					let min_cltv =
-						tail.excess_final_cltv_expiry_delta.saturating_add(trampoline_cltv_sum);
 					let last_hop_cltv_delta = path.hops.last().unwrap().cltv_expiry_delta;
-					if min_cltv > last_hop_cltv_delta {
+					if trampoline_cltv_sum > last_hop_cltv_delta {
 						let err = format!(
-							"Path had a total trampoline and excess blinded path CLTV of {min_cltv}, which is less than the total last-hop CLTV delta of {last_hop_cltv_delta}"
+							"Path had a total trampoline CLTV of {trampoline_cltv_sum}, which is less than the total last-hop CLTV delta of {last_hop_cltv_delta}"
+						);
+						debug_assert!(false, "{}", err);
+						log_error!(logger, "{}", err);
+					}
+					let last_trampoline_cltv = tail.trampoline_hops.last().map(|h| h.cltv_expiry_delta).unwrap_or(u32::MAX);
+					if tail.excess_final_cltv_expiry_delta > last_trampoline_cltv {
+						let err = format!(
+							"Last trampoline CLTV of {last_trampoline_cltv} is less than the excess blinded path cltv of {}",
+							tail.excess_final_cltv_expiry_delta
+						);
+						debug_assert!(false, "{}", err);
+						log_error!(logger, "{}", err);
+					}
+					if tail.excess_final_cltv_expiry_delta > last_hop_cltv_delta {
+						let err = format!(
+							"Last path hop CLTV of {last_hop_cltv_delta} is less than the excess blinded path cltv of {}",
+							tail.excess_final_cltv_expiry_delta
 						);
 						debug_assert!(false, "{}", err);
 						log_error!(logger, "{}", err);
