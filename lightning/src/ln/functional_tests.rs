@@ -49,6 +49,7 @@ use crate::routing::router::{
 	get_route, Path, PaymentParameters, Route, RouteHop, RouteParameters,
 };
 use crate::sign::{EntropySource, OutputSpender, SignerProvider};
+use crate::types::amount::LightningAmount;
 use crate::types::features::{ChannelFeatures, ChannelTypeFeatures, NodeFeatures};
 use crate::types::payment::{PaymentHash, PaymentSecret};
 use crate::types::string::UntrustedString;
@@ -159,7 +160,10 @@ pub fn fake_network_test() {
 	let payment_params = PaymentParameters::from_node_id(node_b_id, TEST_FINAL_CLTV)
 		.with_bolt11_features(nodes[1].node.bolt11_invoice_features())
 		.unwrap();
-	let route_params = RouteParameters::from_payment_params_and_value(payment_params, 1000000);
+	let route_params = RouteParameters::from_payment_params_and_value(
+		payment_params,
+		LightningAmount::from_msat(1000000),
+	);
 	let route = Route {
 		paths: vec![Path { hops, blinded_tail: None }],
 		route_params: Some(route_params.clone()),
@@ -2550,8 +2554,17 @@ pub fn test_peer_disconnected_before_funding_broadcasted() {
 
 	// Open a channel between `nodes[0]` and `nodes[1]`, for which the funding transaction is never
 	// broadcasted, even though it's created by `nodes[0]`.
-	let expected_temporary_channel_id =
-		nodes[0].node.create_channel(node_b_id, 1_000_000, 500_000_000, 42, None, None).unwrap();
+	let expected_temporary_channel_id = nodes[0]
+		.node
+		.create_channel(
+			node_b_id,
+			1_000_000,
+			LightningAmount::from_msat(500_000_000),
+			42,
+			None,
+			None,
+		)
+		.unwrap();
 	let open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 	handle_and_accept_open_channel(&nodes[1], node_a_id, &open_channel);
 	let accept_channel = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, node_a_id);
@@ -6044,7 +6057,10 @@ pub fn test_check_htlc_underpaying() {
 	let payment_params = PaymentParameters::from_node_id(node_b_id, TEST_FINAL_CLTV)
 		.with_bolt11_features(nodes[1].node.bolt11_invoice_features())
 		.unwrap();
-	let route_params = RouteParameters::from_payment_params_and_value(payment_params, 10_000);
+	let route_params = RouteParameters::from_payment_params_and_value(
+		payment_params,
+		LightningAmount::from_msat(10_000),
+	);
 	let route = get_route(
 		&node_a_id,
 		&route_params,
@@ -6350,7 +6366,10 @@ pub fn test_bump_penalty_txn_on_revoked_htlcs() {
 		.unwrap();
 	let scorer = test_utils::TestScorer::new();
 	let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
-	let route_params = RouteParameters::from_payment_params_and_value(payment_params, 3_000_000);
+	let route_params = RouteParameters::from_payment_params_and_value(
+		payment_params,
+		LightningAmount::from_msat(3_000_000),
+	);
 	let route = get_route(
 		&node_a_id,
 		&route_params,
@@ -6366,7 +6385,10 @@ pub fn test_bump_penalty_txn_on_revoked_htlcs() {
 	let payment_params = PaymentParameters::from_node_id(node_a_id, 50)
 		.with_bolt11_features(nodes[0].node.bolt11_invoice_features())
 		.unwrap();
-	let route_params = RouteParameters::from_payment_params_and_value(payment_params, 3_000_000);
+	let route_params = RouteParameters::from_payment_params_and_value(
+		payment_params,
+		LightningAmount::from_msat(3_000_000),
+	);
 	let route = get_route(
 		&node_b_id,
 		&route_params,
@@ -6860,7 +6882,14 @@ pub fn test_override_channel_config() {
 
 	nodes[0]
 		.node
-		.create_channel(node_b_id, 16_000_000, 12_000_000, 42, None, Some(override_config))
+		.create_channel(
+			node_b_id,
+			16_000_000,
+			LightningAmount::from_msat(12_000_000),
+			42,
+			None,
+			Some(override_config),
+		)
 		.unwrap();
 
 	// Assert the channel created by node0 is using the override config.
@@ -6883,7 +6912,14 @@ pub fn test_override_0msat_htlc_minimum() {
 
 	nodes[0]
 		.node
-		.create_channel(node_b_id, 16_000_000, 12_000_000, 42, None, Some(zero_config))
+		.create_channel(
+			node_b_id,
+			16_000_000,
+			LightningAmount::from_msat(12_000_000),
+			42,
+			None,
+			Some(zero_config),
+		)
 		.unwrap();
 	let res = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 	assert_eq!(res.common_fields.htlc_minimum_msat, 1);
@@ -7667,7 +7703,10 @@ pub fn test_pre_lockin_no_chan_closed_update() {
 	let node_b_id = nodes[1].node.get_our_node_id();
 
 	// Create an initial channel
-	nodes[0].node.create_channel(node_b_id, 100000, 10001, 42, None, None).unwrap();
+	nodes[0]
+		.node
+		.create_channel(node_b_id, 100000, LightningAmount::from_msat(10001), 42, None, None)
+		.unwrap();
 	let mut open_chan_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 	handle_and_accept_open_channel(&nodes[1], node_a_id, &open_chan_msg);
 	let accept_chan_msg = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, node_a_id);
@@ -8715,7 +8754,17 @@ fn do_test_max_dust_htlc_exposure(
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
 
-	nodes[0].node.create_channel(node_b_id, 1_000_000, 500_000_000, 42, None, None).unwrap();
+	nodes[0]
+		.node
+		.create_channel(
+			node_b_id,
+			1_000_000,
+			LightningAmount::from_msat(500_000_000),
+			42,
+			None,
+			None,
+		)
+		.unwrap();
 	let mut open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 	open_channel.common_fields.max_htlc_value_in_flight_msat = 50_000_000;
 	open_channel.common_fields.max_accepted_htlcs = 60;
@@ -8786,7 +8835,7 @@ fn do_test_max_dust_htlc_exposure(
 		);
 		(
 			dust_buffer_feerate,
-			chan.context().get_max_dust_htlc_exposure_msat(Some(253)),
+			chan.context().get_max_dust_htlc_exposure(Some(253)).to_msat(),
 			htlc_success_tx_fee_sat,
 			htlc_timeout_tx_fee_sat,
 		)
@@ -9680,8 +9729,10 @@ pub fn test_remove_expired_outbound_unfunded_channels() {
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
 
-	let temp_channel_id =
-		nodes[0].node.create_channel(node_b_id, 100_000, 0, 42, None, None).unwrap();
+	let temp_channel_id = nodes[0]
+		.node
+		.create_channel(node_b_id, 100_000, LightningAmount::from_msat(0), 42, None, None)
+		.unwrap();
 	let open_channel_message =
 		get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 	handle_and_accept_open_channel(&nodes[1], node_a_id, &open_channel_message);
@@ -9744,8 +9795,10 @@ pub fn test_remove_expired_inbound_unfunded_channels() {
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
 
-	let temp_channel_id =
-		nodes[0].node.create_channel(node_b_id, 100_000, 0, 42, None, None).unwrap();
+	let temp_channel_id = nodes[0]
+		.node
+		.create_channel(node_b_id, 100_000, LightningAmount::from_msat(0), 42, None, None)
+		.unwrap();
 	let open_channel_message =
 		get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 	handle_and_accept_open_channel(&nodes[1], node_a_id, &open_channel_message);

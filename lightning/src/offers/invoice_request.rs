@@ -27,6 +27,7 @@
 //! use bitcoin::secp256k1::{Keypair, PublicKey, Secp256k1, SecretKey};
 //! use lightning::ln::channelmanager::PaymentId;
 //! use lightning::ln::inbound_payment::ExpandedKey;
+//! use lightning::types::amount::LightningAmount;
 //! use lightning::types::features::OfferFeatures;
 //! use lightning::offers::invoice_request::UnsignedInvoiceRequest;
 //! # use lightning::offers::nonce::Nonce;
@@ -55,7 +56,7 @@
 //!     .request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)?
 //! # )
 //!     .chain(Network::Testnet)?
-//!     .amount_msats(1000)?
+//!     .amount(LightningAmount::from_msat(1000))?
 //!     .quantity(5)?
 //!     .payer_note("foo".to_string())
 //!     .build_and_sign()?
@@ -84,6 +85,7 @@ use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError, ParsedMessage}
 use crate::offers::payer::{PayerContents, PayerTlvStream, PayerTlvStreamRef};
 use crate::offers::signer::{Metadata, MetadataMaterial};
 use crate::onion_message::dns_resolution::HumanReadableName;
+use crate::types::amount::LightningAmount;
 use crate::types::features::InvoiceRequestFeatures;
 use crate::types::payment::PaymentHash;
 use crate::types::string::{PrintableString, UntrustedString};
@@ -215,13 +217,14 @@ macro_rules! invoice_request_builder_methods { (
 		Ok($return_value)
 	}
 
-	/// Sets the [`InvoiceRequest::amount_msats`] for paying an invoice. Errors if `amount_msats` is
+	/// Sets the [`InvoiceRequest::amount`] for paying an invoice. Errors if the amount is
 	/// not at least the expected invoice amount (i.e., [`Offer::amount`] times [`quantity`]).
 	///
 	/// Successive calls to this method will override the previous setting.
 	///
 	/// [`quantity`]: Self::quantity
-	pub fn amount_msats($($self_mut)* $self: $self_type, amount_msats: u64) -> Result<$return_type, Bolt12SemanticError> {
+	pub fn amount($($self_mut)* $self: $self_type, amount: LightningAmount) -> Result<$return_type, Bolt12SemanticError> {
+		let amount_msats = amount.to_msat();
 		$self.invoice_request.offer.check_amount_msats_for_quantity(
 			Some(amount_msats), $self.invoice_request.quantity
 		)?;
@@ -274,7 +277,7 @@ macro_rules! invoice_request_builder_methods { (
 			$self.invoice_request.chain = None;
 		}
 
-		if $self.offer.amount().is_none() && $self.invoice_request.amount_msats.is_none() {
+		if $self.offer.offer_amount().is_none() && $self.invoice_request.amount_msats.is_none() {
 			return Err(Bolt12SemanticError::MissingAmount);
 		}
 
@@ -708,16 +711,16 @@ macro_rules! invoice_request_accessors { ($self: ident, $contents: expr) => {
 	/// must be greater than or equal to [`Offer::amount`], converted if necessary.
 	///
 	/// [`chain`]: Self::chain
-	pub fn amount_msats(&$self) -> Option<u64> {
-		$contents.amount_msats()
+	pub fn amount(&$self) -> Option<LightningAmount> {
+		$contents.amount_msats().map(LightningAmount::from_msat)
 	}
 
-	/// Returns whether an amount was set in the request; otherwise, if [`amount_msats`] is `Some`
+	/// Returns whether an amount was set in the request; otherwise, if [`amount`] is `Some`
 	/// then it was inferred from the [`Offer::amount`] and [`quantity`].
 	///
-	/// [`amount_msats`]: Self::amount_msats
+	/// [`amount`]: Self::amount
 	/// [`quantity`]: Self::quantity
-	pub fn has_amount_msats(&$self) -> bool {
+	pub fn has_amount(&$self) -> bool {
 		$contents.has_amount_msats()
 	}
 
@@ -1570,6 +1573,7 @@ mod tests {
 	use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError};
 	use crate::offers::payer::PayerTlvStreamRef;
 	use crate::offers::test_utils::*;
+	use crate::types::amount::LightningAmount;
 	use crate::types::features::{InvoiceRequestFeatures, OfferFeatures};
 	use crate::types::string::{PrintableString, UntrustedString};
 	use crate::util::ser::{BigSize, Readable, Writeable};
@@ -1590,7 +1594,7 @@ mod tests {
 		let encrypted_payment_id = expanded_key.crypt_for_offer(payment_id.0, nonce);
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.build()
 			.unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
@@ -1608,7 +1612,7 @@ mod tests {
 			vec![ChainHash::using_genesis_block(Network::Bitcoin)]
 		);
 		assert_eq!(invoice_request.metadata(), None);
-		assert_eq!(invoice_request.amount(), Some(Amount::Bitcoin { amount_msats: 1000 }));
+		assert_eq!(invoice_request.offer_amount(), Some(Amount::Bitcoin { amount_msats: 1000 }));
 		assert_eq!(invoice_request.description(), Some(PrintableString("")));
 		assert_eq!(invoice_request.offer_features(), &OfferFeatures::empty());
 		assert_eq!(invoice_request.absolute_expiry(), None);
@@ -1617,7 +1621,7 @@ mod tests {
 		assert_eq!(invoice_request.supported_quantity(), Quantity::One);
 		assert_eq!(invoice_request.issuer_signing_pubkey(), Some(recipient_pubkey()));
 		assert_eq!(invoice_request.chain(), ChainHash::using_genesis_block(Network::Bitcoin));
-		assert_eq!(invoice_request.amount_msats(), Some(1000));
+		assert_eq!(invoice_request.amount(), Some(LightningAmount::from_msat(1000)));
 		assert_eq!(invoice_request.invoice_request_features(), &InvoiceRequestFeatures::empty());
 		assert_eq!(invoice_request.quantity(), None);
 		assert_eq!(invoice_request.payer_note(), None);
@@ -1682,7 +1686,7 @@ mod tests {
 		let past_expiry = Duration::from_secs(0);
 
 		if let Err(e) = OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.absolute_expiry(future_expiry)
 			.build()
 			.unwrap()
@@ -1694,7 +1698,7 @@ mod tests {
 		}
 
 		match OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.absolute_expiry(past_expiry)
 			.build()
 			.unwrap()
@@ -1716,7 +1720,7 @@ mod tests {
 		let payment_id = PaymentId([1; 32]);
 
 		let offer = OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.experimental_foo(42)
 			.build()
 			.unwrap();
@@ -1829,7 +1833,7 @@ mod tests {
 		let testnet = ChainHash::using_genesis_block(Network::Testnet);
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.build()
 			.unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
@@ -1843,7 +1847,7 @@ mod tests {
 		assert_eq!(tlv_stream.chain, None);
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.chain(Network::Testnet)
 			.build()
 			.unwrap()
@@ -1858,7 +1862,7 @@ mod tests {
 		assert_eq!(tlv_stream.chain, Some(&testnet));
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.chain(Network::Bitcoin)
 			.chain(Network::Testnet)
 			.build()
@@ -1874,7 +1878,7 @@ mod tests {
 		assert_eq!(tlv_stream.chain, None);
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.chain(Network::Bitcoin)
 			.chain(Network::Testnet)
 			.build()
@@ -1892,7 +1896,7 @@ mod tests {
 		assert_eq!(tlv_stream.chain, Some(&testnet));
 
 		match OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.chain(Network::Testnet)
 			.build()
 			.unwrap()
@@ -1905,7 +1909,7 @@ mod tests {
 		}
 
 		match OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.chain(Network::Testnet)
 			.build()
 			.unwrap()
@@ -1927,66 +1931,66 @@ mod tests {
 		let payment_id = PaymentId([1; 32]);
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.build()
 			.unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
 			.unwrap()
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.unwrap()
 			.build_and_sign()
 			.unwrap();
 		let (_, _, tlv_stream, _, _, _) = invoice_request.as_tlv_stream();
-		assert!(invoice_request.has_amount_msats());
-		assert_eq!(invoice_request.amount_msats(), Some(1000));
+		assert!(invoice_request.has_amount());
+		assert_eq!(invoice_request.amount(), Some(LightningAmount::from_msat(1000)));
 		assert_eq!(tlv_stream.amount, Some(1000));
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.build()
 			.unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
 			.unwrap()
-			.amount_msats(1001)
+			.amount(LightningAmount::from_msat(1001))
 			.unwrap()
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.unwrap()
 			.build_and_sign()
 			.unwrap();
 		let (_, _, tlv_stream, _, _, _) = invoice_request.as_tlv_stream();
-		assert!(invoice_request.has_amount_msats());
-		assert_eq!(invoice_request.amount_msats(), Some(1000));
+		assert!(invoice_request.has_amount());
+		assert_eq!(invoice_request.amount(), Some(LightningAmount::from_msat(1000)));
 		assert_eq!(tlv_stream.amount, Some(1000));
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.build()
 			.unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
 			.unwrap()
-			.amount_msats(1001)
+			.amount(LightningAmount::from_msat(1001))
 			.unwrap()
 			.build_and_sign()
 			.unwrap();
 		let (_, _, tlv_stream, _, _, _) = invoice_request.as_tlv_stream();
-		assert!(invoice_request.has_amount_msats());
-		assert_eq!(invoice_request.amount_msats(), Some(1001));
+		assert!(invoice_request.has_amount());
+		assert_eq!(invoice_request.amount(), Some(LightningAmount::from_msat(1001)));
 		assert_eq!(tlv_stream.amount, Some(1001));
 
 		match OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.build()
 			.unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
 			.unwrap()
-			.amount_msats(999)
+			.amount(LightningAmount::from_msat(999))
 		{
 			Ok(_) => panic!("expected error"),
 			Err(e) => assert_eq!(e, Bolt12SemanticError::InsufficientAmount),
 		}
 
 		match OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.supported_quantity(Quantity::Unbounded)
 			.build()
 			.unwrap()
@@ -1994,32 +1998,32 @@ mod tests {
 			.unwrap()
 			.quantity(2)
 			.unwrap()
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 		{
 			Ok(_) => panic!("expected error"),
 			Err(e) => assert_eq!(e, Bolt12SemanticError::InsufficientAmount),
 		}
 
 		match OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.build()
 			.unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
 			.unwrap()
-			.amount_msats(MAX_VALUE_MSAT + 1)
+			.amount(LightningAmount::from_msat(MAX_VALUE_MSAT + 1))
 		{
 			Ok(_) => panic!("expected error"),
 			Err(e) => assert_eq!(e, Bolt12SemanticError::InvalidAmount),
 		}
 
 		match OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.supported_quantity(Quantity::Unbounded)
 			.build()
 			.unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
 			.unwrap()
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.unwrap()
 			.quantity(2)
 			.unwrap()
@@ -2041,7 +2045,7 @@ mod tests {
 		}
 
 		match OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.supported_quantity(Quantity::Unbounded)
 			.build()
 			.unwrap()
@@ -2065,7 +2069,7 @@ mod tests {
 		let payment_id = PaymentId([1; 32]);
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.build()
 			.unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
@@ -2073,12 +2077,12 @@ mod tests {
 			.build_and_sign()
 			.unwrap();
 		let (_, _, tlv_stream, _, _, _) = invoice_request.as_tlv_stream();
-		assert!(!invoice_request.has_amount_msats());
-		assert_eq!(invoice_request.amount_msats(), Some(1000));
+		assert!(!invoice_request.has_amount());
+		assert_eq!(invoice_request.amount(), Some(LightningAmount::from_msat(1000)));
 		assert_eq!(tlv_stream.amount, None);
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.supported_quantity(Quantity::Unbounded)
 			.build()
 			.unwrap()
@@ -2089,12 +2093,12 @@ mod tests {
 			.build_and_sign()
 			.unwrap();
 		let (_, _, tlv_stream, _, _, _) = invoice_request.as_tlv_stream();
-		assert!(!invoice_request.has_amount_msats());
-		assert_eq!(invoice_request.amount_msats(), Some(2000));
+		assert!(!invoice_request.has_amount());
+		assert_eq!(invoice_request.amount(), Some(LightningAmount::from_msat(2000)));
 		assert_eq!(tlv_stream.amount, None);
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
-			.amount(Amount::Currency {
+			.set_amount(Amount::Currency {
 				iso4217_code: CurrencyCode::new(*b"USD").unwrap(),
 				amount: 10,
 			})
@@ -2103,8 +2107,8 @@ mod tests {
 			.unwrap()
 			.build_unchecked_and_sign();
 		let (_, _, tlv_stream, _, _, _) = invoice_request.as_tlv_stream();
-		assert!(!invoice_request.has_amount_msats());
-		assert_eq!(invoice_request.amount_msats(), None);
+		assert!(!invoice_request.has_amount());
+		assert_eq!(invoice_request.amount(), None);
 		assert_eq!(tlv_stream.amount, None);
 	}
 
@@ -2117,7 +2121,7 @@ mod tests {
 		let payment_id = PaymentId([1; 32]);
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.build()
 			.unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
@@ -2130,7 +2134,7 @@ mod tests {
 		assert_eq!(tlv_stream.features, Some(&InvoiceRequestFeatures::unknown()));
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.build()
 			.unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
@@ -2156,7 +2160,7 @@ mod tests {
 		let ten = NonZeroU64::new(10).unwrap();
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.supported_quantity(Quantity::One)
 			.build()
 			.unwrap()
@@ -2169,13 +2173,13 @@ mod tests {
 		assert_eq!(tlv_stream.quantity, None);
 
 		match OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.supported_quantity(Quantity::One)
 			.build()
 			.unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
 			.unwrap()
-			.amount_msats(2_000)
+			.amount(LightningAmount::from_msat(2_000))
 			.unwrap()
 			.quantity(2)
 		{
@@ -2184,30 +2188,30 @@ mod tests {
 		}
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.supported_quantity(Quantity::Bounded(ten))
 			.build()
 			.unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
 			.unwrap()
-			.amount_msats(10_000)
+			.amount(LightningAmount::from_msat(10_000))
 			.unwrap()
 			.quantity(10)
 			.unwrap()
 			.build_and_sign()
 			.unwrap();
 		let (_, _, tlv_stream, _, _, _) = invoice_request.as_tlv_stream();
-		assert_eq!(invoice_request.amount_msats(), Some(10_000));
+		assert_eq!(invoice_request.amount(), Some(LightningAmount::from_msat(10_000)));
 		assert_eq!(tlv_stream.amount, Some(10_000));
 
 		match OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.supported_quantity(Quantity::Bounded(ten))
 			.build()
 			.unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
 			.unwrap()
-			.amount_msats(11_000)
+			.amount(LightningAmount::from_msat(11_000))
 			.unwrap()
 			.quantity(11)
 		{
@@ -2216,24 +2220,24 @@ mod tests {
 		}
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.supported_quantity(Quantity::Unbounded)
 			.build()
 			.unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
 			.unwrap()
-			.amount_msats(2_000)
+			.amount(LightningAmount::from_msat(2_000))
 			.unwrap()
 			.quantity(2)
 			.unwrap()
 			.build_and_sign()
 			.unwrap();
 		let (_, _, tlv_stream, _, _, _) = invoice_request.as_tlv_stream();
-		assert_eq!(invoice_request.amount_msats(), Some(2_000));
+		assert_eq!(invoice_request.amount(), Some(LightningAmount::from_msat(2_000)));
 		assert_eq!(tlv_stream.amount, Some(2_000));
 
 		match OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.supported_quantity(Quantity::Unbounded)
 			.build()
 			.unwrap()
@@ -2246,7 +2250,7 @@ mod tests {
 		}
 
 		match OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.supported_quantity(Quantity::Bounded(one))
 			.build()
 			.unwrap()
@@ -2268,7 +2272,7 @@ mod tests {
 		let payment_id = PaymentId([1; 32]);
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.build()
 			.unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
@@ -2281,7 +2285,7 @@ mod tests {
 		assert_eq!(tlv_stream.payer_note, Some(&String::from("bar")));
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.build()
 			.unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
@@ -2304,7 +2308,7 @@ mod tests {
 		let payment_id = PaymentId([1; 32]);
 
 		match OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.build()
 			.unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
@@ -2328,7 +2332,7 @@ mod tests {
 		let payment_id = PaymentId([1; 32]);
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.build()
 			.unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
@@ -2353,7 +2357,7 @@ mod tests {
 		let payment_id = PaymentId([1; 32]);
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.build()
 			.unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
@@ -2371,7 +2375,7 @@ mod tests {
 		}
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.build()
 			.unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
@@ -2400,7 +2404,7 @@ mod tests {
 		let payment_id = PaymentId([1; 32]);
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.build()
 			.unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
@@ -2420,7 +2424,7 @@ mod tests {
 			.unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
 			.unwrap()
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.unwrap()
 			.build_and_sign()
 			.unwrap();
@@ -2451,7 +2455,7 @@ mod tests {
 		}
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.build()
 			.unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
@@ -2472,7 +2476,7 @@ mod tests {
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
 			.description("foo".to_string())
-			.amount(Amount::Currency {
+			.set_amount(Amount::Currency {
 				iso4217_code: CurrencyCode::new(*b"USD").unwrap(),
 				amount: 1000,
 			})
@@ -2495,7 +2499,7 @@ mod tests {
 		}
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.supported_quantity(Quantity::Unbounded)
 			.build()
 			.unwrap()
@@ -2529,7 +2533,7 @@ mod tests {
 		let ten = NonZeroU64::new(10).unwrap();
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.supported_quantity(Quantity::One)
 			.build()
 			.unwrap()
@@ -2546,13 +2550,13 @@ mod tests {
 		}
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.supported_quantity(Quantity::One)
 			.build()
 			.unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
 			.unwrap()
-			.amount_msats(2_000)
+			.amount(LightningAmount::from_msat(2_000))
 			.unwrap()
 			.quantity_unchecked(2)
 			.build_unchecked_and_sign();
@@ -2571,13 +2575,13 @@ mod tests {
 		}
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.supported_quantity(Quantity::Bounded(ten))
 			.build()
 			.unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
 			.unwrap()
-			.amount_msats(10_000)
+			.amount(LightningAmount::from_msat(10_000))
 			.unwrap()
 			.quantity(10)
 			.unwrap()
@@ -2592,13 +2596,13 @@ mod tests {
 		}
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.supported_quantity(Quantity::Bounded(ten))
 			.build()
 			.unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
 			.unwrap()
-			.amount_msats(11_000)
+			.amount(LightningAmount::from_msat(11_000))
 			.unwrap()
 			.quantity_unchecked(11)
 			.build_unchecked_and_sign();
@@ -2615,13 +2619,13 @@ mod tests {
 		}
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.supported_quantity(Quantity::Unbounded)
 			.build()
 			.unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
 			.unwrap()
-			.amount_msats(2_000)
+			.amount(LightningAmount::from_msat(2_000))
 			.unwrap()
 			.quantity(2)
 			.unwrap()
@@ -2636,7 +2640,7 @@ mod tests {
 		}
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.supported_quantity(Quantity::Unbounded)
 			.build()
 			.unwrap()
@@ -2656,7 +2660,7 @@ mod tests {
 		}
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.supported_quantity(Quantity::Bounded(one))
 			.build()
 			.unwrap()
@@ -2685,7 +2689,7 @@ mod tests {
 		let payment_id = PaymentId([1; 32]);
 
 		let unsigned_invoice_request = OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.build()
 			.unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
@@ -2717,7 +2721,7 @@ mod tests {
 		let payment_id = PaymentId([1; 32]);
 
 		let unsigned_invoice_request = OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.build()
 			.unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
@@ -2747,7 +2751,7 @@ mod tests {
 		let payment_id = PaymentId([1; 32]);
 
 		let unsigned_invoice_request = OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.build()
 			.unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
@@ -2782,7 +2786,7 @@ mod tests {
 
 		let mut buffer = Vec::new();
 		OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.build()
 			.unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
@@ -2810,7 +2814,7 @@ mod tests {
 		let payment_id = PaymentId([1; 32]);
 
 		let mut invoice_request = OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.build()
 			.unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
@@ -2847,7 +2851,7 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let keys = Keypair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let (mut unsigned_invoice_request, payer_keys, _) = OfferBuilder::new(keys.public_key())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.build()
 			.unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
@@ -2882,7 +2886,7 @@ mod tests {
 		assert!(UNKNOWN_EVEN_TYPE % 2 == 0);
 
 		let (mut unsigned_invoice_request, payer_keys, _) = OfferBuilder::new(keys.public_key())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.build()
 			.unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
@@ -2927,7 +2931,7 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let keys = Keypair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let (mut unsigned_invoice_request, payer_keys, _) = OfferBuilder::new(keys.public_key())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.build()
 			.unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
@@ -2965,7 +2969,7 @@ mod tests {
 		assert!(UNKNOWN_EVEN_TYPE % 2 == 0);
 
 		let (mut unsigned_invoice_request, payer_keys, _) = OfferBuilder::new(keys.public_key())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.build()
 			.unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
@@ -3000,7 +3004,7 @@ mod tests {
 		}
 
 		let invoice_request = OfferBuilder::new(keys.public_key())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.build()
 			.unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
@@ -3033,7 +3037,7 @@ mod tests {
 		let payment_id = PaymentId([1; 32]);
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.build()
 			.unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
@@ -3079,7 +3083,7 @@ mod tests {
 		use crate::offers::offer::OfferWithDerivedMetadataBuilder as OfferBuilder;
 		let offer = OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
 			.chain(Network::Testnet)
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.supported_quantity(Quantity::Unbounded)
 			.build()
 			.unwrap();

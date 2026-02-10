@@ -270,7 +270,7 @@ fn pass_async_payments_oms(
 fn create_static_invoice_builder<'a>(
 	recipient: &Node, offer: &'a Offer, offer_nonce: Nonce, relative_expiry: Option<Duration>,
 ) -> StaticInvoiceBuilder<'a> {
-	let amount_msat = offer.amount().and_then(|amount| match amount {
+	let amount_msat = offer.offer_amount().and_then(|amount| match amount {
 		Amount::Bitcoin { amount_msats } => Some(amount_msats),
 		Amount::Currency { .. } => None,
 	});
@@ -1473,7 +1473,7 @@ fn amount_doesnt_match_invreq() {
 					payment_id,
 				)
 				.unwrap()
-				.amount_msats(amt_msat + 1)
+				.amount(LightningAmount::from_msat(amt_msat + 1))
 				.unwrap()
 				.chain_hash(ChainHash::using_genesis_block(Network::Testnet))
 				.unwrap()

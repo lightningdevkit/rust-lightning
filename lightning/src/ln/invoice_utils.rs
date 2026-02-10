@@ -15,6 +15,7 @@ use crate::ln::inbound_payment::{create, create_from_hash};
 use crate::routing::gossip::RoutingFees;
 use crate::routing::router::{RouteHint, RouteHintHop};
 use crate::sign::{EntropySource, NodeSigner, Recipient};
+use crate::types::amount::LightningAmount;
 use crate::types::payment::PaymentHash;
 use crate::util::logger::{Logger, Record};
 use alloc::collections::{btree_map, BTreeMap};
@@ -226,7 +227,7 @@ fn _create_phantom_invoice<ES: EntropySource, NS: NodeSigner, L: Logger>(
 		)
 		.expiry_time(Duration::from_secs(invoice_expiry_delta_secs.into()));
 	if let Some(amt) = amt_msat {
-		invoice = invoice.amount_milli_satoshis(amt);
+		invoice = invoice.amount(LightningAmount::from_msat(amt));
 	}
 
 	for route_hint in
@@ -596,6 +597,7 @@ mod test {
 	use crate::ln::outbound_payment::{RecipientOnionFields, Retry};
 	use crate::routing::router::{PaymentParameters, RouteParameters, RouteParametersConfig};
 	use crate::sign::PhantomKeysManager;
+	use crate::types::amount::LightningAmount;
 	use crate::types::payment::{PaymentHash, PaymentPreimage};
 	use crate::util::config::UserConfig;
 	use crate::util::dyn_signer::{DynKeysInterface, DynPhantomKeysInterface};
@@ -656,7 +658,7 @@ mod test {
 			..Default::default()
 		};
 		let invoice = nodes[1].node.create_bolt11_invoice(invoice_params).unwrap();
-		assert_eq!(invoice.amount_milli_satoshis(), Some(amt_msat));
+		assert_eq!(invoice.amount().map(|a| a.to_msat()), Some(amt_msat));
 		// If no `min_final_cltv_expiry_delta` is specified, then it should be `MIN_FINAL_CLTV_EXPIRY_DELTA`.
 		assert_eq!(invoice.min_final_cltv_expiry_delta(), MIN_FINAL_CLTV_EXPIRY_DELTA as u64);
 		assert_eq!(
@@ -786,7 +788,7 @@ mod test {
 			..Default::default()
 		};
 		let invoice = nodes[1].node.create_bolt11_invoice(invoice_params).unwrap();
-		assert_eq!(invoice.amount_milli_satoshis(), Some(10_000));
+		assert_eq!(invoice.amount().map(|a| a.to_msat()), Some(10_000));
 		assert_eq!(invoice.min_final_cltv_expiry_delta(), MIN_FINAL_CLTV_EXPIRY_DELTA as u64);
 		assert_eq!(
 			invoice.description(),
@@ -814,7 +816,7 @@ mod test {
 			..Default::default()
 		};
 		let invoice = nodes[1].node.create_bolt11_invoice(invoice_params).unwrap();
-		assert_eq!(invoice.amount_milli_satoshis(), Some(10_000));
+		assert_eq!(invoice.amount().map(|a| a.to_msat()), Some(10_000));
 		assert_eq!(invoice.min_final_cltv_expiry_delta(), MIN_FINAL_CLTV_EXPIRY_DELTA as u64);
 		assert_eq!(
 			invoice.description(),
@@ -1049,7 +1051,14 @@ mod test {
 		private_chan_cfg.channel_handshake_config.announce_for_forwarding = false;
 		let temporary_channel_id = nodes[2]
 			.node
-			.create_channel(node_a_id, 1_000_000, 500_000_000, 42, None, Some(private_chan_cfg))
+			.create_channel(
+				node_a_id,
+				1_000_000,
+				LightningAmount::from_msat(500_000_000),
+				42,
+				None,
+				Some(private_chan_cfg),
+			)
 			.unwrap();
 		let open_channel = get_event_msg!(nodes[2], MessageSendEvent::SendOpenChannel, node_a_id);
 		handle_and_accept_open_channel(&nodes[0], node_c_id, &open_channel);
@@ -1279,7 +1288,7 @@ mod test {
 		.unwrap();
 		let params = RouteParameters::from_payment_params_and_value(
 			payment_params,
-			invoice.amount_milli_satoshis().unwrap(),
+			invoice.amount().unwrap(),
 		);
 
 		let payment_hash = invoice.payment_hash();
@@ -1434,7 +1443,7 @@ mod test {
 			Duration::from_secs(1234567),
 		)
 		.unwrap();
-		assert_eq!(invoice.amount_milli_satoshis(), Some(20_000));
+		assert_eq!(invoice.amount().map(|a| a.to_msat()), Some(20_000));
 		assert_eq!(invoice.min_final_cltv_expiry_delta(), MIN_FINAL_CLTV_EXPIRY_DELTA as u64);
 		assert_eq!(
 			invoice.expiry_time(),
@@ -1482,7 +1491,7 @@ mod test {
 			duration_since_epoch,
 		)
 		.unwrap();
-		assert_eq!(invoice.amount_milli_satoshis(), Some(20_000));
+		assert_eq!(invoice.amount().map(|a| a.to_msat()), Some(20_000));
 		assert_eq!(
 			invoice.min_final_cltv_expiry_delta(),
 			(min_final_cltv_expiry_delta.unwrap() + 3) as u64
@@ -1581,7 +1590,14 @@ mod test {
 		private_chan_cfg.channel_handshake_config.announce_for_forwarding = false;
 		let temporary_channel_id = nodes[1]
 			.node
-			.create_channel(node_d_id, 1_000_000, 500_000_000, 42, None, Some(private_chan_cfg))
+			.create_channel(
+				node_d_id,
+				1_000_000,
+				LightningAmount::from_msat(500_000_000),
+				42,
+				None,
+				Some(private_chan_cfg),
+			)
 			.unwrap();
 		let open_channel = get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, node_d_id);
 		handle_and_accept_open_channel(&nodes[3], node_b_id, &open_channel);

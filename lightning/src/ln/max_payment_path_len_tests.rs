@@ -237,7 +237,7 @@ fn one_hop_blinded_path_with_custom_tlv() {
 	.unwrap();
 	let route_params = RouteParameters::from_payment_params_and_value(
 		PaymentParameters::blinded(vec![blinded_path.clone()]),
-		amt_msat,
+		LightningAmount::from_msat(amt_msat),
 	);
 
 	// Calculate the maximum custom TLV value size where a valid onion packet is still possible.

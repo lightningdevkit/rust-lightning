@@ -27,6 +27,7 @@ use crate::ln::msgs::{
 use crate::ln::types::ChannelId;
 use crate::ln::{functional_test_utils::*, msgs};
 use crate::sign::EntropySource;
+use crate::types::amount::LightningAmount;
 use crate::util::config::{
 	ChannelConfigOverrides, ChannelConfigUpdate, ChannelHandshakeConfigUpdate, UserConfig,
 };
@@ -58,7 +59,10 @@ fn test_outbound_chans_unlimited() {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let node_a = nodes[0].node.get_our_node_id();
 	let node_b = nodes[1].node.get_our_node_id();
-	nodes[0].node.create_channel(node_b, 100_000, 0, 42, None, None).unwrap();
+	nodes[0]
+		.node
+		.create_channel(node_b, 100_000, LightningAmount::from_msat(0), 42, None, None)
+		.unwrap();
 	let mut open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b);
 
 	for _ in 0..MAX_UNFUNDED_CHANS_PER_PEER {
@@ -77,7 +81,10 @@ fn test_outbound_chans_unlimited() {
 	);
 
 	// but we can still open an outbound channel.
-	nodes[1].node.create_channel(node_a, 100_000, 0, 42, None, None).unwrap();
+	nodes[1]
+		.node
+		.create_channel(node_a, 100_000, LightningAmount::from_msat(0), 42, None, None)
+		.unwrap();
 	get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, node_a);
 
 	// but even with such an outbound channel, additional inbound channels will still fail.
@@ -98,7 +105,10 @@ fn test_0conf_limiting() {
 
 	// Note that create_network connects the nodes together for us
 	let node_b = nodes[1].node.get_our_node_id();
-	nodes[0].node.create_channel(node_b, 100_000, 0, 42, None, None).unwrap();
+	nodes[0]
+		.node
+		.create_channel(node_b, 100_000, LightningAmount::from_msat(0), 42, None, None)
+		.unwrap();
 	let mut open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b);
 	let init_msg = &msgs::Init {
 		features: nodes[0].node.init_features(),
@@ -221,7 +231,10 @@ fn do_test_manual_inbound_accept_with_override(
 
 	let node_a = nodes[0].node.get_our_node_id();
 	let node_b = nodes[1].node.get_our_node_id();
-	nodes[0].node.create_channel(node_b, 100_000, 0, 42, None, None).unwrap();
+	nodes[0]
+		.node
+		.create_channel(node_b, 100_000, LightningAmount::from_msat(0), 42, None, None)
+		.unwrap();
 	let open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b);
 
 	nodes[2].node.handle_open_channel(node_a, &open_channel_msg);
@@ -328,7 +341,10 @@ fn do_test_channel_type_downgrade(
 
 	let node_a = nodes[0].node.get_our_node_id();
 	let node_b = nodes[1].node.get_our_node_id();
-	nodes[0].node.create_channel(node_b, 100_000, 0, 0, None, None).unwrap();
+	nodes[0]
+		.node
+		.create_channel(node_b, 100_000, LightningAmount::from_msat(0), 0, None, None)
+		.unwrap();
 	let mut open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b);
 	assert_eq!(open_channel_msg.common_fields.channel_type.as_ref().unwrap(), &start_type);
 
@@ -379,7 +395,10 @@ fn test_no_channel_downgrade() {
 	let node_a = nodes[0].node.get_our_node_id();
 	let node_b = nodes[1].node.get_our_node_id();
 
-	nodes[0].node.create_channel(node_b, 100_000, 0, 0, None, None).unwrap();
+	nodes[0]
+		.node
+		.create_channel(node_b, 100_000, LightningAmount::from_msat(0), 0, None, None)
+		.unwrap();
 	let open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b);
 	let start_type = ChannelTypeFeatures::only_static_remote_key();
 	assert_eq!(open_channel_msg.common_fields.channel_type.as_ref().unwrap(), &start_type);
@@ -425,7 +444,10 @@ fn test_channel_resumption_fail_post_funding() {
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
 
-	nodes[0].node.create_channel(node_b_id, 1_000_000, 0, 42, None, None).unwrap();
+	nodes[0]
+		.node
+		.create_channel(node_b_id, 1_000_000, LightningAmount::from_msat(0), 42, None, None)
+		.unwrap();
 	let open_chan = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 	handle_and_accept_open_channel(&nodes[1], node_a_id, &open_chan);
 	let accept_chan = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, node_a_id);
@@ -475,7 +497,17 @@ pub fn test_insane_channel_opens() {
 	let push_msat = (channel_value_sat - channel_reserve_satoshis) * 1000;
 
 	// Have node0 initiate a channel to node1 with aforementioned parameters
-	nodes[0].node.create_channel(node_b_id, channel_value_sat, push_msat, 42, None, None).unwrap();
+	nodes[0]
+		.node
+		.create_channel(
+			node_b_id,
+			channel_value_sat,
+			LightningAmount::from_msat(push_msat),
+			42,
+			None,
+			None,
+		)
+		.unwrap();
 
 	// Extract the channel open message from node0 to node1
 	let open_channel_message =
@@ -610,7 +642,10 @@ fn test_insane_zero_fee_channel_open() {
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
 
-	nodes[0].node.create_channel(node_b_id, 100_000, 0, 42, None, None).unwrap();
+	nodes[0]
+		.node
+		.create_channel(node_b_id, 100_000, LightningAmount::from_msat(0), 42, None, None)
+		.unwrap();
 
 	let open_channel_message =
 		get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
@@ -673,7 +708,7 @@ pub fn test_funding_exceeds_no_wumbo_limit() {
 	match nodes[0].node.create_channel(
 		node_b_id,
 		MAX_FUNDING_SATOSHIS_NO_WUMBO + 1,
-		0,
+		LightningAmount::from_msat(0),
 		42,
 		None,
 		None,
@@ -713,7 +748,10 @@ fn do_test_sanity_on_in_flight_opens(steps: u8) {
 	if steps & 0x0f == 0 {
 		return;
 	}
-	nodes[0].node.create_channel(node_b_id, 100000, 10001, 42, None, None).unwrap();
+	nodes[0]
+		.node
+		.create_channel(node_b_id, 100000, LightningAmount::from_msat(10001), 42, None, None)
+		.unwrap();
 	let open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 
 	if steps & 0x0f == 1 {
@@ -832,7 +870,14 @@ pub fn bolt2_open_channel_sending_node_checks_part1() {
 	let push_msat = 10001;
 	nodes[0]
 		.node
-		.create_channel(node_b_id, channel_value_satoshis, push_msat, 42, None, None)
+		.create_channel(
+			node_b_id,
+			channel_value_satoshis,
+			LightningAmount::from_msat(push_msat),
+			42,
+			None,
+			None,
+		)
 		.unwrap();
 	let node0_to_1_send_open_channel =
 		get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
@@ -843,7 +888,14 @@ pub fn bolt2_open_channel_sending_node_checks_part1() {
 	// channel_id, but now panics due to a colliding outbound SCID alias.
 	assert!(nodes[0]
 		.node
-		.create_channel(node_b_id, channel_value_satoshis, push_msat, 42, None, None)
+		.create_channel(
+			node_b_id,
+			channel_value_satoshis,
+			LightningAmount::from_msat(push_msat),
+			42,
+			None,
+			None
+		)
 		.is_err());
 }
 
@@ -862,10 +914,20 @@ pub fn bolt2_open_channel_sending_node_checks_part2() {
 	let push_msat = 1000 * channel_value_satoshis + 1;
 	assert!(nodes[0]
 		.node
-		.create_channel(node_b_id, channel_value_satoshis, push_msat, 42, None, None)
+		.create_channel(
+			node_b_id,
+			channel_value_satoshis,
+			LightningAmount::from_msat(push_msat),
+			42,
+			None,
+			None
+		)
 		.is_err());
 
-	nodes[0].node.create_channel(node_b_id, 100_000, 0, 42, None, None).unwrap();
+	nodes[0]
+		.node
+		.create_channel(node_b_id, 100_000, LightningAmount::from_msat(0), 42, None, None)
+		.unwrap();
 
 	let node0_to_1_send_open_channel =
 		get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
@@ -891,7 +953,17 @@ pub fn bolt2_open_channel_sane_dust_limit() {
 
 	let value_sats = 1000000;
 	let push_msat = 10001;
-	nodes[0].node.create_channel(node_b_id, value_sats, push_msat, 42, None, None).unwrap();
+	nodes[0]
+		.node
+		.create_channel(
+			node_b_id,
+			value_sats,
+			LightningAmount::from_msat(push_msat),
+			42,
+			None,
+			None,
+		)
+		.unwrap();
 	let mut node0_to_1_send_open_channel =
 		get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 	node0_to_1_send_open_channel.common_fields.dust_limit_satoshis = 547;
@@ -968,7 +1040,10 @@ pub fn test_user_configurable_csv_delay() {
 	}
 
 	// We test config.our_to_self > BREAKDOWN_TIMEOUT is enforced in InboundV1Channel::new()
-	nodes[1].node.create_channel(node_a_id, 1000000, 1000000, 42, None, None).unwrap();
+	nodes[1]
+		.node
+		.create_channel(node_a_id, 1000000, LightningAmount::from_msat(1000000), 42, None, None)
+		.unwrap();
 	let mut open_channel = get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, node_a_id);
 	open_channel.common_fields.to_self_delay = 200;
 	if let Err(error) = InboundV1Channel::new(
@@ -1000,7 +1075,10 @@ pub fn test_user_configurable_csv_delay() {
 	}
 
 	// We test msg.to_self_delay <= config.their_to_self_delay is enforced in Chanel::accept_channel()
-	nodes[0].node.create_channel(node_b_id, 1000000, 1000000, 42, None, None).unwrap();
+	nodes[0]
+		.node
+		.create_channel(node_b_id, 1000000, LightningAmount::from_msat(1000000), 42, None, None)
+		.unwrap();
 	let open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 	handle_and_accept_open_channel(&nodes[1], node_a_id, &open_channel);
 
@@ -1028,7 +1106,10 @@ pub fn test_user_configurable_csv_delay() {
 	check_closed_event(&nodes[0], 1, reason, &[node_b_id], 1000000);
 
 	// We test msg.to_self_delay <= config.their_to_self_delay is enforced in InboundV1Channel::new()
-	nodes[1].node.create_channel(node_a_id, 1000000, 1000000, 42, None, None).unwrap();
+	nodes[1]
+		.node
+		.create_channel(node_a_id, 1000000, LightningAmount::from_msat(1000000), 42, None, None)
+		.unwrap();
 	let mut open_channel = get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, node_a_id);
 	open_channel.common_fields.to_self_delay = 200;
 	if let Err(error) = InboundV1Channel::new(
@@ -1071,7 +1152,10 @@ pub fn test_accept_inbound_channel_config_override() {
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
 
-	nodes[0].node.create_channel(node_b_id, 100000, 10001, 42, None, Some(conf)).unwrap();
+	nodes[0]
+		.node
+		.create_channel(node_b_id, 100000, LightningAmount::from_msat(10001), 42, None, Some(conf))
+		.unwrap();
 	let res = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 
 	nodes[1].node.handle_open_channel(node_a_id, &res);
@@ -1188,7 +1272,10 @@ pub fn test_reject_inbound_channel_request() {
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
 
-	nodes[0].node.create_channel(node_b_id, 100000, 10001, 42, None, None).unwrap();
+	nodes[0]
+		.node
+		.create_channel(node_b_id, 100000, LightningAmount::from_msat(10001), 42, None, None)
+		.unwrap();
 	let res = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 
 	nodes[1].node.handle_open_channel(node_a_id, &res);
@@ -1229,7 +1316,10 @@ pub fn test_can_not_accept_inbound_channel_twice() {
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
 
-	nodes[0].node.create_channel(node_b_id, 100000, 10001, 42, None, None).unwrap();
+	nodes[0]
+		.node
+		.create_channel(node_b_id, 100000, LightningAmount::from_msat(10001), 42, None, None)
+		.unwrap();
 	let res = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 
 	nodes[1].node.handle_open_channel(node_a_id, &res);
@@ -1300,12 +1390,18 @@ pub fn test_duplicate_temporary_channel_id_from_different_peers() {
 	let node_c_id = nodes[2].node.get_our_node_id();
 
 	// Create an first channel channel
-	nodes[1].node.create_channel(node_a_id, 100000, 10001, 42, None, None).unwrap();
+	nodes[1]
+		.node
+		.create_channel(node_a_id, 100000, LightningAmount::from_msat(10001), 42, None, None)
+		.unwrap();
 	let mut open_chan_msg_chan_1_0 =
 		get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, node_a_id);
 
 	// Create an second channel
-	nodes[2].node.create_channel(node_a_id, 100000, 10001, 43, None, None).unwrap();
+	nodes[2]
+		.node
+		.create_channel(node_a_id, 100000, LightningAmount::from_msat(10001), 43, None, None)
+		.unwrap();
 	let mut open_chan_msg_chan_2_0 =
 		get_event_msg!(nodes[2], MessageSendEvent::SendOpenChannel, node_a_id);
 
@@ -1369,7 +1465,10 @@ pub fn test_duplicate_funding_err_in_funding() {
 		chain::transaction::OutPoint { txid: funding_tx.compute_txid(), index: 0 };
 	assert_eq!(ChannelId::v1_from_funding_outpoint(real_chan_funding_txo), real_channel_id);
 
-	nodes[2].node.create_channel(node_b_id, 100_000, 0, 42, None, None).unwrap();
+	nodes[2]
+		.node
+		.create_channel(node_b_id, 100_000, LightningAmount::from_msat(0), 42, None, None)
+		.unwrap();
 	let mut open_chan_msg = get_event_msg!(nodes[2], MessageSendEvent::SendOpenChannel, node_b_id);
 	let node_c_temp_chan_id = open_chan_msg.common_fields.temporary_channel_id;
 	open_chan_msg.common_fields.temporary_channel_id = real_channel_id;
@@ -1417,7 +1516,10 @@ pub fn test_duplicate_chan_id() {
 	let node_b_id = nodes[1].node.get_our_node_id();
 
 	// Create an initial channel
-	nodes[0].node.create_channel(node_b_id, 100000, 10001, 42, None, None).unwrap();
+	nodes[0]
+		.node
+		.create_channel(node_b_id, 100000, LightningAmount::from_msat(10001), 42, None, None)
+		.unwrap();
 	let mut open_chan_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 	handle_and_accept_open_channel(&nodes[1], node_a_id, &open_chan_msg);
 	nodes[0].node.handle_accept_channel(
@@ -1504,7 +1606,10 @@ pub fn test_duplicate_chan_id() {
 	}
 
 	// Now try to create a second channel which has a duplicate funding output.
-	nodes[0].node.create_channel(node_b_id, 100000, 10001, 42, None, None).unwrap();
+	nodes[0]
+		.node
+		.create_channel(node_b_id, 100000, LightningAmount::from_msat(10001), 42, None, None)
+		.unwrap();
 	let open_chan_2_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 	handle_and_accept_open_channel(&nodes[1], node_a_id, &open_chan_2_msg);
 	nodes[0].node.handle_accept_channel(
@@ -1609,7 +1714,10 @@ pub fn test_invalid_funding_tx() {
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
 
-	nodes[0].node.create_channel(node_b_id, 100_000, 10_000, 42, None, None).unwrap();
+	nodes[0]
+		.node
+		.create_channel(node_b_id, 100_000, LightningAmount::from_msat(10_000), 42, None, None)
+		.unwrap();
 	let open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 	handle_and_accept_open_channel(&nodes[1], node_a_id, &open_channel_msg);
 	nodes[0].node.handle_accept_channel(
@@ -1723,7 +1831,10 @@ pub fn test_coinbase_funding_tx() {
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
 
-	nodes[0].node.create_channel(node_b_id, 100000, 10001, 42, None, None).unwrap();
+	nodes[0]
+		.node
+		.create_channel(node_b_id, 100000, LightningAmount::from_msat(10001), 42, None, None)
+		.unwrap();
 	let open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 	handle_and_accept_open_channel(&nodes[1], node_a_id, &open_channel);
 
@@ -1782,8 +1893,10 @@ pub fn test_non_final_funding_tx() {
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
 
-	let temp_channel_id =
-		nodes[0].node.create_channel(node_b_id, 100_000, 0, 42, None, None).unwrap();
+	let temp_channel_id = nodes[0]
+		.node
+		.create_channel(node_b_id, 100_000, LightningAmount::from_msat(0), 42, None, None)
+		.unwrap();
 	let open_channel_message =
 		get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 	handle_and_accept_open_channel(&nodes[1], node_a_id, &open_channel_message);
@@ -1842,8 +1955,10 @@ pub fn test_non_final_funding_tx_within_headroom() {
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
 
-	let temp_channel_id =
-		nodes[0].node.create_channel(node_b_id, 100_000, 0, 42, None, None).unwrap();
+	let temp_channel_id = nodes[0]
+		.node
+		.create_channel(node_b_id, 100_000, LightningAmount::from_msat(0), 42, None, None)
+		.unwrap();
 	let open_channel_message =
 		get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 	handle_and_accept_open_channel(&nodes[1], node_a_id, &open_channel_message);
@@ -1897,8 +2012,10 @@ pub fn test_channel_close_when_not_timely_accepted() {
 	// Simulate peer-disconnects mid-handshake
 	// The channel is initiated from the node 0 side,
 	// but the nodes disconnect before node 1 could send accept channel
-	let create_chan_id =
-		nodes[0].node.create_channel(node_b_id, 100000, 10001, 42, None, None).unwrap();
+	let create_chan_id = nodes[0]
+		.node
+		.create_channel(node_b_id, 100000, LightningAmount::from_msat(10001), 42, None, None)
+		.unwrap();
 	let open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 	assert_eq!(open_channel_msg.common_fields.temporary_channel_id, create_chan_id);
 
@@ -1945,8 +2062,10 @@ pub fn test_rebroadcast_open_channel_when_reconnect_mid_handshake() {
 	// Simulate peer-disconnects mid-handshake
 	// The channel is initiated from the node 0 side,
 	// but the nodes disconnect before node 1 could send accept channel
-	let create_chan_id =
-		nodes[0].node.create_channel(node_b_id, 100000, 10001, 42, None, None).unwrap();
+	let create_chan_id = nodes[0]
+		.node
+		.create_channel(node_b_id, 100000, LightningAmount::from_msat(10001), 42, None, None)
+		.unwrap();
 	let open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 	assert_eq!(open_channel_msg.common_fields.temporary_channel_id, create_chan_id);
 
@@ -2330,7 +2449,10 @@ pub fn test_accept_inbound_channel_errors_queued() {
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
 
-	nodes[0].node.create_channel(node_b_id, 100_000, 0, 42, None, None).unwrap();
+	nodes[0]
+		.node
+		.create_channel(node_b_id, 100_000, LightningAmount::from_msat(0), 42, None, None)
+		.unwrap();
 	let open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 
 	nodes[1].node.handle_open_channel(node_a_id, &open_channel_msg);
@@ -2363,7 +2485,10 @@ pub fn test_manual_funding_abandon() {
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
 
-	assert!(nodes[0].node.create_channel(node_b_id, 100_000, 0, 42, None, None).is_ok());
+	assert!(nodes[0]
+		.node
+		.create_channel(node_b_id, 100_000, LightningAmount::from_msat(0), 42, None, None)
+		.is_ok());
 	let open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 	handle_and_accept_open_channel(&nodes[1], node_a_id, &open_channel);
 
@@ -2412,7 +2537,10 @@ pub fn test_funding_signed_event() {
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
 
-	assert!(nodes[0].node.create_channel(node_b_id, 100_000, 0, 42, None, None).is_ok());
+	assert!(nodes[0]
+		.node
+		.create_channel(node_b_id, 100_000, LightningAmount::from_msat(0), 42, None, None)
+		.is_ok());
 	let open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 	handle_and_accept_open_channel(&nodes[1], node_a_id, &open_channel);
 
@@ -2476,7 +2604,10 @@ fn test_fund_pending_channel() {
 
 	let node_b_id = nodes[1].node.get_our_node_id();
 
-	nodes[0].node.create_channel(node_b_id, 100_000, 0, 42, None, None).unwrap();
+	nodes[0]
+		.node
+		.create_channel(node_b_id, 100_000, LightningAmount::from_msat(0), 42, None, None)
+		.unwrap();
 	let open_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 
 	let tx = Transaction {

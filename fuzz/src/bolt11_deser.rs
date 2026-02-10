@@ -61,7 +61,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], _out: Out) {
 		};
 
 		if let Ok(invoice) = Bolt11Invoice::from_signed(signed_raw_invoice) {
-			invoice.amount_milli_satoshis();
+			invoice.amount();
 		}
 	}
 }

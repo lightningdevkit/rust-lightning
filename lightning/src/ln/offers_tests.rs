@@ -66,6 +66,7 @@ use crate::onion_message::offers::OffersMessage;
 use crate::routing::gossip::{NodeAlias, NodeId};
 use crate::routing::router::{DEFAULT_PAYMENT_DUMMY_HOPS, PaymentParameters, RouteParameters, RouteParametersConfig};
 use crate::sign::{NodeSigner, Recipient};
+use crate::types::amount::LightningAmount;
 use crate::util::ser::Writeable;
 
 /// This used to determine whether we built a compact path or not, but now its just a random
@@ -190,7 +191,7 @@ fn route_bolt12_payment<'a, 'b, 'c>(
 
 	// Use a fake payment_hash and bypass checking for the PaymentClaimable event since the
 	// invoice contains the payment_hash but it was encrypted inside an onion message.
-	let amount_msats = invoice.amount_msats();
+	let amount_msats = invoice.amount().to_msat();
 	let payment_hash = invoice.payment_hash();
 	let args = PassAlongPathArgs::new(node, path, amount_msats, payment_hash, ev)
 		.without_clearing_recipient_events()
@@ -320,7 +321,7 @@ fn create_offer_with_no_blinded_path() {
 	let router = NullMessageRouter {};
 	let offer = alice.node
 		.create_offer_builder_using_router(&router).unwrap()
-		.amount_msats(10_000_000)
+		.amount(LightningAmount::from_msat(10_000_000))
 		.build().unwrap();
 	assert_eq!(offer.issuer_signing_pubkey(), Some(alice_id));
 	assert!(offer.paths().is_empty());
@@ -347,7 +348,7 @@ fn create_refund_with_no_blinded_path() {
 		.create_refund_builder_using_router(&router, 10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), RouteParametersConfig::default())
 		.unwrap()
 		.build().unwrap();
-	assert_eq!(refund.amount_msats(), 10_000_000);
+	assert_eq!(refund.amount().to_msat(), 10_000_000);
 	assert_eq!(refund.absolute_expiry(), Some(absolute_expiry));
 	assert_eq!(refund.payer_signing_pubkey(), alice_id);
 	assert!(refund.paths().is_empty());
@@ -396,7 +397,7 @@ fn prefers_non_tor_nodes_in_blinded_paths() {
 
 	let offer = bob.node
 		.create_offer_builder().unwrap()
-		.amount_msats(10_000_000)
+		.amount(LightningAmount::from_msat(10_000_000))
 		.build().unwrap();
 	assert_ne!(offer.issuer_signing_pubkey(), Some(bob_id));
 	assert!(!offer.paths().is_empty());
@@ -412,7 +413,7 @@ fn prefers_non_tor_nodes_in_blinded_paths() {
 
 	let offer = bob.node
 		.create_offer_builder().unwrap()
-		.amount_msats(10_000_000)
+		.amount(LightningAmount::from_msat(10_000_000))
 		.build().unwrap();
 	assert_ne!(offer.issuer_signing_pubkey(), Some(bob_id));
 	assert!(!offer.paths().is_empty());
@@ -463,7 +464,7 @@ fn prefers_more_connected_nodes_in_blinded_paths() {
 
 	let offer = bob.node
 		.create_offer_builder().unwrap()
-		.amount_msats(10_000_000)
+		.amount(LightningAmount::from_msat(10_000_000))
 		.build().unwrap();
 	assert_ne!(offer.issuer_signing_pubkey(), Some(bob_id));
 	assert!(!offer.paths().is_empty());
@@ -498,7 +499,7 @@ fn check_dummy_hop_pattern_in_offer() {
 
 	let compact_offer = alice.node
 		.create_offer_builder_using_router(&default_router).unwrap()
-		.amount_msats(10_000_000)
+		.amount(LightningAmount::from_msat(10_000_000))
 		.build().unwrap();
 
 	assert!(!compact_offer.paths().is_empty());
@@ -516,7 +517,7 @@ fn check_dummy_hop_pattern_in_offer() {
 	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
 	let (invoice_request, reply_path) = extract_invoice_request(alice, &onion_message);
 
-	assert_eq!(invoice_request.amount_msats(), Some(10_000_000));
+	assert_eq!(invoice_request.amount(), Some(LightningAmount::from_msat(10_000_000)));
 	assert_ne!(invoice_request.payer_signing_pubkey(), bob_id);
 	assert!(check_dummy_hopped_path_length(&reply_path, alice, bob_id, DUMMY_HOPS_PATH_LENGTH));
 
@@ -526,7 +527,7 @@ fn check_dummy_hop_pattern_in_offer() {
 
 	let padded_offer = alice.node
 		.create_offer_builder_using_router(&node_id_router).unwrap()
-		.amount_msats(10_000_000)
+		.amount(LightningAmount::from_msat(10_000_000))
 		.build().unwrap();
 
 	assert!(!padded_offer.paths().is_empty());
@@ -538,7 +539,7 @@ fn check_dummy_hop_pattern_in_offer() {
 	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
 	let (invoice_request, reply_path) = extract_invoice_request(alice, &onion_message);
 
-	assert_eq!(invoice_request.amount_msats(), Some(10_000_000));
+	assert_eq!(invoice_request.amount(), Some(LightningAmount::from_msat(10_000_000)));
 	assert_ne!(invoice_request.payer_signing_pubkey(), bob_id);
 	assert!(check_dummy_hopped_path_length(&reply_path, alice, bob_id, DUMMY_HOPS_PATH_LENGTH));
 }
@@ -691,7 +692,7 @@ fn creates_and_pays_for_offer_using_two_hop_blinded_path() {
 	let offer = alice.node
 		.create_offer_builder()
 		.unwrap()
-		.amount_msats(10_000_000)
+		.amount(LightningAmount::from_msat(10_000_000))
 		.build().unwrap();
 	assert_ne!(offer.issuer_signing_pubkey(), Some(alice_id));
 	assert!(!offer.paths().is_empty());
@@ -723,7 +724,7 @@ fn creates_and_pays_for_offer_using_two_hop_blinded_path() {
 			human_readable_name: None,
 		},
 	});
-	assert_eq!(invoice_request.amount_msats(), Some(10_000_000));
+	assert_eq!(invoice_request.amount(), Some(LightningAmount::from_msat(10_000_000)));
 	assert_ne!(invoice_request.payer_signing_pubkey(), david_id);
 	assert!(check_dummy_hopped_path_length(&reply_path, bob, charlie_id, DUMMY_HOPS_PATH_LENGTH));
 
@@ -734,7 +735,7 @@ fn creates_and_pays_for_offer_using_two_hop_blinded_path() {
 	david.onion_messenger.handle_onion_message(charlie_id, &onion_message);
 
 	let (invoice, reply_path) = extract_invoice(david, &onion_message);
-	assert_eq!(invoice.amount_msats(), 10_000_000);
+	assert_eq!(invoice.amount().to_msat(), 10_000_000);
 	assert_ne!(invoice.signing_pubkey(), alice_id);
 	assert!(!invoice.payment_paths().is_empty());
 	for path in invoice.payment_paths() {
@@ -799,7 +800,7 @@ fn creates_and_pays_for_refund_using_two_hop_blinded_path() {
 		.create_refund_builder(10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), RouteParametersConfig::default())
 		.unwrap()
 		.build().unwrap();
-	assert_eq!(refund.amount_msats(), 10_000_000);
+	assert_eq!(refund.amount().to_msat(), 10_000_000);
 	assert_eq!(refund.absolute_expiry(), Some(absolute_expiry));
 	assert_ne!(refund.payer_signing_pubkey(), david_id);
 	assert!(!refund.paths().is_empty());
@@ -822,7 +823,7 @@ fn creates_and_pays_for_refund_using_two_hop_blinded_path() {
 	let (invoice, reply_path) = extract_invoice(david, &onion_message);
 	assert_eq!(invoice, expected_invoice);
 
-	assert_eq!(invoice.amount_msats(), 10_000_000);
+	assert_eq!(invoice.amount().to_msat(), 10_000_000);
 	assert_ne!(invoice.signing_pubkey(), alice_id);
 	assert!(!invoice.payment_paths().is_empty());
 	for path in invoice.payment_paths() {
@@ -856,7 +857,7 @@ fn creates_and_pays_for_offer_using_one_hop_blinded_path() {
 
 	let offer = alice.node
 		.create_offer_builder().unwrap()
-		.amount_msats(10_000_000)
+		.amount(LightningAmount::from_msat(10_000_000))
 		.build().unwrap();
 	assert_ne!(offer.issuer_signing_pubkey(), Some(alice_id));
 	assert!(!offer.paths().is_empty());
@@ -881,7 +882,7 @@ fn creates_and_pays_for_offer_using_one_hop_blinded_path() {
 			human_readable_name: None,
 		},
 	});
-	assert_eq!(invoice_request.amount_msats(), Some(10_000_000));
+	assert_eq!(invoice_request.amount(), Some(LightningAmount::from_msat(10_000_000)));
 	assert_ne!(invoice_request.payer_signing_pubkey(), bob_id);
 	assert!(check_dummy_hopped_path_length(&reply_path, alice, bob_id, DUMMY_HOPS_PATH_LENGTH));
 
@@ -889,7 +890,7 @@ fn creates_and_pays_for_offer_using_one_hop_blinded_path() {
 	bob.onion_messenger.handle_onion_message(alice_id, &onion_message);
 
 	let (invoice, reply_path) = extract_invoice(bob, &onion_message);
-	assert_eq!(invoice.amount_msats(), 10_000_000);
+	assert_eq!(invoice.amount().to_msat(), 10_000_000);
 	assert_ne!(invoice.signing_pubkey(), alice_id);
 	assert!(!invoice.payment_paths().is_empty());
 	for path in invoice.payment_paths() {
@@ -927,7 +928,7 @@ fn creates_and_pays_for_refund_using_one_hop_blinded_path() {
 		.create_refund_builder(10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), RouteParametersConfig::default())
 		.unwrap()
 		.build().unwrap();
-	assert_eq!(refund.amount_msats(), 10_000_000);
+	assert_eq!(refund.amount().to_msat(), 10_000_000);
 	assert_eq!(refund.absolute_expiry(), Some(absolute_expiry));
 	assert_ne!(refund.payer_signing_pubkey(), bob_id);
 	assert!(!refund.paths().is_empty());
@@ -945,7 +946,7 @@ fn creates_and_pays_for_refund_using_one_hop_blinded_path() {
 	let (invoice, reply_path) = extract_invoice(bob, &onion_message);
 	assert_eq!(invoice, expected_invoice);
 
-	assert_eq!(invoice.amount_msats(), 10_000_000);
+	assert_eq!(invoice.amount().to_msat(), 10_000_000);
 	assert_ne!(invoice.signing_pubkey(), alice_id);
 	assert!(!invoice.payment_paths().is_empty());
 	for path in invoice.payment_paths() {
@@ -980,7 +981,7 @@ fn pays_for_offer_without_blinded_paths() {
 	let offer = alice.node
 		.create_offer_builder().unwrap()
 		.clear_paths()
-		.amount_msats(10_000_000)
+		.amount(LightningAmount::from_msat(10_000_000))
 		.build().unwrap();
 	assert_eq!(offer.issuer_signing_pubkey(), Some(alice_id));
 	assert!(offer.paths().is_empty());
@@ -1105,7 +1106,7 @@ fn send_invoice_requests_with_distinct_reply_path() {
 	let offer = alice.node
 		.create_offer_builder()
 		.unwrap()
-		.amount_msats(10_000_000)
+		.amount(LightningAmount::from_msat(10_000_000))
 		.build().unwrap();
 	assert_ne!(offer.issuer_signing_pubkey(), Some(alice_id));
 	assert!(!offer.paths().is_empty());
@@ -1239,7 +1240,7 @@ fn creates_and_pays_for_offer_with_retry() {
 
 	let offer = alice.node
 		.create_offer_builder().unwrap()
-		.amount_msats(10_000_000)
+		.amount(LightningAmount::from_msat(10_000_000))
 		.build().unwrap();
 	assert_ne!(offer.issuer_signing_pubkey(), Some(alice_id));
 	assert!(!offer.paths().is_empty());
@@ -1270,7 +1271,7 @@ fn creates_and_pays_for_offer_with_retry() {
 			human_readable_name: None,
 		},
 	});
-	assert_eq!(invoice_request.amount_msats(), Some(10_000_000));
+	assert_eq!(invoice_request.amount(), Some(LightningAmount::from_msat(10_000_000)));
 	assert_ne!(invoice_request.payer_signing_pubkey(), bob_id);
 	assert!(check_dummy_hopped_path_length(&reply_path, alice, bob_id, DUMMY_HOPS_PATH_LENGTH));
 	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
@@ -1283,7 +1284,7 @@ fn creates_and_pays_for_offer_with_retry() {
 	assert!(bob.onion_messenger.next_onion_message_for_peer(alice_id).is_none());
 
 	let (invoice, _) = extract_invoice(bob, &onion_message);
-	assert_eq!(invoice.amount_msats(), 10_000_000);
+	assert_eq!(invoice.amount().to_msat(), 10_000_000);
 	assert_ne!(invoice.signing_pubkey(), alice_id);
 	assert!(!invoice.payment_paths().is_empty());
 	for path in invoice.payment_paths() {
@@ -1315,7 +1316,7 @@ fn pays_bolt12_invoice_asynchronously() {
 
 	let offer = alice.node
 		.create_offer_builder().unwrap()
-		.amount_msats(10_000_000)
+		.amount(LightningAmount::from_msat(10_000_000))
 		.build().unwrap();
 
 	let payment_id = PaymentId([1; 32]);
@@ -1353,7 +1354,7 @@ fn pays_bolt12_invoice_asynchronously() {
 		},
 		_ => panic!("No Event::InvoiceReceived"),
 	};
-	assert_eq!(invoice.amount_msats(), 10_000_000);
+	assert_eq!(invoice.amount().to_msat(), 10_000_000);
 	assert_ne!(invoice.signing_pubkey(), alice_id);
 	assert!(!invoice.payment_paths().is_empty());
 	for path in invoice.payment_paths() {
@@ -1407,7 +1408,7 @@ fn creates_offer_with_blinded_path_using_unannounced_introduction_node() {
 
 	let offer = alice.node
 		.create_offer_builder().unwrap()
-		.amount_msats(10_000_000)
+		.amount(LightningAmount::from_msat(10_000_000))
 		.build().unwrap();
 	assert_ne!(offer.issuer_signing_pubkey(), Some(alice_id));
 	assert!(!offer.paths().is_empty());
@@ -1551,7 +1552,7 @@ fn fails_authentication_when_handling_invoice_request() {
 	let offer = alice.node
 		.create_offer_builder()
 		.unwrap()
-		.amount_msats(10_000_000)
+		.amount(LightningAmount::from_msat(10_000_000))
 		.build().unwrap();
 	assert_eq!(offer.metadata(), None);
 	assert_ne!(offer.issuer_signing_pubkey(), Some(alice_id));
@@ -1584,7 +1585,7 @@ fn fails_authentication_when_handling_invoice_request() {
 	alice.onion_messenger.handle_onion_message(david_id, &onion_message);
 
 	let (invoice_request, reply_path) = extract_invoice_request(alice, &onion_message);
-	assert_eq!(invoice_request.amount_msats(), Some(10_000_000));
+	assert_eq!(invoice_request.amount(), Some(LightningAmount::from_msat(10_000_000)));
 	assert_ne!(invoice_request.payer_signing_pubkey(), david_id);
 	assert!(check_dummy_hopped_path_length(&reply_path, david, charlie_id, DUMMY_HOPS_PATH_LENGTH));
 
@@ -1613,7 +1614,7 @@ fn fails_authentication_when_handling_invoice_request() {
 	alice.onion_messenger.handle_onion_message(bob_id, &onion_message);
 
 	let (invoice_request, reply_path) = extract_invoice_request(alice, &onion_message);
-	assert_eq!(invoice_request.amount_msats(), Some(10_000_000));
+	assert_eq!(invoice_request.amount(), Some(LightningAmount::from_msat(10_000_000)));
 	assert_ne!(invoice_request.payer_signing_pubkey(), david_id);
 	assert!(check_dummy_hopped_path_length(&reply_path, david, charlie_id, DUMMY_HOPS_PATH_LENGTH));
 
@@ -1661,7 +1662,7 @@ fn fails_authentication_when_handling_invoice_for_offer() {
 	let offer = alice.node
 		.create_offer_builder()
 		.unwrap()
-		.amount_msats(10_000_000)
+		.amount(LightningAmount::from_msat(10_000_000))
 		.build().unwrap();
 	assert_ne!(offer.issuer_signing_pubkey(), Some(alice_id));
 	assert!(!offer.paths().is_empty());
@@ -1713,7 +1714,7 @@ fn fails_authentication_when_handling_invoice_for_offer() {
 	alice.onion_messenger.handle_onion_message(bob_id, &onion_message);
 
 	let (invoice_request, reply_path) = extract_invoice_request(alice, &onion_message);
-	assert_eq!(invoice_request.amount_msats(), Some(10_000_000));
+	assert_eq!(invoice_request.amount(), Some(LightningAmount::from_msat(10_000_000)));
 	assert_ne!(invoice_request.payer_signing_pubkey(), david_id);
 	assert!(check_dummy_hopped_path_length(&reply_path, david, charlie_id, DUMMY_HOPS_PATH_LENGTH));
 
@@ -1865,7 +1866,7 @@ fn fails_creating_or_paying_for_offer_without_connected_peers() {
 	let absolute_expiry = alice.node.duration_since_epoch() + MAX_SHORT_LIVED_RELATIVE_EXPIRY;
 	let offer = alice.node
 		.create_offer_builder().unwrap()
-		.amount_msats(10_000_000)
+		.amount(LightningAmount::from_msat(10_000_000))
 		.absolute_expiry(absolute_expiry)
 		.build().unwrap();
 
@@ -2023,7 +2024,7 @@ fn fails_creating_invoice_request_without_blinded_reply_path() {
 
 	let offer = alice.node
 		.create_offer_builder().unwrap()
-		.amount_msats(10_000_000)
+		.amount(LightningAmount::from_msat(10_000_000))
 		.build().unwrap();
 
 	match david.node.pay_for_offer(&offer, None, PaymentId([1; 32]), Default::default()) {
@@ -2055,7 +2056,7 @@ fn fails_creating_invoice_request_with_duplicate_payment_id() {
 
 	let offer = alice.node
 		.create_offer_builder().unwrap()
-		.amount_msats(10_000_000)
+		.amount(LightningAmount::from_msat(10_000_000))
 		.build().unwrap();
 
 	let payment_id = PaymentId([1; 32]);
@@ -2137,7 +2138,7 @@ fn fails_sending_invoice_without_blinded_payment_paths_for_offer() {
 
 	let offer = alice.node
 		.create_offer_builder().unwrap()
-		.amount_msats(10_000_000)
+		.amount(LightningAmount::from_msat(10_000_000))
 		.build().unwrap();
 
 	let payment_id = PaymentId([1; 32]);
@@ -2345,7 +2346,7 @@ fn fails_paying_invoice_with_unknown_required_features() {
 
 	let offer = alice.node
 		.create_offer_builder().unwrap()
-		.amount_msats(10_000_000)
+		.amount(LightningAmount::from_msat(10_000_000))
 		.build().unwrap();
 
 	let payment_id = PaymentId([1; 32]);
@@ -2460,7 +2461,7 @@ fn rejects_keysend_to_non_static_invoice_path() {
 	// Pay the invoice via keysend now that we have the preimage and make sure the recipient fails it
 	// due to incorrect payment context.
 	let pay_params = PaymentParameters::from_bolt12_invoice(&invoice);
-	let route_params = RouteParameters::from_payment_params_and_value(pay_params, amt_msat);
+	let route_params = RouteParameters::from_payment_params_and_value(pay_params, LightningAmount::from_msat(amt_msat));
 	let keysend_payment_id = PaymentId([2; 32]);
 	let payment_hash = nodes[0].node.send_spontaneous_payment(
 		Some(payment_preimage), RecipientOnionFields::spontaneous_empty(), keysend_payment_id,
@@ -2513,7 +2514,7 @@ fn no_double_pay_with_stale_channelmanager() {
 	let offer = nodes[1].node
 		.create_offer_builder().unwrap()
 		.clear_paths()
-		.amount_msats(amt_msat)
+		.amount(LightningAmount::from_msat(amt_msat))
 		.build().unwrap();
 	assert_eq!(offer.issuer_signing_pubkey(), Some(bob_id));
 	assert!(offer.paths().is_empty());

@@ -42,7 +42,7 @@ use lightning::util::errors::APIError;
 use lightning::util::logger::Logger;
 use lightning::util::test_utils::{TestBroadcaster, TestStore};
 
-use lightning_invoice::{Bolt11Invoice, InvoiceBuilder, RoutingFees};
+use lightning_invoice::{Bolt11Invoice, InvoiceBuilder, LightningAmount, RoutingFees};
 
 use lightning_types::payment::PaymentHash;
 
@@ -147,7 +147,8 @@ fn create_jit_invoice(
 		.private_route(route_hint);
 
 	if let Some(amount_msat) = payment_size_msat {
-		invoice_builder = invoice_builder.amount_milli_satoshis(amount_msat).basic_mpp();
+		invoice_builder =
+			invoice_builder.amount(LightningAmount::from_msat(amount_msat)).basic_mpp();
 	}
 
 	let raw_invoice = invoice_builder.build_raw().map_err(|e| {
@@ -1496,7 +1497,7 @@ fn create_channel_with_manual_broadcast(
 		.create_channel(
 			*client_node_id,
 			*expected_outbound_amount_msat,
-			0,
+			LightningAmount::from_msat(0),
 			user_channel_id,
 			None,
 			None

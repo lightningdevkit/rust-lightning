@@ -292,6 +292,7 @@ mod tests {
 	use crate::offers::parse::Bech32Encode;
 	use crate::offers::signer::Metadata;
 	use crate::offers::test_utils::recipient_pubkey;
+	use crate::types::amount::LightningAmount;
 	use crate::util::ser::Writeable;
 	use bitcoin::hashes::{sha256, Hash};
 	use bitcoin::hex::FromHex;
@@ -356,7 +357,7 @@ mod tests {
 		// BOLT 12 test vectors
 		let invoice_request = OfferBuilder::new(recipient_pubkey)
 			.description("A Mathematical Treatise".into())
-			.amount(Amount::Currency {
+			.set_amount(Amount::Currency {
 				iso4217_code: CurrencyCode::new(*b"USD").unwrap(),
 				amount: 100,
 			})
@@ -396,7 +397,7 @@ mod tests {
 		let payment_id = PaymentId([1; 32]);
 
 		let unsigned_invoice_request = OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.build()
 			.unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
@@ -428,7 +429,7 @@ mod tests {
 		};
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey)
-			.amount_msats(100)
+			.amount(LightningAmount::from_msat(100))
 			.build_unchecked()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
 			.unwrap()
@@ -462,7 +463,7 @@ mod tests {
 		};
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey)
-			.amount_msats(100)
+			.amount(LightningAmount::from_msat(100))
 			.build_unchecked()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
 			.unwrap()

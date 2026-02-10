@@ -2121,8 +2121,10 @@ fn do_test_splice_with_inflight_htlc_forward_and_resolution(expire_scid_pre_forw
 		PaymentParameters::from_node_id(node_id_2, CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY * 2)
 			.with_bolt11_features(nodes[2].node.bolt11_invoice_features())
 			.unwrap();
-	let route_params =
-		RouteParameters::from_payment_params_and_value(payment_params, payment_amount);
+	let route_params = RouteParameters::from_payment_params_and_value(
+		payment_params,
+		LightningAmount::from_msat(payment_amount),
+	);
 	let route = get_route(&nodes[0], &route_params).unwrap();
 	let (_, payment_hash, payment_secret) =
 		get_payment_preimage_hash(&nodes[2], Some(payment_amount), None);

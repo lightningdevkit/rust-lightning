@@ -24,6 +24,7 @@ use crate::ln::types::ChannelId;
 use crate::prelude::*;
 use crate::routing::router::{get_route, PaymentParameters, RouteParameters};
 use crate::sign::{EntropySource, SignerProvider};
+use crate::types::amount::LightningAmount;
 use crate::types::string::UntrustedString;
 use crate::util::config::UserConfig;
 use crate::util::errors::APIError;
@@ -307,7 +308,10 @@ fn shutdown_on_unfunded_channel() {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let node_b_id = nodes[1].node.get_our_node_id();
 
-	nodes[0].node.create_channel(node_b_id, 1_000_000, 100_000, 0, None, None).unwrap();
+	nodes[0]
+		.node
+		.create_channel(node_b_id, 1_000_000, LightningAmount::from_msat(100_000), 0, None, None)
+		.unwrap();
 	let open_chan = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 
 	// Create a dummy P2WPKH script
@@ -333,8 +337,10 @@ fn close_on_unfunded_channel() {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let node_b_id = nodes[1].node.get_our_node_id();
 
-	let chan_id =
-		nodes[0].node.create_channel(node_b_id, 1_000_000, 100_000, 0, None, None).unwrap();
+	let chan_id = nodes[0]
+		.node
+		.create_channel(node_b_id, 1_000_000, LightningAmount::from_msat(100_000), 0, None, None)
+		.unwrap();
 	let _open_chan = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 
 	nodes[0].node.close_channel(&chan_id, &node_b_id).unwrap();
@@ -415,7 +421,10 @@ fn updates_shutdown_wait() {
 	let payment_params_1 = PaymentParameters::from_node_id(node_b_id, TEST_FINAL_CLTV)
 		.with_bolt11_features(nodes[1].node.bolt11_invoice_features())
 		.unwrap();
-	let route_params = RouteParameters::from_payment_params_and_value(payment_params_1, 100_000);
+	let route_params = RouteParameters::from_payment_params_and_value(
+		payment_params_1,
+		LightningAmount::from_msat(100_000),
+	);
 	let route_1 = get_route(
 		&node_a_id,
 		&route_params,
@@ -430,7 +439,10 @@ fn updates_shutdown_wait() {
 	let payment_params_2 = PaymentParameters::from_node_id(node_a_id, TEST_FINAL_CLTV)
 		.with_bolt11_features(nodes[0].node.bolt11_invoice_features())
 		.unwrap();
-	let route_params = RouteParameters::from_payment_params_and_value(payment_params_2, 100_000);
+	let route_params = RouteParameters::from_payment_params_and_value(
+		payment_params_2,
+		LightningAmount::from_msat(100_000),
+	);
 	let route_2 = get_route(
 		&node_b_id,
 		&route_params,
@@ -541,7 +553,7 @@ fn do_htlc_fail_async_shutdown(blinded_recipient: bool) {
 	} else {
 		RouteParameters::from_payment_params_and_value(
 			PaymentParameters::from_node_id(node_c_id, TEST_FINAL_CLTV),
-			amt_msat,
+			LightningAmount::from_msat(amt_msat),
 		)
 	};
 	let onion = RecipientOnionFields::secret_only(our_payment_secret);
@@ -988,7 +1000,10 @@ fn test_unsupported_anysegwit_upfront_shutdown_script() {
 	let anysegwit_shutdown_script = Builder::new().push_int(16).push_slice(&[0, 40]).into_script();
 
 	// Check script when handling an open_channel message
-	nodes[0].node.create_channel(node_b_id, 100000, 10001, 42, None, None).unwrap();
+	nodes[0]
+		.node
+		.create_channel(node_b_id, 100000, LightningAmount::from_msat(10001), 42, None, None)
+		.unwrap();
 	let mut open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 	open_channel.common_fields.shutdown_scriptpubkey = Some(anysegwit_shutdown_script.clone());
 	nodes[1].node.handle_open_channel(node_a_id, &open_channel);
@@ -1029,7 +1044,10 @@ fn test_unsupported_anysegwit_upfront_shutdown_script() {
 	let node_b_id = nodes[1].node.get_our_node_id();
 
 	// Check script when handling an accept_channel message
-	nodes[0].node.create_channel(node_b_id, 100000, 10001, 42, None, None).unwrap();
+	nodes[0]
+		.node
+		.create_channel(node_b_id, 100000, LightningAmount::from_msat(10001), 42, None, None)
+		.unwrap();
 	let open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 	handle_and_accept_open_channel(&nodes[1], node_a_id, &open_channel);
 
@@ -1063,7 +1081,10 @@ fn test_invalid_upfront_shutdown_script() {
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
 
-	nodes[0].node.create_channel(node_b_id, 100000, 10001, 42, None, None).unwrap();
+	nodes[0]
+		.node
+		.create_channel(node_b_id, 100000, LightningAmount::from_msat(10001), 42, None, None)
+		.unwrap();
 
 	// Use a segwit v0 script with an unsupported witness program
 	let mut open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);

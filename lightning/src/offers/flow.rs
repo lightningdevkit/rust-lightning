@@ -803,7 +803,7 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 		let payment_context =
 			PaymentContext::AsyncBolt12Offer(AsyncBolt12OfferContext { offer_nonce });
 
-		let amount_msat = offer.amount().and_then(|amount| match amount {
+		let amount_msat = offer.offer_amount().and_then(|amount| match amount {
 			Amount::Bitcoin { amount_msats } => Some(amount_msats),
 			Amount::Currency { .. } => None,
 		});
@@ -874,7 +874,7 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 		let expanded_key = &self.inbound_payment_key;
 		let entropy = &entropy_source;
 
-		let amount_msats = refund.amount_msats();
+		let amount_msats = refund.amount().to_msat();
 		let relative_expiry = DEFAULT_RELATIVE_EXPIRY.as_secs() as u32;
 
 		let (payment_hash, payment_secret) = get_payment_info(amount_msats, relative_expiry)?;

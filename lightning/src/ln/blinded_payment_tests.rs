@@ -32,6 +32,7 @@ use crate::routing::router::{
 	BlindedTail, Path, Payee, PaymentParameters, Route, RouteHop, RouteParameters, TrampolineHop,
 };
 use crate::sign::{NodeSigner, PeerStorageKey, ReceiveAuthKey, Recipient};
+use crate::types::amount::LightningAmount;
 use crate::types::features::{BlindedHopFeatures, ChannelFeatures, NodeFeatures};
 use crate::types::payment::{PaymentHash, PaymentSecret};
 use crate::util::config::{HTLCInterceptionFlags, UserConfig};
@@ -110,7 +111,7 @@ pub fn get_blinded_route_parameters(
 			channel_upds,
 			keys_manager,
 		)]),
-		amt_msat,
+		LightningAmount::from_msat(amt_msat),
 	)
 }
 
@@ -185,7 +186,7 @@ fn do_one_hop_blinded_path(success: bool) {
 
 	let route_params = RouteParameters::from_payment_params_and_value(
 		PaymentParameters::blinded(vec![blinded_path]),
-		amt_msat,
+		LightningAmount::from_msat(amt_msat),
 	);
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(),
 	PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
@@ -237,7 +238,7 @@ fn one_hop_blinded_path_with_dummy_hops() {
 
 	let route_params = RouteParameters::from_payment_params_and_value(
 		PaymentParameters::blinded(vec![blinded_path]),
-		amt_msat,
+		LightningAmount::from_msat(amt_msat),
 	);
 	nodes[0]
 		.node
@@ -305,7 +306,7 @@ fn mpp_to_one_hop_blinded_path() {
 		channelmanager::provided_bolt12_invoice_features(&UserConfig::default());
 	let route_params = RouteParameters::from_payment_params_and_value(
 		PaymentParameters::blinded(vec![blinded_path]).with_bolt12_features(bolt12_features).unwrap(),
-		amt_msat,
+		LightningAmount::from_msat(amt_msat),
 	);
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
 	check_added_monitors(&nodes[0], 2);
@@ -396,7 +397,7 @@ fn mpp_to_three_hop_blinded_paths() {
 		)
 			.with_bolt12_features(channelmanager::provided_bolt12_invoice_features(&UserConfig::default()))
 			.unwrap();
-		RouteParameters::from_payment_params_and_value(pay_params, amt_msat)
+		RouteParameters::from_payment_params_and_value(pay_params, LightningAmount::from_msat(amt_msat))
 	};
 
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(),
@@ -1207,7 +1208,7 @@ fn blinded_path_retries() {
 		)
 			.with_bolt12_features(channelmanager::provided_bolt12_invoice_features(&UserConfig::default()))
 			.unwrap();
-		RouteParameters::from_payment_params_and_value(pay_params, amt_msat)
+		RouteParameters::from_payment_params_and_value(pay_params, LightningAmount::from_msat(amt_msat))
 	};
 
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params.clone(), Retry::Attempts(2)).unwrap();
@@ -1429,7 +1430,7 @@ fn custom_tlvs_to_blinded_path() {
 
 	let route_params = RouteParameters::from_payment_params_and_value(
 		PaymentParameters::blinded(vec![blinded_path]),
-		amt_msat,
+		LightningAmount::from_msat(amt_msat),
 	);
 
 	let recipient_onion_fields = RecipientOnionFields::spontaneous_empty()
@@ -1483,7 +1484,7 @@ fn fails_receive_tlvs_authentication() {
 
 	let route_params = RouteParameters::from_payment_params_and_value(
 		PaymentParameters::blinded(vec![blinded_path]),
-		amt_msat,
+		LightningAmount::from_msat(amt_msat),
 	);
 
 	// Test authentication works normally.
@@ -1514,7 +1515,7 @@ fn fails_receive_tlvs_authentication() {
 
 	let route_params = RouteParameters::from_payment_params_and_value(
 		PaymentParameters::blinded(vec![blinded_path]),
-		amt_msat,
+		LightningAmount::from_msat(amt_msat),
 	);
 
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
@@ -1572,7 +1573,7 @@ fn blinded_payment_path_padding() {
 
 	assert!(is_padded(&blinded_path.blinded_hops(), PAYMENT_PADDING_ROUND_OFF));
 
-	let route_params = RouteParameters::from_payment_params_and_value(PaymentParameters::blinded(vec![blinded_path]), amt_msat);
+	let route_params = RouteParameters::from_payment_params_and_value(PaymentParameters::blinded(vec![blinded_path]), LightningAmount::from_msat(amt_msat));
 
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
 	check_added_monitors(&nodes[0], 1);

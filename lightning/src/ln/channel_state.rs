@@ -542,11 +542,13 @@ impl ChannelDetails {
 				// Else `Channel::get_counterparty_htlc_minimum_msat` could return the
 				// default `0` value set by `Channel::new_outbound`.
 				outbound_htlc_minimum_msat: if context.have_received_message() {
-					Some(context.get_counterparty_htlc_minimum_msat())
+					Some(context.get_counterparty_htlc_minimum().to_msat())
 				} else {
 					None
 				},
-				outbound_htlc_maximum_msat: context.get_counterparty_htlc_maximum_msat(funding),
+				outbound_htlc_maximum_msat: context
+					.get_counterparty_htlc_maximum(funding)
+					.map(|a| a.to_msat()),
 			},
 			funding_txo: funding.get_funding_txo(),
 			funding_redeem_script: funding
@@ -581,8 +583,10 @@ impl ChannelDetails {
 			is_channel_ready: context.is_usable(),
 			is_usable: context.is_live(),
 			is_announced: context.should_announce(),
-			inbound_htlc_minimum_msat: Some(context.get_holder_htlc_minimum_msat()),
-			inbound_htlc_maximum_msat: context.get_holder_htlc_maximum_msat(funding),
+			inbound_htlc_minimum_msat: Some(context.get_holder_htlc_minimum().to_msat()),
+			inbound_htlc_maximum_msat: context
+				.get_holder_htlc_maximum(funding)
+				.map(|a| a.to_msat()),
 			config: Some(context.config()),
 			channel_shutdown_state: Some(context.shutdown_state()),
 			pending_inbound_htlcs: context.get_pending_inbound_htlc_details(funding),

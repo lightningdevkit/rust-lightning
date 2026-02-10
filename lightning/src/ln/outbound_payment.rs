@@ -32,6 +32,7 @@ use crate::routing::router::{
 	RouteParametersConfig, Router,
 };
 use crate::sign::{EntropySource, NodeSigner, Recipient};
+use crate::types::amount::LightningAmount;
 use crate::types::features::Bolt12InvoiceFeatures;
 use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::util::errors::APIError;
@@ -337,8 +338,8 @@ impl PendingOutboundPayment {
 				ref mut remaining_max_total_routing_fee_msat, ..
 			} = self {
 				let path = path.expect("Removing a failed payment should always come with a path");
-				*pending_amt_msat -= path.final_value_msat();
-				let path_fee_msat = path.fee_msat();
+				*pending_amt_msat -= path.final_value().to_msat();
+				let path_fee_msat = path.fee().to_msat();
 				if let Some(fee_msat) = pending_fee_msat.as_mut() {
 					*fee_msat -= path_fee_msat;
 				}
@@ -370,8 +371,8 @@ impl PendingOutboundPayment {
 				ref mut pending_amt_msat, ref mut pending_fee_msat,
 				ref mut remaining_max_total_routing_fee_msat, ..
 			} = self {
-					*pending_amt_msat += path.final_value_msat();
-					let path_fee_msat = path.fee_msat();
+					*pending_amt_msat += path.final_value().to_msat();
+					let path_fee_msat = path.fee().to_msat();
 					if let Some(fee_msat) = pending_fee_msat.as_mut() {
 						*fee_msat += path_fee_msat;
 					}
@@ -953,7 +954,7 @@ impl OutboundPayments {
 	{
 		let payment_hash = invoice.payment_hash();
 
-		let amount = match (invoice.amount_milli_satoshis(), amount_msats) {
+		let amount = match (invoice.amount().map(|a| a.to_msat()), amount_msats) {
 			(Some(amt), None) | (None, Some(amt)) => amt,
 			(Some(inv_amt), Some(user_amt)) if user_amt < inv_amt => return Err(Bolt11PaymentError::InvalidAmount),
 			(Some(_), Some(user_amt)) => user_amt,
@@ -967,7 +968,7 @@ impl OutboundPayments {
 		let payment_params = PaymentParameters::from_bolt11_invoice(invoice)
 			.with_user_config_ignoring_fee_limit(optional_params.route_params_config);
 
-		let mut route_params = RouteParameters::from_payment_params_and_value(payment_params, amount);
+		let mut route_params = RouteParameters::from_payment_params_and_value(payment_params, LightningAmount::from_msat(amount));
 
 		if let Some(max_fee_msat) = optional_params.route_params_config.max_total_routing_fee_msat {
 			route_params.max_total_routing_fee_msat = Some(max_fee_msat);
@@ -1008,7 +1009,7 @@ impl OutboundPayments {
 
 		let mut route_params = RouteParameters::from_payment_params_and_value(
 			PaymentParameters::from_bolt12_invoice(&invoice)
-				.with_user_config_ignoring_fee_limit(params_config), invoice.amount_msats()
+				.with_user_config_ignoring_fee_limit(params_config), invoice.amount()
 		);
 		if let Some(max_fee_msat) = params_config.max_total_routing_fee_msat {
 			route_params.max_total_routing_fee_msat = Some(max_fee_msat);
@@ -1193,8 +1194,10 @@ impl OutboundPayments {
 						PaymentHash(Sha256::hash(&keysend_preimage.0).to_byte_array());
 					let pay_params = PaymentParameters::from_static_invoice(invoice)
 						.with_user_config_ignoring_fee_limit(*route_params_config);
-					let mut route_params =
-						RouteParameters::from_payment_params_and_value(pay_params, amount_msat);
+					let mut route_params = RouteParameters::from_payment_params_and_value(
+						pay_params,
+						LightningAmount::from_msat(amount_msat),
+					);
 					route_params.max_total_routing_fee_msat =
 						route_params_config.max_total_routing_fee_msat;
 
@@ -2105,7 +2108,7 @@ impl OutboundPayments {
 					continue 'path_check;
 				}
 			}
-			total_value += path.final_value_msat();
+			total_value += path.final_value().to_msat();
 			path_errs.push(Ok(()));
 		}
 		if path_errs.iter().any(|e| e.is_err()) {
@@ -2135,8 +2138,8 @@ impl OutboundPayments {
 		for (res, path) in results.iter().zip(route.paths.iter()) {
 			if res.is_ok() {
 				has_ok = true;
-				total_ok_fees_msat += path.fee_msat();
-				total_ok_amt_sent_msat += path.final_value_msat();
+				total_ok_fees_msat += path.fee().to_msat();
+				total_ok_amt_sent_msat += path.final_value().to_msat();
 			}
 			if res.is_err() { has_err = true; }
 			if let &Err(APIError::MonitorUpdateInProgress) = res {
@@ -2144,8 +2147,8 @@ impl OutboundPayments {
 				// PartialFailure.
 				has_err = true;
 				has_ok = true;
-				total_ok_fees_msat += path.fee_msat();
-				total_ok_amt_sent_msat += path.final_value_msat();
+				total_ok_fees_msat += path.fee().to_msat();
+				total_ok_amt_sent_msat += path.final_value().to_msat();
 			} else if res.is_err() {
 				has_unsent = true;
 			}
@@ -2615,8 +2618,8 @@ impl OutboundPayments {
 		&self, payment_id: PaymentId, payment_hash: PaymentHash, session_priv_bytes: [u8; 32],
 		path: &Path, best_block_height: u32, logger: &WithContext<L>,
 	) {
-		let path_amt = path.final_value_msat();
-		let path_fee = path.fee_msat();
+		let path_amt = path.final_value().to_msat();
+		let path_fee = path.fee().to_msat();
 
 		macro_rules! new_retryable {
 			() => {
@@ -2741,7 +2744,7 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 		(7, route_params_config, (default_value, (
 			_max_total_routing_fee_msat.map_or(
 				RouteParametersConfig::default(),
-				|fee_msat| RouteParametersConfig::default().with_max_total_routing_fee_msat(fee_msat)
+				|fee_msat| RouteParametersConfig::default().with_max_total_routing_fee(LightningAmount::from_msat(fee_msat))
 			)
 		))),
 	},
@@ -2757,7 +2760,7 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 		(5, route_params_config, (default_value, (
 			_max_total_routing_fee_msat.map_or(
 				RouteParametersConfig::default(),
-				|fee_msat| RouteParametersConfig::default().with_max_total_routing_fee_msat(fee_msat)
+				|fee_msat| RouteParametersConfig::default().with_max_total_routing_fee(LightningAmount::from_msat(fee_msat))
 			)
 		))),
 	},
@@ -2788,7 +2791,7 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 		(5, route_params_config, (default_value, (
 			_max_total_routing_fee_msat.map_or(
 				RouteParametersConfig::default(),
-				|fee_msat| RouteParametersConfig::default().with_max_total_routing_fee_msat(fee_msat)
+				|fee_msat| RouteParametersConfig::default().with_max_total_routing_fee(LightningAmount::from_msat(fee_msat))
 			)
 		))),
 		(6, amount_msats, required),
@@ -2824,6 +2827,7 @@ mod tests {
 		RouteParametersConfig,
 	};
 	use crate::sync::{Arc, Mutex, RwLock};
+	use crate::types::amount::LightningAmount;
 	use crate::types::features::{Bolt12InvoiceFeatures, ChannelFeatures, NodeFeatures};
 	use crate::types::payment::{PaymentHash, PaymentPreimage};
 	use crate::util::errors::APIError;
@@ -2881,7 +2885,7 @@ mod tests {
 				PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap()),
 				0
 			).with_expiry_time(past_expiry_time);
-		let expired_route_params = RouteParameters::from_payment_params_and_value(payment_params, 0);
+		let expired_route_params = RouteParameters::from_payment_params_and_value(payment_params, LightningAmount::ZERO);
 		let pending_events = Mutex::new(VecDeque::new());
 		if on_retry {
 			outbound_payments.add_new_pending_payment(PaymentHash([0; 32]), RecipientOnionFields::spontaneous_empty(),
@@ -2925,7 +2929,7 @@ mod tests {
 
 		let payment_params = PaymentParameters::from_node_id(
 			PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap()), 0);
-		let route_params = RouteParameters::from_payment_params_and_value(payment_params, 0);
+		let route_params = RouteParameters::from_payment_params_and_value(payment_params, LightningAmount::ZERO);
 		router.expect_find_route(route_params.clone(), Err(""));
 
 		let pending_events = Mutex::new(VecDeque::new());
@@ -2967,7 +2971,7 @@ mod tests {
 		let sender_pk = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let receiver_pk = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[43; 32]).unwrap());
 		let payment_params = PaymentParameters::from_node_id(sender_pk, 0);
-		let route_params = RouteParameters::from_payment_params_and_value(payment_params.clone(), 0);
+		let route_params = RouteParameters::from_payment_params_and_value(payment_params.clone(), LightningAmount::ZERO);
 		let failed_scid = 42;
 		let route = Route {
 			paths: vec![Path { hops: vec![RouteHop {
@@ -3203,7 +3207,7 @@ mod tests {
 
 		let created_at = now() - DEFAULT_RELATIVE_EXPIRY;
 		let invoice = OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.build().unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
 			.build_and_sign().unwrap()
@@ -3252,7 +3256,7 @@ mod tests {
 		let expiration = StaleExpiration::AbsoluteTimeout(Duration::from_secs(100));
 
 		let invoice = OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.build().unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
 			.build_and_sign().unwrap()
@@ -3260,7 +3264,7 @@ mod tests {
 			.build().unwrap()
 			.sign(recipient_sign).unwrap();
 
-		let route_params_config = RouteParametersConfig::default().with_max_total_routing_fee_msat(invoice.amount_msats() / 100 + 50_000);
+		let route_params_config = RouteParametersConfig::default().with_max_total_routing_fee(LightningAmount::from_msat(invoice.amount().to_msat() / 100 + 50_000));
 
 		assert!(
 			outbound_payments.add_new_awaiting_invoice(
@@ -3272,7 +3276,7 @@ mod tests {
 
 		let route_params = RouteParameters::from_payment_params_and_value(
 			PaymentParameters::from_bolt12_invoice(&invoice),
-			invoice.amount_msats(),
+			invoice.amount(),
 		);
 		router.expect_find_route(route_params, Err(""));
 
@@ -3317,7 +3321,7 @@ mod tests {
 		let expiration = StaleExpiration::AbsoluteTimeout(Duration::from_secs(100));
 
 		let invoice = OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.build().unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
 			.build_and_sign().unwrap()
@@ -3327,7 +3331,7 @@ mod tests {
 
 		let route_params = RouteParameters {
 			payment_params: PaymentParameters::from_bolt12_invoice(&invoice),
-			final_value_msat: invoice.amount_msats(),
+			final_value_msat: invoice.amount().to_msat(),
 			max_total_routing_fee_msat: Some(1234),
 		};
 		router.expect_find_route(
@@ -3341,7 +3345,7 @@ mod tests {
 								node_features: NodeFeatures::empty(),
 								short_channel_id: 42,
 								channel_features: ChannelFeatures::empty(),
-								fee_msat: invoice.amount_msats(),
+								fee_msat: invoice.amount().to_msat(),
 								cltv_expiry_delta: 0,
 								maybe_announced_channel: true,
 							}
@@ -3365,7 +3369,7 @@ mod tests {
 		assert!(!outbound_payments.has_pending_payments());
 		assert!(pending_events.lock().unwrap().is_empty());
 
-		let route_params_config = RouteParametersConfig::default().with_max_total_routing_fee_msat(1234);
+		let route_params_config = RouteParametersConfig::default().with_max_total_routing_fee(LightningAmount::from_msat(1234));
 
 		assert!(
 			outbound_payments.add_new_awaiting_invoice(
@@ -3406,7 +3410,7 @@ mod tests {
 		let payment_id = PaymentId([1; 32]);
 
 		OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
+			.amount(LightningAmount::from_msat(1000))
 			.build().unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
 			.unwrap()

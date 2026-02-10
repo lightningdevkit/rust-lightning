@@ -15,6 +15,7 @@ use crate::ln::functional_test_utils::*;
 use crate::ln::msgs::ChannelMessageHandler;
 use crate::ln::outbound_payment::Bolt11PaymentError;
 use crate::sign::{NodeSigner, Recipient};
+use crate::types::amount::LightningAmount;
 use lightning_invoice::{Bolt11Invoice, Currency, InvoiceBuilder};
 use std::time::SystemTime;
 
@@ -40,7 +41,7 @@ fn payment_metadata_end_to_end_for_invoice_with_amount() {
 		.payment_secret(payment_secret)
 		.duration_since_epoch(timestamp)
 		.min_final_cltv_expiry_delta(144)
-		.amount_milli_satoshis(50_000)
+		.amount(LightningAmount::from_msat(50_000))
 		.payment_metadata(payment_metadata.clone())
 		.build_raw()
 		.unwrap();

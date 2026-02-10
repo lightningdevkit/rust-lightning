@@ -29,7 +29,7 @@ fn test_accountable_forwarding_with_override(
 	let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash!(nodes[2]);
 	let route_params = RouteParameters::from_payment_params_and_value(
 		PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), TEST_FINAL_CLTV),
-		100_000,
+		LightningAmount::from_msat(100_000),
 	);
 	let onion_fields = RecipientOnionFields::secret_only(payment_secret);
 	let payment_id = PaymentId(payment_hash.0);

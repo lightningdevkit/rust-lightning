@@ -35,6 +35,7 @@ use crate::routing::router::{
 	RouteParameters, TrampolineHop,
 };
 use crate::sign::{EntropySource, NodeSigner, Recipient};
+use crate::types::amount::LightningAmount;
 use crate::types::features::{Bolt11InvoiceFeatures, InitFeatures};
 use crate::types::payment::{PaymentHash, PaymentSecret};
 use crate::util::config::{ChannelConfig, MaxDustHTLCExposure, UserConfig};
@@ -1030,7 +1031,7 @@ fn test_onion_failure() {
 	let amt_to_forward = {
 		let (per_peer_state, mut peer_state);
 		let chan = get_channel_ref!(nodes[1], nodes[2], per_peer_state, peer_state, channels[1].2);
-		chan.context().get_counterparty_htlc_minimum_msat() - 1
+		chan.context().get_counterparty_htlc_minimum().to_msat() - 1
 	};
 	let mut bogus_route = route.clone();
 	let route_len = bogus_route.paths[0].hops.len();
@@ -1966,8 +1967,8 @@ fn test_trampoline_onion_payload_assembly_values() {
 			final_value_msat: amt_msat,
 		}),
 	};
-	assert_eq!(path.fee_msat(), 156_000);
-	assert_eq!(path.final_value_msat(), amt_msat);
+	assert_eq!(path.fee().to_msat(), 156_000);
+	assert_eq!(path.final_value().to_msat(), amt_msat);
 	assert_eq!(path.final_cltv_expiry_delta(), None);
 
 	let payment_secret = PaymentSecret(
@@ -2396,7 +2397,10 @@ macro_rules! get_phantom_route {
 		let scorer = test_utils::TestScorer::new();
 		let first_hops = $nodes[0].node.list_usable_channels();
 		let network_graph = $nodes[0].network_graph.read_only();
-		let route_params = RouteParameters::from_payment_params_and_value(payment_params, $amt);
+		let route_params = RouteParameters::from_payment_params_and_value(
+			payment_params,
+			LightningAmount::from_msat($amt),
+		);
 		(
 			get_route(
 				&$nodes[0].node.get_our_node_id(),

@@ -43,6 +43,7 @@ use crate::onion_message::messenger::OnionMessenger;
 use crate::routing::gossip::{NetworkGraph, NetworkUpdate, P2PGossipSync};
 use crate::routing::router::{self, PaymentParameters, Route, RouteParameters};
 use crate::sign::{EntropySource, RandomBytes};
+pub use crate::types::amount::LightningAmount;
 use crate::types::features::ChannelTypeFeatures;
 use crate::types::features::InitFeatures;
 use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
@@ -1569,7 +1570,14 @@ pub fn exchange_open_accept_zero_conf_chan<'a, 'b, 'c, 'd>(
 
 	initiator
 		.node
-		.create_channel(receiver_node_id, channel_value_sat, push_msat, 42, None, initiator_config)
+		.create_channel(
+			receiver_node_id,
+			channel_value_sat,
+			LightningAmount::from_msat(push_msat),
+			42,
+			None,
+			initiator_config,
+		)
 		.unwrap();
 	let open_channel =
 		get_event_msg!(initiator, MessageSendEvent::SendOpenChannel, receiver_node_id);
@@ -1681,8 +1689,17 @@ pub fn exchange_open_accept_chan<'a, 'b, 'c>(
 	let node_a_id = node_a.node.get_our_node_id();
 	let node_b_id = node_b.node.get_our_node_id();
 
-	let create_chan_id =
-		node_a.node.create_channel(node_b_id, channel_value, push_msat, 42, None, None).unwrap();
+	let create_chan_id = node_a
+		.node
+		.create_channel(
+			node_b_id,
+			channel_value,
+			LightningAmount::from_msat(push_msat),
+			42,
+			None,
+			None,
+		)
+		.unwrap();
 	let open_channel_msg = get_event_msg!(node_a, MessageSendEvent::SendOpenChannel, node_b_id);
 	assert_eq!(open_channel_msg.common_fields.temporary_channel_id, create_chan_id);
 	assert_eq!(
@@ -1974,7 +1991,14 @@ pub fn create_unannounced_chan_between_nodes_with_value<'a, 'b, 'c, 'd>(
 	no_announce_cfg.channel_handshake_config.announce_for_forwarding = false;
 	nodes[a]
 		.node
-		.create_channel(node_b_id, channel_value, push_msat, 42, None, Some(no_announce_cfg))
+		.create_channel(
+			node_b_id,
+			channel_value,
+			LightningAmount::from_msat(push_msat),
+			42,
+			None,
+			Some(no_announce_cfg),
+		)
 		.unwrap();
 	let open_channel = get_event_msg!(nodes[a], MessageSendEvent::SendOpenChannel, node_b_id);
 	handle_and_accept_open_channel(&nodes[b], node_a_id, &open_channel);
@@ -2829,7 +2853,7 @@ macro_rules! get_route {
 	($send_node: expr, $payment_params: expr, $recv_value: expr) => {{
 		let route_params = $crate::routing::router::RouteParameters::from_payment_params_and_value(
 			$payment_params,
-			$recv_value,
+			$crate::types::amount::LightningAmount::from_msat($recv_value),
 		);
 		$crate::ln::functional_test_utils::get_route(&$send_node, &route_params)
 	}};
@@ -2859,7 +2883,7 @@ macro_rules! get_route_and_payment_hash {
 		let mut route_params =
 			$crate::routing::router::RouteParameters::from_payment_params_and_value(
 				$payment_params,
-				$recv_value,
+				$crate::types::amount::LightningAmount::from_msat($recv_value),
 			);
 		route_params.max_total_routing_fee_msat = $max_total_routing_fee_msat;
 		let (payment_preimage, payment_hash, payment_secret) =
@@ -4162,7 +4186,10 @@ pub fn route_payment<'a, 'b, 'c>(
 	)
 	.with_bolt11_features(expected_route.last().unwrap().node.bolt11_invoice_features())
 	.unwrap();
-	let route_params = RouteParameters::from_payment_params_and_value(payment_params, recv_value);
+	let route_params = RouteParameters::from_payment_params_and_value(
+		payment_params,
+		LightningAmount::from_msat(recv_value),
+	);
 	let route = get_route(origin_node, &route_params).unwrap();
 	assert_eq!(route.paths.len(), 1);
 	assert_eq!(route.paths[0].hops.len(), expected_route.len());
@@ -5553,7 +5580,7 @@ pub fn create_batch_channel_funding<'a, 'b, 'c>(
 			.create_channel(
 				other_node_id,
 				*channel_value_satoshis,
-				*push_msat,
+				LightningAmount::from_msat(*push_msat),
 				*user_channel_id,
 				None,
 				override_config.clone(),

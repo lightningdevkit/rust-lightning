@@ -100,6 +100,7 @@ use crate::offers::parse::{Bech32Encode, Bolt12ParseError, Bolt12SemanticError, 
 use crate::offers::payer::{PayerContents, PayerTlvStream, PayerTlvStreamRef};
 use crate::offers::signer::{self, Metadata, MetadataMaterial};
 use crate::sign::EntropySource;
+use crate::types::amount::LightningAmount;
 use crate::types::features::InvoiceRequestFeatures;
 use crate::types::payment::PaymentHash;
 use crate::types::string::PrintableString;
@@ -529,8 +530,8 @@ impl Refund {
 	/// The amount to refund in msats (i.e., the minimum lightning-payable unit for [`chain`]).
 	///
 	/// [`chain`]: Self::chain
-	pub fn amount_msats(&self) -> u64 {
-		self.contents.amount_msats()
+	pub fn amount(&self) -> LightningAmount {
+		LightningAmount::from_msat(self.contents.amount_msats())
 	}
 
 	/// Features pertaining to requesting an invoice.
@@ -1047,6 +1048,7 @@ mod tests {
 	use crate::offers::payer::PayerTlvStreamRef;
 	use crate::offers::test_utils::*;
 	use crate::prelude::*;
+	use crate::types::amount::LightningAmount;
 	use crate::types::features::{InvoiceRequestFeatures, OfferFeatures};
 	use crate::types::string::PrintableString;
 	use crate::util::ser::{BigSize, Writeable};
@@ -1080,7 +1082,7 @@ mod tests {
 		assert_eq!(refund.paths(), &[]);
 		assert_eq!(refund.issuer(), None);
 		assert_eq!(refund.chain(), ChainHash::using_genesis_block(Network::Bitcoin));
-		assert_eq!(refund.amount_msats(), 1000);
+		assert_eq!(refund.amount(), LightningAmount::from_msat(1000));
 		assert_eq!(refund.features(), &InvoiceRequestFeatures::empty());
 		assert_eq!(refund.payer_signing_pubkey(), payer_pubkey());
 		assert_eq!(refund.payer_note(), None);

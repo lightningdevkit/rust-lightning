@@ -219,7 +219,7 @@ macro_rules! invoice_accessors { ($self: ident, $contents: expr) => {
 	///
 	/// From [`Offer::amount`].
 	///
-	/// [`Offer::amount`]: crate::offers::offer::Offer::amount
+	/// [`Offer::amount`]: crate::offers::offer::Offer::offer_amount
 	pub fn amount(&$self) -> Option<Amount> {
 		$contents.amount()
 	}

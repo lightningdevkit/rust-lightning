@@ -119,6 +119,7 @@ use crate::routing::router::{
 };
 use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::sign::{EntropySource, NodeSigner, Recipient, SignerProvider};
+use crate::types::amount::LightningAmount;
 #[cfg(any(feature = "_test_utils", test))]
 use crate::types::features::Bolt11InvoiceFeatures;
 use crate::types::features::{
@@ -2051,9 +2052,10 @@ impl<
 /// #
 /// # fn example<T: AChannelManager, W: Wallet>(channel_manager: T, wallet: W, peer_id: PublicKey) {
 /// # let channel_manager = channel_manager.get_cm();
+/// use lightning::types::amount::LightningAmount;
 /// let value_sats = 1_000_000;
-/// let push_msats = 10_000_000;
-/// match channel_manager.create_channel(peer_id, value_sats, push_msats, 42, None, None) {
+/// let push = LightningAmount::from_msat(10_000_000);
+/// match channel_manager.create_channel(peer_id, value_sats, push, 42, None, None) {
 ///     Ok(channel_id) => println!("Opening channel {}", channel_id),
 ///     Err(e) => println!("Error opening channel: {:?}", e),
 /// }
@@ -2322,6 +2324,7 @@ impl<
 /// # use lightning::ln::channelmanager::AChannelManager;
 /// # use lightning::offers::parse::Bolt12SemanticError;
 /// # use lightning::routing::router::RouteParametersConfig;
+/// # use lightning_types::amount::LightningAmount;
 /// #
 /// # fn example<T: AChannelManager>(channel_manager: T) -> Result<(), Bolt12SemanticError> {
 /// # let channel_manager = channel_manager.get_cm();
@@ -2332,7 +2335,7 @@ impl<
 /// # let builder: lightning::offers::offer::OfferBuilder<_, _> = offer.into();
 /// # let offer = builder
 ///     .description("coffee".to_string())
-///     .amount_msats(10_000_000)
+///     .amount(LightningAmount::from_msat(10_000_000))
 ///     .build()?;
 /// let bech32_offer = offer.to_string();
 ///
@@ -3577,7 +3580,7 @@ impl<
 	/// randomized value for inbound channels. `user_channel_id` has no meaning inside of LDK, it
 	/// is simply copied to events and otherwise ignored.
 	///
-	/// Raises [`APIError::APIMisuseError`] when `channel_value_satoshis` > 2**24 or `push_msat` is
+	/// Raises [`APIError::APIMisuseError`] when `channel_value_satoshis` > 2**24 or `push` is
 	/// greater than `channel_value_satoshis * 1k` or `channel_value_satoshis < 1000`.
 	///
 	/// Raises [`APIError::ChannelUnavailable`] if the channel cannot be opened due to failing to
@@ -3602,7 +3605,8 @@ impl<
 	/// [`Event::FundingGenerationReady::temporary_channel_id`]: events::Event::FundingGenerationReady::temporary_channel_id
 	/// [`Event::ChannelClosed::channel_id`]: events::Event::ChannelClosed::channel_id
 	#[rustfmt::skip]
-	pub fn create_channel(&self, their_network_key: PublicKey, channel_value_satoshis: u64, push_msat: u64, user_channel_id: u128, temporary_channel_id: Option<ChannelId>, override_config: Option<UserConfig>) -> Result<ChannelId, APIError> {
+	pub fn create_channel(&self, their_network_key: PublicKey, channel_value_satoshis: u64, push: LightningAmount, user_channel_id: u128, temporary_channel_id: Option<ChannelId>, override_config: Option<UserConfig>) -> Result<ChannelId, APIError> {
+		let push_msat = push.to_msat();
 		if channel_value_satoshis < 1000 {
 			return Err(APIError::APIMisuseError { err: format!("Channel value must be at least 1000 satoshis. It was {}", channel_value_satoshis) });
 		}
@@ -4815,7 +4819,7 @@ impl<
 				return Err(LocalHTLCFailureReason::ChannelNotReady);
 			}
 		}
-		if next_packet.outgoing_amt_msat < chan.context.get_counterparty_htlc_minimum_msat() {
+		if next_packet.outgoing_amt_msat < chan.context.get_counterparty_htlc_minimum().to_msat() {
 			return Err(LocalHTLCFailureReason::AmountBelowMinimum);
 		}
 		chan.htlc_satisfies_config(msg, next_packet.outgoing_amt_msat, next_packet.outgoing_cltv_value)
@@ -5093,9 +5097,9 @@ impl<
 			message_flags: 1 | if !chan.context.should_announce() { 1 << 1 } else { 0 }, // must_be_one + dont_forward
 			channel_flags: (!were_node_one) as u8 | ((!enabled as u8) << 1),
 			cltv_expiry_delta: chan.context.get_cltv_expiry_delta(),
-			htlc_minimum_msat: chan.context.get_counterparty_htlc_minimum_msat(),
-			htlc_maximum_msat: chan.get_announced_htlc_max_msat(),
-			fee_base_msat: chan.context.get_outbound_forwarding_fee_base_msat(),
+			htlc_minimum_msat: chan.context.get_counterparty_htlc_minimum().to_msat(),
+			htlc_maximum_msat: chan.get_announced_htlc_max().to_msat(),
+			fee_base_msat: chan.context.get_outbound_forwarding_fee_base().to_msat() as u32,
 			fee_proportional_millionths: chan.context.get_fee_proportional_millionths(),
 			excess_data: Vec::new(),
 		};
@@ -5308,7 +5312,7 @@ impl<
 				.and_then(|path| path.hops.last().map(|hop| (hop.pubkey, hop.cltv_expiry_delta as u32)))
 				.unwrap_or_else(|| (PublicKey::from_slice(&[2; 32]).unwrap(), MIN_FINAL_CLTV_EXPIRY_DELTA as u32));
 			let dummy_payment_params = PaymentParameters::from_node_id(payee_node_id, cltv_delta);
-			RouteParameters::from_payment_params_and_value(dummy_payment_params, route.get_total_amount())
+			RouteParameters::from_payment_params_and_value(dummy_payment_params, LightningAmount::from_msat(route.get_total_amount()))
 		});
 		if route.route_params.is_none() { route.route_params = Some(route_params.clone()); }
 		let router = FixedRouter::new(route);
@@ -5845,8 +5849,10 @@ impl<
 	) -> Result<Vec<(PaymentHash, PaymentId)>, ProbeSendFailure> {
 		let payment_params = PaymentParameters::from_node_id(node_id, final_cltv_expiry_delta);
 
-		let route_params =
-			RouteParameters::from_payment_params_and_value(payment_params, amount_msat);
+		let route_params = RouteParameters::from_payment_params_and_value(
+			payment_params,
+			LightningAmount::from_msat(amount_msat),
+		);
 
 		self.send_preflight_probes(route_params, liquidity_limit_multiplier)
 	}
@@ -5901,7 +5907,7 @@ impl<
 						"Avoided sending payment probe all the way to last hop {} as it is likely unannounced.",
 						last_path_hop.short_channel_id
 					);
-					let final_value_msat = path.final_value_msat();
+					let final_value_msat = path.final_value().to_msat();
 					path.hops.pop();
 					if let Some(new_last) = path.hops.last_mut() {
 						new_last.fee_msat += final_value_msat;
@@ -5921,7 +5927,7 @@ impl<
 				if let Some(first_hop) = first_hops.iter().find(|h| {
 					h.get_outbound_payment_scid() == Some(first_path_hop.short_channel_id)
 				}) {
-					let path_value = path.final_value_msat() + path.fee_msat();
+					let path_value = path.final_value().to_msat() + path.fee().to_msat();
 					let used_liquidity =
 						used_liquidity_map.entry(first_path_hop.short_channel_id).or_insert(0);
 
@@ -8100,7 +8106,7 @@ impl<
 								let verified_invreq = match verify_opt {
 									Some(verified_invreq) => {
 										if let Some(invreq_amt_msat) =
-											verified_invreq.amount_msats()
+											verified_invreq.amount().map(|a| a.to_msat())
 										{
 											if payment_data.total_msat < invreq_amt_msat {
 												fail_htlc!(claimable_htlc, payment_hash);
@@ -13306,7 +13312,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		}
 
 		if let Some(amount_msats) = amount_msats {
-			invoice = invoice.amount_milli_satoshis(amount_msats);
+			invoice = invoice.amount(LightningAmount::from_msat(amount_msats));
 		}
 
 		let channels = self.list_channels();
@@ -13745,7 +13751,7 @@ impl<
 		};
 		let builder = match amount_msats {
 			None => builder,
-			Some(amount_msats) => builder.amount_msats(amount_msats)?,
+			Some(amount_msats) => builder.amount(LightningAmount::from_msat(amount_msats))?,
 		};
 		let builder = match payer_note {
 			None => builder,
@@ -18012,7 +18018,9 @@ impl<
 							counterparty_node_id: Some(channel.context.get_counterparty_node_id()),
 							channel_capacity_sats: Some(channel.funding.get_value_satoshis()),
 							channel_funding_txo: channel.funding.get_funding_txo(),
-							last_local_balance_msat: Some(channel.funding.get_value_to_self_msat()),
+							last_local_balance_msat: Some(
+								channel.funding.get_value_to_self().to_msat(),
+							),
 						},
 						None,
 					));
@@ -18093,7 +18101,9 @@ impl<
 						counterparty_node_id: Some(channel.context.get_counterparty_node_id()),
 						channel_capacity_sats: Some(channel.funding.get_value_satoshis()),
 						channel_funding_txo: channel.funding.get_funding_txo(),
-						last_local_balance_msat: Some(channel.funding.get_value_to_self_msat()),
+						last_local_balance_msat: Some(
+							channel.funding.get_value_to_self().to_msat(),
+						),
 					},
 					None,
 				));
@@ -19478,6 +19488,7 @@ mod tests {
 	use crate::prelude::*;
 	use crate::routing::router::{find_route, PaymentParameters, RouteParameters};
 	use crate::sign::EntropySource;
+	use crate::types::amount::LightningAmount;
 	use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 	use crate::util::config::{ChannelConfig, ChannelConfigUpdate};
 	use crate::util::errors::APIError;
@@ -19714,7 +19725,7 @@ mod tests {
 		// Next, attempt a keysend payment and make sure it fails.
 		let route_params = RouteParameters::from_payment_params_and_value(
 			PaymentParameters::for_keysend(expected_route.last().unwrap().node.get_our_node_id(),
-			TEST_FINAL_CLTV, false), 100_000);
+			TEST_FINAL_CLTV, false), LightningAmount::from_msat(100_000));
 		nodes[0].node.send_spontaneous_payment(
 			Some(payment_preimage), RecipientOnionFields::spontaneous_empty(),
 			PaymentId(payment_preimage.0), route_params.clone(), Retry::Attempts(0)
@@ -19810,7 +19821,7 @@ mod tests {
 		// Next, attempt a keysend payment and make sure it fails.
 		let route_params = RouteParameters::from_payment_params_and_value(
 			PaymentParameters::for_keysend(expected_route.last().unwrap().node.get_our_node_id(), TEST_FINAL_CLTV, false),
-			100_000
+			LightningAmount::from_msat(100_000)
 		);
 		let payment_id_2 = PaymentId([45; 32]);
 		nodes[0].node.send_spontaneous_payment(
@@ -19859,7 +19870,7 @@ mod tests {
 
 		let _chan = create_chan_between_nodes(&nodes[0], &nodes[1]);
 		let route_params = RouteParameters::from_payment_params_and_value(
-			PaymentParameters::for_keysend(payee_pubkey, 40, false), 10_000);
+			PaymentParameters::for_keysend(payee_pubkey, 40, false), LightningAmount::from_msat(10_000));
 		let network_graph = nodes[0].network_graph;
 		let first_hops = nodes[0].node.list_usable_channels();
 		let scorer = test_utils::TestScorer::new();
@@ -20139,7 +20150,7 @@ mod tests {
 		let error_message = "Channel force-closed";
 
 		// Test the API functions.
-		check_not_connected_to_peer_error(nodes[0].node.create_channel(unkown_public_key, 1_000_000, 500_000_000, 42, None, None), unkown_public_key);
+		check_not_connected_to_peer_error(nodes[0].node.create_channel(unkown_public_key, 1_000_000, LightningAmount::from_msat(500_000_000), 42, None, None), unkown_public_key);
 
 		check_unkown_peer_error(nodes[0].node.accept_inbound_channel(&channel_id, &unkown_public_key, 42, None), unkown_public_key);
 
@@ -20193,7 +20204,7 @@ mod tests {
 
 		// Note that create_network connects the nodes together for us
 
-		nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100_000, 0, 42, None, None).unwrap();
+		nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100_000, LightningAmount::ZERO, 42, None, None).unwrap();
 		let mut open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
 
 		let mut funding_tx = None;
@@ -20292,7 +20303,7 @@ mod tests {
 			open_channel_msg.common_fields.temporary_channel_id);
 
 		// Of course, however, outbound channels are always allowed
-		nodes[1].node.create_channel(last_random_pk, 100_000, 0, 42, None, None).unwrap();
+		nodes[1].node.create_channel(last_random_pk, 100_000, LightningAmount::ZERO, 42, None, None).unwrap();
 		get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, last_random_pk);
 
 		// If we fund the first channel, nodes[0] has a live on-chain channel with us, it is now
@@ -20664,7 +20675,7 @@ pub mod bench {
 		node_b.peer_connected(node_a.get_our_node_id(), &Init {
 			features: node_a.init_features(), networks: None, remote_network_address: None
 		}, false).unwrap();
-		node_a.create_channel(node_b.get_our_node_id(), 8_000_000, 100_000_000, 42, None, None).unwrap();
+		node_a.create_channel(node_b.get_our_node_id(), 8_000_000, LightningAmount::from_msat(100_000_000), 42, None, None).unwrap();
 		node_b.handle_open_channel(node_a.get_our_node_id(), &get_event_msg!(node_a_holder, MessageSendEvent::SendOpenChannel, node_b.get_our_node_id()));
 		let events = node_b.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);

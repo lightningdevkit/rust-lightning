@@ -253,7 +253,7 @@ fn test_manager_serialize_deserialize_events() {
 	let push_msat = 10001;
 	let node_a = nodes.remove(0);
 	let node_b = nodes.remove(0);
-	node_a.node.create_channel(node_b.node.get_our_node_id(), channel_value, push_msat, 42, None, None).unwrap();
+	node_a.node.create_channel(node_b.node.get_our_node_id(), channel_value, LightningAmount::from_msat(push_msat), 42, None, None).unwrap();
 	handle_and_accept_open_channel(&node_b, node_a.node.get_our_node_id(), &get_event_msg!(node_a, MessageSendEvent::SendOpenChannel, node_b.node.get_our_node_id()));
 	node_a.node.handle_accept_channel(node_b.node.get_our_node_id(), &get_event_msg!(node_b, MessageSendEvent::SendAcceptChannel, node_a.node.get_our_node_id()));
 
@@ -542,7 +542,7 @@ fn do_test_data_loss_protect(reconnect_panicing: bool, substantially_old: bool, 
 		// revoked at least two revocations ago, not the latest revocation. Here, we use
 		// `not_stale` to test the boundary condition.
 		let pay_params = PaymentParameters::for_keysend(nodes[1].node.get_our_node_id(), 100, false);
-		let route_params = RouteParameters::from_payment_params_and_value(pay_params, 40000);
+		let route_params = RouteParameters::from_payment_params_and_value(pay_params, LightningAmount::from_msat(40000));
 		nodes[0].node.send_spontaneous_payment(None, RecipientOnionFields::spontaneous_empty(), PaymentId([0; 32]), route_params, Retry::Attempts(0)).unwrap();
 		check_added_monitors(&nodes[0], 1);
 		let update_add_commit = SendEvent::from_node(&nodes[0]);
@@ -1405,7 +1405,7 @@ fn test_htlc_localremoved_persistence() {
 
 	let _chan = create_chan_between_nodes(&nodes[0], &nodes[1]);
 	let route_params = RouteParameters::from_payment_params_and_value(
-		PaymentParameters::for_keysend(payee_pubkey, 40, false), 10_000);
+		PaymentParameters::for_keysend(payee_pubkey, 40, false), LightningAmount::from_msat(10_000));
 	let route = find_route(
 		&nodes[0], &route_params
 	).unwrap();

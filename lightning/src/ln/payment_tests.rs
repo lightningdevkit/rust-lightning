@@ -43,6 +43,7 @@ use crate::routing::router::{
 };
 use crate::routing::scoring::ChannelUsage;
 use crate::sign::EntropySource;
+use crate::types::amount::LightningAmount;
 use crate::types::features::{Bolt11InvoiceFeatures, ChannelTypeFeatures};
 use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::types::string::UntrustedString;
@@ -248,11 +249,13 @@ fn mpp_retry_overpay() {
 
 	// Check we overpay on the second path which we're about to fail.
 	assert_eq!(chan_1_update.contents.fee_proportional_millionths, 0);
-	let overpaid_amount_1 = route.paths[0].fee_msat() as u32 - chan_1_update.contents.fee_base_msat;
+	let overpaid_amount_1 =
+		route.paths[0].fee().to_msat() as u32 - chan_1_update.contents.fee_base_msat;
 	assert_eq!(overpaid_amount_1, 0);
 
 	assert_eq!(chan_2_update.contents.fee_proportional_millionths, 0);
-	let overpaid_amount_2 = route.paths[1].fee_msat() as u32 - chan_2_update.contents.fee_base_msat;
+	let overpaid_amount_2 =
+		route.paths[1].fee().to_msat() as u32 - chan_2_update.contents.fee_base_msat;
 
 	let total_overpaid_amount = overpaid_amount_1 + overpaid_amount_2;
 
@@ -301,7 +304,7 @@ fn mpp_retry_overpay() {
 	send_payment(&nodes[3], &[&nodes[2]], 38_000_000);
 
 	// Retry the second half of the payment and make sure it succeeds.
-	let first_path_value = route.paths[0].final_value_msat();
+	let first_path_value = route.paths[0].final_value().to_msat();
 	assert_eq!(first_path_value, 36_000_000);
 
 	route.paths.remove(0);
@@ -452,7 +455,7 @@ fn do_test_keysend_payments(public_node: bool) {
 	}
 	let route_params = RouteParameters::from_payment_params_and_value(
 		PaymentParameters::for_keysend(node_b_id, 40, false),
-		10000,
+		LightningAmount::from_msat(10000),
 	);
 
 	{
@@ -502,7 +505,7 @@ fn test_mpp_keysend() {
 	let recv_value = 15_000_000;
 	let route_params = RouteParameters::from_payment_params_and_value(
 		PaymentParameters::for_keysend(node_d_id, 40, true),
-		recv_value,
+		LightningAmount::from_msat(recv_value),
 	);
 
 	let preimage = Some(PaymentPreimage([42; 32]));
@@ -545,7 +548,7 @@ fn test_fulfill_hold_times() {
 	let recv_value = 5_000_000;
 	let route_params = RouteParameters::from_payment_params_and_value(
 		PaymentParameters::for_keysend(node_c_id, 40, true),
-		recv_value,
+		LightningAmount::from_msat(recv_value),
 	);
 
 	let preimage = Some(PaymentPreimage([42; 32]));
@@ -1509,7 +1512,10 @@ fn get_ldk_payment_preimage() {
 	let scorer = test_utils::TestScorer::new();
 	let keys_manager = test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 	let random_seed_bytes = keys_manager.get_secure_random_bytes();
-	let route_params = RouteParameters::from_payment_params_and_value(payment_params, amt_msat);
+	let route_params = RouteParameters::from_payment_params_and_value(
+		payment_params,
+		LightningAmount::from_msat(amt_msat),
+	);
 	let first_hops = nodes[0].node.list_usable_channels();
 	let route = get_route(
 		&node_a_id,
@@ -1735,7 +1741,10 @@ fn preflight_probes_yield_event_skip_private_hop() {
 		.unwrap();
 
 	let recv_value = 50_000_000;
-	let route_params = RouteParameters::from_payment_params_and_value(payment_params, recv_value);
+	let route_params = RouteParameters::from_payment_params_and_value(
+		payment_params,
+		LightningAmount::from_msat(recv_value),
+	);
 	let res = nodes[0].node.send_preflight_probes(route_params, None).unwrap();
 
 	let expected_route: &[(&[&Node], PaymentHash)] =
@@ -1786,7 +1795,10 @@ fn preflight_probes_yield_event() {
 		.unwrap();
 
 	let recv_value = 50_000_000;
-	let route_params = RouteParameters::from_payment_params_and_value(payment_params, recv_value);
+	let route_params = RouteParameters::from_payment_params_and_value(
+		payment_params,
+		LightningAmount::from_msat(recv_value),
+	);
 	let res = nodes[0].node.send_preflight_probes(route_params, None).unwrap();
 
 	let expected_route: &[(&[&Node], PaymentHash)] =
@@ -1839,7 +1851,10 @@ fn preflight_probes_yield_event_and_skip() {
 		.unwrap();
 
 	let recv_value = 80_000_000;
-	let route_params = RouteParameters::from_payment_params_and_value(payment_params, recv_value);
+	let route_params = RouteParameters::from_payment_params_and_value(
+		payment_params,
+		LightningAmount::from_msat(recv_value),
+	);
 	let res = nodes[0].node.send_preflight_probes(route_params, None).unwrap();
 
 	let expected_route: &[(&[&Node], PaymentHash)] =
@@ -2040,7 +2055,7 @@ fn test_trivial_inflight_htlc_tracking() {
 		let channel_1 =
 			get_channel_ref!(&nodes[0], nodes[1], per_peer_lock, peer_state_lock, chan_1_id);
 
-		let chan_1_used_liquidity = inflight_htlcs.used_liquidity_msat(
+		let chan_1_used_liquidity = inflight_htlcs.used_liquidity(
 			&NodeId::from_pubkey(&node_a_id),
 			&NodeId::from_pubkey(&node_b_id),
 			channel_1.funding().get_short_channel_id().unwrap(),
@@ -2053,7 +2068,7 @@ fn test_trivial_inflight_htlc_tracking() {
 		let channel_2 =
 			get_channel_ref!(&nodes[1], nodes[2], per_peer_lock, peer_state_lock, chan_2_id);
 
-		let chan_2_used_liquidity = inflight_htlcs.used_liquidity_msat(
+		let chan_2_used_liquidity = inflight_htlcs.used_liquidity(
 			&NodeId::from_pubkey(&node_b_id),
 			&NodeId::from_pubkey(&node_c_id),
 			channel_2.funding().get_short_channel_id().unwrap(),
@@ -2081,13 +2096,13 @@ fn test_trivial_inflight_htlc_tracking() {
 		let channel_1 =
 			get_channel_ref!(&nodes[0], nodes[1], per_peer_lock, peer_state_lock, chan_1_id);
 
-		let chan_1_used_liquidity = inflight_htlcs.used_liquidity_msat(
+		let chan_1_used_liquidity = inflight_htlcs.used_liquidity(
 			&NodeId::from_pubkey(&node_a_id),
 			&NodeId::from_pubkey(&node_b_id),
 			channel_1.funding().get_short_channel_id().unwrap(),
 		);
 		// First hop accounts for expected 1000 msat fee
-		assert_eq!(chan_1_used_liquidity, Some(501000));
+		assert_eq!(chan_1_used_liquidity, Some(LightningAmount::from_msat(501000)));
 	}
 	{
 		let mut per_peer_lock;
@@ -2095,13 +2110,13 @@ fn test_trivial_inflight_htlc_tracking() {
 		let channel_2 =
 			get_channel_ref!(&nodes[1], nodes[2], per_peer_lock, peer_state_lock, chan_2_id);
 
-		let chan_2_used_liquidity = inflight_htlcs.used_liquidity_msat(
+		let chan_2_used_liquidity = inflight_htlcs.used_liquidity(
 			&NodeId::from_pubkey(&node_b_id),
 			&NodeId::from_pubkey(&node_c_id),
 			channel_2.funding().get_short_channel_id().unwrap(),
 		);
 
-		assert_eq!(chan_2_used_liquidity, Some(500000));
+		assert_eq!(chan_2_used_liquidity, Some(LightningAmount::from_msat(500000)));
 	}
 	let pending_payments = nodes[0].node.list_recent_payments();
 	assert_eq!(pending_payments.len(), 1);
@@ -2123,7 +2138,7 @@ fn test_trivial_inflight_htlc_tracking() {
 		let channel_1 =
 			get_channel_ref!(&nodes[0], nodes[1], per_peer_lock, peer_state_lock, chan_1_id);
 
-		let chan_1_used_liquidity = inflight_htlcs.used_liquidity_msat(
+		let chan_1_used_liquidity = inflight_htlcs.used_liquidity(
 			&NodeId::from_pubkey(&node_a_id),
 			&NodeId::from_pubkey(&node_b_id),
 			channel_1.funding().get_short_channel_id().unwrap(),
@@ -2136,7 +2151,7 @@ fn test_trivial_inflight_htlc_tracking() {
 		let channel_2 =
 			get_channel_ref!(&nodes[1], nodes[2], per_peer_lock, peer_state_lock, chan_2_id);
 
-		let chan_2_used_liquidity = inflight_htlcs.used_liquidity_msat(
+		let chan_2_used_liquidity = inflight_htlcs.used_liquidity(
 			&NodeId::from_pubkey(&node_b_id),
 			&NodeId::from_pubkey(&node_c_id),
 			channel_2.funding().get_short_channel_id().unwrap(),
@@ -2186,13 +2201,13 @@ fn test_holding_cell_inflight_htlcs() {
 		let channel =
 			get_channel_ref!(&nodes[0], nodes[1], per_peer_lock, peer_state_lock, channel_id);
 
-		let used_liquidity = inflight_htlcs.used_liquidity_msat(
+		let used_liquidity = inflight_htlcs.used_liquidity(
 			&NodeId::from_pubkey(&node_a_id),
 			&NodeId::from_pubkey(&node_b_id),
 			channel.funding().get_short_channel_id().unwrap(),
 		);
 
-		assert_eq!(used_liquidity, Some(2000000));
+		assert_eq!(used_liquidity, Some(LightningAmount::from_msat(2000000)));
 	}
 
 	// Clear pending events so test doesn't throw a "Had excess message on node..." error
@@ -2247,7 +2262,10 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 		.unwrap()
 		.with_bolt11_features(nodes[2].node.bolt11_invoice_features())
 		.unwrap();
-	let route_params = RouteParameters::from_payment_params_and_value(payment_params, amt_msat);
+	let route_params = RouteParameters::from_payment_params_and_value(
+		payment_params,
+		LightningAmount::from_msat(amt_msat),
+	);
 	let route = get_route(
 		&node_a_id,
 		&route_params,
@@ -2334,7 +2352,10 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 		expect_payment_failed_conditions(&nodes[0], hash, false, fail_conditions);
 	} else if test == InterceptTest::Forward {
 		// Check that we'll fail as expected when sending to a channel that isn't in `ChannelReady` yet.
-		let temp_id = nodes[1].node.create_channel(node_c_id, 100_000, 0, 42, None, None).unwrap();
+		let temp_id = nodes[1]
+			.node
+			.create_channel(node_c_id, 100_000, LightningAmount::from_msat(0), 42, None, None)
+			.unwrap();
 		let unusable_chan_err =
 			nodes[1].node.forward_intercepted_htlc(intercept_id, &temp_id, node_c_id, outbound_amt);
 		let err = format!(
@@ -2494,7 +2515,10 @@ fn do_accept_underpaying_htlcs_config(num_mpp_parts: usize) {
 		.unwrap()
 		.with_bolt11_features(nodes[2].node.bolt11_invoice_features())
 		.unwrap();
-	let route_params = RouteParameters::from_payment_params_and_value(payment_params, amt_msat);
+	let route_params = RouteParameters::from_payment_params_and_value(
+		payment_params,
+		LightningAmount::from_msat(amt_msat),
+	);
 	let (payment_hash, payment_secret) =
 		nodes[2].node.create_inbound_payment(Some(amt_msat), 60 * 60, None).unwrap();
 
@@ -2652,7 +2676,10 @@ fn do_automatic_retries(test: AutoRetry) {
 		.with_expiry_time(payment_expiry_secs as u64)
 		.with_bolt11_features(invoice_features)
 		.unwrap();
-	let route_params = RouteParameters::from_payment_params_and_value(payment_params, amt_msat);
+	let route_params = RouteParameters::from_payment_params_and_value(
+		payment_params,
+		LightningAmount::from_msat(amt_msat),
+	);
 	let (_, hash, preimage, payment_secret) =
 		get_route_and_payment_hash!(nodes[0], nodes[2], amt_msat);
 
@@ -2909,7 +2936,10 @@ fn auto_retry_partial_failure() {
 		.unwrap();
 
 	// Configure the initial send path
-	let mut route_params = RouteParameters::from_payment_params_and_value(payment_params, amt_msat);
+	let mut route_params = RouteParameters::from_payment_params_and_value(
+		payment_params,
+		LightningAmount::from_msat(amt_msat),
+	);
 	route_params.max_total_routing_fee_msat = None;
 
 	let send_route = Route {
@@ -2946,8 +2976,10 @@ fn auto_retry_partial_failure() {
 	// Configure the retry1 paths
 	let mut payment_params = route_params.payment_params.clone();
 	payment_params.previously_failed_channels.push(chan_2_id);
-	let mut retry_1_params =
-		RouteParameters::from_payment_params_and_value(payment_params, amt_msat / 2);
+	let mut retry_1_params = RouteParameters::from_payment_params_and_value(
+		payment_params,
+		LightningAmount::from_msat(amt_msat / 2),
+	);
 	retry_1_params.max_total_routing_fee_msat = None;
 
 	let retry_1_route = Route {
@@ -2984,8 +3016,10 @@ fn auto_retry_partial_failure() {
 	// Configure the retry2 path
 	let mut payment_params = retry_1_params.payment_params.clone();
 	payment_params.previously_failed_channels.push(chan_3_id);
-	let mut retry_2_params =
-		RouteParameters::from_payment_params_and_value(payment_params, amt_msat / 4);
+	let mut retry_2_params = RouteParameters::from_payment_params_and_value(
+		payment_params,
+		LightningAmount::from_msat(amt_msat / 4),
+	);
 	retry_2_params.max_total_routing_fee_msat = None;
 
 	let retry_2_route = Route {
@@ -3148,7 +3182,10 @@ fn auto_retry_zero_attempts_send_error() {
 		.with_expiry_time(payment_expiry_secs as u64)
 		.with_bolt11_features(invoice_features)
 		.unwrap();
-	let route_params = RouteParameters::from_payment_params_and_value(payment_params, amt_msat);
+	let route_params = RouteParameters::from_payment_params_and_value(
+		payment_params,
+		LightningAmount::from_msat(amt_msat),
+	);
 
 	// Override the route search to return a route, rather than failing at the route-finding step.
 	let send_route = Route {
@@ -3214,7 +3251,10 @@ fn fails_paying_after_rejected_by_payee() {
 		.with_expiry_time(payment_expiry_secs as u64)
 		.with_bolt11_features(invoice_features)
 		.unwrap();
-	let route_params = RouteParameters::from_payment_params_and_value(payment_params, amt_msat);
+	let route_params = RouteParameters::from_payment_params_and_value(
+		payment_params,
+		LightningAmount::from_msat(amt_msat),
+	);
 
 	let onion = RecipientOnionFields::secret_only(payment_secret);
 	let id = PaymentId(payment_hash.0);
@@ -3265,8 +3305,10 @@ fn retry_multi_path_single_failed_payment() {
 		.with_expiry_time(payment_expiry_secs as u64)
 		.with_bolt11_features(invoice_features)
 		.unwrap();
-	let mut route_params =
-		RouteParameters::from_payment_params_and_value(payment_params.clone(), amt_msat);
+	let mut route_params = RouteParameters::from_payment_params_and_value(
+		payment_params.clone(),
+		LightningAmount::from_msat(amt_msat),
+	);
 	route_params.max_total_routing_fee_msat = None;
 
 	let chans = nodes[0].node.list_usable_channels();
@@ -3306,7 +3348,10 @@ fn retry_multi_path_single_failed_payment() {
 	let mut pay_params = route.route_params.clone().unwrap().payment_params;
 	pay_params.previously_failed_channels.push(chans[1].short_channel_id.unwrap());
 
-	let mut retry_params = RouteParameters::from_payment_params_and_value(pay_params, 100_000_000);
+	let mut retry_params = RouteParameters::from_payment_params_and_value(
+		pay_params,
+		LightningAmount::from_msat(100_000_000),
+	);
 	retry_params.max_total_routing_fee_msat = None;
 	route.route_params = Some(retry_params.clone());
 	nodes[0].router.expect_find_route(retry_params, Ok(route.clone()));
@@ -3383,7 +3428,10 @@ fn immediate_retry_on_failure() {
 		.with_expiry_time(payment_expiry_secs as u64)
 		.with_bolt11_features(invoice_features)
 		.unwrap();
-	let route_params = RouteParameters::from_payment_params_and_value(payment_params, amt_msat);
+	let route_params = RouteParameters::from_payment_params_and_value(
+		payment_params,
+		LightningAmount::from_msat(amt_msat),
+	);
 
 	let chans = nodes[0].node.list_usable_channels();
 	let mut route = Route {
@@ -3409,7 +3457,10 @@ fn immediate_retry_on_failure() {
 	route.paths[1].hops[0].fee_msat = 50_000_001;
 	let mut pay_params = route_params.payment_params.clone();
 	pay_params.previously_failed_channels.push(chans[0].short_channel_id.unwrap());
-	let retry_params = RouteParameters::from_payment_params_and_value(pay_params, amt_msat);
+	let retry_params = RouteParameters::from_payment_params_and_value(
+		pay_params,
+		LightningAmount::from_msat(amt_msat),
+	);
 	route.route_params = Some(retry_params.clone());
 	nodes[0].router.expect_find_route(retry_params, Ok(route.clone()));
 
@@ -3482,7 +3533,10 @@ fn no_extra_retries_on_back_to_back_fail() {
 		.with_expiry_time(payment_expiry_secs as u64)
 		.with_bolt11_features(invoice_features)
 		.unwrap();
-	let mut route_params = RouteParameters::from_payment_params_and_value(payment_params, amt_msat);
+	let mut route_params = RouteParameters::from_payment_params_and_value(
+		payment_params,
+		LightningAmount::from_msat(amt_msat),
+	);
 	route_params.max_total_routing_fee_msat = None;
 
 	let mut route = Route {
@@ -3543,8 +3597,10 @@ fn no_extra_retries_on_back_to_back_fail() {
 	// On retry, we'll only return one path
 	route.paths.remove(1);
 	route.paths[0].hops[1].fee_msat = amt_msat;
-	let mut retry_params =
-		RouteParameters::from_payment_params_and_value(second_payment_params, amt_msat);
+	let mut retry_params = RouteParameters::from_payment_params_and_value(
+		second_payment_params,
+		LightningAmount::from_msat(amt_msat),
+	);
 	retry_params.max_total_routing_fee_msat = None;
 	route.route_params = Some(retry_params.clone());
 	nodes[0].router.expect_find_route(retry_params, Ok(route.clone()));
@@ -3727,7 +3783,10 @@ fn test_simple_partial_retry() {
 		.with_expiry_time(payment_expiry_secs as u64)
 		.with_bolt11_features(invoice_features)
 		.unwrap();
-	let mut route_params = RouteParameters::from_payment_params_and_value(payment_params, amt_msat);
+	let mut route_params = RouteParameters::from_payment_params_and_value(
+		payment_params,
+		LightningAmount::from_msat(amt_msat),
+	);
 	route_params.max_total_routing_fee_msat = None;
 
 	let mut route = Route {
@@ -3788,8 +3847,10 @@ fn test_simple_partial_retry() {
 	second_payment_params.previously_failed_channels = vec![chan_2_scid];
 	// On retry, we'll only be asked for one path (or 100k sats)
 	route.paths.remove(0);
-	let mut retry_params =
-		RouteParameters::from_payment_params_and_value(second_payment_params, amt_msat / 2);
+	let mut retry_params = RouteParameters::from_payment_params_and_value(
+		second_payment_params,
+		LightningAmount::from_msat(amt_msat / 2),
+	);
 	retry_params.max_total_routing_fee_msat = None;
 	route.route_params = Some(retry_params.clone());
 	nodes[0].router.expect_find_route(retry_params, Ok(route.clone()));
@@ -4290,7 +4351,10 @@ fn do_claim_from_closed_chan(fail_payment: bool) {
 		.unwrap();
 
 	let amt_msat = 10_000_000;
-	let mut route_params = RouteParameters::from_payment_params_and_value(payment_params, amt_msat);
+	let mut route_params = RouteParameters::from_payment_params_and_value(
+		payment_params,
+		LightningAmount::from_msat(amt_msat),
+	);
 	let inflight = nodes[0].node.compute_inflight_htlcs();
 	let mut route = nodes[0].router.find_route(&node_a_id, &route_params, None, inflight).unwrap();
 
@@ -4833,7 +4897,10 @@ fn do_test_payment_metadata_consistency(do_reload: bool, do_modify: bool) {
 	let payment_params = PaymentParameters::from_node_id(node_d_id, TEST_FINAL_CLTV)
 		.with_bolt11_features(nodes[1].node.bolt11_invoice_features())
 		.unwrap();
-	let mut route_params = RouteParameters::from_payment_params_and_value(payment_params, amt_msat);
+	let mut route_params = RouteParameters::from_payment_params_and_value(
+		payment_params,
+		LightningAmount::from_msat(amt_msat),
+	);
 
 	// Send the MPP payment, delivering the updated commitment state to nodes[1].
 	let onion = RecipientOnionFields {
@@ -5096,7 +5163,10 @@ fn peel_payment_onion_custom_tlvs() {
 
 	let amt_msat = 1000;
 	let payment_params = PaymentParameters::for_keysend(node_b_id, TEST_FINAL_CLTV, false);
-	let route_params = RouteParameters::from_payment_params_and_value(payment_params, amt_msat);
+	let route_params = RouteParameters::from_payment_params_and_value(
+		payment_params,
+		LightningAmount::from_msat(amt_msat),
+	);
 	let route = functional_test_utils::get_route(&nodes[0], &route_params).unwrap();
 	let mut recipient_onion = RecipientOnionFields::spontaneous_empty()
 		.with_custom_tlvs(RecipientCustomTlvs::new(vec![(414141, vec![42; 1200])]).unwrap());
@@ -5185,8 +5255,10 @@ fn test_non_strict_forwarding() {
 	let payment_params = PaymentParameters::from_node_id(node_c_id, TEST_FINAL_CLTV)
 		.with_bolt11_features(nodes[2].node.bolt11_invoice_features())
 		.unwrap();
-	let route_params =
-		RouteParameters::from_payment_params_and_value(payment_params, payment_value);
+	let route_params = RouteParameters::from_payment_params_and_value(
+		payment_params,
+		LightningAmount::from_msat(payment_value),
+	);
 	let route = functional_test_utils::get_route(&nodes[0], &route_params).unwrap();
 
 	// Send 4 payments over the same route.

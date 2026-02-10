@@ -35,6 +35,7 @@ use crate::ln::msgs::{
 };
 use crate::ln::types::ChannelId;
 use crate::routing::utxo::{self, UtxoLookup, UtxoResolver};
+use crate::types::amount::LightningAmount;
 use crate::types::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use crate::types::string::PrintableString;
 use crate::util::indexed_map::{
@@ -1297,7 +1298,7 @@ impl<'a> fmt::Debug for DirectedChannelInfo<'a> {
 /// The effective capacity of a channel for routing purposes.
 ///
 /// While this may be smaller than the actual channel capacity, amounts greater than
-/// [`Self::as_msat`] should not be routed through the channel.
+/// [`Self::as_amount`] should not be routed through the channel.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum EffectiveCapacity {
 	/// The available liquidity in the channel known from being a channel counterparty, and thus a
@@ -1337,16 +1338,16 @@ pub enum EffectiveCapacity {
 pub const UNKNOWN_CHANNEL_CAPACITY_MSAT: u64 = 250_000 * 1000;
 
 impl EffectiveCapacity {
-	/// Returns the effective capacity denominated in millisatoshi.
-	pub fn as_msat(&self) -> u64 {
-		match self {
+	/// Returns the effective capacity as a [`LightningAmount`].
+	pub fn as_amount(&self) -> LightningAmount {
+		LightningAmount::from_msat(match self {
 			EffectiveCapacity::ExactLiquidity { liquidity_msat } => *liquidity_msat,
 			EffectiveCapacity::AdvertisedMaxHTLC { amount_msat } => *amount_msat,
 			EffectiveCapacity::Total { capacity_msat, .. } => *capacity_msat,
 			EffectiveCapacity::HintMaxHTLC { amount_msat } => *amount_msat,
 			EffectiveCapacity::Infinite => u64::max_value(),
 			EffectiveCapacity::Unknown => UNKNOWN_CHANNEL_CAPACITY_MSAT,
-		}
+		})
 	}
 }
 

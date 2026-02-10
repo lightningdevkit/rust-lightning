@@ -54,6 +54,8 @@ use core::time::Duration;
 use serde::{de::Error, Deserialize, Deserializer, Serialize, Serializer};
 
 #[doc(no_inline)]
+pub use lightning_types::amount::LightningAmount;
+#[doc(no_inline)]
 pub use lightning_types::payment::{PaymentHash, PaymentSecret};
 #[doc(no_inline)]
 pub use lightning_types::routing::{RouteHint, RouteHintHop, RoutingFees};
@@ -672,10 +674,11 @@ impl<D: tb::Bool, H: tb::Bool, T: tb::Bool, C: tb::Bool, S: tb::Bool, M: tb::Boo
 		}
 	}
 
-	/// Sets the amount in millisatoshis. The optimal SI prefix is chosen automatically.
-	pub fn amount_milli_satoshis(mut self, amount_msat: u64) -> Self {
+	/// Sets the amount as a [`LightningAmount`]. The optimal SI prefix is chosen automatically.
+	pub fn amount(mut self, amount: LightningAmount) -> Self {
+		let amount_msat = amount.to_msat();
 		// Invoices are denominated in "pico BTC"
-		let amount = match amount_msat.checked_mul(10) {
+		let pico_btc = match amount_msat.checked_mul(10) {
 			Some(amt) => amt,
 			None => {
 				self.error = Some(CreationError::InvalidAmount);
@@ -684,9 +687,9 @@ impl<D: tb::Bool, H: tb::Bool, T: tb::Bool, C: tb::Bool, S: tb::Bool, M: tb::Boo
 		};
 		let biggest_possible_si_prefix = SiPrefix::values_desc()
 			.iter()
-			.find(|prefix| amount % prefix.multiplier() == 0)
+			.find(|prefix| pico_btc % prefix.multiplier() == 0)
 			.expect("Pico should always match");
-		self.amount = Some(amount / biggest_possible_si_prefix.multiplier());
+		self.amount = Some(pico_btc / biggest_possible_si_prefix.multiplier());
 		self.si_prefix = Some(*biggest_possible_si_prefix);
 		self
 	}
@@ -1631,9 +1634,9 @@ impl Bolt11Invoice {
 		self.signed_invoice.currency().into()
 	}
 
-	/// Returns the amount if specified in the invoice as millisatoshis.
-	pub fn amount_milli_satoshis(&self) -> Option<u64> {
-		self.signed_invoice.amount_pico_btc().map(|v| v / 10)
+	/// Returns the amount if specified in the invoice as a [`LightningAmount`].
+	pub fn amount(&self) -> Option<LightningAmount> {
+		self.signed_invoice.amount_pico_btc().map(|v| LightningAmount::from_msat(v / 10))
 	}
 
 	/// Returns the amount if specified in the invoice as pico BTC.
@@ -2190,12 +2193,12 @@ mod test {
 			.payment_hash(PaymentHash([0; 32]))
 			.duration_since_epoch(Duration::from_secs(1234567));
 
-		let invoice = builder.clone().amount_milli_satoshis(1500).build_raw().unwrap();
+		let invoice = builder.clone().amount(LightningAmount::from_msat(1500)).build_raw().unwrap();
 
 		assert_eq!(invoice.hrp.si_prefix, Some(SiPrefix::Nano));
 		assert_eq!(invoice.hrp.raw_amount, Some(15));
 
-		let invoice = builder.amount_milli_satoshis(150).build_raw().unwrap();
+		let invoice = builder.amount(LightningAmount::from_msat(150)).build_raw().unwrap();
 
 		assert_eq!(invoice.hrp.si_prefix, Some(SiPrefix::Pico));
 		assert_eq!(invoice.hrp.raw_amount, Some(1500));
@@ -2304,7 +2307,7 @@ mod test {
 		]);
 
 		let builder = InvoiceBuilder::new(Currency::BitcoinTestnet)
-			.amount_milli_satoshis(123)
+			.amount(LightningAmount::from_msat(123))
 			.duration_since_epoch(Duration::from_secs(1234567))
 			.payee_pub_key(public_key)
 			.expiry_time(Duration::from_secs(54321))
@@ -2325,7 +2328,7 @@ mod test {
 		assert!(invoice.check_signature().is_ok());
 		assert_eq!(invoice.tagged_fields().count(), 10);
 
-		assert_eq!(invoice.amount_milli_satoshis(), Some(123));
+		assert_eq!(invoice.amount(), Some(LightningAmount::from_msat(123)));
 		assert_eq!(invoice.amount_pico_btc(), Some(1230));
 		assert_eq!(invoice.currency(), Currency::BitcoinTestnet);
 		#[cfg(feature = "std")]

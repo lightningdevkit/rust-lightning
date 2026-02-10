@@ -54,7 +54,14 @@ fn do_test_open_channel(zero_conf: bool) {
 	nodes[0].disable_next_channel_signer_op(SignerOp::GetPerCommitmentPoint);
 	let channel_id_0 = nodes[0]
 		.node
-		.create_channel(node_b_id, channel_value_satoshis, 10001, user_channel_id, None, None)
+		.create_channel(
+			node_b_id,
+			channel_value_satoshis,
+			LightningAmount::from_msat(10001),
+			user_channel_id,
+			None,
+			None,
+		)
 		.unwrap();
 
 	{
@@ -135,7 +142,10 @@ fn do_test_funding_created(signer_ops: Vec<SignerOp>) {
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
 
-	nodes[0].node.create_channel(node_b_id, 100000, 10001, 42, None, None).unwrap();
+	nodes[0]
+		.node
+		.create_channel(node_b_id, 100000, LightningAmount::from_msat(10001), 42, None, None)
+		.unwrap();
 
 	// nodes[0] --- open_channel --> nodes[1]
 	let mut open_chan_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
@@ -212,7 +222,10 @@ fn do_test_funding_signed(signer_ops: Vec<SignerOp>) {
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
 
-	nodes[0].node.create_channel(node_b_id, 100000, 10001, 42, None, None).unwrap();
+	nodes[0]
+		.node
+		.create_channel(node_b_id, 100000, LightningAmount::from_msat(10001), 42, None, None)
+		.unwrap();
 
 	// nodes[0] --- open_channel --> nodes[1]
 	let mut open_chan_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
@@ -382,7 +395,10 @@ fn do_test_funding_signed_0conf(signer_ops: Vec<SignerOp>) {
 	let node_b_id = nodes[1].node.get_our_node_id();
 
 	// nodes[0] --- open_channel --> nodes[1]
-	nodes[0].node.create_channel(node_b_id, 100000, 10001, 42, None, None).unwrap();
+	nodes[0]
+		.node
+		.create_channel(node_b_id, 100000, LightningAmount::from_msat(10001), 42, None, None)
+		.unwrap();
 	let open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 
 	nodes[1].node.handle_open_channel(node_a_id, &open_channel);

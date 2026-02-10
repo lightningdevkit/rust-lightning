@@ -882,13 +882,16 @@ pub fn test_chan_init_feerate_unaffordability() {
 		MIN_AFFORDABLE_HTLC_COUNT as u64,
 		&channel_type_features,
 	);
-	assert_eq!(nodes[0].node.create_channel(node_b_id, 100_000, push_amt + 1, 42, None, None).unwrap_err(),
+	assert_eq!(nodes[0].node.create_channel(node_b_id, 100_000, LightningAmount::from_msat(push_amt + 1), 42, None, None).unwrap_err(),
 		APIError::APIMisuseError { err: "Funding amount (356) can't even pay fee for initial commitment transaction fee of 357.".to_string() });
 
 	// During open, we don't have a "counterparty channel reserve" to check against, so that
 	// requirement only comes into play on the open_channel handling side.
 	push_amt -= get_holder_selected_channel_reserve_satoshis(100_000, &default_config) * 1000;
-	nodes[0].node.create_channel(node_b_id, 100_000, push_amt, 42, None, None).unwrap();
+	nodes[0]
+		.node
+		.create_channel(node_b_id, 100_000, LightningAmount::from_msat(push_amt), 42, None, None)
+		.unwrap();
 	let mut open_channel_msg =
 		get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 	open_channel_msg.push_msat += 1;

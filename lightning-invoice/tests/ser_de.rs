@@ -42,7 +42,7 @@ fn get_test_tuples() -> Vec<(String, SignedRawBolt11Invoice, bool, bool)> {
 		(
 			"lnbc2500u1pvjluezsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygspp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpu9qrsgquk0rl77nj30yxdy8j9vdx85fkpmdla2087ne0xh8nhedh8w27kyke0lp53ut353s06fv3qfegext0eh0ymjpf39tuven09sam30g4vgpfna3rh".to_owned(),
 			InvoiceBuilder::new(Currency::Bitcoin)
-				.amount_milli_satoshis(250_000_000)
+				.amount(LightningAmount::from_msat(250_000_000))
 				.duration_since_epoch(Duration::from_secs(1496314658))
 				.payment_secret(PaymentSecret([0x11; 32]))
 				.payment_hash(lightning_invoice::PaymentHash(
@@ -70,7 +70,7 @@ fn get_test_tuples() -> Vec<(String, SignedRawBolt11Invoice, bool, bool)> {
 		(
 			"lnbc2500u1pvjluezsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygspp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpquwpc4curk03c9wlrswe78q4eyqc7d8d0xqzpu9qrsgqhtjpauu9ur7fw2thcl4y9vfvh4m9wlfyz2gem29g5ghe2aak2pm3ps8fdhtceqsaagty2vph7utlgj48u0ged6a337aewvraedendscp573dxr".to_owned(),
 			InvoiceBuilder::new(Currency::Bitcoin)
-				.amount_milli_satoshis(250_000_000)
+				.amount(LightningAmount::from_msat(250_000_000))
 				.duration_since_epoch(Duration::from_secs(1496314658))
 				.payment_secret(PaymentSecret([0x11; 32]))
 				.payment_hash(lightning_invoice::PaymentHash(
@@ -98,7 +98,7 @@ fn get_test_tuples() -> Vec<(String, SignedRawBolt11Invoice, bool, bool)> {
 		(
 			"lnbc20m1pvjluezsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygspp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqhp58yjmdan79s6qqdhdzgynm4zwqd5d7xmw5fk98klysy043l2ahrqs9qrsgq7ea976txfraylvgzuxs8kgcw23ezlrszfnh8r6qtfpr6cxga50aj6txm9rxrydzd06dfeawfk6swupvz4erwnyutnjq7x39ymw6j38gp7ynn44".to_owned(),
 			InvoiceBuilder::new(Currency::Bitcoin)
-				.amount_milli_satoshis(2_000_000_000)
+				.amount(LightningAmount::from_msat(2_000_000_000))
 				.duration_since_epoch(Duration::from_secs(1496314658))
 				.description_hash(sha256::Hash::hash(b"One piece of chocolate cake, one icecream cone, one pickle, one slice of swiss cheese, one slice of salami, one lollypop, one piece of cherry pie, one sausage, one cupcake, and one slice of watermelon"))
 				.payment_secret(PaymentSecret([0x11; 32]))
@@ -125,7 +125,7 @@ fn get_test_tuples() -> Vec<(String, SignedRawBolt11Invoice, bool, bool)> {
 		(
 			"lntb20m1pvjluezsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygshp58yjmdan79s6qqdhdzgynm4zwqd5d7xmw5fk98klysy043l2ahrqspp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqfpp3x9et2e20v6pu37c5d9vax37wxq72un989qrsgqdj545axuxtnfemtpwkc45hx9d2ft7x04mt8q7y6t0k2dge9e7h8kpy9p34ytyslj3yu569aalz2xdk8xkd7ltxqld94u8h2esmsmacgpghe9k8".to_owned(),
 			InvoiceBuilder::new(Currency::BitcoinTestnet)
-				.amount_milli_satoshis(2_000_000_000)
+				.amount(LightningAmount::from_msat(2_000_000_000))
 				.duration_since_epoch(Duration::from_secs(1496314658))
 				.description_hash(sha256::Hash::hash(b"One piece of chocolate cake, one icecream cone, one pickle, one slice of swiss cheese, one slice of salami, one lollypop, one piece of cherry pie, one sausage, one cupcake, and one slice of watermelon"))
 				.payment_secret(PaymentSecret([0x11; 32]))
@@ -153,7 +153,7 @@ fn get_test_tuples() -> Vec<(String, SignedRawBolt11Invoice, bool, bool)> {
 		(
 			"lnbc20m1pvjluezsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygspp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqhp58yjmdan79s6qqdhdzgynm4zwqd5d7xmw5fk98klysy043l2ahrqsfpp3qjmp7lwpagxun9pygexvgpjdc4jdj85fr9yq20q82gphp2nflc7jtzrcazrra7wwgzxqc8u7754cdlpfrmccae92qgzqvzq2ps8pqqqqqqpqqqqq9qqqvpeuqafqxu92d8lr6fvg0r5gv0heeeqgcrqlnm6jhphu9y00rrhy4grqszsvpcgpy9qqqqqqgqqqqq7qqzq9qrsgqdfjcdk6w3ak5pca9hwfwfh63zrrz06wwfya0ydlzpgzxkn5xagsqz7x9j4jwe7yj7vaf2k9lqsdk45kts2fd0fkr28am0u4w95tt2nsq76cqw0".to_owned(),
 			InvoiceBuilder::new(Currency::Bitcoin)
-				.amount_milli_satoshis(2_000_000_000)
+				.amount(LightningAmount::from_msat(2_000_000_000))
 				.duration_since_epoch(Duration::from_secs(1496314658))
 				.description_hash(sha256::Hash::hash(b"One piece of chocolate cake, one icecream cone, one pickle, one slice of swiss cheese, one slice of salami, one lollypop, one piece of cherry pie, one sausage, one cupcake, and one slice of watermelon"))
 				.payment_secret(PaymentSecret([0x11; 32]))
@@ -198,7 +198,7 @@ fn get_test_tuples() -> Vec<(String, SignedRawBolt11Invoice, bool, bool)> {
 		(
 			"lnbc20m1pvjluezsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygshp58yjmdan79s6qqdhdzgynm4zwqd5d7xmw5fk98klysy043l2ahrqspp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqfppj3a24vwu6r8ejrss3axul8rxldph2q7z99qrsgqz6qsgww34xlatfj6e3sngrwfy3ytkt29d2qttr8qz2mnedfqysuqypgqex4haa2h8fx3wnypranf3pdwyluftwe680jjcfp438u82xqphf75ym".to_owned(),
 			InvoiceBuilder::new(Currency::Bitcoin)
-				.amount_milli_satoshis(2_000_000_000)
+				.amount(LightningAmount::from_msat(2_000_000_000))
 				.duration_since_epoch(Duration::from_secs(1496314658))
 				.description_hash(sha256::Hash::hash(b"One piece of chocolate cake, one icecream cone, one pickle, one slice of swiss cheese, one slice of salami, one lollypop, one piece of cherry pie, one sausage, one cupcake, and one slice of watermelon"))
 				.payment_secret(PaymentSecret([0x11; 32]))
@@ -226,7 +226,7 @@ fn get_test_tuples() -> Vec<(String, SignedRawBolt11Invoice, bool, bool)> {
 		(
 			"lnbc20m1pvjluezsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygshp58yjmdan79s6qqdhdzgynm4zwqd5d7xmw5fk98klysy043l2ahrqspp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqfppqw508d6qejxtdg4y5r3zarvary0c5xw7k9qrsgqt29a0wturnys2hhxpner2e3plp6jyj8qx7548zr2z7ptgjjc7hljm98xhjym0dg52sdrvqamxdezkmqg4gdrvwwnf0kv2jdfnl4xatsqmrnsse".to_owned(),
 			InvoiceBuilder::new(Currency::Bitcoin)
-				.amount_milli_satoshis(2_000_000_000)
+				.amount(LightningAmount::from_msat(2_000_000_000))
 				.duration_since_epoch(Duration::from_secs(1496314658))
 				.description_hash(sha256::Hash::hash(b"One piece of chocolate cake, one icecream cone, one pickle, one slice of swiss cheese, one slice of salami, one lollypop, one piece of cherry pie, one sausage, one cupcake, and one slice of watermelon"))
 				.payment_secret(PaymentSecret([0x11; 32]))
@@ -256,7 +256,7 @@ fn get_test_tuples() -> Vec<(String, SignedRawBolt11Invoice, bool, bool)> {
 		(
 			"lnbc20m1pvjluezsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygshp58yjmdan79s6qqdhdzgynm4zwqd5d7xmw5fk98klysy043l2ahrqspp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqfp4qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3q9qrsgq9vlvyj8cqvq6ggvpwd53jncp9nwc47xlrsnenq2zp70fq83qlgesn4u3uyf4tesfkkwwfg3qs54qe426hp3tz7z6sweqdjg05axsrjqp9yrrwc".to_owned(),
 			InvoiceBuilder::new(Currency::Bitcoin)
-				.amount_milli_satoshis(2_000_000_000)
+				.amount(LightningAmount::from_msat(2_000_000_000))
 				.duration_since_epoch(Duration::from_secs(1496314658))
 				.description_hash(sha256::Hash::hash(b"One piece of chocolate cake, one icecream cone, one pickle, one slice of swiss cheese, one slice of salami, one lollypop, one piece of cherry pie, one sausage, one cupcake, and one slice of watermelon"))
 				.payment_secret(PaymentSecret([0x11; 32]))
@@ -286,7 +286,7 @@ fn get_test_tuples() -> Vec<(String, SignedRawBolt11Invoice, bool, bool)> {
 		(
 			"lnbc9678785340p1pwmna7lpp5gc3xfm08u9qy06djf8dfflhugl6p7lgza6dsjxq454gxhj9t7a0sd8dgfkx7cmtwd68yetpd5s9xar0wfjn5gpc8qhrsdfq24f5ggrxdaezqsnvda3kkum5wfjkzmfqf3jkgem9wgsyuctwdus9xgrcyqcjcgpzgfskx6eqf9hzqnteypzxz7fzypfhg6trddjhygrcyqezcgpzfysywmm5ypxxjemgw3hxjmn8yptk7untd9hxwg3q2d6xjcmtv4ezq7pqxgsxzmnyyqcjqmt0wfjjq6t5v4khxsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygsxqyjw5qcqp2rzjq0gxwkzc8w6323m55m4jyxcjwmy7stt9hwkwe2qxmy8zpsgg7jcuwz87fcqqeuqqqyqqqqlgqqqqn3qq9q9qrsgqrvgkpnmps664wgkp43l22qsgdw4ve24aca4nymnxddlnp8vh9v2sdxlu5ywdxefsfvm0fq3sesf08uf6q9a2ke0hc9j6z6wlxg5z5kqpu2v9wz".to_owned(),
 			InvoiceBuilder::new(Currency::Bitcoin)
-				.amount_milli_satoshis(967878534)
+				.amount(LightningAmount::from_msat(967878534))
 				.duration_since_epoch(Duration::from_secs(1572468703))
 				.payment_secret(PaymentSecret([0x11; 32]))
 				.payment_hash(lightning_invoice::PaymentHash(
@@ -324,7 +324,7 @@ fn get_test_tuples() -> Vec<(String, SignedRawBolt11Invoice, bool, bool)> {
 		(
 			"lnbc25m1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5vdhkven9v5sxyetpdeessp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs9q5sqqqqqqqqqqqqqqqqsgq2a25dxl5hrntdtn6zvydt7d66hyzsyhqs4wdynavys42xgl6sgx9c4g7me86a27t07mdtfry458rtjr0v92cnmswpsjscgt2vcse3sgpz3uapa".to_owned(),
 			InvoiceBuilder::new(Currency::Bitcoin)
-				.amount_milli_satoshis(2_500_000_000)
+				.amount(LightningAmount::from_msat(2_500_000_000))
 				.duration_since_epoch(Duration::from_secs(1496314658))
 				.payment_secret(PaymentSecret([0x11; 32]))
 				.payment_hash(lightning_invoice::PaymentHash(
@@ -351,7 +351,7 @@ fn get_test_tuples() -> Vec<(String, SignedRawBolt11Invoice, bool, bool)> {
 		(
 			"LNBC25M1PVJLUEZPP5QQQSYQCYQ5RQWZQFQQQSYQCYQ5RQWZQFQQQSYQCYQ5RQWZQFQYPQDQ5VDHKVEN9V5SXYETPDEESSP5ZYG3ZYG3ZYG3ZYG3ZYG3ZYG3ZYG3ZYG3ZYG3ZYG3ZYG3ZYG3ZYGS9Q5SQQQQQQQQQQQQQQQQSGQ2A25DXL5HRNTDTN6ZVYDT7D66HYZSYHQS4WDYNAVYS42XGL6SGX9C4G7ME86A27T07MDTFRY458RTJR0V92CNMSWPSJSCGT2VCSE3SGPZ3UAPA".to_owned(),
 			InvoiceBuilder::new(Currency::Bitcoin)
-				.amount_milli_satoshis(2_500_000_000)
+				.amount(LightningAmount::from_msat(2_500_000_000))
 				.duration_since_epoch(Duration::from_secs(1496314658))
 				.payment_secret(PaymentSecret([0x11; 32]))
 				.payment_hash(lightning_invoice::PaymentHash(
@@ -378,7 +378,7 @@ fn get_test_tuples() -> Vec<(String, SignedRawBolt11Invoice, bool, bool)> {
 		(
 			"lnbc25m1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5vdhkven9v5sxyetpdeessp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs9q5sqqqqqqqqqqqqqqqqsgq2qrqqqfppnqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqppnqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqpp4qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqhpnqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqhp4qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqspnqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqsp4qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqnp5qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqnpkqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqz599y53s3ujmcfjp5xrdap68qxymkqphwsexhmhr8wdz5usdzkzrse33chw6dlp3jhuhge9ley7j2ayx36kawe7kmgg8sv5ugdyusdcqzn8z9x".to_owned(),
 			InvoiceBuilder::new(Currency::Bitcoin)
-				.amount_milli_satoshis(2_500_000_000)
+				.amount(LightningAmount::from_msat(2_500_000_000))
 				.duration_since_epoch(Duration::from_secs(1496314658))
 				.payment_secret(PaymentSecret([0x11; 32]))
 				.payment_hash(lightning_invoice::PaymentHash(
@@ -405,7 +405,7 @@ fn get_test_tuples() -> Vec<(String, SignedRawBolt11Invoice, bool, bool)> {
 		( // Older version of the payment metadata test with a payment_pubkey set
 			"lnbc10m1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdp9wpshjmt9de6zqmt9w3skgct5vysxjmnnd9jx2mq8q8a04uqnp4q0n326hr8v9zprg8gsvezcch06gfaqqhde2aj730yg0durunfhv66sp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs9q2gqqqqqqsgqy9gw6ymamd20jumvdgpfphkhp8fzhhdhycw36egcmla5vlrtrmhs9t7psfy3hkkdqzm9eq64fjg558znccds5nhsfmxveha5xe0dykgpspdha0".to_owned(),
 			InvoiceBuilder::new(Currency::Bitcoin)
-				.amount_milli_satoshis(1_000_000_000)
+				.amount(LightningAmount::from_msat(1_000_000_000))
 				.duration_since_epoch(Duration::from_secs(1496314658))
 				.payment_hash(lightning_invoice::PaymentHash(
 				<[u8; 32]>::try_from(
@@ -437,7 +437,7 @@ fn get_test_tuples() -> Vec<(String, SignedRawBolt11Invoice, bool, bool)> {
 		(
 			"lnbc10m1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdp9wpshjmt9de6zqmt9w3skgct5vysxjmnnd9jx2mq8q8a04uqsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs9q2gqqqqqqsgq7hf8he7ecf7n4ffphs6awl9t6676rrclv9ckg3d3ncn7fct63p6s365duk5wrk202cfy3aj5xnnp5gs3vrdvruverwwq7yzhkf5a3xqpd05wjc".to_owned(),
 			InvoiceBuilder::new(Currency::Bitcoin)
-				.amount_milli_satoshis(1_000_000_000)
+				.amount(LightningAmount::from_msat(1_000_000_000))
 				.duration_since_epoch(Duration::from_secs(1496314658))
 				.payment_hash(lightning_invoice::PaymentHash(
 				<[u8; 32]>::try_from(

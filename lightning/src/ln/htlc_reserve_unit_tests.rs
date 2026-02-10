@@ -53,8 +53,10 @@ fn do_test_counterparty_no_reserve(send_from_initiator: bool) {
 	push_amt -= get_holder_selected_channel_reserve_satoshis(100_000, &default_config) * 1000;
 
 	let push = if send_from_initiator { 0 } else { push_amt };
-	let temp_channel_id =
-		nodes[0].node.create_channel(node_b_id, 100_000, push, 42, None, None).unwrap();
+	let temp_channel_id = nodes[0]
+		.node
+		.create_channel(node_b_id, 100_000, LightningAmount::from_msat(push), 42, None, None)
+		.unwrap();
 	let mut open_channel_message =
 		get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 	if !send_from_initiator {
@@ -1553,7 +1555,7 @@ pub fn test_update_add_htlc_bolt2_receiver_check_amount_received_more_than_min()
 		let mut peer_state_lock;
 
 		let channel = get_channel_ref!(nodes[0], nodes[1], per_peer_lock, peer_state_lock, chan.2);
-		channel.context().get_holder_htlc_minimum_msat()
+		channel.context().get_holder_htlc_minimum().to_msat()
 	};
 
 	let (route, our_payment_hash, _, our_payment_secret) =

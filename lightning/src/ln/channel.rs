@@ -75,6 +75,7 @@ use crate::routing::gossip::NodeId;
 use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::sign::tx_builder::{HTLCAmountDirection, NextCommitmentStats, SpecTxBuilder, TxBuilder};
 use crate::sign::{ChannelSigner, EntropySource, NodeSigner, Recipient, SignerProvider};
+use crate::types::amount::LightningAmount;
 use crate::types::features::{ChannelTypeFeatures, InitFeatures};
 use crate::types::payment::{PaymentHash, PaymentPreimage};
 use crate::util::config::{
@@ -2577,8 +2578,8 @@ impl FundingScope {
 		self.channel_transaction_parameters.channel_value_satoshis
 	}
 
-	pub(crate) fn get_value_to_self_msat(&self) -> u64 {
-		self.value_to_self_msat
+	pub(crate) fn get_value_to_self(&self) -> LightningAmount {
+		LightningAmount::from_msat(self.value_to_self_msat)
 	}
 
 	pub fn get_holder_counterparty_selected_channel_reserve_satoshis(&self) -> (u64, Option<u64>) {
@@ -4077,8 +4078,8 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 
 	/// Gets the fee we'd want to charge for adding an HTLC output to this Channel
 	/// Allowed in any state (including after shutdown)
-	pub fn get_outbound_forwarding_fee_base_msat(&self) -> u32 {
-		self.config.options.forwarding_fee_base_msat
+	pub fn get_outbound_forwarding_fee_base(&self) -> LightningAmount {
+		LightningAmount::from_msat(self.config.options.forwarding_fee_base_msat as u64)
 	}
 
 	/// Returns true if we've ever received a message from the remote end for this Channel
@@ -4413,23 +4414,27 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 	}
 
 	/// Allowed in any state (including after shutdown)
-	pub fn get_holder_htlc_minimum_msat(&self) -> u64 {
-		self.holder_htlc_minimum_msat
+	pub fn get_holder_htlc_minimum(&self) -> LightningAmount {
+		LightningAmount::from_msat(self.holder_htlc_minimum_msat)
 	}
 
 	/// Allowed in any state (including after shutdown), but will return none before TheirInitSent
-	pub fn get_holder_htlc_maximum_msat(&self, funding: &FundingScope) -> Option<u64> {
-		funding.get_htlc_maximum_msat(self.holder_max_htlc_value_in_flight_msat)
+	pub fn get_holder_htlc_maximum(&self, funding: &FundingScope) -> Option<LightningAmount> {
+		funding
+			.get_htlc_maximum_msat(self.holder_max_htlc_value_in_flight_msat)
+			.map(LightningAmount::from_msat)
 	}
 
 	/// Allowed in any state (including after shutdown)
-	pub fn get_counterparty_htlc_minimum_msat(&self) -> u64 {
-		self.counterparty_htlc_minimum_msat
+	pub fn get_counterparty_htlc_minimum(&self) -> LightningAmount {
+		LightningAmount::from_msat(self.counterparty_htlc_minimum_msat)
 	}
 
 	/// Allowed in any state (including after shutdown), but will return none before TheirInitSent
-	pub fn get_counterparty_htlc_maximum_msat(&self, funding: &FundingScope) -> Option<u64> {
-		funding.get_htlc_maximum_msat(self.counterparty_max_htlc_value_in_flight_msat)
+	pub fn get_counterparty_htlc_maximum(&self, funding: &FundingScope) -> Option<LightningAmount> {
+		funding
+			.get_htlc_maximum_msat(self.counterparty_max_htlc_value_in_flight_msat)
+			.map(LightningAmount::from_msat)
 	}
 
 	pub fn get_fee_proportional_millionths(&self) -> u32 {
@@ -4461,13 +4466,15 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 	///
 	/// Uses a default of 1 sat/vbyte if `limiting_feerate_sat_per_kw` is `None` and the dust
 	/// exposure policy depends on fee rate.
-	pub fn get_max_dust_htlc_exposure_msat(&self, limiting_feerate_sat_per_kw: Option<u32>) -> u64 {
-		match self.config.options.max_dust_htlc_exposure {
+	pub fn get_max_dust_htlc_exposure(
+		&self, limiting_feerate_sat_per_kw: Option<u32>,
+	) -> LightningAmount {
+		LightningAmount::from_msat(match self.config.options.max_dust_htlc_exposure {
 			MaxDustHTLCExposure::FeeRateMultiplier(multiplier) => {
 				(limiting_feerate_sat_per_kw.unwrap_or(250) as u64).saturating_mul(multiplier)
 			},
 			MaxDustHTLCExposure::FixedLimitMsat(limit) => limit,
-		}
+		})
 	}
 
 	/// Returns the previous [`ChannelConfig`] applied to this channel, if any.
@@ -5013,7 +5020,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			})?;
 
 		let max_dust_htlc_exposure_msat =
-			self.get_max_dust_htlc_exposure_msat(dust_exposure_limiting_feerate);
+			self.get_max_dust_htlc_exposure(dust_exposure_limiting_feerate).to_msat();
 		if next_local_commitment_stats.dust_exposure_msat > max_dust_htlc_exposure_msat {
 			return Err(ChannelError::close(
 				format!(
@@ -5204,7 +5211,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		// Note, we evaluate pending htlc "preemptive" trimmed-to-dust threshold at the proposed
 		// `feerate_per_kw`.
 		let max_dust_htlc_exposure_msat =
-			self.get_max_dust_htlc_exposure_msat(dust_exposure_limiting_feerate);
+			self.get_max_dust_htlc_exposure(dust_exposure_limiting_feerate).to_msat();
 		if next_remote_commitment_stats.dust_exposure_msat > max_dust_htlc_exposure_msat {
 			log_debug!(
 				logger,
@@ -5288,7 +5295,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			})?;
 
 		let max_dust_htlc_exposure_msat =
-			self.get_max_dust_htlc_exposure_msat(dust_exposure_limiting_feerate);
+			self.get_max_dust_htlc_exposure(dust_exposure_limiting_feerate).to_msat();
 		if next_remote_commitment_stats.dust_exposure_msat > max_dust_htlc_exposure_msat {
 			// Note that the total dust exposure includes both the dust HTLCs and the excess mining fees of
 			// the counterparty commitment transaction
@@ -5833,7 +5840,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		// send above the dust limit (as the router can always overpay to meet the dust limit).
 		let mut remaining_msat_below_dust_exposure_limit = None;
 		let mut dust_exposure_dust_limit_msat = 0;
-		let max_dust_htlc_exposure_msat = context.get_max_dust_htlc_exposure_msat(dust_exposure_limiting_feerate);
+		let max_dust_htlc_exposure_msat = context.get_max_dust_htlc_exposure(dust_exposure_limiting_feerate).to_msat();
 
 		let dust_buffer_feerate = self.get_dust_buffer_feerate(None);
 		let (buffer_htlc_success_tx_fee_sat, buffer_htlc_timeout_tx_fee_sat) = second_stage_tx_fees_sat(
@@ -13175,14 +13182,14 @@ where
 			.chain(self.context.pending_outbound_htlcs.iter().map(|htlc| (&htlc.source, &htlc.payment_hash)))
 	}
 
-	pub fn get_announced_htlc_max_msat(&self) -> u64 {
-		return cmp::min(
+	pub fn get_announced_htlc_max(&self) -> LightningAmount {
+		LightningAmount::from_msat(cmp::min(
 			// Upper bound by capacity. We make it a bit less than full capacity to prevent attempts
 			// to use full capacity. This is an effort to reduce routing failures, because in many cases
 			// channel might have been used to route very small values (either by honest users or as DoS).
 			self.funding.get_value_satoshis() * 1000 * 9 / 10,
 			self.context.counterparty_max_htlc_value_in_flight_msat,
-		);
+		))
 	}
 
 	#[rustfmt::skip]

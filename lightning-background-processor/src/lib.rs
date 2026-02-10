@@ -2604,7 +2604,14 @@ mod tests {
 		($node_a: expr, $node_b: expr, $channel_value: expr) => {{
 			$node_a
 				.node
-				.create_channel($node_b.node.get_our_node_id(), $channel_value, 100, 42, None, None)
+				.create_channel(
+					$node_b.node.get_our_node_id(),
+					$channel_value,
+					lightning::types::amount::LightningAmount::from_msat(100),
+					42,
+					None,
+					None,
+				)
 				.unwrap();
 			let msg_a = get_event_msg!(
 				$node_a,

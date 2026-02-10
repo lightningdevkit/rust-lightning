@@ -20,6 +20,7 @@
 //! # use lightning::routing::gossip::NetworkGraph;
 //! # use lightning::routing::router::{RouteParameters, find_route};
 //! # use lightning::routing::scoring::{ProbabilisticScorer, ProbabilisticScoringFeeParameters, ProbabilisticScoringDecayParameters};
+//! # use lightning::types::amount::LightningAmount;
 //! # use lightning::sign::KeysManager;
 //! # use lightning::util::logger::{Logger, Record};
 //! # use bitcoin::secp256k1::PublicKey;
@@ -38,7 +39,7 @@
 //!
 //! // Or use custom channel penalties.
 //! let params = ProbabilisticScoringFeeParameters {
-//! 	liquidity_penalty_multiplier_msat: 2 * 1000,
+//! 	liquidity_penalty_multiplier: LightningAmount::from_msat(2 * 1000),
 //! 	..ProbabilisticScoringFeeParameters::default()
 //! };
 //! let decay_params = ProbabilisticScoringDecayParameters::default();
@@ -59,6 +60,7 @@ use crate::routing::gossip::{DirectedChannelInfo, EffectiveCapacity, NetworkGrap
 use crate::routing::log_approx;
 use crate::routing::router::{BlindedPathCandidate, CandidateRouteHop, Path, PublicHopCandidate};
 use crate::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use crate::types::amount::LightningAmount;
 use crate::util::logger::Logger;
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
 use bucketed_history::{
@@ -403,9 +405,9 @@ pub struct FixedPenaltyScorer {
 }
 
 impl FixedPenaltyScorer {
-	/// Creates a new scorer using `penalty_msat`.
-	pub fn with_penalty(penalty_msat: u64) -> Self {
-		Self { penalty_msat }
+	/// Creates a new scorer using `penalty`.
+	pub fn with_penalty(penalty: LightningAmount) -> Self {
+		Self { penalty_msat: penalty.to_msat() }
 	}
 }
 
@@ -459,8 +461,8 @@ impl ReadableArgs<u64> for FixedPenaltyScorer {
 /// *Optimally Reliable & Cheap Payment Flows on the Lightning Network* by Rene Pickhardt
 /// and Stefan Richter [[1]] (i.e. `(upper_bound - payment_amount) / (upper_bound - lower_bound)`).
 ///
-/// This probability is combined with the [`liquidity_penalty_multiplier_msat`] and
-/// [`liquidity_penalty_amount_multiplier_msat`] parameters to calculate a concrete penalty in
+/// This probability is combined with the [`liquidity_penalty_multiplier`] and
+/// [`liquidity_penalty_amount_multiplier`] parameters to calculate a concrete penalty in
 /// milli-satoshis. The penalties, when added across all hops, have the property of being linear in
 /// terms of the entire path's success probability. This allows the router to directly compare
 /// penalties for different paths. See the documentation of those parameters for the exact formulas.
@@ -468,17 +470,17 @@ impl ReadableArgs<u64> for FixedPenaltyScorer {
 /// The liquidity bounds are decayed by halving them every [`liquidity_offset_half_life`].
 ///
 /// Further, we track the history of our upper and lower liquidity bounds for each channel,
-/// allowing us to assign a second penalty (using [`historical_liquidity_penalty_multiplier_msat`]
-/// and [`historical_liquidity_penalty_amount_multiplier_msat`]) based on the same probability
+/// allowing us to assign a second penalty (using [`historical_liquidity_penalty_multiplier`]
+/// and [`historical_liquidity_penalty_amount_multiplier`]) based on the same probability
 /// formula, but using the history of a channel rather than our latest estimates for the liquidity
 /// bounds.
 ///
 /// [1]: https://arxiv.org/abs/2107.05322
-/// [`liquidity_penalty_multiplier_msat`]: ProbabilisticScoringFeeParameters::liquidity_penalty_multiplier_msat
-/// [`liquidity_penalty_amount_multiplier_msat`]: ProbabilisticScoringFeeParameters::liquidity_penalty_amount_multiplier_msat
+/// [`liquidity_penalty_multiplier`]: ProbabilisticScoringFeeParameters::liquidity_penalty_multiplier
+/// [`liquidity_penalty_amount_multiplier`]: ProbabilisticScoringFeeParameters::liquidity_penalty_amount_multiplier
 /// [`liquidity_offset_half_life`]: ProbabilisticScoringDecayParameters::liquidity_offset_half_life
-/// [`historical_liquidity_penalty_multiplier_msat`]: ProbabilisticScoringFeeParameters::historical_liquidity_penalty_multiplier_msat
-/// [`historical_liquidity_penalty_amount_multiplier_msat`]: ProbabilisticScoringFeeParameters::historical_liquidity_penalty_amount_multiplier_msat
+/// [`historical_liquidity_penalty_multiplier`]: ProbabilisticScoringFeeParameters::historical_liquidity_penalty_multiplier
+/// [`historical_liquidity_penalty_amount_multiplier`]: ProbabilisticScoringFeeParameters::historical_liquidity_penalty_amount_multiplier
 pub struct ProbabilisticScorer<G: Deref<Target = NetworkGraph<L>>, L: Logger> {
 	decay_params: ProbabilisticScoringDecayParameters,
 	network_graph: G,
@@ -583,35 +585,35 @@ impl Writeable for ChannelLiquidities {
 pub struct ProbabilisticScoringFeeParameters {
 	/// A fixed penalty in msats to apply to each channel.
 	///
-	/// In testing, a value of roughly 1/10th of [`historical_liquidity_penalty_multiplier_msat`]
+	/// In testing, a value of roughly 1/10th of [`historical_liquidity_penalty_multiplier`]
 	/// (implying scaling all estimated probabilities down by a factor of ~79%) resulted in the
 	/// most accurate total success probabilities.
 	///
 	/// Default value: 1,024 msat (i.e. we're willing to pay 1 sat to avoid each additional hop).
 	///
-	/// [`historical_liquidity_penalty_multiplier_msat`]: Self::historical_liquidity_penalty_multiplier_msat
-	pub base_penalty_msat: u64,
+	/// [`historical_liquidity_penalty_multiplier`]: Self::historical_liquidity_penalty_multiplier
+	pub base_penalty: LightningAmount,
 
 	/// A multiplier used with the payment amount to calculate a fixed penalty applied to each
-	/// channel, in excess of the [`base_penalty_msat`].
+	/// channel, in excess of the [`base_penalty`].
 	///
 	/// The purpose of the amount penalty is to avoid having fees dominate the channel cost (i.e.,
 	/// fees plus penalty) for large payments. The penalty is computed as the product of this
 	/// multiplier and `2^30`ths of the payment amount.
 	///
-	/// ie `base_penalty_amount_multiplier_msat * amount_msat / 2^30`
+	/// ie `base_penalty_amount_multiplier * amount_msat / 2^30`
 	///
 	/// In testing, a value of roughly ~100x (1/10th * 2^10) of
-	/// [`historical_liquidity_penalty_amount_multiplier_msat`] (implying scaling all estimated
+	/// [`historical_liquidity_penalty_amount_multiplier`] (implying scaling all estimated
 	/// probabilities down by a factor of ~79%) resulted in the most accurate total success
 	/// probabilities.
 	///
 	/// Default value: 131,072 msat (i.e. we're willing to pay 0.125bps to avoid each additional
 	///                              hop).
 	///
-	/// [`base_penalty_msat`]: Self::base_penalty_msat
-	/// [`historical_liquidity_penalty_amount_multiplier_msat`]: Self::historical_liquidity_penalty_amount_multiplier_msat
-	pub base_penalty_amount_multiplier_msat: u64,
+	/// [`base_penalty`]: Self::base_penalty
+	/// [`historical_liquidity_penalty_amount_multiplier`]: Self::historical_liquidity_penalty_amount_multiplier
+	pub base_penalty_amount_multiplier: LightningAmount,
 
 	/// A multiplier used in conjunction with the negative `log10` of the channel's success
 	/// probability for a payment, as determined by our latest estimates of the channel's
@@ -619,22 +621,22 @@ pub struct ProbabilisticScoringFeeParameters {
 	///
 	/// The penalty is based in part on the knowledge learned from prior successful and unsuccessful
 	/// payments. This knowledge is decayed over time based on [`liquidity_offset_half_life`]. The
-	/// penalty is effectively limited to `2 * liquidity_penalty_multiplier_msat` (corresponding to
+	/// penalty is effectively limited to `2 * liquidity_penalty_multiplier` (corresponding to
 	/// lower bounding the success probability to `0.01`) when the amount falls within the
 	/// uncertainty bounds of the channel liquidity balance. Amounts above the upper bound will
 	/// result in a `u64::max_value` penalty, however.
 	///
-	/// `-log10(success_probability) * liquidity_penalty_multiplier_msat`
+	/// `-log10(success_probability) * liquidity_penalty_multiplier`
 	///
 	/// In testing, this scoring model performs much worse than the historical scoring model
-	/// configured with the [`historical_liquidity_penalty_multiplier_msat`] and thus is disabled
+	/// configured with the [`historical_liquidity_penalty_multiplier`] and thus is disabled
 	/// by default.
 	///
 	/// Default value: 0 msat
 	///
 	/// [`liquidity_offset_half_life`]: ProbabilisticScoringDecayParameters::liquidity_offset_half_life
-	/// [`historical_liquidity_penalty_multiplier_msat`]: Self::historical_liquidity_penalty_multiplier_msat
-	pub liquidity_penalty_multiplier_msat: u64,
+	/// [`historical_liquidity_penalty_multiplier`]: Self::historical_liquidity_penalty_multiplier
+	pub liquidity_penalty_multiplier: LightningAmount,
 
 	/// A multiplier used in conjunction with the payment amount and the negative `log10` of the
 	/// channel's success probability for the total amount flowing over a channel, as determined by
@@ -645,7 +647,7 @@ pub struct ProbabilisticScoringFeeParameters {
 	/// multiplier and `2^20`ths of the payment amount, weighted by the negative `log10` of the
 	/// success probability.
 	///
-	/// `-log10(success_probability) * liquidity_penalty_amount_multiplier_msat * amount_msat / 2^20`
+	/// `-log10(success_probability) * liquidity_penalty_amount_multiplier * amount_msat / 2^20`
 	///
 	/// In practice, this means for 0.1 success probability (`-log10(0.1) == 1`) each `2^20`th of
 	/// the amount will result in a penalty of the multiplier. And, as the success probability
@@ -654,19 +656,19 @@ pub struct ProbabilisticScoringFeeParameters {
 	/// fall below `1`.
 	///
 	/// In testing, this scoring model performs much worse than the historical scoring model
-	/// configured with the [`historical_liquidity_penalty_amount_multiplier_msat`] and thus is
+	/// configured with the [`historical_liquidity_penalty_amount_multiplier`] and thus is
 	/// disabled by default.
 	///
 	/// Default value: 0 msat
 	///
-	/// [`historical_liquidity_penalty_amount_multiplier_msat`]: Self::historical_liquidity_penalty_amount_multiplier_msat
-	pub liquidity_penalty_amount_multiplier_msat: u64,
+	/// [`historical_liquidity_penalty_amount_multiplier`]: Self::historical_liquidity_penalty_amount_multiplier
+	pub liquidity_penalty_amount_multiplier: LightningAmount,
 
 	/// A multiplier used in conjunction with the negative `log10` of the channel's success
 	/// probability for the payment, as determined based on the history of our estimates of the
 	/// channel's available liquidity, to determine a penalty.
 	///
-	/// This penalty is similar to [`liquidity_penalty_multiplier_msat`], however, instead of using
+	/// This penalty is similar to [`liquidity_penalty_multiplier`], however, instead of using
 	/// only our latest estimate for the current liquidity available in the channel, it estimates
 	/// success probability based on the estimated liquidity available in the channel through
 	/// history. Specifically, every time we update our liquidity bounds on a given channel, we
@@ -676,8 +678,8 @@ pub struct ProbabilisticScoringFeeParameters {
 	/// Default value: 10,000 msat (i.e. willing to pay 1 sat to avoid an 80% probability channel,
 	///                            or 6 sats to avoid a 25% probability channel).
 	///
-	/// [`liquidity_penalty_multiplier_msat`]: Self::liquidity_penalty_multiplier_msat
-	pub historical_liquidity_penalty_multiplier_msat: u64,
+	/// [`liquidity_penalty_multiplier`]: Self::liquidity_penalty_multiplier
+	pub historical_liquidity_penalty_multiplier: LightningAmount,
 
 	/// A multiplier used in conjunction with the payment amount and the negative `log10` of the
 	/// channel's success probability for the total amount flowing over a channel, as determined
@@ -688,7 +690,7 @@ pub struct ProbabilisticScoringFeeParameters {
 	/// large payments. The penalty is computed as the product of this multiplier and `2^20`ths
 	/// of the payment amount, weighted by the negative `log10` of the success probability.
 	///
-	/// This penalty is similar to [`liquidity_penalty_amount_multiplier_msat`], however, instead
+	/// This penalty is similar to [`liquidity_penalty_amount_multiplier`], however, instead
 	/// of using only our latest estimate for the current liquidity available in the channel, it
 	/// estimates success probability based on the estimated liquidity available in the channel
 	/// through history. Specifically, every time we update our liquidity bounds on a given
@@ -699,8 +701,8 @@ pub struct ProbabilisticScoringFeeParameters {
 	///                            probability channels, or 0.5bps to avoid a 38% probability
 	///                            channel).
 	///
-	/// [`liquidity_penalty_amount_multiplier_msat`]: Self::liquidity_penalty_amount_multiplier_msat
-	pub historical_liquidity_penalty_amount_multiplier_msat: u64,
+	/// [`liquidity_penalty_amount_multiplier`]: Self::liquidity_penalty_amount_multiplier
+	pub historical_liquidity_penalty_amount_multiplier: LightningAmount,
 
 	/// Manual penalties used for the given nodes. Allows to set a particular penalty for a given
 	/// node. Note that a manual penalty of `u64::max_value()` means the node would not ever be
@@ -716,15 +718,15 @@ pub struct ProbabilisticScoringFeeParameters {
 	/// to restrict `htlc_maximum_msat` and improve privacy.
 	///
 	/// Default value: 250 msat
-	pub anti_probing_penalty_msat: u64,
+	pub anti_probing_penalty: LightningAmount,
 
 	/// This penalty is applied when the total amount flowing over a channel exceeds our current
 	/// estimate of the channel's available liquidity. The total amount is the amount of the
 	/// current HTLC plus any HTLCs which we've sent over the same channel.
 	///
 	/// Note that in this case all other penalties, including the
-	/// [`liquidity_penalty_multiplier_msat`] and [`liquidity_penalty_amount_multiplier_msat`]-based
-	/// penalties, as well as the [`base_penalty_msat`] and the [`anti_probing_penalty_msat`], if
+	/// [`liquidity_penalty_multiplier`] and [`liquidity_penalty_amount_multiplier`]-based
+	/// penalties, as well as the [`base_penalty`] and the [`anti_probing_penalty`], if
 	/// applicable, are still included in the overall penalty.
 	///
 	/// If you wish to avoid creating paths with such channels entirely, setting this to a value of
@@ -732,11 +734,11 @@ pub struct ProbabilisticScoringFeeParameters {
 	///
 	/// Default value: 1_0000_0000_000 msat (1 Bitcoin)
 	///
-	/// [`liquidity_penalty_multiplier_msat`]: Self::liquidity_penalty_multiplier_msat
-	/// [`liquidity_penalty_amount_multiplier_msat`]: Self::liquidity_penalty_amount_multiplier_msat
-	/// [`base_penalty_msat`]: Self::base_penalty_msat
-	/// [`anti_probing_penalty_msat`]: Self::anti_probing_penalty_msat
-	pub considered_impossible_penalty_msat: u64,
+	/// [`liquidity_penalty_multiplier`]: Self::liquidity_penalty_multiplier
+	/// [`liquidity_penalty_amount_multiplier`]: Self::liquidity_penalty_amount_multiplier
+	/// [`base_penalty`]: Self::base_penalty
+	/// [`anti_probing_penalty`]: Self::anti_probing_penalty
+	pub considered_impossible_penalty: LightningAmount,
 
 	/// In order to calculate most of the scores above, we must first convert a lower and upper
 	/// bound on the available liquidity in a channel into the probability that we think a payment
@@ -771,33 +773,33 @@ pub struct ProbabilisticScoringFeeParameters {
 	/// pathfinding result for background probing.
 	///
 	/// Specifically, the following penalty is applied
-	/// `probing_diversity_penalty_msat * max(0, (86400 - current time + last update))^2 / 86400^2` is
+	/// `probing_diversity_penalty * max(0, (86400 - current time + last update))^2 / 86400^2` is
 	///
 	/// As this is a maximum value, when setting this you should consider it in relation to the
 	/// other values set to ensure that, at maximum, we strongly avoid paths which we recently
 	/// tried (similar to if they have a low success probability). For example, you might set this
-	/// to be the sum of [`Self::base_penalty_msat`] and
-	/// [`Self::historical_liquidity_penalty_multiplier_msat`] (plus some multiple of their
+	/// to be the sum of [`Self::base_penalty`] and
+	/// [`Self::historical_liquidity_penalty_multiplier`] (plus some multiple of their
 	/// corresponding `amount_multiplier`s).
 	///
 	/// Default value: 0
-	pub probing_diversity_penalty_msat: u64,
+	pub probing_diversity_penalty: LightningAmount,
 }
 
 impl Default for ProbabilisticScoringFeeParameters {
 	fn default() -> Self {
 		Self {
-			base_penalty_msat: 1024,
-			base_penalty_amount_multiplier_msat: 131_072,
-			liquidity_penalty_multiplier_msat: 0,
-			liquidity_penalty_amount_multiplier_msat: 0,
+			base_penalty: LightningAmount::from_msat(1024),
+			base_penalty_amount_multiplier: LightningAmount::from_msat(131_072),
+			liquidity_penalty_multiplier: LightningAmount::from_msat(0),
+			liquidity_penalty_amount_multiplier: LightningAmount::from_msat(0),
 			manual_node_penalties: new_hash_map(),
-			anti_probing_penalty_msat: 250,
-			considered_impossible_penalty_msat: 1_0000_0000_000,
-			historical_liquidity_penalty_multiplier_msat: 10_000,
-			historical_liquidity_penalty_amount_multiplier_msat: 1_250,
+			anti_probing_penalty: LightningAmount::from_msat(250),
+			considered_impossible_penalty: LightningAmount::from_msat(1_0000_0000_000),
+			historical_liquidity_penalty_multiplier: LightningAmount::from_msat(10_000),
+			historical_liquidity_penalty_amount_multiplier: LightningAmount::from_msat(1_250),
 			linear_success_probability: false,
-			probing_diversity_penalty_msat: 0,
+			probing_diversity_penalty: LightningAmount::from_msat(0),
 		}
 	}
 }
@@ -842,17 +844,17 @@ impl ProbabilisticScoringFeeParameters {
 impl ProbabilisticScoringFeeParameters {
 	fn zero_penalty() -> Self {
 		Self {
-			base_penalty_msat: 0,
-			base_penalty_amount_multiplier_msat: 0,
-			liquidity_penalty_multiplier_msat: 0,
-			liquidity_penalty_amount_multiplier_msat: 0,
-			historical_liquidity_penalty_multiplier_msat: 0,
-			historical_liquidity_penalty_amount_multiplier_msat: 0,
+			base_penalty: LightningAmount::from_msat(0),
+			base_penalty_amount_multiplier: LightningAmount::from_msat(0),
+			liquidity_penalty_multiplier: LightningAmount::from_msat(0),
+			liquidity_penalty_amount_multiplier: LightningAmount::from_msat(0),
+			historical_liquidity_penalty_multiplier: LightningAmount::from_msat(0),
+			historical_liquidity_penalty_amount_multiplier: LightningAmount::from_msat(0),
 			manual_node_penalties: new_hash_map(),
-			anti_probing_penalty_msat: 0,
-			considered_impossible_penalty_msat: 0,
+			anti_probing_penalty: LightningAmount::from_msat(0),
+			considered_impossible_penalty: LightningAmount::from_msat(0),
 			linear_success_probability: true,
-			probing_diversity_penalty_msat: 0,
+			probing_diversity_penalty: LightningAmount::from_msat(0),
 		}
 	}
 }
@@ -993,7 +995,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Logger> ProbabilisticScorer<G, L> {
 			if let Some(chan_debug) = graph.channels().get(scid) {
 				let log_direction = |source, target| {
 					if let Some((directed_info, _)) = chan_debug.as_directed_to(target) {
-						let amt = directed_info.effective_capacity().as_msat();
+						let amt = directed_info.effective_capacity().as_amount().to_msat();
 						let dir_liq = liq.as_directed(source, target, amt);
 
 						let min_buckets = &dir_liq.liquidity_history.min_liquidity_offset_history_buckets();
@@ -1047,7 +1049,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Logger> ProbabilisticScorer<G, L> {
 		if let Some(chan) = graph.channels().get(&scid) {
 			if let Some(liq) = self.channel_liquidities.get(&scid) {
 				if let Some((directed_info, source)) = chan.as_directed_to(target) {
-					let amt = directed_info.effective_capacity().as_msat();
+					let amt = directed_info.effective_capacity().as_amount().to_msat();
 					let dir_liq = liq.as_directed(source, target, amt);
 					return Some((dir_liq.min_liquidity_msat(), dir_liq.max_liquidity_msat()));
 				}
@@ -1090,7 +1092,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Logger> ProbabilisticScorer<G, L> {
 		if let Some(chan) = graph.channels().get(&scid) {
 			if let Some(liq) = self.channel_liquidities.get(&scid) {
 				if let Some((directed_info, source)) = chan.as_directed_to(target) {
-					let amt = directed_info.effective_capacity().as_msat();
+					let amt = directed_info.effective_capacity().as_amount().to_msat();
 					let dir_liq = liq.as_directed(source, target, amt);
 
 					let min_buckets = *dir_liq.liquidity_history.min_liquidity_offset_history_buckets();
@@ -1129,7 +1131,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Logger> ProbabilisticScorer<G, L> {
 		if let Some(chan) = graph.channels().get(&scid) {
 			if let Some((directed_info, source)) = chan.as_directed_to(target) {
 				if let Some(liq) = self.channel_liquidities.get(&scid) {
-					let capacity_msat = directed_info.effective_capacity().as_msat();
+					let capacity_msat = directed_info.effective_capacity().as_amount().to_msat();
 					let dir_liq = liq.as_directed(source, target, capacity_msat);
 
 					let res = dir_liq.liquidity_history.calculate_success_probability_times_billion(
@@ -1156,7 +1158,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Logger> ProbabilisticScorer<G, L> {
 		amt: u64, params: &ProbabilisticScoringFeeParameters,
 		min_zero_penalty: bool,
 	) -> f64 {
-		let capacity_msat = directed_info.effective_capacity().as_msat();
+		let capacity_msat = directed_info.effective_capacity().as_amount().to_msat();
 		let dummy_liq = ChannelLiquidity::new(Duration::ZERO);
 		let liq = self.channel_liquidities.get(&scid)
 			.unwrap_or(&dummy_liq)
@@ -1457,8 +1459,8 @@ impl<
 		let min_liquidity_msat = core::cmp::min(self.min_liquidity_msat(), max_liquidity_msat);
 
 		let mut res = 0;
-		if score_params.liquidity_penalty_multiplier_msat != 0 ||
-		   score_params.liquidity_penalty_amount_multiplier_msat != 0 {
+		if score_params.liquidity_penalty_multiplier.to_msat() != 0 ||
+		   score_params.liquidity_penalty_amount_multiplier.to_msat() != 0 {
 			if total_inflight_amount_msat <= min_liquidity_msat {
 				// If the in-flight is less than the minimum liquidity estimate, we don't assign a
 				// liquidity penalty at all (as the success probability is 100%).
@@ -1468,8 +1470,8 @@ impl<
 				// impossibility penalty.
 				let negative_log10_times_2048 = NEGATIVE_LOG10_UPPER_BOUND * 2048;
 				res = Self::combined_penalty_msat(amount_msat, negative_log10_times_2048,
-						score_params.liquidity_penalty_multiplier_msat,
-						score_params.liquidity_penalty_amount_multiplier_msat);
+						score_params.liquidity_penalty_multiplier.to_msat(),
+						score_params.liquidity_penalty_amount_multiplier.to_msat());
 			} else {
 				let (numerator, denominator) = success_probability(
 					total_inflight_amount_msat, min_liquidity_msat, max_liquidity_msat,
@@ -1483,27 +1485,27 @@ impl<
 					let negative_log10_times_2048 =
 						log_approx::negative_log10_times_2048(numerator, denominator);
 					res = Self::combined_penalty_msat(amount_msat, negative_log10_times_2048,
-						score_params.liquidity_penalty_multiplier_msat,
-						score_params.liquidity_penalty_amount_multiplier_msat);
+						score_params.liquidity_penalty_multiplier.to_msat(),
+						score_params.liquidity_penalty_amount_multiplier.to_msat());
 				}
 			}
 		}
 
 		if total_inflight_amount_msat >= max_liquidity_msat {
-			res = res.saturating_add(score_params.considered_impossible_penalty_msat);
+			res = res.saturating_add(score_params.considered_impossible_penalty.to_msat());
 		}
 
 		if total_inflight_amount_msat >= available_capacity {
 			// We're trying to send more than the capacity, use a max penalty.
 			res = res.saturating_add(Self::combined_penalty_msat(amount_msat,
 				NEGATIVE_LOG10_UPPER_BOUND * 2048,
-				score_params.historical_liquidity_penalty_multiplier_msat,
-				score_params.historical_liquidity_penalty_amount_multiplier_msat));
+				score_params.historical_liquidity_penalty_multiplier.to_msat(),
+				score_params.historical_liquidity_penalty_amount_multiplier.to_msat()));
 			return res;
 		}
 
-		if score_params.historical_liquidity_penalty_multiplier_msat != 0 ||
-		   score_params.historical_liquidity_penalty_amount_multiplier_msat != 0 {
+		if score_params.historical_liquidity_penalty_multiplier.to_msat() != 0 ||
+		   score_params.historical_liquidity_penalty_amount_multiplier.to_msat() != 0 {
 			if let Some(cumulative_success_prob_times_billion) = self.liquidity_history
 				.calculate_success_probability_times_billion(
 					score_params, total_inflight_amount_msat, self.capacity_msat
@@ -1512,8 +1514,8 @@ impl<
 				let historical_negative_log10_times_2048 =
 					log_approx::negative_log10_times_2048(cumulative_success_prob_times_billion + 1, 1024 * 1024 * 1024);
 				res = res.saturating_add(Self::combined_penalty_msat(amount_msat,
-					historical_negative_log10_times_2048, score_params.historical_liquidity_penalty_multiplier_msat,
-					score_params.historical_liquidity_penalty_amount_multiplier_msat));
+					historical_negative_log10_times_2048, score_params.historical_liquidity_penalty_multiplier.to_msat(),
+					score_params.historical_liquidity_penalty_amount_multiplier.to_msat()));
 			} else {
 				// If we don't have any valid points (or, once decayed, we have less than a full
 				// point), redo the non-historical calculation with no liquidity bounds tracked and
@@ -1525,12 +1527,12 @@ impl<
 				let negative_log10_times_2048 =
 					log_approx::negative_log10_times_2048(numerator, denominator);
 				res = res.saturating_add(Self::combined_penalty_msat(amount_msat, negative_log10_times_2048,
-					score_params.historical_liquidity_penalty_multiplier_msat,
-					score_params.historical_liquidity_penalty_amount_multiplier_msat));
+					score_params.historical_liquidity_penalty_multiplier.to_msat(),
+					score_params.historical_liquidity_penalty_amount_multiplier.to_msat()));
 			}
 		}
 
-		if score_params.probing_diversity_penalty_msat != 0 {
+		if score_params.probing_diversity_penalty.to_msat() != 0 {
 			// We use `last_update_time` as a stand-in for the current time as we don't want to
 			// fetch the current time in every score call (slowing things down substantially on
 			// some platforms where a syscall is required), don't want to add an unnecessary `std`
@@ -1538,7 +1540,7 @@ impl<
 			// to the current time, (and using the last the last time we probed is also fine here).
 			let time_since_update = last_update_time.saturating_sub(*self.last_datapoint_time);
 			let mul = Duration::from_secs(60 * 60 * 24).saturating_sub(time_since_update).as_secs();
-			let penalty = score_params.probing_diversity_penalty_msat.saturating_mul(mul * mul);
+			let penalty = score_params.probing_diversity_penalty.to_msat().saturating_mul(mul * mul);
 			res = res.saturating_add(penalty / ((60 * 60 * 24) * (60 * 60 * 24)));
 		}
 
@@ -1679,7 +1681,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Logger> ScoreLookUp for Probabilisti
 				if usage.amount_msat > hint.payinfo.htlc_maximum_msat {
 					return u64::max_value();
 				} else if total_inflight_amount_msat > hint.payinfo.htlc_maximum_msat {
-					return score_params.considered_impossible_penalty_msat;
+					return score_params.considered_impossible_penalty.to_msat();
 				} else {
 					return 0;
 				}
@@ -1691,8 +1693,8 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Logger> ScoreLookUp for Probabilisti
 			return *penalty;
 		}
 
-		let base_penalty_msat = score_params.base_penalty_msat.saturating_add(
-			score_params.base_penalty_amount_multiplier_msat
+		let base_penalty_msat = score_params.base_penalty.to_msat().saturating_add(
+			score_params.base_penalty_amount_multiplier.to_msat()
 				.saturating_mul(usage.amount_msat) / BASE_AMOUNT_PENALTY_DIVISOR);
 
 		let mut anti_probing_penalty_msat = 0;
@@ -1708,13 +1710,13 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Logger> ScoreLookUp for Probabilisti
 			},
 			EffectiveCapacity::Total { capacity_msat, htlc_maximum_msat } => {
 				if htlc_maximum_msat >= capacity_msat/2 {
-					anti_probing_penalty_msat = score_params.anti_probing_penalty_msat;
+					anti_probing_penalty_msat = score_params.anti_probing_penalty.to_msat();
 				}
 			},
 			_ => {},
 		}
 
-		let capacity_msat = usage.effective_capacity.as_msat();
+		let capacity_msat = usage.effective_capacity.as_amount().to_msat();
 		let time = self.last_update_time;
 		self.channel_liquidities
 			.get(scid)
@@ -1729,7 +1731,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Logger> ScoreLookUp for Probabilisti
 impl<G: Deref<Target = NetworkGraph<L>>, L: Logger> ScoreUpdate for ProbabilisticScorer<G, L> {
 	#[rustfmt::skip]
 	fn payment_path_failed(&mut self, path: &Path, short_channel_id: u64, duration_since_epoch: Duration) {
-		let amount_msat = path.final_value_msat();
+		let amount_msat = path.final_value().to_msat();
 		log_trace!(self.logger, "Scoring path through to SCID {} as having failed at {} msat", short_channel_id, amount_msat);
 		let network_graph = self.network_graph.read_only();
 		for (hop_idx, hop) in path.hops.iter().enumerate() {
@@ -1745,7 +1747,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Logger> ScoreUpdate for Probabilisti
 
 			// Only score announced channels.
 			if let Some((channel, source)) = channel_directed_from_source {
-				let capacity_msat = channel.effective_capacity().as_msat();
+				let capacity_msat = channel.effective_capacity().as_amount().to_msat();
 				if at_failed_channel {
 					self.channel_liquidities
 						.entry(hop.short_channel_id)
@@ -1772,7 +1774,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Logger> ScoreUpdate for Probabilisti
 
 	#[rustfmt::skip]
 	fn payment_path_successful(&mut self, path: &Path, duration_since_epoch: Duration) {
-		let amount_msat = path.final_value_msat();
+		let amount_msat = path.final_value().to_msat();
 		log_trace!(self.logger, "Scoring path through SCID {} as having succeeded at {} msat.",
 			path.hops.split_last().map(|(hop, _)| hop.short_channel_id).unwrap_or(0), amount_msat);
 		let network_graph = self.network_graph.read_only();
@@ -1784,7 +1786,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Logger> ScoreUpdate for Probabilisti
 
 			// Only score announced channels.
 			if let Some((channel, source)) = channel_directed_from_source {
-				let capacity_msat = channel.effective_capacity().as_msat();
+				let capacity_msat = channel.effective_capacity().as_amount().to_msat();
 				self.channel_liquidities
 					.entry(hop.short_channel_id)
 					.or_insert_with(|| ChannelLiquidity::new(duration_since_epoch))
@@ -2598,6 +2600,7 @@ mod tests {
 		ProbabilisticScoringDecayParameters, ProbabilisticScoringFeeParameters,
 	};
 	use crate::blinded_path::BlindedHop;
+	use crate::types::amount::LightningAmount;
 	use crate::util::config::UserConfig;
 
 	use crate::ln::channelmanager;
@@ -2977,7 +2980,7 @@ mod tests {
 		let logger = TestLogger::new();
 		let network_graph = network_graph(&logger);
 		let params = ProbabilisticScoringFeeParameters {
-			liquidity_penalty_multiplier_msat: 1_000,
+			liquidity_penalty_multiplier: LightningAmount::from_msat(1_000),
 			..ProbabilisticScoringFeeParameters::zero_penalty()
 		};
 		let decay_params = ProbabilisticScoringDecayParameters::default();
@@ -3033,8 +3036,8 @@ mod tests {
 		let last_datapoint_time = Duration::ZERO;
 		let network_graph = network_graph(&logger);
 		let params = ProbabilisticScoringFeeParameters {
-			liquidity_penalty_multiplier_msat: 1_000,
-			considered_impossible_penalty_msat: u64::max_value(),
+			liquidity_penalty_multiplier: LightningAmount::from_msat(1_000),
+			considered_impossible_penalty: LightningAmount::from_msat(u64::max_value()),
 			..ProbabilisticScoringFeeParameters::zero_penalty()
 		};
 		let decay_params = ProbabilisticScoringDecayParameters {
@@ -3074,7 +3077,7 @@ mod tests {
 		let logger = TestLogger::new();
 		let network_graph = network_graph(&logger);
 		let params = ProbabilisticScoringFeeParameters {
-			liquidity_penalty_multiplier_msat: 1_000,
+			liquidity_penalty_multiplier: LightningAmount::from_msat(1_000),
 			..ProbabilisticScoringFeeParameters::zero_penalty()
 		};
 		let mut scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
@@ -3108,7 +3111,7 @@ mod tests {
 		let logger = TestLogger::new();
 		let network_graph = network_graph(&logger);
 		let params = ProbabilisticScoringFeeParameters {
-			liquidity_penalty_multiplier_msat: 1_000,
+			liquidity_penalty_multiplier: LightningAmount::from_msat(1_000),
 			..ProbabilisticScoringFeeParameters::zero_penalty()
 		};
 		let mut scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
@@ -3148,8 +3151,8 @@ mod tests {
 		let logger = TestLogger::new();
 		let network_graph = network_graph(&logger);
 		let params = ProbabilisticScoringFeeParameters {
-			liquidity_penalty_multiplier_msat: 1_000,
-			considered_impossible_penalty_msat: u64::max_value(),
+			liquidity_penalty_multiplier: LightningAmount::from_msat(1_000),
+			considered_impossible_penalty: LightningAmount::from_msat(u64::max_value()),
 			..ProbabilisticScoringFeeParameters::zero_penalty()
 		};
 		let mut scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
@@ -3218,7 +3221,7 @@ mod tests {
 		let node_c = NodeId::from_pubkey(&pub_c);
 
 		let params = ProbabilisticScoringFeeParameters {
-			liquidity_penalty_multiplier_msat: 1_000,
+			liquidity_penalty_multiplier: LightningAmount::from_msat(1_000),
 			..ProbabilisticScoringFeeParameters::zero_penalty()
 		};
 		let mut scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
@@ -3283,7 +3286,7 @@ mod tests {
 		let logger = TestLogger::new();
 		let network_graph = network_graph(&logger);
 		let params = ProbabilisticScoringFeeParameters {
-			liquidity_penalty_multiplier_msat: 1_000,
+			liquidity_penalty_multiplier: LightningAmount::from_msat(1_000),
 			..ProbabilisticScoringFeeParameters::zero_penalty()
 		};
 		let mut scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
@@ -3328,8 +3331,8 @@ mod tests {
 		let logger = TestLogger::new();
 		let network_graph = network_graph(&logger);
 		let params = ProbabilisticScoringFeeParameters {
-			liquidity_penalty_multiplier_msat: 1_000,
-			considered_impossible_penalty_msat: u64::max_value(),
+			liquidity_penalty_multiplier: LightningAmount::from_msat(1_000),
+			considered_impossible_penalty: LightningAmount::from_msat(u64::max_value()),
 			..ProbabilisticScoringFeeParameters::zero_penalty()
 		};
 		let decay_params = ProbabilisticScoringDecayParameters {
@@ -3420,7 +3423,7 @@ mod tests {
 		let logger = TestLogger::new();
 		let network_graph = network_graph(&logger);
 		let params = ProbabilisticScoringFeeParameters {
-			liquidity_penalty_multiplier_msat: 1_000,
+			liquidity_penalty_multiplier: LightningAmount::from_msat(1_000),
 			..ProbabilisticScoringFeeParameters::zero_penalty()
 		};
 		let decay_params = ProbabilisticScoringDecayParameters {
@@ -3473,8 +3476,8 @@ mod tests {
 		let logger = TestLogger::new();
 		let network_graph = network_graph(&logger);
 		let params = ProbabilisticScoringFeeParameters {
-			liquidity_penalty_multiplier_msat: 1_000,
-			considered_impossible_penalty_msat: u64::max_value(),
+			liquidity_penalty_multiplier: LightningAmount::from_msat(1_000),
+			considered_impossible_penalty: LightningAmount::from_msat(u64::max_value()),
 			..ProbabilisticScoringFeeParameters::zero_penalty()
 		};
 		let decay_params = ProbabilisticScoringDecayParameters {
@@ -3518,8 +3521,8 @@ mod tests {
 		let logger = TestLogger::new();
 		let network_graph = network_graph(&logger);
 		let params = ProbabilisticScoringFeeParameters {
-			liquidity_penalty_multiplier_msat: 1_000,
-			considered_impossible_penalty_msat: u64::max_value(),
+			liquidity_penalty_multiplier: LightningAmount::from_msat(1_000),
+			considered_impossible_penalty: LightningAmount::from_msat(u64::max_value()),
 			..ProbabilisticScoringFeeParameters::zero_penalty()
 		};
 		let decay_params = ProbabilisticScoringDecayParameters {
@@ -3650,7 +3653,7 @@ mod tests {
 		};
 
 		let params = ProbabilisticScoringFeeParameters {
-			liquidity_penalty_multiplier_msat: 1_000,
+			liquidity_penalty_multiplier: LightningAmount::from_msat(1_000),
 			..ProbabilisticScoringFeeParameters::zero_penalty()
 		};
 		let scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
@@ -3663,16 +3666,16 @@ mod tests {
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 58);
 
 		let params = ProbabilisticScoringFeeParameters {
-			base_penalty_msat: 500, liquidity_penalty_multiplier_msat: 1_000,
-			anti_probing_penalty_msat: 0, ..ProbabilisticScoringFeeParameters::zero_penalty()
+			base_penalty: LightningAmount::from_msat(500), liquidity_penalty_multiplier: LightningAmount::from_msat(1_000),
+			anti_probing_penalty: LightningAmount::from_msat(0), ..ProbabilisticScoringFeeParameters::zero_penalty()
 		};
 		let scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 558);
 
 		let params = ProbabilisticScoringFeeParameters {
-			base_penalty_msat: 500, liquidity_penalty_multiplier_msat: 1_000,
-			base_penalty_amount_multiplier_msat: (1 << 30),
-			anti_probing_penalty_msat: 0, ..ProbabilisticScoringFeeParameters::zero_penalty()
+			base_penalty: LightningAmount::from_msat(500), liquidity_penalty_multiplier: LightningAmount::from_msat(1_000),
+			base_penalty_amount_multiplier: LightningAmount::from_msat(1 << 30),
+			anti_probing_penalty: LightningAmount::from_msat(0), ..ProbabilisticScoringFeeParameters::zero_penalty()
 		};
 
 		let scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
@@ -3692,8 +3695,8 @@ mod tests {
 		};
 
 		let params = ProbabilisticScoringFeeParameters {
-			liquidity_penalty_multiplier_msat: 1_000,
-			liquidity_penalty_amount_multiplier_msat: 0,
+			liquidity_penalty_multiplier: LightningAmount::from_msat(1_000),
+			liquidity_penalty_amount_multiplier: LightningAmount::from_msat(0),
 			..ProbabilisticScoringFeeParameters::zero_penalty()
 		};
 		let scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
@@ -3706,8 +3709,8 @@ mod tests {
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 300);
 
 		let params = ProbabilisticScoringFeeParameters {
-			liquidity_penalty_multiplier_msat: 1_000,
-			liquidity_penalty_amount_multiplier_msat: 256,
+			liquidity_penalty_multiplier: LightningAmount::from_msat(1_000),
+			liquidity_penalty_amount_multiplier: LightningAmount::from_msat(256),
 			..ProbabilisticScoringFeeParameters::zero_penalty()
 		};
 		let scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
@@ -3726,7 +3729,7 @@ mod tests {
 			effective_capacity: EffectiveCapacity::Infinite,
 		};
 		let params = ProbabilisticScoringFeeParameters {
-			liquidity_penalty_multiplier_msat: 40_000,
+			liquidity_penalty_multiplier: LightningAmount::from_msat(40_000),
 			..ProbabilisticScoringFeeParameters::zero_penalty()
 		};
 		let decay_params = ProbabilisticScoringDecayParameters::zero_penalty();
@@ -3746,7 +3749,7 @@ mod tests {
 		let logger = TestLogger::new();
 		let network_graph = network_graph(&logger);
 		let params = ProbabilisticScoringFeeParameters {
-			considered_impossible_penalty_msat: u64::max_value(),
+			considered_impossible_penalty: LightningAmount::from_msat(u64::max_value()),
 			..ProbabilisticScoringFeeParameters::zero_penalty()
 		};
 		let scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
@@ -3779,7 +3782,7 @@ mod tests {
 		let scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
 		let source = source_node_id();
 
-		let base_penalty_msat = params.base_penalty_msat;
+		let base_penalty_msat = params.base_penalty.to_msat();
 		let usage = ChannelUsage {
 			amount_msat: 750,
 			inflight_htlc_msat: 0,
@@ -3807,8 +3810,8 @@ mod tests {
 		let logger = TestLogger::new();
 		let network_graph = network_graph(&logger);
 		let params = ProbabilisticScoringFeeParameters {
-			historical_liquidity_penalty_multiplier_msat: 1024,
-			historical_liquidity_penalty_amount_multiplier_msat: 1024,
+			historical_liquidity_penalty_multiplier: LightningAmount::from_msat(1024),
+			historical_liquidity_penalty_amount_multiplier: LightningAmount::from_msat(1024),
 			..ProbabilisticScoringFeeParameters::zero_penalty()
 		};
 		let decay_params = ProbabilisticScoringDecayParameters {
@@ -3970,7 +3973,7 @@ mod tests {
 		let network_graph = network_graph(&logger);
 		let source = source_node_id();
 		let params = ProbabilisticScoringFeeParameters {
-			anti_probing_penalty_msat: 500,
+			anti_probing_penalty: LightningAmount::from_msat(500),
 			..ProbabilisticScoringFeeParameters::zero_penalty()
 		};
 		let scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
@@ -4022,7 +4025,7 @@ mod tests {
 		let logger = TestLogger::new();
 		let network_graph = network_graph(&logger);
 		let params = ProbabilisticScoringFeeParameters {
-			liquidity_penalty_multiplier_msat: 1_000,
+			liquidity_penalty_multiplier: LightningAmount::from_msat(1_000),
 			..ProbabilisticScoringFeeParameters::zero_penalty()
 		};
 		let decay_params = ProbabilisticScoringDecayParameters::default();
@@ -4074,8 +4077,8 @@ mod tests {
 		let logger = TestLogger::new();
 		let mut network_graph = network_graph(&logger);
 		let params = ProbabilisticScoringFeeParameters {
-			historical_liquidity_penalty_multiplier_msat: 1024,
-			historical_liquidity_penalty_amount_multiplier_msat: 1024,
+			historical_liquidity_penalty_multiplier: LightningAmount::from_msat(1024),
+			historical_liquidity_penalty_amount_multiplier: LightningAmount::from_msat(1024),
 			..ProbabilisticScoringFeeParameters::zero_penalty()
 		};
 		let decay_params = ProbabilisticScoringDecayParameters {
@@ -4149,7 +4152,7 @@ mod tests {
 		let logger = TestLogger::new();
 		let network_graph = network_graph(&logger);
 		let params = ProbabilisticScoringFeeParameters {
-			liquidity_penalty_multiplier_msat: 1_000,
+			liquidity_penalty_multiplier: LightningAmount::from_msat(1_000),
 			..ProbabilisticScoringFeeParameters::zero_penalty()
 		};
 		let mut scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
@@ -4251,11 +4254,11 @@ mod tests {
 	#[test]
 	#[rustfmt::skip]
 	fn probes_for_diversity() {
-		// Tests the probing_diversity_penalty_msat is applied
+		// Tests the probing_diversity_penalty is applied
 		let logger = TestLogger::new();
 		let network_graph = network_graph(&logger);
 		let params = ProbabilisticScoringFeeParameters {
-			probing_diversity_penalty_msat: 1_000_000,
+			probing_diversity_penalty: LightningAmount::from_msat(1_000_000),
 			..ProbabilisticScoringFeeParameters::zero_penalty()
 		};
 		let decay_params = ProbabilisticScoringDecayParameters {
@@ -4283,7 +4286,7 @@ mod tests {
 		// Apply an update to set the last-update time to 1 second
 		scorer.payment_path_failed(&payment_path_for_amount(500), 42, Duration::from_secs(1));
 
-		// If no time has passed, we get the full probing_diversity_penalty_msat
+		// If no time has passed, we get the full probing_diversity_penalty
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 1_000_000);
 
 		// As time passes the penalty decreases.

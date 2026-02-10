@@ -24,6 +24,7 @@ use crate::ln::outbound_payment::RecipientOnionFields;
 use crate::ln::types::ChannelId;
 use crate::routing::gossip::RoutingFees;
 use crate::routing::router::{PaymentParameters, RouteHint, RouteHintHop};
+use crate::types::amount::LightningAmount;
 use crate::types::features::ChannelTypeFeatures;
 use crate::util::config::{MaxDustHTLCExposure, UserConfig};
 use crate::util::ser::Writeable;
@@ -393,7 +394,14 @@ fn test_scid_privacy_on_pub_channel() {
 	scid_privacy_cfg.channel_handshake_config.negotiate_scid_privacy = true;
 	nodes[0]
 		.node
-		.create_channel(node_b_id, 100000, 10001, 42, None, Some(scid_privacy_cfg))
+		.create_channel(
+			node_b_id,
+			100000,
+			LightningAmount::from_msat(10001),
+			42,
+			None,
+			Some(scid_privacy_cfg),
+		)
 		.unwrap();
 	let mut open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 
@@ -422,7 +430,14 @@ fn test_scid_privacy_negotiation() {
 	scid_privacy_cfg.channel_handshake_config.negotiate_scid_privacy = true;
 	nodes[0]
 		.node
-		.create_channel(node_b_id, 100000, 10001, 42, None, Some(scid_privacy_cfg))
+		.create_channel(
+			node_b_id,
+			100000,
+			LightningAmount::from_msat(10001),
+			42,
+			None,
+			Some(scid_privacy_cfg),
+		)
 		.unwrap();
 
 	let init_open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
@@ -495,7 +510,14 @@ fn test_inbound_scid_privacy() {
 	no_announce_cfg.channel_handshake_config.negotiate_scid_privacy = true;
 	nodes[1]
 		.node
-		.create_channel(node_c_id, 100_000, 10_000, 42, None, Some(no_announce_cfg))
+		.create_channel(
+			node_c_id,
+			100_000,
+			LightningAmount::from_msat(10_000),
+			42,
+			None,
+			Some(no_announce_cfg),
+		)
 		.unwrap();
 	let mut open_channel = get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, node_c_id);
 
@@ -808,7 +830,17 @@ fn test_0conf_channel_with_async_monitor() {
 	create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
 
 	chan_config.channel_handshake_config.announce_for_forwarding = false;
-	nodes[0].node.create_channel(node_b_id, 100000, 10001, 42, None, Some(chan_config)).unwrap();
+	nodes[0]
+		.node
+		.create_channel(
+			node_b_id,
+			100000,
+			LightningAmount::from_msat(10001),
+			42,
+			None,
+			Some(chan_config),
+		)
+		.unwrap();
 	let open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 
 	nodes[1].node.handle_open_channel(node_a_id, &open_channel);
@@ -1318,7 +1350,10 @@ fn test_zero_conf_accept_reject() {
 	let node_b_id = nodes[1].node.get_our_node_id();
 
 	// 1. First try the non-0conf method to manually accept
-	nodes[0].node.create_channel(node_b_id, 100000, 10001, 42, None, None).unwrap();
+	nodes[0]
+		.node
+		.create_channel(node_b_id, 100000, LightningAmount::from_msat(10001), 42, None, None)
+		.unwrap();
 	let mut open_channel_msg =
 		get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 
@@ -1354,7 +1389,10 @@ fn test_zero_conf_accept_reject() {
 	}
 
 	// 2. Try again with the 0conf method to manually accept
-	nodes[0].node.create_channel(node_b_id, 100000, 10001, 42, None, None).unwrap();
+	nodes[0]
+		.node
+		.create_channel(node_b_id, 100000, LightningAmount::from_msat(10001), 42, None, None)
+		.unwrap();
 	let mut open_channel_msg =
 		get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 
@@ -1403,7 +1441,10 @@ fn test_connect_before_funding() {
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
 
-	nodes[0].node.create_channel(node_b_id, 100_000, 10_001, 42, None, None).unwrap();
+	nodes[0]
+		.node
+		.create_channel(node_b_id, 100_000, LightningAmount::from_msat(10_001), 42, None, None)
+		.unwrap();
 	let open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 
 	nodes[1].node.handle_open_channel(node_a_id, &open_channel);
