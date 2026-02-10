@@ -2191,7 +2191,7 @@ fn test_trampoline_forward_payload_encoded_as_receive() {
 		).unwrap();
 
 		let recipient_onion_fields = RecipientOnionFields::spontaneous_empty(outer_total_msat);
-		let (outer_payloads, _, _) = onion_utils::test_build_onion_payloads(&route.paths[0], &recipient_onion_fields, 32, &None, None, Some(trampoline_packet)).unwrap();
+		let (outer_payloads, _, _) = onion_utils::test_build_onion_payloads(&route.paths[0], &recipient_onion_fields, 32, &None, None, Some((trampoline_packet, None))).unwrap();
 		let outer_onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route.clone().paths[0], &outer_session_priv);
 		let outer_packet = onion_utils::construct_onion_packet(
 			outer_payloads,
@@ -2530,7 +2530,7 @@ fn replacement_onion(
 		starting_htlc_offset,
 		&None,
 		None,
-		Some(trampoline_packet),
+		Some((trampoline_packet, None)),
 	)
 	.unwrap();
 	assert_eq!(outer_payloads.len(), 2);

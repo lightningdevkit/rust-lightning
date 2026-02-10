@@ -2043,7 +2043,7 @@ fn test_trampoline_onion_payload_assembly_values() {
 		cur_height,
 		&None,
 		None,
-		Some(trampoline_packet),
+		Some((trampoline_packet, None)),
 	)
 	.unwrap();
 	assert_eq!(outer_payloads.len(), 2);
