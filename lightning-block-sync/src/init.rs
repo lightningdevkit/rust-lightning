@@ -191,8 +191,15 @@ where
 			*result = Some((header.height, block_res?));
 		}
 		debug_assert!(fetched_blocks.iter().take(most_connected_blocks.len()).all(|r| r.is_some()));
-		debug_assert!(fetched_blocks
-			.is_sorted_by_key(|r| r.as_ref().map(|(height, _)| *height).unwrap_or(u32::MAX)));
+		// TODO: When our MSRV is 1.82, use is_sorted_by_key
+		debug_assert!(fetched_blocks.windows(2).all(|blocks| {
+			if let (Some(a), Some(b)) = (&blocks[0], &blocks[1]) {
+				a.0 < b.0
+			} else {
+				// Any non-None blocks have to come before any None entries
+				blocks[1].is_none()
+			}
+		}));
 
 		for (listener_height, listener) in chain_listeners_at_height.iter() {
 			// Connect blocks for this listener.
