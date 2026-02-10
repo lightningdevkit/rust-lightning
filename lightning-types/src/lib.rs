@@ -23,6 +23,7 @@
 extern crate alloc;
 extern crate core;
 
+pub mod amount;
 pub mod features;
 pub mod payment;
 pub mod routing;
