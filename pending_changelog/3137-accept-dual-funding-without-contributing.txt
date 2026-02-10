@@ -7,9 +7,8 @@
      differentiate between an inbound request for a dual-funded (V2) or non-dual-funded (V1) channel to be
      opened, with value being either of the enum variants `InboundChannelFunds::DualFunded` and
      `InboundChannelFunds::PushMsat(u64)` corresponding to V2 and V1 channel open requests respectively.
-   * If `manually_accept_inbound_channels` is false, then V2 channels will be accepted automatically; the
-     same behaviour as V1 channels. Otherwise, `ChannelManager::accept_inbound_channel()` can also be used
-     to manually accept an inbound V2 channel.
+   * Similar to V1 channels, `ChannelManager::accept_inbound_channel()` can also be used
+     to accept an inbound V2 channel.
    * 0conf dual-funded channels are not supported.
    * RBF of dual-funded channel funding transactions is not supported.
 
