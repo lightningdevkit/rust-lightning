@@ -55,7 +55,7 @@ use crate::events::{
 };
 use crate::events::{FundingInfo, PaidBolt12Invoice};
 use crate::ln::chan_utils::selected_commitment_sat_per_1000_weight;
-#[cfg(any(test, fuzzing))]
+#[cfg(any(test, fuzzing, feature = "_test_utils"))]
 use crate::ln::channel::QuiescentAction;
 use crate::ln::channel::{
 	self, hold_time_since, Channel, ChannelError, ChannelUpdateStatus, DisconnectResult,
@@ -3047,7 +3047,10 @@ const _CHECK_CLTV_EXPIRY_OFFCHAIN: () = assert!(
 );
 
 /// The number of ticks of [`ChannelManager::timer_tick_occurred`] until expiry of incomplete MPPs
+#[cfg(not(any(fuzzing, test, feature = "_test_utils")))]
 pub(crate) const MPP_TIMEOUT_TICKS: u8 = 3;
+#[cfg(any(fuzzing, test, feature = "_test_utils"))]
+pub(crate) const MPP_TIMEOUT_TICKS: u8 = 1;
 
 /// The number of ticks of [`ChannelManager::timer_tick_occurred`] where a peer is disconnected
 /// until we mark the channel disabled and gossip the update.
@@ -8313,39 +8316,6 @@ impl<
 		NotifyOption::DoPersist
 	}
 
-	#[cfg(any(test, fuzzing, feature = "_externalize_tests"))]
-	/// In chanmon_consistency we want to sometimes do the channel fee updates done in
-	/// timer_tick_occurred, but we can't generate the disabled channel updates as it considers
-	/// these a fuzz failure (as they usually indicate a channel force-close, which is exactly what
-	/// it wants to detect). Thus, we have a variant exposed here for its benefit.
-	#[rustfmt::skip]
-	pub fn maybe_update_chan_fees(&self) {
-		PersistenceNotifierGuard::optionally_notify(self, || {
-			let mut should_persist = NotifyOption::SkipPersistNoEvents;
-			let mut feerate_cache = new_hash_map();
-
-			let per_peer_state = self.per_peer_state.read().unwrap();
-			for (_cp_id, peer_state_mutex) in per_peer_state.iter() {
-				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
-				let peer_state = &mut *peer_state_lock;
-				for (chan_id, chan) in peer_state.channel_by_id.iter_mut()
-					.filter_map(|(chan_id, chan)| chan.as_funded_mut().map(|chan| (chan_id, chan)))
-				{
-					let channel_type = chan.funding.get_channel_type();
-					let new_feerate = feerate_cache.get(channel_type).copied().or_else(|| {
-						let feerate = selected_commitment_sat_per_1000_weight(&self.fee_estimator, &channel_type);
-						feerate_cache.insert(channel_type.clone(), feerate);
-						Some(feerate)
-					}).unwrap();
-					let chan_needs_persist = self.update_channel_fee(chan_id, chan, new_feerate);
-					if chan_needs_persist == NotifyOption::DoPersist { should_persist = NotifyOption::DoPersist; }
-				}
-			}
-
-			should_persist
-		});
-	}
-
 	/// Performs actions which should happen on startup and roughly once per minute thereafter.
 	///
 	/// This currently includes:
@@ -13351,7 +13321,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		}
 	}
 
-	#[cfg(any(test, fuzzing))]
+	#[cfg(any(test, fuzzing, feature = "_test_utils"))]
 	#[rustfmt::skip]
 	pub fn maybe_propose_quiescence(&self, counterparty_node_id: &PublicKey, channel_id: &ChannelId) -> Result<(), APIError> {
 		let mut result = Ok(());
@@ -13408,7 +13378,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		result
 	}
 
-	#[cfg(any(test, fuzzing))]
+	#[cfg(any(test, fuzzing, feature = "_test_utils"))]
 	#[rustfmt::skip]
 	pub fn exit_quiescence(&self, counterparty_node_id: &PublicKey, channel_id: &ChannelId) -> Result<bool, APIError> {
 		let _read_guard = self.total_consistency_lock.read().unwrap();

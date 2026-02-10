@@ -1089,9 +1089,13 @@ pub fn do_cannot_afford_on_holding_cell_release(
 		*feerate_lock = target_feerate;
 	}
 
-	// Put the update fee into the holding cell of node 0
-
-	nodes[0].node.maybe_update_chan_fees();
+	// Put the update fee into the holding cell of node 0. We use quiescence as an easy way to force
+	// the update into the holding cell.
+	nodes[0].node.maybe_propose_quiescence(&node_b_id, &chan_id).unwrap();
+	let stfu = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_b_id);
+	nodes[0].node.timer_tick_occurred();
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+	check_added_monitors(&nodes[0], 0);
 
 	// While the update_fee is in the holding cell, add an inbound HTLC
 
@@ -1132,11 +1136,17 @@ pub fn do_cannot_afford_on_holding_cell_release(
 		panic!();
 	}
 
-	// Release the update_fee from its holding cell
+	// Release the update_fee from its holding cell by completing the quiescence handshake.
+	nodes[1].node.handle_stfu(node_a_id, &stfu);
+	let stfu = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_a_id);
+	nodes[0].node.handle_stfu(node_b_id, &stfu);
+	let _ = nodes[0].node.exit_quiescence(&node_b_id, &chan_id);
+	let _ = nodes[1].node.exit_quiescence(&node_a_id, &chan_id);
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	if can_afford {
 		// We could afford the update_fee, sanity check everything
 		assert_eq!(events.len(), 1);
+		check_added_monitors(&nodes[0], 1);
 		if let MessageSendEvent::UpdateHTLCs { node_id, channel_id, updates } =
 			events.pop().unwrap()
 		{

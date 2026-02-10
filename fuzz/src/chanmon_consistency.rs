@@ -58,7 +58,7 @@ use lightning::ln::channelmanager::{
 use lightning::ln::functional_test_utils::*;
 use lightning::ln::inbound_payment::ExpandedKey;
 use lightning::ln::msgs::{
-	BaseMessageHandler, ChannelMessageHandler, CommitmentUpdate, Init, MessageSendEvent,
+	self, BaseMessageHandler, ChannelMessageHandler, CommitmentUpdate, Init, MessageSendEvent,
 	UpdateAddHTLC,
 };
 use lightning::ln::outbound_payment::RecipientOnionFields;
@@ -844,6 +844,17 @@ fn send_mpp_hop_payment(
 }
 
 #[inline]
+fn assert_action_timeout_awaiting_response(action: &msgs::ErrorAction) {
+	// Since sending/receiving messages may be delayed, `timer_tick_occurred` may cause a node to
+	// disconnect their counterparty if they're expecting a timely response.
+	assert!(matches!(
+		action,
+		msgs::ErrorAction::DisconnectPeerWithWarning { msg }
+		if msg.data.contains("Disconnecting due to timeout awaiting response")
+	));
+}
+
+#[inline]
 pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 	data: &[u8], underlying_out: Out, anchors: bool,
 ) {
@@ -1424,8 +1435,12 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 						},
 						MessageSendEvent::SendChannelReady { .. } => continue,
 						MessageSendEvent::SendAnnouncementSignatures { .. } => continue,
-						MessageSendEvent::SendChannelUpdate { ref node_id, ref msg } => {
-							assert_eq!(msg.contents.channel_flags & 2, 0); // The disable bit must never be set!
+						MessageSendEvent::SendChannelUpdate { ref node_id, .. } => {
+							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
+							*node_id == a_id
+						},
+						MessageSendEvent::HandleError { ref action, ref node_id } => {
+							assert_action_timeout_awaiting_response(action);
 							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
 							*node_id == a_id
 						},
@@ -1638,20 +1653,21 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 								}
 							}
 						},
+						MessageSendEvent::HandleError { ref action, .. } => {
+							assert_action_timeout_awaiting_response(action);
+						},
 						MessageSendEvent::SendChannelReady { .. } => {
 							// Can be generated as a reestablish response
 						},
 						MessageSendEvent::SendAnnouncementSignatures { .. } => {
 							// Can be generated as a reestablish response
 						},
-						MessageSendEvent::SendChannelUpdate { ref msg, .. } => {
-							// When we reconnect we will resend a channel_update to make sure our
-							// counterparty has the latest parameters for receiving payments
-							// through us. We do, however, check that the message does not include
-							// the "disabled" bit, as we should never ever have a channel which is
-							// disabled when we send such an update (or it may indicate channel
-							// force-close which we should detect as an error).
-							assert_eq!(msg.contents.channel_flags & 2, 0);
+						MessageSendEvent::SendChannelUpdate { .. } => {
+							// Can be generated as a reestablish response
+						},
+						MessageSendEvent::BroadcastChannelUpdate { .. } => {
+							// Can be generated as a result of calling `timer_tick_occurred` enough
+							// times while peers are disconnected
 						},
 						_ => if out.may_fail.load(atomic::Ordering::Acquire) {
 							return;
@@ -1693,8 +1709,9 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 							MessageSendEvent::SendStfu { .. } => {},
 							MessageSendEvent::SendChannelReady { .. } => {},
 							MessageSendEvent::SendAnnouncementSignatures { .. } => {},
-							MessageSendEvent::SendChannelUpdate { ref msg, .. } => {
-								assert_eq!(msg.contents.channel_flags & 2, 0); // The disable bit must never be set!
+							MessageSendEvent::SendChannelUpdate { .. } => {},
+							MessageSendEvent::HandleError { ref action, .. } => {
+								assert_action_timeout_awaiting_response(action);
 							},
 							_ => {
 								if out.may_fail.load(atomic::Ordering::Acquire) {
@@ -1720,8 +1737,9 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 							MessageSendEvent::SendStfu { .. } => {},
 							MessageSendEvent::SendChannelReady { .. } => {},
 							MessageSendEvent::SendAnnouncementSignatures { .. } => {},
-							MessageSendEvent::SendChannelUpdate { ref msg, .. } => {
-								assert_eq!(msg.contents.channel_flags & 2, 0); // The disable bit must never be set!
+							MessageSendEvent::SendChannelUpdate { .. } => {},
+							MessageSendEvent::HandleError { ref action, .. } => {
+								assert_action_timeout_awaiting_response(action);
 							},
 							_ => {
 								if out.may_fail.load(atomic::Ordering::Acquire) {
@@ -2195,11 +2213,11 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 				if fee_est_a.ret_val.fetch_add(250, atomic::Ordering::AcqRel) + 250 > max_feerate {
 					fee_est_a.ret_val.store(max_feerate, atomic::Ordering::Release);
 				}
-				nodes[0].maybe_update_chan_fees();
+				nodes[0].timer_tick_occurred();
 			},
 			0x81 => {
 				fee_est_a.ret_val.store(253, atomic::Ordering::Release);
-				nodes[0].maybe_update_chan_fees();
+				nodes[0].timer_tick_occurred();
 			},
 
 			0x84 => {
@@ -2210,11 +2228,11 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 				if fee_est_b.ret_val.fetch_add(250, atomic::Ordering::AcqRel) + 250 > max_feerate {
 					fee_est_b.ret_val.store(max_feerate, atomic::Ordering::Release);
 				}
-				nodes[1].maybe_update_chan_fees();
+				nodes[1].timer_tick_occurred();
 			},
 			0x85 => {
 				fee_est_b.ret_val.store(253, atomic::Ordering::Release);
-				nodes[1].maybe_update_chan_fees();
+				nodes[1].timer_tick_occurred();
 			},
 
 			0x88 => {
@@ -2225,11 +2243,11 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 				if fee_est_c.ret_val.fetch_add(250, atomic::Ordering::AcqRel) + 250 > max_feerate {
 					fee_est_c.ret_val.store(max_feerate, atomic::Ordering::Release);
 				}
-				nodes[2].maybe_update_chan_fees();
+				nodes[2].timer_tick_occurred();
 			},
 			0x89 => {
 				fee_est_c.ret_val.store(253, atomic::Ordering::Release);
-				nodes[2].maybe_update_chan_fees();
+				nodes[2].timer_tick_occurred();
 			},
 
 			0xa0 => {
@@ -2796,6 +2814,14 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 					} };
 				}
 
+				process_all_events!();
+
+				// Since MPP payments are supported, we wait until we fully settle the state of all
+				// channels to see if we have any committed HTLC parts of an MPP payment that need
+				// to be failed back.
+				for node in &nodes {
+					node.timer_tick_occurred();
+				}
 				process_all_events!();
 
 				// Verify no payments are stuck - all should have resolved
