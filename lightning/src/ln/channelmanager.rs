@@ -12571,33 +12571,47 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	}
 
 	/// Handle incoming splice request ack, transition channel to splice-pending (unless some check fails).
-	#[rustfmt::skip]
-	fn internal_splice_ack(&self, counterparty_node_id: &PublicKey, msg: &msgs::SpliceAck) -> Result<(), MsgHandleErrInternal> {
+	fn internal_splice_ack(
+		&self, counterparty_node_id: &PublicKey, msg: &msgs::SpliceAck,
+	) -> Result<(), MsgHandleErrInternal> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
-		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
-			.ok_or_else(|| {
-				debug_assert!(false);
-				MsgHandleErrInternal::no_such_peer(counterparty_node_id, msg.channel_id)
-			})?;
+		let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
+			debug_assert!(false);
+			MsgHandleErrInternal::no_such_peer(counterparty_node_id, msg.channel_id)
+		})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 
 		// Look for the channel
 		match peer_state.channel_by_id.entry(msg.channel_id) {
-			hash_map::Entry::Vacant(_) => Err(MsgHandleErrInternal::no_such_channel_for_peer(counterparty_node_id, msg.channel_id)),
+			hash_map::Entry::Vacant(_) => Err(MsgHandleErrInternal::no_such_channel_for_peer(
+				counterparty_node_id,
+				msg.channel_id,
+			)),
 			hash_map::Entry::Occupied(mut chan_entry) => {
 				if let Some(ref mut funded_channel) = chan_entry.get_mut().as_funded_mut() {
 					let splice_ack_res = funded_channel.splice_ack(
-						msg, &self.signer_provider, &self.entropy_source,
-						&self.get_our_node_id(), &self.logger
+						msg,
+						&self.signer_provider,
+						&self.entropy_source,
+						&self.get_our_node_id(),
+						&self.logger,
 					);
-					let tx_msg_opt = try_channel_entry!(self, peer_state, splice_ack_res, chan_entry);
+					let tx_msg_opt =
+						try_channel_entry!(self, peer_state, splice_ack_res, chan_entry);
 					if let Some(tx_msg) = tx_msg_opt {
-						peer_state.pending_msg_events.push(tx_msg.into_msg_send_event(counterparty_node_id.clone()));
+						peer_state
+							.pending_msg_events
+							.push(tx_msg.into_msg_send_event(counterparty_node_id.clone()));
 					}
 					Ok(())
 				} else {
-					try_channel_entry!(self, peer_state, Err(ChannelError::close("Channel is not funded, cannot be spliced".into())), chan_entry)
+					try_channel_entry!(
+						self,
+						peer_state,
+						Err(ChannelError::close("Channel is not funded, cannot be spliced".into())),
+						chan_entry
+					)
 				}
 			},
 		}
