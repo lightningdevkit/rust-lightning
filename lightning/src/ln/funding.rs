@@ -286,16 +286,6 @@ pub struct FundingContribution {
 	is_splice: bool,
 }
 
-impl_writeable_tlv_based!(FundingContribution, {
-	(1, value_added, required),
-	(3, estimated_fee, required),
-	(5, inputs, optional_vec),
-	(7, outputs, optional_vec),
-	(9, change_output, option),
-	(11, feerate, required),
-	(13, is_splice, required),
-});
-
 impl FundingContribution {
 	pub(super) fn feerate(&self) -> FeeRate {
 		self.feerate
