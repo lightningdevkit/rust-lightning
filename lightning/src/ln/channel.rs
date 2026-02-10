@@ -7942,7 +7942,7 @@ where
 	/// when reconstructing the set of pending HTLCs when deserializing the `ChannelManager`.
 	pub(super) fn inbound_forwarded_htlcs(
 		&self,
-	) -> impl Iterator<Item = (PaymentHash, HTLCPreviousHopData, u64)> + '_ {
+	) -> impl Iterator<Item = (PaymentHash, HTLCPreviousHopData, OutboundHop)> + '_ {
 		// We don't want to return an HTLC as needing processing if it already has a resolution that's
 		// pending in the holding cell.
 		let htlc_resolution_in_holding_cell = |id: u64| -> bool {
@@ -7970,7 +7970,7 @@ where
 						phantom_shared_secret,
 						trampoline_shared_secret,
 						blinded_failure,
-						outbound_hop: OutboundHop { amt_msat, .. },
+						outbound_hop,
 					},
 			} => {
 				if htlc_resolution_in_holding_cell(htlc.htlc_id) {
@@ -7991,7 +7991,7 @@ where
 					counterparty_node_id: Some(counterparty_node_id),
 					cltv_expiry: Some(htlc.cltv_expiry),
 				};
-				Some((htlc.payment_hash, prev_hop_data, *amt_msat))
+				Some((htlc.payment_hash, prev_hop_data, *outbound_hop))
 			},
 			_ => None,
 		})

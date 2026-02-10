@@ -1958,14 +1958,8 @@ fn test_reload_node_with_preimage_in_monitor_claims_htlc() {
 	);
 
 	// When the claim is reconstructed during reload, a PaymentForwarded event is generated.
-	// This event has next_user_channel_id as None since the outbound HTLC was already removed.
 	// Fetching events triggers the pending monitor update (adding preimage) to be applied.
-	let events = nodes[1].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 1);
-	match &events[0] {
-		Event::PaymentForwarded { total_fee_earned_msat: Some(1000), .. } => {},
-		_ => panic!("Expected PaymentForwarded event"),
-	}
+	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], Some(1000), false, false);
 	check_added_monitors(&nodes[1], 1);
 
 	// Reconnect nodes[1] to nodes[0]. The claim should be in nodes[1]'s holding cell.

@@ -18610,11 +18610,11 @@ impl<
 		// that it is handled.
 		let mut already_forwarded_htlcs: HashMap<
 			(ChannelId, PaymentHash),
-			Vec<(HTLCPreviousHopData, u64)>,
+			Vec<(HTLCPreviousHopData, OutboundHop)>,
 		> = new_hash_map();
 		let prune_forwarded_htlc = |already_forwarded_htlcs: &mut HashMap<
 			(ChannelId, PaymentHash),
-			Vec<(HTLCPreviousHopData, u64)>,
+			Vec<(HTLCPreviousHopData, OutboundHop)>,
 		>,
 		                            prev_hop: &HTLCPreviousHopData,
 		                            payment_hash: &PaymentHash| {
@@ -18663,13 +18663,13 @@ impl<
 										.or_insert_with(Vec::new)
 										.push(update_add_htlc);
 								}
-								for (payment_hash, prev_hop, outbound_amt_msat) in
+								for (payment_hash, prev_hop, next_hop) in
 									funded_chan.inbound_forwarded_htlcs()
 								{
 									already_forwarded_htlcs
 										.entry((prev_hop.channel_id, payment_hash))
 										.or_insert_with(Vec::new)
-										.push((prev_hop, outbound_amt_msat));
+										.push((prev_hop, next_hop));
 								}
 							}
 						}
@@ -19378,34 +19378,33 @@ impl<
 				if let Some(forwarded_htlcs) =
 					already_forwarded_htlcs.remove(&(*channel_id, payment_hash))
 				{
-					for (prev_hop, outbound_amt_msat) in forwarded_htlcs {
+					for (prev_hop, next_hop) in forwarded_htlcs {
 						let new_pending_claim =
 							!pending_claims_to_replay.iter().any(|(src, _, _, _, _, _, _, _)| {
 								matches!(src, HTLCSource::PreviousHopData(hop) if hop.htlc_id == prev_hop.htlc_id && hop.channel_id == prev_hop.channel_id)
 							});
 						if new_pending_claim {
-							let counterparty_node_id = monitor.get_counterparty_node_id();
 							let is_downstream_closed = channel_manager
 								.per_peer_state
 								.read()
 								.unwrap()
-								.get(&counterparty_node_id)
+								.get(&next_hop.node_id)
 								.map_or(true, |peer_state_mtx| {
 									!peer_state_mtx
 										.lock()
 										.unwrap()
 										.channel_by_id
-										.contains_key(channel_id)
+										.contains_key(&next_hop.channel_id)
 								});
 							pending_claims_to_replay.push((
 								HTLCSource::PreviousHopData(prev_hop),
 								payment_preimage,
-								outbound_amt_msat,
+								next_hop.amt_msat,
 								is_downstream_closed,
-								counterparty_node_id,
-								monitor.get_funding_txo(),
-								*channel_id,
-								None,
+								next_hop.node_id,
+								next_hop.funding_txo,
+								next_hop.channel_id,
+								Some(next_hop.user_channel_id),
 							));
 						}
 					}
