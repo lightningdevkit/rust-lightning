@@ -5358,6 +5358,7 @@ impl<
 			keysend_preimage,
 			invoice_request: None,
 			bolt12_invoice: None,
+			trampoline_forward_info: None,
 			session_priv_bytes,
 			hold_htlc_at_next_hop: false,
 		})
@@ -5375,6 +5376,7 @@ impl<
 			bolt12_invoice,
 			session_priv_bytes,
 			hold_htlc_at_next_hop,
+			..
 		} = args;
 		// The top-level caller should hold the total_consistency_lock read lock.
 		debug_assert!(self.total_consistency_lock.try_write().is_err());
