@@ -308,6 +308,32 @@ impl InboundHTLCState {
 	}
 }
 
+/// Information about the outbound hop for a forwarded HTLC. Useful for generating an accurate
+/// [`Event::PaymentForwarded`] if we need to claim this HTLC post-restart.
+///
+/// [`Event::PaymentForwarded`]: crate::events::Event::PaymentForwarded
+#[derive(Debug, Copy, Clone)]
+pub(super) struct OutboundHop {
+	/// The amount forwarded outbound.
+	pub(super) amt_msat: u64,
+	/// The outbound channel this HTLC was forwarded over.
+	pub(super) channel_id: ChannelId,
+	/// The next-hop recipient of this HTLC.
+	pub(super) node_id: PublicKey,
+	/// The outbound channel's funding outpoint.
+	pub(super) funding_txo: OutPoint,
+	/// The outbound channel's user channel ID.
+	pub(super) user_channel_id: u128,
+}
+
+impl_writeable_tlv_based!(OutboundHop, {
+	(0, amt_msat, required),
+	(2, channel_id, required),
+	(4, node_id, required),
+	(6, funding_txo, required),
+	(8, user_channel_id, required),
+});
+
 /// A field of `InboundHTLCState::Committed` containing the HTLC's `update_add_htlc` message. If
 /// the HTLC is a forward and gets irrevocably committed to the outbound edge, we convert to
 /// `InboundUpdateAdd::Forwarded`, thus pruning the onion and not persisting it on every
@@ -328,11 +354,7 @@ enum InboundUpdateAdd {
 		phantom_shared_secret: Option<[u8; 32]>,
 		trampoline_shared_secret: Option<[u8; 32]>,
 		blinded_failure: Option<BlindedFailure>,
-		/// Useful for generating an accurate [`Event::PaymentForwarded`], if we need to claim this
-		/// HTLC post-restart.
-		///
-		/// [`Event::PaymentForwarded`]: crate::events::Event::PaymentForwarded
-		outbound_amt_msat: u64,
+		outbound_hop: OutboundHop,
 	},
 	/// This HTLC was received pre-LDK 0.3, before we started persisting the onion for inbound
 	/// committed HTLCs.
@@ -346,7 +368,7 @@ impl_writeable_tlv_based_enum_upgradable!(InboundUpdateAdd,
 	(2, Legacy) => {},
 	(4, Forwarded) => {
 		(0, incoming_packet_shared_secret, required),
-		(2, outbound_amt_msat, required),
+		(2, outbound_hop, required),
 		(4, phantom_shared_secret, option),
 		(6, trampoline_shared_secret, option),
 		(8, blinded_failure, option),
@@ -7948,7 +7970,7 @@ where
 						phantom_shared_secret,
 						trampoline_shared_secret,
 						blinded_failure,
-						outbound_amt_msat,
+						outbound_hop: OutboundHop { amt_msat, .. },
 					},
 			} => {
 				if htlc_resolution_in_holding_cell(htlc.htlc_id) {
@@ -7956,7 +7978,7 @@ where
 				}
 				// The reconstructed `HTLCPreviousHopData` is used to fail or claim the HTLC backwards
 				// post-restart, if it is missing in the outbound edge.
-				let hop_data = HTLCPreviousHopData {
+				let prev_hop_data = HTLCPreviousHopData {
 					prev_outbound_scid_alias,
 					user_channel_id: Some(user_channel_id),
 					htlc_id: htlc.htlc_id,
@@ -7969,7 +7991,7 @@ where
 					counterparty_node_id: Some(counterparty_node_id),
 					cltv_expiry: Some(htlc.cltv_expiry),
 				};
-				Some((htlc.payment_hash, hop_data, *outbound_amt_msat))
+				Some((htlc.payment_hash, prev_hop_data, *amt_msat))
 			},
 			_ => None,
 		})
@@ -8019,17 +8041,18 @@ where
 	/// This inbound HTLC was irrevocably forwarded to the outbound edge, so we no longer need to
 	/// persist its onion.
 	pub(super) fn prune_inbound_htlc_onion(
-		&mut self, htlc_id: u64, hop_data: &HTLCPreviousHopData, outbound_amt_msat: u64,
+		&mut self, htlc_id: u64, prev_hop_data: &HTLCPreviousHopData,
+		outbound_hop_data: OutboundHop,
 	) {
 		for htlc in self.context.pending_inbound_htlcs.iter_mut() {
 			if htlc.htlc_id == htlc_id {
 				if let InboundHTLCState::Committed { ref mut update_add_htlc } = htlc.state {
 					*update_add_htlc = InboundUpdateAdd::Forwarded {
-						incoming_packet_shared_secret: hop_data.incoming_packet_shared_secret,
-						phantom_shared_secret: hop_data.phantom_shared_secret,
-						trampoline_shared_secret: hop_data.trampoline_shared_secret,
-						blinded_failure: hop_data.blinded_failure,
-						outbound_amt_msat,
+						incoming_packet_shared_secret: prev_hop_data.incoming_packet_shared_secret,
+						phantom_shared_secret: prev_hop_data.phantom_shared_secret,
+						trampoline_shared_secret: prev_hop_data.trampoline_shared_secret,
+						blinded_failure: prev_hop_data.blinded_failure,
+						outbound_hop: outbound_hop_data,
 					};
 					return;
 				}

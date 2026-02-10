@@ -59,9 +59,9 @@ use crate::ln::chan_utils::selected_commitment_sat_per_1000_weight;
 use crate::ln::channel::QuiescentAction;
 use crate::ln::channel::{
 	self, hold_time_since, Channel, ChannelError, ChannelUpdateStatus, DisconnectResult,
-	FundedChannel, FundingTxSigned, InboundV1Channel, OutboundV1Channel, PendingV2Channel,
-	ReconnectionMsg, ShutdownResult, SpliceFundingFailed, StfuResponse, UpdateFulfillCommitFetch,
-	WithChannelContext,
+	FundedChannel, FundingTxSigned, InboundV1Channel, OutboundHop, OutboundV1Channel,
+	PendingV2Channel, ReconnectionMsg, ShutdownResult, SpliceFundingFailed, StfuResponse,
+	UpdateFulfillCommitFetch, WithChannelContext,
 };
 use crate::ln::channel_state::ChannelDetails;
 use crate::ln::funding::SpliceContribution;
@@ -1402,6 +1402,8 @@ enum PostMonitorUpdateChanResume {
 	Unblocked {
 		channel_id: ChannelId,
 		counterparty_node_id: PublicKey,
+		funding_txo: OutPoint,
+		user_channel_id: u128,
 		unbroadcasted_batch_funding_txid: Option<Txid>,
 		update_actions: Vec<MonitorUpdateCompletionAction>,
 		htlc_forwards: Option<PerSourcePendingForward>,
@@ -9582,8 +9584,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	/// Handles actions which need to complete after a [`ChannelMonitorUpdate`] has been applied
 	/// which can happen after the per-peer state lock has been dropped.
 	fn post_monitor_update_unlock(
-		&self, channel_id: ChannelId, counterparty_node_id: PublicKey,
-		unbroadcasted_batch_funding_txid: Option<Txid>,
+		&self, channel_id: ChannelId, counterparty_node_id: PublicKey, funding_txo: OutPoint,
+		user_channel_id: u128, unbroadcasted_batch_funding_txid: Option<Txid>,
 		update_actions: Vec<MonitorUpdateCompletionAction>,
 		htlc_forwards: Option<PerSourcePendingForward>,
 		decode_update_add_htlcs: Option<(u64, Vec<msgs::UpdateAddHTLC>)>,
@@ -9660,7 +9662,13 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			};
 			self.fail_htlc_backwards_internal(&failure.0, &failure.1, &failure.2, receiver, None);
 		}
-		self.prune_persisted_inbound_htlc_onions(committed_outbound_htlc_sources);
+		self.prune_persisted_inbound_htlc_onions(
+			channel_id,
+			counterparty_node_id,
+			funding_txo,
+			user_channel_id,
+			committed_outbound_htlc_sources,
+		);
 	}
 
 	fn handle_monitor_update_completion_actions<
@@ -10129,6 +10137,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			PostMonitorUpdateChanResume::Unblocked {
 				channel_id: chan_id,
 				counterparty_node_id,
+				funding_txo: chan.funding_outpoint(),
+				user_channel_id: chan.context.get_user_id(),
 				unbroadcasted_batch_funding_txid,
 				update_actions,
 				htlc_forwards,
@@ -10144,7 +10154,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	/// HTLC set on `ChannelManager` read. If an HTLC has been irrevocably forwarded to the outbound
 	/// edge, we no longer need to persist the inbound edge's onion and can prune it here.
 	fn prune_persisted_inbound_htlc_onions(
-		&self, committed_outbound_htlc_sources: Vec<(HTLCPreviousHopData, u64)>,
+		&self, outbound_channel_id: ChannelId, outbound_node_id: PublicKey,
+		outbound_funding_txo: OutPoint, outbound_user_channel_id: u128,
+		committed_outbound_htlc_sources: Vec<(HTLCPreviousHopData, u64)>,
 	) {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		for (source, outbound_amt_msat) in committed_outbound_htlc_sources {
@@ -10161,7 +10173,17 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			if let Some(chan) =
 				peer_state.channel_by_id.get_mut(&source.channel_id).and_then(|c| c.as_funded_mut())
 			{
-				chan.prune_inbound_htlc_onion(source.htlc_id, &source, outbound_amt_msat);
+				chan.prune_inbound_htlc_onion(
+					source.htlc_id,
+					&source,
+					OutboundHop {
+						amt_msat: outbound_amt_msat,
+						channel_id: outbound_channel_id,
+						node_id: outbound_node_id,
+						funding_txo: outbound_funding_txo,
+						user_channel_id: outbound_user_channel_id,
+					},
+				);
 			}
 		}
 	}
@@ -10217,6 +10239,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			PostMonitorUpdateChanResume::Unblocked {
 				channel_id,
 				counterparty_node_id,
+				funding_txo,
+				user_channel_id,
 				unbroadcasted_batch_funding_txid,
 				update_actions,
 				htlc_forwards,
@@ -10228,6 +10252,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				self.post_monitor_update_unlock(
 					channel_id,
 					counterparty_node_id,
+					funding_txo,
+					user_channel_id,
 					unbroadcasted_batch_funding_txid,
 					update_actions,
 					htlc_forwards,
