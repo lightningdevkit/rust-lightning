@@ -4643,11 +4643,21 @@ impl<
 	///
 	/// The splice initiator is responsible for paying fees for common fields, shared inputs, and
 	/// shared outputs along with any contributed inputs and outputs. When building a
-	/// [`FundingContribution`], fees are estimated using `min_feerate` and must be covered by the
-	/// supplied inputs for splice-in or the channel balance for splice-out. If the counterparty
-	/// also initiates a splice and wins the tie-break, they become the initiator and choose the
-	/// feerate. In that case, `max_feerate` is used to reject a feerate that is too high for our
-	/// contribution.
+	/// [`FundingContribution`], fees are estimated at `min_feerate` assuming initiator
+	/// responsibility and must be covered by the supplied inputs for splice-in or the channel
+	/// balance for splice-out. If the counterparty also initiates a splice and wins the
+	/// tie-break, they become the initiator and choose the feerate. The fee is then
+	/// re-estimated at the counterparty's feerate for only our contributed inputs and outputs,
+	/// which may be higher or lower than the original estimate. The contribution is dropped and
+	/// the splice proceeds without it when:
+	/// - the counterparty's feerate is below `min_feerate`
+	/// - the counterparty's feerate is above `max_feerate` and the re-estimated fee exceeds the
+	///   original fee estimate
+	/// - the re-estimated fee exceeds the *fee buffer* regardless of `max_feerate`
+	///
+	/// The fee buffer is the maximum fee that can be accommodated:
+	/// - **splice-in**: the selected inputs' value minus the contributed amount
+	/// - **splice-out**: the channel balance minus the withdrawal outputs
 	///
 	/// Returns a [`FundingTemplate`] which should be used to build a [`FundingContribution`] via
 	/// one of its splice methods (e.g., [`FundingTemplate::splice_in_sync`]). The resulting
@@ -12826,9 +12836,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 
-		// TODO(splicing): Currently not possible to contribute on the splicing-acceptor side
-		let our_funding_contribution = 0i64;
-
 		// Look for the channel
 		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Vacant(_) => {
@@ -12848,7 +12855,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				if let Some(ref mut funded_channel) = chan_entry.get_mut().as_funded_mut() {
 					let init_res = funded_channel.splice_init(
 						msg,
-						our_funding_contribution,
 						&self.entropy_source,
 						&self.get_our_node_id(),
 						&self.logger,
