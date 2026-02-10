@@ -59,6 +59,6 @@ impl<'a, Out: Output> Write for LockedWriteAdapter<'a, Out> {
 
 impl<Out: Output> Logger for TestLogger<Out> {
 	fn log(&self, record: Record) {
-		write!(LockedWriteAdapter(&self.out), "{:<6} {}", self.id, record).unwrap();
+		writeln!(LockedWriteAdapter(&self.out), "{:<6} {}", self.id, record).unwrap();
 	}
 }
