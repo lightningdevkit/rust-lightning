@@ -18707,14 +18707,16 @@ impl<
 				}
 			}
 			for (channel_id, monitor) in args.channel_monitors.iter() {
-				let mut is_channel_closed = true;
+				let (mut is_channel_closed, mut user_channel_id_opt) = (true, None);
 				let counterparty_node_id = monitor.get_counterparty_node_id();
 				if let Some(peer_state_mtx) = per_peer_state.get(&counterparty_node_id) {
 					let mut peer_state_lock = peer_state_mtx.lock().unwrap();
 					let peer_state = &mut *peer_state_lock;
-					is_channel_closed = !peer_state.channel_by_id.contains_key(channel_id);
-					if reconstruct_manager_from_monitors && !is_channel_closed {
-						if let Some(chan) = peer_state.channel_by_id.get(channel_id) {
+					if let Some(chan) = peer_state.channel_by_id.get(channel_id) {
+						is_channel_closed = false;
+						user_channel_id_opt = Some(chan.context().get_user_id());
+
+						if reconstruct_manager_from_monitors {
 							if let Some(funded_chan) = chan.as_funded() {
 								for (payment_hash, prev_hop) in funded_chan.outbound_htlc_forwards()
 								{
@@ -19014,7 +19016,7 @@ impl<
 
 								Some((htlc_source, payment_preimage, htlc.amount_msat,
 									is_channel_closed, monitor.get_counterparty_node_id(),
-									monitor.get_funding_txo(), monitor.channel_id(), None))
+									monitor.get_funding_txo(), monitor.channel_id(), user_channel_id_opt))
 							} else { None }
 						} else {
 							// If it was an outbound payment, we've handled it above - if a preimage
