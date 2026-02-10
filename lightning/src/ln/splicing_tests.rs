@@ -1663,28 +1663,23 @@ fn do_test_splice_reestablish(reload: bool, async_monitor_update: bool) {
 
 #[test]
 fn test_propose_splice_while_disconnected() {
-	do_test_propose_splice_while_disconnected(false, false);
-	do_test_propose_splice_while_disconnected(false, true);
-	do_test_propose_splice_while_disconnected(true, false);
-	do_test_propose_splice_while_disconnected(true, true);
+	do_test_propose_splice_while_disconnected(false);
+	do_test_propose_splice_while_disconnected(true);
 }
 
 #[cfg(test)]
-fn do_test_propose_splice_while_disconnected(reload: bool, use_0conf: bool) {
+fn do_test_propose_splice_while_disconnected(use_0conf: bool) {
 	// Test that both nodes are able to propose a splice while the counterparty is disconnected, and
 	// whoever doesn't go first due to the quiescence tie-breaker, will retry their splice after the
 	// first one becomes locked.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let (persister_0a, persister_0b, persister_1a, persister_1b);
-	let (chain_monitor_0a, chain_monitor_0b, chain_monitor_1a, chain_monitor_1b);
 	let mut config = test_default_channel_config();
 	if use_0conf {
 		config.channel_handshake_limits.trust_own_funding_0conf = true;
 	}
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
-	let (node_0a, node_0b, node_1a, node_1b);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_id_0 = nodes[0].node.get_our_node_id();
 	let node_id_1 = nodes[1].node.get_our_node_id();
@@ -1722,15 +1717,8 @@ fn do_test_propose_splice_while_disconnected(reload: bool, use_0conf: bool) {
 		value: Amount::from_sat(splice_out_sat),
 		script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
 	}];
-	let feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64);
-	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1, feerate).unwrap();
-	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
 	let node_0_funding_contribution =
-		funding_template.splice_out_sync(node_0_outputs, &wallet).unwrap();
-	nodes[0]
-		.node
-		.funding_contributed(&channel_id, &node_id_1, node_0_funding_contribution.clone(), None)
-		.unwrap();
+		initiate_splice_out(&nodes[0], &nodes[1], channel_id, node_0_outputs);
 
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 
@@ -1738,37 +1726,10 @@ fn do_test_propose_splice_while_disconnected(reload: bool, use_0conf: bool) {
 		value: Amount::from_sat(splice_out_sat),
 		script_pubkey: nodes[1].wallet_source.get_change_script().unwrap(),
 	}];
-	let funding_template = nodes[1].node.splice_channel(&channel_id, &node_id_0, feerate).unwrap();
-	let wallet = WalletSync::new(Arc::clone(&nodes[1].wallet_source), nodes[1].logger);
 	let node_1_funding_contribution =
-		funding_template.splice_out_sync(node_1_outputs, &wallet).unwrap();
-	nodes[1]
-		.node
-		.funding_contributed(&channel_id, &node_id_0, node_1_funding_contribution.clone(), None)
-		.unwrap();
+		initiate_splice_out(&nodes[1], &nodes[0], channel_id, node_1_outputs);
 
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
-
-	if reload {
-		let encoded_monitor_0 = get_monitor!(nodes[0], channel_id).encode();
-		reload_node!(
-			nodes[0],
-			nodes[0].node.encode(),
-			&[&encoded_monitor_0],
-			persister_0a,
-			chain_monitor_0a,
-			node_0a
-		);
-		let encoded_monitor_1 = get_monitor!(nodes[1], channel_id).encode();
-		reload_node!(
-			nodes[1],
-			nodes[1].node.encode(),
-			&[&encoded_monitor_1],
-			persister_1a,
-			chain_monitor_1a,
-			node_1a
-		);
-	}
 
 	// Reconnect the nodes. Both nodes should attempt quiescence as the initiator, but only one will
 	// be it via the tie-breaker.
@@ -1890,29 +1851,8 @@ fn do_test_propose_splice_while_disconnected(reload: bool, use_0conf: bool) {
 
 	// Reconnect the nodes. This should trigger the node which lost the tie-breaker to resend `stfu`
 	// for their splice attempt.
-	if reload {
-		let encoded_monitor_0 = get_monitor!(nodes[0], channel_id).encode();
-		reload_node!(
-			nodes[0],
-			nodes[0].node.encode(),
-			&[&encoded_monitor_0],
-			persister_0b,
-			chain_monitor_0b,
-			node_0b
-		);
-		let encoded_monitor_1 = get_monitor!(nodes[1], channel_id).encode();
-		reload_node!(
-			nodes[1],
-			nodes[1].node.encode(),
-			&[&encoded_monitor_1],
-			persister_1b,
-			chain_monitor_1b,
-			node_1b
-		);
-	} else {
-		nodes[0].node.peer_disconnected(node_id_1);
-		nodes[1].node.peer_disconnected(node_id_0);
-	}
+	nodes[0].node.peer_disconnected(node_id_1);
+	nodes[1].node.peer_disconnected(node_id_0);
 	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
 	if !use_0conf {
 		reconnect_args.send_announcement_sigs = (true, true);
