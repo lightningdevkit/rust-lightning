@@ -12393,10 +12393,6 @@ where
 			));
 		}
 
-		// TODO(splicing): Once splice acceptor can contribute, check that inputs are sufficient,
-		// similarly to the check in `funding_contributed`.
-		debug_assert_eq!(our_funding_contribution, SignedAmount::ZERO);
-
 		let their_funding_contribution = SignedAmount::from_sat(msg.funding_contribution_satoshis);
 		if their_funding_contribution == SignedAmount::ZERO {
 			return Err(ChannelError::WarnAndDisconnect(format!(
@@ -12520,11 +12516,57 @@ where
 	}
 
 	pub(crate) fn splice_init<ES: EntropySource, L: Logger>(
-		&mut self, msg: &msgs::SpliceInit, our_funding_contribution_satoshis: i64,
-		signer_provider: &SP, entropy_source: &ES, holder_node_id: &PublicKey, logger: &L,
+		&mut self, msg: &msgs::SpliceInit, signer_provider: &SP, entropy_source: &ES,
+		holder_node_id: &PublicKey, logger: &L,
 	) -> Result<msgs::SpliceAck, ChannelError> {
-		let our_funding_contribution = SignedAmount::from_sat(our_funding_contribution_satoshis);
+		// Peek at the quiescent_action to determine our funding contribution.
+		let our_funding_contribution = match &self.quiescent_action {
+			Some(QuiescentAction::Splice { contribution, .. }) => {
+				contribution.validate().map(|()| contribution.net_value()).map_err(|e| {
+					debug_assert!(false);
+					ChannelError::WarnAndDisconnect(format!(
+						"Internal Error: Insufficient funding contribution: {}",
+						e,
+					))
+				})?
+			},
+			Some(QuiescentAction::LegacySplice(instructions)) => {
+				instructions.adjusted_funding_contribution
+			},
+			#[cfg(any(test, fuzzing))]
+			Some(QuiescentAction::DoNothing) => SignedAmount::ZERO,
+			None => SignedAmount::ZERO,
+		};
+
 		let splice_funding = self.validate_splice_init(msg, our_funding_contribution)?;
+
+		// Now that validation passed, consume the quiescent_action for inputs/outputs.
+		let (our_funding_inputs, our_funding_outputs, change_strategy) =
+			match self.quiescent_action.take() {
+				Some(QuiescentAction::Splice { contribution, .. }) => {
+					let (inputs, outputs) = contribution.into_tx_parts();
+					(inputs, outputs, ChangeStrategy::FromCoinSelection)
+				},
+				Some(QuiescentAction::LegacySplice(instructions)) => {
+					let SpliceInstructions {
+						our_funding_inputs,
+						our_funding_outputs,
+						change_script,
+						..
+					} = instructions;
+					(
+						our_funding_inputs,
+						our_funding_outputs,
+						ChangeStrategy::LegacyUserProvided(change_script),
+					)
+				},
+				#[cfg(any(test, fuzzing))]
+				Some(action @ QuiescentAction::DoNothing) => {
+					self.quiescent_action = Some(action);
+					(Vec::new(), Vec::new(), ChangeStrategy::FromCoinSelection)
+				},
+				None => (Vec::new(), Vec::new(), ChangeStrategy::FromCoinSelection),
+			};
 
 		log_info!(
 			logger,
@@ -12541,8 +12583,8 @@ where
 			funding_tx_locktime: LockTime::from_consensus(msg.locktime),
 			funding_feerate_sat_per_1000_weight: msg.funding_feerate_per_kw,
 			shared_funding_input: Some(prev_funding_input),
-			our_funding_inputs: Vec::new(),
-			our_funding_outputs: Vec::new(),
+			our_funding_inputs,
+			our_funding_outputs,
 		};
 
 		let mut interactive_tx_constructor = funding_negotiation_context
@@ -12552,8 +12594,7 @@ where
 				signer_provider,
 				entropy_source,
 				holder_node_id.clone(),
-				// ChangeStrategy doesn't matter when no inputs are contributed
-				ChangeStrategy::FromCoinSelection,
+				change_strategy,
 			)
 			.map_err(|err| {
 				ChannelError::WarnAndDisconnect(format!(
@@ -12562,11 +12603,6 @@ where
 				))
 			})?;
 		debug_assert!(interactive_tx_constructor.take_initiator_first_message().is_none());
-
-		// TODO(splicing): if quiescent_action is set, integrate what the user wants to do into the
-		// counterparty-initiated splice. For always-on nodes this probably isn't a useful
-		// optimization, but for often-offline nodes it may be, as we may connect and immediately
-		// go into splicing from both sides.
 
 		let new_funding_pubkey = splice_funding.get_holder_pubkeys().funding_pubkey;
 		self.pending_splice = Some(PendingFunding {
