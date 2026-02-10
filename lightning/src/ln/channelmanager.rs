@@ -12836,7 +12836,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					let init_res = funded_channel.splice_init(
 						msg,
 						our_funding_contribution,
-						&self.signer_provider,
 						&self.entropy_source,
 						&self.get_our_node_id(),
 						&self.logger,
@@ -12880,7 +12879,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				if let Some(ref mut funded_channel) = chan_entry.get_mut().as_funded_mut() {
 					let splice_ack_res = funded_channel.splice_ack(
 						msg,
-						&self.signer_provider,
 						&self.entropy_source,
 						&self.get_our_node_id(),
 						&self.logger,
