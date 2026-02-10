@@ -11971,15 +11971,15 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		}
 	}
 
-	#[rustfmt::skip]
-	fn internal_commitment_signed(&self, counterparty_node_id: &PublicKey, msg: &msgs::CommitmentSigned) -> Result<(), MsgHandleErrInternal> {
+	fn internal_commitment_signed(
+		&self, counterparty_node_id: &PublicKey, msg: &msgs::CommitmentSigned,
+	) -> Result<(), MsgHandleErrInternal> {
 		let best_block = *self.best_block.read().unwrap();
 		let per_peer_state = self.per_peer_state.read().unwrap();
-		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
-			.ok_or_else(|| {
-				debug_assert!(false);
-				MsgHandleErrInternal::no_such_peer(counterparty_node_id, msg.channel_id)
-			})?;
+		let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
+			debug_assert!(false);
+			MsgHandleErrInternal::no_such_peer(counterparty_node_id, msg.channel_id)
+		})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 		match peer_state.channel_by_id.entry(msg.channel_id) {
@@ -11988,12 +11988,22 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				let logger = WithChannelContext::from(&self.logger, &chan.context(), None);
 				let funding_txo = chan.funding().get_funding_txo();
 				let (monitor_opt, monitor_update_opt) = try_channel_entry!(
-					self, peer_state, chan.commitment_signed(msg, best_block, &self.signer_provider, &self.fee_estimator, &&logger),
-					chan_entry);
+					self,
+					peer_state,
+					chan.commitment_signed(
+						msg,
+						best_block,
+						&self.signer_provider,
+						&self.fee_estimator,
+						&&logger
+					),
+					chan_entry
+				);
 
 				if let Some(chan) = chan.as_funded_mut() {
 					if let Some(monitor) = monitor_opt {
-						let monitor_res = self.chain_monitor.watch_channel(monitor.channel_id(), monitor);
+						let monitor_res =
+							self.chain_monitor.watch_channel(monitor.channel_id(), monitor);
 						if let Ok(persist_state) = monitor_res {
 							if let Some(data) = self.handle_initial_monitor(
 								&mut peer_state.in_flight_monitor_updates,
@@ -12008,7 +12018,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								self.handle_post_monitor_update_chan_resume(data);
 							}
 						} else {
-							let logger = WithChannelContext::from(&self.logger, &chan.context, None);
+							let logger =
+								WithChannelContext::from(&self.logger, &chan.context, None);
 							log_error!(logger, "Persisting initial ChannelMonitor failed, implying the channel ID was duplicated");
 							let msg = "Channel ID was a duplicate";
 							let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
@@ -12033,7 +12044,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				}
 				Ok(())
 			},
-			hash_map::Entry::Vacant(_) => Err(MsgHandleErrInternal::no_such_channel_for_peer(counterparty_node_id, msg.channel_id))
+			hash_map::Entry::Vacant(_) => Err(MsgHandleErrInternal::no_such_channel_for_peer(
+				counterparty_node_id,
+				msg.channel_id,
+			)),
 		}
 	}
 
