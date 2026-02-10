@@ -11274,14 +11274,14 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		})
 	}
 
-	#[rustfmt::skip]
-	fn internal_tx_complete(&self, counterparty_node_id: PublicKey, msg: &msgs::TxComplete) -> Result<NotifyOption, MsgHandleErrInternal> {
+	fn internal_tx_complete(
+		&self, counterparty_node_id: PublicKey, msg: &msgs::TxComplete,
+	) -> Result<NotifyOption, MsgHandleErrInternal> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
-		let peer_state_mutex = per_peer_state.get(&counterparty_node_id)
-			.ok_or_else(|| {
-				debug_assert!(false);
-				MsgHandleErrInternal::no_such_peer(&counterparty_node_id, msg.channel_id)
-			})?;
+		let peer_state_mutex = per_peer_state.get(&counterparty_node_id).ok_or_else(|| {
+			debug_assert!(false);
+			MsgHandleErrInternal::no_such_peer(&counterparty_node_id, msg.channel_id)
+		})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 		match peer_state.channel_by_id.entry(msg.channel_id) {
@@ -11291,8 +11291,11 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					Ok(tx_complete_result) => {
 						let mut persist = NotifyOption::SkipPersistNoEvents;
 
-						if let Some(interactive_tx_msg_send) = tx_complete_result.interactive_tx_msg_send {
-							let msg_send_event = interactive_tx_msg_send.into_msg_send_event(counterparty_node_id);
+						if let Some(interactive_tx_msg_send) =
+							tx_complete_result.interactive_tx_msg_send
+						{
+							let msg_send_event =
+								interactive_tx_msg_send.into_msg_send_event(counterparty_node_id);
 							peer_state.pending_msg_events.push(msg_send_event);
 							persist = NotifyOption::SkipPersistHandleEvents;
 						};
@@ -11307,7 +11310,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								},
 								None,
 							));
-							//
 							// We have a successful signing session that we need to persist.
 							persist = NotifyOption::DoPersist;
 						}
@@ -11345,10 +11347,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								});
 							}
 							if let Some(tx_signatures) = tx_signatures {
-								peer_state.pending_msg_events.push(MessageSendEvent::SendTxSignatures {
-									node_id: counterparty_node_id,
-									msg: tx_signatures,
-								});
+								peer_state.pending_msg_events.push(
+									MessageSendEvent::SendTxSignatures {
+										node_id: counterparty_node_id,
+										msg: tx_signatures,
+									},
+								);
 							}
 
 							// We have a successful signing session that we need to persist.
@@ -11360,23 +11364,27 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					Err((error, splice_funding_failed)) => {
 						if let Some(splice_funding_failed) = splice_funding_failed {
 							let pending_events = &mut self.pending_events.lock().unwrap();
-							pending_events.push_back((events::Event::SpliceFailed {
-								channel_id: msg.channel_id,
-								counterparty_node_id,
-								user_channel_id: chan.context().get_user_id(),
-								abandoned_funding_txo: splice_funding_failed.funding_txo,
-								channel_type: splice_funding_failed.channel_type.clone(),
-								contributed_inputs: splice_funding_failed.contributed_inputs,
-								contributed_outputs: splice_funding_failed.contributed_outputs,
-							}, None));
+							pending_events.push_back((
+								events::Event::SpliceFailed {
+									channel_id: msg.channel_id,
+									counterparty_node_id,
+									user_channel_id: chan.context().get_user_id(),
+									abandoned_funding_txo: splice_funding_failed.funding_txo,
+									channel_type: splice_funding_failed.channel_type.clone(),
+									contributed_inputs: splice_funding_failed.contributed_inputs,
+									contributed_outputs: splice_funding_failed.contributed_outputs,
+								},
+								None,
+							));
 						}
 						Err(MsgHandleErrInternal::from_chan_no_close(error, msg.channel_id))
 					},
 				}
 			},
-			hash_map::Entry::Vacant(_) => {
-				Err(MsgHandleErrInternal::no_such_channel_for_peer(&counterparty_node_id, msg.channel_id))
-			}
+			hash_map::Entry::Vacant(_) => Err(MsgHandleErrInternal::no_such_channel_for_peer(
+				&counterparty_node_id,
+				msg.channel_id,
+			)),
 		}
 	}
 
