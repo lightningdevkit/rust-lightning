@@ -244,6 +244,20 @@ pub struct CommonOpenChannelFields {
 	pub channel_type: Option<ChannelTypeFeatures>,
 }
 
+impl CommonOpenChannelFields {
+	/// The [`ChannelParameters`] for this channel.
+	pub fn channel_parameters(&self) -> ChannelParameters {
+		ChannelParameters {
+			dust_limit_satoshis: self.dust_limit_satoshis,
+			max_htlc_value_in_flight_msat: self.max_htlc_value_in_flight_msat,
+			htlc_minimum_msat: self.htlc_minimum_msat,
+			commitment_feerate_sat_per_1000_weight: self.commitment_feerate_sat_per_1000_weight,
+			to_self_delay: self.to_self_delay,
+			max_accepted_htlcs: self.max_accepted_htlcs,
+		}
+	}
+}
+
 /// A subset of [`CommonOpenChannelFields`], containing various parameters which are set by the
 /// channel initiator and which are not part of the channel funding transaction.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
@@ -263,19 +277,6 @@ pub struct ChannelParameters {
 	pub to_self_delay: u16,
 	/// The maximum number of pending HTLCs towards the channel initiator.
 	pub max_accepted_htlcs: u16,
-	/// The minimum value unencumbered by HTLCs for the non-channel-initiator to keep in the channel.
-	///
-	/// For V1 channels (`open_channel`), this is the explicit `channel_reserve_satoshis` value
-	/// from the channel initiator.
-	///
-	/// For V2 channels (`open_channel2`), this is `None` at the time of [`Event::OpenChannelRequest`]
-	/// because the channel reserve is calculated as `max(1% of total_channel_value, dust_limit_satoshis)`
-	/// per the spec, where `total_channel_value` includes both the initiator's and acceptor's funding
-	/// contributions. Since the acceptor's contribution is not yet known when the event is generated,
-	/// the final reserve value cannot be determined at that point.
-	///
-	/// [`Event::OpenChannelRequest`]: crate::events::Event::OpenChannelRequest
-	pub channel_reserve_satoshis: Option<u64>,
 }
 
 /// An [`open_channel`] message to be sent to or received from a peer.
@@ -3938,7 +3939,8 @@ impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPaylo
 					used_aad,
 				} => {
 					if amt.is_some()
-						|| cltv_value.is_some() || total_msat.is_some()
+						|| cltv_value.is_some()
+						|| total_msat.is_some()
 						|| keysend_preimage.is_some()
 						|| invoice_request.is_some()
 						|| used_aad
@@ -3960,7 +3962,8 @@ impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPaylo
 					used_aad,
 				} => {
 					if amt.is_some()
-						|| cltv_value.is_some() || total_msat.is_some()
+						|| cltv_value.is_some()
+						|| total_msat.is_some()
 						|| keysend_preimage.is_some()
 						|| invoice_request.is_some()
 						|| !used_aad
@@ -4106,7 +4109,8 @@ impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundTrampoline
 					used_aad,
 				} => {
 					if amt.is_some()
-						|| cltv_value.is_some() || total_msat.is_some()
+						|| cltv_value.is_some()
+						|| total_msat.is_some()
 						|| keysend_preimage.is_some()
 						|| invoice_request.is_some()
 						|| used_aad

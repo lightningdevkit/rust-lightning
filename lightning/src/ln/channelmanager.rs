@@ -1700,25 +1700,6 @@ pub(super) enum OpenChannelMessageRef<'a> {
 	V2(&'a msgs::OpenChannelV2),
 }
 
-impl<'a> OpenChannelMessageRef<'a> {
-	pub(super) fn channel_parameters(&self) -> msgs::ChannelParameters {
-		let (common_fields, channel_reserve_satoshis) = match self {
-			Self::V1(msg) => (&msg.common_fields, Some(msg.channel_reserve_satoshis)),
-			Self::V2(msg) => (&msg.common_fields, None),
-		};
-		msgs::ChannelParameters {
-			dust_limit_satoshis: common_fields.dust_limit_satoshis,
-			max_htlc_value_in_flight_msat: common_fields.max_htlc_value_in_flight_msat,
-			htlc_minimum_msat: common_fields.htlc_minimum_msat,
-			commitment_feerate_sat_per_1000_weight: common_fields
-				.commitment_feerate_sat_per_1000_weight,
-			to_self_delay: common_fields.to_self_delay,
-			max_accepted_htlcs: common_fields.max_accepted_htlcs,
-			channel_reserve_satoshis,
-		}
-	}
-}
-
 /// A not-yet-accepted inbound (from counterparty) channel. Once
 /// accepted, the parameters will be used to construct a channel.
 pub(super) struct InboundChannelRequest {
@@ -9069,7 +9050,8 @@ impl<
 		ComplFunc: FnOnce(
 			Option<u64>,
 			bool,
-		) -> (Option<MonitorUpdateCompletionAction>, Option<RAAMonitorUpdateBlockingAction>),
+		)
+			-> (Option<MonitorUpdateCompletionAction>, Option<RAAMonitorUpdateBlockingAction>),
 	>(
 		&self, prev_hop: HTLCPreviousHopData, payment_preimage: PaymentPreimage,
 		payment_info: Option<PaymentClaimDetails>, attribution_data: Option<AttributionData>,
@@ -9107,7 +9089,8 @@ impl<
 		ComplFunc: FnOnce(
 			Option<u64>,
 			bool,
-		) -> (Option<MonitorUpdateCompletionAction>, Option<RAAMonitorUpdateBlockingAction>),
+		)
+			-> (Option<MonitorUpdateCompletionAction>, Option<RAAMonitorUpdateBlockingAction>),
 	>(
 		&self, prev_hop: HTLCClaimSource, payment_preimage: PaymentPreimage,
 		payment_info: Option<PaymentClaimDetails>, attribution_data: Option<AttributionData>,
@@ -10871,12 +10854,15 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				counterparty_node_id: *counterparty_node_id,
 				funding_satoshis: common_fields.funding_satoshis,
 				channel_negotiation_type: match msg {
-					OpenChannelMessageRef::V1(msg) => InboundChannelFunds::PushMsat(msg.push_msat),
+					OpenChannelMessageRef::V1(msg) => InboundChannelFunds::PushMsat {
+						push_msat: msg.push_msat,
+						channel_reserve_satoshis: msg.channel_reserve_satoshis,
+					},
 					OpenChannelMessageRef::V2(_) => InboundChannelFunds::DualFunded,
 				},
 				channel_type,
 				is_announced,
-				params: msg.channel_parameters(),
+				params: common_fields.channel_parameters(),
 			},
 			None,
 		));

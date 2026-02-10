@@ -13,7 +13,7 @@ use crate::chain::chaininterface::LowerBoundedFeeEstimator;
 use crate::chain::channelmonitor::{self, ChannelMonitorUpdateStep};
 use crate::chain::transaction::OutPoint;
 use crate::chain::{self, ChannelMonitorUpdateStatus};
-use crate::events::{ClosureReason, Event, FundingInfo};
+use crate::events::{ClosureReason, Event, FundingInfo, InboundChannelFunds};
 use crate::ln::channel::{
 	get_holder_selected_channel_reserve_satoshis, ChannelError, InboundV1Channel,
 	OutboundV1Channel, COINBASE_MATURITY, UNFUNDED_CHANNEL_AGE_LIMIT_TICKS,
@@ -1709,24 +1709,17 @@ pub fn test_invalid_funding_tx() {
 #[xtest(feature = "_externalize_tests")]
 pub fn test_open_channel_request_channel_reserve_satoshis() {
 	// Test that the `channel_reserve_satoshis` field is correctly populated in the
-	// `OpenChannelRequest` event's `params` field for V1 channels.
-	let mut manually_accept_conf = UserConfig::default();
-	manually_accept_conf.manually_accept_inbound_channels = true;
-
+	// `InboundChannelFunds::PushMsat` variant for V1 channels.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs =
-		create_node_chanmgrs(2, &node_cfgs, &[None, Some(manually_accept_conf.clone())]);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
 
 	// Create channel with 100,000 sats
-	nodes[0]
-		.node
-		.create_channel(node_b_id, 100_000, 10_001, 42, None, Some(manually_accept_conf))
-		.unwrap();
+	nodes[0].node.create_channel(node_b_id, 100_000, 10_001, 42, None, None).unwrap();
 	let open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 
 	// The channel_reserve_satoshis in the open_channel message is set by the opener
@@ -1738,15 +1731,24 @@ pub fn test_open_channel_request_channel_reserve_satoshis() {
 	let events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match &events[0] {
-		Event::OpenChannelRequest { temporary_channel_id, params, .. } => {
-			// For V1 channels, channel_reserve_satoshis should be Some with the value from the message
-			assert_eq!(
-				params.channel_reserve_satoshis,
-				Some(expected_reserve),
-				"channel_reserve_satoshis in OpenChannelRequest params should match the open_channel message"
-			);
+		Event::OpenChannelRequest {
+			temporary_channel_id,
+			channel_negotiation_type,
+			params,
+			..
+		} => {
+			// For V1 channels, channel_reserve_satoshis should be in the PushMsat variant
+			match channel_negotiation_type {
+				InboundChannelFunds::PushMsat { channel_reserve_satoshis, .. } => {
+					assert_eq!(
+						*channel_reserve_satoshis, expected_reserve,
+						"channel_reserve_satoshis in InboundChannelFunds::PushMsat should match the open_channel message"
+					);
+				},
+				_ => panic!("Expected InboundChannelFunds::PushMsat for V1 channel"),
+			}
 
-			// Verify other params fields are also correctly populated
+			// Verify params fields are correctly populated
 			assert_eq!(
 				params.dust_limit_satoshis,
 				open_channel_msg.common_fields.dust_limit_satoshis
@@ -1777,16 +1779,18 @@ pub fn test_open_channel_request_channel_reserve_satoshis() {
 
 #[xtest(feature = "_externalize_tests")]
 pub fn test_open_channel_request_channel_reserve_satoshis_v2() {
-	// Test that the `channel_reserve_satoshis` field is `None` in the
-	// `OpenChannelRequest` event's `params` field for V2 (dual-funded) channels.
-	let mut manually_accept_conf = UserConfig::default();
-	manually_accept_conf.manually_accept_inbound_channels = true;
-	manually_accept_conf.enable_dual_funded_channels = true;
+	// Test that the `channel_negotiation_type` is `InboundChannelFunds::DualFunded`
+	// for V2 (dual-funded) channels, which does not carry a channel reserve field.
+	let mut dual_funded_conf = UserConfig::default();
+	dual_funded_conf.enable_dual_funded_channels = true;
 
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs =
-		create_node_chanmgrs(2, &node_cfgs, &[Some(manually_accept_conf.clone()), Some(manually_accept_conf.clone())]);
+	let node_chanmgrs = create_node_chanmgrs(
+		2,
+		&node_cfgs,
+		&[Some(dual_funded_conf.clone()), Some(dual_funded_conf.clone())],
+	);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
@@ -1795,9 +1799,10 @@ pub fn test_open_channel_request_channel_reserve_satoshis_v2() {
 	// Get the open_channel message from node 0 to use as a template for the common fields
 	nodes[0]
 		.node
-		.create_channel(node_b_id, 100_000, 10_001, 42, None, Some(manually_accept_conf.clone()))
+		.create_channel(node_b_id, 100_000, 10_001, 42, None, Some(dual_funded_conf.clone()))
 		.unwrap();
-	let open_channel_v1_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
+	let open_channel_v1_msg =
+		get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 
 	// Create an OpenChannelV2 message using the common fields from V1
 	let open_channel_v2_msg = msgs::OpenChannelV2 {
@@ -1814,15 +1819,20 @@ pub fn test_open_channel_request_channel_reserve_satoshis_v2() {
 	let events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match &events[0] {
-		Event::OpenChannelRequest { temporary_channel_id, params, .. } => {
-			// For V2 channels, channel_reserve_satoshis should be None
+		Event::OpenChannelRequest {
+			temporary_channel_id,
+			channel_negotiation_type,
+			params,
+			..
+		} => {
+			// For V2 channels, channel_negotiation_type should be DualFunded (no reserve field)
 			assert_eq!(
-				params.channel_reserve_satoshis,
-				None,
-				"channel_reserve_satoshis in OpenChannelRequest params should be None for V2 channels"
+				*channel_negotiation_type,
+				InboundChannelFunds::DualFunded,
+				"channel_negotiation_type should be DualFunded for V2 channels"
 			);
 
-			// Verify other params fields are correctly populated
+			// Verify params fields are correctly populated
 			assert_eq!(
 				params.dust_limit_satoshis,
 				open_channel_v2_msg.common_fields.dust_limit_satoshis
@@ -1831,7 +1841,10 @@ pub fn test_open_channel_request_channel_reserve_satoshis_v2() {
 				params.max_htlc_value_in_flight_msat,
 				open_channel_v2_msg.common_fields.max_htlc_value_in_flight_msat
 			);
-			assert_eq!(params.htlc_minimum_msat, open_channel_v2_msg.common_fields.htlc_minimum_msat);
+			assert_eq!(
+				params.htlc_minimum_msat,
+				open_channel_v2_msg.common_fields.htlc_minimum_msat
+			);
 			assert_eq!(params.to_self_delay, open_channel_v2_msg.common_fields.to_self_delay);
 			assert_eq!(
 				params.max_accepted_htlcs,
