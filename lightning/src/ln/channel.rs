@@ -12182,6 +12182,26 @@ where
 		self.propose_quiescence(logger, QuiescentAction::Splice { contribution, locktime })
 	}
 
+	/// Returns a reference to the funding contribution queued by a pending [`QuiescentAction`],
+	/// if any.
+	fn queued_funding_contribution(&self) -> Option<&FundingContribution> {
+		match &self.quiescent_action {
+			Some(QuiescentAction::Splice { contribution, .. }) => Some(contribution),
+			_ => None,
+		}
+	}
+
+	/// Consumes and returns the funding contribution from the pending [`QuiescentAction`], if any.
+	fn take_queued_funding_contribution(&mut self) -> Option<FundingContribution> {
+		match &self.quiescent_action {
+			Some(QuiescentAction::Splice { .. }) => match self.quiescent_action.take() {
+				Some(QuiescentAction::Splice { contribution, .. }) => Some(contribution),
+				_ => unreachable!(),
+			},
+			_ => None,
+		}
+	}
+
 	fn send_splice_init(&mut self, context: FundingNegotiationContext) -> msgs::SpliceInit {
 		debug_assert!(self.pending_splice.is_none());
 		// Rotate the funding pubkey using the prev_funding_txid as a tweak
@@ -12278,10 +12298,6 @@ where
 				"Splicing requested on a channel that is not live".to_owned(),
 			));
 		}
-
-		// TODO(splicing): Once splice acceptor can contribute, check that inputs are sufficient,
-		// similarly to the check in `funding_contributed`.
-		debug_assert_eq!(our_funding_contribution, SignedAmount::ZERO);
 
 		let their_funding_contribution = SignedAmount::from_sat(msg.funding_contribution_satoshis);
 		if their_funding_contribution == SignedAmount::ZERO {
@@ -12406,11 +12422,37 @@ where
 	}
 
 	pub(crate) fn splice_init<ES: EntropySource, L: Logger>(
-		&mut self, msg: &msgs::SpliceInit, our_funding_contribution_satoshis: i64,
-		entropy_source: &ES, holder_node_id: &PublicKey, logger: &L,
+		&mut self, msg: &msgs::SpliceInit, entropy_source: &ES, holder_node_id: &PublicKey,
+		logger: &L,
 	) -> Result<msgs::SpliceAck, ChannelError> {
-		let our_funding_contribution = SignedAmount::from_sat(our_funding_contribution_satoshis);
-		let splice_funding = self.validate_splice_init(msg, our_funding_contribution)?;
+		let feerate = FeeRate::from_sat_per_kwu(msg.funding_feerate_per_kw as u64);
+		let our_funding_contribution = self.queued_funding_contribution().and_then(|c| {
+			c.net_value_for_acceptor_at_feerate(feerate)
+				.map_err(|e| {
+					log_info!(
+						logger,
+						"Cannot accommodate initiator's feerate for channel {}: {}; \
+							 proceeding without contribution",
+						self.context.channel_id(),
+						e,
+					);
+				})
+				.ok()
+		});
+
+		let splice_funding =
+			self.validate_splice_init(msg, our_funding_contribution.unwrap_or(SignedAmount::ZERO))?;
+
+		let (our_funding_inputs, our_funding_outputs) = if our_funding_contribution.is_some() {
+			self.take_queued_funding_contribution()
+				.expect("queued_funding_contribution was Some")
+				.for_acceptor_at_feerate(feerate)
+				.expect("feerate compatibility already checked")
+				.into_tx_parts()
+		} else {
+			Default::default()
+		};
+		let our_funding_contribution = our_funding_contribution.unwrap_or(SignedAmount::ZERO);
 
 		log_info!(
 			logger,
@@ -12427,8 +12469,8 @@ where
 			funding_tx_locktime: LockTime::from_consensus(msg.locktime),
 			funding_feerate_sat_per_1000_weight: msg.funding_feerate_per_kw,
 			shared_funding_input: Some(prev_funding_input),
-			our_funding_inputs: Vec::new(),
-			our_funding_outputs: Vec::new(),
+			our_funding_inputs,
+			our_funding_outputs,
 		};
 
 		let (interactive_tx_constructor, first_message) = funding_negotiation_context
@@ -12439,11 +12481,6 @@ where
 				holder_node_id.clone(),
 			);
 		debug_assert!(first_message.is_none());
-
-		// TODO(splicing): if quiescent_action is set, integrate what the user wants to do into the
-		// counterparty-initiated splice. For always-on nodes this probably isn't a useful
-		// optimization, but for often-offline nodes it may be, as we may connect and immediately
-		// go into splicing from both sides.
 
 		let new_funding_pubkey = splice_funding.get_holder_pubkeys().funding_pubkey;
 		self.pending_splice = Some(PendingFunding {
