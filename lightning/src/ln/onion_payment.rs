@@ -112,6 +112,8 @@ enum RoutingInfo {
 		shared_secret: SharedSecret,
 		current_path_key: Option<PublicKey>,
 		incoming_multipath_data: Option<msgs::FinalOnionHopData>,
+		next_trampoline_amt_msat: u64,
+		next_trampoline_cltv: u32,
 	},
 }
 
@@ -177,6 +179,8 @@ pub(super) fn create_fwd_pending_htlc_info(
 					shared_secret: trampoline_shared_secret,
 					current_path_key: None,
 					incoming_multipath_data: outer_hop_data.multipath_trampoline_data,
+					next_trampoline_amt_msat: next_trampoline_hop_data.amt_to_forward,
+					next_trampoline_cltv: next_trampoline_hop_data.outgoing_cltv_value,
 				},
 				next_trampoline_hop_data.amt_to_forward,
 				next_trampoline_hop_data.outgoing_cltv_value,
@@ -204,6 +208,8 @@ pub(super) fn create_fwd_pending_htlc_info(
 					shared_secret: trampoline_shared_secret,
 					current_path_key: outer_hop_data.current_path_key,
 					incoming_multipath_data: outer_hop_data.multipath_trampoline_data,
+					next_trampoline_amt_msat: next_hop_amount,
+					next_trampoline_cltv: next_hop_cltv,
 				},
 				amt_to_forward,
 				outgoing_cltv_value,
@@ -236,7 +242,7 @@ pub(super) fn create_fwd_pending_htlc_info(
 					}),
 			}
 		}
-		RoutingInfo::Trampoline { next_trampoline, new_packet_bytes, next_hop_hmac, shared_secret, current_path_key, incoming_multipath_data: multipath_trampoline_data } => {
+		RoutingInfo::Trampoline { next_trampoline, new_packet_bytes, next_hop_hmac, shared_secret, current_path_key, incoming_multipath_data: multipath_trampoline_data, next_trampoline_amt_msat: next_hop_amount, next_trampoline_cltv: next_hop_cltv} => {
 			let next_trampoline_packet_pubkey = match next_packet_pubkey_opt {
 				Some(Ok(pubkey)) => pubkey,
 				_ => return Err(InboundHTLCErr {
@@ -265,6 +271,8 @@ pub(super) fn create_fwd_pending_htlc_info(
 							.unwrap_or(BlindedFailure::FromBlindedNode),
 					}),
 				incoming_multipath_data: multipath_trampoline_data,
+				next_trampoline_amt_msat: next_hop_amount,
+				next_trampoline_cltv_expiry: next_hop_cltv,
 			}
 		}
 	};
