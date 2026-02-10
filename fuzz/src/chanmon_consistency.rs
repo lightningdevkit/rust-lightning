@@ -1774,7 +1774,22 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 								assert!(resolved_payments[$node].contains(&sent_id));
 							}
 						},
-						events::Event::PaymentFailed { payment_id, .. } => {
+						// Even though we don't explicitly send probes, because probes are
+						// detected based on hashing the payment hash+preimage, its rather
+						// trivial for the fuzzer to build payments that accidentally end up
+						// looking like probes.
+						events::Event::ProbeSuccessful { payment_id, .. } => {
+							let idx_opt =
+								pending_payments[$node].iter().position(|id| *id == payment_id);
+							if let Some(idx) = idx_opt {
+								pending_payments[$node].remove(idx);
+								resolved_payments[$node].push(payment_id);
+							} else {
+								assert!(resolved_payments[$node].contains(&payment_id));
+							}
+						},
+						events::Event::PaymentFailed { payment_id, .. }
+						| events::Event::ProbeFailed { payment_id, .. } => {
 							let idx_opt =
 								pending_payments[$node].iter().position(|id| *id == payment_id);
 							if let Some(idx) = idx_opt {
@@ -1789,13 +1804,6 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 						events::Event::PaymentClaimed { .. } => {},
 						events::Event::PaymentPathSuccessful { .. } => {},
 						events::Event::PaymentPathFailed { .. } => {},
-						events::Event::ProbeSuccessful { .. }
-						| events::Event::ProbeFailed { .. } => {
-							// Even though we don't explicitly send probes, because probes are
-							// detected based on hashing the payment hash+preimage, its rather
-							// trivial for the fuzzer to build payments that accidentally end up
-							// looking like probes.
-						},
 						events::Event::PaymentForwarded { .. } if $node == 1 => {},
 						events::Event::ChannelReady { .. } => {},
 						events::Event::HTLCHandlingFailed { .. } => {},
