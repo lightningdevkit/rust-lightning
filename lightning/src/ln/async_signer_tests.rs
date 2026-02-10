@@ -70,9 +70,9 @@ fn do_test_open_channel(zero_conf: bool) {
 
 	// Handle an inbound channel simulating an async signer.
 	nodes[1].disable_next_channel_signer_op(SignerOp::GetPerCommitmentPoint);
-	nodes[1].node.handle_open_channel(node_a_id, &open_chan_msg);
 
 	if zero_conf {
+		nodes[1].node.handle_open_channel(node_a_id, &open_chan_msg);
 		let events = nodes[1].node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1, "Expected one event, got {}", events.len());
 		match &events[0] {
@@ -90,15 +90,7 @@ fn do_test_open_channel(zero_conf: bool) {
 			ev => panic!("Expected OpenChannelRequest, not {:?}", ev),
 		}
 	} else {
-		let events = nodes[1].node.get_and_clear_pending_events();
-		assert_eq!(events.len(), 1, "Expected one event, got {}", events.len());
-		match &events[0] {
-			Event::OpenChannelRequest { temporary_channel_id, .. } => nodes[1]
-				.node
-				.accept_inbound_channel(temporary_channel_id, &node_a_id, 0, None)
-				.unwrap(),
-			ev => panic!("Expected OpenChannelRequest, not {:?}", ev),
-		}
+		handle_and_accept_open_channel(&nodes[1], node_a_id, &open_chan_msg);
 	}
 
 	let channel_id_1 = {
