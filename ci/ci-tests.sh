@@ -16,9 +16,6 @@ PIN_RELEASE_DEPS # pin the release dependencies in our main workspace
 # The backtrace v0.3.75 crate relies on rustc 1.82
 [ "$RUSTC_MINOR_VERSION" -lt 82 ] && cargo update -p backtrace --precise "0.3.74" --quiet
 
-# proptest 1.9.0 requires rustc 1.82.0
-[ "$RUSTC_MINOR_VERSION" -lt 82 ] && cargo update -p proptest --precise "1.8.0" --quiet
-
 # Starting with version 1.2.0, the `idna_adapter` crate has an MSRV of rustc 1.81.0.
 [ "$RUSTC_MINOR_VERSION" -lt 81 ] && cargo update -p idna_adapter --precise "1.1.0" --quiet
 
