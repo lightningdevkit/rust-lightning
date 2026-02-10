@@ -186,7 +186,8 @@ where
 		}
 		let results = MultiResultFuturePoller::new(fetch_block_futures).await.into_iter();
 
-		let mut fetched_blocks = [const { None }; MAX_BLOCKS_AT_ONCE];
+		const NO_BLOCK: Option<(u32, crate::poll::ValidatedBlock)> = None;
+		let mut fetched_blocks = [NO_BLOCK; MAX_BLOCKS_AT_ONCE];
 		for ((header, block_res), result) in results.into_iter().zip(fetched_blocks.iter_mut()) {
 			*result = Some((header.height, block_res?));
 		}
