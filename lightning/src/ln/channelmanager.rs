@@ -12527,14 +12527,14 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	}
 
 	/// Handle incoming splice request, transition channel to splice-pending (unless some check fails).
-	#[rustfmt::skip]
-	fn internal_splice_init(&self, counterparty_node_id: &PublicKey, msg: &msgs::SpliceInit) -> Result<(), MsgHandleErrInternal> {
+	fn internal_splice_init(
+		&self, counterparty_node_id: &PublicKey, msg: &msgs::SpliceInit,
+	) -> Result<(), MsgHandleErrInternal> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
-		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
-			.ok_or_else(|| {
-				debug_assert!(false);
-				MsgHandleErrInternal::no_such_peer(counterparty_node_id, msg.channel_id)
-			})?;
+		let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
+			debug_assert!(false);
+			MsgHandleErrInternal::no_such_peer(counterparty_node_id, msg.channel_id)
+		})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 
@@ -12543,19 +12543,28 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 		// Look for the channel
 		match peer_state.channel_by_id.entry(msg.channel_id) {
-			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::no_such_channel_for_peer(counterparty_node_id, msg.channel_id)),
+			hash_map::Entry::Vacant(_) => {
+				return Err(MsgHandleErrInternal::no_such_channel_for_peer(
+					counterparty_node_id,
+					msg.channel_id,
+				))
+			},
 			hash_map::Entry::Occupied(mut chan_entry) => {
 				if self.config.read().unwrap().reject_inbound_splices {
 					let err = ChannelError::WarnAndDisconnect(
-						"Inbound channel splices are currently not allowed".to_owned()
+						"Inbound channel splices are currently not allowed".to_owned(),
 					);
 					return Err(MsgHandleErrInternal::from_chan_no_close(err, msg.channel_id));
 				}
 
 				if let Some(ref mut funded_channel) = chan_entry.get_mut().as_funded_mut() {
 					let init_res = funded_channel.splice_init(
-						msg, our_funding_contribution, &self.signer_provider, &self.entropy_source,
-						&self.get_our_node_id(), &self.logger
+						msg,
+						our_funding_contribution,
+						&self.signer_provider,
+						&self.entropy_source,
+						&self.get_our_node_id(),
+						&self.logger,
 					);
 					let splice_ack_msg = try_channel_entry!(self, peer_state, init_res, chan_entry);
 					peer_state.pending_msg_events.push(MessageSendEvent::SendSpliceAck {
@@ -12564,7 +12573,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					});
 					Ok(())
 				} else {
-					try_channel_entry!(self, peer_state, Err(ChannelError::close("Channel is not funded, cannot be spliced".into())), chan_entry)
+					try_channel_entry!(
+						self,
+						peer_state,
+						Err(ChannelError::close("Channel is not funded, cannot be spliced".into())),
+						chan_entry
+					)
 				}
 			},
 		}
