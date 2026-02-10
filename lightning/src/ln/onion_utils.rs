@@ -415,7 +415,7 @@ pub(super) fn construct_trampoline_onion_keys<T: secp256k1::Signing>(
 
 pub(super) fn build_trampoline_onion_payloads<'a>(
 	blinded_tail: &'a BlindedTail, recipient_onion: &'a RecipientOnionFields,
-	starting_htlc_offset: u32, keysend_preimage: &Option<PaymentPreimage>,
+	cur_block_height: u32, keysend_preimage: &Option<PaymentPreimage>,
 ) -> Result<(Vec<msgs::OutboundTrampolinePayload<'a>>, u64), APIError> {
 	let mut res: Vec<msgs::OutboundTrampolinePayload> =
 		Vec::with_capacity(blinded_tail.trampoline_hops.len() + blinded_tail.hops.len());
@@ -430,7 +430,7 @@ pub(super) fn build_trampoline_onion_payloads<'a>(
 		blinded_tail.trampoline_hops.iter(),
 		Some(blinded_tail_with_hop_iter),
 		recipient_onion,
-		starting_htlc_offset,
+		cur_block_height,
 		keysend_preimage,
 		None,
 		|action, payload| match action {
@@ -444,14 +444,14 @@ pub(super) fn build_trampoline_onion_payloads<'a>(
 /// returns the hop data, as well as the first-hop value_msat and CLTV value we should send.
 #[cfg(any(test, feature = "_externalize_tests"))]
 pub(crate) fn test_build_onion_payloads<'a>(
-	path: &'a Path, recipient_onion: &'a RecipientOnionFields, starting_htlc_offset: u32,
+	path: &'a Path, recipient_onion: &'a RecipientOnionFields, cur_block_height: u32,
 	keysend_preimage: &Option<PaymentPreimage>, invoice_request: Option<&'a InvoiceRequest>,
 	trampoline_packet: Option<msgs::TrampolineOnionPacket>,
 ) -> Result<(Vec<msgs::OutboundOnionPayload<'a>>, u64, u32), APIError> {
 	build_onion_payloads(
 		path,
 		recipient_onion,
-		starting_htlc_offset,
+		cur_block_height,
 		keysend_preimage,
 		invoice_request,
 		trampoline_packet,
@@ -460,7 +460,7 @@ pub(crate) fn test_build_onion_payloads<'a>(
 
 /// returns the hop data, as well as the first-hop value_msat and CLTV value we should send.
 fn build_onion_payloads<'a>(
-	path: &'a Path, recipient_onion: &'a RecipientOnionFields, starting_htlc_offset: u32,
+	path: &'a Path, recipient_onion: &'a RecipientOnionFields, cur_block_height: u32,
 	keysend_preimage: &Option<PaymentPreimage>, invoice_request: Option<&'a InvoiceRequest>,
 	trampoline_packet: Option<msgs::TrampolineOnionPacket>,
 ) -> Result<(Vec<msgs::OutboundOnionPayload<'a>>, u64, u32), APIError> {
@@ -490,7 +490,7 @@ fn build_onion_payloads<'a>(
 		path.hops.iter(),
 		blinded_tail_with_hop_iter,
 		recipient_onion,
-		starting_htlc_offset,
+		cur_block_height,
 		keysend_preimage,
 		invoice_request,
 		|action, payload| match action {
@@ -520,7 +520,7 @@ enum PayloadCallbackAction {
 }
 fn build_onion_payloads_callback<'a, 'b, H, B, F, OP>(
 	hops: H, mut blinded_tail: Option<BlindedTailDetails<'a, B>>,
-	recipient_onion: &'a RecipientOnionFields, starting_htlc_offset: u32,
+	recipient_onion: &'a RecipientOnionFields, cur_block_height: u32,
 	keysend_preimage: &Option<PaymentPreimage>, invoice_request: Option<&'a InvoiceRequest>,
 	mut callback: F,
 ) -> Result<(u64, u32), APIError>
@@ -531,7 +531,7 @@ where
 	OP: OnionPayload<'a, 'b, ReceiveType = OP>,
 {
 	let mut cur_value_msat = 0u64;
-	let mut cur_cltv = starting_htlc_offset;
+	let mut cur_cltv = cur_block_height;
 	let mut last_hop_id = None;
 
 	for (idx, hop) in hops.rev().enumerate() {
@@ -559,7 +559,7 @@ where
 								OP::new_blinded_receive(
 									final_value_msat,
 									recipient_onion.total_mpp_amount_msat,
-									starting_htlc_offset + excess_final_cltv_expiry_delta,
+									cur_block_height + excess_final_cltv_expiry_delta,
 									&blinded_hop.encrypted_payload,
 									blinding_point.take(),
 									*keysend_preimage,
