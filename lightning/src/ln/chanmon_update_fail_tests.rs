@@ -3519,8 +3519,9 @@ fn do_test_blocked_chan_preimage_release(completion_mode: BlockedUpdateComplMode
 			.node
 			.handle_commitment_signed_batch_test(node_a_id, &as_htlc_fulfill.commitment_signed);
 		check_added_monitors(&nodes[1], 1);
-		let (a, raa) = do_main_commitment_signed_dance(&nodes[1], &nodes[0], false);
+		let (a, raa, holding_cell) = do_main_commitment_signed_dance(&nodes[1], &nodes[0], false);
 		assert!(a.is_none());
+		assert!(holding_cell.is_empty());
 
 		nodes[1].node.handle_revoke_and_ack(node_a_id, &raa);
 		check_added_monitors(&nodes[1], 1);
