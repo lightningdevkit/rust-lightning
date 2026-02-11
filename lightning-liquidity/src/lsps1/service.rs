@@ -613,6 +613,7 @@ where
 	/// Marks an order as failed and refunded.
 	///
 	/// This should be called when:
+	/// - We require onchain payment and the client didn't provide a `refund_onchain_address`.
 	/// - The order expires without payment
 	/// - The channel open fails after payment and the LSP must refund
 	pub async fn order_failed_and_refunded(
