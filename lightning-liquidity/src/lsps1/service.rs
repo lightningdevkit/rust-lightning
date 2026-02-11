@@ -34,6 +34,7 @@ use crate::message_queue::MessageQueue;
 use crate::events::EventQueue;
 use crate::lsps0::ser::{
 	LSPSDateTime, LSPSProtocolMessageHandler, LSPSRequestId, LSPSResponseError,
+	LSPS0_CLIENT_REJECTED_ERROR_CODE,
 };
 use crate::persist::{
 	LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE, LSPS1_SERVICE_PERSISTENCE_SECONDARY_NAMESPACE,
@@ -61,6 +62,8 @@ pub struct LSPS1ServiceConfig {
 	/// The options supported by the LSP.
 	pub supported_options: LSPS1Options,
 }
+
+const MAX_TOTAL_PEERS: usize = 100000;
 
 /// The main object allowing to send and receive bLIP-51 / LSPS1 messages.
 pub struct LSPS1ServiceHandler<
@@ -308,11 +311,30 @@ where
 
 		{
 			let mut outer_state_lock = self.per_peer_state.write().unwrap();
+			let num_peers = outer_state_lock.len();
 
-			let inner_state_lock = outer_state_lock
-				.entry(*counterparty_node_id)
-				.or_insert(Mutex::new(PeerState::default()));
-			let mut peer_state_lock = inner_state_lock.lock().unwrap();
+			let inner_state_entry = outer_state_lock.entry(*counterparty_node_id);
+
+			if matches!(inner_state_entry, Entry::Vacant(_)) && num_peers >= MAX_TOTAL_PEERS {
+				let response = LSPS1Response::CreateOrderError(LSPSResponseError {
+					code: LSPS0_CLIENT_REJECTED_ERROR_CODE,
+					message: "Reached maximum number of pending requests. Please try again later."
+						.to_string(),
+					data: None,
+				});
+				let msg = LSPS1Message::Response(request_id, response).into();
+				message_queue_notifier.enqueue(counterparty_node_id, msg);
+				return Err(LightningError {
+					err: format!(
+						"Dropping request from peer {} due to reaching maximally allowed number of total peers: {}",
+						counterparty_node_id, MAX_TOTAL_PEERS
+					),
+					action: ErrorAction::IgnoreAndLog(Level::Debug),
+				});
+			}
+
+			let mut peer_state_lock =
+				inner_state_entry.or_insert(Mutex::new(PeerState::default())).lock().unwrap();
 
 			let request = LSPS1Request::CreateOrder(params.clone());
 			peer_state_lock.register_request(request_id.clone(), request).map_err(|e| {
@@ -734,16 +756,19 @@ where
 		&self, message: Self::ProtocolMessage, counterparty_node_id: &PublicKey,
 	) -> Result<(), LightningError> {
 		match message {
-			LSPS1Message::Request(request_id, request) => match request {
-				LSPS1Request::GetInfo(_) => {
-					self.handle_get_info_request(request_id, counterparty_node_id)
-				},
-				LSPS1Request::CreateOrder(params) => {
-					self.handle_create_order_request(request_id, counterparty_node_id, params)
-				},
-				LSPS1Request::GetOrder(params) => {
-					self.handle_get_order_request(request_id, counterparty_node_id, params)
-				},
+			LSPS1Message::Request(request_id, request) => {
+				let res = match request {
+					LSPS1Request::GetInfo(_) => {
+						self.handle_get_info_request(request_id, counterparty_node_id)
+					},
+					LSPS1Request::CreateOrder(params) => {
+						self.handle_create_order_request(request_id, counterparty_node_id, params)
+					},
+					LSPS1Request::GetOrder(params) => {
+						self.handle_get_order_request(request_id, counterparty_node_id, params)
+					},
+				};
+				res
 			},
 			_ => {
 				debug_assert!(
