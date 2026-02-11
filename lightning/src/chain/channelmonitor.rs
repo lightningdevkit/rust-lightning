@@ -706,10 +706,6 @@ pub(crate) enum ChannelMonitorUpdateStep {
 	ReleasePaymentComplete {
 		htlc: SentHTLCId,
 	},
-	/// Used to update the configurable force-close CLTV buffer for claimable HTLCs.
-	ChannelConfigUpdated {
-		force_close_claimable_htlc_cltv_buffer: u32,
-	},
 }
 
 impl ChannelMonitorUpdateStep {
@@ -727,7 +723,6 @@ impl ChannelMonitorUpdateStep {
 			ChannelMonitorUpdateStep::RenegotiatedFunding { .. } => "RenegotiatedFunding",
 			ChannelMonitorUpdateStep::RenegotiatedFundingLocked { .. } => "RenegotiatedFundingLocked",
 			ChannelMonitorUpdateStep::ReleasePaymentComplete { .. } => "ReleasePaymentComplete",
-			ChannelMonitorUpdateStep::ChannelConfigUpdated { .. } => "ChannelConfigUpdated",
 		}
 	}
 }
@@ -781,9 +776,6 @@ impl_writeable_tlv_based_enum_upgradable!(ChannelMonitorUpdateStep,
 	},
 	(12, RenegotiatedFundingLocked) => {
 		(1, funding_txid, required),
-	},
-	(14, ChannelConfigUpdated) => {
-		(1, force_close_claimable_htlc_cltv_buffer, required),
 	},
 );
 
@@ -1745,28 +1737,27 @@ pub(crate) fn write_chanmon_internal<Signer: EcdsaChannelSigner, W: Writer>(
 		};
 
 	write_tlv_fields!(writer, {
-		(1, channel_monitor.funding_spend_confirmed, option),
-		(3, channel_monitor.htlcs_resolved_on_chain, required_vec),
-		(5, pending_monitor_events, required_vec),
-		(7, channel_monitor.funding_spend_seen, required),
-		(9, channel_monitor.counterparty_node_id, required),
-		(11, channel_monitor.confirmed_commitment_tx_counterparty_output, option),
-		(13, channel_monitor.spendable_txids_confirmed, required_vec),
-		(15, channel_monitor.counterparty_fulfilled_htlcs, required),
-		(17, channel_monitor.initial_counterparty_commitment_info, option),
-		(19, channel_monitor.channel_id, required),
-		(21, channel_monitor.balances_empty_height, option),
-		(23, channel_monitor.holder_pays_commitment_tx_fee, option),
-		(25, channel_monitor.payment_preimages, required),
-		(27, channel_monitor.first_negotiated_funding_txo, required),
-		(29, channel_monitor.initial_counterparty_commitment_tx, option),
-		(31, channel_monitor.funding.channel_parameters, required),
-		(32, channel_monitor.pending_funding, optional_vec),
-		(33, channel_monitor.htlcs_resolved_to_user, required),
-		(34, channel_monitor.alternative_funding_confirmed, option),
-		(35, channel_monitor.is_manual_broadcast, required),
-		(37, channel_monitor.funding_seen_onchain, required),
-		(39, channel_monitor.force_close_claimable_htlc_cltv_buffer, (default_value, CLTV_CLAIM_BUFFER)),
+	(1, channel_monitor.funding_spend_confirmed, option),
+	(3, channel_monitor.htlcs_resolved_on_chain, required_vec),
+	(5, pending_monitor_events, required_vec),
+	(7, channel_monitor.funding_spend_seen, required),
+	(9, channel_monitor.counterparty_node_id, required),
+	(11, channel_monitor.confirmed_commitment_tx_counterparty_output, option),
+	(13, channel_monitor.spendable_txids_confirmed, required_vec),
+	(15, channel_monitor.counterparty_fulfilled_htlcs, required),
+	(17, channel_monitor.initial_counterparty_commitment_info, option),
+	(19, channel_monitor.channel_id, required),
+	(21, channel_monitor.balances_empty_height, option),
+	(23, channel_monitor.holder_pays_commitment_tx_fee, option),
+	(25, channel_monitor.payment_preimages, required),
+	(27, channel_monitor.first_negotiated_funding_txo, required),
+	(29, channel_monitor.initial_counterparty_commitment_tx, option),
+	(31, channel_monitor.funding.channel_parameters, required),
+	(32, channel_monitor.pending_funding, optional_vec),
+	(33, channel_monitor.htlcs_resolved_to_user, required),
+	(34, channel_monitor.alternative_funding_confirmed, option),
+	(35, channel_monitor.is_manual_broadcast, required),
+	(37, channel_monitor.funding_seen_onchain, required),
 	});
 
 	Ok(())
@@ -1872,7 +1863,6 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		initial_holder_commitment_tx: HolderCommitmentTransaction, best_block: BestBlock,
 		counterparty_node_id: PublicKey, channel_id: ChannelId,
 		is_manual_broadcast: bool,
-		force_close_claimable_htlc_cltv_buffer: u32,
 	) -> ChannelMonitor<Signer> {
 
 		assert!(commitment_transaction_number_obscure_factor <= (1 << 48));
@@ -1941,10 +1931,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 
 			on_holder_tx_csv: counterparty_channel_parameters.selected_contest_delay,
 
-			force_close_claimable_htlc_cltv_buffer: core::cmp::max(
-				force_close_claimable_htlc_cltv_buffer,
-				CLTV_CLAIM_BUFFER,
-			),
+			force_close_claimable_htlc_cltv_buffer: CLTV_CLAIM_BUFFER,
 
 			commitment_secrets: CounterpartyCommitmentSecrets::new(),
 			counterparty_commitment_txn_on_chain: new_hash_map(),
@@ -2130,6 +2117,15 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// Gets the channel type of the corresponding channel.
 	pub fn channel_type_features(&self) -> ChannelTypeFeatures {
 		self.inner.lock().unwrap().channel_type_features().clone()
+	}
+
+	/// Gets the initial force-close buffer configuration.
+	///
+	/// This is used during initialization to populate ChainMonitor's memory-only config.
+	/// For monitors deserialized from old versions, this returns the persisted value.
+	/// For new monitors, this returns the value passed during construction.
+	pub(crate) fn get_initial_force_close_buffer(&self) -> u32 {
+		self.inner.lock().unwrap().force_close_claimable_htlc_cltv_buffer
 	}
 
 	/// Gets a list of txids, with their output scripts (in the order they appear in the
@@ -2383,6 +2379,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		header: &Header,
 		txdata: &TransactionData,
 		height: u32,
+		force_close_buffer: u32,
 		broadcaster: B,
 		fee_estimator: F,
 		logger: &L,
@@ -2390,7 +2387,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		let mut inner = self.inner.lock().unwrap();
 		let logger = WithChannelMonitor::from_impl(logger, &*inner, None);
 		inner.block_connected(
-			header, txdata, height, broadcaster, fee_estimator, &logger)
+			header, txdata, height, force_close_buffer, broadcaster, fee_estimator, &logger)
 	}
 
 	/// Determines if the disconnected block contained any transactions of interest and updates
@@ -2416,6 +2413,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		header: &Header,
 		txdata: &TransactionData,
 		height: u32,
+		force_close_buffer: u32,
 		broadcaster: B,
 		fee_estimator: F,
 		logger: &L,
@@ -2424,7 +2422,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		let mut inner = self.inner.lock().unwrap();
 		let logger = WithChannelMonitor::from_impl(logger, &*inner, None);
 		inner.transactions_confirmed(
-			header, txdata, height, broadcaster, &bounded_fee_estimator, &logger)
+			header, txdata, height, force_close_buffer, broadcaster, &bounded_fee_estimator, &logger)
 	}
 
 	/// Processes a transaction that was reorganized out of the chain.
@@ -2461,6 +2459,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		&self,
 		header: &Header,
 		height: u32,
+		force_close_buffer: u32,
 		broadcaster: B,
 		fee_estimator: F,
 		logger: &L,
@@ -2469,7 +2468,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		let mut inner = self.inner.lock().unwrap();
 		let logger = WithChannelMonitor::from_impl(logger, &*inner, None);
 		inner.best_block_updated(
-			header, height, broadcaster, &bounded_fee_estimator, &logger
+			header, height, force_close_buffer, broadcaster, &bounded_fee_estimator, &logger
 		)
 	}
 
@@ -4299,13 +4298,6 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					log_trace!(logger, "HTLC {htlc:?} permanently and fully resolved");
 					self.htlcs_resolved_to_user.insert(*htlc);
 				},
-				ChannelMonitorUpdateStep::ChannelConfigUpdated { force_close_claimable_htlc_cltv_buffer } => {
-					log_trace!(logger, "Updating ChannelMonitor force_close_claimable_htlc_cltv_buffer to {}", force_close_claimable_htlc_cltv_buffer);
-					self.force_close_claimable_htlc_cltv_buffer = core::cmp::max(
-						*force_close_claimable_htlc_cltv_buffer,
-						CLTV_CLAIM_BUFFER,
-					);
-				},
 			}
 		}
 
@@ -4338,8 +4330,6 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				ChannelMonitorUpdateStep::PaymentPreimage { .. } => {},
 				ChannelMonitorUpdateStep::ChannelForceClosed { .. } => {},
 				ChannelMonitorUpdateStep::ReleasePaymentComplete { .. } => {},
-				ChannelMonitorUpdateStep::ChannelConfigUpdated { .. } =>
-					is_pre_close_update = true,
 			}
 		}
 
@@ -5241,14 +5231,14 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 	#[rustfmt::skip]
 	fn block_connected<B: BroadcasterInterface, F: FeeEstimator, L: Logger>(
-		&mut self, header: &Header, txdata: &TransactionData, height: u32, broadcaster: B,
+		&mut self, header: &Header, txdata: &TransactionData, height: u32, force_close_buffer: u32, broadcaster: B,
 		fee_estimator: F, logger: &WithContext<L>,
 	) -> Vec<TransactionOutputs> {
 		let block_hash = header.block_hash();
 		self.best_block = BestBlock::new(block_hash, height);
 
 		let bounded_fee_estimator = LowerBoundedFeeEstimator::new(fee_estimator);
-		self.transactions_confirmed(header, txdata, height, broadcaster, &bounded_fee_estimator, logger)
+		self.transactions_confirmed(header, txdata, height, force_close_buffer, broadcaster, &bounded_fee_estimator, logger)
 	}
 
 	#[rustfmt::skip]
@@ -5256,6 +5246,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		&mut self,
 		header: &Header,
 		height: u32,
+		force_close_buffer: u32,
 		broadcaster: B,
 		fee_estimator: &LowerBoundedFeeEstimator<F>,
 		logger: &WithContext<L>,
@@ -5265,7 +5256,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		if height > self.best_block.height {
 			self.best_block = BestBlock::new(block_hash, height);
 			log_trace!(logger, "Connecting new block {} at height {}", block_hash, height);
-			self.block_confirmed(height, block_hash, vec![], vec![], vec![], &broadcaster, &fee_estimator, logger)
+			self.block_confirmed(height, block_hash, vec![], vec![], vec![], force_close_buffer, &broadcaster, &fee_estimator, logger)
 		} else if block_hash != self.best_block.block_hash {
 			self.best_block = BestBlock::new(block_hash, height);
 			log_trace!(logger, "Best block re-orged, replaced with new block {} at height {}", block_hash, height);
@@ -5284,6 +5275,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		header: &Header,
 		txdata: &TransactionData,
 		height: u32,
+		force_close_buffer: u32,
 		broadcaster: B,
 		fee_estimator: &LowerBoundedFeeEstimator<F>,
 		logger: &WithContext<L>,
@@ -5547,7 +5539,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			watch_outputs.append(&mut outputs);
 		}
 
-		self.block_confirmed(height, block_hash, txn_matched, watch_outputs, claimable_outpoints, &broadcaster, &fee_estimator, logger)
+		self.block_confirmed(height, block_hash, txn_matched, watch_outputs, claimable_outpoints, force_close_buffer, &broadcaster, &fee_estimator, logger)
 	}
 
 	/// Update state for new block(s)/transaction(s) confirmed. Note that the caller must update
@@ -5566,6 +5558,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		txn_matched: Vec<&Transaction>,
 		mut watch_outputs: Vec<TransactionOutputs>,
 		mut claimable_outpoints: Vec<PackageTemplate>,
+		force_close_buffer: u32,
 		broadcaster: &B,
 		fee_estimator: &LowerBoundedFeeEstimator<F>,
 		logger: &WithContext<L>,
@@ -5575,7 +5568,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 		// Only generate claims if we haven't already done so (e.g., in transactions_confirmed).
 		if claimable_outpoints.is_empty() {
-			let should_broadcast = self.should_broadcast_holder_commitment_txn(logger);
+			let should_broadcast = self.should_broadcast_holder_commitment_txn(force_close_buffer, logger);
 			if let Some(payment_hash) = should_broadcast {
 				let reason = ClosureReason::HTLCsTimedOut { payment_hash: Some(payment_hash) };
 				let (mut new_outpoints, mut new_outputs) =
@@ -5941,7 +5934,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 	#[rustfmt::skip]
 	fn should_broadcast_holder_commitment_txn<L: Logger>(
-		&self, logger: &WithContext<L>
+		&self, force_close_buffer: u32, logger: &WithContext<L>
 	) -> Option<PaymentHash> {
 		// There's no need to broadcast our commitment transaction if we've seen one confirmed (even
 		// with 1 confirmation) as it'll be rejected as duplicate/conflicting.
@@ -5980,7 +5973,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					// on-chain for an expired HTLC.
 					let htlc_outbound = $holder_tx == htlc.offered;
 					if ( htlc_outbound && htlc.cltv_expiry + LATENCY_GRACE_PERIOD_BLOCKS <= height) ||
-					   (!htlc_outbound && htlc.cltv_expiry <= height + self.force_close_claimable_htlc_cltv_buffer && self.payment_preimages.contains_key(&htlc.payment_hash)) {
+					   (!htlc_outbound && htlc.cltv_expiry <= height + force_close_buffer && self.payment_preimages.contains_key(&htlc.payment_hash)) {
 						log_info!(logger, "Force-closing channel due to {} HTLC timeout - HTLC with payment hash {} expires at {}", if htlc_outbound { "outbound" } else { "inbound"}, htlc.payment_hash, htlc.cltv_expiry);
 						return Some(htlc.payment_hash);
 					}
@@ -6290,7 +6283,15 @@ impl<Signer: EcdsaChannelSigner, T: BroadcasterInterface, F: FeeEstimator, L: Lo
 	for (ChannelMonitor<Signer>, T, F, L)
 {
 	fn filtered_block_connected(&self, header: &Header, txdata: &TransactionData, height: u32) {
-		self.0.block_connected(header, txdata, height, &self.1, &self.2, &self.3);
+		self.0.block_connected(
+			header,
+			txdata,
+			height,
+			CLTV_CLAIM_BUFFER,
+			&self.1,
+			&self.2,
+			&self.3,
+		);
 	}
 
 	fn blocks_disconnected(&self, fork_point: BestBlock) {
@@ -6304,7 +6305,15 @@ where
 	M: Deref<Target = ChannelMonitor<Signer>>,
 {
 	fn transactions_confirmed(&self, header: &Header, txdata: &TransactionData, height: u32) {
-		self.0.transactions_confirmed(header, txdata, height, &self.1, &self.2, &self.3);
+		self.0.transactions_confirmed(
+			header,
+			txdata,
+			height,
+			CLTV_CLAIM_BUFFER,
+			&self.1,
+			&self.2,
+			&self.3,
+		);
 	}
 
 	fn transaction_unconfirmed(&self, txid: &Txid) {
@@ -6312,7 +6321,7 @@ where
 	}
 
 	fn best_block_updated(&self, header: &Header, height: u32) {
-		self.0.best_block_updated(header, height, &self.1, &self.2, &self.3);
+		self.0.best_block_updated(header, height, CLTV_CLAIM_BUFFER, &self.1, &self.2, &self.3);
 	}
 
 	fn get_relevant_txids(&self) -> Vec<(Txid, u32, Option<BlockHash>)> {
@@ -6793,7 +6802,7 @@ mod tests {
 	use crate::chain::chaininterface::LowerBoundedFeeEstimator;
 	use crate::events::ClosureReason;
 
-	use super::{ChannelMonitorUpdateStep, CLTV_CLAIM_BUFFER};
+	use super::ChannelMonitorUpdateStep;
 	use crate::chain::channelmonitor::{ChannelMonitor, WithChannelMonitor};
 	use crate::chain::package::{
 		weight_offered_htlc, weight_received_htlc, weight_revoked_offered_htlc,
@@ -7028,7 +7037,7 @@ mod tests {
 		let monitor = ChannelMonitor::new(
 			Secp256k1::new(), keys, Some(shutdown_script.into_inner()), 0, &ScriptBuf::new(),
 			&channel_parameters, true, 0, HolderCommitmentTransaction::dummy(0, funding_outpoint, Vec::new()),
-			best_block, dummy_key, channel_id, false, CLTV_CLAIM_BUFFER,
+			best_block, dummy_key, channel_id, false,
 		);
 
 		let nondust_htlcs = preimages_slice_to_htlcs!(preimages[0..10]);
@@ -7289,7 +7298,7 @@ mod tests {
 		let monitor = ChannelMonitor::new(
 			Secp256k1::new(), keys, Some(shutdown_script.into_inner()), 0, &ScriptBuf::new(),
 			&channel_parameters, true, 0, HolderCommitmentTransaction::dummy(0, funding_outpoint, Vec::new()),
-			best_block, dummy_key, channel_id, false, CLTV_CLAIM_BUFFER,
+			best_block, dummy_key, channel_id, false,
 		);
 
 		let chan_id = monitor.inner.lock().unwrap().channel_id();

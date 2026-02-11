@@ -345,6 +345,20 @@ pub trait Watch<ChannelSigner: EcdsaChannelSigner> {
 	fn release_pending_monitor_events(
 		&self,
 	) -> Vec<(OutPoint, ChannelId, Vec<MonitorEvent>, PublicKey)>;
+
+	/// Updates the force-close buffer configuration for a channel.
+	///
+	/// This is a memory-only update that controls how many blocks before an inbound HTLC's
+	/// CLTV expiry the channel will be force-closed. This method is optional and has a default
+	/// no-op implementation for backward compatibility.
+	///
+	/// Returns an error if the implementation cannot apply the update or if the buffer value
+	/// is invalid.
+	fn update_channel_force_close_buffer(
+		&self, _channel_id: ChannelId, _force_close_buffer: u32,
+	) -> Result<(), ()> {
+		Ok(())
+	}
 }
 
 impl<ChannelSigner: EcdsaChannelSigner, T: Watch<ChannelSigner> + ?Sized, W: Deref<Target = T>>
@@ -366,6 +380,12 @@ impl<ChannelSigner: EcdsaChannelSigner, T: Watch<ChannelSigner> + ?Sized, W: Der
 		&self,
 	) -> Vec<(OutPoint, ChannelId, Vec<MonitorEvent>, PublicKey)> {
 		self.deref().release_pending_monitor_events()
+	}
+
+	fn update_channel_force_close_buffer(
+		&self, channel_id: ChannelId, force_close_buffer: u32,
+	) -> Result<(), ()> {
+		self.deref().update_channel_force_close_buffer(channel_id, force_close_buffer)
 	}
 }
 

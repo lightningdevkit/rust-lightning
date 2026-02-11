@@ -33,7 +33,7 @@ use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 #[cfg(peer_storage)]
 use crate::chain::channelmonitor::write_chanmon_internal;
 use crate::chain::channelmonitor::{
-	Balance, ChannelMonitor, ChannelMonitorUpdate, MonitorEvent, TransactionOutputs,
+	self, Balance, ChannelMonitor, ChannelMonitorUpdate, MonitorEvent, TransactionOutputs,
 	WithChannelMonitor,
 };
 use crate::chain::transaction::{OutPoint, TransactionData};
@@ -350,6 +350,12 @@ pub struct ChainMonitor<
 	P::Target: Persist<ChannelSigner>,
 {
 	monitors: RwLock<HashMap<ChannelId, MonitorHolder<ChannelSigner>>>,
+
+	/// Memory-only per-channel configuration for the CLTV buffer used when deciding
+	/// to force-close channels with claimable inbound HTLCs. This is not persisted
+	/// and is rebuilt from channel state on restart.
+	channel_force_close_buffers: RwLock<HashMap<ChannelId, u32>>,
+
 	chain_source: Option<C>,
 	broadcaster: T,
 	logger: L,
@@ -402,6 +408,7 @@ where
 		let event_notifier = Arc::new(Notifier::new());
 		Self {
 			monitors: RwLock::new(new_hash_map()),
+			channel_force_close_buffers: RwLock::new(new_hash_map()),
 			chain_source,
 			broadcaster,
 			logger,
@@ -607,6 +614,7 @@ where
 	) -> Self {
 		Self {
 			monitors: RwLock::new(new_hash_map()),
+			channel_force_close_buffers: RwLock::new(new_hash_map()),
 			chain_source,
 			broadcaster,
 			logger,
@@ -620,6 +628,27 @@ where
 			#[cfg(peer_storage)]
 			our_peerstorage_encryption_key: _our_peerstorage_encryption_key,
 		}
+	}
+
+	/// Updates the force-close buffer configuration for a channel.
+	///
+	/// This is a memory-only update and does not trigger persistence. The buffer value
+	/// determines how many blocks before an inbound HTLC's CLTV expiry the channel will
+	/// be force-closed to claim it on-chain.
+	///
+	/// Returns an error if the buffer value is below [`CLTV_CLAIM_BUFFER`].
+	///
+	/// [`CLTV_CLAIM_BUFFER`]: channelmonitor::CLTV_CLAIM_BUFFER
+	pub fn update_channel_force_close_buffer(
+		&self, channel_id: ChannelId, force_close_buffer: u32,
+	) -> Result<(), ()> {
+		if force_close_buffer < channelmonitor::CLTV_CLAIM_BUFFER {
+			return Err(());
+		}
+
+		let mut buffers = self.channel_force_close_buffers.write().unwrap();
+		buffers.insert(channel_id, force_close_buffer);
+		Ok(())
 	}
 
 	/// Gets the balances in the contained [`ChannelMonitor`]s which are claimable on-chain or
@@ -1128,10 +1157,16 @@ where
 			height
 		);
 		self.process_chain_data(header, Some(height), &txdata, |monitor, txdata| {
+			let channel_id = monitor.channel_id();
+			let buffers = self.channel_force_close_buffers.read().unwrap();
+			let force_close_buffer =
+				buffers.get(&channel_id).copied().unwrap_or(channelmonitor::CLTV_CLAIM_BUFFER);
+
 			monitor.block_connected(
 				header,
 				txdata,
 				height,
+				force_close_buffer,
 				&self.broadcaster,
 				&self.fee_estimator,
 				&self.logger,
@@ -1188,10 +1223,16 @@ where
 			header.block_hash()
 		);
 		self.process_chain_data(header, None, txdata, |monitor, txdata| {
+			let channel_id = monitor.channel_id();
+			let buffers = self.channel_force_close_buffers.read().unwrap();
+			let force_close_buffer =
+				buffers.get(&channel_id).copied().unwrap_or(channelmonitor::CLTV_CLAIM_BUFFER);
+
 			monitor.transactions_confirmed(
 				header,
 				txdata,
 				height,
+				force_close_buffer,
 				&self.broadcaster,
 				&self.fee_estimator,
 				&self.logger,
@@ -1225,9 +1266,15 @@ where
 			// While in practice there shouldn't be any recursive calls when given empty txdata,
 			// it's still possible if a chain::Filter implementation returns a transaction.
 			debug_assert!(txdata.is_empty());
+			let channel_id = monitor.channel_id();
+			let buffers = self.channel_force_close_buffers.read().unwrap();
+			let force_close_buffer =
+				buffers.get(&channel_id).copied().unwrap_or(channelmonitor::CLTV_CLAIM_BUFFER);
+
 			monitor.best_block_updated(
 				header,
 				height,
+				force_close_buffer,
 				&self.broadcaster,
 				&self.fee_estimator,
 				&self.logger,
@@ -1282,6 +1329,7 @@ where
 			hash_map::Entry::Vacant(e) => e,
 		};
 		log_trace!(logger, "Got new ChannelMonitor");
+		let initial_buffer = monitor.get_initial_force_close_buffer();
 		let update_id = monitor.get_latest_update_id();
 		let mut pending_monitor_updates = Vec::new();
 		let persist_res = self.persister.persist_new_channel(monitor.persistence_key(), &monitor);
@@ -1306,6 +1354,10 @@ where
 			monitor,
 			pending_monitor_updates: Mutex::new(pending_monitor_updates),
 		});
+
+		let mut buffers = self.channel_force_close_buffers.write().unwrap();
+		buffers.insert(channel_id, initial_buffer);
+
 		Ok(persist_res)
 	}
 

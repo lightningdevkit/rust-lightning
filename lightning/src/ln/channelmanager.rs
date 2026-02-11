@@ -6648,6 +6648,13 @@ impl<
 				if !channel.context_mut().update_config(&config) {
 					continue;
 				}
+			if let Some(buffer) = config_update.force_close_claimable_htlc_cltv_buffer {
+				if let Err(_) = self.chain_monitor.update_channel_force_close_buffer(*channel_id, buffer) {
+					return Err(APIError::APIMisuseError {
+						err: format!("Failed to update chain monitor force-close buffer"),
+					});
+				}
+			}
 				if let Some(channel) = channel.as_funded() {
 					if let Ok((msg, node_id_1, node_id_2)) = self.get_channel_update_for_broadcast(channel) {
 						let mut pending_broadcast_messages = self.pending_broadcast_messages.lock().unwrap();
