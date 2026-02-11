@@ -5374,9 +5374,9 @@ impl<
 			keysend_preimage,
 			invoice_request,
 			bolt12_invoice,
+			trampoline_forward_info,
 			session_priv_bytes,
 			hold_htlc_at_next_hop,
-			..
 		} = args;
 		// The top-level caller should hold the total_consistency_lock read lock.
 		debug_assert!(self.total_consistency_lock.try_write().is_err());
@@ -5390,18 +5390,32 @@ impl<
 			Some(*payment_hash),
 			payment_id,
 		);
-		let (onion_packet, htlc_msat, htlc_cltv) = onion_utils::create_payment_onion(
-			&self.secp_ctx,
-			&path,
-			&session_priv,
-			recipient_onion,
-			cur_height,
-			payment_hash,
-			keysend_preimage,
-			invoice_request,
-			prng_seed,
-		)
-		.map_err(|e| {
+		let onion_result = if let Some(trampoline_forward_info) = trampoline_forward_info {
+			onion_utils::create_trampoline_forward_onion(
+				&self.secp_ctx,
+				&path,
+				&session_priv,
+				payment_hash,
+				recipient_onion,
+				keysend_preimage,
+				&trampoline_forward_info.next_hop_info,
+				prng_seed,
+			)
+		} else {
+			onion_utils::create_payment_onion(
+				&self.secp_ctx,
+				&path,
+				&session_priv,
+				recipient_onion,
+				cur_height,
+				payment_hash,
+				keysend_preimage,
+				invoice_request,
+				prng_seed,
+			)
+		};
+
+		let (onion_packet, htlc_msat, htlc_cltv) = onion_result.map_err(|e| {
 			log_error!(logger, "Failed to build an onion for path");
 			e
 		})?;
@@ -5445,12 +5459,26 @@ impl<
 							});
 						}
 						let funding_txo = chan.funding.get_funding_txo().unwrap();
-						let htlc_source = HTLCSource::OutboundRoute {
-							path: path.clone(),
-							session_priv: session_priv.clone(),
-							first_hop_htlc_msat: htlc_msat,
-							payment_id,
-							bolt12_invoice: bolt12_invoice.cloned(),
+						let htlc_source = match trampoline_forward_info {
+							None => HTLCSource::OutboundRoute {
+								path: path.clone(),
+								session_priv: session_priv.clone(),
+								first_hop_htlc_msat: htlc_msat,
+								payment_id,
+								bolt12_invoice: bolt12_invoice.cloned(),
+							},
+							Some(trampoline_forward_info) => HTLCSource::TrampolineForward {
+								previous_hop_data: trampoline_forward_info
+									.previous_hop_data
+									.clone(),
+								incoming_trampoline_shared_secret: trampoline_forward_info
+									.incoming_trampoline_shared_secret,
+								outbound_payment: Some(TrampolineDispatch {
+									payment_id,
+									path: path.clone(),
+									session_priv,
+								}),
+							},
 						};
 						let send_res = chan.send_htlc_and_commit(
 							htlc_msat,
