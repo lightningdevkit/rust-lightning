@@ -353,6 +353,27 @@ impl PeerState {
 		self.pending_requests.remove(request_id).ok_or(PeerStateError::UnknownRequestId)
 	}
 
+	pub(super) fn pending_request_count(&self) -> usize {
+		self.pending_requests.len()
+	}
+
+	pub(super) fn pending_requests_and_unpaid_orders(&self) -> usize {
+		let pending_requests = self.pending_requests.len();
+		// We exclude paid and completed orders.
+		let unpaid_orders = self
+			.outbound_channels_by_order_id
+			.iter()
+			.filter(|(_, v)| {
+				!matches!(
+					v.state,
+					ChannelOrderState::OrderPaid { .. }
+						| ChannelOrderState::CompletedAndChannelOpened { .. }
+				)
+			})
+			.count();
+		pending_requests + unpaid_orders
+	}
+
 	pub(super) fn has_active_requests(&self) -> bool {
 		!self.outbound_channels_by_order_id.is_empty()
 	}
@@ -370,8 +391,10 @@ impl PeerState {
 		self.pending_requests.is_empty() && self.outbound_channels_by_order_id.is_empty()
 	}
 
-	pub(super) fn prune_pending_requests(&mut self) {
-		self.pending_requests.clear()
+	pub(super) fn prune_pending_requests(&mut self) -> usize {
+		let num_pruned = self.pending_requests.len();
+		self.pending_requests.clear();
+		num_pruned
 	}
 
 	pub(super) fn prune_expired_request_state(&mut self) {
