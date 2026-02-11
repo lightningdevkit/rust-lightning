@@ -152,7 +152,7 @@ fn lsps1_happy_path() {
 	let _create_order_id = client_handler.create_order(
 		&service_node_id,
 		order_params.clone(),
-		Some(refund_onchain_address),
+		Some(refund_onchain_address.clone()),
 	);
 	let create_order = get_lsps_message!(client_node, service_node_id);
 
@@ -164,11 +164,14 @@ fn lsps1_happy_path() {
 		request_id,
 		counterparty_node_id,
 		order,
+		refund_onchain_address: refund_addr,
+		..
 	}) = _request_for_payment_event
 	{
 		assert_eq!(request_id, _create_order_id.clone());
 		assert_eq!(counterparty_node_id, client_node_id);
 		assert_eq!(order, order_params);
+		assert_eq!(refund_addr, Some(refund_onchain_address));
 	} else {
 		panic!("Unexpected event");
 	}
@@ -346,7 +349,7 @@ fn lsps1_service_handler_persistence_across_restarts() {
 		let create_order_id = client_handler.create_order(
 			&service_node_id,
 			order_params.clone(),
-			Some(refund_onchain_address),
+			Some(refund_onchain_address.clone()),
 		);
 		let create_order = get_lsps_message!(client_node, service_node_id);
 

@@ -326,6 +326,7 @@ where
 			request_id,
 			counterparty_node_id: *counterparty_node_id,
 			order: params.order,
+			refund_onchain_address: params.refund_onchain_address,
 		});
 
 		Ok(())
@@ -334,6 +335,9 @@ where
 	/// Used by LSP to send response containing details regarding the channel fees and payment information.
 	///
 	/// Should be called in response to receiving a [`LSPS1ServiceEvent::RequestForPaymentDetails`] event.
+	///
+	/// Note that the provided `payment_details` can't include the onchain payment variant if the
+	/// user didn't provide a `refund_onchain_address`.
 	///
 	/// [`LSPS1ServiceEvent::RequestForPaymentDetails`]: crate::lsps1::event::LSPS1ServiceEvent::RequestForPaymentDetails
 	pub async fn send_payment_details(
