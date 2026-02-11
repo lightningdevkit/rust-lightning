@@ -174,15 +174,4 @@ pub enum LSPS1ServiceEvent {
 		/// client.
 		refund_onchain_address: Option<Address>,
 	},
-	/// If error is encountered, refund the amount if paid by the client.
-	///
-	/// **Note: ** This event will *not* be persisted across restarts.
-	Refund {
-		/// An identifier.
-		request_id: LSPSRequestId,
-		/// The node id of the client making the information request.
-		counterparty_node_id: PublicKey,
-		/// The order id of the refunded order.
-		order_id: LSPS1OrderId,
-	},
 }
