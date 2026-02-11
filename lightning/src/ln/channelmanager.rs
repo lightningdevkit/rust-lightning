@@ -803,6 +803,26 @@ mod fuzzy_channelmanager {
 		},
 	}
 
+	impl HTLCSource {
+		pub fn failure_type(
+			&self, counterparty_node: PublicKey, channel_id: ChannelId,
+		) -> HTLCHandlingFailureType {
+			match self {
+				// We won't actually emit an event with HTLCHandlingFailure if our source is an
+				// OutboundRoute, but `fail_htlc_backwards_internal` requires that we provide it.
+				HTLCSource::PreviousHopData(_) | HTLCSource::OutboundRoute { .. } => {
+					HTLCHandlingFailureType::Forward {
+						node_id: Some(counterparty_node),
+						channel_id,
+					}
+				},
+				HTLCSource::TrampolineForward { .. } => {
+					HTLCHandlingFailureType::TrampolineForward {}
+				},
+			}
+		}
+	}
+
 	/// Tracks the inbound corresponding to an outbound HTLC
 	#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 	pub struct HTLCPreviousHopData {
@@ -4294,11 +4314,8 @@ where
 		for htlc_source in failed_htlcs.drain(..) {
 			let failure_reason = LocalHTLCFailureReason::ChannelClosed;
 			let reason = HTLCFailReason::from_failure_code(failure_reason);
-			let receiver = HTLCHandlingFailureType::Forward {
-				node_id: Some(*counterparty_node_id),
-				channel_id: *chan_id,
-			};
 			let (source, hash) = htlc_source;
+			let receiver = source.failure_type(*counterparty_node_id, *chan_id);
 			self.fail_htlc_backwards_internal(&source, &hash, &reason, receiver, None);
 		}
 
@@ -4442,10 +4459,7 @@ where
 			let (source, payment_hash, counterparty_node_id, channel_id) = htlc_source;
 			let failure_reason = LocalHTLCFailureReason::ChannelClosed;
 			let reason = HTLCFailReason::from_failure_code(failure_reason);
-			let receiver = HTLCHandlingFailureType::Forward {
-				node_id: Some(counterparty_node_id),
-				channel_id,
-			};
+			let receiver = source.failure_type(counterparty_node_id, channel_id);
 			self.fail_htlc_backwards_internal(&source, &payment_hash, &reason, receiver, None);
 		}
 		if let Some((_, funding_txo, _channel_id, monitor_update)) = shutdown_res.monitor_update {
@@ -7452,6 +7466,8 @@ where
 							};
 
 							failed_forwards.push((
+								// This can't be a trampoline payment because we don't process them
+								// as forwards (we're the last/"receiving" onion node).
 								HTLCSource::PreviousHopData(prev_hop),
 								payment_hash,
 								HTLCFailReason::reason(reason, err_data),
@@ -8715,11 +8731,14 @@ where
 
 		for (htlc_src, payment_hash) in htlcs_to_fail.drain(..) {
 			let reason = HTLCFailReason::reason(failure_reason, onion_failure_data.clone());
-			let receiver = HTLCHandlingFailureType::Forward {
-				node_id: Some(counterparty_node_id.clone()),
-				channel_id,
-			};
-			self.fail_htlc_backwards_internal(&htlc_src, &payment_hash, &reason, receiver, None);
+			let failure_type = htlc_src.failure_type(*counterparty_node_id, channel_id);
+			self.fail_htlc_backwards_internal(
+				&htlc_src,
+				&payment_hash,
+				&reason,
+				failure_type,
+				None,
+			);
 		}
 	}
 
@@ -9672,11 +9691,14 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		}
 		self.finalize_claims(finalized_claimed_htlcs);
 		for failure in failed_htlcs {
-			let receiver = HTLCHandlingFailureType::Forward {
-				node_id: Some(counterparty_node_id),
-				channel_id,
-			};
-			self.fail_htlc_backwards_internal(&failure.0, &failure.1, &failure.2, receiver, None);
+			let failure_type = failure.0.failure_type(counterparty_node_id, channel_id);
+			self.fail_htlc_backwards_internal(
+				&failure.0,
+				&failure.1,
+				&failure.2,
+				failure_type,
+				None,
+			);
 		}
 	}
 
@@ -11319,13 +11341,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			}
 		}
 		for htlc_source in dropped_htlcs.drain(..) {
-			let receiver = HTLCHandlingFailureType::Forward {
-				node_id: Some(counterparty_node_id.clone()),
-				channel_id: msg.channel_id,
-			};
-			let reason = HTLCFailReason::from_failure_code(LocalHTLCFailureReason::ChannelClosed);
 			let (source, hash) = htlc_source;
-			self.fail_htlc_backwards_internal(&source, &hash, &reason, receiver, None);
+			let failure_type = source.failure_type(*counterparty_node_id, msg.channel_id);
+			let reason = HTLCFailReason::from_failure_code(LocalHTLCFailureReason::ChannelClosed);
+			self.fail_htlc_backwards_internal(&source, &hash, &reason, failure_type, None);
 		}
 
 		Ok(())
@@ -12415,10 +12434,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						} else {
 							log_trace!(logger, "Failing HTLC from our monitor");
 							let failure_reason = LocalHTLCFailureReason::OnChainTimeout;
-							let receiver = HTLCHandlingFailureType::Forward {
-								node_id: Some(counterparty_node_id),
-								channel_id,
-							};
+							let failure_type =
+								htlc_update.source.failure_type(counterparty_node_id, channel_id);
 							let reason = HTLCFailReason::from_failure_code(failure_reason);
 							let completion_update = Some(PaymentCompleteUpdate {
 								counterparty_node_id,
@@ -12430,7 +12447,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								&htlc_update.source,
 								&htlc_update.payment_hash,
 								&reason,
-								receiver,
+								failure_type,
 								completion_update,
 							);
 						}
@@ -14777,8 +14794,8 @@ where
 								for (source, payment_hash) in timed_out_pending_htlcs.drain(..) {
 									let reason = LocalHTLCFailureReason::CLTVExpiryTooSoon;
 									let data = self.get_htlc_inbound_temp_fail_data(reason);
-									timed_out_htlcs.push((source, payment_hash, HTLCFailReason::reason(reason, data),
-										HTLCHandlingFailureType::Forward { node_id: Some(funded_channel.context.get_counterparty_node_id()), channel_id: *channel_id }));
+									let failure_type = source.failure_type(funded_channel.context.get_counterparty_node_id(), *channel_id);
+									timed_out_htlcs.push((source, payment_hash, HTLCFailReason::reason(reason, data), failure_type));
 								}
 								let logger = WithChannelContext::from(&self.logger, &funded_channel.context, None);
 								match funding_confirmed_opt {
@@ -19017,11 +19034,15 @@ where
 		for htlc_source in failed_htlcs {
 			let (source, hash, counterparty_id, channel_id, failure_reason, ev_action) =
 				htlc_source;
-			let receiver =
-				HTLCHandlingFailureType::Forward { node_id: Some(counterparty_id), channel_id };
+			let failure_type = source.failure_type(counterparty_id, channel_id);
 			let reason = HTLCFailReason::from_failure_code(failure_reason);
-			channel_manager
-				.fail_htlc_backwards_internal(&source, &hash, &reason, receiver, ev_action);
+			channel_manager.fail_htlc_backwards_internal(
+				&source,
+				&hash,
+				&reason,
+				failure_type,
+				ev_action,
+			);
 		}
 
 		for (
