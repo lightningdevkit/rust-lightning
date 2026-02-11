@@ -6619,6 +6619,13 @@ impl<
 				err: format!("The chosen CLTV expiry delta is below the minimum of {}", MIN_CLTV_EXPIRY_DELTA),
 			});
 		}
+		if config_update.force_close_claimable_htlc_cltv_buffer
+			.map(|buf| buf < CLTV_CLAIM_BUFFER).unwrap_or(false)
+		{
+			return Err(APIError::APIMisuseError {
+				err: format!("The chosen force-close CLTV buffer is below the minimum of {}", CLTV_CLAIM_BUFFER),
+			});
+		}
 
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let per_peer_state = self.per_peer_state.read().unwrap();
@@ -6641,6 +6648,13 @@ impl<
 				if !channel.context_mut().update_config(&config) {
 					continue;
 				}
+			if let Some(buffer) = config_update.force_close_claimable_htlc_cltv_buffer {
+				if let Err(_) = self.chain_monitor.update_channel_force_close_buffer(*channel_id, buffer) {
+					return Err(APIError::APIMisuseError {
+						err: "Failed to update chain monitor force-close buffer".to_string(),
+					});
+				}
+			}
 				if let Some(channel) = channel.as_funded() {
 					if let Ok((msg, node_id_1, node_id_2)) = self.get_channel_update_for_broadcast(channel) {
 						let mut pending_broadcast_messages = self.pending_broadcast_messages.lock().unwrap();

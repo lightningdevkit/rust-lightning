@@ -278,9 +278,9 @@ pub(crate) const MAX_BLOCKS_FOR_CONF: u32 = 18;
 /// If an HTLC expires within this many blocks, force-close the channel to broadcast the
 /// HTLC-Success transaction.
 ///
-/// This is two times [`MAX_BLOCKS_FOR_CONF`] as we need to first get the commitment transaction
-/// confirmed, then get an HTLC transaction confirmed.
-pub(crate) const CLTV_CLAIM_BUFFER: u32 = MAX_BLOCKS_FOR_CONF * 2;
+/// This accounts for the time needed to first get the commitment transaction confirmed, then get
+/// an HTLC transaction confirmed.
+pub const CLTV_CLAIM_BUFFER: u32 = MAX_BLOCKS_FOR_CONF * 2;
 /// Number of blocks by which point we expect our counterparty to have seen new blocks on the
 /// network and done a full update_fail_htlc/commitment_signed dance (+ we've updated all our
 /// copies of ChannelMonitors, including watchtowers). We could enforce the contract by failing
@@ -1234,6 +1234,10 @@ pub(crate) struct ChannelMonitorImpl<Signer: EcdsaChannelSigner> {
 
 	on_holder_tx_csv: u16,
 
+	/// The configurable number of blocks before an inbound HTLC's CLTV expiry at which we will
+	/// force-close the channel to claim it on-chain. Defaults to [`CLTV_CLAIM_BUFFER`].
+	force_close_claimable_htlc_cltv_buffer: u32,
+
 	commitment_secrets: CounterpartyCommitmentSecrets,
 	/// We cannot identify HTLC-Success or HTLC-Timeout transactions by themselves on the chain.
 	/// Nor can we figure out their commitment numbers without the commitment transaction they are
@@ -1734,27 +1738,27 @@ pub(crate) fn write_chanmon_internal<Signer: EcdsaChannelSigner, W: Writer>(
 		};
 
 	write_tlv_fields!(writer, {
-		(1, channel_monitor.funding_spend_confirmed, option),
-		(3, channel_monitor.htlcs_resolved_on_chain, required_vec),
-		(5, pending_monitor_events, required_vec),
-		(7, channel_monitor.funding_spend_seen, required),
-		(9, channel_monitor.counterparty_node_id, required),
-		(11, channel_monitor.confirmed_commitment_tx_counterparty_output, option),
-		(13, channel_monitor.spendable_txids_confirmed, required_vec),
-		(15, channel_monitor.counterparty_fulfilled_htlcs, required),
-		(17, channel_monitor.initial_counterparty_commitment_info, option),
-		(19, channel_monitor.channel_id, required),
-		(21, channel_monitor.balances_empty_height, option),
-		(23, channel_monitor.holder_pays_commitment_tx_fee, option),
-		(25, channel_monitor.payment_preimages, required),
-		(27, channel_monitor.first_negotiated_funding_txo, required),
-		(29, channel_monitor.initial_counterparty_commitment_tx, option),
-		(31, channel_monitor.funding.channel_parameters, required),
-		(32, channel_monitor.pending_funding, optional_vec),
-		(33, channel_monitor.htlcs_resolved_to_user, required),
-		(34, channel_monitor.alternative_funding_confirmed, option),
-		(35, channel_monitor.is_manual_broadcast, required),
-		(37, channel_monitor.funding_seen_onchain, required),
+	(1, channel_monitor.funding_spend_confirmed, option),
+	(3, channel_monitor.htlcs_resolved_on_chain, required_vec),
+	(5, pending_monitor_events, required_vec),
+	(7, channel_monitor.funding_spend_seen, required),
+	(9, channel_monitor.counterparty_node_id, required),
+	(11, channel_monitor.confirmed_commitment_tx_counterparty_output, option),
+	(13, channel_monitor.spendable_txids_confirmed, required_vec),
+	(15, channel_monitor.counterparty_fulfilled_htlcs, required),
+	(17, channel_monitor.initial_counterparty_commitment_info, option),
+	(19, channel_monitor.channel_id, required),
+	(21, channel_monitor.balances_empty_height, option),
+	(23, channel_monitor.holder_pays_commitment_tx_fee, option),
+	(25, channel_monitor.payment_preimages, required),
+	(27, channel_monitor.first_negotiated_funding_txo, required),
+	(29, channel_monitor.initial_counterparty_commitment_tx, option),
+	(31, channel_monitor.funding.channel_parameters, required),
+	(32, channel_monitor.pending_funding, optional_vec),
+	(33, channel_monitor.htlcs_resolved_to_user, required),
+	(34, channel_monitor.alternative_funding_confirmed, option),
+	(35, channel_monitor.is_manual_broadcast, required),
+	(37, channel_monitor.funding_seen_onchain, required),
 	});
 
 	Ok(())
@@ -1927,6 +1931,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 			their_cur_per_commitment_points: None,
 
 			on_holder_tx_csv: counterparty_channel_parameters.selected_contest_delay,
+
+			force_close_claimable_htlc_cltv_buffer: CLTV_CLAIM_BUFFER,
 
 			commitment_secrets: CounterpartyCommitmentSecrets::new(),
 			counterparty_commitment_txn_on_chain: new_hash_map(),
@@ -2112,6 +2118,15 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// Gets the channel type of the corresponding channel.
 	pub fn channel_type_features(&self) -> ChannelTypeFeatures {
 		self.inner.lock().unwrap().channel_type_features().clone()
+	}
+
+	/// Gets the initial force-close buffer configuration.
+	///
+	/// This is used during initialization to populate ChainMonitor's memory-only config.
+	/// For monitors deserialized from old versions, this returns the persisted value.
+	/// For new monitors, this returns the value passed during construction.
+	pub(crate) fn get_initial_force_close_buffer(&self) -> u32 {
+		self.inner.lock().unwrap().force_close_claimable_htlc_cltv_buffer
 	}
 
 	/// Gets a list of txids, with their output scripts (in the order they appear in the
@@ -2365,6 +2380,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		header: &Header,
 		txdata: &TransactionData,
 		height: u32,
+		force_close_buffer: u32,
 		broadcaster: B,
 		fee_estimator: F,
 		logger: &L,
@@ -2372,7 +2388,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		let mut inner = self.inner.lock().unwrap();
 		let logger = WithChannelMonitor::from_impl(logger, &*inner, None);
 		inner.block_connected(
-			header, txdata, height, broadcaster, fee_estimator, &logger)
+			header, txdata, height, force_close_buffer, broadcaster, fee_estimator, &logger)
 	}
 
 	/// Determines if the disconnected block contained any transactions of interest and updates
@@ -2398,6 +2414,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		header: &Header,
 		txdata: &TransactionData,
 		height: u32,
+		force_close_buffer: u32,
 		broadcaster: B,
 		fee_estimator: F,
 		logger: &L,
@@ -2406,7 +2423,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		let mut inner = self.inner.lock().unwrap();
 		let logger = WithChannelMonitor::from_impl(logger, &*inner, None);
 		inner.transactions_confirmed(
-			header, txdata, height, broadcaster, &bounded_fee_estimator, &logger)
+			header, txdata, height, force_close_buffer, broadcaster, &bounded_fee_estimator, &logger)
 	}
 
 	/// Processes a transaction that was reorganized out of the chain.
@@ -2443,6 +2460,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		&self,
 		header: &Header,
 		height: u32,
+		force_close_buffer: u32,
 		broadcaster: B,
 		fee_estimator: F,
 		logger: &L,
@@ -2451,7 +2469,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		let mut inner = self.inner.lock().unwrap();
 		let logger = WithChannelMonitor::from_impl(logger, &*inner, None);
 		inner.best_block_updated(
-			header, height, broadcaster, &bounded_fee_estimator, &logger
+			header, height, force_close_buffer, broadcaster, &bounded_fee_estimator, &logger
 		)
 	}
 
@@ -5214,14 +5232,14 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 	#[rustfmt::skip]
 	fn block_connected<B: BroadcasterInterface, F: FeeEstimator, L: Logger>(
-		&mut self, header: &Header, txdata: &TransactionData, height: u32, broadcaster: B,
+		&mut self, header: &Header, txdata: &TransactionData, height: u32, force_close_buffer: u32, broadcaster: B,
 		fee_estimator: F, logger: &WithContext<L>,
 	) -> Vec<TransactionOutputs> {
 		let block_hash = header.block_hash();
 		self.best_block = BestBlock::new(block_hash, height);
 
 		let bounded_fee_estimator = LowerBoundedFeeEstimator::new(fee_estimator);
-		self.transactions_confirmed(header, txdata, height, broadcaster, &bounded_fee_estimator, logger)
+		self.transactions_confirmed(header, txdata, height, force_close_buffer, broadcaster, &bounded_fee_estimator, logger)
 	}
 
 	#[rustfmt::skip]
@@ -5229,6 +5247,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		&mut self,
 		header: &Header,
 		height: u32,
+		force_close_buffer: u32,
 		broadcaster: B,
 		fee_estimator: &LowerBoundedFeeEstimator<F>,
 		logger: &WithContext<L>,
@@ -5238,7 +5257,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		if height > self.best_block.height {
 			self.best_block = BestBlock::new(block_hash, height);
 			log_trace!(logger, "Connecting new block {} at height {}", block_hash, height);
-			self.block_confirmed(height, block_hash, vec![], vec![], vec![], &broadcaster, &fee_estimator, logger)
+			self.block_confirmed(height, block_hash, vec![], vec![], vec![], force_close_buffer, &broadcaster, &fee_estimator, logger)
 		} else if block_hash != self.best_block.block_hash {
 			self.best_block = BestBlock::new(block_hash, height);
 			log_trace!(logger, "Best block re-orged, replaced with new block {} at height {}", block_hash, height);
@@ -5257,6 +5276,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		header: &Header,
 		txdata: &TransactionData,
 		height: u32,
+		force_close_buffer: u32,
 		broadcaster: B,
 		fee_estimator: &LowerBoundedFeeEstimator<F>,
 		logger: &WithContext<L>,
@@ -5520,7 +5540,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			watch_outputs.append(&mut outputs);
 		}
 
-		self.block_confirmed(height, block_hash, txn_matched, watch_outputs, claimable_outpoints, &broadcaster, &fee_estimator, logger)
+		self.block_confirmed(height, block_hash, txn_matched, watch_outputs, claimable_outpoints, force_close_buffer, &broadcaster, &fee_estimator, logger)
 	}
 
 	/// Update state for new block(s)/transaction(s) confirmed. Note that the caller must update
@@ -5539,6 +5559,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		txn_matched: Vec<&Transaction>,
 		mut watch_outputs: Vec<TransactionOutputs>,
 		mut claimable_outpoints: Vec<PackageTemplate>,
+		force_close_buffer: u32,
 		broadcaster: &B,
 		fee_estimator: &LowerBoundedFeeEstimator<F>,
 		logger: &WithContext<L>,
@@ -5548,7 +5569,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 		// Only generate claims if we haven't already done so (e.g., in transactions_confirmed).
 		if claimable_outpoints.is_empty() {
-			let should_broadcast = self.should_broadcast_holder_commitment_txn(logger);
+			let should_broadcast = self.should_broadcast_holder_commitment_txn(force_close_buffer, logger);
 			if let Some(payment_hash) = should_broadcast {
 				let reason = ClosureReason::HTLCsTimedOut { payment_hash: Some(payment_hash) };
 				let (mut new_outpoints, mut new_outputs) =
@@ -5914,7 +5935,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 	#[rustfmt::skip]
 	fn should_broadcast_holder_commitment_txn<L: Logger>(
-		&self, logger: &WithContext<L>
+		&self, force_close_buffer: u32, logger: &WithContext<L>
 	) -> Option<PaymentHash> {
 		// There's no need to broadcast our commitment transaction if we've seen one confirmed (even
 		// with 1 confirmation) as it'll be rejected as duplicate/conflicting.
@@ -5953,7 +5974,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					// on-chain for an expired HTLC.
 					let htlc_outbound = $holder_tx == htlc.offered;
 					if ( htlc_outbound && htlc.cltv_expiry + LATENCY_GRACE_PERIOD_BLOCKS <= height) ||
-					   (!htlc_outbound && htlc.cltv_expiry <= height + CLTV_CLAIM_BUFFER && self.payment_preimages.contains_key(&htlc.payment_hash)) {
+					   (!htlc_outbound && htlc.cltv_expiry <= height + force_close_buffer && self.payment_preimages.contains_key(&htlc.payment_hash)) {
 						log_info!(logger, "Force-closing channel due to {} HTLC timeout - HTLC with payment hash {} expires at {}", if htlc_outbound { "outbound" } else { "inbound"}, htlc.payment_hash, htlc.cltv_expiry);
 						return Some(htlc.payment_hash);
 					}
@@ -6263,7 +6284,15 @@ impl<Signer: EcdsaChannelSigner, T: BroadcasterInterface, F: FeeEstimator, L: Lo
 	for (ChannelMonitor<Signer>, T, F, L)
 {
 	fn filtered_block_connected(&self, header: &Header, txdata: &TransactionData, height: u32) {
-		self.0.block_connected(header, txdata, height, &self.1, &self.2, &self.3);
+		self.0.block_connected(
+			header,
+			txdata,
+			height,
+			CLTV_CLAIM_BUFFER,
+			&self.1,
+			&self.2,
+			&self.3,
+		);
 	}
 
 	fn blocks_disconnected(&self, fork_point: BestBlock) {
@@ -6277,7 +6306,15 @@ where
 	M: Deref<Target = ChannelMonitor<Signer>>,
 {
 	fn transactions_confirmed(&self, header: &Header, txdata: &TransactionData, height: u32) {
-		self.0.transactions_confirmed(header, txdata, height, &self.1, &self.2, &self.3);
+		self.0.transactions_confirmed(
+			header,
+			txdata,
+			height,
+			CLTV_CLAIM_BUFFER,
+			&self.1,
+			&self.2,
+			&self.3,
+		);
 	}
 
 	fn transaction_unconfirmed(&self, txid: &Txid) {
@@ -6285,7 +6322,7 @@ where
 	}
 
 	fn best_block_updated(&self, header: &Header, height: u32) {
-		self.0.best_block_updated(header, height, &self.1, &self.2, &self.3);
+		self.0.best_block_updated(header, height, CLTV_CLAIM_BUFFER, &self.1, &self.2, &self.3);
 	}
 
 	fn get_relevant_txids(&self) -> Vec<(Txid, u32, Option<BlockHash>)> {
@@ -6521,6 +6558,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		let mut alternative_funding_confirmed = None;
 		let mut is_manual_broadcast = RequiredWrapper(None);
 		let mut funding_seen_onchain = RequiredWrapper(None);
+		let mut force_close_claimable_htlc_cltv_buffer = CLTV_CLAIM_BUFFER;
 		read_tlv_fields!(reader, {
 			(1, funding_spend_confirmed, option),
 			(3, htlcs_resolved_on_chain, optional_vec),
@@ -6543,6 +6581,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			(34, alternative_funding_confirmed, option),
 			(35, is_manual_broadcast, (default_value, false)),
 			(37, funding_seen_onchain, (default_value, true)),
+			(39, force_close_claimable_htlc_cltv_buffer, (default_value, CLTV_CLAIM_BUFFER)),
 		});
 		// Note that `payment_preimages_with_info` was added (and is always written) in LDK 0.1, so
 		// we can use it to determine if this monitor was last written by LDK 0.1 or later.
@@ -6681,6 +6720,8 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			their_cur_per_commitment_points,
 
 			on_holder_tx_csv,
+
+			force_close_claimable_htlc_cltv_buffer,
 
 			commitment_secrets,
 			counterparty_commitment_txn_on_chain,
