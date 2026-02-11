@@ -34,6 +34,7 @@ use crate::message_queue::MessageQueue;
 use crate::events::EventQueue;
 use crate::lsps0::ser::{
 	LSPSDateTime, LSPSProtocolMessageHandler, LSPSRequestId, LSPSResponseError,
+	LSPS0_CLIENT_REJECTED_ERROR_CODE,
 };
 use crate::persist::{
 	LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE, LSPS1_SERVICE_PERSISTENCE_SECONDARY_NAMESPACE,
@@ -62,6 +63,10 @@ pub struct LSPS1ServiceConfig {
 	pub supported_options: LSPS1Options,
 }
 
+const MAX_PENDING_REQUESTS_PER_PEER: usize = 10;
+const MAX_TOTAL_PENDING_REQUESTS: usize = 1000;
+const MAX_TOTAL_PEERS: usize = 100000;
+
 /// The main object allowing to send and receive bLIP-51 / LSPS1 messages.
 pub struct LSPS1ServiceHandler<
 	ES: EntropySource,
@@ -78,6 +83,7 @@ pub struct LSPS1ServiceHandler<
 	pending_messages: Arc<MessageQueue>,
 	pending_events: Arc<EventQueue<K>>,
 	per_peer_state: RwLock<HashMap<PublicKey, Mutex<PeerState>>>,
+	total_pending_requests: AtomicUsize,
 	persistence_in_flight: AtomicUsize,
 	time_provider: TP,
 	config: LSPS1ServiceConfig,
@@ -102,6 +108,7 @@ where
 			pending_messages,
 			pending_events,
 			per_peer_state: RwLock::new(per_peer_state),
+			total_pending_requests: AtomicUsize::new(0),
 			persistence_in_flight: AtomicUsize::new(0),
 			time_provider,
 			config,
@@ -133,7 +140,8 @@ where
 			let mut peer_state_lock = inner_state_lock.lock().unwrap();
 			// We clean up the peer state, but leave removing the peer entry to the prune logic in
 			// `persist` which removes it from the store.
-			peer_state_lock.prune_pending_requests();
+			let num_pruned = peer_state_lock.prune_pending_requests();
+			self.total_pending_requests.fetch_sub(num_pruned, Ordering::Relaxed);
 			peer_state_lock.prune_expired_request_state();
 		}
 	}
@@ -308,11 +316,67 @@ where
 
 		{
 			let mut outer_state_lock = self.per_peer_state.write().unwrap();
+			let num_peers = outer_state_lock.len();
 
-			let inner_state_lock = outer_state_lock
-				.entry(*counterparty_node_id)
-				.or_insert(Mutex::new(PeerState::default()));
-			let mut peer_state_lock = inner_state_lock.lock().unwrap();
+			let inner_state_entry = outer_state_lock.entry(*counterparty_node_id);
+
+			if matches!(inner_state_entry, Entry::Vacant(_)) && num_peers >= MAX_TOTAL_PEERS {
+				let response = LSPS1Response::CreateOrderError(LSPSResponseError {
+					code: LSPS0_CLIENT_REJECTED_ERROR_CODE,
+					message: "Reached maximum number of pending requests. Please try again later."
+						.to_string(),
+					data: None,
+				});
+				let msg = LSPS1Message::Response(request_id, response).into();
+				message_queue_notifier.enqueue(counterparty_node_id, msg);
+				return Err(LightningError {
+					err: format!(
+						"Dropping request from peer {} due to reaching maximally allowed number of total peers: {}",
+						counterparty_node_id, MAX_TOTAL_PEERS
+					),
+					action: ErrorAction::IgnoreAndLog(Level::Debug),
+				});
+			}
+
+			if self.total_pending_requests.load(Ordering::Relaxed) >= MAX_TOTAL_PENDING_REQUESTS {
+				let response = LSPS1Response::CreateOrderError(LSPSResponseError {
+					code: LSPS0_CLIENT_REJECTED_ERROR_CODE,
+					message: "Reached maximum number of pending requests. Please try again later."
+						.to_string(),
+					data: None,
+				});
+				let msg = LSPS1Message::Response(request_id, response).into();
+				message_queue_notifier.enqueue(counterparty_node_id, msg);
+				return Err(LightningError {
+					err: format!(
+						"Reached maximum number of total pending requests: {}",
+						MAX_TOTAL_PENDING_REQUESTS
+					),
+					action: ErrorAction::IgnoreAndLog(Level::Debug),
+				});
+			}
+
+			let mut peer_state_lock =
+				inner_state_entry.or_insert(Mutex::new(PeerState::default())).lock().unwrap();
+
+			if peer_state_lock.pending_requests_and_unpaid_orders() >= MAX_PENDING_REQUESTS_PER_PEER
+			{
+				let response = LSPS1Response::CreateOrderError(LSPSResponseError {
+					code: LSPS0_CLIENT_REJECTED_ERROR_CODE,
+					message: "Reached maximum number of pending requests. Please try again later."
+						.to_string(),
+					data: None,
+				});
+				let msg = LSPS1Message::Response(request_id, response).into();
+				message_queue_notifier.enqueue(counterparty_node_id, msg);
+				return Err(LightningError {
+					err: format!(
+						"Peer {} reached maximum number of pending requests: {}",
+						counterparty_node_id, MAX_PENDING_REQUESTS_PER_PEER
+					),
+					action: ErrorAction::IgnoreAndLog(Level::Debug),
+				});
+			}
 
 			let request = LSPS1Request::CreateOrder(params.clone());
 			peer_state_lock.register_request(request_id.clone(), request).map_err(|e| {
@@ -320,6 +384,8 @@ where
 				let action = ErrorAction::IgnoreAndLog(Level::Error);
 				LightningError { err, action }
 			})?;
+
+			self.total_pending_requests.fetch_add(1, Ordering::Relaxed);
 		}
 
 		event_queue_notifier.enqueue(LSPS1ServiceEvent::RequestForPaymentDetails {
@@ -356,6 +422,7 @@ where
 					let err = format!("Failed to send response due to: {}", e);
 					APIError::APIMisuseError { err }
 				})?;
+				self.total_pending_requests.fetch_sub(1, Ordering::Relaxed);
 
 				match request {
 					LSPS1Request::CreateOrder(params) => {
@@ -453,6 +520,7 @@ where
 					let err = format!("Failed to send response due to: {}", e);
 					APIError::APIMisuseError { err }
 				})?;
+				self.total_pending_requests.fetch_sub(1, Ordering::Relaxed);
 
 				let response = LSPS1Response::CreateOrderError(LSPSResponseError {
 					code: LSPS1_CREATE_ORDER_REQUEST_UNRECOGNIZED_OR_STALE_TOKEN_ERROR_CODE,
@@ -490,6 +558,7 @@ where
 					let err = format!("Failed to send response due to: {}", e);
 					APIError::APIMisuseError { err }
 				})?;
+				self.total_pending_requests.fetch_sub(1, Ordering::Relaxed);
 
 				let response = LSPS1Response::CreateOrderError(LSPSResponseError {
 					code: LSPS1_CREATE_ORDER_REQUEST_OPTION_MISMATCH_ERROR_CODE,
@@ -693,6 +762,21 @@ where
 		let bytes = self.entropy_source.get_secure_random_bytes();
 		LSPS1OrderId(utils::hex_str(&bytes[0..16]))
 	}
+
+	#[cfg(debug_assertions)]
+	fn verify_pending_request_counter(&self) {
+		let mut num_requests = 0;
+		let outer_state_lock = self.per_peer_state.read().unwrap();
+		for (_, inner) in outer_state_lock.iter() {
+			let inner_state_lock = inner.lock().unwrap();
+			num_requests += inner_state_lock.pending_request_count();
+		}
+		debug_assert_eq!(
+			num_requests,
+			self.total_pending_requests.load(Ordering::Relaxed),
+			"total_pending_requests counter out-of-sync! This should never happen!"
+		);
+	}
 }
 
 impl<ES: EntropySource, CM: Deref + Clone, K: KVStore + Clone, TP: Deref + Clone>
@@ -708,16 +792,21 @@ where
 		&self, message: Self::ProtocolMessage, counterparty_node_id: &PublicKey,
 	) -> Result<(), LightningError> {
 		match message {
-			LSPS1Message::Request(request_id, request) => match request {
-				LSPS1Request::GetInfo(_) => {
-					self.handle_get_info_request(request_id, counterparty_node_id)
-				},
-				LSPS1Request::CreateOrder(params) => {
-					self.handle_create_order_request(request_id, counterparty_node_id, params)
-				},
-				LSPS1Request::GetOrder(params) => {
-					self.handle_get_order_request(request_id, counterparty_node_id, params)
-				},
+			LSPS1Message::Request(request_id, request) => {
+				let res = match request {
+					LSPS1Request::GetInfo(_) => {
+						self.handle_get_info_request(request_id, counterparty_node_id)
+					},
+					LSPS1Request::CreateOrder(params) => {
+						self.handle_create_order_request(request_id, counterparty_node_id, params)
+					},
+					LSPS1Request::GetOrder(params) => {
+						self.handle_get_order_request(request_id, counterparty_node_id, params)
+					},
+				};
+				#[cfg(debug_assertions)]
+				self.verify_pending_request_counter();
+				res
 			},
 			_ => {
 				debug_assert!(

@@ -24,7 +24,7 @@ use lightning::ln::functional_test_utils::{
 };
 use lightning::util::test_utils::{TestBroadcaster, TestStore};
 
-use bitcoin::secp256k1::PublicKey;
+use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 use bitcoin::{Address, Network, OutPoint};
 
 use std::str::FromStr;
@@ -33,6 +33,9 @@ use std::sync::Arc;
 use lightning::ln::functional_test_utils::{create_network, Node};
 use lightning_liquidity::lsps1::msgs::LSPS1OrderId;
 use lightning_liquidity::utils::time::TimeProvider;
+
+const MAX_PENDING_REQUESTS_PER_PEER: usize = 10;
+const MAX_TOTAL_PENDING_REQUESTS: usize = 1000;
 
 fn build_lsps1_configs(
 	supported_options: LSPS1Options,
@@ -1137,5 +1140,204 @@ fn lsps1_expired_orders_are_pruned_and_not_persisted() {
 		} else {
 			panic!("Expected OrderRequestFailed event after restart, got: {:?}", error_event);
 		}
+	}
+}
+
+#[test]
+fn max_pending_requests_per_peer_rejected() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let supported_options = LSPS1Options {
+		min_required_channel_confirmations: 0,
+		min_funding_confirms_within_blocks: 6,
+		supports_zero_channel_reserve: true,
+		max_channel_expiry_blocks: 144,
+		min_initial_client_balance_sat: 10_000_000,
+		max_initial_client_balance_sat: 100_000_000,
+		min_initial_lsp_balance_sat: 100_000,
+		max_initial_lsp_balance_sat: 100_000_000,
+		min_channel_balance_sat: 100_000,
+		max_channel_balance_sat: 100_000_000,
+	};
+
+	let LSPSNodes { service_node, client_node } =
+		setup_test_lsps1_nodes(nodes, supported_options.clone());
+	let service_node_id = service_node.inner.node.get_our_node_id();
+	let client_node_id = client_node.inner.node.get_our_node_id();
+	let client_handler = client_node.liquidity_manager.lsps1_client_handler().unwrap();
+
+	let order_params = LSPS1OrderParams {
+		lsp_balance_sat: 100_000,
+		client_balance_sat: 10_000_000,
+		required_channel_confirmations: 0,
+		funding_confirms_within_blocks: 6,
+		channel_expiry_blocks: 144,
+		token: None,
+		announce_channel: true,
+	};
+
+	let refund_onchain_address =
+		Address::from_str("bc1p5uvtaxzkjwvey2tfy49k5vtqfpjmrgm09cvs88ezyy8h2zv7jhas9tu4yr")
+			.unwrap()
+			.assume_checked();
+
+	// Send MAX_PENDING_REQUESTS_PER_PEER create_order requests, all should succeed.
+	for _ in 0..MAX_PENDING_REQUESTS_PER_PEER {
+		let _ = client_handler.create_order(
+			&service_node_id,
+			order_params.clone(),
+			Some(refund_onchain_address.clone()),
+		);
+		let req_msg = get_lsps_message!(client_node, service_node_id);
+		let result = service_node.liquidity_manager.handle_custom_message(req_msg, client_node_id);
+		assert!(result.is_ok());
+		let event = service_node.liquidity_manager.next_event().unwrap();
+		assert!(matches!(
+			event,
+			LiquidityEvent::LSPS1Service(LSPS1ServiceEvent::RequestForPaymentDetails { .. })
+		));
+	}
+
+	// The next request should be rejected due to per-peer limit.
+	let rejected_req_id = client_handler.create_order(
+		&service_node_id,
+		order_params.clone(),
+		Some(refund_onchain_address),
+	);
+	let rejected_req_msg = get_lsps_message!(client_node, service_node_id);
+	let result =
+		service_node.liquidity_manager.handle_custom_message(rejected_req_msg, client_node_id);
+	assert!(result.is_err(), "We should have hit the per-peer limit");
+
+	let error_response = get_lsps_message!(service_node, client_node_id);
+	let result =
+		client_node.liquidity_manager.handle_custom_message(error_response, service_node_id);
+	assert!(result.is_err());
+
+	let event = client_node.liquidity_manager.next_event().unwrap();
+	if let LiquidityEvent::LSPS1Client(LSPS1ClientEvent::OrderRequestFailed {
+		request_id,
+		counterparty_node_id,
+		error,
+	}) = event
+	{
+		assert_eq!(request_id, rejected_req_id);
+		assert_eq!(counterparty_node_id, service_node_id);
+		assert_eq!(error.code, 1); // LSPS0_CLIENT_REJECTED_ERROR_CODE
+	} else {
+		panic!("Expected LSPS1ClientEvent::OrderRequestFailed event");
+	}
+}
+
+#[test]
+fn max_total_pending_requests_rejected() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let supported_options = LSPS1Options {
+		min_required_channel_confirmations: 0,
+		min_funding_confirms_within_blocks: 6,
+		supports_zero_channel_reserve: true,
+		max_channel_expiry_blocks: 144,
+		min_initial_client_balance_sat: 10_000_000,
+		max_initial_client_balance_sat: 100_000_000,
+		min_initial_lsp_balance_sat: 100_000,
+		max_initial_lsp_balance_sat: 100_000_000,
+		min_channel_balance_sat: 100_000,
+		max_channel_balance_sat: 100_000_000,
+	};
+
+	let LSPSNodes { service_node, client_node } =
+		setup_test_lsps1_nodes(nodes, supported_options.clone());
+	let service_node_id = service_node.inner.node.get_our_node_id();
+	let client_handler = client_node.liquidity_manager.lsps1_client_handler().unwrap();
+
+	let secp = Secp256k1::new();
+
+	let order_params = LSPS1OrderParams {
+		lsp_balance_sat: 100_000,
+		client_balance_sat: 10_000_000,
+		required_channel_confirmations: 0,
+		funding_confirms_within_blocks: 6,
+		channel_expiry_blocks: 144,
+		token: None,
+		announce_channel: true,
+	};
+
+	let refund_onchain_address =
+		Address::from_str("bc1p5uvtaxzkjwvey2tfy49k5vtqfpjmrgm09cvs88ezyy8h2zv7jhas9tu4yr")
+			.unwrap()
+			.assume_checked();
+
+	// Fill up the global limit by sending requests from many different synthetic peers.
+	let mut filled = 0;
+	let mut peer_idx: u8 = 1;
+
+	while filled < MAX_TOTAL_PENDING_REQUESTS {
+		let sk = SecretKey::from_slice(&[peer_idx; 32]).unwrap();
+		let peer_node_id = PublicKey::from_secret_key(&secp, &sk);
+
+		for _ in 0..MAX_PENDING_REQUESTS_PER_PEER {
+			if filled >= MAX_TOTAL_PENDING_REQUESTS {
+				break;
+			}
+
+			let _ = client_handler.create_order(
+				&service_node_id,
+				order_params.clone(),
+				Some(refund_onchain_address.clone()),
+			);
+			let req_msg = get_lsps_message!(client_node, service_node_id);
+			let result =
+				service_node.liquidity_manager.handle_custom_message(req_msg, peer_node_id);
+			assert!(result.is_ok());
+
+			let event = service_node.liquidity_manager.next_event().unwrap();
+			assert!(matches!(
+				event,
+				LiquidityEvent::LSPS1Service(LSPS1ServiceEvent::RequestForPaymentDetails { .. })
+			));
+
+			filled += 1;
+		}
+		peer_idx += 1;
+	}
+
+	// Now send one more request from a new peer -- should be rejected.
+	let new_sk = SecretKey::from_slice(&[peer_idx; 32]).unwrap();
+	let new_peer_node_id = PublicKey::from_secret_key(&secp, &new_sk);
+
+	let rejected_req_id = client_handler.create_order(
+		&service_node_id,
+		order_params.clone(),
+		Some(refund_onchain_address),
+	);
+	let rejected_req_msg = get_lsps_message!(client_node, service_node_id);
+	let result =
+		service_node.liquidity_manager.handle_custom_message(rejected_req_msg, new_peer_node_id);
+	assert!(result.is_err(), "We should have hit the global pending requests limit");
+
+	let error_response = get_lsps_message!(service_node, new_peer_node_id);
+	let result =
+		client_node.liquidity_manager.handle_custom_message(error_response, service_node_id);
+	assert!(result.is_err());
+
+	let event = client_node.liquidity_manager.next_event().unwrap();
+	if let LiquidityEvent::LSPS1Client(LSPS1ClientEvent::OrderRequestFailed {
+		request_id,
+		counterparty_node_id,
+		error,
+	}) = event
+	{
+		assert_eq!(request_id, rejected_req_id);
+		assert_eq!(counterparty_node_id, service_node_id);
+		assert_eq!(error.code, 1); // LSPS0_CLIENT_REJECTED_ERROR_CODE
+	} else {
+		panic!("Expected LSPS1ClientEvent::OrderRequestFailed event");
 	}
 }
