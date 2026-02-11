@@ -23,7 +23,7 @@ use super::msgs::{
 	LSPS1ChannelInfo, LSPS1CreateOrderRequest, LSPS1CreateOrderResponse, LSPS1GetInfoResponse,
 	LSPS1GetOrderRequest, LSPS1Message, LSPS1Options, LSPS1OrderId, LSPS1OrderParams,
 	LSPS1PaymentInfo, LSPS1Request, LSPS1Response,
-	LSPS1_CREATE_ORDER_REQUEST_ORDER_MISMATCH_ERROR_CODE,
+	LSPS1_CREATE_ORDER_REQUEST_OPTION_MISMATCH_ERROR_CODE,
 	LSPS1_CREATE_ORDER_REQUEST_UNRECOGNIZED_OR_STALE_TOKEN_ERROR_CODE,
 	LSPS1_GET_ORDER_REQUEST_ORDER_NOT_FOUND_ERROR_CODE,
 };
@@ -291,7 +291,7 @@ where
 
 		if !is_valid(&params.order, &self.config.supported_options) {
 			let response = LSPS1Response::CreateOrderError(LSPSResponseError {
-				code: LSPS1_CREATE_ORDER_REQUEST_ORDER_MISMATCH_ERROR_CODE,
+				code: LSPS1_CREATE_ORDER_REQUEST_OPTION_MISMATCH_ERROR_CODE,
 				message: "Order does not match options supported by LSP server".to_string(),
 				data: Some(format!("Supported options are {:?}", &self.config.supported_options)),
 			});
@@ -337,7 +337,8 @@ where
 	/// Should be called in response to receiving a [`LSPS1ServiceEvent::RequestForPaymentDetails`] event.
 	///
 	/// Note that the provided `payment_details` can't include the onchain payment variant if the
-	/// user didn't provide a `refund_onchain_address`.
+	/// user didn't provide a `refund_onchain_address`. If you *require* onchain payments, you need
+	/// to call [`Self::onchain_payments_required`] to reject the request.
 	///
 	/// [`LSPS1ServiceEvent::RequestForPaymentDetails`]: crate::lsps1::event::LSPS1ServiceEvent::RequestForPaymentDetails
 	pub async fn send_payment_details(
@@ -456,6 +457,45 @@ where
 				let response = LSPS1Response::CreateOrderError(LSPSResponseError {
 					code: LSPS1_CREATE_ORDER_REQUEST_UNRECOGNIZED_OR_STALE_TOKEN_ERROR_CODE,
 					message: "An unrecognized or stale token was provided".to_string(),
+					data: None,
+				});
+
+				let msg = LSPS1Message::Response(request_id, response).into();
+				message_queue_notifier.enqueue(&counterparty_node_id, msg);
+				Ok(())
+			},
+			None => Err(APIError::APIMisuseError {
+				err: format!("No state for the counterparty exists: {}", counterparty_node_id),
+			}),
+		}
+	}
+
+	/// Used by LSP to inform a client that an order was rejected because they require onchain
+	/// payments and the client didn't provided a `refund_onchain_address`.
+	///
+	/// Should be called in response to receiving a [`LSPS1ServiceEvent::RequestForPaymentDetails`]
+	/// event if the LSP requires onchain payments and `refund_onchain_address` is `None`.
+	///
+	/// [`LSPS1ServiceEvent::RequestForPaymentDetails`]: crate::lsps1::event::LSPS1ServiceEvent::RequestForPaymentDetails
+	pub fn onchain_payments_required(
+		&self, counterparty_node_id: PublicKey, request_id: LSPSRequestId,
+	) -> Result<(), APIError> {
+		let mut message_queue_notifier = self.pending_messages.notifier();
+
+		match self.per_peer_state.read().unwrap().get(&counterparty_node_id) {
+			Some(inner_state_lock) => {
+				let mut peer_state_lock = inner_state_lock.lock().unwrap();
+				peer_state_lock.remove_request(&request_id).map_err(|e| {
+					debug_assert!(false, "Failed to send response due to: {}", e);
+					let err = format!("Failed to send response due to: {}", e);
+					APIError::APIMisuseError { err }
+				})?;
+
+				let response = LSPS1Response::CreateOrderError(LSPSResponseError {
+					code: LSPS1_CREATE_ORDER_REQUEST_OPTION_MISMATCH_ERROR_CODE,
+					message:
+						"We require onchain payment but no `refund_onchain_address` was provided"
+							.to_string(),
 					data: None,
 				});
 
@@ -753,6 +793,16 @@ where
 		&self, counterparty_node_id: PublicKey, request_id: LSPSRequestId,
 	) -> Result<(), APIError> {
 		self.inner.invalid_token_provided(counterparty_node_id, request_id)
+	}
+
+	/// Used by LSP to inform a client that an order was rejected because they require onchain
+	/// payments and the client didn't provided a `refund_onchain_address`.
+	///
+	/// Wraps [`LSPS1ServiceHandler::onchain_payments_required`].
+	pub fn onchain_payments_required(
+		&self, counterparty_node_id: PublicKey, request_id: LSPSRequestId,
+	) -> Result<(), APIError> {
+		self.inner.onchain_payments_required(counterparty_node_id, request_id)
 	}
 
 	/// Marks an order as paid after payment has been received.
