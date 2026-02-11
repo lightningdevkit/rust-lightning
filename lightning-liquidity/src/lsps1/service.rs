@@ -381,6 +381,13 @@ where
 			let request = LSPS1Request::CreateOrder(params.clone());
 			peer_state_lock.register_request(request_id.clone(), request).map_err(|e| {
 				let err = format!("Failed to handle request due to: {}", e);
+				let response = LSPS1Response::CreateOrderError(LSPSResponseError {
+					code: LSPS0_CLIENT_REJECTED_ERROR_CODE,
+					message: err.clone(),
+					data: None,
+				});
+				let msg = LSPS1Message::Response(request_id.clone(), response).into();
+				message_queue_notifier.enqueue(counterparty_node_id, msg);
 				let action = ErrorAction::IgnoreAndLog(Level::Error);
 				LightningError { err, action }
 			})?;
