@@ -6651,7 +6651,7 @@ impl<
 			if let Some(buffer) = config_update.force_close_claimable_htlc_cltv_buffer {
 				if let Err(_) = self.chain_monitor.update_channel_force_close_buffer(*channel_id, buffer) {
 					return Err(APIError::APIMisuseError {
-						err: format!("Failed to update chain monitor force-close buffer"),
+						err: "Failed to update chain monitor force-close buffer".to_string(),
 					});
 				}
 			}
