@@ -30,8 +30,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        platform: [ self-hosted, windows-latest, macos-latest ]
-        toolchain: [ stable, beta, 1.75.0 ] # 1.75.0 is the MSRV for all crates
+        platform: >-
+          ${{ github.event_name == 'push' && github.ref == 'refs/heads/main'
+            && fromJSON('["self-hosted","windows-latest","macos-latest"]')
+            || fromJSON('["self-hosted"]') }}
+        toolchain: >-
+          ${{ github.event_name == 'push' && github.ref == 'refs/heads/main'
+            && fromJSON('["stable","beta","1.75.0"]')
+            || fromJSON('["1.75.0"]') }}
         exclude:
           - platform: windows-latest
             toolchain: 1.75.0
