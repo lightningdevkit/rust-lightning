@@ -353,6 +353,20 @@ impl PeerState {
 		self.pending_requests.remove(request_id).ok_or(PeerStateError::UnknownRequestId)
 	}
 
+	pub(super) fn pending_request_count(&self) -> usize {
+		self.pending_requests.len()
+	}
+
+	pub(super) fn pending_requests_and_channels(&self) -> usize {
+		let pending_requests = self.pending_requests.len();
+		let pending_orders = self
+			.outbound_channels_by_order_id
+			.iter()
+			.filter(|(_, v)| v.is_pending_payment())
+			.count();
+		pending_requests + pending_orders
+	}
+
 	pub(super) fn has_active_requests(&self) -> bool {
 		!self.outbound_channels_by_order_id.is_empty()
 	}
@@ -370,8 +384,10 @@ impl PeerState {
 		self.pending_requests.is_empty() && self.outbound_channels_by_order_id.is_empty()
 	}
 
-	pub(super) fn prune_pending_requests(&mut self) {
-		self.pending_requests.clear()
+	pub(super) fn prune_pending_requests(&mut self) -> usize {
+		let num_pruned = self.pending_requests.len();
+		self.pending_requests.clear();
+		num_pruned
 	}
 
 	pub(super) fn prune_expired_request_state(&mut self) {
@@ -431,6 +447,10 @@ impl ChannelOrder {
 	/// Returns the channel details if the channel has been opened.
 	pub(super) fn channel_details(&self) -> Option<&LSPS1ChannelInfo> {
 		self.state.channel_info()
+	}
+
+	fn is_pending_payment(&self) -> bool {
+		matches!(self.state, ChannelOrderState::ExpectingPayment { .. })
 	}
 
 	fn is_prunable(&self) -> bool {
