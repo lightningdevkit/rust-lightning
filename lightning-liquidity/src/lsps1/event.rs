@@ -170,8 +170,10 @@ pub enum LSPS1ServiceEvent {
 		order: LSPS1OrderParams,
 		/// The address we need to send onchain refunds to in case channel opening fails.
 		///
-		/// Please note that you can't offer onchain payments if this was not provided by the
-		/// client.
+		/// If this is `None` and you *require* onchain payment, you should call
+		/// [`LSPS1ServiceHandler::onchain_payments_required`] to reject the request.
+		///
+		/// [`LSPS1ServiceHandler::onchain_payments_required`]: crate::lsps1::service::LSPS1ServiceHandler::onchain_payments_required
 		refund_onchain_address: Option<Address>,
 	},
 }
