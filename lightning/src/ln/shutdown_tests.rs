@@ -836,7 +836,11 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 		// closing_signed so we do it ourselves
 		check_closed_broadcast!(nodes[1], false);
 		check_added_monitors(&nodes[1], 1);
-		let reason = ClosureReason::CounterpartyForceClosed { peer_msg: UntrustedString(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", &node_b_id)) };
+		let peer_msg = format!(
+			"Got a message for a channel from the wrong node! No such channel_id {} for the passed counterparty_node_id {}",
+			chan_1.2, node_b_id
+		);
+		let reason = ClosureReason::CounterpartyForceClosed { peer_msg: UntrustedString(peer_msg) };
 		check_closed_event(&nodes[1], 1, reason, &[node_a_id], 100000);
 	}
 
