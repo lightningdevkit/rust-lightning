@@ -11543,90 +11543,106 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	fn internal_tx_signatures(
 		&self, counterparty_node_id: &PublicKey, msg: &msgs::TxSignatures,
 	) -> Result<(), MsgHandleErrInternal> {
-		let per_peer_state = self.per_peer_state.read().unwrap();
-		let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
-			debug_assert!(false);
-			MsgHandleErrInternal::no_such_peer(counterparty_node_id, msg.channel_id)
-		})?;
-		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
-		let peer_state = &mut *peer_state_lock;
-		match peer_state.channel_by_id.entry(msg.channel_id) {
-			hash_map::Entry::Occupied(mut chan_entry) => {
-				match chan_entry.get_mut().as_funded_mut() {
-					Some(chan) => {
-						let best_block_height = self.best_block.read().unwrap().height;
-						let FundingTxSigned {
-							commitment_signed,
-							counterparty_initial_commitment_signed_result,
-							tx_signatures,
-							funding_tx,
-							splice_negotiated,
-							splice_locked,
-						} = try_channel_entry!(
-							self,
-							peer_state,
-							chan.tx_signatures(msg, best_block_height, &self.logger),
-							chan_entry
-						);
-
-						// We should never be sending a `commitment_signed` in response to their
-						// `tx_signatures`.
-						debug_assert!(commitment_signed.is_none());
-						debug_assert!(counterparty_initial_commitment_signed_result.is_none());
-
-						if let Some(tx_signatures) = tx_signatures {
-							peer_state.pending_msg_events.push(
-								MessageSendEvent::SendTxSignatures {
-									node_id: *counterparty_node_id,
-									msg: tx_signatures,
-								},
-							);
-						}
-						if let Some(splice_locked) = splice_locked {
-							peer_state.pending_msg_events.push(
-								MessageSendEvent::SendSpliceLocked {
-									node_id: *counterparty_node_id,
-									msg: splice_locked,
-								},
-							);
-						}
-						if let Some((ref funding_tx, ref tx_type)) = funding_tx {
-							self.broadcast_interactive_funding(
-								chan,
+		let (result, holding_cell_res) = {
+			let per_peer_state = self.per_peer_state.read().unwrap();
+			let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
+				debug_assert!(false);
+				MsgHandleErrInternal::no_such_peer(counterparty_node_id, msg.channel_id)
+			})?;
+			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+			let peer_state = &mut *peer_state_lock;
+			match peer_state.channel_by_id.entry(msg.channel_id) {
+				hash_map::Entry::Occupied(mut chan_entry) => {
+					match chan_entry.get_mut().as_funded_mut() {
+						Some(chan) => {
+							let best_block_height = self.best_block.read().unwrap().height;
+							let FundingTxSigned {
+								commitment_signed,
+								counterparty_initial_commitment_signed_result,
+								tx_signatures,
 								funding_tx,
-								Some(tx_type.clone()),
-								&self.logger,
+								splice_negotiated,
+								splice_locked,
+							} = try_channel_entry!(
+								self,
+								peer_state,
+								chan.tx_signatures(msg, best_block_height, &self.logger),
+								chan_entry
 							);
-						}
-						if let Some(splice_negotiated) = splice_negotiated {
-							self.pending_events.lock().unwrap().push_back((
-								events::Event::SplicePending {
-									channel_id: msg.channel_id,
-									counterparty_node_id: *counterparty_node_id,
-									user_channel_id: chan.context.get_user_id(),
-									new_funding_txo: splice_negotiated.funding_txo,
-									channel_type: splice_negotiated.channel_type,
-									new_funding_redeem_script: splice_negotiated
-										.funding_redeem_script,
-								},
-								None,
-							));
-						}
-					},
-					None => {
-						let msg = "Got an unexpected tx_signatures message";
-						let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
-						let err = ChannelError::Close((msg.to_owned(), reason));
-						try_channel_entry!(self, peer_state, Err(err), chan_entry)
-					},
-				}
-				Ok(())
-			},
-			hash_map::Entry::Vacant(_) => Err(MsgHandleErrInternal::no_such_channel_for_peer(
-				counterparty_node_id,
-				msg.channel_id,
-			)),
-		}
+
+							// We should never be sending a `commitment_signed` in response to their
+							// `tx_signatures`.
+							debug_assert!(commitment_signed.is_none());
+							debug_assert!(counterparty_initial_commitment_signed_result.is_none());
+
+							if let Some(tx_signatures) = tx_signatures {
+								peer_state.pending_msg_events.push(
+									MessageSendEvent::SendTxSignatures {
+										node_id: *counterparty_node_id,
+										msg: tx_signatures,
+									},
+								);
+							}
+							if let Some(splice_locked) = splice_locked {
+								peer_state.pending_msg_events.push(
+									MessageSendEvent::SendSpliceLocked {
+										node_id: *counterparty_node_id,
+										msg: splice_locked,
+									},
+								);
+							}
+							if let Some((ref funding_tx, ref tx_type)) = funding_tx {
+								self.broadcast_interactive_funding(
+									chan,
+									funding_tx,
+									Some(tx_type.clone()),
+									&self.logger,
+								);
+							}
+							// We consider a splice negotiated when we exchange `tx_signatures`,
+							// which also terminates quiescence.
+							let exited_quiescence = splice_negotiated.is_some();
+							if let Some(splice_negotiated) = splice_negotiated {
+								self.pending_events.lock().unwrap().push_back((
+									events::Event::SplicePending {
+										channel_id: msg.channel_id,
+										counterparty_node_id: *counterparty_node_id,
+										user_channel_id: chan.context.get_user_id(),
+										new_funding_txo: splice_negotiated.funding_txo,
+										channel_type: splice_negotiated.channel_type,
+										new_funding_redeem_script: splice_negotiated
+											.funding_redeem_script,
+									},
+									None,
+								));
+							}
+							let holding_cell_res = if exited_quiescence {
+								self.check_free_peer_holding_cells(peer_state)
+							} else {
+								Vec::new()
+							};
+							(Ok(()), holding_cell_res)
+						},
+						None => {
+							let msg = "Got an unexpected tx_signatures message";
+							let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
+							let err = ChannelError::Close((msg.to_owned(), reason));
+							try_channel_entry!(self, peer_state, Err(err), chan_entry)
+						},
+					}
+				},
+				hash_map::Entry::Vacant(_) => (
+					Err(MsgHandleErrInternal::no_such_channel_for_peer(
+						counterparty_node_id,
+						msg.channel_id,
+					)),
+					Vec::new(),
+				),
+			}
+		};
+
+		self.handle_holding_cell_free_result(holding_cell_res);
+		result
 	}
 
 	fn internal_tx_abort(

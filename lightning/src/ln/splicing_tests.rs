@@ -2166,6 +2166,96 @@ fn fail_splice_on_tx_complete_error() {
 }
 
 #[test]
+fn free_holding_cell_on_tx_signatures_quiescence_exit() {
+	// Test that if there's an update in the holding cell while we're quiescent, that it gets freed
+	// upon exiting quiescence via the `tx_signatures` exchange.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let config = test_default_channel_config();
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let initiator = &nodes[0];
+	let acceptor = &nodes[1];
+	let node_id_initiator = initiator.node.get_our_node_id();
+	let node_id_acceptor = acceptor.node.get_our_node_id();
+
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 0);
+
+	let outputs = vec![TxOut {
+		value: Amount::from_sat(1_000),
+		script_pubkey: initiator.wallet_source.get_change_script().unwrap(),
+	}];
+	let contribution = initiate_splice_out(initiator, acceptor, channel_id, outputs);
+	negotiate_splice_tx(initiator, acceptor, channel_id, contribution);
+
+	// Queue an outgoing HTLC to the holding cell. It should be freed once we exit quiescence.
+	let (route, payment_hash, _payment_preimage, payment_secret) =
+		get_route_and_payment_hash!(initiator, acceptor, 1_000_000);
+	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let payment_id = PaymentId(payment_hash.0);
+	initiator.node.send_payment_with_route(route, payment_hash, onion, payment_id).unwrap();
+	assert!(initiator.node.get_and_clear_pending_msg_events().is_empty());
+
+	let event = get_event!(initiator, Event::FundingTransactionReadyForSigning);
+	if let Event::FundingTransactionReadyForSigning {
+		channel_id,
+		counterparty_node_id,
+		unsigned_transaction,
+		..
+	} = event
+	{
+		let partially_signed_tx = initiator.wallet_source.sign_tx(unsigned_transaction).unwrap();
+		initiator
+			.node
+			.funding_transaction_signed(&channel_id, &counterparty_node_id, partially_signed_tx)
+			.unwrap();
+	} else {
+		unreachable!();
+	}
+
+	let update = get_htlc_update_msgs(initiator, &node_id_acceptor);
+	acceptor.node.handle_commitment_signed(node_id_initiator, &update.commitment_signed[0]);
+	check_added_monitors(&acceptor, 1);
+
+	let msg_events = acceptor.node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 2, "{msg_events:?}");
+	if let MessageSendEvent::UpdateHTLCs { ref updates, .. } = &msg_events[0] {
+		let commitment_signed = &updates.commitment_signed[0];
+		initiator.node.handle_commitment_signed(node_id_acceptor, commitment_signed);
+		check_added_monitors(&initiator, 1);
+	} else {
+		panic!("Unexpected event {:?}", &msg_events[0]);
+	}
+	if let MessageSendEvent::SendTxSignatures { ref msg, .. } = &msg_events[1] {
+		initiator.node.handle_tx_signatures(node_id_acceptor, msg);
+	} else {
+		panic!("Unexpected event {:?}", &msg_events[1]);
+	}
+
+	// With `tx_signatures` exchanged, we've exited quiescence and should now see the outgoing HTLC
+	// update be sent.
+	let msg_events = initiator.node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 2, "{msg_events:?}");
+	check_added_monitors(initiator, 1); // Outgoing HTLC monitor update
+	if let MessageSendEvent::SendTxSignatures { ref msg, .. } = &msg_events[0] {
+		acceptor.node.handle_tx_signatures(node_id_initiator, msg);
+	} else {
+		panic!("Unexpected event {:?}", &msg_events[0]);
+	}
+	if let MessageSendEvent::UpdateHTLCs { updates, .. } = &msg_events[1] {
+		acceptor.node.handle_update_add_htlc(node_id_initiator, &updates.update_add_htlcs[0]);
+		do_commitment_signed_dance(acceptor, initiator, &updates.commitment_signed, false, false);
+	} else {
+		panic!("Unexpected event {:?}", &msg_events[1]);
+	}
+
+	expect_splice_pending_event(initiator, &node_id_acceptor);
+	expect_splice_pending_event(acceptor, &node_id_initiator);
+}
+
+#[test]
 fn fail_splice_on_channel_close() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
