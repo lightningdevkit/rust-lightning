@@ -82,6 +82,7 @@ use crate::io;
 use crate::ln::channelmanager::PaymentId;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN};
 use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
+use crate::offers::currency::CurrencyConversion;
 use crate::offers::merkle::{TaggedHash, TlvRecord, TlvStream};
 use crate::offers::nonce::Nonce;
 use crate::offers::parse::{Bech32Encode, Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
@@ -1123,6 +1124,28 @@ pub enum Amount {
 		/// The amount in the currency unit adjusted by the ISO 4217 exponent (e.g., USD cents).
 		amount: u64,
 	},
+}
+
+impl Amount {
+	pub(crate) fn into_msats<CC: CurrencyConversion>(
+		self, currency_conversion: &CC,
+	) -> Result<u64, Bolt12SemanticError> {
+		match self {
+			Amount::Bitcoin { amount_msats } => Ok(amount_msats),
+			Amount::Currency { iso4217_code, amount } => {
+				let (msats_per_minor_unit, _) = currency_conversion
+					.msats_per_minor_unit(iso4217_code)
+					.map_err(|_| Bolt12SemanticError::UnsupportedCurrency)?;
+				let amount_msats = libm::round(msats_per_minor_unit * amount as f64);
+
+				if !amount_msats.is_finite() {
+					return Err(Bolt12SemanticError::InvalidAmount);
+				}
+
+				u64::try_from(amount_msats as i128).map_err(|_| Bolt12SemanticError::InvalidAmount)
+			},
+		}
+	}
 }
 
 /// An ISO 4217 three-letter currency code (e.g., USD).
