@@ -1962,6 +1962,13 @@ fn fail_splice_on_interactive_tx_error() {
 		initiate_splice_in(initiator, acceptor, channel_id, Amount::from_sat(splice_in_amount));
 	let _ = complete_splice_handshake(initiator, acceptor);
 
+	// Queue an outgoing HTLC to the holding cell. It should be freed once we exit quiescence.
+	let (route, payment_hash, _payment_preimage, payment_secret) =
+		get_route_and_payment_hash!(initiator, acceptor, 1_000_000);
+	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let payment_id = PaymentId(payment_hash.0);
+	initiator.node.send_payment_with_route(route, payment_hash, onion, payment_id).unwrap();
+
 	let tx_add_input =
 		get_event_msg!(initiator, MessageSendEvent::SendTxAddInput, node_id_acceptor);
 	acceptor.node.handle_tx_add_input(node_id_initiator, &tx_add_input);
@@ -1979,11 +1986,28 @@ fn fail_splice_on_interactive_tx_error() {
 		_ => panic!("Expected Event::SpliceFailed"),
 	}
 
-	let tx_abort = get_event_msg!(initiator, MessageSendEvent::SendTxAbort, node_id_acceptor);
-	acceptor.node.handle_tx_abort(node_id_initiator, &tx_abort);
+	// We exit quiescence upon sending `tx_abort`, so we should see the holding cell be immediately
+	// freed.
+	let msg_events = initiator.node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 2, "{msg_events:?}");
+	let tx_abort = if let MessageSendEvent::SendTxAbort { msg, .. } = &msg_events[0] {
+		msg
+	} else {
+		panic!("Unexpected event {:?}", msg_events[0]);
+	};
+	let update = if let MessageSendEvent::UpdateHTLCs { updates, .. } = &msg_events[1] {
+		updates
+	} else {
+		panic!("Unexpected event {:?}", msg_events[1]);
+	};
+	check_added_monitors(initiator, 1);
 
+	acceptor.node.handle_tx_abort(node_id_initiator, tx_abort);
 	let tx_abort = get_event_msg!(acceptor, MessageSendEvent::SendTxAbort, node_id_initiator);
 	initiator.node.handle_tx_abort(node_id_acceptor, &tx_abort);
+
+	acceptor.node.handle_update_add_htlc(node_id_initiator, &update.update_add_htlcs[0]);
+	do_commitment_signed_dance(acceptor, initiator, &update.commitment_signed, false, false);
 }
 
 #[test]
@@ -2035,6 +2059,89 @@ fn fail_splice_on_tx_abort() {
 
 	let tx_abort = get_event_msg!(initiator, MessageSendEvent::SendTxAbort, node_id_acceptor);
 	acceptor.node.handle_tx_abort(node_id_initiator, &tx_abort);
+}
+
+#[test]
+fn fail_splice_on_tx_complete_error() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let config = test_default_channel_config();
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let initiator = &nodes[1];
+	let acceptor = &nodes[0];
+
+	let node_id_initiator = initiator.node.get_our_node_id();
+	let node_id_acceptor = acceptor.node.get_our_node_id();
+
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 50_000_000);
+
+	let outputs = vec![TxOut {
+		value: Amount::from_sat(1_000),
+		script_pubkey: acceptor.wallet_source.get_change_script().unwrap(),
+	}];
+	let _ = initiate_splice_out(initiator, acceptor, channel_id, outputs);
+	let _ = complete_splice_handshake(initiator, acceptor);
+
+	// Queue an outgoing HTLC to the holding cell. It should be freed once we exit quiescence.
+	let (route, payment_hash, _payment_preimage, payment_secret) =
+		get_route_and_payment_hash!(initiator, acceptor, 1_000_000);
+	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let payment_id = PaymentId(payment_hash.0);
+	acceptor.node.send_payment_with_route(route, payment_hash, onion, payment_id).unwrap();
+
+	let tx_add_input =
+		get_event_msg!(initiator, MessageSendEvent::SendTxAddInput, node_id_acceptor);
+	acceptor.node.handle_tx_add_input(node_id_initiator, &tx_add_input);
+	let tx_complete = get_event_msg!(acceptor, MessageSendEvent::SendTxComplete, node_id_initiator);
+	initiator.node.handle_tx_complete(node_id_acceptor, &tx_complete);
+
+	// Tamper the shared funding output such that the acceptor fails upon `tx_complete`.
+	let mut tx_add_output =
+		get_event_msg!(initiator, MessageSendEvent::SendTxAddOutput, node_id_acceptor);
+	if tx_add_output.script.is_p2wsh() {
+		tx_add_output.sats *= 2;
+	}
+	acceptor.node.handle_tx_add_output(node_id_initiator, &tx_add_output);
+	let tx_complete = get_event_msg!(acceptor, MessageSendEvent::SendTxComplete, node_id_initiator);
+	initiator.node.handle_tx_complete(node_id_acceptor, &tx_complete);
+
+	let mut tx_add_output =
+		get_event_msg!(initiator, MessageSendEvent::SendTxAddOutput, node_id_acceptor);
+	if tx_add_output.script.is_p2wsh() {
+		tx_add_output.sats *= 2;
+	}
+	acceptor.node.handle_tx_add_output(node_id_initiator, &tx_add_output);
+	let tx_complete = get_event_msg!(acceptor, MessageSendEvent::SendTxComplete, node_id_initiator);
+	initiator.node.handle_tx_complete(node_id_acceptor, &tx_complete);
+
+	let _ = get_event!(initiator, Event::FundingTransactionReadyForSigning);
+	let tx_complete = get_event_msg!(initiator, MessageSendEvent::SendTxComplete, node_id_acceptor);
+	acceptor.node.handle_tx_complete(node_id_initiator, &tx_complete);
+
+	let msg_events = acceptor.node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 2, "{msg_events:?}");
+	check_added_monitors(acceptor, 1);
+	let tx_abort = if let MessageSendEvent::SendTxAbort { msg, .. } = &msg_events[0] {
+		msg
+	} else {
+		panic!("Unexpected event {:?}", msg_events[0]);
+	};
+	let update = if let MessageSendEvent::UpdateHTLCs { updates, .. } = &msg_events[1] {
+		updates
+	} else {
+		panic!("Unexpected event {:?}", msg_events[1]);
+	};
+
+	initiator.node.handle_tx_abort(node_id_acceptor, tx_abort);
+	let _ = get_event!(initiator, Event::SpliceFailed);
+	let tx_abort = get_event_msg!(initiator, MessageSendEvent::SendTxAbort, node_id_acceptor);
+	acceptor.node.handle_tx_abort(node_id_initiator, &tx_abort);
+
+	initiator.node.handle_update_add_htlc(node_id_acceptor, &update.update_add_htlcs[0]);
+	do_commitment_signed_dance(initiator, acceptor, &update.commitment_signed, false, false);
 }
 
 #[test]

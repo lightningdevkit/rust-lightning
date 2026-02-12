@@ -1204,6 +1204,18 @@ pub enum UpdateFulfillCommitFetch {
 	DuplicateClaim {},
 }
 
+/// Error returned when processing an invalid interactive-tx message from our counterparty.
+pub(super) struct InteractiveTxMsgError {
+	/// The underlying error.
+	pub(super) err: ChannelError,
+	/// If a splice was in progress when processing the message, this contains the splice funding
+	/// information for emitting a `SpliceFailed` event.
+	pub(super) splice_funding_failed: Option<SpliceFundingFailed>,
+	/// Whether we were quiescent when we received the message, and are no longer due to aborting
+	/// the session.
+	pub(super) exited_quiescence: bool,
+}
+
 /// The return value of `monitor_updating_restored`
 pub(super) struct MonitorRestoreUpdates {
 	pub raa: Option<msgs::RevokeAndACK>,
@@ -1846,104 +1858,118 @@ where
 
 	fn fail_interactive_tx_negotiation<L: Logger>(
 		&mut self, reason: AbortReason, logger: &L,
-	) -> (ChannelError, Option<SpliceFundingFailed>) {
+	) -> InteractiveTxMsgError {
 		let logger = WithChannelContext::from(logger, &self.context(), None);
 		log_info!(logger, "Failed interactive transaction negotiation: {reason}");
 
-		let splice_funding_failed = match &mut self.phase {
+		let (splice_funding_failed, exited_quiescence) = match &mut self.phase {
 			ChannelPhase::Undefined => unreachable!(),
-			ChannelPhase::UnfundedOutboundV1(_) | ChannelPhase::UnfundedInboundV1(_) => None,
+			ChannelPhase::UnfundedOutboundV1(_) | ChannelPhase::UnfundedInboundV1(_) => {
+				(None, false)
+			},
 			ChannelPhase::UnfundedV2(pending_v2_channel) => {
 				pending_v2_channel.interactive_tx_constructor.take();
-				None
+				(None, false)
 			},
 			ChannelPhase::Funded(funded_channel) => {
 				if funded_channel.should_reset_pending_splice_state(false) {
-					funded_channel.reset_pending_splice_state()
+					(funded_channel.reset_pending_splice_state(), true)
 				} else {
 					debug_assert!(false, "We should never fail an interactive funding negotiation once we're exchanging tx_signatures");
-					None
+					(None, false)
 				}
 			},
 		};
 
-		(ChannelError::Abort(reason), splice_funding_failed)
+		InteractiveTxMsgError {
+			err: ChannelError::Abort(reason),
+			splice_funding_failed,
+			exited_quiescence,
+		}
 	}
 
 	pub fn tx_add_input<L: Logger>(
 		&mut self, msg: &msgs::TxAddInput, logger: &L,
-	) -> Result<InteractiveTxMessageSend, (ChannelError, Option<SpliceFundingFailed>)> {
+	) -> Result<InteractiveTxMessageSend, InteractiveTxMsgError> {
 		match self.interactive_tx_constructor_mut() {
 			Some(interactive_tx_constructor) => interactive_tx_constructor
 				.handle_tx_add_input(msg)
 				.map_err(|reason| self.fail_interactive_tx_negotiation(reason, logger)),
-			None => Err((
-				ChannelError::WarnAndDisconnect(
+			None => Err(InteractiveTxMsgError {
+				err: ChannelError::WarnAndDisconnect(
 					"Received unexpected interactive transaction negotiation message".to_owned(),
 				),
-				None,
-			)),
+				splice_funding_failed: None,
+				exited_quiescence: false,
+			}),
 		}
 	}
 
 	pub fn tx_add_output<L: Logger>(
 		&mut self, msg: &msgs::TxAddOutput, logger: &L,
-	) -> Result<InteractiveTxMessageSend, (ChannelError, Option<SpliceFundingFailed>)> {
+	) -> Result<InteractiveTxMessageSend, InteractiveTxMsgError> {
 		match self.interactive_tx_constructor_mut() {
 			Some(interactive_tx_constructor) => interactive_tx_constructor
 				.handle_tx_add_output(msg)
 				.map_err(|reason| self.fail_interactive_tx_negotiation(reason, logger)),
-			None => Err((
-				ChannelError::WarnAndDisconnect(
+			None => Err(InteractiveTxMsgError {
+				err: ChannelError::WarnAndDisconnect(
 					"Received unexpected interactive transaction negotiation message".to_owned(),
 				),
-				None,
-			)),
+				splice_funding_failed: None,
+				exited_quiescence: false,
+			}),
 		}
 	}
 
 	pub fn tx_remove_input<L: Logger>(
 		&mut self, msg: &msgs::TxRemoveInput, logger: &L,
-	) -> Result<InteractiveTxMessageSend, (ChannelError, Option<SpliceFundingFailed>)> {
+	) -> Result<InteractiveTxMessageSend, InteractiveTxMsgError> {
 		match self.interactive_tx_constructor_mut() {
 			Some(interactive_tx_constructor) => interactive_tx_constructor
 				.handle_tx_remove_input(msg)
 				.map_err(|reason| self.fail_interactive_tx_negotiation(reason, logger)),
-			None => Err((
-				ChannelError::WarnAndDisconnect(
+			None => Err(InteractiveTxMsgError {
+				err: ChannelError::WarnAndDisconnect(
 					"Received unexpected interactive transaction negotiation message".to_owned(),
 				),
-				None,
-			)),
+				splice_funding_failed: None,
+				exited_quiescence: false,
+			}),
 		}
 	}
 
 	pub fn tx_remove_output<L: Logger>(
 		&mut self, msg: &msgs::TxRemoveOutput, logger: &L,
-	) -> Result<InteractiveTxMessageSend, (ChannelError, Option<SpliceFundingFailed>)> {
+	) -> Result<InteractiveTxMessageSend, InteractiveTxMsgError> {
 		match self.interactive_tx_constructor_mut() {
 			Some(interactive_tx_constructor) => interactive_tx_constructor
 				.handle_tx_remove_output(msg)
 				.map_err(|reason| self.fail_interactive_tx_negotiation(reason, logger)),
-			None => Err((
-				ChannelError::WarnAndDisconnect(
+			None => Err(InteractiveTxMsgError {
+				err: ChannelError::WarnAndDisconnect(
 					"Received unexpected interactive transaction negotiation message".to_owned(),
 				),
-				None,
-			)),
+				splice_funding_failed: None,
+				exited_quiescence: false,
+			}),
 		}
 	}
 
 	pub fn tx_complete<F: FeeEstimator, L: Logger>(
 		&mut self, msg: &msgs::TxComplete, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
-	) -> Result<TxCompleteResult, (ChannelError, Option<SpliceFundingFailed>)> {
+	) -> Result<TxCompleteResult, InteractiveTxMsgError> {
 		let tx_complete_action = match self.interactive_tx_constructor_mut() {
 			Some(interactive_tx_constructor) => interactive_tx_constructor
 				.handle_tx_complete(msg)
 				.map_err(|reason| self.fail_interactive_tx_negotiation(reason, logger))?,
 			None => {
 				let err = "Received unexpected interactive transaction negotiation message";
-				return Err((ChannelError::WarnAndDisconnect(err.to_owned()), None));
+				return Err(InteractiveTxMsgError {
+					err: ChannelError::WarnAndDisconnect(err.to_owned()),
+					splice_funding_failed: None,
+					exited_quiescence: false,
+				});
 			},
 		};
 
