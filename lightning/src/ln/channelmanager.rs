@@ -18988,7 +18988,7 @@ impl<
 
 								Some((htlc_source, payment_preimage, htlc.amount_msat,
 									is_channel_closed, monitor.get_counterparty_node_id(),
-									monitor.get_funding_txo(), monitor.channel_id()))
+									monitor.get_funding_txo(), monitor.channel_id(), None))
 							} else { None }
 						} else {
 							// If it was an outbound payment, we've handled it above - if a preimage
@@ -19354,7 +19354,7 @@ impl<
 				{
 					for (prev_hop, outbound_amt_msat) in forwarded_htlcs {
 						let new_pending_claim =
-							!pending_claims_to_replay.iter().any(|(src, _, _, _, _, _, _)| {
+							!pending_claims_to_replay.iter().any(|(src, _, _, _, _, _, _, _)| {
 								matches!(src, HTLCSource::PreviousHopData(hop) if hop.htlc_id == prev_hop.htlc_id && hop.channel_id == prev_hop.channel_id)
 							});
 						if new_pending_claim {
@@ -19379,6 +19379,7 @@ impl<
 								counterparty_node_id,
 								monitor.get_funding_txo(),
 								*channel_id,
+								None,
 							));
 						}
 					}
@@ -19648,6 +19649,7 @@ impl<
 			downstream_node_id,
 			downstream_funding,
 			downstream_channel_id,
+			downstream_user_channel_id,
 		) in pending_claims_to_replay
 		{
 			// We use `downstream_closed` in place of `from_onchain` here just as a guess - we
@@ -19663,7 +19665,7 @@ impl<
 				downstream_node_id,
 				downstream_funding,
 				downstream_channel_id,
-				None,
+				downstream_user_channel_id,
 				None,
 				None,
 			);
