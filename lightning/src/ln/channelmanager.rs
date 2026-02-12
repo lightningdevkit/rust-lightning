@@ -18637,13 +18637,13 @@ impl<
 										.or_insert_with(Vec::new)
 										.push(update_add_htlc);
 								}
-								for (payment_hash, hop_data, outbound_amt_msat) in
+								for (payment_hash, prev_hop, outbound_amt_msat) in
 									funded_chan.inbound_forwarded_htlcs()
 								{
 									already_forwarded_htlcs
-										.entry((hop_data.channel_id, payment_hash))
+										.entry((prev_hop.channel_id, payment_hash))
 										.or_insert_with(Vec::new)
-										.push((hop_data, outbound_amt_msat));
+										.push((prev_hop, outbound_amt_msat));
 								}
 							}
 						}
@@ -19352,14 +19352,14 @@ impl<
 				if let Some(forwarded_htlcs) =
 					already_forwarded_htlcs.remove(&(*channel_id, payment_hash))
 				{
-					for (hop_data, outbound_amt_msat) in forwarded_htlcs {
+					for (prev_hop, outbound_amt_msat) in forwarded_htlcs {
 						let new_pending_claim =
 							!pending_claims_to_replay.iter().any(|(src, _, _, _, _, _, _)| {
-								matches!(src, HTLCSource::PreviousHopData(hop) if hop.htlc_id == hop_data.htlc_id && hop.channel_id == hop_data.channel_id)
+								matches!(src, HTLCSource::PreviousHopData(hop) if hop.htlc_id == prev_hop.htlc_id && hop.channel_id == prev_hop.channel_id)
 							});
 						if new_pending_claim {
 							let counterparty_node_id = monitor.get_counterparty_node_id();
-							let is_channel_closed = channel_manager
+							let is_downstream_closed = channel_manager
 								.per_peer_state
 								.read()
 								.unwrap()
@@ -19372,10 +19372,10 @@ impl<
 										.contains_key(channel_id)
 								});
 							pending_claims_to_replay.push((
-								HTLCSource::PreviousHopData(hop_data),
+								HTLCSource::PreviousHopData(prev_hop),
 								payment_preimage,
 								outbound_amt_msat,
-								is_channel_closed,
+								is_downstream_closed,
 								counterparty_node_id,
 								monitor.get_funding_txo(),
 								*channel_id,
