@@ -58,8 +58,7 @@ use crate::ln::channelmanager::{
 use crate::ln::funding::{FundingContribution, FundingTemplate, FundingTxInput};
 use crate::ln::interactivetxs::{
 	AbortReason, HandleTxCompleteValue, InteractiveTxConstructor, InteractiveTxConstructorArgs,
-	InteractiveTxMessageSend, InteractiveTxSigningSession, NegotiationError, SharedOwnedInput,
-	SharedOwnedOutput,
+	InteractiveTxMessageSend, InteractiveTxSigningSession, SharedOwnedInput, SharedOwnedOutput,
 };
 use crate::ln::msgs;
 use crate::ln::msgs::{ClosingSigned, ClosingSignedFeeRange, DecodeError, OnionErrorPacket};
@@ -6690,7 +6689,7 @@ impl FundingNegotiationContext {
 	fn into_interactive_tx_constructor<SP: SignerProvider, ES: EntropySource>(
 		self, context: &ChannelContext<SP>, funding: &FundingScope, entropy_source: &ES,
 		holder_node_id: PublicKey,
-	) -> Result<InteractiveTxConstructor, NegotiationError> {
+	) -> InteractiveTxConstructor {
 		debug_assert_eq!(
 			self.shared_funding_input.is_some(),
 			funding.channel_transaction_parameters.splice_parent_funding_txid.is_some(),
@@ -6713,7 +6712,6 @@ impl FundingNegotiationContext {
 			counterparty_node_id: context.counterparty_node_id,
 			channel_id: context.channel_id(),
 			feerate_sat_per_kw: self.funding_feerate_sat_per_1000_weight,
-			is_initiator: self.is_initiator,
 			funding_tx_locktime: self.funding_tx_locktime,
 			inputs_to_contribute: self.our_funding_inputs,
 			shared_funding_input: self.shared_funding_input,
@@ -6723,7 +6721,11 @@ impl FundingNegotiationContext {
 			),
 			outputs_to_contribute: self.our_funding_outputs,
 		};
-		InteractiveTxConstructor::new(constructor_args)
+		if self.is_initiator {
+			InteractiveTxConstructor::new_for_outbound(constructor_args)
+		} else {
+			InteractiveTxConstructor::new_for_inbound(constructor_args)
+		}
 	}
 
 	fn into_contributed_inputs_and_outputs(self) -> (Vec<bitcoin::OutPoint>, Vec<TxOut>) {
@@ -12435,13 +12437,7 @@ where
 				&splice_funding,
 				entropy_source,
 				holder_node_id.clone(),
-			)
-			.map_err(|err| {
-				ChannelError::WarnAndDisconnect(format!(
-					"Failed to start interactive transaction construction, {:?}",
-					err
-				))
-			})?;
+			);
 		debug_assert!(interactive_tx_constructor.take_initiator_first_message().is_none());
 
 		// TODO(splicing): if quiescent_action is set, integrate what the user wants to do into the
@@ -12500,13 +12496,7 @@ where
 				&splice_funding,
 				entropy_source,
 				holder_node_id.clone(),
-			)
-			.map_err(|err| {
-				ChannelError::WarnAndDisconnect(format!(
-					"Failed to start interactive transaction construction, {:?}",
-					err
-				))
-			})?;
+			);
 		let tx_msg_opt = interactive_tx_constructor.take_initiator_first_message();
 
 		debug_assert!(self.context.interactive_tx_signing_session.is_none());
@@ -14367,7 +14357,7 @@ impl<SP: SignerProvider> PendingV2Channel<SP> {
 			script_pubkey: funding.get_funding_redeemscript().to_p2wsh(),
 		};
 
-		let interactive_tx_constructor = Some(InteractiveTxConstructor::new(
+		let interactive_tx_constructor = Some(InteractiveTxConstructor::new_for_inbound(
 			InteractiveTxConstructorArgs {
 				entropy_source,
 				holder_node_id,
@@ -14375,16 +14365,12 @@ impl<SP: SignerProvider> PendingV2Channel<SP> {
 				channel_id: context.channel_id,
 				feerate_sat_per_kw: funding_negotiation_context.funding_feerate_sat_per_1000_weight,
 				funding_tx_locktime: funding_negotiation_context.funding_tx_locktime,
-				is_initiator: false,
 				inputs_to_contribute: our_funding_inputs,
 				shared_funding_input: None,
 				shared_funding_output: SharedOwnedOutput::new(shared_funding_output, our_funding_contribution_sats),
 				outputs_to_contribute: funding_negotiation_context.our_funding_outputs.clone(),
 			}
-		).map_err(|err| {
-			let reason = ClosureReason::ProcessingError { err: err.reason.to_string() };
-			ChannelError::Close((err.reason.to_string(), reason))
-		})?);
+		));
 
 		let unfunded_context = UnfundedChannelContext {
 			unfunded_channel_age_ticks: 0,
