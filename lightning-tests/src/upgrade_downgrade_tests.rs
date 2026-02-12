@@ -716,14 +716,19 @@ fn test_0_0_125_max_update_id_upgrade() {
 		lightning_0_0_125_utils::route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
 
 		let err = "".to_owned();
-		nodes[1]
-			.node
-			.force_close_broadcasting_latest_txn(&chan_id, &node_a_id, err)
-			.unwrap();
+		nodes[1].node.force_close_broadcasting_latest_txn(&chan_id, &node_a_id, err).unwrap();
 
 		lightning_0_0_125_utils::check_added_monitors(&nodes[1], 1);
-		let reason = ClosureReason_0_0_125::HolderForceClosed { broadcasted_latest_txn: Some(true) };
-		lightning_0_0_125_utils::check_closed_event(&nodes[1], 1, reason, false, &[node_a_id], 100000);
+		let reason =
+			ClosureReason_0_0_125::HolderForceClosed { broadcasted_latest_txn: Some(true) };
+		lightning_0_0_125_utils::check_closed_event(
+			&nodes[1],
+			1,
+			reason,
+			false,
+			&[node_a_id],
+			100000,
+		);
 		lightning_0_0_125_utils::check_closed_broadcast(&nodes[1], 1, true);
 
 		node_a_ser = nodes[0].node.encode();
