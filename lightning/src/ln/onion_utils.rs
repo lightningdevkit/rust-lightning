@@ -1009,9 +1009,7 @@ mod fuzzy_onion_utils {
 		pub(crate) failed_within_blinded_path: bool,
 		#[allow(dead_code)]
 		pub(crate) hold_times: Vec<u32>,
-		#[cfg(any(test, feature = "_test_utils"))]
 		pub(crate) onion_error_code: Option<LocalHTLCFailureReason>,
-		#[cfg(any(test, feature = "_test_utils"))]
 		pub(crate) onion_error_data: Option<Vec<u8>>,
 		#[cfg(test)]
 		pub(crate) attribution_failed_channel: Option<u64>,
@@ -1106,9 +1104,7 @@ fn process_onion_failure_inner<T: secp256k1::Signing, L: Logger>(
 			payment_failed_permanently: true,
 			failed_within_blinded_path: false,
 			hold_times: Vec::new(),
-			#[cfg(any(test, feature = "_test_utils"))]
 			onion_error_code: None,
-			#[cfg(any(test, feature = "_test_utils"))]
 			onion_error_data: None,
 			#[cfg(test)]
 			attribution_failed_channel: None,
@@ -1496,9 +1492,7 @@ fn process_onion_failure_inner<T: secp256k1::Signing, L: Logger>(
 			payment_failed_permanently,
 			failed_within_blinded_path,
 			hold_times: hop_hold_times,
-			#[cfg(any(test, feature = "_test_utils"))]
 			onion_error_code: _error_code_ret,
-			#[cfg(any(test, feature = "_test_utils"))]
 			onion_error_data: _error_packet_ret,
 			#[cfg(test)]
 			attribution_failed_channel,
@@ -1519,9 +1513,7 @@ fn process_onion_failure_inner<T: secp256k1::Signing, L: Logger>(
 			payment_failed_permanently: is_from_final_non_blinded_node,
 			failed_within_blinded_path: false,
 			hold_times: hop_hold_times,
-			#[cfg(any(test, feature = "_test_utils"))]
 			onion_error_code: None,
-			#[cfg(any(test, feature = "_test_utils"))]
 			onion_error_data: None,
 			#[cfg(test)]
 			attribution_failed_channel,
@@ -2170,9 +2162,7 @@ impl HTLCFailReason {
 						short_channel_id: Some(path.hops[0].short_channel_id),
 						failed_within_blinded_path: false,
 						hold_times: Vec::new(),
-						#[cfg(any(test, feature = "_test_utils"))]
 						onion_error_code: Some(*failure_reason),
-						#[cfg(any(test, feature = "_test_utils"))]
 						onion_error_data: Some(data.clone()),
 						#[cfg(test)]
 						attribution_failed_channel: None,
