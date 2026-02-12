@@ -1112,11 +1112,12 @@ fn test_0conf_channel_reorg() {
 	let bs_chans = nodes[1].node.list_usable_channels();
 	let bs_chan = bs_chans.iter().find(|chan| chan.counterparty.node_id == node_c_id).unwrap();
 	let original_scid = bs_chan.short_channel_id.unwrap();
+	let outbound_scid = bs_chan.get_outbound_payment_scid().unwrap();
 	assert_eq!(nodes[2].node.list_usable_channels()[0].short_channel_id.unwrap(), original_scid);
 
 	let (mut route, payment_hash, payment_preimage, payment_secret) =
 		get_route_and_payment_hash!(nodes[1], nodes[2], 10_000);
-	assert_eq!(route.paths[0].hops[0].short_channel_id, original_scid);
+	assert_eq!(route.paths[0].hops[0].short_channel_id, outbound_scid);
 	send_along_route_with_secret(
 		&nodes[1],
 		route.clone(),
@@ -1285,12 +1286,21 @@ fn test_0conf_channel_reorg() {
 
 	let onion = RecipientOnionFields::secret_only(payment_secret);
 	let id = PaymentId([0; 32]);
-	nodes[1].node.send_payment_with_route(route, payment_hash, onion.clone(), id).unwrap();
+	// Use the original (real) SCID in the route to test that it no longer works after the
+	// channel announcement propagation delay.
+	let mut old_scid_route = route.clone();
+	old_scid_route.paths[0].hops[0].short_channel_id = original_scid;
+	nodes[1].node.send_payment_with_route(old_scid_route, payment_hash, onion.clone(), id).unwrap();
 	let mut conditions = PaymentFailedConditions::new();
 	conditions.reason = Some(PaymentFailureReason::RouteNotFound);
 	expect_payment_failed_conditions(&nodes[1], payment_hash, false, conditions);
 
-	nodes[0].node.send_payment_with_route(forwarded_route, payment_hash, onion, id).unwrap();
+	let mut old_scid_forwarded_route = forwarded_route.clone();
+	old_scid_forwarded_route.paths[0].hops[1].short_channel_id = original_scid;
+	nodes[0]
+		.node
+		.send_payment_with_route(old_scid_forwarded_route, payment_hash, onion, id)
+		.unwrap();
 	check_added_monitors(&nodes[0], 1);
 	let mut ev = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(ev.len(), 1);

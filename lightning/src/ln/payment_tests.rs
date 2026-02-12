@@ -247,12 +247,18 @@ fn mpp_retry_overpay() {
 		get_route_and_payment_hash!(nodes[0], nodes[3], payment_params, amt_msat, max_fee);
 
 	// Check we overpay on the second path which we're about to fail.
+	// Find which path goes through each node (paths may be in any order).
+	let (path_to_b_idx, path_to_c_idx) =
+		if route.paths[0].hops[0].pubkey == node_b_id { (0, 1) } else { (1, 0) };
+
 	assert_eq!(chan_1_update.contents.fee_proportional_millionths, 0);
-	let overpaid_amount_1 = route.paths[0].fee_msat() as u32 - chan_1_update.contents.fee_base_msat;
+	let overpaid_amount_1 =
+		route.paths[path_to_b_idx].fee_msat() as u32 - chan_1_update.contents.fee_base_msat;
 	assert_eq!(overpaid_amount_1, 0);
 
 	assert_eq!(chan_2_update.contents.fee_proportional_millionths, 0);
-	let overpaid_amount_2 = route.paths[1].fee_msat() as u32 - chan_2_update.contents.fee_base_msat;
+	let overpaid_amount_2 =
+		route.paths[path_to_c_idx].fee_msat() as u32 - chan_2_update.contents.fee_base_msat;
 
 	let total_overpaid_amount = overpaid_amount_1 + overpaid_amount_2;
 
@@ -301,11 +307,12 @@ fn mpp_retry_overpay() {
 	send_payment(&nodes[3], &[&nodes[2]], 38_000_000);
 
 	// Retry the second half of the payment and make sure it succeeds.
-	let first_path_value = route.paths[0].final_value_msat();
-	assert_eq!(first_path_value, 36_000_000);
+	// The path to node B (path_to_b_idx) succeeded with 36M; remove it so we retry only the C path.
+	let succeeded_path_value = route.paths[path_to_b_idx].final_value_msat();
+	assert_eq!(succeeded_path_value, 36_000_000);
 
-	route.paths.remove(0);
-	route_params.final_value_msat -= first_path_value;
+	route.paths.remove(path_to_b_idx);
+	route_params.final_value_msat -= succeeded_path_value;
 	let chan_4_scid = chan_4_update.contents.short_channel_id;
 	route_params.payment_params.previously_failed_channels.push(chan_4_scid);
 	// Check the remaining max total routing fee for the second attempt accounts only for 1_000 msat
@@ -1792,13 +1799,32 @@ fn preflight_probes_yield_event() {
 		.unwrap();
 
 	let recv_value = 50_000_000;
-	let route_params = RouteParameters::from_payment_params_and_value(payment_params, recv_value);
+	let route_params =
+		RouteParameters::from_payment_params_and_value(payment_params.clone(), recv_value);
+
+	// Compute the route first to determine path ordering (probe results follow route path order).
+	let node_0_id = nodes[0].node.get_our_node_id();
+	let node_1_id = nodes[1].node.get_our_node_id();
+	let usable_channels = nodes[0].node.list_usable_channels();
+	let first_hops = usable_channels.iter().collect::<Vec<_>>();
+	let inflight_htlcs = nodes[0].node.compute_inflight_htlcs();
+	let route = nodes[0]
+		.router
+		.router
+		.find_route(&node_0_id, &route_params, Some(&first_hops), inflight_htlcs)
+		.unwrap();
+
+	// Determine which path index goes to node 1 vs node 2
+	let (path_to_1_idx, path_to_2_idx) =
+		if route.paths[0].hops[0].pubkey == node_1_id { (0, 1) } else { (1, 0) };
+
 	let res = nodes[0].node.send_preflight_probes(route_params, None).unwrap();
+	assert_eq!(res.len(), 2);
 
-	let expected_route: &[(&[&Node], PaymentHash)] =
-		&[(&[&nodes[1], &nodes[3]], res[0].0), (&[&nodes[2], &nodes[3]], res[1].0)];
-
-	assert_eq!(res.len(), expected_route.len());
+	let expected_route: &[(&[&Node], PaymentHash)] = &[
+		(&[&nodes[1], &nodes[3]], res[path_to_1_idx].0),
+		(&[&nodes[2], &nodes[3]], res[path_to_2_idx].0),
+	];
 
 	send_probe_along_route(&nodes[0], expected_route);
 
@@ -2040,29 +2066,40 @@ fn test_trivial_inflight_htlc_tracking() {
 	// Send and claim the payment. Inflight HTLCs should be empty.
 	let (_, payment_hash, _, payment_id) = send_payment(&nodes[0], &[&nodes[1], &nodes[2]], 500000);
 	let inflight_htlcs = node_chanmgrs[0].compute_inflight_htlcs();
-	{
-		let mut per_peer_lock;
-		let mut peer_state_lock;
-		let channel_1 =
-			get_channel_ref!(&nodes[0], nodes[1], per_peer_lock, peer_state_lock, chan_1_id);
 
+	// Inflight HTLCs are tracked by the SCID used in routes:
+	// - First hop uses alias via get_outbound_payment_scid()
+	// - Subsequent hops use the real SCID from gossip/network graph
+	let chan_1_scid = nodes[0]
+		.node
+		.list_channels()
+		.iter()
+		.find(|c| c.channel_id == chan_1_id)
+		.unwrap()
+		.get_outbound_payment_scid()
+		.unwrap();
+	let chan_2_scid = nodes[1]
+		.node
+		.list_channels()
+		.iter()
+		.find(|c| c.channel_id == chan_2_id)
+		.unwrap()
+		.short_channel_id
+		.unwrap();
+
+	{
 		let chan_1_used_liquidity = inflight_htlcs.used_liquidity_msat(
 			&NodeId::from_pubkey(&node_a_id),
 			&NodeId::from_pubkey(&node_b_id),
-			channel_1.funding().get_short_channel_id().unwrap(),
+			chan_1_scid,
 		);
 		assert_eq!(chan_1_used_liquidity, None);
 	}
 	{
-		let mut per_peer_lock;
-		let mut peer_state_lock;
-		let channel_2 =
-			get_channel_ref!(&nodes[1], nodes[2], per_peer_lock, peer_state_lock, chan_2_id);
-
 		let chan_2_used_liquidity = inflight_htlcs.used_liquidity_msat(
 			&NodeId::from_pubkey(&node_b_id),
 			&NodeId::from_pubkey(&node_c_id),
-			channel_2.funding().get_short_channel_id().unwrap(),
+			chan_2_scid,
 		);
 
 		assert_eq!(chan_2_used_liquidity, None);
@@ -2082,29 +2119,19 @@ fn test_trivial_inflight_htlc_tracking() {
 		route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 500000);
 	let inflight_htlcs = node_chanmgrs[0].compute_inflight_htlcs();
 	{
-		let mut per_peer_lock;
-		let mut peer_state_lock;
-		let channel_1 =
-			get_channel_ref!(&nodes[0], nodes[1], per_peer_lock, peer_state_lock, chan_1_id);
-
 		let chan_1_used_liquidity = inflight_htlcs.used_liquidity_msat(
 			&NodeId::from_pubkey(&node_a_id),
 			&NodeId::from_pubkey(&node_b_id),
-			channel_1.funding().get_short_channel_id().unwrap(),
+			chan_1_scid,
 		);
 		// First hop accounts for expected 1000 msat fee
 		assert_eq!(chan_1_used_liquidity, Some(501000));
 	}
 	{
-		let mut per_peer_lock;
-		let mut peer_state_lock;
-		let channel_2 =
-			get_channel_ref!(&nodes[1], nodes[2], per_peer_lock, peer_state_lock, chan_2_id);
-
 		let chan_2_used_liquidity = inflight_htlcs.used_liquidity_msat(
 			&NodeId::from_pubkey(&node_b_id),
 			&NodeId::from_pubkey(&node_c_id),
-			channel_2.funding().get_short_channel_id().unwrap(),
+			chan_2_scid,
 		);
 
 		assert_eq!(chan_2_used_liquidity, Some(500000));
@@ -2124,28 +2151,18 @@ fn test_trivial_inflight_htlc_tracking() {
 
 	let inflight_htlcs = node_chanmgrs[0].compute_inflight_htlcs();
 	{
-		let mut per_peer_lock;
-		let mut peer_state_lock;
-		let channel_1 =
-			get_channel_ref!(&nodes[0], nodes[1], per_peer_lock, peer_state_lock, chan_1_id);
-
 		let chan_1_used_liquidity = inflight_htlcs.used_liquidity_msat(
 			&NodeId::from_pubkey(&node_a_id),
 			&NodeId::from_pubkey(&node_b_id),
-			channel_1.funding().get_short_channel_id().unwrap(),
+			chan_1_scid,
 		);
 		assert_eq!(chan_1_used_liquidity, None);
 	}
 	{
-		let mut per_peer_lock;
-		let mut peer_state_lock;
-		let channel_2 =
-			get_channel_ref!(&nodes[1], nodes[2], per_peer_lock, peer_state_lock, chan_2_id);
-
 		let chan_2_used_liquidity = inflight_htlcs.used_liquidity_msat(
 			&NodeId::from_pubkey(&node_b_id),
 			&NodeId::from_pubkey(&node_c_id),
-			channel_2.funding().get_short_channel_id().unwrap(),
+			chan_2_scid,
 		);
 		assert_eq!(chan_2_used_liquidity, None);
 	}
@@ -2187,15 +2204,16 @@ fn test_holding_cell_inflight_htlcs() {
 	let inflight_htlcs = node_chanmgrs[0].compute_inflight_htlcs();
 
 	{
-		let mut per_peer_lock;
-		let mut peer_state_lock;
-		let channel =
-			get_channel_ref!(&nodes[0], nodes[1], per_peer_lock, peer_state_lock, channel_id);
+		// Inflight HTLCs are tracked by the SCID used in routes, which is now the alias.
+		// Use the route's SCID (from get_outbound_payment_scid) to query inflight liquidity.
+		let chan_details =
+			nodes[0].node.list_channels().into_iter().find(|c| c.channel_id == channel_id).unwrap();
+		let route_scid = chan_details.get_outbound_payment_scid().unwrap();
 
 		let used_liquidity = inflight_htlcs.used_liquidity_msat(
 			&NodeId::from_pubkey(&node_a_id),
 			&NodeId::from_pubkey(&node_b_id),
-			channel.funding().get_short_channel_id().unwrap(),
+			route_scid,
 		);
 
 		assert_eq!(used_liquidity, Some(2000000));

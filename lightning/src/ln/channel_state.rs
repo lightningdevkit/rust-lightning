@@ -496,12 +496,12 @@ impl ChannelDetails {
 	/// This should be used in [`Route`]s to describe the first hop or in other contexts where
 	/// we're sending or forwarding a payment outbound over this channel.
 	///
-	/// This is either the [`ChannelDetails::short_channel_id`], if set, or the
-	/// [`ChannelDetails::outbound_scid_alias`]. See those for more information.
+	/// This is either the [`ChannelDetails::outbound_scid_alias`], if set, or the
+	/// [`ChannelDetails::short_channel_id`]. See those for more information.
 	///
 	/// [`Route`]: crate::routing::router::Route
 	pub fn get_outbound_payment_scid(&self) -> Option<u64> {
-		self.short_channel_id.or(self.outbound_scid_alias)
+		self.outbound_scid_alias.or(self.short_channel_id)
 	}
 
 	/// Gets the funding output for this channel, if available.
