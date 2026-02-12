@@ -16498,6 +16498,7 @@ pub fn provided_init_features(config: &UserConfig) -> InitFeatures {
 	features.set_simple_close_optional();
 	features.set_quiescence_optional();
 	features.set_splicing_optional();
+	features.set_zero_reserve_optional();
 
 	if config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx {
 		features.set_anchors_zero_fee_htlc_tx_optional();
