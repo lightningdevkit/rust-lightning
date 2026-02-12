@@ -2012,7 +2012,6 @@ pub(super) struct InteractiveTxConstructorArgs<'a, ES: EntropySource> {
 	pub counterparty_node_id: PublicKey,
 	pub channel_id: ChannelId,
 	pub feerate_sat_per_kw: u32,
-	pub is_initiator: bool,
 	pub funding_tx_locktime: AbsoluteLockTime,
 	pub inputs_to_contribute: Vec<FundingTxInput>,
 	pub shared_funding_input: Option<SharedOwnedInput>,
@@ -2023,18 +2022,15 @@ pub(super) struct InteractiveTxConstructorArgs<'a, ES: EntropySource> {
 impl InteractiveTxConstructor {
 	/// Instantiates a new `InteractiveTxConstructor`.
 	///
-	/// If the holder is the initiator, they need to send the first message which is a `TxAddInput`
-	/// message.
-	pub fn new<ES: EntropySource>(
-		args: InteractiveTxConstructorArgs<ES>,
-	) -> Result<Self, NegotiationError> {
+	/// Use [`Self::new_for_outbound`] or [`Self::new_for_inbound`] instead to also prepare the
+	/// first message for the initiator.
+	fn new<ES: EntropySource>(args: InteractiveTxConstructorArgs<ES>, is_initiator: bool) -> Self {
 		let InteractiveTxConstructorArgs {
 			entropy_source,
 			holder_node_id,
 			counterparty_node_id,
 			channel_id,
 			feerate_sat_per_kw,
-			is_initiator,
 			funding_tx_locktime,
 			inputs_to_contribute,
 			shared_funding_input,
@@ -2104,7 +2100,7 @@ impl InteractiveTxConstructor {
 		let next_input_index = (!inputs_to_contribute.is_empty()).then_some(0);
 		let next_output_index = (!outputs_to_contribute.is_empty()).then_some(0);
 
-		let mut constructor = Self {
+		Self {
 			state_machine,
 			is_initiator,
 			initiator_first_message: None,
@@ -2113,19 +2109,32 @@ impl InteractiveTxConstructor {
 			outputs_to_contribute,
 			next_input_index,
 			next_output_index,
-		};
-		// We'll store the first message for the initiator.
-		if is_initiator {
-			match constructor.maybe_send_message() {
-				Ok(message) => {
-					constructor.initiator_first_message = Some(message);
-				},
-				Err(reason) => {
-					return Err(constructor.into_negotiation_error(reason));
-				},
-			}
 		}
-		Ok(constructor)
+	}
+
+	/// Instantiates a new `InteractiveTxConstructor` for the initiator (outbound splice).
+	///
+	/// The initiator always has the shared funding output added internally, so preparing the
+	/// first message should never fail. Debug asserts verify this invariant.
+	pub fn new_for_outbound<ES: EntropySource>(args: InteractiveTxConstructorArgs<ES>) -> Self {
+		let mut constructor = Self::new(args, true);
+		match constructor.maybe_send_message() {
+			Ok(message) => constructor.initiator_first_message = Some(message),
+			Err(reason) => {
+				debug_assert!(
+					false,
+					"Outbound constructor should always have inputs: {:?}",
+					reason
+				);
+			},
+		}
+		constructor
+	}
+
+	/// Instantiates a new `InteractiveTxConstructor` for the non-initiator (inbound splice or
+	/// dual-funded channel acceptor).
+	pub fn new_for_inbound<ES: EntropySource>(args: InteractiveTxConstructorArgs<ES>) -> Self {
+		Self::new(args, false)
 	}
 
 	fn into_negotiation_error(self, reason: AbortReason) -> NegotiationError {
@@ -2428,84 +2437,62 @@ mod tests {
 			&SecretKey::from_slice(&[43; 32]).unwrap(),
 		);
 
-		let mut constructor_a = match InteractiveTxConstructor::new(InteractiveTxConstructorArgs {
-			entropy_source,
-			channel_id,
-			feerate_sat_per_kw: TEST_FEERATE_SATS_PER_KW,
-			holder_node_id,
-			counterparty_node_id,
-			is_initiator: true,
-			funding_tx_locktime,
-			inputs_to_contribute: session.inputs_a,
-			shared_funding_input: session.a_shared_input.map(|(op, prev_output, lo)| {
-				SharedOwnedInput::new(
-					TxIn {
-						previous_output: op,
-						sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
-						..Default::default()
-					},
-					prev_output,
-					lo,
-					true,                             // holder_sig_first
-					generate_funding_script_pubkey(), // witness_script for test
-				)
-			}),
-			shared_funding_output: SharedOwnedOutput::new(
-				session.shared_output_a.0,
-				session.shared_output_a.1,
-			),
-			outputs_to_contribute: session.outputs_a,
-		}) {
-			Ok(r) => Some(r),
-			Err(e) => {
-				assert_eq!(
-					Some((e.reason, ErrorCulprit::NodeA)),
-					session.expect_error,
-					"Test: {}",
-					session.description
-				);
-				return;
-			},
-		};
-		let mut constructor_b = match InteractiveTxConstructor::new(InteractiveTxConstructorArgs {
-			entropy_source,
-			holder_node_id,
-			counterparty_node_id,
-			channel_id,
-			feerate_sat_per_kw: TEST_FEERATE_SATS_PER_KW,
-			is_initiator: false,
-			funding_tx_locktime,
-			inputs_to_contribute: session.inputs_b,
-			shared_funding_input: session.b_shared_input.map(|(op, prev_output, lo)| {
-				SharedOwnedInput::new(
-					TxIn {
-						previous_output: op,
-						sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
-						..Default::default()
-					},
-					prev_output,
-					lo,
-					false,                            // holder_sig_first
-					generate_funding_script_pubkey(), // witness_script for test
-				)
-			}),
-			shared_funding_output: SharedOwnedOutput::new(
-				session.shared_output_b.0,
-				session.shared_output_b.1,
-			),
-			outputs_to_contribute: session.outputs_b,
-		}) {
-			Ok(r) => Some(r),
-			Err(e) => {
-				assert_eq!(
-					Some((e.reason, ErrorCulprit::NodeB)),
-					session.expect_error,
-					"Test: {}",
-					session.description
-				);
-				return;
-			},
-		};
+		let mut constructor_a =
+			Some(InteractiveTxConstructor::new_for_outbound(InteractiveTxConstructorArgs {
+				entropy_source,
+				channel_id,
+				feerate_sat_per_kw: TEST_FEERATE_SATS_PER_KW,
+				holder_node_id,
+				counterparty_node_id,
+				funding_tx_locktime,
+				inputs_to_contribute: session.inputs_a,
+				shared_funding_input: session.a_shared_input.map(|(op, prev_output, lo)| {
+					SharedOwnedInput::new(
+						TxIn {
+							previous_output: op,
+							sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+							..Default::default()
+						},
+						prev_output,
+						lo,
+						true,                             // holder_sig_first
+						generate_funding_script_pubkey(), // witness_script for test
+					)
+				}),
+				shared_funding_output: SharedOwnedOutput::new(
+					session.shared_output_a.0,
+					session.shared_output_a.1,
+				),
+				outputs_to_contribute: session.outputs_a,
+			}));
+		let mut constructor_b =
+			Some(InteractiveTxConstructor::new_for_inbound(InteractiveTxConstructorArgs {
+				entropy_source,
+				holder_node_id,
+				counterparty_node_id,
+				channel_id,
+				feerate_sat_per_kw: TEST_FEERATE_SATS_PER_KW,
+				funding_tx_locktime,
+				inputs_to_contribute: session.inputs_b,
+				shared_funding_input: session.b_shared_input.map(|(op, prev_output, lo)| {
+					SharedOwnedInput::new(
+						TxIn {
+							previous_output: op,
+							sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+							..Default::default()
+						},
+						prev_output,
+						lo,
+						false,                            // holder_sig_first
+						generate_funding_script_pubkey(), // witness_script for test
+					)
+				}),
+				shared_funding_output: SharedOwnedOutput::new(
+					session.shared_output_b.0,
+					session.shared_output_b.1,
+				),
+				outputs_to_contribute: session.outputs_b,
+			}));
 
 		let handle_message_send =
 			|msg: InteractiveTxMessageSend, for_constructor: &mut InteractiveTxConstructor| {
