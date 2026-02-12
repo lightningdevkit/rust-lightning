@@ -16616,7 +16616,7 @@ const MIN_SERIALIZATION_VERSION: u8 = 1;
 //
 // If 0.3 or 0.4 reads this manager version, it knows that the legacy maps were not written and
 // acts accordingly.
-const RECONSTRUCT_HTLCS_FROM_CHANS_VERSION: u8 = 5;
+const RECONSTRUCT_HTLCS_FROM_CHANS_VERSION: u8 = 2;
 
 impl_writeable_tlv_based!(PhantomRouteHints, {
 	(2, channels, required_vec),
