@@ -168,7 +168,8 @@ mod sealed {
 			// Byte 7
 			Trampoline | SimpleClose | SpliceProduction,
 			// Byte 8 - 16
-			,,,,,,,,,
+			ZeroReserve,
+			,,,,,,,,
 			// Byte 17
 			AnchorZeroFeeCommitmentsStaging,
 			// Byte 18
@@ -197,7 +198,8 @@ mod sealed {
 			// Byte 7
 			Trampoline | SimpleClose | SpliceProduction,
 			// Byte 8 - 16
-			,,,,,,,,,
+			ZeroReserve,
+			,,,,,,,,
 			// Byte 17
 			AnchorZeroFeeCommitmentsStaging,
 			// Byte 18
@@ -695,6 +697,17 @@ mod sealed {
 		clear_splicing_production,
 		supports_splicing_production,
 		requires_splicing_production
+	);
+	define_feature!(
+		65,
+		ZeroReserve,
+		[InitContext, NodeContext],
+		"Feature flags for zero reserve.",
+		set_zero_reserve_optional,
+		set_zero_reserve_required,
+		clear_zero_reserve,
+		supports_zero_reserve,
+		requires_zero_reserve
 	);
 	// By default, allocate enough bytes to cover up to Splice. Update this as new features are
 	// added which we expect to appear commonly across contexts.
