@@ -695,33 +695,24 @@ pub(super) fn decode_incoming_update_add_htlc_onion<NS: NodeSigner, L: Logger, T
 
 			Some(NextPacketDetails { next_packet_pubkey, outgoing_connector: HopConnector::Dummy, outgoing_amt_msat: amt_to_forward, outgoing_cltv_value })
 		}
-		onion_utils::Hop::TrampolineForward { next_trampoline_hop_data: msgs::InboundTrampolineForwardPayload { amt_to_forward, outgoing_cltv_value, next_trampoline }, trampoline_shared_secret, incoming_trampoline_public_key, .. } => {
+		onion_utils::Hop::TrampolineForward { next_trampoline_hop_data: msgs::InboundTrampolineForwardPayload { next_trampoline, .. }, ref outer_hop_data, trampoline_shared_secret, incoming_trampoline_public_key, .. } => {
 			let next_trampoline_packet_pubkey = onion_utils::next_hop_pubkey(secp_ctx,
 				incoming_trampoline_public_key, &trampoline_shared_secret.secret_bytes());
 			Some(NextPacketDetails {
 				next_packet_pubkey: next_trampoline_packet_pubkey,
 				outgoing_connector: HopConnector::Trampoline(next_trampoline),
-				outgoing_amt_msat: amt_to_forward,
-				outgoing_cltv_value,
+				outgoing_amt_msat: outer_hop_data.amt_to_forward,
+				outgoing_cltv_value: outer_hop_data.outgoing_cltv_value,
 			})
 		}
-		onion_utils::Hop::TrampolineBlindedForward { next_trampoline_hop_data: msgs::InboundTrampolineBlindedForwardPayload { next_trampoline, ref payment_relay, ref payment_constraints, ref features, .. }, outer_shared_secret, trampoline_shared_secret, incoming_trampoline_public_key, .. } => {
-			let (amt_to_forward, outgoing_cltv_value) = match check_blinded_forward(
-				msg.amount_msat, msg.cltv_expiry, &payment_relay, &payment_constraints, &features
-			) {
-				Ok((amt, cltv)) => (amt, cltv),
-				Err(()) => {
-					return encode_relay_error("Underflow calculating outbound amount or cltv value for blinded trampoline forward",
-						LocalHTLCFailureReason::InvalidOnionBlinding, outer_shared_secret.secret_bytes(), Some(trampoline_shared_secret.secret_bytes()), &[0; 32]);
-				}
-			};
+		onion_utils::Hop::TrampolineBlindedForward { next_trampoline_hop_data: msgs::InboundTrampolineBlindedForwardPayload { next_trampoline, .. }, ref outer_hop_data, trampoline_shared_secret, incoming_trampoline_public_key, .. } => {
 			let next_trampoline_packet_pubkey = onion_utils::next_hop_pubkey(secp_ctx,
 				incoming_trampoline_public_key, &trampoline_shared_secret.secret_bytes());
 			Some(NextPacketDetails {
 				next_packet_pubkey: next_trampoline_packet_pubkey,
 				outgoing_connector: HopConnector::Trampoline(next_trampoline),
-				outgoing_amt_msat: amt_to_forward,
-				outgoing_cltv_value,
+				outgoing_amt_msat: outer_hop_data.amt_to_forward,
+				outgoing_cltv_value: outer_hop_data.outgoing_cltv_value,
 			})
 		}
 		_ => None
