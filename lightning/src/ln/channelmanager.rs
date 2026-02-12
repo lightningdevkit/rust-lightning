@@ -5102,8 +5102,12 @@ impl<
 			};
 
 		let cur_height = self.best_block.read().unwrap().height + 1;
-		check_incoming_htlc_cltv(cur_height, next_hop.outgoing_cltv_value, msg.cltv_expiry)?;
-
+		check_incoming_htlc_cltv(
+			cur_height,
+			next_hop.outgoing_cltv_value,
+			msg.cltv_expiry,
+			MIN_CLTV_EXPIRY_DELTA.into(),
+		)?;
 		Ok(intercept)
 	}
 
