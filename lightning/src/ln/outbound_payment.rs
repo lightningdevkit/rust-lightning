@@ -2635,24 +2635,26 @@ impl OutboundPayments {
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
 		completion_action: &mut Option<PaymentCompleteUpdate>, logger: &WithContext<L>,
 	) {
-		#[cfg(any(test, feature = "_test_utils"))]
+		#[cfg(test)]
 		let DecodedOnionFailure {
 			network_update,
 			short_channel_id,
 			payment_failed_permanently,
-			onion_error_code,
-			onion_error_data,
 			failed_within_blinded_path,
 			hold_times,
+			onion_error_code: _onion_code,
+			onion_error_data: _onion_data,
 			..
 		} = onion_error.decode_onion_failure(secp_ctx, &logger, &source);
-		#[cfg(not(any(test, feature = "_test_utils")))]
+		#[cfg(not(test))]
 		let DecodedOnionFailure {
 			network_update,
 			short_channel_id,
 			payment_failed_permanently,
 			failed_within_blinded_path,
 			hold_times,
+			onion_error_code: _onion_code,
+			onion_error_data: _onion_data,
 			..
 		} = onion_error.decode_onion_failure(secp_ctx, &logger, &source);
 
@@ -2773,9 +2775,9 @@ impl OutboundPayments {
 					path: path.clone(),
 					short_channel_id,
 					#[cfg(any(test, feature = "_test_utils"))]
-					error_code: onion_error_code.map(|f| f.failure_code()),
+					error_code: _onion_code.map(|f| f.failure_code()),
 					#[cfg(any(test, feature = "_test_utils"))]
-					error_data: onion_error_data,
+					error_data: _onion_data,
 					hold_times,
 				}
 			}
