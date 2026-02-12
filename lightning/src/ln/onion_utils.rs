@@ -1794,7 +1794,7 @@ impl LocalHTLCFailureReason {
 	/// Returns true if the failure is only sent by the final recipient. Note that this function
 	/// only checks [`LocalHTLCFailureReason`] variants that represent bolt 04 errors directly,
 	/// as it's intended to analyze errors we've received as a sender.
-	fn is_recipient_failure(&self) -> bool {
+	pub(super) fn is_recipient_failure(&self) -> bool {
 		self.failure_code() == LocalHTLCFailureReason::IncorrectPaymentDetails.failure_code()
 			|| *self == LocalHTLCFailureReason::FinalIncorrectCLTVExpiry
 			|| *self == LocalHTLCFailureReason::FinalIncorrectHTLCAmount
