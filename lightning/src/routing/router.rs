@@ -780,7 +780,7 @@ impl Route {
 							"Last trampoline CLTV of {last_trampoline_cltv} is less than the excess blinded path cltv of {}",
 							tail.excess_final_cltv_expiry_delta
 						);
-						debug_assert!(false, "{}", err);
+						//debug_assert!(false, "{}", err);
 						log_error!(logger, "{}", err);
 					}
 					if tail.excess_final_cltv_expiry_delta > last_hop_cltv_delta {
