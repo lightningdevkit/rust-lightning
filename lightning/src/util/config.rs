@@ -10,7 +10,6 @@
 //! Various user-configurable channel limits and settings which ChannelManager
 //! applies for you.
 
-use crate::ln::channel::MAX_FUNDING_SATOSHIS_NO_WUMBO;
 use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, MAX_LOCAL_BREAKDOWN_TIMEOUT};
 
 #[cfg(fuzzing)]
@@ -300,11 +299,6 @@ pub struct ChannelHandshakeLimits {
 	/// Default value: `1000`
 	/// (Minimum of [`ChannelHandshakeConfig::their_channel_reserve_proportional_millionths`])
 	pub min_funding_satoshis: u64,
-	/// Maximum allowed satoshis when a channel is funded. This is supplied by the sender and so
-	/// only applies to inbound channels.
-	///
-	/// Default value: `2^24 - 1`
-	pub max_funding_satoshis: u64,
 	/// The remote node sets a limit on the minimum size of HTLCs we can send to them. This allows
 	/// you to limit the maximum minimum-size they can require.
 	///
@@ -374,7 +368,6 @@ impl Default for ChannelHandshakeLimits {
 	fn default() -> Self {
 		ChannelHandshakeLimits {
 			min_funding_satoshis: 1000,
-			max_funding_satoshis: MAX_FUNDING_SATOSHIS_NO_WUMBO,
 			max_htlc_minimum_msat: u64::MAX,
 			min_max_htlc_value_in_flight_msat: 0,
 			max_channel_reserve_satoshis: u64::MAX,
@@ -395,7 +388,6 @@ impl Readable for ChannelHandshakeLimits {
 	fn read<R: crate::io::Read>(reader: &mut R) -> Result<Self, crate::ln::msgs::DecodeError> {
 		Ok(Self {
 			min_funding_satoshis: Readable::read(reader)?,
-			max_funding_satoshis: Readable::read(reader)?,
 			max_htlc_minimum_msat: Readable::read(reader)?,
 			min_max_htlc_value_in_flight_msat: Readable::read(reader)?,
 			max_channel_reserve_satoshis: Readable::read(reader)?,

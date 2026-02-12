@@ -457,8 +457,7 @@ fn test_channel_resumption_fail_post_funding() {
 pub fn test_insane_channel_opens() {
 	// Stand up a network of 2 nodes
 	use crate::ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS;
-	let mut legacy_cfg = test_legacy_channel_config();
-	legacy_cfg.channel_handshake_limits.max_funding_satoshis = TOTAL_BITCOIN_SUPPLY_SATOSHIS + 1;
+	let legacy_cfg = test_legacy_channel_config();
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(legacy_cfg.clone())]);
@@ -524,19 +523,6 @@ pub fn test_insane_channel_opens() {
 
 	use crate::ln::channelmanager::MAX_LOCAL_BREAKDOWN_TIMEOUT;
 
-	// Test all mutations that would make the channel open message insane
-	insane_open_helper(
-		format!(
-			"Per our config, funding must be at most {}. It was {}",
-			TOTAL_BITCOIN_SUPPLY_SATOSHIS + 1,
-			TOTAL_BITCOIN_SUPPLY_SATOSHIS + 2
-		)
-		.as_str(),
-		|mut msg| {
-			msg.common_fields.funding_satoshis = TOTAL_BITCOIN_SUPPLY_SATOSHIS + 2;
-			msg
-		},
-	);
 	insane_open_helper(
 		format!(
 			"Funding must be smaller than the total bitcoin supply. It was {}",
