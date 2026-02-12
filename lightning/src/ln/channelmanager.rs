@@ -2935,6 +2935,23 @@ impl<'a> PersistenceNotifierGuard<'a, fn() -> NotifyOption> {
 		Self::optionally_notify(cm, || -> NotifyOption { NotifyOption::DoPersist })
 	}
 
+	fn manually_notify<F: FnOnce(), C: AChannelManager>(
+		cm: &'a C, f: F,
+	) -> PersistenceNotifierGuard<'a, impl FnOnce() -> NotifyOption> {
+		let read_guard = cm.get_cm().total_consistency_lock.read().unwrap();
+		let force_notify = cm.get_cm().process_background_events();
+
+		PersistenceNotifierGuard {
+			event_persist_notifier: &cm.get_cm().event_persist_notifier,
+			needs_persist_flag: &cm.get_cm().needs_persist_flag,
+			should_persist: Some(move || {
+				f();
+				force_notify
+			}),
+			_read_guard: read_guard,
+		}
+	}
+
 	fn optionally_notify<F: FnOnce() -> NotifyOption, C: AChannelManager>(
 		cm: &'a C, persist_check: F,
 	) -> PersistenceNotifierGuard<'a, impl FnOnce() -> NotifyOption> {
@@ -11336,7 +11353,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	>(
 		&self, counterparty_node_id: &PublicKey, channel_id: ChannelId,
 		tx_msg_handler: HandleTxMsgFn,
-	) -> Result<NotifyOption, MsgHandleErrInternal> {
+	) -> Result<(), MsgHandleErrInternal> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
 			debug_assert!(false);
@@ -11351,7 +11368,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					Ok(msg_send) => {
 						let msg_send_event = msg_send.into_msg_send_event(*counterparty_node_id);
 						peer_state.pending_msg_events.push(msg_send_event);
-						Ok(NotifyOption::SkipPersistHandleEvents)
+						Ok(())
 					},
 					Err(InteractiveTxMsgError {
 						err,
@@ -11389,7 +11406,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 	fn internal_tx_add_input(
 		&self, counterparty_node_id: PublicKey, msg: &msgs::TxAddInput,
-	) -> Result<NotifyOption, MsgHandleErrInternal> {
+	) -> Result<(), MsgHandleErrInternal> {
 		self.internal_tx_msg(&counterparty_node_id, msg.channel_id, |channel: &mut Channel<SP>| {
 			channel.tx_add_input(msg, &self.logger)
 		})
@@ -11397,7 +11414,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 	fn internal_tx_add_output(
 		&self, counterparty_node_id: PublicKey, msg: &msgs::TxAddOutput,
-	) -> Result<NotifyOption, MsgHandleErrInternal> {
+	) -> Result<(), MsgHandleErrInternal> {
 		self.internal_tx_msg(&counterparty_node_id, msg.channel_id, |channel: &mut Channel<SP>| {
 			channel.tx_add_output(msg, &self.logger)
 		})
@@ -11405,7 +11422,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 	fn internal_tx_remove_input(
 		&self, counterparty_node_id: PublicKey, msg: &msgs::TxRemoveInput,
-	) -> Result<NotifyOption, MsgHandleErrInternal> {
+	) -> Result<(), MsgHandleErrInternal> {
 		self.internal_tx_msg(&counterparty_node_id, msg.channel_id, |channel: &mut Channel<SP>| {
 			channel.tx_remove_input(msg, &self.logger)
 		})
@@ -11413,7 +11430,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 	fn internal_tx_remove_output(
 		&self, counterparty_node_id: PublicKey, msg: &msgs::TxRemoveOutput,
-	) -> Result<NotifyOption, MsgHandleErrInternal> {
+	) -> Result<(), MsgHandleErrInternal> {
 		self.internal_tx_msg(&counterparty_node_id, msg.channel_id, |channel: &mut Channel<SP>| {
 			channel.tx_remove_output(msg, &self.logger)
 		})
@@ -11421,7 +11438,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 	fn internal_tx_complete(
 		&self, counterparty_node_id: PublicKey, msg: &msgs::TxComplete,
-	) -> Result<NotifyOption, MsgHandleErrInternal> {
+	) -> Result<(), MsgHandleErrInternal> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(&counterparty_node_id).ok_or_else(|| {
 			debug_assert!(false);
@@ -11434,15 +11451,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				let chan = chan_entry.get_mut();
 				match chan.tx_complete(msg, &self.fee_estimator, &self.logger) {
 					Ok(tx_complete_result) => {
-						let mut persist = NotifyOption::SkipPersistNoEvents;
-
 						if let Some(interactive_tx_msg_send) =
 							tx_complete_result.interactive_tx_msg_send
 						{
 							let msg_send_event =
 								interactive_tx_msg_send.into_msg_send_event(counterparty_node_id);
 							peer_state.pending_msg_events.push(msg_send_event);
-							persist = NotifyOption::SkipPersistHandleEvents;
 						};
 
 						if let Some(unsigned_transaction) = tx_complete_result.event_unsigned_tx {
@@ -11456,7 +11470,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								None,
 							));
 							// We have a successful signing session that we need to persist.
-							persist = NotifyOption::DoPersist;
+							self.needs_persist_flag.store(true, Ordering::Release);
+							self.event_persist_notifier.notify()
 						}
 
 						if let Some(FundingTxSigned {
@@ -11501,10 +11516,11 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							}
 
 							// We have a successful signing session that we need to persist.
-							persist = NotifyOption::DoPersist;
+							self.needs_persist_flag.store(true, Ordering::Release);
+							self.event_persist_notifier.notify()
 						}
 
-						Ok(persist)
+						Ok(())
 					},
 					Err(InteractiveTxMsgError {
 						err,
@@ -16182,62 +16198,47 @@ impl<
 	}
 
 	fn handle_tx_add_input(&self, counterparty_node_id: PublicKey, msg: &msgs::TxAddInput) {
-		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
+		let _persistence_guard = PersistenceNotifierGuard::manually_notify(self, || {
 			let res = self.internal_tx_add_input(counterparty_node_id, msg);
-			let persist = match &res {
-				Err(_) => NotifyOption::DoPersist,
-				Ok(persist) => *persist,
-			};
+			debug_assert!(res.as_ref().err().map_or(true, |err| !err.closes_channel()));
 			let _ = self.handle_error(res, counterparty_node_id);
-			persist
+			self.event_persist_notifier.notify();
 		});
 	}
 
 	fn handle_tx_add_output(&self, counterparty_node_id: PublicKey, msg: &msgs::TxAddOutput) {
-		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
+		let _persistence_guard = PersistenceNotifierGuard::manually_notify(self, || {
 			let res = self.internal_tx_add_output(counterparty_node_id, msg);
-			let persist = match &res {
-				Err(_) => NotifyOption::DoPersist,
-				Ok(persist) => *persist,
-			};
+			debug_assert!(res.as_ref().err().map_or(true, |err| !err.closes_channel()));
 			let _ = self.handle_error(res, counterparty_node_id);
-			persist
+			self.event_persist_notifier.notify();
 		});
 	}
 
 	fn handle_tx_remove_input(&self, counterparty_node_id: PublicKey, msg: &msgs::TxRemoveInput) {
-		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
+		let _persistence_guard = PersistenceNotifierGuard::manually_notify(self, || {
 			let res = self.internal_tx_remove_input(counterparty_node_id, msg);
-			let persist = match &res {
-				Err(_) => NotifyOption::DoPersist,
-				Ok(persist) => *persist,
-			};
+			debug_assert!(res.as_ref().err().map_or(true, |err| !err.closes_channel()));
 			let _ = self.handle_error(res, counterparty_node_id);
-			persist
+			self.event_persist_notifier.notify();
 		});
 	}
 
 	fn handle_tx_remove_output(&self, counterparty_node_id: PublicKey, msg: &msgs::TxRemoveOutput) {
-		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
+		let _persistence_guard = PersistenceNotifierGuard::manually_notify(self, || {
 			let res = self.internal_tx_remove_output(counterparty_node_id, msg);
-			let persist = match &res {
-				Err(_) => NotifyOption::DoPersist,
-				Ok(persist) => *persist,
-			};
+			debug_assert!(res.as_ref().err().map_or(true, |err| !err.closes_channel()));
 			let _ = self.handle_error(res, counterparty_node_id);
-			persist
+			self.event_persist_notifier.notify();
 		});
 	}
 
 	fn handle_tx_complete(&self, counterparty_node_id: PublicKey, msg: &msgs::TxComplete) {
-		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
+		let _persistence_guard = PersistenceNotifierGuard::manually_notify(self, || {
 			let res = self.internal_tx_complete(counterparty_node_id, msg);
-			let persist = match &res {
-				Err(_) => NotifyOption::DoPersist,
-				Ok(persist) => *persist,
-			};
+			debug_assert!(res.as_ref().err().map_or(true, |err| !err.closes_channel()));
 			let _ = self.handle_error(res, counterparty_node_id);
-			persist
+			self.event_persist_notifier.notify();
 		});
 	}
 
