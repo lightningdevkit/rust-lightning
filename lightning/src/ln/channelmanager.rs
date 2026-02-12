@@ -957,7 +957,8 @@ impl MsgHandleErrInternal {
 		}
 	}
 
-	fn no_such_peer(counterparty_node_id: &PublicKey, channel_id: ChannelId) -> Self {
+	fn unreachable_no_such_peer(counterparty_node_id: &PublicKey, channel_id: ChannelId) -> Self {
+		debug_assert!(false);
 		let err =
 			format!("No such peer for the passed counterparty_node_id {counterparty_node_id}");
 		Self::send_err_msg_no_close(err, channel_id)
@@ -10950,8 +10951,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
-			debug_assert!(false);
-			MsgHandleErrInternal::no_such_peer(
+			MsgHandleErrInternal::unreachable_no_such_peer(
 				counterparty_node_id,
 				common_fields.temporary_channel_id,
 			)
@@ -11021,11 +11021,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		// likely to be lost on restart!
 		let (value, output_script, user_id) = {
 			let per_peer_state = self.per_peer_state.read().unwrap();
-			let peer_state_mutex = per_peer_state.get(counterparty_node_id)
-				.ok_or_else(|| {
-					debug_assert!(false);
-					MsgHandleErrInternal::no_such_peer(counterparty_node_id, msg.common_fields.temporary_channel_id)
-				})?;
+			let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
+				MsgHandleErrInternal::unreachable_no_such_peer(
+					counterparty_node_id,
+					msg.common_fields.temporary_channel_id,
+				)
+			})?;
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
 			match peer_state.channel_by_id.entry(msg.common_fields.temporary_channel_id) {
@@ -11066,8 +11067,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
-			debug_assert!(false);
-			MsgHandleErrInternal::no_such_peer(counterparty_node_id, msg.temporary_channel_id)
+			MsgHandleErrInternal::unreachable_no_such_peer(
+				counterparty_node_id,
+				msg.temporary_channel_id,
+			)
 		})?;
 
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
@@ -11261,11 +11264,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	#[rustfmt::skip]
 	fn internal_peer_storage(&self, counterparty_node_id: PublicKey, msg: msgs::PeerStorage) -> Result<(), MsgHandleErrInternal> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
-		let peer_state_mutex = per_peer_state.get(&counterparty_node_id)
-			.ok_or_else(|| {
-				debug_assert!(false);
-				MsgHandleErrInternal::no_such_peer(&counterparty_node_id, ChannelId([0; 32]))
-			})?;
+		let peer_state_mutex = per_peer_state.get(&counterparty_node_id).ok_or_else(|| {
+			MsgHandleErrInternal::unreachable_no_such_peer(&counterparty_node_id, ChannelId([0; 32]))
+		})?;
 
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
@@ -11299,11 +11300,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	fn internal_funding_signed(&self, counterparty_node_id: &PublicKey, msg: &msgs::FundingSigned) -> Result<(), MsgHandleErrInternal> {
 		let best_block = *self.best_block.read().unwrap();
 		let per_peer_state = self.per_peer_state.read().unwrap();
-		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
-			.ok_or_else(|| {
-				debug_assert!(false);
-				MsgHandleErrInternal::no_such_peer(counterparty_node_id, msg.channel_id)
-			})?;
+		let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
+			MsgHandleErrInternal::unreachable_no_such_peer(counterparty_node_id, msg.channel_id)
+		})?;
 
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
@@ -11356,8 +11355,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	) -> Result<(), MsgHandleErrInternal> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
-			debug_assert!(false);
-			MsgHandleErrInternal::no_such_peer(counterparty_node_id, channel_id)
+			MsgHandleErrInternal::unreachable_no_such_peer(counterparty_node_id, channel_id)
 		})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
@@ -11441,8 +11439,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	) -> Result<(), MsgHandleErrInternal> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(&counterparty_node_id).ok_or_else(|| {
-			debug_assert!(false);
-			MsgHandleErrInternal::no_such_peer(&counterparty_node_id, msg.channel_id)
+			MsgHandleErrInternal::unreachable_no_such_peer(&counterparty_node_id, msg.channel_id)
 		})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
@@ -11562,8 +11559,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let (result, holding_cell_res) = {
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
-				debug_assert!(false);
-				MsgHandleErrInternal::no_such_peer(counterparty_node_id, msg.channel_id)
+				MsgHandleErrInternal::unreachable_no_such_peer(counterparty_node_id, msg.channel_id)
 			})?;
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
@@ -11667,8 +11663,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let (result, holding_cell_res) = {
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
-				debug_assert!(false);
-				MsgHandleErrInternal::no_such_peer(counterparty_node_id, msg.channel_id)
+				MsgHandleErrInternal::unreachable_no_such_peer(counterparty_node_id, msg.channel_id)
 			})?;
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
@@ -11733,11 +11728,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		// Note that the ChannelManager is NOT re-persisted on disk after this (unless we error
 		// closing a channel), so any changes are likely to be lost on restart!
 		let per_peer_state = self.per_peer_state.read().unwrap();
-		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
-			.ok_or_else(|| {
-				debug_assert!(false);
-				MsgHandleErrInternal::no_such_peer(counterparty_node_id, msg.channel_id)
-			})?;
+		let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
+			MsgHandleErrInternal::unreachable_no_such_peer(counterparty_node_id, msg.channel_id)
+		})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 		match peer_state.channel_by_id.entry(msg.channel_id) {
@@ -11799,8 +11792,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		{
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
-				debug_assert!(false);
-				MsgHandleErrInternal::no_such_peer(counterparty_node_id, msg.channel_id)
+				MsgHandleErrInternal::unreachable_no_such_peer(counterparty_node_id, msg.channel_id)
 			})?;
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
@@ -11903,8 +11895,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	) -> Result<(), MsgHandleErrInternal> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
-			debug_assert!(false);
-			MsgHandleErrInternal::no_such_peer(counterparty_node_id, msg.channel_id)
+			MsgHandleErrInternal::unreachable_no_such_peer(counterparty_node_id, msg.channel_id)
 		})?;
 		let logger;
 		let tx_err: Option<(_, Result<Infallible, _>)> = {
@@ -12006,11 +11997,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		// closing a channel), so any changes are likely to be lost on restart!
 
 		let per_peer_state = self.per_peer_state.read().unwrap();
-		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
-			.ok_or_else(|| {
-				debug_assert!(false);
-				MsgHandleErrInternal::no_such_peer(counterparty_node_id, msg.channel_id)
-			})?;
+		let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
+			MsgHandleErrInternal::unreachable_no_such_peer(counterparty_node_id, msg.channel_id)
+		})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 		match peer_state.channel_by_id.entry(msg.channel_id) {
@@ -12035,8 +12024,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let (htlc_source, forwarded_htlc_value, skimmed_fee_msat, send_timestamp) = {
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
-				debug_assert!(false);
-				MsgHandleErrInternal::no_such_peer(counterparty_node_id, msg.channel_id)
+				MsgHandleErrInternal::unreachable_no_such_peer(counterparty_node_id, msg.channel_id)
 			})?;
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
@@ -12117,11 +12105,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		// Note that the ChannelManager is NOT re-persisted on disk after this (unless we error
 		// closing a channel), so any changes are likely to be lost on restart!
 		let per_peer_state = self.per_peer_state.read().unwrap();
-		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
-			.ok_or_else(|| {
-				debug_assert!(false);
-				MsgHandleErrInternal::no_such_peer(counterparty_node_id, msg.channel_id)
-			})?;
+		let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
+			MsgHandleErrInternal::unreachable_no_such_peer(counterparty_node_id, msg.channel_id)
+		})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 		match peer_state.channel_by_id.entry(msg.channel_id) {
@@ -12143,11 +12129,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		// Note that the ChannelManager is NOT re-persisted on disk after this (unless we error
 		// closing a channel), so any changes are likely to be lost on restart!
 		let per_peer_state = self.per_peer_state.read().unwrap();
-		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
-			.ok_or_else(|| {
-				debug_assert!(false);
-				MsgHandleErrInternal::no_such_peer(counterparty_node_id, msg.channel_id)
-			})?;
+		let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
+			MsgHandleErrInternal::unreachable_no_such_peer(counterparty_node_id, msg.channel_id)
+		})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 		match peer_state.channel_by_id.entry(msg.channel_id) {
@@ -12174,8 +12158,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let best_block = *self.best_block.read().unwrap();
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
-			debug_assert!(false);
-			MsgHandleErrInternal::no_such_peer(counterparty_node_id, msg.channel_id)
+			MsgHandleErrInternal::unreachable_no_such_peer(counterparty_node_id, msg.channel_id)
 		})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
@@ -12251,11 +12234,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	#[rustfmt::skip]
 	fn internal_commitment_signed_batch(&self, counterparty_node_id: &PublicKey, channel_id: ChannelId, batch: Vec<msgs::CommitmentSigned>) -> Result<(), MsgHandleErrInternal> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
-		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
-			.ok_or_else(|| {
-				debug_assert!(false);
-				MsgHandleErrInternal::no_such_peer(counterparty_node_id, channel_id)
-			})?;
+		let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
+			MsgHandleErrInternal::unreachable_no_such_peer(counterparty_node_id, channel_id)
+		})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 		match peer_state.channel_by_id.entry(channel_id) {
@@ -12393,11 +12374,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	fn internal_revoke_and_ack(&self, counterparty_node_id: &PublicKey, msg: &msgs::RevokeAndACK) -> Result<(), MsgHandleErrInternal> {
 		let (htlcs_to_fail, static_invoices) = {
 			let per_peer_state = self.per_peer_state.read().unwrap();
-			let mut peer_state_lock = per_peer_state.get(counterparty_node_id)
-				.ok_or_else(|| {
-					debug_assert!(false);
-					MsgHandleErrInternal::no_such_peer(counterparty_node_id, msg.channel_id)
-				}).map(|mtx| mtx.lock().unwrap())?;
+			let mut peer_state_lock = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
+				MsgHandleErrInternal::unreachable_no_such_peer(counterparty_node_id, msg.channel_id)
+			}).map(|mtx| mtx.lock().unwrap())?;
 			let peer_state = &mut *peer_state_lock;
 			match peer_state.channel_by_id.entry(msg.channel_id) {
 				hash_map::Entry::Occupied(mut chan_entry) => {
@@ -12446,11 +12425,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	#[rustfmt::skip]
 	fn internal_update_fee(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateFee) -> Result<(), MsgHandleErrInternal> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
-		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
-			.ok_or_else(|| {
-				debug_assert!(false);
-				MsgHandleErrInternal::no_such_peer(counterparty_node_id, msg.channel_id)
-			})?;
+		let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
+			MsgHandleErrInternal::unreachable_no_such_peer(counterparty_node_id, msg.channel_id)
+		})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 		match peer_state.channel_by_id.entry(msg.channel_id) {
@@ -12472,9 +12449,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	fn internal_stfu(&self, counterparty_node_id: &PublicKey, msg: &msgs::Stfu) -> Result<bool, MsgHandleErrInternal> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
-			debug_assert!(false);
-			MsgHandleErrInternal::no_such_peer(counterparty_node_id, msg.channel_id
-			)
+			MsgHandleErrInternal::unreachable_no_such_peer(counterparty_node_id, msg.channel_id)
 		})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
@@ -12527,11 +12502,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	#[rustfmt::skip]
 	fn internal_announcement_signatures(&self, counterparty_node_id: &PublicKey, msg: &msgs::AnnouncementSignatures) -> Result<(), MsgHandleErrInternal> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
-		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
-			.ok_or_else(|| {
-				debug_assert!(false);
-				MsgHandleErrInternal::no_such_peer(counterparty_node_id, msg.channel_id)
-			})?;
+		let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
+			MsgHandleErrInternal::unreachable_no_such_peer(counterparty_node_id, msg.channel_id)
+		})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 		match peer_state.channel_by_id.entry(msg.channel_id) {
@@ -12626,12 +12599,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let (inferred_splice_locked, need_lnd_workaround, holding_cell_res) = {
 			let per_peer_state = self.per_peer_state.read().unwrap();
 
-			let peer_state_mutex = per_peer_state.get(counterparty_node_id)
-				.ok_or_else(|| {
-					debug_assert!(false);
-					MsgHandleErrInternal::no_such_peer(counterparty_node_id, msg.channel_id
-					)
-				})?;
+			let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
+				MsgHandleErrInternal::unreachable_no_such_peer(counterparty_node_id, msg.channel_id)
+			})?;
 			let logger = WithContext::from(&self.logger, Some(*counterparty_node_id), Some(msg.channel_id), None);
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
@@ -12743,8 +12713,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	) -> Result<(), MsgHandleErrInternal> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
-			debug_assert!(false);
-			MsgHandleErrInternal::no_such_peer(counterparty_node_id, msg.channel_id)
+			MsgHandleErrInternal::unreachable_no_such_peer(counterparty_node_id, msg.channel_id)
 		})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
@@ -12801,8 +12770,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	) -> Result<(), MsgHandleErrInternal> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
-			debug_assert!(false);
-			MsgHandleErrInternal::no_such_peer(counterparty_node_id, msg.channel_id)
+			MsgHandleErrInternal::unreachable_no_such_peer(counterparty_node_id, msg.channel_id)
 		})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
@@ -12847,8 +12815,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	) -> Result<(), MsgHandleErrInternal> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
-			debug_assert!(false);
-			MsgHandleErrInternal::no_such_peer(counterparty_node_id, msg.channel_id)
+			MsgHandleErrInternal::unreachable_no_such_peer(counterparty_node_id, msg.channel_id)
 		})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
