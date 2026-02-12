@@ -14085,7 +14085,9 @@ impl<
 					short_channel_id: peer_chans
 						.iter()
 						.filter(|chan| chan.is_usable)
-						.min_by_key(|chan| chan.short_channel_id)
+						// Select the channel which has the highest local balance. We assume this
+						// channel is the most likely to stick around.
+						.max_by_key(|chan| chan.inbound_capacity_msat)
 						.and_then(|chan| chan.get_inbound_payment_scid()),
 				})
 			}
@@ -14108,7 +14110,9 @@ impl<
 					.iter()
 					.filter(|(_, channel)| channel.context().is_usable())
 					.filter_map(|(_, channel)| channel.as_funded())
-					.min_by_key(|funded_channel| funded_channel.context.channel_creation_height)
+					// Select the channel which has the highest local balance. We assume this
+					// channel is the most likely to stick around.
+					.max_by_key(|funded_channel| funded_channel.funding.get_value_to_self_msat())
 					.and_then(|funded_channel| funded_channel.get_inbound_scid()),
 			})
 			.collect::<Vec<_>>()
