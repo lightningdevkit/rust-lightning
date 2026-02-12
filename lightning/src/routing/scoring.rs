@@ -483,16 +483,16 @@ pub struct ProbabilisticScorer<G: Deref<Target = NetworkGraph<L>>, L: Logger> {
 	decay_params: ProbabilisticScoringDecayParameters,
 	network_graph: G,
 	logger: L,
-	channel_liquidities: ChannelLiquidities,
+	channel_liquidities: ChannelLiquiditiesX,
 	/// The last time we were given via a [`ScoreUpdate`] method. This does not imply that we've
 	/// decayed every liquidity bound up to that time.
 	last_update_time: Duration,
 }
 /// Container for live and historical liquidity bounds for each channel.
 #[derive(Clone)]
-pub struct ChannelLiquidities(HashMap<u64, ChannelLiquidity>);
+pub struct ChannelLiquiditiesX(HashMap<u64, ChannelLiquidity>);
 
-impl ChannelLiquidities {
+impl ChannelLiquiditiesX {
 	fn new() -> Self {
 		Self(new_hash_map())
 	}
@@ -551,18 +551,18 @@ impl ChannelLiquidities {
 	}
 }
 
-impl Readable for ChannelLiquidities {
+impl Readable for ChannelLiquiditiesX {
 	#[inline]
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let mut channel_liquidities = new_hash_map();
 		read_tlv_fields!(r, {
 			(0, channel_liquidities, required),
 		});
-		Ok(ChannelLiquidities(channel_liquidities))
+		Ok(ChannelLiquiditiesX(channel_liquidities))
 	}
 }
 
-impl Writeable for ChannelLiquidities {
+impl Writeable for ChannelLiquiditiesX {
 	#[inline]
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		write_tlv_fields!(w, {
@@ -971,7 +971,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Logger> ProbabilisticScorer<G, L> {
 			decay_params,
 			network_graph,
 			logger,
-			channel_liquidities: ChannelLiquidities::new(),
+			channel_liquidities: ChannelLiquiditiesX::new(),
 			last_update_time: Duration::from_secs(0),
 		}
 	}
@@ -1193,12 +1193,12 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Logger> ProbabilisticScorer<G, L> {
 	}
 
 	/// Overwrite the scorer state with the given external scores.
-	pub fn set_scores(&mut self, external_scores: ChannelLiquidities) {
+	pub fn set_scores(&mut self, external_scores: ChannelLiquiditiesX) {
 		_ = mem::replace(&mut self.channel_liquidities, external_scores);
 	}
 
 	/// Returns the current scores.
-	pub fn scores(&self) -> &ChannelLiquidities {
+	pub fn scores(&self) -> &ChannelLiquiditiesX {
 		&self.channel_liquidities
 	}
 }
@@ -1848,7 +1848,7 @@ impl<G: Deref<Target = NetworkGraph<L>> + Clone, L: Logger + Clone> CombinedScor
 
 	/// Merge external channel liquidity information into the scorer.
 	pub fn merge(
-		&mut self, mut external_scores: ChannelLiquidities, duration_since_epoch: Duration,
+		&mut self, mut external_scores: ChannelLiquiditiesX, duration_since_epoch: Duration,
 	) {
 		// Decay both sets of scores to make them comparable and mergeable.
 		self.local_only_scorer.time_passed(duration_since_epoch);
@@ -1866,7 +1866,7 @@ impl<G: Deref<Target = NetworkGraph<L>> + Clone, L: Logger + Clone> CombinedScor
 	}
 
 	/// Overwrite the scorer state with the given external scores.
-	pub fn set_scores(&mut self, external_scores: ChannelLiquidities) {
+	pub fn set_scores(&mut self, external_scores: ChannelLiquiditiesX) {
 		self.scorer.set_scores(external_scores);
 	}
 }
@@ -2506,7 +2506,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Logger>
 		r: &mut R, args: (ProbabilisticScoringDecayParameters, G, L)
 	) -> Result<Self, DecodeError> {
 		let (decay_params, network_graph, logger) = args;
-		let channel_liquidities = ChannelLiquidities::read(r)?;
+		let channel_liquidities = ChannelLiquiditiesX::read(r)?;
 		let mut last_update_time = Duration::from_secs(0);
 		for (_, liq) in channel_liquidities.0.iter() {
 			last_update_time = cmp::max(last_update_time, liq.last_updated);
@@ -2609,7 +2609,7 @@ mod tests {
 		BlindedTail, CandidateRouteHop, Path, PublicHopCandidate, RouteHop,
 	};
 	use crate::routing::scoring::{
-		ChannelLiquidities, ChannelUsage, CombinedScorer, ScoreLookUp, ScoreUpdate,
+		ChannelLiquiditiesX, ChannelUsage, CombinedScorer, ScoreLookUp, ScoreUpdate,
 	};
 	use crate::util::ser::{ReadableArgs, Writeable};
 	use crate::util::test_utils::{self, TestLogger};
@@ -4214,7 +4214,7 @@ mod tests {
 			logger_rc.as_ref(),
 		);
 
-		let mut external_scores = ChannelLiquidities::new();
+		let mut external_scores = ChannelLiquiditiesX::new();
 		external_scores.insert(42, external_liquidity);
 
 		{
