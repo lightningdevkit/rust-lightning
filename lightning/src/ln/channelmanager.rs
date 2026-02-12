@@ -11632,55 +11632,68 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	fn internal_tx_abort(
 		&self, counterparty_node_id: &PublicKey, msg: &msgs::TxAbort,
 	) -> Result<NotifyOption, MsgHandleErrInternal> {
-		let per_peer_state = self.per_peer_state.read().unwrap();
-		let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
-			debug_assert!(false);
-			MsgHandleErrInternal::no_such_peer(counterparty_node_id, msg.channel_id)
-		})?;
-		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
-		let peer_state = &mut *peer_state_lock;
-		match peer_state.channel_by_id.entry(msg.channel_id) {
-			hash_map::Entry::Occupied(mut chan_entry) => {
-				let res = chan_entry.get_mut().tx_abort(msg, &self.logger);
-				let (tx_abort, splice_failed) =
-					try_channel_entry!(self, peer_state, res, chan_entry);
+		let (result, holding_cell_res) = {
+			let per_peer_state = self.per_peer_state.read().unwrap();
+			let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
+				debug_assert!(false);
+				MsgHandleErrInternal::no_such_peer(counterparty_node_id, msg.channel_id)
+			})?;
+			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+			let peer_state = &mut *peer_state_lock;
+			match peer_state.channel_by_id.entry(msg.channel_id) {
+				hash_map::Entry::Occupied(mut chan_entry) => {
+					let res = chan_entry.get_mut().tx_abort(msg, &self.logger);
+					let (tx_abort, splice_failed, exited_quiescence) =
+						try_channel_entry!(self, peer_state, res, chan_entry);
 
-				let persist = if tx_abort.is_some() || splice_failed.is_some() {
-					NotifyOption::DoPersist
-				} else {
-					NotifyOption::SkipPersistNoEvents
-				};
+					let persist = if tx_abort.is_some() || splice_failed.is_some() {
+						NotifyOption::DoPersist
+					} else {
+						NotifyOption::SkipPersistNoEvents
+					};
 
-				if let Some(tx_abort_msg) = tx_abort {
-					peer_state.pending_msg_events.push(MessageSendEvent::SendTxAbort {
-						node_id: *counterparty_node_id,
-						msg: tx_abort_msg,
-					});
-				}
+					if let Some(tx_abort_msg) = tx_abort {
+						peer_state.pending_msg_events.push(MessageSendEvent::SendTxAbort {
+							node_id: *counterparty_node_id,
+							msg: tx_abort_msg,
+						});
+					}
 
-				if let Some(splice_funding_failed) = splice_failed {
-					let pending_events = &mut self.pending_events.lock().unwrap();
-					pending_events.push_back((
-						events::Event::SpliceFailed {
-							channel_id: msg.channel_id,
-							counterparty_node_id: *counterparty_node_id,
-							user_channel_id: chan_entry.get().context().get_user_id(),
-							abandoned_funding_txo: splice_funding_failed.funding_txo,
-							channel_type: splice_funding_failed.channel_type,
-							contributed_inputs: splice_funding_failed.contributed_inputs,
-							contributed_outputs: splice_funding_failed.contributed_outputs,
-						},
-						None,
-					));
-				}
+					if let Some(splice_funding_failed) = splice_failed {
+						let pending_events = &mut self.pending_events.lock().unwrap();
+						pending_events.push_back((
+							events::Event::SpliceFailed {
+								channel_id: msg.channel_id,
+								counterparty_node_id: *counterparty_node_id,
+								user_channel_id: chan_entry.get().context().get_user_id(),
+								abandoned_funding_txo: splice_funding_failed.funding_txo,
+								channel_type: splice_funding_failed.channel_type,
+								contributed_inputs: splice_funding_failed.contributed_inputs,
+								contributed_outputs: splice_funding_failed.contributed_outputs,
+							},
+							None,
+						));
+					}
 
-				Ok(persist)
-			},
-			hash_map::Entry::Vacant(_) => Err(MsgHandleErrInternal::no_such_channel_for_peer(
-				counterparty_node_id,
-				msg.channel_id,
-			)),
-		}
+					let holding_cell_res = if exited_quiescence {
+						self.check_free_peer_holding_cells(peer_state)
+					} else {
+						Vec::new()
+					};
+					(Ok(persist), holding_cell_res)
+				},
+				hash_map::Entry::Vacant(_) => (
+					Err(MsgHandleErrInternal::no_such_channel_for_peer(
+						counterparty_node_id,
+						msg.channel_id,
+					)),
+					Vec::new(),
+				),
+			}
+		};
+
+		self.handle_holding_cell_free_result(holding_cell_res);
+		result
 	}
 
 	#[rustfmt::skip]

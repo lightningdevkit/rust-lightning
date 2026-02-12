@@ -2029,13 +2029,13 @@ where
 
 	pub fn tx_abort<L: Logger>(
 		&mut self, msg: &msgs::TxAbort, logger: &L,
-	) -> Result<(Option<msgs::TxAbort>, Option<SpliceFundingFailed>), ChannelError> {
+	) -> Result<(Option<msgs::TxAbort>, Option<SpliceFundingFailed>, bool), ChannelError> {
 		// If we have not sent a `tx_abort` message for this negotiation previously, we need to echo
 		// back a tx_abort message according to the spec:
 		//   https://github.com/lightning/bolts/blob/247e83d/02-peer-protocol.md?plain=1#L560-L561
 		// For rationale why we echo back `tx_abort`:
 		//   https://github.com/lightning/bolts/blob/247e83d/02-peer-protocol.md?plain=1#L578-L580
-		let (should_ack, splice_funding_failed) = match &mut self.phase {
+		let (should_ack, splice_funding_failed, exited_quiescence) = match &mut self.phase {
 			ChannelPhase::Undefined => unreachable!(),
 			ChannelPhase::UnfundedOutboundV1(_) | ChannelPhase::UnfundedInboundV1(_) => {
 				let err = "Got an unexpected tx_abort message: This is an unfunded channel created with V1 channel establishment";
@@ -2044,7 +2044,7 @@ where
 			ChannelPhase::UnfundedV2(pending_v2_channel) => {
 				let had_constructor =
 					pending_v2_channel.interactive_tx_constructor.take().is_some();
-				(had_constructor, None)
+				(had_constructor, None, false)
 			},
 			ChannelPhase::Funded(funded_channel) => {
 				if funded_channel.has_pending_splice_awaiting_signatures()
@@ -2072,11 +2072,11 @@ where
 						.unwrap_or(false);
 					debug_assert!(has_funding_negotiation);
 					let splice_funding_failed = funded_channel.reset_pending_splice_state();
-					(true, splice_funding_failed)
+					(true, splice_funding_failed, true)
 				} else {
 					// We were not tracking the pending funding negotiation state anymore, likely
 					// due to a disconnection or already having sent our own `tx_abort`.
-					(false, None)
+					(false, None, false)
 				}
 			},
 		};
@@ -2092,7 +2092,7 @@ where
 			}
 		});
 
-		Ok((tx_abort, splice_funding_failed))
+		Ok((tx_abort, splice_funding_failed, exited_quiescence))
 	}
 
 	#[rustfmt::skip]

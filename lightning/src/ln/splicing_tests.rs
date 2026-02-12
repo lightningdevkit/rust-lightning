@@ -2037,6 +2037,13 @@ fn fail_splice_on_tx_abort() {
 		initiate_splice_in(initiator, acceptor, channel_id, Amount::from_sat(splice_in_amount));
 	let _ = complete_splice_handshake(initiator, acceptor);
 
+	// Queue an outgoing HTLC to the holding cell. It should be freed once we exit quiescence.
+	let (route, payment_hash, _payment_preimage, payment_secret) =
+		get_route_and_payment_hash!(initiator, acceptor, 1_000_000);
+	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let payment_id = PaymentId(payment_hash.0);
+	initiator.node.send_payment_with_route(route, payment_hash, onion, payment_id).unwrap();
+
 	let tx_add_input =
 		get_event_msg!(initiator, MessageSendEvent::SendTxAddInput, node_id_acceptor);
 	acceptor.node.handle_tx_add_input(node_id_initiator, &tx_add_input);
@@ -2057,8 +2064,22 @@ fn fail_splice_on_tx_abort() {
 		_ => panic!("Expected Event::SpliceFailed"),
 	}
 
-	let tx_abort = get_event_msg!(initiator, MessageSendEvent::SendTxAbort, node_id_acceptor);
-	acceptor.node.handle_tx_abort(node_id_initiator, &tx_abort);
+	// We exit quiescence upon receiving `tx_abort`, so we should see our `tx_abort` echo and the
+	// holding cell be immediately freed.
+	let msg_events = initiator.node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 2, "{msg_events:?}");
+	check_added_monitors(initiator, 1);
+	if let MessageSendEvent::SendTxAbort { msg, .. } = &msg_events[0] {
+		acceptor.node.handle_tx_abort(node_id_initiator, msg);
+	} else {
+		panic!("Unexpected event {:?}", msg_events[0]);
+	};
+	if let MessageSendEvent::UpdateHTLCs { updates, .. } = &msg_events[1] {
+		acceptor.node.handle_update_add_htlc(node_id_initiator, &updates.update_add_htlcs[0]);
+		do_commitment_signed_dance(acceptor, initiator, &updates.commitment_signed, false, false);
+	} else {
+		panic!("Unexpected event {:?}", msg_events[1]);
+	};
 }
 
 #[test]
