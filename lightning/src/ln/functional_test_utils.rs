@@ -1383,7 +1383,7 @@ macro_rules! _reload_node_inner {
 		);
 		$node.chain_monitor = &$new_chain_monitor;
 
-		$new_channelmanager = _reload_node(
+		$new_channelmanager = $crate::ln::functional_test_utils::_reload_node(
 			&$node,
 			$new_config,
 			&chanman_encoded,
@@ -1401,7 +1401,7 @@ macro_rules! reload_node {
 	// Reload the node using the node's current config
 	($node: expr, $chanman_encoded: expr, $monitors_encoded: expr, $persister: ident, $new_chain_monitor: ident, $new_channelmanager: ident) => {
 		let config = $node.node.get_current_config();
-		_reload_node_inner!(
+		$crate::_reload_node_inner!(
 			$node,
 			config,
 			$chanman_encoded,
@@ -1414,7 +1414,7 @@ macro_rules! reload_node {
 	};
 	// Reload the node with the new provided config
 	($node: expr, $new_config: expr, $chanman_encoded: expr, $monitors_encoded: expr, $persister: ident, $new_chain_monitor: ident, $new_channelmanager: ident) => {
-		_reload_node_inner!(
+		$crate::_reload_node_inner!(
 			$node,
 			$new_config,
 			$chanman_encoded,
@@ -1431,7 +1431,7 @@ macro_rules! reload_node {
 	 ident, $new_chain_monitor: ident, $new_channelmanager: ident, $reconstruct_pending_htlcs: expr
 	) => {
 		let config = $node.node.get_current_config();
-		_reload_node_inner!(
+		$crate::_reload_node_inner!(
 			$node,
 			config,
 			$chanman_encoded,
@@ -2672,20 +2672,23 @@ pub fn commitment_signed_dance_through_cp_raa(
 	node_a: &Node<'_, '_, '_>, node_b: &Node<'_, '_, '_>, fail_backwards: bool,
 	includes_claim: bool,
 ) -> Option<MessageSendEvent> {
-	let (extra_msg_option, bs_revoke_and_ack) =
+	let (extra_msg_option, bs_revoke_and_ack, node_b_holding_cell_htlcs) =
 		do_main_commitment_signed_dance(node_a, node_b, fail_backwards);
+	assert!(node_b_holding_cell_htlcs.is_empty());
 	node_a.node.handle_revoke_and_ack(node_b.node.get_our_node_id(), &bs_revoke_and_ack);
 	check_added_monitors(node_a, if includes_claim { 0 } else { 1 });
 	extra_msg_option
 }
 
 /// Does the main logic in the commitment_signed dance. After the first `commitment_signed` has
-/// been delivered, this method picks up and delivers the response `revoke_and_ack` and
-/// `commitment_signed`, returning the recipient's `revoke_and_ack` and any extra message it may
-/// have included.
+/// been delivered, delivers the response `revoke_and_ack` and `commitment_signed`, and returns:
+/// - The recipient's `revoke_and_ack`
+/// - The recipient's extra message (if any) after handling the commitment_signed
+/// - Any messages released from the initiator's holding cell after handling the `revoke_and_ack`
+///   (e.g., a second HTLC on the same channel)
 pub fn do_main_commitment_signed_dance(
 	node_a: &Node<'_, '_, '_>, node_b: &Node<'_, '_, '_>, fail_backwards: bool,
-) -> (Option<MessageSendEvent>, msgs::RevokeAndACK) {
+) -> (Option<MessageSendEvent>, msgs::RevokeAndACK, Vec<MessageSendEvent>) {
 	let node_a_id = node_a.node.get_our_node_id();
 	let node_b_id = node_b.node.get_our_node_id();
 
@@ -2693,7 +2696,9 @@ pub fn do_main_commitment_signed_dance(
 	check_added_monitors(&node_b, 0);
 	assert!(node_b.node.get_and_clear_pending_msg_events().is_empty());
 	node_b.node.handle_revoke_and_ack(node_a_id, &as_revoke_and_ack);
-	assert!(node_b.node.get_and_clear_pending_msg_events().is_empty());
+	// Handling the RAA may release HTLCs from node_b's holding cell (e.g., if multiple HTLCs
+	// were sent over the same channel and the second was queued behind the first).
+	let node_b_holding_cell_htlcs = node_b.node.get_and_clear_pending_msg_events();
 	check_added_monitors(&node_b, 1);
 	node_b.node.handle_commitment_signed_batch_test(node_a_id, &as_commitment_signed);
 	let (bs_revoke_and_ack, extra_msg_option) = {
@@ -2716,7 +2721,7 @@ pub fn do_main_commitment_signed_dance(
 		assert!(node_a.node.get_and_clear_pending_events().is_empty());
 		assert!(node_a.node.get_and_clear_pending_msg_events().is_empty());
 	}
-	(extra_msg_option, bs_revoke_and_ack)
+	(extra_msg_option, bs_revoke_and_ack, node_b_holding_cell_htlcs)
 }
 
 /// Runs the commitment_signed dance by delivering the commitment_signed and handling the
@@ -2733,9 +2738,10 @@ pub fn commitment_signed_dance_return_raa(
 		.node
 		.handle_commitment_signed_batch_test(node_b.node.get_our_node_id(), commitment_signed);
 	check_added_monitors(&node_a, 1);
-	let (extra_msg_option, bs_revoke_and_ack) =
+	let (extra_msg_option, bs_revoke_and_ack, node_b_holding_cell_htlcs) =
 		do_main_commitment_signed_dance(&node_a, &node_b, fail_backwards);
 	assert!(extra_msg_option.is_none());
+	assert!(node_b_holding_cell_htlcs.is_empty());
 	bs_revoke_and_ack
 }
 
@@ -2971,7 +2977,7 @@ pub fn check_payment_claimable(
 #[cfg(any(test, ldk_bench, feature = "_test_utils"))]
 macro_rules! expect_payment_claimable {
 	($node: expr, $expected_payment_hash: expr, $expected_payment_secret: expr, $expected_recv_value: expr) => {
-		expect_payment_claimable!(
+		$crate::expect_payment_claimable!(
 			$node,
 			$expected_payment_hash,
 			$expected_payment_secret,

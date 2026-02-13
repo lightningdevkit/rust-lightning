@@ -50,10 +50,10 @@ use crate::ln::channel_state::{
 	OutboundHTLCDetails, OutboundHTLCStateDetails,
 };
 use crate::ln::channelmanager::{
-	self, ChannelReadyOrder, FundingConfirmedMessage, HTLCFailureMsg, HTLCPreviousHopData,
-	HTLCSource, OpenChannelMessage, PaymentClaimDetails, PendingHTLCInfo, PendingHTLCStatus,
-	RAACommitmentOrder, SentHTLCId, BREAKDOWN_TIMEOUT, MAX_LOCAL_BREAKDOWN_TIMEOUT,
-	MIN_CLTV_EXPIRY_DELTA,
+	self, BlindedFailure, ChannelReadyOrder, FundingConfirmedMessage, HTLCFailureMsg,
+	HTLCPreviousHopData, HTLCSource, OpenChannelMessage, PaymentClaimDetails, PendingHTLCInfo,
+	PendingHTLCStatus, RAACommitmentOrder, SentHTLCId, BREAKDOWN_TIMEOUT,
+	MAX_LOCAL_BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA,
 };
 use crate::ln::funding::{FundingTxInput, SpliceContribution};
 use crate::ln::interactivetxs::{
@@ -308,6 +308,32 @@ impl InboundHTLCState {
 	}
 }
 
+/// Information about the outbound hop for a forwarded HTLC. Useful for generating an accurate
+/// [`Event::PaymentForwarded`] if we need to claim this HTLC post-restart.
+///
+/// [`Event::PaymentForwarded`]: crate::events::Event::PaymentForwarded
+#[derive(Debug, Copy, Clone)]
+pub(super) struct OutboundHop {
+	/// The amount forwarded outbound.
+	pub(super) amt_msat: u64,
+	/// The outbound channel this HTLC was forwarded over.
+	pub(super) channel_id: ChannelId,
+	/// The next-hop recipient of this HTLC.
+	pub(super) node_id: PublicKey,
+	/// The outbound channel's funding outpoint.
+	pub(super) funding_txo: OutPoint,
+	/// The outbound channel's user channel ID.
+	pub(super) user_channel_id: u128,
+}
+
+impl_writeable_tlv_based!(OutboundHop, {
+	(0, amt_msat, required),
+	(2, channel_id, required),
+	(4, node_id, required),
+	(6, funding_txo, required),
+	(8, user_channel_id, required),
+});
+
 /// A field of `InboundHTLCState::Committed` containing the HTLC's `update_add_htlc` message. If
 /// the HTLC is a forward and gets irrevocably committed to the outbound edge, we convert to
 /// `InboundUpdateAdd::Forwarded`, thus pruning the onion and not persisting it on every
@@ -315,20 +341,20 @@ impl InboundHTLCState {
 ///
 /// Useful for reconstructing the pending HTLC set on startup.
 #[derive(Debug, Clone)]
-pub(super) enum InboundUpdateAdd {
+enum InboundUpdateAdd {
 	/// The inbound committed HTLC's update_add_htlc message.
 	WithOnion { update_add_htlc: msgs::UpdateAddHTLC },
 	/// This inbound HTLC is a forward that was irrevocably committed to the outbound edge, allowing
 	/// its onion to be pruned and no longer persisted.
+	///
+	/// Contains data that is useful if we need to fail or claim this HTLC backwards after a restart
+	/// and it's missing in the outbound edge.
 	Forwarded {
-		/// Useful if we need to fail or claim this HTLC backwards after restart, if it's missing in the
-		/// outbound edge.
-		hop_data: HTLCPreviousHopData,
-		/// Useful if we need to claim this HTLC backwards after a restart and it's missing in the
-		/// outbound edge, to generate an accurate [`Event::PaymentForwarded`].
-		///
-		/// [`Event::PaymentForwarded`]: crate::events::Event::PaymentForwarded
-		outbound_amt_msat: u64,
+		incoming_packet_shared_secret: [u8; 32],
+		phantom_shared_secret: Option<[u8; 32]>,
+		trampoline_shared_secret: Option<[u8; 32]>,
+		blinded_failure: Option<BlindedFailure>,
+		outbound_hop: OutboundHop,
 	},
 	/// This HTLC was received pre-LDK 0.3, before we started persisting the onion for inbound
 	/// committed HTLCs.
@@ -341,8 +367,11 @@ impl_writeable_tlv_based_enum_upgradable!(InboundUpdateAdd,
 	},
 	(2, Legacy) => {},
 	(4, Forwarded) => {
-		(0, hop_data, required),
-		(2, outbound_amt_msat, required),
+		(0, incoming_packet_shared_secret, required),
+		(2, outbound_hop, required),
+		(4, phantom_shared_secret, option),
+		(6, trampoline_shared_secret, option),
+		(8, blinded_failure, option),
 	},
 );
 
@@ -7878,10 +7907,35 @@ where
 		Ok(())
 	}
 
-	/// Useful for reconstructing the set of pending HTLCs when deserializing the `ChannelManager`.
-	pub(super) fn inbound_committed_unresolved_htlcs(
+	/// Returns true if any committed inbound HTLCs were received pre-LDK 0.3 and cannot be used
+	/// during `ChannelManager` deserialization to reconstruct the set of pending HTLCs.
+	pub(super) fn has_legacy_inbound_htlcs(&self) -> bool {
+		self.context.pending_inbound_htlcs.iter().any(|htlc| {
+			matches!(
+				&htlc.state,
+				InboundHTLCState::Committed { update_add_htlc: InboundUpdateAdd::Legacy }
+			)
+		})
+	}
+
+	/// Returns committed inbound HTLCs whose onion has not yet been decoded and processed. Useful
+	/// for reconstructing the set of pending HTLCs when deserializing the `ChannelManager`.
+	pub(super) fn inbound_htlcs_pending_decode(
 		&self,
-	) -> Vec<(PaymentHash, InboundUpdateAdd)> {
+	) -> impl Iterator<Item = msgs::UpdateAddHTLC> + '_ {
+		self.context.pending_inbound_htlcs.iter().filter_map(|htlc| match &htlc.state {
+			InboundHTLCState::Committed {
+				update_add_htlc: InboundUpdateAdd::WithOnion { update_add_htlc },
+			} => Some(update_add_htlc.clone()),
+			_ => None,
+		})
+	}
+
+	/// Returns committed inbound HTLCs that have been forwarded but not yet fully resolved. Useful
+	/// when reconstructing the set of pending HTLCs when deserializing the `ChannelManager`.
+	pub(super) fn inbound_forwarded_htlcs(
+		&self,
+	) -> impl Iterator<Item = (PaymentHash, HTLCPreviousHopData, OutboundHop)> + '_ {
 		// We don't want to return an HTLC as needing processing if it already has a resolution that's
 		// pending in the holding cell.
 		let htlc_resolution_in_holding_cell = |id: u64| -> bool {
@@ -7895,19 +7949,45 @@ where
 			})
 		};
 
-		self.context
-			.pending_inbound_htlcs
-			.iter()
-			.filter_map(|htlc| match &htlc.state {
-				InboundHTLCState::Committed { update_add_htlc } => {
-					if htlc_resolution_in_holding_cell(htlc.htlc_id) {
-						return None;
-					}
-					Some((htlc.payment_hash, update_add_htlc.clone()))
-				},
-				_ => None,
-			})
-			.collect()
+		let prev_outbound_scid_alias = self.context.outbound_scid_alias();
+		let user_channel_id = self.context.get_user_id();
+		let channel_id = self.context.channel_id();
+		let outpoint = self.funding_outpoint();
+		let counterparty_node_id = self.context.get_counterparty_node_id();
+
+		self.context.pending_inbound_htlcs.iter().filter_map(move |htlc| match &htlc.state {
+			InboundHTLCState::Committed {
+				update_add_htlc:
+					InboundUpdateAdd::Forwarded {
+						incoming_packet_shared_secret,
+						phantom_shared_secret,
+						trampoline_shared_secret,
+						blinded_failure,
+						outbound_hop,
+					},
+			} => {
+				if htlc_resolution_in_holding_cell(htlc.htlc_id) {
+					return None;
+				}
+				// The reconstructed `HTLCPreviousHopData` is used to fail or claim the HTLC backwards
+				// post-restart, if it is missing in the outbound edge.
+				let prev_hop_data = HTLCPreviousHopData {
+					prev_outbound_scid_alias,
+					user_channel_id: Some(user_channel_id),
+					htlc_id: htlc.htlc_id,
+					incoming_packet_shared_secret: *incoming_packet_shared_secret,
+					phantom_shared_secret: *phantom_shared_secret,
+					trampoline_shared_secret: *trampoline_shared_secret,
+					blinded_failure: *blinded_failure,
+					channel_id,
+					outpoint,
+					counterparty_node_id: Some(counterparty_node_id),
+					cltv_expiry: Some(htlc.cltv_expiry),
+				};
+				Some((htlc.payment_hash, prev_hop_data, *outbound_hop))
+			},
+			_ => None,
+		})
 	}
 
 	/// Useful when reconstructing the set of pending HTLC forwards when deserializing the
@@ -7954,12 +8034,19 @@ where
 	/// This inbound HTLC was irrevocably forwarded to the outbound edge, so we no longer need to
 	/// persist its onion.
 	pub(super) fn prune_inbound_htlc_onion(
-		&mut self, htlc_id: u64, hop_data: HTLCPreviousHopData, outbound_amt_msat: u64,
+		&mut self, htlc_id: u64, prev_hop_data: &HTLCPreviousHopData,
+		outbound_hop_data: OutboundHop,
 	) {
 		for htlc in self.context.pending_inbound_htlcs.iter_mut() {
 			if htlc.htlc_id == htlc_id {
 				if let InboundHTLCState::Committed { ref mut update_add_htlc } = htlc.state {
-					*update_add_htlc = InboundUpdateAdd::Forwarded { hop_data, outbound_amt_msat };
+					*update_add_htlc = InboundUpdateAdd::Forwarded {
+						incoming_packet_shared_secret: prev_hop_data.incoming_packet_shared_secret,
+						phantom_shared_secret: prev_hop_data.phantom_shared_secret,
+						trampoline_shared_secret: prev_hop_data.trampoline_shared_secret,
+						blinded_failure: prev_hop_data.blinded_failure,
+						outbound_hop: outbound_hop_data,
+					};
 					return;
 				}
 			}

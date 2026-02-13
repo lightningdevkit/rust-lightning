@@ -3519,8 +3519,9 @@ fn do_test_blocked_chan_preimage_release(completion_mode: BlockedUpdateComplMode
 			.node
 			.handle_commitment_signed_batch_test(node_a_id, &as_htlc_fulfill.commitment_signed);
 		check_added_monitors(&nodes[1], 1);
-		let (a, raa) = do_main_commitment_signed_dance(&nodes[1], &nodes[0], false);
+		let (a, raa, holding_cell) = do_main_commitment_signed_dance(&nodes[1], &nodes[0], false);
 		assert!(a.is_none());
+		assert!(holding_cell.is_empty());
 
 		nodes[1].node.handle_revoke_and_ack(node_a_id, &raa);
 		check_added_monitors(&nodes[1], 1);
@@ -3938,7 +3939,12 @@ fn do_test_durable_preimages_on_closed_channel(
 	let evs = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(evs.len(), if close_chans_before_reload { 2 } else { 1 });
 	for ev in evs {
-		if let Event::PaymentForwarded { .. } = ev {
+		if let Event::PaymentForwarded { claim_from_onchain_tx, next_user_channel_id, .. } = ev {
+			if !claim_from_onchain_tx {
+				// If the outbound channel is still open, the `next_user_channel_id` should be available.
+				// This was previously broken.
+				assert!(next_user_channel_id.is_some())
+			}
 		} else {
 			panic!();
 		}

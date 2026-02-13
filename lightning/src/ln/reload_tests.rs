@@ -1966,14 +1966,8 @@ fn test_reload_node_with_preimage_in_monitor_claims_htlc() {
 	);
 
 	// When the claim is reconstructed during reload, a PaymentForwarded event is generated.
-	// This event has next_user_channel_id as None since the outbound HTLC was already removed.
 	// Fetching events triggers the pending monitor update (adding preimage) to be applied.
-	let events = nodes[1].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 1);
-	match &events[0] {
-		Event::PaymentForwarded { total_fee_earned_msat: Some(1000), .. } => {},
-		_ => panic!("Expected PaymentForwarded event"),
-	}
+	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], Some(1000), false, false);
 	check_added_monitors(&nodes[1], 1);
 
 	// Reconnect nodes[1] to nodes[0]. The claim should be in nodes[1]'s holding cell.
@@ -2095,4 +2089,149 @@ fn test_reload_node_without_preimage_fails_htlc() {
 
 	// nodes[0] should now have received the failure and generate PaymentFailed.
 	expect_payment_failed_conditions(&nodes[0], payment_hash, false, PaymentFailedConditions::new());
+}
+
+#[test]
+fn test_reload_with_mpp_claims_on_same_channel() {
+	// Test that if a forwarding node has two HTLCs for the same MPP payment that were both
+	// irrevocably removed on the outbound edge via claim but are still forwarded-and-unresolved
+	// on the inbound edge, both HTLCs will be claimed backwards on restart.
+	//
+	// Topology:
+	//   nodes[0] ----chan_0_1----> nodes[1] ----chan_1_2_a----> nodes[2]
+	//                                      \----chan_1_2_b---/
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let persister;
+	let new_chain_monitor;
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let nodes_1_deserialized;
+	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	let node_0_id = nodes[0].node.get_our_node_id();
+	let node_1_id = nodes[1].node.get_our_node_id();
+	let node_2_id = nodes[2].node.get_our_node_id();
+
+	let chan_0_1 = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 2_000_000, 0);
+	let chan_1_2_a = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
+	let chan_1_2_b = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
+
+	let chan_id_0_1 = chan_0_1.2;
+	let chan_id_1_2_a = chan_1_2_a.2;
+	let chan_id_1_2_b = chan_1_2_b.2;
+
+	// Send an MPP payment large enough that the router must split it across both outbound channels.
+	// Each 1M sat outbound channel has 100M msat max in-flight, so 150M msat requires splitting.
+	let amt_msat = 150_000_000;
+	let (route, payment_hash, payment_preimage, payment_secret) =
+		get_route_and_payment_hash!(nodes[0], nodes[2], amt_msat);
+
+	let payment_id = PaymentId(nodes[0].keys_manager.backing.get_secure_random_bytes());
+	nodes[0].node.send_payment_with_route(
+		route, payment_hash, RecipientOnionFields::secret_only(payment_secret), payment_id,
+	).unwrap();
+	check_added_monitors(&nodes[0], 1);
+
+	// Forward the first HTLC nodes[0] -> nodes[1] -> nodes[2]. Note that the second HTLC is released
+	// from the holding cell during the first HTLC's commitment_signed_dance.
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let payment_event_1 = SendEvent::from_event(events.remove(0));
+
+	nodes[1].node.handle_update_add_htlc(node_0_id, &payment_event_1.msgs[0]);
+	check_added_monitors(&nodes[1], 0);
+	nodes[1].node.handle_commitment_signed_batch_test(node_0_id, &payment_event_1.commitment_msg);
+	check_added_monitors(&nodes[1], 1);
+	let (_, raa, holding_cell_htlcs) =
+		do_main_commitment_signed_dance(&nodes[1], &nodes[0], false);
+	assert_eq!(holding_cell_htlcs.len(), 1);
+	let payment_event_2 = holding_cell_htlcs.into_iter().next().unwrap();
+	nodes[1].node.handle_revoke_and_ack(node_0_id, &raa);
+	check_added_monitors(&nodes[1], 1);
+
+	nodes[1].node.process_pending_htlc_forwards();
+	check_added_monitors(&nodes[1], 1);
+	let mut events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let ev_1_2 = events.remove(0);
+	pass_along_path(
+		&nodes[1], &[&nodes[2]], amt_msat, payment_hash, Some(payment_secret), ev_1_2, false, None,
+	);
+
+	// Second HTLC: full path nodes[0] -> nodes[1] -> nodes[2]. PaymentClaimable expected at end.
+	pass_along_path(
+		&nodes[0], &[&nodes[1], &nodes[2]], amt_msat, payment_hash, Some(payment_secret),
+		payment_event_2, true, None,
+	);
+
+	// Claim the HTLCs such that they're fully removed from the outbound edge, but disconnect
+	// node_0<>node_1 so that they can't be claimed backwards by node_1.
+	nodes[2].node.claim_funds(payment_preimage);
+	check_added_monitors(&nodes[2], 2);
+	expect_payment_claimed!(nodes[2], payment_hash, amt_msat);
+
+	nodes[0].node.peer_disconnected(node_1_id);
+	nodes[1].node.peer_disconnected(node_0_id);
+
+	let mut events = nodes[2].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 2);
+	for ev in events {
+		match ev {
+			MessageSendEvent::UpdateHTLCs { ref node_id, ref updates, .. } => {
+				assert_eq!(*node_id, node_1_id);
+				assert_eq!(updates.update_fulfill_htlcs.len(), 1);
+				nodes[1].node.handle_update_fulfill_htlc(node_2_id, updates.update_fulfill_htlcs[0].clone());
+				check_added_monitors(&nodes[1], 1);
+				do_commitment_signed_dance(&nodes[1], &nodes[2], &updates.commitment_signed, false, false);
+			},
+			_ => panic!("Unexpected event"),
+		}
+	}
+
+	let events = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 2);
+	for event in events {
+		expect_payment_forwarded(
+			event, &nodes[1], &nodes[0], &nodes[2], Some(1000), None, false, false, false,
+		);
+	}
+
+	// Clear the holding cell's claim entries on chan_0_1 before serialization.
+	// This simulates a crash where both HTLCs were fully removed on the outbound edges but are
+	// still present on the inbound edge without a resolution.
+	nodes[1].node.test_clear_channel_holding_cell(node_0_id, chan_id_0_1);
+
+	let node_1_serialized = nodes[1].node.encode();
+	let mon_0_1_serialized = get_monitor!(nodes[1], chan_id_0_1).encode();
+	let mon_1_2_a_serialized = get_monitor!(nodes[1], chan_id_1_2_a).encode();
+	let mon_1_2_b_serialized = get_monitor!(nodes[1], chan_id_1_2_b).encode();
+
+	reload_node!(
+		nodes[1],
+		node_1_serialized,
+		&[&mon_0_1_serialized, &mon_1_2_a_serialized, &mon_1_2_b_serialized],
+		persister,
+		new_chain_monitor,
+		nodes_1_deserialized,
+		Some(true)
+	);
+
+	// When the claims are reconstructed during reload, PaymentForwarded events are regenerated.
+	let events = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 2);
+	for event in events {
+		expect_payment_forwarded(
+			event, &nodes[1], &nodes[0], &nodes[2], Some(1000), None, false, false, false,
+		);
+	}
+	// Fetching events triggers the pending monitor updates (one for each HTLC preimage) to be applied.
+	check_added_monitors(&nodes[1], 2);
+
+	// Reconnect nodes[1] to nodes[0]. Both claims should be in nodes[1]'s holding cell.
+	let mut reconnect_args = ReconnectArgs::new(&nodes[1], &nodes[0]);
+	reconnect_args.pending_cell_htlc_claims = (0, 2);
+	reconnect_nodes(reconnect_args);
+
+	// nodes[0] should now have received both fulfills and generate PaymentSent.
+	expect_payment_sent(&nodes[0], payment_preimage, None, true, true);
 }
