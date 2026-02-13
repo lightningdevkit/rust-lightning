@@ -39,25 +39,25 @@ impl KVStoreSync for FilesystemStore {
 	fn read(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
 	) -> Result<Vec<u8>, lightning::io::Error> {
-		self.state.read_impl(primary_namespace, secondary_namespace, key)
+		self.state.read_impl(primary_namespace, secondary_namespace, key, false)
 	}
 
 	fn write(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: Vec<u8>,
 	) -> Result<(), lightning::io::Error> {
-		self.state.write_impl(primary_namespace, secondary_namespace, key, buf)
+		self.state.write_impl(primary_namespace, secondary_namespace, key, buf, false)
 	}
 
 	fn remove(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, lazy: bool,
 	) -> Result<(), lightning::io::Error> {
-		self.state.remove_impl(primary_namespace, secondary_namespace, key, lazy)
+		self.state.remove_impl(primary_namespace, secondary_namespace, key, lazy, false)
 	}
 
 	fn list(
 		&self, primary_namespace: &str, secondary_namespace: &str,
 	) -> Result<Vec<String>, lightning::io::Error> {
-		self.state.list_impl(primary_namespace, secondary_namespace)
+		self.state.list_impl(primary_namespace, secondary_namespace, false)
 	}
 }
 
@@ -66,31 +66,31 @@ impl KVStore for FilesystemStore {
 	fn read(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
 	) -> impl Future<Output = Result<Vec<u8>, lightning::io::Error>> + 'static + Send {
-		self.state.read_async(primary_namespace, secondary_namespace, key)
+		self.state.read_async(primary_namespace, secondary_namespace, key, false)
 	}
 
 	fn write(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: Vec<u8>,
 	) -> impl Future<Output = Result<(), lightning::io::Error>> + 'static + Send {
-		self.state.write_async(primary_namespace, secondary_namespace, key, buf)
+		self.state.write_async(primary_namespace, secondary_namespace, key, buf, false)
 	}
 
 	fn remove(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, lazy: bool,
 	) -> impl Future<Output = Result<(), lightning::io::Error>> + 'static + Send {
-		self.state.remove_async(primary_namespace, secondary_namespace, key, lazy)
+		self.state.remove_async(primary_namespace, secondary_namespace, key, lazy, false)
 	}
 
 	fn list(
 		&self, primary_namespace: &str, secondary_namespace: &str,
 	) -> impl Future<Output = Result<Vec<String>, lightning::io::Error>> + 'static + Send {
-		self.state.list_async(primary_namespace, secondary_namespace)
+		self.state.list_async(primary_namespace, secondary_namespace, false)
 	}
 }
 
 impl MigratableKVStore for FilesystemStore {
 	fn list_all_keys(&self) -> Result<Vec<(String, String, String)>, lightning::io::Error> {
-		self.state.list_all_keys_impl()
+		self.state.list_all_keys_impl(false)
 	}
 }
 
