@@ -14951,6 +14951,9 @@ impl<
 				"Blocks must be connected in chain-order - the connected block height must be one greater than the previous height");
 		}
 
+		log_info!(self.logger, "Block {} at height {} connected with {} relevant transactions",
+			header.block_hash(), height, txdata.len());
+
 		self.transactions_confirmed(header, txdata, height);
 		self.best_block_updated(header, height);
 	}
@@ -15000,7 +15003,16 @@ impl<
 		// See the docs for `ChannelManagerReadArgs` for more.
 
 		let block_hash = header.block_hash();
-		log_trace!(self.logger, "{} transactions included in block {} at height {} provided", txdata.len(), block_hash, height);
+		log_info!(self.logger, "{} transactions included in block {} at height {} provided", txdata.len(), block_hash, height);
+
+		// Log individual txids when the list is small enough to be useful for debugging
+		// block sync issues. Cap at 10 to avoid flooding the logs.
+		if !txdata.is_empty() && txdata.len() <= 10 {
+			for (_, tx) in txdata.iter() {
+				log_debug!(self.logger, "  Confirmed txid {} in block {} at height {}",
+					tx.compute_txid(), block_hash, height);
+			}
+		}
 
 		let _persistence_guard =
 			PersistenceNotifierGuard::optionally_notify_skipping_background_events(
@@ -15032,7 +15044,7 @@ impl<
 		// See the docs for `ChannelManagerReadArgs` for more.
 
 		let block_hash = header.block_hash();
-		log_trace!(self.logger, "New best block: {} at height {}", block_hash, height);
+		log_info!(self.logger, "New best block: {} at height {}", block_hash, height);
 
 		let _persistence_guard =
 			PersistenceNotifierGuard::optionally_notify_skipping_background_events(
