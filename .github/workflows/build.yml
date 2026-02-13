@@ -342,3 +342,50 @@ jobs:
       - name: Test tor connections using lightning-net-tokio
         run: |
           TOR_PROXY="127.0.0.1:9050" RUSTFLAGS="--cfg=tor" cargo test --verbose --color always -p lightning-net-tokio
+
+  notify-failure:
+    needs: [build, fuzz, linting, rustfmt, check_release, check_docs, benchmark, ext-test, tor-connect, coverage]
+    if: failure() && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Create or update failure issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          LABEL="build failed"
+          TITLE="Failed build: ${{ github.workflow }}"
+          RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          REPO_URL="https://github.com/${{ github.repository }}"
+          COMMITTER="${{ github.event.head_commit.author.username }}"
+          BODY="GitHub Actions workflow [${{ github.workflow }} #${{ github.run_number }}](${RUN_URL}) failed."
+          BODY="${BODY}"$'\n\n'"Event: ${{ github.event_name }}"
+          BRANCH="${{ github.ref_name }}"
+          BODY="${BODY}"$'\n'"Branch: [${BRANCH}](${REPO_URL}/tree/${BRANCH})"
+          BODY="${BODY}"$'\n'"Commit: [${{ github.sha }}](${REPO_URL}/commit/${{ github.sha }})"
+          if [ -n "$COMMITTER" ]; then
+            BODY="${BODY}"$'\n'"Committer: @${COMMITTER}"
+          fi
+
+          # Ensure label exists
+          if ! gh label list --search "$LABEL" --json name --jq '.[].name' | grep -qxF "$LABEL"; then
+            gh label create "$LABEL"
+          fi
+
+          # Find existing open issue with this label
+          ISSUE_NUMBER=$(gh issue list --label "$LABEL" --state open --json number --jq '.[0].number // empty')
+
+          if [ -n "$ISSUE_NUMBER" ]; then
+            gh issue comment "$ISSUE_NUMBER" --body "$BODY"
+          else
+            ISSUE_URL=$(gh issue create --title "$TITLE" --label "$LABEL" --body "$BODY")
+            ISSUE_NUMBER=$(echo "$ISSUE_URL" | grep -o '[0-9]*$')
+          fi
+
+          # Assign issue to committer if no one is assigned yet
+          ASSIGNEE_COUNT=$(gh issue view "$ISSUE_NUMBER" --json assignees --jq '.assignees | length')
+          if [ "$ASSIGNEE_COUNT" = "0" ] && [ -n "$COMMITTER" ]; then
+            gh issue edit "$ISSUE_NUMBER" --add-assignee "$COMMITTER" || true
+          fi
