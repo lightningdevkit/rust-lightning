@@ -439,7 +439,6 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 		tx_broadcaster: nodes[0].tx_broadcaster,
 		logger: &logger,
 		channel_monitors: node_0_stale_monitors.iter().map(|monitor| { (monitor.channel_id(), monitor) }).collect(),
-		reconstruct_manager_from_monitors: None,
 	}) { } else {
 		panic!("If the monitor(s) are stale, this indicates a bug and we should get an Err return");
 	};
@@ -458,7 +457,6 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 		tx_broadcaster: nodes[0].tx_broadcaster,
 		logger: &logger,
 		channel_monitors: node_0_monitors.iter().map(|monitor| { (monitor.channel_id(), monitor) }).collect(),
-		reconstruct_manager_from_monitors: None,
 	}).unwrap();
 	nodes_0_deserialized = nodes_0_deserialized_tmp;
 	assert!(nodes_0_read.is_empty());
@@ -1961,8 +1959,7 @@ fn test_reload_node_with_preimage_in_monitor_claims_htlc() {
 		&[&mon_0_1_serialized, &mon_1_2_serialized],
 		persister,
 		new_chain_monitor,
-		nodes_1_deserialized,
-		Some(true)
+		nodes_1_deserialized
 	);
 
 	// When the claim is reconstructed during reload, a PaymentForwarded event is generated.
@@ -2064,8 +2061,7 @@ fn test_reload_node_without_preimage_fails_htlc() {
 		&[&mon_0_1_serialized, &mon_1_2_serialized],
 		persister,
 		new_chain_monitor,
-		nodes_1_deserialized,
-		Some(true)
+		nodes_1_deserialized
 	);
 
 	// After reload, nodes[1] should have generated an HTLCHandlingFailed event.
@@ -2212,8 +2208,7 @@ fn test_reload_with_mpp_claims_on_same_channel() {
 		&[&mon_0_1_serialized, &mon_1_2_a_serialized, &mon_1_2_b_serialized],
 		persister,
 		new_chain_monitor,
-		nodes_1_deserialized,
-		Some(true)
+		nodes_1_deserialized
 	);
 
 	// When the claims are reconstructed during reload, PaymentForwarded events are regenerated.

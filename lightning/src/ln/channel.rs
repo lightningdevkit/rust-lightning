@@ -50,10 +50,9 @@ use crate::ln::channel_state::{
 	OutboundHTLCDetails, OutboundHTLCStateDetails,
 };
 use crate::ln::channelmanager::{
-	self, BlindedFailure, ChannelReadyOrder, FundingConfirmedMessage, HTLCFailureMsg,
-	HTLCPreviousHopData, HTLCSource, OpenChannelMessage, PaymentClaimDetails, PendingHTLCInfo,
-	PendingHTLCStatus, RAACommitmentOrder, SentHTLCId, BREAKDOWN_TIMEOUT,
-	MAX_LOCAL_BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA,
+	self, BlindedFailure, ChannelReadyOrder, FundingConfirmedMessage, HTLCPreviousHopData,
+	HTLCSource, OpenChannelMessage, PaymentClaimDetails, RAACommitmentOrder, SentHTLCId,
+	BREAKDOWN_TIMEOUT, MAX_LOCAL_BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA,
 };
 use crate::ln::funding::{FundingTxInput, SpliceContribution};
 use crate::ln::interactivetxs::{
@@ -145,36 +144,11 @@ enum InboundHTLCRemovalReason {
 	Fulfill { preimage: PaymentPreimage, attribution_data: Option<AttributionData> },
 }
 
-/// Represents the resolution status of an inbound HTLC.
-#[cfg_attr(test, derive(Debug))]
-#[derive(Clone)]
-enum InboundHTLCResolution {
-	/// Resolved implies the action we must take with the inbound HTLC has already been determined,
-	/// i.e., we already know whether it must be failed back or forwarded.
-	//
-	// TODO: Once this variant is removed, we should also clean up
-	// [`MonitorRestoreUpdates::accepted_htlcs`] as the path will be unreachable.
-	Resolved { pending_htlc_status: PendingHTLCStatus },
-	/// Pending implies we will attempt to resolve the inbound HTLC once it has been fully committed
-	/// to by both sides of the channel, i.e., once a `revoke_and_ack` has been processed by both
-	/// nodes for the state update in which it was proposed.
-	Pending { update_add_htlc: msgs::UpdateAddHTLC },
-}
-
-impl_writeable_tlv_based_enum!(InboundHTLCResolution,
-	(0, Resolved) => {
-		(0, pending_htlc_status, required),
-	},
-	(2, Pending) => {
-		(0, update_add_htlc, required),
-	},
-);
-
 #[cfg_attr(test, derive(Debug))]
 enum InboundHTLCState {
 	/// Offered by remote, to be included in next local commitment tx. I.e., the remote sent an
 	/// update_add_htlc message for this HTLC.
-	RemoteAnnounced(InboundHTLCResolution),
+	RemoteAnnounced(msgs::UpdateAddHTLC),
 	/// Included in a received commitment_signed message (implying we've
 	/// revoke_and_ack'd it), but the remote hasn't yet revoked their previous
 	/// state (see the example below). We have not yet included this HTLC in a
@@ -204,13 +178,13 @@ enum InboundHTLCState {
 	/// Implies AwaitingRemoteRevoke.
 	///
 	/// [BOLT #2]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md
-	AwaitingRemoteRevokeToAnnounce(InboundHTLCResolution),
+	AwaitingRemoteRevokeToAnnounce(msgs::UpdateAddHTLC),
 	/// Included in a received commitment_signed message (implying we've revoke_and_ack'd it).
 	/// We have also included this HTLC in our latest commitment_signed and are now just waiting
 	/// on the remote's revoke_and_ack to make this HTLC an irrevocable part of the state of the
 	/// channel (before it can then get forwarded and/or removed).
 	/// Implies AwaitingRemoteRevoke.
-	AwaitingAnnouncedRemoteRevoke(InboundHTLCResolution),
+	AwaitingAnnouncedRemoteRevoke(msgs::UpdateAddHTLC),
 	/// An HTLC irrevocably committed in the latest commitment transaction, ready to be forwarded or
 	/// removed.
 	Committed {
@@ -295,13 +269,10 @@ impl InboundHTLCState {
 	/// [`ReleaseHeldHtlc`]: crate::onion_message::async_payments::ReleaseHeldHtlc
 	fn should_hold_htlc(&self) -> bool {
 		match self {
-			InboundHTLCState::RemoteAnnounced(res)
-			| InboundHTLCState::AwaitingRemoteRevokeToAnnounce(res)
-			| InboundHTLCState::AwaitingAnnouncedRemoteRevoke(res) => match res {
-				InboundHTLCResolution::Pending { update_add_htlc } => {
-					update_add_htlc.hold_htlc.is_some()
-				},
-				InboundHTLCResolution::Resolved { .. } => false,
+			InboundHTLCState::RemoteAnnounced(update_add_htlc)
+			| InboundHTLCState::AwaitingRemoteRevokeToAnnounce(update_add_htlc)
+			| InboundHTLCState::AwaitingAnnouncedRemoteRevoke(update_add_htlc) => {
+				update_add_htlc.hold_htlc.is_some()
 			},
 			InboundHTLCState::Committed { .. } | InboundHTLCState::LocalRemoved(_) => false,
 		}
@@ -356,16 +327,13 @@ enum InboundUpdateAdd {
 		blinded_failure: Option<BlindedFailure>,
 		outbound_hop: OutboundHop,
 	},
-	/// This HTLC was received pre-LDK 0.3, before we started persisting the onion for inbound
-	/// committed HTLCs.
-	Legacy,
 }
 
 impl_writeable_tlv_based_enum_upgradable!(InboundUpdateAdd,
 	(0, WithOnion) => {
 		(0, update_add_htlc, required),
 	},
-	(2, Legacy) => {},
+	// 2 was previously used for the ::Legacy variant, used for HTLCs received on LDK 0.1-.
 	(4, Forwarded) => {
 		(0, incoming_packet_shared_secret, required),
 		(2, outbound_hop, required),
@@ -1211,7 +1179,6 @@ pub(super) struct MonitorRestoreUpdates {
 	/// A `CommitmentUpdate` to be sent to our channel peer.
 	pub commitment_update: Option<msgs::CommitmentUpdate>,
 	pub commitment_order: RAACommitmentOrder,
-	pub accepted_htlcs: Vec<(PendingHTLCInfo, u64)>,
 	pub failed_htlcs: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
 	pub finalized_claimed_htlcs: Vec<(HTLCSource, Option<AttributionData>)>,
 	/// Inbound update_adds that are now irrevocably committed to this channel and are ready for the
@@ -3121,7 +3088,6 @@ pub(super) struct ChannelContext<SP: SignerProvider> {
 	// responsible for some of the HTLCs here or not - we don't know whether the update in question
 	// completed or not. We currently ignore these fields entirely when force-closing a channel,
 	// but need to handle this somehow or we run the risk of losing HTLCs!
-	monitor_pending_forwards: Vec<(PendingHTLCInfo, u64)>,
 	monitor_pending_failures: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
 	monitor_pending_finalized_fulfills: Vec<(HTLCSource, Option<AttributionData>)>,
 	monitor_pending_update_adds: Vec<msgs::UpdateAddHTLC>,
@@ -3818,7 +3784,6 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			monitor_pending_channel_ready: false,
 			monitor_pending_revoke_and_ack: false,
 			monitor_pending_commitment_signed: false,
-			monitor_pending_forwards: Vec::new(),
 			monitor_pending_failures: Vec::new(),
 			monitor_pending_finalized_fulfills: Vec::new(),
 			monitor_pending_update_adds: Vec::new(),
@@ -4052,7 +4017,6 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			monitor_pending_channel_ready: false,
 			monitor_pending_revoke_and_ack: false,
 			monitor_pending_commitment_signed: false,
-			monitor_pending_forwards: Vec::new(),
 			monitor_pending_failures: Vec::new(),
 			monitor_pending_finalized_fulfills: Vec::new(),
 			monitor_pending_update_adds: Vec::new(),
@@ -7640,7 +7604,6 @@ where
 					false,
 					Vec::new(),
 					Vec::new(),
-					Vec::new(),
 					logger,
 				);
 				UpdateFulfillCommitFetch::NewClaim { monitor_update, htlc_value_msat }
@@ -7900,22 +7863,9 @@ where
 			amount_msat: msg.amount_msat,
 			payment_hash: msg.payment_hash,
 			cltv_expiry: msg.cltv_expiry,
-			state: InboundHTLCState::RemoteAnnounced(InboundHTLCResolution::Pending {
-				update_add_htlc: msg.clone(),
-			}),
+			state: InboundHTLCState::RemoteAnnounced(msg.clone())
 		});
 		Ok(())
-	}
-
-	/// Returns true if any committed inbound HTLCs were received pre-LDK 0.3 and cannot be used
-	/// during `ChannelManager` deserialization to reconstruct the set of pending HTLCs.
-	pub(super) fn has_legacy_inbound_htlcs(&self) -> bool {
-		self.context.pending_inbound_htlcs.iter().any(|htlc| {
-			matches!(
-				&htlc.state,
-				InboundHTLCState::Committed { update_add_htlc: InboundUpdateAdd::Legacy }
-			)
-		})
 	}
 
 	/// Returns committed inbound HTLCs whose onion has not yet been decoded and processed. Useful
@@ -8191,15 +8141,7 @@ where
 			&self.context.channel_id()
 		);
 
-		self.monitor_updating_paused(
-			false,
-			false,
-			false,
-			Vec::new(),
-			Vec::new(),
-			Vec::new(),
-			logger,
-		);
+		self.monitor_updating_paused(false, false, false, Vec::new(), Vec::new(), logger);
 		self.context
 			.interactive_tx_signing_session
 			.as_mut()
@@ -8303,15 +8245,7 @@ where
 			.as_mut()
 			.expect("Signing session must exist for negotiated pending splice")
 			.received_commitment_signed();
-		self.monitor_updating_paused(
-			false,
-			false,
-			false,
-			Vec::new(),
-			Vec::new(),
-			Vec::new(),
-			logger,
-		);
+		self.monitor_updating_paused(false, false, false, Vec::new(), Vec::new(), logger);
 		self.context.monitor_pending_tx_signatures = true;
 
 		Ok(self.push_ret_blockable_mon_update(monitor_update))
@@ -8506,11 +8440,10 @@ where
 		}
 
 		for htlc in self.context.pending_inbound_htlcs.iter_mut() {
-			if let &InboundHTLCState::RemoteAnnounced(ref htlc_resolution) = &htlc.state {
+			if let &InboundHTLCState::RemoteAnnounced(ref update_add) = &htlc.state {
 				log_trace!(logger, "Updating HTLC {} to AwaitingRemoteRevokeToAnnounce due to commitment_signed in channel {}.",
 					&htlc.payment_hash, &self.context.channel_id);
-				htlc.state =
-					InboundHTLCState::AwaitingRemoteRevokeToAnnounce(htlc_resolution.clone());
+				htlc.state = InboundHTLCState::AwaitingRemoteRevokeToAnnounce(update_add.clone());
 				need_commitment = true;
 			}
 		}
@@ -8610,7 +8543,6 @@ where
 			true,
 			need_commitment_signed,
 			false,
-			Vec::new(),
 			Vec::new(),
 			Vec::new(),
 			logger,
@@ -8812,15 +8744,7 @@ where
 				if update_fee.is_some() { "a fee update, " } else { "" },
 				update_add_count, update_fulfill_count, update_fail_count);
 
-			self.monitor_updating_paused(
-				false,
-				true,
-				false,
-				Vec::new(),
-				Vec::new(),
-				Vec::new(),
-				logger,
-			);
+			self.monitor_updating_paused(false, true, false, Vec::new(), Vec::new(), logger);
 			(self.push_ret_blockable_mon_update(monitor_update), htlcs_to_fail)
 		} else {
 			(None, Vec::new())
@@ -8951,12 +8875,9 @@ where
 		}
 
 		log_trace!(logger, "Updating HTLCs on receipt of RAA...");
-		let mut to_forward_infos = Vec::new();
 		let mut pending_update_adds = Vec::new();
 		let mut revoked_htlcs = Vec::new();
 		let mut finalized_claimed_htlcs = Vec::new();
-		let mut update_fail_htlcs = Vec::new();
-		let mut update_fail_malformed_htlcs = Vec::new();
 		let mut static_invoices = Vec::new();
 		let mut require_commitment = false;
 		let mut value_to_self_msat_diff: i64 = 0;
@@ -9021,63 +8942,28 @@ where
 				};
 				if swap {
 					let mut state =
-						InboundHTLCState::Committed { update_add_htlc: InboundUpdateAdd::Legacy };
+						InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailMalformed {
+							sha256_of_onion: [0; 32],
+							failure_code: 0,
+						});
 					mem::swap(&mut state, &mut htlc.state);
 
-					if let InboundHTLCState::AwaitingRemoteRevokeToAnnounce(resolution) = state {
+					if let InboundHTLCState::AwaitingRemoteRevokeToAnnounce(update_add) = state {
 						log_trace!(logger, " ...promoting inbound AwaitingRemoteRevokeToAnnounce {} to AwaitingAnnouncedRemoteRevoke", &htlc.payment_hash);
-						htlc.state = InboundHTLCState::AwaitingAnnouncedRemoteRevoke(resolution);
+						htlc.state = InboundHTLCState::AwaitingAnnouncedRemoteRevoke(update_add);
 						require_commitment = true;
-					} else if let InboundHTLCState::AwaitingAnnouncedRemoteRevoke(resolution) =
+					} else if let InboundHTLCState::AwaitingAnnouncedRemoteRevoke(update_add_htlc) =
 						state
 					{
-						match resolution {
-							InboundHTLCResolution::Resolved { pending_htlc_status } => {
-								match pending_htlc_status {
-									PendingHTLCStatus::Fail(fail_msg) => {
-										log_trace!(logger, " ...promoting inbound AwaitingAnnouncedRemoteRevoke {} to LocalRemoved due to PendingHTLCStatus indicating failure", &htlc.payment_hash);
-										require_commitment = true;
-										match fail_msg {
-											HTLCFailureMsg::Relay(msg) => {
-												htlc.state = InboundHTLCState::LocalRemoved(
-													InboundHTLCRemovalReason::FailRelay(
-														msg.clone().into(),
-													),
-												);
-												update_fail_htlcs.push(msg)
-											},
-											HTLCFailureMsg::Malformed(msg) => {
-												htlc.state = InboundHTLCState::LocalRemoved(
-													InboundHTLCRemovalReason::FailMalformed {
-														sha256_of_onion: msg.sha256_of_onion,
-														failure_code: msg.failure_code,
-													},
-												);
-												update_fail_malformed_htlcs.push(msg)
-											},
-										}
-									},
-									PendingHTLCStatus::Forward(forward_info) => {
-										log_trace!(logger, " ...promoting inbound AwaitingAnnouncedRemoteRevoke {} to Committed, attempting to forward", &htlc.payment_hash);
-										to_forward_infos.push((forward_info, htlc.htlc_id));
-										htlc.state = InboundHTLCState::Committed {
-											// HTLCs will only be in state `InboundHTLCResolution::Resolved` if they were
-											// received on LDK 0.1-.
-											update_add_htlc: InboundUpdateAdd::Legacy,
-										};
-									},
-								}
-							},
-							InboundHTLCResolution::Pending { update_add_htlc } => {
-								log_trace!(logger, " ...promoting inbound AwaitingAnnouncedRemoteRevoke {} to Committed", &htlc.payment_hash);
-								pending_update_adds.push(update_add_htlc.clone());
-								htlc.state = InboundHTLCState::Committed {
-									update_add_htlc: InboundUpdateAdd::WithOnion {
-										update_add_htlc,
-									},
-								};
-							},
-						}
+						log_trace!(
+							logger,
+							" ...promoting inbound AwaitingAnnouncedRemoteRevoke {} to Committed",
+							&htlc.payment_hash
+						);
+						pending_update_adds.push(update_add_htlc.clone());
+						htlc.state = InboundHTLCState::Committed {
+							update_add_htlc: InboundUpdateAdd::WithOnion { update_add_htlc },
+						};
 					}
 				}
 			}
@@ -9193,7 +9079,6 @@ where
 					false,
 					true,
 					false,
-					to_forward_infos,
 					revoked_htlcs,
 					finalized_claimed_htlcs,
 					logger,
@@ -9220,9 +9105,11 @@ where
 						release_state_str
 					);
 					if self.context.channel_state.can_generate_new_commitment() {
-						log_debug!(logger, "Responding with a commitment update with {} HTLCs failed for channel {}",
-							update_fail_htlcs.len() + update_fail_malformed_htlcs.len(),
-							&self.context.channel_id);
+						log_debug!(
+							logger,
+							"Responding with a commitment update for channel {}",
+							&self.context.channel_id
+						);
 					} else {
 						let reason = if self.context.channel_state.is_local_stfu_sent() {
 							"exits quiescence"
@@ -9238,7 +9125,6 @@ where
 						false,
 						true,
 						false,
-						to_forward_infos,
 						revoked_htlcs,
 						finalized_claimed_htlcs,
 						logger,
@@ -9252,7 +9138,6 @@ where
 						false,
 						false,
 						false,
-						to_forward_infos,
 						revoked_htlcs,
 						finalized_claimed_htlcs,
 						logger,
@@ -9562,7 +9447,6 @@ where
 	/// [`ChannelMonitorUpdateStatus::InProgress`]: crate::chain::ChannelMonitorUpdateStatus::InProgress
 	fn monitor_updating_paused<L: Logger>(
 		&mut self, resend_raa: bool, resend_commitment: bool, resend_channel_ready: bool,
-		pending_forwards: Vec<(PendingHTLCInfo, u64)>,
 		pending_fails: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
 		pending_finalized_claimed_htlcs: Vec<(HTLCSource, Option<AttributionData>)>, logger: &L,
 	) {
@@ -9571,7 +9455,6 @@ where
 		self.context.monitor_pending_revoke_and_ack |= resend_raa;
 		self.context.monitor_pending_commitment_signed |= resend_commitment;
 		self.context.monitor_pending_channel_ready |= resend_channel_ready;
-		self.context.monitor_pending_forwards.extend(pending_forwards);
 		self.context.monitor_pending_failures.extend(pending_fails);
 		self.context.monitor_pending_finalized_fulfills.extend(pending_finalized_claimed_htlcs);
 		self.context.channel_state.set_monitor_update_in_progress();
@@ -9658,8 +9541,6 @@ where
 
 		let announcement_sigs = self.get_announcement_sigs(node_signer, chain_hash, user_config, best_block_height, logger);
 
-		let mut accepted_htlcs = Vec::new();
-		mem::swap(&mut accepted_htlcs, &mut self.context.monitor_pending_forwards);
 		let mut failed_htlcs = Vec::new();
 		mem::swap(&mut failed_htlcs, &mut self.context.monitor_pending_failures);
 		let mut finalized_claimed_htlcs = Vec::new();
@@ -9680,9 +9561,9 @@ where
 			self.context.monitor_pending_commitment_signed = false;
 			return MonitorRestoreUpdates {
 				raa: None, commitment_update: None, commitment_order: RAACommitmentOrder::RevokeAndACKFirst,
-				accepted_htlcs, failed_htlcs, finalized_claimed_htlcs, pending_update_adds,
-				funding_broadcastable, channel_ready, announcement_sigs, tx_signatures: None,
-				channel_ready_order, committed_outbound_htlc_sources
+				failed_htlcs, finalized_claimed_htlcs, pending_update_adds, funding_broadcastable,
+				channel_ready, announcement_sigs, tx_signatures: None, channel_ready_order,
+				committed_outbound_htlc_sources
 			};
 		}
 
@@ -9711,7 +9592,7 @@ where
 			if commitment_update.is_some() { "a" } else { "no" }, if raa.is_some() { "an" } else { "no" },
 			match commitment_order { RAACommitmentOrder::CommitmentFirst => "commitment", RAACommitmentOrder::RevokeAndACKFirst => "RAA"});
 		MonitorRestoreUpdates {
-			raa, commitment_update, commitment_order, accepted_htlcs, failed_htlcs, finalized_claimed_htlcs,
+			raa, commitment_update, commitment_order, failed_htlcs, finalized_claimed_htlcs,
 			pending_update_adds, funding_broadcastable, channel_ready, announcement_sigs, tx_signatures,
 			channel_ready_order, committed_outbound_htlc_sources
 		}
@@ -10787,15 +10668,7 @@ where
 				}],
 				channel_id: Some(self.context.channel_id()),
 			};
-			self.monitor_updating_paused(
-				false,
-				false,
-				false,
-				Vec::new(),
-				Vec::new(),
-				Vec::new(),
-				logger,
-			);
+			self.monitor_updating_paused(false, false, false, Vec::new(), Vec::new(), logger);
 			self.push_ret_blockable_mon_update(monitor_update)
 		} else {
 			None
@@ -11536,15 +11409,7 @@ where
 			}],
 			channel_id: Some(self.context.channel_id()),
 		};
-		self.monitor_updating_paused(
-			false,
-			false,
-			false,
-			Vec::new(),
-			Vec::new(),
-			Vec::new(),
-			logger,
-		);
+		self.monitor_updating_paused(false, false, false, Vec::new(), Vec::new(), logger);
 		let monitor_update = self.push_ret_blockable_mon_update(monitor_update);
 
 		let announcement_sigs =
@@ -12989,10 +12854,10 @@ where
 		// is acceptable.
 		for htlc in self.context.pending_inbound_htlcs.iter_mut() {
 			let new_state =
-				if let &InboundHTLCState::AwaitingRemoteRevokeToAnnounce(ref forward_info) =
+				if let &InboundHTLCState::AwaitingRemoteRevokeToAnnounce(ref update_add) =
 					&htlc.state
 				{
-					Some(InboundHTLCState::AwaitingAnnouncedRemoteRevoke(forward_info.clone()))
+					Some(InboundHTLCState::AwaitingAnnouncedRemoteRevoke(update_add.clone()))
 				} else {
 					None
 				};
@@ -13213,15 +13078,7 @@ where
 		let can_add_htlc = send_res.map_err(|(_, msg)| ChannelError::Ignore(msg))?;
 		if can_add_htlc {
 			let monitor_update = self.build_commitment_no_status_check(logger);
-			self.monitor_updating_paused(
-				false,
-				true,
-				false,
-				Vec::new(),
-				Vec::new(),
-				Vec::new(),
-				logger,
-			);
+			self.monitor_updating_paused(false, true, false, Vec::new(), Vec::new(), logger);
 			Ok(self.push_ret_blockable_mon_update(monitor_update))
 		} else {
 			Ok(None)
@@ -13341,15 +13198,7 @@ where
 				}],
 				channel_id: Some(self.context.channel_id()),
 			};
-			self.monitor_updating_paused(
-				false,
-				false,
-				false,
-				Vec::new(),
-				Vec::new(),
-				Vec::new(),
-				&&logger,
-			);
+			self.monitor_updating_paused(false, false, false, Vec::new(), Vec::new(), &&logger);
 			self.push_ret_blockable_mon_update(monitor_update)
 		} else {
 			None
@@ -13958,7 +13807,6 @@ impl<SP: SignerProvider> OutboundV1Channel<SP> {
 			need_channel_ready,
 			Vec::new(),
 			Vec::new(),
-			Vec::new(),
 			logger,
 		);
 		Ok((channel, channel_monitor))
@@ -14255,7 +14103,6 @@ impl<SP: SignerProvider> InboundV1Channel<SP> {
 			false,
 			false,
 			need_channel_ready,
-			Vec::new(),
 			Vec::new(),
 			Vec::new(),
 			logger,
@@ -14702,6 +14549,41 @@ impl Readable for AnnouncementSigsState {
 	}
 }
 
+/// Represents the resolution status of an inbound HTLC. Previously we had multiple variants here,
+/// now we only use it for backwards compatibility when (de)serializing [`InboundHTLCState`]s.
+enum WriteableLegacyHTLCResolution<'a> {
+	Pending { update_add_htlc: &'a msgs::UpdateAddHTLC },
+}
+
+// We can't use `impl_writeable_tlv_based_enum` due to the lifetime.
+impl<'a> Writeable for WriteableLegacyHTLCResolution<'a> {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		match self {
+			Self::Pending { update_add_htlc } => {
+				2u8.write(writer)?;
+				crate::_encode_varint_length_prefixed_tlv!(writer, {
+					(0, update_add_htlc, required)
+				});
+			},
+		}
+
+		Ok(())
+	}
+}
+
+/// Represents the resolution status of an inbound HTLC. Previously we had multiple variants here,
+/// now we only use it for backwards compatibility when (de)serializing [`InboundHTLCState`]s.
+enum ReadableLegacyHTLCResolution {
+	Pending { update_add_htlc: msgs::UpdateAddHTLC },
+}
+
+impl_writeable_tlv_based_enum!(ReadableLegacyHTLCResolution,
+	// 0 used to be used for the ::Resolved variant in 0.2 and below.
+	(2, Pending) => {
+		(0, update_add_htlc, required),
+	},
+);
+
 impl<SP: SignerProvider> Writeable for FundedChannel<SP> {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		// Note that we write out as if remove_uncommitted_htlcs_and_mark_paused had just been
@@ -14786,13 +14668,13 @@ impl<SP: SignerProvider> Writeable for FundedChannel<SP> {
 			htlc.payment_hash.write(writer)?;
 			match &htlc.state {
 				&InboundHTLCState::RemoteAnnounced(_) => unreachable!(),
-				&InboundHTLCState::AwaitingRemoteRevokeToAnnounce(ref htlc_resolution) => {
+				&InboundHTLCState::AwaitingRemoteRevokeToAnnounce(ref update_add_htlc) => {
 					1u8.write(writer)?;
-					htlc_resolution.write(writer)?;
+					WriteableLegacyHTLCResolution::Pending { update_add_htlc }.write(writer)?;
 				},
-				&InboundHTLCState::AwaitingAnnouncedRemoteRevoke(ref htlc_resolution) => {
+				&InboundHTLCState::AwaitingAnnouncedRemoteRevoke(ref update_add_htlc) => {
 					2u8.write(writer)?;
-					htlc_resolution.write(writer)?;
+					WriteableLegacyHTLCResolution::Pending { update_add_htlc }.write(writer)?;
 				},
 				&InboundHTLCState::Committed { ref update_add_htlc } => {
 					3u8.write(writer)?;
@@ -14968,11 +14850,8 @@ impl<SP: SignerProvider> Writeable for FundedChannel<SP> {
 		self.context.monitor_pending_revoke_and_ack.write(writer)?;
 		self.context.monitor_pending_commitment_signed.write(writer)?;
 
-		(self.context.monitor_pending_forwards.len() as u64).write(writer)?;
-		for &(ref pending_forward, ref htlc_id) in self.context.monitor_pending_forwards.iter() {
-			pending_forward.write(writer)?;
-			htlc_id.write(writer)?;
-		}
+		// Previously used for monitor_pending_forwards prior to LDK 0.5.
+		0u64.write(writer)?;
 
 		(self.context.monitor_pending_failures.len() as u64).write(writer)?;
 		for &(ref htlc_source, ref payment_hash, ref fail_reason) in
@@ -15191,13 +15070,13 @@ impl<SP: SignerProvider> Writeable for FundedChannel<SP> {
 	}
 }
 
-impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
-	ReadableArgs<(&'a ES, &'b SP, &'c ChannelTypeFeatures)> for FundedChannel<SP>
+impl<'a, 'b, 'c, 'd, ES: EntropySource, SP: SignerProvider, L: Logger>
+	ReadableArgs<(&'a ES, &'b SP, &'c L, &'d ChannelTypeFeatures)> for FundedChannel<SP>
 {
 	fn read<R: io::Read>(
-		reader: &mut R, args: (&'a ES, &'b SP, &'c ChannelTypeFeatures),
+		reader: &mut R, args: (&'a ES, &'b SP, &'c L, &'d ChannelTypeFeatures),
 	) -> Result<Self, DecodeError> {
-		let (entropy_source, signer_provider, our_supported_features) = args;
+		let (entropy_source, signer_provider, logger, our_supported_features) = args;
 		let ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
 		if ver <= 2 {
 			return Err(DecodeError::UnknownVersion);
@@ -15232,8 +15111,9 @@ impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
 		let counterparty_next_commitment_transaction_number = Readable::read(reader)?;
 		let value_to_self_msat = Readable::read(reader)?;
 
-		let pending_inbound_htlc_count: u64 = Readable::read(reader)?;
+		let logger = WithContext::from(logger, None, Some(channel_id), None);
 
+		let pending_inbound_htlc_count: u64 = Readable::read(reader)?;
 		let mut pending_inbound_htlcs = Vec::with_capacity(cmp::min(
 			pending_inbound_htlc_count as usize,
 			DEFAULT_MAX_HTLCS as usize,
@@ -15246,26 +15126,22 @@ impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
 				payment_hash: Readable::read(reader)?,
 				state: match <u8 as Readable>::read(reader)? {
 					1 => {
-						let resolution = if ver <= 3 {
-							InboundHTLCResolution::Resolved {
-								pending_htlc_status: Readable::read(reader)?,
-							}
-						} else {
-							Readable::read(reader)?
-						};
-						InboundHTLCState::AwaitingRemoteRevokeToAnnounce(resolution)
+						let ReadableLegacyHTLCResolution::Pending { update_add_htlc } =
+							Readable::read(reader).map_err(|e| {
+								log_error!(logger, "Found deprecated HTLC received on LDK 0.1 or earlier. HTLC must be resolved before upgrading to LDK 0.5+, see CHANGELOG.md");
+								e
+							})?;
+						InboundHTLCState::AwaitingRemoteRevokeToAnnounce(update_add_htlc)
 					},
 					2 => {
-						let resolution = if ver <= 3 {
-							InboundHTLCResolution::Resolved {
-								pending_htlc_status: Readable::read(reader)?,
-							}
-						} else {
-							Readable::read(reader)?
-						};
-						InboundHTLCState::AwaitingAnnouncedRemoteRevoke(resolution)
+						let ReadableLegacyHTLCResolution::Pending { update_add_htlc } =
+							Readable::read(reader).map_err(|e| {
+								log_error!(logger, "Found deprecated HTLC received on LDK 0.1 or earlier. HTLC must be resolved before upgrading to LDK 0.5+, see CHANGELOG.md");
+								e
+							})?;
+						InboundHTLCState::AwaitingAnnouncedRemoteRevoke(update_add_htlc)
 					},
-					3 => InboundHTLCState::Committed { update_add_htlc: InboundUpdateAdd::Legacy },
+					3 => InboundHTLCState::Committed { update_add_htlc: dummy_inbound_update_add() },
 					4 => {
 						let reason = match <u8 as Readable>::read(reader)? {
 							0 => InboundHTLCRemovalReason::FailRelay(msgs::OnionErrorPacket {
@@ -15397,13 +15273,10 @@ impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
 		let monitor_pending_revoke_and_ack = Readable::read(reader)?;
 		let monitor_pending_commitment_signed = Readable::read(reader)?;
 
-		let monitor_pending_forwards_count: u64 = Readable::read(reader)?;
-		let mut monitor_pending_forwards = Vec::with_capacity(cmp::min(
-			monitor_pending_forwards_count as usize,
-			DEFAULT_MAX_HTLCS as usize,
-		));
-		for _ in 0..monitor_pending_forwards_count {
-			monitor_pending_forwards.push((Readable::read(reader)?, Readable::read(reader)?));
+		let monitor_pending_forwards_count_legacy: u64 = Readable::read(reader)?;
+		if monitor_pending_forwards_count_legacy != 0 {
+			log_error!(logger, "Found deprecated HTLC received on LDK 0.1 or earlier. HTLC must be resolved before upgrading to LDK 0.5+, see CHANGELOG.md");
+			return Err(DecodeError::InvalidValue);
 		}
 
 		let monitor_pending_failures_count: u64 = Readable::read(reader)?;
@@ -16007,7 +15880,6 @@ impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
 				monitor_pending_channel_ready,
 				monitor_pending_revoke_and_ack,
 				monitor_pending_commitment_signed,
-				monitor_pending_forwards,
 				monitor_pending_failures,
 				monitor_pending_finalized_fulfills: monitor_pending_finalized_fulfills.unwrap(),
 				monitor_pending_update_adds: monitor_pending_update_adds.unwrap_or_default(),
@@ -16116,6 +15988,23 @@ pub(crate) fn hold_time_since(send_timestamp: Option<Duration>) -> Option<u32> {
 	})
 }
 
+fn dummy_inbound_update_add() -> InboundUpdateAdd {
+	let txid_hash = Sha256d::from_bytes_ref(&[0; 32]);
+	InboundUpdateAdd::Forwarded {
+		incoming_packet_shared_secret: [0; 32],
+		phantom_shared_secret: None,
+		trampoline_shared_secret: None,
+		blinded_failure: None,
+		outbound_hop: OutboundHop {
+			amt_msat: 0,
+			channel_id: ChannelId([0; 32]),
+			funding_txo: OutPoint { txid: Txid::from_raw_hash(*txid_hash), index: 0 },
+			node_id: PublicKey::from_slice(&[2; 33]).unwrap(),
+			user_channel_id: 0,
+		},
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use crate::chain::chaininterface::LowerBoundedFeeEstimator;
@@ -16123,8 +16012,8 @@ mod tests {
 	use crate::chain::BestBlock;
 	use crate::ln::chan_utils::{self, commit_tx_fee_sat, ChannelTransactionParameters};
 	use crate::ln::channel::{
-		AwaitingChannelReadyFlags, ChannelState, FundedChannel, HTLCCandidate, HTLCInitiator,
-		HTLCUpdateAwaitingACK, InboundHTLCOutput, InboundHTLCState, InboundUpdateAdd,
+		dummy_inbound_update_add, AwaitingChannelReadyFlags, ChannelState, FundedChannel,
+		HTLCCandidate, HTLCInitiator, HTLCUpdateAwaitingACK, InboundHTLCOutput, InboundHTLCState,
 		InboundV1Channel, OutboundHTLCOutput, OutboundHTLCState, OutboundV1Channel,
 		MIN_THEIR_CHAN_RESERVE_SATOSHIS,
 	};
@@ -16164,10 +16053,6 @@ mod tests {
 	use bitcoin::transaction::{Transaction, TxOut, Version};
 	use bitcoin::{ScriptBuf, WPubkeyHash, WitnessProgram, WitnessVersion};
 	use std::cmp;
-
-	fn dummy_inbound_update_add() -> InboundUpdateAdd {
-		InboundUpdateAdd::Legacy
-	}
 
 	#[test]
 	#[rustfmt::skip]
@@ -16935,9 +16820,11 @@ mod tests {
 		let mut reader =
 			crate::util::ser::FixedLengthReader::new(&mut s, encoded_chan.len() as u64);
 		let features = channelmanager::provided_channel_type_features(&config);
-		let decoded_chan =
-			FundedChannel::read(&mut reader, (&&keys_provider, &&keys_provider, &features))
-				.unwrap();
+		let decoded_chan = FundedChannel::read(
+			&mut reader,
+			(&&keys_provider, &&keys_provider, &&logger, &features),
+		)
+		.unwrap();
 		assert_eq!(decoded_chan.context.pending_outbound_htlcs, pending_outbound_htlcs);
 		assert_eq!(decoded_chan.context.holding_cell_htlc_updates, holding_cell_htlc_updates);
 	}
