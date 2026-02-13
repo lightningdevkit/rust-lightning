@@ -7,6 +7,7 @@ use common::{
 	get_lsps_message, LSPSNodes, LSPSNodesWithPayer, LiquidityNode,
 };
 
+use lightning::blinded_path::IntroductionNode;
 use lightning::events::{ClosureReason, Event};
 use lightning::get_event_msg;
 use lightning::ln::channelmanager::{OptionalBolt11PaymentParams, PaymentId};
@@ -14,6 +15,7 @@ use lightning::ln::functional_test_utils::*;
 use lightning::ln::msgs::BaseMessageHandler;
 use lightning::ln::msgs::ChannelMessageHandler;
 use lightning::ln::msgs::MessageSendEvent;
+use lightning::ln::msgs::OnionMessageHandler;
 use lightning::ln::types::ChannelId;
 
 use lightning_liquidity::events::LiquidityEvent;
@@ -1089,6 +1091,7 @@ fn lsps2_service_handler_persistence_across_restarts() {
 			Some(service_config),
 			None,
 			time_provider,
+			None,
 		)
 		.unwrap();
 
@@ -1994,6 +1997,304 @@ fn htlc_timeout_before_client_claim_results_in_handling_failed() {
 	service_node.inner.chain_monitor.added_monitors.lock().unwrap().clear();
 	client_node.inner.chain_monitor.added_monitors.lock().unwrap().clear();
 	payer_node.chain_monitor.added_monitors.lock().unwrap().clear();
+}
+
+#[test]
+fn bolt12_lsps2_end_to_end_test() {
+	// End-to-end test of the BOLT12 + LSPS2 JIT channel flow. Three nodes: payer, service, client.
+	// client_trusts_lsp=true; funding transaction broadcast happens after client claims the HTLC.
+	//
+	// 1. Create a channel between payer and service
+	// 2. Do the LSPS2 ceremony between client and service to get an intercept SCID
+	// 3. Client creates a BOLT12 offer (with manually_handle_bolt12_invoice_requests = true)
+	// 4. Payer pays for the offer (sends InvoiceRequest via onion message)
+	// 5. Client receives InvoiceRequestReceived event and creates a BOLT12 invoice with blinded
+	//    payment paths through the service's intercept SCID
+	// 6. Payer receives the invoice and sends payment through the blinded path
+	// 7. Service intercepts the HTLC and creates a JIT channel to the client
+	// 8. Service forwards the HTLC to the client via the JIT channel
+	// 9. Client claims the payment, service broadcasts the funding tx
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+
+	let mut service_node_config = test_default_channel_config();
+	service_node_config.htlc_interception_flags = HTLCInterceptionFlags::ToInterceptSCIDs as u8;
+
+	let mut client_node_config = test_default_channel_config();
+	client_node_config.manually_accept_inbound_channels = true;
+	client_node_config.channel_config.accept_underpaying_htlcs = true;
+	client_node_config.manually_handle_bolt12_invoice_requests = true;
+
+	let node_chanmgrs = create_node_chanmgrs(
+		3,
+		&node_cfgs,
+		&[Some(service_node_config), Some(client_node_config), None],
+	);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let (lsps_nodes, promise_secret) = setup_test_lsps2_nodes_with_payer(nodes);
+	let LSPSNodesWithPayer { ref service_node, ref client_node, ref payer_node } = lsps_nodes;
+
+	let payer_node_id = payer_node.node.get_our_node_id();
+	let service_node_id = service_node.inner.node.get_our_node_id();
+	let client_node_id = client_node.inner.node.get_our_node_id();
+
+	let service_handler = service_node.liquidity_manager.lsps2_service_handler().unwrap();
+
+	// Create channel between payer and service
+	create_chan_between_nodes_with_value(&payer_node, &service_node.inner, 2_000_000, 100_000);
+
+	// LSPS2 ceremony: client negotiates JIT channel parameters with service
+	let intercept_scid = service_node.node.get_intercept_scid();
+	let user_channel_id = 42;
+	let cltv_expiry_delta: u32 = 144;
+	let payment_size_msat = Some(1_000_000);
+	let fee_base_msat = 1000;
+
+	execute_lsps2_dance(
+		&lsps_nodes,
+		intercept_scid,
+		user_channel_id,
+		cltv_expiry_delta,
+		promise_secret,
+		payment_size_msat,
+		fee_base_msat,
+	);
+
+	// Disconnect payer from client to ensure deterministic onion message routing through service.
+	// This guarantees that both the offer's blinded message paths and the payer's reply paths
+	// route through the service node.
+	payer_node.node.peer_disconnected(client_node_id);
+	client_node.node.peer_disconnected(payer_node_id);
+	payer_node.onion_messenger.peer_disconnected(client_node_id);
+	client_node.onion_messenger.peer_disconnected(payer_node_id);
+
+	// Client creates a BOLT12 offer. Since client's only remaining peer is service,
+	// the blinded message paths will use service as the introduction node.
+	let offer = client_node
+		.node
+		.create_offer_builder()
+		.unwrap()
+		.amount_msats(payment_size_msat.unwrap())
+		.build()
+		.unwrap();
+
+	// Payer initiates payment for the offer
+	let payment_id = PaymentId([1; 32]);
+	payer_node.node.pay_for_offer(&offer, None, payment_id, Default::default()).unwrap();
+
+	// Route InvoiceRequest: payer -> service -> client
+	let onion_msg = payer_node
+		.onion_messenger
+		.next_onion_message_for_peer(service_node_id)
+		.expect("Payer should send InvoiceRequest toward service");
+	service_node.onion_messenger.handle_onion_message(payer_node_id, &onion_msg);
+
+	let fwd_msg = service_node
+		.onion_messenger
+		.next_onion_message_for_peer(client_node_id)
+		.expect("Service should forward InvoiceRequest to client");
+	client_node.onion_messenger.handle_onion_message(service_node_id, &fwd_msg);
+
+	// Client should NOT auto-create an invoice (manually_handle_bolt12_invoice_requests = true)
+	assert!(client_node.onion_messenger.next_onion_message_for_peer(service_node_id).is_none());
+
+	// Client receives InvoiceRequestReceived event
+	let mut events = client_node.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+
+	let (invoice_request, context, responder) = match events.pop().unwrap() {
+		Event::InvoiceRequestReceived { invoice_request, context, responder } => {
+			(invoice_request, context, responder)
+		},
+		other => panic!("Expected Event::InvoiceRequestReceived, got: {:?}", other),
+	};
+
+	// Client creates a BOLT12 invoice with blinded payment paths through the service's
+	// intercept SCID, simulating the LSPS2 JIT channel flow.
+	let invoice = client_node
+		.node
+		.send_bolt12_invoice_for_intercept_scid(
+			invoice_request,
+			context,
+			responder,
+			service_node_id,
+			intercept_scid,
+			cltv_expiry_delta as u16,
+			3600,
+		)
+		.unwrap();
+
+	// Verify the invoice has the correct structure: blinded payment paths with service
+	// as the introduction node (the LSP that will open the JIT channel).
+	assert_eq!(invoice.amount_msats(), payment_size_msat.unwrap());
+	assert!(!invoice.payment_paths().is_empty());
+	for path in invoice.payment_paths() {
+		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(service_node_id));
+	}
+
+	// Route Invoice: client -> service -> payer
+	let onion_msg = client_node
+		.onion_messenger
+		.next_onion_message_for_peer(service_node_id)
+		.expect("Client should send Invoice toward service");
+	service_node.onion_messenger.handle_onion_message(client_node_id, &onion_msg);
+
+	let fwd_msg = service_node
+		.onion_messenger
+		.next_onion_message_for_peer(payer_node_id)
+		.expect("Service should forward Invoice to payer");
+	payer_node.onion_messenger.handle_onion_message(service_node_id, &fwd_msg);
+
+	// Payer processes the invoice and starts the payment automatically
+	check_added_monitors(&payer_node, 1);
+	let events = payer_node.node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let ev = SendEvent::from_event(events[0].clone());
+
+	// Payment goes to service via the blinded payment path (through intercept SCID)
+	service_node.inner.node.handle_update_add_htlc(payer_node_id, &ev.msgs[0]);
+	do_commitment_signed_dance(&service_node.inner, &payer_node, &ev.commitment_msg, false, true);
+	service_node.inner.node.process_pending_htlc_forwards();
+
+	// Service intercepts the HTLC (destined for intercept SCID)
+	let events = service_node.inner.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	let (payment_hash, expected_outbound_amount_msat) = match &events[0] {
+		Event::HTLCIntercepted {
+			intercept_id,
+			requested_next_hop_scid,
+			payment_hash,
+			expected_outbound_amount_msat,
+			..
+		} => {
+			assert_eq!(*requested_next_hop_scid, intercept_scid);
+
+			service_handler
+				.htlc_intercepted(
+					*requested_next_hop_scid,
+					*intercept_id,
+					*expected_outbound_amount_msat,
+					*payment_hash,
+				)
+				.unwrap();
+			(*payment_hash, expected_outbound_amount_msat)
+		},
+		other => panic!("Expected HTLCIntercepted event, got: {:?}", other),
+	};
+
+	// Service emits OpenChannel event with the correct fee deduction
+	let open_channel_event = service_node.liquidity_manager.next_event().unwrap();
+	match open_channel_event {
+		LiquidityEvent::LSPS2Service(LSPS2ServiceEvent::OpenChannel {
+			their_network_key,
+			amt_to_forward_msat,
+			opening_fee_msat,
+			user_channel_id: uc_id,
+			intercept_scid: iscd,
+		}) => {
+			assert_eq!(their_network_key, client_node_id);
+			assert_eq!(amt_to_forward_msat, payment_size_msat.unwrap() - fee_base_msat);
+			assert_eq!(opening_fee_msat, fee_base_msat);
+			assert_eq!(uc_id, user_channel_id);
+			assert_eq!(iscd, intercept_scid);
+		},
+		other => panic!("Expected OpenChannel event, got: {:?}", other),
+	};
+
+	// Create JIT channel with manual broadcast (client_trusts_lsp = true)
+	let result =
+		service_handler.channel_needs_manual_broadcast(user_channel_id, &client_node_id).unwrap();
+	assert!(result, "Channel should require manual broadcast");
+
+	let (channel_id, funding_tx) = create_channel_with_manual_broadcast(
+		&service_node_id,
+		&client_node_id,
+		&service_node,
+		&client_node,
+		user_channel_id,
+		expected_outbound_amount_msat,
+		true,
+	);
+
+	// Service marks channel as ready and forwards the intercepted HTLC
+	service_handler.channel_ready(user_channel_id, &channel_id, &client_node_id).unwrap();
+	service_node.inner.node.process_pending_htlc_forwards();
+
+	// Forward the HTLC to client on the JIT channel
+	let pay_event = {
+		{
+			let mut added_monitors =
+				service_node.inner.chain_monitor.added_monitors.lock().unwrap();
+			assert_eq!(added_monitors.len(), 1);
+			added_monitors.clear();
+		}
+		let mut events = service_node.inner.node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		SendEvent::from_event(events.remove(0))
+	};
+
+	client_node.inner.node.handle_update_add_htlc(service_node_id, &pay_event.msgs[0]);
+	do_commitment_signed_dance(
+		&client_node.inner,
+		&service_node.inner,
+		&pay_event.commitment_msg,
+		false,
+		true,
+	);
+	client_node.inner.node.process_pending_htlc_forwards();
+
+	// Client sees PaymentClaimable
+	let client_events = client_node.inner.node.get_and_clear_pending_events();
+	assert_eq!(client_events.len(), 1);
+	let preimage = match &client_events[0] {
+		Event::PaymentClaimable { payment_hash: ph, purpose, .. } => {
+			assert_eq!(*ph, payment_hash);
+			purpose.preimage()
+		},
+		other => panic!("Expected PaymentClaimable event on client, got: {:?}", other),
+	};
+
+	// Before client claims, service should not have broadcasted the funding tx
+	let broadcasted = service_node.inner.tx_broadcaster.txn_broadcasted.lock().unwrap();
+	assert!(broadcasted.is_empty(), "There should be no broadcasted txs yet");
+	drop(broadcasted);
+
+	// Client claims the payment
+	client_node.inner.node.claim_funds(preimage.unwrap());
+
+	claim_and_assert_forwarded_only(
+		&payer_node,
+		&service_node.inner,
+		&client_node.inner,
+		preimage.unwrap(),
+	);
+
+	// Service should emit PaymentForwarded
+	let service_events = service_node.node.get_and_clear_pending_events();
+	assert_eq!(service_events.len(), 1);
+
+	let total_fee_msat = match service_events[0].clone() {
+		Event::PaymentForwarded {
+			prev_node_id,
+			next_node_id,
+			skimmed_fee_msat,
+			total_fee_earned_msat,
+			..
+		} => {
+			assert_eq!(prev_node_id, Some(payer_node_id));
+			assert_eq!(next_node_id, Some(client_node_id));
+			service_handler.payment_forwarded(channel_id, skimmed_fee_msat.unwrap_or(0)).unwrap();
+			Some(total_fee_earned_msat.unwrap() - skimmed_fee_msat.unwrap())
+		},
+		_ => panic!("Expected PaymentForwarded event, got: {:?}", service_events[0]),
+	};
+
+	// Service should have broadcasted the funding tx after client claimed
+	let broadcasted = service_node.inner.tx_broadcaster.txn_broadcasted.lock().unwrap();
+	assert!(broadcasted.iter().any(|b| b.compute_txid() == funding_tx.compute_txid()));
+
+	// Payer should have the PaymentSent event
+	expect_payment_sent(&payer_node, preimage.unwrap(), Some(total_fee_msat), true, true);
 }
 
 fn claim_and_assert_forwarded_only<'a, 'b, 'c>(

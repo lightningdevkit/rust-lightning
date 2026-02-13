@@ -1618,6 +1618,7 @@ fn lsps5_service_handler_persistence_across_restarts() {
 			Some(service_config),
 			None,
 			Arc::clone(&time_provider),
+			None,
 		)
 		.unwrap();
 

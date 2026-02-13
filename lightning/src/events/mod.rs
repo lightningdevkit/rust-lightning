@@ -1806,6 +1806,38 @@ pub enum Event {
 		/// [`ChannelManager::respond_to_static_invoice_request`]: crate::ln::channelmanager::ChannelManager::respond_to_static_invoice_request
 		invoice_request: InvoiceRequest,
 	},
+	/// We received a [`Bolt12InvoiceRequest`] and the user has opted to manually handle it via
+	/// [`UserConfig::manually_handle_bolt12_invoice_requests`].
+	///
+	/// The user should construct a [`Bolt12Invoice`] (e.g., using custom blinded payment paths
+	/// for LSPS2 JIT channels via
+	/// [`OffersMessageFlow::create_blinded_payment_paths_for_intercept_scid`] and
+	/// [`OffersMessageFlow::create_invoice_builder_from_invoice_request_with_custom_payment_paths`])
+	/// and send it back via [`ChannelManager::send_invoice_for_request`].
+	///
+	/// # Failure Behavior and Persistence
+	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
+	/// returning `Err(ReplayEvent ())`), but won't be persisted across restarts.
+	///
+	/// [`Bolt12InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
+	/// [`UserConfig::manually_handle_bolt12_invoice_requests`]: crate::util::config::UserConfig::manually_handle_bolt12_invoice_requests
+	/// [`OffersMessageFlow::create_blinded_payment_paths_for_intercept_scid`]: crate::offers::flow::OffersMessageFlow::create_blinded_payment_paths_for_intercept_scid
+	/// [`OffersMessageFlow::create_invoice_builder_from_invoice_request_with_custom_payment_paths`]: crate::offers::flow::OffersMessageFlow::create_invoice_builder_from_invoice_request_with_custom_payment_paths
+	/// [`ChannelManager::send_invoice_for_request`]: crate::ln::channelmanager::ChannelManager::send_invoice_for_request
+	InvoiceRequestReceived {
+		/// The invoice request received from the payer.
+		invoice_request: InvoiceRequest,
+		/// The context from the incoming onion message, needed for verification via
+		/// [`OffersMessageFlow::verify_invoice_request`].
+		///
+		/// [`OffersMessageFlow::verify_invoice_request`]: crate::offers::flow::OffersMessageFlow::verify_invoice_request
+		context: Option<OffersContext>,
+		/// Used to send the [`Bolt12Invoice`] response back to the payer.
+		///
+		/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
+		responder: Responder,
+	},
 	/// Indicates that a channel funding transaction constructed interactively is ready to be
 	/// signed. This event will only be triggered if at least one input was contributed.
 	///
@@ -2296,6 +2328,10 @@ impl Writeable for Event {
 			&Event::StaticInvoiceRequested { .. } => {
 				47u8.write(writer)?;
 				// Never write StaticInvoiceRequested events as buffered onion messages aren't serialized.
+			},
+			&Event::InvoiceRequestReceived { .. } => {
+				51u8.write(writer)?;
+				// Never write InvoiceRequestReceived events as the responder isn't serialized.
 			},
 			&Event::FundingTransactionReadyForSigning { .. } => {
 				49u8.write(writer)?;
@@ -2934,6 +2970,8 @@ impl MaybeReadable for Event {
 			47u8 => Ok(None),
 			// Note that we do not write a length-prefixed TLV for FundingTransactionReadyForSigning events.
 			49u8 => Ok(None),
+			// Note that we do not write a length-prefixed TLV for InvoiceRequestReceived events.
+			51u8 => Ok(None),
 			50u8 => {
 				let mut f = || {
 					_init_and_read_len_prefixed_tlv_fields!(reader, {
