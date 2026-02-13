@@ -1106,7 +1106,7 @@ struct ClaimingPayment {
 	receiver_node_id: PublicKey,
 	htlcs: Vec<events::ClaimedHTLC>,
 	sender_intended_value: Option<u64>,
-	onion_fields: Option<RecipientOnionFields>,
+	onion_fields: RecipientOnionFields,
 	payment_id: Option<PaymentId>,
 	/// When we claim and generate a [`Event::PaymentClaimed`], we want to block any
 	/// payment-preimage-removing RAA [`ChannelMonitorUpdate`]s until the [`Event::PaymentClaimed`]
@@ -1125,13 +1125,14 @@ impl_writeable_tlv_based!(ClaimingPayment, {
 	(4, receiver_node_id, required),
 	(5, htlcs, optional_vec),
 	(7, sender_intended_value, option),
-	(9, onion_fields, (option: ReadableArgs, amount_msat.0.unwrap())),
+	// onion_fields was added (and always set for new payments) in 0.0.124
+	(9, onion_fields, (required: ReadableArgs, amount_msat.0.unwrap())),
 	(11, payment_id, option),
 });
 
 struct ClaimablePayment {
 	purpose: events::PaymentPurpose,
-	onion_fields: Option<RecipientOnionFields>,
+	onion_fields: RecipientOnionFields,
 	htlcs: Vec<ClaimableHTLC>,
 }
 
@@ -1254,12 +1255,11 @@ impl ClaimablePayments {
 					}
 				}
 
-				if let Some(RecipientOnionFields { custom_tlvs, .. }) = &payment.onion_fields {
-					if !custom_tlvs_known && custom_tlvs.iter().any(|(typ, _)| typ % 2 == 0) {
-						log_info!(logger, "Rejecting payment with payment hash {} as we cannot accept payment with unknown even TLVs: {}",
-							&payment_hash, log_iter!(custom_tlvs.iter().map(|(typ, _)| typ).filter(|typ| *typ % 2 == 0)));
-						return Err(payment.htlcs);
-					}
+				let custom_tlvs = &payment.onion_fields.custom_tlvs;
+				if !custom_tlvs_known && custom_tlvs.iter().any(|(typ, _)| typ % 2 == 0) {
+					log_info!(logger, "Rejecting payment with payment hash {} as we cannot accept payment with unknown even TLVs: {}",
+						&payment_hash, log_iter!(custom_tlvs.iter().map(|(typ, _)| typ).filter(|typ| *typ % 2 == 0)));
+					return Err(payment.htlcs);
 				}
 
 				let payment_id = payment.inbound_payment_id(inbound_payment_id_secret);
@@ -8083,7 +8083,9 @@ impl<
 								.or_insert_with(|| {
 									committed_to_claimable = true;
 									ClaimablePayment {
-										purpose: $purpose.clone(), htlcs: Vec::new(), onion_fields: None,
+										purpose: $purpose.clone(),
+										htlcs: Vec::new(),
+										onion_fields: onion_fields.clone(),
 									}
 								});
 							if $purpose != claimable_payment.purpose {
@@ -8091,12 +8093,10 @@ impl<
 								log_trace!(self.logger, "Failing new {} HTLC with payment_hash {} as we already had an existing {} HTLC with the same payment hash", log_keysend(is_keysend), &payment_hash, log_keysend(!is_keysend));
 								fail_htlc!(claimable_htlc, payment_hash);
 							}
-							if let Some(earlier_fields) = &mut claimable_payment.onion_fields {
-								if earlier_fields.check_merge(&mut onion_fields).is_err() {
-									fail_htlc!(claimable_htlc, payment_hash);
-								}
-							} else {
-								claimable_payment.onion_fields = Some(onion_fields);
+							let onions_compatible =
+								claimable_payment.onion_fields.check_merge(&mut onion_fields);
+							if onions_compatible.is_err() {
+								fail_htlc!(claimable_htlc, payment_hash);
 							}
 							let mut total_value = claimable_htlc.sender_intended_value;
 							let mut earliest_expiry = claimable_htlc.cltv_expiry;
@@ -8142,7 +8142,7 @@ impl<
 									counterparty_skimmed_fee_msat,
 									receiving_channel_ids: claimable_payment.receiving_channel_ids(),
 									claim_deadline: Some(earliest_expiry - HTLC_FAIL_BACK_BUFFER),
-									onion_fields: claimable_payment.onion_fields.clone(),
+									onion_fields: Some(claimable_payment.onion_fields.clone()),
 									payment_id: Some(payment_id),
 								}, None));
 								payment_claimable_generated = true;
@@ -9866,7 +9866,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							receiver_node_id: Some(receiver_node_id),
 							htlcs,
 							sender_intended_total_msat,
-							onion_fields,
+							onion_fields: Some(onion_fields),
 							payment_id,
 						};
 						let action = if let Some((outpoint, counterparty_node_id, channel_id)) =
@@ -17341,7 +17341,7 @@ impl<
 		let pending_outbound_payments = self.pending_outbound_payments.pending_outbound_payments.lock().unwrap();
 
 		let mut htlc_purposes: Vec<&events::PaymentPurpose> = Vec::new();
-		let mut htlc_onion_fields: Vec<&_> = Vec::new();
+		let mut htlc_onion_fields: Vec<Option<&_>> = Vec::new();
 		(claimable_payments.claimable_payments.len() as u64).write(writer)?;
 		for (payment_hash, payment) in claimable_payments.claimable_payments.iter() {
 			payment_hash.write(writer)?;
@@ -17350,7 +17350,7 @@ impl<
 				htlc.write(writer)?;
 			}
 			htlc_purposes.push(&payment.purpose);
-			htlc_onion_fields.push(&payment.onion_fields);
+			htlc_onion_fields.push(Some(&payment.onion_fields));
 		}
 
 		let mut monitor_update_blocked_actions_per_peer = None;
@@ -17621,25 +17621,18 @@ pub(super) struct ChannelManagerData<SP: SignerProvider> {
 }
 
 /// Arguments for deserializing [`ChannelManagerData`].
-struct ChannelManagerDataReadArgs<
-	'a,
-	ES: EntropySource,
-	NS: NodeSigner,
-	SP: SignerProvider,
-	L: Logger,
-> {
+struct ChannelManagerDataReadArgs<'a, ES: EntropySource, SP: SignerProvider, L: Logger> {
 	entropy_source: &'a ES,
-	node_signer: &'a NS,
 	signer_provider: &'a SP,
 	config: UserConfig,
 	logger: &'a L,
 }
 
-impl<'a, ES: EntropySource, NS: NodeSigner, SP: SignerProvider, L: Logger>
-	ReadableArgs<ChannelManagerDataReadArgs<'a, ES, NS, SP, L>> for ChannelManagerData<SP>
+impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
+	ReadableArgs<ChannelManagerDataReadArgs<'a, ES, SP, L>> for ChannelManagerData<SP>
 {
 	fn read<R: io::Read>(
-		reader: &mut R, args: ChannelManagerDataReadArgs<'a, ES, NS, SP, L>,
+		reader: &mut R, args: ChannelManagerDataReadArgs<'a, ES, SP, L>,
 	) -> Result<Self, DecodeError> {
 		let version = read_ver_prefix!(reader, SERIALIZATION_VERSION);
 
@@ -17866,10 +17859,7 @@ impl<'a, ES: EntropySource, NS: NodeSigner, SP: SignerProvider, L: Logger>
 		// Resolve events_override: if present, it replaces pending_events.
 		let pending_events_read = events_override.unwrap_or(pending_events_read);
 
-		// Combine claimable_htlcs_list with their purposes and onion fields. For very old data
-		// (pre-0.0.107) that lacks purposes, reconstruct them from legacy hop data.
-		let expanded_inbound_key = args.node_signer.get_expanded_key();
-
+		// Combine claimable_htlcs_list with their purposes and onion fields.
 		let mut claimable_payments = hash_map_with_capacity(claimable_htlcs_list.len());
 		if let Some(purposes) = claimable_htlc_purposes {
 			if purposes.len() != claimable_htlcs_list.len() {
@@ -17892,9 +17882,9 @@ impl<'a, ES: EntropySource, NS: NodeSigner, SP: SignerProvider, L: Logger>
 							return Err(DecodeError::InvalidValue);
 						}
 						onion.0.total_mpp_amount_msat = htlcs_total_msat;
-						Some(onion.0)
+						onion.0
 					} else {
-						None
+						return Err(DecodeError::InvalidValue);
 					};
 					let claimable = ClaimablePayment { purpose, htlcs, onion_fields };
 					let existing_payment = claimable_payments.insert(payment_hash, claimable);
@@ -17902,54 +17892,15 @@ impl<'a, ES: EntropySource, NS: NodeSigner, SP: SignerProvider, L: Logger>
 						return Err(DecodeError::InvalidValue);
 					}
 				}
-			} else {
-				for (purpose, (payment_hash, htlcs)) in
-					purposes.into_iter().zip(claimable_htlcs_list.into_iter())
-				{
-					let claimable = ClaimablePayment { purpose, htlcs, onion_fields: None };
-					let existing_payment = claimable_payments.insert(payment_hash, claimable);
-					if existing_payment.is_some() {
-						return Err(DecodeError::InvalidValue);
-					}
-				}
+			} else if !purposes.is_empty() || !claimable_htlcs_list.is_empty() {
+				// `amountless_claimable_htlc_onion_fields` was first written in LDK 0.0.115. We
+				// haven't supported upgrade from 0.0.115 with pending HTLCs since 0.1.
+				return Err(DecodeError::InvalidValue);
 			}
 		} else {
 			// LDK versions prior to 0.0.107 did not write a `pending_htlc_purposes`, but do
 			// include a `_legacy_hop_data` in the `OnionPayload`.
-			for (payment_hash, htlcs) in claimable_htlcs_list.into_iter() {
-				if htlcs.is_empty() {
-					return Err(DecodeError::InvalidValue);
-				}
-				let purpose = match &htlcs[0].onion_payload {
-					OnionPayload::Invoice { _legacy_hop_data } => {
-						if let Some(hop_data) = _legacy_hop_data {
-							events::PaymentPurpose::Bolt11InvoicePayment {
-								payment_preimage: match inbound_payment::verify(
-									payment_hash,
-									&hop_data,
-									0,
-									&expanded_inbound_key,
-									&args.logger,
-								) {
-									Ok((payment_preimage, _)) => payment_preimage,
-									Err(()) => {
-										log_error!(args.logger, "Failed to read claimable payment data for HTLC with payment hash {} - was not a pending inbound payment and didn't match our payment key", &payment_hash);
-										return Err(DecodeError::InvalidValue);
-									},
-								},
-								payment_secret: hop_data.payment_secret,
-							}
-						} else {
-							return Err(DecodeError::InvalidValue);
-						}
-					},
-					OnionPayload::Spontaneous(payment_preimage) => {
-						events::PaymentPurpose::SpontaneousPayment(*payment_preimage)
-					},
-				};
-				claimable_payments
-					.insert(payment_hash, ClaimablePayment { purpose, htlcs, onion_fields: None });
-			}
+			return Err(DecodeError::InvalidValue);
 		}
 
 		Ok(ChannelManagerData {
@@ -18222,7 +18173,6 @@ impl<
 			reader,
 			ChannelManagerDataReadArgs {
 				entropy_source: &args.entropy_source,
-				node_signer: &args.node_signer,
 				signer_provider: &args.signer_provider,
 				config: args.config.clone(),
 				logger: &args.logger,
@@ -19891,7 +19841,7 @@ impl<
 								amount_msat: claimable_amt_msat,
 								htlcs,
 								sender_intended_total_msat,
-								onion_fields: payment.onion_fields,
+								onion_fields: Some(payment.onion_fields),
 								payment_id: Some(payment_id),
 							},
 							// Note that we don't bother adding a EventCompletionAction here to
