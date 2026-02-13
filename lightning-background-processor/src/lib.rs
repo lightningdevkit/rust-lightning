@@ -511,6 +511,7 @@ pub(crate) mod futures_util {
 		D: Future<Output = ()> + Unpin,
 		E: Future<Output = ()> + Unpin,
 		F: Future<Output = ()> + Unpin,
+		G: Future + Unpin,
 	> {
 		pub a: A,
 		pub b: B,
@@ -518,15 +519,17 @@ pub(crate) mod futures_util {
 		pub d: D,
 		pub e: E,
 		pub f: F,
+		pub g: G,
 	}
 
-	pub(crate) enum SelectorOutput {
+	pub(crate) enum SelectorOutput<GOut> {
 		A(bool),
 		B,
 		C,
 		D,
 		E,
 		F,
+		G(GOut),
 	}
 
 	impl<
@@ -536,12 +539,11 @@ pub(crate) mod futures_util {
 			D: Future<Output = ()> + Unpin,
 			E: Future<Output = ()> + Unpin,
 			F: Future<Output = ()> + Unpin,
-		> Future for Selector<A, B, C, D, E, F>
+			G: Future + Unpin,
+		> Future for Selector<A, B, C, D, E, F, G>
 	{
-		type Output = SelectorOutput;
-		fn poll(
-			mut self: Pin<&mut Self>, ctx: &mut core::task::Context<'_>,
-		) -> Poll<SelectorOutput> {
+		type Output = SelectorOutput<G::Output>;
+		fn poll(mut self: Pin<&mut Self>, ctx: &mut core::task::Context<'_>) -> Poll<Self::Output> {
 			// Bias the selector so it first polls the sleeper future, allowing to exit immediately
 			// if the flag is set.
 			match Pin::new(&mut self.a).poll(ctx) {
@@ -580,24 +582,30 @@ pub(crate) mod futures_util {
 				},
 				Poll::Pending => {},
 			}
+			match Pin::new(&mut self.g).poll(ctx) {
+				Poll::Ready(res) => {
+					return Poll::Ready(SelectorOutput::G(res));
+				},
+				Poll::Pending => {},
+			}
 			Poll::Pending
 		}
 	}
 
 	/// A selector that takes a future wrapped in an option that will be polled if it is `Some` and
 	/// will always be pending otherwise.
-	pub(crate) struct OptionalSelector<F: Future<Output = ()> + Unpin> {
+	pub(crate) struct OptionalSelector<F: Future + Unpin> {
 		pub optional_future: Option<F>,
 	}
 
-	impl<F: Future<Output = ()> + Unpin> Future for OptionalSelector<F> {
-		type Output = ();
+	impl<F: Future + Unpin> Future for OptionalSelector<F> {
+		type Output = F::Output;
 		fn poll(mut self: Pin<&mut Self>, ctx: &mut core::task::Context<'_>) -> Poll<Self::Output> {
 			match self.optional_future.as_mut() {
 				Some(f) => match Pin::new(f).poll(ctx) {
-					Poll::Ready(()) => {
+					Poll::Ready(res) => {
 						self.optional_future.take();
-						Poll::Ready(())
+						Poll::Ready(res)
 					},
 					Poll::Pending => Poll::Pending,
 				},
@@ -637,13 +645,11 @@ pub(crate) mod futures_util {
 
 	pub(crate) struct Joiner<
 		ERR,
-		A: Future<Output = Result<(), ERR>> + Unpin,
 		B: Future<Output = Result<(), ERR>> + Unpin,
 		C: Future<Output = Result<(), ERR>> + Unpin,
 		D: Future<Output = Result<(), ERR>> + Unpin,
 		E: Future<Output = Result<(), ERR>> + Unpin,
 	> {
-		a: JoinerResult<ERR, A>,
 		b: JoinerResult<ERR, B>,
 		c: JoinerResult<ERR, C>,
 		d: JoinerResult<ERR, D>,
@@ -652,16 +658,14 @@ pub(crate) mod futures_util {
 
 	impl<
 			ERR,
-			A: Future<Output = Result<(), ERR>> + Unpin,
 			B: Future<Output = Result<(), ERR>> + Unpin,
 			C: Future<Output = Result<(), ERR>> + Unpin,
 			D: Future<Output = Result<(), ERR>> + Unpin,
 			E: Future<Output = Result<(), ERR>> + Unpin,
-		> Joiner<ERR, A, B, C, D, E>
+		> Joiner<ERR, B, C, D, E>
 	{
 		pub(crate) fn new() -> Self {
 			Self {
-				a: JoinerResult::Pending(None),
 				b: JoinerResult::Pending(None),
 				c: JoinerResult::Pending(None),
 				d: JoinerResult::Pending(None),
@@ -669,12 +673,6 @@ pub(crate) mod futures_util {
 			}
 		}
 
-		pub(crate) fn set_a(&mut self, fut: A) {
-			self.a = JoinerResult::Pending(Some(fut));
-		}
-		pub(crate) fn set_a_res(&mut self, res: Result<(), ERR>) {
-			self.a = JoinerResult::Ready(res);
-		}
 		pub(crate) fn set_b(&mut self, fut: B) {
 			self.b = JoinerResult::Pending(Some(fut));
 		}
@@ -691,16 +689,15 @@ pub(crate) mod futures_util {
 
 	impl<
 			ERR,
-			A: Future<Output = Result<(), ERR>> + Unpin,
 			B: Future<Output = Result<(), ERR>> + Unpin,
 			C: Future<Output = Result<(), ERR>> + Unpin,
 			D: Future<Output = Result<(), ERR>> + Unpin,
 			E: Future<Output = Result<(), ERR>> + Unpin,
-		> Future for Joiner<ERR, A, B, C, D, E>
+		> Future for Joiner<ERR, B, C, D, E>
 	where
-		Joiner<ERR, A, B, C, D, E>: Unpin,
+		Joiner<ERR, B, C, D, E>: Unpin,
 	{
-		type Output = [Result<(), ERR>; 5];
+		type Output = [Result<(), ERR>; 4];
 		fn poll(mut self: Pin<&mut Self>, ctx: &mut core::task::Context<'_>) -> Poll<Self::Output> {
 			let mut all_complete = true;
 			macro_rules! handle {
@@ -723,28 +720,24 @@ pub(crate) mod futures_util {
 					}
 				};
 			}
-			handle!(a);
 			handle!(b);
 			handle!(c);
 			handle!(d);
 			handle!(e);
 
 			if all_complete {
-				let mut res = [Ok(()), Ok(()), Ok(()), Ok(()), Ok(())];
-				if let JoinerResult::Ready(ref mut val) = &mut self.a {
+				let mut res = [Ok(()), Ok(()), Ok(()), Ok(())];
+				if let JoinerResult::Ready(ref mut val) = &mut self.b {
 					core::mem::swap(&mut res[0], val);
 				}
-				if let JoinerResult::Ready(ref mut val) = &mut self.b {
+				if let JoinerResult::Ready(ref mut val) = &mut self.c {
 					core::mem::swap(&mut res[1], val);
 				}
-				if let JoinerResult::Ready(ref mut val) = &mut self.c {
+				if let JoinerResult::Ready(ref mut val) = &mut self.d {
 					core::mem::swap(&mut res[2], val);
 				}
-				if let JoinerResult::Ready(ref mut val) = &mut self.d {
-					core::mem::swap(&mut res[3], val);
-				}
 				if let JoinerResult::Ready(ref mut val) = &mut self.e {
-					core::mem::swap(&mut res[4], val);
+					core::mem::swap(&mut res[3], val);
 				}
 				Poll::Ready(res)
 			} else {
@@ -755,6 +748,21 @@ pub(crate) mod futures_util {
 }
 use core::task;
 use futures_util::{dummy_waker, Joiner, OptionalSelector, Selector, SelectorOutput};
+
+type PersistFuture = core::pin::Pin<
+	Box<dyn core::future::Future<Output = Result<(), lightning::io::Error>> + MaybeSend>,
+>;
+
+/// Tracks an in-flight ChannelManager persistence so it can run concurrently
+/// with event processing and network I/O.
+struct CmPersistState {
+	/// The KV store write future for the ChannelManager.
+	future: PersistFuture,
+	/// Number of deferred monitor operations that were pending when this
+	/// persist started. Only these will be flushed when the persist completes,
+	/// so that monitor writes arriving after the persist aren't included.
+	pending_monitor_writes: usize,
+}
 
 /// Processes background events in a future.
 ///
@@ -1026,6 +1034,8 @@ where
 	let mut have_decayed_scorer = false;
 	let mut have_archived = false;
 
+	let mut cm_persist_state: Option<CmPersistState> = None;
+
 	let mut last_forwards_processing_call = sleeper(batch_delay.get());
 
 	loop {
@@ -1077,6 +1087,9 @@ where
 			(false, true) => Duration::from_millis(100),
 			(false, false) => FASTEST_TIMER,
 		};
+		let cm_persist_fut = OptionalSelector {
+			optional_future: cm_persist_state.as_mut().map(|s| s.future.as_mut()),
+		};
 		let fut = Selector {
 			a: sleeper(sleep_delay),
 			b: channel_manager.get_cm().get_event_or_persistence_needed_future(),
@@ -1084,6 +1097,7 @@ where
 			d: om_fut,
 			e: lm_fut,
 			f: gv_fut,
+			g: cm_persist_fut,
 		};
 		match fut.await {
 			SelectorOutput::B
@@ -1095,6 +1109,15 @@ where
 				if exit {
 					break;
 				}
+			},
+			SelectorOutput::G(res) => {
+				// CM persistence completed. Flush deferred monitor writes that
+				// were captured before the persist started, then re-process
+				// events before doing more work.
+				res?;
+				let state = cm_persist_state.take().unwrap();
+				let _ = chain_monitor.get_cm().flush(state.pending_monitor_writes, &logger);
+				log_trace!(logger, "Done persisting ChannelManager.");
 			},
 		}
 
@@ -1120,44 +1143,24 @@ where
 
 		let mut futures = Joiner::new();
 
-		// We capture pending_operation_count inside the persistence branch to
-		// avoid a race: ChannelManager handlers queue deferred monitor ops
-		// before their PersistenceNotifierGuard drops and sets the persistence
-		// flag. Capturing outside would let us observe pending ops whose
-		// corresponding ChannelManager state hasn't been persisted yet.
-		let mut pending_monitor_writes = 0;
-
-		if channel_manager.get_cm().get_and_clear_needs_persistence() {
-			pending_monitor_writes = chain_monitor.get_cm().pending_operation_count();
+		// Only check `needs_persistence` when no CM persist is in-flight, so we
+		// don't clear-and-lose the flag while unable to act on it. Capture
+		// `pending_operation_count` inside the persist branch to avoid a race:
+		// ChannelManager handlers queue deferred monitor ops before their
+		// PersistenceNotifierGuard drops and sets the persistence flag.
+		if cm_persist_state.is_none() && channel_manager.get_cm().get_and_clear_needs_persistence()
+		{
+			let pending_monitor_writes = chain_monitor.get_cm().pending_operation_count();
 			log_trace!(logger, "Persisting ChannelManager...");
-
-			let fut = async {
-				kv_store
-					.write(
-						CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
-						CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
-						CHANNEL_MANAGER_PERSISTENCE_KEY,
-						channel_manager.get_cm().encode(),
-					)
-					.await
-			};
+			let write_fut = kv_store.write(
+				CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+				CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
+				CHANNEL_MANAGER_PERSISTENCE_KEY,
+				channel_manager.get_cm().encode(),
+			);
 			// TODO: Once our MSRV is 1.68 we should be able to drop the Box
-			let mut fut = Box::pin(fut);
-
-			// Because persisting the ChannelManager is important to avoid accidental
-			// force-closures, go ahead and poll the future once before we do slightly more
-			// CPU-intensive tasks in the form of NetworkGraph pruning or scorer time-stepping
-			// below. This will get it moving but won't block us for too long if the underlying
-			// future is actually async.
-			use core::future::Future;
-			let mut waker = dummy_waker();
-			let mut ctx = task::Context::from_waker(&mut waker);
-			match core::pin::Pin::new(&mut fut).poll(&mut ctx) {
-				task::Poll::Ready(res) => futures.set_a_res(res),
-				task::Poll::Pending => futures.set_a(fut),
-			}
-
-			log_trace!(logger, "Done persisting ChannelManager.");
+			let future: PersistFuture = Box::pin(write_fut);
+			cm_persist_state = Some(CmPersistState { future, pending_monitor_writes });
 		}
 
 		// Note that we want to archive stale ChannelMonitors and run a network graph prune once
@@ -1320,14 +1323,10 @@ where
 			futures.set_e(Box::pin(fut));
 		}
 
-		// Run persistence tasks in parallel and exit if any of them returns an error.
+		// Run scorer/graph/sweeper/liquidity persistence tasks in parallel.
 		for res in futures.await {
 			res?;
 		}
-
-		// Flush monitor operations that were pending before we persisted. New updates
-		// that arrived after are left for the next iteration.
-		chain_monitor.get_cm().flush(pending_monitor_writes, &logger);
 
 		match check_and_reset_sleeper(&mut last_onion_message_handler_call, || {
 			sleeper(ONION_MESSAGE_HANDLER_TIMER)
@@ -1381,6 +1380,13 @@ where
 		}
 	}
 	log_trace!(logger, "Terminating background processor.");
+
+	// If a CM persistence was in-flight, await it and flush its deferred monitor writes
+	// before doing the final persist.
+	if let Some(state) = cm_persist_state.take() {
+		state.future.await?;
+		let _ = chain_monitor.get_cm().flush(state.pending_monitor_writes, &logger);
+	}
 
 	// After we exit, ensure we persist the ChannelManager one final time - this avoids
 	// some races where users quit while channel updates were in-flight, with
@@ -1702,16 +1708,12 @@ impl BackgroundProcessor {
 					last_freshness_call = Instant::now();
 				}
 
-				// We capture pending_operation_count inside the persistence
-				// branch to avoid a race: ChannelManager handlers queue
-				// deferred monitor ops before their PersistenceNotifierGuard
-				// drops and sets the persistence flag. Capturing outside would
-				// let us observe pending ops whose corresponding ChannelManager
-				// state hasn't been persisted yet.
-				let mut pending_monitor_writes = 0;
-
+				// Capture `pending_operation_count` inside the persist branch to
+				// avoid a race: ChannelManager handlers queue deferred monitor ops
+				// before their PersistenceNotifierGuard drops and sets the
+				// persistence flag.
 				if channel_manager.get_cm().get_and_clear_needs_persistence() {
-					pending_monitor_writes = chain_monitor.get_cm().pending_operation_count();
+					let pending_monitor_writes = chain_monitor.get_cm().pending_operation_count();
 					log_trace!(logger, "Persisting ChannelManager...");
 					(kv_store.write(
 						CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
@@ -1720,11 +1722,8 @@ impl BackgroundProcessor {
 						channel_manager.get_cm().encode(),
 					))?;
 					log_trace!(logger, "Done persisting ChannelManager.");
+					chain_monitor.get_cm().flush(pending_monitor_writes, &logger);
 				}
-
-				// Flush monitor operations that were pending before we persisted. New
-				// updates that arrived after are left for the next iteration.
-				chain_monitor.get_cm().flush(pending_monitor_writes, &logger);
 
 				if let Some(liquidity_manager) = liquidity_manager.as_ref() {
 					log_trace!(logger, "Persisting LiquidityManager...");
