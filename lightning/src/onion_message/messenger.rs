@@ -1168,12 +1168,13 @@ pub fn peel_onion_message<NS: NodeSigner, L: Logger, CMH: CustomOnionMessageHand
 			},
 		}
 	};
-	let receiving_context_auth_key = node_signer.get_receive_auth_key();
+	let receive_auth_key = node_signer.get_receive_auth_key();
+	let expanded_key = &node_signer.get_expanded_key();
 	let next_hop = onion_utils::decode_next_untagged_hop(
 		onion_decode_ss,
 		&msg.onion_routing_packet.hop_data[..],
 		msg.onion_routing_packet.hmac,
-		(control_tlvs_ss, &custom_handler, receiving_context_auth_key, &logger),
+		(control_tlvs_ss, &custom_handler, receive_auth_key, expanded_key, &logger),
 	);
 
 	// Constructs the next onion message using packet data and blinding logic.
@@ -1219,21 +1220,24 @@ pub fn peel_onion_message<NS: NodeSigner, L: Logger, CMH: CustomOnionMessageHand
 				message,
 				control_tlvs: ReceiveControlTlvs::Unblinded(ReceiveTlvs { context }),
 				reply_path,
-				control_tlvs_authenticated,
+				control_tlvs_from_local_node,
+				control_tlvs_from_phantom_participant: _,
 			},
 			None,
 		)) => match (message, context) {
 			(ParsedOnionMessageContents::Offers(msg), Some(MessageContext::Offers(ctx))) => {
 				match ctx {
 					OffersContext::InvoiceRequest { .. } => {
-						// Note: We introduced the `control_tlvs_authenticated` check in LDK v0.2
+						// Note: We introduced the `control_tlvs_from_*` check in LDK v0.2
 						// to simplify and standardize onion message authentication.
 						// To continue supporting offers created before v0.2, we allow
 						// unauthenticated control TLVs for these messages, as they can be
 						// verified using the legacy method.
 					},
 					_ => {
-						if !control_tlvs_authenticated {
+						// In any other offers context, we only allow message authenticated as
+						// coming from our local, node, not any other phantom participant.
+						if !control_tlvs_from_local_node {
 							log_trace!(logger, "Received an unauthenticated offers onion message");
 							return Err(());
 						}
@@ -1248,14 +1252,14 @@ pub fn peel_onion_message<NS: NodeSigner, L: Logger, CMH: CustomOnionMessageHand
 				ParsedOnionMessageContents::AsyncPayments(msg),
 				Some(MessageContext::AsyncPayments(ctx)),
 			) => {
-				if !control_tlvs_authenticated {
+				if !control_tlvs_from_local_node {
 					log_trace!(logger, "Received an unauthenticated async payments onion message");
 					return Err(());
 				}
 				Ok(PeeledOnion::AsyncPayments(msg, ctx, reply_path))
 			},
 			(ParsedOnionMessageContents::Custom(msg), Some(MessageContext::Custom(ctx))) => {
-				if !control_tlvs_authenticated {
+				if !control_tlvs_from_local_node {
 					log_trace!(logger, "Received an unauthenticated custom onion message");
 					return Err(());
 				}
@@ -1268,7 +1272,7 @@ pub fn peel_onion_message<NS: NodeSigner, L: Logger, CMH: CustomOnionMessageHand
 				ParsedOnionMessageContents::DNSResolver(msg),
 				Some(MessageContext::DNSResolver(ctx)),
 			) => {
-				if !control_tlvs_authenticated {
+				if !control_tlvs_from_local_node {
 					log_trace!(logger, "Received an unauthenticated DNS resolver onion message");
 					return Err(());
 				}
@@ -2504,7 +2508,8 @@ fn packet_payloads_and_keys<
 				control_tlvs,
 				reply_path: reply_path.take(),
 				message,
-				control_tlvs_authenticated: false,
+				control_tlvs_from_local_node: false,
+				control_tlvs_from_phantom_participant: false,
 			},
 			prev_control_tlvs_ss.unwrap(),
 		));
@@ -2514,7 +2519,8 @@ fn packet_payloads_and_keys<
 				control_tlvs: ReceiveControlTlvs::Unblinded(ReceiveTlvs { context: None }),
 				reply_path: reply_path.take(),
 				message,
-				control_tlvs_authenticated: false,
+				control_tlvs_from_local_node: false,
+				control_tlvs_from_phantom_participant: false,
 			},
 			prev_control_tlvs_ss.unwrap(),
 		));

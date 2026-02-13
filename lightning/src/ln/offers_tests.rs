@@ -75,15 +75,21 @@ const MAX_SHORT_LIVED_RELATIVE_EXPIRY: Duration = Duration::from_secs(60 * 60 * 
 use crate::prelude::*;
 
 macro_rules! expect_recent_payment {
-	($node: expr, $payment_state: path, $payment_id: expr) => {
-		match $node.node.list_recent_payments().first() {
-			Some(&$payment_state { payment_id: actual_payment_id, .. }) => {
-				assert_eq!($payment_id, actual_payment_id);
-			},
-			Some(_) => panic!("Unexpected recent payment state"),
-			None => panic!("No recent payments"),
+	($node: expr, $payment_state: path, $payment_id: expr) => {{
+		let mut found_payment = false;
+		for payment in $node.node.list_recent_payments().iter() {
+			match payment {
+				$payment_state { payment_id: actual_payment_id, .. } => {
+					if $payment_id == *actual_payment_id {
+						found_payment = true;
+						break;
+					}
+				},
+				_ => {},
+			}
 		}
-	}
+		assert!(found_payment);
+	}}
 }
 
 fn connect_peers<'a, 'b, 'c>(node_a: &Node<'a, 'b, 'c>, node_b: &Node<'a, 'b, 'c>) {
@@ -2571,4 +2577,93 @@ fn no_double_pay_with_stale_channelmanager() {
 	// Alice and Bob is closed. Since no 2nd attempt should be made, check that no events are
 	// generated in response to the duplicate invoice.
 	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
+}
+
+#[test]
+fn creates_and_pays_for_phantom_offer() {
+	// Tests that we can pay a "phantom offer" to any participating node.
+	let mut chanmon_cfgs = create_chanmon_cfgs(1);
+	chanmon_cfgs.append(&mut create_phantom_chanmon_cfgs(2));
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 2, 10_000_000, 1_000_000_000);
+
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
+	let node_c_id = nodes[2].node.get_our_node_id();
+
+	let offer = nodes[1].node
+		.create_phantom_offer_builder(vec![(node_c_id, nodes[2].node.list_channels())], 2)
+		.unwrap()
+		.amount_msats(10_000_000)
+		.build().unwrap();
+
+	// The offer should be resolvable by either of node B or C but signed by a derived key
+	assert!(offer.issuer_signing_pubkey().is_some());
+	assert_ne!(offer.issuer_signing_pubkey(), Some(node_b_id));
+	assert_ne!(offer.issuer_signing_pubkey(), Some(node_c_id));
+	assert_eq!(offer.paths().len(), 2);
+	let mut b_path_count = 0;
+	let mut c_path_count = 0;
+	for path in offer.paths() {
+		if check_compact_path_introduction_node(&path, &nodes[0], node_b_id) {
+			b_path_count += 1;
+		}
+		if check_compact_path_introduction_node(&path, &nodes[0], node_c_id) {
+			c_path_count += 1;
+		}
+	}
+	assert_eq!(b_path_count, 1);
+	assert_eq!(c_path_count, 1);
+
+	// Pay twice, first via node B (the node that actually built the offer) then pay via node C
+	// (which won't have seen the offer until it receives the invoice_request).
+	for (payment_id, recipient) in [([1; 32], &nodes[1]), ([2; 32], &nodes[2])] {
+		let payment_id = PaymentId(payment_id);
+		nodes[0].node.pay_for_offer(&offer, None, payment_id, Default::default()).unwrap();
+		expect_recent_payment!(nodes[0], RecentPaymentDetails::AwaitingInvoice, payment_id);
+
+		let recipient_id = recipient.node.get_our_node_id();
+		let non_recipient_id = if node_b_id == recipient_id {
+			node_c_id
+		} else {
+			node_b_id
+		};
+
+		let onion_message =
+			nodes[0].onion_messenger.next_onion_message_for_peer(recipient_id).unwrap();
+		let _discard =
+			nodes[0].onion_messenger.next_onion_message_for_peer(non_recipient_id).unwrap();
+		recipient.onion_messenger.handle_onion_message(node_a_id, &onion_message);
+
+		let (invoice_request, _) = extract_invoice_request(&recipient, &onion_message);
+		let payment_context = PaymentContext::Bolt12Offer(Bolt12OfferContext {
+			offer_id: offer.id(),
+			invoice_request: InvoiceRequestFields {
+				payer_signing_pubkey: invoice_request.payer_signing_pubkey(),
+				quantity: None,
+				payer_note_truncated: None,
+				human_readable_name: None,
+			},
+		});
+
+		let onion_message =
+			recipient.onion_messenger.next_onion_message_for_peer(node_a_id).unwrap();
+		nodes[0].onion_messenger.handle_onion_message(recipient_id, &onion_message);
+
+		let (invoice, _) = extract_invoice(&nodes[0], &onion_message);
+		assert_eq!(invoice.amount_msats(), 10_000_000);
+
+		route_bolt12_payment(&nodes[0], &[recipient], &invoice);
+		expect_recent_payment!(&nodes[0], RecentPaymentDetails::Pending, payment_id);
+
+		claim_bolt12_payment(&nodes[0], &[recipient], payment_context, &invoice);
+		expect_recent_payment!(&nodes[0], RecentPaymentDetails::Fulfilled, payment_id);
+
+		assert!(nodes[0].onion_messenger.next_onion_message_for_peer(node_b_id).is_none());
+		assert!(nodes[0].onion_messenger.next_onion_message_for_peer(node_c_id).is_none());
+	}
 }

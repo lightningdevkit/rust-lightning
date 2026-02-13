@@ -13568,6 +13568,47 @@ macro_rules! create_offer_builder { ($self: ident, $builder: ty) => {
 
 		Ok(builder.into())
 	}
+
+	/// Creates an [`OfferBuilder`] such that the [`Offer`] it builds is recognized by any
+	/// [`ChannelManager`] (or [`OffersMessageFlow`]) using the same [`ExpandedKey`] (as returned
+	/// from [`NodeSigner::get_expanded_key`]). This allows any nodes participating in a BOLT 11
+	/// "phantom node" cluster to also receive BOLT 12 payments.
+	///
+	/// Note that, unlike with BOLT 11 invoices, BOLT 12 "phantom" offers do not in fact have any
+	/// "phantom node" appended to receiving paths. Instead, multiple blinded paths are simply
+	/// included which terminate at different final nodes.
+	///
+	/// `other_nodes_channels` must be set to a list of each participating node's `node_id` (from
+	/// [`NodeSigner::get_node_id`] with a [`Recipient::Node`]) and its channels.
+	///
+	/// `path_count_limit` is used to limit the number of blinded paths included in the resulting
+	/// [`Offer`]. Note that if this is less than the number of participating nodes (i.e.
+	/// `other_nodes_channels.len() + 1`) not all nodes will participate in receiving funds.
+	/// Because the parameterized [`MessageRouter`] will only get a chance to limit the number of
+	/// paths *per-node*, it is important to set this for offers that will be included in a QR
+	/// code.
+	///
+	/// See [`Self::create_offer_builder`] for more details on the blinded path construction.
+	///
+	/// [`ExpandedKey`]: inbound_payment::ExpandedKey
+	pub fn create_phantom_offer_builder(
+		&$self, other_nodes_channels: Vec<(PublicKey, Vec<ChannelDetails>)>,
+		path_count_limit: usize,
+	) -> Result<$builder, Bolt12SemanticError> {
+		let mut peers = Vec::with_capacity(other_nodes_channels.len() + 1);
+		if !other_nodes_channels.iter().any(|(node_id, _)| *node_id == $self.get_our_node_id()) {
+			peers.push(($self.get_our_node_id(), $self.get_peers_for_blinded_path()));
+		}
+		for (node_id, peer_chans) in other_nodes_channels {
+			peers.push((node_id, Self::channel_details_to_forward_nodes(peer_chans)));
+		}
+
+		let builder = $self.flow.create_phantom_offer_builder(
+			&$self.entropy_source, peers, path_count_limit
+		)?;
+
+		Ok(builder.into())
+	}
 } }
 
 macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
@@ -14184,6 +14225,43 @@ impl<
 		now
 	}
 
+	/// Converts a list of channels to a list of peers which may be suitable to receive onion
+	/// messages through.
+	fn channel_details_to_forward_nodes(
+		mut channel_list: Vec<ChannelDetails>,
+	) -> Vec<MessageForwardNode> {
+		channel_list.sort_unstable_by_key(|chan| chan.counterparty.node_id);
+		let mut res = Vec::new();
+		// TODO: When MSRV reaches 1.77 use chunk_by
+		let mut start = 0;
+		while start < channel_list.len() {
+			let counterparty_node_id = channel_list[start].counterparty.node_id;
+			let end = channel_list[start..]
+				.iter()
+				.position(|chan| chan.counterparty.node_id != counterparty_node_id)
+				.map(|pos| start + pos)
+				.unwrap_or(channel_list.len());
+
+			let peer_chans = &channel_list[start..end];
+			if peer_chans.iter().any(|chan| chan.is_usable)
+				&& peer_chans.iter().any(|c| c.counterparty.features.supports_onion_messages())
+			{
+				res.push(MessageForwardNode {
+					node_id: peer_chans[0].counterparty.node_id,
+					short_channel_id: peer_chans
+						.iter()
+						.filter(|chan| chan.is_usable)
+						// Select the channel which has the highest local balance. We assume this
+						// channel is the most likely to stick around.
+						.max_by_key(|chan| chan.inbound_capacity_msat)
+						.and_then(|chan| chan.get_inbound_payment_scid()),
+				})
+			}
+			start = end;
+		}
+		res
+	}
+
 	fn get_peers_for_blinded_path(&self) -> Vec<MessageForwardNode> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		per_peer_state
@@ -14198,7 +14276,9 @@ impl<
 					.iter()
 					.filter(|(_, channel)| channel.context().is_usable())
 					.filter_map(|(_, channel)| channel.as_funded())
-					.min_by_key(|funded_channel| funded_channel.context.channel_creation_height)
+					// Select the channel which has the highest local balance. We assume this
+					// channel is the most likely to stick around.
+					.max_by_key(|funded_channel| funded_channel.funding.get_value_to_self_msat())
 					.and_then(|funded_channel| funded_channel.get_inbound_scid()),
 			})
 			.collect::<Vec<_>>()

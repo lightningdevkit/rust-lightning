@@ -58,7 +58,7 @@ impl<'a, T: Writeable> Writeable for ChaChaPolyWriteAdapter<'a, T> {
 }
 
 /// Encrypts the provided plaintext with the given key using ChaCha20Poly1305 in the modified
-/// with-AAD form used in [`ChaChaDualPolyReadAdapter`].
+/// with-AAD form used in [`ChaChaTriPolyReadAdapter`].
 pub(crate) fn chachapoly_encrypt_with_swapped_aad(
 	mut plaintext: Vec<u8>, key: [u8; 32], aad: [u8; 32],
 ) -> Vec<u8> {
@@ -84,34 +84,48 @@ pub(crate) fn chachapoly_encrypt_with_swapped_aad(
 	plaintext
 }
 
+#[derive(PartialEq, Eq)]
+pub(crate) enum TriPolyAADUsed {
+	/// No AAD was used.
+	///
+	/// The HMAC validated with standard ChaCha20Poly1305.
+	None,
+	/// The HMAC vlidated using the first AAD provided.
+	First,
+	/// The HMAC vlidated using the second AAD provided.
+	Second,
+}
+
 /// Enables the use of the serialization macros for objects that need to be simultaneously decrypted
 /// and deserialized. This allows us to avoid an intermediate Vec allocation.
 ///
-/// This variant of [`ChaChaPolyReadAdapter`] calculates Poly1305 tags twice, once using the given
-/// key and once with the given 32-byte AAD appended after the encrypted stream, accepting either
-/// being correct as sufficient.
+/// This variant of [`ChaChaPolyReadAdapter`] calculates Poly1305 tags thrice, once using the given
+/// key and once each for the two given 32-byte AADs appended after the encrypted stream, accepting
+/// any being correct as sufficient.
 ///
-/// Note that we do *not* use the provided AAD as the standard ChaCha20Poly1305 AAD as that would
+/// Note that we do *not* use the provided AADs as the standard ChaCha20Poly1305 AAD as that would
 /// require placing it first and prevent us from avoiding redundant Poly1305 rounds. Instead, the
 /// ChaCha20Poly1305 MAC check is tweaked to move the AAD to *after* the the contents being
 /// checked, effectively treating the contents as the AAD for the AAD-containing MAC but behaving
 /// like classic ChaCha20Poly1305 for the non-AAD-containing MAC.
-pub(crate) struct ChaChaDualPolyReadAdapter<R: Readable> {
+pub(crate) struct ChaChaTriPolyReadAdapter<R: Readable> {
 	pub readable: R,
-	pub used_aad: bool,
+	pub used_aad: TriPolyAADUsed,
 }
 
-impl<T: Readable> LengthReadableArgs<([u8; 32], [u8; 32])> for ChaChaDualPolyReadAdapter<T> {
+impl<T: Readable> LengthReadableArgs<([u8; 32], [u8; 32], [u8; 32])>
+	for ChaChaTriPolyReadAdapter<T>
+{
 	// Simultaneously read and decrypt an object from a LengthLimitedRead storing it in
 	// Self::readable. LengthLimitedRead must be used instead of std::io::Read because we need the
 	// total length to separate out the tag at the end.
 	fn read<R: LengthLimitedRead>(
-		r: &mut R, params: ([u8; 32], [u8; 32]),
+		r: &mut R, params: ([u8; 32], [u8; 32], [u8; 32]),
 	) -> Result<Self, DecodeError> {
 		if r.remaining_bytes() < 16 {
 			return Err(DecodeError::InvalidValue);
 		}
-		let (key, aad) = params;
+		let (key, aad_a, aad_b) = params;
 
 		let mut chacha = ChaCha20::new(&key[..], &[0; 12]);
 		let mut mac_key = [0u8; 64];
@@ -125,7 +139,7 @@ impl<T: Readable> LengthReadableArgs<([u8; 32], [u8; 32])> for ChaChaDualPolyRea
 		let decrypted_len = r.remaining_bytes() - 16;
 		let s = FixedLengthReader::new(r, decrypted_len);
 		let mut chacha_stream =
-			ChaChaDualPolyReader { chacha: &mut chacha, poly: &mut mac, read_len: 0, read: s };
+			ChaChaTriPolyReader { chacha: &mut chacha, poly: &mut mac, read_len: 0, read: s };
 
 		let readable: T = Readable::read(&mut chacha_stream)?;
 		while chacha_stream.read.bytes_remain() {
@@ -142,14 +156,18 @@ impl<T: Readable> LengthReadableArgs<([u8; 32], [u8; 32])> for ChaChaDualPolyRea
 			mac.input(&[0; 16][0..16 - (read_len % 16)]);
 		}
 
-		let mut mac_aad = mac;
+		let mut mac_aad_a = mac;
+		let mut mac_aad_b = mac;
 
-		mac_aad.input(&aad[..]);
+		mac_aad_a.input(&aad_a[..]);
+		mac_aad_b.input(&aad_b[..]);
 		// Note that we don't need to pad the AAD since its a multiple of 16 bytes
 
 		// For the AAD-containing MAC, swap the AAD and the read data, effectively.
-		mac_aad.input(&(read_len as u64).to_le_bytes());
-		mac_aad.input(&32u64.to_le_bytes());
+		mac_aad_a.input(&(read_len as u64).to_le_bytes());
+		mac_aad_b.input(&(read_len as u64).to_le_bytes());
+		mac_aad_a.input(&32u64.to_le_bytes());
+		mac_aad_b.input(&32u64.to_le_bytes());
 
 		// For the non-AAD-containing MAC, leave the data and AAD where they belong.
 		mac.input(&0u64.to_le_bytes());
@@ -158,23 +176,25 @@ impl<T: Readable> LengthReadableArgs<([u8; 32], [u8; 32])> for ChaChaDualPolyRea
 		let mut tag = [0 as u8; 16];
 		r.read_exact(&mut tag)?;
 		if fixed_time_eq(&mac.result(), &tag) {
-			Ok(Self { readable, used_aad: false })
-		} else if fixed_time_eq(&mac_aad.result(), &tag) {
-			Ok(Self { readable, used_aad: true })
+			Ok(Self { readable, used_aad: TriPolyAADUsed::None })
+		} else if fixed_time_eq(&mac_aad_a.result(), &tag) {
+			Ok(Self { readable, used_aad: TriPolyAADUsed::First })
+		} else if fixed_time_eq(&mac_aad_b.result(), &tag) {
+			Ok(Self { readable, used_aad: TriPolyAADUsed::Second })
 		} else {
 			return Err(DecodeError::InvalidValue);
 		}
 	}
 }
 
-struct ChaChaDualPolyReader<'a, R: Read> {
+struct ChaChaTriPolyReader<'a, R: Read> {
 	chacha: &'a mut ChaCha20,
 	poly: &'a mut Poly1305,
 	read_len: usize,
 	pub read: R,
 }
 
-impl<'a, R: Read> Read for ChaChaDualPolyReader<'a, R> {
+impl<'a, R: Read> Read for ChaChaTriPolyReader<'a, R> {
 	// Decrypts bytes from Self::read into `dest`.
 	// After all reads complete, the caller must compare the expected tag with
 	// the result of `Poly1305::result()`.
@@ -349,15 +369,15 @@ mod tests {
 	}
 
 	#[test]
-	fn short_read_chacha_dual_read_adapter() {
-		// Previously, if we attempted to read from a ChaChaDualPolyReadAdapter but the object
+	fn short_read_chacha_tri_read_adapter() {
+		// Previously, if we attempted to read from a ChaChaTriPolyReadAdapter but the object
 		// being read is shorter than the available buffer while the buffer passed to
-		// ChaChaDualPolyReadAdapter itself always thinks it has room, we'd end up
+		// ChaChaTriPolyReadAdapter itself always thinks it has room, we'd end up
 		// infinite-looping as we didn't handle `Read::read`'s 0 return values at EOF.
 		let mut stream = &[0; 1024][..];
 		let mut too_long_stream = FixedLengthReader::new(&mut stream, 2048);
-		let keys = ([42; 32], [99; 32]);
-		let res = super::ChaChaDualPolyReadAdapter::<u8>::read(&mut too_long_stream, keys);
+		let keys = ([42; 32], [98; 32], [99; 32]);
+		let res = super::ChaChaTriPolyReadAdapter::<u8>::read(&mut too_long_stream, keys);
 		match res {
 			Ok(_) => panic!(),
 			Err(e) => assert_eq!(e, DecodeError::ShortRead),
