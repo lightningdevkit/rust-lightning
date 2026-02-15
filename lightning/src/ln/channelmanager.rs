@@ -3522,7 +3522,7 @@ impl<
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
-		L: Logger + std::ops::Deref,
+		L: Logger + core::ops::Deref,
 	> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 {
 	/// Constructs a new `ChannelManager` to hold several channels and route between them.
@@ -3962,8 +3962,6 @@ impl<
 	///
 	/// [`ChainMonitor::get_claimable_balances`]: crate::chain::chainmonitor::ChainMonitor::get_claimable_balances
 	pub fn get_balance_details(&self, balances: &[Balance]) -> BalanceDetails {
-		use crate::chain::channelmonitor::Balance;
-
 		let recent_payments = self.list_recent_payments();
 
 		let mut claimable_on_channel_close_msat: u64 = 0;

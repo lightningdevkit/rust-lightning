@@ -2415,11 +2415,9 @@ fn test_get_balance_details_catches_orphaned_htlcs() {
 	create_announced_chan_between_nodes(&nodes, 0, 1);
 	create_announced_chan_between_nodes(&nodes, 1, 2);
 
-	// Send a payment without having ChannelManager track it yet, simulating an orphaned HTLC
 	use crate::chain::channelmonitor::Balance;
 	use crate::ln::channelmanager::collect_pending_payment_state;
 	use crate::ln::channelmanager::PaymentId;
-	use crate::routing::router::{PaymentParameters, RouteParameters};
 	use crate::util::test_utils;
 
 	let payment_id = PaymentId([42; 32]);
@@ -2458,7 +2456,7 @@ fn test_get_balance_details_catches_orphaned_htlcs() {
 	// After abandonment, the payment shouldn't be in pending payments
 	let recent_payments = nodes[0].node.list_recent_payments();
 	let abandoned = recent_payments.iter().any(|p| {
-		matches!(p, crate::ln::channelmanager::RecentPaymentDetails::Abandoned { 
+		matches!(p, crate::ln::channelmanager::RecentPaymentDetails::Abandoned {
 			payment_id: pid, .. 
 		} if *pid == payment_id)
 	});
