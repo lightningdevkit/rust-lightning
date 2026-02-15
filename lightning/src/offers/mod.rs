@@ -17,6 +17,7 @@ pub mod offer;
 pub mod flow;
 
 pub mod async_receive_offer_cache;
+pub mod contacts;
 pub mod invoice;
 pub mod invoice_error;
 mod invoice_macros;
