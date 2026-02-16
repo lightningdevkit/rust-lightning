@@ -105,8 +105,7 @@ pub struct ResourceManagerConfig {
 	/// Default: 90 seconds
 	pub resolution_period: Duration,
 
-	/// The maximum time that a HTLC can be held, used as the rolling window for tracking
-	/// revenue.
+	/// The rolling window over which we track the revenue on the incoming channel.
 	///
 	/// This corresponds to the largest cltv delta from the current block height that a node will
 	/// allow a HTLC to set before failing it with `expiry_too_far`. Assuming 10 minute blocks,
@@ -482,9 +481,19 @@ impl Channel {
 		})
 	}
 
-	fn general_available(
-		&mut self, incoming_amount_msat: u64, outgoing_channel_id: u64, salt: Option<[u8; 32]>,
+	fn general_available<ES: EntropySource>(
+		&mut self, incoming_amount_msat: u64, outgoing_channel_id: u64, entropy_source: &ES,
 	) -> Result<bool, ()> {
+		// Check if we need to assign slots for this outgoing channel
+		let needs_slot_assignment =
+			!self.general_bucket.channels_slots.contains_key(&outgoing_channel_id);
+
+		let salt = if needs_slot_assignment {
+			Some(entropy_source.get_secure_random_bytes())
+		} else {
+			None
+		};
+
 		Ok(self.general_bucket.can_add_htlc(outgoing_channel_id, incoming_amount_msat, salt)?)
 	}
 
@@ -555,6 +564,14 @@ impl Channel {
 			.saturating_sub(i64::try_from(outgoing_in_flight_risk).unwrap_or(i64::MAX))
 			.saturating_sub(i64::try_from(in_flight_htlc_risk).unwrap_or(i64::MAX))
 			>= incoming_revenue_threshold)
+	}
+
+	fn outgoing_in_flight_risk(&self) -> u64 {
+		// We only account the in-flight risk for HTLCs that are accountable
+		self.pending_htlcs
+			.iter()
+			.map(|htlc| if htlc.1.outgoing_accountable { htlc.1.in_flight_risk } else { 0 })
+			.sum()
 	}
 }
 
@@ -631,13 +648,17 @@ impl ResourceManager for DefaultResourceManager {
 				entry.insert(channel);
 				Ok(())
 			},
-			Entry::Occupied(_) => Ok(()),
+			Entry::Occupied(_) => {
+				debug_assert!(false, "We should not try to add channel that already exists.");
+				Ok(())
+			},
 		}
 	}
 
 	fn remove_channel(&self, channel_id: u64) -> Result<(), ()> {
 		let mut channels_lock = self.channels.lock().unwrap();
-		channels_lock.remove(&channel_id).ok_or(())?;
+		let res = channels_lock.remove(&channel_id);
+		debug_assert!(res.is_some(), "We should not try to remove channel that does not exist.");
 
 		// Remove slots assigned to channel being removed across all other channels.
 		for (_, channel) in channels_lock.iter_mut() {
@@ -661,12 +682,7 @@ impl ResourceManager for DefaultResourceManager {
 		let outgoing_reputation =
 			outgoing_channel.outgoing_reputation.value_at_timestamp(added_at)?;
 
-		// We only account the in-flight risk for HTLCs that are accountable
-		let outgoing_in_flight_risk: u64 = outgoing_channel
-			.pending_htlcs
-			.iter()
-			.map(|htlc| if htlc.1.outgoing_accountable { htlc.1.in_flight_risk } else { 0 })
-			.sum();
+		let outgoing_in_flight_risk: u64 = outgoing_channel.outgoing_in_flight_risk();
 		let fee = incoming_amount_msat - outgoing_amount_msat;
 		let in_flight_htlc_risk = self.htlc_in_flight_risk(fee, incoming_cltv_expiry, height_added);
 
@@ -681,21 +697,11 @@ impl ResourceManager for DefaultResourceManager {
 
 		let incoming_channel = channels_lock.get_mut(&incoming_channel_id).ok_or(())?;
 
-		// Check if we need to assign slots for this outgoing channel
-		let needs_slot_assignment =
-			!incoming_channel.general_bucket.channels_slots.contains_key(&outgoing_channel_id);
-
-		let salt = if needs_slot_assignment {
-			Some(entropy_source.get_secure_random_bytes())
-		} else {
-			None
-		};
-
 		let (accountable, bucket_assigned) = if !incoming_accountable {
 			if incoming_channel.general_available(
 				incoming_amount_msat,
 				outgoing_channel_id,
-				salt,
+				entropy_source,
 			)? {
 				(false, BucketAssigned::General)
 			} else if incoming_channel.sufficient_reputation(
@@ -733,7 +739,7 @@ impl ResourceManager for DefaultResourceManager {
 				} else if incoming_channel.general_available(
 					incoming_amount_msat,
 					outgoing_channel_id,
-					salt,
+					entropy_source,
 				)? {
 					(true, BucketAssigned::General)
 				} else {
@@ -749,7 +755,7 @@ impl ResourceManager for DefaultResourceManager {
 				incoming_channel.general_bucket.add_htlc(
 					outgoing_channel_id,
 					incoming_amount_msat,
-					salt,
+					None,
 				)?;
 			},
 			BucketAssigned::Congestion => {
@@ -1476,8 +1482,7 @@ mod tests {
 		let outgoing_channel = channels_lock.get_mut(&OUTGOING_SCID).unwrap();
 		let outgoing_reputation =
 			outgoing_channel.outgoing_reputation.value_at_timestamp(now).unwrap();
-		let outgoing_in_flight_risk: u64 =
-			outgoing_channel.pending_htlcs.iter().map(|htlc| htlc.1.in_flight_risk).sum();
+		let outgoing_in_flight_risk: u64 = outgoing_channel.outgoing_in_flight_risk();
 		let fee = FEE_AMOUNT;
 		let in_flight_htlc_risk = rm.htlc_in_flight_risk(fee, CLTV_EXPIRY, CURRENT_HEIGHT);
 
@@ -1493,39 +1498,38 @@ mod tests {
 	}
 
 	#[test]
-	fn test_insufficient_reputation_high_in_flight_risk() {
+	fn test_insufficient_reputation_outgoing_in_flight_risk() {
 		let rm = create_test_resource_manager_with_channels();
 		let entropy_source = TestKeysInterface::new(&[0; 32], Network::Testnet);
 		let reputation = 50_000_000;
 		add_reputation(&rm, OUTGOING_SCID, reputation);
 
-		// Add pending HTLCs with high CLTV expiry to create in-flight risk
+		// Successfully add unaccountable HTLC that should not count in the outgoing
+		// accumulated outgoing in-flight risk.
+		assert!(add_test_htlc(&rm, false, 0, &entropy_source).is_ok());
+
 		let current_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
 		let high_cltv_expiry = CURRENT_HEIGHT + 2000;
 
-		let in_flight_risk_per_htlc =
-			rm.htlc_in_flight_risk(FEE_AMOUNT, high_cltv_expiry, CURRENT_HEIGHT) as i64;
-		let mut current_risk = 0;
-		let mut htlc_id = 0;
-		while current_risk < reputation {
-			let result = rm.add_htlc(
+		// Add accountable HTLC that will add 49_329_633 to the in-flight risk. This is based
+		// on the 3700 and CLTV delta added.
+		assert!(rm
+			.add_htlc(
 				INCOMING_SCID,
-				HTLC_AMOUNT + FEE_AMOUNT,
+				HTLC_AMOUNT + 3700,
 				high_cltv_expiry,
 				OUTGOING_SCID,
 				HTLC_AMOUNT,
-				false,
-				htlc_id,
+				true,
+				1,
 				CURRENT_HEIGHT,
 				current_time,
 				&entropy_source,
-			);
-			assert!(result.is_ok());
-			current_risk += in_flight_risk_per_htlc;
-			htlc_id += 1;
-		}
+			)
+			.is_ok());
 
-		// Now reputation minus accumulated in-flight risk should be below threshold
+		// Since we have added an accountable HTLC with in-fligh risk that is close to the
+		// reputation we added, the next accountable HTLC we try to add should fail.
 		assert_eq!(test_sufficient_reputation(&rm), false);
 	}
 
