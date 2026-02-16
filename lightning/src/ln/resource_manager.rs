@@ -9,7 +9,7 @@
 
 #![allow(dead_code)]
 
-use bitcoin::hashes::{sha256d::Hash as Sha256dHash, Hash};
+use bitcoin::hashes::{sha256::Hash as Sha256Hash, Hash};
 use core::time::Duration;
 use hashbrown::hash_map::Entry;
 
@@ -23,10 +23,10 @@ struct GeneralBucket {
 	total_liquidity: u64,
 
 	/// The number of slots in the general bucket that each forwarding channel pair gets.
-	slot_subset: u8,
+	per_channel_slots: u8,
 	/// The liquidity amount of each slot in the general bucket that each forwarding channel pair
 	/// gets.
-	slot_liquidity: u64,
+	per_slot_msat: u64,
 
 	/// Tracks the occupancy of HTLC slots in the bucket.
 	slots_occupied: Vec<bool>,
@@ -42,7 +42,7 @@ struct GeneralBucket {
 impl GeneralBucket {
 	fn new(scid: u64, slots_allocated: u16, liquidity_allocated: u64) -> Self {
 		let general_slot_allocation =
-			u8::max(5, u8::try_from((slots_allocated * 5).div_ceil(100)).unwrap_or(u8::MAX));
+			u8::max(5, u8::try_from((slots_allocated * 5).div_ceil(100)).unwrap());
 
 		let general_liquidity_allocation =
 			liquidity_allocated * general_slot_allocation as u64 / slots_allocated as u64;
@@ -50,8 +50,8 @@ impl GeneralBucket {
 			scid,
 			total_slots: slots_allocated,
 			total_liquidity: liquidity_allocated,
-			slot_subset: general_slot_allocation,
-			slot_liquidity: general_liquidity_allocation,
+			per_channel_slots: general_slot_allocation,
+			per_slot_msat: general_liquidity_allocation,
 			slots_occupied: vec![false; slots_allocated as usize],
 			channels_slots: new_hash_map(),
 		}
@@ -62,7 +62,7 @@ impl GeneralBucket {
 	fn slots_for_amount(
 		&mut self, outgoing_scid: u64, htlc_amount_msat: u64, salt: Option<[u8; 32]>,
 	) -> Result<Option<Vec<u16>>, ()> {
-		let slots_needed = u64::max(1, htlc_amount_msat.div_ceil(self.slot_liquidity));
+		let slots_needed = u64::max(1, htlc_amount_msat.div_ceil(self.per_slot_msat));
 
 		if self.channels_slots.get(&outgoing_scid).is_none() {
 			// If slots have not been assigned yet, a salt must be provided
@@ -123,7 +123,7 @@ impl GeneralBucket {
 		match self.channels_slots.entry(outgoing_scid) {
 			Entry::Vacant(_) => Err(()),
 			Entry::Occupied(mut entry) => {
-				let slots_needed = u64::max(1, htlc_amount_msat.div_ceil(self.slot_liquidity));
+				let slots_needed = u64::max(1, htlc_amount_msat.div_ceil(self.per_slot_msat));
 
 				let channel_slots = entry.get_mut();
 				let mut slots_used_by_channel: Vec<u16> = channel_slots
@@ -157,7 +157,7 @@ impl GeneralBucket {
 			// TODO: could return the slots already assigned instead of erroring.
 			Entry::Occupied(_) => Err(()),
 			Entry::Vacant(entry) => {
-				let mut channel_slots = Vec::with_capacity(self.slot_subset.into());
+				let mut channel_slots = Vec::with_capacity(self.per_channel_slots.into());
 				let mut slots_assigned_counter = 0;
 
 				// To generate the slots for the channel we hash the salt and the channel
@@ -168,14 +168,14 @@ impl GeneralBucket {
 				buf[32..40].copy_from_slice(&self.scid.to_be_bytes());
 				buf[40..48].copy_from_slice(&outgoing_scid.to_be_bytes());
 
-				let max_attempts = self.slot_subset * 2;
+				let max_attempts = self.per_channel_slots * 2;
 				for i in 0..max_attempts {
-					if slots_assigned_counter == self.slot_subset {
+					if slots_assigned_counter == self.per_channel_slots {
 						break;
 					}
 
 					buf[48] = i;
-					let hash = &Sha256dHash::hash(&buf);
+					let hash = &Sha256Hash::hash(&buf);
 					let mut bytes: [u8; 8] = [0u8; 8];
 					bytes.copy_from_slice(&hash[0..8]);
 
@@ -189,7 +189,7 @@ impl GeneralBucket {
 					}
 				}
 
-				if slots_assigned_counter < self.slot_subset {
+				if slots_assigned_counter < self.per_channel_slots {
 					return Err(());
 				}
 
@@ -379,8 +379,8 @@ mod tests {
 			let mut general_bucket =
 				GeneralBucket::new(0, case.general_slots, case.general_liquidity);
 
-			assert_eq!(general_bucket.slot_subset, case.expected_slots);
-			assert_eq!(general_bucket.slot_liquidity, case.expected_liquidity);
+			assert_eq!(general_bucket.per_channel_slots, case.expected_slots);
+			assert_eq!(general_bucket.per_slot_msat, case.expected_liquidity);
 			assert!(!general_bucket.slots_occupied.iter().any(|slot| *slot));
 
 			general_bucket
