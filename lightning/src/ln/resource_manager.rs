@@ -59,20 +59,20 @@ impl DecayingAverage {
 }
 
 struct RevenueAverage {
-	start_timestamp: u64,
+	start_timestamp_unix_secs: u64,
 	window_count: u8,
 	window_duration: Duration,
 	aggregated_revenue_decaying: DecayingAverage,
 }
 
 impl RevenueAverage {
-	fn new(window: Duration, window_count: u8, start_timestamp: u64) -> Self {
+	fn new(window: Duration, window_count: u8, start_timestamp_unix_secs: u64) -> Self {
 		RevenueAverage {
-			start_timestamp,
+			start_timestamp_unix_secs,
 			window_count,
 			window_duration: window,
 			aggregated_revenue_decaying: DecayingAverage::new(
-				start_timestamp,
+				start_timestamp_unix_secs,
 				window * window_count.into(),
 			),
 		}
@@ -82,27 +82,25 @@ impl RevenueAverage {
 		self.aggregated_revenue_decaying.add_value(value, timestamp)
 	}
 
-	fn windows_tracked(&self, at_timestamp: u64) -> f64 {
-		let elapsed_secs = (at_timestamp - self.start_timestamp) as f64;
+	fn windows_tracked(&self, timestamp_unix_secs: u64) -> f64 {
+		let elapsed_secs = (timestamp_unix_secs - self.start_timestamp_unix_secs) as f64;
 		elapsed_secs / self.window_duration.as_secs_f64()
 	}
 
-	fn value_at_timestamp(&mut self, timestamp: u64) -> Result<i64, ()> {
-		if timestamp < self.start_timestamp {
+	fn value_at_timestamp(&mut self, timestamp_unix_secs: u64) -> Result<i64, ()> {
+		if timestamp_unix_secs < self.start_timestamp_unix_secs {
 			return Err(());
 		}
 
-		let windows_tracked = self.windows_tracked(timestamp);
+		let windows_tracked = self.windows_tracked(timestamp_unix_secs);
 		let window_divisor = f64::min(
 			if windows_tracked < 1.0 { 1.0 } else { windows_tracked },
 			self.window_count as f64,
 		);
 
-		Ok(
-			(self.aggregated_revenue_decaying.value_at_timestamp(timestamp)? as f64
-				/ window_divisor)
-				.round() as i64,
-		)
+		Ok((self.aggregated_revenue_decaying.value_at_timestamp(timestamp_unix_secs)? as f64
+			/ window_divisor)
+			.round() as i64)
 	}
 }
 
@@ -188,6 +186,7 @@ mod tests {
 
 		let mut revenue_average = RevenueAverage::new(WINDOW, window_count, timestamp);
 		assert_eq!(revenue_average.value_at_timestamp(timestamp).unwrap(), 0);
+		assert!(revenue_average.value_at_timestamp(timestamp - 100).is_err());
 
 		let value = 10_000;
 		revenue_average.add_value(value, timestamp).unwrap();
