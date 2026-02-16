@@ -26,6 +26,7 @@ pub trait ResourceManager {
 	/// This should be called when a channel becomes ready for forwarding
 	fn add_channel(
 		&self, channel_id: u64, max_htlc_value_in_flight_msat: u64, max_accepted_htlcs: u16,
+		timestamp_unix_secs: u64,
 	) -> Result<(), ()>;
 
 	/// Removes a channel from the resource manager.
@@ -51,9 +52,9 @@ pub trait ResourceManager {
 
 	/// Records the resolution of a forwarded HTLC.
 	///
-	/// This must be called when an HTLC previously accepted via [`add_htlc`] is resolved,
-	/// either successfully settled or failed. This allows the implementation to release
-	/// resources and update any internal tracking state.
+	/// This must be called for HTLCs where [`add_htlc`] returned [`ForwardingOutcome::Forward`].
+	/// It reports if the HTLC was successfully settled or failed. This allows the implementation
+	/// to release resources and update any internal tracking state.
 	///
 	/// [`add_htlc`]: ResourceManager::add_htlc
 	fn resolve_htlc(
@@ -75,7 +76,7 @@ impl Display for ForwardingOutcome {
 	fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
 		match self {
 			ForwardingOutcome::Forward(signal) => {
-				write!(f, "Forward as {}", if *signal { "accountable " } else { "unaccountable" })
+				write!(f, "Forward as {}", if *signal { "accountable" } else { "unaccountable" })
 			},
 			ForwardingOutcome::Fail => {
 				write!(f, "Fail")
