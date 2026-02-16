@@ -1,35 +1,46 @@
-use std::time::Duration;
+// This file is Copyright its original authors, visible in version control
+// history.
+//
+// This file is licensed under the Apache License, Version 2.0 <LICENSE-APACHE
+// or http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your option.
+// You may not use this file except in accordance with one or both of these
+// licenses.
+
+#![allow(dead_code)]
+
+use core::time::Duration;
 
 struct DecayingAverage {
 	value: i64,
-	last_updated: u64,
+	last_updated_unix_secs: u64,
 	decay_rate: f64,
 }
 
 impl DecayingAverage {
-	fn new(start_timestamp: u64, window: Duration) -> Self {
+	fn new(start_timestamp_unix_secs: u64, window: Duration) -> Self {
 		DecayingAverage {
 			value: 0,
-			last_updated: start_timestamp,
+			last_updated_unix_secs: start_timestamp_unix_secs,
 			decay_rate: 0.5_f64.powf(2.0 / window.as_secs_f64()),
 		}
 	}
 
-	fn value_at_timestamp(&mut self, timestamp: u64) -> Result<i64, ()> {
-		if timestamp < self.last_updated {
+	fn value_at_timestamp(&mut self, timestamp_unix_secs: u64) -> Result<i64, ()> {
+		if timestamp_unix_secs < self.last_updated_unix_secs {
 			return Err(());
 		}
 
-		let elapsed_secs = (timestamp - self.last_updated) as f64;
+		let elapsed_secs = (timestamp_unix_secs - self.last_updated_unix_secs) as f64;
 		self.value = (self.value as f64 * self.decay_rate.powf(elapsed_secs)).round() as i64;
-		self.last_updated = timestamp;
+		self.last_updated_unix_secs = timestamp_unix_secs;
 		Ok(self.value)
 	}
 
-	fn add_value(&mut self, value: i64, timestamp: u64) -> Result<i64, ()> {
-		self.value_at_timestamp(timestamp)?;
+	fn add_value(&mut self, value: i64, timestamp_unix_secs: u64) -> Result<i64, ()> {
+		self.value_at_timestamp(timestamp_unix_secs)?;
 		self.value = self.value.saturating_add(value);
-		self.last_updated = timestamp;
+		self.last_updated_unix_secs = timestamp_unix_secs;
 		Ok(self.value)
 	}
 }
@@ -44,25 +55,22 @@ mod tests {
 
 	#[test]
 	fn test_decaying_average_values() {
+		// Test average decay at different timestamps. The values we are asserting have been
+		// independently calculated.
 		let current_timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
 		let mut avg = DecayingAverage::new(current_timestamp, WINDOW);
 
-		// Add initial value
 		assert_eq!(avg.add_value(1000, current_timestamp).unwrap(), 1000);
 		assert_eq!(avg.value_at_timestamp(current_timestamp).unwrap(), 1000);
 
-		// Check decay after quarter window
 		let ts_1 = current_timestamp + WINDOW.as_secs() / 4;
 		assert_eq!(avg.value_at_timestamp(ts_1).unwrap(), 707);
 
-		// Check decay after half window
 		let ts_2 = current_timestamp + WINDOW.as_secs() / 2;
 		assert_eq!(avg.value_at_timestamp(ts_2).unwrap(), 500);
 
-		// Add value after decay
 		assert_eq!(avg.add_value(500, ts_2).unwrap(), 1000);
 
-		// Check decay after full window
 		let ts_3 = ts_2 + WINDOW.as_secs();
 		assert_eq!(avg.value_at_timestamp(ts_3).unwrap(), 250);
 	}
@@ -77,15 +85,12 @@ mod tests {
 
 	#[test]
 	fn test_decaying_average_bounds() {
-		let timestamp = 1000;
-		let mut avg = DecayingAverage::new(timestamp, WINDOW);
-
-		assert_eq!(avg.add_value(1000, timestamp).unwrap(), 1000);
-		assert_eq!(avg.add_value(i64::MAX, timestamp).unwrap(), i64::MAX);
-
-		avg.value = 0;
-		assert_eq!(avg.add_value(-100, timestamp).unwrap(), -100);
-		assert_eq!(avg.add_value(i64::MIN, timestamp).unwrap(), i64::MIN);
+		for (start, bound) in [(1000, i64::MAX), (-1000, i64::MIN)] {
+			let timestamp = 1000;
+			let mut avg = DecayingAverage::new(timestamp, WINDOW);
+			assert_eq!(avg.add_value(start, timestamp).unwrap(), start);
+			assert_eq!(avg.add_value(bound, timestamp).unwrap(), bound);
+		}
 	}
 
 	#[test]
