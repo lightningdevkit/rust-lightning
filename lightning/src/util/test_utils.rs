@@ -525,6 +525,38 @@ impl<'a> TestChainMonitor<'a> {
 		logger: &'a TestLogger, fee_estimator: &'a TestFeeEstimator,
 		persister: &'a dyn SyncPersist, keys_manager: &'a TestKeysInterface,
 	) -> Self {
+		Self::with_deferred(
+			chain_source,
+			broadcaster,
+			logger,
+			fee_estimator,
+			persister,
+			keys_manager,
+			false,
+		)
+	}
+
+	pub fn new_deferred(
+		chain_source: Option<&'a TestChainSource>, broadcaster: &'a dyn SyncBroadcaster,
+		logger: &'a TestLogger, fee_estimator: &'a TestFeeEstimator,
+		persister: &'a dyn SyncPersist, keys_manager: &'a TestKeysInterface,
+	) -> Self {
+		Self::with_deferred(
+			chain_source,
+			broadcaster,
+			logger,
+			fee_estimator,
+			persister,
+			keys_manager,
+			true,
+		)
+	}
+
+	fn with_deferred(
+		chain_source: Option<&'a TestChainSource>, broadcaster: &'a dyn SyncBroadcaster,
+		logger: &'a TestLogger, fee_estimator: &'a TestFeeEstimator,
+		persister: &'a dyn SyncPersist, keys_manager: &'a TestKeysInterface, deferred: bool,
+	) -> Self {
 		Self {
 			added_monitors: Mutex::new(Vec::new()),
 			monitor_updates: Mutex::new(new_hash_map()),
@@ -537,7 +569,7 @@ impl<'a> TestChainMonitor<'a> {
 				persister,
 				keys_manager,
 				keys_manager.get_peer_storage_key(),
-				false,
+				deferred,
 			),
 			keys_manager,
 			expect_channel_force_closed: Mutex::new(None),
@@ -545,6 +577,10 @@ impl<'a> TestChainMonitor<'a> {
 			#[cfg(feature = "std")]
 			write_blocker: Mutex::new(None),
 		}
+	}
+
+	pub fn pending_operation_count(&self) -> usize {
+		self.chain_monitor.pending_operation_count()
 	}
 
 	pub fn complete_sole_pending_chan_update(&self, channel_id: &ChannelId) {
@@ -677,6 +713,12 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 	fn release_pending_monitor_events(
 		&self,
 	) -> Vec<(OutPoint, ChannelId, Vec<MonitorEvent>, PublicKey)> {
+		// Auto-flush pending operations so that the ChannelManager can pick up monitor
+		// completion events. When not in deferred mode the queue is empty so this only
+		// costs a lock acquisition. It ensures standard test helpers (route_payment, etc.)
+		// work with deferred chain monitors.
+		let count = self.chain_monitor.pending_operation_count();
+		self.chain_monitor.flush(count);
 		return self.chain_monitor.release_pending_monitor_events();
 	}
 }
@@ -836,6 +878,8 @@ pub struct TestPersister {
 	/// The queue of update statuses we'll return. If none are queued, ::Completed will always be
 	/// returned.
 	pub update_rets: Mutex<VecDeque<chain::ChannelMonitorUpdateStatus>>,
+	/// When we get a persist_new_channel call, we push the monitor name here.
+	pub new_channel_persistences: Mutex<Vec<MonitorName>>,
 	/// When we get an update_persisted_channel call *with* a ChannelMonitorUpdate, we insert the
 	/// [`ChannelMonitor::get_latest_update_id`] here.
 	pub offchain_monitor_updates: Mutex<HashMap<MonitorName, HashSet<u64>>>,
@@ -846,9 +890,15 @@ pub struct TestPersister {
 impl TestPersister {
 	pub fn new() -> Self {
 		let update_rets = Mutex::new(VecDeque::new());
+		let new_channel_persistences = Mutex::new(Vec::new());
 		let offchain_monitor_updates = Mutex::new(new_hash_map());
 		let chain_sync_monitor_persistences = Mutex::new(VecDeque::new());
-		Self { update_rets, offchain_monitor_updates, chain_sync_monitor_persistences }
+		Self {
+			update_rets,
+			new_channel_persistences,
+			offchain_monitor_updates,
+			chain_sync_monitor_persistences,
+		}
 	}
 
 	/// Queue an update status to return.
@@ -858,8 +908,9 @@ impl TestPersister {
 }
 impl<Signer: sign::ecdsa::EcdsaChannelSigner> Persist<Signer> for TestPersister {
 	fn persist_new_channel(
-		&self, _monitor_name: MonitorName, _data: &ChannelMonitor<Signer>,
+		&self, monitor_name: MonitorName, _data: &ChannelMonitor<Signer>,
 	) -> chain::ChannelMonitorUpdateStatus {
+		self.new_channel_persistences.lock().unwrap().push(monitor_name);
 		if let Some(update_ret) = self.update_rets.lock().unwrap().pop_front() {
 			return update_ret;
 		}
