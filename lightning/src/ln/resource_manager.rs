@@ -12,9 +12,11 @@
 use bitcoin::hashes::{sha256::Hash as Sha256Hash, Hash};
 use core::time::Duration;
 use hashbrown::hash_map::Entry;
-use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::prelude::{new_hash_map, HashMap};
+use crate::{
+	ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS,
+	prelude::{new_hash_map, HashMap},
+};
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 enum BucketAssigned {
@@ -251,7 +253,6 @@ impl BucketResources {
 
 #[derive(Debug, Clone)]
 struct PendingHTLC {
-	incoming_channel: u64,
 	incoming_amount_msat: u64,
 	fee: u64,
 	outgoing_channel: u64,
@@ -274,11 +275,14 @@ struct Channel {
 	/// The revenue this channel has earned us as an incoming link.
 	incoming_revenue: AggregatedWindowAverage,
 
-	/// Pending HTLCs as an outgoing channel.
+	/// HTLC Ref incoming channel -> pending HTLC outgoing.
+	/// It tracks all the pending HTLCs where this channel is the outgoing link.
 	pending_htlcs: HashMap<HtlcRef, PendingHTLC>,
 
 	general_bucket: GeneralBucket,
 	congestion_bucket: BucketResources,
+	/// SCID -> unix seconds timestamp
+	/// Tracks which channels have misused the congestion bucket and the unix timestamp.
 	last_congestion_misuse: HashMap<u64, u64>,
 	protected_bucket: BucketResources,
 }
@@ -287,8 +291,13 @@ impl Channel {
 	fn new(
 		scid: u64, max_htlc_value_in_flight_msat: u64, max_accepted_htlcs: u16,
 		general_bucket_pct: u8, congestion_bucket_pct: u8, protected_bucket_pct: u8,
-		window: Duration, window_count: u8,
-	) -> Self {
+		window: Duration, window_count: u8, timestamp_unix_secs: u64,
+	) -> Result<Self, ()> {
+		if max_accepted_htlcs > 483
+			|| (max_htlc_value_in_flight_msat / 1000) >= TOTAL_BITCOIN_SUPPLY_SATOSHIS
+		{
+			return Err(());
+		}
 		let general_bucket_slots_allocated = max_accepted_htlcs * general_bucket_pct as u16 / 100;
 		let general_bucket_liquidity_allocated =
 			max_htlc_value_in_flight_msat * general_bucket_pct as u64 / 100;
@@ -303,10 +312,16 @@ impl Channel {
 		let protected_bucket_liquidity_allocated =
 			max_htlc_value_in_flight_msat * protected_bucket_pct as u64 / 100;
 
-		let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-		Channel {
-			outgoing_reputation: DecayingAverage::new(now, window * window_count.into()),
-			incoming_revenue: AggregatedWindowAverage::new(window, window_count, now),
+		Ok(Channel {
+			outgoing_reputation: DecayingAverage::new(
+				timestamp_unix_secs,
+				window * window_count.into(),
+			),
+			incoming_revenue: AggregatedWindowAverage::new(
+				window,
+				window_count,
+				timestamp_unix_secs,
+			),
 			pending_htlcs: new_hash_map(),
 			general_bucket: GeneralBucket::new(
 				scid,
@@ -322,7 +337,7 @@ impl Channel {
 				protected_bucket_slots_allocated,
 				protected_bucket_liquidity_allocated,
 			),
-		}
+		})
 	}
 
 	fn general_available(
@@ -334,14 +349,14 @@ impl Channel {
 	fn congestion_eligible(
 		&mut self, pending_htlcs_in_congestion: bool, incoming_amount_msat: u64,
 		outgoing_channel_id: u64, revenue_window: Duration, at_timestamp: u64,
-	) -> bool {
-		!pending_htlcs_in_congestion
+	) -> Result<bool, ()> {
+		Ok(!pending_htlcs_in_congestion
 			&& self.can_add_htlc_congestion(
 				outgoing_channel_id,
 				incoming_amount_msat,
 				revenue_window,
 				at_timestamp,
-			)
+			)?)
 	}
 
 	fn misused_congestion(&mut self, channel_id: u64, misuse_timestamp: u64) {
@@ -349,22 +364,24 @@ impl Channel {
 	}
 
 	// Returns whether the outgoing channel has misused the congestion bucket during our last
-	// revenue window (two weeks by default).
+	// revenue window.
 	fn has_misused_congestion(
 		&mut self, outgoing_scid: u64, at_timestamp: u64, revenue_window: Duration,
-	) -> bool {
+	) -> Result<bool, ()> {
 		match self.last_congestion_misuse.entry(outgoing_scid) {
-			Entry::Vacant(_) => false,
+			Entry::Vacant(_) => Ok(false),
 			Entry::Occupied(last_misuse) => {
-				// If the last misuse of the congestion bucket was over 2 weeks ago, remove
-				// the entry.
-				debug_assert!(at_timestamp >= *last_misuse.get());
+				// If the last misuse of the congestion bucket was over more than the
+				// revenue window, remote the entry.
+				if at_timestamp <= *last_misuse.get() {
+					return Err(());
+				}
 				let since_last_misuse = Duration::from_secs(at_timestamp - last_misuse.get());
 				if since_last_misuse < revenue_window {
-					return true;
+					return Ok(true);
 				} else {
 					last_misuse.remove();
-					return false;
+					return Ok(false);
 				}
 			},
 		}
@@ -373,17 +390,17 @@ impl Channel {
 	fn can_add_htlc_congestion(
 		&mut self, channel_id: u64, htlc_amount_msat: u64, revenue_window: Duration,
 		at_timestamp: u64,
-	) -> bool {
+	) -> Result<bool, ()> {
 		let congestion_resources_available =
 			self.congestion_bucket.resources_available(htlc_amount_msat);
 		let misused_congestion =
-			self.has_misused_congestion(channel_id, at_timestamp, revenue_window);
+			self.has_misused_congestion(channel_id, at_timestamp, revenue_window)?;
 
-		let below_slot_limit = htlc_amount_msat
+		let below_liquidity_limit = htlc_amount_msat
 			<= self.congestion_bucket.liquidity_allocated
 				/ self.congestion_bucket.slots_allocated as u64;
 
-		congestion_resources_available && !misused_congestion && below_slot_limit
+		Ok(congestion_resources_available && !misused_congestion && below_liquidity_limit)
 	}
 
 	fn sufficient_reputation(
