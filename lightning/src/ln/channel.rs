@@ -2325,22 +2325,46 @@ where
 	/// Doesn't bother handling the
 	/// if-we-removed-it-already-but-haven't-fully-resolved-they-can-still-send-an-inbound-HTLC
 	/// corner case properly.
+	fn get_available_balances_internal<F: FeeEstimator>(
+		&self, fee_estimator: &LowerBoundedFeeEstimator<F>,
+		include_counterparty_unknown_htlcs: bool,
+	) -> Result<AvailableBalances, ()> {
+		match &self.phase {
+			ChannelPhase::Undefined => unreachable!(),
+			ChannelPhase::Funded(chan) => chan
+				.get_available_balances_internal(fee_estimator, include_counterparty_unknown_htlcs),
+			ChannelPhase::UnfundedOutboundV1(chan) => {
+				chan.context.get_available_balances_for_scope(
+					&chan.funding,
+					fee_estimator,
+					include_counterparty_unknown_htlcs,
+				)
+			},
+			ChannelPhase::UnfundedInboundV1(chan) => chan.context.get_available_balances_for_scope(
+				&chan.funding,
+				fee_estimator,
+				include_counterparty_unknown_htlcs,
+			),
+			ChannelPhase::UnfundedV2(chan) => chan.context.get_available_balances_for_scope(
+				&chan.funding,
+				fee_estimator,
+				include_counterparty_unknown_htlcs,
+			),
+		}
+	}
+
+	#[cfg(test)]
+	pub fn get_available_balances_with_counterparty_unknown_htlcs<F: FeeEstimator>(
+		&self, fee_estimator: &LowerBoundedFeeEstimator<F>,
+	) -> Result<AvailableBalances, ()> {
+		self.get_available_balances_internal(fee_estimator, true)
+	}
+
 	pub fn get_available_balances<F: FeeEstimator>(
 		&self, fee_estimator: &LowerBoundedFeeEstimator<F>,
 	) -> AvailableBalances {
-		match &self.phase {
-			ChannelPhase::Undefined => unreachable!(),
-			ChannelPhase::Funded(chan) => chan.get_available_balances(fee_estimator),
-			ChannelPhase::UnfundedOutboundV1(chan) => {
-				chan.context.get_available_balances_for_scope(&chan.funding, fee_estimator)
-			},
-			ChannelPhase::UnfundedInboundV1(chan) => {
-				chan.context.get_available_balances_for_scope(&chan.funding, fee_estimator)
-			},
-			ChannelPhase::UnfundedV2(chan) => {
-				chan.context.get_available_balances_for_scope(&chan.funding, fee_estimator)
-			},
-		}
+		let balances_result = self.get_available_balances_internal(fee_estimator, false);
+		balances_result.expect("All balance changes without including counterparty unknown HTLCs have already been validated")
 	}
 
 	pub fn minimum_depth(&self) -> Option<u32> {
@@ -5638,8 +5662,8 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 	#[rustfmt::skip]
 	fn get_available_balances_for_scope<F: FeeEstimator>(
 		&self, funding: &FundingScope, fee_estimator: &LowerBoundedFeeEstimator<F>,
-	) -> AvailableBalances {
-		let include_counterparty_unknown_htlcs = true;
+		include_counterparty_unknown_htlcs: bool,
+	) -> Result<AvailableBalances, ()> {
 		let dust_exposure_limiting_feerate = self.get_dust_exposure_limiting_feerate(
 			&fee_estimator, funding.get_channel_type(),
 		);
@@ -5651,7 +5675,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			0,
 			self.feerate_per_kw,
 			dust_exposure_limiting_feerate
-		).map(|(remote_stats, _)| remote_stats.available_balances).unwrap();
+		).map(|(remote_stats, _)| remote_stats.available_balances)?;
 
 		#[cfg(debug_assertions)]
 		if balances.next_outbound_htlc_limit_msat >= balances.next_outbound_htlc_minimum_msat
@@ -5675,7 +5699,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 				>= funding.counterparty_selected_channel_reserve_satoshis.unwrap_or(0) * 1000);
 		}
 
-		balances
+		Ok(balances)
 	}
 
 	#[rustfmt::skip]
@@ -12203,7 +12227,13 @@ where
 			return Err((LocalHTLCFailureReason::ZeroAmount, "Cannot send 0-msat HTLC".to_owned()));
 		}
 
-		let available_balances = self.get_available_balances(fee_estimator);
+		let available_balances =
+			self.get_available_balances_internal(fee_estimator, true).map_err(|()| {
+				(
+					LocalHTLCFailureReason::ChannelBalanceOverdrawn,
+					"Channel balance overdrawn".to_owned(),
+				)
+			})?;
 		if amount_msat < available_balances.next_outbound_htlc_minimum_msat {
 			return Err((
 				LocalHTLCFailureReason::HTLCMinimum,
@@ -12298,21 +12328,29 @@ where
 	}
 
 	#[rustfmt::skip]
-	pub(super) fn get_available_balances<F: FeeEstimator>(
-		&self, fee_estimator: &LowerBoundedFeeEstimator<F>,
-	) -> AvailableBalances {
-		core::iter::once(&self.funding)
-			.chain(self.pending_funding().iter())
-			.map(|funding| self.context.get_available_balances_for_scope(funding, fee_estimator))
-			.reduce(|acc, e| {
-				AvailableBalances {
+	pub(super) fn get_available_balances_internal<F: FeeEstimator>(
+		&self, fee_estimator: &LowerBoundedFeeEstimator<F>, include_counterparty_unknown_htlcs: bool,
+	) -> Result<AvailableBalances, ()> {
+		let init = self.context.get_available_balances_for_scope(&self.funding, fee_estimator, include_counterparty_unknown_htlcs)?;
+		self.pending_funding().iter().try_fold(
+			init,
+			|acc, funding| {
+				let e = self.context.get_available_balances_for_scope(funding, fee_estimator, include_counterparty_unknown_htlcs)?;
+				Ok(AvailableBalances {
 					inbound_capacity_msat: acc.inbound_capacity_msat.min(e.inbound_capacity_msat),
 					outbound_capacity_msat: acc.outbound_capacity_msat.min(e.outbound_capacity_msat),
 					next_outbound_htlc_limit_msat: acc.next_outbound_htlc_limit_msat.min(e.next_outbound_htlc_limit_msat),
 					next_outbound_htlc_minimum_msat: acc.next_outbound_htlc_minimum_msat.max(e.next_outbound_htlc_minimum_msat),
-				}
+				})
 			})
-			.expect("At least one FundingScope is always provided")
+	}
+
+	#[rustfmt::skip]
+	pub(super) fn get_available_balances<F: FeeEstimator>(
+		&self, fee_estimator: &LowerBoundedFeeEstimator<F>,
+	) -> AvailableBalances {
+		let balances_result = self.get_available_balances_internal(fee_estimator, false);
+		balances_result.expect("All balance changes without including counterparty unknown HTLCs have already been validated")
 	}
 
 	fn build_commitment_no_status_check<L: Logger>(&mut self, logger: &L) -> ChannelMonitorUpdate {

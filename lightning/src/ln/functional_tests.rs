@@ -9991,9 +9991,19 @@ pub fn test_dust_exposure_holding_cell_assertion() {
 	expect_and_process_pending_htlcs(&nodes[1], false);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
-	let bs_chans = nodes[1].node.list_channels();
-	let bc_chan = bs_chans.iter().find(|chan| chan.counterparty.node_id == node_c_id).unwrap();
-	assert!(bc_chan.next_outbound_htlc_minimum_msat > DUST_HTLC_VALUE_MSAT);
+	{
+		let per_peer_state_lock;
+		let mut peer_state_lock;
+		let chan =
+			get_channel_ref!(nodes[1], nodes[2], per_peer_state_lock, peer_state_lock, bc_chan_id);
+		// This how `chan.send_htlc` determines whether it can send another HTLC
+		let balances = chan
+			.get_available_balances_with_counterparty_unknown_htlcs(&LowerBoundedFeeEstimator::new(
+				nodes[1].fee_estimator,
+			))
+			.unwrap();
+		assert!(balances.next_outbound_htlc_minimum_msat > DUST_HTLC_VALUE_MSAT);
+	}
 
 	// Send an additional HTLC from C to B. This will make B unable to forward the HTLC already in
 	// its holding cell as it would be over-exposed to dust.
