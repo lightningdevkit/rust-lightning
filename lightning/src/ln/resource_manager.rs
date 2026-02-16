@@ -677,45 +677,15 @@ impl Channel {
 	}
 }
 
-impl Writeable for Channel {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
-		write_tlv_fields!(writer, {
-			(1, self.outgoing_reputation, required),
-			(3, self.incoming_revenue, required),
-			(5, self.pending_htlcs, required),
-			(7, self.general_bucket, required),
-			(9, self.congestion_bucket, required),
-			(11, self.last_congestion_misuse, required),
-			(13, self.protected_bucket, required),
-		});
-
-		Ok(())
-	}
-}
-
-impl Readable for Channel {
-	fn read<R: Read>(reader: &mut R) -> Result<Channel, DecodeError> {
-		_init_and_read_len_prefixed_tlv_fields!(reader, {
-			(1, outgoing_reputation, required),
-			(3, incoming_revenue, required),
-			(5, pending_htlcs, required),
-			(7, general_bucket, required),
-			(9, congestion_bucket, required),
-			(11, last_congestion_misuse, required),
-			(13, protected_bucket, required),
-		});
-
-		Ok(Channel {
-			outgoing_reputation: outgoing_reputation.0.unwrap(),
-			incoming_revenue: incoming_revenue.0.unwrap(),
-			pending_htlcs: pending_htlcs.0.unwrap(),
-			general_bucket: general_bucket.0.unwrap(),
-			congestion_bucket: congestion_bucket.0.unwrap(),
-			last_congestion_misuse: last_congestion_misuse.0.unwrap(),
-			protected_bucket: protected_bucket.0.unwrap(),
-		})
-	}
-}
+impl_writeable_tlv_based!(Channel, {
+	(1, outgoing_reputation, required),
+	(3, incoming_revenue, required),
+	(5, pending_htlcs, required),
+	(7, general_bucket, required),
+	(9, congestion_bucket, required),
+	(11, last_congestion_misuse, required),
+	(13, protected_bucket, required),
+});
 
 /// An implementation of [`ResourceManager`] for managing channel resources and informing HTLC
 /// forwarding decisions. It implements the core of the mitigation as proposed in
