@@ -2442,13 +2442,13 @@ where
 		}
 	}
 
-	/// Get the available balances, see [`AvailableBalances`]'s fields for more info.
-	/// Doesn't bother handling the
-	/// if-we-removed-it-already-but-haven't-fully-resolved-they-can-still-send-an-inbound-HTLC
-	/// corner case properly.
+	/// Gets the available balances, see [`AvailableBalances`]'s fields for more info.
+	///
+	/// Returns `Err` if some party cannot currently pay for the HTLCs outbound from said party, and the anchors and
+	/// transaction fee if they are the funder.
 	pub fn get_available_balances<F: FeeEstimator>(
 		&self, fee_estimator: &LowerBoundedFeeEstimator<F>,
-	) -> AvailableBalances {
+	) -> Result<AvailableBalances, ()> {
 		match &self.phase {
 			ChannelPhase::Undefined => unreachable!(),
 			ChannelPhase::Funded(chan) => chan.get_available_balances(fee_estimator),
@@ -5784,7 +5784,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 	#[rustfmt::skip]
 	fn get_available_balances_for_scope<F: FeeEstimator>(
 		&self, funding: &FundingScope, fee_estimator: &LowerBoundedFeeEstimator<F>,
-	) -> AvailableBalances {
+	) -> Result<AvailableBalances, ()> {
 		let htlc_candidate = None;
 		let include_counterparty_unknown_htlcs = true;
 		let addl_nondust_htlc_count = 0;
@@ -5799,7 +5799,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			addl_nondust_htlc_count,
 			self.feerate_per_kw,
 			dust_exposure_limiting_feerate
-		).map(|(remote_stats, _)| remote_stats.available_balances).unwrap();
+		).map(|(remote_stats, _)| remote_stats.available_balances)?;
 
 		#[cfg(debug_assertions)]
 		if balances.next_outbound_htlc_limit_msat >= balances.next_outbound_htlc_minimum_msat
@@ -5823,7 +5823,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 				>= funding.counterparty_selected_channel_reserve_satoshis.unwrap_or(0) * 1000);
 		}
 
-		balances
+		Ok(balances)
 	}
 
 	#[rustfmt::skip]
@@ -12490,7 +12490,12 @@ where
 			return Err((LocalHTLCFailureReason::ZeroAmount, "Cannot send 0-msat HTLC".to_owned()));
 		}
 
-		let available_balances = self.get_available_balances(fee_estimator);
+		let available_balances = self.get_available_balances(fee_estimator).map_err(|()| {
+			(
+				LocalHTLCFailureReason::ChannelBalanceOverdrawn,
+				"Channel balance overdrawn".to_owned(),
+			)
+		})?;
 		if amount_msat < available_balances.next_outbound_htlc_minimum_msat {
 			return Err((
 				LocalHTLCFailureReason::HTLCMinimum,
@@ -12584,22 +12589,26 @@ where
 		Ok(true)
 	}
 
+	/// Gets the available balances, see [`AvailableBalances`]'s fields for more info.
+	///
+	/// Returns `Err` if some party cannot currently pay for the HTLCs outbound from said party, and the anchors and
+	/// transaction fee if they are the funder.
 	#[rustfmt::skip]
 	pub(super) fn get_available_balances<F: FeeEstimator>(
 		&self, fee_estimator: &LowerBoundedFeeEstimator<F>,
-	) -> AvailableBalances {
-		core::iter::once(&self.funding)
-			.chain(self.pending_funding().iter())
-			.map(|funding| self.context.get_available_balances_for_scope(funding, fee_estimator))
-			.reduce(|acc, e| {
-				AvailableBalances {
+	) -> Result<AvailableBalances, ()> {
+		let init = self.context.get_available_balances_for_scope(&self.funding, fee_estimator)?;
+		self.pending_funding().iter().try_fold(
+			init,
+			|acc, funding| {
+				let e = self.context.get_available_balances_for_scope(funding, fee_estimator)?;
+				Ok(AvailableBalances {
 					inbound_capacity_msat: acc.inbound_capacity_msat.min(e.inbound_capacity_msat),
 					outbound_capacity_msat: acc.outbound_capacity_msat.min(e.outbound_capacity_msat),
 					next_outbound_htlc_limit_msat: acc.next_outbound_htlc_limit_msat.min(e.next_outbound_htlc_limit_msat),
 					next_outbound_htlc_minimum_msat: acc.next_outbound_htlc_minimum_msat.max(e.next_outbound_htlc_minimum_msat),
-				}
+				})
 			})
-			.expect("At least one FundingScope is always provided")
 	}
 
 	fn build_commitment_no_status_check<L: Logger>(&mut self, logger: &L) -> ChannelMonitorUpdate {

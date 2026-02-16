@@ -525,7 +525,16 @@ impl ChannelDetails {
 	) -> Self {
 		let context = channel.context();
 		let funding = channel.funding();
-		let balance = channel.get_available_balances(fee_estimator);
+		let balance_result = channel.get_available_balances(fee_estimator);
+		let balance = balance_result.unwrap_or_else(|()| {
+			debug_assert!(false, "some channel balance has been overdrawn");
+			crate::ln::channel::AvailableBalances {
+				inbound_capacity_msat: 0,
+				outbound_capacity_msat: 0,
+				next_outbound_htlc_limit_msat: 0,
+				next_outbound_htlc_minimum_msat: u64::MAX,
+			}
+		});
 		let (to_remote_reserve_satoshis, to_self_reserve_satoshis) =
 			funding.get_holder_counterparty_selected_channel_reserve_satoshis();
 		#[allow(deprecated)] // TODO: Remove once balance_msat is removed.
