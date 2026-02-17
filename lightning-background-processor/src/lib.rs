@@ -1120,11 +1120,15 @@ where
 
 		let mut futures = Joiner::new();
 
-		// Capture the pending count before persisting. Only this many writes will be
-		// flushed afterward, so that updates arriving after persist aren't included.
-		let pending_monitor_writes = chain_monitor.get_cm().pending_operation_count();
+		// We capture pending_operation_count inside the persistence branch to
+		// avoid a race: ChannelManager handlers queue deferred monitor ops
+		// before their PersistenceNotifierGuard drops and sets the persistence
+		// flag. Capturing outside would let us observe pending ops whose
+		// corresponding ChannelManager state hasn't been persisted yet.
+		let mut pending_monitor_writes = 0;
 
 		if channel_manager.get_cm().get_and_clear_needs_persistence() {
+			pending_monitor_writes = chain_monitor.get_cm().pending_operation_count();
 			log_trace!(logger, "Persisting ChannelManager...");
 
 			let fut = async {
@@ -1698,11 +1702,16 @@ impl BackgroundProcessor {
 					last_freshness_call = Instant::now();
 				}
 
-				// Capture the pending count before persisting. Only this many writes will be
-				// flushed afterward, so that updates arriving after persist aren't included.
-				let pending_monitor_writes = chain_monitor.get_cm().pending_operation_count();
+				// We capture pending_operation_count inside the persistence
+				// branch to avoid a race: ChannelManager handlers queue
+				// deferred monitor ops before their PersistenceNotifierGuard
+				// drops and sets the persistence flag. Capturing outside would
+				// let us observe pending ops whose corresponding ChannelManager
+				// state hasn't been persisted yet.
+				let mut pending_monitor_writes = 0;
 
 				if channel_manager.get_cm().get_and_clear_needs_persistence() {
+					pending_monitor_writes = chain_monitor.get_cm().pending_operation_count();
 					log_trace!(logger, "Persisting ChannelManager...");
 					(kv_store.write(
 						CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
