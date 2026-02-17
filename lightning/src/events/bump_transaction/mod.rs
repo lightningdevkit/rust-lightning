@@ -14,7 +14,6 @@
 pub mod sync;
 
 use alloc::collections::BTreeMap;
-use core::ops::Deref;
 
 use crate::chain::chaininterface::{
 	compute_feerate_sat_per_1000_weight, fee_for_weight, BroadcasterInterface, TransactionType,
@@ -257,12 +256,10 @@ pub enum BumpTransactionEvent {
 // Note that updates to documentation on this struct should be copied to the synchronous version.
 pub struct BumpTransactionEventHandler<
 	B: BroadcasterInterface,
-	C: Deref,
+	C: CoinSelectionSource,
 	SP: SignerProvider,
 	L: Logger,
-> where
-	C::Target: CoinSelectionSource,
-{
+> {
 	broadcaster: B,
 	utxo_source: C,
 	signer_provider: SP,
@@ -270,10 +267,8 @@ pub struct BumpTransactionEventHandler<
 	secp: Secp256k1<secp256k1::All>,
 }
 
-impl<B: BroadcasterInterface, C: Deref, SP: SignerProvider, L: Logger>
+impl<B: BroadcasterInterface, C: CoinSelectionSource, SP: SignerProvider, L: Logger>
 	BumpTransactionEventHandler<B, C, SP, L>
-where
-	C::Target: CoinSelectionSource,
 {
 	/// Returns a new instance capable of handling [`Event::BumpTransaction`] events.
 	///

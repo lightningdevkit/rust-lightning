@@ -13,8 +13,6 @@ use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::{Amount, FeeRate, OutPoint, ScriptBuf, SignedAmount, TxOut, WScriptHash, Weight};
 
-use core::ops::Deref;
-
 use crate::ln::chan_utils::{
 	make_funding_redeemscript, BASE_INPUT_WEIGHT, EMPTY_SCRIPT_SIG_WEIGHT,
 	FUNDING_TRANSACTION_WITNESS_WEIGHT,
@@ -125,12 +123,9 @@ macro_rules! build_funding_contribution {
 impl FundingTemplate {
 	/// Creates a [`FundingContribution`] for adding funds to a channel using `wallet` to perform
 	/// coin selection.
-	pub async fn splice_in<W: Deref + MaybeSend>(
+	pub async fn splice_in<W: CoinSelectionSource + MaybeSend>(
 		self, value_added: Amount, wallet: W,
-	) -> Result<FundingContribution, ()>
-	where
-		W::Target: CoinSelectionSource + MaybeSend,
-	{
+	) -> Result<FundingContribution, ()> {
 		if value_added == Amount::ZERO {
 			return Err(());
 		}
@@ -140,12 +135,9 @@ impl FundingTemplate {
 
 	/// Creates a [`FundingContribution`] for adding funds to a channel using `wallet` to perform
 	/// coin selection.
-	pub fn splice_in_sync<W: Deref>(
+	pub fn splice_in_sync<W: CoinSelectionSourceSync>(
 		self, value_added: Amount, wallet: W,
-	) -> Result<FundingContribution, ()>
-	where
-		W::Target: CoinSelectionSourceSync,
-	{
+	) -> Result<FundingContribution, ()> {
 		if value_added == Amount::ZERO {
 			return Err(());
 		}
@@ -162,12 +154,9 @@ impl FundingTemplate {
 
 	/// Creates a [`FundingContribution`] for removing funds from a channel using `wallet` to
 	/// perform coin selection.
-	pub async fn splice_out<W: Deref + MaybeSend>(
+	pub async fn splice_out<W: CoinSelectionSource + MaybeSend>(
 		self, outputs: Vec<TxOut>, wallet: W,
-	) -> Result<FundingContribution, ()>
-	where
-		W::Target: CoinSelectionSource + MaybeSend,
-	{
+	) -> Result<FundingContribution, ()> {
 		if outputs.is_empty() {
 			return Err(());
 		}
@@ -177,12 +166,9 @@ impl FundingTemplate {
 
 	/// Creates a [`FundingContribution`] for removing funds from a channel using `wallet` to
 	/// perform coin selection.
-	pub fn splice_out_sync<W: Deref>(
+	pub fn splice_out_sync<W: CoinSelectionSourceSync>(
 		self, outputs: Vec<TxOut>, wallet: W,
-	) -> Result<FundingContribution, ()>
-	where
-		W::Target: CoinSelectionSourceSync,
-	{
+	) -> Result<FundingContribution, ()> {
 		if outputs.is_empty() {
 			return Err(());
 		}
@@ -199,12 +185,9 @@ impl FundingTemplate {
 
 	/// Creates a [`FundingContribution`] for both adding and removing funds from a channel using
 	/// `wallet` to perform coin selection.
-	pub async fn splice_in_and_out<W: Deref + MaybeSend>(
+	pub async fn splice_in_and_out<W: CoinSelectionSource + MaybeSend>(
 		self, value_added: Amount, outputs: Vec<TxOut>, wallet: W,
-	) -> Result<FundingContribution, ()>
-	where
-		W::Target: CoinSelectionSource + MaybeSend,
-	{
+	) -> Result<FundingContribution, ()> {
 		if value_added == Amount::ZERO && outputs.is_empty() {
 			return Err(());
 		}
@@ -214,12 +197,9 @@ impl FundingTemplate {
 
 	/// Creates a [`FundingContribution`] for both adding and removing funds from a channel using
 	/// `wallet` to perform coin selection.
-	pub fn splice_in_and_out_sync<W: Deref>(
+	pub fn splice_in_and_out_sync<W: CoinSelectionSourceSync>(
 		self, value_added: Amount, outputs: Vec<TxOut>, wallet: W,
-	) -> Result<FundingContribution, ()>
-	where
-		W::Target: CoinSelectionSourceSync,
-	{
+	) -> Result<FundingContribution, ()> {
 		if value_added == Amount::ZERO && outputs.is_empty() {
 			return Err(());
 		}

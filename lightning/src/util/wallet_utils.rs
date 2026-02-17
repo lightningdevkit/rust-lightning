@@ -400,6 +400,29 @@ pub trait CoinSelectionSource {
 	) -> impl Future<Output = Result<Transaction, ()>> + MaybeSend + 'a;
 }
 
+impl<C: Deref> CoinSelectionSource for C
+where
+	C::Target: CoinSelectionSource,
+{
+	fn select_confirmed_utxos<'a>(
+		&'a self, claim_id: Option<ClaimId>, must_spend: Vec<Input>, must_pay_to: &'a [TxOut],
+		target_feerate_sat_per_1000_weight: u32, max_tx_weight: u64,
+	) -> impl Future<Output = Result<CoinSelection, ()>> + MaybeSend + 'a {
+		self.deref().select_confirmed_utxos(
+			claim_id,
+			must_spend,
+			must_pay_to,
+			target_feerate_sat_per_1000_weight,
+			max_tx_weight,
+		)
+	}
+	fn sign_psbt<'a>(
+		&'a self, psbt: Psbt,
+	) -> impl Future<Output = Result<Transaction, ()>> + MaybeSend + 'a {
+		self.deref().sign_psbt(psbt)
+	}
+}
+
 /// An alternative to [`CoinSelectionSource`] that can be implemented and used along [`Wallet`] to
 /// provide a default implementation to [`CoinSelectionSource`].
 ///
@@ -908,26 +931,30 @@ pub trait CoinSelectionSourceSync {
 	fn sign_psbt(&self, psbt: Psbt) -> Result<Transaction, ()>;
 }
 
-pub(crate) struct CoinSelectionSourceSyncWrapper<T: Deref>(pub(crate) T)
+impl<C: Deref> CoinSelectionSourceSync for C
 where
-	T::Target: CoinSelectionSourceSync;
-
-// Implement `Deref` directly on CoinSelectionSourceSyncWrapper so that it can be used directly
-// below, rather than via a wrapper.
-impl<T: Deref> Deref for CoinSelectionSourceSyncWrapper<T>
-where
-	T::Target: CoinSelectionSourceSync,
+	C::Target: CoinSelectionSourceSync,
 {
-	type Target = Self;
-	fn deref(&self) -> &Self {
-		self
+	fn select_confirmed_utxos(
+		&self, claim_id: Option<ClaimId>, must_spend: Vec<Input>, must_pay_to: &[TxOut],
+		target_feerate_sat_per_1000_weight: u32, max_tx_weight: u64,
+	) -> Result<CoinSelection, ()> {
+		self.deref().select_confirmed_utxos(
+			claim_id,
+			must_spend,
+			must_pay_to,
+			target_feerate_sat_per_1000_weight,
+			max_tx_weight,
+		)
+	}
+	fn sign_psbt(&self, psbt: Psbt) -> Result<Transaction, ()> {
+		self.deref().sign_psbt(psbt)
 	}
 }
 
-impl<T: Deref> CoinSelectionSource for CoinSelectionSourceSyncWrapper<T>
-where
-	T::Target: CoinSelectionSourceSync,
-{
+pub(crate) struct CoinSelectionSourceSyncWrapper<T: CoinSelectionSourceSync>(pub(crate) T);
+
+impl<T: CoinSelectionSourceSync> CoinSelectionSource for CoinSelectionSourceSyncWrapper<T> {
 	fn select_confirmed_utxos<'a>(
 		&'a self, claim_id: Option<ClaimId>, must_spend: Vec<Input>, must_pay_to: &'a [TxOut],
 		target_feerate_sat_per_1000_weight: u32, max_tx_weight: u64,
