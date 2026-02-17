@@ -12195,9 +12195,10 @@ where
 	) -> Result<Option<msgs::Stfu>, SpliceFundingFailed> {
 		debug_assert!(contribution.is_splice());
 
-		if let Err(e) = contribution.net_value().and_then(|our_funding_contribution| {
+		if let Err(e) = contribution.validate().and_then(|()| {
 			// For splice-out, our_funding_contribution is adjusted to cover fees if there
 			// aren't any inputs.
+			let our_funding_contribution = contribution.net_value();
 			self.validate_splice_contributions(our_funding_contribution, SignedAmount::ZERO)
 		}) {
 			log_error!(logger, "Channel {} cannot be funded: {}", self.context.channel_id(), e);
@@ -13540,18 +13541,7 @@ where
 					}
 
 					let prev_funding_input = self.funding.to_splice_funding_input();
-					let our_funding_contribution = match contribution.net_value() {
-						Ok(net_value) => net_value,
-						Err(e) => {
-							debug_assert!(false);
-							return Err(ChannelError::WarnAndDisconnect(
-								format!(
-									"Internal Error: Insufficient funding contribution: {}",
-									e,
-								)
-							));
-						},
-					};
+					let our_funding_contribution = contribution.net_value();
 					let funding_feerate_per_kw = contribution.feerate().to_sat_per_kwu() as u32;
 					let (our_funding_inputs, our_funding_outputs) = contribution.into_tx_parts();
 

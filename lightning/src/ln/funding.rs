@@ -60,7 +60,22 @@ macro_rules! build_funding_contribution {
 		let shared_input: Option<Input> = $shared_input;
 		let feerate: FeeRate = $feerate;
 
-		let value_removed = outputs.iter().map(|txout| txout.value).sum();
+		// Validate user-provided amounts are within MAX_MONEY before coin selection to
+		// ensure FundingContribution::net_value() arithmetic cannot overflow. With all
+		// amounts bounded by MAX_MONEY (~2.1e15 sat), the worst-case net_value()
+		// computation is -2 * MAX_MONEY (~-4.2e15), well within i64::MIN (~-9.2e18).
+		if value_added > Amount::MAX_MONEY {
+			return Err(());
+		}
+
+		let mut value_removed = Amount::ZERO;
+		for txout in outputs.iter() {
+			value_removed = match value_removed.checked_add(txout.value) {
+				Some(sum) if sum <= Amount::MAX_MONEY => sum,
+				_ => return Err(()),
+			};
+		}
+
 		let is_splice = shared_input.is_some();
 
 		let coin_selection = if value_added == Amount::ZERO {
@@ -102,6 +117,7 @@ macro_rules! build_funding_contribution {
 		// purposes — this is conservative, overestimating rather than underestimating fees if
 		// the node ends up as the acceptor.
 		let estimated_fee = estimate_transaction_fee(&inputs, &outputs, true, is_splice, feerate);
+		debug_assert!(estimated_fee <= Amount::MAX_MONEY);
 
 		let contribution = FundingContribution {
 			value_added,
@@ -305,10 +321,9 @@ impl FundingContribution {
 		(inputs.into_iter().map(|input| input.utxo.outpoint).collect(), outputs)
 	}
 
-	/// The net value contributed to a channel by the splice. If negative, more value will be
-	/// spliced out than spliced in. Fees will be deducted from the expected splice-out amount
-	/// if no inputs were included.
-	pub fn net_value(&self) -> Result<SignedAmount, String> {
+	/// Validates that the funding inputs are suitable for use in the interactive transaction
+	/// protocol, checking prevtx sizes and input sufficiency.
+	pub fn validate(&self) -> Result<(), String> {
 		for FundingTxInput { utxo, prevtx, .. } in self.inputs.iter() {
 			use crate::util::ser::Writeable;
 			const MESSAGE_TEMPLATE: msgs::TxAddInput = msgs::TxAddInput {
@@ -361,26 +376,32 @@ impl FundingContribution {
 			}
 		}
 
+		Ok(())
+	}
+
+	/// The net value contributed to a channel by the splice. If negative, more value will be
+	/// spliced out than spliced in. Fees will be deducted from the expected splice-out amount
+	/// if no inputs were included.
+	pub fn net_value(&self) -> SignedAmount {
 		let unpaid_fees = if self.inputs.is_empty() { self.estimated_fee } else { Amount::ZERO }
 			.to_signed()
-			.expect("fees should never exceed Amount::MAX_MONEY");
-		let value_added = self.value_added.to_signed().map_err(|_| "Value added too large")?;
+			.expect("estimated_fee is validated to not exceed Amount::MAX_MONEY");
+		let value_added = self
+			.value_added
+			.to_signed()
+			.expect("value_added is validated to not exceed Amount::MAX_MONEY");
 		let value_removed = self
 			.outputs
 			.iter()
 			.map(|txout| txout.value)
 			.sum::<Amount>()
 			.to_signed()
-			.map_err(|_| "Value removed too large")?;
+			.expect("value_removed is validated to not exceed Amount::MAX_MONEY");
 
 		let contribution_amount = value_added - value_removed;
-		let adjusted_contribution = contribution_amount.checked_sub(unpaid_fees).ok_or(format!(
-			"{} splice-out amount plus {} fee estimate exceeds the total bitcoin supply",
-			contribution_amount.unsigned_abs(),
-			self.estimated_fee,
-		))?;
-
-		Ok(adjusted_contribution)
+		contribution_amount
+			.checked_sub(unpaid_fees)
+			.expect("all amounts are validated to not exceed Amount::MAX_MONEY")
 	}
 }
 
@@ -390,10 +411,12 @@ pub type FundingTxInput = crate::util::wallet_utils::ConfirmedUtxo;
 
 #[cfg(test)]
 mod tests {
-	use super::{estimate_transaction_fee, FundingContribution, FundingTxInput};
+	use super::{estimate_transaction_fee, FundingContribution, FundingTemplate, FundingTxInput};
+	use crate::chain::ClaimId;
+	use crate::util::wallet_utils::{CoinSelection, CoinSelectionSourceSync, Input};
 	use bitcoin::hashes::Hash;
 	use bitcoin::transaction::{Transaction, TxOut, Version};
-	use bitcoin::{Amount, FeeRate, ScriptBuf, SignedAmount, WPubkeyHash};
+	use bitcoin::{Amount, FeeRate, Psbt, ScriptBuf, SignedAmount, WPubkeyHash};
 
 	#[test]
 	#[rustfmt::skip]
@@ -483,7 +506,8 @@ mod tests {
 				is_splice: true,
 				feerate: FeeRate::from_sat_per_kwu(2000),
 			};
-			assert_eq!(contribution.net_value(), Ok(contribution.value_added.to_signed().unwrap()));
+			assert!(contribution.validate().is_ok());
+			assert_eq!(contribution.net_value(), contribution.value_added.to_signed().unwrap());
 		}
 
 		// Net splice-in
@@ -503,7 +527,8 @@ mod tests {
 				is_splice: true,
 				feerate: FeeRate::from_sat_per_kwu(2000),
 			};
-			assert_eq!(contribution.net_value(), Ok(SignedAmount::from_sat(220_000 - 200_000)));
+			assert!(contribution.validate().is_ok());
+			assert_eq!(contribution.net_value(), SignedAmount::from_sat(220_000 - 200_000));
 		}
 
 		// Net splice-out
@@ -523,7 +548,8 @@ mod tests {
 				is_splice: true,
 				feerate: FeeRate::from_sat_per_kwu(2000),
 			};
-			assert_eq!(contribution.net_value(), Ok(SignedAmount::from_sat(220_000 - 400_000)));
+			assert!(contribution.validate().is_ok());
+			assert_eq!(contribution.net_value(), SignedAmount::from_sat(220_000 - 400_000));
 		}
 
 		// Net splice-out, inputs insufficient to cover fees
@@ -544,7 +570,7 @@ mod tests {
 				feerate: FeeRate::from_sat_per_kwu(90000),
 			};
 			assert_eq!(
-				contribution.net_value(),
+				contribution.validate(),
 				Err(format!(
 					"Total input amount 0.00300000 BTC is lower than needed for splice-in contribution 0.00220000 BTC, considering fees of {}. Need more inputs.",
 					Amount::from_sat(expected_fee),
@@ -567,7 +593,7 @@ mod tests {
 				feerate: FeeRate::from_sat_per_kwu(2000),
 			};
 			assert_eq!(
-				contribution.net_value(),
+				contribution.validate(),
 				Err(format!(
 					"Total input amount 0.00100000 BTC is lower than needed for splice-in contribution 0.00220000 BTC, considering fees of {}. Need more inputs.",
 					Amount::from_sat(expected_fee),
@@ -590,7 +616,8 @@ mod tests {
 				is_splice: true,
 				feerate: FeeRate::from_sat_per_kwu(2000),
 			};
-			assert_eq!(contribution.net_value(), Ok(contribution.value_added.to_signed().unwrap()));
+			assert!(contribution.validate().is_ok());
+			assert_eq!(contribution.net_value(), contribution.value_added.to_signed().unwrap());
 		}
 
 		// higher fee rate, does not cover
@@ -609,7 +636,7 @@ mod tests {
 				feerate: FeeRate::from_sat_per_kwu(2200),
 			};
 			assert_eq!(
-				contribution.net_value(),
+				contribution.validate(),
 				Err(format!(
 					"Total input amount 0.00300000 BTC is lower than needed for splice-in contribution 0.00298032 BTC, considering fees of {}. Need more inputs.",
 					Amount::from_sat(expected_fee),
@@ -632,7 +659,68 @@ mod tests {
 				is_splice: false,
 				feerate: FeeRate::from_sat_per_kwu(2000),
 			};
-			assert_eq!(contribution.net_value(), Ok(contribution.value_added.to_signed().unwrap()));
+			assert!(contribution.validate().is_ok());
+			assert_eq!(contribution.net_value(), contribution.value_added.to_signed().unwrap());
+		}
+	}
+
+	struct UnreachableWallet;
+
+	impl CoinSelectionSourceSync for UnreachableWallet {
+		fn select_confirmed_utxos(
+			&self, _claim_id: Option<ClaimId>, _must_spend: Vec<Input>, _must_pay_to: &[TxOut],
+			_target_feerate_sat_per_1000_weight: u32, _max_tx_weight: u64,
+		) -> Result<CoinSelection, ()> {
+			unreachable!("should not reach coin selection")
+		}
+		fn sign_psbt(&self, _psbt: Psbt) -> Result<Transaction, ()> {
+			unreachable!("should not reach signing")
+		}
+	}
+
+	#[test]
+	fn test_build_funding_contribution_validates_max_money() {
+		let over_max = Amount::MAX_MONEY + Amount::from_sat(1);
+		let feerate = FeeRate::from_sat_per_kwu(2000);
+
+		// splice_in_sync with value_added > MAX_MONEY
+		{
+			let template = FundingTemplate::new(None, feerate);
+			assert!(template.splice_in_sync(over_max, UnreachableWallet).is_err());
+		}
+
+		// splice_out_sync with single output value > MAX_MONEY
+		{
+			let template = FundingTemplate::new(None, feerate);
+			let outputs = vec![funding_output_sats(over_max.to_sat())];
+			assert!(template.splice_out_sync(outputs, UnreachableWallet).is_err());
+		}
+
+		// splice_out_sync with multiple outputs summing > MAX_MONEY
+		{
+			let template = FundingTemplate::new(None, feerate);
+			let half_over = Amount::MAX_MONEY / 2 + Amount::from_sat(1);
+			let outputs = vec![
+				funding_output_sats(half_over.to_sat()),
+				funding_output_sats(half_over.to_sat()),
+			];
+			assert!(template.splice_out_sync(outputs, UnreachableWallet).is_err());
+		}
+
+		// splice_in_and_out_sync with value_added > MAX_MONEY
+		{
+			let template = FundingTemplate::new(None, feerate);
+			let outputs = vec![funding_output_sats(1_000)];
+			assert!(template.splice_in_and_out_sync(over_max, outputs, UnreachableWallet).is_err());
+		}
+
+		// splice_in_and_out_sync with output sum > MAX_MONEY
+		{
+			let template = FundingTemplate::new(None, feerate);
+			let outputs = vec![funding_output_sats(over_max.to_sat())];
+			assert!(template
+				.splice_in_and_out_sync(Amount::from_sat(1_000), outputs, UnreachableWallet)
+				.is_err());
 		}
 	}
 }
