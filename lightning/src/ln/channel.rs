@@ -12136,7 +12136,7 @@ where
 	}
 
 	/// Initiate splicing.
-	pub fn splice_channel(&mut self, feerate: FeeRate) -> Result<FundingTemplate, APIError> {
+	pub fn splice_channel(&self, feerate: FeeRate) -> Result<FundingTemplate, APIError> {
 		if self.holder_commitment_point.current_point().is_none() {
 			return Err(APIError::APIMisuseError {
 				err: format!(
