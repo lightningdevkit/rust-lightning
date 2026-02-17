@@ -30,6 +30,7 @@ use crate::ln::chan_utils::{
 	HTLC_TIMEOUT_INPUT_KEYED_ANCHOR_WITNESS_WEIGHT, HTLC_TIMEOUT_INPUT_P2A_ANCHOR_WITNESS_WEIGHT,
 	P2WSH_TXOUT_WEIGHT, SEGWIT_MARKER_FLAG_WEIGHT, TRUC_CHILD_MAX_WEIGHT, TRUC_MAX_WEIGHT,
 };
+use crate::ln::funding::FundingTxInput;
 use crate::ln::types::ChannelId;
 use crate::prelude::*;
 use crate::sign::ecdsa::EcdsaChannelSigner;
@@ -284,12 +285,15 @@ pub struct Utxo {
 	/// with their lengths included, required to satisfy the output's script. The weight consumed by
 	/// the input's `script_sig` must account for [`WITNESS_SCALE_FACTOR`].
 	pub satisfaction_weight: u64,
+	/// The sequence number to use in the [`TxIn`] when spending the UTXO.
+	pub sequence: Sequence,
 }
 
 impl_writeable_tlv_based!(Utxo, {
 	(1, outpoint, required),
 	(3, output, required),
 	(5, satisfaction_weight, required),
+	(7, sequence, (default_value, Sequence::ENABLE_RBF_NO_LOCKTIME)),
 });
 
 impl Utxo {
@@ -304,6 +308,7 @@ impl Utxo {
 			outpoint,
 			output: TxOut { value, script_pubkey: ScriptBuf::new_p2pkh(pubkey_hash) },
 			satisfaction_weight: script_sig_size * WITNESS_SCALE_FACTOR as u64 + 1, /* empty witness */
+			sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
 		}
 	}
 
@@ -323,6 +328,7 @@ impl Utxo {
 			},
 			satisfaction_weight: script_sig_size * WITNESS_SCALE_FACTOR as u64
 				+ P2WPKH_WITNESS_WEIGHT,
+			sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
 		}
 	}
 
@@ -332,6 +338,7 @@ impl Utxo {
 			outpoint,
 			output: TxOut { value, script_pubkey: ScriptBuf::new_p2wpkh(pubkey_hash) },
 			satisfaction_weight: EMPTY_SCRIPT_SIG_WEIGHT + P2WPKH_WITNESS_WEIGHT,
+			sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
 		}
 	}
 
@@ -343,9 +350,13 @@ impl Utxo {
 			outpoint,
 			output: TxOut { value, script_pubkey: ScriptBuf::new_p2tr_tweaked(tweaked_public_key) },
 			satisfaction_weight: EMPTY_SCRIPT_SIG_WEIGHT + P2TR_KEY_PATH_WITNESS_WEIGHT,
+			sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
 		}
 	}
 }
+
+/// An unspent transaction output with at least one confirmation.
+pub type ConfirmedUtxo = FundingTxInput;
 
 /// The result of a successful coin selection attempt for a transaction requiring additional UTXOs
 /// to cover its fees.
@@ -353,12 +364,22 @@ impl Utxo {
 pub struct CoinSelection {
 	/// The set of UTXOs (with at least 1 confirmation) to spend and use within a transaction
 	/// requiring additional fees.
-	pub confirmed_utxos: Vec<Utxo>,
+	pub confirmed_utxos: Vec<ConfirmedUtxo>,
 	/// An additional output tracking whether any change remained after coin selection. This output
 	/// should always have a value above dust for its given `script_pubkey`. It should not be
 	/// spent until the transaction it belongs to confirms to ensure mempool descendant limits are
 	/// not met. This implies no other party should be able to spend it except us.
 	pub change_output: Option<TxOut>,
+}
+
+impl CoinSelection {
+	fn satisfaction_weight(&self) -> u64 {
+		self.confirmed_utxos.iter().map(|ConfirmedUtxo { utxo, .. }| utxo.satisfaction_weight).sum()
+	}
+
+	fn input_amount(&self) -> Amount {
+		self.confirmed_utxos.iter().map(|ConfirmedUtxo { utxo, .. }| utxo.output.value).sum()
+	}
 }
 
 /// An abstraction over a bitcoin wallet that can perform coin selection over a set of UTXOs and can
@@ -404,9 +425,12 @@ pub trait CoinSelectionSource {
 	/// which UTXOs to double spend is left to the implementation, but it must strive to keep the
 	/// set of other claims being double spent to a minimum.
 	///
+	/// If `claim_id` is not set, then the selection should be treated as if it were for a unique
+	/// claim and must NOT be double-spent rather than being kept to a minimum.
+	///
 	/// [`ChannelMonitor::rebroadcast_pending_claims`]: crate::chain::channelmonitor::ChannelMonitor::rebroadcast_pending_claims
 	fn select_confirmed_utxos<'a>(
-		&'a self, claim_id: ClaimId, must_spend: Vec<Input>, must_pay_to: &'a [TxOut],
+		&'a self, claim_id: Option<ClaimId>, must_spend: Vec<Input>, must_pay_to: &'a [TxOut],
 		target_feerate_sat_per_1000_weight: u32, max_tx_weight: u64,
 	) -> impl Future<Output = Result<CoinSelection, ()>> + MaybeSend + 'a;
 	/// Signs and provides the full witness for all inputs within the transaction known to the
@@ -431,11 +455,18 @@ pub trait WalletSource {
 	fn list_confirmed_utxos<'a>(
 		&'a self,
 	) -> impl Future<Output = Result<Vec<Utxo>, ()>> + MaybeSend + 'a;
+
+	/// Returns the previous transaction containing the UTXO referenced by the outpoint.
+	fn get_prevtx<'a>(
+		&'a self, outpoint: OutPoint,
+	) -> impl Future<Output = Result<Transaction, ()>> + MaybeSend + 'a;
+
 	/// Returns a script to use for change above dust resulting from a successful coin selection
 	/// attempt.
 	fn get_change_script<'a>(
 		&'a self,
 	) -> impl Future<Output = Result<ScriptBuf, ()>> + MaybeSend + 'a;
+
 	/// Signs and provides the full [`TxIn::script_sig`] and [`TxIn::witness`] for all inputs within
 	/// the transaction known to the wallet (i.e., any provided via
 	/// [`WalletSource::list_confirmed_utxos`]).
@@ -464,7 +495,7 @@ where
 	// TODO: Do we care about cleaning this up once the UTXOs have a confirmed spend? We can do so
 	// by checking whether any UTXOs that exist in the map are no longer returned in
 	// `list_confirmed_utxos`.
-	locked_utxos: Mutex<HashMap<OutPoint, ClaimId>>,
+	locked_utxos: Mutex<HashMap<OutPoint, Option<ClaimId>>>,
 }
 
 impl<W: Deref + MaybeSync + MaybeSend, L: Logger + MaybeSync + MaybeSend> Wallet<W, L>
@@ -486,11 +517,13 @@ where
 	/// least 1 satoshi at the current feerate, otherwise, we'll only attempt to spend those which
 	/// contribute at least twice their fee.
 	async fn select_confirmed_utxos_internal(
-		&self, utxos: &[Utxo], claim_id: ClaimId, force_conflicting_utxo_spend: bool,
+		&self, utxos: &[Utxo], claim_id: Option<ClaimId>, force_conflicting_utxo_spend: bool,
 		tolerate_high_network_feerates: bool, target_feerate_sat_per_1000_weight: u32,
 		preexisting_tx_weight: u64, input_amount_sat: Amount, target_amount_sat: Amount,
 		max_tx_weight: u64,
 	) -> Result<CoinSelection, ()> {
+		debug_assert!(!(claim_id.is_none() && force_conflicting_utxo_spend));
+
 		// P2WSH and P2TR outputs are both the heaviest-weight standard outputs at 34 bytes
 		let max_coin_selection_weight = max_tx_weight
 			.checked_sub(preexisting_tx_weight + P2WSH_TXOUT_WEIGHT)
@@ -510,7 +543,12 @@ where
 				.iter()
 				.filter_map(|utxo| {
 					if let Some(utxo_claim_id) = locked_utxos.get(&utxo.outpoint) {
-						if *utxo_claim_id != claim_id && !force_conflicting_utxo_spend {
+						// TODO(splicing): For splicing (i.e., claim_id.is_none()), ideally we'd
+						// allow force_conflicting_utxo_spend for an RBF attempt. However, we'd need
+						// something similar to a ClaimId to identify a splice.
+						if (utxo_claim_id.is_none() || claim_id.is_none())
+							|| (*utxo_claim_id != claim_id && !force_conflicting_utxo_spend)
+						{
 							log_trace!(
 								self.logger,
 								"Skipping UTXO {} to prevent conflicting spend",
@@ -621,10 +659,26 @@ where
 			Some(TxOut { script_pubkey: change_script, value: change_output_amount })
 		};
 
-		Ok(CoinSelection {
-			confirmed_utxos: selected_utxos.into_iter().map(|(utxo, _)| utxo).collect(),
-			change_output,
-		})
+		let mut confirmed_utxos = Vec::with_capacity(selected_utxos.len());
+		for (utxo, _) in selected_utxos {
+			let prevtx = self.source.get_prevtx(utxo.outpoint).await?;
+			let prevtx_id = prevtx.compute_txid();
+			if prevtx_id != utxo.outpoint.txid
+				|| prevtx.output.get(utxo.outpoint.vout as usize).is_none()
+			{
+				log_error!(
+					self.logger,
+					"Tx {} from wallet source doesn't contain output referenced by outpoint: {}",
+					prevtx_id,
+					utxo.outpoint,
+				);
+				return Err(());
+			}
+
+			confirmed_utxos.push(ConfirmedUtxo { utxo, prevtx });
+		}
+
+		Ok(CoinSelection { confirmed_utxos, change_output })
 	}
 }
 
@@ -634,7 +688,7 @@ where
 	W::Target: WalletSource + MaybeSend + MaybeSync,
 {
 	fn select_confirmed_utxos<'a>(
-		&'a self, claim_id: ClaimId, must_spend: Vec<Input>, must_pay_to: &'a [TxOut],
+		&'a self, claim_id: Option<ClaimId>, must_spend: Vec<Input>, must_pay_to: &'a [TxOut],
 		target_feerate_sat_per_1000_weight: u32, max_tx_weight: u64,
 	) -> impl Future<Output = Result<CoinSelection, ()>> + MaybeSend + 'a {
 		async move {
@@ -659,6 +713,9 @@ where
 
 			let configs = [(false, false), (false, true), (true, false), (true, true)];
 			for (force_conflicting_utxo_spend, tolerate_high_network_feerates) in configs {
+				if claim_id.is_none() && force_conflicting_utxo_spend {
+					continue;
+				}
 				log_debug!(
 					self.logger,
 					"Attempting coin selection targeting {} sat/kW (force_conflicting_utxo_spend = {}, tolerate_high_network_feerates = {})",
@@ -733,11 +790,11 @@ where
 
 	/// Updates a transaction with the result of a successful coin selection attempt.
 	fn process_coin_selection(&self, tx: &mut Transaction, coin_selection: &CoinSelection) {
-		for utxo in coin_selection.confirmed_utxos.iter() {
+		for ConfirmedUtxo { utxo, .. } in coin_selection.confirmed_utxos.iter() {
 			tx.input.push(TxIn {
 				previous_output: utxo.outpoint,
 				script_sig: ScriptBuf::new(),
-				sequence: Sequence::ZERO,
+				sequence: utxo.sequence,
 				witness: Witness::new(),
 			});
 		}
@@ -830,7 +887,7 @@ where
 			let coin_selection: CoinSelection = self
 				.utxo_source
 				.select_confirmed_utxos(
-					claim_id,
+					Some(claim_id),
 					must_spend,
 					&[],
 					package_target_feerate_sat_per_1000_weight,
@@ -858,12 +915,10 @@ where
 				output: vec![],
 			};
 
-			let input_satisfaction_weight: u64 =
-				coin_selection.confirmed_utxos.iter().map(|utxo| utxo.satisfaction_weight).sum();
+			let input_satisfaction_weight = coin_selection.satisfaction_weight();
 			let total_satisfaction_weight =
 				anchor_input_witness_weight + EMPTY_SCRIPT_SIG_WEIGHT + input_satisfaction_weight;
-			let total_input_amount = must_spend_amount
-				+ coin_selection.confirmed_utxos.iter().map(|utxo| utxo.output.value).sum();
+			let total_input_amount = must_spend_amount + coin_selection.input_amount();
 
 			self.process_coin_selection(&mut anchor_tx, &coin_selection);
 			let anchor_txid = anchor_tx.compute_txid();
@@ -878,10 +933,10 @@ where
 				let index = idx + 1;
 				debug_assert_eq!(
 					anchor_psbt.unsigned_tx.input[index].previous_output,
-					utxo.outpoint
+					utxo.outpoint()
 				);
-				if utxo.output.script_pubkey.is_witness_program() {
-					anchor_psbt.inputs[index].witness_utxo = Some(utxo.output);
+				if utxo.output().script_pubkey.is_witness_program() {
+					anchor_psbt.inputs[index].witness_utxo = Some(utxo.into_output());
 				}
 			}
 
@@ -1095,7 +1150,7 @@ where
 			let coin_selection: CoinSelection = match self
 				.utxo_source
 				.select_confirmed_utxos(
-					utxo_id,
+					Some(utxo_id),
 					must_spend,
 					&htlc_tx.output,
 					target_feerate_sat_per_1000_weight,
@@ -1120,13 +1175,11 @@ where
 			utxo_id = claim_id.step_with_bytes(&broadcasted_htlcs.to_be_bytes());
 
 			#[cfg(debug_assertions)]
-			let input_satisfaction_weight: u64 =
-				coin_selection.confirmed_utxos.iter().map(|utxo| utxo.satisfaction_weight).sum();
+			let input_satisfaction_weight = coin_selection.satisfaction_weight();
 			#[cfg(debug_assertions)]
 			let total_satisfaction_weight = must_spend_satisfaction_weight + input_satisfaction_weight;
 			#[cfg(debug_assertions)]
-			let input_value: u64 =
-				coin_selection.confirmed_utxos.iter().map(|utxo| utxo.output.value.to_sat()).sum();
+			let input_value = coin_selection.input_amount().to_sat();
 			#[cfg(debug_assertions)]
 			let total_input_amount = must_spend_amount + input_value;
 
@@ -1147,9 +1200,12 @@ where
 			for (idx, utxo) in coin_selection.confirmed_utxos.into_iter().enumerate() {
 				// offset to skip the htlc inputs
 				let index = idx + selected_htlcs.len();
-				debug_assert_eq!(htlc_psbt.unsigned_tx.input[index].previous_output, utxo.outpoint);
-				if utxo.output.script_pubkey.is_witness_program() {
-					htlc_psbt.inputs[index].witness_utxo = Some(utxo.output);
+				debug_assert_eq!(
+					htlc_psbt.unsigned_tx.input[index].previous_output,
+					utxo.outpoint()
+				);
+				if utxo.output().script_pubkey.is_witness_program() {
+					htlc_psbt.inputs[index].witness_utxo = Some(utxo.into_output());
 				}
 			}
 
@@ -1304,10 +1360,9 @@ mod tests {
 	use crate::util::ser::Readable;
 	use crate::util::test_utils::{TestBroadcaster, TestLogger};
 
-	use bitcoin::hashes::Hash;
 	use bitcoin::hex::FromHex;
 	use bitcoin::{
-		Network, ScriptBuf, Transaction, Txid, WitnessProgram, WitnessVersion, XOnlyPublicKey,
+		Network, ScriptBuf, Transaction, WitnessProgram, WitnessVersion, XOnlyPublicKey,
 	};
 
 	struct TestCoinSelectionSource {
@@ -1316,7 +1371,7 @@ mod tests {
 	}
 	impl CoinSelectionSourceSync for TestCoinSelectionSource {
 		fn select_confirmed_utxos(
-			&self, _claim_id: ClaimId, must_spend: Vec<Input>, _must_pay_to: &[TxOut],
+			&self, _claim_id: Option<ClaimId>, must_spend: Vec<Input>, _must_pay_to: &[TxOut],
 			target_feerate_sat_per_1000_weight: u32, _max_tx_weight: u64,
 		) -> Result<CoinSelection, ()> {
 			let mut expected_selects = self.expected_selects.lock().unwrap();
@@ -1328,9 +1383,17 @@ mod tests {
 			Ok(res)
 		}
 		fn sign_psbt(&self, psbt: Psbt) -> Result<Transaction, ()> {
+			let prevtx_ids: Vec<_> = self
+				.expected_selects
+				.lock()
+				.unwrap()
+				.iter()
+				.flat_map(|selection| selection.3.confirmed_utxos.iter())
+				.map(|utxo| utxo.prevtx.compute_txid())
+				.collect();
 			let mut tx = psbt.unsigned_tx;
 			for input in tx.input.iter_mut() {
-				if input.previous_output.txid != Txid::from_byte_array([44; 32]) {
+				if prevtx_ids.contains(&input.previous_output.txid) {
 					// Channel output, add a realistic size witness to make the assertions happy
 					input.witness = Witness::from_slice(&[vec![42; 162]]);
 				}
@@ -1371,6 +1434,13 @@ mod tests {
 				.weight()
 				.to_wu();
 
+		let prevtx = Transaction {
+			version: Version::TWO,
+			lock_time: LockTime::ZERO,
+			input: vec![],
+			output: vec![TxOut { value: Amount::from_sat(200), script_pubkey: ScriptBuf::new() }],
+		};
+
 		let broadcaster = TestBroadcaster::new(Network::Testnet);
 		let source = TestCoinSelectionSource {
 			expected_selects: Mutex::new(vec![
@@ -1385,13 +1455,14 @@ mod tests {
 					commitment_and_anchor_fee,
 					868,
 					CoinSelection {
-						confirmed_utxos: vec![Utxo {
-							outpoint: OutPoint { txid: Txid::from_byte_array([44; 32]), vout: 0 },
-							output: TxOut {
-								value: Amount::from_sat(200),
-								script_pubkey: ScriptBuf::new(),
+						confirmed_utxos: vec![ConfirmedUtxo {
+							utxo: Utxo {
+								outpoint: OutPoint { txid: prevtx.compute_txid(), vout: 0 },
+								output: prevtx.output[0].clone(),
+								satisfaction_weight: 5, // Just the script_sig and witness lengths
+								sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
 							},
-							satisfaction_weight: 5, // Just the script_sig and witness lengths
+							prevtx,
 						}],
 						change_output: None,
 					},
