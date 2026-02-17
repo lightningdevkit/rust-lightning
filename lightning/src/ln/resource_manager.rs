@@ -58,16 +58,28 @@ impl DecayingAverage {
 	}
 }
 
-struct RevenueAverage {
+/// Tracks an average value over multiple rolling windows to smooth out volatility.
+///
+/// It tracks the average value using a single window duration but extends observation over
+/// [`Self::window_count`]s to protect against short-term shocks.
+///
+/// For example: if we're interested in tracking revenue over 2 weeks with a window count of 12,
+/// we will track the revenue for 12 periods of 2 weeks.
+///
+/// During the initial period after initialization, the average is computed over the elapsed
+/// time rather than the full window count, preventing artificially low values from a brief
+/// history. Once sufficient time has passed, the average stabilizes across the full configured
+/// number of windows.
+struct AggregatedWindowAverage {
 	start_timestamp_unix_secs: u64,
 	window_count: u8,
 	window_duration: Duration,
 	aggregated_revenue_decaying: DecayingAverage,
 }
 
-impl RevenueAverage {
+impl AggregatedWindowAverage {
 	fn new(window: Duration, window_count: u8, start_timestamp_unix_secs: u64) -> Self {
-		RevenueAverage {
+		AggregatedWindowAverage {
 			start_timestamp_unix_secs,
 			window_count,
 			window_duration: window,
@@ -93,11 +105,17 @@ impl RevenueAverage {
 		}
 
 		let windows_tracked = self.windows_tracked(timestamp_unix_secs);
+		// To calculate the average, we need to get the real number of windows we have been
+		// tracking in the case that it is less than the window count. Meaning, if we have
+		// tracked the average for only 2 windows but are averaging over 12 windows, we use 2
+		// to avoid averaging for 10 windows of 0.
 		let window_divisor = f64::min(
 			if windows_tracked < 1.0 { 1.0 } else { windows_tracked },
 			self.window_count as f64,
 		);
 
+		// We are not concerned with the rounding precision loss for this value because it is
+		// negligible when dealing with a long rolling average.
 		Ok((self.aggregated_revenue_decaying.value_at_timestamp(timestamp_unix_secs)? as f64
 			/ window_divisor)
 			.round() as i64)
@@ -108,7 +126,7 @@ impl RevenueAverage {
 mod tests {
 	use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-	use crate::ln::resource_manager::{DecayingAverage, RevenueAverage};
+	use crate::ln::resource_manager::{AggregatedWindowAverage, DecayingAverage};
 
 	const WINDOW: Duration = Duration::from_secs(2016 * 10 * 60);
 
@@ -184,7 +202,7 @@ mod tests {
 		let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
 		let window_count = 12;
 
-		let mut revenue_average = RevenueAverage::new(WINDOW, window_count, timestamp);
+		let mut revenue_average = AggregatedWindowAverage::new(WINDOW, window_count, timestamp);
 		assert_eq!(revenue_average.value_at_timestamp(timestamp).unwrap(), 0);
 		assert!(revenue_average.value_at_timestamp(timestamp - 100).is_err());
 
