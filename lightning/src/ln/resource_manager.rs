@@ -11,9 +11,17 @@
 
 use core::time::Duration;
 
+/// A weighted average that decays over a specified window.
+///
+/// It enables tracking of historical behavior without storing individual data points.
+/// Instead of maintaining a complete history of events (such as HTLC forwards for tracking
+/// reputation), the decaying average continuously adjusts a single accumulated value based on the
+/// elapsed time in the window.
 struct DecayingAverage {
 	value: i64,
 	last_updated_unix_secs: u64,
+	window: Duration,
+	/// A constant rate of decay basen on the rolling [`Self::window`] chosen.
 	decay_rate: f64,
 }
 
@@ -22,6 +30,11 @@ impl DecayingAverage {
 		DecayingAverage {
 			value: 0,
 			last_updated_unix_secs: start_timestamp_unix_secs,
+			window,
+			// This rate is calculated as `0.5^(2/window_seconds)`, which produces a half-life at the
+			// midpoint of the window. For example, with a 24-week window (the default for
+			// reputation tracking), a value will decay to half of its value after 12 weeks
+			// have elapsed.
 			decay_rate: 0.5_f64.powf(2.0 / window.as_secs_f64()),
 		}
 	}
@@ -73,6 +86,22 @@ mod tests {
 
 		let ts_3 = ts_2 + WINDOW.as_secs();
 		assert_eq!(avg.value_at_timestamp(ts_3).unwrap(), 250);
+
+		// Test decaying on negative value
+		let mut avg = DecayingAverage::new(current_timestamp, WINDOW);
+
+		assert_eq!(avg.add_value(-1000, current_timestamp).unwrap(), -1000);
+		assert_eq!(avg.value_at_timestamp(current_timestamp).unwrap(), -1000);
+
+		let ts_1 = current_timestamp + WINDOW.as_secs() / 4;
+		assert_eq!(avg.value_at_timestamp(ts_1).unwrap(), -707);
+
+		let ts_2 = current_timestamp + WINDOW.as_secs() / 2;
+		assert_eq!(avg.value_at_timestamp(ts_2).unwrap(), -500);
+		assert_eq!(avg.add_value(-500, ts_2).unwrap(), -1000);
+
+		let ts_3 = ts_2 + WINDOW.as_secs();
+		assert_eq!(avg.value_at_timestamp(ts_3).unwrap(), -250);
 	}
 
 	#[test]
