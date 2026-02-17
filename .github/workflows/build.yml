@@ -60,11 +60,6 @@ jobs:
         if: "matrix.platform == 'self-hosted'"
         run: |
           rustup target add thumbv7m-none-eabi
-      - name: shellcheck the CI and `contrib` scripts
-        if: "matrix.platform == 'self-hosted'"
-        run: |
-          shellcheck ci/*.sh -aP ci
-          shellcheck contrib/*.sh -aP contrib
       - name: Set RUSTFLAGS to deny warnings
         if: "matrix.toolchain == '1.75.0'"
         run: echo "RUSTFLAGS=-D warnings" >> "$GITHUB_ENV"
@@ -305,6 +300,10 @@ jobs:
       - name: Install clippy
         run: |
           rustup component add clippy
+      - name: shellcheck the CI and `contrib` scripts
+        run: |
+          shellcheck ci/*.sh -aP ci
+          shellcheck contrib/*.sh -aP contrib
       - name: Run default clippy linting
         run: |
           ./ci/check-lint.sh
