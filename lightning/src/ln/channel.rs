@@ -12187,7 +12187,7 @@ where
 			satisfaction_weight: EMPTY_SCRIPT_SIG_WEIGHT + FUNDING_TRANSACTION_WITNESS_WEIGHT,
 		};
 
-		Ok(FundingTemplate::new(Some(shared_input), feerate, true))
+		Ok(FundingTemplate::new(Some(shared_input), feerate))
 	}
 
 	pub fn funding_contributed<L: Logger>(
@@ -13540,7 +13540,6 @@ where
 					}
 
 					let prev_funding_input = self.funding.to_splice_funding_input();
-					let is_initiator = contribution.is_initiator();
 					let our_funding_contribution = match contribution.net_value() {
 						Ok(net_value) => net_value,
 						Err(e) => {
@@ -13557,7 +13556,7 @@ where
 					let (our_funding_inputs, our_funding_outputs) = contribution.into_tx_parts();
 
 					let context = FundingNegotiationContext {
-						is_initiator,
+						is_initiator: true,
 						our_funding_contribution,
 						funding_tx_locktime: locktime,
 						funding_feerate_sat_per_1000_weight: funding_feerate_per_kw,

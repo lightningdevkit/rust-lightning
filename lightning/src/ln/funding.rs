@@ -44,26 +44,21 @@ pub struct FundingTemplate {
 
 	/// The fee rate to use for coin selection.
 	feerate: FeeRate,
-
-	/// Whether the contributor initiated the funding, and thus is responsible for fees incurred for
-	/// common fields and shared inputs and outputs.
-	is_initiator: bool,
 }
 
 impl FundingTemplate {
 	/// Constructs a [`FundingTemplate`] for a splice using the provided shared input.
-	pub(super) fn new(shared_input: Option<Input>, feerate: FeeRate, is_initiator: bool) -> Self {
-		Self { shared_input, feerate, is_initiator }
+	pub(super) fn new(shared_input: Option<Input>, feerate: FeeRate) -> Self {
+		Self { shared_input, feerate }
 	}
 }
 
 macro_rules! build_funding_contribution {
-    ($value_added:expr, $outputs:expr, $shared_input:expr, $feerate:expr, $is_initiator:expr, $wallet:ident, $($await:tt)*) => {{
+    ($value_added:expr, $outputs:expr, $shared_input:expr, $feerate:expr, $wallet:ident, $($await:tt)*) => {{
 		let value_added: Amount = $value_added;
 		let outputs: Vec<TxOut> = $outputs;
 		let shared_input: Option<Input> = $shared_input;
 		let feerate: FeeRate = $feerate;
-		let is_initiator: bool = $is_initiator;
 
 		let value_removed = outputs.iter().map(|txout| txout.value).sum();
 		let is_splice = shared_input.is_some();
@@ -103,7 +98,10 @@ macro_rules! build_funding_contribution {
 
 		let CoinSelection { confirmed_utxos: inputs, change_output } = coin_selection;
 
-		let estimated_fee = estimate_transaction_fee(&inputs, &outputs, is_initiator, is_splice, feerate);
+		// The caller creating a FundingContribution is always the initiator for fee estimation
+		// purposes — this is conservative, overestimating rather than underestimating fees if
+		// the node ends up as the acceptor.
+		let estimated_fee = estimate_transaction_fee(&inputs, &outputs, true, is_splice, feerate);
 
 		let contribution = FundingContribution {
 			value_added,
@@ -112,7 +110,6 @@ macro_rules! build_funding_contribution {
 			outputs,
 			change_output,
 			feerate,
-			is_initiator,
 			is_splice,
 		};
 
@@ -129,8 +126,8 @@ impl FundingTemplate {
 		if value_added == Amount::ZERO {
 			return Err(());
 		}
-		let FundingTemplate { shared_input, feerate, is_initiator } = self;
-		build_funding_contribution!(value_added, vec![], shared_input, feerate, is_initiator, wallet, await)
+		let FundingTemplate { shared_input, feerate } = self;
+		build_funding_contribution!(value_added, vec![], shared_input, feerate, wallet, await)
 	}
 
 	/// Creates a [`FundingContribution`] for adding funds to a channel using `wallet` to perform
@@ -141,15 +138,8 @@ impl FundingTemplate {
 		if value_added == Amount::ZERO {
 			return Err(());
 		}
-		let FundingTemplate { shared_input, feerate, is_initiator } = self;
-		build_funding_contribution!(
-			value_added,
-			vec![],
-			shared_input,
-			feerate,
-			is_initiator,
-			wallet,
-		)
+		let FundingTemplate { shared_input, feerate } = self;
+		build_funding_contribution!(value_added, vec![], shared_input, feerate, wallet,)
 	}
 
 	/// Creates a [`FundingContribution`] for removing funds from a channel using `wallet` to
@@ -160,8 +150,8 @@ impl FundingTemplate {
 		if outputs.is_empty() {
 			return Err(());
 		}
-		let FundingTemplate { shared_input, feerate, is_initiator } = self;
-		build_funding_contribution!(Amount::ZERO, outputs, shared_input, feerate, is_initiator, wallet, await)
+		let FundingTemplate { shared_input, feerate } = self;
+		build_funding_contribution!(Amount::ZERO, outputs, shared_input, feerate, wallet, await)
 	}
 
 	/// Creates a [`FundingContribution`] for removing funds from a channel using `wallet` to
@@ -172,15 +162,8 @@ impl FundingTemplate {
 		if outputs.is_empty() {
 			return Err(());
 		}
-		let FundingTemplate { shared_input, feerate, is_initiator } = self;
-		build_funding_contribution!(
-			Amount::ZERO,
-			outputs,
-			shared_input,
-			feerate,
-			is_initiator,
-			wallet,
-		)
+		let FundingTemplate { shared_input, feerate } = self;
+		build_funding_contribution!(Amount::ZERO, outputs, shared_input, feerate, wallet,)
 	}
 
 	/// Creates a [`FundingContribution`] for both adding and removing funds from a channel using
@@ -191,8 +174,8 @@ impl FundingTemplate {
 		if value_added == Amount::ZERO && outputs.is_empty() {
 			return Err(());
 		}
-		let FundingTemplate { shared_input, feerate, is_initiator } = self;
-		build_funding_contribution!(value_added, outputs, shared_input, feerate, is_initiator, wallet, await)
+		let FundingTemplate { shared_input, feerate } = self;
+		build_funding_contribution!(value_added, outputs, shared_input, feerate, wallet, await)
 	}
 
 	/// Creates a [`FundingContribution`] for both adding and removing funds from a channel using
@@ -203,15 +186,8 @@ impl FundingTemplate {
 		if value_added == Amount::ZERO && outputs.is_empty() {
 			return Err(());
 		}
-		let FundingTemplate { shared_input, feerate, is_initiator } = self;
-		build_funding_contribution!(
-			value_added,
-			outputs,
-			shared_input,
-			feerate,
-			is_initiator,
-			wallet,
-		)
+		let FundingTemplate { shared_input, feerate } = self;
+		build_funding_contribution!(value_added, outputs, shared_input, feerate, wallet,)
 	}
 }
 
@@ -290,10 +266,6 @@ pub struct FundingContribution {
 	/// The fee rate used to select `inputs`.
 	feerate: FeeRate,
 
-	/// Whether the contributor initiated the funding, and thus is responsible for fees incurred for
-	/// common fields and shared inputs and outputs.
-	is_initiator: bool,
-
 	/// Whether the contribution is for funding a splice.
 	is_splice: bool,
 }
@@ -305,17 +277,12 @@ impl_writeable_tlv_based!(FundingContribution, {
 	(7, outputs, optional_vec),
 	(9, change_output, option),
 	(11, feerate, required),
-	(13, is_initiator, required),
-	(15, is_splice, required),
+	(13, is_splice, required),
 });
 
 impl FundingContribution {
 	pub(super) fn feerate(&self) -> FeeRate {
 		self.feerate
-	}
-
-	pub(super) fn is_initiator(&self) -> bool {
-		self.is_initiator
 	}
 
 	pub(super) fn is_splice(&self) -> bool {
@@ -513,7 +480,6 @@ mod tests {
 				],
 				outputs: vec![],
 				change_output: None,
-				is_initiator: true,
 				is_splice: true,
 				feerate: FeeRate::from_sat_per_kwu(2000),
 			};
@@ -534,7 +500,6 @@ mod tests {
 					funding_output_sats(200_000),
 				],
 				change_output: None,
-				is_initiator: true,
 				is_splice: true,
 				feerate: FeeRate::from_sat_per_kwu(2000),
 			};
@@ -555,7 +520,6 @@ mod tests {
 					funding_output_sats(400_000),
 				],
 				change_output: None,
-				is_initiator: true,
 				is_splice: true,
 				feerate: FeeRate::from_sat_per_kwu(2000),
 			};
@@ -576,7 +540,6 @@ mod tests {
 					funding_output_sats(400_000),
 				],
 				change_output: None,
-				is_initiator: true,
 				is_splice: true,
 				feerate: FeeRate::from_sat_per_kwu(90000),
 			};
@@ -600,7 +563,6 @@ mod tests {
 				],
 				outputs: vec![],
 				change_output: None,
-				is_initiator: true,
 				is_splice: true,
 				feerate: FeeRate::from_sat_per_kwu(2000),
 			};
@@ -625,7 +587,6 @@ mod tests {
 				],
 				outputs: vec![],
 				change_output: None,
-				is_initiator: true,
 				is_splice: true,
 				feerate: FeeRate::from_sat_per_kwu(2000),
 			};
@@ -644,7 +605,6 @@ mod tests {
 				],
 				outputs: vec![],
 				change_output: None,
-				is_initiator: true,
 				is_splice: true,
 				feerate: FeeRate::from_sat_per_kwu(2200),
 			};
@@ -657,9 +617,9 @@ mod tests {
 			);
 		}
 
-		// barely covers, less fees (no extra weight, not initiator)
+		// barely covers, less fees (not a splice)
 		{
-			let expected_fee = if cfg!(feature = "grind_signatures") { 1084 } else { 1088 };
+			let expected_fee = if cfg!(feature = "grind_signatures") { 1512 } else { 1516 };
 			let contribution = FundingContribution {
 				value_added: Amount::from_sat(300_000 - expected_fee - 20),
 				estimated_fee: Amount::from_sat(expected_fee),
@@ -669,7 +629,6 @@ mod tests {
 				],
 				outputs: vec![],
 				change_output: None,
-				is_initiator: false,
 				is_splice: false,
 				feerate: FeeRate::from_sat_per_kwu(2000),
 			};
