@@ -2364,7 +2364,15 @@ where
 		&self, fee_estimator: &LowerBoundedFeeEstimator<F>,
 	) -> AvailableBalances {
 		let balances_result = self.get_available_balances_internal(fee_estimator, false);
-		balances_result.expect("All balance changes without including counterparty unknown HTLCs have already been validated")
+		balances_result.unwrap_or_else(|()| {
+			debug_assert!(false, "some channel balance has been overdrawn");
+			AvailableBalances {
+				inbound_capacity_msat: 0,
+				outbound_capacity_msat: 0,
+				next_outbound_htlc_limit_msat: 0,
+				next_outbound_htlc_minimum_msat: u64::MAX,
+			}
+		})
 	}
 
 	pub fn minimum_depth(&self) -> Option<u32> {
@@ -12350,7 +12358,15 @@ where
 		&self, fee_estimator: &LowerBoundedFeeEstimator<F>,
 	) -> AvailableBalances {
 		let balances_result = self.get_available_balances_internal(fee_estimator, false);
-		balances_result.expect("All balance changes without including counterparty unknown HTLCs have already been validated")
+		balances_result.unwrap_or_else(|()| {
+			debug_assert!(false, "some channel balance has been overdrawn");
+			AvailableBalances {
+				inbound_capacity_msat: 0,
+				outbound_capacity_msat: 0,
+				next_outbound_htlc_limit_msat: 0,
+				next_outbound_htlc_minimum_msat: u64::MAX,
+			}
+		})
 	}
 
 	fn build_commitment_no_status_check<L: Logger>(&mut self, logger: &L) -> ChannelMonitorUpdate {
