@@ -3760,3 +3760,414 @@ fn test_funding_contributed_unfunded_channel() {
 
 	expect_discard_funding_event(&nodes[0], &unfunded_channel_id, funding_contribution);
 }
+
+// Helper to re-enter quiescence between two nodes where node_a is the initiator.
+// Returns after both sides are quiescent (no splice_init is generated since we use DoNothing).
+fn reenter_quiescence<'a, 'b, 'c>(
+	node_a: &Node<'a, 'b, 'c>, node_b: &Node<'a, 'b, 'c>, channel_id: &ChannelId,
+) {
+	let node_id_a = node_a.node.get_our_node_id();
+	let node_id_b = node_b.node.get_our_node_id();
+
+	node_a.node.maybe_propose_quiescence(&node_id_b, channel_id).unwrap();
+	let stfu_a = get_event_msg!(node_a, MessageSendEvent::SendStfu, node_id_b);
+	node_b.node.handle_stfu(node_id_a, &stfu_a);
+	let stfu_b = get_event_msg!(node_b, MessageSendEvent::SendStfu, node_id_a);
+	node_a.node.handle_stfu(node_id_b, &stfu_b);
+}
+
+#[test]
+fn test_splice_rbf_acceptor_basic() {
+	// Test the happy path for accepting an RBF of a pending splice transaction.
+	// After completing a splice-in, re-enter quiescence and process tx_init_rbf
+	// from the counterparty, responding with tx_ack_rbf.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+
+	// Complete a splice-in from node 0.
+	let funding_contribution = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+	let (_splice_tx, _new_funding_script) =
+		splice_channel(&nodes[0], &nodes[1], channel_id, funding_contribution);
+
+	// Re-enter quiescence for RBF (node 0 initiates).
+	reenter_quiescence(&nodes[0], &nodes[1], &channel_id);
+
+	// Node 0 sends tx_init_rbf with feerate satisfying the 25/24 rule.
+	// Original feerate was FEERATE_FLOOR_SATS_PER_KW (253). 253 * 25 / 24 = 263.54, so 264 works.
+	let rbf_feerate = (FEERATE_FLOOR_SATS_PER_KW as u64 * 25 + 23) / 24; // ceil(253*25/24) = 264
+	let tx_init_rbf = msgs::TxInitRbf {
+		channel_id,
+		locktime: 0,
+		feerate_sat_per_1000_weight: rbf_feerate as u32,
+		funding_output_contribution: Some(added_value.to_sat() as i64),
+	};
+
+	nodes[1].node.handle_tx_init_rbf(node_id_0, &tx_init_rbf);
+	let tx_ack_rbf = get_event_msg!(nodes[1], MessageSendEvent::SendTxAckRbf, node_id_0);
+
+	assert_eq!(tx_ack_rbf.channel_id, channel_id);
+	// Acceptor doesn't contribute funds in the RBF.
+	assert_eq!(tx_ack_rbf.funding_output_contribution, None);
+}
+
+#[test]
+fn test_splice_rbf_insufficient_feerate() {
+	// Test that tx_init_rbf with an insufficient feerate (less than 25/24 of previous) is rejected.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+
+	// Complete a splice-in.
+	let funding_contribution = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+	let (_splice_tx, _new_funding_script) =
+		splice_channel(&nodes[0], &nodes[1], channel_id, funding_contribution);
+
+	// Re-enter quiescence.
+	reenter_quiescence(&nodes[0], &nodes[1], &channel_id);
+
+	// Send tx_init_rbf with feerate that does NOT satisfy the 25/24 rule.
+	// Original feerate was 253. Using exactly 253 should fail since 253 * 24 < 253 * 25.
+	let tx_init_rbf = msgs::TxInitRbf {
+		channel_id,
+		locktime: 0,
+		feerate_sat_per_1000_weight: FEERATE_FLOOR_SATS_PER_KW,
+		funding_output_contribution: Some(added_value.to_sat() as i64),
+	};
+
+	nodes[1].node.handle_tx_init_rbf(node_id_0, &tx_init_rbf);
+
+	// Should get an error, not a TxAckRbf.
+	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1);
+	match &msg_events[0] {
+		MessageSendEvent::HandleError { action, .. } => {
+			assert_eq!(
+				*action,
+				msgs::ErrorAction::DisconnectPeerWithWarning {
+					msg: msgs::WarningMessage {
+						channel_id,
+						data: format!(
+							"Channel {} RBF feerate {} is less than 25/24 of the previous feerate {}",
+							channel_id, FEERATE_FLOOR_SATS_PER_KW, FEERATE_FLOOR_SATS_PER_KW,
+						),
+					},
+				}
+			);
+		},
+		_ => panic!("Expected HandleError, got {:?}", msg_events[0]),
+	}
+}
+
+#[test]
+fn test_splice_rbf_no_pending_splice() {
+	// Test that tx_init_rbf is rejected when there is no pending splice to RBF.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	// Re-enter quiescence without having done a splice.
+	reenter_quiescence(&nodes[0], &nodes[1], &channel_id);
+
+	let tx_init_rbf = msgs::TxInitRbf {
+		channel_id,
+		locktime: 0,
+		feerate_sat_per_1000_weight: 500,
+		funding_output_contribution: Some(50_000),
+	};
+
+	nodes[1].node.handle_tx_init_rbf(node_id_0, &tx_init_rbf);
+
+	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1);
+	match &msg_events[0] {
+		MessageSendEvent::HandleError { action, .. } => {
+			assert_eq!(
+				*action,
+				msgs::ErrorAction::DisconnectPeerWithWarning {
+					msg: msgs::WarningMessage {
+						channel_id,
+						data: format!("Channel {} has no pending splice to RBF", channel_id),
+					},
+				}
+			);
+		},
+		_ => panic!("Expected HandleError, got {:?}", msg_events[0]),
+	}
+}
+
+#[test]
+fn test_splice_rbf_active_negotiation() {
+	// Test that tx_init_rbf is rejected when a funding negotiation is already in progress.
+	// Start a splice but don't complete interactive TX construction, then send tx_init_rbf.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+
+	// Initiate a splice but only complete the handshake (STFU + splice_init/ack),
+	// leaving interactive TX construction in progress.
+	let _funding_contribution =
+		do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+	let _new_funding_script = complete_splice_handshake(&nodes[0], &nodes[1]);
+
+	// Now the acceptor (node 1) has a funding_negotiation in progress (ConstructingTransaction).
+	// Sending tx_init_rbf should be rejected.
+	let tx_init_rbf = msgs::TxInitRbf {
+		channel_id,
+		locktime: 0,
+		feerate_sat_per_1000_weight: 500,
+		funding_output_contribution: Some(added_value.to_sat() as i64),
+	};
+
+	nodes[1].node.handle_tx_init_rbf(node_id_0, &tx_init_rbf);
+
+	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1);
+	match &msg_events[0] {
+		MessageSendEvent::HandleError { action, .. } => {
+			assert_eq!(
+				*action,
+				msgs::ErrorAction::DisconnectPeerWithWarning {
+					msg: msgs::WarningMessage {
+						channel_id,
+						data: format!(
+							"Channel {} already has a funding negotiation in progress",
+							channel_id,
+						),
+					},
+				}
+			);
+		},
+		_ => panic!("Expected HandleError, got {:?}", msg_events[0]),
+	}
+
+	// Clear the initiator's pending interactive TX messages from the incomplete splice handshake.
+	nodes[0].node.get_and_clear_pending_msg_events();
+}
+
+#[test]
+fn test_splice_rbf_not_quiescence_initiator() {
+	// Test that tx_init_rbf is rejected when the sender is not the quiescence initiator.
+	// Node 1 initiates quiescence, so only node 1 should be allowed to send tx_init_rbf.
+	// Node 0 sending tx_init_rbf should be rejected.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+
+	// Complete a splice-in from node 0.
+	let funding_contribution = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+	let (_splice_tx, _new_funding_script) =
+		splice_channel(&nodes[0], &nodes[1], channel_id, funding_contribution);
+
+	// Re-enter quiescence with node 1 as the initiator (not node 0).
+	nodes[1].node.maybe_propose_quiescence(&node_id_0, &channel_id).unwrap();
+	let stfu_b = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
+	nodes[0].node.handle_stfu(node_id_1, &stfu_b);
+	let stfu_a = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+	nodes[1].node.handle_stfu(node_id_0, &stfu_a);
+
+	// Node 0 sends tx_init_rbf, but node 1 is the quiescence initiator, so node 0 should be
+	// rejected.
+	let tx_init_rbf = msgs::TxInitRbf {
+		channel_id,
+		locktime: 0,
+		feerate_sat_per_1000_weight: 500,
+		funding_output_contribution: Some(added_value.to_sat() as i64),
+	};
+
+	nodes[1].node.handle_tx_init_rbf(node_id_0, &tx_init_rbf);
+
+	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1);
+	match &msg_events[0] {
+		MessageSendEvent::HandleError { action, .. } => {
+			assert_eq!(
+				*action,
+				msgs::ErrorAction::DisconnectPeerWithWarning {
+					msg: msgs::WarningMessage {
+						channel_id,
+						data: "Counterparty sent tx_init_rbf but is not the quiescence initiator"
+							.to_owned(),
+					},
+				}
+			);
+		},
+		_ => panic!("Expected HandleError, got {:?}", msg_events[0]),
+	}
+}
+
+#[test]
+fn test_splice_rbf_after_splice_locked() {
+	// Test that tx_init_rbf is rejected when the counterparty has already sent splice_locked.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+
+	// Complete a splice-in from node 0.
+	let funding_contribution = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+	let (splice_tx, _new_funding_script) =
+		splice_channel(&nodes[0], &nodes[1], channel_id, funding_contribution);
+
+	// Mine the splice tx on both nodes.
+	mine_transaction(&nodes[0], &splice_tx);
+	mine_transaction(&nodes[1], &splice_tx);
+
+	// Connect enough blocks on node 0 only so it sends splice_locked.
+	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
+
+	let splice_locked = get_event_msg!(nodes[0], MessageSendEvent::SendSpliceLocked, node_id_1);
+
+	// Deliver splice_locked to node 1. Since node 1 hasn't confirmed enough blocks,
+	// it won't send its own splice_locked back, but it will set received_funding_txid.
+	nodes[1].node.handle_splice_locked(node_id_0, &splice_locked);
+
+	// Node 1 shouldn't have any messages to send (no splice_locked since it hasn't confirmed).
+	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert!(msg_events.is_empty(), "Expected no messages, got {:?}", msg_events);
+
+	// Re-enter quiescence (node 0 initiates).
+	reenter_quiescence(&nodes[0], &nodes[1], &channel_id);
+
+	// Node 0 sends tx_init_rbf, but node 0 already sent splice_locked, so it should be rejected.
+	let tx_init_rbf = msgs::TxInitRbf {
+		channel_id,
+		locktime: 0,
+		feerate_sat_per_1000_weight: 500,
+		funding_output_contribution: Some(added_value.to_sat() as i64),
+	};
+
+	nodes[1].node.handle_tx_init_rbf(node_id_0, &tx_init_rbf);
+
+	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1);
+	match &msg_events[0] {
+		MessageSendEvent::HandleError { action, .. } => {
+			assert_eq!(
+				*action,
+				msgs::ErrorAction::DisconnectPeerWithWarning {
+					msg: msgs::WarningMessage {
+						channel_id,
+						data: format!(
+							"Channel {} counterparty already sent splice_locked, cannot RBF",
+							channel_id,
+						),
+					},
+				}
+			);
+		},
+		_ => panic!("Expected HandleError, got {:?}", msg_events[0]),
+	}
+}
+
+#[test]
+fn test_splice_rbf_zeroconf_rejected() {
+	// Test that tx_init_rbf is rejected when option_zeroconf is negotiated.
+	// The zero-conf check happens before the pending_splice check, so we don't need to complete
+	// a splice — just enter quiescence and send tx_init_rbf.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let mut config = test_default_channel_config();
+	config.channel_handshake_limits.trust_own_funding_0conf = true;
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (funding_tx, channel_id) =
+		open_zero_conf_channel_with_value(&nodes[0], &nodes[1], None, initial_channel_value_sat, 0);
+	mine_transaction(&nodes[0], &funding_tx);
+	mine_transaction(&nodes[1], &funding_tx);
+
+	// Enter quiescence (node 0 initiates).
+	reenter_quiescence(&nodes[0], &nodes[1], &channel_id);
+
+	// Node 0 sends tx_init_rbf, but the channel has option_zeroconf, so it should be rejected.
+	let tx_init_rbf = msgs::TxInitRbf {
+		channel_id,
+		locktime: 0,
+		feerate_sat_per_1000_weight: 500,
+		funding_output_contribution: Some(50_000),
+	};
+
+	nodes[1].node.handle_tx_init_rbf(node_id_0, &tx_init_rbf);
+
+	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1);
+	match &msg_events[0] {
+		MessageSendEvent::HandleError { action, .. } => {
+			assert_eq!(
+				*action,
+				msgs::ErrorAction::DisconnectPeerWithWarning {
+					msg: msgs::WarningMessage {
+						channel_id,
+						data: format!(
+							"Channel {} has option_zeroconf, cannot RBF splice",
+							channel_id,
+						),
+					},
+				}
+			);
+		},
+		_ => panic!("Expected HandleError, got {:?}", msg_events[0]),
+	}
+}

@@ -12854,6 +12854,54 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		}
 	}
 
+	/// Handle incoming tx_init_rbf, start a new round of interactive transaction construction.
+	fn internal_tx_init_rbf(
+		&self, counterparty_node_id: &PublicKey, msg: &msgs::TxInitRbf,
+	) -> Result<(), MsgHandleErrInternal> {
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
+			debug_assert!(false);
+			MsgHandleErrInternal::unreachable_no_such_peer(counterparty_node_id, msg.channel_id)
+		})?;
+		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+
+		match peer_state.channel_by_id.entry(msg.channel_id) {
+			hash_map::Entry::Vacant(_) => {
+				return Err(MsgHandleErrInternal::no_such_channel_for_peer(
+					counterparty_node_id,
+					msg.channel_id,
+				))
+			},
+			hash_map::Entry::Occupied(mut chan_entry) => {
+				if let Some(ref mut funded_channel) = chan_entry.get_mut().as_funded_mut() {
+					let init_res = funded_channel.tx_init_rbf(
+						msg,
+						&self.entropy_source,
+						&self.get_our_node_id(),
+						&self.fee_estimator,
+						&self.logger,
+					);
+					let tx_ack_rbf_msg = try_channel_entry!(self, peer_state, init_res, chan_entry);
+					peer_state.pending_msg_events.push(MessageSendEvent::SendTxAckRbf {
+						node_id: *counterparty_node_id,
+						msg: tx_ack_rbf_msg,
+					});
+					Ok(())
+				} else {
+					try_channel_entry!(
+						self,
+						peer_state,
+						Err(
+							ChannelError::close("Channel is not funded, cannot RBF splice".into(),)
+						),
+						chan_entry
+					)
+				}
+			},
+		}
+	}
+
 	/// Handle incoming splice request ack, transition channel to splice-pending (unless some check fails).
 	fn internal_splice_ack(
 		&self, counterparty_node_id: &PublicKey, msg: &msgs::SpliceAck,
@@ -16307,11 +16355,16 @@ impl<
 	}
 
 	fn handle_tx_init_rbf(&self, counterparty_node_id: PublicKey, msg: &msgs::TxInitRbf) {
-		let err = Err(MsgHandleErrInternal::send_err_msg_no_close(
-			"Dual-funded channels not supported".to_owned(),
-			msg.channel_id.clone(),
-		));
-		let _: Result<(), _> = self.handle_error(err, counterparty_node_id);
+		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
+			let res = self.internal_tx_init_rbf(&counterparty_node_id, msg);
+			let persist = match &res {
+				Err(e) if e.closes_channel() => NotifyOption::DoPersist,
+				Err(_) => NotifyOption::SkipPersistHandleEvents,
+				Ok(()) => NotifyOption::SkipPersistHandleEvents,
+			};
+			let _ = self.handle_error(res, counterparty_node_id);
+			persist
+		});
 	}
 
 	fn handle_tx_ack_rbf(&self, counterparty_node_id: PublicKey, msg: &msgs::TxAckRbf) {

@@ -2383,6 +2383,7 @@ where
 					holder_commitment_point,
 					pending_splice: None,
 					quiescent_action: None,
+					holder_is_quiescence_initiator: false,
 				};
 				let res = funded_channel.initial_commitment_signed_v2(msg, best_block, signer_provider, logger)
 					.map(|monitor| (Some(monitor), None))
@@ -2910,6 +2911,10 @@ struct PendingFunding {
 
 	/// The funding txid used in the `splice_locked` received from the counterparty.
 	received_funding_txid: Option<Txid>,
+
+	/// The feerate used in the last successfully negotiated funding transaction.
+	/// Used for validating the 25/24 feerate increase rule on RBF attempts.
+	last_funding_feerate_sat_per_1000_weight: Option<u32>,
 }
 
 impl_writeable_tlv_based!(PendingFunding, {
@@ -2917,6 +2922,7 @@ impl_writeable_tlv_based!(PendingFunding, {
 	(3, negotiated_candidates, required_vec),
 	(5, sent_funding_txid, option),
 	(7, received_funding_txid, option),
+	(9, last_funding_feerate_sat_per_1000_weight, option),
 });
 
 #[derive(Debug)]
@@ -6764,6 +6770,10 @@ pub(super) struct FundedChannel<SP: SignerProvider> {
 	/// initiator we may be able to merge this action into what the counterparty wanted to do (e.g.
 	/// in the case of splicing).
 	quiescent_action: Option<QuiescentAction>,
+
+	/// Whether we (the holder) initiated the current quiescence session.
+	/// Set when quiescence is established, cleared when quiescence ends.
+	holder_is_quiescence_initiator: bool,
 }
 
 #[cfg(any(test, fuzzing))]
@@ -12229,6 +12239,7 @@ where
 			negotiated_candidates: vec![],
 			sent_funding_txid: None,
 			received_funding_txid: None,
+			last_funding_feerate_sat_per_1000_weight: Some(funding_feerate_per_kw),
 		});
 
 		msgs::SpliceInit {
@@ -12492,6 +12503,7 @@ where
 			negotiated_candidates: Vec::new(),
 			received_funding_txid: None,
 			sent_funding_txid: None,
+			last_funding_feerate_sat_per_1000_weight: Some(msg.funding_feerate_per_kw),
 		});
 
 		Ok(msgs::SpliceAck {
@@ -12499,6 +12511,159 @@ where
 			funding_contribution_satoshis: our_funding_contribution.to_sat(),
 			funding_pubkey: new_funding_pubkey,
 			require_confirmed_inputs: None,
+		})
+	}
+
+	/// Checks during handling tx_init_rbf for an existing splice
+	fn validate_tx_init_rbf<F: FeeEstimator>(
+		&self, msg: &msgs::TxInitRbf, our_funding_contribution: SignedAmount,
+		fee_estimator: &LowerBoundedFeeEstimator<F>,
+	) -> Result<FundingScope, ChannelError> {
+		if self.holder_commitment_point.current_point().is_none() {
+			return Err(ChannelError::WarnAndDisconnect(format!(
+				"Channel {} commitment point needs to be advanced once before RBF",
+				self.context.channel_id(),
+			)));
+		}
+
+		if !self.context.channel_state.is_quiescent() {
+			return Err(ChannelError::WarnAndDisconnect("Quiescence needed for RBF".to_owned()));
+		}
+
+		if self.holder_is_quiescence_initiator {
+			return Err(ChannelError::WarnAndDisconnect(
+				"Counterparty sent tx_init_rbf but is not the quiescence initiator".to_owned(),
+			));
+		}
+
+		if self.context.minimum_depth(&self.funding) == Some(0) {
+			return Err(ChannelError::WarnAndDisconnect(format!(
+				"Channel {} has option_zeroconf, cannot RBF splice",
+				self.context.channel_id(),
+			)));
+		}
+
+		let pending_splice = match &self.pending_splice {
+			Some(pending_splice) => pending_splice,
+			None => {
+				return Err(ChannelError::WarnAndDisconnect(format!(
+					"Channel {} has no pending splice to RBF",
+					self.context.channel_id(),
+				)));
+			},
+		};
+
+		if pending_splice.funding_negotiation.is_some() {
+			return Err(ChannelError::WarnAndDisconnect(format!(
+				"Channel {} already has a funding negotiation in progress",
+				self.context.channel_id(),
+			)));
+		}
+
+		if pending_splice.received_funding_txid.is_some() {
+			return Err(ChannelError::WarnAndDisconnect(format!(
+				"Channel {} counterparty already sent splice_locked, cannot RBF",
+				self.context.channel_id(),
+			)));
+		}
+
+		let first_candidate = match pending_splice.negotiated_candidates.first() {
+			Some(candidate) => candidate,
+			None => {
+				return Err(ChannelError::WarnAndDisconnect(format!(
+					"Channel {} has no negotiated splice candidates to RBF",
+					self.context.channel_id(),
+				)));
+			},
+		};
+
+		// Check the 25/24 feerate increase rule
+		let prev_feerate =
+			pending_splice.last_funding_feerate_sat_per_1000_weight.unwrap_or_else(|| {
+				fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::UrgentOnChainSweep)
+			});
+		let new_feerate = msg.feerate_sat_per_1000_weight;
+		if (new_feerate as u64) * 24 < (prev_feerate as u64) * 25 {
+			return Err(ChannelError::WarnAndDisconnect(format!(
+				"Channel {} RBF feerate {} is less than 25/24 of the previous feerate {}",
+				self.context.channel_id(),
+				new_feerate,
+				prev_feerate,
+			)));
+		}
+
+		let their_funding_contribution = match msg.funding_output_contribution {
+			Some(value) => SignedAmount::from_sat(value),
+			None => SignedAmount::ZERO,
+		};
+
+		self.validate_splice_contributions(our_funding_contribution, their_funding_contribution)
+			.map_err(|e| ChannelError::WarnAndDisconnect(e))?;
+
+		// Reuse funding pubkeys from the first negotiated candidate since all RBF candidates
+		// for the same splice share the same funding output script.
+		let holder_pubkeys = first_candidate.get_holder_pubkeys().clone();
+		let counterparty_funding_pubkey = *first_candidate.counterparty_funding_pubkey();
+
+		Ok(FundingScope::for_splice(
+			&self.funding,
+			&self.context,
+			our_funding_contribution,
+			their_funding_contribution,
+			counterparty_funding_pubkey,
+			holder_pubkeys,
+		))
+	}
+
+	pub(crate) fn tx_init_rbf<ES: EntropySource, F: FeeEstimator, L: Logger>(
+		&mut self, msg: &msgs::TxInitRbf, entropy_source: &ES, holder_node_id: &PublicKey,
+		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
+	) -> Result<msgs::TxAckRbf, ChannelError> {
+		let our_funding_contribution = SignedAmount::ZERO;
+		let rbf_funding =
+			self.validate_tx_init_rbf(msg, our_funding_contribution, fee_estimator)?;
+
+		log_info!(
+			logger,
+			"Starting RBF funding negotiation for channel {} after receiving tx_init_rbf; channel value: {} sats",
+			self.context.channel_id,
+			rbf_funding.get_value_satoshis(),
+		);
+
+		let prev_funding_input = self.funding.to_splice_funding_input();
+		let funding_negotiation_context = FundingNegotiationContext {
+			is_initiator: false,
+			our_funding_contribution,
+			funding_tx_locktime: LockTime::from_consensus(msg.locktime),
+			funding_feerate_sat_per_1000_weight: msg.feerate_sat_per_1000_weight,
+			shared_funding_input: Some(prev_funding_input),
+			our_funding_inputs: Vec::new(),
+			our_funding_outputs: Vec::new(),
+		};
+
+		let (interactive_tx_constructor, first_message) = funding_negotiation_context
+			.into_interactive_tx_constructor(
+				&self.context,
+				&rbf_funding,
+				entropy_source,
+				holder_node_id.clone(),
+			);
+		debug_assert!(first_message.is_none());
+
+		let pending_splice = self
+			.pending_splice
+			.as_mut()
+			.expect("We validated pending_splice exists in validate_tx_init_rbf");
+		pending_splice.funding_negotiation = Some(FundingNegotiation::ConstructingTransaction {
+			funding: rbf_funding,
+			interactive_tx_constructor,
+		});
+		pending_splice.last_funding_feerate_sat_per_1000_weight =
+			Some(msg.feerate_sat_per_1000_weight);
+
+		Ok(msgs::TxAckRbf {
+			channel_id: self.context.channel_id,
+			funding_output_contribution: None,
 		})
 	}
 
@@ -13381,6 +13546,7 @@ where
 
 		self.context.channel_state.clear_local_stfu_sent();
 		self.context.channel_state.set_quiescent();
+		self.holder_is_quiescence_initiator = is_holder_quiescence_initiator;
 
 		log_debug!(
 			logger,
@@ -13496,6 +13662,7 @@ where
 			// initiated first, we'll retry after we're no longer quiescent.
 			self.context.channel_state.clear_remote_stfu_sent();
 			self.context.channel_state.set_quiescent();
+			self.holder_is_quiescence_initiator = false;
 			false
 		} else {
 			log_debug!(logger, "Sending stfu as quiescence initiator");
@@ -13839,6 +14006,7 @@ impl<SP: SignerProvider> OutboundV1Channel<SP> {
 			holder_commitment_point,
 			pending_splice: None,
 			quiescent_action: None,
+			holder_is_quiescence_initiator: false,
 		};
 
 		let need_channel_ready = channel.check_get_channel_ready(0, logger).is_some()
@@ -14139,6 +14307,7 @@ impl<SP: SignerProvider> InboundV1Channel<SP> {
 			holder_commitment_point,
 			pending_splice: None,
 			quiescent_action: None,
+			holder_is_quiescence_initiator: false,
 		};
 		let need_channel_ready = channel.check_get_channel_ready(0, logger).is_some()
 			|| channel.context.signer_pending_channel_ready;
@@ -15966,6 +16135,7 @@ impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
 			holder_commitment_point,
 			pending_splice,
 			quiescent_action: None,
+			holder_is_quiescence_initiator: false,
 		})
 	}
 }
