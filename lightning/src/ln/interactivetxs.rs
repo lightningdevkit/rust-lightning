@@ -136,6 +136,11 @@ pub(crate) enum AbortReason {
 	DuplicateFundingOutput,
 	/// More than one funding (shared) input found.
 	DuplicateFundingInput,
+	/// The RBF feerate is insufficient (e.g., doesn't satisfy the 25/24 rule or can't accommodate
+	/// prior contributions).
+	InsufficientRbfFeerate,
+	/// A funding negotiation is already in progress.
+	NegotiationInProgress,
 	/// Internal error
 	InternalError(&'static str),
 }
@@ -195,6 +200,10 @@ impl Display for AbortReason {
 				f.write_str("More than one funding output found")
 			},
 			AbortReason::DuplicateFundingInput => f.write_str("More than one funding input found"),
+			AbortReason::InsufficientRbfFeerate => f.write_str("Insufficient RBF feerate"),
+			AbortReason::NegotiationInProgress => {
+				f.write_str("A funding negotiation is already in progress")
+			},
 			AbortReason::InternalError(text) => {
 				f.write_fmt(format_args!("Internal error: {}", text))
 			},
