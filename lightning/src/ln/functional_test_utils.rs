@@ -2210,31 +2210,31 @@ macro_rules! check_spends {
 	}
 }
 
-macro_rules! get_closing_signed_broadcast {
-	($node: expr, $dest_pubkey: expr) => {{
-		let events = $node.get_and_clear_pending_msg_events();
-		assert!(events.len() == 1 || events.len() == 2);
-		(
-			match events[events.len() - 1] {
-				MessageSendEvent::BroadcastChannelUpdate { ref msg, .. } => {
-					assert_eq!(msg.contents.channel_flags & 2, 2);
-					msg.clone()
+pub fn get_closing_signed_broadcast(
+	node: &Node, dest_pubkey: PublicKey,
+) -> (msgs::ChannelUpdate, Option<msgs::ClosingSigned>) {
+	let events = node.node.get_and_clear_pending_msg_events();
+	assert!(events.len() == 1 || events.len() == 2);
+	(
+		match events[events.len() - 1] {
+			MessageSendEvent::BroadcastChannelUpdate { ref msg, .. } => {
+				assert_eq!(msg.contents.channel_flags & 2, 2);
+				msg.clone()
+			},
+			_ => panic!("Unexpected event"),
+		},
+		if events.len() == 2 {
+			match events[0] {
+				MessageSendEvent::SendClosingSigned { ref node_id, ref msg } => {
+					assert_eq!(*node_id, dest_pubkey);
+					Some(msg.clone())
 				},
 				_ => panic!("Unexpected event"),
-			},
-			if events.len() == 2 {
-				match events[0] {
-					MessageSendEvent::SendClosingSigned { ref node_id, ref msg } => {
-						assert_eq!(*node_id, $dest_pubkey);
-						Some(msg.clone())
-					},
-					_ => panic!("Unexpected event"),
-				}
-			} else {
-				None
-			},
-		)
-	}};
+			}
+		} else {
+			None
+		},
+	)
 }
 
 #[cfg(test)]
@@ -2519,10 +2519,10 @@ pub fn close_channel<'a, 'b, 'c>(
 		assert_eq!(broadcaster_b.txn_broadcasted.lock().unwrap().len(), 1);
 		tx_b = broadcaster_b.txn_broadcasted.lock().unwrap().remove(0);
 		let (bs_update, closing_signed_b) =
-			get_closing_signed_broadcast!(node_b, node_a.get_our_node_id());
+			get_closing_signed_broadcast(struct_b, node_a.get_our_node_id());
 
 		node_a.handle_closing_signed(node_b.get_our_node_id(), &closing_signed_b.unwrap());
-		let (as_update, none_a) = get_closing_signed_broadcast!(node_a, node_b.get_our_node_id());
+		let (as_update, none_a) = get_closing_signed_broadcast(struct_a, node_b.get_our_node_id());
 		assert!(none_a.is_none());
 		assert_eq!(broadcaster_a.txn_broadcasted.lock().unwrap().len(), 1);
 		tx_a = broadcaster_a.txn_broadcasted.lock().unwrap().remove(0);
@@ -2539,10 +2539,10 @@ pub fn close_channel<'a, 'b, 'c>(
 		assert_eq!(broadcaster_a.txn_broadcasted.lock().unwrap().len(), 1);
 		tx_a = broadcaster_a.txn_broadcasted.lock().unwrap().remove(0);
 		let (as_update, closing_signed_a) =
-			get_closing_signed_broadcast!(node_a, node_b.get_our_node_id());
+			get_closing_signed_broadcast(struct_a, node_b.get_our_node_id());
 
 		node_b.handle_closing_signed(node_a.get_our_node_id(), &closing_signed_a.unwrap());
-		let (bs_update, none_b) = get_closing_signed_broadcast!(node_b, node_a.get_our_node_id());
+		let (bs_update, none_b) = get_closing_signed_broadcast(struct_b, node_a.get_our_node_id());
 		assert!(none_b.is_none());
 		assert_eq!(broadcaster_b.txn_broadcasted.lock().unwrap().len(), 1);
 		tx_b = broadcaster_b.txn_broadcasted.lock().unwrap().remove(0);

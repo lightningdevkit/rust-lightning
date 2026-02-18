@@ -3048,11 +3048,11 @@ fn test_temporary_error_during_shutdown() {
 		node_b_id,
 		&get_event_msg!(nodes[1], MessageSendEvent::SendClosingSigned, node_a_id),
 	);
-	let (_, closing_signed_a) = get_closing_signed_broadcast!(nodes[0].node, node_b_id);
+	let (_, closing_signed_a) = get_closing_signed_broadcast(&nodes[0], node_b_id);
 	let txn_a = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 
 	nodes[1].node.handle_closing_signed(node_a_id, &closing_signed_a.unwrap());
-	let (_, none_b) = get_closing_signed_broadcast!(nodes[1].node, node_a_id);
+	let (_, none_b) = get_closing_signed_broadcast(&nodes[1], node_a_id);
 	assert!(none_b.is_none());
 	let txn_b = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 

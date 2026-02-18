@@ -369,9 +369,9 @@ fn do_chanmon_claim_value_coop_close(keyed_anchors: bool, p2a_anchor: bool) {
 	nodes[1].node.handle_closing_signed(nodes[0].node.get_our_node_id(), &node_0_closing_signed);
 	let node_1_closing_signed = get_event_msg!(nodes[1], MessageSendEvent::SendClosingSigned, nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_closing_signed(nodes[1].node.get_our_node_id(), &node_1_closing_signed);
-	let (_, node_0_2nd_closing_signed) = get_closing_signed_broadcast!(nodes[0].node, nodes[1].node.get_our_node_id());
+	let (_, node_0_2nd_closing_signed) = get_closing_signed_broadcast(&nodes[0], nodes[1].node.get_our_node_id());
 	nodes[1].node.handle_closing_signed(nodes[0].node.get_our_node_id(), &node_0_2nd_closing_signed.unwrap());
-	let (_, node_1_none) = get_closing_signed_broadcast!(nodes[1].node, nodes[0].node.get_our_node_id());
+	let (_, node_1_none) = get_closing_signed_broadcast(&nodes[1], nodes[0].node.get_our_node_id());
 	assert!(node_1_none.is_none());
 
 	let shutdown_tx = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
