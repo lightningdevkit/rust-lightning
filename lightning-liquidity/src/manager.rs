@@ -24,13 +24,13 @@ use crate::lsps5::msgs::LSPS5Message;
 use crate::lsps5::service::{LSPS5ServiceConfig, LSPS5ServiceHandler};
 use crate::message_queue::MessageQueue;
 use crate::persist::{
-	read_event_queue, read_lsps2_service_peer_states, read_lsps5_service_peer_states,
+	read_event_queue, read_lsps1_service_peer_states, read_lsps2_service_peer_states,
+	read_lsps5_service_peer_states,
 };
 
 use crate::lsps1::client::{LSPS1ClientConfig, LSPS1ClientHandler};
 use crate::lsps1::msgs::LSPS1Message;
-#[cfg(lsps1_service)]
-use crate::lsps1::service::{LSPS1ServiceConfig, LSPS1ServiceHandler};
+use crate::lsps1::service::{LSPS1ServiceConfig, LSPS1ServiceHandler, LSPS1ServiceHandlerSync};
 
 use crate::lsps2::client::{LSPS2ClientConfig, LSPS2ClientHandler};
 use crate::lsps2::msgs::LSPS2Message;
@@ -43,8 +43,7 @@ use crate::utils::time::DefaultTimeProvider;
 use crate::utils::time::TimeProvider;
 
 use lightning::chain::chaininterface::BroadcasterInterface;
-use lightning::chain::{self, BestBlock, Confirm, Filter, Listen};
-use lightning::ln::channelmanager::{AChannelManager, ChainParameters};
+use lightning::ln::channelmanager::AChannelManager;
 use lightning::ln::msgs::{ErrorAction, LightningError};
 use lightning::ln::peer_handler::CustomMessageHandler;
 use lightning::ln::wire::CustomMessageReader;
@@ -72,7 +71,6 @@ const LSPS_FEATURE_BIT: usize = 729;
 #[derive(Clone)]
 pub struct LiquidityServiceConfig {
 	/// Optional server-side configuration for LSPS1 channel requests.
-	#[cfg(lsps1_service)]
 	pub lsps1_service_config: Option<LSPS1ServiceConfig>,
 	/// Optional server-side configuration for JIT channels
 	/// should you want to support them.
@@ -111,8 +109,6 @@ pub trait ALiquidityManager {
 	type AChannelManager: AChannelManager + ?Sized;
 	/// A type that may be dereferenced to [`Self::AChannelManager`].
 	type CM: Deref<Target = Self::AChannelManager> + Clone;
-	/// A type implementing [`Filter`].
-	type C: Filter + Clone;
 	/// A type implementing [`KVStore`].
 	type K: KVStore + Clone;
 	/// A type implementing [`TimeProvider`].
@@ -128,7 +124,6 @@ pub trait ALiquidityManager {
 		Self::EntropySource,
 		Self::NodeSigner,
 		Self::CM,
-		Self::C,
 		Self::K,
 		Self::TP,
 		Self::BroadcasterInterface,
@@ -139,11 +134,10 @@ impl<
 		ES: EntropySource + Clone,
 		NS: NodeSigner + Clone,
 		CM: Deref + Clone,
-		C: Filter + Clone,
 		K: KVStore + Clone,
 		TP: Deref + Clone,
 		T: BroadcasterInterface + Clone,
-	> ALiquidityManager for LiquidityManager<ES, NS, CM, C, K, TP, T>
+	> ALiquidityManager for LiquidityManager<ES, NS, CM, K, TP, T>
 where
 	CM::Target: AChannelManager,
 	TP::Target: TimeProvider,
@@ -152,12 +146,11 @@ where
 	type NodeSigner = NS;
 	type AChannelManager = CM::Target;
 	type CM = CM;
-	type C = C;
 	type K = K;
 	type TimeProvider = TP::Target;
 	type TP = TP;
 	type BroadcasterInterface = T;
-	fn get_lm(&self) -> &LiquidityManager<ES, NS, CM, C, K, TP, T> {
+	fn get_lm(&self) -> &LiquidityManager<ES, NS, CM, K, TP, T> {
 		self
 	}
 }
@@ -175,8 +168,6 @@ pub trait ALiquidityManagerSync {
 	type AChannelManager: AChannelManager + ?Sized;
 	/// A type that may be dereferenced to [`Self::AChannelManager`].
 	type CM: Deref<Target = Self::AChannelManager> + Clone;
-	/// A type implementing [`Filter`].
-	type C: Filter + Clone;
 	/// A type implementing [`KVStoreSync`].
 	type KVStoreSync: KVStoreSync + ?Sized;
 	/// A type that may be dereferenced to [`Self::KVStoreSync`].
@@ -195,7 +186,6 @@ pub trait ALiquidityManagerSync {
 		Self::EntropySource,
 		Self::NodeSigner,
 		Self::CM,
-		Self::C,
 		KVStoreSyncWrapper<Self::KS>,
 		Self::TP,
 		Self::BroadcasterInterface,
@@ -207,7 +197,6 @@ pub trait ALiquidityManagerSync {
 		Self::EntropySource,
 		Self::NodeSigner,
 		Self::CM,
-		Self::C,
 		Self::KS,
 		Self::TP,
 		Self::BroadcasterInterface,
@@ -218,11 +207,10 @@ impl<
 		ES: EntropySource + Clone,
 		NS: NodeSigner + Clone,
 		CM: Deref + Clone,
-		C: Filter + Clone,
 		KS: Deref + Clone,
 		TP: Deref + Clone,
 		T: BroadcasterInterface + Clone,
-	> ALiquidityManagerSync for LiquidityManagerSync<ES, NS, CM, C, KS, TP, T>
+	> ALiquidityManagerSync for LiquidityManagerSync<ES, NS, CM, KS, TP, T>
 where
 	CM::Target: AChannelManager,
 	KS::Target: KVStoreSync,
@@ -232,7 +220,6 @@ where
 	type NodeSigner = NS;
 	type AChannelManager = CM::Target;
 	type CM = CM;
-	type C = C;
 	type KVStoreSync = KS::Target;
 	type KS = KS;
 	type TimeProvider = TP::Target;
@@ -246,14 +233,13 @@ where
 		Self::EntropySource,
 		Self::NodeSigner,
 		Self::CM,
-		Self::C,
 		KVStoreSyncWrapper<Self::KS>,
 		Self::TP,
 		Self::BroadcasterInterface,
 	> {
 		&self.inner
 	}
-	fn get_lm(&self) -> &LiquidityManagerSync<ES, NS, CM, C, KS, TP, T> {
+	fn get_lm(&self) -> &LiquidityManagerSync<ES, NS, CM, KS, TP, T> {
 		self
 	}
 }
@@ -281,7 +267,6 @@ pub struct LiquidityManager<
 	ES: EntropySource + Clone,
 	NS: NodeSigner + Clone,
 	CM: Deref + Clone,
-	C: Filter + Clone,
 	K: KVStore + Clone,
 	TP: Deref + Clone,
 	T: BroadcasterInterface + Clone,
@@ -296,8 +281,7 @@ pub struct LiquidityManager<
 	ignored_peers: RwLock<HashSet<PublicKey>>,
 	lsps0_client_handler: LSPS0ClientHandler<ES, K>,
 	lsps0_service_handler: Option<LSPS0ServiceHandler>,
-	#[cfg(lsps1_service)]
-	lsps1_service_handler: Option<LSPS1ServiceHandler<ES, CM, C, K>>,
+	lsps1_service_handler: Option<LSPS1ServiceHandler<ES, CM, K, TP>>,
 	lsps1_client_handler: Option<LSPS1ClientHandler<ES, K>>,
 	lsps2_service_handler: Option<LSPS2ServiceHandler<CM, K, T>>,
 	lsps2_client_handler: Option<LSPS2ClientHandler<ES, K>>,
@@ -305,8 +289,6 @@ pub struct LiquidityManager<
 	lsps5_client_handler: Option<LSPS5ClientHandler<ES, K>>,
 	service_config: Option<LiquidityServiceConfig>,
 	_client_config: Option<LiquidityClientConfig>,
-	best_block: RwLock<Option<BestBlock>>,
-	_chain_source: Option<C>,
 	pending_msgs_or_needs_persist_notifier: Arc<Notifier>,
 }
 
@@ -315,10 +297,9 @@ impl<
 		ES: EntropySource + Clone,
 		NS: NodeSigner + Clone,
 		CM: Deref + Clone,
-		C: Filter + Clone,
 		K: KVStore + Clone,
 		T: BroadcasterInterface + Clone,
-	> LiquidityManager<ES, NS, CM, C, K, DefaultTimeProvider, T>
+	> LiquidityManager<ES, NS, CM, K, DefaultTimeProvider, T>
 where
 	CM::Target: AChannelManager,
 {
@@ -326,9 +307,8 @@ where
 	///
 	/// Will read persisted service states from the given [`KVStore`].
 	pub async fn new(
-		entropy_source: ES, node_signer: NS, channel_manager: CM, chain_source: Option<C>,
-		chain_params: Option<ChainParameters>, kv_store: K, transaction_broadcaster: T,
-		service_config: Option<LiquidityServiceConfig>,
+		entropy_source: ES, node_signer: NS, channel_manager: CM, kv_store: K,
+		transaction_broadcaster: T, service_config: Option<LiquidityServiceConfig>,
 		client_config: Option<LiquidityClientConfig>,
 	) -> Result<Self, lightning::io::Error> {
 		Self::new_with_custom_time_provider(
@@ -336,8 +316,6 @@ where
 			node_signer,
 			channel_manager,
 			transaction_broadcaster,
-			chain_source,
-			chain_params,
 			kv_store,
 			service_config,
 			client_config,
@@ -351,11 +329,10 @@ impl<
 		ES: EntropySource + Clone,
 		NS: NodeSigner + Clone,
 		CM: Deref + Clone,
-		C: Filter + Clone,
 		K: KVStore + Clone,
 		TP: Deref + Clone,
 		T: BroadcasterInterface + Clone,
-	> LiquidityManager<ES, NS, CM, C, K, TP, T>
+	> LiquidityManager<ES, NS, CM, K, TP, T>
 where
 	CM::Target: AChannelManager,
 	TP::Target: TimeProvider,
@@ -370,8 +347,7 @@ where
 	/// [`LiquidityClientConfig`] and [`LiquidityServiceConfig`].
 	pub async fn new_with_custom_time_provider(
 		entropy_source: ES, node_signer: NS, channel_manager: CM, transaction_broadcaster: T,
-		chain_source: Option<C>, chain_params: Option<ChainParameters>, kv_store: K,
-		service_config: Option<LiquidityServiceConfig>,
+		kv_store: K, service_config: Option<LiquidityServiceConfig>,
 		client_config: Option<LiquidityClientConfig>, time_provider: TP,
 	) -> Result<Self, lightning::io::Error> {
 		let pending_msgs_or_needs_persist_notifier = Arc::new(Notifier::new());
@@ -451,7 +427,7 @@ where
 					kv_store.clone(),
 					node_signer,
 					lsps5_service_config.clone(),
-					time_provider,
+					time_provider.clone(),
 				))
 			} else {
 				None
@@ -471,24 +447,32 @@ where
 			})
 		});
 
-		#[cfg(lsps1_service)]
-		let lsps1_service_handler = service_config.as_ref().and_then(|config| {
-			if let Some(number) =
-				<LSPS1ServiceHandler<ES, CM, C, K> as LSPSProtocolMessageHandler>::PROTOCOL_NUMBER
-			{
-				supported_protocols.push(number);
-			}
-			config.lsps1_service_config.as_ref().map(|config| {
-				LSPS1ServiceHandler::new(
+		let lsps1_service_handler = if let Some(service_config) = service_config.as_ref() {
+			if let Some(lsps1_service_config) = service_config.lsps1_service_config.as_ref() {
+				if let Some(number) =
+					<LSPS1ServiceHandler<ES, CM, K, TP> as LSPSProtocolMessageHandler>::PROTOCOL_NUMBER
+				{
+					supported_protocols.push(number);
+				}
+
+				let peer_states = read_lsps1_service_peer_states(kv_store.clone()).await?;
+
+				Some(LSPS1ServiceHandler::new(
+					peer_states,
 					entropy_source.clone(),
 					Arc::clone(&pending_messages),
 					Arc::clone(&pending_events),
 					channel_manager.clone(),
-					chain_source.clone(),
-					config.clone(),
-				)
-			})
-		});
+					kv_store.clone(),
+					time_provider,
+					lsps1_service_config.clone(),
+				))
+			} else {
+				None
+			}
+		} else {
+			None
+		};
 
 		let lsps0_client_handler = LSPS0ClientHandler::new(
 			entropy_source.clone(),
@@ -510,7 +494,6 @@ where
 			lsps0_client_handler,
 			lsps0_service_handler,
 			lsps1_client_handler,
-			#[cfg(lsps1_service)]
 			lsps1_service_handler,
 			lsps2_client_handler,
 			lsps2_service_handler,
@@ -518,8 +501,6 @@ where
 			lsps5_service_handler,
 			service_config,
 			_client_config: client_config,
-			best_block: RwLock::new(chain_params.map(|chain_params| chain_params.best_block)),
-			_chain_source: chain_source,
 			pending_msgs_or_needs_persist_notifier,
 		})
 	}
@@ -543,8 +524,7 @@ where
 	}
 
 	/// Returns a reference to the LSPS1 server-side handler.
-	#[cfg(lsps1_service)]
-	pub fn lsps1_service_handler(&self) -> Option<&LSPS1ServiceHandler<ES, CM, C, K>> {
+	pub fn lsps1_service_handler(&self) -> Option<&LSPS1ServiceHandler<ES, CM, K, TP>> {
 		self.lsps1_service_handler.as_ref()
 	}
 
@@ -647,6 +627,10 @@ where
 		let mut did_persist = false;
 		did_persist |= self.pending_events.persist().await?;
 
+		if let Some(lsps1_service_handler) = self.lsps1_service_handler.as_ref() {
+			did_persist |= lsps1_service_handler.persist().await?;
+		}
+
 		if let Some(lsps2_service_handler) = self.lsps2_service_handler.as_ref() {
 			did_persist |= lsps2_service_handler.persist().await?;
 		}
@@ -688,18 +672,15 @@ where
 					},
 				}
 			},
-			LSPSMessage::LSPS1(_msg @ LSPS1Message::Request(..)) => {
-				#[cfg(lsps1_service)]
+			LSPSMessage::LSPS1(msg @ LSPS1Message::Request(..)) => {
 				match &self.lsps1_service_handler {
 					Some(lsps1_service_handler) => {
-						lsps1_service_handler.handle_message(_msg, sender_node_id)?;
+						lsps1_service_handler.handle_message(msg, sender_node_id)?;
 					},
 					None => {
 						return Err(LightningError { err: format!("Received LSPS1 request message without LSPS1 service handler configured. From node {}", sender_node_id), action: ErrorAction::IgnoreAndLog(Level::Debug)});
 					},
 				}
-				#[cfg(not(lsps1_service))]
-				return Err(LightningError { err: format!("Received LSPS1 request message without LSPS1 service handler configured. From node {}", sender_node_id), action: ErrorAction::IgnoreAndLog(Level::Debug)});
 			},
 			LSPSMessage::LSPS2(msg @ LSPS2Message::Response(..)) => {
 				match &self.lsps2_client_handler {
@@ -740,14 +721,10 @@ where
 									.lsps2_service_handler
 									.as_ref()
 									.is_some_and(|h| h.has_active_requests(sender_node_id));
-								#[cfg(lsps1_service)]
 								let lsps1_has_active_requests = self
 									.lsps1_service_handler
 									.as_ref()
 									.is_some_and(|h| h.has_active_requests(sender_node_id));
-								#[cfg(not(lsps1_service))]
-								let lsps1_has_active_requests = false;
-
 								lsps5_service_handler.enforce_prior_activity_or_reject(
 									sender_node_id,
 									lsps2_has_active_requests,
@@ -773,11 +750,10 @@ impl<
 		ES: EntropySource + Clone,
 		NS: NodeSigner + Clone,
 		CM: Deref + Clone,
-		C: Filter + Clone,
 		K: KVStore + Clone,
 		TP: Deref + Clone,
 		T: BroadcasterInterface + Clone,
-	> CustomMessageReader for LiquidityManager<ES, NS, CM, C, K, TP, T>
+	> CustomMessageReader for LiquidityManager<ES, NS, CM, K, TP, T>
 where
 	CM::Target: AChannelManager,
 	TP::Target: TimeProvider,
@@ -800,11 +776,10 @@ impl<
 		ES: EntropySource + Clone,
 		NS: NodeSigner + Clone,
 		CM: Deref + Clone,
-		C: Filter + Clone,
 		K: KVStore + Clone,
 		TP: Deref + Clone,
 		T: BroadcasterInterface + Clone,
-	> CustomMessageHandler for LiquidityManager<ES, NS, CM, C, K, TP, T>
+	> CustomMessageHandler for LiquidityManager<ES, NS, CM, K, TP, T>
 where
 	CM::Target: AChannelManager,
 	TP::Target: TimeProvider,
@@ -905,6 +880,10 @@ where
 		// If the peer was misbehaving, drop it from the ignored list to cleanup the kept state.
 		self.ignored_peers.write().unwrap().remove(&counterparty_node_id);
 
+		if let Some(lsps1_service_handler) = self.lsps1_service_handler.as_ref() {
+			lsps1_service_handler.peer_disconnected(counterparty_node_id);
+		}
+
 		if let Some(lsps2_service_handler) = self.lsps2_service_handler.as_ref() {
 			lsps2_service_handler.peer_disconnected(counterparty_node_id);
 		}
@@ -925,93 +904,12 @@ where
 	}
 }
 
-impl<
-		ES: EntropySource + Clone,
-		NS: NodeSigner + Clone,
-		CM: Deref + Clone,
-		C: Filter + Clone,
-		K: KVStore + Clone,
-		TP: Deref + Clone,
-		T: BroadcasterInterface + Clone,
-	> Listen for LiquidityManager<ES, NS, CM, C, K, TP, T>
-where
-	CM::Target: AChannelManager,
-	TP::Target: TimeProvider,
-{
-	fn filtered_block_connected(
-		&self, header: &bitcoin::block::Header, txdata: &chain::transaction::TransactionData,
-		height: u32,
-	) {
-		if let Some(best_block) = self.best_block.read().unwrap().as_ref() {
-			assert_eq!(best_block.block_hash, header.prev_blockhash,
-			"Blocks must be connected in chain-order - the connected header must build on the last connected header");
-			assert_eq!(best_block.height, height - 1,
-			"Blocks must be connected in chain-order - the connected block height must be one greater than the previous height");
-		}
-
-		self.transactions_confirmed(header, txdata, height);
-		self.best_block_updated(header, height);
-	}
-
-	fn blocks_disconnected(&self, fork_point: BestBlock) {
-		if let Some(best_block) = self.best_block.write().unwrap().as_mut() {
-			assert!(best_block.height > fork_point.height,
-				"Blocks disconnected must indicate disconnection from the current best height, i.e. the new chain tip must be lower than the previous best height");
-			*best_block = fork_point;
-		}
-
-		// TODO: Call block_disconnected on all sub-modules that require it, e.g., LSPS1MessageHandler.
-		// Internally this should call transaction_unconfirmed for all transactions that were
-		// confirmed at a height <= the one we now disconnected.
-	}
-}
-
-impl<
-		ES: EntropySource + Clone,
-		NS: NodeSigner + Clone,
-		CM: Deref + Clone,
-		C: Filter + Clone,
-		K: KVStore + Clone,
-		TP: Deref + Clone,
-		T: BroadcasterInterface + Clone,
-	> Confirm for LiquidityManager<ES, NS, CM, C, K, TP, T>
-where
-	CM::Target: AChannelManager,
-	TP::Target: TimeProvider,
-{
-	fn transactions_confirmed(
-		&self, _header: &bitcoin::block::Header, _txdata: &chain::transaction::TransactionData,
-		_height: u32,
-	) {
-		// TODO: Call transactions_confirmed on all sub-modules that require it, e.g., LSPS1MessageHandler.
-	}
-
-	fn transaction_unconfirmed(&self, _txid: &bitcoin::Txid) {
-		// TODO: Call transaction_unconfirmed on all sub-modules that require it, e.g., LSPS1MessageHandler.
-		// Internally this should call transaction_unconfirmed for all transactions that were
-		// confirmed at a height <= the one we now unconfirmed.
-	}
-
-	fn best_block_updated(&self, header: &bitcoin::block::Header, height: u32) {
-		let new_best_block = BestBlock::new(header.block_hash(), height);
-		*self.best_block.write().unwrap() = Some(new_best_block);
-
-		// TODO: Call best_block_updated on all sub-modules that require it, e.g., LSPS1MessageHandler.
-	}
-
-	fn get_relevant_txids(&self) -> Vec<(bitcoin::Txid, u32, Option<bitcoin::BlockHash>)> {
-		// TODO: Collect relevant txids from all sub-modules that, e.g., LSPS1MessageHandler.
-		Vec::new()
-	}
-}
-
 /// A synchroneous wrapper around [`LiquidityManager`] to be used in contexts where async is not
 /// available.
 pub struct LiquidityManagerSync<
 	ES: EntropySource + Clone,
 	NS: NodeSigner + Clone,
 	CM: Deref + Clone,
-	C: Filter + Clone,
 	KS: Deref + Clone,
 	TP: Deref + Clone,
 	T: BroadcasterInterface + Clone,
@@ -1020,7 +918,7 @@ pub struct LiquidityManagerSync<
 	KS::Target: KVStoreSync,
 	TP::Target: TimeProvider,
 {
-	inner: LiquidityManager<ES, NS, CM, C, KVStoreSyncWrapper<KS>, TP, T>,
+	inner: LiquidityManager<ES, NS, CM, KVStoreSyncWrapper<KS>, TP, T>,
 }
 
 #[cfg(feature = "time")]
@@ -1028,10 +926,9 @@ impl<
 		ES: EntropySource + Clone,
 		NS: NodeSigner + Clone,
 		CM: Deref + Clone,
-		C: Filter + Clone,
 		KS: Deref + Clone,
 		T: BroadcasterInterface + Clone,
-	> LiquidityManagerSync<ES, NS, CM, C, KS, DefaultTimeProvider, T>
+	> LiquidityManagerSync<ES, NS, CM, KS, DefaultTimeProvider, T>
 where
 	CM::Target: AChannelManager,
 	KS::Target: KVStoreSync,
@@ -1040,9 +937,8 @@ where
 	///
 	/// Wraps [`LiquidityManager::new`].
 	pub fn new(
-		entropy_source: ES, node_signer: NS, channel_manager: CM, chain_source: Option<C>,
-		chain_params: Option<ChainParameters>, kv_store_sync: KS, transaction_broadcaster: T,
-		service_config: Option<LiquidityServiceConfig>,
+		entropy_source: ES, node_signer: NS, channel_manager: CM, kv_store_sync: KS,
+		transaction_broadcaster: T, service_config: Option<LiquidityServiceConfig>,
 		client_config: Option<LiquidityClientConfig>,
 	) -> Result<Self, lightning::io::Error> {
 		let kv_store = KVStoreSyncWrapper(kv_store_sync);
@@ -1051,8 +947,6 @@ where
 			entropy_source,
 			node_signer,
 			channel_manager,
-			chain_source,
-			chain_params,
 			kv_store,
 			transaction_broadcaster,
 			service_config,
@@ -1076,11 +970,10 @@ impl<
 		ES: EntropySource + Clone,
 		NS: NodeSigner + Clone,
 		CM: Deref + Clone,
-		C: Filter + Clone,
 		KS: Deref + Clone,
 		TP: Deref + Clone,
 		T: BroadcasterInterface + Clone,
-	> LiquidityManagerSync<ES, NS, CM, C, KS, TP, T>
+	> LiquidityManagerSync<ES, NS, CM, KS, TP, T>
 where
 	CM::Target: AChannelManager,
 	KS::Target: KVStoreSync,
@@ -1090,9 +983,8 @@ where
 	///
 	/// Wraps [`LiquidityManager::new_with_custom_time_provider`].
 	pub fn new_with_custom_time_provider(
-		entropy_source: ES, node_signer: NS, channel_manager: CM, chain_source: Option<C>,
-		chain_params: Option<ChainParameters>, kv_store_sync: KS, transaction_broadcaster: T,
-		service_config: Option<LiquidityServiceConfig>,
+		entropy_source: ES, node_signer: NS, channel_manager: CM, kv_store_sync: KS,
+		transaction_broadcaster: T, service_config: Option<LiquidityServiceConfig>,
 		client_config: Option<LiquidityClientConfig>, time_provider: TP,
 	) -> Result<Self, lightning::io::Error> {
 		let kv_store = KVStoreSyncWrapper(kv_store_sync);
@@ -1101,8 +993,6 @@ where
 			node_signer,
 			channel_manager,
 			transaction_broadcaster,
-			chain_source,
-			chain_params,
 			kv_store,
 			service_config,
 			client_config,
@@ -1145,11 +1035,10 @@ where
 	/// Returns a reference to the LSPS1 server-side handler.
 	///
 	/// Wraps [`LiquidityManager::lsps1_service_handler`].
-	#[cfg(lsps1_service)]
-	pub fn lsps1_service_handler(
-		&self,
-	) -> Option<&LSPS1ServiceHandler<ES, CM, C, KVStoreSyncWrapper<KS>>> {
-		self.inner.lsps1_service_handler()
+	pub fn lsps1_service_handler<'a>(
+		&'a self,
+	) -> Option<LSPS1ServiceHandlerSync<'a, ES, CM, KVStoreSyncWrapper<KS>, TP>> {
+		self.inner.lsps1_service_handler.as_ref().map(|r| LSPS1ServiceHandlerSync::from_inner(r))
 	}
 
 	/// Returns a reference to the LSPS2 client-side handler.
@@ -1242,11 +1131,10 @@ impl<
 		ES: EntropySource + Clone,
 		NS: NodeSigner + Clone,
 		CM: Deref + Clone,
-		C: Filter + Clone,
 		KS: Deref + Clone,
 		TP: Deref + Clone,
 		T: BroadcasterInterface + Clone,
-	> CustomMessageReader for LiquidityManagerSync<ES, NS, CM, C, KS, TP, T>
+	> CustomMessageReader for LiquidityManagerSync<ES, NS, CM, KS, TP, T>
 where
 	CM::Target: AChannelManager,
 	KS::Target: KVStoreSync,
@@ -1265,11 +1153,10 @@ impl<
 		ES: EntropySource + Clone,
 		NS: NodeSigner + Clone,
 		CM: Deref + Clone,
-		C: Filter + Clone,
 		KS: Deref + Clone,
 		TP: Deref + Clone,
 		T: BroadcasterInterface + Clone,
-	> CustomMessageHandler for LiquidityManagerSync<ES, NS, CM, C, KS, TP, T>
+	> CustomMessageHandler for LiquidityManagerSync<ES, NS, CM, KS, TP, T>
 where
 	CM::Target: AChannelManager,
 	KS::Target: KVStoreSync,
@@ -1301,65 +1188,5 @@ where
 		init_msg: &lightning::ln::msgs::Init, inbound: bool,
 	) -> Result<(), ()> {
 		self.inner.peer_connected(counterparty_node_id, init_msg, inbound)
-	}
-}
-
-impl<
-		ES: EntropySource + Clone,
-		NS: NodeSigner + Clone,
-		CM: Deref + Clone,
-		C: Filter + Clone,
-		KS: Deref + Clone,
-		TP: Deref + Clone,
-		T: BroadcasterInterface + Clone,
-	> Listen for LiquidityManagerSync<ES, NS, CM, C, KS, TP, T>
-where
-	CM::Target: AChannelManager,
-	KS::Target: KVStoreSync,
-	TP::Target: TimeProvider,
-{
-	fn filtered_block_connected(
-		&self, header: &bitcoin::block::Header, txdata: &chain::transaction::TransactionData,
-		height: u32,
-	) {
-		self.inner.filtered_block_connected(header, txdata, height)
-	}
-
-	fn blocks_disconnected(&self, fork_point: BestBlock) {
-		self.inner.blocks_disconnected(fork_point);
-	}
-}
-
-impl<
-		ES: EntropySource + Clone,
-		NS: NodeSigner + Clone,
-		CM: Deref + Clone,
-		C: Filter + Clone,
-		KS: Deref + Clone,
-		TP: Deref + Clone,
-		T: BroadcasterInterface + Clone,
-	> Confirm for LiquidityManagerSync<ES, NS, CM, C, KS, TP, T>
-where
-	CM::Target: AChannelManager,
-	KS::Target: KVStoreSync,
-	TP::Target: TimeProvider,
-{
-	fn transactions_confirmed(
-		&self, header: &bitcoin::block::Header, txdata: &chain::transaction::TransactionData,
-		height: u32,
-	) {
-		self.inner.transactions_confirmed(header, txdata, height)
-	}
-
-	fn transaction_unconfirmed(&self, txid: &bitcoin::Txid) {
-		self.inner.transaction_unconfirmed(txid)
-	}
-
-	fn best_block_updated(&self, header: &bitcoin::block::Header, height: u32) {
-		self.inner.best_block_updated(header, height)
-	}
-
-	fn get_relevant_txids(&self) -> Vec<(bitcoin::Txid, u32, Option<bitcoin::BlockHash>)> {
-		self.inner.get_relevant_txids()
 	}
 }
