@@ -28,7 +28,8 @@ use bitcoin::transaction::Version;
 use bitcoin::transaction::{Transaction, TxOut};
 use bitcoin::FeeRate;
 
-use bitcoin::hash_types::BlockHash;
+use bitcoin::block::Header;
+use bitcoin::hash_types::{BlockHash, Txid};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hashes::Hash as TraitImport;
@@ -55,9 +56,10 @@ use lightning::ln::channelmanager::{
 	ChainParameters, ChannelManager, ChannelManagerReadArgs, PaymentId, RecentPaymentDetails,
 };
 use lightning::ln::functional_test_utils::*;
+use lightning::ln::funding::{FundingContribution, FundingTemplate};
 use lightning::ln::inbound_payment::ExpandedKey;
 use lightning::ln::msgs::{
-	BaseMessageHandler, ChannelMessageHandler, CommitmentUpdate, Init, MessageSendEvent,
+	self, BaseMessageHandler, ChannelMessageHandler, CommitmentUpdate, Init, MessageSendEvent,
 	UpdateAddHTLC,
 };
 use lightning::ln::outbound_payment::RecipientOnionFields;
@@ -79,7 +81,7 @@ use lightning::util::errors::APIError;
 use lightning::util::hash_tables::*;
 use lightning::util::logger::Logger;
 use lightning::util::ser::{LengthReadable, ReadableArgs, Writeable, Writer};
-use lightning::util::test_channel_signer::{EnforcementState, TestChannelSigner};
+use lightning::util::test_channel_signer::{EnforcementState, SignerOp, TestChannelSigner};
 use lightning::util::test_utils::TestWalletSource;
 
 use lightning_invoice::RawBolt11Invoice;
@@ -96,6 +98,7 @@ use lightning::util::dyn_signer::DynSigner;
 
 use std::cell::RefCell;
 use std::cmp;
+use std::collections::HashSet;
 use std::mem;
 use std::sync::atomic;
 use std::sync::{Arc, Mutex};
@@ -104,6 +107,7 @@ const MAX_FEE: u32 = 10_000;
 struct FuzzEstimator {
 	ret_val: atomic::AtomicU32,
 }
+
 impl FeeEstimator for FuzzEstimator {
 	fn get_est_sat_per_1000_weight(&self, conf_target: ConfirmationTarget) -> u32 {
 		// We force-close channels if our counterparty sends us a feerate which is a small multiple
@@ -123,6 +127,13 @@ impl FeeEstimator for FuzzEstimator {
 				cmp::min(self.ret_val.load(atomic::Ordering::Acquire), MAX_FEE)
 			},
 		}
+	}
+}
+
+impl FuzzEstimator {
+	fn feerate_sat_per_kw(&self) -> FeeRate {
+		let feerate = self.ret_val.load(atomic::Ordering::Acquire);
+		FeeRate::from_sat_per_kwu(feerate as u64)
 	}
 }
 
@@ -168,6 +179,46 @@ impl BroadcasterInterface for TestBroadcaster {
 		for (tx, _broadcast_type) in txs {
 			self.txn_broadcasted.borrow_mut().push((*tx).clone());
 		}
+	}
+}
+
+struct ChainState {
+	blocks: Vec<(Header, Vec<Transaction>)>,
+	confirmed_txids: HashSet<Txid>,
+}
+
+impl ChainState {
+	fn new() -> Self {
+		let genesis_hash = genesis_block(Network::Bitcoin).block_hash();
+		let genesis_header = create_dummy_header(genesis_hash, 42);
+		Self { blocks: vec![(genesis_header, Vec::new())], confirmed_txids: HashSet::new() }
+	}
+
+	fn tip_height(&self) -> u32 {
+		(self.blocks.len() - 1) as u32
+	}
+
+	fn confirm_tx(&mut self, tx: Transaction) -> bool {
+		let txid = tx.compute_txid();
+		if self.confirmed_txids.contains(&txid) {
+			return false;
+		}
+		self.confirmed_txids.insert(txid);
+
+		let prev_hash = self.blocks.last().unwrap().0.block_hash();
+		let header = create_dummy_header(prev_hash, 42);
+		self.blocks.push((header, vec![tx]));
+
+		for _ in 0..5 {
+			let prev_hash = self.blocks.last().unwrap().0.block_hash();
+			let header = create_dummy_header(prev_hash, 42);
+			self.blocks.push((header, Vec::new()));
+		}
+		true
+	}
+
+	fn block_at(&self, height: u32) -> &(Header, Vec<Transaction>) {
+		&self.blocks[height as usize]
 	}
 }
 
@@ -326,7 +377,8 @@ impl EntropySource for KeyProvider {
 	fn get_secure_random_bytes(&self) -> [u8; 32] {
 		let id = self.rand_bytes_id.fetch_add(1, atomic::Ordering::Relaxed);
 		#[rustfmt::skip]
-		let mut res = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 11, self.node_secret[31]];
+		let mut res = [self.node_secret[31], 11, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 11, self.node_secret[31]];
+		res[2..6].copy_from_slice(&id.to_le_bytes());
 		res[30 - 4..30].copy_from_slice(&id.to_le_bytes());
 		res
 	}
@@ -448,6 +500,14 @@ impl SignerProvider for KeyProvider {
 	}
 }
 
+// Since this fuzzer is only concerned with live-channel operations, we don't need to worry about
+// any signer operations that come after a force close.
+const SUPPORTED_SIGNER_OPS: [SignerOp; 3] = [
+	SignerOp::SignCounterpartyCommitment,
+	SignerOp::GetPerCommitmentPoint,
+	SignerOp::ReleaseCommitmentSecret,
+];
+
 impl KeyProvider {
 	fn make_enforcement_state_cell(
 		&self, commitment_seed: [u8; 32],
@@ -459,6 +519,22 @@ impl KeyProvider {
 		}
 		let cell = revoked_commitments.get(&commitment_seed).unwrap();
 		Arc::clone(cell)
+	}
+
+	fn disable_supported_ops_for_all_signers(&self) {
+		let enforcement_states = self.enforcement_states.lock().unwrap();
+		for (_, state) in enforcement_states.iter() {
+			for signer_op in SUPPORTED_SIGNER_OPS {
+				state.lock().unwrap().disabled_signer_ops.insert(signer_op);
+			}
+		}
+	}
+
+	fn enable_op_for_all_signers(&self, signer_op: SignerOp) {
+		let enforcement_states = self.enforcement_states.lock().unwrap();
+		for (_, state) in enforcement_states.iter() {
+			state.lock().unwrap().disabled_signer_ops.remove(&signer_op);
+		}
 	}
 }
 
@@ -503,15 +579,21 @@ fn get_payment_secret_hash(dest: &ChanMan, payment_ctr: &mut u64) -> (PaymentSec
 
 #[inline]
 fn send_payment(
-	source: &ChanMan, dest: &ChanMan, dest_chan_id: u64, amt: u64, payment_secret: PaymentSecret,
-	payment_hash: PaymentHash, payment_id: PaymentId,
+	source: &ChanMan, dest: &ChanMan, dest_chan_id: ChannelId, amt: u64,
+	payment_secret: PaymentSecret, payment_hash: PaymentHash, payment_id: PaymentId,
 ) -> bool {
-	let (min_value_sendable, max_value_sendable) = source
+	let (min_value_sendable, max_value_sendable, dest_scid) = source
 		.list_usable_channels()
 		.iter()
-		.find(|chan| chan.short_channel_id == Some(dest_chan_id))
-		.map(|chan| (chan.next_outbound_htlc_minimum_msat, chan.next_outbound_htlc_limit_msat))
-		.unwrap_or((0, 0));
+		.find(|chan| chan.channel_id == dest_chan_id)
+		.map(|chan| {
+			(
+				chan.next_outbound_htlc_minimum_msat,
+				chan.next_outbound_htlc_limit_msat,
+				chan.short_channel_id.unwrap_or(0),
+			)
+		})
+		.unwrap_or((0, 0, 0));
 	let route_params = RouteParameters::from_payment_params_and_value(
 		PaymentParameters::from_node_id(source.get_our_node_id(), TEST_FINAL_CLTV),
 		amt,
@@ -521,7 +603,7 @@ fn send_payment(
 			hops: vec![RouteHop {
 				pubkey: dest.get_our_node_id(),
 				node_features: dest.node_features(),
-				short_channel_id: dest_chan_id,
+				short_channel_id: dest_scid,
 				channel_features: dest.channel_features(),
 				fee_msat: amt,
 				cltv_expiry_delta: 200,
@@ -548,15 +630,28 @@ fn send_payment(
 
 #[inline]
 fn send_hop_payment(
-	source: &ChanMan, middle: &ChanMan, middle_scid: u64, dest: &ChanMan, dest_scid: u64, amt: u64,
-	payment_secret: PaymentSecret, payment_hash: PaymentHash, payment_id: PaymentId,
+	source: &ChanMan, middle: &ChanMan, middle_chan_id: ChannelId, dest: &ChanMan,
+	dest_chan_id: ChannelId, amt: u64, payment_secret: PaymentSecret, payment_hash: PaymentHash,
+	payment_id: PaymentId,
 ) -> bool {
-	let (min_value_sendable, max_value_sendable) = source
+	let (min_value_sendable, max_value_sendable, middle_scid) = source
 		.list_usable_channels()
 		.iter()
-		.find(|chan| chan.short_channel_id == Some(middle_scid))
-		.map(|chan| (chan.next_outbound_htlc_minimum_msat, chan.next_outbound_htlc_limit_msat))
-		.unwrap_or((0, 0));
+		.find(|chan| chan.channel_id == middle_chan_id)
+		.map(|chan| {
+			(
+				chan.next_outbound_htlc_minimum_msat,
+				chan.next_outbound_htlc_limit_msat,
+				chan.short_channel_id.unwrap_or(0),
+			)
+		})
+		.unwrap_or((0, 0, 0));
+	let dest_scid = dest
+		.list_channels()
+		.iter()
+		.find(|chan| chan.channel_id == dest_chan_id)
+		.and_then(|chan| chan.short_channel_id)
+		.unwrap_or(0);
 	let first_hop_fee = 50_000;
 	let route_params = RouteParameters::from_payment_params_and_value(
 		PaymentParameters::from_node_id(source.get_our_node_id(), TEST_FINAL_CLTV),
@@ -607,10 +702,10 @@ fn send_hop_payment(
 /// Send an MPP payment directly from source to dest using multiple channels.
 #[inline]
 fn send_mpp_payment(
-	source: &ChanMan, dest: &ChanMan, dest_scids: &[u64], amt: u64, payment_secret: PaymentSecret,
-	payment_hash: PaymentHash, payment_id: PaymentId,
+	source: &ChanMan, dest: &ChanMan, dest_chan_ids: &[ChannelId], amt: u64,
+	payment_secret: PaymentSecret, payment_hash: PaymentHash, payment_id: PaymentId,
 ) -> bool {
-	let num_paths = dest_scids.len();
+	let num_paths = dest_chan_ids.len();
 	if num_paths == 0 {
 		return false;
 	}
@@ -618,7 +713,16 @@ fn send_mpp_payment(
 	let amt_per_path = amt / num_paths as u64;
 	let mut paths = Vec::with_capacity(num_paths);
 
-	for (i, &dest_scid) in dest_scids.iter().enumerate() {
+	let dest_chans = dest.list_channels();
+	let dest_scids = dest_chan_ids.iter().map(|chan_id| {
+		dest_chans
+			.iter()
+			.find(|chan| chan.channel_id == *chan_id)
+			.and_then(|chan| chan.short_channel_id)
+			.unwrap()
+	});
+
+	for (i, dest_scid) in dest_scids.enumerate() {
 		let path_amt = if i == num_paths - 1 {
 			amt - amt_per_path * (num_paths as u64 - 1)
 		} else {
@@ -656,11 +760,12 @@ fn send_mpp_payment(
 /// Supports multiple channels on either or both hops.
 #[inline]
 fn send_mpp_hop_payment(
-	source: &ChanMan, middle: &ChanMan, middle_scids: &[u64], dest: &ChanMan, dest_scids: &[u64],
-	amt: u64, payment_secret: PaymentSecret, payment_hash: PaymentHash, payment_id: PaymentId,
+	source: &ChanMan, middle: &ChanMan, middle_chan_ids: &[ChannelId], dest: &ChanMan,
+	dest_chan_ids: &[ChannelId], amt: u64, payment_secret: PaymentSecret,
+	payment_hash: PaymentHash, payment_id: PaymentId,
 ) -> bool {
 	// Create paths by pairing middle_scids with dest_scids
-	let num_paths = middle_scids.len().max(dest_scids.len());
+	let num_paths = middle_chan_ids.len().max(dest_chan_ids.len());
 	if num_paths == 0 {
 		return false;
 	}
@@ -669,6 +774,30 @@ fn send_mpp_hop_payment(
 	let amt_per_path = amt / num_paths as u64;
 	let fee_per_path = first_hop_fee / num_paths as u64;
 	let mut paths = Vec::with_capacity(num_paths);
+
+	let middle_chans = middle.list_channels();
+	let middle_scids: Vec<_> = middle_chan_ids
+		.iter()
+		.map(|chan_id| {
+			middle_chans
+				.iter()
+				.find(|chan| chan.channel_id == *chan_id)
+				.and_then(|chan| chan.short_channel_id)
+				.unwrap()
+		})
+		.collect();
+
+	let dest_chans = dest.list_channels();
+	let dest_scids: Vec<_> = dest_chan_ids
+		.iter()
+		.map(|chan_id| {
+			dest_chans
+				.iter()
+				.find(|chan| chan.channel_id == *chan_id)
+				.and_then(|chan| chan.short_channel_id)
+				.unwrap()
+		})
+		.collect();
 
 	for i in 0..num_paths {
 		let middle_scid = middle_scids[i % middle_scids.len()];
@@ -724,11 +853,24 @@ fn send_mpp_hop_payment(
 }
 
 #[inline]
+fn assert_action_timeout_awaiting_response(action: &msgs::ErrorAction) {
+	// Since sending/receiving messages may be delayed, `timer_tick_occurred` may cause a node to
+	// disconnect their counterparty if they're expecting a timely response.
+	assert!(matches!(
+		action,
+		msgs::ErrorAction::DisconnectPeerWithWarning { msg }
+		if msg.data.contains("Disconnecting due to timeout awaiting response")
+	));
+}
+
+#[inline]
 pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 	data: &[u8], underlying_out: Out, anchors: bool,
 ) {
 	let out = SearchingOutput::new(underlying_out);
-	let broadcast = Arc::new(TestBroadcaster { txn_broadcasted: RefCell::new(Vec::new()) });
+	let broadcast_a = Arc::new(TestBroadcaster { txn_broadcasted: RefCell::new(Vec::new()) });
+	let broadcast_b = Arc::new(TestBroadcaster { txn_broadcasted: RefCell::new(Vec::new()) });
+	let broadcast_c = Arc::new(TestBroadcaster { txn_broadcasted: RefCell::new(Vec::new()) });
 	let router = FuzzRouter {};
 
 	// Read initial monitor styles from fuzz input (1 byte: 2 bits per node)
@@ -751,8 +893,13 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 		}),
 	];
 
+	let mut chain_state = ChainState::new();
+	let mut node_height_a: u32 = 0;
+	let mut node_height_b: u32 = 0;
+	let mut node_height_c: u32 = 0;
+
 	macro_rules! make_node {
-		($node_id: expr, $fee_estimator: expr) => {{
+		($node_id: expr, $fee_estimator: expr, $broadcaster: expr) => {{
 			let logger: Arc<dyn Logger + MaybeSend + MaybeSync> =
 				Arc::new(test_logger::TestLogger::new($node_id.to_string(), out.clone()));
 			let node_secret = SecretKey::from_slice(&[
@@ -766,7 +913,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 				enforcement_states: Mutex::new(new_hash_map()),
 			});
 			let monitor = Arc::new(TestChainMonitor::new(
-				broadcast.clone(),
+				$broadcaster.clone(),
 				logger.clone(),
 				$fee_estimator.clone(),
 				Arc::new(TestPersister {
@@ -789,7 +936,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 				ChannelManager::new(
 					$fee_estimator.clone(),
 					monitor.clone(),
-					broadcast.clone(),
+					$broadcaster.clone(),
 					&router,
 					&router,
 					Arc::clone(&logger),
@@ -812,12 +959,13 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 	                   old_monitors: &TestChainMonitor,
 	                   mut use_old_mons,
 	                   keys,
-	                   fee_estimator| {
+	                   fee_estimator,
+	                   broadcaster: Arc<TestBroadcaster>| {
 		let keys_manager = Arc::clone(keys);
 		let logger: Arc<dyn Logger + MaybeSend + MaybeSync> =
 			Arc::new(test_logger::TestLogger::new(node_id.to_string(), out.clone()));
 		let chain_monitor = Arc::new(TestChainMonitor::new(
-			broadcast.clone(),
+			broadcaster.clone(),
 			logger.clone(),
 			Arc::clone(fee_estimator),
 			Arc::new(TestPersister {
@@ -879,7 +1027,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 			signer_provider: keys_manager,
 			fee_estimator: Arc::clone(fee_estimator),
 			chain_monitor: chain_monitor.clone(),
-			tx_broadcaster: broadcast.clone(),
+			tx_broadcaster: broadcaster,
 			router: &router,
 			message_router: &router,
 			logger,
@@ -900,7 +1048,6 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 		res
 	};
 
-	let mut channel_txn = Vec::new();
 	macro_rules! complete_all_pending_monitor_updates {
 		($monitor: expr) => {{
 			for (channel_id, state) in $monitor.latest_monitors.lock().unwrap().iter_mut() {
@@ -1004,7 +1151,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 							tx.clone(),
 						)
 						.unwrap();
-					channel_txn.push(tx);
+					chain_state.confirm_tx(tx);
 				} else {
 					panic!("Wrong event type");
 				}
@@ -1057,22 +1204,6 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 			} else {
 				panic!("Wrong event type");
 			}
-
-			channel_id
-		}};
-	}
-
-	macro_rules! confirm_txn {
-		($node: expr) => {{
-			let chain_hash = genesis_block(Network::Bitcoin).block_hash();
-			let mut header = create_dummy_header(chain_hash, 42);
-			let txdata: Vec<_> =
-				channel_txn.iter().enumerate().map(|(i, tx)| (i + 1, tx)).collect();
-			$node.transactions_confirmed(&header, &txdata, 1);
-			for _ in 2..100 {
-				header = create_dummy_header(header.block_hash(), 42);
-			}
-			$node.best_block_updated(&header, 99);
 		}};
 	}
 
@@ -1111,6 +1242,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 	let wallet_a = TestWalletSource::new(SecretKey::from_slice(&[1; 32]).unwrap());
 	let wallet_b = TestWalletSource::new(SecretKey::from_slice(&[2; 32]).unwrap());
 	let wallet_c = TestWalletSource::new(SecretKey::from_slice(&[3; 32]).unwrap());
+
 	let wallets = vec![wallet_a, wallet_b, wallet_c];
 	let coinbase_tx = bitcoin::Transaction {
 		version: bitcoin::transaction::Version::TWO,
@@ -1137,9 +1269,9 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 
 	// 3 nodes is enough to hit all the possible cases, notably unknown-source-unknown-dest
 	// forwarding.
-	let (node_a, mut monitor_a, keys_manager_a, logger_a) = make_node!(0, fee_est_a);
-	let (node_b, mut monitor_b, keys_manager_b, logger_b) = make_node!(1, fee_est_b);
-	let (node_c, mut monitor_c, keys_manager_c, logger_c) = make_node!(2, fee_est_c);
+	let (node_a, mut monitor_a, keys_manager_a, logger_a) = make_node!(0, fee_est_a, broadcast_a);
+	let (node_b, mut monitor_b, keys_manager_b, logger_b) = make_node!(1, fee_est_b, broadcast_b);
+	let (node_c, mut monitor_c, keys_manager_c, logger_c) = make_node!(2, fee_est_c, broadcast_c);
 
 	let mut nodes = [node_a, node_b, node_c];
 	let loggers = [logger_a, logger_b, logger_c];
@@ -1155,50 +1287,60 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 	// Fuzz mode uses XOR-based hashing (all bytes XOR to one byte), and
 	// versions 0-5 cause collisions between A-B and B-C channel pairs
 	// (e.g., A-B with Version(1) collides with B-C with Version(3)).
-	let chan_ab_ids = [
-		make_channel!(nodes[0], nodes[1], monitor_a, monitor_b, keys_manager_b, 1),
-		make_channel!(nodes[0], nodes[1], monitor_a, monitor_b, keys_manager_b, 2),
-		make_channel!(nodes[0], nodes[1], monitor_a, monitor_b, keys_manager_b, 3),
-	];
-	let chan_bc_ids = [
-		make_channel!(nodes[1], nodes[2], monitor_b, monitor_c, keys_manager_c, 4),
-		make_channel!(nodes[1], nodes[2], monitor_b, monitor_c, keys_manager_c, 5),
-		make_channel!(nodes[1], nodes[2], monitor_b, monitor_c, keys_manager_c, 6),
-	];
+	make_channel!(nodes[0], nodes[1], monitor_a, monitor_b, keys_manager_b, 1);
+	make_channel!(nodes[0], nodes[1], monitor_a, monitor_b, keys_manager_b, 2);
+	make_channel!(nodes[0], nodes[1], monitor_a, monitor_b, keys_manager_b, 3);
+	make_channel!(nodes[1], nodes[2], monitor_b, monitor_c, keys_manager_c, 4);
+	make_channel!(nodes[1], nodes[2], monitor_b, monitor_c, keys_manager_c, 5);
+	make_channel!(nodes[1], nodes[2], monitor_b, monitor_c, keys_manager_c, 6);
 
 	// Wipe the transactions-broadcasted set to make sure we don't broadcast any transactions
 	// during normal operation in `test_return`.
-	broadcast.txn_broadcasted.borrow_mut().clear();
+	broadcast_a.txn_broadcasted.borrow_mut().clear();
+	broadcast_b.txn_broadcasted.borrow_mut().clear();
+	broadcast_c.txn_broadcasted.borrow_mut().clear();
 
-	for node in nodes.iter() {
-		confirm_txn!(node);
-	}
+	let sync_with_chain_state = |chain_state: &ChainState,
+	                             node: &ChannelManager<_, _, _, _, _, _, _, _, _>,
+	                             node_height: &mut u32,
+	                             num_blocks: Option<u32>| {
+		let target_height = if let Some(num_blocks) = num_blocks {
+			std::cmp::min(*node_height + num_blocks, chain_state.tip_height())
+		} else {
+			chain_state.tip_height()
+		};
+
+		while *node_height < target_height {
+			*node_height += 1;
+			let (header, txn) = chain_state.block_at(*node_height);
+			let txdata: Vec<_> = txn.iter().enumerate().map(|(i, tx)| (i + 1, tx)).collect();
+			if !txdata.is_empty() {
+				node.transactions_confirmed(header, &txdata, *node_height);
+			}
+			node.best_block_updated(header, *node_height);
+		}
+	};
+
+	// Sync all nodes to tip to lock the funding.
+	sync_with_chain_state(&mut chain_state, &nodes[0], &mut node_height_a, None);
+	sync_with_chain_state(&mut chain_state, &nodes[1], &mut node_height_b, None);
+	sync_with_chain_state(&mut chain_state, &nodes[2], &mut node_height_c, None);
 
 	lock_fundings!(nodes);
 
-	// Get SCIDs for all A-B channels (from node A's perspective)
-	let node_a_chans: Vec<_> = nodes[0].list_usable_channels();
-	let chan_ab_scids: [u64; 3] = [
-		node_a_chans[0].short_channel_id.unwrap(),
-		node_a_chans[1].short_channel_id.unwrap(),
-		node_a_chans[2].short_channel_id.unwrap(),
-	];
-	let chan_ab_chan_ids: [ChannelId; 3] =
-		[node_a_chans[0].channel_id, node_a_chans[1].channel_id, node_a_chans[2].channel_id];
-	// Get SCIDs for all B-C channels (from node C's perspective)
-	let node_c_chans: Vec<_> = nodes[2].list_usable_channels();
-	let chan_bc_scids: [u64; 3] = [
-		node_c_chans[0].short_channel_id.unwrap(),
-		node_c_chans[1].short_channel_id.unwrap(),
-		node_c_chans[2].short_channel_id.unwrap(),
-	];
-	let chan_bc_chan_ids: [ChannelId; 3] =
-		[node_c_chans[0].channel_id, node_c_chans[1].channel_id, node_c_chans[2].channel_id];
+	// Get channel IDs for all A-B channels (from node A's perspective)
+	let chan_ab_ids = {
+		let node_a_chans = nodes[0].list_usable_channels();
+		[node_a_chans[0].channel_id, node_a_chans[1].channel_id, node_a_chans[2].channel_id]
+	};
+	// Get channel IDs for all B-C channels (from node C's perspective)
+	let chan_bc_ids = {
+		let node_c_chans = nodes[2].list_usable_channels();
+		[node_c_chans[0].channel_id, node_c_chans[1].channel_id, node_c_chans[2].channel_id]
+	};
 	// Keep old names for backward compatibility in existing code
-	let chan_a = chan_ab_scids[0];
-	let chan_a_id = chan_ab_chan_ids[0];
-	let chan_b = chan_bc_scids[0];
-	let chan_b_id = chan_bc_chan_ids[0];
+	let chan_a_id = chan_ab_ids[0];
+	let chan_b_id = chan_bc_ids[0];
 
 	let mut p_ctr: u64 = 0;
 
@@ -1222,9 +1364,11 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 			assert_eq!(nodes[1].list_channels().len(), 6);
 			assert_eq!(nodes[2].list_channels().len(), 3);
 
-			// At no point should we have broadcasted any transactions after the initial channel
-			// opens.
-			assert!(broadcast.txn_broadcasted.borrow().is_empty());
+			// All broadcasters should be empty (all broadcast transactions should be handled
+			// explicitly).
+			assert!(broadcast_a.txn_broadcasted.borrow().is_empty());
+			assert!(broadcast_b.txn_broadcasted.borrow().is_empty());
+			assert!(broadcast_c.txn_broadcasted.borrow().is_empty());
 
 			return;
 		}};
@@ -1241,6 +1385,82 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 			&data[read_pos - slice_len..read_pos]
 		}};
 	}
+
+	let splice_channel = |node: &ChanMan,
+	                      counterparty_node_id: &PublicKey,
+	                      channel_id: &ChannelId,
+	                      f: &dyn Fn(FundingTemplate) -> Result<FundingContribution, ()>,
+	                      funding_feerate_sat_per_kw: FeeRate| {
+		match node.splice_channel(channel_id, counterparty_node_id, funding_feerate_sat_per_kw) {
+			Ok(funding_template) => {
+				if let Ok(contribution) = f(funding_template) {
+					let _ = node.funding_contributed(
+						channel_id,
+						counterparty_node_id,
+						contribution,
+						None,
+					);
+				}
+			},
+			Err(e) => {
+				assert!(
+					matches!(e, APIError::APIMisuseError { ref err } if err.contains("splice")),
+					"{:?}",
+					e
+				);
+			},
+		}
+	};
+
+	let splice_in =
+		|node: &ChanMan,
+		 counterparty_node_id: &PublicKey,
+		 channel_id: &ChannelId,
+		 wallet: &WalletSync<&TestWalletSource, Arc<dyn Logger + MaybeSend + MaybeSync>>,
+		 funding_feerate_sat_per_kw: FeeRate| {
+			splice_channel(
+				node,
+				counterparty_node_id,
+				channel_id,
+				&move |funding_template: FundingTemplate| {
+					funding_template.splice_in_sync(Amount::from_sat(10_000), wallet)
+				},
+				funding_feerate_sat_per_kw,
+			);
+		};
+
+	let splice_out = |node: &ChanMan,
+	                  counterparty_node_id: &PublicKey,
+	                  channel_id: &ChannelId,
+	                  wallet: &TestWalletSource,
+	                  logger: Arc<dyn Logger + MaybeSend + MaybeSync>,
+	                  funding_feerate_sat_per_kw: FeeRate| {
+		// We conditionally splice out `MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS` only when the node
+		// has double the balance required to send a payment upon a `0xff` byte. We do this to
+		// ensure there's always liquidity available for a payment to succeed then.
+		let outbound_capacity_msat = node
+			.list_channels()
+			.iter()
+			.find(|chan| chan.channel_id == *channel_id)
+			.map(|chan| chan.outbound_capacity_msat)
+			.unwrap();
+		if outbound_capacity_msat < 20_000_000 {
+			return;
+		}
+		splice_channel(
+			node,
+			counterparty_node_id,
+			channel_id,
+			&move |funding_template| {
+				let outputs = vec![TxOut {
+					value: Amount::from_sat(MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS),
+					script_pubkey: wallet.get_change_script().unwrap(),
+				}];
+				funding_template.splice_out_sync(outputs, &WalletSync::new(wallet, logger.clone()))
+			},
+			funding_feerate_sat_per_kw,
+		);
+	};
 
 	loop {
 		// Push any events from Node B onto ba_events and bc_events
@@ -1295,10 +1515,18 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
 							*node_id == a_id
 						},
+						MessageSendEvent::SendTxSignatures { ref node_id, .. } => {
+							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
+							*node_id == a_id
+						},
 						MessageSendEvent::SendChannelReady { .. } => continue,
 						MessageSendEvent::SendAnnouncementSignatures { .. } => continue,
-						MessageSendEvent::SendChannelUpdate { ref node_id, ref msg } => {
-							assert_eq!(msg.contents.channel_flags & 2, 0); // The disable bit must never be set!
+						MessageSendEvent::SendChannelUpdate { ref node_id, .. } => {
+							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
+							*node_id == a_id
+						},
+						MessageSendEvent::HandleError { ref action, ref node_id } => {
+							assert_action_timeout_awaiting_response(action);
 							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
 							*node_id == a_id
 						},
@@ -1479,6 +1707,14 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 								}
 							}
 						},
+						MessageSendEvent::SendTxSignatures { ref node_id, ref msg } => {
+							for (idx, dest) in nodes.iter().enumerate() {
+								if dest.get_our_node_id() == *node_id {
+									out.locked_write(format!("Delivering tx_signatures from node {} to node {}.\n", $node, idx).as_bytes());
+									dest.handle_tx_signatures(nodes[$node].get_our_node_id(), msg);
+								}
+							}
+						},
 						MessageSendEvent::SendSpliceInit { ref node_id, ref msg } => {
 							for (idx, dest) in nodes.iter().enumerate() {
 								if dest.get_our_node_id() == *node_id {
@@ -1503,20 +1739,21 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 								}
 							}
 						},
+						MessageSendEvent::HandleError { ref action, .. } => {
+							assert_action_timeout_awaiting_response(action);
+						},
 						MessageSendEvent::SendChannelReady { .. } => {
 							// Can be generated as a reestablish response
 						},
 						MessageSendEvent::SendAnnouncementSignatures { .. } => {
 							// Can be generated as a reestablish response
 						},
-						MessageSendEvent::SendChannelUpdate { ref msg, .. } => {
-							// When we reconnect we will resend a channel_update to make sure our
-							// counterparty has the latest parameters for receiving payments
-							// through us. We do, however, check that the message does not include
-							// the "disabled" bit, as we should never ever have a channel which is
-							// disabled when we send such an update (or it may indicate channel
-							// force-close which we should detect as an error).
-							assert_eq!(msg.contents.channel_flags & 2, 0);
+						MessageSendEvent::SendChannelUpdate { .. } => {
+							// Can be generated as a reestablish response
+						},
+						MessageSendEvent::BroadcastChannelUpdate { .. } => {
+							// Can be generated as a result of calling `timer_tick_occurred` enough
+							// times while peers are disconnected
 						},
 						_ => if out.may_fail.load(atomic::Ordering::Acquire) {
 							return;
@@ -1558,8 +1795,9 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 							MessageSendEvent::SendStfu { .. } => {},
 							MessageSendEvent::SendChannelReady { .. } => {},
 							MessageSendEvent::SendAnnouncementSignatures { .. } => {},
-							MessageSendEvent::SendChannelUpdate { ref msg, .. } => {
-								assert_eq!(msg.contents.channel_flags & 2, 0); // The disable bit must never be set!
+							MessageSendEvent::SendChannelUpdate { .. } => {},
+							MessageSendEvent::HandleError { ref action, .. } => {
+								assert_action_timeout_awaiting_response(action);
 							},
 							_ => {
 								if out.may_fail.load(atomic::Ordering::Acquire) {
@@ -1585,8 +1823,9 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 							MessageSendEvent::SendStfu { .. } => {},
 							MessageSendEvent::SendChannelReady { .. } => {},
 							MessageSendEvent::SendAnnouncementSignatures { .. } => {},
-							MessageSendEvent::SendChannelUpdate { ref msg, .. } => {
-								assert_eq!(msg.contents.channel_flags & 2, 0); // The disable bit must never be set!
+							MessageSendEvent::SendChannelUpdate { .. } => {},
+							MessageSendEvent::HandleError { ref action, .. } => {
+								assert_action_timeout_awaiting_response(action);
 							},
 							_ => {
 								if out.may_fail.load(atomic::Ordering::Acquire) {
@@ -1639,7 +1878,22 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 								assert!(resolved_payments[$node].contains(&sent_id));
 							}
 						},
-						events::Event::PaymentFailed { payment_id, .. } => {
+						// Even though we don't explicitly send probes, because probes are
+						// detected based on hashing the payment hash+preimage, its rather
+						// trivial for the fuzzer to build payments that accidentally end up
+						// looking like probes.
+						events::Event::ProbeSuccessful { payment_id, .. } => {
+							let idx_opt =
+								pending_payments[$node].iter().position(|id| *id == payment_id);
+							if let Some(idx) = idx_opt {
+								pending_payments[$node].remove(idx);
+								resolved_payments[$node].push(payment_id);
+							} else {
+								assert!(resolved_payments[$node].contains(&payment_id));
+							}
+						},
+						events::Event::PaymentFailed { payment_id, .. }
+						| events::Event::ProbeFailed { payment_id, .. } => {
 							let idx_opt =
 								pending_payments[$node].iter().position(|id| *id == payment_id);
 							if let Some(idx) = idx_opt {
@@ -1654,13 +1908,6 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 						events::Event::PaymentClaimed { .. } => {},
 						events::Event::PaymentPathSuccessful { .. } => {},
 						events::Event::PaymentPathFailed { .. } => {},
-						events::Event::ProbeSuccessful { .. }
-						| events::Event::ProbeFailed { .. } => {
-							// Even though we don't explicitly send probes, because probes are
-							// detected based on hashing the payment hash+preimage, its rather
-							// trivial for the fuzzer to build payments that accidentally end up
-							// looking like probes.
-						},
 						events::Event::PaymentForwarded { .. } if $node == 1 => {},
 						events::Event::ChannelReady { .. } => {},
 						events::Event::HTLCHandlingFailed { .. } => {},
@@ -1680,7 +1927,18 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 								)
 								.unwrap();
 						},
-						events::Event::SplicePending { .. } => {},
+						events::Event::SplicePending { new_funding_txo, .. } => {
+							let broadcaster = match $node {
+								0 => &broadcast_a,
+								1 => &broadcast_b,
+								_ => &broadcast_c,
+							};
+							let mut txs = broadcaster.txn_broadcasted.borrow_mut();
+							assert!(txs.len() >= 1);
+							let splice_tx = txs.remove(0);
+							assert_eq!(new_funding_txo.txid, splice_tx.compute_txid());
+							chain_state.confirm_tx(splice_tx);
+						},
 						events::Event::SpliceFailed { .. } => {},
 
 						_ => {
@@ -1761,9 +2019,9 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 
 		let send_hop_noret = |source_idx: usize,
 		                      middle_idx: usize,
-		                      middle_scid: u64,
+		                      middle_chan_id: ChannelId,
 		                      dest_idx: usize,
-		                      dest_scid: u64,
+		                      dest_chan_id: ChannelId,
 		                      amt: u64,
 		                      payment_ctr: &mut u64| {
 			let source = &nodes[source_idx];
@@ -1775,9 +2033,9 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 			let succeeded = send_hop_payment(
 				source,
 				middle,
-				middle_scid,
+				middle_chan_id,
 				dest,
-				dest_scid,
+				dest_chan_id,
 				amt,
 				secret,
 				hash,
@@ -1791,7 +2049,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 		// Direct MPP payment (no hop)
 		let send_mpp_direct = |source_idx: usize,
 		                       dest_idx: usize,
-		                       dest_scids: &[u64],
+		                       dest_chan_ids: &[ChannelId],
 		                       amt: u64,
 		                       payment_ctr: &mut u64| {
 			let source = &nodes[source_idx];
@@ -1799,7 +2057,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 			let (secret, hash) = get_payment_secret_hash(dest, payment_ctr);
 			let mut id = PaymentId([0; 32]);
 			id.0[0..8].copy_from_slice(&payment_ctr.to_ne_bytes());
-			let succeeded = send_mpp_payment(source, dest, dest_scids, amt, secret, hash, id);
+			let succeeded = send_mpp_payment(source, dest, dest_chan_ids, amt, secret, hash, id);
 			if succeeded {
 				pending_payments.borrow_mut()[source_idx].push(id);
 			}
@@ -1808,9 +2066,9 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 		// MPP payment via hop - splits payment across multiple channels on either or both hops
 		let send_mpp_hop = |source_idx: usize,
 		                    middle_idx: usize,
-		                    middle_scids: &[u64],
+		                    middle_chan_ids: &[ChannelId],
 		                    dest_idx: usize,
-		                    dest_scids: &[u64],
+		                    dest_chan_ids: &[ChannelId],
 		                    amt: u64,
 		                    payment_ctr: &mut u64| {
 			let source = &nodes[source_idx];
@@ -1822,9 +2080,9 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 			let succeeded = send_mpp_hop_payment(
 				source,
 				middle,
-				middle_scids,
+				middle_chan_ids,
 				dest,
-				dest_scids,
+				dest_chan_ids,
 				amt,
 				secret,
 				hash,
@@ -1963,73 +2221,75 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 			0x27 => process_ev_noret!(2, false),
 
 			// 1/10th the channel size:
-			0x30 => send_noret(0, 1, chan_a, 10_000_000, &mut p_ctr),
-			0x31 => send_noret(1, 0, chan_a, 10_000_000, &mut p_ctr),
-			0x32 => send_noret(1, 2, chan_b, 10_000_000, &mut p_ctr),
-			0x33 => send_noret(2, 1, chan_b, 10_000_000, &mut p_ctr),
-			0x34 => send_hop_noret(0, 1, chan_a, 2, chan_b, 10_000_000, &mut p_ctr),
-			0x35 => send_hop_noret(2, 1, chan_b, 0, chan_a, 10_000_000, &mut p_ctr),
+			0x30 => send_noret(0, 1, chan_a_id, 10_000_000, &mut p_ctr),
+			0x31 => send_noret(1, 0, chan_a_id, 10_000_000, &mut p_ctr),
+			0x32 => send_noret(1, 2, chan_b_id, 10_000_000, &mut p_ctr),
+			0x33 => send_noret(2, 1, chan_b_id, 10_000_000, &mut p_ctr),
+			0x34 => send_hop_noret(0, 1, chan_a_id, 2, chan_b_id, 10_000_000, &mut p_ctr),
+			0x35 => send_hop_noret(2, 1, chan_b_id, 0, chan_a_id, 10_000_000, &mut p_ctr),
 
-			0x38 => send_noret(0, 1, chan_a, 1_000_000, &mut p_ctr),
-			0x39 => send_noret(1, 0, chan_a, 1_000_000, &mut p_ctr),
-			0x3a => send_noret(1, 2, chan_b, 1_000_000, &mut p_ctr),
-			0x3b => send_noret(2, 1, chan_b, 1_000_000, &mut p_ctr),
-			0x3c => send_hop_noret(0, 1, chan_a, 2, chan_b, 1_000_000, &mut p_ctr),
-			0x3d => send_hop_noret(2, 1, chan_b, 0, chan_a, 1_000_000, &mut p_ctr),
+			0x38 => send_noret(0, 1, chan_a_id, 1_000_000, &mut p_ctr),
+			0x39 => send_noret(1, 0, chan_a_id, 1_000_000, &mut p_ctr),
+			0x3a => send_noret(1, 2, chan_b_id, 1_000_000, &mut p_ctr),
+			0x3b => send_noret(2, 1, chan_b_id, 1_000_000, &mut p_ctr),
+			0x3c => send_hop_noret(0, 1, chan_a_id, 2, chan_b_id, 1_000_000, &mut p_ctr),
+			0x3d => send_hop_noret(2, 1, chan_b_id, 0, chan_a_id, 1_000_000, &mut p_ctr),
 
-			0x40 => send_noret(0, 1, chan_a, 100_000, &mut p_ctr),
-			0x41 => send_noret(1, 0, chan_a, 100_000, &mut p_ctr),
-			0x42 => send_noret(1, 2, chan_b, 100_000, &mut p_ctr),
-			0x43 => send_noret(2, 1, chan_b, 100_000, &mut p_ctr),
-			0x44 => send_hop_noret(0, 1, chan_a, 2, chan_b, 100_000, &mut p_ctr),
-			0x45 => send_hop_noret(2, 1, chan_b, 0, chan_a, 100_000, &mut p_ctr),
+			0x40 => send_noret(0, 1, chan_a_id, 100_000, &mut p_ctr),
+			0x41 => send_noret(1, 0, chan_a_id, 100_000, &mut p_ctr),
+			0x42 => send_noret(1, 2, chan_b_id, 100_000, &mut p_ctr),
+			0x43 => send_noret(2, 1, chan_b_id, 100_000, &mut p_ctr),
+			0x44 => send_hop_noret(0, 1, chan_a_id, 2, chan_b_id, 100_000, &mut p_ctr),
+			0x45 => send_hop_noret(2, 1, chan_b_id, 0, chan_a_id, 100_000, &mut p_ctr),
 
-			0x48 => send_noret(0, 1, chan_a, 10_000, &mut p_ctr),
-			0x49 => send_noret(1, 0, chan_a, 10_000, &mut p_ctr),
-			0x4a => send_noret(1, 2, chan_b, 10_000, &mut p_ctr),
-			0x4b => send_noret(2, 1, chan_b, 10_000, &mut p_ctr),
-			0x4c => send_hop_noret(0, 1, chan_a, 2, chan_b, 10_000, &mut p_ctr),
-			0x4d => send_hop_noret(2, 1, chan_b, 0, chan_a, 10_000, &mut p_ctr),
+			0x48 => send_noret(0, 1, chan_a_id, 10_000, &mut p_ctr),
+			0x49 => send_noret(1, 0, chan_a_id, 10_000, &mut p_ctr),
+			0x4a => send_noret(1, 2, chan_b_id, 10_000, &mut p_ctr),
+			0x4b => send_noret(2, 1, chan_b_id, 10_000, &mut p_ctr),
+			0x4c => send_hop_noret(0, 1, chan_a_id, 2, chan_b_id, 10_000, &mut p_ctr),
+			0x4d => send_hop_noret(2, 1, chan_b_id, 0, chan_a_id, 10_000, &mut p_ctr),
 
-			0x50 => send_noret(0, 1, chan_a, 1_000, &mut p_ctr),
-			0x51 => send_noret(1, 0, chan_a, 1_000, &mut p_ctr),
-			0x52 => send_noret(1, 2, chan_b, 1_000, &mut p_ctr),
-			0x53 => send_noret(2, 1, chan_b, 1_000, &mut p_ctr),
-			0x54 => send_hop_noret(0, 1, chan_a, 2, chan_b, 1_000, &mut p_ctr),
-			0x55 => send_hop_noret(2, 1, chan_b, 0, chan_a, 1_000, &mut p_ctr),
+			0x50 => send_noret(0, 1, chan_a_id, 1_000, &mut p_ctr),
+			0x51 => send_noret(1, 0, chan_a_id, 1_000, &mut p_ctr),
+			0x52 => send_noret(1, 2, chan_b_id, 1_000, &mut p_ctr),
+			0x53 => send_noret(2, 1, chan_b_id, 1_000, &mut p_ctr),
+			0x54 => send_hop_noret(0, 1, chan_a_id, 2, chan_b_id, 1_000, &mut p_ctr),
+			0x55 => send_hop_noret(2, 1, chan_b_id, 0, chan_a_id, 1_000, &mut p_ctr),
 
-			0x58 => send_noret(0, 1, chan_a, 100, &mut p_ctr),
-			0x59 => send_noret(1, 0, chan_a, 100, &mut p_ctr),
-			0x5a => send_noret(1, 2, chan_b, 100, &mut p_ctr),
-			0x5b => send_noret(2, 1, chan_b, 100, &mut p_ctr),
-			0x5c => send_hop_noret(0, 1, chan_a, 2, chan_b, 100, &mut p_ctr),
-			0x5d => send_hop_noret(2, 1, chan_b, 0, chan_a, 100, &mut p_ctr),
+			0x58 => send_noret(0, 1, chan_a_id, 100, &mut p_ctr),
+			0x59 => send_noret(1, 0, chan_a_id, 100, &mut p_ctr),
+			0x5a => send_noret(1, 2, chan_b_id, 100, &mut p_ctr),
+			0x5b => send_noret(2, 1, chan_b_id, 100, &mut p_ctr),
+			0x5c => send_hop_noret(0, 1, chan_a_id, 2, chan_b_id, 100, &mut p_ctr),
+			0x5d => send_hop_noret(2, 1, chan_b_id, 0, chan_a_id, 100, &mut p_ctr),
 
-			0x60 => send_noret(0, 1, chan_a, 10, &mut p_ctr),
-			0x61 => send_noret(1, 0, chan_a, 10, &mut p_ctr),
-			0x62 => send_noret(1, 2, chan_b, 10, &mut p_ctr),
-			0x63 => send_noret(2, 1, chan_b, 10, &mut p_ctr),
-			0x64 => send_hop_noret(0, 1, chan_a, 2, chan_b, 10, &mut p_ctr),
-			0x65 => send_hop_noret(2, 1, chan_b, 0, chan_a, 10, &mut p_ctr),
+			0x60 => send_noret(0, 1, chan_a_id, 10, &mut p_ctr),
+			0x61 => send_noret(1, 0, chan_a_id, 10, &mut p_ctr),
+			0x62 => send_noret(1, 2, chan_b_id, 10, &mut p_ctr),
+			0x63 => send_noret(2, 1, chan_b_id, 10, &mut p_ctr),
+			0x64 => send_hop_noret(0, 1, chan_a_id, 2, chan_b_id, 10, &mut p_ctr),
+			0x65 => send_hop_noret(2, 1, chan_b_id, 0, chan_a_id, 10, &mut p_ctr),
 
-			0x68 => send_noret(0, 1, chan_a, 1, &mut p_ctr),
-			0x69 => send_noret(1, 0, chan_a, 1, &mut p_ctr),
-			0x6a => send_noret(1, 2, chan_b, 1, &mut p_ctr),
-			0x6b => send_noret(2, 1, chan_b, 1, &mut p_ctr),
-			0x6c => send_hop_noret(0, 1, chan_a, 2, chan_b, 1, &mut p_ctr),
-			0x6d => send_hop_noret(2, 1, chan_b, 0, chan_a, 1, &mut p_ctr),
+			0x68 => send_noret(0, 1, chan_a_id, 1, &mut p_ctr),
+			0x69 => send_noret(1, 0, chan_a_id, 1, &mut p_ctr),
+			0x6a => send_noret(1, 2, chan_b_id, 1, &mut p_ctr),
+			0x6b => send_noret(2, 1, chan_b_id, 1, &mut p_ctr),
+			0x6c => send_hop_noret(0, 1, chan_a_id, 2, chan_b_id, 1, &mut p_ctr),
+			0x6d => send_hop_noret(2, 1, chan_b_id, 0, chan_a_id, 1, &mut p_ctr),
 
 			// MPP payments
 			// 0x70: direct MPP from 0 to 1 (multi A-B channels)
-			0x70 => send_mpp_direct(0, 1, &chan_ab_scids, 1_000_000, &mut p_ctr),
+			0x70 => send_mpp_direct(0, 1, &chan_ab_ids, 1_000_000, &mut p_ctr),
 			// 0x71: MPP 0->1->2, multi channels on first hop (A-B)
-			0x71 => send_mpp_hop(0, 1, &chan_ab_scids, 2, &[chan_b], 1_000_000, &mut p_ctr),
+			0x71 => send_mpp_hop(0, 1, &chan_ab_ids, 2, &[chan_b_id], 1_000_000, &mut p_ctr),
 			// 0x72: MPP 0->1->2, multi channels on both hops (A-B and B-C)
-			0x72 => send_mpp_hop(0, 1, &chan_ab_scids, 2, &chan_bc_scids, 1_000_000, &mut p_ctr),
+			0x72 => send_mpp_hop(0, 1, &chan_ab_ids, 2, &chan_bc_ids, 1_000_000, &mut p_ctr),
 			// 0x73: MPP 0->1->2, multi channels on second hop (B-C)
-			0x73 => send_mpp_hop(0, 1, &[chan_a], 2, &chan_bc_scids, 1_000_000, &mut p_ctr),
+			0x73 => send_mpp_hop(0, 1, &[chan_a_id], 2, &chan_bc_ids, 1_000_000, &mut p_ctr),
 			// 0x74: direct MPP from 0 to 1, multi parts over single channel
-			0x74 => send_mpp_direct(0, 1, &[chan_a, chan_a, chan_a], 1_000_000, &mut p_ctr),
+			0x74 => {
+				send_mpp_direct(0, 1, &[chan_a_id, chan_a_id, chan_a_id], 1_000_000, &mut p_ctr)
+			},
 
 			0x80 => {
 				let mut max_feerate = last_htlc_clear_fee_a;
@@ -2039,11 +2299,11 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 				if fee_est_a.ret_val.fetch_add(250, atomic::Ordering::AcqRel) + 250 > max_feerate {
 					fee_est_a.ret_val.store(max_feerate, atomic::Ordering::Release);
 				}
-				nodes[0].maybe_update_chan_fees();
+				nodes[0].timer_tick_occurred();
 			},
 			0x81 => {
 				fee_est_a.ret_val.store(253, atomic::Ordering::Release);
-				nodes[0].maybe_update_chan_fees();
+				nodes[0].timer_tick_occurred();
 			},
 
 			0x84 => {
@@ -2054,11 +2314,11 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 				if fee_est_b.ret_val.fetch_add(250, atomic::Ordering::AcqRel) + 250 > max_feerate {
 					fee_est_b.ret_val.store(max_feerate, atomic::Ordering::Release);
 				}
-				nodes[1].maybe_update_chan_fees();
+				nodes[1].timer_tick_occurred();
 			},
 			0x85 => {
 				fee_est_b.ret_val.store(253, atomic::Ordering::Release);
-				nodes[1].maybe_update_chan_fees();
+				nodes[1].timer_tick_occurred();
 			},
 
 			0x88 => {
@@ -2069,281 +2329,75 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 				if fee_est_c.ret_val.fetch_add(250, atomic::Ordering::AcqRel) + 250 > max_feerate {
 					fee_est_c.ret_val.store(max_feerate, atomic::Ordering::Release);
 				}
-				nodes[2].maybe_update_chan_fees();
+				nodes[2].timer_tick_occurred();
 			},
 			0x89 => {
 				fee_est_c.ret_val.store(253, atomic::Ordering::Release);
-				nodes[2].maybe_update_chan_fees();
+				nodes[2].timer_tick_occurred();
 			},
 
 			0xa0 => {
-				let feerate_sat_per_kw = fee_estimators[0].ret_val.load(atomic::Ordering::Acquire);
-				let feerate = FeeRate::from_sat_per_kwu(feerate_sat_per_kw as u64);
-				match nodes[0].splice_channel(&chan_a_id, &nodes[1].get_our_node_id(), feerate) {
-					Ok(funding_template) => {
-						let wallet = WalletSync::new(&wallets[0], Arc::clone(&loggers[0]));
-						if let Ok(contribution) =
-							funding_template.splice_in_sync(Amount::from_sat(10_000), &wallet)
-						{
-							let _ = nodes[0].funding_contributed(
-								&chan_a_id,
-								&nodes[1].get_our_node_id(),
-								contribution,
-								None,
-							);
-						}
-					},
-					Err(e) => {
-						assert!(
-							matches!(e, APIError::APIMisuseError { ref err } if err.contains("splice")),
-							"{:?}",
-							e
-						);
-					},
-				}
+				let cp_node_id = nodes[1].get_our_node_id();
+				let wallet = WalletSync::new(&wallets[0], Arc::clone(&loggers[0]));
+				let feerate_sat_per_kw = fee_estimators[0].feerate_sat_per_kw();
+				splice_in(&nodes[0], &cp_node_id, &chan_a_id, &wallet, feerate_sat_per_kw);
 			},
 			0xa1 => {
-				let feerate_sat_per_kw = fee_estimators[1].ret_val.load(atomic::Ordering::Acquire);
-				let feerate = FeeRate::from_sat_per_kwu(feerate_sat_per_kw as u64);
-				match nodes[1].splice_channel(&chan_a_id, &nodes[0].get_our_node_id(), feerate) {
-					Ok(funding_template) => {
-						let wallet = WalletSync::new(&wallets[1], Arc::clone(&loggers[1]));
-						if let Ok(contribution) =
-							funding_template.splice_in_sync(Amount::from_sat(10_000), &wallet)
-						{
-							let _ = nodes[1].funding_contributed(
-								&chan_a_id,
-								&nodes[0].get_our_node_id(),
-								contribution,
-								None,
-							);
-						}
-					},
-					Err(e) => {
-						assert!(
-							matches!(e, APIError::APIMisuseError { ref err } if err.contains("splice")),
-							"{:?}",
-							e
-						);
-					},
-				}
+				let cp_node_id = nodes[0].get_our_node_id();
+				let wallet = WalletSync::new(&wallets[1], Arc::clone(&loggers[1]));
+				let feerate_sat_per_kw = fee_estimators[1].feerate_sat_per_kw();
+				splice_in(&nodes[1], &cp_node_id, &chan_a_id, &wallet, feerate_sat_per_kw);
 			},
 			0xa2 => {
-				let feerate_sat_per_kw = fee_estimators[1].ret_val.load(atomic::Ordering::Acquire);
-				let feerate = FeeRate::from_sat_per_kwu(feerate_sat_per_kw as u64);
-				match nodes[1].splice_channel(&chan_b_id, &nodes[2].get_our_node_id(), feerate) {
-					Ok(funding_template) => {
-						let wallet = WalletSync::new(&wallets[1], Arc::clone(&loggers[1]));
-						if let Ok(contribution) =
-							funding_template.splice_in_sync(Amount::from_sat(10_000), &wallet)
-						{
-							let _ = nodes[1].funding_contributed(
-								&chan_b_id,
-								&nodes[2].get_our_node_id(),
-								contribution,
-								None,
-							);
-						}
-					},
-					Err(e) => {
-						assert!(
-							matches!(e, APIError::APIMisuseError { ref err } if err.contains("splice")),
-							"{:?}",
-							e
-						);
-					},
-				}
+				let cp_node_id = nodes[2].get_our_node_id();
+				let wallet = WalletSync::new(&wallets[1], Arc::clone(&loggers[1]));
+				let feerate_sat_per_kw = fee_estimators[1].feerate_sat_per_kw();
+				splice_in(&nodes[1], &cp_node_id, &chan_b_id, &wallet, feerate_sat_per_kw);
 			},
 			0xa3 => {
-				let feerate_sat_per_kw = fee_estimators[2].ret_val.load(atomic::Ordering::Acquire);
-				let feerate = FeeRate::from_sat_per_kwu(feerate_sat_per_kw as u64);
-				match nodes[2].splice_channel(&chan_b_id, &nodes[1].get_our_node_id(), feerate) {
-					Ok(funding_template) => {
-						let wallet = WalletSync::new(&wallets[2], Arc::clone(&loggers[2]));
-						if let Ok(contribution) =
-							funding_template.splice_in_sync(Amount::from_sat(10_000), &wallet)
-						{
-							let _ = nodes[2].funding_contributed(
-								&chan_b_id,
-								&nodes[1].get_our_node_id(),
-								contribution,
-								None,
-							);
-						}
-					},
-					Err(e) => {
-						assert!(
-							matches!(e, APIError::APIMisuseError { ref err } if err.contains("splice")),
-							"{:?}",
-							e
-						);
-					},
-				}
+				let cp_node_id = nodes[1].get_our_node_id();
+				let wallet = WalletSync::new(&wallets[2], Arc::clone(&loggers[2]));
+				let feerate_sat_per_kw = fee_estimators[2].feerate_sat_per_kw();
+				splice_in(&nodes[2], &cp_node_id, &chan_b_id, &wallet, feerate_sat_per_kw);
 			},
 
-			// We conditionally splice out `MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS` only when the node
-			// has double the balance required to send a payment upon a `0xff` byte. We do this to
-			// ensure there's always liquidity available for a payment to succeed then.
 			0xa4 => {
-				let outbound_capacity_msat = nodes[0]
-					.list_channels()
-					.iter()
-					.find(|chan| chan.channel_id == chan_a_id)
-					.map(|chan| chan.outbound_capacity_msat)
-					.unwrap();
-				if outbound_capacity_msat >= 20_000_000 {
-					let feerate_sat_per_kw =
-						fee_estimators[0].ret_val.load(atomic::Ordering::Acquire);
-					let feerate = FeeRate::from_sat_per_kwu(feerate_sat_per_kw as u64);
-					match nodes[0].splice_channel(&chan_a_id, &nodes[1].get_our_node_id(), feerate)
-					{
-						Ok(funding_template) => {
-							let outputs = vec![TxOut {
-								value: Amount::from_sat(MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS),
-								script_pubkey: coinbase_tx.output[0].script_pubkey.clone(),
-							}];
-							let wallet = WalletSync::new(&wallets[0], Arc::clone(&loggers[0]));
-							if let Ok(contribution) =
-								funding_template.splice_out_sync(outputs, &wallet)
-							{
-								let _ = nodes[0].funding_contributed(
-									&chan_a_id,
-									&nodes[1].get_our_node_id(),
-									contribution,
-									None,
-								);
-							}
-						},
-						Err(e) => {
-							assert!(
-								matches!(e, APIError::APIMisuseError { ref err } if err.contains("splice")),
-								"{:?}",
-								e
-							);
-						},
-					}
-				}
+				let cp_node_id = nodes[1].get_our_node_id();
+				let wallet = &wallets[0];
+				let logger = Arc::clone(&loggers[0]);
+				let feerate_sat_per_kw = fee_estimators[0].feerate_sat_per_kw();
+				splice_out(&nodes[0], &cp_node_id, &chan_a_id, wallet, logger, feerate_sat_per_kw);
 			},
 			0xa5 => {
-				let outbound_capacity_msat = nodes[1]
-					.list_channels()
-					.iter()
-					.find(|chan| chan.channel_id == chan_a_id)
-					.map(|chan| chan.outbound_capacity_msat)
-					.unwrap();
-				if outbound_capacity_msat >= 20_000_000 {
-					let feerate_sat_per_kw =
-						fee_estimators[1].ret_val.load(atomic::Ordering::Acquire);
-					let feerate = FeeRate::from_sat_per_kwu(feerate_sat_per_kw as u64);
-					match nodes[1].splice_channel(&chan_a_id, &nodes[0].get_our_node_id(), feerate)
-					{
-						Ok(funding_template) => {
-							let outputs = vec![TxOut {
-								value: Amount::from_sat(MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS),
-								script_pubkey: coinbase_tx.output[1].script_pubkey.clone(),
-							}];
-							let wallet = WalletSync::new(&wallets[1], Arc::clone(&loggers[1]));
-							if let Ok(contribution) =
-								funding_template.splice_out_sync(outputs, &wallet)
-							{
-								let _ = nodes[1].funding_contributed(
-									&chan_a_id,
-									&nodes[0].get_our_node_id(),
-									contribution,
-									None,
-								);
-							}
-						},
-						Err(e) => {
-							assert!(
-								matches!(e, APIError::APIMisuseError { ref err } if err.contains("splice")),
-								"{:?}",
-								e
-							);
-						},
-					}
-				}
+				let cp_node_id = nodes[0].get_our_node_id();
+				let wallet = &wallets[1];
+				let logger = Arc::clone(&loggers[1]);
+				let feerate_sat_per_kw = fee_estimators[1].feerate_sat_per_kw();
+				splice_out(&nodes[1], &cp_node_id, &chan_a_id, wallet, logger, feerate_sat_per_kw);
 			},
 			0xa6 => {
-				let outbound_capacity_msat = nodes[1]
-					.list_channels()
-					.iter()
-					.find(|chan| chan.channel_id == chan_b_id)
-					.map(|chan| chan.outbound_capacity_msat)
-					.unwrap();
-				if outbound_capacity_msat >= 20_000_000 {
-					let feerate_sat_per_kw =
-						fee_estimators[1].ret_val.load(atomic::Ordering::Acquire);
-					let feerate = FeeRate::from_sat_per_kwu(feerate_sat_per_kw as u64);
-					match nodes[1].splice_channel(&chan_b_id, &nodes[2].get_our_node_id(), feerate)
-					{
-						Ok(funding_template) => {
-							let outputs = vec![TxOut {
-								value: Amount::from_sat(MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS),
-								script_pubkey: coinbase_tx.output[1].script_pubkey.clone(),
-							}];
-							let wallet = WalletSync::new(&wallets[1], Arc::clone(&loggers[1]));
-							if let Ok(contribution) =
-								funding_template.splice_out_sync(outputs, &wallet)
-							{
-								let _ = nodes[1].funding_contributed(
-									&chan_b_id,
-									&nodes[2].get_our_node_id(),
-									contribution,
-									None,
-								);
-							}
-						},
-						Err(e) => {
-							assert!(
-								matches!(e, APIError::APIMisuseError { ref err } if err.contains("splice")),
-								"{:?}",
-								e
-							);
-						},
-					}
-				}
+				let cp_node_id = nodes[2].get_our_node_id();
+				let wallet = &wallets[1];
+				let logger = Arc::clone(&loggers[1]);
+				let feerate_sat_per_kw = fee_estimators[1].feerate_sat_per_kw();
+				splice_out(&nodes[1], &cp_node_id, &chan_b_id, wallet, logger, feerate_sat_per_kw);
 			},
 			0xa7 => {
-				let outbound_capacity_msat = nodes[2]
-					.list_channels()
-					.iter()
-					.find(|chan| chan.channel_id == chan_b_id)
-					.map(|chan| chan.outbound_capacity_msat)
-					.unwrap();
-				if outbound_capacity_msat >= 20_000_000 {
-					let feerate_sat_per_kw =
-						fee_estimators[2].ret_val.load(atomic::Ordering::Acquire);
-					let feerate = FeeRate::from_sat_per_kwu(feerate_sat_per_kw as u64);
-					match nodes[2].splice_channel(&chan_b_id, &nodes[1].get_our_node_id(), feerate)
-					{
-						Ok(funding_template) => {
-							let outputs = vec![TxOut {
-								value: Amount::from_sat(MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS),
-								script_pubkey: coinbase_tx.output[2].script_pubkey.clone(),
-							}];
-							let wallet = WalletSync::new(&wallets[2], Arc::clone(&loggers[2]));
-							if let Ok(contribution) =
-								funding_template.splice_out_sync(outputs, &wallet)
-							{
-								let _ = nodes[2].funding_contributed(
-									&chan_b_id,
-									&nodes[1].get_our_node_id(),
-									contribution,
-									None,
-								);
-							}
-						},
-						Err(e) => {
-							assert!(
-								matches!(e, APIError::APIMisuseError { ref err } if err.contains("splice")),
-								"{:?}",
-								e
-							);
-						},
-					}
-				}
+				let cp_node_id = nodes[1].get_our_node_id();
+				let wallet = &wallets[2];
+				let logger = Arc::clone(&loggers[2]);
+				let feerate_sat_per_kw = fee_estimators[2].feerate_sat_per_kw();
+				splice_out(&nodes[2], &cp_node_id, &chan_b_id, wallet, logger, feerate_sat_per_kw);
 			},
+
+			// Sync node by 1 block to cover confirmation of a transaction.
+			0xa8 => sync_with_chain_state(&mut chain_state, &nodes[0], &mut node_height_a, Some(1)),
+			0xa9 => sync_with_chain_state(&mut chain_state, &nodes[1], &mut node_height_b, Some(1)),
+			0xaa => sync_with_chain_state(&mut chain_state, &nodes[2], &mut node_height_c, Some(1)),
+			// Sync node to chain tip to cover confirmation of a transaction post-reorg-risk.
+			0xab => sync_with_chain_state(&mut chain_state, &nodes[0], &mut node_height_a, None),
+			0xac => sync_with_chain_state(&mut chain_state, &nodes[1], &mut node_height_b, None),
+			0xad => sync_with_chain_state(&mut chain_state, &nodes[2], &mut node_height_c, None),
 
 			0xb0 | 0xb1 | 0xb2 => {
 				// Restart node A, picking among the in-flight `ChannelMonitor`s to use based on
@@ -2358,8 +2412,15 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 					ab_events.clear();
 					ba_events.clear();
 				}
-				let (new_node_a, new_monitor_a) =
-					reload_node(&node_a_ser, 0, &monitor_a, v, &keys_manager_a, &fee_est_a);
+				let (new_node_a, new_monitor_a) = reload_node(
+					&node_a_ser,
+					0,
+					&monitor_a,
+					v,
+					&keys_manager_a,
+					&fee_est_a,
+					broadcast_a.clone(),
+				);
 				nodes[0] = new_node_a;
 				monitor_a = new_monitor_a;
 			},
@@ -2380,8 +2441,15 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 					bc_events.clear();
 					cb_events.clear();
 				}
-				let (new_node_b, new_monitor_b) =
-					reload_node(&node_b_ser, 1, &monitor_b, v, &keys_manager_b, &fee_est_b);
+				let (new_node_b, new_monitor_b) = reload_node(
+					&node_b_ser,
+					1,
+					&monitor_b,
+					v,
+					&keys_manager_b,
+					&fee_est_b,
+					broadcast_b.clone(),
+				);
 				nodes[1] = new_node_b;
 				monitor_b = new_monitor_b;
 			},
@@ -2398,10 +2466,57 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 					bc_events.clear();
 					cb_events.clear();
 				}
-				let (new_node_c, new_monitor_c) =
-					reload_node(&node_c_ser, 2, &monitor_c, v, &keys_manager_c, &fee_est_c);
+				let (new_node_c, new_monitor_c) = reload_node(
+					&node_c_ser,
+					2,
+					&monitor_c,
+					v,
+					&keys_manager_c,
+					&fee_est_c,
+					broadcast_c.clone(),
+				);
 				nodes[2] = new_node_c;
 				monitor_c = new_monitor_c;
+			},
+
+			0xc0 => keys_manager_a.disable_supported_ops_for_all_signers(),
+			0xc1 => keys_manager_b.disable_supported_ops_for_all_signers(),
+			0xc2 => keys_manager_c.disable_supported_ops_for_all_signers(),
+			0xc3 => {
+				keys_manager_a.enable_op_for_all_signers(SignerOp::SignCounterpartyCommitment);
+				nodes[0].signer_unblocked(None);
+			},
+			0xc4 => {
+				keys_manager_b.enable_op_for_all_signers(SignerOp::SignCounterpartyCommitment);
+				nodes[1].signer_unblocked(None);
+			},
+			0xc5 => {
+				keys_manager_c.enable_op_for_all_signers(SignerOp::SignCounterpartyCommitment);
+				nodes[2].signer_unblocked(None);
+			},
+			0xc6 => {
+				keys_manager_a.enable_op_for_all_signers(SignerOp::GetPerCommitmentPoint);
+				nodes[0].signer_unblocked(None);
+			},
+			0xc7 => {
+				keys_manager_b.enable_op_for_all_signers(SignerOp::GetPerCommitmentPoint);
+				nodes[1].signer_unblocked(None);
+			},
+			0xc8 => {
+				keys_manager_c.enable_op_for_all_signers(SignerOp::GetPerCommitmentPoint);
+				nodes[2].signer_unblocked(None);
+			},
+			0xc9 => {
+				keys_manager_a.enable_op_for_all_signers(SignerOp::ReleaseCommitmentSecret);
+				nodes[0].signer_unblocked(None);
+			},
+			0xca => {
+				keys_manager_b.enable_op_for_all_signers(SignerOp::ReleaseCommitmentSecret);
+				nodes[1].signer_unblocked(None);
+			},
+			0xcb => {
+				keys_manager_c.enable_op_for_all_signers(SignerOp::ReleaseCommitmentSecret);
+				nodes[2].signer_unblocked(None);
 			},
 
 			0xf0 => {
@@ -2504,6 +2619,15 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 					peers_bc_disconnected = false;
 				}
 
+				for op in SUPPORTED_SIGNER_OPS {
+					keys_manager_a.enable_op_for_all_signers(op);
+					keys_manager_b.enable_op_for_all_signers(op);
+					keys_manager_c.enable_op_for_all_signers(op);
+				}
+				nodes[0].signer_unblocked(None);
+				nodes[1].signer_unblocked(None);
+				nodes[2].signer_unblocked(None);
+
 				macro_rules! process_all_events {
 					() => { {
 						let mut last_pass_no_updates = false;
@@ -2563,6 +2687,14 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 
 				process_all_events!();
 
+				// Since MPP payments are supported, we wait until we fully settle the state of all
+				// channels to see if we have any committed HTLC parts of an MPP payment that need
+				// to be failed back.
+				for node in &nodes {
+					node.timer_tick_occurred();
+				}
+				process_all_events!();
+
 				// Verify no payments are stuck - all should have resolved
 				for (idx, pending) in pending_payments.borrow().iter().enumerate() {
 					assert!(
@@ -2574,16 +2706,16 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 				}
 
 				// Finally, make sure that at least one end of each channel can make a substantial payment
-				for &scid in &chan_ab_scids {
+				for &chan_id in &chan_ab_ids {
 					assert!(
-						send(0, 1, scid, 10_000_000, &mut p_ctr)
-							|| send(1, 0, scid, 10_000_000, &mut p_ctr)
+						send(0, 1, chan_id, 10_000_000, &mut p_ctr)
+							|| send(1, 0, chan_id, 10_000_000, &mut p_ctr)
 					);
 				}
-				for &scid in &chan_bc_scids {
+				for &chan_id in &chan_bc_ids {
 					assert!(
-						send(1, 2, scid, 10_000_000, &mut p_ctr)
-							|| send(2, 1, scid, 10_000_000, &mut p_ctr)
+						send(1, 2, chan_id, 10_000_000, &mut p_ctr)
+							|| send(2, 1, chan_id, 10_000_000, &mut p_ctr)
 					);
 				}
 

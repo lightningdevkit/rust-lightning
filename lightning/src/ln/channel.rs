@@ -3030,7 +3030,7 @@ pub(crate) enum QuiescentAction {
 		contribution: FundingContribution,
 		locktime: LockTime,
 	},
-	#[cfg(any(test, fuzzing))]
+	#[cfg(any(test, fuzzing, feature = "_test_utils"))]
 	DoNothing,
 }
 
@@ -3039,7 +3039,7 @@ pub(crate) enum StfuResponse {
 	SpliceInit(msgs::SpliceInit),
 }
 
-#[cfg(any(test, fuzzing))]
+#[cfg(any(test, fuzzing, feature = "_test_utils"))]
 impl_writeable_tlv_based_enum_upgradable!(QuiescentAction,
 	(0, DoNothing) => {},
 	(2, Splice) => {
@@ -3048,7 +3048,7 @@ impl_writeable_tlv_based_enum_upgradable!(QuiescentAction,
 	},
 	{1, LegacySplice} => (),
 );
-#[cfg(not(any(test, fuzzing)))]
+#[cfg(not(any(test, fuzzing, feature = "_test_utils")))]
 impl_writeable_tlv_based_enum_upgradable!(QuiescentAction,
 	(2, Splice) => {
 		(0, contribution, required),
@@ -7066,7 +7066,7 @@ where
 							contributed_outputs: outputs,
 						})
 					},
-					#[cfg(any(test, fuzzing))]
+					#[cfg(any(test, fuzzing, feature = "_test_utils"))]
 					Some(quiescent_action) => {
 						self.quiescent_action = Some(quiescent_action);
 						None
@@ -13569,7 +13569,7 @@ where
 					let splice_init = self.send_splice_init_internal(context, ChangeStrategy::FromCoinSelection);
 					return Ok(Some(StfuResponse::SpliceInit(splice_init)));
 				},
-				#[cfg(any(test, fuzzing))]
+				#[cfg(any(test, fuzzing, feature = "_test_utils"))]
 				Some(QuiescentAction::DoNothing) => {
 					// In quiescence test we want to just hang out here, letting the test manually
 					// leave quiescence.
@@ -13612,7 +13612,7 @@ where
 		Ok(None)
 	}
 
-	#[cfg(any(test, fuzzing))]
+	#[cfg(any(test, fuzzing, feature = "_test_utils"))]
 	#[rustfmt::skip]
 	pub fn exit_quiescence(&mut self) -> bool {
 		// Make sure we either finished the quiescence handshake and are quiescent, or we never
