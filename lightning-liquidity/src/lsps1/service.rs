@@ -316,10 +316,11 @@ where
 
 		{
 			let mut outer_state_lock = self.per_peer_state.write().unwrap();
+			let num_peers = outer_state_lock.len();
 
-			if !outer_state_lock.contains_key(counterparty_node_id)
-				&& outer_state_lock.len() >= MAX_TOTAL_PEERS
-			{
+			let inner_state_entry = outer_state_lock.entry(*counterparty_node_id);
+
+			if matches!(inner_state_entry, Entry::Vacant(_)) && num_peers >= MAX_TOTAL_PEERS {
 				let response = LSPS1Response::CreateOrderError(LSPSResponseError {
 					code: LSPS0_CLIENT_REJECTED_ERROR_CODE,
 					message: "Reached maximum number of pending requests. Please try again later."
@@ -355,10 +356,8 @@ where
 				});
 			}
 
-			let inner_state_lock = outer_state_lock
-				.entry(*counterparty_node_id)
-				.or_insert(Mutex::new(PeerState::default()));
-			let mut peer_state_lock = inner_state_lock.lock().unwrap();
+			let mut peer_state_lock =
+				inner_state_entry.or_insert(Mutex::new(PeerState::default())).lock().unwrap();
 
 			if peer_state_lock.pending_requests_and_channels() >= MAX_PENDING_REQUESTS_PER_PEER {
 				let response = LSPS1Response::CreateOrderError(LSPSResponseError {
