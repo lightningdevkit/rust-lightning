@@ -908,7 +908,7 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 		},
 		_ => panic!("Unexpected event"),
 	}
-	check_closed_broadcast!(nodes[1], false);
+	check_closed_broadcast(&nodes[1], 1, false);
 
 	// Now claim the first payment, which should allow nodes[1] to claim the payment on-chain when
 	// we close in a moment.
@@ -1118,7 +1118,7 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 		},
 		_ => panic!("Unexpected event"),
 	}
-	check_closed_broadcast!(nodes[1], false);
+	check_closed_broadcast(&nodes[1], 1, false);
 
 	// Now fail back the payment from nodes[2] to nodes[1]. This doesn't really matter as the
 	// previous hop channel is already on-chain, but it makes nodes[2] willing to see additional
@@ -1283,7 +1283,7 @@ fn do_test_dup_htlc_onchain_doesnt_fail_on_reload(
 		.node
 		.force_close_broadcasting_latest_txn(&chan_id, &node_b_id, message.clone())
 		.unwrap();
-	check_closed_broadcast!(nodes[0], true);
+	check_closed_broadcast(&nodes[0], 1, true);
 	check_added_monitors(&nodes[0], 1);
 	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
 	check_closed_event(&nodes[0], 1, reason, &[node_b_id], 100000);
@@ -1686,7 +1686,7 @@ fn onchain_failed_probe_yields_event() {
 	// Node A, which after 6 confirmations should result in a probe failure event.
 	let bs_txn = get_local_commitment_txn!(nodes[1], chan_id);
 	confirm_transaction(&nodes[0], &bs_txn[0]);
-	check_closed_broadcast!(&nodes[0], true);
+	check_closed_broadcast(&nodes[0], 1, true);
 	check_added_monitors(&nodes[0], 1);
 
 	check_added_monitors(&nodes[0], 0);

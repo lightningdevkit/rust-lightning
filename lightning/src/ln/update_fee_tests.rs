@@ -523,7 +523,7 @@ pub fn do_test_update_fee_that_funder_cannot_afford(channel_type_features: Chann
 	let err = "Funding remote cannot afford proposed new fee";
 	nodes[1].logger.assert_log_contains("lightning::ln::channelmanager", err, 3);
 	check_added_monitors(&nodes[1], 1);
-	check_closed_broadcast!(nodes[1], true);
+	check_closed_broadcast(&nodes[1], 1, true);
 	let reason = ClosureReason::ProcessingError { err: err.to_string() };
 	check_closed_event(&nodes[1], 1, reason, &[node_a_id], channel_value);
 }
@@ -620,7 +620,7 @@ pub fn test_update_fee_that_saturates_subs() {
 	let err = "Funding remote cannot afford proposed new fee";
 	nodes[1].logger.assert_log_contains("lightning::ln::channelmanager", err, 3);
 	check_added_monitors(&nodes[1], 1);
-	check_closed_broadcast!(nodes[1], true);
+	check_closed_broadcast(&nodes[1], 1, true);
 	let reason = ClosureReason::ProcessingError { err: err.to_string() };
 	check_closed_event(&nodes[1], 1, reason, &[node_a_id], 10_000);
 }
@@ -1002,7 +1002,7 @@ pub fn accept_busted_but_better_fee() {
 				required_feerate_sat_per_kw: 5000,
 			};
 			check_closed_event(&nodes[1], 1, reason, &[node_a_id], 100000);
-			check_closed_broadcast!(nodes[1], true);
+			check_closed_broadcast(&nodes[1], 1, true);
 			check_added_monitors(&nodes[1], 1);
 		},
 		_ => panic!("Unexpected event"),

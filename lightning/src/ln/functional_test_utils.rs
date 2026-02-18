@@ -2313,17 +2313,6 @@ pub fn check_closed_broadcast(
 		.collect()
 }
 
-/// Check that a channel's closing channel update has been broadcasted, and optionally
-/// check whether an error message event has occurred.
-///
-/// Don't use this, use the identically-named function instead.
-#[macro_export]
-macro_rules! check_closed_broadcast {
-	($node: expr, $with_error_msg: expr) => {
-		$crate::ln::functional_test_utils::check_closed_broadcast(&$node, 1, $with_error_msg).pop()
-	};
-}
-
 #[derive(Default)]
 pub struct ExpectedCloseEvent {
 	pub channel_capacity_sats: Option<u64>,

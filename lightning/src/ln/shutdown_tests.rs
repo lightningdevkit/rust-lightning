@@ -361,7 +361,7 @@ fn expect_channel_shutdown_state_with_force_closure() {
 		.node
 		.force_close_broadcasting_latest_txn(&chan_1.2, &node_a_id, message.clone())
 		.unwrap();
-	check_closed_broadcast!(nodes[1], true);
+	check_closed_broadcast(&nodes[1], 1, true);
 	check_added_monitors(&nodes[1], 1);
 
 	expect_channel_shutdown_state!(nodes[0], chan_1.2, ChannelShutdownState::NotShuttingDown);
@@ -371,7 +371,7 @@ fn expect_channel_shutdown_state_with_force_closure() {
 	assert_eq!(node_txn.len(), 1);
 	check_spends!(node_txn[0], chan_1.3);
 	mine_transaction(&nodes[0], &node_txn[0]);
-	check_closed_broadcast!(nodes[0], true);
+	check_closed_broadcast(&nodes[0], 1, true);
 	check_added_monitors(&nodes[0], 1);
 
 	assert!(nodes[0].node.list_channels().is_empty());
@@ -834,7 +834,7 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 		// get_closing_signed_broadcast usually eats the BroadcastChannelUpdate for us and
 		// checks it, but in this case nodes[1] didn't ever get a chance to receive a
 		// closing_signed so we do it ourselves
-		check_closed_broadcast!(nodes[1], false);
+		check_closed_broadcast(&nodes[1], 1, false);
 		check_added_monitors(&nodes[1], 1);
 		let peer_msg = format!(
 			"Got a message for a channel from the wrong node! No such channel_id {} for the passed counterparty_node_id {}",
@@ -1418,7 +1418,7 @@ fn do_test_closing_signed_reinit_timeout(timeout_step: TimeoutStep) {
 				|| (txn[0].output[1].script_pubkey.is_p2wpkh()
 					&& txn[0].output[0].script_pubkey.is_p2wsh())
 		);
-		check_closed_broadcast!(nodes[1], true);
+		check_closed_broadcast(&nodes[1], 1, true);
 		check_added_monitors(&nodes[1], 1);
 		let reason = ClosureReason::ProcessingError {
 			err: "closing_signed negotiation failed to finish within two timer ticks".to_string(),

@@ -277,7 +277,7 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool) {
 	};
 	nodes[0].node.force_close_broadcasting_latest_txn(&channel_id, &node_b_id, message).unwrap();
 	check_added_monitors(&nodes[0], 1);
-	check_closed_broadcast!(nodes[0], true);
+	check_closed_broadcast(&nodes[0], 1, true);
 
 	// TODO: Once we hit the chain with the failure transaction we should check that we get a
 	// PaymentPathFailed event
@@ -2509,7 +2509,7 @@ fn test_fail_htlc_on_broadcast_after_claim() {
 	mine_transaction(&nodes[1], &bs_txn[0]);
 	let reason = ClosureReason::CommitmentTxConfirmed;
 	check_closed_event(&nodes[1], 1, reason, &[node_c_id], 100000);
-	check_closed_broadcast!(nodes[1], true);
+	check_closed_broadcast(&nodes[1], 1, true);
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 	check_added_monitors(&nodes[1], 1);
 	expect_and_process_pending_htlcs_and_htlc_handling_failed(
@@ -4043,7 +4043,7 @@ fn do_test_reload_mon_update_completion_actions(close_during_reload: bool) {
 		};
 		nodes[0].node.force_close_broadcasting_latest_txn(&chan_id_ab, &node_b_id, msg).unwrap();
 		check_added_monitors(&nodes[0], 1);
-		check_closed_broadcast!(nodes[0], true);
+		check_closed_broadcast(&nodes[0], 1, true);
 		check_closed_event(&nodes[0], 1, reason, &[node_b_id], 100_000);
 		let as_closing_tx = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 		mine_transaction_without_consistency_checks(&nodes[1], &as_closing_tx[0]);
@@ -4494,13 +4494,13 @@ fn test_claim_to_closed_channel_blocks_forwarded_preimage_removal() {
 	check_added_monitors(&nodes[0], 1);
 	let a_reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
 	check_closed_event(&nodes[0], 1, a_reason, &[node_b_id], 1000000);
-	check_closed_broadcast!(nodes[0], true);
+	check_closed_broadcast(&nodes[0], 1, true);
 
 	let as_commit_tx = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 	assert_eq!(as_commit_tx.len(), 1);
 
 	mine_transaction(&nodes[1], &as_commit_tx[0]);
-	check_closed_broadcast!(nodes[1], true);
+	check_closed_broadcast(&nodes[1], 1, true);
 	check_added_monitors(&nodes[1], 1);
 	let b_reason = ClosureReason::CommitmentTxConfirmed;
 	check_closed_event(&nodes[1], 1, b_reason, &[node_a_id], 1000000);
@@ -4572,13 +4572,13 @@ fn test_claim_to_closed_channel_blocks_claimed_event() {
 	check_added_monitors(&nodes[0], 1);
 	let a_reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
 	check_closed_event(&nodes[0], 1, a_reason, &[node_b_id], 1000000);
-	check_closed_broadcast!(nodes[0], true);
+	check_closed_broadcast(&nodes[0], 1, true);
 
 	let as_commit_tx = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 	assert_eq!(as_commit_tx.len(), 1);
 
 	mine_transaction(&nodes[1], &as_commit_tx[0]);
-	check_closed_broadcast!(nodes[1], true);
+	check_closed_broadcast(&nodes[1], 1, true);
 	check_added_monitors(&nodes[1], 1);
 	let b_reason = ClosureReason::CommitmentTxConfirmed;
 	check_closed_event(&nodes[1], 1, b_reason, &[node_a_id], 1000000);

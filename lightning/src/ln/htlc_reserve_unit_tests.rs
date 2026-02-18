@@ -1098,7 +1098,7 @@ pub fn test_chan_reserve_violation_inbound_htlc_outbound_channel() {
 	// Check that the payment failed and the channel is closed in response to the malicious UpdateAdd.
 	nodes[0].logger.assert_log_contains("lightning::ln::channelmanager", "Cannot accept HTLC that would put our balance under counterparty-announced channel reserve value", 3);
 	assert_eq!(nodes[0].node.list_channels().len(), 0);
-	let err_msg = check_closed_broadcast!(nodes[0], true).unwrap();
+	let err_msg = check_closed_broadcast(&nodes[0], 1, true).pop().unwrap();
 	assert_eq!(err_msg.data, "Cannot accept HTLC that would put our balance under counterparty-announced channel reserve value");
 	let reason = ClosureReason::ProcessingError { err: "Cannot accept HTLC that would put our balance under counterparty-announced channel reserve value".to_string() };
 	check_added_monitors(&nodes[0], 1);
@@ -1291,7 +1291,7 @@ pub fn test_chan_reserve_violation_inbound_htlc_inbound_chan() {
 		3,
 	);
 	assert_eq!(nodes[1].node.list_channels().len(), 1);
-	let err_msg = check_closed_broadcast!(nodes[1], true).unwrap();
+	let err_msg = check_closed_broadcast(&nodes[1], 1, true).pop().unwrap();
 	assert_eq!(err_msg.data, "Remote HTLC add would put them under remote reserve value");
 	check_added_monitors(&nodes[1], 1);
 	let reason = ClosureReason::ProcessingError { err: err_msg.data.clone() };
@@ -1409,7 +1409,7 @@ pub fn test_update_add_htlc_bolt2_receiver_zero_value_msat() {
 		"Remote side tried to send a 0-msat HTLC",
 		3,
 	);
-	check_closed_broadcast!(nodes[1], true).unwrap();
+	check_closed_broadcast(&nodes[1], 1, true);
 	check_added_monitors(&nodes[1], 1);
 	let reason = ClosureReason::ProcessingError {
 		err: "Remote side tried to send a 0-msat HTLC".to_string(),
@@ -1566,7 +1566,7 @@ pub fn test_update_add_htlc_bolt2_receiver_check_amount_received_more_than_min()
 	updates.update_add_htlcs[0].amount_msat = htlc_minimum_msat - 1;
 	nodes[1].node.handle_update_add_htlc(node_a_id, &updates.update_add_htlcs[0]);
 	assert!(nodes[1].node.list_channels().is_empty());
-	let err_msg = check_closed_broadcast!(nodes[1], true).unwrap();
+	let err_msg = check_closed_broadcast(&nodes[1], 1, true).pop().unwrap();
 	assert!(regex::Regex::new(r"Remote side tried to send less than our minimum HTLC value\. Lower limit: \(\d+\)\. Actual: \(\d+\)").unwrap().is_match(err_msg.data.as_str()));
 	check_added_monitors(&nodes[1], 1);
 	let reason = ClosureReason::ProcessingError { err: err_msg.data };
@@ -1611,7 +1611,7 @@ pub fn test_update_add_htlc_bolt2_receiver_sender_can_afford_amount_sent() {
 	nodes[1].node.handle_update_add_htlc(node_a_id, &updates.update_add_htlcs[0]);
 
 	assert!(nodes[1].node.list_channels().is_empty());
-	let err_msg = check_closed_broadcast!(nodes[1], true).unwrap();
+	let err_msg = check_closed_broadcast(&nodes[1], 1, true).pop().unwrap();
 	assert_eq!(err_msg.data, "Remote HTLC add would put them under remote reserve value");
 	check_added_monitors(&nodes[1], 1);
 	let reason = ClosureReason::ProcessingError { err: err_msg.data };
@@ -1678,7 +1678,7 @@ pub fn test_update_add_htlc_bolt2_receiver_check_max_htlc_limit() {
 	nodes[1].node.handle_update_add_htlc(node_a_id, &msg);
 
 	assert!(nodes[1].node.list_channels().is_empty());
-	let err_msg = check_closed_broadcast!(nodes[1], true).unwrap();
+	let err_msg = check_closed_broadcast(&nodes[1], 1, true).pop().unwrap();
 	assert!(regex::Regex::new(r"Remote tried to push more than our max accepted HTLCs \(\d+\)")
 		.unwrap()
 		.is_match(err_msg.data.as_str()));
@@ -1713,7 +1713,7 @@ pub fn test_update_add_htlc_bolt2_receiver_check_max_in_flight_msat() {
 	nodes[1].node.handle_update_add_htlc(node_a_id, &updates.update_add_htlcs[0]);
 
 	assert!(nodes[1].node.list_channels().is_empty());
-	let err_msg = check_closed_broadcast!(nodes[1], true).unwrap();
+	let err_msg = check_closed_broadcast(&nodes[1], 1, true).pop().unwrap();
 	assert!(regex::Regex::new("Remote HTLC add would put them over our max HTLC value")
 		.unwrap()
 		.is_match(err_msg.data.as_str()));
@@ -1745,7 +1745,7 @@ pub fn test_update_add_htlc_bolt2_receiver_check_cltv_expiry() {
 	nodes[1].node.handle_update_add_htlc(node_a_id, &updates.update_add_htlcs[0]);
 
 	assert!(nodes[1].node.list_channels().is_empty());
-	let err_msg = check_closed_broadcast!(nodes[1], true).unwrap();
+	let err_msg = check_closed_broadcast(&nodes[1], 1, true).pop().unwrap();
 	assert_eq!(err_msg.data, "Remote provided CLTV expiry in seconds instead of block height");
 	check_added_monitors(&nodes[1], 1);
 	let reason = ClosureReason::ProcessingError { err: err_msg.data };
@@ -1809,7 +1809,7 @@ pub fn test_update_add_htlc_bolt2_receiver_check_repeated_id_ignore() {
 	nodes[1].node.handle_update_add_htlc(node_a_id, &updates.update_add_htlcs[0]);
 
 	assert!(nodes[1].node.list_channels().is_empty());
-	let err_msg = check_closed_broadcast!(nodes[1], true).unwrap();
+	let err_msg = check_closed_broadcast(&nodes[1], 1, true).pop().unwrap();
 	assert!(regex::Regex::new(r"Remote skipped HTLC ID \(skipped ID: \d+\)")
 		.unwrap()
 		.is_match(err_msg.data.as_str()));
@@ -1851,7 +1851,7 @@ pub fn test_update_fulfill_htlc_bolt2_update_fulfill_htlc_before_commitment() {
 	nodes[0].node.handle_update_fulfill_htlc(node_b_id, update_msg);
 
 	assert!(nodes[0].node.list_channels().is_empty());
-	let err_msg = check_closed_broadcast!(nodes[0], true).unwrap();
+	let err_msg = check_closed_broadcast(&nodes[0], 1, true).pop().unwrap();
 	assert!(regex::Regex::new(
 		r"Remote tried to fulfill/fail HTLC \(\d+\) before it had been committed"
 	)
@@ -1895,7 +1895,7 @@ pub fn test_update_fulfill_htlc_bolt2_update_fail_htlc_before_commitment() {
 	nodes[0].node.handle_update_fail_htlc(node_b_id, &update_msg);
 
 	assert!(nodes[0].node.list_channels().is_empty());
-	let err_msg = check_closed_broadcast!(nodes[0], true).unwrap();
+	let err_msg = check_closed_broadcast(&nodes[0], 1, true).pop().unwrap();
 	assert!(regex::Regex::new(
 		r"Remote tried to fulfill/fail HTLC \(\d+\) before it had been committed"
 	)
@@ -1938,7 +1938,7 @@ pub fn test_update_fulfill_htlc_bolt2_update_fail_malformed_htlc_before_commitme
 	nodes[0].node.handle_update_fail_malformed_htlc(node_b_id, &update_msg);
 
 	assert!(nodes[0].node.list_channels().is_empty());
-	let err_msg = check_closed_broadcast!(nodes[0], true).unwrap();
+	let err_msg = check_closed_broadcast(&nodes[0], 1, true).pop().unwrap();
 	assert!(regex::Regex::new(
 		r"Remote tried to fulfill/fail HTLC \(\d+\) before it had been committed"
 	)
@@ -2001,7 +2001,7 @@ pub fn test_update_fulfill_htlc_bolt2_incorrect_htlc_id() {
 	nodes[0].node.handle_update_fulfill_htlc(node_b_id, update_fulfill_msg);
 
 	assert!(nodes[0].node.list_channels().is_empty());
-	let err_msg = check_closed_broadcast!(nodes[0], true).unwrap();
+	let err_msg = check_closed_broadcast(&nodes[0], 1, true).pop().unwrap();
 	assert_eq!(err_msg.data, "Remote tried to fulfill/fail an HTLC we couldn't find");
 	check_added_monitors(&nodes[0], 1);
 	let reason = ClosureReason::ProcessingError { err: err_msg.data };
@@ -2060,7 +2060,7 @@ pub fn test_update_fulfill_htlc_bolt2_wrong_preimage() {
 	nodes[0].node.handle_update_fulfill_htlc(node_b_id, update_fulfill_msg);
 
 	assert!(nodes[0].node.list_channels().is_empty());
-	let err_msg = check_closed_broadcast!(nodes[0], true).unwrap();
+	let err_msg = check_closed_broadcast(&nodes[0], 1, true).pop().unwrap();
 	assert!(regex::Regex::new(r"Remote tried to fulfill HTLC \(\d+\) with an incorrect preimage")
 		.unwrap()
 		.is_match(err_msg.data.as_str()));
@@ -2133,7 +2133,7 @@ pub fn test_update_fulfill_htlc_bolt2_missing_badonion_bit_for_malformed_htlc_me
 	nodes[0].node.handle_update_fail_malformed_htlc(node_b_id, &update_msg);
 
 	assert!(nodes[0].node.list_channels().is_empty());
-	let err_msg = check_closed_broadcast!(nodes[0], true).unwrap();
+	let err_msg = check_closed_broadcast(&nodes[0], 1, true).pop().unwrap();
 	assert_eq!(err_msg.data, "Got update_fail_malformed_htlc with BADONION not set");
 	check_added_monitors(&nodes[0], 1);
 	let reason = ClosureReason::ProcessingError { err: err_msg.data };

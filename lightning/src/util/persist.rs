@@ -1533,7 +1533,6 @@ impl From<u64> for UpdateName {
 mod tests {
 	use super::*;
 	use crate::chain::ChannelMonitorUpdateStatus;
-	use crate::check_closed_broadcast;
 	use crate::events::ClosureReason;
 	use crate::ln::functional_test_utils::*;
 	use crate::ln::msgs::BaseMessageHandler;
@@ -1756,7 +1755,7 @@ mod tests {
 		let reason =
 			ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
 		check_closed_event(&nodes[0], 1, reason, &[node_id_1], 100000);
-		check_closed_broadcast!(nodes[0], true);
+		check_closed_broadcast(&nodes[0], 1, true);
 		check_added_monitors(&nodes[0], 1);
 
 		let node_txn = nodes[0].tx_broadcaster.txn_broadcast();
@@ -1765,7 +1764,7 @@ mod tests {
 		let dummy_block = create_dummy_block(nodes[0].best_block_hash(), 42, txn);
 		connect_block(&nodes[1], &dummy_block);
 
-		check_closed_broadcast!(nodes[1], true);
+		check_closed_broadcast(&nodes[1], 1, true);
 		let reason = ClosureReason::CommitmentTxConfirmed;
 		let node_id_0 = nodes[0].node.get_our_node_id();
 		check_closed_event(&nodes[1], 1, reason, &[node_id_0], 100000);
