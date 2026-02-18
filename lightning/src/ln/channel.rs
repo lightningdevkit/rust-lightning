@@ -3787,7 +3787,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		let funders_amount_msat = funding.get_value_satoshis() * 1000 - funding.get_value_to_self_msat();
 		let htlc_candidate = None;
 		let include_counterparty_unknown_htlcs = false;
-		let addl_nondust_htlc_count = if funding.get_channel_type().supports_anchor_zero_fee_commitments() { 0 } else { MIN_AFFORDABLE_HTLC_COUNT };
+		let addl_nondust_htlc_count = MIN_AFFORDABLE_HTLC_COUNT;
 		let dust_exposure_limiting_feerate = channel_context.get_dust_exposure_limiting_feerate(&fee_estimator, funding.get_channel_type());
 		let remote_stats = channel_context.get_next_remote_commitment_stats(
 			&funding,
@@ -4034,7 +4034,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 
 		let htlc_candidate = None;
 		let include_counterparty_unknown_htlcs = false;
-		let addl_nondust_htlc_count = if funding.get_channel_type().supports_anchor_zero_fee_commitments() { 0 } else { MIN_AFFORDABLE_HTLC_COUNT };
+		let addl_nondust_htlc_count = MIN_AFFORDABLE_HTLC_COUNT;
 		let dust_exposure_limiting_feerate = channel_context.get_dust_exposure_limiting_feerate(&fee_estimator, funding.get_channel_type());
 		let local_stats = channel_context.get_next_local_commitment_stats(
 			&funding,
