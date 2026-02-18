@@ -9481,11 +9481,7 @@ impl<
 					None,
 				));
 			},
-			HTLCSource::TrampolineForward {
-				previous_hop_data,
-				outbound_payment,
-				..
-			} => {
+			HTLCSource::TrampolineForward { previous_hop_data, outbound_payment, .. } => {
 				let trampoline_error = match outbound_payment {
 					Some(_) => self
 						.pending_outbound_payments
@@ -10339,7 +10335,29 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					send_timestamp,
 				);
 			},
-			HTLCSource::TrampolineForward { previous_hop_data, .. } => {
+			HTLCSource::TrampolineForward { previous_hop_data, outbound_payment, .. } => {
+				let total_fee_earned_msat = match &outbound_payment {
+					Some(trampoline_dispatch) => {
+						let fee = self.pending_outbound_payments.claim_trampoline_forward(
+							&trampoline_dispatch.payment_id,
+							&trampoline_dispatch.session_priv,
+							from_onchain,
+						);
+						debug_assert!(
+							fee.is_some(),
+							"Trampoline payment with unknown payment_id: {} settled",
+							trampoline_dispatch.payment_id
+						);
+						fee
+					},
+					None => {
+						debug_assert!(
+							false,
+							"Trampoline payment settled with no outbound payment dispatched"
+						);
+						None
+					},
+				};
 				// Only emit a single event for trampoline claims.
 				let prev_htlcs: Vec<events::HTLCLocator> =
 					previous_hop_data.iter().map(Into::into).collect();
@@ -10358,10 +10376,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 										user_channel_id: next_user_channel_id,
 										node_id: Some(next_channel_counterparty_node_id),
 									}],
-									// TODO: When trampoline payments are tracked in our
-									// pending_outbound_payments, we'll be able to lookup our total
-									// fee earnings.
-									total_fee_earned_msat: None,
+									total_fee_earned_msat,
 									skimmed_fee_msat,
 									claim_from_onchain_tx: from_onchain,
 									outbound_amount_forwarded_msat: forwarded_htlc_value_msat,
