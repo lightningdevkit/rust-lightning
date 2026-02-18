@@ -14,7 +14,7 @@
 use alloc::sync::Arc;
 
 use bitcoin::hashes::hex::FromHex;
-use bitcoin::{BlockHash, Txid};
+use bitcoin::Txid;
 
 use core::convert::Infallible;
 use core::future::Future;
@@ -32,14 +32,15 @@ use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use crate::chain::chainmonitor::Persist;
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate};
 use crate::chain::transaction::OutPoint;
+use crate::chain::BestBlock;
 use crate::ln::types::ChannelId;
 use crate::sign::{ecdsa::EcdsaChannelSigner, EntropySource, SignerProvider};
 use crate::sync::Mutex;
 use crate::util::async_poll::{
-	dummy_waker, MaybeSend, MaybeSync, MultiResultFuturePoller, ResultFuture, TwoFutureJoiner,
+	dummy_waker, MultiResultFuturePoller, ResultFuture, TwoFutureJoiner,
 };
 use crate::util::logger::Logger;
-use crate::util::native_async::FutureSpawner;
+use crate::util::native_async::{FutureSpawner, MaybeSend, MaybeSync};
 use crate::util::ser::{Readable, ReadableArgs, Writeable};
 use crate::util::wakers::Notifier;
 
@@ -467,7 +468,7 @@ impl<ChannelSigner: EcdsaChannelSigner, K: KVStoreSync + ?Sized> Persist<Channel
 /// Read previously persisted [`ChannelMonitor`]s from the store.
 pub fn read_channel_monitors<K: Deref, ES: EntropySource, SP: SignerProvider>(
 	kv_store: K, entropy_source: ES, signer_provider: SP,
-) -> Result<Vec<(BlockHash, ChannelMonitor<SP::EcdsaSigner>)>, io::Error>
+) -> Result<Vec<(BestBlock, ChannelMonitor<SP::EcdsaSigner>)>, io::Error>
 where
 	K::Target: KVStoreSync,
 {
@@ -477,7 +478,7 @@ where
 		CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
 		CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
 	)? {
-		match <Option<(BlockHash, ChannelMonitor<SP::EcdsaSigner>)>>::read(
+		match <Option<(BestBlock, ChannelMonitor<SP::EcdsaSigner>)>>::read(
 			&mut io::Cursor::new(kv_store.read(
 				CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
 				CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
@@ -485,7 +486,7 @@ where
 			)?),
 			(&entropy_source, &signer_provider),
 		) {
-			Ok(Some((block_hash, channel_monitor))) => {
+			Ok(Some((best_block, channel_monitor))) => {
 				let monitor_name = MonitorName::from_str(&stored_key)?;
 				if channel_monitor.persistence_key() != monitor_name {
 					return Err(io::Error::new(
@@ -494,7 +495,7 @@ where
 					));
 				}
 
-				res.push((block_hash, channel_monitor));
+				res.push((best_block, channel_monitor));
 			},
 			Ok(None) => {},
 			Err(_) => {
@@ -670,7 +671,7 @@ where
 	/// Reads all stored channel monitors, along with any stored updates for them.
 	pub fn read_all_channel_monitors_with_updates(
 		&self,
-	) -> Result<Vec<(BlockHash, ChannelMonitor<SP::EcdsaSigner>)>, io::Error> {
+	) -> Result<Vec<(BestBlock, ChannelMonitor<SP::EcdsaSigner>)>, io::Error> {
 		poll_sync_future(self.0.read_all_channel_monitors_with_updates())
 	}
 
@@ -691,7 +692,7 @@ where
 	/// function to accomplish this. Take care to limit the number of parallel readers.
 	pub fn read_channel_monitor_with_updates(
 		&self, monitor_key: &str,
-	) -> Result<(BlockHash, ChannelMonitor<SP::EcdsaSigner>), io::Error> {
+	) -> Result<(BestBlock, ChannelMonitor<SP::EcdsaSigner>), io::Error> {
 		poll_sync_future(self.0.read_channel_monitor_with_updates(monitor_key))
 	}
 
@@ -858,7 +859,7 @@ impl<
 	/// deserialization as well.
 	pub async fn read_all_channel_monitors_with_updates(
 		&self,
-	) -> Result<Vec<(BlockHash, ChannelMonitor<SP::EcdsaSigner>)>, io::Error> {
+	) -> Result<Vec<(BestBlock, ChannelMonitor<SP::EcdsaSigner>)>, io::Error> {
 		let primary = CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE;
 		let secondary = CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE;
 		let monitor_list = self.0.kv_store.list(primary, secondary).await?;
@@ -889,7 +890,7 @@ impl<
 	/// `Arc` that can live for `'static` and be sent and accessed across threads.
 	pub async fn read_all_channel_monitors_with_updates_parallel(
 		self: &Arc<Self>,
-	) -> Result<Vec<(BlockHash, ChannelMonitor<SP::EcdsaSigner>)>, io::Error>
+	) -> Result<Vec<(BestBlock, ChannelMonitor<SP::EcdsaSigner>)>, io::Error>
 	where
 		K: MaybeSend + MaybeSync + 'static,
 		L: MaybeSend + MaybeSync + 'static,
@@ -939,7 +940,7 @@ impl<
 	/// function to accomplish this. Take care to limit the number of parallel readers.
 	pub async fn read_channel_monitor_with_updates(
 		&self, monitor_key: &str,
-	) -> Result<(BlockHash, ChannelMonitor<SP::EcdsaSigner>), io::Error> {
+	) -> Result<(BestBlock, ChannelMonitor<SP::EcdsaSigner>), io::Error> {
 		self.0.read_channel_monitor_with_updates(monitor_key).await
 	}
 
@@ -1050,7 +1051,7 @@ impl<
 {
 	pub async fn read_channel_monitor_with_updates(
 		&self, monitor_key: &str,
-	) -> Result<(BlockHash, ChannelMonitor<SP::EcdsaSigner>), io::Error> {
+	) -> Result<(BestBlock, ChannelMonitor<SP::EcdsaSigner>), io::Error> {
 		match self.maybe_read_channel_monitor_with_updates(monitor_key).await? {
 			Some(res) => Ok(res),
 			None => Err(io::Error::new(
@@ -1067,14 +1068,14 @@ impl<
 
 	async fn maybe_read_channel_monitor_with_updates(
 		&self, monitor_key: &str,
-	) -> Result<Option<(BlockHash, ChannelMonitor<SP::EcdsaSigner>)>, io::Error> {
+	) -> Result<Option<(BestBlock, ChannelMonitor<SP::EcdsaSigner>)>, io::Error> {
 		let monitor_name = MonitorName::from_str(monitor_key)?;
 		let read_future = pin!(self.maybe_read_monitor(&monitor_name, monitor_key));
 		let list_future = pin!(self
 			.kv_store
 			.list(CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE, monitor_key));
 		let (read_res, list_res) = TwoFutureJoiner::new(read_future, list_future).await;
-		let (block_hash, monitor) = match read_res? {
+		let (best_block, monitor) = match read_res? {
 			Some(res) => res,
 			None => return Ok(None),
 		};
@@ -1105,13 +1106,13 @@ impl<
 				io::Error::new(io::ErrorKind::Other, "Monitor update failed")
 			})?;
 		}
-		Ok(Some((block_hash, monitor)))
+		Ok(Some((best_block, monitor)))
 	}
 
 	/// Read a channel monitor.
 	async fn maybe_read_monitor(
 		&self, monitor_name: &MonitorName, monitor_key: &str,
-	) -> Result<Option<(BlockHash, ChannelMonitor<SP::EcdsaSigner>)>, io::Error> {
+	) -> Result<Option<(BestBlock, ChannelMonitor<SP::EcdsaSigner>)>, io::Error> {
 		let primary = CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE;
 		let secondary = CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE;
 		let monitor_bytes = self.kv_store.read(primary, secondary, monitor_key).await?;
@@ -1120,12 +1121,12 @@ impl<
 		if monitor_cursor.get_ref().starts_with(MONITOR_UPDATING_PERSISTER_PREPEND_SENTINEL) {
 			monitor_cursor.set_position(MONITOR_UPDATING_PERSISTER_PREPEND_SENTINEL.len() as u64);
 		}
-		match <Option<(BlockHash, ChannelMonitor<SP::EcdsaSigner>)>>::read(
+		match <Option<(BestBlock, ChannelMonitor<SP::EcdsaSigner>)>>::read(
 			&mut monitor_cursor,
 			(&self.entropy_source, &self.signer_provider),
 		) {
 			Ok(None) => Ok(None),
-			Ok(Some((blockhash, channel_monitor))) => {
+			Ok(Some((best_block, channel_monitor))) => {
 				if channel_monitor.persistence_key() != *monitor_name {
 					log_error!(
 						self.logger,
@@ -1137,7 +1138,7 @@ impl<
 						"ChannelMonitor was stored under the wrong key",
 					))
 				} else {
-					Ok(Some((blockhash, channel_monitor)))
+					Ok(Some((best_block, channel_monitor)))
 				}
 			},
 			Err(e) => {
@@ -1316,7 +1317,7 @@ impl<
 	async fn archive_persisted_channel(&self, monitor_name: MonitorName) {
 		let monitor_key = monitor_name.to_string();
 		let monitor = match self.read_channel_monitor_with_updates(&monitor_key).await {
-			Ok((_block_hash, monitor)) => monitor,
+			Ok((_best_block, monitor)) => monitor,
 			Err(_) => return,
 		};
 		let primary = ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE;

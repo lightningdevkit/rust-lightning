@@ -20,6 +20,7 @@ use crate::chain::channelmonitor::{
 	ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, MonitorEvent,
 };
 use crate::chain::transaction::OutPoint;
+use crate::chain::BestBlock;
 use crate::chain::WatchedOutput;
 use crate::events::bump_transaction::sync::WalletSourceSync;
 use crate::events::bump_transaction::{ConfirmedUtxo, Utxo};
@@ -50,7 +51,6 @@ use crate::sign::{self, ReceiveAuthKey};
 use crate::sign::{ChannelSigner, PeerStorageKey};
 use crate::sync::RwLock;
 use crate::types::features::{ChannelFeatures, InitFeatures, NodeFeatures};
-use crate::util::async_poll::MaybeSend;
 use crate::util::config::UserConfig;
 use crate::util::dyn_signer::{
 	DynKeysInterface, DynKeysInterfaceTrait, DynPhantomKeysInterface, DynSigner,
@@ -58,6 +58,7 @@ use crate::util::dyn_signer::{
 use crate::util::logger::{Logger, Record};
 #[cfg(feature = "std")]
 use crate::util::mut_global::MutGlobal;
+use crate::util::native_async::MaybeSend;
 use crate::util::persist::{KVStore, KVStoreSync, MonitorName};
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
 use crate::util::test_channel_signer::{EnforcementState, TestChannelSigner};
@@ -67,7 +68,7 @@ use bitcoin::amount::Amount;
 use bitcoin::block::Block;
 use bitcoin::constants::genesis_block;
 use bitcoin::constants::ChainHash;
-use bitcoin::hash_types::{BlockHash, Txid};
+use bitcoin::hash_types::Txid;
 use bitcoin::hashes::{hex::FromHex, Hash};
 use bitcoin::network::Network;
 use bitcoin::script::{Builder, Script, ScriptBuf};
@@ -564,7 +565,7 @@ impl<'a> TestChainMonitor<'a> {
 		// underlying `ChainMonitor`.
 		let mut w = TestVecWriter(Vec::new());
 		monitor.write(&mut w).unwrap();
-		let new_monitor = <(BlockHash, ChannelMonitor<TestChannelSigner>)>::read(
+		let new_monitor = <(BestBlock, ChannelMonitor<TestChannelSigner>)>::read(
 			&mut io::Cursor::new(&w.0),
 			(self.keys_manager, self.keys_manager),
 		)
@@ -601,7 +602,7 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 		// monitor to a serialized copy and get he same one back.
 		let mut w = TestVecWriter(Vec::new());
 		monitor.write(&mut w).unwrap();
-		let new_monitor = <(BlockHash, ChannelMonitor<TestChannelSigner>)>::read(
+		let new_monitor = <(BestBlock, ChannelMonitor<TestChannelSigner>)>::read(
 			&mut io::Cursor::new(&w.0),
 			(self.keys_manager, self.keys_manager),
 		)
@@ -657,7 +658,7 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 		let monitor = self.chain_monitor.get_monitor(channel_id).unwrap();
 		w.0.clear();
 		monitor.write(&mut w).unwrap();
-		let new_monitor = <(BlockHash, ChannelMonitor<TestChannelSigner>)>::read(
+		let new_monitor = <(BestBlock, ChannelMonitor<TestChannelSigner>)>::read(
 			&mut io::Cursor::new(&w.0),
 			(self.keys_manager, self.keys_manager),
 		)

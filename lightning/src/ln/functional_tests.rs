@@ -19,6 +19,7 @@ use crate::chain::channelmonitor::{
 	LATENCY_GRACE_PERIOD_BLOCKS,
 };
 use crate::chain::transaction::OutPoint;
+use crate::chain::BestBlock;
 use crate::chain::{ChannelMonitorUpdateStatus, Confirm, Listen, Watch};
 use crate::events::{
 	ClosureReason, Event, HTLCHandlingFailureType, PathFailure, PaymentFailureReason,
@@ -7382,7 +7383,7 @@ pub fn test_update_err_monitor_lockdown() {
 		let new_monitor = {
 			let monitor = nodes[0].chain_monitor.chain_monitor.get_monitor(chan_1.2).unwrap();
 			let new_monitor =
-				<(BlockHash, channelmonitor::ChannelMonitor<TestChannelSigner>)>::read(
+				<(BestBlock, channelmonitor::ChannelMonitor<TestChannelSigner>)>::read(
 					&mut io::Cursor::new(&monitor.encode()),
 					(nodes[0].keys_manager, nodes[0].keys_manager),
 				)
@@ -7490,7 +7491,7 @@ pub fn test_concurrent_monitor_claim() {
 		let new_monitor = {
 			let monitor = nodes[0].chain_monitor.chain_monitor.get_monitor(chan_1.2).unwrap();
 			let new_monitor =
-				<(BlockHash, channelmonitor::ChannelMonitor<TestChannelSigner>)>::read(
+				<(BestBlock, channelmonitor::ChannelMonitor<TestChannelSigner>)>::read(
 					&mut io::Cursor::new(&monitor.encode()),
 					(nodes[0].keys_manager, nodes[0].keys_manager),
 				)
@@ -7540,7 +7541,7 @@ pub fn test_concurrent_monitor_claim() {
 		let new_monitor = {
 			let monitor = nodes[0].chain_monitor.chain_monitor.get_monitor(chan_1.2).unwrap();
 			let new_monitor =
-				<(BlockHash, channelmonitor::ChannelMonitor<TestChannelSigner>)>::read(
+				<(BestBlock, channelmonitor::ChannelMonitor<TestChannelSigner>)>::read(
 					&mut io::Cursor::new(&monitor.encode()),
 					(nodes[0].keys_manager, nodes[0].keys_manager),
 				)

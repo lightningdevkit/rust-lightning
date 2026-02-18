@@ -852,7 +852,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 					let mon = self.chain_monitor.chain_monitor.get_monitor(channel_id).unwrap();
 					mon.write(&mut w).unwrap();
 					let (_, deserialized_monitor) =
-						<(BlockHash, ChannelMonitor<TestChannelSigner>)>::read(
+						<(BestBlock, ChannelMonitor<TestChannelSigner>)>::read(
 							&mut io::Cursor::new(&w.0),
 							(self.keys_manager, self.keys_manager),
 						)
@@ -881,7 +881,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 				let mut w = test_utils::TestVecWriter(Vec::new());
 				self.node.write(&mut w).unwrap();
 				<(
-					BlockHash,
+					BestBlock,
 					ChannelManager<
 						&test_utils::TestChainMonitor,
 						&test_utils::TestBroadcaster,
@@ -1319,7 +1319,7 @@ pub fn _reload_node<'a, 'b, 'c>(
 	let mut monitors_read = Vec::with_capacity(monitors_encoded.len());
 	for encoded in monitors_encoded {
 		let mut monitor_read = &encoded[..];
-		let (_, monitor) = <(BlockHash, ChannelMonitor<TestChannelSigner>)>::read(
+		let (_, monitor) = <(BestBlock, ChannelMonitor<TestChannelSigner>)>::read(
 			&mut monitor_read,
 			(node.keys_manager, node.keys_manager),
 		)
@@ -1334,7 +1334,7 @@ pub fn _reload_node<'a, 'b, 'c>(
 		for monitor in monitors_read.iter() {
 			assert!(channel_monitors.insert(monitor.channel_id(), monitor).is_none());
 		}
-		<(BlockHash, TestChannelManager<'b, 'c>)>::read(
+		<(BestBlock, TestChannelManager<'b, 'c>)>::read(
 			&mut node_read,
 			ChannelManagerReadArgs {
 				config,
