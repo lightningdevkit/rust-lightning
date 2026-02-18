@@ -14,13 +14,11 @@ use crate::blinded_path::payment::DummyTlvs;
 use crate::chain::channelmonitor::ChannelMonitor;
 use crate::chain::transaction::OutPoint;
 use crate::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Listen, Watch};
-use crate::events::bump_transaction::sync::{
-	BumpTransactionEventHandlerSync, WalletSourceSync, WalletSync,
-};
+use crate::events::bump_transaction::sync::BumpTransactionEventHandlerSync;
 use crate::events::bump_transaction::BumpTransactionEvent;
 use crate::events::{
-	ClaimedHTLC, ClosureReason, Event, HTLCHandlingFailureType, PaidBolt12Invoice, PathFailure,
-	PaymentFailureReason, PaymentPurpose,
+	ClaimedHTLC, ClosureReason, Event, FundingInfo, HTLCHandlingFailureType, PaidBolt12Invoice,
+	PathFailure, PaymentFailureReason, PaymentPurpose,
 };
 use crate::ln::chan_utils::{
 	commitment_tx_base_weight, COMMITMENT_TX_WEIGHT_PER_HTLC, TRUC_MAX_WEIGHT,
@@ -29,7 +27,7 @@ use crate::ln::channelmanager::{
 	AChannelManager, ChainParameters, ChannelManager, ChannelManagerReadArgs, PaymentId,
 	RAACommitmentOrder, MIN_CLTV_EXPIRY_DELTA,
 };
-use crate::ln::funding::FundingTxInput;
+use crate::ln::funding::{FundingContribution, FundingTxInput};
 use crate::ln::msgs::{self, OpenChannel};
 use crate::ln::msgs::{
 	BaseMessageHandler, ChannelMessageHandler, MessageSendEvent, RoutingMessageHandler,
@@ -54,6 +52,7 @@ use crate::util::test_channel_signer::SignerOp;
 use crate::util::test_channel_signer::TestChannelSigner;
 use crate::util::test_utils::{self, TestLogger};
 use crate::util::test_utils::{TestChainMonitor, TestKeysInterface, TestScorer};
+use crate::util::wallet_utils::{WalletSourceSync, WalletSync};
 
 use bitcoin::amount::Amount;
 use bitcoin::block::{Block, Header, Version as BlockVersion};
@@ -3259,6 +3258,57 @@ pub fn expect_splice_pending_event<'a, 'b, 'c, 'd>(
 		crate::events::Event::SplicePending { channel_id, counterparty_node_id, .. } => {
 			assert_eq!(*expected_counterparty_node_id, *counterparty_node_id);
 			*channel_id
+		},
+		_ => panic!("Unexpected event"),
+	}
+}
+
+#[cfg(any(test, ldk_bench, feature = "_test_utils"))]
+pub fn expect_splice_failed_events<'a, 'b, 'c, 'd>(
+	node: &'a Node<'b, 'c, 'd>, expected_channel_id: &ChannelId,
+	funding_contribution: FundingContribution,
+) {
+	let events = node.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 2);
+	match &events[0] {
+		Event::SpliceFailed { channel_id, .. } => {
+			assert_eq!(*expected_channel_id, *channel_id);
+		},
+		_ => panic!("Unexpected event"),
+	}
+	match &events[1] {
+		Event::DiscardFunding { funding_info, .. } => {
+			if let FundingInfo::Contribution { inputs, outputs } = &funding_info {
+				let (expected_inputs, expected_outputs) =
+					funding_contribution.into_contributed_inputs_and_outputs();
+				assert_eq!(*inputs, expected_inputs);
+				assert_eq!(*outputs, expected_outputs);
+			} else {
+				panic!("Expected FundingInfo::Contribution");
+			}
+		},
+		_ => panic!("Unexpected event"),
+	}
+}
+
+#[cfg(any(test, ldk_bench, feature = "_test_utils"))]
+pub fn expect_discard_funding_event<'a, 'b, 'c, 'd>(
+	node: &'a Node<'b, 'c, 'd>, expected_channel_id: &ChannelId,
+	funding_contribution: FundingContribution,
+) {
+	let events = node.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match &events[0] {
+		Event::DiscardFunding { channel_id, funding_info } => {
+			assert_eq!(*expected_channel_id, *channel_id);
+			if let FundingInfo::Contribution { inputs, outputs } = &funding_info {
+				let (expected_inputs, expected_outputs) =
+					funding_contribution.into_contributed_inputs_and_outputs();
+				assert_eq!(*inputs, expected_inputs);
+				assert_eq!(*outputs, expected_outputs);
+			} else {
+				panic!("Expected FundingInfo::Contribution");
+			}
 		},
 		_ => panic!("Unexpected event"),
 	}
