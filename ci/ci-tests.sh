@@ -78,10 +78,6 @@ cargo test -p lightning-persister --quiet --color always --features tokio
 cargo check -p lightning-persister --quiet --color always --features tokio
 cargo doc -p lightning-persister --quiet --document-private-items --features tokio
 
-echo -e "\n\nTest Custom Message Macros"
-cargo test -p lightning-custom-message --quiet --color always
-[ "$CI_MINIMIZE_DISK_USAGE" != "" ] && cargo clean
-
 echo -e "\n\nTest backtrace-debug builds"
 cargo test -p lightning --quiet --color always --features backtrace
 

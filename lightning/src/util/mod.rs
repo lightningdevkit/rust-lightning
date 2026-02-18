@@ -25,6 +25,7 @@ pub mod async_poll;
 pub mod base32;
 #[cfg(not(fuzzing))]
 pub(crate) mod base32;
+pub mod custom_message;
 pub mod errors;
 pub mod message_signing;
 pub mod native_async;
