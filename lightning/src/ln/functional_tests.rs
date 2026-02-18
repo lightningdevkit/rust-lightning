@@ -6057,7 +6057,7 @@ pub fn test_check_htlc_underpaying() {
 	)
 	.unwrap();
 
-	let (_, our_payment_hash, _) = get_payment_preimage_hash!(nodes[0]);
+	let (_, our_payment_hash, _) = get_payment_preimage_hash(&nodes[0], None, None);
 	let our_payment_secret = nodes[1]
 		.node
 		.create_inbound_payment_for_hash(our_payment_hash, Some(100_000), 7200, None)
@@ -8318,7 +8318,7 @@ fn do_test_dup_htlc_second_rejected(test_for_second_fail_panic: bool) {
 	let route = get_route!(nodes[0], payment_params, 10_000).unwrap();
 
 	let (our_payment_preimage, our_payment_hash, our_payment_secret) =
-		get_payment_preimage_hash!(&nodes[1]);
+		get_payment_preimage_hash(&nodes[1], None, None);
 
 	{
 		let onion = RecipientOnionFields::secret_only(our_payment_secret);
@@ -8467,7 +8467,7 @@ pub fn test_inconsistent_mpp_params() {
 		}
 	});
 
-	let (preimage, hash, payment_secret) = get_payment_preimage_hash!(&nodes[3]);
+	let (preimage, hash, payment_secret) = get_payment_preimage_hash(&nodes[3], None, None);
 
 	let cur_height = nodes[0].best_block_info().1;
 	let id = PaymentId([42; 32]);
@@ -9476,7 +9476,7 @@ fn do_payment_with_custom_min_final_cltv_expiry(valid_delta: bool, use_user_hash
 		PaymentParameters::from_node_id(node_b_id, final_cltv_expiry_delta as u32);
 	let (hash, payment_preimage, payment_secret) = if use_user_hash {
 		let (payment_preimage, hash, payment_secret) =
-			get_payment_preimage_hash!(nodes[1], Some(recv_value), Some(min_cltv_expiry_delta));
+			get_payment_preimage_hash(&nodes[1], Some(recv_value), Some(min_cltv_expiry_delta));
 		(hash, payment_preimage, payment_secret)
 	} else {
 		let (hash, payment_secret) = nodes[1]

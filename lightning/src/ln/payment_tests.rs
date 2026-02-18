@@ -2168,7 +2168,7 @@ fn test_holding_cell_inflight_htlcs() {
 
 	let (route, payment_hash_1, _, payment_secret_1) =
 		get_route_and_payment_hash!(nodes[0], nodes[1], 1000000);
-	let (_, payment_hash_2, payment_secret_2) = get_payment_preimage_hash!(nodes[1]);
+	let (_, payment_hash_2, payment_secret_2) = get_payment_preimage_hash(&nodes[1], None, None);
 
 	// Queue up two payments - one will be delivered right away, one immediately goes into the
 	// holding cell as nodes[0] is AwaitingRAA.
@@ -4290,7 +4290,7 @@ fn do_claim_from_closed_chan(fail_payment: bool) {
 	let chan_bd = create_announced_chan_between_nodes_with_value(&nodes, 1, 3, 1_000_000, 0).2;
 	create_announced_chan_between_nodes(&nodes, 2, 3);
 
-	let (payment_preimage, hash, payment_secret) = get_payment_preimage_hash!(nodes[3]);
+	let (payment_preimage, hash, payment_secret) = get_payment_preimage_hash(&nodes[3], None, None);
 	let payment_params = PaymentParameters::from_node_id(node_d_id, TEST_FINAL_CLTV)
 		.with_bolt11_features(nodes[1].node.bolt11_invoice_features())
 		.unwrap();
@@ -4688,7 +4688,7 @@ fn do_test_custom_tlvs_consistency(
 		}
 	});
 
-	let (preimage, hash, payment_secret) = get_payment_preimage_hash!(&nodes[3]);
+	let (preimage, hash, payment_secret) = get_payment_preimage_hash(&nodes[3], None, None);
 	let id = PaymentId([42; 32]);
 	let amt_msat = 15_000_000;
 
@@ -4832,7 +4832,7 @@ fn do_test_payment_metadata_consistency(do_reload: bool, do_modify: bool) {
 	// Pay more than half of each channel's max, requiring MPP
 	let amt_msat = 750_000_000;
 	let (payment_preimage, payment_hash, payment_secret) =
-		get_payment_preimage_hash!(nodes[3], Some(amt_msat));
+		get_payment_preimage_hash(&nodes[3], Some(amt_msat), None);
 	let payment_id = PaymentId(payment_hash.0);
 	let payment_metadata = vec![44, 49, 52, 142];
 

@@ -268,7 +268,8 @@ pub fn test_channel_reserve_holding_cell_htlcs() {
 	{
 		let mut route = route_1.clone();
 		route.paths[0].hops.last_mut().unwrap().fee_msat = recv_value_2 + 1;
-		let (_, our_payment_hash, our_payment_secret) = get_payment_preimage_hash!(nodes[2]);
+		let (_, our_payment_hash, our_payment_secret) =
+			get_payment_preimage_hash(&nodes[2], None, None);
 		let onion = RecipientOnionFields::secret_only(our_payment_secret);
 		let id = PaymentId(our_payment_hash.0);
 		let res = nodes[0].node.send_payment_with_route(route, our_payment_hash, onion, id);

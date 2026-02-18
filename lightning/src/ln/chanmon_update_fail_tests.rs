@@ -1382,9 +1382,9 @@ fn raa_no_response_awaiting_raa_state() {
 	let (route, payment_hash_1, payment_preimage_1, payment_secret_1) =
 		get_route_and_payment_hash!(nodes[0], nodes[1], 1000000);
 	let (payment_preimage_2, payment_hash_2, payment_secret_2) =
-		get_payment_preimage_hash!(nodes[1]);
+		get_payment_preimage_hash(&nodes[1], None, None);
 	let (payment_preimage_3, payment_hash_3, payment_secret_3) =
-		get_payment_preimage_hash!(nodes[1]);
+		get_payment_preimage_hash(&nodes[1], None, None);
 
 	// Queue up two payments - one will be delivered right away, one immediately goes into the
 	// holding cell as nodes[0] is AwaitingRAA. Ultimately this allows us to deliver an RAA
@@ -1872,7 +1872,7 @@ fn test_monitor_update_fail_claim() {
 	do_commitment_signed_dance(&nodes[1], &nodes[2], &payment_event.commitment_msg, false, true);
 	expect_htlc_failure_conditions(nodes[1].node.get_and_clear_pending_events(), &[]);
 
-	let (_, payment_hash_3, payment_secret_3) = get_payment_preimage_hash!(nodes[0]);
+	let (_, payment_hash_3, payment_secret_3) = get_payment_preimage_hash(&nodes[0], None, None);
 	let id_3 = PaymentId(payment_hash_3.0);
 	let onion_3 = RecipientOnionFields::secret_only(payment_secret_3);
 	nodes[2].node.send_payment_with_route(route, payment_hash_3, onion_3, id_3).unwrap();
@@ -2663,7 +2663,7 @@ fn do_channel_holding_cell_serialize(disconnect: bool, reload_a: bool) {
 	let (route, payment_hash_1, payment_preimage_1, payment_secret_1) =
 		get_route_and_payment_hash!(&nodes[0], nodes[1], 100000);
 	let (payment_preimage_2, payment_hash_2, payment_secret_2) =
-		get_payment_preimage_hash!(&nodes[1]);
+		get_payment_preimage_hash(&nodes[1], None, None);
 
 	// Do a really complicated dance to get an HTLC into the holding cell, with
 	// MonitorUpdateInProgress set but AwaitingRemoteRevoke unset. When this test was written, any
@@ -5099,7 +5099,8 @@ fn test_mpp_claim_to_holding_cell() {
 	send_along_route_with_secret(&nodes[0], route, paths, 500_000, paymnt_hash_1, payment_secret);
 
 	// Put the C <-> D channel into AwaitingRaa
-	let (preimage_2, paymnt_hash_2, payment_secret_2) = get_payment_preimage_hash!(nodes[3]);
+	let (preimage_2, paymnt_hash_2, payment_secret_2) =
+		get_payment_preimage_hash(&nodes[3], None, None);
 	let onion = RecipientOnionFields::secret_only(payment_secret_2);
 	let id = PaymentId([42; 32]);
 	let pay_params = PaymentParameters::from_node_id(node_d_id, TEST_FINAL_CLTV);

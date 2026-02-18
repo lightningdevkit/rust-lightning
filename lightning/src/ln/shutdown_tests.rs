@@ -410,7 +410,7 @@ fn updates_shutdown_wait() {
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
-	let (_, payment_hash, payment_secret) = get_payment_preimage_hash!(nodes[0]);
+	let (_, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[0], None, None);
 
 	let payment_params_1 = PaymentParameters::from_node_id(node_b_id, TEST_FINAL_CLTV)
 		.with_bolt11_features(nodes[1].node.bolt11_invoice_features())

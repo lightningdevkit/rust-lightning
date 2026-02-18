@@ -2818,26 +2818,6 @@ pub fn get_payment_preimage_hash(
 	(payment_preimage, payment_hash, payment_secret)
 }
 
-/// Get a payment preimage and hash.
-///
-/// Don't use this, use the identically-named function instead.
-#[macro_export]
-macro_rules! get_payment_preimage_hash {
-	($dest_node: expr) => {
-		get_payment_preimage_hash!($dest_node, None)
-	};
-	($dest_node: expr, $min_value_msat: expr) => {
-		$crate::get_payment_preimage_hash!($dest_node, $min_value_msat, None)
-	};
-	($dest_node: expr, $min_value_msat: expr, $min_final_cltv_expiry_delta: expr) => {
-		$crate::ln::functional_test_utils::get_payment_preimage_hash(
-			&$dest_node,
-			$min_value_msat,
-			$min_final_cltv_expiry_delta,
-		)
-	};
-}
-
 /// Gets a route from the given sender to the node described in `payment_params`.
 pub fn get_route(send_node: &Node, route_params: &RouteParameters) -> Result<Route, &'static str> {
 	let scorer = TestScorer::new();
@@ -3809,7 +3789,7 @@ pub fn send_along_route<'a, 'b, 'c>(
 	recv_value: u64,
 ) -> (PaymentPreimage, PaymentHash, PaymentSecret, PaymentId) {
 	let (our_payment_preimage, our_payment_hash, our_payment_secret) =
-		get_payment_preimage_hash!(expected_route.last().unwrap());
+		get_payment_preimage_hash(expected_route.last().unwrap(), None, None);
 	let payment_id = send_along_route_with_secret(
 		origin_node,
 		route,
