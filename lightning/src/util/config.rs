@@ -920,6 +920,51 @@ pub enum HTLCInterceptionFlags {
 		| Self::ToOfflinePrivateChannels as isize
 		| Self::ToOnlinePrivateChannels as isize
 		| Self::ToPublicChannels as isize,
+	/// If this flag is set, any attempts to forward a payment from a private channel (to anywhere)
+	/// will instead generate an [`Event::HTLCIntercepted`] which must be handled the same as any
+	/// other intercepted HTLC.
+	///
+	/// This is useful for an LSP that may wish to apply a higher fee policy on their channels when
+	/// the HTLC comes from a private channel client. Note that HTLCs which do not pay the
+	/// configured fee rate or do not meet the [`ChannelConfig::cltv_expiry_delta`] will fail.
+	/// Thus, this cannot be used to allow forwarding for less than the public fees.
+	///
+	/// Note that no HTLCs to unknown channels will be intercepted by this flag. For that, use
+	/// [`Self::ToUnknownSCIDs`].
+	///
+	/// [`Event::HTLCIntercepted`]: crate::events::Event::HTLCIntercepted
+	FromPrivateChannels = 1 << 4,
+	/// If this flag is set, any attempts to forward a payment from a public channel to a private
+	/// channel will instead generate an [`Event::HTLCIntercepted`] which must be handled the same
+	/// as any other intercepted HTLC.
+	///
+	/// This is useful for an LSP that may wish to take an additional fee on any HTLCs which are
+	/// forwarded to a private channel client but wishes to avoid taking that fee when forwarding
+	/// an HTLC from a private channel client to another private channel client.
+	///
+	/// Note that HTLCs which do not pay the configured fee rate or do not meet the
+	/// [`ChannelConfig::cltv_expiry_delta`] will fail and not be intercepted.
+	///
+	/// Note that no HTLCs to unknown channels will be intercepted by this flag. For that, use
+	/// [`Self::ToUnknownSCIDs`].
+	///
+	/// [`Event::HTLCIntercepted`]: crate::events::Event::HTLCIntercepted
+	FromPublicToPrivateChannels = 1 << 5,
+	/// If this flag is set, any attempts to forward a payment from a public channel to another
+	/// public channel will instead generate an [`Event::HTLCIntercepted`] which must be handled
+	/// the same as any other intercepted HTLC.
+	///
+	/// This primarily exists for completeness, and generally interception of HTLCs between public
+	/// channels is *strongly* discouraged.
+	///
+	/// Note that HTLCs which do not pay the configured fee rate or do not meet the
+	/// [`ChannelConfig::cltv_expiry_delta`] will fail and not be intercepted.
+	///
+	/// Note that no HTLCs to unknown channels will be intercepted by this flag. For that, use
+	/// [`Self::ToUnknownSCIDs`].
+	///
+	/// [`Event::HTLCIntercepted`]: crate::events::Event::HTLCIntercepted
+	FromPublicToPublicChannels = 1 << 6,
 	/// If this flag is set, any attempts to forward a payment to an unknown short channel id will
 	/// instead generate an [`Event::HTLCIntercepted`] which must be handled the same as any other
 	/// intercepted HTLC.
@@ -931,7 +976,7 @@ pub enum HTLCInterceptionFlags {
 	/// delta meets your requirements before forwarding the HTLC.
 	///
 	/// [`Event::HTLCIntercepted`]: crate::events::Event::HTLCIntercepted
-	ToUnknownSCIDs = 1 << 4,
+	ToUnknownSCIDs = 1 << 7,
 	/// If these flags are set, all HTLCs being forwarded over this node will instead generate an
 	/// [`Event::HTLCIntercepted`] which must be handled the same as any other intercepted HTLC.
 	///
@@ -941,7 +986,7 @@ pub enum HTLCInterceptionFlags {
 	/// validate the fee and CLTV delta meets your requirements before forwarding the HTLC.
 	///
 	/// [`Event::HTLCIntercepted`]: crate::events::Event::HTLCIntercepted
-	AllValidHTLCs = Self::ToAllKnownSCIDs as isize | Self::ToUnknownSCIDs as isize,
+	AllValidHTLCs = 0xff,
 }
 
 impl Into<u8> for HTLCInterceptionFlags {
