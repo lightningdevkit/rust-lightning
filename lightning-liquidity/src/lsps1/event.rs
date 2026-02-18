@@ -154,7 +154,7 @@ pub enum LSPS1ServiceEvent {
 	/// payment and order id for this order for the client.
 	///
 	/// You should call [`LSPS1ServiceHandler::invalid_token_provided`] if the token provided as
-	/// partof the order parameters is invalid.
+	/// part of the order parameters is invalid.
 	///
 	/// **Note: ** This event will *not* be persisted across restarts.
 	///
