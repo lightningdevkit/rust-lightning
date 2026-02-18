@@ -4924,6 +4924,7 @@ fn native_async_persist() {
 		native_async_persister,
 		Arc::clone(&keys_manager),
 		keys_manager.get_peer_storage_key(),
+		false,
 	);
 
 	// Write the initial ChannelMonitor async, testing primarily that the `MonitorEvent::Completed`

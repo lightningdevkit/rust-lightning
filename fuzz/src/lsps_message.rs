@@ -59,6 +59,7 @@ pub fn do_test(data: &[u8]) {
 		Arc::clone(&kv_store),
 		Arc::clone(&keys_manager),
 		keys_manager.get_peer_storage_key(),
+		false,
 	));
 	let best_block = BestBlock::from_network(network);
 	let params = ChainParameters { network, best_block };

@@ -2890,6 +2890,8 @@ enum NotifyOption {
 struct PersistenceNotifierGuard<'a, F: FnOnce() -> NotifyOption> {
 	event_persist_notifier: &'a Notifier,
 	needs_persist_flag: &'a AtomicBool,
+	logger: &'a dyn Logger,
+	caller: &'static core::panic::Location<'static>,
 	// Always `Some` once initialized, but tracked as an `Option` to obtain the closure by value in
 	// [`PersistenceNotifierGuard::drop`].
 	should_persist: Option<F>,
@@ -2905,14 +2907,23 @@ impl<'a> PersistenceNotifierGuard<'a, fn() -> NotifyOption> {
 	/// This must always be called if the changes included a `ChannelMonitorUpdate`, as well as in
 	/// other cases where losing the changes on restart may result in a force-close or otherwise
 	/// isn't ideal.
+	#[track_caller]
 	fn notify_on_drop<C: AChannelManager>(
 		cm: &'a C,
 	) -> PersistenceNotifierGuard<'a, impl FnOnce() -> NotifyOption> {
-		Self::optionally_notify(cm, || -> NotifyOption { NotifyOption::DoPersist })
+		let caller = core::panic::Location::caller();
+		Self::optionally_notify_inner(cm, || -> NotifyOption { NotifyOption::DoPersist }, caller)
 	}
 
+	#[track_caller]
 	fn optionally_notify<F: FnOnce() -> NotifyOption, C: AChannelManager>(
 		cm: &'a C, persist_check: F,
+	) -> PersistenceNotifierGuard<'a, impl FnOnce() -> NotifyOption> {
+		Self::optionally_notify_inner(cm, persist_check, core::panic::Location::caller())
+	}
+
+	fn optionally_notify_inner<F: FnOnce() -> NotifyOption, C: AChannelManager>(
+		cm: &'a C, persist_check: F, caller: &'static core::panic::Location<'static>,
 	) -> PersistenceNotifierGuard<'a, impl FnOnce() -> NotifyOption> {
 		let read_guard = cm.get_cm().total_consistency_lock.read().unwrap();
 		let force_notify = cm.get_cm().process_background_events();
@@ -2920,6 +2931,8 @@ impl<'a> PersistenceNotifierGuard<'a, fn() -> NotifyOption> {
 		PersistenceNotifierGuard {
 			event_persist_notifier: &cm.get_cm().event_persist_notifier,
 			needs_persist_flag: &cm.get_cm().needs_persist_flag,
+			logger: &cm.get_cm().logger,
+			caller,
 			should_persist: Some(move || {
 				// Pick the "most" action between `persist_check` and the background events
 				// processing and return that.
@@ -2943,6 +2956,7 @@ impl<'a> PersistenceNotifierGuard<'a, fn() -> NotifyOption> {
 	/// Note that if any [`ChannelMonitorUpdate`]s are possibly generated,
 	/// [`ChannelManager::process_background_events`] MUST be called first (or
 	/// [`Self::optionally_notify`] used).
+	#[track_caller]
 	fn optionally_notify_skipping_background_events<F: Fn() -> NotifyOption, C: AChannelManager>(
 		cm: &'a C, persist_check: F,
 	) -> PersistenceNotifierGuard<'a, F> {
@@ -2951,6 +2965,8 @@ impl<'a> PersistenceNotifierGuard<'a, fn() -> NotifyOption> {
 		PersistenceNotifierGuard {
 			event_persist_notifier: &cm.get_cm().event_persist_notifier,
 			needs_persist_flag: &cm.get_cm().needs_persist_flag,
+			logger: &cm.get_cm().logger,
+			caller: core::panic::Location::caller(),
 			should_persist: Some(persist_check),
 			_read_guard: read_guard,
 		}
@@ -2968,6 +2984,12 @@ impl<'a, F: FnOnce() -> NotifyOption> Drop for PersistenceNotifierGuard<'a, F> {
 		};
 		match should_persist() {
 			NotifyOption::DoPersist => {
+				log_trace!(
+					self.logger,
+					"Marking ChannelManager needing persistence, triggered at {}:{}",
+					self.caller.file(),
+					self.caller.line()
+				);
 				self.needs_persist_flag.store(true, Ordering::Release);
 				self.event_persist_notifier.notify()
 			},
@@ -3317,8 +3339,11 @@ macro_rules! process_events_body {
 
 				// TODO: This behavior should be documented. It's unintuitive that we query
 				// ChannelMonitors when clearing other events.
-				if $self.process_pending_monitor_events() {
-					result = NotifyOption::DoPersist;
+				match $self.process_pending_monitor_events() {
+					NotifyOption::DoPersist => result = NotifyOption::DoPersist,
+					NotifyOption::SkipPersistHandleEvents if result == NotifyOption::SkipPersistNoEvents =>
+						result = NotifyOption::SkipPersistHandleEvents,
+					_ => {},
 				}
 			}
 
@@ -3373,6 +3398,7 @@ macro_rules! process_events_body {
 
 			match result {
 				NotifyOption::DoPersist => {
+					log_trace!($self.logger, "Marking ChannelManager needing persistence from process_events_body");
 					$self.needs_persist_flag.store(true, Ordering::Release);
 					$self.event_persist_notifier.notify();
 				},
@@ -9930,6 +9956,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		if self.background_events_processed_since_startup.load(Ordering::Acquire) {
 			let update_res =
 				self.chain_monitor.update_channel(channel_id, &in_flight_updates[update_idx]);
+			// Ensure the ChannelManager is persisted so that `in_flight_monitor_updates`
+			// is in sync with the updates applied to the chain monitor.
+			self.needs_persist_flag.store(true, Ordering::Release);
 			let logger =
 				WithContext::from(&self.logger, Some(counterparty_node_id), Some(channel_id), None);
 			let update_completed = self.handle_monitor_update_res(update_res, logger);
@@ -12839,19 +12868,21 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		Ok(())
 	}
 
-	/// Process pending events from the [`chain::Watch`], returning whether any events were processed.
-	fn process_pending_monitor_events(&self) -> bool {
+	/// Process pending events from the [`chain::Watch`], returning a [`NotifyOption`] indicating
+	/// whether persistence is needed.
+	fn process_pending_monitor_events(&self) -> NotifyOption {
 		debug_assert!(self.total_consistency_lock.try_write().is_err()); // Caller holds read lock
 
 		let mut failed_channels: Vec<(Result<Infallible, _>, _)> = Vec::new();
 		let mut pending_monitor_events = self.chain_monitor.release_pending_monitor_events();
-		let has_pending_monitor_events = !pending_monitor_events.is_empty();
+		let mut result = NotifyOption::SkipPersistNoEvents;
 		for (funding_outpoint, channel_id, mut monitor_events, counterparty_node_id) in
 			pending_monitor_events.drain(..)
 		{
 			for monitor_event in monitor_events.drain(..) {
 				match monitor_event {
 					MonitorEvent::HTLCEvent(htlc_update) => {
+						result = NotifyOption::DoPersist;
 						let logger = WithContext::from(
 							&self.logger,
 							Some(counterparty_node_id),
@@ -12904,6 +12935,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					},
 					MonitorEvent::HolderForceClosed(_)
 					| MonitorEvent::HolderForceClosedWithInfo { .. } => {
+						result = NotifyOption::DoPersist;
 						let per_peer_state = self.per_peer_state.read().unwrap();
 						if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
 							let mut peer_state_lock = peer_state_mutex.lock().unwrap();
@@ -12936,6 +12968,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						}
 					},
 					MonitorEvent::CommitmentTxConfirmed(_) => {
+						result = NotifyOption::DoPersist;
 						let per_peer_state = self.per_peer_state.read().unwrap();
 						if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
 							let mut peer_state_lock = peer_state_mutex.lock().unwrap();
@@ -12957,6 +12990,17 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						}
 					},
 					MonitorEvent::Completed { channel_id, monitor_update_id, .. } => {
+						// Completed events don't require ChannelManager persistence.
+						// `channel_monitor_updated` clears transient flags and may
+						// trigger actions like forwarding HTLCs or finalizing claims,
+						// but all of these are re-derived on restart: the serialized
+						// `in_flight_monitor_updates` will still contain the completed
+						// entries, and deserialization will detect that the monitor is
+						// ahead, synthesizing a `MonitorUpdatesComplete` background
+						// event that re-drives `channel_monitor_updated`.
+						if result == NotifyOption::SkipPersistNoEvents {
+							result = NotifyOption::SkipPersistHandleEvents;
+						}
 						self.channel_monitor_updated(
 							&channel_id,
 							Some(monitor_update_id),
@@ -12971,7 +13015,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			let _ = self.handle_error(err, counterparty_node_id);
 		}
 
-		has_pending_monitor_events
+		result
 	}
 
 	fn handle_holding_cell_free_result(&self, result: FreeHoldingCellsResult) {
@@ -12985,6 +13029,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			}
 
 			self.fail_holding_cell_htlcs(failed_htlcs, chan_id, &cp_node_id);
+			log_trace!(
+				self.logger,
+				"Marking ChannelManager needing persistence from handle_holding_cell_free_result"
+			);
 			self.needs_persist_flag.store(true, Ordering::Release);
 			self.event_persist_notifier.notify();
 		}
@@ -15005,8 +15053,14 @@ impl<
 
 			// TODO: This behavior should be documented. It's unintuitive that we query
 			// ChannelMonitors when clearing other events.
-			if self.process_pending_monitor_events() {
-				result = NotifyOption::DoPersist;
+			match self.process_pending_monitor_events() {
+				NotifyOption::DoPersist => result = NotifyOption::DoPersist,
+				NotifyOption::SkipPersistHandleEvents
+					if result == NotifyOption::SkipPersistNoEvents =>
+				{
+					result = NotifyOption::SkipPersistHandleEvents
+				},
+				_ => {},
 			}
 
 			if self.maybe_generate_initial_closing_signed() {
@@ -21100,7 +21154,7 @@ pub mod bench {
 
 		let seed_a = [1u8; 32];
 		let keys_manager_a = KeysManager::new(&seed_a, 42, 42, true);
-		let chain_monitor_a = ChainMonitor::new(None, &tx_broadcaster, &logger_a, &fee_estimator, &persister_a, &keys_manager_a, keys_manager_a.get_peer_storage_key());
+		let chain_monitor_a = ChainMonitor::new(None, &tx_broadcaster, &logger_a, &fee_estimator, &persister_a, &keys_manager_a, keys_manager_a.get_peer_storage_key(), false);
 		let node_a = ChannelManager::new(&fee_estimator, &chain_monitor_a, &tx_broadcaster, &router, &message_router, &logger_a, &keys_manager_a, &keys_manager_a, &keys_manager_a, config.clone(), ChainParameters {
 			network,
 			best_block: BestBlock::from_network(network),
@@ -21110,7 +21164,7 @@ pub mod bench {
 		let logger_b = test_utils::TestLogger::with_id("node a".to_owned());
 		let seed_b = [2u8; 32];
 		let keys_manager_b = KeysManager::new(&seed_b, 42, 42, true);
-		let chain_monitor_b = ChainMonitor::new(None, &tx_broadcaster, &logger_a, &fee_estimator, &persister_b, &keys_manager_b, keys_manager_b.get_peer_storage_key());
+		let chain_monitor_b = ChainMonitor::new(None, &tx_broadcaster, &logger_a, &fee_estimator, &persister_b, &keys_manager_b, keys_manager_b.get_peer_storage_key(), false);
 		let node_b = ChannelManager::new(&fee_estimator, &chain_monitor_b, &tx_broadcaster, &router, &message_router, &logger_b, &keys_manager_b, &keys_manager_b, &keys_manager_b, config.clone(), ChainParameters {
 			network,
 			best_block: BestBlock::from_network(network),
