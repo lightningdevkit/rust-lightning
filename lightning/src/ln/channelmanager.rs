@@ -2876,6 +2876,8 @@ enum NotifyOption {
 struct PersistenceNotifierGuard<'a, F: FnOnce() -> NotifyOption> {
 	event_persist_notifier: &'a Notifier,
 	needs_persist_flag: &'a AtomicBool,
+	logger: &'a dyn Logger,
+	caller: &'static core::panic::Location<'static>,
 	// Always `Some` once initialized, but tracked as an `Option` to obtain the closure by value in
 	// [`PersistenceNotifierGuard::drop`].
 	should_persist: Option<F>,
@@ -2891,14 +2893,23 @@ impl<'a> PersistenceNotifierGuard<'a, fn() -> NotifyOption> {
 	/// This must always be called if the changes included a `ChannelMonitorUpdate`, as well as in
 	/// other cases where losing the changes on restart may result in a force-close or otherwise
 	/// isn't ideal.
+	#[track_caller]
 	fn notify_on_drop<C: AChannelManager>(
 		cm: &'a C,
 	) -> PersistenceNotifierGuard<'a, impl FnOnce() -> NotifyOption> {
-		Self::optionally_notify(cm, || -> NotifyOption { NotifyOption::DoPersist })
+		let caller = core::panic::Location::caller();
+		Self::optionally_notify_inner(cm, || -> NotifyOption { NotifyOption::DoPersist }, caller)
 	}
 
+	#[track_caller]
 	fn optionally_notify<F: FnOnce() -> NotifyOption, C: AChannelManager>(
 		cm: &'a C, persist_check: F,
+	) -> PersistenceNotifierGuard<'a, impl FnOnce() -> NotifyOption> {
+		Self::optionally_notify_inner(cm, persist_check, core::panic::Location::caller())
+	}
+
+	fn optionally_notify_inner<F: FnOnce() -> NotifyOption, C: AChannelManager>(
+		cm: &'a C, persist_check: F, caller: &'static core::panic::Location<'static>,
 	) -> PersistenceNotifierGuard<'a, impl FnOnce() -> NotifyOption> {
 		let read_guard = cm.get_cm().total_consistency_lock.read().unwrap();
 		let force_notify = cm.get_cm().process_background_events();
@@ -2906,6 +2917,8 @@ impl<'a> PersistenceNotifierGuard<'a, fn() -> NotifyOption> {
 		PersistenceNotifierGuard {
 			event_persist_notifier: &cm.get_cm().event_persist_notifier,
 			needs_persist_flag: &cm.get_cm().needs_persist_flag,
+			logger: &cm.get_cm().logger,
+			caller,
 			should_persist: Some(move || {
 				// Pick the "most" action between `persist_check` and the background events
 				// processing and return that.
@@ -2929,6 +2942,7 @@ impl<'a> PersistenceNotifierGuard<'a, fn() -> NotifyOption> {
 	/// Note that if any [`ChannelMonitorUpdate`]s are possibly generated,
 	/// [`ChannelManager::process_background_events`] MUST be called first (or
 	/// [`Self::optionally_notify`] used).
+	#[track_caller]
 	fn optionally_notify_skipping_background_events<F: Fn() -> NotifyOption, C: AChannelManager>(
 		cm: &'a C, persist_check: F,
 	) -> PersistenceNotifierGuard<'a, F> {
@@ -2937,6 +2951,8 @@ impl<'a> PersistenceNotifierGuard<'a, fn() -> NotifyOption> {
 		PersistenceNotifierGuard {
 			event_persist_notifier: &cm.get_cm().event_persist_notifier,
 			needs_persist_flag: &cm.get_cm().needs_persist_flag,
+			logger: &cm.get_cm().logger,
+			caller: core::panic::Location::caller(),
 			should_persist: Some(persist_check),
 			_read_guard: read_guard,
 		}
@@ -2954,6 +2970,12 @@ impl<'a, F: FnOnce() -> NotifyOption> Drop for PersistenceNotifierGuard<'a, F> {
 		};
 		match should_persist() {
 			NotifyOption::DoPersist => {
+				log_trace!(
+					self.logger,
+					"Marking ChannelManager needing persistence, triggered at {}:{}",
+					self.caller.file(),
+					self.caller.line()
+				);
 				self.needs_persist_flag.store(true, Ordering::Release);
 				self.event_persist_notifier.notify()
 			},
@@ -3359,6 +3381,7 @@ macro_rules! process_events_body {
 
 			match result {
 				NotifyOption::DoPersist => {
+					log_trace!($self.logger, "Marking ChannelManager needing persistence from process_events_body");
 					$self.needs_persist_flag.store(true, Ordering::Release);
 					$self.event_persist_notifier.notify();
 				},
@@ -12768,6 +12791,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			}
 
 			self.fail_holding_cell_htlcs(failed_htlcs, chan_id, &cp_node_id);
+			log_trace!(
+				self.logger,
+				"Marking ChannelManager needing persistence from handle_holding_cell_free_result"
+			);
 			self.needs_persist_flag.store(true, Ordering::Release);
 			self.event_persist_notifier.notify();
 		}

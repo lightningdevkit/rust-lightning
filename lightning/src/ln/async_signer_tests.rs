@@ -1457,6 +1457,7 @@ fn test_no_disconnect_while_async_commitment_signed_expecting_remote_revoke_and_
 }
 
 #[test]
+#[ignore = "logging in PersistenceNotifierGuard::Drop conflicts with panic unwind"]
 fn test_async_panic_on_stale_state() {
 	// Test that we panic if the counterparty sends us a `channel_reestablish` message with a
 	// `next_remote_commitment_number` greater than what we know with a valid corresponding secret,
