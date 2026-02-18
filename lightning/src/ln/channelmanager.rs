@@ -9872,6 +9872,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		if self.background_events_processed_since_startup.load(Ordering::Acquire) {
 			let update_res =
 				self.chain_monitor.update_channel(channel_id, &in_flight_updates[update_idx]);
+			// Ensure the ChannelManager is persisted so that `in_flight_monitor_updates`
+			// is in sync with the updates applied to the chain monitor.
+			self.needs_persist_flag.store(true, Ordering::Release);
 			let logger =
 				WithContext::from(&self.logger, Some(counterparty_node_id), Some(channel_id), None);
 			let update_completed = self.handle_monitor_update_res(update_res, logger);
