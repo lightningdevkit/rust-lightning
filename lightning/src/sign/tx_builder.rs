@@ -317,6 +317,17 @@ pub(crate) fn get_available_balances(
 	holder_channel_constraints: ChannelConstraints,
 	counterparty_channel_constraints: ChannelConstraints, channel_type: &ChannelTypeFeatures,
 ) -> crate::ln::channel::AvailableBalances {
+	// When sizing the next HTLC add, we take the remote's view of the set of pending HTLCs in
+	// `ChannelContext::get_next_commitment_htlcs`, set this view to `pending_htlcs` here, and use this set of
+	// pending HTLCs to calculate stats on our own commitment below.
+	//
+	// This means we do *not* include `LocalRemoved` HTLCs. `LocalRemoved` and `LocalAnnounced` HTLCs are applied
+	// atomically to our own commitment upon the counterparty's next ack.
+	//
+	// `RemoteRemoved` HTLCs *are* included. While we don't expect these HTLCs to be present in our next
+	// commitment, we have not ack'ed these removals yet, so we expect the counterparty to count them when
+	// validating our own HTLC add. These HTLCs would also revert to `Committed` upon a disconnection.
+
 	let fee_spike_buffer_htlc =
 		if channel_type.supports_anchor_zero_fee_commitments() { 0 } else { 1 };
 
