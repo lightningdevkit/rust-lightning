@@ -10215,6 +10215,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				});
 
 				Some((source, hold_times))
+			} else if let HTLCSource::TrampolineForward { .. } = source {
+				Some((source, Vec::new()))
 			} else {
 				None
 			}

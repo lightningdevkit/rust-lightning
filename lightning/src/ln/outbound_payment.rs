@@ -2535,6 +2535,14 @@ impl OutboundPayments {
 						}, None));
 					}
 				}
+			} else if let HTLCSource::TrampolineForward {
+				outbound_payment: Some(trampoline_dispatch), ..
+			} = source {
+				let session_priv_bytes = trampoline_dispatch.session_priv.secret_bytes();
+				if let hash_map::Entry::Occupied(mut payment) = outbounds.entry(trampoline_dispatch.payment_id) {
+					assert!(payment.get().is_fulfilled());
+					payment.get_mut().remove(&session_priv_bytes, None);
+				}
 			}
 		}
 	}
