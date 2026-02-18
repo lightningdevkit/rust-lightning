@@ -170,8 +170,7 @@ pub enum LSPS1ServiceEvent {
 		order: LSPS1OrderParams,
 		/// The address we need to send onchain refunds to in case channel opening fails.
 		///
-		/// In case this is `None` you might just provide Lightning payments options to the client.
-		/// If you *require* onchain payment, you should call
+		/// If this is `None` and you *require* onchain payment, you should call
 		/// [`LSPS1ServiceHandler::onchain_payments_required`] to reject the request.
 		///
 		/// [`LSPS1ServiceHandler::onchain_payments_required`]: crate::lsps1::service::LSPS1ServiceHandler::onchain_payments_required
