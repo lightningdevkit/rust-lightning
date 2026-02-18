@@ -3026,6 +3026,33 @@ impl OutboundPayments {
 			},
 		}
 	}
+
+	/// Looks up a trampoline forward by its payment id, marks it as fulfilled, and returns the
+	/// forwarding fee our node earned. Returns None if the payment is not found or it does not
+	/// have trampoline forwarding information.
+	pub(crate) fn claim_trampoline_forward(
+		&self, payment_id: &PaymentId, session_priv: &SecretKey, from_onchain: bool,
+	) -> Option<u64> {
+		let mut outbounds = self.pending_outbound_payments.lock().unwrap();
+		if let hash_map::Entry::Occupied(mut payment) = outbounds.entry(*payment_id) {
+			let fee = match payment.get() {
+				PendingOutboundPayment::Retryable { trampoline_forward_info, .. } => {
+					trampoline_forward_info.as_ref().map(|info| info.forwading_fee_msat)
+				},
+				_ => None,
+			};
+			if !payment.get().is_fulfilled() {
+				payment.get_mut().mark_fulfilled();
+			}
+			if from_onchain {
+				let session_priv_bytes = session_priv.secret_bytes();
+				payment.get_mut().remove(&session_priv_bytes, None);
+			}
+			fee
+		} else {
+			None
+		}
+	}
 }
 
 /// Returns whether a payment with the given [`PaymentHash`] and [`PaymentId`] is, in fact, a
