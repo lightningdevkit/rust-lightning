@@ -1520,20 +1520,6 @@ impl Readable for Address {
 	}
 }
 
-impl Writeable for FeeRate {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		self.to_sat_per_kwu().write(w)?;
-		Ok(())
-	}
-}
-
-impl Readable for FeeRate {
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
-		let sat_per_kwu: u64 = Readable::read(r)?;
-		Ok(FeeRate::from_sat_per_kwu(sat_per_kwu))
-	}
-}
-
 impl Writeable for Bolt11Invoice {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		self.to_string().write(w)?;
