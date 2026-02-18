@@ -26,77 +26,36 @@ jobs:
           cd ext-functional-test-demo
           cargo test --verbose --color always
           cargo test --verbose --color always --features test-broken
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        platform: >-
-          ${{ github.event_name == 'push' && github.ref == 'refs/heads/main'
-            && fromJSON('["self-hosted","windows-latest","macos-latest"]')
-            || fromJSON('["self-hosted"]') }}
-        toolchain: >-
-          ${{ github.event_name == 'push' && github.ref == 'refs/heads/main'
-            && fromJSON('["stable","beta","1.75.0"]')
-            || fromJSON('["1.75.0"]') }}
-        exclude:
-          - platform: windows-latest
-            toolchain: 1.75.0
-          - platform: windows-latest
-            toolchain: beta
-          - platform: macos-latest
-            toolchain: beta
-    runs-on: ${{ matrix.platform }}
-    steps:
-      - name: Checkout source code
-        uses: actions/checkout@v4
-      - name: Install Rust ${{ matrix.toolchain }} toolchain
-        run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ matrix.toolchain }}
-      - name: Use rust-lld linker on Windows
-        if: matrix.platform == 'windows-latest'
-        shell: bash
-        run: echo "RUSTFLAGS=-C linker=rust-lld" >> "$GITHUB_ENV"
-      - name: Install no-std-check dependencies for ARM Embedded
-        if: "matrix.platform == 'self-hosted'"
-        run: |
-          rustup target add thumbv7m-none-eabi
-      - name: shellcheck the CI and `contrib` scripts
-        if: "matrix.platform == 'self-hosted'"
-        run: |
-          shellcheck ci/*.sh -aP ci
-          shellcheck contrib/*.sh -aP contrib
-      - name: Set RUSTFLAGS to deny warnings
-        if: "matrix.toolchain == '1.75.0'"
-        run: echo "RUSTFLAGS=-D warnings" >> "$GITHUB_ENV"
-      - name: Enable caching for bitcoind
-        if: matrix.platform != 'windows-latest'
-        id: cache-bitcoind
-        uses: actions/cache@v4
-        with:
-          path: bin/bitcoind-${{ runner.os }}-${{ runner.arch }}
-          key: bitcoind-${{ runner.os }}-${{ runner.arch }}
-      - name: Enable caching for electrs
-        if: matrix.platform != 'windows-latest'
-        id: cache-electrs
-        uses: actions/cache@v4
-        with:
-          path: bin/electrs-${{ runner.os }}-${{ runner.arch }}
-          key: electrs-${{ runner.os }}-${{ runner.arch }}
-      - name: Download bitcoind/electrs
-        if: "matrix.platform != 'windows-latest' && (steps.cache-bitcoind.outputs.cache-hit != 'true' || steps.cache-electrs.outputs.cache-hit != 'true')"
-        run: |
-            source ./contrib/download_bitcoind_electrs.sh
-            mkdir bin
-            mv "$BITCOIND_EXE" bin/bitcoind-${{ runner.os }}-${{ runner.arch }}
-            mv "$ELECTRS_EXE" bin/electrs-${{ runner.os }}-${{ runner.arch }}
-      - name: Set bitcoind/electrs environment variables
-        if: matrix.platform != 'windows-latest'
-        run: |
-            echo "BITCOIND_EXE=$( pwd )/bin/bitcoind-${{ runner.os }}-${{ runner.arch }}" >> "$GITHUB_ENV"
-            echo "ELECTRS_EXE=$( pwd )/bin/electrs-${{ runner.os }}-${{ runner.arch }}" >> "$GITHUB_ENV"
-      - name: Run CI script
-        shell: bash # Default on Winblows is powershell
-        run: CI_ENV=1 CI_MINIMIZE_DISK_USAGE=1 ./ci/ci-tests.sh
+
+  build-workspace:
+    uses: ./.github/workflows/ci-build.yml
+    with:
+      script: ci/ci-tests-workspace.sh
+
+  build-features:
+    uses: ./.github/workflows/ci-build.yml
+    with:
+      script: ci/ci-tests-features.sh
+
+  build-bindings:
+    uses: ./.github/workflows/ci-build.yml
+    with:
+      script: ci/ci-tests-bindings.sh
+
+  build-nostd:
+    uses: ./.github/workflows/ci-build.yml
+    with:
+      script: ci/ci-tests-nostd.sh
+
+  build-cfg-flags:
+    uses: ./.github/workflows/ci-build.yml
+    with:
+      script: ci/ci-tests-cfg-flags.sh
+
+  build-sync:
+    uses: ./.github/workflows/ci-build.yml
+    with:
+      script: ci/ci-tests-sync.sh
 
   coverage:
     needs: fuzz
@@ -305,6 +264,10 @@ jobs:
       - name: Install clippy
         run: |
           rustup component add clippy
+      - name: shellcheck the CI and `contrib` scripts
+        run: |
+          shellcheck ci/*.sh -aP ci
+          shellcheck contrib/*.sh -aP contrib
       - name: Run default clippy linting
         run: |
           ./ci/check-lint.sh
@@ -344,7 +307,7 @@ jobs:
           TOR_PROXY="127.0.0.1:9050" RUSTFLAGS="--cfg=tor" cargo test --verbose --color always -p lightning-net-tokio
 
   notify-failure:
-    needs: [build, fuzz, linting, rustfmt, check_release, check_docs, benchmark, ext-test, tor-connect, coverage]
+    needs: [build-workspace, build-features, build-bindings, build-nostd, build-cfg-flags, build-sync, fuzz, linting, rustfmt, check_release, check_docs, benchmark, ext-test, tor-connect, coverage]
     if: failure() && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
