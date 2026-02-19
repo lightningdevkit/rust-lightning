@@ -12694,9 +12694,35 @@ where
 		&mut self, msg: &msgs::TxInitRbf, entropy_source: &ES, holder_node_id: &PublicKey,
 		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
 	) -> Result<msgs::TxAckRbf, ChannelError> {
-		let our_funding_contribution = SignedAmount::ZERO;
+		// Peek at the quiescent_action to determine our funding contribution.
+		let our_funding_contribution = match &self.quiescent_action {
+			Some(QuiescentAction::Splice { contribution, .. }) => {
+				contribution.validate().map(|()| contribution.net_value()).map_err(|e| {
+					debug_assert!(false);
+					ChannelError::WarnAndDisconnect(format!(
+						"Internal Error: Insufficient funding contribution: {}",
+						e,
+					))
+				})?
+			},
+			#[cfg(any(test, fuzzing))]
+			Some(QuiescentAction::DoNothing) => SignedAmount::ZERO,
+			None => SignedAmount::ZERO,
+		};
+
 		let rbf_funding =
 			self.validate_tx_init_rbf(msg, our_funding_contribution, fee_estimator)?;
+
+		// Now that validation passed, consume the quiescent_action for inputs/outputs.
+		let (our_funding_inputs, our_funding_outputs) = match self.quiescent_action.take() {
+			Some(QuiescentAction::Splice { contribution, .. }) => contribution.into_tx_parts(),
+			#[cfg(any(test, fuzzing))]
+			Some(action @ QuiescentAction::DoNothing) => {
+				self.quiescent_action = Some(action);
+				(Vec::new(), Vec::new())
+			},
+			None => (Vec::new(), Vec::new()),
+		};
 
 		log_info!(
 			logger,
@@ -12712,8 +12738,8 @@ where
 			funding_tx_locktime: LockTime::from_consensus(msg.locktime),
 			funding_feerate_sat_per_1000_weight: msg.feerate_sat_per_1000_weight,
 			shared_funding_input: Some(prev_funding_input),
-			our_funding_inputs: Vec::new(),
-			our_funding_outputs: Vec::new(),
+			our_funding_inputs,
+			our_funding_outputs,
 		};
 
 		let mut interactive_tx_constructor = funding_negotiation_context
@@ -12738,7 +12764,11 @@ where
 
 		Ok(msgs::TxAckRbf {
 			channel_id: self.context.channel_id,
-			funding_output_contribution: None,
+			funding_output_contribution: if our_funding_contribution != SignedAmount::ZERO {
+				Some(our_funding_contribution.to_sat())
+			} else {
+				None
+			},
 		})
 	}
 
