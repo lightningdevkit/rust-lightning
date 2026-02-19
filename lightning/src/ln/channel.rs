@@ -12545,9 +12545,26 @@ where
 		&mut self, msg: &msgs::TxInitRbf, entropy_source: &ES, holder_node_id: &PublicKey,
 		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
 	) -> Result<msgs::TxAckRbf, ChannelError> {
-		let our_funding_contribution = SignedAmount::ZERO;
-		let rbf_funding =
-			self.validate_tx_init_rbf(msg, our_funding_contribution, fee_estimator)?;
+		let feerate = FeeRate::from_sat_per_kwu(msg.feerate_sat_per_1000_weight as u64);
+		let (our_funding_contribution, holder_balance) =
+			self.resolve_queued_contribution(feerate, logger);
+
+		let rbf_funding = self.validate_tx_init_rbf(
+			msg,
+			our_funding_contribution.unwrap_or(SignedAmount::ZERO),
+			fee_estimator,
+		)?;
+
+		let (our_funding_inputs, our_funding_outputs) = if our_funding_contribution.is_some() {
+			self.take_queued_funding_contribution()
+				.expect("queued_funding_contribution was Some")
+				.for_acceptor_at_feerate(feerate, holder_balance.unwrap())
+				.expect("feerate compatibility already checked")
+				.into_tx_parts()
+		} else {
+			Default::default()
+		};
+		let our_funding_contribution = our_funding_contribution.unwrap_or(SignedAmount::ZERO);
 
 		log_info!(
 			logger,
@@ -12566,8 +12583,8 @@ where
 			prev_funding_input,
 			msg.locktime,
 			msg.feerate_sat_per_1000_weight,
-			Vec::new(),
-			Vec::new(),
+			our_funding_inputs,
+			our_funding_outputs,
 		);
 		let pending_splice = self.pending_splice.as_mut().expect("pending_splice should exist");
 		pending_splice.funding_negotiation = Some(funding_negotiation);
@@ -12576,7 +12593,11 @@ where
 
 		Ok(msgs::TxAckRbf {
 			channel_id: self.context.channel_id,
-			funding_output_contribution: None,
+			funding_output_contribution: if our_funding_contribution != SignedAmount::ZERO {
+				Some(our_funding_contribution.to_sat())
+			} else {
+				None
+			},
 		})
 	}
 
