@@ -4714,6 +4714,58 @@ impl<
 		}
 	}
 
+	/// Initiate an RBF of a pending splice transaction for an existing channel.
+	///
+	/// This is used after a splice has been negotiated but before it has been locked, in order
+	/// to bump the feerate of the funding transaction via replace-by-fee.
+	///
+	/// Returns a [`FundingTemplate`] that must be completed with inputs/outputs and then
+	/// passed to [`Self::funding_contributed`].
+	pub fn rbf_channel(
+		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey, feerate: FeeRate,
+	) -> Result<FundingTemplate, APIError> {
+		let per_peer_state = self.per_peer_state.read().unwrap();
+
+		let peer_state_mutex = match per_peer_state
+			.get(counterparty_node_id)
+			.ok_or_else(|| APIError::no_such_peer(counterparty_node_id))
+		{
+			Ok(p) => p,
+			Err(e) => return Err(e),
+		};
+
+		let mut peer_state = peer_state_mutex.lock().unwrap();
+		if !peer_state.latest_features.supports_splicing() {
+			return Err(APIError::ChannelUnavailable {
+				err: "Peer does not support splicing".to_owned(),
+			});
+		}
+		if !peer_state.latest_features.supports_quiescence() {
+			return Err(APIError::ChannelUnavailable {
+				err: "Peer does not support quiescence, a splicing prerequisite".to_owned(),
+			});
+		}
+
+		// Look for the channel
+		match peer_state.channel_by_id.entry(*channel_id) {
+			hash_map::Entry::Occupied(chan_phase_entry) => {
+				if let Some(chan) = chan_phase_entry.get().as_funded() {
+					chan.rbf_channel(feerate)
+				} else {
+					Err(APIError::ChannelUnavailable {
+						err: format!(
+							"Channel with id {} is not funded, cannot RBF splice",
+							channel_id
+						),
+					})
+				}
+			},
+			hash_map::Entry::Vacant(_) => {
+				Err(APIError::no_such_channel_for_peer(channel_id, counterparty_node_id))
+			},
+		}
+	}
+
 	#[cfg(test)]
 	pub(crate) fn abandon_splice(
 		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey,

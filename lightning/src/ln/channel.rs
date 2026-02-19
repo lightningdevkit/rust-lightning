@@ -12116,6 +12116,110 @@ where
 		Ok(FundingTemplate::new(Some(shared_input), feerate))
 	}
 
+	/// Initiate an RBF of a pending splice transaction.
+	pub fn rbf_channel(&self, feerate: FeeRate) -> Result<FundingTemplate, APIError> {
+		if self.holder_commitment_point.current_point().is_none() {
+			return Err(APIError::APIMisuseError {
+				err: format!(
+					"Channel {} cannot RBF until a payment is routed",
+					self.context.channel_id(),
+				),
+			});
+		}
+
+		if self.quiescent_action.is_some() {
+			return Err(APIError::APIMisuseError {
+				err: format!(
+					"Channel {} cannot RBF as one is waiting to be negotiated",
+					self.context.channel_id(),
+				),
+			});
+		}
+
+		if !self.context.is_usable() {
+			return Err(APIError::APIMisuseError {
+				err: format!(
+					"Channel {} cannot RBF as it is either pending open/close",
+					self.context.channel_id()
+				),
+			});
+		}
+
+		if self.context.minimum_depth(&self.funding) == Some(0) {
+			return Err(APIError::APIMisuseError {
+				err: format!(
+					"Channel {} has option_zeroconf, cannot RBF splice",
+					self.context.channel_id(),
+				),
+			});
+		}
+
+		let pending_splice = match &self.pending_splice {
+			Some(pending_splice) => pending_splice,
+			None => {
+				return Err(APIError::APIMisuseError {
+					err: format!(
+						"Channel {} has no pending splice to RBF",
+						self.context.channel_id(),
+					),
+				});
+			},
+		};
+
+		if pending_splice.funding_negotiation.is_some() {
+			return Err(APIError::APIMisuseError {
+				err: format!(
+					"Channel {} cannot RBF as a funding negotiation is already in progress",
+					self.context.channel_id(),
+				),
+			});
+		}
+
+		if pending_splice.sent_funding_txid.is_some() {
+			return Err(APIError::APIMisuseError {
+				err: format!(
+					"Channel {} already sent splice_locked, cannot RBF",
+					self.context.channel_id(),
+				),
+			});
+		}
+
+		if pending_splice.negotiated_candidates.is_empty() {
+			return Err(APIError::APIMisuseError {
+				err: format!(
+					"Channel {} has no negotiated splice candidates to RBF",
+					self.context.channel_id(),
+				),
+			});
+		}
+
+		// Check the 25/24 feerate increase rule
+		let new_feerate = feerate.to_sat_per_kwu() as u32;
+		if let Some(prev_feerate) = pending_splice.last_funding_feerate_sat_per_1000_weight {
+			if (new_feerate as u64) * 24 < (prev_feerate as u64) * 25 {
+				return Err(APIError::APIMisuseError {
+					err: format!(
+						"Channel {} RBF feerate {} is less than 25/24 of the previous feerate {}",
+						self.context.channel_id(),
+						new_feerate,
+						prev_feerate,
+					),
+				});
+			}
+		}
+
+		let funding_txo = self.funding.get_funding_txo().expect("funding_txo should be set");
+		let previous_utxo =
+			self.funding.get_funding_output().expect("funding_output should be set");
+		let shared_input = Input {
+			outpoint: funding_txo.into_bitcoin_outpoint(),
+			previous_utxo,
+			satisfaction_weight: EMPTY_SCRIPT_SIG_WEIGHT + FUNDING_TRANSACTION_WITNESS_WEIGHT,
+		};
+
+		Ok(FundingTemplate::new(Some(shared_input), feerate))
+	}
+
 	pub fn funding_contributed<L: Logger>(
 		&mut self, contribution: FundingContribution, locktime: LockTime, logger: &L,
 	) -> Result<Option<msgs::Stfu>, QuiescentError> {
