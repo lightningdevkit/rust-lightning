@@ -2786,11 +2786,18 @@ impl FundingScope {
 			.funding_pubkey = counterparty_funding_pubkey;
 
 		// New reserve values are based on the new channel value and are v2-specific
-		let counterparty_selected_channel_reserve_satoshis =
-			get_v2_channel_reserve_satoshis(post_channel_value, MIN_CHAN_DUST_LIMIT_SATOSHIS);
+		let counterparty_selected_channel_reserve_satoshis = get_v2_channel_reserve_satoshis(
+			post_channel_value,
+			MIN_CHAN_DUST_LIMIT_SATOSHIS,
+			prev_funding
+				.counterparty_selected_channel_reserve_satoshis
+				.expect("counterparty reserve is set")
+				== 0,
+		);
 		let holder_selected_channel_reserve_satoshis = get_v2_channel_reserve_satoshis(
 			post_channel_value,
 			context.counterparty_dust_limit_satoshis,
+			prev_funding.holder_selected_channel_reserve_satoshis == 0,
 		);
 
 		Self {
@@ -5032,27 +5039,27 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			));
 		}
 
-		if funding.is_outbound() {
-			let (local_stats, _local_htlcs) = self
-				.get_next_local_commitment_stats(
-					funding,
-					Some(HTLCAmountDirection { outbound: false, amount_msat: msg.amount_msat }),
-					include_counterparty_unknown_htlcs,
-					fee_spike_buffer_htlc,
-					self.feerate_per_kw,
-					dust_exposure_limiting_feerate,
-				)
-				.map_err(|()| {
-					ChannelError::close(String::from("Balance exhausted on local commitment"))
-				})?;
-			// Check that they won't violate our local required channel reserve by adding this HTLC.
-			if local_stats.commitment_stats.holder_balance_msat
+		let (local_stats, _local_htlcs) = self
+			.get_next_local_commitment_stats(
+				funding,
+				Some(HTLCAmountDirection { outbound: false, amount_msat: msg.amount_msat }),
+				include_counterparty_unknown_htlcs,
+				fee_spike_buffer_htlc,
+				self.feerate_per_kw,
+				dust_exposure_limiting_feerate,
+			)
+			.map_err(|()| {
+				ChannelError::close(String::from("Balance exhausted on local commitment"))
+			})?;
+
+		// Check that they won't violate our local required channel reserve by adding this HTLC.
+		if funding.is_outbound()
+			&& local_stats.commitment_stats.holder_balance_msat
 				< funding.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000
-			{
-				return Err(ChannelError::close(
-					"Cannot accept HTLC that would put our balance under counterparty-announced channel reserve value".to_owned()
-				));
-			}
+		{
+			return Err(ChannelError::close(
+				"Cannot accept HTLC that would put our balance under counterparty-announced channel reserve value".to_owned()
+			));
 		}
 
 		Ok(())
@@ -5146,6 +5153,12 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		let commitment_txid = {
 			let trusted_tx = commitment_data.tx.trust();
 			let bitcoin_tx = trusted_tx.built_transaction();
+			if bitcoin_tx.transaction.output.is_empty() {
+				return Err(ChannelError::close(
+					"Commitment tx from peer has 0 outputs".to_owned(),
+				));
+			}
+
 			let sighash = bitcoin_tx.get_sighash_all(&funding_script, funding.get_value_satoshis());
 
 			log_trace!(logger, "Checking commitment tx signature {} by key {} against tx {} (sighash {}) with redeemscript {} in channel {}",
@@ -6282,8 +6295,11 @@ fn get_holder_max_htlc_value_in_flight_msat(
 /// This is used both for outbound and inbound channels and has lower bound
 /// of `MIN_THEIR_CHAN_RESERVE_SATOSHIS`.
 pub(crate) fn get_holder_selected_channel_reserve_satoshis(
-	channel_value_satoshis: u64, config: &UserConfig,
+	channel_value_satoshis: u64, config: &UserConfig, is_0reserve: bool,
 ) -> u64 {
+	if is_0reserve {
+		return 0;
+	}
 	let counterparty_chan_reserve_prop_mil =
 		config.channel_handshake_config.their_channel_reserve_proportional_millionths as u64;
 	let calculated_reserve =
@@ -6309,7 +6325,12 @@ pub(crate) fn get_legacy_default_holder_selected_channel_reserve_satoshis(
 ///
 /// This is used both for outbound and inbound channels and has lower bound
 /// of `dust_limit_satoshis`.
-fn get_v2_channel_reserve_satoshis(channel_value_satoshis: u64, dust_limit_satoshis: u64) -> u64 {
+fn get_v2_channel_reserve_satoshis(
+	channel_value_satoshis: u64, dust_limit_satoshis: u64, is_0reserve: bool,
+) -> u64 {
+	if is_0reserve {
+		return 0;
+	}
 	// Fixed at 1% of channel value by spec.
 	let (q, _) = channel_value_satoshis.overflowing_div(100);
 	cmp::min(channel_value_satoshis, cmp::max(q, dust_limit_satoshis))
@@ -12033,12 +12054,19 @@ where
 			our_funding_contribution.to_sat(),
 			their_funding_contribution.to_sat(),
 		);
-		let counterparty_selected_channel_reserve = Amount::from_sat(
-			get_v2_channel_reserve_satoshis(post_channel_value, MIN_CHAN_DUST_LIMIT_SATOSHIS),
-		);
+		let counterparty_selected_channel_reserve =
+			Amount::from_sat(get_v2_channel_reserve_satoshis(
+				post_channel_value,
+				MIN_CHAN_DUST_LIMIT_SATOSHIS,
+				self.funding
+					.counterparty_selected_channel_reserve_satoshis
+					.expect("counterparty reserve is set")
+					== 0,
+			));
 		let holder_selected_channel_reserve = Amount::from_sat(get_v2_channel_reserve_satoshis(
 			post_channel_value,
 			self.context.counterparty_dust_limit_satoshis,
+			self.funding.holder_selected_channel_reserve_satoshis == 0,
 		));
 
 		// We allow parties to draw from their previous reserve, as long as they satisfy their v2 reserve
@@ -13267,7 +13295,7 @@ impl<SP: SignerProvider> OutboundV1Channel<SP> {
 		channel_value_satoshis: u64, push_msat: u64, user_id: u128, config: &UserConfig, current_chain_height: u32,
 		outbound_scid_alias: u64, temporary_channel_id: Option<ChannelId>, logger: L
 	) -> Result<OutboundV1Channel<SP>, APIError> {
-		let holder_selected_channel_reserve_satoshis = get_holder_selected_channel_reserve_satoshis(channel_value_satoshis, config);
+		let holder_selected_channel_reserve_satoshis = get_holder_selected_channel_reserve_satoshis(channel_value_satoshis, config, false);
 		if holder_selected_channel_reserve_satoshis < MIN_CHAN_DUST_LIMIT_SATOSHIS {
 			// Protocol level safety check in place, although it should never happen because
 			// of `MIN_THEIR_CHAN_RESERVE_SATOSHIS`
@@ -13649,7 +13677,7 @@ impl<SP: SignerProvider> InboundV1Channel<SP> {
 		// support this channel type.
 		let channel_type = channel_type_from_open_channel(&msg.common_fields, our_supported_features)?;
 
-		let holder_selected_channel_reserve_satoshis = get_holder_selected_channel_reserve_satoshis(msg.common_fields.funding_satoshis, config);
+		let holder_selected_channel_reserve_satoshis = get_holder_selected_channel_reserve_satoshis(msg.common_fields.funding_satoshis, config, false);
 		let counterparty_pubkeys = ChannelPublicKeys {
 			funding_pubkey: msg.common_fields.funding_pubkey,
 			revocation_basepoint: RevocationBasepoint::from(msg.common_fields.revocation_basepoint),
@@ -13903,7 +13931,7 @@ impl<SP: SignerProvider> PendingV2Channel<SP> {
 		});
 
 		let holder_selected_channel_reserve_satoshis = get_v2_channel_reserve_satoshis(
-			funding_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS);
+			funding_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS, false);
 
 		let funding_feerate_sat_per_1000_weight = fee_estimator.bounded_sat_per_1000_weight(funding_confirmation_target);
 		let funding_tx_locktime = LockTime::from_height(current_chain_height)
@@ -14042,9 +14070,9 @@ impl<SP: SignerProvider> PendingV2Channel<SP> {
 		let channel_value_satoshis =
 			our_funding_contribution_sats.saturating_add(msg.common_fields.funding_satoshis);
 		let counterparty_selected_channel_reserve_satoshis = get_v2_channel_reserve_satoshis(
-			channel_value_satoshis, msg.common_fields.dust_limit_satoshis);
+			channel_value_satoshis, msg.common_fields.dust_limit_satoshis, false);
 		let holder_selected_channel_reserve_satoshis = get_v2_channel_reserve_satoshis(
-			channel_value_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS);
+			channel_value_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS, false);
 
 		let channel_type = channel_type_from_open_channel(&msg.common_fields, our_supported_features)?;
 

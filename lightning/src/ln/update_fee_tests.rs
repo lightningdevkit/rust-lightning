@@ -408,7 +408,8 @@ pub fn do_test_update_fee_that_funder_cannot_afford(channel_type_features: Chann
 	);
 	let channel_id = chan.2;
 	let secp_ctx = Secp256k1::new();
-	let bs_channel_reserve_sats = get_holder_selected_channel_reserve_satoshis(channel_value, &cfg);
+	let bs_channel_reserve_sats =
+		get_holder_selected_channel_reserve_satoshis(channel_value, &cfg, false);
 	let (anchor_outputs_value_sats, outputs_num_no_htlcs) =
 		if channel_type_features.supports_anchors_zero_fee_htlc_tx() {
 			(ANCHOR_OUTPUT_VALUE_SATOSHI * 2, 4)
@@ -892,7 +893,8 @@ pub fn test_chan_init_feerate_unaffordability() {
 
 	// During open, we don't have a "counterparty channel reserve" to check against, so that
 	// requirement only comes into play on the open_channel handling side.
-	push_amt -= get_holder_selected_channel_reserve_satoshis(100_000, &default_config) * 1000;
+	push_amt -=
+		get_holder_selected_channel_reserve_satoshis(100_000, &default_config, false) * 1000;
 	nodes[0].node.create_channel(node_b_id, 100_000, push_amt, 42, None, None).unwrap();
 	let mut open_channel_msg =
 		get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
