@@ -3670,8 +3670,46 @@ impl<
 	/// [`Event::FundingGenerationReady::user_channel_id`]: events::Event::FundingGenerationReady::user_channel_id
 	/// [`Event::FundingGenerationReady::temporary_channel_id`]: events::Event::FundingGenerationReady::temporary_channel_id
 	/// [`Event::ChannelClosed::channel_id`]: events::Event::ChannelClosed::channel_id
+	pub fn create_channel(
+		&self, their_network_key: PublicKey, channel_value_satoshis: u64, push_msat: u64,
+		user_channel_id: u128, temporary_channel_id: Option<ChannelId>,
+		override_config: Option<UserConfig>,
+	) -> Result<ChannelId, APIError> {
+		self.create_channel_internal(
+			their_network_key,
+			channel_value_satoshis,
+			push_msat,
+			user_channel_id,
+			temporary_channel_id,
+			override_config,
+			false,
+		)
+	}
+
+	/// Creates a new outbound channel to the given remote node and with the given value.
+	///
+	/// The only difference between this method and [`ChannelManager::create_channel`] is that this method sets
+	/// the reserve the counterparty must keep at all times in the channel to zero. This allows the counterparty to
+	/// spend their entire channel balance, and attempt to force-close the channel with a revoked commitment
+	/// transaction **for free**.
+	pub fn create_channel_to_trusted_peer(
+		&self, their_network_key: PublicKey, channel_value_satoshis: u64, push_msat: u64,
+		user_channel_id: u128, temporary_channel_id: Option<ChannelId>,
+		override_config: Option<UserConfig>,
+	) -> Result<ChannelId, APIError> {
+		self.create_channel_internal(
+			their_network_key,
+			channel_value_satoshis,
+			push_msat,
+			user_channel_id,
+			temporary_channel_id,
+			override_config,
+			true,
+		)
+	}
+
 	#[rustfmt::skip]
-	pub fn create_channel(&self, their_network_key: PublicKey, channel_value_satoshis: u64, push_msat: u64, user_channel_id: u128, temporary_channel_id: Option<ChannelId>, override_config: Option<UserConfig>) -> Result<ChannelId, APIError> {
+	fn create_channel_internal(&self, their_network_key: PublicKey, channel_value_satoshis: u64, push_msat: u64, user_channel_id: u128, temporary_channel_id: Option<ChannelId>, override_config: Option<UserConfig>, is_0reserve: bool) -> Result<ChannelId, APIError> {
 		if channel_value_satoshis < 1000 {
 			return Err(APIError::APIMisuseError { err: format!("Channel value must be at least 1000 satoshis. It was {}", channel_value_satoshis) });
 		}
@@ -3707,7 +3745,7 @@ impl<
 			};
 			match OutboundV1Channel::new(&self.fee_estimator, &self.entropy_source, &self.signer_provider, their_network_key,
 				their_features, channel_value_satoshis, push_msat, user_channel_id, config,
-				self.best_block.read().unwrap().height, outbound_scid_alias, temporary_channel_id, &self.logger)
+				self.best_block.read().unwrap().height, outbound_scid_alias, temporary_channel_id, &self.logger, is_0reserve)
 			{
 				Ok(res) => res,
 				Err(e) => {
