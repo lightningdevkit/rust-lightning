@@ -940,6 +940,7 @@ pub fn test_user_configurable_csv_delay() {
 		42,
 		None,
 		&logger,
+		None,
 	) {
 		match error {
 			APIError::APIMisuseError { err } => {
