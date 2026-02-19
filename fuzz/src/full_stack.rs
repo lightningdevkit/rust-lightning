@@ -743,7 +743,7 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger + MaybeSend + MaybeSync>
 				payments_sent += 1;
 				let _ = channelmanager.send_payment(
 					payment_hash,
-					RecipientOnionFields::spontaneous_empty(),
+					RecipientOnionFields::spontaneous_empty(final_value_msat),
 					PaymentId(payment_hash.0),
 					params,
 					Retry::Attempts(2),
@@ -765,7 +765,7 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger + MaybeSend + MaybeSync>
 				payments_sent += 1;
 				let _ = channelmanager.send_payment(
 					payment_hash,
-					RecipientOnionFields::secret_only(payment_secret),
+					RecipientOnionFields::secret_only(payment_secret, final_value_msat),
 					PaymentId(payment_hash.0),
 					params,
 					Retry::Attempts(2),

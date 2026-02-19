@@ -11,7 +11,7 @@
 //! nodes for functional tests.
 
 use crate::blinded_path::payment::DummyTlvs;
-use crate::chain::channelmonitor::ChannelMonitor;
+use crate::chain::channelmonitor::{ChannelMonitor, HTLC_FAIL_BACK_BUFFER};
 use crate::chain::transaction::OutPoint;
 use crate::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Listen, Watch};
 use crate::events::bump_transaction::sync::{
@@ -3478,7 +3478,7 @@ pub fn send_along_route_with_secret<'a, 'b, 'c>(
 		.node
 		.send_payment(
 			our_payment_hash,
-			RecipientOnionFields::secret_only(our_payment_secret),
+			RecipientOnionFields::secret_only(our_payment_secret, recv_value),
 			payment_id,
 			route.route_params.unwrap(),
 			Retry::Attempts(0),
@@ -3522,6 +3522,7 @@ pub struct PassAlongPathArgs<'a, 'b, 'c, 'd> {
 	pub custom_tlvs: Vec<(u64, Vec<u8>)>,
 	pub payment_metadata: Option<Vec<u8>>,
 	pub expected_failure: Option<HTLCHandlingFailureType>,
+	pub payment_claimable_cltv: Option<u32>,
 }
 
 impl<'a, 'b, 'c, 'd> PassAlongPathArgs<'a, 'b, 'c, 'd> {
@@ -3544,6 +3545,7 @@ impl<'a, 'b, 'c, 'd> PassAlongPathArgs<'a, 'b, 'c, 'd> {
 			custom_tlvs: Vec::new(),
 			payment_metadata: None,
 			expected_failure: None,
+			payment_claimable_cltv: None,
 		}
 	}
 	pub fn without_clearing_recipient_events(mut self) -> Self {
@@ -3584,6 +3586,10 @@ impl<'a, 'b, 'c, 'd> PassAlongPathArgs<'a, 'b, 'c, 'd> {
 		self.dummy_tlvs = dummy_tlvs.to_vec();
 		self
 	}
+	pub fn with_payment_claimable_cltv(mut self, cltv: u32) -> Self {
+		self.payment_claimable_cltv = Some(cltv);
+		self
+	}
 }
 
 pub fn do_pass_along_path<'a, 'b, 'c>(args: PassAlongPathArgs) -> Option<Event> {
@@ -3602,6 +3608,7 @@ pub fn do_pass_along_path<'a, 'b, 'c>(args: PassAlongPathArgs) -> Option<Event> 
 		custom_tlvs,
 		payment_metadata,
 		expected_failure,
+		payment_claimable_cltv,
 	} = args;
 
 	let mut payment_event = SendEvent::from_event(ev);
@@ -3617,7 +3624,7 @@ pub fn do_pass_along_path<'a, 'b, 'c>(args: PassAlongPathArgs) -> Option<Event> 
 
 		if is_last_hop && is_probe {
 			do_commitment_signed_dance(node, prev_node, &payment_event.commitment_msg, true, true);
-			node.node.process_pending_htlc_forwards();
+			expect_and_process_pending_htlcs(node, true);
 			check_added_monitors(node, 1);
 		} else {
 			let commitment = &payment_event.commitment_msg;
@@ -3717,6 +3724,12 @@ pub fn do_pass_along_path<'a, 'b, 'c>(args: PassAlongPathArgs) -> Option<Event> 
 							assert_eq!(*user_chan_id, Some(chan.user_channel_id));
 						}
 						assert!(claim_deadline.unwrap() > node.best_block_info().1);
+						if let Some(expected_cltv) = payment_claimable_cltv {
+							assert_eq!(
+								claim_deadline.unwrap(),
+								expected_cltv - HTLC_FAIL_BACK_BUFFER,
+							);
+						}
 					},
 					_ => panic!("Unexpected event"),
 				}

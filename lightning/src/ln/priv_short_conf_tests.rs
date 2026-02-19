@@ -81,7 +81,7 @@ fn test_priv_forwarding_rejection() {
 	let (route, our_payment_hash, our_payment_preimage, our_payment_secret) =
 		get_route_and_payment_hash!(nodes[0], nodes[2], payment_params, 10_000);
 
-	let onion = RecipientOnionFields::secret_only(our_payment_secret);
+	let onion = RecipientOnionFields::secret_only(our_payment_secret, 10_000);
 	let id = PaymentId(our_payment_hash.0);
 	nodes[0].node.send_payment_with_route(route.clone(), our_payment_hash, onion, id).unwrap();
 	check_added_monitors(&nodes[0], 1);
@@ -164,7 +164,7 @@ fn test_priv_forwarding_rejection() {
 	get_event_msg!(nodes[1], MessageSendEvent::SendChannelUpdate, node_c_id);
 	get_event_msg!(nodes[2], MessageSendEvent::SendChannelUpdate, node_b_id);
 
-	let onion = RecipientOnionFields::secret_only(our_payment_secret);
+	let onion = RecipientOnionFields::secret_only(our_payment_secret, 10_000);
 	let id = PaymentId(our_payment_hash.0);
 	nodes[0].node.send_payment_with_route(route, our_payment_hash, onion, id).unwrap();
 	check_added_monitors(&nodes[0], 1);
@@ -348,7 +348,7 @@ fn test_routed_scid_alias() {
 		get_route_and_payment_hash!(nodes[0], nodes[2], payment_params, 100_000);
 	assert_eq!(route.paths[0].hops[1].short_channel_id, last_hop[0].inbound_scid_alias.unwrap());
 
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, 100_000);
 	let id = PaymentId(payment_hash.0);
 	nodes[0].node.send_payment_with_route(route, payment_hash, onion, id).unwrap();
 	check_added_monitors(&nodes[0], 1);
@@ -578,7 +578,7 @@ fn test_inbound_scid_privacy() {
 		get_route_and_payment_hash!(nodes[0], nodes[2], payment_params, 100_000);
 	assert_eq!(route.paths[0].hops[1].short_channel_id, last_hop[0].inbound_scid_alias.unwrap());
 
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, 100_000);
 	let id = PaymentId(payment_hash.0);
 	nodes[0].node.send_payment_with_route(route, payment_hash, onion, id).unwrap();
 	check_added_monitors(&nodes[0], 1);
@@ -599,7 +599,7 @@ fn test_inbound_scid_privacy() {
 		get_route_and_payment_hash!(nodes[0], nodes[2], payment_params_2, 100_000);
 	assert_eq!(route_2.paths[0].hops[1].short_channel_id, last_hop[0].short_channel_id.unwrap());
 
-	let onion = RecipientOnionFields::secret_only(payment_secret_2);
+	let onion = RecipientOnionFields::secret_only(payment_secret_2, 100_000);
 	let id = PaymentId(payment_hash_2.0);
 	nodes[0].node.send_payment_with_route(route_2, payment_hash_2, onion, id).unwrap();
 	check_added_monitors(&nodes[0], 1);
@@ -695,7 +695,7 @@ fn test_scid_alias_returned() {
 	route.paths[0].hops[1].fee_msat = 10_000_000; // Overshoot the last channel's value
 
 	// Route the HTLC through to the destination.
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, route.get_total_amount());
 	let id = PaymentId(payment_hash.0);
 	nodes[0].node.send_payment_with_route(route.clone(), payment_hash, onion, id).unwrap();
 
@@ -732,7 +732,7 @@ fn test_scid_alias_returned() {
 	route.paths[0].hops[0].fee_msat = 0; // But set fee paid to the middle hop to 0
 
 	// Route the HTLC through to the destination.
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, 10_000);
 	let id = PaymentId(payment_hash.0);
 	nodes[0].node.send_payment_with_route(route, payment_hash, onion, id).unwrap();
 
@@ -934,7 +934,7 @@ fn test_0conf_channel_with_async_monitor() {
 	let (route, payment_hash, payment_preimage, payment_secret) =
 		get_route_and_payment_hash!(nodes[0], nodes[2], 1_000_000);
 
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, 1_000_000);
 	let id = PaymentId(payment_hash.0);
 	nodes[0].node.send_payment_with_route(route, payment_hash, onion, id).unwrap();
 	check_added_monitors(&nodes[0], 1);
@@ -1283,7 +1283,7 @@ fn test_0conf_channel_reorg() {
 	);
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
 
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, 10_000);
 	let id = PaymentId([0; 32]);
 	nodes[1].node.send_payment_with_route(route, payment_hash, onion.clone(), id).unwrap();
 	let mut conditions = PaymentFailedConditions::new();

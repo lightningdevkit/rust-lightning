@@ -2469,7 +2469,7 @@ fn rejects_keysend_to_non_static_invoice_path() {
 	let route_params = RouteParameters::from_payment_params_and_value(pay_params, amt_msat);
 	let keysend_payment_id = PaymentId([2; 32]);
 	let payment_hash = nodes[0].node.send_spontaneous_payment(
-		Some(payment_preimage), RecipientOnionFields::spontaneous_empty(), keysend_payment_id,
+		Some(payment_preimage), RecipientOnionFields::spontaneous_empty(amt_msat), keysend_payment_id,
 		route_params, Retry::Attempts(0)
 	).unwrap();
 	check_added_monitors(&nodes[0], 1);

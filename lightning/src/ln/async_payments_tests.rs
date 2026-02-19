@@ -615,7 +615,7 @@ fn invalid_keysend_payment_secret() {
 		.node
 		.send_spontaneous_payment(
 			Some(keysend_preimage),
-			RecipientOnionFields::spontaneous_empty(),
+			RecipientOnionFields::spontaneous_empty(amt_msat),
 			PaymentId(keysend_preimage.0),
 			route_params,
 			Retry::Attempts(0),

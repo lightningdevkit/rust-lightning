@@ -2387,7 +2387,7 @@ fn do_test_splice_with_inflight_htlc_forward_and_resolution(expire_scid_pre_forw
 	let route = get_route(&nodes[0], &route_params).unwrap();
 	let (_, payment_hash, payment_secret) =
 		get_payment_preimage_hash(&nodes[2], Some(payment_amount), None);
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, payment_amount);
 	let id = PaymentId(payment_hash.0);
 	nodes[0].node.send_payment_with_route(route.clone(), payment_hash, onion, id).unwrap();
 	check_added_monitors(&nodes[0], 1);
