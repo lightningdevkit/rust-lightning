@@ -13006,6 +13006,51 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		}
 	}
 
+	fn internal_tx_ack_rbf(
+		&self, counterparty_node_id: &PublicKey, msg: &msgs::TxAckRbf,
+	) -> Result<(), MsgHandleErrInternal> {
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
+			debug_assert!(false);
+			MsgHandleErrInternal::unreachable_no_such_peer(counterparty_node_id, msg.channel_id)
+		})?;
+		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+
+		// Look for the channel
+		match peer_state.channel_by_id.entry(msg.channel_id) {
+			hash_map::Entry::Vacant(_) => Err(MsgHandleErrInternal::no_such_channel_for_peer(
+				counterparty_node_id,
+				msg.channel_id,
+			)),
+			hash_map::Entry::Occupied(mut chan_entry) => {
+				if let Some(ref mut funded_channel) = chan_entry.get_mut().as_funded_mut() {
+					let tx_ack_rbf_res = funded_channel.tx_ack_rbf(
+						msg,
+						&self.entropy_source,
+						&self.get_our_node_id(),
+						&self.logger,
+					);
+					let tx_msg_opt =
+						try_channel_entry!(self, peer_state, tx_ack_rbf_res, chan_entry);
+					if let Some(tx_msg) = tx_msg_opt {
+						peer_state
+							.pending_msg_events
+							.push(tx_msg.into_msg_send_event(counterparty_node_id.clone()));
+					}
+					Ok(())
+				} else {
+					try_channel_entry!(
+						self,
+						peer_state,
+						Err(ChannelError::close("Channel is not funded, cannot RBF splice".into())),
+						chan_entry
+					)
+				}
+			},
+		}
+	}
+
 	fn internal_splice_locked(
 		&self, counterparty_node_id: &PublicKey, msg: &msgs::SpliceLocked,
 	) -> Result<(), MsgHandleErrInternal> {
@@ -16427,11 +16472,16 @@ impl<
 	}
 
 	fn handle_tx_ack_rbf(&self, counterparty_node_id: PublicKey, msg: &msgs::TxAckRbf) {
-		let err = Err(MsgHandleErrInternal::send_err_msg_no_close(
-			"Dual-funded channels not supported".to_owned(),
-			msg.channel_id.clone(),
-		));
-		let _: Result<(), _> = self.handle_error(err, counterparty_node_id);
+		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
+			let res = self.internal_tx_ack_rbf(&counterparty_node_id, msg);
+			let persist = match &res {
+				Err(e) if e.closes_channel() => NotifyOption::DoPersist,
+				Err(_) => NotifyOption::SkipPersistHandleEvents,
+				Ok(()) => NotifyOption::SkipPersistHandleEvents,
+			};
+			let _ = self.handle_error(res, counterparty_node_id);
+			persist
+		});
 	}
 
 	fn handle_tx_abort(&self, counterparty_node_id: PublicKey, msg: &msgs::TxAbort) {
