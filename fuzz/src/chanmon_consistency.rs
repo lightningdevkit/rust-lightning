@@ -3077,3 +3077,415 @@ pub extern "C" fn chanmon_consistency_run(data: *const u8, datalen: usize) {
 	do_test(unsafe { std::slice::from_raw_parts(data, datalen) }, test_logger::DevNull {}, false);
 	do_test(unsafe { std::slice::from_raw_parts(data, datalen) }, test_logger::DevNull {}, true);
 }
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::utils::test_logger::StringBuffer;
+
+	fn run_and_get_log(data: &[u8]) -> String {
+		let logger = StringBuffer::new();
+		do_test(data, logger.clone(), false);
+		logger.into_string()
+	}
+
+	#[test]
+	fn test_force_close_executes() {
+		let data: Vec<u8> = vec![
+			0x00, // mon style: all Completed
+			0xd0, // A force-closes A-B channel
+			0xd8, 0xd9, 0xda, // drain and confirm broadcasts for A, B, C
+			0xdc, 0xdc, 0xdc, // advance 50+50+50 blocks
+			0xff, // settle: sync nodes, resolve all pending state
+		];
+		let log = run_and_get_log(&data);
+
+		// Verify initiator force-closed
+		assert!(log.contains("Force-closing channel"), "Node should initiate force-close");
+		// Verify counterparty received the error and also closed
+		assert!(
+			log.contains("counterparty force-closed"),
+			"Counterparty should close after receiving error message"
+		);
+		// Verify commitment tx was confirmed on-chain
+		assert!(
+			log.contains("Channel closed by funding output spend"),
+			"Commitment transaction should be confirmed on-chain"
+		);
+		// Verify spendable output matured
+		assert!(
+			log.contains("marked for spending has got enough confirmations"),
+			"Spendable outputs should mature after chain advancement"
+		);
+	}
+
+	#[test]
+	fn test_force_close_without_broadcast_confirm_no_resolution() {
+		// Force-close but skip draining broadcasts, advancing height, and
+		// settlement. Without chain progression, no on-chain resolution occurs.
+		let data: Vec<u8> = vec![
+			0x00, // mon style: all Completed
+			0xd0, // A force-closes A-B channel
+		];
+		let log = run_and_get_log(&data);
+
+		assert!(log.contains("Force-closing channel"), "Force-close should fire");
+		assert!(
+			!log.contains("marked for spending has got enough confirmations"),
+			"Without chain advancement, outputs should not mature"
+		);
+	}
+
+	#[test]
+	fn test_force_close_both_directions() {
+		let data: Vec<u8> = vec![
+			0x00, // mon style: all Completed
+			0xd0, // A force-closes A-B channel
+			0xd1, // B force-closes B-C channel
+			0xd8, 0xd9, 0xda, // drain and confirm broadcasts for A, B, C
+			0xdc, 0xdc, 0xdc, // advance 50+50+50 blocks
+			0xff, // settle: sync nodes, resolve all pending state
+		];
+		let log = run_and_get_log(&data);
+
+		// User-initiated force-closes log with the error message
+		let user_fc_count = log.matches("Force-closing channel, The error message").count();
+		assert_eq!(user_fc_count, 2, "Should have 2 user-initiated force-closes");
+		// Both counterparties should also detect the close
+		let counterparty_count = log.matches("counterparty force-closed").count();
+		assert!(
+			counterparty_count >= 2,
+			"Both counterparties should close, got {}",
+			counterparty_count
+		);
+	}
+
+	#[test]
+	fn test_force_close_middle_node_initiates() {
+		let data: Vec<u8> = vec![
+			0x00, // mon style: all Completed
+			0xd2, // B force-closes A-B channel (error msg "]]]]]]")
+			0xd8, 0xd9, 0xda, // drain and confirm broadcasts for A, B, C
+			0xdc, 0xdc, 0xdc, // advance 50+50+50 blocks
+			0xff, // settle: sync nodes, resolve all pending state
+		];
+		let log = run_and_get_log(&data);
+
+		// B initiated with its specific error message
+		assert!(
+			log.contains("]]]]]]\""),
+			"Middle node B should force-close with its specific error message"
+		);
+		// A should detect counterparty close
+		assert!(
+			log.contains("counterparty force-closed with message: ]]]]]]"),
+			"Node A should detect counterparty force-close from B"
+		);
+	}
+
+	#[test]
+	fn test_inflight_htlc_force_close_needs_height() {
+		// Send payment A->B (0x30), process messages to get HTLC committed (0x10, 0x18),
+		// process events (0x16, 0x1e), then force-close without advancing height.
+		// The HTLC timeout package should be delayed waiting for its timelock.
+		let data: Vec<u8> = vec![
+			0x00, // mon style
+			0x30, // A sends payment to B on chan_a
+			0x10, // process all msgs on node 0 (A)
+			0x18, // process all msgs on node 1 (B)
+			0x10, // process all msgs on node 0 (A) again for revoke_and_ack
+			0x16, // process events on node 0
+			0x1e, // process events on node 1
+			0xd0, // A force-closes with B
+			0xd8, 0xd9, 0xda, // drain all broadcasts and confirm
+		];
+		let log = run_and_get_log(&data);
+
+		assert!(log.contains("Force-closing channel"), "Force-close should fire");
+		// HTLC timeout should be delayed because chain height hasn't advanced past CLTV
+		assert!(
+			log.contains("Delaying claim of package until its timelock"),
+			"HTLC claim should be delayed waiting for timelock"
+		);
+	}
+
+	#[test]
+	fn test_inflight_htlc_resolved_after_height_advance() {
+		// Same as above but advance height past the HTLC timeout. The HTLC timeout
+		// tx should get broadcast after the height passes the timelock.
+		let data: Vec<u8> = vec![
+			0x00, // mon style
+			0x30, // A sends payment to B on chan_a
+			0x10, // process all msgs on node 0 (A)
+			0x18, // process all msgs on node 1 (B)
+			0x10, // process all msgs on node 0 (A) again for revoke_and_ack
+			0x16, // process events on node 0
+			0x1e, // process events on node 1
+			0xd0, // A force-closes with B
+			0xd8, // drain and confirm A's broadcasts (commitment tx)
+			0xde, 0xde, // advance 200+200 blocks past CLTV
+		];
+		let log = run_and_get_log(&data);
+
+		assert!(log.contains("Force-closing channel"), "Force-close should fire");
+		// After advancing past the timelock, the HTLC timeout tx should broadcast
+		assert!(
+			log.contains("Broadcasting onchain"),
+			"HTLC timeout transaction should be broadcast after height advance"
+		);
+	}
+
+	#[test]
+	fn test_three_node_force_close_during_fulfill_propagation() {
+		// A->B->C payment. C claims, fulfill propagates back to B, then A-B
+		// is force-closed before B forwards the fulfill to A. B has the
+		// preimage and claims the HTLC on-chain. A learns the preimage from
+		// B's on-chain HTLC-success transaction. Settlement (0xff) handles
+		// syncing all nodes to the chain, enabling signer ops, and
+		// resolving all pending state.
+		let data: Vec<u8> = vec![
+			0x00, // mon style: all Completed
+			0x3c, // send_hop A->B->C, 1_000_000 msat
+			// Commit HTLC on A-B channel:
+			0x11, // Process A: deliver A's update_add+CS to B
+			0x19, // Process B: deliver B's RAA+CS to A
+			0x11, // Process A: deliver A's RAA to B. A-B HTLC committed.
+			// Forward HTLC from B to C:
+			0x1f, // Process events on B: forward HTLC to C
+			0x19, // Process B: deliver B's update_add+CS to C
+			0x21, // Process C: deliver C's RAA+CS to B
+			0x19, // Process B: deliver B's RAA to C. B-C HTLC committed.
+			// C claims the payment (two rounds: first decodes HTLC, second claims):
+			0x27, // Process events on C: decode HTLC, generate PaymentClaimable
+			0x27, // Process events on C: handle PaymentClaimable, call claim_funds
+			// Deliver C's fulfill to B:
+			0x21, // Process C: deliver C's update_fulfill+CS to B. B learns preimage.
+			// DO NOT process B's messages: B's fulfill hasn't reached A yet.
+			// A force-closes while HTLC is still committed on A-B:
+			0xd0, // A force-closes A-B
+			// Settle everything: syncs chain, enables signing, resolves on-chain.
+			0xff,
+		];
+		let log = run_and_get_log(&data);
+
+		assert!(log.contains("Force-closing channel"), "A should force-close");
+		// C should claim and send fulfill to B
+		assert!(
+			log.contains("Delivering update_fulfill_htlc from node 2 to node 1"),
+			"C should deliver fulfill to B"
+		);
+		// B should broadcast HTLC-success claim using the preimage on-chain
+		assert!(
+			log.contains("Broadcasting onchain HTLC claim tx (1 preimage"),
+			"B should broadcast HTLC preimage claim on-chain"
+		);
+		// A should learn the preimage from B's on-chain claim
+		assert!(
+			log.contains("resolves outbound HTLC") && log.contains("with preimage"),
+			"A should learn preimage from B's on-chain HTLC claim"
+		);
+		// Payment should ultimately succeed
+		assert!(
+			log.contains("Handling event PaymentSent"),
+			"Payment should succeed after on-chain resolution"
+		);
+	}
+
+	// Async monitor variants: same scenarios but with all monitors returning
+	// InProgress (0x07) instead of Completed (0x00). This exercises the
+	// async monitor update path where updates are queued and completed later.
+
+	#[test]
+	fn test_force_close_executes_async() {
+		let data: Vec<u8> = vec![
+			0x07, // mon style: all InProgress (async)
+			0xd0, // A force-closes A-B channel
+			0xd8, 0xd9, 0xda, // drain and confirm broadcasts for A, B, C
+			0xdc, 0xdc, 0xdc, // advance 50+50+50 blocks
+			0xff, // settle: completes monitor updates, syncs nodes, resolves state
+		];
+		let log = run_and_get_log(&data);
+
+		assert!(log.contains("Force-closing channel"), "Node should initiate force-close");
+		assert!(
+			log.contains("counterparty force-closed"),
+			"Counterparty should close after receiving error message"
+		);
+		assert!(
+			log.contains("Channel closed by funding output spend"),
+			"Commitment transaction should be confirmed on-chain"
+		);
+		assert!(
+			log.contains("marked for spending has got enough confirmations"),
+			"Spendable outputs should mature after chain advancement"
+		);
+	}
+
+	#[test]
+	fn test_force_close_without_broadcast_confirm_no_resolution_async() {
+		let data: Vec<u8> = vec![
+			0x07, // mon style: all InProgress (async)
+			0xd0, // A force-closes A-B channel
+		];
+		let log = run_and_get_log(&data);
+
+		assert!(log.contains("Force-closing channel"), "Force-close should fire");
+		assert!(
+			!log.contains("marked for spending has got enough confirmations"),
+			"Without chain advancement, outputs should not mature"
+		);
+	}
+
+	#[test]
+	fn test_force_close_both_directions_async() {
+		let data: Vec<u8> = vec![
+			0x07, // mon style: all InProgress (async)
+			0xd0, // A force-closes A-B channel
+			0xd1, // B force-closes B-C channel
+			0xd8, 0xd9, 0xda, // drain and confirm broadcasts for A, B, C
+			0xdc, 0xdc, 0xdc, // advance 50+50+50 blocks
+			0xff, // settle: completes monitor updates, syncs nodes, resolves state
+		];
+		let log = run_and_get_log(&data);
+
+		let user_fc_count = log.matches("Force-closing channel, The error message").count();
+		assert_eq!(user_fc_count, 2, "Should have 2 user-initiated force-closes");
+		let counterparty_count = log.matches("counterparty force-closed").count();
+		assert!(
+			counterparty_count >= 2,
+			"Both counterparties should close, got {}",
+			counterparty_count
+		);
+	}
+
+	#[test]
+	fn test_force_close_middle_node_initiates_async() {
+		let data: Vec<u8> = vec![
+			0x07, // mon style: all InProgress (async)
+			0xd2, // B force-closes A-B channel (error msg "]]]]]]")
+			0xd8, 0xd9, 0xda, // drain and confirm broadcasts for A, B, C
+			0xdc, 0xdc, 0xdc, // advance 50+50+50 blocks
+			0xff, // settle: completes monitor updates, syncs nodes, resolves state
+		];
+		let log = run_and_get_log(&data);
+
+		assert!(
+			log.contains("]]]]]]\""),
+			"Middle node B should force-close with its specific error message"
+		);
+		assert!(
+			log.contains("counterparty force-closed with message: ]]]]]]"),
+			"Node A should detect counterparty force-close from B"
+		);
+	}
+
+	#[test]
+	fn test_inflight_htlc_force_close_needs_height_async() {
+		let data: Vec<u8> = vec![
+			0x07, // mon style: all InProgress (async)
+			0x30, // A sends payment to B on chan_a
+			0x08, // complete all A's monitor updates (A-B)
+			0x10, // Process A: deliver A's update_add+CS to B
+			0x09, // complete all B's monitor updates (A-B)
+			0x18, // Process B: deliver B's RAA+CS to A
+			0x08, // complete all A's monitor updates (A-B)
+			0x10, // Process A: deliver A's RAA to B
+			0x09, // complete all B's monitor updates (A-B)
+			0x16, // process events on node 0 (A)
+			0x1e, // process events on node 1 (B)
+			0xd0, // A force-closes with B
+			0xd8, 0xd9, 0xda, // drain all broadcasts and confirm
+		];
+		let log = run_and_get_log(&data);
+
+		assert!(log.contains("Force-closing channel"), "Force-close should fire");
+		assert!(
+			log.contains("Delaying claim of package until its timelock"),
+			"HTLC claim should be delayed waiting for timelock"
+		);
+	}
+
+	#[test]
+	fn test_inflight_htlc_resolved_after_height_advance_async() {
+		let data: Vec<u8> = vec![
+			0x07, // mon style: all InProgress (async)
+			0x30, // A sends payment to B on chan_a
+			0x08, // complete all A's monitor updates (A-B)
+			0x10, // Process A: deliver A's update_add+CS to B
+			0x09, // complete all B's monitor updates (A-B)
+			0x18, // Process B: deliver B's RAA+CS to A
+			0x08, // complete all A's monitor updates (A-B)
+			0x10, // Process A: deliver A's RAA to B
+			0x09, // complete all B's monitor updates (A-B)
+			0x16, // process events on node 0 (A)
+			0x1e, // process events on node 1 (B)
+			0xd0, // A force-closes with B
+			0xd8, // drain and confirm A's broadcasts (commitment tx)
+			0xde, 0xde, // advance 200+200 blocks past CLTV
+		];
+		let log = run_and_get_log(&data);
+
+		assert!(log.contains("Force-closing channel"), "Force-close should fire");
+		assert!(
+			log.contains("Broadcasting onchain"),
+			"HTLC timeout transaction should be broadcast after height advance"
+		);
+	}
+
+	#[test]
+	fn test_three_node_force_close_during_fulfill_propagation_async() {
+		let data: Vec<u8> = vec![
+			0x07, // mon style: all InProgress (async)
+			0x3c, // send_hop A->B->C, 1_000_000 msat
+			// Commit HTLC on A-B channel (complete-all after each step):
+			0x08, // complete all A's monitor updates (A-B)
+			0x11, // Process A: deliver A's update_add+CS to B
+			0x09, // complete all B's monitor updates (A-B)
+			0x19, // Process B: deliver B's RAA+CS to A
+			0x08, // complete all A's monitor updates (A-B)
+			0x11, // Process A: deliver A's RAA to B. A-B HTLC committed.
+			0x09, // complete all B's monitor updates (A-B)
+			// Forward HTLC from B to C:
+			0x1f, // Process events on B: forward HTLC to C
+			0x0a, // complete all B's monitor updates (B-C)
+			0x19, // Process B: deliver B's update_add+CS to C
+			0x0b, // complete all C's monitor updates (B-C)
+			0x21, // Process C: deliver C's RAA+CS to B
+			0x0a, // complete all B's monitor updates (B-C)
+			0x19, // Process B: deliver B's RAA to C. B-C HTLC committed.
+			0x0b, // complete all C's monitor updates (B-C)
+			// C claims the payment (two rounds: first decodes HTLC, second claims):
+			0x27, // Process events on C: decode HTLC, generate PaymentClaimable
+			0x27, // Process events on C: handle PaymentClaimable, call claim_funds
+			0x0b, // complete all C's monitor updates (B-C)
+			// Deliver C's fulfill to B:
+			0x21, // Process C: deliver C's update_fulfill+CS to B. B learns preimage.
+			0x0a, // complete all B's monitor updates (B-C)
+			0x09, // complete all B's monitor updates (A-B)
+			// DO NOT process B's messages: B's fulfill hasn't reached A yet.
+			// A force-closes while HTLC is still committed on A-B:
+			0xd0, // A force-closes A-B
+			// Settle everything: completes monitor updates, syncs chain, resolves.
+			0xff,
+		];
+		let log = run_and_get_log(&data);
+
+		assert!(log.contains("Force-closing channel"), "A should force-close");
+		assert!(
+			log.contains("Delivering update_fulfill_htlc from node 2 to node 1"),
+			"C should deliver fulfill to B"
+		);
+		assert!(
+			log.contains("Broadcasting onchain HTLC claim tx (1 preimage"),
+			"B should broadcast HTLC preimage claim on-chain"
+		);
+		assert!(
+			log.contains("resolves outbound HTLC") && log.contains("with preimage"),
+			"A should learn preimage from B's on-chain HTLC claim"
+		);
+		assert!(
+			log.contains("Handling event PaymentSent"),
+			"Payment should succeed after on-chain resolution"
+		);
+	}
+}
