@@ -1031,6 +1031,12 @@ fn test_splice_in_and_out() {
 
 #[test]
 fn test_fails_initiating_concurrent_splices() {
+	fails_initiating_concurrent_splices(true);
+	fails_initiating_concurrent_splices(false);
+}
+
+#[cfg(test)]
+fn fails_initiating_concurrent_splices(reconnect: bool) {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let config = test_default_channel_config();
@@ -1043,6 +1049,7 @@ fn test_fails_initiating_concurrent_splices() {
 	let node_0_id = nodes[0].node.get_our_node_id();
 	let node_1_id = nodes[1].node.get_our_node_id();
 
+	send_payment(&nodes[0], &[&nodes[1]], 1_000);
 	provide_utxo_reserves(&nodes, 2, Amount::ONE_BTC);
 
 	let outputs = vec![TxOut {
@@ -1116,15 +1123,23 @@ fn test_fails_initiating_concurrent_splices() {
 	expect_splice_pending_event(&nodes[0], &node_1_id);
 	expect_splice_pending_event(&nodes[1], &node_0_id);
 
-	// Now that the splice is pending, another splice may be initiated.
+	// Now that the splice is pending, another splice may be initiated, but we must wait until
+	// the `splice_locked` exchange to send the initiator `stfu`.
 	assert!(nodes[0].node.splice_channel(&channel_id, &node_1_id, feerate).is_ok());
+
+	if reconnect {
+		nodes[0].node.peer_disconnected(node_1_id);
+		nodes[1].node.peer_disconnected(node_0_id);
+		reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
+	}
+
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
 	mine_transaction(&nodes[0], &splice_tx);
 	mine_transaction(&nodes[1], &splice_tx);
 	let stfu = lock_splice_after_blocks(&nodes[0], &nodes[1], ANTI_REORG_DELAY - 1);
 
-	// However, the acceptor had enqueued a quiescent action while the splice was pending, so it
-	// will now attempt to initiate quiescence.
 	assert!(
 		matches!(stfu, Some(MessageSendEvent::SendStfu { node_id, .. }) if node_id == node_0_id)
 	);

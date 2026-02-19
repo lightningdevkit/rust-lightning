@@ -13619,6 +13619,17 @@ where
 			return Ok(None);
 		}
 
+		if let Some(action) = self.quiescent_action.as_ref() {
+			// We can't initiate another splice while ours is pending, so don't bother becoming
+			// quiescent yet.
+			// TODO(splicing): Allow the splice as an RBF once supported.
+			let has_splice_action = matches!(action, QuiescentAction::Splice { .. })
+				|| matches!(action, QuiescentAction::LegacySplice(_));
+			if has_splice_action && self.pending_splice.is_some() {
+				return Ok(None);
+			}
+		}
+
 		// We need to send our `stfu`, either because we're trying to initiate quiescence, or the
 		// counterparty is and we've yet to send ours.
 		if self.context.channel_state.is_awaiting_quiescence()
