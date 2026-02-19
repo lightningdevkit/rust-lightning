@@ -142,6 +142,7 @@ fn test_zero_conf_channel_type_support() {
 		42,
 		None,
 		&logger,
+		false,
 	)
 	.unwrap();
 
@@ -241,6 +242,7 @@ fn do_test_supports_channel_type(config: UserConfig, expected_channel_type: Chan
 		42,
 		None,
 		&logger,
+		false,
 	)
 	.unwrap();
 	assert_eq!(
@@ -262,6 +264,7 @@ fn do_test_supports_channel_type(config: UserConfig, expected_channel_type: Chan
 		42,
 		None,
 		&logger,
+		false,
 	)
 	.unwrap();
 
@@ -328,6 +331,7 @@ fn test_rejects_if_channel_type_not_set() {
 		42,
 		None,
 		&logger,
+		false,
 	)
 	.unwrap();
 
@@ -416,6 +420,7 @@ fn test_rejects_if_channel_type_differ() {
 		42,
 		None,
 		&logger,
+		false,
 	)
 	.unwrap();
 
@@ -500,6 +505,7 @@ fn test_rejects_simple_anchors_channel_type() {
 		42,
 		None,
 		&logger,
+		false,
 	)
 	.unwrap();
 
@@ -542,6 +548,7 @@ fn test_rejects_simple_anchors_channel_type() {
 		42,
 		None,
 		&logger,
+		false,
 	)
 	.unwrap();
 
