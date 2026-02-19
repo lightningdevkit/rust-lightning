@@ -500,12 +500,11 @@ impl SignerProvider for KeyProvider {
 	}
 }
 
-// Since this fuzzer is only concerned with live-channel operations, we don't need to worry about
-// any signer operations that come after a force close.
-const SUPPORTED_SIGNER_OPS: [SignerOp; 3] = [
+const SUPPORTED_SIGNER_OPS: [SignerOp; 4] = [
 	SignerOp::SignCounterpartyCommitment,
 	SignerOp::GetPerCommitmentPoint,
 	SignerOp::ReleaseCommitmentSecret,
+	SignerOp::SignHolderCommitment,
 ];
 
 impl KeyProvider {
@@ -2545,6 +2544,18 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 			},
 			0xcb => {
 				keys_manager_c.enable_op_for_all_signers(SignerOp::ReleaseCommitmentSecret);
+				nodes[2].signer_unblocked(None);
+			},
+			0xcc => {
+				keys_manager_a.enable_op_for_all_signers(SignerOp::SignHolderCommitment);
+				nodes[0].signer_unblocked(None);
+			},
+			0xcd => {
+				keys_manager_b.enable_op_for_all_signers(SignerOp::SignHolderCommitment);
+				nodes[1].signer_unblocked(None);
+			},
+			0xce => {
+				keys_manager_c.enable_op_for_all_signers(SignerOp::SignHolderCommitment);
 				nodes[2].signer_unblocked(None);
 			},
 
