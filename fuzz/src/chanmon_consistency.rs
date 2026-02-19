@@ -508,11 +508,12 @@ impl SignerProvider for KeyProvider {
 	}
 }
 
-const SUPPORTED_SIGNER_OPS: [SignerOp; 4] = [
+const SUPPORTED_SIGNER_OPS: [SignerOp; 5] = [
 	SignerOp::SignCounterpartyCommitment,
 	SignerOp::GetPerCommitmentPoint,
 	SignerOp::ReleaseCommitmentSecret,
 	SignerOp::SignHolderCommitment,
+	SignerOp::SignHolderHtlcTransaction,
 ];
 
 impl KeyProvider {
@@ -2607,6 +2608,14 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 			},
 			0xce => {
 				keys_manager_c.enable_op_for_all_signers(SignerOp::SignHolderCommitment);
+				nodes[2].signer_unblocked(None);
+			},
+			0xcf => {
+				keys_manager_a.enable_op_for_all_signers(SignerOp::SignHolderHtlcTransaction);
+				keys_manager_b.enable_op_for_all_signers(SignerOp::SignHolderHtlcTransaction);
+				keys_manager_c.enable_op_for_all_signers(SignerOp::SignHolderHtlcTransaction);
+				nodes[0].signer_unblocked(None);
+				nodes[1].signer_unblocked(None);
 				nodes[2].signer_unblocked(None);
 			},
 
