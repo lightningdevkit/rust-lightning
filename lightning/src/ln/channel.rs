@@ -4930,27 +4930,27 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			));
 		}
 
-		if funding.is_outbound() {
-			let (local_stats, _local_htlcs) = self
-				.get_next_local_commitment_stats(
-					funding,
-					Some(HTLCAmountDirection { outbound: false, amount_msat: msg.amount_msat }),
-					include_counterparty_unknown_htlcs,
-					fee_spike_buffer_htlc,
-					self.feerate_per_kw,
-					dust_exposure_limiting_feerate,
-				)
-				.map_err(|()| {
-					ChannelError::close(String::from("Balance exhausted on local commitment"))
-				})?;
-			// Check that they won't violate our local required channel reserve by adding this HTLC.
-			if local_stats.commitment_stats.holder_balance_msat
+		let (local_stats, _local_htlcs) = self
+			.get_next_local_commitment_stats(
+				funding,
+				Some(HTLCAmountDirection { outbound: false, amount_msat: msg.amount_msat }),
+				include_counterparty_unknown_htlcs,
+				fee_spike_buffer_htlc,
+				self.feerate_per_kw,
+				dust_exposure_limiting_feerate,
+			)
+			.map_err(|()| {
+				ChannelError::close(String::from("Balance exhausted on local commitment"))
+			})?;
+
+		// Check that they won't violate our local required channel reserve by adding this HTLC.
+		if funding.is_outbound()
+			&& local_stats.commitment_stats.holder_balance_msat
 				< funding.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000
-			{
-				return Err(ChannelError::close(
-					"Cannot accept HTLC that would put our balance under counterparty-announced channel reserve value".to_owned()
-				));
-			}
+		{
+			return Err(ChannelError::close(
+				"Cannot accept HTLC that would put our balance under counterparty-announced channel reserve value".to_owned()
+			));
 		}
 
 		Ok(())
@@ -5044,6 +5044,12 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		let commitment_txid = {
 			let trusted_tx = commitment_data.tx.trust();
 			let bitcoin_tx = trusted_tx.built_transaction();
+			if bitcoin_tx.transaction.output.is_empty() {
+				return Err(ChannelError::close(
+					"Commitment tx from peer has 0 outputs".to_owned(),
+				));
+			}
+
 			let sighash = bitcoin_tx.get_sighash_all(&funding_script, funding.get_value_satoshis());
 
 			log_trace!(logger, "Checking commitment tx signature {} by key {} against tx {} (sighash {}) with redeemscript {} in channel {}",
