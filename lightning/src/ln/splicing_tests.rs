@@ -2730,3 +2730,54 @@ fn test_splice_buffer_invalid_commitment_signed_closes_channel() {
 	);
 	check_added_monitors(&nodes[0], 1);
 }
+
+#[test]
+fn test_splice_balance_falls_below_reserve() {
+	// Test that we're able to proceed with a splice where the acceptor does not contribute
+	// anything, but the initiator does, resulting in an increased channel reserve that the
+	// counterparty does not meet but is still valid.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let mut config = test_default_channel_config();
+	config.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 100;
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let initial_channel_value_sat = 100_000;
+	// Push 10k sat to node 1 so it has balance to send HTLCs back.
+	let push_msat = 10_000_000;
+	let (_, _, channel_id, _) = create_announced_chan_between_nodes_with_value(
+		&nodes,
+		0,
+		1,
+		initial_channel_value_sat,
+		push_msat,
+	);
+
+	let _ = provide_anchor_reserves(&nodes);
+
+	// Create bidirectional pending HTLCs (routed but not claimed).
+	// Outbound HTLC from node 0 to node 1.
+	let (preimage_0_to_1, _hash_0_to_1, ..) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+	// Large inbound HTLC from node 1 to node 0, bringing node 1's remaining balance down to
+	// 2000 sat. The old reserve (1% of 100k) is 1000 sat so this is still above reserve.
+	let (preimage_1_to_0, _hash_1_to_0, ..) = route_payment(&nodes[1], &[&nodes[0]], 8_000_000);
+
+	// Splice-in 200k sat. The new channel value becomes 300k sat, raising the reserve to 3000
+	// sat. Node 1's remaining 2000 sat is now below the new reserve.
+	let initiator_contribution =
+		initiate_splice_in(&nodes[0], &nodes[1], channel_id, Amount::from_sat(200_000));
+	let (splice_tx, _) = splice_channel(&nodes[0], &nodes[1], channel_id, initiator_contribution);
+
+	// Confirm and lock the splice.
+	mine_transaction(&nodes[0], &splice_tx);
+	mine_transaction(&nodes[1], &splice_tx);
+	lock_splice_after_blocks(&nodes[0], &nodes[1], ANTI_REORG_DELAY - 1);
+
+	// Claim both pending HTLCs to verify the channel is fully functional after the splice.
+	claim_payment(&nodes[0], &[&nodes[1]], preimage_0_to_1);
+	claim_payment(&nodes[1], &[&nodes[0]], preimage_1_to_0);
+
+	// Final sanity check: send a payment using the new spliced capacity.
+	let _ = send_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+}
