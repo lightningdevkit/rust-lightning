@@ -1036,6 +1036,7 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger + MaybeSend + MaybeSync>
 					&chan_id,
 					&counterparty,
 					FeeRate::from_sat_per_kwu(253),
+					FeeRate::MAX,
 				) {
 					let wallet_sync = WalletSync::new(&wallet, Arc::clone(&logger));
 					if let Ok(contribution) = funding_template
@@ -1076,6 +1077,7 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger + MaybeSend + MaybeSync>
 					&chan_id,
 					&counterparty,
 					FeeRate::from_sat_per_kwu(253),
+					FeeRate::MAX,
 				) {
 					let outputs = vec![TxOut {
 						value: Amount::from_sat(splice_out_sats),

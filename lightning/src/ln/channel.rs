@@ -12052,7 +12052,9 @@ where
 	}
 
 	/// Initiate splicing.
-	pub fn splice_channel(&self, feerate: FeeRate) -> Result<FundingTemplate, APIError> {
+	pub fn splice_channel(
+		&self, min_feerate: FeeRate, max_feerate: FeeRate,
+	) -> Result<FundingTemplate, APIError> {
 		if self.holder_commitment_point.current_point().is_none() {
 			return Err(APIError::APIMisuseError {
 				err: format!(
@@ -12094,6 +12096,17 @@ where
 			});
 		}
 
+		if min_feerate > max_feerate {
+			return Err(APIError::APIMisuseError {
+				err: format!(
+					"Channel {} min_feerate {} exceeds max_feerate {}",
+					self.context.channel_id(),
+					min_feerate,
+					max_feerate,
+				),
+			});
+		}
+
 		let funding_txo = self.funding.get_funding_txo().expect("funding_txo should be set");
 		let previous_utxo =
 			self.funding.get_funding_output().expect("funding_output should be set");
@@ -12103,7 +12116,7 @@ where
 			satisfaction_weight: EMPTY_SCRIPT_SIG_WEIGHT + FUNDING_TRANSACTION_WITNESS_WEIGHT,
 		};
 
-		Ok(FundingTemplate::new(Some(shared_input), feerate))
+		Ok(FundingTemplate::new(Some(shared_input), min_feerate, max_feerate))
 	}
 
 	pub fn funding_contributed<L: Logger>(

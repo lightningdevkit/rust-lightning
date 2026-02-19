@@ -1393,7 +1393,12 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 	                      channel_id: &ChannelId,
 	                      f: &dyn Fn(FundingTemplate) -> Result<FundingContribution, ()>,
 	                      funding_feerate_sat_per_kw: FeeRate| {
-		match node.splice_channel(channel_id, counterparty_node_id, funding_feerate_sat_per_kw) {
+		match node.splice_channel(
+			channel_id,
+			counterparty_node_id,
+			funding_feerate_sat_per_kw,
+			FeeRate::MAX,
+		) {
 			Ok(funding_template) => {
 				if let Ok(contribution) = f(funding_template) {
 					let _ = node.funding_contributed(
