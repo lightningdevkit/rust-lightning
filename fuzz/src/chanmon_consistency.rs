@@ -217,6 +217,14 @@ impl ChainState {
 		true
 	}
 
+	fn advance_height(&mut self, num_blocks: u32) {
+		for _ in 0..num_blocks {
+			let prev_hash = self.blocks.last().unwrap().0.block_hash();
+			let header = create_dummy_header(prev_hash, 42);
+			self.blocks.push((header, Vec::new()));
+		}
+	}
+
 	fn block_at(&self, height: u32) -> &(Header, Vec<Transaction>) {
 		&self.blocks[height as usize]
 	}
@@ -2668,6 +2676,12 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 					chain_state.confirm_tx(tx);
 				}
 			},
+
+			// Advance chain height by many empty blocks so that HTLC timelocks can
+			// expire and the OnchainTxHandler releases timelocked claim packages.
+			0xdc => chain_state.advance_height(50),
+			0xdd => chain_state.advance_height(100),
+			0xde => chain_state.advance_height(200),
 
 			0xf0 => {
 				for id in &chan_ab_ids {
