@@ -3778,15 +3778,17 @@ fn reenter_quiescence<'a, 'b, 'c>(
 
 #[test]
 fn test_splice_rbf_acceptor_basic() {
-	// Test the happy path for accepting an RBF of a pending splice transaction.
-	// After completing a splice-in, re-enter quiescence and process tx_init_rbf
-	// from the counterparty, responding with tx_ack_rbf.
+	// Test the full end-to-end flow for RBF of a pending splice transaction.
+	// Complete a splice-in, then use rbf_channel API to initiate an RBF attempt
+	// with a higher feerate, going through the full tx_init_rbf → tx_ack_rbf →
+	// interactive TX → signing → mining → splice_locked flow.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
 
 	let initial_channel_value_sat = 100_000;
 	let (_, _, channel_id, _) =
@@ -3795,41 +3797,153 @@ fn test_splice_rbf_acceptor_basic() {
 	let added_value = Amount::from_sat(50_000);
 	provide_utxo_reserves(&nodes, 2, added_value * 2);
 
-	// Complete a splice-in from node 0.
+	// Step 1: Complete a splice-in from node 0.
 	let funding_contribution = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
-	let (_splice_tx, _new_funding_script) =
+	// Save the pre-splice funding outpoint before splice_channel modifies the monitor.
+	let original_funding_outpoint = nodes[0]
+		.chain_monitor
+		.chain_monitor
+		.get_monitor(channel_id)
+		.map(|monitor| (monitor.get_funding_txo(), monitor.get_funding_script()))
+		.unwrap();
+
+	let (first_splice_tx, new_funding_script) =
 		splice_channel(&nodes[0], &nodes[1], channel_id, funding_contribution);
 
-	// Re-enter quiescence for RBF (node 0 initiates).
-	reenter_quiescence(&nodes[0], &nodes[1], &channel_id);
+	// Step 2: Provide more UTXO reserves for the RBF attempt.
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
 
-	// Node 0 sends tx_init_rbf with feerate satisfying the 25/24 rule.
+	// Step 3: Use rbf_channel API to initiate the RBF.
 	// Original feerate was FEERATE_FLOOR_SATS_PER_KW (253). 253 * 25 / 24 = 263.54, so 264 works.
-	let rbf_feerate = (FEERATE_FLOOR_SATS_PER_KW as u64 * 25 + 23) / 24; // ceil(253*25/24) = 264
-	let tx_init_rbf = msgs::TxInitRbf {
-		channel_id,
-		locktime: 0,
-		feerate_sat_per_1000_weight: rbf_feerate as u32,
-		funding_output_contribution: Some(added_value.to_sat() as i64),
-	};
+	let rbf_feerate_sat_per_kwu = (FEERATE_FLOOR_SATS_PER_KW as u64 * 25 + 23) / 24; // ceil(253*25/24) = 264
+	let rbf_feerate = FeeRate::from_sat_per_kwu(rbf_feerate_sat_per_kwu);
+	let funding_template = nodes[0].node.rbf_channel(&channel_id, &node_id_1, rbf_feerate).unwrap();
+	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
+	let funding_contribution = funding_template.splice_in_sync(added_value, &wallet).unwrap();
 
+	// Step 4: funding_contributed stores QuiescentAction::Splice and proposes quiescence.
+	nodes[0]
+		.node
+		.funding_contributed(&channel_id, &node_id_1, funding_contribution.clone(), None)
+		.unwrap();
+
+	// Step 5: STFU exchange.
+	let stfu_a = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+	nodes[1].node.handle_stfu(node_id_0, &stfu_a);
+	let stfu_b = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
+	nodes[0].node.handle_stfu(node_id_1, &stfu_b);
+
+	// Step 6: Node 0 sends tx_init_rbf (not splice_init, since pending_splice exists).
+	let tx_init_rbf = get_event_msg!(nodes[0], MessageSendEvent::SendTxInitRbf, node_id_1);
+	assert_eq!(tx_init_rbf.channel_id, channel_id);
+	assert_eq!(tx_init_rbf.feerate_sat_per_1000_weight, rbf_feerate_sat_per_kwu as u32);
+
+	// Step 7: Node 1 handles tx_init_rbf → responds with tx_ack_rbf.
 	nodes[1].node.handle_tx_init_rbf(node_id_0, &tx_init_rbf);
 	let tx_ack_rbf = get_event_msg!(nodes[1], MessageSendEvent::SendTxAckRbf, node_id_0);
-
 	assert_eq!(tx_ack_rbf.channel_id, channel_id);
-	// Acceptor doesn't contribute funds in the RBF.
-	assert_eq!(tx_ack_rbf.funding_output_contribution, None);
+
+	// Step 8: Node 0 handles tx_ack_rbf → starts interactive TX construction.
+	nodes[0].node.handle_tx_ack_rbf(node_id_1, &tx_ack_rbf);
+
+	// Step 9: Complete interactive funding negotiation.
+	complete_interactive_funding_negotiation(
+		&nodes[0],
+		&nodes[1],
+		channel_id,
+		funding_contribution,
+		new_funding_script.clone(),
+	);
+
+	// Step 10: Sign and broadcast.
+	let (rbf_tx, splice_locked) = sign_interactive_funding_tx(&nodes[0], &nodes[1], false);
+	assert!(splice_locked.is_none());
+
+	expect_splice_pending_event(&nodes[0], &node_id_1);
+	expect_splice_pending_event(&nodes[1], &node_id_0);
+
+	// Step 11: Mine and lock.
+	mine_transaction(&nodes[0], &rbf_tx);
+	mine_transaction(&nodes[1], &rbf_tx);
+
+	// Lock the RBF splice. We can't use lock_splice_after_blocks directly because the splice
+	// promotion generates DiscardFunding events for the old (replaced) splice candidate.
+	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
+
+	let splice_locked_b = get_event_msg!(nodes[0], MessageSendEvent::SendSpliceLocked, node_id_1);
+	nodes[1].node.handle_splice_locked(node_id_0, &splice_locked_b);
+
+	let mut msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 2, "{msg_events:?}");
+	let splice_locked_a =
+		if let MessageSendEvent::SendSpliceLocked { msg, .. } = msg_events.remove(0) {
+			msg
+		} else {
+			panic!("Expected SendSpliceLocked, got {:?}", msg_events[0]);
+		};
+	let announcement_sigs_b =
+		if let MessageSendEvent::SendAnnouncementSignatures { msg, .. } = msg_events.remove(0) {
+			msg
+		} else {
+			panic!("Expected SendAnnouncementSignatures");
+		};
+	nodes[0].node.handle_splice_locked(node_id_1, &splice_locked_a);
+	nodes[0].node.handle_announcement_signatures(node_id_1, &announcement_sigs_b);
+
+	// Expect ChannelReady + DiscardFunding for the old splice candidate on both nodes.
+	let events_a = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events_a.len(), 2, "{events_a:?}");
+	assert!(matches!(events_a[0], Event::ChannelReady { .. }));
+	assert!(matches!(events_a[1], Event::DiscardFunding { .. }));
+	check_added_monitors(&nodes[0], 1);
+
+	let events_b = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(events_b.len(), 2, "{events_b:?}");
+	assert!(matches!(events_b[0], Event::ChannelReady { .. }));
+	assert!(matches!(events_b[1], Event::DiscardFunding { .. }));
+	check_added_monitors(&nodes[1], 1);
+
+	// Complete the announcement exchange.
+	let mut msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 2, "{msg_events:?}");
+	if let MessageSendEvent::SendAnnouncementSignatures { msg, .. } = msg_events.remove(0) {
+		nodes[1].node.handle_announcement_signatures(node_id_0, &msg);
+	} else {
+		panic!("Expected SendAnnouncementSignatures");
+	}
+	assert!(matches!(msg_events.remove(0), MessageSendEvent::BroadcastChannelAnnouncement { .. }));
+
+	let mut msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1, "{msg_events:?}");
+	assert!(matches!(msg_events.remove(0), MessageSendEvent::BroadcastChannelAnnouncement { .. }));
+
+	// Clean up old watched outpoints from the chain source.
+	// The original channel's funding outpoint and the first (replaced) splice's funding outpoint
+	// are still being watched but are no longer tracked by the deserialized monitor.
+	let (orig_outpoint, orig_script) = original_funding_outpoint;
+	let first_splice_funding_idx =
+		first_splice_tx.output.iter().position(|o| o.script_pubkey == new_funding_script).unwrap();
+	let first_splice_outpoint =
+		OutPoint { txid: first_splice_tx.compute_txid(), index: first_splice_funding_idx as u16 };
+	for node in &nodes {
+		node.chain_source.remove_watched_txn_and_outputs(orig_outpoint, orig_script.clone());
+		node.chain_source
+			.remove_watched_txn_and_outputs(first_splice_outpoint, new_funding_script.clone());
+	}
 }
 
 #[test]
 fn test_splice_rbf_insufficient_feerate() {
-	// Test that tx_init_rbf with an insufficient feerate (less than 25/24 of previous) is rejected.
+	// Test that rbf_channel rejects a feerate that doesn't satisfy the 25/24 rule, and that the
+	// acceptor also rejects tx_init_rbf with an insufficient feerate from a misbehaving peer.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
 
 	let initial_channel_value_sat = 100_000;
 	let (_, _, channel_id, _) =
@@ -3843,11 +3957,23 @@ fn test_splice_rbf_insufficient_feerate() {
 	let (_splice_tx, _new_funding_script) =
 		splice_channel(&nodes[0], &nodes[1], channel_id, funding_contribution);
 
-	// Re-enter quiescence.
+	// Initiator-side: rbf_channel rejects an insufficient feerate.
+	// Original feerate was 253. Using exactly 253 should fail since 253 * 24 < 253 * 25.
+	let same_feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64);
+	let err = nodes[0].node.rbf_channel(&channel_id, &node_id_1, same_feerate).unwrap_err();
+	assert_eq!(
+		err,
+		APIError::APIMisuseError {
+			err: format!(
+				"Channel {} RBF feerate {} is less than 25/24 of the previous feerate {}",
+				channel_id, FEERATE_FLOOR_SATS_PER_KW, FEERATE_FLOOR_SATS_PER_KW,
+			),
+		}
+	);
+
+	// Acceptor-side: tx_init_rbf with an insufficient feerate is also rejected.
 	reenter_quiescence(&nodes[0], &nodes[1], &channel_id);
 
-	// Send tx_init_rbf with feerate that does NOT satisfy the 25/24 rule.
-	// Original feerate was 253. Using exactly 253 should fail since 253 * 24 < 253 * 25.
 	let tx_init_rbf = msgs::TxInitRbf {
 		channel_id,
 		locktime: 0,
@@ -3857,7 +3983,6 @@ fn test_splice_rbf_insufficient_feerate() {
 
 	nodes[1].node.handle_tx_init_rbf(node_id_0, &tx_init_rbf);
 
-	// Should get an error, not a TxAckRbf.
 	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), 1);
 	match &msg_events[0] {
