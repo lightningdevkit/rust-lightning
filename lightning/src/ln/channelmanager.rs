@@ -4642,9 +4642,12 @@ impl<
 	/// # Arguments
 	///
 	/// The splice initiator is responsible for paying fees for common fields, shared inputs, and
-	/// shared outputs along with any contributed inputs and outputs. Fees are determined using
-	/// `feerate` and must be covered by the supplied inputs for splice-in or the channel balance
-	/// for splice-out.
+	/// shared outputs along with any contributed inputs and outputs. When building a
+	/// [`FundingContribution`], fees are estimated using `min_feerate` and must be covered by the
+	/// supplied inputs for splice-in or the channel balance for splice-out. If the counterparty
+	/// also initiates a splice and wins the tie-break, they become the initiator and choose the
+	/// feerate. In that case, `max_feerate` is used to reject a feerate that is too high for our
+	/// contribution.
 	///
 	/// Returns a [`FundingTemplate`] which should be used to build a [`FundingContribution`] via
 	/// one of its splice methods (e.g., [`FundingTemplate::splice_in_sync`]). The resulting
@@ -4670,7 +4673,8 @@ impl<
 	/// [`FundingContribution`]: crate::ln::funding::FundingContribution
 	#[rustfmt::skip]
 	pub fn splice_channel(
-		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey, feerate: FeeRate,
+		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey,
+		min_feerate: FeeRate, max_feerate: FeeRate,
 	) -> Result<FundingTemplate, APIError> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 
@@ -4698,7 +4702,7 @@ impl<
 		match peer_state.channel_by_id.entry(*channel_id) {
 			hash_map::Entry::Occupied(chan_phase_entry) => {
 				if let Some(chan) = chan_phase_entry.get().as_funded() {
-					chan.splice_channel(feerate)
+					chan.splice_channel(min_feerate, max_feerate)
 				} else {
 					Err(APIError::ChannelUnavailable {
 						err: format!(
