@@ -1290,6 +1290,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 
 	let sync_with_chain_state = |chain_state: &ChainState,
 	                             node: &ChannelManager<_, _, _, _, _, _, _, _, _>,
+	                             monitor: &TestChainMonitor,
 	                             node_height: &mut u32,
 	                             num_blocks: Option<u32>| {
 		let target_height = if let Some(num_blocks) = num_blocks {
@@ -1303,16 +1304,18 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 			let (header, txn) = chain_state.block_at(*node_height);
 			let txdata: Vec<_> = txn.iter().enumerate().map(|(i, tx)| (i + 1, tx)).collect();
 			if !txdata.is_empty() {
+				monitor.chain_monitor.transactions_confirmed(header, &txdata, *node_height);
 				node.transactions_confirmed(header, &txdata, *node_height);
 			}
+			monitor.chain_monitor.best_block_updated(header, *node_height);
 			node.best_block_updated(header, *node_height);
 		}
 	};
 
 	// Sync all nodes to tip to lock the funding.
-	sync_with_chain_state(&mut chain_state, &nodes[0], &mut node_height_a, None);
-	sync_with_chain_state(&mut chain_state, &nodes[1], &mut node_height_b, None);
-	sync_with_chain_state(&mut chain_state, &nodes[2], &mut node_height_c, None);
+	sync_with_chain_state(&mut chain_state, &nodes[0], &monitor_a, &mut node_height_a, None);
+	sync_with_chain_state(&mut chain_state, &nodes[1], &monitor_b, &mut node_height_b, None);
+	sync_with_chain_state(&mut chain_state, &nodes[2], &monitor_c, &mut node_height_c, None);
 
 	lock_fundings!(nodes);
 
@@ -2419,13 +2422,49 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 			},
 
 			// Sync node by 1 block to cover confirmation of a transaction.
-			0xa8 => sync_with_chain_state(&mut chain_state, &nodes[0], &mut node_height_a, Some(1)),
-			0xa9 => sync_with_chain_state(&mut chain_state, &nodes[1], &mut node_height_b, Some(1)),
-			0xaa => sync_with_chain_state(&mut chain_state, &nodes[2], &mut node_height_c, Some(1)),
+			0xa8 => sync_with_chain_state(
+				&mut chain_state,
+				&nodes[0],
+				&monitor_a,
+				&mut node_height_a,
+				Some(1),
+			),
+			0xa9 => sync_with_chain_state(
+				&mut chain_state,
+				&nodes[1],
+				&monitor_b,
+				&mut node_height_b,
+				Some(1),
+			),
+			0xaa => sync_with_chain_state(
+				&mut chain_state,
+				&nodes[2],
+				&monitor_c,
+				&mut node_height_c,
+				Some(1),
+			),
 			// Sync node to chain tip to cover confirmation of a transaction post-reorg-risk.
-			0xab => sync_with_chain_state(&mut chain_state, &nodes[0], &mut node_height_a, None),
-			0xac => sync_with_chain_state(&mut chain_state, &nodes[1], &mut node_height_b, None),
-			0xad => sync_with_chain_state(&mut chain_state, &nodes[2], &mut node_height_c, None),
+			0xab => sync_with_chain_state(
+				&mut chain_state,
+				&nodes[0],
+				&monitor_a,
+				&mut node_height_a,
+				None,
+			),
+			0xac => sync_with_chain_state(
+				&mut chain_state,
+				&nodes[1],
+				&monitor_b,
+				&mut node_height_b,
+				None,
+			),
+			0xad => sync_with_chain_state(
+				&mut chain_state,
+				&nodes[2],
+				&monitor_c,
+				&mut node_height_c,
+				None,
+			),
 
 			0xb0 | 0xb1 | 0xb2 => {
 				// Restart node A, picking among the in-flight `ChannelMonitor`s to use based on
