@@ -6,8 +6,39 @@ use serde_json;
 #[cfg(feature = "tokio")]
 use bitreq::RequestExt;
 
+use std::convert::Infallible;
 use std::convert::TryFrom;
 use std::fmt;
+
+/// Trait for converting parse errors into a String message.
+pub trait ToParseErrorMessage {
+	/// Converts a parse error into a human-readable message.
+	fn to_parse_error_message(self) -> String;
+}
+
+impl ToParseErrorMessage for Infallible {
+	fn to_parse_error_message(self) -> String {
+		match self {}
+	}
+}
+
+impl ToParseErrorMessage for () {
+	fn to_parse_error_message(self) -> String {
+		"invalid data".to_string()
+	}
+}
+
+impl ToParseErrorMessage for &'static str {
+	fn to_parse_error_message(self) -> String {
+		self.to_string()
+	}
+}
+
+impl ToParseErrorMessage for String {
+	fn to_parse_error_message(self) -> String {
+		self
+	}
+}
 
 /// Timeout for requests in seconds. This is set to a high value as it is not uncommon for Bitcoin
 /// Core to be blocked waiting on UTXO cache flushes for upwards of 10 minutes on slow devices
@@ -26,7 +57,7 @@ pub enum HttpClientError {
 	/// HTTP error response (non-2xx status code)
 	Http(HttpError),
 	/// Response parsing/conversion error
-	Io(std::io::Error),
+	Parse(String),
 }
 
 impl std::error::Error for HttpClientError {
@@ -34,7 +65,7 @@ impl std::error::Error for HttpClientError {
 		match self {
 			HttpClientError::Transport(e) => Some(e),
 			HttpClientError::Http(e) => Some(e),
-			HttpClientError::Io(e) => Some(e),
+			HttpClientError::Parse(_) => None,
 		}
 	}
 }
@@ -44,14 +75,8 @@ impl fmt::Display for HttpClientError {
 		match self {
 			HttpClientError::Transport(e) => write!(f, "transport error: {}", e),
 			HttpClientError::Http(e) => write!(f, "HTTP error: {}", e),
-			HttpClientError::Io(e) => write!(f, "Response parsing/conversion error: {}", e),
+			HttpClientError::Parse(e) => write!(f, "response parsing error: {}", e),
 		}
-	}
-}
-
-impl From<std::io::Error> for HttpClientError {
-	fn from(e: std::io::Error) -> Self {
-		HttpClientError::Io(e)
 	}
 }
 
@@ -97,7 +122,8 @@ impl HttpClient {
 	#[allow(dead_code)]
 	pub async fn get<F>(&self, uri: &str) -> Result<F, HttpClientError>
 	where
-		F: TryFrom<Vec<u8>, Error = std::io::Error>,
+		F: TryFrom<Vec<u8>>,
+		<F as TryFrom<Vec<u8>>>::Error: ToParseErrorMessage,
 	{
 		let url = format!("{}{}", self.base_url, uri);
 		let request = bitreq::get(url)
@@ -106,7 +132,7 @@ impl HttpClient {
 		#[cfg(feature = "tokio")]
 		let request = request.with_pipelining();
 		let response_body = self.send_request(request).await?;
-		F::try_from(response_body).map_err(HttpClientError::Io)
+		F::try_from(response_body).map_err(|e| HttpClientError::Parse(e.to_parse_error_message()))
 	}
 
 	/// Sends a `POST` request for a resource identified by `uri` using the given HTTP
@@ -119,7 +145,8 @@ impl HttpClient {
 		&self, uri: &str, auth: &str, content: serde_json::Value,
 	) -> Result<F, HttpClientError>
 	where
-		F: TryFrom<Vec<u8>, Error = std::io::Error>,
+		F: TryFrom<Vec<u8>>,
+		<F as TryFrom<Vec<u8>>>::Error: ToParseErrorMessage,
 	{
 		let url = format!("{}{}", self.base_url, uri);
 		let request = bitreq::post(url)
@@ -131,7 +158,7 @@ impl HttpClient {
 		#[cfg(feature = "tokio")]
 		let request = request.with_pipelining();
 		let response_body = self.send_request(request).await?;
-		F::try_from(response_body).map_err(HttpClientError::Io)
+		F::try_from(response_body).map_err(|e| HttpClientError::Parse(e.to_parse_error_message()))
 	}
 
 	/// Sends an HTTP request message and reads the response, returning its body.
@@ -178,19 +205,19 @@ pub struct JsonResponse(pub serde_json::Value);
 
 /// Interprets bytes from an HTTP response body as binary data.
 impl TryFrom<Vec<u8>> for BinaryResponse {
-	type Error = std::io::Error;
+	type Error = Infallible;
 
-	fn try_from(bytes: Vec<u8>) -> std::io::Result<Self> {
+	fn try_from(bytes: Vec<u8>) -> Result<Self, Infallible> {
 		Ok(BinaryResponse(bytes))
 	}
 }
 
 /// Interprets bytes from an HTTP response body as a JSON value.
 impl TryFrom<Vec<u8>> for JsonResponse {
-	type Error = std::io::Error;
+	type Error = String;
 
-	fn try_from(bytes: Vec<u8>) -> std::io::Result<Self> {
-		Ok(JsonResponse(serde_json::from_slice(&bytes)?))
+	fn try_from(bytes: Vec<u8>) -> Result<Self, String> {
+		serde_json::from_slice(&bytes).map(JsonResponse).map_err(|e| e.to_string())
 	}
 }
 

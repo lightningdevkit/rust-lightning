@@ -3,7 +3,7 @@
 
 use crate::convert::GetUtxosResponse;
 use crate::gossip::UtxoSource;
-use crate::http::{BinaryResponse, HttpClient, HttpClientError, JsonResponse};
+use crate::http::{BinaryResponse, HttpClient, HttpClientError, JsonResponse, ToParseErrorMessage};
 use crate::{BlockData, BlockHeaderData, BlockSource, BlockSourceResult};
 
 use bitcoin::hash_types::BlockHash;
@@ -29,10 +29,13 @@ impl RestClient {
 	/// Requests a resource encoded in `F` format and interpreted as type `T`.
 	pub async fn request_resource<F, T>(&self, resource_path: &str) -> Result<T, HttpClientError>
 	where
-		F: TryFrom<Vec<u8>, Error = std::io::Error> + TryInto<T, Error = std::io::Error>,
+		F: TryFrom<Vec<u8>> + TryInto<T>,
+		<F as TryFrom<Vec<u8>>>::Error: ToParseErrorMessage,
+		<F as TryInto<T>>::Error: ToParseErrorMessage,
 	{
 		let uri = format!("/{}", resource_path);
-		self.client.get::<F>(&uri).await?.try_into().map_err(HttpClientError::Io)
+		let response = self.client.get::<F>(&uri).await?;
+		response.try_into().map_err(|e| HttpClientError::Parse(e.to_parse_error_message()))
 	}
 }
 
@@ -91,21 +94,15 @@ impl UtxoSource for RestClient {
 mod tests {
 	use super::*;
 	use crate::http::client_tests::{HttpServer, MessageBody};
-	use crate::http::BinaryResponse;
 	use bitcoin::hashes::Hash;
 
 	/// Parses binary data as a string-encoded `u32`.
 	impl TryInto<u32> for BinaryResponse {
-		type Error = std::io::Error;
+		type Error = String;
 
-		fn try_into(self) -> std::io::Result<u32> {
-			match std::str::from_utf8(&self.0) {
-				Err(e) => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
-				Ok(s) => match u32::from_str_radix(s, 10) {
-					Err(e) => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
-					Ok(n) => Ok(n),
-				},
-			}
+		fn try_into(self) -> Result<u32, String> {
+			let s = std::str::from_utf8(&self.0).map_err(|e| e.to_string())?;
+			u32::from_str_radix(s, 10).map_err(|e| e.to_string())
 		}
 	}
 
@@ -127,7 +124,7 @@ mod tests {
 		let client = RestClient::new(server.endpoint());
 
 		match client.request_resource::<BinaryResponse, u32>("/").await {
-			Err(HttpClientError::Io(_)) => {},
+			Err(HttpClientError::Parse(_)) => {},
 			Err(e) => panic!("Unexpected error type: {:?}", e),
 			Ok(_) => panic!("Expected error"),
 		}

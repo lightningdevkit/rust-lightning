@@ -2,7 +2,7 @@
 //! endpoint.
 
 use crate::gossip::UtxoSource;
-use crate::http::{HttpClient, HttpClientError, JsonResponse};
+use crate::http::{HttpClient, HttpClientError, JsonResponse, ToParseErrorMessage};
 use crate::{BlockData, BlockHeaderData, BlockSource, BlockSourceResult};
 
 use bitcoin::hash_types::BlockHash;
@@ -106,7 +106,8 @@ impl RpcClient {
 		&self, method: &str, params: &[serde_json::Value],
 	) -> Result<T, RpcClientError>
 	where
-		JsonResponse: TryFrom<Vec<u8>, Error = std::io::Error> + TryInto<T, Error = std::io::Error>,
+		JsonResponse: TryInto<T>,
+		<JsonResponse as TryInto<T>>::Error: ToParseErrorMessage,
 	{
 		let content = serde_json::json!({
 			"method": method,
@@ -148,7 +149,7 @@ impl RpcClient {
 
 		JsonResponse(result)
 			.try_into()
-			.map_err(|e: std::io::Error| RpcClientError::InvalidData(e.to_string()))
+			.map_err(|e| RpcClientError::InvalidData(e.to_parse_error_message()))
 	}
 }
 
@@ -215,11 +216,11 @@ mod tests {
 
 	/// Converts a JSON value into `u64`.
 	impl TryInto<u64> for JsonResponse {
-		type Error = std::io::Error;
+		type Error = &'static str;
 
-		fn try_into(self) -> std::io::Result<u64> {
+		fn try_into(self) -> Result<u64, &'static str> {
 			match self.0.as_u64() {
-				None => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "not a number")),
+				None => Err("not a number"),
 				Some(n) => Ok(n),
 			}
 		}
