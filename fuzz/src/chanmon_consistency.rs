@@ -2890,6 +2890,61 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 				}
 				process_all_events!();
 
+				// If any channels were force-closed, advance chain height past HTLC
+				// timelocks so HTLC-timeout transactions can be broadcast, confirmed,
+				// and fully resolved. We advance in two phases:
+				// 1) Past cltv_expiry so HTLC-timeout txs are released
+				// 2) Past the CSV delay so SpendableOutputs events fire
+				if !closed_channels.borrow().is_empty() {
+					chain_state.advance_height(250);
+					sync_with_chain_state(
+						&chain_state,
+						&nodes[0],
+						&monitor_a,
+						&mut node_height_a,
+						None,
+					);
+					sync_with_chain_state(
+						&chain_state,
+						&nodes[1],
+						&monitor_b,
+						&mut node_height_b,
+						None,
+					);
+					sync_with_chain_state(
+						&chain_state,
+						&nodes[2],
+						&monitor_c,
+						&mut node_height_c,
+						None,
+					);
+					process_all_events!();
+
+					chain_state.advance_height(250);
+					sync_with_chain_state(
+						&chain_state,
+						&nodes[0],
+						&monitor_a,
+						&mut node_height_a,
+						None,
+					);
+					sync_with_chain_state(
+						&chain_state,
+						&nodes[1],
+						&monitor_b,
+						&mut node_height_b,
+						None,
+					);
+					sync_with_chain_state(
+						&chain_state,
+						&nodes[2],
+						&monitor_c,
+						&mut node_height_c,
+						None,
+					);
+					process_all_events!();
+				}
+
 				// Verify no payments are stuck - all should have resolved
 				for (idx, pending) in pending_payments.borrow().iter().enumerate() {
 					assert!(
