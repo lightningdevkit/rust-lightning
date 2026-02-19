@@ -12762,9 +12762,37 @@ where
 		&mut self, msg: &msgs::TxInitRbf, entropy_source: &ES, holder_node_id: &PublicKey,
 		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
 	) -> Result<msgs::TxAckRbf, ChannelError> {
-		let our_funding_contribution = SignedAmount::ZERO;
-		let rbf_funding =
-			self.validate_tx_init_rbf(msg, our_funding_contribution, fee_estimator)?;
+		let feerate = FeeRate::from_sat_per_kwu(msg.feerate_sat_per_1000_weight as u64);
+		let our_funding_contribution = self.queued_funding_contribution().and_then(|c| {
+			c.net_value_for_acceptor_at_feerate(feerate)
+				.map_err(|e| {
+					log_info!(
+						logger,
+						"Cannot accommodate initiator's feerate for channel {}: {}; \
+							 proceeding without contribution",
+						self.context.channel_id(),
+						e,
+					);
+				})
+				.ok()
+		});
+
+		let rbf_funding = self.validate_tx_init_rbf(
+			msg,
+			our_funding_contribution.unwrap_or(SignedAmount::ZERO),
+			fee_estimator,
+		)?;
+
+		let (our_funding_inputs, our_funding_outputs) = if our_funding_contribution.is_some() {
+			self.take_queued_funding_contribution()
+				.expect("queued_funding_contribution was Some")
+				.for_acceptor_at_feerate(feerate)
+				.expect("feerate compatibility already checked")
+				.into_tx_parts()
+		} else {
+			Default::default()
+		};
+		let our_funding_contribution = our_funding_contribution.unwrap_or(SignedAmount::ZERO);
 
 		log_info!(
 			logger,
@@ -12780,8 +12808,8 @@ where
 			funding_tx_locktime: LockTime::from_consensus(msg.locktime),
 			funding_feerate_sat_per_1000_weight: msg.feerate_sat_per_1000_weight,
 			shared_funding_input: Some(prev_funding_input),
-			our_funding_inputs: Vec::new(),
-			our_funding_outputs: Vec::new(),
+			our_funding_inputs,
+			our_funding_outputs,
 		};
 
 		let (interactive_tx_constructor, first_message) = funding_negotiation_context
@@ -12806,7 +12834,11 @@ where
 
 		Ok(msgs::TxAckRbf {
 			channel_id: self.context.channel_id,
-			funding_output_contribution: None,
+			funding_output_contribution: if our_funding_contribution != SignedAmount::ZERO {
+				Some(our_funding_contribution.to_sat())
+			} else {
+				None
+			},
 		})
 	}
 
