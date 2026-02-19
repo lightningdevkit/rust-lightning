@@ -2496,33 +2496,51 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 			},
 			0xc4 => {
 				keys_manager_b.enable_op_for_all_signers(SignerOp::SignCounterpartyCommitment);
-				nodes[1].signer_unblocked(None);
+				let filter = Some((nodes[0].get_our_node_id(), chan_a_id));
+				nodes[1].signer_unblocked(filter);
 			},
 			0xc5 => {
+				keys_manager_b.enable_op_for_all_signers(SignerOp::SignCounterpartyCommitment);
+				let filter = Some((nodes[2].get_our_node_id(), chan_b_id));
+				nodes[1].signer_unblocked(filter);
+			},
+			0xc6 => {
 				keys_manager_c.enable_op_for_all_signers(SignerOp::SignCounterpartyCommitment);
 				nodes[2].signer_unblocked(None);
 			},
-			0xc6 => {
+			0xc7 => {
 				keys_manager_a.enable_op_for_all_signers(SignerOp::GetPerCommitmentPoint);
 				nodes[0].signer_unblocked(None);
 			},
-			0xc7 => {
-				keys_manager_b.enable_op_for_all_signers(SignerOp::GetPerCommitmentPoint);
-				nodes[1].signer_unblocked(None);
-			},
 			0xc8 => {
+				keys_manager_b.enable_op_for_all_signers(SignerOp::GetPerCommitmentPoint);
+				let filter = Some((nodes[0].get_our_node_id(), chan_a_id));
+				nodes[1].signer_unblocked(filter);
+			},
+			0xc9 => {
+				keys_manager_b.enable_op_for_all_signers(SignerOp::GetPerCommitmentPoint);
+				let filter = Some((nodes[2].get_our_node_id(), chan_b_id));
+				nodes[1].signer_unblocked(filter);
+			},
+			0xca => {
 				keys_manager_c.enable_op_for_all_signers(SignerOp::GetPerCommitmentPoint);
 				nodes[2].signer_unblocked(None);
 			},
-			0xc9 => {
+			0xcb => {
 				keys_manager_a.enable_op_for_all_signers(SignerOp::ReleaseCommitmentSecret);
 				nodes[0].signer_unblocked(None);
 			},
-			0xca => {
+			0xcc => {
 				keys_manager_b.enable_op_for_all_signers(SignerOp::ReleaseCommitmentSecret);
-				nodes[1].signer_unblocked(None);
+				let filter = Some((nodes[0].get_our_node_id(), chan_a_id));
+				nodes[1].signer_unblocked(filter);
 			},
-			0xcb => {
+			0xcd => {
+				keys_manager_b.enable_op_for_all_signers(SignerOp::ReleaseCommitmentSecret);
+				let filter = Some((nodes[2].get_our_node_id(), chan_b_id));
+				nodes[1].signer_unblocked(filter);
+			},
+			0xce => {
 				keys_manager_c.enable_op_for_all_signers(SignerOp::ReleaseCommitmentSecret);
 				nodes[2].signer_unblocked(None);
 			},
