@@ -20529,7 +20529,7 @@ mod tests {
 		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-		let (_, payment_hash, payment_secret) = get_payment_preimage_hash!(&nodes[0]);
+		let (_, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[0], None, None);
 		let payment_data = msgs::FinalOnionHopData {
 			payment_secret,
 			total_msat: 100_000,

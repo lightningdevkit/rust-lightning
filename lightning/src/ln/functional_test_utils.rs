@@ -2210,31 +2210,31 @@ macro_rules! check_spends {
 	}
 }
 
-macro_rules! get_closing_signed_broadcast {
-	($node: expr, $dest_pubkey: expr) => {{
-		let events = $node.get_and_clear_pending_msg_events();
-		assert!(events.len() == 1 || events.len() == 2);
-		(
-			match events[events.len() - 1] {
-				MessageSendEvent::BroadcastChannelUpdate { ref msg, .. } => {
-					assert_eq!(msg.contents.channel_flags & 2, 2);
-					msg.clone()
+pub fn get_closing_signed_broadcast(
+	node: &Node, dest_pubkey: PublicKey,
+) -> (msgs::ChannelUpdate, Option<msgs::ClosingSigned>) {
+	let events = node.node.get_and_clear_pending_msg_events();
+	assert!(events.len() == 1 || events.len() == 2);
+	(
+		match events[events.len() - 1] {
+			MessageSendEvent::BroadcastChannelUpdate { ref msg, .. } => {
+				assert_eq!(msg.contents.channel_flags & 2, 2);
+				msg.clone()
+			},
+			_ => panic!("Unexpected event"),
+		},
+		if events.len() == 2 {
+			match events[0] {
+				MessageSendEvent::SendClosingSigned { ref node_id, ref msg } => {
+					assert_eq!(*node_id, dest_pubkey);
+					Some(msg.clone())
 				},
 				_ => panic!("Unexpected event"),
-			},
-			if events.len() == 2 {
-				match events[0] {
-					MessageSendEvent::SendClosingSigned { ref node_id, ref msg } => {
-						assert_eq!(*node_id, $dest_pubkey);
-						Some(msg.clone())
-					},
-					_ => panic!("Unexpected event"),
-				}
-			} else {
-				None
-			},
-		)
-	}};
+			}
+		} else {
+			None
+		},
+	)
 }
 
 #[cfg(test)]
@@ -2311,17 +2311,6 @@ pub fn check_closed_broadcast(
 			}
 		})
 		.collect()
-}
-
-/// Check that a channel's closing channel update has been broadcasted, and optionally
-/// check whether an error message event has occurred.
-///
-/// Don't use this, use the identically-named function instead.
-#[macro_export]
-macro_rules! check_closed_broadcast {
-	($node: expr, $with_error_msg: expr) => {
-		$crate::ln::functional_test_utils::check_closed_broadcast(&$node, 1, $with_error_msg).pop()
-	};
 }
 
 #[derive(Default)]
@@ -2530,10 +2519,10 @@ pub fn close_channel<'a, 'b, 'c>(
 		assert_eq!(broadcaster_b.txn_broadcasted.lock().unwrap().len(), 1);
 		tx_b = broadcaster_b.txn_broadcasted.lock().unwrap().remove(0);
 		let (bs_update, closing_signed_b) =
-			get_closing_signed_broadcast!(node_b, node_a.get_our_node_id());
+			get_closing_signed_broadcast(struct_b, node_a.get_our_node_id());
 
 		node_a.handle_closing_signed(node_b.get_our_node_id(), &closing_signed_b.unwrap());
-		let (as_update, none_a) = get_closing_signed_broadcast!(node_a, node_b.get_our_node_id());
+		let (as_update, none_a) = get_closing_signed_broadcast(struct_a, node_b.get_our_node_id());
 		assert!(none_a.is_none());
 		assert_eq!(broadcaster_a.txn_broadcasted.lock().unwrap().len(), 1);
 		tx_a = broadcaster_a.txn_broadcasted.lock().unwrap().remove(0);
@@ -2550,10 +2539,10 @@ pub fn close_channel<'a, 'b, 'c>(
 		assert_eq!(broadcaster_a.txn_broadcasted.lock().unwrap().len(), 1);
 		tx_a = broadcaster_a.txn_broadcasted.lock().unwrap().remove(0);
 		let (as_update, closing_signed_a) =
-			get_closing_signed_broadcast!(node_a, node_b.get_our_node_id());
+			get_closing_signed_broadcast(struct_a, node_b.get_our_node_id());
 
 		node_b.handle_closing_signed(node_a.get_our_node_id(), &closing_signed_a.unwrap());
-		let (bs_update, none_b) = get_closing_signed_broadcast!(node_b, node_a.get_our_node_id());
+		let (bs_update, none_b) = get_closing_signed_broadcast(struct_b, node_a.get_our_node_id());
 		assert!(none_b.is_none());
 		assert_eq!(broadcaster_b.txn_broadcasted.lock().unwrap().len(), 1);
 		tx_b = broadcaster_b.txn_broadcasted.lock().unwrap().remove(0);
@@ -2827,26 +2816,6 @@ pub fn get_payment_preimage_hash(
 		)
 		.unwrap();
 	(payment_preimage, payment_hash, payment_secret)
-}
-
-/// Get a payment preimage and hash.
-///
-/// Don't use this, use the identically-named function instead.
-#[macro_export]
-macro_rules! get_payment_preimage_hash {
-	($dest_node: expr) => {
-		get_payment_preimage_hash!($dest_node, None)
-	};
-	($dest_node: expr, $min_value_msat: expr) => {
-		$crate::get_payment_preimage_hash!($dest_node, $min_value_msat, None)
-	};
-	($dest_node: expr, $min_value_msat: expr, $min_final_cltv_expiry_delta: expr) => {
-		$crate::ln::functional_test_utils::get_payment_preimage_hash(
-			&$dest_node,
-			$min_value_msat,
-			$min_final_cltv_expiry_delta,
-		)
-	};
 }
 
 /// Gets a route from the given sender to the node described in `payment_params`.
@@ -3820,7 +3789,7 @@ pub fn send_along_route<'a, 'b, 'c>(
 	recv_value: u64,
 ) -> (PaymentPreimage, PaymentHash, PaymentSecret, PaymentId) {
 	let (our_payment_preimage, our_payment_hash, our_payment_secret) =
-		get_payment_preimage_hash!(expected_route.last().unwrap());
+		get_payment_preimage_hash(expected_route.last().unwrap(), None, None);
 	let payment_id = send_along_route_with_secret(
 		origin_node,
 		route,

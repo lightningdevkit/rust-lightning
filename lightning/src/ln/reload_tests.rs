@@ -713,7 +713,7 @@ fn do_test_data_loss_protect(reconnect_panicing: bool, substantially_old: bool, 
 		);
 		let reason = ClosureReason::CounterpartyForceClosed { peer_msg: UntrustedString(peer_msg) };
 		check_closed_event(&nodes[1], 1, reason, &[nodes[0].node.get_our_node_id()], 1000000);
-		check_closed_broadcast!(nodes[1], false);
+		check_closed_broadcast(&nodes[1], 1, false);
 	}
 }
 
@@ -1022,7 +1022,7 @@ fn do_forwarded_payment_no_manager_persistence(use_cs_commitment: bool, claim_ht
 	check_added_monitors(&nodes[2], 1);
 	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
 	check_closed_event(&nodes[2], 1, reason, &[nodes[1].node.get_our_node_id()], 100000);
-	check_closed_broadcast!(nodes[2], true);
+	check_closed_broadcast(&nodes[2], 1, true);
 
 	let chan_0_monitor_serialized = get_monitor!(nodes[1], chan_id_1).encode();
 	let chan_1_monitor_serialized = get_monitor!(nodes[1], chan_id_2).encode();

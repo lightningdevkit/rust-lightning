@@ -1,4 +1,3 @@
-use lightning::check_closed_broadcast;
 use lightning::events::ClosureReason;
 use lightning::ln::functional_test_utils::*;
 use lightning::util::persist::{
@@ -188,7 +187,7 @@ pub(crate) fn do_test_store<K: KVStoreSync + Sync>(store_0: &K, store_1: &K) {
 		.unwrap();
 	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
 	check_closed_event(&nodes[0], 1, reason, &[node_b_id], 100000);
-	check_closed_broadcast!(nodes[0], true);
+	check_closed_broadcast(&nodes[0], 1, true);
 	check_added_monitors(&nodes[0], 1);
 
 	let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
@@ -202,7 +201,7 @@ pub(crate) fn do_test_store<K: KVStoreSync + Sync>(store_0: &K, store_1: &K) {
 			vec![node_txn[0].clone(), node_txn[0].clone()],
 		),
 	);
-	check_closed_broadcast!(nodes[1], true);
+	check_closed_broadcast(&nodes[1], 1, true);
 	let reason = ClosureReason::CommitmentTxConfirmed;
 	check_closed_event(&nodes[1], 1, reason, &[nodes[0].node.get_our_node_id()], 100000);
 	check_added_monitors(&nodes[1], 1);

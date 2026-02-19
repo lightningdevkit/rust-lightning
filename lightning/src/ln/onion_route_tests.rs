@@ -418,7 +418,7 @@ fn test_fee_failures() {
 	// If the hop gives fee_insufficient but enough fees were provided, then the previous hop
 	// malleated the payment before forwarding, taking funds when they shouldn't have. However,
 	// because we ignore channel update contents, we will still blame the 2nd channel.
-	let (_, payment_hash, payment_secret) = get_payment_preimage_hash!(nodes[2]);
+	let (_, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[2], None, None);
 	let short_channel_id = channels[1].0.contents.short_channel_id;
 	run_onion_failure_test(
 		"fee_insufficient",
@@ -449,7 +449,7 @@ fn test_fee_failures() {
 	}
 
 	let (payment_preimage_success, payment_hash_success, payment_secret_success) =
-		get_payment_preimage_hash!(nodes[2]);
+		get_payment_preimage_hash(&nodes[2], None, None);
 	let recipient_onion = RecipientOnionFields::secret_only(payment_secret_success);
 	let payment_id = PaymentId(payment_hash_success.0);
 	nodes[0]
@@ -667,7 +667,7 @@ fn test_onion_failure() {
 		Some(route.paths[0].hops[1].short_channel_id),
 		None,
 	);
-	let (_, payment_hash, payment_secret) = get_payment_preimage_hash!(nodes[2]);
+	let (_, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[2], None, None);
 
 	// intermediate node failure
 	run_onion_failure_test_with_fail_intercept(
@@ -738,7 +738,7 @@ fn test_onion_failure() {
 		Some(route.paths[0].hops[1].short_channel_id),
 		None,
 	);
-	let (_, payment_hash, payment_secret) = get_payment_preimage_hash!(nodes[2]);
+	let (_, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[2], None, None);
 
 	// intermediate node failure
 	run_onion_failure_test_with_fail_intercept(
@@ -811,7 +811,7 @@ fn test_onion_failure() {
 		Some(route.paths[0].hops[1].short_channel_id),
 		None,
 	);
-	let (_, payment_hash, payment_secret) = get_payment_preimage_hash!(nodes[2]);
+	let (_, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[2], None, None);
 
 	// Our immediate peer sent UpdateFailMalformedHTLC because it couldn't understand the onion in
 	// the UpdateAddHTLC that we sent.
@@ -1142,7 +1142,7 @@ fn test_onion_failure() {
 		None,
 		None,
 	);
-	let (_, payment_hash, payment_secret) = get_payment_preimage_hash!(nodes[2]);
+	let (_, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[2], None, None);
 
 	run_onion_failure_test(
 		"final_expiry_too_soon",
@@ -2426,7 +2426,7 @@ fn test_phantom_onion_hmac_failure() {
 	// Get the route.
 	let recv_value_msat = 10_000;
 	let (_, payment_hash, payment_secret) =
-		get_payment_preimage_hash!(nodes[1], Some(recv_value_msat));
+		get_payment_preimage_hash(&nodes[1], Some(recv_value_msat), None);
 	let (route, phantom_scid) = get_phantom_route!(nodes, recv_value_msat, channel);
 
 	// Route the HTLC through to the destination.
@@ -2496,7 +2496,7 @@ fn test_phantom_invalid_onion_payload() {
 	// Get the route.
 	let recv_value_msat = 10_000;
 	let (_, payment_hash, payment_secret) =
-		get_payment_preimage_hash!(nodes[1], Some(recv_value_msat));
+		get_payment_preimage_hash(&nodes[1], Some(recv_value_msat), None);
 	let (route, phantom_scid) = get_phantom_route!(nodes, recv_value_msat, channel);
 
 	// We'll use the session priv later when constructing an invalid onion packet.
@@ -2598,7 +2598,7 @@ fn test_phantom_final_incorrect_cltv_expiry() {
 	// Get the route.
 	let recv_value_msat = 10_000;
 	let (_, payment_hash, payment_secret) =
-		get_payment_preimage_hash!(nodes[1], Some(recv_value_msat));
+		get_payment_preimage_hash(&nodes[1], Some(recv_value_msat), None);
 	let (route, phantom_scid) = get_phantom_route!(nodes, recv_value_msat, channel);
 
 	// Route the HTLC through to the destination.
@@ -2664,7 +2664,7 @@ fn test_phantom_failure_too_low_cltv() {
 	// Get the route.
 	let recv_value_msat = 10_000;
 	let (_, payment_hash, payment_secret) =
-		get_payment_preimage_hash!(nodes[1], Some(recv_value_msat));
+		get_payment_preimage_hash(&nodes[1], Some(recv_value_msat), None);
 	let (mut route, phantom_scid) = get_phantom_route!(nodes, recv_value_msat, channel);
 
 	// Modify the route to have a too-low cltv.
@@ -2720,7 +2720,7 @@ fn test_phantom_failure_modified_cltv() {
 	// Get the route.
 	let recv_value_msat = 10_000;
 	let (_, payment_hash, payment_secret) =
-		get_payment_preimage_hash!(nodes[1], Some(recv_value_msat));
+		get_payment_preimage_hash(&nodes[1], Some(recv_value_msat), None);
 	let (mut route, phantom_scid) = get_phantom_route!(nodes, recv_value_msat, channel);
 
 	// Route the HTLC through to the destination.
@@ -2775,7 +2775,7 @@ fn test_phantom_failure_expires_too_soon() {
 	// Get the route.
 	let recv_value_msat = 10_000;
 	let (_, payment_hash, payment_secret) =
-		get_payment_preimage_hash!(nodes[1], Some(recv_value_msat));
+		get_payment_preimage_hash(&nodes[1], Some(recv_value_msat), None);
 	let (mut route, phantom_scid) = get_phantom_route!(nodes, recv_value_msat, channel);
 
 	// Route the HTLC through to the destination.
@@ -2825,7 +2825,7 @@ fn test_phantom_failure_too_low_recv_amt() {
 	let recv_amt_msat = 10_000;
 	let bad_recv_amt_msat = recv_amt_msat - 10;
 	let (_, payment_hash, payment_secret) =
-		get_payment_preimage_hash!(nodes[1], Some(recv_amt_msat));
+		get_payment_preimage_hash(&nodes[1], Some(recv_amt_msat), None);
 	let (mut route, phantom_scid) = get_phantom_route!(nodes, bad_recv_amt_msat, channel);
 
 	// Route the HTLC through to the destination.
@@ -2894,7 +2894,7 @@ fn do_test_phantom_dust_exposure_failure(multiplier_dust_limit: bool) {
 
 	// Get the route with an amount exceeding the dust exposure threshold of nodes[1].
 	let (_, payment_hash, payment_secret) =
-		get_payment_preimage_hash!(nodes[1], Some(max_dust_exposure + 1));
+		get_payment_preimage_hash(&nodes[1], Some(max_dust_exposure + 1), None);
 	let (mut route, phantom_scid) = get_phantom_route!(nodes, max_dust_exposure + 1, channel);
 
 	// Route the HTLC through to the destination.
@@ -2944,7 +2944,7 @@ fn test_phantom_failure_reject_payment() {
 	// Get the route with a too-low amount.
 	let recv_amt_msat = 10_000;
 	let (_, payment_hash, payment_secret) =
-		get_payment_preimage_hash!(nodes[1], Some(recv_amt_msat));
+		get_payment_preimage_hash(&nodes[1], Some(recv_amt_msat), None);
 	let (mut route, phantom_scid) = get_phantom_route!(nodes, recv_amt_msat, channel);
 
 	// Route the HTLC through to the destination.

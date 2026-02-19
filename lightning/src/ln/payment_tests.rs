@@ -908,7 +908,7 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 		},
 		_ => panic!("Unexpected event"),
 	}
-	check_closed_broadcast!(nodes[1], false);
+	check_closed_broadcast(&nodes[1], 1, false);
 
 	// Now claim the first payment, which should allow nodes[1] to claim the payment on-chain when
 	// we close in a moment.
@@ -1118,7 +1118,7 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 		},
 		_ => panic!("Unexpected event"),
 	}
-	check_closed_broadcast!(nodes[1], false);
+	check_closed_broadcast(&nodes[1], 1, false);
 
 	// Now fail back the payment from nodes[2] to nodes[1]. This doesn't really matter as the
 	// previous hop channel is already on-chain, but it makes nodes[2] willing to see additional
@@ -1283,7 +1283,7 @@ fn do_test_dup_htlc_onchain_doesnt_fail_on_reload(
 		.node
 		.force_close_broadcasting_latest_txn(&chan_id, &node_b_id, message.clone())
 		.unwrap();
-	check_closed_broadcast!(nodes[0], true);
+	check_closed_broadcast(&nodes[0], 1, true);
 	check_added_monitors(&nodes[0], 1);
 	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
 	check_closed_event(&nodes[0], 1, reason, &[node_b_id], 100000);
@@ -1686,7 +1686,7 @@ fn onchain_failed_probe_yields_event() {
 	// Node A, which after 6 confirmations should result in a probe failure event.
 	let bs_txn = get_local_commitment_txn!(nodes[1], chan_id);
 	confirm_transaction(&nodes[0], &bs_txn[0]);
-	check_closed_broadcast!(&nodes[0], true);
+	check_closed_broadcast(&nodes[0], 1, true);
 	check_added_monitors(&nodes[0], 1);
 
 	check_added_monitors(&nodes[0], 0);
@@ -2168,7 +2168,7 @@ fn test_holding_cell_inflight_htlcs() {
 
 	let (route, payment_hash_1, _, payment_secret_1) =
 		get_route_and_payment_hash!(nodes[0], nodes[1], 1000000);
-	let (_, payment_hash_2, payment_secret_2) = get_payment_preimage_hash!(nodes[1]);
+	let (_, payment_hash_2, payment_secret_2) = get_payment_preimage_hash(&nodes[1], None, None);
 
 	// Queue up two payments - one will be delivered right away, one immediately goes into the
 	// holding cell as nodes[0] is AwaitingRAA.
@@ -4290,7 +4290,7 @@ fn do_claim_from_closed_chan(fail_payment: bool) {
 	let chan_bd = create_announced_chan_between_nodes_with_value(&nodes, 1, 3, 1_000_000, 0).2;
 	create_announced_chan_between_nodes(&nodes, 2, 3);
 
-	let (payment_preimage, hash, payment_secret) = get_payment_preimage_hash!(nodes[3]);
+	let (payment_preimage, hash, payment_secret) = get_payment_preimage_hash(&nodes[3], None, None);
 	let payment_params = PaymentParameters::from_node_id(node_d_id, TEST_FINAL_CLTV)
 		.with_bolt11_features(nodes[1].node.bolt11_invoice_features())
 		.unwrap();
@@ -4688,7 +4688,7 @@ fn do_test_custom_tlvs_consistency(
 		}
 	});
 
-	let (preimage, hash, payment_secret) = get_payment_preimage_hash!(&nodes[3]);
+	let (preimage, hash, payment_secret) = get_payment_preimage_hash(&nodes[3], None, None);
 	let id = PaymentId([42; 32]);
 	let amt_msat = 15_000_000;
 
@@ -4832,7 +4832,7 @@ fn do_test_payment_metadata_consistency(do_reload: bool, do_modify: bool) {
 	// Pay more than half of each channel's max, requiring MPP
 	let amt_msat = 750_000_000;
 	let (payment_preimage, payment_hash, payment_secret) =
-		get_payment_preimage_hash!(nodes[3], Some(amt_msat));
+		get_payment_preimage_hash(&nodes[3], Some(amt_msat), None);
 	let payment_id = PaymentId(payment_hash.0);
 	let payment_metadata = vec![44, 49, 52, 142];
 

@@ -1308,9 +1308,9 @@ fn do_test_closing_signed(extra_closing_signed: bool, reconnect: bool) {
 	}
 
 	nodes[0].node.signer_unblocked(None);
-	let (_, node_0_2nd_closing_signed) = get_closing_signed_broadcast!(nodes[0].node, node_b_id);
+	let (_, node_0_2nd_closing_signed) = get_closing_signed_broadcast(&nodes[0], node_b_id);
 	nodes[1].node.handle_closing_signed(node_a_id, &node_0_2nd_closing_signed.unwrap());
-	let (_, node_1_closing_signed) = get_closing_signed_broadcast!(nodes[1].node, node_a_id);
+	let (_, node_1_closing_signed) = get_closing_signed_broadcast(&nodes[1], node_a_id);
 	assert!(node_1_closing_signed.is_none());
 
 	assert!(nodes[0].node.list_channels().is_empty());

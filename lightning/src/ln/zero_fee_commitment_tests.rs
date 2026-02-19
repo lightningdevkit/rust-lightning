@@ -185,12 +185,12 @@ fn test_htlc_claim_chunking() {
 	assert_eq!(htlc_claims[1].input.len(), 34);
 	assert_eq!(htlc_claims[1].output.len(), 24);
 
-	check_closed_broadcast!(nodes[0], true);
+	check_closed_broadcast(&nodes[0], 1, true);
 	check_added_monitors(&nodes[0], 1);
 	let reason = ClosureReason::CommitmentTxConfirmed;
 	check_closed_event(&nodes[0], 1, reason, &[nodes[1].node.get_our_node_id()], CHAN_CAPACITY);
 	assert!(nodes[0].node.list_channels().is_empty());
-	check_closed_broadcast!(nodes[1], true);
+	check_closed_broadcast(&nodes[1], 1, true);
 	check_added_monitors(&nodes[1], 1);
 	let reason = ClosureReason::CommitmentTxConfirmed;
 	check_closed_event(&nodes[1], 1, reason, &[nodes[0].node.get_our_node_id()], CHAN_CAPACITY);
@@ -346,7 +346,7 @@ fn test_anchor_tx_too_big() {
 		.force_close_broadcasting_latest_txn(&chan_id, &node_a_id, message.clone())
 		.unwrap();
 	check_added_monitors(&nodes[1], 1);
-	check_closed_broadcast!(nodes[1], true);
+	check_closed_broadcast(&nodes[1], 1, true);
 
 	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
 	check_closed_event(&nodes[1], 1, reason, &[node_a_id], CHAN_CAPACITY);

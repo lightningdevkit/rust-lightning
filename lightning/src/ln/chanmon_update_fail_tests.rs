@@ -277,7 +277,7 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool) {
 	};
 	nodes[0].node.force_close_broadcasting_latest_txn(&channel_id, &node_b_id, message).unwrap();
 	check_added_monitors(&nodes[0], 1);
-	check_closed_broadcast!(nodes[0], true);
+	check_closed_broadcast(&nodes[0], 1, true);
 
 	// TODO: Once we hit the chain with the failure transaction we should check that we get a
 	// PaymentPathFailed event
@@ -1382,9 +1382,9 @@ fn raa_no_response_awaiting_raa_state() {
 	let (route, payment_hash_1, payment_preimage_1, payment_secret_1) =
 		get_route_and_payment_hash!(nodes[0], nodes[1], 1000000);
 	let (payment_preimage_2, payment_hash_2, payment_secret_2) =
-		get_payment_preimage_hash!(nodes[1]);
+		get_payment_preimage_hash(&nodes[1], None, None);
 	let (payment_preimage_3, payment_hash_3, payment_secret_3) =
-		get_payment_preimage_hash!(nodes[1]);
+		get_payment_preimage_hash(&nodes[1], None, None);
 
 	// Queue up two payments - one will be delivered right away, one immediately goes into the
 	// holding cell as nodes[0] is AwaitingRAA. Ultimately this allows us to deliver an RAA
@@ -1872,7 +1872,7 @@ fn test_monitor_update_fail_claim() {
 	do_commitment_signed_dance(&nodes[1], &nodes[2], &payment_event.commitment_msg, false, true);
 	expect_htlc_failure_conditions(nodes[1].node.get_and_clear_pending_events(), &[]);
 
-	let (_, payment_hash_3, payment_secret_3) = get_payment_preimage_hash!(nodes[0]);
+	let (_, payment_hash_3, payment_secret_3) = get_payment_preimage_hash(&nodes[0], None, None);
 	let id_3 = PaymentId(payment_hash_3.0);
 	let onion_3 = RecipientOnionFields::secret_only(payment_secret_3);
 	nodes[2].node.send_payment_with_route(route, payment_hash_3, onion_3, id_3).unwrap();
@@ -2509,7 +2509,7 @@ fn test_fail_htlc_on_broadcast_after_claim() {
 	mine_transaction(&nodes[1], &bs_txn[0]);
 	let reason = ClosureReason::CommitmentTxConfirmed;
 	check_closed_event(&nodes[1], 1, reason, &[node_c_id], 100000);
-	check_closed_broadcast!(nodes[1], true);
+	check_closed_broadcast(&nodes[1], 1, true);
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 	check_added_monitors(&nodes[1], 1);
 	expect_and_process_pending_htlcs_and_htlc_handling_failed(
@@ -2663,7 +2663,7 @@ fn do_channel_holding_cell_serialize(disconnect: bool, reload_a: bool) {
 	let (route, payment_hash_1, payment_preimage_1, payment_secret_1) =
 		get_route_and_payment_hash!(&nodes[0], nodes[1], 100000);
 	let (payment_preimage_2, payment_hash_2, payment_secret_2) =
-		get_payment_preimage_hash!(&nodes[1]);
+		get_payment_preimage_hash(&nodes[1], None, None);
 
 	// Do a really complicated dance to get an HTLC into the holding cell, with
 	// MonitorUpdateInProgress set but AwaitingRemoteRevoke unset. When this test was written, any
@@ -3048,11 +3048,11 @@ fn test_temporary_error_during_shutdown() {
 		node_b_id,
 		&get_event_msg!(nodes[1], MessageSendEvent::SendClosingSigned, node_a_id),
 	);
-	let (_, closing_signed_a) = get_closing_signed_broadcast!(nodes[0].node, node_b_id);
+	let (_, closing_signed_a) = get_closing_signed_broadcast(&nodes[0], node_b_id);
 	let txn_a = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 
 	nodes[1].node.handle_closing_signed(node_a_id, &closing_signed_a.unwrap());
-	let (_, none_b) = get_closing_signed_broadcast!(nodes[1].node, node_a_id);
+	let (_, none_b) = get_closing_signed_broadcast(&nodes[1], node_a_id);
 	assert!(none_b.is_none());
 	let txn_b = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 
@@ -4043,7 +4043,7 @@ fn do_test_reload_mon_update_completion_actions(close_during_reload: bool) {
 		};
 		nodes[0].node.force_close_broadcasting_latest_txn(&chan_id_ab, &node_b_id, msg).unwrap();
 		check_added_monitors(&nodes[0], 1);
-		check_closed_broadcast!(nodes[0], true);
+		check_closed_broadcast(&nodes[0], 1, true);
 		check_closed_event(&nodes[0], 1, reason, &[node_b_id], 100_000);
 		let as_closing_tx = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 		mine_transaction_without_consistency_checks(&nodes[1], &as_closing_tx[0]);
@@ -4494,13 +4494,13 @@ fn test_claim_to_closed_channel_blocks_forwarded_preimage_removal() {
 	check_added_monitors(&nodes[0], 1);
 	let a_reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
 	check_closed_event(&nodes[0], 1, a_reason, &[node_b_id], 1000000);
-	check_closed_broadcast!(nodes[0], true);
+	check_closed_broadcast(&nodes[0], 1, true);
 
 	let as_commit_tx = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 	assert_eq!(as_commit_tx.len(), 1);
 
 	mine_transaction(&nodes[1], &as_commit_tx[0]);
-	check_closed_broadcast!(nodes[1], true);
+	check_closed_broadcast(&nodes[1], 1, true);
 	check_added_monitors(&nodes[1], 1);
 	let b_reason = ClosureReason::CommitmentTxConfirmed;
 	check_closed_event(&nodes[1], 1, b_reason, &[node_a_id], 1000000);
@@ -4572,13 +4572,13 @@ fn test_claim_to_closed_channel_blocks_claimed_event() {
 	check_added_monitors(&nodes[0], 1);
 	let a_reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
 	check_closed_event(&nodes[0], 1, a_reason, &[node_b_id], 1000000);
-	check_closed_broadcast!(nodes[0], true);
+	check_closed_broadcast(&nodes[0], 1, true);
 
 	let as_commit_tx = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 	assert_eq!(as_commit_tx.len(), 1);
 
 	mine_transaction(&nodes[1], &as_commit_tx[0]);
-	check_closed_broadcast!(nodes[1], true);
+	check_closed_broadcast(&nodes[1], 1, true);
 	check_added_monitors(&nodes[1], 1);
 	let b_reason = ClosureReason::CommitmentTxConfirmed;
 	check_closed_event(&nodes[1], 1, b_reason, &[node_a_id], 1000000);
@@ -5099,7 +5099,8 @@ fn test_mpp_claim_to_holding_cell() {
 	send_along_route_with_secret(&nodes[0], route, paths, 500_000, paymnt_hash_1, payment_secret);
 
 	// Put the C <-> D channel into AwaitingRaa
-	let (preimage_2, paymnt_hash_2, payment_secret_2) = get_payment_preimage_hash!(nodes[3]);
+	let (preimage_2, paymnt_hash_2, payment_secret_2) =
+		get_payment_preimage_hash(&nodes[3], None, None);
 	let onion = RecipientOnionFields::secret_only(payment_secret_2);
 	let id = PaymentId([42; 32]);
 	let pay_params = PaymentParameters::from_node_id(node_d_id, TEST_FINAL_CLTV);
