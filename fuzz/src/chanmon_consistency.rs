@@ -853,17 +853,6 @@ fn send_mpp_hop_payment(
 }
 
 #[inline]
-fn assert_action_timeout_awaiting_response(action: &msgs::ErrorAction) {
-	// Since sending/receiving messages may be delayed, `timer_tick_occurred` may cause a node to
-	// disconnect their counterparty if they're expecting a timely response.
-	assert!(matches!(
-		action,
-		msgs::ErrorAction::DisconnectPeerWithWarning { msg }
-		if msg.data.contains("Disconnecting due to timeout awaiting response")
-	));
-}
-
-#[inline]
 pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 	data: &[u8], underlying_out: Out, anchors: bool,
 ) {
@@ -1528,10 +1517,17 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 							*node_id == a_id
 						},
 						MessageSendEvent::HandleError { ref action, ref node_id } => {
-							assert_action_timeout_awaiting_response(action);
+							match action {
+								msgs::ErrorAction::DisconnectPeerWithWarning { msg }
+								if msg.data.contains("Disconnecting due to timeout awaiting response") => {},
+								msgs::ErrorAction::DisconnectPeer { .. } => {},
+								msgs::ErrorAction::SendErrorMessage { .. } => {},
+								_ => panic!("Unexpected HandleError action {:?}", action),
+							}
 							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
 							*node_id == a_id
 						},
+						MessageSendEvent::BroadcastChannelUpdate { .. } => continue,
 						_ => panic!("Unhandled message event {:?}", event),
 					};
 					if push_a { ba_events.push(event); } else { bc_events.push(event); }
@@ -1741,8 +1737,20 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 								}
 							}
 						},
-						MessageSendEvent::HandleError { ref action, .. } => {
-							assert_action_timeout_awaiting_response(action);
+						MessageSendEvent::HandleError { ref action, ref node_id } => {
+							match action {
+								msgs::ErrorAction::DisconnectPeerWithWarning { msg }
+								if msg.data.contains("Disconnecting due to timeout awaiting response") => {},
+								msgs::ErrorAction::DisconnectPeer { .. } => {},
+								msgs::ErrorAction::SendErrorMessage { ref msg } => {
+									for dest in nodes.iter() {
+										if dest.get_our_node_id() == *node_id {
+											dest.handle_error(nodes[$node].get_our_node_id(), msg);
+										}
+									}
+								},
+								_ => panic!("Unexpected HandleError action {:?}", action),
+							}
 						},
 						MessageSendEvent::SendChannelReady { .. } => {
 							// Can be generated as a reestablish response
@@ -1798,8 +1806,14 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 							MessageSendEvent::SendChannelReady { .. } => {},
 							MessageSendEvent::SendAnnouncementSignatures { .. } => {},
 							MessageSendEvent::SendChannelUpdate { .. } => {},
-							MessageSendEvent::HandleError { ref action, .. } => {
-								assert_action_timeout_awaiting_response(action);
+							MessageSendEvent::HandleError { ref action, .. } => match action {
+								msgs::ErrorAction::DisconnectPeerWithWarning { msg }
+									if msg.data.contains(
+										"Disconnecting due to timeout awaiting response",
+									) => {},
+								msgs::ErrorAction::DisconnectPeer { .. } => {},
+								msgs::ErrorAction::SendErrorMessage { .. } => {},
+								_ => panic!("Unexpected HandleError action {:?}", action),
 							},
 							_ => {
 								if out.may_fail.load(atomic::Ordering::Acquire) {
@@ -1826,8 +1840,14 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 							MessageSendEvent::SendChannelReady { .. } => {},
 							MessageSendEvent::SendAnnouncementSignatures { .. } => {},
 							MessageSendEvent::SendChannelUpdate { .. } => {},
-							MessageSendEvent::HandleError { ref action, .. } => {
-								assert_action_timeout_awaiting_response(action);
+							MessageSendEvent::HandleError { ref action, .. } => match action {
+								msgs::ErrorAction::DisconnectPeerWithWarning { msg }
+									if msg.data.contains(
+										"Disconnecting due to timeout awaiting response",
+									) => {},
+								msgs::ErrorAction::DisconnectPeer { .. } => {},
+								msgs::ErrorAction::SendErrorMessage { .. } => {},
+								_ => panic!("Unexpected HandleError action {:?}", action),
 							},
 							_ => {
 								if out.may_fail.load(atomic::Ordering::Acquire) {
@@ -1947,6 +1967,8 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 							}
 						},
 						events::Event::SpliceFailed { .. } => {},
+						events::Event::ChannelClosed { .. } => {},
+						events::Event::BumpTransaction(..) => {},
 
 						_ => {
 							if out.may_fail.load(atomic::Ordering::Acquire) {
