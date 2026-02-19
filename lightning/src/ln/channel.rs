@@ -3052,6 +3052,7 @@ impl From<QuiescentAction> for QuiescentError {
 pub(crate) enum StfuResponse {
 	Stfu(msgs::Stfu),
 	SpliceInit(msgs::SpliceInit),
+	TxInitRbf(msgs::TxInitRbf),
 }
 
 /// Wrapper around a [`Transaction`] useful for caching the result of [`Transaction::compute_txid`].
@@ -12352,6 +12353,34 @@ where
 		}
 	}
 
+	fn send_tx_init_rbf_internal(&mut self, context: FundingNegotiationContext) -> msgs::TxInitRbf {
+		let pending_splice =
+			self.pending_splice.as_mut().expect("pending_splice should exist for RBF");
+		debug_assert!(!pending_splice.negotiated_candidates.is_empty());
+
+		let new_holder_funding_key = pending_splice
+			.negotiated_candidates
+			.first()
+			.unwrap()
+			.get_holder_pubkeys()
+			.funding_pubkey;
+
+		let funding_feerate_per_kw = context.funding_feerate_sat_per_1000_weight;
+		let funding_contribution_satoshis = context.our_funding_contribution.to_sat();
+		let locktime = context.funding_tx_locktime.to_consensus_u32();
+
+		pending_splice.funding_negotiation =
+			Some(FundingNegotiation::AwaitingAck { context, new_holder_funding_key });
+		pending_splice.last_funding_feerate_sat_per_1000_weight = Some(funding_feerate_per_kw);
+
+		msgs::TxInitRbf {
+			channel_id: self.context.channel_id,
+			locktime,
+			feerate_sat_per_1000_weight: funding_feerate_per_kw,
+			funding_output_contribution: Some(funding_contribution_satoshis),
+		}
+	}
+
 	#[cfg(test)]
 	pub fn abandon_splice(
 		&mut self,
@@ -13663,21 +13692,6 @@ where
 					));
 				},
 				Some(QuiescentAction::Splice { contribution, locktime }) => {
-					// TODO(splicing): If the splice has been negotiated but has not been locked, we
-					// can RBF here to add the contribution.
-					if self.pending_splice.is_some() {
-						debug_assert!(false);
-						self.quiescent_action =
-							Some(QuiescentAction::Splice { contribution, locktime });
-
-						return Err(ChannelError::WarnAndDisconnect(
-							format!(
-								"Channel {} cannot be spliced as it already has a splice pending",
-								self.context.channel_id(),
-							),
-						));
-					}
-
 					let prev_funding_input = self.funding.to_splice_funding_input();
 					let our_funding_contribution = contribution.net_value();
 					let funding_feerate_per_kw = contribution.feerate().to_sat_per_kwu() as u32;
@@ -13692,6 +13706,11 @@ where
 						our_funding_inputs,
 						our_funding_outputs,
 					};
+
+					if self.pending_splice.is_some() {
+						let tx_init_rbf = self.send_tx_init_rbf_internal(context);
+						return Ok(Some(StfuResponse::TxInitRbf(tx_init_rbf)));
+					}
 
 					let splice_init = self.send_splice_init(context);
 					return Ok(Some(StfuResponse::SpliceInit(splice_init)));

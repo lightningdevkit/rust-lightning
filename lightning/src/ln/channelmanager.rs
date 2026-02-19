@@ -12632,6 +12632,13 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							});
 							Ok(true)
 						},
+						Some(StfuResponse::TxInitRbf(msg)) => {
+							peer_state.pending_msg_events.push(MessageSendEvent::SendTxInitRbf {
+								node_id: *counterparty_node_id,
+								msg,
+							});
+							Ok(true)
+						},
 					}
 				} else {
 					let msg = "Peer sent `stfu` for an unfunded channel";
