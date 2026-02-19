@@ -36,7 +36,6 @@ use crate::chain::channelmonitor::{
 };
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::chain::BestBlock;
-use crate::events::bump_transaction::Input;
 use crate::events::{ClosureReason, FundingInfo};
 use crate::ln::chan_utils;
 use crate::ln::chan_utils::{
@@ -84,6 +83,7 @@ use crate::util::errors::APIError;
 use crate::util::logger::{Logger, Record, WithContext};
 use crate::util::scid_utils::{block_from_scid, scid_from_parts};
 use crate::util::ser::{Readable, ReadableArgs, RequiredWrapper, Writeable, Writer};
+use crate::util::wallet_utils::Input;
 use crate::{impl_readable_for_vec, impl_writeable_for_vec};
 
 use alloc::collections::{btree_map, BTreeMap};
@@ -12162,7 +12162,7 @@ where
 	}
 
 	/// Initiate splicing.
-	pub fn splice_channel(&mut self, feerate: FeeRate) -> Result<FundingTemplate, APIError> {
+	pub fn splice_channel(&self, feerate: FeeRate) -> Result<FundingTemplate, APIError> {
 		if self.holder_commitment_point.current_point().is_none() {
 			return Err(APIError::APIMisuseError {
 				err: format!(
@@ -12213,7 +12213,7 @@ where
 			satisfaction_weight: EMPTY_SCRIPT_SIG_WEIGHT + FUNDING_TRANSACTION_WITNESS_WEIGHT,
 		};
 
-		Ok(FundingTemplate::new(Some(shared_input), feerate, true))
+		Ok(FundingTemplate::new(Some(shared_input), feerate))
 	}
 
 	pub fn funding_contributed<L: Logger>(
@@ -12221,9 +12221,10 @@ where
 	) -> Result<Option<msgs::Stfu>, SpliceFundingFailed> {
 		debug_assert!(contribution.is_splice());
 
-		if let Err(e) = contribution.net_value().and_then(|our_funding_contribution| {
+		if let Err(e) = contribution.validate().and_then(|()| {
 			// For splice-out, our_funding_contribution is adjusted to cover fees if there
 			// aren't any inputs.
+			let our_funding_contribution = contribution.net_value();
 			self.validate_splice_contributions(our_funding_contribution, SignedAmount::ZERO)
 		}) {
 			log_error!(logger, "Channel {} cannot be funded: {}", self.context.channel_id(), e);
@@ -13566,24 +13567,12 @@ where
 					}
 
 					let prev_funding_input = self.funding.to_splice_funding_input();
-					let is_initiator = contribution.is_initiator();
-					let our_funding_contribution = match contribution.net_value() {
-						Ok(net_value) => net_value,
-						Err(e) => {
-							debug_assert!(false);
-							return Err(ChannelError::WarnAndDisconnect(
-								format!(
-									"Internal Error: Insufficient funding contribution: {}",
-									e,
-								)
-							));
-						},
-					};
+					let our_funding_contribution = contribution.net_value();
 					let funding_feerate_per_kw = contribution.feerate().to_sat_per_kwu() as u32;
 					let (our_funding_inputs, our_funding_outputs) = contribution.into_tx_parts();
 
 					let context = FundingNegotiationContext {
-						is_initiator,
+						is_initiator: true,
 						our_funding_contribution,
 						funding_tx_locktime: locktime,
 						funding_feerate_sat_per_1000_weight: funding_feerate_per_kw,

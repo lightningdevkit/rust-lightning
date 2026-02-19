@@ -4625,20 +4625,6 @@ impl<
 	pub fn splice_channel(
 		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey, feerate: FeeRate,
 	) -> Result<FundingTemplate, APIError> {
-		let mut res = Err(APIError::APIMisuseError { err: String::new() });
-		PersistenceNotifierGuard::optionally_notify(self, || {
-			let result = self.internal_splice_channel(
-				channel_id, counterparty_node_id, feerate,
-			);
-			res = result;
-			NotifyOption::SkipPersistNoEvents
-		});
-		res
-	}
-
-	fn internal_splice_channel(
-		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey, feerate: FeeRate,
-	) -> Result<FundingTemplate, APIError> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 
 		let peer_state_mutex = match per_peer_state
@@ -4663,8 +4649,8 @@ impl<
 
 		// Look for the channel
 		match peer_state.channel_by_id.entry(*channel_id) {
-			hash_map::Entry::Occupied(mut chan_phase_entry) => {
-				if let Some(chan) = chan_phase_entry.get_mut().as_funded_mut() {
+			hash_map::Entry::Occupied(chan_phase_entry) => {
+				if let Some(chan) = chan_phase_entry.get().as_funded() {
 					chan.splice_channel(feerate)
 				} else {
 					Err(APIError::ChannelUnavailable {

@@ -11,15 +11,8 @@
 
 use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::PublicKey;
-use bitcoin::{
-	Amount, FeeRate, OutPoint, Script, ScriptBuf, Sequence, SignedAmount, Transaction, TxOut,
-	WScriptHash, Weight,
-};
+use bitcoin::{Amount, FeeRate, OutPoint, ScriptBuf, SignedAmount, TxOut, WScriptHash, Weight};
 
-use core::ops::Deref;
-
-use crate::events::bump_transaction::sync::CoinSelectionSourceSync;
-use crate::events::bump_transaction::{CoinSelection, CoinSelectionSource, Input, Utxo};
 use crate::ln::chan_utils::{
 	make_funding_redeemscript, BASE_INPUT_WEIGHT, EMPTY_SCRIPT_SIG_WEIGHT,
 	FUNDING_TRANSACTION_WITNESS_WEIGHT,
@@ -29,8 +22,10 @@ use crate::ln::msgs;
 use crate::ln::types::ChannelId;
 use crate::ln::LN_MAX_MSG_LEN;
 use crate::prelude::*;
-use crate::sign::{P2TR_KEY_PATH_WITNESS_WEIGHT, P2WPKH_WITNESS_WEIGHT};
 use crate::util::async_poll::MaybeSend;
+use crate::util::wallet_utils::{
+	CoinSelection, CoinSelectionSource, CoinSelectionSourceSync, Input,
+};
 
 /// A template for contributing to a channel's splice funding transaction.
 ///
@@ -49,28 +44,38 @@ pub struct FundingTemplate {
 
 	/// The fee rate to use for coin selection.
 	feerate: FeeRate,
-
-	/// Whether the contributor initiated the funding, and thus is responsible for fees incurred for
-	/// common fields and shared inputs and outputs.
-	is_initiator: bool,
 }
 
 impl FundingTemplate {
 	/// Constructs a [`FundingTemplate`] for a splice using the provided shared input.
-	pub(super) fn new(shared_input: Option<Input>, feerate: FeeRate, is_initiator: bool) -> Self {
-		Self { shared_input, feerate, is_initiator }
+	pub(super) fn new(shared_input: Option<Input>, feerate: FeeRate) -> Self {
+		Self { shared_input, feerate }
 	}
 }
 
 macro_rules! build_funding_contribution {
-    ($value_added:expr, $outputs:expr, $shared_input:expr, $feerate:expr, $is_initiator:expr, $wallet:ident, $($await:tt)*) => {{
+    ($value_added:expr, $outputs:expr, $shared_input:expr, $feerate:expr, $wallet:ident, $($await:tt)*) => {{
 		let value_added: Amount = $value_added;
 		let outputs: Vec<TxOut> = $outputs;
 		let shared_input: Option<Input> = $shared_input;
 		let feerate: FeeRate = $feerate;
-		let is_initiator: bool = $is_initiator;
 
-		let value_removed = outputs.iter().map(|txout| txout.value).sum();
+		// Validate user-provided amounts are within MAX_MONEY before coin selection to
+		// ensure FundingContribution::net_value() arithmetic cannot overflow. With all
+		// amounts bounded by MAX_MONEY (~2.1e15 sat), the worst-case net_value()
+		// computation is -2 * MAX_MONEY (~-4.2e15), well within i64::MIN (~-9.2e18).
+		if value_added > Amount::MAX_MONEY {
+			return Err(());
+		}
+
+		let mut value_removed = Amount::ZERO;
+		for txout in outputs.iter() {
+			value_removed = match value_removed.checked_add(txout.value) {
+				Some(sum) if sum <= Amount::MAX_MONEY => sum,
+				_ => return Err(()),
+			};
+		}
+
 		let is_splice = shared_input.is_some();
 
 		let coin_selection = if value_added == Amount::ZERO {
@@ -108,7 +113,11 @@ macro_rules! build_funding_contribution {
 
 		let CoinSelection { confirmed_utxos: inputs, change_output } = coin_selection;
 
-		let estimated_fee = estimate_transaction_fee(&inputs, &outputs, is_initiator, is_splice, feerate);
+		// The caller creating a FundingContribution is always the initiator for fee estimation
+		// purposes — this is conservative, overestimating rather than underestimating fees if
+		// the node ends up as the acceptor.
+		let estimated_fee = estimate_transaction_fee(&inputs, &outputs, true, is_splice, feerate);
+		debug_assert!(estimated_fee <= Amount::MAX_MONEY);
 
 		let contribution = FundingContribution {
 			value_added,
@@ -117,7 +126,6 @@ macro_rules! build_funding_contribution {
 			outputs,
 			change_output,
 			feerate,
-			is_initiator,
 			is_splice,
 		};
 
@@ -128,113 +136,74 @@ macro_rules! build_funding_contribution {
 impl FundingTemplate {
 	/// Creates a [`FundingContribution`] for adding funds to a channel using `wallet` to perform
 	/// coin selection.
-	pub async fn splice_in<W: Deref + MaybeSend>(
+	pub async fn splice_in<W: CoinSelectionSource + MaybeSend>(
 		self, value_added: Amount, wallet: W,
-	) -> Result<FundingContribution, ()>
-	where
-		W::Target: CoinSelectionSource + MaybeSend,
-	{
+	) -> Result<FundingContribution, ()> {
 		if value_added == Amount::ZERO {
 			return Err(());
 		}
-		let FundingTemplate { shared_input, feerate, is_initiator } = self;
-		build_funding_contribution!(value_added, vec![], shared_input, feerate, is_initiator, wallet, await)
+		let FundingTemplate { shared_input, feerate } = self;
+		build_funding_contribution!(value_added, vec![], shared_input, feerate, wallet, await)
 	}
 
 	/// Creates a [`FundingContribution`] for adding funds to a channel using `wallet` to perform
 	/// coin selection.
-	pub fn splice_in_sync<W: Deref>(
+	pub fn splice_in_sync<W: CoinSelectionSourceSync>(
 		self, value_added: Amount, wallet: W,
-	) -> Result<FundingContribution, ()>
-	where
-		W::Target: CoinSelectionSourceSync,
-	{
+	) -> Result<FundingContribution, ()> {
 		if value_added == Amount::ZERO {
 			return Err(());
 		}
-		let FundingTemplate { shared_input, feerate, is_initiator } = self;
-		build_funding_contribution!(
-			value_added,
-			vec![],
-			shared_input,
-			feerate,
-			is_initiator,
-			wallet,
-		)
+		let FundingTemplate { shared_input, feerate } = self;
+		build_funding_contribution!(value_added, vec![], shared_input, feerate, wallet,)
 	}
 
 	/// Creates a [`FundingContribution`] for removing funds from a channel using `wallet` to
 	/// perform coin selection.
-	pub async fn splice_out<W: Deref + MaybeSend>(
+	pub async fn splice_out<W: CoinSelectionSource + MaybeSend>(
 		self, outputs: Vec<TxOut>, wallet: W,
-	) -> Result<FundingContribution, ()>
-	where
-		W::Target: CoinSelectionSource + MaybeSend,
-	{
+	) -> Result<FundingContribution, ()> {
 		if outputs.is_empty() {
 			return Err(());
 		}
-		let FundingTemplate { shared_input, feerate, is_initiator } = self;
-		build_funding_contribution!(Amount::ZERO, outputs, shared_input, feerate, is_initiator, wallet, await)
+		let FundingTemplate { shared_input, feerate } = self;
+		build_funding_contribution!(Amount::ZERO, outputs, shared_input, feerate, wallet, await)
 	}
 
 	/// Creates a [`FundingContribution`] for removing funds from a channel using `wallet` to
 	/// perform coin selection.
-	pub fn splice_out_sync<W: Deref>(
+	pub fn splice_out_sync<W: CoinSelectionSourceSync>(
 		self, outputs: Vec<TxOut>, wallet: W,
-	) -> Result<FundingContribution, ()>
-	where
-		W::Target: CoinSelectionSourceSync,
-	{
+	) -> Result<FundingContribution, ()> {
 		if outputs.is_empty() {
 			return Err(());
 		}
-		let FundingTemplate { shared_input, feerate, is_initiator } = self;
-		build_funding_contribution!(
-			Amount::ZERO,
-			outputs,
-			shared_input,
-			feerate,
-			is_initiator,
-			wallet,
-		)
+		let FundingTemplate { shared_input, feerate } = self;
+		build_funding_contribution!(Amount::ZERO, outputs, shared_input, feerate, wallet,)
 	}
 
 	/// Creates a [`FundingContribution`] for both adding and removing funds from a channel using
 	/// `wallet` to perform coin selection.
-	pub async fn splice_in_and_out<W: Deref + MaybeSend>(
+	pub async fn splice_in_and_out<W: CoinSelectionSource + MaybeSend>(
 		self, value_added: Amount, outputs: Vec<TxOut>, wallet: W,
-	) -> Result<FundingContribution, ()>
-	where
-		W::Target: CoinSelectionSource + MaybeSend,
-	{
+	) -> Result<FundingContribution, ()> {
 		if value_added == Amount::ZERO && outputs.is_empty() {
 			return Err(());
 		}
-		let FundingTemplate { shared_input, feerate, is_initiator } = self;
-		build_funding_contribution!(value_added, outputs, shared_input, feerate, is_initiator, wallet, await)
+		let FundingTemplate { shared_input, feerate } = self;
+		build_funding_contribution!(value_added, outputs, shared_input, feerate, wallet, await)
 	}
 
 	/// Creates a [`FundingContribution`] for both adding and removing funds from a channel using
 	/// `wallet` to perform coin selection.
-	pub fn splice_in_and_out_sync<W: Deref>(
+	pub fn splice_in_and_out_sync<W: CoinSelectionSourceSync>(
 		self, value_added: Amount, outputs: Vec<TxOut>, wallet: W,
-	) -> Result<FundingContribution, ()>
-	where
-		W::Target: CoinSelectionSourceSync,
-	{
+	) -> Result<FundingContribution, ()> {
 		if value_added == Amount::ZERO && outputs.is_empty() {
 			return Err(());
 		}
-		let FundingTemplate { shared_input, feerate, is_initiator } = self;
-		build_funding_contribution!(
-			value_added,
-			outputs,
-			shared_input,
-			feerate,
-			is_initiator,
-			wallet,
-		)
+		let FundingTemplate { shared_input, feerate } = self;
+		build_funding_contribution!(value_added, outputs, shared_input, feerate, wallet,)
 	}
 }
 
@@ -313,10 +282,6 @@ pub struct FundingContribution {
 	/// The fee rate used to select `inputs`.
 	feerate: FeeRate,
 
-	/// Whether the contributor initiated the funding, and thus is responsible for fees incurred for
-	/// common fields and shared inputs and outputs.
-	is_initiator: bool,
-
 	/// Whether the contribution is for funding a splice.
 	is_splice: bool,
 }
@@ -328,17 +293,12 @@ impl_writeable_tlv_based!(FundingContribution, {
 	(7, outputs, optional_vec),
 	(9, change_output, option),
 	(11, feerate, required),
-	(13, is_initiator, required),
-	(15, is_splice, required),
+	(13, is_splice, required),
 });
 
 impl FundingContribution {
 	pub(super) fn feerate(&self) -> FeeRate {
 		self.feerate
-	}
-
-	pub(super) fn is_initiator(&self) -> bool {
-		self.is_initiator
 	}
 
 	pub(super) fn is_splice(&self) -> bool {
@@ -361,10 +321,9 @@ impl FundingContribution {
 		(inputs.into_iter().map(|input| input.utxo.outpoint).collect(), outputs)
 	}
 
-	/// The net value contributed to a channel by the splice. If negative, more value will be
-	/// spliced out than spliced in. Fees will be deducted from the expected splice-out amount
-	/// if no inputs were included.
-	pub fn net_value(&self) -> Result<SignedAmount, String> {
+	/// Validates that the funding inputs are suitable for use in the interactive transaction
+	/// protocol, checking prevtx sizes and input sufficiency.
+	pub fn validate(&self) -> Result<(), String> {
 		for FundingTxInput { utxo, prevtx, .. } in self.inputs.iter() {
 			use crate::util::ser::Writeable;
 			const MESSAGE_TEMPLATE: msgs::TxAddInput = msgs::TxAddInput {
@@ -417,204 +376,47 @@ impl FundingContribution {
 			}
 		}
 
+		Ok(())
+	}
+
+	/// The net value contributed to a channel by the splice. If negative, more value will be
+	/// spliced out than spliced in. Fees will be deducted from the expected splice-out amount
+	/// if no inputs were included.
+	pub fn net_value(&self) -> SignedAmount {
 		let unpaid_fees = if self.inputs.is_empty() { self.estimated_fee } else { Amount::ZERO }
 			.to_signed()
-			.expect("fees should never exceed Amount::MAX_MONEY");
-		let value_added = self.value_added.to_signed().map_err(|_| "Value added too large")?;
+			.expect("estimated_fee is validated to not exceed Amount::MAX_MONEY");
+		let value_added = self
+			.value_added
+			.to_signed()
+			.expect("value_added is validated to not exceed Amount::MAX_MONEY");
 		let value_removed = self
 			.outputs
 			.iter()
 			.map(|txout| txout.value)
 			.sum::<Amount>()
 			.to_signed()
-			.map_err(|_| "Value removed too large")?;
+			.expect("value_removed is validated to not exceed Amount::MAX_MONEY");
 
 		let contribution_amount = value_added - value_removed;
-		let adjusted_contribution = contribution_amount.checked_sub(unpaid_fees).ok_or(format!(
-			"{} splice-out amount plus {} fee estimate exceeds the total bitcoin supply",
-			contribution_amount.unsigned_abs(),
-			self.estimated_fee,
-		))?;
-
-		Ok(adjusted_contribution)
+		contribution_amount
+			.checked_sub(unpaid_fees)
+			.expect("all amounts are validated to not exceed Amount::MAX_MONEY")
 	}
 }
 
 /// An input to contribute to a channel's funding transaction either when using the v2 channel
 /// establishment protocol or when splicing.
-#[derive(Debug, Clone)]
-pub struct FundingTxInput {
-	/// The unspent [`TxOut`] found in [`prevtx`].
-	///
-	/// [`TxOut`]: bitcoin::TxOut
-	/// [`prevtx`]: Self::prevtx
-	pub(crate) utxo: Utxo,
-
-	/// The transaction containing the unspent [`TxOut`] referenced by [`utxo`].
-	///
-	/// [`TxOut`]: bitcoin::TxOut
-	/// [`utxo`]: Self::utxo
-	pub(crate) prevtx: Transaction,
-}
-
-impl_writeable_tlv_based!(FundingTxInput, {
-	(1, utxo, required),
-	(3, _sequence, (legacy, Sequence,
-		|read_val: Option<&Sequence>| {
-			if let Some(sequence) = read_val {
-				// Utxo contains sequence now, so update it if the value read here differs since
-				// this indicates Utxo::sequence was read with default_value
-				let utxo: &mut Utxo = utxo.0.as_mut().expect("utxo is required");
-				if utxo.sequence != *sequence {
-					utxo.sequence = *sequence;
-				}
-			}
-			Ok(())
-		},
-		|input: &FundingTxInput| Some(input.utxo.sequence))),
-	(5, prevtx, required),
-});
-
-impl FundingTxInput {
-	fn new<F: FnOnce(&bitcoin::Script) -> bool>(
-		prevtx: Transaction, vout: u32, witness_weight: Weight, script_filter: F,
-	) -> Result<Self, ()> {
-		Ok(FundingTxInput {
-			utxo: Utxo {
-				outpoint: bitcoin::OutPoint { txid: prevtx.compute_txid(), vout },
-				output: prevtx
-					.output
-					.get(vout as usize)
-					.filter(|output| script_filter(&output.script_pubkey))
-					.ok_or(())?
-					.clone(),
-				satisfaction_weight: EMPTY_SCRIPT_SIG_WEIGHT + witness_weight.to_wu(),
-				sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
-			},
-			prevtx,
-		})
-	}
-
-	/// Creates an input spending a P2WPKH output from the given `prevtx` at index `vout`.
-	///
-	/// Uses [`Sequence::ENABLE_RBF_NO_LOCKTIME`] as the [`TxIn::sequence`], which can be overridden
-	/// by [`set_sequence`].
-	///
-	/// Returns `Err` if no such output exists in `prevtx` at index `vout`.
-	///
-	/// [`TxIn::sequence`]: bitcoin::TxIn::sequence
-	/// [`set_sequence`]: Self::set_sequence
-	pub fn new_p2wpkh(prevtx: Transaction, vout: u32) -> Result<Self, ()> {
-		let witness_weight = Weight::from_wu(P2WPKH_WITNESS_WEIGHT)
-			- if cfg!(feature = "grind_signatures") {
-				// Guarantees a low R signature
-				Weight::from_wu(1)
-			} else {
-				Weight::ZERO
-			};
-		FundingTxInput::new(prevtx, vout, witness_weight, Script::is_p2wpkh)
-	}
-
-	/// Creates an input spending a P2WSH output from the given `prevtx` at index `vout`.
-	///
-	/// Requires passing the weight of witness needed to satisfy the output's script.
-	///
-	/// Uses [`Sequence::ENABLE_RBF_NO_LOCKTIME`] as the [`TxIn::sequence`], which can be overridden
-	/// by [`set_sequence`].
-	///
-	/// Returns `Err` if no such output exists in `prevtx` at index `vout`.
-	///
-	/// [`TxIn::sequence`]: bitcoin::TxIn::sequence
-	/// [`set_sequence`]: Self::set_sequence
-	pub fn new_p2wsh(prevtx: Transaction, vout: u32, witness_weight: Weight) -> Result<Self, ()> {
-		FundingTxInput::new(prevtx, vout, witness_weight, Script::is_p2wsh)
-	}
-
-	/// Creates an input spending a P2TR output from the given `prevtx` at index `vout`.
-	///
-	/// This is meant for inputs spending a taproot output using the key path. See
-	/// [`new_p2tr_script_spend`] for when spending using a script path.
-	///
-	/// Uses [`Sequence::ENABLE_RBF_NO_LOCKTIME`] as the [`TxIn::sequence`], which can be overridden
-	/// by [`set_sequence`].
-	///
-	/// Returns `Err` if no such output exists in `prevtx` at index `vout`.
-	///
-	/// [`new_p2tr_script_spend`]: Self::new_p2tr_script_spend
-	///
-	/// [`TxIn::sequence`]: bitcoin::TxIn::sequence
-	/// [`set_sequence`]: Self::set_sequence
-	pub fn new_p2tr_key_spend(prevtx: Transaction, vout: u32) -> Result<Self, ()> {
-		let witness_weight = Weight::from_wu(P2TR_KEY_PATH_WITNESS_WEIGHT);
-		FundingTxInput::new(prevtx, vout, witness_weight, Script::is_p2tr)
-	}
-
-	/// Creates an input spending a P2TR output from the given `prevtx` at index `vout`.
-	///
-	/// Requires passing the weight of witness needed to satisfy a script path of the taproot
-	/// output. See [`new_p2tr_key_spend`] for when spending using the key path.
-	///
-	/// Uses [`Sequence::ENABLE_RBF_NO_LOCKTIME`] as the [`TxIn::sequence`], which can be overridden
-	/// by [`set_sequence`].
-	///
-	/// Returns `Err` if no such output exists in `prevtx` at index `vout`.
-	///
-	/// [`new_p2tr_key_spend`]: Self::new_p2tr_key_spend
-	///
-	/// [`TxIn::sequence`]: bitcoin::TxIn::sequence
-	/// [`set_sequence`]: Self::set_sequence
-	pub fn new_p2tr_script_spend(
-		prevtx: Transaction, vout: u32, witness_weight: Weight,
-	) -> Result<Self, ()> {
-		FundingTxInput::new(prevtx, vout, witness_weight, Script::is_p2tr)
-	}
-
-	#[cfg(test)]
-	pub(crate) fn new_p2pkh(prevtx: Transaction, vout: u32) -> Result<Self, ()> {
-		FundingTxInput::new(prevtx, vout, Weight::ZERO, Script::is_p2pkh)
-	}
-
-	/// The outpoint of the UTXO being spent.
-	pub fn outpoint(&self) -> bitcoin::OutPoint {
-		self.utxo.outpoint
-	}
-
-	/// The unspent output.
-	pub fn output(&self) -> &TxOut {
-		&self.utxo.output
-	}
-
-	/// The sequence number to use in the [`TxIn`].
-	///
-	/// [`TxIn`]: bitcoin::TxIn
-	pub fn sequence(&self) -> Sequence {
-		self.utxo.sequence
-	}
-
-	/// Sets the sequence number to use in the [`TxIn`].
-	///
-	/// [`TxIn`]: bitcoin::TxIn
-	pub fn set_sequence(&mut self, sequence: Sequence) {
-		self.utxo.sequence = sequence;
-	}
-
-	/// Converts the [`FundingTxInput`] into a [`Utxo`].
-	pub fn into_utxo(self) -> Utxo {
-		self.utxo
-	}
-
-	/// Converts the [`FundingTxInput`] into a [`TxOut`].
-	pub fn into_output(self) -> TxOut {
-		self.utxo.output
-	}
-}
+pub type FundingTxInput = crate::util::wallet_utils::ConfirmedUtxo;
 
 #[cfg(test)]
 mod tests {
-	use super::{estimate_transaction_fee, FundingContribution, FundingTxInput};
+	use super::{estimate_transaction_fee, FundingContribution, FundingTemplate, FundingTxInput};
+	use crate::chain::ClaimId;
+	use crate::util::wallet_utils::{CoinSelection, CoinSelectionSourceSync, Input};
 	use bitcoin::hashes::Hash;
 	use bitcoin::transaction::{Transaction, TxOut, Version};
-	use bitcoin::{Amount, FeeRate, ScriptBuf, SignedAmount, WPubkeyHash};
+	use bitcoin::{Amount, FeeRate, Psbt, ScriptBuf, SignedAmount, WPubkeyHash};
 
 	#[test]
 	#[rustfmt::skip]
@@ -701,11 +503,11 @@ mod tests {
 				],
 				outputs: vec![],
 				change_output: None,
-				is_initiator: true,
 				is_splice: true,
 				feerate: FeeRate::from_sat_per_kwu(2000),
 			};
-			assert_eq!(contribution.net_value(), Ok(contribution.value_added.to_signed().unwrap()));
+			assert!(contribution.validate().is_ok());
+			assert_eq!(contribution.net_value(), contribution.value_added.to_signed().unwrap());
 		}
 
 		// Net splice-in
@@ -722,11 +524,11 @@ mod tests {
 					funding_output_sats(200_000),
 				],
 				change_output: None,
-				is_initiator: true,
 				is_splice: true,
 				feerate: FeeRate::from_sat_per_kwu(2000),
 			};
-			assert_eq!(contribution.net_value(), Ok(SignedAmount::from_sat(220_000 - 200_000)));
+			assert!(contribution.validate().is_ok());
+			assert_eq!(contribution.net_value(), SignedAmount::from_sat(220_000 - 200_000));
 		}
 
 		// Net splice-out
@@ -743,11 +545,11 @@ mod tests {
 					funding_output_sats(400_000),
 				],
 				change_output: None,
-				is_initiator: true,
 				is_splice: true,
 				feerate: FeeRate::from_sat_per_kwu(2000),
 			};
-			assert_eq!(contribution.net_value(), Ok(SignedAmount::from_sat(220_000 - 400_000)));
+			assert!(contribution.validate().is_ok());
+			assert_eq!(contribution.net_value(), SignedAmount::from_sat(220_000 - 400_000));
 		}
 
 		// Net splice-out, inputs insufficient to cover fees
@@ -764,12 +566,11 @@ mod tests {
 					funding_output_sats(400_000),
 				],
 				change_output: None,
-				is_initiator: true,
 				is_splice: true,
 				feerate: FeeRate::from_sat_per_kwu(90000),
 			};
 			assert_eq!(
-				contribution.net_value(),
+				contribution.validate(),
 				Err(format!(
 					"Total input amount 0.00300000 BTC is lower than needed for splice-in contribution 0.00220000 BTC, considering fees of {}. Need more inputs.",
 					Amount::from_sat(expected_fee),
@@ -788,12 +589,11 @@ mod tests {
 				],
 				outputs: vec![],
 				change_output: None,
-				is_initiator: true,
 				is_splice: true,
 				feerate: FeeRate::from_sat_per_kwu(2000),
 			};
 			assert_eq!(
-				contribution.net_value(),
+				contribution.validate(),
 				Err(format!(
 					"Total input amount 0.00100000 BTC is lower than needed for splice-in contribution 0.00220000 BTC, considering fees of {}. Need more inputs.",
 					Amount::from_sat(expected_fee),
@@ -813,11 +613,11 @@ mod tests {
 				],
 				outputs: vec![],
 				change_output: None,
-				is_initiator: true,
 				is_splice: true,
 				feerate: FeeRate::from_sat_per_kwu(2000),
 			};
-			assert_eq!(contribution.net_value(), Ok(contribution.value_added.to_signed().unwrap()));
+			assert!(contribution.validate().is_ok());
+			assert_eq!(contribution.net_value(), contribution.value_added.to_signed().unwrap());
 		}
 
 		// higher fee rate, does not cover
@@ -832,12 +632,11 @@ mod tests {
 				],
 				outputs: vec![],
 				change_output: None,
-				is_initiator: true,
 				is_splice: true,
 				feerate: FeeRate::from_sat_per_kwu(2200),
 			};
 			assert_eq!(
-				contribution.net_value(),
+				contribution.validate(),
 				Err(format!(
 					"Total input amount 0.00300000 BTC is lower than needed for splice-in contribution 0.00298032 BTC, considering fees of {}. Need more inputs.",
 					Amount::from_sat(expected_fee),
@@ -845,9 +644,9 @@ mod tests {
 			);
 		}
 
-		// barely covers, less fees (no extra weight, not initiator)
+		// barely covers, less fees (not a splice)
 		{
-			let expected_fee = if cfg!(feature = "grind_signatures") { 1084 } else { 1088 };
+			let expected_fee = if cfg!(feature = "grind_signatures") { 1512 } else { 1516 };
 			let contribution = FundingContribution {
 				value_added: Amount::from_sat(300_000 - expected_fee - 20),
 				estimated_fee: Amount::from_sat(expected_fee),
@@ -857,11 +656,71 @@ mod tests {
 				],
 				outputs: vec![],
 				change_output: None,
-				is_initiator: false,
 				is_splice: false,
 				feerate: FeeRate::from_sat_per_kwu(2000),
 			};
-			assert_eq!(contribution.net_value(), Ok(contribution.value_added.to_signed().unwrap()));
+			assert!(contribution.validate().is_ok());
+			assert_eq!(contribution.net_value(), contribution.value_added.to_signed().unwrap());
+		}
+	}
+
+	struct UnreachableWallet;
+
+	impl CoinSelectionSourceSync for UnreachableWallet {
+		fn select_confirmed_utxos(
+			&self, _claim_id: Option<ClaimId>, _must_spend: Vec<Input>, _must_pay_to: &[TxOut],
+			_target_feerate_sat_per_1000_weight: u32, _max_tx_weight: u64,
+		) -> Result<CoinSelection, ()> {
+			unreachable!("should not reach coin selection")
+		}
+		fn sign_psbt(&self, _psbt: Psbt) -> Result<Transaction, ()> {
+			unreachable!("should not reach signing")
+		}
+	}
+
+	#[test]
+	fn test_build_funding_contribution_validates_max_money() {
+		let over_max = Amount::MAX_MONEY + Amount::from_sat(1);
+		let feerate = FeeRate::from_sat_per_kwu(2000);
+
+		// splice_in_sync with value_added > MAX_MONEY
+		{
+			let template = FundingTemplate::new(None, feerate);
+			assert!(template.splice_in_sync(over_max, UnreachableWallet).is_err());
+		}
+
+		// splice_out_sync with single output value > MAX_MONEY
+		{
+			let template = FundingTemplate::new(None, feerate);
+			let outputs = vec![funding_output_sats(over_max.to_sat())];
+			assert!(template.splice_out_sync(outputs, UnreachableWallet).is_err());
+		}
+
+		// splice_out_sync with multiple outputs summing > MAX_MONEY
+		{
+			let template = FundingTemplate::new(None, feerate);
+			let half_over = Amount::MAX_MONEY / 2 + Amount::from_sat(1);
+			let outputs = vec![
+				funding_output_sats(half_over.to_sat()),
+				funding_output_sats(half_over.to_sat()),
+			];
+			assert!(template.splice_out_sync(outputs, UnreachableWallet).is_err());
+		}
+
+		// splice_in_and_out_sync with value_added > MAX_MONEY
+		{
+			let template = FundingTemplate::new(None, feerate);
+			let outputs = vec![funding_output_sats(1_000)];
+			assert!(template.splice_in_and_out_sync(over_max, outputs, UnreachableWallet).is_err());
+		}
+
+		// splice_in_and_out_sync with output sum > MAX_MONEY
+		{
+			let template = FundingTemplate::new(None, feerate);
+			let outputs = vec![funding_output_sats(over_max.to_sat())];
+			assert!(template
+				.splice_in_and_out_sync(Amount::from_sat(1_000), outputs, UnreachableWallet)
+				.is_err());
 		}
 	}
 }
