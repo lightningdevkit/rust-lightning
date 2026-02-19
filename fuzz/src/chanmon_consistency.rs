@@ -41,7 +41,7 @@ use lightning::chain;
 use lightning::chain::chaininterface::{
 	BroadcasterInterface, ConfirmationTarget, FeeEstimator, TransactionType,
 };
-use lightning::chain::channelmonitor::{ChannelMonitor, MonitorEvent};
+use lightning::chain::channelmonitor::{Balance, ChannelMonitor, MonitorEvent};
 use lightning::chain::transaction::OutPoint;
 use lightning::chain::{
 	chainmonitor, channelmonitor, BestBlock, ChannelMonitorUpdateStatus, Confirm, Watch,
@@ -2987,6 +2987,43 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 						send(1, 2, chan_id, 10_000_000, &mut p_ctr)
 							|| send(2, 1, chan_id, 10_000_000, &mut p_ctr)
 					);
+				}
+
+				// After settlement, verify that closed channels have no
+				// ClaimableOnChannelClose balances (which would indicate the
+				// monitor still thinks the channel is open).
+				if !closed_channels.borrow().is_empty() {
+					let open_channels = nodes[0]
+						.list_channels()
+						.iter()
+						.chain(nodes[1].list_channels().iter())
+						.chain(nodes[2].list_channels().iter())
+						.map(|c| c.clone())
+						.collect::<Vec<_>>();
+					let open_refs: Vec<&_> = open_channels.iter().collect();
+					for (label, monitor) in
+						[("A", &monitor_a), ("B", &monitor_b), ("C", &monitor_c)]
+					{
+						let balances = monitor.chain_monitor.get_claimable_balances(&open_refs);
+						for balance in &balances {
+							if matches!(balance, Balance::ClaimableOnChannelClose { .. }) {
+								panic!(
+									"Monitor {} has ClaimableOnChannelClose balance after settlement: {:?}",
+									label, balance
+								);
+							}
+						}
+						if !balances.is_empty() {
+							out.locked_write(
+								format!(
+									"Monitor {} has {} remaining balances after settlement.\n",
+									label,
+									balances.len()
+								)
+								.as_bytes(),
+							);
+						}
+					}
 				}
 
 				last_htlc_clear_fee_a = fee_est_a.ret_val.load(atomic::Ordering::Acquire);
