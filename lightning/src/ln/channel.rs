@@ -12508,37 +12508,72 @@ where
 		Ok(())
 	}
 
-	pub(crate) fn splice_init<ES: EntropySource, L: Logger>(
-		&mut self, msg: &msgs::SpliceInit, entropy_source: &ES, holder_node_id: &PublicKey,
-		logger: &L,
-	) -> Result<msgs::SpliceAck, ChannelError> {
-		// Peek at the quiescent_action to determine our funding contribution.
-		let our_funding_contribution = match &self.quiescent_action {
+	/// Peeks at the pending [`QuiescentAction`] without consuming it, returning the contribution
+	/// amount at the target feerate and whether the feerate is compatible. If feerate adjustment
+	/// fails, the action is preserved for a future splice and we return a zero contribution.
+	fn peek_pending_contribution<L: Logger>(
+		&self, target_feerate: FeeRate, logger: &L,
+	) -> Result<(SignedAmount, bool), ChannelError> {
+		match &self.quiescent_action {
 			Some(QuiescentAction::Splice { contribution, .. }) => {
-				contribution.validate().map(|()| contribution.net_value()).map_err(|e| {
+				contribution.validate().map_err(|e| {
 					debug_assert!(false);
 					ChannelError::WarnAndDisconnect(format!(
 						"Internal Error: Insufficient funding contribution: {}",
 						e,
 					))
-				})?
+				})?;
+				match contribution.net_value_at_feerate(target_feerate) {
+					Ok(net) => Ok((net, true)),
+					Err(e) => {
+						log_info!(
+							logger,
+							"Cannot accommodate initiator's feerate for channel {}: {}; \
+							 proceeding without contribution",
+							self.context.channel_id(),
+							e,
+						);
+						Ok((SignedAmount::ZERO, false))
+					},
+				}
 			},
 			#[cfg(any(test, fuzzing))]
-			Some(QuiescentAction::DoNothing) => SignedAmount::ZERO,
-			None => SignedAmount::ZERO,
-		};
+			Some(QuiescentAction::DoNothing) => Ok((SignedAmount::ZERO, false)),
+			None => Ok((SignedAmount::ZERO, false)),
+		}
+	}
+
+	/// Consumes the pending [`QuiescentAction`], adjusting the contribution for the target
+	/// feerate and returning the funding inputs and outputs. Must only be called after
+	/// [`peek_pending_contribution`] returned `feerate_compatible = true`.
+	fn take_pending_contribution(
+		&mut self, target_feerate: FeeRate,
+	) -> (Vec<FundingTxInput>, Vec<TxOut>) {
+		match self.quiescent_action.take() {
+			Some(QuiescentAction::Splice { mut contribution, .. }) => {
+				contribution
+					.adjust_for_feerate(target_feerate)
+					.expect("feerate compatibility already checked in peek_pending_contribution");
+				contribution.into_tx_parts()
+			},
+			_ => unreachable!("take_pending_contribution called without compatible contribution"),
+		}
+	}
+
+	pub(crate) fn splice_init<ES: EntropySource, L: Logger>(
+		&mut self, msg: &msgs::SpliceInit, entropy_source: &ES, holder_node_id: &PublicKey,
+		logger: &L,
+	) -> Result<msgs::SpliceAck, ChannelError> {
+		let target_feerate = FeeRate::from_sat_per_kwu(msg.funding_feerate_per_kw as u64);
+		let (our_funding_contribution, feerate_compatible) =
+			self.peek_pending_contribution(target_feerate, logger)?;
 
 		let splice_funding = self.validate_splice_init(msg, our_funding_contribution)?;
 
-		// Now that validation passed, consume the quiescent_action for inputs/outputs.
-		let (our_funding_inputs, our_funding_outputs) = match self.quiescent_action.take() {
-			Some(QuiescentAction::Splice { contribution, .. }) => contribution.into_tx_parts(),
-			#[cfg(any(test, fuzzing))]
-			Some(action @ QuiescentAction::DoNothing) => {
-				self.quiescent_action = Some(action);
-				(Vec::new(), Vec::new())
-			},
-			None => (Vec::new(), Vec::new()),
+		let (our_funding_inputs, our_funding_outputs) = if feerate_compatible {
+			self.take_pending_contribution(target_feerate)
+		} else {
+			(Vec::new(), Vec::new())
 		};
 
 		log_info!(
@@ -12694,34 +12729,17 @@ where
 		&mut self, msg: &msgs::TxInitRbf, entropy_source: &ES, holder_node_id: &PublicKey,
 		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
 	) -> Result<msgs::TxAckRbf, ChannelError> {
-		// Peek at the quiescent_action to determine our funding contribution.
-		let our_funding_contribution = match &self.quiescent_action {
-			Some(QuiescentAction::Splice { contribution, .. }) => {
-				contribution.validate().map(|()| contribution.net_value()).map_err(|e| {
-					debug_assert!(false);
-					ChannelError::WarnAndDisconnect(format!(
-						"Internal Error: Insufficient funding contribution: {}",
-						e,
-					))
-				})?
-			},
-			#[cfg(any(test, fuzzing))]
-			Some(QuiescentAction::DoNothing) => SignedAmount::ZERO,
-			None => SignedAmount::ZERO,
-		};
+		let target_feerate = FeeRate::from_sat_per_kwu(msg.feerate_sat_per_1000_weight as u64);
+		let (our_funding_contribution, feerate_compatible) =
+			self.peek_pending_contribution(target_feerate, logger)?;
 
 		let rbf_funding =
 			self.validate_tx_init_rbf(msg, our_funding_contribution, fee_estimator)?;
 
-		// Now that validation passed, consume the quiescent_action for inputs/outputs.
-		let (our_funding_inputs, our_funding_outputs) = match self.quiescent_action.take() {
-			Some(QuiescentAction::Splice { contribution, .. }) => contribution.into_tx_parts(),
-			#[cfg(any(test, fuzzing))]
-			Some(action @ QuiescentAction::DoNothing) => {
-				self.quiescent_action = Some(action);
-				(Vec::new(), Vec::new())
-			},
-			None => (Vec::new(), Vec::new()),
+		let (our_funding_inputs, our_funding_outputs) = if feerate_compatible {
+			self.take_pending_contribution(target_feerate)
+		} else {
+			(Vec::new(), Vec::new())
 		};
 
 		log_info!(
