@@ -2969,6 +2969,32 @@ impl FundingNegotiation {
 			FundingNegotiation::AwaitingSignatures { is_initiator, .. } => *is_initiator,
 		}
 	}
+	fn for_initiator<SP: SignerProvider, ES: EntropySource>(
+		funding: FundingScope, context: &ChannelContext<SP>,
+		funding_negotiation_context: FundingNegotiationContext, entropy_source: &ES,
+		holder_node_id: &PublicKey,
+	) -> (FundingNegotiation, Option<InteractiveTxMessageSend>) {
+		let funding_feerate_sat_per_1000_weight =
+			funding_negotiation_context.funding_feerate_sat_per_1000_weight;
+		let (interactive_tx_constructor, tx_msg_opt) = funding_negotiation_context
+			.into_interactive_tx_constructor(
+				context,
+				&funding,
+				entropy_source,
+				holder_node_id.clone(),
+			);
+		debug_assert!(tx_msg_opt.is_some());
+
+		(
+			FundingNegotiation::ConstructingTransaction {
+				funding,
+				funding_feerate_sat_per_1000_weight,
+				interactive_tx_constructor,
+			},
+			tx_msg_opt,
+		)
+	}
+
 	fn for_acceptor<SP: SignerProvider, ES: EntropySource>(
 		funding: FundingScope, context: &ChannelContext<SP>, entropy_source: &ES,
 		holder_node_id: &PublicKey, our_funding_contribution: SignedAmount,
@@ -3003,6 +3029,43 @@ impl FundingNegotiation {
 }
 
 impl PendingFunding {
+	fn awaiting_ack_context(
+		&self, msg_name: &str,
+	) -> Result<(&FundingNegotiationContext, &PublicKey), ChannelError> {
+		match &self.funding_negotiation {
+			Some(FundingNegotiation::AwaitingAck { context, new_holder_funding_key }) => {
+				Ok((context, new_holder_funding_key))
+			},
+			Some(FundingNegotiation::ConstructingTransaction { .. })
+			| Some(FundingNegotiation::AwaitingSignatures { .. }) => Err(ChannelError::WarnAndDisconnect(
+				format!("Got unexpected {}; funding negotiation already in progress", msg_name,),
+			)),
+			None => Err(ChannelError::Ignore(format!(
+				"Got unexpected {}; no funding negotiation in progress",
+				msg_name,
+			))),
+		}
+	}
+
+	fn take_awaiting_ack_context(
+		&mut self, msg_name: &str,
+	) -> Result<FundingNegotiationContext, ChannelError> {
+		match self.funding_negotiation.take() {
+			Some(FundingNegotiation::AwaitingAck { context, .. }) => Ok(context),
+			Some(other) => {
+				self.funding_negotiation = Some(other);
+				Err(ChannelError::WarnAndDisconnect(format!(
+					"Got unexpected {}; funding negotiation already in progress",
+					msg_name,
+				)))
+			},
+			None => Err(ChannelError::Ignore(format!(
+				"Got unexpected {}; no funding negotiation in progress",
+				msg_name,
+			))),
+		}
+	}
+
 	fn check_get_splice_locked<SP: SignerProvider>(
 		&mut self, context: &ChannelContext<SP>, confirmed_funding_index: usize, height: u32,
 	) -> Option<msgs::SpliceLocked> {
@@ -6791,15 +6854,27 @@ where
 
 	fn reset_pending_splice_state(&mut self) -> Option<SpliceFundingFailed> {
 		debug_assert!(self.should_reset_pending_splice_state(true));
-		debug_assert!(
-			self.context.interactive_tx_signing_session.is_none()
-				|| !self
-					.context
-					.interactive_tx_signing_session
-					.as_ref()
-					.expect("We have a pending splice awaiting signatures")
-					.has_received_commitment_signed()
-		);
+
+		// Only clear the signing session if the current round is mid-signing. When an earlier
+		// round completed signing and a later RBF round is in AwaitingAck or
+		// ConstructingTransaction, the session belongs to the prior round and must be preserved.
+		let current_is_awaiting_signatures = self
+			.pending_splice
+			.as_ref()
+			.and_then(|ps| ps.funding_negotiation.as_ref())
+			.map(|fn_| matches!(fn_, FundingNegotiation::AwaitingSignatures { .. }))
+			.unwrap_or(false);
+		if current_is_awaiting_signatures {
+			debug_assert!(
+				self.context.interactive_tx_signing_session.is_none()
+					|| !self
+						.context
+						.interactive_tx_signing_session
+						.as_ref()
+						.expect("We have a pending splice awaiting signatures")
+						.has_received_commitment_signed()
+			);
+		}
 
 		let splice_funding_failed = maybe_create_splice_funding_failed!(
 			self,
@@ -6813,7 +6888,9 @@ where
 		}
 
 		self.context.channel_state.clear_quiescent();
-		self.context.interactive_tx_signing_session.take();
+		if current_is_awaiting_signatures {
+			self.context.interactive_tx_signing_session.take();
+		}
 
 		splice_funding_failed
 	}
@@ -12518,6 +12595,71 @@ where
 		})
 	}
 
+	fn validate_tx_ack_rbf(&self, msg: &msgs::TxAckRbf) -> Result<FundingScope, ChannelError> {
+		let pending_splice = self
+			.pending_splice
+			.as_ref()
+			.ok_or_else(|| ChannelError::Ignore("Channel is not in pending splice".to_owned()))?;
+
+		let (funding_negotiation_context, _) = pending_splice.awaiting_ack_context("tx_ack_rbf")?;
+
+		let our_funding_contribution = funding_negotiation_context.our_funding_contribution;
+		let their_funding_contribution = match msg.funding_output_contribution {
+			Some(value) => SignedAmount::from_sat(value),
+			None => SignedAmount::ZERO,
+		};
+		self.validate_splice_contributions(our_funding_contribution, their_funding_contribution)
+			.map_err(|e| ChannelError::WarnAndDisconnect(e))?;
+
+		let last_candidate = pending_splice.negotiated_candidates.last().ok_or_else(|| {
+			ChannelError::WarnAndDisconnect("No negotiated splice candidates for RBF".to_owned())
+		})?;
+		let holder_pubkeys = last_candidate.get_holder_pubkeys().clone();
+		let counterparty_funding_pubkey = *last_candidate.counterparty_funding_pubkey();
+
+		Ok(FundingScope::for_splice(
+			&self.funding,
+			&self.context,
+			our_funding_contribution,
+			their_funding_contribution,
+			counterparty_funding_pubkey,
+			holder_pubkeys,
+		))
+	}
+
+	pub(crate) fn tx_ack_rbf<ES: EntropySource, L: Logger>(
+		&mut self, msg: &msgs::TxAckRbf, entropy_source: &ES, holder_node_id: &PublicKey,
+		logger: &L,
+	) -> Result<Option<InteractiveTxMessageSend>, ChannelError> {
+		let rbf_funding = self.validate_tx_ack_rbf(msg)?;
+
+		log_info!(
+			logger,
+			"Starting RBF funding negotiation for channel {} after receiving tx_ack_rbf; channel value: {} sats",
+			self.context.channel_id,
+			rbf_funding.get_value_satoshis(),
+		);
+
+		let pending_splice = self
+			.pending_splice
+			.as_mut()
+			.expect("pending_splice existence validated in validate_tx_ack_rbf");
+		let funding_negotiation_context = pending_splice
+			.take_awaiting_ack_context("tx_ack_rbf")
+			.expect("awaiting ack state validated in validate_tx_ack_rbf");
+
+		let (funding_negotiation, tx_msg_opt) = FundingNegotiation::for_initiator(
+			rbf_funding,
+			&self.context,
+			funding_negotiation_context,
+			entropy_source,
+			holder_node_id,
+		);
+		pending_splice.funding_negotiation = Some(funding_negotiation);
+
+		Ok(tx_msg_opt)
+	}
+
 	pub(crate) fn splice_ack<ES: EntropySource, L: Logger>(
 		&mut self, msg: &msgs::SpliceAck, entropy_source: &ES, holder_node_id: &PublicKey,
 		logger: &L,
@@ -12532,36 +12674,24 @@ where
 			self.funding.get_value_satoshis(),
 		);
 
-		let pending_splice =
-			self.pending_splice.as_mut().expect("We should have returned an error earlier!");
-		// TODO: Good candidate for a let else statement once MSRV >= 1.65
-		let funding_negotiation_context =
-			if let Some(FundingNegotiation::AwaitingAck { context, .. }) =
-				pending_splice.funding_negotiation.take()
-			{
-				context
-			} else {
-				panic!("We should have returned an error earlier!");
-			};
-
-		let funding_feerate_sat_per_1000_weight =
-			funding_negotiation_context.funding_feerate_sat_per_1000_weight;
-		let (interactive_tx_constructor, tx_msg_opt) = funding_negotiation_context
-			.into_interactive_tx_constructor(
-				&self.context,
-				&splice_funding,
-				entropy_source,
-				holder_node_id.clone(),
-			);
-		debug_assert!(tx_msg_opt.is_some());
-
 		debug_assert!(self.context.interactive_tx_signing_session.is_none());
 
-		pending_splice.funding_negotiation = Some(FundingNegotiation::ConstructingTransaction {
-			funding: splice_funding,
-			funding_feerate_sat_per_1000_weight,
-			interactive_tx_constructor,
-		});
+		let pending_splice = self
+			.pending_splice
+			.as_mut()
+			.expect("pending_splice existence validated in validate_splice_ack");
+		let funding_negotiation_context = pending_splice
+			.take_awaiting_ack_context("splice_ack")
+			.expect("awaiting ack state validated in validate_splice_ack");
+
+		let (funding_negotiation, tx_msg_opt) = FundingNegotiation::for_initiator(
+			splice_funding,
+			&self.context,
+			funding_negotiation_context,
+			entropy_source,
+			holder_node_id,
+		);
+		pending_splice.funding_negotiation = Some(funding_negotiation);
 
 		Ok(tx_msg_opt)
 	}
@@ -12574,24 +12704,8 @@ where
 			.as_ref()
 			.ok_or_else(|| ChannelError::Ignore("Channel is not in pending splice".to_owned()))?;
 
-		let (funding_negotiation_context, new_holder_funding_key) = match &pending_splice
-			.funding_negotiation
-		{
-			Some(FundingNegotiation::AwaitingAck { context, new_holder_funding_key, .. }) => {
-				(context, new_holder_funding_key)
-			},
-			Some(FundingNegotiation::ConstructingTransaction { .. })
-			| Some(FundingNegotiation::AwaitingSignatures { .. }) => {
-				return Err(ChannelError::WarnAndDisconnect(
-					"Got unexpected splice_ack; splice negotiation already in progress".to_owned(),
-				));
-			},
-			None => {
-				return Err(ChannelError::Ignore(
-					"Got unexpected splice_ack; no splice negotiation in progress".to_owned(),
-				));
-			},
-		};
+		let (funding_negotiation_context, new_holder_funding_key) =
+			pending_splice.awaiting_ack_context("splice_ack")?;
 
 		let our_funding_contribution = funding_negotiation_context.our_funding_contribution;
 		let their_funding_contribution = SignedAmount::from_sat(msg.funding_contribution_satoshis);
