@@ -15,8 +15,8 @@
 //! actions such as sending payments, handling events, or changing monitor update return values on
 //! a per-node basis. This should allow it to find any cases where the ordering of actions results
 //! in us getting out of sync with ourselves, and, assuming at least one of our recieve- or
-//! send-side handling is correct, other peers. We consider it a failure if any action results in a
-//! channel being force-closed.
+//! send-side handling is correct, other peers. The fuzzer also exercises user-initiated
+//! force-closes with on-chain commitment transaction confirmation.
 
 use bitcoin::amount::Amount;
 use bitcoin::constants::genesis_block;
@@ -1969,7 +1969,11 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 							}
 						},
 						events::Event::SpliceFailed { .. } => {},
-						events::Event::ChannelClosed { .. } => {},
+						events::Event::ChannelClosed { channel_id, .. } => {
+							closed_channels.borrow_mut().insert(channel_id);
+						},
+						events::Event::DiscardFunding { .. } => {},
+						events::Event::SpendableOutputs { .. } => {},
 						events::Event::BumpTransaction(..) => {},
 
 						_ => {
@@ -2596,6 +2600,73 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 			0xce => {
 				keys_manager_c.enable_op_for_all_signers(SignerOp::SignHolderCommitment);
 				nodes[2].signer_unblocked(None);
+			},
+
+			// Force-close a channel and track it as closed.
+			0xd0 => {
+				if nodes[0]
+					.force_close_broadcasting_latest_txn(
+						&chan_a_id,
+						&nodes[1].get_our_node_id(),
+						"]]]]]]]]".to_string(),
+					)
+					.is_ok()
+				{
+					closed_channels.borrow_mut().insert(chan_a_id);
+				}
+			},
+			0xd1 => {
+				if nodes[1]
+					.force_close_broadcasting_latest_txn(
+						&chan_b_id,
+						&nodes[2].get_our_node_id(),
+						"]]]]]]]".to_string(),
+					)
+					.is_ok()
+				{
+					closed_channels.borrow_mut().insert(chan_b_id);
+				}
+			},
+			0xd2 => {
+				if nodes[1]
+					.force_close_broadcasting_latest_txn(
+						&chan_a_id,
+						&nodes[0].get_our_node_id(),
+						"]]]]]]".to_string(),
+					)
+					.is_ok()
+				{
+					closed_channels.borrow_mut().insert(chan_a_id);
+				}
+			},
+			0xd3 => {
+				if nodes[2]
+					.force_close_broadcasting_latest_txn(
+						&chan_b_id,
+						&nodes[1].get_our_node_id(),
+						"]]]]]".to_string(),
+					)
+					.is_ok()
+				{
+					closed_channels.borrow_mut().insert(chan_b_id);
+				}
+			},
+
+			// Drain broadcasters and confirm all broadcast transactions.
+			0xd8 => {
+				for tx in broadcast_a.txn_broadcasted.borrow_mut().drain(..) {
+					chain_state.confirm_tx(tx);
+				}
+			},
+			0xd9 => {
+				for tx in broadcast_b.txn_broadcasted.borrow_mut().drain(..) {
+					chain_state.confirm_tx(tx);
+				}
+			},
+			0xda => {
+				for tx in broadcast_c.txn_broadcasted.borrow_mut().drain(..) {
+					chain_state.confirm_tx(tx);
+				}
 			},
 
 			0xf0 => {
