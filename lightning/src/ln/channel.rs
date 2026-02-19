@@ -2787,12 +2787,26 @@ impl FundingScope {
 			.funding_pubkey = counterparty_funding_pubkey;
 
 		// New reserve values are based on the new channel value and are v2-specific
-		let counterparty_selected_channel_reserve_satoshis =
-			Some(get_v2_channel_reserve_satoshis(post_channel_value, MIN_CHAN_DUST_LIMIT_SATOSHIS));
-		let holder_selected_channel_reserve_satoshis = get_v2_channel_reserve_satoshis(
-			post_channel_value,
-			context.counterparty_dust_limit_satoshis,
-		);
+		let counterparty_selected_channel_reserve_satoshis = if prev_funding
+			.counterparty_selected_channel_reserve_satoshis
+			.expect("counterparty reserve is set")
+			== 0
+		{
+			// If we previously had a 0-value reserve, continue with the same reserve
+			Some(0)
+		} else {
+			Some(get_v2_channel_reserve_satoshis(post_channel_value, MIN_CHAN_DUST_LIMIT_SATOSHIS))
+		};
+		let holder_selected_channel_reserve_satoshis =
+			if prev_funding.holder_selected_channel_reserve_satoshis == 0 {
+				// If the counterparty previously had a 0-value reserve, continue with the same reserve
+				0
+			} else {
+				get_v2_channel_reserve_satoshis(
+					post_channel_value,
+					context.counterparty_dust_limit_satoshis,
+				)
+			};
 
 		Self {
 			channel_transaction_parameters: post_channel_transaction_parameters,
@@ -5070,27 +5084,27 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			));
 		}
 
-		if funding.is_outbound() {
-			let (local_stats, _local_htlcs) = self
-				.get_next_local_commitment_stats(
-					funding,
-					Some(HTLCAmountDirection { outbound: false, amount_msat: msg.amount_msat }),
-					include_counterparty_unknown_htlcs,
-					fee_spike_buffer_htlc,
-					self.feerate_per_kw,
-					dust_exposure_limiting_feerate,
-				)
-				.map_err(|()| {
-					ChannelError::close(String::from("Balance exhausted on local commitment"))
-				})?;
-			// Check that they won't violate our local required channel reserve by adding this HTLC.
-			if local_stats.commitment_stats.holder_balance_msat
+		let (local_stats, _local_htlcs) = self
+			.get_next_local_commitment_stats(
+				funding,
+				Some(HTLCAmountDirection { outbound: false, amount_msat: msg.amount_msat }),
+				include_counterparty_unknown_htlcs,
+				fee_spike_buffer_htlc,
+				self.feerate_per_kw,
+				dust_exposure_limiting_feerate,
+			)
+			.map_err(|()| {
+				ChannelError::close(String::from("Balance exhausted on local commitment"))
+			})?;
+
+		// Check that they won't violate our local required channel reserve by adding this HTLC.
+		if funding.is_outbound()
+			&& local_stats.commitment_stats.holder_balance_msat
 				< funding.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000
-			{
-				return Err(ChannelError::close(
-					"Cannot accept HTLC that would put our balance under counterparty-announced channel reserve value".to_owned()
-				));
-			}
+		{
+			return Err(ChannelError::close(
+				"Cannot accept HTLC that would put our balance under counterparty-announced channel reserve value".to_owned()
+			));
 		}
 
 		Ok(())
@@ -5184,6 +5198,12 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		let commitment_txid = {
 			let trusted_tx = commitment_data.tx.trust();
 			let bitcoin_tx = trusted_tx.built_transaction();
+			if bitcoin_tx.transaction.output.is_empty() {
+				return Err(ChannelError::close(
+					"Commitment tx from peer has 0 outputs".to_owned(),
+				));
+			}
+
 			let sighash = bitcoin_tx.get_sighash_all(&funding_script, funding.get_value_satoshis());
 
 			log_trace!(logger, "Checking commitment tx signature {} by key {} against tx {} (sighash {}) with redeemscript {} in channel {}",
