@@ -16,15 +16,16 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
-rest-client = [ "serde_json", "chunked_transfer" ]
-rpc-client = [ "serde_json", "chunked_transfer" ]
+rest-client = [ "serde_json", "dep:bitreq" ]
+rpc-client = [ "serde_json", "dep:bitreq" ]
+tokio = [ "dep:tokio", "bitreq?/async" ]
 
 [dependencies]
 bitcoin = "0.32.2"
 lightning = { version = "0.3.0", path = "../lightning" }
 tokio = { version = "1.35", features = [ "io-util", "net", "time", "rt" ], optional = true }
 serde_json = { version = "1.0", optional = true }
-chunked_transfer = { version = "1.4", optional = true }
+bitreq = { version = "0.3", default-features = false, features = ["std"], optional = true }
 
 [dev-dependencies]
 lightning = { version = "0.3.0", path = "../lightning", features = ["_test_utils"] }

@@ -1,4 +1,6 @@
-use crate::http::{BinaryResponse, JsonResponse};
+use crate::http::{BinaryResponse, HttpClientError, JsonResponse};
+#[cfg(feature = "rpc-client")]
+use crate::rpc::RpcClientError;
 use crate::utils::hex_to_work;
 use crate::{BlockHeaderData, BlockSourceError};
 
@@ -11,15 +13,15 @@ use bitcoin::Transaction;
 use serde_json;
 
 use bitcoin::hashes::Hash;
-use std::convert::From;
+use std::convert::Infallible;
 use std::convert::TryFrom;
 use std::convert::TryInto;
 use std::io;
 use std::str::FromStr;
 
 impl TryInto<serde_json::Value> for JsonResponse {
-	type Error = io::Error;
-	fn try_into(self) -> Result<serde_json::Value, io::Error> {
+	type Error = Infallible;
+	fn try_into(self) -> Result<serde_json::Value, Infallible> {
 		Ok(self.0)
 	}
 }
@@ -35,51 +37,106 @@ impl From<io::Error> for BlockSourceError {
 	}
 }
 
+/// Conversion from `HttpClientError` into `BlockSourceError`.
+impl From<HttpClientError> for BlockSourceError {
+	fn from(e: HttpClientError) -> BlockSourceError {
+		match e {
+			// Transport errors (connection, timeout, etc.) are transient
+			HttpClientError::Transport(err) => {
+				BlockSourceError::transient(HttpClientError::Transport(err))
+			},
+			// 5xx errors are transient (server issues), others are persistent (client errors)
+			HttpClientError::Http(http_err) => {
+				if (500..600).contains(&http_err.status_code) {
+					BlockSourceError::transient(HttpClientError::Http(http_err))
+				} else {
+					BlockSourceError::persistent(HttpClientError::Http(http_err))
+				}
+			},
+			// Parse errors are persistent (invalid data)
+			HttpClientError::Parse(msg) => {
+				BlockSourceError::persistent(HttpClientError::Parse(msg))
+			},
+		}
+	}
+}
+
+/// Conversion from `RpcClientError` into `BlockSourceError`.
+#[cfg(feature = "rpc-client")]
+impl From<RpcClientError> for BlockSourceError {
+	fn from(e: RpcClientError) -> BlockSourceError {
+		match e {
+			RpcClientError::Http(http_err) => match http_err {
+				// Transport errors (connection, timeout, etc.) are transient
+				HttpClientError::Transport(err) => BlockSourceError::transient(
+					RpcClientError::Http(HttpClientError::Transport(err)),
+				),
+				// 5xx errors are transient (server issues), others are persistent (client errors)
+				HttpClientError::Http(http) => {
+					if (500..600).contains(&http.status_code) {
+						BlockSourceError::transient(RpcClientError::Http(HttpClientError::Http(
+							http,
+						)))
+					} else {
+						BlockSourceError::persistent(RpcClientError::Http(HttpClientError::Http(
+							http,
+						)))
+					}
+				},
+				HttpClientError::Parse(msg) => {
+					BlockSourceError::persistent(RpcClientError::Http(HttpClientError::Parse(msg)))
+				},
+			},
+			// RPC errors (e.g. "block not found") are transient
+			RpcClientError::Rpc(rpc_err) => {
+				BlockSourceError::transient(RpcClientError::Rpc(rpc_err))
+			},
+			// Malformed response data is persistent
+			RpcClientError::InvalidData(msg) => {
+				BlockSourceError::persistent(RpcClientError::InvalidData(msg))
+			},
+		}
+	}
+}
+
 /// Parses binary data as a block.
 impl TryInto<Block> for BinaryResponse {
-	type Error = io::Error;
+	type Error = ();
 
-	fn try_into(self) -> io::Result<Block> {
-		match encode::deserialize(&self.0) {
-			Err(_) => return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid block data")),
-			Ok(block) => Ok(block),
-		}
+	fn try_into(self) -> Result<Block, ()> {
+		encode::deserialize(&self.0).map_err(|_| ())
 	}
 }
 
 /// Parses binary data as a block hash.
 impl TryInto<BlockHash> for BinaryResponse {
-	type Error = io::Error;
+	type Error = ();
 
-	fn try_into(self) -> io::Result<BlockHash> {
-		BlockHash::from_slice(&self.0)
-			.map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "bad block hash length"))
+	fn try_into(self) -> Result<BlockHash, ()> {
+		BlockHash::from_slice(&self.0).map_err(|_| ())
 	}
 }
 
 /// Converts a JSON value into block header data. The JSON value may be an object representing a
 /// block header or an array of such objects. In the latter case, the first object is converted.
 impl TryInto<BlockHeaderData> for JsonResponse {
-	type Error = io::Error;
+	type Error = &'static str;
 
-	fn try_into(self) -> io::Result<BlockHeaderData> {
+	fn try_into(self) -> Result<BlockHeaderData, &'static str> {
 		let header = match self.0 {
 			serde_json::Value::Array(mut array) if !array.is_empty() => {
 				array.drain(..).next().unwrap()
 			},
 			serde_json::Value::Object(_) => self.0,
-			_ => return Err(io::Error::new(io::ErrorKind::InvalidData, "unexpected JSON type")),
+			_ => return Err("unexpected JSON type"),
 		};
 
 		if !header.is_object() {
-			return Err(io::Error::new(io::ErrorKind::InvalidData, "expected JSON object"));
+			return Err("expected JSON object");
 		}
 
 		// Add an empty previousblockhash for the genesis block.
-		match header.try_into() {
-			Err(_) => Err(io::Error::new(io::ErrorKind::InvalidData, "invalid header data")),
-			Ok(header) => Ok(header),
-		}
+		header.try_into().map_err(|_| "invalid header data")
 	}
 }
 
@@ -119,15 +176,15 @@ impl TryFrom<serde_json::Value> for BlockHeaderData {
 
 /// Converts a JSON value into a block. Assumes the block is hex-encoded in a JSON string.
 impl TryInto<Block> for JsonResponse {
-	type Error = io::Error;
+	type Error = &'static str;
 
-	fn try_into(self) -> io::Result<Block> {
+	fn try_into(self) -> Result<Block, &'static str> {
 		match self.0.as_str() {
-			None => Err(io::Error::new(io::ErrorKind::InvalidData, "expected JSON string")),
+			None => Err("expected JSON string"),
 			Some(hex_data) => match Vec::<u8>::from_hex(hex_data) {
-				Err(_) => Err(io::Error::new(io::ErrorKind::InvalidData, "invalid hex data")),
+				Err(_) => Err("invalid hex data"),
 				Ok(block_data) => match encode::deserialize(&block_data) {
-					Err(_) => Err(io::Error::new(io::ErrorKind::InvalidData, "invalid block data")),
+					Err(_) => Err("invalid block data"),
 					Ok(block) => Ok(block),
 				},
 			},
@@ -137,35 +194,31 @@ impl TryInto<Block> for JsonResponse {
 
 /// Converts a JSON value into the best block hash and optional height.
 impl TryInto<(BlockHash, Option<u32>)> for JsonResponse {
-	type Error = io::Error;
+	type Error = &'static str;
 
-	fn try_into(self) -> io::Result<(BlockHash, Option<u32>)> {
+	fn try_into(self) -> Result<(BlockHash, Option<u32>), &'static str> {
 		if !self.0.is_object() {
-			return Err(io::Error::new(io::ErrorKind::InvalidData, "expected JSON object"));
+			return Err("expected JSON object");
 		}
 
 		let hash = match &self.0["bestblockhash"] {
 			serde_json::Value::String(hex_data) => match BlockHash::from_str(&hex_data) {
-				Err(_) => {
-					return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid hex data"))
-				},
+				Err(_) => return Err("invalid hex data"),
 				Ok(block_hash) => block_hash,
 			},
-			_ => return Err(io::Error::new(io::ErrorKind::InvalidData, "expected JSON string")),
+			_ => return Err("expected JSON string"),
 		};
 
 		let height = match &self.0["blocks"] {
 			serde_json::Value::Null => None,
 			serde_json::Value::Number(height) => match height.as_u64() {
-				None => return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid height")),
+				None => return Err("invalid height"),
 				Some(height) => match height.try_into() {
-					Err(_) => {
-						return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid height"))
-					},
+					Err(_) => return Err("invalid height"),
 					Ok(height) => Some(height),
 				},
 			},
-			_ => return Err(io::Error::new(io::ErrorKind::InvalidData, "expected JSON number")),
+			_ => return Err("expected JSON number"),
 		};
 
 		Ok((hash, height))
@@ -173,22 +226,18 @@ impl TryInto<(BlockHash, Option<u32>)> for JsonResponse {
 }
 
 impl TryInto<Txid> for JsonResponse {
-	type Error = io::Error;
-	fn try_into(self) -> io::Result<Txid> {
-		let hex_data = self
-			.0
-			.as_str()
-			.ok_or(io::Error::new(io::ErrorKind::InvalidData, "expected JSON string"))?;
-		Txid::from_str(hex_data)
-			.map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err.to_string()))
+	type Error = String;
+	fn try_into(self) -> Result<Txid, String> {
+		let hex_data = self.0.as_str().ok_or_else(|| "expected JSON string".to_string())?;
+		Txid::from_str(hex_data).map_err(|err| err.to_string())
 	}
 }
 
 /// Converts a JSON value into a transaction. WATCH OUT! this cannot be used for zero-input transactions
 /// (e.g. createrawtransaction). See <https://github.com/rust-bitcoin/rust-bitcoincore-rpc/issues/197>
 impl TryInto<Transaction> for JsonResponse {
-	type Error = io::Error;
-	fn try_into(self) -> io::Result<Transaction> {
+	type Error = String;
+	fn try_into(self) -> Result<Transaction, String> {
 		let hex_tx = if self.0.is_object() {
 			// result is json encoded
 			match &self.0["hex"] {
@@ -202,10 +251,7 @@ impl TryInto<Transaction> for JsonResponse {
 								_ => "Unknown error",
 							};
 
-							return Err(io::Error::new(
-								io::ErrorKind::InvalidData,
-								format!("transaction couldn't be signed. {}", reason),
-							));
+							return Err(format!("transaction couldn't be signed. {}", reason));
 						} else {
 							hex_data
 						}
@@ -214,7 +260,7 @@ impl TryInto<Transaction> for JsonResponse {
 					_ => hex_data,
 				},
 				_ => {
-					return Err(io::Error::new(io::ErrorKind::InvalidData, "expected JSON string"));
+					return Err("expected JSON string".to_string());
 				},
 			}
 		} else {
@@ -222,15 +268,15 @@ impl TryInto<Transaction> for JsonResponse {
 			match self.0.as_str() {
 				Some(hex_tx) => hex_tx,
 				None => {
-					return Err(io::Error::new(io::ErrorKind::InvalidData, "expected JSON string"));
+					return Err("expected JSON string".to_string());
 				},
 			}
 		};
 
 		match Vec::<u8>::from_hex(hex_tx) {
-			Err(_) => Err(io::Error::new(io::ErrorKind::InvalidData, "invalid hex data")),
+			Err(_) => Err("invalid hex data".to_string()),
 			Ok(tx_data) => match encode::deserialize(&tx_data) {
-				Err(_) => Err(io::Error::new(io::ErrorKind::InvalidData, "invalid transaction")),
+				Err(_) => Err("invalid transaction".to_string()),
 				Ok(tx) => Ok(tx),
 			},
 		}
@@ -238,16 +284,13 @@ impl TryInto<Transaction> for JsonResponse {
 }
 
 impl TryInto<BlockHash> for JsonResponse {
-	type Error = io::Error;
+	type Error = &'static str;
 
-	fn try_into(self) -> io::Result<BlockHash> {
+	fn try_into(self) -> Result<BlockHash, &'static str> {
 		match self.0.as_str() {
-			None => Err(io::Error::new(io::ErrorKind::InvalidData, "expected JSON string")),
-			Some(hex_data) if hex_data.len() != 64 => {
-				Err(io::Error::new(io::ErrorKind::InvalidData, "invalid hash length"))
-			},
-			Some(hex_data) => BlockHash::from_str(hex_data)
-				.map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid hex data")),
+			None => Err("expected JSON string"),
+			Some(hex_data) if hex_data.len() != 64 => Err("invalid hash length"),
+			Some(hex_data) => BlockHash::from_str(hex_data).map_err(|_| "invalid hex data"),
 		}
 	}
 }
@@ -262,24 +305,21 @@ pub(crate) struct GetUtxosResponse {
 
 #[cfg(feature = "rest-client")]
 impl TryInto<GetUtxosResponse> for JsonResponse {
-	type Error = io::Error;
+	type Error = &'static str;
 
-	fn try_into(self) -> io::Result<GetUtxosResponse> {
-		let obj_err = || io::Error::new(io::ErrorKind::InvalidData, "expected an object");
-		let bitmap_err = || io::Error::new(io::ErrorKind::InvalidData, "missing bitmap field");
-		let bitstr_err = || io::Error::new(io::ErrorKind::InvalidData, "bitmap should be an str");
+	fn try_into(self) -> Result<GetUtxosResponse, &'static str> {
 		let bitmap_str = self
 			.0
 			.as_object()
-			.ok_or_else(obj_err)?
+			.ok_or("expected an object")?
 			.get("bitmap")
-			.ok_or_else(bitmap_err)?
+			.ok_or("missing bitmap field")?
 			.as_str()
-			.ok_or_else(bitstr_err)?;
+			.ok_or("bitmap should be an str")?;
 		let mut hit_bitmap_nonempty = false;
 		for c in bitmap_str.chars() {
 			if c < '0' || c > '9' {
-				return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid byte"));
+				return Err("invalid byte");
 			}
 			if c > '0' {
 				hit_bitmap_nonempty = true;
@@ -321,8 +361,7 @@ pub(crate) mod tests {
 		let response = JsonResponse(serde_json::json!(42));
 		match TryInto::<BlockHeaderData>::try_into(response) {
 			Err(e) => {
-				assert_eq!(e.kind(), io::ErrorKind::InvalidData);
-				assert_eq!(e.get_ref().unwrap().to_string(), "unexpected JSON type");
+				assert_eq!(e, "unexpected JSON type");
 			},
 			Ok(_) => panic!("Expected error"),
 		}
@@ -333,8 +372,7 @@ pub(crate) mod tests {
 		let response = JsonResponse(serde_json::json!([42]));
 		match TryInto::<BlockHeaderData>::try_into(response) {
 			Err(e) => {
-				assert_eq!(e.kind(), io::ErrorKind::InvalidData);
-				assert_eq!(e.get_ref().unwrap().to_string(), "expected JSON object");
+				assert_eq!(e, "expected JSON object");
 			},
 			Ok(_) => panic!("Expected error"),
 		}
@@ -351,8 +389,7 @@ pub(crate) mod tests {
 
 		match TryInto::<BlockHeaderData>::try_into(response) {
 			Err(e) => {
-				assert_eq!(e.kind(), io::ErrorKind::InvalidData);
-				assert_eq!(e.get_ref().unwrap().to_string(), "invalid header data");
+				assert_eq!(e, "invalid header data");
 			},
 			Ok(_) => panic!("Expected error"),
 		}
@@ -369,8 +406,7 @@ pub(crate) mod tests {
 
 		match TryInto::<BlockHeaderData>::try_into(response) {
 			Err(e) => {
-				assert_eq!(e.kind(), io::ErrorKind::InvalidData);
-				assert_eq!(e.get_ref().unwrap().to_string(), "invalid header data");
+				assert_eq!(e, "invalid header data");
 			},
 			Ok(_) => panic!("Expected error"),
 		}
@@ -464,8 +500,7 @@ pub(crate) mod tests {
 		let response = JsonResponse(serde_json::json!({ "result": "foo" }));
 		match TryInto::<Block>::try_into(response) {
 			Err(e) => {
-				assert_eq!(e.kind(), io::ErrorKind::InvalidData);
-				assert_eq!(e.get_ref().unwrap().to_string(), "expected JSON string");
+				assert_eq!(e, "expected JSON string");
 			},
 			Ok(_) => panic!("Expected error"),
 		}
@@ -476,8 +511,7 @@ pub(crate) mod tests {
 		let response = JsonResponse(serde_json::json!("foobar"));
 		match TryInto::<Block>::try_into(response) {
 			Err(e) => {
-				assert_eq!(e.kind(), io::ErrorKind::InvalidData);
-				assert_eq!(e.get_ref().unwrap().to_string(), "invalid hex data");
+				assert_eq!(e, "invalid hex data");
 			},
 			Ok(_) => panic!("Expected error"),
 		}
@@ -488,8 +522,7 @@ pub(crate) mod tests {
 		let response = JsonResponse(serde_json::json!("abcd"));
 		match TryInto::<Block>::try_into(response) {
 			Err(e) => {
-				assert_eq!(e.kind(), io::ErrorKind::InvalidData);
-				assert_eq!(e.get_ref().unwrap().to_string(), "invalid block data");
+				assert_eq!(e, "invalid block data");
 			},
 			Ok(_) => panic!("Expected error"),
 		}
@@ -510,8 +543,7 @@ pub(crate) mod tests {
 		let response = JsonResponse(serde_json::json!("foo"));
 		match TryInto::<(BlockHash, Option<u32>)>::try_into(response) {
 			Err(e) => {
-				assert_eq!(e.kind(), io::ErrorKind::InvalidData);
-				assert_eq!(e.get_ref().unwrap().to_string(), "expected JSON object");
+				assert_eq!(e, "expected JSON object");
 			},
 			Ok(_) => panic!("Expected error"),
 		}
@@ -522,8 +554,7 @@ pub(crate) mod tests {
 		let response = JsonResponse(serde_json::json!({ "bestblockhash": 42 }));
 		match TryInto::<(BlockHash, Option<u32>)>::try_into(response) {
 			Err(e) => {
-				assert_eq!(e.kind(), io::ErrorKind::InvalidData);
-				assert_eq!(e.get_ref().unwrap().to_string(), "expected JSON string");
+				assert_eq!(e, "expected JSON string");
 			},
 			Ok(_) => panic!("Expected error"),
 		}
@@ -534,8 +565,7 @@ pub(crate) mod tests {
 		let response = JsonResponse(serde_json::json!({ "bestblockhash": "foobar"} ));
 		match TryInto::<(BlockHash, Option<u32>)>::try_into(response) {
 			Err(e) => {
-				assert_eq!(e.kind(), io::ErrorKind::InvalidData);
-				assert_eq!(e.get_ref().unwrap().to_string(), "invalid hex data");
+				assert_eq!(e, "invalid hex data");
 			},
 			Ok(_) => panic!("Expected error"),
 		}
@@ -565,8 +595,7 @@ pub(crate) mod tests {
 		}));
 		match TryInto::<(BlockHash, Option<u32>)>::try_into(response) {
 			Err(e) => {
-				assert_eq!(e.kind(), io::ErrorKind::InvalidData);
-				assert_eq!(e.get_ref().unwrap().to_string(), "expected JSON number");
+				assert_eq!(e, "expected JSON number");
 			},
 			Ok(_) => panic!("Expected error"),
 		}
@@ -581,8 +610,7 @@ pub(crate) mod tests {
 		}));
 		match TryInto::<(BlockHash, Option<u32>)>::try_into(response) {
 			Err(e) => {
-				assert_eq!(e.kind(), io::ErrorKind::InvalidData);
-				assert_eq!(e.get_ref().unwrap().to_string(), "invalid height");
+				assert_eq!(e, "invalid height");
 			},
 			Ok(_) => panic!("Expected error"),
 		}
@@ -609,8 +637,7 @@ pub(crate) mod tests {
 		let response = JsonResponse(serde_json::json!({ "result": "foo" }));
 		match TryInto::<Txid>::try_into(response) {
 			Err(e) => {
-				assert_eq!(e.kind(), io::ErrorKind::InvalidData);
-				assert_eq!(e.get_ref().unwrap().to_string(), "expected JSON string");
+				assert_eq!(e, "expected JSON string");
 			},
 			Ok(_) => panic!("Expected error"),
 		}
@@ -621,8 +648,7 @@ pub(crate) mod tests {
 		let response = JsonResponse(serde_json::json!("foobar"));
 		match TryInto::<Txid>::try_into(response) {
 			Err(e) => {
-				assert_eq!(e.kind(), io::ErrorKind::InvalidData);
-				assert_eq!(e.get_ref().unwrap().to_string(), "failed to parse hex");
+				assert_eq!(e, "failed to parse hex");
 			},
 			Ok(_) => panic!("Expected error"),
 		}
@@ -633,8 +659,7 @@ pub(crate) mod tests {
 		let response = JsonResponse(serde_json::json!("abcd"));
 		match TryInto::<Txid>::try_into(response) {
 			Err(e) => {
-				assert_eq!(e.kind(), io::ErrorKind::InvalidData);
-				assert_eq!(e.get_ref().unwrap().to_string(), "failed to parse hex");
+				assert_eq!(e, "failed to parse hex");
 			},
 			Ok(_) => panic!("Expected error"),
 		}
@@ -654,9 +679,8 @@ pub(crate) mod tests {
 	fn into_txid_from_bitcoind_rpc_json_response() {
 		let mut rpc_response = serde_json::json!(
 			{"error": "", "id": "770", "result": "7934f775149929a8b742487129a7c3a535dfb612f0b726cc67bc10bc2628f906"}
-
 		);
-		let r: io::Result<Txid> =
+		let r: Result<Txid, String> =
 			JsonResponse(rpc_response.get_mut("result").unwrap().take()).try_into();
 		assert_eq!(
 			r.unwrap().to_string(),
@@ -676,8 +700,7 @@ pub(crate) mod tests {
 		let response = JsonResponse(serde_json::json!("foobar"));
 		match TryInto::<Transaction>::try_into(response) {
 			Err(e) => {
-				assert_eq!(e.kind(), io::ErrorKind::InvalidData);
-				assert_eq!(e.get_ref().unwrap().to_string(), "invalid hex data");
+				assert_eq!(e, "invalid hex data");
 			},
 			Ok(_) => panic!("Expected error"),
 		}
@@ -688,8 +711,7 @@ pub(crate) mod tests {
 		let response = JsonResponse(Value::Number(Number::from_f64(1.0).unwrap()));
 		match TryInto::<Transaction>::try_into(response) {
 			Err(e) => {
-				assert_eq!(e.kind(), io::ErrorKind::InvalidData);
-				assert_eq!(e.get_ref().unwrap().to_string(), "expected JSON string");
+				assert_eq!(e, "expected JSON string");
 			},
 			Ok(_) => panic!("Expected error"),
 		}
@@ -700,8 +722,7 @@ pub(crate) mod tests {
 		let response = JsonResponse(serde_json::json!("abcd"));
 		match TryInto::<Transaction>::try_into(response) {
 			Err(e) => {
-				assert_eq!(e.kind(), io::ErrorKind::InvalidData);
-				assert_eq!(e.get_ref().unwrap().to_string(), "invalid transaction");
+				assert_eq!(e, "invalid transaction");
 			},
 			Ok(_) => panic!("Expected error"),
 		}
@@ -737,8 +758,7 @@ pub(crate) mod tests {
 		let response = JsonResponse(serde_json::json!({ "error": "foo" }));
 		match TryInto::<Transaction>::try_into(response) {
 			Err(e) => {
-				assert_eq!(e.kind(), io::ErrorKind::InvalidData);
-				assert_eq!(e.get_ref().unwrap().to_string(), "expected JSON string");
+				assert_eq!(e, "expected JSON string");
 			},
 			Ok(_) => panic!("Expected error"),
 		}
@@ -749,12 +769,7 @@ pub(crate) mod tests {
 		let response = JsonResponse(serde_json::json!({ "hex": "foo", "complete": false }));
 		match TryInto::<Transaction>::try_into(response) {
 			Err(e) => {
-				assert_eq!(e.kind(), io::ErrorKind::InvalidData);
-				assert!(e
-					.get_ref()
-					.unwrap()
-					.to_string()
-					.contains("transaction couldn't be signed"));
+				assert!(e.contains("transaction couldn't be signed"));
 			},
 			Ok(_) => panic!("Expected error"),
 		}
