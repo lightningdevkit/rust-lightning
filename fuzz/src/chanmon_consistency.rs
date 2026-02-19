@@ -1356,7 +1356,9 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 	let mut node_c_ser = nodes[2].encode();
 
 	let pending_payments = RefCell::new([Vec::new(), Vec::new(), Vec::new()]);
-	let resolved_payments = RefCell::new([Vec::new(), Vec::new(), Vec::new()]);
+	let resolved_payments: RefCell<[HashMap<PaymentId, Option<PaymentHash>>; 3]> =
+		RefCell::new([new_hash_map(), new_hash_map(), new_hash_map()]);
+	let claimed_payment_hashes: RefCell<HashSet<PaymentHash>> = RefCell::new(HashSet::new());
 
 	macro_rules! test_return {
 		() => {{
@@ -1864,18 +1866,19 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 									nodes[$node].fail_htlc_backwards(&payment_hash);
 								} else {
 									nodes[$node].claim_funds(PaymentPreimage(payment_hash.0));
+									claimed_payment_hashes.borrow_mut().insert(payment_hash);
 								}
 							}
 						},
-						events::Event::PaymentSent { payment_id, .. } => {
+						events::Event::PaymentSent { payment_id, payment_hash, .. } => {
 							let sent_id = payment_id.unwrap();
 							let idx_opt =
 								pending_payments[$node].iter().position(|id| *id == sent_id);
 							if let Some(idx) = idx_opt {
 								pending_payments[$node].remove(idx);
-								resolved_payments[$node].push(sent_id);
+								resolved_payments[$node].insert(sent_id, Some(payment_hash));
 							} else {
-								assert!(resolved_payments[$node].contains(&sent_id));
+								assert!(resolved_payments[$node].contains_key(&sent_id));
 							}
 						},
 						// Even though we don't explicitly send probes, because probes are
@@ -1887,9 +1890,9 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 								pending_payments[$node].iter().position(|id| *id == payment_id);
 							if let Some(idx) = idx_opt {
 								pending_payments[$node].remove(idx);
-								resolved_payments[$node].push(payment_id);
+								resolved_payments[$node].insert(payment_id, None);
 							} else {
-								assert!(resolved_payments[$node].contains(&payment_id));
+								assert!(resolved_payments[$node].contains_key(&payment_id));
 							}
 						},
 						events::Event::PaymentFailed { payment_id, .. }
@@ -1898,11 +1901,11 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 								pending_payments[$node].iter().position(|id| *id == payment_id);
 							if let Some(idx) = idx_opt {
 								pending_payments[$node].remove(idx);
-								resolved_payments[$node].push(payment_id);
-							} else if !resolved_payments[$node].contains(&payment_id) {
+								resolved_payments[$node].insert(payment_id, None);
+							} else if !resolved_payments[$node].contains_key(&payment_id) {
 								// Payment failed immediately on send, so it was never added to
 								// pending_payments. Add it to resolved_payments to track it.
-								resolved_payments[$node].push(payment_id);
+								resolved_payments[$node].insert(payment_id, None);
 							}
 						},
 						events::Event::PaymentClaimed { .. } => {},
@@ -2702,6 +2705,20 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 						"Node {} has {} stuck pending payments after settling all state",
 						idx,
 						pending.len()
+					);
+				}
+
+				// Verify that every payment claimed by a receiver resulted in a
+				// PaymentSent event at the sender.
+				let resolved = resolved_payments.borrow();
+				for hash in claimed_payment_hashes.borrow().iter() {
+					let found = resolved.iter().any(|node_resolved| {
+						node_resolved.values().any(|h| h.as_ref() == Some(hash))
+					});
+					assert!(
+						found,
+						"Payment {:?} was claimed by receiver but sender never got PaymentSent",
+						hash
 					);
 				}
 
