@@ -4039,9 +4039,14 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		}
 
 		if let Some(parent_funding_txid) = channel_parameters.splice_parent_funding_txid.as_ref() {
-			// Only one splice can be negotiated at a time after we've exchanged `channel_ready`
-			// (implying our funding is confirmed) that spends our currently locked funding.
-			if !self.pending_funding.is_empty() {
+			// Multiple RBF candidates for the same splice are allowed (they share the same
+			// parent funding txid). A new splice with a different parent while one is pending
+			// is not allowed.
+			let has_different_parent = self.pending_funding.iter().any(|funding| {
+				funding.channel_parameters.splice_parent_funding_txid.as_ref()
+					!= Some(parent_funding_txid)
+			});
+			if has_different_parent {
 				log_error!(
 					logger,
 					"Negotiated splice while channel is pending channel_ready/splice_locked"
