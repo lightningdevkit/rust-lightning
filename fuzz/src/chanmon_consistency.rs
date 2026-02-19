@@ -1931,16 +1931,20 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 								.unwrap();
 						},
 						events::Event::SplicePending { new_funding_txo, .. } => {
-							let broadcaster = match $node {
-								0 => &broadcast_a,
-								1 => &broadcast_b,
-								_ => &broadcast_c,
-							};
-							let mut txs = broadcaster.txn_broadcasted.borrow_mut();
-							assert!(txs.len() >= 1);
-							let splice_tx = txs.remove(0);
-							assert_eq!(new_funding_txo.txid, splice_tx.compute_txid());
-							chain_state.confirm_tx(splice_tx);
+							if !chain_state.confirmed_txids.contains(&new_funding_txo.txid) {
+								let broadcaster = match $node {
+									0 => &broadcast_a,
+									1 => &broadcast_b,
+									_ => &broadcast_c,
+								};
+								let mut txs = broadcaster.txn_broadcasted.borrow_mut();
+								let pos = txs
+									.iter()
+									.position(|tx| new_funding_txo.txid == tx.compute_txid())
+									.expect("SplicePending but splice tx not found in broadcaster");
+								let splice_tx = txs.remove(pos);
+								chain_state.confirm_tx(splice_tx);
+							}
 						},
 						events::Event::SpliceFailed { .. } => {},
 
