@@ -1350,18 +1350,18 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 	let resolved_payments: RefCell<[HashMap<PaymentId, Option<PaymentHash>>; 3]> =
 		RefCell::new([new_hash_map(), new_hash_map(), new_hash_map()]);
 	let claimed_payment_hashes: RefCell<HashSet<PaymentHash>> = RefCell::new(HashSet::new());
+	let closed_channels: RefCell<HashSet<ChannelId>> = RefCell::new(HashSet::new());
 
 	macro_rules! test_return {
 		() => {{
-			assert_eq!(nodes[0].list_channels().len(), 3);
-			assert_eq!(nodes[1].list_channels().len(), 6);
-			assert_eq!(nodes[2].list_channels().len(), 3);
+			assert!(nodes[0].list_channels().len() <= 3);
+			assert!(nodes[1].list_channels().len() <= 6);
+			assert!(nodes[2].list_channels().len() <= 3);
 
-			// All broadcasters should be empty (all broadcast transactions should be handled
-			// explicitly).
-			assert!(broadcast_a.txn_broadcasted.borrow().is_empty());
-			assert!(broadcast_b.txn_broadcasted.borrow().is_empty());
-			assert!(broadcast_c.txn_broadcasted.borrow().is_empty());
+			// Drain broadcasters since force-closes produce commitment transactions.
+			broadcast_a.txn_broadcasted.borrow_mut().clear();
+			broadcast_b.txn_broadcasted.borrow_mut().clear();
+			broadcast_c.txn_broadcasted.borrow_mut().clear();
 
 			return;
 		}};
@@ -2723,6 +2723,28 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 								complete_all_monitor_updates(&monitor_b, id);
 								complete_all_monitor_updates(&monitor_c, id);
 							}
+							// Drain any broadcast transactions (from force-closes) and
+							// confirm them so the monitors can process the spends.
+							let mut had_txs = false;
+							for tx in broadcast_a.txn_broadcasted.borrow_mut().drain(..) {
+								chain_state.confirm_tx(tx);
+								had_txs = true;
+							}
+							for tx in broadcast_b.txn_broadcasted.borrow_mut().drain(..) {
+								chain_state.confirm_tx(tx);
+								had_txs = true;
+							}
+							for tx in broadcast_c.txn_broadcasted.borrow_mut().drain(..) {
+								chain_state.confirm_tx(tx);
+								had_txs = true;
+							}
+							if had_txs {
+								sync_with_chain_state(&chain_state, &nodes[0], &monitor_a, &mut node_height_a, None);
+								sync_with_chain_state(&chain_state, &nodes[1], &monitor_b, &mut node_height_b, None);
+								sync_with_chain_state(&chain_state, &nodes[2], &monitor_c, &mut node_height_c, None);
+								last_pass_no_updates = false;
+								continue;
+							}
 							// Then, make sure any current forwards make their way to their destination
 							if process_msg_events!(0, false, ProcessMessages::AllMessages) {
 								last_pass_no_updates = false;
@@ -2800,12 +2822,18 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 
 				// Finally, make sure that at least one end of each channel can make a substantial payment
 				for &chan_id in &chan_ab_ids {
+					if closed_channels.borrow().contains(&chan_id) {
+						continue;
+					}
 					assert!(
 						send(0, 1, chan_id, 10_000_000, &mut p_ctr)
 							|| send(1, 0, chan_id, 10_000_000, &mut p_ctr)
 					);
 				}
 				for &chan_id in &chan_bc_ids {
+					if closed_channels.borrow().contains(&chan_id) {
+						continue;
+					}
 					assert!(
 						send(1, 2, chan_id, 10_000_000, &mut p_ctr)
 							|| send(2, 1, chan_id, 10_000_000, &mut p_ctr)
