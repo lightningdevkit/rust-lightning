@@ -716,14 +716,28 @@ impl_writeable_tlv_based_enum_upgradable!(PaymentFailureReason,
 /// Used to indicate the kind of funding for this channel by the channel acceptor (us).
 ///
 /// Allows the differentiation between a request for a dual-funded and non-dual-funded channel.
+/// For V1 channels, this also carries the `channel_reserve_satoshis` value set by the channel
+/// initiator, since it is only available in V1 `open_channel` messages.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InboundChannelFunds {
-	/// For a non-dual-funded channel, the `push_msat` value from the channel initiator to us.
-	PushMsat(u64),
+	/// For a non-dual-funded (V1) channel, the `push_msat` value and `channel_reserve_satoshis`
+	/// from the channel initiator.
+	PushMsat {
+		/// The amount, in millisatoshis, that the channel initiator is pushing to us.
+		push_msat: u64,
+		/// The minimum value unencumbered by HTLCs for the non-channel-initiator to keep in the
+		/// channel, as set by the channel initiator in the `open_channel` message.
+		channel_reserve_satoshis: u64,
+	},
 	/// Indicates the open request is for a dual funded channel.
 	///
 	/// Note that these channels do not support starting with initial funds pushed from the counterparty,
 	/// who is the channel opener in this case.
+	///
+	/// For V2 channels, the channel reserve is calculated as
+	/// `max(1% of total_channel_value, dust_limit_satoshis)` per the spec, and is not known at
+	/// the time of [`Event::OpenChannelRequest`] because the acceptor's funding contribution has
+	/// not yet been determined.
 	DualFunded,
 }
 
@@ -1622,8 +1636,9 @@ pub enum Event {
 		/// The channel value of the requested channel.
 		funding_satoshis: u64,
 		/// If `channel_negotiation_type` is `InboundChannelFunds::DualFunded`, this indicates that the peer wishes to
-		/// open a dual-funded channel. Otherwise, this field will be `InboundChannelFunds::PushMsats`,
-		/// indicating the `push_msats` value our peer is pushing to us for a non-dual-funded channel.
+		/// open a dual-funded channel. Otherwise, this field will be `InboundChannelFunds::PushMsat`,
+		/// indicating the `push_msat` value and `channel_reserve_satoshis` our peer set for a
+		/// non-dual-funded (V1) channel.
 		channel_negotiation_type: InboundChannelFunds,
 		/// The features that this channel will operate with. If you reject the channel, a
 		/// well-behaved counterparty may automatically re-attempt the channel with a new set of

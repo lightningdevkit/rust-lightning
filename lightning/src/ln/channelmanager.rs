@@ -9133,7 +9133,8 @@ impl<
 		ComplFunc: FnOnce(
 			Option<u64>,
 			bool,
-		) -> (Option<MonitorUpdateCompletionAction>, Option<RAAMonitorUpdateBlockingAction>),
+		)
+			-> (Option<MonitorUpdateCompletionAction>, Option<RAAMonitorUpdateBlockingAction>),
 	>(
 		&self, prev_hop: HTLCPreviousHopData, payment_preimage: PaymentPreimage,
 		payment_info: Option<PaymentClaimDetails>, attribution_data: Option<AttributionData>,
@@ -9171,7 +9172,8 @@ impl<
 		ComplFunc: FnOnce(
 			Option<u64>,
 			bool,
-		) -> (Option<MonitorUpdateCompletionAction>, Option<RAAMonitorUpdateBlockingAction>),
+		)
+			-> (Option<MonitorUpdateCompletionAction>, Option<RAAMonitorUpdateBlockingAction>),
 	>(
 		&self, prev_hop: HTLCClaimSource, payment_preimage: PaymentPreimage,
 		payment_info: Option<PaymentClaimDetails>, attribution_data: Option<AttributionData>,
@@ -10955,7 +10957,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				counterparty_node_id: *counterparty_node_id,
 				funding_satoshis: common_fields.funding_satoshis,
 				channel_negotiation_type: match msg {
-					OpenChannelMessageRef::V1(msg) => InboundChannelFunds::PushMsat(msg.push_msat),
+					OpenChannelMessageRef::V1(msg) => InboundChannelFunds::PushMsat {
+						push_msat: msg.push_msat,
+						channel_reserve_satoshis: msg.channel_reserve_satoshis,
+					},
 					OpenChannelMessageRef::V2(_) => InboundChannelFunds::DualFunded,
 				},
 				channel_type,
