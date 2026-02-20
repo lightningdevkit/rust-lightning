@@ -35,6 +35,11 @@ fn test_quiescence_tie() {
 
 	assert!(nodes[0].node.exit_quiescence(&nodes[1].node.get_our_node_id(), &chan_id).unwrap());
 	assert!(nodes[1].node.exit_quiescence(&nodes[0].node.get_our_node_id(), &chan_id).unwrap());
+
+	// Since node 1 lost the tie, they'll attempt quiescence again.
+	let stfu =
+		get_event_msg!(nodes[1], MessageSendEvent::SendStfu, nodes[0].node.get_our_node_id());
+	assert!(stfu.initiator);
 }
 
 #[test]
