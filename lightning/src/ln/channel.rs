@@ -80,7 +80,7 @@ use crate::util::config::{
 	MaxDustHTLCExposure, UserConfig,
 };
 use crate::util::errors::APIError;
-use crate::util::logger::{Logger, Record, WithContext};
+use crate::util::logger::{Level as LoggerLevel, Logger, Record, WithContext};
 use crate::util::scid_utils::{block_from_scid, scid_from_parts};
 use crate::util::ser::{Readable, ReadableArgs, RequiredWrapper, Writeable, Writer};
 use crate::util::wallet_utils::Input;
@@ -13410,65 +13410,19 @@ where
 			);
 			return Err(action);
 		}
+		// Since we don't have a pending quiescent action, we should never be in a state where we
+		// sent `stfu` without already having become quiescent.
+		debug_assert!(!self.context.channel_state.is_awaiting_quiescence());
+		debug_assert!(!self.context.channel_state.is_local_stfu_sent());
 
 		self.quiescent_action = Some(action);
-		if self.context.channel_state.is_quiescent()
-			|| self.context.channel_state.is_awaiting_quiescence()
-			|| self.context.channel_state.is_local_stfu_sent()
-		{
-			log_debug!(logger, "Channel is either pending quiescence or already quiescent");
+		if self.context.channel_state.is_quiescent() {
+			log_debug!(logger, "Channel is already quiescent");
 			return Ok(None);
 		}
 
 		self.context.channel_state.set_awaiting_quiescence();
-		if self.context.is_live() {
-			match self.send_stfu(logger) {
-				Ok(stfu) => Ok(Some(stfu)),
-				Err(e) => {
-					log_debug!(logger, "{e}");
-					Ok(None)
-				},
-			}
-		} else {
-			log_debug!(logger, "Waiting for peer reconnection to send stfu");
-			Ok(None)
-		}
-	}
-
-	// Assumes we are either awaiting quiescence or our counterparty has requested quiescence.
-	#[rustfmt::skip]
-	pub fn send_stfu<L: Logger>(&mut self, logger: &L) -> Result<msgs::Stfu, &'static str> {
-		debug_assert!(!self.context.channel_state.is_local_stfu_sent());
-		debug_assert!(
-			self.context.channel_state.is_awaiting_quiescence()
-				|| self.context.channel_state.is_remote_stfu_sent()
-		);
-		debug_assert!(self.context.is_live());
-
-		if self.context.is_waiting_on_peer_pending_channel_update()
-			|| self.context.is_monitor_or_signer_pending_channel_update()
-		{
-			return Err("We cannot send `stfu` while state machine is pending")
-		}
-
-		let initiator = if self.context.channel_state.is_remote_stfu_sent() {
-			// We may have also attempted to initiate quiescence.
-			self.context.channel_state.clear_awaiting_quiescence();
-			self.context.channel_state.clear_remote_stfu_sent();
-			self.context.channel_state.set_quiescent();
-			// We are sending an stfu in response to our couterparty's stfu, but had not yet sent
-			// our own stfu (even if `awaiting_quiescence` was set). Thus, the counterparty is the
-			// initiator and they can do "something fundamental".
-			false
-		} else {
-			log_debug!(logger, "Sending stfu as quiescence initiator");
-			debug_assert!(self.context.channel_state.is_awaiting_quiescence());
-			self.context.channel_state.clear_awaiting_quiescence();
-			self.context.channel_state.set_local_stfu_sent();
-			true
-		};
-
-		Ok(msgs::Stfu { channel_id: self.context.channel_id, initiator })
+		Ok(self.try_send_stfu(false, logger))
 	}
 
 	#[rustfmt::skip]
@@ -13505,10 +13459,7 @@ where
 			self.context.channel_state.set_remote_stfu_sent();
 
 			log_debug!(logger, "Received counterparty stfu proposing quiescence");
-			return self
-				.send_stfu(logger)
-				.map(|stfu| Some(StfuResponse::Stfu(stfu)))
-				.map_err(|e| ChannelError::Ignore(e.to_owned()));
+			return Ok(self.try_send_stfu(false, logger).map(|stfu| StfuResponse::Stfu(stfu)))
 		}
 
 		// We already sent `stfu` and are now processing theirs. It may be in response to ours, or
@@ -13610,17 +13561,30 @@ where
 		Ok(None)
 	}
 
-	pub fn try_send_stfu<L: Logger>(
-		&mut self, logger: &L,
-	) -> Result<Option<msgs::Stfu>, ChannelError> {
+	pub fn try_send_stfu<L: Logger>(&mut self, is_retry: bool, logger: &L) -> Option<msgs::Stfu> {
 		// We must never see both stfu flags set, we always set the quiescent flag instead.
 		debug_assert!(
 			!(self.context.channel_state.is_local_stfu_sent()
 				&& self.context.channel_state.is_remote_stfu_sent())
 		);
 
+		// We only need to send `stfu` when we're awaiting quiescence and haven't sent it yet, or
+		// in response to a counterparty one.
+		if self.context.channel_state.is_local_stfu_sent()
+			|| self.context.channel_state.is_quiescent()
+		{
+			return None;
+		}
+		if !self.context.channel_state.is_awaiting_quiescence()
+			&& !self.context.channel_state.is_remote_stfu_sent()
+		{
+			return None;
+		}
+
+		let logger_level = if is_retry { LoggerLevel::Trace } else { LoggerLevel::Debug };
 		if !self.context.is_live() {
-			return Ok(None);
+			log_given_level!(logger, logger_level, "Waiting for peer reconnection to send stfu");
+			return None;
 		}
 
 		if let Some(action) = self.quiescent_action.as_ref() {
@@ -13630,27 +13594,44 @@ where
 			let has_splice_action = matches!(action, QuiescentAction::Splice { .. })
 				|| matches!(action, QuiescentAction::LegacySplice(_));
 			if has_splice_action && self.pending_splice.is_some() {
-				return Ok(None);
+				log_given_level!(
+					logger,
+					logger_level,
+					"Waiting for pending splice to lock before sending stfu for new splice"
+				);
+				return None;
 			}
 		}
 
-		// We need to send our `stfu`, either because we're trying to initiate quiescence, or the
-		// counterparty is and we've yet to send ours.
-		if self.context.channel_state.is_awaiting_quiescence()
-			|| (self.context.channel_state.is_remote_stfu_sent()
-				&& !self.context.channel_state.is_local_stfu_sent())
+		if self.context.is_waiting_on_peer_pending_channel_update()
+			|| self.context.is_monitor_or_signer_pending_channel_update()
 		{
-			return self
-				.send_stfu(logger)
-				.map(|stfu| Some(stfu))
-				.map_err(|e| ChannelError::Ignore(e.to_owned()));
+			log_given_level!(
+				logger,
+				logger_level,
+				"Waiting for state machine pending changes to complete before sending stfu"
+			);
+			return None;
 		}
 
-		// We're either:
-		//  - already quiescent
-		//  - in a state where quiescence is not possible
-		//  - not currently trying to become quiescent
-		Ok(None)
+		let initiator = if self.context.channel_state.is_remote_stfu_sent() {
+			// We may have also attempted to initiate quiescence.
+			self.context.channel_state.clear_awaiting_quiescence();
+			self.context.channel_state.clear_remote_stfu_sent();
+			self.context.channel_state.set_quiescent();
+			// We are sending an stfu in response to our counterparty's stfu, but had not yet sent
+			// our own stfu (even if `awaiting_quiescence` was set). Thus, the counterparty is the
+			// initiator and they can do "something fundamental".
+			false
+		} else {
+			log_debug!(logger, "Sending stfu as quiescence initiator");
+			debug_assert!(self.context.channel_state.is_awaiting_quiescence());
+			self.context.channel_state.clear_awaiting_quiescence();
+			self.context.channel_state.set_local_stfu_sent();
+			true
+		};
+
+		Some(msgs::Stfu { channel_id: self.context.channel_id, initiator })
 	}
 
 	#[cfg(any(test, fuzzing, feature = "_test_utils"))]
