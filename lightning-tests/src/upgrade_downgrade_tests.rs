@@ -700,3 +700,57 @@ fn do_upgrade_mid_htlc_forward(test: MidHtlcForwardCase) {
 	expect_payment_claimable!(nodes[2], pay_hash, pay_secret, 1_000_000);
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], pay_preimage);
 }
+
+#[test]
+fn test_0_0_125_max_update_id_upgrade() {
+	let (node_a_ser, node_b_ser, mon_a_ser, mon_b_ser);
+	{
+		let chanmon_cfgs = lightning_0_0_125_utils::create_chanmon_cfgs(2);
+		let node_cfgs = lightning_0_0_125_utils::create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs =
+			lightning_0_0_125_utils::create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = lightning_0_0_125_utils::create_network(2, &node_cfgs, &node_chanmgrs);
+
+		let node_a_id = nodes[0].node.get_our_node_id();
+		let chan_id = lightning_0_0_125_utils::create_announced_chan_between_nodes(&nodes, 0, 1).2;
+
+		lightning_0_0_125_utils::route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+
+		let err = "".to_owned();
+		nodes[1].node.force_close_broadcasting_latest_txn(&chan_id, &node_a_id, err).unwrap();
+
+		lightning_0_0_125_utils::check_added_monitors(&nodes[1], 1);
+		let reason =
+			ClosureReason_0_0_125::HolderForceClosed { broadcasted_latest_txn: Some(true) };
+		lightning_0_0_125_utils::check_closed_event(
+			&nodes[1],
+			1,
+			reason,
+			false,
+			&[node_a_id],
+			100000,
+		);
+		lightning_0_0_125_utils::check_closed_broadcast(&nodes[1], 1, true);
+
+		node_a_ser = nodes[0].node.encode();
+		node_b_ser = nodes[1].node.encode();
+		mon_a_ser = get_monitor_0_0_125!(nodes[0], chan_id).encode();
+		mon_b_ser = get_monitor_0_0_125!(nodes[1], chan_id).encode();
+	}
+
+	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+
+	chanmon_cfgs[0].keys_manager.disable_all_state_policy_checks = true;
+	chanmon_cfgs[1].keys_manager.disable_all_state_policy_checks = true;
+
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let (persister_a, persister_b, chain_mon_a, chain_mon_b);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let (node_a, node_b);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let config = test_default_channel_config();
+	let a_mons = &[&mon_a_ser[..]];
+	reload_node!(nodes[0], config.clone(), &node_a_ser, a_mons, persister_a, chain_mon_a, node_a);
+	reload_node!(nodes[1], config, &node_b_ser, &[&mon_b_ser], persister_b, chain_mon_b, node_b);
+}
