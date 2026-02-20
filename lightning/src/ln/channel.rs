@@ -2788,7 +2788,7 @@ impl FundingScope {
 
 		// New reserve values are based on the new channel value and are v2-specific
 		let counterparty_selected_channel_reserve_satoshis =
-			Some(get_v2_channel_reserve_satoshis(post_channel_value, MIN_CHAN_DUST_LIMIT_SATOSHIS));
+			get_v2_channel_reserve_satoshis(post_channel_value, MIN_CHAN_DUST_LIMIT_SATOSHIS);
 		let holder_selected_channel_reserve_satoshis = get_v2_channel_reserve_satoshis(
 			post_channel_value,
 			context.counterparty_dust_limit_satoshis,
@@ -2798,23 +2798,39 @@ impl FundingScope {
 			channel_transaction_parameters: post_channel_transaction_parameters,
 			value_to_self_msat: post_value_to_self_msat,
 			funding_transaction: None,
-			counterparty_selected_channel_reserve_satoshis,
+			counterparty_selected_channel_reserve_satoshis: Some(
+				counterparty_selected_channel_reserve_satoshis,
+			),
 			holder_selected_channel_reserve_satoshis,
 			#[cfg(debug_assertions)]
 			holder_prev_commitment_tx_balance: {
 				let prev = *prev_funding.holder_prev_commitment_tx_balance.lock().unwrap();
-				Mutex::new((
-					prev.0.saturating_add_signed(our_funding_contribution.to_sat() * 1000),
-					prev.1.saturating_add_signed(their_funding_contribution.to_sat() * 1000),
-				))
+				let new_holder_balance_msat =
+					prev.0.saturating_add_signed(our_funding_contribution.to_sat() * 1000);
+				let new_counterparty_balance_msat =
+					prev.1.saturating_add_signed(their_funding_contribution.to_sat() * 1000);
+				if new_holder_balance_msat < counterparty_selected_channel_reserve_satoshis {
+					assert_eq!(new_holder_balance_msat, prev.0);
+				}
+				if new_counterparty_balance_msat < holder_selected_channel_reserve_satoshis {
+					assert_eq!(new_counterparty_balance_msat, prev.1);
+				}
+				Mutex::new((new_holder_balance_msat, new_counterparty_balance_msat))
 			},
 			#[cfg(debug_assertions)]
 			counterparty_prev_commitment_tx_balance: {
 				let prev = *prev_funding.counterparty_prev_commitment_tx_balance.lock().unwrap();
-				Mutex::new((
-					prev.0.saturating_add_signed(our_funding_contribution.to_sat() * 1000),
-					prev.1.saturating_add_signed(their_funding_contribution.to_sat() * 1000),
-				))
+				let new_holder_balance_msat =
+					prev.0.saturating_add_signed(our_funding_contribution.to_sat() * 1000);
+				let new_counterparty_balance_msat =
+					prev.1.saturating_add_signed(their_funding_contribution.to_sat() * 1000);
+				if new_holder_balance_msat < counterparty_selected_channel_reserve_satoshis {
+					assert_eq!(new_holder_balance_msat, prev.0);
+				}
+				if new_counterparty_balance_msat < holder_selected_channel_reserve_satoshis {
+					assert_eq!(new_counterparty_balance_msat, prev.1);
+				}
+				Mutex::new((new_holder_balance_msat, new_counterparty_balance_msat))
 			},
 			#[cfg(any(test, fuzzing))]
 			next_local_fee: Mutex::new(PredictedNextFee::default()),
