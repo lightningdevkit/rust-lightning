@@ -58,7 +58,12 @@ fn main() {
 
 	let mut data = Vec::with_capacity(8192);
 	std::io::stdin().read_to_end(&mut data).unwrap();
-	msg_tx_add_input_run(data.as_ptr(), data.len());
+	let res = std::panic::catch_unwind(|| {
+		msg_tx_add_input_test(&data, lightning_fuzz::utils::test_logger::Stdout {});
+	});
+	if res.is_err() {
+		std::process::exit(1);
+	}
 }
 
 #[test]
