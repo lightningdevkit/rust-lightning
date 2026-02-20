@@ -6850,7 +6850,7 @@ mod tests {
 		// the update through to the ChannelMonitor which will refuse it (as the channel is closed).
 		let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[1], nodes[0], 100_000);
 		nodes[1].node.send_payment_with_route(route, payment_hash,
-			RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)
+			RecipientOnionFields::secret_only(payment_secret, 100_000), PaymentId(payment_hash.0)
 		).unwrap();
 		check_added_monitors(&nodes[1], 1);
 

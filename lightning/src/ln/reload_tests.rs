@@ -545,7 +545,7 @@ fn do_test_data_loss_protect(reconnect_panicing: bool, substantially_old: bool, 
 		// `not_stale` to test the boundary condition.
 		let pay_params = PaymentParameters::for_keysend(nodes[1].node.get_our_node_id(), 100, false);
 		let route_params = RouteParameters::from_payment_params_and_value(pay_params, 40000);
-		nodes[0].node.send_spontaneous_payment(None, RecipientOnionFields::spontaneous_empty(), PaymentId([0; 32]), route_params, Retry::Attempts(0)).unwrap();
+		nodes[0].node.send_spontaneous_payment(None, RecipientOnionFields::spontaneous_empty(40000), PaymentId([0; 32]), route_params, Retry::Attempts(0)).unwrap();
 		check_added_monitors(&nodes[0], 1);
 		let update_add_commit = SendEvent::from_node(&nodes[0]);
 
@@ -766,7 +766,7 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool, double_rest
 	});
 
 	nodes[0].node.send_payment_with_route(route, payment_hash,
-		RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
+		RecipientOnionFields::secret_only(payment_secret, 15_000_000), PaymentId(payment_hash.0)).unwrap();
 	check_added_monitors(&nodes[0], 2);
 
 	// Send the payment through to nodes[3] *without* clearing the PaymentClaimable event
@@ -964,7 +964,7 @@ fn do_forwarded_payment_no_manager_persistence(use_cs_commitment: bool, claim_ht
 	let payment_id = PaymentId(nodes[0].keys_manager.backing.get_secure_random_bytes());
 	let htlc_expiry = nodes[0].best_block_info().1 + TEST_FINAL_CLTV;
 	nodes[0].node.send_payment_with_route(route, payment_hash,
-		RecipientOnionFields::secret_only(payment_secret), payment_id).unwrap();
+		RecipientOnionFields::secret_only(payment_secret, 1_000_000), payment_id).unwrap();
 	check_added_monitors(&nodes[0], 1);
 
 	let payment_event = SendEvent::from_node(&nodes[0]);
@@ -1219,7 +1219,7 @@ fn do_manager_persisted_pre_outbound_edge_forward(intercept_htlc: bool) {
 	if intercept_htlc {
 		route.paths[0].hops[1].short_channel_id = nodes[1].node.get_intercept_scid();
 	}
-	nodes[0].node.send_payment_with_route(route, payment_hash, RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
+	nodes[0].node.send_payment_with_route(route, payment_hash, RecipientOnionFields::secret_only(payment_secret, amt_msat), PaymentId(payment_hash.0)).unwrap();
 	check_added_monitors(&nodes[0], 1);
 	let updates = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
@@ -1312,7 +1312,7 @@ fn test_manager_persisted_post_outbound_edge_forward() {
 	// Lock in the HTLC from node_a <> node_b.
 	let amt_msat = 5000;
 	let (mut route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], amt_msat);
-	nodes[0].node.send_payment_with_route(route, payment_hash, RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
+	nodes[0].node.send_payment_with_route(route, payment_hash, RecipientOnionFields::secret_only(payment_secret, amt_msat), PaymentId(payment_hash.0)).unwrap();
 	check_added_monitors(&nodes[0], 1);
 	let updates = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
@@ -1371,7 +1371,8 @@ fn test_manager_persisted_post_outbound_edge_holding_cell() {
 	// Lock in the HTLC from node_a <> node_b.
 	let amt_msat = 1000;
 	let (route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], amt_msat);
-	nodes[0].node.send_payment_with_route(route, payment_hash, RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
+	let onion = RecipientOnionFields::secret_only(payment_secret, amt_msat);
+	nodes[0].node.send_payment_with_route(route, payment_hash, onion, PaymentId(payment_hash.0)).unwrap();
 	check_added_monitors(&nodes[0], 1);
 	let updates = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
@@ -1380,7 +1381,8 @@ fn test_manager_persisted_post_outbound_edge_holding_cell() {
 	// Send a 2nd HTLC node_c -> node_b, to force the first HTLC into the holding cell.
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 	let (route_2, payment_hash_2, payment_preimage_2, payment_secret_2) = get_route_and_payment_hash!(nodes[2], nodes[1], amt_msat);
-	nodes[2].node.send_payment_with_route(route_2, payment_hash_2, RecipientOnionFields::secret_only(payment_secret_2), PaymentId(payment_hash_2.0)).unwrap();
+	let onion = RecipientOnionFields::secret_only(payment_secret_2, amt_msat);
+	nodes[2].node.send_payment_with_route(route_2, payment_hash_2, onion, PaymentId(payment_hash_2.0)).unwrap();
 	let send_event =
 		SendEvent::from_event(nodes[2].node.get_and_clear_pending_msg_events().remove(0));
 	nodes[1].node.handle_update_add_htlc(nodes[2].node.get_our_node_id(), &send_event.msgs[0]);
@@ -1554,9 +1556,9 @@ fn test_htlc_localremoved_persistence() {
 	let test_preimage = PaymentPreimage([42; 32]);
 	let mismatch_payment_hash = PaymentHash([43; 32]);
 	let session_privs = nodes[0].node.test_add_new_pending_payment(mismatch_payment_hash,
-		RecipientOnionFields::spontaneous_empty(), PaymentId(mismatch_payment_hash.0), &route).unwrap();
+		RecipientOnionFields::spontaneous_empty(10_000), PaymentId(mismatch_payment_hash.0), &route).unwrap();
 	nodes[0].node.test_send_payment_internal(&route, mismatch_payment_hash,
-		RecipientOnionFields::spontaneous_empty(), Some(test_preimage), PaymentId(mismatch_payment_hash.0), None, session_privs).unwrap();
+		RecipientOnionFields::spontaneous_empty(10_000), Some(test_preimage), PaymentId(mismatch_payment_hash.0), session_privs).unwrap();
 	check_added_monitors(&nodes[0], 1);
 
 	let updates = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
@@ -1741,7 +1743,7 @@ fn test_hold_completed_inflight_monitor_updates_upon_manager_reload() {
 	let (route, payment_hash, _, payment_secret) =
 		get_route_and_payment_hash!(nodes[0], nodes[1], 1_000_000);
 	let payment_id = PaymentId(payment_hash.0);
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, 1_000_000);
 	nodes[0].node.send_payment_with_route(route, payment_hash, onion, payment_id).unwrap();
 	check_added_monitors(&nodes[0], 1);
 
@@ -2127,9 +2129,8 @@ fn test_reload_with_mpp_claims_on_same_channel() {
 		get_route_and_payment_hash!(nodes[0], nodes[2], amt_msat);
 
 	let payment_id = PaymentId(nodes[0].keys_manager.backing.get_secure_random_bytes());
-	nodes[0].node.send_payment_with_route(
-		route, payment_hash, RecipientOnionFields::secret_only(payment_secret), payment_id,
-	).unwrap();
+	let onion = RecipientOnionFields::secret_only(payment_secret, amt_msat);
+	nodes[0].node.send_payment_with_route(route, payment_hash, onion, payment_id).unwrap();
 	check_added_monitors(&nodes[0], 1);
 
 	// Forward the first HTLC nodes[0] -> nodes[1] -> nodes[2]. Note that the second HTLC is released

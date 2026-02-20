@@ -443,12 +443,12 @@ fn updates_shutdown_wait() {
 	)
 	.unwrap();
 
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, 100_000);
 	let id = PaymentId(payment_hash.0);
 	let res = nodes[0].node.send_payment_with_route(route_1, payment_hash, onion, id);
 	unwrap_send_err!(nodes[0], res, true, APIError::ChannelUnavailable { .. }, {});
 
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, 100_000);
 	let res = nodes[1].node.send_payment_with_route(route_2, payment_hash, onion, id);
 	unwrap_send_err!(nodes[1], res, true, APIError::ChannelUnavailable { .. }, {});
 
@@ -544,7 +544,7 @@ fn do_htlc_fail_async_shutdown(blinded_recipient: bool) {
 			amt_msat,
 		)
 	};
-	let onion = RecipientOnionFields::secret_only(our_payment_secret);
+	let onion = RecipientOnionFields::secret_only(our_payment_secret, amt_msat);
 	let id = PaymentId(our_payment_hash.0);
 	nodes[0]
 		.node
@@ -1903,7 +1903,7 @@ fn test_pending_htlcs_arent_lost_on_mon_delay() {
 	// moment `cs_last_raa` is received by B.
 	let (route_b, payment_hash_b, _preimage, payment_secret_b) =
 		get_route_and_payment_hash!(&nodes[0], nodes[2], 900_000);
-	let onion = RecipientOnionFields::secret_only(payment_secret_b);
+	let onion = RecipientOnionFields::secret_only(payment_secret_b, 900_000);
 	let id = PaymentId(payment_hash_b.0);
 	nodes[0].node.send_payment_with_route(route_b, payment_hash_b, onion, id).unwrap();
 	check_added_monitors(&nodes[0], 1);

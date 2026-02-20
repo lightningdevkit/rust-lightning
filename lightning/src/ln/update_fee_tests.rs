@@ -80,7 +80,7 @@ pub fn test_async_inbound_update_fee() {
 	// ...but before it's delivered, nodes[1] starts to send a payment back to nodes[0]...
 	let (route, our_payment_hash, _, our_payment_secret) =
 		get_route_and_payment_hash!(nodes[1], nodes[0], 40000);
-	let onion = RecipientOnionFields::secret_only(our_payment_secret);
+	let onion = RecipientOnionFields::secret_only(our_payment_secret, 40000);
 	let id = PaymentId(our_payment_hash.0);
 	nodes[1].node.send_payment_with_route(route, our_payment_hash, onion, id).unwrap();
 	check_added_monitors(&nodes[1], 1);
@@ -181,7 +181,7 @@ pub fn test_update_fee_unordered_raa() {
 	// ...but before it's delivered, nodes[1] starts to send a payment back to nodes[0]...
 	let (route, our_payment_hash, _, our_payment_secret) =
 		get_route_and_payment_hash!(nodes[1], nodes[0], 40000);
-	let onion = RecipientOnionFields::secret_only(our_payment_secret);
+	let onion = RecipientOnionFields::secret_only(our_payment_secret, 40000);
 	let id = PaymentId(our_payment_hash.0);
 	nodes[1].node.send_payment_with_route(route, our_payment_hash, onion, id).unwrap();
 	check_added_monitors(&nodes[1], 1);
@@ -665,7 +665,7 @@ pub fn test_update_fee_with_fundee_update_add_htlc() {
 		get_route_and_payment_hash!(nodes[1], nodes[0], 800000);
 
 	// nothing happens since node[1] is in AwaitingRemoteRevoke
-	let onion = RecipientOnionFields::secret_only(our_payment_secret);
+	let onion = RecipientOnionFields::secret_only(our_payment_secret, 800000);
 	let id = PaymentId(our_payment_hash.0);
 	nodes[1].node.send_payment_with_route(route, our_payment_hash, onion, id).unwrap();
 	check_added_monitors(&nodes[1], 0);
@@ -1101,7 +1101,7 @@ pub fn do_cannot_afford_on_holding_cell_release(
 
 	let (route, payment_hash, _, payment_secret) =
 		get_route_and_payment_hash!(nodes[1], nodes[0], 5000 * 1000);
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, 5000 * 1000);
 	let id = PaymentId(payment_hash.0);
 	nodes[1].node.send_payment_with_route(route, payment_hash, onion, id).unwrap();
 	check_added_monitors(&nodes[1], 1);

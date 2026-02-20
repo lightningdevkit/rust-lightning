@@ -1980,7 +1980,7 @@ fn fail_splice_on_interactive_tx_error() {
 	// Queue an outgoing HTLC to the holding cell. It should be freed once we exit quiescence.
 	let (route, payment_hash, _payment_preimage, payment_secret) =
 		get_route_and_payment_hash!(initiator, acceptor, 1_000_000);
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, 1_000_000);
 	let payment_id = PaymentId(payment_hash.0);
 	initiator.node.send_payment_with_route(route, payment_hash, onion, payment_id).unwrap();
 
@@ -2055,7 +2055,7 @@ fn fail_splice_on_tx_abort() {
 	// Queue an outgoing HTLC to the holding cell. It should be freed once we exit quiescence.
 	let (route, payment_hash, _payment_preimage, payment_secret) =
 		get_route_and_payment_hash!(initiator, acceptor, 1_000_000);
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, 1_000_000);
 	let payment_id = PaymentId(payment_hash.0);
 	initiator.node.send_payment_with_route(route, payment_hash, onion, payment_id).unwrap();
 
@@ -2124,7 +2124,7 @@ fn fail_splice_on_tx_complete_error() {
 	// Queue an outgoing HTLC to the holding cell. It should be freed once we exit quiescence.
 	let (route, payment_hash, _payment_preimage, payment_secret) =
 		get_route_and_payment_hash!(initiator, acceptor, 1_000_000);
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, 1_000_000);
 	let payment_id = PaymentId(payment_hash.0);
 	acceptor.node.send_payment_with_route(route, payment_hash, onion, payment_id).unwrap();
 
@@ -2208,7 +2208,7 @@ fn free_holding_cell_on_tx_signatures_quiescence_exit() {
 	// Queue an outgoing HTLC to the holding cell. It should be freed once we exit quiescence.
 	let (route, payment_hash, _payment_preimage, payment_secret) =
 		get_route_and_payment_hash!(initiator, acceptor, 1_000_000);
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, 1_000_000);
 	let payment_id = PaymentId(payment_hash.0);
 	initiator.node.send_payment_with_route(route, payment_hash, onion, payment_id).unwrap();
 	assert!(initiator.node.get_and_clear_pending_msg_events().is_empty());
@@ -2402,7 +2402,7 @@ fn do_test_splice_with_inflight_htlc_forward_and_resolution(expire_scid_pre_forw
 	let route = get_route(&nodes[0], &route_params).unwrap();
 	let (_, payment_hash, payment_secret) =
 		get_payment_preimage_hash(&nodes[2], Some(payment_amount), None);
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, payment_amount);
 	let id = PaymentId(payment_hash.0);
 	nodes[0].node.send_payment_with_route(route.clone(), payment_hash, onion, id).unwrap();
 	check_added_monitors(&nodes[0], 1);

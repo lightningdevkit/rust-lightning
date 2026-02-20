@@ -41,8 +41,8 @@ use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::types::string::UntrustedString;
 use crate::util::errors::APIError;
 use crate::util::ser::{
-	BigSize, FixedLengthReader, MaybeReadable, Readable, RequiredWrapper, UpgradableRequired,
-	WithoutLength, Writeable, Writer,
+	BigSize, FixedLengthReader, MaybeReadable, Readable, ReadableArgs, RequiredWrapper,
+	UpgradableRequired, WithoutLength, Writeable, Writer,
 };
 
 use crate::io;
@@ -2378,7 +2378,7 @@ impl MaybeReadable for Event {
 						(6, _user_payment_id, option),
 						(7, claim_deadline, option),
 						(8, payment_preimage, option),
-						(9, onion_fields, option),
+						(9, onion_fields, (option: ReadableArgs, amount_msat)),
 						(10, counterparty_skimmed_fee_msat_opt, option),
 						(11, payment_context, option),
 						(13, payment_id, option),
@@ -2710,7 +2710,8 @@ impl MaybeReadable for Event {
 						(4, amount_msat, required),
 						(5, htlcs, optional_vec),
 						(7, sender_intended_total_msat, option),
-						(9, onion_fields, option),
+						(9, onion_fields, (option: ReadableArgs,
+							sender_intended_total_msat.unwrap_or(amount_msat))),
 						(11, payment_id, option),
 					});
 					Ok(Some(Event::PaymentClaimed {
