@@ -6437,18 +6437,21 @@ impl<
 	) -> Result<(), APIError> {
 		let mut result = Ok(());
 		PersistenceNotifierGuard::optionally_notify(self, || {
-			let per_peer_state = self.per_peer_state.read().unwrap();
-			let peer_state_mutex_opt = per_peer_state.get(counterparty_node_id);
-			if peer_state_mutex_opt.is_none() {
+			let push_discard_funding = |contribution: FundingContribution| {
 				let (inputs, outputs) = contribution.into_contributed_inputs_and_outputs();
-				let pending_events = &mut self.pending_events.lock().unwrap();
-				pending_events.push_back((
+				self.pending_events.lock().unwrap().push_back((
 					events::Event::DiscardFunding {
 						channel_id: *channel_id,
 						funding_info: FundingInfo::Contribution { inputs, outputs },
 					},
 					None,
 				));
+			};
+
+			let per_peer_state = self.per_peer_state.read().unwrap();
+			let peer_state_mutex_opt = per_peer_state.get(counterparty_node_id);
+			if peer_state_mutex_opt.is_none() {
+				push_discard_funding(contribution);
 				result = Err(APIError::ChannelUnavailable {
 					err: format!("Can't find a peer matching the passed counterparty node_id {counterparty_node_id}")
 				});
@@ -6484,8 +6487,7 @@ impl<
 								});
 							},
 							Err(QuiescentError::DiscardFunding { inputs, outputs }) => {
-								let pending_events = &mut self.pending_events.lock().unwrap();
-								pending_events.push_back((
+								self.pending_events.lock().unwrap().push_back((
 									events::Event::DiscardFunding {
 										channel_id: *channel_id,
 										funding_info: FundingInfo::Contribution { inputs, outputs },
@@ -6538,15 +6540,7 @@ impl<
 						return NotifyOption::DoPersist;
 					},
 					None => {
-						let (inputs, outputs) = contribution.into_contributed_inputs_and_outputs();
-						let pending_events = &mut self.pending_events.lock().unwrap();
-						pending_events.push_back((
-							events::Event::DiscardFunding {
-								channel_id: *channel_id,
-								funding_info: FundingInfo::Contribution { inputs, outputs },
-							},
-							None,
-						));
+						push_discard_funding(contribution);
 						result = Err(APIError::APIMisuseError {
 							err: format!(
 								"Channel with id {} not expecting funding contribution",
@@ -6557,15 +6551,7 @@ impl<
 					},
 				},
 				None => {
-					let (inputs, outputs) = contribution.into_contributed_inputs_and_outputs();
-					let pending_events = &mut self.pending_events.lock().unwrap();
-					pending_events.push_back((
-						events::Event::DiscardFunding {
-							channel_id: *channel_id,
-							funding_info: FundingInfo::Contribution { inputs, outputs },
-						},
-						None,
-					));
+					push_discard_funding(contribution);
 					result = Err(APIError::ChannelUnavailable {
 						err: format!(
 							"Channel with id {} not found for the passed counterparty node_id {}",
