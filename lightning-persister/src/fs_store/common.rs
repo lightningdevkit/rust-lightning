@@ -1,8 +1,11 @@
-//! Objects related to [`FilesystemStore`] live here.
+//! Common utilities shared between [`FilesystemStore`] and [`FilesystemStoreV2`] implementations.
+//!
+//! [`FilesystemStore`]: crate::fs_store::v1::FilesystemStore
+//! [`FilesystemStoreV2`]: crate::fs_store::v2::FilesystemStoreV2
+
 use crate::utils::{check_namespace_key_validity, is_valid_kvstore_str};
 
 use lightning::types::string::PrintableString;
-use lightning::util::persist::{KVStoreSync, MigratableKVStore};
 
 use std::collections::HashMap;
 use std::fs;
@@ -11,14 +14,14 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
-#[cfg(feature = "tokio")]
-use core::future::Future;
-#[cfg(feature = "tokio")]
-use lightning::util::persist::KVStore;
-
 #[cfg(target_os = "windows")]
-use {std::ffi::OsStr, std::os::windows::ffi::OsStrExt};
+use std::ffi::OsStr;
+#[cfg(feature = "tokio")]
+use std::future::Future;
+#[cfg(target_os = "windows")]
+use std::os::windows::ffi::OsStrExt;
 
+/// Calls a Windows API function and returns Ok(()) on success or the last OS error on failure.
 #[cfg(target_os = "windows")]
 macro_rules! call {
 	($e: expr) => {
@@ -31,6 +34,10 @@ macro_rules! call {
 }
 
 #[cfg(target_os = "windows")]
+use call;
+
+/// Converts a path to a null-terminated wide string for Windows API calls.
+#[cfg(target_os = "windows")]
 fn path_to_windows_str<T: AsRef<OsStr>>(path: &T) -> Vec<u16> {
 	path.as_ref().encode_wide().chain(Some(0)).collect()
 }
@@ -39,6 +46,15 @@ fn path_to_windows_str<T: AsRef<OsStr>>(path: &T) -> Vec<u16> {
 // a consistent view and error out.
 const LIST_DIR_CONSISTENCY_RETRIES: usize = 10;
 
+// The directory name used for empty namespaces in v2.
+// Uses brackets which are not in KVSTORE_NAMESPACE_KEY_ALPHABET, preventing collisions
+// with valid namespace names.
+pub(crate) const EMPTY_NAMESPACE_DIR: &str = "[empty]";
+
+/// Inner state shared between sync and async operations for filesystem stores.
+///
+/// This struct manages the data directory, temporary file counter, and per-path locks
+/// that ensure we don't have concurrent writes to the same file.
 struct FilesystemStoreInner {
 	data_dir: PathBuf,
 	tmp_file_counter: AtomicUsize,
@@ -48,10 +64,7 @@ struct FilesystemStoreInner {
 	locks: Mutex<HashMap<PathBuf, Arc<RwLock<u64>>>>,
 }
 
-/// A [`KVStore`] and [`KVStoreSync`] implementation that writes to and reads from the file system.
-///
-/// [`KVStore`]: lightning::util::persist::KVStore
-pub struct FilesystemStore {
+pub(crate) struct FilesystemStoreState {
 	inner: Arc<FilesystemStoreInner>,
 
 	// Version counter to ensure that writes are applied in the correct order. It is assumed that read and list
@@ -59,13 +72,15 @@ pub struct FilesystemStore {
 	next_version: AtomicU64,
 }
 
-impl FilesystemStore {
-	/// Constructs a new [`FilesystemStore`].
-	pub fn new(data_dir: PathBuf) -> Self {
-		let locks = Mutex::new(HashMap::new());
-		let tmp_file_counter = AtomicUsize::new(0);
+impl FilesystemStoreState {
+	/// Creates a new [`FilesystemStoreInner`] with the given data directory.
+	pub(crate) fn new(data_dir: PathBuf) -> Self {
 		Self {
-			inner: Arc::new(FilesystemStoreInner { data_dir, tmp_file_counter, locks }),
+			inner: Arc::new(FilesystemStoreInner {
+				data_dir,
+				tmp_file_counter: AtomicUsize::new(0),
+				locks: Mutex::new(HashMap::new()),
+			}),
 			next_version: AtomicU64::new(1),
 		}
 	}
@@ -94,57 +109,18 @@ impl FilesystemStore {
 		let outer_lock = self.inner.locks.lock().unwrap();
 		outer_lock.len()
 	}
-}
 
-impl KVStoreSync for FilesystemStore {
-	fn read(
-		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
-	) -> Result<Vec<u8>, lightning::io::Error> {
-		let path = self.inner.get_checked_dest_file_path(
+	pub(crate) fn get_checked_dest_file_path(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: Option<&str>,
+		operation: &str, use_empty_ns_dir: bool,
+	) -> lightning::io::Result<PathBuf> {
+		self.inner.get_checked_dest_file_path(
 			primary_namespace,
 			secondary_namespace,
-			Some(key),
-			"read",
-		)?;
-		self.inner.read(path)
-	}
-
-	fn write(
-		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: Vec<u8>,
-	) -> Result<(), lightning::io::Error> {
-		let path = self.inner.get_checked_dest_file_path(
-			primary_namespace,
-			secondary_namespace,
-			Some(key),
-			"write",
-		)?;
-		let (inner_lock_ref, version) = self.get_new_version_and_lock_ref(path.clone());
-		self.inner.write_version(inner_lock_ref, path, buf, version)
-	}
-
-	fn remove(
-		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, lazy: bool,
-	) -> Result<(), lightning::io::Error> {
-		let path = self.inner.get_checked_dest_file_path(
-			primary_namespace,
-			secondary_namespace,
-			Some(key),
-			"remove",
-		)?;
-		let (inner_lock_ref, version) = self.get_new_version_and_lock_ref(path.clone());
-		self.inner.remove_version(inner_lock_ref, path, lazy, version)
-	}
-
-	fn list(
-		&self, primary_namespace: &str, secondary_namespace: &str,
-	) -> Result<Vec<String>, lightning::io::Error> {
-		let path = self.inner.get_checked_dest_file_path(
-			primary_namespace,
-			secondary_namespace,
-			None,
-			"list",
-		)?;
-		self.inner.list(path)
+			key,
+			operation,
+			use_empty_ns_dir,
+		)
 	}
 }
 
@@ -155,7 +131,7 @@ impl FilesystemStoreInner {
 	}
 
 	fn get_dest_dir_path(
-		&self, primary_namespace: &str, secondary_namespace: &str,
+		&self, primary_namespace: &str, secondary_namespace: &str, use_empty_ns_dir: bool,
 	) -> std::io::Result<PathBuf> {
 		let mut dest_dir_path = {
 			#[cfg(target_os = "windows")]
@@ -170,9 +146,22 @@ impl FilesystemStoreInner {
 			}
 		};
 
-		dest_dir_path.push(primary_namespace);
-		if !secondary_namespace.is_empty() {
-			dest_dir_path.push(secondary_namespace);
+		if use_empty_ns_dir {
+			dest_dir_path.push(if primary_namespace.is_empty() {
+				EMPTY_NAMESPACE_DIR
+			} else {
+				primary_namespace
+			});
+			dest_dir_path.push(if secondary_namespace.is_empty() {
+				EMPTY_NAMESPACE_DIR
+			} else {
+				secondary_namespace
+			});
+		} else {
+			dest_dir_path.push(primary_namespace);
+			if !secondary_namespace.is_empty() {
+				dest_dir_path.push(secondary_namespace);
+			}
 		}
 
 		Ok(dest_dir_path)
@@ -180,11 +169,12 @@ impl FilesystemStoreInner {
 
 	fn get_checked_dest_file_path(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: Option<&str>,
-		operation: &str,
+		operation: &str, use_empty_ns_dir: bool,
 	) -> lightning::io::Result<PathBuf> {
 		check_namespace_key_validity(primary_namespace, secondary_namespace, key, operation)?;
 
-		let mut dest_file_path = self.get_dest_dir_path(primary_namespace, secondary_namespace)?;
+		let mut dest_file_path =
+			self.get_dest_dir_path(primary_namespace, secondary_namespace, use_empty_ns_dir)?;
 		if let Some(key) = key {
 			dest_file_path.push(key);
 		}
@@ -260,8 +250,13 @@ impl FilesystemStoreInner {
 	/// returns early without writing.
 	fn write_version(
 		&self, inner_lock_ref: Arc<RwLock<u64>>, dest_file_path: PathBuf, buf: Vec<u8>,
-		version: u64,
+		version: u64, preserve_mtime: bool,
 	) -> lightning::io::Result<()> {
+		let mtime = if preserve_mtime {
+			fs::metadata(&dest_file_path).ok().and_then(|m| m.modified().ok())
+		} else {
+			None
+		};
 		let parent_directory = dest_file_path.parent().ok_or_else(|| {
 			let msg =
 				format!("Could not retrieve parent directory of {}.", dest_file_path.display());
@@ -281,6 +276,13 @@ impl FilesystemStoreInner {
 		{
 			let mut tmp_file = fs::File::create(&tmp_file_path)?;
 			tmp_file.write_all(&buf)?;
+
+			// If we need to preserve the original mtime (for updates), set it before fsync.
+			if let Some(mtime) = mtime {
+				let times = fs::FileTimes::new().set_modified(mtime);
+				tmp_file.set_times(times)?;
+			}
+
 			tmp_file.sync_all()?;
 		}
 
@@ -413,13 +415,13 @@ impl FilesystemStoreInner {
 		})
 	}
 
-	fn list(&self, prefixed_dest: PathBuf) -> lightning::io::Result<Vec<String>> {
+	fn list(&self, prefixed_dest: PathBuf, is_v2: bool) -> lightning::io::Result<Vec<String>> {
 		if !Path::new(&prefixed_dest).exists() {
 			return Ok(Vec::new());
 		}
 
 		let mut keys;
-		let mut retries = LIST_DIR_CONSISTENCY_RETRIES;
+		let mut retries = if is_v2 { 0 } else { LIST_DIR_CONSISTENCY_RETRIES };
 
 		'retry_list: loop {
 			keys = Vec::new();
@@ -430,7 +432,7 @@ impl FilesystemStoreInner {
 				let res = dir_entry_is_key(&entry);
 				match res {
 					Ok(true) => {
-						let key = get_key_from_dir_entry_path(&p, &prefixed_dest)?;
+						let key = get_key_from_dir_entry_path(&p, &prefixed_dest, false)?;
 						keys.push(key);
 					},
 					Ok(false) => {
@@ -439,6 +441,14 @@ impl FilesystemStoreInner {
 						continue 'skip_entry;
 					},
 					Err(e) => {
+						// In version 2 if a file has been deleted between the `read_dir` and our attempt
+						// to access it, we should just add it to the list to give a more consistent view.
+						if is_v2 {
+							let key = get_key_from_dir_entry_path(&p, &prefixed_dest, false)?;
+							keys.push(key);
+							continue 'skip_entry;
+						}
+
 						if e.kind() == lightning::io::ErrorKind::NotFound && retries > 0 {
 							// We had found the entry in `read_dir` above, so some race happend.
 							// Retry the `read_dir` to get a consistent view.
@@ -458,10 +468,68 @@ impl FilesystemStoreInner {
 	}
 }
 
-#[cfg(feature = "tokio")]
-impl KVStore for FilesystemStore {
-	fn read(
+impl FilesystemStoreState {
+	pub(crate) fn read_impl(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
+		use_empty_ns_dir: bool,
+	) -> Result<Vec<u8>, lightning::io::Error> {
+		let path = self.inner.get_checked_dest_file_path(
+			primary_namespace,
+			secondary_namespace,
+			Some(key),
+			"read",
+			use_empty_ns_dir,
+		)?;
+		self.inner.read(path)
+	}
+
+	pub(crate) fn write_impl(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: Vec<u8>,
+		use_empty_ns_dir: bool,
+	) -> Result<(), lightning::io::Error> {
+		let path = self.inner.get_checked_dest_file_path(
+			primary_namespace,
+			secondary_namespace,
+			Some(key),
+			"write",
+			use_empty_ns_dir,
+		)?;
+		let (inner_lock_ref, version) = self.get_new_version_and_lock_ref(path.clone());
+		self.inner.write_version(inner_lock_ref, path, buf, version, use_empty_ns_dir)
+	}
+
+	pub(crate) fn remove_impl(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, lazy: bool,
+		use_empty_ns_dir: bool,
+	) -> Result<(), lightning::io::Error> {
+		let path = self.inner.get_checked_dest_file_path(
+			primary_namespace,
+			secondary_namespace,
+			Some(key),
+			"remove",
+			use_empty_ns_dir,
+		)?;
+		let (inner_lock_ref, version) = self.get_new_version_and_lock_ref(path.clone());
+		self.inner.remove_version(inner_lock_ref, path, lazy, version)
+	}
+
+	pub(crate) fn list_impl(
+		&self, primary_namespace: &str, secondary_namespace: &str, use_empty_ns_dir: bool,
+	) -> Result<Vec<String>, lightning::io::Error> {
+		let path = self.inner.get_checked_dest_file_path(
+			primary_namespace,
+			secondary_namespace,
+			None,
+			"list",
+			use_empty_ns_dir,
+		)?;
+		self.inner.list(path, use_empty_ns_dir)
+	}
+
+	#[cfg(feature = "tokio")]
+	pub(crate) fn read_async(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
+		use_empty_ns_dir: bool,
 	) -> impl Future<Output = Result<Vec<u8>, lightning::io::Error>> + 'static + Send {
 		let this = Arc::clone(&self.inner);
 		let path = this.get_checked_dest_file_path(
@@ -469,6 +537,7 @@ impl KVStore for FilesystemStore {
 			secondary_namespace,
 			Some(key),
 			"read",
+			use_empty_ns_dir,
 		);
 
 		async move {
@@ -482,12 +551,20 @@ impl KVStore for FilesystemStore {
 		}
 	}
 
-	fn write(
+	#[cfg(feature = "tokio")]
+	pub(crate) fn write_async(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: Vec<u8>,
+		use_empty_ns_dir: bool,
 	) -> impl Future<Output = Result<(), lightning::io::Error>> + 'static + Send {
 		let this = Arc::clone(&self.inner);
 		let path = this
-			.get_checked_dest_file_path(primary_namespace, secondary_namespace, Some(key), "write")
+			.get_checked_dest_file_path(
+				primary_namespace,
+				secondary_namespace,
+				Some(key),
+				"write",
+				use_empty_ns_dir,
+			)
 			.map(|path| (self.get_new_version_and_lock_ref(path.clone()), path));
 
 		async move {
@@ -496,19 +573,27 @@ impl KVStore for FilesystemStore {
 				Err(e) => return Err(e),
 			};
 			tokio::task::spawn_blocking(move || {
-				this.write_version(inner_lock_ref, path, buf, version)
+				this.write_version(inner_lock_ref, path, buf, version, use_empty_ns_dir)
 			})
 			.await
 			.unwrap_or_else(|e| Err(lightning::io::Error::new(lightning::io::ErrorKind::Other, e)))
 		}
 	}
 
-	fn remove(
+	#[cfg(feature = "tokio")]
+	pub(crate) fn remove_async(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, lazy: bool,
+		use_empty_ns_dir: bool,
 	) -> impl Future<Output = Result<(), lightning::io::Error>> + 'static + Send {
 		let this = Arc::clone(&self.inner);
 		let path = this
-			.get_checked_dest_file_path(primary_namespace, secondary_namespace, Some(key), "remove")
+			.get_checked_dest_file_path(
+				primary_namespace,
+				secondary_namespace,
+				Some(key),
+				"remove",
+				use_empty_ns_dir,
+			)
 			.map(|path| (self.get_new_version_and_lock_ref(path.clone()), path));
 
 		async move {
@@ -524,23 +609,110 @@ impl KVStore for FilesystemStore {
 		}
 	}
 
-	fn list(
-		&self, primary_namespace: &str, secondary_namespace: &str,
+	#[cfg(feature = "tokio")]
+	pub(crate) fn list_async(
+		&self, primary_namespace: &str, secondary_namespace: &str, use_empty_ns_dir: bool,
 	) -> impl Future<Output = Result<Vec<String>, lightning::io::Error>> + 'static + Send {
 		let this = Arc::clone(&self.inner);
 
-		let path =
-			this.get_checked_dest_file_path(primary_namespace, secondary_namespace, None, "list");
+		let path = this.get_checked_dest_file_path(
+			primary_namespace,
+			secondary_namespace,
+			None,
+			"list",
+			use_empty_ns_dir,
+		);
 
 		async move {
 			let path = match path {
 				Ok(path) => path,
 				Err(e) => return Err(e),
 			};
-			tokio::task::spawn_blocking(move || this.list(path)).await.unwrap_or_else(|e| {
-				Err(lightning::io::Error::new(lightning::io::ErrorKind::Other, e))
-			})
+			tokio::task::spawn_blocking(move || this.list(path, use_empty_ns_dir))
+				.await
+				.unwrap_or_else(|e| {
+					Err(lightning::io::Error::new(lightning::io::ErrorKind::Other, e))
+				})
 		}
+	}
+
+	pub(crate) fn list_all_keys_impl(
+		&self, use_empty_ns_dir: bool,
+	) -> Result<Vec<(String, String, String)>, lightning::io::Error> {
+		let prefixed_dest = &self.inner.data_dir;
+		if !prefixed_dest.exists() {
+			return Ok(Vec::new());
+		}
+
+		let mut keys = Vec::new();
+
+		'primary_loop: for primary_entry in fs::read_dir(prefixed_dest)? {
+			let primary_entry = primary_entry?;
+			let primary_path = primary_entry.path();
+
+			if dir_entry_is_key(&primary_entry)? {
+				let primary_namespace = String::new();
+				let secondary_namespace = String::new();
+				let key = get_key_from_dir_entry_path(&primary_path, prefixed_dest, false)?;
+				keys.push((primary_namespace, secondary_namespace, key));
+				continue 'primary_loop;
+			}
+
+			// The primary_entry is actually also a directory.
+			'secondary_loop: for secondary_entry in fs::read_dir(&primary_path)? {
+				let secondary_entry = secondary_entry?;
+				let secondary_path = secondary_entry.path();
+
+				if dir_entry_is_key(&secondary_entry)? {
+					let primary_namespace = get_key_from_dir_entry_path(
+						&primary_path,
+						prefixed_dest,
+						use_empty_ns_dir,
+					)?;
+					let secondary_namespace = String::new();
+					let key = get_key_from_dir_entry_path(&secondary_path, &primary_path, false)?;
+					keys.push((primary_namespace, secondary_namespace, key));
+					continue 'secondary_loop;
+				}
+
+				// The secondary_entry is actually also a directory.
+				for tertiary_entry in fs::read_dir(&secondary_path)? {
+					let tertiary_entry = tertiary_entry?;
+					let tertiary_path = tertiary_entry.path();
+
+					if dir_entry_is_key(&tertiary_entry)? {
+						let primary_namespace = get_key_from_dir_entry_path(
+							&primary_path,
+							prefixed_dest,
+							use_empty_ns_dir,
+						)?;
+						let secondary_namespace = get_key_from_dir_entry_path(
+							&secondary_path,
+							&primary_path,
+							use_empty_ns_dir,
+						)?;
+						let key =
+							get_key_from_dir_entry_path(&tertiary_path, &secondary_path, false)?;
+						keys.push((primary_namespace, secondary_namespace, key));
+					} else {
+						debug_assert!(
+							false,
+							"Failed to list keys of path {}: only two levels of namespaces are supported",
+							PrintableString(tertiary_path.to_str().unwrap_or_default())
+						);
+						let msg = format!(
+							"Failed to list keys of path {}: only two levels of namespaces are supported",
+							PrintableString(tertiary_path.to_str().unwrap_or_default())
+						);
+						return Err(lightning::io::Error::new(
+							lightning::io::ErrorKind::Other,
+							msg,
+						));
+					}
+				}
+			}
+		}
+		Ok(keys)
 	}
 }
 
@@ -584,10 +756,18 @@ fn dir_entry_is_key(dir_entry: &fs::DirEntry) -> Result<bool, lightning::io::Err
 	Ok(true)
 }
 
-fn get_key_from_dir_entry_path(p: &Path, base_path: &Path) -> Result<String, lightning::io::Error> {
+/// Gets the key from a directory entry path by stripping the base path and validating the result.
+/// If `map_empty_ns_dir` is true, treats entries with the name of `EMPTY_NAMESPACE_DIR` as an empty string.
+/// `map_empty_ns_dir` should always be false when reading keys and only be true when listing namespaces.
+pub(crate) fn get_key_from_dir_entry_path(
+	p: &Path, base_path: &Path, map_empty_ns_dir: bool,
+) -> Result<String, lightning::io::Error> {
 	match p.strip_prefix(&base_path) {
 		Ok(stripped_path) => {
 			if let Some(relative_path) = stripped_path.to_str() {
+				if map_empty_ns_dir && relative_path == EMPTY_NAMESPACE_DIR {
+					return Ok(String::new());
+				}
 				if is_valid_kvstore_str(relative_path) {
 					return Ok(relative_path.to_string());
 				} else {
@@ -629,327 +809,5 @@ fn get_key_from_dir_entry_path(p: &Path, base_path: &Path) -> Result<String, lig
 			);
 			return Err(lightning::io::Error::new(lightning::io::ErrorKind::Other, msg));
 		},
-	}
-}
-
-impl MigratableKVStore for FilesystemStore {
-	fn list_all_keys(&self) -> Result<Vec<(String, String, String)>, lightning::io::Error> {
-		let prefixed_dest = &self.inner.data_dir;
-		if !prefixed_dest.exists() {
-			return Ok(Vec::new());
-		}
-
-		let mut keys = Vec::new();
-
-		'primary_loop: for primary_entry in fs::read_dir(prefixed_dest)? {
-			let primary_entry = primary_entry?;
-			let primary_path = primary_entry.path();
-
-			if dir_entry_is_key(&primary_entry)? {
-				let primary_namespace = String::new();
-				let secondary_namespace = String::new();
-				let key = get_key_from_dir_entry_path(&primary_path, prefixed_dest)?;
-				keys.push((primary_namespace, secondary_namespace, key));
-				continue 'primary_loop;
-			}
-
-			// The primary_entry is actually also a directory.
-			'secondary_loop: for secondary_entry in fs::read_dir(&primary_path)? {
-				let secondary_entry = secondary_entry?;
-				let secondary_path = secondary_entry.path();
-
-				if dir_entry_is_key(&secondary_entry)? {
-					let primary_namespace =
-						get_key_from_dir_entry_path(&primary_path, prefixed_dest)?;
-					let secondary_namespace = String::new();
-					let key = get_key_from_dir_entry_path(&secondary_path, &primary_path)?;
-					keys.push((primary_namespace, secondary_namespace, key));
-					continue 'secondary_loop;
-				}
-
-				// The secondary_entry is actually also a directory.
-				for tertiary_entry in fs::read_dir(&secondary_path)? {
-					let tertiary_entry = tertiary_entry?;
-					let tertiary_path = tertiary_entry.path();
-
-					if dir_entry_is_key(&tertiary_entry)? {
-						let primary_namespace =
-							get_key_from_dir_entry_path(&primary_path, prefixed_dest)?;
-						let secondary_namespace =
-							get_key_from_dir_entry_path(&secondary_path, &primary_path)?;
-						let key = get_key_from_dir_entry_path(&tertiary_path, &secondary_path)?;
-						keys.push((primary_namespace, secondary_namespace, key));
-					} else {
-						debug_assert!(
-							false,
-							"Failed to list keys of path {}: only two levels of namespaces are supported",
-							PrintableString(tertiary_path.to_str().unwrap_or_default())
-						);
-						let msg = format!(
-							"Failed to list keys of path {}: only two levels of namespaces are supported",
-							PrintableString(tertiary_path.to_str().unwrap_or_default())
-						);
-						return Err(lightning::io::Error::new(
-							lightning::io::ErrorKind::Other,
-							msg,
-						));
-					}
-				}
-			}
-		}
-		Ok(keys)
-	}
-}
-
-#[cfg(test)]
-mod tests {
-	use super::*;
-	use crate::test_utils::{
-		do_read_write_remove_list_persist, do_test_data_migration, do_test_store,
-	};
-
-	use lightning::chain::chainmonitor::Persist;
-	use lightning::chain::ChannelMonitorUpdateStatus;
-	use lightning::events::ClosureReason;
-	use lightning::ln::functional_test_utils::*;
-	use lightning::ln::msgs::BaseMessageHandler;
-	use lightning::util::persist::read_channel_monitors;
-	use lightning::util::test_utils;
-
-	impl Drop for FilesystemStore {
-		fn drop(&mut self) {
-			// We test for invalid directory names, so it's OK if directory removal
-			// fails.
-			match fs::remove_dir_all(&self.inner.data_dir) {
-				Err(e) => println!("Failed to remove test persister directory: {}", e),
-				_ => {},
-			}
-		}
-	}
-
-	#[test]
-	fn read_write_remove_list_persist() {
-		let mut temp_path = std::env::temp_dir();
-		temp_path.push("test_read_write_remove_list_persist");
-		let fs_store = FilesystemStore::new(temp_path);
-		do_read_write_remove_list_persist(&fs_store);
-	}
-
-	#[cfg(feature = "tokio")]
-	#[tokio::test]
-	async fn read_write_remove_list_persist_async() {
-		use crate::fs_store::FilesystemStore;
-		use lightning::util::persist::KVStore;
-		use std::sync::Arc;
-
-		let mut temp_path = std::env::temp_dir();
-		temp_path.push("test_read_write_remove_list_persist_async");
-		let fs_store = Arc::new(FilesystemStore::new(temp_path));
-		assert_eq!(fs_store.state_size(), 0);
-
-		let async_fs_store = Arc::clone(&fs_store);
-
-		let data1 = vec![42u8; 32];
-		let data2 = vec![43u8; 32];
-
-		let primary = "testspace";
-		let secondary = "testsubspace";
-		let key = "testkey";
-
-		// Test writing the same key twice with different data. Execute the asynchronous part out of order to ensure
-		// that eventual consistency works.
-		let fut1 = KVStore::write(&*async_fs_store, primary, secondary, key, data1);
-		assert_eq!(fs_store.state_size(), 1);
-
-		let fut2 = KVStore::remove(&*async_fs_store, primary, secondary, key, false);
-		assert_eq!(fs_store.state_size(), 1);
-
-		let fut3 = KVStore::write(&*async_fs_store, primary, secondary, key, data2.clone());
-		assert_eq!(fs_store.state_size(), 1);
-
-		fut3.await.unwrap();
-		assert_eq!(fs_store.state_size(), 1);
-
-		fut2.await.unwrap();
-		assert_eq!(fs_store.state_size(), 1);
-
-		fut1.await.unwrap();
-		assert_eq!(fs_store.state_size(), 0);
-
-		// Test list.
-		let listed_keys = KVStore::list(&*async_fs_store, primary, secondary).await.unwrap();
-		assert_eq!(listed_keys.len(), 1);
-		assert_eq!(listed_keys[0], key);
-
-		// Test read. We expect to read data2, as the write call was initiated later.
-		let read_data = KVStore::read(&*async_fs_store, primary, secondary, key).await.unwrap();
-		assert_eq!(data2, &*read_data);
-
-		// Test remove.
-		KVStore::remove(&*async_fs_store, primary, secondary, key, false).await.unwrap();
-
-		let listed_keys = KVStore::list(&*async_fs_store, primary, secondary).await.unwrap();
-		assert_eq!(listed_keys.len(), 0);
-	}
-
-	#[test]
-	fn test_data_migration() {
-		let mut source_temp_path = std::env::temp_dir();
-		source_temp_path.push("test_data_migration_source");
-		let mut source_store = FilesystemStore::new(source_temp_path);
-
-		let mut target_temp_path = std::env::temp_dir();
-		target_temp_path.push("test_data_migration_target");
-		let mut target_store = FilesystemStore::new(target_temp_path);
-
-		do_test_data_migration(&mut source_store, &mut target_store);
-	}
-
-	#[test]
-	fn test_if_monitors_is_not_dir() {
-		let store = FilesystemStore::new("test_monitors_is_not_dir".into());
-
-		fs::create_dir_all(&store.get_data_dir()).unwrap();
-		let mut path = std::path::PathBuf::from(&store.get_data_dir());
-		path.push("monitors");
-		fs::File::create(path).unwrap();
-
-		let chanmon_cfgs = create_chanmon_cfgs(1);
-		let mut node_cfgs = create_node_cfgs(1, &chanmon_cfgs);
-		let chain_mon_0 = test_utils::TestChainMonitor::new(
-			Some(&chanmon_cfgs[0].chain_source),
-			&chanmon_cfgs[0].tx_broadcaster,
-			&chanmon_cfgs[0].logger,
-			&chanmon_cfgs[0].fee_estimator,
-			&store,
-			node_cfgs[0].keys_manager,
-		);
-		node_cfgs[0].chain_monitor = chain_mon_0;
-		let node_chanmgrs = create_node_chanmgrs(1, &node_cfgs, &[None]);
-		let nodes = create_network(1, &node_cfgs, &node_chanmgrs);
-
-		// Check that read_channel_monitors() returns error if monitors/ is not a
-		// directory.
-		assert!(
-			read_channel_monitors(&store, nodes[0].keys_manager, nodes[0].keys_manager).is_err()
-		);
-	}
-
-	#[test]
-	fn test_filesystem_store() {
-		// Create the nodes, giving them FilesystemStores for data stores.
-		let store_0 = FilesystemStore::new("test_filesystem_store_0".into());
-		let store_1 = FilesystemStore::new("test_filesystem_store_1".into());
-		do_test_store(&store_0, &store_1)
-	}
-
-	// Test that if the store's path to channel data is read-only, writing a
-	// monitor to it results in the store returning an UnrecoverableError.
-	// Windows ignores the read-only flag for folders, so this test is Unix-only.
-	#[cfg(not(target_os = "windows"))]
-	#[test]
-	fn test_readonly_dir_perm_failure() {
-		let store = FilesystemStore::new("test_readonly_dir_perm_failure".into());
-		fs::create_dir_all(&store.get_data_dir()).unwrap();
-
-		// Set up a dummy channel and force close. This will produce a monitor
-		// that we can then use to test persistence.
-		let chanmon_cfgs = create_chanmon_cfgs(2);
-		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-
-		let node_a_id = nodes[0].node.get_our_node_id();
-
-		let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
-
-		let message = "Channel force-closed".to_owned();
-		nodes[1]
-			.node
-			.force_close_broadcasting_latest_txn(&chan.2, &node_a_id, message.clone())
-			.unwrap();
-		let reason =
-			ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
-		check_closed_event(&nodes[1], 1, reason, &[node_a_id], 100000);
-		let mut added_monitors = nodes[1].chain_monitor.added_monitors.lock().unwrap();
-
-		// Set the store's directory to read-only, which should result in
-		// returning an unrecoverable failure when we then attempt to persist a
-		// channel update.
-		let path = &store.get_data_dir();
-		let mut perms = fs::metadata(path).unwrap().permissions();
-		perms.set_readonly(true);
-		fs::set_permissions(path, perms).unwrap();
-
-		let monitor_name = added_monitors[0].1.persistence_key();
-		match store.persist_new_channel(monitor_name, &added_monitors[0].1) {
-			ChannelMonitorUpdateStatus::UnrecoverableError => {},
-			_ => panic!("unexpected result from persisting new channel"),
-		}
-
-		nodes[1].node.get_and_clear_pending_msg_events();
-		added_monitors.clear();
-	}
-
-	// Test that if a store's directory name is invalid, monitor persistence
-	// will fail.
-	#[cfg(target_os = "windows")]
-	#[test]
-	fn test_fail_on_open() {
-		// Set up a dummy channel and force close. This will produce a monitor
-		// that we can then use to test persistence.
-		let chanmon_cfgs = create_chanmon_cfgs(2);
-		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-
-		let node_a_id = nodes[0].node.get_our_node_id();
-
-		let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
-
-		let message = "Channel force-closed".to_owned();
-		nodes[1]
-			.node
-			.force_close_broadcasting_latest_txn(&chan.2, &node_a_id, message.clone())
-			.unwrap();
-		let reason =
-			ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
-		check_closed_event(&nodes[1], 1, reason, &[node_a_id], 100000);
-		let mut added_monitors = nodes[1].chain_monitor.added_monitors.lock().unwrap();
-		let update_map = nodes[1].chain_monitor.latest_monitor_update_id.lock().unwrap();
-		let update_id = update_map.get(&added_monitors[0].1.channel_id()).unwrap();
-
-		// Create the store with an invalid directory name and test that the
-		// channel fails to open because the directories fail to be created. There
-		// don't seem to be invalid filename characters on Unix that Rust doesn't
-		// handle, hence why the test is Windows-only.
-		let store = FilesystemStore::new(":<>/".into());
-
-		let monitor_name = added_monitors[0].1.persistence_key();
-		match store.persist_new_channel(monitor_name, &added_monitors[0].1) {
-			ChannelMonitorUpdateStatus::UnrecoverableError => {},
-			_ => panic!("unexpected result from persisting new channel"),
-		}
-
-		nodes[1].node.get_and_clear_pending_msg_events();
-		added_monitors.clear();
-	}
-}
-
-#[cfg(ldk_bench)]
-/// Benches
-pub mod bench {
-	use criterion::Criterion;
-
-	/// Bench!
-	pub fn bench_sends(bench: &mut Criterion) {
-		let store_a = super::FilesystemStore::new("bench_filesystem_store_a".into());
-		let store_b = super::FilesystemStore::new("bench_filesystem_store_b".into());
-		lightning::ln::channelmanager::bench::bench_two_sends(
-			bench,
-			"bench_filesystem_persisted_sends",
-			store_a,
-			store_b,
-		);
 	}
 }

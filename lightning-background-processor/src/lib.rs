@@ -1934,7 +1934,7 @@ mod tests {
 	use lightning::{get_event, get_event_msg};
 	use lightning_liquidity::utils::time::DefaultTimeProvider;
 	use lightning_liquidity::{ALiquidityManagerSync, LiquidityManager, LiquidityManagerSync};
-	use lightning_persister::fs_store::FilesystemStore;
+	use lightning_persister::fs_store::v1::FilesystemStore;
 	use lightning_rapid_gossip_sync::RapidGossipSync;
 	use std::collections::VecDeque;
 	use std::path::PathBuf;
