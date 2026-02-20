@@ -679,10 +679,9 @@ mod state_flags {
 	pub const LOCAL_SHUTDOWN_SENT: u32 = 1 << 11;
 	pub const SHUTDOWN_COMPLETE: u32 = 1 << 12;
 	pub const WAITING_FOR_BATCH: u32 = 1 << 13;
-	pub const AWAITING_QUIESCENCE: u32 = 1 << 14;
-	pub const LOCAL_STFU_SENT: u32 = 1 << 15;
-	pub const REMOTE_STFU_SENT: u32 = 1 << 16;
-	pub const QUIESCENT: u32 = 1 << 17;
+	pub const LOCAL_STFU_SENT: u32 = 1 << 14;
+	pub const REMOTE_STFU_SENT: u32 = 1 << 15;
+	pub const QUIESCENT: u32 = 1 << 16;
 }
 
 define_state_flags!(
@@ -749,13 +748,8 @@ define_state_flags!(
 			implicit ACK, so instead we have to hold them away temporarily to be sent later.",
 			AWAITING_REMOTE_REVOKE, state_flags::AWAITING_REMOTE_REVOKE,
 			is_awaiting_remote_revoke, set_awaiting_remote_revoke, clear_awaiting_remote_revoke),
-		("Indicates a local request has been made for the channel to become quiescent. Both nodes \
-			must send `stfu` for the channel to become quiescent. This flag will be cleared and we \
-			will no longer attempt quiescence if either node requests a shutdown.",
-			AWAITING_QUIESCENCE, state_flags::AWAITING_QUIESCENCE,
-			is_awaiting_quiescence, set_awaiting_quiescence, clear_awaiting_quiescence),
 		("Indicates we have sent a `stfu` message to the counterparty. This message can only be sent \
-			if either `AWAITING_QUIESCENCE` or `REMOTE_STFU_SENT` is set. Shutdown requests are \
+			if `REMOTE_STFU_SENT` is set, or a `QuiescentAction` is pending. Shutdown requests are \
 			rejected if this flag is set.",
 			LOCAL_STFU_SENT, state_flags::LOCAL_STFU_SENT,
 			is_local_stfu_sent, set_local_stfu_sent, clear_local_stfu_sent),
@@ -948,12 +942,6 @@ impl ChannelState {
 		is_awaiting_remote_revoke,
 		set_awaiting_remote_revoke,
 		clear_awaiting_remote_revoke,
-		ChannelReady
-	);
-	impl_state_flag!(
-		is_awaiting_quiescence,
-		set_awaiting_quiescence,
-		clear_awaiting_quiescence,
 		ChannelReady
 	);
 	impl_state_flag!(is_local_stfu_sent, set_local_stfu_sent, clear_local_stfu_sent, ChannelReady);
@@ -1750,10 +1738,6 @@ where
 		let splice_funding_failed = if let ChannelPhase::Funded(chan) = &mut self.phase {
 			// Reset any quiescence-related state as it is implicitly terminated once disconnected.
 			if matches!(chan.context.channel_state, ChannelState::ChannelReady(_)) {
-				if chan.quiescent_action.is_some() {
-					// If we were trying to get quiescent, try again after reconnection.
-					chan.context.channel_state.set_awaiting_quiescence();
-				}
 				chan.context.channel_state.clear_local_stfu_sent();
 				chan.context.channel_state.clear_remote_stfu_sent();
 				if chan.should_reset_pending_splice_state(false) {
@@ -7088,7 +7072,6 @@ where
 			} else {
 				match self.quiescent_action.take() {
 					Some(QuiescentAction::LegacySplice(instructions)) => {
-						self.context.channel_state.clear_awaiting_quiescence();
 						let (inputs, outputs) = instructions.into_contributed_inputs_and_outputs();
 						Some(SpliceFundingFailed {
 							funding_txo: None,
@@ -7098,7 +7081,6 @@ where
 						})
 					},
 					Some(QuiescentAction::Splice { contribution, .. }) => {
-						self.context.channel_state.clear_awaiting_quiescence();
 						let (inputs, outputs) = contribution.into_contributed_inputs_and_outputs();
 						Some(SpliceFundingFailed {
 							funding_txo: None,
@@ -10747,11 +10729,6 @@ where
 		// From here on out, we may not fail!
 
 		self.context.channel_state.set_remote_shutdown_sent();
-		if self.context.channel_state.is_awaiting_quiescence() {
-			// We haven't been able to send `stfu` yet, and there's no point in attempting
-			// quiescence anymore since the counterparty wishes to close the channel.
-			self.context.channel_state.clear_awaiting_quiescence();
-		}
 		self.context.update_time_counter += 1;
 
 		let monitor_update = if update_shutdown_script {
@@ -11525,17 +11502,6 @@ where
 
 		let announcement_sigs =
 			self.get_announcement_sigs(node_signer, chain_hash, user_config, block_height, logger);
-
-		if let Some(quiescent_action) = self.quiescent_action.as_ref() {
-			// TODO(splicing): If we didn't win quiescence, then we can contribute as an acceptor
-			// instead of waiting for the splice to lock.
-			if matches!(
-				quiescent_action,
-				QuiescentAction::Splice { .. } | QuiescentAction::LegacySplice(_)
-			) {
-				self.context.channel_state.set_awaiting_quiescence();
-			}
-		}
 
 		Some(SpliceFundingPromotion {
 			funding_txo,
@@ -13314,9 +13280,6 @@ where
 		// From here on out, we may not fail!
 		self.context.target_closing_feerate_sats_per_kw = target_feerate_sats_per_kw;
 		self.context.channel_state.set_local_shutdown_sent();
-		if self.context.channel_state.is_awaiting_quiescence() {
-			self.context.channel_state.clear_awaiting_quiescence();
-		}
 		self.context.local_initiated_shutdown = Some(());
 		self.context.update_time_counter += 1;
 
@@ -13412,7 +13375,6 @@ where
 		}
 		// Since we don't have a pending quiescent action, we should never be in a state where we
 		// sent `stfu` without already having become quiescent.
-		debug_assert!(!self.context.channel_state.is_awaiting_quiescence());
 		debug_assert!(!self.context.channel_state.is_local_stfu_sent());
 
 		self.quiescent_action = Some(action);
@@ -13421,7 +13383,6 @@ where
 			return Ok(None);
 		}
 
-		self.context.channel_state.set_awaiting_quiescence();
 		Ok(self.try_send_stfu(false, logger))
 	}
 
@@ -13570,13 +13531,11 @@ where
 
 		// We only need to send `stfu` when we're awaiting quiescence and haven't sent it yet, or
 		// in response to a counterparty one.
-		if self.context.channel_state.is_local_stfu_sent()
-			|| self.context.channel_state.is_quiescent()
-		{
+		if self.quiescent_action.is_none() && !self.context.channel_state.is_remote_stfu_sent() {
 			return None;
 		}
-		if !self.context.channel_state.is_awaiting_quiescence()
-			&& !self.context.channel_state.is_remote_stfu_sent()
+		if self.context.channel_state.is_local_stfu_sent()
+			|| self.context.channel_state.is_quiescent()
 		{
 			return None;
 		}
@@ -13615,18 +13574,13 @@ where
 		}
 
 		let initiator = if self.context.channel_state.is_remote_stfu_sent() {
-			// We may have also attempted to initiate quiescence.
-			self.context.channel_state.clear_awaiting_quiescence();
+			// Since we may have also attempted to initiate quiescence but the counterparty
+			// initiated first, we'll retry after we're no longer quiescent.
 			self.context.channel_state.clear_remote_stfu_sent();
 			self.context.channel_state.set_quiescent();
-			// We are sending an stfu in response to our counterparty's stfu, but had not yet sent
-			// our own stfu (even if `awaiting_quiescence` was set). Thus, the counterparty is the
-			// initiator and they can do "something fundamental".
 			false
 		} else {
 			log_debug!(logger, "Sending stfu as quiescence initiator");
-			debug_assert!(self.context.channel_state.is_awaiting_quiescence());
-			self.context.channel_state.clear_awaiting_quiescence();
 			self.context.channel_state.set_local_stfu_sent();
 			true
 		};
@@ -13639,7 +13593,6 @@ where
 	pub fn exit_quiescence(&mut self) -> bool {
 		// Make sure we either finished the quiescence handshake and are quiescent, or we never
 		// attempted to initiate quiescence at all.
-		debug_assert!(!self.context.channel_state.is_awaiting_quiescence());
 		debug_assert!(!self.context.channel_state.is_local_stfu_sent());
 		debug_assert!(!self.context.channel_state.is_remote_stfu_sent());
 
@@ -14744,11 +14697,6 @@ impl<SP: SignerProvider> Writeable for FundedChannel<SP> {
 			match channel_state {
 				ChannelState::AwaitingChannelReady(_) => {},
 				ChannelState::ChannelReady(_) => {
-					if self.quiescent_action.is_some() {
-						// If we're trying to get quiescent to do something, try again when we
-						// reconnect to the peer.
-						channel_state.set_awaiting_quiescence();
-					}
 					channel_state.clear_local_stfu_sent();
 					channel_state.clear_remote_stfu_sent();
 					if self.should_reset_pending_splice_state(false)
