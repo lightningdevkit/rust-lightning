@@ -1145,6 +1145,49 @@ fn fails_initiating_concurrent_splices(reconnect: bool) {
 	);
 }
 
+#[test]
+fn test_initiating_splice_holds_stfu_with_pending_splice() {
+	// Test that we don't send stfu too early for a new splice while we're already pending one.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let config = test_default_channel_config();
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(config)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_0_id = nodes[0].node.get_our_node_id();
+	provide_utxo_reserves(&nodes, 2, Amount::ONE_BTC);
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	// Have both nodes attempt a splice, but only node 0 will call back and negotiate the splice.
+	let value_added = Amount::from_sat(10_000);
+	let funding_contribution_0 = initiate_splice_in(&nodes[0], &nodes[1], channel_id, value_added);
+
+	let feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64);
+	let funding_template = nodes[1].node.splice_channel(&channel_id, &node_0_id, feerate).unwrap();
+
+	let (splice_tx, _) = splice_channel(&nodes[0], &nodes[1], channel_id, funding_contribution_0);
+
+	// With the splice negotiated, have node 1 call back. This will queue the quiescent action, but
+	// it shouldn't send stfu yet as there's a pending splice.
+	let wallet = WalletSync::new(Arc::clone(&nodes[1].wallet_source), &nodes[1].logger);
+	let funding_contribution = funding_template.splice_in_sync(value_added, &wallet).unwrap();
+	nodes[1]
+		.node
+		.funding_contributed(&channel_id, &node_0_id, funding_contribution.clone(), None)
+		.unwrap();
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+	mine_transaction(&nodes[0], &splice_tx);
+	mine_transaction(&nodes[1], &splice_tx);
+	let stfu = lock_splice_after_blocks(&nodes[0], &nodes[1], 5);
+	assert!(
+		matches!(stfu, Some(MessageSendEvent::SendStfu { node_id, .. }) if node_id == node_0_id)
+	);
+}
+
 #[cfg(test)]
 #[derive(PartialEq)]
 enum SpliceStatus {

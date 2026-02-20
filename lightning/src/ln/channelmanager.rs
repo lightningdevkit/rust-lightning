@@ -13342,17 +13342,11 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					let logger = WithContext::from(
 						&self.logger, Some(*counterparty_node_id), Some(*channel_id), None
 					);
-					match funded_chan.try_send_stfu(&&logger) {
-						Ok(None) => {},
-						Ok(Some(stfu)) => {
-							pending_msg_events.push(MessageSendEvent::SendStfu {
-								node_id: chan.context().get_counterparty_node_id(),
-								msg: stfu,
-							});
-						},
-						Err(e) => {
-							log_debug!(logger, "Could not advance quiescence handshake: {}", e);
-						}
+					if let Some(stfu) = funded_chan.try_send_stfu(true, &&logger) {
+						pending_msg_events.push(MessageSendEvent::SendStfu {
+							node_id: chan.context().get_counterparty_node_id(),
+							msg: stfu,
+						});
 					}
 				}
 			}
