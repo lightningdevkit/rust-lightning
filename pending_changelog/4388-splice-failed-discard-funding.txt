@@ -1,0 +1,21 @@
+# API Updates
+
+ * `Event::SpliceFailed` no longer carries `contributed_inputs` or `contributed_outputs` fields.
+   Instead, a separate `Event::DiscardFunding` event with `FundingInfo::Contribution` is emitted
+   for UTXO cleanup.
+
+ * `Event::DiscardFunding` with `FundingInfo::Contribution` is also emitted without a
+   corresponding `Event::SpliceFailed` when `ChannelManager::funding_contributed` returns an
+   error (e.g., channel or peer not found, wrong channel state, duplicate contribution).
+
+# Backwards Compatibility
+
+ * Older serializations that included `contributed_inputs` and `contributed_outputs` in
+   `SpliceFailed` will have those fields silently ignored on deserialization (they were odd TLV
+   fields). A `DiscardFunding` event will not be produced when reading these older serializations.
+
+# Forward Compatibility
+
+ * Downgrading will not set the removed `contributed_inputs`/`contributed_outputs` fields on
+   `SpliceFailed`, so older code expecting those fields will see empty vectors for splice
+   failures.
