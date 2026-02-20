@@ -15,8 +15,8 @@
 //! actions such as sending payments, handling events, or changing monitor update return values on
 //! a per-node basis. This should allow it to find any cases where the ordering of actions results
 //! in us getting out of sync with ourselves, and, assuming at least one of our recieve- or
-//! send-side handling is correct, other peers. We consider it a failure if any action results in a
-//! channel being force-closed.
+//! send-side handling is correct, other peers. The fuzzer also exercises user-initiated
+//! force-closes with on-chain commitment transaction confirmation.
 
 use bitcoin::amount::Amount;
 use bitcoin::constants::genesis_block;
@@ -41,7 +41,7 @@ use lightning::chain;
 use lightning::chain::chaininterface::{
 	BroadcasterInterface, ConfirmationTarget, FeeEstimator, TransactionType,
 };
-use lightning::chain::channelmonitor::{ChannelMonitor, MonitorEvent};
+use lightning::chain::channelmonitor::{Balance, ChannelMonitor, MonitorEvent};
 use lightning::chain::transaction::OutPoint;
 use lightning::chain::{
 	chainmonitor, channelmonitor, BestBlock, ChannelMonitorUpdateStatus, Confirm, Watch,
@@ -215,6 +215,14 @@ impl ChainState {
 			self.blocks.push((header, Vec::new()));
 		}
 		true
+	}
+
+	fn advance_height(&mut self, num_blocks: u32) {
+		for _ in 0..num_blocks {
+			let prev_hash = self.blocks.last().unwrap().0.block_hash();
+			let header = create_dummy_header(prev_hash, 42);
+			self.blocks.push((header, Vec::new()));
+		}
 	}
 
 	fn block_at(&self, height: u32) -> &(Header, Vec<Transaction>) {
@@ -500,12 +508,12 @@ impl SignerProvider for KeyProvider {
 	}
 }
 
-// Since this fuzzer is only concerned with live-channel operations, we don't need to worry about
-// any signer operations that come after a force close.
-const SUPPORTED_SIGNER_OPS: [SignerOp; 3] = [
+const SUPPORTED_SIGNER_OPS: [SignerOp; 5] = [
 	SignerOp::SignCounterpartyCommitment,
 	SignerOp::GetPerCommitmentPoint,
 	SignerOp::ReleaseCommitmentSecret,
+	SignerOp::SignHolderCommitment,
+	SignerOp::SignHolderHtlcTransaction,
 ];
 
 impl KeyProvider {
@@ -850,17 +858,6 @@ fn send_mpp_hop_payment(
 		Err(_) => false,
 		Ok(()) => check_payment_send_events(source, payment_id),
 	}
-}
-
-#[inline]
-fn assert_action_timeout_awaiting_response(action: &msgs::ErrorAction) {
-	// Since sending/receiving messages may be delayed, `timer_tick_occurred` may cause a node to
-	// disconnect their counterparty if they're expecting a timely response.
-	assert!(matches!(
-		action,
-		msgs::ErrorAction::DisconnectPeerWithWarning { msg }
-		if msg.data.contains("Disconnecting due to timeout awaiting response")
-	));
 }
 
 #[inline]
@@ -1302,6 +1299,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 
 	let sync_with_chain_state = |chain_state: &ChainState,
 	                             node: &ChannelManager<_, _, _, _, _, _, _, _, _>,
+	                             monitor: &TestChainMonitor,
 	                             node_height: &mut u32,
 	                             num_blocks: Option<u32>| {
 		let target_height = if let Some(num_blocks) = num_blocks {
@@ -1315,16 +1313,18 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 			let (header, txn) = chain_state.block_at(*node_height);
 			let txdata: Vec<_> = txn.iter().enumerate().map(|(i, tx)| (i + 1, tx)).collect();
 			if !txdata.is_empty() {
+				monitor.chain_monitor.transactions_confirmed(header, &txdata, *node_height);
 				node.transactions_confirmed(header, &txdata, *node_height);
 			}
+			monitor.chain_monitor.best_block_updated(header, *node_height);
 			node.best_block_updated(header, *node_height);
 		}
 	};
 
 	// Sync all nodes to tip to lock the funding.
-	sync_with_chain_state(&mut chain_state, &nodes[0], &mut node_height_a, None);
-	sync_with_chain_state(&mut chain_state, &nodes[1], &mut node_height_b, None);
-	sync_with_chain_state(&mut chain_state, &nodes[2], &mut node_height_c, None);
+	sync_with_chain_state(&mut chain_state, &nodes[0], &monitor_a, &mut node_height_a, None);
+	sync_with_chain_state(&mut chain_state, &nodes[1], &monitor_b, &mut node_height_b, None);
+	sync_with_chain_state(&mut chain_state, &nodes[2], &monitor_c, &mut node_height_c, None);
 
 	lock_fundings!(nodes);
 
@@ -1356,19 +1356,21 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 	let mut node_c_ser = nodes[2].encode();
 
 	let pending_payments = RefCell::new([Vec::new(), Vec::new(), Vec::new()]);
-	let resolved_payments = RefCell::new([Vec::new(), Vec::new(), Vec::new()]);
+	let resolved_payments: RefCell<[HashMap<PaymentId, Option<PaymentHash>>; 3]> =
+		RefCell::new([new_hash_map(), new_hash_map(), new_hash_map()]);
+	let claimed_payment_hashes: RefCell<HashSet<PaymentHash>> = RefCell::new(HashSet::new());
+	let closed_channels: RefCell<HashSet<ChannelId>> = RefCell::new(HashSet::new());
 
 	macro_rules! test_return {
 		() => {{
-			assert_eq!(nodes[0].list_channels().len(), 3);
-			assert_eq!(nodes[1].list_channels().len(), 6);
-			assert_eq!(nodes[2].list_channels().len(), 3);
+			assert!(nodes[0].list_channels().len() <= 3);
+			assert!(nodes[1].list_channels().len() <= 6);
+			assert!(nodes[2].list_channels().len() <= 3);
 
-			// All broadcasters should be empty (all broadcast transactions should be handled
-			// explicitly).
-			assert!(broadcast_a.txn_broadcasted.borrow().is_empty());
-			assert!(broadcast_b.txn_broadcasted.borrow().is_empty());
-			assert!(broadcast_c.txn_broadcasted.borrow().is_empty());
+			// Drain broadcasters since force-closes produce commitment transactions.
+			broadcast_a.txn_broadcasted.borrow_mut().clear();
+			broadcast_b.txn_broadcasted.borrow_mut().clear();
+			broadcast_c.txn_broadcasted.borrow_mut().clear();
 
 			return;
 		}};
@@ -1526,10 +1528,17 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 							*node_id == a_id
 						},
 						MessageSendEvent::HandleError { ref action, ref node_id } => {
-							assert_action_timeout_awaiting_response(action);
+							match action {
+								msgs::ErrorAction::DisconnectPeerWithWarning { msg }
+								if msg.data.contains("Disconnecting due to timeout awaiting response") => {},
+								msgs::ErrorAction::DisconnectPeer { .. } => {},
+								msgs::ErrorAction::SendErrorMessage { .. } => {},
+								_ => panic!("Unexpected HandleError action {:?}", action),
+							}
 							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
 							*node_id == a_id
 						},
+						MessageSendEvent::BroadcastChannelUpdate { .. } => continue,
 						_ => panic!("Unhandled message event {:?}", event),
 					};
 					if push_a { ba_events.push(event); } else { bc_events.push(event); }
@@ -1739,8 +1748,20 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 								}
 							}
 						},
-						MessageSendEvent::HandleError { ref action, .. } => {
-							assert_action_timeout_awaiting_response(action);
+						MessageSendEvent::HandleError { ref action, ref node_id } => {
+							match action {
+								msgs::ErrorAction::DisconnectPeerWithWarning { msg }
+								if msg.data.contains("Disconnecting due to timeout awaiting response") => {},
+								msgs::ErrorAction::DisconnectPeer { .. } => {},
+								msgs::ErrorAction::SendErrorMessage { ref msg } => {
+									for dest in nodes.iter() {
+										if dest.get_our_node_id() == *node_id {
+											dest.handle_error(nodes[$node].get_our_node_id(), msg);
+										}
+									}
+								},
+								_ => panic!("Unexpected HandleError action {:?}", action),
+							}
 						},
 						MessageSendEvent::SendChannelReady { .. } => {
 							// Can be generated as a reestablish response
@@ -1796,8 +1817,14 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 							MessageSendEvent::SendChannelReady { .. } => {},
 							MessageSendEvent::SendAnnouncementSignatures { .. } => {},
 							MessageSendEvent::SendChannelUpdate { .. } => {},
-							MessageSendEvent::HandleError { ref action, .. } => {
-								assert_action_timeout_awaiting_response(action);
+							MessageSendEvent::HandleError { ref action, .. } => match action {
+								msgs::ErrorAction::DisconnectPeerWithWarning { msg }
+									if msg.data.contains(
+										"Disconnecting due to timeout awaiting response",
+									) => {},
+								msgs::ErrorAction::DisconnectPeer { .. } => {},
+								msgs::ErrorAction::SendErrorMessage { .. } => {},
+								_ => panic!("Unexpected HandleError action {:?}", action),
 							},
 							_ => {
 								if out.may_fail.load(atomic::Ordering::Acquire) {
@@ -1824,8 +1851,14 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 							MessageSendEvent::SendChannelReady { .. } => {},
 							MessageSendEvent::SendAnnouncementSignatures { .. } => {},
 							MessageSendEvent::SendChannelUpdate { .. } => {},
-							MessageSendEvent::HandleError { ref action, .. } => {
-								assert_action_timeout_awaiting_response(action);
+							MessageSendEvent::HandleError { ref action, .. } => match action {
+								msgs::ErrorAction::DisconnectPeerWithWarning { msg }
+									if msg.data.contains(
+										"Disconnecting due to timeout awaiting response",
+									) => {},
+								msgs::ErrorAction::DisconnectPeer { .. } => {},
+								msgs::ErrorAction::SendErrorMessage { .. } => {},
+								_ => panic!("Unexpected HandleError action {:?}", action),
 							},
 							_ => {
 								if out.may_fail.load(atomic::Ordering::Acquire) {
@@ -1864,18 +1897,19 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 									nodes[$node].fail_htlc_backwards(&payment_hash);
 								} else {
 									nodes[$node].claim_funds(PaymentPreimage(payment_hash.0));
+									claimed_payment_hashes.borrow_mut().insert(payment_hash);
 								}
 							}
 						},
-						events::Event::PaymentSent { payment_id, .. } => {
+						events::Event::PaymentSent { payment_id, payment_hash, .. } => {
 							let sent_id = payment_id.unwrap();
 							let idx_opt =
 								pending_payments[$node].iter().position(|id| *id == sent_id);
 							if let Some(idx) = idx_opt {
 								pending_payments[$node].remove(idx);
-								resolved_payments[$node].push(sent_id);
+								resolved_payments[$node].insert(sent_id, Some(payment_hash));
 							} else {
-								assert!(resolved_payments[$node].contains(&sent_id));
+								assert!(resolved_payments[$node].contains_key(&sent_id));
 							}
 						},
 						// Even though we don't explicitly send probes, because probes are
@@ -1887,9 +1921,9 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 								pending_payments[$node].iter().position(|id| *id == payment_id);
 							if let Some(idx) = idx_opt {
 								pending_payments[$node].remove(idx);
-								resolved_payments[$node].push(payment_id);
+								resolved_payments[$node].insert(payment_id, None);
 							} else {
-								assert!(resolved_payments[$node].contains(&payment_id));
+								assert!(resolved_payments[$node].contains_key(&payment_id));
 							}
 						},
 						events::Event::PaymentFailed { payment_id, .. }
@@ -1898,11 +1932,11 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 								pending_payments[$node].iter().position(|id| *id == payment_id);
 							if let Some(idx) = idx_opt {
 								pending_payments[$node].remove(idx);
-								resolved_payments[$node].push(payment_id);
-							} else if !resolved_payments[$node].contains(&payment_id) {
+								resolved_payments[$node].insert(payment_id, None);
+							} else if !resolved_payments[$node].contains_key(&payment_id) {
 								// Payment failed immediately on send, so it was never added to
 								// pending_payments. Add it to resolved_payments to track it.
-								resolved_payments[$node].push(payment_id);
+								resolved_payments[$node].insert(payment_id, None);
 							}
 						},
 						events::Event::PaymentClaimed { .. } => {},
@@ -1928,18 +1962,28 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 								.unwrap();
 						},
 						events::Event::SplicePending { new_funding_txo, .. } => {
-							let broadcaster = match $node {
-								0 => &broadcast_a,
-								1 => &broadcast_b,
-								_ => &broadcast_c,
-							};
-							let mut txs = broadcaster.txn_broadcasted.borrow_mut();
-							assert!(txs.len() >= 1);
-							let splice_tx = txs.remove(0);
-							assert_eq!(new_funding_txo.txid, splice_tx.compute_txid());
-							chain_state.confirm_tx(splice_tx);
+							if !chain_state.confirmed_txids.contains(&new_funding_txo.txid) {
+								let broadcaster = match $node {
+									0 => &broadcast_a,
+									1 => &broadcast_b,
+									_ => &broadcast_c,
+								};
+								let mut txs = broadcaster.txn_broadcasted.borrow_mut();
+								let pos = txs
+									.iter()
+									.position(|tx| new_funding_txo.txid == tx.compute_txid())
+									.expect("SplicePending but splice tx not found in broadcaster");
+								let splice_tx = txs.remove(pos);
+								chain_state.confirm_tx(splice_tx);
+							}
 						},
 						events::Event::SpliceFailed { .. } => {},
+						events::Event::ChannelClosed { channel_id, .. } => {
+							closed_channels.borrow_mut().insert(channel_id);
+						},
+						events::Event::DiscardFunding { .. } => {},
+						events::Event::SpendableOutputs { .. } => {},
+						events::Event::BumpTransaction(..) => {},
 
 						_ => {
 							if out.may_fail.load(atomic::Ordering::Acquire) {
@@ -2391,13 +2435,49 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 			},
 
 			// Sync node by 1 block to cover confirmation of a transaction.
-			0xa8 => sync_with_chain_state(&mut chain_state, &nodes[0], &mut node_height_a, Some(1)),
-			0xa9 => sync_with_chain_state(&mut chain_state, &nodes[1], &mut node_height_b, Some(1)),
-			0xaa => sync_with_chain_state(&mut chain_state, &nodes[2], &mut node_height_c, Some(1)),
+			0xa8 => sync_with_chain_state(
+				&mut chain_state,
+				&nodes[0],
+				&monitor_a,
+				&mut node_height_a,
+				Some(1),
+			),
+			0xa9 => sync_with_chain_state(
+				&mut chain_state,
+				&nodes[1],
+				&monitor_b,
+				&mut node_height_b,
+				Some(1),
+			),
+			0xaa => sync_with_chain_state(
+				&mut chain_state,
+				&nodes[2],
+				&monitor_c,
+				&mut node_height_c,
+				Some(1),
+			),
 			// Sync node to chain tip to cover confirmation of a transaction post-reorg-risk.
-			0xab => sync_with_chain_state(&mut chain_state, &nodes[0], &mut node_height_a, None),
-			0xac => sync_with_chain_state(&mut chain_state, &nodes[1], &mut node_height_b, None),
-			0xad => sync_with_chain_state(&mut chain_state, &nodes[2], &mut node_height_c, None),
+			0xab => sync_with_chain_state(
+				&mut chain_state,
+				&nodes[0],
+				&monitor_a,
+				&mut node_height_a,
+				None,
+			),
+			0xac => sync_with_chain_state(
+				&mut chain_state,
+				&nodes[1],
+				&monitor_b,
+				&mut node_height_b,
+				None,
+			),
+			0xad => sync_with_chain_state(
+				&mut chain_state,
+				&nodes[2],
+				&monitor_c,
+				&mut node_height_c,
+				None,
+			),
 
 			0xb0 | 0xb1 | 0xb2 => {
 				// Restart node A, picking among the in-flight `ChannelMonitor`s to use based on
@@ -2518,6 +2598,99 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 				keys_manager_c.enable_op_for_all_signers(SignerOp::ReleaseCommitmentSecret);
 				nodes[2].signer_unblocked(None);
 			},
+			0xcc => {
+				keys_manager_a.enable_op_for_all_signers(SignerOp::SignHolderCommitment);
+				nodes[0].signer_unblocked(None);
+			},
+			0xcd => {
+				keys_manager_b.enable_op_for_all_signers(SignerOp::SignHolderCommitment);
+				nodes[1].signer_unblocked(None);
+			},
+			0xce => {
+				keys_manager_c.enable_op_for_all_signers(SignerOp::SignHolderCommitment);
+				nodes[2].signer_unblocked(None);
+			},
+			0xcf => {
+				keys_manager_a.enable_op_for_all_signers(SignerOp::SignHolderHtlcTransaction);
+				keys_manager_b.enable_op_for_all_signers(SignerOp::SignHolderHtlcTransaction);
+				keys_manager_c.enable_op_for_all_signers(SignerOp::SignHolderHtlcTransaction);
+				nodes[0].signer_unblocked(None);
+				nodes[1].signer_unblocked(None);
+				nodes[2].signer_unblocked(None);
+			},
+
+			// Force-close a channel and track it as closed.
+			0xd0 => {
+				if nodes[0]
+					.force_close_broadcasting_latest_txn(
+						&chan_a_id,
+						&nodes[1].get_our_node_id(),
+						"]]]]]]]]".to_string(),
+					)
+					.is_ok()
+				{
+					closed_channels.borrow_mut().insert(chan_a_id);
+				}
+			},
+			0xd1 => {
+				if nodes[1]
+					.force_close_broadcasting_latest_txn(
+						&chan_b_id,
+						&nodes[2].get_our_node_id(),
+						"]]]]]]]".to_string(),
+					)
+					.is_ok()
+				{
+					closed_channels.borrow_mut().insert(chan_b_id);
+				}
+			},
+			0xd2 => {
+				if nodes[1]
+					.force_close_broadcasting_latest_txn(
+						&chan_a_id,
+						&nodes[0].get_our_node_id(),
+						"]]]]]]".to_string(),
+					)
+					.is_ok()
+				{
+					closed_channels.borrow_mut().insert(chan_a_id);
+				}
+			},
+			0xd3 => {
+				if nodes[2]
+					.force_close_broadcasting_latest_txn(
+						&chan_b_id,
+						&nodes[1].get_our_node_id(),
+						"]]]]]".to_string(),
+					)
+					.is_ok()
+				{
+					closed_channels.borrow_mut().insert(chan_b_id);
+				}
+			},
+
+			// Drain broadcasters and confirm all broadcast transactions.
+			0xd8 => {
+				for tx in broadcast_a.txn_broadcasted.borrow_mut().drain(..) {
+					chain_state.confirm_tx(tx);
+				}
+			},
+			0xd9 => {
+				for tx in broadcast_b.txn_broadcasted.borrow_mut().drain(..) {
+					chain_state.confirm_tx(tx);
+				}
+			},
+			0xda => {
+				for tx in broadcast_c.txn_broadcasted.borrow_mut().drain(..) {
+					chain_state.confirm_tx(tx);
+				}
+			},
+
+			// Advance chain height by many empty blocks so that HTLC timelocks can
+			// expire and the OnchainTxHandler releases timelocked claim packages.
+			0xdc => chain_state.advance_height(50),
+			0xdd => chain_state.advance_height(100),
+			0xde => chain_state.advance_height(200),
 
 			0xf0 => {
 				for id in &chan_ab_ids {
@@ -2644,6 +2817,28 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 								complete_all_monitor_updates(&monitor_b, id);
 								complete_all_monitor_updates(&monitor_c, id);
 							}
+							// Drain any broadcast transactions (from force-closes) and
+							// confirm them so the monitors can process the spends.
+							let mut had_txs = false;
+							for tx in broadcast_a.txn_broadcasted.borrow_mut().drain(..) {
+								chain_state.confirm_tx(tx);
+								had_txs = true;
+							}
+							for tx in broadcast_b.txn_broadcasted.borrow_mut().drain(..) {
+								chain_state.confirm_tx(tx);
+								had_txs = true;
+							}
+							for tx in broadcast_c.txn_broadcasted.borrow_mut().drain(..) {
+								chain_state.confirm_tx(tx);
+								had_txs = true;
+							}
+							if had_txs {
+								sync_with_chain_state(&chain_state, &nodes[0], &monitor_a, &mut node_height_a, None);
+								sync_with_chain_state(&chain_state, &nodes[1], &monitor_b, &mut node_height_b, None);
+								sync_with_chain_state(&chain_state, &nodes[2], &monitor_c, &mut node_height_c, None);
+								last_pass_no_updates = false;
+								continue;
+							}
 							// Then, make sure any current forwards make their way to their destination
 							if process_msg_events!(0, false, ProcessMessages::AllMessages) {
 								last_pass_no_updates = false;
@@ -2695,6 +2890,61 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 				}
 				process_all_events!();
 
+				// If any channels were force-closed, advance chain height past HTLC
+				// timelocks so HTLC-timeout transactions can be broadcast, confirmed,
+				// and fully resolved. We advance in two phases:
+				// 1) Past cltv_expiry so HTLC-timeout txs are released
+				// 2) Past the CSV delay so SpendableOutputs events fire
+				if !closed_channels.borrow().is_empty() {
+					chain_state.advance_height(250);
+					sync_with_chain_state(
+						&chain_state,
+						&nodes[0],
+						&monitor_a,
+						&mut node_height_a,
+						None,
+					);
+					sync_with_chain_state(
+						&chain_state,
+						&nodes[1],
+						&monitor_b,
+						&mut node_height_b,
+						None,
+					);
+					sync_with_chain_state(
+						&chain_state,
+						&nodes[2],
+						&monitor_c,
+						&mut node_height_c,
+						None,
+					);
+					process_all_events!();
+
+					chain_state.advance_height(250);
+					sync_with_chain_state(
+						&chain_state,
+						&nodes[0],
+						&monitor_a,
+						&mut node_height_a,
+						None,
+					);
+					sync_with_chain_state(
+						&chain_state,
+						&nodes[1],
+						&monitor_b,
+						&mut node_height_b,
+						None,
+					);
+					sync_with_chain_state(
+						&chain_state,
+						&nodes[2],
+						&monitor_c,
+						&mut node_height_c,
+						None,
+					);
+					process_all_events!();
+				}
+
 				// Verify no payments are stuck - all should have resolved
 				for (idx, pending) in pending_payments.borrow().iter().enumerate() {
 					assert!(
@@ -2705,18 +2955,75 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 					);
 				}
 
+				// Verify that every payment claimed by a receiver resulted in a
+				// PaymentSent event at the sender.
+				let resolved = resolved_payments.borrow();
+				for hash in claimed_payment_hashes.borrow().iter() {
+					let found = resolved.iter().any(|node_resolved| {
+						node_resolved.values().any(|h| h.as_ref() == Some(hash))
+					});
+					assert!(
+						found,
+						"Payment {:?} was claimed by receiver but sender never got PaymentSent",
+						hash
+					);
+				}
+
 				// Finally, make sure that at least one end of each channel can make a substantial payment
 				for &chan_id in &chan_ab_ids {
+					if closed_channels.borrow().contains(&chan_id) {
+						continue;
+					}
 					assert!(
 						send(0, 1, chan_id, 10_000_000, &mut p_ctr)
 							|| send(1, 0, chan_id, 10_000_000, &mut p_ctr)
 					);
 				}
 				for &chan_id in &chan_bc_ids {
+					if closed_channels.borrow().contains(&chan_id) {
+						continue;
+					}
 					assert!(
 						send(1, 2, chan_id, 10_000_000, &mut p_ctr)
 							|| send(2, 1, chan_id, 10_000_000, &mut p_ctr)
 					);
+				}
+
+				// After settlement, verify that closed channels have no
+				// ClaimableOnChannelClose balances (which would indicate the
+				// monitor still thinks the channel is open).
+				if !closed_channels.borrow().is_empty() {
+					let open_channels = nodes[0]
+						.list_channels()
+						.iter()
+						.chain(nodes[1].list_channels().iter())
+						.chain(nodes[2].list_channels().iter())
+						.map(|c| c.clone())
+						.collect::<Vec<_>>();
+					let open_refs: Vec<&_> = open_channels.iter().collect();
+					for (label, monitor) in
+						[("A", &monitor_a), ("B", &monitor_b), ("C", &monitor_c)]
+					{
+						let balances = monitor.chain_monitor.get_claimable_balances(&open_refs);
+						for balance in &balances {
+							if matches!(balance, Balance::ClaimableOnChannelClose { .. }) {
+								panic!(
+									"Monitor {} has ClaimableOnChannelClose balance after settlement: {:?}",
+									label, balance
+								);
+							}
+						}
+						if !balances.is_empty() {
+							out.locked_write(
+								format!(
+									"Monitor {} has {} remaining balances after settlement.\n",
+									label,
+									balances.len()
+								)
+								.as_bytes(),
+							);
+						}
+					}
 				}
 
 				last_htlc_clear_fee_a = fee_est_a.ret_val.load(atomic::Ordering::Acquire);
@@ -2769,4 +3076,416 @@ pub fn chanmon_consistency_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8]
 pub extern "C" fn chanmon_consistency_run(data: *const u8, datalen: usize) {
 	do_test(unsafe { std::slice::from_raw_parts(data, datalen) }, test_logger::DevNull {}, false);
 	do_test(unsafe { std::slice::from_raw_parts(data, datalen) }, test_logger::DevNull {}, true);
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::utils::test_logger::StringBuffer;
+
+	fn run_and_get_log(data: &[u8]) -> String {
+		let logger = StringBuffer::new();
+		do_test(data, logger.clone(), false);
+		logger.into_string()
+	}
+
+	#[test]
+	fn test_force_close_executes() {
+		let data: Vec<u8> = vec![
+			0x00, // mon style: all Completed
+			0xd0, // A force-closes A-B channel
+			0xd8, 0xd9, 0xda, // drain and confirm broadcasts for A, B, C
+			0xdc, 0xdc, 0xdc, // advance 50+50+50 blocks
+			0xff, // settle: sync nodes, resolve all pending state
+		];
+		let log = run_and_get_log(&data);
+
+		// Verify initiator force-closed
+		assert!(log.contains("Force-closing channel"), "Node should initiate force-close");
+		// Verify counterparty received the error and also closed
+		assert!(
+			log.contains("counterparty force-closed"),
+			"Counterparty should close after receiving error message"
+		);
+		// Verify commitment tx was confirmed on-chain
+		assert!(
+			log.contains("Channel closed by funding output spend"),
+			"Commitment transaction should be confirmed on-chain"
+		);
+		// Verify spendable output matured
+		assert!(
+			log.contains("marked for spending has got enough confirmations"),
+			"Spendable outputs should mature after chain advancement"
+		);
+	}
+
+	#[test]
+	fn test_force_close_without_broadcast_confirm_no_resolution() {
+		// Force-close but skip draining broadcasts, advancing height, and
+		// settlement. Without chain progression, no on-chain resolution occurs.
+		let data: Vec<u8> = vec![
+			0x00, // mon style: all Completed
+			0xd0, // A force-closes A-B channel
+		];
+		let log = run_and_get_log(&data);
+
+		assert!(log.contains("Force-closing channel"), "Force-close should fire");
+		assert!(
+			!log.contains("marked for spending has got enough confirmations"),
+			"Without chain advancement, outputs should not mature"
+		);
+	}
+
+	#[test]
+	fn test_force_close_both_directions() {
+		let data: Vec<u8> = vec![
+			0x00, // mon style: all Completed
+			0xd0, // A force-closes A-B channel
+			0xd1, // B force-closes B-C channel
+			0xd8, 0xd9, 0xda, // drain and confirm broadcasts for A, B, C
+			0xdc, 0xdc, 0xdc, // advance 50+50+50 blocks
+			0xff, // settle: sync nodes, resolve all pending state
+		];
+		let log = run_and_get_log(&data);
+
+		// User-initiated force-closes log with the error message
+		let user_fc_count = log.matches("Force-closing channel, The error message").count();
+		assert_eq!(user_fc_count, 2, "Should have 2 user-initiated force-closes");
+		// Both counterparties should also detect the close
+		let counterparty_count = log.matches("counterparty force-closed").count();
+		assert!(
+			counterparty_count >= 2,
+			"Both counterparties should close, got {}",
+			counterparty_count
+		);
+	}
+
+	#[test]
+	fn test_force_close_middle_node_initiates() {
+		let data: Vec<u8> = vec![
+			0x00, // mon style: all Completed
+			0xd2, // B force-closes A-B channel (error msg "]]]]]]")
+			0xd8, 0xd9, 0xda, // drain and confirm broadcasts for A, B, C
+			0xdc, 0xdc, 0xdc, // advance 50+50+50 blocks
+			0xff, // settle: sync nodes, resolve all pending state
+		];
+		let log = run_and_get_log(&data);
+
+		// B initiated with its specific error message
+		assert!(
+			log.contains("]]]]]]\""),
+			"Middle node B should force-close with its specific error message"
+		);
+		// A should detect counterparty close
+		assert!(
+			log.contains("counterparty force-closed with message: ]]]]]]"),
+			"Node A should detect counterparty force-close from B"
+		);
+	}
+
+	#[test]
+	fn test_inflight_htlc_force_close_needs_height() {
+		// Send payment A->B (0x30), process messages to get HTLC committed (0x10, 0x18),
+		// process events (0x16, 0x1e), then force-close without advancing height.
+		// The HTLC timeout package should be delayed waiting for its timelock.
+		let data: Vec<u8> = vec![
+			0x00, // mon style
+			0x30, // A sends payment to B on chan_a
+			0x10, // process all msgs on node 0 (A)
+			0x18, // process all msgs on node 1 (B)
+			0x10, // process all msgs on node 0 (A) again for revoke_and_ack
+			0x16, // process events on node 0
+			0x1e, // process events on node 1
+			0xd0, // A force-closes with B
+			0xd8, 0xd9, 0xda, // drain all broadcasts and confirm
+		];
+		let log = run_and_get_log(&data);
+
+		assert!(log.contains("Force-closing channel"), "Force-close should fire");
+		// HTLC timeout should be delayed because chain height hasn't advanced past CLTV
+		assert!(
+			log.contains("Delaying claim of package until its timelock"),
+			"HTLC claim should be delayed waiting for timelock"
+		);
+	}
+
+	#[test]
+	fn test_inflight_htlc_resolved_after_height_advance() {
+		// Same as above but advance height past the HTLC timeout. The HTLC timeout
+		// tx should get broadcast after the height passes the timelock.
+		let data: Vec<u8> = vec![
+			0x00, // mon style
+			0x30, // A sends payment to B on chan_a
+			0x10, // process all msgs on node 0 (A)
+			0x18, // process all msgs on node 1 (B)
+			0x10, // process all msgs on node 0 (A) again for revoke_and_ack
+			0x16, // process events on node 0
+			0x1e, // process events on node 1
+			0xd0, // A force-closes with B
+			0xd8, // drain and confirm A's broadcasts (commitment tx)
+			0xde, 0xde, // advance 200+200 blocks past CLTV
+		];
+		let log = run_and_get_log(&data);
+
+		assert!(log.contains("Force-closing channel"), "Force-close should fire");
+		// After advancing past the timelock, the HTLC timeout tx should broadcast
+		assert!(
+			log.contains("Broadcasting onchain"),
+			"HTLC timeout transaction should be broadcast after height advance"
+		);
+	}
+
+	#[test]
+	fn test_three_node_force_close_during_fulfill_propagation() {
+		// A->B->C payment. C claims, fulfill propagates back to B, then A-B
+		// is force-closed before B forwards the fulfill to A. B has the
+		// preimage and claims the HTLC on-chain. A learns the preimage from
+		// B's on-chain HTLC-success transaction. Settlement (0xff) handles
+		// syncing all nodes to the chain, enabling signer ops, and
+		// resolving all pending state.
+		let data: Vec<u8> = vec![
+			0x00, // mon style: all Completed
+			0x3c, // send_hop A->B->C, 1_000_000 msat
+			// Commit HTLC on A-B channel:
+			0x11, // Process A: deliver A's update_add+CS to B
+			0x19, // Process B: deliver B's RAA+CS to A
+			0x11, // Process A: deliver A's RAA to B. A-B HTLC committed.
+			// Forward HTLC from B to C:
+			0x1f, // Process events on B: forward HTLC to C
+			0x19, // Process B: deliver B's update_add+CS to C
+			0x21, // Process C: deliver C's RAA+CS to B
+			0x19, // Process B: deliver B's RAA to C. B-C HTLC committed.
+			// C claims the payment (two rounds: first decodes HTLC, second claims):
+			0x27, // Process events on C: decode HTLC, generate PaymentClaimable
+			0x27, // Process events on C: handle PaymentClaimable, call claim_funds
+			// Deliver C's fulfill to B:
+			0x21, // Process C: deliver C's update_fulfill+CS to B. B learns preimage.
+			// DO NOT process B's messages: B's fulfill hasn't reached A yet.
+			// A force-closes while HTLC is still committed on A-B:
+			0xd0, // A force-closes A-B
+			// Settle everything: syncs chain, enables signing, resolves on-chain.
+			0xff,
+		];
+		let log = run_and_get_log(&data);
+
+		assert!(log.contains("Force-closing channel"), "A should force-close");
+		// C should claim and send fulfill to B
+		assert!(
+			log.contains("Delivering update_fulfill_htlc from node 2 to node 1"),
+			"C should deliver fulfill to B"
+		);
+		// B should broadcast HTLC-success claim using the preimage on-chain
+		assert!(
+			log.contains("Broadcasting onchain HTLC claim tx (1 preimage"),
+			"B should broadcast HTLC preimage claim on-chain"
+		);
+		// A should learn the preimage from B's on-chain claim
+		assert!(
+			log.contains("resolves outbound HTLC") && log.contains("with preimage"),
+			"A should learn preimage from B's on-chain HTLC claim"
+		);
+		// Payment should ultimately succeed
+		assert!(
+			log.contains("Handling event PaymentSent"),
+			"Payment should succeed after on-chain resolution"
+		);
+	}
+
+	// Async monitor variants: same scenarios but with all monitors returning
+	// InProgress (0x07) instead of Completed (0x00). This exercises the
+	// async monitor update path where updates are queued and completed later.
+
+	#[test]
+	fn test_force_close_executes_async() {
+		let data: Vec<u8> = vec![
+			0x07, // mon style: all InProgress (async)
+			0xd0, // A force-closes A-B channel
+			0xd8, 0xd9, 0xda, // drain and confirm broadcasts for A, B, C
+			0xdc, 0xdc, 0xdc, // advance 50+50+50 blocks
+			0xff, // settle: completes monitor updates, syncs nodes, resolves state
+		];
+		let log = run_and_get_log(&data);
+
+		assert!(log.contains("Force-closing channel"), "Node should initiate force-close");
+		assert!(
+			log.contains("counterparty force-closed"),
+			"Counterparty should close after receiving error message"
+		);
+		assert!(
+			log.contains("Channel closed by funding output spend"),
+			"Commitment transaction should be confirmed on-chain"
+		);
+		assert!(
+			log.contains("marked for spending has got enough confirmations"),
+			"Spendable outputs should mature after chain advancement"
+		);
+	}
+
+	#[test]
+	fn test_force_close_without_broadcast_confirm_no_resolution_async() {
+		let data: Vec<u8> = vec![
+			0x07, // mon style: all InProgress (async)
+			0xd0, // A force-closes A-B channel
+		];
+		let log = run_and_get_log(&data);
+
+		assert!(log.contains("Force-closing channel"), "Force-close should fire");
+		assert!(
+			!log.contains("marked for spending has got enough confirmations"),
+			"Without chain advancement, outputs should not mature"
+		);
+	}
+
+	#[test]
+	fn test_force_close_both_directions_async() {
+		let data: Vec<u8> = vec![
+			0x07, // mon style: all InProgress (async)
+			0xd0, // A force-closes A-B channel
+			0xd1, // B force-closes B-C channel
+			0xd8, 0xd9, 0xda, // drain and confirm broadcasts for A, B, C
+			0xdc, 0xdc, 0xdc, // advance 50+50+50 blocks
+			0xff, // settle: completes monitor updates, syncs nodes, resolves state
+		];
+		let log = run_and_get_log(&data);
+
+		let user_fc_count = log.matches("Force-closing channel, The error message").count();
+		assert_eq!(user_fc_count, 2, "Should have 2 user-initiated force-closes");
+		let counterparty_count = log.matches("counterparty force-closed").count();
+		assert!(
+			counterparty_count >= 2,
+			"Both counterparties should close, got {}",
+			counterparty_count
+		);
+	}
+
+	#[test]
+	fn test_force_close_middle_node_initiates_async() {
+		let data: Vec<u8> = vec![
+			0x07, // mon style: all InProgress (async)
+			0xd2, // B force-closes A-B channel (error msg "]]]]]]")
+			0xd8, 0xd9, 0xda, // drain and confirm broadcasts for A, B, C
+			0xdc, 0xdc, 0xdc, // advance 50+50+50 blocks
+			0xff, // settle: completes monitor updates, syncs nodes, resolves state
+		];
+		let log = run_and_get_log(&data);
+
+		assert!(
+			log.contains("]]]]]]\""),
+			"Middle node B should force-close with its specific error message"
+		);
+		assert!(
+			log.contains("counterparty force-closed with message: ]]]]]]"),
+			"Node A should detect counterparty force-close from B"
+		);
+	}
+
+	#[test]
+	fn test_inflight_htlc_force_close_needs_height_async() {
+		let data: Vec<u8> = vec![
+			0x07, // mon style: all InProgress (async)
+			0x30, // A sends payment to B on chan_a
+			0x08, // complete all A's monitor updates (A-B)
+			0x10, // Process A: deliver A's update_add+CS to B
+			0x09, // complete all B's monitor updates (A-B)
+			0x18, // Process B: deliver B's RAA+CS to A
+			0x08, // complete all A's monitor updates (A-B)
+			0x10, // Process A: deliver A's RAA to B
+			0x09, // complete all B's monitor updates (A-B)
+			0x16, // process events on node 0 (A)
+			0x1e, // process events on node 1 (B)
+			0xd0, // A force-closes with B
+			0xd8, 0xd9, 0xda, // drain all broadcasts and confirm
+		];
+		let log = run_and_get_log(&data);
+
+		assert!(log.contains("Force-closing channel"), "Force-close should fire");
+		assert!(
+			log.contains("Delaying claim of package until its timelock"),
+			"HTLC claim should be delayed waiting for timelock"
+		);
+	}
+
+	#[test]
+	fn test_inflight_htlc_resolved_after_height_advance_async() {
+		let data: Vec<u8> = vec![
+			0x07, // mon style: all InProgress (async)
+			0x30, // A sends payment to B on chan_a
+			0x08, // complete all A's monitor updates (A-B)
+			0x10, // Process A: deliver A's update_add+CS to B
+			0x09, // complete all B's monitor updates (A-B)
+			0x18, // Process B: deliver B's RAA+CS to A
+			0x08, // complete all A's monitor updates (A-B)
+			0x10, // Process A: deliver A's RAA to B
+			0x09, // complete all B's monitor updates (A-B)
+			0x16, // process events on node 0 (A)
+			0x1e, // process events on node 1 (B)
+			0xd0, // A force-closes with B
+			0xd8, // drain and confirm A's broadcasts (commitment tx)
+			0xde, 0xde, // advance 200+200 blocks past CLTV
+		];
+		let log = run_and_get_log(&data);
+
+		assert!(log.contains("Force-closing channel"), "Force-close should fire");
+		assert!(
+			log.contains("Broadcasting onchain"),
+			"HTLC timeout transaction should be broadcast after height advance"
+		);
+	}
+
+	#[test]
+	fn test_three_node_force_close_during_fulfill_propagation_async() {
+		let data: Vec<u8> = vec![
+			0x07, // mon style: all InProgress (async)
+			0x3c, // send_hop A->B->C, 1_000_000 msat
+			// Commit HTLC on A-B channel (complete-all after each step):
+			0x08, // complete all A's monitor updates (A-B)
+			0x11, // Process A: deliver A's update_add+CS to B
+			0x09, // complete all B's monitor updates (A-B)
+			0x19, // Process B: deliver B's RAA+CS to A
+			0x08, // complete all A's monitor updates (A-B)
+			0x11, // Process A: deliver A's RAA to B. A-B HTLC committed.
+			0x09, // complete all B's monitor updates (A-B)
+			// Forward HTLC from B to C:
+			0x1f, // Process events on B: forward HTLC to C
+			0x0a, // complete all B's monitor updates (B-C)
+			0x19, // Process B: deliver B's update_add+CS to C
+			0x0b, // complete all C's monitor updates (B-C)
+			0x21, // Process C: deliver C's RAA+CS to B
+			0x0a, // complete all B's monitor updates (B-C)
+			0x19, // Process B: deliver B's RAA to C. B-C HTLC committed.
+			0x0b, // complete all C's monitor updates (B-C)
+			// C claims the payment (two rounds: first decodes HTLC, second claims):
+			0x27, // Process events on C: decode HTLC, generate PaymentClaimable
+			0x27, // Process events on C: handle PaymentClaimable, call claim_funds
+			0x0b, // complete all C's monitor updates (B-C)
+			// Deliver C's fulfill to B:
+			0x21, // Process C: deliver C's update_fulfill+CS to B. B learns preimage.
+			0x0a, // complete all B's monitor updates (B-C)
+			0x09, // complete all B's monitor updates (A-B)
+			// DO NOT process B's messages: B's fulfill hasn't reached A yet.
+			// A force-closes while HTLC is still committed on A-B:
+			0xd0, // A force-closes A-B
+			// Settle everything: completes monitor updates, syncs chain, resolves.
+			0xff,
+		];
+		let log = run_and_get_log(&data);
+
+		assert!(log.contains("Force-closing channel"), "A should force-close");
+		assert!(
+			log.contains("Delivering update_fulfill_htlc from node 2 to node 1"),
+			"C should deliver fulfill to B"
+		);
+		assert!(
+			log.contains("Broadcasting onchain HTLC claim tx (1 preimage"),
+			"B should broadcast HTLC preimage claim on-chain"
+		);
+		assert!(
+			log.contains("resolves outbound HTLC") && log.contains("with preimage"),
+			"A should learn preimage from B's on-chain HTLC claim"
+		);
+		assert!(
+			log.contains("Handling event PaymentSent"),
+			"Payment should succeed after on-chain resolution"
+		);
+	}
 }
