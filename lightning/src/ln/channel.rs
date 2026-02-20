@@ -6833,11 +6833,16 @@ impl FundingNegotiationContext {
 		(contributed_inputs, contributed_outputs)
 	}
 
+	fn contributed_inputs(&self) -> impl Iterator<Item = bitcoin::OutPoint> + '_ {
+		self.our_funding_inputs.iter().map(|input| input.utxo.outpoint)
+	}
+
+	fn contributed_outputs(&self) -> impl Iterator<Item = &TxOut> + '_ {
+		self.our_funding_outputs.iter()
+	}
+
 	fn to_contributed_inputs_and_outputs(&self) -> (Vec<bitcoin::OutPoint>, Vec<TxOut>) {
-		let contributed_inputs =
-			self.our_funding_inputs.iter().map(|input| input.utxo.outpoint).collect();
-		let contributed_outputs = self.our_funding_outputs.clone();
-		(contributed_inputs, contributed_outputs)
+		(self.contributed_inputs().collect(), self.contributed_outputs().cloned().collect())
 	}
 }
 
