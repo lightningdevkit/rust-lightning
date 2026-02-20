@@ -12272,23 +12272,58 @@ where
 
 		if let Some(QuiescentAction::Splice { contribution: existing, .. }) = &self.quiescent_action
 		{
-			let (new_inputs, new_outputs) = contribution.into_contributed_inputs_and_outputs();
+			return match contribution.into_unique_contributions(
+				existing.contributed_inputs(),
+				existing.contributed_outputs(),
+			) {
+				None => Err(QuiescentError::DoNothing),
+				Some((inputs, outputs)) => Err(QuiescentError::DiscardFunding { inputs, outputs }),
+			};
+		}
 
-			// Filter out inputs/outputs already in the existing contribution
-			let inputs: Vec<_> = new_inputs
-				.into_iter()
-				.filter(|input| !existing.contributed_inputs().any(|e| e == *input))
-				.collect();
-			let outputs: Vec<_> = new_outputs
-				.into_iter()
-				.filter(|output| !existing.contributed_outputs().any(|e| *e == *output))
-				.collect();
+		let initiated_funding_negotiation = self
+			.pending_splice
+			.as_ref()
+			.and_then(|pending_splice| pending_splice.funding_negotiation.as_ref())
+			.filter(|funding_negotiation| funding_negotiation.is_initiator());
 
-			if inputs.is_empty() && outputs.is_empty() {
-				return Err(QuiescentError::DoNothing);
-			}
+		if let Some(funding_negotiation) = initiated_funding_negotiation {
+			let unique_contributions = match funding_negotiation {
+				FundingNegotiation::AwaitingAck { context, .. } => contribution
+					.into_unique_contributions(
+						context.contributed_inputs(),
+						context.contributed_outputs(),
+					),
+				FundingNegotiation::ConstructingTransaction {
+					interactive_tx_constructor, ..
+				} => contribution.into_unique_contributions(
+					interactive_tx_constructor.contributed_inputs(),
+					interactive_tx_constructor.contributed_outputs(),
+				),
+				FundingNegotiation::AwaitingSignatures { .. } => {
+					let session = self
+						.context
+						.interactive_tx_signing_session
+						.as_ref()
+						.expect("pending splice awaiting signatures");
+					contribution.into_unique_contributions(
+						session.contributed_inputs(),
+						session.contributed_outputs(),
+					)
+				},
+			};
 
-			return Err(QuiescentError::DiscardFunding { inputs, outputs });
+			return match unique_contributions {
+				None => Err(QuiescentError::DoNothing),
+				Some((contributed_inputs, contributed_outputs)) => {
+					Err(QuiescentError::FailSplice(SpliceFundingFailed {
+						funding_txo: None,
+						channel_type: None,
+						contributed_inputs,
+						contributed_outputs,
+					}))
+				},
+			};
 		}
 
 		if let Err(e) = contribution.validate().and_then(|()| {
