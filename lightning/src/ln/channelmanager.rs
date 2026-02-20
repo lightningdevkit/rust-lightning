@@ -6401,13 +6401,27 @@ impl<
 	/// Used after [`ChannelManager::splice_channel`] by constructing a [`FundingContribution`]
 	/// from the returned [`FundingTemplate`] and passing it here.
 	///
-	/// Calling this method will commence the process of creating a new funding transaction for the
-	/// channel. An [`Event::FundingTransactionReadyForSigning`] will be generated once the
-	/// transaction is successfully constructed interactively with the counterparty.
-	/// If unsuccessful, an [`Event::SpliceFailed`] will be surfaced instead.
+	/// # Arguments
 	///
 	/// An optional `locktime` for the funding transaction may be specified. If not given, the
 	/// current best block height is used.
+	///
+	/// # Events
+	///
+	/// Calling this method will commence the process of creating a new funding transaction for the
+	/// channel. An [`Event::FundingTransactionReadyForSigning`] will be generated once the
+	/// transaction is successfully constructed interactively with the counterparty.
+	///
+	/// If unsuccessful, an [`Event::SpliceFailed`] will be produced if there aren't any earlier
+	/// splice attempts for the channel outstanding (i.e., haven't yet produced either
+	/// [`Event::SplicePending`] or [`Event::SpliceFailed`]).
+	///
+	/// If unsuccessful, an [`Event::DiscardFunding`] will be produced for any contributions
+	/// passed in that are not found in any outstanding attempts for the channel. If there are no
+	/// such contributions, then the [`Event::DiscardFunding`] will not be produced since these
+	/// contributions must not be reused yet.
+	///
+	/// # Errors
 	///
 	/// Returns [`ChannelUnavailable`] when a channel is not found or an incorrect
 	/// `counterparty_node_id` is provided.
