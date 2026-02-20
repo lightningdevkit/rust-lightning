@@ -2583,10 +2583,10 @@ pub(super) struct FundingScope {
 
 	#[cfg(debug_assertions)]
 	/// Max to_local and to_remote outputs in a locally-generated commitment transaction
-	holder_max_commitment_tx_output: Mutex<(u64, u64)>,
+	holder_prev_commitment_tx_balance: Mutex<(u64, u64)>,
 	#[cfg(debug_assertions)]
 	/// Max to_local and to_remote outputs in a remote-generated commitment transaction
-	counterparty_max_commitment_tx_output: Mutex<(u64, u64)>,
+	counterparty_prev_commitment_tx_balance: Mutex<(u64, u64)>,
 
 	// We save these values so we can make sure validation of channel updates properly predicts
 	// what the next commitment transaction fee will be, by comparing the cached values to the
@@ -2658,9 +2658,9 @@ impl Readable for FundingScope {
 			counterparty_selected_channel_reserve_satoshis,
 			holder_selected_channel_reserve_satoshis: holder_selected_channel_reserve_satoshis.0.unwrap(),
 			#[cfg(debug_assertions)]
-			holder_max_commitment_tx_output: Mutex::new((0, 0)),
+			holder_prev_commitment_tx_balance: Mutex::new((0, 0)),
 			#[cfg(debug_assertions)]
-			counterparty_max_commitment_tx_output: Mutex::new((0, 0)),
+			counterparty_prev_commitment_tx_balance: Mutex::new((0, 0)),
 			channel_transaction_parameters: channel_transaction_parameters.0.unwrap(),
 			funding_transaction,
 			funding_tx_confirmed_in,
@@ -2847,15 +2847,21 @@ impl FundingScope {
 			counterparty_selected_channel_reserve_satoshis,
 			holder_selected_channel_reserve_satoshis,
 			#[cfg(debug_assertions)]
-			holder_max_commitment_tx_output: Mutex::new((
-				post_value_to_self_msat,
-				(post_channel_value * 1000).saturating_sub(post_value_to_self_msat),
-			)),
+			holder_prev_commitment_tx_balance: {
+				let prev = *prev_funding.holder_prev_commitment_tx_balance.lock().unwrap();
+				Mutex::new((
+					prev.0.saturating_add_signed(our_funding_contribution.to_sat() * 1000),
+					prev.1.saturating_add_signed(their_funding_contribution.to_sat() * 1000),
+				))
+			},
 			#[cfg(debug_assertions)]
-			counterparty_max_commitment_tx_output: Mutex::new((
-				post_value_to_self_msat,
-				(post_channel_value * 1000).saturating_sub(post_value_to_self_msat),
-			)),
+			counterparty_prev_commitment_tx_balance: {
+				let prev = *prev_funding.counterparty_prev_commitment_tx_balance.lock().unwrap();
+				Mutex::new((
+					prev.0.saturating_add_signed(our_funding_contribution.to_sat() * 1000),
+					prev.1.saturating_add_signed(their_funding_contribution.to_sat() * 1000),
+				))
+			},
 			#[cfg(any(test, fuzzing))]
 			next_local_fee: Mutex::new(PredictedNextFee::default()),
 			#[cfg(any(test, fuzzing))]
@@ -3799,9 +3805,9 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			holder_selected_channel_reserve_satoshis,
 
 			#[cfg(debug_assertions)]
-			holder_max_commitment_tx_output: Mutex::new((value_to_self_msat, (channel_value_satoshis * 1000 - msg_push_msat).saturating_sub(value_to_self_msat))),
+			holder_prev_commitment_tx_balance: Mutex::new((value_to_self_msat, (channel_value_satoshis * 1000 - msg_push_msat).saturating_sub(value_to_self_msat))),
 			#[cfg(debug_assertions)]
-			counterparty_max_commitment_tx_output: Mutex::new((value_to_self_msat, (channel_value_satoshis * 1000 - msg_push_msat).saturating_sub(value_to_self_msat))),
+			counterparty_prev_commitment_tx_balance: Mutex::new((value_to_self_msat, (channel_value_satoshis * 1000 - msg_push_msat).saturating_sub(value_to_self_msat))),
 
 			#[cfg(any(test, fuzzing))]
 			next_local_fee: Mutex::new(PredictedNextFee::default()),
@@ -4037,9 +4043,9 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			// We'll add our counterparty's `funding_satoshis` to these max commitment output assertions
 			// when we receive `accept_channel2`.
 			#[cfg(debug_assertions)]
-			holder_max_commitment_tx_output: Mutex::new((channel_value_satoshis * 1000 - push_msat, push_msat)),
+			holder_prev_commitment_tx_balance: Mutex::new((channel_value_satoshis * 1000 - push_msat, push_msat)),
 			#[cfg(debug_assertions)]
-			counterparty_max_commitment_tx_output: Mutex::new((channel_value_satoshis * 1000 - push_msat, push_msat)),
+			counterparty_prev_commitment_tx_balance: Mutex::new((channel_value_satoshis * 1000 - push_msat, push_msat)),
 
 			#[cfg(any(test, fuzzing))]
 			next_local_fee: Mutex::new(PredictedNextFee::default()),
@@ -5588,17 +5594,26 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		{
 			// Make sure that the to_self/to_remote is always either past the appropriate
 			// channel_reserve *or* it is making progress towards it.
-			let mut broadcaster_max_commitment_tx_output = if generated_by_local {
-				funding.holder_max_commitment_tx_output.lock().unwrap()
+			let mut broadcaster_prev_commitment_balance = if generated_by_local {
+				funding.holder_prev_commitment_tx_balance.lock().unwrap()
 			} else {
-				funding.counterparty_max_commitment_tx_output.lock().unwrap()
+				funding.counterparty_prev_commitment_tx_balance.lock().unwrap()
 			};
-			debug_assert!(broadcaster_max_commitment_tx_output.0 <= stats.local_balance_before_fee_msat || stats.local_balance_before_fee_msat / 1000 >= funding.counterparty_selected_channel_reserve_satoshis.unwrap());
-			broadcaster_max_commitment_tx_output.0 = cmp::max(broadcaster_max_commitment_tx_output.0, stats.local_balance_before_fee_msat);
-			debug_assert!(broadcaster_max_commitment_tx_output.1 <= stats.remote_balance_before_fee_msat || stats.remote_balance_before_fee_msat / 1000 >= funding.holder_selected_channel_reserve_satoshis);
-			broadcaster_max_commitment_tx_output.1 = cmp::max(broadcaster_max_commitment_tx_output.1, stats.remote_balance_before_fee_msat);
-		}
 
+			if stats.local_balance_before_fee_msat / 1000 < funding.counterparty_selected_channel_reserve_satoshis.unwrap() {
+				// If the local balance is below the reserve on this new commitment, it MUST be
+				// greater than or equal to the one on the previous commitment.
+				debug_assert!(broadcaster_prev_commitment_balance.0 <= stats.local_balance_before_fee_msat);
+			}
+			broadcaster_prev_commitment_balance.0 = stats.local_balance_before_fee_msat;
+
+			if stats.remote_balance_before_fee_msat / 1000 < funding.holder_selected_channel_reserve_satoshis {
+				// If the remote balance is below the reserve on this new commitment, it MUST be
+				// greater than or equal to the one on the previous commitment.
+				debug_assert!(broadcaster_prev_commitment_balance.1 <= stats.remote_balance_before_fee_msat);
+			}
+			broadcaster_prev_commitment_balance.1 = stats.remote_balance_before_fee_msat;
+		}
 
 		// This populates the HTLC-source table with the indices from the HTLCs in the commitment
 		// transaction.
@@ -15977,9 +15992,9 @@ impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
 					.unwrap(),
 
 				#[cfg(debug_assertions)]
-				holder_max_commitment_tx_output: Mutex::new((0, 0)),
+				holder_prev_commitment_tx_balance: Mutex::new((0, 0)),
 				#[cfg(debug_assertions)]
-				counterparty_max_commitment_tx_output: Mutex::new((0, 0)),
+				counterparty_prev_commitment_tx_balance: Mutex::new((0, 0)),
 
 				#[cfg(any(test, fuzzing))]
 				next_local_fee: Mutex::new(PredictedNextFee::default()),
@@ -18542,9 +18557,9 @@ mod tests {
 			holder_selected_channel_reserve_satoshis: 0,
 
 			#[cfg(debug_assertions)]
-			holder_max_commitment_tx_output: Mutex::new((0, 0)),
+			holder_prev_commitment_tx_balance: Mutex::new((0, 0)),
 			#[cfg(debug_assertions)]
-			counterparty_max_commitment_tx_output: Mutex::new((0, 0)),
+			counterparty_prev_commitment_tx_balance: Mutex::new((0, 0)),
 
 			#[cfg(any(test, fuzzing))]
 			next_local_fee: Mutex::new(PredictedNextFee::default()),
