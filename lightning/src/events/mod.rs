@@ -77,7 +77,7 @@ pub enum FundingInfo {
 		/// The outpoint of the funding
 		outpoint: transaction::OutPoint,
 	},
-	/// The contributions used to for a dual funding or splice funding transaction.
+	/// The contributions used for a dual funding or splice funding transaction.
 	Contribution {
 		/// UTXOs spent as inputs contributed to the funding transaction.
 		inputs: Vec<OutPoint>,
