@@ -634,6 +634,9 @@ impl_writeable_tlv_based_enum_upgradable!(OnchainEvent,
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ChannelMonitorUpdateStep {
+	EventGenerated {
+		event: Event,
+	},
 	LatestHolderCommitmentTXInfo {
 		commitment_tx: HolderCommitmentTransaction,
 		/// Note that LDK after 0.0.115 supports this only containing dust HTLCs (implying the
@@ -723,6 +726,7 @@ impl ChannelMonitorUpdateStep {
 			ChannelMonitorUpdateStep::RenegotiatedFunding { .. } => "RenegotiatedFunding",
 			ChannelMonitorUpdateStep::RenegotiatedFundingLocked { .. } => "RenegotiatedFundingLocked",
 			ChannelMonitorUpdateStep::ReleasePaymentComplete { .. } => "ReleasePaymentComplete",
+			ChannelMonitorUpdateStep::EventGenerated { .. } => "EventGenerated",
 		}
 	}
 }
@@ -777,6 +781,9 @@ impl_writeable_tlv_based_enum_upgradable!(ChannelMonitorUpdateStep,
 	(12, RenegotiatedFundingLocked) => {
 		(1, funding_txid, required),
 	},
+	(13, EventGenerated) => {
+		(0, event, upgradable_required),
+	}
 );
 
 /// Indicates whether the balance is derived from a cooperative close, a force-close
@@ -1283,6 +1290,7 @@ pub(crate) struct ChannelMonitorImpl<Signer: EcdsaChannelSigner> {
 	pending_monitor_events: Vec<MonitorEvent>,
 
 	pub(super) pending_events: Vec<Event>,
+	pub(super) pending_mgr_events: Vec<Event>,
 	pub(super) is_processing_pending_events: bool,
 
 	// Used to track on-chain events (i.e., transactions part of channels confirmed on chain) on
@@ -1755,6 +1763,7 @@ pub(crate) fn write_chanmon_internal<Signer: EcdsaChannelSigner, W: Writer>(
 		(34, channel_monitor.alternative_funding_confirmed, option),
 		(35, channel_monitor.is_manual_broadcast, required),
 		(37, channel_monitor.funding_seen_onchain, required),
+		(38, channel_monitor.pending_mgr_events, optional_vec),
 	});
 
 	Ok(())
@@ -1938,6 +1947,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 
 			payment_preimages: new_hash_map(),
 			pending_monitor_events: Vec::new(),
+			pending_mgr_events: Vec::new(),
 			pending_events: Vec::new(),
 			is_processing_pending_events: false,
 
@@ -4155,6 +4165,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				// provide a preimage at this point.
 				ChannelMonitorUpdateStep::PaymentPreimage { .. } =>
 					debug_assert!(self.lockdown_from_offchain),
+				ChannelMonitorUpdateStep::EventGenerated { .. } => {},
 				_ => {
 					log_error!(logger, "Attempted to apply post-force-close ChannelMonitorUpdate of type {}", updates.updates[0].variant_name());
 					panic!("Attempted to apply post-force-close ChannelMonitorUpdate that wasn't providing a payment preimage");
@@ -4281,6 +4292,10 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					log_trace!(logger, "HTLC {htlc:?} permanently and fully resolved");
 					self.htlcs_resolved_to_user.insert(*htlc);
 				},
+				ChannelMonitorUpdateStep::EventGenerated { event } => {
+					log_trace!(logger, "Updating ChannelMonitor with channel manager event: {:?}", event);
+					self.pending_mgr_events.push(event.clone());
+				},
 			}
 		}
 
@@ -4313,6 +4328,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				ChannelMonitorUpdateStep::PaymentPreimage { .. } => {},
 				ChannelMonitorUpdateStep::ChannelForceClosed { .. } => {},
 				ChannelMonitorUpdateStep::ReleasePaymentComplete { .. } => {},
+    			ChannelMonitorUpdateStep::EventGenerated { .. } => {},
 			}
 		}
 
@@ -6521,6 +6537,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		let mut alternative_funding_confirmed = None;
 		let mut is_manual_broadcast = RequiredWrapper(None);
 		let mut funding_seen_onchain = RequiredWrapper(None);
+		let mut pending_mgr_events = Some(Vec::new());
 		read_tlv_fields!(reader, {
 			(1, funding_spend_confirmed, option),
 			(3, htlcs_resolved_on_chain, optional_vec),
@@ -6543,6 +6560,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			(34, alternative_funding_confirmed, option),
 			(35, is_manual_broadcast, (default_value, false)),
 			(37, funding_seen_onchain, (default_value, true)),
+			(38, pending_mgr_events, optional_vec),
 		});
 		// Note that `payment_preimages_with_info` was added (and is always written) in LDK 0.1, so
 		// we can use it to determine if this monitor was last written by LDK 0.1 or later.
@@ -6692,6 +6710,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 
 			payment_preimages,
 			pending_monitor_events: pending_monitor_events.unwrap(),
+			pending_mgr_events: pending_mgr_events.unwrap(),
 			pending_events,
 			is_processing_pending_events: false,
 
