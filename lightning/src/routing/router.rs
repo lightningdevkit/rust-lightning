@@ -1919,6 +1919,7 @@ struct NodeCounters<'a> {
 	network_graph: &'a ReadOnlyNetworkGraph<'a>,
 	private_node_id_to_node_counter: HashMap<NodeId, u32>,
 	private_hop_key_cache: HashMap<PublicKey, (NodeId, u32)>,
+	have_blinded_payee_counter: bool,
 }
 
 struct NodeCountersBuilder<'a>(NodeCounters<'a>);
@@ -1929,7 +1930,15 @@ impl<'a> NodeCountersBuilder<'a> {
 			network_graph,
 			private_node_id_to_node_counter: new_hash_map(),
 			private_hop_key_cache: new_hash_map(),
+			have_blinded_payee_counter: false,
 		})
+	}
+
+	fn select_node_counter_for_blinded_payee_and_build(mut self) -> (u32, NodeCounters<'a>) {
+		let next_node_counter = self.0.network_graph.max_node_counter() + 1 +
+			self.0.private_node_id_to_node_counter.len() as u32;
+		self.0.have_blinded_payee_counter = true;
+		(next_node_counter, self.0)
 	}
 
 	fn select_node_counter_for_pubkey(&mut self, pubkey: PublicKey) -> u32 {
@@ -1960,7 +1969,8 @@ impl<'a> NodeCounters<'a> {
 	#[rustfmt::skip]
 	fn max_counter(&self) -> u32 {
 		self.network_graph.max_node_counter() +
-			self.private_node_id_to_node_counter.len() as u32
+			self.private_node_id_to_node_counter.len() as u32 +
+			if self.have_blinded_payee_counter { 1 } else { 0 }
 	}
 
 	fn private_node_counter_from_pubkey(&self, pubkey: &PublicKey) -> Option<&(NodeId, u32)> {
@@ -2638,7 +2648,6 @@ pub(crate) fn get_route<L: Logger, S: ScoreLookUp>(
 	let mut node_counter_builder = NodeCountersBuilder::new(&network_graph);
 
 	let payer_node_counter = node_counter_builder.select_node_counter_for_pubkey(*our_node_pubkey);
-	let payee_node_counter = node_counter_builder.select_node_counter_for_pubkey(maybe_dummy_payee_pk);
 
 	for route in payment_params.payee.unblinded_route_hints().iter() {
 		for hop in route.0.iter() {
@@ -2677,7 +2686,11 @@ pub(crate) fn get_route<L: Logger, S: ScoreLookUp>(
 		}
 	}
 
-	let node_counters = node_counter_builder.build();
+	let (payee_node_counter, node_counters) = if let Some(pubkey) = payment_params.payee.node_id() {
+		(node_counter_builder.select_node_counter_for_pubkey(pubkey), node_counter_builder.build())
+	} else {
+		node_counter_builder.select_node_counter_for_blinded_payee_and_build()
+	};
 
 	let introduction_node_id_cache = calculate_blinded_path_intro_points(
 		&payment_params, &node_counters, network_graph, &logger, our_node_id, &first_hop_targets,
