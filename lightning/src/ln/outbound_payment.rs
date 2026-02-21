@@ -144,6 +144,8 @@ pub(crate) enum PendingOutboundPayment {
 		timer_ticks_without_htlcs: u8,
 		/// The total payment amount across all paths, used to be able to issue `PaymentSent`.
 		total_msat: Option<u64>,
+		/// The fee paid for this payment, tracked when transitioning from Retryable to Fulfilled.
+		pending_fee_msat: Option<u64>,
 	},
 	/// When we've decided to give up retrying a payment, we mark it as abandoned so we can eventually
 	/// generate a `PaymentFailed` event when all HTLCs have irrevocably failed.
@@ -197,7 +199,7 @@ impl PendingOutboundPayment {
 		}
 	}
 	#[rustfmt::skip]
-	fn is_retryable_now(&self) -> bool {
+	pub(super) fn is_retryable_now(&self) -> bool {
 		match self {
 			PendingOutboundPayment::Retryable { retry_strategy: None, .. } => {
 				// We're handling retries manually, we can always retry.
@@ -274,6 +276,10 @@ impl PendingOutboundPayment {
 	#[rustfmt::skip]
 	fn mark_fulfilled(&mut self) {
 		let mut session_privs = new_hash_set();
+		let pending_fee_msat = match self {
+			PendingOutboundPayment::Retryable { pending_fee_msat, .. } => pending_fee_msat.clone(),
+			_ => None,
+		};
 		core::mem::swap(&mut session_privs, match self {
 			PendingOutboundPayment::Legacy { session_privs } |
 				PendingOutboundPayment::Retryable { session_privs, .. } |
@@ -286,7 +292,7 @@ impl PendingOutboundPayment {
 		});
 		let payment_hash = self.payment_hash();
 		let total_msat = self.total_msat();
-		*self = PendingOutboundPayment::Fulfilled { session_privs, payment_hash, timer_ticks_without_htlcs: 0, total_msat };
+		*self = PendingOutboundPayment::Fulfilled { session_privs, payment_hash, timer_ticks_without_htlcs: 0, total_msat, pending_fee_msat };
 	}
 
 	#[rustfmt::skip]
@@ -2701,6 +2707,7 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 		(1, payment_hash, option),
 		(3, timer_ticks_without_htlcs, (default_value, 0)),
 		(5, total_msat, option),
+		(7, pending_fee_msat, option),
 	},
 	(2, Retryable) => {
 		(0, session_privs, required),

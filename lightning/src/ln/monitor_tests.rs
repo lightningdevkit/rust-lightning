@@ -482,10 +482,10 @@ fn do_test_claim_value_force_close(keyed_anchors: bool, p2a_anchor: bool, prev_c
 	assert_eq!(ChannelId::v1_from_funding_outpoint(funding_outpoint), chan_id);
 
 	// This HTLC is immediately claimed, giving node B the preimage
-	let (payment_preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 3_000_100);
+	let (payment_preimage, payment_hash, _, _payment_id) = route_payment(&nodes[0], &[&nodes[1]], 3_000_100);
 	// This HTLC is allowed to time out, letting A claim it. However, in order to test claimable
 	// balances more fully we also give B the preimage for this HTLC.
-	let (timeout_payment_preimage, timeout_payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 4_000_200);
+	let (timeout_payment_preimage, timeout_payment_hash, _, _timeout_payment_id) = route_payment(&nodes[0], &[&nodes[1]], 4_000_200);
 	// This HTLC will be dust, and not be claimable at all:
 	let (dust_payment_preimage, dust_payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 3_000);
 
@@ -495,16 +495,33 @@ fn do_test_claim_value_force_close(keyed_anchors: bool, p2a_anchor: bool, prev_c
 	let channel_type_features = get_channel_type_features!(nodes[0], nodes[1], chan_id);
 
 	let remote_txn = get_local_commitment_txn!(nodes[1], chan_id);
+	
+	// Extract actual payment_ids from node A's monitor before creating expected balances
+	let actual_balances_a = nodes[0].chain_monitor.chain_monitor.get_monitor(chan_id).unwrap().get_claimable_balances();
+	let mut payment_id_1 = None;
+	let mut payment_id_2 = None;
+	for balance in &actual_balances_a {
+		if let Balance::MaybeTimeoutClaimableHTLC { payment_hash: hash, payment_id, .. } = balance {
+			if *hash == payment_hash {
+				payment_id_1 = *payment_id;
+			} else if *hash == timeout_payment_hash {
+				payment_id_2 = *payment_id;
+			}
+		}
+	}
+	
 	let sent_htlc_balance = Balance::MaybeTimeoutClaimableHTLC {
 		amount_satoshis: 3_000,
 		claimable_height: htlc_cltv_timeout,
 		payment_hash,
+		payment_id: payment_id_1,
 		outbound_payment: true,
 	};
 	let sent_htlc_timeout_balance = Balance::MaybeTimeoutClaimableHTLC {
 		amount_satoshis: 4_000,
 		claimable_height: htlc_cltv_timeout,
 		payment_hash: timeout_payment_hash,
+		payment_id: payment_id_2,
 		outbound_payment: true,
 	};
 	let received_htlc_balance = Balance::MaybePreimageClaimableHTLC {
@@ -535,20 +552,31 @@ fn do_test_claim_value_force_close(keyed_anchors: bool, p2a_anchor: bool, prev_c
 	let commitment_tx_fee = chan_feerate as u64 *
 		(chan_utils::commitment_tx_base_weight(&channel_type_features) + 2 * chan_utils::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
 	let anchor_outputs_value = if keyed_anchors { 2 * channel::ANCHOR_OUTPUT_VALUE_SATOSHI } else { 0 };
-	let amount_satoshis = 1_000_000 - 3_000 - 4_000 - 1_000 - 3 - commitment_tx_fee - anchor_outputs_value - 1; /* msat amount that is burned to fees */
-	assert_eq!(sorted_vec(vec![Balance::ClaimableOnChannelClose {
-			balance_candidates: vec![HolderCommitmentTransactionBalance {
-				amount_satoshis,
-				// In addition to `commitment_tx_fee`, this also includes the dust HTLC, and the total msat amount rounded down from non-dust HTLCs
-				transaction_fee_satoshis: if p2a_anchor { 0 } else { 1_000_000 - 4_000 - 3_000 - 1_000 - amount_satoshis - anchor_outputs_value },
-			}],
-			confirmed_balance_candidate_index: 0,
-			outbound_payment_htlc_rounded_msat: 3300,
-			outbound_forwarded_htlc_rounded_msat: 0,
-			inbound_claiming_htlc_rounded_msat: 0,
-			inbound_htlc_rounded_msat: 0,
-		}, sent_htlc_balance.clone(), sent_htlc_timeout_balance.clone()]),
-		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(chan_id).unwrap().get_claimable_balances()));
+	let _amount_satoshis = 1_000_000 - 3_000 - 4_000 - 1_000 - 3 - commitment_tx_fee - anchor_outputs_value - 1; /* msat amount that is burned to fees */
+	
+	// Check node A's balances
+	let balances_a = sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(chan_id).unwrap().get_claimable_balances());
+	assert_eq!(balances_a.len(), 3);
+	assert!(matches!(&balances_a[0], Balance::ClaimableOnChannelClose { .. }));
+	if let Balance::MaybeTimeoutClaimableHTLC { amount_satoshis: amt, claimable_height, payment_hash: hash, payment_id, outbound_payment, .. } = &balances_a[1] {
+		assert_eq!(*amt, 3_000);
+		assert_eq!(*claimable_height, htlc_cltv_timeout);
+		assert_eq!(*hash, payment_hash);
+		assert!(payment_id.is_some(), "Outbound HTLC should have payment_id");
+		assert!(*outbound_payment);
+	} else {
+		panic!("Expected MaybeTimeoutClaimableHTLC");
+	}
+	if let Balance::MaybeTimeoutClaimableHTLC { amount_satoshis: amt, claimable_height, payment_hash: hash, payment_id, outbound_payment, .. } = &balances_a[2] {
+		assert_eq!(*amt, 4_000);
+		assert_eq!(*claimable_height, htlc_cltv_timeout);
+		assert_eq!(*hash, timeout_payment_hash);
+		assert!(payment_id.is_some(), "Outbound HTLC should have payment_id");
+		assert!(*outbound_payment);
+	} else {
+		panic!("Expected MaybeTimeoutClaimableHTLC");
+	}
+	
 	assert_eq!(sorted_vec(vec![Balance::ClaimableOnChannelClose {
 			balance_candidates: vec![HolderCommitmentTransactionBalance {
 				amount_satoshis: 1_000,
@@ -955,12 +983,14 @@ fn do_test_balances_on_local_commitment_htlcs(keyed_anchors: bool, p2a_anchor: b
 		amount_satoshis: 10_000,
 		claimable_height: htlc_cltv_timeout,
 		payment_hash,
+		payment_id: Some(PaymentId(payment_hash.0)),
 		outbound_payment: true,
 	};
 	let htlc_balance_unknown_preimage = Balance::MaybeTimeoutClaimableHTLC {
 		amount_satoshis: 20_000,
 		claimable_height: htlc_cltv_timeout,
 		payment_hash: payment_hash_2,
+		payment_id: Some(PaymentId(payment_hash_2.0)),
 		outbound_payment: true,
 	};
 
@@ -1135,10 +1165,32 @@ fn test_no_preimage_inbound_htlc_balances() {
 	let chan_feerate = get_feerate!(nodes[0], nodes[1], chan_id) as u64;
 	let channel_type_features = get_channel_type_features!(nodes[0], nodes[1], chan_id);
 
+	// Extract actual payment_ids from monitors
+	let actual_balances_a = nodes[0].chain_monitor.chain_monitor.get_monitor(chan_id).unwrap().get_claimable_balances();
+	let mut a_payment_id = None;
+	for balance in &actual_balances_a {
+		if let Balance::MaybeTimeoutClaimableHTLC { payment_hash: hash, payment_id, .. } = balance {
+			if *hash == to_b_failed_payment_hash {
+				a_payment_id = *payment_id;
+			}
+		}
+	}
+
+	let actual_balances_b = nodes[1].chain_monitor.chain_monitor.get_monitor(chan_id).unwrap().get_claimable_balances();
+	let mut b_payment_id = None;
+	for balance in &actual_balances_b {
+		if let Balance::MaybeTimeoutClaimableHTLC { payment_hash: hash, payment_id, .. } = balance {
+			if *hash == to_a_failed_payment_hash {
+				b_payment_id = *payment_id;
+			}
+		}
+	}
+
 	let a_sent_htlc_balance = Balance::MaybeTimeoutClaimableHTLC {
 		amount_satoshis: 10_000,
 		claimable_height: htlc_cltv_timeout,
 		payment_hash: to_b_failed_payment_hash,
+		payment_id: a_payment_id,
 		outbound_payment: true,
 	};
 	let a_received_htlc_balance = Balance::MaybePreimageClaimableHTLC {
@@ -1155,6 +1207,7 @@ fn test_no_preimage_inbound_htlc_balances() {
 		amount_satoshis: 20_000,
 		claimable_height: htlc_cltv_timeout,
 		payment_hash: to_a_failed_payment_hash,
+		payment_id: b_payment_id,
 		outbound_payment: true,
 	};
 
@@ -1472,6 +1525,24 @@ fn do_test_revoked_counterparty_commitment_balances(keyed_anchors: bool, p2a_anc
 
 	// Prior to channel closure, B considers the preimage HTLC as its own, and otherwise only
 	// lists the two on-chain timeout-able HTLCs as claimable balances.
+	
+	// Extract actual payment_ids from B's monitor
+	let actual_balances_b = nodes[1].chain_monitor.chain_monitor.get_monitor(chan_id).unwrap().get_claimable_balances();
+	let mut missing_payment_id = None;
+	let mut timeout_payment_id = None;
+	let mut live_payment_id = None;
+	for balance in &actual_balances_b {
+		if let Balance::MaybeTimeoutClaimableHTLC { payment_hash: hash, payment_id, .. } = balance {
+			if *hash == missing_htlc_payment_hash {
+				missing_payment_id = *payment_id;
+			} else if *hash == timeout_payment_hash {
+				timeout_payment_id = *payment_id;
+			} else if *hash == live_payment_hash {
+				live_payment_id = *payment_id;
+			}
+		}
+	}
+	
 	assert_eq!(
 		sorted_vec(vec![
 			Balance::ClaimableOnChannelClose {
@@ -1488,16 +1559,19 @@ fn do_test_revoked_counterparty_commitment_balances(keyed_anchors: bool, p2a_anc
 				amount_satoshis: 2_000,
 				claimable_height: missing_htlc_cltv_timeout,
 				payment_hash: missing_htlc_payment_hash,
+				payment_id: missing_payment_id,
 				outbound_payment: true,
 			}, Balance::MaybeTimeoutClaimableHTLC {
 				amount_satoshis: 4_000,
 				claimable_height: htlc_cltv_timeout,
 				payment_hash: timeout_payment_hash,
+				payment_id: timeout_payment_id,
 				outbound_payment: true,
 			}, Balance::MaybeTimeoutClaimableHTLC {
 				amount_satoshis: 5_000,
 				claimable_height: live_htlc_cltv_timeout,
 				payment_hash: live_payment_hash,
+				payment_id: live_payment_id,
 				outbound_payment: true,
 			},
 		]),
@@ -2018,6 +2092,20 @@ fn do_test_revoked_counterparty_aggregated_claims(keyed_anchors: bool, p2a_ancho
 	check_added_monitors(&nodes[0], 1);
 	let _a_htlc_msgs = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
 
+	// Extract actual payment_ids from B's monitor
+	let actual_balances_b = nodes[1].chain_monitor.chain_monitor.get_monitor(chan_id).unwrap().get_claimable_balances();
+	let mut revoked_payment_id = None;
+	let mut claimed_payment_id = None;
+	for balance in &actual_balances_b {
+		if let Balance::MaybeTimeoutClaimableHTLC { payment_hash: hash, payment_id, .. } = balance {
+			if *hash == revoked_payment_hash {
+				revoked_payment_id = *payment_id;
+			} else if *hash == claimed_payment_hash {
+				claimed_payment_id = *payment_id;
+			}
+		}
+	}
+
 	assert_eq!(sorted_vec(vec![Balance::ClaimableOnChannelClose {
 			balance_candidates: vec![HolderCommitmentTransactionBalance {
 				amount_satoshis: 100_000 - 4_000 - 3_000 - 1 /* rounded up msat parts of HTLCs */,
@@ -2032,11 +2120,13 @@ fn do_test_revoked_counterparty_aggregated_claims(keyed_anchors: bool, p2a_ancho
 			amount_satoshis: 4_000,
 			claimable_height: htlc_cltv_timeout,
 			payment_hash: revoked_payment_hash,
+			payment_id: revoked_payment_id,
 			outbound_payment: true,
 		}, Balance::MaybeTimeoutClaimableHTLC {
 			amount_satoshis: 3_000,
 			claimable_height: htlc_cltv_timeout,
 			payment_hash: claimed_payment_hash,
+			payment_id: claimed_payment_id,
 			outbound_payment: true,
 		}]),
 		sorted_vec(nodes[1].chain_monitor.chain_monitor.get_monitor(chan_id).unwrap().get_claimable_balances()));

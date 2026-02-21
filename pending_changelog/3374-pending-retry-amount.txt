@@ -1,0 +1,8 @@
+## API Updates
+
+* `RecentPaymentDetails::Pending` now includes `inflight_msat` and `is_retryable`
+  to track payment retry state (#3374).
+* Added `ChannelManager::get_spendable_balance_msat()` and `get_balance_details()`
+  to calculate available balance without double-counting stuck payments (#3374).
+* Added `BalanceDetails` struct for detailed balance breakdown (#3374).
+* `Balance::MaybeTimeoutClaimableHTLC` now includes `payment_id` (#3374).
