@@ -15,15 +15,28 @@ jobs:
         uses: actions/checkout@v3
         with:
           path: rust-lightning
+      - name: Determine LDK Node repo and branch
+        id: ldk-node-ref
+        if: github.event_name == 'pull_request'
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          LDK_NODE_REF=$(echo "$PR_BODY" | sed -n 's/^[[:space:]]*ldk-node:[[:space:]]*//p' | tr -d '[:space:]')
+          if [ -n "$LDK_NODE_REF" ]; then
+            echo "repo=$(echo "$LDK_NODE_REF" | cut -d'#' -f1)" >> "$GITHUB_OUTPUT"
+            echo "ref=$(echo "$LDK_NODE_REF" | cut -d'#' -s -f2)" >> "$GITHUB_OUTPUT"
+          fi
       - name: Checkout LDK Node
         uses: actions/checkout@v3
         with:
-          repository: lightningdevkit/ldk-node
+          repository: ${{ steps.ldk-node-ref.outputs.repo || 'lightningdevkit/ldk-node' }}
+          ref: ${{ steps.ldk-node-ref.outputs.ref || '' }}
           path: ldk-node
       - name: Install Rust stable toolchain
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain stable
-      - name: Run LDK Node Integration Tests
+      - name: Patch LDK Node Cargo.toml
+        if: steps.ldk-node-ref.outputs.repo == ''
         run: |
           cd ldk-node
           cat <<EOF >> Cargo.toml
@@ -53,5 +66,8 @@ jobs:
             lightning-liquidity = { path = "../rust-lightning/lightning-liquidity" }
             lightning-macros = { path = "../rust-lightning/lightning-macros" }
           EOF
+      - name: Run LDK Node Integration Tests
+        run: |
+          cd ldk-node
           cargo check
           cargo check --features uniffi
