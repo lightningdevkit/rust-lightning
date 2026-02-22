@@ -2320,6 +2320,21 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		ret
 	}
 
+	#[cfg(any(test, feature = "_test_utils"))]
+	pub fn get_and_clear_claim_info_events(&self) -> Vec<Event> {
+		let mut res = Vec::new();
+		let mut inner = self.inner.lock().unwrap();
+		inner.pending_events.retain(|ev| {
+			if let Event::PersistClaimInfo { .. } = ev {
+				res.push(ev.clone());
+				false
+			} else {
+				true
+			}
+		});
+		res
+	}
+
 	/// Gets the counterparty's initial commitment transaction. The returned commitment
 	/// transaction is unsigned. This is intended to be called during the initial persistence of
 	/// the monitor (inside an implementation of [`Persist::persist_new_channel`]), to allow for
@@ -3557,6 +3572,13 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				} else {
 					assert!(cfg!(fuzzing), "Commitment txids are unique outside of fuzzing, where hashes can collide");
 				}
+				let htlcs = funding.counterparty_claimable_outpoints.get(&txid).unwrap().iter().map(|(htlc, _)| htlc.clone()).collect();
+				self.pending_events.push(Event::PersistClaimInfo {
+					funding_txo: funding.funding_outpoint().into_bitcoin_outpoint(),
+					channel_id: self.channel_id,
+					claim_key: ClaimKey(txid),
+					claim_info: ClaimInfo { htlcs },
+				})
 			}
 		};
 		core::iter::once(&mut self.funding).chain(&mut self.pending_funding).for_each(prune_htlc_sources);

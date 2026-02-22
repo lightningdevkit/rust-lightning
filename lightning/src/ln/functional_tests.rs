@@ -7385,6 +7385,10 @@ pub fn test_update_err_monitor_lockdown() {
 				)
 				.unwrap()
 				.1;
+			// Compare events separately since we don't ever persist [`Event::PersistClaimInfo`] event.
+			let events = monitor.get_and_clear_pending_events();
+			let new_events = new_monitor.get_and_clear_pending_events();
+			assert_eq!(new_events, events);
 			assert!(new_monitor == *monitor);
 			new_monitor
 		};
@@ -7493,6 +7497,10 @@ pub fn test_concurrent_monitor_claim() {
 				)
 				.unwrap()
 				.1;
+			// Compare events separately since we don't ever persist [`Event::PersistClaimInfo`] event.
+			let events = monitor.get_and_clear_pending_events();
+			let new_events = new_monitor.get_and_clear_pending_events();
+			assert_eq!(new_events, events);
 			assert!(new_monitor == *monitor);
 			new_monitor
 		};
@@ -7543,6 +7551,10 @@ pub fn test_concurrent_monitor_claim() {
 				)
 				.unwrap()
 				.1;
+			// Compare events separately since we don't ever persist [`Event::PersistClaimInfo`] event.
+			let events = monitor.get_and_clear_pending_events();
+			let new_events = new_monitor.get_and_clear_pending_events();
+			assert_eq!(new_events, events);
 			assert!(new_monitor == *monitor);
 			new_monitor
 		};
@@ -10010,7 +10022,7 @@ fn do_test_multi_post_event_actions(do_reload: bool) {
 	// After the events are processed, the ChannelMonitorUpdates will be released and, upon their
 	// completion, we'll respond to nodes[1] with an RAA + CS.
 	get_revoke_commit_msgs(&nodes[0], &node_b_id);
-	check_added_monitors(&nodes[0], 3);
+	check_added_monitors_with_claim_info_events(&nodes[0], 3, 2);
 }
 
 #[xtest(feature = "_externalize_tests")]
