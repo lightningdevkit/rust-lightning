@@ -4873,6 +4873,17 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						claimable_outpoints.push(justice_package);
 					}
 				}
+			} else {
+				self.pending_events.push(Event::ClaimInfoRequest {
+					funding_txo: funding_spent.funding_outpoint().into_bitcoin_outpoint(),
+					channel_id: self.channel_id,
+					claim_key: ClaimKey(commitment_txid),
+					claim_metadata: ClaimMetadata {
+						block_hash: block_hash.clone(),
+						tx: commitment_tx.clone(),
+						height,
+					},
+				});
 			}
 
 			// Last, track onchain revoked commitment transaction and fail backward outgoing HTLCs as payment path is broken
@@ -4886,14 +4897,6 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						block_hash, per_commitment_claimable_data.iter().map(|(htlc, htlc_source)|
 							(htlc, htlc_source.as_ref().map(|htlc_source| htlc_source.as_ref()))
 						), logger);
-				} else {
-					// Our fuzzers aren't constrained by pesky things like valid signatures, so can
-					// spend our funding output with a transaction which doesn't match our past
-					// commitment transactions. Thus, we can only debug-assert here when not
-					// fuzzing.
-					debug_assert!(cfg!(fuzzing), "We should have per-commitment option for any recognized old commitment txn");
-					fail_unbroadcast_htlcs!(self, "revoked counterparty", commitment_txid, commitment_tx, height,
-						block_hash, [].iter().map(|reference| *reference), logger);
 				}
 			}
 		} else if let Some(per_commitment_claimable_data) = per_commitment_option {
@@ -5100,7 +5103,13 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		let per_commitment_point = PublicKey::from_secret_key(&self.onchain_tx_handler.secp_ctx, &per_commitment_key);
 
 		let funding_spent = get_confirmed_funding_scope!(self);
-		debug_assert!(funding_spent.counterparty_claimable_outpoints.contains_key(commitment_txid));
+		// The counterparty_claimable_outpoints entry may not exist if the claim info was
+		// offloaded via `claim_info_persisted` and not yet re-provided. The HTLC justice
+		// claim only requires the per-commitment key, not the full claim info.
+		debug_assert!(
+			funding_spent.counterparty_claimable_outpoints.contains_key(commitment_txid)
+				|| self.counterparty_commitment_txn_on_chain.contains_key(commitment_txid)
+		);
 
 		let htlc_txid = tx.compute_txid();
 		let mut claimable_outpoints = vec![];
