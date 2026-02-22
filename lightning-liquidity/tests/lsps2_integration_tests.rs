@@ -71,6 +71,7 @@ fn build_lsps2_configs() -> ([u8; 32], LiquidityServiceConfig, LiquidityClientCo
 		lsps1_client_config: None,
 		lsps2_client_config: Some(lsps2_client_config),
 		lsps5_client_config: None,
+		lsps7_client_config: None,
 	};
 
 	(promise_secret, service_config, client_config)

@@ -53,6 +53,7 @@ fn build_lsps1_configs(
 		lsps1_client_config: Some(lsps1_client_config),
 		lsps2_client_config: None,
 		lsps5_client_config: None,
+		lsps7_client_config: None,
 	};
 
 	(service_config, client_config)
@@ -444,6 +445,7 @@ fn lsps1_service_handler_persistence_across_restarts() {
 			lsps1_client_config: Some(lsps1_client_config),
 			lsps2_client_config: None,
 			lsps5_client_config: None,
+			lsps7_client_config: None,
 		};
 
 		let client_lm = LiquidityManagerSync::new_with_custom_time_provider(
@@ -1096,6 +1098,7 @@ fn lsps1_expired_orders_are_pruned_and_not_persisted() {
 			lsps1_client_config: Some(lsps1_client_config),
 			lsps2_client_config: None,
 			lsps5_client_config: None,
+			lsps7_client_config: None,
 		};
 
 		let client_lm = LiquidityManagerSync::new_with_custom_time_provider(
