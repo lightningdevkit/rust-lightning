@@ -186,7 +186,7 @@ macro_rules! invoice_request_builder_methods { (
 		InvoiceRequestContentsWithoutPayerSigningPubkey {
 			payer: PayerContents(metadata), offer, chain: None, amount_msats: None,
 			features: InvoiceRequestFeatures::empty(), quantity: None, payer_note: None,
-			offer_from_hrn: None,
+			offer_from_hrn: None, invreq_contact_secret: None, invreq_payer_offer: None,
 			#[cfg(test)]
 			experimental_bar: None,
 		}
@@ -252,6 +252,29 @@ macro_rules! invoice_request_builder_methods { (
 	/// Successive calls to this method will override the previous setting.
 	pub fn sourced_from_human_readable_name($($self_mut)* $self: $self_type, hrn: HumanReadableName) -> $return_type {
 		$self.invoice_request.offer_from_hrn = Some(hrn);
+		$return_value
+	}
+
+	/// Sets the contact secret for BLIP-42 contact authentication.
+	///
+	/// This will include the primary secret from the [`ContactSecrets`] in the invoice request.
+	///
+	/// Successive calls to this method will override the previous setting.
+	///
+	/// [`ContactSecrets`]: crate::offers::contacts::ContactSecrets
+	pub fn contact_secrets($($self_mut)* $self: $self_type, contact_secrets: crate::offers::contacts::ContactSecrets) -> $return_type {
+		$self.invoice_request.invreq_contact_secret = Some(*contact_secrets.primary_secret().as_bytes());
+		$return_value
+	}
+
+	/// Sets the payer's offer for BLIP-42 contact management.
+	///
+	/// This will include the serialized offer bytes in the invoice request,
+	/// allowing the recipient to identify which offer the payer is responding to.
+	///
+	/// Successive calls to this method will override the previous setting.
+	pub fn payer_offer($($self_mut)* $self: $self_type, offer: &Offer) -> $return_type {
+		$self.invoice_request.invreq_payer_offer = Some(offer.bytes.clone());
 		$return_value
 	}
 
@@ -500,7 +523,10 @@ impl UnsignedInvoiceRequest {
 
 		invoice_request_tlv_stream.write(&mut bytes).unwrap();
 
-		const EXPERIMENTAL_TLV_ALLOCATION_SIZE: usize = 0;
+		// Allocate sufficient capacity for experimental TLV fields to avoid reallocations.
+		// The new fields (invreq_contact_secret: ~48 bytes, invreq_payer_offer: ~116 bytes)
+		// total ~164 bytes, with 600 providing headroom for future experimental fields.
+		const EXPERIMENTAL_TLV_ALLOCATION_SIZE: usize = 600;
 		let mut experimental_bytes = Vec::with_capacity(EXPERIMENTAL_TLV_ALLOCATION_SIZE);
 
 		let experimental_tlv_stream =
@@ -686,6 +712,8 @@ pub(super) struct InvoiceRequestContentsWithoutPayerSigningPubkey {
 	quantity: Option<u64>,
 	payer_note: Option<String>,
 	offer_from_hrn: Option<HumanReadableName>,
+	invreq_contact_secret: Option<[u8; 32]>,
+	invreq_payer_offer: Option<Vec<u8>>,
 	#[cfg(test)]
 	experimental_bar: Option<u64>,
 }
@@ -746,6 +774,16 @@ macro_rules! invoice_request_accessors { ($self: ident, $contents: expr) => {
 	/// builder to indicate the original [`HumanReadableName`] which was resolved.
 	pub fn offer_from_hrn(&$self) -> &Option<HumanReadableName> {
 		$contents.offer_from_hrn()
+	}
+
+	/// Returns the contact secret if present in the invoice request.
+	pub fn contact_secret(&$self) -> Option<[u8; 32]> {
+		$contents.contact_secret()
+	}
+
+	/// Returns the payer offer if present in the invoice request.
+	pub fn payer_offer(&$self) -> Option<crate::offers::offer::Offer> {
+		$contents.payer_offer()
 	}
 } }
 
@@ -1054,6 +1092,10 @@ macro_rules! fields_accessor {
 				},
 			} = &$inner;
 
+			// Extract BLIP-42 contact information if present
+			let contact_secret = $self.contact_secret();
+			let payer_offer = $self.payer_offer();
+
 			InvoiceRequestFields {
 				payer_signing_pubkey: *payer_signing_pubkey,
 				quantity: *quantity,
@@ -1063,6 +1105,8 @@ macro_rules! fields_accessor {
 					// down to the nearest valid UTF-8 code point boundary.
 					.map(|s| UntrustedString(string_truncate_safe(s, PAYER_NOTE_LIMIT))),
 				human_readable_name: $self.offer_from_hrn().clone(),
+				contact_secret,
+				payer_offer,
 			}
 		}
 	};
@@ -1179,6 +1223,17 @@ impl InvoiceRequestContents {
 		&self.inner.offer_from_hrn
 	}
 
+	pub(super) fn contact_secret(&self) -> Option<[u8; 32]> {
+		self.inner.invreq_contact_secret
+	}
+
+	pub(super) fn payer_offer(&self) -> Option<crate::offers::offer::Offer> {
+		self.inner
+			.invreq_payer_offer
+			.as_ref()
+			.and_then(|bytes| crate::offers::offer::Offer::try_from(bytes.clone()).ok())
+	}
+
 	pub(super) fn as_tlv_stream(&self) -> PartialInvoiceRequestTlvStreamRef<'_> {
 		let (payer, offer, mut invoice_request, experimental_offer, experimental_invoice_request) =
 			self.inner.as_tlv_stream();
@@ -1225,6 +1280,8 @@ impl InvoiceRequestContentsWithoutPayerSigningPubkey {
 		};
 
 		let experimental_invoice_request = ExperimentalInvoiceRequestTlvStreamRef {
+			invreq_contact_secret: self.invreq_contact_secret.as_ref(),
+			invreq_payer_offer: self.invreq_payer_offer.as_ref(),
 			#[cfg(test)]
 			experimental_bar: self.experimental_bar,
 		};
@@ -1291,9 +1348,11 @@ pub(super) const EXPERIMENTAL_INVOICE_REQUEST_TYPES: core::ops::Range<u64> =
 #[cfg(not(test))]
 tlv_stream!(
 	ExperimentalInvoiceRequestTlvStream,
-	ExperimentalInvoiceRequestTlvStreamRef,
+	ExperimentalInvoiceRequestTlvStreamRef<'a>,
 	EXPERIMENTAL_INVOICE_REQUEST_TYPES,
 	{
+		(2_000_001_729, invreq_contact_secret: [u8; 32]),
+		(2_000_001_731, invreq_payer_offer: (Vec<u8>, WithoutLength)),
 		// When adding experimental TLVs, update EXPERIMENTAL_TLV_ALLOCATION_SIZE accordingly in
 		// UnsignedInvoiceRequest::new to avoid unnecessary allocations.
 	}
@@ -1301,8 +1360,10 @@ tlv_stream!(
 
 #[cfg(test)]
 tlv_stream!(
-	ExperimentalInvoiceRequestTlvStream, ExperimentalInvoiceRequestTlvStreamRef,
+	ExperimentalInvoiceRequestTlvStream, ExperimentalInvoiceRequestTlvStreamRef<'a>,
 	EXPERIMENTAL_INVOICE_REQUEST_TYPES, {
+		(2_000_001_729, invreq_contact_secret: [u8; 32]),
+		(2_000_001_731, invreq_payer_offer: (Vec<u8>, WithoutLength)),
 		(2_999_999_999, experimental_bar: (u64, HighZeroBytesDroppedBigSize)),
 	}
 );
@@ -1322,7 +1383,7 @@ type FullInvoiceRequestTlvStreamRef<'a> = (
 	InvoiceRequestTlvStreamRef<'a>,
 	SignatureTlvStreamRef<'a>,
 	ExperimentalOfferTlvStreamRef,
-	ExperimentalInvoiceRequestTlvStreamRef,
+	ExperimentalInvoiceRequestTlvStreamRef<'a>,
 );
 
 impl CursorReadable for FullInvoiceRequestTlvStream {
@@ -1358,7 +1419,7 @@ type PartialInvoiceRequestTlvStreamRef<'a> = (
 	OfferTlvStreamRef<'a>,
 	InvoiceRequestTlvStreamRef<'a>,
 	ExperimentalOfferTlvStreamRef,
-	ExperimentalInvoiceRequestTlvStreamRef,
+	ExperimentalInvoiceRequestTlvStreamRef<'a>,
 );
 
 impl TryFrom<Vec<u8>> for UnsignedInvoiceRequest {
@@ -1437,6 +1498,8 @@ impl TryFrom<PartialInvoiceRequestTlvStream> for InvoiceRequestContents {
 			},
 			experimental_offer_tlv_stream,
 			ExperimentalInvoiceRequestTlvStream {
+				invreq_contact_secret,
+				invreq_payer_offer,
 				#[cfg(test)]
 				experimental_bar,
 			},
@@ -1480,6 +1543,8 @@ impl TryFrom<PartialInvoiceRequestTlvStream> for InvoiceRequestContents {
 				quantity,
 				payer_note,
 				offer_from_hrn,
+				invreq_contact_secret,
+				invreq_payer_offer,
 				#[cfg(test)]
 				experimental_bar,
 			},
@@ -1505,6 +1570,14 @@ pub struct InvoiceRequestFields {
 
 	/// The Human Readable Name which the sender indicated they were paying to.
 	pub human_readable_name: Option<HumanReadableName>,
+
+	/// BLIP-42: The contact secret included by the payer for contact management.
+	/// This allows the recipient to establish a contact relationship with the payer.
+	pub contact_secret: Option<[u8; 32]>,
+
+	/// BLIP-42: The payer's minimal offer included in the invoice request.
+	/// This is a compact offer (just node_id) to fit within payment onion size constraints.
+	pub payer_offer: Option<crate::offers::offer::Offer>,
 }
 
 /// The maximum number of characters included in [`InvoiceRequestFields::payer_note_truncated`].
@@ -1517,11 +1590,14 @@ pub const PAYER_NOTE_LIMIT: usize = 8;
 
 impl Writeable for InvoiceRequestFields {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		let payer_offer_bytes = self.payer_offer.as_ref().map(|offer| offer.as_ref().to_vec());
 		write_tlv_fields!(writer, {
 			(0, self.payer_signing_pubkey, required),
 			(1, self.human_readable_name, option),
 			(2, self.quantity.map(|v| HighZeroBytesDroppedBigSize(v)), option),
 			(4, self.payer_note_truncated.as_ref().map(|s| WithoutLength(&s.0)), option),
+			(6, self.contact_secret, option),
+			(8, payer_offer_bytes.as_ref().map(|v| WithoutLength(&v[..])), option),
 		});
 		Ok(())
 	}
@@ -1534,13 +1610,20 @@ impl Readable for InvoiceRequestFields {
 			(1, human_readable_name, option),
 			(2, quantity, (option, encoding: (u64, HighZeroBytesDroppedBigSize))),
 			(4, payer_note_truncated, (option, encoding: (String, WithoutLength))),
+			(6, contact_secret, option),
+			(8, payer_offer_bytes, (option, encoding: (Vec<u8>, WithoutLength))),
 		});
+
+		let payer_offer =
+			payer_offer_bytes.and_then(|bytes| crate::offers::offer::Offer::try_from(bytes).ok());
 
 		Ok(InvoiceRequestFields {
 			payer_signing_pubkey: payer_signing_pubkey.0.unwrap(),
 			quantity,
 			payer_note_truncated: payer_note_truncated.map(|s| UntrustedString(s)),
 			human_readable_name,
+			contact_secret,
+			payer_offer,
 		})
 	}
 }
@@ -1660,7 +1743,11 @@ mod tests {
 				},
 				SignatureTlvStreamRef { signature: Some(&invoice_request.signature()) },
 				ExperimentalOfferTlvStreamRef { experimental_foo: None },
-				ExperimentalInvoiceRequestTlvStreamRef { experimental_bar: None },
+				ExperimentalInvoiceRequestTlvStreamRef {
+					invreq_contact_secret: None,
+					invreq_payer_offer: None,
+					experimental_bar: None,
+				},
 			),
 		);
 
@@ -3112,6 +3199,8 @@ mod tests {
 						quantity: Some(1),
 						payer_note_truncated: Some(UntrustedString(expected_payer_note)),
 						human_readable_name: None,
+						contact_secret: None,
+						payer_offer: None,
 					}
 				);
 
