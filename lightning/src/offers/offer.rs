@@ -2051,6 +2051,13 @@ mod tests {
 		}
 
 		let mut builder = OfferBuilder::new(pubkey(42));
+		builder.offer.paths = Some(vec![]);
+		let offer = builder.build().unwrap();
+		if let Err(e) = offer.to_string().parse::<Offer>() {
+			panic!("error parsing offer: {:?}", e);
+		}
+
+		let mut builder = OfferBuilder::new(pubkey(42));
 		builder.offer.issuer_signing_pubkey = None;
 		builder.offer.paths = Some(vec![]);
 
