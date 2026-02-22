@@ -5469,6 +5469,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 				} else {
 					1
 				};
+			// Note that the feerate is 0 in zero-fee commitment channels, so this statement is a noop
 			let spiked_feerate = feerate * fee_spike_multiple;
 			let (remote_stats, _remote_htlcs) = self
 				.get_next_remote_commitment_stats(
@@ -12401,6 +12402,15 @@ where
 		// We are not interested in dust exposure
 		let dust_exposure_limiting_feerate = None;
 
+		// Note that the feerate is 0 in zero-fee commitment channels, so this statement is a noop
+		let feerate_per_kw = if !funding.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
+			// Similar to HTLC additions, require the funder to have enough funds reserved for
+			// fees such that the feerate can jump without rendering the channel useless.
+			self.context.feerate_per_kw * FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE as u32
+		} else {
+			self.context.feerate_per_kw
+		};
+
 		let (local_stats, _local_htlcs) = self
 			.context
 			.get_next_local_commitment_stats(
@@ -12408,7 +12418,7 @@ where
 				None, // htlc_candidate
 				include_counterparty_unknown_htlcs,
 				addl_nondust_htlc_count,
-				self.context.feerate_per_kw,
+				feerate_per_kw,
 				dust_exposure_limiting_feerate,
 			)
 			.map_err(|()| "Balance exhausted on local commitment")?;
@@ -12420,7 +12430,7 @@ where
 				None, // htlc_candidate
 				include_counterparty_unknown_htlcs,
 				addl_nondust_htlc_count,
-				self.context.feerate_per_kw,
+				feerate_per_kw,
 				dust_exposure_limiting_feerate,
 			)
 			.map_err(|()| "Balance exhausted on remote commitment")?;
