@@ -148,6 +148,15 @@ mv hfuzz_workspace/fuzz_target/SIGABRT.PC.7ffff7e21ce1.STACK.[…].fuzz ./test_c
 
 This will reproduce the failing fuzz input and yield a usable stack trace.
 
+Alternatively, you can use the `stdin_fuzz` feature to pipe the crash input directly without
+creating test case files on disk:
+
+```shell
+echo -ne '\x2d\x31\x36\x38\x37\x34\x09\x01...' | RUSTFLAGS="--cfg=fuzzing --cfg=secp256k1_fuzz --cfg=hashes_fuzz" cargo run --features stdin_fuzz --bin full_stack_target
+```
+
+This is useful for reproducing crashes during `git bisect` or when working with AI agents that can
+construct and pipe byte sequences directly.
 
 ## How do I add a new fuzz test?
 
