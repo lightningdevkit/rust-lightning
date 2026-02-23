@@ -1088,7 +1088,8 @@ pub fn get_warning_msg(node: &Node, recipient: &PublicKey) -> msgs::WarningMessa
 macro_rules! get_event {
 	($node: expr, $event_type: path) => {{
 		let mut events = $node.node.get_and_clear_pending_events();
-		assert_eq!(events.len(), 1);
+		assert!(!events.is_empty(), "Expected an event");
+		assert_eq!(events.len(), 1, "Unexpected events {events:?}");
 		let ev = events.pop().unwrap();
 		match ev {
 			$event_type { .. } => ev,
