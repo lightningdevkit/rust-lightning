@@ -713,24 +713,25 @@ fn send_mpp_payment(
 	source: &ChanMan, dest: &ChanMan, dest_chan_ids: &[ChannelId], amt: u64,
 	payment_secret: PaymentSecret, payment_hash: PaymentHash, payment_id: PaymentId,
 ) -> bool {
-	let num_paths = dest_chan_ids.len();
+	let mut paths = Vec::new();
+
+	let dest_chans = dest.list_channels();
+	let dest_scids: Vec<_> = dest_chan_ids
+		.iter()
+		.filter_map(|chan_id| {
+			dest_chans
+				.iter()
+				.find(|chan| chan.channel_id == *chan_id)
+				.and_then(|chan| chan.short_channel_id)
+		})
+		.collect();
+	let num_paths = dest_scids.len();
 	if num_paths == 0 {
 		return false;
 	}
-
 	let amt_per_path = amt / num_paths as u64;
-	let mut paths = Vec::with_capacity(num_paths);
 
-	let dest_chans = dest.list_channels();
-	let dest_scids = dest_chan_ids.iter().map(|chan_id| {
-		dest_chans
-			.iter()
-			.find(|chan| chan.channel_id == *chan_id)
-			.and_then(|chan| chan.short_channel_id)
-			.unwrap()
-	});
-
-	for (i, dest_scid) in dest_scids.enumerate() {
+	for (i, dest_scid) in dest_scids.into_iter().enumerate() {
 		let path_amt = if i == num_paths - 1 {
 			amt - amt_per_path * (num_paths as u64 - 1)
 		} else {
@@ -772,9 +773,30 @@ fn send_mpp_hop_payment(
 	dest_chan_ids: &[ChannelId], amt: u64, payment_secret: PaymentSecret,
 	payment_hash: PaymentHash, payment_id: PaymentId,
 ) -> bool {
-	// Create paths by pairing middle_scids with dest_scids
-	let num_paths = middle_chan_ids.len().max(dest_chan_ids.len());
-	if num_paths == 0 {
+	let middle_chans = middle.list_channels();
+	let middle_scids: Vec<_> = middle_chan_ids
+		.iter()
+		.filter_map(|chan_id| {
+			middle_chans
+				.iter()
+				.find(|chan| chan.channel_id == *chan_id)
+				.and_then(|chan| chan.short_channel_id)
+		})
+		.collect();
+
+	let dest_chans = dest.list_channels();
+	let dest_scids: Vec<_> = dest_chan_ids
+		.iter()
+		.filter_map(|chan_id| {
+			dest_chans
+				.iter()
+				.find(|chan| chan.channel_id == *chan_id)
+				.and_then(|chan| chan.short_channel_id)
+		})
+		.collect();
+
+	let num_paths = middle_scids.len().max(dest_scids.len());
+	if middle_scids.is_empty() || dest_scids.is_empty() {
 		return false;
 	}
 
@@ -782,30 +804,6 @@ fn send_mpp_hop_payment(
 	let amt_per_path = amt / num_paths as u64;
 	let fee_per_path = first_hop_fee / num_paths as u64;
 	let mut paths = Vec::with_capacity(num_paths);
-
-	let middle_chans = middle.list_channels();
-	let middle_scids: Vec<_> = middle_chan_ids
-		.iter()
-		.map(|chan_id| {
-			middle_chans
-				.iter()
-				.find(|chan| chan.channel_id == *chan_id)
-				.and_then(|chan| chan.short_channel_id)
-				.unwrap()
-		})
-		.collect();
-
-	let dest_chans = dest.list_channels();
-	let dest_scids: Vec<_> = dest_chan_ids
-		.iter()
-		.map(|chan_id| {
-			dest_chans
-				.iter()
-				.find(|chan| chan.channel_id == *chan_id)
-				.and_then(|chan| chan.short_channel_id)
-				.unwrap()
-		})
-		.collect();
 
 	for i in 0..num_paths {
 		let middle_scid = middle_scids[i % middle_scids.len()];
