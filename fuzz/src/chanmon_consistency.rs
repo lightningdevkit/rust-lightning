@@ -1035,13 +1035,14 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 		let manager =
 			<(BlockHash, ChanMan)>::read(&mut &ser[..], read_args).expect("Failed to read manager");
 		let res = (manager.1, chain_monitor.clone());
+		let expected_status = *mon_style[node_id as usize].borrow();
+		*chain_monitor.persister.update_ret.lock().unwrap() = expected_status.clone();
 		for (channel_id, mon) in monitors.drain() {
 			assert_eq!(
 				chain_monitor.chain_monitor.watch_channel(channel_id, mon),
-				Ok(ChannelMonitorUpdateStatus::Completed)
+				Ok(expected_status.clone())
 			);
 		}
-		*chain_monitor.persister.update_ret.lock().unwrap() = *mon_style[node_id as usize].borrow();
 		res
 	};
 
