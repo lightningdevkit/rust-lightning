@@ -116,7 +116,7 @@ macro_rules! build_funding_contribution {
 		// The caller creating a FundingContribution is always the initiator for fee estimation
 		// purposes — this is conservative, overestimating rather than underestimating fees if
 		// the node ends up as the acceptor.
-		let estimated_fee = estimate_transaction_fee(&inputs, &outputs, true, is_splice, feerate);
+		let estimated_fee = estimate_transaction_fee(&inputs, &outputs, change_output.as_ref(), true, is_splice, feerate);
 		debug_assert!(estimated_fee <= Amount::MAX_MONEY);
 
 		let contribution = FundingContribution {
@@ -208,8 +208,8 @@ impl FundingTemplate {
 }
 
 fn estimate_transaction_fee(
-	inputs: &[FundingTxInput], outputs: &[TxOut], is_initiator: bool, is_splice: bool,
-	feerate: FeeRate,
+	inputs: &[FundingTxInput], outputs: &[TxOut], change_output: Option<&TxOut>,
+	is_initiator: bool, is_splice: bool, feerate: FeeRate,
 ) -> Amount {
 	let input_weight: u64 = inputs
 		.iter()
@@ -218,6 +218,7 @@ fn estimate_transaction_fee(
 
 	let output_weight: u64 = outputs
 		.iter()
+		.chain(change_output.into_iter())
 		.map(|txout| txout.weight().to_wu())
 		.fold(0, |total_weight, output_weight| total_weight.saturating_add(output_weight));
 
@@ -303,6 +304,14 @@ impl FundingContribution {
 		self.outputs.iter().chain(self.change_output.iter())
 	}
 
+	/// Returns the change output included in this contribution, if any.
+	///
+	/// When coin selection provides more value than needed for the funding contribution and fees,
+	/// the surplus is returned to the wallet via this change output.
+	pub fn change_output(&self) -> Option<&TxOut> {
+		self.change_output.as_ref()
+	}
+
 	pub(super) fn into_tx_parts(self) -> (Vec<FundingTxInput>, Vec<TxOut>) {
 		let FundingContribution { inputs, mut outputs, change_output, .. } = self;
 
@@ -372,11 +381,11 @@ impl FundingContribution {
 					.ok_or("Sum of input values is greater than the total bitcoin supply")?;
 			}
 
-			// If the inputs are enough to cover intended contribution amount, with fees even when
-			// there is a change output, we are fine.
-			// If the inputs are less, but enough to cover intended contribution amount, with
-			// (lower) fees with no change, we are also fine (change will not be generated).
-			// So it's enough to check considering the lower, no-change fees.
+			// If the inputs are enough to cover intended contribution amount plus fees (which
+			// include the change output weight when present), we are fine.
+			// If the inputs are less, but enough to cover intended contribution amount with
+			// (lower) fees without change, we are also fine (change will not be generated).
+			// Since estimated_fee includes change weight, this check is conservative.
 			//
 			// Note: dust limit is not relevant in this check.
 
@@ -442,44 +451,70 @@ mod tests {
 
 		// 2 inputs, initiator, 2000 sat/kw feerate
 		assert_eq!(
-			estimate_transaction_fee(&two_inputs, &[], true, false, FeeRate::from_sat_per_kwu(2000)),
+			estimate_transaction_fee(&two_inputs, &[], None, true, false, FeeRate::from_sat_per_kwu(2000)),
 			Amount::from_sat(if cfg!(feature = "grind_signatures") { 1512 } else { 1516 }),
 		);
 
 		// higher feerate
 		assert_eq!(
-			estimate_transaction_fee(&two_inputs, &[], true, false, FeeRate::from_sat_per_kwu(3000)),
+			estimate_transaction_fee(&two_inputs, &[], None, true, false, FeeRate::from_sat_per_kwu(3000)),
 			Amount::from_sat(if cfg!(feature = "grind_signatures") { 2268 } else { 2274 }),
 		);
 
 		// only 1 input
 		assert_eq!(
-			estimate_transaction_fee(&one_input, &[], true, false, FeeRate::from_sat_per_kwu(2000)),
+			estimate_transaction_fee(&one_input, &[], None, true, false, FeeRate::from_sat_per_kwu(2000)),
 			Amount::from_sat(if cfg!(feature = "grind_signatures") { 970 } else { 972 }),
 		);
 
 		// 0 inputs
 		assert_eq!(
-			estimate_transaction_fee(&[], &[], true, false, FeeRate::from_sat_per_kwu(2000)),
+			estimate_transaction_fee(&[], &[], None, true, false, FeeRate::from_sat_per_kwu(2000)),
 			Amount::from_sat(428),
 		);
 
 		// not initiator
 		assert_eq!(
-			estimate_transaction_fee(&[], &[], false, false, FeeRate::from_sat_per_kwu(2000)),
+			estimate_transaction_fee(&[], &[], None, false, false, FeeRate::from_sat_per_kwu(2000)),
 			Amount::from_sat(0),
 		);
 
 		// splice initiator
 		assert_eq!(
-			estimate_transaction_fee(&one_input, &[], true, true, FeeRate::from_sat_per_kwu(2000)),
+			estimate_transaction_fee(&one_input, &[], None, true, true, FeeRate::from_sat_per_kwu(2000)),
 			Amount::from_sat(if cfg!(feature = "grind_signatures") { 1736 } else { 1740 }),
 		);
 
 		// splice acceptor
 		assert_eq!(
-			estimate_transaction_fee(&one_input, &[], false, true, FeeRate::from_sat_per_kwu(2000)),
+			estimate_transaction_fee(&one_input, &[], None, false, true, FeeRate::from_sat_per_kwu(2000)),
 			Amount::from_sat(if cfg!(feature = "grind_signatures") { 542 } else { 544 }),
+		);
+
+		// splice initiator, 1 input, 1 output
+		let outputs = [funding_output_sats(500)];
+		assert_eq!(
+			estimate_transaction_fee(&one_input, &outputs, None, true, true, FeeRate::from_sat_per_kwu(2000)),
+			Amount::from_sat(if cfg!(feature = "grind_signatures") { 1984 } else { 1988 }),
+		);
+
+		// splice acceptor, 1 input, 1 output
+		assert_eq!(
+			estimate_transaction_fee(&one_input, &outputs, None, false, true, FeeRate::from_sat_per_kwu(2000)),
+			Amount::from_sat(if cfg!(feature = "grind_signatures") { 790 } else { 792 }),
+		);
+
+		// splice initiator, 1 input, 1 output, 1 change via change_output parameter
+		let change = funding_output_sats(1_000);
+		assert_eq!(
+			estimate_transaction_fee(&one_input, &outputs, Some(&change), true, true, FeeRate::from_sat_per_kwu(2000)),
+			Amount::from_sat(if cfg!(feature = "grind_signatures") { 2232 } else { 2236 }),
+		);
+
+		// splice acceptor, 1 input, 1 output, 1 change via change_output parameter
+		assert_eq!(
+			estimate_transaction_fee(&one_input, &outputs, Some(&change), false, true, FeeRate::from_sat_per_kwu(2000)),
+			Amount::from_sat(if cfg!(feature = "grind_signatures") { 1038 } else { 1040 }),
 		);
 	}
 
