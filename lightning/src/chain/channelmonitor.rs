@@ -6760,7 +6760,7 @@ mod tests {
 	use bitcoin::{Sequence, Witness};
 
 	use crate::chain::chaininterface::LowerBoundedFeeEstimator;
-	use crate::events::ClosureReason;
+	use crate::events::{ClosureReason, Event};
 
 	use super::ChannelMonitorUpdateStep;
 	use crate::chain::channelmonitor::{ChannelMonitor, WithChannelMonitor};
@@ -6890,7 +6890,15 @@ mod tests {
 		check_spends!(htlc_txn[1], broadcast_tx);
 
 		check_closed_broadcast(&nodes[1], 1, true);
-		check_closed_event(&nodes[1], 1, ClosureReason::CommitmentTxConfirmed, &[nodes[0].node.get_our_node_id()], 100000);
+		let mut events = nodes[1].node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 3);
+		assert!(matches!(
+			events.pop().unwrap(),
+			Event::ChannelClosed { reason: ClosureReason::CommitmentTxConfirmed, .. }
+		));
+		expect_payment_failed_conditions_event(
+			events, payment_hash, false, PaymentFailedConditions::new(),
+		);
 		check_added_monitors(&nodes[1], 1);
 	}
 

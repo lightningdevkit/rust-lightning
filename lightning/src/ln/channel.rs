@@ -2372,9 +2372,12 @@ where
 		})
 	}
 
-	pub fn force_shutdown(&mut self, closure_reason: ClosureReason) -> ShutdownResult {
+	pub fn force_shutdown(
+		&mut self, closure_reason: ClosureReason,
+		in_flight_monitor_updates: &[ChannelMonitorUpdate],
+	) -> ShutdownResult {
 		let (funding, context) = self.funding_and_context_mut();
-		context.force_shutdown(funding, closure_reason)
+		context.force_shutdown(funding, closure_reason, in_flight_monitor_updates)
 	}
 
 	#[rustfmt::skip]
@@ -6239,6 +6242,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 	/// those explicitly stated to be alowed after shutdown, e.g. some simple getters).
 	fn force_shutdown(
 		&mut self, funding: &FundingScope, mut closure_reason: ClosureReason,
+		in_flight_monitor_updates: &[ChannelMonitorUpdate],
 	) -> ShutdownResult {
 		// Note that we MUST only generate a monitor update that indicates force-closure - we're
 		// called during initialization prior to the chain_monitor in the encompassing ChannelManager
@@ -6267,14 +6271,16 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		}
 
 		// Once we're closed, the `ChannelMonitor` is responsible for resolving any remaining
-		// HTLCs. However, in the specific case of us pushing new HTLC(s) to the counterparty in
-		// the latest commitment transaction that we haven't actually sent due to a block
-		// `ChannelMonitorUpdate`, we may have some HTLCs that the `ChannelMonitor` won't know
-		// about and thus really need to be included in `dropped_outbound_htlcs`.
+		// HTLCs. However, if we have HTLCs in `LocalAnnounced` state whose corresponding
+		// `ChannelMonitorUpdate` is either blocked (in `blocked_monitor_updates`) or dispatched
+		// but not yet persisted (in `in_flight_monitor_updates`), the `ChannelMonitor` may not
+		// know about them and they need to be included in `dropped_outbound_htlcs`.
 		'htlc_iter: for htlc in self.pending_outbound_htlcs.iter() {
 			if let OutboundHTLCState::LocalAnnounced(_) = htlc.state {
-				for update in self.blocked_monitor_updates.iter() {
-					for update in update.update.updates.iter() {
+				let blocked_iter = self.blocked_monitor_updates.iter().map(|u| &u.update);
+				let in_flight_iter = in_flight_monitor_updates.iter();
+				for update in blocked_iter.chain(in_flight_iter) {
+					for update in update.updates.iter() {
 						let have_htlc = match update {
 							ChannelMonitorUpdateStep::LatestCounterpartyCommitment {
 								htlc_data,
@@ -7073,10 +7079,14 @@ where
 		&self.context
 	}
 
-	pub fn force_shutdown(&mut self, closure_reason: ClosureReason) -> ShutdownResult {
+	pub fn force_shutdown(
+		&mut self, closure_reason: ClosureReason,
+		in_flight_monitor_updates: &[ChannelMonitorUpdate],
+	) -> ShutdownResult {
 		let splice_funding_failed = self.maybe_fail_splice_negotiation();
 
-		let mut shutdown_result = self.context.force_shutdown(&self.funding, closure_reason);
+		let mut shutdown_result =
+			self.context.force_shutdown(&self.funding, closure_reason, in_flight_monitor_updates);
 		shutdown_result.splice_funding_failed = splice_funding_failed;
 		shutdown_result
 	}
@@ -9869,7 +9879,7 @@ where
 						(closing_signed, signed_tx, shutdown_result)
 					}
 					Err(err) => {
-						let shutdown = self.context.force_shutdown(&self.funding, ClosureReason::ProcessingError {err: err.to_string()});
+						let shutdown = self.context.force_shutdown(&self.funding, ClosureReason::ProcessingError {err: err.to_string()}, &[]);
 						(None, None, Some(shutdown))
 					}
 				}
@@ -13706,7 +13716,7 @@ pub(super) struct OutboundV1Channel<SP: SignerProvider> {
 
 impl<SP: SignerProvider> OutboundV1Channel<SP> {
 	pub fn abandon_unfunded_chan(&mut self, closure_reason: ClosureReason) -> ShutdownResult {
-		self.context.force_shutdown(&self.funding, closure_reason)
+		self.context.force_shutdown(&self.funding, closure_reason, &[])
 	}
 
 	#[allow(dead_code)] // TODO(dual_funding): Remove once opending V2 channels is enabled.

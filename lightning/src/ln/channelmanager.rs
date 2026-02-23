@@ -4431,7 +4431,11 @@ impl<
 			let mut shutdown_res = if let Some(res) = coop_close_shutdown_res {
 				res
 			} else {
-				chan.force_shutdown(reason)
+				let in_flight = in_flight_monitor_updates
+					.get(&chan_id)
+					.map(|(_, updates)| updates.as_slice())
+					.unwrap_or(&[]);
+				chan.force_shutdown(reason, in_flight)
 			};
 			let chan_update = self.get_channel_update_for_broadcast(chan).ok();
 
@@ -4493,7 +4497,7 @@ impl<
 		convert_channel_err_internal(err, chan_id, |reason, msg| {
 			let logger = WithChannelContext::from(&self.logger, chan.context(), None);
 
-			let shutdown_res = chan.force_shutdown(reason);
+			let shutdown_res = chan.force_shutdown(reason, &[]);
 			log_error!(logger, "Closed channel due to close-required error: {}", msg);
 			self.short_to_chan_info.write().unwrap().remove(&chan.context().outbound_scid_alias());
 			// If the channel was never confirmed on-chain prior to its closure, remove the
@@ -18300,7 +18304,7 @@ impl<
 							monitor.get_cur_counterparty_commitment_number(), channel.get_cur_counterparty_commitment_transaction_number());
 					}
 					let shutdown_result =
-						channel.force_shutdown(ClosureReason::OutdatedChannelManager);
+						channel.force_shutdown(ClosureReason::OutdatedChannelManager, &[]);
 					if shutdown_result.unbroadcasted_batch_funding_txid.is_some() {
 						return Err(DecodeError::InvalidValue);
 					}

@@ -271,19 +271,24 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool) {
 
 	// ...and make sure we can force-close a frozen channel
 	let message = "Channel force-closed".to_owned();
-	let reason = ClosureReason::HolderForceClosed {
-		broadcasted_latest_txn: Some(true),
-		message: message.clone(),
-	};
 	nodes[0].node.force_close_broadcasting_latest_txn(&channel_id, &node_b_id, message).unwrap();
 	check_added_monitors(&nodes[0], 1);
 	check_closed_broadcast(&nodes[0], 1, true);
 
-	// TODO: Once we hit the chain with the failure transaction we should check that we get a
-	// PaymentPathFailed event
-
 	assert_eq!(nodes[0].node.list_channels().len(), 0);
-	check_closed_event(&nodes[0], 1, reason, &[node_b_id], 100000);
+
+	let mut events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 3);
+	assert!(matches!(
+		events.pop().unwrap(),
+		Event::ChannelClosed { reason: ClosureReason::HolderForceClosed { .. }, .. }
+	));
+	expect_payment_failed_conditions_event(
+		events,
+		payment_hash_2,
+		false,
+		PaymentFailedConditions::new(),
+	);
 }
 
 #[test]
@@ -5166,4 +5171,67 @@ fn test_mpp_claim_to_holding_cell() {
 	expect_and_process_pending_htlcs(&nodes[3], false);
 	expect_payment_claimable!(nodes[3], paymnt_hash_2, payment_secret_2, 400_000);
 	claim_payment(&nodes[2], &[&nodes[3]], preimage_2);
+}
+
+#[test]
+fn test_force_close_with_in_progress_monitor_update_drops_htlc() {
+	// When a channel is force-closed while a monitor update is InProgress, any HTLC in
+	// LocalAnnounced state (committed to the channel but monitor update not yet persisted) may
+	// not be included in the ChannelMonitor. Verify that the payment is properly failed back
+	// via PaymentPathFailed/PaymentFailed events rather than being silently dropped.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_b_id = nodes[1].node.get_our_node_id();
+
+	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
+
+	let (route, payment_hash, _, payment_secret) =
+		get_route_and_payment_hash!(&nodes[0], nodes[1], 1_000_000);
+
+	// Set node A's monitor persistence to InProgress so the HTLC monitor update won't complete.
+	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
+
+	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let payment_id = PaymentId(payment_hash.0);
+	nodes[0].node.send_payment_with_route(route, payment_hash, onion, payment_id).unwrap();
+	check_added_monitors(&nodes[0], 1);
+
+	// The HTLC is now LocalAnnounced but the monitor update hasn't been persisted.
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+
+	// Force-close the channel while the monitor update is still InProgress.
+	nodes[0]
+		.node
+		.force_close_broadcasting_latest_txn(&channel_id, &node_b_id, "force close".to_owned())
+		.unwrap();
+	check_added_monitors(&nodes[0], 1);
+	check_closed_broadcast(&nodes[0], 1, true);
+
+	// The payment should be failed back since the channel is closed and the HTLC was never
+	// committed by the counterparty.
+	let mut events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 3);
+	assert!(matches!(
+		events.pop().unwrap(),
+		Event::ChannelClosed { reason: ClosureReason::HolderForceClosed { .. }, .. }
+	));
+	expect_payment_failed_conditions_event(
+		events,
+		payment_hash,
+		false,
+		PaymentFailedConditions::new(),
+	);
+
+	// Now complete the pending monitor update. The ChannelMonitor will learn about the HTLC,
+	// but the broadcast commitment transaction does not include it (it was never committed by
+	// the counterparty). Completing the update should not produce duplicate payment failure
+	// events or panics.
+	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
+	let (latest_update, _) = nodes[0].chain_monitor.get_latest_mon_update_id(channel_id);
+	nodes[0].chain_monitor.chain_monitor.force_channel_monitor_updated(channel_id, latest_update);
+
+	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
 }
