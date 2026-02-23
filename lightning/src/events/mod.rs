@@ -1464,6 +1464,10 @@ pub enum Event {
 		funding_txo: Option<OutPoint>,
 		/// The features that this channel will operate with.
 		channel_type: ChannelTypeFeatures,
+		/// The outpoint of the channel's previous funding transaction that was spent by a splice.
+		///
+		/// Will be `None` for initial channel funding (non-splice) events.
+		spent_funding_txo: Option<OutPoint>,
 	},
 	/// Used to indicate that a channel that got past the initial handshake with the given `channel_id` is in the
 	/// process of closure. This includes previously opened channels, and channels that time out from not being funded.
@@ -2223,12 +2227,14 @@ impl Writeable for Event {
 				ref counterparty_node_id,
 				ref funding_txo,
 				ref channel_type,
+				ref spent_funding_txo,
 			} => {
 				29u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(0, channel_id, required),
 					(1, funding_txo, option),
 					(2, user_channel_id, required),
+					(3, spent_funding_txo, option),
 					(4, counterparty_node_id, required),
 					(6, channel_type, required),
 				});
@@ -2805,10 +2811,12 @@ impl MaybeReadable for Event {
 					let mut counterparty_node_id = RequiredWrapper(None);
 					let mut funding_txo = None;
 					let mut channel_type = RequiredWrapper(None);
+					let mut spent_funding_txo = None;
 					read_tlv_fields!(reader, {
 						(0, channel_id, required),
 						(1, funding_txo, option),
 						(2, user_channel_id, required),
+						(3, spent_funding_txo, option),
 						(4, counterparty_node_id, required),
 						(6, channel_type, required),
 					});
@@ -2819,6 +2827,7 @@ impl MaybeReadable for Event {
 						counterparty_node_id: counterparty_node_id.0.unwrap(),
 						funding_txo,
 						channel_type: channel_type.0.unwrap(),
+						spent_funding_txo,
 					}))
 				};
 				f()
