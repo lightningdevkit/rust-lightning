@@ -1452,12 +1452,15 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 		// We conditionally splice out `MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS` only when the node
 		// has double the balance required to send a payment upon a `0xff` byte. We do this to
 		// ensure there's always liquidity available for a payment to succeed then.
-		let outbound_capacity_msat = node
+		let outbound_capacity_msat = match node
 			.list_channels()
 			.iter()
 			.find(|chan| chan.channel_id == *channel_id)
 			.map(|chan| chan.outbound_capacity_msat)
-			.unwrap();
+		{
+			Some(v) => v,
+			None => return,
+		};
 		if outbound_capacity_msat < 20_000_000 {
 			return;
 		}
