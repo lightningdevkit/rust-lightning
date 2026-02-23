@@ -2915,6 +2915,13 @@ struct PendingFunding {
 	/// The feerate used in the last successfully negotiated funding transaction.
 	/// Used for validating the 25/24 feerate increase rule on RBF attempts.
 	last_funding_feerate_sat_per_1000_weight: Option<u32>,
+
+	/// The funding contributions from all explicit splice/RBF attempts on this channel.
+	/// Each entry reflects the feerate-adjusted contribution that was actually used in that
+	/// negotiation. The last entry is re-used when the counterparty initiates an RBF and we
+	/// have no pending `QuiescentAction`. When re-used as acceptor, the last entry is replaced
+	/// with the version adjusted for the new feerate.
+	contributions: Vec<FundingContribution>,
 }
 
 impl_writeable_tlv_based!(PendingFunding, {
@@ -2923,6 +2930,7 @@ impl_writeable_tlv_based!(PendingFunding, {
 	(5, sent_funding_txid, option),
 	(7, received_funding_txid, option),
 	(9, last_funding_feerate_sat_per_1000_weight, option),
+	(11, contributions, optional_vec),
 });
 
 #[derive(Debug)]
@@ -12355,6 +12363,7 @@ where
 			sent_funding_txid: None,
 			received_funding_txid: None,
 			last_funding_feerate_sat_per_1000_weight: Some(funding_feerate_per_kw),
+			contributions: vec![],
 		});
 
 		msgs::SpliceInit {
@@ -12598,15 +12607,19 @@ where
 		let splice_funding =
 			self.validate_splice_init(msg, our_funding_contribution.unwrap_or(SignedAmount::ZERO))?;
 
-		let (our_funding_inputs, our_funding_outputs) = if our_funding_contribution.is_some() {
-			self.take_queued_funding_contribution()
-				.expect("queued_funding_contribution was Some")
-				.for_acceptor_at_feerate(feerate)
-				.expect("feerate compatibility already checked")
-				.into_tx_parts()
-		} else {
-			Default::default()
-		};
+		// Adjust for the feerate and clone so we can store it for future RBF re-use.
+		let (adjusted_contribution, our_funding_inputs, our_funding_outputs) =
+			if our_funding_contribution.is_some() {
+				let adjusted_contribution = self
+					.take_queued_funding_contribution()
+					.expect("queued_funding_contribution was Some")
+					.for_acceptor_at_feerate(feerate)
+					.expect("feerate compatibility already checked");
+				let (inputs, outputs) = adjusted_contribution.clone().into_tx_parts();
+				(Some(adjusted_contribution), inputs, outputs)
+			} else {
+				(None, Default::default(), Default::default())
+			};
 		let our_funding_contribution = our_funding_contribution.unwrap_or(SignedAmount::ZERO);
 
 		log_info!(
@@ -12647,6 +12660,7 @@ where
 			received_funding_txid: None,
 			sent_funding_txid: None,
 			last_funding_feerate_sat_per_1000_weight: Some(msg.funding_feerate_per_kw),
+			contributions: adjusted_contribution.into_iter().collect(),
 		});
 
 		Ok(msgs::SpliceAck {
@@ -12763,7 +12777,9 @@ where
 		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
 	) -> Result<msgs::TxAckRbf, ChannelError> {
 		let feerate = FeeRate::from_sat_per_kwu(msg.feerate_sat_per_1000_weight as u64);
-		let our_funding_contribution = self.queued_funding_contribution().and_then(|c| {
+
+		// Try queued contribution from QuiescentAction (tiebreak scenario).
+		let queued_net_value = self.queued_funding_contribution().and_then(|c| {
 			c.net_value_for_acceptor_at_feerate(feerate)
 				.map_err(|e| {
 					log_info!(
@@ -12777,21 +12793,72 @@ where
 				.ok()
 		});
 
+		// If no queued contribution, try prior contribution from previous negotiation.
+		// Failing here means the RBF would erase our splice — reject it.
+		let prior_net_value = if queued_net_value.is_none() {
+			match self
+				.pending_splice
+				.as_ref()
+				.and_then(|pending_splice| pending_splice.contributions.last())
+			{
+				Some(prior) => {
+					Some(prior.net_value_for_acceptor_at_feerate(feerate).map_err(|e| {
+						ChannelError::WarnAndDisconnect(format!(
+							"Channel {} cannot accommodate RBF feerate for our prior \
+							 contribution: {}",
+							self.context.channel_id(),
+							e
+						))
+					})?)
+				},
+				None => None,
+			}
+		} else {
+			None
+		};
+
+		let our_funding_contribution = queued_net_value.or(prior_net_value);
+
 		let rbf_funding = self.validate_tx_init_rbf(
 			msg,
 			our_funding_contribution.unwrap_or(SignedAmount::ZERO),
 			fee_estimator,
 		)?;
 
-		let (our_funding_inputs, our_funding_outputs) = if our_funding_contribution.is_some() {
-			self.take_queued_funding_contribution()
+		// Consume the appropriate contribution source.
+		let (our_funding_inputs, our_funding_outputs) = if queued_net_value.is_some() {
+			let adjusted_contribution = self
+				.take_queued_funding_contribution()
 				.expect("queued_funding_contribution was Some")
 				.for_acceptor_at_feerate(feerate)
-				.expect("feerate compatibility already checked")
-				.into_tx_parts()
+				.expect("feerate compatibility already checked");
+			self.pending_splice
+				.as_mut()
+				.expect("pending_splice is Some")
+				.contributions
+				.push(adjusted_contribution.clone());
+			adjusted_contribution.into_tx_parts()
+		} else if prior_net_value.is_some() {
+			let prior_contribution = self
+				.pending_splice
+				.as_mut()
+				.expect("pending_splice is Some")
+				.contributions
+				.pop()
+				.expect("prior_net_value was Some");
+			let adjusted_contribution = prior_contribution
+				.for_acceptor_at_feerate(feerate)
+				.expect("feerate compatibility already checked");
+			self.pending_splice
+				.as_mut()
+				.expect("pending_splice is Some")
+				.contributions
+				.push(adjusted_contribution.clone());
+			adjusted_contribution.into_tx_parts()
 		} else {
 			Default::default()
 		};
+
 		let our_funding_contribution = our_funding_contribution.unwrap_or(SignedAmount::ZERO);
 
 		log_info!(
@@ -13824,6 +13891,7 @@ where
 					));
 				},
 				Some(QuiescentAction::Splice { contribution, locktime }) => {
+					let prior_contribution = contribution.clone();
 					let prev_funding_input = self.funding.to_splice_funding_input();
 					let our_funding_contribution = contribution.net_value();
 					let funding_feerate_per_kw = contribution.feerate().to_sat_per_kwu() as u32;
@@ -13841,10 +13909,16 @@ where
 
 					if self.pending_splice.is_some() {
 						let tx_init_rbf = self.send_tx_init_rbf_internal(context);
+						debug_assert!(self.pending_splice.is_some());
+						self.pending_splice.as_mut().unwrap()
+							.contributions.push(prior_contribution);
 						return Ok(Some(StfuResponse::TxInitRbf(tx_init_rbf)));
 					}
 
 					let splice_init = self.send_splice_init(context);
+					debug_assert!(self.pending_splice.is_some());
+					self.pending_splice.as_mut().unwrap()
+						.contributions.push(prior_contribution);
 					return Ok(Some(StfuResponse::SpliceInit(splice_init)));
 				},
 				#[cfg(any(test, fuzzing, feature = "_test_utils"))]
