@@ -25,15 +25,18 @@ use crate::ln::types::ChannelId;
 use crate::routing::router::{PaymentParameters, RouteParameters};
 use crate::util::errors::APIError;
 use crate::util::ser::Writeable;
-use crate::util::wallet_utils::{WalletSourceSync, WalletSync};
+use crate::util::wallet_utils::{
+	CoinSelection, CoinSelectionSourceSync, ConfirmedUtxo, Input, WalletSourceSync, WalletSync,
+};
 
 use crate::sync::Arc;
 
 use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::ecdsa::Signature;
 use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
+use bitcoin::transaction::Version;
 use bitcoin::{
-	Amount, FeeRate, OutPoint as BitcoinOutPoint, ScriptBuf, Transaction, TxOut, WPubkeyHash,
+	Amount, FeeRate, OutPoint as BitcoinOutPoint, Psbt, ScriptBuf, Transaction, TxOut, WPubkeyHash,
 };
 
 #[test]
@@ -110,6 +113,78 @@ fn test_v1_splice_in_negative_insufficient_inputs() {
 
 	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
 	assert!(funding_template.splice_in_sync(splice_in_value, &wallet).is_err());
+}
+
+/// A mock wallet that returns a pre-configured [`CoinSelection`] with a single input and change
+/// output. Used to test edge cases where the input value is tight relative to the fee estimate.
+struct TightBudgetWallet {
+	utxo_value: Amount,
+	change_value: Amount,
+}
+
+impl CoinSelectionSourceSync for TightBudgetWallet {
+	fn select_confirmed_utxos(
+		&self, _claim_id: Option<crate::chain::ClaimId>, _must_spend: Vec<Input>,
+		_must_pay_to: &[TxOut], _target_feerate_sat_per_1000_weight: u32, _max_tx_weight: u64,
+	) -> Result<CoinSelection, ()> {
+		let prevout = TxOut {
+			value: self.utxo_value,
+			script_pubkey: ScriptBuf::new_p2wpkh(&WPubkeyHash::all_zeros()),
+		};
+		let prevtx = Transaction {
+			input: vec![],
+			output: vec![prevout],
+			version: Version::TWO,
+			lock_time: bitcoin::absolute::LockTime::ZERO,
+		};
+		let utxo = ConfirmedUtxo::new_p2wpkh(prevtx, 0).unwrap();
+
+		let change_output = TxOut {
+			value: self.change_value,
+			script_pubkey: ScriptBuf::new_p2wpkh(&WPubkeyHash::all_zeros()),
+		};
+
+		Ok(CoinSelection { confirmed_utxos: vec![utxo], change_output: Some(change_output) })
+	}
+
+	fn sign_psbt(&self, _psbt: Psbt) -> Result<Transaction, ()> {
+		unreachable!("should not reach signing")
+	}
+}
+
+#[test]
+fn test_validate_accounts_for_change_output_weight() {
+	// Demonstrates that estimated_fee includes the change output's weight when building a
+	// FundingContribution. A mock wallet returns a single input whose value is between
+	// estimated_fee_without_change (1736/1740 sats) and estimated_fee_with_change (1984/1988
+	// sats) above value_added. The validate() check correctly catches that the inputs are
+	// insufficient when the change output weight is included. Without accounting for the change
+	// output weight, the check would incorrectly pass.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 0);
+
+	let feerate = FeeRate::from_sat_per_kwu(2000);
+	let funding_template = nodes[0]
+		.node
+		.splice_channel(&channel_id, &nodes[1].node.get_our_node_id(), feerate)
+		.unwrap();
+
+	// Input value = value_added + 1800: above 1736/1740 (fee without change), below 1984/1988
+	// (fee with change).
+	let value_added = Amount::from_sat(20_000);
+	let wallet = TightBudgetWallet {
+		utxo_value: value_added + Amount::from_sat(1800),
+		change_value: Amount::from_sat(1000),
+	};
+	let contribution = funding_template.splice_in_sync(value_added, &wallet).unwrap();
+
+	assert!(contribution.change_output().is_some());
+	assert!(contribution.validate().is_err());
 }
 
 pub fn negotiate_splice_tx<'a, 'b, 'c, 'd>(

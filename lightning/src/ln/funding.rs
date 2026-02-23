@@ -118,7 +118,7 @@ macro_rules! build_funding_contribution {
 		// The caller creating a FundingContribution is always the initiator for fee estimation
 		// purposes — this is conservative, overestimating rather than underestimating fees if
 		// the node ends up as the acceptor.
-		let estimated_fee = estimate_transaction_fee(&inputs, &outputs, true, is_splice, feerate);
+		let estimated_fee = estimate_transaction_fee(&inputs, &outputs, change_output.as_ref(), true, is_splice, feerate);
 		debug_assert!(estimated_fee <= Amount::MAX_MONEY);
 
 		let contribution = FundingContribution {
@@ -210,8 +210,8 @@ impl FundingTemplate {
 }
 
 fn estimate_transaction_fee(
-	inputs: &[FundingTxInput], outputs: &[TxOut], is_initiator: bool, is_splice: bool,
-	feerate: FeeRate,
+	inputs: &[FundingTxInput], outputs: &[TxOut], change_output: Option<&TxOut>,
+	is_initiator: bool, is_splice: bool, feerate: FeeRate,
 ) -> Amount {
 	let input_weight: u64 = inputs
 		.iter()
@@ -220,6 +220,7 @@ fn estimate_transaction_fee(
 
 	let output_weight: u64 = outputs
 		.iter()
+		.chain(change_output.into_iter())
 		.map(|txout| txout.weight().to_wu())
 		.fold(0, |total_weight, output_weight| total_weight.saturating_add(output_weight));
 
@@ -392,11 +393,11 @@ impl FundingContribution {
 					.ok_or("Sum of input values is greater than the total bitcoin supply")?;
 			}
 
-			// If the inputs are enough to cover intended contribution amount, with fees even when
-			// there is a change output, we are fine.
-			// If the inputs are less, but enough to cover intended contribution amount, with
-			// (lower) fees with no change, we are also fine (change will not be generated).
-			// So it's enough to check considering the lower, no-change fees.
+			// If the inputs are enough to cover intended contribution amount plus fees (which
+			// include the change output weight when present), we are fine.
+			// If the inputs are less, but enough to cover intended contribution amount with
+			// (lower) fees without change, we are also fine (change will not be generated).
+			// Since estimated_fee includes change weight, this check is conservative.
 			//
 			// Note: dust limit is not relevant in this check.
 
@@ -436,11 +437,10 @@ impl FundingContribution {
 				let dust_limit = change_output.script_pubkey.minimal_non_dust();
 
 				// Fair fee including the change output's weight.
-				let all_outputs: Vec<TxOut> =
-					self.outputs.iter().chain(self.change_output.iter()).cloned().collect();
 				let fair_fee = estimate_transaction_fee(
 					&self.inputs,
-					&all_outputs,
+					&self.outputs,
+					self.change_output.as_ref(),
 					false,
 					is_splice,
 					target_feerate,
@@ -459,6 +459,7 @@ impl FundingContribution {
 						let fair_fee_no_change = estimate_transaction_fee(
 							&self.inputs,
 							&self.outputs,
+							None,
 							false,
 							is_splice,
 							target_feerate,
@@ -478,6 +479,7 @@ impl FundingContribution {
 				let fair_fee = estimate_transaction_fee(
 					&self.inputs,
 					&self.outputs,
+					None,
 					false,
 					is_splice,
 					target_feerate,
@@ -501,8 +503,14 @@ impl FundingContribution {
 			}
 		} else {
 			// No inputs (splice-out): fees paid from channel balance.
-			let fair_fee =
-				estimate_transaction_fee(&[], &self.outputs, false, is_splice, target_feerate);
+			let fair_fee = estimate_transaction_fee(
+				&[],
+				&self.outputs,
+				None,
+				false,
+				is_splice,
+				target_feerate,
+			);
 			if self.estimated_fee < fair_fee {
 				return Err(format!(
 					"Feerate too high: estimated fee {} insufficient for required fee {}",
@@ -596,44 +604,70 @@ mod tests {
 
 		// 2 inputs, initiator, 2000 sat/kw feerate
 		assert_eq!(
-			estimate_transaction_fee(&two_inputs, &[], true, false, FeeRate::from_sat_per_kwu(2000)),
+			estimate_transaction_fee(&two_inputs, &[], None, true, false, FeeRate::from_sat_per_kwu(2000)),
 			Amount::from_sat(if cfg!(feature = "grind_signatures") { 1512 } else { 1516 }),
 		);
 
 		// higher feerate
 		assert_eq!(
-			estimate_transaction_fee(&two_inputs, &[], true, false, FeeRate::from_sat_per_kwu(3000)),
+			estimate_transaction_fee(&two_inputs, &[], None, true, false, FeeRate::from_sat_per_kwu(3000)),
 			Amount::from_sat(if cfg!(feature = "grind_signatures") { 2268 } else { 2274 }),
 		);
 
 		// only 1 input
 		assert_eq!(
-			estimate_transaction_fee(&one_input, &[], true, false, FeeRate::from_sat_per_kwu(2000)),
+			estimate_transaction_fee(&one_input, &[], None, true, false, FeeRate::from_sat_per_kwu(2000)),
 			Amount::from_sat(if cfg!(feature = "grind_signatures") { 970 } else { 972 }),
 		);
 
 		// 0 inputs
 		assert_eq!(
-			estimate_transaction_fee(&[], &[], true, false, FeeRate::from_sat_per_kwu(2000)),
+			estimate_transaction_fee(&[], &[], None, true, false, FeeRate::from_sat_per_kwu(2000)),
 			Amount::from_sat(428),
 		);
 
 		// not initiator
 		assert_eq!(
-			estimate_transaction_fee(&[], &[], false, false, FeeRate::from_sat_per_kwu(2000)),
+			estimate_transaction_fee(&[], &[], None, false, false, FeeRate::from_sat_per_kwu(2000)),
 			Amount::from_sat(0),
 		);
 
 		// splice initiator
 		assert_eq!(
-			estimate_transaction_fee(&one_input, &[], true, true, FeeRate::from_sat_per_kwu(2000)),
+			estimate_transaction_fee(&one_input, &[], None, true, true, FeeRate::from_sat_per_kwu(2000)),
 			Amount::from_sat(if cfg!(feature = "grind_signatures") { 1736 } else { 1740 }),
 		);
 
 		// splice acceptor
 		assert_eq!(
-			estimate_transaction_fee(&one_input, &[], false, true, FeeRate::from_sat_per_kwu(2000)),
+			estimate_transaction_fee(&one_input, &[], None, false, true, FeeRate::from_sat_per_kwu(2000)),
 			Amount::from_sat(if cfg!(feature = "grind_signatures") { 542 } else { 544 }),
+		);
+
+		// splice initiator, 1 input, 1 output
+		let output = funding_output_sats(500);
+		assert_eq!(
+			estimate_transaction_fee(&one_input, &[output.clone()], None, true, true, FeeRate::from_sat_per_kwu(2000)),
+			Amount::from_sat(if cfg!(feature = "grind_signatures") { 1984 } else { 1988 }),
+		);
+
+		// splice acceptor, 1 input, 1 output
+		assert_eq!(
+			estimate_transaction_fee(&one_input, &[output.clone()], None, false, true, FeeRate::from_sat_per_kwu(2000)),
+			Amount::from_sat(if cfg!(feature = "grind_signatures") { 790 } else { 792 }),
+		);
+
+		// splice initiator, 1 input, 1 output, 1 change via change_output parameter
+		let change = funding_output_sats(1_000);
+		assert_eq!(
+			estimate_transaction_fee(&one_input, &[output.clone()], Some(&change), true, true, FeeRate::from_sat_per_kwu(2000)),
+			Amount::from_sat(if cfg!(feature = "grind_signatures") { 2232 } else { 2236 }),
+		);
+
+		// splice acceptor, 1 input, 1 output, 1 change via change_output parameter
+		assert_eq!(
+			estimate_transaction_fee(&one_input, &[output.clone()], Some(&change), false, true, FeeRate::from_sat_per_kwu(2000)),
+			Amount::from_sat(if cfg!(feature = "grind_signatures") { 1038 } else { 1040 }),
 		);
 	}
 
@@ -902,12 +936,19 @@ mod tests {
 		// feerate for the acceptor's fair fee to exceed the budget, causing the change
 		// to decrease.
 		let original_feerate = FeeRate::from_sat_per_kwu(2000);
-		let target_feerate = FeeRate::from_sat_per_kwu(5000);
+		let target_feerate = FeeRate::from_sat_per_kwu(6000);
 		let input = funding_input_sats(100_000);
 		let change = funding_output_sats(10_000);
 
-		// Budget computed as initiator (overestimate, without change output weight).
-		let budget = estimate_transaction_fee(&[input.clone()], &[], true, true, original_feerate);
+		// Budget computed as initiator (overestimate), including change output weight.
+		let budget = estimate_transaction_fee(
+			&[input.clone()],
+			&[],
+			Some(&change),
+			true,
+			true,
+			original_feerate,
+		);
 
 		let contribution = FundingContribution {
 			value_added: Amount::from_sat(50_000),
@@ -924,7 +965,7 @@ mod tests {
 
 		// Fair fee at target feerate for acceptor (is_initiator=false), including change weight.
 		let expected_fair_fee =
-			estimate_transaction_fee(&[input], &[change], false, true, target_feerate);
+			estimate_transaction_fee(&[input], &[], Some(&change), false, true, target_feerate);
 		let expected_change = budget + Amount::from_sat(10_000) - expected_fair_fee;
 
 		assert_eq!(contribution.estimated_fee, expected_fair_fee);
@@ -942,7 +983,14 @@ mod tests {
 		let input = funding_input_sats(100_000);
 		let change = funding_output_sats(10_000);
 
-		let budget = estimate_transaction_fee(&[input.clone()], &[], true, true, original_feerate);
+		let budget = estimate_transaction_fee(
+			&[input.clone()],
+			&[],
+			Some(&change),
+			true,
+			true,
+			original_feerate,
+		);
 
 		let contribution = FundingContribution {
 			value_added: Amount::from_sat(50_000),
@@ -958,7 +1006,7 @@ mod tests {
 		let contribution = contribution.for_acceptor_at_feerate(target_feerate).unwrap();
 
 		let expected_fair_fee =
-			estimate_transaction_fee(&[input], &[change], false, true, target_feerate);
+			estimate_transaction_fee(&[input], &[], Some(&change), false, true, target_feerate);
 		let expected_change = budget + Amount::from_sat(10_000) - expected_fair_fee;
 
 		assert_eq!(contribution.estimated_fee, expected_fair_fee);
@@ -977,7 +1025,14 @@ mod tests {
 		let input = funding_input_sats(100_000);
 		let change = funding_output_sats(500);
 
-		let budget = estimate_transaction_fee(&[input.clone()], &[], true, true, original_feerate);
+		let budget = estimate_transaction_fee(
+			&[input.clone()],
+			&[],
+			Some(&change),
+			true,
+			true,
+			original_feerate,
+		);
 
 		let contribution = FundingContribution {
 			value_added: Amount::from_sat(50_000),
@@ -995,7 +1050,7 @@ mod tests {
 		// Change should be removed; estimated_fee updated to no-change fair fee.
 		assert!(contribution.change_output.is_none());
 		let expected_fee_no_change =
-			estimate_transaction_fee(&[input], &[], false, true, target_feerate);
+			estimate_transaction_fee(&[input], &[], None, false, true, target_feerate);
 		assert_eq!(contribution.estimated_fee, expected_fee_no_change);
 		assert_eq!(contribution.net_value(), net_value_before);
 	}
@@ -1008,7 +1063,14 @@ mod tests {
 		let input = funding_input_sats(100_000);
 		let change = funding_output_sats(500);
 
-		let budget = estimate_transaction_fee(&[input.clone()], &[], true, true, original_feerate);
+		let budget = estimate_transaction_fee(
+			&[input.clone()],
+			&[],
+			Some(&change),
+			true,
+			true,
+			original_feerate,
+		);
 
 		let contribution = FundingContribution {
 			value_added: Amount::from_sat(50_000),
@@ -1033,7 +1095,8 @@ mod tests {
 		let target_feerate = FeeRate::from_sat_per_kwu(3000);
 		let output = funding_output_sats(50_000);
 
-		let budget = estimate_transaction_fee(&[], &[output.clone()], true, true, original_feerate);
+		let budget =
+			estimate_transaction_fee(&[], &[output.clone()], None, true, true, original_feerate);
 
 		let contribution = FundingContribution {
 			value_added: Amount::ZERO,
@@ -1048,7 +1111,7 @@ mod tests {
 		let contribution = contribution.for_acceptor_at_feerate(target_feerate).unwrap();
 		// estimated_fee is updated to the fair fee; surplus goes back to channel balance.
 		let expected_fair_fee =
-			estimate_transaction_fee(&[], &[output], false, true, target_feerate);
+			estimate_transaction_fee(&[], &[output], None, false, true, target_feerate);
 		assert_eq!(contribution.estimated_fee, expected_fair_fee);
 		assert!(expected_fair_fee <= budget);
 	}
@@ -1060,7 +1123,8 @@ mod tests {
 		let target_feerate = FeeRate::from_sat_per_kwu(50_000);
 		let output = funding_output_sats(50_000);
 
-		let budget = estimate_transaction_fee(&[], &[output.clone()], true, true, original_feerate);
+		let budget =
+			estimate_transaction_fee(&[], &[output.clone()], None, true, true, original_feerate);
 
 		let contribution = FundingContribution {
 			value_added: Amount::ZERO,
@@ -1086,7 +1150,14 @@ mod tests {
 		let input = funding_input_sats(100_000);
 		let change = funding_output_sats(10_000);
 
-		let budget = estimate_transaction_fee(&[input.clone()], &[], true, true, original_feerate);
+		let budget = estimate_transaction_fee(
+			&[input.clone()],
+			&[],
+			Some(&change),
+			true,
+			true,
+			original_feerate,
+		);
 
 		let contribution = FundingContribution {
 			value_added: Amount::from_sat(50_000),
@@ -1113,7 +1184,8 @@ mod tests {
 		let target_feerate = FeeRate::from_sat_per_kwu(3000);
 		let output = funding_output_sats(50_000);
 
-		let budget = estimate_transaction_fee(&[], &[output.clone()], true, true, original_feerate);
+		let budget =
+			estimate_transaction_fee(&[], &[output.clone()], None, true, true, original_feerate);
 
 		let contribution = FundingContribution {
 			value_added: Amount::ZERO,
@@ -1129,7 +1201,7 @@ mod tests {
 			contribution.net_value_for_acceptor_at_feerate(target_feerate).unwrap();
 
 		// The fair fee at target feerate should be less than the initiator's budget.
-		let fair_fee = estimate_transaction_fee(&[], &[output], false, true, target_feerate);
+		let fair_fee = estimate_transaction_fee(&[], &[output], None, false, true, target_feerate);
 		let expected_net = SignedAmount::ZERO
 			- Amount::from_sat(50_000).to_signed().unwrap()
 			- fair_fee.to_signed().unwrap();
@@ -1147,7 +1219,14 @@ mod tests {
 		let input = funding_input_sats(100_000);
 		let change = funding_output_sats(10_000);
 
-		let budget = estimate_transaction_fee(&[input.clone()], &[], true, true, original_feerate);
+		let budget = estimate_transaction_fee(
+			&[input.clone()],
+			&[],
+			Some(&change),
+			true,
+			true,
+			original_feerate,
+		);
 
 		let contribution = FundingContribution {
 			value_added: Amount::from_sat(50_000),
@@ -1179,7 +1258,14 @@ mod tests {
 		let input = funding_input_sats(100_000);
 		let change = funding_output_sats(500);
 
-		let budget = estimate_transaction_fee(&[input.clone()], &[], true, true, original_feerate);
+		let budget = estimate_transaction_fee(
+			&[input.clone()],
+			&[],
+			Some(&change),
+			true,
+			true,
+			original_feerate,
+		);
 
 		let contribution = FundingContribution {
 			value_added: Amount::from_sat(50_000),
