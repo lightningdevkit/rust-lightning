@@ -1270,7 +1270,7 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 		let message = AsyncPaymentsMessage::HeldHtlcAvailable(HeldHtlcAvailable {});
 		enqueue_onion_message_with_reply_paths(
 			message,
-			invoice.message_paths(),
+			invoice.held_htlc_available_paths(),
 			reply_paths,
 			&mut pending_async_payments_messages,
 		);
