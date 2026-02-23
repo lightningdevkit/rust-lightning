@@ -1665,6 +1665,17 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 							}
 						},
 						MessageSendEvent::SendChannelReestablish { ref node_id, ref msg } => {
+							if msg.next_local_commitment_number == 0
+								&& msg.next_remote_commitment_number == 0
+							{
+								// Skip bogus reestablish (lnd workaround). All fuzzer
+								// nodes are LDK and will already force-close via the
+								// error message path. Delivering these between LDK
+								// nodes creates an infinite ping-pong since both sides
+								// respond with another bogus reestablish for the
+								// unknown channel.
+								continue;
+							}
 							for (idx, dest) in nodes.iter().enumerate() {
 								if dest.get_our_node_id() == *node_id {
 									out.locked_write(format!("Delivering channel_reestablish from node {} to node {}.\n", $node, idx).as_bytes());
@@ -2818,7 +2829,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 						let mut last_pass_no_updates = false;
 						for i in 0..std::usize::MAX {
 							if i == 100 {
-								panic!("It may take may iterations to settle the state, but it should not take forever");
+								panic!("It may take many iterations to settle the state, but it should not take forever");
 							}
 							// Next, make sure no monitor updates are pending
 							for id in &chan_ab_ids {
@@ -2831,23 +2842,30 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 							}
 							// Drain any broadcast transactions (from force-closes) and
 							// confirm them so the monitors can process the spends.
-							let mut had_txs = false;
-							for tx in broadcast_a.txn_broadcasted.borrow_mut().drain(..) {
-								chain_state.confirm_tx(tx);
-								had_txs = true;
-							}
-							for tx in broadcast_b.txn_broadcasted.borrow_mut().drain(..) {
-								chain_state.confirm_tx(tx);
-								had_txs = true;
-							}
-							for tx in broadcast_c.txn_broadcasted.borrow_mut().drain(..) {
-								chain_state.confirm_tx(tx);
-								had_txs = true;
-							}
-							if had_txs {
+							// We loop here because syncing can trigger monitors to
+							// re-broadcast (fee bumps), which need to be confirmed
+							// before proceeding.
+							let mut had_new_txs = false;
+							loop {
+								let mut found = false;
+								for tx in broadcast_a.txn_broadcasted.borrow_mut().drain(..) {
+									found |= chain_state.confirm_tx(tx);
+								}
+								for tx in broadcast_b.txn_broadcasted.borrow_mut().drain(..) {
+									found |= chain_state.confirm_tx(tx);
+								}
+								for tx in broadcast_c.txn_broadcasted.borrow_mut().drain(..) {
+									found |= chain_state.confirm_tx(tx);
+								}
+								if !found {
+									break;
+								}
+								had_new_txs = true;
 								sync_with_chain_state(&chain_state, &nodes[0], &monitor_a, &mut node_height_a, None);
 								sync_with_chain_state(&chain_state, &nodes[1], &monitor_b, &mut node_height_b, None);
 								sync_with_chain_state(&chain_state, &nodes[2], &monitor_c, &mut node_height_c, None);
+							}
+							if had_new_txs {
 								last_pass_no_updates = false;
 								continue;
 							}
