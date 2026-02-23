@@ -7065,37 +7065,41 @@ where
 		shutdown_result
 	}
 
+	fn abandon_quiescent_action(&mut self) -> Option<SpliceFundingFailed> {
+		match self.quiescent_action.take() {
+			Some(QuiescentAction::LegacySplice(instructions)) => {
+				let (inputs, outputs) = instructions.into_contributed_inputs_and_outputs();
+				Some(SpliceFundingFailed {
+					funding_txo: None,
+					channel_type: None,
+					contributed_inputs: inputs,
+					contributed_outputs: outputs,
+				})
+			},
+			Some(QuiescentAction::Splice { contribution, .. }) => {
+				let (inputs, outputs) = contribution.into_contributed_inputs_and_outputs();
+				Some(SpliceFundingFailed {
+					funding_txo: None,
+					channel_type: None,
+					contributed_inputs: inputs,
+					contributed_outputs: outputs,
+				})
+			},
+			#[cfg(any(test, fuzzing, feature = "_test_utils"))]
+			Some(quiescent_action) => {
+				self.quiescent_action = Some(quiescent_action);
+				None
+			},
+			None => None,
+		}
+	}
+
 	fn maybe_fail_splice_negotiation(&mut self) -> Option<SpliceFundingFailed> {
 		if matches!(self.context.channel_state, ChannelState::ChannelReady(_)) {
 			if self.should_reset_pending_splice_state(false) {
 				self.reset_pending_splice_state()
 			} else {
-				match self.quiescent_action.take() {
-					Some(QuiescentAction::LegacySplice(instructions)) => {
-						let (inputs, outputs) = instructions.into_contributed_inputs_and_outputs();
-						Some(SpliceFundingFailed {
-							funding_txo: None,
-							channel_type: None,
-							contributed_inputs: inputs,
-							contributed_outputs: outputs,
-						})
-					},
-					Some(QuiescentAction::Splice { contribution, .. }) => {
-						let (inputs, outputs) = contribution.into_contributed_inputs_and_outputs();
-						Some(SpliceFundingFailed {
-							funding_txo: None,
-							channel_type: None,
-							contributed_inputs: inputs,
-							contributed_outputs: outputs,
-						})
-					},
-					#[cfg(any(test, fuzzing, feature = "_test_utils"))]
-					Some(quiescent_action) => {
-						self.quiescent_action = Some(quiescent_action);
-						None
-					},
-					None => None,
-				}
+				self.abandon_quiescent_action()
 			}
 		} else {
 			None
@@ -10638,7 +10642,12 @@ where
 		&mut self, logger: &L, signer_provider: &SP, their_features: &InitFeatures,
 		msg: &msgs::Shutdown,
 	) -> Result<
-		(Option<msgs::Shutdown>, Option<ChannelMonitorUpdate>, Vec<(HTLCSource, PaymentHash)>),
+		(
+			Option<msgs::Shutdown>,
+			Option<ChannelMonitorUpdate>,
+			Vec<(HTLCSource, PaymentHash)>,
+			Option<SpliceFundingFailed>,
+		),
 		ChannelError,
 	> {
 		if self.context.channel_state.is_peer_disconnected() {
@@ -10779,7 +10788,9 @@ where
 		self.context.channel_state.set_local_shutdown_sent();
 		self.context.update_time_counter += 1;
 
-		Ok((shutdown, monitor_update, dropped_outbound_htlcs))
+		let splice_funding_failed = self.abandon_quiescent_action();
+
+		Ok((shutdown, monitor_update, dropped_outbound_htlcs, splice_funding_failed))
 	}
 
 	fn build_signed_closing_transaction(
@@ -13206,7 +13217,12 @@ where
 		target_feerate_sats_per_kw: Option<u32>, override_shutdown_script: Option<ShutdownScript>,
 		logger: &L,
 	) -> Result<
-		(msgs::Shutdown, Option<ChannelMonitorUpdate>, Vec<(HTLCSource, PaymentHash)>),
+		(
+			msgs::Shutdown,
+			Option<ChannelMonitorUpdate>,
+			Vec<(HTLCSource, PaymentHash)>,
+			Option<SpliceFundingFailed>,
+		),
 		APIError,
 	> {
 		let logger = WithChannelContext::from(logger, &self.context, None);
@@ -13328,7 +13344,9 @@ where
 			"we can't both complete shutdown and return a monitor update"
 		);
 
-		Ok((shutdown, monitor_update, dropped_outbound_htlcs))
+		let splice_funding_failed = self.abandon_quiescent_action();
+
+		Ok((shutdown, monitor_update, dropped_outbound_htlcs, splice_funding_failed))
 	}
 
 	// Miscellaneous utilities

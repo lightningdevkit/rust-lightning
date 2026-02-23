@@ -3901,14 +3901,30 @@ impl<
 					if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
 						let funding_txo_opt = chan.funding.get_funding_txo();
 						let their_features = &peer_state.latest_features;
-						let (shutdown_msg, mut monitor_update_opt, htlcs) = chan.get_shutdown(
-							&self.signer_provider,
-							their_features,
-							target_feerate_sats_per_1000_weight,
-							override_shutdown_script,
-							&self.logger,
-						)?;
+						let (shutdown_msg, mut monitor_update_opt, htlcs, splice_funding_failed) =
+							chan.get_shutdown(
+								&self.signer_provider,
+								their_features,
+								target_feerate_sats_per_1000_weight,
+								override_shutdown_script,
+								&self.logger,
+							)?;
 						failed_htlcs = htlcs;
+
+						if let Some(splice_funding_failed) = splice_funding_failed {
+							self.pending_events.lock().unwrap().push_back((
+								events::Event::SpliceFailed {
+									channel_id: *chan_id,
+									counterparty_node_id: *counterparty_node_id,
+									user_channel_id: chan.context().get_user_id(),
+									abandoned_funding_txo: splice_funding_failed.funding_txo,
+									channel_type: splice_funding_failed.channel_type,
+									contributed_inputs: splice_funding_failed.contributed_inputs,
+									contributed_outputs: splice_funding_failed.contributed_outputs,
+								},
+								None,
+							));
+						}
 
 						// We can send the `shutdown` message before updating the `ChannelMonitor`
 						// here as we don't need the monitor update to complete until we send a
@@ -11779,18 +11795,30 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						}
 
 						let funding_txo_opt = chan.funding.get_funding_txo();
-						let (shutdown, monitor_update_opt, htlcs) = try_channel_entry!(
-							self,
-							peer_state,
-							chan.shutdown(
-								&self.logger,
-								&self.signer_provider,
-								&peer_state.latest_features,
-								&msg
-							),
-							chan_entry
+						let res = chan.shutdown(
+							&self.logger,
+							&self.signer_provider,
+							&peer_state.latest_features,
+							&msg,
 						);
+						let (shutdown, monitor_update_opt, htlcs, splice_funding_failed) =
+							try_channel_entry!(self, peer_state, res, chan_entry);
 						dropped_htlcs = htlcs;
+
+						if let Some(splice_funding_failed) = splice_funding_failed {
+							self.pending_events.lock().unwrap().push_back((
+								events::Event::SpliceFailed {
+									channel_id: msg.channel_id,
+									counterparty_node_id: *counterparty_node_id,
+									user_channel_id: chan.context().get_user_id(),
+									abandoned_funding_txo: splice_funding_failed.funding_txo,
+									channel_type: splice_funding_failed.channel_type,
+									contributed_inputs: splice_funding_failed.contributed_inputs,
+									contributed_outputs: splice_funding_failed.contributed_outputs,
+								},
+								None,
+							));
+						}
 
 						if let Some(msg) = shutdown {
 							// We can send the `shutdown` message before updating the `ChannelMonitor`

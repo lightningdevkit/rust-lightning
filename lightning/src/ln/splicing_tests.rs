@@ -2406,6 +2406,66 @@ fn fail_quiescent_action_on_channel_close() {
 	check_added_monitors(&nodes[0], 1);
 }
 
+#[test]
+fn abandon_splice_quiescent_action_on_shutdown() {
+	do_abandon_splice_quiescent_action_on_shutdown(true);
+	do_abandon_splice_quiescent_action_on_shutdown(false);
+}
+
+#[cfg(test)]
+fn do_abandon_splice_quiescent_action_on_shutdown(local_shutdown: bool) {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	provide_utxo_reserves(&nodes, 1, Amount::ONE_BTC);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_capacity = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_capacity, 0);
+
+	// Since we cannot close after having sent `stfu`, send an HTLC so that when we attempt to
+	// splice, the `stfu` message is held back.
+	let (route, payment_hash, _payment_preimage, payment_secret) =
+		get_route_and_payment_hash!(&nodes[0], &nodes[1], 1_000_000);
+	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let payment_id = PaymentId(payment_hash.0);
+	nodes[0].node.send_payment_with_route(route, payment_hash, onion, payment_id).unwrap();
+	let update = get_htlc_update_msgs(&nodes[0], &node_id_1);
+	check_added_monitors(&nodes[0], 1);
+
+	nodes[1].node.handle_update_add_htlc(node_id_0, &update.update_add_htlcs[0]);
+	nodes[1].node.handle_commitment_signed(node_id_0, &update.commitment_signed[0]);
+	check_added_monitors(&nodes[1], 1);
+	let (revoke_and_ack, _) = get_revoke_commit_msgs(&nodes[1], &node_id_0);
+
+	nodes[0].node.handle_revoke_and_ack(node_id_1, &revoke_and_ack);
+	check_added_monitors(&nodes[0], 1);
+
+	// Attempt the splice. `stfu` should not go out yet as the state machine is pending.
+	let splice_in_amount = initial_channel_capacity / 2;
+	let _ =
+		initiate_splice_in(&nodes[0], &nodes[1], channel_id, Amount::from_sat(splice_in_amount));
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+
+	// Close the channel. We should see a `SpliceFailed` event for the pending splice
+	// `QuiescentAction`.
+	let (closer_node, closee_node) =
+		if local_shutdown { (&nodes[0], &nodes[1]) } else { (&nodes[1], &nodes[0]) };
+	let closer_node_id = closer_node.node.get_our_node_id();
+	let closee_node_id = closee_node.node.get_our_node_id();
+
+	closer_node.node.close_channel(&channel_id, &closee_node_id).unwrap();
+	let shutdown = get_event_msg!(closer_node, MessageSendEvent::SendShutdown, closee_node_id);
+	closee_node.node.handle_shutdown(closer_node_id, &shutdown);
+
+	let _ = get_event!(nodes[0], Event::SpliceFailed);
+	let _ = get_event_msg!(closee_node, MessageSendEvent::SendShutdown, closer_node_id);
+}
+
 #[cfg(test)]
 fn do_test_splice_with_inflight_htlc_forward_and_resolution(expire_scid_pre_forward: bool) {
 	// Test that we are still able to forward and resolve HTLCs while the original SCIDs contained
