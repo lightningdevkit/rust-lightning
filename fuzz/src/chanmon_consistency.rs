@@ -46,7 +46,7 @@ use lightning::chain::transaction::OutPoint;
 use lightning::chain::{
 	chainmonitor, channelmonitor, BestBlock, ChannelMonitorUpdateStatus, Confirm, Watch,
 };
-use lightning::events;
+use lightning::events::{self, EventsProvider};
 use lightning::ln::channel::{
 	FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE, MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS,
 };
@@ -83,6 +83,8 @@ use lightning::util::ser::{LengthReadable, ReadableArgs, Writeable, Writer};
 use lightning::util::test_channel_signer::{EnforcementState, SignerOp, TestChannelSigner};
 use lightning::util::test_utils::TestWalletSource;
 use lightning::util::wallet_utils::{WalletSourceSync, WalletSync};
+
+use lightning::events::bump_transaction::sync::BumpTransactionEventHandlerSync;
 
 use lightning_invoice::RawBolt11Invoice;
 
@@ -2849,6 +2851,57 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 								last_pass_no_updates = false;
 								continue;
 							}
+							// Process chain monitor events (BumpTransaction, SpendableOutputs)
+							// which are separate from ChannelManager events.
+							{
+								let monitors = [&monitor_a, &monitor_b, &monitor_c];
+								let broadcasters: [&Arc<TestBroadcaster>; 3] = [&broadcast_a, &broadcast_b, &broadcast_c];
+								let keys_managers = [&keys_manager_a, &keys_manager_b, &keys_manager_c];
+								for (idx, monitor) in monitors.iter().enumerate() {
+									let wallet = WalletSync::new(
+										&wallets[idx],
+										Arc::clone(&loggers[idx]),
+									);
+									let handler = BumpTransactionEventHandlerSync::new(
+										broadcasters[idx].as_ref(),
+										&wallet,
+										keys_managers[idx].as_ref(),
+										Arc::clone(&loggers[idx]),
+									);
+									let broadcaster = broadcasters[idx];
+									monitor.chain_monitor.process_pending_events(
+										&|event: events::Event| {
+											if let events::Event::BumpTransaction(ref bump) = event {
+												match bump {
+													events::bump_transaction::BumpTransactionEvent::ChannelClose {
+														commitment_tx,
+														channel_id,
+														counterparty_node_id,
+														..
+													} => {
+														// Broadcast the commitment tx directly.
+														// Skip the full anchor-bumping flow
+														// since fuzz crypto causes weight
+														// assertion failures in the bump
+														// handler.
+														broadcaster.broadcast_transactions(&[(
+															commitment_tx,
+															lightning::chain::chaininterface::TransactionType::UnilateralClose {
+																counterparty_node_id: *counterparty_node_id,
+																channel_id: *channel_id,
+															},
+														)]);
+													},
+													events::bump_transaction::BumpTransactionEvent::HTLCResolution { .. } => {
+														handler.handle_event(bump);
+													},
+												}
+											}
+											Ok(())
+										},
+									);
+								}
+							}
 							// Then, make sure any current forwards make their way to their destination
 							if process_msg_events!(0, false, ProcessMessages::AllMessages) {
 								last_pass_no_updates = false;
@@ -2902,57 +2955,35 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 
 				// If any channels were force-closed, advance chain height past HTLC
 				// timelocks so HTLC-timeout transactions can be broadcast, confirmed,
-				// and fully resolved. We advance in two phases:
-				// 1) Past cltv_expiry so HTLC-timeout txs are released
-				// 2) Past the CSV delay so SpendableOutputs events fire
+				// and fully resolved. We iterate multiple times to cover: (1) confirm
+				// commitment txs, (2) confirm HTLC-timeout txs after bump handling,
+				// (3) confirm second-stage txs past CSV, (4) final cleanup.
 				if !closed_channels.borrow().is_empty() {
-					chain_state.advance_height(250);
-					sync_with_chain_state(
-						&chain_state,
-						&nodes[0],
-						&monitor_a,
-						&mut node_height_a,
-						None,
-					);
-					sync_with_chain_state(
-						&chain_state,
-						&nodes[1],
-						&monitor_b,
-						&mut node_height_b,
-						None,
-					);
-					sync_with_chain_state(
-						&chain_state,
-						&nodes[2],
-						&monitor_c,
-						&mut node_height_c,
-						None,
-					);
-					process_all_events!();
-
-					chain_state.advance_height(250);
-					sync_with_chain_state(
-						&chain_state,
-						&nodes[0],
-						&monitor_a,
-						&mut node_height_a,
-						None,
-					);
-					sync_with_chain_state(
-						&chain_state,
-						&nodes[1],
-						&monitor_b,
-						&mut node_height_b,
-						None,
-					);
-					sync_with_chain_state(
-						&chain_state,
-						&nodes[2],
-						&monitor_c,
-						&mut node_height_c,
-						None,
-					);
-					process_all_events!();
+					for _ in 0..4 {
+						chain_state.advance_height(250);
+						sync_with_chain_state(
+							&chain_state,
+							&nodes[0],
+							&monitor_a,
+							&mut node_height_a,
+							None,
+						);
+						sync_with_chain_state(
+							&chain_state,
+							&nodes[1],
+							&monitor_b,
+							&mut node_height_b,
+							None,
+						);
+						sync_with_chain_state(
+							&chain_state,
+							&nodes[2],
+							&monitor_c,
+							&mut node_height_c,
+							None,
+						);
+						process_all_events!();
+					}
 				}
 
 				// Verify no payments are stuck - all should have resolved
