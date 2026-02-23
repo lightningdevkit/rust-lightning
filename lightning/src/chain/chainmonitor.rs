@@ -369,6 +369,12 @@ pub struct ChainMonitor<
 	/// Messages to send to the peer. This is currently used to distribute PeerStorage to channel partners.
 	pending_send_only_events: Mutex<Vec<MessageSendEvent>>,
 
+	/// We only support using one of [`ChannelMonitorUpdateStatus::InProgress`] and
+	/// [`ChannelMonitorUpdateStatus::Completed`] without restarting. We enforce this in non-test
+	/// builds by storing which one is in use (0 = unset, 1 = InProgress, 2 = Completed).
+	#[cfg(not(any(test, feature = "_externalize_tests")))]
+	monitor_update_type: AtomicUsize,
+
 	#[cfg(peer_storage)]
 	our_peerstorage_encryption_key: PeerStorageKey,
 }
@@ -412,6 +418,8 @@ where
 			event_notifier: Arc::clone(&event_notifier),
 			persister: AsyncPersister { persister, event_notifier },
 			pending_send_only_events: Mutex::new(Vec::new()),
+			#[cfg(not(any(test, feature = "_externalize_tests")))]
+			monitor_update_type: AtomicUsize::new(0),
 			#[cfg(peer_storage)]
 			our_peerstorage_encryption_key: _our_peerstorage_encryption_key,
 		}
@@ -617,8 +625,29 @@ where
 			highest_chain_height: AtomicUsize::new(0),
 			event_notifier: Arc::new(Notifier::new()),
 			pending_send_only_events: Mutex::new(Vec::new()),
+			#[cfg(not(any(test, feature = "_externalize_tests")))]
+			monitor_update_type: AtomicUsize::new(0),
 			#[cfg(peer_storage)]
 			our_peerstorage_encryption_key: _our_peerstorage_encryption_key,
+		}
+	}
+
+	#[cfg(not(any(test, feature = "_externalize_tests")))]
+	fn check_monitor_update_type(
+		monitor_update_type: &AtomicUsize, persist_res: &ChannelMonitorUpdateStatus,
+	) {
+		match persist_res {
+			ChannelMonitorUpdateStatus::InProgress => {
+				if monitor_update_type.swap(1, Ordering::Relaxed) == 2 {
+					panic!("Cannot use both ChannelMonitorUpdateStatus modes InProgress and Completed without restart");
+				}
+			},
+			ChannelMonitorUpdateStatus::Completed => {
+				if monitor_update_type.swap(2, Ordering::Relaxed) == 1 {
+					panic!("Cannot use both ChannelMonitorUpdateStatus modes InProgress and Completed without restart");
+				}
+			},
+			ChannelMonitorUpdateStatus::UnrecoverableError => {},
 		}
 	}
 
@@ -1285,6 +1314,8 @@ where
 		let update_id = monitor.get_latest_update_id();
 		let mut pending_monitor_updates = Vec::new();
 		let persist_res = self.persister.persist_new_channel(monitor.persistence_key(), &monitor);
+		#[cfg(not(any(test, feature = "_externalize_tests")))]
+		Self::check_monitor_update_type(&self.monitor_update_type, &persist_res);
 		match persist_res {
 			ChannelMonitorUpdateStatus::InProgress => {
 				log_info!(logger, "Persistence of new ChannelMonitor in progress",);
@@ -1367,6 +1398,8 @@ where
 						monitor,
 					)
 				};
+				#[cfg(not(any(test, feature = "_externalize_tests")))]
+				Self::check_monitor_update_type(&self.monitor_update_type, &persist_res);
 				match persist_res {
 					ChannelMonitorUpdateStatus::InProgress => {
 						pending_monitor_updates.push(update_id);

@@ -2779,13 +2779,6 @@ pub struct ChannelManager<
 	#[cfg(any(test, feature = "_test_utils"))]
 	pub(super) per_peer_state: FairRwLock<HashMap<PublicKey, Mutex<PeerState<SP>>>>,
 
-	/// We only support using one of [`ChannelMonitorUpdateStatus::InProgress`] and
-	/// [`ChannelMonitorUpdateStatus::Completed`] without restarting. Because the API does not
-	/// otherwise directly enforce this, we enforce it in non-test builds here by storing which one
-	/// is in use.
-	#[cfg(not(any(test, feature = "_externalize_tests")))]
-	monitor_update_type: AtomicUsize,
-
 	/// The set of events which we need to give to the user to handle. In some cases an event may
 	/// require some further action after the user handles it (currently only blocking a monitor
 	/// update from being handed to the user to ensure the included changes to the channel state
@@ -3526,9 +3519,6 @@ impl<
 			highest_seen_timestamp: AtomicUsize::new(current_timestamp as usize),
 
 			per_peer_state: FairRwLock::new(new_hash_map()),
-
-			#[cfg(not(any(test, feature = "_externalize_tests")))]
-			monitor_update_type: AtomicUsize::new(0),
 
 			pending_events: Mutex::new(VecDeque::new()),
 			pending_events_processor: AtomicBool::new(false),
@@ -10006,23 +9996,13 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				panic!("{}", err_str);
 			},
 			ChannelMonitorUpdateStatus::InProgress => {
-				#[cfg(not(any(test, feature = "_externalize_tests")))]
-				if self.monitor_update_type.swap(1, Ordering::Relaxed) == 2 {
-					panic!("Cannot use both ChannelMonitorUpdateStatus modes InProgress and Completed without restart");
-				}
 				log_debug!(
 					logger,
 					"ChannelMonitor update in flight, holding messages until the update completes.",
 				);
 				false
 			},
-			ChannelMonitorUpdateStatus::Completed => {
-				#[cfg(not(any(test, feature = "_externalize_tests")))]
-				if self.monitor_update_type.swap(2, Ordering::Relaxed) == 1 {
-					panic!("Cannot use both ChannelMonitorUpdateStatus modes InProgress and Completed without restart");
-				}
-				true
-			},
+			ChannelMonitorUpdateStatus::Completed => true,
 		}
 	}
 
@@ -19549,9 +19529,6 @@ impl<
 			highest_seen_timestamp: AtomicUsize::new(highest_seen_timestamp as usize),
 
 			per_peer_state: FairRwLock::new(per_peer_state),
-
-			#[cfg(not(any(test, feature = "_externalize_tests")))]
-			monitor_update_type: AtomicUsize::new(0),
 
 			pending_events: Mutex::new(pending_events_read),
 			pending_events_processor: AtomicBool::new(false),

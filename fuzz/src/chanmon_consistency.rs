@@ -1038,13 +1038,25 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 		let manager =
 			<(BlockHash, ChanMan)>::read(&mut &ser[..], read_args).expect("Failed to read manager");
 		let res = (manager.1, chain_monitor.clone());
+		let expected_status = *mon_style[node_id as usize].borrow();
+		*chain_monitor.persister.update_ret.lock().unwrap() = expected_status.clone();
 		for (channel_id, mon) in monitors.drain() {
+			let monitor_id = mon.get_latest_update_id();
 			assert_eq!(
 				chain_monitor.chain_monitor.watch_channel(channel_id, mon),
-				Ok(ChannelMonitorUpdateStatus::Completed)
+				Ok(expected_status.clone())
 			);
+			// When persistence returns InProgress, the real ChainMonitor tracks
+			// the initial update_id as pending. We must mirror this in the
+			// TestChainMonitor's latest_monitors so that
+			// complete_all_monitor_updates can drain and complete it later.
+			if expected_status == chain::ChannelMonitorUpdateStatus::InProgress {
+				let mut map = chain_monitor.latest_monitors.lock().unwrap();
+				if let Some(state) = map.get_mut(&channel_id) {
+					state.pending_monitors.push((monitor_id, state.persisted_monitor.clone()));
+				}
+			}
 		}
-		*chain_monitor.persister.update_ret.lock().unwrap() = *mon_style[node_id as usize].borrow();
 		res
 	};
 
