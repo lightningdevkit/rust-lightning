@@ -2990,6 +2990,14 @@ impl FundingNegotiation {
 }
 
 impl PendingFunding {
+	fn contributed_inputs(&self) -> impl Iterator<Item = bitcoin::OutPoint> + '_ {
+		self.contributions.iter().flat_map(|c| c.contributed_inputs())
+	}
+
+	fn contributed_outputs(&self) -> impl Iterator<Item = &TxOut> + '_ {
+		self.contributions.iter().flat_map(|c| c.contributed_outputs())
+	}
+
 	fn check_get_splice_locked<SP: SignerProvider>(
 		&mut self, context: &ChannelContext<SP>, confirmed_funding_index: usize, height: u32,
 	) -> Option<msgs::SpliceLocked> {
@@ -12246,9 +12254,16 @@ where
 
 		if let Some(QuiescentAction::Splice { contribution: existing, .. }) = &self.quiescent_action
 		{
+			let pending_splice = self.pending_splice.as_ref();
+			let prior_inputs = pending_splice
+				.into_iter()
+				.flat_map(|pending_splice| pending_splice.contributed_inputs());
+			let prior_outputs = pending_splice
+				.into_iter()
+				.flat_map(|pending_splice| pending_splice.contributed_outputs());
 			return match contribution.into_unique_contributions(
-				existing.contributed_inputs(),
-				existing.contributed_outputs(),
+				existing.contributed_inputs().chain(prior_inputs),
+				existing.contributed_outputs().chain(prior_outputs),
 			) {
 				None => Err(QuiescentError::DoNothing),
 				Some((inputs, outputs)) => Err(QuiescentError::DiscardFunding { inputs, outputs }),
@@ -12262,17 +12277,21 @@ where
 			.filter(|funding_negotiation| funding_negotiation.is_initiator());
 
 		if let Some(funding_negotiation) = initiated_funding_negotiation {
+			let pending_splice =
+				self.pending_splice.as_ref().expect("funding negotiation implies pending splice");
+			let prior_inputs = pending_splice.contributed_inputs();
+			let prior_outputs = pending_splice.contributed_outputs();
 			let unique_contributions = match funding_negotiation {
 				FundingNegotiation::AwaitingAck { context, .. } => contribution
 					.into_unique_contributions(
-						context.contributed_inputs(),
-						context.contributed_outputs(),
+						context.contributed_inputs().chain(prior_inputs),
+						context.contributed_outputs().chain(prior_outputs),
 					),
 				FundingNegotiation::ConstructingTransaction {
 					interactive_tx_constructor, ..
 				} => contribution.into_unique_contributions(
-					interactive_tx_constructor.contributed_inputs(),
-					interactive_tx_constructor.contributed_outputs(),
+					interactive_tx_constructor.contributed_inputs().chain(prior_inputs),
+					interactive_tx_constructor.contributed_outputs().chain(prior_outputs),
 				),
 				FundingNegotiation::AwaitingSignatures { .. } => {
 					let session = self
@@ -12281,8 +12300,8 @@ where
 						.as_ref()
 						.expect("pending splice awaiting signatures");
 					contribution.into_unique_contributions(
-						session.contributed_inputs(),
-						session.contributed_outputs(),
+						session.contributed_inputs().chain(prior_inputs),
+						session.contributed_outputs().chain(prior_outputs),
 					)
 				},
 			};
