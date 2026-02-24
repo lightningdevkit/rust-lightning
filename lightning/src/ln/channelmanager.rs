@@ -94,6 +94,7 @@ use crate::ln::outbound_payment::{
 	Bolt11PaymentError, Bolt12PaymentError, NextTrampolineHopInfo, OutboundPayments,
 	PendingOutboundPayment, ProbeSendFailure, RecipientCustomTlvs, RecipientOnionFields, Retry,
 	RetryableInvoiceRequest, RetryableSendFailure, SendAlongPathArgs, StaleExpiration,
+	TrampolineForwardInfo,
 };
 use crate::ln::types::ChannelId;
 use crate::offers::async_receive_offer_cache::AsyncReceiveOfferCache;
@@ -118,12 +119,14 @@ use crate::onion_message::offers::{OffersMessage, OffersMessageHandler};
 use crate::routing::gossip::NodeId;
 use crate::routing::router::{
 	BlindedTail, FixedRouter, InFlightHtlcs, Path, Payee, PaymentParameters, Route,
-	RouteParameters, RouteParametersConfig, Router,
+	RouteParameters, RouteParametersConfig, Router, DEFAULT_MAX_PATH_COUNT,
+	MAX_PATH_LENGTH_ESTIMATE,
 };
 use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::sign::{EntropySource, NodeSigner, Recipient, SignerProvider};
 use crate::types::features::{
-	Bolt12InvoiceFeatures, ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures,
+	Bolt11InvoiceFeatures, Bolt12InvoiceFeatures, ChannelFeatures, ChannelTypeFeatures,
+	InitFeatures, NodeFeatures,
 };
 use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::types::string::UntrustedString;
@@ -8319,7 +8322,7 @@ impl<
 	fn handle_trampoline_htlc(
 		&self, claimable_htlc: ClaimableHTLC, onion_fields: RecipientOnionFields,
 		payment_hash: PaymentHash, incoming_trampoline_shared_secret: [u8; 32],
-		next_hop_info: NextTrampolineHopInfo, _next_node_id: PublicKey,
+		next_hop_info: NextTrampolineHopInfo, next_node_id: PublicKey,
 	) -> Result<(), (HTLCSource, HTLCFailReason)> {
 		let mut trampoline_payments = self.awaiting_trampoline_forwards.lock().unwrap();
 
@@ -8401,7 +8404,7 @@ impl<
 			)
 		};
 
-		let _max_total_routing_fee_msat = match incoming_amt_msat
+		let max_total_routing_fee_msat = match incoming_amt_msat
 			.checked_sub(our_forwarding_fee_msat + next_hop_info.amount_msat)
 		{
 			Some(amount) => amount,
@@ -8410,7 +8413,7 @@ impl<
 			},
 		};
 
-		let _max_total_cltv_expiry_delta =
+		let max_total_cltv_expiry_delta =
 			match incoming_cltv_expiry.checked_sub(next_hop_info.cltv_expiry_height + cltv_delta) {
 				Some(cltv_delta) => cltv_delta,
 				None => {
@@ -8418,9 +8421,69 @@ impl<
 				},
 			};
 
+		// Assume any Trampoline node supports MPP
+		let mut recipient_features = Bolt11InvoiceFeatures::empty();
+		recipient_features.set_basic_mpp_optional();
+
+		let route_parameters = RouteParameters {
+			payment_params: PaymentParameters {
+				payee: Payee::Clear {
+					node_id: next_node_id, // TODO: this can be threaded through from above
+					route_hints: vec![],
+					features: Some(recipient_features),
+					// When sending a trampoline payment, we assume that the original sender has
+					// baked a final cltv into our instructions.
+					final_cltv_expiry_delta: 0,
+				},
+				expiry_time: None,
+				max_total_cltv_expiry_delta,
+				max_path_count: DEFAULT_MAX_PATH_COUNT,
+				max_path_length: MAX_PATH_LENGTH_ESTIMATE / 2,
+				max_channel_saturation_power_of_half: 2,
+				previously_failed_channels: vec![],
+				previously_failed_blinded_path_idxs: vec![],
+			},
+			final_value_msat: next_hop_info.amount_msat,
+			max_total_routing_fee_msat: Some(max_total_routing_fee_msat),
+		};
+
+		#[cfg(not(any(test, feature = "_test_utils")))]
+		let retry_strategy = Retry::Attempts(3);
+		#[cfg(any(test, feature = "_test_utils"))]
+		let retry_strategy = Retry::Attempts(0);
+
 		log_debug!(
 			self.logger,
-			"Rejecting trampoline forward because we do not fully support forwarding yet.",
+			"Attempting to forward trampoline payment that pays us {} with {} fee budget ({} total, {} cltv max)",
+			our_forwarding_fee_msat,
+			max_total_routing_fee_msat,
+			next_hop_info.amount_msat,
+			max_total_cltv_expiry_delta,
+		);
+		let result = self.pending_outbound_payments.send_payment_for_trampoline_forward(
+			PaymentId(payment_hash.0),
+			payment_hash,
+			TrampolineForwardInfo {
+				next_hop_info,
+				previous_hop_data: claimable_payment
+					.htlcs
+					.iter()
+					.map(|htlc| htlc.prev_hop.clone())
+					.collect(),
+				incoming_trampoline_shared_secret,
+				forwading_fee_msat: our_forwarding_fee_msat,
+			},
+			retry_strategy,
+			route_parameters.clone(),
+			&self.router,
+			self.list_usable_channels(),
+			|| self.compute_inflight_htlcs(),
+			&self.entropy_source,
+			&self.node_signer,
+			self.current_best_block().height,
+			&self.pending_events,
+			|args| self.send_payment_along_path(args),
+			&WithContext::from(&self.logger, None, None, Some(payment_hash)),
 		);
 
 		let source = trampoline_source();
@@ -8430,12 +8493,19 @@ impl<
 				"Dispatched trampoline payment: {} was not present in awaiting inbound",
 				payment_hash
 			);
+			return Err((
+				source,
+				HTLCFailReason::reason(LocalHTLCFailureReason::TemporaryTrampolineFailure, vec![]),
+			));
 		}
 
-		Err((
-			source,
-			HTLCFailReason::reason(LocalHTLCFailureReason::TemporaryTrampolineFailure, vec![]),
-		))
+		if let Err(_retryable_send_failure) = result {
+			return Err((
+				source,
+				HTLCFailReason::reason(LocalHTLCFailureReason::TemporaryTrampolineFailure, vec![]),
+			));
+		};
+		Ok(())
 	}
 
 	fn process_receive_htlcs(
