@@ -2875,21 +2875,37 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 				nodes[1].signer_unblocked(None);
 				nodes[2].signer_unblocked(None);
 
-				// After a node reload with an older monitor, node_height may be
-				// ahead of the monitor's best_block. Reset to the minimum so
-				// sync_with_chain_state re-delivers missed blocks during settlement.
-				for (node, monitor, node_height) in [
-					(&nodes[0], &monitor_a, &mut node_height_a),
-					(&nodes[1], &monitor_b, &mut node_height_b),
-					(&nodes[2], &monitor_c, &mut node_height_c),
+				// After a node reload with an older monitor, the monitor may
+				// be behind node_height. Sync only the monitors (not the
+				// ChannelManager) for the missed blocks to avoid the
+				// ChannelManager interpreting lower heights as a reorg.
+				for (monitor, node_height) in [
+					(&monitor_a, &node_height_a),
+					(&monitor_b, &node_height_b),
+					(&monitor_c, &node_height_c),
 				] {
-					let mut min = std::cmp::min(*node_height, node.current_best_block().height);
+					let mut min_monitor_height = *node_height;
 					for chan_id in monitor.chain_monitor.list_monitors() {
 						if let Ok(mon) = monitor.chain_monitor.get_monitor(chan_id) {
-							min = std::cmp::min(min, mon.current_best_block().height);
+							min_monitor_height = std::cmp::min(
+								min_monitor_height,
+								mon.current_best_block().height,
+							);
 						}
 					}
-					*node_height = min;
+					let mut h = min_monitor_height;
+					while h < *node_height {
+						h += 1;
+						let (header, txn) = chain_state.block_at(h);
+						let txdata: Vec<_> =
+							txn.iter().enumerate().map(|(i, tx)| (i + 1, tx)).collect();
+						if !txdata.is_empty() {
+							monitor
+								.chain_monitor
+								.transactions_confirmed(header, &txdata, h);
+						}
+						monitor.chain_monitor.best_block_updated(header, h);
+					}
 				}
 
 				macro_rules! process_all_events {
