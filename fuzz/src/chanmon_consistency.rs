@@ -26,6 +26,7 @@ use bitcoin::opcodes;
 use bitcoin::script::{Builder, ScriptBuf};
 use bitcoin::transaction::Version;
 use bitcoin::transaction::{Transaction, TxOut};
+use bitcoin::OutPoint as BitcoinOutPoint;
 use bitcoin::FeeRate;
 
 use bitcoin::block::Header;
@@ -187,13 +188,22 @@ impl BroadcasterInterface for TestBroadcaster {
 struct ChainState {
 	blocks: Vec<(Header, Vec<Transaction>)>,
 	confirmed_txids: HashSet<Txid>,
+	/// Tracks unspent outputs created by confirmed transactions. Only
+	/// transactions that spend existing UTXOs can be confirmed, which
+	/// prevents fuzz hash collisions from creating phantom spends of
+	/// outputs that were never actually created.
+	utxos: HashSet<BitcoinOutPoint>,
 }
 
 impl ChainState {
 	fn new() -> Self {
 		let genesis_hash = genesis_block(Network::Bitcoin).block_hash();
 		let genesis_header = create_dummy_header(genesis_hash, 42);
-		Self { blocks: vec![(genesis_header, Vec::new())], confirmed_txids: HashSet::new() }
+		Self {
+			blocks: vec![(genesis_header, Vec::new())],
+			confirmed_txids: HashSet::new(),
+			utxos: HashSet::new(),
+		}
 	}
 
 	fn tip_height(&self) -> u32 {
@@ -205,7 +215,28 @@ impl ChainState {
 		if self.confirmed_txids.contains(&txid) {
 			return false;
 		}
+		// Validate that all inputs spend existing, unspent outputs. This
+		// rejects both double-spends and spends of outputs that were never
+		// created (e.g. due to fuzz txid hash collisions where a different
+		// transaction was confirmed under the same txid).
+		let is_coinbase = tx.is_coinbase();
+		if !is_coinbase {
+			for input in &tx.input {
+				if !self.utxos.contains(&input.previous_output) {
+					return false;
+				}
+			}
+		}
 		self.confirmed_txids.insert(txid);
+		if !is_coinbase {
+			for input in &tx.input {
+				self.utxos.remove(&input.previous_output);
+			}
+		}
+		// Add this transaction's outputs as new UTXOs.
+		for idx in 0..tx.output.len() {
+			self.utxos.insert(BitcoinOutPoint { txid, vout: idx as u32 });
+		}
 
 		let prev_hash = self.blocks.last().unwrap().0.block_hash();
 		let header = create_dummy_header(prev_hash, 42);
@@ -1253,21 +1284,27 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 	let wallet_c = TestWalletSource::new(SecretKey::from_slice(&[3; 32]).unwrap());
 
 	let wallets = vec![wallet_a, wallet_b, wallet_c];
-	let coinbase_tx = bitcoin::Transaction {
-		version: bitcoin::transaction::Version::TWO,
-		lock_time: bitcoin::absolute::LockTime::ZERO,
-		input: vec![bitcoin::TxIn { ..Default::default() }],
-		output: wallets
-			.iter()
-			.map(|w| TxOut {
-				value: Amount::from_sat(100_000),
-				script_pubkey: w.get_change_script().unwrap(),
-			})
-			.collect(),
-	};
-	wallets.iter().enumerate().for_each(|(i, w)| {
-		w.add_utxo(coinbase_tx.clone(), i as u32);
-	});
+	// Create wallet UTXOs for each node. Each anchor-channel HTLC claim
+	// needs a wallet input for fees, so we create enough UTXOs to cover
+	// multiple concurrent claims.
+	let num_wallet_utxos = 50;
+	for (wallet_idx, w) in wallets.iter().enumerate() {
+		let coinbase_tx = bitcoin::Transaction {
+			version: bitcoin::transaction::Version(wallet_idx as i32 + 100),
+			lock_time: bitcoin::absolute::LockTime::ZERO,
+			input: vec![bitcoin::TxIn { ..Default::default() }],
+			output: (0..num_wallet_utxos)
+				.map(|_| TxOut {
+					value: Amount::from_sat(100_000),
+					script_pubkey: w.get_change_script().unwrap(),
+				})
+				.collect(),
+		};
+		for vout in 0..num_wallet_utxos {
+			w.add_utxo(coinbase_tx.clone(), vout);
+		}
+		chain_state.confirm_tx(coinbase_tx);
+	}
 
 	let fee_est_a = Arc::new(FuzzEstimator { ret_val: atomic::AtomicU32::new(253) });
 	let mut last_htlc_clear_fee_a = 253;
