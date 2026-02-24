@@ -539,8 +539,6 @@ struct ClaimableHTLC {
 	/// The total value received for a payment (sum of all MPP parts if the payment is a MPP).
 	/// Gets set to the amount reported when pushing [`Event::PaymentClaimable`].
 	total_value_received: Option<u64>,
-	/// The sender intended sum total of all MPP parts specified in the onion
-	total_msat: u64,
 	/// The extra fee our counterparty skimmed off the top of this HTLC.
 	counterparty_skimmed_fee_msat: Option<u64>,
 }
@@ -686,6 +684,20 @@ pub struct OptionalBolt11PaymentParams {
 	/// will ultimately fail once all pending paths have failed (generating an
 	/// [`Event::PaymentFailed`]).
 	pub retry_strategy: Retry,
+	/// If the payment being made from this node is part of a larger MPP payment from multiple
+	/// nodes (i.e. because a single payment is being made from multiple wallets), you can specify
+	/// the total amount being paid here.
+	///
+	/// If this is set, it must be at least the [`Bolt11Invoice::amount_milli_satoshis`] for the
+	/// invoice provided to [`ChannelManager::pay_for_bolt11_invoice`]. Further, if this is set,
+	/// the `amount_msats` provided to [`ChannelManager::pay_for_bolt11_invoice`] is allowed to be
+	/// lower than [`Bolt11Invoice::amount_milli_satoshis`] (as the payment we're making may be a
+	/// small part of the amount needed to meet the invoice's minimum).
+	///
+	/// If this is lower than the `amount_msats` passed to
+	/// [`ChannelManager::pay_for_bolt11_invoice`] the call will fail with
+	/// [`Bolt11PaymentError::InvalidAmount`].
+	pub declared_total_mpp_value_msat_override: Option<u64>,
 }
 
 impl Default for OptionalBolt11PaymentParams {
@@ -697,6 +709,7 @@ impl Default for OptionalBolt11PaymentParams {
 			retry_strategy: Retry::Timeout(core::time::Duration::from_secs(2)),
 			#[cfg(not(feature = "std"))]
 			retry_strategy: Retry::Attempts(3),
+			declared_total_mpp_value_msat_override: None,
 		}
 	}
 }
@@ -1091,7 +1104,7 @@ struct ClaimingPayment {
 	receiver_node_id: PublicKey,
 	htlcs: Vec<events::ClaimedHTLC>,
 	sender_intended_value: Option<u64>,
-	onion_fields: Option<RecipientOnionFields>,
+	onion_fields: RecipientOnionFields,
 	payment_id: Option<PaymentId>,
 	/// When we claim and generate a [`Event::PaymentClaimed`], we want to block any
 	/// payment-preimage-removing RAA [`ChannelMonitorUpdate`]s until the [`Event::PaymentClaimed`]
@@ -1110,13 +1123,14 @@ impl_writeable_tlv_based!(ClaimingPayment, {
 	(4, receiver_node_id, required),
 	(5, htlcs, optional_vec),
 	(7, sender_intended_value, option),
-	(9, onion_fields, option),
+	// onion_fields was added (and always set for new payments) in 0.0.124
+	(9, onion_fields, (required: ReadableArgs, amount_msat.0.unwrap())),
 	(11, payment_id, option),
 });
 
 struct ClaimablePayment {
 	purpose: events::PaymentPurpose,
-	onion_fields: Option<RecipientOnionFields>,
+	onion_fields: RecipientOnionFields,
 	htlcs: Vec<ClaimableHTLC>,
 }
 
@@ -1239,12 +1253,11 @@ impl ClaimablePayments {
 					}
 				}
 
-				if let Some(RecipientOnionFields { custom_tlvs, .. }) = &payment.onion_fields {
-					if !custom_tlvs_known && custom_tlvs.iter().any(|(typ, _)| typ % 2 == 0) {
-						log_info!(logger, "Rejecting payment with payment hash {} as we cannot accept payment with unknown even TLVs: {}",
-							&payment_hash, log_iter!(custom_tlvs.iter().map(|(typ, _)| typ).filter(|typ| *typ % 2 == 0)));
-						return Err(payment.htlcs);
-					}
+				let custom_tlvs = &payment.onion_fields.custom_tlvs;
+				if !custom_tlvs_known && custom_tlvs.iter().any(|(typ, _)| typ % 2 == 0) {
+					log_info!(logger, "Rejecting payment with payment hash {} as we cannot accept payment with unknown even TLVs: {}",
+						&payment_hash, log_iter!(custom_tlvs.iter().map(|(typ, _)| typ).filter(|typ| *typ % 2 == 0)));
+					return Err(payment.htlcs);
 				}
 
 				let payment_id = payment.inbound_payment_id(inbound_payment_id_secret);
@@ -1257,7 +1270,7 @@ impl ClaimablePayments {
 					})
 					.or_insert_with(|| {
 						let htlcs = payment.htlcs.iter().map(events::ClaimedHTLC::from).collect();
-						let sender_intended_value = payment.htlcs.first().map(|htlc| htlc.total_msat);
+						let sender_intended_value = payment.onion_fields.total_mpp_amount_msat;
 						// Pick an "arbitrary" channel to block RAAs on until the `PaymentSent`
 						// event is processed, specifically the last channel to get claimed.
 						let durable_preimage_channel = payment.htlcs.last().map_or(None, |htlc| {
@@ -1273,7 +1286,7 @@ impl ClaimablePayments {
 							payment_purpose: payment.purpose,
 							receiver_node_id,
 							htlcs,
-							sender_intended_value,
+							sender_intended_value: Some(sender_intended_value),
 							onion_fields: payment.onion_fields,
 							payment_id: Some(payment_id),
 							durable_preimage_channel,
@@ -5153,15 +5166,14 @@ impl<
 	#[cfg(any(test, feature = "_externalize_tests"))]
 	pub(crate) fn test_send_payment_along_path(
 		&self, path: &Path, payment_hash: &PaymentHash, recipient_onion: RecipientOnionFields,
-		total_value: u64, cur_height: u32, payment_id: PaymentId,
-		keysend_preimage: &Option<PaymentPreimage>, session_priv_bytes: [u8; 32],
+		cur_height: u32, payment_id: PaymentId, keysend_preimage: &Option<PaymentPreimage>,
+		session_priv_bytes: [u8; 32],
 	) -> Result<(), APIError> {
 		let _lck = self.total_consistency_lock.read().unwrap();
 		self.send_payment_along_path(SendAlongPathArgs {
 			path,
 			payment_hash,
 			recipient_onion: &recipient_onion,
-			total_value,
 			cur_height,
 			payment_id,
 			keysend_preimage,
@@ -5177,7 +5189,6 @@ impl<
 			path,
 			payment_hash,
 			recipient_onion,
-			total_value,
 			cur_height,
 			payment_id,
 			keysend_preimage,
@@ -5202,7 +5213,6 @@ impl<
 			&self.secp_ctx,
 			&path,
 			&session_priv,
-			total_value,
 			recipient_onion,
 			cur_height,
 			payment_hash,
@@ -5421,7 +5431,7 @@ impl<
 	pub(super) fn test_send_payment_internal(
 		&self, route: &Route, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields,
 		keysend_preimage: Option<PaymentPreimage>, payment_id: PaymentId,
-		recv_value_msat: Option<u64>, onion_session_privs: Vec<[u8; 32]>,
+		onion_session_privs: Vec<[u8; 32]>,
 	) -> Result<(), PaymentSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height;
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
@@ -5431,7 +5441,6 @@ impl<
 			recipient_onion,
 			keysend_preimage,
 			payment_id,
-			recv_value_msat,
 			onion_session_privs,
 			&self.node_signer,
 			best_block_height,
@@ -5482,10 +5491,19 @@ impl<
 	/// The invoice's `payment_hash().0` serves as a reliable choice for the `payment_id`.
 	///
 	/// # Handling Invoice Amounts
-	/// Some invoices include a specific amount, while others require you to specify one.
-	/// - If the invoice **includes** an amount, user may provide an amount greater or equal to it
-	/// to allow for overpayments.
-	/// - If the invoice **doesn't include** an amount, you'll need to specify `amount_msats`.
+	/// Some invoices require a specific minimum amount (which can be fetched with
+	/// [`Bolt11Invoice::amount_milli_satoshis`]) while others allow you to pay any amount.
+	///
+	/// - If the invoice **includes** an amount, `amount_msats` may be `None` to pay exactly
+	///   [`Bolt11Invoice::amount_milli_satoshis`] or may be `Some` with a value greater than or
+	///   equal to the [`Bolt11Invoice::amount_milli_satoshis`] to allow for deliberate overpayment
+	///   (e.g. for "tips").
+	/// - If the invoice **doesn't include** an amount, `amount_msats` must be `Some`.
+	///
+	/// In the special case that
+	/// [`OptionalBolt11PaymentParams::declared_total_mpp_value_msat_override`] is set,
+	/// `amount_msats` may be `Some` and lower than [`Bolt11Invoice::amount_milli_satoshis`]. See
+	/// the parameter for more details.
 	///
 	/// If these conditions aren’t met, the function will return [`Bolt11PaymentError::InvalidAmount`].
 	///
@@ -7932,6 +7950,7 @@ impl<
 								payment_secret: Some(payment_data.payment_secret),
 								payment_metadata,
 								custom_tlvs,
+								total_mpp_amount_msat: payment_data.total_msat,
 							};
 							(
 								incoming_cltv_expiry,
@@ -7960,6 +7979,10 @@ impl<
 								payment_secret: payment_data
 									.as_ref()
 									.map(|data| data.payment_secret),
+								total_mpp_amount_msat: payment_data
+									.as_ref()
+									.map(|data| data.total_msat)
+									.unwrap_or(outgoing_amt_msat),
 								payment_metadata,
 								custom_tlvs,
 							};
@@ -7988,11 +8011,6 @@ impl<
 						sender_intended_value: outgoing_amt_msat,
 						timer_ticks: 0,
 						total_value_received: None,
-						total_msat: if let Some(data) = &payment_data {
-							data.total_msat
-						} else {
-							outgoing_amt_msat
-						},
 						cltv_expiry,
 						onion_payload,
 						counterparty_skimmed_fee_msat: skimmed_fee_msat,
@@ -8058,7 +8076,9 @@ impl<
 								.or_insert_with(|| {
 									committed_to_claimable = true;
 									ClaimablePayment {
-										purpose: $purpose.clone(), htlcs: Vec::new(), onion_fields: None,
+										purpose: $purpose.clone(),
+										htlcs: Vec::new(),
+										onion_fields: onion_fields.clone(),
 									}
 								});
 							if $purpose != claimable_payment.purpose {
@@ -8066,34 +8086,30 @@ impl<
 								log_trace!(self.logger, "Failing new {} HTLC with payment_hash {} as we already had an existing {} HTLC with the same payment hash", log_keysend(is_keysend), &payment_hash, log_keysend(!is_keysend));
 								fail_htlc!(claimable_htlc, payment_hash);
 							}
-							if let Some(earlier_fields) = &mut claimable_payment.onion_fields {
-								if earlier_fields.check_merge(&mut onion_fields).is_err() {
-									fail_htlc!(claimable_htlc, payment_hash);
-								}
-							} else {
-								claimable_payment.onion_fields = Some(onion_fields);
+							let onions_compatible =
+								claimable_payment.onion_fields.check_merge(&mut onion_fields);
+							if onions_compatible.is_err() {
+								fail_htlc!(claimable_htlc, payment_hash);
 							}
-							let mut total_value = claimable_htlc.sender_intended_value;
+							let mut total_intended_recvd_value =
+								claimable_htlc.sender_intended_value;
 							let mut earliest_expiry = claimable_htlc.cltv_expiry;
 							for htlc in claimable_payment.htlcs.iter() {
-								total_value += htlc.sender_intended_value;
+								total_intended_recvd_value += htlc.sender_intended_value;
 								earliest_expiry = cmp::min(earliest_expiry, htlc.cltv_expiry);
-								if htlc.total_msat != claimable_htlc.total_msat {
-									log_trace!(self.logger, "Failing HTLCs with payment_hash {} as the HTLCs had inconsistent total values (eg {} and {})",
-										&payment_hash, claimable_htlc.total_msat, htlc.total_msat);
-									total_value = msgs::MAX_VALUE_MSAT;
-								}
-								if total_value >= msgs::MAX_VALUE_MSAT { break; }
+								if total_intended_recvd_value >= msgs::MAX_VALUE_MSAT { break; }
 							}
+							let total_mpp_value =
+								claimable_payment.onion_fields.total_mpp_amount_msat;
 							// The condition determining whether an MPP is complete must
 							// match exactly the condition used in `timer_tick_occurred`
-							if total_value >= msgs::MAX_VALUE_MSAT {
+							if total_intended_recvd_value >= msgs::MAX_VALUE_MSAT {
 								fail_htlc!(claimable_htlc, payment_hash);
-							} else if total_value - claimable_htlc.sender_intended_value >= claimable_htlc.total_msat {
+							} else if total_intended_recvd_value - claimable_htlc.sender_intended_value >= total_mpp_value {
 								log_trace!(self.logger, "Failing HTLC with payment_hash {} as payment is already claimable",
 									&payment_hash);
 								fail_htlc!(claimable_htlc, payment_hash);
-							} else if total_value >= claimable_htlc.total_msat {
+							} else if total_intended_recvd_value >= total_mpp_value {
 								#[allow(unused_assignments)] {
 									committed_to_claimable = true;
 								}
@@ -8104,8 +8120,8 @@ impl<
 									.for_each(|htlc| htlc.total_value_received = Some(amount_msat));
 								let counterparty_skimmed_fee_msat = claimable_payment.htlcs.iter()
 									.map(|htlc| htlc.counterparty_skimmed_fee_msat.unwrap_or(0)).sum();
-								debug_assert!(total_value.saturating_sub(amount_msat) <=
-									counterparty_skimmed_fee_msat);
+								debug_assert!(total_intended_recvd_value.saturating_sub(amount_msat)
+									<= counterparty_skimmed_fee_msat);
 								claimable_payment.htlcs.sort();
 								let payment_id =
 									claimable_payment.inbound_payment_id(&self.inbound_payment_id_secret);
@@ -8117,7 +8133,7 @@ impl<
 									counterparty_skimmed_fee_msat,
 									receiving_channel_ids: claimable_payment.receiving_channel_ids(),
 									claim_deadline: Some(earliest_expiry - HTLC_FAIL_BACK_BUFFER),
-									onion_fields: claimable_payment.onion_fields.clone(),
+									onion_fields: Some(claimable_payment.onion_fields.clone()),
 									payment_id: Some(payment_id),
 								}, None));
 								payment_claimable_generated = true;
@@ -8567,9 +8583,10 @@ impl<
 						// In this case we're not going to handle any timeouts of the parts here.
 						// This condition determining whether the MPP is complete here must match
 						// exactly the condition used in `process_pending_htlc_forwards`.
-						let htlc_total_msat =
+						let total_intended_recvd_value =
 							payment.htlcs.iter().map(|h| h.sender_intended_value).sum();
-						if payment.htlcs[0].total_msat <= htlc_total_msat {
+						let total_mpp_value = payment.onion_fields.total_mpp_amount_msat;
+						if total_mpp_value <= total_intended_recvd_value {
 							return true;
 						} else if payment.htlcs.iter_mut().any(|htlc| {
 							htlc.timer_ticks += 1;
@@ -8984,20 +9001,11 @@ impl<
 		// amount we told the user in the last `PaymentClaimable`. We also do a sanity-check that
 		// the MPP parts all have the same `total_msat`.
 		let mut claimable_amt_msat = 0;
-		let mut prev_total_msat = None;
 		let mut expected_amt_msat = None;
 		let mut valid_mpp = true;
 		let mut errs = Vec::new();
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		for htlc in sources.iter() {
-			if prev_total_msat.is_some() && prev_total_msat != Some(htlc.total_msat) {
-				log_error!(self.logger, "Somehow ended up with an MPP payment with different expected total amounts - this should not be reachable!");
-				debug_assert!(false);
-				valid_mpp = false;
-				break;
-			}
-			prev_total_msat = Some(htlc.total_msat);
-
 			if expected_amt_msat.is_some() && expected_amt_msat != htlc.total_value_received {
 				log_error!(self.logger, "Somehow ended up with an MPP payment with different received total amounts - this should not be reachable!");
 				debug_assert!(false);
@@ -9841,7 +9849,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							receiver_node_id: Some(receiver_node_id),
 							htlcs,
 							sender_intended_total_msat,
-							onion_fields,
+							onion_fields: Some(onion_fields),
 							payment_id,
 						};
 						let action = if let Some((outpoint, counterparty_node_id, channel_id)) =
@@ -16989,33 +16997,33 @@ impl_writeable_tlv_based!(HTLCPreviousHopData, {
 	(13, trampoline_shared_secret, option),
 });
 
-impl Writeable for ClaimableHTLC {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
-		let (payment_data, keysend_preimage) = match &self.onion_payload {
-			OnionPayload::Invoice { _legacy_hop_data } => (_legacy_hop_data.as_ref(), None),
-			OnionPayload::Spontaneous(preimage) => (None, Some(preimage)),
-		};
-		write_tlv_fields!(writer, {
-			(0, self.prev_hop, required),
-			(1, self.total_msat, required),
-			(2, self.value, required),
-			(3, self.sender_intended_value, required),
-			(4, payment_data, option),
-			(5, self.total_value_received, option),
-			(6, self.cltv_expiry, required),
-			(8, keysend_preimage, option),
-			(10, self.counterparty_skimmed_fee_msat, option),
-		});
-		Ok(())
-	}
+fn write_claimable_htlc<W: Writer>(
+	htlc: &ClaimableHTLC, total_mpp_value_msat: u64, writer: &mut W,
+) -> Result<(), io::Error> {
+	let (payment_data, keysend_preimage) = match &htlc.onion_payload {
+		OnionPayload::Invoice { _legacy_hop_data } => (_legacy_hop_data.as_ref(), None),
+		OnionPayload::Spontaneous(preimage) => (None, Some(preimage)),
+	};
+	write_tlv_fields!(writer, {
+		(0, htlc.prev_hop, required),
+		(1, total_mpp_value_msat, required),
+		(2, htlc.value, required),
+		(3, htlc.sender_intended_value, required),
+		(4, payment_data, option),
+		(5, htlc.total_value_received, option),
+		(6, htlc.cltv_expiry, required),
+		(8, keysend_preimage, option),
+		(10, htlc.counterparty_skimmed_fee_msat, option),
+	});
+	Ok(())
 }
 
-impl Readable for ClaimableHTLC {
+impl Readable for (ClaimableHTLC, u64) {
 	#[rustfmt::skip]
 	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		_init_and_read_len_prefixed_tlv_fields!(reader, {
 			(0, prev_hop, required),
-			(1, total_msat, option),
+			(1, total_msat, required), // Added and always written in 0.0.107
 			(2, value_ser, required),
 			(3, sender_intended_value, option),
 			(4, payment_data_opt, option),
@@ -17031,32 +17039,20 @@ impl Readable for ClaimableHTLC {
 				if payment_data.is_some() {
 					return Err(DecodeError::InvalidValue)
 				}
-				if total_msat.is_none() {
-					total_msat = Some(value);
-				}
 				OnionPayload::Spontaneous(p)
 			},
-			None => {
-				if total_msat.is_none() {
-					if payment_data.is_none() {
-						return Err(DecodeError::InvalidValue)
-					}
-					total_msat = Some(payment_data.as_ref().unwrap().total_msat);
-				}
-				OnionPayload::Invoice { _legacy_hop_data: payment_data }
-			},
+			None => OnionPayload::Invoice { _legacy_hop_data: payment_data },
 		};
-		Ok(Self {
+		Ok((ClaimableHTLC {
 			prev_hop: prev_hop.0.unwrap(),
 			timer_ticks: 0,
 			value,
 			sender_intended_value: sender_intended_value.unwrap_or(value),
 			total_value_received,
-			total_msat: total_msat.unwrap(),
 			onion_payload,
 			cltv_expiry: cltv_expiry.0.unwrap(),
 			counterparty_skimmed_fee_msat,
-		})
+		}, total_msat.0.expect("required field")))
 	}
 }
 
@@ -17316,16 +17312,16 @@ impl<
 		let pending_outbound_payments = self.pending_outbound_payments.pending_outbound_payments.lock().unwrap();
 
 		let mut htlc_purposes: Vec<&events::PaymentPurpose> = Vec::new();
-		let mut htlc_onion_fields: Vec<&_> = Vec::new();
+		let mut htlc_onion_fields: Vec<Option<&_>> = Vec::new();
 		(claimable_payments.claimable_payments.len() as u64).write(writer)?;
 		for (payment_hash, payment) in claimable_payments.claimable_payments.iter() {
 			payment_hash.write(writer)?;
 			(payment.htlcs.len() as u64).write(writer)?;
 			for htlc in payment.htlcs.iter() {
-				htlc.write(writer)?;
+				write_claimable_htlc(&htlc, payment.onion_fields.total_mpp_amount_msat, writer)?;
 			}
 			htlc_purposes.push(&payment.purpose);
-			htlc_onion_fields.push(&payment.onion_fields);
+			htlc_onion_fields.push(Some(&payment.onion_fields));
 		}
 
 		let mut monitor_update_blocked_actions_per_peer = None;
@@ -17551,6 +17547,18 @@ impl Readable for VecDeque<(Event, Option<EventCompletionAction>)> {
 	}
 }
 
+/// We write the [`ClaimableHTLC`]'s [`RecipientOnionFields`] separately as they were added sometime
+/// later. Because [`RecipientOnionFields`] only implements [`ReadableArgs`] we have to add a
+/// wrapper which reads them without [`RecipientOnionFields::total_mpp_amount_msat`] and then fill
+/// them in later.
+struct AmountlessClaimablePaymentHTLCOnion(RecipientOnionFields);
+
+impl Readable for AmountlessClaimablePaymentHTLCOnion {
+	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		Ok(Self(ReadableArgs::read(reader, 0)?))
+	}
+}
+
 // Raw deserialized data from a ChannelManager, before validation or reconstruction.
 // This is an internal DTO used in the two-stage deserialization process.
 pub(super) struct ChannelManagerData<SP: SignerProvider> {
@@ -17584,25 +17592,18 @@ pub(super) struct ChannelManagerData<SP: SignerProvider> {
 }
 
 /// Arguments for deserializing [`ChannelManagerData`].
-struct ChannelManagerDataReadArgs<
-	'a,
-	ES: EntropySource,
-	NS: NodeSigner,
-	SP: SignerProvider,
-	L: Logger,
-> {
+struct ChannelManagerDataReadArgs<'a, ES: EntropySource, SP: SignerProvider, L: Logger> {
 	entropy_source: &'a ES,
-	node_signer: &'a NS,
 	signer_provider: &'a SP,
 	config: UserConfig,
 	logger: &'a L,
 }
 
-impl<'a, ES: EntropySource, NS: NodeSigner, SP: SignerProvider, L: Logger>
-	ReadableArgs<ChannelManagerDataReadArgs<'a, ES, NS, SP, L>> for ChannelManagerData<SP>
+impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
+	ReadableArgs<ChannelManagerDataReadArgs<'a, ES, SP, L>> for ChannelManagerData<SP>
 {
 	fn read<R: io::Read>(
-		reader: &mut R, args: ChannelManagerDataReadArgs<'a, ES, NS, SP, L>,
+		reader: &mut R, args: ChannelManagerDataReadArgs<'a, ES, SP, L>,
 	) -> Result<Self, DecodeError> {
 		let version = read_ver_prefix!(reader, SERIALIZATION_VERSION);
 
@@ -17657,10 +17658,20 @@ impl<'a, ES: EntropySource, NS: NodeSigner, SP: SignerProvider, L: Logger>
 				previous_hops_len as usize,
 				MAX_ALLOC_SIZE / mem::size_of::<ClaimableHTLC>(),
 			));
+			let mut total_mpp_value_msat = None;
 			for _ in 0..previous_hops_len {
-				previous_hops.push(<ClaimableHTLC as Readable>::read(reader)?);
+				let (htlc, total_mpp_value_msat_read) =
+					<(ClaimableHTLC, u64) as Readable>::read(reader)?;
+				if total_mpp_value_msat.is_some()
+					&& total_mpp_value_msat != Some(total_mpp_value_msat_read)
+				{
+					return Err(DecodeError::InvalidValue);
+				}
+				total_mpp_value_msat = Some(total_mpp_value_msat_read);
+				previous_hops.push(htlc);
 			}
-			claimable_htlcs_list.push((payment_hash, previous_hops));
+			let total_mpp_value_msat = total_mpp_value_msat.ok_or(DecodeError::InvalidValue)?;
+			claimable_htlcs_list.push((payment_hash, previous_hops, total_mpp_value_msat));
 		}
 
 		let peer_count: u64 = Readable::read(reader)?;
@@ -17743,8 +17754,10 @@ impl<'a, ES: EntropySource, NS: NodeSigner, SP: SignerProvider, L: Logger>
 		let mut fake_scid_rand_bytes: Option<[u8; 32]> = None;
 		let mut probing_cookie_secret: Option<[u8; 32]> = None;
 		let mut claimable_htlc_purposes = None;
-		let mut claimable_htlc_onion_fields = None;
-		let mut pending_claiming_payments = None;
+		let mut amountless_claimable_htlc_onion_fields: Option<
+			Vec<Option<AmountlessClaimablePaymentHTLCOnion>>,
+		> = None;
+		let mut pending_claiming_payments = Some(new_hash_map());
 		let mut monitor_update_blocked_actions_per_peer: Option<Vec<(_, BTreeMap<_, Vec<_>>)>> =
 			None;
 		let mut events_override = None;
@@ -17771,7 +17784,7 @@ impl<'a, ES: EntropySource, NS: NodeSigner, SP: SignerProvider, L: Logger>
 			(9, claimable_htlc_purposes, optional_vec),
 			(10, legacy_in_flight_monitor_updates, option),
 			(11, probing_cookie_secret, option),
-			(13, claimable_htlc_onion_fields, optional_vec),
+			(13, amountless_claimable_htlc_onion_fields, optional_vec),
 			(14, decode_update_add_htlcs_legacy, option),
 			(15, inbound_payment_id_secret, option),
 			(17, in_flight_monitor_updates, option),
@@ -17827,77 +17840,46 @@ impl<'a, ES: EntropySource, NS: NodeSigner, SP: SignerProvider, L: Logger>
 		// Resolve events_override: if present, it replaces pending_events.
 		let pending_events_read = events_override.unwrap_or(pending_events_read);
 
-		// Combine claimable_htlcs_list with their purposes and onion fields. For very old data
-		// (pre-0.0.107) that lacks purposes, reconstruct them from legacy hop data.
-		let expanded_inbound_key = args.node_signer.get_expanded_key();
-
+		// Combine claimable_htlcs_list with their purposes and onion fields.
 		let mut claimable_payments = hash_map_with_capacity(claimable_htlcs_list.len());
 		if let Some(purposes) = claimable_htlc_purposes {
 			if purposes.len() != claimable_htlcs_list.len() {
 				return Err(DecodeError::InvalidValue);
 			}
-			if let Some(onion_fields) = claimable_htlc_onion_fields {
+			if let Some(onion_fields) = amountless_claimable_htlc_onion_fields {
 				if onion_fields.len() != claimable_htlcs_list.len() {
 					return Err(DecodeError::InvalidValue);
 				}
-				for (purpose, (onion, (payment_hash, htlcs))) in purposes
+				for (purpose, (onion, (payment_hash, htlcs, total_mpp_value_msat))) in purposes
 					.into_iter()
 					.zip(onion_fields.into_iter().zip(claimable_htlcs_list.into_iter()))
 				{
-					let claimable = ClaimablePayment { purpose, htlcs, onion_fields: onion };
+					let onion_fields = if let Some(mut onion) = onion {
+						if onion.0.total_mpp_amount_msat != 0
+							&& onion.0.total_mpp_amount_msat != total_mpp_value_msat
+						{
+							return Err(DecodeError::InvalidValue);
+						}
+						onion.0.total_mpp_amount_msat = total_mpp_value_msat;
+						onion.0
+					} else {
+						return Err(DecodeError::InvalidValue);
+					};
+					let claimable = ClaimablePayment { purpose, htlcs, onion_fields };
 					let existing_payment = claimable_payments.insert(payment_hash, claimable);
 					if existing_payment.is_some() {
 						return Err(DecodeError::InvalidValue);
 					}
 				}
-			} else {
-				for (purpose, (payment_hash, htlcs)) in
-					purposes.into_iter().zip(claimable_htlcs_list.into_iter())
-				{
-					let claimable = ClaimablePayment { purpose, htlcs, onion_fields: None };
-					let existing_payment = claimable_payments.insert(payment_hash, claimable);
-					if existing_payment.is_some() {
-						return Err(DecodeError::InvalidValue);
-					}
-				}
+			} else if !purposes.is_empty() || !claimable_htlcs_list.is_empty() {
+				// `amountless_claimable_htlc_onion_fields` was first written in LDK 0.0.115. We
+				// haven't supported upgrade from 0.0.115 with pending HTLCs since 0.1.
+				return Err(DecodeError::InvalidValue);
 			}
 		} else {
 			// LDK versions prior to 0.0.107 did not write a `pending_htlc_purposes`, but do
 			// include a `_legacy_hop_data` in the `OnionPayload`.
-			for (payment_hash, htlcs) in claimable_htlcs_list.into_iter() {
-				if htlcs.is_empty() {
-					return Err(DecodeError::InvalidValue);
-				}
-				let purpose = match &htlcs[0].onion_payload {
-					OnionPayload::Invoice { _legacy_hop_data } => {
-						if let Some(hop_data) = _legacy_hop_data {
-							events::PaymentPurpose::Bolt11InvoicePayment {
-								payment_preimage: match inbound_payment::verify(
-									payment_hash,
-									&hop_data,
-									0,
-									&expanded_inbound_key,
-									&args.logger,
-								) {
-									Ok((payment_preimage, _)) => payment_preimage,
-									Err(()) => {
-										log_error!(args.logger, "Failed to read claimable payment data for HTLC with payment hash {} - was not a pending inbound payment and didn't match our payment key", &payment_hash);
-										return Err(DecodeError::InvalidValue);
-									},
-								},
-								payment_secret: hop_data.payment_secret,
-							}
-						} else {
-							return Err(DecodeError::InvalidValue);
-						}
-					},
-					OnionPayload::Spontaneous(payment_preimage) => {
-						events::PaymentPurpose::SpontaneousPayment(*payment_preimage)
-					},
-				};
-				claimable_payments
-					.insert(payment_hash, ClaimablePayment { purpose, htlcs, onion_fields: None });
-			}
+			return Err(DecodeError::InvalidValue);
 		}
 
 		Ok(ChannelManagerData {
@@ -18170,7 +18152,6 @@ impl<
 			reader,
 			ChannelManagerDataReadArgs {
 				entropy_source: &args.entropy_source,
-				node_signer: &args.node_signer,
 				signer_provider: &args.signer_provider,
 				config: args.config.clone(),
 				logger: &args.logger,
@@ -19829,8 +19810,7 @@ impl<
 						let payment_id =
 							payment.inbound_payment_id(&inbound_payment_id_secret.unwrap());
 						let htlcs = payment.htlcs.iter().map(events::ClaimedHTLC::from).collect();
-						let sender_intended_total_msat =
-							payment.htlcs.first().map(|htlc| htlc.total_msat);
+						let sender_intended_total_msat = payment.onion_fields.total_mpp_amount_msat;
 						pending_events.push_back((
 							events::Event::PaymentClaimed {
 								receiver_node_id,
@@ -19838,8 +19818,8 @@ impl<
 								purpose: payment.purpose,
 								amount_msat: claimable_amt_msat,
 								htlcs,
-								sender_intended_total_msat,
-								onion_fields: payment.onion_fields,
+								sender_intended_total_msat: Some(sender_intended_total_msat),
+								onion_fields: Some(payment.onion_fields),
 								payment_id: Some(payment_id),
 							},
 							// Note that we don't bother adding a EventCompletionAction here to
@@ -20040,9 +20020,9 @@ mod tests {
 		// indicates there are more HTLCs coming.
 		let cur_height = CHAN_CONFIRM_DEPTH + 1; // route_payment calls send_payment, which adds 1 to the current height. So we do the same here to match.
 		let session_privs = nodes[0].node.test_add_new_pending_payment(our_payment_hash,
-			RecipientOnionFields::secret_only(payment_secret), payment_id, &mpp_route).unwrap();
+			RecipientOnionFields::secret_only(payment_secret, 200_000), payment_id, &mpp_route).unwrap();
 		nodes[0].node.test_send_payment_along_path(&mpp_route.paths[0], &our_payment_hash,
-			RecipientOnionFields::secret_only(payment_secret), 200_000, cur_height, payment_id, &None, session_privs[0]).unwrap();
+			RecipientOnionFields::secret_only(payment_secret, 200_000), cur_height, payment_id, &None, session_privs[0]).unwrap();
 		check_added_monitors(&nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
@@ -20050,7 +20030,7 @@ mod tests {
 
 		// Next, send a keysend payment with the same payment_hash and make sure it fails.
 		nodes[0].node.send_spontaneous_payment(
-			Some(payment_preimage), RecipientOnionFields::spontaneous_empty(),
+			Some(payment_preimage), RecipientOnionFields::spontaneous_empty(100_000),
 			PaymentId(payment_preimage.0), route.route_params.clone().unwrap(), Retry::Attempts(0)
 		).unwrap();
 		check_added_monitors(&nodes[0], 1);
@@ -20078,7 +20058,7 @@ mod tests {
 
 		// Send the second half of the original MPP payment.
 		nodes[0].node.test_send_payment_along_path(&mpp_route.paths[1], &our_payment_hash,
-			RecipientOnionFields::secret_only(payment_secret), 200_000, cur_height, payment_id, &None, session_privs[1]).unwrap();
+			RecipientOnionFields::secret_only(payment_secret, 200_000), cur_height, payment_id, &None, session_privs[1]).unwrap();
 		check_added_monitors(&nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
@@ -20168,7 +20148,7 @@ mod tests {
 			PaymentParameters::for_keysend(expected_route.last().unwrap().node.get_our_node_id(),
 			TEST_FINAL_CLTV, false), 100_000);
 		nodes[0].node.send_spontaneous_payment(
-			Some(payment_preimage), RecipientOnionFields::spontaneous_empty(),
+			Some(payment_preimage), RecipientOnionFields::spontaneous_empty(100_000),
 			PaymentId(payment_preimage.0), route_params.clone(), Retry::Attempts(0)
 		).unwrap();
 		check_added_monitors(&nodes[0], 1);
@@ -20206,7 +20186,7 @@ mod tests {
 			None, nodes[0].logger, &scorer, &Default::default(), &random_seed_bytes
 		).unwrap();
 		let payment_hash = nodes[0].node.send_spontaneous_payment(
-			Some(payment_preimage), RecipientOnionFields::spontaneous_empty(),
+			Some(payment_preimage), RecipientOnionFields::spontaneous_empty(100_000),
 			PaymentId(payment_preimage.0), route.route_params.clone().unwrap(), Retry::Attempts(0)
 		).unwrap();
 	check_added_monitors(&nodes[0], 1);
@@ -20219,7 +20199,7 @@ mod tests {
 		// Next, attempt a regular payment and make sure it fails.
 		let payment_secret = PaymentSecret([43; 32]);
 		nodes[0].node.send_payment_with_route(route.clone(), payment_hash,
-			RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
+			RecipientOnionFields::secret_only(payment_secret, 100_000), PaymentId(payment_hash.0)).unwrap();
 		check_added_monitors(&nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
@@ -20249,7 +20229,7 @@ mod tests {
 		// To start (3), send a keysend payment but don't claim it.
 		let payment_id_1 = PaymentId([44; 32]);
 		let payment_hash = nodes[0].node.send_spontaneous_payment(
-			Some(payment_preimage), RecipientOnionFields::spontaneous_empty(), payment_id_1,
+			Some(payment_preimage), RecipientOnionFields::spontaneous_empty(100_000), payment_id_1,
 			route.route_params.clone().unwrap(), Retry::Attempts(0)
 		).unwrap();
 		check_added_monitors(&nodes[0], 1);
@@ -20266,7 +20246,7 @@ mod tests {
 		);
 		let payment_id_2 = PaymentId([45; 32]);
 		nodes[0].node.send_spontaneous_payment(
-			Some(payment_preimage), RecipientOnionFields::spontaneous_empty(), payment_id_2, route_params,
+			Some(payment_preimage), RecipientOnionFields::spontaneous_empty(100_000), payment_id_2, route_params,
 			Retry::Attempts(0)
 		).unwrap();
 		check_added_monitors(&nodes[0], 1);
@@ -20324,9 +20304,9 @@ mod tests {
 		let test_preimage = PaymentPreimage([42; 32]);
 		let mismatch_payment_hash = PaymentHash([43; 32]);
 		let session_privs = nodes[0].node.test_add_new_pending_payment(mismatch_payment_hash,
-			RecipientOnionFields::spontaneous_empty(), PaymentId(mismatch_payment_hash.0), &route).unwrap();
+			RecipientOnionFields::spontaneous_empty(10_000), PaymentId(mismatch_payment_hash.0), &route).unwrap();
 		nodes[0].node.test_send_payment_internal(&route, mismatch_payment_hash,
-			RecipientOnionFields::spontaneous_empty(), Some(test_preimage), PaymentId(mismatch_payment_hash.0), None, session_privs).unwrap();
+			RecipientOnionFields::spontaneous_empty(10_000), Some(test_preimage), PaymentId(mismatch_payment_hash.0), session_privs).unwrap();
 		check_added_monitors(&nodes[0], 1);
 
 		let updates = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
@@ -20368,9 +20348,10 @@ mod tests {
 		route.paths[1].hops[0].pubkey = nodes[2].node.get_our_node_id();
 		route.paths[1].hops[0].short_channel_id = chan_2_id;
 		route.paths[1].hops[1].short_channel_id = chan_4_id;
+		route.route_params.as_mut().unwrap().final_value_msat *= 2;
 
 		nodes[0].node.send_payment_with_route(route, payment_hash,
-			RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0)).unwrap();
+			RecipientOnionFields::spontaneous_empty(200000), PaymentId(payment_hash.0)).unwrap();
 		let events = nodes[0].node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
 		match events[0] {
@@ -21208,7 +21189,7 @@ pub mod bench {
 				let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0[..]).to_byte_array());
 				let payment_secret = $node_b.create_inbound_payment_for_hash(payment_hash, None, 7200, None).unwrap();
 
-				$node_a.send_payment(payment_hash, RecipientOnionFields::secret_only(payment_secret),
+				$node_a.send_payment(payment_hash, RecipientOnionFields::secret_only(payment_secret, 10_000),
 					PaymentId(payment_hash.0),
 					RouteParameters::from_payment_params_and_value(payment_params, 10_000),
 					Retry::Attempts(0)).unwrap();

@@ -633,7 +633,7 @@ impl Path {
 		}
 	}
 
-	/// Gets the final hop's CLTV expiry delta.
+	/// Gets the final hop's CLTV expiry delta, if there's a final non-blinded hop.
 	#[rustfmt::skip]
 	pub fn final_cltv_expiry_delta(&self) -> Option<u32> {
 		match &self.blinded_tail {
@@ -687,6 +687,66 @@ impl Route {
 	/// [`htlc_minimum_msat`]: https://github.com/lightning/bolts/blob/master/07-routing-gossip.md#the-channel_update-message
 	pub fn get_total_amount(&self) -> u64 {
 		self.paths.iter().map(|path| path.final_value_msat()).sum()
+	}
+
+	pub(crate) fn debug_assert_route_meets_params<L: Logger>(&self, logger: L) -> Result<(), ()> {
+		if let Some(route_params) = self.route_params.as_ref() {
+			// Check that we actually pay less than the max fee we set.
+			if let Some(max_total_fee) = route_params.max_total_routing_fee_msat {
+				let total_fee = self.get_total_fees();
+				if total_fee > max_total_fee {
+					let err = format!("Router returned an attempt to pay with a higher fee ({total_fee}msat) than we allowed ({max_total_fee}msat). Your router is critically buggy!");
+					debug_assert!(false, "{}", err);
+					log_error!(logger, "{}", err);
+					return Err(());
+				}
+			}
+
+			if self.paths.is_empty() {
+				let err = "Selected route had no paths. Your router is buggy!";
+				debug_assert!(false, "{}", err);
+				log_error!(logger, "{}", err);
+				return Err(());
+			}
+
+			for path in self.paths.iter() {
+				if path.hops.is_empty() {
+					let err = "Unusable path in route (path.hops.len() must be at least 1)";
+					debug_assert!(false, "{}", err);
+					log_error!(logger, "{}", err);
+					return Err(());
+				}
+
+				if path.hops.len() > route_params.payment_params.max_path_length.into() {
+					let err = format!(
+						"Path had a length of {}, which is greater than the maximum we're allowed ({})",
+						path.hops.len(),
+						route_params.payment_params.max_path_length,
+					);
+					#[cfg(any(test, feature = "_test_utils"))]
+					debug_assert!(false, "{}", err);
+					log_error!(logger, "{}", err);
+					// This is a bug, but there's not a material safety risk to making this
+					// payment, so we don't bother to error here.
+				}
+			}
+
+			// Test that we don't contain any "extra" MPP parts - while we're allowed to overshoot
+			// the `final_value_msat` specified in the `route_params`, we aren't allowed to have
+			// any MPP parts which aren't needed to meet `route_params.final_value_msat`.
+			let min_mpp_part = self.paths.iter().map(|h| h.final_value_msat()).min().unwrap_or(0);
+			if self.get_total_amount() - min_mpp_part >= route_params.final_value_msat {
+				let err = format!(
+					"Router returned an attempt to include more MPP parts than needed. The smallest MPP part ({min_mpp_part}msat) was not needed for a payment of {}msat. Your router is critically buggy!",
+					route_params.final_value_msat
+				);
+				debug_assert!(false, "{}", err);
+				log_error!(logger, "{}", err);
+				return Err(());
+			}
+		}
+
+		Ok(())
 	}
 }
 
@@ -2491,9 +2551,11 @@ pub fn find_route<L: Logger, GL: Logger, S: ScoreLookUp>(
 	scorer: &S, score_params: &S::ScoreParams, random_seed_bytes: &[u8; 32]
 ) -> Result<Route, &'static str> {
 	let graph_lock = network_graph.read_only();
-	let mut route = get_route(our_node_pubkey, &route_params, &graph_lock, first_hops, logger,
+	let mut route = get_route(our_node_pubkey, &route_params, &graph_lock, first_hops, &logger,
 		scorer, score_params, random_seed_bytes)?;
 	add_random_cltv_offset(&mut route, &route_params.payment_params, &graph_lock, random_seed_bytes);
+	route.debug_assert_route_meets_params(&logger)
+		.map_err(|()| "Generated route doesn't comply with the parameters you specified. This indicates a bug in the router. Please report this bug!")?;
 	Ok(route)
 }
 

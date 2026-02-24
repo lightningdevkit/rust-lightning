@@ -3446,7 +3446,7 @@ pub fn send_along_route_with_secret<'a, 'b, 'c>(
 		.node
 		.send_payment(
 			our_payment_hash,
-			RecipientOnionFields::secret_only(our_payment_secret),
+			RecipientOnionFields::secret_only(our_payment_secret, recv_value),
 			payment_id,
 			route.route_params.unwrap(),
 			Retry::Attempts(0),
@@ -3585,7 +3585,7 @@ pub fn do_pass_along_path<'a, 'b, 'c>(args: PassAlongPathArgs) -> Option<Event> 
 
 		if is_last_hop && is_probe {
 			do_commitment_signed_dance(node, prev_node, &payment_event.commitment_msg, true, true);
-			node.node.process_pending_htlc_forwards();
+			expect_and_process_pending_htlcs(node, true);
 			check_added_monitors(node, 1);
 		} else {
 			let commitment = &payment_event.commitment_msg;
