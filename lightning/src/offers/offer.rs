@@ -1211,6 +1211,12 @@ pub(super) const OFFER_TYPES: core::ops::Range<u64> = 1..80;
 /// TLV record type for [`Offer::metadata`].
 const OFFER_METADATA_TYPE: u64 = 4;
 
+/// TLV record type for [`Offer::description`].
+pub(super) const OFFER_DESCRIPTION_TYPE: u64 = 10;
+
+/// TLV record type for [`Offer::issuer`].
+pub(super) const OFFER_ISSUER_TYPE: u64 = 18;
+
 /// TLV record type for [`Offer::issuer_signing_pubkey`].
 const OFFER_ISSUER_ID_TYPE: u64 = 22;
 
