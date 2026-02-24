@@ -17,8 +17,8 @@ use crate::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Listen, Watch
 use crate::events::bump_transaction::sync::BumpTransactionEventHandlerSync;
 use crate::events::bump_transaction::BumpTransactionEvent;
 use crate::events::{
-	ClaimedHTLC, ClosureReason, Event, HTLCHandlingFailureType, PaidBolt12Invoice, PathFailure,
-	PaymentFailureReason, PaymentPurpose,
+	ClaimedHTLC, ClosureReason, Event, FundingInfo, HTLCHandlingFailureType, PaidBolt12Invoice,
+	PathFailure, PaymentFailureReason, PaymentPurpose,
 };
 use crate::ln::chan_utils::{
 	commitment_tx_base_weight, COMMITMENT_TX_WEIGHT_PER_HTLC, TRUC_MAX_WEIGHT,
@@ -27,7 +27,7 @@ use crate::ln::channelmanager::{
 	AChannelManager, ChainParameters, ChannelManager, ChannelManagerReadArgs, PaymentId,
 	RAACommitmentOrder, MIN_CLTV_EXPIRY_DELTA,
 };
-use crate::ln::funding::FundingTxInput;
+use crate::ln::funding::{FundingContribution, FundingTxInput};
 use crate::ln::msgs::{self, OpenChannel};
 use crate::ln::msgs::{
 	BaseMessageHandler, ChannelMessageHandler, MessageSendEvent, RoutingMessageHandler,
@@ -1088,7 +1088,8 @@ pub fn get_warning_msg(node: &Node, recipient: &PublicKey) -> msgs::WarningMessa
 macro_rules! get_event {
 	($node: expr, $event_type: path) => {{
 		let mut events = $node.node.get_and_clear_pending_events();
-		assert_eq!(events.len(), 1);
+		assert!(!events.is_empty(), "Expected an event");
+		assert_eq!(events.len(), 1, "Unexpected events {events:?}");
 		let ev = events.pop().unwrap();
 		match ev {
 			$event_type { .. } => ev,
@@ -3227,6 +3228,57 @@ pub fn expect_splice_pending_event<'a, 'b, 'c, 'd>(
 		crate::events::Event::SplicePending { channel_id, counterparty_node_id, .. } => {
 			assert_eq!(*expected_counterparty_node_id, *counterparty_node_id);
 			*channel_id
+		},
+		_ => panic!("Unexpected event"),
+	}
+}
+
+#[cfg(any(test, ldk_bench, feature = "_test_utils"))]
+pub fn expect_splice_failed_events<'a, 'b, 'c, 'd>(
+	node: &'a Node<'b, 'c, 'd>, expected_channel_id: &ChannelId,
+	funding_contribution: FundingContribution,
+) {
+	let events = node.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 2);
+	match &events[0] {
+		Event::SpliceFailed { channel_id, .. } => {
+			assert_eq!(*expected_channel_id, *channel_id);
+		},
+		_ => panic!("Unexpected event"),
+	}
+	match &events[1] {
+		Event::DiscardFunding { funding_info, .. } => {
+			if let FundingInfo::Contribution { inputs, outputs } = &funding_info {
+				let (expected_inputs, expected_outputs) =
+					funding_contribution.into_contributed_inputs_and_outputs();
+				assert_eq!(*inputs, expected_inputs);
+				assert_eq!(*outputs, expected_outputs);
+			} else {
+				panic!("Expected FundingInfo::Contribution");
+			}
+		},
+		_ => panic!("Unexpected event"),
+	}
+}
+
+#[cfg(any(test, ldk_bench, feature = "_test_utils"))]
+pub fn expect_discard_funding_event<'a, 'b, 'c, 'd>(
+	node: &'a Node<'b, 'c, 'd>, expected_channel_id: &ChannelId,
+	funding_contribution: FundingContribution,
+) {
+	let events = node.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match &events[0] {
+		Event::DiscardFunding { channel_id, funding_info } => {
+			assert_eq!(*expected_channel_id, *channel_id);
+			if let FundingInfo::Contribution { inputs, outputs } = &funding_info {
+				let (expected_inputs, expected_outputs) =
+					funding_contribution.into_contributed_inputs_and_outputs();
+				assert_eq!(*inputs, expected_inputs);
+				assert_eq!(*outputs, expected_outputs);
+			} else {
+				panic!("Expected FundingInfo::Contribution");
+			}
 		},
 		_ => panic!("Unexpected event"),
 	}

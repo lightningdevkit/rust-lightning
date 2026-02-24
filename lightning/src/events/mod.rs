@@ -77,6 +77,13 @@ pub enum FundingInfo {
 		/// The outpoint of the funding
 		outpoint: transaction::OutPoint,
 	},
+	/// The contributions used for a dual funding or splice funding transaction.
+	Contribution {
+		/// UTXOs spent as inputs contributed to the funding transaction.
+		inputs: Vec<OutPoint>,
+		/// Outputs contributed to the funding transaction.
+		outputs: Vec<TxOut>,
+	},
 }
 
 impl_writeable_tlv_based_enum!(FundingInfo,
@@ -85,6 +92,10 @@ impl_writeable_tlv_based_enum!(FundingInfo,
 	},
 	(1, OutPoint) => {
 		(1, outpoint, required)
+	},
+	(2, Contribution) => {
+		(1, inputs, optional_vec),
+		(3, outputs, optional_vec),
 	}
 );
 
@@ -1561,10 +1572,6 @@ pub enum Event {
 		abandoned_funding_txo: Option<OutPoint>,
 		/// The features that this channel will operate with, if available.
 		channel_type: Option<ChannelTypeFeatures>,
-		/// UTXOs spent as inputs contributed to the splice transaction.
-		contributed_inputs: Vec<OutPoint>,
-		/// Outputs contributed to the splice transaction.
-		contributed_outputs: Vec<TxOut>,
 	},
 	/// Used to indicate to the user that they can abandon the funding transaction and recycle the
 	/// inputs for another purpose.
@@ -2326,8 +2333,6 @@ impl Writeable for Event {
 				ref counterparty_node_id,
 				ref abandoned_funding_txo,
 				ref channel_type,
-				ref contributed_inputs,
-				ref contributed_outputs,
 			} => {
 				52u8.write(writer)?;
 				write_tlv_fields!(writer, {
@@ -2336,8 +2341,6 @@ impl Writeable for Event {
 					(5, user_channel_id, required),
 					(7, counterparty_node_id, required),
 					(9, abandoned_funding_txo, option),
-					(11, *contributed_inputs, optional_vec),
-					(13, *contributed_outputs, optional_vec),
 				});
 			},
 			// Note that, going forward, all new events must only write data inside of
@@ -2965,8 +2968,6 @@ impl MaybeReadable for Event {
 						(5, user_channel_id, required),
 						(7, counterparty_node_id, required),
 						(9, abandoned_funding_txo, option),
-						(11, contributed_inputs, optional_vec),
-						(13, contributed_outputs, optional_vec),
 					});
 
 					Ok(Some(Event::SpliceFailed {
@@ -2975,8 +2976,6 @@ impl MaybeReadable for Event {
 						counterparty_node_id: counterparty_node_id.0.unwrap(),
 						abandoned_funding_txo,
 						channel_type,
-						contributed_inputs: contributed_inputs.unwrap_or_default(),
-						contributed_outputs: contributed_outputs.unwrap_or_default(),
 					}))
 				};
 				f()
