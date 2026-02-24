@@ -1428,7 +1428,7 @@ impl InvoiceFields {
 				fallbacks: self.fallbacks.as_ref(),
 				features,
 				node_id: Some(&self.signing_pubkey),
-				message_paths: None,
+				held_htlc_available_paths: None,
 			},
 			ExperimentalInvoiceTlvStreamRef {
 				#[cfg(test)]
@@ -1511,7 +1511,7 @@ tlv_stream!(InvoiceTlvStream, InvoiceTlvStreamRef<'a>, INVOICE_TYPES, {
 	(174, features: (Bolt12InvoiceFeatures, WithoutLength)),
 	(176, node_id: PublicKey),
 	// Only present in `StaticInvoice`s.
-	(236, message_paths: (Vec<BlindedMessagePath>, WithoutLength)),
+	(236, held_htlc_available_paths: (Vec<BlindedMessagePath>, WithoutLength)),
 });
 
 /// Valid type range for experimental invoice TLV records.
@@ -1700,7 +1700,7 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 				fallbacks,
 				features,
 				node_id,
-				message_paths,
+				held_htlc_available_paths,
 			},
 			experimental_offer_tlv_stream,
 			experimental_invoice_request_tlv_stream,
@@ -1710,7 +1710,7 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 			},
 		) = tlv_stream;
 
-		if message_paths.is_some() {
+		if held_htlc_available_paths.is_some() {
 			return Err(Bolt12SemanticError::UnexpectedPaths);
 		}
 
@@ -2037,7 +2037,7 @@ mod tests {
 					fallbacks: None,
 					features: None,
 					node_id: Some(&recipient_pubkey()),
-					message_paths: None,
+					held_htlc_available_paths: None,
 				},
 				SignatureTlvStreamRef { signature: Some(&invoice.signature()) },
 				ExperimentalOfferTlvStreamRef { experimental_foo: None },
@@ -2140,7 +2140,7 @@ mod tests {
 					fallbacks: None,
 					features: None,
 					node_id: Some(&recipient_pubkey()),
-					message_paths: None,
+					held_htlc_available_paths: None,
 				},
 				SignatureTlvStreamRef { signature: Some(&invoice.signature()) },
 				ExperimentalOfferTlvStreamRef { experimental_foo: None },
@@ -3558,7 +3558,7 @@ mod tests {
 	}
 
 	#[test]
-	fn fails_parsing_invoice_with_message_paths() {
+	fn fails_parsing_invoice_with_held_htlc_available_paths() {
 		let expanded_key = ExpandedKey::new([42; 32]);
 		let entropy = FixedEntropy {};
 		let nonce = Nonce::from_entropy_source(&entropy);
@@ -3590,8 +3590,8 @@ mod tests {
 		);
 
 		let mut tlv_stream = invoice.as_tlv_stream();
-		let message_paths = vec![blinded_path];
-		tlv_stream.3.message_paths = Some(&message_paths);
+		let held_htlc_available_paths = vec![blinded_path];
+		tlv_stream.3.held_htlc_available_paths = Some(&held_htlc_available_paths);
 
 		match Bolt12Invoice::try_from(tlv_stream.to_bytes()) {
 			Ok(_) => panic!("expected error"),

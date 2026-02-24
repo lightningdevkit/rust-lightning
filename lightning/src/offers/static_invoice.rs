@@ -99,7 +99,7 @@ struct InvoiceContents {
 	fallbacks: Option<Vec<FallbackAddress>>,
 	features: Bolt12InvoiceFeatures,
 	signing_pubkey: PublicKey,
-	message_paths: Vec<BlindedMessagePath>,
+	held_htlc_available_paths: Vec<BlindedMessagePath>,
 	#[cfg(test)]
 	experimental_baz: Option<u64>,
 }
@@ -122,14 +122,17 @@ impl<'a> StaticInvoiceBuilder<'a> {
 	/// overridden by [`StaticInvoiceBuilder::relative_expiry`].
 	pub fn for_offer_using_derived_keys<T: secp256k1::Signing>(
 		offer: &'a Offer, payment_paths: Vec<BlindedPaymentPath>,
-		message_paths: Vec<BlindedMessagePath>, created_at: Duration, expanded_key: &ExpandedKey,
-		nonce: Nonce, secp_ctx: &Secp256k1<T>,
+		held_htlc_available_paths: Vec<BlindedMessagePath>, created_at: Duration,
+		expanded_key: &ExpandedKey, nonce: Nonce, secp_ctx: &Secp256k1<T>,
 	) -> Result<Self, Bolt12SemanticError> {
 		if offer.chains().len() > 1 {
 			return Err(Bolt12SemanticError::UnexpectedChain);
 		}
 
-		if payment_paths.is_empty() || message_paths.is_empty() || offer.paths().is_empty() {
+		if payment_paths.is_empty()
+			|| held_htlc_available_paths.is_empty()
+			|| offer.paths().is_empty()
+		{
 			return Err(Bolt12SemanticError::MissingPaths);
 		}
 
@@ -147,8 +150,13 @@ impl<'a> StaticInvoiceBuilder<'a> {
 			return Err(Bolt12SemanticError::InvalidSigningPubkey);
 		}
 
-		let invoice =
-			InvoiceContents::new(offer, payment_paths, message_paths, created_at, signing_pubkey);
+		let invoice = InvoiceContents::new(
+			offer,
+			payment_paths,
+			held_htlc_available_paths,
+			created_at,
+			signing_pubkey,
+		);
 
 		Ok(Self { offer_bytes: &offer.bytes, invoice, keys })
 	}
@@ -264,8 +272,8 @@ macro_rules! invoice_accessors { ($self: ident, $contents: expr) => {
 
 	/// Paths to the recipient for indicating that a held HTLC is available to claim when they next
 	/// come online.
-	pub fn message_paths(&$self) -> &[BlindedMessagePath] {
-		$contents.message_paths()
+	pub fn held_htlc_available_paths(&$self) -> &[BlindedMessagePath] {
+		$contents.held_htlc_available_paths()
 	}
 
 	/// The quantity of items supported, from [`Offer::supported_quantity`].
@@ -438,12 +446,13 @@ impl InvoiceContents {
 
 	fn new(
 		offer: &Offer, payment_paths: Vec<BlindedPaymentPath>,
-		message_paths: Vec<BlindedMessagePath>, created_at: Duration, signing_pubkey: PublicKey,
+		held_htlc_available_paths: Vec<BlindedMessagePath>, created_at: Duration,
+		signing_pubkey: PublicKey,
 	) -> Self {
 		Self {
 			offer: offer.contents.clone(),
 			payment_paths,
-			message_paths,
+			held_htlc_available_paths,
 			created_at,
 			relative_expiry: None,
 			fallbacks: None,
@@ -465,7 +474,7 @@ impl InvoiceContents {
 
 		let invoice = InvoiceTlvStreamRef {
 			paths: Some(Iterable(self.payment_paths.iter().map(|path| path.inner_blinded_path()))),
-			message_paths: Some(self.message_paths.as_ref()),
+			held_htlc_available_paths: Some(self.held_htlc_available_paths.as_ref()),
 			blindedpay: Some(Iterable(self.payment_paths.iter().map(|path| &path.payinfo))),
 			created_at: Some(self.created_at.as_secs()),
 			relative_expiry: self.relative_expiry.map(|duration| duration.as_secs() as u32),
@@ -519,8 +528,8 @@ impl InvoiceContents {
 		self.offer.paths()
 	}
 
-	fn message_paths(&self) -> &[BlindedMessagePath] {
-		&self.message_paths[..]
+	fn held_htlc_available_paths(&self) -> &[BlindedMessagePath] {
+		&self.held_htlc_available_paths[..]
 	}
 
 	fn supported_quantity(&self) -> Quantity {
@@ -670,7 +679,7 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 				fallbacks,
 				features,
 				node_id,
-				message_paths,
+				held_htlc_available_paths,
 				payment_hash,
 				amount,
 			},
@@ -689,7 +698,8 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 		}
 
 		let payment_paths = construct_payment_paths(blindedpay, paths)?;
-		let message_paths = message_paths.ok_or(Bolt12SemanticError::MissingPaths)?;
+		let held_htlc_available_paths =
+			held_htlc_available_paths.ok_or(Bolt12SemanticError::MissingPaths)?;
 
 		let created_at = match created_at {
 			None => return Err(Bolt12SemanticError::MissingCreationTime),
@@ -713,7 +723,7 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 		Ok(InvoiceContents {
 			offer: OfferContents::try_from((offer_tlv_stream, experimental_offer_tlv_stream))?,
 			payment_paths,
-			message_paths,
+			held_htlc_available_paths,
 			created_at,
 			relative_expiry,
 			fallbacks,
@@ -875,7 +885,7 @@ mod tests {
 		assert_eq!(invoice.offer_features(), &OfferFeatures::empty());
 		assert_eq!(invoice.absolute_expiry(), None);
 		assert_eq!(invoice.offer_message_paths(), &[blinded_path()]);
-		assert_eq!(invoice.message_paths(), &[blinded_path()]);
+		assert_eq!(invoice.held_htlc_available_paths(), &[blinded_path()]);
 		assert_eq!(invoice.issuer(), None);
 		assert_eq!(invoice.supported_quantity(), Quantity::One);
 		assert_ne!(invoice.signing_pubkey(), recipient_pubkey());
@@ -921,7 +931,7 @@ mod tests {
 					fallbacks: None,
 					features: None,
 					node_id: Some(&signing_pubkey),
-					message_paths: Some(&paths),
+					held_htlc_available_paths: Some(&paths),
 				},
 				SignatureTlvStreamRef { signature: Some(&invoice.signature()) },
 				ExperimentalOfferTlvStreamRef { experimental_foo: None },
@@ -1318,10 +1328,10 @@ mod tests {
 			},
 		}
 
-		// Error if message paths are missing.
-		let missing_message_paths_invoice = invoice();
-		let mut tlv_stream = missing_message_paths_invoice.as_tlv_stream();
-		tlv_stream.1.message_paths = None;
+		// Error if held_htlc_available_paths are missing.
+		let missing_held_htlc_available_paths_invoice = invoice();
+		let mut tlv_stream = missing_held_htlc_available_paths_invoice.as_tlv_stream();
+		tlv_stream.1.held_htlc_available_paths = None;
 		match StaticInvoice::try_from(tlv_stream_to_bytes(&tlv_stream)) {
 			Ok(_) => panic!("expected error"),
 			Err(e) => {
