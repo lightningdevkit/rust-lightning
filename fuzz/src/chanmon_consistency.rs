@@ -2875,6 +2875,23 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 				nodes[1].signer_unblocked(None);
 				nodes[2].signer_unblocked(None);
 
+				// After a node reload with an older monitor, node_height may be
+				// ahead of the monitor's best_block. Reset to the minimum so
+				// sync_with_chain_state re-delivers missed blocks during settlement.
+				for (node, monitor, node_height) in [
+					(&nodes[0], &monitor_a, &mut node_height_a),
+					(&nodes[1], &monitor_b, &mut node_height_b),
+					(&nodes[2], &monitor_c, &mut node_height_c),
+				] {
+					let mut min = std::cmp::min(*node_height, node.current_best_block().height);
+					for chan_id in monitor.chain_monitor.list_monitors() {
+						if let Ok(mon) = monitor.chain_monitor.get_monitor(chan_id) {
+							min = std::cmp::min(min, mon.current_best_block().height);
+						}
+					}
+					*node_height = min;
+				}
+
 				macro_rules! process_all_events {
 					() => { {
 						let mut last_pass_no_updates = false;
