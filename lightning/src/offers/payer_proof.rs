@@ -466,6 +466,13 @@ impl AsRef<[u8]> for PayerProof {
 	}
 }
 
+// TODO: This uses manual TLV parsing rather than the standard `ParsedMessage` +
+// `tlv_stream!` pattern (used by Offer, InvoiceRequest, Bolt12Invoice) because payer
+// proofs have a hybrid structure: a dynamic set of included invoice TLV records
+// (preserved as raw bytes for merkle reconstruction) plus payer-proof-specific TLVs
+// (240-250) with non-standard encodings (BigSize lists, concatenated hashes).
+// Possible improvements: separate parsing from semantic validation into two layers,
+// extract helpers for repeated cursor+read patterns (read_tlv_value, read_hash_list).
 impl TryFrom<Vec<u8>> for PayerProof {
 	type Error = crate::offers::parse::Bolt12ParseError;
 

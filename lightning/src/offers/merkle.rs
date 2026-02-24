@@ -327,7 +327,6 @@ pub(super) struct SelectiveDisclosure {
 struct TlvMerkleData {
 	tlv_type: u64,
 	per_tlv_hash: sha256::Hash,
-	nonce_hash: sha256::Hash,
 	is_included: bool,
 }
 
@@ -358,6 +357,7 @@ pub(super) fn compute_selective_disclosure(
 	let branch_tag = tagged_hash_engine(sha256::Hash::hash("LnBranch".as_bytes()));
 
 	let mut tlv_data: Vec<TlvMerkleData> = Vec::new();
+	let mut leaf_hashes: Vec<sha256::Hash> = Vec::new();
 	for record in tlv_stream.filter(|r| !SIGNATURE_TYPES.contains(&r.r#type)) {
 		let leaf_hash = tagged_hash_from_engine(leaf_tag.clone(), record.record_bytes);
 		let nonce_hash = tagged_hash_from_engine(nonce_tag.clone(), record.type_bytes);
@@ -365,20 +365,15 @@ pub(super) fn compute_selective_disclosure(
 			tagged_branch_hash_from_engine(branch_tag.clone(), leaf_hash, nonce_hash);
 
 		let is_included = included_types.contains(&record.r#type);
-		tlv_data.push(TlvMerkleData {
-			tlv_type: record.r#type,
-			per_tlv_hash,
-			nonce_hash,
-			is_included,
-		});
+		if is_included {
+			leaf_hashes.push(nonce_hash);
+		}
+		tlv_data.push(TlvMerkleData { tlv_type: record.r#type, per_tlv_hash, is_included });
 	}
 
 	if tlv_data.is_empty() {
 		return Err(SelectiveDisclosureError::EmptyTlvStream);
 	}
-
-	let leaf_hashes: Vec<_> =
-		tlv_data.iter().filter(|d| d.is_included).map(|d| d.nonce_hash).collect();
 	let omitted_markers = compute_omitted_markers(&tlv_data);
 	let (merkle_root, missing_hashes) = build_tree_with_disclosure(&tlv_data, &branch_tag);
 
@@ -438,6 +433,8 @@ fn build_tree_with_disclosure(
 	let num_nodes = tlv_data.len();
 	debug_assert!(num_nodes > 0, "TLV stream must contain at least one record");
 
+	let num_omitted = tlv_data.iter().filter(|d| !d.is_included).count();
+
 	let mut nodes: Vec<TreeNode> = tlv_data
 		.iter()
 		.map(|data| TreeNode {
@@ -447,7 +444,7 @@ fn build_tree_with_disclosure(
 		})
 		.collect();
 
-	let mut missing_with_types: Vec<(u64, sha256::Hash)> = Vec::new();
+	let mut missing_with_types: Vec<(u64, sha256::Hash)> = Vec::with_capacity(num_omitted);
 
 	for level in 0.. {
 		let step = 2 << level;
@@ -527,32 +524,65 @@ pub(super) fn reconstruct_merkle_root<'a>(
 		return Err(SelectiveDisclosureError::LeafHashCountMismatch);
 	}
 
-	let positions = reconstruct_positions_from_records(included_records, omitted_markers);
-
-	let num_nodes = positions.len();
-
 	let leaf_tag = tagged_hash_engine(sha256::Hash::hash("LnLeaf".as_bytes()));
 	let branch_tag = tagged_hash_engine(sha256::Hash::hash("LnBranch".as_bytes()));
 
+	// Build TreeNode vec directly by interleaving included/omitted positions,
+	// eliminating the intermediate Vec<bool> from reconstruct_positions_from_records.
+	let num_nodes = 1 + included_records.len() + omitted_markers.len();
 	let mut nodes: Vec<TreeNode> = Vec::with_capacity(num_nodes);
-	let mut leaf_hash_idx = 0;
-	for (i, &incl) in positions.iter().enumerate() {
-		let hash = if incl {
-			let (_, record_bytes) = included_records[leaf_hash_idx];
+
+	// TLV0 is always omitted
+	nodes.push(TreeNode { hash: None, included: false, min_type: 0 });
+
+	let mut inc_idx = 0;
+	let mut mrk_idx = 0;
+	let mut prev_marker: u64 = 0;
+	let mut node_idx: u64 = 1;
+
+	while inc_idx < included_records.len() || mrk_idx < omitted_markers.len() {
+		if mrk_idx >= omitted_markers.len() {
+			// No more markers, remaining positions are included
+			let (_, record_bytes) = included_records[inc_idx];
 			let leaf_hash = tagged_hash_from_engine(leaf_tag.clone(), record_bytes);
-			let nonce_hash = leaf_hashes[leaf_hash_idx];
-			leaf_hash_idx += 1;
-			Some(tagged_branch_hash_from_engine(branch_tag.clone(), leaf_hash, nonce_hash))
+			let nonce_hash = leaf_hashes[inc_idx];
+			let hash = tagged_branch_hash_from_engine(branch_tag.clone(), leaf_hash, nonce_hash);
+			nodes.push(TreeNode { hash: Some(hash), included: true, min_type: node_idx });
+			inc_idx += 1;
+		} else if inc_idx >= included_records.len() {
+			// No more included types, remaining positions are omitted
+			nodes.push(TreeNode { hash: None, included: false, min_type: node_idx });
+			prev_marker = omitted_markers[mrk_idx];
+			mrk_idx += 1;
 		} else {
-			None
-		};
-		nodes.push(TreeNode { hash, included: incl, min_type: i as u64 });
+			let marker = omitted_markers[mrk_idx];
+			let (inc_type, _) = included_records[inc_idx];
+
+			if marker == prev_marker + 1 {
+				// Continuation of current run -> omitted position
+				nodes.push(TreeNode { hash: None, included: false, min_type: node_idx });
+				prev_marker = marker;
+				mrk_idx += 1;
+			} else {
+				// Jump detected -> included position comes first
+				let (_, record_bytes) = included_records[inc_idx];
+				let leaf_hash = tagged_hash_from_engine(leaf_tag.clone(), record_bytes);
+				let nonce_hash = leaf_hashes[inc_idx];
+				let hash =
+					tagged_branch_hash_from_engine(branch_tag.clone(), leaf_hash, nonce_hash);
+				nodes.push(TreeNode { hash: Some(hash), included: true, min_type: node_idx });
+				prev_marker = inc_type;
+				inc_idx += 1;
+			}
+		}
+		node_idx += 1;
 	}
 
 	// First pass: walk the tree to discover which positions need missing hashes.
 	// We mutate nodes[].included and nodes[].min_type directly since the second
 	// pass only reads nodes[].hash, making this safe without a separate allocation.
-	let mut needs_hash: Vec<(u64, usize)> = Vec::new();
+	let num_omitted = omitted_markers.len() + 1; // +1 for implicit TLV0
+	let mut needs_hash: Vec<(u64, usize)> = Vec::with_capacity(num_omitted);
 
 	for level in 0.. {
 		let step = 2 << level;
@@ -705,46 +735,6 @@ fn reconstruct_positions(included_types: &[u64], omitted_markers: &[u64]) -> Vec
 				prev_marker = inc_type;
 				inc_idx += 1;
 				// Don't advance mrk_idx - same marker will be continuation next
-			}
-		}
-	}
-
-	positions
-}
-
-/// Like `reconstruct_positions`, but extracts types directly from included records,
-/// avoiding a separate Vec allocation for the types.
-fn reconstruct_positions_from_records(
-	included_records: &[(u64, &[u8])], omitted_markers: &[u64],
-) -> Vec<bool> {
-	let total = 1 + included_records.len() + omitted_markers.len();
-	let mut positions = Vec::with_capacity(total);
-	positions.push(false); // TLV0 is always omitted
-
-	let mut inc_idx = 0;
-	let mut mrk_idx = 0;
-	let mut prev_marker: u64 = 0;
-
-	while inc_idx < included_records.len() || mrk_idx < omitted_markers.len() {
-		if mrk_idx >= omitted_markers.len() {
-			positions.push(true);
-			inc_idx += 1;
-		} else if inc_idx >= included_records.len() {
-			positions.push(false);
-			prev_marker = omitted_markers[mrk_idx];
-			mrk_idx += 1;
-		} else {
-			let marker = omitted_markers[mrk_idx];
-			let (inc_type, _) = included_records[inc_idx];
-
-			if marker == prev_marker + 1 {
-				positions.push(false);
-				prev_marker = marker;
-				mrk_idx += 1;
-			} else {
-				positions.push(true);
-				prev_marker = inc_type;
-				inc_idx += 1;
 			}
 		}
 	}
