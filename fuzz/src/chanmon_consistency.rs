@@ -26,8 +26,8 @@ use bitcoin::opcodes;
 use bitcoin::script::{Builder, ScriptBuf};
 use bitcoin::transaction::Version;
 use bitcoin::transaction::{Transaction, TxOut};
-use bitcoin::OutPoint as BitcoinOutPoint;
 use bitcoin::FeeRate;
+use bitcoin::OutPoint as BitcoinOutPoint;
 
 use bitcoin::block::Header;
 use bitcoin::hash_types::{BlockHash, Txid};
@@ -2007,6 +2007,16 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 						events::Event::PaymentPathFailed { .. } => {},
 						events::Event::PaymentForwarded { .. } if $node == 1 => {},
 						events::Event::ChannelReady { .. } => {},
+						events::Event::HTLCHandlingFailed {
+							failure_type: events::HTLCHandlingFailureType::Receive { payment_hash },
+							..
+						} => {
+							// The receiver failed to handle this HTLC (e.g., HTLC
+							// timeout won the race against the claim). Remove it from
+							// claimed hashes so we don't assert that the sender must
+							// have received PaymentSent.
+							claimed_payment_hashes.borrow_mut().remove(&payment_hash);
+						},
 						events::Event::HTLCHandlingFailed { .. } => {},
 
 						events::Event::FundingTransactionReadyForSigning {
