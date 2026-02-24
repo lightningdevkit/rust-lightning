@@ -8861,12 +8861,24 @@ fn do_test_max_dust_htlc_exposure(
 			let onion = RecipientOnionFields::secret_only(payment_secret);
 			let id = PaymentId(payment_hash.0);
 			let res = nodes[0].node.send_payment_with_route(route, payment_hash, onion, id);
-			unwrap_send_err!(nodes[0], res, true, APIError::ChannelUnavailable { .. }, {});
+			unwrap_send_err!(
+				nodes[0],
+				res,
+				true,
+				APIError::ChannelUnavailable { .. } | APIError::ChannelBusy { .. },
+				{}
+			);
 		} else {
 			let onion = RecipientOnionFields::secret_only(payment_secret);
 			let id = PaymentId(payment_hash.0);
 			let res = nodes[0].node.send_payment_with_route(route, payment_hash, onion, id);
-			unwrap_send_err!(nodes[0], res, true, APIError::ChannelUnavailable { .. }, {});
+			unwrap_send_err!(
+				nodes[0],
+				res,
+				true,
+				APIError::ChannelUnavailable { .. } | APIError::ChannelBusy { .. },
+				{}
+			);
 		}
 	} else if exposure_breach_event == ExposureEvent::AtHTLCReception {
 		let amount_msats = if on_holder_tx {
@@ -9185,9 +9197,9 @@ pub fn test_nondust_htlc_excess_fees_are_dust() {
 	let onion = RecipientOnionFields::secret_only(payment_secret_0_1);
 	let id = PaymentId(payment_hash_0_1.0);
 	let res = nodes[0].node.send_payment_with_route(route_0_1, payment_hash_0_1, onion, id);
-	unwrap_send_err!(nodes[0], res, true, APIError::ChannelUnavailable { .. }, {});
+	unwrap_send_err!(nodes[0], res, true, APIError::ChannelBusy { .. }, {});
 	nodes[0].logger.assert_log("lightning::ln::outbound_payment",
-		format!("Failed to send along path due to error: Channel unavailable: Cannot send more than our next-HTLC maximum - {} msat", 2325000), 1);
+		format!("Failed to send along path due to error: Channel busy: Cannot send more than our next-HTLC maximum - {} msat", 2325000), 1);
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 
 	assert_eq!(nodes[0].node.list_channels().len(), 1);
@@ -9406,7 +9418,13 @@ fn do_test_nondust_htlc_fees_dust_exposure_delta(features: ChannelTypeFeatures) 
 	let onion = RecipientOnionFields::secret_only(payment_secret_1_0);
 	let id = PaymentId(payment_hash_1_0.0);
 	let res = nodes[1].node.send_payment_with_route(route_1_0, payment_hash_1_0, onion, id);
-	unwrap_send_err!(nodes[1], res, true, APIError::ChannelUnavailable { .. }, {});
+	unwrap_send_err!(
+		nodes[1],
+		res,
+		true,
+		APIError::ChannelUnavailable { .. } | APIError::ChannelBusy { .. },
+		{}
+	);
 
 	let (htlc_success_tx_fee_sat, _) =
 		second_stage_tx_fees_sat(&features, node_1_dust_buffer_feerate as u32);
@@ -9416,7 +9434,7 @@ fn do_test_nondust_htlc_fees_dust_exposure_delta(features: ChannelTypeFeatures) 
 		MIN_CHAN_DUST_LIMIT_SATOSHIS * 1000
 	};
 	nodes[1].logger.assert_log("lightning::ln::outbound_payment",
-		format!("Failed to send along path due to error: Channel unavailable: Cannot send more than our next-HTLC maximum - {} msat", dust_limit), 1);
+		format!("Failed to send along path due to error: Channel busy: Cannot send more than our next-HTLC maximum - {} msat", dust_limit), 1);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
 	assert_eq!(nodes[0].node.list_channels().len(), 1);

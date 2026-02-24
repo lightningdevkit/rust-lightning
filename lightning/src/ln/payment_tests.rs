@@ -2950,10 +2950,11 @@ fn auto_retry_partial_failure() {
 	nodes[0].router.expect_find_route(route_params.clone(), Ok(send_route));
 
 	// Configure the retry1 paths
-	let mut payment_params = route_params.payment_params.clone();
-	payment_params.previously_failed_channels.push(chan_2_id);
-	let mut retry_1_params =
-		RouteParameters::from_payment_params_and_value(payment_params, amt_msat / 2);
+	// ChannelBusy errors don't blacklist channels, so previously_failed_channels stays empty.
+	let mut retry_1_params = RouteParameters::from_payment_params_and_value(
+		route_params.payment_params.clone(),
+		amt_msat / 2,
+	);
 	retry_1_params.max_total_routing_fee_msat = None;
 
 	let retry_1_route = Route {
@@ -2988,10 +2989,11 @@ fn auto_retry_partial_failure() {
 	nodes[0].router.expect_find_route(retry_1_params.clone(), Ok(retry_1_route));
 
 	// Configure the retry2 path
-	let mut payment_params = retry_1_params.payment_params.clone();
-	payment_params.previously_failed_channels.push(chan_3_id);
-	let mut retry_2_params =
-		RouteParameters::from_payment_params_and_value(payment_params, amt_msat / 4);
+	// ChannelBusy errors don't blacklist channels, so previously_failed_channels stays empty.
+	let mut retry_2_params = RouteParameters::from_payment_params_and_value(
+		retry_1_params.payment_params.clone(),
+		amt_msat / 4,
+	);
 	retry_2_params.max_total_routing_fee_msat = None;
 
 	let retry_2_route = Route {
@@ -3307,12 +3309,14 @@ fn retry_multi_path_single_failed_payment() {
 	};
 	nodes[0].router.expect_find_route(route_params.clone(), Ok(route.clone()));
 	// On retry, split the payment across both channels.
+	// ChannelBusy errors don't blacklist channels, so previously_failed_channels stays empty.
 	route.paths[0].hops[0].fee_msat = 50_000_001;
 	route.paths[1].hops[0].fee_msat = 50_000_000;
-	let mut pay_params = route.route_params.clone().unwrap().payment_params;
-	pay_params.previously_failed_channels.push(chans[1].short_channel_id.unwrap());
 
-	let mut retry_params = RouteParameters::from_payment_params_and_value(pay_params, 100_000_000);
+	let mut retry_params = RouteParameters::from_payment_params_and_value(
+		route_params.payment_params.clone(),
+		100_000_000,
+	);
 	retry_params.max_total_routing_fee_msat = None;
 	route.route_params = Some(retry_params.clone());
 	nodes[0].router.expect_find_route(retry_params, Ok(route.clone()));
@@ -3347,12 +3351,11 @@ fn retry_multi_path_single_failed_payment() {
 		Event::PaymentPathFailed {
 			payment_hash: ev_payment_hash,
 			payment_failed_permanently: false,
-			failure: PathFailure::InitialSend { err: APIError::ChannelUnavailable { .. } },
-			short_channel_id: Some(expected_scid),
+			failure: PathFailure::InitialSend { err: APIError::ChannelBusy { .. } },
+			short_channel_id: None,
 			..
 		} => {
 			assert_eq!(payment_hash, ev_payment_hash);
-			assert_eq!(expected_scid, route.paths[1].hops[0].short_channel_id);
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -3409,13 +3412,12 @@ fn immediate_retry_on_failure() {
 	};
 	nodes[0].router.expect_find_route(route_params.clone(), Ok(route.clone()));
 	// On retry, split the payment across both channels.
+	// ChannelBusy errors don't blacklist the channel, so the retry uses original route_params.
 	route.paths.push(route.paths[0].clone());
 	route.paths[0].hops[0].short_channel_id = chans[1].short_channel_id.unwrap();
 	route.paths[0].hops[0].fee_msat = 50_000_000;
 	route.paths[1].hops[0].fee_msat = 50_000_001;
-	let mut pay_params = route_params.payment_params.clone();
-	pay_params.previously_failed_channels.push(chans[0].short_channel_id.unwrap());
-	let retry_params = RouteParameters::from_payment_params_and_value(pay_params, amt_msat);
+	let retry_params = route_params.clone();
 	route.route_params = Some(retry_params.clone());
 	nodes[0].router.expect_find_route(retry_params, Ok(route.clone()));
 
@@ -3428,12 +3430,11 @@ fn immediate_retry_on_failure() {
 		Event::PaymentPathFailed {
 			payment_hash: ev_payment_hash,
 			payment_failed_permanently: false,
-			failure: PathFailure::InitialSend { err: APIError::ChannelUnavailable { .. } },
-			short_channel_id: Some(expected_scid),
+			failure: PathFailure::InitialSend { err: APIError::ChannelBusy { .. } },
+			short_channel_id: None,
 			..
 		} => {
 			assert_eq!(payment_hash, ev_payment_hash);
-			assert_eq!(expected_scid, route.paths[1].hops[0].short_channel_id);
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -5437,4 +5438,114 @@ fn max_out_mpp_path() {
 	assert!(nodes[0].node.list_recent_payments().len() == 1);
 	check_added_monitors(&nodes[0], 2); // one monitor update per MPP part
 	nodes[0].node.get_and_clear_pending_msg_events();
+}
+
+#[test]
+fn channel_busy_does_not_blacklist_channel() {
+	// Test that when a payment fails with ChannelBusy (e.g., exceeds max HTLC value), the
+	// channel is not added to previously_failed_channels, allowing the retry to use the same
+	// channel. This is the core behavior from issue #4161.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_b_id = nodes[1].node.get_our_node_id();
+
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+
+	// Amount exceeds max HTLC value for a single channel (10% of 1M sats = 100K sats)
+	let amt_msat = 100_000_001;
+	let (_, payment_hash, _, payment_secret) =
+		get_route_and_payment_hash!(&nodes[0], nodes[1], amt_msat);
+	#[cfg(feature = "std")]
+	let payment_expiry_secs = SystemTime::UNIX_EPOCH.elapsed().unwrap().as_secs() + 60 * 60;
+	#[cfg(not(feature = "std"))]
+	let payment_expiry_secs = 60 * 60;
+	let mut invoice_features = Bolt11InvoiceFeatures::empty();
+	invoice_features.set_variable_length_onion_required();
+	invoice_features.set_payment_secret_required();
+	invoice_features.set_basic_mpp_optional();
+	let payment_params = PaymentParameters::from_node_id(node_b_id, TEST_FINAL_CLTV)
+		.with_expiry_time(payment_expiry_secs as u64)
+		.with_bolt11_features(invoice_features)
+		.unwrap();
+	let route_params = RouteParameters::from_payment_params_and_value(payment_params, amt_msat);
+
+	let chans = nodes[0].node.list_usable_channels();
+
+	// First attempt: single path with too-large value -> ChannelBusy
+	let route = Route {
+		paths: vec![Path {
+			hops: vec![RouteHop {
+				pubkey: node_b_id,
+				node_features: nodes[1].node.node_features(),
+				short_channel_id: chans[0].short_channel_id.unwrap(),
+				channel_features: nodes[1].node.channel_features(),
+				fee_msat: amt_msat,
+				cltv_expiry_delta: 100,
+				maybe_announced_channel: true,
+			}],
+			blinded_tail: None,
+		}],
+		route_params: Some(route_params.clone()),
+	};
+	nodes[0].router.expect_find_route(route_params.clone(), Ok(route));
+
+	// On retry, the route_params should NOT have previously_failed_channels set because
+	// ChannelBusy does not blacklist the channel. The retry splits across both channels.
+	let retry_route = Route {
+		paths: vec![
+			Path {
+				hops: vec![RouteHop {
+					pubkey: node_b_id,
+					node_features: nodes[1].node.node_features(),
+					short_channel_id: chans[0].short_channel_id.unwrap(),
+					channel_features: nodes[1].node.channel_features(),
+					fee_msat: 50_000_000,
+					cltv_expiry_delta: 100,
+					maybe_announced_channel: true,
+				}],
+				blinded_tail: None,
+			},
+			Path {
+				hops: vec![RouteHop {
+					pubkey: node_b_id,
+					node_features: nodes[1].node.node_features(),
+					short_channel_id: chans[1].short_channel_id.unwrap(),
+					channel_features: nodes[1].node.channel_features(),
+					fee_msat: 50_000_001,
+					cltv_expiry_delta: 100,
+					maybe_announced_channel: true,
+				}],
+				blinded_tail: None,
+			},
+		],
+		route_params: Some(route_params.clone()),
+	};
+	// Key assertion: the retry uses route_params WITHOUT previously_failed_channels
+	nodes[0].router.expect_find_route(route_params.clone(), Ok(retry_route));
+
+	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let id = PaymentId(payment_hash.0);
+	nodes[0].node.send_payment(payment_hash, onion, id, route_params, Retry::Attempts(1)).unwrap();
+
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	// Verify ChannelBusy error with no short_channel_id blame (channel not blacklisted)
+	match &events[0] {
+		Event::PaymentPathFailed {
+			payment_failed_permanently: false,
+			failure: PathFailure::InitialSend { err: APIError::ChannelBusy { .. } },
+			short_channel_id: None,
+			..
+		} => {},
+		_ => panic!("Expected PaymentPathFailed with ChannelBusy, got: {:?}", events[0]),
+	}
+
+	// The retry should have succeeded (split across both channels)
+	let htlc_msgs = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(htlc_msgs.len(), 2);
+	check_added_monitors(&nodes[0], 2);
 }
