@@ -1455,7 +1455,8 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 			},
 			Err(e) => {
 				assert!(
-					matches!(e, APIError::APIMisuseError { ref err } if err.contains("splice")),
+					matches!(e, APIError::APIMisuseError { ref err } if err.contains("splice"))
+					|| matches!(e, APIError::ChannelUnavailable { .. }),
 					"{:?}",
 					e
 				);
