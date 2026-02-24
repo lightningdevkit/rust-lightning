@@ -61,6 +61,8 @@ use crate::offers::invoice_error::InvoiceError;
 use crate::offers::invoice_request::{InvoiceRequest, InvoiceRequestFields, InvoiceRequestVerifiedFromOffer};
 use crate::offers::nonce::Nonce;
 use crate::offers::parse::Bolt12SemanticError;
+use crate::offers::payer_proof::{PayerProof, PayerProofBuilder, PayerProofError};
+use crate::types::payment::PaymentPreimage;
 use crate::onion_message::messenger::{DefaultMessageRouter, Destination, MessageSendInstructions, NodeIdMessageRouter, NullMessageRouter, PeeledOnion, DUMMY_HOPS_PATH_LENGTH, QR_CODED_DUMMY_HOPS_PATH_LENGTH};
 use crate::onion_message::offers::OffersMessage;
 use crate::routing::gossip::{NodeAlias, NodeId};
@@ -258,6 +260,21 @@ fn extract_offer_nonce<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, message: &OnionMessa
 	match node.onion_messenger.peel_onion_message(message) {
 		Ok(PeeledOnion::Offers(_, Some(OffersContext::InvoiceRequest { nonce }), _)) => nonce,
 		Ok(PeeledOnion::Offers(_, context, _)) => panic!("Unexpected onion message context: {:?}", context),
+		Ok(PeeledOnion::Forward(_, _)) => panic!("Unexpected onion message forward"),
+		Ok(_) => panic!("Unexpected onion message"),
+		Err(e) => panic!("Failed to process onion message {:?}", e),
+	}
+}
+
+/// Extract the payer's nonce from an invoice onion message received by the payer.
+///
+/// When the payer receives an invoice through their reply path, the blinded path context
+/// contains the nonce originally used for deriving their payer signing key. This nonce is
+/// needed to build a [`PayerProof`] using [`PayerProofBuilder::build_and_sign_with_derived_key`].
+fn extract_payer_context<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, message: &OnionMessage) -> (PaymentId, Nonce) {
+	match node.onion_messenger.peel_onion_message(message) {
+		Ok(PeeledOnion::Offers(_, Some(OffersContext::OutboundPaymentForOffer { payment_id, nonce, .. }), _)) => (payment_id, nonce),
+		Ok(PeeledOnion::Offers(_, context, _)) => panic!("Expected OutboundPaymentForOffer context, got: {:?}", context),
 		Ok(PeeledOnion::Forward(_, _)) => panic!("Unexpected onion message forward"),
 		Ok(_) => panic!("Unexpected onion message"),
 		Err(e) => panic!("Failed to process onion message {:?}", e),
@@ -2666,4 +2683,237 @@ fn creates_and_pays_for_phantom_offer() {
 		assert!(nodes[0].onion_messenger.next_onion_message_for_peer(node_b_id).is_none());
 		assert!(nodes[0].onion_messenger.next_onion_message_for_peer(node_c_id).is_none());
 	}
+}
+
+/// Tests the full payer proof lifecycle: offer -> invoice_request -> invoice -> payment ->
+/// proof creation with derived key signing -> verification -> bech32 round-trip.
+///
+/// This exercises the primary API path where a wallet pays a BOLT 12 offer and then creates
+/// a payer proof using the derived signing key (same key derivation as the invoice request).
+#[test]
+fn creates_and_verifies_payer_proof_after_offer_payment() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000);
+
+	let alice = &nodes[0]; // recipient (offer creator)
+	let alice_id = alice.node.get_our_node_id();
+	let bob = &nodes[1]; // payer
+	let bob_id = bob.node.get_our_node_id();
+
+	// Alice creates an offer
+	let offer = alice.node
+		.create_offer_builder().unwrap()
+		.amount_msats(10_000_000)
+		.build().unwrap();
+
+	// Bob initiates payment
+	let payment_id = PaymentId([1; 32]);
+	bob.node.pay_for_offer(&offer, None, payment_id, Default::default()).unwrap();
+	expect_recent_payment!(bob, RecentPaymentDetails::AwaitingInvoice, payment_id);
+
+	// Bob sends invoice request to Alice
+	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
+	alice.onion_messenger.handle_onion_message(bob_id, &onion_message);
+
+	let (invoice_request, _) = extract_invoice_request(alice, &onion_message);
+
+	// Alice sends invoice back to Bob
+	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
+	bob.onion_messenger.handle_onion_message(alice_id, &onion_message);
+
+	let (invoice, _) = extract_invoice(bob, &onion_message);
+	assert_eq!(invoice.amount_msats(), 10_000_000);
+
+	// Extract the payer nonce and payment_id from Bob's reply path context. In a real wallet,
+	// these would be persisted alongside the payment for later payer proof creation.
+	let (context_payment_id, payer_nonce) = extract_payer_context(bob, &onion_message);
+	assert_eq!(context_payment_id, payment_id);
+
+	// Route the payment
+	route_bolt12_payment(bob, &[alice], &invoice);
+	expect_recent_payment!(bob, RecentPaymentDetails::Pending, payment_id);
+
+	// Get the payment preimage from Alice's PaymentClaimable event and claim it.
+	// In a real wallet, the payer receives the preimage via Event::PaymentSent after the
+	// recipient claims. For the test, we extract it from the recipient's claimable event.
+	let payment_preimage = match get_event!(alice, Event::PaymentClaimable) {
+		Event::PaymentClaimable { purpose, .. } => {
+			match &purpose {
+				PaymentPurpose::Bolt12OfferPayment { payment_context, .. } => {
+					assert_eq!(payment_context.offer_id, offer.id());
+					assert_eq!(
+						payment_context.invoice_request.payer_signing_pubkey,
+						invoice_request.payer_signing_pubkey(),
+					);
+				},
+				_ => panic!("Expected Bolt12OfferPayment purpose"),
+			}
+			purpose.preimage().unwrap()
+		},
+		_ => panic!("Expected Event::PaymentClaimable"),
+	};
+
+	claim_payment(bob, &[alice], payment_preimage);
+	expect_recent_payment!(bob, RecentPaymentDetails::Fulfilled, payment_id);
+
+	// --- Payer Proof Creation ---
+	// Bob (the payer) creates a proof-of-payment with selective disclosure.
+	// He includes the offer description and invoice amount, but omits other fields for privacy.
+	let expanded_key = bob.keys_manager.get_expanded_key();
+	let proof = PayerProofBuilder::new(&invoice, payment_preimage).unwrap()
+		.include_offer_description()
+		.include_invoice_amount()
+		.include_invoice_created_at()
+		.build_and_sign_with_derived_key(&expanded_key, payer_nonce, payment_id, None)
+		.unwrap();
+
+	// --- Verification ---
+	// Anyone with the proof can verify it without needing the full invoice.
+	proof.verify().unwrap();
+
+	// Check proof contents match the original payment
+	assert_eq!(proof.preimage(), payment_preimage);
+	assert_eq!(proof.payment_hash(), invoice.payment_hash());
+	assert_eq!(proof.payer_id(), invoice.payer_signing_pubkey());
+	assert_eq!(proof.issuer_signing_pubkey(), invoice.signing_pubkey());
+	assert!(proof.payer_note().is_none());
+
+	// --- Serialization Round-Trip ---
+	// The proof can be serialized to a bech32 string (lnp...) for sharing.
+	let encoded = proof.to_string();
+	assert!(encoded.starts_with("lnp1"));
+
+	// Round-trip through TLV bytes: re-parse the raw bytes and verify.
+	let decoded = PayerProof::try_from(proof.bytes().to_vec()).unwrap();
+	decoded.verify().unwrap();
+	assert_eq!(decoded.preimage(), proof.preimage());
+	assert_eq!(decoded.payment_hash(), proof.payment_hash());
+	assert_eq!(decoded.payer_id(), proof.payer_id());
+	assert_eq!(decoded.issuer_signing_pubkey(), proof.issuer_signing_pubkey());
+	assert_eq!(decoded.merkle_root(), proof.merkle_root());
+}
+
+/// Tests payer proof creation with a payer note, selective disclosure of specific invoice
+/// fields, and error cases. Verifies that:
+/// - A wrong preimage is rejected
+/// - A minimal proof (required fields only) works
+/// - Selective disclosure with a payer note works
+/// - The proof survives a bech32 round-trip with the note intact
+#[test]
+fn creates_payer_proof_with_note_and_selective_disclosure() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000);
+
+	let alice = &nodes[0];
+	let alice_id = alice.node.get_our_node_id();
+	let bob = &nodes[1];
+	let bob_id = bob.node.get_our_node_id();
+
+	// Alice creates an offer with a description
+	let offer = alice.node
+		.create_offer_builder().unwrap()
+		.amount_msats(5_000_000)
+		.description("Coffee beans - 1kg".into())
+		.build().unwrap();
+
+	// Bob pays for the offer
+	let payment_id = PaymentId([2; 32]);
+	bob.node.pay_for_offer(&offer, None, payment_id, Default::default()).unwrap();
+	expect_recent_payment!(bob, RecentPaymentDetails::AwaitingInvoice, payment_id);
+
+	// Exchange messages
+	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
+	alice.onion_messenger.handle_onion_message(bob_id, &onion_message);
+	let (invoice_request, _) = extract_invoice_request(alice, &onion_message);
+
+	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
+	bob.onion_messenger.handle_onion_message(alice_id, &onion_message);
+
+	let (invoice, _) = extract_invoice(bob, &onion_message);
+	let (context_payment_id, payer_nonce) = extract_payer_context(bob, &onion_message);
+	assert_eq!(context_payment_id, payment_id);
+
+	// Route and claim the payment, extracting the preimage
+	route_bolt12_payment(bob, &[alice], &invoice);
+	expect_recent_payment!(bob, RecentPaymentDetails::Pending, payment_id);
+
+	let payment_preimage = match get_event!(alice, Event::PaymentClaimable) {
+		Event::PaymentClaimable { purpose, .. } => {
+			match &purpose {
+				PaymentPurpose::Bolt12OfferPayment { payment_context, .. } => {
+					assert_eq!(payment_context.offer_id, offer.id());
+					assert_eq!(
+						payment_context.invoice_request.payer_signing_pubkey,
+						invoice_request.payer_signing_pubkey(),
+					);
+				},
+				_ => panic!("Expected Bolt12OfferPayment purpose"),
+			}
+			purpose.preimage().unwrap()
+		},
+		_ => panic!("Expected Event::PaymentClaimable"),
+	};
+
+	claim_payment(bob, &[alice], payment_preimage);
+	expect_recent_payment!(bob, RecentPaymentDetails::Fulfilled, payment_id);
+
+	// --- Test 1: Wrong preimage is rejected ---
+	let wrong_preimage = PaymentPreimage([0xDE; 32]);
+	assert!(PayerProofBuilder::new(&invoice, wrong_preimage).is_err());
+
+	// --- Test 2: Wrong payment_id causes key derivation failure ---
+	let expanded_key = bob.keys_manager.get_expanded_key();
+	let wrong_payment_id = PaymentId([0xFF; 32]);
+	let result = PayerProofBuilder::new(&invoice, payment_preimage).unwrap()
+		.build_and_sign_with_derived_key(&expanded_key, payer_nonce, wrong_payment_id, None);
+	assert!(matches!(result, Err(PayerProofError::KeyDerivationFailed)));
+
+	// --- Test 3: Wrong nonce causes key derivation failure ---
+	let wrong_nonce = Nonce::from_entropy_source(&chanmon_cfgs[0].keys_manager);
+	let result = PayerProofBuilder::new(&invoice, payment_preimage).unwrap()
+		.build_and_sign_with_derived_key(&expanded_key, wrong_nonce, payment_id, None);
+	assert!(matches!(result, Err(PayerProofError::KeyDerivationFailed)));
+
+	// --- Test 4: Minimal proof (only required fields) ---
+	let minimal_proof = PayerProofBuilder::new(&invoice, payment_preimage).unwrap()
+		.build_and_sign_with_derived_key(&expanded_key, payer_nonce, payment_id, None)
+		.unwrap();
+	minimal_proof.verify().unwrap();
+
+	// --- Test 5: Proof with selective disclosure and payer note ---
+	let proof_with_note = PayerProofBuilder::new(&invoice, payment_preimage).unwrap()
+		.include_offer_description()
+		.include_offer_issuer()
+		.include_invoice_amount()
+		.include_invoice_created_at()
+		.build_and_sign_with_derived_key(&expanded_key, payer_nonce, payment_id, Some("Paid for coffee"))
+		.unwrap();
+	proof_with_note.verify().unwrap();
+	assert_eq!(proof_with_note.payer_note(), Some("Paid for coffee"));
+
+	// Both proofs should verify and have the same core fields
+	assert_eq!(minimal_proof.preimage(), proof_with_note.preimage());
+	assert_eq!(minimal_proof.payment_hash(), proof_with_note.payment_hash());
+	assert_eq!(minimal_proof.payer_id(), proof_with_note.payer_id());
+	assert_eq!(minimal_proof.issuer_signing_pubkey(), proof_with_note.issuer_signing_pubkey());
+
+	// The merkle roots are the same since both reconstruct from the same invoice
+	assert_eq!(minimal_proof.merkle_root(), proof_with_note.merkle_root());
+
+	// --- Test 6: Round-trip the proof with note through TLV bytes ---
+	let encoded = proof_with_note.to_string();
+	assert!(encoded.starts_with("lnp1"));
+
+	let decoded = PayerProof::try_from(proof_with_note.bytes().to_vec()).unwrap();
+	decoded.verify().unwrap();
+	assert_eq!(decoded.payer_note(), Some("Paid for coffee"));
+	assert_eq!(decoded.preimage(), payment_preimage);
 }
