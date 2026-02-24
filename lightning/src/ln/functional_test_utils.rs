@@ -3735,6 +3735,9 @@ pub fn do_pass_along_path<'a, 'b, 'c>(args: PassAlongPathArgs) -> Option<Event> 
 									onion_fields.as_ref().unwrap().payment_secret
 								);
 							},
+							PaymentPurpose::Trampoline {} => {
+								panic!("Trampoline should not emit PaymentClaimable");
+							},
 						}
 						assert_eq!(*amount_msat, recv_value);
 						let channels = node.node.list_channels();
