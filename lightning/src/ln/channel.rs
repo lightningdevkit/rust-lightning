@@ -5781,46 +5781,50 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		outbound_details
 	}
 
-	#[rustfmt::skip]
 	fn get_available_balances_for_scope<F: FeeEstimator>(
 		&self, funding: &FundingScope, fee_estimator: &LowerBoundedFeeEstimator<F>,
 	) -> Result<AvailableBalances, ()> {
 		let htlc_candidate = None;
 		let include_counterparty_unknown_htlcs = true;
 		let addl_nondust_htlc_count = 0;
-		let dust_exposure_limiting_feerate = self.get_dust_exposure_limiting_feerate(
-			&fee_estimator, funding.get_channel_type(),
-		);
+		let dust_exposure_limiting_feerate =
+			self.get_dust_exposure_limiting_feerate(&fee_estimator, funding.get_channel_type());
 
-		let balances = self.get_next_remote_commitment_stats(
-			funding,
-			htlc_candidate,
-			include_counterparty_unknown_htlcs,
-			addl_nondust_htlc_count,
-			self.feerate_per_kw,
-			dust_exposure_limiting_feerate
-		).map(|(remote_stats, _)| remote_stats.available_balances)?;
+		let balances = self
+			.get_next_remote_commitment_stats(
+				funding,
+				htlc_candidate,
+				include_counterparty_unknown_htlcs,
+				addl_nondust_htlc_count,
+				self.feerate_per_kw,
+				dust_exposure_limiting_feerate,
+			)
+			.map(|(remote_stats, _)| remote_stats.available_balances)?;
 
 		#[cfg(debug_assertions)]
 		if balances.next_outbound_htlc_limit_msat >= balances.next_outbound_htlc_minimum_msat
 			&& balances.next_outbound_htlc_limit_msat != 0
 		{
-			let (remote_stats, _remote_htlcs) = self.get_next_remote_commitment_stats(
-				funding,
-				Some(HTLCAmountDirection {
-					outbound: true,
-					// Note that this likely creates a non-dust HTLC, we could add a check for the
-					// biggest dust HTLC to make sure we still have a broadcastable commitment in
-					// that case.
-					amount_msat: balances.next_outbound_htlc_limit_msat,
-				}),
-				include_counterparty_unknown_htlcs,
-				addl_nondust_htlc_count,
-				self.feerate_per_kw,
-				dust_exposure_limiting_feerate
-			).unwrap();
-			assert!(remote_stats.commitment_stats.holder_balance_msat
-				>= funding.counterparty_selected_channel_reserve_satoshis.unwrap_or(0) * 1000);
+			let (remote_stats, _remote_htlcs) = self
+				.get_next_remote_commitment_stats(
+					funding,
+					Some(HTLCAmountDirection {
+						outbound: true,
+						// Note that this likely creates a non-dust HTLC, we could add a check for the
+						// biggest dust HTLC to make sure we still have a broadcastable commitment in
+						// that case.
+						amount_msat: balances.next_outbound_htlc_limit_msat,
+					}),
+					include_counterparty_unknown_htlcs,
+					addl_nondust_htlc_count,
+					self.feerate_per_kw,
+					dust_exposure_limiting_feerate,
+				)
+				.unwrap();
+			assert!(
+				remote_stats.commitment_stats.holder_balance_msat
+					>= funding.counterparty_selected_channel_reserve_satoshis.unwrap_or(0) * 1000
+			);
 		}
 
 		Ok(balances)
@@ -12593,22 +12597,23 @@ where
 	///
 	/// Returns `Err` if some party cannot currently pay for the HTLCs outbound from said party, and the anchors and
 	/// transaction fee if they are the funder.
-	#[rustfmt::skip]
 	pub(super) fn get_available_balances<F: FeeEstimator>(
 		&self, fee_estimator: &LowerBoundedFeeEstimator<F>,
 	) -> Result<AvailableBalances, ()> {
 		let init = self.context.get_available_balances_for_scope(&self.funding, fee_estimator)?;
-		self.pending_funding().iter().try_fold(
-			init,
-			|acc, funding| {
-				let e = self.context.get_available_balances_for_scope(funding, fee_estimator)?;
-				Ok(AvailableBalances {
-					inbound_capacity_msat: acc.inbound_capacity_msat.min(e.inbound_capacity_msat),
-					outbound_capacity_msat: acc.outbound_capacity_msat.min(e.outbound_capacity_msat),
-					next_outbound_htlc_limit_msat: acc.next_outbound_htlc_limit_msat.min(e.next_outbound_htlc_limit_msat),
-					next_outbound_htlc_minimum_msat: acc.next_outbound_htlc_minimum_msat.max(e.next_outbound_htlc_minimum_msat),
-				})
+		self.pending_funding().iter().try_fold(init, |acc, funding| {
+			let e = self.context.get_available_balances_for_scope(funding, fee_estimator)?;
+			Ok(AvailableBalances {
+				inbound_capacity_msat: acc.inbound_capacity_msat.min(e.inbound_capacity_msat),
+				outbound_capacity_msat: acc.outbound_capacity_msat.min(e.outbound_capacity_msat),
+				next_outbound_htlc_limit_msat: acc
+					.next_outbound_htlc_limit_msat
+					.min(e.next_outbound_htlc_limit_msat),
+				next_outbound_htlc_minimum_msat: acc
+					.next_outbound_htlc_minimum_msat
+					.max(e.next_outbound_htlc_minimum_msat),
 			})
+		})
 	}
 
 	fn build_commitment_no_status_check<L: Logger>(&mut self, logger: &L) -> ChannelMonitorUpdate {
