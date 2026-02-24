@@ -141,6 +141,7 @@ use crate::offers::offer::{
 };
 use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
 use crate::offers::payer::{PayerTlvStream, PayerTlvStreamRef, PAYER_METADATA_TYPE};
+use crate::offers::payer_proof::{PayerProofBuilder, PayerProofError};
 use crate::offers::refund::{
 	Refund, RefundContents, IV_BYTES_WITHOUT_METADATA as REFUND_IV_BYTES_WITHOUT_METADATA,
 	IV_BYTES_WITH_METADATA as REFUND_IV_BYTES_WITH_METADATA,
@@ -148,6 +149,7 @@ use crate::offers::refund::{
 use crate::offers::signer::{self, Metadata};
 use crate::types::features::{Bolt12InvoiceFeatures, InvoiceRequestFeatures, OfferFeatures};
 use crate::types::payment::PaymentHash;
+use crate::types::payment::PaymentPreimage;
 use crate::types::string::PrintableString;
 use crate::util::ser::{
 	CursorReadable, HighZeroBytesDroppedBigSize, Iterable, LengthLimitedRead, LengthReadable,
@@ -1033,6 +1035,17 @@ impl Bolt12Invoice {
 		)
 	}
 
+	/// Creates a [`PayerProofBuilder`] for this invoice using the given payment preimage.
+	///
+	/// Returns an error if the preimage doesn't match the invoice's payment hash.
+	///
+	/// [`PayerProofBuilder`]: crate::offers::payer_proof::PayerProofBuilder
+	pub fn payer_proof_builder(
+		&self, preimage: PaymentPreimage,
+	) -> Result<PayerProofBuilder<'_>, PayerProofError> {
+		PayerProofBuilder::new(self, preimage)
+	}
+
 	/// Re-derives the payer's signing keypair for payer proof creation.
 	///
 	/// This performs the same key derivation that occurs during invoice request creation
@@ -1557,6 +1570,21 @@ impl TryFrom<Vec<u8>> for Bolt12Invoice {
 
 /// Valid type range for invoice TLV records.
 pub(super) const INVOICE_TYPES: core::ops::Range<u64> = 160..240;
+
+/// TLV record type for the invoice creation timestamp.
+pub(super) const INVOICE_CREATED_AT_TYPE: u64 = 164;
+
+/// TLV record type for [`Bolt12Invoice::payment_hash`].
+pub(super) const INVOICE_PAYMENT_HASH_TYPE: u64 = 168;
+
+/// TLV record type for [`Bolt12Invoice::amount_msats`].
+pub(super) const INVOICE_AMOUNT_TYPE: u64 = 170;
+
+/// TLV record type for [`Bolt12Invoice::invoice_features`].
+pub(super) const INVOICE_FEATURES_TYPE: u64 = 174;
+
+/// TLV record type for [`Bolt12Invoice::signing_pubkey`].
+pub(super) const INVOICE_NODE_ID_TYPE: u64 = 176;
 
 tlv_stream!(InvoiceTlvStream, InvoiceTlvStreamRef<'a>, INVOICE_TYPES, {
 	(160, paths: (Vec<BlindedPath>, WithoutLength, Iterable<'a, BlindedPathIter<'a>, BlindedPath>)),
