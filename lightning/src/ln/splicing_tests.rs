@@ -2429,9 +2429,10 @@ fn do_abandon_splice_quiescent_action_on_shutdown(local_shutdown: bool) {
 
 	// Since we cannot close after having sent `stfu`, send an HTLC so that when we attempt to
 	// splice, the `stfu` message is held back.
+	let payment_amount = 1_000_000;
 	let (route, payment_hash, _payment_preimage, payment_secret) =
-		get_route_and_payment_hash!(&nodes[0], &nodes[1], 1_000_000);
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+		get_route_and_payment_hash!(&nodes[0], &nodes[1], payment_amount);
+	let onion = RecipientOnionFields::secret_only(payment_secret, payment_amount);
 	let payment_id = PaymentId(payment_hash.0);
 	nodes[0].node.send_payment_with_route(route, payment_hash, onion, payment_id).unwrap();
 	let update = get_htlc_update_msgs(&nodes[0], &node_id_1);
