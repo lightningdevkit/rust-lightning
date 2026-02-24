@@ -174,6 +174,9 @@ pub enum PaymentPurpose {
 	/// Because this is a spontaneous payment, the payer generated their own preimage rather than us
 	/// (the payee) providing a preimage.
 	SpontaneousPayment(PaymentPreimage),
+	/// HTLCs terminating at our node are intended for forwarding onwards as a trampoline
+	/// forward.
+	Trampoline {},
 }
 
 impl PaymentPurpose {
@@ -184,6 +187,7 @@ impl PaymentPurpose {
 			PaymentPurpose::Bolt12OfferPayment { payment_preimage, .. } => *payment_preimage,
 			PaymentPurpose::Bolt12RefundPayment { payment_preimage, .. } => *payment_preimage,
 			PaymentPurpose::SpontaneousPayment(preimage) => Some(*preimage),
+			PaymentPurpose::Trampoline {} => None,
 		}
 	}
 
@@ -193,6 +197,7 @@ impl PaymentPurpose {
 			PaymentPurpose::Bolt12OfferPayment { .. } => false,
 			PaymentPurpose::Bolt12RefundPayment { .. } => false,
 			PaymentPurpose::SpontaneousPayment(..) => true,
+			PaymentPurpose::Trampoline {} => false,
 		}
 	}
 
@@ -240,8 +245,9 @@ impl_writeable_tlv_based_enum_legacy!(PaymentPurpose,
 		(2, payment_secret, required),
 		(4, payment_context, required),
 	},
+	(3, Trampoline) => {},
 	;
-	(2, SpontaneousPayment)
+	(2, SpontaneousPayment),
 );
 
 /// Information about an HTLC that is part of a payment that can be claimed.
@@ -1925,6 +1931,11 @@ impl Writeable for Event {
 					},
 					PaymentPurpose::SpontaneousPayment(preimage) => {
 						payment_preimage = Some(*preimage);
+					},
+					PaymentPurpose::Trampoline {} => {
+						payment_secret = None;
+						payment_preimage = None;
+						payment_context = None;
 					},
 				}
 				let skimmed_fee_opt = if counterparty_skimmed_fee_msat == 0 {
