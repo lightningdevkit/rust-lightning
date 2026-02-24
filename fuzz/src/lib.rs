@@ -44,6 +44,7 @@ pub mod process_onion_failure;
 pub mod refund_deser;
 pub mod router;
 pub mod static_invoice_deser;
+pub mod utxo_validation;
 pub mod zbase32;
 
 pub mod fs_store;
