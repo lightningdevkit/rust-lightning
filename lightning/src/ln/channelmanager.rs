@@ -18315,8 +18315,16 @@ impl Readable for HTLCSource {
 				})
 			}
 			1 => Ok(HTLCSource::PreviousHopData(Readable::read(reader)?)),
-			// Note: we intentionally do not read HTLCSource::TrampolineForward because we do not
-			// want to allow downgrades with in-flight trampoline forwards.
+			2 => {
+				_init_and_read_len_prefixed_tlv_fields!(reader, {
+					(1, previous_hop_data, required_vec),
+					(3, outbound_payment, option),
+				});
+				Ok(HTLCSource::TrampolineForward {
+					previous_hop_data: _init_tlv_based_struct_field!(previous_hop_data, required_vec),
+					outbound_payment,
+				})
+			},
 			_ => Err(DecodeError::UnknownRequiredFeature),
 		}
 	}
