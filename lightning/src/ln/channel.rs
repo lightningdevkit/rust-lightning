@@ -12431,8 +12431,9 @@ where
 				.map_err(|e| {
 					log_info!(
 						logger,
-						"Cannot accommodate initiator's feerate for channel {}: {}; \
+						"Cannot accommodate initiator's feerate ({}) for channel {}: {}; \
 							 proceeding without contribution",
+						feerate,
 						self.context.channel_id(),
 						e,
 					);
