@@ -1951,7 +1951,6 @@ impl InteractiveTxInput {
 pub(super) struct InteractiveTxConstructor {
 	state_machine: StateMachine,
 	is_initiator: bool,
-	initiator_first_message: Option<InteractiveTxMessageSend>,
 	channel_id: ChannelId,
 	inputs_to_contribute: Vec<(SerialId, InputOwned)>,
 	outputs_to_contribute: Vec<(SerialId, OutputOwned)>,
@@ -2111,7 +2110,6 @@ impl InteractiveTxConstructor {
 		Self {
 			state_machine,
 			is_initiator,
-			initiator_first_message: None,
 			channel_id,
 			inputs_to_contribute,
 			outputs_to_contribute,
@@ -2124,19 +2122,22 @@ impl InteractiveTxConstructor {
 	///
 	/// The initiator always has the shared funding output added internally, so preparing the
 	/// first message should never fail. Debug asserts verify this invariant.
-	pub fn new_for_outbound<ES: EntropySource>(args: InteractiveTxConstructorArgs<ES>) -> Self {
+	pub fn new_for_outbound<ES: EntropySource>(
+		args: InteractiveTxConstructorArgs<ES>,
+	) -> (Self, Option<InteractiveTxMessageSend>) {
 		let mut constructor = Self::new(args, true);
-		match constructor.maybe_send_message() {
-			Ok(message) => constructor.initiator_first_message = Some(message),
+		let message = match constructor.maybe_send_message() {
+			Ok(message) => Some(message),
 			Err(reason) => {
 				debug_assert!(
 					false,
 					"Outbound constructor should always have inputs: {:?}",
 					reason
 				);
+				None
 			},
-		}
-		constructor
+		};
+		(constructor, message)
 	}
 
 	/// Instantiates a new `InteractiveTxConstructor` for the non-initiator (inbound splice or
@@ -2186,10 +2187,6 @@ impl InteractiveTxConstructor {
 
 	pub fn is_initiator(&self) -> bool {
 		self.is_initiator
-	}
-
-	pub fn take_initiator_first_message(&mut self) -> Option<InteractiveTxMessageSend> {
-		self.initiator_first_message.take()
 	}
 
 	fn maybe_send_message(&mut self) -> Result<InteractiveTxMessageSend, AbortReason> {
@@ -2447,8 +2444,8 @@ mod tests {
 			&SecretKey::from_slice(&[43; 32]).unwrap(),
 		);
 
-		let mut constructor_a =
-			Some(InteractiveTxConstructor::new_for_outbound(InteractiveTxConstructorArgs {
+		let (constructor_a, mut message_send_a) =
+			InteractiveTxConstructor::new_for_outbound(InteractiveTxConstructorArgs {
 				entropy_source,
 				channel_id,
 				feerate_sat_per_kw: TEST_FEERATE_SATS_PER_KW,
@@ -2474,7 +2471,8 @@ mod tests {
 					session.shared_output_a.1,
 				),
 				outputs_to_contribute: session.outputs_a,
-			}));
+			});
+		let mut constructor_a = Some(constructor_a);
 		let mut constructor_b =
 			Some(InteractiveTxConstructor::new_for_inbound(InteractiveTxConstructorArgs {
 				entropy_source,
@@ -2503,6 +2501,7 @@ mod tests {
 				),
 				outputs_to_contribute: session.outputs_b,
 			}));
+		let mut message_send_b = None;
 
 		let handle_message_send =
 			|msg: InteractiveTxMessageSend, for_constructor: &mut InteractiveTxConstructor| {
@@ -2526,8 +2525,6 @@ mod tests {
 				}
 			};
 
-		let mut message_send_a = constructor_a.as_mut().unwrap().take_initiator_first_message();
-		let mut message_send_b = None;
 		let mut final_tx_a = None;
 		let mut final_tx_b = None;
 		while constructor_a.is_some() || constructor_b.is_some() {

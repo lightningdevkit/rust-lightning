@@ -6689,7 +6689,7 @@ impl FundingNegotiationContext {
 	fn into_interactive_tx_constructor<SP: SignerProvider, ES: EntropySource>(
 		self, context: &ChannelContext<SP>, funding: &FundingScope, entropy_source: &ES,
 		holder_node_id: PublicKey,
-	) -> InteractiveTxConstructor {
+	) -> (InteractiveTxConstructor, Option<InteractiveTxMessageSend>) {
 		debug_assert_eq!(
 			self.shared_funding_input.is_some(),
 			funding.channel_transaction_parameters.splice_parent_funding_txid.is_some(),
@@ -6724,7 +6724,7 @@ impl FundingNegotiationContext {
 		if self.is_initiator {
 			InteractiveTxConstructor::new_for_outbound(constructor_args)
 		} else {
-			InteractiveTxConstructor::new_for_inbound(constructor_args)
+			(InteractiveTxConstructor::new_for_inbound(constructor_args), None)
 		}
 	}
 
@@ -12431,14 +12431,14 @@ where
 			our_funding_outputs: Vec::new(),
 		};
 
-		let mut interactive_tx_constructor = funding_negotiation_context
+		let (interactive_tx_constructor, first_message) = funding_negotiation_context
 			.into_interactive_tx_constructor(
 				&self.context,
 				&splice_funding,
 				entropy_source,
 				holder_node_id.clone(),
 			);
-		debug_assert!(interactive_tx_constructor.take_initiator_first_message().is_none());
+		debug_assert!(first_message.is_none());
 
 		// TODO(splicing): if quiescent_action is set, integrate what the user wants to do into the
 		// counterparty-initiated splice. For always-on nodes this probably isn't a useful
@@ -12490,14 +12490,14 @@ where
 				panic!("We should have returned an error earlier!");
 			};
 
-		let mut interactive_tx_constructor = funding_negotiation_context
+		let (interactive_tx_constructor, tx_msg_opt) = funding_negotiation_context
 			.into_interactive_tx_constructor(
 				&self.context,
 				&splice_funding,
 				entropy_source,
 				holder_node_id.clone(),
 			);
-		let tx_msg_opt = interactive_tx_constructor.take_initiator_first_message();
+		debug_assert!(tx_msg_opt.is_some());
 
 		debug_assert!(self.context.interactive_tx_signing_session.is_none());
 
