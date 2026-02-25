@@ -136,14 +136,11 @@ fn test_monitor_and_persister_update_fail() {
 				&feeest,
 				&node_cfgs[0].logger,
 			) {
-				// Check that the persister returns InProgress (and will never actually complete)
-				// as the monitor update errors.
-				if let ChannelMonitorUpdateStatus::InProgress =
-					chain_mon.chain_monitor.update_channel(chan.2, &update)
-				{
-				} else {
-					panic!("Expected monitor paused");
-				}
+				// Check that the chain monitor returns Err as the monitor update errors.
+				assert!(
+					chain_mon.chain_monitor.update_channel(chan.2, &update).is_err(),
+					"Expected monitor update failure",
+				);
 				logger.assert_log_regex(
 					"lightning::chain::chainmonitor",
 					regex::Regex::new("Failed to update ChannelMonitor").unwrap(),
@@ -154,7 +151,7 @@ fn test_monitor_and_persister_update_fail() {
 				// ChannelManager and ChannelMonitor aren't out of sync.
 				assert_eq!(
 					nodes[0].chain_monitor.update_channel(chan.2, &update),
-					ChannelMonitorUpdateStatus::Completed
+					Ok(ChannelMonitorUpdateStatus::Completed)
 				);
 			} else {
 				assert!(false);
@@ -4967,10 +4964,10 @@ fn native_async_persist() {
 	// Now test two async `ChannelMonitorUpdate`s in flight at once, completing them in-order but
 	// separately.
 	let update_status = async_chain_monitor.update_channel(chan_id, &updates[0]);
-	assert_eq!(update_status, ChannelMonitorUpdateStatus::InProgress);
+	assert_eq!(update_status, Ok(ChannelMonitorUpdateStatus::InProgress));
 
 	let update_status = async_chain_monitor.update_channel(chan_id, &updates[1]);
-	assert_eq!(update_status, ChannelMonitorUpdateStatus::InProgress);
+	assert_eq!(update_status, Ok(ChannelMonitorUpdateStatus::InProgress));
 
 	persist_futures.poll_futures();
 	assert_eq!(async_chain_monitor.release_pending_monitor_events().len(), 0);
@@ -5016,10 +5013,10 @@ fn native_async_persist() {
 	// out-of-order and ensuring that no `MonitorEvent::Completed` is generated until they are both
 	// completed (and that it marks both as completed when it is generated).
 	let update_status = async_chain_monitor.update_channel(chan_id, &updates[2]);
-	assert_eq!(update_status, ChannelMonitorUpdateStatus::InProgress);
+	assert_eq!(update_status, Ok(ChannelMonitorUpdateStatus::InProgress));
 
 	let update_status = async_chain_monitor.update_channel(chan_id, &updates[3]);
-	assert_eq!(update_status, ChannelMonitorUpdateStatus::InProgress);
+	assert_eq!(update_status, Ok(ChannelMonitorUpdateStatus::InProgress));
 
 	persist_futures.poll_futures();
 	assert_eq!(async_chain_monitor.release_pending_monitor_events().len(), 0);

@@ -316,22 +316,23 @@ pub trait Watch<ChannelSigner: EcdsaChannelSigner> {
 
 	/// Updates a channel identified by `channel_id` by applying `update` to its monitor.
 	///
-	/// Implementations must call [`ChannelMonitor::update_monitor`] with the given update. This
-	/// may fail (returning an `Err(())`), in which case this should return
-	/// [`ChannelMonitorUpdateStatus::InProgress`] (and the update should never complete). This
+	/// Implementations must call [`ChannelMonitor::update_monitor`] with the given update. If
+	/// that call fails (returning an `Err(())`), this method should return `Err(())`. This
 	/// generally implies the channel has been closed (either by the funding outpoint being spent
 	/// on-chain or the [`ChannelMonitor`] having decided to do so and broadcasted a transaction),
 	/// and the [`ChannelManager`] state will be updated once it sees the funding spend on-chain.
+	/// Even when `update_monitor` fails, the updated monitor state should still be persisted.
 	///
-	/// In general, persistence failures should be retried after returning
-	/// [`ChannelMonitorUpdateStatus::InProgress`] and eventually complete. If a failure truly
-	/// cannot be retried, the node should shut down immediately after returning
-	/// [`ChannelMonitorUpdateStatus::UnrecoverableError`], see its documentation for more info.
+	/// On success, returns the persistence status. In general, persistence failures should be
+	/// retried after returning [`ChannelMonitorUpdateStatus::InProgress`] and eventually
+	/// complete. If a failure truly cannot be retried, the node should shut down immediately
+	/// after returning [`ChannelMonitorUpdateStatus::UnrecoverableError`], see its documentation
+	/// for more info.
 	///
 	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 	fn update_channel(
 		&self, channel_id: ChannelId, update: &ChannelMonitorUpdate,
-	) -> ChannelMonitorUpdateStatus;
+	) -> Result<ChannelMonitorUpdateStatus, ()>;
 
 	/// Returns any monitor events since the last call. Subsequent calls must only return new
 	/// events.
@@ -358,7 +359,7 @@ impl<ChannelSigner: EcdsaChannelSigner, T: Watch<ChannelSigner> + ?Sized, W: Der
 
 	fn update_channel(
 		&self, channel_id: ChannelId, update: &ChannelMonitorUpdate,
-	) -> ChannelMonitorUpdateStatus {
+	) -> Result<ChannelMonitorUpdateStatus, ()> {
 		self.deref().update_channel(channel_id, update)
 	}
 

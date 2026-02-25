@@ -320,7 +320,7 @@ impl chain::Watch<TestChannelSigner> for TestChainMonitor {
 
 	fn update_channel(
 		&self, channel_id: ChannelId, update: &channelmonitor::ChannelMonitorUpdate,
-	) -> chain::ChannelMonitorUpdateStatus {
+	) -> Result<chain::ChannelMonitorUpdateStatus, ()> {
 		let mut map_lock = self.latest_monitors.lock().unwrap();
 		let map_entry = map_lock.get_mut(&channel_id).expect("Didn't have monitor on update call");
 		let latest_monitor_data = map_entry
@@ -336,26 +336,29 @@ impl chain::Watch<TestChannelSigner> for TestChainMonitor {
 			)
 			.unwrap()
 			.1;
-		deserialized_monitor
-			.update_monitor(
-				update,
-				&&TestBroadcaster { txn_broadcasted: RefCell::new(Vec::new()) },
-				&&FuzzEstimator { ret_val: atomic::AtomicU32::new(253) },
-				&self.logger,
-			)
-			.unwrap();
+		let local_update_res = deserialized_monitor.update_monitor(
+			update,
+			&&TestBroadcaster { txn_broadcasted: RefCell::new(Vec::new()) },
+			&&FuzzEstimator { ret_val: atomic::AtomicU32::new(253) },
+			&self.logger,
+		);
 		let mut ser = VecWriter(Vec::new());
 		deserialized_monitor.write(&mut ser).unwrap();
 		let res = self.chain_monitor.update_channel(channel_id, update);
 		match res {
-			chain::ChannelMonitorUpdateStatus::Completed => {
+			Ok(chain::ChannelMonitorUpdateStatus::Completed) => {
+				assert!(local_update_res.is_ok());
 				map_entry.persisted_monitor_id = update.update_id;
 				map_entry.persisted_monitor = ser.0;
 			},
-			chain::ChannelMonitorUpdateStatus::InProgress => {
+			Ok(chain::ChannelMonitorUpdateStatus::InProgress) => {
+				assert!(local_update_res.is_ok());
 				map_entry.pending_monitors.push((update.update_id, ser.0));
 			},
-			chain::ChannelMonitorUpdateStatus::UnrecoverableError => panic!(),
+			Ok(chain::ChannelMonitorUpdateStatus::UnrecoverableError) => panic!(),
+			Err(()) => {
+				assert!(local_update_res.is_err());
+			},
 		}
 		res
 	}

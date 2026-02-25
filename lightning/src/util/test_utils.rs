@@ -617,7 +617,7 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 
 	fn update_channel(
 		&self, channel_id: ChannelId, update: &ChannelMonitorUpdate,
-	) -> chain::ChannelMonitorUpdateStatus {
+	) -> Result<chain::ChannelMonitorUpdateStatus, ()> {
 		#[cfg(feature = "std")]
 		if let Some(blocker) = &*self.write_blocker.lock().unwrap() {
 			blocker.recv().unwrap();

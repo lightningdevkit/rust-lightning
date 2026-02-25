@@ -1311,7 +1311,7 @@ where
 
 	fn update_channel(
 		&self, channel_id: ChannelId, update: &ChannelMonitorUpdate,
-	) -> ChannelMonitorUpdateStatus {
+	) -> Result<ChannelMonitorUpdateStatus, ()> {
 		// `ChannelMonitorUpdate`'s `channel_id` is `None` prior to 0.0.121 and all channels in those
 		// versions are V1-established. For 0.0.121+ the `channel_id` fields is always `Some`.
 		debug_assert_eq!(update.channel_id.unwrap(), channel_id);
@@ -1328,7 +1328,7 @@ where
 				#[cfg(debug_assertions)]
 				panic!("ChannelManager generated a channel update for a channel that was not yet registered!");
 				#[cfg(not(debug_assertions))]
-				ChannelMonitorUpdateStatus::InProgress
+				Err(())
 			},
 			Some(monitor_state) => {
 				let monitor = &monitor_state.monitor;
@@ -1415,9 +1415,9 @@ where
 				}
 
 				if update_res.is_err() {
-					ChannelMonitorUpdateStatus::InProgress
+					Err(())
 				} else {
-					persist_res
+					Ok(persist_res)
 				}
 			},
 		}

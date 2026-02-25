@@ -10058,7 +10058,20 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				self.chain_monitor.update_channel(channel_id, &in_flight_updates[update_idx]);
 			let logger =
 				WithContext::from(&self.logger, Some(counterparty_node_id), Some(channel_id), None);
-			let update_completed = self.handle_monitor_update_res(update_res, logger);
+			// Map monitor update failure (Err) to InProgress to freeze the channel.
+			// This happens when ChannelMonitor::update_monitor fails internally,
+			// generally implying the channel has been closed on-chain.
+			let update_status = match update_res {
+				Ok(status) => status,
+				Err(()) => {
+					log_debug!(
+						logger,
+						"ChannelMonitor::update_monitor failed, treating as InProgress to freeze channel.",
+					);
+					ChannelMonitorUpdateStatus::InProgress
+				},
+			};
+			let update_completed = self.handle_monitor_update_res(update_status, logger);
 			if update_completed {
 				let _ = in_flight_updates.remove(update_idx);
 			}
