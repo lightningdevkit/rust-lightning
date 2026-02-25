@@ -415,13 +415,14 @@ impl FundingContribution {
 		Ok(())
 	}
 
-	/// Computes the feerate adjustment as a pure `&self` operation, returning the new estimated
-	/// fee and optionally the new change output value.
+	/// Computes the adjusted fee and change output value for the acceptor at the initiator's
+	/// proposed feerate, which may differ from the feerate used during coin selection.
 	///
-	/// Returns `Ok((new_estimated_fee, new_change_value))` or `Err`:
-	/// - `(fee, Some(change))` — inputs with change: both should be updated
-	/// - `(fee, None)` — inputs without change (or change removed), or splice-out: fee updated
-	///   only
+	/// On success, returns the new estimated fee and, if applicable, the new change output value:
+	/// - `Some(change)` — the adjusted change output value
+	/// - `None` — no change output (no inputs or change fell below dust)
+	///
+	/// Returns `Err` if the contribution cannot accommodate the target feerate.
 	fn compute_feerate_adjustment(
 		&self, target_feerate: FeeRate,
 	) -> Result<(Amount, Option<Amount>), String> {
