@@ -146,14 +146,14 @@ impl FilesystemStoreState {
 		let page_entries: Vec<_> =
 			entries.iter().skip(start_idx).take(PAGE_SIZE).cloned().collect();
 
-		let keys: Vec<String> = page_entries.iter().map(|(_, key)| key.clone()).collect();
-
 		// Determine next page token
 		let next_page_token = if start_idx + PAGE_SIZE < entries.len() {
 			page_entries.last().map(|(mtime, key)| PageToken::new(format_page_token(*mtime, key)))
 		} else {
 			None
 		};
+
+		let keys: Vec<String> = page_entries.into_iter().map(|(_, key)| key).collect();
 
 		Ok(PaginatedListResponse { keys, next_page_token })
 	}
