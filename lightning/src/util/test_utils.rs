@@ -23,6 +23,11 @@ use crate::chain::transaction::OutPoint;
 use crate::chain::WatchedOutput;
 #[cfg(any(test, feature = "_externalize_tests"))]
 use crate::ln::chan_utils::CommitmentTransaction;
+use crate::ln::chan_utils::{
+	ChannelPublicKeys, ChannelTransactionParameters, CounterpartyChannelTransactionParameters,
+	HolderCommitmentTransaction,
+};
+use crate::ln::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint, RevocationBasepoint};
 use crate::ln::channel_state::ChannelDetails;
 use crate::ln::channelmanager;
 use crate::ln::inbound_payment::ExpandedKey;
@@ -44,9 +49,11 @@ use crate::routing::router::{
 };
 use crate::routing::scoring::{ChannelUsage, ScoreLookUp, ScoreUpdate};
 use crate::routing::utxo::{UtxoLookup, UtxoLookupError, UtxoResult};
+use crate::sign::InMemorySigner;
 use crate::sign::{self, ReceiveAuthKey};
 use crate::sign::{ChannelSigner, PeerStorageKey};
 use crate::sync::RwLock;
+use crate::types::features::ChannelTypeFeatures;
 use crate::types::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use crate::util::async_poll::MaybeSend;
 use crate::util::config::UserConfig;
@@ -2335,4 +2342,67 @@ impl WalletSourceSync for TestWalletSource {
 		let tx = psbt.extract_tx_unchecked_fee_rate();
 		self.sign_tx(tx).map_err(|_| ())
 	}
+}
+
+/// Creates a minimal `ChannelMonitor` for testing purposes.
+///
+/// The `wrap_signer` closure converts the raw `InMemorySigner` into the desired signer type
+/// (e.g. wrapping it in `TestChannelSigner` or passing it through unchanged).
+pub fn dummy_monitor<S: sign::ecdsa::EcdsaChannelSigner + 'static>(
+	channel_id: ChannelId, wrap_signer: impl FnOnce(InMemorySigner) -> S,
+) -> crate::chain::channelmonitor::ChannelMonitor<S> {
+	let secp_ctx = Secp256k1::new();
+	let dummy_key =
+		PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
+	let keys = InMemorySigner::new(
+		SecretKey::from_slice(&[41; 32]).unwrap(),
+		SecretKey::from_slice(&[41; 32]).unwrap(),
+		SecretKey::from_slice(&[41; 32]).unwrap(),
+		SecretKey::from_slice(&[41; 32]).unwrap(),
+		true,
+		SecretKey::from_slice(&[41; 32]).unwrap(),
+		SecretKey::from_slice(&[41; 32]).unwrap(),
+		[41; 32],
+		[0; 32],
+		[0; 32],
+	);
+	let counterparty_pubkeys = ChannelPublicKeys {
+		funding_pubkey: dummy_key,
+		revocation_basepoint: RevocationBasepoint::from(dummy_key),
+		payment_point: dummy_key,
+		delayed_payment_basepoint: DelayedPaymentBasepoint::from(dummy_key),
+		htlc_basepoint: HtlcBasepoint::from(dummy_key),
+	};
+	let funding_outpoint = OutPoint { txid: Txid::all_zeros(), index: u16::MAX };
+	let channel_parameters = ChannelTransactionParameters {
+		holder_pubkeys: keys.pubkeys(&secp_ctx),
+		holder_selected_contest_delay: 66,
+		is_outbound_from_holder: true,
+		counterparty_parameters: Some(CounterpartyChannelTransactionParameters {
+			pubkeys: counterparty_pubkeys,
+			selected_contest_delay: 67,
+		}),
+		funding_outpoint: Some(funding_outpoint),
+		splice_parent_funding_txid: None,
+		channel_type_features: ChannelTypeFeatures::only_static_remote_key(),
+		channel_value_satoshis: 0,
+	};
+	let shutdown_script = ShutdownScript::new_p2wpkh_from_pubkey(dummy_key);
+	let best_block = crate::chain::BestBlock::from_network(Network::Testnet);
+	let signer = wrap_signer(keys);
+	ChannelMonitor::new(
+		secp_ctx,
+		signer,
+		Some(shutdown_script.into_inner()),
+		0,
+		&ScriptBuf::new(),
+		&channel_parameters,
+		true,
+		0,
+		HolderCommitmentTransaction::dummy(0, funding_outpoint, Vec::new()),
+		best_block,
+		dummy_key,
+		channel_id,
+		false,
+	)
 }
