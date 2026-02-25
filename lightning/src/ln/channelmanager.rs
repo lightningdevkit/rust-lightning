@@ -1394,7 +1394,7 @@ pub(crate) enum MonitorUpdateCompletionAction {
 	/// outbound edge.
 	EmitEventOptionAndFreeOtherChannel {
 		event: Option<events::Event>,
-		downstream_counterparty_and_funding_outpoint: Option<EventUnblockedChannel>,
+		downstream_counterparty_and_funding_outpoint: EventUnblockedChannel,
 	},
 	/// Indicates we should immediately resume the operation of another channel, unless there is
 	/// some other reason why the channel is blocked. In practice this simply means immediately
@@ -1432,12 +1432,7 @@ impl_writeable_tlv_based_enum_upgradable!(MonitorUpdateCompletionAction,
 		// with multiple incoming HTLCS, so nodes cannot downgrade while trampoline payments
 		// are in the process of being resolved.
 		(0, event, upgradable_option),
-		// LDK prior to 0.0.116 did not have this field as the monitor update application order was
-		// required by clients. If we downgrade to something prior to 0.0.116 this may result in
-		// monitor updates which aren't properly blocked or resumed, however that's fine - we don't
-		// support async monitor updates even in LDK 0.0.116 and once we do we'll require no
-		// downgrades to prior versions.
-		(1, downstream_counterparty_and_funding_outpoint, upgradable_option),
+		(1, downstream_counterparty_and_funding_outpoint, upgradable_required),
 	},
 );
 
@@ -9674,12 +9669,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					None,
 					Some(attribution_data),
 					|htlc_claim_value_msat, definitely_duplicate| {
-						let chan_to_release = Some(EventUnblockedChannel {
+						let chan_to_release = EventUnblockedChannel {
 							counterparty_node_id: next_channel_counterparty_node_id,
 							funding_txo: next_channel_outpoint,
 							channel_id: next_channel_id,
 							blocking_action: completed_blocker,
-						});
+						};
 
 						if definitely_duplicate && startup_replay {
 							// On startup we may get redundant claims which are related to
@@ -9732,15 +9727,15 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							}
 							(None, None)
 						} else if definitely_duplicate {
-							if let Some(other_chan) = chan_to_release {
-								(Some(MonitorUpdateCompletionAction::FreeOtherChannelImmediately {
-									downstream_counterparty_node_id: other_chan.counterparty_node_id,
-									downstream_channel_id: other_chan.channel_id,
-									blocking_action: other_chan.blocking_action,
-								}), None)
-							} else {
-								(None, None)
-							}
+							(
+								Some(MonitorUpdateCompletionAction::FreeOtherChannelImmediately {
+									downstream_counterparty_node_id: chan_to_release
+										.counterparty_node_id,
+									downstream_channel_id: chan_to_release.channel_id,
+									blocking_action: chan_to_release.blocking_action,
+								}),
+								None,
+							)
 						} else {
 							let total_fee_earned_msat =
 								if let Some(forwarded_htlc_value) = forwarded_htlc_value_msat {
@@ -10006,13 +10001,11 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					if let Some(event) = event {
 						self.pending_events.lock().unwrap().push_back((event, None));
 					}
-					if let Some(unblocked) = downstream_counterparty_and_funding_outpoint {
-						self.handle_monitor_update_release(
-							unblocked.counterparty_node_id,
-							unblocked.channel_id,
-							Some(unblocked.blocking_action),
-						);
-					}
+					self.handle_monitor_update_release(
+						downstream_counterparty_and_funding_outpoint.counterparty_node_id,
+						downstream_counterparty_and_funding_outpoint.channel_id,
+						Some(downstream_counterparty_and_funding_outpoint.blocking_action),
+					);
 				},
 				MonitorUpdateCompletionAction::FreeOtherChannelImmediately {
 					downstream_counterparty_node_id,
@@ -19513,12 +19506,12 @@ impl<
 					for action in actions.iter() {
 						if let MonitorUpdateCompletionAction::EmitEventOptionAndFreeOtherChannel {
 							downstream_counterparty_and_funding_outpoint:
-								Some(EventUnblockedChannel {
+								EventUnblockedChannel {
 									counterparty_node_id: blocked_node_id,
 									funding_txo: _,
 									channel_id: blocked_channel_id,
 									blocking_action,
-								}),
+								},
 							..
 						} = action
 						{
