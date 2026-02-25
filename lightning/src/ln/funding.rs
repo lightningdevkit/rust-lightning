@@ -42,7 +42,7 @@ use crate::util::wallet_utils::{
 #[derive(Debug)]
 pub(super) enum FeeRateAdjustmentError {
 	/// The counterparty's proposed feerate is below `min_feerate`, which was used as the feerate
-	/// during coin selection.
+	/// during coin selection. We'll retry via RBF at our preferred feerate.
 	FeeRateTooLow { target_feerate: FeeRate, min_feerate: FeeRate },
 	/// The counterparty's proposed feerate is above `max_feerate` and the re-estimated fee for
 	/// our contributed inputs and outputs exceeds the original fee estimate (computed at

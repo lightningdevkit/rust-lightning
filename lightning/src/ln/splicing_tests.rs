@@ -5078,6 +5078,99 @@ fn do_test_splice_rbf_tiebreak(
 }
 
 #[test]
+fn test_splice_rbf_tiebreak_feerate_too_high_rejected() {
+	// Node 0 (winner) proposes an RBF feerate far above node 1's (loser) max_feerate, and
+	// node 1's fair fee at that feerate exceeds its budget. This triggers
+	// FeeRateAdjustmentError::TooHigh in the queued contribution path, causing node 1 to
+	// reject with WarnAndDisconnect.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+
+	// Complete an initial splice-in from node 0.
+	let funding_contribution = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+	let (_first_splice_tx, _new_funding_script) =
+		splice_channel(&nodes[0], &nodes[1], channel_id, funding_contribution);
+
+	// Provide more UTXOs for both nodes' RBF attempts.
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+
+	// Node 0 uses an extremely high feerate (100,000 sat/kwu). Node 1 uses the minimum RBF
+	// feerate with a moderate splice-in (50,000 sats) and a low max_feerate (3,000 sat/kwu).
+	// The target (100k) far exceeds node 1's max (3k), and the fair fee at 100k exceeds
+	// node 1's budget, triggering TooHigh.
+	let high_feerate = FeeRate::from_sat_per_kwu(100_000);
+	let min_rbf_feerate_sat_per_kwu = (FEERATE_FLOOR_SATS_PER_KW as u64 * 25 + 23) / 24;
+	let min_rbf_feerate = FeeRate::from_sat_per_kwu(min_rbf_feerate_sat_per_kwu);
+	let node_1_max_feerate = FeeRate::from_sat_per_kwu(3_000);
+
+	let funding_template_0 =
+		nodes[0].node.rbf_channel(&channel_id, &node_id_1, high_feerate, FeeRate::MAX).unwrap();
+	let wallet_0 = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
+	let node_0_funding_contribution =
+		funding_template_0.splice_in_sync(added_value, &wallet_0).unwrap();
+	nodes[0]
+		.node
+		.funding_contributed(&channel_id, &node_id_1, node_0_funding_contribution.clone(), None)
+		.unwrap();
+
+	let funding_template_1 = nodes[1]
+		.node
+		.rbf_channel(&channel_id, &node_id_0, min_rbf_feerate, node_1_max_feerate)
+		.unwrap();
+	let wallet_1 = WalletSync::new(Arc::clone(&nodes[1].wallet_source), nodes[1].logger);
+	let node_1_funding_contribution =
+		funding_template_1.splice_in_sync(added_value, &wallet_1).unwrap();
+	nodes[1]
+		.node
+		.funding_contributed(&channel_id, &node_id_0, node_1_funding_contribution.clone(), None)
+		.unwrap();
+
+	// Both sent STFU.
+	let stfu_0 = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+	let stfu_1 = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
+
+	// Tie-break: node 0 wins.
+	nodes[1].node.handle_stfu(node_id_0, &stfu_0);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+	nodes[0].node.handle_stfu(node_id_1, &stfu_1);
+
+	// Node 0 sends tx_init_rbf at 100,000 sat/kwu.
+	let tx_init_rbf = get_event_msg!(nodes[0], MessageSendEvent::SendTxInitRbf, node_id_1);
+	assert_eq!(tx_init_rbf.feerate_sat_per_1000_weight, high_feerate.to_sat_per_kwu() as u32);
+
+	// Node 1 handles tx_init_rbf — TooHigh: target (100k) >> max (3k) and fair fee > budget.
+	nodes[1].node.handle_tx_init_rbf(node_id_0, &tx_init_rbf);
+
+	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1, "{msg_events:?}");
+	match &msg_events[0] {
+		MessageSendEvent::HandleError {
+			action: msgs::ErrorAction::DisconnectPeerWithWarning { msg },
+			..
+		} => {
+			assert!(
+				msg.data.contains("Cannot accommodate initiator's feerate"),
+				"Unexpected warning: {}",
+				msg.data
+			);
+		},
+		other => panic!("Expected HandleError/DisconnectPeerWithWarning, got {:?}", other),
+	}
+}
+
+#[test]
 fn test_splice_rbf_acceptor_recontributes() {
 	// When the counterparty RBFs a splice and we have no pending QuiescentAction,
 	// our prior contribution should be automatically re-used. This tests the scenario:
