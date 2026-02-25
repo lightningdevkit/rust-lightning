@@ -7830,7 +7830,16 @@ impl<
 						.values_mut()
 						.filter_map(Channel::as_funded_mut)
 						.filter_map(|chan| {
-							let balances = chan.get_available_balances(&self.fee_estimator);
+							let balances_result = chan.get_available_balances(&self.fee_estimator);
+							let balances = balances_result.unwrap_or_else(|()| {
+								debug_assert!(false, "some channel balance has been overdrawn");
+								crate::ln::channel::AvailableBalances {
+									inbound_capacity_msat: 0,
+									outbound_capacity_msat: 0,
+									next_outbound_htlc_limit_msat: 0,
+									next_outbound_htlc_minimum_msat: u64::MAX,
+								}
+							});
 							let is_in_range = (balances.next_outbound_htlc_minimum_msat
 								..=balances.next_outbound_htlc_limit_msat)
 								.contains(&outgoing_amt_msat);
