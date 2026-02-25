@@ -79,9 +79,11 @@ pub fn do_test(data: &[u8]) {
 	let mut buf = [0; 65536 + 16];
 	loop {
 		if get_slice!(1)[0] == 0 {
-			crypter.encrypt_buffer(MessageBuf::from_encoded(&get_slice!(slice_to_be16(
-				get_slice!(2)
-			))));
+			let mut dest = Vec::new();
+			crypter.encrypt_buffer_into(
+				&mut dest,
+				MessageBuf::from_encoded(&get_slice!(slice_to_be16(get_slice!(2)))),
+			);
 		} else {
 			let len = match crypter.decrypt_length_header(get_slice!(16 + 2)) {
 				Ok(len) => len,

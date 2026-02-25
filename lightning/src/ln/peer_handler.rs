@@ -747,6 +747,9 @@ enum MessageBatchImpl {
 /// Sized to fit in a single TCP/IP packet on a standard 1500-byte Ethernet MTU:
 ///   1500 (MTU) - 40 (IPv6 header) - 32 (TCP header with timestamps) = 1428 bytes available.
 ///   1400 provides a 28-byte margin that also survives PPPoE tunnels (MTU 1492).
+#[cfg(fuzzing)]
+pub const CHUNK_SIZE: usize = 1400;
+#[cfg(not(fuzzing))]
 const CHUNK_SIZE: usize = 1400;
 
 /// The minimum size of an encrypted Ping message: 6-byte plaintext (2-byte type + 2-byte ponglen
@@ -804,6 +807,10 @@ struct ChunkedMessageQueue {
 	buffer: Vec<u8>,
 	/// Next byte to send; bytes before this have already been written to the socket.
 	send_offset: usize,
+	/// Tracks the number of unsent bytes in `buffer` that correspond to actual encrypted
+	/// messages (i.e., NOT Ping padding). Used for gossip drop threshold calculations so that
+	/// Ping padding overhead doesn't artificially reduce the gossip budget.
+	pending_msg_bytes: usize,
 	/// Pre-serialized (unencrypted) gossip messages, ready for encryption.
 	gossip_broadcast_buffer: VecDeque<MessageBuf>,
 }
@@ -813,6 +820,7 @@ impl ChunkedMessageQueue {
 		ChunkedMessageQueue {
 			buffer: Vec::with_capacity(2 * CHUNK_SIZE),
 			send_offset: 0,
+			pending_msg_bytes: 0,
 			gossip_broadcast_buffer: VecDeque::new(),
 		}
 	}
@@ -831,17 +839,22 @@ impl ChunkedMessageQueue {
 	fn encrypt_and_push_message<T: wire::Type>(
 		&mut self, encryptor: &mut PeerChannelEncryptor, message: wire::Message<T>,
 	) {
+		let before = self.buffer.len();
 		encryptor.encrypt_message_into(&mut self.buffer, message);
+		self.pending_msg_bytes += self.buffer.len() - before;
 	}
 
 	/// Encrypts and appends a pre-serialized gossip [`MessageBuf`] to the buffer.
 	fn encrypt_and_push_gossip(&mut self, encryptor: &mut PeerChannelEncryptor, msg: MessageBuf) {
+		let before = self.buffer.len();
 		encryptor.encrypt_buffer_into(&mut self.buffer, msg);
+		self.pending_msg_bytes += self.buffer.len() - before;
 	}
 
 	/// Appends raw (pre-encryption) bytes to the buffer. Used for handshake act bytes.
 	fn push_raw(&mut self, data: &[u8]) {
 		self.buffer.extend_from_slice(data);
+		self.pending_msg_bytes += data.len();
 	}
 
 	/// Fills remaining space in the current chunk with Ping padding, then encrypts the padding.
@@ -920,6 +933,10 @@ impl ChunkedMessageQueue {
 		let data = &self.buffer[self.send_offset..chunk_end];
 		let sent = descriptor.send_data(data, continue_read);
 		self.send_offset += sent;
+		// Reduce pending_msg_bytes proportionally: a chunk may contain both real messages and
+		// padding, but once fully sent those message bytes are gone. Use saturating_sub since
+		// after padding, pending_msg_bytes < pending_bytes.
+		self.pending_msg_bytes = self.pending_msg_bytes.saturating_sub(sent);
 		self.maybe_compact();
 		sent
 	}
@@ -933,6 +950,7 @@ impl ChunkedMessageQueue {
 		}
 		let sent = descriptor.send_data(data, continue_read);
 		self.send_offset += sent;
+		self.pending_msg_bytes = self.pending_msg_bytes.saturating_sub(sent);
 		self.maybe_compact();
 		sent
 	}
@@ -945,10 +963,11 @@ impl ChunkedMessageQueue {
 		}
 	}
 
-	/// Returns the total buffered bytes (pending encrypted + pending gossip broadcast estimate).
+	/// Returns the total buffered bytes of actual messages (pending encrypted messages, excluding
+	/// Ping padding, plus pending gossip broadcast estimate).
 	/// Used for determining when to drop gossip broadcasts.
 	fn total_buffered_bytes(&self) -> usize {
-		self.pending_bytes()
+		self.pending_msg_bytes
 			+ self.gossip_broadcast_buffer.iter().map(|m| m.capacity()).sum::<usize>()
 	}
 }
@@ -967,13 +986,10 @@ struct Peer {
 	their_features: Option<InitFeatures>,
 	their_socket_address: Option<SocketAddress>,
 
-	pending_outbound_buffer: VecDeque<Vec<u8>>,
-	pending_outbound_buffer_first_msg_offset: usize,
-	/// Queue gossip broadcasts separately from `pending_outbound_buffer` so we can easily
-	/// prioritize channel messages over them.
-	///
-	/// Note that these messages are *not* encrypted/MAC'd, and are only serialized.
-	gossip_broadcast_buffer: VecDeque<MessageBuf>,
+	/// Chunked message queue that replaces the old `pending_outbound_buffer` and
+	/// `gossip_broadcast_buffer`. Accumulates encrypted bytes and writes them in fixed-size
+	/// chunks to the socket, with Ping padding to fill any remaining space.
+	message_queue: ChunkedMessageQueue,
 	awaiting_write_event: bool,
 	/// Set to true if the last call to [`SocketDescriptor::send_data`] for this peer had the
 	/// `should_read` flag unset, indicating we've told the driver to stop reading from this peer.
@@ -1056,15 +1072,15 @@ impl Peer {
 		if !gossip_processing_backlogged {
 			self.received_channel_announce_since_backlogged = false;
 		}
-		self.pending_outbound_buffer.len() < OUTBOUND_BUFFER_LIMIT_READ_PAUSE
+		self.message_queue.pending_bytes() < OUTBOUND_BUFFER_LIMIT_READ_PAUSE
 			&& (!gossip_processing_backlogged || !self.received_channel_announce_since_backlogged)
 	}
 
 	/// Determines if we should push additional gossip background sync (aka "backfill") onto a peer's
 	/// outbound buffer. This is checked every time the peer's buffer may have been drained.
 	fn should_buffer_gossip_backfill(&self) -> bool {
-		self.pending_outbound_buffer.is_empty()
-			&& self.gossip_broadcast_buffer.is_empty()
+		!self.message_queue.has_full_chunk()
+			&& self.message_queue.gossip_broadcast_buffer.is_empty()
 			&& self.msgs_sent_since_pong < BUFFER_DRAIN_MSGS_PER_TICK
 			&& self.handshake_complete()
 	}
@@ -1072,7 +1088,7 @@ impl Peer {
 	/// Determines if we should push an onion message onto a peer's outbound buffer. This is checked
 	/// every time the peer's buffer may have been drained.
 	fn should_buffer_onion_message(&self) -> bool {
-		self.pending_outbound_buffer.is_empty()
+		!self.message_queue.has_full_chunk()
 			&& self.handshake_complete()
 			&& self.msgs_sent_since_pong < BUFFER_DRAIN_MSGS_PER_TICK
 	}
@@ -1080,18 +1096,14 @@ impl Peer {
 	/// Determines if we should push additional gossip broadcast messages onto a peer's outbound
 	/// buffer. This is checked every time the peer's buffer may have been drained.
 	fn should_buffer_gossip_broadcast(&self) -> bool {
-		self.pending_outbound_buffer.is_empty()
+		!self.message_queue.has_full_chunk()
 			&& self.handshake_complete()
 			&& self.msgs_sent_since_pong < BUFFER_DRAIN_MSGS_PER_TICK
 	}
 
 	/// Returns whether this peer's outbound buffers are full and we should drop gossip broadcasts.
 	fn buffer_full_drop_gossip_broadcast(&self) -> bool {
-		let total_outbound_buffered: usize =
-			self.gossip_broadcast_buffer.iter().map(|m| m.capacity()).sum::<usize>()
-				+ self.pending_outbound_buffer.iter().map(|m| m.capacity()).sum::<usize>();
-
-		total_outbound_buffered > OUTBOUND_BUFFER_SIZE_LIMIT_DROP_GOSSIP
+		self.message_queue.total_buffered_bytes() > OUTBOUND_BUFFER_SIZE_LIMIT_DROP_GOSSIP
 	}
 
 	fn set_their_node_id(&mut self, node_id: PublicKey) {
@@ -1596,9 +1608,7 @@ impl<
 					their_features: None,
 					their_socket_address: remote_network_address,
 
-					pending_outbound_buffer: VecDeque::new(),
-					pending_outbound_buffer_first_msg_offset: 0,
-					gossip_broadcast_buffer: VecDeque::new(),
+					message_queue: ChunkedMessageQueue::new(),
 					awaiting_write_event: false,
 					sent_pause_read: false,
 
@@ -1657,9 +1667,7 @@ impl<
 					their_features: None,
 					their_socket_address: remote_network_address,
 
-					pending_outbound_buffer: VecDeque::new(),
-					pending_outbound_buffer_first_msg_offset: 0,
-					gossip_broadcast_buffer: VecDeque::new(),
+					message_queue: ChunkedMessageQueue::new(),
 					awaiting_write_event: false,
 					sent_pause_read: false,
 
@@ -1704,7 +1712,36 @@ impl<
 		// indicating whether or not reads are paused. Do this by forcing a write with the desired
 		// `continue_read` flag set, even if no outbound messages are currently queued.
 		force_one_write |= self.should_read_from(peer) == peer.sent_pause_read;
+
+		// If encryption isn't ready yet (handshake in progress), send raw bytes without chunking.
+		if !peer.channel_encryptor.is_ready_for_encryption() {
+			if peer.message_queue.pending_bytes() > 0 || force_one_write {
+				let should_read = self.should_read_from(peer);
+				peer.message_queue.send_raw(descriptor, should_read);
+				peer.sent_pause_read = !should_read;
+				if peer.message_queue.pending_bytes() > 0 {
+					peer.awaiting_write_event = true;
+				}
+			}
+			return;
+		}
+
 		while force_one_write || !peer.awaiting_write_event {
+			// First, try to send any full chunks already in the buffer.
+			if peer.message_queue.has_full_chunk() {
+				let should_read = self.should_read_from(peer);
+				let sent = peer.message_queue.send_chunk(descriptor, should_read);
+				peer.sent_pause_read = !should_read;
+				force_one_write = false;
+				if sent < CHUNK_SIZE {
+					peer.awaiting_write_event = true;
+				}
+				continue;
+			}
+
+			// Buffer more messages (in priority order): onion -> gossip broadcast -> backfill.
+			let pending_before = peer.message_queue.pending_bytes();
+
 			if peer.should_buffer_onion_message() {
 				if let Some((peer_node_id, _)) = peer.their_node_id {
 					let handler = &self.message_handler.onion_message_handler;
@@ -1717,10 +1754,9 @@ impl<
 				}
 			}
 			if peer.should_buffer_gossip_broadcast() {
-				if let Some(msg) = peer.gossip_broadcast_buffer.pop_front() {
+				if let Some(msg) = peer.message_queue.gossip_broadcast_buffer.pop_front() {
 					peer.msgs_sent_since_pong += 1;
-					peer.pending_outbound_buffer
-						.push_back(peer.channel_encryptor.encrypt_buffer(msg));
+					peer.message_queue.encrypt_and_push_gossip(&mut peer.channel_encryptor, msg);
 				}
 			}
 			if peer.should_buffer_gossip_backfill() {
@@ -1776,37 +1812,27 @@ impl<
 				self.maybe_send_extra_ping(peer);
 			}
 
-			let should_read = self.should_read_from(peer);
-			let next_buff = match peer.pending_outbound_buffer.front() {
-				None => {
-					if force_one_write {
-						let data_sent = descriptor.send_data(&[], should_read);
-						debug_assert_eq!(data_sent, 0, "Can't write more than no data");
-						peer.sent_pause_read = !should_read;
-					}
-					return;
-				},
-				Some(buff) => buff,
-			};
-			force_one_write = false;
-
-			let pending = &next_buff[peer.pending_outbound_buffer_first_msg_offset..];
-			let data_sent = descriptor.send_data(pending, should_read);
-			peer.sent_pause_read = !should_read;
-			peer.pending_outbound_buffer_first_msg_offset += data_sent;
-			if peer.pending_outbound_buffer_first_msg_offset == next_buff.len() {
-				peer.pending_outbound_buffer_first_msg_offset = 0;
-				peer.pending_outbound_buffer.pop_front();
-				const VEC_SIZE: usize = ::core::mem::size_of::<Vec<u8>>();
-				let large_capacity = peer.pending_outbound_buffer.capacity() > 4096 / VEC_SIZE;
-				let lots_of_slack = peer.pending_outbound_buffer.len()
-					< peer.pending_outbound_buffer.capacity() / 2;
-				if large_capacity && lots_of_slack {
-					peer.pending_outbound_buffer.shrink_to_fit();
-				}
-			} else {
-				peer.awaiting_write_event = true;
+			let added_messages = peer.message_queue.pending_bytes() > pending_before;
+			if added_messages {
+				// We added messages. If we have a full chunk now, loop back to send it.
+				continue;
 			}
+
+			// No new messages were added. If we have a partial buffer, pad + send it.
+			if peer.message_queue.pending_bytes() > 0 {
+				peer.message_queue.pad_and_finalize_chunk(&mut peer.channel_encryptor);
+				// The buffer is now chunk-aligned; loop back to send the chunk(s).
+				continue;
+			}
+
+			// Nothing pending at all.
+			if force_one_write {
+				let should_read = self.should_read_from(peer);
+				let data_sent = descriptor.send_data(&[], should_read);
+				debug_assert_eq!(data_sent, 0, "Can't write more than no data");
+				peer.sent_pause_read = !should_read;
+			}
+			return;
 		}
 	}
 
@@ -1886,7 +1912,7 @@ impl<
 			debug_assert!(false, "node_id should be set by the time we send a message");
 		}
 		peer.msgs_sent_since_pong += 1;
-		peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(message));
+		peer.message_queue.encrypt_and_push_message(&mut peer.channel_encryptor, message);
 	}
 
 	fn do_read_event(
@@ -2017,7 +2043,7 @@ impl<
 								&self.secp_ctx,
 							);
 							let act_two = try_potential_handleerror!(peer, res).to_vec();
-							peer.pending_outbound_buffer.push_back(act_two);
+							peer.message_queue.push_raw(&act_two);
 							peer.pending_read_buffer = [0; 66].to_vec(); // act three is 66 bytes long
 						},
 						NextNoiseStep::ActTwo => {
@@ -2025,7 +2051,7 @@ impl<
 								.channel_encryptor
 								.process_act_two(&peer.pending_read_buffer[..], &self.node_signer);
 							let (act_three, their_node_id) = try_potential_handleerror!(peer, res);
-							peer.pending_outbound_buffer.push_back(act_three.to_vec());
+							peer.message_queue.push_raw(&act_three);
 							peer.pending_read_buffer = [0; 18].to_vec(); // Message length header is 18 bytes
 							peer.pending_read_is_header = true;
 
@@ -2832,7 +2858,7 @@ impl<
 						continue;
 					}
 					let encoded_message = MessageBuf::from_encoded(&encoded_msg);
-					peer.gossip_broadcast_buffer.push_back(encoded_message);
+					peer.message_queue.gossip_broadcast_buffer.push_back(encoded_message);
 				}
 			},
 			BroadcastGossipMessage::NodeAnnouncement(msg) => {
@@ -2878,7 +2904,7 @@ impl<
 						continue;
 					}
 					let encoded_message = MessageBuf::from_encoded(&encoded_msg);
-					peer.gossip_broadcast_buffer.push_back(encoded_message);
+					peer.message_queue.gossip_broadcast_buffer.push_back(encoded_message);
 				}
 			},
 			BroadcastGossipMessage::ChannelUpdate { msg, node_id_1, node_id_2 } => {
@@ -2918,7 +2944,7 @@ impl<
 						continue;
 					}
 					let encoded_message = MessageBuf::from_encoded(&encoded_msg);
-					peer.gossip_broadcast_buffer.push_back(encoded_message);
+					peer.message_queue.gossip_broadcast_buffer.push_back(encoded_message);
 				}
 			},
 		}
@@ -4453,7 +4479,8 @@ mod tests {
 
 		let not_init_msg = msgs::Ping { ponglen: 4, byteslen: 0 };
 		let msg: Message<()> = Message::Ping(not_init_msg);
-		let msg_bytes = dup_encryptor.encrypt_message(msg);
+		let mut msg_bytes = Vec::new();
+		dup_encryptor.encrypt_message_into(&mut msg_bytes, msg);
 		assert!(peers[0].read_event(&mut fd_dup, &msg_bytes).is_err());
 	}
 
@@ -4649,8 +4676,8 @@ mod tests {
 		{
 			let peer_lock = peers[1].peers.read().unwrap();
 			let peer = peer_lock.get(&fd_b).unwrap().lock().unwrap();
-			assert_eq!(peer.pending_outbound_buffer.len(), 1);
-			assert_eq!(peer.gossip_broadcast_buffer.len(), 0);
+			assert!(peer.message_queue.pending_bytes() > 0);
+			assert!(peer.message_queue.gossip_broadcast_buffer.is_empty());
 		}
 
 		// At this point we should have sent channel announcements up to roughly SCID 150. Now
@@ -4679,10 +4706,10 @@ mod tests {
 		{
 			let peer_lock = peers[1].peers.read().unwrap();
 			let peer = peer_lock.get(&fd_b).unwrap().lock().unwrap();
-			assert_eq!(peer.pending_outbound_buffer.len(), 1);
-			assert_eq!(peer.gossip_broadcast_buffer.len(), 1);
+			assert!(peer.message_queue.pending_bytes() > 0);
+			assert_eq!(peer.message_queue.gossip_broadcast_buffer.len(), 1);
 
-			let pending_msg = &peer.gossip_broadcast_buffer[0];
+			let pending_msg = &peer.message_queue.gossip_broadcast_buffer[0];
 			let msg: Message<()> = Message::ChannelUpdate(msg_100);
 			let expected = encode_message(msg);
 			assert_eq!(expected, pending_msg.fetch_encoded_msg_with_type_pfx());
@@ -4921,8 +4948,7 @@ mod tests {
 		{
 			let peer_a_lock = peers[0].peers.read().unwrap();
 			let peer = peer_a_lock.get(&fd_a).unwrap().lock().unwrap();
-			let buf_len = peer.pending_outbound_buffer.iter().map(|m| m.capacity()).sum::<usize>()
-				+ peer.gossip_broadcast_buffer.iter().map(|m| m.capacity()).sum::<usize>();
+			let buf_len = peer.message_queue.total_buffered_bytes();
 			assert!(buf_len > OUTBOUND_BUFFER_SIZE_LIMIT_DROP_GOSSIP - encoded_size);
 			assert!(buf_len < OUTBOUND_BUFFER_SIZE_LIMIT_DROP_GOSSIP);
 		}
@@ -4935,8 +4961,7 @@ mod tests {
 		{
 			let peer_a_lock = peers[0].peers.read().unwrap();
 			let peer = peer_a_lock.get(&fd_a).unwrap().lock().unwrap();
-			let buf_len = peer.pending_outbound_buffer.iter().map(|m| m.capacity()).sum::<usize>()
-				+ peer.gossip_broadcast_buffer.iter().map(|m| m.capacity()).sum::<usize>();
+			let buf_len = peer.message_queue.total_buffered_bytes();
 			assert!(buf_len > OUTBOUND_BUFFER_SIZE_LIMIT_DROP_GOSSIP);
 			assert!(buf_len < OUTBOUND_BUFFER_SIZE_LIMIT_DROP_GOSSIP + encoded_size);
 		}
@@ -4952,8 +4977,14 @@ mod tests {
 		drain_queues!();
 		{
 			let peer_a_lock = peers[0].peers.read().unwrap();
-			let empty =
-				peer_a_lock.get(&fd_a).unwrap().lock().unwrap().gossip_broadcast_buffer.is_empty();
+			let empty = peer_a_lock
+				.get(&fd_a)
+				.unwrap()
+				.lock()
+				.unwrap()
+				.message_queue
+				.gossip_broadcast_buffer
+				.is_empty();
 			assert!(empty);
 		}
 

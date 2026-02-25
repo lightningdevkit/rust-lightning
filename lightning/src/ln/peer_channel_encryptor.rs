@@ -28,7 +28,7 @@ use bitcoin::secp256k1::{PublicKey, SecretKey};
 
 use crate::crypto::chacha20poly1305rfc::ChaCha20Poly1305RFC;
 use crate::crypto::utils::hkdf_extract_expand_twice;
-use crate::util::ser::{VecWriter, Writer};
+use crate::util::ser::Writer;
 
 /// Maximum Lightning message data length according to
 /// [BOLT-8](https://github.com/lightning/bolts/blob/v1.0/08-transport.md#lightning-message-specification)
@@ -540,41 +540,6 @@ impl PeerChannelEncryptor {
 		}
 	}
 
-	/// Builds sendable bytes for a message.
-	///
-	/// `msgbuf` must begin with 16 + 2 dummy/0 bytes, which will be filled with the encrypted
-	/// message length and its MAC. It should then be followed by the message bytes themselves
-	/// (including the two byte message type).
-	///
-	/// For efficiency, the [`Vec::capacity`] should be at least 16 bytes larger than the
-	/// [`Vec::len`], to avoid reallocating for the message MAC, which will be appended to the vec.
-	fn encrypt_message_with_header_0s(&mut self, msgbuf: &mut Vec<u8>) {
-		self.encrypt_with_header_0s_at(msgbuf, 0);
-	}
-
-	/// Encrypts the given pre-serialized message, returning the encrypted version.
-	/// panics if msg.len() > 65535 or Noise handshake has not finished.
-	pub fn encrypt_buffer(&mut self, mut msg: MessageBuf) -> Vec<u8> {
-		self.encrypt_message_with_header_0s(&mut msg.0);
-		msg.0
-	}
-
-	/// Encrypts the given message, returning the encrypted version.
-	/// panics if the length of `message`, once encoded, is greater than 65535 or if the Noise
-	/// handshake has not finished.
-	pub fn encrypt_message<T: wire::Type>(&mut self, message: wire::Message<T>) -> Vec<u8> {
-		// Allocate a buffer with 2KB, fitting most common messages. Reserve the first 16+2 bytes
-		// for the 2-byte message type prefix and its MAC.
-		let mut res = VecWriter(Vec::with_capacity(MSG_BUF_ALLOC_SIZE));
-		res.0.resize(16 + 2, 0);
-
-		message.type_id().write(&mut res).expect("In-memory messages must never fail to serialize");
-		message.write(&mut res).expect("In-memory messages must never fail to serialize");
-
-		self.encrypt_message_with_header_0s(&mut res.0);
-		res.0
-	}
-
 	/// Encrypts the given message directly into the destination buffer, appending encrypted bytes.
 	pub fn encrypt_message_into<T: wire::Type>(
 		&mut self, dest: &mut Vec<u8>, message: wire::Message<T>,
@@ -1054,7 +1019,8 @@ mod tests {
 
 		for i in 0..1005 {
 			let msg = [0x68, 0x65, 0x6c, 0x6c, 0x6f];
-			let mut res = outbound_peer.encrypt_buffer(MessageBuf::from_encoded(&msg));
+			let mut res = Vec::new();
+			outbound_peer.encrypt_buffer_into(&mut res, MessageBuf::from_encoded(&msg));
 			assert_eq!(res.len(), 5 + 2 * 16 + 2);
 
 			let len_header = res[0..2 + 16].to_vec();
@@ -1099,7 +1065,8 @@ mod tests {
 	fn max_message_len_encryption() {
 		let mut outbound_peer = get_outbound_peer_for_initiator_test_vectors();
 		let msg = [4u8; LN_MAX_MSG_LEN + 1];
-		outbound_peer.encrypt_buffer(MessageBuf::from_encoded(&msg));
+		let mut dest = Vec::new();
+		outbound_peer.encrypt_buffer_into(&mut dest, MessageBuf::from_encoded(&msg));
 	}
 
 	#[test]
