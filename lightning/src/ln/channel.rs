@@ -55,7 +55,9 @@ use crate::ln::channelmanager::{
 	PendingHTLCStatus, RAACommitmentOrder, SentHTLCId, BREAKDOWN_TIMEOUT,
 	MAX_LOCAL_BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA,
 };
-use crate::ln::funding::{FundingContribution, FundingTemplate, FundingTxInput};
+use crate::ln::funding::{
+	FeeRateAdjustmentError, FundingContribution, FundingTemplate, FundingTxInput,
+};
 use crate::ln::interactivetxs::{
 	AbortReason, HandleTxCompleteValue, InteractiveTxConstructor, InteractiveTxConstructorArgs,
 	InteractiveTxMessageSend, InteractiveTxSigningSession, SharedOwnedInput, SharedOwnedOutput,
@@ -12417,7 +12419,7 @@ where
 
 	fn resolve_queued_contribution<L: Logger>(
 		&self, feerate: FeeRate, logger: &L,
-	) -> (Option<SignedAmount>, Option<Amount>) {
+	) -> Result<(Option<SignedAmount>, Option<Amount>), ChannelError> {
 		let holder_balance = self
 			.get_holder_counterparty_balances_floor_incl_fee(&self.funding)
 			.map(|(holder, _)| holder)
@@ -12432,23 +12434,29 @@ where
 			})
 			.ok();
 
-		let net_value =
-			holder_balance.and_then(|_| self.queued_funding_contribution()).and_then(|c| {
-				c.net_value_for_acceptor_at_feerate(feerate, holder_balance.unwrap())
-					.map_err(|e| {
+		let net_value = match holder_balance.and_then(|_| self.queued_funding_contribution()) {
+			Some(c) => {
+				match c.net_value_for_acceptor_at_feerate(feerate, holder_balance.unwrap()) {
+					Ok(net_value) => Some(net_value),
+					Err(FeeRateAdjustmentError::FeeRateTooHigh { .. }) => {
+						return Err(ChannelError::Abort(AbortReason::FeeRateTooHigh));
+					},
+					Err(e) => {
 						log_info!(
 							logger,
-							"Cannot accommodate initiator's feerate ({}) for channel {}: {}; \
-								 proceeding without contribution",
+							"Cannot accommodate initiator's feerate ({}) for channel {}: {}",
 							feerate,
 							self.context.channel_id(),
 							e,
 						);
-					})
-					.ok()
-			});
+						None
+					},
+				}
+			},
+			None => None,
+		};
 
-		(net_value, holder_balance)
+		Ok((net_value, holder_balance))
 	}
 
 	pub(crate) fn splice_init<ES: EntropySource, L: Logger>(
@@ -12457,7 +12465,7 @@ where
 	) -> Result<msgs::SpliceAck, ChannelError> {
 		let feerate = FeeRate::from_sat_per_kwu(msg.funding_feerate_per_kw as u64);
 		let (our_funding_contribution, holder_balance) =
-			self.resolve_queued_contribution(feerate, logger);
+			self.resolve_queued_contribution(feerate, logger)?;
 
 		let splice_funding =
 			self.validate_splice_init(msg, our_funding_contribution.unwrap_or(SignedAmount::ZERO))?;
@@ -12615,7 +12623,8 @@ where
 		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
 	) -> Result<msgs::TxAckRbf, ChannelError> {
 		let feerate = FeeRate::from_sat_per_kwu(msg.feerate_sat_per_1000_weight as u64);
-		let (queued_net_value, holder_balance) = self.resolve_queued_contribution(feerate, logger);
+		let (queued_net_value, holder_balance) =
+			self.resolve_queued_contribution(feerate, logger)?;
 
 		// If no queued contribution, try prior contribution from previous negotiation.
 		// Failing here means the RBF would erase our splice — reject it.

@@ -141,6 +141,8 @@ pub(crate) enum AbortReason {
 	InsufficientRbfFeerate,
 	/// A funding negotiation is already in progress.
 	NegotiationInProgress,
+	/// The initiator's feerate exceeds our maximum.
+	FeeRateTooHigh,
 	/// Internal error
 	InternalError(&'static str),
 }
@@ -203,6 +205,9 @@ impl Display for AbortReason {
 			AbortReason::InsufficientRbfFeerate => f.write_str("Insufficient RBF feerate"),
 			AbortReason::NegotiationInProgress => {
 				f.write_str("A funding negotiation is already in progress")
+			},
+			AbortReason::FeeRateTooHigh => {
+				f.write_str("The initiator's feerate exceeds our maximum")
 			},
 			AbortReason::InternalError(text) => {
 				f.write_fmt(format_args!("Internal error: {}", text))

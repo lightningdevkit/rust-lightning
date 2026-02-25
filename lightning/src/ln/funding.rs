@@ -42,7 +42,7 @@ use crate::util::wallet_utils::{
 #[derive(Debug)]
 pub(super) enum FeeRateAdjustmentError {
 	/// The counterparty's proposed feerate is below `min_feerate`, which was used as the feerate
-	/// during coin selection.
+	/// during coin selection. We'll retry via RBF at our preferred feerate.
 	FeeRateTooLow { target_feerate: FeeRate, min_feerate: FeeRate },
 	/// The counterparty's proposed feerate is above `max_feerate` and the re-estimated fee for
 	/// our contributed inputs and outputs exceeds the original fee estimate (computed at
@@ -68,7 +68,12 @@ impl core::fmt::Display for FeeRateAdjustmentError {
 	fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
 		match self {
 			FeeRateAdjustmentError::FeeRateTooLow { target_feerate, min_feerate } => {
-				write!(f, "Target feerate {} is below our minimum {}", target_feerate, min_feerate)
+				write!(
+					f,
+					"Target feerate {} is below our minimum {}; \
+					 proceeding without contribution, will RBF later",
+					target_feerate, min_feerate,
+				)
 			},
 			FeeRateAdjustmentError::FeeRateTooHigh {
 				target_feerate,
@@ -83,12 +88,17 @@ impl core::fmt::Display for FeeRateAdjustmentError {
 				)
 			},
 			FeeRateAdjustmentError::FeeBufferOverflow => {
-				write!(f, "Arithmetic overflow when computing available fee buffer")
+				write!(
+					f,
+					"Arithmetic overflow when computing available fee buffer; \
+					 proceeding without contribution",
+				)
 			},
 			FeeRateAdjustmentError::FeeBufferInsufficient { source, available, required } => {
 				write!(
 					f,
-					"Fee buffer {} ({}) is insufficient for required fee {}",
+					"Fee buffer {} ({}) is insufficient for required fee {}; \
+					 proceeding without contribution",
 					available, source, required,
 				)
 			},
