@@ -1010,6 +1010,26 @@ pub enum Balance {
 		/// were already spent.
 		amount_satoshis: u64,
 	},
+	/// The channel has been closed, and our counterparty broadcasted a revoked commitment
+	/// transaction. However, the claim information for this commitment transaction has been
+	/// offloaded via [`Event::PersistClaimInfo`] and has not yet been re-provided in response to
+	/// an [`Event::ClaimInfoRequest`].
+	///
+	/// Once the claim information is provided via [`ChainMonitor::provide_claim_info`], this
+	/// balance will be replaced by one or more [`Balance::CounterpartyRevokedOutputClaimable`]
+	/// entries representing the specific outputs we can claim.
+	///
+	/// The non-HTLC balance for the revoked commitment (i.e., the counterparty's to_self output)
+	/// may still appear as a separate [`Balance::CounterpartyRevokedOutputClaimable`] or
+	/// [`Balance::ClaimableAwaitingConfirmations`] alongside this balance.
+	///
+	/// [`Event::PersistClaimInfo`]: crate::events::Event::PersistClaimInfo
+	/// [`Event::ClaimInfoRequest`]: crate::events::Event::ClaimInfoRequest
+	/// [`ChainMonitor::provide_claim_info`]: crate::chain::chainmonitor::ChainMonitor::provide_claim_info
+	CounterpartyRevokedOutputClaimableAwaitingClaimInfo {
+		/// The identifier for which claim information is being requested.
+		claim_key: ClaimKey,
+	},
 }
 
 impl Balance {
@@ -1050,7 +1070,8 @@ impl Balance {
 				=> *amount_satoshis,
 			Balance::MaybeTimeoutClaimableHTLC { amount_satoshis, outbound_payment, .. }
 				=> if *outbound_payment { 0 } else { *amount_satoshis },
-			Balance::MaybePreimageClaimableHTLC { .. } => 0,
+			Balance::MaybePreimageClaimableHTLC { .. }
+			| Balance::CounterpartyRevokedOutputClaimableAwaitingClaimInfo { .. } => 0,
 		}
 	}
 }
@@ -2988,7 +3009,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		if let Some(txid) = confirmed_txid {
 			let funding_spent = get_confirmed_funding_scope!(us);
 			let mut found_commitment_tx = false;
-			if let Some(counterparty_tx_htlcs) = funding_spent.counterparty_claimable_outpoints.get(&txid) {
+			if us.counterparty_commitment_txn_on_chain.contains_key(&txid) {
 				// First look for the to_remote output back to us.
 				if let Some(conf_thresh) = pending_commitment_tx_conf_thresh {
 					if let Some(value) = us.onchain_events_awaiting_threshold_conf.iter().find_map(|event| {
@@ -3009,10 +3030,20 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 						// confirmation with the same height or have never met our dust amount.
 					}
 				}
+				let counterparty_tx_htlcs_opt =
+					funding_spent.counterparty_claimable_outpoints.get(&txid);
 				if Some(txid) == funding_spent.current_counterparty_commitment_txid || Some(txid) == funding_spent.prev_counterparty_commitment_txid {
+					let counterparty_tx_htlcs = counterparty_tx_htlcs_opt
+						.expect("We must always have state for our counterparty's latest and previous commitment tx, especially since it's on chain");
 					walk_htlcs!(false, false, counterparty_tx_htlcs.iter().map(|(a, b)| (a, b.as_ref().map(|b| &**b))));
 				} else {
-					walk_htlcs!(false, true, counterparty_tx_htlcs.iter().map(|(a, b)| (a, b.as_ref().map(|b| &**b))));
+					if let Some(counterparty_tx_htlcs) = counterparty_tx_htlcs_opt {
+						walk_htlcs!(false, true, counterparty_tx_htlcs.iter().map(|(a, b)| (a, b.as_ref().map(|b| &**b))));
+					} else {
+						res.push(Balance::CounterpartyRevokedOutputClaimableAwaitingClaimInfo {
+							claim_key: ClaimKey(txid),
+						});
+					}
 					// The counterparty broadcasted a revoked state!
 					// Look for any StaticOutputs first, generating claimable balances for those.
 					// If any match the confirmed counterparty revoked to_self output, skip
