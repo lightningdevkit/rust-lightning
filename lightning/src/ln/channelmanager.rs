@@ -12763,20 +12763,25 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							chan.update_fulfill_htlc(&msg),
 							chan_entry
 						);
-						if let HTLCSource::PreviousHopData(prev_hop) = &res.0 {
-							let logger =
-								WithChannelContext::from(&self.logger, &chan.context, None);
+						let prev_hops = match &res.0 {
+							HTLCSource::PreviousHopData(prev_hop) => vec![prev_hop],
+							HTLCSource::TrampolineForward { previous_hop_data, .. } => {
+								previous_hop_data.iter().collect()
+							},
+							_ => vec![],
+						};
+						let logger = WithChannelContext::from(&self.logger, &chan.context, None);
+						for prev_hop in prev_hops {
 							log_trace!(logger,
 								"Holding the next revoke_and_ack until the preimage is durably persisted in the inbound edge's ChannelMonitor",
-								);
+							);
 							peer_state
 								.actions_blocking_raa_monitor_updates
 								.entry(msg.channel_id)
 								.or_insert_with(Vec::new)
-								.push(RAAMonitorUpdateBlockingAction::from_prev_hop_data(
-									&prev_hop,
-								));
+								.push(RAAMonitorUpdateBlockingAction::from_prev_hop_data(prev_hop));
 						}
+
 						// Note that we do not need to push an `actions_blocking_raa_monitor_updates`
 						// entry here, even though we *do* need to block the next RAA monitor update.
 						// We do this instead in the `claim_funds_internal` by attaching a
