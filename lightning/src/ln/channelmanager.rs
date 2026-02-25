@@ -3372,8 +3372,12 @@ macro_rules! process_events_body {
 
 				// TODO: This behavior should be documented. It's unintuitive that we query
 				// ChannelMonitors when clearing other events.
-				if $self.process_pending_monitor_events() {
-					result = NotifyOption::DoPersist;
+				match $self.process_pending_monitor_events() {
+					NotifyOption::DoPersist => result = NotifyOption::DoPersist,
+					NotifyOption::SkipPersistHandleEvents
+						if result == NotifyOption::SkipPersistNoEvents =>
+						result = NotifyOption::SkipPersistHandleEvents,
+					_ => {},
 				}
 			}
 
@@ -13013,13 +13017,16 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		Ok(())
 	}
 
-	/// Process pending events from the [`chain::Watch`], returning whether any events were processed.
-	fn process_pending_monitor_events(&self) -> bool {
+	/// Process pending events from the [`chain::Watch`], returning the appropriate
+	/// [`NotifyOption`] for persistence and event handling.
+	fn process_pending_monitor_events(&self) -> NotifyOption {
 		debug_assert!(self.total_consistency_lock.try_write().is_err()); // Caller holds read lock
 
 		let mut failed_channels: Vec<(Result<Infallible, _>, _)> = Vec::new();
 		let mut pending_monitor_events = self.chain_monitor.release_pending_monitor_events();
-		let has_pending_monitor_events = !pending_monitor_events.is_empty();
+		if pending_monitor_events.is_empty() {
+			return NotifyOption::SkipPersistNoEvents;
+		}
 		for (funding_outpoint, channel_id, mut monitor_events, counterparty_node_id) in
 			pending_monitor_events.drain(..)
 		{
@@ -13145,7 +13152,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			let _ = self.handle_error(err, counterparty_node_id);
 		}
 
-		has_pending_monitor_events
+		NotifyOption::DoPersist
 	}
 
 	fn handle_holding_cell_free_result(&self, result: FreeHoldingCellsResult) {
@@ -15171,8 +15178,6 @@ impl<
 	fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> {
 		let events = RefCell::new(Vec::new());
 		PersistenceNotifierGuard::optionally_notify(self, || {
-			let mut result = NotifyOption::SkipPersistNoEvents;
-
 			// This method is quite performance-sensitive. Not only is it called very often, but it
 			// *is* the critical path between generating a message for a peer and giving it to the
 			// `PeerManager` to send. Thus, we should avoid adding any more logic here than we
@@ -15181,9 +15186,7 @@ impl<
 
 			// TODO: This behavior should be documented. It's unintuitive that we query
 			// ChannelMonitors when clearing other events.
-			if self.process_pending_monitor_events() {
-				result = NotifyOption::DoPersist;
-			}
+			let mut result = self.process_pending_monitor_events();
 
 			if self.maybe_generate_initial_closing_signed() {
 				result = NotifyOption::DoPersist;
