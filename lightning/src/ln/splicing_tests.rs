@@ -348,50 +348,50 @@ pub fn complete_interactive_funding_negotiation_for_both<'a, 'b, 'c, 'd>(
 			(Vec::new(), Vec::new())
 		};
 
-	let mut acceptor_sent_tx_complete = false;
 	let mut initiator_sent_tx_complete;
+	let mut acceptor_sent_tx_complete = false;
 	loop {
 		// Initiator's turn: send TxAddInput, TxAddOutput, or TxComplete
-		if !expected_initiator_inputs.is_empty() {
-			let tx_add_input =
-				get_event_msg!(initiator, MessageSendEvent::SendTxAddInput, node_id_acceptor);
-			let input_prevout = BitcoinOutPoint {
-				txid: tx_add_input
-					.prevtx
-					.as_ref()
-					.map(|prevtx| prevtx.compute_txid())
-					.or(tx_add_input.shared_input_txid)
-					.unwrap(),
-				vout: tx_add_input.prevtx_out,
-			};
-			expected_initiator_inputs.remove(
-				expected_initiator_inputs.iter().position(|input| *input == input_prevout).unwrap(),
-			);
-			acceptor.node.handle_tx_add_input(node_id_initiator, &tx_add_input);
-			initiator_sent_tx_complete = false;
-		} else if !expected_initiator_scripts.is_empty() {
-			let tx_add_output =
-				get_event_msg!(initiator, MessageSendEvent::SendTxAddOutput, node_id_acceptor);
-			expected_initiator_scripts.remove(
-				expected_initiator_scripts
-					.iter()
-					.position(|script| *script == tx_add_output.script)
-					.unwrap(),
-			);
-			acceptor.node.handle_tx_add_output(node_id_initiator, &tx_add_output);
-			initiator_sent_tx_complete = false;
-		} else {
-			let msg_events = initiator.node.get_and_clear_pending_msg_events();
-			assert_eq!(msg_events.len(), 1, "{msg_events:?}");
-			if let MessageSendEvent::SendTxComplete { ref msg, .. } = &msg_events[0] {
+		let msg_events = initiator.node.get_and_clear_pending_msg_events();
+		assert_eq!(msg_events.len(), 1, "{msg_events:?}");
+		match &msg_events[0] {
+			MessageSendEvent::SendTxAddInput { msg, .. } => {
+				let input_prevout = BitcoinOutPoint {
+					txid: msg
+						.prevtx
+						.as_ref()
+						.map(|prevtx| prevtx.compute_txid())
+						.or(msg.shared_input_txid)
+						.unwrap(),
+					vout: msg.prevtx_out,
+				};
+				expected_initiator_inputs.remove(
+					expected_initiator_inputs
+						.iter()
+						.position(|input| *input == input_prevout)
+						.unwrap(),
+				);
+				acceptor.node.handle_tx_add_input(node_id_initiator, msg);
+				initiator_sent_tx_complete = false;
+			},
+			MessageSendEvent::SendTxAddOutput { msg, .. } => {
+				expected_initiator_scripts.remove(
+					expected_initiator_scripts
+						.iter()
+						.position(|script| *script == msg.script)
+						.unwrap(),
+				);
+				acceptor.node.handle_tx_add_output(node_id_initiator, msg);
+				initiator_sent_tx_complete = false;
+			},
+			MessageSendEvent::SendTxComplete { msg, .. } => {
 				acceptor.node.handle_tx_complete(node_id_initiator, msg);
-			} else {
-				panic!();
-			}
-			initiator_sent_tx_complete = true;
-			if acceptor_sent_tx_complete {
-				break;
-			}
+				initiator_sent_tx_complete = true;
+				if acceptor_sent_tx_complete {
+					break;
+				}
+			},
+			_ => panic!("Unexpected message event: {:?}", msg_events[0]),
 		}
 
 		// Acceptor's turn: send TxAddInput, TxAddOutput, or TxComplete
@@ -438,6 +438,8 @@ pub fn complete_interactive_funding_negotiation_for_both<'a, 'b, 'c, 'd>(
 		}
 	}
 
+	assert!(expected_initiator_inputs.is_empty(), "Not all initiator inputs were sent");
+	assert!(expected_initiator_scripts.is_empty(), "Not all initiator outputs were sent");
 	assert!(expected_acceptor_inputs.is_empty(), "Not all acceptor inputs were sent");
 	assert!(expected_acceptor_scripts.is_empty(), "Not all acceptor outputs were sent");
 }
