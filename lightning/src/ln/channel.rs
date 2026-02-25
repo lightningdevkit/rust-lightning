@@ -7098,15 +7098,27 @@ where
 
 	fn reset_pending_splice_state(&mut self) -> Option<SpliceFundingFailed> {
 		debug_assert!(self.should_reset_pending_splice_state(true));
-		debug_assert!(
-			self.context.interactive_tx_signing_session.is_none()
-				|| !self
-					.context
-					.interactive_tx_signing_session
-					.as_ref()
-					.expect("We have a pending splice awaiting signatures")
-					.has_received_commitment_signed()
-		);
+
+		// Only clear the signing session if the current round is mid-signing. When an earlier
+		// round completed signing and a later RBF round is in AwaitingAck or
+		// ConstructingTransaction, the session belongs to the prior round and must be preserved.
+		let current_is_awaiting_signatures = self
+			.pending_splice
+			.as_ref()
+			.and_then(|ps| ps.funding_negotiation.as_ref())
+			.map(|fn_| matches!(fn_, FundingNegotiation::AwaitingSignatures { .. }))
+			.unwrap_or(false);
+		if current_is_awaiting_signatures {
+			debug_assert!(
+				self.context.interactive_tx_signing_session.is_none()
+					|| !self
+						.context
+						.interactive_tx_signing_session
+						.as_ref()
+						.expect("We have a pending splice awaiting signatures")
+						.has_received_commitment_signed()
+			);
+		}
 
 		let splice_funding_failed = maybe_create_splice_funding_failed!(
 			self,
@@ -7120,7 +7132,9 @@ where
 		}
 
 		self.context.channel_state.clear_quiescent();
-		self.context.interactive_tx_signing_session.take();
+		if current_is_awaiting_signatures {
+			self.context.interactive_tx_signing_session.take();
+		}
 
 		splice_funding_failed
 	}
