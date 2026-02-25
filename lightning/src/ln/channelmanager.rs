@@ -20310,7 +20310,13 @@ impl<
 			// De-duplicate HTLCs that are present in both `failed_htlcs` and `decode_update_add_htlcs`.
 			// Omitting this de-duplication could lead to redundant HTLC processing and/or bugs.
 			for (src, payment_hash, _, _, _, _) in failed_htlcs.iter() {
-				if let HTLCSource::PreviousHopData(prev_hop_data) = src {
+				for prev_hop_data in match src {
+					HTLCSource::PreviousHopData(prev_hop_data) => vec![prev_hop_data],
+					HTLCSource::TrampolineForward { previous_hop_data, .. } => {
+						previous_hop_data.iter().collect()
+					},
+					_ => vec![],
+				} {
 					dedup_decode_update_add_htlcs(
 						&mut decode_update_add_htlcs,
 						prev_hop_data,
