@@ -550,6 +550,14 @@ struct ClaimableHTLC {
 	counterparty_skimmed_fee_msat: Option<u64>,
 }
 
+impl ClaimableHTLC {
+	// Increments timer ticks and returns a boolean indicating whether HLTC is timed out.
+	fn mpp_timer_tick(&mut self) -> bool {
+		self.timer_ticks += 1;
+		self.timer_ticks >= MPP_TIMEOUT_TICKS
+	}
+}
+
 impl From<&ClaimableHTLC> for events::ClaimedHTLC {
 	fn from(val: &ClaimableHTLC) -> Self {
 		events::ClaimedHTLC {
@@ -1237,6 +1245,20 @@ impl ClaimablePayment {
 			.map(|htlc| (htlc.prev_hop.channel_id, htlc.prev_hop.user_channel_id))
 			.collect()
 	}
+}
+
+/// Increments MPP timeout tick for all HTLCs and returns a boolean indicating whether the HTLC
+/// set has hit its MPP timeout. Will return false if the set have reached the sender's intended
+/// total, as the MPP has completed in this case.
+fn check_mpp_timeout(payment: &mut ClaimablePayment) -> bool {
+	// This condition determining whether the MPP is complete here must match exactly the condition
+	// used in `process_pending_htlc_forwards`.
+	let total_intended_recvd_value = payment.htlcs.iter().map(|h| h.sender_intended_value).sum();
+	let total_mpp_value = payment.onion_fields.total_mpp_amount_msat;
+	if total_mpp_value <= total_intended_recvd_value {
+		return false;
+	}
+	payment.htlcs.iter_mut().any(|htlc| htlc.mpp_timer_tick())
 }
 
 /// Represent the channel funding transaction type.
@@ -8766,42 +8788,38 @@ impl<
 			self.claimable_payments.lock().unwrap().claimable_payments.retain(
 				|payment_hash, payment| {
 					if payment.htlcs.is_empty() {
-						// This should be unreachable
 						debug_assert!(false);
 						return false;
 					}
 					if let OnionPayload::Invoice { .. } = payment.htlcs[0].onion_payload {
-						// Check if we've received all the parts we need for an MPP (the value of the parts adds to total_msat).
-						// In this case we're not going to handle any timeouts of the parts here.
-						// This condition determining whether the MPP is complete here must match
-						// exactly the condition used in `process_pending_htlc_forwards`.
-						let total_intended_recvd_value =
-							payment.htlcs.iter().map(|h| h.sender_intended_value).sum();
-						let total_mpp_value = payment.onion_fields.total_mpp_amount_msat;
-						if total_mpp_value <= total_intended_recvd_value {
-							return true;
-						} else if payment.htlcs.iter_mut().any(|htlc| {
-							htlc.timer_ticks += 1;
-							return htlc.timer_ticks >= MPP_TIMEOUT_TICKS;
-						}) {
-							let htlcs = payment
-								.htlcs
-								.drain(..)
-								.map(|htlc: ClaimableHTLC| (htlc.prev_hop, *payment_hash));
-							timed_out_mpp_htlcs.extend(htlcs);
-							return false;
+						let mpp_timeout = check_mpp_timeout(payment);
+						if mpp_timeout {
+							timed_out_mpp_htlcs.extend(payment.htlcs.drain(..).map(|h| {
+								(
+									HTLCSource::PreviousHopData(h.prev_hop),
+									*payment_hash,
+									HTLCHandlingFailureType::Receive {
+										payment_hash: *payment_hash,
+									},
+								)
+							}));
 						}
+						return !mpp_timeout;
 					}
 					true
 				},
 			);
 
-			for htlc_source in timed_out_mpp_htlcs.drain(..) {
-				let source = HTLCSource::PreviousHopData(htlc_source.0.clone());
+			for (htlc_source, payment_hash, failure_type) in timed_out_mpp_htlcs.drain(..) {
 				let failure_reason = LocalHTLCFailureReason::MPPTimeout;
 				let reason = HTLCFailReason::from_failure_code(failure_reason);
-				let receiver = HTLCHandlingFailureType::Receive { payment_hash: htlc_source.1 };
-				self.fail_htlc_backwards_internal(&source, &htlc_source.1, &reason, receiver, None);
+				self.fail_htlc_backwards_internal(
+					&htlc_source,
+					&payment_hash,
+					&reason,
+					failure_type,
+					None,
+				);
 			}
 
 			for (err, counterparty_node_id) in handle_errors {
