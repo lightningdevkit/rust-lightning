@@ -5054,6 +5054,7 @@ impl<
 	fn can_forward_htlc_should_intercept(
 		&self, msg: &msgs::UpdateAddHTLC, prev_chan_public: bool, next_hop: &NextPacketDetails,
 	) -> Result<bool, LocalHTLCFailureReason> {
+		let cur_height = self.best_block.read().unwrap().height + 1;
 		let outgoing_scid = match next_hop.outgoing_connector {
 			HopConnector::ShortChannelId(scid) => scid,
 			HopConnector::Dummy => {
@@ -5061,8 +5062,24 @@ impl<
 				debug_assert!(false, "Dummy hop reached HTLC handling.");
 				return Err(LocalHTLCFailureReason::InvalidOnionPayload);
 			},
+			// We can't make forwarding checks on trampoline forwards where we don't know the
+			// outgoing channel on receipt of the incoming htlc. Our trampoline logic will check
+			// our required delta and fee later on, so here we just check that the forwarding node
+			// did not "skim" off some of the sender's intended fee/cltv.
 			HopConnector::Trampoline(_) => {
-				return Err(LocalHTLCFailureReason::InvalidTrampolineForward);
+				if msg.amount_msat < next_hop.outgoing_amt_msat {
+					return Err(LocalHTLCFailureReason::FeeInsufficient);
+				}
+
+				check_incoming_htlc_cltv(
+					cur_height,
+					next_hop.outgoing_cltv_value,
+					msg.cltv_expiry,
+					0,
+				)?;
+
+				// TODO: what do we do about interception for trampoline?
+				return Ok(false);
 			},
 		};
 		// TODO: We do the fake SCID namespace check a bunch of times here (and indirectly via
@@ -5101,7 +5118,6 @@ impl<
 				},
 			};
 
-		let cur_height = self.best_block.read().unwrap().height + 1;
 		check_incoming_htlc_cltv(
 			cur_height,
 			next_hop.outgoing_cltv_value,
