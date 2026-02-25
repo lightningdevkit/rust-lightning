@@ -2904,12 +2904,14 @@ fn fail_quiescent_action_on_channel_close() {
 
 #[test]
 fn abandon_splice_quiescent_action_on_shutdown() {
-	do_abandon_splice_quiescent_action_on_shutdown(true);
-	do_abandon_splice_quiescent_action_on_shutdown(false);
+	do_abandon_splice_quiescent_action_on_shutdown(true, false);
+	do_abandon_splice_quiescent_action_on_shutdown(false, false);
+	do_abandon_splice_quiescent_action_on_shutdown(true, true);
+	do_abandon_splice_quiescent_action_on_shutdown(false, true);
 }
 
 #[cfg(test)]
-fn do_abandon_splice_quiescent_action_on_shutdown(local_shutdown: bool) {
+fn do_abandon_splice_quiescent_action_on_shutdown(local_shutdown: bool, pending_splice: bool) {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -2923,6 +2925,19 @@ fn do_abandon_splice_quiescent_action_on_shutdown(local_shutdown: bool) {
 	let (_, _, channel_id, _) =
 		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_capacity, 0);
 
+	// When testing with a prior pending splice, complete splice A first so that
+	// `quiescent_action_into_error` filters against `pending_splice.contributed_inputs/outputs`.
+	if pending_splice {
+		let funding_contribution = do_initiate_splice_in(
+			&nodes[0],
+			&nodes[1],
+			channel_id,
+			Amount::from_sat(initial_channel_capacity / 2),
+		);
+		let (_splice_tx, _new_funding_script) =
+			splice_channel(&nodes[0], &nodes[1], channel_id, funding_contribution);
+	}
+
 	// Since we cannot close after having sent `stfu`, send an HTLC so that when we attempt to
 	// splice, the `stfu` message is held back.
 	let payment_amount = 1_000_000;
@@ -2935,7 +2950,8 @@ fn do_abandon_splice_quiescent_action_on_shutdown(local_shutdown: bool) {
 	check_added_monitors(&nodes[0], 1);
 
 	nodes[1].node.handle_update_add_htlc(node_id_0, &update.update_add_htlcs[0]);
-	nodes[1].node.handle_commitment_signed(node_id_0, &update.commitment_signed[0]);
+	// After a splice, commitment_signed messages are batched across funding scopes.
+	nodes[1].node.handle_commitment_signed_batch_test(node_id_0, &update.commitment_signed);
 	check_added_monitors(&nodes[1], 1);
 	let (revoke_and_ack, _) = get_revoke_commit_msgs(&nodes[1], &node_id_0);
 
@@ -2943,9 +2959,13 @@ fn do_abandon_splice_quiescent_action_on_shutdown(local_shutdown: bool) {
 	check_added_monitors(&nodes[0], 1);
 
 	// Attempt the splice. `stfu` should not go out yet as the state machine is pending.
-	let splice_in_amount = initial_channel_capacity / 2;
+	// Use a different amount when there's a prior splice so the change output differs.
+	let splice_in_amount =
+		if pending_splice { initial_channel_capacity / 4 } else { initial_channel_capacity / 2 };
 	let funding_contribution =
 		initiate_splice_in(&nodes[0], &nodes[1], channel_id, Amount::from_sat(splice_in_amount));
+	let splice_b_change_output =
+		if pending_splice { funding_contribution.change_output().cloned() } else { None };
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 
 	// Close the channel. We should see a `SpliceFailed` event for the pending splice
@@ -2959,7 +2979,33 @@ fn do_abandon_splice_quiescent_action_on_shutdown(local_shutdown: bool) {
 	let shutdown = get_event_msg!(closer_node, MessageSendEvent::SendShutdown, closee_node_id);
 	closee_node.node.handle_shutdown(closer_node_id, &shutdown);
 
-	expect_splice_failed_events(&nodes[0], &channel_id, funding_contribution);
+	if pending_splice {
+		// With a prior pending splice, contributions are filtered against committed inputs/outputs.
+		let events = nodes[0].node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 2, "{events:?}");
+		match &events[0] {
+			Event::SpliceFailed { channel_id: cid, .. } => {
+				assert_eq!(*cid, channel_id);
+			},
+			other => panic!("Expected SpliceFailed, got {:?}", other),
+		}
+		match &events[1] {
+			Event::DiscardFunding {
+				funding_info: FundingInfo::Contribution { inputs, outputs },
+				..
+			} => {
+				// The UTXO was filtered: it's still committed to the prior splice.
+				assert!(inputs.is_empty(), "Expected empty inputs (filtered), got {:?}", inputs);
+				// The change output was NOT filtered: different splice-in amount produces a
+				// different change.
+				let expected_outputs: Vec<_> = splice_b_change_output.into_iter().collect();
+				assert_eq!(*outputs, expected_outputs);
+			},
+			other => panic!("Expected DiscardFunding with Contribution, got {:?}", other),
+		}
+	} else {
+		expect_splice_failed_events(&nodes[0], &channel_id, funding_contribution);
+	}
 	let _ = get_event_msg!(closee_node, MessageSendEvent::SendShutdown, closer_node_id);
 }
 
@@ -5327,4 +5373,75 @@ fn test_splice_rbf_sequential() {
 		node.chain_source.remove_watched_txn_and_outputs(outpoint_0, new_funding_script.clone());
 		node.chain_source.remove_watched_txn_and_outputs(outpoint_1, new_funding_script.clone());
 	}
+}
+
+#[test]
+fn test_splice_rbf_disconnect_filters_prior_contributions() {
+	// When disconnecting during an RBF round that reuses the same UTXOs as a prior round,
+	// the SpliceFundingFailed event should filter out inputs/outputs still committed to the prior
+	// round. This exercises the `reset_pending_splice_state` → `maybe_create_splice_funding_failed`
+	// macro path.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let added_value = Amount::from_sat(50_000);
+	// Provide exactly 1 UTXO per node so coin selection is deterministic.
+	provide_utxo_reserves(&nodes, 1, added_value * 2);
+
+	// --- Round 0: Initial splice-in at floor feerate (253). ---
+	let funding_contribution = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+	let (_splice_tx_0, _new_funding_script) =
+		splice_channel(&nodes[0], &nodes[1], channel_id, funding_contribution);
+
+	// --- Round 1: RBF at higher feerate without providing new UTXOs. ---
+	// The wallet reselects the same UTXO since the splice tx hasn't been mined.
+	let feerate_1_sat_per_kwu = (FEERATE_FLOOR_SATS_PER_KW as u64 * 25 + 23) / 24;
+	let rbf_feerate = FeeRate::from_sat_per_kwu(feerate_1_sat_per_kwu);
+	let funding_contribution_1 =
+		do_initiate_rbf_splice_in(&nodes[0], &nodes[1], channel_id, added_value, rbf_feerate);
+	let rbf_change_output = funding_contribution_1.change_output().cloned();
+
+	// STFU exchange + RBF handshake to start interactive TX.
+	complete_rbf_handshake(&nodes[0], &nodes[1]);
+
+	// Disconnect mid-negotiation. Stale interactive TX messages are cleared by peer_disconnected.
+	nodes[0].node.peer_disconnected(node_id_1);
+	nodes[1].node.peer_disconnected(node_id_0);
+
+	// The initiator should get SpliceFailed + DiscardFunding with filtered contributions.
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 2, "{events:?}");
+	match &events[0] {
+		Event::SpliceFailed { channel_id: cid, .. } => {
+			assert_eq!(*cid, channel_id);
+		},
+		other => panic!("Expected SpliceFailed, got {:?}", other),
+	}
+	match &events[1] {
+		Event::DiscardFunding {
+			funding_info: FundingInfo::Contribution { inputs, outputs },
+			..
+		} => {
+			// The UTXO was filtered out: it's still committed to round 0's splice.
+			assert!(inputs.is_empty(), "Expected empty inputs (filtered), got {:?}", inputs);
+			// The change output was NOT filtered: different feerate produces a different amount.
+			let expected_outputs: Vec<_> = rbf_change_output.into_iter().collect();
+			assert_eq!(*outputs, expected_outputs);
+		},
+		other => panic!("Expected DiscardFunding with Contribution, got {:?}", other),
+	}
+
+	// Reconnect. After a completed splice, channel_ready is not re-sent.
+	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
+	reconnect_args.send_announcement_sigs = (true, true);
+	reconnect_nodes(reconnect_args);
 }
