@@ -28,7 +28,7 @@ use bitcoin::secp256k1::{PublicKey, SecretKey};
 
 use crate::crypto::chacha20poly1305rfc::ChaCha20Poly1305RFC;
 use crate::crypto::utils::hkdf_extract_expand_twice;
-use crate::util::ser::VecWriter;
+use crate::util::ser::{VecWriter, Writer};
 
 /// Maximum Lightning message data length according to
 /// [BOLT-8](https://github.com/lightning/bolts/blob/v1.0/08-transport.md#lightning-message-specification)
@@ -501,16 +501,16 @@ impl PeerChannelEncryptor {
 		Ok(self.their_node_id.unwrap().clone())
 	}
 
-	/// Builds sendable bytes for a message.
+	/// Builds sendable bytes for a message at the given offset within a buffer.
 	///
-	/// `msgbuf` must begin with 16 + 2 dummy/0 bytes, which will be filled with the encrypted
-	/// message length and its MAC. It should then be followed by the message bytes themselves
-	/// (including the two byte message type).
+	/// The buffer at `buf[offset..]` must begin with 16 + 2 dummy/0 bytes, which will be filled
+	/// with the encrypted message length and its MAC. It should then be followed by the message
+	/// bytes themselves (including the two byte message type).
 	///
-	/// For effeciency, the [`Vec::capacity`] should be at least 16 bytes larger than the
+	/// For efficiency, the [`Vec::capacity`] should be at least 16 bytes larger than the
 	/// [`Vec::len`], to avoid reallocating for the message MAC, which will be appended to the vec.
-	fn encrypt_message_with_header_0s(&mut self, msgbuf: &mut Vec<u8>) {
-		let msg_len = msgbuf.len() - 16 - 2;
+	pub(crate) fn encrypt_with_header_0s_at(&mut self, buf: &mut Vec<u8>, offset: usize) {
+		let msg_len = buf.len() - offset - 16 - 2;
 		if msg_len > LN_MAX_MSG_LEN {
 			panic!("Attempted to encrypt message longer than 65535 bytes!");
 		}
@@ -525,7 +525,7 @@ impl PeerChannelEncryptor {
 				}
 
 				Self::encrypt_with_ad(
-					&mut msgbuf[0..16 + 2],
+					&mut buf[offset..offset + 16 + 2],
 					*sn,
 					sk,
 					&[0; 0],
@@ -533,11 +533,23 @@ impl PeerChannelEncryptor {
 				);
 				*sn += 1;
 
-				Self::encrypt_in_place_with_ad(msgbuf, 16 + 2, *sn, sk, &[0; 0]);
+				Self::encrypt_in_place_with_ad(buf, offset + 16 + 2, *sn, sk, &[0; 0]);
 				*sn += 1;
 			},
 			_ => panic!("Tried to encrypt a message prior to noise handshake completion"),
 		}
+	}
+
+	/// Builds sendable bytes for a message.
+	///
+	/// `msgbuf` must begin with 16 + 2 dummy/0 bytes, which will be filled with the encrypted
+	/// message length and its MAC. It should then be followed by the message bytes themselves
+	/// (including the two byte message type).
+	///
+	/// For efficiency, the [`Vec::capacity`] should be at least 16 bytes larger than the
+	/// [`Vec::len`], to avoid reallocating for the message MAC, which will be appended to the vec.
+	fn encrypt_message_with_header_0s(&mut self, msgbuf: &mut Vec<u8>) {
+		self.encrypt_with_header_0s_at(msgbuf, 0);
 	}
 
 	/// Encrypts the given pre-serialized message, returning the encrypted version.
@@ -561,6 +573,36 @@ impl PeerChannelEncryptor {
 
 		self.encrypt_message_with_header_0s(&mut res.0);
 		res.0
+	}
+
+	/// Encrypts the given message directly into the destination buffer, appending encrypted bytes.
+	pub fn encrypt_message_into<T: wire::Type>(
+		&mut self, dest: &mut Vec<u8>, message: wire::Message<T>,
+	) {
+		let offset = dest.len();
+		// Reserve 16+2 header bytes, then serialize the message type and body.
+		dest.resize(offset + 16 + 2, 0);
+
+		let mut writer = BorrowedVecWriter(dest);
+		message
+			.type_id()
+			.write(&mut writer)
+			.expect("In-memory messages must never fail to serialize");
+		message.write(&mut writer).expect("In-memory messages must never fail to serialize");
+		let dest = writer.0;
+
+		self.encrypt_with_header_0s_at(dest, offset);
+	}
+
+	/// Encrypts the given pre-serialized gossip [`MessageBuf`] directly into the destination
+	/// buffer, appending encrypted bytes.
+	pub fn encrypt_buffer_into(&mut self, dest: &mut Vec<u8>, msg: MessageBuf) {
+		let offset = dest.len();
+		let encoded = &msg.0[16 + 2..];
+		// Write the header placeholder + encoded message bytes into dest.
+		dest.resize(offset + 16 + 2, 0);
+		dest.extend_from_slice(encoded);
+		self.encrypt_with_header_0s_at(dest, offset);
 	}
 
 	/// Decrypts a message length header from the remote peer.
@@ -621,6 +663,16 @@ impl PeerChannelEncryptor {
 			NoiseState::InProgress { .. } => false,
 			NoiseState::Finished { .. } => true,
 		}
+	}
+}
+
+/// A [`Writer`] adapter that borrows a `Vec<u8>` rather than owning it.
+struct BorrowedVecWriter<'a>(&'a mut Vec<u8>);
+impl<'a> Writer for BorrowedVecWriter<'a> {
+	#[inline]
+	fn write_all(&mut self, buf: &[u8]) -> Result<(), crate::io::Error> {
+		self.0.extend_from_slice(buf);
+		Ok(())
 	}
 }
 

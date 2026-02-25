@@ -741,11 +741,24 @@ enum MessageBatchImpl {
 	CommitmentSigned(Vec<msgs::CommitmentSigned>),
 }
 
-/// When the outbound buffer has this many messages, we'll stop reading bytes from the peer until
-/// we have fewer than this many messages in the outbound buffer again.
-/// We also use this as the target number of outbound gossip messages to keep in the write buffer,
-/// refilled as we send bytes.
-const OUTBOUND_BUFFER_LIMIT_READ_PAUSE: usize = 12;
+/// The fixed chunk size (in bytes) for all outbound traffic. All data written to the socket
+/// will be in increments of this size, with Ping messages used as padding filler.
+///
+/// Sized to fit in a single TCP/IP packet on a standard 1500-byte Ethernet MTU:
+///   1500 (MTU) - 40 (IPv6 header) - 32 (TCP header with timestamps) = 1428 bytes available.
+///   1400 provides a 28-byte margin that also survives PPPoE tunnels (MTU 1492).
+const CHUNK_SIZE: usize = 1400;
+
+/// The minimum size of an encrypted Ping message: 6-byte plaintext (2-byte type + 2-byte ponglen
+/// + 2-byte CollectionLength) + 34 bytes encryption overhead (18-byte header + 16-byte body MAC).
+const MIN_ENCRYPTED_PING_SIZE: usize = 40;
+
+/// When the outbound chunk buffer has at least this many pending bytes, we'll stop reading bytes
+/// from the peer until we have fewer pending bytes again.
+///
+/// Set to 10 chunks (~14 KB), roughly equivalent to the old 12-message limit given that typical
+/// encrypted messages are a few hundred bytes each.
+const OUTBOUND_BUFFER_LIMIT_READ_PAUSE: usize = 10 * CHUNK_SIZE;
 
 /// If we've sent a ping, and are still awaiting a response, we may need to churn our way through
 /// the socket receive buffer before receiving the ping.
@@ -782,6 +795,163 @@ const BUFFER_DRAIN_MSGS_PER_TICK: usize = 32;
 /// Note that as we always drain the gossip forwarding queue before continuing gossip backfill,
 /// the equivalent maximum buffer size for gossip backfill is zero.
 const OUTBOUND_BUFFER_SIZE_LIMIT_DROP_GOSSIP: usize = 64 * 1024 * 2;
+
+/// A message queue that accumulates encrypted bytes and writes them to the socket in fixed-size
+/// chunks of [`CHUNK_SIZE`] bytes. Any remaining space in a chunk is padded with encrypted Ping
+/// messages, so that an observer sees only constant-size writes on the wire.
+struct ChunkedMessageQueue {
+	/// Contiguous buffer of encrypted bytes. Bytes `[send_offset..len]` are pending.
+	buffer: Vec<u8>,
+	/// Next byte to send; bytes before this have already been written to the socket.
+	send_offset: usize,
+	/// Pre-serialized (unencrypted) gossip messages, ready for encryption.
+	gossip_broadcast_buffer: VecDeque<MessageBuf>,
+}
+
+impl ChunkedMessageQueue {
+	fn new() -> Self {
+		ChunkedMessageQueue {
+			buffer: Vec::with_capacity(2 * CHUNK_SIZE),
+			send_offset: 0,
+			gossip_broadcast_buffer: VecDeque::new(),
+		}
+	}
+
+	/// Returns the number of unsent bytes in the buffer.
+	fn pending_bytes(&self) -> usize {
+		self.buffer.len() - self.send_offset
+	}
+
+	/// Returns whether a full chunk is ready to send.
+	fn has_full_chunk(&self) -> bool {
+		self.pending_bytes() >= CHUNK_SIZE
+	}
+
+	/// Encrypts and appends a message to the buffer.
+	fn encrypt_and_push_message<T: wire::Type>(
+		&mut self, encryptor: &mut PeerChannelEncryptor, message: wire::Message<T>,
+	) {
+		encryptor.encrypt_message_into(&mut self.buffer, message);
+	}
+
+	/// Encrypts and appends a pre-serialized gossip [`MessageBuf`] to the buffer.
+	fn encrypt_and_push_gossip(&mut self, encryptor: &mut PeerChannelEncryptor, msg: MessageBuf) {
+		encryptor.encrypt_buffer_into(&mut self.buffer, msg);
+	}
+
+	/// Appends raw (pre-encryption) bytes to the buffer. Used for handshake act bytes.
+	fn push_raw(&mut self, data: &[u8]) {
+		self.buffer.extend_from_slice(data);
+	}
+
+	/// Fills remaining space in the current chunk with Ping padding, then encrypts the padding.
+	///
+	/// If the remaining space is less than [`MIN_ENCRYPTED_PING_SIZE`], the Ping overflows into
+	/// the next chunk. In that case, a second Ping is used to pad the remainder of the second
+	/// chunk. At most two Pings are ever needed because `CHUNK_SIZE` >> `MIN_ENCRYPTED_PING_SIZE`.
+	fn pad_and_finalize_chunk(&mut self, encryptor: &mut PeerChannelEncryptor) {
+		let pending = self.pending_bytes();
+		if pending == 0 {
+			return;
+		}
+
+		let remainder = CHUNK_SIZE - (pending % CHUNK_SIZE);
+		if remainder == CHUNK_SIZE {
+			// Already chunk-aligned.
+			return;
+		}
+
+		if remainder >= MIN_ENCRYPTED_PING_SIZE {
+			// Enough space for a single Ping to fill the remainder exactly.
+			self.push_ping_padding(encryptor, remainder);
+		} else {
+			// Not enough space for even a minimal Ping. Send a minimal Ping that overflows
+			// into the next chunk, then pad the rest of that next chunk with a second Ping.
+			self.push_ping_padding(encryptor, MIN_ENCRYPTED_PING_SIZE);
+			let pending = self.pending_bytes();
+			let remainder2 = CHUNK_SIZE - (pending % CHUNK_SIZE);
+			debug_assert_ne!(remainder2, 0);
+			debug_assert!(remainder2 >= MIN_ENCRYPTED_PING_SIZE);
+			self.push_ping_padding(encryptor, remainder2);
+		}
+
+		debug_assert_eq!(self.pending_bytes() % CHUNK_SIZE, 0);
+	}
+
+	/// Writes encrypted Ping padding of exactly `size` encrypted bytes into the buffer.
+	///
+	/// The Ping is constructed with `ponglen = 65533` so the counterparty does NOT respond with a
+	/// Pong (per BOLT-1: "if `ponglen` is less than 65532 it MUST respond ...").
+	fn push_ping_padding(&mut self, encryptor: &mut PeerChannelEncryptor, size: usize) {
+		debug_assert!(size >= MIN_ENCRYPTED_PING_SIZE);
+
+		// Encryption overhead: 18-byte header (2-byte encrypted length + 16-byte MAC)
+		//                    + 16-byte body MAC = 34 bytes
+		// Ping plaintext: 2-byte type (0x0012) + 2-byte ponglen + 2-byte CollectionLength + zeros
+		let plaintext_len = size - 34; // total - overhead
+		let byteslen = plaintext_len - 2 - 2 - 2; // minus type, ponglen, CollectionLength
+
+		let offset = self.buffer.len();
+		// Reserve space: 18-byte header + plaintext + 16-byte body MAC
+		self.buffer.resize(offset + 18 + plaintext_len, 0);
+
+		// Write plaintext starting after the 18-byte header.
+		let plaintext_start = offset + 18;
+		// Message type: Ping = 18 (0x0012)
+		self.buffer[plaintext_start..plaintext_start + 2].copy_from_slice(&18u16.to_be_bytes());
+		// ponglen: 65533 to suppress Pong response
+		self.buffer[plaintext_start + 2..plaintext_start + 4]
+			.copy_from_slice(&65533u16.to_be_bytes());
+		// CollectionLength (byteslen as u16, since byteslen < 0xffff)
+		self.buffer[plaintext_start + 4..plaintext_start + 6]
+			.copy_from_slice(&(byteslen as u16).to_be_bytes());
+		// Remaining bytes are already zero from resize.
+
+		encryptor.encrypt_with_header_0s_at(&mut self.buffer, offset);
+	}
+
+	/// Sends exactly one chunk of [`CHUNK_SIZE`] bytes to the descriptor.
+	///
+	/// Returns the number of bytes actually written. If fewer than `CHUNK_SIZE` bytes were written,
+	/// this indicates the socket is full and we should set `awaiting_write_event`.
+	fn send_chunk(&mut self, descriptor: &mut impl SocketDescriptor, continue_read: bool) -> usize {
+		debug_assert!(self.pending_bytes() >= CHUNK_SIZE);
+		let chunk_end = self.send_offset + CHUNK_SIZE;
+		let data = &self.buffer[self.send_offset..chunk_end];
+		let sent = descriptor.send_data(data, continue_read);
+		self.send_offset += sent;
+		self.maybe_compact();
+		sent
+	}
+
+	/// Sends raw (non-chunked) bytes from the buffer, used during handshake before encryption is
+	/// established. Returns the number of bytes sent.
+	fn send_raw(&mut self, descriptor: &mut impl SocketDescriptor, continue_read: bool) -> usize {
+		let data = &self.buffer[self.send_offset..];
+		if data.is_empty() {
+			return 0;
+		}
+		let sent = descriptor.send_data(data, continue_read);
+		self.send_offset += sent;
+		self.maybe_compact();
+		sent
+	}
+
+	/// Drains already-sent bytes from the front of the buffer when `send_offset` is large enough.
+	fn maybe_compact(&mut self) {
+		if self.send_offset >= CHUNK_SIZE {
+			self.buffer.drain(..self.send_offset);
+			self.send_offset = 0;
+		}
+	}
+
+	/// Returns the total buffered bytes (pending encrypted + pending gossip broadcast estimate).
+	/// Used for determining when to drop gossip broadcasts.
+	fn total_buffered_bytes(&self) -> usize {
+		self.pending_bytes()
+			+ self.gossip_broadcast_buffer.iter().map(|m| m.capacity()).sum::<usize>()
+	}
+}
 
 struct Peer {
 	channel_encryptor: PeerChannelEncryptor,
