@@ -186,7 +186,7 @@ pub(super) fn create_fwd_pending_htlc_info(
 		},
 		onion_utils::Hop::TrampolineBlindedForward { outer_hop_data, next_trampoline_hop_data, next_trampoline_hop_hmac, new_trampoline_packet_bytes, trampoline_shared_secret, .. } => {
 			let (amt_to_forward, outgoing_cltv_value) = check_blinded_forward(
-				msg.amount_msat, msg.cltv_expiry, &next_trampoline_hop_data.payment_relay, &next_trampoline_hop_data.payment_constraints, &next_trampoline_hop_data.features
+				outer_hop_data.multipath_trampoline_data.as_ref().map(|f| f.total_msat).unwrap_or(msg.amount_msat), msg.cltv_expiry, &next_trampoline_hop_data.payment_relay, &next_trampoline_hop_data.payment_constraints, &next_trampoline_hop_data.features
 			).map_err(|()| {
 				// We should be returning malformed here if `msg.blinding_point` is set, but this is
 				// unreachable right now since we checked it in `decode_update_add_htlc_onion`.
