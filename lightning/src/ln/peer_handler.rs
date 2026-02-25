@@ -4994,6 +4994,162 @@ mod tests {
 		);
 	}
 
+	/// Helper: completes a noise handshake and returns the outbound encryptor ready for encryption.
+	fn get_test_encryptor() -> PeerChannelEncryptor {
+		let secp_ctx = Secp256k1::new();
+		// Inbound peer identity (the "responder").
+		let inbound_secret = SecretKey::from_slice(&[42; 32]).unwrap();
+		let inbound_pubkey =
+			bitcoin::secp256k1::PublicKey::from_secret_key(&secp_ctx, &inbound_secret);
+		let inbound_signer = crate::util::test_utils::TestNodeSigner::new(inbound_secret);
+
+		// Outbound peer identity (the "initiator").
+		let outbound_secret = SecretKey::from_slice(&[43; 32]).unwrap();
+		let outbound_signer = crate::util::test_utils::TestNodeSigner::new(outbound_secret);
+
+		let outbound_ephemeral = SecretKey::from_slice(&[44; 32]).unwrap();
+		let inbound_ephemeral = SecretKey::from_slice(&[45; 32]).unwrap();
+
+		let mut outbound = PeerChannelEncryptor::new_outbound(inbound_pubkey, outbound_ephemeral);
+		let mut inbound = PeerChannelEncryptor::new_inbound(&&inbound_signer);
+
+		let act_one = outbound.get_act_one(&secp_ctx);
+		let act_two = inbound
+			.process_act_one_with_keys(&act_one, &&inbound_signer, inbound_ephemeral, &secp_ctx)
+			.unwrap();
+		let (act_three, _) = outbound.process_act_two(&act_two, &&outbound_signer).unwrap();
+		let _ = inbound.process_act_three(&act_three).unwrap();
+
+		outbound
+	}
+
+	#[test]
+	fn test_chunked_message_queue_ping_padding() {
+		// Tests that Ping padding correctly fills the remainder of a chunk.
+		let mut encryptor = get_test_encryptor();
+
+		// Test various remainder sizes to ensure padding works correctly.
+		for msg_size in [40, 100, 500, 1000, 5000, 30000, 65535] {
+			let mut queue = ChunkedMessageQueue::new();
+			// Push a raw blob of msg_size bytes to simulate encrypted message data.
+			let fake_data = vec![0u8; msg_size];
+			queue.buffer.extend_from_slice(&fake_data);
+			queue.pending_msg_bytes += msg_size;
+
+			queue.pad_and_finalize_chunk(&mut encryptor);
+			assert_eq!(
+				queue.pending_bytes() % CHUNK_SIZE,
+				0,
+				"Buffer not chunk-aligned after padding for msg_size={}",
+				msg_size
+			);
+			assert!(
+				queue.pending_bytes() >= CHUNK_SIZE,
+				"Buffer should be at least one chunk for msg_size={}",
+				msg_size
+			);
+		}
+	}
+
+	#[test]
+	fn test_chunked_message_queue_small_remainder_overflow() {
+		// Tests the edge case where remainder < MIN_ENCRYPTED_PING_SIZE, requiring two Pings.
+		let mut encryptor = get_test_encryptor();
+
+		// Test remainders from 1 to MIN_ENCRYPTED_PING_SIZE-1 (the overflow cases).
+		for remainder in 1..MIN_ENCRYPTED_PING_SIZE {
+			let mut queue = ChunkedMessageQueue::new();
+			// Fill buffer so that exactly `remainder` bytes are left in the current chunk.
+			let fill_size = CHUNK_SIZE - remainder;
+			queue.buffer.resize(fill_size, 0);
+			queue.pending_msg_bytes = fill_size;
+
+			queue.pad_and_finalize_chunk(&mut encryptor);
+			assert_eq!(
+				queue.pending_bytes() % CHUNK_SIZE,
+				0,
+				"Buffer not chunk-aligned for remainder={}",
+				remainder
+			);
+			// Should overflow into exactly 2 chunks.
+			assert_eq!(
+				queue.pending_bytes(),
+				2 * CHUNK_SIZE,
+				"Expected 2 chunks for small remainder={}",
+				remainder
+			);
+		}
+	}
+
+	#[test]
+	fn test_chunked_message_queue_chunk_alignment() {
+		// Tests that after multiple messages the buffer stays correctly aligned after padding.
+		let mut encryptor = get_test_encryptor();
+		let mut queue = ChunkedMessageQueue::new();
+
+		// Encrypt several Ping messages of various sizes.
+		for pong_len in [0u16, 64, 256, 1024] {
+			let ping = msgs::Ping { ponglen: pong_len, byteslen: 64 };
+			let msg: wire::Message<()> = wire::Message::Ping(ping);
+			queue.encrypt_and_push_message(&mut encryptor, msg);
+		}
+
+		let pending_before_pad = queue.pending_bytes();
+		assert!(pending_before_pad > 0);
+
+		queue.pad_and_finalize_chunk(&mut encryptor);
+
+		assert_eq!(queue.pending_bytes() % CHUNK_SIZE, 0);
+		assert!(queue.pending_bytes() >= pending_before_pad);
+	}
+
+	#[test]
+	fn test_chunked_message_queue_buffer_compaction() {
+		// Tests that maybe_compact drains sent bytes appropriately.
+		let mut queue = ChunkedMessageQueue::new();
+
+		// Fill with 2 chunks worth of data.
+		queue.buffer.resize(2 * CHUNK_SIZE, 0xAB);
+		queue.pending_msg_bytes = 2 * CHUNK_SIZE;
+		assert_eq!(queue.pending_bytes(), 2 * CHUNK_SIZE);
+
+		// Simulate sending the first chunk.
+		queue.send_offset = CHUNK_SIZE;
+		queue.pending_msg_bytes = CHUNK_SIZE;
+		queue.maybe_compact();
+
+		// After compaction, send_offset should be 0 and buffer should be one chunk.
+		assert_eq!(queue.send_offset, 0);
+		assert_eq!(queue.buffer.len(), CHUNK_SIZE);
+		assert_eq!(queue.pending_bytes(), CHUNK_SIZE);
+	}
+
+	#[test]
+	fn test_chunked_message_queue_pending_msg_bytes_tracking() {
+		// Tests that pending_msg_bytes correctly tracks message bytes vs padding bytes.
+		let mut encryptor = get_test_encryptor();
+		let mut queue = ChunkedMessageQueue::new();
+
+		// Encrypt a small message.
+		let ping = msgs::Ping { ponglen: 0, byteslen: 64 };
+		let msg: wire::Message<()> = wire::Message::Ping(ping);
+		queue.encrypt_and_push_message(&mut encryptor, msg);
+
+		let msg_bytes = queue.pending_msg_bytes;
+		assert!(msg_bytes > 0);
+		assert_eq!(msg_bytes, queue.pending_bytes());
+
+		// After padding, pending_bytes increases but pending_msg_bytes stays the same.
+		queue.pad_and_finalize_chunk(&mut encryptor);
+
+		assert_eq!(queue.pending_msg_bytes, msg_bytes);
+		assert!(queue.pending_bytes() > msg_bytes);
+		assert_eq!(queue.pending_bytes() % CHUNK_SIZE, 0);
+
+		// total_buffered_bytes should use pending_msg_bytes, not pending_bytes.
+		assert_eq!(queue.total_buffered_bytes(), msg_bytes);
+	}
+
 	#[test]
 	fn test_filter_addresses() {
 		// Tests the filter_addresses function.
