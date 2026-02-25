@@ -2467,7 +2467,7 @@ fn compute_fees(amount_msat: u64, channel_fees: RoutingFees) -> Option<u64> {
 /// Calculate the fees required to route the given amount over a channel with the given fees,
 /// saturating to [`u64::max_value`].
 #[rustfmt::skip]
-fn compute_fees_saturating(amount_msat: u64, channel_fees: RoutingFees) -> u64 {
+pub(crate) fn compute_fees_saturating(amount_msat: u64, channel_fees: RoutingFees) -> u64 {
 	amount_msat.checked_mul(channel_fees.proportional_millionths as u64)
 		.map(|prop| prop / 1_000_000).unwrap_or(u64::max_value())
 		.saturating_add(channel_fees.base_msat as u64)
