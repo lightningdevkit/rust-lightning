@@ -12180,9 +12180,7 @@ where
 		self.propose_quiescence(logger, QuiescentAction::Splice { contribution, locktime })
 	}
 
-	fn send_splice_init_internal(
-		&mut self, context: FundingNegotiationContext,
-	) -> msgs::SpliceInit {
+	fn send_splice_init(&mut self, context: FundingNegotiationContext) -> msgs::SpliceInit {
 		debug_assert!(self.pending_splice.is_none());
 		// Rotate the funding pubkey using the prev_funding_txid as a tweak
 		let prev_funding_txid = self.funding.get_funding_txid();
@@ -13401,7 +13399,7 @@ where
 						our_funding_outputs,
 					};
 
-					let splice_init = self.send_splice_init_internal(context);
+					let splice_init = self.send_splice_init(context);
 					return Ok(Some(StfuResponse::SpliceInit(splice_init)));
 				},
 				#[cfg(any(test, fuzzing, feature = "_test_utils"))]
