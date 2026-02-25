@@ -3049,22 +3049,6 @@ pub(crate) enum StfuResponse {
 	SpliceInit(msgs::SpliceInit),
 }
 
-#[cfg(any(test, fuzzing, feature = "_test_utils"))]
-impl_writeable_tlv_based_enum_upgradable!(QuiescentAction,
-	(0, DoNothing) => {},
-	(2, Splice) => {
-		(0, contribution, required),
-		(1, locktime, required),
-	},
-);
-#[cfg(not(any(test, fuzzing, feature = "_test_utils")))]
-impl_writeable_tlv_based_enum_upgradable!(QuiescentAction,
-	(2, Splice) => {
-		(0, contribution, required),
-		(1, locktime, required),
-	},
-);
-
 /// Wrapper around a [`Transaction`] useful for caching the result of [`Transaction::compute_txid`].
 struct ConfirmedTransaction<'a> {
 	tx: &'a Transaction,
@@ -15441,7 +15425,6 @@ impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
 		let mut minimum_depth_override: Option<u32> = None;
 
 		let mut pending_splice: Option<PendingFunding> = None;
-		let mut _quiescent_action: Option<QuiescentAction> = None;
 
 		let mut pending_outbound_held_htlc_flags_opt: Option<Vec<Option<()>>> = None;
 		let mut holding_cell_held_htlc_flags_opt: Option<Vec<Option<()>>> = None;
@@ -15495,7 +15478,7 @@ impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
 			(61, fulfill_attribution_data, optional_vec), // Added in 0.2
 			(63, holder_commitment_point_current_opt, option), // Added in 0.2
 			(64, pending_splice, option), // Added in 0.2
-			(65, _quiescent_action, upgradable_option), // Added in 0.2
+			// 65 quiescent_action: Added in 0.2; removed in 0.3
 			(67, pending_outbound_held_htlc_flags_opt, optional_vec), // Added in 0.2
 			(69, holding_cell_held_htlc_flags_opt, optional_vec), // Added in 0.2
 			(71, holder_commitment_point_previous_revoked_opt, option), // Added in 0.3
