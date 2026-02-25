@@ -12154,59 +12154,7 @@ where
 			});
 		}
 
-		let pending_splice = match &self.pending_splice {
-			Some(pending_splice) => pending_splice,
-			None => {
-				return Err(APIError::APIMisuseError {
-					err: format!(
-						"Channel {} has no pending splice to RBF",
-						self.context.channel_id(),
-					),
-				});
-			},
-		};
-
-		if pending_splice.funding_negotiation.is_some() {
-			return Err(APIError::APIMisuseError {
-				err: format!(
-					"Channel {} cannot RBF as a funding negotiation is already in progress",
-					self.context.channel_id(),
-				),
-			});
-		}
-
-		if pending_splice.sent_funding_txid.is_some() {
-			return Err(APIError::APIMisuseError {
-				err: format!(
-					"Channel {} already sent splice_locked, cannot RBF",
-					self.context.channel_id(),
-				),
-			});
-		}
-
-		if pending_splice.negotiated_candidates.is_empty() {
-			return Err(APIError::APIMisuseError {
-				err: format!(
-					"Channel {} has no negotiated splice candidates to RBF",
-					self.context.channel_id(),
-				),
-			});
-		}
-
-		// Check the 25/24 feerate increase rule
-		let new_feerate = feerate.to_sat_per_kwu() as u32;
-		if let Some(prev_feerate) = pending_splice.last_funding_feerate_sat_per_1000_weight {
-			if (new_feerate as u64) * 24 < (prev_feerate as u64) * 25 {
-				return Err(APIError::APIMisuseError {
-					err: format!(
-						"Channel {} RBF feerate {} is less than 25/24 of the previous feerate {}",
-						self.context.channel_id(),
-						new_feerate,
-						prev_feerate,
-					),
-				});
-			}
-		}
+		self.can_initiate_rbf(feerate).map_err(|err| APIError::APIMisuseError { err })?;
 
 		let funding_txo = self.funding.get_funding_txo().expect("funding_txo should be set");
 		let previous_utxo =
@@ -12218,6 +12166,54 @@ where
 		};
 
 		Ok(FundingTemplate::new(Some(shared_input), feerate))
+	}
+
+	fn can_initiate_rbf(&self, feerate: FeeRate) -> Result<(), String> {
+		let pending_splice = match &self.pending_splice {
+			Some(pending_splice) => pending_splice,
+			None => {
+				return Err(format!(
+					"Channel {} has no pending splice to RBF",
+					self.context.channel_id(),
+				));
+			},
+		};
+
+		if pending_splice.funding_negotiation.is_some() {
+			return Err(format!(
+				"Channel {} cannot RBF as a funding negotiation is already in progress",
+				self.context.channel_id(),
+			));
+		}
+
+		if pending_splice.sent_funding_txid.is_some() {
+			return Err(format!(
+				"Channel {} already sent splice_locked, cannot RBF",
+				self.context.channel_id(),
+			));
+		}
+
+		if pending_splice.negotiated_candidates.is_empty() {
+			return Err(format!(
+				"Channel {} has no negotiated splice candidates to RBF",
+				self.context.channel_id(),
+			));
+		}
+
+		// Check the 25/24 feerate increase rule
+		let new_feerate = feerate.to_sat_per_kwu() as u32;
+		if let Some(prev_feerate) = pending_splice.last_funding_feerate_sat_per_1000_weight {
+			if (new_feerate as u64) * 24 < (prev_feerate as u64) * 25 {
+				return Err(format!(
+					"Channel {} RBF feerate {} is less than 25/24 of the previous feerate {}",
+					self.context.channel_id(),
+					new_feerate,
+					prev_feerate,
+				));
+			}
+		}
+
+		Ok(())
 	}
 
 	pub fn funding_contributed<L: Logger>(
@@ -13736,17 +13732,18 @@ where
 		}
 
 		if let Some(action) = self.quiescent_action.as_ref() {
-			// We can't initiate another splice while ours is pending, so don't bother becoming
-			// quiescent yet.
-			// TODO(splicing): Allow the splice as an RBF once supported.
-			let has_splice_action = matches!(action, QuiescentAction::Splice { .. });
-			if has_splice_action && self.pending_splice.is_some() {
-				log_given_level!(
-					logger,
-					logger_level,
-					"Waiting for pending splice to lock before sending stfu for new splice"
-				);
-				return None;
+			#[allow(irrefutable_let_patterns)]
+			if let QuiescentAction::Splice { contribution, .. } = action {
+				if self.pending_splice.is_some() {
+					if let Err(msg) = self.can_initiate_rbf(contribution.feerate()) {
+						log_given_level!(
+							logger,
+							logger_level,
+							"Waiting on sending stfu for splice RBF: {msg}"
+						);
+						return None;
+					}
+				}
 			}
 		}
 
