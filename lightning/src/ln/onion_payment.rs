@@ -178,14 +178,14 @@ pub(super) fn create_fwd_pending_htlc_info(
 					current_path_key: None,
 					incoming_multipath_data: outer_hop_data.multipath_trampoline_data,
 				},
-				next_trampoline_hop_data.amt_to_forward,
-				next_trampoline_hop_data.outgoing_cltv_value,
+				outer_hop_data.amt_to_forward,
+				outer_hop_data.outgoing_cltv_value,
 				None,
 				None
 			)
 		},
 		onion_utils::Hop::TrampolineBlindedForward { outer_hop_data, next_trampoline_hop_data, next_trampoline_hop_hmac, new_trampoline_packet_bytes, trampoline_shared_secret, .. } => {
-			let (amt_to_forward, outgoing_cltv_value) = check_blinded_forward(
+			let (_next_hop_amount, _next_hop_cltv) = check_blinded_forward(
 				outer_hop_data.multipath_trampoline_data.as_ref().map(|f| f.total_msat).unwrap_or(msg.amount_msat), msg.cltv_expiry, &next_trampoline_hop_data.payment_relay, &next_trampoline_hop_data.payment_constraints, &next_trampoline_hop_data.features
 			).map_err(|()| {
 				// We should be returning malformed here if `msg.blinding_point` is set, but this is
@@ -205,8 +205,8 @@ pub(super) fn create_fwd_pending_htlc_info(
 					current_path_key: outer_hop_data.current_path_key,
 					incoming_multipath_data: outer_hop_data.multipath_trampoline_data,
 				},
-				amt_to_forward,
-				outgoing_cltv_value,
+				outer_hop_data.amt_to_forward,
+				outer_hop_data.outgoing_cltv_value,
 				next_trampoline_hop_data.intro_node_blinding_point,
 				next_trampoline_hop_data.next_blinding_override
 			)
