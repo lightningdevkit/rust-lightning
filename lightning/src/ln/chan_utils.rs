@@ -1344,7 +1344,7 @@ impl_writeable_tlv_based!(HolderCommitmentTransaction, {
 });
 
 impl HolderCommitmentTransaction {
-	#[cfg(test)]
+	#[cfg(any(test, feature = "_test_utils"))]
 	#[rustfmt::skip]
 	pub fn dummy(channel_value_satoshis: u64, funding_outpoint: chain::transaction::OutPoint, nondust_htlcs: Vec<HTLCOutputInCommitment>) -> Self {
 		let secp_ctx = Secp256k1::new();
