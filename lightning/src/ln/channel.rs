@@ -2998,6 +2998,16 @@ impl PendingFunding {
 		self.contributions.iter().flat_map(|c| c.contributed_outputs())
 	}
 
+	fn prior_contributed_inputs(&self) -> impl Iterator<Item = bitcoin::OutPoint> + '_ {
+		let len = self.contributions.len();
+		self.contributions[..len.saturating_sub(1)].iter().flat_map(|c| c.contributed_inputs())
+	}
+
+	fn prior_contributed_outputs(&self) -> impl Iterator<Item = &TxOut> + '_ {
+		let len = self.contributions.len();
+		self.contributions[..len.saturating_sub(1)].iter().flat_map(|c| c.contributed_outputs())
+	}
+
 	fn check_get_splice_locked<SP: SignerProvider>(
 		&mut self, context: &ChannelContext<SP>, confirmed_funding_index: usize, height: u32,
 	) -> Option<msgs::SpliceLocked> {
@@ -3044,25 +3054,6 @@ pub(super) enum QuiescentError {
 	DoNothing,
 	DiscardFunding { inputs: Vec<bitcoin::OutPoint>, outputs: Vec<bitcoin::TxOut> },
 	FailSplice(SpliceFundingFailed),
-}
-
-impl From<QuiescentAction> for QuiescentError {
-	fn from(action: QuiescentAction) -> Self {
-		match action {
-			QuiescentAction::Splice { contribution, .. } => {
-				let (contributed_inputs, contributed_outputs) =
-					contribution.into_contributed_inputs_and_outputs();
-				return QuiescentError::FailSplice(SpliceFundingFailed {
-					funding_txo: None,
-					channel_type: None,
-					contributed_inputs,
-					contributed_outputs,
-				});
-			},
-			#[cfg(any(test, fuzzing, feature = "_test_utils"))]
-			QuiescentAction::DoNothing => QuiescentError::DoNothing,
-		}
-	}
 }
 
 pub(crate) enum StfuResponse {
@@ -6936,7 +6927,7 @@ pub struct SpliceFundingFailed {
 }
 
 macro_rules! maybe_create_splice_funding_failed {
-	($funded_channel: expr, $pending_splice: expr, $get: ident, $contributed_inputs_and_outputs: ident) => {{
+	($funded_channel: expr, $pending_splice: expr, $pending_splice_ref: expr, $get: ident, $contributed_inputs_and_outputs: ident) => {{
 		$pending_splice
 			.and_then(|pending_splice| pending_splice.funding_negotiation.$get())
 			.filter(|funding_negotiation| funding_negotiation.is_initiator())
@@ -6950,7 +6941,7 @@ macro_rules! maybe_create_splice_funding_failed {
 					.as_funding()
 					.map(|funding| funding.get_channel_type().clone());
 
-				let (contributed_inputs, contributed_outputs) = match funding_negotiation {
+				let (mut contributed_inputs, mut contributed_outputs) = match funding_negotiation {
 					FundingNegotiation::AwaitingAck { context, .. } => {
 						context.$contributed_inputs_and_outputs()
 					},
@@ -6965,6 +6956,15 @@ macro_rules! maybe_create_splice_funding_failed {
 						.expect("We have a pending splice awaiting signatures")
 						.$contributed_inputs_and_outputs(),
 				};
+
+				if let Some(pending_splice) = $pending_splice_ref {
+					for input in pending_splice.prior_contributed_inputs() {
+						contributed_inputs.retain(|i| *i != input);
+					}
+					for output in pending_splice.prior_contributed_outputs() {
+						contributed_outputs.retain(|o| *o != *output);
+					}
+				}
 
 				SpliceFundingFailed {
 					funding_txo,
@@ -6999,11 +6999,19 @@ where
 		shutdown_result
 	}
 
-	fn abandon_quiescent_action(&mut self) -> Option<SpliceFundingFailed> {
-		match self.quiescent_action.take() {
-			Some(QuiescentAction::Splice { contribution, .. }) => {
-				let (inputs, outputs) = contribution.into_contributed_inputs_and_outputs();
-				Some(SpliceFundingFailed {
+	fn quiescent_action_into_error(&self, action: QuiescentAction) -> QuiescentError {
+		match action {
+			QuiescentAction::Splice { contribution, .. } => {
+				let (mut inputs, mut outputs) = contribution.into_contributed_inputs_and_outputs();
+				if let Some(ref pending_splice) = self.pending_splice {
+					for input in pending_splice.contributed_inputs() {
+						inputs.retain(|i| *i != input);
+					}
+					for output in pending_splice.contributed_outputs() {
+						outputs.retain(|o| *o != *output);
+					}
+				}
+				QuiescentError::FailSplice(SpliceFundingFailed {
 					funding_txo: None,
 					channel_type: None,
 					contributed_inputs: inputs,
@@ -7011,11 +7019,20 @@ where
 				})
 			},
 			#[cfg(any(test, fuzzing, feature = "_test_utils"))]
-			Some(quiescent_action) => {
-				self.quiescent_action = Some(quiescent_action);
+			QuiescentAction::DoNothing => QuiescentError::DoNothing,
+		}
+	}
+
+	fn abandon_quiescent_action(&mut self) -> Option<SpliceFundingFailed> {
+		let action = self.quiescent_action.take()?;
+		match self.quiescent_action_into_error(action) {
+			QuiescentError::FailSplice(failed) => Some(failed),
+			#[cfg(any(test, fuzzing, feature = "_test_utils"))]
+			QuiescentError::DoNothing => None,
+			_ => {
+				debug_assert!(false);
 				None
 			},
-			None => None,
 		}
 	}
 
@@ -7139,6 +7156,7 @@ where
 		let splice_funding_failed = maybe_create_splice_funding_failed!(
 			self,
 			self.pending_splice.as_mut(),
+			self.pending_splice.as_ref(),
 			take,
 			into_contributed_inputs_and_outputs
 		);
@@ -7162,6 +7180,7 @@ where
 
 		maybe_create_splice_funding_failed!(
 			self,
+			self.pending_splice.as_ref(),
 			self.pending_splice.as_ref(),
 			as_ref,
 			to_contributed_inputs_and_outputs
@@ -13811,14 +13830,14 @@ where
 
 		if !self.context.is_usable() {
 			log_debug!(logger, "Channel is not in a usable state to propose quiescence");
-			return Err(action.into());
+			return Err(self.quiescent_action_into_error(action));
 		}
 		if self.quiescent_action.is_some() {
 			log_debug!(
 				logger,
 				"Channel already has a pending quiescent action and cannot start another",
 			);
-			return Err(action.into());
+			return Err(self.quiescent_action_into_error(action));
 		}
 		// Since we don't have a pending quiescent action, we should never be in a state where we
 		// sent `stfu` without already having become quiescent.
