@@ -3975,8 +3975,8 @@ fn add_random_cltv_offset(route: &mut Route, payment_params: &PaymentParameters,
 
 		// Limit the offset so we never exceed the max_total_cltv_expiry_delta. To improve plausibility,
 		// we choose the limit to be the largest possible multiple of MEDIAN_HOP_CLTV_EXPIRY_DELTA.
-		let path_total_cltv_expiry_delta: u32 = path.hops.iter().map(|h| h.cltv_expiry_delta).sum();
-		let mut max_path_offset = payment_params.max_total_cltv_expiry_delta - path_total_cltv_expiry_delta;
+		let mut max_path_offset =
+			payment_params.max_total_cltv_expiry_delta - path.total_cltv_expiry_delta();
 		max_path_offset = cmp::max(
 			max_path_offset - (max_path_offset % MEDIAN_HOP_CLTV_EXPIRY_DELTA),
 			max_path_offset % MEDIAN_HOP_CLTV_EXPIRY_DELTA);
