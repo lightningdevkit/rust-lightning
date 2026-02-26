@@ -3708,10 +3708,18 @@ impl<
 		)
 	}
 
-	#[rustfmt::skip]
-	fn create_channel_internal(&self, their_network_key: PublicKey, channel_value_satoshis: u64, push_msat: u64, user_channel_id: u128, temporary_channel_id: Option<ChannelId>, override_config: Option<UserConfig>, is_0reserve: bool) -> Result<ChannelId, APIError> {
+	fn create_channel_internal(
+		&self, their_network_key: PublicKey, channel_value_satoshis: u64, push_msat: u64,
+		user_channel_id: u128, temporary_channel_id: Option<ChannelId>,
+		override_config: Option<UserConfig>, is_0reserve: bool,
+	) -> Result<ChannelId, APIError> {
 		if channel_value_satoshis < 1000 {
-			return Err(APIError::APIMisuseError { err: format!("Channel value must be at least 1000 satoshis. It was {}", channel_value_satoshis) });
+			return Err(APIError::APIMisuseError {
+				err: format!(
+					"Channel value must be at least 1000 satoshis. It was {}",
+					channel_value_satoshis
+				),
+			});
 		}
 
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
@@ -3720,17 +3728,26 @@ impl<
 
 		let per_peer_state = self.per_peer_state.read().unwrap();
 
-		let peer_state_mutex = per_peer_state.get(&their_network_key)
-			.ok_or_else(|| APIError::APIMisuseError{ err: format!("Not connected to node: {}", their_network_key) })?;
+		let peer_state_mutex =
+			per_peer_state.get(&their_network_key).ok_or_else(|| APIError::APIMisuseError {
+				err: format!("Not connected to node: {}", their_network_key),
+			})?;
 
 		let mut peer_state = peer_state_mutex.lock().unwrap();
 		if !peer_state.is_connected {
-			return Err(APIError::APIMisuseError{ err: format!("Not connected to node: {}", their_network_key) });
+			return Err(APIError::APIMisuseError {
+				err: format!("Not connected to node: {}", their_network_key),
+			});
 		}
 
 		if let Some(temporary_channel_id) = temporary_channel_id {
 			if peer_state.channel_by_id.contains_key(&temporary_channel_id) {
-				return Err(APIError::APIMisuseError{ err: format!("Channel with temporary channel ID {} already exists!", temporary_channel_id)});
+				return Err(APIError::APIMisuseError {
+					err: format!(
+						"Channel with temporary channel ID {} already exists!",
+						temporary_channel_id
+					),
+				});
 			}
 		}
 
@@ -3738,15 +3755,23 @@ impl<
 			let outbound_scid_alias = self.create_and_insert_outbound_scid_alias();
 			let their_features = &peer_state.latest_features;
 			let config = self.config.read().unwrap();
-			let config = if let Some(config) = &override_config {
-				config
-			} else {
-				&*config
-			};
-			match OutboundV1Channel::new(&self.fee_estimator, &self.entropy_source, &self.signer_provider, their_network_key,
-				their_features, channel_value_satoshis, push_msat, user_channel_id, config,
-				self.best_block.read().unwrap().height, outbound_scid_alias, temporary_channel_id, &self.logger, is_0reserve)
-			{
+			let config = if let Some(config) = &override_config { config } else { &*config };
+			match OutboundV1Channel::new(
+				&self.fee_estimator,
+				&self.entropy_source,
+				&self.signer_provider,
+				their_network_key,
+				their_features,
+				channel_value_satoshis,
+				push_msat,
+				user_channel_id,
+				config,
+				self.best_block.read().unwrap().height,
+				outbound_scid_alias,
+				temporary_channel_id,
+				&self.logger,
+				is_0reserve,
+			) {
 				Ok(res) => res,
 				Err(e) => {
 					self.outbound_scid_aliases.lock().unwrap().remove(&outbound_scid_alias);
@@ -3766,14 +3791,15 @@ impl<
 					panic!("RNG is bad???");
 				}
 			},
-			hash_map::Entry::Vacant(entry) => { entry.insert(Channel::from(channel)); }
+			hash_map::Entry::Vacant(entry) => {
+				entry.insert(Channel::from(channel));
+			},
 		}
 
 		if let Some(msg) = res {
-			peer_state.pending_msg_events.push(MessageSendEvent::SendOpenChannel {
-				node_id: their_network_key,
-				msg,
-			});
+			peer_state
+				.pending_msg_events
+				.push(MessageSendEvent::SendOpenChannel { node_id: their_network_key, msg });
 		}
 		Ok(temporary_channel_id)
 	}
