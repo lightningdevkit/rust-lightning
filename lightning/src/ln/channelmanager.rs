@@ -4714,6 +4714,58 @@ impl<
 		}
 	}
 
+	/// Initiate an RBF of a pending splice transaction for an existing channel.
+	///
+	/// This is used after a splice has been negotiated but before it has been locked, in order
+	/// to bump the feerate of the funding transaction via replace-by-fee.
+	///
+	/// Returns a [`FundingTemplate`] that must be completed with inputs/outputs and then
+	/// passed to [`Self::funding_contributed`].
+	pub fn rbf_channel(
+		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey, feerate: FeeRate,
+	) -> Result<FundingTemplate, APIError> {
+		let per_peer_state = self.per_peer_state.read().unwrap();
+
+		let peer_state_mutex = match per_peer_state
+			.get(counterparty_node_id)
+			.ok_or_else(|| APIError::no_such_peer(counterparty_node_id))
+		{
+			Ok(p) => p,
+			Err(e) => return Err(e),
+		};
+
+		let mut peer_state = peer_state_mutex.lock().unwrap();
+		if !peer_state.latest_features.supports_splicing() {
+			return Err(APIError::ChannelUnavailable {
+				err: "Peer does not support splicing".to_owned(),
+			});
+		}
+		if !peer_state.latest_features.supports_quiescence() {
+			return Err(APIError::ChannelUnavailable {
+				err: "Peer does not support quiescence, a splicing prerequisite".to_owned(),
+			});
+		}
+
+		// Look for the channel
+		match peer_state.channel_by_id.entry(*channel_id) {
+			hash_map::Entry::Occupied(chan_phase_entry) => {
+				if let Some(chan) = chan_phase_entry.get().as_funded() {
+					chan.rbf_channel(feerate)
+				} else {
+					Err(APIError::ChannelUnavailable {
+						err: format!(
+							"Channel with id {} is not funded, cannot RBF splice",
+							channel_id
+						),
+					})
+				}
+			},
+			hash_map::Entry::Vacant(_) => {
+				Err(APIError::no_such_channel_for_peer(channel_id, counterparty_node_id))
+			},
+		}
+	}
+
 	#[cfg(test)]
 	pub(crate) fn abandon_splice(
 		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey,
@@ -12589,6 +12641,13 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							});
 							Ok(true)
 						},
+						Some(StfuResponse::TxInitRbf(msg)) => {
+							peer_state.pending_msg_events.push(MessageSendEvent::SendTxInitRbf {
+								node_id: *counterparty_node_id,
+								msg,
+							});
+							Ok(true)
+						},
 					}
 				} else {
 					let msg = "Peer sent `stfu` for an unfunded channel";
@@ -12822,9 +12881,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 
-		// TODO(splicing): Currently not possible to contribute on the splicing-acceptor side
-		let our_funding_contribution = 0i64;
-
 		// Look for the channel
 		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Vacant(_) => {
@@ -12844,8 +12900,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				if let Some(ref mut funded_channel) = chan_entry.get_mut().as_funded_mut() {
 					let init_res = funded_channel.splice_init(
 						msg,
-						our_funding_contribution,
-						&self.signer_provider,
 						&self.entropy_source,
 						&self.get_our_node_id(),
 						&self.logger,
@@ -12861,6 +12915,54 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						self,
 						peer_state,
 						Err(ChannelError::close("Channel is not funded, cannot be spliced".into())),
+						chan_entry
+					)
+				}
+			},
+		}
+	}
+
+	/// Handle incoming tx_init_rbf, start a new round of interactive transaction construction.
+	fn internal_tx_init_rbf(
+		&self, counterparty_node_id: &PublicKey, msg: &msgs::TxInitRbf,
+	) -> Result<(), MsgHandleErrInternal> {
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
+			debug_assert!(false);
+			MsgHandleErrInternal::unreachable_no_such_peer(counterparty_node_id, msg.channel_id)
+		})?;
+		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+
+		match peer_state.channel_by_id.entry(msg.channel_id) {
+			hash_map::Entry::Vacant(_) => {
+				return Err(MsgHandleErrInternal::no_such_channel_for_peer(
+					counterparty_node_id,
+					msg.channel_id,
+				))
+			},
+			hash_map::Entry::Occupied(mut chan_entry) => {
+				if let Some(ref mut funded_channel) = chan_entry.get_mut().as_funded_mut() {
+					let init_res = funded_channel.tx_init_rbf(
+						msg,
+						&self.entropy_source,
+						&self.get_our_node_id(),
+						&self.fee_estimator,
+						&self.logger,
+					);
+					let tx_ack_rbf_msg = try_channel_entry!(self, peer_state, init_res, chan_entry);
+					peer_state.pending_msg_events.push(MessageSendEvent::SendTxAckRbf {
+						node_id: *counterparty_node_id,
+						msg: tx_ack_rbf_msg,
+					});
+					Ok(())
+				} else {
+					try_channel_entry!(
+						self,
+						peer_state,
+						Err(
+							ChannelError::close("Channel is not funded, cannot RBF splice".into(),)
+						),
 						chan_entry
 					)
 				}
@@ -12889,7 +12991,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				if let Some(ref mut funded_channel) = chan_entry.get_mut().as_funded_mut() {
 					let splice_ack_res = funded_channel.splice_ack(
 						msg,
-						&self.signer_provider,
 						&self.entropy_source,
 						&self.get_our_node_id(),
 						&self.logger,
@@ -12907,6 +13008,51 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						self,
 						peer_state,
 						Err(ChannelError::close("Channel is not funded, cannot be spliced".into())),
+						chan_entry
+					)
+				}
+			},
+		}
+	}
+
+	fn internal_tx_ack_rbf(
+		&self, counterparty_node_id: &PublicKey, msg: &msgs::TxAckRbf,
+	) -> Result<(), MsgHandleErrInternal> {
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
+			debug_assert!(false);
+			MsgHandleErrInternal::unreachable_no_such_peer(counterparty_node_id, msg.channel_id)
+		})?;
+		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+
+		// Look for the channel
+		match peer_state.channel_by_id.entry(msg.channel_id) {
+			hash_map::Entry::Vacant(_) => Err(MsgHandleErrInternal::no_such_channel_for_peer(
+				counterparty_node_id,
+				msg.channel_id,
+			)),
+			hash_map::Entry::Occupied(mut chan_entry) => {
+				if let Some(ref mut funded_channel) = chan_entry.get_mut().as_funded_mut() {
+					let tx_ack_rbf_res = funded_channel.tx_ack_rbf(
+						msg,
+						&self.entropy_source,
+						&self.get_our_node_id(),
+						&self.logger,
+					);
+					let tx_msg_opt =
+						try_channel_entry!(self, peer_state, tx_ack_rbf_res, chan_entry);
+					if let Some(tx_msg) = tx_msg_opt {
+						peer_state
+							.pending_msg_events
+							.push(tx_msg.into_msg_send_event(counterparty_node_id.clone()));
+					}
+					Ok(())
+				} else {
+					try_channel_entry!(
+						self,
+						peer_state,
+						Err(ChannelError::close("Channel is not funded, cannot RBF splice".into())),
 						chan_entry
 					)
 				}
@@ -16322,19 +16468,29 @@ impl<
 	}
 
 	fn handle_tx_init_rbf(&self, counterparty_node_id: PublicKey, msg: &msgs::TxInitRbf) {
-		let err = Err(MsgHandleErrInternal::send_err_msg_no_close(
-			"Dual-funded channels not supported".to_owned(),
-			msg.channel_id.clone(),
-		));
-		let _: Result<(), _> = self.handle_error(err, counterparty_node_id);
+		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
+			let res = self.internal_tx_init_rbf(&counterparty_node_id, msg);
+			let persist = match &res {
+				Err(e) if e.closes_channel() => NotifyOption::DoPersist,
+				Err(_) => NotifyOption::SkipPersistHandleEvents,
+				Ok(()) => NotifyOption::SkipPersistHandleEvents,
+			};
+			let _ = self.handle_error(res, counterparty_node_id);
+			persist
+		});
 	}
 
 	fn handle_tx_ack_rbf(&self, counterparty_node_id: PublicKey, msg: &msgs::TxAckRbf) {
-		let err = Err(MsgHandleErrInternal::send_err_msg_no_close(
-			"Dual-funded channels not supported".to_owned(),
-			msg.channel_id.clone(),
-		));
-		let _: Result<(), _> = self.handle_error(err, counterparty_node_id);
+		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
+			let res = self.internal_tx_ack_rbf(&counterparty_node_id, msg);
+			let persist = match &res {
+				Err(e) if e.closes_channel() => NotifyOption::DoPersist,
+				Err(_) => NotifyOption::SkipPersistHandleEvents,
+				Ok(()) => NotifyOption::SkipPersistHandleEvents,
+			};
+			let _ = self.handle_error(res, counterparty_node_id);
+			persist
+		});
 	}
 
 	fn handle_tx_abort(&self, counterparty_node_id: PublicKey, msg: &msgs::TxAbort) {

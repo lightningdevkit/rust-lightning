@@ -25,15 +25,18 @@ use crate::ln::types::ChannelId;
 use crate::routing::router::{PaymentParameters, RouteParameters};
 use crate::util::errors::APIError;
 use crate::util::ser::Writeable;
-use crate::util::wallet_utils::{WalletSourceSync, WalletSync};
+use crate::util::wallet_utils::{
+	CoinSelection, CoinSelectionSourceSync, ConfirmedUtxo, Input, WalletSourceSync, WalletSync,
+};
 
 use crate::sync::Arc;
 
 use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::ecdsa::Signature;
 use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
+use bitcoin::transaction::Version;
 use bitcoin::{
-	Amount, FeeRate, OutPoint as BitcoinOutPoint, ScriptBuf, Transaction, TxOut, WPubkeyHash,
+	Amount, FeeRate, OutPoint as BitcoinOutPoint, Psbt, ScriptBuf, Transaction, TxOut, WPubkeyHash,
 };
 
 #[test]
@@ -110,6 +113,78 @@ fn test_v1_splice_in_negative_insufficient_inputs() {
 
 	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
 	assert!(funding_template.splice_in_sync(splice_in_value, &wallet).is_err());
+}
+
+/// A mock wallet that returns a pre-configured [`CoinSelection`] with a single input and change
+/// output. Used to test edge cases where the input value is tight relative to the fee estimate.
+struct TightBudgetWallet {
+	utxo_value: Amount,
+	change_value: Amount,
+}
+
+impl CoinSelectionSourceSync for TightBudgetWallet {
+	fn select_confirmed_utxos(
+		&self, _claim_id: Option<crate::chain::ClaimId>, _must_spend: Vec<Input>,
+		_must_pay_to: &[TxOut], _target_feerate_sat_per_1000_weight: u32, _max_tx_weight: u64,
+	) -> Result<CoinSelection, ()> {
+		let prevout = TxOut {
+			value: self.utxo_value,
+			script_pubkey: ScriptBuf::new_p2wpkh(&WPubkeyHash::all_zeros()),
+		};
+		let prevtx = Transaction {
+			input: vec![],
+			output: vec![prevout],
+			version: Version::TWO,
+			lock_time: bitcoin::absolute::LockTime::ZERO,
+		};
+		let utxo = ConfirmedUtxo::new_p2wpkh(prevtx, 0).unwrap();
+
+		let change_output = TxOut {
+			value: self.change_value,
+			script_pubkey: ScriptBuf::new_p2wpkh(&WPubkeyHash::all_zeros()),
+		};
+
+		Ok(CoinSelection { confirmed_utxos: vec![utxo], change_output: Some(change_output) })
+	}
+
+	fn sign_psbt(&self, _psbt: Psbt) -> Result<Transaction, ()> {
+		unreachable!("should not reach signing")
+	}
+}
+
+#[test]
+fn test_validate_accounts_for_change_output_weight() {
+	// Demonstrates that estimated_fee includes the change output's weight when building a
+	// FundingContribution. A mock wallet returns a single input whose value is between
+	// estimated_fee_without_change (1736/1740 sats) and estimated_fee_with_change (1984/1988
+	// sats) above value_added. The validate() check correctly catches that the inputs are
+	// insufficient when the change output weight is included. Without accounting for the change
+	// output weight, the check would incorrectly pass.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 0);
+
+	let feerate = FeeRate::from_sat_per_kwu(2000);
+	let funding_template = nodes[0]
+		.node
+		.splice_channel(&channel_id, &nodes[1].node.get_our_node_id(), feerate)
+		.unwrap();
+
+	// Input value = value_added + 1800: above 1736/1740 (fee without change), below 1984/1988
+	// (fee with change).
+	let value_added = Amount::from_sat(20_000);
+	let wallet = TightBudgetWallet {
+		utxo_value: value_added + Amount::from_sat(1800),
+		change_value: Amount::from_sat(1000),
+	};
+	let contribution = funding_template.splice_in_sync(value_added, &wallet).unwrap();
+
+	assert!(contribution.change_output().is_some());
+	assert!(contribution.validate().is_err());
 }
 
 pub fn negotiate_splice_tx<'a, 'b, 'c, 'd>(
@@ -222,6 +297,21 @@ pub fn complete_interactive_funding_negotiation<'a, 'b, 'c, 'd>(
 	initiator: &'a Node<'b, 'c, 'd>, acceptor: &'a Node<'b, 'c, 'd>, channel_id: ChannelId,
 	initiator_contribution: FundingContribution, new_funding_script: ScriptBuf,
 ) {
+	complete_interactive_funding_negotiation_for_both(
+		initiator,
+		acceptor,
+		channel_id,
+		initiator_contribution,
+		None,
+		new_funding_script,
+	);
+}
+
+pub fn complete_interactive_funding_negotiation_for_both<'a, 'b, 'c, 'd>(
+	initiator: &'a Node<'b, 'c, 'd>, acceptor: &'a Node<'b, 'c, 'd>, channel_id: ChannelId,
+	initiator_contribution: FundingContribution,
+	acceptor_contribution: Option<FundingContribution>, new_funding_script: ScriptBuf,
+) {
 	let node_id_initiator = initiator.node.get_our_node_id();
 	let node_id_acceptor = acceptor.node.get_our_node_id();
 
@@ -246,60 +336,123 @@ pub fn complete_interactive_funding_negotiation<'a, 'b, 'c, 'd>(
 		.chain(core::iter::once(new_funding_script))
 		.collect::<Vec<_>>();
 
+	let (mut expected_acceptor_inputs, mut expected_acceptor_scripts) =
+		if let Some(acceptor_contribution) = acceptor_contribution {
+			let (acceptor_inputs, acceptor_outputs) = acceptor_contribution.into_tx_parts();
+			let expected_acceptor_inputs =
+				acceptor_inputs.iter().map(|input| input.utxo.outpoint).collect::<Vec<_>>();
+			let expected_acceptor_scripts =
+				acceptor_outputs.into_iter().map(|output| output.script_pubkey).collect::<Vec<_>>();
+			(expected_acceptor_inputs, expected_acceptor_scripts)
+		} else {
+			(Vec::new(), Vec::new())
+		};
+
+	let mut initiator_sent_tx_complete;
 	let mut acceptor_sent_tx_complete = false;
 	loop {
-		if !expected_initiator_inputs.is_empty() {
-			let tx_add_input =
-				get_event_msg!(initiator, MessageSendEvent::SendTxAddInput, node_id_acceptor);
-			let input_prevout = BitcoinOutPoint {
-				txid: tx_add_input
-					.prevtx
-					.as_ref()
-					.map(|prevtx| prevtx.compute_txid())
-					.or(tx_add_input.shared_input_txid)
-					.unwrap(),
-				vout: tx_add_input.prevtx_out,
-			};
-			expected_initiator_inputs.remove(
-				expected_initiator_inputs.iter().position(|input| *input == input_prevout).unwrap(),
-			);
-			acceptor.node.handle_tx_add_input(node_id_initiator, &tx_add_input);
-		} else if !expected_initiator_scripts.is_empty() {
-			let tx_add_output =
-				get_event_msg!(initiator, MessageSendEvent::SendTxAddOutput, node_id_acceptor);
-			expected_initiator_scripts.remove(
-				expected_initiator_scripts
-					.iter()
-					.position(|script| *script == tx_add_output.script)
-					.unwrap(),
-			);
-			acceptor.node.handle_tx_add_output(node_id_initiator, &tx_add_output);
-		} else {
-			let msg_events = initiator.node.get_and_clear_pending_msg_events();
-			assert_eq!(msg_events.len(), 1, "{msg_events:?}");
-			if let MessageSendEvent::SendTxComplete { ref msg, .. } = &msg_events[0] {
+		// Initiator's turn: send TxAddInput, TxAddOutput, or TxComplete
+		let msg_events = initiator.node.get_and_clear_pending_msg_events();
+		assert_eq!(msg_events.len(), 1, "{msg_events:?}");
+		match &msg_events[0] {
+			MessageSendEvent::SendTxAddInput { msg, .. } => {
+				let input_prevout = BitcoinOutPoint {
+					txid: msg
+						.prevtx
+						.as_ref()
+						.map(|prevtx| prevtx.compute_txid())
+						.or(msg.shared_input_txid)
+						.unwrap(),
+					vout: msg.prevtx_out,
+				};
+				expected_initiator_inputs.remove(
+					expected_initiator_inputs
+						.iter()
+						.position(|input| *input == input_prevout)
+						.unwrap(),
+				);
+				acceptor.node.handle_tx_add_input(node_id_initiator, msg);
+				initiator_sent_tx_complete = false;
+			},
+			MessageSendEvent::SendTxAddOutput { msg, .. } => {
+				expected_initiator_scripts.remove(
+					expected_initiator_scripts
+						.iter()
+						.position(|script| *script == msg.script)
+						.unwrap(),
+				);
+				acceptor.node.handle_tx_add_output(node_id_initiator, msg);
+				initiator_sent_tx_complete = false;
+			},
+			MessageSendEvent::SendTxComplete { msg, .. } => {
 				acceptor.node.handle_tx_complete(node_id_initiator, msg);
-			} else {
-				panic!();
-			}
-			if acceptor_sent_tx_complete {
-				break;
-			}
+				initiator_sent_tx_complete = true;
+				if acceptor_sent_tx_complete {
+					break;
+				}
+			},
+			_ => panic!("Unexpected message event: {:?}", msg_events[0]),
 		}
 
-		let mut msg_events = acceptor.node.get_and_clear_pending_msg_events();
+		// Acceptor's turn: send TxAddInput, TxAddOutput, or TxComplete
+		let msg_events = acceptor.node.get_and_clear_pending_msg_events();
 		assert_eq!(msg_events.len(), 1, "{msg_events:?}");
-		if let MessageSendEvent::SendTxComplete { ref msg, .. } = msg_events.remove(0) {
-			initiator.node.handle_tx_complete(node_id_acceptor, msg);
-		} else {
-			panic!();
+		match &msg_events[0] {
+			MessageSendEvent::SendTxAddInput { msg, .. } => {
+				let input_prevout = BitcoinOutPoint {
+					txid: msg
+						.prevtx
+						.as_ref()
+						.map(|prevtx| prevtx.compute_txid())
+						.or(msg.shared_input_txid)
+						.unwrap(),
+					vout: msg.prevtx_out,
+				};
+				expected_acceptor_inputs.remove(
+					expected_acceptor_inputs
+						.iter()
+						.position(|input| *input == input_prevout)
+						.unwrap(),
+				);
+				initiator.node.handle_tx_add_input(node_id_acceptor, msg);
+				acceptor_sent_tx_complete = false;
+			},
+			MessageSendEvent::SendTxAddOutput { msg, .. } => {
+				expected_acceptor_scripts.remove(
+					expected_acceptor_scripts
+						.iter()
+						.position(|script| *script == msg.script)
+						.unwrap(),
+				);
+				initiator.node.handle_tx_add_output(node_id_acceptor, msg);
+				acceptor_sent_tx_complete = false;
+			},
+			MessageSendEvent::SendTxComplete { msg, .. } => {
+				initiator.node.handle_tx_complete(node_id_acceptor, msg);
+				acceptor_sent_tx_complete = true;
+				if initiator_sent_tx_complete {
+					break;
+				}
+			},
+			_ => panic!("Unexpected message event: {:?}", msg_events[0]),
 		}
-		acceptor_sent_tx_complete = true;
 	}
+
+	assert!(expected_initiator_inputs.is_empty(), "Not all initiator inputs were sent");
+	assert!(expected_initiator_scripts.is_empty(), "Not all initiator outputs were sent");
+	assert!(expected_acceptor_inputs.is_empty(), "Not all acceptor inputs were sent");
+	assert!(expected_acceptor_scripts.is_empty(), "Not all acceptor outputs were sent");
 }
 
 pub fn sign_interactive_funding_tx<'a, 'b, 'c, 'd>(
 	initiator: &'a Node<'b, 'c, 'd>, acceptor: &'a Node<'b, 'c, 'd>, is_0conf: bool,
+) -> (Transaction, Option<(msgs::SpliceLocked, PublicKey)>) {
+	sign_interactive_funding_tx_with_acceptor_contribution(initiator, acceptor, is_0conf, false)
+}
+
+pub fn sign_interactive_funding_tx_with_acceptor_contribution<'a, 'b, 'c, 'd>(
+	initiator: &'a Node<'b, 'c, 'd>, acceptor: &'a Node<'b, 'c, 'd>, is_0conf: bool,
+	acceptor_has_contribution: bool,
 ) -> (Transaction, Option<(msgs::SpliceLocked, PublicKey)>) {
 	let node_id_initiator = initiator.node.get_our_node_id();
 	let node_id_acceptor = acceptor.node.get_our_node_id();
@@ -332,6 +485,29 @@ pub fn sign_interactive_funding_tx<'a, 'b, 'c, 'd>(
 			panic!();
 		};
 	acceptor.node.handle_commitment_signed(node_id_initiator, &initial_commit_sig_for_acceptor);
+
+	if acceptor_has_contribution {
+		// When the acceptor contributed inputs, it needs to sign as well. The counterparty's
+		// commitment_signed is buffered until the acceptor signs.
+		assert!(acceptor.node.get_and_clear_pending_msg_events().is_empty());
+
+		let event = get_event!(acceptor, Event::FundingTransactionReadyForSigning);
+		if let Event::FundingTransactionReadyForSigning {
+			channel_id,
+			counterparty_node_id,
+			unsigned_transaction,
+			..
+		} = event
+		{
+			let partially_signed_tx = acceptor.wallet_source.sign_tx(unsigned_transaction).unwrap();
+			acceptor
+				.node
+				.funding_transaction_signed(&channel_id, &counterparty_node_id, partially_signed_tx)
+				.unwrap();
+		} else {
+			panic!();
+		}
+	}
 
 	let msg_events = acceptor.node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), 2, "{msg_events:?}");
@@ -1195,6 +1371,351 @@ fn test_initiating_splice_holds_stfu_with_pending_splice() {
 	);
 }
 
+#[test]
+fn test_splice_both_contribute_tiebreak() {
+	// Same feerate: the acceptor's change increases because is_initiator=false has lower weight.
+	do_test_splice_both_contribute_tiebreak(None, None);
+}
+
+#[test]
+fn test_splice_tiebreak_higher_feerate() {
+	// Node 0 (winner) uses a higher feerate than node 1 (loser). Node 1's change output is
+	// adjusted (reduced) to accommodate the higher feerate. Negotiation succeeds.
+	let floor = FEERATE_FLOOR_SATS_PER_KW as u64;
+	do_test_splice_both_contribute_tiebreak(
+		Some(FeeRate::from_sat_per_kwu(floor * 3)),
+		Some(FeeRate::from_sat_per_kwu(floor)),
+	);
+}
+
+#[test]
+fn test_splice_tiebreak_lower_feerate() {
+	// Node 0 (winner) uses a lower feerate than node 1 (loser). Node 1's change output increases
+	// because the acceptor's fair fee decreases. Negotiation succeeds.
+	let floor = FEERATE_FLOOR_SATS_PER_KW as u64;
+	do_test_splice_both_contribute_tiebreak(
+		Some(FeeRate::from_sat_per_kwu(floor)),
+		Some(FeeRate::from_sat_per_kwu(floor * 3)),
+	);
+}
+
+/// Runs the splice tie-breaker test with optional per-node feerates.
+/// If `node_0_feerate` or `node_1_feerate` is None, both use the same default feerate.
+#[cfg(test)]
+fn do_test_splice_both_contribute_tiebreak(
+	node_0_feerate: Option<FeeRate>, node_1_feerate: Option<FeeRate>,
+) {
+	// Both nodes call splice_channel + splice_in_sync + funding_contributed, both send STFU,
+	// one wins the quiescence tie-break (node 0, the outbound channel funder). The loser
+	// (node 1) becomes the acceptor and its stored QuiescentAction is consumed by the
+	// splice_init handler, contributing its inputs/outputs to the splice transaction.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 2, Amount::from_sat(100_000));
+
+	let default_feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64);
+	let feerate_0 = node_0_feerate.unwrap_or(default_feerate);
+	let feerate_1 = node_1_feerate.unwrap_or(default_feerate);
+
+	// Node 0 calls splice_channel + splice_in_sync + funding_contributed at feerate_0.
+	let funding_template_0 =
+		nodes[0].node.splice_channel(&channel_id, &node_id_1, feerate_0).unwrap();
+	let wallet_0 = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
+	let node_0_funding_contribution =
+		funding_template_0.splice_in_sync(added_value, &wallet_0).unwrap();
+	nodes[0]
+		.node
+		.funding_contributed(&channel_id, &node_id_1, node_0_funding_contribution.clone(), None)
+		.unwrap();
+
+	// Node 1 calls splice_channel + splice_in_sync + funding_contributed at feerate_1.
+	let funding_template_1 =
+		nodes[1].node.splice_channel(&channel_id, &node_id_0, feerate_1).unwrap();
+	let wallet_1 = WalletSync::new(Arc::clone(&nodes[1].wallet_source), nodes[1].logger);
+	let node_1_funding_contribution =
+		funding_template_1.splice_in_sync(added_value, &wallet_1).unwrap();
+	nodes[1]
+		.node
+		.funding_contributed(&channel_id, &node_id_0, node_1_funding_contribution.clone(), None)
+		.unwrap();
+
+	// Capture change output values before the tiebreak.
+	let node_0_change = node_0_funding_contribution
+		.change_output()
+		.expect("splice-in should have a change output")
+		.clone();
+	let node_1_change = node_1_funding_contribution
+		.change_output()
+		.expect("splice-in should have a change output")
+		.clone();
+
+	// Both nodes emit STFU.
+	let stfu_0 = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+	assert!(stfu_0.initiator);
+	let stfu_1 = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
+	assert!(stfu_1.initiator);
+
+	// Tie-break: node 1 handles node 0's STFU first — node 1 loses (not the outbound funder).
+	nodes[1].node.handle_stfu(node_id_0, &stfu_0);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+	// Node 0 handles node 1's STFU — node 0 wins (outbound funder), sends SpliceInit.
+	nodes[0].node.handle_stfu(node_id_1, &stfu_1);
+
+	let splice_init = get_event_msg!(nodes[0], MessageSendEvent::SendSpliceInit, node_id_1);
+
+	// Node 1 handles SpliceInit — its contribution is adjusted for node 0's feerate as acceptor,
+	// then sends SpliceAck with its contribution.
+	nodes[1].node.handle_splice_init(node_id_0, &splice_init);
+	let splice_ack = get_event_msg!(nodes[1], MessageSendEvent::SendSpliceAck, node_id_0);
+	assert_ne!(
+		splice_ack.funding_contribution_satoshis, 0,
+		"Acceptor should contribute to the splice"
+	);
+
+	// Node 0 handles SpliceAck — starts interactive tx construction.
+	nodes[0].node.handle_splice_ack(node_id_1, &splice_ack);
+
+	// Compute the new funding script from the splice pubkeys.
+	let new_funding_script = chan_utils::make_funding_redeemscript(
+		&splice_init.funding_pubkey,
+		&splice_ack.funding_pubkey,
+	)
+	.to_p2wsh();
+
+	// Complete interactive funding negotiation with both parties' inputs/outputs.
+	complete_interactive_funding_negotiation_for_both(
+		&nodes[0],
+		&nodes[1],
+		channel_id,
+		node_0_funding_contribution,
+		Some(node_1_funding_contribution),
+		new_funding_script,
+	);
+
+	// Sign (acceptor has contribution) and broadcast.
+	let (tx, splice_locked) =
+		sign_interactive_funding_tx_with_acceptor_contribution(&nodes[0], &nodes[1], false, true);
+	assert!(splice_locked.is_none());
+
+	// The initiator's change output should remain unchanged (no feerate adjustment).
+	let initiator_change_in_tx = tx
+		.output
+		.iter()
+		.find(|o| o.script_pubkey == node_0_change.script_pubkey)
+		.expect("Initiator's change output should be in the splice transaction");
+	assert_eq!(
+		initiator_change_in_tx.value, node_0_change.value,
+		"Initiator's change output should remain unchanged",
+	);
+
+	// The acceptor's change output should be adjusted based on the feerate difference.
+	let acceptor_change_in_tx = tx
+		.output
+		.iter()
+		.find(|o| o.script_pubkey == node_1_change.script_pubkey)
+		.expect("Acceptor's change output should be in the splice transaction");
+	if feerate_0 <= feerate_1 {
+		// Initiator's feerate <= acceptor's original: the acceptor's change increases because
+		// is_initiator=false has lower weight, and the feerate is the same or lower.
+		assert!(
+			acceptor_change_in_tx.value > node_1_change.value,
+			"Acceptor's change should increase when initiator feerate ({}) <= acceptor feerate \
+			 ({}): adjusted {} vs original {}",
+			feerate_0.to_sat_per_kwu(),
+			feerate_1.to_sat_per_kwu(),
+			acceptor_change_in_tx.value,
+			node_1_change.value,
+		);
+	} else {
+		// Initiator's feerate > acceptor's original: the higher feerate more than compensates
+		// for the lower weight, so the acceptor's change decreases.
+		assert!(
+			acceptor_change_in_tx.value < node_1_change.value,
+			"Acceptor's change should decrease when initiator feerate ({}) > acceptor feerate \
+			 ({}): adjusted {} vs original {}",
+			feerate_0.to_sat_per_kwu(),
+			feerate_1.to_sat_per_kwu(),
+			acceptor_change_in_tx.value,
+			node_1_change.value,
+		);
+	}
+
+	expect_splice_pending_event(&nodes[0], &node_id_1);
+	expect_splice_pending_event(&nodes[1], &node_id_0);
+
+	mine_transaction(&nodes[0], &tx);
+	mine_transaction(&nodes[1], &tx);
+
+	lock_splice_after_blocks(&nodes[0], &nodes[1], ANTI_REORG_DELAY - 1);
+}
+
+#[test]
+fn test_splice_tiebreak_feerate_too_high() {
+	// Node 0 (winner) uses a feerate high enough that node 1's (loser) contribution cannot
+	// cover the fees. Node 1 proceeds without its contribution (QuiescentAction is preserved
+	// for a future splice). The splice completes with only node 0's inputs/outputs.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	provide_utxo_reserves(&nodes, 2, Amount::from_sat(100_000));
+
+	// Node 0 uses a high feerate (20,000 sat/kwu). Node 1 uses the floor feerate but
+	// splices in a large amount (95,000 sats from a 100,000 sat UTXO), leaving very little
+	// change/fee budget. Node 1's budget (~5,000 sats) can't cover the acceptor's fair fee
+	// at 20,000 sat/kwu, so adjust_for_feerate fails.
+	let high_feerate = FeeRate::from_sat_per_kwu(20_000);
+	let floor_feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64);
+	let node_0_added_value = Amount::from_sat(50_000);
+	let node_1_added_value = Amount::from_sat(95_000);
+
+	// Node 0: high feerate, moderate splice-in.
+	let funding_template_0 =
+		nodes[0].node.splice_channel(&channel_id, &node_id_1, high_feerate).unwrap();
+	let wallet_0 = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
+	let node_0_funding_contribution =
+		funding_template_0.splice_in_sync(node_0_added_value, &wallet_0).unwrap();
+	nodes[0]
+		.node
+		.funding_contributed(&channel_id, &node_id_1, node_0_funding_contribution.clone(), None)
+		.unwrap();
+
+	// Node 1: floor feerate, tight budget (95,000 from 100,000 sat UTXO).
+	let funding_template_1 =
+		nodes[1].node.splice_channel(&channel_id, &node_id_0, floor_feerate).unwrap();
+	let wallet_1 = WalletSync::new(Arc::clone(&nodes[1].wallet_source), nodes[1].logger);
+	let node_1_funding_contribution =
+		funding_template_1.splice_in_sync(node_1_added_value, &wallet_1).unwrap();
+	nodes[1]
+		.node
+		.funding_contributed(&channel_id, &node_id_0, node_1_funding_contribution.clone(), None)
+		.unwrap();
+
+	// Both emit STFU.
+	let stfu_0 = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+	let stfu_1 = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
+
+	// Tie-break: node 0 wins.
+	nodes[1].node.handle_stfu(node_id_0, &stfu_0);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+	nodes[0].node.handle_stfu(node_id_1, &stfu_1);
+
+	// Node 0 sends SpliceInit at 20,000 sat/kwu.
+	let splice_init = get_event_msg!(nodes[0], MessageSendEvent::SendSpliceInit, node_id_1);
+
+	// Node 1 handles SpliceInit — adjust_for_feerate fails because node 1's contribution
+	// can't cover fees at 20,000 sat/kwu. Node 1 proceeds without its contribution.
+	nodes[1].node.handle_splice_init(node_id_0, &splice_init);
+	let splice_ack = get_event_msg!(nodes[1], MessageSendEvent::SendSpliceAck, node_id_0);
+	assert_eq!(
+		splice_ack.funding_contribution_satoshis, 0,
+		"Acceptor should not contribute when feerate adjustment fails"
+	);
+
+	// Node 0 handles SpliceAck — starts interactive tx construction.
+	nodes[0].node.handle_splice_ack(node_id_1, &splice_ack);
+
+	let new_funding_script = chan_utils::make_funding_redeemscript(
+		&splice_init.funding_pubkey,
+		&splice_ack.funding_pubkey,
+	)
+	.to_p2wsh();
+
+	// Complete with only node 0's contribution.
+	complete_interactive_funding_negotiation_for_both(
+		&nodes[0],
+		&nodes[1],
+		channel_id,
+		node_0_funding_contribution,
+		None,
+		new_funding_script,
+	);
+
+	// Sign (no acceptor contribution) and broadcast.
+	let (tx, splice_locked) =
+		sign_interactive_funding_tx_with_acceptor_contribution(&nodes[0], &nodes[1], false, false);
+	assert!(splice_locked.is_none());
+
+	expect_splice_pending_event(&nodes[0], &node_id_1);
+	expect_splice_pending_event(&nodes[1], &node_id_0);
+
+	mine_transaction(&nodes[0], &tx);
+	mine_transaction(&nodes[1], &tx);
+
+	// After splice_locked, node 1's preserved QuiescentAction triggers STFU.
+	let node_1_stfu = lock_splice_after_blocks(&nodes[0], &nodes[1], ANTI_REORG_DELAY - 1);
+	let stfu_1 = if let Some(MessageSendEvent::SendStfu { msg, .. }) = node_1_stfu {
+		assert!(msg.initiator);
+		msg
+	} else {
+		panic!("Expected SendStfu from node 1 after splice_locked");
+	};
+
+	// === Part 2: Node 1 retries as initiator ===
+
+	// Node 0 receives node 1's STFU and responds with its own STFU.
+	nodes[0].node.handle_stfu(node_id_1, &stfu_1);
+	let stfu_0 = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+
+	// Node 1 receives STFU → quiescence established → node 1 is the initiator → sends SpliceInit.
+	nodes[1].node.handle_stfu(node_id_0, &stfu_0);
+	let splice_init = get_event_msg!(nodes[1], MessageSendEvent::SendSpliceInit, node_id_0);
+
+	// Node 0 handles SpliceInit → sends SpliceAck.
+	nodes[0].node.handle_splice_init(node_id_1, &splice_init);
+	let splice_ack = get_event_msg!(nodes[0], MessageSendEvent::SendSpliceAck, node_id_1);
+
+	// Node 1 handles SpliceAck → starts interactive tx construction.
+	nodes[1].node.handle_splice_ack(node_id_0, &splice_ack);
+
+	let new_funding_script_2 = chan_utils::make_funding_redeemscript(
+		&splice_init.funding_pubkey,
+		&splice_ack.funding_pubkey,
+	)
+	.to_p2wsh();
+
+	// Complete interactive funding negotiation with node 1 as initiator (only node 1 contributes).
+	complete_interactive_funding_negotiation(
+		&nodes[1],
+		&nodes[0],
+		channel_id,
+		node_1_funding_contribution,
+		new_funding_script_2,
+	);
+
+	// Sign (no acceptor contribution) and broadcast.
+	let (new_splice_tx, splice_locked) = sign_interactive_funding_tx(&nodes[1], &nodes[0], false);
+	assert!(splice_locked.is_none());
+
+	expect_splice_pending_event(&nodes[1], &node_id_0);
+	expect_splice_pending_event(&nodes[0], &node_id_1);
+
+	mine_transaction(&nodes[1], &new_splice_tx);
+	mine_transaction(&nodes[0], &new_splice_tx);
+
+	lock_splice_after_blocks(&nodes[1], &nodes[0], ANTI_REORG_DELAY - 1);
+}
+
 #[cfg(test)]
 #[derive(PartialEq)]
 enum SpliceStatus {
@@ -1663,28 +2184,23 @@ fn do_test_splice_reestablish(reload: bool, async_monitor_update: bool) {
 
 #[test]
 fn test_propose_splice_while_disconnected() {
-	do_test_propose_splice_while_disconnected(false, false);
-	do_test_propose_splice_while_disconnected(false, true);
-	do_test_propose_splice_while_disconnected(true, false);
-	do_test_propose_splice_while_disconnected(true, true);
+	do_test_propose_splice_while_disconnected(false);
+	do_test_propose_splice_while_disconnected(true);
 }
 
 #[cfg(test)]
-fn do_test_propose_splice_while_disconnected(reload: bool, use_0conf: bool) {
+fn do_test_propose_splice_while_disconnected(use_0conf: bool) {
 	// Test that both nodes are able to propose a splice while the counterparty is disconnected, and
-	// whoever doesn't go first due to the quiescence tie-breaker, will retry their splice after the
-	// first one becomes locked.
+	// whoever doesn't go first due to the quiescence tie-breaker, will have their contribution
+	// merged into the counterparty-initiated splice.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let (persister_0a, persister_0b, persister_1a, persister_1b);
-	let (chain_monitor_0a, chain_monitor_0b, chain_monitor_1a, chain_monitor_1b);
 	let mut config = test_default_channel_config();
 	if use_0conf {
 		config.channel_handshake_limits.trust_own_funding_0conf = true;
 	}
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
-	let (node_0a, node_0b, node_1a, node_1b);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_id_0 = nodes[0].node.get_our_node_id();
 	let node_id_1 = nodes[1].node.get_our_node_id();
@@ -1722,15 +2238,8 @@ fn do_test_propose_splice_while_disconnected(reload: bool, use_0conf: bool) {
 		value: Amount::from_sat(splice_out_sat),
 		script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
 	}];
-	let feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64);
-	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1, feerate).unwrap();
-	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
 	let node_0_funding_contribution =
-		funding_template.splice_out_sync(node_0_outputs, &wallet).unwrap();
-	nodes[0]
-		.node
-		.funding_contributed(&channel_id, &node_id_1, node_0_funding_contribution.clone(), None)
-		.unwrap();
+		initiate_splice_out(&nodes[0], &nodes[1], channel_id, node_0_outputs);
 
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 
@@ -1738,37 +2247,10 @@ fn do_test_propose_splice_while_disconnected(reload: bool, use_0conf: bool) {
 		value: Amount::from_sat(splice_out_sat),
 		script_pubkey: nodes[1].wallet_source.get_change_script().unwrap(),
 	}];
-	let funding_template = nodes[1].node.splice_channel(&channel_id, &node_id_0, feerate).unwrap();
-	let wallet = WalletSync::new(Arc::clone(&nodes[1].wallet_source), nodes[1].logger);
 	let node_1_funding_contribution =
-		funding_template.splice_out_sync(node_1_outputs, &wallet).unwrap();
-	nodes[1]
-		.node
-		.funding_contributed(&channel_id, &node_id_0, node_1_funding_contribution.clone(), None)
-		.unwrap();
+		initiate_splice_out(&nodes[1], &nodes[0], channel_id, node_1_outputs);
 
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
-
-	if reload {
-		let encoded_monitor_0 = get_monitor!(nodes[0], channel_id).encode();
-		reload_node!(
-			nodes[0],
-			nodes[0].node.encode(),
-			&[&encoded_monitor_0],
-			persister_0a,
-			chain_monitor_0a,
-			node_0a
-		);
-		let encoded_monitor_1 = get_monitor!(nodes[1], channel_id).encode();
-		reload_node!(
-			nodes[1],
-			nodes[1].node.encode(),
-			&[&encoded_monitor_1],
-			persister_1a,
-			chain_monitor_1a,
-			node_1a
-		);
-	}
 
 	// Reconnect the nodes. Both nodes should attempt quiescence as the initiator, but only one will
 	// be it via the tie-breaker.
@@ -1790,23 +2272,28 @@ fn do_test_propose_splice_while_disconnected(reload: bool, use_0conf: bool) {
 		.map(|monitor| (monitor.get_funding_txo(), monitor.get_funding_script()))
 		.unwrap();
 
-	// Negotiate the first splice to completion.
+	// Negotiate the splice to completion. Node 1's quiescent action should be consumed by
+	// splice_init, so both contributions are merged into a single splice.
 	nodes[1].node.handle_splice_init(node_id_0, &splice_init);
 	let splice_ack = get_event_msg!(nodes[1], MessageSendEvent::SendSpliceAck, node_id_0);
+	assert_ne!(splice_ack.funding_contribution_satoshis, 0);
 	nodes[0].node.handle_splice_ack(node_id_1, &splice_ack);
 	let new_funding_script = chan_utils::make_funding_redeemscript(
 		&splice_init.funding_pubkey,
 		&splice_ack.funding_pubkey,
 	)
 	.to_p2wsh();
-	complete_interactive_funding_negotiation(
+	complete_interactive_funding_negotiation_for_both(
 		&nodes[0],
 		&nodes[1],
 		channel_id,
 		node_0_funding_contribution,
+		Some(node_1_funding_contribution),
 		new_funding_script,
 	);
-	let (splice_tx, splice_locked) = sign_interactive_funding_tx(&nodes[0], &nodes[1], use_0conf);
+	let (splice_tx, splice_locked) = sign_interactive_funding_tx_with_acceptor_contribution(
+		&nodes[0], &nodes[1], use_0conf, true,
+	);
 	expect_splice_pending_event(&nodes[0], &node_id_1);
 	expect_splice_pending_event(&nodes[1], &node_id_0);
 
@@ -1820,7 +2307,7 @@ fn do_test_propose_splice_while_disconnected(reload: bool, use_0conf: bool) {
 		mine_transaction(&nodes[0], &splice_tx);
 		mine_transaction(&nodes[1], &splice_tx);
 
-		// Mine enough blocks for the first splice to become locked.
+		// Mine enough blocks for the splice to become locked.
 		connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
 		connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 
@@ -1828,10 +2315,9 @@ fn do_test_propose_splice_while_disconnected(reload: bool, use_0conf: bool) {
 	};
 	nodes[1].node.handle_splice_locked(node_id_0, &splice_locked);
 
-	// We should see the node which lost the tie-breaker attempt their splice now by first
-	// negotiating quiescence, but their `stfu` won't be sent until after another reconnection.
+	// Node 1's quiescent action was consumed, so it should NOT send stfu.
 	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
-	assert_eq!(msg_events.len(), if use_0conf { 2 } else { 3 }, "{msg_events:?}");
+	assert_eq!(msg_events.len(), if use_0conf { 1 } else { 2 }, "{msg_events:?}");
 	if let MessageSendEvent::SendSpliceLocked { ref msg, .. } = &msg_events[0] {
 		nodes[0].node.handle_splice_locked(node_id_1, msg);
 		if use_0conf {
@@ -1852,10 +2338,6 @@ fn do_test_propose_splice_while_disconnected(reload: bool, use_0conf: bool) {
 			panic!("Unexpected event {:?}", &msg_events[1]);
 		}
 	}
-	assert!(matches!(
-		&msg_events[if use_0conf { 1 } else { 2 }],
-		MessageSendEvent::SendStfu { .. }
-	));
 
 	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), if use_0conf { 0 } else { 2 }, "{msg_events:?}");
@@ -1887,78 +2369,6 @@ fn do_test_propose_splice_while_disconnected(reload: bool, use_0conf: bool) {
 	nodes[1]
 		.chain_source
 		.remove_watched_txn_and_outputs(prev_funding_outpoint, prev_funding_script);
-
-	// Reconnect the nodes. This should trigger the node which lost the tie-breaker to resend `stfu`
-	// for their splice attempt.
-	if reload {
-		let encoded_monitor_0 = get_monitor!(nodes[0], channel_id).encode();
-		reload_node!(
-			nodes[0],
-			nodes[0].node.encode(),
-			&[&encoded_monitor_0],
-			persister_0b,
-			chain_monitor_0b,
-			node_0b
-		);
-		let encoded_monitor_1 = get_monitor!(nodes[1], channel_id).encode();
-		reload_node!(
-			nodes[1],
-			nodes[1].node.encode(),
-			&[&encoded_monitor_1],
-			persister_1b,
-			chain_monitor_1b,
-			node_1b
-		);
-	} else {
-		nodes[0].node.peer_disconnected(node_id_1);
-		nodes[1].node.peer_disconnected(node_id_0);
-	}
-	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
-	if !use_0conf {
-		reconnect_args.send_announcement_sigs = (true, true);
-	}
-	reconnect_args.send_stfu = (true, false);
-	reconnect_nodes(reconnect_args);
-
-	// Drive the second splice to completion.
-	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
-	assert_eq!(msg_events.len(), 1, "{msg_events:?}");
-	if let MessageSendEvent::SendStfu { ref msg, .. } = msg_events[0] {
-		nodes[1].node.handle_stfu(node_id_0, msg);
-	} else {
-		panic!("Unexpected event {:?}", &msg_events[0]);
-	}
-
-	let splice_init = get_event_msg!(nodes[1], MessageSendEvent::SendSpliceInit, node_id_0);
-	nodes[0].node.handle_splice_init(node_id_1, &splice_init);
-	let splice_ack = get_event_msg!(nodes[0], MessageSendEvent::SendSpliceAck, node_id_1);
-	nodes[1].node.handle_splice_ack(node_id_0, &splice_ack);
-	let new_funding_script = chan_utils::make_funding_redeemscript(
-		&splice_init.funding_pubkey,
-		&splice_ack.funding_pubkey,
-	)
-	.to_p2wsh();
-	complete_interactive_funding_negotiation(
-		&nodes[1],
-		&nodes[0],
-		channel_id,
-		node_1_funding_contribution,
-		new_funding_script,
-	);
-	let (splice_tx, splice_locked) = sign_interactive_funding_tx(&nodes[1], &nodes[0], use_0conf);
-	expect_splice_pending_event(&nodes[0], &node_id_1);
-	expect_splice_pending_event(&nodes[1], &node_id_0);
-
-	if use_0conf {
-		let (splice_locked, for_node_id) = splice_locked.unwrap();
-		assert_eq!(for_node_id, node_id_0);
-		lock_splice(&nodes[1], &nodes[0], &splice_locked, true);
-	} else {
-		assert!(splice_locked.is_none());
-		mine_transaction(&nodes[0], &splice_tx);
-		mine_transaction(&nodes[1], &splice_tx);
-		lock_splice_after_blocks(&nodes[1], &nodes[0], ANTI_REORG_DELAY - 1);
-	}
 
 	// Sanity check that we can still make a test payment.
 	send_payment(&nodes[0], &[&nodes[1]], 1_000_000);
@@ -2402,12 +2812,14 @@ fn fail_quiescent_action_on_channel_close() {
 
 #[test]
 fn abandon_splice_quiescent_action_on_shutdown() {
-	do_abandon_splice_quiescent_action_on_shutdown(true);
-	do_abandon_splice_quiescent_action_on_shutdown(false);
+	do_abandon_splice_quiescent_action_on_shutdown(true, false);
+	do_abandon_splice_quiescent_action_on_shutdown(false, false);
+	do_abandon_splice_quiescent_action_on_shutdown(true, true);
+	do_abandon_splice_quiescent_action_on_shutdown(false, true);
 }
 
 #[cfg(test)]
-fn do_abandon_splice_quiescent_action_on_shutdown(local_shutdown: bool) {
+fn do_abandon_splice_quiescent_action_on_shutdown(local_shutdown: bool, pending_splice: bool) {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -2421,6 +2833,19 @@ fn do_abandon_splice_quiescent_action_on_shutdown(local_shutdown: bool) {
 	let (_, _, channel_id, _) =
 		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_capacity, 0);
 
+	// When testing with a prior pending splice, complete splice A first so that
+	// `quiescent_action_into_error` filters against `pending_splice.contributed_inputs/outputs`.
+	if pending_splice {
+		let funding_contribution = do_initiate_splice_in(
+			&nodes[0],
+			&nodes[1],
+			channel_id,
+			Amount::from_sat(initial_channel_capacity / 2),
+		);
+		let (_splice_tx, _new_funding_script) =
+			splice_channel(&nodes[0], &nodes[1], channel_id, funding_contribution);
+	}
+
 	// Since we cannot close after having sent `stfu`, send an HTLC so that when we attempt to
 	// splice, the `stfu` message is held back.
 	let payment_amount = 1_000_000;
@@ -2433,7 +2858,8 @@ fn do_abandon_splice_quiescent_action_on_shutdown(local_shutdown: bool) {
 	check_added_monitors(&nodes[0], 1);
 
 	nodes[1].node.handle_update_add_htlc(node_id_0, &update.update_add_htlcs[0]);
-	nodes[1].node.handle_commitment_signed(node_id_0, &update.commitment_signed[0]);
+	// After a splice, commitment_signed messages are batched across funding scopes.
+	nodes[1].node.handle_commitment_signed_batch_test(node_id_0, &update.commitment_signed);
 	check_added_monitors(&nodes[1], 1);
 	let (revoke_and_ack, _) = get_revoke_commit_msgs(&nodes[1], &node_id_0);
 
@@ -2441,9 +2867,13 @@ fn do_abandon_splice_quiescent_action_on_shutdown(local_shutdown: bool) {
 	check_added_monitors(&nodes[0], 1);
 
 	// Attempt the splice. `stfu` should not go out yet as the state machine is pending.
-	let splice_in_amount = initial_channel_capacity / 2;
+	// Use a different amount when there's a prior splice so the change output differs.
+	let splice_in_amount =
+		if pending_splice { initial_channel_capacity / 4 } else { initial_channel_capacity / 2 };
 	let funding_contribution =
 		initiate_splice_in(&nodes[0], &nodes[1], channel_id, Amount::from_sat(splice_in_amount));
+	let splice_b_change_output =
+		if pending_splice { funding_contribution.change_output().cloned() } else { None };
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 
 	// Close the channel. We should see a `SpliceFailed` event for the pending splice
@@ -2457,7 +2887,33 @@ fn do_abandon_splice_quiescent_action_on_shutdown(local_shutdown: bool) {
 	let shutdown = get_event_msg!(closer_node, MessageSendEvent::SendShutdown, closee_node_id);
 	closee_node.node.handle_shutdown(closer_node_id, &shutdown);
 
-	expect_splice_failed_events(&nodes[0], &channel_id, funding_contribution);
+	if pending_splice {
+		// With a prior pending splice, contributions are filtered against committed inputs/outputs.
+		let events = nodes[0].node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 2, "{events:?}");
+		match &events[0] {
+			Event::SpliceFailed { channel_id: cid, .. } => {
+				assert_eq!(*cid, channel_id);
+			},
+			other => panic!("Expected SpliceFailed, got {:?}", other),
+		}
+		match &events[1] {
+			Event::DiscardFunding {
+				funding_info: FundingInfo::Contribution { inputs, outputs },
+				..
+			} => {
+				// The UTXO was filtered: it's still committed to the prior splice.
+				assert!(inputs.is_empty(), "Expected empty inputs (filtered), got {:?}", inputs);
+				// The change output was NOT filtered: different splice-in amount produces a
+				// different change.
+				let expected_outputs: Vec<_> = splice_b_change_output.into_iter().collect();
+				assert_eq!(*outputs, expected_outputs);
+			},
+			other => panic!("Expected DiscardFunding with Contribution, got {:?}", other),
+		}
+	} else {
+		expect_splice_failed_events(&nodes[0], &channel_id, funding_contribution);
+	}
 	let _ = get_event_msg!(closee_node, MessageSendEvent::SendShutdown, closer_node_id);
 }
 
@@ -3349,4 +3805,1674 @@ fn test_funding_contributed_unfunded_channel() {
 	);
 
 	expect_discard_funding_event(&nodes[0], &unfunded_channel_id, funding_contribution);
+}
+
+// Helper to re-enter quiescence between two nodes where node_a is the initiator.
+// Returns after both sides are quiescent (no splice_init is generated since we use DoNothing).
+fn reenter_quiescence<'a, 'b, 'c>(
+	node_a: &Node<'a, 'b, 'c>, node_b: &Node<'a, 'b, 'c>, channel_id: &ChannelId,
+) {
+	let node_id_a = node_a.node.get_our_node_id();
+	let node_id_b = node_b.node.get_our_node_id();
+
+	node_a.node.maybe_propose_quiescence(&node_id_b, channel_id).unwrap();
+	let stfu_a = get_event_msg!(node_a, MessageSendEvent::SendStfu, node_id_b);
+	node_b.node.handle_stfu(node_id_a, &stfu_a);
+	let stfu_b = get_event_msg!(node_b, MessageSendEvent::SendStfu, node_id_a);
+	node_a.node.handle_stfu(node_id_b, &stfu_b);
+}
+
+#[test]
+fn test_splice_rbf_acceptor_basic() {
+	// Test the full end-to-end flow for RBF of a pending splice transaction.
+	// Complete a splice-in, then use rbf_channel API to initiate an RBF attempt
+	// with a higher feerate, going through the full tx_init_rbf → tx_ack_rbf →
+	// interactive TX → signing → mining → splice_locked flow.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+
+	// Step 1: Complete a splice-in from node 0.
+	let funding_contribution = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+	// Save the pre-splice funding outpoint before splice_channel modifies the monitor.
+	let original_funding_outpoint = nodes[0]
+		.chain_monitor
+		.chain_monitor
+		.get_monitor(channel_id)
+		.map(|monitor| (monitor.get_funding_txo(), monitor.get_funding_script()))
+		.unwrap();
+
+	let (first_splice_tx, new_funding_script) =
+		splice_channel(&nodes[0], &nodes[1], channel_id, funding_contribution);
+
+	// Step 2: Provide more UTXO reserves for the RBF attempt.
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+
+	// Step 3: Use rbf_channel API to initiate the RBF.
+	// Original feerate was FEERATE_FLOOR_SATS_PER_KW (253). 253 * 25 / 24 = 263.54, so 264 works.
+	let rbf_feerate_sat_per_kwu = (FEERATE_FLOOR_SATS_PER_KW as u64 * 25 + 23) / 24; // ceil(253*25/24) = 264
+	let rbf_feerate = FeeRate::from_sat_per_kwu(rbf_feerate_sat_per_kwu);
+	let funding_template = nodes[0].node.rbf_channel(&channel_id, &node_id_1, rbf_feerate).unwrap();
+	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
+	let funding_contribution = funding_template.splice_in_sync(added_value, &wallet).unwrap();
+
+	// Step 4: funding_contributed stores QuiescentAction::Splice and proposes quiescence.
+	nodes[0]
+		.node
+		.funding_contributed(&channel_id, &node_id_1, funding_contribution.clone(), None)
+		.unwrap();
+
+	// Step 5: STFU exchange.
+	let stfu_a = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+	nodes[1].node.handle_stfu(node_id_0, &stfu_a);
+	let stfu_b = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
+	nodes[0].node.handle_stfu(node_id_1, &stfu_b);
+
+	// Step 6: Node 0 sends tx_init_rbf (not splice_init, since pending_splice exists).
+	let tx_init_rbf = get_event_msg!(nodes[0], MessageSendEvent::SendTxInitRbf, node_id_1);
+	assert_eq!(tx_init_rbf.channel_id, channel_id);
+	assert_eq!(tx_init_rbf.feerate_sat_per_1000_weight, rbf_feerate_sat_per_kwu as u32);
+
+	// Step 7: Node 1 handles tx_init_rbf → responds with tx_ack_rbf.
+	nodes[1].node.handle_tx_init_rbf(node_id_0, &tx_init_rbf);
+	let tx_ack_rbf = get_event_msg!(nodes[1], MessageSendEvent::SendTxAckRbf, node_id_0);
+	assert_eq!(tx_ack_rbf.channel_id, channel_id);
+
+	// Step 8: Node 0 handles tx_ack_rbf → starts interactive TX construction.
+	nodes[0].node.handle_tx_ack_rbf(node_id_1, &tx_ack_rbf);
+
+	// Step 9: Complete interactive funding negotiation.
+	complete_interactive_funding_negotiation(
+		&nodes[0],
+		&nodes[1],
+		channel_id,
+		funding_contribution,
+		new_funding_script.clone(),
+	);
+
+	// Step 10: Sign and broadcast.
+	let (rbf_tx, splice_locked) = sign_interactive_funding_tx(&nodes[0], &nodes[1], false);
+	assert!(splice_locked.is_none());
+
+	expect_splice_pending_event(&nodes[0], &node_id_1);
+	expect_splice_pending_event(&nodes[1], &node_id_0);
+
+	// Step 11: Mine and lock.
+	mine_transaction(&nodes[0], &rbf_tx);
+	mine_transaction(&nodes[1], &rbf_tx);
+
+	// Lock the RBF splice. We can't use lock_splice_after_blocks directly because the splice
+	// promotion generates DiscardFunding events for the old (replaced) splice candidate.
+	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
+
+	let splice_locked_b = get_event_msg!(nodes[0], MessageSendEvent::SendSpliceLocked, node_id_1);
+	nodes[1].node.handle_splice_locked(node_id_0, &splice_locked_b);
+
+	let mut msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 2, "{msg_events:?}");
+	let splice_locked_a =
+		if let MessageSendEvent::SendSpliceLocked { msg, .. } = msg_events.remove(0) {
+			msg
+		} else {
+			panic!("Expected SendSpliceLocked, got {:?}", msg_events[0]);
+		};
+	let announcement_sigs_b =
+		if let MessageSendEvent::SendAnnouncementSignatures { msg, .. } = msg_events.remove(0) {
+			msg
+		} else {
+			panic!("Expected SendAnnouncementSignatures");
+		};
+	nodes[0].node.handle_splice_locked(node_id_1, &splice_locked_a);
+	nodes[0].node.handle_announcement_signatures(node_id_1, &announcement_sigs_b);
+
+	// Expect ChannelReady + DiscardFunding for the old splice candidate on both nodes.
+	let events_a = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events_a.len(), 2, "{events_a:?}");
+	assert!(matches!(events_a[0], Event::ChannelReady { .. }));
+	assert!(matches!(events_a[1], Event::DiscardFunding { .. }));
+	check_added_monitors(&nodes[0], 1);
+
+	let events_b = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(events_b.len(), 2, "{events_b:?}");
+	assert!(matches!(events_b[0], Event::ChannelReady { .. }));
+	assert!(matches!(events_b[1], Event::DiscardFunding { .. }));
+	check_added_monitors(&nodes[1], 1);
+
+	// Complete the announcement exchange.
+	let mut msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 2, "{msg_events:?}");
+	if let MessageSendEvent::SendAnnouncementSignatures { msg, .. } = msg_events.remove(0) {
+		nodes[1].node.handle_announcement_signatures(node_id_0, &msg);
+	} else {
+		panic!("Expected SendAnnouncementSignatures");
+	}
+	assert!(matches!(msg_events.remove(0), MessageSendEvent::BroadcastChannelAnnouncement { .. }));
+
+	let mut msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1, "{msg_events:?}");
+	assert!(matches!(msg_events.remove(0), MessageSendEvent::BroadcastChannelAnnouncement { .. }));
+
+	// Clean up old watched outpoints from the chain source.
+	// The original channel's funding outpoint and the first (replaced) splice's funding outpoint
+	// are still being watched but are no longer tracked by the deserialized monitor.
+	let (orig_outpoint, orig_script) = original_funding_outpoint;
+	let first_splice_funding_idx =
+		first_splice_tx.output.iter().position(|o| o.script_pubkey == new_funding_script).unwrap();
+	let first_splice_outpoint =
+		OutPoint { txid: first_splice_tx.compute_txid(), index: first_splice_funding_idx as u16 };
+	for node in &nodes {
+		node.chain_source.remove_watched_txn_and_outputs(orig_outpoint, orig_script.clone());
+		node.chain_source
+			.remove_watched_txn_and_outputs(first_splice_outpoint, new_funding_script.clone());
+	}
+}
+
+#[test]
+fn test_splice_rbf_insufficient_feerate() {
+	// Test that rbf_channel rejects a feerate that doesn't satisfy the 25/24 rule, and that the
+	// acceptor also rejects tx_init_rbf with an insufficient feerate from a misbehaving peer.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+
+	// Complete a splice-in.
+	let funding_contribution = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+	let (_splice_tx, _new_funding_script) =
+		splice_channel(&nodes[0], &nodes[1], channel_id, funding_contribution);
+
+	// Initiator-side: rbf_channel rejects an insufficient feerate.
+	// Original feerate was 253. Using exactly 253 should fail since 253 * 24 < 253 * 25.
+	let same_feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64);
+	let err = nodes[0].node.rbf_channel(&channel_id, &node_id_1, same_feerate).unwrap_err();
+	assert_eq!(
+		err,
+		APIError::APIMisuseError {
+			err: format!(
+				"Channel {} RBF feerate {} is less than 25/24 of the previous feerate {}",
+				channel_id, FEERATE_FLOOR_SATS_PER_KW, FEERATE_FLOOR_SATS_PER_KW,
+			),
+		}
+	);
+
+	// Acceptor-side: tx_init_rbf with an insufficient feerate is also rejected.
+	reenter_quiescence(&nodes[0], &nodes[1], &channel_id);
+
+	let tx_init_rbf = msgs::TxInitRbf {
+		channel_id,
+		locktime: 0,
+		feerate_sat_per_1000_weight: FEERATE_FLOOR_SATS_PER_KW,
+		funding_output_contribution: Some(added_value.to_sat() as i64),
+	};
+
+	nodes[1].node.handle_tx_init_rbf(node_id_0, &tx_init_rbf);
+
+	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1);
+	match &msg_events[0] {
+		MessageSendEvent::HandleError { action, .. } => {
+			assert_eq!(
+				*action,
+				msgs::ErrorAction::DisconnectPeerWithWarning {
+					msg: msgs::WarningMessage {
+						channel_id,
+						data: format!(
+							"Channel {} RBF feerate {} is less than 25/24 of the previous feerate {}",
+							channel_id, FEERATE_FLOOR_SATS_PER_KW, FEERATE_FLOOR_SATS_PER_KW,
+						),
+					},
+				}
+			);
+		},
+		_ => panic!("Expected HandleError, got {:?}", msg_events[0]),
+	}
+}
+
+#[test]
+fn test_splice_rbf_no_pending_splice() {
+	// Test that tx_init_rbf is rejected when there is no pending splice to RBF.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	// Re-enter quiescence without having done a splice.
+	reenter_quiescence(&nodes[0], &nodes[1], &channel_id);
+
+	let tx_init_rbf = msgs::TxInitRbf {
+		channel_id,
+		locktime: 0,
+		feerate_sat_per_1000_weight: 500,
+		funding_output_contribution: Some(50_000),
+	};
+
+	nodes[1].node.handle_tx_init_rbf(node_id_0, &tx_init_rbf);
+
+	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1);
+	match &msg_events[0] {
+		MessageSendEvent::HandleError { action, .. } => {
+			assert_eq!(
+				*action,
+				msgs::ErrorAction::DisconnectPeerWithWarning {
+					msg: msgs::WarningMessage {
+						channel_id,
+						data: format!("Channel {} has no pending splice to RBF", channel_id),
+					},
+				}
+			);
+		},
+		_ => panic!("Expected HandleError, got {:?}", msg_events[0]),
+	}
+}
+
+#[test]
+fn test_splice_rbf_active_negotiation() {
+	// Test that tx_init_rbf is rejected when a funding negotiation is already in progress.
+	// Start a splice but don't complete interactive TX construction, then send tx_init_rbf.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+
+	// Initiate a splice but only complete the handshake (STFU + splice_init/ack),
+	// leaving interactive TX construction in progress.
+	let _funding_contribution =
+		do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+	let _new_funding_script = complete_splice_handshake(&nodes[0], &nodes[1]);
+
+	// Now the acceptor (node 1) has a funding_negotiation in progress (ConstructingTransaction).
+	// Sending tx_init_rbf should be rejected.
+	let tx_init_rbf = msgs::TxInitRbf {
+		channel_id,
+		locktime: 0,
+		feerate_sat_per_1000_weight: 500,
+		funding_output_contribution: Some(added_value.to_sat() as i64),
+	};
+
+	nodes[1].node.handle_tx_init_rbf(node_id_0, &tx_init_rbf);
+
+	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1);
+	match &msg_events[0] {
+		MessageSendEvent::HandleError { action, .. } => {
+			assert_eq!(
+				*action,
+				msgs::ErrorAction::DisconnectPeerWithWarning {
+					msg: msgs::WarningMessage {
+						channel_id,
+						data: format!(
+							"Channel {} already has a funding negotiation in progress",
+							channel_id,
+						),
+					},
+				}
+			);
+		},
+		_ => panic!("Expected HandleError, got {:?}", msg_events[0]),
+	}
+
+	// Clear the initiator's pending interactive TX messages from the incomplete splice handshake.
+	nodes[0].node.get_and_clear_pending_msg_events();
+}
+
+#[test]
+fn test_splice_rbf_not_quiescence_initiator() {
+	// Test that tx_init_rbf is rejected when the sender is not the quiescence initiator.
+	// Node 1 initiates quiescence, so only node 1 should be allowed to send tx_init_rbf.
+	// Node 0 sending tx_init_rbf should be rejected.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+
+	// Complete a splice-in from node 0.
+	let funding_contribution = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+	let (_splice_tx, _new_funding_script) =
+		splice_channel(&nodes[0], &nodes[1], channel_id, funding_contribution);
+
+	// Re-enter quiescence with node 1 as the initiator (not node 0).
+	nodes[1].node.maybe_propose_quiescence(&node_id_0, &channel_id).unwrap();
+	let stfu_b = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
+	nodes[0].node.handle_stfu(node_id_1, &stfu_b);
+	let stfu_a = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+	nodes[1].node.handle_stfu(node_id_0, &stfu_a);
+
+	// Node 0 sends tx_init_rbf, but node 1 is the quiescence initiator, so node 0 should be
+	// rejected.
+	let tx_init_rbf = msgs::TxInitRbf {
+		channel_id,
+		locktime: 0,
+		feerate_sat_per_1000_weight: 500,
+		funding_output_contribution: Some(added_value.to_sat() as i64),
+	};
+
+	nodes[1].node.handle_tx_init_rbf(node_id_0, &tx_init_rbf);
+
+	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1);
+	match &msg_events[0] {
+		MessageSendEvent::HandleError { action, .. } => {
+			assert_eq!(
+				*action,
+				msgs::ErrorAction::DisconnectPeerWithWarning {
+					msg: msgs::WarningMessage {
+						channel_id,
+						data: "Counterparty sent tx_init_rbf but is not the quiescence initiator"
+							.to_owned(),
+					},
+				}
+			);
+		},
+		_ => panic!("Expected HandleError, got {:?}", msg_events[0]),
+	}
+}
+
+#[test]
+fn test_splice_rbf_after_splice_locked() {
+	// Test that tx_init_rbf is rejected when the counterparty has already sent splice_locked.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+
+	// Complete a splice-in from node 0.
+	let funding_contribution = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+	let (splice_tx, _new_funding_script) =
+		splice_channel(&nodes[0], &nodes[1], channel_id, funding_contribution);
+
+	// Mine the splice tx on both nodes.
+	mine_transaction(&nodes[0], &splice_tx);
+	mine_transaction(&nodes[1], &splice_tx);
+
+	// Connect enough blocks on node 0 only so it sends splice_locked.
+	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
+
+	let splice_locked = get_event_msg!(nodes[0], MessageSendEvent::SendSpliceLocked, node_id_1);
+
+	// Deliver splice_locked to node 1. Since node 1 hasn't confirmed enough blocks,
+	// it won't send its own splice_locked back, but it will set received_funding_txid.
+	nodes[1].node.handle_splice_locked(node_id_0, &splice_locked);
+
+	// Node 1 shouldn't have any messages to send (no splice_locked since it hasn't confirmed).
+	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert!(msg_events.is_empty(), "Expected no messages, got {:?}", msg_events);
+
+	// Re-enter quiescence (node 0 initiates).
+	reenter_quiescence(&nodes[0], &nodes[1], &channel_id);
+
+	// Node 0 sends tx_init_rbf, but node 0 already sent splice_locked, so it should be rejected.
+	let tx_init_rbf = msgs::TxInitRbf {
+		channel_id,
+		locktime: 0,
+		feerate_sat_per_1000_weight: 500,
+		funding_output_contribution: Some(added_value.to_sat() as i64),
+	};
+
+	nodes[1].node.handle_tx_init_rbf(node_id_0, &tx_init_rbf);
+
+	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1);
+	match &msg_events[0] {
+		MessageSendEvent::HandleError { action, .. } => {
+			assert_eq!(
+				*action,
+				msgs::ErrorAction::DisconnectPeerWithWarning {
+					msg: msgs::WarningMessage {
+						channel_id,
+						data: format!(
+							"Channel {} counterparty already sent splice_locked, cannot RBF",
+							channel_id,
+						),
+					},
+				}
+			);
+		},
+		_ => panic!("Expected HandleError, got {:?}", msg_events[0]),
+	}
+}
+
+#[test]
+fn test_splice_rbf_zeroconf_rejected() {
+	// Test that tx_init_rbf is rejected when option_zeroconf is negotiated.
+	// The zero-conf check happens before the pending_splice check, so we don't need to complete
+	// a splice — just enter quiescence and send tx_init_rbf.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let mut config = test_default_channel_config();
+	config.channel_handshake_limits.trust_own_funding_0conf = true;
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (funding_tx, channel_id) =
+		open_zero_conf_channel_with_value(&nodes[0], &nodes[1], None, initial_channel_value_sat, 0);
+	mine_transaction(&nodes[0], &funding_tx);
+	mine_transaction(&nodes[1], &funding_tx);
+
+	// Enter quiescence (node 0 initiates).
+	reenter_quiescence(&nodes[0], &nodes[1], &channel_id);
+
+	// Node 0 sends tx_init_rbf, but the channel has option_zeroconf, so it should be rejected.
+	let tx_init_rbf = msgs::TxInitRbf {
+		channel_id,
+		locktime: 0,
+		feerate_sat_per_1000_weight: 500,
+		funding_output_contribution: Some(50_000),
+	};
+
+	nodes[1].node.handle_tx_init_rbf(node_id_0, &tx_init_rbf);
+
+	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1);
+	match &msg_events[0] {
+		MessageSendEvent::HandleError { action, .. } => {
+			assert_eq!(
+				*action,
+				msgs::ErrorAction::DisconnectPeerWithWarning {
+					msg: msgs::WarningMessage {
+						channel_id,
+						data: format!(
+							"Channel {} has option_zeroconf, cannot RBF splice",
+							channel_id,
+						),
+					},
+				}
+			);
+		},
+		_ => panic!("Expected HandleError, got {:?}", msg_events[0]),
+	}
+}
+
+#[test]
+fn test_splice_rbf_both_contribute_tiebreak() {
+	do_test_splice_rbf_both_contribute_tiebreak(None, None);
+}
+
+#[test]
+fn test_splice_rbf_tiebreak_higher_feerate() {
+	// Node 0 (winner) uses a higher feerate than node 1 (loser). Node 1's change output is
+	// adjusted (reduced) to accommodate the higher feerate. Negotiation succeeds.
+	let min_rbf_feerate = (FEERATE_FLOOR_SATS_PER_KW as u64 * 25 + 23) / 24;
+	do_test_splice_rbf_both_contribute_tiebreak(
+		Some(FeeRate::from_sat_per_kwu(min_rbf_feerate * 3)),
+		Some(FeeRate::from_sat_per_kwu(min_rbf_feerate)),
+	);
+}
+
+#[test]
+fn test_splice_rbf_tiebreak_lower_feerate() {
+	// Node 0 (winner) uses a lower feerate than node 1 (loser). Node 1's change output increases
+	// because the acceptor's fair fee decreases. Negotiation succeeds.
+	let min_rbf_feerate = (FEERATE_FLOOR_SATS_PER_KW as u64 * 25 + 23) / 24;
+	do_test_splice_rbf_both_contribute_tiebreak(
+		Some(FeeRate::from_sat_per_kwu(min_rbf_feerate)),
+		Some(FeeRate::from_sat_per_kwu(min_rbf_feerate * 3)),
+	);
+}
+
+/// Runs the tie-breaker test with optional per-node feerates.
+/// If `node_0_feerate` or `node_1_feerate` is None, both use the same default RBF feerate.
+fn do_test_splice_rbf_both_contribute_tiebreak(
+	node_0_feerate: Option<FeeRate>, node_1_feerate: Option<FeeRate>,
+) {
+	// Test where both parties call rbf_channel + funding_contributed, both send STFU, one wins
+	// the quiescence tie-break (node 0, the outbound channel funder). The loser (node 1) becomes
+	// the acceptor and its stored QuiescentAction::Splice is consumed by the tx_init_rbf handler,
+	// contributing its inputs/outputs to the RBF transaction.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+
+	// Step 1: Complete an initial splice-in from node 0.
+	let funding_contribution = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+	let original_funding_outpoint = nodes[0]
+		.chain_monitor
+		.chain_monitor
+		.get_monitor(channel_id)
+		.map(|monitor| (monitor.get_funding_txo(), monitor.get_funding_script()))
+		.unwrap();
+	let (first_splice_tx, new_funding_script) =
+		splice_channel(&nodes[0], &nodes[1], channel_id, funding_contribution);
+
+	// Step 2: Provide more UTXOs for both nodes' RBF attempts.
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+
+	// Step 3: Both nodes initiate RBF, possibly at different feerates.
+	let default_rbf_feerate_sat_per_kwu = (FEERATE_FLOOR_SATS_PER_KW as u64 * 25 + 23) / 24;
+	let default_rbf_feerate = FeeRate::from_sat_per_kwu(default_rbf_feerate_sat_per_kwu);
+	let rbf_feerate_0 = node_0_feerate.unwrap_or(default_rbf_feerate);
+	let rbf_feerate_1 = node_1_feerate.unwrap_or(default_rbf_feerate);
+
+	// Node 0 calls rbf_channel + funding_contributed.
+	let funding_template_0 =
+		nodes[0].node.rbf_channel(&channel_id, &node_id_1, rbf_feerate_0).unwrap();
+	let wallet_0 = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
+	let node_0_funding_contribution =
+		funding_template_0.splice_in_sync(added_value, &wallet_0).unwrap();
+	nodes[0]
+		.node
+		.funding_contributed(&channel_id, &node_id_1, node_0_funding_contribution.clone(), None)
+		.unwrap();
+
+	// Node 1 calls rbf_channel + funding_contributed.
+	let funding_template_1 =
+		nodes[1].node.rbf_channel(&channel_id, &node_id_0, rbf_feerate_1).unwrap();
+	let wallet_1 = WalletSync::new(Arc::clone(&nodes[1].wallet_source), nodes[1].logger);
+	let node_1_funding_contribution =
+		funding_template_1.splice_in_sync(added_value, &wallet_1).unwrap();
+	nodes[1]
+		.node
+		.funding_contributed(&channel_id, &node_id_0, node_1_funding_contribution.clone(), None)
+		.unwrap();
+
+	// Capture change output values before the tiebreak.
+	let node_0_change = node_0_funding_contribution
+		.change_output()
+		.expect("splice-in should have a change output")
+		.clone();
+	let node_1_change = node_1_funding_contribution
+		.change_output()
+		.expect("splice-in should have a change output")
+		.clone();
+
+	// Step 4: Both nodes sent STFU (both have awaiting_quiescence set).
+	let stfu_0 = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+	assert!(stfu_0.initiator);
+	let stfu_1 = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
+	assert!(stfu_1.initiator);
+
+	// Step 5: Exchange STFUs. Node 0 is the outbound channel funder and wins the tie-break.
+	// Node 1 handles node 0's STFU first — it already sent its own STFU (local_stfu_sent is set),
+	// so this goes through the tie-break path. Node 1 loses (is_outbound = false) and becomes the
+	// acceptor. Its quiescent_action is preserved for the tx_init_rbf handler.
+	nodes[1].node.handle_stfu(node_id_0, &stfu_0);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+	// Node 0 handles node 1's STFU — it already sent its own STFU, so tie-break again.
+	// Node 0 wins (is_outbound = true), consumes its quiescent_action, and sends tx_init_rbf.
+	nodes[0].node.handle_stfu(node_id_1, &stfu_1);
+
+	// Step 6: Node 0 sends tx_init_rbf.
+	let tx_init_rbf = get_event_msg!(nodes[0], MessageSendEvent::SendTxInitRbf, node_id_1);
+	assert_eq!(tx_init_rbf.channel_id, channel_id);
+	assert_eq!(tx_init_rbf.feerate_sat_per_1000_weight, rbf_feerate_0.to_sat_per_kwu() as u32);
+
+	// Step 7: Node 1 handles tx_init_rbf — its quiescent_action is consumed, providing its
+	// inputs/outputs (adjusted for node 0's feerate). Responds with tx_ack_rbf.
+	nodes[1].node.handle_tx_init_rbf(node_id_0, &tx_init_rbf);
+	let tx_ack_rbf = get_event_msg!(nodes[1], MessageSendEvent::SendTxAckRbf, node_id_0);
+	assert_eq!(tx_ack_rbf.channel_id, channel_id);
+	assert!(
+		tx_ack_rbf.funding_output_contribution.is_some(),
+		"Acceptor should contribute to the RBF splice"
+	);
+
+	// Step 8: Node 0 handles tx_ack_rbf.
+	nodes[0].node.handle_tx_ack_rbf(node_id_1, &tx_ack_rbf);
+
+	// Step 9: Complete interactive funding negotiation with both parties' inputs/outputs.
+	complete_interactive_funding_negotiation_for_both(
+		&nodes[0],
+		&nodes[1],
+		channel_id,
+		node_0_funding_contribution,
+		Some(node_1_funding_contribution),
+		new_funding_script.clone(),
+	);
+
+	// Step 10: Sign (acceptor has contribution) and broadcast.
+	let (rbf_tx, splice_locked) =
+		sign_interactive_funding_tx_with_acceptor_contribution(&nodes[0], &nodes[1], false, true);
+	assert!(splice_locked.is_none());
+
+	// The initiator's change output should remain unchanged (no feerate adjustment).
+	let initiator_change_in_tx = rbf_tx
+		.output
+		.iter()
+		.find(|o| o.script_pubkey == node_0_change.script_pubkey)
+		.expect("Initiator's change output should be in the RBF transaction");
+	assert_eq!(
+		initiator_change_in_tx.value, node_0_change.value,
+		"Initiator's change output should remain unchanged",
+	);
+
+	// The acceptor's change output should be adjusted based on the feerate difference.
+	let acceptor_change_in_tx = rbf_tx
+		.output
+		.iter()
+		.find(|o| o.script_pubkey == node_1_change.script_pubkey)
+		.expect("Acceptor's change output should be in the RBF transaction");
+	if rbf_feerate_0 <= rbf_feerate_1 {
+		// Initiator's feerate <= acceptor's original: the acceptor's change increases because
+		// is_initiator=false has lower weight, and the feerate is the same or lower.
+		assert!(
+			acceptor_change_in_tx.value > node_1_change.value,
+			"Acceptor's change should increase when initiator feerate ({}) <= acceptor feerate \
+			 ({}): adjusted {} vs original {}",
+			rbf_feerate_0.to_sat_per_kwu(),
+			rbf_feerate_1.to_sat_per_kwu(),
+			acceptor_change_in_tx.value,
+			node_1_change.value,
+		);
+	} else {
+		// Initiator's feerate > acceptor's original: the higher feerate more than compensates
+		// for the lower weight, so the acceptor's change decreases.
+		assert!(
+			acceptor_change_in_tx.value < node_1_change.value,
+			"Acceptor's change should decrease when initiator feerate ({}) > acceptor feerate \
+			 ({}): adjusted {} vs original {}",
+			rbf_feerate_0.to_sat_per_kwu(),
+			rbf_feerate_1.to_sat_per_kwu(),
+			acceptor_change_in_tx.value,
+			node_1_change.value,
+		);
+	}
+
+	expect_splice_pending_event(&nodes[0], &node_id_1);
+	expect_splice_pending_event(&nodes[1], &node_id_0);
+
+	// Step 11: Mine and lock.
+	mine_transaction(&nodes[0], &rbf_tx);
+	mine_transaction(&nodes[1], &rbf_tx);
+
+	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
+
+	let splice_locked_b = get_event_msg!(nodes[0], MessageSendEvent::SendSpliceLocked, node_id_1);
+	nodes[1].node.handle_splice_locked(node_id_0, &splice_locked_b);
+
+	let mut msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 2, "{msg_events:?}");
+	let splice_locked_a =
+		if let MessageSendEvent::SendSpliceLocked { msg, .. } = msg_events.remove(0) {
+			msg
+		} else {
+			panic!("Expected SendSpliceLocked, got {:?}", msg_events[0]);
+		};
+	let announcement_sigs_b =
+		if let MessageSendEvent::SendAnnouncementSignatures { msg, .. } = msg_events.remove(0) {
+			msg
+		} else {
+			panic!("Expected SendAnnouncementSignatures");
+		};
+	nodes[0].node.handle_splice_locked(node_id_1, &splice_locked_a);
+	nodes[0].node.handle_announcement_signatures(node_id_1, &announcement_sigs_b);
+
+	// Expect ChannelReady + DiscardFunding for the old splice candidate on both nodes.
+	let events_a = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events_a.len(), 2, "{events_a:?}");
+	assert!(matches!(events_a[0], Event::ChannelReady { .. }));
+	assert!(matches!(events_a[1], Event::DiscardFunding { .. }));
+	check_added_monitors(&nodes[0], 1);
+
+	let events_b = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(events_b.len(), 2, "{events_b:?}");
+	assert!(matches!(events_b[0], Event::ChannelReady { .. }));
+	assert!(matches!(events_b[1], Event::DiscardFunding { .. }));
+	check_added_monitors(&nodes[1], 1);
+
+	// Complete the announcement exchange.
+	let mut msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 2, "{msg_events:?}");
+	if let MessageSendEvent::SendAnnouncementSignatures { msg, .. } = msg_events.remove(0) {
+		nodes[1].node.handle_announcement_signatures(node_id_0, &msg);
+	} else {
+		panic!("Expected SendAnnouncementSignatures");
+	}
+	assert!(matches!(msg_events.remove(0), MessageSendEvent::BroadcastChannelAnnouncement { .. }));
+
+	let mut msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1, "{msg_events:?}");
+	assert!(matches!(msg_events.remove(0), MessageSendEvent::BroadcastChannelAnnouncement { .. }));
+
+	// Clean up old watched outpoints from the chain source.
+	let (orig_outpoint, orig_script) = original_funding_outpoint;
+	let first_splice_funding_idx =
+		first_splice_tx.output.iter().position(|o| o.script_pubkey == new_funding_script).unwrap();
+	let first_splice_outpoint =
+		OutPoint { txid: first_splice_tx.compute_txid(), index: first_splice_funding_idx as u16 };
+	for node in &nodes {
+		node.chain_source.remove_watched_txn_and_outputs(orig_outpoint, orig_script.clone());
+		node.chain_source
+			.remove_watched_txn_and_outputs(first_splice_outpoint, new_funding_script.clone());
+	}
+}
+
+#[test]
+fn test_splice_rbf_tiebreak_feerate_too_high() {
+	// Node 0 (winner) uses a feerate high enough that node 1's (loser) contribution cannot
+	// cover the fees. Node 1 proceeds without its contribution (QuiescentAction is preserved
+	// for a future splice). The RBF completes with only node 0's inputs/outputs.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+
+	// Complete an initial splice-in from node 0.
+	let funding_contribution = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+	let original_funding_outpoint = nodes[0]
+		.chain_monitor
+		.chain_monitor
+		.get_monitor(channel_id)
+		.map(|monitor| (monitor.get_funding_txo(), monitor.get_funding_script()))
+		.unwrap();
+	let (first_splice_tx, new_funding_script) =
+		splice_channel(&nodes[0], &nodes[1], channel_id, funding_contribution);
+
+	// Provide more UTXOs for both nodes' RBF attempts.
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+
+	// Node 0 uses a high feerate (20,000 sat/kwu). Node 1 uses the minimum RBF feerate but
+	// splices in a large amount (95,000 sats from a 100,000 sat UTXO), leaving very little
+	// change/fee budget. Node 1's budget (~5,000 sats) can't cover the acceptor's fair fee
+	// at 20,000 sat/kwu (~5,440 sats without change output), so adjust_for_feerate fails.
+	let high_feerate = FeeRate::from_sat_per_kwu(20_000);
+	let min_rbf_feerate_sat_per_kwu = (FEERATE_FLOOR_SATS_PER_KW as u64 * 25 + 23) / 24;
+	let min_rbf_feerate = FeeRate::from_sat_per_kwu(min_rbf_feerate_sat_per_kwu);
+
+	let node_1_added_value = Amount::from_sat(95_000);
+
+	let funding_template_0 =
+		nodes[0].node.rbf_channel(&channel_id, &node_id_1, high_feerate).unwrap();
+	let wallet_0 = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
+	let node_0_funding_contribution =
+		funding_template_0.splice_in_sync(added_value, &wallet_0).unwrap();
+	nodes[0]
+		.node
+		.funding_contributed(&channel_id, &node_id_1, node_0_funding_contribution.clone(), None)
+		.unwrap();
+
+	let funding_template_1 =
+		nodes[1].node.rbf_channel(&channel_id, &node_id_0, min_rbf_feerate).unwrap();
+	let wallet_1 = WalletSync::new(Arc::clone(&nodes[1].wallet_source), nodes[1].logger);
+	let node_1_funding_contribution =
+		funding_template_1.splice_in_sync(node_1_added_value, &wallet_1).unwrap();
+	nodes[1]
+		.node
+		.funding_contributed(&channel_id, &node_id_0, node_1_funding_contribution.clone(), None)
+		.unwrap();
+
+	// Both sent STFU.
+	let stfu_0 = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+	let stfu_1 = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
+
+	// Tie-break: node 0 wins.
+	nodes[1].node.handle_stfu(node_id_0, &stfu_0);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+	nodes[0].node.handle_stfu(node_id_1, &stfu_1);
+
+	// Node 0 sends tx_init_rbf at 20,000 sat/kwu.
+	let tx_init_rbf = get_event_msg!(nodes[0], MessageSendEvent::SendTxInitRbf, node_id_1);
+	assert_eq!(tx_init_rbf.feerate_sat_per_1000_weight, high_feerate.to_sat_per_kwu() as u32);
+
+	// Node 1 handles tx_init_rbf — adjust_for_feerate fails because node 1's contribution
+	// can't cover fees at 20,000 sat/kwu. Node 1 proceeds without its contribution.
+	nodes[1].node.handle_tx_init_rbf(node_id_0, &tx_init_rbf);
+	let tx_ack_rbf = get_event_msg!(nodes[1], MessageSendEvent::SendTxAckRbf, node_id_0);
+	assert_eq!(tx_ack_rbf.channel_id, channel_id);
+	assert!(
+		tx_ack_rbf.funding_output_contribution.is_none(),
+		"Acceptor should not contribute when feerate adjustment fails"
+	);
+
+	// Node 0 handles tx_ack_rbf.
+	nodes[0].node.handle_tx_ack_rbf(node_id_1, &tx_ack_rbf);
+
+	// Complete interactive funding negotiation with only node 0's contribution.
+	complete_interactive_funding_negotiation_for_both(
+		&nodes[0],
+		&nodes[1],
+		channel_id,
+		node_0_funding_contribution,
+		None,
+		new_funding_script.clone(),
+	);
+
+	// Sign (acceptor has no contribution) and broadcast.
+	let (rbf_tx, splice_locked) =
+		sign_interactive_funding_tx_with_acceptor_contribution(&nodes[0], &nodes[1], false, false);
+	assert!(splice_locked.is_none());
+
+	expect_splice_pending_event(&nodes[0], &node_id_1);
+	expect_splice_pending_event(&nodes[1], &node_id_0);
+
+	// Mine and lock.
+	mine_transaction(&nodes[0], &rbf_tx);
+	mine_transaction(&nodes[1], &rbf_tx);
+
+	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
+
+	let splice_locked_b = get_event_msg!(nodes[0], MessageSendEvent::SendSpliceLocked, node_id_1);
+	nodes[1].node.handle_splice_locked(node_id_0, &splice_locked_b);
+
+	// Node 1's QuiescentAction was preserved, so after splice_locked it re-initiates
+	// quiescence to retry its contribution in a future splice.
+	let mut msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 3, "{msg_events:?}");
+	let splice_locked_a =
+		if let MessageSendEvent::SendSpliceLocked { msg, .. } = msg_events.remove(0) {
+			msg
+		} else {
+			panic!("Expected SendSpliceLocked, got {:?}", msg_events[0]);
+		};
+	let announcement_sigs_b =
+		if let MessageSendEvent::SendAnnouncementSignatures { msg, .. } = msg_events.remove(0) {
+			msg
+		} else {
+			panic!("Expected SendAnnouncementSignatures");
+		};
+	let stfu_1 = if let MessageSendEvent::SendStfu { msg, .. } = msg_events.remove(0) {
+		msg
+	} else {
+		panic!("Expected SendStfu, got {:?}", msg_events[0]);
+	};
+	assert!(stfu_1.initiator);
+
+	nodes[0].node.handle_splice_locked(node_id_1, &splice_locked_a);
+	nodes[0].node.handle_announcement_signatures(node_id_1, &announcement_sigs_b);
+
+	// Expect ChannelReady + DiscardFunding for the old splice candidate on both nodes.
+	let events_a = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events_a.len(), 2, "{events_a:?}");
+	assert!(matches!(events_a[0], Event::ChannelReady { .. }));
+	assert!(matches!(events_a[1], Event::DiscardFunding { .. }));
+	check_added_monitors(&nodes[0], 1);
+
+	let events_b = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(events_b.len(), 2, "{events_b:?}");
+	assert!(matches!(events_b[0], Event::ChannelReady { .. }));
+	assert!(matches!(events_b[1], Event::DiscardFunding { .. }));
+	check_added_monitors(&nodes[1], 1);
+
+	// Complete the announcement exchange.
+	let mut msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 2, "{msg_events:?}");
+	if let MessageSendEvent::SendAnnouncementSignatures { msg, .. } = msg_events.remove(0) {
+		nodes[1].node.handle_announcement_signatures(node_id_0, &msg);
+	} else {
+		panic!("Expected SendAnnouncementSignatures");
+	}
+	assert!(matches!(msg_events.remove(0), MessageSendEvent::BroadcastChannelAnnouncement { .. }));
+
+	let mut msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1, "{msg_events:?}");
+	assert!(matches!(msg_events.remove(0), MessageSendEvent::BroadcastChannelAnnouncement { .. }));
+
+	// Clean up old watched outpoints.
+	let (orig_outpoint, orig_script) = original_funding_outpoint;
+	let first_splice_funding_idx =
+		first_splice_tx.output.iter().position(|o| o.script_pubkey == new_funding_script).unwrap();
+	let first_splice_outpoint =
+		OutPoint { txid: first_splice_tx.compute_txid(), index: first_splice_funding_idx as u16 };
+	for node in &nodes {
+		node.chain_source.remove_watched_txn_and_outputs(orig_outpoint, orig_script.clone());
+		node.chain_source
+			.remove_watched_txn_and_outputs(first_splice_outpoint, new_funding_script.clone());
+	}
+
+	// === Part 2: Node 1's preserved QuiescentAction leads to a new splice ===
+	//
+	// After splice_locked, pending_splice is None. So when stfu() consumes the QuiescentAction,
+	// it sends SpliceInit (not TxInitRbf), starting a brand new splice.
+
+	// Node 0 receives node 1's STFU and responds with its own STFU.
+	nodes[0].node.handle_stfu(node_id_1, &stfu_1);
+	let stfu_0 = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+
+	// Node 1 receives STFU → quiescence established → node 1 is the initiator → sends SpliceInit.
+	nodes[1].node.handle_stfu(node_id_0, &stfu_0);
+	let splice_init = get_event_msg!(nodes[1], MessageSendEvent::SendSpliceInit, node_id_0);
+
+	// Node 0 handles SpliceInit → sends SpliceAck.
+	nodes[0].node.handle_splice_init(node_id_1, &splice_init);
+	let splice_ack = get_event_msg!(nodes[0], MessageSendEvent::SendSpliceAck, node_id_1);
+
+	// Node 1 handles SpliceAck → starts interactive tx construction.
+	nodes[1].node.handle_splice_ack(node_id_0, &splice_ack);
+
+	// Compute the new funding script from the splice pubkeys.
+	let new_funding_script_2 = chan_utils::make_funding_redeemscript(
+		&splice_init.funding_pubkey,
+		&splice_ack.funding_pubkey,
+	)
+	.to_p2wsh();
+
+	// Complete interactive funding negotiation with node 1 as initiator (only node 1 contributes).
+	complete_interactive_funding_negotiation(
+		&nodes[1],
+		&nodes[0],
+		channel_id,
+		node_1_funding_contribution,
+		new_funding_script_2,
+	);
+
+	// Sign (no acceptor contribution) and broadcast.
+	let (new_splice_tx, splice_locked) = sign_interactive_funding_tx(&nodes[1], &nodes[0], false);
+	assert!(splice_locked.is_none());
+
+	expect_splice_pending_event(&nodes[1], &node_id_0);
+	expect_splice_pending_event(&nodes[0], &node_id_1);
+
+	// Mine and lock.
+	mine_transaction(&nodes[1], &new_splice_tx);
+	mine_transaction(&nodes[0], &new_splice_tx);
+
+	lock_splice_after_blocks(&nodes[1], &nodes[0], ANTI_REORG_DELAY - 1);
+}
+
+#[test]
+fn test_splice_rbf_acceptor_recontributes() {
+	// When the counterparty RBFs a splice and we have no pending QuiescentAction,
+	// our prior contribution should be automatically re-used. This tests the scenario:
+	// 1. Both nodes contribute to a splice (tiebreak: node 0 wins).
+	// 2. Only node 0 initiates an RBF — node 1 has no QuiescentAction.
+	// 3. Node 1 should re-contribute its prior inputs/outputs via our_prior_contribution.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 2, Amount::from_sat(100_000));
+
+	// Step 1: Both nodes initiate a splice at floor feerate.
+	let feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64);
+
+	let funding_template_0 =
+		nodes[0].node.splice_channel(&channel_id, &node_id_1, feerate).unwrap();
+	let wallet_0 = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
+	let node_0_funding_contribution =
+		funding_template_0.splice_in_sync(added_value, &wallet_0).unwrap();
+	nodes[0]
+		.node
+		.funding_contributed(&channel_id, &node_id_1, node_0_funding_contribution.clone(), None)
+		.unwrap();
+
+	let funding_template_1 =
+		nodes[1].node.splice_channel(&channel_id, &node_id_0, feerate).unwrap();
+	let wallet_1 = WalletSync::new(Arc::clone(&nodes[1].wallet_source), nodes[1].logger);
+	let node_1_funding_contribution =
+		funding_template_1.splice_in_sync(added_value, &wallet_1).unwrap();
+	nodes[1]
+		.node
+		.funding_contributed(&channel_id, &node_id_0, node_1_funding_contribution.clone(), None)
+		.unwrap();
+
+	// Step 2: Both send STFU; tiebreak: node 0 wins.
+	let stfu_0 = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+	let stfu_1 = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
+
+	nodes[1].node.handle_stfu(node_id_0, &stfu_0);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+	nodes[0].node.handle_stfu(node_id_1, &stfu_1);
+
+	// Step 3: Node 0 sends SpliceInit, node 1 handles as acceptor (QuiescentAction consumed).
+	let splice_init = get_event_msg!(nodes[0], MessageSendEvent::SendSpliceInit, node_id_1);
+	nodes[1].node.handle_splice_init(node_id_0, &splice_init);
+	let splice_ack = get_event_msg!(nodes[1], MessageSendEvent::SendSpliceAck, node_id_0);
+	assert_ne!(splice_ack.funding_contribution_satoshis, 0);
+	nodes[0].node.handle_splice_ack(node_id_1, &splice_ack);
+
+	let new_funding_script = chan_utils::make_funding_redeemscript(
+		&splice_init.funding_pubkey,
+		&splice_ack.funding_pubkey,
+	)
+	.to_p2wsh();
+
+	// Complete interactive funding with both contributions.
+	complete_interactive_funding_negotiation_for_both(
+		&nodes[0],
+		&nodes[1],
+		channel_id,
+		node_0_funding_contribution,
+		Some(node_1_funding_contribution.clone()),
+		new_funding_script.clone(),
+	);
+
+	let (first_splice_tx, splice_locked) =
+		sign_interactive_funding_tx_with_acceptor_contribution(&nodes[0], &nodes[1], false, true);
+	assert!(splice_locked.is_none());
+
+	let original_funding_outpoint = nodes[0]
+		.chain_monitor
+		.chain_monitor
+		.get_monitor(channel_id)
+		.map(|monitor| (monitor.get_funding_txo(), monitor.get_funding_script()))
+		.unwrap();
+
+	expect_splice_pending_event(&nodes[0], &node_id_1);
+	expect_splice_pending_event(&nodes[1], &node_id_0);
+
+	// Step 4: Provide new UTXOs for node 0's RBF (node 1 does NOT initiate RBF).
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+
+	// Step 5: Only node 0 calls rbf_channel + funding_contributed.
+	let rbf_feerate_sat_per_kwu = (FEERATE_FLOOR_SATS_PER_KW as u64 * 25 + 23) / 24;
+	let rbf_feerate = FeeRate::from_sat_per_kwu(rbf_feerate_sat_per_kwu);
+	let funding_template = nodes[0].node.rbf_channel(&channel_id, &node_id_1, rbf_feerate).unwrap();
+	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
+	let rbf_funding_contribution = funding_template.splice_in_sync(added_value, &wallet).unwrap();
+	nodes[0]
+		.node
+		.funding_contributed(&channel_id, &node_id_1, rbf_funding_contribution.clone(), None)
+		.unwrap();
+
+	// Step 6: STFU exchange — node 0 initiates, node 1 responds (no QuiescentAction).
+	let stfu_a = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+	nodes[1].node.handle_stfu(node_id_0, &stfu_a);
+	let stfu_b = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
+	nodes[0].node.handle_stfu(node_id_1, &stfu_b);
+
+	// Step 7: Node 0 sends tx_init_rbf.
+	let tx_init_rbf = get_event_msg!(nodes[0], MessageSendEvent::SendTxInitRbf, node_id_1);
+	assert_eq!(tx_init_rbf.channel_id, channel_id);
+	assert_eq!(tx_init_rbf.feerate_sat_per_1000_weight, rbf_feerate_sat_per_kwu as u32);
+
+	// Step 8: Node 1 handles tx_init_rbf — should use our_prior_contribution.
+	nodes[1].node.handle_tx_init_rbf(node_id_0, &tx_init_rbf);
+	let tx_ack_rbf = get_event_msg!(nodes[1], MessageSendEvent::SendTxAckRbf, node_id_0);
+	assert_eq!(tx_ack_rbf.channel_id, channel_id);
+	assert!(
+		tx_ack_rbf.funding_output_contribution.is_some(),
+		"Acceptor should re-contribute via our_prior_contribution"
+	);
+
+	// Step 9: Node 0 handles tx_ack_rbf.
+	nodes[0].node.handle_tx_ack_rbf(node_id_1, &tx_ack_rbf);
+
+	// Step 10: Complete interactive funding with both contributions.
+	// Node 1's prior contribution is re-used — pass a clone for matching.
+	complete_interactive_funding_negotiation_for_both(
+		&nodes[0],
+		&nodes[1],
+		channel_id,
+		rbf_funding_contribution,
+		Some(node_1_funding_contribution),
+		new_funding_script.clone(),
+	);
+
+	// Step 11: Sign (acceptor has contribution) and broadcast.
+	let (rbf_tx, splice_locked) =
+		sign_interactive_funding_tx_with_acceptor_contribution(&nodes[0], &nodes[1], false, true);
+	assert!(splice_locked.is_none());
+
+	expect_splice_pending_event(&nodes[0], &node_id_1);
+	expect_splice_pending_event(&nodes[1], &node_id_0);
+
+	// Step 12: Mine and lock.
+	mine_transaction(&nodes[0], &rbf_tx);
+	mine_transaction(&nodes[1], &rbf_tx);
+
+	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
+
+	let splice_locked_b = get_event_msg!(nodes[0], MessageSendEvent::SendSpliceLocked, node_id_1);
+	nodes[1].node.handle_splice_locked(node_id_0, &splice_locked_b);
+
+	let mut msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 2, "{msg_events:?}");
+	let splice_locked_a =
+		if let MessageSendEvent::SendSpliceLocked { msg, .. } = msg_events.remove(0) {
+			msg
+		} else {
+			panic!("Expected SendSpliceLocked, got {:?}", msg_events[0]);
+		};
+	let announcement_sigs_b =
+		if let MessageSendEvent::SendAnnouncementSignatures { msg, .. } = msg_events.remove(0) {
+			msg
+		} else {
+			panic!("Expected SendAnnouncementSignatures");
+		};
+	nodes[0].node.handle_splice_locked(node_id_1, &splice_locked_a);
+	nodes[0].node.handle_announcement_signatures(node_id_1, &announcement_sigs_b);
+
+	let events_a = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events_a.len(), 2, "{events_a:?}");
+	assert!(matches!(events_a[0], Event::ChannelReady { .. }));
+	assert!(matches!(events_a[1], Event::DiscardFunding { .. }));
+	check_added_monitors(&nodes[0], 1);
+
+	let events_b = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(events_b.len(), 2, "{events_b:?}");
+	assert!(matches!(events_b[0], Event::ChannelReady { .. }));
+	assert!(matches!(events_b[1], Event::DiscardFunding { .. }));
+	check_added_monitors(&nodes[1], 1);
+
+	let mut msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 2, "{msg_events:?}");
+	if let MessageSendEvent::SendAnnouncementSignatures { msg, .. } = msg_events.remove(0) {
+		nodes[1].node.handle_announcement_signatures(node_id_0, &msg);
+	} else {
+		panic!("Expected SendAnnouncementSignatures");
+	}
+	assert!(matches!(msg_events.remove(0), MessageSendEvent::BroadcastChannelAnnouncement { .. }));
+
+	let mut msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1, "{msg_events:?}");
+	assert!(matches!(msg_events.remove(0), MessageSendEvent::BroadcastChannelAnnouncement { .. }));
+
+	// Clean up old watched outpoints.
+	let (orig_outpoint, orig_script) = original_funding_outpoint;
+	let first_splice_funding_idx =
+		first_splice_tx.output.iter().position(|o| o.script_pubkey == new_funding_script).unwrap();
+	let first_splice_outpoint =
+		OutPoint { txid: first_splice_tx.compute_txid(), index: first_splice_funding_idx as u16 };
+	for node in &nodes {
+		node.chain_source.remove_watched_txn_and_outputs(orig_outpoint, orig_script.clone());
+		node.chain_source
+			.remove_watched_txn_and_outputs(first_splice_outpoint, new_funding_script.clone());
+	}
+}
+
+#[test]
+fn test_splice_rbf_recontributes_feerate_too_high() {
+	// When the counterparty RBFs at a feerate too high for our prior contribution,
+	// we should reject the RBF rather than proceeding without our contribution.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	provide_utxo_reserves(&nodes, 2, Amount::from_sat(100_000));
+
+	// Step 1: Both nodes initiate a splice. Node 0 at floor feerate, node 1 splices in 95k
+	// from a 100k UTXO (tight budget: ~5k for change/fees).
+	let floor_feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64);
+
+	let funding_template_0 =
+		nodes[0].node.splice_channel(&channel_id, &node_id_1, floor_feerate).unwrap();
+	let wallet_0 = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
+	let node_0_funding_contribution =
+		funding_template_0.splice_in_sync(Amount::from_sat(50_000), &wallet_0).unwrap();
+	nodes[0]
+		.node
+		.funding_contributed(&channel_id, &node_id_1, node_0_funding_contribution.clone(), None)
+		.unwrap();
+
+	let node_1_added_value = Amount::from_sat(95_000);
+	let funding_template_1 =
+		nodes[1].node.splice_channel(&channel_id, &node_id_0, floor_feerate).unwrap();
+	let wallet_1 = WalletSync::new(Arc::clone(&nodes[1].wallet_source), nodes[1].logger);
+	let node_1_funding_contribution =
+		funding_template_1.splice_in_sync(node_1_added_value, &wallet_1).unwrap();
+	nodes[1]
+		.node
+		.funding_contributed(&channel_id, &node_id_0, node_1_funding_contribution.clone(), None)
+		.unwrap();
+
+	// Step 2: Both send STFU; tiebreak: node 0 wins.
+	let stfu_0 = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+	let stfu_1 = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
+
+	nodes[1].node.handle_stfu(node_id_0, &stfu_0);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+	nodes[0].node.handle_stfu(node_id_1, &stfu_1);
+
+	// Step 3: Complete the initial splice with both contributing.
+	let splice_init = get_event_msg!(nodes[0], MessageSendEvent::SendSpliceInit, node_id_1);
+	nodes[1].node.handle_splice_init(node_id_0, &splice_init);
+	let splice_ack = get_event_msg!(nodes[1], MessageSendEvent::SendSpliceAck, node_id_0);
+	assert_ne!(splice_ack.funding_contribution_satoshis, 0);
+	nodes[0].node.handle_splice_ack(node_id_1, &splice_ack);
+
+	let new_funding_script = chan_utils::make_funding_redeemscript(
+		&splice_init.funding_pubkey,
+		&splice_ack.funding_pubkey,
+	)
+	.to_p2wsh();
+
+	complete_interactive_funding_negotiation_for_both(
+		&nodes[0],
+		&nodes[1],
+		channel_id,
+		node_0_funding_contribution,
+		Some(node_1_funding_contribution),
+		new_funding_script.clone(),
+	);
+
+	let (_first_splice_tx, splice_locked) =
+		sign_interactive_funding_tx_with_acceptor_contribution(&nodes[0], &nodes[1], false, true);
+	assert!(splice_locked.is_none());
+
+	expect_splice_pending_event(&nodes[0], &node_id_1);
+	expect_splice_pending_event(&nodes[1], &node_id_0);
+
+	// Step 4: Provide new UTXOs. Node 0 initiates RBF at 20,000 sat/kwu.
+	provide_utxo_reserves(&nodes, 2, Amount::from_sat(100_000));
+
+	let high_feerate = FeeRate::from_sat_per_kwu(20_000);
+	let funding_template =
+		nodes[0].node.rbf_channel(&channel_id, &node_id_1, high_feerate).unwrap();
+	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
+	let rbf_funding_contribution =
+		funding_template.splice_in_sync(Amount::from_sat(50_000), &wallet).unwrap();
+	nodes[0]
+		.node
+		.funding_contributed(&channel_id, &node_id_1, rbf_funding_contribution.clone(), None)
+		.unwrap();
+
+	// Step 5: STFU exchange.
+	let stfu_a = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+	nodes[1].node.handle_stfu(node_id_0, &stfu_a);
+	let stfu_b = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
+	nodes[0].node.handle_stfu(node_id_1, &stfu_b);
+
+	// Step 6: Node 0 sends tx_init_rbf at 20,000 sat/kwu.
+	let tx_init_rbf = get_event_msg!(nodes[0], MessageSendEvent::SendTxInitRbf, node_id_1);
+	assert_eq!(tx_init_rbf.feerate_sat_per_1000_weight, high_feerate.to_sat_per_kwu() as u32);
+
+	// Step 7: Node 1's prior contribution (95k from 100k UTXO) can't cover fees at 20k sat/kwu.
+	// Should reject with WarnAndDisconnect rather than proceeding without contribution.
+	nodes[1].node.handle_tx_init_rbf(node_id_0, &tx_init_rbf);
+
+	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1, "{msg_events:?}");
+	match &msg_events[0] {
+		MessageSendEvent::HandleError {
+			action: msgs::ErrorAction::DisconnectPeerWithWarning { msg },
+			..
+		} => {
+			assert!(
+				msg.data.contains("cannot accommodate RBF feerate"),
+				"Unexpected warning: {}",
+				msg.data
+			);
+		},
+		other => panic!("Expected HandleError/DisconnectPeerWithWarning, got {:?}", other),
+	}
+}
+
+#[test]
+fn test_splice_rbf_sequential() {
+	// Three consecutive RBF rounds on the same splice (initial → RBF #1 → RBF #2).
+	// Node 0 is the quiescence initiator; node 1 is the acceptor with no contribution.
+	// Verifies:
+	// - Each round satisfies the 25/24 feerate rule
+	// - DiscardFunding events reference the correct txids from previous rounds
+	// - The final RBF can be mined and splice_locked successfully
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+
+	// Save the pre-splice funding outpoint.
+	let original_funding_outpoint = nodes[0]
+		.chain_monitor
+		.chain_monitor
+		.get_monitor(channel_id)
+		.map(|monitor| (monitor.get_funding_txo(), monitor.get_funding_script()))
+		.unwrap();
+
+	// --- Round 0: Initial splice-in from node 0 at floor feerate (253). ---
+	let funding_contribution = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+	let (splice_tx_0, new_funding_script) =
+		splice_channel(&nodes[0], &nodes[1], channel_id, funding_contribution);
+
+	// Feerate progression: 253 → ceil(253*25/24) = 264 → ceil(264*25/24) = 275
+	let feerate_1_sat_per_kwu = (FEERATE_FLOOR_SATS_PER_KW as u64 * 25 + 23) / 24; // 264
+	let feerate_2_sat_per_kwu = (feerate_1_sat_per_kwu * 25 + 23) / 24; // 275
+
+	// --- Round 1: RBF #1 at feerate 264. ---
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+
+	let rbf_feerate_1 = FeeRate::from_sat_per_kwu(feerate_1_sat_per_kwu);
+	let funding_template =
+		nodes[0].node.rbf_channel(&channel_id, &node_id_1, rbf_feerate_1).unwrap();
+	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
+	let funding_contribution_1 = funding_template.splice_in_sync(added_value, &wallet).unwrap();
+	nodes[0]
+		.node
+		.funding_contributed(&channel_id, &node_id_1, funding_contribution_1.clone(), None)
+		.unwrap();
+
+	let stfu_a = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+	nodes[1].node.handle_stfu(node_id_0, &stfu_a);
+	let stfu_b = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
+	nodes[0].node.handle_stfu(node_id_1, &stfu_b);
+
+	let tx_init_rbf = get_event_msg!(nodes[0], MessageSendEvent::SendTxInitRbf, node_id_1);
+	assert_eq!(tx_init_rbf.feerate_sat_per_1000_weight, feerate_1_sat_per_kwu as u32);
+	nodes[1].node.handle_tx_init_rbf(node_id_0, &tx_init_rbf);
+	let tx_ack_rbf = get_event_msg!(nodes[1], MessageSendEvent::SendTxAckRbf, node_id_0);
+	nodes[0].node.handle_tx_ack_rbf(node_id_1, &tx_ack_rbf);
+
+	complete_interactive_funding_negotiation(
+		&nodes[0],
+		&nodes[1],
+		channel_id,
+		funding_contribution_1,
+		new_funding_script.clone(),
+	);
+	let (splice_tx_1, splice_locked) = sign_interactive_funding_tx(&nodes[0], &nodes[1], false);
+	assert!(splice_locked.is_none());
+	expect_splice_pending_event(&nodes[0], &node_id_1);
+	expect_splice_pending_event(&nodes[1], &node_id_0);
+
+	// --- Round 2: RBF #2 at feerate 275. ---
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+
+	let rbf_feerate_2 = FeeRate::from_sat_per_kwu(feerate_2_sat_per_kwu);
+	let funding_template =
+		nodes[0].node.rbf_channel(&channel_id, &node_id_1, rbf_feerate_2).unwrap();
+	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
+	let funding_contribution_2 = funding_template.splice_in_sync(added_value, &wallet).unwrap();
+	nodes[0]
+		.node
+		.funding_contributed(&channel_id, &node_id_1, funding_contribution_2.clone(), None)
+		.unwrap();
+
+	let stfu_a = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+	nodes[1].node.handle_stfu(node_id_0, &stfu_a);
+	let stfu_b = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
+	nodes[0].node.handle_stfu(node_id_1, &stfu_b);
+
+	let tx_init_rbf = get_event_msg!(nodes[0], MessageSendEvent::SendTxInitRbf, node_id_1);
+	assert_eq!(tx_init_rbf.feerate_sat_per_1000_weight, feerate_2_sat_per_kwu as u32);
+	nodes[1].node.handle_tx_init_rbf(node_id_0, &tx_init_rbf);
+	let tx_ack_rbf = get_event_msg!(nodes[1], MessageSendEvent::SendTxAckRbf, node_id_0);
+	nodes[0].node.handle_tx_ack_rbf(node_id_1, &tx_ack_rbf);
+
+	complete_interactive_funding_negotiation(
+		&nodes[0],
+		&nodes[1],
+		channel_id,
+		funding_contribution_2,
+		new_funding_script.clone(),
+	);
+	let (rbf_tx_final, splice_locked) = sign_interactive_funding_tx(&nodes[0], &nodes[1], false);
+	assert!(splice_locked.is_none());
+	expect_splice_pending_event(&nodes[0], &node_id_1);
+	expect_splice_pending_event(&nodes[1], &node_id_0);
+
+	// --- Mine and lock the final RBF. ---
+	mine_transaction(&nodes[0], &rbf_tx_final);
+	mine_transaction(&nodes[1], &rbf_tx_final);
+
+	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
+
+	let splice_locked_b = get_event_msg!(nodes[0], MessageSendEvent::SendSpliceLocked, node_id_1);
+	nodes[1].node.handle_splice_locked(node_id_0, &splice_locked_b);
+
+	let mut msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 2, "{msg_events:?}");
+	let splice_locked_a =
+		if let MessageSendEvent::SendSpliceLocked { msg, .. } = msg_events.remove(0) {
+			msg
+		} else {
+			panic!("Expected SendSpliceLocked, got {:?}", msg_events[0]);
+		};
+	let announcement_sigs_b =
+		if let MessageSendEvent::SendAnnouncementSignatures { msg, .. } = msg_events.remove(0) {
+			msg
+		} else {
+			panic!("Expected SendAnnouncementSignatures");
+		};
+	nodes[0].node.handle_splice_locked(node_id_1, &splice_locked_a);
+	nodes[0].node.handle_announcement_signatures(node_id_1, &announcement_sigs_b);
+
+	// --- Verify DiscardFunding events for both replaced candidates. ---
+	let splice_tx_0_txid = splice_tx_0.compute_txid();
+	let splice_tx_1_txid = splice_tx_1.compute_txid();
+
+	// Node 0 (initiator): ChannelReady + 2 DiscardFunding.
+	let events_a = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events_a.len(), 3, "{events_a:?}");
+	assert!(matches!(events_a[0], Event::ChannelReady { .. }));
+	let discard_txids_a: Vec<_> = events_a[1..]
+		.iter()
+		.map(|e| match e {
+			Event::DiscardFunding { funding_info: FundingInfo::Tx { transaction }, .. } => {
+				transaction.compute_txid()
+			},
+			Event::DiscardFunding { funding_info: FundingInfo::OutPoint { outpoint }, .. } => {
+				outpoint.txid
+			},
+			other => panic!("Expected DiscardFunding, got {:?}", other),
+		})
+		.collect();
+	assert!(discard_txids_a.contains(&splice_tx_0_txid), "Missing discard for initial splice");
+	assert!(discard_txids_a.contains(&splice_tx_1_txid), "Missing discard for RBF #1");
+	check_added_monitors(&nodes[0], 1);
+
+	// Node 1 (acceptor): ChannelReady + 2 DiscardFunding.
+	let events_b = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(events_b.len(), 3, "{events_b:?}");
+	assert!(matches!(events_b[0], Event::ChannelReady { .. }));
+	let discard_txids_b: Vec<_> = events_b[1..]
+		.iter()
+		.map(|e| match e {
+			Event::DiscardFunding { funding_info: FundingInfo::Tx { transaction }, .. } => {
+				transaction.compute_txid()
+			},
+			Event::DiscardFunding { funding_info: FundingInfo::OutPoint { outpoint }, .. } => {
+				outpoint.txid
+			},
+			other => panic!("Expected DiscardFunding, got {:?}", other),
+		})
+		.collect();
+	assert!(discard_txids_b.contains(&splice_tx_0_txid), "Missing discard for initial splice");
+	assert!(discard_txids_b.contains(&splice_tx_1_txid), "Missing discard for RBF #1");
+	check_added_monitors(&nodes[1], 1);
+
+	// Complete the announcement exchange.
+	let mut msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 2, "{msg_events:?}");
+	if let MessageSendEvent::SendAnnouncementSignatures { msg, .. } = msg_events.remove(0) {
+		nodes[1].node.handle_announcement_signatures(node_id_0, &msg);
+	} else {
+		panic!("Expected SendAnnouncementSignatures");
+	}
+	assert!(matches!(msg_events.remove(0), MessageSendEvent::BroadcastChannelAnnouncement { .. }));
+
+	let mut msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1, "{msg_events:?}");
+	assert!(matches!(msg_events.remove(0), MessageSendEvent::BroadcastChannelAnnouncement { .. }));
+
+	// Clean up old watched outpoints.
+	let (orig_outpoint, orig_script) = original_funding_outpoint;
+	let splice_funding_idx = |tx: &Transaction| {
+		tx.output.iter().position(|o| o.script_pubkey == new_funding_script).unwrap()
+	};
+	let outpoint_0 =
+		OutPoint { txid: splice_tx_0_txid, index: splice_funding_idx(&splice_tx_0) as u16 };
+	let outpoint_1 =
+		OutPoint { txid: splice_tx_1_txid, index: splice_funding_idx(&splice_tx_1) as u16 };
+	for node in &nodes {
+		node.chain_source.remove_watched_txn_and_outputs(orig_outpoint, orig_script.clone());
+		node.chain_source.remove_watched_txn_and_outputs(outpoint_0, new_funding_script.clone());
+		node.chain_source.remove_watched_txn_and_outputs(outpoint_1, new_funding_script.clone());
+	}
+}
+
+#[test]
+fn test_splice_rbf_disconnect_filters_prior_contributions() {
+	// When disconnecting during an RBF round that reuses the same UTXOs as a prior round,
+	// the SpliceFundingFailed event should filter out inputs/outputs still committed to the prior
+	// round. This exercises the `reset_pending_splice_state` → `maybe_create_splice_funding_failed`
+	// macro path.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let added_value = Amount::from_sat(50_000);
+	// Provide exactly 1 UTXO per node so coin selection is deterministic.
+	provide_utxo_reserves(&nodes, 1, added_value * 2);
+
+	// --- Round 0: Initial splice-in at floor feerate (253). ---
+	let funding_contribution = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+	let (_splice_tx_0, _new_funding_script) =
+		splice_channel(&nodes[0], &nodes[1], channel_id, funding_contribution);
+
+	// --- Round 1: RBF at higher feerate without providing new UTXOs. ---
+	// The wallet reselects the same UTXO since the splice tx hasn't been mined.
+	let feerate_1_sat_per_kwu = (FEERATE_FLOOR_SATS_PER_KW as u64 * 25 + 23) / 24;
+	let rbf_feerate = FeeRate::from_sat_per_kwu(feerate_1_sat_per_kwu);
+	let funding_template = nodes[0].node.rbf_channel(&channel_id, &node_id_1, rbf_feerate).unwrap();
+	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
+	let funding_contribution_1 = funding_template.splice_in_sync(added_value, &wallet).unwrap();
+	let rbf_change_output = funding_contribution_1.change_output().cloned();
+	nodes[0]
+		.node
+		.funding_contributed(&channel_id, &node_id_1, funding_contribution_1, None)
+		.unwrap();
+
+	// STFU exchange.
+	let stfu_a = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+	nodes[1].node.handle_stfu(node_id_0, &stfu_a);
+	let stfu_b = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
+	nodes[0].node.handle_stfu(node_id_1, &stfu_b);
+
+	// RBF handshake to start interactive TX.
+	let tx_init_rbf = get_event_msg!(nodes[0], MessageSendEvent::SendTxInitRbf, node_id_1);
+	assert_eq!(tx_init_rbf.feerate_sat_per_1000_weight, feerate_1_sat_per_kwu as u32);
+	nodes[1].node.handle_tx_init_rbf(node_id_0, &tx_init_rbf);
+	let tx_ack_rbf = get_event_msg!(nodes[1], MessageSendEvent::SendTxAckRbf, node_id_0);
+	nodes[0].node.handle_tx_ack_rbf(node_id_1, &tx_ack_rbf);
+
+	// Disconnect mid-negotiation. Stale interactive TX messages are cleared by peer_disconnected.
+	nodes[0].node.peer_disconnected(node_id_1);
+	nodes[1].node.peer_disconnected(node_id_0);
+
+	// The initiator should get SpliceFailed + DiscardFunding with filtered contributions.
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 2, "{events:?}");
+	match &events[0] {
+		Event::SpliceFailed { channel_id: cid, .. } => {
+			assert_eq!(*cid, channel_id);
+		},
+		other => panic!("Expected SpliceFailed, got {:?}", other),
+	}
+	match &events[1] {
+		Event::DiscardFunding {
+			funding_info: FundingInfo::Contribution { inputs, outputs },
+			..
+		} => {
+			// The UTXO was filtered out: it's still committed to round 0's splice.
+			assert!(inputs.is_empty(), "Expected empty inputs (filtered), got {:?}", inputs);
+			// The change output was NOT filtered: different feerate produces a different amount.
+			let expected_outputs: Vec<_> = rbf_change_output.into_iter().collect();
+			assert_eq!(*outputs, expected_outputs);
+		},
+		other => panic!("Expected DiscardFunding with Contribution, got {:?}", other),
+	}
+
+	// Reconnect. After a completed splice, channel_ready is not re-sent.
+	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
+	reconnect_args.send_announcement_sigs = (true, true);
+	reconnect_nodes(reconnect_args);
 }

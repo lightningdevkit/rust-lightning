@@ -11,7 +11,9 @@
 
 use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::PublicKey;
-use bitcoin::{Amount, FeeRate, OutPoint, ScriptBuf, SignedAmount, TxOut, WScriptHash, Weight};
+use bitcoin::{
+	Amount, FeeRate, OutPoint, ScriptBuf, SignedAmount, TxOut, WPubkeyHash, WScriptHash, Weight,
+};
 
 use crate::ln::chan_utils::{
 	make_funding_redeemscript, BASE_INPUT_WEIGHT, EMPTY_SCRIPT_SIG_WEIGHT,
@@ -116,7 +118,7 @@ macro_rules! build_funding_contribution {
 		// The caller creating a FundingContribution is always the initiator for fee estimation
 		// purposes — this is conservative, overestimating rather than underestimating fees if
 		// the node ends up as the acceptor.
-		let estimated_fee = estimate_transaction_fee(&inputs, &outputs, true, is_splice, feerate);
+		let estimated_fee = estimate_transaction_fee(&inputs, &outputs, change_output.as_ref(), true, is_splice, feerate);
 		debug_assert!(estimated_fee <= Amount::MAX_MONEY);
 
 		let contribution = FundingContribution {
@@ -208,8 +210,8 @@ impl FundingTemplate {
 }
 
 fn estimate_transaction_fee(
-	inputs: &[FundingTxInput], outputs: &[TxOut], is_initiator: bool, is_splice: bool,
-	feerate: FeeRate,
+	inputs: &[FundingTxInput], outputs: &[TxOut], change_output: Option<&TxOut>,
+	is_initiator: bool, is_splice: bool, feerate: FeeRate,
 ) -> Amount {
 	let input_weight: u64 = inputs
 		.iter()
@@ -218,6 +220,7 @@ fn estimate_transaction_fee(
 
 	let output_weight: u64 = outputs
 		.iter()
+		.chain(change_output.into_iter())
 		.map(|txout| txout.weight().to_wu())
 		.fold(0, |total_weight, output_weight| total_weight.saturating_add(output_weight));
 
@@ -313,6 +316,14 @@ impl FundingContribution {
 		self.outputs.iter().chain(self.change_output.iter())
 	}
 
+	/// Returns the change output included in this contribution, if any.
+	///
+	/// When coin selection provides more value than needed for the funding contribution and fees,
+	/// the surplus is returned to the wallet via this change output.
+	pub fn change_output(&self) -> Option<&TxOut> {
+		self.change_output.as_ref()
+	}
+
 	pub(super) fn into_tx_parts(self) -> (Vec<FundingTxInput>, Vec<TxOut>) {
 		let FundingContribution { inputs, mut outputs, change_output, .. } = self;
 
@@ -382,11 +393,11 @@ impl FundingContribution {
 					.ok_or("Sum of input values is greater than the total bitcoin supply")?;
 			}
 
-			// If the inputs are enough to cover intended contribution amount, with fees even when
-			// there is a change output, we are fine.
-			// If the inputs are less, but enough to cover intended contribution amount, with
-			// (lower) fees with no change, we are also fine (change will not be generated).
-			// So it's enough to check considering the lower, no-change fees.
+			// If the inputs are enough to cover intended contribution amount plus fees (which
+			// include the change output weight when present), we are fine.
+			// If the inputs are less, but enough to cover intended contribution amount with
+			// (lower) fees without change, we are also fine (change will not be generated).
+			// Since estimated_fee includes change weight, this check is conservative.
 			//
 			// Note: dust limit is not relevant in this check.
 
@@ -405,11 +416,152 @@ impl FundingContribution {
 		Ok(())
 	}
 
+	/// Computes the adjusted fee and change output value for the acceptor at the initiator's
+	/// proposed feerate, which may differ from the feerate used during coin selection.
+	///
+	/// On success, returns the new estimated fee and, if applicable, the new change output value:
+	/// - `Some(change)` — the adjusted change output value
+	/// - `None` — no change output (no inputs or change fell below dust)
+	///
+	/// Returns `Err` if the contribution cannot accommodate the target feerate.
+	fn compute_feerate_adjustment(
+		&self, target_feerate: FeeRate,
+	) -> Result<(Amount, Option<Amount>), String> {
+		let is_splice = self.is_splice;
+
+		if !self.inputs.is_empty() {
+			let budget = self.estimated_fee;
+
+			if let Some(ref change_output) = self.change_output {
+				let old_change_value = change_output.value;
+				let dust_limit = change_output.script_pubkey.minimal_non_dust();
+
+				// Fair fee including the change output's weight.
+				let fair_fee = estimate_transaction_fee(
+					&self.inputs,
+					&self.outputs,
+					self.change_output.as_ref(),
+					false,
+					is_splice,
+					target_feerate,
+				);
+
+				let available = budget
+					.checked_add(old_change_value)
+					.ok_or("Budget plus change value overflow".to_string())?;
+
+				match available.checked_sub(fair_fee) {
+					Some(new_change_value) if new_change_value >= dust_limit => {
+						Ok((fair_fee, Some(new_change_value)))
+					},
+					_ => {
+						// Change would be below dust or negative. Try without change.
+						let fair_fee_no_change = estimate_transaction_fee(
+							&self.inputs,
+							&self.outputs,
+							None,
+							false,
+							is_splice,
+							target_feerate,
+						);
+						if available >= fair_fee_no_change {
+							Ok((fair_fee_no_change, None))
+						} else {
+							Err(format!(
+								"Feerate too high: available fee budget {} insufficient for required fee {}",
+								available, fair_fee_no_change,
+							))
+						}
+					},
+				}
+			} else {
+				// No change output.
+				let fair_fee = estimate_transaction_fee(
+					&self.inputs,
+					&self.outputs,
+					None,
+					false,
+					is_splice,
+					target_feerate,
+				);
+				if budget < fair_fee {
+					return Err(format!(
+						"Feerate too high: fee budget {} insufficient for required fee {}",
+						budget, fair_fee,
+					));
+				}
+				let surplus = budget - fair_fee;
+				let dust_limit =
+					ScriptBuf::new_p2wpkh(&WPubkeyHash::all_zeros()).minimal_non_dust();
+				if surplus >= dust_limit {
+					return Err(format!(
+						"Fee surplus {} exceeds dust limit {}; cannot burn without change output",
+						surplus, dust_limit,
+					));
+				}
+				Ok((fair_fee, None))
+			}
+		} else {
+			// No inputs (splice-out): fees paid from channel balance.
+			let fair_fee = estimate_transaction_fee(
+				&[],
+				&self.outputs,
+				None,
+				false,
+				is_splice,
+				target_feerate,
+			);
+			if self.estimated_fee < fair_fee {
+				return Err(format!(
+					"Feerate too high: estimated fee {} insufficient for required fee {}",
+					self.estimated_fee, fair_fee,
+				));
+			}
+			// Surplus goes back to the channel balance.
+			Ok((fair_fee, None))
+		}
+	}
+
+	/// Adjusts the contribution's change output for the initiator's feerate.
+	///
+	/// When the acceptor has a pending contribution (from the quiescence tie-breaker scenario),
+	/// the initiator's proposed feerate may differ from the feerate used during coin selection.
+	/// This adjusts the change output so the acceptor pays their fair share at the target
+	/// feerate.
+	pub(super) fn for_acceptor_at_feerate(mut self, feerate: FeeRate) -> Result<Self, String> {
+		let (new_estimated_fee, new_change) = self.compute_feerate_adjustment(feerate)?;
+		match new_change {
+			Some(value) => self.change_output.as_mut().unwrap().value = value,
+			None => self.change_output = None,
+		}
+		self.estimated_fee = new_estimated_fee;
+		self.feerate = feerate;
+		Ok(self)
+	}
+
+	/// Returns the net value at the given target feerate without mutating `self`.
+	///
+	/// This serves double duty: it checks feerate compatibility (returning `Err` if the feerate
+	/// can't be accommodated) and computes the adjusted net value (returning `Ok` with the value
+	/// accounting for the target feerate).
+	pub(super) fn net_value_for_acceptor_at_feerate(
+		&self, target_feerate: FeeRate,
+	) -> Result<SignedAmount, String> {
+		let (new_estimated_fee, _) = self.compute_feerate_adjustment(target_feerate)?;
+		Ok(self.net_value_with_fee(new_estimated_fee))
+	}
+
 	/// The net value contributed to a channel by the splice. If negative, more value will be
 	/// spliced out than spliced in. Fees will be deducted from the expected splice-out amount
 	/// if no inputs were included.
 	pub fn net_value(&self) -> SignedAmount {
-		let unpaid_fees = if self.inputs.is_empty() { self.estimated_fee } else { Amount::ZERO }
+		self.net_value_with_fee(self.estimated_fee)
+	}
+
+	/// Computes the net value using the given `estimated_fee` for the splice-out (no inputs)
+	/// case. For splice-in, fees are paid by inputs so `estimated_fee` is not deducted.
+	fn net_value_with_fee(&self, estimated_fee: Amount) -> SignedAmount {
+		let unpaid_fees = if self.inputs.is_empty() { estimated_fee } else { Amount::ZERO }
 			.to_signed()
 			.expect("estimated_fee is validated to not exceed Amount::MAX_MONEY");
 		let value_added = self
@@ -452,44 +604,70 @@ mod tests {
 
 		// 2 inputs, initiator, 2000 sat/kw feerate
 		assert_eq!(
-			estimate_transaction_fee(&two_inputs, &[], true, false, FeeRate::from_sat_per_kwu(2000)),
+			estimate_transaction_fee(&two_inputs, &[], None, true, false, FeeRate::from_sat_per_kwu(2000)),
 			Amount::from_sat(if cfg!(feature = "grind_signatures") { 1512 } else { 1516 }),
 		);
 
 		// higher feerate
 		assert_eq!(
-			estimate_transaction_fee(&two_inputs, &[], true, false, FeeRate::from_sat_per_kwu(3000)),
+			estimate_transaction_fee(&two_inputs, &[], None, true, false, FeeRate::from_sat_per_kwu(3000)),
 			Amount::from_sat(if cfg!(feature = "grind_signatures") { 2268 } else { 2274 }),
 		);
 
 		// only 1 input
 		assert_eq!(
-			estimate_transaction_fee(&one_input, &[], true, false, FeeRate::from_sat_per_kwu(2000)),
+			estimate_transaction_fee(&one_input, &[], None, true, false, FeeRate::from_sat_per_kwu(2000)),
 			Amount::from_sat(if cfg!(feature = "grind_signatures") { 970 } else { 972 }),
 		);
 
 		// 0 inputs
 		assert_eq!(
-			estimate_transaction_fee(&[], &[], true, false, FeeRate::from_sat_per_kwu(2000)),
+			estimate_transaction_fee(&[], &[], None, true, false, FeeRate::from_sat_per_kwu(2000)),
 			Amount::from_sat(428),
 		);
 
 		// not initiator
 		assert_eq!(
-			estimate_transaction_fee(&[], &[], false, false, FeeRate::from_sat_per_kwu(2000)),
+			estimate_transaction_fee(&[], &[], None, false, false, FeeRate::from_sat_per_kwu(2000)),
 			Amount::from_sat(0),
 		);
 
 		// splice initiator
 		assert_eq!(
-			estimate_transaction_fee(&one_input, &[], true, true, FeeRate::from_sat_per_kwu(2000)),
+			estimate_transaction_fee(&one_input, &[], None, true, true, FeeRate::from_sat_per_kwu(2000)),
 			Amount::from_sat(if cfg!(feature = "grind_signatures") { 1736 } else { 1740 }),
 		);
 
 		// splice acceptor
 		assert_eq!(
-			estimate_transaction_fee(&one_input, &[], false, true, FeeRate::from_sat_per_kwu(2000)),
+			estimate_transaction_fee(&one_input, &[], None, false, true, FeeRate::from_sat_per_kwu(2000)),
 			Amount::from_sat(if cfg!(feature = "grind_signatures") { 542 } else { 544 }),
+		);
+
+		// splice initiator, 1 input, 1 output
+		let output = funding_output_sats(500);
+		assert_eq!(
+			estimate_transaction_fee(&one_input, &[output.clone()], None, true, true, FeeRate::from_sat_per_kwu(2000)),
+			Amount::from_sat(if cfg!(feature = "grind_signatures") { 1984 } else { 1988 }),
+		);
+
+		// splice acceptor, 1 input, 1 output
+		assert_eq!(
+			estimate_transaction_fee(&one_input, &[output.clone()], None, false, true, FeeRate::from_sat_per_kwu(2000)),
+			Amount::from_sat(if cfg!(feature = "grind_signatures") { 790 } else { 792 }),
+		);
+
+		// splice initiator, 1 input, 1 output, 1 change via change_output parameter
+		let change = funding_output_sats(1_000);
+		assert_eq!(
+			estimate_transaction_fee(&one_input, &[output.clone()], Some(&change), true, true, FeeRate::from_sat_per_kwu(2000)),
+			Amount::from_sat(if cfg!(feature = "grind_signatures") { 2232 } else { 2236 }),
+		);
+
+		// splice acceptor, 1 input, 1 output, 1 change via change_output parameter
+		assert_eq!(
+			estimate_transaction_fee(&one_input, &[output.clone()], Some(&change), false, true, FeeRate::from_sat_per_kwu(2000)),
+			Amount::from_sat(if cfg!(feature = "grind_signatures") { 1038 } else { 1040 }),
 		);
 	}
 
@@ -748,5 +926,359 @@ mod tests {
 				.splice_in_and_out_sync(Amount::from_sat(1_000), outputs, UnreachableWallet)
 				.is_err());
 		}
+	}
+
+	#[test]
+	fn test_for_acceptor_at_feerate_higher_change_adjusted() {
+		// Splice-in: higher target feerate reduces the change output.
+		// The budget (is_initiator=true) overestimates by including common TX fields,
+		// shared output, and shared input weight. So we need a sufficiently high target
+		// feerate for the acceptor's fair fee to exceed the budget, causing the change
+		// to decrease.
+		let original_feerate = FeeRate::from_sat_per_kwu(2000);
+		let target_feerate = FeeRate::from_sat_per_kwu(6000);
+		let input = funding_input_sats(100_000);
+		let change = funding_output_sats(10_000);
+
+		// Budget computed as initiator (overestimate), including change output weight.
+		let budget = estimate_transaction_fee(
+			&[input.clone()],
+			&[],
+			Some(&change),
+			true,
+			true,
+			original_feerate,
+		);
+
+		let contribution = FundingContribution {
+			value_added: Amount::from_sat(50_000),
+			estimated_fee: budget,
+			inputs: vec![input.clone()],
+			outputs: vec![],
+			change_output: Some(change.clone()),
+			feerate: original_feerate,
+			is_splice: true,
+		};
+
+		let net_value_before = contribution.net_value();
+		let contribution = contribution.for_acceptor_at_feerate(target_feerate).unwrap();
+
+		// Fair fee at target feerate for acceptor (is_initiator=false), including change weight.
+		let expected_fair_fee =
+			estimate_transaction_fee(&[input], &[], Some(&change), false, true, target_feerate);
+		let expected_change = budget + Amount::from_sat(10_000) - expected_fair_fee;
+
+		assert_eq!(contribution.estimated_fee, expected_fair_fee);
+		assert!(contribution.change_output.is_some());
+		assert_eq!(contribution.change_output.as_ref().unwrap().value, expected_change);
+		assert!(expected_change < Amount::from_sat(10_000)); // Change reduced
+		assert_eq!(contribution.net_value(), net_value_before);
+	}
+
+	#[test]
+	fn test_for_acceptor_at_feerate_lower_change_increased() {
+		// Splice-in: lower target feerate increases the change output.
+		let original_feerate = FeeRate::from_sat_per_kwu(2000);
+		let target_feerate = FeeRate::from_sat_per_kwu(1000);
+		let input = funding_input_sats(100_000);
+		let change = funding_output_sats(10_000);
+
+		let budget = estimate_transaction_fee(
+			&[input.clone()],
+			&[],
+			Some(&change),
+			true,
+			true,
+			original_feerate,
+		);
+
+		let contribution = FundingContribution {
+			value_added: Amount::from_sat(50_000),
+			estimated_fee: budget,
+			inputs: vec![input.clone()],
+			outputs: vec![],
+			change_output: Some(change.clone()),
+			feerate: original_feerate,
+			is_splice: true,
+		};
+
+		let net_value_before = contribution.net_value();
+		let contribution = contribution.for_acceptor_at_feerate(target_feerate).unwrap();
+
+		let expected_fair_fee =
+			estimate_transaction_fee(&[input], &[], Some(&change), false, true, target_feerate);
+		let expected_change = budget + Amount::from_sat(10_000) - expected_fair_fee;
+
+		assert_eq!(contribution.estimated_fee, expected_fair_fee);
+		assert!(contribution.change_output.is_some());
+		assert_eq!(contribution.change_output.as_ref().unwrap().value, expected_change);
+		assert!(expected_change > Amount::from_sat(10_000)); // Change increased
+		assert_eq!(contribution.net_value(), net_value_before);
+	}
+
+	#[test]
+	fn test_for_acceptor_at_feerate_change_removed() {
+		// Splice-in: feerate high enough that change drops below dust and is removed,
+		// but budget + change still covers the fee without the change output.
+		let original_feerate = FeeRate::from_sat_per_kwu(2000);
+		let target_feerate = FeeRate::from_sat_per_kwu(7000);
+		let input = funding_input_sats(100_000);
+		let change = funding_output_sats(500);
+
+		let budget = estimate_transaction_fee(
+			&[input.clone()],
+			&[],
+			Some(&change),
+			true,
+			true,
+			original_feerate,
+		);
+
+		let contribution = FundingContribution {
+			value_added: Amount::from_sat(50_000),
+			estimated_fee: budget,
+			inputs: vec![input.clone()],
+			outputs: vec![],
+			change_output: Some(change),
+			feerate: original_feerate,
+			is_splice: true,
+		};
+
+		let net_value_before = contribution.net_value();
+		let contribution = contribution.for_acceptor_at_feerate(target_feerate).unwrap();
+
+		// Change should be removed; estimated_fee updated to no-change fair fee.
+		assert!(contribution.change_output.is_none());
+		let expected_fee_no_change =
+			estimate_transaction_fee(&[input], &[], None, false, true, target_feerate);
+		assert_eq!(contribution.estimated_fee, expected_fee_no_change);
+		assert_eq!(contribution.net_value(), net_value_before);
+	}
+
+	#[test]
+	fn test_for_acceptor_at_feerate_too_high_rejected() {
+		// Splice-in: feerate so high that even without change, the fee can't be covered.
+		let original_feerate = FeeRate::from_sat_per_kwu(2000);
+		let target_feerate = FeeRate::from_sat_per_kwu(100_000);
+		let input = funding_input_sats(100_000);
+		let change = funding_output_sats(500);
+
+		let budget = estimate_transaction_fee(
+			&[input.clone()],
+			&[],
+			Some(&change),
+			true,
+			true,
+			original_feerate,
+		);
+
+		let contribution = FundingContribution {
+			value_added: Amount::from_sat(50_000),
+			estimated_fee: budget,
+			inputs: vec![input],
+			outputs: vec![],
+			change_output: Some(change),
+			feerate: original_feerate,
+			is_splice: true,
+		};
+
+		let result = contribution.for_acceptor_at_feerate(target_feerate);
+		assert!(result.is_err());
+		assert!(result.unwrap_err().contains("Feerate too high"));
+	}
+
+	#[test]
+	fn test_for_acceptor_at_feerate_splice_out_sufficient() {
+		// Splice-out (no inputs): budget from is_initiator=true overestimate covers the
+		// acceptor's fair fee at a moderately higher target feerate.
+		let original_feerate = FeeRate::from_sat_per_kwu(2000);
+		let target_feerate = FeeRate::from_sat_per_kwu(3000);
+		let output = funding_output_sats(50_000);
+
+		let budget =
+			estimate_transaction_fee(&[], &[output.clone()], None, true, true, original_feerate);
+
+		let contribution = FundingContribution {
+			value_added: Amount::ZERO,
+			estimated_fee: budget,
+			inputs: vec![],
+			outputs: vec![output.clone()],
+			change_output: None,
+			feerate: original_feerate,
+			is_splice: true,
+		};
+
+		let contribution = contribution.for_acceptor_at_feerate(target_feerate).unwrap();
+		// estimated_fee is updated to the fair fee; surplus goes back to channel balance.
+		let expected_fair_fee =
+			estimate_transaction_fee(&[], &[output], None, false, true, target_feerate);
+		assert_eq!(contribution.estimated_fee, expected_fair_fee);
+		assert!(expected_fair_fee <= budget);
+	}
+
+	#[test]
+	fn test_for_acceptor_at_feerate_splice_out_insufficient() {
+		// Splice-out: target feerate too high for the is_initiator=true budget.
+		let original_feerate = FeeRate::from_sat_per_kwu(2000);
+		let target_feerate = FeeRate::from_sat_per_kwu(50_000);
+		let output = funding_output_sats(50_000);
+
+		let budget =
+			estimate_transaction_fee(&[], &[output.clone()], None, true, true, original_feerate);
+
+		let contribution = FundingContribution {
+			value_added: Amount::ZERO,
+			estimated_fee: budget,
+			inputs: vec![],
+			outputs: vec![output],
+			change_output: None,
+			feerate: original_feerate,
+			is_splice: true,
+		};
+
+		let result = contribution.for_acceptor_at_feerate(target_feerate);
+		assert!(result.is_err());
+		assert!(result.unwrap_err().contains("Feerate too high"));
+	}
+
+	#[test]
+	fn test_net_value_for_acceptor_at_feerate_splice_in() {
+		// Splice-in: net_value_for_acceptor_at_feerate returns the same value as net_value() since
+		// splice-in fees are paid by inputs, not from channel balance.
+		let original_feerate = FeeRate::from_sat_per_kwu(2000);
+		let target_feerate = FeeRate::from_sat_per_kwu(3000);
+		let input = funding_input_sats(100_000);
+		let change = funding_output_sats(10_000);
+
+		let budget = estimate_transaction_fee(
+			&[input.clone()],
+			&[],
+			Some(&change),
+			true,
+			true,
+			original_feerate,
+		);
+
+		let contribution = FundingContribution {
+			value_added: Amount::from_sat(50_000),
+			estimated_fee: budget,
+			inputs: vec![input],
+			outputs: vec![],
+			change_output: Some(change),
+			feerate: original_feerate,
+			is_splice: true,
+		};
+
+		// For splice-in, unpaid_fees is zero so net_value_for_acceptor_at_feerate equals net_value.
+		let net_at_feerate =
+			contribution.net_value_for_acceptor_at_feerate(target_feerate).unwrap();
+		assert_eq!(net_at_feerate, contribution.net_value());
+		assert_eq!(net_at_feerate, Amount::from_sat(50_000).to_signed().unwrap());
+	}
+
+	#[test]
+	fn test_net_value_for_acceptor_at_feerate_splice_out() {
+		// Splice-out: net_value_for_acceptor_at_feerate returns the adjusted value using the fair fee
+		// at the target feerate.
+		let original_feerate = FeeRate::from_sat_per_kwu(2000);
+		let target_feerate = FeeRate::from_sat_per_kwu(3000);
+		let output = funding_output_sats(50_000);
+
+		let budget =
+			estimate_transaction_fee(&[], &[output.clone()], None, true, true, original_feerate);
+
+		let contribution = FundingContribution {
+			value_added: Amount::ZERO,
+			estimated_fee: budget,
+			inputs: vec![],
+			outputs: vec![output.clone()],
+			change_output: None,
+			feerate: original_feerate,
+			is_splice: true,
+		};
+
+		let net_at_feerate =
+			contribution.net_value_for_acceptor_at_feerate(target_feerate).unwrap();
+
+		// The fair fee at target feerate should be less than the initiator's budget.
+		let fair_fee = estimate_transaction_fee(&[], &[output], None, false, true, target_feerate);
+		let expected_net = SignedAmount::ZERO
+			- Amount::from_sat(50_000).to_signed().unwrap()
+			- fair_fee.to_signed().unwrap();
+		assert_eq!(net_at_feerate, expected_net);
+
+		// Should be less negative than net_value() which uses the higher budget.
+		assert!(net_at_feerate > contribution.net_value());
+	}
+
+	#[test]
+	fn test_net_value_for_acceptor_at_feerate_does_not_mutate() {
+		// Verify net_value_for_acceptor_at_feerate does not modify the contribution.
+		let original_feerate = FeeRate::from_sat_per_kwu(2000);
+		let target_feerate = FeeRate::from_sat_per_kwu(5000);
+		let input = funding_input_sats(100_000);
+		let change = funding_output_sats(10_000);
+
+		let budget = estimate_transaction_fee(
+			&[input.clone()],
+			&[],
+			Some(&change),
+			true,
+			true,
+			original_feerate,
+		);
+
+		let contribution = FundingContribution {
+			value_added: Amount::from_sat(50_000),
+			estimated_fee: budget,
+			inputs: vec![input],
+			outputs: vec![],
+			change_output: Some(change),
+			feerate: original_feerate,
+			is_splice: true,
+		};
+
+		let net_before = contribution.net_value();
+		let fee_before = contribution.estimated_fee;
+		let change_before = contribution.change_output.as_ref().unwrap().value;
+
+		let _ = contribution.net_value_for_acceptor_at_feerate(target_feerate);
+
+		// Nothing should have changed.
+		assert_eq!(contribution.net_value(), net_before);
+		assert_eq!(contribution.estimated_fee, fee_before);
+		assert_eq!(contribution.change_output.as_ref().unwrap().value, change_before);
+	}
+
+	#[test]
+	fn test_net_value_for_acceptor_at_feerate_too_high() {
+		// net_value_for_acceptor_at_feerate returns Err when feerate can't be accommodated.
+		let original_feerate = FeeRate::from_sat_per_kwu(2000);
+		let target_feerate = FeeRate::from_sat_per_kwu(100_000);
+		let input = funding_input_sats(100_000);
+		let change = funding_output_sats(500);
+
+		let budget = estimate_transaction_fee(
+			&[input.clone()],
+			&[],
+			Some(&change),
+			true,
+			true,
+			original_feerate,
+		);
+
+		let contribution = FundingContribution {
+			value_added: Amount::from_sat(50_000),
+			estimated_fee: budget,
+			inputs: vec![input],
+			outputs: vec![],
+			change_output: Some(change),
+			feerate: original_feerate,
+			is_splice: true,
+		};
+
+		let result = contribution.net_value_for_acceptor_at_feerate(target_feerate);
+		assert!(result.is_err());
+		assert!(result.unwrap_err().contains("Feerate too high"));
 	}
 }
