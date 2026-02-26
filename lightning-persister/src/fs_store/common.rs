@@ -9,7 +9,7 @@ use lightning::types::string::PrintableString;
 
 use std::collections::HashMap;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -253,7 +253,11 @@ impl FilesystemStoreInner {
 		version: u64, preserve_mtime: bool,
 	) -> lightning::io::Result<()> {
 		let mtime = if preserve_mtime {
-			fs::metadata(&dest_file_path).ok().and_then(|m| m.modified().ok())
+			match fs::metadata(&dest_file_path) {
+				Err(e) if e.kind() == ErrorKind::NotFound => None,
+				Err(e) => return Err(e.into()),
+				Ok(m) => Some(m.modified()?),
+			}
 		} else {
 			None
 		};
