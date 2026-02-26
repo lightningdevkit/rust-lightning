@@ -2040,6 +2040,32 @@ mod tests {
 			Err(e) => assert_eq!(e, Bolt12SemanticError::MissingAmount),
 		}
 
+		// An offer with amount_msats(0) is normalized to None, so invoice request must provide amount.
+		match OfferBuilder::new(recipient_pubkey())
+			.amount_msats(0)
+			.build()
+			.unwrap()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
+			.unwrap()
+			.build_and_sign()
+		{
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, Bolt12SemanticError::MissingAmount),
+		}
+
+		// But providing an amount in the invoice request should succeed.
+		let invoice_request = OfferBuilder::new(recipient_pubkey())
+			.amount_msats(0)
+			.build()
+			.unwrap()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
+			.unwrap()
+			.amount_msats(1000)
+			.unwrap()
+			.build_and_sign()
+			.unwrap();
+		assert_eq!(invoice_request.amount_msats(), Some(1000));
+
 		match OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
 			.supported_quantity(Quantity::Unbounded)

@@ -405,6 +405,10 @@ macro_rules! offer_builder_methods { (
 				if amount_msats > MAX_VALUE_MSAT {
 					return Err(Bolt12SemanticError::InvalidAmount);
 				}
+				// An amount of 0 is equivalent to not setting an amount, so default to None.
+				if amount_msats == 0 {
+					$self.offer.amount = None;
+				}
 			},
 			Some(Amount::Currency { .. }) => return Err(Bolt12SemanticError::UnsupportedCurrency),
 			None => {},
@@ -1309,8 +1313,12 @@ impl TryFrom<FullOfferTlvStream> for OfferContents {
 			(None, Some(amount_msats)) if amount_msats > MAX_VALUE_MSAT => {
 				return Err(Bolt12SemanticError::InvalidAmount);
 			},
+			// An amount of 0 is equivalent to not setting an amount, so default to None.
+			(None, Some(0)) => None,
 			(None, Some(amount_msats)) => Some(Amount::Bitcoin { amount_msats }),
 			(Some(_), None) => return Err(Bolt12SemanticError::MissingAmount),
+			// An amount of 0 with a currency is equivalent to not setting an amount.
+			(Some(_), Some(0)) => None,
 			(Some(currency_bytes), Some(amount)) => {
 				let iso4217_code = CurrencyCode::new(currency_bytes)
 					.map_err(|_| Bolt12SemanticError::InvalidCurrencyCode)?;
@@ -1702,6 +1710,21 @@ mod tests {
 			Ok(_) => panic!("expected error"),
 			Err(e) => assert_eq!(e, Bolt12SemanticError::InvalidAmount),
 		}
+
+		// An amount of 0 is equivalent to not setting an amount and should default to None.
+		let offer = OfferBuilder::new(pubkey(42)).amount_msats(0).build().unwrap();
+		assert_eq!(offer.amount(), None);
+		assert_eq!(offer.as_tlv_stream().0.amount, None);
+
+		// Verify roundtrip: offer with amount=0 serializes and parses back with amount=None.
+		let serialized = offer.to_string();
+		match serialized.parse::<Offer>() {
+			Ok(reparsed) => {
+				assert_eq!(reparsed.amount(), None);
+				assert_eq!(reparsed.as_tlv_stream().0.amount, None);
+			},
+			Err(e) => panic!("error parsing offer: {:?}", e),
+		}
 	}
 
 	#[test]
@@ -1973,6 +1996,36 @@ mod tests {
 				e,
 				Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::InvalidCurrencyCode)
 			),
+		}
+
+		// An amount of 0 is equivalent to not setting an amount and should default to None.
+		let mut tlv_stream = offer.as_tlv_stream();
+		tlv_stream.0.amount = Some(0);
+		tlv_stream.0.currency = None;
+
+		let mut encoded_offer = Vec::new();
+		tlv_stream.write(&mut encoded_offer).unwrap();
+
+		match Offer::try_from(encoded_offer) {
+			Ok(offer) => {
+				assert_eq!(offer.amount(), None);
+			},
+			Err(e) => panic!("error parsing offer: {:?}", e),
+		}
+
+		// An amount of 0 with a currency is also equivalent to not setting an amount.
+		let mut tlv_stream = offer.as_tlv_stream();
+		tlv_stream.0.amount = Some(0);
+		tlv_stream.0.currency = Some(b"USD");
+
+		let mut encoded_offer = Vec::new();
+		tlv_stream.write(&mut encoded_offer).unwrap();
+
+		match Offer::try_from(encoded_offer) {
+			Ok(offer) => {
+				assert_eq!(offer.amount(), None);
+			},
+			Err(e) => panic!("error parsing offer: {:?}", e),
 		}
 	}
 
