@@ -57,6 +57,17 @@ fuzz_target!(|data: &[u8]| {
 fn main() {
 	use std::io::Read;
 
+	// On macOS, panic=abort causes the process to send SIGABRT which can leave it
+	// stuck in an uninterruptible state due to the ReportCrash daemon. Using
+	// process::exit in a panic hook avoids this by terminating cleanly.
+	std::panic::set_hook(Box::new(|panic_info| {
+		use std::io::Write;
+		let _ = std::io::stdout().flush();
+		eprintln!("{}\n{}", panic_info, std::backtrace::Backtrace::force_capture());
+		let _ = std::io::stderr().flush();
+		std::process::exit(1);
+	}));
+
 	let mut data = Vec::with_capacity(8192);
 	std::io::stdin().read_to_end(&mut data).unwrap();
 	msg_update_fail_malformed_htlc_test(&data, lightning_fuzz::utils::test_logger::Stdout {});
