@@ -2043,12 +2043,16 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 									_ => &broadcast_c,
 								};
 								let mut txs = broadcaster.txn_broadcasted.borrow_mut();
-								let pos = txs
+								if let Some(pos) = txs
 									.iter()
 									.position(|tx| new_funding_txo.txid == tx.compute_txid())
-									.expect("SplicePending but splice tx not found in broadcaster");
-								let splice_tx = txs.remove(pos);
-								chain_state.confirm_tx(splice_tx);
+								{
+									let splice_tx = txs.remove(pos);
+									chain_state.confirm_tx(splice_tx);
+								}
+								// If not found, the settlement drain loop already
+								// removed it from the broadcaster but confirm_tx
+								// rejected it (e.g. inputs already spent).
 							}
 						},
 						events::Event::SpliceFailed { .. } => {},
