@@ -47,7 +47,7 @@ use lightning::ln::functional_test_utils::*;
 use lightning::ln::inbound_payment::ExpandedKey;
 use lightning::ln::outbound_payment::{RecipientOnionFields, Retry};
 use lightning::ln::peer_handler::{
-	IgnoringMessageHandler, MessageHandler, PeerManager, SocketDescriptor,
+	IgnoringMessageHandler, MessageHandler, PeerManager, SocketDescriptor, CHUNK_SIZE,
 };
 use lightning::ln::script::ShutdownScript;
 use lightning::ln::types::ChannelId;
@@ -201,6 +201,15 @@ struct Peer<'a> {
 }
 impl<'a> SocketDescriptor for Peer<'a> {
 	fn send_data(&mut self, data: &[u8], _continue_read: bool) -> usize {
+		// After the Noise handshake, all writes must be exactly CHUNK_SIZE bytes
+		// (or 0 for empty force-writes). The only non-chunk write is 50 bytes for
+		// the handshake act_two sent by an inbound peer before encryption is ready.
+		assert!(
+			data.len() == 0 || data.len() == 50 || data.len() == CHUNK_SIZE,
+			"Unexpected send_data size: {} (expected 0, 50, or {})",
+			data.len(),
+			CHUNK_SIZE,
+		);
 		data.len()
 	}
 	fn disconnect_socket(&mut self) {
