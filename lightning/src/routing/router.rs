@@ -2587,6 +2587,25 @@ fn sort_first_hop_channels(
 /// However, the enabled/disabled bit on such channels as well as the `htlc_minimum_msat` /
 /// `htlc_maximum_msat` *are* checked as they may change based on the receiving node.
 ///
+/// Routes are constructed by searching the provided [`NetworkGraph`] for paths from the payer
+/// to the payee that satisfy the constraints in [`RouteParameters`]. Fees are accumulated
+/// backwards from the payee to the payer, and CLTV expiry deltas are aggregated hop-by-hop.
+///
+/// Channel selection and path ranking are influenced by the provided [`ScoreLookUp`]
+/// implementation, which may apply penalties based on historical reliability,
+/// liquidity hints, or in-flight HTLCs.
+///
+/// If `first_hops` is provided, those channels are used as the only outbound candidates
+/// from the payer, overriding the corresponding entries in the [`NetworkGraph`].
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The payer and payee are the same node.
+/// - The payment amount is zero or exceeds the maximum representable value.
+/// - The total CLTV expiry constraint cannot accommodate the payee's required final CLTV delta.
+/// - No route satisfying liquidity, feature, and policy constraints can be found.
+///
 /// # Panics
 ///
 /// Panics if first_hops contains channels without `short_channel_id`s;
