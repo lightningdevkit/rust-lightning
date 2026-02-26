@@ -1638,10 +1638,12 @@ pub fn exchange_open_accept_zero_conf_chan<'a, 'b, 'c, 'd>(
 		Event::OpenChannelRequest { temporary_channel_id, .. } => {
 			receiver
 				.node
-				.accept_inbound_channel_from_trusted_peer_0conf(
+				.accept_inbound_channel_from_trusted_peer(
 					&temporary_channel_id,
 					&initiator_node_id,
 					0,
+					true,
+					false,
 					None,
 				)
 				.unwrap();
