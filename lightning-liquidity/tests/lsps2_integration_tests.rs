@@ -27,8 +27,7 @@ use lightning_liquidity::lsps2::utils::is_valid_opening_fee_params;
 use lightning_liquidity::utils::time::{DefaultTimeProvider, TimeProvider};
 use lightning_liquidity::{LiquidityClientConfig, LiquidityManagerSync, LiquidityServiceConfig};
 
-use lightning::chain::{BestBlock, Filter};
-use lightning::ln::channelmanager::{ChainParameters, InterceptId, MIN_FINAL_CLTV_EXPIRY_DELTA};
+use lightning::ln::channelmanager::{InterceptId, MIN_FINAL_CLTV_EXPIRY_DELTA};
 use lightning::ln::functional_test_utils::{
 	create_chanmon_cfgs, create_node_cfgs, create_node_chanmgrs,
 };
@@ -61,7 +60,6 @@ fn build_lsps2_configs() -> ([u8; 32], LiquidityServiceConfig, LiquidityClientCo
 	let promise_secret = [42; 32];
 	let lsps2_service_config = LSPS2ServiceConfig { promise_secret };
 	let service_config = LiquidityServiceConfig {
-		#[cfg(lsps1_service)]
 		lsps1_service_config: None,
 		lsps2_service_config: Some(lsps2_service_config),
 		lsps5_service_config: None,
@@ -942,7 +940,6 @@ fn lsps2_service_handler_persistence_across_restarts() {
 
 	let promise_secret = [42; 32];
 	let service_config = LiquidityServiceConfig {
-		#[cfg(lsps1_service)]
 		lsps1_service_config: None,
 		lsps2_service_config: Some(LSPS2ServiceConfig { promise_secret }),
 		lsps5_service_config: None,
@@ -1071,19 +1068,12 @@ fn lsps2_service_handler_persistence_across_restarts() {
 		let nodes_restart = create_network(2, &node_cfgs, &node_chanmgrs_restart);
 
 		// Create a new LiquidityManager with the same configuration and KV store to simulate restart
-		let chain_params = ChainParameters {
-			network: Network::Testnet,
-			best_block: BestBlock::from_network(Network::Testnet),
-		};
-
 		let transaction_broadcaster = Arc::new(TestBroadcaster::new(Network::Testnet));
 
 		let restarted_service_lm = LiquidityManagerSync::new_with_custom_time_provider(
 			nodes_restart[0].keys_manager,
 			nodes_restart[0].keys_manager,
 			nodes_restart[0].node,
-			None::<Arc<dyn Filter + Send + Sync>>,
-			Some(chain_params),
 			service_kv_store,
 			transaction_broadcaster,
 			Some(service_config),

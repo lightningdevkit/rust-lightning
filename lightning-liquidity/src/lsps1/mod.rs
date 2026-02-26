@@ -12,5 +12,5 @@
 pub mod client;
 pub mod event;
 pub mod msgs;
-#[cfg(lsps1_service)]
+pub(crate) mod peer_state;
 pub mod service;
