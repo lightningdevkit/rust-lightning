@@ -689,7 +689,11 @@ impl TxBuilder for SpecTxBuilder {
 			)
 		};
 
-		let mut to_broadcaster_value_sat = if local { value_to_self } else { value_to_remote };
+		let (mut to_broadcaster_value_sat, to_broadcaster_value_offchain_msat) = if local {
+			(value_to_self, value_to_self_after_htlcs_msat)
+		} else {
+			(value_to_remote, value_to_remote_after_htlcs_msat)
+		};
 		let mut to_countersignatory_value_sat = if local { value_to_remote } else { value_to_self };
 
 		if to_broadcaster_value_sat >= broadcaster_dust_limit_satoshis {
@@ -723,6 +727,7 @@ impl TxBuilder for SpecTxBuilder {
 			commitment_number,
 			per_commitment_point,
 			to_broadcaster_value_sat,
+			to_broadcaster_value_offchain_msat,
 			to_countersignatory_value_sat,
 			feerate_per_kw,
 			htlcs_in_tx,

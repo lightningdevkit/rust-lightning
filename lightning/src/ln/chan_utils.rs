@@ -1372,7 +1372,9 @@ impl HolderCommitmentTransaction {
 		for _ in 0..nondust_htlcs.len() {
 			counterparty_htlc_sigs.push(dummy_sig);
 		}
-		let inner = CommitmentTransaction::new(0, &dummy_key, 0, 0, 0, nondust_htlcs, &channel_parameters.as_counterparty_broadcastable(), &secp_ctx);
+		let inner = CommitmentTransaction::new_without_broadcaster_offchain_value(
+			0, &dummy_key, 0, 0, 0, nondust_htlcs, &channel_parameters.as_counterparty_broadcastable(), &secp_ctx
+		);
 		HolderCommitmentTransaction {
 			inner,
 			counterparty_sig: dummy_sig,
@@ -1600,6 +1602,7 @@ impl<'a> TrustedClosingTransaction<'a> {
 #[derive(Clone, Debug)]
 pub struct CommitmentTransaction {
 	commitment_number: u64,
+	to_broadcaster_value_offchain_msat: Option<u64>,
 	to_broadcaster_value_sat: Amount,
 	to_countersignatory_value_sat: Amount,
 	to_broadcaster_delay: Option<u16>, // Added in 0.0.117
@@ -1620,6 +1623,7 @@ impl PartialEq for CommitmentTransaction {
 	#[rustfmt::skip]
 	fn eq(&self, o: &Self) -> bool {
 		let eq = self.commitment_number == o.commitment_number &&
+			self.to_broadcaster_value_offchain_msat == o.to_broadcaster_value_offchain_msat &&
 			self.to_broadcaster_value_sat == o.to_broadcaster_value_sat &&
 			self.to_countersignatory_value_sat == o.to_countersignatory_value_sat &&
 			self.feerate_per_kw == o.feerate_per_kw &&
@@ -1649,6 +1653,7 @@ impl Writeable for CommitmentTransaction {
 			(12, self.nondust_htlcs, required_vec),
 			(14, legacy_deserialization_prevention_marker, option),
 			(15, self.channel_type_features, required),
+			(17, self.to_broadcaster_value_offchain_msat, option),
 		});
 		Ok(())
 	}
@@ -1668,6 +1673,7 @@ impl Readable for CommitmentTransaction {
 			(12, nondust_htlcs, required_vec),
 			(14, _legacy_deserialization_prevention_marker, (option, explicit_type: ())),
 			(15, channel_type_features, option),
+			(17, to_broadcaster_value_offchain_msat, option),
 		});
 
 		let mut additional_features = ChannelTypeFeatures::empty();
@@ -1677,6 +1683,7 @@ impl Readable for CommitmentTransaction {
 		Ok(Self {
 			commitment_number: commitment_number.0.unwrap(),
 			to_broadcaster_value_sat: to_broadcaster_value_sat.0.unwrap(),
+			to_broadcaster_value_offchain_msat,
 			to_countersignatory_value_sat: to_countersignatory_value_sat.0.unwrap(),
 			to_broadcaster_delay,
 			feerate_per_kw: feerate_per_kw.0.unwrap(),
@@ -1694,33 +1701,94 @@ impl CommitmentTransaction {
 	/// All HTLCs MUST be above the dust limit for the channel.
 	/// The broadcaster and countersignatory amounts MUST be either 0 or above dust. If the amount
 	/// is 0, the corresponding output will be omitted from the transaction.
-	#[rustfmt::skip]
-	pub fn new(commitment_number: u64, per_commitment_point: &PublicKey, to_broadcaster_value_sat: u64, to_countersignatory_value_sat: u64, feerate_per_kw: u32, mut nondust_htlcs: Vec<HTLCOutputInCommitment>, channel_parameters: &DirectedChannelTransactionParameters, secp_ctx: &Secp256k1<secp256k1::All>) -> CommitmentTransaction {
+	pub fn new(
+		commitment_number: u64, per_commitment_point: &PublicKey, to_broadcaster_value_sat: u64,
+		to_broadcaster_value_offchain_msat: u64, to_countersignatory_value_sat: u64,
+		feerate_per_kw: u32, nondust_htlcs: Vec<HTLCOutputInCommitment>,
+		channel_parameters: &DirectedChannelTransactionParameters,
+		secp_ctx: &Secp256k1<secp256k1::All>,
+	) -> CommitmentTransaction {
+		debug_assert!(to_broadcaster_value_sat * 1000 <= to_broadcaster_value_offchain_msat);
+		Self::build(
+			commitment_number,
+			per_commitment_point,
+			to_broadcaster_value_sat,
+			Some(to_broadcaster_value_offchain_msat),
+			to_countersignatory_value_sat,
+			feerate_per_kw,
+			nondust_htlcs,
+			channel_parameters,
+			secp_ctx,
+		)
+	}
+
+	pub(crate) fn new_without_broadcaster_offchain_value(
+		commitment_number: u64, per_commitment_point: &PublicKey, to_broadcaster_value_sat: u64,
+		to_countersignatory_value_sat: u64, feerate_per_kw: u32,
+		nondust_htlcs: Vec<HTLCOutputInCommitment>,
+		channel_parameters: &DirectedChannelTransactionParameters,
+		secp_ctx: &Secp256k1<secp256k1::All>,
+	) -> CommitmentTransaction {
+		Self::build(
+			commitment_number,
+			per_commitment_point,
+			to_broadcaster_value_sat,
+			None,
+			to_countersignatory_value_sat,
+			feerate_per_kw,
+			nondust_htlcs,
+			channel_parameters,
+			secp_ctx,
+		)
+	}
+
+	fn build(
+		commitment_number: u64, per_commitment_point: &PublicKey, to_broadcaster_value_sat: u64,
+		to_broadcaster_value_offchain_msat: Option<u64>, to_countersignatory_value_sat: u64,
+		feerate_per_kw: u32, mut nondust_htlcs: Vec<HTLCOutputInCommitment>,
+		channel_parameters: &DirectedChannelTransactionParameters,
+		secp_ctx: &Secp256k1<secp256k1::All>,
+	) -> CommitmentTransaction {
 		let to_broadcaster_value_sat = Amount::from_sat(to_broadcaster_value_sat);
 		let to_countersignatory_value_sat = Amount::from_sat(to_countersignatory_value_sat);
-		let keys = TxCreationKeys::from_channel_static_keys(per_commitment_point, channel_parameters.broadcaster_pubkeys(), channel_parameters.countersignatory_pubkeys(), secp_ctx);
+		let keys = TxCreationKeys::from_channel_static_keys(
+			per_commitment_point,
+			channel_parameters.broadcaster_pubkeys(),
+			channel_parameters.countersignatory_pubkeys(),
+			secp_ctx,
+		);
 
 		// Build and sort the outputs of the transaction.
 		// Also sort the HTLC output data in `nondust_htlcs` in the same order, and populate the
 		// transaction output indices therein.
-		let outputs = Self::build_outputs_and_htlcs(&keys, to_broadcaster_value_sat, to_countersignatory_value_sat, &mut nondust_htlcs, channel_parameters);
+		let outputs = Self::build_outputs_and_htlcs(
+			&keys,
+			to_broadcaster_value_sat,
+			to_countersignatory_value_sat,
+			&mut nondust_htlcs,
+			channel_parameters,
+		);
 
-		let (obscured_commitment_transaction_number, txins) = Self::build_inputs(commitment_number, channel_parameters);
-		let transaction = Self::make_transaction(obscured_commitment_transaction_number, txins, outputs, channel_parameters);
+		let (obscured_commitment_transaction_number, txins) =
+			Self::build_inputs(commitment_number, channel_parameters);
+		let transaction = Self::make_transaction(
+			obscured_commitment_transaction_number,
+			txins,
+			outputs,
+			channel_parameters,
+		);
 		let txid = transaction.compute_txid();
 		CommitmentTransaction {
 			commitment_number,
 			to_broadcaster_value_sat,
+			to_broadcaster_value_offchain_msat,
 			to_countersignatory_value_sat,
 			to_broadcaster_delay: Some(channel_parameters.contest_delay()),
 			feerate_per_kw,
 			nondust_htlcs,
 			channel_type_features: channel_parameters.channel_type_features().clone(),
 			keys,
-			built: BuiltCommitmentTransaction {
-				transaction,
-				txid
-			},
+			built: BuiltCommitmentTransaction { transaction, txid },
 		}
 	}
 
@@ -2028,6 +2096,12 @@ impl CommitmentTransaction {
 		self.keys.per_commitment_point
 	}
 
+	/// The value which is owed the broadcaster (excluding HTLCs) before reductions due to dust
+	/// limits, being rounded down to the nearest sat, reserve value(s).
+	pub fn to_broadcaster_value_offchain_msat(&self) -> Option<u64> {
+		self.to_broadcaster_value_offchain_msat
+	}
+
 	/// The value to be sent to the broadcaster
 	pub fn to_broadcaster_value_sat(&self) -> u64 {
 		self.to_broadcaster_value_sat.to_sat()
@@ -2318,7 +2392,7 @@ mod tests {
 
 		#[rustfmt::skip]
 		fn build(&self, to_broadcaster_sats: u64, to_countersignatory_sats: u64, nondust_htlcs: Vec<HTLCOutputInCommitment>) -> CommitmentTransaction {
-			CommitmentTransaction::new(
+			CommitmentTransaction::new_without_broadcaster_offchain_value(
 				self.commitment_number, &self.per_commitment_point, to_broadcaster_sats, to_countersignatory_sats, self.feerate_per_kw,
 				nondust_htlcs, &self.channel_parameters.as_holder_broadcastable(), &self.secp_ctx
 			)
