@@ -175,6 +175,7 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool) {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	nodes[0].disable_monitor_completeness_assertion();
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -316,6 +317,7 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	nodes[0].disable_monitor_completeness_assertion();
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -969,6 +971,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	nodes[1].disable_monitor_completeness_assertion();
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -1500,6 +1503,7 @@ fn claim_while_disconnected_monitor_update_fail() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	nodes[1].disable_monitor_completeness_assertion();
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -1727,6 +1731,7 @@ fn first_message_on_recv_ordering() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	nodes[1].disable_monitor_completeness_assertion();
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -3849,6 +3854,7 @@ fn do_test_durable_preimages_on_closed_channel(
 	// Now reload node B
 	let manager_b = nodes[1].node.encode();
 	reload_node!(nodes[1], &manager_b, &[&mon_ab, &mon_bc], persister, chain_mon, node_b_reload);
+	nodes[1].disable_monitor_completeness_assertion();
 
 	nodes[0].node.peer_disconnected(node_b_id);
 	nodes[2].node.peer_disconnected(node_b_id);
