@@ -1643,7 +1643,7 @@ pub enum Event {
 		/// Furthermore, note that if [`ChannelTypeFeatures::supports_zero_conf`] returns true on this type,
 		/// the resulting [`ChannelManager`] will not be readable by versions of LDK prior to
 		/// 0.0.107. Channels setting this type also need to get manually accepted via
-		/// [`crate::ln::channelmanager::ChannelManager::accept_inbound_channel_from_trusted_peer_0conf`],
+		/// [`crate::ln::channelmanager::ChannelManager::accept_inbound_channel_from_trusted_peer`],
 		/// or will be rejected otherwise.
 		///
 		/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager

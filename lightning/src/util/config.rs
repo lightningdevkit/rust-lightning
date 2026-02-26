@@ -31,11 +31,11 @@ pub struct ChannelHandshakeConfig {
 	/// A lower-bound of `1` is applied, requiring all channels to have a confirmed commitment
 	/// transaction before operation. If you wish to accept channels with zero confirmations,
 	/// manually accept them via [`Event::OpenChannelRequest`] using
-	/// [`ChannelManager::accept_inbound_channel_from_trusted_peer_0conf`].
+	/// [`ChannelManager::accept_inbound_channel_from_trusted_peer`].
 	///
 	/// Default value: `6`
 	///
-	/// [`ChannelManager::accept_inbound_channel_from_trusted_peer_0conf`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel_from_trusted_peer_0conf
+	/// [`ChannelManager::accept_inbound_channel_from_trusted_peer`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel_from_trusted_peer
 	/// [`Event::OpenChannelRequest`]: crate::events::Event::OpenChannelRequest
 	pub minimum_depth: u32,
 	/// Set to the number of blocks we require our counterparty to wait to claim their money (ie
