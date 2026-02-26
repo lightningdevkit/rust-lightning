@@ -1918,7 +1918,7 @@ fn test_trampoline_onion_payload_assembly_values() {
 				short_channel_id: (572330 << 40) + (42 << 16) + 2821,
 				channel_features: ChannelFeatures::empty(),
 				fee_msat: 153_000,
-				cltv_expiry_delta: 0,
+				cltv_expiry_delta: 36 + 24, // Last hop should include the CLTV of the trampoline hops
 				maybe_announced_channel: false,
 			},
 		],
@@ -1974,17 +1974,15 @@ fn test_trampoline_onion_payload_assembly_values() {
 		SecretKey::from_slice(&<Vec<u8>>::from_hex(SECRET_HEX).unwrap()).unwrap().secret_bytes(),
 	);
 	let recipient_onion_fields = RecipientOnionFields::secret_only(payment_secret, amt_msat);
-	let (trampoline_payloads, outer_total_msat, outer_starting_htlc_offset) =
-		onion_utils::build_trampoline_onion_payloads(
-			&path.blinded_tail.as_ref().unwrap(),
-			&recipient_onion_fields,
-			cur_height,
-			&None,
-		)
-		.unwrap();
+	let (trampoline_payloads, outer_total_msat) = onion_utils::build_trampoline_onion_payloads(
+		&path.blinded_tail.as_ref().unwrap(),
+		&recipient_onion_fields,
+		cur_height,
+		&None,
+	)
+	.unwrap();
 	assert_eq!(trampoline_payloads.len(), 3);
 	assert_eq!(outer_total_msat, 150_153_000);
-	assert_eq!(outer_starting_htlc_offset, 800_060);
 
 	let trampoline_carol_payload = &trampoline_payloads[0];
 	let trampoline_dave_payload = &trampoline_payloads[1];
@@ -2042,7 +2040,7 @@ fn test_trampoline_onion_payload_assembly_values() {
 	let (outer_payloads, total_msat, total_htlc_offset) = test_build_onion_payloads(
 		&path,
 		&recipient_onion_fields,
-		outer_starting_htlc_offset,
+		cur_height,
 		&None,
 		None,
 		Some(trampoline_packet),
@@ -2067,7 +2065,7 @@ fn test_trampoline_onion_payload_assembly_values() {
 		outer_bob_payload
 	{
 		assert_eq!(amt_to_forward, &150_153_000);
-		assert_eq!(outgoing_cltv_value, &800_084);
+		assert_eq!(outgoing_cltv_value, &800_060);
 	} else {
 		panic!("Bob payload must be Forward");
 	}

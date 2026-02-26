@@ -1429,9 +1429,10 @@ pub fn test_update_add_htlc_bolt2_sender_cltv_expiry_too_high() {
 
 	let _chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 0);
 
-	let payment_params = PaymentParameters::from_node_id(node_b_id, 0)
+	let mut payment_params = PaymentParameters::from_node_id(node_b_id, 0)
 		.with_bolt11_features(nodes[1].node.bolt11_invoice_features())
 		.unwrap();
+	payment_params.max_total_cltv_expiry_delta = 500000001;
 	let (mut route, our_payment_hash, _, our_payment_secret) =
 		get_route_and_payment_hash!(nodes[0], nodes[1], payment_params, 100000000);
 	route.paths[0].hops.last_mut().unwrap().cltv_expiry_delta = 500000001;
