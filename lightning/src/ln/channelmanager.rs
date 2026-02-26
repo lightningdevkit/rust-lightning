@@ -17550,13 +17550,13 @@ impl<
 			decode_update_add_htlcs_opt = Some(decode_update_add_htlcs);
 		}
 
-		let claimable_payments = self.claimable_payments.lock().unwrap();
+		let claimable_payments_legacy = self.claimable_payments.lock().unwrap();
 		let pending_outbound_payments = self.pending_outbound_payments.pending_outbound_payments.lock().unwrap();
 
 		let mut htlc_purposes: Vec<&events::PaymentPurpose> = Vec::new();
 		let mut htlc_onion_fields: Vec<Option<&_>> = Vec::new();
-		(claimable_payments.claimable_payments.len() as u64).write(writer)?;
-		for (payment_hash, payment) in claimable_payments.claimable_payments.iter() {
+		(claimable_payments_legacy.claimable_payments.len() as u64).write(writer)?;
+		for (payment_hash, payment) in claimable_payments_legacy.claimable_payments.iter() {
 			payment_hash.write(writer)?;
 			(payment.htlcs.len() as u64).write(writer)?;
 			for htlc in payment.htlcs.iter() {
@@ -17706,7 +17706,7 @@ impl<
 			pending_intercepted_htlcs = Some(our_pending_intercepts);
 		}
 
-		let mut pending_claiming_payments = Some(&claimable_payments.pending_claiming_payments);
+		let mut pending_claiming_payments = Some(&claimable_payments_legacy.pending_claiming_payments);
 		if pending_claiming_payments.as_ref().unwrap().is_empty() {
 			// LDK versions prior to 0.0.113 do not know how to read the pending claimed payments
 			// map. Thus, if there are no entries we skip writing a TLV for it.
@@ -17816,12 +17816,12 @@ pub(super) struct ChannelManagerData<SP: SignerProvider> {
 	best_block_height: u32,
 	best_block_hash: BlockHash,
 	channels: Vec<FundedChannel<SP>>,
-	claimable_payments: HashMap<PaymentHash, ClaimablePayment>,
+	claimable_payments_legacy: HashMap<PaymentHash, ClaimablePayment>,
 	peer_init_features: Vec<(PublicKey, InitFeatures)>,
 	pending_events_read: VecDeque<(events::Event, Option<EventCompletionAction>)>,
 	highest_seen_timestamp: u32,
 	pending_outbound_payments: HashMap<PaymentId, PendingOutboundPayment>,
-	pending_claiming_payments: HashMap<PaymentHash, ClaimingPayment>,
+	pending_claiming_payments_legacy: HashMap<PaymentHash, ClaimingPayment>,
 	received_network_pubkey: Option<PublicKey>,
 	monitor_update_blocked_actions_per_peer:
 		Vec<(PublicKey, BTreeMap<ChannelId, Vec<MonitorUpdateCompletionAction>>)>,
@@ -17899,7 +17899,7 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 			};
 
 		let claimable_htlcs_count: u64 = Readable::read(reader)?;
-		let mut claimable_htlcs_list =
+		let mut claimable_htlcs_list_legacy =
 			Vec::with_capacity(cmp::min(claimable_htlcs_count as usize, 128));
 		for _ in 0..claimable_htlcs_count {
 			let payment_hash = Readable::read(reader)?;
@@ -17921,7 +17921,7 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 				previous_hops.push(htlc);
 			}
 			let total_mpp_value_msat = total_mpp_value_msat.ok_or(DecodeError::InvalidValue)?;
-			claimable_htlcs_list.push((payment_hash, previous_hops, total_mpp_value_msat));
+			claimable_htlcs_list_legacy.push((payment_hash, previous_hops, total_mpp_value_msat));
 		}
 
 		let peer_count: u64 = Readable::read(reader)?;
@@ -18003,11 +18003,11 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 		let mut received_network_pubkey: Option<PublicKey> = None;
 		let mut fake_scid_rand_bytes: Option<[u8; 32]> = None;
 		let mut probing_cookie_secret: Option<[u8; 32]> = None;
-		let mut claimable_htlc_purposes = None;
-		let mut amountless_claimable_htlc_onion_fields: Option<
+		let mut claimable_htlc_purposes_legacy = None;
+		let mut amountless_claimable_htlc_onion_fields_legacy: Option<
 			Vec<Option<AmountlessClaimablePaymentHTLCOnion>>,
 		> = None;
-		let mut pending_claiming_payments = Some(new_hash_map());
+		let mut pending_claiming_payments_legacy = Some(new_hash_map());
 		let mut monitor_update_blocked_actions_per_peer: Option<Vec<(_, BTreeMap<_, Vec<_>>)>> =
 			None;
 		let mut events_override = None;
@@ -18026,15 +18026,15 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 			(1, pending_outbound_payments_no_retry, option),
 			(2, pending_intercepted_htlcs_legacy, option),
 			(3, pending_outbound_payments, option),
-			(4, pending_claiming_payments, option),
+			(4, pending_claiming_payments_legacy, option),
 			(5, received_network_pubkey, option),
 			(6, monitor_update_blocked_actions_per_peer, option),
 			(7, fake_scid_rand_bytes, option),
 			(8, events_override, option),
-			(9, claimable_htlc_purposes, optional_vec),
+			(9, claimable_htlc_purposes_legacy, optional_vec),
 			(10, legacy_in_flight_monitor_updates, option),
 			(11, probing_cookie_secret, option),
-			(13, amountless_claimable_htlc_onion_fields, optional_vec),
+			(13, amountless_claimable_htlc_onion_fields_legacy, optional_vec),
 			(14, decode_update_add_htlcs_legacy, option),
 			(15, inbound_payment_id_secret, option),
 			(17, in_flight_monitor_updates, option),
@@ -18091,18 +18091,19 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 		let pending_events_read = events_override.unwrap_or(pending_events_read);
 
 		// Combine claimable_htlcs_list with their purposes and onion fields.
-		let mut claimable_payments = hash_map_with_capacity(claimable_htlcs_list.len());
-		if let Some(purposes) = claimable_htlc_purposes {
-			if purposes.len() != claimable_htlcs_list.len() {
+		let mut claimable_payments_legacy =
+			hash_map_with_capacity(claimable_htlcs_list_legacy.len());
+		if let Some(purposes) = claimable_htlc_purposes_legacy {
+			if purposes.len() != claimable_htlcs_list_legacy.len() {
 				return Err(DecodeError::InvalidValue);
 			}
-			if let Some(onion_fields) = amountless_claimable_htlc_onion_fields {
-				if onion_fields.len() != claimable_htlcs_list.len() {
+			if let Some(onion_fields) = amountless_claimable_htlc_onion_fields_legacy {
+				if onion_fields.len() != claimable_htlcs_list_legacy.len() {
 					return Err(DecodeError::InvalidValue);
 				}
 				for (purpose, (onion, (payment_hash, htlcs, total_mpp_value_msat))) in purposes
 					.into_iter()
-					.zip(onion_fields.into_iter().zip(claimable_htlcs_list.into_iter()))
+					.zip(onion_fields.into_iter().zip(claimable_htlcs_list_legacy.into_iter()))
 				{
 					let onion_fields = if let Some(mut onion) = onion {
 						if onion.0.total_mpp_amount_msat != 0
@@ -18116,12 +18117,13 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 						return Err(DecodeError::InvalidValue);
 					};
 					let claimable = ClaimablePayment { purpose, htlcs, onion_fields };
-					let existing_payment = claimable_payments.insert(payment_hash, claimable);
+					let existing_payment =
+						claimable_payments_legacy.insert(payment_hash, claimable);
 					if existing_payment.is_some() {
 						return Err(DecodeError::InvalidValue);
 					}
 				}
-			} else if !purposes.is_empty() || !claimable_htlcs_list.is_empty() {
+			} else if !purposes.is_empty() || !claimable_htlcs_list_legacy.is_empty() {
 				// `amountless_claimable_htlc_onion_fields` was first written in LDK 0.0.115. We
 				// haven't supported upgrade from 0.0.115 with pending HTLCs since 0.1.
 				return Err(DecodeError::InvalidValue);
@@ -18138,14 +18140,15 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 			best_block_hash,
 			channels,
 			forward_htlcs_legacy,
-			claimable_payments,
+			claimable_payments_legacy,
 			peer_init_features,
 			pending_events_read,
 			highest_seen_timestamp,
 			pending_intercepted_htlcs_legacy: pending_intercepted_htlcs_legacy
 				.unwrap_or_else(new_hash_map),
 			pending_outbound_payments,
-			pending_claiming_payments: pending_claiming_payments.unwrap_or_else(new_hash_map),
+			pending_claiming_payments_legacy: pending_claiming_payments_legacy
+				.unwrap_or_else(new_hash_map),
 			received_network_pubkey,
 			monitor_update_blocked_actions_per_peer: monitor_update_blocked_actions_per_peer
 				.unwrap_or_else(Vec::new),
@@ -18443,13 +18446,13 @@ impl<
 			best_block_hash,
 			channels,
 			mut forward_htlcs_legacy,
-			claimable_payments,
+			claimable_payments_legacy,
 			peer_init_features,
 			mut pending_events_read,
 			highest_seen_timestamp,
 			mut pending_intercepted_htlcs_legacy,
 			pending_outbound_payments,
-			pending_claiming_payments,
+			pending_claiming_payments_legacy,
 			received_network_pubkey,
 			monitor_update_blocked_actions_per_peer,
 			mut fake_scid_rand_bytes,
@@ -19479,7 +19482,7 @@ impl<
 		// Similar to the above cases for forwarded payments, if we have any pending inbound HTLCs
 		// which haven't yet been claimed, we may be missing counterparty_node_id info and would
 		// panic if we attempted to claim them at this point.
-		for (payment_hash, payment) in claimable_payments.iter() {
+		for (payment_hash, payment) in claimable_payments_legacy.iter() {
 			for htlc in payment.htlcs.iter() {
 				if htlc.prev_hop.counterparty_node_id.is_some() {
 					continue;
@@ -19671,7 +19674,7 @@ impl<
 			}
 
 			// See above comment on `failed_htlcs`.
-			for htlcs in claimable_payments.values().map(|pmt| &pmt.htlcs) {
+			for htlcs in claimable_payments_legacy.values().map(|pmt| &pmt.htlcs) {
 				for prev_hop_data in htlcs.iter().map(|h| &h.prev_hop) {
 					dedup_decode_update_add_htlcs(
 						&mut decode_update_add_htlcs,
@@ -19764,8 +19767,8 @@ impl<
 			forward_htlcs: Mutex::new(forward_htlcs),
 			decode_update_add_htlcs: Mutex::new(decode_update_add_htlcs),
 			claimable_payments: Mutex::new(ClaimablePayments {
-				claimable_payments,
-				pending_claiming_payments,
+				claimable_payments: claimable_payments_legacy,
+				pending_claiming_payments: pending_claiming_payments_legacy,
 			}),
 			outbound_scid_aliases: Mutex::new(outbound_scid_aliases),
 			short_to_chan_info: FairRwLock::new(short_to_chan_info),
