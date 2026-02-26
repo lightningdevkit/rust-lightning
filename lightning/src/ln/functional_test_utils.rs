@@ -25,7 +25,7 @@ use crate::ln::chan_utils::{
 };
 use crate::ln::channelmanager::{
 	AChannelManager, ChainParameters, ChannelManager, ChannelManagerReadArgs, PaymentId,
-	RAACommitmentOrder, MIN_CLTV_EXPIRY_DELTA,
+	RAACommitmentOrder, TrustedChannelFeatures, MIN_CLTV_EXPIRY_DELTA,
 };
 use crate::ln::funding::{FundingContribution, FundingTxInput};
 use crate::ln::msgs::{self, OpenChannel};
@@ -1646,10 +1646,11 @@ pub fn exchange_open_accept_zero_conf_chan<'a, 'b, 'c, 'd>(
 		Event::OpenChannelRequest { temporary_channel_id, .. } => {
 			receiver
 				.node
-				.accept_inbound_channel_from_trusted_peer_0conf(
+				.accept_inbound_channel_from_trusted_peer(
 					&temporary_channel_id,
 					&initiator_node_id,
 					0,
+					TrustedChannelFeatures::ZeroConf,
 					None,
 				)
 				.unwrap();

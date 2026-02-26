@@ -9,7 +9,9 @@ use common::{
 
 use lightning::events::{ClosureReason, Event};
 use lightning::get_event_msg;
-use lightning::ln::channelmanager::{OptionalBolt11PaymentParams, PaymentId};
+use lightning::ln::channelmanager::{
+	OptionalBolt11PaymentParams, PaymentId, TrustedChannelFeatures,
+};
 use lightning::ln::functional_test_utils::*;
 use lightning::ln::msgs::BaseMessageHandler;
 use lightning::ln::msgs::ChannelMessageHandler;
@@ -1503,10 +1505,11 @@ fn create_channel_with_manual_broadcast(
 		Event::OpenChannelRequest { temporary_channel_id, .. } => {
 			client_node
 				.node
-				.accept_inbound_channel_from_trusted_peer_0conf(
+				.accept_inbound_channel_from_trusted_peer(
 					&temporary_channel_id,
 					&service_node_id,
 					user_channel_id,
+					TrustedChannelFeatures::ZeroConf,
 					None,
 				)
 				.unwrap();

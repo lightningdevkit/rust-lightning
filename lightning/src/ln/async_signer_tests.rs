@@ -22,7 +22,7 @@ use crate::events::{ClosureReason, Event};
 use crate::ln::chan_utils::ClosingTransaction;
 use crate::ln::channel::DISCONNECT_PEER_AWAITING_RESPONSE_TICKS;
 use crate::ln::channel_state::{ChannelDetails, ChannelShutdownState};
-use crate::ln::channelmanager::{PaymentId, RAACommitmentOrder};
+use crate::ln::channelmanager::{PaymentId, RAACommitmentOrder, TrustedChannelFeatures};
 use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, ErrorAction, MessageSendEvent};
 use crate::ln::outbound_payment::RecipientOnionFields;
 use crate::ln::{functional_test_utils::*, msgs};
@@ -78,10 +78,11 @@ fn do_test_open_channel(zero_conf: bool) {
 			Event::OpenChannelRequest { temporary_channel_id, .. } => {
 				nodes[1]
 					.node
-					.accept_inbound_channel_from_trusted_peer_0conf(
+					.accept_inbound_channel_from_trusted_peer(
 						temporary_channel_id,
 						&node_a_id,
 						0,
+						TrustedChannelFeatures::ZeroConf,
 						None,
 					)
 					.expect("Unable to accept inbound zero-conf channel");
@@ -383,10 +384,11 @@ fn do_test_funding_signed_0conf(signer_ops: Vec<SignerOp>) {
 			Event::OpenChannelRequest { temporary_channel_id, .. } => {
 				nodes[1]
 					.node
-					.accept_inbound_channel_from_trusted_peer_0conf(
+					.accept_inbound_channel_from_trusted_peer(
 						temporary_channel_id,
 						&node_a_id,
 						0,
+						TrustedChannelFeatures::ZeroConf,
 						None,
 					)
 					.expect("Unable to accept inbound zero-conf channel");

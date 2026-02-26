@@ -14,7 +14,7 @@
 use crate::chain::ChannelMonitorUpdateStatus;
 use crate::events::{ClosureReason, Event, HTLCHandlingFailureType, PaymentFailureReason};
 use crate::ln::channel::CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY;
-use crate::ln::channelmanager::{PaymentId, MIN_CLTV_EXPIRY_DELTA};
+use crate::ln::channelmanager::{PaymentId, TrustedChannelFeatures, MIN_CLTV_EXPIRY_DELTA};
 use crate::ln::msgs;
 use crate::ln::msgs::{
 	BaseMessageHandler, ChannelMessageHandler, ErrorAction, MessageSendEvent, RoutingMessageHandler,
@@ -774,7 +774,7 @@ fn test_simple_0conf_channel() {
 	// If our peer tells us they will accept our channel with 0 confs, and we funded the channel,
 	// we should trust the funding won't be double-spent (assuming `trust_own_funding_0conf` is
 	// set)!
-	// Further, if we `accept_inbound_channel_from_trusted_peer_0conf`, `channel_ready` messages
+	// Further, if we `accept_inbound_channel_from_trusted_peer`, `channel_ready` messages
 	// should fly immediately and the channel should be available for use as soon as they are
 	// received.
 
@@ -818,10 +818,11 @@ fn test_0conf_channel_with_async_monitor() {
 		Event::OpenChannelRequest { temporary_channel_id, .. } => {
 			nodes[1]
 				.node
-				.accept_inbound_channel_from_trusted_peer_0conf(
+				.accept_inbound_channel_from_trusted_peer(
 					&temporary_channel_id,
 					&node_a_id,
 					0,
+					TrustedChannelFeatures::ZeroConf,
 					None,
 				)
 				.unwrap();
@@ -1369,11 +1370,12 @@ fn test_zero_conf_accept_reject() {
 			// Assert we can accept via the 0conf method
 			assert!(nodes[1]
 				.node
-				.accept_inbound_channel_from_trusted_peer_0conf(
+				.accept_inbound_channel_from_trusted_peer(
 					&temporary_channel_id,
 					&node_a_id,
 					0,
-					None
+					TrustedChannelFeatures::ZeroConf,
+					None,
 				)
 				.is_ok());
 		},
@@ -1411,10 +1413,11 @@ fn test_connect_before_funding() {
 		Event::OpenChannelRequest { temporary_channel_id, .. } => {
 			nodes[1]
 				.node
-				.accept_inbound_channel_from_trusted_peer_0conf(
+				.accept_inbound_channel_from_trusted_peer(
 					&temporary_channel_id,
 					&node_a_id,
 					0,
+					TrustedChannelFeatures::ZeroConf,
 					None,
 				)
 				.unwrap();

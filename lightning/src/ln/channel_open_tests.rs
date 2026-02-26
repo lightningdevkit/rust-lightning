@@ -19,7 +19,8 @@ use crate::ln::channel::{
 	OutboundV1Channel, COINBASE_MATURITY, UNFUNDED_CHANNEL_AGE_LIMIT_TICKS,
 };
 use crate::ln::channelmanager::{
-	self, BREAKDOWN_TIMEOUT, MAX_UNFUNDED_CHANNEL_PEERS, MAX_UNFUNDED_CHANS_PER_PEER,
+	self, TrustedChannelFeatures, BREAKDOWN_TIMEOUT, MAX_UNFUNDED_CHANNEL_PEERS,
+	MAX_UNFUNDED_CHANS_PER_PEER,
 };
 use crate::ln::msgs::{
 	AcceptChannel, BaseMessageHandler, ChannelMessageHandler, ErrorAction, MessageSendEvent,
@@ -157,10 +158,11 @@ fn test_0conf_limiting() {
 		Event::OpenChannelRequest { temporary_channel_id, .. } => {
 			nodes[1]
 				.node
-				.accept_inbound_channel_from_trusted_peer_0conf(
+				.accept_inbound_channel_from_trusted_peer(
 					&temporary_channel_id,
 					&last_random_pk,
 					23,
+					TrustedChannelFeatures::ZeroConf,
 					None,
 				)
 				.unwrap();
@@ -968,7 +970,7 @@ pub fn test_user_configurable_csv_delay() {
 		&low_our_to_self_config,
 		0,
 		&nodes[0].logger,
-		/*is_0conf=*/ false,
+		None,
 	) {
 		match error {
 			ChannelError::Close((err, _)) => {
@@ -1028,7 +1030,7 @@ pub fn test_user_configurable_csv_delay() {
 		&high_their_to_self_config,
 		0,
 		&nodes[0].logger,
-		/*is_0conf=*/ false,
+		None,
 	) {
 		match error {
 			ChannelError::Close((err, _)) => {
