@@ -1032,6 +1032,24 @@ impl Bolt12Invoice {
 		)
 	}
 
+	/// Re-derives the payer's signing keypair for payer proof creation.
+	///
+	/// This performs the same key derivation that occurs during invoice request creation
+	/// with `deriving_signing_pubkey`, allowing the payer to recover their signing keypair.
+	/// The `nonce` and `payment_id` must be the same ones used when creating the original
+	/// invoice request (available from [`OffersContext::OutboundPaymentForOffer`]).
+	///
+	/// [`OffersContext::OutboundPaymentForOffer`]: crate::blinded_path::message::OffersContext::OutboundPaymentForOffer
+	pub(crate) fn derive_signing_keys<T: secp256k1::Signing>(
+		&self, payment_id: PaymentId, nonce: Nonce, key: &ExpandedKey, secp_ctx: &Secp256k1<T>,
+	) -> Result<Keypair, ()> {
+		let iv_bytes = match &self.contents {
+			InvoiceContents::ForOffer { .. } => INVOICE_REQUEST_IV_BYTES,
+			InvoiceContents::ForRefund { .. } => REFUND_IV_BYTES_WITHOUT_METADATA,
+		};
+		self.contents.derive_signing_keys(&self.bytes, payment_id, nonce, key, iv_bytes, secp_ctx)
+	}
+
 	pub(crate) fn as_tlv_stream(&self) -> FullInvoiceTlvStreamRef<'_> {
 		let (
 			payer_tlv_stream,
@@ -1334,6 +1352,36 @@ impl InvoiceContents {
 		let signing_pubkey = self.payer_signing_pubkey();
 		signer::verify_payer_metadata(
 			metadata.as_ref(),
+			key,
+			iv_bytes,
+			signing_pubkey,
+			tlv_stream,
+			secp_ctx,
+		)
+	}
+
+	fn derive_signing_keys<T: secp256k1::Signing>(
+		&self, bytes: &[u8], payment_id: PaymentId, nonce: Nonce, key: &ExpandedKey,
+		iv_bytes: &[u8; IV_LEN], secp_ctx: &Secp256k1<T>,
+	) -> Result<Keypair, ()> {
+		const EXPERIMENTAL_TYPES: core::ops::Range<u64> =
+			EXPERIMENTAL_OFFER_TYPES.start..EXPERIMENTAL_INVOICE_REQUEST_TYPES.end;
+
+		let offer_records = TlvStream::new(bytes).range(OFFER_TYPES);
+		let invreq_records = TlvStream::new(bytes).range(INVOICE_REQUEST_TYPES).filter(|record| {
+			match record.r#type {
+				PAYER_METADATA_TYPE => false,
+				INVOICE_REQUEST_PAYER_ID_TYPE => false,
+				_ => true,
+			}
+		});
+		let experimental_records = TlvStream::new(bytes).range(EXPERIMENTAL_TYPES);
+		let tlv_stream = offer_records.chain(invreq_records).chain(experimental_records);
+
+		let signing_pubkey = self.payer_signing_pubkey();
+		signer::derive_payer_keys(
+			payment_id,
+			nonce,
 			key,
 			iv_bytes,
 			signing_pubkey,
