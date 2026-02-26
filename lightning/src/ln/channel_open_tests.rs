@@ -157,10 +157,12 @@ fn test_0conf_limiting() {
 		Event::OpenChannelRequest { temporary_channel_id, .. } => {
 			nodes[1]
 				.node
-				.accept_inbound_channel_from_trusted_peer_0conf(
+				.accept_inbound_channel_from_trusted_peer(
 					&temporary_channel_id,
 					&last_random_pk,
 					23,
+					true,
+					false,
 					None,
 				)
 				.unwrap();
@@ -938,6 +940,7 @@ pub fn test_user_configurable_csv_delay() {
 		42,
 		None,
 		&logger,
+		false,
 	) {
 		match error {
 			APIError::APIMisuseError { err } => {
@@ -970,6 +973,7 @@ pub fn test_user_configurable_csv_delay() {
 		0,
 		&nodes[0].logger,
 		/*is_0conf=*/ false,
+		/*is_0reserve=*/ false,
 	) {
 		match error {
 			ChannelError::Close((err, _)) => {
@@ -1030,6 +1034,7 @@ pub fn test_user_configurable_csv_delay() {
 		0,
 		&nodes[0].logger,
 		/*is_0conf=*/ false,
+		/*is_0reserve=*/ false,
 	) {
 		match error {
 			ChannelError::Close((err, _)) => {

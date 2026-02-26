@@ -284,6 +284,15 @@ fn get_next_commitment_stats(
 		)
 	};
 
+	// Make sure the commitment transaction has at least one output
+	let dust_limit_msat = broadcaster_dust_limit_satoshis * 1000;
+	if holder_balance_msat < dust_limit_msat
+		&& counterparty_balance_msat < dust_limit_msat
+		&& nondust_htlc_count == 0
+	{
+		return Err(());
+	}
+
 	Ok(NextCommitmentStats {
 		holder_balance_msat,
 		counterparty_balance_msat,
@@ -511,13 +520,104 @@ fn get_available_balances(
 		available_capacity_msat = 0;
 	}
 
-	#[allow(deprecated)] // TODO: Remove once balance_msat is removed
+	let current_local_nondust_htlc_count = pending_htlcs
+		.iter()
+		.filter(|htlc| {
+			!htlc.is_dust(
+				true,
+				feerate_per_kw,
+				channel_constraints.holder_dust_limit_satoshis,
+				channel_type,
+			)
+		})
+		.count();
+	let current_remote_nondust_htlc_count = remote_nondust_htlc_count;
+
+	let (maybe_new_local_min_msat, maybe_new_local_max_msat) =
+		adjust_boundaries_if_max_dust_htlc_produces_no_output(
+			true,
+			is_outbound_from_holder,
+			local_balance_before_fee_msat,
+			remote_balance_before_fee_msat,
+			current_local_nondust_htlc_count,
+			channel_constraints.holder_dust_limit_satoshis,
+			feerate_per_kw,
+			channel_type,
+			available_capacity_msat,
+		);
+	next_outbound_htlc_minimum_msat =
+		cmp::max(next_outbound_htlc_minimum_msat, maybe_new_local_min_msat);
+	available_capacity_msat = cmp::min(available_capacity_msat, maybe_new_local_max_msat);
+
+	let (maybe_new_remote_min_msat, maybe_new_remote_max_msat) =
+		adjust_boundaries_if_max_dust_htlc_produces_no_output(
+			false,
+			is_outbound_from_holder,
+			local_balance_before_fee_msat,
+			remote_balance_before_fee_msat,
+			current_remote_nondust_htlc_count,
+			channel_constraints.counterparty_dust_limit_satoshis,
+			feerate_per_kw,
+			channel_type,
+			available_capacity_msat,
+		);
+	next_outbound_htlc_minimum_msat =
+		cmp::max(next_outbound_htlc_minimum_msat, maybe_new_remote_min_msat);
+	available_capacity_msat = cmp::min(available_capacity_msat, maybe_new_remote_max_msat);
+
 	crate::ln::channel::AvailableBalances {
 		inbound_capacity_msat: remote_balance_before_fee_msat
 			.saturating_sub(channel_constraints.holder_selected_channel_reserve_satoshis * 1000),
 		outbound_capacity_msat,
 		next_outbound_htlc_limit_msat: available_capacity_msat,
 		next_outbound_htlc_minimum_msat,
+	}
+}
+
+fn adjust_boundaries_if_max_dust_htlc_produces_no_output(
+	local: bool, is_outbound_from_holder: bool, holder_balance_before_fee_msat: u64,
+	counterparty_balance_before_fee_msat: u64, nondust_htlc_count: usize, dust_limit_satoshis: u64,
+	feerate_per_kw: u32, channel_type: &ChannelTypeFeatures, available_capacity_msat: u64,
+) -> (u64, u64) {
+	let commit_tx_fee_sat = commit_tx_fee_sat(feerate_per_kw, nondust_htlc_count, channel_type);
+	let (holder_balance_msat, counterparty_balance_msat) = if is_outbound_from_holder {
+		(
+			holder_balance_before_fee_msat.saturating_sub(commit_tx_fee_sat.saturating_mul(1000)),
+			counterparty_balance_before_fee_msat,
+		)
+	} else {
+		(
+			holder_balance_before_fee_msat,
+			counterparty_balance_before_fee_msat
+				.saturating_sub(commit_tx_fee_sat.saturating_mul(1000)),
+		)
+	};
+
+	let (htlc_success_tx_fee_sat, htlc_timeout_tx_fee_sat) =
+		second_stage_tx_fees_sat(channel_type, feerate_per_kw);
+	let min_nondust_htlc_sat =
+		dust_limit_satoshis + if local { htlc_timeout_tx_fee_sat } else { htlc_success_tx_fee_sat };
+	let max_dust_htlc_msat = (min_nondust_htlc_sat.saturating_mul(1000)).saturating_sub(1);
+
+	// If the biggest dust HTLC produces no outputs, then we have to say something...
+	let dust_limit_msat = dust_limit_satoshis.saturating_mul(1000);
+	if holder_balance_msat.saturating_sub(max_dust_htlc_msat) < dust_limit_msat
+		&& counterparty_balance_msat < dust_limit_msat
+		&& nondust_htlc_count == 0
+	{
+		// Our main balance output must be currently above the dust limit, otherwise we are already toast
+		debug_assert!(holder_balance_msat >= dust_limit_msat);
+		// If we are allowed to send non-dust HTLCs, set the min HTLC to the smallest non-dust HTLC...
+		if available_capacity_msat >= min_nondust_htlc_sat.saturating_mul(1000) {
+			(min_nondust_htlc_sat.saturating_mul(1000), u64::MAX)
+		// Otherwise, set the max HTLC to the biggest that still leaves our main balance output untrimmed.
+		// Note this will be a dust HTLC.
+		} else {
+			(0, holder_balance_msat.saturating_sub(dust_limit_msat))
+		}
+	// Otherwise, it is impossible to produce no outputs with this upcoming HTLC add, so we stay quiet
+	} else {
+		(0, u64::MAX)
 	}
 }
 

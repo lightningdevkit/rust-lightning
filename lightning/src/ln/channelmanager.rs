@@ -3670,10 +3670,56 @@ impl<
 	/// [`Event::FundingGenerationReady::user_channel_id`]: events::Event::FundingGenerationReady::user_channel_id
 	/// [`Event::FundingGenerationReady::temporary_channel_id`]: events::Event::FundingGenerationReady::temporary_channel_id
 	/// [`Event::ChannelClosed::channel_id`]: events::Event::ChannelClosed::channel_id
-	#[rustfmt::skip]
-	pub fn create_channel(&self, their_network_key: PublicKey, channel_value_satoshis: u64, push_msat: u64, user_channel_id: u128, temporary_channel_id: Option<ChannelId>, override_config: Option<UserConfig>) -> Result<ChannelId, APIError> {
+	pub fn create_channel(
+		&self, their_network_key: PublicKey, channel_value_satoshis: u64, push_msat: u64,
+		user_channel_id: u128, temporary_channel_id: Option<ChannelId>,
+		override_config: Option<UserConfig>,
+	) -> Result<ChannelId, APIError> {
+		self.create_channel_internal(
+			their_network_key,
+			channel_value_satoshis,
+			push_msat,
+			user_channel_id,
+			temporary_channel_id,
+			override_config,
+			false,
+		)
+	}
+
+	/// Creates a new outbound channel to the given remote node and with the given value.
+	///
+	/// The only difference between this method and [`ChannelManager::create_channel`] is that this method sets
+	/// the reserve the counterparty must keep at all times in the channel to zero. This allows the counterparty to
+	/// spend their entire channel balance, and attempt to force-close the channel with a revoked commitment
+	/// transaction **for free**.
+	pub fn create_channel_to_trusted_peer(
+		&self, their_network_key: PublicKey, channel_value_satoshis: u64, push_msat: u64,
+		user_channel_id: u128, temporary_channel_id: Option<ChannelId>,
+		override_config: Option<UserConfig>,
+	) -> Result<ChannelId, APIError> {
+		self.create_channel_internal(
+			their_network_key,
+			channel_value_satoshis,
+			push_msat,
+			user_channel_id,
+			temporary_channel_id,
+			override_config,
+			true,
+		)
+	}
+
+	fn create_channel_internal(
+		&self, their_network_key: PublicKey, channel_value_satoshis: u64, push_msat: u64,
+		user_channel_id: u128, temporary_channel_id: Option<ChannelId>,
+		override_config: Option<UserConfig>, is_0reserve: bool,
+	) -> Result<ChannelId, APIError> {
 		if channel_value_satoshis < 1000 {
-			return Err(APIError::APIMisuseError { err: format!("Channel value must be at least 1000 satoshis. It was {}", channel_value_satoshis) });
+			return Err(APIError::APIMisuseError {
+				err: format!(
+					"Channel value must be at least 1000 satoshis. It was {}",
+					channel_value_satoshis
+				),
+			});
 		}
 
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
@@ -3682,17 +3728,26 @@ impl<
 
 		let per_peer_state = self.per_peer_state.read().unwrap();
 
-		let peer_state_mutex = per_peer_state.get(&their_network_key)
-			.ok_or_else(|| APIError::APIMisuseError{ err: format!("Not connected to node: {}", their_network_key) })?;
+		let peer_state_mutex =
+			per_peer_state.get(&their_network_key).ok_or_else(|| APIError::APIMisuseError {
+				err: format!("Not connected to node: {}", their_network_key),
+			})?;
 
 		let mut peer_state = peer_state_mutex.lock().unwrap();
 		if !peer_state.is_connected {
-			return Err(APIError::APIMisuseError{ err: format!("Not connected to node: {}", their_network_key) });
+			return Err(APIError::APIMisuseError {
+				err: format!("Not connected to node: {}", their_network_key),
+			});
 		}
 
 		if let Some(temporary_channel_id) = temporary_channel_id {
 			if peer_state.channel_by_id.contains_key(&temporary_channel_id) {
-				return Err(APIError::APIMisuseError{ err: format!("Channel with temporary channel ID {} already exists!", temporary_channel_id)});
+				return Err(APIError::APIMisuseError {
+					err: format!(
+						"Channel with temporary channel ID {} already exists!",
+						temporary_channel_id
+					),
+				});
 			}
 		}
 
@@ -3700,15 +3755,23 @@ impl<
 			let outbound_scid_alias = self.create_and_insert_outbound_scid_alias();
 			let their_features = &peer_state.latest_features;
 			let config = self.config.read().unwrap();
-			let config = if let Some(config) = &override_config {
-				config
-			} else {
-				&*config
-			};
-			match OutboundV1Channel::new(&self.fee_estimator, &self.entropy_source, &self.signer_provider, their_network_key,
-				their_features, channel_value_satoshis, push_msat, user_channel_id, config,
-				self.best_block.read().unwrap().height, outbound_scid_alias, temporary_channel_id, &self.logger)
-			{
+			let config = if let Some(config) = &override_config { config } else { &*config };
+			match OutboundV1Channel::new(
+				&self.fee_estimator,
+				&self.entropy_source,
+				&self.signer_provider,
+				their_network_key,
+				their_features,
+				channel_value_satoshis,
+				push_msat,
+				user_channel_id,
+				config,
+				self.best_block.read().unwrap().height,
+				outbound_scid_alias,
+				temporary_channel_id,
+				&self.logger,
+				is_0reserve,
+			) {
 				Ok(res) => res,
 				Err(e) => {
 					self.outbound_scid_aliases.lock().unwrap().remove(&outbound_scid_alias);
@@ -3728,14 +3791,15 @@ impl<
 					panic!("RNG is bad???");
 				}
 			},
-			hash_map::Entry::Vacant(entry) => { entry.insert(Channel::from(channel)); }
+			hash_map::Entry::Vacant(entry) => {
+				entry.insert(Channel::from(channel));
+			},
 		}
 
 		if let Some(msg) = res {
-			peer_state.pending_msg_events.push(MessageSendEvent::SendOpenChannel {
-				node_id: their_network_key,
-				msg,
-			});
+			peer_state
+				.pending_msg_events
+				.push(MessageSendEvent::SendOpenChannel { node_id: their_network_key, msg });
 		}
 		Ok(temporary_channel_id)
 	}
@@ -10696,10 +10760,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	///
 	/// The `user_channel_id` parameter will be provided back in
 	/// [`Event::ChannelClosed::user_channel_id`] to allow tracking of which events correspond
-	/// with which `accept_inbound_channel`/`accept_inbound_channel_from_trusted_peer_0conf` call.
+	/// with which `accept_inbound_channel`/`accept_inbound_channel_from_trusted_peer` call.
 	///
 	/// Note that this method will return an error and reject the channel, if it requires support
-	/// for zero confirmations. Instead, `accept_inbound_channel_from_trusted_peer_0conf` must be
+	/// for zero confirmations. Instead, `accept_inbound_channel_from_trusted_peer` must be
 	/// used to accept such channels.
 	///
 	/// NOTE: LDK makes no attempt to prevent the counterparty from using non-standard inputs which
@@ -10716,19 +10780,24 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			temporary_channel_id,
 			counterparty_node_id,
 			false,
+			false,
 			user_channel_id,
 			config_overrides,
 		)
 	}
 
-	/// Accepts a request to open a channel after a [`Event::OpenChannelRequest`], treating
-	/// it as confirmed immediately.
+	/// Accepts a request to open a channel after a [`Event::OpenChannelRequest`]. Unlike
+	/// [`ChannelManager::accept_inbound_channel`], this method allows some combination of the
+	/// zero-conf and zero-reserve features to be set for the channel, see a description of these
+	/// features below.
 	///
 	/// The `user_channel_id` parameter will be provided back in
 	/// [`Event::ChannelClosed::user_channel_id`] to allow tracking of which events correspond
-	/// with which `accept_inbound_channel`/`accept_inbound_channel_from_trusted_peer_0conf` call.
+	/// with which `accept_inbound_channel`/`accept_inbound_channel_from_trusted_peer` call.
 	///
-	/// Unlike [`ChannelManager::accept_inbound_channel`], this method accepts the incoming channel
+	/// # Zero-conf
+	///
+	/// If `accept_0conf` is set, the method accepts the incoming channel
 	/// and (if the counterparty agrees), enables forwarding of payments immediately.
 	///
 	/// This fully trusts that the counterparty has honestly and correctly constructed the funding
@@ -10737,16 +10806,26 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	/// If it does not confirm before we decide to close the channel, or if the funding transaction
 	/// does not pay to the correct script the correct amount, *you will lose funds*.
 	///
+	/// # Zero-reserve
+	///
+	/// If `accept_0reserve` is set, the method accepts the incoming channel and sets the reserve the counterparty
+	/// must keep at all times in the channel to zero.
+	///
+	/// This allows the counterparty to spend their entire channel balance, and attempt to force-close the channel
+	/// with a revoked commitment transaction **for free**.
+	///
 	/// [`Event::OpenChannelRequest`]: events::Event::OpenChannelRequest
 	/// [`Event::ChannelClosed::user_channel_id`]: events::Event::ChannelClosed::user_channel_id
-	pub fn accept_inbound_channel_from_trusted_peer_0conf(
+	pub fn accept_inbound_channel_from_trusted_peer(
 		&self, temporary_channel_id: &ChannelId, counterparty_node_id: &PublicKey,
-		user_channel_id: u128, config_overrides: Option<ChannelConfigOverrides>,
+		user_channel_id: u128, accept_0conf: bool, accept_0reserve: bool,
+		config_overrides: Option<ChannelConfigOverrides>,
 	) -> Result<(), APIError> {
 		self.do_accept_inbound_channel(
 			temporary_channel_id,
 			counterparty_node_id,
-			true,
+			accept_0conf,
+			accept_0reserve,
 			user_channel_id,
 			config_overrides,
 		)
@@ -10755,7 +10834,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	/// TODO(dual_funding): Allow contributions, pass intended amount and inputs
 	fn do_accept_inbound_channel(
 		&self, temporary_channel_id: &ChannelId, counterparty_node_id: &PublicKey,
-		accept_0conf: bool, user_channel_id: u128,
+		accept_0conf: bool, accept_0reserve: bool, user_channel_id: u128,
 		config_overrides: Option<ChannelConfigOverrides>,
 	) -> Result<(), APIError> {
 		let mut config = self.config.read().unwrap().clone();
@@ -10805,6 +10884,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						best_block_height,
 						&self.logger,
 						accept_0conf,
+						accept_0reserve,
 					)
 					.map_err(|err| {
 						MsgHandleErrInternal::from_chan_no_close(err, *temporary_channel_id)
@@ -10896,7 +10976,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			};
 			debug_assert!(peer_state.is_connected);
 			peer_state.pending_msg_events.push(send_msg_err_event);
-			let err_str = "Please use accept_inbound_channel_from_trusted_peer_0conf to accept channels with zero confirmations.".to_owned();
+			let err_str = "Please use accept_inbound_channel_from_trusted_peer to accept channels with zero confirmations.".to_owned();
 			log_error!(logger, "{}", err_str);
 
 			return Err(APIError::APIMisuseError { err: err_str });
@@ -16963,6 +17043,7 @@ pub fn provided_init_features(config: &UserConfig) -> InitFeatures {
 	features.set_simple_close_optional();
 	features.set_quiescence_optional();
 	features.set_splicing_optional();
+	features.set_zero_reserve_optional();
 
 	if config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx {
 		features.set_anchors_zero_fee_htlc_tx_optional();

@@ -175,6 +175,8 @@ mod sealed {
 			,
 			// Byte 19
 			HtlcHold,
+			// Byte 20
+			ZeroReserveStaging,
 		]
 	);
 	define_context!(
@@ -204,8 +206,10 @@ mod sealed {
 			,
 			// Byte 19
 			HtlcHold,
-			// Byte 20 - 31
-			,,,,,,,,,,,,
+			// Byte 20
+			ZeroReserveStaging,
+			// Byte 21 - 31
+			,,,,,,,,,,,
 			// Byte 32
 			DnsResolver,
 		]
@@ -720,6 +724,17 @@ mod sealed {
 		clear_htlc_hold,
 		supports_htlc_hold,
 		requires_htlc_hold
+	);
+	define_feature!(
+		165,
+		ZeroReserveStaging,
+		[InitContext, NodeContext],
+		"Feature flags for zero reserve.",
+		set_zero_reserve_optional,
+		set_zero_reserve_required,
+		clear_zero_reserve,
+		supports_zero_reserve,
+		requires_zero_reserve
 	);
 	define_feature!(
 		259,
