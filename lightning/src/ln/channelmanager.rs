@@ -1400,15 +1400,15 @@ pub(crate) enum MonitorUpdateCompletionAction {
 	/// some other reason why the channel is blocked. In practice this simply means immediately
 	/// removing the [`RAAMonitorUpdateBlockingAction`] provided from the blocking set.
 	///
-	/// This is usually generated when we've forwarded an HTLC and want to block the outbound edge
-	/// from completing a monitor update which removes the payment preimage until the inbound edge
+	/// This is generated when we've forwarded an HTLC and want to block the outbound edge from
+	/// completing a monitor update which removes the payment preimage until the inbound edge
 	/// completes a monitor update containing the payment preimage. However, we use this variant
 	/// instead of [`Self::EmitEventOptionAndFreeOtherChannel`] when we discover that the claim was
 	/// in fact duplicative and we simply want to resume the outbound edge channel immediately.
 	///
 	/// This variant should thus never be written to disk, as it is processed inline rather than
 	/// stored for later processing.
-	FreeOtherChannelImmediately {
+	FreeDuplicateClaimImmediately {
 		downstream_counterparty_node_id: PublicKey,
 		blocking_action: RAAMonitorUpdateBlockingAction,
 		downstream_channel_id: ChannelId,
@@ -1420,9 +1420,9 @@ impl_writeable_tlv_based_enum_upgradable!(MonitorUpdateCompletionAction,
 		(0, payment_hash, required),
 		(9999999999, pending_mpp_claim, (static_value, None)),
 	},
-	// Note that FreeOtherChannelImmediately should never be written - we were supposed to free
+	// Note that FreeDuplicateClaimImmediately should never be written - we were supposed to free
 	// *immediately*. However, for simplicity we implement read/write here.
-	(1, FreeOtherChannelImmediately) => {
+	(1, FreeDuplicateClaimImmediately) => {
 		(0, downstream_counterparty_node_id, required),
 		(4, blocking_action, upgradable_required),
 		(5, downstream_channel_id, required),
@@ -9420,7 +9420,7 @@ impl<
 
 							log_trace!(logger, "Completing monitor update completion action as claim was redundant: {:?}",
 								action);
-							if let MonitorUpdateCompletionAction::FreeOtherChannelImmediately {
+							if let MonitorUpdateCompletionAction::FreeDuplicateClaimImmediately {
 								downstream_counterparty_node_id: node_id,
 								blocking_action: blocker,
 								downstream_channel_id: channel_id,
@@ -9728,12 +9728,14 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							(None, None)
 						} else if definitely_duplicate {
 							(
-								Some(MonitorUpdateCompletionAction::FreeOtherChannelImmediately {
-									downstream_counterparty_node_id: chan_to_release
-										.counterparty_node_id,
-									downstream_channel_id: chan_to_release.channel_id,
-									blocking_action: chan_to_release.blocking_action,
-								}),
+								Some(
+									MonitorUpdateCompletionAction::FreeDuplicateClaimImmediately {
+										downstream_counterparty_node_id: chan_to_release
+											.counterparty_node_id,
+										downstream_channel_id: chan_to_release.channel_id,
+										blocking_action: chan_to_release.blocking_action,
+									},
+								),
 								None,
 							)
 						} else {
@@ -10007,7 +10009,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						Some(downstream_counterparty_and_funding_outpoint.blocking_action),
 					);
 				},
-				MonitorUpdateCompletionAction::FreeOtherChannelImmediately {
+				MonitorUpdateCompletionAction::FreeDuplicateClaimImmediately {
 					downstream_counterparty_node_id,
 					downstream_channel_id,
 					blocking_action,
@@ -19534,7 +19536,7 @@ impl<
 								// anymore.
 							}
 						}
-						if let MonitorUpdateCompletionAction::FreeOtherChannelImmediately {
+						if let MonitorUpdateCompletionAction::FreeDuplicateClaimImmediately {
 							..
 						} = action
 						{
