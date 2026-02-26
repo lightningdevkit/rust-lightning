@@ -823,12 +823,14 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool, double_rest
 
 	// Now restart nodes[3].
 	reload_node!(nodes[3], original_manager.clone(), &[&updated_monitor.0, &original_monitor.0], persist_d_1, chain_d_1, node_d_1);
+	nodes[3].disable_monitor_completeness_assertion();
 
 	if double_restart {
 		// Previously, we had a bug where we'd fail to reload if we re-persist the `ChannelManager`
 		// without updating any `ChannelMonitor`s as we'd fail to double-initiate the claim replay.
 		// We test that here ensuring that we can reload again.
 		reload_node!(nodes[3], node_d_1.encode(), &[&updated_monitor.0, &original_monitor.0], persist_d_2, chain_d_2, node_d_2);
+		nodes[3].disable_monitor_completeness_assertion();
 	}
 
 	// Until the startup background events are processed (in `get_and_clear_pending_events`,
@@ -2216,6 +2218,7 @@ fn test_reload_with_mpp_claims_on_same_channel() {
 		nodes_1_deserialized,
 		Some(true)
 	);
+	nodes[1].disable_monitor_completeness_assertion();
 
 	// When the claims are reconstructed during reload, PaymentForwarded events are regenerated.
 	let events = nodes[1].node.get_and_clear_pending_events();

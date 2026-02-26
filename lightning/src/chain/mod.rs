@@ -233,11 +233,10 @@ pub enum ChannelMonitorUpdateStatus {
 	/// This includes performing any `fsync()` calls required to ensure the update is guaranteed to
 	/// be available on restart even if the application crashes.
 	///
-	/// If you return this variant, you cannot later return [`InProgress`] from the same instance of
-	/// [`Persist`]/[`Watch`] without first restarting.
+	/// You cannot switch from [`InProgress`] to this variant for the same channel without first
+	/// restarting. However, switching from this variant to [`InProgress`] is always allowed.
 	///
 	/// [`InProgress`]: ChannelMonitorUpdateStatus::InProgress
-	/// [`Persist`]: chainmonitor::Persist
 	Completed,
 	/// Indicates that the update will happen asynchronously in the background or that a transient
 	/// failure occurred which is being retried in the background and will eventually complete.
@@ -263,12 +262,7 @@ pub enum ChannelMonitorUpdateStatus {
 	/// reliable, this feature is considered beta, and a handful of edge-cases remain. Until the
 	/// remaining cases are fixed, in rare cases, *using this feature may lead to funds loss*.
 	///
-	/// If you return this variant, you cannot later return [`Completed`] from the same instance of
-	/// [`Persist`]/[`Watch`] without first restarting.
-	///
 	/// [`InProgress`]: ChannelMonitorUpdateStatus::InProgress
-	/// [`Completed`]: ChannelMonitorUpdateStatus::Completed
-	/// [`Persist`]: chainmonitor::Persist
 	InProgress,
 	/// Indicates that an update has failed and will not complete at any point in the future.
 	///
@@ -327,6 +321,8 @@ pub trait Watch<ChannelSigner: EcdsaChannelSigner> {
 	/// [`ChannelMonitorUpdateStatus::InProgress`] and eventually complete. If a failure truly
 	/// cannot be retried, the node should shut down immediately after returning
 	/// [`ChannelMonitorUpdateStatus::UnrecoverableError`], see its documentation for more info.
+	///
+	/// See [`ChannelMonitorUpdateStatus`] for requirements on when each variant may be returned.
 	///
 	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 	fn update_channel(

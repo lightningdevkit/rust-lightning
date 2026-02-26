@@ -598,6 +598,14 @@ impl<'a, 'b, 'c> Node<'a, 'b, 'c> {
 			self.node.init_features() | self.onion_messenger.provided_init_features(peer_node_id)
 		})
 	}
+
+	/// Disables the panic when `Watch::update_channel` returns `Completed` while prior updates
+	/// are still `InProgress`. Some legacy tests switch the persister between modes mid-flight,
+	/// which violates this contract but is otherwise harmless.
+	#[cfg(test)]
+	pub fn disable_monitor_completeness_assertion(&self) {
+		self.node.skip_monitor_update_assertion.store(true, core::sync::atomic::Ordering::Relaxed);
+	}
 }
 
 impl<'a, 'b, 'c> std::panic::UnwindSafe for Node<'a, 'b, 'c> {}

@@ -6817,6 +6817,7 @@ mod tests {
 		let legacy_cfg = test_legacy_channel_config();
 		let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg.clone()), Some(legacy_cfg)]);
 		let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+		nodes[1].disable_monitor_completeness_assertion();
 		let channel = create_announced_chan_between_nodes(&nodes, 0, 1);
 		create_announced_chan_between_nodes(&nodes, 1, 2);
 
