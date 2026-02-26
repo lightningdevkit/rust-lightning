@@ -83,8 +83,10 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 ///    the background with [`ChainMonitor::list_pending_monitor_updates`] and
 ///    [`ChainMonitor::get_monitor`].
 ///
-///    Once a full [`ChannelMonitor`] has been persisted, all pending updates for that channel can
-///    be marked as complete via [`ChainMonitor::channel_monitor_updated`].
+///    Each pending update must be individually marked as complete by calling
+///    [`ChainMonitor::channel_monitor_updated`] with the corresponding update ID. Note that
+///    persisting a full [`ChannelMonitor`] covers all prior updates, but each update ID still
+///    needs to be marked complete separately.
 ///
 ///    If at some point no further progress can be made towards persisting the pending updates, the
 ///    node should simply shut down.
