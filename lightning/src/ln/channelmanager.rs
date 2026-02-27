@@ -18534,6 +18534,81 @@ fn dedup_decode_update_add_htlcs<L: Logger>(
 	}
 }
 
+/// Checks if a forwarded HTLC claim needs to be replayed on startup, returning None if it doesn't
+/// need to be replayed. When the HTLC needs to be claimed, it returns a bool indicating whether
+/// deserialization of should be failed due to missing information.
+fn prev_hop_needs_claim_replay<Signer: EcdsaChannelSigner, L: Logger>(
+	prev_hop: &HTLCPreviousHopData, payment_preimage: PaymentPreimage,
+	inbound_edge_monitor: &ChannelMonitor<Signer>,
+	short_to_chan_info: &HashMap<u64, (PublicKey, ChannelId)>, logger: &L,
+) -> Option<bool> {
+	// If the inbound edge of the payment's monitor has been fully claimed we've had at least
+	// `ANTI_REORG_DELAY` blocks to get any PaymentForwarded event(s) to the user and assume that
+	// there's no need to try to replay the claim just for that.
+	let inbound_edge_balances = inbound_edge_monitor.get_claimable_balances();
+	if inbound_edge_balances.is_empty() {
+		return None;
+	}
+
+	let mut fail_read = false;
+	if prev_hop.counterparty_node_id.is_none() {
+		// We no longer support claiming an HTLC where we don't have the counterparty_node_id
+		// available if the claim has to go to a closed channel. Its possible we can get away with
+		// it if the channel is not yet closed, but its by no means a guarantee.
+
+		// Thus, in this case we are a bit more aggressive with our pruning - if we have no use for
+		// the claim (because the inbound edge of the payment's monitor has already claimed the
+		// HTLC) we skip trying to replay the claim.
+		let htlc_payment_hash: PaymentHash = payment_preimage.into();
+		let logger =
+			WithChannelMonitor::from(logger, inbound_edge_monitor, Some(htlc_payment_hash));
+		let balance_could_incl_htlc = |bal| match bal {
+			&Balance::ClaimableOnChannelClose { .. } => {
+				// The channel is still open, assume we can still
+				// claim against it
+				true
+			},
+			&Balance::MaybePreimageClaimableHTLC { payment_hash, .. } => {
+				payment_hash == htlc_payment_hash
+			},
+			_ => false,
+		};
+		let htlc_may_be_in_balances = inbound_edge_balances.iter().any(balance_could_incl_htlc);
+		if !htlc_may_be_in_balances {
+			return None;
+		}
+
+		// First check if we're absolutely going to fail - if we need to replay this claim to get
+		// the preimage into the inbound edge monitor but the channel is closed (and thus we'll
+		// immediately panic if we call claim_funds_from_hop).
+		if short_to_chan_info.get(&prev_hop.prev_outbound_scid_alias).is_none() {
+			log_error!(logger,
+				"We need to replay the HTLC claim for payment_hash {} (preimage {}) but cannot do so as the HTLC was forwarded prior to LDK 0.0.124.\
+					All HTLCs that were forwarded by LDK 0.0.123 and prior must be resolved prior to upgrading to LDK 0.1",
+				htlc_payment_hash,
+				payment_preimage,
+			);
+			fail_read = true;
+		}
+
+		// At this point we're confident we need the claim, but the
+		// inbound edge channel is still live. As long as this remains
+		// the case, we can conceivably proceed, but we run some risk
+		// of panicking at runtime. The user ideally should have read
+		// the release notes and we wouldn't be here, but we go ahead
+		// and let things run in the hope that it'll all just work out.
+		log_error!(logger,
+			"We need to replay the HTLC claim for payment_hash {} (preimage {}) but don't have all the required information to do so reliably.\
+				As long as the channel for the inbound edge of the forward remains open, this may work okay, but we may panic at runtime!\
+				All HTLCs that were forwarded by LDK 0.0.123 and prior must be resolved prior to upgrading to LDK 0.1\
+				Continuing anyway, though panics may occur!",
+			htlc_payment_hash,
+			payment_preimage,
+		);
+	}
+	Some(fail_read)
+}
+
 // Implement ReadableArgs for an Arc'd ChannelManager to make it a bit easier to work with the
 // SipmleArcChannelManager type:
 impl<
@@ -19510,112 +19585,71 @@ impl<
 				// preimages from it which may be needed in upstream channels for forwarded
 				// payments.
 				let mut fail_read = false;
-				let outbound_claimed_htlcs_iter = monitor.get_all_current_outbound_htlcs()
+				let outbound_claimed_htlcs_iter = monitor
+					.get_all_current_outbound_htlcs()
 					.into_iter()
 					.filter_map(|(htlc_source, (htlc, preimage_opt))| {
-						if let HTLCSource::PreviousHopData(prev_hop) = &htlc_source {
-							if let Some(payment_preimage) = preimage_opt {
-								let inbound_edge_monitor = args.channel_monitors.get(&prev_hop.channel_id);
-								// Note that for channels which have gone to chain,
-								// `get_all_current_outbound_htlcs` is never pruned and always returns
-								// a constant set until the monitor is removed/archived. Thus, we
-								// want to skip replaying claims that have definitely been resolved
-								// on-chain.
-
-								// If the inbound monitor is not present, we assume it was fully
-								// resolved and properly archived, implying this payment had plenty
-								// of time to get claimed and we can safely skip any further
-								// attempts to claim it (they wouldn't succeed anyway as we don't
-								// have a monitor against which to do so).
-								let inbound_edge_monitor = if let Some(monitor) = inbound_edge_monitor {
-									monitor
-								} else {
-									return None;
-								};
-								// Second, if the inbound edge of the payment's monitor has been
-								// fully claimed we've had at least `ANTI_REORG_DELAY` blocks to
-								// get any PaymentForwarded event(s) to the user and assume that
-								// there's no need to try to replay the claim just for that.
-								let inbound_edge_balances = inbound_edge_monitor.get_claimable_balances();
-								if inbound_edge_balances.is_empty() {
-									return None;
-								}
-
-								if prev_hop.counterparty_node_id.is_none() {
-									// We no longer support claiming an HTLC where we don't have
-									// the counterparty_node_id available if the claim has to go to
-									// a closed channel. Its possible we can get away with it if
-									// the channel is not yet closed, but its by no means a
-									// guarantee.
-
-									// Thus, in this case we are a bit more aggressive with our
-									// pruning - if we have no use for the claim (because the
-									// inbound edge of the payment's monitor has already claimed
-									// the HTLC) we skip trying to replay the claim.
-									let htlc_payment_hash: PaymentHash = payment_preimage.into();
-									let logger = WithChannelMonitor::from(
-										&args.logger,
-										monitor,
-										Some(htlc_payment_hash),
-									);
-									let balance_could_incl_htlc = |bal| match bal {
-										&Balance::ClaimableOnChannelClose { .. } => {
-											// The channel is still open, assume we can still
-											// claim against it
-											true
-										},
-										&Balance::MaybePreimageClaimableHTLC { payment_hash, .. } => {
-											payment_hash == htlc_payment_hash
-										},
-										_ => false,
-									};
-									let htlc_may_be_in_balances =
-										inbound_edge_balances.iter().any(balance_could_incl_htlc);
-									if !htlc_may_be_in_balances {
-										return None;
-									}
-
-									// First check if we're absolutely going to fail - if we need
-									// to replay this claim to get the preimage into the inbound
-									// edge monitor but the channel is closed (and thus we'll
-									// immediately panic if we call claim_funds_from_hop).
-									if short_to_chan_info.get(&prev_hop.prev_outbound_scid_alias).is_none() {
-										log_error!(logger,
-											"We need to replay the HTLC claim for payment_hash {} (preimage {}) but cannot do so as the HTLC was forwarded prior to LDK 0.0.124.\
-											All HTLCs that were forwarded by LDK 0.0.123 and prior must be resolved prior to upgrading to LDK 0.1",
-											htlc_payment_hash,
-											payment_preimage,
-										);
-										fail_read = true;
-									}
-
-									// At this point we're confident we need the claim, but the
-									// inbound edge channel is still live. As long as this remains
-									// the case, we can conceivably proceed, but we run some risk
-									// of panicking at runtime. The user ideally should have read
-									// the release notes and we wouldn't be here, but we go ahead
-									// and let things run in the hope that it'll all just work out.
-									log_error!(logger,
-										"We need to replay the HTLC claim for payment_hash {} (preimage {}) but don't have all the required information to do so reliably.\
-										As long as the channel for the inbound edge of the forward remains open, this may work okay, but we may panic at runtime!\
-										All HTLCs that were forwarded by LDK 0.0.123 and prior must be resolved prior to upgrading to LDK 0.1\
-										Continuing anyway, though panics may occur!",
-										htlc_payment_hash,
-										payment_preimage,
-									);
-								}
-
-								Some((htlc_source, payment_preimage, htlc.amount_msat,
-									is_channel_closed, monitor.get_counterparty_node_id(),
-									monitor.get_funding_txo(), monitor.channel_id(), user_channel_id_opt))
-							} else { None }
-						} else {
+						let payment_preimage = preimage_opt?;
+						let prev_htlcs = match &htlc_source {
+							HTLCSource::PreviousHopData(prev_hop) => vec![prev_hop],
 							// If it was an outbound payment, we've handled it above - if a preimage
-							// came in and we persisted the `ChannelManager` we either handled it and
-							// are good to go or the channel force-closed - we don't have to handle the
-							// channel still live case here.
-							None
+							// came in and we persisted the `ChannelManager` we either handled it
+							// and are good to go or the channel force-closed - we don't have to
+							// handle the channel still live case here.
+							_ => vec![],
+						};
+						let prev_htlcs_count = prev_htlcs.len();
+						if prev_htlcs_count == 0 {
+							return None;
 						}
+
+						for prev_hop in prev_htlcs {
+							// Note that for channels which have gone to chain,
+							// `get_all_current_outbound_htlcs` is never pruned and always returns
+							// a constant set until the monitor is removed/archived. Thus, we want
+							// to skip replaying claims that have definitely been resolved on-chain.
+
+							// If the inbound monitor is not present, we assume it was fully
+							// resolved and properly archived, implying this payment had plenty of
+							// time to get claimed and we can safely skip any further attempts to
+							// claim it (they wouldn't succeed anyway as we don't have a monitor
+							// against which to do so).
+							let inbound_edge_monitor =
+								args.channel_monitors.get(&prev_hop.channel_id)?;
+							let logger = WithChannelMonitor::from(
+								&args.logger,
+								monitor,
+								Some(payment_preimage.into()),
+							);
+							if let Some(fail_claim_read) = prev_hop_needs_claim_replay(
+								prev_hop,
+								payment_preimage,
+								inbound_edge_monitor,
+								&short_to_chan_info,
+								&logger,
+							) {
+								// We can only fail to read from disk for legacy HTLCs that have
+								// a single prev_htlc. If we could fail_claim_read for multiple
+								// prev_htlcs, it wouldn't be correct to exit early on our first
+								// claimable prev_hop (because a subsequent one may
+								// fail_claim_read).
+								if fail_claim_read {
+									debug_assert!(prev_htlcs_count == 1);
+								}
+								fail_read |= fail_claim_read;
+								return Some((
+									htlc_source,
+									payment_preimage,
+									htlc.amount_msat,
+									is_channel_closed,
+									monitor.get_counterparty_node_id(),
+									monitor.get_funding_txo(),
+									monitor.channel_id(),
+									user_channel_id_opt,
+								));
+							}
+						}
+						None
 					});
 				for tuple in outbound_claimed_htlcs_iter {
 					pending_claims_to_replay.push(tuple);
