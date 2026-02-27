@@ -656,6 +656,11 @@ impl Path {
 	}
 }
 
+impl_writeable_tlv_based!(Path,{
+	(1, hops, required_vec),
+	(3, blinded_tail, option),
+});
+
 /// A route directs a payment from the sender (us) to the recipient. If the recipient supports MPP,
 /// it can take multiple paths. Each path is composed of one or more hops through the network.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]

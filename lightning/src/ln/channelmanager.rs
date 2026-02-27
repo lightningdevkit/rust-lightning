@@ -756,13 +756,25 @@ impl Default for OptionalOfferPaymentParams {
 pub(crate) enum SentHTLCId {
 	PreviousHopData { prev_outbound_scid_alias: u64, htlc_id: u64 },
 	OutboundRoute { session_priv: [u8; SECRET_KEY_SIZE] },
+	TrampolineForward { session_priv: [u8; SECRET_KEY_SIZE] },
 }
 impl SentHTLCId {
+	/// Creates an identifier for the [`HTLCSource`] provided. Note that for MPP trampoline payments
+	/// each outgoing HTLC will have a distinct identifier.
 	pub(crate) fn from_source(source: &HTLCSource) -> Self {
 		match source {
 			HTLCSource::PreviousHopData(hop_data) => Self::PreviousHopData {
 				prev_outbound_scid_alias: hop_data.prev_outbound_scid_alias,
 				htlc_id: hop_data.htlc_id,
+			},
+			HTLCSource::TrampolineForward {
+				ref outbound_payment,
+				..
+			} => Self::TrampolineForward {
+				session_priv: outbound_payment
+					.as_ref()
+					.map(|o| o.session_priv.secret_bytes())
+					.expect("trying to identify a trampoline payment that we have no outbound_payment tracked for"),
 			},
 			HTLCSource::OutboundRoute { session_priv, .. } => {
 				Self::OutboundRoute { session_priv: session_priv.secret_bytes() }
@@ -778,6 +790,9 @@ impl_writeable_tlv_based_enum!(SentHTLCId,
 	(2, OutboundRoute) => {
 		(0, session_priv, required),
 	},
+	(4, TrampolineForward) => {
+		(0, session_priv, required),
+	},
 );
 
 type FailedHTLCForward = (HTLCSource, PaymentHash, HTLCFailReason, HTLCHandlingFailureType);
@@ -785,11 +800,31 @@ type FailedHTLCForward = (HTLCSource, PaymentHash, HTLCFailReason, HTLCHandlingF
 mod fuzzy_channelmanager {
 	use super::*;
 
+	/// Information about a HTLC sent as part of a (possibly MPP) payment to the next trampoline.
+	#[derive(Clone, Debug, PartialEq, Eq)]
+	pub struct TrampolineDispatch {
+		/// The payment ID used for the outbound payment.
+		pub payment_id: PaymentId,
+		/// The path used for the outbound payment.
+		pub path: Path,
+		/// The session private key used for inter-trampoline outer onions.
+		pub session_priv: SecretKey,
+	}
+
 	/// Tracks the inbound corresponding to an outbound HTLC
-	#[allow(clippy::derive_hash_xor_eq)] // Our Hash is faithful to the data, we just don't have SecretKey::hash
+	#[allow(clippy::derive_hash_xor_eq, dead_code)] // Our Hash is faithful to the data, we just don't have SecretKey::hash
 	#[derive(Clone, Debug, PartialEq, Eq)]
 	pub enum HTLCSource {
 		PreviousHopData(HTLCPreviousHopData),
+		TrampolineForward {
+			/// We might be forwarding an incoming payment that was received over MPP, and therefore
+			/// need to store the vector of corresponding `HTLCPreviousHopData` values.
+			previous_hop_data: Vec<HTLCPreviousHopData>,
+			incoming_trampoline_shared_secret: [u8; 32],
+			/// Track outbound payment details once the payment has been dispatched, will be `None`
+			/// when waiting for incoming MPP to accumulate.
+			outbound_payment: Option<TrampolineDispatch>,
+		},
 		OutboundRoute {
 			path: Path,
 			session_priv: SecretKey,
@@ -802,6 +837,26 @@ mod fuzzy_channelmanager {
 			/// with a stale ChannelManager state.
 			bolt12_invoice: Option<PaidBolt12Invoice>,
 		},
+	}
+
+	impl HTLCSource {
+		pub fn failure_type(
+			&self, counterparty_node: PublicKey, channel_id: ChannelId,
+		) -> HTLCHandlingFailureType {
+			match self {
+				// We won't actually emit an event with HTLCHandlingFailure if our source is an
+				// OutboundRoute, but `fail_htlc_backwards_internal` requires that we provide it.
+				HTLCSource::PreviousHopData(_) | HTLCSource::OutboundRoute { .. } => {
+					HTLCHandlingFailureType::Forward {
+						node_id: Some(counterparty_node),
+						channel_id,
+					}
+				},
+				HTLCSource::TrampolineForward { .. } => {
+					HTLCHandlingFailureType::TrampolineForward {}
+				},
+			}
+		}
 	}
 
 	/// Tracks the inbound corresponding to an outbound HTLC
@@ -823,6 +878,16 @@ mod fuzzy_channelmanager {
 		/// Used to preserve our backwards channel by failing back in case an HTLC claim in the forward
 		/// channel remains unconfirmed for too long.
 		pub cltv_expiry: Option<u32>,
+	}
+
+	impl From<&HTLCPreviousHopData> for events::HTLCLocator {
+		fn from(value: &HTLCPreviousHopData) -> Self {
+			events::HTLCLocator {
+				channel_id: value.channel_id,
+				user_channel_id: value.user_channel_id,
+				node_id: value.counterparty_node_id,
+			}
+		}
 	}
 }
 #[cfg(fuzzing)]
@@ -851,6 +916,20 @@ impl core::hash::Hash for HTLCSource {
 				payment_id.hash(hasher);
 				first_hop_htlc_msat.hash(hasher);
 				bolt12_invoice.hash(hasher);
+			},
+			HTLCSource::TrampolineForward {
+				previous_hop_data,
+				incoming_trampoline_shared_secret,
+				outbound_payment,
+			} => {
+				2u8.hash(hasher);
+				previous_hop_data.hash(hasher);
+				incoming_trampoline_shared_secret.hash(hasher);
+				if let Some(payment) = outbound_payment {
+					payment.payment_id.hash(hasher);
+					payment.path.hash(hasher);
+					payment.session_priv[..].hash(hasher);
+				}
 			},
 		}
 	}
@@ -1392,23 +1471,23 @@ pub(crate) enum MonitorUpdateCompletionAction {
 	/// completes a monitor update containing the payment preimage. In that case, after the inbound
 	/// edge completes, we will surface an [`Event::PaymentForwarded`] as well as unblock the
 	/// outbound edge.
-	EmitEventAndFreeOtherChannel {
-		event: events::Event,
-		downstream_counterparty_and_funding_outpoint: Option<EventUnblockedChannel>,
+	EmitEventOptionAndFreeOtherChannel {
+		event: Option<events::Event>,
+		downstream_counterparty_and_funding_outpoint: EventUnblockedChannel,
 	},
 	/// Indicates we should immediately resume the operation of another channel, unless there is
 	/// some other reason why the channel is blocked. In practice this simply means immediately
 	/// removing the [`RAAMonitorUpdateBlockingAction`] provided from the blocking set.
 	///
-	/// This is usually generated when we've forwarded an HTLC and want to block the outbound edge
-	/// from completing a monitor update which removes the payment preimage until the inbound edge
+	/// This is generated when we've forwarded an HTLC and want to block the outbound edge from
+	/// completing a monitor update which removes the payment preimage until the inbound edge
 	/// completes a monitor update containing the payment preimage. However, we use this variant
-	/// instead of [`Self::EmitEventAndFreeOtherChannel`] when we discover that the claim was in
-	/// fact duplicative and we simply want to resume the outbound edge channel immediately.
+	/// instead of [`Self::EmitEventOptionAndFreeOtherChannel`] when we discover that the claim was
+	/// in fact duplicative and we simply want to resume the outbound edge channel immediately.
 	///
 	/// This variant should thus never be written to disk, as it is processed inline rather than
 	/// stored for later processing.
-	FreeOtherChannelImmediately {
+	FreeDuplicateClaimImmediately {
 		downstream_counterparty_node_id: PublicKey,
 		blocking_action: RAAMonitorUpdateBlockingAction,
 		downstream_channel_id: ChannelId,
@@ -1420,21 +1499,19 @@ impl_writeable_tlv_based_enum_upgradable!(MonitorUpdateCompletionAction,
 		(0, payment_hash, required),
 		(9999999999, pending_mpp_claim, (static_value, None)),
 	},
-	// Note that FreeOtherChannelImmediately should never be written - we were supposed to free
+	// Note that FreeDuplicateClaimImmediately should never be written - we were supposed to free
 	// *immediately*. However, for simplicity we implement read/write here.
-	(1, FreeOtherChannelImmediately) => {
+	(1, FreeDuplicateClaimImmediately) => {
 		(0, downstream_counterparty_node_id, required),
 		(4, blocking_action, upgradable_required),
 		(5, downstream_channel_id, required),
 	},
-	(2, EmitEventAndFreeOtherChannel) => {
-		(0, event, upgradable_required),
-		// LDK prior to 0.0.116 did not have this field as the monitor update application order was
-		// required by clients. If we downgrade to something prior to 0.0.116 this may result in
-		// monitor updates which aren't properly blocked or resumed, however that's fine - we don't
-		// support async monitor updates even in LDK 0.0.116 and once we do we'll require no
-		// downgrades to prior versions.
-		(1, downstream_counterparty_and_funding_outpoint, upgradable_option),
+	(2, EmitEventOptionAndFreeOtherChannel) => {
+		// LDK prior to 0.3 required this field. It will not be present for trampoline payments
+		// with multiple incoming HTLCS, so nodes cannot downgrade while trampoline payments
+		// are in the process of being resolved.
+		(0, event, upgradable_option),
+		(1, downstream_counterparty_and_funding_outpoint, upgradable_required),
 	},
 );
 
@@ -3996,11 +4073,8 @@ impl<
 		for htlc_source in failed_htlcs.drain(..) {
 			let failure_reason = LocalHTLCFailureReason::ChannelClosed;
 			let reason = HTLCFailReason::from_failure_code(failure_reason);
-			let receiver = HTLCHandlingFailureType::Forward {
-				node_id: Some(*counterparty_node_id),
-				channel_id: *chan_id,
-			};
 			let (source, hash) = htlc_source;
+			let receiver = source.failure_type(*counterparty_node_id, *chan_id);
 			self.fail_htlc_backwards_internal(&source, &hash, &reason, receiver, None);
 		}
 
@@ -4163,10 +4237,7 @@ impl<
 			let (source, payment_hash, counterparty_node_id, channel_id) = htlc_source;
 			let failure_reason = LocalHTLCFailureReason::ChannelClosed;
 			let reason = HTLCFailReason::from_failure_code(failure_reason);
-			let receiver = HTLCHandlingFailureType::Forward {
-				node_id: Some(counterparty_node_id),
-				channel_id,
-			};
+			let receiver = source.failure_type(counterparty_node_id, channel_id);
 			self.fail_htlc_backwards_internal(&source, &payment_hash, &reason, receiver, None);
 		}
 		if let Some((_, funding_txo, _channel_id, monitor_update)) = shutdown_res.monitor_update {
@@ -7425,7 +7496,7 @@ impl<
 					.push(failure);
 				self.pending_events.lock().unwrap().push_back((
 					events::Event::HTLCHandlingFailed {
-						prev_channel_id: incoming_channel_id,
+						prev_channel_ids: vec![incoming_channel_id],
 						failure_type,
 						failure_reason: Some(failure_reason),
 					},
@@ -7610,6 +7681,8 @@ impl<
 							};
 
 							failed_forwards.push((
+								// This can't be a trampoline payment because we don't process them
+								// as forwards (we're the last/"receiving" onion node).
 								HTLCSource::PreviousHopData(prev_hop),
 								payment_hash,
 								HTLCFailReason::reason(reason, err_data),
@@ -8888,11 +8961,14 @@ impl<
 
 		for (htlc_src, payment_hash) in htlcs_to_fail.drain(..) {
 			let reason = HTLCFailReason::reason(failure_reason, onion_failure_data.clone());
-			let receiver = HTLCHandlingFailureType::Forward {
-				node_id: Some(counterparty_node_id.clone()),
-				channel_id,
-			};
-			self.fail_htlc_backwards_internal(&htlc_src, &payment_hash, &reason, receiver, None);
+			let failure_type = htlc_src.failure_type(*counterparty_node_id, channel_id);
+			self.fail_htlc_backwards_internal(
+				&htlc_src,
+				&payment_hash,
+				&reason,
+				failure_type,
+				None,
+			);
 		}
 	}
 
@@ -8911,6 +8987,19 @@ impl<
 		for (_, peer) in self.per_peer_state.read().unwrap().iter() {
 			debug_assert_ne!(peer.held_by_thread(), LockHeldState::HeldByThread);
 		}
+
+		let push_forward_htlcs_failure =
+			|prev_outbound_scid_alias: u64, failure: HTLCForwardInfo| {
+				let mut forward_htlcs = self.forward_htlcs.lock().unwrap();
+				match forward_htlcs.entry(prev_outbound_scid_alias) {
+					hash_map::Entry::Occupied(mut entry) => {
+						entry.get_mut().push(failure);
+					},
+					hash_map::Entry::Vacant(entry) => {
+						entry.insert(vec![failure]);
+					},
+				}
+			};
 
 		//TODO: There is a timing attack here where if a node fails an HTLC back to us they can
 		//identify whether we sent it or not based on the (I presume) very different runtime
@@ -8978,49 +9067,91 @@ impl<
 					if blinded_failure.is_some() { "blinded " } else { "" },
 					onion_error
 				);
-				// In case of trampoline + phantom we prioritize the trampoline failure over the phantom failure.
-				// TODO: Correctly wrap the error packet twice if failing back a trampoline + phantom HTLC.
-				let secondary_shared_secret = trampoline_shared_secret.or(*phantom_shared_secret);
-				let failure = match blinded_failure {
-					Some(BlindedFailure::FromIntroductionNode) => {
-						let blinded_onion_error = HTLCFailReason::reason(
-							LocalHTLCFailureReason::InvalidOnionBlinding,
-							vec![0; 32],
-						);
-						let err_packet = blinded_onion_error.get_encrypted_failure_packet(
-							incoming_packet_shared_secret,
-							&secondary_shared_secret,
-						);
-						HTLCForwardInfo::FailHTLC { htlc_id: *htlc_id, err_packet }
-					},
-					Some(BlindedFailure::FromBlindedNode) => HTLCForwardInfo::FailMalformedHTLC {
-						htlc_id: *htlc_id,
-						failure_code: LocalHTLCFailureReason::InvalidOnionBlinding.failure_code(),
-						sha256_of_onion: [0; 32],
-					},
-					None => {
-						let err_packet = onion_error.get_encrypted_failure_packet(
-							incoming_packet_shared_secret,
-							&secondary_shared_secret,
-						);
-						HTLCForwardInfo::FailHTLC { htlc_id: *htlc_id, err_packet }
-					},
-				};
 
-				let mut forward_htlcs = self.forward_htlcs.lock().unwrap();
-				match forward_htlcs.entry(*prev_outbound_scid_alias) {
-					hash_map::Entry::Occupied(mut entry) => {
-						entry.get_mut().push(failure);
-					},
-					hash_map::Entry::Vacant(entry) => {
-						entry.insert(vec![failure]);
-					},
-				}
-				mem::drop(forward_htlcs);
+				push_forward_htlcs_failure(
+					*prev_outbound_scid_alias,
+					get_htlc_forward_failure(
+						blinded_failure,
+						onion_error,
+						incoming_packet_shared_secret,
+						trampoline_shared_secret,
+						phantom_shared_secret,
+						*htlc_id,
+					),
+				);
+
 				let mut pending_events = self.pending_events.lock().unwrap();
 				pending_events.push_back((
 					events::Event::HTLCHandlingFailed {
-						prev_channel_id: *channel_id,
+						prev_channel_ids: vec![*channel_id],
+						failure_type,
+						failure_reason: Some(onion_error.into()),
+					},
+					None,
+				));
+			},
+			HTLCSource::TrampolineForward {
+				previous_hop_data,
+				incoming_trampoline_shared_secret,
+				..
+			} => {
+				let decoded_onion_failure =
+					onion_error.decode_onion_failure(&self.secp_ctx, &self.logger, &source);
+				log_trace!(
+					WithContext::from(&self.logger, None, None, Some(*payment_hash)),
+					"Trampoline forward failed downstream on {}",
+					if let Some(scid) = decoded_onion_failure.short_channel_id {
+						scid.to_string()
+					} else {
+						"unknown channel".to_string()
+					},
+				);
+				let incoming_trampoline_shared_secret = Some(*incoming_trampoline_shared_secret);
+
+				// TODO: when we receive a failure from a single outgoing trampoline HTLC, we don't
+				// necessarily want to fail all of our incoming HTLCs back yet. We may have other
+				// outgoing HTLCs that need to resolve first. This will be tracked in our
+				// pending_outbound_payments in a followup.
+				for current_hop_data in previous_hop_data {
+					let HTLCPreviousHopData {
+						prev_outbound_scid_alias,
+						htlc_id,
+						incoming_packet_shared_secret,
+						blinded_failure,
+						channel_id,
+						..
+					} = current_hop_data;
+					log_trace!(
+						WithContext::from(&self.logger, None, Some(*channel_id), Some(*payment_hash)),
+						"Failing {}HTLC with payment_hash {} backwards from us following Trampoline forwarding failure: {:?}",
+						if blinded_failure.is_some() { "blinded " } else { "" }, &payment_hash, onion_error
+					);
+					let onion_error = HTLCFailReason::reason(
+						LocalHTLCFailureReason::TemporaryTrampolineFailure,
+						Vec::new(),
+					);
+					push_forward_htlcs_failure(
+						*prev_outbound_scid_alias,
+						get_htlc_forward_failure(
+							blinded_failure,
+							&onion_error,
+							incoming_packet_shared_secret,
+							&incoming_trampoline_shared_secret,
+							&None,
+							*htlc_id,
+						),
+					);
+				}
+
+				// We only want to emit a single event for trampoline failures, so we do it once
+				// we've failed back all of our incoming HTLCs.
+				let mut pending_events = self.pending_events.lock().unwrap();
+				pending_events.push_back((
+					events::Event::HTLCHandlingFailed {
+						prev_channel_ids: previous_hop_data
+							.iter()
+							.map(|prev| prev.channel_id)
+							.collect(),
 						failure_type,
 						failure_reason: Some(onion_error.into()),
 					},
@@ -9250,6 +9381,129 @@ impl<
 		}
 	}
 
+	/// Claims funds for a forwarded HTLC where we are an intermediate hop.
+	///
+	/// Processes attribution data, calculates fees earned, and emits a [`Event::PaymentForwarded`]
+	/// event upon successful claim. `make_payment_forwarded_event` is responsible for creating a
+	/// single [`Event::PaymentForwarded`] event that represents the forward.
+	fn claim_funds_from_htlc_forward_hop(
+		&self, payment_preimage: PaymentPreimage,
+		make_payment_forwarded_event: impl Fn(Option<u64>) -> Option<events::Event>,
+		startup_replay: bool, next_channel_counterparty_node_id: PublicKey,
+		next_channel_outpoint: OutPoint, next_channel_id: ChannelId, hop_data: HTLCPreviousHopData,
+		attribution_data: Option<AttributionData>, send_timestamp: Option<Duration>,
+	) {
+		let _prev_channel_id = hop_data.channel_id;
+		let completed_blocker = RAAMonitorUpdateBlockingAction::from_prev_hop_data(&hop_data);
+
+		// Obtain hold time, if available.
+		let hold_time = hold_time_since(send_timestamp).unwrap_or(0);
+
+		// If attribution data was received from downstream, we shift it and get it ready for adding our hold
+		// time. Note that fulfilled HTLCs take a fast path to the incoming side. We don't need to wait for RAA
+		// to record the hold time like we do for failed HTLCs.
+		let attribution_data = process_fulfill_attribution_data(
+			attribution_data,
+			&hop_data.incoming_packet_shared_secret,
+			hold_time,
+		);
+
+		#[cfg(test)]
+		let claiming_chan_funding_outpoint = hop_data.outpoint;
+		self.claim_funds_from_hop(
+			hop_data,
+			payment_preimage,
+			None,
+			Some(attribution_data),
+			|htlc_claim_value_msat, definitely_duplicate| {
+				let chan_to_release = EventUnblockedChannel {
+					counterparty_node_id: next_channel_counterparty_node_id,
+					funding_txo: next_channel_outpoint,
+					channel_id: next_channel_id,
+					blocking_action: completed_blocker,
+				};
+
+				if definitely_duplicate && startup_replay {
+					// On startup we may get redundant claims which are related to
+					// monitor updates still in flight. In that case, we shouldn't
+					// immediately free, but instead let that monitor update complete
+					// in the background.
+					#[cfg(test)]
+					{
+						let per_peer_state = self.per_peer_state.deadlocking_read();
+						// The channel we'd unblock should already be closed, or...
+						let channel_closed = per_peer_state
+							.get(&next_channel_counterparty_node_id)
+							.map(|lck| lck.deadlocking_lock())
+							.map(|peer| !peer.channel_by_id.contains_key(&next_channel_id))
+							.unwrap_or(true);
+						let background_events = self.pending_background_events.lock().unwrap();
+						// there should be a `BackgroundEvent` pending...
+						let matching_bg_event =
+							background_events.iter().any(|ev| {
+								match ev {
+									// to apply a monitor update that blocked the claiming channel,
+									BackgroundEvent::MonitorUpdateRegeneratedOnStartup {
+										funding_txo,
+										update,
+										..
+									} => {
+										if *funding_txo == claiming_chan_funding_outpoint {
+											assert!(
+												update.updates.iter().any(|upd| {
+													if let ChannelMonitorUpdateStep::PaymentPreimage {
+															payment_preimage: update_preimage, ..
+														} = upd {
+															payment_preimage == *update_preimage
+														} else { false }
+												}),
+												"{:?}",
+												update
+											);
+											true
+										} else {
+											false
+										}
+									},
+									// or the monitor update has completed and will unblock
+									// immediately once we get going.
+									BackgroundEvent::MonitorUpdatesComplete {
+										channel_id, ..
+									} => *channel_id == _prev_channel_id,
+								}
+							});
+						assert!(channel_closed || matching_bg_event, "{:?}", *background_events);
+					}
+					(None, None)
+				} else if definitely_duplicate {
+					(
+						Some(MonitorUpdateCompletionAction::FreeDuplicateClaimImmediately {
+							downstream_counterparty_node_id: chan_to_release.counterparty_node_id,
+							downstream_channel_id: chan_to_release.channel_id,
+							blocking_action: chan_to_release.blocking_action,
+						}),
+						None,
+					)
+				} else {
+					let event = make_payment_forwarded_event(htlc_claim_value_msat);
+					if let Some(ref payment_forwarded) = event {
+						debug_assert!(matches!(
+							payment_forwarded,
+							&events::Event::PaymentForwarded { .. }
+						));
+					}
+					(
+						Some(MonitorUpdateCompletionAction::EmitEventOptionAndFreeOtherChannel {
+							event,
+							downstream_counterparty_and_funding_outpoint: chan_to_release,
+						}),
+						None,
+					)
+				}
+			},
+		);
+	}
+
 	fn claim_funds_from_hop<
 		ComplFunc: FnOnce(
 			Option<u64>,
@@ -9422,7 +9676,7 @@ impl<
 
 							log_trace!(logger, "Completing monitor update completion action as claim was redundant: {:?}",
 								action);
-							if let MonitorUpdateCompletionAction::FreeOtherChannelImmediately {
+							if let MonitorUpdateCompletionAction::FreeDuplicateClaimImmediately {
 								downstream_counterparty_node_id: node_id,
 								blocking_action: blocker,
 								downstream_channel_id: channel_id,
@@ -9645,135 +9899,87 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				}
 			},
 			HTLCSource::PreviousHopData(hop_data) => {
-				let prev_channel_id = hop_data.channel_id;
-				let prev_user_channel_id = hop_data.user_channel_id;
-				let prev_node_id = hop_data.counterparty_node_id;
-				let completed_blocker =
-					RAAMonitorUpdateBlockingAction::from_prev_hop_data(&hop_data);
-
-				// Obtain hold time, if available.
-				let hold_time = hold_time_since(send_timestamp).unwrap_or(0);
-
-				// If attribution data was received from downstream, we shift it and get it ready for adding our hold
-				// time. Note that fulfilled HTLCs take a fast path to the incoming side. We don't need to wait for RAA
-				// to record the hold time like we do for failed HTLCs.
-				let attribution_data = process_fulfill_attribution_data(
-					attribution_data,
-					&hop_data.incoming_packet_shared_secret,
-					hold_time,
-				);
-
-				#[cfg(test)]
-				let claiming_chan_funding_outpoint = hop_data.outpoint;
-				self.claim_funds_from_hop(
-					hop_data,
+				let prev_htlcs = vec![events::HTLCLocator::from(&hop_data)];
+				self.claim_funds_from_htlc_forward_hop(
 					payment_preimage,
-					None,
-					Some(attribution_data),
-					|htlc_claim_value_msat, definitely_duplicate| {
-						let chan_to_release = Some(EventUnblockedChannel {
-							counterparty_node_id: next_channel_counterparty_node_id,
-							funding_txo: next_channel_outpoint,
-							channel_id: next_channel_id,
-							blocking_action: completed_blocker,
-						});
-
-						if definitely_duplicate && startup_replay {
-							// On startup we may get redundant claims which are related to
-							// monitor updates still in flight. In that case, we shouldn't
-							// immediately free, but instead let that monitor update complete
-							// in the background.
-							#[cfg(test)]
-							{
-								let per_peer_state = self.per_peer_state.deadlocking_read();
-								// The channel we'd unblock should already be closed, or...
-								let channel_closed = per_peer_state
-									.get(&next_channel_counterparty_node_id)
-									.map(|lck| lck.deadlocking_lock())
-									.map(|peer| !peer.channel_by_id.contains_key(&next_channel_id))
-									.unwrap_or(true);
-								let background_events =
-									self.pending_background_events.lock().unwrap();
-								// there should be a `BackgroundEvent` pending...
-								let matching_bg_event =
-									background_events.iter().any(|ev| {
-										match ev {
-											// to apply a monitor update that blocked the claiming channel,
-											BackgroundEvent::MonitorUpdateRegeneratedOnStartup {
-												funding_txo, update, ..
-											} => {
-												if *funding_txo == claiming_chan_funding_outpoint {
-													assert!(update.updates.iter().any(|upd|
-														if let ChannelMonitorUpdateStep::PaymentPreimage {
-															payment_preimage: update_preimage, ..
-														} = upd {
-															payment_preimage == *update_preimage
-														} else { false }
-													), "{:?}", update);
-													true
-												} else { false }
-											},
-											// or the monitor update has completed and will unblock
-											// immediately once we get going.
-											BackgroundEvent::MonitorUpdatesComplete {
-												channel_id, ..
-											} =>
-												*channel_id == prev_channel_id,
-										}
-									});
-								assert!(
-									channel_closed || matching_bg_event,
-									"{:?}",
-									*background_events
-								);
-							}
-							(None, None)
-						} else if definitely_duplicate {
-							if let Some(other_chan) = chan_to_release {
-								(Some(MonitorUpdateCompletionAction::FreeOtherChannelImmediately {
-									downstream_counterparty_node_id: other_chan.counterparty_node_id,
-									downstream_channel_id: other_chan.channel_id,
-									blocking_action: other_chan.blocking_action,
-								}), None)
-							} else {
-								(None, None)
-							}
-						} else {
-							let total_fee_earned_msat =
-								if let Some(forwarded_htlc_value) = forwarded_htlc_value_msat {
-									if let Some(claimed_htlc_value) = htlc_claim_value_msat {
-										Some(claimed_htlc_value - forwarded_htlc_value)
-									} else {
-										None
-									}
+					|htlc_claim_value_msat: Option<u64>| -> Option<events::Event> {
+						let total_fee_earned_msat =
+							if let Some(forwarded_htlc_value) = forwarded_htlc_value_msat {
+								if let Some(claimed_htlc_value) = htlc_claim_value_msat {
+									Some(claimed_htlc_value - forwarded_htlc_value)
 								} else {
 									None
-								};
-							debug_assert!(
-								skimmed_fee_msat <= total_fee_earned_msat,
-								"skimmed_fee_msat must always be included in total_fee_earned_msat"
-							);
-							(
-								Some(MonitorUpdateCompletionAction::EmitEventAndFreeOtherChannel {
-									event: events::Event::PaymentForwarded {
-										prev_channel_id: Some(prev_channel_id),
-										next_channel_id: Some(next_channel_id),
-										prev_user_channel_id,
-										next_user_channel_id,
-										prev_node_id,
-										next_node_id: Some(next_channel_counterparty_node_id),
-										total_fee_earned_msat,
-										skimmed_fee_msat,
-										claim_from_onchain_tx: from_onchain,
-										outbound_amount_forwarded_msat: forwarded_htlc_value_msat,
-									},
-									downstream_counterparty_and_funding_outpoint: chan_to_release,
-								}),
-								None,
-							)
-						}
+								}
+							} else {
+								None
+							};
+						debug_assert!(
+							skimmed_fee_msat <= total_fee_earned_msat,
+							"skimmed_fee_msat must always be included in total_fee_earned_msat"
+						);
+
+						Some(events::Event::PaymentForwarded {
+							prev_htlcs: prev_htlcs.clone(),
+							next_htlcs: vec![events::HTLCLocator {
+								channel_id: next_channel_id,
+								user_channel_id: next_user_channel_id,
+								node_id: Some(next_channel_counterparty_node_id),
+							}],
+							total_fee_earned_msat,
+							skimmed_fee_msat,
+							claim_from_onchain_tx: from_onchain,
+							outbound_amount_forwarded_msat: forwarded_htlc_value_msat,
+						})
 					},
+					startup_replay,
+					next_channel_counterparty_node_id,
+					next_channel_outpoint,
+					next_channel_id,
+					hop_data,
+					attribution_data,
+					send_timestamp,
 				);
+			},
+			HTLCSource::TrampolineForward { previous_hop_data, .. } => {
+				// Only emit a single event for trampoline claims.
+				let prev_htlcs: Vec<events::HTLCLocator> =
+					previous_hop_data.iter().map(Into::into).collect();
+				for (i, current_previous_hop_data) in previous_hop_data.into_iter().enumerate() {
+					self.claim_funds_from_htlc_forward_hop(
+						payment_preimage,
+						|_: Option<u64>| -> Option<events::Event> {
+							if i == 0 {
+								Some(events::Event::PaymentForwarded {
+									prev_htlcs: prev_htlcs.clone(),
+									// TODO: When trampoline payments are tracked in our
+									// pending_outbound_payments, we'll be able to provide all the
+									// outgoing htlcs for this forward.
+									next_htlcs: vec![events::HTLCLocator {
+										channel_id: next_channel_id,
+										user_channel_id: next_user_channel_id,
+										node_id: Some(next_channel_counterparty_node_id),
+									}],
+									// TODO: When trampoline payments are tracked in our
+									// pending_outbound_payments, we'll be able to lookup our total
+									// fee earnings.
+									total_fee_earned_msat: None,
+									skimmed_fee_msat,
+									claim_from_onchain_tx: from_onchain,
+									outbound_amount_forwarded_msat: forwarded_htlc_value_msat,
+								})
+							} else {
+								None
+							}
+						},
+						startup_replay,
+						next_channel_counterparty_node_id,
+						next_channel_outpoint,
+						next_channel_id,
+						current_previous_hop_data,
+						attribution_data.clone(),
+						send_timestamp,
+					);
+				}
 			},
 		}
 	}
@@ -9855,11 +10061,14 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		}
 		self.finalize_claims(finalized_claimed_htlcs);
 		for failure in failed_htlcs {
-			let receiver = HTLCHandlingFailureType::Forward {
-				node_id: Some(counterparty_node_id),
-				channel_id,
-			};
-			self.fail_htlc_backwards_internal(&failure.0, &failure.1, &failure.2, receiver, None);
+			let failure_type = failure.0.failure_type(counterparty_node_id, channel_id);
+			self.fail_htlc_backwards_internal(
+				&failure.0,
+				&failure.1,
+				&failure.2,
+				failure_type,
+				None,
+			);
 		}
 		self.prune_persisted_inbound_htlc_onions(
 			channel_id,
@@ -9992,20 +10201,20 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						}
 					}
 				},
-				MonitorUpdateCompletionAction::EmitEventAndFreeOtherChannel {
+				MonitorUpdateCompletionAction::EmitEventOptionAndFreeOtherChannel {
 					event,
 					downstream_counterparty_and_funding_outpoint,
 				} => {
-					self.pending_events.lock().unwrap().push_back((event, None));
-					if let Some(unblocked) = downstream_counterparty_and_funding_outpoint {
-						self.handle_monitor_update_release(
-							unblocked.counterparty_node_id,
-							unblocked.channel_id,
-							Some(unblocked.blocking_action),
-						);
+					if let Some(event) = event {
+						self.pending_events.lock().unwrap().push_back((event, None));
 					}
+					self.handle_monitor_update_release(
+						downstream_counterparty_and_funding_outpoint.counterparty_node_id,
+						downstream_counterparty_and_funding_outpoint.channel_id,
+						Some(downstream_counterparty_and_funding_outpoint.blocking_action),
+					);
 				},
-				MonitorUpdateCompletionAction::FreeOtherChannelImmediately {
+				MonitorUpdateCompletionAction::FreeDuplicateClaimImmediately {
 					downstream_counterparty_node_id,
 					downstream_channel_id,
 					blocking_action,
@@ -12007,13 +12216,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			}
 		}
 		for htlc_source in dropped_htlcs.drain(..) {
-			let receiver = HTLCHandlingFailureType::Forward {
-				node_id: Some(counterparty_node_id.clone()),
-				channel_id: msg.channel_id,
-			};
-			let reason = HTLCFailReason::from_failure_code(LocalHTLCFailureReason::ChannelClosed);
 			let (source, hash) = htlc_source;
-			self.fail_htlc_backwards_internal(&source, &hash, &reason, receiver, None);
+			let failure_type = source.failure_type(*counterparty_node_id, msg.channel_id);
+			let reason = HTLCFailReason::from_failure_code(LocalHTLCFailureReason::ChannelClosed);
+			self.fail_htlc_backwards_internal(&source, &hash, &reason, failure_type, None);
 		}
 
 		Ok(())
@@ -13056,10 +13262,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						} else {
 							log_trace!(logger, "Failing HTLC from our monitor");
 							let failure_reason = LocalHTLCFailureReason::OnChainTimeout;
-							let receiver = HTLCHandlingFailureType::Forward {
-								node_id: Some(counterparty_node_id),
-								channel_id,
-							};
+							let failure_type =
+								htlc_update.source.failure_type(counterparty_node_id, channel_id);
 							let reason = HTLCFailReason::from_failure_code(failure_reason);
 							let completion_update = Some(PaymentCompleteUpdate {
 								counterparty_node_id,
@@ -13071,7 +13275,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								&htlc_update.source,
 								&htlc_update.payment_hash,
 								&reason,
-								receiver,
+								failure_type,
 								completion_update,
 							);
 						}
@@ -13708,6 +13912,43 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			.sign(|_| signature)
 			.map(|invoice| Bolt11Invoice::from_signed(invoice).unwrap())
 			.map_err(|e| SignOrCreationError::SignError(e))
+	}
+}
+
+/// Constructs an HTLC forward failure for sending back to the previous hop, converting to a blinded
+/// failure where appropriate.
+///
+/// When both trampoline and phantom secrets are present, the trampoline secret takes priority
+/// for error encryption.
+fn get_htlc_forward_failure(
+	blinded_failure: &Option<BlindedFailure>, onion_error: &HTLCFailReason,
+	incoming_packet_shared_secret: &[u8; 32], trampoline_shared_secret: &Option<[u8; 32]>,
+	phantom_shared_secret: &Option<[u8; 32]>, htlc_id: u64,
+) -> HTLCForwardInfo {
+	// TODO: Correctly wrap the error packet twice if failing back a trampoline + phantom HTLC.
+	let secondary_shared_secret = trampoline_shared_secret.or(*phantom_shared_secret);
+	match blinded_failure {
+		Some(BlindedFailure::FromIntroductionNode) => {
+			let blinded_onion_error =
+				HTLCFailReason::reason(LocalHTLCFailureReason::InvalidOnionBlinding, vec![0; 32]);
+			let err_packet = blinded_onion_error.get_encrypted_failure_packet(
+				incoming_packet_shared_secret,
+				&secondary_shared_secret,
+			);
+			HTLCForwardInfo::FailHTLC { htlc_id, err_packet }
+		},
+		Some(BlindedFailure::FromBlindedNode) => HTLCForwardInfo::FailMalformedHTLC {
+			htlc_id,
+			failure_code: LocalHTLCFailureReason::InvalidOnionBlinding.failure_code(),
+			sha256_of_onion: [0; 32],
+		},
+		None => {
+			let err_packet = onion_error.get_encrypted_failure_packet(
+				incoming_packet_shared_secret,
+				&secondary_shared_secret,
+			);
+			HTLCForwardInfo::FailHTLC { htlc_id, err_packet }
+		},
 	}
 }
 
@@ -15524,8 +15765,8 @@ impl<
 								for (source, payment_hash) in timed_out_pending_htlcs.drain(..) {
 									let reason = LocalHTLCFailureReason::CLTVExpiryTooSoon;
 									let data = self.get_htlc_inbound_temp_fail_data(reason);
-									timed_out_htlcs.push((source, payment_hash, HTLCFailReason::reason(reason, data),
-										HTLCHandlingFailureType::Forward { node_id: Some(funded_channel.context.get_counterparty_node_id()), channel_id: *channel_id }));
+									let failure_type = source.failure_type(funded_channel.context.get_counterparty_node_id(), *channel_id);
+									timed_out_htlcs.push((source, payment_hash, HTLCFailReason::reason(reason, data), failure_type));
 								}
 								let logger = WithChannelContext::from(&self.logger, &funded_channel.context, None);
 								match funding_confirmed_opt {
@@ -17263,6 +17504,8 @@ impl Readable for HTLCSource {
 				})
 			}
 			1 => Ok(HTLCSource::PreviousHopData(Readable::read(reader)?)),
+			// Note: we intentionally do not read HTLCSource::TrampolineForward because we do not
+			// want to allow downgrades with in-flight trampoline forwards.
 			_ => Err(DecodeError::UnknownRequiredFeature),
 		}
 	}
@@ -17295,6 +17538,18 @@ impl Writeable for HTLCSource {
 				1u8.write(writer)?;
 				field.write(writer)?;
 			},
+			HTLCSource::TrampolineForward {
+				ref previous_hop_data,
+				incoming_trampoline_shared_secret,
+				ref outbound_payment,
+			} => {
+				2u8.write(writer)?;
+				write_tlv_fields!(writer, {
+					(1, *previous_hop_data, required_vec),
+					(3, incoming_trampoline_shared_secret, required),
+					(5, outbound_payment, option),
+				});
+			},
 		}
 		Ok(())
 	}
@@ -17310,6 +17565,12 @@ impl_writeable_tlv_based!(PendingAddHTLCInfo, {
 	// filled in, so we can safely unwrap it here.
 	(7, prev_channel_id, (default_value, ChannelId::v1_from_funding_outpoint(prev_funding_outpoint.0.unwrap()))),
 	(9, prev_counterparty_node_id, required),
+});
+
+impl_writeable_tlv_based!(TrampolineDispatch, {
+	(1, payment_id, required),
+	(3, path, required),
+	(5, session_priv, required),
 });
 
 impl Writeable for HTLCForwardInfo {
@@ -18273,6 +18534,81 @@ fn dedup_decode_update_add_htlcs<L: Logger>(
 	}
 }
 
+/// Checks if a forwarded HTLC claim needs to be replayed on startup, returning None if it doesn't
+/// need to be replayed. When the HTLC needs to be claimed, it returns a bool indicating whether
+/// deserialization of should be failed due to missing information.
+fn prev_hop_needs_claim_replay<Signer: EcdsaChannelSigner, L: Logger>(
+	prev_hop: &HTLCPreviousHopData, payment_preimage: PaymentPreimage,
+	inbound_edge_monitor: &ChannelMonitor<Signer>,
+	short_to_chan_info: &HashMap<u64, (PublicKey, ChannelId)>, logger: &L,
+) -> Option<bool> {
+	// If the inbound edge of the payment's monitor has been fully claimed we've had at least
+	// `ANTI_REORG_DELAY` blocks to get any PaymentForwarded event(s) to the user and assume that
+	// there's no need to try to replay the claim just for that.
+	let inbound_edge_balances = inbound_edge_monitor.get_claimable_balances();
+	if inbound_edge_balances.is_empty() {
+		return None;
+	}
+
+	let mut fail_read = false;
+	if prev_hop.counterparty_node_id.is_none() {
+		// We no longer support claiming an HTLC where we don't have the counterparty_node_id
+		// available if the claim has to go to a closed channel. Its possible we can get away with
+		// it if the channel is not yet closed, but its by no means a guarantee.
+
+		// Thus, in this case we are a bit more aggressive with our pruning - if we have no use for
+		// the claim (because the inbound edge of the payment's monitor has already claimed the
+		// HTLC) we skip trying to replay the claim.
+		let htlc_payment_hash: PaymentHash = payment_preimage.into();
+		let logger =
+			WithChannelMonitor::from(logger, inbound_edge_monitor, Some(htlc_payment_hash));
+		let balance_could_incl_htlc = |bal| match bal {
+			&Balance::ClaimableOnChannelClose { .. } => {
+				// The channel is still open, assume we can still
+				// claim against it
+				true
+			},
+			&Balance::MaybePreimageClaimableHTLC { payment_hash, .. } => {
+				payment_hash == htlc_payment_hash
+			},
+			_ => false,
+		};
+		let htlc_may_be_in_balances = inbound_edge_balances.iter().any(balance_could_incl_htlc);
+		if !htlc_may_be_in_balances {
+			return None;
+		}
+
+		// First check if we're absolutely going to fail - if we need to replay this claim to get
+		// the preimage into the inbound edge monitor but the channel is closed (and thus we'll
+		// immediately panic if we call claim_funds_from_hop).
+		if short_to_chan_info.get(&prev_hop.prev_outbound_scid_alias).is_none() {
+			log_error!(logger,
+				"We need to replay the HTLC claim for payment_hash {} (preimage {}) but cannot do so as the HTLC was forwarded prior to LDK 0.0.124.\
+					All HTLCs that were forwarded by LDK 0.0.123 and prior must be resolved prior to upgrading to LDK 0.1",
+				htlc_payment_hash,
+				payment_preimage,
+			);
+			fail_read = true;
+		}
+
+		// At this point we're confident we need the claim, but the
+		// inbound edge channel is still live. As long as this remains
+		// the case, we can conceivably proceed, but we run some risk
+		// of panicking at runtime. The user ideally should have read
+		// the release notes and we wouldn't be here, but we go ahead
+		// and let things run in the hope that it'll all just work out.
+		log_error!(logger,
+			"We need to replay the HTLC claim for payment_hash {} (preimage {}) but don't have all the required information to do so reliably.\
+				As long as the channel for the inbound edge of the forward remains open, this may work okay, but we may panic at runtime!\
+				All HTLCs that were forwarded by LDK 0.0.123 and prior must be resolved prior to upgrading to LDK 0.1\
+				Continuing anyway, though panics may occur!",
+			htlc_payment_hash,
+			payment_preimage,
+		);
+	}
+	Some(fail_read)
+}
+
 // Implement ReadableArgs for an Arc'd ChannelManager to make it a bit easier to work with the
 // SipmleArcChannelManager type:
 impl<
@@ -19108,65 +19444,36 @@ impl<
 						let htlc_id = SentHTLCId::from_source(&htlc_source);
 						match htlc_source {
 							HTLCSource::PreviousHopData(prev_hop_data) => {
-								let pending_forward_matches_htlc = |info: &PendingAddHTLCInfo| {
-									info.prev_funding_outpoint == prev_hop_data.outpoint
-										&& info.prev_htlc_id == prev_hop_data.htlc_id
-								};
-
-								// If `reconstruct_manager_from_monitors` is set, we always add all inbound committed
-								// HTLCs to `decode_update_add_htlcs` in the above loop, but we need to prune from
-								// those added HTLCs if they were already forwarded to the outbound edge. Otherwise,
-								// we'll double-forward.
-								if reconstruct_manager_from_monitors {
-									dedup_decode_update_add_htlcs(
-										&mut decode_update_add_htlcs,
-										&prev_hop_data,
-										"HTLC already forwarded to the outbound edge",
-										&&logger,
-									);
-									prune_forwarded_htlc(
+								reconcile_pending_htlcs_with_monitor(
+									reconstruct_manager_from_monitors,
+									&mut already_forwarded_htlcs,
+									&mut forward_htlcs_legacy,
+									&mut pending_events_read,
+									&mut pending_intercepted_htlcs_legacy,
+									&mut decode_update_add_htlcs,
+									&mut decode_update_add_htlcs_legacy,
+									prev_hop_data,
+									&logger,
+									htlc.payment_hash,
+									monitor.channel_id(),
+								);
+							},
+							HTLCSource::TrampolineForward { previous_hop_data, .. } => {
+								for prev_hop_data in previous_hop_data {
+									reconcile_pending_htlcs_with_monitor(
+										reconstruct_manager_from_monitors,
 										&mut already_forwarded_htlcs,
-										&prev_hop_data,
-										&htlc.payment_hash,
+										&mut forward_htlcs_legacy,
+										&mut pending_events_read,
+										&mut pending_intercepted_htlcs_legacy,
+										&mut decode_update_add_htlcs,
+										&mut decode_update_add_htlcs_legacy,
+										prev_hop_data,
+										&logger,
+										htlc.payment_hash,
+										monitor.channel_id(),
 									);
 								}
-
-								// The ChannelMonitor is now responsible for this HTLC's
-								// failure/success and will let us know what its outcome is. If we
-								// still have an entry for this HTLC in `forward_htlcs_legacy`,
-								// `pending_intercepted_htlcs_legacy`, or
-								// `decode_update_add_htlcs_legacy`, we were apparently not persisted
-								// after the monitor was when forwarding the payment.
-								dedup_decode_update_add_htlcs(
-									&mut decode_update_add_htlcs_legacy,
-									&prev_hop_data,
-									"HTLC was forwarded to the closed channel",
-									&&logger,
-								);
-								forward_htlcs_legacy.retain(|_, forwards| {
-								forwards.retain(|forward| {
-									if let HTLCForwardInfo::AddHTLC(htlc_info) = forward {
-										if pending_forward_matches_htlc(&htlc_info) {
-											log_info!(logger, "Removing pending to-forward HTLC with hash {} as it was forwarded to the closed channel {}",
-												&htlc.payment_hash, &monitor.channel_id());
-											false
-										} else { true }
-									} else { true }
-								});
-								!forwards.is_empty()
-							});
-								pending_intercepted_htlcs_legacy.retain(|intercepted_id, htlc_info| {
-								if pending_forward_matches_htlc(&htlc_info) {
-									log_info!(logger, "Removing pending intercepted HTLC with hash {} as it was forwarded to the closed channel {}",
-										&htlc.payment_hash, &monitor.channel_id());
-									pending_events_read.retain(|(event, _)| {
-										if let Event::HTLCIntercepted { intercept_id: ev_id, .. } = event {
-											intercepted_id != ev_id
-										} else { true }
-									});
-									false
-								} else { true }
-							});
 							},
 							HTLCSource::OutboundRoute {
 								payment_id,
@@ -19278,112 +19585,78 @@ impl<
 				// preimages from it which may be needed in upstream channels for forwarded
 				// payments.
 				let mut fail_read = false;
-				let outbound_claimed_htlcs_iter = monitor.get_all_current_outbound_htlcs()
+				let outbound_claimed_htlcs_iter = monitor
+					.get_all_current_outbound_htlcs()
 					.into_iter()
 					.filter_map(|(htlc_source, (htlc, preimage_opt))| {
-						if let HTLCSource::PreviousHopData(prev_hop) = &htlc_source {
-							if let Some(payment_preimage) = preimage_opt {
-								let inbound_edge_monitor = args.channel_monitors.get(&prev_hop.channel_id);
-								// Note that for channels which have gone to chain,
-								// `get_all_current_outbound_htlcs` is never pruned and always returns
-								// a constant set until the monitor is removed/archived. Thus, we
-								// want to skip replaying claims that have definitely been resolved
-								// on-chain.
-
-								// If the inbound monitor is not present, we assume it was fully
-								// resolved and properly archived, implying this payment had plenty
-								// of time to get claimed and we can safely skip any further
-								// attempts to claim it (they wouldn't succeed anyway as we don't
-								// have a monitor against which to do so).
-								let inbound_edge_monitor = if let Some(monitor) = inbound_edge_monitor {
-									monitor
-								} else {
-									return None;
-								};
-								// Second, if the inbound edge of the payment's monitor has been
-								// fully claimed we've had at least `ANTI_REORG_DELAY` blocks to
-								// get any PaymentForwarded event(s) to the user and assume that
-								// there's no need to try to replay the claim just for that.
-								let inbound_edge_balances = inbound_edge_monitor.get_claimable_balances();
-								if inbound_edge_balances.is_empty() {
-									return None;
-								}
-
-								if prev_hop.counterparty_node_id.is_none() {
-									// We no longer support claiming an HTLC where we don't have
-									// the counterparty_node_id available if the claim has to go to
-									// a closed channel. Its possible we can get away with it if
-									// the channel is not yet closed, but its by no means a
-									// guarantee.
-
-									// Thus, in this case we are a bit more aggressive with our
-									// pruning - if we have no use for the claim (because the
-									// inbound edge of the payment's monitor has already claimed
-									// the HTLC) we skip trying to replay the claim.
-									let htlc_payment_hash: PaymentHash = payment_preimage.into();
-									let logger = WithChannelMonitor::from(
-										&args.logger,
-										monitor,
-										Some(htlc_payment_hash),
-									);
-									let balance_could_incl_htlc = |bal| match bal {
-										&Balance::ClaimableOnChannelClose { .. } => {
-											// The channel is still open, assume we can still
-											// claim against it
-											true
-										},
-										&Balance::MaybePreimageClaimableHTLC { payment_hash, .. } => {
-											payment_hash == htlc_payment_hash
-										},
-										_ => false,
-									};
-									let htlc_may_be_in_balances =
-										inbound_edge_balances.iter().any(balance_could_incl_htlc);
-									if !htlc_may_be_in_balances {
-										return None;
-									}
-
-									// First check if we're absolutely going to fail - if we need
-									// to replay this claim to get the preimage into the inbound
-									// edge monitor but the channel is closed (and thus we'll
-									// immediately panic if we call claim_funds_from_hop).
-									if short_to_chan_info.get(&prev_hop.prev_outbound_scid_alias).is_none() {
-										log_error!(logger,
-											"We need to replay the HTLC claim for payment_hash {} (preimage {}) but cannot do so as the HTLC was forwarded prior to LDK 0.0.124.\
-											All HTLCs that were forwarded by LDK 0.0.123 and prior must be resolved prior to upgrading to LDK 0.1",
-											htlc_payment_hash,
-											payment_preimage,
-										);
-										fail_read = true;
-									}
-
-									// At this point we're confident we need the claim, but the
-									// inbound edge channel is still live. As long as this remains
-									// the case, we can conceivably proceed, but we run some risk
-									// of panicking at runtime. The user ideally should have read
-									// the release notes and we wouldn't be here, but we go ahead
-									// and let things run in the hope that it'll all just work out.
-									log_error!(logger,
-										"We need to replay the HTLC claim for payment_hash {} (preimage {}) but don't have all the required information to do so reliably.\
-										As long as the channel for the inbound edge of the forward remains open, this may work okay, but we may panic at runtime!\
-										All HTLCs that were forwarded by LDK 0.0.123 and prior must be resolved prior to upgrading to LDK 0.1\
-										Continuing anyway, though panics may occur!",
-										htlc_payment_hash,
-										payment_preimage,
-									);
-								}
-
-								Some((htlc_source, payment_preimage, htlc.amount_msat,
-									is_channel_closed, monitor.get_counterparty_node_id(),
-									monitor.get_funding_txo(), monitor.channel_id(), user_channel_id_opt))
-							} else { None }
-						} else {
+						let payment_preimage = preimage_opt?;
+						let prev_htlcs = match &htlc_source {
+							HTLCSource::PreviousHopData(prev_hop) => vec![prev_hop],
+							HTLCSource::TrampolineForward { previous_hop_data, .. } => {
+								previous_hop_data.iter().collect()
+							},
 							// If it was an outbound payment, we've handled it above - if a preimage
-							// came in and we persisted the `ChannelManager` we either handled it and
-							// are good to go or the channel force-closed - we don't have to handle the
-							// channel still live case here.
-							None
+							// came in and we persisted the `ChannelManager` we either handled it
+							// and are good to go or the channel force-closed - we don't have to
+							// handle the channel still live case here.
+							_ => vec![],
+						};
+						let prev_htlcs_count = prev_htlcs.len();
+						if prev_htlcs_count == 0 {
+							return None;
 						}
+
+						for prev_hop in prev_htlcs {
+							// Note that for channels which have gone to chain,
+							// `get_all_current_outbound_htlcs` is never pruned and always returns
+							// a constant set until the monitor is removed/archived. Thus, we want
+							// to skip replaying claims that have definitely been resolved on-chain.
+
+							// If the inbound monitor is not present, we assume it was fully
+							// resolved and properly archived, implying this payment had plenty of
+							// time to get claimed and we can safely skip any further attempts to
+							// claim it (they wouldn't succeed anyway as we don't have a monitor
+							// against which to do so).
+							let inbound_edge_monitor =
+								args.channel_monitors.get(&prev_hop.channel_id)?;
+							let logger = WithChannelMonitor::from(
+								&args.logger,
+								monitor,
+								Some(payment_preimage.into()),
+							);
+							if let Some(fail_claim_read) = prev_hop_needs_claim_replay(
+								prev_hop,
+								payment_preimage,
+								inbound_edge_monitor,
+								&short_to_chan_info,
+								&logger,
+							) {
+								// We can only fail to read from disk for legacy HTLCs that have
+								// a single prev_htlc. If we could fail_claim_read for multiple
+								// prev_htlcs, it wouldn't be correct to exit early on our first
+								// claimable prev_hop (because a subsequent one may
+								// fail_claim_read).
+								if fail_claim_read {
+									debug_assert!(prev_htlcs_count == 1);
+								}
+								fail_read |= fail_claim_read;
+								return Some((
+									// When we have multiple prev_htlcs we assume that they all
+									// share the same htlc_source which contains all previous hops,
+									// so we can exit on the first claimable prev_hop because this
+									// will result in all prev_hops being claimed.
+									htlc_source,
+									payment_preimage,
+									htlc.amount_msat,
+									is_channel_closed,
+									monitor.get_counterparty_node_id(),
+									monitor.get_funding_txo(),
+									monitor.channel_id(),
+									user_channel_id_opt,
+								));
+							}
+						}
+						None
 					});
 				for tuple in outbound_claimed_htlcs_iter {
 					pending_claims_to_replay.push(tuple);
@@ -19502,14 +19775,14 @@ impl<
 					let logger =
 						WithContext::from(&args.logger, Some(node_id), Some(*channel_id), None);
 					for action in actions.iter() {
-						if let MonitorUpdateCompletionAction::EmitEventAndFreeOtherChannel {
+						if let MonitorUpdateCompletionAction::EmitEventOptionAndFreeOtherChannel {
 							downstream_counterparty_and_funding_outpoint:
-								Some(EventUnblockedChannel {
+								EventUnblockedChannel {
 									counterparty_node_id: blocked_node_id,
 									funding_txo: _,
 									channel_id: blocked_channel_id,
 									blocking_action,
-								}),
+								},
 							..
 						} = action
 						{
@@ -19532,7 +19805,7 @@ impl<
 								// anymore.
 							}
 						}
-						if let MonitorUpdateCompletionAction::FreeOtherChannelImmediately {
+						if let MonitorUpdateCompletionAction::FreeDuplicateClaimImmediately {
 							..
 						} = action
 						{
@@ -20004,11 +20277,15 @@ impl<
 		for htlc_source in failed_htlcs {
 			let (source, hash, counterparty_id, channel_id, failure_reason, ev_action) =
 				htlc_source;
-			let receiver =
-				HTLCHandlingFailureType::Forward { node_id: Some(counterparty_id), channel_id };
+			let failure_type = source.failure_type(counterparty_id, channel_id);
 			let reason = HTLCFailReason::from_failure_code(failure_reason);
-			channel_manager
-				.fail_htlc_backwards_internal(&source, &hash, &reason, receiver, ev_action);
+			channel_manager.fail_htlc_backwards_internal(
+				&source,
+				&hash,
+				&reason,
+				failure_type,
+				ev_action,
+			);
 		}
 		for ((_, hash), htlcs) in already_forwarded_htlcs.into_iter() {
 			for (htlc, _) in htlcs {
@@ -20061,6 +20338,94 @@ impl<
 
 		Ok((best_block_hash, channel_manager))
 	}
+}
+
+fn prune_forwarded_htlc(
+	already_forwarded_htlcs: &mut HashMap<
+		(ChannelId, PaymentHash),
+		Vec<(HTLCPreviousHopData, OutboundHop)>,
+	>,
+	prev_hop: &HTLCPreviousHopData, payment_hash: &PaymentHash,
+) {
+	if let hash_map::Entry::Occupied(mut entry) =
+		already_forwarded_htlcs.entry((prev_hop.channel_id, *payment_hash))
+	{
+		entry.get_mut().retain(|(htlc, _)| prev_hop.htlc_id != htlc.htlc_id);
+		if entry.get().is_empty() {
+			entry.remove();
+		}
+	}
+}
+
+/// Removes pending HTLC entries that the ChannelMonitor has already taken responsibility for,
+/// cleaning up state mismatches that can occur during restart.
+fn reconcile_pending_htlcs_with_monitor(
+	reconstruct_manager_from_monitors: bool,
+	already_forwarded_htlcs: &mut HashMap<
+		(ChannelId, PaymentHash),
+		Vec<(HTLCPreviousHopData, OutboundHop)>,
+	>,
+	forward_htlcs_legacy: &mut HashMap<u64, Vec<HTLCForwardInfo>>,
+	pending_events_read: &mut VecDeque<(Event, Option<EventCompletionAction>)>,
+	pending_intercepted_htlcs_legacy: &mut HashMap<InterceptId, PendingAddHTLCInfo>,
+	decode_update_add_htlcs: &mut HashMap<u64, Vec<msgs::UpdateAddHTLC>>,
+	decode_update_add_htlcs_legacy: &mut HashMap<u64, Vec<msgs::UpdateAddHTLC>>,
+	prev_hop_data: HTLCPreviousHopData, logger: &impl Logger, payment_hash: PaymentHash,
+	channel_id: ChannelId,
+) {
+	let pending_forward_matches_htlc = |info: &PendingAddHTLCInfo| {
+		info.prev_funding_outpoint == prev_hop_data.outpoint
+			&& info.prev_htlc_id == prev_hop_data.htlc_id
+	};
+
+	// If `reconstruct_manager_from_monitors` is set, we always add all inbound committed
+	// HTLCs to `decode_update_add_htlcs` in the above loop, but we need to prune from
+	// those added HTLCs if they were already forwarded to the outbound edge. Otherwise,
+	// we'll double-forward.
+	if reconstruct_manager_from_monitors {
+		dedup_decode_update_add_htlcs(
+			decode_update_add_htlcs,
+			&prev_hop_data,
+			"HTLC already forwarded to the outbound edge",
+			&&logger,
+		);
+		prune_forwarded_htlc(already_forwarded_htlcs, &prev_hop_data, &payment_hash);
+	}
+
+	// The ChannelMonitor is now responsible for this HTLC's failure/success and will let us know
+	// what its outcome is. If we still have an entry for this HTLC in `forward_htlcs_legacy`,
+	// `pending_intercepted_htlcs_legacy`, or `decode_update_add_htlcs_legacy`, we were apparently
+	// not persisted after the monitor was when forwarding the payment.
+	dedup_decode_update_add_htlcs(
+		decode_update_add_htlcs_legacy,
+		&prev_hop_data,
+		"HTLC was forwarded to the closed channel",
+		&&logger,
+	);
+	forward_htlcs_legacy.retain(|_, forwards| {
+		forwards.retain(|forward| {
+			if let HTLCForwardInfo::AddHTLC(htlc_info) = forward {
+				if pending_forward_matches_htlc(&htlc_info) {
+					log_info!(logger, "Removing pending to-forward HTLC with hash {} as it was forwarded to the closed channel {}",
+						&payment_hash, channel_id);
+					false
+				} else { true }
+			} else { true }
+		});
+		!forwards.is_empty()
+	});
+	pending_intercepted_htlcs_legacy.retain(|intercepted_id, htlc_info| {
+		if pending_forward_matches_htlc(&htlc_info) {
+			log_info!(logger, "Removing pending intercepted HTLC with hash {} as it was forwarded to the closed channel {}",
+				payment_hash, channel_id);
+			pending_events_read.retain(|(event, _)| {
+				if let Event::HTLCIntercepted { intercept_id: ev_id, .. } = event {
+					intercepted_id != ev_id
+				} else { true }
+			});
+			false
+		} else { true }
+	});
 }
 
 #[cfg(test)]
