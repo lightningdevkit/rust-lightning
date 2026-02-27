@@ -52,13 +52,11 @@ pub enum APIError {
 		err: String,
 	},
 	/// An attempt to call [`chain::Watch::watch_channel`]/[`chain::Watch::update_channel`]
-	/// returned a [`ChannelMonitorUpdateStatus::InProgress`] indicating the persistence of a
-	/// monitor update is awaiting async resolution. Once it resolves the attempted action should
-	/// complete automatically.
+	/// indicates the persistence of a monitor update is awaiting async resolution. Once it
+	/// resolves the attempted action should complete automatically.
 	///
 	/// [`chain::Watch::watch_channel`]: crate::chain::Watch::watch_channel
 	/// [`chain::Watch::update_channel`]: crate::chain::Watch::update_channel
-	/// [`ChannelMonitorUpdateStatus::InProgress`]: crate::chain::ChannelMonitorUpdateStatus::InProgress
 	MonitorUpdateInProgress,
 	/// [`SignerProvider::get_shutdown_scriptpubkey`] returned a shutdown scriptpubkey incompatible
 	/// with the channel counterparty as negotiated in [`InitFeatures`].

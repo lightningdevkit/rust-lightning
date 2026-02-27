@@ -9193,8 +9193,6 @@ where
 	/// [`Self::monitor_updating_restored`] is called.
 	///
 	/// [`ChannelManager`]: super::channelmanager::ChannelManager
-	/// [`chain::Watch`]: crate::chain::Watch
-	/// [`ChannelMonitorUpdateStatus::InProgress`]: crate::chain::ChannelMonitorUpdateStatus::InProgress
 	fn monitor_updating_paused<L: Logger>(
 		&mut self, resend_raa: bool, resend_commitment: bool, resend_channel_ready: bool,
 		pending_forwards: Vec<(PendingHTLCInfo, u64)>,
