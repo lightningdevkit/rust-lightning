@@ -94,7 +94,7 @@ pub struct FundingTemplate {
 	/// transaction.
 	shared_input: Option<Input>,
 
-	/// The minimum fee rate to use for coin selection and to propose as initiator.
+	/// The minimum fee rate for the splice transaction, used to propose as initiator.
 	min_feerate: FeeRate,
 
 	/// The maximum fee rate to accept as acceptor before rejecting the splice.
