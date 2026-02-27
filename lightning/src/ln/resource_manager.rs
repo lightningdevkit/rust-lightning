@@ -9,14 +9,17 @@
 
 #![allow(dead_code)]
 
+use bitcoin::io::Read;
 use core::{fmt::Display, time::Duration};
 
 use crate::{
 	crypto::chacha20::ChaCha20,
-	ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS,
-	prelude::{hash_map::Entry, new_hash_map, HashMap},
+	io,
+	ln::{channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS, msgs::DecodeError},
+	prelude::{hash_map::Entry, new_hash_map, new_hash_set, HashMap, HashSet},
 	sign::EntropySource,
 	sync::Mutex,
+	util::ser::{CollectionLength, Readable, ReadableArgs, Writeable, Writer},
 };
 
 /// The minimum number of accepted HTLCs required for a channel to be added to the resource
@@ -307,6 +310,16 @@ fn assign_slots_for_channel<ES: EntropySource>(
 	Ok((channel_slots, salt))
 }
 
+struct GeneralBucketData {
+	scid: u64,
+	channel_salts: HashMap<u64, [u8; 32]>,
+}
+
+impl_writeable_tlv_based!(GeneralBucketData, {
+	(1, scid, required),
+	(3, channel_salts, required),
+});
+
 struct BucketResources {
 	slots_allocated: u16,
 	slots_used: u16,
@@ -344,6 +357,42 @@ impl BucketResources {
 	}
 }
 
+struct BucketAllocations {
+	general_slots: u16,
+	general_liquidity: u64,
+	congestion_slots: u16,
+	congestion_liquidity: u64,
+	protected_slots: u16,
+	protected_liquidity: u64,
+}
+
+fn bucket_allocations(
+	max_accepted_htlcs: u16, max_htlc_value_in_flight_msat: u64, general_pct: u8,
+	congestion_pct: u8,
+) -> BucketAllocations {
+	let general_slots = (max_accepted_htlcs as f64 * general_pct as f64 / 100.0).round() as u16;
+	let general_liquidity =
+		(max_htlc_value_in_flight_msat as f64 * general_pct as f64 / 100.0).round() as u64;
+
+	let congestion_slots =
+		(max_accepted_htlcs as f64 * congestion_pct as f64 / 100.0).round() as u16;
+	let congestion_liquidity =
+		(max_htlc_value_in_flight_msat as f64 * congestion_pct as f64 / 100.0).round() as u64;
+
+	let protected_slots = max_accepted_htlcs - general_slots - congestion_slots;
+	let protected_liquidity =
+		max_htlc_value_in_flight_msat - general_liquidity - congestion_liquidity;
+
+	BucketAllocations {
+		general_slots,
+		general_liquidity,
+		congestion_slots,
+		congestion_liquidity,
+		protected_slots,
+		protected_liquidity,
+	}
+}
+
 #[derive(Debug, Clone)]
 struct PendingHTLC {
 	incoming_amount_msat: u64,
@@ -354,13 +403,16 @@ struct PendingHTLC {
 	bucket: BucketAssigned,
 }
 
-#[derive(Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct HtlcRef {
 	incoming_channel_id: u64,
 	htlc_id: u64,
 }
 
 struct Channel {
+	max_htlc_value_in_flight_msat: u64,
+	max_accepted_htlcs: u16,
+
 	/// The reputation this channel has accrued as an outgoing link.
 	outgoing_reputation: DecayingAverage,
 
@@ -401,31 +453,19 @@ impl Channel {
 			return Err(());
 		}
 
-		let general_bucket_slots_allocated =
-			(max_accepted_htlcs as f64 * general_bucket_pct as f64 / 100.0).round() as u16;
-		let general_bucket_liquidity_allocated =
-			(max_htlc_value_in_flight_msat as f64 * general_bucket_pct as f64 / 100.0).round()
-				as u64;
-		debug_assert!(
-			general_bucket_slots_allocated >= 5,
-			"5 is the minimum we need for general bucket"
+		let alloc = bucket_allocations(
+			max_accepted_htlcs,
+			max_htlc_value_in_flight_msat,
+			general_bucket_pct,
+			congestion_bucket_pct,
 		);
-
-		let congestion_bucket_slots_allocated =
-			(max_accepted_htlcs as f64 * congestion_bucket_pct as f64 / 100.0).round() as u16;
-		let congestion_bucket_liquidity_allocated =
-			(max_htlc_value_in_flight_msat as f64 * congestion_bucket_pct as f64 / 100.0).round()
-				as u64;
-		debug_assert!(congestion_bucket_slots_allocated > 0);
-
-		let protected_bucket_slots_allocated =
-			max_accepted_htlcs - general_bucket_slots_allocated - congestion_bucket_slots_allocated;
-		let protected_bucket_liquidity_allocated = max_htlc_value_in_flight_msat
-			- general_bucket_liquidity_allocated
-			- congestion_bucket_liquidity_allocated;
-		debug_assert!(protected_bucket_slots_allocated > 0);
+		debug_assert!(alloc.general_slots >= 5, "5 is the minimum we need for general bucket");
+		debug_assert!(alloc.congestion_slots > 0);
+		debug_assert!(alloc.protected_slots > 0);
 
 		Ok(Channel {
+			max_htlc_value_in_flight_msat,
+			max_accepted_htlcs,
 			outgoing_reputation: DecayingAverage::new(timestamp_unix_secs, reputation_window),
 			incoming_revenue: AggregatedWindowAverage::new(
 				revenue_week_avg,
@@ -433,19 +473,15 @@ impl Channel {
 				timestamp_unix_secs,
 			),
 			pending_htlcs: new_hash_map(),
-			general_bucket: GeneralBucket::new(
-				scid,
-				general_bucket_slots_allocated,
-				general_bucket_liquidity_allocated,
-			),
+			general_bucket: GeneralBucket::new(scid, alloc.general_slots, alloc.general_liquidity),
 			congestion_bucket: BucketResources::new(
-				congestion_bucket_slots_allocated,
-				congestion_bucket_liquidity_allocated,
+				alloc.congestion_slots,
+				alloc.congestion_liquidity,
 			),
 			last_congestion_misuse: new_hash_map(),
 			protected_bucket: BucketResources::new(
-				protected_bucket_slots_allocated,
-				protected_bucket_liquidity_allocated,
+				alloc.protected_slots,
+				alloc.protected_liquidity,
 			),
 		})
 	}
@@ -546,17 +582,113 @@ impl Channel {
 	}
 }
 
+impl Writeable for Channel {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		let general_bucket_data = GeneralBucketData {
+			scid: self.general_bucket.scid,
+			channel_salts: self
+				.general_bucket
+				.channels_slots
+				.iter()
+				.map(|(scid, (_slots, salt))| (*scid, *salt))
+				.collect(),
+		};
+		write_tlv_fields!(writer, {
+			(1, self.max_htlc_value_in_flight_msat, required),
+			(3, self.max_accepted_htlcs, required),
+			(5, self.outgoing_reputation, required),
+			(7, self.incoming_revenue, required),
+			(9, general_bucket_data, required),
+			(11, self.last_congestion_misuse, required),
+		});
+		Ok(())
+	}
+}
+
+impl<ES: EntropySource> ReadableArgs<(&ResourceManagerConfig, &ES)> for Channel {
+	fn read<R: Read>(
+		reader: &mut R, args: (&ResourceManagerConfig, &ES),
+	) -> Result<Self, DecodeError> {
+		let (config, entropy_source) = args;
+		_init_and_read_len_prefixed_tlv_fields!(reader, {
+			(1, max_htlc_value_in_flight_msat, required),
+			(3, max_accepted_htlcs, required),
+			(5, outgoing_reputation, required),
+			(7, incoming_revenue, required),
+			(9, general_bucket_data, required),
+			(11, last_congestion_misuse, required),
+		});
+
+		let max_htlc_value_in_flight_msat: u64 = max_htlc_value_in_flight_msat.0.unwrap();
+		let max_accepted_htlcs: u16 = max_accepted_htlcs.0.unwrap();
+		let general_bucket_data: GeneralBucketData = general_bucket_data.0.unwrap();
+
+		let alloc = bucket_allocations(
+			max_accepted_htlcs,
+			max_htlc_value_in_flight_msat,
+			config.general_allocation_pct,
+			config.congestion_allocation_pct,
+		);
+
+		let mut general_bucket = GeneralBucket::new(
+			general_bucket_data.scid,
+			alloc.general_slots,
+			alloc.general_liquidity,
+		);
+		for (outgoing_scid, salt) in general_bucket_data.channel_salts {
+			let entry = assign_slots_for_channel(
+				general_bucket.scid,
+				outgoing_scid,
+				Some(salt),
+				entropy_source,
+				general_bucket.per_channel_slots,
+				general_bucket.total_slots,
+			)
+			.map_err(|_| DecodeError::InvalidValue)?;
+			general_bucket.channels_slots.insert(outgoing_scid, entry);
+		}
+
+		Ok(Channel {
+			max_htlc_value_in_flight_msat,
+			max_accepted_htlcs,
+			outgoing_reputation: outgoing_reputation.0.unwrap(),
+			incoming_revenue: incoming_revenue.0.unwrap(),
+			general_bucket,
+			pending_htlcs: new_hash_map(),
+			congestion_bucket: BucketResources::new(
+				alloc.congestion_slots,
+				alloc.congestion_liquidity,
+			),
+			last_congestion_misuse: last_congestion_misuse.0.unwrap(),
+			protected_bucket: BucketResources::new(
+				alloc.protected_slots,
+				alloc.protected_liquidity,
+			),
+		})
+	}
+}
+
 /// An implementation for managing channel resources and informing HTLC forwarding decisions. It
 /// implements the core of the mitigation as proposed in https://github.com/lightning/bolts/pull/1280.
 pub struct DefaultResourceManager {
 	config: ResourceManagerConfig,
 	channels: Mutex<HashMap<u64, Channel>>,
+	/// Tracks HTLCs that returned [`ForwardingOutcome::Fail`] during [`Self::replay_pending_htlcs`].
+	/// When [`Self::resolve_htlc`] is called for one of these, it is silently ignored instead of
+	/// returning an error. This should not happen often but there is a chance that HTLCs are
+	/// failed on replay even if it was accepted previously. This could happen if reputation has
+	/// decayed and reputation check fails.
+	failed_replays: Mutex<HashSet<HtlcRef>>,
 }
 
 impl DefaultResourceManager {
 	pub fn new(config: ResourceManagerConfig) -> Self {
 		debug_assert!(config.resolution_period > Duration::ZERO);
-		DefaultResourceManager { config, channels: Mutex::new(new_hash_map()) }
+		DefaultResourceManager {
+			config,
+			channels: Mutex::new(new_hash_map()),
+			failed_replays: Mutex::new(new_hash_set()),
+		}
 	}
 
 	// To calculate the risk of pending HTLCs, we assume they will resolve in the worst
@@ -793,10 +925,17 @@ impl DefaultResourceManager {
 		&self, incoming_channel_id: u64, htlc_id: u64, outgoing_channel_id: u64, settled: bool,
 		resolved_at: u64,
 	) -> Result<(), ()> {
+		let htlc_ref = HtlcRef { incoming_channel_id, htlc_id };
+
+		{
+			let mut failed_replays = self.failed_replays.lock().unwrap();
+			if failed_replays.remove(&htlc_ref) {
+				return Ok(());
+			}
+		}
+
 		let mut channels_lock = self.channels.lock().unwrap();
 		let outgoing_channel = channels_lock.get_mut(&outgoing_channel_id).ok_or(())?;
-
-		let htlc_ref = HtlcRef { incoming_channel_id, htlc_id };
 		let pending_htlc = outgoing_channel.pending_htlcs.get(&htlc_ref).ok_or(())?.clone();
 
 		if resolved_at < pending_htlc.added_at_unix_seconds {
@@ -837,6 +976,97 @@ impl DefaultResourceManager {
 		}
 
 		Ok(())
+	}
+}
+
+pub struct PendingHTLCReplay {
+	pub incoming_channel_id: u64,
+	pub incoming_amount_msat: u64,
+	pub incoming_htlc_id: u64,
+	pub incoming_cltv_expiry: u32,
+	pub incoming_accountable: bool,
+	pub outgoing_channel_id: u64,
+	pub outgoing_amount_msat: u64,
+	pub added_at_unix_seconds: u64,
+	pub height_added: u32,
+}
+
+impl Writeable for DefaultResourceManager {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		let channels = self.channels.lock().unwrap();
+		write_tlv_fields!(writer, {
+			(1, channels, required),
+		});
+		Ok(())
+	}
+}
+
+impl<ES: EntropySource> ReadableArgs<(ResourceManagerConfig, &ES)> for DefaultResourceManager {
+	fn read<R: Read>(
+		reader: &mut R, args: (ResourceManagerConfig, &ES),
+	) -> Result<DefaultResourceManager, DecodeError> {
+		let (config, entropy_source) = args;
+		_init_and_read_len_prefixed_tlv_fields!(reader, {
+			(1, channels, (required: ReadableArgs, (&config, entropy_source))),
+		});
+		let channels: HashMap<u64, Channel> = channels.0.unwrap();
+		Ok(DefaultResourceManager {
+			config,
+			channels: Mutex::new(channels),
+			failed_replays: Mutex::new(new_hash_set()),
+		})
+	}
+}
+
+impl<ES: EntropySource> ReadableArgs<(&ResourceManagerConfig, &ES)> for HashMap<u64, Channel> {
+	fn read<R: Read>(r: &mut R, args: (&ResourceManagerConfig, &ES)) -> Result<Self, DecodeError> {
+		let len: CollectionLength = Readable::read(r)?;
+		let mut ret = new_hash_map();
+		for _ in 0..len.0 {
+			let k: u64 = Readable::read(r)?;
+			let v = Channel::read(r, args)?;
+			if ret.insert(k, v).is_some() {
+				return Err(DecodeError::InvalidValue);
+			}
+		}
+		Ok(ret)
+	}
+}
+
+impl DefaultResourceManager {
+	// This should only be called once during startup to replay pending HTLCs we had before
+	// shutdown.
+	pub fn replay_pending_htlcs<ES: EntropySource>(
+		&self, pending_htlcs: &[PendingHTLCReplay], entropy_source: &ES,
+	) -> Result<Vec<ForwardingOutcome>, DecodeError> {
+		let mut forwarding_outcomes = Vec::with_capacity(pending_htlcs.len());
+		let mut failed_replays = self.failed_replays.lock().unwrap();
+		for htlc in pending_htlcs {
+			let outcome = self
+				.add_htlc(
+					htlc.incoming_channel_id,
+					htlc.incoming_amount_msat,
+					htlc.incoming_cltv_expiry,
+					htlc.outgoing_channel_id,
+					htlc.outgoing_amount_msat,
+					htlc.incoming_accountable,
+					htlc.incoming_htlc_id,
+					htlc.height_added,
+					htlc.added_at_unix_seconds,
+					entropy_source,
+				)
+				.map_err(|_| DecodeError::InvalidValue)?;
+
+			if outcome == ForwardingOutcome::Fail {
+				failed_replays.insert(HtlcRef {
+					incoming_channel_id: htlc.incoming_channel_id,
+					htlc_id: htlc.incoming_htlc_id,
+				});
+			}
+
+			forwarding_outcomes.push(outcome);
+		}
+		Ok(forwarding_outcomes)
 	}
 }
 
@@ -882,6 +1112,16 @@ impl DecayingAverage {
 		Ok(self.value)
 	}
 }
+
+impl_writeable_tlv_based!(DecayingAverage, {
+	(1, value, required),
+	(3, last_updated_unix_secs, required),
+	(5, window, required),
+	(_unused, half_life, (static_value, {
+		let w: Duration = window.0.unwrap();
+		w.as_secs_f64() * 2_f64.ln()
+	})),
+});
 
 /// Approximates an [`Self::avg_weeks`]-week average by tracking a decaying average over a larger
 /// [`Self::window_weeks`] window to smooth out volatility.
@@ -930,6 +1170,13 @@ impl AggregatedWindowAverage {
 	}
 }
 
+impl_writeable_tlv_based!(AggregatedWindowAverage, {
+	(1, start_timestamp_unix_secs, required),
+	(3, avg_weeks, required),
+	(5, window_weeks, required),
+	(7, aggregated_revenue_decaying, required),
+});
+
 #[cfg(test)]
 mod tests {
 	use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -945,7 +1192,10 @@ mod tests {
 			},
 		},
 		sign::EntropySource,
-		util::test_utils::TestKeysInterface,
+		util::{
+			ser::{ReadableArgs, Writeable},
+			test_utils::TestKeysInterface,
+		},
 	};
 	use bitcoin::Network;
 
@@ -1338,6 +1588,13 @@ mod tests {
 		let outgoing_channel = channels.get_mut(&outgoing_scid).unwrap();
 		let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
 		outgoing_channel.outgoing_reputation.add_value(target_reputation, now).unwrap();
+	}
+
+	fn add_revenue(rm: &DefaultResourceManager, incoming_scid: u64, revenue: i64) {
+		let mut channels = rm.channels.lock().unwrap();
+		let channel = channels.get_mut(&incoming_scid).unwrap();
+		let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+		channel.incoming_revenue.add_value(revenue, now).unwrap();
 	}
 
 	fn fill_general_bucket(rm: &DefaultResourceManager, incoming_scid: u64) {
@@ -2253,6 +2510,76 @@ mod tests {
 			ForwardingOutcome::Fail,
 		);
 		assert!(get_htlc_bucket(&rm, INCOMING_SCID, htlc_id, OUTGOING_SCID_2).is_none());
+	}
+
+	#[test]
+	fn test_simple_manager_serialize_deserialize() {
+		// This is not a complete test of the serialization/deserialization of the resource
+		// manager because the pending HTLCs will be replayed through `replay_pending_htlcs` by
+		// the upstream i.e ChannelManager.
+		let rm = create_test_resource_manager_with_channels();
+		let entropy_source = TestKeysInterface::new(&[0; 32], Network::Testnet);
+
+		add_test_htlc(&rm, false, 0, None, &entropy_source).unwrap();
+
+		let reputation = 50_000_000;
+		add_reputation(&rm, OUTGOING_SCID, reputation);
+
+		let revenue = 70_000_000;
+		add_revenue(&rm, INCOMING_SCID, revenue);
+
+		let serialized_rm = rm.encode();
+
+		let channels = rm.channels.lock().unwrap();
+		let expected_incoming_channel = channels.get(&INCOMING_SCID).unwrap();
+		let (expected_slots, expected_salt) = expected_incoming_channel
+			.general_bucket
+			.channels_slots
+			.get(&OUTGOING_SCID)
+			.unwrap()
+			.clone();
+
+		let deserialized_rm = DefaultResourceManager::read(
+			&mut serialized_rm.as_slice(),
+			(ResourceManagerConfig::default(), &entropy_source),
+		)
+		.unwrap();
+		let deserialized_channels = deserialized_rm.channels.lock().unwrap();
+		assert_eq!(2, deserialized_channels.len());
+
+		let outgoing_channel = deserialized_channels.get(&OUTGOING_SCID).unwrap();
+		assert!(outgoing_channel.general_bucket.channels_slots.is_empty());
+
+		assert_eq!(outgoing_channel.outgoing_reputation.value, reputation);
+
+		let incoming_channel = deserialized_channels.get(&INCOMING_SCID).unwrap();
+		assert_eq!(incoming_channel.incoming_revenue.aggregated_revenue_decaying.value, revenue);
+
+		assert_eq!(incoming_channel.general_bucket.channels_slots.len(), 1);
+
+		let (slots, salt) =
+			incoming_channel.general_bucket.channels_slots.get(&OUTGOING_SCID).unwrap().clone();
+		assert_eq!(slots, expected_slots);
+		assert_eq!(salt, expected_salt);
+
+		let congestion_bucket = &incoming_channel.congestion_bucket;
+		assert_eq!(
+			congestion_bucket.slots_allocated,
+			expected_incoming_channel.congestion_bucket.slots_allocated
+		);
+		assert_eq!(
+			congestion_bucket.liquidity_allocated,
+			expected_incoming_channel.congestion_bucket.liquidity_allocated
+		);
+		let protected_bucket = &incoming_channel.protected_bucket;
+		assert_eq!(
+			protected_bucket.slots_allocated,
+			expected_incoming_channel.protected_bucket.slots_allocated
+		);
+		assert_eq!(
+			protected_bucket.liquidity_allocated,
+			expected_incoming_channel.protected_bucket.liquidity_allocated
+		);
 	}
 
 	#[test]
