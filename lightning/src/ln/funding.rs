@@ -36,13 +36,14 @@ pub(super) enum FeeRateAdjustmentError {
 	/// Target feerate is below our minimum. The counterparty's splice can proceed without our
 	/// contribution; we'll retry via RBF at our preferred feerate.
 	TooLow { target_feerate: FeeRate, min_feerate: FeeRate },
-	/// Target feerate is above our maximum and would consume too much of the change output. The
-	/// splice should be rejected.
+	/// Target feerate is above our maximum and our fair fee exceeds the available budget (UTXO
+	/// inputs for splice-in, or channel balance for splice-out). The splice should be rejected.
 	TooHigh { target_feerate: FeeRate, max_feerate: FeeRate, fair_fee: Amount, budget: Amount },
-	/// Arithmetic overflow when computing fee budget.
+	/// Arithmetic overflow when computing the available budget.
 	BudgetOverflow,
-	/// Target feerate is within our acceptable range but our UTXO budget is insufficient to
-	/// cover the required fees. The counterparty's splice can proceed without our contribution.
+	/// The available budget is insufficient to cover the required fees. For splice-in, the budget
+	/// comes from UTXO inputs; for splice-out, it comes from the channel balance. The
+	/// counterparty's splice can proceed without our contribution.
 	BudgetInsufficient { available: Amount, required: Amount },
 	/// Fee surplus exceeds dust limit and cannot be absorbed without a change output.
 	SurplusExceedsDust { surplus: Amount, dust_limit: Amount },
@@ -62,7 +63,7 @@ impl core::fmt::Display for FeeRateAdjustmentError {
 				)
 			},
 			FeeRateAdjustmentError::BudgetOverflow => {
-				write!(f, "Estimated fee plus change value overflow")
+				write!(f, "Arithmetic overflow when computing available budget")
 			},
 			FeeRateAdjustmentError::BudgetInsufficient { available, required } => {
 				write!(f, "Fee budget {} insufficient for required fee {}", available, required)
@@ -495,7 +496,7 @@ impl FundingContribution {
 	///
 	/// Returns `Err` if the contribution cannot accommodate the target feerate.
 	fn compute_feerate_adjustment(
-		&self, target_feerate: FeeRate,
+		&self, target_feerate: FeeRate, holder_balance: Amount,
 	) -> Result<(Amount, Option<Amount>), FeeRateAdjustmentError> {
 		if target_feerate < self.feerate {
 			return Err(FeeRateAdjustmentError::TooLow {
@@ -607,9 +608,14 @@ impl FundingContribution {
 				is_splice,
 				target_feerate,
 			);
-			if self.estimated_fee < fair_fee {
+			// Check that the channel balance can cover the withdrawal outputs plus fees.
+			let value_removed: Amount = self.outputs.iter().map(|o| o.value).sum();
+			let total_cost = fair_fee
+				.checked_add(value_removed)
+				.ok_or(FeeRateAdjustmentError::BudgetOverflow)?;
+			if total_cost > holder_balance {
 				return Err(FeeRateAdjustmentError::BudgetInsufficient {
-					available: self.estimated_fee,
+					available: holder_balance.checked_sub(value_removed).unwrap_or(Amount::ZERO),
 					required: fair_fee,
 				});
 			}
@@ -625,9 +631,10 @@ impl FundingContribution {
 	/// This adjusts the change output so the acceptor pays their fair share at the target
 	/// feerate.
 	pub(super) fn for_acceptor_at_feerate(
-		mut self, feerate: FeeRate,
+		mut self, feerate: FeeRate, holder_balance: Amount,
 	) -> Result<Self, FeeRateAdjustmentError> {
-		let (new_estimated_fee, new_change) = self.compute_feerate_adjustment(feerate)?;
+		let (new_estimated_fee, new_change) =
+			self.compute_feerate_adjustment(feerate, holder_balance)?;
 		match new_change {
 			Some(value) => self.change_output.as_mut().unwrap().value = value,
 			None => self.change_output = None,
@@ -643,9 +650,10 @@ impl FundingContribution {
 	/// can't be accommodated) and computes the adjusted net value (returning `Ok` with the value
 	/// accounting for the target feerate).
 	pub(super) fn net_value_for_acceptor_at_feerate(
-		&self, target_feerate: FeeRate,
+		&self, target_feerate: FeeRate, holder_balance: Amount,
 	) -> Result<SignedAmount, FeeRateAdjustmentError> {
-		let (new_estimated_fee, _) = self.compute_feerate_adjustment(target_feerate)?;
+		let (new_estimated_fee, _) =
+			self.compute_feerate_adjustment(target_feerate, holder_balance)?;
 		Ok(self.net_value_with_fee(new_estimated_fee))
 	}
 
@@ -1065,7 +1073,8 @@ mod tests {
 		};
 
 		let net_value_before = contribution.net_value();
-		let contribution = contribution.for_acceptor_at_feerate(target_feerate).unwrap();
+		let contribution =
+			contribution.for_acceptor_at_feerate(target_feerate, Amount::MAX).unwrap();
 
 		// Fair fee at target feerate for acceptor (is_initiator=false), including change weight.
 		let expected_fair_fee =
@@ -1101,7 +1110,7 @@ mod tests {
 			is_splice: true,
 		};
 
-		let result = contribution.for_acceptor_at_feerate(target_feerate);
+		let result = contribution.for_acceptor_at_feerate(target_feerate, Amount::MAX);
 		assert!(matches!(result, Err(FeeRateAdjustmentError::TooLow { .. })));
 	}
 
@@ -1129,7 +1138,8 @@ mod tests {
 		};
 
 		let net_value_before = contribution.net_value();
-		let contribution = contribution.for_acceptor_at_feerate(target_feerate).unwrap();
+		let contribution =
+			contribution.for_acceptor_at_feerate(target_feerate, Amount::MAX).unwrap();
 
 		// Change should be removed; estimated_fee updated to no-change fair fee.
 		assert!(contribution.change_output.is_none());
@@ -1161,7 +1171,7 @@ mod tests {
 			is_splice: true,
 		};
 
-		let result = contribution.for_acceptor_at_feerate(target_feerate);
+		let result = contribution.for_acceptor_at_feerate(target_feerate, Amount::MAX);
 		assert!(matches!(result, Err(FeeRateAdjustmentError::BudgetInsufficient { .. })));
 	}
 
@@ -1187,7 +1197,8 @@ mod tests {
 			is_splice: true,
 		};
 
-		let contribution = contribution.for_acceptor_at_feerate(target_feerate).unwrap();
+		let contribution =
+			contribution.for_acceptor_at_feerate(target_feerate, Amount::MAX).unwrap();
 		// estimated_fee is updated to the fair fee; surplus goes back to channel balance.
 		let expected_fair_fee =
 			estimate_transaction_fee(&[], &outputs, None, false, true, target_feerate);
@@ -1197,7 +1208,7 @@ mod tests {
 
 	#[test]
 	fn test_for_acceptor_at_feerate_splice_out_insufficient() {
-		// Splice-out: target feerate too high for the is_initiator=true budget.
+		// Splice-out: channel balance too small for outputs + fair fee at high target feerate.
 		let original_feerate = FeeRate::from_sat_per_kwu(2000);
 		let target_feerate = FeeRate::from_sat_per_kwu(50_000);
 		let outputs = vec![funding_output_sats(50_000)];
@@ -1216,7 +1227,9 @@ mod tests {
 			is_splice: true,
 		};
 
-		let result = contribution.for_acceptor_at_feerate(target_feerate);
+		// Balance of 55,000 sats can't cover outputs (50,000) + fair_fee at 50k sat/kwu.
+		let holder_balance = Amount::from_sat(55_000);
+		let result = contribution.for_acceptor_at_feerate(target_feerate, holder_balance);
 		assert!(matches!(result, Err(FeeRateAdjustmentError::BudgetInsufficient { .. })));
 	}
 
@@ -1245,7 +1258,7 @@ mod tests {
 
 		// For splice-in, unpaid_fees is zero so net_value_for_acceptor_at_feerate equals net_value.
 		let net_at_feerate =
-			contribution.net_value_for_acceptor_at_feerate(target_feerate).unwrap();
+			contribution.net_value_for_acceptor_at_feerate(target_feerate, Amount::MAX).unwrap();
 		assert_eq!(net_at_feerate, contribution.net_value());
 		assert_eq!(net_at_feerate, Amount::from_sat(50_000).to_signed().unwrap());
 	}
@@ -1273,7 +1286,7 @@ mod tests {
 		};
 
 		let net_at_feerate =
-			contribution.net_value_for_acceptor_at_feerate(target_feerate).unwrap();
+			contribution.net_value_for_acceptor_at_feerate(target_feerate, Amount::MAX).unwrap();
 
 		// The fair fee at target feerate should be less than the initiator's budget.
 		let fair_fee = estimate_transaction_fee(&[], &outputs, None, false, true, target_feerate);
@@ -1312,7 +1325,7 @@ mod tests {
 		let fee_before = contribution.estimated_fee;
 		let change_before = contribution.change_output.as_ref().unwrap().value;
 
-		let _ = contribution.net_value_for_acceptor_at_feerate(target_feerate);
+		let _ = contribution.net_value_for_acceptor_at_feerate(target_feerate, Amount::MAX);
 
 		// Nothing should have changed.
 		assert_eq!(contribution.net_value(), net_before);
@@ -1342,7 +1355,7 @@ mod tests {
 			is_splice: true,
 		};
 
-		let result = contribution.net_value_for_acceptor_at_feerate(target_feerate);
+		let result = contribution.net_value_for_acceptor_at_feerate(target_feerate, Amount::MAX);
 		assert!(matches!(result, Err(FeeRateAdjustmentError::BudgetInsufficient { .. })));
 	}
 
@@ -1370,7 +1383,7 @@ mod tests {
 			is_splice: true,
 		};
 
-		let result = contribution.for_acceptor_at_feerate(target_feerate);
+		let result = contribution.for_acceptor_at_feerate(target_feerate, Amount::MAX);
 		assert!(matches!(result, Err(FeeRateAdjustmentError::TooHigh { .. })));
 	}
 
@@ -1402,7 +1415,7 @@ mod tests {
 			is_splice: true,
 		};
 
-		let result = contribution.for_acceptor_at_feerate(target_feerate);
+		let result = contribution.for_acceptor_at_feerate(target_feerate, Amount::MAX);
 		assert!(result.is_ok());
 		let adjusted = result.unwrap();
 
@@ -1437,7 +1450,7 @@ mod tests {
 			is_splice: true,
 		};
 
-		let result = contribution.for_acceptor_at_feerate(target_feerate);
+		let result = contribution.for_acceptor_at_feerate(target_feerate, Amount::MAX);
 		assert!(result.is_ok());
 		let adjusted = result.unwrap();
 
@@ -1468,7 +1481,7 @@ mod tests {
 			is_splice: true,
 		};
 
-		let result = contribution.for_acceptor_at_feerate(target_feerate);
+		let result = contribution.for_acceptor_at_feerate(target_feerate, Amount::MAX);
 		assert!(matches!(result, Err(FeeRateAdjustmentError::BudgetInsufficient { .. })));
 	}
 
@@ -1496,7 +1509,7 @@ mod tests {
 
 		// target == min feerate, so TooLow check passes.
 		// surplus = estimated_fee(initiator) - fair_fee(acceptor) >= dust_limit
-		let result = contribution.for_acceptor_at_feerate(feerate);
+		let result = contribution.for_acceptor_at_feerate(feerate, Amount::MAX);
 		assert!(matches!(result, Err(FeeRateAdjustmentError::SurplusExceedsDust { .. })));
 	}
 
@@ -1517,7 +1530,92 @@ mod tests {
 			is_splice: true,
 		};
 
-		let result = contribution.for_acceptor_at_feerate(feerate);
+		let result = contribution.for_acceptor_at_feerate(feerate, Amount::MAX);
 		assert!(matches!(result, Err(FeeRateAdjustmentError::BudgetOverflow)));
+	}
+
+	#[test]
+	fn test_for_acceptor_at_feerate_splice_out_balance_insufficient() {
+		// Splice-out: channel balance too small to cover outputs + fair fee.
+		let original_feerate = FeeRate::from_sat_per_kwu(2000);
+		let target_feerate = FeeRate::from_sat_per_kwu(3000);
+		let outputs = vec![funding_output_sats(50_000)];
+
+		let estimated_fee =
+			estimate_transaction_fee(&[], &outputs, None, true, true, original_feerate);
+
+		let contribution = FundingContribution {
+			value_added: Amount::ZERO,
+			estimated_fee,
+			inputs: vec![],
+			outputs: outputs.clone(),
+			change_output: None,
+			feerate: original_feerate,
+			max_feerate: FeeRate::MAX,
+			is_splice: true,
+		};
+
+		// Balance of 40,000 sats is less than outputs (50,000) + fair_fee.
+		let holder_balance = Amount::from_sat(40_000);
+		let result = contribution.for_acceptor_at_feerate(target_feerate, holder_balance);
+		assert!(matches!(result, Err(FeeRateAdjustmentError::BudgetInsufficient { .. })));
+	}
+
+	#[test]
+	fn test_for_acceptor_at_feerate_splice_out_balance_sufficient() {
+		// Splice-out: channel balance large enough to cover outputs + fair fee.
+		let original_feerate = FeeRate::from_sat_per_kwu(2000);
+		let target_feerate = FeeRate::from_sat_per_kwu(3000);
+		let outputs = vec![funding_output_sats(50_000)];
+
+		let estimated_fee =
+			estimate_transaction_fee(&[], &outputs, None, true, true, original_feerate);
+
+		let contribution = FundingContribution {
+			value_added: Amount::ZERO,
+			estimated_fee,
+			inputs: vec![],
+			outputs: outputs.clone(),
+			change_output: None,
+			feerate: original_feerate,
+			max_feerate: FeeRate::MAX,
+			is_splice: true,
+		};
+
+		// Balance of 100,000 sats is more than outputs (50,000) + fair_fee.
+		let holder_balance = Amount::from_sat(100_000);
+		let contribution =
+			contribution.for_acceptor_at_feerate(target_feerate, holder_balance).unwrap();
+		let expected_fair_fee =
+			estimate_transaction_fee(&[], &outputs, None, false, true, target_feerate);
+		assert_eq!(contribution.estimated_fee, expected_fair_fee);
+	}
+
+	#[test]
+	fn test_net_value_for_acceptor_at_feerate_splice_out_balance_insufficient() {
+		// Splice-out: net_value_for_acceptor_at_feerate returns Err when channel balance
+		// is too small to cover outputs + fair fee.
+		let original_feerate = FeeRate::from_sat_per_kwu(2000);
+		let target_feerate = FeeRate::from_sat_per_kwu(3000);
+		let outputs = vec![funding_output_sats(50_000)];
+
+		let estimated_fee =
+			estimate_transaction_fee(&[], &outputs, None, true, true, original_feerate);
+
+		let contribution = FundingContribution {
+			value_added: Amount::ZERO,
+			estimated_fee,
+			inputs: vec![],
+			outputs,
+			change_output: None,
+			feerate: original_feerate,
+			max_feerate: FeeRate::MAX,
+			is_splice: true,
+		};
+
+		// Balance of 40,000 sats is less than outputs (50,000) + fair_fee.
+		let holder_balance = Amount::from_sat(40_000);
+		let result = contribution.net_value_for_acceptor_at_feerate(target_feerate, holder_balance);
+		assert!(matches!(result, Err(FeeRateAdjustmentError::BudgetInsufficient { .. })));
 	}
 }
