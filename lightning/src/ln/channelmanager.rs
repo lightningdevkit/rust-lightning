@@ -48,7 +48,7 @@ use crate::chain::channelmonitor::{
 	LATENCY_GRACE_PERIOD_BLOCKS, MAX_BLOCKS_FOR_CONF,
 };
 use crate::chain::transaction::{OutPoint, TransactionData};
-use crate::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Watch};
+use crate::chain::{BestBlock, Confirm, Watch};
 use crate::events::{
 	self, ClosureReason, Event, EventHandler, EventsProvider, HTLCHandlingFailureType,
 	InboundChannelFunds, PaymentFailureReason, ReplayEvent,
@@ -2793,13 +2793,6 @@ pub struct ChannelManager<
 	#[cfg(any(test, feature = "_test_utils"))]
 	pub(super) per_peer_state: FairRwLock<HashMap<PublicKey, Mutex<PeerState<SP>>>>,
 
-	/// We only support using one of [`ChannelMonitorUpdateStatus::InProgress`] and
-	/// [`ChannelMonitorUpdateStatus::Completed`] without restarting. Because the API does not
-	/// otherwise directly enforce this, we enforce it in non-test builds here by storing which one
-	/// is in use.
-	#[cfg(not(any(test, feature = "_externalize_tests")))]
-	monitor_update_type: AtomicUsize,
-
 	/// The set of events which we need to give to the user to handle. In some cases an event may
 	/// require some further action after the user handles it (currently only blocking a monitor
 	/// update from being handed to the user to ensure the included changes to the channel state
@@ -3202,12 +3195,7 @@ pub struct PhantomRouteHints {
 }
 
 /// The return type of [`ChannelManager::check_free_peer_holding_cells`]
-type FreeHoldingCellsResult = Vec<(
-	ChannelId,
-	PublicKey,
-	Option<PostMonitorUpdateChanResume>,
-	Vec<(HTLCSource, PaymentHash)>,
-)>;
+type FreeHoldingCellsResult = Vec<(ChannelId, PublicKey, Vec<(HTLCSource, PaymentHash)>)>;
 
 macro_rules! insert_short_channel_id {
 	($short_to_chan_info: ident, $channel: expr) => {{
@@ -3540,9 +3528,6 @@ impl<
 			highest_seen_timestamp: AtomicUsize::new(current_timestamp as usize),
 
 			per_peer_state: FairRwLock::new(new_hash_map()),
-
-			#[cfg(not(any(test, feature = "_externalize_tests")))]
-			monitor_update_type: AtomicUsize::new(0),
 
 			pending_events: Mutex::new(VecDeque::new()),
 			pending_events_processor: AtomicBool::new(false),
@@ -3964,19 +3949,12 @@ impl<
 
 						// Update the monitor with the shutdown script if necessary.
 						if let Some(monitor_update) = monitor_update_opt.take() {
-							if let Some(data) = self.handle_new_monitor_update(
+							self.handle_new_monitor_update(
 								&mut peer_state.in_flight_monitor_updates,
-								&mut peer_state.monitor_update_blocked_actions,
-								&mut peer_state.pending_msg_events,
-								peer_state.is_connected,
 								chan,
 								funding_txo_opt.unwrap(),
 								monitor_update,
-							) {
-								mem::drop(peer_state_lock);
-								mem::drop(per_peer_state);
-								self.handle_post_monitor_update_chan_resume(data);
-							}
+							);
 						}
 					} else {
 						let reason = ClosureReason::LocallyCoopClosedUnfundedChannel;
@@ -4096,19 +4074,12 @@ impl<
 		match peer_state.channel_by_id.entry(channel_id) {
 			hash_map::Entry::Occupied(mut chan_entry) => {
 				if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
-					if let Some(data) = self.handle_new_monitor_update(
+					self.handle_new_monitor_update(
 						&mut peer_state.in_flight_monitor_updates,
-						&mut peer_state.monitor_update_blocked_actions,
-						&mut peer_state.pending_msg_events,
-						peer_state.is_connected,
 						chan,
 						funding_txo,
 						monitor_update,
-					) {
-						mem::drop(peer_state_lock);
-						mem::drop(per_peer_state);
-						self.handle_post_monitor_update_chan_resume(data);
-					}
+					);
 					return;
 				} else {
 					debug_assert!(false, "We shouldn't have an update for a non-funded channel");
@@ -4117,18 +4088,13 @@ impl<
 			hash_map::Entry::Vacant(_) => {},
 		}
 
-		if let Some(actions) = self.handle_post_close_monitor_update(
+		self.handle_new_monitor_update_locked_actions_handled_by_caller(
 			&mut peer_state.in_flight_monitor_updates,
-			&mut peer_state.monitor_update_blocked_actions,
-			funding_txo,
-			monitor_update,
-			counterparty_node_id,
 			channel_id,
-		) {
-			mem::drop(peer_state_lock);
-			mem::drop(per_peer_state);
-			self.handle_monitor_update_completion_actions(actions);
-		}
+			funding_txo,
+			counterparty_node_id,
+			monitor_update,
+		);
 	}
 
 	/// When a channel is removed, two things need to happen:
@@ -5327,30 +5293,12 @@ impl<
 						);
 						match break_channel_entry!(self, peer_state, send_res, chan_entry) {
 							Some(monitor_update) => {
-								let (update_completed, completion_data) = self
-									.handle_new_monitor_update_with_status(
-										&mut peer_state.in_flight_monitor_updates,
-										&mut peer_state.monitor_update_blocked_actions,
-										&mut peer_state.pending_msg_events,
-										peer_state.is_connected,
-										chan,
-										funding_txo,
-										monitor_update,
-									);
-								if let Some(data) = completion_data {
-									mem::drop(peer_state_lock);
-									mem::drop(per_peer_state);
-									self.handle_post_monitor_update_chan_resume(data);
-								}
-								if !update_completed {
-									// Note that MonitorUpdateInProgress here indicates (per function
-									// docs) that we will resend the commitment update once monitor
-									// updating completes. Therefore, we must return an error
-									// indicating that it is unsafe to retry the payment wholesale,
-									// which we do in the send_payment check for
-									// MonitorUpdateInProgress, below.
-									return Err(APIError::MonitorUpdateInProgress);
-								}
+								self.handle_new_monitor_update(
+									&mut peer_state.in_flight_monitor_updates,
+									chan,
+									funding_txo,
+									monitor_update,
+								);
 							},
 							None => {},
 						}
@@ -5433,7 +5381,7 @@ impl<
 	///
 	/// Additionally, in the scenario where we begin the process of sending a payment, but crash
 	/// before `send_payment` returns (or prior to [`ChannelMonitorUpdate`] persistence if you're
-	/// using [`ChannelMonitorUpdateStatus::InProgress`]), the payment may be lost on restart. See
+	/// using asynchronous [`chain::Watch`] persistence), the payment may be lost on restart. See
 	/// [`ChannelManager::list_recent_payments`] for more information.
 	///
 	/// Routes are automatically found using the [`Router`] provided on startup. To fix a route for a
@@ -5444,7 +5392,6 @@ impl<
 	/// [`Event::PaymentFailed`]: events::Event::PaymentFailed
 	/// [`UpdateHTLCs`]: MessageSendEvent::UpdateHTLCs
 	/// [`PeerManager::process_events`]: crate::ln::peer_handler::PeerManager::process_events
-	/// [`ChannelMonitorUpdateStatus::InProgress`]: crate::chain::ChannelMonitorUpdateStatus::InProgress
 	pub fn send_payment(
 		&self, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields,
 		payment_id: PaymentId, route_params: RouteParameters, retry_strategy: Retry,
@@ -6645,9 +6592,7 @@ impl<
 		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey, transaction: Transaction,
 	) -> Result<(), APIError> {
 		let mut funding_tx_signed_result = Ok(());
-		let mut monitor_update_result: Option<
-			Result<PostMonitorUpdateChanResume, MsgHandleErrInternal>,
-		> = None;
+		let mut monitor_update_result: Option<MsgHandleErrInternal> = None;
 
 		PersistenceNotifierGuard::optionally_notify(self, || {
 			let per_peer_state = self.per_peer_state.read().unwrap();
@@ -6752,18 +6697,12 @@ impl<
 								match counterparty_initial_commitment_signed_result {
 									Some(Ok(Some(monitor_update))) => {
 										let funding_txo = funded_chan.funding.get_funding_txo();
-										if let Some(post_update_data) = self
-											.handle_new_monitor_update(
-												&mut peer_state.in_flight_monitor_updates,
-												&mut peer_state.monitor_update_blocked_actions,
-												&mut peer_state.pending_msg_events,
-												peer_state.is_connected,
-												funded_chan,
-												funding_txo.unwrap(),
-												monitor_update,
-											) {
-											monitor_update_result = Some(Ok(post_update_data));
-										}
+										self.handle_new_monitor_update(
+											&mut peer_state.in_flight_monitor_updates,
+											funded_chan,
+											funding_txo.unwrap(),
+											monitor_update,
+										);
 									},
 									Some(Err(err)) => {
 										let (drop, err) = self.locked_handle_funded_force_close(
@@ -6776,7 +6715,7 @@ impl<
 											chan_entry.remove_entry();
 										}
 
-										monitor_update_result = Some(Err(err));
+										monitor_update_result = Some(err);
 									},
 									Some(Ok(None)) | None => {},
 								}
@@ -6800,15 +6739,8 @@ impl<
 			mem::drop(peer_state_lock);
 			mem::drop(per_peer_state);
 
-			if let Some(monitor_update_result) = monitor_update_result {
-				match monitor_update_result {
-					Ok(post_update_data) => {
-						self.handle_post_monitor_update_chan_resume(post_update_data);
-					},
-					Err(_) => {
-						let _ = self.handle_error(monitor_update_result, *counterparty_node_id);
-					},
-				}
+			if let Some(err) = monitor_update_result {
+				let _ = self.handle_error::<()>(Err(err), *counterparty_node_id);
 			}
 
 			NotifyOption::DoPersist
@@ -9359,19 +9291,12 @@ impl<
 									.or_insert_with(Vec::new)
 									.push(raa_blocker);
 							}
-							if let Some(data) = self.handle_new_monitor_update(
+							self.handle_new_monitor_update(
 								&mut peer_state.in_flight_monitor_updates,
-								&mut peer_state.monitor_update_blocked_actions,
-								&mut peer_state.pending_msg_events,
-								peer_state.is_connected,
 								chan,
 								prev_hop.funding_txo,
 								monitor_update,
-							) {
-								mem::drop(peer_state_lock);
-								mem::drop(per_peer_state);
-								self.handle_post_monitor_update_chan_resume(data);
-							}
+							);
 						},
 						UpdateFulfillCommitFetch::DuplicateClaim {} => {
 							let (action_opt, raa_blocker_opt) = completion_action(None, true);
@@ -9532,18 +9457,13 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				.push(action);
 		}
 
-		if let Some(actions) = self.handle_post_close_monitor_update(
+		self.handle_new_monitor_update_locked_actions_handled_by_caller(
 			&mut peer_state.in_flight_monitor_updates,
-			&mut peer_state.monitor_update_blocked_actions,
-			prev_hop.funding_txo,
-			preimage_update,
-			prev_hop.counterparty_node_id,
 			chan_id,
-		) {
-			mem::drop(peer_state_lock);
-			mem::drop(per_peer_state);
-			self.handle_monitor_update_completion_actions(actions);
-		}
+			prev_hop.funding_txo,
+			prev_hop.counterparty_node_id,
+			preimage_update,
+		);
 	}
 
 	fn finalize_claims(&self, sources: Vec<(HTLCSource, Option<AttributionData>)>) {
@@ -10027,19 +9947,16 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	/// Applies a [`ChannelMonitorUpdate`] to the channel monitor.
 	///
 	/// Monitor updates must be applied while holding the same lock under which they were generated
-	/// to ensure correct ordering. However, completion handling requires releasing those locks.
-	/// This method applies the update immediately (while locks are held) and returns whether the
-	/// update completed, allowing the caller to handle completion separately after releasing locks.
+	/// to ensure correct ordering. The update is always considered in-progress until completion is
+	/// signaled asynchronously via [`MonitorEvent::Completed`].
 	///
-	/// Returns a tuple of `(update_completed, all_updates_completed)`:
-	/// - `update_completed`: whether this specific monitor update finished persisting
-	/// - `all_updates_completed`: whether all in-flight updates for this channel are now complete
+	/// [`MonitorEvent::Completed`]: chain::channelmonitor::MonitorEvent::Completed
 	fn handle_new_monitor_update_locked_actions_handled_by_caller(
 		&self,
 		in_flight_monitor_updates: &mut BTreeMap<ChannelId, (OutPoint, Vec<ChannelMonitorUpdate>)>,
 		channel_id: ChannelId, funding_txo: OutPoint, counterparty_node_id: PublicKey,
 		new_update: ChannelMonitorUpdate,
-	) -> (bool, bool) {
+	) {
 		let in_flight_updates = &mut in_flight_monitor_updates
 			.entry(channel_id)
 			.or_insert_with(|| (funding_txo, Vec::new()))
@@ -10054,15 +9971,13 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			});
 
 		if self.background_events_processed_since_startup.load(Ordering::Acquire) {
-			let update_res =
-				self.chain_monitor.update_channel(channel_id, &in_flight_updates[update_idx]);
+			self.chain_monitor.update_channel(channel_id, &in_flight_updates[update_idx]);
 			let logger =
 				WithContext::from(&self.logger, Some(counterparty_node_id), Some(channel_id), None);
-			let update_completed = self.handle_monitor_update_res(update_res, logger);
-			if update_completed {
-				let _ = in_flight_updates.remove(update_idx);
-			}
-			(update_completed, update_completed && in_flight_updates.is_empty())
+			log_debug!(
+				logger,
+				"ChannelMonitor update in flight, holding messages until the update completes.",
+			);
 		} else {
 			// We blindly assume that the ChannelMonitorUpdate will be regenerated on startup if we
 			// fail to persist it. This is a fairly safe assumption, however, since anything we do
@@ -10082,167 +9997,42 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			// We could work around that with some effort, but its simpler to just track updates
 			// twice.
 			self.pending_background_events.lock().unwrap().push(event);
-			(false, false)
 		}
 	}
 
-	/// Handles a monitor update for a closed channel, returning optionally the completion actions
-	/// to process after locks are released.
+	/// Logs that the initial monitor persistence is in-progress. Completion is signaled
+	/// asynchronously via [`MonitorEvent::Completed`].
 	///
-	/// Returns `Some` if all in-flight updates are complete.
-	fn handle_post_close_monitor_update(
-		&self,
-		in_flight_monitor_updates: &mut BTreeMap<ChannelId, (OutPoint, Vec<ChannelMonitorUpdate>)>,
-		monitor_update_blocked_actions: &mut BTreeMap<
-			ChannelId,
-			Vec<MonitorUpdateCompletionAction>,
-		>,
-		funding_txo: OutPoint, update: ChannelMonitorUpdate, counterparty_node_id: PublicKey,
-		channel_id: ChannelId,
-	) -> Option<Vec<MonitorUpdateCompletionAction>> {
-		let (_update_completed, all_updates_complete) = self
-			.handle_new_monitor_update_locked_actions_handled_by_caller(
-				in_flight_monitor_updates,
-				channel_id,
-				funding_txo,
-				counterparty_node_id,
-				update,
-			);
-		if all_updates_complete {
-			Some(monitor_update_blocked_actions.remove(&channel_id).unwrap_or(Vec::new()))
-		} else {
-			None
-		}
-	}
-
-	/// Returns whether the monitor update is completed, `false` if the update is in-progress.
-	fn handle_monitor_update_res<LG: Logger>(
-		&self, update_res: ChannelMonitorUpdateStatus, logger: LG,
-	) -> bool {
+	/// [`MonitorEvent::Completed`]: chain::channelmonitor::MonitorEvent::Completed
+	fn handle_initial_monitor(&self, chan: &FundedChannel<SP>) {
 		debug_assert!(self.background_events_processed_since_startup.load(Ordering::Acquire));
-		match update_res {
-			ChannelMonitorUpdateStatus::UnrecoverableError => {
-				let err_str = "ChannelMonitor[Update] persistence failed unrecoverably. This indicates we cannot continue normal operation and must shut down.";
-				log_error!(logger, "{}", err_str);
-				panic!("{}", err_str);
-			},
-			ChannelMonitorUpdateStatus::InProgress => {
-				#[cfg(not(any(test, feature = "_externalize_tests")))]
-				if self.monitor_update_type.swap(1, Ordering::Relaxed) == 2 {
-					panic!("Cannot use both ChannelMonitorUpdateStatus modes InProgress and Completed without restart");
-				}
-				log_debug!(
-					logger,
-					"ChannelMonitor update in flight, holding messages until the update completes.",
-				);
-				false
-			},
-			ChannelMonitorUpdateStatus::Completed => {
-				#[cfg(not(any(test, feature = "_externalize_tests")))]
-				if self.monitor_update_type.swap(2, Ordering::Relaxed) == 1 {
-					panic!("Cannot use both ChannelMonitorUpdateStatus modes InProgress and Completed without restart");
-				}
-				true
-			},
-		}
-	}
-
-	/// Handles the initial monitor persistence, returning optionally data to process after locks
-	/// are released.
-	///
-	/// Note: This method takes individual fields from `PeerState` rather than the whole struct
-	/// to avoid borrow checker issues when the channel is borrowed from `peer_state.channel_by_id`.
-	fn handle_initial_monitor(
-		&self,
-		in_flight_monitor_updates: &mut BTreeMap<ChannelId, (OutPoint, Vec<ChannelMonitorUpdate>)>,
-		monitor_update_blocked_actions: &mut BTreeMap<
-			ChannelId,
-			Vec<MonitorUpdateCompletionAction>,
-		>,
-		pending_msg_events: &mut Vec<MessageSendEvent>, is_connected: bool,
-		chan: &mut FundedChannel<SP>, update_res: ChannelMonitorUpdateStatus,
-	) -> Option<PostMonitorUpdateChanResume> {
 		let logger = WithChannelContext::from(&self.logger, &chan.context, None);
-		let update_completed = self.handle_monitor_update_res(update_res, logger);
-		if update_completed {
-			Some(self.try_resume_channel_post_monitor_update(
-				in_flight_monitor_updates,
-				monitor_update_blocked_actions,
-				pending_msg_events,
-				is_connected,
-				chan,
-			))
-		} else {
-			None
-		}
+		log_debug!(
+			logger,
+			"ChannelMonitor update in flight, holding messages until the update completes.",
+		);
 	}
 
-	/// Applies a new monitor update and attempts to resume the channel if all updates are complete.
-	///
-	/// Returns [`PostMonitorUpdateChanResume`] if all in-flight updates are complete, which should
-	/// be passed to [`Self::handle_post_monitor_update_chan_resume`] after releasing locks.
+	/// Applies a new monitor update, sending it to the [`Watch`] implementation.
 	///
 	/// Note: This method takes individual fields from [`PeerState`] rather than the whole struct
 	/// to avoid borrow checker issues when the channel is borrowed from `peer_state.channel_by_id`.
+	///
+	/// [`Watch`]: chain::Watch
 	fn handle_new_monitor_update(
 		&self,
 		in_flight_monitor_updates: &mut BTreeMap<ChannelId, (OutPoint, Vec<ChannelMonitorUpdate>)>,
-		monitor_update_blocked_actions: &mut BTreeMap<
-			ChannelId,
-			Vec<MonitorUpdateCompletionAction>,
-		>,
-		pending_msg_events: &mut Vec<MessageSendEvent>, is_connected: bool,
 		chan: &mut FundedChannel<SP>, funding_txo: OutPoint, update: ChannelMonitorUpdate,
-	) -> Option<PostMonitorUpdateChanResume> {
-		self.handle_new_monitor_update_with_status(
-			in_flight_monitor_updates,
-			monitor_update_blocked_actions,
-			pending_msg_events,
-			is_connected,
-			chan,
-			funding_txo,
-			update,
-		)
-		.1
-	}
-
-	/// Like [`Self::handle_new_monitor_update`], but also returns whether this specific update
-	/// completed (as opposed to being in-progress).
-	fn handle_new_monitor_update_with_status(
-		&self,
-		in_flight_monitor_updates: &mut BTreeMap<ChannelId, (OutPoint, Vec<ChannelMonitorUpdate>)>,
-		monitor_update_blocked_actions: &mut BTreeMap<
-			ChannelId,
-			Vec<MonitorUpdateCompletionAction>,
-		>,
-		pending_msg_events: &mut Vec<MessageSendEvent>, is_connected: bool,
-		chan: &mut FundedChannel<SP>, funding_txo: OutPoint, update: ChannelMonitorUpdate,
-	) -> (bool, Option<PostMonitorUpdateChanResume>) {
+	) {
 		let chan_id = chan.context.channel_id();
 		let counterparty_node_id = chan.context.get_counterparty_node_id();
-
-		let (update_completed, all_updates_complete) = self
-			.handle_new_monitor_update_locked_actions_handled_by_caller(
-				in_flight_monitor_updates,
-				chan_id,
-				funding_txo,
-				counterparty_node_id,
-				update,
-			);
-
-		let completion_data = if all_updates_complete {
-			Some(self.try_resume_channel_post_monitor_update(
-				in_flight_monitor_updates,
-				monitor_update_blocked_actions,
-				pending_msg_events,
-				is_connected,
-				chan,
-			))
-		} else {
-			None
-		};
-
-		(update_completed, completion_data)
+		self.handle_new_monitor_update_locked_actions_handled_by_caller(
+			in_flight_monitor_updates,
+			chan_id,
+			funding_txo,
+			counterparty_node_id,
+			update,
+		);
 	}
 
 	/// Attempts to resume a channel after a monitor update completes, while locks are still held.
@@ -11227,7 +11017,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			},
 			hash_map::Entry::Vacant(e) => {
 				let monitor_res = self.chain_monitor.watch_channel(monitor.channel_id(), monitor);
-				if let Ok(persist_state) = monitor_res {
+				if monitor_res.is_ok() {
 					// There's no problem signing a counterparty's funding transaction if our monitor
 					// hasn't persisted to disk yet - we can't lose money on a transaction that we haven't
 					// accepted payment from yet. We do, however, need to wait to send our channel_ready
@@ -11240,18 +11030,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					}
 
 					if let Some(funded_chan) = e.insert(Channel::from(chan)).as_funded_mut() {
-						if let Some(data) = self.handle_initial_monitor(
-							&mut peer_state.in_flight_monitor_updates,
-							&mut peer_state.monitor_update_blocked_actions,
-							&mut peer_state.pending_msg_events,
-							peer_state.is_connected,
-							funded_chan,
-							persist_state,
-						) {
-							mem::drop(peer_state_lock);
-							mem::drop(per_peer_state);
-							self.handle_post_monitor_update_chan_resume(data);
-						}
+						self.handle_initial_monitor(funded_chan);
 					} else {
 						unreachable!("This must be a funded channel as we just inserted it.");
 					}
@@ -11406,22 +11185,11 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								funded_chan.unset_funding_info();
 								ChannelError::close("Channel ID was a duplicate".to_owned())
 							})
-							.map(|persist_status| (funded_chan, persist_status))
+							.map(|()| funded_chan)
 					})
 				{
-					Ok((funded_chan, persist_status)) => {
-						if let Some(data) = self.handle_initial_monitor(
-							&mut peer_state.in_flight_monitor_updates,
-							&mut peer_state.monitor_update_blocked_actions,
-							&mut peer_state.pending_msg_events,
-							peer_state.is_connected,
-							funded_chan,
-							persist_status,
-						) {
-							mem::drop(peer_state_lock);
-							mem::drop(per_peer_state);
-							self.handle_post_monitor_update_chan_resume(data);
-						}
+					Ok(funded_chan) => {
+						self.handle_initial_monitor(funded_chan);
 						Ok(())
 					},
 					Err(e) => try_channel_entry!(self, peer_state, Err(e), chan_entry),
@@ -11969,19 +11737,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						}
 						// Update the monitor with the shutdown script if necessary.
 						if let Some(monitor_update) = monitor_update_opt {
-							if let Some(data) = self.handle_new_monitor_update(
+							self.handle_new_monitor_update(
 								&mut peer_state.in_flight_monitor_updates,
-								&mut peer_state.monitor_update_blocked_actions,
-								&mut peer_state.pending_msg_events,
-								peer_state.is_connected,
 								chan,
 								funding_txo_opt.unwrap(),
 								monitor_update,
-							) {
-								mem::drop(peer_state_lock);
-								mem::drop(per_peer_state);
-								self.handle_post_monitor_update_chan_resume(data);
-							}
+							);
 						}
 					},
 					None => {
@@ -12310,19 +12071,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					if let Some(monitor) = monitor_opt {
 						let monitor_res =
 							self.chain_monitor.watch_channel(monitor.channel_id(), monitor);
-						if let Ok(persist_state) = monitor_res {
-							if let Some(data) = self.handle_initial_monitor(
-								&mut peer_state.in_flight_monitor_updates,
-								&mut peer_state.monitor_update_blocked_actions,
-								&mut peer_state.pending_msg_events,
-								peer_state.is_connected,
-								chan,
-								persist_state,
-							) {
-								mem::drop(peer_state_lock);
-								mem::drop(per_peer_state);
-								self.handle_post_monitor_update_chan_resume(data);
-							}
+						if monitor_res.is_ok() {
+							self.handle_initial_monitor(chan);
 						} else {
 							let logger =
 								WithChannelContext::from(&self.logger, &chan.context, None);
@@ -12333,19 +12083,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							try_channel_entry!(self, peer_state, Err(err), chan_entry)
 						}
 					} else if let Some(monitor_update) = monitor_update_opt {
-						if let Some(data) = self.handle_new_monitor_update(
+						self.handle_new_monitor_update(
 							&mut peer_state.in_flight_monitor_updates,
-							&mut peer_state.monitor_update_blocked_actions,
-							&mut peer_state.pending_msg_events,
-							peer_state.is_connected,
 							chan,
 							funding_txo.unwrap(),
 							monitor_update,
-						) {
-							mem::drop(peer_state_lock);
-							mem::drop(per_peer_state);
-							self.handle_post_monitor_update_chan_resume(data);
-						}
+						);
 					}
 				}
 				Ok(())
@@ -12376,19 +12119,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					);
 
 					if let Some(monitor_update) = monitor_update_opt {
-						if let Some(data) = self.handle_new_monitor_update(
+						self.handle_new_monitor_update(
 							&mut peer_state.in_flight_monitor_updates,
-							&mut peer_state.monitor_update_blocked_actions,
-							&mut peer_state.pending_msg_events,
-							peer_state.is_connected,
 							chan,
 							funding_txo.unwrap(),
 							monitor_update,
-						) {
-							mem::drop(peer_state_lock);
-							mem::drop(per_peer_state);
-							self.handle_post_monitor_update_chan_resume(data);
-						}
+						);
 					}
 				}
 				Ok(())
@@ -12456,6 +12192,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	}
 
 	#[cfg(any(test, feature = "_test_utils"))]
+	pub(crate) fn test_process_pending_monitor_events(&self) {
+		let _read_guard = self.total_consistency_lock.read().unwrap();
+		self.process_pending_monitor_events();
+	}
+
+	#[cfg(any(test, feature = "_test_utils"))]
 	pub(crate) fn test_raa_monitor_updates_held(
 		&self, counterparty_node_id: PublicKey, channel_id: ChannelId,
 	) -> bool {
@@ -12495,19 +12237,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						if let Some(monitor_update) = monitor_update_opt {
 							let funding_txo = funding_txo_opt
 								.expect("Funding outpoint must have been set for RAA handling to succeed");
-							if let Some(data) = self.handle_new_monitor_update(
+							self.handle_new_monitor_update(
 								&mut peer_state.in_flight_monitor_updates,
-								&mut peer_state.monitor_update_blocked_actions,
-								&mut peer_state.pending_msg_events,
-								peer_state.is_connected,
 								chan,
 								funding_txo,
 								monitor_update,
-							) {
-								mem::drop(peer_state_lock);
-								mem::drop(per_peer_state);
-								self.handle_post_monitor_update_chan_resume(data);
-							}
+							);
 						}
 						(htlcs_to_fail, static_invoices)
 					} else {
@@ -12986,19 +12721,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						}
 
 						if let Some(monitor_update) = splice_promotion.monitor_update {
-							if let Some(data) = self.handle_new_monitor_update(
+							self.handle_new_monitor_update(
 								&mut peer_state.in_flight_monitor_updates,
-								&mut peer_state.monitor_update_blocked_actions,
-								&mut peer_state.pending_msg_events,
-								peer_state.is_connected,
 								chan,
 								splice_promotion.funding_txo,
 								monitor_update,
-							) {
-								mem::drop(peer_state_lock);
-								mem::drop(per_peer_state);
-								self.handle_post_monitor_update_chan_resume(data);
-							}
+							);
 						}
 					}
 				} else {
@@ -13153,11 +12881,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			self.total_consistency_lock.held_by_thread(),
 			LockHeldState::NotHeldByThread
 		);
-		for (chan_id, cp_node_id, post_update_data, failed_htlcs) in result {
-			if let Some(data) = post_update_data {
-				self.handle_post_monitor_update_chan_resume(data);
-			}
-
+		for (chan_id, cp_node_id, failed_htlcs) in result {
 			self.fail_holding_cell_htlcs(failed_htlcs, chan_id, &cp_node_id);
 			self.needs_persist_flag.store(true, Ordering::Release);
 			self.event_persist_notifier.notify();
@@ -13188,21 +12912,16 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				&&WithChannelContext::from(&self.logger, &chan.context, None),
 			);
 			if monitor_opt.is_some() || !holding_cell_failed_htlcs.is_empty() {
-				let update_res = monitor_opt
-					.map(|monitor_update| {
-						self.handle_new_monitor_update(
-							&mut peer_state.in_flight_monitor_updates,
-							&mut peer_state.monitor_update_blocked_actions,
-							&mut peer_state.pending_msg_events,
-							peer_state.is_connected,
-							chan,
-							chan.funding.get_funding_txo().unwrap(),
-							monitor_update,
-						)
-					})
-					.flatten();
+				if let Some(monitor_update) = monitor_opt {
+					self.handle_new_monitor_update(
+						&mut peer_state.in_flight_monitor_updates,
+						chan,
+						chan.funding.get_funding_txo().unwrap(),
+						monitor_update,
+					);
+				}
 				let cp_node_id = chan.context.get_counterparty_node_id();
-				updates.push((*chan_id, cp_node_id, update_res, holding_cell_failed_htlcs));
+				updates.push((*chan_id, cp_node_id, holding_cell_failed_htlcs));
 			}
 		}
 		updates
@@ -14736,11 +14455,8 @@ impl<
 						if let Some((monitor_update, further_update_exists)) = chan.unblock_next_blocked_monitor_update() {
 							log_debug!(logger, "Unlocking monitor updating and updating monitor",
 								);
-							let post_update_data = self.handle_new_monitor_update(
+							self.handle_new_monitor_update(
 								&mut peer_state.in_flight_monitor_updates,
-								&mut peer_state.monitor_update_blocked_actions,
-								&mut peer_state.pending_msg_events,
-								peer_state.is_connected,
 								chan,
 								channel_funding_outpoint,
 								monitor_update,
@@ -14749,10 +14465,6 @@ impl<
 
 							mem::drop(peer_state_lck);
 							mem::drop(per_peer_state);
-
-							if let Some(data) = post_update_data {
-								self.handle_post_monitor_update_chan_resume(data);
-							}
 
 							self.handle_holding_cell_free_result(holding_cell_res);
 
@@ -14833,18 +14545,13 @@ impl<
 						};
 						self.pending_background_events.lock().unwrap().push(event);
 					} else {
-						if let Some(actions) = self.handle_post_close_monitor_update(
+						self.handle_new_monitor_update_locked_actions_handled_by_caller(
 							&mut peer_state.in_flight_monitor_updates,
-							&mut peer_state.monitor_update_blocked_actions,
-							channel_funding_outpoint,
-							update,
-							counterparty_node_id,
 							channel_id,
-						) {
-							mem::drop(peer_state_lock);
-							mem::drop(per_peer_state);
-							self.handle_monitor_update_completion_actions(actions);
-						}
+							channel_funding_outpoint,
+							counterparty_node_id,
+							update,
+						);
 					}
 				},
 			}
@@ -19698,9 +19405,6 @@ impl<
 			highest_seen_timestamp: AtomicUsize::new(highest_seen_timestamp as usize),
 
 			per_peer_state: FairRwLock::new(per_peer_state),
-
-			#[cfg(not(any(test, feature = "_externalize_tests")))]
-			monitor_update_type: AtomicUsize::new(0),
 
 			pending_events: Mutex::new(pending_events_read),
 			pending_events_processor: AtomicBool::new(false),
