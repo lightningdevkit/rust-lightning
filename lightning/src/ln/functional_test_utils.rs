@@ -3095,17 +3095,16 @@ pub fn expect_payment_forwarded<CM: AChannelManager, H: NodeHolder<CM = CM>>(
 ) -> Option<u64> {
 	match event {
 		Event::PaymentForwarded {
-			prev_channel_id,
-			next_channel_id,
-			prev_user_channel_id,
-			next_user_channel_id,
-			prev_node_id,
-			next_node_id,
+			prev_htlcs,
+			next_htlcs,
 			total_fee_earned_msat,
 			skimmed_fee_msat,
 			claim_from_onchain_tx,
 			..
 		} => {
+			assert_eq!(prev_htlcs.len(), 1);
+			assert_eq!(next_htlcs.len(), 1);
+
 			if allow_1_msat_fee_overpay {
 				// Aggregating fees for blinded paths may result in a rounding error, causing slight
 				// overpayment in fees.
@@ -3120,33 +3119,36 @@ pub fn expect_payment_forwarded<CM: AChannelManager, H: NodeHolder<CM = CM>>(
 			// overpaid amount.
 			assert!(skimmed_fee_msat == expected_extra_fees_msat);
 			if !upstream_force_closed {
-				assert_eq!(prev_node.node().get_our_node_id(), prev_node_id.unwrap());
+				let prev_node_id = prev_htlcs[0].node_id.unwrap();
+				let prev_channel_id = prev_htlcs[0].channel_id;
+				let prev_user_channel_id = prev_htlcs[0].user_channel_id.unwrap();
+
+				assert_eq!(prev_node.node().get_our_node_id(), prev_node_id);
 				// Is the event prev_channel_id in one of the channels between the two nodes?
 				let node_chans = node.node().list_channels();
-				assert!(node_chans.iter().any(|x| x.counterparty.node_id == prev_node_id.unwrap()
-					&& x.channel_id == prev_channel_id.unwrap()
-					&& x.user_channel_id == prev_user_channel_id.unwrap()));
+				assert!(node_chans.iter().any(|x| x.counterparty.node_id == prev_node_id
+					&& x.channel_id == prev_channel_id
+					&& x.user_channel_id == prev_user_channel_id));
 			}
 			// We check for force closures since a force closed channel is removed from the
 			// node's channel list
 			if !downstream_force_closed {
+				let next_node_id = next_htlcs[0].node_id.unwrap();
+				let next_channel_id = next_htlcs[0].channel_id;
+				let next_user_channel_id = next_htlcs[0].user_channel_id.unwrap();
 				// As documented, `next_user_channel_id` will only be `Some` if we didn't settle via an
 				// onchain transaction, just as the `total_fee_earned_msat` field. Rather than
 				// introducing yet another variable, we use the latter's state as a flag to detect
 				// this and only check if it's `Some`.
-				assert_eq!(next_node.node().get_our_node_id(), next_node_id.unwrap());
+				assert_eq!(next_node.node().get_our_node_id(), next_node_id);
 				let node_chans = node.node().list_channels();
 				if total_fee_earned_msat.is_none() {
-					assert!(node_chans
-						.iter()
-						.any(|x| x.counterparty.node_id == next_node_id.unwrap()
-							&& x.channel_id == next_channel_id.unwrap()));
+					assert!(node_chans.iter().any(|x| x.counterparty.node_id == next_node_id
+						&& x.channel_id == next_channel_id));
 				} else {
-					assert!(node_chans
-						.iter()
-						.any(|x| x.counterparty.node_id == next_node_id.unwrap()
-							&& x.channel_id == next_channel_id.unwrap()
-							&& x.user_channel_id == next_user_channel_id.unwrap()));
+					assert!(node_chans.iter().any(|x| x.counterparty.node_id == next_node_id
+						&& x.channel_id == next_channel_id
+						&& x.user_channel_id == next_user_channel_id));
 				}
 			}
 			assert_eq!(claim_from_onchain_tx, downstream_force_closed);
@@ -3732,6 +3734,9 @@ pub fn do_pass_along_path<'a, 'b, 'c>(args: PassAlongPathArgs) -> Option<Event> 
 									our_payment_secret,
 									onion_fields.as_ref().unwrap().payment_secret
 								);
+							},
+							PaymentPurpose::Trampoline {} => {
+								panic!("Trampoline should not emit PaymentClaimable");
 							},
 						}
 						assert_eq!(*amount_msat, recv_value);
