@@ -5874,6 +5874,7 @@ impl<
 			let features = self.bolt12_invoice_features();
 			let outbound_pmts_res = self.pending_outbound_payments.static_invoice_received(
 				invoice,
+				&self.flow.currency_conversion,
 				payment_id,
 				features,
 				best_block_height,
