@@ -822,19 +822,25 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 	/// by the [`OffersMessageFlow`], and any corresponding [`Bolt12Invoice`] received in response
 	/// can be verified using [`Self::verify_bolt12_invoice`].
 	///
+	/// The provided [`CurrencyConversion`] is used to resolve any currency-denominated offer amount
+	/// while building the request.
+	///
 	/// # Nonce
 	/// The nonce is used to create a unique [`InvoiceRequest::payer_metadata`] for the invoice request.
 	/// These will be used to verify the corresponding [`Bolt12Invoice`] when it is received.
 	///
 	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
-	pub fn create_invoice_request_builder<'a>(
+	pub fn create_invoice_request_builder<'a, CC: CurrencyConversion>(
 		&'a self, offer: &'a Offer, nonce: Nonce, payment_id: PaymentId,
-	) -> Result<InvoiceRequestBuilder<'a, 'a, secp256k1::All>, Bolt12SemanticError> {
+		currency_conversion: &'a CC,
+	) -> Result<InvoiceRequestBuilder<'a, 'a, secp256k1::All, CC>, Bolt12SemanticError> {
 		let expanded_key = &self.inbound_payment_key;
 		let secp_ctx = &self.secp_ctx;
 
-		let builder: InvoiceRequestBuilder<secp256k1::All> =
-			offer.request_invoice(expanded_key, nonce, secp_ctx, payment_id)?.into();
+		let builder: InvoiceRequestBuilder<'a, 'a, secp256k1::All, CC> = offer
+			.request_invoice(expanded_key, nonce, secp_ctx, payment_id, currency_conversion)?
+			.into();
+
 		let builder = builder.chain_hash(self.chain_hash)?;
 
 		Ok(builder)
@@ -843,11 +849,14 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 	/// Creates a [`StaticInvoiceBuilder`] from the corresponding [`Offer`] and [`Nonce`] that were
 	/// created via [`Self::create_async_receive_offer_builder`].
 	///
+	/// The provided [`CurrencyConversion`] is used to resolve the offer amount when the offer is
+	/// currency-denominated.
+	///
 	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
-	pub fn create_static_invoice_builder<'a, R: Router>(
+	pub fn create_static_invoice_builder<'a, R: Router, CC: CurrencyConversion>(
 		&self, router: &R, offer: &'a Offer, offer_nonce: Nonce, payment_secret: PaymentSecret,
 		relative_expiry_secs: u32, usable_channels: Vec<ChannelDetails>,
-		peers: Vec<MessageForwardNode>,
+		peers: Vec<MessageForwardNode>, currency_conversion: &CC,
 	) -> Result<StaticInvoiceBuilder<'a>, Bolt12SemanticError> {
 		let expanded_key = &self.inbound_payment_key;
 		let secp_ctx = &self.secp_ctx;
@@ -855,10 +864,7 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 		let payment_context =
 			PaymentContext::AsyncBolt12Offer(AsyncBolt12OfferContext { offer_nonce });
 
-		let amount_msat = offer.amount().and_then(|amount| match amount {
-			Amount::Bitcoin { amount_msats } => Some(amount_msats),
-			Amount::Currency { .. } => None,
-		});
+		let amount_msat = offer.resolve_offer_amount(currency_conversion)?;
 
 		let created_at = self.duration_since_epoch();
 
@@ -973,23 +979,32 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 	///
 	/// Use this method when you want to inspect or modify the [`InvoiceBuilder`]
 	/// before signing and generating the final [`Bolt12Invoice`].
+	/// The provided [`CurrencyConversion`] is used to resolve any
+	/// currency-denominated amount in the [`InvoiceRequest`].
 	///
 	/// # Errors
 	///
 	/// Returns a [`Bolt12SemanticError`] if:
 	/// - Valid blinded payment paths could not be generated for the [`Bolt12Invoice`].
 	/// - The [`InvoiceBuilder`] could not be created from the [`InvoiceRequest`].
-	pub fn create_invoice_builder_from_invoice_request_with_keys<'a, R: Router, F>(
+	pub fn create_invoice_builder_from_invoice_request_with_keys<
+		'a,
+		R: Router,
+		F,
+		CC: CurrencyConversion,
+	>(
 		&self, router: &R, invoice_request: &'a VerifiedInvoiceRequest<DerivedSigningPubkey>,
-		usable_channels: Vec<ChannelDetails>, get_payment_info: F,
+		usable_channels: Vec<ChannelDetails>, get_payment_info: F, currency_conversion: &CC,
 	) -> Result<(InvoiceBuilder<'a, DerivedSigningPubkey>, MessageContext), Bolt12SemanticError>
 	where
 		F: Fn(u64, u32) -> Result<(PaymentHash, PaymentSecret), Bolt12SemanticError>,
 	{
 		let relative_expiry = DEFAULT_RELATIVE_EXPIRY.as_secs() as u32;
 
-		let amount_msats =
-			InvoiceBuilder::<DerivedSigningPubkey>::amount_msats(&invoice_request.inner)?;
+		let amount_msats = InvoiceBuilder::<DerivedSigningPubkey>::amount_msats(
+			&invoice_request.inner,
+			currency_conversion,
+		)?;
 
 		let (payment_hash, payment_secret) = get_payment_info(amount_msats, relative_expiry)?;
 
@@ -1010,9 +1025,14 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
 		#[cfg(feature = "std")]
-		let builder = invoice_request.respond_using_derived_keys(payment_paths, payment_hash);
+		let builder = invoice_request.respond_using_derived_keys(
+			currency_conversion,
+			payment_paths,
+			payment_hash,
+		);
 		#[cfg(not(feature = "std"))]
 		let builder = invoice_request.respond_using_derived_keys_no_std(
+			currency_conversion,
 			payment_paths,
 			payment_hash,
 			Duration::from_secs(self.highest_seen_timestamp.load(Ordering::Acquire) as u64),
@@ -1032,23 +1052,32 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 	///
 	/// Use this method when you want to inspect or modify the [`InvoiceBuilder`]
 	/// before signing and generating the final [`Bolt12Invoice`].
+	/// The provided [`CurrencyConversion`] is used to resolve any
+	/// currency-denominated amount in the [`InvoiceRequest`].
 	///
 	/// # Errors
 	///
 	/// Returns a [`Bolt12SemanticError`] if:
 	/// - Valid blinded payment paths could not be generated for the [`Bolt12Invoice`].
 	/// - The [`InvoiceBuilder`] could not be created from the [`InvoiceRequest`].
-	pub fn create_invoice_builder_from_invoice_request_without_keys<'a, R: Router, F>(
+	pub fn create_invoice_builder_from_invoice_request_without_keys<
+		'a,
+		R: Router,
+		F,
+		CC: CurrencyConversion,
+	>(
 		&self, router: &R, invoice_request: &'a VerifiedInvoiceRequest<ExplicitSigningPubkey>,
-		usable_channels: Vec<ChannelDetails>, get_payment_info: F,
+		usable_channels: Vec<ChannelDetails>, get_payment_info: F, currency_conversion: &CC,
 	) -> Result<(InvoiceBuilder<'a, ExplicitSigningPubkey>, MessageContext), Bolt12SemanticError>
 	where
 		F: Fn(u64, u32) -> Result<(PaymentHash, PaymentSecret), Bolt12SemanticError>,
 	{
 		let relative_expiry = DEFAULT_RELATIVE_EXPIRY.as_secs() as u32;
 
-		let amount_msats =
-			InvoiceBuilder::<DerivedSigningPubkey>::amount_msats(&invoice_request.inner)?;
+		let amount_msats = InvoiceBuilder::<DerivedSigningPubkey>::amount_msats(
+			&invoice_request.inner,
+			currency_conversion,
+		)?;
 
 		let (payment_hash, payment_secret) = get_payment_info(amount_msats, relative_expiry)?;
 
@@ -1069,9 +1098,10 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
 		#[cfg(feature = "std")]
-		let builder = invoice_request.respond_with(payment_paths, payment_hash);
+		let builder = invoice_request.respond_with(currency_conversion, payment_paths, payment_hash);
 		#[cfg(not(feature = "std"))]
 		let builder = invoice_request.respond_with_no_std(
+			currency_conversion,
 			payment_paths,
 			payment_hash,
 			Duration::from_secs(self.highest_seen_timestamp.load(Ordering::Acquire) as u64),
@@ -1389,9 +1419,9 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 	/// the cache can self-regulate the number of messages sent out.
 	///
 	/// Errors if we failed to create blinded reply paths when sending an [`OfferPathsRequest`] message.
-	pub fn check_refresh_async_receive_offer_cache<R: Router>(
+	pub fn check_refresh_async_receive_offer_cache<R: Router, CC: CurrencyConversion>(
 		&self, peers: Vec<MessageForwardNode>, usable_channels: Vec<ChannelDetails>, router: R,
-		timer_tick_occurred: bool,
+		timer_tick_occurred: bool, currency_conversion: &CC,
 	) -> Result<(), ()> {
 		// Terminate early if this node does not intend to receive async payments.
 		{
@@ -1404,7 +1434,7 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 		self.check_refresh_async_offers(peers.clone(), timer_tick_occurred)?;
 
 		if timer_tick_occurred {
-			self.check_refresh_static_invoices(peers, usable_channels, router);
+			self.check_refresh_static_invoices(peers, usable_channels, router, currency_conversion);
 		}
 
 		Ok(())
@@ -1461,8 +1491,9 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 
 	/// Enqueue onion messages that will used to request invoice refresh from the static invoice
 	/// server, based on the offers provided by the cache.
-	fn check_refresh_static_invoices<R: Router>(
+	fn check_refresh_static_invoices<R: Router, CC: CurrencyConversion>(
 		&self, peers: Vec<MessageForwardNode>, usable_channels: Vec<ChannelDetails>, router: R,
+		currency_conversion: &CC,
 	) {
 		let mut serve_static_invoice_msgs = Vec::new();
 		{
@@ -1477,6 +1508,7 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 					peers.clone(),
 					usable_channels.clone(),
 					&router,
+					currency_conversion,
 				) {
 					Ok((invoice, path)) => (invoice, path),
 					Err(()) => continue,
@@ -1584,10 +1616,10 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 	///
 	/// Returns `None` if we have enough offers cached already, verification of `message` fails, or we
 	/// fail to create blinded paths.
-	pub fn handle_offer_paths<ES: EntropySource, R: Router>(
+	pub fn handle_offer_paths<ES: EntropySource, R: Router, CC: CurrencyConversion>(
 		&self, message: OfferPaths, context: AsyncPaymentsContext, responder: Responder,
 		peers: Vec<MessageForwardNode>, usable_channels: Vec<ChannelDetails>, entropy: ES,
-		router: R,
+		router: R, currency_conversion: &CC,
 	) -> Option<(ServeStaticInvoice, MessageContext)> {
 		let duration_since_epoch = self.duration_since_epoch();
 		let invoice_slot = match context {
@@ -1632,6 +1664,7 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 			peers,
 			usable_channels,
 			router,
+			currency_conversion,
 		) {
 			Ok(res) => res,
 			Err(()) => {
@@ -1665,9 +1698,9 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 
 	/// Creates a [`StaticInvoice`] and a blinded path for the server to forward invoice requests from
 	/// payers to our node.
-	fn create_static_invoice_for_server<R: Router>(
+	fn create_static_invoice_for_server<R: Router, CC: CurrencyConversion>(
 		&self, offer: &Offer, offer_nonce: Nonce, peers: Vec<MessageForwardNode>,
-		usable_channels: Vec<ChannelDetails>, router: R,
+		usable_channels: Vec<ChannelDetails>, router: R, currency_conversion: &CC,
 	) -> Result<(StaticInvoice, BlindedMessagePath), ()> {
 		let expanded_key = &self.inbound_payment_key;
 		let duration_since_epoch = self.duration_since_epoch();
@@ -1699,6 +1732,7 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 				offer_relative_expiry,
 				usable_channels,
 				peers.clone(),
+				currency_conversion,
 			)
 			.and_then(|builder| builder.build_and_sign(secp_ctx))
 			.map_err(|_| ())?;
