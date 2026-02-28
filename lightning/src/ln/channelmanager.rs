@@ -8373,12 +8373,26 @@ impl<
 								});
 								let verified_invreq = match verify_opt {
 									Some(verified_invreq) => {
-										if let Some(invreq_amt_msat) =
-											verified_invreq.amount_msats()
+										match verified_invreq
+											.amount_msats(&self.flow.currency_conversion)
 										{
-											if payment_data.total_msat < invreq_amt_msat {
+											Ok(invreq_amt_msat) => {
+												if payment_data.total_msat < invreq_amt_msat {
+													fail_htlc!(claimable_htlc, payment_hash);
+												}
+											},
+											Err(_) => {
+												// `amount_msats()` can only fail if the invoice request does not specify an amount
+												// and the underlying offer's amount cannot be resolved.
+												//
+												// This invoice request corresponds to an offer we constructed, and we only allow
+												// creating offers with currency amounts that the node explicitly supports.
+												//
+												// Therefore, amount resolution must succeed here. Reaching this branch indicates
+												// an internal logic error.
+												debug_assert!(false);
 												fail_htlc!(claimable_htlc, payment_hash);
-											}
+											},
 										}
 										verified_invreq
 									},
@@ -14193,10 +14207,12 @@ impl<
 			None => builder,
 			Some(quantity) => builder.quantity(quantity)?,
 		};
+
 		let builder = match amount_msats {
 			None => builder,
 			Some(amount_msats) => builder.amount_msats(amount_msats)?,
 		};
+
 		let builder = match payer_note {
 			None => builder,
 			Some(payer_note) => builder.payer_note(payer_note),
