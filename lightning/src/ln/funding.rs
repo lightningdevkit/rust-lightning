@@ -1486,6 +1486,48 @@ mod tests {
 	}
 
 	#[test]
+	fn test_for_acceptor_at_feerate_no_change_surplus_below_dust() {
+		// Inputs present, no change output. The acceptor built their contribution at a low
+		// feerate as if they were the initiator (including common TX fields in estimated_fee).
+		// The initiator proposes a ~3x higher feerate. At that rate, the acceptor's fair fee
+		// (only their personal input weight) nearly matches the original budget, leaving a
+		// small surplus below the dust limit.
+		let original_feerate = FeeRate::from_sat_per_kwu(1000);
+		let target_feerate = FeeRate::from_sat_per_kwu(3000);
+		let inputs = vec![funding_input_sats(100_000)];
+
+		// estimated_fee includes common TX fields (is_initiator=true) at the original feerate.
+		let estimated_fee =
+			estimate_transaction_fee(&inputs, &[], None, true, true, original_feerate);
+
+		// fair_fee only includes the acceptor's contributed weight (is_initiator=false) at the
+		// higher target feerate.
+		let fair_fee = estimate_transaction_fee(&inputs, &[], None, false, true, target_feerate);
+
+		// Verify our setup: surplus is positive and below the P2WPKH dust limit (294 sats).
+		assert!(estimated_fee > fair_fee);
+		let dust_limit = ScriptBuf::new_p2wpkh(&WPubkeyHash::all_zeros()).minimal_non_dust();
+		assert!(estimated_fee - fair_fee < dust_limit);
+
+		let contribution = FundingContribution {
+			value_added: Amount::from_sat(50_000),
+			estimated_fee,
+			inputs,
+			outputs: vec![],
+			change_output: None,
+			feerate: original_feerate,
+			max_feerate: FeeRate::MAX,
+			is_splice: true,
+		};
+
+		let result = contribution.for_acceptor_at_feerate(target_feerate, Amount::MAX);
+		assert!(result.is_ok());
+		let adjusted = result.unwrap();
+		assert!(adjusted.change_output.is_none());
+		assert_eq!(adjusted.estimated_fee, fair_fee);
+	}
+
+	#[test]
 	fn test_for_acceptor_at_feerate_surplus_exceeds_dust() {
 		// Inputs, no change. The estimated_fee (is_initiator=true budget) far exceeds
 		// the acceptor's fair fee (is_initiator=false), so surplus >= dust_limit.
