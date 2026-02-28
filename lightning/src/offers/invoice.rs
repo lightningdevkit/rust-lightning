@@ -1894,7 +1894,7 @@ mod tests {
 	use crate::offers::merkle::{self, SignError, SignatureTlvStreamRef, TaggedHash, TlvStream};
 	use crate::offers::nonce::Nonce;
 	use crate::offers::offer::{
-		Amount, ExperimentalOfferTlvStreamRef, OfferTlvStreamRef, Quantity,
+		Amount, CurrencyCode, ExperimentalOfferTlvStreamRef, OfferTlvStreamRef, Quantity,
 	};
 	use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError};
 	use crate::offers::payer::PayerTlvStreamRef;
@@ -2094,6 +2094,54 @@ mod tests {
 		if let Err(e) = Bolt12Invoice::try_from(buffer) {
 			panic!("error parsing invoice: {:?}", e);
 		}
+	}
+
+	#[test]
+	fn builds_invoice_for_fiat_offer() {
+		let expanded_key = ExpandedKey::new([42; 32]);
+		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
+		let secp_ctx = Secp256k1::new();
+		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
+		let currency_amount =
+			Amount::Currency { iso4217_code: CurrencyCode::new(*b"USD").unwrap(), amount: 10 };
+		let expected_amount_msats = 10_000;
+
+		let payment_paths = payment_paths();
+		let payment_hash = payment_hash();
+		let now = now();
+		let unsigned_invoice = OfferBuilder::new(recipient_pubkey())
+			.amount(currency_amount, &conversion)
+			.unwrap()
+			.build()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id, &conversion)
+			.unwrap()
+			.build_and_sign()
+			.unwrap()
+			.respond_with_no_std(&conversion, payment_paths.clone(), payment_hash, now)
+			.unwrap()
+			.build()
+			.unwrap();
+
+		let (_, offer_tlv_stream, _, invoice_tlv_stream, _, _, _) =
+			unsigned_invoice.contents.as_tlv_stream();
+		assert_eq!(unsigned_invoice.amount(), Some(currency_amount));
+		assert_eq!(offer_tlv_stream.currency, Some(b"USD"));
+		assert_eq!(offer_tlv_stream.amount, Some(10));
+		assert_eq!(invoice_tlv_stream.amount, Some(expected_amount_msats));
+		assert_eq!(unsigned_invoice.amount_msats(), expected_amount_msats);
+		assert_eq!(unsigned_invoice.payment_paths(), payment_paths.as_slice());
+
+		#[cfg(c_bindings)]
+		let mut unsigned_invoice = unsigned_invoice;
+		let invoice = unsigned_invoice.sign(recipient_sign).unwrap();
+		let (_, offer_tlv_stream, _, invoice_tlv_stream, _, _, _, _) = invoice.as_tlv_stream();
+		assert_eq!(invoice.amount(), Some(currency_amount));
+		assert_eq!(offer_tlv_stream.currency, Some(b"USD"));
+		assert_eq!(offer_tlv_stream.amount, Some(10));
+		assert_eq!(invoice_tlv_stream.amount, Some(expected_amount_msats));
+		assert_eq!(invoice.amount_msats(), expected_amount_msats);
 	}
 
 	#[test]
