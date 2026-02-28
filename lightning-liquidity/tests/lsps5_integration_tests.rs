@@ -7,9 +7,8 @@ use common::{
 	get_lsps_message, LSPSNodes, LiquidityNode,
 };
 
-use lightning::chain::{BestBlock, Filter};
 use lightning::events::ClosureReason;
-use lightning::ln::channelmanager::{ChainParameters, InterceptId};
+use lightning::ln::channelmanager::InterceptId;
 use lightning::ln::functional_test_utils::{
 	check_closed_event, close_channel, create_chan_between_nodes, create_chanmon_cfgs,
 	create_network, create_node_cfgs, create_node_chanmgrs, Node,
@@ -43,8 +42,6 @@ use lightning_liquidity::{LiquidityClientConfig, LiquidityServiceConfig};
 
 use lightning_types::payment::PaymentHash;
 
-use bitcoin::Network;
-
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -55,7 +52,6 @@ pub(crate) fn lsps5_test_setup_with_kv_stores<'a, 'b, 'c>(
 ) -> (LSPSNodes<'a, 'b, 'c>, LSPS5Validator) {
 	let lsps5_service_config = LSPS5ServiceConfig::default();
 	let service_config = LiquidityServiceConfig {
-		#[cfg(lsps1_service)]
 		lsps1_service_config: None,
 		lsps2_service_config: None,
 		lsps5_service_config: Some(lsps5_service_config),
@@ -68,6 +64,7 @@ pub(crate) fn lsps5_test_setup_with_kv_stores<'a, 'b, 'c>(
 		lsps1_client_config: None,
 		lsps2_client_config: None,
 		lsps5_client_config: Some(lsps5_client_config),
+		lsps7_client_config: None,
 	};
 
 	let lsps_nodes = create_service_and_client_nodes_with_kv_stores(
@@ -239,7 +236,6 @@ pub(crate) fn lsps5_lsps2_test_setup<'a, 'b, 'c>(
 	let lsps5_service_config = LSPS5ServiceConfig::default();
 	let lsps2_service_config = LSPS2ServiceConfig { promise_secret: [42; 32] };
 	let service_config = LiquidityServiceConfig {
-		#[cfg(lsps1_service)]
 		lsps1_service_config: None,
 		lsps2_service_config: Some(lsps2_service_config),
 		lsps5_service_config: Some(lsps5_service_config),
@@ -252,6 +248,7 @@ pub(crate) fn lsps5_lsps2_test_setup<'a, 'b, 'c>(
 		lsps1_client_config: None,
 		lsps2_client_config: Some(lsps2_client_config),
 		lsps5_client_config: Some(lsps5_client_config),
+		lsps7_client_config: None,
 	};
 
 	let lsps_nodes = create_service_and_client_nodes(
@@ -1515,7 +1512,6 @@ fn lsps5_service_handler_persistence_across_restarts() {
 	let client_kv_store = Arc::new(TestStore::new(false));
 
 	let service_config = LiquidityServiceConfig {
-		#[cfg(lsps1_service)]
 		lsps1_service_config: None,
 		lsps2_service_config: None,
 		lsps5_service_config: Some(LSPS5ServiceConfig::default()),
@@ -1601,18 +1597,10 @@ fn lsps5_service_handler_persistence_across_restarts() {
 		let node_chanmgrs_restart = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 		let nodes_restart = create_network(2, &node_cfgs, &node_chanmgrs_restart);
 
-		// Create a new LiquidityManager with the same configuration and KV store to simulate restart
-		let chain_params = ChainParameters {
-			network: Network::Testnet,
-			best_block: BestBlock::from_network(Network::Testnet),
-		};
-
 		let restarted_service_lm = LiquidityManagerSync::new_with_custom_time_provider(
 			nodes_restart[0].keys_manager,
 			nodes_restart[0].keys_manager,
 			nodes_restart[0].node,
-			None::<Arc<dyn Filter + Send + Sync>>,
-			Some(chain_params),
 			service_kv_store,
 			nodes_restart[0].tx_broadcaster,
 			Some(service_config),

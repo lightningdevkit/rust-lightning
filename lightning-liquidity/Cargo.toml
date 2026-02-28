@@ -46,7 +46,6 @@ parking_lot = { version = "0.12", default-features = false }
 level = "forbid"
 # When adding a new cfg attribute, ensure that it is added to this list.
 check-cfg = [
-	"cfg(lsps1_service)",
 	"cfg(c_bindings)",
 	"cfg(backtrace)",
 	"cfg(ldk_bench)",

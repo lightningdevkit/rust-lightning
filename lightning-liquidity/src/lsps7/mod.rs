@@ -7,10 +7,8 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-//! Types and primitives that implement the bLIP-51 / LSPS1: Channel Request specification.
+//! Types and primitives that implement the bLIP-57 / LSPS7: Channel Lease Extensions specification.
 
 pub mod client;
 pub mod event;
 pub mod msgs;
-pub(crate) mod peer_state;
-pub mod service;
