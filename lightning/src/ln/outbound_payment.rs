@@ -24,7 +24,7 @@ use crate::ln::channelmanager::{
 use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils;
 use crate::ln::onion_utils::{DecodedOnionFailure, HTLCFailReason};
-use crate::offers::invoice::{Bolt12Invoice, DerivedSigningPubkey, InvoiceBuilder};
+use crate::offers::invoice::Bolt12Invoice;
 use crate::offers::invoice_request::InvoiceRequest;
 use crate::offers::nonce::Nonce;
 use crate::offers::static_invoice::StaticInvoice;
@@ -1285,9 +1285,7 @@ impl OutboundPayments {
 						));
 					}
 
-					let amount_msat = match InvoiceBuilder::<DerivedSigningPubkey>::amount_msats(
-						invreq,
-					) {
+					let amount_msat = match invreq.payable_amount_msats() {
 						Ok(amt) => amt,
 						Err(_) => {
 							// We check this during invoice request parsing, when constructing the invreq's
@@ -2882,7 +2880,7 @@ mod tests {
 	use crate::util::errors::APIError;
 	use crate::util::hash_tables::new_hash_map;
 	use crate::util::logger::WithContext;
-	use crate::util::test_utils;
+	use crate::util::test_utils::{self, TestCurrencyConversion};
 
 	use alloc::collections::VecDeque;
 
@@ -3245,6 +3243,7 @@ mod tests {
 		let pending_events = Mutex::new(VecDeque::new());
 		let outbound_payments = OutboundPayments::new(new_hash_map());
 		let payment_id = PaymentId([0; 32]);
+		let conversion = TestCurrencyConversion;
 		let expiration = StaleExpiration::AbsoluteTimeout(Duration::from_secs(100));
 
 		assert!(
@@ -3302,6 +3301,7 @@ mod tests {
 		let expanded_key = ExpandedKey::new([42; 32]);
 		let nonce = Nonce([0; 16]);
 		let payment_id = PaymentId([0; 32]);
+		let conversion = TestCurrencyConversion;
 		let expiration = StaleExpiration::AbsoluteTimeout(Duration::from_secs(100));
 
 		let invoice = OfferBuilder::new(recipient_pubkey())
@@ -3367,6 +3367,7 @@ mod tests {
 		let expanded_key = ExpandedKey::new([42; 32]);
 		let nonce = Nonce([0; 16]);
 		let payment_id = PaymentId([0; 32]);
+		let conversion = TestCurrencyConversion;
 		let expiration = StaleExpiration::AbsoluteTimeout(Duration::from_secs(100));
 
 		let invoice = OfferBuilder::new(recipient_pubkey())
@@ -3457,6 +3458,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000).unwrap()

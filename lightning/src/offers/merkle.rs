@@ -336,7 +336,7 @@ mod tests {
 		let nonce = Nonce([0u8; 16]);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
-		let supported_conversion = TestCurrencyConversion;
+		let conversion = TestCurrencyConversion;
 
 		let recipient_pubkey = {
 			let secret_bytes = <Vec<u8>>::from_hex(
@@ -360,7 +360,7 @@ mod tests {
 			.description("A Mathematical Treatise".into())
 			.amount(
 				Amount::Currency { iso4217_code: CurrencyCode::new(*b"USD").unwrap(), amount: 100 },
-				&supported_conversion,
+				&conversion,
 			)
 			.unwrap()
 			.build_unchecked()
@@ -397,6 +397,7 @@ mod tests {
 		let nonce = Nonce([0u8; 16]);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		let unsigned_invoice_request = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
@@ -424,6 +425,7 @@ mod tests {
 		let nonce = Nonce([0u8; 16]);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		let recipient_pubkey = {
 			let secret_key = SecretKey::from_slice(&[41; 32]).unwrap();
@@ -459,6 +461,7 @@ mod tests {
 		let nonce = Nonce([0u8; 16]);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		let recipient_pubkey = {
 			let secret_key = SecretKey::from_slice(&[41; 32]).unwrap();

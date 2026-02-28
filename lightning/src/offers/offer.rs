@@ -817,7 +817,8 @@ macro_rules! request_invoice_derived_signing_pubkey { ($self: ident, $offer: exp
 			return Err(Bolt12SemanticError::UnknownRequiredFeatures);
 		}
 
-		let mut builder = <$builder>::deriving_signing_pubkey(&$offer, expanded_key, nonce, secp_ctx, payment_id);
+		let mut builder =
+			<$builder>::deriving_signing_pubkey(&$offer, expanded_key, nonce, secp_ctx, payment_id);
 		if let Some(hrn) = $hrn {
 			#[cfg(c_bindings)]
 			{
@@ -952,6 +953,12 @@ impl OfferContents {
 	pub(super) fn check_amount_msats_for_quantity(
 		&self, amount_msats: Option<u64>, quantity: Option<u64>,
 	) -> Result<(), Bolt12SemanticError> {
+		if let Some(amount_msats) = amount_msats {
+			if amount_msats > MAX_VALUE_MSAT {
+				return Err(Bolt12SemanticError::InvalidAmount);
+			}
+		}
+
 		let offer_amount_msats = match self.amount {
 			None => 0,
 			Some(Amount::Bitcoin { amount_msats }) => amount_msats,
@@ -966,10 +973,6 @@ impl OfferContents {
 
 			if amount_msats < expected_amount_msats {
 				return Err(Bolt12SemanticError::InsufficientAmount);
-			}
-
-			if amount_msats > MAX_VALUE_MSAT {
-				return Err(Bolt12SemanticError::InvalidAmount);
 			}
 		}
 
@@ -1631,6 +1634,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		#[cfg(c_bindings)]
 		use super::OfferWithDerivedMetadataBuilder as OfferBuilder;
@@ -1702,6 +1706,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		let blinded_path = BlindedMessagePath::from_blinded_path(
 			pubkey(40),
@@ -2019,6 +2024,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		match OfferBuilder::new(pubkey(42))
 			.features_unchecked(OfferFeatures::unknown())

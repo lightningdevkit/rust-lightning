@@ -223,9 +223,14 @@ macro_rules! invoice_request_builder_methods { (
 	///
 	/// [`quantity`]: Self::quantity
 	pub fn amount_msats($($self_mut)* $self: $self_type, amount_msats: u64) -> Result<$return_type, Bolt12SemanticError> {
-		$self.invoice_request.offer.check_amount_msats_for_quantity(
-			Some(amount_msats), $self.invoice_request.quantity
-		)?;
+		match $self
+			.invoice_request
+			.offer
+			.check_amount_msats_for_quantity(Some(amount_msats), $self.invoice_request.quantity)
+		{
+			Ok(()) | Err(Bolt12SemanticError::UnsupportedCurrency) => (),
+			Err(err) => return Err(err),
+		}
 		$self.invoice_request.amount_msats = Some(amount_msats);
 		Ok($return_value)
 	}
@@ -280,9 +285,17 @@ macro_rules! invoice_request_builder_methods { (
 		}
 
 		$self.invoice_request.offer.check_quantity($self.invoice_request.quantity)?;
-		$self.invoice_request.offer.check_amount_msats_for_quantity(
-			$self.invoice_request.amount_msats, $self.invoice_request.quantity
-		)?;
+		// Keep the wire request amount omitted whenever the payer leaves it unspecified. We still
+		// enforce every amount check that can be derived locally, but if the offer amount is
+		// currency-denominated we defer the remaining minimum calculation until a later stage where
+		// currency conversion is available.
+		match $self.invoice_request.offer.check_amount_msats_for_quantity(
+			$self.invoice_request.amount_msats,
+			$self.invoice_request.quantity
+		) {
+			Ok(()) | Err(Bolt12SemanticError::UnsupportedCurrency) => (),
+			Err(err) => return Err(err),
+		}
 
 		Ok($self.build_without_checks())
 	}
@@ -805,8 +818,9 @@ macro_rules! invoice_request_respond_with_explicit_signing_pubkey_methods { (
 	/// [`Bolt12Invoice::created_at`]: crate::offers::invoice::Bolt12Invoice::created_at
 	/// [`OfferBuilder::deriving_signing_pubkey`]: crate::offers::offer::OfferBuilder::deriving_signing_pubkey
 	pub fn respond_with_no_std(
-		&$self, payment_paths: Vec<BlindedPaymentPath>, payment_hash: PaymentHash,
-		created_at: core::time::Duration
+		&$self,
+		payment_paths: Vec<BlindedPaymentPath>, payment_hash: PaymentHash,
+		created_at: core::time::Duration,
 	) -> Result<$builder, Bolt12SemanticError> {
 		if $contents.invoice_request_features().requires_unknown_bits() {
 			return Err(Bolt12SemanticError::UnknownRequiredFeatures);
@@ -823,8 +837,9 @@ macro_rules! invoice_request_respond_with_explicit_signing_pubkey_methods { (
 	#[cfg(test)]
 	#[allow(dead_code)]
 	pub(super) fn respond_with_no_std_using_signing_pubkey(
-		&$self, payment_paths: Vec<BlindedPaymentPath>, payment_hash: PaymentHash,
-		created_at: core::time::Duration, signing_pubkey: PublicKey
+		&$self,
+		payment_paths: Vec<BlindedPaymentPath>, payment_hash: PaymentHash,
+		created_at: core::time::Duration, signing_pubkey: PublicKey,
 	) -> Result<$builder, Bolt12SemanticError> {
 		debug_assert!($contents.contents.inner.offer.issuer_signing_pubkey().is_none());
 
@@ -952,7 +967,7 @@ impl InvoiceRequest {
 	invoice_request_respond_with_explicit_signing_pubkey_methods!(
 		self,
 		self,
-		InvoiceWithExplicitSigningPubkeyBuilder
+		InvoiceWithExplicitSigningPubkeyBuilder<'_>
 	);
 	invoice_request_verify_method!(self, &Self);
 
@@ -1002,7 +1017,8 @@ macro_rules! invoice_request_respond_with_derived_signing_pubkey_methods { (
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	#[cfg(feature = "std")]
 	pub fn respond_using_derived_keys(
-		&$self, payment_paths: Vec<BlindedPaymentPath>, payment_hash: PaymentHash
+		&$self,
+		payment_paths: Vec<BlindedPaymentPath>, payment_hash: PaymentHash
 	) -> Result<$builder, Bolt12SemanticError> {
 		let created_at = std::time::SystemTime::now()
 			.duration_since(std::time::SystemTime::UNIX_EPOCH)
@@ -1019,7 +1035,8 @@ macro_rules! invoice_request_respond_with_derived_signing_pubkey_methods { (
 	///
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	pub fn respond_using_derived_keys_no_std(
-		&$self, payment_paths: Vec<BlindedPaymentPath>, payment_hash: PaymentHash,
+		&$self,
+		payment_paths: Vec<BlindedPaymentPath>, payment_hash: PaymentHash,
 		created_at: core::time::Duration
 	) -> Result<$builder, Bolt12SemanticError> {
 		if $self.inner.invoice_request_features().requires_unknown_bits() {
@@ -1087,7 +1104,7 @@ impl VerifiedInvoiceRequest<DerivedSigningPubkey> {
 	invoice_request_respond_with_derived_signing_pubkey_methods!(
 		self,
 		self.inner,
-		InvoiceWithDerivedSigningPubkeyBuilder
+		InvoiceWithDerivedSigningPubkeyBuilder<'_>
 	);
 }
 
@@ -1106,7 +1123,7 @@ impl VerifiedInvoiceRequest<ExplicitSigningPubkey> {
 	invoice_request_respond_with_explicit_signing_pubkey_methods!(
 		self,
 		self.inner,
-		InvoiceWithExplicitSigningPubkeyBuilder
+		InvoiceWithExplicitSigningPubkeyBuilder<'_>
 	);
 }
 
@@ -1160,10 +1177,7 @@ impl InvoiceRequestContents {
 				.checked_mul(self.quantity().unwrap_or(1))
 				.ok_or(Bolt12SemanticError::InvalidAmount),
 			Some(Amount::Currency { .. }) => Err(Bolt12SemanticError::UnsupportedCurrency),
-			None => {
-				debug_assert!(false);
-				Err(Bolt12SemanticError::MissingAmount)
-			},
+			None => Err(Bolt12SemanticError::MissingAmount),
 		}
 	}
 
@@ -1465,7 +1479,14 @@ impl TryFrom<PartialInvoiceRequestTlvStream> for InvoiceRequestContents {
 		}
 
 		offer.check_quantity(quantity)?;
-		offer.check_amount_msats_for_quantity(amount, quantity)?;
+
+		match offer.check_amount_msats_for_quantity(amount, quantity) {
+			// When the offer amount is currency-denominated we can still parse the request and
+			// enforce every conversion-independent check above, but the amount minimum itself is
+			// deferred until a later stage where currency conversion is available.
+			Ok(()) | Err(Bolt12SemanticError::UnsupportedCurrency) => (),
+			Err(err) => return Err(err),
+		}
 
 		let features = features.unwrap_or_else(InvoiceRequestFeatures::empty);
 
@@ -1596,6 +1617,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 		let encrypted_payment_id = expanded_key.crypt_for_offer(payment_id.0, nonce);
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
@@ -1687,6 +1709,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		let future_expiry = Duration::from_secs(u64::max_value());
 		let past_expiry = Duration::from_secs(0);
@@ -1724,6 +1747,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		let offer = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
@@ -1834,6 +1858,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		let mainnet = ChainHash::using_genesis_block(Network::Bitcoin);
 		let testnet = ChainHash::using_genesis_block(Network::Testnet);
@@ -1935,6 +1960,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
@@ -2081,7 +2107,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
-		let supported_conversion = TestCurrencyConversion;
+		let conversion = TestCurrencyConversion;
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
@@ -2115,7 +2141,7 @@ mod tests {
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
 			.amount(
 				Amount::Currency { iso4217_code: CurrencyCode::new(*b"USD").unwrap(), amount: 10 },
-				&supported_conversion,
+				&conversion,
 			)
 			.unwrap()
 			.build_unchecked()
@@ -2129,6 +2155,16 @@ mod tests {
 			Err(Bolt12SemanticError::UnsupportedCurrency)
 		);
 		assert_eq!(tlv_stream.amount, None);
+
+		let invoice_request = OfferBuilder::new(recipient_pubkey())
+			.build()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
+			.unwrap()
+			.build_unchecked_and_sign();
+		let (_, _, tlv_stream, _, _, _) = invoice_request.as_tlv_stream();
+		assert_eq!(invoice_request.amount_msats(), None);
+		assert_eq!(invoice_request.payable_amount_msats(), Err(Bolt12SemanticError::MissingAmount));
+		assert_eq!(tlv_stream.amount, None);
 	}
 
 	#[test]
@@ -2138,6 +2174,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
@@ -2174,6 +2211,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		let one = NonZeroU64::new(1).unwrap();
 		let ten = NonZeroU64::new(10).unwrap();
@@ -2220,7 +2258,7 @@ mod tests {
 			.build_and_sign()
 			.unwrap();
 		let (_, _, tlv_stream, _, _, _) = invoice_request.as_tlv_stream();
-		assert_eq!(invoice_request.amount_msats(), Some(10_000));
+		assert_eq!(invoice_request.payable_amount_msats(), Ok(10_000));
 		assert_eq!(tlv_stream.amount, Some(10_000));
 
 		match OfferBuilder::new(recipient_pubkey())
@@ -2252,7 +2290,7 @@ mod tests {
 			.build_and_sign()
 			.unwrap();
 		let (_, _, tlv_stream, _, _, _) = invoice_request.as_tlv_stream();
-		assert_eq!(invoice_request.amount_msats(), Some(2_000));
+		assert_eq!(invoice_request.payable_amount_msats(), Ok(2_000));
 		assert_eq!(tlv_stream.amount, Some(2_000));
 
 		match OfferBuilder::new(recipient_pubkey())
@@ -2289,6 +2327,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
@@ -2325,6 +2364,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		match OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
@@ -2349,6 +2389,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
@@ -2374,6 +2415,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
@@ -2421,7 +2463,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
-		let supported_conversion = TestCurrencyConversion;
+		let conversion = TestCurrencyConversion;
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
@@ -2499,7 +2541,7 @@ mod tests {
 					iso4217_code: CurrencyCode::new(*b"USD").unwrap(),
 					amount: 1000,
 				},
-				&supported_conversion,
+				&conversion,
 			)
 			.unwrap()
 			.build_unchecked()
@@ -2510,14 +2552,9 @@ mod tests {
 		let mut buffer = Vec::new();
 		invoice_request.write(&mut buffer).unwrap();
 
-		match InvoiceRequest::try_from(buffer) {
-			Ok(_) => panic!("expected error"),
-			Err(e) => {
-				assert_eq!(
-					e,
-					Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::UnsupportedCurrency)
-				);
-			},
+		// Parsing must succeed now that LDK supports Offers with currency-denominated amounts.
+		if let Err(e) = InvoiceRequest::try_from(buffer) {
+			panic!("error parsing invoice_request: {:?}", e);
 		}
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
@@ -2550,6 +2587,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		let one = NonZeroU64::new(1).unwrap();
 		let ten = NonZeroU64::new(10).unwrap();
@@ -2709,6 +2747,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		let unsigned_invoice_request = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
@@ -2741,6 +2780,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		let unsigned_invoice_request = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
@@ -2771,6 +2811,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		let unsigned_invoice_request = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
@@ -2805,6 +2846,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		let mut buffer = Vec::new();
 		OfferBuilder::new(recipient_pubkey())
@@ -2834,6 +2876,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		let mut invoice_request = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
@@ -2866,6 +2909,7 @@ mod tests {
 		let entropy = FixedEntropy {};
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		const UNKNOWN_ODD_TYPE: u64 = INVOICE_REQUEST_TYPES.end - 1;
 		assert!(UNKNOWN_ODD_TYPE % 2 == 1);
@@ -2946,6 +2990,7 @@ mod tests {
 		let entropy = FixedEntropy {};
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		const UNKNOWN_ODD_TYPE: u64 = EXPERIMENTAL_INVOICE_REQUEST_TYPES.start + 1;
 		assert!(UNKNOWN_ODD_TYPE % 2 == 1);
@@ -3057,6 +3102,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
@@ -3100,6 +3146,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		#[cfg(c_bindings)]
 		use crate::offers::offer::OfferWithDerivedMetadataBuilder as OfferBuilder;

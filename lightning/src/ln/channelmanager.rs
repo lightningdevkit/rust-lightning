@@ -8552,17 +8552,15 @@ impl<
 								});
 								let verified_invreq = match verify_opt {
 									Some(verified_invreq) => {
-										match verified_invreq.payable_amount_msats() {
-											Ok(invreq_amt_msat) => {
-												if payment_data.total_msat < invreq_amt_msat {
-													fail_htlc!(claimable_htlc, payment_hash);
-												}
-											},
-											Err(Bolt12SemanticError::UnsupportedCurrency)
-											| Err(Bolt12SemanticError::MissingAmount) => {},
-											Err(_) => {
+										if let Some(invreq_amt_msat) =
+											verified_invreq.amount_msats()
+										{
+											// Only explicit payer-provided amounts act as a lower
+											// bound here. Omitted amounts are resolved into the
+											// invoice amount when the payee creates the invoice.
+											if payment_data.total_msat < invreq_amt_msat {
 												fail_htlc!(claimable_htlc, payment_hash);
-											},
+											}
 										}
 										verified_invreq
 									},
@@ -14713,18 +14711,18 @@ impl<
 		let entropy = &self.entropy_source;
 		let nonce = Nonce::from_entropy_source(entropy);
 
-		let builder = self.flow.create_invoice_request_builder(
-			offer, nonce, payment_id,
-		)?;
+		let builder = self.flow.create_invoice_request_builder(offer, nonce, payment_id)?;
 
 		let builder = match quantity {
 			None => builder,
 			Some(quantity) => builder.quantity(quantity)?,
 		};
+
 		let builder = match amount_msats {
 			None => builder,
 			Some(amount_msats) => builder.amount_msats(amount_msats)?,
 		};
+
 		let builder = match payer_note {
 			None => builder,
 			Some(payer_note) => builder.payer_note(payer_note),

@@ -833,6 +833,7 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 
 		let builder: InvoiceRequestBuilder<secp256k1::All> =
 			offer.request_invoice(expanded_key, nonce, secp_ctx, payment_id)?.into();
+
 		let builder = builder.chain_hash(self.chain_hash)?;
 
 		Ok(builder)

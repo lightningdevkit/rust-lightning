@@ -1851,6 +1851,7 @@ mod tests {
 	use crate::types::features::{Bolt12InvoiceFeatures, InvoiceRequestFeatures, OfferFeatures};
 	use crate::types::string::PrintableString;
 	use crate::util::ser::{BigSize, Iterable, Writeable};
+	use crate::util::test_utils::TestCurrencyConversion;
 	#[cfg(not(c_bindings))]
 	use {crate::offers::offer::OfferBuilder, crate::offers::refund::RefundBuilder};
 	#[cfg(c_bindings)]
@@ -1882,6 +1883,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 		let encrypted_payment_id = expanded_key.crypt_for_offer(payment_id.0, nonce);
 
 		let payment_paths = payment_paths();
@@ -2153,6 +2155,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		let future_expiry = Duration::from_secs(u64::max_value());
 		let past_expiry = Duration::from_secs(0);
@@ -2230,6 +2233,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		let blinded_path = BlindedMessagePath::from_blinded_path(
 			pubkey(40),
@@ -2352,6 +2356,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		let now = now();
 		let one_hour = Duration::from_secs(3600);
@@ -2406,6 +2411,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		let invoice = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
@@ -2435,6 +2441,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		let invoice = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
@@ -2481,6 +2488,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		let script = ScriptBuf::new();
 		let pubkey = bitcoin::key::PublicKey::new(recipient_pubkey());
@@ -2539,6 +2547,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		let mut features = Bolt12InvoiceFeatures::empty();
 		features.set_basic_mpp_optional();
@@ -2570,6 +2579,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		match OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
@@ -2615,6 +2625,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		let invoice = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
@@ -2692,6 +2703,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		let invoice = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
@@ -2736,6 +2748,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		let invoice = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
@@ -2769,6 +2782,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		let invoice = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
@@ -2813,6 +2827,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		let invoice = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
@@ -2855,6 +2870,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		let invoice = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
@@ -2892,6 +2908,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		let script = ScriptBuf::new();
 		let pubkey = bitcoin::key::PublicKey::new(recipient_pubkey());
@@ -2961,6 +2978,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		let invoice = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
@@ -3019,6 +3037,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		let paths = [
 			BlindedMessagePath::from_blinded_path(
@@ -3120,6 +3139,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		let invoice = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
@@ -3140,12 +3160,11 @@ mod tests {
 		let mut buffer = Vec::new();
 		invoice.write(&mut buffer).unwrap();
 
-		match Bolt12Invoice::try_from(buffer) {
-			Ok(_) => panic!("expected error"),
-			Err(e) => assert_eq!(
-				e,
-				Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::InvalidAmount)
-			),
+		// When the payer omits `invoice_request.amount_msats`, invoice parsing cannot validate the
+		// final amount yet. That check is deferred until a later stage where the offer amount can be
+		// resolved with currency conversion if necessary.
+		if let Err(e) = Bolt12Invoice::try_from(buffer) {
+			panic!("error parsing invoice: {:?}", e);
 		}
 
 		let invoice = OfferBuilder::new(recipient_pubkey())
@@ -3212,6 +3231,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		let mut buffer = Vec::new();
 		OfferBuilder::new(recipient_pubkey())
@@ -3246,6 +3266,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		let mut invoice = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
@@ -3284,6 +3305,7 @@ mod tests {
 		let entropy = FixedEntropy {};
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		const UNKNOWN_ODD_TYPE: u64 = INVOICE_TYPES.end - 1;
 		assert!(UNKNOWN_ODD_TYPE % 2 == 1);
@@ -3372,6 +3394,7 @@ mod tests {
 		let entropy = FixedEntropy {};
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		let secp_ctx = Secp256k1::new();
 		let keys = Keypair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
@@ -3520,6 +3543,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		let invoice = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
@@ -3555,6 +3579,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		let invoice = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
@@ -3600,6 +3625,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		let offer = OfferBuilder::new(recipient_pubkey()).amount_msats(1000).unwrap().build();
 
@@ -3648,6 +3674,7 @@ mod tests {
 		let payment_paths = payment_paths();
 		let now = Duration::from_secs(123456);
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		let offer = OfferBuilder::new(node_id).amount_msats(1000).unwrap().build();
 
