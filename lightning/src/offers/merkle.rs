@@ -336,7 +336,7 @@ mod tests {
 		let nonce = Nonce([0u8; 16]);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
-		let supported_conversion = TestCurrencyConversion;
+		let conversion = TestCurrencyConversion;
 
 		let recipient_pubkey = {
 			let secret_bytes = <Vec<u8>>::from_hex(
@@ -360,12 +360,12 @@ mod tests {
 			.description("A Mathematical Treatise".into())
 			.amount(
 				Amount::Currency { iso4217_code: CurrencyCode::new(*b"USD").unwrap(), amount: 100 },
-				&supported_conversion,
+				&conversion,
 			)
 			.unwrap()
 			.build_unchecked()
 			// Override the payer metadata and signing pubkey to match the test vectors
-			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id, &conversion)
 			.unwrap()
 			.payer_metadata(Metadata::Bytes(vec![0; 8]))
 			.payer_signing_pubkey(payer_keys.public_key())
@@ -397,12 +397,13 @@ mod tests {
 		let nonce = Nonce([0u8; 16]);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		let unsigned_invoice_request = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
 			.build()
 			.unwrap()
-			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id, &conversion)
 			.unwrap()
 			.payer_note("bar".into())
 			.build_unchecked();
@@ -424,6 +425,7 @@ mod tests {
 		let nonce = Nonce([0u8; 16]);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		let recipient_pubkey = {
 			let secret_key = SecretKey::from_slice(&[41; 32]).unwrap();
@@ -433,7 +435,7 @@ mod tests {
 		let invoice_request = OfferBuilder::new(recipient_pubkey)
 			.amount_msats(100)
 			.build_unchecked()
-			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id, &conversion)
 			.unwrap()
 			.build_and_sign()
 			.unwrap();
@@ -458,6 +460,7 @@ mod tests {
 		let nonce = Nonce([0u8; 16]);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		let recipient_pubkey = {
 			let secret_key = SecretKey::from_slice(&[41; 32]).unwrap();
@@ -467,7 +470,7 @@ mod tests {
 		let invoice_request = OfferBuilder::new(recipient_pubkey)
 			.amount_msats(100)
 			.build_unchecked()
-			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id, &conversion)
 			.unwrap()
 			.build_and_sign()
 			.unwrap();

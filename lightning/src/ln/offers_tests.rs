@@ -73,6 +73,7 @@ use crate::util::ser::Writeable;
 const MAX_SHORT_LIVED_RELATIVE_EXPIRY: Duration = Duration::from_secs(60 * 60 * 24);
 
 use crate::prelude::*;
+use crate::util::test_utils::TestCurrencyConversion;
 
 macro_rules! expect_recent_payment {
 	($node: expr, $payment_state: path, $payment_id: expr) => {{
@@ -517,12 +518,14 @@ fn check_dummy_hop_pattern_in_offer() {
 	}
 
 	let payment_id = PaymentId([1; 32]);
+	let conversion = TestCurrencyConversion;
+
 	bob.node.pay_for_offer(&compact_offer, None, payment_id, Default::default()).unwrap();
 
 	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
 	let (invoice_request, reply_path) = extract_invoice_request(alice, &onion_message);
 
-	assert_eq!(invoice_request.amount_msats(), Some(10_000_000));
+	assert_eq!(invoice_request.amount_msats(&conversion), Ok(10_000_000));
 	assert_ne!(invoice_request.payer_signing_pubkey(), bob_id);
 	assert!(check_dummy_hopped_path_length(&reply_path, alice, bob_id, DUMMY_HOPS_PATH_LENGTH));
 
@@ -544,7 +547,7 @@ fn check_dummy_hop_pattern_in_offer() {
 	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
 	let (invoice_request, reply_path) = extract_invoice_request(alice, &onion_message);
 
-	assert_eq!(invoice_request.amount_msats(), Some(10_000_000));
+	assert_eq!(invoice_request.amount_msats(&conversion), Ok(10_000_000));
 	assert_ne!(invoice_request.payer_signing_pubkey(), bob_id);
 	assert!(check_dummy_hopped_path_length(&reply_path, alice, bob_id, DUMMY_HOPS_PATH_LENGTH));
 }
@@ -706,6 +709,8 @@ fn creates_and_pays_for_offer_using_two_hop_blinded_path() {
 	}
 
 	let payment_id = PaymentId([1; 32]);
+	let conversion = TestCurrencyConversion;
+
 	david.node.pay_for_offer(&offer, None, payment_id, Default::default()).unwrap();
 	expect_recent_payment!(david, RecentPaymentDetails::AwaitingInvoice, payment_id);
 
@@ -729,7 +734,7 @@ fn creates_and_pays_for_offer_using_two_hop_blinded_path() {
 			human_readable_name: None,
 		},
 	});
-	assert_eq!(invoice_request.amount_msats(), Some(10_000_000));
+	assert_eq!(invoice_request.amount_msats(&conversion), Ok(10_000_000));
 	assert_ne!(invoice_request.payer_signing_pubkey(), david_id);
 	assert!(check_dummy_hopped_path_length(&reply_path, bob, charlie_id, DUMMY_HOPS_PATH_LENGTH));
 
@@ -871,6 +876,7 @@ fn creates_and_pays_for_offer_using_one_hop_blinded_path() {
 	}
 
 	let payment_id = PaymentId([1; 32]);
+	let conversion = TestCurrencyConversion;
 	bob.node.pay_for_offer(&offer, None, payment_id, Default::default()).unwrap();
 	expect_recent_payment!(bob, RecentPaymentDetails::AwaitingInvoice, payment_id);
 
@@ -887,7 +893,7 @@ fn creates_and_pays_for_offer_using_one_hop_blinded_path() {
 			human_readable_name: None,
 		},
 	});
-	assert_eq!(invoice_request.amount_msats(), Some(10_000_000));
+	assert_eq!(invoice_request.amount_msats(&conversion), Ok(10_000_000));
 	assert_ne!(invoice_request.payer_signing_pubkey(), bob_id);
 	assert!(check_dummy_hopped_path_length(&reply_path, alice, bob_id, DUMMY_HOPS_PATH_LENGTH));
 
@@ -1253,6 +1259,7 @@ fn creates_and_pays_for_offer_with_retry() {
 		assert!(check_compact_path_introduction_node(&path, bob, alice_id));
 	}
 	let payment_id = PaymentId([1; 32]);
+	let conversion = TestCurrencyConversion;
 	bob.node.pay_for_offer(&offer, None, payment_id, Default::default()).unwrap();
 	expect_recent_payment!(bob, RecentPaymentDetails::AwaitingInvoice, payment_id);
 
@@ -1276,7 +1283,7 @@ fn creates_and_pays_for_offer_with_retry() {
 			human_readable_name: None,
 		},
 	});
-	assert_eq!(invoice_request.amount_msats(), Some(10_000_000));
+	assert_eq!(invoice_request.amount_msats(&conversion), Ok(10_000_000));
 	assert_ne!(invoice_request.payer_signing_pubkey(), bob_id);
 	assert!(check_dummy_hopped_path_length(&reply_path, alice, bob_id, DUMMY_HOPS_PATH_LENGTH));
 	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
@@ -1576,6 +1583,8 @@ fn fails_authentication_when_handling_invoice_request() {
 
 	// Send the invoice request directly to Alice instead of using a blinded path.
 	let payment_id = PaymentId([1; 32]);
+	let conversion = TestCurrencyConversion;
+
 	david.node.pay_for_offer(&offer, None, payment_id, Default::default()).unwrap();
 	expect_recent_payment!(david, RecentPaymentDetails::AwaitingInvoice, payment_id);
 
@@ -1590,7 +1599,7 @@ fn fails_authentication_when_handling_invoice_request() {
 	alice.onion_messenger.handle_onion_message(david_id, &onion_message);
 
 	let (invoice_request, reply_path) = extract_invoice_request(alice, &onion_message);
-	assert_eq!(invoice_request.amount_msats(), Some(10_000_000));
+	assert_eq!(invoice_request.amount_msats(&conversion), Ok(10_000_000));
 	assert_ne!(invoice_request.payer_signing_pubkey(), david_id);
 	assert!(check_dummy_hopped_path_length(&reply_path, david, charlie_id, DUMMY_HOPS_PATH_LENGTH));
 
@@ -1619,7 +1628,7 @@ fn fails_authentication_when_handling_invoice_request() {
 	alice.onion_messenger.handle_onion_message(bob_id, &onion_message);
 
 	let (invoice_request, reply_path) = extract_invoice_request(alice, &onion_message);
-	assert_eq!(invoice_request.amount_msats(), Some(10_000_000));
+	assert_eq!(invoice_request.amount_msats(&conversion), Ok(10_000_000));
 	assert_ne!(invoice_request.payer_signing_pubkey(), david_id);
 	assert!(check_dummy_hopped_path_length(&reply_path, david, charlie_id, DUMMY_HOPS_PATH_LENGTH));
 
@@ -1693,6 +1702,8 @@ fn fails_authentication_when_handling_invoice_for_offer() {
 	};
 
 	let payment_id = PaymentId([2; 32]);
+	let conversion = TestCurrencyConversion;
+
 	david.node.pay_for_offer(&offer, None, payment_id, Default::default()).unwrap();
 	expect_recent_payment!(david, RecentPaymentDetails::AwaitingInvoice, payment_id);
 
@@ -1719,7 +1730,7 @@ fn fails_authentication_when_handling_invoice_for_offer() {
 	alice.onion_messenger.handle_onion_message(bob_id, &onion_message);
 
 	let (invoice_request, reply_path) = extract_invoice_request(alice, &onion_message);
-	assert_eq!(invoice_request.amount_msats(), Some(10_000_000));
+	assert_eq!(invoice_request.amount_msats(&conversion), Ok(10_000_000));
 	assert_ne!(invoice_request.payer_signing_pubkey(), david_id);
 	assert!(check_dummy_hopped_path_length(&reply_path, david, charlie_id, DUMMY_HOPS_PATH_LENGTH));
 
@@ -1973,6 +1984,7 @@ fn fails_creating_invoice_request_for_unsupported_chain() {
 		.create_offer_builder().unwrap()
 		.clear_chains()
 		.chain(Network::Signet)
+		.amount_msats(1_000)
 		.build().unwrap();
 
 	match bob.node.pay_for_offer(&offer, None, PaymentId([1; 32]), Default::default()) {
