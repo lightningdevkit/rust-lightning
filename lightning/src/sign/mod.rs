@@ -34,6 +34,7 @@ use bitcoin::secp256k1::schnorr;
 use bitcoin::secp256k1::All;
 use bitcoin::secp256k1::{Keypair, PublicKey, Scalar, Secp256k1, SecretKey, Signing};
 use bitcoin::{secp256k1, Psbt, Sequence, Txid, WPubkeyHash, Witness};
+use chacha20_poly1305::chacha20::{ChaCha20, Key, Nonce};
 
 use lightning_invoice::RawBolt11Invoice;
 
@@ -62,7 +63,6 @@ use crate::util::async_poll::MaybeSend;
 use crate::util::ser::{ReadableArgs, Writeable};
 use crate::util::transaction_utils;
 
-use crate::crypto::chacha20::ChaCha20;
 use crate::prelude::*;
 use crate::sign::ecdsa::EcdsaChannelSigner;
 #[cfg(taproot)]
@@ -2791,7 +2791,14 @@ impl EntropySource for RandomBytes {
 		let index = self.index.next();
 		let mut nonce = [0u8; 16];
 		nonce[..8].copy_from_slice(&index.to_be_bytes());
-		ChaCha20::get_single_block(&self.seed, &nonce)
+		let mut chacha_bytes = [0; 32];
+		ChaCha20::new(
+			Key::new(self.seed),
+			Nonce::new(nonce[4..].try_into().unwrap()),
+			u32::from_le_bytes(nonce[..4].try_into().unwrap()),
+		)
+		.apply_keystream(&mut chacha_bytes);
+		chacha_bytes
 	}
 }
 

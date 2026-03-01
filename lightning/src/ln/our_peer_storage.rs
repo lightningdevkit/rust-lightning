@@ -14,18 +14,18 @@
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::{Hash, HashEngine, Hmac, HmacEngine};
 use bitcoin::secp256k1::PublicKey;
+use chacha20_poly1305::{ChaCha20Poly1305, Key, Nonce};
 
 use crate::ln::types::ChannelId;
 use crate::sign::PeerStorageKey;
 
-use crate::crypto::chacha20poly1305rfc::ChaCha20Poly1305RFC;
 use crate::prelude::*;
 
 /// [`DecryptedOurPeerStorage`] is used to store serialised channel information that allows for the creation of a
 /// `peer_storage` backup.
 ///
 /// This structure is designed to serialize channel data for backup and supports encryption
-/// using `ChaCha20Poly1305RFC` for transmission.
+/// using `ChaCha20Poly1305` for transmission.
 ///
 /// # Key Methods
 /// - [`DecryptedOurPeerStorage::new`]: Returns [`DecryptedOurPeerStorage`] with the given data.
@@ -66,9 +66,8 @@ impl DecryptedOurPeerStorage {
 		let plaintext_len = data.len();
 		let nonce = derive_nonce(key, random_bytes);
 
-		let mut chacha = ChaCha20Poly1305RFC::new(&key.inner, &nonce, b"");
-		let mut tag = [0; 16];
-		chacha.encrypt_full_message_in_place(&mut data[0..plaintext_len], &mut tag);
+		let chacha = ChaCha20Poly1305::new(Key::new(key.inner), Nonce::new(nonce));
+		let tag = chacha.encrypt(&mut data[0..plaintext_len], None);
 
 		data.extend_from_slice(&tag);
 
@@ -122,9 +121,10 @@ impl EncryptedOurPeerStorage {
 
 		let nonce = derive_nonce(key, random_bytes);
 
-		let mut chacha = ChaCha20Poly1305RFC::new(&key.inner, &nonce, b"");
-
-		if chacha.check_decrypt_in_place(encrypted_data, tag).is_err() {
+		let chacha = ChaCha20Poly1305::new(Key::new(key.inner), Nonce::new(nonce));
+		let mut decrypt_tag = [0; 16];
+		decrypt_tag.copy_from_slice(tag);
+		if chacha.decrypt(encrypted_data, decrypt_tag, None).is_err() {
 			return Err(());
 		}
 
