@@ -21,8 +21,6 @@ use crate::chain::channelmonitor::{
 };
 use crate::chain::transaction::OutPoint;
 use crate::chain::WatchedOutput;
-#[cfg(any(test, feature = "_externalize_tests"))]
-use crate::ln::chan_utils::CommitmentTransaction;
 use crate::ln::channel_state::ChannelDetails;
 use crate::ln::channelmanager;
 use crate::ln::inbound_payment::ExpandedKey;
@@ -680,20 +678,8 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 }
 
 #[cfg(any(test, feature = "_externalize_tests"))]
-struct JusticeTxData {
-	justice_tx: Transaction,
-	value: Amount,
-	commitment_number: u64,
-}
-
-#[cfg(any(test, feature = "_externalize_tests"))]
 pub(crate) struct WatchtowerPersister {
 	persister: TestPersister,
-	/// Upon a new commitment_signed, we'll get a
-	/// ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTxInfo. We'll store the justice tx
-	/// amount, and commitment number so we can build the justice tx after our counterparty
-	/// revokes it.
-	unsigned_justice_tx_data: Mutex<HashMap<ChannelId, VecDeque<JusticeTxData>>>,
 	/// After receiving a revoke_and_ack for a commitment number, we'll form and store the justice
 	/// tx which would be used to provide a watchtower with the data it needs.
 	watchtower_state: Mutex<HashMap<ChannelId, HashMap<Txid, Transaction>>>,
@@ -703,12 +689,9 @@ pub(crate) struct WatchtowerPersister {
 #[cfg(any(test, feature = "_externalize_tests"))]
 impl WatchtowerPersister {
 	pub(crate) fn new(destination_script: ScriptBuf) -> Self {
-		let unsigned_justice_tx_data = Mutex::new(new_hash_map());
-		let watchtower_state = Mutex::new(new_hash_map());
 		WatchtowerPersister {
 			persister: TestPersister::new(),
-			unsigned_justice_tx_data,
-			watchtower_state,
+			watchtower_state: Mutex::new(new_hash_map()),
 			destination_script,
 		}
 	}
@@ -724,23 +707,6 @@ impl WatchtowerPersister {
 			.get(commitment_txid)
 			.cloned()
 	}
-
-	fn form_justice_data_from_commitment(
-		&self, counterparty_commitment_tx: &CommitmentTransaction,
-	) -> Option<JusticeTxData> {
-		let trusted_tx = counterparty_commitment_tx.trust();
-		let output_idx = trusted_tx.revokeable_output_index()?;
-		let built_tx = trusted_tx.built_transaction();
-		let value = built_tx.transaction.output[output_idx as usize].value;
-		let justice_tx = trusted_tx
-			.build_to_local_justice_tx(
-				FEERATE_FLOOR_SATS_PER_KW as u64,
-				self.destination_script.clone(),
-			)
-			.ok()?;
-		let commitment_number = counterparty_commitment_tx.commitment_number();
-		Some(JusticeTxData { justice_tx, value, commitment_number })
-	}
 }
 
 #[cfg(any(test, feature = "_externalize_tests"))]
@@ -751,30 +717,24 @@ impl<Signer: sign::ecdsa::EcdsaChannelSigner> Persist<Signer> for WatchtowerPers
 		let res = self.persister.persist_new_channel(monitor_name, data);
 
 		assert!(self
-			.unsigned_justice_tx_data
-			.lock()
-			.unwrap()
-			.insert(data.channel_id(), VecDeque::new())
-			.is_none());
-		assert!(self
 			.watchtower_state
 			.lock()
 			.unwrap()
 			.insert(data.channel_id(), new_hash_map())
 			.is_none());
 
-		let initial_counterparty_commitment_tx =
-			data.initial_counterparty_commitment_tx().expect("First and only call expects Some");
-		if let Some(justice_data) =
-			self.form_justice_data_from_commitment(&initial_counterparty_commitment_tx)
-		{
-			self.unsigned_justice_tx_data
+		// Use the simplified get_justice_txs API
+		let justice_txs =
+			data.get_justice_txs(FEERATE_FLOOR_SATS_PER_KW as u64, self.destination_script.clone());
+		for jtx in justice_txs {
+			self.watchtower_state
 				.lock()
 				.unwrap()
 				.get_mut(&data.channel_id())
 				.unwrap()
-				.push_back(justice_data);
+				.insert(jtx.revoked_commitment_txid, jtx.tx);
 		}
+
 		res
 	}
 
@@ -784,41 +744,18 @@ impl<Signer: sign::ecdsa::EcdsaChannelSigner> Persist<Signer> for WatchtowerPers
 	) -> chain::ChannelMonitorUpdateStatus {
 		let res = self.persister.update_persisted_channel(monitor_name, update, data);
 
-		if let Some(update) = update {
-			let commitment_txs = data.counterparty_commitment_txs_from_update(update);
-			let justice_datas = commitment_txs
-				.into_iter()
-				.filter_map(|commitment_tx| self.form_justice_data_from_commitment(&commitment_tx));
-			let mut channels_justice_txs = self.unsigned_justice_tx_data.lock().unwrap();
-			let channel_state = channels_justice_txs.get_mut(&data.channel_id()).unwrap();
-			channel_state.extend(justice_datas);
-
-			while let Some(JusticeTxData { justice_tx, value, commitment_number }) =
-				channel_state.front()
-			{
-				let input_idx = 0;
-				let commitment_txid = justice_tx.input[input_idx].previous_output.txid;
-				match data.sign_to_local_justice_tx(
-					justice_tx.clone(),
-					input_idx,
-					value.to_sat(),
-					*commitment_number,
-				) {
-					Ok(signed_justice_tx) => {
-						let dup = self
-							.watchtower_state
-							.lock()
-							.unwrap()
-							.get_mut(&data.channel_id())
-							.unwrap()
-							.insert(commitment_txid, signed_justice_tx);
-						assert!(dup.is_none());
-						channel_state.pop_front();
-					},
-					Err(_) => break,
-				}
-			}
+		// Use the simplified get_justice_txs API
+		let justice_txs =
+			data.get_justice_txs(FEERATE_FLOOR_SATS_PER_KW as u64, self.destination_script.clone());
+		for jtx in justice_txs {
+			self.watchtower_state
+				.lock()
+				.unwrap()
+				.get_mut(&data.channel_id())
+				.unwrap()
+				.insert(jtx.revoked_commitment_txid, jtx.tx);
 		}
+
 		res
 	}
 
