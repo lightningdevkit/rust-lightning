@@ -526,6 +526,7 @@ impl<'a> TestChainMonitor<'a> {
 		chain_source: Option<&'a TestChainSource>, broadcaster: &'a dyn SyncBroadcaster,
 		logger: &'a TestLogger, fee_estimator: &'a TestFeeEstimator,
 		persister: &'a dyn SyncPersist, keys_manager: &'a TestKeysInterface,
+		offload_claim_info: bool,
 	) -> Self {
 		Self {
 			added_monitors: Mutex::new(Vec::new()),
@@ -539,6 +540,7 @@ impl<'a> TestChainMonitor<'a> {
 				persister,
 				keys_manager,
 				keys_manager.get_peer_storage_key(),
+				offload_claim_info,
 			),
 			persisted_claim_infos: Mutex::new(new_hash_map()),
 			keys_manager,

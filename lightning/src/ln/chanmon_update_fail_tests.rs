@@ -108,6 +108,7 @@ fn test_monitor_and_persister_update_fail() {
 			&chanmon_cfgs[0].fee_estimator,
 			&persister,
 			&node_cfgs[0].keys_manager,
+			false,
 		);
 		assert_eq!(
 			chain_mon.watch_channel(chan.2, new_monitor),
@@ -4931,6 +4932,7 @@ fn native_async_persist() {
 		native_async_persister,
 		Arc::clone(&keys_manager),
 		keys_manager.get_peer_storage_key(),
+		false,
 	);
 
 	// Write the initial ChannelMonitor async, testing primarily that the `MonitorEvent::Completed`

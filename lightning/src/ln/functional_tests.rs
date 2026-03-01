@@ -4860,6 +4860,7 @@ pub fn test_key_derivation_params() {
 		&chanmon_cfgs[0].fee_estimator,
 		&chanmon_cfgs[0].persister,
 		&keys_manager,
+		false,
 	);
 	let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &chanmon_cfgs[0].logger));
 	let scorer = RwLock::new(test_utils::TestScorer::new());
@@ -7399,6 +7400,7 @@ pub fn test_update_err_monitor_lockdown() {
 			&chanmon_cfgs[0].fee_estimator,
 			&persister,
 			&node_cfgs[0].keys_manager,
+			false,
 		);
 		assert_eq!(
 			watchtower.watch_channel(chan_1.2, new_monitor),
@@ -7511,6 +7513,7 @@ pub fn test_concurrent_monitor_claim() {
 			&chanmon_cfgs[0].fee_estimator,
 			&persister,
 			&node_cfgs[0].keys_manager,
+			false,
 		);
 		assert_eq!(
 			watchtower.watch_channel(chan_1.2, new_monitor),
@@ -7565,6 +7568,7 @@ pub fn test_concurrent_monitor_claim() {
 			&chanmon_cfgs[0].fee_estimator,
 			&persister,
 			&node_cfgs[0].keys_manager,
+			false,
 		);
 		assert_eq!(
 			watchtower.watch_channel(chan_1.2, new_monitor),

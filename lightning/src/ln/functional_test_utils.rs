@@ -929,6 +929,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 				&feeest,
 				&persister,
 				&self.keys_manager,
+				false,
 			);
 			for deserialized_monitor in deserialized_monitors.drain(..) {
 				let channel_id = deserialized_monitor.channel_id();
@@ -1444,6 +1445,7 @@ macro_rules! _reload_node_inner {
 			$node.fee_estimator,
 			&$persister,
 			&$node.keys_manager,
+			false,
 		);
 		$node.chain_monitor = &$new_chain_monitor;
 
@@ -4644,6 +4646,7 @@ where
 			&cfg.fee_estimator,
 			persisters[i],
 			&cfg.keys_manager,
+			false,
 		);
 
 		let seed = [i as u8; 32];

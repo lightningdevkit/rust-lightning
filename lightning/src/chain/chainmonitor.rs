@@ -371,6 +371,9 @@ pub struct ChainMonitor<
 
 	#[cfg(peer_storage)]
 	our_peerstorage_encryption_key: PeerStorageKey,
+
+	/// If false, claim info persistence events are swallowed.
+	offload_claim_info: bool,
 }
 
 impl<
@@ -397,7 +400,7 @@ where
 	pub fn new_async_beta(
 		chain_source: Option<C>, broadcaster: T, logger: L, feeest: F,
 		persister: MonitorUpdatingPersisterAsync<K, S, L, ES, SP, T, F>, _entropy_source: ES,
-		_our_peerstorage_encryption_key: PeerStorageKey,
+		_our_peerstorage_encryption_key: PeerStorageKey, offload_claim_info: bool,
 	) -> Self {
 		let event_notifier = Arc::new(Notifier::new());
 		Self {
@@ -414,6 +417,7 @@ where
 			pending_send_only_events: Mutex::new(Vec::new()),
 			#[cfg(peer_storage)]
 			our_peerstorage_encryption_key: _our_peerstorage_encryption_key,
+			offload_claim_info,
 		}
 	}
 }
@@ -590,6 +594,15 @@ where
 	/// always need to fetch full blocks absent another means for determining which blocks contain
 	/// transactions relevant to the watched channels.
 	///
+	/// If `offload_claim_info` is set to `true`, [`Event::PersistClaimInfo`] events will be
+	/// surfaced, allowing callers to offload claim information from [`ChannelMonitor`]s to reduce
+	/// their size. If set to `false`, these events will be silently ignored and the claim
+	/// information will remain in-memory and in each [`ChannelMonitor`] on disk.
+	///
+	/// Note that no matter the value of `offload_claim_info`, [`Event::ClaimInfoRequest`]s will be
+	/// surfaced if needed. If [`Event::PersistClaimInfo`]s have never been surfaced/handled for a
+	/// node, no [`Event::ClaimInfoRequest`] will be generated.
+	///
 	/// # Note
 	/// `our_peerstorage_encryption_key` must be obtained from [`NodeSigner::get_peer_storage_key`].
 	/// This key is used to encrypt peer storage backups.
@@ -601,9 +614,12 @@ where
 	/// [`NodeSigner`]: crate::sign::NodeSigner
 	/// [`NodeSigner::get_peer_storage_key`]: crate::sign::NodeSigner::get_peer_storage_key
 	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+	/// [`Event::PersistClaimInfo`]: crate::events::Event::PersistClaimInfo
+	/// [`Event::ClaimInfoRequest`]: crate::events::Event::ClaimInfoRequest
 	pub fn new(
 		chain_source: Option<C>, broadcaster: T, logger: L, feeest: F, persister: P,
 		_entropy_source: ES, _our_peerstorage_encryption_key: PeerStorageKey,
+		offload_claim_info: bool,
 	) -> Self {
 		Self {
 			monitors: RwLock::new(new_hash_map()),
@@ -619,6 +635,7 @@ where
 			pending_send_only_events: Mutex::new(Vec::new()),
 			#[cfg(peer_storage)]
 			our_peerstorage_encryption_key: _our_peerstorage_encryption_key,
+			offload_claim_info,
 		}
 	}
 
@@ -880,7 +897,17 @@ where
 				self.monitors.read().unwrap().get(&channel_id).map(|m| &m.monitor),
 				self.logger,
 				ev,
-				handler(ev).await
+				{
+					if !self.offload_claim_info {
+						if let Event::PersistClaimInfo { .. } = &ev {
+							Ok(())
+						} else {
+							handler(ev).await
+						}
+					} else {
+						handler(ev).await
+					}
+				}
 			) {
 				Ok(()) => {},
 				Err(ReplayEvent()) => {
@@ -1539,8 +1566,16 @@ where
 	where
 		H::Target: EventHandler,
 	{
+		let filtering_handler = |event: events::Event| {
+			if !self.offload_claim_info {
+				if let events::Event::PersistClaimInfo { .. } = &event {
+					return Ok(());
+				}
+			}
+			handler.handle_event(event)
+		};
 		for monitor_state in self.monitors.read().unwrap().values() {
-			match monitor_state.monitor.process_pending_events(&handler, &self.logger) {
+			match monitor_state.monitor.process_pending_events(&&filtering_handler, &self.logger) {
 				Ok(()) => {},
 				Err(ReplayEvent()) => {
 					self.event_notifier.notify();
