@@ -333,6 +333,7 @@ pub const HTLC_FAIL_BACK_BUFFER: u32 = CLTV_CLAIM_BUFFER + LATENCY_GRACE_PERIOD_
 /// This type is used in [`Event::PersistClaimInfo`] and [`Event::ClaimInfoRequest`] to
 /// associate persisted [`ClaimInfo`] with the correct commitment transaction.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+#[cfg_attr(test, derive(PartialOrd, Ord))]
 pub struct ClaimKey(pub(crate) Txid);
 
 impl Writeable for ClaimKey {
@@ -2478,6 +2479,17 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		let mut inner = self.inner.lock().unwrap();
 		let logger = WithChannelMonitor::from_impl(logger, &*inner, None);
 		inner.unsafe_get_latest_holder_commitment_txn(&logger)
+	}
+
+	/// Like [`Self::unsafe_get_latest_holder_commitment_txn`] but returns the commitment
+	/// transaction for the confirmed funding scope (which may be a splice/alternative funding).
+	#[cfg(any(test, feature = "_test_utils"))]
+	pub fn unsafe_get_latest_holder_commitment_txn_for_confirmed_scope<L: Logger>(
+		&self, logger: &L,
+	) -> Vec<Transaction> {
+		let mut inner = self.inner.lock().unwrap();
+		let logger = WithChannelMonitor::from_impl(logger, &*inner, None);
+		inner.unsafe_get_latest_holder_commitment_txn_for_confirmed_scope(&logger)
 	}
 
 	/// Processes transactions in a newly connected block, which may result in any of the following:
@@ -5452,6 +5464,32 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			});
 
 		holder_transactions
+	}
+
+	/// Like [`Self::unsafe_get_latest_holder_commitment_txn`] but returns the commitment
+	/// transaction for the confirmed funding scope (which may be a splice/alternative funding).
+	#[cfg(any(test, feature = "_test_utils"))]
+	fn unsafe_get_latest_holder_commitment_txn_for_confirmed_scope<L: Logger>(
+		&mut self, logger: &WithContext<L>,
+	) -> Vec<Transaction> {
+		log_debug!(
+			logger,
+			"Getting signed copy of latest holder commitment transaction for confirmed scope!"
+		);
+		let funding = get_confirmed_funding_scope!(self);
+		let sig = self
+			.onchain_tx_handler
+			.signer
+			.unsafe_sign_holder_commitment(
+				&funding.channel_parameters,
+				&funding.current_holder_commitment_tx,
+				&self.onchain_tx_handler.secp_ctx,
+			)
+			.expect("sign holder commitment");
+		let redeem_script = funding.channel_parameters.make_funding_redeemscript();
+		let commitment_tx =
+			funding.current_holder_commitment_tx.add_holder_sig(&redeem_script, sig);
+		vec![commitment_tx]
 	}
 
 	#[rustfmt::skip]
