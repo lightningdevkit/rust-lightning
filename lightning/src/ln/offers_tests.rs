@@ -326,8 +326,8 @@ fn create_offer_with_no_blinded_path() {
 	let router = NullMessageRouter {};
 	let offer = alice.node
 		.create_offer_builder_using_router(&router).unwrap()
-		.amount_msats(10_000_000)
-		.build().unwrap();
+		.amount_msats(10_000_000).unwrap()
+		.build();
 	assert_eq!(offer.issuer_signing_pubkey(), Some(alice_id));
 	assert!(offer.paths().is_empty());
 }
@@ -402,8 +402,8 @@ fn prefers_non_tor_nodes_in_blinded_paths() {
 
 	let offer = bob.node
 		.create_offer_builder().unwrap()
-		.amount_msats(10_000_000)
-		.build().unwrap();
+		.amount_msats(10_000_000).unwrap()
+		.build();
 	assert_ne!(offer.issuer_signing_pubkey(), Some(bob_id));
 	assert!(!offer.paths().is_empty());
 	for path in offer.paths() {
@@ -418,8 +418,8 @@ fn prefers_non_tor_nodes_in_blinded_paths() {
 
 	let offer = bob.node
 		.create_offer_builder().unwrap()
-		.amount_msats(10_000_000)
-		.build().unwrap();
+		.amount_msats(10_000_000).unwrap()
+		.build();
 	assert_ne!(offer.issuer_signing_pubkey(), Some(bob_id));
 	assert!(!offer.paths().is_empty());
 	for path in offer.paths() {
@@ -469,8 +469,8 @@ fn prefers_more_connected_nodes_in_blinded_paths() {
 
 	let offer = bob.node
 		.create_offer_builder().unwrap()
-		.amount_msats(10_000_000)
-		.build().unwrap();
+		.amount_msats(10_000_000).unwrap()
+		.build();
 	assert_ne!(offer.issuer_signing_pubkey(), Some(bob_id));
 	assert!(!offer.paths().is_empty());
 	for path in offer.paths() {
@@ -504,8 +504,8 @@ fn check_dummy_hop_pattern_in_offer() {
 
 	let compact_offer = alice.node
 		.create_offer_builder_using_router(&default_router).unwrap()
-		.amount_msats(10_000_000)
-		.build().unwrap();
+		.amount_msats(10_000_000).unwrap()
+		.build();
 
 	assert!(!compact_offer.paths().is_empty());
 
@@ -532,8 +532,8 @@ fn check_dummy_hop_pattern_in_offer() {
 
 	let padded_offer = alice.node
 		.create_offer_builder_using_router(&node_id_router).unwrap()
-		.amount_msats(10_000_000)
-		.build().unwrap();
+		.amount_msats(10_000_000).unwrap()
+		.build();
 
 	assert!(!padded_offer.paths().is_empty());
 	assert!(padded_offer.paths().iter().all(|path| path.blinded_hops().len() == QR_CODED_DUMMY_HOPS_PATH_LENGTH));
@@ -565,7 +565,7 @@ fn creates_short_lived_offer() {
 
 	let offer = alice.node
 		.create_offer_builder().unwrap()
-		.build().unwrap();
+		.build();
 	assert!(!offer.paths().is_empty());
 	for path in offer.paths() {
 		let introduction_node_id = resolve_introduction_node(bob, &path);
@@ -591,7 +591,7 @@ fn creates_long_lived_offer() {
 	let offer = alice.node
 		.create_offer_builder_using_router(&router)
 		.unwrap()
-		.build().unwrap();
+		.build();
 	assert!(!offer.paths().is_empty());
 	for path in offer.paths() {
 		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(alice_id));
@@ -697,8 +697,8 @@ fn creates_and_pays_for_offer_using_two_hop_blinded_path() {
 	let offer = alice.node
 		.create_offer_builder()
 		.unwrap()
-		.amount_msats(10_000_000)
-		.build().unwrap();
+		.amount_msats(10_000_000).unwrap()
+		.build();
 	assert_ne!(offer.issuer_signing_pubkey(), Some(alice_id));
 	assert!(!offer.paths().is_empty());
 	for path in offer.paths() {
@@ -862,8 +862,8 @@ fn creates_and_pays_for_offer_using_one_hop_blinded_path() {
 
 	let offer = alice.node
 		.create_offer_builder().unwrap()
-		.amount_msats(10_000_000)
-		.build().unwrap();
+		.amount_msats(10_000_000).unwrap()
+		.build();
 	assert_ne!(offer.issuer_signing_pubkey(), Some(alice_id));
 	assert!(!offer.paths().is_empty());
 	for path in offer.paths() {
@@ -986,8 +986,8 @@ fn pays_for_offer_without_blinded_paths() {
 	let offer = alice.node
 		.create_offer_builder().unwrap()
 		.clear_paths()
-		.amount_msats(10_000_000)
-		.build().unwrap();
+		.amount_msats(10_000_000).unwrap()
+		.build();
 	assert_eq!(offer.issuer_signing_pubkey(), Some(alice_id));
 	assert!(offer.paths().is_empty());
 
@@ -1111,8 +1111,8 @@ fn send_invoice_requests_with_distinct_reply_path() {
 	let offer = alice.node
 		.create_offer_builder()
 		.unwrap()
-		.amount_msats(10_000_000)
-		.build().unwrap();
+		.amount_msats(10_000_000).unwrap()
+		.build();
 	assert_ne!(offer.issuer_signing_pubkey(), Some(alice_id));
 	assert!(!offer.paths().is_empty());
 	for path in offer.paths() {
@@ -1245,8 +1245,8 @@ fn creates_and_pays_for_offer_with_retry() {
 
 	let offer = alice.node
 		.create_offer_builder().unwrap()
-		.amount_msats(10_000_000)
-		.build().unwrap();
+		.amount_msats(10_000_000).unwrap()
+		.build();
 	assert_ne!(offer.issuer_signing_pubkey(), Some(alice_id));
 	assert!(!offer.paths().is_empty());
 	for path in offer.paths() {
@@ -1321,8 +1321,8 @@ fn pays_bolt12_invoice_asynchronously() {
 
 	let offer = alice.node
 		.create_offer_builder().unwrap()
-		.amount_msats(10_000_000)
-		.build().unwrap();
+		.amount_msats(10_000_000).unwrap()
+		.build();
 
 	let payment_id = PaymentId([1; 32]);
 	bob.node.pay_for_offer(&offer, None, payment_id, Default::default()).unwrap();
@@ -1413,8 +1413,8 @@ fn creates_offer_with_blinded_path_using_unannounced_introduction_node() {
 
 	let offer = alice.node
 		.create_offer_builder().unwrap()
-		.amount_msats(10_000_000)
-		.build().unwrap();
+		.amount_msats(10_000_000).unwrap()
+		.build();
 	assert_ne!(offer.issuer_signing_pubkey(), Some(alice_id));
 	assert!(!offer.paths().is_empty());
 	for path in offer.paths() {
@@ -1557,8 +1557,8 @@ fn fails_authentication_when_handling_invoice_request() {
 	let offer = alice.node
 		.create_offer_builder()
 		.unwrap()
-		.amount_msats(10_000_000)
-		.build().unwrap();
+		.amount_msats(10_000_000).unwrap()
+		.build();
 	assert_eq!(offer.metadata(), None);
 	assert_ne!(offer.issuer_signing_pubkey(), Some(alice_id));
 	assert!(!offer.paths().is_empty());
@@ -1569,7 +1569,7 @@ fn fails_authentication_when_handling_invoice_request() {
 	let invalid_path = alice.node
 		.create_offer_builder()
 		.unwrap()
-		.build().unwrap()
+		.build()
 		.paths().first().unwrap()
 		.clone();
 	assert!(check_compact_path_introduction_node(&invalid_path, alice, bob_id));
@@ -1667,8 +1667,8 @@ fn fails_authentication_when_handling_invoice_for_offer() {
 	let offer = alice.node
 		.create_offer_builder()
 		.unwrap()
-		.amount_msats(10_000_000)
-		.build().unwrap();
+		.amount_msats(10_000_000).unwrap()
+		.build();
 	assert_ne!(offer.issuer_signing_pubkey(), Some(alice_id));
 	assert!(!offer.paths().is_empty());
 	for path in offer.paths() {
@@ -1871,9 +1871,9 @@ fn fails_creating_or_paying_for_offer_without_connected_peers() {
 	let absolute_expiry = alice.node.duration_since_epoch() + MAX_SHORT_LIVED_RELATIVE_EXPIRY;
 	let offer = alice.node
 		.create_offer_builder().unwrap()
-		.amount_msats(10_000_000)
+		.amount_msats(10_000_000).unwrap()
 		.absolute_expiry(absolute_expiry)
-		.build().unwrap();
+		.build();
 
 	let payment_id = PaymentId([1; 32]);
 
@@ -1973,7 +1973,7 @@ fn fails_creating_invoice_request_for_unsupported_chain() {
 		.create_offer_builder().unwrap()
 		.clear_chains()
 		.chain(Network::Signet)
-		.build().unwrap();
+		.build();
 
 	match bob.node.pay_for_offer(&offer, None, PaymentId([1; 32]), Default::default()) {
 		Ok(_) => panic!("Expected error"),
@@ -2029,8 +2029,8 @@ fn fails_creating_invoice_request_without_blinded_reply_path() {
 
 	let offer = alice.node
 		.create_offer_builder().unwrap()
-		.amount_msats(10_000_000)
-		.build().unwrap();
+		.amount_msats(10_000_000).unwrap()
+		.build();
 
 	match david.node.pay_for_offer(&offer, None, PaymentId([1; 32]), Default::default()) {
 		Ok(_) => panic!("Expected error"),
@@ -2061,8 +2061,8 @@ fn fails_creating_invoice_request_with_duplicate_payment_id() {
 
 	let offer = alice.node
 		.create_offer_builder().unwrap()
-		.amount_msats(10_000_000)
-		.build().unwrap();
+		.amount_msats(10_000_000).unwrap()
+		.build();
 
 	let payment_id = PaymentId([1; 32]);
 	assert!(david.node.pay_for_offer( &offer, None, payment_id, Default::default()).is_ok());
@@ -2143,8 +2143,8 @@ fn fails_sending_invoice_without_blinded_payment_paths_for_offer() {
 
 	let offer = alice.node
 		.create_offer_builder().unwrap()
-		.amount_msats(10_000_000)
-		.build().unwrap();
+		.amount_msats(10_000_000).unwrap()
+		.build();
 
 	let payment_id = PaymentId([1; 32]);
 	david.node.pay_for_offer(&offer, None, payment_id, Default::default()).unwrap();
@@ -2351,8 +2351,8 @@ fn fails_paying_invoice_with_unknown_required_features() {
 
 	let offer = alice.node
 		.create_offer_builder().unwrap()
-		.amount_msats(10_000_000)
-		.build().unwrap();
+		.amount_msats(10_000_000).unwrap()
+		.build();
 
 	let payment_id = PaymentId([1; 32]);
 	david.node.pay_for_offer(&offer, None, payment_id, Default::default()).unwrap();
@@ -2436,7 +2436,7 @@ fn rejects_keysend_to_non_static_invoice_path() {
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
 
 	// First pay the offer and save the payment preimage and invoice.
-	let offer = nodes[1].node.create_offer_builder().unwrap().build().unwrap();
+	let offer = nodes[1].node.create_offer_builder().unwrap().build();
 	let amt_msat = 5000;
 	let payment_id = PaymentId([1; 32]);
 	nodes[0].node.pay_for_offer(&offer, Some(amt_msat), payment_id, Default::default()).unwrap();
@@ -2519,8 +2519,8 @@ fn no_double_pay_with_stale_channelmanager() {
 	let offer = nodes[1].node
 		.create_offer_builder().unwrap()
 		.clear_paths()
-		.amount_msats(amt_msat)
-		.build().unwrap();
+		.amount_msats(amt_msat).unwrap()
+		.build();
 	assert_eq!(offer.issuer_signing_pubkey(), Some(bob_id));
 	assert!(offer.paths().is_empty());
 
@@ -2598,8 +2598,8 @@ fn creates_and_pays_for_phantom_offer() {
 	let offer = nodes[1].node
 		.create_phantom_offer_builder(vec![(node_c_id, nodes[2].node.list_channels())], 2)
 		.unwrap()
-		.amount_msats(10_000_000)
-		.build().unwrap();
+		.amount_msats(10_000_000).unwrap()
+		.build();
 
 	// The offer should be resolvable by either of node B or C but signed by a derived key
 	assert!(offer.issuer_signing_pubkey().is_some());

@@ -324,7 +324,7 @@ fn create_static_invoice<T: secp256k1::Signing + secp256k1::Verification>(
 		.flow
 		.create_async_receive_offer_builder(entropy_source, blinded_paths_to_always_online_node)
 		.unwrap();
-	let offer = offer_builder.build().unwrap();
+	let offer = offer_builder.build();
 	let static_invoice =
 		create_static_invoice_builder(recipient, &offer, offer_nonce, relative_expiry)
 			.build_and_sign(&secp_ctx)
@@ -695,7 +695,7 @@ fn static_invoice_unknown_required_features() {
 		.flow
 		.create_async_receive_offer_builder(entropy_source, blinded_paths_to_always_online_node)
 		.unwrap();
-	let offer = offer_builder.build().unwrap();
+	let offer = offer_builder.build();
 	let static_invoice_unknown_req_features =
 		create_static_invoice_builder(&nodes[2], &offer, nonce, None)
 			.features_unchecked(Bolt12InvoiceFeatures::unknown())
@@ -1679,7 +1679,7 @@ fn invalid_async_receive_with_retry<F1, F2>(
 		.flow
 		.create_async_receive_offer_builder(entropy_source, blinded_paths_to_always_online_node)
 		.unwrap();
-	let offer = offer_builder.build().unwrap();
+	let offer = offer_builder.build();
 	let amt_msat = 5000;
 	let payment_id = PaymentId([1; 32]);
 

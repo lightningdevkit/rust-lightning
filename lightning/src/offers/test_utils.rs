@@ -149,8 +149,7 @@ pub fn dummy_static_invoice() -> StaticInvoice {
 
 	let offer = OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
 		.path(blinded_path())
-		.build()
-		.unwrap();
+		.build();
 
 	StaticInvoiceBuilder::for_offer_using_derived_keys(
 		&offer,

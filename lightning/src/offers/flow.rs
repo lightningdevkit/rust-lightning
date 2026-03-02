@@ -1621,14 +1621,8 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 			offer_builder =
 				offer_builder.absolute_expiry(Duration::from_secs(paths_absolute_expiry));
 		}
-		let (offer_id, offer) = match offer_builder.build() {
-			Ok(offer) => (offer.id(), offer),
-			Err(_) => {
-				log_error!(self.logger, "Failed to build async receive offer");
-				debug_assert!(false);
-				return None;
-			},
-		};
+		let offer = offer_builder.build();
+		let offer_id = offer.id();
 
 		let (invoice, forward_invoice_request_path) = match self.create_static_invoice_for_server(
 			&offer,

@@ -3256,8 +3256,8 @@ mod tests {
 
 		let created_at = now() - DEFAULT_RELATIVE_EXPIRY;
 		let invoice = OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
-			.build().unwrap()
+			.amount_msats(1000).unwrap()
+			.build()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
 			.build_and_sign().unwrap()
 			.respond_with_no_std(payment_paths(), payment_hash(), created_at).unwrap()
@@ -3305,8 +3305,8 @@ mod tests {
 		let expiration = StaleExpiration::AbsoluteTimeout(Duration::from_secs(100));
 
 		let invoice = OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
-			.build().unwrap()
+			.amount_msats(1000).unwrap()
+			.build()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
 			.build_and_sign().unwrap()
 			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap()
@@ -3370,8 +3370,8 @@ mod tests {
 		let expiration = StaleExpiration::AbsoluteTimeout(Duration::from_secs(100));
 
 		let invoice = OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
-			.build().unwrap()
+			.amount_msats(1000).unwrap()
+			.build()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
 			.build_and_sign().unwrap()
 			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap()
@@ -3459,8 +3459,8 @@ mod tests {
 		let payment_id = PaymentId([1; 32]);
 
 		OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
-			.build().unwrap()
+			.amount_msats(1000).unwrap()
+			.build()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
 			.unwrap()
 			.build_and_sign()
