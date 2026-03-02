@@ -465,7 +465,7 @@ mod test {
 
 		let name = HumanReadableName::from_encoded("matt@mattcorallo.com").unwrap();
 
-		let bs_offer = nodes[1].node.create_offer_builder().unwrap().build().unwrap();
+		let bs_offer = nodes[1].node.create_offer_builder().unwrap().build();
 		let resolvers = vec![Destination::Node(resolver_id)];
 
 		pay_offer_flow(

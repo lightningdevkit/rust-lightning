@@ -519,7 +519,7 @@ fn bolt12_invoice_too_large_blinded_paths() {
 		),
 	]);
 
-	let offer = nodes[1].node.create_offer_builder().unwrap().build().unwrap();
+	let offer = nodes[1].node.create_offer_builder().unwrap().build();
 	let payment_id = PaymentId([1; 32]);
 	nodes[0]
 		.node
