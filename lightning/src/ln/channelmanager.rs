@@ -61,8 +61,8 @@ use crate::ln::channel::QuiescentError;
 use crate::ln::channel::{
 	self, hold_time_since, Channel, ChannelError, ChannelUpdateStatus, DisconnectResult,
 	FundedChannel, FundingTxSigned, InboundV1Channel, InteractiveTxMsgError, OutboundHop,
-	OutboundV1Channel, PendingV2Channel, ReconnectionMsg, ShutdownResult, SpliceFundingFailed,
-	StfuResponse, UpdateFulfillCommitFetch, WithChannelContext,
+	OutboundV1Channel, ReconnectionMsg, ShutdownResult, SpliceFundingFailed, StfuResponse,
+	UnfundedV2Channel, UpdateFulfillCommitFetch, WithChannelContext,
 };
 use crate::ln::channel_state::ChannelDetails;
 use crate::ln::funding::{FundingContribution, FundingTemplate};
@@ -10834,7 +10834,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							});
 						(*temporary_channel_id, Channel::from(channel), message_send_event)
 					}),
-					OpenChannelMessage::V2(open_channel_msg) => PendingV2Channel::new_inbound(
+					OpenChannelMessage::V2(open_channel_msg) => UnfundedV2Channel::new_inbound(
 						&self.fee_estimator,
 						&self.entropy_source,
 						&self.signer_provider,

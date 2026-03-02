@@ -1490,7 +1490,7 @@ enum ChannelPhase<SP: SignerProvider> {
 	UnfundedOutboundV1(OutboundV1Channel<SP>),
 	PendingV1(PendingV1Channel<SP>),
 	UnfundedInboundV1(InboundV1Channel<SP>),
-	UnfundedV2(PendingV2Channel<SP>),
+	UnfundedV2(UnfundedV2Channel<SP>),
 	Funded(FundedChannel<SP>),
 }
 
@@ -1638,7 +1638,7 @@ where
 		}
 	}
 
-	pub fn as_unfunded_v2(&self) -> Option<&PendingV2Channel<SP>> {
+	pub fn as_unfunded_v2(&self) -> Option<&UnfundedV2Channel<SP>> {
 		if let ChannelPhase::UnfundedV2(channel) = &self.phase {
 			Some(channel)
 		} else {
@@ -2135,7 +2135,7 @@ where
 
 				chan.interactive_tx_constructor
 					.take()
-					.expect("PendingV2Channel::interactive_tx_constructor should be set")
+					.expect("UnfundedV2Channel::interactive_tx_constructor should be set")
 			},
 			ChannelPhase::Funded(chan) => {
 				if let Some(pending_splice) = chan.pending_splice.as_mut() {
@@ -2518,11 +2518,11 @@ where
 	}
 }
 
-impl<SP: SignerProvider> From<PendingV2Channel<SP>> for Channel<SP>
+impl<SP: SignerProvider> From<UnfundedV2Channel<SP>> for Channel<SP>
 where
 	SP::EcdsaSigner: ChannelSigner,
 {
-	fn from(channel: PendingV2Channel<SP>) -> Self {
+	fn from(channel: UnfundedV2Channel<SP>) -> Self {
 		Channel { phase: ChannelPhase::UnfundedV2(channel) }
 	}
 }
@@ -13960,7 +13960,7 @@ impl<SP: SignerProvider> InboundV1Channel<SP> {
 }
 
 // A not-yet-funded channel using V2 channel establishment.
-pub(super) struct PendingV2Channel<SP: SignerProvider> {
+pub(super) struct UnfundedV2Channel<SP: SignerProvider> {
 	pub funding: FundingScope,
 	pub context: ChannelContext<SP>,
 	pub unfunded_context: UnfundedChannelContext,
@@ -13969,7 +13969,7 @@ pub(super) struct PendingV2Channel<SP: SignerProvider> {
 	pub interactive_tx_constructor: Option<InteractiveTxConstructor>,
 }
 
-impl<SP: SignerProvider> PendingV2Channel<SP> {
+impl<SP: SignerProvider> UnfundedV2Channel<SP> {
 	#[allow(dead_code)] // TODO(dual_funding): Remove once creating V2 channels is enabled.
 	#[rustfmt::skip]
 	pub fn new_outbound<ES: EntropySource, F: FeeEstimator, L: Logger>(
