@@ -520,8 +520,12 @@ pub struct RouteHop {
 	pub fee_msat: u64,
 	/// The CLTV delta added for this hop.
 	/// If this is the last hop in [`Path::hops`]:
-	/// * if we're sending to a [`BlindedPaymentPath`], this is the CLTV delta for the entire blinded
-	///   path (including any Trampoline hops)
+	/// * if we're sending to a [`BlindedPaymentPath`] *with* trampoline hops, this is the CLTV
+	///   delta for the entire blinded path including the trampoline hops, and is thus equal to the
+	///   sum of [`TrampolineHop::cltv_expiry_delta`] for all the [`BlindedTail::trampoline_hops`].
+	/// * if we're sending to a [`BlindedPaymentPath`], *without* trampoline hops, this is the CLTV
+	///   delta for the entire blinded path (including
+	///   [`BlindedTail::excess_final_cltv_expiry_delta`]).
 	/// * otherwise, this is the CLTV delta expected at the destination
 	pub cltv_expiry_delta: u32,
 	/// Indicates whether this hop is possibly announced in the public network graph.
@@ -753,9 +757,11 @@ impl Route {
 					let trampoline_cltv_sum: u32 =
 						tail.trampoline_hops.iter().map(|hop| hop.cltv_expiry_delta).sum();
 					let last_hop_cltv_delta = path.hops.last().unwrap().cltv_expiry_delta;
-					if trampoline_cltv_sum > last_hop_cltv_delta {
+					if !tail.trampoline_hops.is_empty()
+						&& trampoline_cltv_sum != last_hop_cltv_delta
+					{
 						let err = format!(
-							"Path had a total trampoline CLTV of {trampoline_cltv_sum}, which is less than the total last-hop CLTV delta of {last_hop_cltv_delta}"
+							"Path had a total trampoline CLTV of {trampoline_cltv_sum}, which is not equal to the total last-hop CLTV delta of {last_hop_cltv_delta}"
 						);
 						debug_assert!(false, "{}", err);
 						log_error!(logger, "{}", err);
@@ -3975,8 +3981,8 @@ fn add_random_cltv_offset(route: &mut Route, payment_params: &PaymentParameters,
 
 		// Limit the offset so we never exceed the max_total_cltv_expiry_delta. To improve plausibility,
 		// we choose the limit to be the largest possible multiple of MEDIAN_HOP_CLTV_EXPIRY_DELTA.
-		let path_total_cltv_expiry_delta: u32 = path.hops.iter().map(|h| h.cltv_expiry_delta).sum();
-		let mut max_path_offset = payment_params.max_total_cltv_expiry_delta - path_total_cltv_expiry_delta;
+		let mut max_path_offset =
+			payment_params.max_total_cltv_expiry_delta - path.total_cltv_expiry_delta();
 		max_path_offset = cmp::max(
 			max_path_offset - (max_path_offset % MEDIAN_HOP_CLTV_EXPIRY_DELTA),
 			max_path_offset % MEDIAN_HOP_CLTV_EXPIRY_DELTA);
