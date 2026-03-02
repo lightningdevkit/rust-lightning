@@ -4064,8 +4064,8 @@ impl<
 			let failure_reason = LocalHTLCFailureReason::ChannelClosed;
 			let reason = HTLCFailReason::from_failure_code(failure_reason);
 			let (source, hash) = htlc_source;
-			let receiver = source.failure_type(*counterparty_node_id, *chan_id);
-			self.fail_htlc_backwards_internal(&source, &hash, &reason, receiver, None);
+			let failure_type = source.failure_type(*counterparty_node_id, *chan_id);
+			self.fail_htlc_backwards_internal(&source, &hash, &reason, failure_type, None);
 		}
 
 		let _ = self.handle_error(shutdown_result, *counterparty_node_id);
@@ -4227,8 +4227,8 @@ impl<
 			let (source, payment_hash, counterparty_node_id, channel_id) = htlc_source;
 			let failure_reason = LocalHTLCFailureReason::ChannelClosed;
 			let reason = HTLCFailReason::from_failure_code(failure_reason);
-			let receiver = source.failure_type(counterparty_node_id, channel_id);
-			self.fail_htlc_backwards_internal(&source, &payment_hash, &reason, receiver, None);
+			let failure_type = source.failure_type(counterparty_node_id, channel_id);
+			self.fail_htlc_backwards_internal(&source, &payment_hash, &reason, failure_type, None);
 		}
 		if let Some((_, funding_txo, _channel_id, monitor_update)) = shutdown_res.monitor_update {
 			debug_assert!(false, "This should have been handled in `convert_channel_err`");
