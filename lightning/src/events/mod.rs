@@ -2600,18 +2600,19 @@ impl MaybeReadable for Event {
 						(11, next_user_channel_id_legacy, option),
 						(13, prev_node_id_legacy, option),
 						(15, next_node_id_legacy, option),
-						// We can unwrap in the eagerly-evaluated default_value code because we
-						// always write legacy fields to be backwards compatible, and expect
-						// this field to be set because the legacy field was only None for versions
-						// before 0.0.107 and we do not allow upgrades with pending forwards to 0.1
-						// for any version 0.0.123 or earlier.
+						// We never expect prev/next_channel_id_legacy to be None because this field
+						// was only None for versions before 0.0.107 and we do not allow upgrades
+						// with pending forwards to 0.1 for any version 0.0.123 or earlier. We
+						// currently write the legacy fields for backwards compatibility, but we
+						// use a zero channel ID in the eagerly evaluated default_value block to
+						// allow the legacy field to be deprecated in future.
 						(17, prev_htlcs, (default_value, vec![HTLCLocator{
-							channel_id: prev_channel_id_legacy.unwrap(),
+							channel_id: prev_channel_id_legacy.unwrap_or(ChannelId::new_zero()),
 							user_channel_id: prev_user_channel_id_legacy,
 							node_id: prev_node_id_legacy,
 						}])),
 						(19, next_htlcs, (default_value, vec![HTLCLocator{
-							channel_id: next_channel_id_legacy.unwrap(),
+							channel_id: next_channel_id_legacy.unwrap_or(ChannelId::new_zero()),
 							user_channel_id: next_user_channel_id_legacy,
 							node_id: next_node_id_legacy,
 						}])),
