@@ -2233,10 +2233,15 @@ impl Writeable for Event {
 				ref failure_reason,
 			} => {
 				25u8.write(writer)?;
-				let legacy_chan_id =
-					prev_channel_ids.first().ok_or(io::Error::from(IOInvalidData))?;
+				// Legacy field is written for backwards compatibility. We don't want to fail writes
+				// so we write garbage data if we don't have the data we expect.
+				debug_assert!(
+					!prev_channel_ids.is_empty(),
+					"at least one prev_channel_id required for HTLCHandlingFailed"
+				);
+				let zero_id = ChannelId::new_zero();
+				let legacy_chan_id = prev_channel_ids.first().unwrap_or(&zero_id);
 				write_tlv_fields!(writer, {
-					// Write legacy field to remain backwards compatible.
 					(0, legacy_chan_id, required),
 					(1, failure_reason, option),
 					(2, failure_type, required),
