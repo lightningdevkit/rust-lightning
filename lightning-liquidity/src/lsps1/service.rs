@@ -92,11 +92,11 @@ where
 	/// `CreateOrder` request and replied with a `CreateOrder` response containing
 	/// an `order_id`.
 	/// Pending requests that are still awaiting our response are deliberately NOT counted.
-	pub(crate) fn has_active_requests(&self, counterparty_node_id: &PublicKey) -> bool {
+	pub(crate) fn has_active_orders(&self, counterparty_node_id: &PublicKey) -> bool {
 		let outer_state_lock = self.per_peer_state.read().unwrap();
 		outer_state_lock.get(counterparty_node_id).map_or(false, |inner| {
 			let peer_state = inner.lock().unwrap();
-			peer_state.has_active_requests()
+			peer_state.has_active_orders()
 		})
 	}
 

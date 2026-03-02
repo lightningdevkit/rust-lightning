@@ -716,17 +716,17 @@ where
 									.as_ref()
 									.is_some_and(|h| h.has_active_requests(sender_node_id));
 								#[cfg(lsps1_service)]
-								let lsps1_has_active_requests = self
+								let lsps1_has_active_orders = self
 									.lsps1_service_handler
 									.as_ref()
-									.is_some_and(|h| h.has_active_requests(sender_node_id));
+									.is_some_and(|h| h.has_active_orders(sender_node_id));
 								#[cfg(not(lsps1_service))]
 								let lsps1_has_active_requests = false;
 
 								lsps5_service_handler.enforce_prior_activity_or_reject(
 									sender_node_id,
 									lsps2_has_active_requests,
-									lsps1_has_active_requests,
+									lsps1_has_active_orders,
 									req_id.clone(),
 								)?
 							}

@@ -33,7 +33,7 @@ impl PeerState {
 		self.outbound_channels_by_order_id.get(order_id).map(|channel| &channel.order)
 	}
 
-	pub(super) fn has_active_requests(&self) -> bool {
+	pub(super) fn has_active_orders(&self) -> bool {
 		!self.outbound_channels_by_order_id.is_empty()
 	}
 }
