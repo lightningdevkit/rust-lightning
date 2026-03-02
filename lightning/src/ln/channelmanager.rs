@@ -19554,9 +19554,9 @@ impl<
 								return None;
 							}
 							return Some((
-								// When we have multiple prev_htlcs we assume that they all
-								// share the same htlc_source which contains all previous hops,
-								// so we can exit on the first claimable prev_hop because this
+								// When we have multiple prev_htlcs we know that they are all from
+								// a single HTLCSource (see match above) which contains all previous
+								// hops, so we can exit on the first claimable prev_hop because this
 								// will result in all prev_hops being claimed.
 								htlc_source,
 								payment_preimage,
