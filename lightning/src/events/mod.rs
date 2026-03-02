@@ -745,9 +745,15 @@ pub struct HTLCLocator {
 	pub channel_id: ChannelId,
 
 	/// The `user_channel_id` for `channel_id`.
+	///
+	/// This will be `None` if the payment was settled via an on-chain transaction. It will also
+	/// be `None` for events serialization by versions prior to 0.0.122.
 	pub user_channel_id: Option<u128>,
 
 	/// The public key identity of the node that the HTLC was sent to or received from.
+	///
+	/// This is only `None` for HTLCs received prior to 0.1 or for events serialized by versions
+	/// prior to 0.1.
 	pub node_id: Option<PublicKey>,
 }
 
