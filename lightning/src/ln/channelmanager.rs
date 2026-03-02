@@ -857,6 +857,14 @@ mod fuzzy_channelmanager {
 				},
 			}
 		}
+
+		pub fn previous_hop_data(&self) -> &[HTLCPreviousHopData] {
+			match self {
+				HTLCSource::PreviousHopData(prev_hop) => core::slice::from_ref(prev_hop),
+				HTLCSource::TrampolineForward { previous_hop_data, .. } => &previous_hop_data[..],
+				HTLCSource::OutboundRoute { .. } => &[],
+			}
+		}
 	}
 
 	/// Tracks the inbound corresponding to an outbound HTLC
@@ -19520,17 +19528,11 @@ impl<
 					.into_iter()
 					.filter_map(|(htlc_source, (htlc, preimage_opt))| {
 						let payment_preimage = preimage_opt?;
-						let prev_htlcs = match &htlc_source {
-							HTLCSource::PreviousHopData(prev_hop) => vec![prev_hop],
-							HTLCSource::TrampolineForward { previous_hop_data, .. } => {
-								previous_hop_data.iter().collect()
-							},
-							// If it was an outbound payment, we've handled it above - if a preimage
-							// came in and we persisted the `ChannelManager` we either handled it
-							// and are good to go or the channel force-closed - we don't have to
-							// handle the channel still live case here.
-							_ => vec![],
-						};
+						// If it was an outbound payment, we've handled it above - if a preimage
+						// came in and we persisted the `ChannelManager` we either handled it
+						// and are good to go or the channel force-closed - we don't have to
+						// handle the channel still live case here.
+						let prev_htlcs = htlc_source.previous_hop_data();
 						let prev_htlcs_count = prev_htlcs.len();
 						if prev_htlcs_count == 0 {
 							return None;
