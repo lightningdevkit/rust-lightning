@@ -857,6 +857,14 @@ mod fuzzy_channelmanager {
 				},
 			}
 		}
+
+		pub(crate) fn previous_hop_data(&self) -> &[HTLCPreviousHopData] {
+			match self {
+				HTLCSource::PreviousHopData(prev_hop) => core::slice::from_ref(prev_hop),
+				HTLCSource::TrampolineForward { previous_hop_data, .. } => &previous_hop_data[..],
+				HTLCSource::OutboundRoute { .. } => &[],
+			}
+		}
 	}
 
 	/// Tracks the inbound corresponding to an outbound HTLC
@@ -12532,15 +12540,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							chan.update_fulfill_htlc(&msg),
 							chan_entry
 						);
-						let prev_hops = match &res.0 {
-							HTLCSource::PreviousHopData(prev_hop) => vec![prev_hop],
-							HTLCSource::TrampolineForward { previous_hop_data, .. } => {
-								previous_hop_data.iter().collect()
-							},
-							_ => vec![],
-						};
 						let logger = WithChannelContext::from(&self.logger, &chan.context, None);
-						for prev_hop in prev_hops {
+						for prev_hop in res.0.previous_hop_data() {
 							log_trace!(logger,
 								"Holding the next revoke_and_ack until the preimage is durably persisted in the inbound edge's ChannelMonitor",
 							);
@@ -19792,17 +19793,11 @@ impl<
 					.into_iter()
 					.filter_map(|(htlc_source, (htlc, preimage_opt))| {
 						let payment_preimage = preimage_opt?;
-						let prev_htlcs = match &htlc_source {
-							HTLCSource::PreviousHopData(prev_hop) => vec![prev_hop],
-							HTLCSource::TrampolineForward { previous_hop_data, .. } => {
-								previous_hop_data.iter().collect()
-							},
-							// If it was an outbound payment, we've handled it above - if a preimage
-							// came in and we persisted the `ChannelManager` we either handled it
-							// and are good to go or the channel force-closed - we don't have to
-							// handle the channel still live case here.
-							_ => vec![],
-						};
+						// If it was an outbound payment, we've handled it above - if a preimage
+						// came in and we persisted the `ChannelManager` we either handled it
+						// and are good to go or the channel force-closed - we don't have to
+						// handle the channel still live case here.
+						let prev_htlcs = htlc_source.previous_hop_data();
 						let prev_htlcs_count = prev_htlcs.len();
 						if prev_htlcs_count == 0 {
 							return None;
