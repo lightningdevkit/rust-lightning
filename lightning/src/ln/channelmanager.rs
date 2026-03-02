@@ -9338,7 +9338,7 @@ impl<
 	/// single [`Event::PaymentForwarded`] event that represents the forward.
 	fn claim_funds_from_htlc_forward_hop(
 		&self, payment_preimage: PaymentPreimage,
-		make_payment_forwarded_event: impl Fn(Option<u64>) -> Option<events::Event>,
+		make_payment_forwarded_event: impl FnOnce(Option<u64>) -> Option<events::Event>,
 		startup_replay: bool, next_channel_counterparty_node_id: PublicKey,
 		next_channel_outpoint: OutPoint, next_channel_id: ChannelId, hop_data: HTLCPreviousHopData,
 		attribution_data: Option<AttributionData>, send_timestamp: Option<Duration>,
@@ -9869,7 +9869,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						);
 
 						Some(events::Event::PaymentForwarded {
-							prev_htlcs: prev_htlcs.clone(),
+							prev_htlcs,
 							next_htlcs: vec![events::HTLCLocator {
 								channel_id: next_channel_id,
 								user_channel_id: next_user_channel_id,
