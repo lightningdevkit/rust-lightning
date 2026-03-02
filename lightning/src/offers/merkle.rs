@@ -293,6 +293,7 @@ mod tests {
 	use crate::offers::signer::Metadata;
 	use crate::offers::test_utils::recipient_pubkey;
 	use crate::util::ser::Writeable;
+	use crate::util::test_utils::TestCurrencyConversion;
 	use bitcoin::hashes::{sha256, Hash};
 	use bitcoin::hex::FromHex;
 	use bitcoin::secp256k1::schnorr::Signature;
@@ -335,6 +336,7 @@ mod tests {
 		let nonce = Nonce([0u8; 16]);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let supported_conversion = TestCurrencyConversion;
 
 		let recipient_pubkey = {
 			let secret_bytes = <Vec<u8>>::from_hex(
@@ -356,10 +358,11 @@ mod tests {
 		// BOLT 12 test vectors
 		let invoice_request = OfferBuilder::new(recipient_pubkey)
 			.description("A Mathematical Treatise".into())
-			.amount(Amount::Currency {
-				iso4217_code: CurrencyCode::new(*b"USD").unwrap(),
-				amount: 100,
-			})
+			.amount(
+				Amount::Currency { iso4217_code: CurrencyCode::new(*b"USD").unwrap(), amount: 100 },
+				&supported_conversion,
+			)
+			.unwrap()
 			.build_unchecked()
 			// Override the payer metadata and signing pubkey to match the test vectors
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
