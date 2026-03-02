@@ -45,7 +45,7 @@ use crate::util::ser::{
 	UpgradableRequired, WithoutLength, Writeable, Writer,
 };
 
-use crate::io::{self, ErrorKind::InvalidData as IOInvalidData};
+use crate::io;
 use crate::sync::Arc;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash;
@@ -2043,9 +2043,23 @@ impl Writeable for Event {
 				outbound_amount_forwarded_msat,
 			} => {
 				7u8.write(writer)?;
-				// Fields 1, 3, 9, 11, 13 and 15 are written for backwards compatibility.
-				let legacy_prev = prev_htlcs.first().ok_or(io::Error::from(IOInvalidData))?;
-				let legacy_next = next_htlcs.first().ok_or(io::Error::from(IOInvalidData))?;
+				// Fields 1, 3, 9, 11, 13 and 15 are written for backwards compatibility. We don't
+				// want to fail writes, so we write garbage data if we don't have at least on htlc.
+				debug_assert!(
+					!prev_htlcs.is_empty(),
+					"at least one prev_htlc required for PaymentForwarded",
+				);
+				debug_assert!(
+					!next_htlcs.is_empty(),
+					"at least one next_htlc required for PaymentForwarded",
+				);
+				let empty_locator = HTLCLocator {
+					channel_id: ChannelId::new_zero(),
+					user_channel_id: None,
+					node_id: None,
+				};
+				let legacy_prev = prev_htlcs.first().unwrap_or(&empty_locator);
+				let legacy_next = next_htlcs.first().unwrap_or(&empty_locator);
 				write_tlv_fields!(writer, {
 					(0, total_fee_earned_msat, option),
 					(1, Some(legacy_prev.channel_id), option),
