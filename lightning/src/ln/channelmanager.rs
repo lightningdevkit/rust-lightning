@@ -7783,6 +7783,10 @@ impl<
 							continue;
 						}
 					} else {
+						debug_assert!(
+							false,
+							"We only expect to handle regular forwards in forwarding_channel_not_found"
+						);
 						let msg =
 							format!("Unknown short channel id {} for forward HTLC", short_chan_id);
 						failure_handler(
