@@ -19236,21 +19236,6 @@ impl<
 			(ChannelId, PaymentHash),
 			Vec<(HTLCPreviousHopData, OutboundHop)>,
 		> = new_hash_map();
-		let prune_forwarded_htlc = |already_forwarded_htlcs: &mut HashMap<
-			(ChannelId, PaymentHash),
-			Vec<(HTLCPreviousHopData, OutboundHop)>,
-		>,
-		                            prev_hop: &HTLCPreviousHopData,
-		                            payment_hash: &PaymentHash| {
-			if let hash_map::Entry::Occupied(mut entry) =
-				already_forwarded_htlcs.entry((prev_hop.channel_id, *payment_hash))
-			{
-				entry.get_mut().retain(|(htlc, _)| prev_hop.htlc_id != htlc.htlc_id);
-				if entry.get().is_empty() {
-					entry.remove();
-				}
-			}
-		};
 		{
 			// If we're tracking pending payments, ensure we haven't lost any by looking at the
 			// ChannelMonitor data for any channels for which we do not have authorative state
