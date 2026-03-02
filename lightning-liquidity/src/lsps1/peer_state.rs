@@ -22,6 +22,8 @@ use lightning::{impl_writeable_tlv_based, impl_writeable_tlv_based_enum};
 
 use core::fmt;
 
+const MAX_PENDING_REQUESTS_PER_PEER: usize = 10;
+
 /// Indicates which payment method was used for the order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaymentMethod {
@@ -340,6 +342,9 @@ impl PeerState {
 	pub(super) fn register_request(
 		&mut self, request_id: LSPSRequestId, request: LSPS1Request,
 	) -> Result<(), PeerStateError> {
+		if self.pending_requests_and_unpaid_orders() >= MAX_PENDING_REQUESTS_PER_PEER {
+			return Err(PeerStateError::TooManyPendingRequests);
+		}
 		if self.pending_requests.contains_key(&request_id) {
 			return Err(PeerStateError::DuplicateRequestId);
 		}
@@ -355,23 +360,6 @@ impl PeerState {
 
 	pub(super) fn pending_request_count(&self) -> usize {
 		self.pending_requests.len()
-	}
-
-	pub(super) fn pending_requests_and_unpaid_orders(&self) -> usize {
-		let pending_requests = self.pending_requests.len();
-		// We exclude paid and completed orders.
-		let unpaid_orders = self
-			.outbound_channels_by_order_id
-			.iter()
-			.filter(|(_, v)| {
-				!matches!(
-					v.state,
-					ChannelOrderState::OrderPaid { .. }
-						| ChannelOrderState::CompletedAndChannelOpened { .. }
-				)
-			})
-			.count();
-		pending_requests + unpaid_orders
 	}
 
 	pub(super) fn has_active_orders(&self) -> bool {
@@ -406,6 +394,23 @@ impl PeerState {
 			true
 		});
 	}
+
+	fn pending_requests_and_unpaid_orders(&self) -> usize {
+		let pending_requests = self.pending_requests.len();
+		// We exclude paid and completed orders.
+		let unpaid_orders = self
+			.outbound_channels_by_order_id
+			.iter()
+			.filter(|(_, v)| {
+				!matches!(
+					v.state,
+					ChannelOrderState::OrderPaid { .. }
+						| ChannelOrderState::CompletedAndChannelOpened { .. }
+				)
+			})
+			.count();
+		pending_requests + unpaid_orders
+	}
 }
 
 impl_writeable_tlv_based!(PeerState, {
@@ -420,6 +425,7 @@ pub(super) enum PeerStateError {
 	DuplicateRequestId,
 	UnknownOrderId,
 	InvalidStateTransition(ChannelOrderStateError),
+	TooManyPendingRequests,
 }
 
 impl fmt::Display for PeerStateError {
@@ -429,6 +435,7 @@ impl fmt::Display for PeerStateError {
 			Self::DuplicateRequestId => write!(f, "duplicate request id"),
 			Self::UnknownOrderId => write!(f, "unknown order id"),
 			Self::InvalidStateTransition(e) => write!(f, "{}", e),
+			Self::TooManyPendingRequests => write!(f, "too many pending requests"),
 		}
 	}
 }

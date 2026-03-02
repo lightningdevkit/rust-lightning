@@ -63,7 +63,6 @@ pub struct LSPS1ServiceConfig {
 	pub supported_options: LSPS1Options,
 }
 
-const MAX_PENDING_REQUESTS_PER_PEER: usize = 10;
 const MAX_TOTAL_PENDING_REQUESTS: usize = 1000;
 const MAX_TOTAL_PEERS: usize = 100000;
 
@@ -358,25 +357,6 @@ where
 
 			let mut peer_state_lock =
 				inner_state_entry.or_insert(Mutex::new(PeerState::default())).lock().unwrap();
-
-			if peer_state_lock.pending_requests_and_unpaid_orders() >= MAX_PENDING_REQUESTS_PER_PEER
-			{
-				let response = LSPS1Response::CreateOrderError(LSPSResponseError {
-					code: LSPS0_CLIENT_REJECTED_ERROR_CODE,
-					message: "Reached maximum number of pending requests. Please try again later."
-						.to_string(),
-					data: None,
-				});
-				let msg = LSPS1Message::Response(request_id, response).into();
-				message_queue_notifier.enqueue(counterparty_node_id, msg);
-				return Err(LightningError {
-					err: format!(
-						"Peer {} reached maximum number of pending requests: {}",
-						counterparty_node_id, MAX_PENDING_REQUESTS_PER_PEER
-					),
-					action: ErrorAction::IgnoreAndLog(Level::Debug),
-				});
-			}
 
 			let request = LSPS1Request::CreateOrder(params.clone());
 			peer_state_lock.register_request(request_id.clone(), request).map_err(|e| {
