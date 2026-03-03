@@ -8400,6 +8400,12 @@ where
 			);
 		}
 
+		let funding_contribution = self
+			.pending_splice
+			.as_ref()
+			.and_then(|pending_splice| pending_splice.contributions.last())
+			.cloned();
+
 		log_info!(
 			logger,
 			"Received splice initial commitment_signed from peer with funding txid {}",
@@ -8413,6 +8419,7 @@ where
 				channel_parameters: pending_splice_funding.channel_transaction_parameters.clone(),
 				holder_commitment_tx,
 				counterparty_commitment_tx,
+				funding_contribution,
 			}],
 			channel_id: Some(self.context.channel_id()),
 		};

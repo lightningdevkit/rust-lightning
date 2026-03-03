@@ -582,11 +582,11 @@ impl FundingContribution {
 		self.is_splice
 	}
 
-	pub(super) fn contributed_inputs(&self) -> impl Iterator<Item = OutPoint> + '_ {
+	pub(crate) fn contributed_inputs(&self) -> impl Iterator<Item = OutPoint> + '_ {
 		self.inputs.iter().map(|input| input.utxo.outpoint)
 	}
 
-	pub(super) fn contributed_outputs(&self) -> impl Iterator<Item = &bitcoin::Script> + '_ {
+	pub(crate) fn contributed_outputs(&self) -> impl Iterator<Item = &bitcoin::Script> + '_ {
 		self.outputs
 			.iter()
 			.chain(self.change_output.iter())
@@ -761,7 +761,7 @@ impl FundingContribution {
 		(contributed_inputs, contributed_outputs.map(|output| output.script_pubkey).collect())
 	}
 
-	pub(super) fn into_unique_contributions<'a>(
+	pub(crate) fn into_unique_contributions<'a>(
 		self, existing_inputs: impl Iterator<Item = OutPoint>,
 		existing_outputs: impl Iterator<Item = &'a bitcoin::Script>,
 	) -> Option<(Vec<OutPoint>, Vec<ScriptBuf>)> {

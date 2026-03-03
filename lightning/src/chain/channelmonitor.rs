@@ -44,7 +44,7 @@ use crate::chain::package::{
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::chain::{BlockLocator, WatchedOutput};
 use crate::events::bump_transaction::{AnchorDescriptor, BumpTransactionEvent};
-use crate::events::{ClosureReason, Event, EventHandler, ReplayEvent};
+use crate::events::{ClosureReason, Event, EventHandler, FundingInfo, ReplayEvent};
 use crate::ln::chan_utils::{
 	self, ChannelTransactionParameters, CommitmentTransaction, CounterpartyCommitmentSecrets,
 	HTLCClaim, HTLCOutputInCommitment, HolderCommitmentTransaction,
@@ -55,6 +55,7 @@ use crate::ln::channel_keys::{
 	RevocationKey,
 };
 use crate::ln::channelmanager::{HTLCSource, PaymentClaimDetails, SentHTLCId};
+use crate::ln::funding::FundingContribution;
 use crate::ln::msgs::DecodeError;
 use crate::ln::types::ChannelId;
 use crate::sign::{
@@ -688,6 +689,7 @@ pub(crate) enum ChannelMonitorUpdateStep {
 		channel_parameters: ChannelTransactionParameters,
 		holder_commitment_tx: HolderCommitmentTransaction,
 		counterparty_commitment_tx: CommitmentTransaction,
+		funding_contribution: Option<FundingContribution>,
 	},
 	RenegotiatedFundingLocked {
 		funding_txid: Txid,
@@ -773,6 +775,7 @@ impl_writeable_tlv_based_enum_upgradable!(ChannelMonitorUpdateStep,
 		(1, channel_parameters, (required: ReadableArgs, None)),
 		(3, holder_commitment_tx, required),
 		(5, counterparty_commitment_tx, required),
+		(7, funding_contribution, option),
 	},
 	(12, RenegotiatedFundingLocked) => {
 		(1, funding_txid, required),
@@ -1166,6 +1169,9 @@ struct FundingScope {
 	// transaction for which we have deleted claim information on some watchtowers.
 	current_holder_commitment_tx: HolderCommitmentTransaction,
 	prev_holder_commitment_tx: Option<HolderCommitmentTransaction>,
+
+	/// Our funding contribution when we negotiated the corresponding funding transaction.
+	contribution: Option<FundingContribution>,
 }
 
 impl FundingScope {
@@ -1185,6 +1191,14 @@ impl FundingScope {
 	fn channel_type_features(&self) -> &ChannelTypeFeatures {
 		&self.channel_parameters.channel_type_features
 	}
+
+	fn contributed_inputs(&self) -> impl Iterator<Item = bitcoin::OutPoint> + '_ {
+		self.contribution.iter().flat_map(|contribution| contribution.contributed_inputs())
+	}
+
+	fn contributed_outputs(&self) -> impl Iterator<Item = &bitcoin::Script> + '_ {
+		self.contribution.iter().flat_map(|contribution| contribution.contributed_outputs())
+	}
 }
 
 impl_writeable_tlv_based!(FundingScope, {
@@ -1194,6 +1208,7 @@ impl_writeable_tlv_based!(FundingScope, {
 	(7, current_holder_commitment_tx, required),
 	(9, prev_holder_commitment_tx, option),
 	(11, counterparty_claimable_outpoints, required),
+	(13, contribution, option),
 });
 
 #[derive(Clone, PartialEq)]
@@ -1756,6 +1771,7 @@ pub(crate) fn write_chanmon_internal<Signer: EcdsaChannelSigner, W: Writer>(
 		(35, channel_monitor.is_manual_broadcast, required),
 		(37, channel_monitor.funding_seen_onchain, required),
 		(39, channel_monitor.best_block.previous_blocks, required),
+		(41, channel_monitor.funding.contribution, option),
 	});
 
 	Ok(())
@@ -1905,6 +1921,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 
 				current_holder_commitment_tx: initial_holder_commitment_tx,
 				prev_holder_commitment_tx: None,
+
+				contribution: None,
 			},
 			pending_funding: vec![],
 
@@ -3959,6 +3977,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		&mut self, logger: &WithContext<L>, channel_parameters: &ChannelTransactionParameters,
 		alternative_holder_commitment_tx: &HolderCommitmentTransaction,
 		alternative_counterparty_commitment_tx: &CommitmentTransaction,
+		funding_contribution: &Option<FundingContribution>,
 	) -> Result<(), ()> {
 		let alternative_counterparty_commitment_txid =
 			alternative_counterparty_commitment_tx.trust().txid();
@@ -4025,6 +4044,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			counterparty_claimable_outpoints,
 			current_holder_commitment_tx: alternative_holder_commitment_tx.clone(),
 			prev_holder_commitment_tx: None,
+			contribution: funding_contribution.clone(),
 		};
 		let alternative_funding_outpoint = alternative_funding.funding_outpoint();
 
@@ -4081,6 +4101,29 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		Ok(())
 	}
 
+	fn queue_discard_funding_event(
+		&mut self, discarded_funding: impl Iterator<Item = FundingScope>,
+	) {
+		for funding in discarded_funding {
+			if let Some(contribution) = funding.contribution {
+				if let Some((inputs, outputs)) = contribution.into_unique_contributions(
+					self.funding.contributed_inputs(),
+					self.funding.contributed_outputs(),
+				) {
+					self.pending_events.push(Event::DiscardFunding {
+						channel_id: self.channel_id,
+						funding_info: FundingInfo::Contribution { inputs, outputs },
+					});
+				}
+			} else {
+				self.pending_events.push(Event::DiscardFunding {
+					channel_id: self.channel_id,
+					funding_info: FundingInfo::OutPoint { outpoint: funding.funding_outpoint() },
+				});
+			}
+		}
+	}
+
 	fn promote_funding(&mut self, new_funding_txid: Txid) -> Result<(), ()> {
 		let prev_funding_txid = self.funding.funding_txid();
 
@@ -4111,18 +4154,20 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		let no_further_updates_allowed = self.no_further_updates_allowed();
 
 		// The swap above places the previous `FundingScope` into `pending_funding`.
-		for funding in self.pending_funding.drain(..) {
-			let funding_txid = funding.funding_txid();
-			self.outputs_to_watch.remove(&funding_txid);
-			if no_further_updates_allowed && funding_txid != prev_funding_txid {
-				self.pending_events.push(Event::DiscardFunding {
-					channel_id: self.channel_id,
-					funding_info: crate::events::FundingInfo::OutPoint {
-						outpoint: funding.funding_outpoint(),
-					},
-				});
-			}
+		for funding in &self.pending_funding {
+			self.outputs_to_watch.remove(&funding.funding_txid());
 		}
+		let mut discarded_funding = Vec::new();
+		mem::swap(&mut self.pending_funding, &mut discarded_funding);
+		let discarded_funding = discarded_funding
+			.into_iter()
+			// The previous funding is filtered out since it was already locked, so nothing needs to
+			// be discarded.
+			.filter(|funding| {
+				no_further_updates_allowed && funding.funding_txid() != prev_funding_txid
+			});
+		self.queue_discard_funding_event(discarded_funding);
+
 		if let Some((alternative_funding_txid, _)) = self.alternative_funding_confirmed.take() {
 			// In exceedingly rare cases, it's possible there was a reorg that caused a potential funding to
 			// be locked in that this `ChannelMonitor` has not yet seen. Thus, we avoid a runtime assertion
@@ -4239,11 +4284,13 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				},
 				ChannelMonitorUpdateStep::RenegotiatedFunding {
 					channel_parameters, holder_commitment_tx, counterparty_commitment_tx,
+					funding_contribution,
 				} => {
 					log_trace!(logger, "Updating ChannelMonitor with alternative holder and counterparty commitment transactions for funding txid {}",
 						channel_parameters.funding_outpoint.unwrap().txid);
 					if let Err(_) = self.renegotiated_funding(
 						logger, channel_parameters, holder_commitment_tx, counterparty_commitment_tx,
+						funding_contribution,
 					) {
 						ret = Err(());
 					}
@@ -5810,15 +5857,14 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					self.funding_spend_confirmed = Some(entry.txid);
 					self.confirmed_commitment_tx_counterparty_output = commitment_tx_to_counterparty_output;
 					if self.alternative_funding_confirmed.is_none() {
-						for funding in self.pending_funding.drain(..) {
+						// We saw a confirmed commitment for our currently locked funding, so
+						// discard all pending ones.
+						for funding in &self.pending_funding {
 							self.outputs_to_watch.remove(&funding.funding_txid());
-							self.pending_events.push(Event::DiscardFunding {
-								channel_id: self.channel_id,
-								funding_info: crate::events::FundingInfo::OutPoint {
-									outpoint: funding.funding_outpoint(),
-								},
-							});
 						}
+						let mut discarded_funding = Vec::new();
+						mem::swap(&mut self.pending_funding, &mut discarded_funding);
+						self.queue_discard_funding_event(discarded_funding.into_iter());
 					}
 				},
 				OnchainEvent::AlternativeFundingConfirmation {} => {
@@ -6696,6 +6742,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		let mut is_manual_broadcast = RequiredWrapper(None);
 		let mut funding_seen_onchain = RequiredWrapper(None);
 		let mut best_block_previous_blocks = None;
+		let mut current_funding_contribution = None;
 		read_tlv_fields!(reader, {
 			(1, funding_spend_confirmed, option),
 			(3, htlcs_resolved_on_chain, optional_vec),
@@ -6719,6 +6766,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			(35, is_manual_broadcast, (default_value, false)),
 			(37, funding_seen_onchain, (default_value, true)),
 			(39, best_block_previous_blocks, option), // Added and always set in 0.3
+			(41, current_funding_contribution, option),
 		});
 		if let Some(previous_blocks) = best_block_previous_blocks {
 			best_block.previous_blocks = previous_blocks;
@@ -6837,6 +6885,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 
 				current_holder_commitment_tx,
 				prev_holder_commitment_tx,
+				contribution: current_funding_contribution,
 			},
 			pending_funding: pending_funding.unwrap_or(vec![]),
 			is_manual_broadcast: is_manual_broadcast.0.unwrap(),
