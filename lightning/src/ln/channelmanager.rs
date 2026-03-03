@@ -19672,28 +19672,17 @@ impl<
 					prune_forwarded_htlc(&mut already_forwarded_htlcs, prev_hop_data, payment_hash);
 				}
 			}
-
-			// See above comment on `failed_htlcs`.
-			for htlcs in claimable_payments_legacy.values().map(|pmt| &pmt.htlcs) {
-				for prev_hop_data in htlcs.iter().map(|h| &h.prev_hop) {
-					dedup_decode_update_add_htlcs(
-						&mut decode_update_add_htlcs,
-						prev_hop_data,
-						"HTLC was already decoded and marked as a claimable payment",
-						&args.logger,
-					);
-				}
-			}
 		}
 
-		let (decode_update_add_htlcs, forward_htlcs, pending_intercepted_htlcs) =
+		let (decode_update_add_htlcs, forward_htlcs, pending_intercepted_htlcs, claimable_payments) =
 			if reconstruct_manager_from_monitors {
-				(decode_update_add_htlcs, new_hash_map(), new_hash_map())
+				(decode_update_add_htlcs, new_hash_map(), new_hash_map(), new_hash_map())
 			} else {
 				(
 					decode_update_add_htlcs_legacy,
 					forward_htlcs_legacy,
 					pending_intercepted_htlcs_legacy,
+					claimable_payments_legacy,
 				)
 			};
 
@@ -19767,7 +19756,7 @@ impl<
 			forward_htlcs: Mutex::new(forward_htlcs),
 			decode_update_add_htlcs: Mutex::new(decode_update_add_htlcs),
 			claimable_payments: Mutex::new(ClaimablePayments {
-				claimable_payments: claimable_payments_legacy,
+				claimable_payments,
 				pending_claiming_payments: pending_claiming_payments_legacy,
 			}),
 			outbound_scid_aliases: Mutex::new(outbound_scid_aliases),
