@@ -1968,7 +1968,7 @@ fn test_reload_node_with_preimage_in_monitor_claims_htlc() {
 		persister,
 		new_chain_monitor,
 		nodes_1_deserialized,
-		Some(true)
+		TestReloadNodeCfg::new().with_reconstruct_htlcs(true)
 	);
 
 	// When the claim is reconstructed during reload, a PaymentForwarded event is generated.
@@ -2071,7 +2071,7 @@ fn test_reload_node_without_preimage_fails_htlc() {
 		persister,
 		new_chain_monitor,
 		nodes_1_deserialized,
-		Some(true)
+		TestReloadNodeCfg::new().with_reconstruct_htlcs(true)
 	);
 
 	// After reload, nodes[1] should have generated an HTLCHandlingFailed event.
@@ -2218,7 +2218,7 @@ fn test_reload_with_mpp_claims_on_same_channel() {
 		persister,
 		new_chain_monitor,
 		nodes_1_deserialized,
-		Some(true)
+		TestReloadNodeCfg::new().with_reconstruct_htlcs(true)
 	);
 
 	// When the claims are reconstructed during reload, PaymentForwarded events are regenerated.
