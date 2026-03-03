@@ -7925,12 +7925,12 @@ where
 		&mut self, msg: &msgs::CommitmentSigned, fee_estimator: &LowerBoundedFeeEstimator<F>,
 		logger: &L,
 	) -> Result<Option<ChannelMonitorUpdate>, ChannelError> {
-		debug_assert!(self
+		let signing_session = self
 			.context
 			.interactive_tx_signing_session
 			.as_ref()
-			.map(|signing_session| !signing_session.has_received_tx_signatures())
-			.unwrap_or(false));
+			.expect("Signing session must exist for negotiated pending splice");
+		debug_assert!(!signing_session.has_received_tx_signatures());
 
 		let pending_splice_funding = self
 			.pending_splice
@@ -7982,6 +7982,9 @@ where
 			);
 		}
 
+		let (contributed_inputs, contributed_outputs) =
+			signing_session.to_contributed_inputs_and_outputs();
+
 		log_info!(
 			logger,
 			"Received splice initial commitment_signed from peer with funding txid {}",
@@ -7995,6 +7998,8 @@ where
 				channel_parameters: pending_splice_funding.channel_transaction_parameters.clone(),
 				holder_commitment_tx,
 				counterparty_commitment_tx,
+				contributed_inputs,
+				contributed_outputs,
 			}],
 			channel_id: Some(self.context.channel_id()),
 		};

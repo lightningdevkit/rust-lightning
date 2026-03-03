@@ -1897,6 +1897,8 @@ fn do_test_splice_commitment_broadcast(splice_status: SpliceStatus, claim_htlcs:
 	let splice_in_amount = initial_channel_capacity / 2;
 	let initiator_contribution =
 		do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, Amount::from_sat(splice_in_amount));
+	let (expected_discarded_inputs, expected_discarded_outputs) =
+		initiator_contribution.clone().into_contributed_inputs_and_outputs();
 	let (splice_tx, _) = splice_channel(&nodes[0], &nodes[1], channel_id, initiator_contribution);
 	let (preimage2, payment_hash2, ..) = route_payment(&nodes[0], &[&nodes[1]], payment_amount);
 	let htlc_expiry = nodes[0].best_block_info().1 + TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS;
@@ -2039,20 +2041,29 @@ fn do_test_splice_commitment_broadcast(splice_status: SpliceStatus, claim_htlcs:
 			.chain_source
 			.remove_watched_txn_and_outputs(funding_outpoint, txout.script_pubkey.clone());
 
-		// `SpendableOutputs` events are also included here, but we don't care for them.
 		let events = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
 		assert_eq!(events.len(), if claim_htlcs { 2 } else { 4 }, "{events:?}");
 		if let Event::DiscardFunding { funding_info, .. } = &events[0] {
-			assert_eq!(*funding_info, FundingInfo::OutPoint { outpoint: funding_outpoint });
+			assert_eq!(
+				*funding_info,
+				FundingInfo::Contribution {
+					inputs: expected_discarded_inputs,
+					outputs: expected_discarded_outputs,
+				}
+			);
 		} else {
 			panic!();
 		}
+		assert!(matches!(&events[1], Event::SpendableOutputs { .. }));
+		if !claim_htlcs {
+			assert!(matches!(&events[2], Event::SpendableOutputs { .. }));
+			assert!(matches!(&events[3], Event::SpendableOutputs { .. }));
+		}
+
 		let events = nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events();
-		assert_eq!(events.len(), if claim_htlcs { 2 } else { 1 }, "{events:?}");
-		if let Event::DiscardFunding { funding_info, .. } = &events[0] {
-			assert_eq!(*funding_info, FundingInfo::OutPoint { outpoint: funding_outpoint });
-		} else {
-			panic!();
+		assert_eq!(events.len(), if claim_htlcs { 1 } else { 0 }, "{events:?}");
+		if claim_htlcs {
+			assert!(matches!(&events[0], Event::SpendableOutputs { .. }));
 		}
 	}
 }

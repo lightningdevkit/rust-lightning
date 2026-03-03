@@ -1102,6 +1102,8 @@ impl_for_vec!(crate::ln::channelmanager::MonitorUpdateCompletionAction);
 impl_for_vec!(crate::ln::channelmanager::PaymentClaimDetails);
 impl_for_vec!(crate::ln::msgs::SocketAddress);
 impl_for_vec!((A, B), A, B);
+impl_for_vec!(OutPoint);
+impl_for_vec!(ScriptBuf);
 impl_for_vec!(SerialId);
 impl_for_vec!(TxInMetadata);
 impl_for_vec!(TxOutMetadata);
