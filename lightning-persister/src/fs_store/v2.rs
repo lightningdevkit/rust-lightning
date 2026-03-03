@@ -1,5 +1,7 @@
 //! Objects related to [`FilesystemStoreV2`] live here.
-use crate::fs_store::common::{get_key_from_dir_entry_path, FilesystemStoreState};
+use crate::fs_store::common::{
+	dir_entry_is_key, get_key_from_dir_entry_path, FilesystemStoreState,
+};
 
 use lightning::util::persist::{
 	KVStoreSync, MigratableKVStore, PageToken, PaginatedKVStoreSync, PaginatedListResponse,
@@ -107,6 +109,16 @@ impl FilesystemStoreState {
 		let mut entries: Vec<(u64, String)> = Vec::new();
 		for dir_entry in fs::read_dir(&prefixed_dest)? {
 			let dir_entry = dir_entry?;
+
+			match dir_entry_is_key(&dir_entry) {
+				// Entry is not a key (e.g., .tmp file, directory), skip it.
+				Ok(false) => continue,
+				// Entry is a valid key file, proceed to collect it.
+				Ok(true) => {},
+				// Entry may have been deleted between read_dir and our check. Include
+				// it anyway to give a more consistent view, matching list's behavior.
+				Err(_) => {},
+			}
 
 			let key =
 				get_key_from_dir_entry_path(&dir_entry.path(), prefixed_dest.as_path(), false)?;
@@ -614,6 +626,33 @@ mod tests {
 		assert_eq!(response.keys[1], "mango");
 		assert_eq!(response.keys[2], "banana");
 		assert_eq!(response.keys[3], "apple");
+	}
+
+	#[test]
+	fn test_paginated_listing_skips_tmp_files() {
+		use lightning::util::persist::{KVStoreSync, PaginatedKVStoreSync};
+
+		let mut temp_path = std::env::temp_dir();
+		temp_path.push("test_paginated_listing_skips_tmp_files_v2");
+		let fs_store = FilesystemStoreV2::new(temp_path.clone()).unwrap();
+
+		let data = vec![42u8; 32];
+
+		// Write some real keys
+		KVStoreSync::write(&fs_store, "ns", "sub", "key0", data.clone()).unwrap();
+		std::thread::sleep(std::time::Duration::from_millis(10));
+		KVStoreSync::write(&fs_store, "ns", "sub", "key1", data.clone()).unwrap();
+
+		// Create a .tmp file and a subdirectory directly on disk
+		let dir = temp_path.join("ns").join("sub");
+		fs::write(dir.join("inflight.tmp"), &data).unwrap();
+		fs::create_dir_all(dir.join("stray_dir")).unwrap();
+
+		// Paginated listing should only return the two real keys
+		let response = PaginatedKVStoreSync::list_paginated(&fs_store, "ns", "sub", None).unwrap();
+		assert_eq!(response.keys.len(), 2);
+		assert!(response.keys.contains(&"key0".to_string()));
+		assert!(response.keys.contains(&"key1".to_string()));
 	}
 
 	#[test]

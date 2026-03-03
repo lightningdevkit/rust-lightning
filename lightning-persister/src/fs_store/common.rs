@@ -720,7 +720,7 @@ impl FilesystemStoreState {
 	}
 }
 
-fn dir_entry_is_key(dir_entry: &fs::DirEntry) -> Result<bool, lightning::io::Error> {
+pub(crate) fn dir_entry_is_key(dir_entry: &fs::DirEntry) -> Result<bool, lightning::io::Error> {
 	let p = dir_entry.path();
 	if let Some(ext) = p.extension() {
 		#[cfg(target_os = "windows")]
