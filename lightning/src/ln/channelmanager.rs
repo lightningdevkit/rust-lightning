@@ -9915,6 +9915,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 									total_fee_earned_msat: None,
 									skimmed_fee_msat,
 									claim_from_onchain_tx: from_onchain,
+									// TODO: When trampoline payments are tracked in our
+									// pending_outbound_payments, set to the total amount sent (not
+									// just the amount of the outgoing htlc that was first settled).
 									outbound_amount_forwarded_msat: forwarded_htlc_value_msat,
 								})
 							} else {
