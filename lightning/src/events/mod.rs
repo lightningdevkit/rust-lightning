@@ -2618,6 +2618,13 @@ impl MaybeReadable for Event {
 						}])),
 					});
 
+					// Legacy fields must be present if prev/next_htlcs are not.
+					if prev_htlcs.is_empty() && prev_node_id_legacy.is_none()
+						|| next_htlcs.is_empty() && next_node_id_legacy.is_none()
+					{
+						return Err(msgs::DecodeError::InvalidValue);
+					}
+
 					Ok(Some(Event::PaymentForwarded {
 						prev_htlcs,
 						next_htlcs,
