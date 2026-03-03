@@ -2788,7 +2788,7 @@ impl FundingScope {
 
 		// New reserve values are based on the new channel value and are v2-specific
 		let counterparty_selected_channel_reserve_satoshis =
-			Some(get_v2_channel_reserve_satoshis(post_channel_value, MIN_CHAN_DUST_LIMIT_SATOSHIS));
+			get_v2_channel_reserve_satoshis(post_channel_value, MIN_CHAN_DUST_LIMIT_SATOSHIS);
 		let holder_selected_channel_reserve_satoshis = get_v2_channel_reserve_satoshis(
 			post_channel_value,
 			context.counterparty_dust_limit_satoshis,
@@ -2798,23 +2798,39 @@ impl FundingScope {
 			channel_transaction_parameters: post_channel_transaction_parameters,
 			value_to_self_msat: post_value_to_self_msat,
 			funding_transaction: None,
-			counterparty_selected_channel_reserve_satoshis,
+			counterparty_selected_channel_reserve_satoshis: Some(
+				counterparty_selected_channel_reserve_satoshis,
+			),
 			holder_selected_channel_reserve_satoshis,
 			#[cfg(debug_assertions)]
 			holder_prev_commitment_tx_balance: {
 				let prev = *prev_funding.holder_prev_commitment_tx_balance.lock().unwrap();
-				Mutex::new((
-					prev.0.saturating_add_signed(our_funding_contribution.to_sat() * 1000),
-					prev.1.saturating_add_signed(their_funding_contribution.to_sat() * 1000),
-				))
+				let new_holder_balance_msat =
+					prev.0.saturating_add_signed(our_funding_contribution.to_sat() * 1000);
+				let new_counterparty_balance_msat =
+					prev.1.saturating_add_signed(their_funding_contribution.to_sat() * 1000);
+				if new_holder_balance_msat < counterparty_selected_channel_reserve_satoshis {
+					assert_eq!(new_holder_balance_msat, prev.0);
+				}
+				if new_counterparty_balance_msat < holder_selected_channel_reserve_satoshis {
+					assert_eq!(new_counterparty_balance_msat, prev.1);
+				}
+				Mutex::new((new_holder_balance_msat, new_counterparty_balance_msat))
 			},
 			#[cfg(debug_assertions)]
 			counterparty_prev_commitment_tx_balance: {
 				let prev = *prev_funding.counterparty_prev_commitment_tx_balance.lock().unwrap();
-				Mutex::new((
-					prev.0.saturating_add_signed(our_funding_contribution.to_sat() * 1000),
-					prev.1.saturating_add_signed(their_funding_contribution.to_sat() * 1000),
-				))
+				let new_holder_balance_msat =
+					prev.0.saturating_add_signed(our_funding_contribution.to_sat() * 1000);
+				let new_counterparty_balance_msat =
+					prev.1.saturating_add_signed(their_funding_contribution.to_sat() * 1000);
+				if new_holder_balance_msat < counterparty_selected_channel_reserve_satoshis {
+					assert_eq!(new_holder_balance_msat, prev.0);
+				}
+				if new_counterparty_balance_msat < holder_selected_channel_reserve_satoshis {
+					assert_eq!(new_counterparty_balance_msat, prev.1);
+				}
+				Mutex::new((new_holder_balance_msat, new_counterparty_balance_msat))
 			},
 			#[cfg(any(test, fuzzing))]
 			next_local_fee: Mutex::new(PredictedNextFee::default()),
@@ -5453,6 +5469,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 				} else {
 					1
 				};
+			// Note that the feerate is 0 in zero-fee commitment channels, so this statement is a noop
 			let spiked_feerate = feerate * fee_spike_multiple;
 			let (remote_stats, _remote_htlcs) = self
 				.get_next_remote_commitment_stats(
@@ -12385,6 +12402,15 @@ where
 		// We are not interested in dust exposure
 		let dust_exposure_limiting_feerate = None;
 
+		// Note that the feerate is 0 in zero-fee commitment channels, so this statement is a noop
+		let feerate_per_kw = if !funding.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
+			// Similar to HTLC additions, require the funder to have enough funds reserved for
+			// fees such that the feerate can jump without rendering the channel useless.
+			self.context.feerate_per_kw * FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE as u32
+		} else {
+			self.context.feerate_per_kw
+		};
+
 		let (local_stats, _local_htlcs) = self
 			.context
 			.get_next_local_commitment_stats(
@@ -12392,7 +12418,7 @@ where
 				None, // htlc_candidate
 				include_counterparty_unknown_htlcs,
 				addl_nondust_htlc_count,
-				self.context.feerate_per_kw,
+				feerate_per_kw,
 				dust_exposure_limiting_feerate,
 			)
 			.map_err(|()| "Balance exhausted on local commitment")?;
@@ -12404,7 +12430,7 @@ where
 				None, // htlc_candidate
 				include_counterparty_unknown_htlcs,
 				addl_nondust_htlc_count,
-				self.context.feerate_per_kw,
+				feerate_per_kw,
 				dust_exposure_limiting_feerate,
 			)
 			.map_err(|()| "Balance exhausted on remote commitment")?;

@@ -1576,7 +1576,7 @@ fn test_async_splice_initial_commit_sig() {
 		value: Amount::from_sat(1_000),
 		script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
 	}];
-	let contribution = initiate_splice_out(initiator, acceptor, channel_id, outputs);
+	let contribution = initiate_splice_out(initiator, acceptor, channel_id, outputs).unwrap();
 	negotiate_splice_tx(initiator, acceptor, channel_id, contribution);
 
 	assert!(initiator.node.get_and_clear_pending_msg_events().is_empty());
