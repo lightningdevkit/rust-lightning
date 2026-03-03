@@ -19804,273 +19804,279 @@ impl<
 		};
 
 		let mut processed_claims: HashSet<Vec<MPPClaimHTLCSource>> = new_hash_set();
-		for (channel_id, monitor) in args.channel_monitors.iter() {
-			for (payment_hash, (payment_preimage, payment_claims)) in monitor.get_stored_preimages()
+
+		let monitor_preimages = args.channel_monitors.iter().flat_map(|(channel_id, monitor)| {
+			let counterparty_node_id = monitor.get_counterparty_node_id();
+			monitor.get_stored_preimages().into_iter().map(
+				move |(payment_hash, (payment_preimage, payment_claims))| {
+					(
+						*channel_id,
+						counterparty_node_id,
+						payment_hash,
+						payment_preimage,
+						payment_claims,
+					)
+				},
+			)
+		});
+
+		for (channel_id, counterparty_node_id, payment_hash, payment_preimage, payment_claims) in
+			monitor_preimages
+		{
+			// If we have unresolved inbound committed HTLCs that were already forwarded to the
+			// outbound edge and removed via claim, we need to make sure to claim them backwards via
+			// adding them to `pending_claims_to_replay`.
+			if let Some(forwarded_htlcs) =
+				already_forwarded_htlcs.remove(&(channel_id, payment_hash))
 			{
-				// If we have unresolved inbound committed HTLCs that were already forwarded to the
-				// outbound edge and removed via claim, we need to make sure to claim them backwards via
-				// adding them to `pending_claims_to_replay`.
-				if let Some(forwarded_htlcs) =
-					already_forwarded_htlcs.remove(&(*channel_id, payment_hash))
-				{
-					for (prev_hop, next_hop) in forwarded_htlcs {
-						let new_pending_claim =
-							!pending_claims_to_replay.iter().any(|(src, _, _, _, _, _, _, _)| {
-								matches!(src, HTLCSource::PreviousHopData(hop) if hop.htlc_id == prev_hop.htlc_id && hop.channel_id == prev_hop.channel_id)
+				for (prev_hop, next_hop) in forwarded_htlcs {
+					let new_pending_claim =
+						!pending_claims_to_replay.iter().any(|(src, _, _, _, _, _, _, _)| {
+							matches!(src, HTLCSource::PreviousHopData(hop) if hop.htlc_id == prev_hop.htlc_id && hop.channel_id == prev_hop.channel_id)
+						});
+					if new_pending_claim {
+						let is_downstream_closed = channel_manager
+							.per_peer_state
+							.read()
+							.unwrap()
+							.get(&next_hop.node_id)
+							.map_or(true, |peer_state_mtx| {
+								!peer_state_mtx
+									.lock()
+									.unwrap()
+									.channel_by_id
+									.contains_key(&next_hop.channel_id)
 							});
-						if new_pending_claim {
-							let is_downstream_closed = channel_manager
-								.per_peer_state
-								.read()
-								.unwrap()
-								.get(&next_hop.node_id)
-								.map_or(true, |peer_state_mtx| {
-									!peer_state_mtx
-										.lock()
-										.unwrap()
-										.channel_by_id
-										.contains_key(&next_hop.channel_id)
-								});
-							pending_claims_to_replay.push((
-								HTLCSource::PreviousHopData(prev_hop),
-								payment_preimage,
-								next_hop.amt_msat,
-								is_downstream_closed,
-								next_hop.node_id,
-								next_hop.funding_txo,
-								next_hop.channel_id,
-								Some(next_hop.user_channel_id),
-							));
-						}
+						pending_claims_to_replay.push((
+							HTLCSource::PreviousHopData(prev_hop),
+							payment_preimage,
+							next_hop.amt_msat,
+							is_downstream_closed,
+							next_hop.node_id,
+							next_hop.funding_txo,
+							next_hop.channel_id,
+							Some(next_hop.user_channel_id),
+						));
 					}
 				}
-				if !payment_claims.is_empty() {
-					for payment_claim in payment_claims {
-						if processed_claims.contains(&payment_claim.mpp_parts) {
-							// We might get the same payment a few times from different channels
-							// that the MPP payment was received using. There's no point in trying
-							// to claim the same payment again and again, so we check if the HTLCs
-							// are the same and skip the payment here.
-							continue;
-						}
-						if payment_claim.mpp_parts.is_empty() {
-							return Err(DecodeError::InvalidValue);
-						}
-						{
-							let payments = channel_manager.claimable_payments.lock().unwrap();
-							if !payments.claimable_payments.contains_key(&payment_hash) {
-								if let Some(payment) =
-									payments.pending_claiming_payments.get(&payment_hash)
-								{
-									if payment.payment_id
-										== payment_claim.claiming_payment.payment_id
-									{
-										// If this payment already exists and was marked as
-										// being-claimed then the serialized state must contain all
-										// of the pending `ChannelMonitorUpdate`s required to get
-										// the preimage on disk in all MPP parts. Thus we can skip
-										// the replay below.
-										continue;
-									}
-								}
-							}
-						}
-
-						let mut channels_without_preimage = payment_claim
-							.mpp_parts
-							.iter()
-							.map(|htlc_info| (htlc_info.counterparty_node_id, htlc_info.channel_id))
-							.collect::<Vec<_>>();
-						// If we have multiple MPP parts which were received over the same channel,
-						// we only track it once as once we get a preimage durably in the
-						// `ChannelMonitor` it will be used for all HTLCs with a matching hash.
-						channels_without_preimage.sort_unstable();
-						channels_without_preimage.dedup();
-						let pending_claims = PendingMPPClaim {
-							channels_without_preimage,
-							channels_with_preimage: Vec::new(),
-						};
-						let pending_claim_ptr_opt = Some(Arc::new(Mutex::new(pending_claims)));
-
-						// While it may be duplicative to generate a PaymentClaimed here, trying to
-						// figure out if the user definitely saw it before shutdown would require some
-						// nontrivial logic and may break as we move away from regularly persisting
-						// ChannelManager. Instead, we rely on the users' event handler being
-						// idempotent and just blindly generate one no matter what, letting the
-						// preimages eventually timing out from ChannelMonitors to prevent us from
-						// doing so forever.
-
-						let claim_found = channel_manager
-							.claimable_payments
-							.lock()
-							.unwrap()
-							.begin_claiming_payment(
-								payment_hash,
-								&channel_manager.node_signer,
-								&channel_manager.logger,
-								&channel_manager.inbound_payment_id_secret,
-								true,
-							);
-						if claim_found.is_err() {
-							let mut claimable_payments =
-								channel_manager.claimable_payments.lock().unwrap();
-							match claimable_payments.pending_claiming_payments.entry(payment_hash) {
-								hash_map::Entry::Occupied(_) => {
-									debug_assert!(
-										false,
-										"Entry was added in begin_claiming_payment"
-									);
-									return Err(DecodeError::InvalidValue);
-								},
-								hash_map::Entry::Vacant(entry) => {
-									entry.insert(payment_claim.claiming_payment);
-								},
-							}
-						}
-
-						for part in payment_claim.mpp_parts.iter() {
-							let pending_mpp_claim = pending_claim_ptr_opt.as_ref().map(|ptr| {
-								(
-									part.counterparty_node_id,
-									part.channel_id,
-									PendingMPPClaimPointer(Arc::clone(&ptr)),
-								)
-							});
-							let pending_claim_ptr = pending_claim_ptr_opt.as_ref().map(|ptr| {
-								RAAMonitorUpdateBlockingAction::ClaimedMPPPayment {
-									pending_claim: PendingMPPClaimPointer(Arc::clone(&ptr)),
-								}
-							});
-							// Note that we don't need to pass the `payment_info` here - its
-							// already (clearly) durably on disk in the `ChannelMonitor` so there's
-							// no need to worry about getting it into others.
-							//
-							// We don't encode any attribution data, because the required onion shared secret isn't
-							// available here.
-							channel_manager.claim_mpp_part(
-								part.into(),
-								payment_preimage,
-								None,
-								None,
-								|_, _| {
-									(
-										Some(MonitorUpdateCompletionAction::PaymentClaimed {
-											payment_hash,
-											pending_mpp_claim,
-										}),
-										pending_claim_ptr,
-									)
-								},
-							);
-						}
-						processed_claims.insert(payment_claim.mpp_parts);
+			}
+			if !payment_claims.is_empty() {
+				for payment_claim in payment_claims {
+					if processed_claims.contains(&payment_claim.mpp_parts) {
+						// We might get the same payment a few times from different channels
+						// that the MPP payment was received using. There's no point in trying
+						// to claim the same payment again and again, so we check if the HTLCs
+						// are the same and skip the payment here.
+						continue;
 					}
-				} else {
-					let per_peer_state = channel_manager.per_peer_state.read().unwrap();
-					let mut claimable_payments = channel_manager.claimable_payments.lock().unwrap();
-					let payment = claimable_payments.claimable_payments.remove(&payment_hash);
-					mem::drop(claimable_payments);
-					if let Some(payment) = payment {
-						log_info!(channel_manager.logger, "Re-claiming HTLCs with payment hash {} as we've released the preimage to a ChannelMonitor!", &payment_hash);
-						let mut claimable_amt_msat = 0;
-						let mut receiver_node_id = Some(our_network_pubkey);
-						let phantom_shared_secret = payment.htlcs[0].prev_hop.phantom_shared_secret;
-						if phantom_shared_secret.is_some() {
-							let phantom_pubkey = channel_manager
-								.node_signer
-								.get_node_id(Recipient::PhantomNode)
-								.expect("Failed to get node_id for phantom node recipient");
-							receiver_node_id = Some(phantom_pubkey)
-						}
-						for claimable_htlc in &payment.htlcs {
-							claimable_amt_msat += claimable_htlc.value;
-
-							// Add a holding-cell claim of the payment to the Channel, which should be
-							// applied ~immediately on peer reconnection. Because it won't generate a
-							// new commitment transaction we can just provide the payment preimage to
-							// the corresponding ChannelMonitor and nothing else.
-							//
-							// We do so directly instead of via the normal ChannelMonitor update
-							// procedure as the ChainMonitor hasn't yet been initialized, implying
-							// we're not allowed to call it directly yet. Further, we do the update
-							// without incrementing the ChannelMonitor update ID as there isn't any
-							// reason to.
-							// If we were to generate a new ChannelMonitor update ID here and then
-							// crash before the user finishes block connect we'd end up force-closing
-							// this channel as well. On the flip side, there's no harm in restarting
-							// without the new monitor persisted - we'll end up right back here on
-							// restart.
-							let previous_channel_id = claimable_htlc.prev_hop.channel_id;
-							let peer_node_id = monitor.get_counterparty_node_id();
+					if payment_claim.mpp_parts.is_empty() {
+						return Err(DecodeError::InvalidValue);
+					}
+					{
+						let payments = channel_manager.claimable_payments.lock().unwrap();
+						if !payments.claimable_payments.contains_key(&payment_hash) {
+							if let Some(payment) =
+								payments.pending_claiming_payments.get(&payment_hash)
 							{
-								let peer_state_mutex = per_peer_state.get(&peer_node_id).unwrap();
-								let mut peer_state_lock = peer_state_mutex.lock().unwrap();
-								let peer_state = &mut *peer_state_lock;
-								if let Some(channel) = peer_state
-									.channel_by_id
-									.get_mut(&previous_channel_id)
-									.and_then(Channel::as_funded_mut)
-								{
-									let logger = WithChannelContext::from(
-										&channel_manager.logger,
-										&channel.context,
-										Some(payment_hash),
-									);
-									channel
-										.claim_htlc_while_disconnected_dropping_mon_update_legacy(
-											claimable_htlc.prev_hop.htlc_id,
-											payment_preimage,
-											&&logger,
-										);
+								if payment.payment_id == payment_claim.claiming_payment.payment_id {
+									// If this payment already exists and was marked as
+									// being-claimed then the serialized state must contain all
+									// of the pending `ChannelMonitorUpdate`s required to get
+									// the preimage on disk in all MPP parts. Thus we can skip
+									// the replay below.
+									continue;
 								}
 							}
-							if let Some(previous_hop_monitor) =
-								args.channel_monitors.get(&claimable_htlc.prev_hop.channel_id)
+						}
+					}
+
+					let mut channels_without_preimage = payment_claim
+						.mpp_parts
+						.iter()
+						.map(|htlc_info| (htlc_info.counterparty_node_id, htlc_info.channel_id))
+						.collect::<Vec<_>>();
+					// If we have multiple MPP parts which were received over the same channel,
+					// we only track it once as once we get a preimage durably in the
+					// `ChannelMonitor` it will be used for all HTLCs with a matching hash.
+					channels_without_preimage.sort_unstable();
+					channels_without_preimage.dedup();
+					let pending_claims = PendingMPPClaim {
+						channels_without_preimage,
+						channels_with_preimage: Vec::new(),
+					};
+					let pending_claim_ptr_opt = Some(Arc::new(Mutex::new(pending_claims)));
+
+					// While it may be duplicative to generate a PaymentClaimed here, trying to
+					// figure out if the user definitely saw it before shutdown would require some
+					// nontrivial logic and may break as we move away from regularly persisting
+					// ChannelManager. Instead, we rely on the users' event handler being
+					// idempotent and just blindly generate one no matter what, letting the
+					// preimages eventually timing out from ChannelMonitors to prevent us from
+					// doing so forever.
+
+					let claim_found =
+						channel_manager.claimable_payments.lock().unwrap().begin_claiming_payment(
+							payment_hash,
+							&channel_manager.node_signer,
+							&channel_manager.logger,
+							&channel_manager.inbound_payment_id_secret,
+							true,
+						);
+					if claim_found.is_err() {
+						let mut claimable_payments =
+							channel_manager.claimable_payments.lock().unwrap();
+						match claimable_payments.pending_claiming_payments.entry(payment_hash) {
+							hash_map::Entry::Occupied(_) => {
+								debug_assert!(false, "Entry was added in begin_claiming_payment");
+								return Err(DecodeError::InvalidValue);
+							},
+							hash_map::Entry::Vacant(entry) => {
+								entry.insert(payment_claim.claiming_payment);
+							},
+						}
+					}
+
+					for part in payment_claim.mpp_parts.iter() {
+						let pending_mpp_claim = pending_claim_ptr_opt.as_ref().map(|ptr| {
+							(
+								part.counterparty_node_id,
+								part.channel_id,
+								PendingMPPClaimPointer(Arc::clone(&ptr)),
+							)
+						});
+						let pending_claim_ptr = pending_claim_ptr_opt.as_ref().map(|ptr| {
+							RAAMonitorUpdateBlockingAction::ClaimedMPPPayment {
+								pending_claim: PendingMPPClaimPointer(Arc::clone(&ptr)),
+							}
+						});
+						// Note that we don't need to pass the `payment_info` here - its
+						// already (clearly) durably on disk in the `ChannelMonitor` so there's
+						// no need to worry about getting it into others.
+						//
+						// We don't encode any attribution data, because the required onion shared secret isn't
+						// available here.
+						channel_manager.claim_mpp_part(
+							part.into(),
+							payment_preimage,
+							None,
+							None,
+							|_, _| {
+								(
+									Some(MonitorUpdateCompletionAction::PaymentClaimed {
+										payment_hash,
+										pending_mpp_claim,
+									}),
+									pending_claim_ptr,
+								)
+							},
+						);
+					}
+					processed_claims.insert(payment_claim.mpp_parts);
+				}
+			} else {
+				let per_peer_state = channel_manager.per_peer_state.read().unwrap();
+				let mut claimable_payments = channel_manager.claimable_payments.lock().unwrap();
+				let payment = claimable_payments.claimable_payments.remove(&payment_hash);
+				mem::drop(claimable_payments);
+				if let Some(payment) = payment {
+					log_info!(channel_manager.logger, "Re-claiming HTLCs with payment hash {} as we've released the preimage to a ChannelMonitor!", &payment_hash);
+					let mut claimable_amt_msat = 0;
+					let mut receiver_node_id = Some(our_network_pubkey);
+					let phantom_shared_secret = payment.htlcs[0].prev_hop.phantom_shared_secret;
+					if phantom_shared_secret.is_some() {
+						let phantom_pubkey = channel_manager
+							.node_signer
+							.get_node_id(Recipient::PhantomNode)
+							.expect("Failed to get node_id for phantom node recipient");
+						receiver_node_id = Some(phantom_pubkey)
+					}
+					for claimable_htlc in &payment.htlcs {
+						claimable_amt_msat += claimable_htlc.value;
+
+						// Add a holding-cell claim of the payment to the Channel, which should be
+						// applied ~immediately on peer reconnection. Because it won't generate a
+						// new commitment transaction we can just provide the payment preimage to
+						// the corresponding ChannelMonitor and nothing else.
+						//
+						// We do so directly instead of via the normal ChannelMonitor update
+						// procedure as the ChainMonitor hasn't yet been initialized, implying
+						// we're not allowed to call it directly yet. Further, we do the update
+						// without incrementing the ChannelMonitor update ID as there isn't any
+						// reason to.
+						// If we were to generate a new ChannelMonitor update ID here and then
+						// crash before the user finishes block connect we'd end up force-closing
+						// this channel as well. On the flip side, there's no harm in restarting
+						// without the new monitor persisted - we'll end up right back here on
+						// restart.
+						let previous_channel_id = claimable_htlc.prev_hop.channel_id;
+						{
+							let peer_state_mutex =
+								per_peer_state.get(&counterparty_node_id).unwrap();
+							let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+							let peer_state = &mut *peer_state_lock;
+							if let Some(channel) = peer_state
+								.channel_by_id
+								.get_mut(&previous_channel_id)
+								.and_then(Channel::as_funded_mut)
 							{
-								// Note that this is unsafe as we no longer require the
-								// `ChannelMonitor`s to be re-persisted prior to this
-								// `ChannelManager` being persisted after we get started running.
-								// If this `ChannelManager` gets persisted first then we crash, we
-								// won't have the `claimable_payments` entry we need to re-enter
-								// this code block, causing us to not re-apply the preimage to this
-								// `ChannelMonitor`.
-								//
-								// We should never be here with modern payment claims, however, as
-								// they should always include the HTLC list. Instead, this is only
-								// for nodes during upgrade, and we explicitly require the old
-								// persistence semantics on upgrade in the release notes.
-								previous_hop_monitor.provide_payment_preimage_unsafe_legacy(
-									&payment_hash,
-									&payment_preimage,
-									&channel_manager.tx_broadcaster,
-									&channel_manager.fee_estimator,
+								let logger = WithChannelContext::from(
 									&channel_manager.logger,
+									&channel.context,
+									Some(payment_hash),
+								);
+								channel.claim_htlc_while_disconnected_dropping_mon_update_legacy(
+									claimable_htlc.prev_hop.htlc_id,
+									payment_preimage,
+									&&logger,
 								);
 							}
 						}
-						let mut pending_events = channel_manager.pending_events.lock().unwrap();
-						let payment_id =
-							payment.inbound_payment_id(&inbound_payment_id_secret.unwrap());
-						let htlcs = payment.htlcs.iter().map(events::ClaimedHTLC::from).collect();
-						let sender_intended_total_msat = payment.onion_fields.total_mpp_amount_msat;
-						pending_events.push_back((
-							events::Event::PaymentClaimed {
-								receiver_node_id,
-								payment_hash,
-								purpose: payment.purpose,
-								amount_msat: claimable_amt_msat,
-								htlcs,
-								sender_intended_total_msat: Some(sender_intended_total_msat),
-								onion_fields: Some(payment.onion_fields),
-								payment_id: Some(payment_id),
-							},
-							// Note that we don't bother adding a EventCompletionAction here to
-							// ensure the `PaymentClaimed` event is durable processed as this
-							// should only be hit for particularly old channels and we don't have
-							// enough information to generate such an action.
-							None,
-						));
+						if let Some(previous_hop_monitor) =
+							args.channel_monitors.get(&claimable_htlc.prev_hop.channel_id)
+						{
+							// Note that this is unsafe as we no longer require the
+							// `ChannelMonitor`s to be re-persisted prior to this
+							// `ChannelManager` being persisted after we get started running.
+							// If this `ChannelManager` gets persisted first then we crash, we
+							// won't have the `claimable_payments` entry we need to re-enter
+							// this code block, causing us to not re-apply the preimage to this
+							// `ChannelMonitor`.
+							//
+							// We should never be here with modern payment claims, however, as
+							// they should always include the HTLC list. Instead, this is only
+							// for nodes during upgrade, and we explicitly require the old
+							// persistence semantics on upgrade in the release notes.
+							previous_hop_monitor.provide_payment_preimage_unsafe_legacy(
+								&payment_hash,
+								&payment_preimage,
+								&channel_manager.tx_broadcaster,
+								&channel_manager.fee_estimator,
+								&channel_manager.logger,
+							);
+						}
 					}
+					let mut pending_events = channel_manager.pending_events.lock().unwrap();
+					let payment_id =
+						payment.inbound_payment_id(&inbound_payment_id_secret.unwrap());
+					let htlcs = payment.htlcs.iter().map(events::ClaimedHTLC::from).collect();
+					let sender_intended_total_msat = payment.onion_fields.total_mpp_amount_msat;
+					pending_events.push_back((
+						events::Event::PaymentClaimed {
+							receiver_node_id,
+							payment_hash,
+							purpose: payment.purpose,
+							amount_msat: claimable_amt_msat,
+							htlcs,
+							sender_intended_total_msat: Some(sender_intended_total_msat),
+							onion_fields: Some(payment.onion_fields),
+							payment_id: Some(payment_id),
+						},
+						// Note that we don't bother adding a EventCompletionAction here to
+						// ensure the `PaymentClaimed` event is durable processed as this
+						// should only be hit for particularly old channels and we don't have
+						// enough information to generate such an action.
+						None,
+					));
 				}
 			}
 		}
