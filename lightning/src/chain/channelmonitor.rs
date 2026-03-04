@@ -4295,15 +4295,17 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		// race where a monitor update is dispatched before the channel force-closes but only
 		// applied after the commitment transaction confirms.
 		for update in updates.updates.iter() {
-			let htlcs: Vec<(&HTLCSource, PaymentHash, u64)> = match update {
+			match update {
 				ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo {
 					htlc_outputs, ..
-				} => htlc_outputs
-					.iter()
-					.filter_map(|(htlc, source)| {
-						source.as_ref().map(|s| (&**s, htlc.payment_hash, htlc.amount_msat))
-					})
-					.collect(),
+				} => {
+					self.fail_htlcs_from_update_after_funding_spend(
+						htlc_outputs.iter().filter_map(|(htlc, source)| {
+							source.as_ref().map(|s| (&**s, htlc.payment_hash, htlc.amount_msat))
+						}),
+						logger,
+					);
+				},
 				ChannelMonitorUpdateStep::LatestCounterpartyCommitment {
 					commitment_txs, htlc_data,
 				} => {
@@ -4316,12 +4318,12 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					let dust = htlc_data.dust_htlcs.iter().filter_map(|(htlc, source)| {
 						source.as_ref().map(|s| (s, htlc.payment_hash, htlc.amount_msat))
 					});
-					nondust.chain(dust).collect()
+					self.fail_htlcs_from_update_after_funding_spend(
+						nondust.chain(dust),
+						logger,
+					);
 				},
-				_ => continue,
-			};
-			if !htlcs.is_empty() {
-				self.fail_htlcs_from_update_after_funding_spend(&htlcs, logger);
+				_ => {},
 			}
 		}
 
@@ -4378,8 +4380,9 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	/// This handles the race where a `ChannelMonitorUpdate` with a new counterparty commitment
 	/// is dispatched (e.g., via deferred writes) before the channel force-closes, but only
 	/// applied to the in-memory monitor after the commitment transaction has already confirmed.
-	fn fail_htlcs_from_update_after_funding_spend<L: Logger>(
-		&mut self, htlcs: &[(&HTLCSource, PaymentHash, u64)], logger: &WithContext<L>,
+	fn fail_htlcs_from_update_after_funding_spend<'a, L: Logger>(
+		&mut self, htlcs: impl Iterator<Item = (&'a HTLCSource, PaymentHash, u64)>,
+		logger: &WithContext<L>,
 	) {
 		// Determine the confirmed spending txid, either from the fully confirmed field or
 		// from a pending FundingSpendConfirmation event still awaiting ANTI_REORG_DELAY.
@@ -4400,26 +4403,37 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			return;
 		};
 
-		// Collect the confirmed commitment's non-dust HTLCs so we can skip HTLCs that have
-		// on-chain outputs (those will be resolved via the normal HTLC timeout/success path).
-		let confirmed_commitment_htlcs: Vec<_> = if let Some(htlc_list) =
+		// Collect sources for non-dust outbound HTLCs in the confirmed commitment so we
+		// can skip them (those will be resolved via the normal HTLC timeout/success path).
+		let confirmed_nondust_sources: Vec<&HTLCSource> = if let Some(htlc_list) =
 			self.funding.counterparty_claimable_outpoints.get(&spending_txid)
 		{
-			htlc_list.iter().map(|(htlc, _)| htlc.clone()).collect()
+			// Counterparty commitment: our outbound HTLCs have sources.
+			htlc_list
+				.iter()
+				.filter_map(|(htlc, source)| {
+					htlc.transaction_output_index.and(source.as_ref().map(|s| s.as_ref()))
+				})
+				.collect()
 		} else {
 			// Holder commitment confirmed. Check both current and previous since we
 			// don't track which holder commitment txid was broadcast.
+			let nondust_source = |(htlc, source): (&HTLCOutputInCommitment, _)| {
+				htlc.transaction_output_index.and(source)
+			};
 			let funding = &self.funding;
 			let current_txid = funding.current_holder_commitment_tx.trust().txid();
 			if current_txid == spending_txid {
-				holder_commitment_htlcs!(self, CURRENT).cloned().collect()
+				holder_commitment_htlcs!(self, CURRENT_WITH_SOURCES)
+					.filter_map(nondust_source)
+					.collect()
 			} else if funding
 				.prev_holder_commitment_tx
 				.as_ref()
 				.is_some_and(|tx| tx.trust().txid() == spending_txid)
 			{
-				holder_commitment_htlcs!(self, PREV)
-					.map(|iter| iter.cloned().collect())
+				holder_commitment_htlcs!(self, PREV_WITH_SOURCES)
+					.map(|iter| iter.filter_map(nondust_source).collect())
 					.unwrap_or_default()
 			} else {
 				Vec::new()
@@ -4436,14 +4450,10 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		// This is safe because the `ChannelManager` handles duplicate `HTLCEvent`s
 		// gracefully.
 		let entry_height = self.best_block.height;
-		for &(source, payment_hash, amount_msat) in htlcs {
-			// Skip HTLCs that appear as non-dust outputs in the confirmed commitment.
-			let in_confirmed_commitment = confirmed_commitment_htlcs.iter().any(|htlc| {
-				htlc.transaction_output_index.is_some()
-					&& htlc.payment_hash == payment_hash
-					&& htlc.amount_msat == amount_msat
-			});
-			if in_confirmed_commitment {
+		for (source, payment_hash, amount_msat) in htlcs {
+			// Skip HTLCs that have non-dust outputs in the confirmed commitment
+			// (those will be resolved via the normal HTLC timeout/success path).
+			if confirmed_nondust_sources.contains(&source) {
 				continue;
 			}
 			if self.counterparty_fulfilled_htlcs.get(&SentHTLCId::from_source(source)).is_some() {
