@@ -1597,7 +1597,7 @@ enum PostMonitorUpdateChanResume {
 		decode_update_add_htlcs: Option<(u64, Vec<msgs::UpdateAddHTLC>)>,
 		finalized_claimed_htlcs: Vec<(HTLCSource, Option<AttributionData>)>,
 		failed_htlcs: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
-		committed_outbound_htlc_sources: Vec<(HTLCPreviousHopData, u64)>,
+		committed_outbound_htlc_sources: Vec<(HTLCSource, u64)>,
 	},
 }
 
@@ -10654,7 +10654,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		decode_update_add_htlcs: Option<(u64, Vec<msgs::UpdateAddHTLC>)>,
 		finalized_claimed_htlcs: Vec<(HTLCSource, Option<AttributionData>)>,
 		failed_htlcs: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
-		committed_outbound_htlc_sources: Vec<(HTLCPreviousHopData, u64)>,
+		committed_outbound_htlc_sources: Vec<(HTLCSource, u64)>,
 	) {
 		// If the channel belongs to a batch funding transaction, the progress of the batch
 		// should be updated as we have received funding_signed and persisted the monitor.
@@ -11220,34 +11220,40 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	fn prune_persisted_inbound_htlc_onions(
 		&self, outbound_channel_id: ChannelId, outbound_node_id: PublicKey,
 		outbound_funding_txo: OutPoint, outbound_user_channel_id: u128,
-		committed_outbound_htlc_sources: Vec<(HTLCPreviousHopData, u64)>,
+		committed_outbound_htlc_sources: Vec<(HTLCSource, u64)>,
 	) {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		for (source, outbound_amt_msat) in committed_outbound_htlc_sources {
-			let counterparty_node_id = match source.counterparty_node_id.as_ref() {
-				Some(id) => id,
-				None => continue,
-			};
-			let mut peer_state =
-				match per_peer_state.get(counterparty_node_id).map(|state| state.lock().unwrap()) {
+			for previous_hop in source.previous_hop_data() {
+				let counterparty_node_id = match previous_hop.counterparty_node_id.as_ref() {
+					Some(id) => id,
+					None => continue,
+				};
+				let mut peer_state = match per_peer_state
+					.get(counterparty_node_id)
+					.map(|state| state.lock().unwrap())
+				{
 					Some(peer_state) => peer_state,
 					None => continue,
 				};
 
-			if let Some(chan) =
-				peer_state.channel_by_id.get_mut(&source.channel_id).and_then(|c| c.as_funded_mut())
-			{
-				chan.prune_inbound_htlc_onion(
-					source.htlc_id,
-					&source,
-					OutboundHop {
-						amt_msat: outbound_amt_msat,
-						channel_id: outbound_channel_id,
-						node_id: outbound_node_id,
-						funding_txo: outbound_funding_txo,
-						user_channel_id: outbound_user_channel_id,
-					},
-				);
+				if let Some(chan) = peer_state
+					.channel_by_id
+					.get_mut(&previous_hop.channel_id)
+					.and_then(|c| c.as_funded_mut())
+				{
+					chan.prune_inbound_htlc_onion(
+						previous_hop.htlc_id,
+						&previous_hop,
+						OutboundHop {
+							amt_msat: outbound_amt_msat,
+							channel_id: outbound_channel_id,
+							node_id: outbound_node_id,
+							funding_txo: outbound_funding_txo,
+							user_channel_id: outbound_user_channel_id,
+						},
+					);
+				}
 			}
 		}
 	}

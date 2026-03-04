@@ -1198,7 +1198,7 @@ pub(super) struct MonitorRestoreUpdates {
 	/// The sources of outbound HTLCs that were forwarded and irrevocably committed on this channel
 	/// (the outbound edge), along with their outbound amounts. Useful to store in the inbound HTLC
 	/// to ensure it gets resolved.
-	pub committed_outbound_htlc_sources: Vec<(HTLCPreviousHopData, u64)>,
+	pub committed_outbound_htlc_sources: Vec<(HTLCSource, u64)>,
 }
 
 /// The return value of `signer_maybe_unblocked`
@@ -9368,8 +9368,8 @@ where
 		mem::swap(&mut pending_update_adds, &mut self.context.monitor_pending_update_adds);
 		let committed_outbound_htlc_sources = self.context.pending_outbound_htlcs.iter().filter_map(|htlc| {
 			if let &OutboundHTLCState::LocalAnnounced(_) = &htlc.state {
-				if let HTLCSource::PreviousHopData(prev_hop_data) = &htlc.source {
-					return Some((prev_hop_data.clone(), htlc.amount_msat))
+				if let HTLCSource::PreviousHopData(_) = &htlc.source {
+					return Some((htlc.source.clone(), htlc.amount_msat))
 				}
 			}
 			None
