@@ -7561,14 +7561,18 @@ where
 		let holding_cell_outbounds =
 			self.context.holding_cell_htlc_updates.iter().filter_map(|htlc| match htlc {
 				HTLCUpdateAwaitingACK::AddHTLC { source, payment_hash, .. } => match source {
-					HTLCSource::PreviousHopData(_) => Some((*payment_hash, source.clone())),
+					HTLCSource::PreviousHopData(_) | HTLCSource::TrampolineForward { .. } => {
+						Some((*payment_hash, source.clone()))
+					},
 					_ => None,
 				},
 				_ => None,
 			});
 		let committed_outbounds =
 			self.context.pending_outbound_htlcs.iter().filter_map(|htlc| match &htlc.source {
-				HTLCSource::PreviousHopData(_) => Some((htlc.payment_hash, htlc.source.clone())),
+				HTLCSource::PreviousHopData(_) | HTLCSource::TrampolineForward { .. } => {
+					Some((htlc.payment_hash, htlc.source.clone()))
+				},
 				_ => None,
 			});
 		holding_cell_outbounds.chain(committed_outbounds)
