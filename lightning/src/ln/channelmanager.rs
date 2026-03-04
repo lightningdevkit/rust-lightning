@@ -17842,7 +17842,6 @@ pub(super) struct ChannelManagerData<SP: SignerProvider> {
 	pending_events_read: VecDeque<(events::Event, Option<EventCompletionAction>)>,
 	highest_seen_timestamp: u32,
 	pending_outbound_payments: HashMap<PaymentId, PendingOutboundPayment>,
-	pending_claiming_payments_legacy: HashMap<PaymentHash, ClaimingPayment>,
 	received_network_pubkey: Option<PublicKey>,
 	monitor_update_blocked_actions_per_peer:
 		Vec<(PublicKey, BTreeMap<ChannelId, Vec<MonitorUpdateCompletionAction>>)>,
@@ -18028,7 +18027,9 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 		let mut amountless_claimable_htlc_onion_fields_legacy: Option<
 			Vec<Option<AmountlessClaimablePaymentHTLCOnion>>,
 		> = None;
-		let mut pending_claiming_payments_legacy = Some(new_hash_map());
+		// As of 0.4 we reconstruct this map using `ChannelMonitor` data on read.
+		let mut _pending_claiming_payments_legacy: Option<HashMap<PaymentHash, ClaimingPayment>> =
+			None;
 		let mut monitor_update_blocked_actions_per_peer: Option<Vec<(_, BTreeMap<_, Vec<_>>)>> =
 			None;
 		let mut events_override = None;
@@ -18047,7 +18048,7 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 			(1, pending_outbound_payments_no_retry, option),
 			(2, pending_intercepted_htlcs_legacy, option),
 			(3, pending_outbound_payments, option),
-			(4, pending_claiming_payments_legacy, option),
+			(4, _pending_claiming_payments_legacy, option),
 			(5, received_network_pubkey, option),
 			(6, monitor_update_blocked_actions_per_peer, option),
 			(7, fake_scid_rand_bytes, option),
@@ -18168,8 +18169,6 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 			pending_intercepted_htlcs_legacy: pending_intercepted_htlcs_legacy
 				.unwrap_or_else(new_hash_map),
 			pending_outbound_payments,
-			pending_claiming_payments_legacy: pending_claiming_payments_legacy
-				.unwrap_or_else(new_hash_map),
 			received_network_pubkey,
 			monitor_update_blocked_actions_per_peer: monitor_update_blocked_actions_per_peer
 				.unwrap_or_else(Vec::new),
@@ -18473,7 +18472,6 @@ impl<
 			highest_seen_timestamp,
 			mut pending_intercepted_htlcs_legacy,
 			pending_outbound_payments,
-			pending_claiming_payments_legacy,
 			received_network_pubkey,
 			monitor_update_blocked_actions_per_peer,
 			mut fake_scid_rand_bytes,
