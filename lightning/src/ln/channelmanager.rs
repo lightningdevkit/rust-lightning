@@ -9506,7 +9506,43 @@ impl<
 			}
 		}
 
+		// Below, we always queue up the monitor update completion action because we don't have any
+		// idea if it's duplicative. This may result in a duplicate `Event`, but note that `Event`s are
+		// generally always allowed to be duplicative (and it's specifically noted in
+		// `PaymentForwarded`).
+		let (action_opt, raa_blocker_opt) = completion_action(None, false);
+
+		let needs_post_close_monitor_update =
+			raa_blocker_opt.as_ref().map_or(true, |raa_blocker| match raa_blocker {
+				RAAMonitorUpdateBlockingAction::ClaimedMPPPayment { pending_claim } => {
+					// If this monitor already has the preimage, there's no need to generate a redundant update.
+					let claim = pending_claim.0.lock().unwrap();
+					claim
+						.channels_without_preimage
+						.contains(&(prev_hop.counterparty_node_id, chan_id))
+				},
+				RAAMonitorUpdateBlockingAction::ForwardedPaymentInboundClaim { .. } => true,
+			});
+
 		let peer_state = &mut *peer_state_lock;
+		if let Some(raa_blocker) = raa_blocker_opt {
+			peer_state
+				.actions_blocking_raa_monitor_updates
+				.entry(prev_hop.channel_id)
+				.or_default()
+				.push(raa_blocker);
+		}
+
+		if !needs_post_close_monitor_update {
+			// If there's no need for a monitor update, just run the (possibly duplicative) completion
+			// action.
+			if let Some(action) = action_opt {
+				mem::drop(peer_state_lock);
+				mem::drop(per_peer_state);
+				self.handle_monitor_update_completion_actions(core::iter::once(action));
+				return;
+			}
+		}
 
 		let update_id = if let Some(latest_update_id) =
 			peer_state.closed_channel_monitor_update_ids.get_mut(&chan_id)
@@ -9529,21 +9565,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			}],
 			channel_id: Some(prev_hop.channel_id),
 		};
-
-		// We don't have any idea if this is a duplicate claim without interrogating the
-		// `ChannelMonitor`, so we just always queue up the completion action after the
-		// `ChannelMonitorUpdate` we're about to generate. This may result in a duplicate `Event`,
-		// but note that `Event`s are generally always allowed to be duplicative (and it's
-		// specifically noted in `PaymentForwarded`).
-		let (action_opt, raa_blocker_opt) = completion_action(None, false);
-
-		if let Some(raa_blocker) = raa_blocker_opt {
-			peer_state
-				.actions_blocking_raa_monitor_updates
-				.entry(prev_hop.channel_id)
-				.or_default()
-				.push(raa_blocker);
-		}
 
 		// Given the fact that we're in a bit of a weird edge case, its worth hashing the preimage
 		// to include the `payment_hash` in the log metadata here.
@@ -19820,6 +19841,15 @@ impl<
 			)
 		});
 
+		// Build the set of channels where the preimage is durably persisted, for use below
+		let mut channels_with_durable_preimage: HashSet<(ChannelId, PaymentHash)> = new_hash_set();
+		for (channel_id, monitor) in args.channel_monitors.iter() {
+			for (payment_hash, (_, claims)) in monitor.get_stored_preimages() {
+				if !claims.is_empty() {
+					channels_with_durable_preimage.insert((*channel_id, payment_hash));
+				}
+			}
+		}
 		for (channel_id, counterparty_node_id, payment_hash, payment_preimage, payment_claims) in
 			monitor_preimages
 		{
@@ -19890,20 +19920,27 @@ impl<
 						}
 					}
 
-					let mut channels_without_preimage = payment_claim
-						.mpp_parts
-						.iter()
-						.map(|htlc_info| (htlc_info.counterparty_node_id, htlc_info.channel_id))
-						.collect::<Vec<_>>();
+					let mut channels_with_preimage = Vec::new();
+					let mut channels_without_preimage = Vec::new();
+					for htlc_info in payment_claim.mpp_parts.iter() {
+						if channels_with_durable_preimage
+							.contains(&(htlc_info.channel_id, payment_hash))
+						{
+							channels_with_preimage
+								.push((htlc_info.counterparty_node_id, htlc_info.channel_id));
+						} else {
+							channels_without_preimage
+								.push((htlc_info.counterparty_node_id, htlc_info.channel_id));
+						}
+					}
+
 					// If we have multiple MPP parts which were received over the same channel,
 					// we only track it once as once we get a preimage durably in the
 					// `ChannelMonitor` it will be used for all HTLCs with a matching hash.
 					channels_without_preimage.sort_unstable();
 					channels_without_preimage.dedup();
-					let pending_claims = PendingMPPClaim {
-						channels_without_preimage,
-						channels_with_preimage: Vec::new(),
-					};
+					let pending_claims =
+						PendingMPPClaim { channels_without_preimage, channels_with_preimage };
 					let pending_claim_ptr_opt = Some(Arc::new(Mutex::new(pending_claims)));
 
 					// While it may be duplicative to generate a PaymentClaimed here, trying to

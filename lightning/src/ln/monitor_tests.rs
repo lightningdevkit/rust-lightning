@@ -3397,10 +3397,9 @@ fn test_claim_event_never_handled() {
 	check_added_monitors(&nodes[1], 0);
 
 	expect_payment_claimed!(nodes[1], payment_hash_a, 1_000_000);
-	// The reload logic spuriously generates 2 redundant payment preimage-containing
-	// `ChannelMonitorUpdate`s, plus we get a monitor update once the PaymentClaimed event is
-	// processed.
-	check_added_monitors(&nodes[1], 3);
+	// One monitor update for the outdated channel force-closure, one for the PaymentClaimed event
+	// being handled
+	check_added_monitors(&nodes[1], 2);
 }
 
 fn do_test_lost_preimage_monitor_events(on_counterparty_tx: bool, p2a_anchor: bool) {
