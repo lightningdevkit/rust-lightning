@@ -525,6 +525,10 @@ pub struct TestChainMonitor<'a> {
 	pub expect_monitor_round_trip_fail: Mutex<Option<ChannelId>>,
 	#[cfg(feature = "std")]
 	pub write_blocker: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+	/// When set to `true`, `release_pending_monitor_events` will not auto-flush pending
+	/// deferred operations. This allows tests to control exactly when queued monitor updates
+	/// are applied to the in-memory monitor.
+	pub pause_flush: AtomicBool,
 }
 impl<'a> TestChainMonitor<'a> {
 	pub fn new(
@@ -584,6 +588,7 @@ impl<'a> TestChainMonitor<'a> {
 			expect_monitor_round_trip_fail: Mutex::new(None),
 			#[cfg(feature = "std")]
 			write_blocker: Mutex::new(None),
+			pause_flush: AtomicBool::new(false),
 		}
 	}
 
@@ -725,8 +730,10 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 		// completion events. When not in deferred mode the queue is empty so this only
 		// costs a lock acquisition. It ensures standard test helpers (route_payment, etc.)
 		// work with deferred chain monitors.
-		let count = self.chain_monitor.pending_operation_count();
-		self.chain_monitor.flush(count, &self.logger);
+		if !self.pause_flush.load(Ordering::Acquire) {
+			let count = self.chain_monitor.pending_operation_count();
+			self.chain_monitor.flush(count, &self.logger);
+		}
 		return self.chain_monitor.release_pending_monitor_events();
 	}
 }

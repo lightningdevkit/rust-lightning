@@ -4290,6 +4290,41 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 		self.latest_update_id = updates.update_id;
 
+		// If a counterparty commitment update was applied while the funding output has already
+		// been spent on-chain, fail back the outbound HTLCs from the update. This handles the
+		// race where a monitor update is dispatched before the channel force-closes but only
+		// applied after the commitment transaction confirms.
+		for update in updates.updates.iter() {
+			let htlcs: Vec<(&HTLCSource, PaymentHash, u64)> = match update {
+				ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo {
+					htlc_outputs, ..
+				} => htlc_outputs
+					.iter()
+					.filter_map(|(htlc, source)| {
+						source.as_ref().map(|s| (&**s, htlc.payment_hash, htlc.amount_msat))
+					})
+					.collect(),
+				ChannelMonitorUpdateStep::LatestCounterpartyCommitment {
+					commitment_txs, htlc_data,
+				} => {
+					let nondust = commitment_txs[0]
+						.nondust_htlcs()
+						.iter()
+						.filter(|htlc| !htlc.offered)
+						.zip(htlc_data.nondust_htlc_sources.iter())
+						.map(|(htlc, source)| (source, htlc.payment_hash, htlc.amount_msat));
+					let dust = htlc_data.dust_htlcs.iter().filter_map(|(htlc, source)| {
+						source.as_ref().map(|s| (s, htlc.payment_hash, htlc.amount_msat))
+					});
+					nondust.chain(dust).collect()
+				},
+				_ => continue,
+			};
+			if !htlcs.is_empty() {
+				self.fail_htlcs_from_update_after_funding_spend(&htlcs, logger);
+			}
+		}
+
 		// Refuse updates after we've detected a spend onchain (or if the channel was otherwise
 		// closed), but only if the update isn't the kind of update we expect to see after channel
 		// closure.
@@ -4334,6 +4369,107 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 	fn no_further_updates_allowed(&self) -> bool {
 		self.funding_spend_seen || self.lockdown_from_offchain || self.holder_tx_signed
+	}
+
+	/// Given outbound HTLCs from a counterparty commitment update, checks if the funding output
+	/// has been spent on-chain. If so, creates `OnchainEvent::HTLCUpdate` entries to fail back
+	/// those HTLCs.
+	///
+	/// This handles the race where a `ChannelMonitorUpdate` with a new counterparty commitment
+	/// is dispatched (e.g., via deferred writes) before the channel force-closes, but only
+	/// applied to the in-memory monitor after the commitment transaction has already confirmed.
+	fn fail_htlcs_from_update_after_funding_spend<L: Logger>(
+		&mut self, htlcs: &[(&HTLCSource, PaymentHash, u64)], logger: &WithContext<L>,
+	) {
+		// Determine the confirmed spending txid, either from the fully confirmed field or
+		// from a pending FundingSpendConfirmation event still awaiting ANTI_REORG_DELAY.
+		// There is at most one FundingSpendConfirmation at a time (splice promotions happen
+		// via AlternativeFundingConfirmation on a separate funding scope).
+		let spending_txid = if let Some(txid) = self.funding_spend_confirmed {
+			txid
+		} else if let Some(txid) =
+			self.onchain_events_awaiting_threshold_conf.iter().find_map(|event| {
+				if let OnchainEvent::FundingSpendConfirmation { .. } = &event.event {
+					Some(event.txid)
+				} else {
+					None
+				}
+			}) {
+			txid
+		} else {
+			return;
+		};
+
+		// Collect the confirmed commitment's non-dust HTLCs so we can skip HTLCs that have
+		// on-chain outputs (those will be resolved via the normal HTLC timeout/success path).
+		let confirmed_commitment_htlcs: Vec<_> = if let Some(htlc_list) =
+			self.funding.counterparty_claimable_outpoints.get(&spending_txid)
+		{
+			htlc_list.iter().map(|(htlc, _)| htlc.clone()).collect()
+		} else {
+			// Holder commitment confirmed. Check both current and previous since we
+			// don't track which holder commitment txid was broadcast.
+			let funding = &self.funding;
+			let current_txid = funding.current_holder_commitment_tx.trust().txid();
+			if current_txid == spending_txid {
+				holder_commitment_htlcs!(self, CURRENT).cloned().collect()
+			} else if funding
+				.prev_holder_commitment_tx
+				.as_ref()
+				.is_some_and(|tx| tx.trust().txid() == spending_txid)
+			{
+				holder_commitment_htlcs!(self, PREV)
+					.map(|iter| iter.cloned().collect())
+					.unwrap_or_default()
+			} else {
+				Vec::new()
+			}
+		};
+
+		// We use best_block.height so that entries wait ANTI_REORG_DELAY blocks before
+		// maturing. Since we don't know whether `commitment_signed` reached the peer,
+		// they may still broadcast the newer commitment, and we need to allow time for
+		// that before treating these HTLCs as failed.
+		//
+		// HTLCs that were already failed via `fail_unbroadcast_htlcs` (from a
+		// previously-known counterparty commitment) may produce duplicate entries here.
+		// This is safe because the `ChannelManager` handles duplicate `HTLCEvent`s
+		// gracefully.
+		let entry_height = self.best_block.height;
+		for &(source, payment_hash, amount_msat) in htlcs {
+			// Skip HTLCs that appear as non-dust outputs in the confirmed commitment.
+			let in_confirmed_commitment = confirmed_commitment_htlcs.iter().any(|htlc| {
+				htlc.transaction_output_index.is_some()
+					&& htlc.payment_hash == payment_hash
+					&& htlc.amount_msat == amount_msat
+			});
+			if in_confirmed_commitment {
+				continue;
+			}
+			if self.counterparty_fulfilled_htlcs.get(&SentHTLCId::from_source(source)).is_some() {
+				continue;
+			}
+			let entry = OnchainEventEntry {
+				txid: spending_txid,
+				transaction: None,
+				height: entry_height,
+				block_hash: None,
+				event: OnchainEvent::HTLCUpdate {
+					source: source.clone(),
+					payment_hash,
+					htlc_value_satoshis: Some(amount_msat / 1000),
+					commitment_tx_output_idx: None,
+				},
+			};
+			let logger = WithContext::from(logger, None, None, Some(payment_hash));
+			log_trace!(
+				logger,
+				"Failing HTLC from late counterparty commitment update, \
+				waiting for confirmation (at height {})",
+				entry.confirmation_threshold()
+			);
+			self.onchain_events_awaiting_threshold_conf.push(entry);
+		}
 	}
 
 	fn get_latest_update_id(&self) -> u64 {

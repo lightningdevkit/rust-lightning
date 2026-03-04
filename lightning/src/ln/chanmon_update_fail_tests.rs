@@ -48,6 +48,7 @@ use crate::util::test_utils;
 use crate::prelude::*;
 use crate::sync::{Arc, Mutex};
 use bitcoin::hashes::Hash;
+use core::sync::atomic::Ordering;
 
 #[test]
 fn test_monitor_and_persister_update_fail() {
@@ -5170,4 +5171,205 @@ fn test_mpp_claim_to_holding_cell() {
 	expect_and_process_pending_htlcs(&nodes[3], false);
 	expect_payment_claimable!(nodes[3], paymnt_hash_2, payment_secret_2, 400_000);
 	claim_payment(&nodes[2], &[&nodes[3]], preimage_2);
+}
+
+fn do_test_late_counterparty_commitment_update_after_funding_spend(fully_confirmed: bool) {
+	// Tests that when a ChannelMonitorUpdate containing a new counterparty commitment (with an
+	// outbound HTLC) is applied to a monitor that has already seen the funding output spent
+	// on-chain, the HTLC is properly failed back.
+	//
+	// This exercises the race condition where:
+	// 1. A sends an HTLC to B, creating a monitor update with LatestCounterpartyCommitmentTXInfo
+	// 2. In deferred-write mode, this update is queued but not applied to the in-memory monitor
+	// 3. B's commitment transaction (without the HTLC) is broadcast and confirmed
+	// 4. The queued update is flushed, applying the counterparty commitment to the monitor
+	// 5. The monitor detects the funding spend and fails the HTLC
+	//
+	// When `fully_confirmed` is true, ANTI_REORG_DELAY has fully passed before the flush, so
+	// funding_spend_confirmed is set. Otherwise, the FundingSpendConfirmation entry is still
+	// pending in onchain_events_awaiting_threshold_conf.
+
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs_deferred(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_b_id = nodes[1].node.get_our_node_id();
+
+	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
+
+	// Get B's commitment transaction before any HTLCs are added. This is the transaction that
+	// will be mined on-chain, simulating B broadcasting while A's monitor update is pending.
+	let bs_commitment_tx = get_local_commitment_txn!(nodes[1], chan_id);
+	assert_eq!(bs_commitment_tx.len(), 1);
+
+	// Pause auto-flush on A so that the monitor update from send_payment is queued but NOT
+	// applied to the in-memory monitor.
+	nodes[0].chain_monitor.pause_flush.store(true, Ordering::Release);
+
+	// Send a payment from A to B. The ChannelManager creates a LatestCounterpartyCommitmentTXInfo
+	// monitor update, but in deferred mode with pause_flush it remains queued.
+	let (route, payment_hash, _, payment_secret) =
+		get_route_and_payment_hash!(nodes[0], nodes[1], 1_000_000);
+	let payment_id = PaymentId(payment_hash.0);
+	nodes[0]
+		.node
+		.send_payment_with_route(
+			route,
+			payment_hash,
+			RecipientOnionFields::secret_only(payment_secret, 1_000_000),
+			payment_id,
+		)
+		.unwrap();
+	check_added_monitors(&nodes[0], 1);
+
+	// Mine B's (old) commitment transaction on A and advance blocks. When fully_confirmed,
+	// advance past ANTI_REORG_DELAY so FundingSpendConfirmation is consumed and
+	// funding_spend_confirmed is set. Otherwise, stop one block short so the entry remains
+	// in onchain_events_awaiting_threshold_conf.
+	mine_transaction(&nodes[0], &bs_commitment_tx[0]);
+	let extra_blocks = if fully_confirmed { ANTI_REORG_DELAY - 1 } else { ANTI_REORG_DELAY - 2 };
+	connect_blocks(&nodes[0], extra_blocks);
+
+	if fully_confirmed {
+		// The channel close event, error message, and ChannelForceClosed monitor update were
+		// generated during block connection. Consume them before flushing.
+		check_closed_event(
+			&nodes[0],
+			1,
+			ClosureReason::CommitmentTxConfirmed,
+			&[node_b_id],
+			100000,
+		);
+		check_closed_broadcast(&nodes[0], 1, true);
+		check_added_monitors(&nodes[0], 1);
+	}
+
+	// Flush the queued monitor updates. This applies the LatestCounterpartyCommitmentTXInfo
+	// (and ChannelForceClosed) to the monitor, which triggers fail_htlcs_from_update_after_
+	// funding_spend to create OnchainEvent::HTLCUpdate entries for the HTLC.
+	nodes[0].chain_monitor.pause_flush.store(false, Ordering::Release);
+	let pending_count = nodes[0].chain_monitor.chain_monitor.pending_operation_count();
+	nodes[0].chain_monitor.chain_monitor.flush(pending_count, &nodes[0].logger);
+
+	if !fully_confirmed {
+		// The channel close event, error message, and ChannelForceClosed monitor update were
+		// generated during block connection.
+		check_closed_event(
+			&nodes[0],
+			1,
+			ClosureReason::CommitmentTxConfirmed,
+			&[node_b_id],
+			100000,
+		);
+		check_closed_broadcast(&nodes[0], 1, true);
+		check_added_monitors(&nodes[0], 1);
+	}
+
+	// Advance ANTI_REORG_DELAY blocks so the OnchainEvent::HTLCUpdate entries (created at
+	// best_block.height during the flush) mature into MonitorEvent::HTLCEvent.
+	connect_blocks(&nodes[0], ANTI_REORG_DELAY);
+
+	// The ChannelManager processes the MonitorEvent::HTLCEvent and fails the payment.
+	expect_payment_failed_conditions(
+		&nodes[0],
+		payment_hash,
+		false,
+		PaymentFailedConditions::new(),
+	);
+	// The payment failure generates a ReleasePaymentComplete monitor update.
+	check_added_monitors(&nodes[0], 1);
+}
+
+#[test]
+fn test_late_counterparty_commitment_update_after_funding_spend() {
+	do_test_late_counterparty_commitment_update_after_funding_spend(false);
+}
+
+#[test]
+fn test_late_counterparty_commitment_update_after_funding_spend_fully_confirmed() {
+	do_test_late_counterparty_commitment_update_after_funding_spend(true);
+}
+
+#[test]
+fn test_late_counterparty_commitment_update_after_holder_commitment_spend() {
+	// Tests that when the confirmed spending transaction is a holder commitment, HTLCs that
+	// have non-dust outputs in the holder commitment are NOT failed by
+	// fail_htlcs_from_update_after_funding_spend (they'll be resolved on-chain via
+	// HTLC-timeout), while HTLCs only present in the late counterparty commitment update ARE
+	// failed.
+	//
+	// Setup:
+	// 1. Route HTLC X from A to B (fully committed in both holder and counterparty commitments)
+	// 2. Grab A's holder commitment (which contains HTLC X)
+	// 3. Pause flush, then send HTLC Y from A to B (counterparty commitment update is queued)
+	// 4. Mine A's holder commitment (contains X but not Y)
+	// 5. Flush the queued update (contains both X and Y)
+	// 6. Verify: X is not failed by our code (on-chain output), Y is failed
+
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs_deferred(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_b_id = nodes[1].node.get_our_node_id();
+
+	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
+
+	// Route HTLC X fully (committed in both commitments).
+	let (_, _payment_hash_x, ..) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+
+	// Get A's holder commitment which now contains HTLC X.
+	let as_commitment_tx = get_local_commitment_txn!(nodes[0], chan_id);
+	assert_eq!(as_commitment_tx.len(), 1);
+	// Verify the commitment tx has at least 3 outputs (to_local, to_remote, HTLC X).
+	assert!(as_commitment_tx[0].output.len() >= 3);
+
+	// Pause flush so the next monitor update is queued.
+	nodes[0].chain_monitor.pause_flush.store(true, Ordering::Release);
+
+	// Send HTLC Y. The LatestCounterpartyCommitmentTXInfo (containing both X and Y) is queued.
+	let (route, payment_hash_y, _, payment_secret_y) =
+		get_route_and_payment_hash!(nodes[0], nodes[1], 2_000_000);
+	let payment_id_y = PaymentId(payment_hash_y.0);
+	nodes[0]
+		.node
+		.send_payment_with_route(
+			route,
+			payment_hash_y,
+			RecipientOnionFields::secret_only(payment_secret_y, 2_000_000),
+			payment_id_y,
+		)
+		.unwrap();
+	check_added_monitors(&nodes[0], 1);
+
+	// Mine A's holder commitment (contains X but not Y).
+	mine_transaction(&nodes[0], &as_commitment_tx[0]);
+	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 2);
+
+	// Flush the queued monitor updates.
+	nodes[0].chain_monitor.pause_flush.store(false, Ordering::Release);
+	let pending_count = nodes[0].chain_monitor.chain_monitor.pending_operation_count();
+	nodes[0].chain_monitor.chain_monitor.flush(pending_count, &nodes[0].logger);
+
+	check_closed_event(&nodes[0], 1, ClosureReason::CommitmentTxConfirmed, &[node_b_id], 100000);
+	check_closed_broadcast(&nodes[0], 1, true);
+	check_added_monitors(&nodes[0], 1);
+
+	// Advance ANTI_REORG_DELAY blocks so OnchainEvent::HTLCUpdate entries mature.
+	connect_blocks(&nodes[0], ANTI_REORG_DELAY);
+
+	// Only HTLC Y should be failed by our code. HTLC X has an on-chain output in the holder
+	// commitment and will be resolved via the HTLC-timeout path.
+	expect_payment_failed_conditions(
+		&nodes[0],
+		payment_hash_y,
+		false,
+		PaymentFailedConditions::new(),
+	);
+	check_added_monitors(&nodes[0], 1);
+
+	// Verify HTLC X was NOT failed (no payment failure event for it at this point).
+	// It will be resolved later via the on-chain HTLC-timeout claim.
+	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
 }
