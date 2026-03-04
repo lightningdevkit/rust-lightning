@@ -18499,6 +18499,33 @@ impl<
 			is_connected: false,
 		};
 
+		// Extract preimage data from in_flight_monitor_updates before it's consumed by the loop below.
+		// We need this for reconstructing pending_claiming_payments claims on restart.
+		let in_flight_preimages: Vec<_> = in_flight_monitor_updates
+			.iter()
+			.flat_map(|((counterparty_id, channel_id), updates)| {
+				updates.iter().flat_map(move |update| {
+					update.updates.iter().filter_map(move |step| {
+						if let ChannelMonitorUpdateStep::PaymentPreimage {
+							payment_preimage,
+							payment_info: Some(details),
+						} = step
+						{
+							Some((
+								*channel_id,
+								*counterparty_id,
+								(*payment_preimage).into(),
+								*payment_preimage,
+								vec![details.clone()],
+							))
+						} else {
+							None
+						}
+					})
+				})
+			})
+			.collect();
+
 		const MAX_ALLOC_SIZE: usize = 1024 * 64;
 		let mut failed_htlcs = Vec::new();
 		let channel_count = channels.len();
@@ -19778,7 +19805,7 @@ impl<
 			decode_update_add_htlcs: Mutex::new(decode_update_add_htlcs),
 			claimable_payments: Mutex::new(ClaimablePayments {
 				claimable_payments,
-				pending_claiming_payments: pending_claiming_payments_legacy,
+				pending_claiming_payments: new_hash_map(),
 			}),
 			outbound_scid_aliases: Mutex::new(outbound_scid_aliases),
 			short_to_chan_info: FairRwLock::new(short_to_chan_info),
@@ -19850,8 +19877,12 @@ impl<
 				}
 			}
 		}
+
+		// Because we are rebuilding `ClaimablePayments::pending_claiming_payments` here, we need to
+		// iterate over all the preimages in all the monitors as well as the preimages in in-flight
+		// monitor updates to get a complete picture of which channels/payments are mid-claim.
 		for (channel_id, counterparty_node_id, payment_hash, payment_preimage, payment_claims) in
-			monitor_preimages
+			monitor_preimages.chain(in_flight_preimages.into_iter())
 		{
 			// If we have unresolved inbound committed HTLCs that were already forwarded to the
 			// outbound edge and removed via claim, we need to make sure to claim them backwards via
