@@ -11308,7 +11308,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				{
 					chan.prune_inbound_htlc_onion(
 						previous_hop.htlc_id,
-						&previous_hop,
+						&source,
 						OutboundHop {
 							amt_msat: outbound_amt_msat,
 							channel_id: outbound_channel_id,
