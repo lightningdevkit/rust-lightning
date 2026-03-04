@@ -7631,7 +7631,7 @@ where
 	/// when reconstructing the set of pending HTLCs when deserializing the `ChannelManager`.
 	pub(super) fn inbound_forwarded_htlcs(
 		&self,
-	) -> impl Iterator<Item = (PaymentHash, HTLCSource, OutboundHop)> + '_ {
+	) -> impl Iterator<Item = (PaymentHash, Vec<(HTLCSource, OutboundHop)>)> + '_ {
 		// We don't want to return an HTLC as needing processing if it already has a resolution that's
 		// pending in the holding cell.
 		let htlc_resolution_in_holding_cell = |id: u64| -> bool {
@@ -7680,7 +7680,10 @@ where
 					counterparty_node_id: Some(counterparty_node_id),
 					cltv_expiry: Some(htlc.cltv_expiry),
 				};
-				Some((htlc.payment_hash, HTLCSource::PreviousHopData(prev_hop_data), *outbound_hop))
+				Some((
+					htlc.payment_hash,
+					vec![(HTLCSource::PreviousHopData(prev_hop_data), *outbound_hop)],
+				))
 			},
 			_ => None,
 		})
@@ -7695,18 +7698,14 @@ where
 		let holding_cell_outbounds =
 			self.context.holding_cell_htlc_updates.iter().filter_map(|htlc| match htlc {
 				HTLCUpdateAwaitingACK::AddHTLC { source, payment_hash, .. } => match source {
-					HTLCSource::PreviousHopData(_) => {
-						Some((*payment_hash, source.clone()))
-					},
+					HTLCSource::PreviousHopData(_) => Some((*payment_hash, source.clone())),
 					_ => None,
 				},
 				_ => None,
 			});
 		let committed_outbounds =
 			self.context.pending_outbound_htlcs.iter().filter_map(|htlc| match &htlc.source {
-				HTLCSource::PreviousHopData(_) => {
-					Some((htlc.payment_hash, htlc.source.clone()))
-				},
+				HTLCSource::PreviousHopData(_) => Some((htlc.payment_hash, htlc.source.clone())),
 				_ => None,
 			});
 		holding_cell_outbounds.chain(committed_outbounds)
