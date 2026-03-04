@@ -7614,7 +7614,7 @@ where
 	/// when reconstructing the set of pending HTLCs when deserializing the `ChannelManager`.
 	pub(super) fn inbound_forwarded_htlcs(
 		&self,
-	) -> impl Iterator<Item = (PaymentHash, HTLCPreviousHopData, OutboundHop)> + '_ {
+	) -> impl Iterator<Item = (PaymentHash, HTLCSource, OutboundHop)> + '_ {
 		// We don't want to return an HTLC as needing processing if it already has a resolution that's
 		// pending in the holding cell.
 		let htlc_resolution_in_holding_cell = |id: u64| -> bool {
@@ -7663,7 +7663,7 @@ where
 					counterparty_node_id: Some(counterparty_node_id),
 					cltv_expiry: Some(htlc.cltv_expiry),
 				};
-				Some((htlc.payment_hash, prev_hop_data, *outbound_hop))
+				Some((htlc.payment_hash, HTLCSource::PreviousHopData(prev_hop_data), *outbound_hop))
 			},
 			_ => None,
 		})
@@ -7674,12 +7674,12 @@ where
 	/// present in the outbound edge, or else we'll double-forward.
 	pub(super) fn outbound_htlc_forwards(
 		&self,
-	) -> impl Iterator<Item = (PaymentHash, HTLCPreviousHopData)> + '_ {
+	) -> impl Iterator<Item = (PaymentHash, HTLCSource)> + '_ {
 		let holding_cell_outbounds =
 			self.context.holding_cell_htlc_updates.iter().filter_map(|htlc| match htlc {
 				HTLCUpdateAwaitingACK::AddHTLC { source, payment_hash, .. } => match source {
-					HTLCSource::PreviousHopData(prev_hop_data) => {
-						Some((*payment_hash, prev_hop_data.clone()))
+					HTLCSource::PreviousHopData(_) => {
+						Some((*payment_hash, source.clone()))
 					},
 					_ => None,
 				},
@@ -7687,8 +7687,8 @@ where
 			});
 		let committed_outbounds =
 			self.context.pending_outbound_htlcs.iter().filter_map(|htlc| match &htlc.source {
-				HTLCSource::PreviousHopData(prev_hop_data) => {
-					Some((htlc.payment_hash, prev_hop_data.clone()))
+				HTLCSource::PreviousHopData(_) => {
+					Some((htlc.payment_hash, htlc.source.clone()))
 				},
 				_ => None,
 			});
