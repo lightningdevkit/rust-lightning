@@ -154,6 +154,27 @@ impl Display for ForwardingOutcome {
 	}
 }
 
+/// Error returned by resource manager operations.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ResourceManagerError {
+	/// The incoming or outgoing channel is not registered with the resource manager.
+	ChannelNotFound,
+	/// An HTLC with this ID is already being tracked on this channel pair.
+	DuplicateHtlc,
+	/// The HTLC was not found in the pending set. This is expected in read-only mode when
+	/// [`add_htlc`] returned [`ForwardingOutcome::Fail`] but the HTLC was forwarded anyway.
+	/// Only returned by [`DefaultResourceManager::resolve_htlc`].
+	///
+	/// [`add_htlc`]: DefaultResourceManager::add_htlc
+	HtlcNotFound,
+	/// An internal error occurred (e.g., slot generation failed or resource state is inconsistent).
+	InternalError,
+	/// An invalid parameter was provided (outgoing amount > incoming, or CLTV already expired).
+	InvalidParameter,
+	/// A provided timestamp predates a previously observed timestamp.
+	InvalidTimestamp,
+}
+
 #[derive(Clone, PartialEq, Eq, Debug)]
 enum BucketAssigned {
 	General,
@@ -206,7 +227,7 @@ impl GeneralBucket {
 	/// htlc amount.
 	fn slots_for_amount<ES: EntropySource>(
 		&mut self, outgoing_scid: u64, htlc_amount_msat: u64, entropy_source: &ES,
-	) -> Result<Option<Vec<u16>>, ()> {
+	) -> Result<Option<Vec<u16>>, ResourceManagerError> {
 		let slots_needed = u64::max(1, htlc_amount_msat.div_ceil(self.per_slot_msat));
 
 		let assigned;
@@ -240,13 +261,13 @@ impl GeneralBucket {
 
 	fn can_add_htlc<ES: EntropySource>(
 		&mut self, outgoing_scid: u64, htlc_amount_msat: u64, entropy_source: &ES,
-	) -> Result<bool, ()> {
+	) -> Result<bool, ResourceManagerError> {
 		Ok(self.slots_for_amount(outgoing_scid, htlc_amount_msat, entropy_source)?.is_some())
 	}
 
 	fn add_htlc<ES: EntropySource>(
 		&mut self, outgoing_scid: u64, htlc_amount_msat: u64, entropy_source: &ES,
-	) -> Result<Vec<u16>, ()> {
+	) -> Result<Vec<u16>, ResourceManagerError> {
 		match self.slots_for_amount(outgoing_scid, htlc_amount_msat, entropy_source)? {
 			Some(slots) => {
 				for slot_idx in &slots {
@@ -255,14 +276,16 @@ impl GeneralBucket {
 				}
 				Ok(slots)
 			},
-			None => Err(()),
+			None => Err(ResourceManagerError::InternalError),
 		}
 	}
 
-	fn remove_htlc(&mut self, outgoing_scid: u64, htlc_amount_msat: u64) -> Result<(), ()> {
+	fn remove_htlc(
+		&mut self, outgoing_scid: u64, htlc_amount_msat: u64,
+	) -> Result<(), ResourceManagerError> {
 		let channel_slots = match self.channels_slots.get(&outgoing_scid) {
 			Some((slots, _)) => slots,
-			None => return Err(()),
+			None => return Err(ResourceManagerError::InternalError),
 		};
 
 		let slots_needed = u64::max(1, htlc_amount_msat.div_ceil(self.per_slot_msat));
@@ -274,7 +297,7 @@ impl GeneralBucket {
 			.collect();
 
 		if slots_needed > slots_used_by_channel.len() as u64 {
-			return Err(());
+			return Err(ResourceManagerError::InternalError);
 		}
 		let slots_released: Vec<u16> =
 			slots_used_by_channel.drain(0..slots_needed as usize).collect();
@@ -288,7 +311,7 @@ impl GeneralBucket {
 
 	fn assign_slots_for_channel<ES: EntropySource>(
 		&mut self, outgoing_scid: u64, salt: Option<[u8; 32]>, entropy_source: &ES,
-	) -> Result<Vec<u16>, ()> {
+	) -> Result<Vec<u16>, ResourceManagerError> {
 		debug_assert_ne!(self.scid, outgoing_scid);
 
 		match self.channels_slots.entry(outgoing_scid) {
@@ -319,7 +342,7 @@ impl GeneralBucket {
 				}
 
 				if slots_assigned_counter < self.per_channel_slots {
-					return Err(());
+					return Err(ResourceManagerError::InternalError);
 				}
 
 				entry.insert((channel_slots.clone(), salt));
@@ -366,9 +389,9 @@ impl BucketResources {
 			&& (self.slots_used < self.slots_allocated);
 	}
 
-	fn add_htlc(&mut self, htlc_amount_msat: u64) -> Result<(), ()> {
+	fn add_htlc(&mut self, htlc_amount_msat: u64) -> Result<(), ResourceManagerError> {
 		if !self.resources_available(htlc_amount_msat) {
-			return Err(());
+			return Err(ResourceManagerError::InternalError);
 		}
 
 		self.slots_used += 1;
@@ -376,9 +399,9 @@ impl BucketResources {
 		Ok(())
 	}
 
-	fn remove_htlc(&mut self, htlc_amount_msat: u64) -> Result<(), ()> {
+	fn remove_htlc(&mut self, htlc_amount_msat: u64) -> Result<(), ResourceManagerError> {
 		if self.slots_used == 0 || self.liquidity_used < htlc_amount_msat {
-			return Err(());
+			return Err(ResourceManagerError::InternalError);
 		}
 		self.slots_used -= 1;
 		self.liquidity_used -= htlc_amount_msat;
@@ -507,7 +530,7 @@ impl Channel {
 
 	fn general_available<ES: EntropySource>(
 		&mut self, incoming_amount_msat: u64, outgoing_channel_id: u64, entropy_source: &ES,
-	) -> Result<bool, ()> {
+	) -> Result<bool, ResourceManagerError> {
 		Ok(self.general_bucket.can_add_htlc(
 			outgoing_channel_id,
 			incoming_amount_msat,
@@ -518,7 +541,7 @@ impl Channel {
 	fn congestion_eligible(
 		&mut self, pending_htlcs_in_congestion: bool, incoming_amount_msat: u64,
 		outgoing_channel_id: u64, at_timestamp: u64,
-	) -> Result<bool, ()> {
+	) -> Result<bool, ResourceManagerError> {
 		Ok(!pending_htlcs_in_congestion
 			&& self.can_add_htlc_congestion(
 				outgoing_channel_id,
@@ -535,12 +558,12 @@ impl Channel {
 	// weeks.
 	fn has_misused_congestion(
 		&mut self, outgoing_scid: u64, at_timestamp: u64,
-	) -> Result<bool, ()> {
+	) -> Result<bool, ResourceManagerError> {
 		match self.last_congestion_misuse.entry(outgoing_scid) {
 			Entry::Vacant(_) => Ok(false),
 			Entry::Occupied(last_misuse) => {
 				if at_timestamp < *last_misuse.get() {
-					return Err(());
+					return Err(ResourceManagerError::InvalidTimestamp);
 				}
 				// If the last misuse of the congestion bucket was over more than two
 				// weeks ago, remove the entry.
@@ -558,7 +581,7 @@ impl Channel {
 
 	fn can_add_htlc_congestion(
 		&mut self, channel_id: u64, htlc_amount_msat: u64, at_timestamp: u64,
-	) -> Result<bool, ()> {
+	) -> Result<bool, ResourceManagerError> {
 		let congestion_resources_available =
 			self.congestion_bucket.resources_available(htlc_amount_msat);
 		let misused_congestion = self.has_misused_congestion(channel_id, at_timestamp)?;
@@ -583,7 +606,7 @@ impl Channel {
 	fn sufficient_reputation(
 		&mut self, in_flight_htlc_risk: u64, outgoing_reputation: i64,
 		outgoing_in_flight_risk: u64, at_timestamp: u64,
-	) -> Result<bool, ()> {
+	) -> Result<bool, ResourceManagerError> {
 		let incoming_revenue_threshold = self.incoming_revenue.value_at_timestamp(at_timestamp)?;
 
 		Ok(outgoing_reputation
@@ -779,18 +802,20 @@ impl DefaultResourceManager {
 		&self, incoming_channel_id: u64, incoming_amount_msat: u64, incoming_cltv_expiry: u32,
 		outgoing_channel_id: u64, outgoing_amount_msat: u64, incoming_accountable: bool,
 		htlc_id: u64, height_added: u32, added_at: u64, entropy_source: &ES,
-	) -> Result<ForwardingOutcome, ()> {
+	) -> Result<ForwardingOutcome, ResourceManagerError> {
 		if (outgoing_amount_msat > incoming_amount_msat) || (height_added >= incoming_cltv_expiry) {
-			return Err(());
+			return Err(ResourceManagerError::InvalidParameter);
 		}
 
 		let mut channels_lock = self.channels.lock().unwrap();
 
 		let htlc_ref = HtlcRef { incoming_channel_id, htlc_id };
-		let outgoing_channel = channels_lock.get_mut(&outgoing_channel_id).ok_or(())?;
+		let outgoing_channel = channels_lock
+			.get_mut(&outgoing_channel_id)
+			.ok_or(ResourceManagerError::ChannelNotFound)?;
 
 		if outgoing_channel.pending_htlcs.get(&htlc_ref).is_some() {
-			return Err(());
+			return Err(ResourceManagerError::DuplicateHtlc);
 		}
 
 		let outgoing_reputation =
@@ -802,7 +827,9 @@ impl DefaultResourceManager {
 		let pending_htlcs_in_congestion =
 			outgoing_channel.pending_htlcs_in_congestion(incoming_channel_id);
 
-		let incoming_channel = channels_lock.get_mut(&incoming_channel_id).ok_or(())?;
+		let incoming_channel = channels_lock
+			.get_mut(&incoming_channel_id)
+			.ok_or(ResourceManagerError::ChannelNotFound)?;
 
 		let (accountable, bucket_assigned) = if !incoming_accountable {
 			if incoming_channel.general_available(
@@ -872,7 +899,9 @@ impl DefaultResourceManager {
 			},
 		}
 
-		let outgoing_channel = channels_lock.get_mut(&outgoing_channel_id).ok_or(())?;
+		let outgoing_channel = channels_lock
+			.get_mut(&outgoing_channel_id)
+			.ok_or(ResourceManagerError::ChannelNotFound)?;
 		let pending_htlc = PendingHTLC {
 			incoming_amount_msat,
 			fee,
@@ -889,7 +918,7 @@ impl DefaultResourceManager {
 	pub fn resolve_htlc(
 		&self, incoming_channel_id: u64, htlc_id: u64, outgoing_channel_id: u64, settled: bool,
 		resolved_at: u64,
-	) -> Result<(), ()> {
+	) -> Result<(), ResourceManagerError> {
 		let htlc_ref = HtlcRef { incoming_channel_id, htlc_id };
 
 		let mut failed_replays = self.failed_replays.lock().unwrap();
@@ -898,11 +927,17 @@ impl DefaultResourceManager {
 		}
 
 		let mut channels_lock = self.channels.lock().unwrap();
-		let outgoing_channel = channels_lock.get_mut(&outgoing_channel_id).ok_or(())?;
-		let pending_htlc = outgoing_channel.pending_htlcs.remove(&htlc_ref).ok_or(())?;
+		let outgoing_channel = channels_lock
+			.get_mut(&outgoing_channel_id)
+			.ok_or(ResourceManagerError::ChannelNotFound)?;
+
+		let pending_htlc = outgoing_channel
+			.pending_htlcs
+			.remove(&htlc_ref)
+			.ok_or(ResourceManagerError::HtlcNotFound)?;
 
 		if resolved_at < pending_htlc.added_at_unix_seconds {
-			return Err(());
+			return Err(ResourceManagerError::InvalidTimestamp);
 		}
 		let resolution_time = Duration::from_secs(resolved_at - pending_htlc.added_at_unix_seconds);
 		let effective_fee = self.effective_fees(
@@ -913,7 +948,9 @@ impl DefaultResourceManager {
 		);
 		outgoing_channel.outgoing_reputation.add_value(effective_fee, resolved_at)?;
 
-		let incoming_channel = channels_lock.get_mut(&incoming_channel_id).ok_or(())?;
+		let incoming_channel = channels_lock
+			.get_mut(&incoming_channel_id)
+			.ok_or(ResourceManagerError::ChannelNotFound)?;
 		match pending_htlc.bucket {
 			BucketAssigned::General => incoming_channel
 				.general_bucket
@@ -941,6 +978,7 @@ impl DefaultResourceManager {
 	}
 }
 
+#[derive(Debug)]
 pub struct PendingHTLCReplay {
 	pub incoming_channel_id: u64,
 	pub incoming_amount_msat: u64,
@@ -1032,6 +1070,98 @@ impl DefaultResourceManager {
 	}
 }
 
+/// A read-only wrapper around [`DefaultResourceManager`]. The main purpose is to silently handle
+/// [`ResourceManagerError::HtlcNotFound`] when [`DefaultResourceManager::add_htlc`] returned
+/// [`ForwardingOutcome::Fail`], the HTLC is not stored, so a subsequent
+/// [`DefaultResourceManager::resolve_htlc`] call will not find it; this is expected and is
+/// converted to `Ok(())` here.
+///
+/// All other errors are returned as-is.
+pub struct ReadOnlyResourceManager {
+	inner: DefaultResourceManager,
+}
+
+impl ReadOnlyResourceManager {
+	/// Creates a new [`ReadOnlyResourceManager`] with the given configuration.
+	pub fn new(config: ResourceManagerConfig) -> Self {
+		ReadOnlyResourceManager { inner: DefaultResourceManager::new(config) }
+	}
+
+	/// Constructs a [`ReadOnlyResourceManager`] from an already-deserialized
+	/// [`DefaultResourceManager`].
+	pub fn from_inner(inner: DefaultResourceManager) -> Self {
+		ReadOnlyResourceManager { inner }
+	}
+
+	/// See [`DefaultResourceManager::add_channel`].
+	pub fn add_channel(
+		&self, channel_id: u64, max_htlc_value_in_flight_msat: u64, max_accepted_htlcs: u16,
+		timestamp_unix_secs: u64,
+	) -> Result<(), ()> {
+		self.inner.add_channel(
+			channel_id,
+			max_htlc_value_in_flight_msat,
+			max_accepted_htlcs,
+			timestamp_unix_secs,
+		)
+	}
+
+	/// See [`DefaultResourceManager::remove_channel`].
+	pub fn remove_channel(&self, channel_id: u64) -> Result<(), ()> {
+		self.inner.remove_channel(channel_id)
+	}
+
+	/// See [`DefaultResourceManager::add_htlc`].
+	pub fn add_htlc<ES: EntropySource>(
+		&self, incoming_channel_id: u64, incoming_amount_msat: u64, incoming_cltv_expiry: u32,
+		outgoing_channel_id: u64, outgoing_amount_msat: u64, incoming_accountable: bool,
+		htlc_id: u64, height_added: u32, added_at: u64, entropy_source: &ES,
+	) -> Result<ForwardingOutcome, ResourceManagerError> {
+		self.inner.add_htlc(
+			incoming_channel_id,
+			incoming_amount_msat,
+			incoming_cltv_expiry,
+			outgoing_channel_id,
+			outgoing_amount_msat,
+			incoming_accountable,
+			htlc_id,
+			height_added,
+			added_at,
+			entropy_source,
+		)
+	}
+
+	/// Records the resolution of a forwarded HTLC.
+	///
+	/// [`ResourceManagerError::HtlcNotFound`] is silently discarded. This is the expected case
+	/// when [`add_htlc`] returned [`ForwardingOutcome::Fail`] and the HTLC was never stored.
+	/// All other errors are returned as is.
+	///
+	/// [`add_htlc`]: Self::add_htlc
+	pub fn resolve_htlc(
+		&self, incoming_channel_id: u64, htlc_id: u64, outgoing_channel_id: u64, settled: bool,
+		resolved_at: u64,
+	) -> Result<(), ResourceManagerError> {
+		match self.inner.resolve_htlc(
+			incoming_channel_id,
+			htlc_id,
+			outgoing_channel_id,
+			settled,
+			resolved_at,
+		) {
+			Ok(()) => Ok(()),
+			Err(ResourceManagerError::HtlcNotFound) => Ok(()),
+			Err(e) => Err(e),
+		}
+	}
+}
+
+impl Writeable for ReadOnlyResourceManager {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		self.inner.write(writer)
+	}
+}
+
 /// A weighted average that decays over a specified window.
 ///
 /// It enables tracking of historical behavior without storing individual data points.
@@ -1060,9 +1190,11 @@ impl DecayingAverage {
 		}
 	}
 
-	fn value_at_timestamp(&mut self, timestamp_unix_secs: u64) -> Result<i64, ()> {
+	fn value_at_timestamp(
+		&mut self, timestamp_unix_secs: u64,
+	) -> Result<i64, ResourceManagerError> {
 		if timestamp_unix_secs < self.last_updated_unix_secs {
-			return Err(());
+			return Err(ResourceManagerError::InvalidTimestamp);
 		}
 
 		let elapsed_secs = (timestamp_unix_secs - self.last_updated_unix_secs) as f64;
@@ -1071,7 +1203,9 @@ impl DecayingAverage {
 		Ok(self.value)
 	}
 
-	fn add_value(&mut self, value: i64, timestamp_unix_secs: u64) -> Result<i64, ()> {
+	fn add_value(
+		&mut self, value: i64, timestamp_unix_secs: u64,
+	) -> Result<i64, ResourceManagerError> {
 		self.value_at_timestamp(timestamp_unix_secs)?;
 		self.value = self.value.saturating_add(value);
 		self.last_updated_unix_secs = timestamp_unix_secs;
@@ -1121,7 +1255,7 @@ impl AggregatedWindowAverage {
 		}
 	}
 
-	fn add_value(&mut self, value: i64, timestamp: u64) -> Result<i64, ()> {
+	fn add_value(&mut self, value: i64, timestamp: u64) -> Result<i64, ResourceManagerError> {
 		self.aggregated_revenue_decaying.add_value(value, timestamp)
 	}
 
@@ -1130,9 +1264,11 @@ impl AggregatedWindowAverage {
 		elapsed_secs / self.window_duration.as_secs_f64()
 	}
 
-	fn value_at_timestamp(&mut self, timestamp_unix_secs: u64) -> Result<i64, ()> {
+	fn value_at_timestamp(
+		&mut self, timestamp_unix_secs: u64,
+	) -> Result<i64, ResourceManagerError> {
 		if timestamp_unix_secs < self.start_timestamp_unix_secs {
-			return Err(());
+			return Err(ResourceManagerError::InvalidTimestamp);
 		}
 
 		let windows_tracked = self.windows_tracked(timestamp_unix_secs);
@@ -1172,7 +1308,7 @@ mod tests {
 			resource_manager::{
 				AggregatedWindowAverage, BucketAssigned, BucketResources, Channel, DecayingAverage,
 				DefaultResourceManager, ForwardingOutcome, GeneralBucket, HtlcRef,
-				ResourceManagerConfig,
+				ResourceManagerConfig, ResourceManagerError,
 			},
 		},
 		sign::EntropySource,
@@ -1527,7 +1663,7 @@ mod tests {
 	fn add_test_htlc<ES: EntropySource>(
 		rm: &DefaultResourceManager, accountable: bool, htlc_id: u64, added_at: Option<u64>,
 		entropy_source: &ES,
-	) -> Result<ForwardingOutcome, ()> {
+	) -> Result<ForwardingOutcome, ResourceManagerError> {
 		rm.add_htlc(
 			INCOMING_SCID,
 			HTLC_AMOUNT + FEE_AMOUNT,
@@ -2000,7 +2136,7 @@ mod tests {
 			TestCase {
 				hold_time: slow_resolve,
 				settled: true,
-				expected_reputation: 0,              // effective_fee = 0 (slow unaccountable)
+				expected_reputation: 0, // effective_fee = 0 (slow unaccountable)
 				expected_revenue: FEE_AMOUNT as i64, // revenue increases regardless of speed
 			},
 			TestCase {
