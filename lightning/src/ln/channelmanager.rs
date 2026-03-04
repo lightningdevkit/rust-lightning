@@ -19300,14 +19300,16 @@ impl<
 										.or_insert_with(Vec::new)
 										.push(update_add_htlc);
 								}
-								for (payment_hash, htlc_source, next_hop) in
+								for (payment_hash, source_and_hop) in
 									funded_chan.inbound_forwarded_htlcs()
 								{
-									for prev_hop in htlc_source.previous_hop_data() {
-										already_forwarded_htlcs
-											.entry((prev_hop.channel_id, payment_hash))
-											.or_insert_with(Vec::new)
-											.push((htlc_source.clone(), next_hop));
+									for (htlc_source, next_hop) in source_and_hop {
+										for prev_hop in htlc_source.previous_hop_data() {
+											already_forwarded_htlcs
+												.entry((prev_hop.channel_id, payment_hash))
+												.or_insert_with(Vec::new)
+												.push((htlc_source.clone(), next_hop));
+										}
 									}
 								}
 							}
