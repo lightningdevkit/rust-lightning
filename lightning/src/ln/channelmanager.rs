@@ -18530,35 +18530,38 @@ impl<
 
 // If the HTLC corresponding to `prev_hop_data` is present in `decode_update_add_htlcs`, remove it
 // from the map as it is already being stored and processed elsewhere.
-fn dedup_decode_update_add_htlcs<L: Logger>(
+fn dedup_decode_update_add_htlcs<'a, L: Logger>(
 	decode_update_add_htlcs: &mut HashMap<u64, Vec<msgs::UpdateAddHTLC>>,
-	prev_hop_data: &HTLCPreviousHopData, removal_reason: &'static str, logger: &L,
+	previous_hops: impl Iterator<Item = &'a HTLCPreviousHopData>, removal_reason: &'static str,
+	logger: &L,
 ) {
-	match decode_update_add_htlcs.entry(prev_hop_data.prev_outbound_scid_alias) {
-		hash_map::Entry::Occupied(mut update_add_htlcs) => {
-			update_add_htlcs.get_mut().retain(|update_add| {
-				let matches = update_add.htlc_id == prev_hop_data.htlc_id;
-				if matches {
-					let logger = WithContext::from(
-						logger,
-						prev_hop_data.counterparty_node_id,
-						Some(update_add.channel_id),
-						Some(update_add.payment_hash),
-					);
-					log_info!(
-						logger,
-						"Removing pending to-decode HTLC with id {}: {}",
-						update_add.htlc_id,
-						removal_reason
-					);
+	for prev_hop_data in previous_hops {
+		match decode_update_add_htlcs.entry(prev_hop_data.prev_outbound_scid_alias) {
+			hash_map::Entry::Occupied(mut update_add_htlcs) => {
+				update_add_htlcs.get_mut().retain(|update_add| {
+					let matches = update_add.htlc_id == prev_hop_data.htlc_id;
+					if matches {
+						let logger = WithContext::from(
+							logger,
+							prev_hop_data.counterparty_node_id,
+							Some(update_add.channel_id),
+							Some(update_add.payment_hash),
+						);
+						log_info!(
+							logger,
+							"Removing pending to-decode HTLC with id {}: {}",
+							update_add.htlc_id,
+							removal_reason
+						);
+					}
+					!matches
+				});
+				if update_add_htlcs.get().is_empty() {
+					update_add_htlcs.remove();
 				}
-				!matches
-			});
-			if update_add_htlcs.get().is_empty() {
-				update_add_htlcs.remove();
-			}
-		},
-		_ => {},
+			},
+			_ => {},
+		}
 	}
 }
 
@@ -19255,10 +19258,11 @@ impl<
 		// store an identifier for it here and verify that it is either (a) present in the outbound
 		// edge or (b) removed from the outbound edge via claim. If it's in neither of these states, we
 		// infer that it was removed from the outbound edge via fail, and fail it backwards to ensure
-		// that it is handled.
+		// that it is handled. For trampoline forwards where it is possible that we have multiple
+		// inbound HTLCs, each incoming HTLC's entry will store the full HTLCSource.
 		let mut already_forwarded_htlcs: HashMap<
 			(ChannelId, PaymentHash),
-			Vec<(HTLCPreviousHopData, OutboundHop)>,
+			Vec<(HTLCSource, OutboundHop)>,
 		> = new_hash_map();
 		{
 			// If we're tracking pending payments, ensure we haven't lost any by looking at the
@@ -19296,13 +19300,15 @@ impl<
 										.or_insert_with(Vec::new)
 										.push(update_add_htlc);
 								}
-								for (payment_hash, prev_hop, next_hop) in
+								for (payment_hash, htlc_source, next_hop) in
 									funded_chan.inbound_forwarded_htlcs()
 								{
-									already_forwarded_htlcs
-										.entry((prev_hop.channel_id, payment_hash))
-										.or_insert_with(Vec::new)
-										.push((prev_hop, next_hop));
+									for prev_hop in htlc_source.previous_hop_data() {
+										already_forwarded_htlcs
+											.entry((prev_hop.channel_id, payment_hash))
+											.or_insert_with(Vec::new)
+											.push((htlc_source.clone(), next_hop));
+									}
 								}
 							}
 						}
@@ -19351,17 +19357,18 @@ impl<
 
 						if reconstruct_manager_from_monitors {
 							if let Some(funded_chan) = chan.as_funded() {
-								for (payment_hash, prev_hop) in funded_chan.outbound_htlc_forwards()
+								for (payment_hash, htlc_source) in
+									funded_chan.outbound_htlc_forwards()
 								{
 									dedup_decode_update_add_htlcs(
 										&mut decode_update_add_htlcs,
-										&prev_hop,
+										htlc_source.previous_hop_data().iter(),
 										"HTLC already forwarded to the outbound edge",
 										&args.logger,
 									);
 									prune_forwarded_htlc(
 										&mut already_forwarded_htlcs,
-										&prev_hop,
+										&htlc_source,
 										&payment_hash,
 									);
 								}
@@ -19381,7 +19388,8 @@ impl<
 						);
 						let htlc_id = SentHTLCId::from_source(&htlc_source);
 						match htlc_source {
-							HTLCSource::PreviousHopData(prev_hop_data) => {
+							HTLCSource::PreviousHopData(_)
+							| HTLCSource::TrampolineForward { .. } => {
 								reconcile_pending_htlcs_with_monitor(
 									reconstruct_manager_from_monitors,
 									&mut already_forwarded_htlcs,
@@ -19390,28 +19398,11 @@ impl<
 									&mut pending_intercepted_htlcs_legacy,
 									&mut decode_update_add_htlcs,
 									&mut decode_update_add_htlcs_legacy,
-									prev_hop_data,
+									&htlc_source,
 									&logger,
 									htlc.payment_hash,
 									monitor.channel_id(),
 								);
-							},
-							HTLCSource::TrampolineForward { previous_hop_data, .. } => {
-								for prev_hop_data in previous_hop_data {
-									reconcile_pending_htlcs_with_monitor(
-										reconstruct_manager_from_monitors,
-										&mut already_forwarded_htlcs,
-										&mut forward_htlcs_legacy,
-										&mut pending_events_read,
-										&mut pending_intercepted_htlcs_legacy,
-										&mut decode_update_add_htlcs,
-										&mut decode_update_add_htlcs_legacy,
-										prev_hop_data,
-										&logger,
-										htlc.payment_hash,
-										monitor.channel_id(),
-									);
-								}
 							},
 							HTLCSource::OutboundRoute {
 								payment_id,
@@ -19775,27 +19766,25 @@ impl<
 			// De-duplicate HTLCs that are present in both `failed_htlcs` and `decode_update_add_htlcs`.
 			// Omitting this de-duplication could lead to redundant HTLC processing and/or bugs.
 			for (src, payment_hash, _, _, _, _) in failed_htlcs.iter() {
-				if let HTLCSource::PreviousHopData(prev_hop_data) = src {
+				if let HTLCSource::PreviousHopData(_) = src {
 					dedup_decode_update_add_htlcs(
 						&mut decode_update_add_htlcs,
-						prev_hop_data,
+						src.previous_hop_data().iter(),
 						"HTLC was failed backwards during manager read",
 						&args.logger,
 					);
-					prune_forwarded_htlc(&mut already_forwarded_htlcs, prev_hop_data, payment_hash);
+					prune_forwarded_htlc(&mut already_forwarded_htlcs, &src, payment_hash);
 				}
 			}
 
 			// See above comment on `failed_htlcs`.
-			for htlcs in claimable_payments.values().map(|pmt| &pmt.htlcs) {
-				for prev_hop_data in htlcs.iter().map(|h| &h.prev_hop) {
-					dedup_decode_update_add_htlcs(
-						&mut decode_update_add_htlcs,
-						prev_hop_data,
-						"HTLC was already decoded and marked as a claimable payment",
-						&args.logger,
-					);
-				}
+			for claimable_htlcs in claimable_payments.values().map(|pmt| &pmt.htlcs) {
+				dedup_decode_update_add_htlcs(
+					&mut decode_update_add_htlcs,
+					claimable_htlcs.into_iter().map(|h| &h.prev_hop),
+					"HTLC was already decoded and marked as a claimable payment",
+					&args.logger,
+				);
 			}
 		}
 
@@ -19937,11 +19926,10 @@ impl<
 				if let Some(forwarded_htlcs) =
 					already_forwarded_htlcs.remove(&(*channel_id, payment_hash))
 				{
-					for (prev_hop, next_hop) in forwarded_htlcs {
-						let new_pending_claim =
-							!pending_claims_to_replay.iter().any(|(src, _, _, _, _, _, _, _)| {
-								matches!(src, HTLCSource::PreviousHopData(hop) if hop.htlc_id == prev_hop.htlc_id && hop.channel_id == prev_hop.channel_id)
-							});
+					for (source, next_hop) in forwarded_htlcs {
+						let new_pending_claim = !pending_claims_to_replay
+							.iter()
+							.any(|(src, _, _, _, _, _, _, _)| *src == source);
 						if new_pending_claim {
 							let is_downstream_closed = channel_manager
 								.per_peer_state
@@ -19956,7 +19944,7 @@ impl<
 										.contains_key(&next_hop.channel_id)
 								});
 							pending_claims_to_replay.push((
-								HTLCSource::PreviousHopData(prev_hop),
+								source,
 								payment_preimage,
 								next_hop.amt_msat,
 								is_downstream_closed,
@@ -20213,18 +20201,20 @@ impl<
 			);
 		}
 		for ((_, hash), htlcs) in already_forwarded_htlcs.into_iter() {
-			for (htlc, _) in htlcs {
-				let channel_id = htlc.channel_id;
-				let node_id = htlc.counterparty_node_id;
-				let source = HTLCSource::PreviousHopData(htlc);
+			for (source, next_hop) in htlcs {
 				let failure_reason = LocalHTLCFailureReason::TemporaryChannelFailure;
 				let failure_data = channel_manager.get_htlc_inbound_temp_fail_data(failure_reason);
 				let reason = HTLCFailReason::reason(failure_reason, failure_data);
-				let receiver = HTLCHandlingFailureType::Forward { node_id, channel_id };
+				let failure_type = source.failure_type(next_hop.node_id, next_hop.channel_id);
 				// The event completion action is only relevant for HTLCs that originate from our node, not
 				// forwarded HTLCs.
-				channel_manager
-					.fail_htlc_backwards_internal(&source, &hash, &reason, receiver, None);
+				channel_manager.fail_htlc_backwards_internal(
+					&source,
+					&hash,
+					&reason,
+					failure_type,
+					None,
+				);
 			}
 		}
 
@@ -20266,18 +20256,18 @@ impl<
 }
 
 fn prune_forwarded_htlc(
-	already_forwarded_htlcs: &mut HashMap<
-		(ChannelId, PaymentHash),
-		Vec<(HTLCPreviousHopData, OutboundHop)>,
-	>,
-	prev_hop: &HTLCPreviousHopData, payment_hash: &PaymentHash,
+	already_forwarded_htlcs: &mut HashMap<(ChannelId, PaymentHash), Vec<(HTLCSource, OutboundHop)>>,
+	htlc_source: &HTLCSource, payment_hash: &PaymentHash,
 ) {
-	if let hash_map::Entry::Occupied(mut entry) =
-		already_forwarded_htlcs.entry((prev_hop.channel_id, *payment_hash))
-	{
-		entry.get_mut().retain(|(htlc, _)| prev_hop.htlc_id != htlc.htlc_id);
-		if entry.get().is_empty() {
-			entry.remove();
+	for prev_hop in htlc_source.previous_hop_data() {
+		if let hash_map::Entry::Occupied(mut entry) =
+			already_forwarded_htlcs.entry((prev_hop.channel_id, *payment_hash))
+		{
+			// TODO: check how we populate each of these sources to make sure they'll be equal.
+			entry.get_mut().retain(|(source, _)| source != htlc_source);
+			if entry.get().is_empty() {
+				entry.remove();
+			}
 		}
 	}
 }
@@ -20286,21 +20276,20 @@ fn prune_forwarded_htlc(
 /// cleaning up state mismatches that can occur during restart.
 fn reconcile_pending_htlcs_with_monitor(
 	reconstruct_manager_from_monitors: bool,
-	already_forwarded_htlcs: &mut HashMap<
-		(ChannelId, PaymentHash),
-		Vec<(HTLCPreviousHopData, OutboundHop)>,
-	>,
+	already_forwarded_htlcs: &mut HashMap<(ChannelId, PaymentHash), Vec<(HTLCSource, OutboundHop)>>,
 	forward_htlcs_legacy: &mut HashMap<u64, Vec<HTLCForwardInfo>>,
 	pending_events_read: &mut VecDeque<(Event, Option<EventCompletionAction>)>,
 	pending_intercepted_htlcs_legacy: &mut HashMap<InterceptId, PendingAddHTLCInfo>,
 	decode_update_add_htlcs: &mut HashMap<u64, Vec<msgs::UpdateAddHTLC>>,
 	decode_update_add_htlcs_legacy: &mut HashMap<u64, Vec<msgs::UpdateAddHTLC>>,
-	prev_hop_data: HTLCPreviousHopData, logger: &impl Logger, payment_hash: PaymentHash,
+	htlc_source: &HTLCSource, logger: &impl Logger, payment_hash: PaymentHash,
 	channel_id: ChannelId,
 ) {
 	let pending_forward_matches_htlc = |info: &PendingAddHTLCInfo| {
-		info.prev_funding_outpoint == prev_hop_data.outpoint
-			&& info.prev_htlc_id == prev_hop_data.htlc_id
+		htlc_source.previous_hop_data().iter().any(|prev_hop_data| {
+			info.prev_funding_outpoint == prev_hop_data.outpoint
+				&& info.prev_htlc_id == prev_hop_data.htlc_id
+		})
 	};
 
 	// If `reconstruct_manager_from_monitors` is set, we always add all inbound committed
@@ -20310,11 +20299,11 @@ fn reconcile_pending_htlcs_with_monitor(
 	if reconstruct_manager_from_monitors {
 		dedup_decode_update_add_htlcs(
 			decode_update_add_htlcs,
-			&prev_hop_data,
+			htlc_source.previous_hop_data().iter(),
 			"HTLC already forwarded to the outbound edge",
 			&&logger,
 		);
-		prune_forwarded_htlc(already_forwarded_htlcs, &prev_hop_data, &payment_hash);
+		prune_forwarded_htlc(already_forwarded_htlcs, htlc_source, &payment_hash);
 	}
 
 	// The ChannelMonitor is now responsible for this HTLC's failure/success and will let us know
@@ -20323,7 +20312,7 @@ fn reconcile_pending_htlcs_with_monitor(
 	// not persisted after the monitor was when forwarding the payment.
 	dedup_decode_update_add_htlcs(
 		decode_update_add_htlcs_legacy,
-		&prev_hop_data,
+		htlc_source.previous_hop_data().iter(),
 		"HTLC was forwarded to the closed channel",
 		&&logger,
 	);
