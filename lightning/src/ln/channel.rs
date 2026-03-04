@@ -7698,6 +7698,28 @@ where
 					vec![(HTLCSource::PreviousHopData(prev_hop_data), *outbound_hop)],
 				))
 			},
+			InboundHTLCState::Committed {
+				update_add_htlc:
+					InboundUpdateAdd::TrampolineForwarded { previous_hop_data, outbound_hops },
+			} => {
+				if htlc_resolution_in_holding_cell(htlc.htlc_id) {
+					return None;
+				}
+				let trampoline_sources: Vec<(HTLCSource, OutboundHop)> = outbound_hops
+					.iter()
+					.map(|(hop, dispatch)| {
+						(
+							HTLCSource::TrampolineForward {
+								previous_hop_data: previous_hop_data.clone(),
+								outbound_payment: Some(dispatch.clone()),
+							},
+							*hop,
+						)
+					})
+					.collect();
+
+				Some((htlc.payment_hash, trampoline_sources))
+			},
 			_ => None,
 		})
 	}
