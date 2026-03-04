@@ -52,7 +52,7 @@ use crate::ln::channel_state::{
 use crate::ln::channelmanager::{
 	self, BlindedFailure, ChannelReadyOrder, FundingConfirmedMessage, HTLCFailureMsg,
 	HTLCPreviousHopData, HTLCSource, OpenChannelMessage, PaymentClaimDetails, PendingHTLCInfo,
-	PendingHTLCStatus, RAACommitmentOrder, SentHTLCId, BREAKDOWN_TIMEOUT,
+	PendingHTLCStatus, RAACommitmentOrder, SentHTLCId, TrampolineDispatch, BREAKDOWN_TIMEOUT,
 	MAX_LOCAL_BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA,
 };
 use crate::ln::funding::{FundingContribution, FundingTemplate, FundingTxInput};
@@ -356,6 +356,15 @@ enum InboundUpdateAdd {
 		blinded_failure: Option<BlindedFailure>,
 		outbound_hop: OutboundHop,
 	},
+	/// This inbound HTLC is a forward that was irrevocably committed to outbound edge(s) as part
+	/// of a trampoline forward, allowing its onion to be pruned and no longer persisted.
+	///
+	/// Contains data that is useful if we need to fail or claim this HTLC backwards after a
+	/// restart and it's missing in the outbound edge.
+	TrampolineForwarded {
+		previous_hop_data: Vec<HTLCPreviousHopData>,
+		outbound_hops: Vec<(OutboundHop, TrampolineDispatch)>,
+	},
 	/// This HTLC was received pre-LDK 0.3, before we started persisting the onion for inbound
 	/// committed HTLCs.
 	Legacy,
@@ -372,6 +381,10 @@ impl_writeable_tlv_based_enum_upgradable!(InboundUpdateAdd,
 		(4, phantom_shared_secret, option),
 		(6, trampoline_shared_secret, option),
 		(8, blinded_failure, option),
+	},
+	(6, TrampolineForwarded) => {
+		(0, previous_hop_data, required_vec),
+		(2, outbound_hops, required_vec),
 	},
 );
 
@@ -7549,20 +7562,66 @@ where
 	/// This inbound HTLC was irrevocably forwarded to the outbound edge, so we no longer need to
 	/// persist its onion.
 	pub(super) fn prune_inbound_htlc_onion(
-		&mut self, htlc_id: u64, prev_hop_data: &HTLCPreviousHopData,
-		outbound_hop_data: OutboundHop,
+		&mut self, htlc_id: u64, htlc_source: &HTLCSource, outbound_hop_data: OutboundHop,
 	) {
 		for htlc in self.context.pending_inbound_htlcs.iter_mut() {
+			// TODO: all these returns are super mif
 			if htlc.htlc_id == htlc_id {
-				if let InboundHTLCState::Committed { ref mut update_add_htlc } = htlc.state {
-					*update_add_htlc = InboundUpdateAdd::Forwarded {
-						incoming_packet_shared_secret: prev_hop_data.incoming_packet_shared_secret,
-						phantom_shared_secret: prev_hop_data.phantom_shared_secret,
-						trampoline_shared_secret: prev_hop_data.trampoline_shared_secret,
-						blinded_failure: prev_hop_data.blinded_failure,
-						outbound_hop: outbound_hop_data,
-					};
-					return;
+				match &mut htlc.state {
+					InboundHTLCState::Committed {
+						update_add_htlc: InboundUpdateAdd::TrampolineForwarded { outbound_hops, .. },
+					} => {
+						if let HTLCSource::TrampolineForward {
+							outbound_payment: Some(trampoline_dispatch),
+							..
+						} = htlc_source
+						{
+							if !outbound_hops.iter().any(|(_, dispatch)| {
+								dispatch.session_priv == trampoline_dispatch.session_priv
+							}) {
+								outbound_hops.push((outbound_hop_data, trampoline_dispatch.clone()))
+							}
+							return;
+						} else {
+							debug_assert!(false, "prune inbound onion called for trampoline with no dispatch or on non-trampoline inbound");
+							return;
+						}
+					},
+					InboundHTLCState::Committed { update_add_htlc } => {
+						*update_add_htlc = match htlc_source {
+							HTLCSource::PreviousHopData(prev_hop_data) => {
+								InboundUpdateAdd::Forwarded {
+									incoming_packet_shared_secret: prev_hop_data
+										.incoming_packet_shared_secret,
+									phantom_shared_secret: prev_hop_data.phantom_shared_secret,
+									trampoline_shared_secret: prev_hop_data
+										.trampoline_shared_secret,
+									blinded_failure: prev_hop_data.blinded_failure,
+									outbound_hop: outbound_hop_data,
+								}
+							},
+							HTLCSource::TrampolineForward {
+								previous_hop_data,
+								outbound_payment,
+							} => {
+								InboundUpdateAdd::TrampolineForwarded {
+									previous_hop_data: previous_hop_data.to_vec(),
+									outbound_hops: vec![(outbound_hop_data, outbound_payment
+										.clone() // TODO: no clone / expect
+										.expect("trampoline shouldn't be pruned with no payment data"))],
+								}
+							},
+							_ => {
+								debug_assert!(
+									false,
+									"outbound route should not prune inbound htlc"
+								);
+								return;
+							},
+						};
+						return;
+					},
+					_ => {},
 				}
 			}
 		}
@@ -9183,7 +9242,7 @@ where
 		mem::swap(&mut pending_update_adds, &mut self.context.monitor_pending_update_adds);
 		let committed_outbound_htlc_sources = self.context.pending_outbound_htlcs.iter().filter_map(|htlc| {
 			if let &OutboundHTLCState::LocalAnnounced(_) = &htlc.state {
-				if let HTLCSource::PreviousHopData(_) = &htlc.source {
+				if let HTLCSource::PreviousHopData(_) | HTLCSource::TrampolineForward { .. } = &htlc.source {
 					return Some((htlc.source.clone(), htlc.amount_msat))
 				}
 			}
