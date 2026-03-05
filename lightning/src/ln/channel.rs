@@ -11897,6 +11897,13 @@ where
 			));
 		}
 
+		if pending_splice.received_funding_txid.is_some() {
+			return Err(format!(
+				"Channel {} counterparty already sent splice_locked, cannot RBF",
+				self.context.channel_id(),
+			));
+		}
+
 		if pending_splice.negotiated_candidates.is_empty() {
 			return Err(format!(
 				"Channel {} has no negotiated splice candidates to RBF",
