@@ -3420,7 +3420,6 @@ impl<
 	/// [`block_connected`]: chain::Listen::block_connected
 	/// [`blocks_disconnected`]: chain::Listen::blocks_disconnected
 	/// [`params.best_block.block_hash`]: chain::BestBlock::block_hash
-	#[rustfmt::skip]
 	pub fn new(
 		fee_est: F, chain_monitor: M, tx_broadcaster: T, router: R, message_router: MR, logger: L,
 		entropy_source: ES, node_signer: NS, signer_provider: SP, config: UserConfig,
@@ -3436,9 +3435,15 @@ impl<
 		let our_network_pubkey = node_signer.get_node_id(Recipient::Node).unwrap();
 
 		let flow = OffersMessageFlow::new(
-			ChainHash::using_genesis_block(params.network), params.best_block,
-			our_network_pubkey, current_timestamp, expanded_inbound_key,
-			node_signer.get_receive_auth_key(), secp_ctx.clone(), message_router, logger.clone(),
+			ChainHash::using_genesis_block(params.network),
+			params.best_block,
+			our_network_pubkey,
+			current_timestamp,
+			expanded_inbound_key,
+			node_signer.get_receive_auth_key(),
+			secp_ctx.clone(),
+			message_router,
+			logger.clone(),
 		);
 
 		ChannelManager {
@@ -3456,7 +3461,10 @@ impl<
 			pending_outbound_payments: OutboundPayments::new(new_hash_map()),
 			forward_htlcs: Mutex::new(new_hash_map()),
 			decode_update_add_htlcs: Mutex::new(new_hash_map()),
-			claimable_payments: Mutex::new(ClaimablePayments { claimable_payments: new_hash_map(), pending_claiming_payments: new_hash_map() }),
+			claimable_payments: Mutex::new(ClaimablePayments {
+				claimable_payments: new_hash_map(),
+				pending_claiming_payments: new_hash_map(),
+			}),
 			pending_intercepted_htlcs: Mutex::new(new_hash_map()),
 			short_to_chan_info: FairRwLock::new(new_hash_map()),
 
