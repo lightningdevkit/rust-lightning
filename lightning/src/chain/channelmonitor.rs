@@ -4388,22 +4388,14 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		&mut self, htlcs: impl Iterator<Item = (&'a HTLCSource, PaymentHash, u64)>,
 		logger: &WithContext<L>,
 	) {
-		// Determine the spending txid, either from the fully confirmed field or from a
-		// pending FundingSpendConfirmation event still awaiting ANTI_REORG_DELAY.
-		let spending_txid = if let Some(txid) = self.funding_spend_confirmed {
-			txid
-		} else if let Some(txid) =
-			self.onchain_events_awaiting_threshold_conf.iter().find_map(|event| {
-				if let OnchainEvent::FundingSpendConfirmation { .. } = &event.event {
-					Some(event.txid)
-				} else {
-					None
-				}
-			}) {
-			txid
-		} else {
+		let pending_spend_entry = self
+			.onchain_events_awaiting_threshold_conf
+			.iter()
+			.find(|event| matches!(event.event, OnchainEvent::FundingSpendConfirmation { .. }))
+			.map(|entry| (entry.txid, entry.transaction.clone(), entry.height, entry.block_hash));
+		if self.funding_spend_confirmed.is_none() && pending_spend_entry.is_none() {
 			return;
-		};
+		}
 
 		// Check HTLC sources against all previously-known commitments to find truly new
 		// ones. After the update has been applied, `prev_counterparty_commitment_txid` holds
@@ -4430,7 +4422,6 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			}
 			false
 		};
-		let entry_height = self.best_block.height;
 		for (source, payment_hash, amount_msat) in htlcs {
 			if is_source_known(source) {
 				continue;
@@ -4438,26 +4429,50 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			if self.counterparty_fulfilled_htlcs.get(&SentHTLCId::from_source(source)).is_some() {
 				continue;
 			}
-			let entry = OnchainEventEntry {
-				txid: spending_txid,
-				transaction: None,
-				height: entry_height,
-				block_hash: None,
-				event: OnchainEvent::HTLCUpdate {
-					source: source.clone(),
-					payment_hash,
-					htlc_value_satoshis: Some(amount_msat / 1000),
-					commitment_tx_output_idx: None,
-				},
-			};
+			let htlc_value_satoshis = Some(amount_msat / 1000);
 			let logger = WithContext::from(logger, None, None, Some(payment_hash));
-			log_trace!(
-				logger,
-				"Failing HTLC from late counterparty commitment update, \
-				waiting for confirmation (at height {})",
-				entry.confirmation_threshold()
-			);
-			self.onchain_events_awaiting_threshold_conf.push(entry);
+			if let Some(confirmed_txid) = self.funding_spend_confirmed {
+				// Funding spend already confirmed past ANTI_REORG_DELAY: resolve immediately.
+				log_trace!(
+					logger,
+					"Failing HTLC from late counterparty commitment update immediately \
+					(funding spend already confirmed)"
+				);
+				self.pending_monitor_events.push(MonitorEvent::HTLCEvent(HTLCUpdate {
+					payment_hash,
+					payment_preimage: None,
+					source: source.clone(),
+					htlc_value_satoshis,
+				}));
+				self.htlcs_resolved_on_chain.push(IrrevocablyResolvedHTLC {
+					commitment_tx_output_idx: None,
+					resolving_txid: Some(confirmed_txid),
+					resolving_tx: None,
+					payment_preimage: None,
+				});
+			} else {
+				// Funding spend still awaiting ANTI_REORG_DELAY: queue the failure.
+				let (txid, transaction, height, block_hash) = pending_spend_entry.clone().unwrap();
+				let entry = OnchainEventEntry {
+					txid,
+					transaction,
+					height,
+					block_hash,
+					event: OnchainEvent::HTLCUpdate {
+						source: source.clone(),
+						payment_hash,
+						htlc_value_satoshis,
+						commitment_tx_output_idx: None,
+					},
+				};
+				log_trace!(
+					logger,
+					"Failing HTLC from late counterparty commitment update, \
+					waiting for confirmation (at height {})",
+					entry.confirmation_threshold()
+				);
+				self.onchain_events_awaiting_threshold_conf.push(entry);
+			}
 		}
 	}
 
@@ -6885,7 +6900,7 @@ mod tests {
 	use bitcoin::{Sequence, Witness};
 
 	use crate::chain::chaininterface::LowerBoundedFeeEstimator;
-	use crate::events::ClosureReason;
+	use crate::events::{ClosureReason, Event};
 
 	use super::ChannelMonitorUpdateStep;
 	use crate::chain::channelmonitor::{ChannelMonitor, WithChannelMonitor};
@@ -7008,8 +7023,21 @@ mod tests {
 		check_spends!(htlc_txn[1], broadcast_tx);
 
 		check_closed_broadcast(&nodes[1], 1, true);
-		check_closed_event(&nodes[1], 1, ClosureReason::CommitmentTxConfirmed, &[nodes[0].node.get_our_node_id()], 100000);
-		check_added_monitors(&nodes[1], 1);
+		if !use_local_txn {
+			// When the counterparty commitment confirms, FundingSpendConfirmation matures
+			// immediately (no CSV delay), so funding_spend_confirmed is set. The new payment's
+			// commitment update then triggers immediate HTLC failure, generating payment events
+			// alongside the channel close event.
+			let events = nodes[1].node.get_and_clear_pending_events();
+			assert_eq!(events.len(), 3);
+			assert!(events.iter().any(|e| matches!(e, Event::PaymentPathFailed { .. })));
+			assert!(events.iter().any(|e| matches!(e, Event::PaymentFailed { .. })));
+			assert!(events.iter().any(|e| matches!(e, Event::ChannelClosed { .. })));
+			check_added_monitors(&nodes[1], 2);
+		} else {
+			check_closed_event(&nodes[1], 1, ClosureReason::CommitmentTxConfirmed, &[nodes[0].node.get_our_node_id()], 100000);
+			check_added_monitors(&nodes[1], 1);
+		}
 	}
 
 	#[test]
