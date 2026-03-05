@@ -15,6 +15,10 @@ use lightning::ln::msgs::BaseMessageHandler;
 use lightning::ln::msgs::ChannelMessageHandler;
 use lightning::ln::msgs::MessageSendEvent;
 use lightning::ln::types::ChannelId;
+use lightning::offers::invoice_request::InvoiceRequestFields;
+use lightning::offers::offer::OfferId;
+use lightning::routing::router::{InFlightHtlcs, Route, RouteParameters, Router};
+use lightning::sign::ReceiveAuthKey;
 
 use lightning_liquidity::events::LiquidityEvent;
 use lightning_liquidity::lsps0::ser::LSPSDateTime;
@@ -22,11 +26,16 @@ use lightning_liquidity::lsps2::client::LSPS2ClientConfig;
 use lightning_liquidity::lsps2::event::LSPS2ClientEvent;
 use lightning_liquidity::lsps2::event::LSPS2ServiceEvent;
 use lightning_liquidity::lsps2::msgs::LSPS2RawOpeningFeeParams;
+use lightning_liquidity::lsps2::router::{LSPS2BOLT12Router, LSPS2Bolt12InvoiceParameters};
 use lightning_liquidity::lsps2::service::LSPS2ServiceConfig;
 use lightning_liquidity::lsps2::utils::is_valid_opening_fee_params;
 use lightning_liquidity::utils::time::{DefaultTimeProvider, TimeProvider};
 use lightning_liquidity::{LiquidityClientConfig, LiquidityManagerSync, LiquidityServiceConfig};
 
+use lightning::blinded_path::payment::{
+	Bolt12OfferContext, PaymentConstraints, PaymentContext, ReceiveTlvs,
+};
+use lightning::blinded_path::NodeIdLookUp;
 use lightning::chain::{BestBlock, Filter};
 use lightning::ln::channelmanager::{ChainParameters, InterceptId, MIN_FINAL_CLTV_EXPIRY_DELTA};
 use lightning::ln::functional_test_utils::{
@@ -56,6 +65,46 @@ use std::time::Duration;
 
 const MAX_PENDING_REQUESTS_PER_PEER: usize = 10;
 const MAX_TOTAL_PENDING_REQUESTS: usize = 1000;
+
+struct RecordingLookup {
+	next_node_id: PublicKey,
+	short_channel_id: std::sync::Mutex<Option<u64>>,
+}
+
+impl NodeIdLookUp for RecordingLookup {
+	fn next_node_id(&self, short_channel_id: u64) -> Option<PublicKey> {
+		*self.short_channel_id.lock().unwrap() = Some(short_channel_id);
+		Some(self.next_node_id)
+	}
+}
+
+struct FailingRouter;
+
+impl FailingRouter {
+	fn new() -> Self {
+		Self
+	}
+}
+
+impl Router for FailingRouter {
+	fn find_route(
+		&self, _payer: &PublicKey, _route_params: &RouteParameters,
+		_first_hops: Option<&[&lightning::ln::channel_state::ChannelDetails]>,
+		_inflight_htlcs: InFlightHtlcs,
+	) -> Result<Route, &'static str> {
+		Err("failing test router")
+	}
+
+	fn create_blinded_payment_paths<
+		T: bitcoin::secp256k1::Signing + bitcoin::secp256k1::Verification,
+	>(
+		&self, _recipient: PublicKey, _local_node_receive_key: ReceiveAuthKey,
+		_first_hops: Vec<lightning::ln::channel_state::ChannelDetails>, _tlvs: ReceiveTlvs,
+		_amount_msats: Option<u64>, _secp_ctx: &Secp256k1<T>,
+	) -> Result<Vec<lightning::blinded_path::payment::BlindedPaymentPath>, ()> {
+		Err(())
+	}
+}
 
 fn build_lsps2_configs() -> ([u8; 32], LiquidityServiceConfig, LiquidityClientConfig) {
 	let promise_secret = [42; 32];
@@ -1485,6 +1534,86 @@ fn execute_lsps2_dance(
 	} else {
 		panic!("Unexpected event");
 	}
+}
+
+#[test]
+fn bolt12_custom_router_uses_lsps2_intercept_scid() {
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let (lsps_nodes, promise_secret) = setup_test_lsps2_nodes_with_payer(nodes);
+
+	let service_node_id = lsps_nodes.service_node.inner.node.get_our_node_id();
+	let client_node_id = lsps_nodes.client_node.inner.node.get_our_node_id();
+
+	let intercept_scid = lsps_nodes.service_node.node.get_intercept_scid();
+	let cltv_expiry_delta = 72;
+
+	execute_lsps2_dance(
+		&lsps_nodes,
+		intercept_scid,
+		42,
+		cltv_expiry_delta,
+		promise_secret,
+		Some(250_000),
+		1_000,
+	);
+
+	let inner_router = FailingRouter::new();
+	let router = LSPS2BOLT12Router::new(inner_router, lsps_nodes.client_node.keys_manager);
+	let offer_id = OfferId([42; 32]);
+
+	router.register_offer(
+		offer_id,
+		LSPS2Bolt12InvoiceParameters {
+			counterparty_node_id: service_node_id,
+			intercept_scid,
+			cltv_expiry_delta,
+		},
+	);
+
+	let tlvs = ReceiveTlvs {
+		payment_secret: lightning_types::payment::PaymentSecret([7; 32]),
+		payment_constraints: PaymentConstraints { max_cltv_expiry: 50, htlc_minimum_msat: 1 },
+		payment_context: PaymentContext::Bolt12Offer(Bolt12OfferContext {
+			offer_id,
+			invoice_request: InvoiceRequestFields {
+				payer_signing_pubkey: lsps_nodes.payer_node.node.get_our_node_id(),
+				quantity: None,
+				payer_note_truncated: None,
+				human_readable_name: None,
+			},
+		}),
+	};
+
+	let secp_ctx = Secp256k1::new();
+	let mut paths = router
+		.create_blinded_payment_paths(
+			client_node_id,
+			ReceiveAuthKey([3; 32]),
+			Vec::new(),
+			tlvs,
+			Some(100_000),
+			&secp_ctx,
+		)
+		.unwrap();
+
+	assert_eq!(paths.len(), 1);
+	let mut path = paths.pop().unwrap();
+	assert_eq!(
+		path.introduction_node(),
+		&lightning::blinded_path::IntroductionNode::NodeId(service_node_id)
+	);
+	assert_eq!(path.payinfo.fee_base_msat, 0);
+	assert_eq!(path.payinfo.fee_proportional_millionths, 0);
+
+	let lookup = RecordingLookup {
+		next_node_id: client_node_id,
+		short_channel_id: std::sync::Mutex::new(None),
+	};
+	path.advance_path_by_one(lsps_nodes.service_node.keys_manager, &lookup, &secp_ctx).unwrap();
+	assert_eq!(*lookup.short_channel_id.lock().unwrap(), Some(intercept_scid));
 }
 
 fn create_channel_with_manual_broadcast(
