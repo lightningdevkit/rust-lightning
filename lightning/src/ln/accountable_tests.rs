@@ -26,12 +26,13 @@ fn test_accountable_forwarding_with_override(
 	let _chan_ab = create_announced_chan_between_nodes(&nodes, 0, 1);
 	let _chan_bc = create_announced_chan_between_nodes(&nodes, 1, 2);
 
-	let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash!(nodes[2]);
+	let (payment_preimage, payment_hash, payment_secret) =
+		get_payment_preimage_hash(&nodes[2], None, None);
 	let route_params = RouteParameters::from_payment_params_and_value(
 		PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), TEST_FINAL_CLTV),
 		100_000,
 	);
-	let onion_fields = RecipientOnionFields::secret_only(payment_secret);
+	let onion_fields = RecipientOnionFields::secret_only(payment_secret, 100_000);
 	let payment_id = PaymentId(payment_hash.0);
 	nodes[0]
 		.node

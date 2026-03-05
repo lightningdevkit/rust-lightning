@@ -80,7 +80,7 @@ pub fn test_async_inbound_update_fee() {
 	// ...but before it's delivered, nodes[1] starts to send a payment back to nodes[0]...
 	let (route, our_payment_hash, _, our_payment_secret) =
 		get_route_and_payment_hash!(nodes[1], nodes[0], 40000);
-	let onion = RecipientOnionFields::secret_only(our_payment_secret);
+	let onion = RecipientOnionFields::secret_only(our_payment_secret, 40000);
 	let id = PaymentId(our_payment_hash.0);
 	nodes[1].node.send_payment_with_route(route, our_payment_hash, onion, id).unwrap();
 	check_added_monitors(&nodes[1], 1);
@@ -181,7 +181,7 @@ pub fn test_update_fee_unordered_raa() {
 	// ...but before it's delivered, nodes[1] starts to send a payment back to nodes[0]...
 	let (route, our_payment_hash, _, our_payment_secret) =
 		get_route_and_payment_hash!(nodes[1], nodes[0], 40000);
-	let onion = RecipientOnionFields::secret_only(our_payment_secret);
+	let onion = RecipientOnionFields::secret_only(our_payment_secret, 40000);
 	let id = PaymentId(our_payment_hash.0);
 	nodes[1].node.send_payment_with_route(route, our_payment_hash, onion, id).unwrap();
 	check_added_monitors(&nodes[1], 1);
@@ -385,18 +385,13 @@ pub fn do_test_update_fee_that_funder_cannot_afford(channel_type_features: Chann
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 
-	let mut default_config = test_default_channel_config();
+	let mut cfg = test_legacy_channel_config();
 	if channel_type_features == ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies() {
-		default_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
-		// this setting is also needed to create an anchor channel
-		default_config.manually_accept_inbound_channels = true;
+		cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 	}
 
-	let node_chanmgrs = create_node_chanmgrs(
-		2,
-		&node_cfgs,
-		&[Some(default_config.clone()), Some(default_config.clone())],
-	);
+	let node_chanmgrs =
+		create_node_chanmgrs(2, &node_cfgs, &[Some(cfg.clone()), Some(cfg.clone())]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
@@ -413,8 +408,7 @@ pub fn do_test_update_fee_that_funder_cannot_afford(channel_type_features: Chann
 	);
 	let channel_id = chan.2;
 	let secp_ctx = Secp256k1::new();
-	let bs_channel_reserve_sats =
-		get_holder_selected_channel_reserve_satoshis(channel_value, &default_config);
+	let bs_channel_reserve_sats = get_holder_selected_channel_reserve_satoshis(channel_value, &cfg);
 	let (anchor_outputs_value_sats, outputs_num_no_htlcs) =
 		if channel_type_features.supports_anchors_zero_fee_htlc_tx() {
 			(ANCHOR_OUTPUT_VALUE_SATOSHI * 2, 4)
@@ -529,7 +523,7 @@ pub fn do_test_update_fee_that_funder_cannot_afford(channel_type_features: Chann
 	let err = "Funding remote cannot afford proposed new fee";
 	nodes[1].logger.assert_log_contains("lightning::ln::channelmanager", err, 3);
 	check_added_monitors(&nodes[1], 1);
-	check_closed_broadcast!(nodes[1], true);
+	check_closed_broadcast(&nodes[1], 1, true);
 	let reason = ClosureReason::ProcessingError { err: err.to_string() };
 	check_closed_event(&nodes[1], 1, reason, &[node_a_id], channel_value);
 }
@@ -548,13 +542,12 @@ pub fn test_update_fee_that_saturates_subs() {
 	// on the commitment transaction that is greater than her balance, we saturate the subtractions,
 	// and force close the channel.
 
-	let mut default_config = test_default_channel_config();
+	let mut cfg = test_legacy_channel_config();
 	let secp_ctx = Secp256k1::new();
 
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs =
-		create_node_chanmgrs(2, &node_cfgs, &[Some(default_config.clone()), Some(default_config)]);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(cfg.clone()), Some(cfg)]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
@@ -627,7 +620,7 @@ pub fn test_update_fee_that_saturates_subs() {
 	let err = "Funding remote cannot afford proposed new fee";
 	nodes[1].logger.assert_log_contains("lightning::ln::channelmanager", err, 3);
 	check_added_monitors(&nodes[1], 1);
-	check_closed_broadcast!(nodes[1], true);
+	check_closed_broadcast(&nodes[1], 1, true);
 	let reason = ClosureReason::ProcessingError { err: err.to_string() };
 	check_closed_event(&nodes[1], 1, reason, &[node_a_id], 10_000);
 }
@@ -672,7 +665,7 @@ pub fn test_update_fee_with_fundee_update_add_htlc() {
 		get_route_and_payment_hash!(nodes[1], nodes[0], 800000);
 
 	// nothing happens since node[1] is in AwaitingRemoteRevoke
-	let onion = RecipientOnionFields::secret_only(our_payment_secret);
+	let onion = RecipientOnionFields::secret_only(our_payment_secret, 800000);
 	let id = PaymentId(our_payment_hash.0);
 	nodes[1].node.send_payment_with_route(route, our_payment_hash, onion, id).unwrap();
 	check_added_monitors(&nodes[1], 0);
@@ -870,7 +863,9 @@ pub fn test_chan_init_feerate_unaffordability() {
 	let mut chanmon_cfgs = create_chanmon_cfgs(2);
 	let feerate_per_kw = *chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap();
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs =
+		create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
@@ -887,8 +882,13 @@ pub fn test_chan_init_feerate_unaffordability() {
 		MIN_AFFORDABLE_HTLC_COUNT as u64,
 		&channel_type_features,
 	);
-	assert_eq!(nodes[0].node.create_channel(node_b_id, 100_000, push_amt + 1, 42, None, None).unwrap_err(),
-		APIError::APIMisuseError { err: "Funding amount (356) can't even pay fee for initial commitment transaction fee of 357.".to_string() });
+	assert_eq!(
+		nodes[0].node.create_channel(node_b_id, 100_000, push_amt + 1, 42, None, None).unwrap_err(),
+		APIError::APIMisuseError {
+			err: "Funding amount (356) can't even pay fee for initial commitment transaction."
+				.to_string()
+		}
+	);
 
 	// During open, we don't have a "counterparty channel reserve" to check against, so that
 	// requirement only comes into play on the open_channel handling side.
@@ -898,6 +898,17 @@ pub fn test_chan_init_feerate_unaffordability() {
 		get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 	open_channel_msg.push_msat += 1;
 	nodes[1].node.handle_open_channel(node_a_id, &open_channel_msg);
+	let events = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match &events[0] {
+		Event::OpenChannelRequest { temporary_channel_id, counterparty_node_id, .. } => {
+			assert!(nodes[1]
+				.node
+				.accept_inbound_channel(temporary_channel_id, counterparty_node_id, 42, None,)
+				.is_err());
+		},
+		_ => panic!("Unexpected event"),
+	}
 
 	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), 1);
@@ -996,7 +1007,7 @@ pub fn accept_busted_but_better_fee() {
 				required_feerate_sat_per_kw: 5000,
 			};
 			check_closed_event(&nodes[1], 1, reason, &[node_a_id], 100000);
-			check_closed_broadcast!(nodes[1], true);
+			check_closed_broadcast(&nodes[1], 1, true);
 			check_added_monitors(&nodes[1], 1);
 		},
 		_ => panic!("Unexpected event"),
@@ -1024,17 +1035,14 @@ pub fn do_cannot_afford_on_holding_cell_release(
 	// update_fee from its holding cell, we do not generate any msg events
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 
-	let mut default_config = test_default_channel_config();
-	default_config.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel =
-		100;
+	let mut cfg = test_legacy_channel_config();
+	cfg.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 100;
 	if channel_type_features.supports_anchors_zero_fee_htlc_tx() {
-		default_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
-		default_config.manually_accept_inbound_channels = true;
+		cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 	}
 
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs =
-		create_node_chanmgrs(2, &node_cfgs, &[Some(default_config.clone()), Some(default_config)]);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(cfg.clone()), Some(cfg)]);
 
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
@@ -1086,15 +1094,19 @@ pub fn do_cannot_afford_on_holding_cell_release(
 		*feerate_lock = target_feerate;
 	}
 
-	// Put the update fee into the holding cell of node 0
-
-	nodes[0].node.maybe_update_chan_fees();
+	// Put the update fee into the holding cell of node 0. We use quiescence as an easy way to force
+	// the update into the holding cell.
+	nodes[0].node.maybe_propose_quiescence(&node_b_id, &chan_id).unwrap();
+	let stfu = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_b_id);
+	nodes[0].node.timer_tick_occurred();
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+	check_added_monitors(&nodes[0], 0);
 
 	// While the update_fee is in the holding cell, add an inbound HTLC
 
 	let (route, payment_hash, _, payment_secret) =
 		get_route_and_payment_hash!(nodes[1], nodes[0], 5000 * 1000);
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, 5000 * 1000);
 	let id = PaymentId(payment_hash.0);
 	nodes[1].node.send_payment_with_route(route, payment_hash, onion, id).unwrap();
 	check_added_monitors(&nodes[1], 1);
@@ -1129,11 +1141,17 @@ pub fn do_cannot_afford_on_holding_cell_release(
 		panic!();
 	}
 
-	// Release the update_fee from its holding cell
+	// Release the update_fee from its holding cell by completing the quiescence handshake.
+	nodes[1].node.handle_stfu(node_a_id, &stfu);
+	let stfu = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_a_id);
+	nodes[0].node.handle_stfu(node_b_id, &stfu);
+	let _ = nodes[0].node.exit_quiescence(&node_b_id, &chan_id);
+	let _ = nodes[1].node.exit_quiescence(&node_a_id, &chan_id);
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	if can_afford {
 		// We could afford the update_fee, sanity check everything
 		assert_eq!(events.len(), 1);
+		check_added_monitors(&nodes[0], 1);
 		if let MessageSendEvent::UpdateHTLCs { node_id, channel_id, updates } =
 			events.pop().unwrap()
 		{
@@ -1211,13 +1229,12 @@ pub fn do_can_afford_given_trimmed_htlcs(inequality_regions: core::cmp::Ordering
 
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 
-	let mut default_config = test_default_channel_config();
-	default_config.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel =
-		100;
+	let mut legacy_cfg = test_legacy_channel_config();
+	legacy_cfg.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 100;
 
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs =
-		create_node_chanmgrs(2, &node_cfgs, &[Some(default_config.clone()), Some(default_config)]);
+		create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
 
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
@@ -1372,7 +1389,6 @@ pub fn test_zero_fee_commitments_no_update_fee() {
 	// they'll disconnect and warn if they receive them.
 	let mut cfg = test_default_channel_config();
 	cfg.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
-	cfg.manually_accept_inbound_channels = true;
 
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);

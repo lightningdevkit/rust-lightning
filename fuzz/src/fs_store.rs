@@ -1,6 +1,6 @@
 use core::hash::{BuildHasher, Hasher};
 use lightning::util::persist::{KVStore, KVStoreSync};
-use lightning_persister::fs_store::FilesystemStore;
+use lightning_persister::fs_store::v1::FilesystemStore;
 use std::fs;
 use tokio::runtime::Runtime;
 

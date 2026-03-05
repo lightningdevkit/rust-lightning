@@ -41,6 +41,7 @@ use bitcoin::secp256k1::ecdsa;
 use bitcoin::secp256k1::schnorr;
 use bitcoin::secp256k1::{PublicKey, SecretKey};
 use bitcoin::transaction::{OutPoint, Transaction, TxOut};
+use bitcoin::FeeRate;
 use bitcoin::{consensus, Sequence, TxIn, Weight, Witness};
 
 use dnssec_prover::rr::Name;
@@ -979,13 +980,15 @@ where
 	}
 }
 
-// Vectors
+/// Write number of items in a vec followed by each element, without writing a length-prefix for
+/// each element.
+#[macro_export]
 macro_rules! impl_writeable_for_vec {
 	($ty: ty $(, $name: ident)*) => {
 		impl<$($name : Writeable),*> Writeable for Vec<$ty> {
 			#[inline]
 			fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-				CollectionLength(self.len() as u64).write(w)?;
+				$crate::util::ser::CollectionLength(self.len() as u64).write(w)?;
 				for elem in self.iter() {
 					elem.write(w)?;
 				}
@@ -994,15 +997,21 @@ macro_rules! impl_writeable_for_vec {
 		}
 	}
 }
+/// Read the number of items in a vec followed by each element, without reading a length prefix for
+/// each element.
+///
+/// Each element is read with `MaybeReadable`, meaning if an element cannot be read then it is
+/// skipped without returning `DecodeError::InvalidValue`.
+#[macro_export]
 macro_rules! impl_readable_for_vec {
 	($ty: ty $(, $name: ident)*) => {
 		impl<$($name : Readable),*> Readable for Vec<$ty> {
 			#[inline]
-			fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
-				let len: CollectionLength = Readable::read(r)?;
-				let mut ret = Vec::with_capacity(cmp::min(len.0 as usize, MAX_BUF_SIZE / core::mem::size_of::<$ty>()));
+			fn read<R: $crate::io::Read>(r: &mut R) -> Result<Self, DecodeError> {
+				let len: $crate::util::ser::CollectionLength = Readable::read(r)?;
+				let mut ret = Vec::with_capacity(cmp::min(len.0 as usize, $crate::util::ser::MAX_BUF_SIZE / core::mem::size_of::<$ty>()));
 				for _ in 0..len.0 {
-					if let Some(val) = MaybeReadable::read(r)? {
+					if let Some(val) = $crate::util::ser::MaybeReadable::read(r)? {
 						ret.push(val);
 					}
 				}
@@ -1415,6 +1424,19 @@ impl Readable for Weight {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let wu: u64 = Readable::read(r)?;
 		Ok(Weight::from_wu(wu))
+	}
+}
+
+impl Writeable for FeeRate {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.to_sat_per_kwu().write(w)
+	}
+}
+
+impl Readable for FeeRate {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let sat_kwu: u64 = Readable::read(r)?;
+		Ok(FeeRate::from_sat_per_kwu(sat_kwu))
 	}
 }
 

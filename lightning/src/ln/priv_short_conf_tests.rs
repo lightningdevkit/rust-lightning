@@ -81,7 +81,7 @@ fn test_priv_forwarding_rejection() {
 	let (route, our_payment_hash, our_payment_preimage, our_payment_secret) =
 		get_route_and_payment_hash!(nodes[0], nodes[2], payment_params, 10_000);
 
-	let onion = RecipientOnionFields::secret_only(our_payment_secret);
+	let onion = RecipientOnionFields::secret_only(our_payment_secret, 10_000);
 	let id = PaymentId(our_payment_hash.0);
 	nodes[0].node.send_payment_with_route(route.clone(), our_payment_hash, onion, id).unwrap();
 	check_added_monitors(&nodes[0], 1);
@@ -164,7 +164,7 @@ fn test_priv_forwarding_rejection() {
 	get_event_msg!(nodes[1], MessageSendEvent::SendChannelUpdate, node_c_id);
 	get_event_msg!(nodes[2], MessageSendEvent::SendChannelUpdate, node_b_id);
 
-	let onion = RecipientOnionFields::secret_only(our_payment_secret);
+	let onion = RecipientOnionFields::secret_only(our_payment_secret, 10_000);
 	let id = PaymentId(our_payment_hash.0);
 	nodes[0].node.send_payment_with_route(route, our_payment_hash, onion, id).unwrap();
 	check_added_monitors(&nodes[0], 1);
@@ -348,7 +348,7 @@ fn test_routed_scid_alias() {
 		get_route_and_payment_hash!(nodes[0], nodes[2], payment_params, 100_000);
 	assert_eq!(route.paths[0].hops[1].short_channel_id, last_hop[0].inbound_scid_alias.unwrap());
 
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, 100_000);
 	let id = PaymentId(payment_hash.0);
 	nodes[0].node.send_payment_with_route(route, payment_hash, onion, id).unwrap();
 	check_added_monitors(&nodes[0], 1);
@@ -448,7 +448,7 @@ fn test_scid_privacy_negotiation() {
 		.as_ref()
 		.unwrap()
 		.supports_scid_privacy());
-	nodes[1].node.handle_open_channel(node_a_id, &second_open_channel);
+	handle_and_accept_open_channel(&nodes[1], node_a_id, &second_open_channel);
 	nodes[0].node.handle_accept_channel(
 		node_b_id,
 		&get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, node_a_id),
@@ -501,7 +501,7 @@ fn test_inbound_scid_privacy() {
 
 	assert!(open_channel.common_fields.channel_type.as_ref().unwrap().requires_scid_privacy());
 
-	nodes[2].node.handle_open_channel(node_b_id, &open_channel);
+	handle_and_accept_open_channel(&nodes[2], node_b_id, &open_channel);
 	let accept_channel = get_event_msg!(nodes[2], MessageSendEvent::SendAcceptChannel, node_b_id);
 	nodes[1].node.handle_accept_channel(node_c_id, &accept_channel);
 
@@ -578,7 +578,7 @@ fn test_inbound_scid_privacy() {
 		get_route_and_payment_hash!(nodes[0], nodes[2], payment_params, 100_000);
 	assert_eq!(route.paths[0].hops[1].short_channel_id, last_hop[0].inbound_scid_alias.unwrap());
 
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, 100_000);
 	let id = PaymentId(payment_hash.0);
 	nodes[0].node.send_payment_with_route(route, payment_hash, onion, id).unwrap();
 	check_added_monitors(&nodes[0], 1);
@@ -599,7 +599,7 @@ fn test_inbound_scid_privacy() {
 		get_route_and_payment_hash!(nodes[0], nodes[2], payment_params_2, 100_000);
 	assert_eq!(route_2.paths[0].hops[1].short_channel_id, last_hop[0].short_channel_id.unwrap());
 
-	let onion = RecipientOnionFields::secret_only(payment_secret_2);
+	let onion = RecipientOnionFields::secret_only(payment_secret_2, 100_000);
 	let id = PaymentId(payment_hash_2.0);
 	nodes[0].node.send_payment_with_route(route_2, payment_hash_2, onion, id).unwrap();
 	check_added_monitors(&nodes[0], 1);
@@ -695,7 +695,7 @@ fn test_scid_alias_returned() {
 	route.paths[0].hops[1].fee_msat = 10_000_000; // Overshoot the last channel's value
 
 	// Route the HTLC through to the destination.
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, route.get_total_amount());
 	let id = PaymentId(payment_hash.0);
 	nodes[0].node.send_payment_with_route(route.clone(), payment_hash, onion, id).unwrap();
 
@@ -732,7 +732,7 @@ fn test_scid_alias_returned() {
 	route.paths[0].hops[0].fee_msat = 0; // But set fee paid to the middle hop to 0
 
 	// Route the HTLC through to the destination.
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, 10_000);
 	let id = PaymentId(payment_hash.0);
 	nodes[0].node.send_payment_with_route(route, payment_hash, onion, id).unwrap();
 
@@ -781,7 +781,6 @@ fn test_simple_0conf_channel() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let mut chan_config = test_default_channel_config();
-	chan_config.manually_accept_inbound_channels = true;
 
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(chan_config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
@@ -800,7 +799,6 @@ fn test_0conf_channel_with_async_monitor() {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let mut chan_config = test_default_channel_config();
-	chan_config.manually_accept_inbound_channels = true;
 	let node_chanmgrs =
 		create_node_chanmgrs(3, &node_cfgs, &[None, Some(chan_config.clone()), None]);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
@@ -936,7 +934,7 @@ fn test_0conf_channel_with_async_monitor() {
 	let (route, payment_hash, payment_preimage, payment_secret) =
 		get_route_and_payment_hash!(nodes[0], nodes[2], 1_000_000);
 
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, 1_000_000);
 	let id = PaymentId(payment_hash.0);
 	nodes[0].node.send_payment_with_route(route, payment_hash, onion, id).unwrap();
 	check_added_monitors(&nodes[0], 1);
@@ -997,7 +995,6 @@ fn test_0conf_close_no_early_chan_update() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let mut chan_config = test_default_channel_config();
-	chan_config.manually_accept_inbound_channels = true;
 
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(chan_config.clone())]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
@@ -1024,7 +1021,6 @@ fn test_public_0conf_channel() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let mut chan_config = test_default_channel_config();
-	chan_config.manually_accept_inbound_channels = true;
 
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(chan_config.clone())]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
@@ -1086,7 +1082,6 @@ fn test_0conf_channel_reorg() {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let mut chan_config = test_default_channel_config();
-	chan_config.manually_accept_inbound_channels = true;
 
 	let node_chanmgrs =
 		create_node_chanmgrs(3, &node_cfgs, &[None, None, Some(chan_config.clone())]);
@@ -1288,7 +1283,7 @@ fn test_0conf_channel_reorg() {
 	);
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
 
-	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let onion = RecipientOnionFields::secret_only(payment_secret, 10_000);
 	let id = PaymentId([0; 32]);
 	nodes[1].node.send_payment_with_route(route, payment_hash, onion.clone(), id).unwrap();
 	let mut conditions = PaymentFailedConditions::new();
@@ -1314,7 +1309,7 @@ fn test_zero_conf_accept_reject() {
 	let mut channel_type_features = ChannelTypeFeatures::only_static_remote_key();
 	channel_type_features.set_zero_conf_required();
 
-	// 1. Check we reject zero conf channels by default
+	// Check we can accept zero conf channels via the right method
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -1322,42 +1317,8 @@ fn test_zero_conf_accept_reject() {
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
 
+	// 1. First try the non-0conf method to manually accept
 	nodes[0].node.create_channel(node_b_id, 100000, 10001, 42, None, None).unwrap();
-	let mut open_channel_msg =
-		get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
-
-	open_channel_msg.common_fields.channel_type = Some(channel_type_features.clone());
-
-	nodes[1].node.handle_open_channel(node_a_id, &open_channel_msg);
-
-	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
-	match msg_events[0] {
-		MessageSendEvent::HandleError {
-			action: ErrorAction::SendErrorMessage { ref msg, .. },
-			..
-		} => {
-			assert_eq!(msg.data, "No zero confirmation channels accepted".to_owned());
-		},
-		_ => panic!(),
-	}
-
-	// 2. Check we can manually accept zero conf channels via the right method
-	let mut manually_accept_conf = UserConfig::default();
-	manually_accept_conf.manually_accept_inbound_channels = true;
-
-	let chanmon_cfgs = create_chanmon_cfgs(2);
-	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs =
-		create_node_chanmgrs(2, &node_cfgs, &[None, Some(manually_accept_conf.clone())]);
-	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let node_a_id = nodes[0].node.get_our_node_id();
-	let node_b_id = nodes[1].node.get_our_node_id();
-
-	// 2.1 First try the non-0conf method to manually accept
-	nodes[0]
-		.node
-		.create_channel(node_b_id, 100000, 10001, 42, None, Some(manually_accept_conf.clone()))
-		.unwrap();
 	let mut open_channel_msg =
 		get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 
@@ -1392,11 +1353,8 @@ fn test_zero_conf_accept_reject() {
 		_ => panic!(),
 	}
 
-	// 2.2 Try again with the 0conf method to manually accept
-	nodes[0]
-		.node
-		.create_channel(node_b_id, 100000, 10001, 42, None, Some(manually_accept_conf))
-		.unwrap();
+	// 2. Try again with the 0conf method to manually accept
+	nodes[0].node.create_channel(node_b_id, 100000, 10001, 42, None, None).unwrap();
 	let mut open_channel_msg =
 		get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 
@@ -1438,10 +1396,7 @@ fn test_connect_before_funding() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 
-	let mut manually_accept_conf = test_default_channel_config();
-	manually_accept_conf.manually_accept_inbound_channels = true;
-
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(manually_accept_conf)]);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -1492,7 +1447,6 @@ fn test_0conf_ann_sigs_racing_conf() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let mut chan_config = test_default_channel_config();
-	chan_config.manually_accept_inbound_channels = true;
 
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(chan_config.clone())]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);

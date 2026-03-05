@@ -10,9 +10,7 @@
 //! Tests for asynchronous signing. These tests verify that the channel state machine behaves
 //! properly with a signer implementation that asynchronously derives signatures.
 
-use crate::events::bump_transaction::sync::WalletSourceSync;
-use crate::ln::funding::SpliceContribution;
-use crate::ln::splicing_tests::negotiate_splice_tx;
+use crate::ln::splicing_tests::{initiate_splice_out, negotiate_splice_tx};
 use crate::prelude::*;
 use crate::util::ser::Writeable;
 use bitcoin::secp256k1::Secp256k1;
@@ -32,6 +30,7 @@ use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::sign::SignerProvider;
 use crate::util::logger::Logger;
 use crate::util::test_channel_signer::SignerOp;
+use crate::util::wallet_utils::WalletSourceSync;
 
 #[test]
 fn test_open_channel() {
@@ -41,12 +40,9 @@ fn test_open_channel() {
 
 fn do_test_open_channel(zero_conf: bool) {
 	// Simulate acquiring the commitment point for `open_channel` and `accept_channel` asynchronously.
-	let mut manually_accept_config = test_default_channel_config();
-	manually_accept_config.manually_accept_inbound_channels = zero_conf;
-
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(manually_accept_config)]);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -73,9 +69,9 @@ fn do_test_open_channel(zero_conf: bool) {
 
 	// Handle an inbound channel simulating an async signer.
 	nodes[1].disable_next_channel_signer_op(SignerOp::GetPerCommitmentPoint);
-	nodes[1].node.handle_open_channel(node_a_id, &open_chan_msg);
 
 	if zero_conf {
+		nodes[1].node.handle_open_channel(node_a_id, &open_chan_msg);
 		let events = nodes[1].node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1, "Expected one event, got {}", events.len());
 		match &events[0] {
@@ -93,8 +89,7 @@ fn do_test_open_channel(zero_conf: bool) {
 			ev => panic!("Expected OpenChannelRequest, not {:?}", ev),
 		}
 	} else {
-		let msgs = nodes[1].node.get_and_clear_pending_msg_events();
-		assert!(msgs.is_empty(), "Expected no message events; got {:?}", msgs);
+		handle_and_accept_open_channel(&nodes[1], node_a_id, &open_chan_msg);
 	}
 
 	let channel_id_1 = {
@@ -135,7 +130,7 @@ fn do_test_funding_created(signer_ops: Vec<SignerOp>) {
 
 	// nodes[0] --- open_channel --> nodes[1]
 	let mut open_chan_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
-	nodes[1].node.handle_open_channel(node_a_id, &open_chan_msg);
+	handle_and_accept_open_channel(&nodes[1], node_a_id, &open_chan_msg);
 
 	// nodes[0] <-- accept_channel --- nodes[1]
 	nodes[0].node.handle_accept_channel(
@@ -212,7 +207,7 @@ fn do_test_funding_signed(signer_ops: Vec<SignerOp>) {
 
 	// nodes[0] --- open_channel --> nodes[1]
 	let mut open_chan_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
-	nodes[1].node.handle_open_channel(node_a_id, &open_chan_msg);
+	handle_and_accept_open_channel(&nodes[1], node_a_id, &open_chan_msg);
 
 	// nodes[0] <-- accept_channel --- nodes[1]
 	nodes[0].node.handle_accept_channel(
@@ -301,7 +296,7 @@ fn do_test_async_commitment_signature_for_commitment_signed_revoke_and_ack(
 
 	let (route, our_payment_hash, _our_payment_preimage, our_payment_secret) =
 		get_route_and_payment_hash!(src, dst, 8000000);
-	let recipient_fields = RecipientOnionFields::secret_only(our_payment_secret);
+	let recipient_fields = RecipientOnionFields::secret_only(our_payment_secret, 8000000);
 	let payment_id = PaymentId(our_payment_hash.0);
 	src.node
 		.send_payment_with_route(route, our_payment_hash, recipient_fields, payment_id)
@@ -368,12 +363,9 @@ fn test_funding_signed_0conf() {
 
 fn do_test_funding_signed_0conf(signer_ops: Vec<SignerOp>) {
 	// Simulate acquiring the signature for `funding_signed` asynchronously for a zero-conf channel.
-	let mut manually_accept_config = test_default_channel_config();
-	manually_accept_config.manually_accept_inbound_channels = true;
-
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(manually_accept_config)]);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -528,7 +520,7 @@ fn do_test_async_raa_peer_disconnect(
 
 	let (route, our_payment_hash, _our_payment_preimage, our_payment_secret) =
 		get_route_and_payment_hash!(src, dst, 8000000);
-	let recipient_fields = RecipientOnionFields::secret_only(our_payment_secret);
+	let recipient_fields = RecipientOnionFields::secret_only(our_payment_secret, 8000000);
 	let payment_id = PaymentId(our_payment_hash.0);
 	src.node
 		.send_payment_with_route(route, our_payment_hash, recipient_fields, payment_id)
@@ -677,7 +669,7 @@ fn do_test_async_commitment_signature_peer_disconnect(
 
 	let (route, our_payment_hash, _our_payment_preimage, our_payment_secret) =
 		get_route_and_payment_hash!(src, dst, 8000000);
-	let recipient_fields = RecipientOnionFields::secret_only(our_payment_secret);
+	let recipient_fields = RecipientOnionFields::secret_only(our_payment_secret, 8000000);
 	let payment_id = PaymentId(our_payment_hash.0);
 	src.node
 		.send_payment_with_route(route, our_payment_hash, recipient_fields, payment_id)
@@ -812,7 +804,7 @@ fn do_test_async_commitment_signature_ordering(monitor_update_failure: bool) {
 	// to the peer.
 	let (route, payment_hash_2, payment_preimage_2, payment_secret_2) =
 		get_route_and_payment_hash!(nodes[0], nodes[1], 1000000);
-	let recipient_fields = RecipientOnionFields::secret_only(payment_secret_2);
+	let recipient_fields = RecipientOnionFields::secret_only(payment_secret_2, 1000000);
 	let payment_id = PaymentId(payment_hash_2.0);
 	nodes[0]
 		.node
@@ -1003,7 +995,6 @@ fn do_test_async_holder_signatures(keyed_anchors: bool, p2a_anchor: bool, remote
 	let mut config = test_default_channel_config();
 	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = keyed_anchors;
 	config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
-	config.manually_accept_inbound_channels = keyed_anchors || p2a_anchor;
 
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -1317,9 +1308,9 @@ fn do_test_closing_signed(extra_closing_signed: bool, reconnect: bool) {
 	}
 
 	nodes[0].node.signer_unblocked(None);
-	let (_, node_0_2nd_closing_signed) = get_closing_signed_broadcast!(nodes[0].node, node_b_id);
+	let (_, node_0_2nd_closing_signed) = get_closing_signed_broadcast(&nodes[0], node_b_id);
 	nodes[1].node.handle_closing_signed(node_a_id, &node_0_2nd_closing_signed.unwrap());
-	let (_, node_1_closing_signed) = get_closing_signed_broadcast!(nodes[1].node, node_a_id);
+	let (_, node_1_closing_signed) = get_closing_signed_broadcast(&nodes[1], node_a_id);
 	assert!(node_1_closing_signed.is_none());
 
 	assert!(nodes[0].node.list_channels().is_empty());
@@ -1352,14 +1343,14 @@ fn test_no_disconnect_while_async_revoke_and_ack_expecting_remote_commitment_sig
 	// We'll send a payment from both nodes to each other.
 	let (route1, payment_hash1, _, payment_secret1) =
 		get_route_and_payment_hash!(&nodes[0], &nodes[1], payment_amount);
-	let onion1 = RecipientOnionFields::secret_only(payment_secret1);
+	let onion1 = RecipientOnionFields::secret_only(payment_secret1, payment_amount);
 	let payment_id1 = PaymentId(payment_hash1.0);
 	nodes[0].node.send_payment_with_route(route1, payment_hash1, onion1, payment_id1).unwrap();
 	check_added_monitors(&nodes[0], 1);
 
 	let (route2, payment_hash2, _, payment_secret2) =
 		get_route_and_payment_hash!(&nodes[1], &nodes[0], payment_amount);
-	let onion2 = RecipientOnionFields::secret_only(payment_secret2);
+	let onion2 = RecipientOnionFields::secret_only(payment_secret2, payment_amount);
 	let payment_id2 = PaymentId(payment_hash2.0);
 	nodes[1].node.send_payment_with_route(route2, payment_hash2, onion2, payment_id2).unwrap();
 	check_added_monitors(&nodes[1], 1);
@@ -1581,10 +1572,11 @@ fn test_async_splice_initial_commit_sig() {
 	);
 
 	// Negotiate a splice up until the signature exchange.
-	let contribution = SpliceContribution::splice_out(vec![TxOut {
+	let outputs = vec![TxOut {
 		value: Amount::from_sat(1_000),
 		script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
-	}]);
+	}];
+	let contribution = initiate_splice_out(initiator, acceptor, channel_id, outputs).unwrap();
 	negotiate_splice_tx(initiator, acceptor, channel_id, contribution);
 
 	assert!(initiator.node.get_and_clear_pending_msg_events().is_empty());

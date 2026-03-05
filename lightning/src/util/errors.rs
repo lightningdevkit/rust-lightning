@@ -9,7 +9,10 @@
 
 //! Error types live here.
 
+use bitcoin::secp256k1::PublicKey;
+
 use crate::ln::script::ShutdownScript;
+use crate::ln::types::ChannelId;
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -86,6 +89,28 @@ impl fmt::Debug for APIError {
 			APIError::IncompatibleShutdownScript { ref script } => {
 				write!(f, "Provided a scriptpubkey format not accepted by peer: {}", script)
 			},
+		}
+	}
+}
+
+impl APIError {
+	pub(crate) fn no_such_peer(counterparty_node_id: &PublicKey) -> Self {
+		Self::ChannelUnavailable {
+			err: format!(
+				"No such peer for the passed counterparty_node_id {}",
+				counterparty_node_id
+			),
+		}
+	}
+
+	pub(crate) fn no_such_channel_for_peer(
+		channel_id: &ChannelId, counterparty_node_id: &PublicKey,
+	) -> Self {
+		Self::ChannelUnavailable {
+			err: format!(
+				"No such channel_id {} for the passed counterparty_node_id {}",
+				channel_id, counterparty_node_id
+			),
 		}
 	}
 }

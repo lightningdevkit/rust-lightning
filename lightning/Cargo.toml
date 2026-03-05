@@ -34,7 +34,7 @@ grind_signatures = []
 default = ["std", "grind_signatures"]
 
 [dependencies]
-lightning-types = { version = "0.3.0", path = "../lightning-types", default-features = false }
+lightning-types = { version = "0.4.0", path = "../lightning-types", default-features = false }
 lightning-invoice = { version = "0.35.0", path = "../lightning-invoice", default-features = false }
 lightning-macros = { version = "0.2", path = "../lightning-macros" }
 
@@ -53,7 +53,7 @@ inventory = { version = "0.3", optional = true  }
 
 [dev-dependencies]
 regex = "1.5.6"
-lightning-types = { version = "0.3.0", path = "../lightning-types", features = ["_test_utils"] }
+lightning-types = { version = "0.4.0", path = "../lightning-types", features = ["_test_utils"] }
 lightning-macros = { path = "../lightning-macros" }
 parking_lot = { version = "0.12", default-features = false }
 

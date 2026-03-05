@@ -21,8 +21,6 @@ use crate::chain::channelmonitor::{
 };
 use crate::chain::transaction::OutPoint;
 use crate::chain::WatchedOutput;
-use crate::events::bump_transaction::sync::WalletSourceSync;
-use crate::events::bump_transaction::Utxo;
 #[cfg(any(test, feature = "_externalize_tests"))]
 use crate::ln::chan_utils::CommitmentTransaction;
 use crate::ln::channel_state::ChannelDetails;
@@ -62,6 +60,7 @@ use crate::util::persist::{KVStore, KVStoreSync, MonitorName};
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
 use crate::util::test_channel_signer::{EnforcementState, TestChannelSigner};
 use crate::util::wakers::Notifier;
+use crate::util::wallet_utils::{ConfirmedUtxo, Utxo, WalletSourceSync};
 
 use bitcoin::amount::Amount;
 use bitcoin::block::Block;
@@ -1801,7 +1800,7 @@ impl TestNodeSigner {
 
 impl NodeSigner for TestNodeSigner {
 	fn get_expanded_key(&self) -> ExpandedKey {
-		unreachable!()
+		ExpandedKey::new([42; 32])
 	}
 
 	fn get_peer_storage_key(&self) -> PeerStorageKey {
@@ -1983,6 +1982,7 @@ pub trait TestSignerFactory: Send + Sync {
 	/// Make a dynamic signer
 	fn make_signer(
 		&self, seed: &[u8; 32], now: Duration, v2_remote_key_derivation: bool,
+		phantom_seed: Option<&[u8; 32]>,
 	) -> Box<dyn DynKeysInterfaceTrait<EcdsaSigner = DynSigner>>;
 }
 
@@ -1992,12 +1992,13 @@ struct DefaultSignerFactory();
 impl TestSignerFactory for DefaultSignerFactory {
 	fn make_signer(
 		&self, seed: &[u8; 32], now: Duration, v2_remote_key_derivation: bool,
+		phantom_seed: Option<&[u8; 32]>,
 	) -> Box<dyn DynKeysInterfaceTrait<EcdsaSigner = DynSigner>> {
 		let phantom = sign::PhantomKeysManager::new(
 			seed,
 			now.as_secs(),
 			now.subsec_nanos(),
-			seed,
+			if let Some(provided_seed) = phantom_seed { provided_seed } else { seed },
 			v2_remote_key_derivation,
 		);
 		let dphantom = DynPhantomKeysInterface::new(phantom);
@@ -2029,7 +2030,7 @@ impl TestKeysInterface {
 		let factory = DefaultSignerFactory();
 
 		let now = Duration::from_secs(genesis_block(network).header.time as u64);
-		let backing = factory.make_signer(seed, now, true);
+		let backing = factory.make_signer(seed, now, true, None);
 		Self::build(backing)
 	}
 
@@ -2041,7 +2042,21 @@ impl TestKeysInterface {
 		let factory = DefaultSignerFactory();
 
 		let now = Duration::from_secs(genesis_block(network).header.time as u64);
-		let backing = factory.make_signer(seed, now, false);
+		let backing = factory.make_signer(seed, now, false, None);
+		Self::build(backing)
+	}
+
+	pub fn with_settings(
+		seed: &[u8; 32], network: Network, v1_derivation: bool, phantom_seed: Option<&[u8; 32]>,
+	) -> Self {
+		#[cfg(feature = "std")]
+		let factory = SIGNER_FACTORY.get();
+
+		#[cfg(not(feature = "std"))]
+		let factory = DefaultSignerFactory();
+
+		let now = Duration::from_secs(genesis_block(network).header.time as u64);
+		let backing = factory.make_signer(seed, now, !v1_derivation, phantom_seed);
 		Self::build(backing)
 	}
 
@@ -2240,7 +2255,7 @@ impl Drop for TestScorer {
 
 pub struct TestWalletSource {
 	secret_key: SecretKey,
-	utxos: Mutex<Vec<Utxo>>,
+	utxos: Mutex<Vec<ConfirmedUtxo>>,
 	secp: Secp256k1<bitcoin::secp256k1::All>,
 }
 
@@ -2249,21 +2264,13 @@ impl TestWalletSource {
 		Self { secret_key, utxos: Mutex::new(Vec::new()), secp: Secp256k1::new() }
 	}
 
-	pub fn add_utxo(&self, outpoint: bitcoin::OutPoint, value: Amount) -> TxOut {
-		let public_key = bitcoin::PublicKey::new(self.secret_key.public_key(&self.secp));
-		let utxo = Utxo::new_v0_p2wpkh(outpoint, value, &public_key.wpubkey_hash().unwrap());
-		self.utxos.lock().unwrap().push(utxo.clone());
-		utxo.output
-	}
-
-	pub fn add_custom_utxo(&self, utxo: Utxo) -> TxOut {
-		let output = utxo.output.clone();
+	pub fn add_utxo(&self, prevtx: Transaction, vout: u32) {
+		let utxo = ConfirmedUtxo::new_p2wpkh(prevtx, vout).unwrap();
 		self.utxos.lock().unwrap().push(utxo);
-		output
 	}
 
 	pub fn remove_utxo(&self, outpoint: bitcoin::OutPoint) {
-		self.utxos.lock().unwrap().retain(|utxo| utxo.outpoint != outpoint);
+		self.utxos.lock().unwrap().retain(|utxo| utxo.outpoint() != outpoint);
 	}
 
 	pub fn clear_utxos(&self) {
@@ -2276,12 +2283,12 @@ impl TestWalletSource {
 		let utxos = self.utxos.lock().unwrap();
 		for i in 0..tx.input.len() {
 			if let Some(utxo) =
-				utxos.iter().find(|utxo| utxo.outpoint == tx.input[i].previous_output)
+				utxos.iter().find(|utxo| utxo.outpoint() == tx.input[i].previous_output)
 			{
 				let sighash = SighashCache::new(&tx).p2wpkh_signature_hash(
 					i,
-					&utxo.output.script_pubkey,
-					utxo.output.value,
+					&utxo.output().script_pubkey,
+					utxo.output().value,
 					EcdsaSighashType::All,
 				)?;
 				#[cfg(not(feature = "grind_signatures"))]
@@ -2306,7 +2313,17 @@ impl TestWalletSource {
 
 impl WalletSourceSync for TestWalletSource {
 	fn list_confirmed_utxos(&self) -> Result<Vec<Utxo>, ()> {
-		Ok(self.utxos.lock().unwrap().clone())
+		let utxos = self.utxos.lock().unwrap();
+		Ok(utxos.iter().map(|ConfirmedUtxo { utxo, .. }| utxo.clone()).collect())
+	}
+
+	fn get_prevtx(&self, outpoint: bitcoin::OutPoint) -> Result<Transaction, ()> {
+		let utxos = self.utxos.lock().unwrap();
+		utxos
+			.iter()
+			.find(|confirmed_utxo| confirmed_utxo.utxo.outpoint == outpoint)
+			.map(|ConfirmedUtxo { prevtx, .. }| prevtx.clone())
+			.ok_or(())
 	}
 
 	fn get_change_script(&self) -> Result<ScriptBuf, ()> {

@@ -51,6 +51,7 @@ pub(crate) mod macro_logger;
 // These have to come after macro_logger to build
 pub mod config;
 pub mod logger;
+pub mod wallet_utils;
 
 #[cfg(any(test, feature = "_test_utils"))]
 pub mod test_utils;

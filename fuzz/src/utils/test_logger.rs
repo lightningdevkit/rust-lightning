@@ -21,6 +21,13 @@ impl Output for DevNull {
 	fn locked_write(&self, _data: &[u8]) {}
 }
 #[derive(Clone)]
+pub struct Stdout {}
+impl Output for Stdout {
+	fn locked_write(&self, data: &[u8]) {
+		std::io::stdout().write_all(data).unwrap();
+	}
+}
+#[derive(Clone)]
 pub struct StringBuffer(Arc<Mutex<String>>);
 impl Output for StringBuffer {
 	fn locked_write(&self, data: &[u8]) {
@@ -59,6 +66,6 @@ impl<'a, Out: Output> Write for LockedWriteAdapter<'a, Out> {
 
 impl<Out: Output> Logger for TestLogger<Out> {
 	fn log(&self, record: Record) {
-		write!(LockedWriteAdapter(&self.out), "{:<6} {}", self.id, record).unwrap();
+		writeln!(LockedWriteAdapter(&self.out), "{:<6} {}", self.id, record).unwrap();
 	}
 }

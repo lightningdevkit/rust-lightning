@@ -34,8 +34,10 @@ fn test_option_anchors_zero_fee_initial() {
 	let mut expected_type = ChannelTypeFeatures::only_static_remote_key();
 	expected_type.set_anchors_zero_fee_htlc_tx_required();
 
+	let mut start_cfg = UserConfig::default();
+	start_cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = false;
 	do_test_get_initial_channel_type(
-		UserConfig::default(),
+		start_cfg,
 		InitFeatures::empty(),
 		ChannelTypeFeatures::only_static_remote_key(),
 		|cfg: &mut UserConfig| {
@@ -225,13 +227,15 @@ fn do_test_supports_channel_type(config: UserConfig, expected_channel_type: Chan
 	let node_id_b =
 		PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[2; 32]).unwrap());
 
+	let mut non_anchors_config = UserConfig::default();
+	non_anchors_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = false;
 	// Assert that we get `static_remotekey` when no custom config is negotiated.
 	let channel_a = OutboundV1Channel::<&TestKeysInterface>::new(
 		&fee_estimator,
 		&&keys_provider,
 		&&keys_provider,
 		node_id_b,
-		&channelmanager::provided_init_features(&UserConfig::default()),
+		&channelmanager::provided_init_features(&non_anchors_config),
 		10000000,
 		100000,
 		42,

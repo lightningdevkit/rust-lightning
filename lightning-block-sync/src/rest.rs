@@ -3,7 +3,7 @@
 
 use crate::convert::GetUtxosResponse;
 use crate::gossip::UtxoSource;
-use crate::http::{BinaryResponse, HttpClient, HttpEndpoint, JsonResponse};
+use crate::http::{BinaryResponse, HttpClient, HttpClientError, JsonResponse, ToParseErrorMessage};
 use crate::{BlockData, BlockHeaderData, BlockSource, BlockSourceResult};
 
 use bitcoin::hash_types::BlockHash;
@@ -12,38 +12,30 @@ use bitcoin::OutPoint;
 use std::convert::TryFrom;
 use std::convert::TryInto;
 use std::future::Future;
-use std::sync::Mutex;
 
 /// A simple REST client for requesting resources using HTTP `GET`.
 pub struct RestClient {
-	endpoint: HttpEndpoint,
-	client: Mutex<Option<HttpClient>>,
+	client: HttpClient,
 }
 
 impl RestClient {
 	/// Creates a new REST client connected to the given endpoint.
 	///
-	/// The endpoint should contain the REST path component (e.g., http://127.0.0.1:8332/rest).
-	pub fn new(endpoint: HttpEndpoint) -> Self {
-		Self { endpoint, client: Mutex::new(None) }
+	/// The base URL should include the REST path component (e.g., "http://127.0.0.1:8332/rest").
+	pub fn new(base_url: String) -> Self {
+		Self { client: HttpClient::new(base_url) }
 	}
 
 	/// Requests a resource encoded in `F` format and interpreted as type `T`.
-	pub async fn request_resource<F, T>(&self, resource_path: &str) -> std::io::Result<T>
+	pub async fn request_resource<F, T>(&self, resource_path: &str) -> Result<T, HttpClientError>
 	where
-		F: TryFrom<Vec<u8>, Error = std::io::Error> + TryInto<T, Error = std::io::Error>,
+		F: TryFrom<Vec<u8>> + TryInto<T>,
+		<F as TryFrom<Vec<u8>>>::Error: ToParseErrorMessage,
+		<F as TryInto<T>>::Error: ToParseErrorMessage,
 	{
-		let host = format!("{}:{}", self.endpoint.host(), self.endpoint.port());
-		let uri = format!("{}/{}", self.endpoint.path().trim_end_matches("/"), resource_path);
-		let reserved_client = self.client.lock().unwrap().take();
-		let mut client = if let Some(client) = reserved_client {
-			client
-		} else {
-			HttpClient::connect(&self.endpoint)?
-		};
-		let res = client.get::<F>(&uri, &host).await?.try_into();
-		*self.client.lock().unwrap() = Some(client);
-		res
+		let uri = format!("/{}", resource_path);
+		let response = self.client.get::<F>(&uri).await?;
+		response.try_into().map_err(|e| HttpClientError::Parse(e.to_parse_error_message()))
 	}
 }
 
@@ -102,21 +94,15 @@ impl UtxoSource for RestClient {
 mod tests {
 	use super::*;
 	use crate::http::client_tests::{HttpServer, MessageBody};
-	use crate::http::BinaryResponse;
 	use bitcoin::hashes::Hash;
 
 	/// Parses binary data as a string-encoded `u32`.
 	impl TryInto<u32> for BinaryResponse {
-		type Error = std::io::Error;
+		type Error = String;
 
-		fn try_into(self) -> std::io::Result<u32> {
-			match std::str::from_utf8(&self.0) {
-				Err(e) => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
-				Ok(s) => match u32::from_str_radix(s, 10) {
-					Err(e) => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
-					Ok(n) => Ok(n),
-				},
-			}
+		fn try_into(self) -> Result<u32, String> {
+			let s = std::str::from_utf8(&self.0).map_err(|e| e.to_string())?;
+			u32::from_str_radix(s, 10).map_err(|e| e.to_string())
 		}
 	}
 
@@ -126,7 +112,8 @@ mod tests {
 		let client = RestClient::new(server.endpoint());
 
 		match client.request_resource::<BinaryResponse, u32>("/").await {
-			Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::Other),
+			Err(HttpClientError::Http(e)) => assert_eq!(e.status_code, 404),
+			Err(e) => panic!("Unexpected error type: {:?}", e),
 			Ok(_) => panic!("Expected error"),
 		}
 	}
@@ -137,7 +124,8 @@ mod tests {
 		let client = RestClient::new(server.endpoint());
 
 		match client.request_resource::<BinaryResponse, u32>("/").await {
-			Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::InvalidData),
+			Err(HttpClientError::Parse(_)) => {},
+			Err(e) => panic!("Unexpected error type: {:?}", e),
 			Ok(_) => panic!("Expected error"),
 		}
 	}

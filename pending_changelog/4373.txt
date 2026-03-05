@@ -1,0 +1,4 @@
+## Backwards Compat
+ * Setting `OptionalBolt11PaymentParams::declared_total_mpp_value_override` or
+   `RecipientOnionFields::total_mpp_amount_msat` for a payment will break
+   downgrade to 0.2 until the payment completes.

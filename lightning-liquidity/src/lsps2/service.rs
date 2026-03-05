@@ -2351,64 +2351,58 @@ mod tests {
 
 	use crate::lsps0::ser::LSPSDateTime;
 
-	use proptest::prelude::*;
-
 	use bitcoin::{absolute::LockTime, transaction::Version};
 	use core::str::FromStr;
 
 	const MAX_VALUE_MSAT: u64 = 21_000_000_0000_0000_000;
 
-	fn arb_forward_amounts() -> impl Strategy<Value = (u64, u64, u64, u64)> {
-		(1u64..MAX_VALUE_MSAT, 1u64..MAX_VALUE_MSAT, 1u64..MAX_VALUE_MSAT, 1u64..MAX_VALUE_MSAT)
-			.prop_map(|(a, b, c, d)| {
-				(a, b, c, core::cmp::min(d, a.saturating_add(b).saturating_add(c)))
-			})
-	}
+	#[test]
+	fn rand_test_calculate_amount_to_forward() {
+		use std::collections::hash_map::RandomState;
+		use std::hash::{BuildHasher, Hasher};
 
-	proptest! {
-		#[test]
-		fn proptest_calculate_amount_to_forward((o_0, o_1, o_2, total_fee_msat) in arb_forward_amounts()) {
-			let htlcs = vec![
-				InterceptedHTLC {
-					intercept_id: InterceptId([0; 32]),
-					expected_outbound_amount_msat: o_0,
-					payment_hash: PaymentHash([0; 32]),
-				},
-				InterceptedHTLC {
-					intercept_id: InterceptId([1; 32]),
-					expected_outbound_amount_msat: o_1,
-					payment_hash: PaymentHash([0; 32]),
-				},
-				InterceptedHTLC {
-					intercept_id: InterceptId([2; 32]),
-					expected_outbound_amount_msat: o_2,
-					payment_hash: PaymentHash([0; 32]),
-				},
-			];
+		let total_fee_msat = RandomState::new().build_hasher().finish() % MAX_VALUE_MSAT;
+		let htlc_count = (RandomState::new().build_hasher().finish() % 10) as u8;
 
-			let result = calculate_amount_to_forward_per_htlc(&htlcs, total_fee_msat);
-			let total_received_msat = o_0 + o_1 + o_2;
+		let mut htlcs = Vec::new();
+		let mut total_received_msat = 0;
+		let mut htlc_values = Vec::new();
+		for i in 0..htlc_count {
+			let expected_outbound_amount_msat =
+				RandomState::new().build_hasher().finish() % MAX_VALUE_MSAT;
+			if total_received_msat + expected_outbound_amount_msat > MAX_VALUE_MSAT {
+				break;
+			}
+			total_received_msat += expected_outbound_amount_msat;
+			htlc_values.push(total_received_msat);
+			htlcs.push(InterceptedHTLC {
+				intercept_id: InterceptId([i; 32]),
+				expected_outbound_amount_msat,
+				payment_hash: PaymentHash([i; 32]),
+			});
+		}
 
-			if total_received_msat < total_fee_msat {
-				assert_eq!(result.len(), 0);
-			} else {
-				assert_ne!(result.len(), 0);
-				assert_eq!(result[0].0, htlcs[0].intercept_id);
-				assert_eq!(result[1].0, htlcs[1].intercept_id);
-				assert_eq!(result[2].0, htlcs[2].intercept_id);
-				assert!(result[0].1 <= o_0);
-				assert!(result[1].1 <= o_1);
-				assert!(result[2].1 <= o_2);
+		if total_fee_msat > total_received_msat {
+			return;
+		}
 
-				let result_sum = result.iter().map(|(_, f)| f).sum::<u64>();
-				assert_eq!(total_received_msat - result_sum, total_fee_msat);
-				let five_pct = result_sum as f32 * 0.05;
-				let fair_share_0 = (o_0 as f32 / total_received_msat as f32) * result_sum as f32;
-				assert!(result[0].1 as f32 <= fair_share_0 + five_pct);
-				let fair_share_1 = (o_1 as f32 / total_received_msat as f32) * result_sum as f32;
-				assert!(result[1].1 as f32 <= fair_share_1 + five_pct);
-				let fair_share_2 = (o_2 as f32 / total_received_msat as f32) * result_sum as f32;
-				assert!(result[2].1 as f32 <= fair_share_2 + five_pct);
+		let result = calculate_amount_to_forward_per_htlc(&htlcs, total_fee_msat);
+
+		if total_received_msat < total_fee_msat {
+			assert_eq!(result.len(), 0);
+		} else {
+			assert_eq!(result.len(), htlcs.len());
+			let result_sum = result.iter().map(|(_, f)| f).sum::<u64>();
+			assert_eq!(total_received_msat - result_sum, total_fee_msat);
+			let five_pct = result_sum as f32 * 0.05;
+
+			for ((htlc, htlc_value), res) in htlcs.iter().zip(htlc_values).zip(result.iter()) {
+				assert_eq!(res.0, htlc.intercept_id);
+				assert!(res.1 <= htlc_value);
+
+				let fair_share =
+					(htlc_value as f32 / total_received_msat as f32) * result_sum as f32;
+				assert!(res.1 as f32 <= fair_share + five_pct);
 			}
 		}
 	}
