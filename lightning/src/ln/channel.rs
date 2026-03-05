@@ -1491,6 +1491,7 @@ enum ChannelPhase<SP: SignerProvider> {
 	PendingV1(PendingV1Channel<SP>),
 	UnfundedInboundV1(InboundV1Channel<SP>),
 	UnfundedV2(UnfundedV2Channel<SP>),
+	PendingV2(PendingV2Channel<SP>),
 	Funded(FundedChannel<SP>),
 }
 
@@ -1506,6 +1507,7 @@ where
 			ChannelPhase::PendingV1(chan) => &chan.context,
 			ChannelPhase::UnfundedInboundV1(chan) => &chan.context,
 			ChannelPhase::UnfundedV2(chan) => &chan.context,
+			ChannelPhase::PendingV2(chan) => &chan.context,
 		}
 	}
 
@@ -1517,6 +1519,7 @@ where
 			ChannelPhase::PendingV1(chan) => &mut chan.context,
 			ChannelPhase::UnfundedInboundV1(chan) => &mut chan.context,
 			ChannelPhase::UnfundedV2(chan) => &mut chan.context,
+			ChannelPhase::PendingV2(chan) => &mut chan.context,
 		}
 	}
 
@@ -1528,6 +1531,7 @@ where
 			ChannelPhase::PendingV1(chan) => &chan.funding,
 			ChannelPhase::UnfundedInboundV1(chan) => &chan.funding,
 			ChannelPhase::UnfundedV2(chan) => &chan.funding,
+			ChannelPhase::PendingV2(chan) => &chan.funding,
 		}
 	}
 
@@ -1540,6 +1544,7 @@ where
 			ChannelPhase::PendingV1(chan) => &mut chan.funding,
 			ChannelPhase::UnfundedInboundV1(chan) => &mut chan.funding,
 			ChannelPhase::UnfundedV2(chan) => &mut chan.funding,
+			ChannelPhase::PendingV2(chan) => &mut chan.funding,
 		}
 	}
 
@@ -1551,6 +1556,7 @@ where
 			ChannelPhase::PendingV1(chan) => (&chan.funding, &mut chan.context),
 			ChannelPhase::UnfundedInboundV1(chan) => (&chan.funding, &mut chan.context),
 			ChannelPhase::UnfundedV2(chan) => (&chan.funding, &mut chan.context),
+			ChannelPhase::PendingV2(chan) => (&chan.funding, &mut chan.context),
 		}
 	}
 
@@ -1565,6 +1571,7 @@ where
 			ChannelPhase::PendingV1(chan) => Some(&mut chan.unfunded_context),
 			ChannelPhase::UnfundedInboundV1(chan) => Some(&mut chan.unfunded_context),
 			ChannelPhase::UnfundedV2(chan) => Some(&mut chan.unfunded_context),
+			ChannelPhase::PendingV2(chan) => Some(&mut chan.unfunded_context),
 		}
 	}
 
@@ -1707,7 +1714,7 @@ where
 					shutdown_result: None,
 				}))
 			},
-			ChannelPhase::UnfundedV2(_) => Ok(None),
+			ChannelPhase::UnfundedV2(_) | ChannelPhase::PendingV2(_) => Ok(None),
 		}
 	}
 
@@ -1730,6 +1737,7 @@ where
 			ChannelPhase::PendingV1(_) => false,
 			ChannelPhase::UnfundedInboundV1(_) => false,
 			ChannelPhase::UnfundedV2(_) => false,
+			ChannelPhase::PendingV2(_) => false,
 		};
 
 		let splice_funding_failed = if let ChannelPhase::Funded(chan) = &mut self.phase {
@@ -1777,15 +1785,8 @@ where
 					.map(|msg| ReconnectionMsg::Open(OpenChannelMessage::V1(msg)))
 					.unwrap_or(ReconnectionMsg::None)
 			},
-			ChannelPhase::PendingV1(_) => {
-				// PendingV1 channels are not resumable, so this shouldn't be reached.
-				debug_assert!(false);
-				ReconnectionMsg::None
-			},
-			ChannelPhase::UnfundedInboundV1(_) => {
-				// Since unfunded inbound channel maps are cleared upon disconnecting a peer,
-				// they are not persisted and won't be recovered after a crash.
-				// Therefore, they shouldn't exist at this point.
+			ChannelPhase::PendingV1(_) | ChannelPhase::PendingV2(_) => {
+				// Pending channels are not resumable, so this shouldn't be reached.
 				debug_assert!(false);
 				ReconnectionMsg::None
 			},
@@ -1801,6 +1802,13 @@ where
 					debug_assert!(false);
 					ReconnectionMsg::None
 				}
+			},
+			ChannelPhase::UnfundedInboundV1(_) => {
+				// Since unfunded inbound channel maps are cleared upon disconnecting a peer,
+				// they are not persisted and won't be recovered after a crash.
+				// Therefore, they shouldn't exist at this point.
+				debug_assert!(false);
+				ReconnectionMsg::None
 			},
 		}
 	}
@@ -1820,7 +1828,7 @@ where
 				)
 					.map(|msg| Some(OpenChannelMessage::V1(msg)))
 			},
-			ChannelPhase::PendingV1(_) => Ok(None),
+			ChannelPhase::PendingV1(_) | ChannelPhase::PendingV2(_) => Ok(None),
 			ChannelPhase::UnfundedInboundV1(_) => Ok(None),
 			ChannelPhase::UnfundedV2(chan) => {
 				if chan.funding.is_outbound() {
@@ -1853,6 +1861,7 @@ where
 			ChannelPhase::Undefined => unreachable!(),
 			ChannelPhase::UnfundedOutboundV1(_)
 			| ChannelPhase::PendingV1(_)
+			| ChannelPhase::PendingV2(_)
 			| ChannelPhase::UnfundedInboundV1(_) => (None, false),
 			ChannelPhase::UnfundedV2(pending_v2_channel) => {
 				pending_v2_channel.interactive_tx_constructor.take();
@@ -2030,6 +2039,10 @@ where
 				let err = "Got an unexpected tx_abort message: This is an unfunded channel created with V1 channel establishment";
 				return Err(ChannelError::Warn(err.into()));
 			},
+			ChannelPhase::PendingV2(chan) => {
+				let had_session = chan.context.interactive_tx_signing_session.take().is_some();
+				(had_session, None, false)
+			},
 			ChannelPhase::UnfundedV2(pending_v2_channel) => {
 				let had_constructor =
 					pending_v2_channel.interactive_tx_constructor.take().is_some();
@@ -2114,8 +2127,9 @@ where
 	}
 
 	fn funding_tx_constructed(&mut self, funding_outpoint: OutPoint) -> Result<(), AbortReason> {
-		let interactive_tx_constructor = match &mut self.phase {
-			ChannelPhase::UnfundedV2(chan) => {
+		let phase = core::mem::replace(&mut self.phase, ChannelPhase::Undefined);
+		let result = match phase {
+			ChannelPhase::UnfundedV2(mut chan) => {
 				debug_assert_eq!(
 					chan.context.channel_state,
 					ChannelState::NegotiatingFunding(
@@ -2133,12 +2147,23 @@ where
 				chan.funding.channel_transaction_parameters.funding_outpoint =
 					Some(funding_outpoint);
 
-				chan.interactive_tx_constructor
+				let interactive_tx_constructor = chan
+					.interactive_tx_constructor
 					.take()
-					.expect("UnfundedV2Channel::interactive_tx_constructor should be set")
+					.expect("UnfundedV2Channel::interactive_tx_constructor should be set");
+
+				let signing_session = interactive_tx_constructor.into_signing_session();
+				chan.context.interactive_tx_signing_session = Some(signing_session);
+
+				self.phase = ChannelPhase::PendingV2(PendingV2Channel {
+					funding: chan.funding,
+					context: chan.context,
+					unfunded_context: chan.unfunded_context,
+				});
+				Ok(())
 			},
-			ChannelPhase::Funded(chan) => {
-				if let Some(pending_splice) = chan.pending_splice.as_mut() {
+			ChannelPhase::Funded(mut chan) => {
+				let result = if let Some(pending_splice) = chan.pending_splice.as_mut() {
 					let funding_negotiation = pending_splice.funding_negotiation.take();
 					if let Some(FundingNegotiation::ConstructingTransaction {
 						mut funding,
@@ -2154,31 +2179,32 @@ where
 								funding,
 								initial_commitment_signed_from_counterparty: None,
 							});
-						interactive_tx_constructor
+
+						let signing_session = interactive_tx_constructor.into_signing_session();
+						chan.context.interactive_tx_signing_session = Some(signing_session);
+						Ok(())
 					} else {
 						// Replace the taken state for later error handling
 						pending_splice.funding_negotiation = funding_negotiation;
-						return Err(AbortReason::InternalError(
+						Err(AbortReason::InternalError(
 							"Got a tx_complete message in an invalid state",
-						));
+						))
 					}
 				} else {
-					return Err(AbortReason::InternalError(
-						"Got a tx_complete message in an invalid state",
-					));
-				}
+					Err(AbortReason::InternalError("Got a tx_complete message in an invalid state"))
+				};
+				self.phase = ChannelPhase::Funded(chan);
+				result
 			},
 			_ => {
+				self.phase = phase;
 				debug_assert!(false);
-				return Err(AbortReason::InternalError(
-					"Got a tx_complete message in an invalid phase",
-				));
+				Err(AbortReason::InternalError("Got a tx_complete message in an invalid phase"))
 			},
 		};
 
-		let signing_session = interactive_tx_constructor.into_signing_session();
-		self.context_mut().interactive_tx_signing_session = Some(signing_session);
-		Ok(())
+		debug_assert!(!matches!(self.phase, ChannelPhase::Undefined));
+		result
 	}
 
 	pub fn funding_transaction_signed<F: FeeEstimator, L: Logger>(
@@ -2187,7 +2213,7 @@ where
 	) -> Result<FundingTxSigned, APIError> {
 		let (context, funding, pending_splice) = match &mut self.phase {
 			ChannelPhase::Undefined => unreachable!(),
-			ChannelPhase::UnfundedV2(channel) => (&mut channel.context, &channel.funding, None),
+			ChannelPhase::PendingV2(channel) => (&mut channel.context, &channel.funding, None),
 			ChannelPhase::Funded(channel) => {
 				(&mut channel.context, &channel.funding, channel.pending_splice.as_ref())
 			},
@@ -2372,7 +2398,7 @@ where
 	) -> Result<(Option<ChannelMonitor<SP::EcdsaSigner>>, Option<ChannelMonitorUpdate>), ChannelError> {
 		let phase = core::mem::replace(&mut self.phase, ChannelPhase::Undefined);
 		match phase {
-			ChannelPhase::UnfundedV2(chan) => {
+			ChannelPhase::PendingV2(chan) => {
 				let holder_commitment_point = match chan.unfunded_context.holder_commitment_point {
 					Some(point) => point,
 					None => {
@@ -2483,6 +2509,9 @@ where
 			ChannelPhase::UnfundedV2(chan) => {
 				chan.context.get_available_balances_for_scope(&chan.funding, fee_estimator)
 			},
+			ChannelPhase::PendingV2(chan) => {
+				chan.context.get_available_balances_for_scope(&chan.funding, fee_estimator)
+			},
 		}
 	}
 
@@ -2524,6 +2553,15 @@ where
 {
 	fn from(channel: UnfundedV2Channel<SP>) -> Self {
 		Channel { phase: ChannelPhase::UnfundedV2(channel) }
+	}
+}
+
+impl<SP: SignerProvider> From<PendingV2Channel<SP>> for Channel<SP>
+where
+	SP::EcdsaSigner: ChannelSigner,
+{
+	fn from(channel: PendingV2Channel<SP>) -> Self {
+		Channel { phase: ChannelPhase::PendingV2(channel) }
 	}
 }
 
@@ -14280,6 +14318,20 @@ impl<SP: SignerProvider> UnfundedV2Channel<SP> {
 	#[allow(dead_code)] // TODO(dual_funding): Remove once contribution to V2 channels is enabled.
 	pub fn get_accept_channel_v2_message(&self) -> msgs::AcceptChannelV2 {
 		self.generate_accept_channel_v2_message()
+	}
+}
+
+/// A V2 channel that has completed funding transaction construction but has not yet
+/// received `commitment_signed`.
+pub(super) struct PendingV2Channel<SP: SignerProvider> {
+	pub funding: FundingScope,
+	pub context: ChannelContext<SP>,
+	pub unfunded_context: UnfundedChannelContext,
+}
+
+impl<SP: SignerProvider> PendingV2Channel<SP> {
+	pub fn abandon_unfunded_chan(&mut self, closure_reason: ClosureReason) -> ShutdownResult {
+		self.context.force_shutdown(&self.funding, closure_reason)
 	}
 }
 
