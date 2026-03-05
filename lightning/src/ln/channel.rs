@@ -12413,17 +12413,6 @@ where
 			Some(c) => {
 				match c.net_value_for_acceptor_at_feerate(feerate, holder_balance.unwrap()) {
 					Ok(net_value) => Some(net_value),
-					Err(e @ FeeRateAdjustmentError::FeeRateTooLow { .. }) => {
-						log_info!(
-							logger,
-							"Initiator's feerate ({}) for channel {} is below our minimum: {}; \
-								 proceeding without contribution, will RBF later",
-							feerate,
-							self.context.channel_id(),
-							e,
-						);
-						None
-					},
 					Err(e @ FeeRateAdjustmentError::FeeRateTooHigh { .. }) => {
 						return Err(ChannelError::WarnAndDisconnect(format!(
 							"Cannot accommodate initiator's feerate ({}) for channel {}: {}",
@@ -12432,14 +12421,10 @@ where
 							e,
 						)));
 					},
-					Err(
-						e @ FeeRateAdjustmentError::FeeBufferInsufficient { .. }
-						| e @ FeeRateAdjustmentError::FeeBufferOverflow { .. },
-					) => {
+					Err(e) => {
 						log_info!(
 							logger,
-							"Cannot accommodate initiator's feerate ({}) for channel {}: {}; \
-								 proceeding without contribution",
+							"Cannot accommodate initiator's feerate ({}) for channel {}: {}",
 							feerate,
 							self.context.channel_id(),
 							e,

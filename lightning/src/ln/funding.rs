@@ -68,7 +68,12 @@ impl core::fmt::Display for FeeRateAdjustmentError {
 	fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
 		match self {
 			FeeRateAdjustmentError::FeeRateTooLow { target_feerate, min_feerate } => {
-				write!(f, "Target feerate {} is below our minimum {}", target_feerate, min_feerate)
+				write!(
+					f,
+					"Target feerate {} is below our minimum {}; \
+					 proceeding without contribution, will RBF later",
+					target_feerate, min_feerate,
+				)
 			},
 			FeeRateAdjustmentError::FeeRateTooHigh {
 				target_feerate,
@@ -83,12 +88,17 @@ impl core::fmt::Display for FeeRateAdjustmentError {
 				)
 			},
 			FeeRateAdjustmentError::FeeBufferOverflow => {
-				write!(f, "Arithmetic overflow when computing available fee buffer")
+				write!(
+					f,
+					"Arithmetic overflow when computing available fee buffer; \
+					 proceeding without contribution",
+				)
 			},
 			FeeRateAdjustmentError::FeeBufferInsufficient { source, available, required } => {
 				write!(
 					f,
-					"Fee buffer {} ({}) is insufficient for required fee {}",
+					"Fee buffer {} ({}) is insufficient for required fee {}; \
+					 proceeding without contribution",
 					available, source, required,
 				)
 			},
