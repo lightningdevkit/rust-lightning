@@ -24,13 +24,14 @@ compile_error!("Fuzz targets need cfg=secp256k1_fuzz");
 
 extern crate lightning_fuzz;
 use lightning_fuzz::invoice_request_deser::*;
+use lightning_fuzz::utils::test_logger;
 
 #[cfg(feature = "afl")]
 #[macro_use] extern crate afl;
 #[cfg(feature = "afl")]
 fn main() {
 	fuzz!(|data| {
-		invoice_request_deser_run(data.as_ptr(), data.len());
+		invoice_request_deser_test(&data, test_logger::DevNull {});
 	});
 }
 
@@ -40,7 +41,7 @@ fn main() {
 fn main() {
 	loop {
 		fuzz!(|data| {
-			invoice_request_deser_run(data.as_ptr(), data.len());
+			invoice_request_deser_test(&data, test_logger::DevNull {});
 		});
 	}
 }
@@ -49,7 +50,7 @@ fn main() {
 #[macro_use] extern crate libfuzzer_sys;
 #[cfg(feature = "libfuzzer_fuzz")]
 fuzz_target!(|data: &[u8]| {
-	invoice_request_deser_run(data.as_ptr(), data.len());
+	invoice_request_deser_test(data, test_logger::DevNull {});
 });
 
 #[cfg(feature = "stdin_fuzz")]
@@ -58,7 +59,7 @@ fn main() {
 
 	let mut data = Vec::with_capacity(8192);
 	std::io::stdin().read_to_end(&mut data).unwrap();
-	invoice_request_deser_run(data.as_ptr(), data.len());
+	invoice_request_deser_test(&data, lightning_fuzz::utils::test_logger::Stdout {});
 }
 
 #[test]
@@ -70,7 +71,7 @@ fn run_test_cases() {
 	use std::sync::{atomic, Arc};
 	{
 		let data: Vec<u8> = vec![0];
-		invoice_request_deser_run(data.as_ptr(), data.len());
+		invoice_request_deser_test(&data, test_logger::DevNull {});
 	}
 	let mut threads = Vec::new();
 	let threads_running = Arc::new(atomic::AtomicUsize::new(0));

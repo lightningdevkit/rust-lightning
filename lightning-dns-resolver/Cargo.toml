@@ -11,7 +11,7 @@ rust-version = "1.75"
 
 [dependencies]
 lightning = { version = "0.3.0", path = "../lightning", default-features = false }
-lightning-types = { version = "0.3.0", path = "../lightning-types", default-features = false }
+lightning-types = { version = "0.4.0", path = "../lightning-types", default-features = false }
 dnssec-prover = { version = "0.6", default-features = false, features = [ "std", "tokio" ] }
 tokio = { version = "1.0", default-features = false, features = ["rt"] }
 

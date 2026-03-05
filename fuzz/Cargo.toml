@@ -39,6 +39,7 @@ cc = "1.0"
 members = ["."]
 
 [profile.release]
+panic = "abort"
 lto = true
 codegen-units = 1
 debug-assertions = true
@@ -46,12 +47,13 @@ overflow-checks = true
 
 # When testing a large fuzz corpus, -O1 offers a nice speedup
 [profile.dev]
+panic = "abort"
 opt-level = 1
 
 [lib]
 name = "lightning_fuzz"
 path = "src/lib.rs"
-crate-type = ["rlib", "dylib", "staticlib"]
+crate-type = ["rlib", "staticlib"]
 
 [lints.rust.unexpected_cfgs]
 level = "forbid"

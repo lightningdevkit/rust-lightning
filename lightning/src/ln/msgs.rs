@@ -56,7 +56,7 @@ use core::str::FromStr;
 #[cfg(feature = "std")]
 use std::net::SocketAddr;
 
-use crate::crypto::streams::ChaChaDualPolyReadAdapter;
+use crate::crypto::streams::{ChaChaTriPolyReadAdapter, TriPolyAADUsed};
 use crate::util::base32;
 use crate::util::logger;
 use crate::util::ser::{
@@ -3924,10 +3924,13 @@ impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPaylo
 				.map_err(|_| DecodeError::InvalidValue)?;
 			let rho = onion_utils::gen_rho_from_shared_secret(&enc_tlvs_ss.secret_bytes());
 			let receive_auth_key = node_signer.get_receive_auth_key();
+			let phantom_auth_key = node_signer.get_expanded_key().phantom_node_blinded_path_key;
+			let read_args = (rho, receive_auth_key.0, phantom_auth_key);
+
 			let mut s = Cursor::new(&enc_tlvs);
 			let mut reader = FixedLengthReader::new(&mut s, enc_tlvs.len() as u64);
-			match ChaChaDualPolyReadAdapter::read(&mut reader, (rho, receive_auth_key.0))? {
-				ChaChaDualPolyReadAdapter {
+			match ChaChaTriPolyReadAdapter::read(&mut reader, read_args)? {
+				ChaChaTriPolyReadAdapter {
 					readable:
 						BlindedPaymentTlvs::Forward(ForwardTlvs {
 							short_channel_id,
@@ -3942,7 +3945,7 @@ impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPaylo
 						|| cltv_value.is_some() || total_msat.is_some()
 						|| keysend_preimage.is_some()
 						|| invoice_request.is_some()
-						|| used_aad
+						|| used_aad != TriPolyAADUsed::None
 					{
 						return Err(DecodeError::InvalidValue);
 					}
@@ -3955,7 +3958,7 @@ impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPaylo
 						next_blinding_override,
 					}))
 				},
-				ChaChaDualPolyReadAdapter {
+				ChaChaTriPolyReadAdapter {
 					readable:
 						BlindedPaymentTlvs::Dummy(DummyTlvs { payment_relay, payment_constraints }),
 					used_aad,
@@ -3964,7 +3967,7 @@ impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPaylo
 						|| cltv_value.is_some() || total_msat.is_some()
 						|| keysend_preimage.is_some()
 						|| invoice_request.is_some()
-						|| !used_aad
+						|| used_aad == TriPolyAADUsed::None
 					{
 						return Err(DecodeError::InvalidValue);
 					}
@@ -3974,11 +3977,11 @@ impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPaylo
 						intro_node_blinding_point,
 					}))
 				},
-				ChaChaDualPolyReadAdapter {
+				ChaChaTriPolyReadAdapter {
 					readable: BlindedPaymentTlvs::Receive(receive_tlvs),
 					used_aad,
 				} => {
-					if !used_aad {
+					if used_aad == TriPolyAADUsed::None {
 						return Err(DecodeError::InvalidValue);
 					}
 
@@ -4041,6 +4044,7 @@ impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundTrampoline
 	fn read<R: Read>(r: &mut R, args: (Option<PublicKey>, NS)) -> Result<Self, DecodeError> {
 		let (update_add_blinding_point, node_signer) = args;
 		let receive_auth_key = node_signer.get_receive_auth_key();
+		let phantom_auth_key = node_signer.get_expanded_key().phantom_node_blinded_path_key;
 
 		let mut amt = None;
 		let mut cltv_value = None;
@@ -4094,8 +4098,9 @@ impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundTrampoline
 			let rho = onion_utils::gen_rho_from_shared_secret(&enc_tlvs_ss.secret_bytes());
 			let mut s = Cursor::new(&enc_tlvs);
 			let mut reader = FixedLengthReader::new(&mut s, enc_tlvs.len() as u64);
-			match ChaChaDualPolyReadAdapter::read(&mut reader, (rho, receive_auth_key.0))? {
-				ChaChaDualPolyReadAdapter {
+			let read_args = (rho, receive_auth_key.0, phantom_auth_key);
+			match ChaChaTriPolyReadAdapter::read(&mut reader, read_args)? {
+				ChaChaTriPolyReadAdapter {
 					readable:
 						BlindedTrampolineTlvs::Forward(TrampolineForwardTlvs {
 							next_trampoline,
@@ -4110,7 +4115,7 @@ impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundTrampoline
 						|| cltv_value.is_some() || total_msat.is_some()
 						|| keysend_preimage.is_some()
 						|| invoice_request.is_some()
-						|| used_aad
+						|| used_aad != TriPolyAADUsed::None
 					{
 						return Err(DecodeError::InvalidValue);
 					}
@@ -4123,11 +4128,11 @@ impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundTrampoline
 						next_blinding_override,
 					}))
 				},
-				ChaChaDualPolyReadAdapter {
+				ChaChaTriPolyReadAdapter {
 					readable: BlindedTrampolineTlvs::Receive(receive_tlvs),
 					used_aad,
 				} => {
-					if !used_aad {
+					if used_aad == TriPolyAADUsed::None {
 						return Err(DecodeError::InvalidValue);
 					}
 

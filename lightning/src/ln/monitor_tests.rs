@@ -68,7 +68,7 @@ fn chanmon_fail_from_stale_commitment() {
 
 	let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], 1_000_000);
 	nodes[0].node.send_payment_with_route(route, payment_hash,
-		RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
+		RecipientOnionFields::secret_only(payment_secret, 1_000_000), PaymentId(payment_hash.0)).unwrap();
 	check_added_monitors(&nodes[0], 1);
 
 	let bs_txn = get_local_commitment_txn!(nodes[1], chan_id_2);
@@ -84,7 +84,7 @@ fn chanmon_fail_from_stale_commitment() {
 	// Don't bother delivering the new HTLC add/commits, instead confirming the pre-HTLC commitment
 	// transaction for nodes[1].
 	mine_transaction(&nodes[1], &bs_txn[0]);
-	check_closed_broadcast!(nodes[1], true);
+	check_closed_broadcast(&nodes[1], 1, true);
 	check_added_monitors(&nodes[1], 1);
 	check_closed_event(&nodes[1], 1, ClosureReason::CommitmentTxConfirmed, &[nodes[2].node.get_our_node_id()], 100000);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
@@ -140,7 +140,7 @@ fn revoked_output_htlc_resolution_timing() {
 
 	// Confirm the revoked commitment transaction, closing the channel.
 	mine_transaction(&nodes[1], &revoked_local_txn[0]);
-	check_closed_broadcast!(nodes[1], true);
+	check_closed_broadcast(&nodes[1], 1, true);
 	check_added_monitors(&nodes[1], 1);
 	check_closed_event(&nodes[1], 1, ClosureReason::CommitmentTxConfirmed, &[nodes[0].node.get_our_node_id()], 1000000);
 
@@ -175,7 +175,7 @@ fn archive_fully_resolved_monitors() {
 	// Test we archive fully resolved channel monitors at the right time.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let mut user_config = test_default_channel_config();
+	let mut user_config = test_legacy_channel_config();
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config.clone()), Some(user_config)]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
@@ -187,7 +187,7 @@ fn archive_fully_resolved_monitors() {
 	let message = "Channel force-closed".to_owned();
 	nodes[0].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[1].node.get_our_node_id(), message.clone()).unwrap();
 	check_added_monitors(&nodes[0], 1);
-	check_closed_broadcast!(nodes[0], true);
+	check_closed_broadcast(&nodes[0], 1, true);
 	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
 	check_closed_event(&nodes[0], 1, reason, &[nodes[1].node.get_our_node_id()], 1_000_000);
 
@@ -319,10 +319,8 @@ fn do_chanmon_claim_value_coop_close(keyed_anchors: bool, p2a_anchor: bool) {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let mut user_config = test_default_channel_config();
 	user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
-	user_config.manually_accept_inbound_channels = true;
 	user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = keyed_anchors;
 	user_config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
-	user_config.manually_accept_inbound_channels = keyed_anchors || p2a_anchor;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config.clone()), Some(user_config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
@@ -371,9 +369,9 @@ fn do_chanmon_claim_value_coop_close(keyed_anchors: bool, p2a_anchor: bool) {
 	nodes[1].node.handle_closing_signed(nodes[0].node.get_our_node_id(), &node_0_closing_signed);
 	let node_1_closing_signed = get_event_msg!(nodes[1], MessageSendEvent::SendClosingSigned, nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_closing_signed(nodes[1].node.get_our_node_id(), &node_1_closing_signed);
-	let (_, node_0_2nd_closing_signed) = get_closing_signed_broadcast!(nodes[0].node, nodes[1].node.get_our_node_id());
+	let (_, node_0_2nd_closing_signed) = get_closing_signed_broadcast(&nodes[0], nodes[1].node.get_our_node_id());
 	nodes[1].node.handle_closing_signed(nodes[0].node.get_our_node_id(), &node_0_2nd_closing_signed.unwrap());
-	let (_, node_1_none) = get_closing_signed_broadcast!(nodes[1].node, nodes[0].node.get_our_node_id());
+	let (_, node_1_none) = get_closing_signed_broadcast(&nodes[1], nodes[0].node.get_our_node_id());
 	assert!(node_1_none.is_none());
 
 	let shutdown_tx = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
@@ -473,7 +471,6 @@ fn do_test_claim_value_force_close(keyed_anchors: bool, p2a_anchor: bool, prev_c
 	let mut user_config = test_default_channel_config();
 	user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = keyed_anchors;
 	user_config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
-	user_config.manually_accept_inbound_channels = keyed_anchors || p2a_anchor;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config.clone()), Some(user_config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
@@ -681,11 +678,11 @@ fn do_test_claim_value_force_close(keyed_anchors: bool, p2a_anchor: bool, prev_c
 	assert_eq!(remote_txn[0].output[b_broadcast_txn[0].input[0].previous_output.vout as usize].value.to_sat(), 3_000);
 	assert_eq!(remote_txn[0].output[b_broadcast_txn[1].input[0].previous_output.vout as usize].value.to_sat(), 4_000);
 
-	check_closed_broadcast!(nodes[0], true);
+	check_closed_broadcast(&nodes[0], 1, true);
 	check_added_monitors(&nodes[0], 1);
 	check_closed_event(&nodes[0], 1, ClosureReason::CommitmentTxConfirmed, &[nodes[1].node.get_our_node_id()], 1000000);
 	assert!(nodes[0].node.list_channels().is_empty());
-	check_closed_broadcast!(nodes[1], true);
+	check_closed_broadcast(&nodes[1], 1, true);
 	check_added_monitors(&nodes[1], 1);
 	check_closed_event(&nodes[1], 1, ClosureReason::CommitmentTxConfirmed, &[nodes[0].node.get_our_node_id()], 1000000);
 	assert!(nodes[1].node.list_channels().is_empty());
@@ -872,7 +869,6 @@ fn do_test_balances_on_local_commitment_htlcs(keyed_anchors: bool, p2a_anchor: b
 	let mut user_config = test_default_channel_config();
 	user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = keyed_anchors;
 	user_config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
-	user_config.manually_accept_inbound_channels = keyed_anchors || p2a_anchor;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config.clone()), Some(user_config)]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
@@ -885,7 +881,7 @@ fn do_test_balances_on_local_commitment_htlcs(keyed_anchors: bool, p2a_anchor: b
 	let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 10_000_000);
 	let htlc_cltv_timeout = nodes[0].best_block_info().1 + TEST_FINAL_CLTV + 1; // Note ChannelManager adds one to CLTV timeouts for safety
 	nodes[0].node.send_payment_with_route(route, payment_hash,
-		RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
+		RecipientOnionFields::secret_only(payment_secret, 10_000_000), PaymentId(payment_hash.0)).unwrap();
 	check_added_monitors(&nodes[0], 1);
 
 	let updates = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
@@ -897,7 +893,7 @@ fn do_test_balances_on_local_commitment_htlcs(keyed_anchors: bool, p2a_anchor: b
 
 	let (route_2, payment_hash_2, payment_preimage_2, payment_secret_2) = get_route_and_payment_hash!(nodes[0], nodes[1], 20_000_000);
 	nodes[0].node.send_payment_with_route(route_2, payment_hash_2,
-		RecipientOnionFields::secret_only(payment_secret_2), PaymentId(payment_hash_2.0)).unwrap();
+		RecipientOnionFields::secret_only(payment_secret_2, 20_000_000), PaymentId(payment_hash_2.0)).unwrap();
 	check_added_monitors(&nodes[0], 1);
 
 	let updates = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
@@ -920,7 +916,7 @@ fn do_test_balances_on_local_commitment_htlcs(keyed_anchors: bool, p2a_anchor: b
 	let node_a_commitment_claimable = nodes[0].best_block_info().1 + BREAKDOWN_TIMEOUT as u32;
 	nodes[0].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[1].node.get_our_node_id(), message.clone()).unwrap();
 	check_added_monitors(&nodes[0], 1);
-	check_closed_broadcast!(nodes[0], true);
+	check_closed_broadcast(&nodes[0], 1, true);
 	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
 	check_closed_event(&nodes[0], 1, reason, &[nodes[1].node.get_our_node_id()], 1000000);
 	if keyed_anchors || p2a_anchor {
@@ -980,7 +976,7 @@ fn do_test_balances_on_local_commitment_htlcs(keyed_anchors: bool, p2a_anchor: b
 
 	// Get nodes[1]'s HTLC claim tx for the second HTLC
 	mine_transaction(&nodes[1], &commitment_tx);
-	check_closed_broadcast!(nodes[1], true);
+	check_closed_broadcast(&nodes[1], 1, true);
 	check_added_monitors(&nodes[1], 1);
 	check_closed_event(&nodes[1], 1, ClosureReason::CommitmentTxConfirmed, &[nodes[0].node.get_our_node_id()], 1000000);
 	let bs_htlc_claim_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
@@ -1125,7 +1121,8 @@ fn test_no_preimage_inbound_htlc_balances() {
 	// have a preimage.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let (_, _, chan_id, funding_tx) = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 500_000_000);
@@ -1210,7 +1207,7 @@ fn test_no_preimage_inbound_htlc_balances() {
 
 	mine_transaction(&nodes[0], &as_txn[0]);
 	nodes[0].tx_broadcaster.clear();
-	check_closed_broadcast!(nodes[0], true);
+	check_closed_broadcast(&nodes[0], 1, true);
 	check_added_monitors(&nodes[0], 1);
 	check_closed_event(&nodes[0], 1, ClosureReason::CommitmentTxConfirmed, &[nodes[1].node.get_our_node_id()], 1000000);
 
@@ -1218,7 +1215,7 @@ fn test_no_preimage_inbound_htlc_balances() {
 		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(chan_id).unwrap().get_claimable_balances()));
 
 	mine_transaction(&nodes[1], &as_txn[0]);
-	check_closed_broadcast!(nodes[1], true);
+	check_closed_broadcast(&nodes[1], 1, true);
 	check_added_monitors(&nodes[1], 1);
 	check_closed_event(&nodes[1], 1, ClosureReason::CommitmentTxConfirmed, &[nodes[0].node.get_our_node_id()], 1000000);
 
@@ -1383,7 +1380,6 @@ fn do_test_revoked_counterparty_commitment_balances(keyed_anchors: bool, p2a_anc
 	let mut user_config = test_default_channel_config();
 	user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = keyed_anchors;
 	user_config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
-	user_config.manually_accept_inbound_channels = keyed_anchors || p2a_anchor;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config.clone()), Some(user_config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
@@ -1432,7 +1428,7 @@ fn do_test_revoked_counterparty_commitment_balances(keyed_anchors: bool, p2a_anc
 	let _b_htlc_msgs = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
 
 	connect_blocks(&nodes[0], htlc_cltv_timeout + 1 - 10);
-	check_closed_broadcast!(nodes[0], true);
+	check_closed_broadcast(&nodes[0], 1, true);
 	check_added_monitors(&nodes[0], 1);
 
 	let mut events = nodes[0].node.get_and_clear_pending_events();
@@ -1461,7 +1457,7 @@ fn do_test_revoked_counterparty_commitment_balances(keyed_anchors: bool, p2a_anc
 	}
 
 	connect_blocks(&nodes[1], htlc_cltv_timeout + 1 - 10);
-	check_closed_broadcast!(nodes[1], true);
+	check_closed_broadcast(&nodes[1], 1, true);
 	check_added_monitors(&nodes[1], 1);
 	check_closed_events(&nodes[1], &[ExpectedCloseEvent {
 		channel_capacity_sats: Some(1_000_000),
@@ -1687,7 +1683,6 @@ fn do_test_revoked_counterparty_htlc_tx_balances(keyed_anchors: bool, p2a_anchor
 	let mut user_config = test_default_channel_config();
 	user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = keyed_anchors;
 	user_config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
-	user_config.manually_accept_inbound_channels = keyed_anchors || p2a_anchor;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config.clone()), Some(user_config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
@@ -1723,7 +1718,7 @@ fn do_test_revoked_counterparty_htlc_tx_balances(keyed_anchors: bool, p2a_anchor
 
 	// B will generate an HTLC-Success from its revoked commitment tx
 	mine_transaction(&nodes[1], &revoked_local_txn[0]);
-	check_closed_broadcast!(nodes[1], true);
+	check_closed_broadcast(&nodes[1], 1, true);
 	check_added_monitors(&nodes[1], 1);
 	check_closed_event(&nodes[1], 1, ClosureReason::CommitmentTxConfirmed, &[nodes[0].node.get_our_node_id()], 1000000);
 	if keyed_anchors || p2a_anchor {
@@ -1767,7 +1762,7 @@ fn do_test_revoked_counterparty_htlc_tx_balances(keyed_anchors: bool, p2a_anchor
 		&[HTLCHandlingFailureType::Receive { payment_hash: failed_payment_hash }]);
 	// A will generate justice tx from B's revoked commitment/HTLC tx
 	mine_transaction(&nodes[0], &revoked_local_txn[0]);
-	check_closed_broadcast!(nodes[0], true);
+	check_closed_broadcast(&nodes[0], 1, true);
 	check_added_monitors(&nodes[0], 1);
 	check_closed_event(&nodes[0], 1, ClosureReason::CommitmentTxConfirmed, &[nodes[1].node.get_our_node_id()], 1000000);
 	let to_remote_conf_height = nodes[0].best_block_info().1 + ANTI_REORG_DELAY - 1;
@@ -1977,7 +1972,6 @@ fn do_test_revoked_counterparty_aggregated_claims(keyed_anchors: bool, p2a_ancho
 	let mut user_config = test_default_channel_config();
 	user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = keyed_anchors;
 	user_config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
-	user_config.manually_accept_inbound_channels = keyed_anchors || p2a_anchor;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config.clone()), Some(user_config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
@@ -2048,7 +2042,7 @@ fn do_test_revoked_counterparty_aggregated_claims(keyed_anchors: bool, p2a_ancho
 		sorted_vec(nodes[1].chain_monitor.chain_monitor.get_monitor(chan_id).unwrap().get_claimable_balances()));
 
 	mine_transaction(&nodes[1], &as_revoked_txn[0]);
-	check_closed_broadcast!(nodes[1], true);
+	check_closed_broadcast(&nodes[1], 1, true);
 	check_closed_event(&nodes[1], 1, ClosureReason::CommitmentTxConfirmed, &[nodes[0].node.get_our_node_id()], 1000000);
 	check_added_monitors(&nodes[1], 1);
 
@@ -2254,7 +2248,6 @@ fn do_test_claimable_balance_correct_while_payment_pending(outbound_payment: boo
 	let mut user_config = test_default_channel_config();
 	user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = keyed_anchors;
 	user_config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
-	user_config.manually_accept_inbound_channels = keyed_anchors || p2a_anchor;
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[Some(user_config.clone()), Some(user_config.clone()), Some(user_config)]);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
@@ -2325,7 +2318,8 @@ fn do_test_restored_packages_retry(check_old_monitor_retries_after_upgrade: bool
 	let persister;
 	let new_chain_monitor;
 
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
 	let node_deserialized;
 
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
@@ -2402,7 +2396,6 @@ fn do_test_monitor_rebroadcast_pending_claims(keyed_anchors: bool, p2a_anchor: b
 	let mut config = test_default_channel_config();
 	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = keyed_anchors;
 	config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
-	config.manually_accept_inbound_channels = keyed_anchors || p2a_anchor;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
@@ -2421,7 +2414,7 @@ fn do_test_monitor_rebroadcast_pending_claims(keyed_anchors: bool, p2a_anchor: b
 	assert_eq!(commitment_txn.len(), if keyed_anchors || p2a_anchor { 1 /* commitment tx only */} else { 2 /* commitment and htlc timeout tx */ });
 	check_spends!(&commitment_txn[0], &funding_tx);
 	mine_transaction(&nodes[0], &commitment_txn[0]);
-	check_closed_broadcast!(&nodes[0], true);
+	check_closed_broadcast(&nodes[0], 1, true);
 	check_closed_event(&nodes[0], 1, ClosureReason::CommitmentTxConfirmed, &[nodes[1].node.get_our_node_id()], 1000000);
 	check_added_monitors(&nodes[0], 1);
 
@@ -2528,7 +2521,6 @@ fn do_test_yield_anchors_events(have_htlcs: bool, p2a_anchor: bool) {
 	anchors_config.channel_handshake_config.announce_for_forwarding = true;
 	anchors_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 	anchors_config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
-	anchors_config.manually_accept_inbound_channels = true;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(anchors_config.clone()), Some(anchors_config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
@@ -2730,7 +2722,6 @@ fn do_test_anchors_aggregated_revoked_htlc_tx(p2a_anchor: bool) {
 
 	let mut anchors_config = test_default_channel_config();
 	anchors_config.channel_handshake_config.announce_for_forwarding = true;
-	anchors_config.manually_accept_inbound_channels = true;
 	anchors_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 	anchors_config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(anchors_config.clone()), Some(anchors_config.clone())]);
@@ -3037,7 +3028,6 @@ fn do_test_anchors_monitor_fixes_counterparty_payment_script_on_reload(confirm_c
 	let chain_monitor;
 	let mut user_config = test_default_channel_config();
 	user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
-	user_config.manually_accept_inbound_channels = true;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config.clone()), Some(user_config.clone())]);
 	let node_deserialized;
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
@@ -3128,7 +3118,6 @@ fn do_test_monitor_claims_with_random_signatures(keyed_anchors: bool, p2a_anchor
 	let mut user_config = test_default_channel_config();
 	user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = keyed_anchors;
 	user_config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
-	user_config.manually_accept_inbound_channels = keyed_anchors || p2a_anchor;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config.clone()), Some(user_config)]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
@@ -3167,13 +3156,13 @@ fn do_test_monitor_claims_with_random_signatures(keyed_anchors: bool, p2a_anchor
 	if p2a_anchor {
 		mine_transaction(closing_node, anchor_tx.as_ref().unwrap());
 	}
-	check_closed_broadcast!(closing_node, true);
+	check_closed_broadcast(closing_node, 1, true);
 	check_added_monitors(&closing_node, 1);
 	let message = "ChannelMonitor-initiated commitment transaction broadcast".to_string();
 	check_closed_event(&closing_node, 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message }, &[other_node.node.get_our_node_id()], 1_000_000);
 
 	mine_transaction(other_node, &commitment_tx);
-	check_closed_broadcast!(other_node, true);
+	check_closed_broadcast(other_node, 1, true);
 	check_added_monitors(&other_node, 1);
 	check_closed_event(&other_node, 1, ClosureReason::CommitmentTxConfirmed, &[closing_node.node.get_our_node_id()], 1_000_000);
 
@@ -3419,7 +3408,6 @@ fn do_test_lost_preimage_monitor_events(on_counterparty_tx: bool, p2a_anchor: bo
 	// Here we test that losing `MonitorEvent`s that contain HTLC resolution preimages does not
 	// cause us to lose funds or miss a `PaymentSent` event.
 	let mut cfg = test_default_channel_config();
-	cfg.manually_accept_inbound_channels = true;
 	cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 	cfg.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
 	let cfgs = [Some(cfg.clone()), Some(cfg.clone()), Some(cfg.clone())];
@@ -3601,7 +3589,6 @@ fn do_test_lost_timeout_monitor_events(confirm_tx: CommitmentType, dust_htlcs: b
 	// Here we test that losing `MonitorEvent`s that contain HTLC resolution via timeouts does not
 	// cause us to lose a `PaymentFailed` event.
 	let mut cfg = test_default_channel_config();
-	cfg.manually_accept_inbound_channels = true;
 	cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 	cfg.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
 	let cfgs = [Some(cfg.clone()), Some(cfg.clone()), Some(cfg.clone())];
@@ -3643,7 +3630,7 @@ fn do_test_lost_timeout_monitor_events(confirm_tx: CommitmentType, dust_htlcs: b
 
 	let (route, hash_b, _, payment_secret_b) =
 		get_route_and_payment_hash!(nodes[1], nodes[2], amt);
-	let onion = RecipientOnionFields::secret_only(payment_secret_b);
+	let onion = RecipientOnionFields::secret_only(payment_secret_b, amt);
 	nodes[1].node.send_payment_with_route(route, hash_b, onion, PaymentId(hash_b.0)).unwrap();
 	check_added_monitors(&nodes[1], 1);
 
@@ -3845,7 +3832,8 @@ fn test_ladder_preimage_htlc_claims() {
 	// already claimed) resulting in an invalid claim transaction.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_id_0 = nodes[0].node.get_our_node_id();

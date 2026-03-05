@@ -1256,18 +1256,19 @@ pub(crate) struct ChannelMonitorImpl<Signer: EcdsaChannelSigner> {
 	// deserialization
 	current_holder_commitment_number: u64,
 
-	/// The set of payment hashes from inbound payments for which we know the preimage. Payment
-	/// preimages that are not included in any unrevoked local commitment transaction or unrevoked
-	/// remote commitment transactions are automatically removed when commitment transactions are
-	/// revoked. Note that this happens one revocation after it theoretically could, leaving
-	/// preimages present here for the previous state even when the channel is "at rest". This is a
-	/// good safety buffer, but also is important as it ensures we retain payment preimages for the
-	/// previous local commitment transaction, which may have been broadcast already when we see
-	/// the revocation (in setups with redundant monitors).
+	/// The set of payment hashes from inbound payments and forwards for which we know the preimage.
+	/// Payment preimages that are not included in any unrevoked local commitment transaction or
+	/// unrevoked remote commitment transactions are automatically removed when commitment
+	/// transactions are revoked. Note that this happens one revocation after it theoretically could,
+	/// leaving preimages present here for the previous state even when the channel is "at rest".
+	/// This is a good safety buffer, but also is important as it ensures we retain payment preimages
+	/// for the previous local commitment transaction, which may have been broadcast already when we
+	/// see the revocation (in setups with redundant monitors).
 	///
 	/// We also store [`PaymentClaimDetails`] here, tracking the payment information(s) for this
 	/// preimage for inbound payments. This allows us to rebuild the inbound payment information on
-	/// startup even if we lost our `ChannelManager`.
+	/// startup even if we lost our `ChannelManager`. For forwardeds, the list of
+	/// [`PaymentClaimDetails`] is empty.
 	payment_preimages: HashMap<PaymentHash, (PaymentPreimage, Vec<PaymentClaimDetails>)>,
 
 	// Note that `MonitorEvent`s MUST NOT be generated during update processing, only generated
@@ -6813,7 +6814,8 @@ mod tests {
 		// updates is handled correctly in such conditions.
 		let chanmon_cfgs = create_chanmon_cfgs(3);
 		let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
-		let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+		let legacy_cfg = test_legacy_channel_config();
+		let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg.clone()), Some(legacy_cfg)]);
 		let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 		let channel = create_announced_chan_between_nodes(&nodes, 0, 1);
 		create_announced_chan_between_nodes(&nodes, 1, 2);
@@ -6848,7 +6850,7 @@ mod tests {
 		// the update through to the ChannelMonitor which will refuse it (as the channel is closed).
 		let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[1], nodes[0], 100_000);
 		nodes[1].node.send_payment_with_route(route, payment_hash,
-			RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)
+			RecipientOnionFields::secret_only(payment_secret, 100_000), PaymentId(payment_hash.0)
 		).unwrap();
 		check_added_monitors(&nodes[1], 1);
 

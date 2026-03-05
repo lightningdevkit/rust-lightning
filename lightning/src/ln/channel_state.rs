@@ -366,14 +366,11 @@ pub struct ChannelDetails {
 	/// [`outbound_capacity_msat`]: ChannelDetails::outbound_capacity_msat
 	pub unspendable_punishment_reserve: Option<u64>,
 	/// The `user_channel_id` value passed in to [`ChannelManager::create_channel`] for outbound
-	/// channels, or to [`ChannelManager::accept_inbound_channel`] for inbound channels if
-	/// [`UserConfig::manually_accept_inbound_channels`] config flag is set to true. Otherwise
-	/// `user_channel_id` will be randomized for an inbound channel.  This may be zero for objects
-	/// serialized with LDK versions prior to 0.0.113.
+	/// channels, or to [`ChannelManager::accept_inbound_channel`] for inbound channels.
+	///  This may be zero for objects serialized with LDK versions prior to 0.0.113.
 	///
 	/// [`ChannelManager::create_channel`]: crate::ln::channelmanager::ChannelManager::create_channel
 	/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
-	/// [`UserConfig::manually_accept_inbound_channels`]: crate::util::config::UserConfig::manually_accept_inbound_channels
 	pub user_channel_id: u128,
 	/// The currently negotiated fee rate denominated in satoshi per 1000 weight units,
 	/// which is applied to commitment and HTLC transactions.
@@ -528,7 +525,16 @@ impl ChannelDetails {
 	) -> Self {
 		let context = channel.context();
 		let funding = channel.funding();
-		let balance = channel.get_available_balances(fee_estimator);
+		let balance_result = channel.get_available_balances(fee_estimator);
+		let balance = balance_result.unwrap_or_else(|()| {
+			debug_assert!(false, "some channel balance has been overdrawn");
+			crate::ln::channel::AvailableBalances {
+				inbound_capacity_msat: 0,
+				outbound_capacity_msat: 0,
+				next_outbound_htlc_limit_msat: 0,
+				next_outbound_htlc_minimum_msat: u64::MAX,
+			}
+		});
 		let (to_remote_reserve_satoshis, to_self_reserve_satoshis) =
 			funding.get_holder_counterparty_selected_channel_reserve_satoshis();
 		#[allow(deprecated)] // TODO: Remove once balance_msat is removed.
@@ -607,9 +613,9 @@ impl_writeable_tlv_based!(ChannelDetails, {
 	(10, channel_value_satoshis, required),
 	(12, unspendable_punishment_reserve, option),
 	// Note that _user_channel_id_low is used below, but rustc warns anyway
-	(14, _user_channel_id_low, (legacy, u64,
+	(14, _user_channel_id_low, (legacy, u64, |_| Ok(()),
 		|us: &ChannelDetails| Some(us.user_channel_id as u64))),
-	(16, _balance_msat, (legacy, u64, |us: &ChannelDetails| Some(us.next_outbound_htlc_limit_msat))),
+	(16, _balance_msat, (legacy, u64, |_| Ok(()), |us: &ChannelDetails| Some(us.next_outbound_htlc_limit_msat))),
 	(18, outbound_capacity_msat, required),
 	(19, next_outbound_htlc_limit_msat, (default_value, outbound_capacity_msat)),
 	(20, inbound_capacity_msat, required),
@@ -623,7 +629,7 @@ impl_writeable_tlv_based!(ChannelDetails, {
 	(33, inbound_htlc_minimum_msat, option),
 	(35, inbound_htlc_maximum_msat, option),
 	// Note that _user_channel_id_high is used below, but rustc warns anyway
-	(37, _user_channel_id_high, (legacy, u64,
+	(37, _user_channel_id_high, (legacy, u64, |_| Ok(()),
 		|us: &ChannelDetails| Some((us.user_channel_id >> 64) as u64))),
 	(39, feerate_sat_per_1000_weight, option),
 	(41, channel_shutdown_state, option),

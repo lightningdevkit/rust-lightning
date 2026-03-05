@@ -41,8 +41,8 @@ use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::types::string::UntrustedString;
 use crate::util::errors::APIError;
 use crate::util::ser::{
-	BigSize, FixedLengthReader, MaybeReadable, Readable, RequiredWrapper, UpgradableRequired,
-	WithoutLength, Writeable, Writer,
+	BigSize, FixedLengthReader, MaybeReadable, Readable, ReadableArgs, RequiredWrapper,
+	UpgradableRequired, WithoutLength, Writeable, Writer,
 };
 
 use crate::io;
@@ -77,6 +77,13 @@ pub enum FundingInfo {
 		/// The outpoint of the funding
 		outpoint: transaction::OutPoint,
 	},
+	/// The contributions used for a dual funding or splice funding transaction.
+	Contribution {
+		/// UTXOs spent as inputs contributed to the funding transaction.
+		inputs: Vec<OutPoint>,
+		/// Outputs contributed to the funding transaction.
+		outputs: Vec<TxOut>,
+	},
 }
 
 impl_writeable_tlv_based_enum!(FundingInfo,
@@ -85,6 +92,10 @@ impl_writeable_tlv_based_enum!(FundingInfo,
 	},
 	(1, OutPoint) => {
 		(1, outpoint, required)
+	},
+	(2, Contribution) => {
+		(1, inputs, optional_vec),
+		(3, outputs, optional_vec),
 	}
 );
 
@@ -245,9 +256,7 @@ pub struct ClaimedHTLC {
 	pub channel_id: ChannelId,
 	/// The `user_channel_id` of the channel over which the HTLC was received. This is the value
 	/// passed in to [`ChannelManager::create_channel`] for outbound channels, or to
-	/// [`ChannelManager::accept_inbound_channel`] for inbound channels if
-	/// [`UserConfig::manually_accept_inbound_channels`] config flag is set to true. Otherwise
-	/// `user_channel_id` will be randomized for an inbound channel.
+	/// [`ChannelManager::accept_inbound_channel`] for inbound channels.
 	///
 	/// This field will be zero for a payment that was serialized prior to LDK version 0.0.117. (This
 	/// should only happen in the case that a payment was claimable prior to LDK version 0.0.117, but
@@ -255,7 +264,6 @@ pub struct ClaimedHTLC {
 	///
 	/// [`ChannelManager::create_channel`]: crate::ln::channelmanager::ChannelManager::create_channel
 	/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
-	/// [`UserConfig::manually_accept_inbound_channels`]: crate::util::config::UserConfig::manually_accept_inbound_channels
 	pub user_channel_id: u128,
 	/// The block height at which this HTLC expires.
 	pub cltv_expiry: u32,
@@ -765,14 +773,11 @@ pub enum Event {
 		/// The script which should be used in the transaction output.
 		output_script: ScriptBuf,
 		/// The `user_channel_id` value passed in to [`ChannelManager::create_channel`] for outbound
-		/// channels, or to [`ChannelManager::accept_inbound_channel`] for inbound channels if
-		/// [`UserConfig::manually_accept_inbound_channels`] config flag is set to true. Otherwise
-		/// `user_channel_id` will be randomized for an inbound channel.  This may be zero for objects
-		/// serialized with LDK versions prior to 0.0.113.
+		/// channels, or to [`ChannelManager::accept_inbound_channel`] for inbound channels.
+		///  This may be zero for objects serialized with LDK versions prior to 0.0.113.
 		///
 		/// [`ChannelManager::create_channel`]: crate::ln::channelmanager::ChannelManager::create_channel
 		/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
-		/// [`UserConfig::manually_accept_inbound_channels`]: crate::util::config::UserConfig::manually_accept_inbound_channels
 		user_channel_id: u128,
 	},
 	/// Used to indicate that the counterparty node has provided the signature(s) required to
@@ -1408,13 +1413,10 @@ pub enum Event {
 		/// The `channel_id` of the channel that is pending confirmation.
 		channel_id: ChannelId,
 		/// The `user_channel_id` value passed in to [`ChannelManager::create_channel`] for outbound
-		/// channels, or to [`ChannelManager::accept_inbound_channel`] for inbound channels if
-		/// [`UserConfig::manually_accept_inbound_channels`] config flag is set to true. Otherwise
-		/// `user_channel_id` will be randomized for an inbound channel.
+		/// channels, or to [`ChannelManager::accept_inbound_channel`] for inbound channels.
 		///
 		/// [`ChannelManager::create_channel`]: crate::ln::channelmanager::ChannelManager::create_channel
 		/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
-		/// [`UserConfig::manually_accept_inbound_channels`]: crate::util::config::UserConfig::manually_accept_inbound_channels
 		user_channel_id: u128,
 		/// The `temporary_channel_id` this channel used to be known by during channel establishment.
 		///
@@ -1448,13 +1450,10 @@ pub enum Event {
 		/// The `channel_id` of the channel that is ready.
 		channel_id: ChannelId,
 		/// The `user_channel_id` value passed in to [`ChannelManager::create_channel`] for outbound
-		/// channels, or to [`ChannelManager::accept_inbound_channel`] for inbound channels if
-		/// [`UserConfig::manually_accept_inbound_channels`] config flag is set to true. Otherwise
-		/// `user_channel_id` will be randomized for an inbound channel.
+		/// channels, or to [`ChannelManager::accept_inbound_channel`] for inbound channels.
 		///
 		/// [`ChannelManager::create_channel`]: crate::ln::channelmanager::ChannelManager::create_channel
 		/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
-		/// [`UserConfig::manually_accept_inbound_channels`]: crate::util::config::UserConfig::manually_accept_inbound_channels
 		user_channel_id: u128,
 		/// The `node_id` of the channel counterparty.
 		counterparty_node_id: PublicKey,
@@ -1470,11 +1469,10 @@ pub enum Event {
 	/// process of closure. This includes previously opened channels, and channels that time out from not being funded.
 	///
 	/// Note that this event is only triggered for accepted channels: if the
-	/// [`UserConfig::manually_accept_inbound_channels`] config flag is set to true and the channel is
-	/// rejected, no `ChannelClosed` event will be sent.
+	/// [`Event::OpenChannelRequest`] was rejected, no `ChannelClosed` event will be sent.
 	///
 	/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
-	/// [`UserConfig::manually_accept_inbound_channels`]: crate::util::config::UserConfig::manually_accept_inbound_channels
+	/// [`Event::OpenChannelRequest`]: Event::OpenChannelRequest
 	///
 	/// # Failure Behavior and Persistence
 	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
@@ -1484,15 +1482,12 @@ pub enum Event {
 		/// resolving the channel are likely still awaiting confirmation.
 		channel_id: ChannelId,
 		/// The `user_channel_id` value passed in to [`ChannelManager::create_channel`] for outbound
-		/// channels, or to [`ChannelManager::accept_inbound_channel`] for inbound channels if
-		/// [`UserConfig::manually_accept_inbound_channels`] config flag is set to true. Otherwise
-		/// `user_channel_id` will be randomized for inbound channels.
+		/// channels, or to [`ChannelManager::accept_inbound_channel`] for inbound channels.
 		/// This may be zero for inbound channels serialized prior to 0.0.113 and will always be
 		/// zero for objects serialized with LDK versions prior to 0.0.102.
 		///
 		/// [`ChannelManager::create_channel`]: crate::ln::channelmanager::ChannelManager::create_channel
 		/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
-		/// [`UserConfig::manually_accept_inbound_channels`]: crate::util::config::UserConfig::manually_accept_inbound_channels
 		user_channel_id: u128,
 		/// The reason the channel was closed.
 		reason: ClosureReason,
@@ -1536,13 +1531,10 @@ pub enum Event {
 		/// The `channel_id` of the channel that has a pending splice funding transaction.
 		channel_id: ChannelId,
 		/// The `user_channel_id` value passed in to [`ChannelManager::create_channel`] for outbound
-		/// channels, or to [`ChannelManager::accept_inbound_channel`] for inbound channels if
-		/// [`UserConfig::manually_accept_inbound_channels`] config flag is set to true. Otherwise
-		/// `user_channel_id` will be randomized for an inbound channel.
+		/// channels, or to [`ChannelManager::accept_inbound_channel`] for inbound channels.
 		///
 		/// [`ChannelManager::create_channel`]: crate::ln::channelmanager::ChannelManager::create_channel
 		/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
-		/// [`UserConfig::manually_accept_inbound_channels`]: crate::util::config::UserConfig::manually_accept_inbound_channels
 		user_channel_id: u128,
 		/// The `node_id` of the channel counterparty.
 		counterparty_node_id: PublicKey,
@@ -1569,13 +1561,10 @@ pub enum Event {
 		/// The `channel_id` of the channel for which the splice failed.
 		channel_id: ChannelId,
 		/// The `user_channel_id` value passed in to [`ChannelManager::create_channel`] for outbound
-		/// channels, or to [`ChannelManager::accept_inbound_channel`] for inbound channels if
-		/// [`UserConfig::manually_accept_inbound_channels`] config flag is set to true. Otherwise
-		/// `user_channel_id` will be randomized for an inbound channel.
+		/// channels, or to [`ChannelManager::accept_inbound_channel`] for inbound channels.
 		///
 		/// [`ChannelManager::create_channel`]: crate::ln::channelmanager::ChannelManager::create_channel
 		/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
-		/// [`UserConfig::manually_accept_inbound_channels`]: crate::util::config::UserConfig::manually_accept_inbound_channels
 		user_channel_id: u128,
 		/// The `node_id` of the channel counterparty.
 		counterparty_node_id: PublicKey,
@@ -1583,10 +1572,6 @@ pub enum Event {
 		abandoned_funding_txo: Option<OutPoint>,
 		/// The features that this channel will operate with, if available.
 		channel_type: Option<ChannelTypeFeatures>,
-		/// UTXOs spent as inputs contributed to the splice transaction.
-		contributed_inputs: Vec<OutPoint>,
-		/// Outputs contributed to the splice transaction.
-		contributed_outputs: Vec<TxOut>,
 	},
 	/// Used to indicate to the user that they can abandon the funding transaction and recycle the
 	/// inputs for another purpose.
@@ -1608,13 +1593,11 @@ pub enum Event {
 	},
 	/// Indicates a request to open a new channel by a peer.
 	///
+	/// This event is triggered for all inbound requests to open a new channel.
 	/// To accept the request (and in the case of a dual-funded channel, not contribute funds),
 	/// call [`ChannelManager::accept_inbound_channel`].
 	/// To reject the request, call [`ChannelManager::force_close_broadcasting_latest_txn`].
 	/// Note that a [`ChannelClosed`] event will _not_ be triggered if the channel is rejected.
-	///
-	/// The event is only triggered when a new open channel request is received and the
-	/// [`UserConfig::manually_accept_inbound_channels`] config flag is set to true.
 	///
 	/// # Failure Behavior and Persistence
 	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
@@ -1623,7 +1606,6 @@ pub enum Event {
 	/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
 	/// [`ChannelClosed`]: Event::ChannelClosed
 	/// [`ChannelManager::force_close_broadcasting_latest_txn`]: crate::ln::channelmanager::ChannelManager::force_close_broadcasting_latest_txn
-	/// [`UserConfig::manually_accept_inbound_channels`]: crate::util::config::UserConfig::manually_accept_inbound_channels
 	OpenChannelRequest {
 		/// The temporary channel ID of the channel requested to be opened.
 		///
@@ -1865,11 +1847,11 @@ pub enum Event {
 		///
 		/// [`ChannelManager::funding_transaction_signed`]: crate::ln::channelmanager::ChannelManager::funding_transaction_signed
 		counterparty_node_id: PublicKey,
-		/// The `user_channel_id` value passed in for outbound channels, or for inbound channels if
-		/// [`UserConfig::manually_accept_inbound_channels`] config flag is set to true. Otherwise
-		/// `user_channel_id` will be randomized for inbound channels.
+		/// The `user_channel_id` value passed in to [`ChannelManager::create_channel`] for outbound
+		/// channels, or to [`ChannelManager::accept_inbound_channel`] for inbound channels.
 		///
-		/// [`UserConfig::manually_accept_inbound_channels`]: crate::util::config::UserConfig::manually_accept_inbound_channels
+		/// [`ChannelManager::create_channel`]: crate::ln::channelmanager::ChannelManager::create_channel
+		/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
 		user_channel_id: u128,
 		/// The unsigned transaction to be signed and passed back to
 		/// [`ChannelManager::funding_transaction_signed`].
@@ -2351,8 +2333,6 @@ impl Writeable for Event {
 				ref counterparty_node_id,
 				ref abandoned_funding_txo,
 				ref channel_type,
-				ref contributed_inputs,
-				ref contributed_outputs,
 			} => {
 				52u8.write(writer)?;
 				write_tlv_fields!(writer, {
@@ -2361,8 +2341,6 @@ impl Writeable for Event {
 					(5, user_channel_id, required),
 					(7, counterparty_node_id, required),
 					(9, abandoned_funding_txo, option),
-					(11, *contributed_inputs, optional_vec),
-					(13, *contributed_outputs, optional_vec),
 				});
 			},
 			// Note that, going forward, all new events must only write data inside of
@@ -2403,7 +2381,7 @@ impl MaybeReadable for Event {
 						(6, _user_payment_id, option),
 						(7, claim_deadline, option),
 						(8, payment_preimage, option),
-						(9, onion_fields, option),
+						(9, onion_fields, (option: ReadableArgs, amount_msat)),
 						(10, counterparty_skimmed_fee_msat_opt, option),
 						(11, payment_context, option),
 						(13, payment_id, option),
@@ -2735,7 +2713,8 @@ impl MaybeReadable for Event {
 						(4, amount_msat, required),
 						(5, htlcs, optional_vec),
 						(7, sender_intended_total_msat, option),
-						(9, onion_fields, option),
+						(9, onion_fields, (option: ReadableArgs,
+							sender_intended_total_msat.unwrap_or(amount_msat))),
 						(11, payment_id, option),
 					});
 					Ok(Some(Event::PaymentClaimed {
@@ -2989,8 +2968,6 @@ impl MaybeReadable for Event {
 						(5, user_channel_id, required),
 						(7, counterparty_node_id, required),
 						(9, abandoned_funding_txo, option),
-						(11, contributed_inputs, optional_vec),
-						(13, contributed_outputs, optional_vec),
 					});
 
 					Ok(Some(Event::SpliceFailed {
@@ -2999,8 +2976,6 @@ impl MaybeReadable for Event {
 						counterparty_node_id: counterparty_node_id.0.unwrap(),
 						abandoned_funding_txo,
 						channel_type,
-						contributed_inputs: contributed_inputs.unwrap_or_default(),
-						contributed_outputs: contributed_outputs.unwrap_or_default(),
 					}))
 				};
 				f()

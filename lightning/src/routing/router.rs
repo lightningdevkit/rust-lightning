@@ -512,6 +512,7 @@ pub struct RouteHop {
 	/// to reach this node.
 	pub channel_features: ChannelFeatures,
 	/// The fee taken on this hop (for paying for the use of the *next* channel in the path).
+	///
 	/// If this is the last hop in [`Path::hops`]:
 	/// * if we're sending to a [`BlindedPaymentPath`], this is the fee paid for use of the entire
 	///   blinded path (including any Trampoline hops)
@@ -519,8 +520,12 @@ pub struct RouteHop {
 	pub fee_msat: u64,
 	/// The CLTV delta added for this hop.
 	/// If this is the last hop in [`Path::hops`]:
-	/// * if we're sending to a [`BlindedPaymentPath`], this is the CLTV delta for the entire blinded
-	///   path (including any Trampoline hops)
+	/// * if we're sending to a [`BlindedPaymentPath`] *with* trampoline hops, this is the CLTV
+	///   delta for the entire blinded path including the trampoline hops, and is thus equal to the
+	///   sum of [`TrampolineHop::cltv_expiry_delta`] for all the [`BlindedTail::trampoline_hops`].
+	/// * if we're sending to a [`BlindedPaymentPath`], *without* trampoline hops, this is the CLTV
+	///   delta for the entire blinded path (including
+	///   [`BlindedTail::excess_final_cltv_expiry_delta`]).
 	/// * otherwise, this is the CLTV delta expected at the destination
 	pub cltv_expiry_delta: u32,
 	/// Indicates whether this hop is possibly announced in the public network graph.
@@ -557,8 +562,9 @@ pub struct TrampolineHop {
 	/// the entire blinded path.
 	pub fee_msat: u64,
 	/// The CLTV delta added for this hop.
+	///
 	/// If this is the last Trampoline hop within [`BlindedTail`], this is the CLTV delta for the entire
-	/// blinded path.
+	/// blinded path (including the [`BlindedTail::excess_final_cltv_expiry_delta`]).
 	pub cltv_expiry_delta: u32,
 }
 
@@ -633,13 +639,19 @@ impl Path {
 		}
 	}
 
-	/// Gets the final hop's CLTV expiry delta.
+	/// Gets the final hop's CLTV expiry delta, if there's a final non-blinded hop.
 	#[rustfmt::skip]
 	pub fn final_cltv_expiry_delta(&self) -> Option<u32> {
 		match &self.blinded_tail {
 			Some(_) => None,
 			None => self.hops.last().map(|hop| hop.cltv_expiry_delta)
 		}
+	}
+
+	/// Gets the total CLTV expiry delta which will be added to the current block height (plus some
+	/// extra headroom) when sending the HTLC
+	pub fn total_cltv_expiry_delta(&self) -> u32 {
+		self.hops.iter().map(|hop| hop.cltv_expiry_delta).sum()
 	}
 
 	/// True if this [`Path`] has at least one Trampoline hop.
@@ -687,6 +699,111 @@ impl Route {
 	/// [`htlc_minimum_msat`]: https://github.com/lightning/bolts/blob/master/07-routing-gossip.md#the-channel_update-message
 	pub fn get_total_amount(&self) -> u64 {
 		self.paths.iter().map(|path| path.final_value_msat()).sum()
+	}
+
+	pub(crate) fn debug_assert_route_meets_params<L: Logger>(&self, logger: L) -> Result<(), ()> {
+		if let Some(route_params) = self.route_params.as_ref() {
+			// Check that we actually pay less than the max fee we set.
+			if let Some(max_total_fee) = route_params.max_total_routing_fee_msat {
+				let total_fee = self.get_total_fees();
+				if total_fee > max_total_fee {
+					let err = format!("Router returned an attempt to pay with a higher fee ({total_fee}msat) than we allowed ({max_total_fee}msat). Your router is critically buggy!");
+					debug_assert!(false, "{}", err);
+					log_error!(logger, "{}", err);
+					return Err(());
+				}
+			}
+
+			if self.paths.is_empty() {
+				let err = "Selected route had no paths. Your router is buggy!";
+				debug_assert!(false, "{}", err);
+				log_error!(logger, "{}", err);
+				return Err(());
+			}
+
+			for path in self.paths.iter() {
+				if path.hops.is_empty() {
+					let err = "Unusable path in route (path.hops.len() must be at least 1)";
+					debug_assert!(false, "{}", err);
+					log_error!(logger, "{}", err);
+					return Err(());
+				}
+
+				let total_cltv_delta = path.total_cltv_expiry_delta();
+				if total_cltv_delta > route_params.payment_params.max_total_cltv_expiry_delta {
+					let err = format!(
+						"Path had a total CLTV of {total_cltv_delta} which is greater than the maximum we're allowed {}",
+						route_params.payment_params.max_total_cltv_expiry_delta,
+					);
+					debug_assert!(false, "{}", err);
+					log_error!(logger, "{}", err);
+					return Err(());
+				}
+
+				if path.hops.len() > route_params.payment_params.max_path_length.into() {
+					let err = format!(
+						"Path had a length of {}, which is greater than the maximum we're allowed ({})",
+						path.hops.len(),
+						route_params.payment_params.max_path_length,
+					);
+					#[cfg(any(test, feature = "_test_utils"))]
+					debug_assert!(false, "{}", err);
+					log_error!(logger, "{}", err);
+					// This is a bug, but there's not a material safety risk to making this
+					// payment, so we don't bother to error here.
+				}
+
+				if let Some(tail) = &path.blinded_tail {
+					let trampoline_cltv_sum: u32 =
+						tail.trampoline_hops.iter().map(|hop| hop.cltv_expiry_delta).sum();
+					let last_hop_cltv_delta = path.hops.last().unwrap().cltv_expiry_delta;
+					if !tail.trampoline_hops.is_empty()
+						&& trampoline_cltv_sum != last_hop_cltv_delta
+					{
+						let err = format!(
+							"Path had a total trampoline CLTV of {trampoline_cltv_sum}, which is not equal to the total last-hop CLTV delta of {last_hop_cltv_delta}"
+						);
+						debug_assert!(false, "{}", err);
+						log_error!(logger, "{}", err);
+					}
+					let last_trampoline_cltv_opt =
+						tail.trampoline_hops.last().map(|h| h.cltv_expiry_delta);
+					let last_trampoline_cltv = last_trampoline_cltv_opt.unwrap_or(u32::MAX);
+					if tail.excess_final_cltv_expiry_delta > last_trampoline_cltv {
+						let err = format!(
+							"Last trampoline CLTV of {last_trampoline_cltv} is less than the excess blinded path cltv of {}",
+							tail.excess_final_cltv_expiry_delta
+						);
+						debug_assert!(false, "{}", err);
+						log_error!(logger, "{}", err);
+					}
+					if tail.excess_final_cltv_expiry_delta > last_hop_cltv_delta {
+						let err = format!(
+							"Last path hop CLTV of {last_hop_cltv_delta} is less than the excess blinded path cltv of {}",
+							tail.excess_final_cltv_expiry_delta
+						);
+						debug_assert!(false, "{}", err);
+						log_error!(logger, "{}", err);
+					}
+				}
+			}
+
+			// Test that we don't contain any "extra" MPP parts - while we're allowed to overshoot
+			// the `final_value_msat` specified in the `route_params`, we aren't allowed to have
+			// any MPP parts which aren't needed to meet `route_params.final_value_msat`.
+			let min_mpp_part = self.paths.iter().map(|h| h.final_value_msat()).min().unwrap_or(0);
+			if self.get_total_amount() - min_mpp_part >= route_params.final_value_msat {
+				let err = format!(
+					"Router returned an attempt to include more MPP parts than needed. The smallest MPP part ({min_mpp_part}msat) was not needed for a payment of {}msat. Your router is critically buggy!",
+					route_params.final_value_msat
+				);
+				debug_assert!(false, "{}", err);
+				log_error!(logger, "{}", err);
+				return Err(());
+			}
+		}
+
+		Ok(())
 	}
 }
 
@@ -2491,9 +2608,11 @@ pub fn find_route<L: Logger, GL: Logger, S: ScoreLookUp>(
 	scorer: &S, score_params: &S::ScoreParams, random_seed_bytes: &[u8; 32]
 ) -> Result<Route, &'static str> {
 	let graph_lock = network_graph.read_only();
-	let mut route = get_route(our_node_pubkey, &route_params, &graph_lock, first_hops, logger,
+	let mut route = get_route(our_node_pubkey, &route_params, &graph_lock, first_hops, &logger,
 		scorer, score_params, random_seed_bytes)?;
 	add_random_cltv_offset(&mut route, &route_params.payment_params, &graph_lock, random_seed_bytes);
+	route.debug_assert_route_meets_params(&logger)
+		.map_err(|()| "Generated route doesn't comply with the parameters you specified. This indicates a bug in the router. Please report this bug!")?;
 	Ok(route)
 }
 
@@ -3862,8 +3981,8 @@ fn add_random_cltv_offset(route: &mut Route, payment_params: &PaymentParameters,
 
 		// Limit the offset so we never exceed the max_total_cltv_expiry_delta. To improve plausibility,
 		// we choose the limit to be the largest possible multiple of MEDIAN_HOP_CLTV_EXPIRY_DELTA.
-		let path_total_cltv_expiry_delta: u32 = path.hops.iter().map(|h| h.cltv_expiry_delta).sum();
-		let mut max_path_offset = payment_params.max_total_cltv_expiry_delta - path_total_cltv_expiry_delta;
+		let mut max_path_offset =
+			payment_params.max_total_cltv_expiry_delta - path.total_cltv_expiry_delta();
 		max_path_offset = cmp::max(
 			max_path_offset - (max_path_offset % MEDIAN_HOP_CLTV_EXPIRY_DELTA),
 			max_path_offset % MEDIAN_HOP_CLTV_EXPIRY_DELTA);

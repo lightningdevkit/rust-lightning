@@ -18,7 +18,6 @@ fn test_p2a_anchor_values_under_trims_and_rounds() {
 	let mut user_cfg = test_default_channel_config();
 	user_cfg.channel_handshake_config.our_htlc_minimum_msat = 1;
 	user_cfg.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
-	user_cfg.manually_accept_inbound_channels = true;
 
 	let configs = [Some(user_cfg.clone()), Some(user_cfg)];
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &configs);
@@ -125,13 +124,12 @@ fn test_htlc_claim_chunking() {
 	user_cfg.channel_handshake_config.our_htlc_minimum_msat = 1;
 	user_cfg.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
 	user_cfg.channel_handshake_config.our_max_accepted_htlcs = 114;
-	user_cfg.manually_accept_inbound_channels = true;
 
 	let configs = [Some(user_cfg.clone()), Some(user_cfg)];
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &configs);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	let coinbase_tx = provide_anchor_utxo_reserves(&nodes, 50, Amount::from_sat(500));
+	let coinbase_tx = provide_utxo_reserves(&nodes, 50, Amount::from_sat(500));
 
 	const CHAN_CAPACITY: u64 = 10_000_000;
 	let (_, _, chan_id, _funding_tx) = create_announced_chan_between_nodes_with_value(
@@ -187,12 +185,12 @@ fn test_htlc_claim_chunking() {
 	assert_eq!(htlc_claims[1].input.len(), 34);
 	assert_eq!(htlc_claims[1].output.len(), 24);
 
-	check_closed_broadcast!(nodes[0], true);
+	check_closed_broadcast(&nodes[0], 1, true);
 	check_added_monitors(&nodes[0], 1);
 	let reason = ClosureReason::CommitmentTxConfirmed;
 	check_closed_event(&nodes[0], 1, reason, &[nodes[1].node.get_our_node_id()], CHAN_CAPACITY);
 	assert!(nodes[0].node.list_channels().is_empty());
-	check_closed_broadcast!(nodes[1], true);
+	check_closed_broadcast(&nodes[1], 1, true);
 	check_added_monitors(&nodes[1], 1);
 	let reason = ClosureReason::CommitmentTxConfirmed;
 	check_closed_event(&nodes[1], 1, reason, &[nodes[0].node.get_our_node_id()], CHAN_CAPACITY);
@@ -314,7 +312,6 @@ fn test_anchor_tx_too_big() {
 	user_cfg.channel_handshake_config.our_htlc_minimum_msat = 1;
 	user_cfg.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
 	user_cfg.channel_handshake_config.our_max_accepted_htlcs = 114;
-	user_cfg.manually_accept_inbound_channels = true;
 
 	let configs = [Some(user_cfg.clone()), Some(user_cfg)];
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &configs);
@@ -322,7 +319,7 @@ fn test_anchor_tx_too_big() {
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 
-	let _coinbase_tx_a = provide_anchor_utxo_reserves(&nodes, 50, Amount::from_sat(500));
+	let _coinbase_tx_a = provide_utxo_reserves(&nodes, 50, Amount::from_sat(500));
 
 	const CHAN_CAPACITY: u64 = 10_000_000;
 	let (_, _, chan_id, _funding_tx) = create_announced_chan_between_nodes_with_value(
@@ -349,7 +346,7 @@ fn test_anchor_tx_too_big() {
 		.force_close_broadcasting_latest_txn(&chan_id, &node_a_id, message.clone())
 		.unwrap();
 	check_added_monitors(&nodes[1], 1);
-	check_closed_broadcast!(nodes[1], true);
+	check_closed_broadcast(&nodes[1], 1, true);
 
 	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
 	check_closed_event(&nodes[1], 1, reason, &[node_a_id], CHAN_CAPACITY);
@@ -371,7 +368,7 @@ fn test_anchor_tx_too_big() {
 		- EMPTY_WITNESS_WEIGHT
 		- P2WSH_TXOUT_WEIGHT;
 	nodes[1].logger.assert_log(
-		"lightning::events::bump_transaction",
+		"lightning::util::wallet_utils",
 		format!(
 			"Insufficient funds to meet target feerate {} sat/kW while remaining under {} WU",
 			FEERATE, max_coin_selection_weight
@@ -405,7 +402,7 @@ fn test_anchor_tx_too_big() {
 	assert_eq!(txns[1].input.len(), 2);
 	assert_eq!(txns[1].output.len(), 1);
 	nodes[1].logger.assert_log(
-		"lightning::events::bump_transaction",
+		"lightning::util::wallet_utils",
 		format!(
 			"Insufficient funds to meet target feerate {} sat/kW while remaining under {} WU",
 			FEERATE, max_coin_selection_weight

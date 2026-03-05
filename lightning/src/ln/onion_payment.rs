@@ -438,7 +438,7 @@ pub(super) fn create_recv_pending_htlc_info(
 			payment_data,
 			payment_preimage,
 			payment_metadata,
-			incoming_cltv_expiry: onion_cltv_expiry,
+			incoming_cltv_expiry: cltv_expiry,
 			custom_tlvs,
 			requires_blinded_error,
 			has_recipient_created_payment_secret,
@@ -450,7 +450,7 @@ pub(super) fn create_recv_pending_htlc_info(
 			payment_data: data,
 			payment_metadata,
 			payment_context,
-			incoming_cltv_expiry: onion_cltv_expiry,
+			incoming_cltv_expiry: cltv_expiry,
 			phantom_shared_secret,
 			trampoline_shared_secret,
 			custom_tlvs,
@@ -779,7 +779,7 @@ mod tests {
 		let charlie_pk = PublicKey::from_secret_key(&secp_ctx, &charlie.get_node_secret_key());
 
 		let (
-			session_priv, total_amt_msat, cur_height, mut recipient_onion, keysend_preimage, payment_hash,
+			session_priv, _total_amt_msat, cur_height, mut recipient_onion, keysend_preimage, payment_hash,
 			prng_seed, hops, ..
 		) = payment_onion_args(bob_pk, charlie_pk);
 
@@ -788,8 +788,8 @@ mod tests {
 
 		let path = Path { hops, blinded_tail: None, };
 		let onion_keys = super::onion_utils::construct_onion_keys(&secp_ctx, &path, &session_priv);
-		let (onion_payloads, ..) = super::onion_utils::build_onion_payloads(
-			&path, total_amt_msat, &recipient_onion, cur_height + 1, &Some(keysend_preimage), None, None
+		let (onion_payloads, ..) = super::onion_utils::test_build_onion_payloads(
+			&path, &recipient_onion, cur_height + 1, &Some(keysend_preimage), None, None
 		).unwrap();
 
 		assert!(super::onion_utils::construct_onion_packet(
@@ -817,7 +817,7 @@ mod tests {
 		};
 
 		let (onion, amount_msat, cltv_expiry) = create_payment_onion(
-			&secp_ctx, &path, &session_priv, total_amt_msat, &recipient_onion,
+			&secp_ctx, &path, &session_priv, &recipient_onion,
 			cur_height, &payment_hash, &Some(preimage), None, prng_seed
 		).unwrap();
 
@@ -842,7 +842,7 @@ mod tests {
 			PendingHTLCRouting::ReceiveKeysend { payment_preimage, payment_data, incoming_cltv_expiry, .. } => {
 				assert_eq!(payment_preimage, preimage);
 				assert_eq!(peeled2.outgoing_amt_msat, recipient_amount);
-				assert_eq!(incoming_cltv_expiry, peeled2.outgoing_cltv_value);
+				assert_eq!(incoming_cltv_expiry, msg.cltv_expiry);
 				let msgs::FinalOnionHopData{total_msat, payment_secret} = payment_data.unwrap();
 				assert_eq!(total_msat, total_amt_msat);
 				assert_eq!(payment_secret, pay_secret);
@@ -879,7 +879,7 @@ mod tests {
 		let total_amt_msat = 1000;
 		let cur_height = 1000;
 		let pay_secret = PaymentSecret([99; 32]);
-		let recipient_onion = RecipientOnionFields::secret_only(pay_secret);
+		let recipient_onion = RecipientOnionFields::secret_only(pay_secret, total_amt_msat);
 		let preimage_bytes = [43; 32];
 		let preimage = PaymentPreimage(preimage_bytes);
 		let rhash_bytes = Sha256::hash(&preimage_bytes).to_byte_array();

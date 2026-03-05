@@ -103,7 +103,6 @@ pub enum SignerOp {
 	ReleaseCommitmentSecret,
 	ValidateHolderCommitment,
 	SignCounterpartyCommitment,
-	ValidateCounterpartyRevocation,
 	SignHolderCommitment,
 	SignJusticeRevokedOutput,
 	SignJusticeRevokedHtlc,
@@ -121,7 +120,6 @@ impl SignerOp {
 			SignerOp::ReleaseCommitmentSecret,
 			SignerOp::ValidateHolderCommitment,
 			SignerOp::SignCounterpartyCommitment,
-			SignerOp::ValidateCounterpartyRevocation,
 			SignerOp::SignHolderCommitment,
 			SignerOp::SignJusticeRevokedOutput,
 			SignerOp::SignJusticeRevokedHtlc,
@@ -186,7 +184,7 @@ impl TestChannelSigner {
 		self.get_enforcement_state().disabled_signer_ops.insert(signer_op);
 	}
 
-	#[cfg(test)]
+	#[cfg(any(test, feature = "_test_utils"))]
 	fn is_signer_available(&self, signer_op: SignerOp) -> bool {
 		!self.get_enforcement_state().disabled_signer_ops.contains(&signer_op)
 	}
@@ -196,7 +194,7 @@ impl ChannelSigner for TestChannelSigner {
 	fn get_per_commitment_point(
 		&self, idx: u64, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<PublicKey, ()> {
-		#[cfg(test)]
+		#[cfg(any(test, feature = "_test_utils"))]
 		if !self.is_signer_available(SignerOp::GetPerCommitmentPoint) {
 			return Err(());
 		}
@@ -204,7 +202,7 @@ impl ChannelSigner for TestChannelSigner {
 	}
 
 	fn release_commitment_secret(&self, idx: u64) -> Result<[u8; 32], ()> {
-		#[cfg(test)]
+		#[cfg(any(test, feature = "_test_utils"))]
 		if !self.is_signer_available(SignerOp::ReleaseCommitmentSecret) {
 			return Err(());
 		}
@@ -236,10 +234,6 @@ impl ChannelSigner for TestChannelSigner {
 	}
 
 	fn validate_counterparty_revocation(&self, idx: u64, _secret: &SecretKey) -> Result<(), ()> {
-		#[cfg(test)]
-		if !self.is_signer_available(SignerOp::ValidateCounterpartyRevocation) {
-			return Err(());
-		}
 		let mut state = self.state.lock().unwrap();
 		if !self.disable_all_state_policy_checks {
 			assert!(idx == state.last_counterparty_revoked_commitment || idx == state.last_counterparty_revoked_commitment - 1, "expecting to validate the current or next counterparty revocation - trying {}, current {}", idx, state.last_counterparty_revoked_commitment);
@@ -272,7 +266,7 @@ impl EcdsaChannelSigner for TestChannelSigner {
 	) -> Result<(Signature, Vec<Signature>), ()> {
 		self.verify_counterparty_commitment_tx(channel_parameters, commitment_tx, secp_ctx);
 
-		#[cfg(test)]
+		#[cfg(any(test, feature = "_test_utils"))]
 		if !self.is_signer_available(SignerOp::SignCounterpartyCommitment) {
 			return Err(());
 		}
@@ -317,7 +311,7 @@ impl EcdsaChannelSigner for TestChannelSigner {
 		&self, channel_parameters: &ChannelTransactionParameters,
 		commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()> {
-		#[cfg(test)]
+		#[cfg(any(test, feature = "_test_utils"))]
 		if !self.is_signer_available(SignerOp::SignHolderCommitment) {
 			return Err(());
 		}
@@ -354,7 +348,7 @@ impl EcdsaChannelSigner for TestChannelSigner {
 		input: usize, amount: u64, per_commitment_key: &SecretKey,
 		secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()> {
-		#[cfg(test)]
+		#[cfg(any(test, feature = "_test_utils"))]
 		if !self.is_signer_available(SignerOp::SignJusticeRevokedOutput) {
 			return Err(());
 		}
@@ -375,7 +369,7 @@ impl EcdsaChannelSigner for TestChannelSigner {
 		input: usize, amount: u64, per_commitment_key: &SecretKey, htlc: &HTLCOutputInCommitment,
 		secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()> {
-		#[cfg(test)]
+		#[cfg(any(test, feature = "_test_utils"))]
 		if !self.is_signer_available(SignerOp::SignJusticeRevokedHtlc) {
 			return Err(());
 		}
@@ -396,7 +390,7 @@ impl EcdsaChannelSigner for TestChannelSigner {
 		&self, htlc_tx: &Transaction, input: usize, htlc_descriptor: &HTLCDescriptor,
 		secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()> {
-		#[cfg(test)]
+		#[cfg(any(test, feature = "_test_utils"))]
 		if !self.is_signer_available(SignerOp::SignHolderHtlcTransaction) {
 			return Err(());
 		}
@@ -462,7 +456,7 @@ impl EcdsaChannelSigner for TestChannelSigner {
 		input: usize, amount: u64, per_commitment_point: &PublicKey, htlc: &HTLCOutputInCommitment,
 		secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()> {
-		#[cfg(test)]
+		#[cfg(any(test, feature = "_test_utils"))]
 		if !self.is_signer_available(SignerOp::SignCounterpartyHtlcTransaction) {
 			return Err(());
 		}
@@ -483,7 +477,7 @@ impl EcdsaChannelSigner for TestChannelSigner {
 		&self, channel_parameters: &ChannelTransactionParameters, closing_tx: &ClosingTransaction,
 		secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()> {
-		#[cfg(test)]
+		#[cfg(any(test, feature = "_test_utils"))]
 		if !self.is_signer_available(SignerOp::SignClosingTransaction) {
 			return Err(());
 		}
@@ -504,7 +498,7 @@ impl EcdsaChannelSigner for TestChannelSigner {
 			anchor_tx.input[input].previous_output.vout == 0
 				|| anchor_tx.input[input].previous_output.vout == 1
 		);
-		#[cfg(test)]
+		#[cfg(any(test, feature = "_test_utils"))]
 		if !self.is_signer_available(SignerOp::SignHolderAnchorInput) {
 			return Err(());
 		}
