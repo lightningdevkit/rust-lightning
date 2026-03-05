@@ -4375,19 +4375,21 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 	/// Given outbound HTLCs from a counterparty commitment update, checks if the funding output
 	/// has been spent on-chain. If so, creates `OnchainEvent::HTLCUpdate` entries to fail back
-	/// those HTLCs.
+	/// HTLCs that weren't already known to the monitor.
 	///
 	/// This handles the race where a `ChannelMonitorUpdate` with a new counterparty commitment
 	/// is dispatched (e.g., via deferred writes) before the channel force-closes, but only
 	/// applied to the in-memory monitor after the commitment transaction has already confirmed.
+	///
+	/// Only truly new HTLCs (not present in any previously-known commitment) need to be failed
+	/// here. HTLCs that were already tracked by the monitor will be handled by the existing
+	/// `fail_unbroadcast_htlcs` logic when the spending transaction confirms.
 	fn fail_htlcs_from_update_after_funding_spend<'a, L: Logger>(
 		&mut self, htlcs: impl Iterator<Item = (&'a HTLCSource, PaymentHash, u64)>,
 		logger: &WithContext<L>,
 	) {
-		// Determine the confirmed spending txid, either from the fully confirmed field or
-		// from a pending FundingSpendConfirmation event still awaiting ANTI_REORG_DELAY.
-		// There is at most one FundingSpendConfirmation at a time (splice promotions happen
-		// via AlternativeFundingConfirmation on a separate funding scope).
+		// Determine the spending txid, either from the fully confirmed field or from a
+		// pending FundingSpendConfirmation event still awaiting ANTI_REORG_DELAY.
 		let spending_txid = if let Some(txid) = self.funding_spend_confirmed {
 			txid
 		} else if let Some(txid) =
@@ -4403,59 +4405,34 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			return;
 		};
 
-		// Collect sources for non-dust outbound HTLCs in the confirmed commitment so we
-		// can skip them (those will be resolved via the normal HTLC timeout/success path).
-		let confirmed_nondust_sources: Vec<&HTLCSource> = if let Some(htlc_list) =
-			self.funding.counterparty_claimable_outpoints.get(&spending_txid)
-		{
-			// Counterparty commitment: our outbound HTLCs have sources.
-			htlc_list
-				.iter()
-				.filter_map(|(htlc, source)| {
-					htlc.transaction_output_index.and(source.as_ref().map(|s| s.as_ref()))
-				})
-				.collect()
-		} else {
-			// Holder commitment confirmed. Check both current and previous since we
-			// don't track which holder commitment txid was broadcast.
-			let nondust_source = |(htlc, source): (&HTLCOutputInCommitment, _)| {
-				htlc.transaction_output_index.and(source)
-			};
-			let funding = &self.funding;
-			let current_txid = funding.current_holder_commitment_tx.trust().txid();
-			if current_txid == spending_txid {
-				holder_commitment_htlcs!(self, CURRENT_WITH_SOURCES)
-					.filter_map(nondust_source)
-					.collect()
-			} else if funding
-				.prev_holder_commitment_tx
-				.as_ref()
-				.is_some_and(|tx| tx.trust().txid() == spending_txid)
-			{
-				holder_commitment_htlcs!(self, PREV_WITH_SOURCES)
-					.map(|iter| iter.filter_map(nondust_source).collect())
-					.unwrap_or_default()
-			} else {
-				Vec::new()
+		// Check HTLC sources against all previously-known commitments to find truly new
+		// ones. After the update has been applied, `prev_counterparty_commitment_txid` holds
+		// what was `current` before this update, so it represents the already-known
+		// counterparty state. HTLCs already present in any of these will be handled by
+		// `fail_unbroadcast_htlcs` when the spending transaction confirms.
+		let is_source_known = |source: &HTLCSource| {
+			if let Some(ref txid) = self.funding.prev_counterparty_commitment_txid {
+				if let Some(htlc_list) = self.funding.counterparty_claimable_outpoints.get(txid) {
+					if htlc_list.iter().any(|(_, s)| s.as_ref().map(|s| s.as_ref()) == Some(source))
+					{
+						return true;
+					}
+				}
 			}
+			if holder_commitment_htlcs!(self, CURRENT_WITH_SOURCES).any(|(_, s)| s == Some(source))
+			{
+				return true;
+			}
+			if let Some(mut iter) = holder_commitment_htlcs!(self, PREV_WITH_SOURCES) {
+				if iter.any(|(_, s)| s == Some(source)) {
+					return true;
+				}
+			}
+			false
 		};
-
-		// We push entries to `onchain_events_awaiting_threshold_conf` rather than failing
-		// immediately as a safeguard. With deferred writes, `commitment_signed` is held
-		// back until the monitor update completes, so the peer should not have received
-		// it yet. However, waiting ANTI_REORG_DELAY blocks is defensive and also handles
-		// reorgs correctly (entries are removed by `blocks_disconnected` if the funding
-		// spend is reorged out, and the monitor now has the latest commitment stored).
-		//
-		// HTLCs that were already failed via `fail_unbroadcast_htlcs` (from a
-		// previously-known counterparty commitment) may produce duplicate entries here.
-		// This is safe because the `ChannelManager` handles duplicate `HTLCEvent`s
-		// gracefully.
 		let entry_height = self.best_block.height;
 		for (source, payment_hash, amount_msat) in htlcs {
-			// Skip HTLCs that have non-dust outputs in the confirmed commitment
-			// (those will be resolved via the normal HTLC timeout/success path).
-			if confirmed_nondust_sources.contains(&source) {
+			if is_source_known(source) {
 				continue;
 			}
 			if self.counterparty_fulfilled_htlcs.get(&SentHTLCId::from_source(source)).is_some() {
