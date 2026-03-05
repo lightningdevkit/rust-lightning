@@ -2353,7 +2353,6 @@ where
 					holder_commitment_point,
 					pending_splice: None,
 					quiescent_action: None,
-					holder_is_quiescence_initiator: false,
 				};
 				let res = funded_channel.initial_commitment_signed_v2(msg, best_block, signer_provider, logger)
 					.map(|monitor| (Some(monitor), None))
@@ -6426,10 +6425,6 @@ pub(super) struct FundedChannel<SP: SignerProvider> {
 	/// initiator we may be able to merge this action into what the counterparty wanted to do (e.g.
 	/// in the case of splicing).
 	quiescent_action: Option<QuiescentAction>,
-
-	/// Whether we (the holder) initiated the current quiescence session.
-	/// Set when quiescence is established, cleared when quiescence ends.
-	holder_is_quiescence_initiator: bool,
 }
 
 #[cfg(any(test, fuzzing))]
@@ -12213,12 +12208,6 @@ where
 			return Err(ChannelError::WarnAndDisconnect("Quiescence needed for RBF".to_owned()));
 		}
 
-		if self.holder_is_quiescence_initiator {
-			return Err(ChannelError::WarnAndDisconnect(
-				"Counterparty sent tx_init_rbf but is not the quiescence initiator".to_owned(),
-			));
-		}
-
 		if self.context.minimum_depth(&self.funding) == Some(0) {
 			return Err(ChannelError::WarnAndDisconnect(format!(
 				"Channel {} has option_zeroconf, cannot RBF splice",
@@ -13252,7 +13241,6 @@ where
 
 		self.context.channel_state.clear_local_stfu_sent();
 		self.context.channel_state.set_quiescent();
-		self.holder_is_quiescence_initiator = is_holder_quiescence_initiator;
 
 		log_debug!(
 			logger,
@@ -13368,7 +13356,6 @@ where
 			// initiated first, we'll retry after we're no longer quiescent.
 			self.context.channel_state.clear_remote_stfu_sent();
 			self.context.channel_state.set_quiescent();
-			self.holder_is_quiescence_initiator = false;
 			false
 		} else {
 			log_debug!(logger, "Sending stfu as quiescence initiator");
@@ -13712,7 +13699,6 @@ impl<SP: SignerProvider> OutboundV1Channel<SP> {
 			holder_commitment_point,
 			pending_splice: None,
 			quiescent_action: None,
-			holder_is_quiescence_initiator: false,
 		};
 
 		let need_channel_ready = channel.check_get_channel_ready(0, logger).is_some()
@@ -14013,7 +13999,6 @@ impl<SP: SignerProvider> InboundV1Channel<SP> {
 			holder_commitment_point,
 			pending_splice: None,
 			quiescent_action: None,
-			holder_is_quiescence_initiator: false,
 		};
 		let need_channel_ready = channel.check_get_channel_ready(0, logger).is_some()
 			|| channel.context.signer_pending_channel_ready;
@@ -15841,7 +15826,6 @@ impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
 			holder_commitment_point,
 			pending_splice,
 			quiescent_action: None,
-			holder_is_quiescence_initiator: false,
 		})
 	}
 }

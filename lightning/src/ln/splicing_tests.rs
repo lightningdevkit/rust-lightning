@@ -4229,68 +4229,6 @@ fn test_splice_rbf_active_negotiation() {
 }
 
 #[test]
-fn test_splice_rbf_not_quiescence_initiator() {
-	// Test that tx_init_rbf is rejected when the sender is not the quiescence initiator.
-	// Node 1 initiates quiescence, so only node 1 should be allowed to send tx_init_rbf.
-	// Node 0 sending tx_init_rbf should be rejected.
-	let chanmon_cfgs = create_chanmon_cfgs(2);
-	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-
-	let node_id_0 = nodes[0].node.get_our_node_id();
-	let node_id_1 = nodes[1].node.get_our_node_id();
-
-	let initial_channel_value_sat = 100_000;
-	let (_, _, channel_id, _) =
-		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
-
-	let added_value = Amount::from_sat(50_000);
-	provide_utxo_reserves(&nodes, 2, added_value * 2);
-
-	// Complete a splice-in from node 0.
-	let funding_contribution = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
-	let (_splice_tx, _new_funding_script) =
-		splice_channel(&nodes[0], &nodes[1], channel_id, funding_contribution);
-
-	// Re-enter quiescence with node 1 as the initiator (not node 0).
-	nodes[1].node.maybe_propose_quiescence(&node_id_0, &channel_id).unwrap();
-	let stfu_b = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
-	nodes[0].node.handle_stfu(node_id_1, &stfu_b);
-	let stfu_a = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
-	nodes[1].node.handle_stfu(node_id_0, &stfu_a);
-
-	// Node 0 sends tx_init_rbf, but node 1 is the quiescence initiator, so node 0 should be
-	// rejected.
-	let tx_init_rbf = msgs::TxInitRbf {
-		channel_id,
-		locktime: 0,
-		feerate_sat_per_1000_weight: 500,
-		funding_output_contribution: Some(added_value.to_sat() as i64),
-	};
-
-	nodes[1].node.handle_tx_init_rbf(node_id_0, &tx_init_rbf);
-
-	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
-	assert_eq!(msg_events.len(), 1);
-	match &msg_events[0] {
-		MessageSendEvent::HandleError { action, .. } => {
-			assert_eq!(
-				*action,
-				msgs::ErrorAction::DisconnectPeerWithWarning {
-					msg: msgs::WarningMessage {
-						channel_id,
-						data: "Counterparty sent tx_init_rbf but is not the quiescence initiator"
-							.to_owned(),
-					},
-				}
-			);
-		},
-		_ => panic!("Expected HandleError, got {:?}", msg_events[0]),
-	}
-}
-
-#[test]
 fn test_splice_rbf_after_splice_locked() {
 	// Test that tx_init_rbf is rejected when the counterparty has already sent splice_locked.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
