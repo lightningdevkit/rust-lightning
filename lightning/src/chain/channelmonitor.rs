@@ -4440,10 +4440,12 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			}
 		};
 
-		// We use best_block.height so that entries wait ANTI_REORG_DELAY blocks before
-		// maturing. Since we don't know whether `commitment_signed` reached the peer,
-		// they may still broadcast the newer commitment, and we need to allow time for
-		// that before treating these HTLCs as failed.
+		// We push entries to `onchain_events_awaiting_threshold_conf` rather than failing
+		// immediately as a safeguard. With deferred writes, `commitment_signed` is held
+		// back until the monitor update completes, so the peer should not have received
+		// it yet. However, waiting ANTI_REORG_DELAY blocks is defensive and also handles
+		// reorgs correctly (entries are removed by `blocks_disconnected` if the funding
+		// spend is reorged out, and the monitor now has the latest commitment stored).
 		//
 		// HTLCs that were already failed via `fail_unbroadcast_htlcs` (from a
 		// previously-known counterparty commitment) may produce duplicate entries here.
