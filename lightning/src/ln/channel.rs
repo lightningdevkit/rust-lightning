@@ -2964,6 +2964,26 @@ impl FundingNegotiation {
 			FundingNegotiation::AwaitingSignatures { is_initiator, .. } => *is_initiator,
 		}
 	}
+	fn for_initiator<SP: SignerProvider, ES: EntropySource>(
+		funding: FundingScope, context: &ChannelContext<SP>,
+		funding_negotiation_context: FundingNegotiationContext, entropy_source: &ES,
+		holder_node_id: &PublicKey,
+	) -> (FundingNegotiation, Option<InteractiveTxMessageSend>) {
+		let (interactive_tx_constructor, tx_msg_opt) = funding_negotiation_context
+			.into_interactive_tx_constructor(
+				context,
+				&funding,
+				entropy_source,
+				holder_node_id.clone(),
+			);
+		debug_assert!(tx_msg_opt.is_some());
+
+		(
+			FundingNegotiation::ConstructingTransaction { funding, interactive_tx_constructor },
+			tx_msg_opt,
+		)
+	}
+
 	fn for_acceptor<SP: SignerProvider, ES: EntropySource>(
 		funding: FundingScope, context: &ChannelContext<SP>, entropy_source: &ES,
 		holder_node_id: &PublicKey, our_funding_contribution: SignedAmount,
@@ -3005,6 +3025,25 @@ impl PendingFunding {
 			| Some(FundingNegotiation::AwaitingSignatures { .. }) => Err(ChannelError::WarnAndDisconnect(
 				format!("Got unexpected {}; funding negotiation already in progress", msg_name,),
 			)),
+			None => Err(ChannelError::Ignore(format!(
+				"Got unexpected {}; no funding negotiation in progress",
+				msg_name,
+			))),
+		}
+	}
+
+	fn take_awaiting_ack_context(
+		&mut self, msg_name: &str,
+	) -> Result<FundingNegotiationContext, ChannelError> {
+		match self.funding_negotiation.take() {
+			Some(FundingNegotiation::AwaitingAck { context, .. }) => Ok(context),
+			Some(other) => {
+				self.funding_negotiation = Some(other);
+				Err(ChannelError::WarnAndDisconnect(format!(
+					"Got unexpected {}; funding negotiation already in progress",
+					msg_name,
+				)))
+			},
 			None => Err(ChannelError::Ignore(format!(
 				"Got unexpected {}; no funding negotiation in progress",
 				msg_name,
@@ -12541,37 +12580,6 @@ where
 		})
 	}
 
-	fn begin_funding_negotiation<ES: EntropySource>(
-		&mut self, funding: FundingScope, entropy_source: &ES, holder_node_id: &PublicKey,
-	) -> Result<Option<InteractiveTxMessageSend>, ChannelError> {
-		let pending_splice =
-			self.pending_splice.as_mut().expect("We should have returned an error earlier!");
-		let funding_negotiation_context =
-			if let Some(FundingNegotiation::AwaitingAck { context, .. }) =
-				pending_splice.funding_negotiation.take()
-			{
-				context
-			} else {
-				panic!("We should have returned an error earlier!");
-			};
-
-		let (interactive_tx_constructor, tx_msg_opt) = funding_negotiation_context
-			.into_interactive_tx_constructor(
-				&self.context,
-				&funding,
-				entropy_source,
-				holder_node_id.clone(),
-			);
-		debug_assert!(tx_msg_opt.is_some());
-
-		pending_splice.funding_negotiation = Some(FundingNegotiation::ConstructingTransaction {
-			funding,
-			interactive_tx_constructor,
-		});
-
-		Ok(tx_msg_opt)
-	}
-
 	fn validate_tx_ack_rbf(&self, msg: &msgs::TxAckRbf) -> Result<FundingScope, ChannelError> {
 		let pending_splice = self
 			.pending_splice
@@ -12617,7 +12625,22 @@ where
 			rbf_funding.get_value_satoshis(),
 		);
 
-		self.begin_funding_negotiation(rbf_funding, entropy_source, holder_node_id)
+		let pending_splice =
+			self.pending_splice.as_mut().expect("We should have returned an error earlier!");
+		let funding_negotiation_context = pending_splice
+			.take_awaiting_ack_context("tx_ack_rbf")
+			.expect("We should have returned an error earlier!");
+
+		let (funding_negotiation, tx_msg_opt) = FundingNegotiation::for_initiator(
+			rbf_funding,
+			&self.context,
+			funding_negotiation_context,
+			entropy_source,
+			holder_node_id,
+		);
+		pending_splice.funding_negotiation = Some(funding_negotiation);
+
+		Ok(tx_msg_opt)
 	}
 
 	pub(crate) fn splice_ack<ES: EntropySource, L: Logger>(
@@ -12636,7 +12659,22 @@ where
 
 		debug_assert!(self.context.interactive_tx_signing_session.is_none());
 
-		self.begin_funding_negotiation(splice_funding, entropy_source, holder_node_id)
+		let pending_splice =
+			self.pending_splice.as_mut().expect("We should have returned an error earlier!");
+		let funding_negotiation_context = pending_splice
+			.take_awaiting_ack_context("splice_ack")
+			.expect("We should have returned an error earlier!");
+
+		let (funding_negotiation, tx_msg_opt) = FundingNegotiation::for_initiator(
+			splice_funding,
+			&self.context,
+			funding_negotiation_context,
+			entropy_source,
+			holder_node_id,
+		);
+		pending_splice.funding_negotiation = Some(funding_negotiation);
+
+		Ok(tx_msg_opt)
 	}
 
 	fn validate_splice_ack(&self, msg: &msgs::SpliceAck) -> Result<FundingScope, ChannelError> {
