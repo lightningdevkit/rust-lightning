@@ -1082,6 +1082,13 @@ pub struct UserConfig {
 	///
 	/// [`ChannelManager::splice_channel`]: crate::ln::channelmanager::ChannelManager::splice_channel
 	pub reject_inbound_splices: bool,
+
+	/// If this is set to `true`, the resource manager will be enabled. The resource manager
+	/// tracks per-channel resources (HTLC slots and liquidity) to inform HTLC forwarding
+	/// decisions. See <https://github.com/lightning/bolts/pull/1280>.
+	///
+	/// Default value: `false`
+	pub enable_resource_manager: bool,
 }
 
 impl Default for UserConfig {
@@ -1099,6 +1106,7 @@ impl Default for UserConfig {
 			enable_htlc_hold: false,
 			hold_outbound_htlcs_at_next_hop: false,
 			reject_inbound_splices: true,
+			enable_resource_manager: false,
 		}
 	}
 }
@@ -1122,6 +1130,7 @@ impl Readable for UserConfig {
 			hold_outbound_htlcs_at_next_hop: Readable::read(reader)?,
 			enable_htlc_hold: Readable::read(reader)?,
 			reject_inbound_splices: Readable::read(reader)?,
+			enable_resource_manager: Readable::read(reader)?,
 		})
 	}
 }
