@@ -13069,7 +13069,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	) -> Result<(), MsgHandleErrInternal> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
-			debug_assert!(false);
 			MsgHandleErrInternal::unreachable_no_such_peer(counterparty_node_id, msg.channel_id)
 		})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
