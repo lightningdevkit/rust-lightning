@@ -863,9 +863,15 @@ fn assert_action_timeout_awaiting_response(action: &msgs::ErrorAction) {
 	));
 }
 
+pub enum ChanType {
+	Legacy,
+	KeyedAnchors,
+	ZeroFeeCommitments,
+}
+
 #[inline]
 pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
-	data: &[u8], underlying_out: Out, anchors: bool,
+	data: &[u8], underlying_out: Out, chan_type: ChanType,
 ) {
 	let out = SearchingOutput::new(underlying_out);
 	let broadcast_a = Arc::new(TestBroadcaster { txn_broadcasted: RefCell::new(Vec::new()) });
@@ -926,8 +932,19 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 			config.channel_config.forwarding_fee_proportional_millionths = 0;
 			config.channel_handshake_config.announce_for_forwarding = true;
 			config.reject_inbound_splices = false;
-			if !anchors {
-				config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = false;
+			match chan_type {
+				ChanType::Legacy => {
+					config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = false;
+					config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = false;
+				},
+				ChanType::KeyedAnchors => {
+					config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+					config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = false;
+				},
+				ChanType::ZeroFeeCommitments => {
+					config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = false;
+					config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
+				},
 			}
 			let network = Network::Bitcoin;
 			let best_block_timestamp = genesis_block(network).header.time;
@@ -978,8 +995,19 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 		config.channel_config.forwarding_fee_proportional_millionths = 0;
 		config.channel_handshake_config.announce_for_forwarding = true;
 		config.reject_inbound_splices = false;
-		if !anchors {
-			config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = false;
+		match chan_type {
+			ChanType::Legacy => {
+				config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = false;
+				config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = false;
+			},
+			ChanType::KeyedAnchors => {
+				config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+				config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = false;
+			},
+			ChanType::ZeroFeeCommitments => {
+				config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = false;
+				config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
+			},
 		}
 
 		let mut monitors = new_hash_map();
@@ -1078,8 +1106,23 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 		}};
 	}
 	macro_rules! make_channel {
-		($source: expr, $dest: expr, $source_monitor: expr, $dest_monitor: expr, $dest_keys_manager: expr, $chan_id: expr) => {{
-			$source.create_channel($dest.get_our_node_id(), 100_000, 42, 0, None, None).unwrap();
+		($source: expr, $dest: expr, $source_monitor: expr, $dest_monitor: expr, $dest_keys_manager: expr, $chan_id: expr, $trusted_open: expr, $trusted_accept: expr) => {{
+			if $trusted_open {
+				$source
+					.create_channel_to_trusted_peer_0reserve(
+						$dest.get_our_node_id(),
+						100_000,
+						42,
+						0,
+						None,
+						None,
+					)
+					.unwrap();
+			} else {
+				$source
+					.create_channel($dest.get_our_node_id(), 100_000, 42, 0, None, None)
+					.unwrap();
+			}
 			let open_channel = {
 				let events = $source.get_and_clear_pending_msg_events();
 				assert_eq!(events.len(), 1);
@@ -1104,14 +1147,27 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 					random_bytes
 						.copy_from_slice(&$dest_keys_manager.get_secure_random_bytes()[..16]);
 					let user_channel_id = u128::from_be_bytes(random_bytes);
-					$dest
-						.accept_inbound_channel(
-							temporary_channel_id,
-							counterparty_node_id,
-							user_channel_id,
-							None,
-						)
-						.unwrap();
+					if $trusted_accept {
+						$dest
+							.accept_inbound_channel_from_trusted_peer(
+								temporary_channel_id,
+								counterparty_node_id,
+								user_channel_id,
+								false,
+								true,
+								None,
+							)
+							.unwrap();
+					} else {
+						$dest
+							.accept_inbound_channel(
+								temporary_channel_id,
+								counterparty_node_id,
+								user_channel_id,
+								None,
+							)
+							.unwrap();
+					}
 				} else {
 					panic!("Wrong event type");
 				}
@@ -1287,12 +1343,16 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 	// Fuzz mode uses XOR-based hashing (all bytes XOR to one byte), and
 	// versions 0-5 cause collisions between A-B and B-C channel pairs
 	// (e.g., A-B with Version(1) collides with B-C with Version(3)).
-	make_channel!(nodes[0], nodes[1], monitor_a, monitor_b, keys_manager_b, 1);
-	make_channel!(nodes[0], nodes[1], monitor_a, monitor_b, keys_manager_b, 2);
-	make_channel!(nodes[0], nodes[1], monitor_a, monitor_b, keys_manager_b, 3);
-	make_channel!(nodes[1], nodes[2], monitor_b, monitor_c, keys_manager_c, 4);
-	make_channel!(nodes[1], nodes[2], monitor_b, monitor_c, keys_manager_c, 5);
-	make_channel!(nodes[1], nodes[2], monitor_b, monitor_c, keys_manager_c, 6);
+	// A-B: channel 2 A and B have 0-reserve (trusted open + trusted accept),
+	//       channel 3 A has 0-reserve (trusted accept)
+	make_channel!(nodes[0], nodes[1], monitor_a, monitor_b, keys_manager_b, 1, false, false);
+	make_channel!(nodes[0], nodes[1], monitor_a, monitor_b, keys_manager_b, 2, true, true);
+	make_channel!(nodes[0], nodes[1], monitor_a, monitor_b, keys_manager_b, 3, false, true);
+	// B-C: channel 4 B has 0-reserve (via trusted accept),
+	//       channel 5 C has 0-reserve (via trusted open)
+	make_channel!(nodes[1], nodes[2], monitor_b, monitor_c, keys_manager_c, 4, false, true);
+	make_channel!(nodes[1], nodes[2], monitor_b, monitor_c, keys_manager_c, 5, true, false);
+	make_channel!(nodes[1], nodes[2], monitor_b, monitor_c, keys_manager_c, 6, false, false);
 
 	// Wipe the transactions-broadcasted set to make sure we don't broadcast any transactions
 	// during normal operation in `test_return`.
@@ -2301,7 +2361,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 
 			0x80 => {
 				let mut max_feerate = last_htlc_clear_fee_a;
-				if !anchors {
+				if matches!(chan_type, ChanType::Legacy) {
 					max_feerate *= FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE as u32;
 				}
 				if fee_est_a.ret_val.fetch_add(250, atomic::Ordering::AcqRel) + 250 > max_feerate {
@@ -2316,7 +2376,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 
 			0x84 => {
 				let mut max_feerate = last_htlc_clear_fee_b;
-				if !anchors {
+				if matches!(chan_type, ChanType::Legacy) {
 					max_feerate *= FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE as u32;
 				}
 				if fee_est_b.ret_val.fetch_add(250, atomic::Ordering::AcqRel) + 250 > max_feerate {
@@ -2331,7 +2391,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 
 			0x88 => {
 				let mut max_feerate = last_htlc_clear_fee_c;
-				if !anchors {
+				if matches!(chan_type, ChanType::Legacy) {
 					max_feerate *= FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE as u32;
 				}
 				if fee_est_c.ret_val.fetch_add(250, atomic::Ordering::AcqRel) + 250 > max_feerate {
@@ -2783,12 +2843,26 @@ impl<O: Output> SearchingOutput<O> {
 }
 
 pub fn chanmon_consistency_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
-	do_test(data, out.clone(), false);
-	do_test(data, out, true);
+	do_test(data, out.clone(), ChanType::Legacy);
+	do_test(data, out.clone(), ChanType::KeyedAnchors);
+	do_test(data, out, ChanType::ZeroFeeCommitments);
 }
 
 #[no_mangle]
 pub extern "C" fn chanmon_consistency_run(data: *const u8, datalen: usize) {
-	do_test(unsafe { std::slice::from_raw_parts(data, datalen) }, test_logger::DevNull {}, false);
-	do_test(unsafe { std::slice::from_raw_parts(data, datalen) }, test_logger::DevNull {}, true);
+	do_test(
+		unsafe { std::slice::from_raw_parts(data, datalen) },
+		test_logger::DevNull {},
+		ChanType::Legacy,
+	);
+	do_test(
+		unsafe { std::slice::from_raw_parts(data, datalen) },
+		test_logger::DevNull {},
+		ChanType::KeyedAnchors,
+	);
+	do_test(
+		unsafe { std::slice::from_raw_parts(data, datalen) },
+		test_logger::DevNull {},
+		ChanType::ZeroFeeCommitments,
+	);
 }
