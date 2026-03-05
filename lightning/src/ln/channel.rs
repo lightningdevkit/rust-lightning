@@ -12250,6 +12250,13 @@ where
 			)));
 		}
 
+		if pending_splice.sent_funding_txid.is_some() {
+			return Err(ChannelError::WarnAndDisconnect(format!(
+				"Channel {} already sent splice_locked, cannot RBF",
+				self.context.channel_id(),
+			)));
+		}
+
 		let first_candidate = match pending_splice.negotiated_candidates.first() {
 			Some(candidate) => candidate,
 			None => {
