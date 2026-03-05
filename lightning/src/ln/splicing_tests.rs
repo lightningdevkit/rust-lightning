@@ -4492,3 +4492,76 @@ fn test_splice_rbf_zeroconf_rejected() {
 		_ => panic!("Expected HandleError, got {:?}", msg_events[0]),
 	}
 }
+
+#[test]
+fn test_splice_rbf_not_quiescence_initiator() {
+	// Test that tx_init_rbf from the non-quiescence-initiator is rejected because the
+	// quiescence initiator's RBF flow has already set funding_negotiation to AwaitingAck.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+
+	// Complete a splice-in from node 0.
+	let funding_contribution = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+	let (_splice_tx, _new_funding_script) =
+		splice_channel(&nodes[0], &nodes[1], channel_id, funding_contribution);
+
+	// Provide more UTXO reserves for the RBF attempt.
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+
+	// Initiate RBF from node 0 (quiescence initiator).
+	let rbf_feerate_sat_per_kwu = (FEERATE_FLOOR_SATS_PER_KW as u64 * 25 + 23) / 24;
+	let rbf_feerate = FeeRate::from_sat_per_kwu(rbf_feerate_sat_per_kwu);
+	let _funding_contribution =
+		do_initiate_rbf_splice_in(&nodes[0], &nodes[1], channel_id, added_value, rbf_feerate);
+
+	// STFU exchange: node 0 initiates quiescence.
+	let stfu_init = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+	nodes[1].node.handle_stfu(node_id_0, &stfu_init);
+	let stfu_ack = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
+	nodes[0].node.handle_stfu(node_id_1, &stfu_ack);
+
+	// Node 0 sends tx_init_rbf as the quiescence initiator — grab and discard.
+	let _tx_init_rbf = get_event_msg!(nodes[0], MessageSendEvent::SendTxInitRbf, node_id_1);
+
+	// Now craft a competing tx_init_rbf from node 1 (the non-initiator).
+	let tx_init_rbf = msgs::TxInitRbf {
+		channel_id,
+		locktime: 0,
+		feerate_sat_per_1000_weight: 500,
+		funding_output_contribution: Some(added_value.to_sat() as i64),
+	};
+
+	nodes[0].node.handle_tx_init_rbf(node_id_1, &tx_init_rbf);
+
+	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1);
+	match &msg_events[0] {
+		MessageSendEvent::HandleError { action, .. } => {
+			assert_eq!(
+				*action,
+				msgs::ErrorAction::DisconnectPeerWithWarning {
+					msg: msgs::WarningMessage {
+						channel_id,
+						data: format!(
+							"Channel {} already has a funding negotiation in progress",
+							channel_id,
+						),
+					},
+				}
+			);
+		},
+		_ => panic!("Expected HandleError, got {:?}", msg_events[0]),
+	}
+}
