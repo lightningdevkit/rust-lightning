@@ -12625,11 +12625,13 @@ where
 			rbf_funding.get_value_satoshis(),
 		);
 
-		let pending_splice =
-			self.pending_splice.as_mut().expect("We should have returned an error earlier!");
+		let pending_splice = self
+			.pending_splice
+			.as_mut()
+			.expect("pending_splice existence validated in validate_tx_ack_rbf");
 		let funding_negotiation_context = pending_splice
 			.take_awaiting_ack_context("tx_ack_rbf")
-			.expect("We should have returned an error earlier!");
+			.expect("awaiting ack state validated in validate_tx_ack_rbf");
 
 		let (funding_negotiation, tx_msg_opt) = FundingNegotiation::for_initiator(
 			rbf_funding,
@@ -12659,11 +12661,13 @@ where
 
 		debug_assert!(self.context.interactive_tx_signing_session.is_none());
 
-		let pending_splice =
-			self.pending_splice.as_mut().expect("We should have returned an error earlier!");
+		let pending_splice = self
+			.pending_splice
+			.as_mut()
+			.expect("pending_splice existence validated in validate_splice_ack");
 		let funding_negotiation_context = pending_splice
 			.take_awaiting_ack_context("splice_ack")
-			.expect("We should have returned an error earlier!");
+			.expect("awaiting ack state validated in validate_splice_ack");
 
 		let (funding_negotiation, tx_msg_opt) = FundingNegotiation::for_initiator(
 			splice_funding,
