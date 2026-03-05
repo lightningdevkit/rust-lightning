@@ -14,7 +14,9 @@
 
 use crate::chain::chaininterface::LowerBoundedFeeEstimator;
 use crate::chain::chainmonitor::ChainMonitor;
-use crate::chain::channelmonitor::{ChannelMonitor, MonitorEvent, ANTI_REORG_DELAY};
+use crate::chain::channelmonitor::{
+	ChannelMonitor, MonitorEvent, ANTI_REORG_DELAY, CLTV_CLAIM_BUFFER,
+};
 use crate::chain::transaction::OutPoint;
 use crate::chain::{ChannelMonitorUpdateStatus, Listen, Watch};
 use crate::events::{ClosureReason, Event, HTLCHandlingFailureType, PaymentPurpose};
@@ -4927,6 +4929,7 @@ fn native_async_persist() {
 		native_async_persister,
 		Arc::clone(&keys_manager),
 		keys_manager.get_peer_storage_key(),
+		CLTV_CLAIM_BUFFER,
 	);
 
 	// Write the initial ChannelMonitor async, testing primarily that the `MonitorEvent::Completed`
