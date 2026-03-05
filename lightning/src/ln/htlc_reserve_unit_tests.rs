@@ -288,8 +288,7 @@ pub fn test_channel_reserve_holding_cell_htlcs() {
 			stat.value_to_self_msat
 				- (stat.pending_outbound_htlcs_amount_msat
 					+ recv_value_21 + recv_value_22
-					+ total_fee_msat
-					+ total_fee_msat
+					+ total_fee_msat + total_fee_msat
 					+ commit_tx_fee_3_htlcs),
 			stat.channel_reserve_msat
 		);
