@@ -801,6 +801,18 @@ pub struct HolderCommitmentTransactionBalance {
 	/// The amount available to claim, in satoshis, excluding the on-chain fees which will be
 	/// required to do so.
 	pub amount_satoshis: u64,
+	/// The amount which is owed to us, excluding HTLCs, before dust limits, fees, anchor outputs,
+	/// and reserve values.
+	///
+	/// If the channel is (eventually) cooperatively closed, and this value is above the channel's
+	/// dust limit, then we will be paid this on-chain less any fees required for the closure.
+	///
+	/// This is generally roughly equal to [`Self::amount_satoshis`] +
+	/// [`Self::transaction_fee_satoshis`] + any anchor outputs in the current commitment
+	/// transaction. It might differ slightly due to differences in rounding and HTLC calculation.
+	///
+	/// This will be `None` for channels last updated on LDK 0.2 or prior.
+	pub amount_offchain_satoshis: Option<u64>,
 	/// The transaction fee we pay for the closing commitment transaction. This amount is not
 	/// included in the [`HolderCommitmentTransactionBalance::amount_satoshis`] value.
 	/// This amount includes the sum of dust HTLCs on the commitment transaction, any elided anchors,
@@ -977,11 +989,12 @@ impl Balance {
 	/// [`Balance::MaybePreimageClaimableHTLC`].
 	///
 	/// On-chain fees required to claim the balance are not included in this amount.
-	#[rustfmt::skip]
 	pub fn claimable_amount_satoshis(&self) -> u64 {
 		match self {
 			Balance::ClaimableOnChannelClose {
-				balance_candidates, confirmed_balance_candidate_index, ..
+				balance_candidates,
+				confirmed_balance_candidate_index,
+				..
 			} => {
 				if *confirmed_balance_candidate_index != 0 {
 					balance_candidates[*confirmed_balance_candidate_index].amount_satoshis
@@ -989,12 +1002,59 @@ impl Balance {
 					balance_candidates.last().map(|balance| balance.amount_satoshis).unwrap_or(0)
 				}
 			},
-			Balance::ClaimableAwaitingConfirmations { amount_satoshis, .. }|
-			Balance::ContentiousClaimable { amount_satoshis, .. }|
-			Balance::CounterpartyRevokedOutputClaimable { amount_satoshis, .. }
-				=> *amount_satoshis,
-			Balance::MaybeTimeoutClaimableHTLC { amount_satoshis, outbound_payment, .. }
-				=> if *outbound_payment { 0 } else { *amount_satoshis },
+			Balance::ClaimableAwaitingConfirmations { amount_satoshis, .. }
+			| Balance::ContentiousClaimable { amount_satoshis, .. }
+			| Balance::CounterpartyRevokedOutputClaimable { amount_satoshis, .. } => *amount_satoshis,
+			Balance::MaybeTimeoutClaimableHTLC { amount_satoshis, outbound_payment, .. } => {
+				if *outbound_payment {
+					0
+				} else {
+					*amount_satoshis
+				}
+			},
+			Balance::MaybePreimageClaimableHTLC { .. } => 0,
+		}
+	}
+
+	/// The "offchain balance", in satoshis.
+	///
+	/// When the channel has yet to close, this returns the balance we are owed, ignoring fees,
+	/// reserve values, anchors, and dust limits. This is the sum of our inbound and outbound
+	/// payments, initial channel contribution, and splices and may be more useful as the balance
+	/// displayed in an end-user wallet. Still, it is somewhat misleading from an
+	/// on-chain-funds-available perspective.
+	///
+	/// For pending payments, splice behavior, or behavior after a channel has been closed, this
+	/// behaves the same as [`Self::claimable_amount_satoshis`].
+	pub fn offchain_amount_satoshis(&self) -> u64 {
+		match self {
+			Balance::ClaimableOnChannelClose {
+				balance_candidates,
+				confirmed_balance_candidate_index,
+				..
+			} => {
+				if *confirmed_balance_candidate_index != 0 {
+					let candidate = &balance_candidates[*confirmed_balance_candidate_index];
+					candidate.amount_offchain_satoshis.unwrap_or(candidate.amount_satoshis)
+				} else {
+					balance_candidates
+						.last()
+						.map(|balance| {
+							balance.amount_offchain_satoshis.unwrap_or(balance.amount_satoshis)
+						})
+						.unwrap_or(0)
+				}
+			},
+			Balance::ClaimableAwaitingConfirmations { amount_satoshis, .. }
+			| Balance::ContentiousClaimable { amount_satoshis, .. }
+			| Balance::CounterpartyRevokedOutputClaimable { amount_satoshis, .. } => *amount_satoshis,
+			Balance::MaybeTimeoutClaimableHTLC { amount_satoshis, outbound_payment, .. } => {
+				if *outbound_payment {
+					0
+				} else {
+					*amount_satoshis
+				}
+			},
 			Balance::MaybePreimageClaimableHTLC { .. } => 0,
 		}
 	}
@@ -3044,6 +3104,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 				.chain(us.pending_funding.iter())
 				.map(|funding| {
 					let to_self_value_sat = funding.current_holder_commitment_tx.to_broadcaster_value_sat();
+					let to_self_offchain_msat =
+						funding.current_holder_commitment_tx.to_broadcaster_value_offchain_msat();
 					// In addition to `commit_tx_fee_sat`, this can also include dust HTLCs, any
 					// elided anchors, and the total msat amount rounded down from non-dust HTLCs.
 					let transaction_fee_satoshis = if us.holder_pays_commitment_tx_fee.unwrap_or(true) {
@@ -3055,6 +3117,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 					};
 					HolderCommitmentTransactionBalance {
 						amount_satoshis: to_self_value_sat + claimable_inbound_htlc_value_sat,
+						amount_offchain_satoshis:
+							to_self_offchain_msat.map(|v| v / 1_000 + claimable_inbound_htlc_value_sat),
 						transaction_fee_satoshis,
 					}
 				})
@@ -4467,16 +4531,23 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		})
 	}
 
-	#[rustfmt::skip]
 	fn build_counterparty_commitment_tx(
 		&self, channel_parameters: &ChannelTransactionParameters, commitment_number: u64,
 		their_per_commitment_point: &PublicKey, to_broadcaster_value: u64,
 		to_countersignatory_value: u64, feerate_per_kw: u32,
-		nondust_htlcs: Vec<HTLCOutputInCommitment>
+		nondust_htlcs: Vec<HTLCOutputInCommitment>,
 	) -> CommitmentTransaction {
 		let channel_parameters = &channel_parameters.as_counterparty_broadcastable();
-		CommitmentTransaction::new(commitment_number, their_per_commitment_point,
-			to_broadcaster_value, to_countersignatory_value, feerate_per_kw, nondust_htlcs, channel_parameters, &self.onchain_tx_handler.secp_ctx)
+		CommitmentTransaction::new_without_broadcaster_offchain_value(
+			commitment_number,
+			their_per_commitment_point,
+			to_broadcaster_value,
+			to_countersignatory_value,
+			feerate_per_kw,
+			nondust_htlcs,
+			channel_parameters,
+			&self.onchain_tx_handler.secp_ctx,
+		)
 	}
 
 	#[rustfmt::skip]
