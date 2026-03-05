@@ -54,7 +54,9 @@ use crate::events::{
 	InboundChannelFunds, PaymentFailureReason, ReplayEvent,
 };
 use crate::events::{FundingInfo, PaidBolt12Invoice};
-use crate::ln::chan_utils::selected_commitment_sat_per_1000_weight;
+use crate::ln::chan_utils::{
+	selected_commitment_sat_per_1000_weight, ChannelTransactionParametersAccess,
+};
 #[cfg(any(test, fuzzing, feature = "_test_utils"))]
 use crate::ln::channel::QuiescentAction;
 use crate::ln::channel::QuiescentError;
@@ -1717,9 +1719,8 @@ impl<SP: SignerProvider> PeerState<SP> {
 				return false;
 			}
 		}
-		let chan_is_funded_or_outbound = |(_, channel): (_, &Channel<SP>)| {
-			channel.is_funded() || channel.funding().is_outbound()
-		};
+		let chan_is_funded_or_outbound =
+			|(_, channel): (_, &Channel<SP>)| channel.is_funded() || channel.is_outbound();
 		!self.channel_by_id.iter().any(chan_is_funded_or_outbound)
 			&& self.monitor_update_blocked_actions.is_empty()
 			&& self.closed_channel_monitor_update_ids.is_empty()
@@ -10898,7 +10899,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		if accept_0conf {
 			// This should have been correctly configured by the call to Inbound(V1/V2)Channel::new.
 			debug_assert!(channel.minimum_depth().unwrap() == 0);
-		} else if channel.funding().get_channel_type().requires_zero_conf() {
+		} else if channel.get_channel_type().requires_zero_conf() {
 			let send_msg_err_event = MessageSendEvent::HandleError {
 				node_id: channel.context().get_counterparty_node_id(),
 				action: msgs::ErrorAction::SendErrorMessage {
@@ -10998,7 +10999,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				},
 				None => {
 					// Outbound channels don't contribute to the unfunded count in the DoS context.
-					if chan.funding().is_outbound() {
+					if chan.is_outbound() {
 						continue;
 					}
 
@@ -11173,7 +11174,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
-		let (mut chan, funding_msg_opt, monitor) = match peer_state
+		let (chan, funding_msg_opt, monitor) = match peer_state
 			.channel_by_id
 			.remove(&msg.temporary_channel_id)
 			.map(Channel::into_unfunded_inbound_v1)
@@ -11229,8 +11230,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				// immediately, we'll remove the existing channel from `outpoint_to_peer`.
 				// Thus, we must first unset the funding outpoint on the channel.
 				let err = ChannelError::close($err.to_owned());
-				chan.unset_funding_info();
 				let mut chan = Channel::from(chan);
+				chan.unfund();
 				return Err(self.locked_handle_unfunded_close(err, &mut chan).1);
 			}};
 		}
@@ -11407,36 +11408,36 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan_entry) => {
 				let chan = chan_entry.get_mut();
-				match chan
-					.funding_signed(&msg, best_block, &self.signer_provider, &self.logger)
-					.and_then(|(funded_chan, monitor)| {
-						self.chain_monitor
-							.watch_channel(funded_chan.context.channel_id(), monitor)
-							.map_err(|()| {
+				match chan.funding_signed(&msg, best_block, &self.signer_provider, &self.logger) {
+					Ok((funded_chan, monitor)) => {
+						let channel_id = funded_chan.context.channel_id();
+						match self.chain_monitor.watch_channel(channel_id, monitor) {
+							Ok(persist_status) => {
+								if let Some(data) = self.handle_initial_monitor(
+									&mut peer_state.in_flight_monitor_updates,
+									&mut peer_state.monitor_update_blocked_actions,
+									&mut peer_state.pending_msg_events,
+									peer_state.is_connected,
+									funded_chan,
+									persist_status,
+								) {
+									mem::drop(peer_state_lock);
+									mem::drop(per_peer_state);
+									self.handle_post_monitor_update_chan_resume(data);
+								}
+								Ok(())
+							},
+							Err(()) => {
 								// We weren't able to watch the channel to begin with, so no
 								// updates should be made on it. Previously, full_stack_target
 								// found an (unreachable) panic when the monitor update contained
 								// within `shutdown_finish` was applied.
-								funded_chan.unset_funding_info();
-								ChannelError::close("Channel ID was a duplicate".to_owned())
-							})
-							.map(|persist_status| (funded_chan, persist_status))
-					})
-				{
-					Ok((funded_chan, persist_status)) => {
-						if let Some(data) = self.handle_initial_monitor(
-							&mut peer_state.in_flight_monitor_updates,
-							&mut peer_state.monitor_update_blocked_actions,
-							&mut peer_state.pending_msg_events,
-							peer_state.is_connected,
-							funded_chan,
-							persist_status,
-						) {
-							mem::drop(peer_state_lock);
-							mem::drop(per_peer_state);
-							self.handle_post_monitor_update_chan_resume(data);
+								chan.unfund();
+								try_channel_entry!(self, peer_state, Err(ChannelError::close(
+									"Channel ID was a duplicate".to_owned()
+								)), chan_entry)
+							},
 						}
-						Ok(())
 					},
 					Err(e) => try_channel_entry!(self, peer_state, Err(e), chan_entry),
 				}
@@ -12309,7 +12310,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			hash_map::Entry::Occupied(mut chan_entry) => {
 				let chan = chan_entry.get_mut();
 				let logger = WithChannelContext::from(&self.logger, &chan.context(), None);
-				let funding_txo = chan.funding().get_funding_txo();
+				let funding_txo = chan.get_funding_txo();
 				let res = chan.commitment_signed(
 					msg,
 					best_block,
@@ -12383,7 +12384,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			hash_map::Entry::Occupied(mut chan_entry) => {
 				let chan = chan_entry.get_mut();
 				let logger = WithChannelContext::from(&self.logger, &chan.context(), None);
-				let funding_txo = chan.funding().get_funding_txo();
+				let funding_txo = chan.get_funding_txo();
 				if let Some(chan) = chan.as_funded_mut() {
 					let monitor_update_opt = try_channel_entry!(
 						self, peer_state, chan.commitment_signed_batch(batch, &self.fee_estimator, &&logger), chan_entry
