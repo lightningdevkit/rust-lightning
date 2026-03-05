@@ -704,7 +704,18 @@ fn do_upgrade_mid_htlc_forward(test: MidHtlcForwardCase) {
 
 #[test]
 fn test_0_0_125_max_update_id_upgrade() {
-	let (node_a_ser, node_b_ser, mon_a_ser, mon_b_ser);
+	use lightning::chain::chainmonitor::Persist;
+	use lightning::util::ser::ReadableArgs;
+	use lightning::util::persist::{
+		KVStoreSync, MonitorUpdatingPersister, CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+		CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+		CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
+		MONITOR_UPDATING_PERSISTER_PREPEND_SENTINEL,
+	};
+	use lightning::util::test_utils::TestStore;
+
+	// Phase 1: Create old LDK state with u64::MAX update IDs via force-close.
+	let mon_b_ser;
 	{
 		let chanmon_cfgs = lightning_0_0_125_utils::create_chanmon_cfgs(2);
 		let node_cfgs = lightning_0_0_125_utils::create_node_cfgs(2, &chanmon_cfgs);
@@ -733,25 +744,97 @@ fn test_0_0_125_max_update_id_upgrade() {
 		);
 		lightning_0_0_125_utils::check_closed_broadcast(&nodes[1], 1, true);
 
-		node_a_ser = nodes[0].node.encode();
-		node_b_ser = nodes[1].node.encode();
-		mon_a_ser = get_monitor_0_0_125!(nodes[0], chan_id).encode();
 		mon_b_ser = get_monitor_0_0_125!(nodes[1], chan_id).encode();
 	}
 
-	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+	// Phase 2: Pre-seed a TestStore with old monitor data (simulating an existing KV store
+	// from a pre-0.1 LDK install), then verify MonitorUpdatingPersister handles it correctly.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
 
-	chanmon_cfgs[0].keys_manager.disable_all_state_policy_checks = true;
-	chanmon_cfgs[1].keys_manager.disable_all_state_policy_checks = true;
+	let kv_store = TestStore::new(false);
+	let max_pending_updates = 5;
+	let persister = MonitorUpdatingPersister::new(
+		&kv_store,
+		&chanmon_cfgs[1].logger,
+		max_pending_updates,
+		&chanmon_cfgs[1].keys_manager,
+		&chanmon_cfgs[1].keys_manager,
+		&chanmon_cfgs[1].tx_broadcaster,
+		&chanmon_cfgs[1].fee_estimator,
+	);
 
-	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let (persister_a, persister_b, chain_mon_a, chain_mon_b);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let (node_a, node_b);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	// Deserialize node_b's monitor to get its persistence key, then write the raw bytes
+	// into the store (without the sentinel prefix, as old KVStoreSync-based persist would).
+	let (_, mon_b) = <(
+		bitcoin::BlockHash,
+		lightning::chain::channelmonitor::ChannelMonitor<
+			lightning::util::test_channel_signer::TestChannelSigner,
+		>,
+	)>::read(
+		&mut &mon_b_ser[..],
+		(&chanmon_cfgs[1].keys_manager, &chanmon_cfgs[1].keys_manager),
+	)
+	.unwrap();
+	let monitor_key = mon_b.persistence_key().to_string();
+	assert_eq!(mon_b.get_latest_update_id(), u64::MAX);
 
-	let config = test_default_channel_config();
-	let a_mons = &[&mon_a_ser[..]];
-	reload_node!(nodes[0], config.clone(), &node_a_ser, a_mons, persister_a, chain_mon_a, node_a);
-	reload_node!(nodes[1], config, &node_b_ser, &[&mon_b_ser], persister_b, chain_mon_b, node_b);
+	KVStoreSync::write(
+		&kv_store,
+		CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+		CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+		&monitor_key,
+		mon_b_ser.clone(),
+	)
+	.unwrap();
+
+	// Phase 3: Verify MonitorUpdatingPersister can read the old monitor with u64::MAX update ID.
+	let mons = persister.read_all_channel_monitors_with_updates().unwrap();
+	assert_eq!(mons.len(), 1);
+	assert_eq!(mons[0].1.get_latest_update_id(), u64::MAX);
+
+	// Verify no incremental update files exist yet.
+	let updates = KVStoreSync::list(
+		&kv_store,
+		CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
+		&monitor_key,
+	)
+	.unwrap();
+	assert!(updates.is_empty());
+
+	// Phase 4: Verify that persisting a u64::MAX monitor through MonitorUpdatingPersister
+	// writes a full monitor (not an incremental update).
+	let persist_res =
+		persister.persist_new_channel(mon_b.persistence_key(), &mons[0].1);
+	assert_eq!(persist_res, lightning::chain::ChannelMonitorUpdateStatus::Completed);
+
+	// The full monitor should now be stored with the sentinel prefix.
+	let stored_bytes = KVStoreSync::read(
+		&kv_store,
+		CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+		CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+		&monitor_key,
+	)
+	.unwrap();
+	assert!(
+		stored_bytes.starts_with(MONITOR_UPDATING_PERSISTER_PREPEND_SENTINEL),
+		"Expected sentinel prefix on re-persisted monitor"
+	);
+
+	// Re-read after persist to confirm round-trip works with sentinel prefix.
+	let mons_after = persister.read_all_channel_monitors_with_updates().unwrap();
+	assert_eq!(mons_after.len(), 1);
+	assert_eq!(mons_after[0].1.get_latest_update_id(), u64::MAX);
+
+	// Still no incremental updates should exist for a u64::MAX monitor.
+	let updates_after = KVStoreSync::list(
+		&kv_store,
+		CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
+		&monitor_key,
+	)
+	.unwrap();
+	assert!(
+		updates_after.is_empty(),
+		"Expected no incremental updates for u64::MAX monitor, found {}",
+		updates_after.len()
+	);
 }
