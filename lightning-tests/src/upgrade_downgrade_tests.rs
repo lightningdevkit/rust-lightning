@@ -803,8 +803,7 @@ fn test_0_0_125_max_update_id_upgrade() {
 
 	// Phase 4: Verify that persisting a u64::MAX monitor through MonitorUpdatingPersister
 	// writes a full monitor (not an incremental update).
-	let persist_res =
-		persister.persist_new_channel(mon_b.persistence_key(), &mons[0].1);
+	let persist_res = persister.persist_new_channel(mon_b.persistence_key(), &mons[0].1);
 	assert_eq!(persist_res, lightning::chain::ChannelMonitorUpdateStatus::Completed);
 
 	// The full monitor should now be stored with the sentinel prefix.
