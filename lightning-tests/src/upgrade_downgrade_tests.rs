@@ -705,13 +705,13 @@ fn do_upgrade_mid_htlc_forward(test: MidHtlcForwardCase) {
 #[test]
 fn test_0_0_125_max_update_id_upgrade() {
 	use lightning::chain::chainmonitor::Persist;
-	use lightning::util::ser::ReadableArgs;
 	use lightning::util::persist::{
 		KVStoreSync, MonitorUpdatingPersister, CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
 		CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
 		CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
 		MONITOR_UPDATING_PERSISTER_PREPEND_SENTINEL,
 	};
+	use lightning::util::ser::ReadableArgs;
 	use lightning::util::test_utils::TestStore;
 
 	// Phase 1: Create old LDK state with u64::MAX update IDs via force-close.
