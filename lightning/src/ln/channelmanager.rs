@@ -6120,7 +6120,7 @@ impl<
 		let logger = WithChannelContext::from(&self.logger, &chan.context, None);
 		let funding_res = chan.get_funding_created(funding_transaction, funding_txo, is_batch_funding, &&logger);
 		let (mut chan, msg_opt) = match funding_res {
-			Ok(funding_msg) => (chan, funding_msg),
+			Ok((pending, funding_msg)) => (pending, funding_msg),
 			Err((mut chan, chan_err)) => {
 				let api_err = APIError::ChannelUnavailable { err: "Signer refused to sign the initial commitment transaction".to_owned() };
 				return abandon_chan!(chan_err, api_err, chan);

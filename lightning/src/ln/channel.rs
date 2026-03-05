@@ -1488,6 +1488,7 @@ pub(super) struct Channel<SP: SignerProvider> {
 enum ChannelPhase<SP: SignerProvider> {
 	Undefined,
 	UnfundedOutboundV1(OutboundV1Channel<SP>),
+	PendingV1(PendingV1Channel<SP>),
 	UnfundedInboundV1(InboundV1Channel<SP>),
 	UnfundedV2(PendingV2Channel<SP>),
 	Funded(FundedChannel<SP>),
@@ -1502,6 +1503,7 @@ where
 			ChannelPhase::Undefined => unreachable!(),
 			ChannelPhase::Funded(chan) => &chan.context,
 			ChannelPhase::UnfundedOutboundV1(chan) => &chan.context,
+			ChannelPhase::PendingV1(chan) => &chan.context,
 			ChannelPhase::UnfundedInboundV1(chan) => &chan.context,
 			ChannelPhase::UnfundedV2(chan) => &chan.context,
 		}
@@ -1512,6 +1514,7 @@ where
 			ChannelPhase::Undefined => unreachable!(),
 			ChannelPhase::Funded(chan) => &mut chan.context,
 			ChannelPhase::UnfundedOutboundV1(chan) => &mut chan.context,
+			ChannelPhase::PendingV1(chan) => &mut chan.context,
 			ChannelPhase::UnfundedInboundV1(chan) => &mut chan.context,
 			ChannelPhase::UnfundedV2(chan) => &mut chan.context,
 		}
@@ -1522,6 +1525,7 @@ where
 			ChannelPhase::Undefined => unreachable!(),
 			ChannelPhase::Funded(chan) => &chan.funding,
 			ChannelPhase::UnfundedOutboundV1(chan) => &chan.funding,
+			ChannelPhase::PendingV1(chan) => &chan.funding,
 			ChannelPhase::UnfundedInboundV1(chan) => &chan.funding,
 			ChannelPhase::UnfundedV2(chan) => &chan.funding,
 		}
@@ -1533,6 +1537,7 @@ where
 			ChannelPhase::Undefined => unreachable!(),
 			ChannelPhase::Funded(chan) => &mut chan.funding,
 			ChannelPhase::UnfundedOutboundV1(chan) => &mut chan.funding,
+			ChannelPhase::PendingV1(chan) => &mut chan.funding,
 			ChannelPhase::UnfundedInboundV1(chan) => &mut chan.funding,
 			ChannelPhase::UnfundedV2(chan) => &mut chan.funding,
 		}
@@ -1543,6 +1548,7 @@ where
 			ChannelPhase::Undefined => unreachable!(),
 			ChannelPhase::Funded(chan) => (&chan.funding, &mut chan.context),
 			ChannelPhase::UnfundedOutboundV1(chan) => (&chan.funding, &mut chan.context),
+			ChannelPhase::PendingV1(chan) => (&chan.funding, &mut chan.context),
 			ChannelPhase::UnfundedInboundV1(chan) => (&chan.funding, &mut chan.context),
 			ChannelPhase::UnfundedV2(chan) => (&chan.funding, &mut chan.context),
 		}
@@ -1556,6 +1562,7 @@ where
 				None
 			},
 			ChannelPhase::UnfundedOutboundV1(chan) => Some(&mut chan.unfunded_context),
+			ChannelPhase::PendingV1(chan) => Some(&mut chan.unfunded_context),
 			ChannelPhase::UnfundedInboundV1(chan) => Some(&mut chan.unfunded_context),
 			ChannelPhase::UnfundedV2(chan) => Some(&mut chan.unfunded_context),
 		}
@@ -1593,7 +1600,9 @@ where
 	pub fn is_unfunded_v1(&self) -> bool {
 		matches!(
 			self.phase,
-			ChannelPhase::UnfundedOutboundV1(_) | ChannelPhase::UnfundedInboundV1(_)
+			ChannelPhase::UnfundedOutboundV1(_)
+				| ChannelPhase::PendingV1(_)
+				| ChannelPhase::UnfundedInboundV1(_)
 		)
 	}
 
@@ -1645,11 +1654,29 @@ where
 			ChannelPhase::Undefined => unreachable!(),
 			ChannelPhase::Funded(chan) => chan.signer_maybe_unblocked(logger, path_for_release_htlc).map(|r| Some(r)),
 			ChannelPhase::UnfundedOutboundV1(chan) => {
-				let (open_channel, funding_created) = chan.signer_maybe_unblocked(chain_hash, logger);
+				let open_channel = chan.signer_maybe_unblocked(chain_hash, logger);
 				Ok(Some(SignerResumeUpdates {
 					commitment_update: None,
 					revoke_and_ack: None,
 					open_channel,
+					accept_channel: None,
+					funding_created: None,
+					funding_signed: None,
+					funding_commit_sig: None,
+					tx_signatures: None,
+					channel_ready: None,
+					order: chan.context.resend_order.clone(),
+					closing_signed: None,
+					signed_closing_tx: None,
+					shutdown_result: None,
+				}))
+			},
+			ChannelPhase::PendingV1(chan) => {
+				let funding_created = chan.signer_maybe_unblocked(logger);
+				Ok(Some(SignerResumeUpdates {
+					commitment_update: None,
+					revoke_and_ack: None,
+					open_channel: None,
 					accept_channel: None,
 					funding_created,
 					funding_signed: None,
@@ -1700,6 +1727,7 @@ where
 			// handshake (and bailing if the peer rejects it), so we force-close in
 			// that case.
 			ChannelPhase::UnfundedOutboundV1(chan) => chan.is_resumable(),
+			ChannelPhase::PendingV1(_) => false,
 			ChannelPhase::UnfundedInboundV1(_) => false,
 			ChannelPhase::UnfundedV2(_) => false,
 		};
@@ -1749,6 +1777,11 @@ where
 					.map(|msg| ReconnectionMsg::Open(OpenChannelMessage::V1(msg)))
 					.unwrap_or(ReconnectionMsg::None)
 			},
+			ChannelPhase::PendingV1(_) => {
+				// PendingV1 channels are not resumable, so this shouldn't be reached.
+				debug_assert!(false);
+				ReconnectionMsg::None
+			},
 			ChannelPhase::UnfundedInboundV1(_) => {
 				// Since unfunded inbound channel maps are cleared upon disconnecting a peer,
 				// they are not persisted and won't be recovered after a crash.
@@ -1787,6 +1820,7 @@ where
 				)
 					.map(|msg| Some(OpenChannelMessage::V1(msg)))
 			},
+			ChannelPhase::PendingV1(_) => Ok(None),
 			ChannelPhase::UnfundedInboundV1(_) => Ok(None),
 			ChannelPhase::UnfundedV2(chan) => {
 				if chan.funding.is_outbound() {
@@ -1817,9 +1851,9 @@ where
 
 		let (splice_funding_failed, exited_quiescence) = match &mut self.phase {
 			ChannelPhase::Undefined => unreachable!(),
-			ChannelPhase::UnfundedOutboundV1(_) | ChannelPhase::UnfundedInboundV1(_) => {
-				(None, false)
-			},
+			ChannelPhase::UnfundedOutboundV1(_)
+			| ChannelPhase::PendingV1(_)
+			| ChannelPhase::UnfundedInboundV1(_) => (None, false),
 			ChannelPhase::UnfundedV2(pending_v2_channel) => {
 				pending_v2_channel.interactive_tx_constructor.take();
 				(None, false)
@@ -1990,7 +2024,9 @@ where
 		//   https://github.com/lightning/bolts/blob/247e83d/02-peer-protocol.md?plain=1#L578-L580
 		let (should_ack, splice_funding_failed, exited_quiescence) = match &mut self.phase {
 			ChannelPhase::Undefined => unreachable!(),
-			ChannelPhase::UnfundedOutboundV1(_) | ChannelPhase::UnfundedInboundV1(_) => {
+			ChannelPhase::UnfundedOutboundV1(_)
+			| ChannelPhase::PendingV1(_)
+			| ChannelPhase::UnfundedInboundV1(_) => {
 				let err = "Got an unexpected tx_abort message: This is an unfunded channel created with V1 channel establishment";
 				return Err(ChannelError::Warn(err.into()));
 			},
@@ -2053,7 +2089,7 @@ where
 		&mut self, msg: &msgs::FundingSigned, best_block: BestBlock, signer_provider: &SP, logger: &L
 	) -> Result<(&mut FundedChannel<SP>, ChannelMonitor<SP::EcdsaSigner>), ChannelError> {
 		let phase = core::mem::replace(&mut self.phase, ChannelPhase::Undefined);
-		let result = if let ChannelPhase::UnfundedOutboundV1(chan) = phase {
+		let result = if let ChannelPhase::PendingV1(chan) = phase {
 			let channel_state = chan.context.channel_state;
 			let logger = WithChannelContext::from(logger, &chan.context, None);
 			match chan.funding_signed(msg, best_block, signer_provider, &&logger) {
@@ -2064,13 +2100,13 @@ where
 				},
 				Err((chan, e)) => {
 					debug_assert_eq!(chan.context.channel_state, channel_state);
-					self.phase = ChannelPhase::UnfundedOutboundV1(chan);
+					self.phase = ChannelPhase::PendingV1(chan);
 					Err(e)
 				},
 			}
 		} else {
 			self.phase = phase;
-			Err(ChannelError::SendError("Failed to find corresponding UnfundedOutboundV1 channel".to_owned()))
+			Err(ChannelError::SendError("Failed to find corresponding PendingV1 channel".to_owned()))
 		};
 
 		debug_assert!(!matches!(self.phase, ChannelPhase::Undefined));
@@ -2438,6 +2474,9 @@ where
 			ChannelPhase::UnfundedOutboundV1(chan) => {
 				chan.context.get_available_balances_for_scope(&chan.funding, fee_estimator)
 			},
+			ChannelPhase::PendingV1(chan) => {
+				chan.context.get_available_balances_for_scope(&chan.funding, fee_estimator)
+			},
 			ChannelPhase::UnfundedInboundV1(chan) => {
 				chan.context.get_available_balances_for_scope(&chan.funding, fee_estimator)
 			},
@@ -2458,6 +2497,15 @@ where
 {
 	fn from(channel: OutboundV1Channel<SP>) -> Self {
 		Channel { phase: ChannelPhase::UnfundedOutboundV1(channel) }
+	}
+}
+
+impl<SP: SignerProvider> From<PendingV1Channel<SP>> for Channel<SP>
+where
+	SP::EcdsaSigner: ChannelSigner,
+{
+	fn from(channel: PendingV1Channel<SP>) -> Self {
+		Channel { phase: ChannelPhase::PendingV1(channel) }
 	}
 }
 
@@ -3476,7 +3524,7 @@ trait InitialRemoteCommitmentReceiver<SP: SignerProvider> {
 	fn is_v2_established(&self) -> bool;
 }
 
-impl<SP: SignerProvider> InitialRemoteCommitmentReceiver<SP> for OutboundV1Channel<SP> {
+impl<SP: SignerProvider> InitialRemoteCommitmentReceiver<SP> for PendingV1Channel<SP> {
 	fn context(&self) -> &ChannelContext<SP> {
 		&self.context
 	}
@@ -13311,45 +13359,6 @@ impl<SP: SignerProvider> OutboundV1Channel<SP> {
 		Ok(chan)
 	}
 
-	/// Only allowed after [`FundingScope::channel_transaction_parameters`] is set.
-	#[rustfmt::skip]
-	fn get_funding_created_msg<L: Logger>(&mut self, logger: &L) -> Option<msgs::FundingCreated> {
-		let commitment_data = self.context.build_commitment_transaction(&self.funding,
-			self.context.counterparty_next_commitment_transaction_number,
-			&self.context.counterparty_next_commitment_point.unwrap(), false, false, logger);
-		let counterparty_initial_commitment_tx = commitment_data.tx;
-		let signature = match &self.context.holder_signer {
-			// TODO (taproot|arik): move match into calling method for Taproot
-			ChannelSignerType::Ecdsa(ecdsa) => {
-				let channel_parameters = &self.funding.channel_transaction_parameters;
-				ecdsa.sign_counterparty_commitment(channel_parameters, &counterparty_initial_commitment_tx, Vec::new(), Vec::new(), &self.context.secp_ctx)
-					.map(|(sig, _)| sig).ok()
-			},
-			// TODO (taproot|arik)
-			#[cfg(taproot)]
-			_ => todo!()
-		};
-
-		if signature.is_some() && self.context.signer_pending_funding {
-			log_trace!(logger, "Counterparty commitment signature ready for funding_created message: clearing signer_pending_funding");
-			self.context.signer_pending_funding = false;
-		} else if signature.is_none() {
-			log_trace!(logger, "funding_created awaiting signer; setting signer_pending_funding");
-			self.context.signer_pending_funding = true;
-		};
-
-		signature.map(|signature| msgs::FundingCreated {
-			temporary_channel_id: self.context.temporary_channel_id.unwrap(),
-			funding_txid: self.funding.channel_transaction_parameters.funding_outpoint.as_ref().unwrap().txid,
-			funding_output_index: self.funding.channel_transaction_parameters.funding_outpoint.as_ref().unwrap().index,
-			signature,
-			#[cfg(taproot)]
-			partial_signature_with_nonce: None,
-			#[cfg(taproot)]
-			next_local_nonce: None,
-		})
-	}
-
 	/// Updates channel state with knowledge of the funding transaction's txid/index, and generates
 	/// a funding_created message for the remote peer.
 	/// Panics if called at some time other than immediately after initial handshake, if called twice,
@@ -13358,8 +13367,8 @@ impl<SP: SignerProvider> OutboundV1Channel<SP> {
 	/// Do NOT broadcast the funding transaction until after a successful funding_signed call!
 	/// If an Err is returned, it is a ChannelError::Close.
 	#[rustfmt::skip]
-	pub fn get_funding_created<L: Logger>(&mut self, funding_transaction: Transaction, funding_txo: OutPoint, is_batch_funding: bool, logger: &L)
-	-> Result<Option<msgs::FundingCreated>, (Self, ChannelError)> {
+	pub fn get_funding_created<L: Logger>(mut self, funding_transaction: Transaction, funding_txo: OutPoint, is_batch_funding: bool, logger: &L)
+	-> Result<(PendingV1Channel<SP>, Option<msgs::FundingCreated>), (Self, ChannelError)> {
 		if !self.funding.is_outbound() {
 			panic!("Tried to create outbound funding_created message on an inbound channel!");
 		}
@@ -13390,8 +13399,13 @@ impl<SP: SignerProvider> OutboundV1Channel<SP> {
 		self.funding.funding_transaction = Some(funding_transaction);
 		self.context.is_batch_funding = Some(()).filter(|_| is_batch_funding);
 
-		let funding_created = self.get_funding_created_msg(logger);
-		Ok(funding_created)
+		let mut pending = PendingV1Channel {
+			funding: self.funding,
+			context: self.context,
+			unfunded_context: self.unfunded_context,
+		};
+		let funding_created = pending.get_funding_created_msg(logger);
+		Ok((pending, funding_created))
 	}
 
 	/// If we receive an error message, it may only be a rejection of the channel type we tried,
@@ -13485,6 +13499,81 @@ impl<SP: SignerProvider> OutboundV1Channel<SP> {
 		)
 	}
 
+	/// Indicates that the signer may have some signatures for us, so we should retry if we're
+	/// blocked.
+	#[rustfmt::skip]
+	pub fn signer_maybe_unblocked<L: Logger>(
+		&mut self, chain_hash: ChainHash, logger: &L
+	) -> Option<msgs::OpenChannel> {
+		// If we were pending a commitment point, retry the signer and advance to an
+		// available state.
+		if self.unfunded_context.holder_commitment_point.is_none() {
+			self.unfunded_context.holder_commitment_point = HolderCommitmentPoint::new(&self.context.holder_signer, &self.context.secp_ctx);
+		}
+		if let Some(ref mut point) = self.unfunded_context.holder_commitment_point {
+			if !point.can_advance() {
+				point.try_resolve_pending(&self.context.holder_signer, &self.context.secp_ctx, logger);
+			}
+		}
+		if self.signer_pending_open_channel {
+			log_trace!(logger, "Attempting to generate open_channel...");
+			self.get_open_channel(chain_hash, logger)
+		} else { None }
+	}
+}
+
+/// An outbound channel using V1 channel establishment that has generated a `funding_created`
+/// message but has not yet received `funding_signed`.
+pub(super) struct PendingV1Channel<SP: SignerProvider> {
+	pub funding: FundingScope,
+	pub context: ChannelContext<SP>,
+	pub unfunded_context: UnfundedChannelContext,
+}
+
+impl<SP: SignerProvider> PendingV1Channel<SP> {
+	pub fn abandon_unfunded_chan(&mut self, closure_reason: ClosureReason) -> ShutdownResult {
+		self.context.force_shutdown(&self.funding, closure_reason)
+	}
+
+	/// Only allowed after [`FundingScope::channel_transaction_parameters`] is set.
+	#[rustfmt::skip]
+	fn get_funding_created_msg<L: Logger>(&mut self, logger: &L) -> Option<msgs::FundingCreated> {
+		let commitment_data = self.context.build_commitment_transaction(&self.funding,
+			self.context.counterparty_next_commitment_transaction_number,
+			&self.context.counterparty_next_commitment_point.unwrap(), false, false, logger);
+		let counterparty_initial_commitment_tx = commitment_data.tx;
+		let signature = match &self.context.holder_signer {
+			// TODO (taproot|arik): move match into calling method for Taproot
+			ChannelSignerType::Ecdsa(ecdsa) => {
+				let channel_parameters = &self.funding.channel_transaction_parameters;
+				ecdsa.sign_counterparty_commitment(channel_parameters, &counterparty_initial_commitment_tx, Vec::new(), Vec::new(), &self.context.secp_ctx)
+					.map(|(sig, _)| sig).ok()
+			},
+			// TODO (taproot|arik)
+			#[cfg(taproot)]
+			_ => todo!()
+		};
+
+		if signature.is_some() && self.context.signer_pending_funding {
+			log_trace!(logger, "Counterparty commitment signature ready for funding_created message: clearing signer_pending_funding");
+			self.context.signer_pending_funding = false;
+		} else if signature.is_none() {
+			log_trace!(logger, "funding_created awaiting signer; setting signer_pending_funding");
+			self.context.signer_pending_funding = true;
+		};
+
+		signature.map(|signature| msgs::FundingCreated {
+			temporary_channel_id: self.context.temporary_channel_id.unwrap(),
+			funding_txid: self.funding.channel_transaction_parameters.funding_outpoint.as_ref().unwrap().txid,
+			funding_output_index: self.funding.channel_transaction_parameters.funding_outpoint.as_ref().unwrap().index,
+			signature,
+			#[cfg(taproot)]
+			partial_signature_with_nonce: None,
+			#[cfg(taproot)]
+			next_local_nonce: None,
+		})
+	}
+
 	/// Handles a funding_signed message from the remote end.
 	/// If this call is successful, broadcast the funding transaction (and not before!)
 	pub fn funding_signed<L: Logger>(
@@ -13492,7 +13581,7 @@ impl<SP: SignerProvider> OutboundV1Channel<SP> {
 		logger: &L,
 	) -> Result<
 		(FundedChannel<SP>, ChannelMonitor<SP::EcdsaSigner>),
-		(OutboundV1Channel<SP>, ChannelError),
+		(PendingV1Channel<SP>, ChannelError),
 	> {
 		if !self.funding.is_outbound() {
 			let err = "Received funding_signed for an inbound channel?";
@@ -13556,29 +13645,24 @@ impl<SP: SignerProvider> OutboundV1Channel<SP> {
 
 	/// Indicates that the signer may have some signatures for us, so we should retry if we're
 	/// blocked.
-	#[rustfmt::skip]
 	pub fn signer_maybe_unblocked<L: Logger>(
-		&mut self, chain_hash: ChainHash, logger: &L
-	) -> (Option<msgs::OpenChannel>, Option<msgs::FundingCreated>) {
-		// If we were pending a commitment point, retry the signer and advance to an
-		// available state.
-		if self.unfunded_context.holder_commitment_point.is_none() {
-			self.unfunded_context.holder_commitment_point = HolderCommitmentPoint::new(&self.context.holder_signer, &self.context.secp_ctx);
-		}
+		&mut self, logger: &L,
+	) -> Option<msgs::FundingCreated> {
 		if let Some(ref mut point) = self.unfunded_context.holder_commitment_point {
 			if !point.can_advance() {
-				point.try_resolve_pending(&self.context.holder_signer, &self.context.secp_ctx, logger);
+				point.try_resolve_pending(
+					&self.context.holder_signer,
+					&self.context.secp_ctx,
+					logger,
+				);
 			}
 		}
-		let open_channel = if self.signer_pending_open_channel {
-			log_trace!(logger, "Attempting to generate open_channel...");
-			self.get_open_channel(chain_hash, logger)
-		} else { None };
-		let funding_created = if self.context.signer_pending_funding && self.funding.is_outbound() {
+		if self.context.signer_pending_funding {
 			log_trace!(logger, "Attempting to generate pending funding created...");
 			self.get_funding_created_msg(logger)
-		} else { None };
-		(open_channel, funding_created)
+		} else {
+			None
+		}
 	}
 
 	/// Unsets the existing funding information.
@@ -15926,7 +16010,7 @@ mod tests {
 			value: Amount::from_sat(10000000), script_pubkey: output_script.clone(),
 		}]};
 		let funding_outpoint = OutPoint{ txid: tx.compute_txid(), index: 0 };
-		let funding_created_msg = node_a_chan.get_funding_created(tx.clone(), funding_outpoint, false, &&logger).map_err(|_| ()).unwrap();
+		let (mut node_a_chan, funding_created_msg) = node_a_chan.get_funding_created(tx.clone(), funding_outpoint, false, &&logger).map_err(|_| ()).unwrap();
 		let (_, funding_signed_msg, _) = node_b_chan.funding_created(&funding_created_msg.unwrap(), best_block, &&keys_provider, &&logger).map_err(|_| ()).unwrap();
 
 		// Node B --> Node A: funding signed
@@ -16069,7 +16153,7 @@ mod tests {
 			value: Amount::from_sat(10000000), script_pubkey: output_script.clone(),
 		}]};
 		let funding_outpoint = OutPoint{ txid: tx.compute_txid(), index: 0 };
-		let funding_created_msg = node_a_chan.get_funding_created(tx.clone(), funding_outpoint, false, &&logger).map_err(|_| ()).unwrap();
+		let (mut node_a_chan, funding_created_msg) = node_a_chan.get_funding_created(tx.clone(), funding_outpoint, false, &&logger).map_err(|_| ()).unwrap();
 		let (mut node_b_chan, funding_signed_msg, _) = node_b_chan.funding_created(&funding_created_msg.unwrap(), best_block, &&keys_provider, &&logger).map_err(|_| ()).unwrap();
 
 		// Node B --> Node A: funding signed
@@ -16265,7 +16349,7 @@ mod tests {
 			value: Amount::from_sat(10000000), script_pubkey: output_script.clone(),
 		}]};
 		let funding_outpoint = OutPoint{ txid: tx.compute_txid(), index: 0 };
-		let funding_created_msg = node_a_chan.get_funding_created(tx.clone(), funding_outpoint, false, &&logger).map_err(|_| ()).unwrap();
+		let (mut node_a_chan, funding_created_msg) = node_a_chan.get_funding_created(tx.clone(), funding_outpoint, false, &&logger).map_err(|_| ()).unwrap();
 		let (_, funding_signed_msg, _) = node_b_chan.funding_created(&funding_created_msg.unwrap(), best_block, &&keys_provider, &&logger).map_err(|_| ()).unwrap();
 
 		// Node B --> Node A: funding signed
@@ -16374,11 +16458,11 @@ mod tests {
 			}],
 		};
 		let funding_outpoint = OutPoint { txid: tx.compute_txid(), index: 0 };
-		let funding_created = outbound_chan
+		let (_pending, funding_created) = outbound_chan
 			.get_funding_created(tx.clone(), funding_outpoint, false, &&logger)
 			.map_err(|_| ())
-			.unwrap()
 			.unwrap();
+		let funding_created = funding_created.unwrap();
 		let mut chan = match inbound_chan.funding_created(
 			&funding_created,
 			best_block,
@@ -18034,7 +18118,7 @@ mod tests {
 				},
 			]};
 		let funding_outpoint = OutPoint{ txid: tx.compute_txid(), index: 0 };
-		let funding_created_msg = node_a_chan.get_funding_created(
+		let (mut node_a_chan, funding_created_msg) = node_a_chan.get_funding_created(
 			tx.clone(), funding_outpoint, true, &&logger,
 		).map_err(|_| ()).unwrap();
 		let (mut node_b_chan, funding_signed_msg, _) = node_b_chan.funding_created(
