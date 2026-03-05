@@ -4411,6 +4411,14 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					}
 				}
 			}
+			// Note that we don't care about the case where a counterparty sent us a fresh local commitment transaction
+			// post-closure (with the `ChannelManager` still operating the channel). First of all we only care about
+			// resolving outbound HTLCs, which fundamentally have to be initiated by us. However we also don't mind
+			// looking at the current holder commitment transaction's HTLCs as any fresh outbound HTLCs will have to
+			// first come in a locally-initiated update to the counterparty's commitment transaction which we can, by
+			// refusing to apply the update, prevent the counterparty from ever seeing (as no messages can be sent until
+			// the monitor is updated). Thus, the HTLCs we care about can never appear in the holder commitment
+			// transaction.
 			if holder_commitment_htlcs!(self, CURRENT_WITH_SOURCES).any(|(_, s)| s == Some(source))
 			{
 				return true;
