@@ -2964,6 +2964,33 @@ impl FundingNegotiation {
 			FundingNegotiation::AwaitingSignatures { is_initiator, .. } => *is_initiator,
 		}
 	}
+	fn for_acceptor<SP: SignerProvider, ES: EntropySource>(
+		funding: FundingScope, context: &ChannelContext<SP>, entropy_source: &ES,
+		holder_node_id: &PublicKey, our_funding_contribution: SignedAmount,
+		prev_funding_input: SharedOwnedInput, locktime: u32, feerate_sat_per_1000_weight: u32,
+		our_funding_inputs: Vec<FundingTxInput>, our_funding_outputs: Vec<TxOut>,
+	) -> FundingNegotiation {
+		let funding_negotiation_context = FundingNegotiationContext {
+			is_initiator: false,
+			our_funding_contribution,
+			funding_tx_locktime: LockTime::from_consensus(locktime),
+			funding_feerate_sat_per_1000_weight: feerate_sat_per_1000_weight,
+			shared_funding_input: Some(prev_funding_input),
+			our_funding_inputs,
+			our_funding_outputs,
+		};
+
+		let (interactive_tx_constructor, first_message) = funding_negotiation_context
+			.into_interactive_tx_constructor(
+				context,
+				&funding,
+				entropy_source,
+				holder_node_id.clone(),
+			);
+		debug_assert!(first_message.is_none());
+
+		FundingNegotiation::ConstructingTransaction { funding, interactive_tx_constructor }
+	}
 }
 
 impl PendingFunding {
@@ -12096,11 +12123,9 @@ where
 		Ok(())
 	}
 
-	pub(crate) fn splice_init<ES: EntropySource, L: Logger>(
-		&mut self, msg: &msgs::SpliceInit, entropy_source: &ES, holder_node_id: &PublicKey,
-		logger: &L,
-	) -> Result<msgs::SpliceAck, ChannelError> {
-		let feerate = FeeRate::from_sat_per_kwu(msg.funding_feerate_per_kw as u64);
+	fn resolve_queued_contribution<L: Logger>(
+		&self, feerate: FeeRate, logger: &L,
+	) -> (Option<SignedAmount>, Option<Amount>) {
 		let holder_balance = self
 			.get_holder_counterparty_balances_floor_incl_fee(&self.funding)
 			.map(|(holder, _)| holder)
@@ -12114,7 +12139,8 @@ where
 				);
 			})
 			.ok();
-		let our_funding_contribution =
+
+		let net_value =
 			holder_balance.and_then(|_| self.queued_funding_contribution()).and_then(|c| {
 				c.net_value_for_acceptor_at_feerate(feerate, holder_balance.unwrap())
 					.map_err(|e| {
@@ -12129,6 +12155,17 @@ where
 					})
 					.ok()
 			});
+
+		(net_value, holder_balance)
+	}
+
+	pub(crate) fn splice_init<ES: EntropySource, L: Logger>(
+		&mut self, msg: &msgs::SpliceInit, entropy_source: &ES, holder_node_id: &PublicKey,
+		logger: &L,
+	) -> Result<msgs::SpliceAck, ChannelError> {
+		let feerate = FeeRate::from_sat_per_kwu(msg.funding_feerate_per_kw as u64);
+		let (our_funding_contribution, holder_balance) =
+			self.resolve_queued_contribution(feerate, logger);
 
 		let splice_funding =
 			self.validate_splice_init(msg, our_funding_contribution.unwrap_or(SignedAmount::ZERO))?;
@@ -12152,32 +12189,22 @@ where
 			self.funding.get_value_satoshis(),
 		);
 
+		let new_funding_pubkey = splice_funding.get_holder_pubkeys().funding_pubkey;
 		let prev_funding_input = self.funding.to_splice_funding_input();
-		let funding_negotiation_context = FundingNegotiationContext {
-			is_initiator: false,
+		let funding_negotiation = FundingNegotiation::for_acceptor(
+			splice_funding,
+			&self.context,
+			entropy_source,
+			holder_node_id,
 			our_funding_contribution,
-			funding_tx_locktime: LockTime::from_consensus(msg.locktime),
-			funding_feerate_sat_per_1000_weight: msg.funding_feerate_per_kw,
-			shared_funding_input: Some(prev_funding_input),
+			prev_funding_input,
+			msg.locktime,
+			msg.funding_feerate_per_kw,
 			our_funding_inputs,
 			our_funding_outputs,
-		};
-
-		let (interactive_tx_constructor, first_message) = funding_negotiation_context
-			.into_interactive_tx_constructor(
-				&self.context,
-				&splice_funding,
-				entropy_source,
-				holder_node_id.clone(),
-			);
-		debug_assert!(first_message.is_none());
-
-		let new_funding_pubkey = splice_funding.get_holder_pubkeys().funding_pubkey;
+		);
 		self.pending_splice = Some(PendingFunding {
-			funding_negotiation: Some(FundingNegotiation::ConstructingTransaction {
-				funding: splice_funding,
-				interactive_tx_constructor,
-			}),
+			funding_negotiation: Some(funding_negotiation),
 			negotiated_candidates: Vec::new(),
 			received_funding_txid: None,
 			sent_funding_txid: None,
@@ -12310,33 +12337,20 @@ where
 		);
 
 		let prev_funding_input = self.funding.to_splice_funding_input();
-		let funding_negotiation_context = FundingNegotiationContext {
-			is_initiator: false,
+		let funding_negotiation = FundingNegotiation::for_acceptor(
+			rbf_funding,
+			&self.context,
+			entropy_source,
+			holder_node_id,
 			our_funding_contribution,
-			funding_tx_locktime: LockTime::from_consensus(msg.locktime),
-			funding_feerate_sat_per_1000_weight: msg.feerate_sat_per_1000_weight,
-			shared_funding_input: Some(prev_funding_input),
-			our_funding_inputs: Vec::new(),
-			our_funding_outputs: Vec::new(),
-		};
-
-		let (interactive_tx_constructor, first_message) = funding_negotiation_context
-			.into_interactive_tx_constructor(
-				&self.context,
-				&rbf_funding,
-				entropy_source,
-				holder_node_id.clone(),
-			);
-		debug_assert!(first_message.is_none());
-
-		let pending_splice = self
-			.pending_splice
-			.as_mut()
-			.expect("We validated pending_splice exists in validate_tx_init_rbf");
-		pending_splice.funding_negotiation = Some(FundingNegotiation::ConstructingTransaction {
-			funding: rbf_funding,
-			interactive_tx_constructor,
-		});
+			prev_funding_input,
+			msg.locktime,
+			msg.feerate_sat_per_1000_weight,
+			Vec::new(),
+			Vec::new(),
+		);
+		let pending_splice = self.pending_splice.as_mut().expect("pending_splice should exist");
+		pending_splice.funding_negotiation = Some(funding_negotiation);
 		pending_splice.last_funding_feerate_sat_per_1000_weight =
 			Some(msg.feerate_sat_per_1000_weight);
 
