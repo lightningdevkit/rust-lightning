@@ -4432,6 +4432,14 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		funding.get_htlc_maximum_msat(self.counterparty_max_htlc_value_in_flight_msat)
 	}
 
+	pub fn get_holder_max_htlc_value_in_flight_msat(&self) -> u64 {
+		self.holder_max_htlc_value_in_flight_msat
+	}
+
+	pub fn get_holder_max_accepted_htlcs(&self) -> u16 {
+		self.holder_max_accepted_htlcs
+	}
+
 	pub fn get_fee_proportional_millionths(&self) -> u32 {
 		self.config.options.forwarding_fee_proportional_millionths
 	}
@@ -13173,6 +13181,10 @@ where
 				}
 			})
 			.chain(self.context.pending_outbound_htlcs.iter().map(|htlc| (&htlc.source, &htlc.payment_hash)))
+	}
+
+	pub fn get_outbound_htlcs(&self) -> impl Iterator<Item = (u64, &HTLCSource)> {
+		self.context.pending_outbound_htlcs.iter().map(|htlc| (htlc.amount_msat, &htlc.source))
 	}
 
 	pub fn get_announced_htlc_max_msat(&self) -> u64 {
