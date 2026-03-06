@@ -15112,8 +15112,6 @@ impl<
 				}
 			}
 
-			log_debug!(logger, "Generating channel_reestablish events");
-
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
 				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
@@ -15131,6 +15129,7 @@ impl<
 					let logger = WithChannelContext::from(&self.logger, &chan.context(), None);
 					match chan.peer_connected_get_handshake(self.chain_hash, &&logger) {
 						ReconnectionMsg::Reestablish(msg) => {
+							log_debug!(logger, "Generating channel_reestablish events");
 							pending_msg_events.push(MessageSendEvent::SendChannelReestablish {
 								node_id: chan.context().get_counterparty_node_id(),
 								msg,
