@@ -25,7 +25,6 @@ use crate::blinded_path::payment::{
 	PaymentConstraints, PaymentContext, ReceiveTlvs,
 };
 use crate::chain::channelmonitor::LATENCY_GRACE_PERIOD_BLOCKS;
-
 #[allow(unused_imports)]
 use crate::prelude::*;
 
