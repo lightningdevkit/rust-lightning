@@ -61,6 +61,18 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], _out: Out) {
 	}
 }
 
+struct FuzzCurrencyConversion;
+
+impl CurrencyConversion for FuzzCurrencyConversion {
+	fn msats_per_minor_unit(&self, _iso4217_code: CurrencyCode) -> Result<u64, ()> {
+		unreachable!()
+	}
+
+	fn tolerance_percent(&self) -> u8 {
+		unreachable!()
+	}
+}
+
 struct Randomness;
 
 impl EntropySource for Randomness {

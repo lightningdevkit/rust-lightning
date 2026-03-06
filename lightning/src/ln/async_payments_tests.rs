@@ -60,6 +60,7 @@ use crate::types::features::Bolt12InvoiceFeatures;
 use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::util::config::{HTLCInterceptionFlags, UserConfig};
 use crate::util::ser::Writeable;
+use crate::util::test_utils::TestCurrencyConversion;
 use bitcoin::constants::ChainHash;
 use bitcoin::network::Network;
 use bitcoin::secp256k1;
@@ -1448,6 +1449,8 @@ fn amount_doesnt_match_invreq() {
 
 	let amt_msat = 5000;
 	let payment_id = PaymentId([1; 32]);
+	let conversion = TestCurrencyConversion;
+
 	nodes[0].node.pay_for_offer(&offer, Some(amt_msat), payment_id, Default::default()).unwrap();
 	let release_held_htlc_om_3_0 = pass_async_payments_oms(
 		static_invoice,
@@ -1471,6 +1474,7 @@ fn amount_doesnt_match_invreq() {
 					Nonce::from_entropy_source(nodes[0].keys_manager),
 					&secp_ctx,
 					payment_id,
+					&conversion,
 				)
 				.unwrap()
 				.amount_msats(amt_msat + 1)

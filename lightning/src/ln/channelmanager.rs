@@ -95,6 +95,9 @@ use crate::ln::outbound_payment::{
 };
 use crate::ln::types::ChannelId;
 use crate::offers::async_receive_offer_cache::AsyncReceiveOfferCache;
+use crate::offers::currency::CurrencyConversion;
+#[cfg(not(c_bindings))]
+use crate::offers::currency::DefaultCurrencyConversion;
 use crate::offers::flow::{HeldHtlcReplyPath, InvreqResponseInstructions, OffersMessageFlow};
 use crate::offers::invoice::{Bolt12Invoice, UnsignedBolt12Invoice};
 use crate::offers::invoice_error::InvoiceError;
@@ -1817,6 +1820,7 @@ pub type SimpleArcChannelManager<M, T, F, L> = ChannelManager<
 		>,
 	>,
 	Arc<DefaultMessageRouter<Arc<NetworkGraph<Arc<L>>>, Arc<L>, Arc<KeysManager>>>,
+	Arc<DefaultCurrencyConversion>,
 	Arc<L>,
 >;
 
@@ -1848,6 +1852,7 @@ pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, 'i, M, T, F, L>
 		ProbabilisticScorer<&'f NetworkGraph<&'g L>, &'g L>,
 	>,
 	&'i DefaultMessageRouter<&'f NetworkGraph<&'g L>, &'g L, &'c KeysManager>,
+	&'i DefaultCurrencyConversion,
 	&'g L,
 >;
 
@@ -1874,6 +1879,8 @@ pub trait AChannelManager {
 	type Router: Router;
 	/// A type implementing [`MessageRouter`].
 	type MessageRouter: MessageRouter;
+	/// A type implementing [`CurrencyConversion`].
+	type CurrencyConversion: CurrencyConversion;
 	/// A type implementing [`Logger`].
 	type Logger: Logger;
 	/// Returns a reference to the actual [`ChannelManager`] object.
@@ -1888,6 +1895,7 @@ pub trait AChannelManager {
 		Self::FeeEstimator,
 		Self::Router,
 		Self::MessageRouter,
+		Self::CurrencyConversion,
 		Self::Logger,
 	>;
 }
@@ -1901,8 +1909,9 @@ impl<
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
+		CC: CurrencyConversion,
 		L: Logger,
-	> AChannelManager for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> AChannelManager for ChannelManager<M, T, ES, NS, SP, F, R, MR, CC, L>
 {
 	type Watch = M;
 	type Broadcaster = T;
@@ -1913,8 +1922,9 @@ impl<
 	type FeeEstimator = F;
 	type Router = R;
 	type MessageRouter = MR;
+	type CurrencyConversion = CC;
 	type Logger = L;
-	fn get_cm(&self) -> &ChannelManager<M, T, ES, NS, SP, F, R, MR, L> {
+	fn get_cm(&self) -> &ChannelManager<M, T, ES, NS, SP, F, R, MR, CC, L> {
 		self
 	}
 }
@@ -1995,6 +2005,7 @@ impl<
 /// #     tx_broadcaster: &dyn lightning::chain::chaininterface::BroadcasterInterface,
 /// #     router: &lightning::routing::router::DefaultRouter<&NetworkGraph<&'a L>, &'a L, &ES, &S, SP, SL>,
 /// #     message_router: &lightning::onion_message::messenger::DefaultMessageRouter<&NetworkGraph<&'a L>, &'a L, &ES>,
+/// #     currency_conversion: &lightning::offers::currency::DefaultCurrencyConversion,
 /// #     logger: &L,
 /// #     entropy_source: &ES,
 /// #     node_signer: &dyn lightning::sign::NodeSigner,
@@ -2010,18 +2021,18 @@ impl<
 /// };
 /// let config = UserConfig::default();
 /// let channel_manager = ChannelManager::new(
-///     fee_estimator, chain_monitor, tx_broadcaster, router, message_router, logger,
-///     entropy_source, node_signer, signer_provider, config.clone(), params, current_timestamp,
+///     fee_estimator, chain_monitor, tx_broadcaster, router, message_router, currency_conversion,
+/// 	logger, entropy_source, node_signer, signer_provider, config.clone(), params, current_timestamp,
 /// );
 ///
 /// // Restart from deserialized data
 /// let mut channel_monitors = read_channel_monitors();
 /// let args = ChannelManagerReadArgs::new(
 ///     entropy_source, node_signer, signer_provider, fee_estimator, chain_monitor, tx_broadcaster,
-///     router, message_router, logger, config, channel_monitors.iter().collect(),
+///     router, message_router, currency_conversion, logger, config, channel_monitors.iter().collect(),
 /// );
 /// let (block_hash, channel_manager) =
-///     <(BlockHash, ChannelManager<_, _, _, _, _, _, _, _, _>)>::read(&mut reader, args)?;
+///     <(BlockHash, ChannelManager<_, _, _, _, _, _, _, _, _, _>)>::read(&mut reader, args)?;
 ///
 /// // Update the ChannelManager and ChannelMonitors with the latest chain data
 /// // ...
@@ -2668,6 +2679,7 @@ pub struct ChannelManager<
 	F: FeeEstimator,
 	R: Router,
 	MR: MessageRouter,
+	CC: CurrencyConversion,
 	L: Logger,
 > {
 	config: RwLock<UserConfig>,
@@ -2678,9 +2690,9 @@ pub struct ChannelManager<
 	router: R,
 
 	#[cfg(test)]
-	pub(super) flow: OffersMessageFlow<MR, L>,
+	pub(super) flow: OffersMessageFlow<MR, CC, L>,
 	#[cfg(not(test))]
-	flow: OffersMessageFlow<MR, L>,
+	flow: OffersMessageFlow<MR, CC, L>,
 
 	#[cfg(any(test, feature = "_test_utils"))]
 	pub(super) best_block: RwLock<BestBlock>,
@@ -3468,8 +3480,9 @@ impl<
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
+		CC: CurrencyConversion,
 		L: Logger,
-	> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> ChannelManager<M, T, ES, NS, SP, F, R, MR, CC, L>
 {
 	/// Constructs a new `ChannelManager` to hold several channels and route between them.
 	///
@@ -3490,9 +3503,9 @@ impl<
 	/// [`params.best_block.block_hash`]: chain::BestBlock::block_hash
 	#[rustfmt::skip]
 	pub fn new(
-		fee_est: F, chain_monitor: M, tx_broadcaster: T, router: R, message_router: MR, logger: L,
-		entropy_source: ES, node_signer: NS, signer_provider: SP, config: UserConfig,
-		params: ChainParameters, current_timestamp: u32,
+		fee_est: F, chain_monitor: M, tx_broadcaster: T, router: R, message_router: MR,
+		currency_conversion: CC, logger: L, entropy_source: ES, node_signer: NS,
+		signer_provider: SP, config: UserConfig, params: ChainParameters, current_timestamp: u32,
 	) -> Self
 	where
 		L: Clone,
@@ -3506,7 +3519,8 @@ impl<
 		let flow = OffersMessageFlow::new(
 			ChainHash::using_genesis_block(params.network), params.best_block,
 			our_network_pubkey, current_timestamp, expanded_inbound_key,
-			node_signer.get_receive_auth_key(), secp_ctx.clone(), message_router, logger.clone(),
+			node_signer.get_receive_auth_key(), secp_ctx.clone(), message_router,
+			currency_conversion, logger.clone(),
 		);
 
 		ChannelManager {
@@ -5701,6 +5715,7 @@ impl<
 			let features = self.bolt12_invoice_features();
 			let outbound_pmts_res = self.pending_outbound_payments.static_invoice_received(
 				invoice,
+				&self.flow.currency_conversion,
 				payment_id,
 				features,
 				best_block_height,
@@ -8359,12 +8374,25 @@ impl<
 								});
 								let verified_invreq = match verify_opt {
 									Some(verified_invreq) => {
-										if let Some(invreq_amt_msat) =
-											verified_invreq.amount_msats()
+										match verified_invreq
+											.amount_msats(&self.flow.currency_conversion)
 										{
-											if payment_data.total_msat < invreq_amt_msat {
-												fail_htlc!(claimable_htlc, payment_hash);
-											}
+											Ok(invreq_amt_msat) => {
+												if payment_data.total_msat < invreq_amt_msat {
+													fail_htlc!(claimable_htlc, payment_hash);
+												}
+											},
+											Err(_) => {
+												// `amount_msats()` can only fail if the invoice request does not specify an amount
+												// and the underlying offer's amount cannot be resolved.
+												//
+												// This invoice request corresponds to an offer we constructed, and we only allow
+												// creating offers with currency amounts that the node explicitly supports.
+												//
+												// Therefore, amount resolution must succeed here. Reaching this branch indicates
+												// an internal logic error.
+												debug_assert!(false);
+											},
 										}
 										verified_invreq
 									},
@@ -13976,8 +14004,9 @@ impl<
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
+		CC: CurrencyConversion,
 		L: Logger,
-	> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> ChannelManager<M, T, ES, NS, SP, F, R, MR, CC, L>
 {
 	#[cfg(not(c_bindings))]
 	create_offer_builder!(self, OfferBuilder<'_, DerivedMetadata, secp256k1::All>);
@@ -14178,10 +14207,12 @@ impl<
 			None => builder,
 			Some(quantity) => builder.quantity(quantity)?,
 		};
+
 		let builder = match amount_msats {
 			None => builder,
 			Some(amount_msats) => builder.amount_msats(amount_msats)?,
 		};
+
 		let builder = match payer_note {
 			None => builder,
 			Some(payer_note) => builder.payer_note(payer_note),
@@ -14883,8 +14914,9 @@ impl<
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
+		CC: CurrencyConversion,
 		L: Logger,
-	> BaseMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> BaseMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, CC, L>
 {
 	fn provided_node_features(&self) -> NodeFeatures {
 		provided_node_features(&self.config.read().unwrap())
@@ -15249,8 +15281,9 @@ impl<
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
+		CC: CurrencyConversion,
 		L: Logger,
-	> EventsProvider for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> EventsProvider for ChannelManager<M, T, ES, NS, SP, F, R, MR, CC, L>
 {
 	/// Processes events that must be periodically handled.
 	///
@@ -15274,8 +15307,9 @@ impl<
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
+		CC: CurrencyConversion,
 		L: Logger,
-	> chain::Listen for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> chain::Listen for ChannelManager<M, T, ES, NS, SP, F, R, MR, CC, L>
 {
 	fn filtered_block_connected(&self, header: &Header, txdata: &TransactionData, height: u32) {
 		{
@@ -15325,8 +15359,9 @@ impl<
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
+		CC: CurrencyConversion,
 		L: Logger,
-	> chain::Confirm for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> chain::Confirm for ChannelManager<M, T, ES, NS, SP, F, R, MR, CC, L>
 {
 	#[rustfmt::skip]
 	fn transactions_confirmed(&self, header: &Header, txdata: &TransactionData, height: u32) {
@@ -15488,8 +15523,9 @@ impl<
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
+		CC: CurrencyConversion,
 		L: Logger,
-	> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> ChannelManager<M, T, ES, NS, SP, F, R, MR, CC, L>
 {
 	/// Calls a function which handles an on-chain event (blocks dis/connected, transactions
 	/// un/confirmed, etc) on each channel, handling any resulting errors or messages generated by
@@ -15840,8 +15876,9 @@ impl<
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
+		CC: CurrencyConversion,
 		L: Logger,
-	> ChannelMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> ChannelMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, CC, L>
 {
 	fn handle_open_channel(&self, counterparty_node_id: PublicKey, message: &msgs::OpenChannel) {
 		// Note that we never need to persist the updated ChannelManager for an inbound
@@ -16390,8 +16427,9 @@ impl<
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
+		CC: CurrencyConversion,
 		L: Logger,
-	> OffersMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> OffersMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, CC, L>
 {
 	#[rustfmt::skip]
 	fn handle_message(
@@ -16598,8 +16636,9 @@ impl<
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
+		CC: CurrencyConversion,
 		L: Logger,
-	> AsyncPaymentsMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> AsyncPaymentsMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, CC, L>
 {
 	fn handle_offer_paths_request(
 		&self, message: OfferPathsRequest, context: AsyncPaymentsContext,
@@ -16845,8 +16884,9 @@ impl<
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
+		CC: CurrencyConversion,
 		L: Logger,
-	> DNSResolverMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> DNSResolverMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, CC, L>
 {
 	fn handle_dnssec_query(
 		&self, _message: DNSSECQuery, _responder: Option<Responder>,
@@ -16903,8 +16943,9 @@ impl<
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
+		CC: CurrencyConversion,
 		L: Logger,
-	> NodeIdLookUp for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> NodeIdLookUp for ChannelManager<M, T, ES, NS, SP, F, R, MR, CC, L>
 {
 	fn next_node_id(&self, short_channel_id: u64) -> Option<PublicKey> {
 		self.short_to_chan_info.read().unwrap().get(&short_channel_id).map(|(pubkey, _)| *pubkey)
@@ -17408,8 +17449,9 @@ impl<
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
+		CC: CurrencyConversion,
 		L: Logger,
-	> Writeable for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> Writeable for ChannelManager<M, T, ES, NS, SP, F, R, MR, CC, L>
 {
 	#[rustfmt::skip]
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
@@ -18138,6 +18180,7 @@ pub struct ChannelManagerReadArgs<
 	F: FeeEstimator,
 	R: Router,
 	MR: MessageRouter,
+	CC: CurrencyConversion,
 	L: Logger + Clone,
 > {
 	/// A cryptographically secure source of entropy.
@@ -18176,6 +18219,11 @@ pub struct ChannelManagerReadArgs<
 	///
 	/// [`BlindedMessagePath`]: crate::blinded_path::message::BlindedMessagePath
 	pub message_router: MR,
+	/// The [`CurrencyConversion`] used for supporting and interpreting [`Offer`] amount
+	/// denoted in [`Amount::Currency`].
+	///
+	/// [`Amount::Currency`]: crate::offers::offer::Amount::Currency
+	pub currency_conversion: CC,
 	/// The Logger for use in the ChannelManager and which may be used to log information during
 	/// deserialization.
 	pub logger: L,
@@ -18216,16 +18264,18 @@ impl<
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
+		CC: CurrencyConversion,
 		L: Logger + Clone,
-	> ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>
+	> ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, CC, L>
 {
 	/// Simple utility function to create a ChannelManagerReadArgs which creates the monitor
 	/// HashMap for you. This is primarily useful for C bindings where it is not practical to
 	/// populate a HashMap directly from C.
 	pub fn new(
 		entropy_source: ES, node_signer: NS, signer_provider: SP, fee_estimator: F,
-		chain_monitor: M, tx_broadcaster: T, router: R, message_router: MR, logger: L,
-		config: UserConfig, mut channel_monitors: Vec<&'a ChannelMonitor<SP::EcdsaSigner>>,
+		chain_monitor: M, tx_broadcaster: T, router: R, message_router: MR,
+		currency_conversion: CC, logger: L, config: UserConfig,
+		mut channel_monitors: Vec<&'a ChannelMonitor<SP::EcdsaSigner>>,
 	) -> Self {
 		Self {
 			entropy_source,
@@ -18236,6 +18286,7 @@ impl<
 			tx_broadcaster,
 			router,
 			message_router,
+			currency_conversion,
 			logger,
 			config,
 			channel_monitors: hash_map_from_iter(
@@ -18293,15 +18344,16 @@ impl<
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
+		CC: CurrencyConversion,
 		L: Logger + Clone,
-	> ReadableArgs<ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>>
-	for (BlockHash, Arc<ChannelManager<M, T, ES, NS, SP, F, R, MR, L>>)
+	> ReadableArgs<ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, CC, L>>
+	for (BlockHash, Arc<ChannelManager<M, T, ES, NS, SP, F, R, MR, CC, L>>)
 {
 	fn read<Reader: io::Read>(
-		reader: &mut Reader, args: ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>,
+		reader: &mut Reader, args: ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, CC, L>,
 	) -> Result<Self, DecodeError> {
 		let (blockhash, chan_manager) =
-			<(BlockHash, ChannelManager<M, T, ES, NS, SP, F, R, MR, L>)>::read(reader, args)?;
+			<(BlockHash, ChannelManager<M, T, ES, NS, SP, F, R, MR, CC, L>)>::read(reader, args)?;
 		Ok((blockhash, Arc::new(chan_manager)))
 	}
 }
@@ -18316,12 +18368,13 @@ impl<
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
+		CC: CurrencyConversion,
 		L: Logger + Clone,
-	> ReadableArgs<ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>>
-	for (BlockHash, ChannelManager<M, T, ES, NS, SP, F, R, MR, L>)
+	> ReadableArgs<ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, CC, L>>
+	for (BlockHash, ChannelManager<M, T, ES, NS, SP, F, R, MR, CC, L>)
 {
 	fn read<Reader: io::Read>(
-		reader: &mut Reader, args: ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>,
+		reader: &mut Reader, args: ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, CC, L>,
 	) -> Result<Self, DecodeError> {
 		// Stage 1: Pure deserialization into DTO
 		let data: ChannelManagerData<SP> = ChannelManagerData::read(
@@ -18348,8 +18401,9 @@ impl<
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
+		CC: CurrencyConversion,
 		L: Logger + Clone,
-	> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> ChannelManager<M, T, ES, NS, SP, F, R, MR, CC, L>
 {
 	/// Constructs a `ChannelManager` from deserialized data and runtime dependencies.
 	///
@@ -18361,7 +18415,7 @@ impl<
 	/// [`ChannelMonitorUpdate`]s.
 	pub(super) fn from_channel_manager_data(
 		data: ChannelManagerData<SP>,
-		mut args: ChannelManagerReadArgs<'_, M, T, ES, NS, SP, F, R, MR, L>,
+		mut args: ChannelManagerReadArgs<'_, M, T, ES, NS, SP, F, R, MR, CC, L>,
 	) -> Result<(BlockHash, Self), DecodeError> {
 		let ChannelManagerData {
 			chain_hash,
@@ -19669,6 +19723,7 @@ impl<
 			args.node_signer.get_receive_auth_key(),
 			secp_ctx.clone(),
 			args.message_router,
+			args.currency_conversion,
 			args.logger.clone(),
 		)
 		.with_async_payments_offers_cache(async_receive_offer_cache);

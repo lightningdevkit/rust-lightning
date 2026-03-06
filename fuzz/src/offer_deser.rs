@@ -12,6 +12,7 @@ use bitcoin::secp256k1::Secp256k1;
 use core::convert::TryFrom;
 use lightning::ln::channelmanager::PaymentId;
 use lightning::ln::inbound_payment::ExpandedKey;
+use lightning::offers::currency::DefaultCurrencyConversion;
 use lightning::offers::invoice_request::InvoiceRequest;
 use lightning::offers::nonce::Nonce;
 use lightning::offers::offer::{Amount, Offer, Quantity};
@@ -48,13 +49,13 @@ fn build_request(offer: &Offer) -> Result<InvoiceRequest, Bolt12SemanticError> {
 	let nonce = Nonce::from_entropy_source(&entropy);
 	let secp_ctx = Secp256k1::new();
 	let payment_id = PaymentId([1; 32]);
+	let conversion = DefaultCurrencyConversion;
 
 	let mut builder = offer.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)?;
 
 	builder = match offer.amount() {
 		None => builder.amount_msats(1000).unwrap(),
-		Some(Amount::Bitcoin { amount_msats }) => builder.amount_msats(amount_msats + 1)?,
-		Some(Amount::Currency { .. }) => return Err(Bolt12SemanticError::UnsupportedCurrency),
+		Some(amount) => builder.amount_msats(amount.to_msats(&conversion)?)?,
 	};
 
 	builder = match offer.supported_quantity() {

@@ -82,6 +82,7 @@ use crate::io;
 use crate::ln::channelmanager::PaymentId;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN};
 use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
+use crate::offers::currency::{CurrencyConversion, DefaultCurrencyConversion};
 use crate::offers::merkle::{TaggedHash, TlvRecord, TlvStream};
 use crate::offers::nonce::Nonce;
 use crate::offers::parse::{Bech32Encode, Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
@@ -339,19 +340,27 @@ macro_rules! offer_builder_methods { (
 		$return_value
 	}
 
-	/// Sets the [`Offer::amount`] as an [`Amount::Bitcoin`].
+	/// Sets the [`Offer::amount`] in millisatoshis.
 	///
-	/// Successive calls to this method will override the previous setting.
+	/// Internally this sets the amount as [`Amount::Bitcoin`].
+	///
+	/// Successive calls to this method override the previously set amount.
 	pub fn amount_msats($self: $self_type, amount_msats: u64) -> $return_type {
-		$self.amount(Amount::Bitcoin { amount_msats })
+		$self.amount(Amount::Bitcoin { amount_msats }, &DefaultCurrencyConversion)
+			.expect("Setting amount in msats cannot fail")
 	}
 
 	/// Sets the [`Offer::amount`].
 	///
 	/// Successive calls to this method will override the previous setting.
-	pub(super) fn amount($($self_mut)* $self: $self_type, amount: Amount) -> $return_type {
+	pub fn amount<CC: CurrencyConversion>($($self_mut)* $self: $self_type, amount: Amount, currency_conversion: &CC) -> Result<$return_type, Bolt12SemanticError>
+	{
+		if amount.into_msats(currency_conversion)? > MAX_VALUE_MSAT {
+			return Err(Bolt12SemanticError::InvalidAmount);
+		}
+
 		$self.offer.amount = Some(amount);
-		$return_value
+		Ok($return_value)
 	}
 
 	/// Sets the [`Offer::absolute_expiry`] as seconds since the Unix epoch.
@@ -400,16 +409,6 @@ macro_rules! offer_builder_methods { (
 
 	/// Builds an [`Offer`] from the builder's settings.
 	pub fn build($($self_mut)* $self: $self_type) -> Result<Offer, Bolt12SemanticError> {
-		match $self.offer.amount {
-			Some(Amount::Bitcoin { amount_msats }) => {
-				if amount_msats > MAX_VALUE_MSAT {
-					return Err(Bolt12SemanticError::InvalidAmount);
-				}
-			},
-			Some(Amount::Currency { .. }) => return Err(Bolt12SemanticError::UnsupportedCurrency),
-			None => {},
-		}
-
 		if $self.offer.amount.is_some() && $self.offer.description.is_none() {
 			$self.offer.description = Some(String::new());
 		}
@@ -708,6 +707,20 @@ macro_rules! offer_accessors { ($self: ident, $contents: expr) => {
 	pub fn issuer_signing_pubkey(&$self) -> Option<bitcoin::secp256k1::PublicKey> {
 		$contents.issuer_signing_pubkey()
 	}
+
+	/// Resolves the [`Offer::amount`] into millisatoshis.
+	///
+	/// If the offer amount is denominated in a fiat currency, the provided
+	/// [`CurrencyConversion`] implementation is used to convert it into msats.
+	///
+	/// Returns:
+	/// - `Ok(Some(msats))` if the offer specifies an amount and it can be resolved.
+	/// - `Ok(None)` if the offer does not specify an amount.
+	/// - `Err(_)` if the amount cannot be resolved (e.g., unsupported currency).
+	pub fn resolve_offer_amount<CC: CurrencyConversion>(&$self, currency_conversion: &CC) -> Result<Option<u64>, Bolt12SemanticError>
+	{
+		$contents.resolve_offer_amount(currency_conversion)
+	}
 } }
 
 impl Offer {
@@ -785,20 +798,23 @@ macro_rules! request_invoice_derived_signing_pubkey { ($self: ident, $offer: exp
 	pub fn request_invoice<
 		'a, 'b,
 		#[cfg(not(c_bindings))]
-		T: secp256k1::Signing
+		T: secp256k1::Signing,
+		CC: CurrencyConversion,
 	>(
 		&'a $self, expanded_key: &ExpandedKey, nonce: Nonce,
 		#[cfg(not(c_bindings))]
 		secp_ctx: &'b Secp256k1<T>,
 		#[cfg(c_bindings)]
 		secp_ctx: &'b Secp256k1<secp256k1::All>,
-		payment_id: PaymentId
-	) -> Result<$builder, Bolt12SemanticError> {
+		payment_id: PaymentId,
+		currency_conversion: &'a CC,
+	) -> Result<$builder, Bolt12SemanticError>
+	{
 		if $offer.offer_features().requires_unknown_bits() {
 			return Err(Bolt12SemanticError::UnknownRequiredFeatures);
 		}
 
-		let mut builder = <$builder>::deriving_signing_pubkey(&$offer, expanded_key, nonce, secp_ctx, payment_id);
+		let mut builder = <$builder>::deriving_signing_pubkey(&$offer, expanded_key, nonce, secp_ctx, payment_id, currency_conversion);
 		if let Some(hrn) = $hrn {
 			#[cfg(c_bindings)]
 			{
@@ -815,7 +831,7 @@ macro_rules! request_invoice_derived_signing_pubkey { ($self: ident, $offer: exp
 
 #[cfg(not(c_bindings))]
 impl Offer {
-	request_invoice_derived_signing_pubkey!(self, self, InvoiceRequestBuilder<'a, 'b, T>, None);
+	request_invoice_derived_signing_pubkey!(self, self, InvoiceRequestBuilder<'a, 'b, T, CC>, None);
 }
 
 #[cfg(not(c_bindings))]
@@ -823,7 +839,7 @@ impl OfferFromHrn {
 	request_invoice_derived_signing_pubkey!(
 		self,
 		self.offer,
-		InvoiceRequestBuilder<'a, 'b, T>,
+		InvoiceRequestBuilder<'a, 'b, T, CC>,
 		Some(self.hrn)
 	);
 }
@@ -833,7 +849,7 @@ impl Offer {
 	request_invoice_derived_signing_pubkey!(
 		self,
 		self,
-		InvoiceRequestWithDerivedPayerSigningPubkeyBuilder<'a, 'b>,
+		InvoiceRequestWithDerivedPayerSigningPubkeyBuilder<'a, 'b, CC>,
 		None
 	);
 }
@@ -843,7 +859,7 @@ impl OfferFromHrn {
 	request_invoice_derived_signing_pubkey!(
 		self,
 		self.offer,
-		InvoiceRequestWithDerivedPayerSigningPubkeyBuilder<'a, 'b>,
+		InvoiceRequestWithDerivedPayerSigningPubkeyBuilder<'a, 'b, CC>,
 		Some(self.hrn)
 	);
 }
@@ -930,28 +946,49 @@ impl OfferContents {
 		self.paths.as_ref().map(|paths| paths.as_slice()).unwrap_or(&[])
 	}
 
-	pub(super) fn check_amount_msats_for_quantity(
-		&self, amount_msats: Option<u64>, quantity: Option<u64>,
+	pub(super) fn check_amount_msats_for_quantity<CC: CurrencyConversion>(
+		&self, currency_conversion: &CC, requested_amount_msats: Option<u64>,
+		requested_quantity: Option<u64>,
 	) -> Result<(), Bolt12SemanticError> {
-		let offer_amount_msats = match self.amount {
-			None => 0,
-			Some(Amount::Bitcoin { amount_msats }) => amount_msats,
-			Some(Amount::Currency { .. }) => return Err(Bolt12SemanticError::UnsupportedCurrency),
-		};
+		// If the offer expects a quantity but none has been provided yet,
+		// the implied total amount cannot be determined. Defer amount
+		// validation until the quantity is known.
+		if self.expects_quantity() && requested_quantity.is_none() {
+			return Ok(());
+		}
 
-		if !self.expects_quantity() || quantity.is_some() {
-			let expected_amount_msats = offer_amount_msats
-				.checked_mul(quantity.unwrap_or(1))
-				.ok_or(Bolt12SemanticError::InvalidAmount)?;
-			let amount_msats = amount_msats.unwrap_or(expected_amount_msats);
+		let quantity = requested_quantity.unwrap_or(1);
 
-			if amount_msats < expected_amount_msats {
-				return Err(Bolt12SemanticError::InsufficientAmount);
-			}
+		// Expected offer amount defaults to zero if unspecified
+		let expected_amount_msats = self
+			.resolve_offer_amount(currency_conversion)?
+			.map(|unit_msats| {
+				unit_msats.checked_mul(quantity).ok_or(Bolt12SemanticError::InvalidAmount)
+			})
+			.transpose()?;
 
-			if amount_msats > MAX_VALUE_MSAT {
-				return Err(Bolt12SemanticError::InvalidAmount);
-			}
+		let total_amount_msats = match (requested_amount_msats, expected_amount_msats) {
+			// The payer specified an amount and the offer defines a minimum.
+			// Enforce that the requested amount satisfies the minimum.
+			(Some(requested), Some(minimum)) if requested < minimum => {
+				Err(Bolt12SemanticError::InsufficientAmount)
+			},
+
+			// The payer specified a valid amount which satisfies the offer minimum
+			// (or the offer does not define one).
+			(Some(requested), _) => Ok(requested),
+
+			// The payer did not specify an amount but the offer defines one.
+			// Use the offer-implied amount.
+			(None, Some(amount_msats)) => Ok(amount_msats),
+
+			// Neither the payer nor the offer defines an amount.
+			(None, None) => Err(Bolt12SemanticError::MissingAmount),
+		}?;
+
+		// Sanity check:
+		if total_amount_msats > MAX_VALUE_MSAT {
+			return Err(Bolt12SemanticError::InvalidAmount);
 		}
 
 		Ok(())
@@ -991,6 +1028,12 @@ impl OfferContents {
 
 	pub(super) fn issuer_signing_pubkey(&self) -> Option<PublicKey> {
 		self.issuer_signing_pubkey
+	}
+
+	pub(super) fn resolve_offer_amount<CC: CurrencyConversion>(
+		&self, currency_conversion: &CC,
+	) -> Result<Option<u64>, Bolt12SemanticError> {
+		self.amount().map(|amt| amt.into_msats(currency_conversion)).transpose()
 	}
 
 	pub(super) fn verify_using_metadata<T: secp256k1::Signing>(
@@ -1123,6 +1166,21 @@ pub enum Amount {
 		/// The amount in the currency unit adjusted by the ISO 4217 exponent (e.g., USD cents).
 		amount: u64,
 	},
+}
+
+impl Amount {
+	pub(crate) fn into_msats<CC: CurrencyConversion>(
+		self, currency_conversion: &CC,
+	) -> Result<u64, Bolt12SemanticError> {
+		match self {
+			Amount::Bitcoin { amount_msats } => Ok(amount_msats),
+			Amount::Currency { iso4217_code, amount } => currency_conversion
+				.msats_per_minor_unit(iso4217_code)
+				.map_err(|_| Bolt12SemanticError::UnsupportedCurrency)?
+				.checked_mul(amount)
+				.ok_or(Bolt12SemanticError::InvalidAmount),
+		}
+	}
 }
 
 /// An ISO 4217 three-letter currency code (e.g., USD).
@@ -1401,6 +1459,7 @@ mod tests {
 	use crate::types::features::OfferFeatures;
 	use crate::types::string::PrintableString;
 	use crate::util::ser::{BigSize, Writeable};
+	use crate::util::test_utils::TestCurrencyConversion;
 	use bitcoin::constants::ChainHash;
 	use bitcoin::network::Network;
 	use bitcoin::secp256k1::Secp256k1;
@@ -1515,6 +1574,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		#[cfg(c_bindings)]
 		use super::OfferWithDerivedMetadataBuilder as OfferBuilder;
@@ -1527,7 +1587,7 @@ mod tests {
 		assert_eq!(offer.issuer_signing_pubkey(), Some(node_id));
 
 		let invoice_request = offer
-			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id, &conversion)
 			.unwrap()
 			.build_and_sign()
 			.unwrap();
@@ -1538,7 +1598,7 @@ mod tests {
 
 		// Fails verification when using the wrong method
 		let invoice_request = offer
-			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id, &conversion)
 			.unwrap()
 			.build_and_sign()
 			.unwrap();
@@ -1555,7 +1615,7 @@ mod tests {
 
 		let invoice_request = Offer::try_from(encoded_offer)
 			.unwrap()
-			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id, &conversion)
 			.unwrap()
 			.build_and_sign()
 			.unwrap();
@@ -1571,7 +1631,7 @@ mod tests {
 
 		let invoice_request = Offer::try_from(encoded_offer)
 			.unwrap()
-			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id, &conversion)
 			.unwrap()
 			.build_and_sign()
 			.unwrap();
@@ -1586,6 +1646,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		let blinded_path = BlindedMessagePath::from_blinded_path(
 			pubkey(40),
@@ -1608,7 +1669,7 @@ mod tests {
 		assert_ne!(offer.issuer_signing_pubkey(), Some(node_id));
 
 		let invoice_request = offer
-			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id, &conversion)
 			.unwrap()
 			.build_and_sign()
 			.unwrap();
@@ -1619,7 +1680,7 @@ mod tests {
 
 		// Fails verification when using the wrong method
 		let invoice_request = offer
-			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id, &conversion)
 			.unwrap()
 			.build_and_sign()
 			.unwrap();
@@ -1634,7 +1695,7 @@ mod tests {
 
 		let invoice_request = Offer::try_from(encoded_offer)
 			.unwrap()
-			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id, &conversion)
 			.unwrap()
 			.build_and_sign()
 			.unwrap();
@@ -1652,7 +1713,7 @@ mod tests {
 
 		let invoice_request = Offer::try_from(encoded_offer)
 			.unwrap()
-			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id, &conversion)
 			.unwrap()
 			.build_and_sign()
 			.unwrap();
@@ -1673,24 +1734,26 @@ mod tests {
 		assert_eq!(tlv_stream.0.amount, Some(1000));
 		assert_eq!(tlv_stream.0.currency, None);
 
+		let conversion = TestCurrencyConversion;
+
 		#[cfg(not(c_bindings))]
-		let builder = OfferBuilder::new(pubkey(42)).amount(currency_amount.clone());
+		let builder = OfferBuilder::new(pubkey(42)).amount(currency_amount.clone(), &conversion).unwrap();
 		#[cfg(c_bindings)]
 		let mut builder = OfferBuilder::new(pubkey(42));
 		#[cfg(c_bindings)]
-		builder.amount(currency_amount.clone());
+		let _ = builder.amount(currency_amount.clone(), &conversion);
+
+		// Currency-denominated amounts are now supported, so setting the amount should succeed.
 		let tlv_stream = builder.offer.as_tlv_stream();
 		assert_eq!(builder.offer.amount, Some(currency_amount.clone()));
 		assert_eq!(tlv_stream.0.amount, Some(10));
 		assert_eq!(tlv_stream.0.currency, Some(b"USD"));
-		match builder.build() {
-			Ok(_) => panic!("expected error"),
-			Err(e) => assert_eq!(e, Bolt12SemanticError::UnsupportedCurrency),
-		}
 
 		let offer = OfferBuilder::new(pubkey(42))
-			.amount(currency_amount.clone())
-			.amount(bitcoin_amount.clone())
+			.amount(currency_amount.clone(), &conversion)
+			.unwrap()
+			.amount(bitcoin_amount.clone(), &conversion)
+			.unwrap()
 			.build()
 			.unwrap();
 		let tlv_stream = offer.as_tlv_stream();
@@ -1698,7 +1761,7 @@ mod tests {
 		assert_eq!(tlv_stream.0.currency, None);
 
 		let invalid_amount = Amount::Bitcoin { amount_msats: MAX_VALUE_MSAT + 1 };
-		match OfferBuilder::new(pubkey(42)).amount(invalid_amount).build() {
+		match OfferBuilder::new(pubkey(42)).amount(invalid_amount, &conversion) {
 			Ok(_) => panic!("expected error"),
 			Err(e) => assert_eq!(e, Bolt12SemanticError::InvalidAmount),
 		}
@@ -1870,12 +1933,13 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		match OfferBuilder::new(pubkey(42))
 			.features_unchecked(OfferFeatures::unknown())
 			.build()
 			.unwrap()
-			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id, &conversion)
 		{
 			Ok(_) => panic!("expected error"),
 			Err(e) => assert_eq!(e, Bolt12SemanticError::UnknownRequiredFeatures),
@@ -1896,8 +1960,10 @@ mod tests {
 
 	#[test]
 	fn parses_offer_with_amount() {
+		let conversion = TestCurrencyConversion;
 		let offer = OfferBuilder::new(pubkey(42))
-			.amount(Amount::Bitcoin { amount_msats: 1000 })
+			.amount(Amount::Bitcoin { amount_msats: 1000 }, &conversion)
+			.unwrap()
 			.build()
 			.unwrap();
 		if let Err(e) = offer.to_string().parse::<Offer>() {
