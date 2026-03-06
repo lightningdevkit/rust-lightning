@@ -706,6 +706,17 @@ pub(crate) enum ChannelMonitorUpdateStep {
 	ReleasePaymentComplete {
 		htlc: SentHTLCId,
 	},
+	/// When an [`Event::PaymentClaimed`] is processed by the user, we need to track that so we don't
+	/// keep regenerating the event redundantly on startup.
+	///
+	/// This will remove the HTLC from [`ChannelMonitor::get_stored_preimages`].
+	///
+	/// Note that this is only generated for closed channels -- if the channel is open, the inbound
+	/// payment is pruned automatically when the HTLC is no longer present in any unrevoked
+	/// commitment transaction.
+	InboundPaymentClaimed {
+		payment_hash: PaymentHash,
+	},
 }
 
 impl ChannelMonitorUpdateStep {
@@ -723,6 +734,7 @@ impl ChannelMonitorUpdateStep {
 			ChannelMonitorUpdateStep::RenegotiatedFunding { .. } => "RenegotiatedFunding",
 			ChannelMonitorUpdateStep::RenegotiatedFundingLocked { .. } => "RenegotiatedFundingLocked",
 			ChannelMonitorUpdateStep::ReleasePaymentComplete { .. } => "ReleasePaymentComplete",
+			ChannelMonitorUpdateStep::InboundPaymentClaimed { .. } => "InboundPaymentClaimed",
 		}
 	}
 }
@@ -768,6 +780,9 @@ impl_writeable_tlv_based_enum_upgradable!(ChannelMonitorUpdateStep,
 		(1, commitment_txs, required_vec),
 		(3, htlc_data, required),
 		(5, claimed_htlcs, required_vec),
+	},
+	(9, InboundPaymentClaimed) => {
+		(1, payment_hash, required),
 	},
 	(10, RenegotiatedFunding) => {
 		(1, channel_parameters, (required: ReadableArgs, None)),
@@ -4150,6 +4165,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			assert_eq!(updates.updates.len(), 1);
 			match updates.updates[0] {
 				ChannelMonitorUpdateStep::ReleasePaymentComplete { .. } => {},
+				ChannelMonitorUpdateStep::InboundPaymentClaimed { .. } => {},
 				ChannelMonitorUpdateStep::ChannelForceClosed { .. } => {},
 				// We should have already seen a `ChannelForceClosed` update if we're trying to
 				// provide a preimage at this point.
@@ -4281,6 +4297,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					log_trace!(logger, "HTLC {htlc:?} permanently and fully resolved");
 					self.htlcs_resolved_to_user.insert(*htlc);
 				},
+				ChannelMonitorUpdateStep::InboundPaymentClaimed { payment_hash } => {
+				},
 			}
 		}
 
@@ -4313,6 +4331,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				ChannelMonitorUpdateStep::PaymentPreimage { .. } => {},
 				ChannelMonitorUpdateStep::ChannelForceClosed { .. } => {},
 				ChannelMonitorUpdateStep::ReleasePaymentComplete { .. } => {},
+				ChannelMonitorUpdateStep::InboundPaymentClaimed { .. } => {},
 			}
 		}
 
