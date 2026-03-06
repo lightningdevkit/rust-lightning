@@ -19,7 +19,10 @@ use crate::{
 	prelude::{hash_map::Entry, new_hash_map, new_hash_set, HashMap, HashSet},
 	sign::EntropySource,
 	sync::Mutex,
-	util::ser::{CollectionLength, Readable, ReadableArgs, Writeable, Writer},
+	util::{
+		logger::Logger,
+		ser::{CollectionLength, Readable, ReadableArgs, Writeable, Writer},
+	},
 };
 
 /// A trait for managing channel resources and making HTLC forwarding decisions.
@@ -606,13 +609,15 @@ impl Channel {
 	fn sufficient_reputation(
 		&mut self, in_flight_htlc_risk: u64, outgoing_reputation: i64,
 		outgoing_in_flight_risk: u64, at_timestamp: u64,
-	) -> Result<bool, ResourceManagerError> {
+	) -> Result<(bool, i64), ResourceManagerError> {
 		let incoming_revenue_threshold = self.incoming_revenue.value_at_timestamp(at_timestamp)?;
 
-		Ok(outgoing_reputation
+		let sufficient = outgoing_reputation
 			.saturating_sub(i64::try_from(outgoing_in_flight_risk).unwrap_or(i64::MAX))
 			.saturating_sub(i64::try_from(in_flight_htlc_risk).unwrap_or(i64::MAX))
-			>= incoming_revenue_threshold)
+			>= incoming_revenue_threshold;
+
+		Ok((sufficient, incoming_revenue_threshold))
 	}
 
 	fn outgoing_in_flight_risk(&self) -> u64 {
@@ -706,21 +711,23 @@ impl<ES: EntropySource> ReadableArgs<(&ResourceManagerConfig, &ES)> for Channel 
 /// An implementation of [`ResourceManager`] for managing channel resources and informing HTLC
 /// forwarding decisions. It implements the core of the mitigation as proposed in
 /// https://github.com/lightning/bolts/pull/1280.
-pub struct DefaultResourceManager {
+pub struct DefaultResourceManager<L: Logger> {
 	config: ResourceManagerConfig,
 	channels: Mutex<HashMap<u64, Channel>>,
 	/// Tracks HTLCs that returned [`ForwardingOutcome::Fail`] during [`Self::replay_pending_htlcs`].
 	/// When [`Self::resolve_htlc`] is called for one of these, it is silently ignored instead of
 	/// returning an error.
 	failed_replays: Mutex<HashSet<HtlcRef>>,
+	logger: L,
 }
 
-impl DefaultResourceManager {
-	pub fn new(config: ResourceManagerConfig) -> Self {
+impl<L: Logger> DefaultResourceManager<L> {
+	pub fn new(config: ResourceManagerConfig, logger: L) -> Self {
 		DefaultResourceManager {
 			config,
 			channels: Mutex::new(new_hash_map()),
 			failed_replays: Mutex::new(new_hash_set()),
+			logger,
 		}
 	}
 
@@ -762,7 +769,7 @@ impl DefaultResourceManager {
 	}
 }
 
-impl DefaultResourceManager {
+impl<L: Logger> DefaultResourceManager<L> {
 	pub fn add_channel(
 		&self, channel_id: u64, max_htlc_value_in_flight_msat: u64, max_accepted_htlcs: u16,
 		timestamp_unix_secs: u64,
@@ -781,6 +788,13 @@ impl DefaultResourceManager {
 					timestamp_unix_secs,
 				)?;
 				entry.insert(channel);
+				log_debug!(
+					self.logger,
+					"Added channel {} to resource manager (max_inflight={}msat, max_htlcs={})",
+					channel_id,
+					max_htlc_value_in_flight_msat,
+					max_accepted_htlcs,
+				);
 				Ok(())
 			},
 			Entry::Occupied(_) => Ok(()),
@@ -795,6 +809,7 @@ impl DefaultResourceManager {
 		for (_, channel) in channels_lock.iter_mut() {
 			channel.general_bucket.remove_channel_slots(channel_id);
 		}
+		log_debug!(self.logger, "Removed channel {} from resource manager", channel_id);
 		Ok(())
 	}
 
@@ -838,35 +853,85 @@ impl DefaultResourceManager {
 				entropy_source,
 			)? {
 				(false, BucketAssigned::General)
-			} else if incoming_channel.sufficient_reputation(
-				in_flight_htlc_risk,
-				outgoing_reputation,
-				outgoing_in_flight_risk,
-				added_at,
-			)? && incoming_channel
-				.protected_bucket
-				.resources_available(incoming_amount_msat)
-			{
-				(true, BucketAssigned::Protected)
-			} else if incoming_channel.congestion_eligible(
-				pending_htlcs_in_congestion,
-				incoming_amount_msat,
-				outgoing_channel_id,
-				added_at,
-			)? {
-				(true, BucketAssigned::Congestion)
 			} else {
-				return Ok(ForwardingOutcome::Fail);
+				let (has_reputation, revenue_threshold) = incoming_channel.sufficient_reputation(
+					in_flight_htlc_risk,
+					outgoing_reputation,
+					outgoing_in_flight_risk,
+					added_at,
+				)?;
+				log_debug!(
+					self.logger,
+					"Reputation check for unaccountable HTLC {} (incoming {} -> outgoing {}): \
+					outgoing_reputation={}, outgoing_in_flight_risk={}, htlc_in_flight_risk={}, \
+					revenue_threshold={}, sufficient={}",
+					htlc_id,
+					incoming_channel_id,
+					outgoing_channel_id,
+					outgoing_reputation,
+					outgoing_in_flight_risk,
+					in_flight_htlc_risk,
+					revenue_threshold,
+					has_reputation,
+				);
+				if has_reputation
+					&& incoming_channel.protected_bucket.resources_available(incoming_amount_msat)
+				{
+					(true, BucketAssigned::Protected)
+				} else {
+					let congestion_eligible = incoming_channel.congestion_eligible(
+						pending_htlcs_in_congestion,
+						incoming_amount_msat,
+						outgoing_channel_id,
+						added_at,
+					)?;
+					log_debug!(
+						self.logger,
+						"Congestion eligibility for HTLC {} (incoming {} -> outgoing {}): {}",
+						htlc_id,
+						incoming_channel_id,
+						outgoing_channel_id,
+						congestion_eligible,
+					);
+					if congestion_eligible {
+						(true, BucketAssigned::Congestion)
+					} else {
+						log_debug!(
+							self.logger,
+							"Failing HTLC {} (incoming {} -> outgoing {}): general full, \
+							insufficient reputation, and not congestion eligible",
+							htlc_id,
+							incoming_channel_id,
+							outgoing_channel_id,
+						);
+						return Ok(ForwardingOutcome::Fail);
+					}
+				}
 			}
 		} else {
 			// If the incoming HTLC is accountable, we only forward it if the outgoing
 			// channel has sufficient reputation, otherwise we fail it.
-			if incoming_channel.sufficient_reputation(
+			let (has_reputation, revenue_threshold) = incoming_channel.sufficient_reputation(
 				in_flight_htlc_risk,
 				outgoing_reputation,
 				outgoing_in_flight_risk,
 				added_at,
-			)? {
+			)?;
+			log_debug!(
+				self.logger,
+				"Reputation check for accountable HTLC {} (incoming {} -> outgoing {}): \
+				outgoing_reputation={}, outgoing_in_flight_risk={}, htlc_in_flight_risk={}, \
+				revenue_threshold={}, sufficient={}",
+				htlc_id,
+				incoming_channel_id,
+				outgoing_channel_id,
+				outgoing_reputation,
+				outgoing_in_flight_risk,
+				in_flight_htlc_risk,
+				revenue_threshold,
+				has_reputation,
+			);
+			if has_reputation {
 				if incoming_channel.protected_bucket.resources_available(incoming_amount_msat) {
 					(true, BucketAssigned::Protected)
 				} else if incoming_channel.general_available(
@@ -876,12 +941,38 @@ impl DefaultResourceManager {
 				)? {
 					(true, BucketAssigned::General)
 				} else {
+					log_debug!(
+						self.logger,
+						"Failing accountable HTLC {} (incoming {} -> outgoing {}): \
+						sufficient reputation but no bucket resources available",
+						htlc_id,
+						incoming_channel_id,
+						outgoing_channel_id,
+					);
 					return Ok(ForwardingOutcome::Fail);
 				}
 			} else {
+				log_debug!(
+					self.logger,
+					"Failing accountable HTLC {} (incoming {} -> outgoing {}): \
+					insufficient reputation",
+					htlc_id,
+					incoming_channel_id,
+					outgoing_channel_id,
+				);
 				return Ok(ForwardingOutcome::Fail);
 			}
 		};
+
+		log_debug!(
+			self.logger,
+			"Forwarding HTLC {} (incoming {} -> outgoing {}) in {:?} bucket, accountable={}",
+			htlc_id,
+			incoming_channel_id,
+			outgoing_channel_id,
+			bucket_assigned,
+			accountable,
+		);
 
 		match bucket_assigned {
 			BucketAssigned::General => {
@@ -923,6 +1014,7 @@ impl DefaultResourceManager {
 
 		let mut failed_replays = self.failed_replays.lock().unwrap();
 		if failed_replays.remove(&htlc_ref) {
+			log_debug!(self.logger, "Resolved HTLC that was failed during replay.");
 			return Ok(());
 		}
 
@@ -946,7 +1038,19 @@ impl DefaultResourceManager {
 			pending_htlc.outgoing_accountable,
 			settled,
 		);
-		outgoing_channel.outgoing_reputation.add_value(effective_fee, resolved_at)?;
+		let new_reputation =
+			outgoing_channel.outgoing_reputation.add_value(effective_fee, resolved_at)?;
+		log_debug!(
+			self.logger,
+			"HTLC {} (incoming {} -> outgoing {}) resolved: settled={}, effective_fee={}, \
+			new_outgoing_reputation={}",
+			htlc_id,
+			incoming_channel_id,
+			outgoing_channel_id,
+			settled,
+			effective_fee,
+			new_reputation,
+		);
 
 		let incoming_channel = channels_lock
 			.get_mut(&incoming_channel_id)
@@ -971,7 +1075,14 @@ impl DefaultResourceManager {
 
 		if settled {
 			let fee: i64 = i64::try_from(pending_htlc.fee).unwrap_or(i64::MAX);
-			incoming_channel.incoming_revenue.add_value(fee, resolved_at)?;
+			let new_revenue = incoming_channel.incoming_revenue.add_value(fee, resolved_at)?;
+			log_debug!(
+				self.logger,
+				"Updated incoming revenue for channel {} after settling HTLC {}: new_revenue={}",
+				incoming_channel_id,
+				htlc_id,
+				new_revenue,
+			);
 		}
 
 		Ok(())
@@ -991,7 +1102,7 @@ pub struct PendingHTLCReplay {
 	pub height_added: u32,
 }
 
-impl Writeable for DefaultResourceManager {
+impl<L: Logger> Writeable for DefaultResourceManager<L> {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		let channels = self.channels.lock().unwrap();
 		write_tlv_fields!(writer, {
@@ -1001,19 +1112,22 @@ impl Writeable for DefaultResourceManager {
 	}
 }
 
-impl<ES: EntropySource> ReadableArgs<(ResourceManagerConfig, &ES)> for DefaultResourceManager {
+impl<ES: EntropySource, L: Logger> ReadableArgs<(ResourceManagerConfig, &ES, L)>
+	for DefaultResourceManager<L>
+{
 	fn read<R: Read>(
-		reader: &mut R, args: (ResourceManagerConfig, &ES),
-	) -> Result<DefaultResourceManager, DecodeError> {
-		let (config, entropy_source) = args;
+		reader: &mut R, args: (ResourceManagerConfig, &ES, L),
+	) -> Result<DefaultResourceManager<L>, DecodeError> {
+		let (config, entropy_source, logger) = args;
 		_init_and_read_len_prefixed_tlv_fields!(reader, {
-			(1, channels, (required: ReadableArgs, (&config, entropy_source))),
+			(1, channels, (required: ReadableArgs, (&config, entropy_source,))),
 		});
 		let channels: HashMap<u64, Channel> = channels.0.unwrap();
 		Ok(DefaultResourceManager {
 			config,
 			channels: Mutex::new(channels),
 			failed_replays: Mutex::new(new_hash_set()),
+			logger,
 		})
 	}
 }
@@ -1033,12 +1147,17 @@ impl<ES: EntropySource> ReadableArgs<(&ResourceManagerConfig, &ES)> for HashMap<
 	}
 }
 
-impl DefaultResourceManager {
+impl<L: Logger> DefaultResourceManager<L> {
 	// This should only be called once during startup to replay pending HTLCs we had before
 	// shutdown.
 	pub fn replay_pending_htlcs<ES: EntropySource>(
 		&self, pending_htlcs: &[PendingHTLCReplay], entropy_source: &ES,
 	) -> Result<Vec<ForwardingOutcome>, DecodeError> {
+		log_debug!(
+			self.logger,
+			"Replaying {} pending HTLCs into resource manager",
+			pending_htlcs.len(),
+		);
 		let mut forwarding_outcomes = Vec::with_capacity(pending_htlcs.len());
 		let mut failed_replays = self.failed_replays.lock().unwrap();
 		for htlc in pending_htlcs {
@@ -1056,6 +1175,18 @@ impl DefaultResourceManager {
 					entropy_source,
 				)
 				.map_err(|_| DecodeError::InvalidValue)?;
+
+			log_debug!(
+				self.logger,
+				"Replayed HTLC {} (incoming {} {}msat -> outgoing {} {}msat, accountable={}): {}",
+				htlc.incoming_htlc_id,
+				htlc.incoming_channel_id,
+				htlc.incoming_amount_msat,
+				htlc.outgoing_channel_id,
+				htlc.outgoing_amount_msat,
+				htlc.incoming_accountable,
+				outcome,
+			);
 
 			if outcome == ForwardingOutcome::Fail {
 				failed_replays.insert(HtlcRef {
@@ -1077,19 +1208,19 @@ impl DefaultResourceManager {
 /// converted to `Ok(())` here.
 ///
 /// All other errors are returned as-is.
-pub struct ReadOnlyResourceManager {
-	inner: DefaultResourceManager,
+pub struct ReadOnlyResourceManager<L: Logger> {
+	inner: DefaultResourceManager<L>,
 }
 
-impl ReadOnlyResourceManager {
+impl<L: Logger> ReadOnlyResourceManager<L> {
 	/// Creates a new [`ReadOnlyResourceManager`] with the given configuration.
-	pub fn new(config: ResourceManagerConfig) -> Self {
-		ReadOnlyResourceManager { inner: DefaultResourceManager::new(config) }
+	pub fn new(config: ResourceManagerConfig, logger: L) -> Self {
+		ReadOnlyResourceManager { inner: DefaultResourceManager::new(config, logger) }
 	}
 
 	/// Constructs a [`ReadOnlyResourceManager`] from an already-deserialized
 	/// [`DefaultResourceManager`].
-	pub fn from_inner(inner: DefaultResourceManager) -> Self {
+	pub fn from_inner(inner: DefaultResourceManager<L>) -> Self {
 		ReadOnlyResourceManager { inner }
 	}
 
@@ -1150,13 +1281,16 @@ impl ReadOnlyResourceManager {
 			resolved_at,
 		) {
 			Ok(()) => Ok(()),
-			Err(ResourceManagerError::HtlcNotFound) => Ok(()),
+			Err(ResourceManagerError::HtlcNotFound) => {
+				log_debug!(self.inner.logger, "Got HTLC not found during resolution in read-only resource manager. Discarding since thismeans we suggested a ForwardingOutcome::Fail and we do not have it in our state.");
+				Ok(())
+			},
 			Err(e) => Err(e),
 		}
 	}
 }
 
-impl Writeable for ReadOnlyResourceManager {
+impl<L: Logger> Writeable for ReadOnlyResourceManager<L> {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		self.inner.write(writer)
 	}
@@ -1314,7 +1448,7 @@ mod tests {
 		sign::EntropySource,
 		util::{
 			ser::{ReadableArgs, Writeable},
-			test_utils::TestKeysInterface,
+			test_utils::{TestKeysInterface, TestLogger},
 		},
 	};
 
@@ -1594,7 +1728,7 @@ mod tests {
 	#[test]
 	fn test_opportunity_cost() {
 		let config = ResourceManagerConfig::default();
-		let resource_manager = DefaultResourceManager::new(config);
+		let resource_manager = DefaultResourceManager::new(config, TestLogger::new());
 
 		// Less than resolution_period has zero cost.
 		assert_eq!(resource_manager.opportunity_cost(Duration::from_secs(10), 100), 0);
@@ -1614,7 +1748,7 @@ mod tests {
 		let fast_resolve = config.resolution_period / 2;
 		let slow_resolve = config.resolution_period * 3;
 
-		let resource_manager = DefaultResourceManager::new(config);
+		let resource_manager = DefaultResourceManager::new(config, TestLogger::new());
 
 		let accountable = true;
 		let settled = true;
@@ -1645,9 +1779,11 @@ mod tests {
 	const CURRENT_HEIGHT: u32 = 1000;
 	const CLTV_EXPIRY: u32 = 1144;
 
-	fn create_test_resource_manager_with_channel_pairs(n_pairs: u8) -> DefaultResourceManager {
+	fn create_test_resource_manager_with_channel_pairs(
+		n_pairs: u8,
+	) -> DefaultResourceManager<TestLogger> {
 		let config = ResourceManagerConfig::default();
-		let rm = DefaultResourceManager::new(config);
+		let rm = DefaultResourceManager::new(config, TestLogger::new());
 		let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
 		for i in 0..n_pairs {
 			rm.add_channel(INCOMING_SCID + i as u64, 5_000_000_000, 114, now).unwrap();
@@ -1656,13 +1792,13 @@ mod tests {
 		rm
 	}
 
-	fn create_test_resource_manager_with_channels() -> DefaultResourceManager {
+	fn create_test_resource_manager_with_channels() -> DefaultResourceManager<TestLogger> {
 		create_test_resource_manager_with_channel_pairs(1)
 	}
 
 	fn add_test_htlc<ES: EntropySource>(
-		rm: &DefaultResourceManager, accountable: bool, htlc_id: u64, added_at: Option<u64>,
-		entropy_source: &ES,
+		rm: &DefaultResourceManager<TestLogger>, accountable: bool, htlc_id: u64,
+		added_at: Option<u64>, entropy_source: &ES,
 	) -> Result<ForwardingOutcome, ResourceManagerError> {
 		rm.add_htlc(
 			INCOMING_SCID,
@@ -1678,21 +1814,23 @@ mod tests {
 		)
 	}
 
-	fn add_reputation(rm: &DefaultResourceManager, outgoing_scid: u64, target_reputation: i64) {
+	fn add_reputation(
+		rm: &DefaultResourceManager<TestLogger>, outgoing_scid: u64, target_reputation: i64,
+	) {
 		let mut channels = rm.channels.lock().unwrap();
 		let outgoing_channel = channels.get_mut(&outgoing_scid).unwrap();
 		let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
 		outgoing_channel.outgoing_reputation.add_value(target_reputation, now).unwrap();
 	}
 
-	fn add_revenue(rm: &DefaultResourceManager, incoming_scid: u64, revenue: i64) {
+	fn add_revenue(rm: &DefaultResourceManager<TestLogger>, incoming_scid: u64, revenue: i64) {
 		let mut channels = rm.channels.lock().unwrap();
 		let channel = channels.get_mut(&incoming_scid).unwrap();
 		let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
 		channel.incoming_revenue.add_value(revenue, now).unwrap();
 	}
 
-	fn fill_general_bucket(rm: &DefaultResourceManager, incoming_scid: u64) {
+	fn fill_general_bucket(rm: &DefaultResourceManager<TestLogger>, incoming_scid: u64) {
 		let mut channels = rm.channels.lock().unwrap();
 		let incoming_channel = channels.get_mut(&incoming_scid).unwrap();
 		for slot in incoming_channel.general_bucket.slots_occupied.iter_mut() {
@@ -1700,7 +1838,7 @@ mod tests {
 		}
 	}
 
-	fn fill_congestion_bucket(rm: &DefaultResourceManager, incoming_scid: u64) {
+	fn fill_congestion_bucket(rm: &DefaultResourceManager<TestLogger>, incoming_scid: u64) {
 		let mut channels = rm.channels.lock().unwrap();
 		let incoming_channel = channels.get_mut(&incoming_scid).unwrap();
 		let slots_allocated = incoming_channel.congestion_bucket.slots_allocated;
@@ -1709,7 +1847,7 @@ mod tests {
 		incoming_channel.congestion_bucket.liquidity_used = liquidity_allocated;
 	}
 
-	fn fill_protected_bucket(rm: &DefaultResourceManager, incoming_scid: u64) {
+	fn fill_protected_bucket(rm: &DefaultResourceManager<TestLogger>, incoming_scid: u64) {
 		let mut channels = rm.channels.lock().unwrap();
 		let incoming_channel = channels.get_mut(&incoming_scid).unwrap();
 		let slots_allocated = incoming_channel.protected_bucket.slots_allocated;
@@ -1719,7 +1857,7 @@ mod tests {
 	}
 
 	fn mark_congestion_misused(
-		rm: &DefaultResourceManager, incoming_scid: u64, outgoing_scid: u64,
+		rm: &DefaultResourceManager<TestLogger>, incoming_scid: u64, outgoing_scid: u64,
 	) {
 		let mut channels = rm.channels.lock().unwrap();
 		let incoming_channel = channels.get_mut(&incoming_scid).unwrap();
@@ -1728,7 +1866,7 @@ mod tests {
 	}
 
 	fn get_htlc_bucket(
-		rm: &DefaultResourceManager, incoming_channel_id: u64, htlc_id: u64,
+		rm: &DefaultResourceManager<TestLogger>, incoming_channel_id: u64, htlc_id: u64,
 		outgoing_channel_id: u64,
 	) -> Option<BucketAssigned> {
 		let channels = rm.channels.lock().unwrap();
@@ -1737,13 +1875,14 @@ mod tests {
 		htlc.map(|htlc| htlc.bucket.clone())
 	}
 
-	fn count_pending_htlcs(rm: &DefaultResourceManager, outgoing_scid: u64) -> usize {
+	fn count_pending_htlcs(rm: &DefaultResourceManager<TestLogger>, outgoing_scid: u64) -> usize {
 		let channels = rm.channels.lock().unwrap();
 		channels.get(&outgoing_scid).unwrap().pending_htlcs.len()
 	}
 
 	fn assert_general_bucket_slots_used(
-		rm: &DefaultResourceManager, incoming_scid: u64, outgoing_scid: u64, expected_count: usize,
+		rm: &DefaultResourceManager<TestLogger>, incoming_scid: u64, outgoing_scid: u64,
+		expected_count: usize,
 	) {
 		let channels = rm.channels.lock().unwrap();
 		let channel = channels.get(&incoming_scid).unwrap();
@@ -1757,7 +1896,9 @@ mod tests {
 		assert_eq!(used_count, expected_count);
 	}
 
-	fn test_congestion_eligible(rm: &DefaultResourceManager, incoming_htlc_amount: u64) -> bool {
+	fn test_congestion_eligible(
+		rm: &DefaultResourceManager<TestLogger>, incoming_htlc_amount: u64,
+	) -> bool {
 		let mut channels_lock = rm.channels.lock().unwrap();
 		let outgoing_channel = channels_lock.get_mut(&OUTGOING_SCID).unwrap();
 		let pending_htlcs_in_congestion =
@@ -1781,7 +1922,7 @@ mod tests {
 		// - Congestion bucket is full
 		// - Congestion bucket was misused
 		let cases = vec![
-			|rm: &DefaultResourceManager| {
+			|rm: &DefaultResourceManager<TestLogger>| {
 				fill_general_bucket(&rm, INCOMING_SCID);
 				let htlc_id = 1;
 				let entropy_source = TestKeysInterface::new(&[0; 32], Network::Testnet);
@@ -1791,10 +1932,10 @@ mod tests {
 					BucketAssigned::Congestion
 				);
 			},
-			|rm: &DefaultResourceManager| {
+			|rm: &DefaultResourceManager<TestLogger>| {
 				fill_congestion_bucket(rm, INCOMING_SCID);
 			},
-			|rm: &DefaultResourceManager| {
+			|rm: &DefaultResourceManager<TestLogger>| {
 				mark_congestion_misused(rm, INCOMING_SCID, OUTGOING_SCID);
 			},
 		];
@@ -1823,7 +1964,7 @@ mod tests {
 		assert!(!test_congestion_eligible(&rm, htlc_amount_over_limit));
 	}
 
-	fn test_sufficient_reputation(rm: &DefaultResourceManager) -> bool {
+	fn test_sufficient_reputation(rm: &DefaultResourceManager<TestLogger>) -> bool {
 		let mut channels_lock = rm.channels.lock().unwrap();
 		let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
 
@@ -1843,6 +1984,7 @@ mod tests {
 				now,
 			)
 			.unwrap()
+			.0
 	}
 
 	#[test]
@@ -1922,7 +2064,7 @@ mod tests {
 	fn test_add_htlc_unaccountable_forwarding_decisions() {
 		struct TestCase {
 			description: &'static str,
-			setup: fn(&DefaultResourceManager),
+			setup: fn(&DefaultResourceManager<TestLogger>),
 			expected_outcome: ForwardingOutcome,
 			expected_bucket: Option<BucketAssigned>,
 		}
@@ -2012,7 +2154,7 @@ mod tests {
 	fn test_add_htlc_accountable_forwarding_decisions() {
 		struct TestCase {
 			description: &'static str,
-			setup: fn(&DefaultResourceManager),
+			setup: fn(&DefaultResourceManager<TestLogger>),
 			expected_outcome: ForwardingOutcome,
 			expected_bucket: Option<BucketAssigned>,
 		}
@@ -2615,7 +2757,7 @@ mod tests {
 
 		let deserialized_rm = DefaultResourceManager::read(
 			&mut serialized_rm.as_slice(),
-			(ResourceManagerConfig::default(), &entropy_source),
+			(ResourceManagerConfig::default(), &entropy_source, TestLogger::new()),
 		)
 		.unwrap();
 		let deserialized_channels = deserialized_rm.channels.lock().unwrap();
