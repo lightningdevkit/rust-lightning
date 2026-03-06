@@ -308,23 +308,27 @@ impl PendingChecks {
 						// This may be called with the mutex held on a different UtxoMessages
 						// struct, however in that case we have a global lockorder of new messages
 						// -> old messages, which makes this safe.
-						let pending_matches = match &pending_msgs
-							.unsafe_well_ordered_double_lock_self()
-							.channel_announce
-						{
+						let pending_state = pending_msgs.unsafe_well_ordered_double_lock_self();
+						let pending_matches = match &pending_state.channel_announce {
 							Some(ChannelAnnouncement::Full(pending_msg)) => {
 								Some(pending_msg) == full_msg
 							},
 							Some(ChannelAnnouncement::Unsigned(pending_msg)) => pending_msg == msg,
 							None => {
-								// This shouldn't actually be reachable. We set the
-								// `channel_announce` field under the same lock as setting the
-								// channel map entry. Still, we can just treat it as
+								// This can be reached if `resolve_single_future` has already
+								// consumed `channel_announce` via `.take()` while the
+								// `Arc<Mutex<UtxoMessages>>` is still alive (e.g. held on
+								// the stack of `check_resolved_futures`). In that case,
+								// `complete` should also have been taken. Treat it as
 								// non-matching and let the new request fly.
-								debug_assert!(false);
+								debug_assert!(
+									pending_state.complete.is_none(),
+									"channel_announce is None but complete is still pending"
+								);
 								false
 							},
 						};
+						drop(pending_state);
 						if pending_matches {
 							return Err(LightningError {
 								err: "Channel announcement is already being checked".to_owned(),
