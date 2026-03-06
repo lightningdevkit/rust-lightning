@@ -1369,10 +1369,36 @@ pub fn _reload_node<'a, 'b, 'c>(
 }
 
 #[macro_export]
-macro_rules! _reload_node_inner {
-	($node: expr, $new_config: expr, $chanman_encoded: expr, $monitors_encoded: expr, $persister:
-	 ident, $new_chain_monitor: ident, $new_channelmanager: ident, $reconstruct_pending_htlcs: expr
+macro_rules! reload_node {
+	// Reload the node with the new provided `UserConfig`
+	($node: expr, $new_config: expr, $chanman_encoded: expr, $monitors_encoded: expr, $persister: ident, $new_chain_monitor: ident, $new_channelmanager: ident) => {
+		$crate::reload_node!(
+			$node,
+			$chanman_encoded,
+			$monitors_encoded,
+			$persister,
+			$new_chain_monitor,
+			$new_channelmanager,
+			TestReloadNodeCfg::new().with_cfg($new_config)
+		);
+	};
+	// Reload the node using the node's current config
+	($node: expr, $chanman_encoded: expr, $monitors_encoded: expr, $persister: ident, $new_chain_monitor: ident, $new_channelmanager: ident) => {
+		$crate::reload_node!(
+			$node,
+			$chanman_encoded,
+			$monitors_encoded,
+			$persister,
+			$new_chain_monitor,
+			$new_channelmanager,
+			TestReloadNodeCfg::new()
+		);
+	};
+	// Base implementation - only called via internal recursive macro calls
+	($node: expr, $chanman_encoded: expr, $monitors_encoded: expr, $persister:
+	 ident, $new_chain_monitor: ident, $new_channelmanager: ident, $reload_cfg: expr
 	) => {
+		let TestReloadNodeCfg { config_override, reconstruct_pending_htlcs } = $reload_cfg;
 		let chanman_encoded = $chanman_encoded;
 
 		$persister = $crate::util::test_utils::TestPersister::new();
@@ -1388,10 +1414,10 @@ macro_rules! _reload_node_inner {
 
 		$new_channelmanager = $crate::ln::functional_test_utils::_reload_node(
 			&$node,
-			$new_config,
+			config_override.unwrap_or_else(|| $node.node.get_current_config()),
 			&chanman_encoded,
 			$monitors_encoded,
-			$reconstruct_pending_htlcs,
+			reconstruct_pending_htlcs,
 		);
 		$node.node = &$new_channelmanager;
 		$node.onion_messenger.set_offers_handler(&$new_channelmanager);
@@ -1399,52 +1425,30 @@ macro_rules! _reload_node_inner {
 	};
 }
 
-#[macro_export]
-macro_rules! reload_node {
-	// Reload the node using the node's current config
-	($node: expr, $chanman_encoded: expr, $monitors_encoded: expr, $persister: ident, $new_chain_monitor: ident, $new_channelmanager: ident) => {
-		let config = $node.node.get_current_config();
-		$crate::_reload_node_inner!(
-			$node,
-			config,
-			$chanman_encoded,
-			$monitors_encoded,
-			$persister,
-			$new_chain_monitor,
-			$new_channelmanager,
-			None
-		);
-	};
-	// Reload the node with the new provided config
-	($node: expr, $new_config: expr, $chanman_encoded: expr, $monitors_encoded: expr, $persister: ident, $new_chain_monitor: ident, $new_channelmanager: ident) => {
-		$crate::_reload_node_inner!(
-			$node,
-			$new_config,
-			$chanman_encoded,
-			$monitors_encoded,
-			$persister,
-			$new_chain_monitor,
-			$new_channelmanager,
-			None
-		);
-	};
-	// Reload the node and have the `ChannelManager` use new codepaths that reconstruct its set of
-	// pending HTLCs from `Channel{Monitor}` data.
-	($node: expr, $chanman_encoded: expr, $monitors_encoded: expr, $persister:
-	 ident, $new_chain_monitor: ident, $new_channelmanager: ident, $reconstruct_pending_htlcs: expr
-	) => {
-		let config = $node.node.get_current_config();
-		$crate::_reload_node_inner!(
-			$node,
-			config,
-			$chanman_encoded,
-			$monitors_encoded,
-			$persister,
-			$new_chain_monitor,
-			$new_channelmanager,
-			$reconstruct_pending_htlcs
-		);
-	};
+/// Knobs for [`reload_node`].
+pub struct TestReloadNodeCfg {
+	/// Override the `ChannelManager`'s [`UserConfig`] on reload. Otherwise, the node's pre-reload
+	/// config will be used.
+	pub config_override: Option<UserConfig>,
+	/// Sets [`ChannelManagerReadArgs::reconstruct_manager_from_monitors`].
+	pub reconstruct_pending_htlcs: Option<bool>,
+}
+
+impl TestReloadNodeCfg {
+	/// Sets [`Self::config_override`] and [`Self::reconstruct_pending_htlcs`] to `None`.
+	pub fn new() -> Self {
+		Self { config_override: None, reconstruct_pending_htlcs: None }
+	}
+	/// Sets [`Self::config_override`]
+	pub fn with_cfg(mut self, cfg: UserConfig) -> Self {
+		self.config_override = Some(cfg);
+		self
+	}
+	/// Sets [`Self::reconstruct_pending_htlcs`]
+	pub fn with_reconstruct_htlcs(mut self, reconstruct_htlcs: bool) -> Self {
+		self.reconstruct_pending_htlcs = Some(reconstruct_htlcs);
+		self
+	}
 }
 
 pub fn create_funding_transaction<'a, 'b, 'c>(
