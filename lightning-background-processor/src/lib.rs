@@ -1118,14 +1118,15 @@ where
 			None => {},
 		}
 
-		let mut futures = Joiner::new();
-
 		// We capture pending_operation_count inside the persistence branch to
 		// avoid a race: ChannelManager handlers queue deferred monitor ops
 		// before the persistence flag is set. Capturing outside would let us
 		// observe pending ops while the flag is still unset, causing us to
 		// flush monitor writes without persisting the ChannelManager.
-		let mut pending_monitor_writes = 0;
+		// Declared before futures so it outlives the Joiner (drop order).
+		let pending_monitor_writes;
+
+		let mut futures = Joiner::new();
 
 		if channel_manager.get_cm().get_and_clear_needs_persistence() {
 			pending_monitor_writes = chain_monitor.get_cm().pending_operation_count();
@@ -1139,7 +1140,12 @@ where
 						CHANNEL_MANAGER_PERSISTENCE_KEY,
 						channel_manager.get_cm().encode(),
 					)
-					.await
+					.await?;
+
+				// Flush monitor operations that were pending before we persisted. New updates
+				// that arrived after are left for the next iteration.
+				chain_monitor.get_cm().flush(pending_monitor_writes, &logger);
+				Ok(())
 			};
 			// TODO: Once our MSRV is 1.68 we should be able to drop the Box
 			let mut fut = Box::pin(fut);
@@ -1324,10 +1330,6 @@ where
 		for res in futures.await {
 			res?;
 		}
-
-		// Flush monitor operations that were pending before we persisted. New updates
-		// that arrived after are left for the next iteration.
-		chain_monitor.get_cm().flush(pending_monitor_writes, &logger);
 
 		match check_and_reset_sleeper(&mut last_onion_message_handler_call, || {
 			sleeper(ONION_MESSAGE_HANDLER_TIMER)
