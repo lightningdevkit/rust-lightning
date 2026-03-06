@@ -24,6 +24,7 @@ pub mod msgs;
 pub mod onion_payment;
 pub mod our_peer_storage;
 pub mod peer_handler;
+mod resource_manager;
 pub mod script;
 pub mod types;
 
