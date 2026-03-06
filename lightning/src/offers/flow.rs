@@ -26,6 +26,7 @@ use crate::blinded_path::payment::{
 };
 use crate::chain::channelmonitor::LATENCY_GRACE_PERIOD_BLOCKS;
 
+use crate::offers::currency::CurrencyConversion;
 #[allow(unused_imports)]
 use crate::prelude::*;
 
@@ -73,7 +74,7 @@ use {
 ///
 /// [`OffersMessageFlow`] is parameterized by a [`MessageRouter`], which is responsible
 /// for finding message paths when initiating and retrying onion messages.
-pub struct OffersMessageFlow<MR: MessageRouter, L: Logger> {
+pub struct OffersMessageFlow<MR: MessageRouter, CC: CurrencyConversion, L: Logger> {
 	chain_hash: ChainHash,
 	best_block: RwLock<BestBlock>,
 
@@ -85,6 +86,8 @@ pub struct OffersMessageFlow<MR: MessageRouter, L: Logger> {
 
 	secp_ctx: Secp256k1<secp256k1::All>,
 	message_router: MR,
+
+	pub(crate) currency_conversion: CC,
 
 	#[cfg(not(any(test, feature = "_test_utils")))]
 	pending_offers_messages: Mutex<Vec<(OffersMessage, MessageSendInstructions)>>,
@@ -102,13 +105,13 @@ pub struct OffersMessageFlow<MR: MessageRouter, L: Logger> {
 	logger: L,
 }
 
-impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
+impl<MR: MessageRouter, CC: CurrencyConversion, L: Logger> OffersMessageFlow<MR, CC, L> {
 	/// Creates a new [`OffersMessageFlow`]
 	pub fn new(
 		chain_hash: ChainHash, best_block: BestBlock, our_network_pubkey: PublicKey,
 		current_timestamp: u32, inbound_payment_key: inbound_payment::ExpandedKey,
 		receive_auth_key: ReceiveAuthKey, secp_ctx: Secp256k1<secp256k1::All>, message_router: MR,
-		logger: L,
+		currency_conversion: CC, logger: L,
 	) -> Self {
 		Self {
 			chain_hash,
@@ -122,6 +125,8 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 
 			secp_ctx,
 			message_router,
+
+			currency_conversion,
 
 			pending_offers_messages: Mutex::new(Vec::new()),
 			pending_async_payments_messages: Mutex::new(Vec::new()),
@@ -257,7 +262,7 @@ const DEFAULT_ASYNC_RECEIVE_OFFER_EXPIRY: Duration = Duration::from_secs(365 * 2
 pub(crate) const TEST_DEFAULT_ASYNC_RECEIVE_OFFER_EXPIRY: Duration =
 	DEFAULT_ASYNC_RECEIVE_OFFER_EXPIRY;
 
-impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
+impl<MR: MessageRouter, CC: CurrencyConversion, L: Logger> OffersMessageFlow<MR, CC, L> {
 	/// [`BlindedMessagePath`]s for an async recipient to communicate with this node and interactively
 	/// build [`Offer`]s and [`StaticInvoice`]s for receiving async payments.
 	///
@@ -450,7 +455,7 @@ pub enum HeldHtlcReplyPath {
 	},
 }
 
-impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
+impl<MR: MessageRouter, CC: CurrencyConversion, L: Logger> OffersMessageFlow<MR, CC, L> {
 	/// Verifies an [`InvoiceRequest`] using the provided [`OffersContext`] or the [`InvoiceRequest::metadata`].
 	///
 	/// - If an [`OffersContext::InvoiceRequest`] with a `nonce` is provided, verification is performed using recipient context data.
