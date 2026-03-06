@@ -730,9 +730,7 @@ fn test_0_0_125_max_update_id_upgrade() {
 		lightning_0_0_125_utils::route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
 
 		// Set persist to InProgress before force-close so the u64::MAX update remains pending.
-		chanmon_cfgs[1]
-			.persister
-			.set_update_ret(ChannelMonitorUpdateStatus_0_0_125::InProgress);
+		chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus_0_0_125::InProgress);
 
 		let err = "".to_owned();
 		nodes[1].node.force_close_broadcasting_latest_txn(&chan_id, &node_a_id, err).unwrap();
