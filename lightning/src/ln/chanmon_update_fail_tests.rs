@@ -3940,11 +3940,11 @@ fn do_test_durable_preimages_on_closed_channel(
 	let evs = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(evs.len(), if close_chans_before_reload { 2 } else { 1 });
 	for ev in evs {
-		if let Event::PaymentForwarded { claim_from_onchain_tx, next_user_channel_id, .. } = ev {
+		if let Event::PaymentForwarded { claim_from_onchain_tx, next_htlcs, .. } = ev {
 			if !claim_from_onchain_tx {
 				// If the outbound channel is still open, the `next_user_channel_id` should be available.
 				// This was previously broken.
-				assert!(next_user_channel_id.is_some())
+				assert!(next_htlcs[0].user_channel_id.is_some())
 			}
 		} else {
 			panic!();
