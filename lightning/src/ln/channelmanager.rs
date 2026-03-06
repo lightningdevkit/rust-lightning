@@ -15112,8 +15112,6 @@ impl<
 				}
 			}
 
-			log_debug!(logger, "Generating channel_reestablish events");
-
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
 				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
@@ -15131,22 +15129,45 @@ impl<
 					let logger = WithChannelContext::from(&self.logger, &chan.context(), None);
 					match chan.peer_connected_get_handshake(self.chain_hash, &&logger) {
 						ReconnectionMsg::Reestablish(msg) => {
+							log_debug!(
+								logger,
+								"Generated channel_reestablish event for channel {}",
+								chan.context().channel_id()
+							);
 							pending_msg_events.push(MessageSendEvent::SendChannelReestablish {
 								node_id: chan.context().get_counterparty_node_id(),
 								msg,
 							})
 						},
-						ReconnectionMsg::Open(OpenChannelMessage::V1(msg)) => pending_msg_events
-							.push(MessageSendEvent::SendOpenChannel {
+						ReconnectionMsg::Open(OpenChannelMessage::V1(msg)) => {
+							log_debug!(
+								logger,
+								"Generated open_channel event for channel {}",
+								chan.context().channel_id()
+							);
+							pending_msg_events.push(MessageSendEvent::SendOpenChannel {
 								node_id: chan.context().get_counterparty_node_id(),
 								msg,
-							}),
-						ReconnectionMsg::Open(OpenChannelMessage::V2(msg)) => pending_msg_events
-							.push(MessageSendEvent::SendOpenChannelV2 {
+							});
+						},
+						ReconnectionMsg::Open(OpenChannelMessage::V2(msg)) => {
+							log_debug!(
+								logger,
+								"Generated open_channel_v2 event for channel {}",
+								chan.context().channel_id()
+							);
+							pending_msg_events.push(MessageSendEvent::SendOpenChannelV2 {
 								node_id: chan.context().get_counterparty_node_id(),
 								msg,
-							}),
-						ReconnectionMsg::None => {},
+							});
+						},
+						ReconnectionMsg::None => {
+							log_debug!(
+								logger,
+								"Peer reconnected. No reconnection message for channel {}",
+								chan.context().channel_id()
+							);
+						},
 					}
 				}
 			}
