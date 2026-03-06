@@ -1476,6 +1476,21 @@ impl_writeable_tlv_based!(PaymentCompleteUpdate, {
 });
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct InboundPaymentClaimedUpdate {
+	pub counterparty_node_id: PublicKey,
+	pub channel_funding_outpoint: OutPoint,
+	pub channel_id: ChannelId,
+	pub payment_hash: PaymentHash,
+}
+
+impl_writeable_tlv_based!(InboundPaymentClaimedUpdate, {
+	(1, counterparty_node_id, required),
+	(3, channel_funding_outpoint, required),
+	(5, channel_id, required),
+	(7, payment_hash, required),
+});
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum EventCompletionAction {
 	ReleaseRAAChannelMonitorUpdate {
 		counterparty_node_id: PublicKey,
@@ -1489,6 +1504,12 @@ pub(crate) enum EventCompletionAction {
 	/// fully-resolved in the [`ChannelMonitor`], which we do via this action.
 	/// Note that this action will be dropped on downgrade to LDK prior to 0.2!
 	ReleasePaymentCompleteChannelMonitorUpdate(PaymentCompleteUpdate),
+
+	/// When a payment's resolution is communicated to the downstream logic via
+	/// [`Event::PaymentClaimed`], we may want to mark the payment as fully-resolved in the
+	/// [`ChannelMonitor`], which we do via this action.
+	/// Note that this action will be dropped on downgrade to LDK prior to 0.3!
+	InboundPaymentClaimedChannelMonitorUpdate(InboundPaymentClaimedUpdate),
 }
 impl_writeable_tlv_based_enum!(EventCompletionAction,
 	(0, ReleaseRAAChannelMonitorUpdate) => {
@@ -1500,8 +1521,9 @@ impl_writeable_tlv_based_enum!(EventCompletionAction,
 			}
 			ChannelId::v1_from_funding_outpoint(channel_funding_outpoint.unwrap())
 		})),
-	}
+	},
 	{1, ReleasePaymentCompleteChannelMonitorUpdate} => (),
+	{3, InboundPaymentClaimedChannelMonitorUpdate} => (),
 );
 
 /// The source argument which is passed to [`ChannelManager::claim_mpp_part`].
@@ -14818,6 +14840,7 @@ impl<
 						update_step,
 					);
 				},
+				EventCompletionAction::InboundPaymentClaimedChannelMonitorUpdate(_) => {},
 			}
 		}
 	}
