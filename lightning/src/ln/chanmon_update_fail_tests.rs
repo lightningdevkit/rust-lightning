@@ -4598,6 +4598,7 @@ fn test_claim_to_closed_channel_blocks_claimed_event() {
 	// available.
 	nodes[1].chain_monitor.complete_sole_pending_chan_update(&chan_a.2);
 	expect_payment_claimed!(nodes[1], payment_hash, 1_000_000);
+	check_added_monitors(&nodes[1], 1);
 }
 
 #[test]

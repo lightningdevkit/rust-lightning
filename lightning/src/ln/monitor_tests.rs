@@ -225,6 +225,9 @@ fn archive_fully_resolved_monitors() {
 	nodes[1].node.claim_funds(payment_preimage);
 	check_added_monitors(&nodes[1], 1);
 	expect_payment_claimed!(nodes[1], payment_hash, 10_000_000);
+	// Processing PaymentClaimed on a closed channel generates a monitor update to mark the claim as
+	// resolved to the user.
+	check_added_monitors(&nodes[1], 1);
 	let htlc_claim_tx = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 	assert_eq!(htlc_claim_tx.len(), 1);
 
@@ -3282,22 +3285,29 @@ fn test_update_replay_panics() {
 	nodes[1].node.claim_funds(payment_preimage_1);
 	check_added_monitors(&nodes[1], 1);
 	expect_payment_claimed!(nodes[1], payment_hash_1, 1_000_000);
+	// Processing PaymentClaimed on a closed channel generates a monitor update to mark the claim as
+	// resolved to the user.
+	check_added_monitors(&nodes[1], 1);
 
 	nodes[1].node.claim_funds(payment_preimage_2);
 	check_added_monitors(&nodes[1], 1);
 	expect_payment_claimed!(nodes[1], payment_hash_2, 1_000_000);
+	check_added_monitors(&nodes[1], 1);
 
 	let mut updates = nodes[1].chain_monitor.monitor_updates.lock().unwrap().get_mut(&chan.2).unwrap().split_off(0);
 
-	// Update `monitor` until there's just one normal updates, an FC update, and a post-FC claim
-	// update pending
-	for update in updates.drain(..updates.len() - 4) {
+	// Update `monitor` until there's just one normal updates, an FC update, a post-FC claim
+	// and InboundPaymentClaimed updates pending.
+	// Updates are: [normal, FC, preimage1, inbound_claimed1, preimage2, inbound_claimed2]
+	for update in updates.drain(..updates.len() - 6) {
 		monitor.update_monitor(&update, &nodes[1].tx_broadcaster, &nodes[1].fee_estimator, &nodes[1].logger).unwrap();
 	}
-	assert_eq!(updates.len(), 4);
+	assert_eq!(updates.len(), 6);
 	assert!(matches!(updates[1].updates[0], ChannelMonitorUpdateStep::ChannelForceClosed { .. }));
 	assert!(matches!(updates[2].updates[0], ChannelMonitorUpdateStep::PaymentPreimage { .. }));
-	assert!(matches!(updates[3].updates[0], ChannelMonitorUpdateStep::PaymentPreimage { .. }));
+	assert!(matches!(updates[3].updates[0], ChannelMonitorUpdateStep::InboundPaymentClaimed { .. }));
+	assert!(matches!(updates[4].updates[0], ChannelMonitorUpdateStep::PaymentPreimage { .. }));
+	assert!(matches!(updates[5].updates[0], ChannelMonitorUpdateStep::InboundPaymentClaimed { .. }));
 
 	// Ensure applying the force-close update skipping the last normal update fails
 	let poisoned_monitor = monitor.clone();
@@ -3384,11 +3394,13 @@ fn test_claim_event_never_handled() {
 	let chan_0_monitor_serialized = get_monitor!(nodes[1], chan.2).encode();
 	let mons = &[&chan_0_monitor_serialized[..]];
 	reload_node!(nodes[1], &init_node_ser, mons, persister, new_chain_mon, nodes_1_reload);
+	check_added_monitors(&nodes[1], 0);
 
 	expect_payment_claimed!(nodes[1], payment_hash_a, 1_000_000);
-	// The reload logic spuriously generates a redundant payment preimage-containing
-	// `ChannelMonitorUpdate`.
-	check_added_monitors(&nodes[1], 2);
+	// The reload logic spuriously generates 2 redundant payment preimage-containing
+	// `ChannelMonitorUpdate`s, plus we get a monitor update once the PaymentClaimed event is
+	// processed.
+	check_added_monitors(&nodes[1], 3);
 }
 
 fn do_test_lost_preimage_monitor_events(on_counterparty_tx: bool, p2a_anchor: bool) {
@@ -3863,6 +3875,7 @@ fn test_ladder_preimage_htlc_claims() {
 	check_closed_event(&nodes[1], 1, ClosureReason::CommitmentTxConfirmed, &[node_id_0], 1_000_000);
 
 	nodes[1].node.claim_funds(payment_preimage1);
+	check_added_monitors(&nodes[1], 1);
 	expect_payment_claimed!(&nodes[1], payment_hash1, 1_000_000);
 	check_added_monitors(&nodes[1], 1);
 
@@ -3884,6 +3897,7 @@ fn test_ladder_preimage_htlc_claims() {
 	check_added_monitors(&nodes[0], 1);
 
 	nodes[1].node.claim_funds(payment_preimage2);
+	check_added_monitors(&nodes[1], 1);
 	expect_payment_claimed!(&nodes[1], payment_hash2, 1_000_000);
 	check_added_monitors(&nodes[1], 1);
 

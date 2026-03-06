@@ -3271,6 +3271,20 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	pub(crate) fn get_stored_preimages(
 		&self,
 	) -> HashMap<PaymentHash, (PaymentPreimage, Vec<PaymentClaimDetails>)> {
+		let inner = self.inner.lock().unwrap();
+		inner
+			.payment_preimages
+			.iter()
+			.filter(|(hash, _)| !inner.inbound_payments_claimed.contains(*hash))
+			.map(|(hash, value)| (*hash, value.clone()))
+			.collect()
+	}
+
+	/// Used in tests to verify preimage propagation.
+	#[cfg(test)]
+	pub(crate) fn test_get_all_stored_preimages(
+		&self,
+	) -> HashMap<PaymentHash, (PaymentPreimage, Vec<PaymentClaimDetails>)> {
 		self.inner.lock().unwrap().payment_preimages.clone()
 	}
 }
@@ -4304,6 +4318,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					self.htlcs_resolved_to_user.insert(*htlc);
 				},
 				ChannelMonitorUpdateStep::InboundPaymentClaimed { payment_hash } => {
+					log_trace!(logger, "Inbound payment {} claimed", payment_hash);
+					self.inbound_payments_claimed.insert(*payment_hash);
 				},
 			}
 		}

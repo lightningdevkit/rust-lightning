@@ -10004,11 +10004,34 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						let action = if let Some((outpoint, counterparty_node_id, channel_id)) =
 							durable_preimage_channel
 						{
-							Some(EventCompletionAction::ReleaseRAAChannelMonitorUpdate {
-								channel_funding_outpoint: Some(outpoint),
-								counterparty_node_id,
-								channel_id,
-							})
+							let per_peer_state = self.per_peer_state.read().unwrap();
+							let is_channel_closed = per_peer_state
+								.get(&counterparty_node_id)
+								.map(|peer_state_mutex| {
+									let peer_state = peer_state_mutex.lock().unwrap();
+									!peer_state.channel_by_id.contains_key(&channel_id)
+								})
+								.unwrap_or(true);
+							// For open channels, we use ReleaseRAAChannelMonitorUpdate to maintain the blocking
+							// behavior (RAA updates are blocked until the PaymentClaimed event is handled).
+							// For closed channels, we use InboundPaymentClaimedChannelMonitorUpdate to persist
+							// that the PaymentClaimed event has been handled, preventing regeneration on restart.
+							if is_channel_closed {
+								Some(EventCompletionAction::InboundPaymentClaimedChannelMonitorUpdate(
+										InboundPaymentClaimedUpdate {
+											channel_funding_outpoint: outpoint,
+											counterparty_node_id,
+											channel_id,
+											payment_hash,
+										},
+								))
+							} else {
+								Some(EventCompletionAction::ReleaseRAAChannelMonitorUpdate {
+									channel_funding_outpoint: Some(outpoint),
+									counterparty_node_id,
+									channel_id,
+								})
+							}
 						} else {
 							None
 						};
@@ -14840,7 +14863,23 @@ impl<
 						update_step,
 					);
 				},
-				EventCompletionAction::InboundPaymentClaimedChannelMonitorUpdate(_) => {},
+				EventCompletionAction::InboundPaymentClaimedChannelMonitorUpdate(
+					InboundPaymentClaimedUpdate {
+						counterparty_node_id,
+						channel_funding_outpoint,
+						channel_id,
+						payment_hash,
+					},
+				) => {
+					let update_step =
+						ChannelMonitorUpdateStep::InboundPaymentClaimed { payment_hash };
+					self.handle_closed_channel_monitor_update_for_event(
+						counterparty_node_id,
+						channel_funding_outpoint,
+						channel_id,
+						update_step,
+					);
+				},
 			}
 		}
 	}
