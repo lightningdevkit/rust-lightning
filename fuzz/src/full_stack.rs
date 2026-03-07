@@ -38,6 +38,7 @@ use lightning::chain::chaininterface::{
 	BroadcasterInterface, ConfirmationTarget, FeeEstimator, TransactionType,
 };
 use lightning::chain::chainmonitor;
+use lightning::chain::channelmonitor;
 use lightning::chain::transaction::OutPoint;
 use lightning::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Listen};
 use lightning::events::Event;
@@ -603,6 +604,7 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger + MaybeSend + MaybeSync>
 		Arc::new(TestPersister { update_ret: Mutex::new(ChannelMonitorUpdateStatus::Completed) }),
 		Arc::clone(&keys_manager),
 		keys_manager.get_peer_storage_key(),
+		channelmonitor::CLTV_CLAIM_BUFFER,
 	));
 
 	let network = Network::Bitcoin;
