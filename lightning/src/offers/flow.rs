@@ -68,11 +68,56 @@ use {
 	crate::onion_message::dns_resolution::{DNSResolverMessage, DNSSECQuery, OMNameResolver},
 };
 
-/// A BOLT12 offers code and flow utility provider, which facilitates
-/// BOLT12 builder generation and onion message handling.
+/// A BOLT 12 offers flow utility that facilitates builder generation, message verification, and
+/// onion message handling. [`OffersMessageFlow`] can be used independently of [`ChannelManager`]
+/// for working with [BOLT 12] offers and refunds.
 ///
-/// [`OffersMessageFlow`] is parameterized by a [`MessageRouter`], which is responsible
-/// for finding message paths when initiating and retrying onion messages.
+/// [`OffersMessageFlow`] is parameterized by a [`MessageRouter`], which is responsible for finding
+/// message paths when initiating and retrying onion messages.
+///
+/// ## Receiving Payments
+///
+/// ### Via Offers
+///
+/// 1. Build an [`Offer`] using [`Self::create_offer_builder`] and share it with potential payers.
+/// 2. Upon receiving an [`InvoiceRequest`], verify it using [`Self::verify_invoice_request`].
+/// 3. Build a [`Bolt12Invoice`] using
+///    [`Self::create_invoice_builder_from_invoice_request_with_keys`] (for derived signing
+///    pubkeys) or [`Self::create_invoice_builder_from_invoice_request_without_keys`] (for explicit
+///    signing pubkeys).
+/// 4. Sign the invoice and send it back to the payer via an onion message.
+///
+/// ### Via Refunds
+///
+/// 1. Upon receiving a [`Refund`], build a [`Bolt12Invoice`] using
+///    [`Self::create_invoice_builder_from_refund`].
+/// 2. Sign the invoice and enqueue it for sending using [`Self::enqueue_invoice`].
+///
+/// ## Sending Payments
+///
+/// ### Paying an Offer
+///
+/// 1. Create a [`Nonce`] and build an [`InvoiceRequest`] using
+///    [`Self::create_invoice_request_builder`].
+/// 2. Enqueue the request for sending using [`Self::enqueue_invoice_request`], passing the same
+///    [`Nonce`] used to build it.
+/// 3. Upon receiving a [`Bolt12Invoice`], verify it using [`Self::verify_bolt12_invoice`].
+/// 4. Pay the invoice using your payment infrastructure.
+///
+/// ### Paying via a Refund
+///
+/// 1. Build a [`Refund`] using [`Self::create_refund_builder`] and share it with the recipient.
+/// 2. Upon receiving a [`Bolt12Invoice`], verify it using [`Self::verify_bolt12_invoice`].
+/// 3. Pay the invoice using your payment infrastructure.
+///
+/// ## Pending Messages
+///
+/// Call [`Self::release_pending_offers_messages`] to retrieve queued [`OffersMessage`]s for
+/// sending via onion messages. Similarly, call [`Self::release_pending_async_messages`] for async
+/// payment messages.
+///
+/// [BOLT 12]: https://github.com/lightning/bolts/blob/master/12-offer-encoding.md
+/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 pub struct OffersMessageFlow<MR: MessageRouter, L: Logger> {
 	chain_hash: ChainHash,
 	best_block: RwLock<BestBlock>,
