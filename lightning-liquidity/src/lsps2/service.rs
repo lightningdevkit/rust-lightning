@@ -45,6 +45,7 @@ use lightning::events::HTLCHandlingFailureType;
 use lightning::ln::channelmanager::{AChannelManager, FailureCode, InterceptId};
 use lightning::ln::msgs::{ErrorAction, LightningError};
 use lightning::ln::types::ChannelId;
+use lightning::onion_message::messenger::OnionMessageInterceptor;
 use lightning::util::errors::APIError;
 use lightning::util::logger::Level;
 use lightning::util::ser::Writeable;
@@ -631,17 +632,20 @@ impl PeerState {
 		});
 	}
 
-	fn prune_expired_request_state(&mut self) {
+	fn prune_expired_request_state(&mut self) -> Vec<u64> {
+		let mut pruned_scids = Vec::new();
 		self.outbound_channels_by_intercept_scid.retain(|intercept_scid, entry| {
 			if entry.is_prunable() {
 				// We abort the flow, and prune any data kept.
 				self.intercept_scid_by_channel_id.retain(|_, iscid| intercept_scid != iscid);
 				self.intercept_scid_by_user_channel_id.retain(|_, iscid| intercept_scid != iscid);
 				self.needs_persist |= true;
+				pruned_scids.push(*intercept_scid);
 				return false;
 			}
 			true
 		});
+		pruned_scids
 	}
 
 	fn pending_requests_and_channels(&self) -> usize {
@@ -717,6 +721,7 @@ where
 	total_pending_requests: AtomicUsize,
 	config: LSPS2ServiceConfig,
 	persistence_in_flight: AtomicUsize,
+	onion_message_interceptor: Option<Arc<dyn OnionMessageInterceptor + Send + Sync>>,
 }
 
 impl<CM: Deref, K: KVStore + Clone, T: BroadcasterInterface + Clone> LSPS2ServiceHandler<CM, K, T>
@@ -728,6 +733,7 @@ where
 		per_peer_state: HashMap<PublicKey, Mutex<PeerState>>, pending_messages: Arc<MessageQueue>,
 		pending_events: Arc<EventQueue<K>>, channel_manager: CM, kv_store: K, tx_broadcaster: T,
 		config: LSPS2ServiceConfig,
+		onion_message_interceptor: Option<Arc<dyn OnionMessageInterceptor + Send + Sync>>,
 	) -> Result<Self, lightning::io::Error> {
 		let mut peer_by_intercept_scid = new_hash_map();
 		let mut peer_by_channel_id = new_hash_map();
@@ -756,6 +762,14 @@ where
 			}
 		}
 
+		// Register all peers with active intercept SCIDs for onion message interception,
+		// so that messages for offline peers are held rather than dropped.
+		if let Some(ref interceptor) = onion_message_interceptor {
+			for node_id in peer_by_intercept_scid.values() {
+				interceptor.register_peer_for_interception(*node_id);
+			}
+		}
+
 		Ok(Self {
 			pending_messages,
 			pending_events,
@@ -768,12 +782,36 @@ where
 			kv_store,
 			tx_broadcaster,
 			config,
+			onion_message_interceptor,
 		})
 	}
 
 	/// Returns a reference to the used config.
 	pub fn config(&self) -> &LSPS2ServiceConfig {
 		&self.config
+	}
+
+	/// Cleans up `peer_by_intercept_scid` entries for the given SCIDs, and deregisters the peer
+	/// from onion message interception if they have no remaining active intercept SCIDs.
+	fn cleanup_intercept_scids(
+		&self, counterparty_node_id: &PublicKey, pruned_scids: &[u64], has_remaining_channels: bool,
+	) {
+		if pruned_scids.is_empty() {
+			return;
+		}
+
+		{
+			let mut peer_by_intercept_scid = self.peer_by_intercept_scid.write().unwrap();
+			for scid in pruned_scids {
+				peer_by_intercept_scid.remove(scid);
+			}
+		}
+
+		if !has_remaining_channels {
+			if let Some(ref interceptor) = self.onion_message_interceptor {
+				interceptor.deregister_peer_for_interception(counterparty_node_id);
+			}
+		}
 	}
 
 	/// Returns whether the peer has any active LSPS2 requests.
@@ -921,6 +959,10 @@ where
 							peer_by_intercept_scid.insert(intercept_scid, *counterparty_node_id);
 						}
 
+						if let Some(ref interceptor) = self.onion_message_interceptor {
+							interceptor.register_peer_for_interception(*counterparty_node_id);
+						}
+
 						let outbound_jit_channel = OutboundJITChannel::new(
 							buy_request.payment_size_msat,
 							buy_request.opening_fee_params,
@@ -1051,7 +1093,15 @@ where
 								peer_state
 									.outbound_channels_by_intercept_scid
 									.remove(&intercept_scid);
-								// TODO: cleanup peer_by_intercept_scid
+								let has_remaining =
+									!peer_state.outbound_channels_by_intercept_scid.is_empty();
+								drop(peer_state);
+								drop(outer_state_lock);
+								self.cleanup_intercept_scids(
+									counterparty_node_id,
+									&[intercept_scid],
+									has_remaining,
+								);
 								return Err(APIError::APIMisuseError { err: e.err });
 							},
 						}
@@ -1270,7 +1320,7 @@ where
 	pub async fn channel_open_abandoned(
 		&self, counterparty_node_id: &PublicKey, user_channel_id: u128,
 	) -> Result<(), APIError> {
-		{
+		let (intercept_scid, has_remaining) = {
 			let outer_state_lock = self.per_peer_state.read().unwrap();
 			let inner_state_lock = outer_state_lock.get(counterparty_node_id).ok_or_else(|| {
 				APIError::APIMisuseError {
@@ -1317,7 +1367,11 @@ where
 			peer_state.outbound_channels_by_intercept_scid.remove(&intercept_scid);
 			peer_state.intercept_scid_by_channel_id.retain(|_, &mut scid| scid != intercept_scid);
 			peer_state.needs_persist |= true;
-		}
+			let has_remaining = !peer_state.outbound_channels_by_intercept_scid.is_empty();
+			(intercept_scid, has_remaining)
+		};
+
+		self.cleanup_intercept_scids(counterparty_node_id, &[intercept_scid], has_remaining);
 
 		self.persist_peer_state(*counterparty_node_id).await.map_err(|e| {
 			APIError::APIMisuseError {
@@ -1801,16 +1855,31 @@ where
 			{
 				// First build a list of peers to persist and prune with the read lock. This allows
 				// us to avoid the write lock unless we actually need to remove a node.
+				let mut all_pruned_scids = Vec::new();
 				let outer_state_lock = self.per_peer_state.read().unwrap();
 				for (counterparty_node_id, inner_state_lock) in outer_state_lock.iter() {
 					let mut peer_state_lock = inner_state_lock.lock().unwrap();
-					peer_state_lock.prune_expired_request_state();
+					let pruned_scids = peer_state_lock.prune_expired_request_state();
+					if !pruned_scids.is_empty() {
+						let has_remaining =
+							!peer_state_lock.outbound_channels_by_intercept_scid.is_empty();
+						all_pruned_scids.push((*counterparty_node_id, pruned_scids, has_remaining));
+					}
 					let is_prunable = peer_state_lock.is_prunable();
 					if is_prunable {
 						need_remove.push(*counterparty_node_id);
 					} else if peer_state_lock.needs_persist {
 						need_persist.push(*counterparty_node_id);
 					}
+				}
+				drop(outer_state_lock);
+
+				for (counterparty_node_id, pruned_scids, has_remaining) in all_pruned_scids {
+					self.cleanup_intercept_scids(
+						&counterparty_node_id,
+						&pruned_scids,
+						has_remaining,
+					);
 				}
 			}
 
@@ -1822,6 +1891,7 @@ where
 
 			for counterparty_node_id in need_remove {
 				let mut future_opt = None;
+				let mut was_removed = false;
 				{
 					// We need to take the `per_peer_state` write lock to remove an entry, but also
 					// have to hold it until after the `remove` call returns (but not through
@@ -1833,6 +1903,7 @@ where
 						let state = entry.get_mut().get_mut().unwrap();
 						if state.is_prunable() {
 							entry.remove();
+							was_removed = true;
 							let key = counterparty_node_id.to_string();
 							future_opt = Some(self.kv_store.remove(
 								LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
@@ -1848,6 +1919,20 @@ where
 						// This should never happen, we can only have one `persist` call
 						// in-progress at once and map entries are only removed by it.
 						debug_assert!(false);
+					}
+				}
+				if was_removed {
+					// Clean up handler-level maps for the removed peer.
+					self.peer_by_intercept_scid
+						.write()
+						.unwrap()
+						.retain(|_, node_id| *node_id != counterparty_node_id);
+					self.peer_by_channel_id
+						.write()
+						.unwrap()
+						.retain(|_, node_id| *node_id != counterparty_node_id);
+					if let Some(ref interceptor) = self.onion_message_interceptor {
+						interceptor.deregister_peer_for_interception(&counterparty_node_id);
 					}
 				}
 				if let Some(future) = future_opt {
@@ -1877,7 +1962,11 @@ where
 			// We clean up the peer state, but leave removing the peer entry to the prune logic in
 			// `persist` which removes it from the store.
 			peer_state_lock.prune_pending_requests();
-			peer_state_lock.prune_expired_request_state();
+			let pruned_scids = peer_state_lock.prune_expired_request_state();
+			let has_remaining = !peer_state_lock.outbound_channels_by_intercept_scid.is_empty();
+			drop(peer_state_lock);
+			drop(outer_state_lock);
+			self.cleanup_intercept_scids(&counterparty_node_id, &pruned_scids, has_remaining);
 		}
 	}
 

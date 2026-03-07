@@ -88,6 +88,7 @@ pub fn do_test(data: &[u8]) {
 			Arc::clone(&tx_broadcaster),
 			None,
 			None,
+			None,
 		)
 		.unwrap(),
 	);
