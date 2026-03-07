@@ -25,6 +25,10 @@ use crate::lsps5::msgs::{
 	LSPS5Message, LSPS5Request, LSPS5Response, LSPS5_LIST_WEBHOOKS_METHOD_NAME,
 	LSPS5_REMOVE_WEBHOOK_METHOD_NAME, LSPS5_SET_WEBHOOK_METHOD_NAME,
 };
+use crate::lsps7::msgs::{
+	LSPS7Message, LSPS7Request, LSPS7Response, LSPS7_CREATE_ORDER_METHOD_NAME,
+	LSPS7_GET_EXTENDABLE_CHANNELS_METHOD_NAME, LSPS7_GET_ORDER_METHOD_NAME,
+};
 
 use crate::prelude::HashMap;
 
@@ -69,6 +73,9 @@ pub(crate) enum LSPSMethod {
 	LSPS5SetWebhook,
 	LSPS5ListWebhooks,
 	LSPS5RemoveWebhook,
+	LSPS7GetExtendableChannels,
+	LSPS7CreateOrder,
+	LSPS7GetOrder,
 }
 
 impl LSPSMethod {
@@ -83,6 +90,9 @@ impl LSPSMethod {
 			Self::LSPS5SetWebhook => LSPS5_SET_WEBHOOK_METHOD_NAME,
 			Self::LSPS5ListWebhooks => LSPS5_LIST_WEBHOOKS_METHOD_NAME,
 			Self::LSPS5RemoveWebhook => LSPS5_REMOVE_WEBHOOK_METHOD_NAME,
+			Self::LSPS7GetExtendableChannels => LSPS7_GET_EXTENDABLE_CHANNELS_METHOD_NAME,
+			Self::LSPS7CreateOrder => LSPS7_CREATE_ORDER_METHOD_NAME,
+			Self::LSPS7GetOrder => LSPS7_GET_ORDER_METHOD_NAME,
 		}
 	}
 }
@@ -100,6 +110,9 @@ impl FromStr for LSPSMethod {
 			LSPS5_SET_WEBHOOK_METHOD_NAME => Ok(Self::LSPS5SetWebhook),
 			LSPS5_LIST_WEBHOOKS_METHOD_NAME => Ok(Self::LSPS5ListWebhooks),
 			LSPS5_REMOVE_WEBHOOK_METHOD_NAME => Ok(Self::LSPS5RemoveWebhook),
+			LSPS7_GET_EXTENDABLE_CHANNELS_METHOD_NAME => Ok(Self::LSPS7GetExtendableChannels),
+			LSPS7_CREATE_ORDER_METHOD_NAME => Ok(Self::LSPS7CreateOrder),
+			LSPS7_GET_ORDER_METHOD_NAME => Ok(Self::LSPS7GetOrder),
 			_ => Err(&"Unknown method name"),
 		}
 	}
@@ -138,6 +151,16 @@ impl From<&LSPS5Request> for LSPSMethod {
 			LSPS5Request::SetWebhook(_) => Self::LSPS5SetWebhook,
 			LSPS5Request::ListWebhooks(_) => Self::LSPS5ListWebhooks,
 			LSPS5Request::RemoveWebhook(_) => Self::LSPS5RemoveWebhook,
+		}
+	}
+}
+
+impl From<&LSPS7Request> for LSPSMethod {
+	fn from(value: &LSPS7Request) -> Self {
+		match value {
+			LSPS7Request::GetExtendableChannels(_) => Self::LSPS7GetExtendableChannels,
+			LSPS7Request::CreateOrder(_) => Self::LSPS7CreateOrder,
+			LSPS7Request::GetOrder(_) => Self::LSPS7GetOrder,
 		}
 	}
 }
@@ -326,6 +349,8 @@ pub enum LSPSMessage {
 	LSPS2(LSPS2Message),
 	/// An LSPS5 message.
 	LSPS5(LSPS5Message),
+	/// An LSPS7 message.
+	LSPS7(LSPS7Message),
 }
 
 impl LSPSMessage {
@@ -354,6 +379,9 @@ impl LSPSMessage {
 				Some((LSPSRequestId(request_id.0.clone()), request.into()))
 			},
 			LSPSMessage::LSPS5(LSPS5Message::Request(request_id, request)) => {
+				Some((LSPSRequestId(request_id.0.clone()), request.into()))
+			},
+			LSPSMessage::LSPS7(LSPS7Message::Request(request_id, request)) => {
 				Some((LSPSRequestId(request_id.0.clone()), request.into()))
 			},
 			_ => None,
@@ -510,6 +538,47 @@ impl Serialize for LSPSMessage {
 					},
 				}
 			},
+			LSPSMessage::LSPS7(LSPS7Message::Request(request_id, request)) => {
+				jsonrpc_object.serialize_field(JSONRPC_ID_FIELD_KEY, &request_id.0)?;
+				jsonrpc_object
+					.serialize_field(JSONRPC_METHOD_FIELD_KEY, &LSPSMethod::from(request))?;
+
+				match request {
+					LSPS7Request::GetExtendableChannels(params) => {
+						jsonrpc_object.serialize_field(JSONRPC_PARAMS_FIELD_KEY, params)?
+					},
+					LSPS7Request::CreateOrder(params) => {
+						jsonrpc_object.serialize_field(JSONRPC_PARAMS_FIELD_KEY, params)?
+					},
+					LSPS7Request::GetOrder(params) => {
+						jsonrpc_object.serialize_field(JSONRPC_PARAMS_FIELD_KEY, params)?
+					},
+				}
+			},
+			LSPSMessage::LSPS7(LSPS7Message::Response(request_id, response)) => {
+				jsonrpc_object.serialize_field(JSONRPC_ID_FIELD_KEY, &request_id.0)?;
+
+				match response {
+					LSPS7Response::GetExtendableChannels(result) => {
+						jsonrpc_object.serialize_field(JSONRPC_RESULT_FIELD_KEY, result)?
+					},
+					LSPS7Response::GetExtendableChannelsError(error) => {
+						jsonrpc_object.serialize_field(JSONRPC_ERROR_FIELD_KEY, error)?
+					},
+					LSPS7Response::CreateOrder(result) => {
+						jsonrpc_object.serialize_field(JSONRPC_RESULT_FIELD_KEY, result)?
+					},
+					LSPS7Response::CreateOrderError(error) => {
+						jsonrpc_object.serialize_field(JSONRPC_ERROR_FIELD_KEY, error)?
+					},
+					LSPS7Response::GetOrder(result) => {
+						jsonrpc_object.serialize_field(JSONRPC_RESULT_FIELD_KEY, result)?
+					},
+					LSPS7Response::GetOrderError(error) => {
+						jsonrpc_object.serialize_field(JSONRPC_ERROR_FIELD_KEY, error)?
+					},
+				}
+			},
 		}
 
 		jsonrpc_object.end()
@@ -645,6 +714,30 @@ impl<'de, 'a> Visitor<'de> for LSPSMessageVisitor<'a> {
 					Ok(LSPSMessage::LSPS5(LSPS5Message::Request(
 						id,
 						LSPS5Request::RemoveWebhook(request),
+					)))
+				},
+				LSPSMethod::LSPS7GetExtendableChannels => {
+					let request = serde_json::from_value(params.unwrap_or(json!({})))
+						.map_err(de::Error::custom)?;
+					Ok(LSPSMessage::LSPS7(LSPS7Message::Request(
+						id,
+						LSPS7Request::GetExtendableChannels(request),
+					)))
+				},
+				LSPSMethod::LSPS7CreateOrder => {
+					let request = serde_json::from_value(params.unwrap_or(json!({})))
+						.map_err(de::Error::custom)?;
+					Ok(LSPSMessage::LSPS7(LSPS7Message::Request(
+						id,
+						LSPS7Request::CreateOrder(request),
+					)))
+				},
+				LSPSMethod::LSPS7GetOrder => {
+					let request = serde_json::from_value(params.unwrap_or(json!({})))
+						.map_err(de::Error::custom)?;
+					Ok(LSPSMessage::LSPS7(LSPS7Message::Request(
+						id,
+						LSPS7Request::GetOrder(request),
 					)))
 				},
 			},
@@ -793,6 +886,57 @@ impl<'de, 'a> Visitor<'de> for LSPSMessageVisitor<'a> {
 							Ok(LSPSMessage::LSPS5(LSPS5Message::Response(
 								id,
 								LSPS5Response::RemoveWebhook(response),
+							)))
+						} else {
+							Err(de::Error::custom("Received invalid JSON-RPC object: one of method, result, or error required"))
+						}
+					},
+					LSPSMethod::LSPS7GetExtendableChannels => {
+						if let Some(error) = error {
+							Ok(LSPSMessage::LSPS7(LSPS7Message::Response(
+								id,
+								LSPS7Response::GetExtendableChannelsError(error),
+							)))
+						} else if let Some(result) = result {
+							let response =
+								serde_json::from_value(result).map_err(de::Error::custom)?;
+							Ok(LSPSMessage::LSPS7(LSPS7Message::Response(
+								id,
+								LSPS7Response::GetExtendableChannels(response),
+							)))
+						} else {
+							Err(de::Error::custom("Received invalid JSON-RPC object: one of method, result, or error required"))
+						}
+					},
+					LSPSMethod::LSPS7CreateOrder => {
+						if let Some(error) = error {
+							Ok(LSPSMessage::LSPS7(LSPS7Message::Response(
+								id,
+								LSPS7Response::CreateOrderError(error),
+							)))
+						} else if let Some(result) = result {
+							let response =
+								serde_json::from_value(result).map_err(de::Error::custom)?;
+							Ok(LSPSMessage::LSPS7(LSPS7Message::Response(
+								id,
+								LSPS7Response::CreateOrder(response),
+							)))
+						} else {
+							Err(de::Error::custom("Received invalid JSON-RPC object: one of method, result, or error required"))
+						}
+					},
+					LSPSMethod::LSPS7GetOrder => {
+						if let Some(error) = error {
+							Ok(LSPSMessage::LSPS7(LSPS7Message::Response(
+								id,
+								LSPS7Response::GetOrderError(error),
+							)))
+						} else if let Some(result) = result {
+							let response =
+								serde_json::from_value(result).map_err(de::Error::custom)?;
+							Ok(LSPSMessage::LSPS7(LSPS7Message::Response(
+								id,
+								LSPS7Response::GetOrder(response),
 							)))
 						} else {
 							Err(de::Error::custom("Received invalid JSON-RPC object: one of method, result, or error required"))

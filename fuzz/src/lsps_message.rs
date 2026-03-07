@@ -82,8 +82,6 @@ pub fn do_test(data: &[u8]) {
 			Arc::clone(&keys_manager),
 			Arc::clone(&keys_manager),
 			Arc::clone(&manager),
-			None::<Arc<dyn Filter + Send + Sync>>,
-			None,
 			kv_store,
 			Arc::clone(&tx_broadcaster),
 			None,
