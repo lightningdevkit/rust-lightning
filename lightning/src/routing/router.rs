@@ -3756,6 +3756,29 @@ pub(crate) fn get_route<L: Logger, S: ScoreLookUp>(
 
 	// Step (5).
 	if payment_paths.len() == 0 {
+		let all_hints_exhausted = match &payment_params.payee {
+			Payee::Blinded { route_hints, .. } => {
+				!route_hints.is_empty()
+					&& (0..route_hints.len()).all(|idx| {
+						payment_params
+							.previously_failed_blinded_path_idxs
+							.contains(&(idx as u64))
+					})
+			},
+			Payee::Clear { route_hints, .. } => {
+				!route_hints.is_empty()
+					&& route_hints.iter().all(|hint| {
+						hint.0.iter().any(|hop| {
+							payment_params
+								.previously_failed_channels
+								.contains(&hop.short_channel_id)
+						})
+					})
+			},
+		};
+		if all_hints_exhausted {
+			return Err("Failed to find a path to the given destination: all provided route hints have been exhausted by prior payment attempts");
+		}
 		return Err("Failed to find a path to the given destination");
 	}
 
@@ -7610,6 +7633,74 @@ mod tests {
 					% route.paths[0].hops.len();
 				payment_params.previously_failed_channels.push(route.paths[0].hops[victim].short_channel_id);
 			} else { break; }
+		}
+	}
+
+	#[test]
+	#[rustfmt::skip]
+	fn exhausted_blinded_path_hints_error() {
+		// Test that when all blinded path route hints have been marked as previously failed,
+		// the router returns a specific error message indicating hint exhaustion.
+		let (secp_ctx, network, _, _, logger) = build_graph();
+		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
+		let network_graph = network.read_only();
+
+		let scorer = ln_test_utils::TestScorer::new();
+		let random_seed_bytes = [42; 32];
+
+		let blinded_payinfo = BlindedPayInfo {
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			htlc_minimum_msat: 1,
+			htlc_maximum_msat: MAX_VALUE_MSAT,
+			cltv_expiry_delta: 0,
+			features: BlindedHopFeatures::empty(),
+		};
+		let blinded_hints = vec![
+			dummy_blinded_path(nodes[1], blinded_payinfo.clone()),
+			dummy_blinded_path(nodes[2], blinded_payinfo.clone()),
+		];
+
+		let first_hops = [
+			get_channel_details(Some(1), nodes[1], channelmanager::provided_init_features(
+				&UserConfig::default()), 10_000_000),
+			get_channel_details(Some(2), nodes[2], channelmanager::provided_init_features(
+				&UserConfig::default()), 10_000_000),
+		];
+
+		// Routing should succeed initially.
+		let payment_params = PaymentParameters::blinded(blinded_hints.clone());
+		let route_params = RouteParameters::from_payment_params_and_value(
+			payment_params, 1000);
+		assert!(get_route(&our_id, &route_params, &network_graph,
+			Some(&first_hops.iter().collect::<Vec<_>>()), Arc::clone(&logger),
+			&scorer, &Default::default(), &random_seed_bytes).is_ok());
+
+		// Mark all blinded path indices as previously failed.
+		let mut payment_params = PaymentParameters::blinded(blinded_hints.clone());
+		payment_params.previously_failed_blinded_path_idxs = vec![0, 1];
+		let route_params = RouteParameters::from_payment_params_and_value(
+			payment_params, 1000);
+		match get_route(&our_id, &route_params, &network_graph,
+			Some(&first_hops.iter().collect::<Vec<_>>()), Arc::clone(&logger),
+			&scorer, &Default::default(), &random_seed_bytes)
+		{
+			Err(err) => assert_eq!(err, "Failed to find a path to the given destination: all provided route hints have been exhausted by prior payment attempts"),
+			Ok(_) => panic!("Expected error"),
+		}
+
+		// Mark only one blinded path as failed — should get the generic error (not exhaustion)
+		// since not all hints are exhausted.
+		let mut payment_params = PaymentParameters::blinded(blinded_hints);
+		payment_params.previously_failed_blinded_path_idxs = vec![0];
+		let route_params = RouteParameters::from_payment_params_and_value(
+			payment_params, 1000);
+		match get_route(&our_id, &route_params, &network_graph,
+			Some(&first_hops.iter().collect::<Vec<_>>()), Arc::clone(&logger),
+			&scorer, &Default::default(), &random_seed_bytes)
+		{
+			Ok(_) => {}, // May find a route via the remaining hint
+			Err(err) => assert_eq!(err, "Failed to find a path to the given destination"),
 		}
 	}
 
