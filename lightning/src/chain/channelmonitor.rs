@@ -46,8 +46,8 @@ use crate::chain::{BestBlock, WatchedOutput};
 use crate::events::bump_transaction::{AnchorDescriptor, BumpTransactionEvent};
 use crate::events::{ClosureReason, Event, EventHandler, ReplayEvent};
 use crate::ln::chan_utils::{
-	self, ChannelTransactionParameters, CommitmentTransaction, CounterpartyCommitmentSecrets,
-	HTLCClaim, HTLCOutputInCommitment, HolderCommitmentTransaction,
+	self, ChannelTransactionParameters, ChannelTransactionParametersAccess, CommitmentTransaction,
+	CounterpartyCommitmentSecrets, HTLCClaim, HTLCOutputInCommitment, HolderCommitmentTransaction,
 };
 use crate::ln::channel::INITIAL_COMMITMENT_NUMBER;
 use crate::ln::channel_keys::{
@@ -118,9 +118,7 @@ impl ChannelMonitorUpdate {
 	) -> impl Iterator<Item = (OutPoint, ScriptBuf)> + '_ {
 		self.updates.iter().filter_map(|update| match update {
 			ChannelMonitorUpdateStep::RenegotiatedFunding { channel_parameters, .. } => {
-				let funding_outpoint = channel_parameters
-					.funding_outpoint
-					.expect("Renegotiated funding must always have known outpoint");
+				let funding_outpoint = channel_parameters.funding_outpoint;
 				let funding_script = channel_parameters.make_funding_redeemscript().to_p2wsh();
 				Some((funding_outpoint, funding_script))
 			},
@@ -1170,8 +1168,7 @@ struct FundingScope {
 
 impl FundingScope {
 	fn funding_outpoint(&self) -> OutPoint {
-		let funding_outpoint = self.channel_parameters.funding_outpoint.as_ref();
-		*funding_outpoint.expect("Funding outpoint must be set for active monitor")
+		self.channel_parameters.funding_outpoint
 	}
 
 	fn funding_txid(&self) -> Txid {
@@ -1868,7 +1865,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 			&channel_parameters.channel_type_features, &holder_pubkeys.payment_point
 		);
 
-		let counterparty_channel_parameters = channel_parameters.counterparty_parameters.as_ref().unwrap();
+		let counterparty_channel_parameters = &channel_parameters.counterparty_parameters;
 		let counterparty_delayed_payment_base_key = counterparty_channel_parameters.pubkeys.delayed_payment_basepoint;
 		let counterparty_htlc_base_key = counterparty_channel_parameters.pubkeys.htlc_basepoint;
 		let counterparty_commitment_params = CounterpartyCommitmentParameters { counterparty_delayed_payment_base_key, counterparty_htlc_base_key, on_counterparty_tx_csv };
@@ -1885,8 +1882,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 			initial_holder_commitment_tx.clone(), secp_ctx,
 		);
 
-		let funding_outpoint = channel_parameters.funding_outpoint
-			.expect("Funding outpoint must be known during initialization");
+		let funding_outpoint = channel_parameters.funding_outpoint;
 		let funding_redeem_script = channel_parameters.make_funding_redeemscript();
 		let funding_script = funding_redeem_script.to_p2wsh();
 		let mut outputs_to_watch = new_hash_map();
@@ -4231,7 +4227,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					channel_parameters, holder_commitment_tx, counterparty_commitment_tx,
 				} => {
 					log_trace!(logger, "Updating ChannelMonitor with alternative holder and counterparty commitment transactions for funding txid {}",
-						channel_parameters.funding_outpoint.unwrap().txid);
+						channel_parameters.funding_outpoint.txid);
 					if let Err(_) = self.renegotiated_funding(
 						logger, channel_parameters, holder_commitment_tx, counterparty_commitment_tx,
 					) {
@@ -4345,7 +4341,6 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	#[rustfmt::skip]
 	fn get_funding_txo(&self) -> OutPoint {
 		self.funding.channel_parameters.funding_outpoint
-			.expect("Funding outpoint must be set for active monitor")
 	}
 
 	/// Returns the P2WSH script we are currently monitoring the chain for spends. This will change
@@ -6981,11 +6976,11 @@ mod tests {
 			holder_pubkeys: keys.pubkeys(&secp_ctx),
 			holder_selected_contest_delay: 66,
 			is_outbound_from_holder: true,
-			counterparty_parameters: Some(CounterpartyChannelTransactionParameters {
+			counterparty_parameters: CounterpartyChannelTransactionParameters {
 				pubkeys: counterparty_pubkeys,
 				selected_contest_delay: 67,
-			}),
-			funding_outpoint: Some(funding_outpoint),
+			},
+			funding_outpoint,
 			splice_parent_funding_txid: None,
 			channel_type_features: ChannelTypeFeatures::only_static_remote_key(),
 			channel_value_satoshis: 0,
@@ -7244,11 +7239,11 @@ mod tests {
 			holder_pubkeys: keys.pubkeys(&secp_ctx),
 			holder_selected_contest_delay: 66,
 			is_outbound_from_holder: true,
-			counterparty_parameters: Some(CounterpartyChannelTransactionParameters {
+			counterparty_parameters: CounterpartyChannelTransactionParameters {
 				pubkeys: counterparty_pubkeys,
 				selected_contest_delay: 67,
-			}),
-			funding_outpoint: Some(funding_outpoint),
+			},
+			funding_outpoint,
 			splice_parent_funding_txid: None,
 			channel_type_features: ChannelTypeFeatures::only_static_remote_key(),
 			channel_value_satoshis: 0,

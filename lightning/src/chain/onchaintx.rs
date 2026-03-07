@@ -1354,11 +1354,11 @@ mod tests {
 			holder_pubkeys: signer.pubkeys(&secp_ctx),
 			holder_selected_contest_delay: 66,
 			is_outbound_from_holder: true,
-			counterparty_parameters: Some(CounterpartyChannelTransactionParameters {
+			counterparty_parameters: CounterpartyChannelTransactionParameters {
 				pubkeys: counterparty_pubkeys,
 				selected_contest_delay: 67,
-			}),
-			funding_outpoint: Some(funding_outpoint),
+			},
+			funding_outpoint,
 			splice_parent_funding_txid: None,
 			channel_type_features: ChannelTypeFeatures::only_static_remote_key(),
 			channel_value_satoshis: 0,

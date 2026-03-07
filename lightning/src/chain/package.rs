@@ -31,8 +31,8 @@ use crate::chain::channelmonitor::COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE;
 use crate::chain::onchaintx::{FeerateStrategy, OnchainTxHandler};
 use crate::chain::transaction::MaybeSignedTransaction;
 use crate::ln::chan_utils::{
-	self, ChannelTransactionParameters, HTLCOutputInCommitment, HolderCommitmentTransaction,
-	TxCreationKeys,
+	self, ChannelTransactionParameters, ChannelTransactionParametersAccess, HTLCOutputInCommitment,
+	HolderCommitmentTransaction, TxCreationKeys,
 };
 use crate::ln::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint};
 use crate::ln::channelmanager::MIN_CLTV_EXPIRY_DELTA;
@@ -1892,7 +1892,7 @@ mod tests {
 					payment_hash: PaymentHash::from(preimage),
 					transaction_output_index: None,
 				};
-				let funding_outpoint = channel_parameters.funding_outpoint.unwrap();
+				let funding_outpoint = channel_parameters.funding_outpoint;
 				let commitment_tx = HolderCommitmentTransaction::dummy(0, funding_outpoint, vec![htlc.clone()]);
 				let trusted_tx = commitment_tx.trust();
 				PackageSolvingData::HolderHTLCOutput(HolderHTLCOutput::build(
@@ -1929,7 +1929,7 @@ mod tests {
 					payment_hash: PaymentHash::from(PaymentPreimage([2;32])),
 					transaction_output_index: None,
 				};
-				let funding_outpoint = channel_parameters.funding_outpoint.unwrap();
+				let funding_outpoint = channel_parameters.funding_outpoint;
 				let commitment_tx = HolderCommitmentTransaction::dummy(0, funding_outpoint, vec![htlc.clone()]);
 				let trusted_tx = commitment_tx.trust();
 				PackageSolvingData::HolderHTLCOutput(HolderHTLCOutput::build(
@@ -1957,7 +1957,7 @@ mod tests {
 	macro_rules! dumb_funding_output {
 		() => {{
 			let mut channel_parameters = ChannelTransactionParameters::test_dummy(0);
-			let funding_outpoint = channel_parameters.funding_outpoint.unwrap();
+			let funding_outpoint = channel_parameters.funding_outpoint;
 			let commitment_tx = HolderCommitmentTransaction::dummy(0, funding_outpoint, Vec::new());
 			channel_parameters.channel_type_features = ChannelTypeFeatures::only_static_remote_key();
 			PackageSolvingData::HolderFundingOutput(HolderFundingOutput::build(

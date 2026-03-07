@@ -15,7 +15,8 @@ use bitcoin::secp256k1::PublicKey;
 
 use crate::chain::chaininterface::{FeeEstimator, LowerBoundedFeeEstimator};
 use crate::chain::transaction::OutPoint;
-use crate::ln::channel::Channel;
+use crate::ln::chan_utils::ChannelTransactionParametersAccess;
+use crate::ln::channel::{AvailableBalances, Channel, ChannelContext, FundingScope};
 use crate::ln::types::ChannelId;
 use crate::sign::SignerProvider;
 use crate::types::features::{ChannelTypeFeatures, InitFeatures};
@@ -523,18 +524,16 @@ impl ChannelDetails {
 		channel: &Channel<SP>, best_block_height: u32, latest_features: InitFeatures,
 		fee_estimator: &LowerBoundedFeeEstimator<F>,
 	) -> Self {
-		let context = channel.context();
-		let funding = channel.funding();
-		let balance_result = channel.get_available_balances(fee_estimator);
-		let balance = balance_result.unwrap_or_else(|()| {
-			debug_assert!(false, "some channel balance has been overdrawn");
-			crate::ln::channel::AvailableBalances {
-				inbound_capacity_msat: 0,
-				outbound_capacity_msat: 0,
-				next_outbound_htlc_limit_msat: 0,
-				next_outbound_htlc_minimum_msat: u64::MAX,
-			}
-		});
+		channel.channel_details(best_block_height, latest_features, fee_estimator)
+	}
+
+	#[rustfmt::skip]
+	pub(super) fn from_channel_parts<SP: SignerProvider, P: ChannelTransactionParametersAccess, F: FeeEstimator>(
+		context: &ChannelContext<SP>, funding: &FundingScope<P>,
+		balance: AvailableBalances, minimum_depth: Option<u32>,
+		best_block_height: u32, latest_features: InitFeatures,
+		_fee_estimator: &LowerBoundedFeeEstimator<F>,
+	) -> Self {
 		let (to_remote_reserve_satoshis, to_self_reserve_satoshis) =
 			funding.get_holder_counterparty_selected_channel_reserve_satoshis();
 		#[allow(deprecated)] // TODO: Remove once balance_msat is removed.
@@ -583,7 +582,7 @@ impl ChannelDetails {
 			next_outbound_htlc_limit_msat: balance.next_outbound_htlc_limit_msat,
 			next_outbound_htlc_minimum_msat: balance.next_outbound_htlc_minimum_msat,
 			user_channel_id: context.get_user_id(),
-			confirmations_required: channel.minimum_depth(),
+			confirmations_required: minimum_depth,
 			confirmations: Some(funding.get_funding_tx_confirmations(best_block_height)),
 			force_close_spend_delay: funding.get_counterparty_selected_contest_delay(),
 			is_outbound: funding.is_outbound(),
