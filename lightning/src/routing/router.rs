@@ -2578,29 +2578,82 @@ fn sort_first_hop_channels(
 
 /// Finds a route from us (payer) to the given target node (payee).
 ///
-/// If the payee provided features in their invoice, they should be provided via the `payee` field
-/// in the given [`RouteParameters::payment_params`].
-/// Without this, MPP will only be used if the payee's features are available in the network graph.
+/// This function computes one or more payment paths for sending a payment to the payee while
+/// respecting all constraints like fees, CLTV expiry deltas, channel liquidity, and the payee's
+/// feature requirements. You'll get multiple paths back if multi-path payments (MPP) are needed.
 ///
-/// Private routing paths between a public node and the target may be included in the `payee` field
-/// of [`RouteParameters::payment_params`].
+///  Parameters
+/// - `our_node_pubkey` - The public key of the payer (us).
+/// - `route_params` - Payment parameters including the final value, payee information, feature
+///   requirements from any invoice, and routing constraints like max fees and path count.
+/// - `network_graph` - The network graph with all known channels and nodes.
+/// - `first_hops` - Channels directly connected to us. If you provide this, it takes priority
+///   over what's in the network graph, which is useful for unannounced channels. You can get
+///   this from [`ChannelManager::list_usable_channels`].
+/// - `logger` - For logging routing progress and debug info.
+/// - `scorer` - The implementation that ranks and selects paths based on reliability, liquidity,
+///   and congestion metrics.
+/// - `score_params` - Parameters for tuning the scorer's behavior.
+/// - `random_seed_bytes` - A random seed for adding privacy-enhancing offsets to CLTV values.
 ///
-/// If some channels aren't announced, it may be useful to fill in `first_hops` with the results
-/// from [`ChannelManager::list_usable_channels`]. If it is filled in, the view of these channels
-/// from `network_graph` will be ignored, and only those in `first_hops` will be used.
+///  Payee Information
+///  How we handle the payee depends on what they provided:
+/// - Bolt11 invoices: Include features via [`RouteParameters::payment_params`] to enable MPP.
+///   Without features, MPP only works if the payee is already known in the network graph.
+/// - Bolt12 invoices: May include blinded paths for privacy. We unblind these in the returned
+///   [`Route`] so you can actually construct the payment.
+/// - BOLT11 route hints: Private hops near the payee get included in the final route.
 ///
-/// The fees on channels from us to the next hop are ignored as they are assumed to all be equal.
-/// However, the enabled/disabled bit on such channels as well as the `htlc_minimum_msat` /
-/// `htlc_maximum_msat` *are* checked as they may change based on the receiving node.
+///  First Hop Behavior
+/// Fees on channels from us to the next hop are ignored during routing since we assume all
+/// first-hop channels cost the same. However, we do check the channel's enabled/disabled status
+/// and HTLC limits (htlc_minimum_msat and htlc_maximum_msat) since those can vary.
 ///
-/// # Panics
+/// We use a modified Dijkstra's algorithm, searching backwards from the payee to us:
+/// 1. Fee calculation: We total up fees at each hop from the payee going back to the payer,
+///    computing them based on the amount being routed. This gives us accurate estimates because
+///    the amount increases as we move backward toward the payer.
+/// 2. CLTV deltas: Each hop's CLTV expiry delta is aggregated hop-by-hop to ensure we have
+///    enough time for on-chain resolution if needed.
+/// 3. Penalties: The scorer's penalties (from your provided scorer) are factored directly into
+///    the pathfinding algorithm itself, not just applied afterward. This means channels with
+///    higher penalties are naturally less likely to be selected during the search.
+/// 4. Path construction: We build multiple candidate paths while staying within the fee limit
+///    and respecting all liquidity and feature constraints.
+/// 5. Value provisioning: We collect paths until the total value is roughly 3x the requested
+///    payment (this gives us room to find cheaper combinations), then we pick the cheapest set.
 ///
-/// Panics if first_hops contains channels without `short_channel_id`s;
-/// [`ChannelManager::list_usable_channels`] will never include such channels.
+/// Scoring and Channel Selection
+/// The scorer you provide influences which paths we select during the actual pathfinding. The
+/// scorer assigns penalties to channels based on factors like:
+/// - How reliable the channel has been historically
+/// - Known liquidity constraints and in-flight HTLCs
+/// - Estimated network congestion
 ///
-/// [`ChannelManager::list_usable_channels`]: crate::ln::channelmanager::ChannelManager::list_usable_channels
-/// [`Event::PaymentPathFailed`]: crate::events::Event::PaymentPathFailed
-/// [`NetworkGraph`]: crate::routing::gossip::NetworkGraph
+/// These penalties are built into the algorithm's scoring, so channels with higher penalties are
+/// naturally deprioritized as we search for paths, letting us favor more reliable and liquid
+/// options.
+///
+/// Returns
+/// On success, you get a [`Route`] with one or more payment paths. The route respects all
+/// your constraints and is ready to use for payment construction.
+///
+/// Errors
+/// The function returns an error if:
+/// - The payer and payee are the same node (that doesn't make sense).
+/// - The payment amount is zero or larger than [`MAX_VALUE_MSAT`].
+/// - The total CLTV delta constraint is too tight for the payee's final CLTV delta.
+/// - No route can be found that meets all the liquidity, feature, and policy constraints.
+///
+/// This will panic if `first_hops` contains channels without a short_channel_id. This shouldn't
+/// happen in practice since [`ChannelManager::list_usable_channels`] always provides proper IDs,
+/// so it's safe to pass that output directly.
+///
+/// See Also
+///
+/// [`ChannelManager::list_usable_channels`] to get the first_hops list.
+/// [`NetworkGraph`] for more on the network graph parameter.
+/// [`RouteParameters`] for available routing constraints.
 #[rustfmt::skip]
 pub fn find_route<L: Logger, GL: Logger, S: ScoreLookUp>(
 	our_node_pubkey: &PublicKey, route_params: &RouteParameters,
