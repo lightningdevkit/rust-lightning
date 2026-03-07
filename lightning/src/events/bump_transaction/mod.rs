@@ -485,6 +485,9 @@ impl<B: BroadcasterInterface, C: CoinSelectionSource, SP: SignerProvider, L: Log
 				// Our estimate should be within a 1% error margin of the actual weight and we should
 				// never underestimate.
 				assert!(expected_signed_tx_weight >= signed_tx_weight);
+				// When fuzzing, signatures are trivially small so the actual weight can be
+				// significantly less than estimated. Skip the lower-bound check.
+				#[cfg(not(fuzzing))]
 				assert!(expected_signed_tx_weight * 99 / 100 <= signed_tx_weight);
 
 				let expected_package_fee = Amount::from_sat(fee_for_weight(
@@ -733,6 +736,9 @@ impl<B: BroadcasterInterface, C: CoinSelectionSource, SP: SignerProvider, L: Log
 				// Our estimate should be within a 2% error margin of the actual weight and we should
 				// never underestimate.
 				assert!(expected_signed_tx_weight >= signed_tx_weight);
+				// When fuzzing, signatures are trivially small so the actual weight can be
+				// significantly less than estimated. Skip the lower-bound check.
+				#[cfg(not(fuzzing))]
 				assert!(expected_signed_tx_weight * 98 / 100 <= signed_tx_weight);
 
 				let expected_signed_tx_fee =
