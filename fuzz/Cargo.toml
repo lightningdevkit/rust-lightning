@@ -19,6 +19,7 @@ stdin_fuzz = []
 
 [dependencies]
 lightning = { path = "../lightning", features = ["regex", "_test_utils"] }
+lightning-block-sync = { path = "../lightning-block-sync", features = ["tokio"] }
 lightning-invoice = { path = "../lightning-invoice" }
 lightning-liquidity = { path = "../lightning-liquidity" }
 lightning-rapid-gossip-sync = { path = "../lightning-rapid-gossip-sync" }
