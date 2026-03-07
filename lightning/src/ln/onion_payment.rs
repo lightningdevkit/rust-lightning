@@ -111,6 +111,9 @@ enum RoutingInfo {
 		next_hop_hmac: [u8; 32],
 		shared_secret: SharedSecret,
 		current_path_key: Option<PublicKey>,
+		incoming_multipath_data: Option<msgs::FinalOnionHopData>,
+		next_trampoline_amt_msat: u64,
+		next_trampoline_cltv: u32,
 	},
 }
 
@@ -167,24 +170,27 @@ pub(super) fn create_fwd_pending_htlc_info(
 				reason: LocalHTLCFailureReason::InvalidOnionPayload,
 				err_data: Vec::new(),
 			}),
-		onion_utils::Hop::TrampolineForward { next_trampoline_hop_data, next_trampoline_hop_hmac, new_trampoline_packet_bytes, trampoline_shared_secret, .. } => {
+		onion_utils::Hop::TrampolineForward { outer_hop_data, next_trampoline_hop_data, next_trampoline_hop_hmac, new_trampoline_packet_bytes, trampoline_shared_secret, .. } => {
 			(
 				RoutingInfo::Trampoline {
 					next_trampoline: next_trampoline_hop_data.next_trampoline,
 					new_packet_bytes: new_trampoline_packet_bytes,
 					next_hop_hmac: next_trampoline_hop_hmac,
 					shared_secret: trampoline_shared_secret,
-					current_path_key: None
+					current_path_key: None,
+					incoming_multipath_data: outer_hop_data.multipath_trampoline_data,
+					next_trampoline_amt_msat: next_trampoline_hop_data.amt_to_forward,
+					next_trampoline_cltv: next_trampoline_hop_data.outgoing_cltv_value,
 				},
-				next_trampoline_hop_data.amt_to_forward,
-				next_trampoline_hop_data.outgoing_cltv_value,
+				outer_hop_data.amt_to_forward,
+				outer_hop_data.outgoing_cltv_value,
 				None,
 				None
 			)
 		},
 		onion_utils::Hop::TrampolineBlindedForward { outer_hop_data, next_trampoline_hop_data, next_trampoline_hop_hmac, new_trampoline_packet_bytes, trampoline_shared_secret, .. } => {
-			let (amt_to_forward, outgoing_cltv_value) = check_blinded_forward(
-				msg.amount_msat, msg.cltv_expiry, &next_trampoline_hop_data.payment_relay, &next_trampoline_hop_data.payment_constraints, &next_trampoline_hop_data.features
+			let (next_hop_amount, next_hop_cltv) = check_blinded_forward(
+				outer_hop_data.multipath_trampoline_data.as_ref().map(|f| f.total_msat).unwrap_or(msg.amount_msat), msg.cltv_expiry, &next_trampoline_hop_data.payment_relay, &next_trampoline_hop_data.payment_constraints, &next_trampoline_hop_data.features
 			).map_err(|()| {
 				// We should be returning malformed here if `msg.blinding_point` is set, but this is
 				// unreachable right now since we checked it in `decode_update_add_htlc_onion`.
@@ -200,10 +206,13 @@ pub(super) fn create_fwd_pending_htlc_info(
 					new_packet_bytes: new_trampoline_packet_bytes,
 					next_hop_hmac: next_trampoline_hop_hmac,
 					shared_secret: trampoline_shared_secret,
-					current_path_key: outer_hop_data.current_path_key
+					current_path_key: outer_hop_data.current_path_key,
+					incoming_multipath_data: outer_hop_data.multipath_trampoline_data,
+					next_trampoline_amt_msat: next_hop_amount,
+					next_trampoline_cltv: next_hop_cltv,
 				},
-				amt_to_forward,
-				outgoing_cltv_value,
+				outer_hop_data.amt_to_forward,
+				outer_hop_data.outgoing_cltv_value,
 				next_trampoline_hop_data.intro_node_blinding_point,
 				next_trampoline_hop_data.next_blinding_override
 			)
@@ -233,7 +242,7 @@ pub(super) fn create_fwd_pending_htlc_info(
 					}),
 			}
 		}
-		RoutingInfo::Trampoline { next_trampoline, new_packet_bytes, next_hop_hmac, shared_secret, current_path_key } => {
+		RoutingInfo::Trampoline { next_trampoline, new_packet_bytes, next_hop_hmac, shared_secret, current_path_key, incoming_multipath_data: multipath_trampoline_data, next_trampoline_amt_msat: next_hop_amount, next_trampoline_cltv: next_hop_cltv} => {
 			let next_trampoline_packet_pubkey = match next_packet_pubkey_opt {
 				Some(Ok(pubkey)) => pubkey,
 				_ => return Err(InboundHTLCErr {
@@ -260,7 +269,10 @@ pub(super) fn create_fwd_pending_htlc_info(
 						failure: intro_node_blinding_point
 							.map(|_| BlindedFailure::FromIntroductionNode)
 							.unwrap_or(BlindedFailure::FromBlindedNode),
-					})
+					}),
+				incoming_multipath_data: multipath_trampoline_data,
+				next_trampoline_amt_msat: next_hop_amount,
+				next_trampoline_cltv_expiry: next_hop_cltv,
 			}
 		}
 	};
@@ -515,7 +527,7 @@ pub fn peel_payment_onion<NS: NodeSigner, L: Logger, T: secp256k1::Verification>
 			};
 
 			if let Err(reason) = check_incoming_htlc_cltv(
-				cur_height, outgoing_cltv_value, msg.cltv_expiry,
+				cur_height, outgoing_cltv_value, msg.cltv_expiry, MIN_CLTV_EXPIRY_DELTA.into(),
 			) {
 				return Err(InboundHTLCErr {
 					msg: "incoming cltv check failed",
@@ -683,33 +695,24 @@ pub(super) fn decode_incoming_update_add_htlc_onion<NS: NodeSigner, L: Logger, T
 
 			Some(NextPacketDetails { next_packet_pubkey, outgoing_connector: HopConnector::Dummy, outgoing_amt_msat: amt_to_forward, outgoing_cltv_value })
 		}
-		onion_utils::Hop::TrampolineForward { next_trampoline_hop_data: msgs::InboundTrampolineForwardPayload { amt_to_forward, outgoing_cltv_value, next_trampoline }, trampoline_shared_secret, incoming_trampoline_public_key, .. } => {
+		onion_utils::Hop::TrampolineForward { next_trampoline_hop_data: msgs::InboundTrampolineForwardPayload { next_trampoline, .. }, ref outer_hop_data, trampoline_shared_secret, incoming_trampoline_public_key, .. } => {
 			let next_trampoline_packet_pubkey = onion_utils::next_hop_pubkey(secp_ctx,
 				incoming_trampoline_public_key, &trampoline_shared_secret.secret_bytes());
 			Some(NextPacketDetails {
 				next_packet_pubkey: next_trampoline_packet_pubkey,
 				outgoing_connector: HopConnector::Trampoline(next_trampoline),
-				outgoing_amt_msat: amt_to_forward,
-				outgoing_cltv_value,
+				outgoing_amt_msat: outer_hop_data.amt_to_forward,
+				outgoing_cltv_value: outer_hop_data.outgoing_cltv_value,
 			})
 		}
-		onion_utils::Hop::TrampolineBlindedForward { next_trampoline_hop_data: msgs::InboundTrampolineBlindedForwardPayload { next_trampoline, ref payment_relay, ref payment_constraints, ref features, .. }, outer_shared_secret, trampoline_shared_secret, incoming_trampoline_public_key, .. } => {
-			let (amt_to_forward, outgoing_cltv_value) = match check_blinded_forward(
-				msg.amount_msat, msg.cltv_expiry, &payment_relay, &payment_constraints, &features
-			) {
-				Ok((amt, cltv)) => (amt, cltv),
-				Err(()) => {
-					return encode_relay_error("Underflow calculating outbound amount or cltv value for blinded trampoline forward",
-						LocalHTLCFailureReason::InvalidOnionBlinding, outer_shared_secret.secret_bytes(), Some(trampoline_shared_secret.secret_bytes()), &[0; 32]);
-				}
-			};
+		onion_utils::Hop::TrampolineBlindedForward { next_trampoline_hop_data: msgs::InboundTrampolineBlindedForwardPayload { next_trampoline, .. }, ref outer_hop_data, trampoline_shared_secret, incoming_trampoline_public_key, .. } => {
 			let next_trampoline_packet_pubkey = onion_utils::next_hop_pubkey(secp_ctx,
 				incoming_trampoline_public_key, &trampoline_shared_secret.secret_bytes());
 			Some(NextPacketDetails {
 				next_packet_pubkey: next_trampoline_packet_pubkey,
 				outgoing_connector: HopConnector::Trampoline(next_trampoline),
-				outgoing_amt_msat: amt_to_forward,
-				outgoing_cltv_value,
+				outgoing_amt_msat: outer_hop_data.amt_to_forward,
+				outgoing_cltv_value: outer_hop_data.outgoing_cltv_value,
 			})
 		}
 		_ => None
@@ -719,9 +722,9 @@ pub(super) fn decode_incoming_update_add_htlc_onion<NS: NodeSigner, L: Logger, T
 }
 
 pub(super) fn check_incoming_htlc_cltv(
-	cur_height: u32, outgoing_cltv_value: u32, cltv_expiry: u32,
+	cur_height: u32, outgoing_cltv_value: u32, cltv_expiry: u32, min_cltv_expiry_delta: u64,
 ) -> Result<(), LocalHTLCFailureReason> {
-	if (cltv_expiry as u64) < (outgoing_cltv_value) as u64 + MIN_CLTV_EXPIRY_DELTA as u64 {
+	if (cltv_expiry as u64) < (outgoing_cltv_value) as u64 + min_cltv_expiry_delta {
 		return Err(LocalHTLCFailureReason::IncorrectCLTVExpiry);
 	}
 	// Theoretically, channel counterparty shouldn't send us a HTLC expiring now,

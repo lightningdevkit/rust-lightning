@@ -2659,7 +2659,6 @@ mod fuzzy_internal_msgs {
 		/// This is used for Trampoline hops that are not the blinded path intro hop.
 		/// We would only ever construct this variant when we are a Trampoline node forwarding a
 		/// payment along a blinded path.
-		#[allow(unused)]
 		BlindedTrampolineEntrypoint {
 			amt_to_forward: u64,
 			outgoing_cltv_value: u32,
