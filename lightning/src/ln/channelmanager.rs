@@ -3372,8 +3372,12 @@ macro_rules! process_events_body {
 
 				// TODO: This behavior should be documented. It's unintuitive that we query
 				// ChannelMonitors when clearing other events.
-				if $self.process_pending_monitor_events() {
-					result = NotifyOption::DoPersist;
+				match $self.process_pending_monitor_events() {
+					NotifyOption::DoPersist => result = NotifyOption::DoPersist,
+					NotifyOption::SkipPersistHandleEvents
+						if result == NotifyOption::SkipPersistNoEvents =>
+						result = NotifyOption::SkipPersistHandleEvents,
+					_ => {},
 				}
 			}
 
@@ -10179,13 +10183,14 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let logger = WithChannelContext::from(&self.logger, &chan.context, None);
 		let update_completed = self.handle_monitor_update_res(update_res, logger);
 		if update_completed {
-			Some(self.try_resume_channel_post_monitor_update(
+			let (data, _needs_persist) = self.try_resume_channel_post_monitor_update(
 				in_flight_monitor_updates,
 				monitor_update_blocked_actions,
 				pending_msg_events,
 				is_connected,
 				chan,
-			))
+			);
+			Some(data)
 		} else {
 			None
 		}
@@ -10245,13 +10250,14 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			);
 
 		let completion_data = if all_updates_complete {
-			Some(self.try_resume_channel_post_monitor_update(
+			let (data, _needs_persist) = self.try_resume_channel_post_monitor_update(
 				in_flight_monitor_updates,
 				monitor_update_blocked_actions,
 				pending_msg_events,
 				is_connected,
 				chan,
-			))
+			);
+			Some(data)
 		} else {
 			None
 		};
@@ -10276,7 +10282,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		>,
 		pending_msg_events: &mut Vec<MessageSendEvent>, is_connected: bool,
 		chan: &mut FundedChannel<SP>,
-	) -> PostMonitorUpdateChanResume {
+	) -> (PostMonitorUpdateChanResume, bool) {
 		let chan_id = chan.context.channel_id();
 		let outbound_alias = chan.context.outbound_scid_alias();
 		let counterparty_node_id = chan.context.get_counterparty_node_id();
@@ -10294,7 +10300,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 		if chan.blocked_monitor_updates_pending() != 0 {
 			log_debug!(logger, "Channel has blocked monitor updates, completing update actions but leaving channel blocked");
-			PostMonitorUpdateChanResume::Blocked { update_actions }
+			let needs_persist = !update_actions.is_empty();
+			(PostMonitorUpdateChanResume::Blocked { update_actions }, needs_persist)
 		} else {
 			log_debug!(logger, "Channel is open and awaiting update, resuming it");
 			let updates = chan.monitor_updating_restored(
@@ -10325,6 +10332,11 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				None
 			};
 
+			// Checked before handle_channel_resumption moves these fields.
+			let has_state_changes = updates.funding_broadcastable.is_some()
+				|| updates.channel_ready.is_some()
+				|| updates.announcement_sigs.is_some();
+
 			let (htlc_forwards, decode_update_add_htlcs) = self.handle_channel_resumption(
 				pending_msg_events,
 				chan,
@@ -10347,19 +10359,32 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			let unbroadcasted_batch_funding_txid =
 				chan.context.unbroadcasted_batch_funding_txid(&chan.funding);
 
-			PostMonitorUpdateChanResume::Unblocked {
-				channel_id: chan_id,
-				counterparty_node_id,
-				funding_txo: chan.funding_outpoint(),
-				user_channel_id: chan.context.get_user_id(),
-				unbroadcasted_batch_funding_txid,
-				update_actions,
-				htlc_forwards,
-				decode_update_add_htlcs,
-				finalized_claimed_htlcs: updates.finalized_claimed_htlcs,
-				failed_htlcs: updates.failed_htlcs,
-				committed_outbound_htlc_sources: updates.committed_outbound_htlc_sources,
-			}
+			// Queuing outbound messages (commitment_update, raa) alone does
+			// not require ChannelManager persistence.
+			let needs_persist = has_state_changes
+				|| !updates.finalized_claimed_htlcs.is_empty()
+				|| !updates.failed_htlcs.is_empty()
+				|| !update_actions.is_empty()
+				|| unbroadcasted_batch_funding_txid.is_some()
+				|| !htlc_forwards.is_empty()
+				|| decode_update_add_htlcs.is_some();
+
+			(
+				PostMonitorUpdateChanResume::Unblocked {
+					channel_id: chan_id,
+					counterparty_node_id,
+					funding_txo: chan.funding_outpoint(),
+					user_channel_id: chan.context.get_user_id(),
+					unbroadcasted_batch_funding_txid,
+					update_actions,
+					htlc_forwards,
+					decode_update_add_htlcs,
+					finalized_claimed_htlcs: updates.finalized_claimed_htlcs,
+					failed_htlcs: updates.failed_htlcs,
+					committed_outbound_htlc_sources: updates.committed_outbound_htlc_sources,
+				},
+				needs_persist,
+			)
 		}
 	}
 
@@ -10628,13 +10653,14 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	}
 
 	#[rustfmt::skip]
-	fn channel_monitor_updated(&self, channel_id: &ChannelId, highest_applied_update_id: Option<u64>, counterparty_node_id: &PublicKey) {
+	fn channel_monitor_updated(&self, channel_id: &ChannelId, highest_applied_update_id: Option<u64>, counterparty_node_id: &PublicKey) -> bool {
 		debug_assert!(self.total_consistency_lock.try_write().is_err()); // Caller holds read lock
 
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let mut peer_state_lock;
 		let peer_state_mutex_opt = per_peer_state.get(counterparty_node_id);
-		if peer_state_mutex_opt.is_none() { return }
+		// Peer is gone; conservatively request persistence.
+		if peer_state_mutex_opt.is_none() { return true }
 		peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 
@@ -10666,7 +10692,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			} else { 0 };
 
 		if remaining_in_flight != 0 {
-			return;
+			return false;
 		}
 
 		if let Some(chan) = peer_state.channel_by_id
@@ -10674,7 +10700,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			.and_then(Channel::as_funded_mut)
 		{
 			if chan.is_awaiting_monitor_update() {
-				let completion_data = self.try_resume_channel_post_monitor_update(
+				let (completion_data, needs_persist) = self.try_resume_channel_post_monitor_update(
 					&mut peer_state.in_flight_monitor_updates,
 					&mut peer_state.monitor_update_blocked_actions,
 					&mut peer_state.pending_msg_events,
@@ -10689,16 +10715,20 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 				self.handle_post_monitor_update_chan_resume(completion_data);
 				self.handle_holding_cell_free_result(holding_cell_res);
+				needs_persist
 			} else {
 				log_trace!(logger, "Channel is open but not awaiting update");
+				false
 			}
 		} else {
 			let update_actions = peer_state.monitor_update_blocked_actions
 				.remove(channel_id).unwrap_or(Vec::new());
+			let needs_persist = !update_actions.is_empty();
 			log_trace!(logger, "Channel is closed, applying {} post-update actions", update_actions.len());
 			mem::drop(peer_state_lock);
 			mem::drop(per_peer_state);
 			self.handle_monitor_update_completion_actions(update_actions);
+			needs_persist
 		}
 	}
 
@@ -13021,13 +13051,17 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		Ok(())
 	}
 
-	/// Process pending events from the [`chain::Watch`], returning whether any events were processed.
-	fn process_pending_monitor_events(&self) -> bool {
+	/// Process pending events from the [`chain::Watch`], returning the appropriate
+	/// [`NotifyOption`] for persistence and event handling.
+	fn process_pending_monitor_events(&self) -> NotifyOption {
 		debug_assert!(self.total_consistency_lock.try_write().is_err()); // Caller holds read lock
 
 		let mut failed_channels: Vec<(Result<Infallible, _>, _)> = Vec::new();
 		let mut pending_monitor_events = self.chain_monitor.release_pending_monitor_events();
-		let has_pending_monitor_events = !pending_monitor_events.is_empty();
+		if pending_monitor_events.is_empty() {
+			return NotifyOption::SkipPersistNoEvents;
+		}
+		let mut needs_persist = true;
 		for (funding_outpoint, channel_id, mut monitor_events, counterparty_node_id) in
 			pending_monitor_events.drain(..)
 		{
@@ -13139,7 +13173,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						}
 					},
 					MonitorEvent::Completed { channel_id, monitor_update_id, .. } => {
-						self.channel_monitor_updated(
+						needs_persist = self.channel_monitor_updated(
 							&channel_id,
 							Some(monitor_update_id),
 							&counterparty_node_id,
@@ -13153,7 +13187,11 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			let _ = self.handle_error(err, counterparty_node_id);
 		}
 
-		has_pending_monitor_events
+		if needs_persist {
+			NotifyOption::DoPersist
+		} else {
+			NotifyOption::SkipPersistHandleEvents
+		}
 	}
 
 	fn handle_holding_cell_free_result(&self, result: FreeHoldingCellsResult) {
@@ -15179,8 +15217,6 @@ impl<
 	fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> {
 		let events = RefCell::new(Vec::new());
 		PersistenceNotifierGuard::optionally_notify(self, || {
-			let mut result = NotifyOption::SkipPersistNoEvents;
-
 			// This method is quite performance-sensitive. Not only is it called very often, but it
 			// *is* the critical path between generating a message for a peer and giving it to the
 			// `PeerManager` to send. Thus, we should avoid adding any more logic here than we
@@ -15189,9 +15225,7 @@ impl<
 
 			// TODO: This behavior should be documented. It's unintuitive that we query
 			// ChannelMonitors when clearing other events.
-			if self.process_pending_monitor_events() {
-				result = NotifyOption::DoPersist;
-			}
+			let mut result = self.process_pending_monitor_events();
 
 			if self.maybe_generate_initial_closing_signed() {
 				result = NotifyOption::DoPersist;
