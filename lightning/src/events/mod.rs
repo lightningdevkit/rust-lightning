@@ -45,6 +45,7 @@ use crate::util::ser::{
 	UpgradableRequired, WithoutLength, Writeable, Writer,
 };
 
+use crate::chain::channelmonitor::{ClaimInfo, ClaimKey, ClaimMetadata};
 use crate::io;
 use crate::sync::Arc;
 use bitcoin::hashes::sha256::Hash as Sha256;
@@ -1464,6 +1465,10 @@ pub enum Event {
 		funding_txo: Option<OutPoint>,
 		/// The features that this channel will operate with.
 		channel_type: ChannelTypeFeatures,
+		/// The outpoint of the channel's previous funding transaction that was spent by a splice.
+		///
+		/// Will be `None` for initial channel funding (non-splice) events.
+		spent_funding_txo: Option<OutPoint>,
 	},
 	/// Used to indicate that a channel that got past the initial handshake with the given `channel_id` is in the
 	/// process of closure. This includes previously opened channels, and channels that time out from not being funded.
@@ -1668,6 +1673,94 @@ pub enum Event {
 		///
 		/// This field will be `None` only for objects serialized prior to LDK 0.2.0.
 		failure_reason: Option<HTLCHandlingFailureReason>,
+	},
+	/// Indicates that a [`ClaimInfo`] for a specific counterparty commitment transaction must be
+	/// supplied to LDK if available.
+	///
+	/// This event is generated when there is a need for [`ClaimInfo`] that was previously stored
+	/// using [`Event::PersistClaimInfo`] for the specified counterparty commitment transaction.
+	/// This event will not be generated if [`Event::PersistClaimInfo`] event is being ignored.
+	///
+	/// The response to this event should be handled by calling
+	/// [`ChainMonitor::provide_claim_info`] with the [`ClaimInfo`] that was previously stored and
+	/// [`ClaimMetadata`] from this event.
+	///
+	/// # Failure Behavior and Persistence
+	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
+	/// returning `Err(ReplayEvent ())`) and will be persisted across restarts.
+	///
+	/// [`ChainMonitor::provide_claim_info`]: crate::chain::chainmonitor::ChainMonitor::provide_claim_info
+	ClaimInfoRequest {
+		/// The channel's funding outpoint to which this claim pertains. This will match the
+		/// [`Event::PersistClaimInfo::funding_txo`] value for the same `claim_key`.
+		funding_txo: OutPoint,
+		/// The ID of the channel to which this claim pertains. This will match the
+		/// [`Event::PersistClaimInfo::channel_id`] value for the same `claim_key`.
+		channel_id: ChannelId,
+		/// The identifier for which [`ClaimInfo`] is requested.
+		claim_key: ClaimKey,
+		/// Additional metadata that must be supplied in the call to [`ChainMonitor::provide_claim_info`].
+		///
+		/// [`ChainMonitor::provide_claim_info`]: crate::chain::chainmonitor::ChainMonitor::provide_claim_info
+		claim_metadata: ClaimMetadata,
+	},
+	/// Provides a [`ClaimInfo`] that may be persisted separately to reduce [`ChannelMonitor`] size.
+	///
+	/// This event is used to persist information regarding a previous state which may be necessary
+	/// to claim funds if our counterparty broadcasts a stale state. The persisted [`ClaimInfo`]
+	/// may later be requested by LDK with an [`Event::ClaimInfoRequest`].
+	///
+	/// [`ClaimInfo`]s are unique for a given [`claim_key`], however, you should consider storing
+	/// them with a combined key with the [`funding_txo`] and/or [`channel_id`] as well. After a
+	/// splice is irrevocably confirmed on chain, [`ClaimInfo`]s with a [`funding_txo`]
+	/// matching the prior state can be pruned. Similarly, after a channel has been closed and
+	/// resolution irrevocably confirmed on chain, any [`ClaimInfo`]s with a matching
+	/// [`channel_id`] can be pruned.
+	///
+	/// After successfully persisting the claim information, [`ChainMonitor::claim_info_persisted`]
+	/// must be called to notify the system that the data has been durably stored and can be
+	/// removed from the [`ChannelMonitor`].
+	///
+	/// This event can be safely ignored if [`ChannelMonitor`] in-memory and on-disk size is not a
+	/// limitation, such as in a low-traffic node.
+	///
+	/// # Failure Behavior and Persistence
+	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
+	/// returning `Err(ReplayEvent ())`), but won't be persisted across restarts.
+	///
+	/// [`ChannelMonitor`]: crate::chain::channelmonitor::ChannelMonitor
+	/// [`claim_key`]: Event::PersistClaimInfo::claim_key
+	/// [`funding_txo`]: Event::PersistClaimInfo::funding_txo
+	/// [`channel_id`]: Event::PersistClaimInfo::channel_id
+	/// [`ChainMonitor::claim_info_persisted`]: crate::chain::chainmonitor::ChainMonitor::claim_info_persisted
+	/// [`ClaimInfoRequest`]: Event::ClaimInfoRequest
+	PersistClaimInfo {
+		/// The channel's funding outpoint to which this claim pertains.
+		///
+		/// Because a splice confirming invalidates all previous channel states on the prior
+		/// funding outpoint (as those states would double-spend the channel's original funding
+		/// output, now spent by the splice transaction), an [`Event::ChannelReady`] also implies
+		/// any stored [`ClaimInfo`]s with a `funding_txo` matching
+		/// [`Event::ChannelReady::spent_funding_txo`] can be pruned. Further, an
+		/// [`Event::SpliceFailed`] with a matching [`Event::SpliceFailed::abandoned_funding_txo`]
+		/// can be pruned as they represent states on a splicing RBF attempt which has now been
+		/// cancelled.
+		funding_txo: OutPoint,
+		/// The ID of the channel to which this claim pertains. After the channel is closed and
+		/// fully resolved onchain (i.e. [`ChannelMonitor::get_claimable_balances`] for the
+		/// corresponding [`ChannelMonitor`] returns an empty set), any stored [`ClaimInfo`]s with
+		/// a matching `channel_id` can be pruned.
+		///
+		/// [`ChannelMonitor::get_claimable_balances`]: crate::chain::channelmonitor::ChannelMonitor::get_claimable_balances
+		/// [`ChannelMonitor`]: crate::chain::channelmonitor::ChannelMonitor
+		channel_id: ChannelId,
+		/// The identifier against which [`ClaimInfo`] is to be persisted.
+		claim_key: ClaimKey,
+		/// Claim related information necessary to generate revocation transactions, that must be durably
+		/// persisted before calling [`ChainMonitor::claim_info_persisted`].
+		///
+		/// [`ChainMonitor::claim_info_persisted`]: crate::chain::chainmonitor::ChainMonitor::claim_info_persisted
+		claim_info: ClaimInfo,
 	},
 	/// Indicates that a transaction originating from LDK needs to have its fee bumped. This event
 	/// requires confirmed external funds to be readily available to spend.
@@ -2223,12 +2316,14 @@ impl Writeable for Event {
 				ref counterparty_node_id,
 				ref funding_txo,
 				ref channel_type,
+				ref spent_funding_txo,
 			} => {
 				29u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(0, channel_id, required),
 					(1, funding_txo, option),
 					(2, user_channel_id, required),
+					(3, spent_funding_txo, option),
 					(4, counterparty_node_id, required),
 					(6, channel_type, required),
 				});
@@ -2342,6 +2437,24 @@ impl Writeable for Event {
 					(7, counterparty_node_id, required),
 					(9, abandoned_funding_txo, option),
 				});
+			},
+			&Event::ClaimInfoRequest {
+				ref funding_txo,
+				ref channel_id,
+				ref claim_key,
+				ref claim_metadata,
+			} => {
+				54u8.write(writer)?;
+				write_tlv_fields!(writer, {
+					(1, funding_txo, required),
+					(3, channel_id, required),
+					(5, claim_key, required),
+					(7, claim_metadata, required),
+				});
+			},
+			&Event::PersistClaimInfo { .. } => {
+				55u8.write(writer)?;
+				// We don't write `PersistClaimInfo` because it is ok if we lost it, and it may be replayed.
 			},
 			// Note that, going forward, all new events must only write data inside of
 			// `write_tlv_fields`. Versions 0.0.101+ will ignore odd-numbered events that write
@@ -2805,10 +2918,12 @@ impl MaybeReadable for Event {
 					let mut counterparty_node_id = RequiredWrapper(None);
 					let mut funding_txo = None;
 					let mut channel_type = RequiredWrapper(None);
+					let mut spent_funding_txo = None;
 					read_tlv_fields!(reader, {
 						(0, channel_id, required),
 						(1, funding_txo, option),
 						(2, user_channel_id, required),
+						(3, spent_funding_txo, option),
 						(4, counterparty_node_id, required),
 						(6, channel_type, required),
 					});
@@ -2819,6 +2934,7 @@ impl MaybeReadable for Event {
 						counterparty_node_id: counterparty_node_id.0.unwrap(),
 						funding_txo,
 						channel_type: channel_type.0.unwrap(),
+						spent_funding_txo,
 					}))
 				};
 				f()
@@ -2980,6 +3096,26 @@ impl MaybeReadable for Event {
 				};
 				f()
 			},
+			54u8 => {
+				let mut f = || {
+					_init_and_read_len_prefixed_tlv_fields!(reader, {
+						(1, funding_txo, required),
+						(3, channel_id, required),
+						(5, claim_key, required),
+						(7, claim_metadata, required),
+					});
+
+					Ok(Some(Event::ClaimInfoRequest {
+						funding_txo: funding_txo.0.unwrap(),
+						channel_id: channel_id.0.unwrap(),
+						claim_key: claim_key.0.unwrap(),
+						claim_metadata: claim_metadata.0.unwrap(),
+					}))
+				};
+				f()
+			},
+			// Note that we do not write a length-prefixed TLV for PersistClaimInfo events.
+			55u8 => Ok(None),
 			// Versions prior to 0.0.100 did not ignore odd types, instead returning InvalidValue.
 			// Version 0.0.100 failed to properly ignore odd types, possibly resulting in corrupt
 			// reads.

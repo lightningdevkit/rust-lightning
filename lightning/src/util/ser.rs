@@ -27,6 +27,7 @@ use alloc::collections::BTreeMap;
 
 use bitcoin::absolute::LockTime as AbsoluteLockTime;
 use bitcoin::amount::{Amount, SignedAmount};
+use bitcoin::block::Header;
 use bitcoin::consensus::Encodable;
 use bitcoin::constants::ChainHash;
 use bitcoin::hash_types::{BlockHash, Txid};
@@ -1098,6 +1099,7 @@ impl_for_vec!(crate::ln::channelmanager::MonitorUpdateCompletionAction);
 impl_for_vec!(crate::ln::channelmanager::PaymentClaimDetails);
 impl_for_vec!(crate::ln::msgs::SocketAddress);
 impl_for_vec!((A, B), A, B);
+impl_for_vec!((A, B, C), A, B, C);
 impl_for_vec!(SerialId);
 impl_for_vec!(TxInMetadata);
 impl_for_vec!(TxOutMetadata);
@@ -1532,6 +1534,7 @@ impl_consensus_ser!(TxIn);
 impl_consensus_ser!(TxOut);
 impl_consensus_ser!(Witness);
 impl_consensus_ser!(Sequence);
+impl_consensus_ser!(Header);
 
 impl<T: Readable> Readable for Mutex<T> {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {

@@ -328,6 +328,62 @@ pub const ARCHIVAL_DELAY_BLOCKS: u32 = 4032;
 /// providing us the preimage (which would claim it).
 pub const HTLC_FAIL_BACK_BUFFER: u32 = CLTV_CLAIM_BUFFER + LATENCY_GRACE_PERIOD_BLOCKS;
 
+/// An opaque key used with the [`ChannelId`] to identify a [`ClaimMetadata`].
+///
+/// This type is used in [`Event::PersistClaimInfo`] and [`Event::ClaimInfoRequest`] to
+/// associate persisted [`ClaimInfo`] with the correct commitment transaction.
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+#[cfg_attr(test, derive(PartialOrd, Ord))]
+pub struct ClaimKey(pub(crate) Txid);
+
+impl Writeable for ClaimKey {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		0u8.write(writer)?;
+		self.0.write(writer)
+	}
+}
+
+impl Readable for ClaimKey {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		let version: u8 = Readable::read(reader)?;
+		if version != 0 {
+			return Err(DecodeError::UnknownRequiredFeature);
+		}
+		Ok(Self(Readable::read(reader)?))
+	}
+}
+
+/// Metadata associated with an [`Event::ClaimInfoRequest`] which allows the operation to continue
+/// after calling [`ChainMonitor::provide_claim_info`].
+///
+/// [`ChainMonitor::provide_claim_info`]: super::chainmonitor::ChainMonitor::provide_claim_info
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClaimMetadata {
+	/// The [`BlockHash`] of the block containing [`Self::tx`].
+	pub(crate) block_hash: BlockHash,
+	/// The counterparty commitment transaction for which a claim might be necessary.
+	pub(crate) tx: Transaction,
+	/// The height of the block in which the commitment transaction is included.
+	pub(crate) height: u32,
+}
+
+impl_writeable_tlv_based!(ClaimMetadata, {
+	(1, block_hash, required),
+	(3, tx, required),
+	(5, height, required),
+});
+
+/// Represents detailed information about HTLCs in a commitment transaction that can be claimed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClaimInfo {
+	/// A list of HTLC outputs for the commitment transaction that are eligible for claiming.
+	pub(crate) htlcs: Vec<HTLCOutputInCommitment>,
+}
+
+impl_writeable_tlv_based!(ClaimInfo, {
+	(1, htlcs, required_vec),
+});
+
 // Deprecated, use [`HolderCommitment`] or [`HolderCommitmentTransaction`].
 #[derive(Clone, PartialEq, Eq)]
 struct HolderSignedTx {
@@ -955,6 +1011,26 @@ pub enum Balance {
 		/// were already spent.
 		amount_satoshis: u64,
 	},
+	/// The channel has been closed, and our counterparty broadcasted a revoked commitment
+	/// transaction. However, the claim information for this commitment transaction has been
+	/// offloaded via [`Event::PersistClaimInfo`] and has not yet been re-provided in response to
+	/// an [`Event::ClaimInfoRequest`].
+	///
+	/// Once the claim information is provided via [`ChainMonitor::provide_claim_info`], this
+	/// balance will be replaced by one or more [`Balance::CounterpartyRevokedOutputClaimable`]
+	/// entries representing the specific outputs we can claim.
+	///
+	/// The non-HTLC balance for the revoked commitment (i.e., the counterparty's to_self output)
+	/// may still appear as a separate [`Balance::CounterpartyRevokedOutputClaimable`] or
+	/// [`Balance::ClaimableAwaitingConfirmations`] alongside this balance.
+	///
+	/// [`Event::PersistClaimInfo`]: crate::events::Event::PersistClaimInfo
+	/// [`Event::ClaimInfoRequest`]: crate::events::Event::ClaimInfoRequest
+	/// [`ChainMonitor::provide_claim_info`]: crate::chain::chainmonitor::ChainMonitor::provide_claim_info
+	CounterpartyRevokedOutputClaimableAwaitingClaimInfo {
+		/// The identifier for which claim information is being requested.
+		claim_key: ClaimKey,
+	},
 }
 
 impl Balance {
@@ -995,7 +1071,8 @@ impl Balance {
 				=> *amount_satoshis,
 			Balance::MaybeTimeoutClaimableHTLC { amount_satoshis, outbound_payment, .. }
 				=> if *outbound_payment { 0 } else { *amount_satoshis },
-			Balance::MaybePreimageClaimableHTLC { .. } => 0,
+			Balance::MaybePreimageClaimableHTLC { .. }
+			| Balance::CounterpartyRevokedOutputClaimableAwaitingClaimInfo { .. } => 0,
 		}
 	}
 }
@@ -1151,6 +1228,14 @@ struct FundingScope {
 	/// The set of outpoints in each counterparty commitment transaction. We always need at least
 	/// the payment hash from `HTLCOutputInCommitment` to claim even a revoked commitment
 	/// transaction broadcast as we need to be able to construct the witness script in all cases.
+	///
+	/// Note that for revoked commitment transactions, the `per_commitment_data` (the `Option` in
+	/// the value tuple) may be `None` if the claim info was offloaded via
+	/// [`Event::PersistClaimInfo`] and removed after [`ChainMonitor::claim_info_persisted`] was
+	/// called. In that case, an [`Event::ClaimInfoRequest`] will be emitted when the data is
+	/// needed.
+	///
+	/// [`ChainMonitor::claim_info_persisted`]: crate::chain::chainmonitor::ChainMonitor::claim_info_persisted
 	//
 	// TODO(splicing): We shouldn't have to track these duplicatively per `FundingScope`. Ideally,
 	// we have a global map to track the HTLCs, along with their source, as they should be
@@ -1348,6 +1433,11 @@ pub(crate) struct ChannelMonitorImpl<Signer: EcdsaChannelSigner> {
 	/// revoked remote outpoint we otherwise have no tracking at all once they've reached
 	/// [`ANTI_REORG_DELAY`], so we have to track them here.
 	spendable_txids_confirmed: Vec<Txid>,
+
+	/// Transactions confirmed spending a counterparty commitment while awaiting a call to
+	/// [`Self::provide_claim_info`].
+	/// Replayed through [`Self::transactions_confirmed`] once claim info is provided.
+	pending_claim_info_txn: Vec<(Transaction, u32, Header)>,
 
 	// We simply modify best_block in Channel's block_connected so that serialization is
 	// consistent but hopefully the users' copy handles block_connected in a consistent way.
@@ -1755,6 +1845,7 @@ pub(crate) fn write_chanmon_internal<Signer: EcdsaChannelSigner, W: Writer>(
 		(34, channel_monitor.alternative_funding_confirmed, option),
 		(35, channel_monitor.is_manual_broadcast, required),
 		(37, channel_monitor.funding_seen_onchain, required),
+		(38, channel_monitor.pending_claim_info_txn, required),
 	});
 
 	Ok(())
@@ -1955,6 +2046,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 			htlcs_resolved_on_chain: Vec::new(),
 			htlcs_resolved_to_user: new_hash_set(),
 			spendable_txids_confirmed: Vec::new(),
+			pending_claim_info_txn: Vec::new(),
 
 			best_block,
 			counterparty_node_id: counterparty_node_id,
@@ -2155,6 +2247,32 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		self.inner.lock().unwrap().get_and_clear_pending_monitor_events()
 	}
 
+	/// Notifies the system that [`ClaimInfo`] associated with a given `claim_key` has been durably
+	/// persisted.
+	///
+	/// This method should be called after a [`ClaimInfo`] is persisted in response to an
+	/// [`Event::PersistClaimInfo`]. The [`ClaimInfo`] will thus be removed from both in-memory and
+	/// on-disk storage within the [`ChannelMonitor`].
+	pub fn claim_info_persisted(&self, claim_key: &ClaimKey) {
+		self.inner.lock().unwrap().claim_info_persisted(&claim_key.0);
+	}
+
+	pub(crate) fn provide_claim_info<B: BroadcasterInterface, F: FeeEstimator, L: Logger>(
+		&self, claim_key: ClaimKey, claim_metadata: ClaimMetadata, claim_info: ClaimInfo,
+		broadcaster: &B, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
+	) {
+		let mut inner = self.inner.lock().unwrap();
+		let logger = WithChannelMonitor::from_impl(logger, &*inner, None);
+		inner.provide_claim_info(
+			claim_key,
+			claim_metadata,
+			claim_info,
+			broadcaster,
+			fee_estimator,
+			&logger,
+		);
+	}
+
 	/// Processes [`SpendableOutputs`] events produced from each [`ChannelMonitor`] upon maturity.
 	///
 	/// For channels featuring anchor outputs, this method will also process [`BumpTransaction`]
@@ -2201,6 +2319,21 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		mem::swap(&mut ret, &mut lck.pending_events);
 		ret.append(&mut lck.get_repeated_events());
 		ret
+	}
+
+	#[cfg(any(test, feature = "_test_utils"))]
+	pub fn get_and_clear_claim_info_events(&self) -> Vec<Event> {
+		let mut res = Vec::new();
+		let mut inner = self.inner.lock().unwrap();
+		inner.pending_events.retain(|ev| {
+			if let Event::PersistClaimInfo { .. } = ev {
+				res.push(ev.clone());
+				false
+			} else {
+				true
+			}
+		});
+		res
 	}
 
 	/// Gets the counterparty's initial commitment transaction. The returned commitment
@@ -2346,6 +2479,17 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		let mut inner = self.inner.lock().unwrap();
 		let logger = WithChannelMonitor::from_impl(logger, &*inner, None);
 		inner.unsafe_get_latest_holder_commitment_txn(&logger)
+	}
+
+	/// Like [`Self::unsafe_get_latest_holder_commitment_txn`] but returns the commitment
+	/// transaction for the confirmed funding scope (which may be a splice/alternative funding).
+	#[cfg(any(test, feature = "_test_utils"))]
+	pub fn unsafe_get_latest_holder_commitment_txn_for_confirmed_scope<L: Logger>(
+		&self, logger: &L,
+	) -> Vec<Transaction> {
+		let mut inner = self.inner.lock().unwrap();
+		let logger = WithChannelMonitor::from_impl(logger, &*inner, None);
+		inner.unsafe_get_latest_holder_commitment_txn_for_confirmed_scope(&logger)
 	}
 
 	/// Processes transactions in a newly connected block, which may result in any of the following:
@@ -2892,7 +3036,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		if let Some(txid) = confirmed_txid {
 			let funding_spent = get_confirmed_funding_scope!(us);
 			let mut found_commitment_tx = false;
-			if let Some(counterparty_tx_htlcs) = funding_spent.counterparty_claimable_outpoints.get(&txid) {
+			if us.counterparty_commitment_txn_on_chain.contains_key(&txid) {
 				// First look for the to_remote output back to us.
 				if let Some(conf_thresh) = pending_commitment_tx_conf_thresh {
 					if let Some(value) = us.onchain_events_awaiting_threshold_conf.iter().find_map(|event| {
@@ -2913,10 +3057,20 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 						// confirmation with the same height or have never met our dust amount.
 					}
 				}
+				let counterparty_tx_htlcs_opt =
+					funding_spent.counterparty_claimable_outpoints.get(&txid);
 				if Some(txid) == funding_spent.current_counterparty_commitment_txid || Some(txid) == funding_spent.prev_counterparty_commitment_txid {
+					let counterparty_tx_htlcs = counterparty_tx_htlcs_opt
+						.expect("We must always have state for our counterparty's latest and previous commitment tx, especially since it's on chain");
 					walk_htlcs!(false, false, counterparty_tx_htlcs.iter().map(|(a, b)| (a, b.as_ref().map(|b| &**b))));
 				} else {
-					walk_htlcs!(false, true, counterparty_tx_htlcs.iter().map(|(a, b)| (a, b.as_ref().map(|b| &**b))));
+					if let Some(counterparty_tx_htlcs) = counterparty_tx_htlcs_opt {
+						walk_htlcs!(false, true, counterparty_tx_htlcs.iter().map(|(a, b)| (a, b.as_ref().map(|b| &**b))));
+					} else {
+						res.push(Balance::CounterpartyRevokedOutputClaimableAwaitingClaimInfo {
+							claim_key: ClaimKey(txid),
+						});
+					}
 					// The counterparty broadcasted a revoked state!
 					// Look for any StaticOutputs first, generating claimable balances for those.
 					// If any match the confirmed counterparty revoked to_self output, skip
@@ -3430,6 +3584,13 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				} else {
 					assert!(cfg!(fuzzing), "Commitment txids are unique outside of fuzzing, where hashes can collide");
 				}
+				let htlcs = funding.counterparty_claimable_outpoints.get(&txid).unwrap().iter().map(|(htlc, _)| htlc.clone()).collect();
+				self.pending_events.push(Event::PersistClaimInfo {
+					funding_txo: funding.funding_outpoint().into_bitcoin_outpoint(),
+					channel_id: self.channel_id,
+					claim_key: ClaimKey(txid),
+					claim_info: ClaimInfo { htlcs },
+				})
 			}
 		};
 		core::iter::once(&mut self.funding).chain(&mut self.pending_funding).for_each(prune_htlc_sources);
@@ -4374,6 +4535,85 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		ret
 	}
 
+	fn claim_info_persisted(&mut self, txid: &Txid) {
+		core::iter::once(&mut self.funding).chain(self.pending_funding.iter_mut()).for_each(
+			|funding| {
+				funding.counterparty_claimable_outpoints.remove(txid);
+			},
+		);
+	}
+
+	fn provide_claim_info<B: BroadcasterInterface, F: FeeEstimator, L: Logger>(
+		&mut self, claim_key: ClaimKey, claim_metadata: ClaimMetadata, claim_info: ClaimInfo,
+		broadcaster: &B, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &WithContext<L>,
+	) {
+		let txid = claim_key.0;
+		let claimable_outpoints: Vec<_> =
+			claim_info.htlcs.into_iter().zip(core::iter::repeat(None)).collect();
+		let funding = self
+			.alternative_funding_confirmed
+			.and_then(|(alt_txid, _)| {
+				self.pending_funding.iter_mut().find(|f| f.funding_txid() == alt_txid)
+			})
+			.unwrap_or(&mut self.funding);
+		funding.counterparty_claimable_outpoints.insert(txid, claimable_outpoints);
+
+		// First replay the commitment transaction itself, generating the claimable packages for it.
+		let (claimable_outpoints, _) = self.check_spend_counterparty_transaction(
+			txid,
+			&claim_metadata.tx,
+			claim_metadata.height,
+			&claim_metadata.block_hash,
+			logger,
+		);
+
+		// Then filter the new claimable packages by transactions that have already been spent
+		// on-chain (which we'll replay in a moment) and give them to the onchain_tx_handler.
+		let buffered_txn = core::mem::take(&mut self.pending_claim_info_txn);
+		let already_spent: HashSet<_> = buffered_txn
+			.iter()
+			.flat_map(|(tx, _, _)| {
+				tx.input
+					.iter()
+					.filter(|inp| inp.previous_output.txid == txid)
+					.map(|inp| inp.previous_output)
+			})
+			.collect();
+
+		let claimable_outpoints = claimable_outpoints
+			.into_iter()
+			.filter(|package| {
+				debug_assert_eq!(package.outpoints().len(), 1);
+				!package.outpoints().iter().any(|outp| already_spent.contains(*outp))
+			})
+			.collect();
+
+		let conf_target = self.closure_conf_target();
+		self.onchain_tx_handler.update_claims_view_from_requests(
+			claimable_outpoints,
+			claim_metadata.height,
+			self.best_block.height,
+			broadcaster,
+			conf_target,
+			&self.destination_script,
+			fee_estimator,
+			logger,
+		);
+
+		// Finally, replay all the transactions which spent the commitment transaction on-chain.
+		for (tx, buf_height, buf_header) in buffered_txn {
+			let txdata = [(0usize, &tx)];
+			self.transactions_confirmed(
+				&buf_header,
+				&txdata,
+				buf_height,
+				broadcaster,
+				fee_estimator,
+				logger,
+			);
+		}
+	}
+
 	/// Gets the set of events that are repeated regularly (e.g. those which RBF bump
 	/// transactions). We're okay if we lose these on restart as they'll be regenerated for us at
 	/// some regular interval via [`ChannelMonitor::rebroadcast_pending_claims`].
@@ -4585,8 +4825,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	/// height > height + CLTV_SHARED_CLAIM_BUFFER. In any case, will install monitoring for
 	/// HTLC-Success/HTLC-Timeout transactions.
 	///
-	/// Returns packages to claim the revoked output(s) and general information about the output that
-	/// is to the counterparty in the commitment transaction.
+	/// Returns unmerged (i.e. single-claim) packages to claim the revoked output(s) and general
+	/// information about the output that is to the counterparty in the commitment transaction.
 	#[rustfmt::skip]
 	fn check_spend_counterparty_transaction<L: Logger>(&mut self, commitment_txid: Txid, commitment_tx: &Transaction, height: u32, block_hash: &BlockHash, logger: &L)
 		-> (Vec<PackageTemplate>, CommitmentTxCounterpartyOutputInfo)
@@ -4667,6 +4907,17 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						claimable_outpoints.push(justice_package);
 					}
 				}
+			} else {
+				self.pending_events.push(Event::ClaimInfoRequest {
+					funding_txo: funding_spent.funding_outpoint().into_bitcoin_outpoint(),
+					channel_id: self.channel_id,
+					claim_key: ClaimKey(commitment_txid),
+					claim_metadata: ClaimMetadata {
+						block_hash: block_hash.clone(),
+						tx: commitment_tx.clone(),
+						height,
+					},
+				});
 			}
 
 			// Last, track onchain revoked commitment transaction and fail backward outgoing HTLCs as payment path is broken
@@ -4680,14 +4931,6 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						block_hash, per_commitment_claimable_data.iter().map(|(htlc, htlc_source)|
 							(htlc, htlc_source.as_ref().map(|htlc_source| htlc_source.as_ref()))
 						), logger);
-				} else {
-					// Our fuzzers aren't constrained by pesky things like valid signatures, so can
-					// spend our funding output with a transaction which doesn't match our past
-					// commitment transactions. Thus, we can only debug-assert here when not
-					// fuzzing.
-					debug_assert!(cfg!(fuzzing), "We should have per-commitment option for any recognized old commitment txn");
-					fail_unbroadcast_htlcs!(self, "revoked counterparty", commitment_txid, commitment_tx, height,
-						block_hash, [].iter().map(|reference| *reference), logger);
 				}
 			}
 		} else if let Some(per_commitment_claimable_data) = per_commitment_option {
@@ -4713,6 +4956,11 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			for req in htlc_claim_reqs {
 				claimable_outpoints.push(req);
 			}
+		}
+
+		// provide_claim_info relies on this:
+		for claimable in claimable_outpoints.iter() {
+			debug_assert_eq!(claimable.outpoints().len(), 1);
 		}
 
 		(claimable_outpoints, to_counterparty_output_info)
@@ -4889,7 +5137,13 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		let per_commitment_point = PublicKey::from_secret_key(&self.onchain_tx_handler.secp_ctx, &per_commitment_key);
 
 		let funding_spent = get_confirmed_funding_scope!(self);
-		debug_assert!(funding_spent.counterparty_claimable_outpoints.contains_key(commitment_txid));
+		// The counterparty_claimable_outpoints entry may not exist if the claim info was
+		// offloaded via `claim_info_persisted` and not yet re-provided. The HTLC justice
+		// claim only requires the per-commitment key, not the full claim info.
+		debug_assert!(
+			funding_spent.counterparty_claimable_outpoints.contains_key(commitment_txid)
+				|| self.counterparty_commitment_txn_on_chain.contains_key(commitment_txid)
+		);
 
 		let htlc_txid = tx.compute_txid();
 		let mut claimable_outpoints = vec![];
@@ -5212,6 +5466,32 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		holder_transactions
 	}
 
+	/// Like [`Self::unsafe_get_latest_holder_commitment_txn`] but returns the commitment
+	/// transaction for the confirmed funding scope (which may be a splice/alternative funding).
+	#[cfg(any(test, feature = "_test_utils"))]
+	fn unsafe_get_latest_holder_commitment_txn_for_confirmed_scope<L: Logger>(
+		&mut self, logger: &WithContext<L>,
+	) -> Vec<Transaction> {
+		log_debug!(
+			logger,
+			"Getting signed copy of latest holder commitment transaction for confirmed scope!"
+		);
+		let funding = get_confirmed_funding_scope!(self);
+		let sig = self
+			.onchain_tx_handler
+			.signer
+			.unsafe_sign_holder_commitment(
+				&funding.channel_parameters,
+				&funding.current_holder_commitment_tx,
+				&self.onchain_tx_handler.secp_ctx,
+			)
+			.expect("sign holder commitment");
+		let redeem_script = funding.channel_parameters.make_funding_redeemscript();
+		let commitment_tx =
+			funding.current_holder_commitment_tx.add_holder_sig(&redeem_script, sig);
+		vec![commitment_tx]
+	}
+
 	#[rustfmt::skip]
 	fn block_connected<B: BroadcasterInterface, F: FeeEstimator, L: Logger>(
 		&mut self, header: &Header, txdata: &TransactionData, height: u32, broadcaster: B,
@@ -5243,6 +5523,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			self.best_block = BestBlock::new(block_hash, height);
 			log_trace!(logger, "Best block re-orged, replaced with new block {} at height {}", block_hash, height);
 			self.onchain_events_awaiting_threshold_conf.retain(|ref entry| entry.height <= height);
+			self.pending_claim_info_txn.retain(|(_, h, _)| *h <= height);
 			let conf_target = self.closure_conf_target();
 			self.onchain_tx_handler.blocks_disconnected(
 				height, &broadcaster, conf_target, &self.destination_script, fee_estimator, logger,
@@ -5504,6 +5785,22 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					}
 				}
 				self.is_resolving_htlc_output(&tx, height, &block_hash, logger);
+
+				// If any input of this transaction spends a revoked counterparty
+				// commitment output whose claim info hasn't been provided yet, buffer
+				// the transaction so we can replay it through
+				// `is_resolving_htlc_output` once claim info arrives.
+				for tx_input in &tx.input {
+					let commitment_txid = tx_input.previous_output.txid;
+					if self.counterparty_commitment_txn_on_chain.contains_key(&commitment_txid) {
+						let funding = get_confirmed_funding_scope!(self);
+						if !funding.counterparty_claimable_outpoints.contains_key(&commitment_txid) {
+							self.pending_claim_info_txn
+								.push(((*tx).clone(), height, *header));
+							break;
+						}
+					}
+				}
 
 				self.check_tx_and_push_spendable_outputs(&tx, height, &block_hash, logger);
 			}
@@ -5768,6 +6065,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		//- htlc update there as failure-trigger tx (revoked commitment tx, non-revoked commitment tx, HTLC-timeout tx) has been disconnected
 		//- maturing spendable output has transaction paying us has been disconnected
 		self.onchain_events_awaiting_threshold_conf.retain(|ref entry| entry.height <= new_height);
+		self.pending_claim_info_txn.retain(|(_, h, _)| *h <= new_height);
 
 		// TODO: Replace with `take_if` once our MSRV is >= 1.80.
 		let mut should_broadcast_commitment = false;
@@ -5823,6 +6121,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				log_info!(logger, "Transaction {} reorg'd out", entry.txid);
 				false
 			} else { true });
+			self.pending_claim_info_txn.retain(|(_, h, _)| *h < removed_height);
 		}
 
 		debug_assert!(!self.onchain_events_awaiting_threshold_conf.iter().any(|ref entry| entry.txid == *txid));
@@ -6521,6 +6820,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		let mut alternative_funding_confirmed = None;
 		let mut is_manual_broadcast = RequiredWrapper(None);
 		let mut funding_seen_onchain = RequiredWrapper(None);
+		let mut pending_claim_info_txn: Option<Vec<(Transaction, u32, Header)>> = None;
 		read_tlv_fields!(reader, {
 			(1, funding_spend_confirmed, option),
 			(3, htlcs_resolved_on_chain, optional_vec),
@@ -6543,6 +6843,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			(34, alternative_funding_confirmed, option),
 			(35, is_manual_broadcast, (default_value, false)),
 			(37, funding_seen_onchain, (default_value, true)),
+			(38, pending_claim_info_txn, option),
 		});
 		// Note that `payment_preimages_with_info` was added (and is always written) in LDK 0.1, so
 		// we can use it to determine if this monitor was last written by LDK 0.1 or later.
@@ -6709,6 +7010,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			htlcs_resolved_on_chain: htlcs_resolved_on_chain.unwrap(),
 			htlcs_resolved_to_user: htlcs_resolved_to_user.unwrap(),
 			spendable_txids_confirmed: spendable_txids_confirmed.unwrap(),
+			pending_claim_info_txn: pending_claim_info_txn.unwrap_or_default(),
 
 			best_block,
 			counterparty_node_id: counterparty_node_id.unwrap_or(dummy_node_id),

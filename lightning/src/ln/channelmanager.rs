@@ -3272,6 +3272,7 @@ macro_rules! emit_initial_channel_ready_event {
 						.get_funding_txo()
 						.map(|outpoint| outpoint.into_bitcoin_outpoint()),
 					channel_type: $channel.funding.get_channel_type().clone(),
+					spent_funding_txo: None,
 				},
 				None,
 			));
@@ -12969,6 +12970,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 										splice_promotion.funding_txo.into_bitcoin_outpoint(),
 									),
 									channel_type: chan.funding.get_channel_type().clone(),
+									spent_funding_txo: splice_promotion.spent_funding_txo,
 								},
 								None,
 							));
@@ -15476,7 +15478,13 @@ impl<
 
 pub(super) enum FundingConfirmedMessage {
 	Establishment(msgs::ChannelReady),
-	Splice(msgs::SpliceLocked, Option<OutPoint>, Option<ChannelMonitorUpdate>, Vec<FundingInfo>),
+	Splice(
+		msgs::SpliceLocked,
+		Option<OutPoint>,
+		Option<ChannelMonitorUpdate>,
+		Vec<FundingInfo>,
+		Option<bitcoin::OutPoint>,
+	),
 }
 
 impl<
@@ -15551,7 +15559,7 @@ impl<
 											log_trace!(logger, "Sending channel_ready WITHOUT channel_update");
 										}
 									},
-									Some(FundingConfirmedMessage::Splice(splice_locked, funding_txo, monitor_update_opt, discarded_funding)) => {
+									Some(FundingConfirmedMessage::Splice(splice_locked, funding_txo, monitor_update_opt, discarded_funding, spent_funding_txo)) => {
 										let counterparty_node_id = funded_channel.context.get_counterparty_node_id();
 										let channel_id = funded_channel.context.channel_id();
 
@@ -15579,6 +15587,7 @@ impl<
 												counterparty_node_id,
 												funding_txo: Some(funding_txo.into_bitcoin_outpoint()),
 												channel_type: funded_channel.funding.get_channel_type().clone(),
+												spent_funding_txo,
 											}, None));
 											discarded_funding.into_iter().for_each(|funding_info| {
 												let event = Event::DiscardFunding {
@@ -21250,7 +21259,7 @@ pub mod bench {
 
 		let seed_a = [1u8; 32];
 		let keys_manager_a = KeysManager::new(&seed_a, 42, 42, true);
-		let chain_monitor_a = ChainMonitor::new(None, &tx_broadcaster, &logger_a, &fee_estimator, &persister_a, &keys_manager_a, keys_manager_a.get_peer_storage_key());
+		let chain_monitor_a = ChainMonitor::new(None, &tx_broadcaster, &logger_a, &fee_estimator, &persister_a, &keys_manager_a, keys_manager_a.get_peer_storage_key(), false);
 		let node_a = ChannelManager::new(&fee_estimator, &chain_monitor_a, &tx_broadcaster, &router, &message_router, &logger_a, &keys_manager_a, &keys_manager_a, &keys_manager_a, config.clone(), ChainParameters {
 			network,
 			best_block: BestBlock::from_network(network),
@@ -21260,7 +21269,7 @@ pub mod bench {
 		let logger_b = test_utils::TestLogger::with_id("node a".to_owned());
 		let seed_b = [2u8; 32];
 		let keys_manager_b = KeysManager::new(&seed_b, 42, 42, true);
-		let chain_monitor_b = ChainMonitor::new(None, &tx_broadcaster, &logger_a, &fee_estimator, &persister_b, &keys_manager_b, keys_manager_b.get_peer_storage_key());
+		let chain_monitor_b = ChainMonitor::new(None, &tx_broadcaster, &logger_a, &fee_estimator, &persister_b, &keys_manager_b, keys_manager_b.get_peer_storage_key(), false);
 		let node_b = ChannelManager::new(&fee_estimator, &chain_monitor_b, &tx_broadcaster, &router, &message_router, &logger_b, &keys_manager_b, &keys_manager_b, &keys_manager_b, config.clone(), ChainParameters {
 			network,
 			best_block: BestBlock::from_network(network),
