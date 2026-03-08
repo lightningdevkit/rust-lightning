@@ -121,6 +121,13 @@ pub struct AvailableBalances {
 	pub next_outbound_htlc_limit_msat: u64,
 	/// The minimum value we can assign to the next outbound HTLC
 	pub next_outbound_htlc_minimum_msat: u64,
+	/// The current total dust exposure on this channel, in millisatoshis.
+	///
+	/// This is the maximum of the dust exposure on the holder and counterparty commitment
+	/// transactions, and includes both the value of all pending HTLCs that are below the dust
+	/// threshold as well as any excess commitment transaction fees that contribute to dust
+	/// exposure.
+	pub dust_exposure_msat: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -12577,6 +12584,7 @@ where
 				next_outbound_htlc_minimum_msat: acc
 					.next_outbound_htlc_minimum_msat
 					.max(e.next_outbound_htlc_minimum_msat),
+				dust_exposure_msat: acc.dust_exposure_msat.max(e.dust_exposure_msat),
 			})
 		})
 	}
