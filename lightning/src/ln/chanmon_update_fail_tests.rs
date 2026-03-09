@@ -3904,11 +3904,28 @@ fn do_test_durable_preimages_on_closed_channel(
 	}
 	if !close_chans_before_reload {
 		check_closed_broadcast(&nodes[1], 1, false);
-		let reason = ClosureReason::CommitmentTxConfirmed;
-		check_closed_event(&nodes[1], 1, reason, &[node_a_id], 100000);
+		// When hold=false, get_and_clear_pending_events also triggers
+		// process_background_events (replaying the preimage and force-close updates)
+		// and resolves the deferred completions, firing PaymentForwarded alongside
+		// ChannelClosed. When hold=true, only ChannelClosed fires.
+		let evs = nodes[1].node.get_and_clear_pending_events();
+		let expected = if hold_post_reload_mon_update { 1 } else { 2 };
+		assert_eq!(evs.len(), expected, "{:?}", evs);
+		assert!(evs.iter().any(|e| matches!(
+			e,
+			Event::ChannelClosed { reason: ClosureReason::CommitmentTxConfirmed, .. }
+		)));
+		if !hold_post_reload_mon_update {
+			assert!(evs.iter().any(|e| matches!(e, Event::PaymentForwarded { .. })));
+			check_added_monitors(&nodes[1], mons_added);
+		}
 	}
 	nodes[1].node.timer_tick_occurred();
-	check_added_monitors(&nodes[1], mons_added);
+	// For !close_chans_before_reload && !hold, background events were already replayed
+	// during get_and_clear_pending_events above, so timer_tick adds no monitors.
+	let expected_mons =
+		if !close_chans_before_reload && !hold_post_reload_mon_update { 0 } else { mons_added };
+	check_added_monitors(&nodes[1], expected_mons);
 
 	// Finally, check that B created a payment preimage transaction and close out the payment.
 	let bs_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
@@ -3923,44 +3940,61 @@ fn do_test_durable_preimages_on_closed_channel(
 	check_closed_broadcast(&nodes[0], 1, false);
 	expect_payment_sent(&nodes[0], payment_preimage, None, true, true);
 
+	if close_chans_before_reload && !hold_post_reload_mon_update {
+		// For close_chans_before_reload with hold=false, the deferred completions
+		// haven't been processed yet. Trigger process_pending_monitor_events now.
+		let _ = nodes[1].node.get_and_clear_pending_msg_events();
+		check_added_monitors(&nodes[1], 0);
+	}
+
 	if !close_chans_before_reload || close_only_a {
 		// Make sure the B<->C channel is still alive and well by sending a payment over it.
 		let mut reconnect_args = ReconnectArgs::new(&nodes[1], &nodes[2]);
 		reconnect_args.pending_responding_commitment_signed.1 = true;
-		// The B<->C `ChannelMonitorUpdate` shouldn't be allowed to complete, which is the
-		// equivalent to the responding `commitment_signed` being a duplicate for node B, thus we
-		// need to set the `pending_responding_commitment_signed_dup` flag.
-		reconnect_args.pending_responding_commitment_signed_dup_monitor.1 = true;
+		if hold_post_reload_mon_update {
+			// When the A-B update is still InProgress, B-C monitor updates are blocked,
+			// so the responding commitment_signed is a duplicate that generates no update.
+			reconnect_args.pending_responding_commitment_signed_dup_monitor.1 = true;
+		}
 		reconnect_args.pending_raa.1 = true;
 
 		reconnect_nodes(reconnect_args);
 	}
 
-	// Once the blocked `ChannelMonitorUpdate` *finally* completes, the pending
-	// `PaymentForwarded` event will finally be released.
-	let (_, ab_update_id) = nodes[1].chain_monitor.get_latest_mon_update_id(chan_id_ab);
-	nodes[1].chain_monitor.chain_monitor.force_channel_monitor_updated(chan_id_ab, ab_update_id);
+	if hold_post_reload_mon_update {
+		// When the persister returned InProgress, we need to manually complete the
+		// A-B monitor update to unblock the PaymentForwarded completion action.
+		let (_, ab_update_id) = nodes[1].chain_monitor.get_latest_mon_update_id(chan_id_ab);
+		nodes[1]
+			.chain_monitor
+			.chain_monitor
+			.force_channel_monitor_updated(chan_id_ab, ab_update_id);
+	}
 
 	// If the A<->B channel was closed before we reload, we'll replay the claim against it on
 	// reload, causing the `PaymentForwarded` event to get replayed.
 	let evs = nodes[1].node.get_and_clear_pending_events();
-	assert_eq!(evs.len(), if close_chans_before_reload { 2 } else { 1 });
-	for ev in evs {
-		if let Event::PaymentForwarded { claim_from_onchain_tx, next_htlcs, .. } = ev {
-			if !claim_from_onchain_tx {
-				// If the outbound channel is still open, the `next_user_channel_id` should be available.
-				// This was previously broken.
-				assert!(next_htlcs[0].user_channel_id.is_some())
+	if !close_chans_before_reload && !hold_post_reload_mon_update {
+		// PaymentForwarded already fired during get_and_clear_pending_events above.
+		assert!(evs.is_empty(), "{:?}", evs);
+	} else {
+		assert_eq!(evs.len(), if close_chans_before_reload { 2 } else { 1 }, "{:?}", evs);
+		for ev in evs {
+			if let Event::PaymentForwarded { claim_from_onchain_tx, next_htlcs, .. } = ev {
+				if !claim_from_onchain_tx {
+					assert!(next_htlcs[0].user_channel_id.is_some())
+				}
+			} else {
+				panic!("Unexpected event: {:?}", ev);
 			}
-		} else {
-			panic!();
 		}
 	}
 
 	if !close_chans_before_reload || close_only_a {
-		// Once we call `process_pending_events` the final `ChannelMonitor` for the B<->C channel
-		// will fly, removing the payment preimage from it.
-		check_added_monitors(&nodes[1], 1);
+		if hold_post_reload_mon_update {
+			// The B-C monitor update from the completion action fires now.
+			check_added_monitors(&nodes[1], 1);
+		}
 		assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 		send_payment(&nodes[1], &[&nodes[2]], 100_000);
 	}
@@ -5178,15 +5212,16 @@ fn test_mpp_claim_to_holding_cell() {
 }
 
 #[test]
-#[should_panic(expected = "Watch::update_channel returned Completed while prior updates are still InProgress")]
-fn test_monitor_update_fail_after_funding_spend() {
-	// When a counterparty commitment transaction confirms (funding spend), the
-	// ChannelMonitor sets funding_spend_seen. If a commitment_signed from the
-	// counterparty is then processed (a race between chain events and message
-	// processing), update_monitor returns Err because no_further_updates_allowed()
-	// is true. ChainMonitor overrides the result to InProgress, permanently
-	// freezing the channel. A subsequent preimage claim returning Completed then
-	// triggers the per-channel assertion.
+fn test_monitor_update_after_funding_spend() {
+	// Test that monitor updates still work after a funding spend is detected by the
+	// ChainMonitor but before ChannelManager has processed the corresponding block.
+	//
+	// When the counterparty commitment transaction confirms (funding spend), the
+	// ChannelMonitor sets funding_spend_seen and no_further_updates_allowed() returns
+	// true. ChainMonitor overrides all subsequent update_channel results to InProgress
+	// to freeze the channel. These overridden updates complete via deferred completions
+	// in release_pending_monitor_events, so that MonitorUpdateCompletionActions (like
+	// PaymentClaimed) can still fire.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -5197,7 +5232,7 @@ fn test_monitor_update_fail_after_funding_spend() {
 	let (_, _, chan_id, _) = create_announced_chan_between_nodes(&nodes, 0, 1);
 
 	// Route payment 1 fully so B can claim it later.
-	let (payment_preimage_1, _payment_hash_1, ..) =
+	let (payment_preimage_1, payment_hash_1, ..) =
 		route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
 
 	// Get A's commitment tx (this is the "counterparty" commitment from B's perspective).
@@ -5206,12 +5241,14 @@ fn test_monitor_update_fail_after_funding_spend() {
 
 	// Confirm A's commitment tx on B's chain_monitor ONLY (not on B's ChannelManager).
 	// This sets funding_spend_seen in the monitor, making no_further_updates_allowed() true.
+	// We also update the best block on the chain_monitor so the broadcaster height is
+	// consistent when claiming HTLCs.
 	let (block_hash, height) = nodes[1].best_block_info();
 	let block = create_dummy_block(block_hash, height + 1, vec![as_commitment_tx[0].clone()]);
 	let txdata: Vec<_> = block.txdata.iter().enumerate().collect();
-	nodes[1].chain_monitor.chain_monitor.transactions_confirmed(
-		&block.header, &txdata, height + 1,
-	);
+	nodes[1].chain_monitor.chain_monitor.transactions_confirmed(&block.header, &txdata, height + 1);
+	nodes[1].chain_monitor.chain_monitor.best_block_updated(&block.header, height + 1);
+	nodes[1].blocks.lock().unwrap().push((block, height + 1));
 
 	// Send payment 2 from A to B.
 	let (route, payment_hash_2, _, payment_secret_2) =
@@ -5233,15 +5270,38 @@ fn test_monitor_update_fail_after_funding_spend() {
 
 	nodes[1].node.handle_update_add_htlc(node_a_id, &payment_event.msgs[0]);
 
-	// B processes commitment_signed. The monitor's update_monitor succeeds on the
-	// update steps, but returns Err at the end because no_further_updates_allowed()
-	// is true (funding_spend_seen). ChainMonitor overrides the result to InProgress.
+	// B processes commitment_signed. The monitor applies the update but returns Err
+	// because no_further_updates_allowed() is true. ChainMonitor overrides to InProgress,
+	// freezing the channel.
 	nodes[1].node.handle_commitment_signed(node_a_id, &payment_event.commitment_msg[0]);
 	check_added_monitors(&nodes[1], 1);
-	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
-	// B claims payment 1. The PaymentPreimage monitor update returns Completed
-	// (update_monitor succeeds for preimage, and persister returns Completed),
-	// but the prior InProgress from the commitment_signed is still pending.
+	// B claims payment 1. The preimage monitor update also returns InProgress (deferred),
+	// so no Completed-while-InProgress assertion fires.
 	nodes[1].node.claim_funds(payment_preimage_1);
+	check_added_monitors(&nodes[1], 1);
+
+	// First event cycle: the force-close MonitorEvent (CommitmentTxConfirmed) fires first,
+	// then the deferred completions resolve. The force-close generates a ChannelForceClosed
+	// update (also deferred), which blocks completion actions. So we only get ChannelClosed.
+	let events = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match &events[0] {
+		Event::ChannelClosed { reason: ClosureReason::CommitmentTxConfirmed, .. } => {},
+		_ => panic!("Unexpected event: {:?}", events[0]),
+	}
+	check_added_monitors(&nodes[1], 1);
+	nodes[1].node.get_and_clear_pending_msg_events();
+
+	// Second event cycle: the ChannelForceClosed deferred completion resolves, unblocking
+	// the PaymentClaimed completion action.
+	let events = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match &events[0] {
+		Event::PaymentClaimed { payment_hash, amount_msat, .. } => {
+			assert_eq!(payment_hash_1, *payment_hash);
+			assert_eq!(1_000_000, *amount_msat);
+		},
+		_ => panic!("Unexpected event: {:?}", events[0]),
+	}
 }
