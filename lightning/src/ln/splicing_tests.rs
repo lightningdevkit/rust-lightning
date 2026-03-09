@@ -3237,6 +3237,101 @@ fn test_splice_buffer_invalid_commitment_signed_closes_channel() {
 }
 
 #[test]
+fn test_splice_waits_for_initial_commitment_monitor_update_before_releasing_tx_signatures() {
+	// Test that if processing the counterparty's initial `commitment_signed` returns
+	// `ChannelMonitorUpdateStatus::InProgress`, we do not release our `tx_signatures` when their
+	// `tx_signatures` is received. We should only release ours once the monitor update completes.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 0);
+
+	let outputs = vec![TxOut {
+		value: Amount::from_sat(1_000),
+		script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
+	}];
+	let initiator_contribution =
+		initiate_splice_out(&nodes[0], &nodes[1], channel_id, outputs).unwrap();
+	negotiate_splice_tx(&nodes[0], &nodes[1], channel_id, initiator_contribution);
+
+	let signing_event = get_event!(nodes[0], Event::FundingTransactionReadyForSigning);
+	if let Event::FundingTransactionReadyForSigning {
+		channel_id: event_channel_id,
+		counterparty_node_id,
+		unsigned_transaction,
+		..
+	} = signing_event
+	{
+		assert_eq!(event_channel_id, channel_id);
+		assert_eq!(counterparty_node_id, node_id_1);
+
+		let partially_signed_tx = nodes[0].wallet_source.sign_tx(unsigned_transaction).unwrap();
+		nodes[0]
+			.node
+			.funding_transaction_signed(&channel_id, &node_id_1, partially_signed_tx)
+			.unwrap();
+	} else {
+		panic!("Expected FundingTransactionReadyForSigning event");
+	}
+
+	let initiator_commit_sig = get_htlc_update_msgs(&nodes[0], &node_id_1);
+	nodes[1].node.handle_commitment_signed(node_id_0, &initiator_commit_sig.commitment_signed[0]);
+	check_added_monitors(&nodes[1], 1);
+
+	// Leave the monitor update for node 0's processing of the initial `commitment_signed` pending.
+	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
+
+	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 2, "{msg_events:?}");
+	let counterparty_commit_sig =
+		if let MessageSendEvent::UpdateHTLCs { ref updates, .. } = &msg_events[0] {
+			updates.commitment_signed[0].clone()
+		} else {
+			panic!("Expected UpdateHTLCs message");
+		};
+	let counterparty_tx_signatures =
+		if let MessageSendEvent::SendTxSignatures { ref msg, .. } = &msg_events[1] {
+			msg.clone()
+		} else {
+			panic!("Expected SendTxSignatures message");
+		};
+
+	nodes[0].node.handle_commitment_signed(node_id_1, &counterparty_commit_sig);
+	check_added_monitors(&nodes[0], 1);
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+
+	nodes[0].node.handle_tx_signatures(node_id_1, &counterparty_tx_signatures);
+
+	// We should not send our `tx_signatures` while the monitor update is still in progress.
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+
+	// Reestablishing before the monitor update completes should still not release `tx_signatures`.
+	nodes[0].node.peer_disconnected(node_id_1);
+	nodes[1].node.peer_disconnected(node_id_0);
+	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
+	reconnect_args.send_announcement_sigs = (true, true);
+	reconnect_nodes(reconnect_args);
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+	nodes[0].chain_monitor.complete_sole_pending_chan_update(&channel_id);
+	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
+
+	let initiator_tx_signatures =
+		get_event_msg!(nodes[0], MessageSendEvent::SendTxSignatures, node_id_1);
+	nodes[1].node.handle_tx_signatures(node_id_0, &initiator_tx_signatures);
+
+	expect_splice_pending_event(&nodes[0], &node_id_1);
+	expect_splice_pending_event(&nodes[1], &node_id_0);
+}
+
+#[test]
 fn test_splice_balance_falls_below_reserve() {
 	// Test that we're able to proceed with a splice where the acceptor does not contribute
 	// anything, but the initiator does, resulting in an increased channel reserve that the
