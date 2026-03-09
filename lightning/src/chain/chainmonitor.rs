@@ -1250,7 +1250,41 @@ where
 					}
 				}
 
-				if update_res.is_err() {
+				debug_assert!(
+					update_res.is_ok() || monitor.no_further_updates_allowed(),
+					"update_monitor returned Err but channel is not post-close",
+				);
+
+				// We also check update_res.is_err() as a defensive measure: an
+				// error should only occur on a post-close monitor (validated by
+				// the debug_assert above), but we defer here regardless to avoid
+				// returning Completed for a failed update.
+				if (update_res.is_err() || monitor.no_further_updates_allowed())
+					&& persist_res == ChannelMonitorUpdateStatus::Completed
+				{
+					// The channel is post-close (funding spend seen, lockdown, or
+					// holder tx signed). Return InProgress so ChannelManager freezes
+					// the channel until the force-close MonitorEvents are processed.
+					// Push a Completed event into pending_monitor_events so it gets
+					// picked up after the per-monitor events in the next
+					// release_pending_monitor_events call.
+					let funding_txo = monitor.get_funding_txo();
+					let channel_id = monitor.channel_id();
+					self.pending_monitor_events.lock().unwrap().push((
+						funding_txo,
+						channel_id,
+						vec![MonitorEvent::Completed {
+							funding_txo,
+							channel_id,
+							monitor_update_id: monitor.get_latest_update_id(),
+						}],
+						monitor.get_counterparty_node_id(),
+					));
+					log_debug!(
+						logger,
+						"Deferring completion of ChannelMonitorUpdate id {:?} (channel is post-close)",
+						update_id,
+					);
 					ChannelMonitorUpdateStatus::InProgress
 				} else {
 					persist_res
@@ -1614,8 +1648,9 @@ where
 		for (channel_id, update_id) in self.persister.get_and_clear_completed_updates() {
 			let _ = self.channel_monitor_updated(channel_id, update_id);
 		}
-		let mut pending_monitor_events = self.pending_monitor_events.lock().unwrap().split_off(0);
-		for monitor_state in self.monitors.read().unwrap().values() {
+		let monitors = self.monitors.read().unwrap();
+		let mut pending_monitor_events = Vec::new();
+		for monitor_state in monitors.values() {
 			let monitor_events = monitor_state.monitor.get_and_clear_pending_monitor_events();
 			if monitor_events.len() > 0 {
 				let monitor_funding_txo = monitor_state.monitor.get_funding_txo();
@@ -1629,6 +1664,10 @@ where
 				));
 			}
 		}
+		// Drain pending_monitor_events (which includes deferred post-close
+		// completions) after per-monitor events so that force-close
+		// MonitorEvents are processed by ChannelManager first.
+		pending_monitor_events.extend(self.pending_monitor_events.lock().unwrap().split_off(0));
 		pending_monitor_events
 	}
 }
