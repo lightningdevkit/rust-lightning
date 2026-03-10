@@ -4644,6 +4644,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				funding.prev_counterparty_commitment_tx =
 					funding.cur_counterparty_commitment_tx.take();
 				funding.cur_counterparty_commitment_tx = Some(commitment_tx);
+			} else {
+				debug_assert!(false);
 			}
 		}
 
