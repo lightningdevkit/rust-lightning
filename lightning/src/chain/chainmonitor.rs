@@ -413,10 +413,10 @@ where
 	) -> Self {
 		assert!(
 			force_close_claimable_htlc_cltv_buffer >= channelmonitor::CLTV_CLAIM_BUFFER
-				&& force_close_claimable_htlc_cltv_buffer <= channelmonitor::HTLC_FAIL_BACK_BUFFER,
+				&& force_close_claimable_htlc_cltv_buffer < channelmonitor::HTLC_FAIL_BACK_BUFFER,
 			"force_close_claimable_htlc_cltv_buffer must be between {} and {} inclusive",
 			channelmonitor::CLTV_CLAIM_BUFFER,
-			channelmonitor::HTLC_FAIL_BACK_BUFFER,
+			channelmonitor::HTLC_FAIL_BACK_BUFFER - 1,
 		);
 		let event_notifier = Arc::new(Notifier::new());
 		Self {
@@ -628,10 +628,10 @@ where
 	) -> Self {
 		assert!(
 			force_close_claimable_htlc_cltv_buffer >= channelmonitor::CLTV_CLAIM_BUFFER
-				&& force_close_claimable_htlc_cltv_buffer <= channelmonitor::HTLC_FAIL_BACK_BUFFER,
+				&& force_close_claimable_htlc_cltv_buffer < channelmonitor::HTLC_FAIL_BACK_BUFFER,
 			"force_close_claimable_htlc_cltv_buffer must be between {} and {} inclusive",
 			channelmonitor::CLTV_CLAIM_BUFFER,
-			channelmonitor::HTLC_FAIL_BACK_BUFFER,
+			channelmonitor::HTLC_FAIL_BACK_BUFFER - 1,
 		);
 		Self {
 			monitors: RwLock::new(new_hash_map()),
