@@ -23,3 +23,5 @@ See [README.md](README.md) for the workspace layout and [ARCH.md](ARCH.md) for s
 - When adding comments, do not refer to internal logic in other modules, instead
   make sure comments make sense in the context they're in without needing other
   context.
+- Try to keep code DRY - if new code you add is duplicate with other code,
+  deduplicate it.
