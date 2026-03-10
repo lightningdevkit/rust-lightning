@@ -682,7 +682,7 @@ pub(crate) struct WatchtowerPersister {
 	persister: TestPersister,
 	/// After receiving a revoke_and_ack for a commitment number, we'll form and store the justice
 	/// tx which would be used to provide a watchtower with the data it needs.
-	watchtower_state: Mutex<HashMap<ChannelId, HashMap<Txid, Transaction>>>,
+	watchtower_state: Mutex<HashMap<ChannelId, HashMap<Txid, Vec<Transaction>>>>,
 	destination_script: ScriptBuf,
 }
 
@@ -705,7 +705,19 @@ impl WatchtowerPersister {
 			.get(&channel_id)
 			.unwrap()
 			.get(commitment_txid)
+			.and_then(|txs| txs.first().cloned())
+	}
+
+	pub(crate) fn justice_txs(
+		&self, channel_id: ChannelId, commitment_txid: &Txid,
+	) -> Vec<Transaction> {
+		self.watchtower_state
+			.lock()
+			.unwrap()
+			.get(&channel_id)
+			.and_then(|m| m.get(commitment_txid))
 			.cloned()
+			.unwrap_or_default()
 	}
 }
 
@@ -723,7 +735,7 @@ impl<Signer: sign::ecdsa::EcdsaChannelSigner> Persist<Signer> for WatchtowerPers
 			.insert(data.channel_id(), new_hash_map())
 			.is_none());
 
-		if let Some(jtx) = data.sign_initial_justice_tx(
+		for jtx in data.sign_initial_justice_txs(
 			FEERATE_FLOOR_SATS_PER_KW as u64,
 			self.destination_script.clone(),
 		) {
@@ -732,7 +744,9 @@ impl<Signer: sign::ecdsa::EcdsaChannelSigner> Persist<Signer> for WatchtowerPers
 				.unwrap()
 				.get_mut(&data.channel_id())
 				.unwrap()
-				.insert(jtx.revoked_commitment_txid, jtx.tx);
+				.entry(jtx.revoked_commitment_txid)
+				.or_insert_with(Vec::new)
+				.push(jtx.tx);
 		}
 
 		res
@@ -751,14 +765,14 @@ impl<Signer: sign::ecdsa::EcdsaChannelSigner> Persist<Signer> for WatchtowerPers
 				self.destination_script.clone(),
 			);
 			for jtx in justice_txs {
-				let dup = self
-					.watchtower_state
+				self.watchtower_state
 					.lock()
 					.unwrap()
 					.get_mut(&data.channel_id())
 					.unwrap()
-					.insert(jtx.revoked_commitment_txid, jtx.tx);
-				assert!(dup.is_none());
+					.entry(jtx.revoked_commitment_txid)
+					.or_insert_with(Vec::new)
+					.push(jtx.tx);
 			}
 		}
 
