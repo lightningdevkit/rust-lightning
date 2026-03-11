@@ -880,8 +880,7 @@ pub fn bolt2_open_channel_sane_dust_limit() {
 	nodes[0].node.create_channel(node_b_id, value_sats, push_msat, 42, None, None).unwrap();
 	let mut node0_to_1_send_open_channel =
 		get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
-	node0_to_1_send_open_channel.common_fields.dust_limit_satoshis = 547;
-	node0_to_1_send_open_channel.channel_reserve_satoshis = 100001;
+	node0_to_1_send_open_channel.common_fields.dust_limit_satoshis = 10_001;
 
 	nodes[1].node.handle_open_channel(node_a_id, &node0_to_1_send_open_channel);
 	let events = nodes[1].node.get_and_clear_pending_events();
@@ -893,7 +892,7 @@ pub fn bolt2_open_channel_sane_dust_limit() {
 		{
 			Err(APIError::ChannelUnavailable { err }) => assert_eq!(
 				err,
-				"dust_limit_satoshis (547) is greater than the implementation limit (546)"
+				"dust_limit_satoshis (10001) is greater than the implementation limit (10000)"
 			),
 			_ => panic!(),
 		},

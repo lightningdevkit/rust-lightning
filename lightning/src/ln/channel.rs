@@ -982,8 +982,11 @@ pub const TOTAL_BITCOIN_SUPPLY_SATOSHIS: u64 = 21_000_000 * 1_0000_0000;
 /// implementations use this value for their dust limit today.
 pub const MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS: u64 = 546;
 
+/// The maximum channel dust limit we will accept from our counterparty for non-anchor channels.
+pub const MAX_LEGACY_CHAN_DUST_LIMIT_SATOSHIS: u64 = MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS;
+
 /// The maximum channel dust limit we will accept from our counterparty.
-pub const MAX_CHAN_DUST_LIMIT_SATOSHIS: u64 = MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS;
+pub const MAX_CHAN_DUST_LIMIT_SATOSHIS: u64 = 10_000;
 
 /// The dust limit is used for both the commitment transaction outputs as well as the closing
 /// transactions. For cooperative closing transactions, we require segwit outputs, though accept
@@ -3644,8 +3647,14 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		if open_channel_fields.dust_limit_satoshis < MIN_CHAN_DUST_LIMIT_SATOSHIS {
 			return Err(ChannelError::close(format!("dust_limit_satoshis ({}) is less than the implementation limit ({})", open_channel_fields.dust_limit_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS)));
 		}
-		if open_channel_fields.dust_limit_satoshis >  MAX_CHAN_DUST_LIMIT_SATOSHIS {
-			return Err(ChannelError::close(format!("dust_limit_satoshis ({}) is greater than the implementation limit ({})", open_channel_fields.dust_limit_satoshis, MAX_CHAN_DUST_LIMIT_SATOSHIS)));
+
+		let max_chan_dust_limit_satoshis = if channel_type.supports_anchors_zero_fee_htlc_tx() || channel_type.supports_anchor_zero_fee_commitments() {
+			MAX_CHAN_DUST_LIMIT_SATOSHIS
+		} else {
+			MAX_LEGACY_CHAN_DUST_LIMIT_SATOSHIS
+		};
+		if open_channel_fields.dust_limit_satoshis > max_chan_dust_limit_satoshis {
+			return Err(ChannelError::close(format!("dust_limit_satoshis ({}) is greater than the implementation limit ({})", open_channel_fields.dust_limit_satoshis, max_chan_dust_limit_satoshis)));
 		}
 
 		// Convert things into internal flags and prep our state:
@@ -4426,8 +4435,14 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		if common_fields.dust_limit_satoshis < MIN_CHAN_DUST_LIMIT_SATOSHIS {
 			return Err(ChannelError::close(format!("dust_limit_satoshis ({}) is less than the implementation limit ({})", common_fields.dust_limit_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS)));
 		}
-		if common_fields.dust_limit_satoshis > MAX_CHAN_DUST_LIMIT_SATOSHIS {
-			return Err(ChannelError::close(format!("dust_limit_satoshis ({}) is greater than the implementation limit ({})", common_fields.dust_limit_satoshis, MAX_CHAN_DUST_LIMIT_SATOSHIS)));
+
+		let max_chan_dust_limit_satoshis = if channel_type.supports_anchors_zero_fee_htlc_tx() || channel_type.supports_anchor_zero_fee_commitments() {
+			MAX_CHAN_DUST_LIMIT_SATOSHIS
+		} else {
+			MAX_LEGACY_CHAN_DUST_LIMIT_SATOSHIS
+		};
+		if common_fields.dust_limit_satoshis > max_chan_dust_limit_satoshis {
+			return Err(ChannelError::close(format!("dust_limit_satoshis ({}) is greater than the implementation limit ({})", common_fields.dust_limit_satoshis, max_chan_dust_limit_satoshis)));
 		}
 		if common_fields.minimum_depth > peer_limits.max_minimum_depth {
 			return Err(ChannelError::close(format!("We consider the minimum depth to be unreasonably large. Expected minimum: ({}). Actual: ({})", peer_limits.max_minimum_depth, common_fields.minimum_depth)));
