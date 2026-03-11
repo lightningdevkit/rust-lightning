@@ -4985,7 +4985,7 @@ fn test_htlc_forward_considers_anchor_outputs_value() {
 		create_announced_chan_between_nodes_with_value(&nodes, 1, 2, CHAN_AMT, PUSH_MSAT);
 
 	let channel_reserve_msat =
-		get_holder_selected_channel_reserve_satoshis(CHAN_AMT, &config) * 1000;
+		get_holder_selected_channel_reserve_satoshis(CHAN_AMT, 0, &config) * 1000;
 	let commitment_fee_msat = chan_utils::commit_tx_fee_sat(
 		*nodes[1].fee_estimator.sat_per_kw.lock().unwrap(),
 		2,
