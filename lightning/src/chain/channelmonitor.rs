@@ -4451,6 +4451,10 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			}
 			let htlc_value_satoshis = Some(amount_msat / 1000);
 			let logger = WithContext::from(logger, None, None, Some(payment_hash));
+			// Defensively mark the HTLC as failed back so the expiry-based failure
+			// path in `block_connected` doesn't generate a duplicate `HTLCUpdate`
+			// event for the same source.
+			self.failed_back_htlc_ids.insert(SentHTLCId::from_source(source));
 			if let Some(confirmed_txid) = self.funding_spend_confirmed {
 				// Funding spend already confirmed past ANTI_REORG_DELAY: resolve immediately.
 				log_trace!(
