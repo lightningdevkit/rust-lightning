@@ -4006,3 +4006,75 @@ fn do_test_splice_pending_htlcs(config: UserConfig) {
 	let _ = send_payment(&nodes[0], &[&nodes[1]], 2_000 * 1000);
 	let _ = send_payment(&nodes[1], &[&nodes[0]], 2_000 * 1000);
 }
+
+#[test]
+fn test_splice_acceptor_disconnect_emits_events() {
+	// When both nodes contribute to a splice and the negotiation fails due to disconnect,
+	// both the initiator and acceptor should receive SpliceFailed + DiscardFunding events
+	// so each can reclaim their UTXOs.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 1, added_value * 2);
+
+	// Both nodes initiate splice-in (tiebreak: node 0 wins).
+	let node_0_funding_contribution =
+		do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+	let _node_1_funding_contribution =
+		do_initiate_splice_in(&nodes[1], &nodes[0], channel_id, added_value);
+
+	let stfu_0 = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+	let stfu_1 = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
+	nodes[1].node.handle_stfu(node_id_0, &stfu_0);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+	nodes[0].node.handle_stfu(node_id_1, &stfu_1);
+
+	let splice_init = get_event_msg!(nodes[0], MessageSendEvent::SendSpliceInit, node_id_1);
+	nodes[1].node.handle_splice_init(node_id_0, &splice_init);
+	let splice_ack = get_event_msg!(nodes[1], MessageSendEvent::SendSpliceAck, node_id_0);
+	assert_ne!(splice_ack.funding_contribution_satoshis, 0);
+	nodes[0].node.handle_splice_ack(node_id_1, &splice_ack);
+
+	// Disconnect mid-interactive-TX negotiation.
+	nodes[0].node.peer_disconnected(node_id_1);
+	nodes[1].node.peer_disconnected(node_id_0);
+
+	// The initiator should get SpliceFailed + DiscardFunding.
+	expect_splice_failed_events(&nodes[0], &channel_id, node_0_funding_contribution);
+
+	// The acceptor should also get SpliceFailed + DiscardFunding with its contributions
+	// so it can reclaim its UTXOs. The contribution is feerate-adjusted by handle_splice_init,
+	// so we check for non-empty inputs/outputs rather than exact values.
+	let events = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 2, "{events:?}");
+	match &events[0] {
+		Event::SpliceFailed { channel_id: cid, .. } => assert_eq!(*cid, channel_id),
+		other => panic!("Expected SpliceFailed, got {:?}", other),
+	}
+	match &events[1] {
+		Event::DiscardFunding {
+			funding_info: FundingInfo::Contribution { inputs, outputs },
+			..
+		} => {
+			assert!(!inputs.is_empty(), "Expected acceptor inputs, got empty");
+			assert!(!outputs.is_empty(), "Expected acceptor outputs, got empty");
+		},
+		other => panic!("Expected DiscardFunding with Contribution, got {:?}", other),
+	}
+
+	// Reconnect and verify the channel is still operational.
+	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
+	reconnect_args.send_channel_ready = (true, true);
+	reconnect_args.send_announcement_sigs = (true, true);
+	reconnect_nodes(reconnect_args);
+}

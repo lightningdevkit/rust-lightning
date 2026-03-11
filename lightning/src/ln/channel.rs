@@ -6568,8 +6568,9 @@ macro_rules! maybe_create_splice_funding_failed {
 	($funded_channel: expr, $pending_splice: expr, $get: ident, $contributed_inputs_and_outputs: ident) => {{
 		$pending_splice
 			.and_then(|pending_splice| pending_splice.funding_negotiation.$get())
-			.filter(|funding_negotiation| funding_negotiation.is_initiator())
-			.map(|funding_negotiation| {
+			.and_then(|funding_negotiation| {
+				let is_initiator = funding_negotiation.is_initiator();
+
 				let funding_txo = funding_negotiation
 					.as_funding()
 					.and_then(|funding| funding.get_funding_txo())
@@ -6595,12 +6596,17 @@ macro_rules! maybe_create_splice_funding_failed {
 						.$contributed_inputs_and_outputs(),
 				};
 
-				SpliceFundingFailed {
+				if !is_initiator && contributed_inputs.is_empty() && contributed_outputs.is_empty()
+				{
+					return None;
+				}
+
+				Some(SpliceFundingFailed {
 					funding_txo,
 					channel_type,
 					contributed_inputs,
 					contributed_outputs,
-				}
+				})
 			})
 	}};
 }
