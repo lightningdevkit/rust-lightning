@@ -148,8 +148,7 @@ impl GeneralBucket {
 		debug_assert_ne!(self.scid, outgoing_scid);
 
 		match self.channels_slots.entry(outgoing_scid) {
-			// TODO: could return the slots already assigned instead of erroring.
-			Entry::Occupied(_) => Err(()),
+			Entry::Occupied(e) => Ok(e.get().0.clone()),
 			Entry::Vacant(entry) => {
 				let mut channel_slots = Vec::with_capacity(self.per_channel_slots.into());
 				let mut slots_assigned_counter = 0;
