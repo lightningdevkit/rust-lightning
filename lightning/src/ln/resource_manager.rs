@@ -244,7 +244,6 @@ impl BucketResources {
 struct PendingHTLC {
 	incoming_amount_msat: u64,
 	fee: u64,
-	outgoing_channel: u64,
 	outgoing_accountable: bool,
 	added_at_unix_seconds: u64,
 	in_flight_risk: u64,
@@ -282,9 +281,12 @@ impl Channel {
 		general_bucket_pct: u8, congestion_bucket_pct: u8, reputation_window: Duration,
 		revenue_window_weeks: u8, revenue_week_avg: u8, timestamp_unix_secs: u64,
 	) -> Result<Self, ()> {
-		if max_accepted_htlcs > 483
-			|| (max_htlc_value_in_flight_msat / 1000) >= TOTAL_BITCOIN_SUPPLY_SATOSHIS
-		{
+		let max_in_flight_sat = max_htlc_value_in_flight_msat / 1000;
+		if max_accepted_htlcs > 483 || max_in_flight_sat >= TOTAL_BITCOIN_SUPPLY_SATOSHIS {
+			return Err(());
+		}
+
+		if max_accepted_htlcs < 12 || max_in_flight_sat < 1000 {
 			return Err(());
 		}
 
@@ -292,14 +294,17 @@ impl Channel {
 			return Err(());
 		}
 
-		let general_bucket_slots_allocated = max_accepted_htlcs * general_bucket_pct as u16 / 100;
+		let general_bucket_slots_allocated =
+			(max_accepted_htlcs as f64 * general_bucket_pct as f64 / 100.0).round() as u16;
 		let general_bucket_liquidity_allocated =
-			max_htlc_value_in_flight_msat * general_bucket_pct as u64 / 100;
+			(max_htlc_value_in_flight_msat as f64 * general_bucket_pct as f64 / 100.0).round()
+				as u64;
 
 		let congestion_bucket_slots_allocated =
-			max_accepted_htlcs * congestion_bucket_pct as u16 / 100;
+			(max_accepted_htlcs as f64 * congestion_bucket_pct as f64 / 100.0).round() as u16;
 		let congestion_bucket_liquidity_allocated =
-			max_htlc_value_in_flight_msat * congestion_bucket_pct as u64 / 100;
+			(max_htlc_value_in_flight_msat as f64 * congestion_bucket_pct as f64 / 100.0).round()
+				as u64;
 
 		let protected_bucket_slots_allocated =
 			max_accepted_htlcs - general_bucket_slots_allocated - congestion_bucket_slots_allocated;
@@ -366,11 +371,11 @@ impl Channel {
 		match self.last_congestion_misuse.entry(outgoing_scid) {
 			Entry::Vacant(_) => Ok(false),
 			Entry::Occupied(last_misuse) => {
-				// If the last misuse of the congestion bucket was over more than the
-				// revenue window, remote the entry.
 				if at_timestamp < *last_misuse.get() {
 					return Err(());
 				}
+				// If the last misuse of the congestion bucket was over more than two
+				// weeks ago, remove the entry.
 				const TWO_WEEKS: u64 = 2016 * 10 * 60;
 				let since_last_misuse = at_timestamp - last_misuse.get();
 				if since_last_misuse < TWO_WEEKS {
@@ -734,6 +739,10 @@ mod tests {
 			(TOTAL_BITCOIN_SUPPLY_SATOSHIS * 1000 + 1, 483, 40, 20),
 			// Invalid bucket percentages
 			(100_000, 483, 70, 50),
+			// Invalid max_accepted_htlcs (< 12)
+			(100_000_000, 11, 40, 20),
+			// Invalid max_htlc_value_in_flight_msat (< 1000 sats)
+			(999_999, 100, 40, 20),
 		];
 
 		for (max_inflight, max_htlcs, general_pct, congestion_pct) in cases {
