@@ -930,8 +930,6 @@ pub fn do_test_fee_spike_buffer(cfg: Option<UserConfig>, htlc_fails: bool) {
 		signature: res.0,
 		htlc_signatures: res.1,
 		funding_txid: None,
-		#[cfg(taproot)]
-		partial_signature_with_nonce: None,
 	};
 
 	// Send the commitment_signed message to the nodes[1].
@@ -943,8 +941,6 @@ pub fn do_test_fee_spike_buffer(cfg: Option<UserConfig>, htlc_fails: bool) {
 		channel_id: chan.2,
 		per_commitment_secret: local_secret,
 		next_per_commitment_point: next_local_point,
-		#[cfg(taproot)]
-		next_local_nonce: None,
 		release_htlc_message_paths: Vec::new(),
 	};
 	nodes[1].node.handle_revoke_and_ack(node_a_id, &raa_msg);
@@ -2388,8 +2384,6 @@ pub fn do_test_dust_limit_fee_accounting(can_afford: bool) {
 			signature: res.0,
 			htlc_signatures: res.1,
 			funding_txid: None,
-			#[cfg(taproot)]
-			partial_signature_with_nonce: None,
 		};
 
 		// Send the commitment_signed message to the nodes[1].
@@ -2401,8 +2395,6 @@ pub fn do_test_dust_limit_fee_accounting(can_afford: bool) {
 			channel_id: chan_id,
 			per_commitment_secret: local_secret,
 			next_per_commitment_point: next_local_point,
-			#[cfg(taproot)]
-			next_local_nonce: None,
 			release_htlc_message_paths: Vec::new(),
 		};
 		nodes[1].node.handle_revoke_and_ack(node_a_id, &raa_msg);

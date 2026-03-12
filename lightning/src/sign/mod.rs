@@ -51,8 +51,6 @@ use crate::ln::channel_keys::{
 	RevocationBasepoint, RevocationKey,
 };
 use crate::ln::inbound_payment::ExpandedKey;
-#[cfg(taproot)]
-use crate::ln::msgs::PartialSignatureWithNonce;
 use crate::ln::msgs::{UnsignedChannelAnnouncement, UnsignedGossipMessage};
 use crate::ln::script::ShutdownScript;
 use crate::offers::invoice::UnsignedBolt12Invoice;
@@ -71,8 +69,6 @@ use core::convert::TryInto;
 use core::future::Future;
 use core::ops::Deref;
 use core::sync::atomic::{AtomicUsize, Ordering};
-#[cfg(taproot)]
-use musig2::types::{PartialSignature, PublicNonce};
 
 pub(crate) mod type_resolver;
 

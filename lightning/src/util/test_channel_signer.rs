@@ -34,15 +34,11 @@ use bitcoin::sighash::EcdsaSighashType;
 use bitcoin::transaction::Transaction;
 use bitcoin::Txid;
 
-#[cfg(taproot)]
-use crate::ln::msgs::PartialSignatureWithNonce;
 use crate::sign::HTLCDescriptor;
 use crate::util::dyn_signer::DynSigner;
 use bitcoin::secp256k1;
 use bitcoin::secp256k1::{ecdsa::Signature, Secp256k1};
 use bitcoin::secp256k1::{PublicKey, SecretKey};
-#[cfg(taproot)]
-use musig2::types::{PartialSignature, PublicNonce};
 
 /// Initial value for revoked commitment downward counter
 pub const INITIAL_REVOKED_COMMITMENT_NUMBER: u64 = 1 << 48;

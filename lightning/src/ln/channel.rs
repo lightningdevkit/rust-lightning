@@ -6002,8 +6002,6 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		signature.map(|(signature, _)| msgs::FundingSigned {
 			channel_id: self.channel_id(),
 			signature,
-			#[cfg(taproot)]
-			partial_signature_with_nonce: None,
 		})
 	}
 
@@ -6129,8 +6127,6 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 				htlc_signatures,
 				signature,
 				funding_txid: funding.get_funding_txo().map(|funding_txo| funding_txo.txid),
-				#[cfg(taproot)]
-				partial_signature_with_nonce: None,
 			})
 		} else {
 			log_debug!(
@@ -9463,8 +9459,6 @@ where
 					channel_id: self.context.channel_id,
 					per_commitment_secret,
 					next_per_commitment_point: self.holder_commitment_point.next_point(),
-					#[cfg(taproot)]
-					next_local_nonce: None,
 					release_htlc_message_paths,
 				});
 			}
@@ -11519,7 +11513,7 @@ where
 						bitcoin_signature_2: if were_node_one { their_bitcoin_sig } else { our_bitcoin_sig },
 						contents: announcement,
 					})
-				}
+				},
 			}
 		} else {
 			Err(ChannelError::Ignore("Attempted to sign channel announcement before we'd received announcement_signatures".to_string()))
@@ -12729,8 +12723,6 @@ where
 					signature,
 					htlc_signatures,
 					funding_txid: funding.get_funding_txo().map(|funding_txo| funding_txo.txid),
-					#[cfg(taproot)]
-					partial_signature_with_nonce: None,
 				})
 				}
 			}
@@ -13310,10 +13302,6 @@ impl<SP: SignerProvider> OutboundV1Channel<SP> {
 			funding_txid: self.funding.channel_transaction_parameters.funding_outpoint.as_ref().unwrap().txid,
 			funding_output_index: self.funding.channel_transaction_parameters.funding_outpoint.as_ref().unwrap().index,
 			signature,
-			#[cfg(taproot)]
-			partial_signature_with_nonce: None,
-			#[cfg(taproot)]
-			next_local_nonce: None,
 		})
 	}
 
@@ -13718,8 +13706,6 @@ impl<SP: SignerProvider> InboundV1Channel<SP> {
 				channel_type: Some(self.funding.get_channel_type().clone()),
 			},
 			channel_reserve_satoshis: self.funding.holder_selected_channel_reserve_satoshis,
-			#[cfg(taproot)]
-			next_local_nonce: None,
 		})
 	}
 
