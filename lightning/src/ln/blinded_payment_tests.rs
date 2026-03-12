@@ -2723,9 +2723,8 @@ fn do_test_trampoline_relay(blinded: bool, test_case: TrampolineTestCase) {
 ///   Alice (0) --> Bob (1) --> Carol (2, trampoline node)
 ///   Alice (0) --> Barry (3) --> Carol (2, trampoline node)
 ///
-/// Carol's inner trampoline onion is a forward to an unknown next node. We don't need the
-/// next hop as a real node since forwarding isn't implemented yet -- we just need the onion to
-/// contain a valid forward payload.
+/// Carol's inner trampoline onion is a forward to an unknown next node, which is intentionally
+/// faked to force a forwarding failure after our MPP parts have accumulated.
 ///
 /// Returns (payment_hash, per_path_amount, ev_to_bob, ev_to_barry).
 fn send_trampoline_mpp_payment<'a, 'b, 'c>(
