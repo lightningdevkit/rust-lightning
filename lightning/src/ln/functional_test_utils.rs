@@ -1312,6 +1312,24 @@ fn check_claimed_htlcs_match_route<'a, 'b, 'c>(
 	}
 }
 
+fn claimed_htlc_value_msats_for_paths<'a, 'b, 'c>(
+	origin_node: &Node<'a, 'b, 'c>, expected_paths: &[&[&Node<'a, 'b, 'c>]], htlcs: &[ClaimedHTLC],
+) -> Vec<u64> {
+	let mut remaining_htlcs: Vec<&ClaimedHTLC> = htlcs.iter().collect();
+
+	expected_paths
+		.iter()
+		.map(|path| {
+			let idx = remaining_htlcs
+				.iter()
+				.position(|htlc| claimed_htlc_matches_path(origin_node, path, htlc))
+				.expect("each path must have a unique matching claimed HTLC");
+
+			remaining_htlcs.remove(idx).value_msat
+		})
+		.collect()
+}
+
 pub fn _reload_node<'a, 'b, 'c>(
 	node: &'a Node<'a, 'b, 'c>, config: UserConfig, chanman_encoded: &[u8],
 	monitors_encoded: &[&[u8]], _reconstruct_manager_from_monitors: Option<bool>,
@@ -3673,6 +3691,7 @@ pub fn do_pass_along_path<'a, 'b, 'c>(args: PassAlongPathArgs) -> Option<Event> 
 						ref payment_hash,
 						ref purpose,
 						amount_msat,
+						dummy_hops_skimmed_fee_msat,
 						receiver_node_id,
 						ref receiving_channel_ids,
 						claim_deadline,
@@ -3687,6 +3706,16 @@ pub fn do_pass_along_path<'a, 'b, 'c>(args: PassAlongPathArgs) -> Option<Event> 
 							onion_fields.as_ref().unwrap().payment_metadata,
 							payment_metadata
 						);
+						// Freshly generated `PaymentClaimable` events include one
+						// `receiving_channel_ids` entry per inbound HTLC, without
+						// deduplicating by channel, so `len() == 1` implies a
+						// single-part payment here.
+						if receiving_channel_ids.len() == 1 {
+							assert_eq!(
+								dummy_hops_total_fee_msat(recv_value, &dummy_tlvs),
+								*dummy_hops_skimmed_fee_msat
+							);
+						}
 						match &purpose {
 							PaymentPurpose::Bolt11InvoicePayment {
 								payment_preimage,
@@ -3881,6 +3910,7 @@ pub fn do_claim_payment_along_route(args: ClaimAlongRouteArgs) -> u64 {
 pub struct ClaimAlongRouteArgs<'a, 'b, 'c, 'd> {
 	pub origin_node: &'a Node<'b, 'c, 'd>,
 	pub expected_paths: &'a [&'a [&'a Node<'b, 'c, 'd>]],
+	pub dummy_tlvs: Vec<Vec<DummyTlvs>>,
 	pub expected_extra_fees: Vec<u32>,
 	/// A one-off adjustment used only in tests to account for an existing
 	/// fee-handling trade-off in LDK.
@@ -3927,6 +3957,7 @@ impl<'a, 'b, 'c, 'd> ClaimAlongRouteArgs<'a, 'b, 'c, 'd> {
 		Self {
 			origin_node,
 			expected_paths,
+			dummy_tlvs: vec![Vec::new(); expected_paths.len()],
 			expected_extra_fees: vec![0; expected_paths.len()],
 			expected_extra_total_fees_msat: 0,
 			expected_min_htlc_overpay: vec![0; expected_paths.len()],
@@ -3960,6 +3991,39 @@ impl<'a, 'b, 'c, 'd> ClaimAlongRouteArgs<'a, 'b, 'c, 'd> {
 		self.custom_tlvs = custom_tlvs;
 		self
 	}
+	pub fn with_dummy_tlvs(mut self, dummy_tlvs: &[DummyTlvs]) -> Self {
+		self.dummy_tlvs = vec![dummy_tlvs.to_vec(); self.expected_paths.len()];
+		self
+	}
+	pub fn with_per_path_dummy_tlvs(mut self, dummy_tlvs: &[Vec<DummyTlvs>]) -> Self {
+		assert_eq!(dummy_tlvs.len(), self.expected_paths.len());
+		self.dummy_tlvs = dummy_tlvs.to_vec();
+		self
+	}
+}
+
+/// Computes the total fees skimmed by all dummy hops for a single received HTLC.
+///
+/// The provided `final_amount_msat` is the amount that reaches the recipient after all dummy hops
+/// have been traversed. Because dummy hops each charge fees on the amount forwarded through them,
+/// their fees must be accumulated in reverse order, with each hop's fee increasing the amount that
+/// the previous dummy hop forwarded.
+fn dummy_hops_total_fee_msat(final_amount_msat: u64, dummy_tlvs: &[DummyTlvs]) -> u64 {
+	let mut amount_msat = final_amount_msat;
+	let mut total_fee_msat = 0;
+
+	// The last dummy hop forwards directly to the receiver, so work backwards from the final
+	// amount that reaches the recipient and accumulate the fees each earlier dummy hop must cover.
+	for tlvs in dummy_tlvs.iter().rev() {
+		let base_fee_msat = tlvs.payment_relay.fee_base_msat as u64;
+		let proportional_fee_millionths = tlvs.payment_relay.fee_proportional_millionths as u64;
+		let fee_msat = (amount_msat * proportional_fee_millionths / 1_000_000) + base_fee_msat;
+
+		total_fee_msat += fee_msat;
+		amount_msat += fee_msat;
+	}
+
+	total_fee_msat
 }
 
 macro_rules! single_fulfill_commit_from_ev {
@@ -3994,9 +4058,7 @@ macro_rules! single_fulfill_commit_from_ev {
 pub fn pass_claimed_payment_along_route(args: ClaimAlongRouteArgs) -> u64 {
 	let claim_event = args.expected_paths[0].last().unwrap().node.get_and_clear_pending_events();
 	assert_eq!(claim_event.len(), 1, "{claim_event:?}");
-	#[allow(unused)]
-	let mut fwd_amt_msat = 0;
-	match claim_event[0] {
+	let per_path_claim_amt_msats = match claim_event[0] {
 		Event::PaymentClaimed {
 			purpose:
 				PaymentPurpose::SpontaneousPayment(preimage)
@@ -4004,16 +4066,26 @@ pub fn pass_claimed_payment_along_route(args: ClaimAlongRouteArgs) -> u64 {
 				| PaymentPurpose::Bolt12OfferPayment { payment_preimage: Some(preimage), .. }
 				| PaymentPurpose::Bolt12RefundPayment { payment_preimage: Some(preimage), .. },
 			amount_msat,
+			dummy_hops_skimmed_fee_msat,
 			ref htlcs,
 			ref onion_fields,
 			..
 		} => {
-			assert_eq!(preimage, args.payment_preimage);
 			assert_eq!(htlcs.len(), args.expected_paths.len()); // One per path.
+			assert_eq!(args.dummy_tlvs.len(), args.expected_paths.len());
+			let expected_dummy_hops_skimmed_fee_msat = htlcs
+				.iter()
+				.zip(args.dummy_tlvs.iter())
+				.map(|(htlc, path_dummy_tlvs)| {
+					dummy_hops_total_fee_msat(htlc.value_msat, path_dummy_tlvs)
+				})
+				.sum::<u64>();
+			assert_eq!(preimage, args.payment_preimage);
 			assert_eq!(htlcs.iter().map(|h| h.value_msat).sum::<u64>(), amount_msat);
+			assert_eq!(dummy_hops_skimmed_fee_msat, expected_dummy_hops_skimmed_fee_msat);
 			assert_eq!(onion_fields.as_ref().unwrap().custom_tlvs, args.custom_tlvs);
 			check_claimed_htlcs_match_route(args.origin_node, args.expected_paths, htlcs);
-			fwd_amt_msat = amount_msat;
+			claimed_htlc_value_msats_for_paths(args.origin_node, args.expected_paths, htlcs)
 		},
 		Event::PaymentClaimed {
 			purpose:
@@ -4022,19 +4094,29 @@ pub fn pass_claimed_payment_along_route(args: ClaimAlongRouteArgs) -> u64 {
 				| PaymentPurpose::Bolt12RefundPayment { .. },
 			payment_hash,
 			amount_msat,
+			dummy_hops_skimmed_fee_msat,
 			ref htlcs,
 			ref onion_fields,
 			..
 		} => {
-			assert_eq!(&payment_hash.0, &Sha256::hash(&args.payment_preimage.0)[..]);
 			assert_eq!(htlcs.len(), args.expected_paths.len()); // One per path.
+			assert_eq!(args.dummy_tlvs.len(), args.expected_paths.len());
+			let expected_dummy_hops_skimmed_fee_msat = htlcs
+				.iter()
+				.zip(args.dummy_tlvs.iter())
+				.map(|(htlc, path_dummy_tlvs)| {
+					dummy_hops_total_fee_msat(htlc.value_msat, path_dummy_tlvs)
+				})
+				.sum::<u64>();
+			assert_eq!(&payment_hash.0, &Sha256::hash(&args.payment_preimage.0)[..]);
 			assert_eq!(htlcs.iter().map(|h| h.value_msat).sum::<u64>(), amount_msat);
+			assert_eq!(dummy_hops_skimmed_fee_msat, expected_dummy_hops_skimmed_fee_msat);
 			assert_eq!(onion_fields.as_ref().unwrap().custom_tlvs, args.custom_tlvs);
 			check_claimed_htlcs_match_route(args.origin_node, args.expected_paths, htlcs);
-			fwd_amt_msat = amount_msat;
+			claimed_htlc_value_msats_for_paths(args.origin_node, args.expected_paths, htlcs)
 		},
 		_ => panic!(),
-	}
+	};
 
 	check_added_monitors(args.expected_paths[0].last().unwrap(), args.expected_paths.len());
 
@@ -4063,17 +4145,35 @@ pub fn pass_claimed_payment_along_route(args: ClaimAlongRouteArgs) -> u64 {
 		}
 	}
 
-	pass_claimed_payment_along_route_from_ev(fwd_amt_msat, per_path_msgs, args)
+	pass_claimed_payment_along_route_from_ev_with_path_amounts(
+		per_path_claim_amt_msats,
+		per_path_msgs,
+		args,
+	)
 }
 
 pub fn pass_claimed_payment_along_route_from_ev(
 	each_htlc_claim_amt_msat: u64,
+	per_path_msgs: Vec<((msgs::UpdateFulfillHTLC, Vec<msgs::CommitmentSigned>), PublicKey)>,
+	args: ClaimAlongRouteArgs,
+) -> u64 {
+	let per_path_claim_amt_msats = vec![each_htlc_claim_amt_msat; args.expected_paths.len()];
+	pass_claimed_payment_along_route_from_ev_with_path_amounts(
+		per_path_claim_amt_msats,
+		per_path_msgs,
+		args,
+	)
+}
+
+fn pass_claimed_payment_along_route_from_ev_with_path_amounts(
+	per_path_claim_amt_msats: Vec<u64>,
 	mut per_path_msgs: Vec<((msgs::UpdateFulfillHTLC, Vec<msgs::CommitmentSigned>), PublicKey)>,
 	args: ClaimAlongRouteArgs,
 ) -> u64 {
 	let ClaimAlongRouteArgs {
 		origin_node,
 		expected_paths,
+		dummy_tlvs,
 		expected_extra_fees,
 		expected_min_htlc_overpay,
 		skip_last,
@@ -4081,13 +4181,23 @@ pub fn pass_claimed_payment_along_route_from_ev(
 		allow_1_msat_fee_overpay,
 		..
 	} = args;
+	assert_eq!(dummy_tlvs.len(), expected_paths.len());
 
-	let mut fwd_amt_msat = each_htlc_claim_amt_msat;
 	let mut expected_total_fee_msat = 0;
 
-	for (i, (expected_route, (path_msgs, next_hop))) in
-		expected_paths.iter().zip(per_path_msgs.drain(..)).enumerate()
+	for (i, (((expected_route, path_claim_amt_msat), path_dummy_tlvs), (path_msgs, next_hop))) in
+		expected_paths
+			.iter()
+			.zip(per_path_claim_amt_msats.into_iter())
+			.zip(dummy_tlvs.into_iter())
+			.zip(per_path_msgs.drain(..))
+			.enumerate()
 	{
+		let mut fwd_amt_msat = path_claim_amt_msat;
+		let dummy_hops_fee_msat = dummy_hops_total_fee_msat(fwd_amt_msat, &path_dummy_tlvs);
+		expected_total_fee_msat += dummy_hops_fee_msat;
+		fwd_amt_msat += dummy_hops_fee_msat;
+
 		let mut next_msgs = Some(path_msgs);
 		let mut expected_next_node = next_hop;
 

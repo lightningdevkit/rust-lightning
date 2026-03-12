@@ -261,7 +261,10 @@ fn one_hop_blinded_path_with_dummy_hops() {
 		.with_payment_secret(payment_secret);
 
 	do_pass_along_path(args);
-	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage);
+	let path: &[&[&Node<'_, '_, '_>]] = &[&[&nodes[1]]];
+	let claim_args =
+		ClaimAlongRouteArgs::new(&nodes[0], path, payment_preimage).with_dummy_tlvs(&dummy_tlvs);
+	claim_payment_along_route(claim_args);
 }
 
 #[test]
