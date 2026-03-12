@@ -2124,6 +2124,10 @@ impl HTLCFailReason {
 				let mut err = err.clone();
 				let hold_time = hold_time.unwrap_or(0);
 
+				if let Some(secondary_shared_secret) = secondary_shared_secret {
+					process_failure_packet(&mut err, secondary_shared_secret, hold_time);
+					crypt_failure_packet(secondary_shared_secret, &mut err);
+				}
 				process_failure_packet(&mut err, incoming_packet_shared_secret, hold_time);
 				crypt_failure_packet(incoming_packet_shared_secret, &mut err);
 
