@@ -229,7 +229,9 @@ fn has_output(
 	let dust_limit_msat = broadcaster_dust_limit_satoshis * 1000;
 	let has_no_output = real_holder_balance_msat < dust_limit_msat
 		&& real_counterparty_balance_msat < dust_limit_msat
-		&& nondust_htlc_count == 0;
+		&& nondust_htlc_count == 0
+		// 0FC channels always have a P2A output on the commitment transaction
+		&& !channel_type.supports_anchor_zero_fee_commitments();
 	!has_no_output
 }
 

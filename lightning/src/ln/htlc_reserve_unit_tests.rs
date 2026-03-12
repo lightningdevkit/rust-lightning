@@ -2640,10 +2640,6 @@ fn test_zero_reserve_no_outputs() {
 	assert_eq!(channel_type, ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies());
 
 	let channel_type =
-		do_test_zero_reserve_no_outputs(config.clone(), NoOutputs::ReceiverCanAcceptHTLCA);
-	assert_eq!(channel_type, ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies());
-
-	let channel_type =
 		do_test_zero_reserve_no_outputs(config.clone(), NoOutputs::FailsReceiverUpdateAddHTLC);
 	assert_eq!(channel_type, ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies());
 
@@ -2652,14 +2648,6 @@ fn test_zero_reserve_no_outputs() {
 	config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
 
 	let channel_type = do_test_zero_reserve_no_outputs(config.clone(), NoOutputs::PaymentSucceeds);
-	assert_eq!(channel_type, ChannelTypeFeatures::anchors_zero_fee_commitments());
-
-	let channel_type =
-		do_test_zero_reserve_no_outputs(config.clone(), NoOutputs::ReceiverCanAcceptHTLCA);
-	assert_eq!(channel_type, ChannelTypeFeatures::anchors_zero_fee_commitments());
-
-	let channel_type =
-		do_test_zero_reserve_no_outputs(config.clone(), NoOutputs::FailsReceiverUpdateAddHTLC);
 	assert_eq!(channel_type, ChannelTypeFeatures::anchors_zero_fee_commitments());
 }
 
@@ -2886,33 +2874,31 @@ fn do_test_zero_reserve_no_outputs(
 
 		match no_outputs_case {
 			NoOutputs::PaymentSucceeds => (sender_amount_msat, sender_amount_msat),
-			NoOutputs::ReceiverCanAcceptHTLCA => (sender_amount_msat, sender_amount_msat),
+			NoOutputs::ReceiverCanAcceptHTLCA => panic!("This case is not run"),
 			NoOutputs::ReceiverCanAcceptHTLCB => panic!("This case is not run"),
 			NoOutputs::FailsReceiverUpdateAddHTLC => (sender_amount_msat, sender_amount_msat - 1),
 		}
 	} else if channel_type == ChannelTypeFeatures::anchors_zero_fee_commitments() {
 		// We can afford to send a non-dust HTLC
 		assert!(channel_value_sat > dust_limit_satoshis);
-		// But sending the biggest dust HTLC possible trims our balance output!
-		let max_dust_htlc = dust_limit_satoshis - 1;
-		assert!(channel_value_sat - max_dust_htlc < dust_limit_satoshis);
-		// So we can *only* send non-dust HTLCs
+		// Sending the biggest dust HTLC possible trims our balance output!
+		let max_dust_htlc_sat = dust_limit_satoshis - 1;
+		assert!(channel_value_sat - max_dust_htlc_sat < dust_limit_satoshis);
+		// But we'll always have the P2A output on the commitment, so we are free to send any size HTLC,
+		// including those that result in only a single output on the commitment, the P2A output.
 		let details_0 = &nodes[0].node.list_channels()[0];
-		assert_eq!(details_0.next_outbound_htlc_minimum_msat, dust_limit_satoshis * 1000);
+		assert_eq!(details_0.next_outbound_htlc_minimum_msat, 1000);
 		// 0FC + 0-reserve baby!
 		assert_eq!(details_0.next_outbound_htlc_limit_msat, channel_value_sat * 1000);
 
-		// Send the smallest non-dust HTLC possible, this will pass both holder and counterparty validation
-		//
-		// One msat below the non-dust HTLC value will break counterparty validation at
-		// `validate_update_add_htlc`.
-		let sender_amount_msat = dust_limit_satoshis * 1000;
+		// Send the max size dust HTLC; this results in a commitment with only the P2A output present
+		let sender_amount_msat = max_dust_htlc_sat * 1000;
 
 		match no_outputs_case {
 			NoOutputs::PaymentSucceeds => (sender_amount_msat, sender_amount_msat),
-			NoOutputs::ReceiverCanAcceptHTLCA => (sender_amount_msat, sender_amount_msat),
+			NoOutputs::ReceiverCanAcceptHTLCA => panic!("This case is not run"),
 			NoOutputs::ReceiverCanAcceptHTLCB => panic!("This case is not run"),
-			NoOutputs::FailsReceiverUpdateAddHTLC => (sender_amount_msat, sender_amount_msat - 1),
+			NoOutputs::FailsReceiverUpdateAddHTLC => panic!("This case is not run"),
 		}
 	} else {
 		panic!("Unexpected channel type");
@@ -3093,37 +3079,32 @@ fn do_test_zero_reserve_no_outputs(
 		nodes[1].node.handle_revoke_and_ack(node_a_id, &raa_msg);
 		expect_and_process_pending_htlcs(&nodes[1], false);
 
-		if channel_type == ChannelTypeFeatures::only_static_remote_key() {
-			expect_htlc_handling_failed_destinations!(
-				nodes[1].node.get_and_clear_pending_events(),
-				&[HTLCHandlingFailureType::Receive { payment_hash }]
-			);
+		expect_htlc_handling_failed_destinations!(
+			nodes[1].node.get_and_clear_pending_events(),
+			&[HTLCHandlingFailureType::Receive { payment_hash }]
+		);
 
-			let events = nodes[1].node.get_and_clear_pending_msg_events();
-			assert_eq!(events.len(), 1);
+		let events = nodes[1].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
 
-			// Make sure the HTLC failed in the way we expect.
-			match events[0] {
-				MessageSendEvent::UpdateHTLCs {
-					updates: msgs::CommitmentUpdate { ref update_fail_htlcs, .. },
-					..
-				} => {
-					assert_eq!(update_fail_htlcs.len(), 1);
-					update_fail_htlcs[0].clone()
-				},
-				_ => panic!("Unexpected event"),
-			};
-			nodes[1].logger.assert_log(
-				"lightning::ln::channel",
-				"Attempting to fail HTLC due to balance exhausted on remote commitment".to_string(),
-				1,
-			);
+		// Make sure the HTLC failed in the way we expect.
+		match events[0] {
+			MessageSendEvent::UpdateHTLCs {
+				updates: msgs::CommitmentUpdate { ref update_fail_htlcs, .. },
+				..
+			} => {
+				assert_eq!(update_fail_htlcs.len(), 1);
+				update_fail_htlcs[0].clone()
+			},
+			_ => panic!("Unexpected event"),
+		};
+		nodes[1].logger.assert_log(
+			"lightning::ln::channel",
+			"Attempting to fail HTLC due to balance exhausted on remote commitment".to_string(),
+			1,
+		);
 
-			check_added_monitors(&nodes[1], 3);
-		} else {
-			expect_payment_claimable!(nodes[1], payment_hash, payment_secret, receiver_amount_msat);
-			check_added_monitors(&nodes[1], 2);
-		}
+		check_added_monitors(&nodes[1], 3);
 	}
 
 	channel_type
