@@ -70,8 +70,6 @@ use core::future::Future;
 use core::ops::Deref;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-pub(crate) mod type_resolver;
-
 pub mod ecdsa;
 pub mod tx_builder;
 
@@ -1088,7 +1086,8 @@ pub type DynSignerProvider = dyn SignerProvider<EcdsaSigner = InMemorySigner>;
 /// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 /// [`MonitorUpdatingPersister`]: crate::util::persist::MonitorUpdatingPersister
 pub trait SignerProvider {
-	/// A type which implements [`EcdsaChannelSigner`] which will be returned by [`Self::derive_channel_signer`].
+	/// A type which implements [`EcdsaChannelSigner`] which will be returned by
+	/// [`Self::derive_channel_signer`].
 	type EcdsaSigner: EcdsaChannelSigner;
 
 	/// Generates a unique `channel_keys_id` that can be used to obtain a [`Self::EcdsaSigner`] through

@@ -48,6 +48,7 @@ use crate::routing::gossip::{NetworkGraph, NetworkUpdate};
 use crate::routing::router::{
 	get_route, Path, PaymentParameters, Route, RouteHop, RouteParameters,
 };
+use crate::sign::ChannelSigner;
 use crate::sign::{EntropySource, OutputSpender, SignerProvider};
 use crate::types::features::{ChannelFeatures, ChannelTypeFeatures, NodeFeatures};
 use crate::types::payment::{PaymentHash, PaymentSecret};
@@ -6681,16 +6682,15 @@ pub fn test_counterparty_raa_skip_no_crash() {
 		const INITIAL_COMMITMENT_NUMBER: u64 = (1 << 48) - 1;
 
 		// Make signer believe we got a counterparty signature, so that it allows the revocation
-		keys.as_ecdsa().unwrap().get_enforcement_state().last_holder_commitment -= 1;
-		per_commitment_secret =
-			keys.as_ref().release_commitment_secret(INITIAL_COMMITMENT_NUMBER).unwrap();
+		keys.get_enforcement_state().last_holder_commitment -= 1;
+		per_commitment_secret = keys.release_commitment_secret(INITIAL_COMMITMENT_NUMBER).unwrap();
 
 		// Must revoke without gaps
-		keys.as_ecdsa().unwrap().get_enforcement_state().last_holder_commitment -= 1;
-		keys.as_ref().release_commitment_secret(INITIAL_COMMITMENT_NUMBER - 1).unwrap();
+		keys.get_enforcement_state().last_holder_commitment -= 1;
+		keys.release_commitment_secret(INITIAL_COMMITMENT_NUMBER - 1).unwrap();
 
-		keys.as_ecdsa().unwrap().get_enforcement_state().last_holder_commitment -= 1;
-		let sec = keys.as_ref().release_commitment_secret(INITIAL_COMMITMENT_NUMBER - 2).unwrap();
+		keys.get_enforcement_state().last_holder_commitment -= 1;
+		let sec = keys.release_commitment_secret(INITIAL_COMMITMENT_NUMBER - 2).unwrap();
 		let key = SecretKey::from_slice(&sec).unwrap();
 		next_per_commitment_point = PublicKey::from_secret_key(&Secp256k1::new(), &key);
 	}
