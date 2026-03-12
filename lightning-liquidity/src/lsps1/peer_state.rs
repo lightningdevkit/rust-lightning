@@ -353,10 +353,6 @@ impl PeerState {
 		self.pending_requests.remove(request_id).ok_or(PeerStateError::UnknownRequestId)
 	}
 
-	pub(super) fn pending_request_count(&self) -> usize {
-		self.pending_requests.len()
-	}
-
 	pub(super) fn pending_requests_and_unpaid_orders(&self) -> usize {
 		let pending_requests = self.pending_requests.len();
 		// We exclude paid and completed orders.
