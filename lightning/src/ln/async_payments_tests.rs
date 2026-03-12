@@ -11,7 +11,9 @@ use crate::blinded_path::message::{
 	BlindedMessagePath, MessageContext, NextMessageHop, OffersContext,
 };
 use crate::blinded_path::payment::{AsyncBolt12OfferContext, BlindedPaymentTlvs};
-use crate::blinded_path::payment::{DummyTlvs, PaymentContext};
+use crate::blinded_path::payment::{
+	DummyTlvs, PaymentContext, DEFAULT_DUMMY_HOP_CLTV_EXPIRY_DELTA,
+};
 use crate::chain::channelmonitor::{HTLC_FAIL_BACK_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS};
 use crate::events::{
 	Event, EventsProvider, HTLCHandlingFailureReason, HTLCHandlingFailureType, PaidBolt12Invoice,
@@ -3034,11 +3036,16 @@ fn held_htlc_timeout() {
 	// Extract the release_htlc_om, but don't deliver it to the sender's LSP.
 	let _ = extract_release_htlc_oms(recipient, &[sender, sender_lsp, invoice_server]);
 
+	// Dummy hops add to the blinded path's total advertised CLTV delta.
+	let additional_cltv_expiry =
+		DEFAULT_PAYMENT_DUMMY_HOPS as u32 * DEFAULT_DUMMY_HOP_CLTV_EXPIRY_DELTA as u32;
+
 	// Connect blocks to the sender's LSP until they timeout the HTLC.
 	connect_blocks(
 		sender_lsp,
 		MIN_CLTV_EXPIRY_DELTA as u32
 			+ TEST_FINAL_CLTV
+			+ additional_cltv_expiry
 			+ HTLC_FAIL_BACK_BUFFER
 			+ LATENCY_GRACE_PERIOD_BLOCKS,
 	);
