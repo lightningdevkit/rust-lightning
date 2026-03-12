@@ -854,7 +854,6 @@ mod fuzzy_channelmanager {
 			/// We might be forwarding an incoming payment that was received over MPP, and therefore
 			/// need to store the vector of corresponding `HTLCPreviousHopData` values.
 			previous_hop_data: Vec<HTLCPreviousHopData>,
-			incoming_trampoline_shared_secret: [u8; 32],
 			/// Track outbound payment details once the payment has been dispatched, will be `None`
 			/// when waiting for incoming MPP to accumulate.
 			outbound_payment: Option<TrampolineDispatch>,
@@ -959,14 +958,9 @@ impl core::hash::Hash for HTLCSource {
 				first_hop_htlc_msat.hash(hasher);
 				bolt12_invoice.hash(hasher);
 			},
-			HTLCSource::TrampolineForward {
-				previous_hop_data,
-				incoming_trampoline_shared_secret,
-				outbound_payment,
-			} => {
+			HTLCSource::TrampolineForward { previous_hop_data, outbound_payment } => {
 				2u8.hash(hasher);
 				previous_hop_data.hash(hasher);
-				incoming_trampoline_shared_secret.hash(hasher);
 				if let Some(payment) = outbound_payment {
 					payment.payment_id.hash(hasher);
 					payment.path.hash(hasher);
@@ -9321,11 +9315,7 @@ impl<
 					None,
 				));
 			},
-			HTLCSource::TrampolineForward {
-				previous_hop_data,
-				incoming_trampoline_shared_secret,
-				..
-			} => {
+			HTLCSource::TrampolineForward { previous_hop_data, .. } => {
 				let decoded_onion_failure =
 					onion_error.decode_onion_failure(&self.secp_ctx, &self.logger, &source);
 				log_trace!(
@@ -9337,8 +9327,6 @@ impl<
 						"unknown channel".to_string()
 					},
 				);
-				let incoming_trampoline_shared_secret = Some(*incoming_trampoline_shared_secret);
-
 				// TODO: when we receive a failure from a single outgoing trampoline HTLC, we don't
 				// necessarily want to fail all of our incoming HTLCs back yet. We may have other
 				// outgoing HTLCs that need to resolve first. This will be tracked in our
@@ -9350,6 +9338,7 @@ impl<
 						incoming_packet_shared_secret,
 						blinded_failure,
 						channel_id,
+						trampoline_shared_secret,
 						..
 					} = current_hop_data;
 					log_trace!(
@@ -9361,13 +9350,17 @@ impl<
 						LocalHTLCFailureReason::TemporaryTrampolineFailure,
 						Vec::new(),
 					);
+					debug_assert!(
+						trampoline_shared_secret.is_some(),
+						"trampoline hop should have secret"
+					);
 					push_forward_htlcs_failure(
 						*prev_outbound_scid_alias,
 						get_htlc_forward_failure(
 							blinded_failure,
 							&onion_error,
 							incoming_packet_shared_secret,
-							&incoming_trampoline_shared_secret,
+							&trampoline_shared_secret,
 							&None,
 							*htlc_id,
 						),
@@ -17948,16 +17941,11 @@ impl Writeable for HTLCSource {
 				1u8.write(writer)?;
 				field.write(writer)?;
 			},
-			HTLCSource::TrampolineForward {
-				ref previous_hop_data,
-				incoming_trampoline_shared_secret,
-				ref outbound_payment,
-			} => {
+			HTLCSource::TrampolineForward { ref previous_hop_data, ref outbound_payment } => {
 				2u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(1, *previous_hop_data, required_vec),
-					(3, incoming_trampoline_shared_secret, required),
-					(5, outbound_payment, option),
+					(3, outbound_payment, option),
 				});
 			},
 		}
