@@ -518,6 +518,7 @@ struct OutboundHTLCOutput {
 	state: OutboundHTLCState,
 	source: HTLCSource,
 	blinding_point: Option<PublicKey>,
+	dummy_hops_skimmed_fee_msat: Option<u64>,
 	skimmed_fee_msat: Option<u64>,
 	send_timestamp: Option<Duration>,
 	hold_htlc: Option<()>,
@@ -536,6 +537,7 @@ enum HTLCUpdateAwaitingACK {
 		payment_hash: PaymentHash,
 		source: HTLCSource,
 		onion_routing_packet: msgs::OnionPacket,
+		dummy_hops_skimmed_fee_msat: Option<u64>,
 		// The extra fee we're skimming off the top of this HTLC.
 		skimmed_fee_msat: Option<u64>,
 		blinding_point: Option<PublicKey>,
@@ -8196,6 +8198,7 @@ where
 						ref payment_hash,
 						ref source,
 						ref onion_routing_packet,
+						dummy_hops_skimmed_fee_msat,
 						skimmed_fee_msat,
 						blinding_point,
 						hold_htlc,
@@ -8208,6 +8211,7 @@ where
 							source.clone(),
 							onion_routing_packet.clone(),
 							false,
+							dummy_hops_skimmed_fee_msat,
 							skimmed_fee_msat,
 							blinding_point,
 							hold_htlc.is_some(),
@@ -9521,6 +9525,7 @@ where
 					payment_hash: htlc.payment_hash,
 					cltv_expiry: htlc.cltv_expiry,
 					onion_routing_packet: (**onion_packet).clone(),
+					dummy_hops_skimmed_fee_msat: htlc.dummy_hops_skimmed_fee_msat,
 					skimmed_fee_msat: htlc.skimmed_fee_msat,
 					blinding_point: htlc.blinding_point,
 					hold_htlc: htlc.hold_htlc,
@@ -12380,7 +12385,8 @@ where
 	/// commitment update.
 	pub fn queue_add_htlc<F: FeeEstimator, L: Logger>(
 		&mut self, amount_msat: u64, payment_hash: PaymentHash, cltv_expiry: u32,
-		source: HTLCSource, onion_routing_packet: msgs::OnionPacket, skimmed_fee_msat: Option<u64>,
+		source: HTLCSource, onion_routing_packet: msgs::OnionPacket,
+		dummy_hops_skimmed_fee_msat: Option<u64>, skimmed_fee_msat: Option<u64>,
 		blinding_point: Option<PublicKey>, accountable: bool,
 		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
 	) -> Result<(), (LocalHTLCFailureReason, String)> {
@@ -12391,6 +12397,7 @@ where
 			source,
 			onion_routing_packet,
 			true,
+			dummy_hops_skimmed_fee_msat,
 			skimmed_fee_msat,
 			blinding_point,
 			// This method is only called for forwarded HTLCs, which are never held at the next hop
@@ -12426,8 +12433,9 @@ where
 	fn send_htlc<F: FeeEstimator, L: Logger>(
 		&mut self, amount_msat: u64, payment_hash: PaymentHash, cltv_expiry: u32,
 		source: HTLCSource, onion_routing_packet: msgs::OnionPacket, mut force_holding_cell: bool,
-		skimmed_fee_msat: Option<u64>, blinding_point: Option<PublicKey>, hold_htlc: bool,
-		accountable: bool, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
+		dummy_hops_skimmed_fee_msat: Option<u64>, skimmed_fee_msat: Option<u64>,
+		blinding_point: Option<PublicKey>, hold_htlc: bool, accountable: bool,
+		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
 	) -> Result<bool, (LocalHTLCFailureReason, String)> {
 		if !matches!(self.context.channel_state, ChannelState::ChannelReady(_))
 			|| self.context.channel_state.is_local_shutdown_sent()
@@ -12507,6 +12515,7 @@ where
 				cltv_expiry,
 				source,
 				onion_routing_packet,
+				dummy_hops_skimmed_fee_msat,
 				skimmed_fee_msat,
 				blinding_point,
 				hold_htlc: hold_htlc.then(|| ()),
@@ -12530,6 +12539,7 @@ where
 			state: OutboundHTLCState::LocalAnnounced(Box::new(onion_routing_packet.clone())),
 			source,
 			blinding_point,
+			dummy_hops_skimmed_fee_msat,
 			skimmed_fee_msat,
 			send_timestamp,
 			hold_htlc: hold_htlc.then(|| ()),
@@ -12772,9 +12782,9 @@ where
 	/// [`Self::send_htlc`] and [`Self::build_commitment_no_state_update`] for more info.
 	pub fn send_htlc_and_commit<F: FeeEstimator, L: Logger>(
 		&mut self, amount_msat: u64, payment_hash: PaymentHash, cltv_expiry: u32,
-		source: HTLCSource, onion_routing_packet: msgs::OnionPacket, skimmed_fee_msat: Option<u64>,
-		hold_htlc: bool, accountable: bool, fee_estimator: &LowerBoundedFeeEstimator<F>,
-		logger: &L,
+		source: HTLCSource, onion_routing_packet: msgs::OnionPacket,
+		dummy_hops_skimmed_fee_msat: Option<u64>, skimmed_fee_msat: Option<u64>, hold_htlc: bool,
+		accountable: bool, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
 	) -> Result<Option<ChannelMonitorUpdate>, ChannelError> {
 		let send_res = self.send_htlc(
 			amount_msat,
@@ -12783,6 +12793,7 @@ where
 			source,
 			onion_routing_packet,
 			false,
+			dummy_hops_skimmed_fee_msat,
 			skimmed_fee_msat,
 			None,
 			hold_htlc,
@@ -14409,6 +14420,7 @@ impl<SP: SignerProvider> Writeable for FundedChannel<SP> {
 		// but we still serialize the option to maintain backwards compatibility
 		let mut preimages: Vec<Option<&PaymentPreimage>> = vec![];
 		let mut fulfill_attribution_data = vec![];
+		let mut pending_outbound_dummy_hops_skimmed_fees: Vec<Option<u64>> = Vec::new();
 		let mut pending_outbound_skimmed_fees: Vec<Option<u64>> = Vec::new();
 		let mut pending_outbound_blinding_points: Vec<Option<PublicKey>> = Vec::new();
 		let mut pending_outbound_held_htlc_flags: Vec<Option<()>> = Vec::new();
@@ -14453,6 +14465,7 @@ impl<SP: SignerProvider> Writeable for FundedChannel<SP> {
 					reason.write(writer)?;
 				},
 			}
+			pending_outbound_dummy_hops_skimmed_fees.push(htlc.dummy_hops_skimmed_fee_msat);
 			pending_outbound_skimmed_fees.push(htlc.skimmed_fee_msat);
 			pending_outbound_blinding_points.push(htlc.blinding_point);
 			pending_outbound_held_htlc_flags.push(htlc.hold_htlc);
@@ -14460,6 +14473,8 @@ impl<SP: SignerProvider> Writeable for FundedChannel<SP> {
 		}
 
 		let holding_cell_htlc_update_count = self.context.holding_cell_htlc_updates.len();
+		let mut holding_cell_dummy_hops_skimmed_fees: Vec<Option<u64>> =
+			Vec::with_capacity(holding_cell_htlc_update_count);
 		let mut holding_cell_skimmed_fees: Vec<Option<u64>> =
 			Vec::with_capacity(holding_cell_htlc_update_count);
 		let mut holding_cell_blinding_points: Vec<Option<PublicKey>> =
@@ -14481,6 +14496,7 @@ impl<SP: SignerProvider> Writeable for FundedChannel<SP> {
 					ref payment_hash,
 					ref source,
 					ref onion_routing_packet,
+					dummy_hops_skimmed_fee_msat,
 					blinding_point,
 					skimmed_fee_msat,
 					hold_htlc,
@@ -14493,6 +14509,7 @@ impl<SP: SignerProvider> Writeable for FundedChannel<SP> {
 					source.write(writer)?;
 					onion_routing_packet.write(writer)?;
 
+					holding_cell_dummy_hops_skimmed_fees.push(dummy_hops_skimmed_fee_msat);
 					holding_cell_skimmed_fees.push(skimmed_fee_msat);
 					holding_cell_blinding_points.push(blinding_point);
 					holding_cell_held_htlc_flags.push(hold_htlc);
@@ -14737,6 +14754,7 @@ impl<SP: SignerProvider> Writeable for FundedChannel<SP> {
 			(28, holder_max_accepted_htlcs, option),
 			(29, self.context.temporary_channel_id, option),
 			(31, channel_pending_event_emitted, option),
+			(33, pending_outbound_dummy_hops_skimmed_fees, optional_vec), // Added in 0.3
 			(35, pending_outbound_skimmed_fees, optional_vec),
 			(37, holding_cell_skimmed_fees, optional_vec),
 			(38, self.context.is_batch_funding, option),
@@ -14764,6 +14782,7 @@ impl<SP: SignerProvider> Writeable for FundedChannel<SP> {
 			(75, inbound_committed_update_adds, optional_vec),
 			(77, holding_cell_accountable_flags, optional_vec), // Added in 0.3
 			(79, pending_outbound_accountable, optional_vec), // Added in 0.3
+			(81, holding_cell_dummy_hops_skimmed_fees, optional_vec), // Added in 0.3
 		});
 
 		Ok(())
@@ -14924,6 +14943,7 @@ impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
 					},
 					_ => return Err(DecodeError::InvalidValue),
 				},
+				dummy_hops_skimmed_fee_msat: None,
 				skimmed_fee_msat: None,
 				blinding_point: None,
 				send_timestamp: None,
@@ -14945,6 +14965,7 @@ impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
 					payment_hash: Readable::read(reader)?,
 					source: Readable::read(reader)?,
 					onion_routing_packet: Readable::read(reader)?,
+					dummy_hops_skimmed_fee_msat: None,
 					skimmed_fee_msat: None,
 					blinding_point: None,
 					hold_htlc: None,
@@ -15117,7 +15138,9 @@ impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
 		let mut blocked_monitor_updates = Some(Vec::new());
 
 		let mut pending_outbound_skimmed_fees_opt: Option<Vec<Option<u64>>> = None;
+		let mut pending_outbound_dummy_hops_skimmed_fees_opt: Option<Vec<Option<u64>>> = None;
 		let mut holding_cell_skimmed_fees_opt: Option<Vec<Option<u64>>> = None;
+		let mut holding_cell_dummy_hops_skimmed_fees_opt: Option<Vec<Option<u64>>> = None;
 
 		let mut is_batch_funding: Option<()> = None;
 
@@ -15180,6 +15203,7 @@ impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
 			(28, holder_max_accepted_htlcs, option),
 			(29, temporary_channel_id, option),
 			(31, channel_pending_event_emitted, option),
+			(33, pending_outbound_dummy_hops_skimmed_fees_opt, optional_vec),
 			(35, pending_outbound_skimmed_fees_opt, optional_vec),
 			(37, holding_cell_skimmed_fees_opt, optional_vec),
 			(38, is_batch_funding, option),
@@ -15207,6 +15231,7 @@ impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
 			(75, inbound_committed_update_adds_opt, optional_vec),
 			(77, holding_cell_accountable, optional_vec), // Added in 0.3
 			(79, pending_outbound_accountable, optional_vec), // Added in 0.3
+			(81, holding_cell_dummy_hops_skimmed_fees_opt, optional_vec),
 		});
 
 		let holder_signer = signer_provider.derive_channel_signer(channel_keys_id);
@@ -15264,12 +15289,35 @@ impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
 
 		let holder_max_accepted_htlcs = holder_max_accepted_htlcs.unwrap_or(DEFAULT_MAX_HTLCS);
 
+		if let Some(dummy_hops_skimmed_fees) = pending_outbound_dummy_hops_skimmed_fees_opt {
+			let mut iter = dummy_hops_skimmed_fees.into_iter();
+			for htlc in pending_outbound_htlcs.iter_mut() {
+				htlc.dummy_hops_skimmed_fee_msat = iter.next().ok_or(DecodeError::InvalidValue)?;
+			}
+			if iter.next().is_some() {
+				return Err(DecodeError::InvalidValue);
+			}
+		}
 		if let Some(skimmed_fees) = pending_outbound_skimmed_fees_opt {
 			let mut iter = skimmed_fees.into_iter();
 			for htlc in pending_outbound_htlcs.iter_mut() {
 				htlc.skimmed_fee_msat = iter.next().ok_or(DecodeError::InvalidValue)?;
 			}
 			// We expect all skimmed fees to be consumed above
+			if iter.next().is_some() {
+				return Err(DecodeError::InvalidValue);
+			}
+		}
+		if let Some(dummy_hops_skimmed_fees) = holding_cell_dummy_hops_skimmed_fees_opt {
+			let mut iter = dummy_hops_skimmed_fees.into_iter();
+			for htlc in holding_cell_htlc_updates.iter_mut() {
+				if let HTLCUpdateAwaitingACK::AddHTLC {
+					ref mut dummy_hops_skimmed_fee_msat, ..
+				} = htlc
+				{
+					*dummy_hops_skimmed_fee_msat = iter.next().ok_or(DecodeError::InvalidValue)?;
+				}
+			}
 			if iter.next().is_some() {
 				return Err(DecodeError::InvalidValue);
 			}
@@ -15953,11 +16001,12 @@ mod tests {
 				path: Path { hops: Vec::new(), blinded_tail: None },
 				session_priv: SecretKey::from_slice(&<Vec<u8>>::from_hex("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap(),
 				first_hop_htlc_msat: 548,
-				payment_id: PaymentId([42; 32]),
-				bolt12_invoice: None,
-			},
-			skimmed_fee_msat: None,
-			blinding_point: None,
+			payment_id: PaymentId([42; 32]),
+			bolt12_invoice: None,
+		},
+		dummy_hops_skimmed_fee_msat: None,
+		skimmed_fee_msat: None,
+		blinding_point: None,
 			send_timestamp: None,
 			hold_htlc: None,
 			accountable: false,
@@ -16414,6 +16463,7 @@ mod tests {
 			cltv_expiry: 0,
 			state: OutboundHTLCState::Committed,
 			source: dummy_htlc_source.clone(),
+			dummy_hops_skimmed_fee_msat: None,
 			skimmed_fee_msat: None,
 			blinding_point: None,
 			send_timestamp: None,
@@ -16424,6 +16474,9 @@ mod tests {
 		for (idx, htlc) in pending_outbound_htlcs.iter_mut().enumerate() {
 			if idx % 2 == 0 {
 				htlc.blinding_point = Some(test_utils::pubkey(42 + idx as u8));
+			}
+			if idx % 4 == 0 {
+				htlc.dummy_hops_skimmed_fee_msat = Some(2);
 			}
 			if idx % 3 == 0 {
 				htlc.skimmed_fee_msat = Some(1);
@@ -16442,6 +16495,7 @@ mod tests {
 				hop_data: [0; 20 * 65],
 				hmac: [0; 32],
 			},
+			dummy_hops_skimmed_fee_msat: None,
 			skimmed_fee_msat: None,
 			blinding_point: None,
 			hold_htlc: None,
@@ -16480,11 +16534,13 @@ mod tests {
 					let mut dummy_add = dummy_holding_cell_add_htlc.clone();
 					if let HTLCUpdateAwaitingACK::AddHTLC {
 						ref mut blinding_point,
+						ref mut dummy_hops_skimmed_fee_msat,
 						ref mut skimmed_fee_msat,
 						..
 					} = &mut dummy_add
 					{
 						*blinding_point = Some(test_utils::pubkey(42 + i));
+						*dummy_hops_skimmed_fee_msat = Some(41);
 						*skimmed_fee_msat = Some(42);
 					} else {
 						panic!()

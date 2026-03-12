@@ -758,6 +758,8 @@ pub struct UpdateAddHTLC {
 	///
 	/// [`ChannelConfig::accept_underpaying_htlcs`]: crate::util::config::ChannelConfig::accept_underpaying_htlcs
 	pub skimmed_fee_msat: Option<u64>,
+	/// The extra fees skimmed by the Dummy Hop
+	pub dummy_hops_skimmed_fee_msat: Option<u64>,
 	/// The onion routing packet with encrypted data for the next hop.
 	pub onion_routing_packet: OnionPacket,
 	/// Provided if we are relaying or receiving a payment within a blinded path, to decrypt the onion
@@ -3633,6 +3635,7 @@ impl_writeable_msg!(UpdateAddHTLC, {
 }, {
 	(0, blinding_point, option),
 	(65537, skimmed_fee_msat, option),
+	(65539, dummy_hops_skimmed_fee_msat, option),
 	// TODO: currently we may fail to read the `ChannelManager` if we write a new even TLV in this message
 	// and then downgrade. Once this is fixed, update the type here to match BOLTs PR 989.
 	(75537, hold_htlc, option),
@@ -6151,6 +6154,7 @@ mod tests {
 			payment_hash: PaymentHash([1; 32]),
 			cltv_expiry: 821716,
 			onion_routing_packet,
+			dummy_hops_skimmed_fee_msat: None,
 			skimmed_fee_msat: None,
 			blinding_point: None,
 			hold_htlc: None,
@@ -7050,6 +7054,7 @@ mod tests {
 			amount_msat: 1000,
 			payment_hash: PaymentHash([1; 32]),
 			cltv_expiry: 500000,
+			dummy_hops_skimmed_fee_msat: None,
 			skimmed_fee_msat: None,
 			onion_routing_packet: msgs::OnionPacket {
 				version: 0,
