@@ -2229,8 +2229,6 @@ where
 						splice_input_index as usize,
 						&context.secp_ctx,
 					),
-					#[cfg(taproot)]
-					ChannelSignerType::Taproot(_) => todo!(),
 				};
 				Some(sig)
 			} else {
@@ -5988,13 +5986,9 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 
 		// We sign "counterparty" commitment transaction, allowing them to broadcast the tx if they wish.
 		let signature = match &self.holder_signer {
-			// TODO (arik): move match into calling method for Taproot
 			ChannelSignerType::Ecdsa(ecdsa) => ecdsa.sign_counterparty_commitment(
 				channel_parameters, &counterparty_initial_commitment_tx, Vec::new(), Vec::new(), &self.secp_ctx
 			).ok(),
-			// TODO (taproot|arik)
-			#[cfg(taproot)]
-			_ => todo!()
 		};
 
 		if signature.is_some() && self.signer_pending_funding {
@@ -6104,7 +6098,6 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		);
 		let counterparty_initial_commitment_tx = commitment_data.tx;
 		match self.holder_signer {
-			// TODO (taproot|arik): move match into calling method for Taproot
 			ChannelSignerType::Ecdsa(ref ecdsa) => {
 				let channel_parameters = &funding.channel_transaction_parameters;
 				ecdsa
@@ -6117,9 +6110,6 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 					)
 					.ok()
 			},
-			// TODO (taproot|arik)
-			#[cfg(taproot)]
-			_ => todo!(),
 		}
 	}
 
@@ -8427,9 +8417,6 @@ where
 						ChannelError::close("Failed to validate revocation from peer".to_owned())
 					})?;
 			},
-			// TODO (taproot|arik)
-			#[cfg(taproot)]
-			_ => todo!(),
 		};
 
 		self.context
@@ -10384,9 +10371,6 @@ where
 					&self.context.secp_ctx,
 				)
 				.ok(),
-			// TODO (taproot|arik)
-			#[cfg(taproot)]
-			_ => todo!(),
 		};
 		if sig.is_none() {
 			log_trace!(logger, "Closing transaction signature unavailable, waiting on signer");
@@ -11505,10 +11489,7 @@ where
 					node_signature: our_node_sig,
 					bitcoin_signature: our_bitcoin_sig,
 				})
-			},
-			// TODO (taproot|arik)
-			#[cfg(taproot)]
-			_ => todo!()
+			}
 		}
 	}
 
@@ -11538,10 +11519,7 @@ where
 						bitcoin_signature_2: if were_node_one { their_bitcoin_sig } else { our_bitcoin_sig },
 						contents: announcement,
 					})
-				},
-				// TODO (taproot|arik)
-				#[cfg(taproot)]
-				_ => todo!()
+				}
 			}
 		} else {
 			Err(ChannelError::Ignore("Attempted to sign channel announcement before we'd received announcement_signatures".to_string()))
@@ -11883,8 +11861,6 @@ where
 			(Some(prev_funding_txid), ChannelSignerType::Ecdsa(ecdsa)) => {
 				ecdsa.new_funding_pubkey(prev_funding_txid, &self.context.secp_ctx)
 			},
-			#[cfg(taproot)]
-			_ => todo!(),
 		};
 
 		let funding_feerate_per_kw = context.funding_feerate_sat_per_1000_weight;
@@ -11989,8 +11965,6 @@ where
 			(Some(prev_funding_txid), ChannelSignerType::Ecdsa(ecdsa)) => {
 				ecdsa.new_funding_pubkey(prev_funding_txid, &self.context.secp_ctx)
 			},
-			#[cfg(taproot)]
-			_ => todo!(),
 		};
 		let mut new_keys = self.funding.get_holder_pubkeys().clone();
 		new_keys.funding_pubkey = funding_pubkey;
@@ -12758,11 +12732,8 @@ where
 					#[cfg(taproot)]
 					partial_signature_with_nonce: None,
 				})
-			},
-			// TODO (taproot|arik)
-			#[cfg(taproot)]
-			_ => todo!()
-		}
+				}
+			}
 	}
 
 	/// Adds a pending outbound HTLC to this channel, and builds a new remote commitment
@@ -13319,15 +13290,11 @@ impl<SP: SignerProvider> OutboundV1Channel<SP> {
 			&self.context.counterparty_next_commitment_point.unwrap(), false, false, logger);
 		let counterparty_initial_commitment_tx = commitment_data.tx;
 		let signature = match &self.context.holder_signer {
-			// TODO (taproot|arik): move match into calling method for Taproot
 			ChannelSignerType::Ecdsa(ecdsa) => {
 				let channel_parameters = &self.funding.channel_transaction_parameters;
 				ecdsa.sign_counterparty_commitment(channel_parameters, &counterparty_initial_commitment_tx, Vec::new(), Vec::new(), &self.context.secp_ctx)
 					.map(|(sig, _)| sig).ok()
 			},
-			// TODO (taproot|arik)
-			#[cfg(taproot)]
-			_ => todo!()
 		};
 
 		if signature.is_some() && self.context.signer_pending_funding {
@@ -15775,8 +15742,6 @@ mod tests {
 	#[cfg(ldk_test_vectors)]
 	impl SignerProvider for Keys {
 		type EcdsaSigner = InMemorySigner;
-		#[cfg(taproot)]
-		type TaprootSigner = InMemorySigner;
 
 		fn generate_channel_keys_id(&self, _inbound: bool, _user_channel_id: u128) -> [u8; 32] {
 			self.signer.channel_keys_id()

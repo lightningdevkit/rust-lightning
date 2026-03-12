@@ -12,8 +12,6 @@ use crate::ln::inbound_payment::ExpandedKey;
 use crate::ln::msgs::{UnsignedChannelAnnouncement, UnsignedGossipMessage};
 use crate::ln::script::ShutdownScript;
 use crate::sign::ecdsa::EcdsaChannelSigner;
-#[cfg(taproot)]
-use crate::sign::taproot::TaprootChannelSigner;
 use crate::sign::InMemorySigner;
 use crate::sign::{ChannelSigner, ReceiveAuthKey};
 use crate::sign::{EntropySource, HTLCDescriptor, OutputSpender, PhantomKeysManager};
@@ -25,19 +23,12 @@ use bitcoin::absolute::LockTime;
 use bitcoin::secp256k1::All;
 use bitcoin::{secp256k1, ScriptBuf, Transaction, TxOut, Txid};
 use lightning_invoice::RawBolt11Invoice;
-#[cfg(taproot)]
-use musig2::types::{PartialSignature, PublicNonce};
 use secp256k1::ecdsa::RecoverableSignature;
 use secp256k1::{ecdh::SharedSecret, ecdsa::Signature, PublicKey, Scalar, Secp256k1, SecretKey};
 use types::payment::PaymentPreimage;
 
-#[cfg(not(taproot))]
 /// A super-trait for all the traits that a dyn signer backing implements
 pub trait DynSignerTrait: EcdsaChannelSigner + Send + Sync {}
-
-#[cfg(taproot)]
-/// A super-trait for all the traits that a dyn signer backing implements
-pub trait DynSignerTrait: EcdsaChannelSigner + TaprootChannelSigner + Send + Sync {}
 
 /// Helper to allow DynSigner to clone itself
 pub trait InnerSign: DynSignerTrait {
@@ -57,67 +48,6 @@ impl DynSigner {
 	/// Create a new DynSigner
 	pub fn new<S: InnerSign + 'static>(inner: S) -> Self {
 		DynSigner { inner: Box::new(inner) }
-	}
-}
-
-#[cfg(taproot)]
-#[allow(unused_variables)]
-impl TaprootChannelSigner for DynSigner {
-	fn generate_local_nonce_pair(
-		&self, commitment_number: u64, secp_ctx: &Secp256k1<All>,
-	) -> PublicNonce {
-		todo!()
-	}
-
-	fn partially_sign_counterparty_commitment(
-		&self, counterparty_nonce: PublicNonce, commitment_tx: &CommitmentTransaction,
-		inbound_htlc_preimages: Vec<PaymentPreimage>,
-		outbound_htlc_preimages: Vec<PaymentPreimage>, secp_ctx: &Secp256k1<All>,
-	) -> Result<(crate::ln::msgs::PartialSignatureWithNonce, Vec<secp256k1::schnorr::Signature>), ()>
-	{
-		todo!();
-	}
-
-	fn finalize_holder_commitment(
-		&self, commitment_tx: &HolderCommitmentTransaction,
-		counterparty_partial_signature: crate::ln::msgs::PartialSignatureWithNonce,
-		secp_ctx: &Secp256k1<All>,
-	) -> Result<PartialSignature, ()> {
-		todo!();
-	}
-
-	fn sign_justice_revoked_output(
-		&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey,
-		secp_ctx: &Secp256k1<All>,
-	) -> Result<secp256k1::schnorr::Signature, ()> {
-		todo!();
-	}
-
-	fn sign_justice_revoked_htlc(
-		&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey,
-		htlc: &HTLCOutputInCommitment, secp_ctx: &Secp256k1<All>,
-	) -> Result<secp256k1::schnorr::Signature, ()> {
-		todo!();
-	}
-
-	fn sign_holder_htlc_transaction(
-		&self, htlc_tx: &Transaction, input: usize, htlc_descriptor: &HTLCDescriptor,
-		secp_ctx: &Secp256k1<All>,
-	) -> Result<secp256k1::schnorr::Signature, ()> {
-		todo!();
-	}
-
-	fn sign_counterparty_htlc_transaction(
-		&self, htlc_tx: &Transaction, input: usize, amount: u64, per_commitment_point: &PublicKey,
-		htlc: &HTLCOutputInCommitment, secp_ctx: &Secp256k1<All>,
-	) -> Result<secp256k1::schnorr::Signature, ()> {
-		todo!();
-	}
-
-	fn partially_sign_closing_transaction(
-		&self, closing_tx: &ClosingTransaction, secp_ctx: &Secp256k1<All>,
-	) -> Result<PartialSignature, ()> {
-		todo!();
 	}
 }
 
@@ -231,8 +161,6 @@ delegate!(DynKeysInterface, SignerProvider,
 	fn generate_channel_keys_id(, _inbound: bool, _user_channel_id: u128) -> [u8; 32],
 	fn derive_channel_signer(, _channel_keys_id: [u8; 32]) -> Self::EcdsaSigner;
 	type EcdsaSigner = DynSigner,
-	#[cfg(taproot)]
-	type TaprootSigner = DynSigner
 );
 
 delegate!(DynKeysInterface, EntropySource, inner,
@@ -246,22 +174,9 @@ delegate!(DynKeysInterface, OutputSpender, inner,
 		locktime: Option<LockTime>, secp_ctx: &Secp256k1<All>
 	) -> Result<Transaction, ()>
 );
-#[cfg(not(taproot))]
 /// A supertrait for all the traits that a keys interface implements
 pub trait DynKeysInterfaceTrait:
 	NodeSigner + OutputSpender + SignerProvider<EcdsaSigner = DynSigner> + EntropySource + Send + Sync
-{
-}
-
-#[cfg(taproot)]
-/// A supertrait for all the traits that a keys interface implements
-pub trait DynKeysInterfaceTrait:
-	NodeSigner
-	+ OutputSpender
-	+ SignerProvider<EcdsaSigner = DynSigner, TaprootSigner = DynSigner>
-	+ EntropySource
-	+ Send
-	+ Sync
 {
 }
 
@@ -293,8 +208,6 @@ delegate!(DynPhantomKeysInterface, NodeSigner,
 
 impl SignerProvider for DynPhantomKeysInterface {
 	type EcdsaSigner = DynSigner;
-	#[cfg(taproot)]
-	type TaprootSigner = DynSigner;
 
 	fn get_destination_script(&self, channel_keys_id: [u8; 32]) -> Result<ScriptBuf, ()> {
 		self.inner.get_destination_script(channel_keys_id)

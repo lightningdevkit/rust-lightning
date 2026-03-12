@@ -378,17 +378,10 @@ type DynMessageRouter = lightning::onion_message::messenger::DefaultMessageRoute
 	&'static (dyn EntropySource + Send + Sync),
 >;
 
-#[cfg(all(not(c_bindings), not(taproot)))]
+#[cfg(not(c_bindings))]
 type DynSignerProvider = dyn lightning::sign::SignerProvider<EcdsaSigner = lightning::sign::InMemorySigner>
 	+ Send
 	+ Sync;
-
-#[cfg(all(not(c_bindings), taproot))]
-type DynSignerProvider = (dyn lightning::sign::SignerProvider<
-	EcdsaSigner = lightning::sign::InMemorySigner,
-	TaprootSigner = lightning::sign::InMemorySigner,
-> + Send
-     + Sync);
 
 #[cfg(not(c_bindings))]
 type DynChannelManager = lightning::ln::channelmanager::ChannelManager<
