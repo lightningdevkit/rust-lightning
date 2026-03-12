@@ -104,7 +104,7 @@ fn do_test_trampoline_mpp_validation(test_case: Option<TrampolineMppValidationTe
 			mismatch_payment_secret = true;
 			LocalHTLCFailureReason::InvalidTrampolineForward
 		},
-		// We currently reject trampoline forwards once accumulated.
+		// We can't route to the next trampoline as they're unknown.
 		None => LocalHTLCFailureReason::TemporaryTrampolineFailure,
 	};
 
