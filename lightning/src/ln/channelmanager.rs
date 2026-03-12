@@ -231,11 +231,12 @@ pub enum PendingHTLCRouting {
 	},
 	/// An HTLC which should be forwarded on to another Trampoline node.
 	TrampolineForward {
-		/// The onion shared secret we build with the sender (or the preceding Trampoline node) used
-		/// to decrypt the onion.
+		/// The onion shared secret we build with the node that forwarded us this trampoline
+		/// forward (either the original sender, or a preceding Trampoline node), used to decrypt
+		/// the inner trampoline onion.
 		///
 		/// This is later used to encrypt failure packets in the event that the HTLC is failed.
-		incoming_shared_secret: [u8; 32],
+		trampoline_shared_secret: [u8; 32],
 		/// The onion which should be included in the forwarded HTLC, telling the next hop what to
 		/// do with the HTLC.
 		onion_packet: msgs::TrampolineOnionPacket,
@@ -473,6 +474,9 @@ impl PendingAddHTLCInfo {
 		let trampoline_shared_secret = match self.forward_info.routing {
 			PendingHTLCRouting::Receive { trampoline_shared_secret, .. } => {
 				trampoline_shared_secret
+			},
+			PendingHTLCRouting::TrampolineForward { trampoline_shared_secret, .. } => {
+				Some(trampoline_shared_secret)
 			},
 			_ => None,
 		};
@@ -17572,7 +17576,7 @@ impl_writeable_tlv_based_enum!(PendingHTLCRouting,
 		(11, invoice_request, option),
 	},
 	(3, TrampolineForward) => {
-		(0, incoming_shared_secret, required),
+		(0, trampoline_shared_secret, required),
 		(2, onion_packet, required),
 		(4, blinded, option),
 		(6, node_id, required),

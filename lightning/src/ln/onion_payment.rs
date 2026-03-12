@@ -249,7 +249,7 @@ pub(super) fn create_fwd_pending_htlc_info(
 				hmac: next_hop_hmac,
 			};
 			PendingHTLCRouting::TrampolineForward {
-				incoming_shared_secret: shared_secret.secret_bytes(),
+				trampoline_shared_secret: shared_secret.secret_bytes(),
 				onion_packet: outgoing_packet,
 				node_id: next_trampoline,
 				incoming_cltv_expiry: msg.cltv_expiry,
