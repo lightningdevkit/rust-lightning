@@ -4164,6 +4164,7 @@ mod tests {
 			channel_shutdown_state: Some(ChannelShutdownState::NotShuttingDown),
 			pending_inbound_htlcs: Vec::new(),
 			pending_outbound_htlcs: Vec::new(),
+			current_dust_exposure_msat: None,
 		}
 	}
 
@@ -9665,6 +9666,7 @@ pub(crate) mod bench_utils {
 			channel_shutdown_state: Some(ChannelShutdownState::NotShuttingDown),
 			pending_inbound_htlcs: Vec::new(),
 			pending_outbound_htlcs: Vec::new(),
+			current_dust_exposure_msat: None,
 		}
 	}
 

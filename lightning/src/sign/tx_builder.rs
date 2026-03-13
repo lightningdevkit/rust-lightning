@@ -512,6 +512,8 @@ fn get_available_balances(
 		available_capacity_msat = 0;
 	}
 
+	let dust_exposure_msat = cmp::max(local_dust_exposure_msat, remote_dust_exposure_msat);
+
 	#[allow(deprecated)] // TODO: Remove once balance_msat is removed
 	crate::ln::channel::AvailableBalances {
 		inbound_capacity_msat: remote_balance_before_fee_msat
@@ -519,6 +521,7 @@ fn get_available_balances(
 		outbound_capacity_msat,
 		next_outbound_htlc_limit_msat: available_capacity_msat,
 		next_outbound_htlc_minimum_msat,
+		dust_exposure_msat,
 	}
 }
 
