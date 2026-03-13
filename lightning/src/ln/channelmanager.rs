@@ -82,9 +82,7 @@ use crate::ln::onion_utils::{self};
 use crate::ln::onion_utils::{
 	decode_fulfill_attribution_data, HTLCFailReason, LocalHTLCFailureReason,
 };
-use crate::ln::onion_utils::{
-	process_fulfill_attribution_data, AttributionData, DecodedOnionFailure,
-};
+use crate::ln::onion_utils::{process_fulfill_attribution_data, AttributionData};
 use crate::ln::our_peer_storage::{EncryptedOurPeerStorage, PeerStorageMonitorHolder};
 #[cfg(test)]
 use crate::ln::outbound_payment;
@@ -124,8 +122,6 @@ use crate::routing::router::{
 };
 use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::sign::{EntropySource, NodeSigner, Recipient, SignerProvider};
-#[cfg(any(feature = "_test_utils", test))]
-use crate::types::features::Bolt11InvoiceFeatures;
 use crate::types::features::{
 	Bolt11InvoiceFeatures, Bolt12InvoiceFeatures, ChannelFeatures, ChannelTypeFeatures,
 	InitFeatures, NodeFeatures,
@@ -5207,7 +5203,8 @@ impl<
 	#[rustfmt::skip]
 	fn construct_pending_htlc_fail_msg<'a>(
 		&self, msg: &msgs::UpdateAddHTLC, counterparty_node_id: &PublicKey,
-		shared_secret: [u8; 32], inbound_err: InboundHTLCErr
+		shared_secret: [u8; 32], trampoline_shared_secret: &Option<[u8; 32]>,
+		inbound_err: InboundHTLCErr,
 	) -> HTLCFailureMsg {
 		let logger = WithContext::from(&self.logger, Some(*counterparty_node_id), Some(msg.channel_id), Some(msg.payment_hash));
 		log_info!(logger, "Failed to accept/forward incoming HTLC: {}", inbound_err.msg);
@@ -5224,7 +5221,7 @@ impl<
 		}
 
 		let failure = HTLCFailReason::reason(inbound_err.reason, inbound_err.err_data.to_vec())
-					.get_encrypted_failure_packet(&shared_secret, &None);
+					.get_encrypted_failure_packet(&shared_secret, trampoline_shared_secret);
 		return HTLCFailureMsg::Relay(msgs::UpdateFailHTLC {
 			channel_id: msg.channel_id,
 			htlc_id: msg.htlc_id,
@@ -7477,6 +7474,16 @@ impl<
 					}
 				}
 
+				// Extract the trampoline shared secret before `next_hop` is consumed,
+				// so we can double-encrypt errors for trampoline receives.
+				let trampoline_shared_secret = match &next_hop {
+					onion_utils::Hop::TrampolineReceive { trampoline_shared_secret, .. }
+					| onion_utils::Hop::TrampolineBlindedReceive {
+						trampoline_shared_secret, ..
+					} => Some(trampoline_shared_secret.secret_bytes()),
+					_ => None,
+				};
+
 				match self.get_pending_htlc_info(
 					&update_add_htlc,
 					shared_secret,
@@ -7582,6 +7589,7 @@ impl<
 							&update_add_htlc,
 							&incoming_counterparty_node_id,
 							shared_secret,
+							&trampoline_shared_secret,
 							inbound_err,
 						);
 						htlc_fails.push((htlc_fail, failure_type, htlc_failure));
@@ -9574,16 +9582,29 @@ impl<
 							&self.secp_ctx,
 							&WithContext::from(&self.logger, None, None, Some(*payment_hash)),
 						)
-						.map(|e| match e {
-							DecodedOnionFailure {
-								onion_error_code: Some(error_code),
-								onion_error_data: Some(error_data),
-								..
-							} if error_code.is_recipient_failure() => HTLCFailReason::reason(error_code, error_data),
-							_ => HTLCFailReason::reason(
-								LocalHTLCFailureReason::TemporaryTrampolineFailure,
-								Vec::new(),
-							),
+						.map(|decoded| {
+							if decoded.onion_error_code.is_some() {
+								// Error was decoded at the outer onion level, meaning it
+								// came from a non-trampoline intermediate node. Replace
+								// with TemporaryTrampolineFailure to avoid leaking info
+								// about the path between trampoline hops.
+								HTLCFailReason::reason(
+									LocalHTLCFailureReason::TemporaryTrampolineFailure,
+									Vec::new(),
+								)
+							} else if let Some(peeled_packet) = decoded.trampoline_peeled_packet {
+								// Error couldn't be decoded at the outer level, meaning
+								// it's already trampoline-encrypted from downstream. Pass
+								// it through so the original sender can decode it.
+								HTLCFailReason::from_onion_error_packet(peeled_packet)
+							} else {
+								// Couldn't peel outer layers (e.g., packet too short or
+								// fail_malformed_htlc). Replace with our own error.
+								HTLCFailReason::reason(
+									LocalHTLCFailureReason::TemporaryTrampolineFailure,
+									Vec::new(),
+								)
+							}
 						}),
 					None => Some(HTLCFailReason::reason(
 						LocalHTLCFailureReason::TemporaryTrampolineFailure,

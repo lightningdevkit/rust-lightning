@@ -1011,6 +1011,10 @@ mod fuzzy_onion_utils {
 		pub(crate) hold_times: Vec<u32>,
 		pub(crate) onion_error_code: Option<LocalHTLCFailureReason>,
 		pub(crate) onion_error_data: Option<Vec<u8>>,
+		/// When processing a trampoline forward error that couldn't be decoded at the
+		/// outer onion level, this contains the error packet with outer layers peeled,
+		/// ready to be passed through with additional trampoline wrapping.
+		pub(crate) trampoline_peeled_packet: Option<super::msgs::OnionErrorPacket>,
 		#[cfg(test)]
 		pub(crate) attribution_failed_channel: Option<u64>,
 	}
@@ -1029,19 +1033,29 @@ mod fuzzy_onion_utils {
 					None,
 					encrypted_packet,
 				)
+				.0
 			},
 			HTLCSource::TrampolineForward { outbound_payment, .. } => {
 				let dispatch = outbound_payment.as_ref()
 					.expect("processing trampoline onion failure for forward with no outbound payment details");
 
-				process_onion_failure_inner(
+				let (mut decoded, peeled_packet) = process_onion_failure_inner(
 					secp_ctx,
 					logger,
 					&dispatch.path,
 					&dispatch.session_priv,
 					None,
 					encrypted_packet,
-				)
+				);
+
+				// If we couldn't decode the error at the outer onion level, it's a
+				// trampoline-encrypted error from downstream. Store the peeled packet
+				// so the caller can pass it through with additional trampoline wrapping.
+				if decoded.onion_error_code.is_none() {
+					decoded.trampoline_peeled_packet = Some(peeled_packet);
+				}
+
+				decoded
 			},
 			_ => unreachable!(),
 		}
@@ -1106,7 +1120,7 @@ pub(crate) use self::fuzzy_onion_utils::*;
 fn process_onion_failure_inner<T: secp256k1::Signing, L: Logger>(
 	secp_ctx: &Secp256k1<T>, logger: &L, path: &Path, session_priv: &SecretKey,
 	trampoline_session_priv_override: Option<SecretKey>, mut encrypted_packet: OnionErrorPacket,
-) -> DecodedOnionFailure {
+) -> (DecodedOnionFailure, OnionErrorPacket) {
 	// Check that there is at least enough data for an hmac, otherwise none of the checking that we may do makes sense.
 	// Also prevent slice out of bounds further down.
 	if encrypted_packet.data.len() < 32 {
@@ -1118,17 +1132,21 @@ fn process_onion_failure_inner<T: secp256k1::Signing, L: Logger>(
 
 		// Signal that we failed permanently. Without a valid hmac, we can't identify the failing node and we can't
 		// apply a penalty. Therefore there is nothing more we can do other than failing the payment.
-		return DecodedOnionFailure {
-			network_update: None,
-			short_channel_id: None,
-			payment_failed_permanently: true,
-			failed_within_blinded_path: false,
-			hold_times: Vec::new(),
-			onion_error_code: None,
-			onion_error_data: None,
-			#[cfg(test)]
-			attribution_failed_channel: None,
-		};
+		return (
+			DecodedOnionFailure {
+				network_update: None,
+				short_channel_id: None,
+				payment_failed_permanently: true,
+				failed_within_blinded_path: false,
+				hold_times: Vec::new(),
+				onion_error_code: None,
+				onion_error_data: None,
+				trampoline_peeled_packet: None,
+				#[cfg(test)]
+				attribution_failed_channel: None,
+			},
+			encrypted_packet,
+		);
 	}
 
 	// Learnings from the HTLC failure to inform future payment retries and scoring.
@@ -1209,16 +1227,41 @@ fn process_onion_failure_inner<T: secp256k1::Signing, L: Logger>(
 		let route_hop = match route_hop_option.as_ref() {
 			Some(hop) => hop,
 			None => {
-				// Got an error from within a blinded route.
-				_error_code_ret = Some(LocalHTLCFailureReason::InvalidOnionBlinding);
-				_error_packet_ret = Some(vec![0; 32]);
-				res = Some(FailureLearnings {
-					network_update: None,
-					short_channel_id: None,
-					payment_failed_permanently: false,
-					failed_within_blinded_path: true,
-				});
-				break;
+				// This is a blinded hop. We still need to peel this layer so that
+				// trampoline pass-through errors can be decoded at a later hop.
+				crypt_failure_packet(shared_secret.as_ref(), &mut encrypted_packet);
+
+				let um = gen_um_from_shared_secret(shared_secret.as_ref());
+				let mut hmac = HmacEngine::<Sha256>::new(&um);
+				hmac.input(&encrypted_packet.data[32..]);
+				if &Hmac::from_engine(hmac).to_byte_array() == &encrypted_packet.data[..32] {
+					// The error was addressed to this blinded hop (trampoline recipient).
+					let err_packet = msgs::DecodedOnionErrorPacket::read(&mut Cursor::new(
+						&encrypted_packet.data,
+					));
+					if let Ok(err_packet) = err_packet {
+						if let Some(error_code_slice) = err_packet.failuremsg.get(0..2) {
+							_error_code_ret = Some(
+								u16::from_be_bytes(error_code_slice.try_into().expect("len is 2"))
+									.into(),
+							);
+							_error_packet_ret = Some(err_packet.failuremsg[2..].to_vec());
+						}
+					}
+					res = Some(FailureLearnings {
+						network_update: None,
+						short_channel_id: None,
+						payment_failed_permanently: false,
+						failed_within_blinded_path: true,
+					});
+					break;
+				}
+
+				// HMAC didn't match — continue peeling to find the right hop.
+				// If we exhaust all hops without a match, the fallthrough will
+				// handle it (returning onion_error_code: None for trampoline
+				// pass-through).
+				continue;
 			},
 		};
 
@@ -1235,37 +1278,60 @@ fn process_onion_failure_inner<T: secp256k1::Signing, L: Logger>(
 			match next_hop {
 				Some((_, (Some(hop), _))) => hop,
 				_ => {
-					// The failing hop is within a multi-hop blinded path.
-					#[cfg(not(test))]
-					{
-						_error_code_ret = Some(LocalHTLCFailureReason::InvalidOnionBlinding);
-						_error_packet_ret = Some(vec![0; 32]);
-					}
-					#[cfg(test)]
-					{
-						// Actually parse the onion error data in tests so we can check that blinded hops fail
-						// back correctly.
-						crypt_failure_packet(shared_secret.as_ref(), &mut encrypted_packet);
-						let err_packet = msgs::DecodedOnionErrorPacket::read(&mut Cursor::new(
-							&encrypted_packet.data,
-						))
-						.unwrap();
-						_error_code_ret = Some(
-							u16::from_be_bytes(
-								err_packet.failuremsg.get(0..2).unwrap().try_into().unwrap(),
-							)
-							.into(),
-						);
-						_error_packet_ret = Some(err_packet.failuremsg[2..].to_vec());
+					// The next hop is within a multi-hop blinded path.
+					// Crypt and check HMAC to see if the error was addressed
+					// to this hop. If not, continue peeling so trampoline
+					// pass-through errors can be decoded at a later hop.
+					crypt_failure_packet(shared_secret.as_ref(), &mut encrypted_packet);
+
+					let um = gen_um_from_shared_secret(shared_secret.as_ref());
+					let mut hmac = HmacEngine::<Sha256>::new(&um);
+					hmac.input(&encrypted_packet.data[32..]);
+
+					if &Hmac::from_engine(hmac).to_byte_array() == &encrypted_packet.data[..32] {
+						#[cfg(not(test))]
+						{
+							_error_code_ret = Some(LocalHTLCFailureReason::InvalidOnionBlinding);
+							_error_packet_ret = Some(vec![0; 32]);
+						}
+						#[cfg(test)]
+						{
+							// Actually parse the onion error data in tests so we
+							// can check that blinded hops fail back correctly.
+							if let Ok(err_packet) = msgs::DecodedOnionErrorPacket::read(
+								&mut Cursor::new(&encrypted_packet.data),
+							) {
+								_error_code_ret = Some(
+									u16::from_be_bytes(
+										err_packet
+											.failuremsg
+											.get(0..2)
+											.unwrap()
+											.try_into()
+											.unwrap(),
+									)
+									.into(),
+								);
+								_error_packet_ret = Some(err_packet.failuremsg[2..].to_vec());
+							} else {
+								_error_code_ret =
+									Some(LocalHTLCFailureReason::InvalidOnionBlinding);
+								_error_packet_ret = Some(vec![0; 32]);
+							}
+						}
+
+						res = Some(FailureLearnings {
+							network_update: None,
+							short_channel_id: None,
+							payment_failed_permanently: false,
+							failed_within_blinded_path: true,
+						});
+						break;
 					}
 
-					res = Some(FailureLearnings {
-						network_update: None,
-						short_channel_id: None,
-						payment_failed_permanently: false,
-						failed_within_blinded_path: true,
-					});
-					break;
+					// HMAC didn't match — continue peeling to find the right
+					// hop (trampoline pass-through).
+					continue;
 				},
 			}
 		};
@@ -1499,7 +1565,7 @@ fn process_onion_failure_inner<T: secp256k1::Signing, L: Logger>(
 		break;
 	}
 
-	if let Some(FailureLearnings {
+	let decoded = if let Some(FailureLearnings {
 		network_update,
 		short_channel_id,
 		payment_failed_permanently,
@@ -1514,6 +1580,7 @@ fn process_onion_failure_inner<T: secp256k1::Signing, L: Logger>(
 			hold_times: hop_hold_times,
 			onion_error_code: _error_code_ret,
 			onion_error_data: _error_packet_ret,
+			trampoline_peeled_packet: None,
 			#[cfg(test)]
 			attribution_failed_channel,
 		}
@@ -1535,10 +1602,13 @@ fn process_onion_failure_inner<T: secp256k1::Signing, L: Logger>(
 			hold_times: hop_hold_times,
 			onion_error_code: None,
 			onion_error_data: None,
+			trampoline_peeled_packet: None,
 			#[cfg(test)]
 			attribution_failed_channel,
 		}
-	}
+	};
+
+	(decoded, encrypted_packet)
 }
 
 const BADONION: u16 = 0x8000;
@@ -2114,6 +2184,10 @@ impl HTLCFailReason {
 		})
 	}
 
+	pub(super) fn from_onion_error_packet(packet: OnionErrorPacket) -> Self {
+		Self(HTLCFailReasonRepr::LightningError { err: packet, hold_time: None })
+	}
+
 	/// Encrypted a failure packet using a shared secret.
 	///
 	/// For phantom nodes or inner Trampoline onions, a secondary_shared_secret can be passed, which
@@ -2126,7 +2200,6 @@ impl HTLCFailReason {
 			HTLCFailReasonRepr::Reason { ref data, ref failure_reason } => {
 				// Final hop always reports zero hold time.
 				let hold_time: u32 = 0;
-
 				if let Some(secondary_shared_secret) = secondary_shared_secret {
 					// Phantom hop always reports zero hold time too.
 					let mut packet = build_failure_packet(
@@ -2178,6 +2251,7 @@ impl HTLCFailReason {
 					hold_times: Vec::new(),
 					onion_error_code: Some($failure_reason),
 					onion_error_data: Some($data.clone()),
+					trampoline_peeled_packet: None,
 					#[cfg(test)]
 					attribution_failed_channel: None,
 				}
@@ -3791,7 +3865,7 @@ mod tests {
 				data: <Vec<u8>>::from_hex(error_packet_hex).unwrap(),
 				attribution_data: None,
 			};
-			let decrypted_failure = process_onion_failure_inner(
+			let (decrypted_failure, _) = process_onion_failure_inner(
 				&secp_ctx,
 				&logger,
 				&build_trampoline_test_path(),
