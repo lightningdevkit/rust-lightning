@@ -3692,6 +3692,8 @@ impl<
 	/// the reserve the counterparty must keep at all times in the channel to zero. This allows the counterparty to
 	/// spend their entire channel balance, and attempt to force-close the channel with a revoked commitment
 	/// transaction **for free**.
+	///
+	/// Note that there is no guarantee that the counterparty accepts such a channel.
 	pub fn create_channel_to_trusted_peer_0reserve(
 		&self, their_network_key: PublicKey, channel_value_satoshis: u64, push_msat: u64,
 		user_channel_id: u128, temporary_channel_id: Option<ChannelId>,
@@ -10827,6 +10829,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	///
 	/// This allows the counterparty to spend their entire channel balance, and attempt to force-close the channel
 	/// with a revoked commitment transaction **for free**.
+	///
+	/// Note that there is no guarantee that the counterparty accepts such a channel themselves.
 	///
 	/// [`Event::OpenChannelRequest`]: events::Event::OpenChannelRequest
 	/// [`Event::ChannelClosed::user_channel_id`]: events::Event::ChannelClosed::user_channel_id
