@@ -6,7 +6,7 @@ use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 use bitcoin::Network;
 
 use lightning::chain::Filter;
-use lightning::chain::{chainmonitor, BestBlock};
+use lightning::chain::{chainmonitor, channelmonitor, BestBlock};
 use lightning::ln::channelmanager::{ChainParameters, ChannelManager};
 use lightning::ln::peer_handler::CustomMessageHandler;
 use lightning::ln::wire::CustomMessageReader;
@@ -59,6 +59,7 @@ pub fn do_test(data: &[u8]) {
 		Arc::clone(&kv_store),
 		Arc::clone(&keys_manager),
 		keys_manager.get_peer_storage_key(),
+		channelmonitor::CLTV_CLAIM_BUFFER,
 	));
 	let best_block = BestBlock::from_network(network);
 	let params = ChainParameters { network, best_block };

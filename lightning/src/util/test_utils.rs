@@ -536,6 +536,7 @@ impl<'a> TestChainMonitor<'a> {
 				persister,
 				keys_manager,
 				keys_manager.get_peer_storage_key(),
+				crate::chain::channelmonitor::CLTV_CLAIM_BUFFER,
 			),
 			keys_manager,
 			expect_channel_force_closed: Mutex::new(None),

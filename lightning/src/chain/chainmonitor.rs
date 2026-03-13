@@ -33,7 +33,7 @@ use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 #[cfg(peer_storage)]
 use crate::chain::channelmonitor::write_chanmon_internal;
 use crate::chain::channelmonitor::{
-	Balance, ChannelMonitor, ChannelMonitorUpdate, MonitorEvent, TransactionOutputs,
+	self, Balance, ChannelMonitor, ChannelMonitorUpdate, MonitorEvent, TransactionOutputs,
 	WithChannelMonitor,
 };
 use crate::chain::transaction::{OutPoint, TransactionData};
@@ -350,6 +350,17 @@ pub struct ChainMonitor<
 	P::Target: Persist<ChannelSigner>,
 {
 	monitors: RwLock<HashMap<ChannelId, MonitorHolder<ChannelSigner>>>,
+
+	/// The number of blocks before an inbound HTLC's CLTV expiry at which we will force-close
+	/// the channel to claim it on-chain. This is a global, memory-only setting configured at
+	/// construction time.
+	///
+	/// Must be between [`CLTV_CLAIM_BUFFER`] and [`HTLC_FAIL_BACK_BUFFER`] inclusive.
+	///
+	/// [`CLTV_CLAIM_BUFFER`]: channelmonitor::CLTV_CLAIM_BUFFER
+	/// [`HTLC_FAIL_BACK_BUFFER`]: channelmonitor::HTLC_FAIL_BACK_BUFFER
+	force_close_claimable_htlc_cltv_buffer: u32,
+
 	chain_source: Option<C>,
 	broadcaster: T,
 	logger: L,
@@ -398,10 +409,19 @@ where
 		chain_source: Option<C>, broadcaster: T, logger: L, feeest: F,
 		persister: MonitorUpdatingPersisterAsync<K, S, L, ES, SP, T, F>, _entropy_source: ES,
 		_our_peerstorage_encryption_key: PeerStorageKey,
+		force_close_claimable_htlc_cltv_buffer: u32,
 	) -> Self {
+		assert!(
+			force_close_claimable_htlc_cltv_buffer >= channelmonitor::CLTV_CLAIM_BUFFER
+				&& force_close_claimable_htlc_cltv_buffer < channelmonitor::HTLC_FAIL_BACK_BUFFER,
+			"force_close_claimable_htlc_cltv_buffer must be between {} and {} inclusive",
+			channelmonitor::CLTV_CLAIM_BUFFER,
+			channelmonitor::HTLC_FAIL_BACK_BUFFER - 1,
+		);
 		let event_notifier = Arc::new(Notifier::new());
 		Self {
 			monitors: RwLock::new(new_hash_map()),
+			force_close_claimable_htlc_cltv_buffer,
 			chain_source,
 			broadcaster,
 			logger,
@@ -604,9 +624,18 @@ where
 	pub fn new(
 		chain_source: Option<C>, broadcaster: T, logger: L, feeest: F, persister: P,
 		_entropy_source: ES, _our_peerstorage_encryption_key: PeerStorageKey,
+		force_close_claimable_htlc_cltv_buffer: u32,
 	) -> Self {
+		assert!(
+			force_close_claimable_htlc_cltv_buffer >= channelmonitor::CLTV_CLAIM_BUFFER
+				&& force_close_claimable_htlc_cltv_buffer < channelmonitor::HTLC_FAIL_BACK_BUFFER,
+			"force_close_claimable_htlc_cltv_buffer must be between {} and {} inclusive",
+			channelmonitor::CLTV_CLAIM_BUFFER,
+			channelmonitor::HTLC_FAIL_BACK_BUFFER - 1,
+		);
 		Self {
 			monitors: RwLock::new(new_hash_map()),
+			force_close_claimable_htlc_cltv_buffer,
 			chain_source,
 			broadcaster,
 			logger,
@@ -1132,6 +1161,7 @@ where
 				header,
 				txdata,
 				height,
+				self.force_close_claimable_htlc_cltv_buffer,
 				&self.broadcaster,
 				&self.fee_estimator,
 				&self.logger,
@@ -1192,6 +1222,7 @@ where
 				header,
 				txdata,
 				height,
+				self.force_close_claimable_htlc_cltv_buffer,
 				&self.broadcaster,
 				&self.fee_estimator,
 				&self.logger,
@@ -1228,6 +1259,7 @@ where
 			monitor.best_block_updated(
 				header,
 				height,
+				self.force_close_claimable_htlc_cltv_buffer,
 				&self.broadcaster,
 				&self.fee_estimator,
 				&self.logger,
@@ -1306,6 +1338,7 @@ where
 			monitor,
 			pending_monitor_updates: Mutex::new(pending_monitor_updates),
 		});
+
 		Ok(persist_res)
 	}
 
