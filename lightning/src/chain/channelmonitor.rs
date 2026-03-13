@@ -6743,6 +6743,71 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 }
 
 #[cfg(test)]
+pub(super) fn dummy_monitor<S: EcdsaChannelSigner + 'static>(
+	channel_id: ChannelId, wrap_signer: impl FnOnce(crate::sign::InMemorySigner) -> S,
+) -> ChannelMonitor<S> {
+	use crate::ln::chan_utils::{ChannelPublicKeys, CounterpartyChannelTransactionParameters};
+	use crate::sign::{ChannelSigner, InMemorySigner};
+	use bitcoin::network::Network;
+
+	let secp_ctx = Secp256k1::new();
+	let dummy_key =
+		PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
+	let keys = InMemorySigner::new(
+		SecretKey::from_slice(&[41; 32]).unwrap(),
+		SecretKey::from_slice(&[41; 32]).unwrap(),
+		SecretKey::from_slice(&[41; 32]).unwrap(),
+		SecretKey::from_slice(&[41; 32]).unwrap(),
+		true,
+		SecretKey::from_slice(&[41; 32]).unwrap(),
+		SecretKey::from_slice(&[41; 32]).unwrap(),
+		[41; 32],
+		[0; 32],
+		[0; 32],
+	);
+	let counterparty_pubkeys = ChannelPublicKeys {
+		funding_pubkey: dummy_key,
+		revocation_basepoint: RevocationBasepoint::from(dummy_key),
+		payment_point: dummy_key,
+		delayed_payment_basepoint: DelayedPaymentBasepoint::from(dummy_key),
+		htlc_basepoint: HtlcBasepoint::from(dummy_key),
+	};
+	let funding_outpoint =
+		crate::chain::transaction::OutPoint { txid: Txid::all_zeros(), index: u16::MAX };
+	let channel_parameters = ChannelTransactionParameters {
+		holder_pubkeys: keys.pubkeys(&secp_ctx),
+		holder_selected_contest_delay: 66,
+		is_outbound_from_holder: true,
+		counterparty_parameters: Some(CounterpartyChannelTransactionParameters {
+			pubkeys: counterparty_pubkeys,
+			selected_contest_delay: 67,
+		}),
+		funding_outpoint: Some(funding_outpoint),
+		splice_parent_funding_txid: None,
+		channel_type_features: ChannelTypeFeatures::only_static_remote_key(),
+		channel_value_satoshis: 0,
+	};
+	let shutdown_script = crate::ln::script::ShutdownScript::new_p2wpkh_from_pubkey(dummy_key);
+	let best_block = BestBlock::from_network(Network::Testnet);
+	let signer = wrap_signer(keys);
+	ChannelMonitor::new(
+		secp_ctx,
+		signer,
+		Some(shutdown_script.into_inner()),
+		0,
+		&ScriptBuf::new(),
+		&channel_parameters,
+		true,
+		0,
+		HolderCommitmentTransaction::dummy(0, funding_outpoint, Vec::new()),
+		best_block,
+		dummy_key,
+		channel_id,
+		false,
+	)
+}
+
+#[cfg(test)]
 mod tests {
 	use bitcoin::amount::Amount;
 	use bitcoin::hash_types::{BlockHash, Txid};
@@ -6771,23 +6836,16 @@ mod tests {
 		weight_revoked_received_htlc, WEIGHT_REVOKED_OUTPUT,
 	};
 	use crate::chain::transaction::OutPoint;
-	use crate::chain::{BestBlock, Confirm};
+	use crate::chain::Confirm;
 	use crate::io;
-	use crate::ln::chan_utils::{
-		self, ChannelPublicKeys, ChannelTransactionParameters,
-		CounterpartyChannelTransactionParameters, HTLCOutputInCommitment,
-		HolderCommitmentTransaction,
-	};
+	use crate::ln::chan_utils::{self, HTLCOutputInCommitment, HolderCommitmentTransaction};
 	use crate::ln::channel_keys::{
-		DelayedPaymentBasepoint, DelayedPaymentKey, HtlcBasepoint, RevocationBasepoint,
-		RevocationKey,
+		DelayedPaymentBasepoint, DelayedPaymentKey, RevocationBasepoint, RevocationKey,
 	};
 	use crate::ln::channelmanager::{HTLCSource, PaymentId};
 	use crate::ln::functional_test_utils::*;
 	use crate::ln::outbound_payment::RecipientOnionFields;
-	use crate::ln::script::ShutdownScript;
 	use crate::ln::types::ChannelId;
-	use crate::sign::{ChannelSigner, InMemorySigner};
 	use crate::sync::Arc;
 	use crate::types::features::ChannelTypeFeatures;
 	use crate::types::payment::{PaymentHash, PaymentPreimage};
@@ -6957,51 +7015,11 @@ mod tests {
 			}
 		}
 
-		let keys = InMemorySigner::new(
-			SecretKey::from_slice(&[41; 32]).unwrap(),
-			SecretKey::from_slice(&[41; 32]).unwrap(),
-			SecretKey::from_slice(&[41; 32]).unwrap(),
-			SecretKey::from_slice(&[41; 32]).unwrap(),
-			true,
-			SecretKey::from_slice(&[41; 32]).unwrap(),
-			SecretKey::from_slice(&[41; 32]).unwrap(),
-			[41; 32],
-			[0; 32],
-			[0; 32],
-		);
-
-		let counterparty_pubkeys = ChannelPublicKeys {
-			funding_pubkey: PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[44; 32]).unwrap()),
-			revocation_basepoint: RevocationBasepoint::from(PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[45; 32]).unwrap())),
-			payment_point: PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[46; 32]).unwrap()),
-			delayed_payment_basepoint: DelayedPaymentBasepoint::from(PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[47; 32]).unwrap())),
-			htlc_basepoint: HtlcBasepoint::from(PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[48; 32]).unwrap()))
-		};
 		let funding_outpoint = OutPoint { txid: Txid::all_zeros(), index: u16::MAX };
 		let channel_id = ChannelId::v1_from_funding_outpoint(funding_outpoint);
-		let channel_parameters = ChannelTransactionParameters {
-			holder_pubkeys: keys.pubkeys(&secp_ctx),
-			holder_selected_contest_delay: 66,
-			is_outbound_from_holder: true,
-			counterparty_parameters: Some(CounterpartyChannelTransactionParameters {
-				pubkeys: counterparty_pubkeys,
-				selected_contest_delay: 67,
-			}),
-			funding_outpoint: Some(funding_outpoint),
-			splice_parent_funding_txid: None,
-			channel_type_features: ChannelTypeFeatures::only_static_remote_key(),
-			channel_value_satoshis: 0,
-		};
 		// Prune with one old state and a holder commitment tx holding a few overlaps with the
 		// old state.
-		let shutdown_pubkey = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
-		let shutdown_script = ShutdownScript::new_p2wpkh_from_pubkey(shutdown_pubkey);
-		let best_block = BestBlock::from_network(Network::Testnet);
-		let monitor = ChannelMonitor::new(
-			Secp256k1::new(), keys, Some(shutdown_script.into_inner()), 0, &ScriptBuf::new(),
-			&channel_parameters, true, 0, HolderCommitmentTransaction::dummy(0, funding_outpoint, Vec::new()),
-			best_block, dummy_key, channel_id, false,
-		);
+		let monitor = super::dummy_monitor(channel_id, |keys| keys);
 
 		let nondust_htlcs = preimages_slice_to_htlcs!(preimages[0..10]);
 		let dummy_commitment_tx = HolderCommitmentTransaction::dummy(0, funding_outpoint, nondust_htlcs);
@@ -7220,49 +7238,9 @@ mod tests {
 
 		let dummy_key = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 
-		let keys = InMemorySigner::new(
-			SecretKey::from_slice(&[41; 32]).unwrap(),
-			SecretKey::from_slice(&[41; 32]).unwrap(),
-			SecretKey::from_slice(&[41; 32]).unwrap(),
-			SecretKey::from_slice(&[41; 32]).unwrap(),
-			true,
-			SecretKey::from_slice(&[41; 32]).unwrap(),
-			SecretKey::from_slice(&[41; 32]).unwrap(),
-			[41; 32],
-			[0; 32],
-			[0; 32],
-		);
-
-		let counterparty_pubkeys = ChannelPublicKeys {
-			funding_pubkey: PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[44; 32]).unwrap()),
-			revocation_basepoint: RevocationBasepoint::from(PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[45; 32]).unwrap())),
-			payment_point: PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[46; 32]).unwrap()),
-			delayed_payment_basepoint: DelayedPaymentBasepoint::from(PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[47; 32]).unwrap())),
-			htlc_basepoint: HtlcBasepoint::from(PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[48; 32]).unwrap())),
-		};
 		let funding_outpoint = OutPoint { txid: Txid::all_zeros(), index: u16::MAX };
 		let channel_id = ChannelId::v1_from_funding_outpoint(funding_outpoint);
-		let channel_parameters = ChannelTransactionParameters {
-			holder_pubkeys: keys.pubkeys(&secp_ctx),
-			holder_selected_contest_delay: 66,
-			is_outbound_from_holder: true,
-			counterparty_parameters: Some(CounterpartyChannelTransactionParameters {
-				pubkeys: counterparty_pubkeys,
-				selected_contest_delay: 67,
-			}),
-			funding_outpoint: Some(funding_outpoint),
-			splice_parent_funding_txid: None,
-			channel_type_features: ChannelTypeFeatures::only_static_remote_key(),
-			channel_value_satoshis: 0,
-		};
-		let shutdown_pubkey = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
-		let shutdown_script = ShutdownScript::new_p2wpkh_from_pubkey(shutdown_pubkey);
-		let best_block = BestBlock::from_network(Network::Testnet);
-		let monitor = ChannelMonitor::new(
-			Secp256k1::new(), keys, Some(shutdown_script.into_inner()), 0, &ScriptBuf::new(),
-			&channel_parameters, true, 0, HolderCommitmentTransaction::dummy(0, funding_outpoint, Vec::new()),
-			best_block, dummy_key, channel_id, false,
-		);
+		let monitor = super::dummy_monitor(channel_id, |keys| keys);
 
 		let chan_id = monitor.inner.lock().unwrap().channel_id();
 		let payment_hash = PaymentHash([1; 32]);
