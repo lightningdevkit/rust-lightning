@@ -637,7 +637,7 @@ impl InteractiveTxSigningSession {
 			None
 		};
 
-		let funding_tx_opt = self.maybe_finalize_funding_tx();
+		let funding_tx_opt = self.signed_tx();
 
 		Ok((holder_tx_signatures, funding_tx_opt))
 	}
@@ -666,7 +666,7 @@ impl InteractiveTxSigningSession {
 
 		self.holder_tx_signatures = Some(tx_signatures);
 
-		let funding_tx_opt = self.maybe_finalize_funding_tx();
+		let funding_tx_opt = self.signed_tx();
 		let holder_tx_signatures = (self.has_received_commitment_signed
 			&& (self.holder_sends_tx_signatures_first || self.has_received_tx_signatures()))
 		.then(|| {
@@ -723,7 +723,9 @@ impl InteractiveTxSigningSession {
 		})
 	}
 
-	fn maybe_finalize_funding_tx(&mut self) -> Option<Transaction> {
+	/// Returns `Some` with the fully signed transaction if both holder and counterparty signatures
+	/// are available.
+	pub fn signed_tx(&self) -> Option<Transaction> {
 		let holder_tx_signatures = self.holder_tx_signatures.as_ref()?;
 		let counterparty_tx_signatures = self.counterparty_tx_signatures.as_ref()?;
 		let shared_input_signature = self.shared_input_signature.as_ref();

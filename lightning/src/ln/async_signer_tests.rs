@@ -1648,3 +1648,95 @@ fn test_async_splice_initial_commit_sig() {
 	let _ = get_event!(initiator, Event::SplicePending);
 	let _ = get_event!(acceptor, Event::SplicePending);
 }
+
+#[test]
+fn test_async_splice_initial_commit_sig_waits_for_monitor_before_tx_signatures() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
+
+	let (initiator, acceptor) = (&nodes[0], &nodes[1]);
+	let initiator_node_id = initiator.node.get_our_node_id();
+	let acceptor_node_id = acceptor.node.get_our_node_id();
+
+	acceptor.disable_channel_signer_op(
+		&initiator_node_id,
+		&channel_id,
+		SignerOp::SignCounterpartyCommitment,
+	);
+
+	// Negotiate a splice up until the signature exchange.
+	let outputs = vec![TxOut {
+		value: Amount::from_sat(1_000),
+		script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
+	}];
+	let contribution = initiate_splice_out(initiator, acceptor, channel_id, outputs).unwrap();
+	negotiate_splice_tx(initiator, acceptor, channel_id, contribution);
+
+	let event = get_event!(initiator, Event::FundingTransactionReadyForSigning);
+	if let Event::FundingTransactionReadyForSigning { unsigned_transaction, .. } = event {
+		let partially_signed_tx = initiator.wallet_source.sign_tx(unsigned_transaction).unwrap();
+		initiator
+			.node
+			.funding_transaction_signed(&channel_id, &acceptor_node_id, partially_signed_tx)
+			.unwrap();
+	}
+
+	let initiator_commit_sig = get_htlc_update_msgs(initiator, &acceptor_node_id);
+
+	// Keep the monitor update from processing the initiator's initial commitment signed pending on
+	// the acceptor.
+	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
+	acceptor
+		.node
+		.handle_commitment_signed(initiator_node_id, &initiator_commit_sig.commitment_signed[0]);
+	check_added_monitors(acceptor, 1);
+	assert!(acceptor.node.get_and_clear_pending_msg_events().is_empty());
+
+	// Once the async signer is unblocked, we should send the initial commitment_signed, but still
+	// hold back tx_signatures until the monitor update is completed.
+	acceptor.enable_channel_signer_op(
+		&initiator_node_id,
+		&channel_id,
+		SignerOp::SignCounterpartyCommitment,
+	);
+	acceptor.node.signer_unblocked(None);
+
+	let msg_events = acceptor.node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1, "{msg_events:?}");
+	if let MessageSendEvent::UpdateHTLCs { updates, .. } = &msg_events[0] {
+		initiator.node.handle_commitment_signed(acceptor_node_id, &updates.commitment_signed[0]);
+		check_added_monitors(initiator, 1);
+	} else {
+		panic!("Unexpected event");
+	}
+
+	assert!(initiator.node.get_and_clear_pending_msg_events().is_empty());
+	assert!(acceptor.node.get_and_clear_pending_msg_events().is_empty());
+
+	// Reestablishing before the monitor update completes should still not release `tx_signatures`.
+	initiator.node.peer_disconnected(acceptor_node_id);
+	acceptor.node.peer_disconnected(initiator_node_id);
+	let mut reconnect_args = ReconnectArgs::new(initiator, acceptor);
+	reconnect_args.send_announcement_sigs = (true, true);
+	reconnect_nodes(reconnect_args);
+	assert!(initiator.node.get_and_clear_pending_msg_events().is_empty());
+	assert!(acceptor.node.get_and_clear_pending_msg_events().is_empty());
+
+	acceptor.chain_monitor.complete_sole_pending_chan_update(&channel_id);
+	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
+
+	let tx_signatures =
+		get_event_msg!(acceptor, MessageSendEvent::SendTxSignatures, initiator_node_id);
+	initiator.node.handle_tx_signatures(acceptor_node_id, &tx_signatures);
+
+	let tx_signatures =
+		get_event_msg!(initiator, MessageSendEvent::SendTxSignatures, acceptor_node_id);
+	acceptor.node.handle_tx_signatures(initiator_node_id, &tx_signatures);
+
+	let _ = get_event!(initiator, Event::SplicePending);
+	let _ = get_event!(acceptor, Event::SplicePending);
+}
