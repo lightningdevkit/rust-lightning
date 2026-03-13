@@ -668,6 +668,13 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 		} else {
 			assert!(new_monitor == *monitor);
 		}
+
+		if update.updates.len() == 1 {
+			if let ChannelMonitorUpdateStep::EventGenerated { .. } = update.updates[0] {
+				return update_res;
+			}
+		}
+
 		self.added_monitors.lock().unwrap().push((channel_id, new_monitor));
 		update_res
 	}
