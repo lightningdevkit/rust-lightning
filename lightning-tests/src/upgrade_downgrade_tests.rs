@@ -701,3 +701,126 @@ fn do_upgrade_mid_htlc_forward(test: MidHtlcForwardCase) {
 	expect_payment_claimable!(nodes[2], pay_hash, pay_secret, 1_000_000);
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], pay_preimage);
 }
+
+#[test]
+fn test_0_0_125_max_update_id_upgrade() {
+	use lightning::chain::chainmonitor::Persist;
+	use lightning::util::persist::{
+		KVStoreSync, MonitorUpdatingPersister, CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+		CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+		MONITOR_UPDATING_PERSISTER_PREPEND_SENTINEL,
+	};
+	use lightning::util::test_utils::TestStore;
+
+	// Phase 1: Create old LDK state with a pending u64::MAX monitor update via force-close.
+	// We use InProgress persist to simulate the async monitor updating flow, so the u64::MAX
+	// monitor update is still pending (in-flight) when we serialize.
+	let (node_b_ser, mon_b_ser, chan_id_bytes);
+	{
+		let chanmon_cfgs = lightning_0_0_125_utils::create_chanmon_cfgs(2);
+		let node_cfgs = lightning_0_0_125_utils::create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs =
+			lightning_0_0_125_utils::create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = lightning_0_0_125_utils::create_network(2, &node_cfgs, &node_chanmgrs);
+
+		let node_a_id = nodes[0].node.get_our_node_id();
+		let chan_id = lightning_0_0_125_utils::create_announced_chan_between_nodes(&nodes, 0, 1).2;
+		chan_id_bytes = chan_id.0;
+
+		lightning_0_0_125_utils::route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+
+		// Set persist to InProgress before force-close so the u64::MAX update remains pending.
+		chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus_0_0_125::InProgress);
+
+		let err = "".to_owned();
+		nodes[1].node.force_close_broadcasting_latest_txn(&chan_id, &node_a_id, err).unwrap();
+
+		check_added_monitors_0_0_125!(nodes[1], 1);
+		let reason =
+			ClosureReason_0_0_125::HolderForceClosed { broadcasted_latest_txn: Some(true) };
+		lightning_0_0_125_utils::check_closed_event(
+			&nodes[1],
+			1,
+			reason,
+			false,
+			&[node_a_id],
+			100000,
+		);
+		lightning_0_0_125_utils::check_closed_broadcast(&nodes[1], 1, true);
+
+		// Serialize while the u64::MAX update is still InProgress (pending in-flight).
+		node_b_ser = nodes[1].node.encode();
+		mon_b_ser = get_monitor_0_0_125!(nodes[1], chan_id).encode();
+	}
+
+	// Phase 2: Reload with current LDK using MonitorUpdatingPersister as the persist backend
+	// for the ChainMonitor. This verifies that the ChannelManager can load old state with a
+	// pending u64::MAX monitor update and that MonitorUpdatingPersister handles it correctly.
+	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+	chanmon_cfgs[1].keys_manager.disable_all_state_policy_checks = true;
+
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+
+	// Declare before `nodes` so they outlive it (variables are dropped in reverse order).
+	let kv_store;
+	let mon_updating_persister;
+	let chain_mon_b;
+
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let node_b;
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	// Create a MonitorUpdatingPersister backed by TestStore, and a TestChainMonitor using it.
+	kv_store = TestStore::new(false);
+	mon_updating_persister = MonitorUpdatingPersister::new(
+		&kv_store,
+		nodes[1].logger,
+		5,
+		nodes[1].keys_manager,
+		nodes[1].keys_manager,
+		nodes[1].tx_broadcaster,
+		nodes[1].fee_estimator,
+	);
+	chain_mon_b = lightning::util::test_utils::TestChainMonitor::new(
+		Some(nodes[1].chain_source),
+		nodes[1].tx_broadcaster,
+		nodes[1].logger,
+		nodes[1].fee_estimator,
+		&mon_updating_persister,
+		nodes[1].keys_manager,
+	);
+	nodes[1].chain_monitor = &chain_mon_b;
+
+	// Reload the ChannelManager from serialized state. _reload_node deserializes the
+	// ChannelManager and monitors, and loads them into the ChainMonitor.
+	let config = test_default_channel_config();
+	node_b = _reload_node(&nodes[1], config, &node_b_ser, &[&mon_b_ser], None);
+	nodes[1].node = &node_b;
+	nodes[1].onion_messenger.set_offers_handler(&node_b);
+	nodes[1].onion_messenger.set_async_payments_handler(&node_b);
+
+	// Verify the monitor was loaded with the u64::MAX update ID.
+	let channel_id = ChannelId(chan_id_bytes);
+	let mon = get_monitor!(nodes[1], channel_id);
+	assert_eq!(mon.get_latest_update_id(), u64::MAX);
+
+	// Persist the monitor through MonitorUpdatingPersister and verify it writes
+	// the full monitor with the sentinel prefix (not an incremental update).
+	let monitor_key = mon.persistence_key().to_string();
+	let persist_res = mon_updating_persister.persist_new_channel(mon.persistence_key(), &mon);
+	assert_eq!(persist_res, lightning::chain::ChannelMonitorUpdateStatus::Completed);
+
+	let stored_bytes = KVStoreSync::read(
+		&kv_store,
+		CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+		CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+		&monitor_key,
+	)
+	.unwrap();
+	assert!(stored_bytes.starts_with(MONITOR_UPDATING_PERSISTER_PREPEND_SENTINEL));
+
+	// Verify MonitorUpdatingPersister can read the persisted monitor back correctly.
+	let mons = mon_updating_persister.read_all_channel_monitors_with_updates().unwrap();
+	assert_eq!(mons.len(), 1);
+	assert_eq!(mons[0].1.get_latest_update_id(), u64::MAX);
+}

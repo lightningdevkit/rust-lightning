@@ -220,7 +220,15 @@ impl FundingTemplate {
 			return Err(());
 		}
 		let FundingTemplate { shared_input, min_feerate, max_feerate } = self;
-		build_funding_contribution!(value_added, vec![], shared_input, min_feerate, max_feerate, wallet, await)
+		build_funding_contribution!(
+			value_added,
+			vec![],
+			shared_input,
+			min_feerate,
+			max_feerate,
+			wallet,
+			await
+		)
 	}
 
 	/// Creates a [`FundingContribution`] for adding funds to a channel using `wallet` to perform
@@ -251,7 +259,15 @@ impl FundingTemplate {
 			return Err(());
 		}
 		let FundingTemplate { shared_input, min_feerate, max_feerate } = self;
-		build_funding_contribution!(Amount::ZERO, outputs, shared_input, min_feerate, max_feerate, wallet, await)
+		build_funding_contribution!(
+			Amount::ZERO,
+			outputs,
+			shared_input,
+			min_feerate,
+			max_feerate,
+			wallet,
+			await
+		)
 	}
 
 	/// Creates a [`FundingContribution`] for removing funds from a channel using `wallet` to
@@ -282,7 +298,15 @@ impl FundingTemplate {
 			return Err(());
 		}
 		let FundingTemplate { shared_input, min_feerate, max_feerate } = self;
-		build_funding_contribution!(value_added, outputs, shared_input, min_feerate, max_feerate, wallet, await)
+		build_funding_contribution!(
+			value_added,
+			outputs,
+			shared_input,
+			min_feerate,
+			max_feerate,
+			wallet,
+			await
+		)
 	}
 
 	/// Creates a [`FundingContribution`] for both adding and removing funds from a channel using
