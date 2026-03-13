@@ -429,7 +429,7 @@ impl EcdsaChannelSigner for TestChannelSigner {
 				.unwrap();
 			let countersignatory_htlc_key = HtlcKey::from_basepoint(
 				&secp_ctx,
-				&channel_parameters.counterparty_pubkeys().unwrap().htlc_basepoint,
+				&channel_parameters.counterparty_parameters.pubkeys.htlc_basepoint,
 				&htlc_descriptor.per_commitment_point,
 			);
 
@@ -482,7 +482,7 @@ impl EcdsaChannelSigner for TestChannelSigner {
 			return Err(());
 		}
 		closing_tx
-			.verify(channel_parameters.funding_outpoint.as_ref().unwrap().into_bitcoin_outpoint())
+			.verify(channel_parameters.funding_outpoint.into_bitcoin_outpoint())
 			.expect("derived different closing transaction");
 		Ok(self.inner.sign_closing_transaction(channel_parameters, closing_tx, secp_ctx).unwrap())
 	}

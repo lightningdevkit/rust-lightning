@@ -483,6 +483,8 @@ pub fn do_test_update_fee_that_funder_cannot_afford(channel_type_features: Chann
 		let local_chan_signer = local_chan.as_funded().unwrap().get_signer();
 
 		let nondust_htlcs: Vec<HTLCOutputInCommitment> = vec![];
+		let complete_params =
+			local_chan.as_funded().unwrap().funding.channel_transaction_parameters.clone();
 		let commitment_tx = CommitmentTransaction::new(
 			INITIAL_COMMITMENT_NUMBER - 1,
 			&remote_point,
@@ -492,14 +494,19 @@ pub fn do_test_update_fee_that_funder_cannot_afford(channel_type_features: Chann
 				- commit_tx_fee_msat(non_buffer_feerate + 4, 0, &channel_type_features) / 1000,
 			non_buffer_feerate + 4,
 			nondust_htlcs,
-			&local_chan.funding().channel_transaction_parameters.as_counterparty_broadcastable(),
+			&complete_params.as_counterparty_broadcastable(),
 			&secp_ctx,
 		);
-		let params = &local_chan.funding().channel_transaction_parameters;
 		local_chan_signer
 			.as_ecdsa()
 			.unwrap()
-			.sign_counterparty_commitment(params, &commitment_tx, Vec::new(), Vec::new(), &secp_ctx)
+			.sign_counterparty_commitment(
+				&complete_params,
+				&commitment_tx,
+				Vec::new(),
+				Vec::new(),
+				&secp_ctx,
+			)
 			.unwrap()
 	};
 
@@ -583,6 +590,8 @@ pub fn test_update_fee_that_saturates_subs() {
 			get_channel_ref!(nodes[0], nodes[1], per_peer_lock, peer_state_lock, chan_id);
 		let local_chan_signer = local_chan.as_funded().unwrap().get_signer();
 		let nondust_htlcs: Vec<HTLCOutputInCommitment> = vec![];
+		let complete_params =
+			local_chan.as_funded().unwrap().funding.channel_transaction_parameters.clone();
 		let commitment_tx = CommitmentTransaction::new(
 			INITIAL_COMMITMENT_NUMBER,
 			&remote_point,
@@ -592,14 +601,19 @@ pub fn test_update_fee_that_saturates_subs() {
 			0,
 			FEERATE,
 			nondust_htlcs,
-			&local_chan.funding().channel_transaction_parameters.as_counterparty_broadcastable(),
+			&complete_params.as_counterparty_broadcastable(),
 			&secp_ctx,
 		);
-		let params = &local_chan.funding().channel_transaction_parameters;
 		local_chan_signer
 			.as_ecdsa()
 			.unwrap()
-			.sign_counterparty_commitment(params, &commitment_tx, Vec::new(), Vec::new(), &secp_ctx)
+			.sign_counterparty_commitment(
+				&complete_params,
+				&commitment_tx,
+				Vec::new(),
+				Vec::new(),
+				&secp_ctx,
+			)
 			.unwrap()
 	};
 
@@ -1083,7 +1097,7 @@ pub fn do_cannot_afford_on_holding_cell_release(
 		let chan =
 			get_channel_ref!(nodes[1], nodes[0], per_peer_state_lock, peer_state_lock, chan_id);
 		assert_eq!(
-			chan.funding().holder_selected_channel_reserve_satoshis,
+			chan.as_funded().unwrap().funding.holder_selected_channel_reserve_satoshis,
 			channel_reserve_satoshis
 		);
 	}
@@ -1270,7 +1284,7 @@ pub fn do_can_afford_given_trimmed_htlcs(inequality_regions: core::cmp::Ordering
 		let chan =
 			get_channel_ref!(nodes[1], nodes[0], per_peer_state_lock, peer_state_lock, chan_id);
 		assert_eq!(
-			chan.funding().holder_selected_channel_reserve_satoshis,
+			chan.as_funded().unwrap().funding.holder_selected_channel_reserve_satoshis,
 			channel_reserve_satoshis
 		);
 	}

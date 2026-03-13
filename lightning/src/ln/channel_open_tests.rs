@@ -1509,15 +1509,17 @@ pub fn test_duplicate_chan_id() {
 		let chan_id = open_chan_2_msg.common_fields.temporary_channel_id;
 		let mut channel = a_peer_state.channel_by_id.remove(&chan_id).unwrap();
 
-		if let Some(mut chan) = channel.as_unfunded_outbound_v1_mut() {
-			let logger = test_utils::TestLogger::new();
-			chan.get_funding_created(tx.clone(), funding_outpoint, false, &&logger)
-				.map_err(|_| ())
-				.unwrap()
-		} else {
-			panic!("Unexpected Channel phase")
+		match channel.into_unfunded_outbound_v1() {
+			Ok(chan) => {
+				let logger = test_utils::TestLogger::new();
+				let (_pending, funding_created) = chan
+					.get_funding_created(tx.clone(), funding_outpoint, false, &&logger)
+					.map_err(|_| ())
+					.unwrap();
+				funding_created.unwrap()
+			},
+			Err(_) => panic!("Unexpected Channel phase"),
 		}
-		.unwrap()
 	};
 	check_added_monitors(&nodes[0], 0);
 	nodes[1].node.handle_funding_created(node_a_id, &funding_created);

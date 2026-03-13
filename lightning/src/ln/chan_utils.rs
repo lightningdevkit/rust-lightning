@@ -1040,13 +1040,49 @@ pub fn build_keyed_anchor_input_witness(
 	ret
 }
 
-/// Per-channel data used to build transactions in conjunction with the per-commitment data (CommitmentTransaction).
-/// The fields are organized by holder/counterparty.
+/// Trait providing unified access to channel transaction parameters fields shared by both
+/// [`PartialChannelTransactionParameters`] and [`ChannelTransactionParameters`].
 ///
-/// Normally, this is converted to the broadcaster/countersignatory-organized DirectedChannelTransactionParameters
-/// before use, via the as_holder_broadcastable and as_counterparty_broadcastable functions.
+/// This enables generic code (e.g., `FundingScope<P>`) to access common fields without
+/// knowing which concrete parameters type is in use.
+pub(crate) trait ChannelTransactionParametersAccess {
+	fn holder_pubkeys(&self) -> &ChannelPublicKeys;
+	fn holder_selected_contest_delay(&self) -> u16;
+	fn is_outbound_from_holder(&self) -> bool;
+	fn channel_type_features(&self) -> &ChannelTypeFeatures;
+	fn channel_value_satoshis(&self) -> u64;
+	fn splice_parent_funding_txid(&self) -> Option<Txid>;
+	/// Returns the funding outpoint, if known.
+	fn funding_outpoint(&self) -> Option<chain::transaction::OutPoint>;
+	/// Returns the counterparty parameters, if known.
+	fn counterparty_parameters(&self) -> Option<&CounterpartyChannelTransactionParameters>;
+
+	/// Builds the funding redeemscript, if counterparty parameters are known.
+	fn make_funding_redeemscript_opt(&self) -> Option<ScriptBuf> {
+		self.counterparty_parameters().map(|p| {
+			make_funding_redeemscript(
+				&self.holder_pubkeys().funding_pubkey,
+				&p.pubkeys.funding_pubkey,
+			)
+		})
+	}
+
+	/// Builds the funding redeemscript, panicking if counterparty parameters are not yet known.
+	fn make_funding_redeemscript(&self) -> ScriptBuf {
+		self.make_funding_redeemscript_opt().unwrap()
+	}
+}
+
+/// Per-channel data used to build transactions in conjunction with the per-commitment data
+/// (CommitmentTransaction). The fields are organized by holder/counterparty.
+///
+/// This is the internal variant used during channel negotiation, where counterparty parameters and
+/// the funding outpoint may not yet be known. Once both are populated, this can be converted to
+/// [`ChannelTransactionParameters`] via [`into_complete`].
+///
+/// [`into_complete`]: PartialChannelTransactionParameters::into_complete
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub struct ChannelTransactionParameters {
+pub(crate) struct PartialChannelTransactionParameters {
 	/// Holder public keys
 	pub holder_pubkeys: ChannelPublicKeys,
 	/// The contest delay selected by the holder, which applies to counterparty-broadcast transactions
@@ -1059,6 +1095,36 @@ pub struct ChannelTransactionParameters {
 	pub counterparty_parameters: Option<CounterpartyChannelTransactionParameters>,
 	/// The late-bound funding outpoint
 	pub funding_outpoint: Option<chain::transaction::OutPoint>,
+	/// The parent funding txid for a channel that has been spliced.
+	pub splice_parent_funding_txid: Option<Txid>,
+	/// This channel's type, as negotiated during channel open.
+	pub channel_type_features: ChannelTypeFeatures,
+	/// The value locked in the channel, denominated in satoshis.
+	pub channel_value_satoshis: u64,
+}
+
+/// Per-channel data used to build transactions in conjunction with the per-commitment data (CommitmentTransaction).
+/// The fields are organized by holder/counterparty.
+///
+/// Normally, this is converted to the broadcaster/countersignatory-organized DirectedChannelTransactionParameters
+/// before use, via the as_holder_broadcastable and as_counterparty_broadcastable functions.
+///
+/// All late-bound fields (counterparty parameters and funding outpoint) are guaranteed to be
+/// present. For the partially-populated variant used during channel negotiation, see
+/// [`PartialChannelTransactionParameters`].
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct ChannelTransactionParameters {
+	/// Holder public keys
+	pub holder_pubkeys: ChannelPublicKeys,
+	/// The contest delay selected by the holder, which applies to counterparty-broadcast transactions
+	pub holder_selected_contest_delay: u16,
+	/// Whether the holder is the initiator of this channel.
+	/// This is an input to the commitment number obscure factor computation.
+	pub is_outbound_from_holder: bool,
+	/// The counterparty channel transaction parameters.
+	pub counterparty_parameters: CounterpartyChannelTransactionParameters,
+	/// The funding outpoint
+	pub funding_outpoint: chain::transaction::OutPoint,
 	/// The parent funding txid for a channel that has been spliced.
 	///
 	/// If a channel was funded with transaction A, and later spliced with transaction B, this field
@@ -1086,54 +1152,119 @@ pub struct CounterpartyChannelTransactionParameters {
 	pub selected_contest_delay: u16,
 }
 
-impl ChannelTransactionParameters {
-	/// Whether the late bound parameters are populated.
-	pub fn is_populated(&self) -> bool {
-		self.counterparty_parameters.is_some() && self.funding_outpoint.is_some()
+impl ChannelTransactionParametersAccess for PartialChannelTransactionParameters {
+	fn holder_pubkeys(&self) -> &ChannelPublicKeys {
+		&self.holder_pubkeys
 	}
+	fn holder_selected_contest_delay(&self) -> u16 {
+		self.holder_selected_contest_delay
+	}
+	fn is_outbound_from_holder(&self) -> bool {
+		self.is_outbound_from_holder
+	}
+	fn channel_type_features(&self) -> &ChannelTypeFeatures {
+		&self.channel_type_features
+	}
+	fn channel_value_satoshis(&self) -> u64 {
+		self.channel_value_satoshis
+	}
+	fn splice_parent_funding_txid(&self) -> Option<Txid> {
+		self.splice_parent_funding_txid
+	}
+	fn funding_outpoint(&self) -> Option<chain::transaction::OutPoint> {
+		self.funding_outpoint
+	}
+	fn counterparty_parameters(&self) -> Option<&CounterpartyChannelTransactionParameters> {
+		self.counterparty_parameters.as_ref()
+	}
+}
 
+impl ChannelTransactionParametersAccess for ChannelTransactionParameters {
+	fn holder_pubkeys(&self) -> &ChannelPublicKeys {
+		&self.holder_pubkeys
+	}
+	fn holder_selected_contest_delay(&self) -> u16 {
+		self.holder_selected_contest_delay
+	}
+	fn is_outbound_from_holder(&self) -> bool {
+		self.is_outbound_from_holder
+	}
+	fn channel_type_features(&self) -> &ChannelTypeFeatures {
+		&self.channel_type_features
+	}
+	fn channel_value_satoshis(&self) -> u64 {
+		self.channel_value_satoshis
+	}
+	fn splice_parent_funding_txid(&self) -> Option<Txid> {
+		self.splice_parent_funding_txid
+	}
+	fn funding_outpoint(&self) -> Option<chain::transaction::OutPoint> {
+		Some(self.funding_outpoint)
+	}
+	fn counterparty_parameters(&self) -> Option<&CounterpartyChannelTransactionParameters> {
+		Some(&self.counterparty_parameters)
+	}
+}
+
+impl PartialChannelTransactionParameters {
+	/// Converts to the complete type, returning `None` if late-bound fields are not populated.
+	pub(crate) fn into_complete(self) -> Option<ChannelTransactionParameters> {
+		Some(ChannelTransactionParameters {
+			holder_pubkeys: self.holder_pubkeys,
+			holder_selected_contest_delay: self.holder_selected_contest_delay,
+			is_outbound_from_holder: self.is_outbound_from_holder,
+			counterparty_parameters: self.counterparty_parameters?,
+			funding_outpoint: self.funding_outpoint?,
+			splice_parent_funding_txid: self.splice_parent_funding_txid,
+			channel_type_features: self.channel_type_features,
+			channel_value_satoshis: self.channel_value_satoshis,
+		})
+	}
+}
+
+impl ChannelTransactionParameters {
 	/// Convert the holder/counterparty parameters to broadcaster/countersignatory-organized parameters,
 	/// given that the holder is the broadcaster.
-	///
-	/// self.is_populated() must be true before calling this function.
 	#[rustfmt::skip]
 	pub fn as_holder_broadcastable(&self) -> DirectedChannelTransactionParameters<'_> {
-		assert!(self.is_populated(), "self.late_parameters must be set before using as_holder_broadcastable");
 		DirectedChannelTransactionParameters {
-			inner: self,
-			holder_is_broadcaster: true
+			broadcaster_pubkeys: &self.holder_pubkeys,
+			countersignatory_pubkeys: &self.counterparty_parameters.pubkeys,
+			contest_delay: self.counterparty_parameters.selected_contest_delay,
+			is_outbound: self.is_outbound_from_holder,
+			funding_outpoint: self.funding_outpoint.into_bitcoin_outpoint(),
+			channel_type_features: &self.channel_type_features,
+			channel_value_satoshis: self.channel_value_satoshis,
 		}
 	}
 
 	/// Convert the holder/counterparty parameters to broadcaster/countersignatory-organized parameters,
 	/// given that the counterparty is the broadcaster.
-	///
-	/// self.is_populated() must be true before calling this function.
 	#[rustfmt::skip]
 	pub fn as_counterparty_broadcastable(&self) -> DirectedChannelTransactionParameters<'_> {
-		assert!(self.is_populated(), "self.late_parameters must be set before using as_counterparty_broadcastable");
 		DirectedChannelTransactionParameters {
-			inner: self,
-			holder_is_broadcaster: false
+			broadcaster_pubkeys: &self.counterparty_parameters.pubkeys,
+			countersignatory_pubkeys: &self.holder_pubkeys,
+			contest_delay: self.holder_selected_contest_delay,
+			is_outbound: !self.is_outbound_from_holder,
+			funding_outpoint: self.funding_outpoint.into_bitcoin_outpoint(),
+			channel_type_features: &self.channel_type_features,
+			channel_value_satoshis: self.channel_value_satoshis,
 		}
 	}
 
-	pub(crate) fn make_funding_redeemscript(&self) -> ScriptBuf {
-		self.make_funding_redeemscript_opt().unwrap()
-	}
-
-	pub(crate) fn make_funding_redeemscript_opt(&self) -> Option<ScriptBuf> {
-		self.counterparty_parameters.as_ref().map(|p| {
-			make_funding_redeemscript(
-				&self.holder_pubkeys.funding_pubkey,
-				&p.pubkeys.funding_pubkey,
-			)
-		})
-	}
-
-	/// Returns the counterparty's pubkeys.
-	pub fn counterparty_pubkeys(&self) -> Option<&ChannelPublicKeys> {
-		self.counterparty_parameters.as_ref().map(|params| &params.pubkeys)
+	/// Converts to the partial type (with Options).
+	pub(crate) fn into_partial(self) -> PartialChannelTransactionParameters {
+		PartialChannelTransactionParameters {
+			holder_pubkeys: self.holder_pubkeys,
+			holder_selected_contest_delay: self.holder_selected_contest_delay,
+			is_outbound_from_holder: self.is_outbound_from_holder,
+			counterparty_parameters: Some(self.counterparty_parameters),
+			funding_outpoint: Some(self.funding_outpoint),
+			splice_parent_funding_txid: self.splice_parent_funding_txid,
+			channel_type_features: self.channel_type_features,
+			channel_value_satoshis: self.channel_value_satoshis,
+		}
 	}
 
 	#[cfg(test)]
@@ -1150,13 +1281,13 @@ impl ChannelTransactionParameters {
 			holder_pubkeys: dummy_keys.clone(),
 			holder_selected_contest_delay: 42,
 			is_outbound_from_holder: true,
-			counterparty_parameters: Some(CounterpartyChannelTransactionParameters {
+			counterparty_parameters: CounterpartyChannelTransactionParameters {
 				pubkeys: dummy_keys,
 				selected_contest_delay: 42,
-			}),
-			funding_outpoint: Some(chain::transaction::OutPoint {
+			},
+			funding_outpoint: chain::transaction::OutPoint {
 				txid: Txid::from_byte_array([42; 32]), index: 0
-			}),
+			},
 			splice_parent_funding_txid: None,
 			channel_type_features: ChannelTypeFeatures::empty(),
 			channel_value_satoshis,
@@ -1173,12 +1304,14 @@ impl Writeable for ChannelTransactionParameters {
 	#[rustfmt::skip]
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		let legacy_deserialization_prevention_marker = legacy_deserialization_prevention_marker_for_channel_type_features(&self.channel_type_features);
+		let counterparty_parameters = Some(&self.counterparty_parameters);
+		let funding_outpoint = Some(&self.funding_outpoint);
 		write_tlv_fields!(writer, {
 			(0, self.holder_pubkeys, required),
 			(2, self.holder_selected_contest_delay, required),
 			(4, self.is_outbound_from_holder, required),
-			(6, self.counterparty_parameters, option),
-			(8, self.funding_outpoint, option),
+			(6, counterparty_parameters, option),
+			(8, funding_outpoint, option),
 			(10, legacy_deserialization_prevention_marker, option),
 			(11, self.channel_type_features, required),
 			(12, self.splice_parent_funding_txid, option),
@@ -1189,6 +1322,13 @@ impl Writeable for ChannelTransactionParameters {
 }
 
 impl ReadableArgs<Option<u64>> for ChannelTransactionParameters {
+	fn read<R: io::Read>(reader: &mut R, read_args: Option<u64>) -> Result<Self, DecodeError> {
+		let params = PartialChannelTransactionParameters::read(reader, read_args)?;
+		params.into_complete().ok_or(DecodeError::InvalidValue)
+	}
+}
+
+impl ReadableArgs<Option<u64>> for PartialChannelTransactionParameters {
 	#[rustfmt::skip]
 	fn read<R: io::Read>(reader: &mut R, read_args: Option<u64>) -> Result<Self, DecodeError> {
 		let mut holder_pubkeys = RequiredWrapper(None);
@@ -1248,61 +1388,60 @@ impl ReadableArgs<Option<u64>> for ChannelTransactionParameters {
 /// This is derived from the holder/counterparty-organized ChannelTransactionParameters via the
 /// as_holder_broadcastable and as_counterparty_broadcastable functions.
 pub struct DirectedChannelTransactionParameters<'a> {
-	/// The holder's channel static parameters
-	inner: &'a ChannelTransactionParameters,
-	/// Whether the holder is the broadcaster
-	holder_is_broadcaster: bool,
+	/// The channel pubkeys for the broadcaster
+	broadcaster_pubkeys: &'a ChannelPublicKeys,
+	/// The channel pubkeys for the countersignatory
+	countersignatory_pubkeys: &'a ChannelPublicKeys,
+	/// The contest delay selected by the countersignatory
+	contest_delay: u16,
+	/// Whether the channel is outbound from the broadcaster
+	is_outbound: bool,
+	/// The funding outpoint
+	funding_outpoint: OutPoint,
+	/// The channel type features
+	channel_type_features: &'a ChannelTypeFeatures,
+	/// The value locked in the channel
+	channel_value_satoshis: u64,
 }
 
 impl<'a> DirectedChannelTransactionParameters<'a> {
 	/// Get the channel pubkeys for the broadcaster
 	pub fn broadcaster_pubkeys(&self) -> &'a ChannelPublicKeys {
-		if self.holder_is_broadcaster {
-			&self.inner.holder_pubkeys
-		} else {
-			&self.inner.counterparty_parameters.as_ref().unwrap().pubkeys
-		}
+		self.broadcaster_pubkeys
 	}
 
 	/// Get the channel pubkeys for the countersignatory
 	pub fn countersignatory_pubkeys(&self) -> &'a ChannelPublicKeys {
-		if self.holder_is_broadcaster {
-			&self.inner.counterparty_parameters.as_ref().unwrap().pubkeys
-		} else {
-			&self.inner.holder_pubkeys
-		}
+		self.countersignatory_pubkeys
 	}
 
 	/// Get the contest delay applicable to the transactions.
 	/// Note that the contest delay was selected by the countersignatory.
-	#[rustfmt::skip]
 	pub fn contest_delay(&self) -> u16 {
-		let counterparty_parameters = self.inner.counterparty_parameters.as_ref().unwrap();
-		if self.holder_is_broadcaster { counterparty_parameters.selected_contest_delay } else { self.inner.holder_selected_contest_delay }
+		self.contest_delay
 	}
 
 	/// Whether the channel is outbound from the broadcaster.
 	///
 	/// The boolean representing the side that initiated the channel is
 	/// an input to the commitment number obscure factor computation.
-	#[rustfmt::skip]
 	pub fn is_outbound(&self) -> bool {
-		if self.holder_is_broadcaster { self.inner.is_outbound_from_holder } else { !self.inner.is_outbound_from_holder }
+		self.is_outbound
 	}
 
 	/// The funding outpoint
 	pub fn funding_outpoint(&self) -> OutPoint {
-		self.inner.funding_outpoint.unwrap().into_bitcoin_outpoint()
+		self.funding_outpoint
 	}
 
 	/// The type of channel these parameters are for
 	pub fn channel_type_features(&self) -> &'a ChannelTypeFeatures {
-		&self.inner.channel_type_features
+		self.channel_type_features
 	}
 
 	/// The value locked in the channel, denominated in satoshis.
 	pub fn channel_value_satoshis(&self) -> u64 {
-		self.inner.channel_value_satoshis
+		self.channel_value_satoshis
 	}
 }
 
@@ -1362,8 +1501,8 @@ impl HolderCommitmentTransaction {
 			holder_pubkeys: channel_pubkeys.clone(),
 			holder_selected_contest_delay: 0,
 			is_outbound_from_holder: false,
-			counterparty_parameters: Some(CounterpartyChannelTransactionParameters { pubkeys: channel_pubkeys.clone(), selected_contest_delay: 0 }),
-			funding_outpoint: Some(funding_outpoint),
+			counterparty_parameters: CounterpartyChannelTransactionParameters { pubkeys: channel_pubkeys.clone(), selected_contest_delay: 0 },
+			funding_outpoint: funding_outpoint,
 			splice_parent_funding_txid: None,
 			channel_type_features: ChannelTypeFeatures::only_static_remote_key(),
 			channel_value_satoshis,
@@ -2299,8 +2438,8 @@ mod tests {
 				holder_pubkeys: holder_pubkeys.clone(),
 				holder_selected_contest_delay: 0,
 				is_outbound_from_holder: false,
-				counterparty_parameters: Some(CounterpartyChannelTransactionParameters { pubkeys: counterparty_pubkeys.clone(), selected_contest_delay: 0 }),
-				funding_outpoint: Some(chain::transaction::OutPoint { txid: Txid::all_zeros(), index: 0 }),
+				counterparty_parameters: CounterpartyChannelTransactionParameters { pubkeys: counterparty_pubkeys.clone(), selected_contest_delay: 0 },
+				funding_outpoint: chain::transaction::OutPoint { txid: Txid::all_zeros(), index: 0 },
 				splice_parent_funding_txid: None,
 				channel_type_features: ChannelTypeFeatures::only_static_remote_key(),
 				channel_value_satoshis: 4000,
