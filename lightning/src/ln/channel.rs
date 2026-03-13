@@ -982,8 +982,11 @@ pub const TOTAL_BITCOIN_SUPPLY_SATOSHIS: u64 = 21_000_000 * 1_0000_0000;
 /// implementations use this value for their dust limit today.
 pub const MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS: u64 = 546;
 
+/// The maximum channel dust limit we will accept from our counterparty for non-anchor channels.
+pub const MAX_LEGACY_CHAN_DUST_LIMIT_SATOSHIS: u64 = MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS;
+
 /// The maximum channel dust limit we will accept from our counterparty.
-pub const MAX_CHAN_DUST_LIMIT_SATOSHIS: u64 = MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS;
+pub const MAX_CHAN_DUST_LIMIT_SATOSHIS: u64 = 10_000;
 
 /// The dust limit is used for both the commitment transaction outputs as well as the closing
 /// transactions. For cooperative closing transactions, we require segwit outputs, though accept
@@ -3644,8 +3647,14 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		if open_channel_fields.dust_limit_satoshis < MIN_CHAN_DUST_LIMIT_SATOSHIS {
 			return Err(ChannelError::close(format!("dust_limit_satoshis ({}) is less than the implementation limit ({})", open_channel_fields.dust_limit_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS)));
 		}
-		if open_channel_fields.dust_limit_satoshis >  MAX_CHAN_DUST_LIMIT_SATOSHIS {
-			return Err(ChannelError::close(format!("dust_limit_satoshis ({}) is greater than the implementation limit ({})", open_channel_fields.dust_limit_satoshis, MAX_CHAN_DUST_LIMIT_SATOSHIS)));
+
+		let max_chan_dust_limit_satoshis = if channel_type.supports_anchors_zero_fee_htlc_tx() || channel_type.supports_anchor_zero_fee_commitments() {
+			MAX_CHAN_DUST_LIMIT_SATOSHIS
+		} else {
+			MAX_LEGACY_CHAN_DUST_LIMIT_SATOSHIS
+		};
+		if open_channel_fields.dust_limit_satoshis > max_chan_dust_limit_satoshis {
+			return Err(ChannelError::close(format!("dust_limit_satoshis ({}) is greater than the implementation limit ({})", open_channel_fields.dust_limit_satoshis, max_chan_dust_limit_satoshis)));
 		}
 
 		// Convert things into internal flags and prep our state:
@@ -4426,8 +4435,14 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		if common_fields.dust_limit_satoshis < MIN_CHAN_DUST_LIMIT_SATOSHIS {
 			return Err(ChannelError::close(format!("dust_limit_satoshis ({}) is less than the implementation limit ({})", common_fields.dust_limit_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS)));
 		}
-		if common_fields.dust_limit_satoshis > MAX_CHAN_DUST_LIMIT_SATOSHIS {
-			return Err(ChannelError::close(format!("dust_limit_satoshis ({}) is greater than the implementation limit ({})", common_fields.dust_limit_satoshis, MAX_CHAN_DUST_LIMIT_SATOSHIS)));
+
+		let max_chan_dust_limit_satoshis = if channel_type.supports_anchors_zero_fee_htlc_tx() || channel_type.supports_anchor_zero_fee_commitments() {
+			MAX_CHAN_DUST_LIMIT_SATOSHIS
+		} else {
+			MAX_LEGACY_CHAN_DUST_LIMIT_SATOSHIS
+		};
+		if common_fields.dust_limit_satoshis > max_chan_dust_limit_satoshis {
+			return Err(ChannelError::close(format!("dust_limit_satoshis ({}) is greater than the implementation limit ({})", common_fields.dust_limit_satoshis, max_chan_dust_limit_satoshis)));
 		}
 		if common_fields.minimum_depth > peer_limits.max_minimum_depth {
 			return Err(ChannelError::close(format!("We consider the minimum depth to be unreasonably large. Expected minimum: ({}). Actual: ({})", peer_limits.max_minimum_depth, common_fields.minimum_depth)));
@@ -6280,15 +6295,18 @@ fn get_holder_max_htlc_value_in_flight_msat(
 /// Guaranteed to return a value no larger than channel_value_satoshis
 ///
 /// This is used both for outbound and inbound channels and has lower bound
-/// of `MIN_THEIR_CHAN_RESERVE_SATOSHIS`.
+/// of `MIN_THEIR_CHAN_RESERVE_SATOSHIS`, and the `dust_limit_satoshis` of
+/// the counterparty.
 pub(crate) fn get_holder_selected_channel_reserve_satoshis(
-	channel_value_satoshis: u64, config: &UserConfig,
+	channel_value_satoshis: u64, their_dust_limit_satoshis: u64, config: &UserConfig,
 ) -> u64 {
 	let counterparty_chan_reserve_prop_mil =
 		config.channel_handshake_config.their_channel_reserve_proportional_millionths as u64;
 	let calculated_reserve =
 		channel_value_satoshis.saturating_mul(counterparty_chan_reserve_prop_mil) / 1_000_000;
-	cmp::min(channel_value_satoshis, cmp::max(calculated_reserve, MIN_THEIR_CHAN_RESERVE_SATOSHIS))
+	let channel_reserve_satoshis = cmp::max(calculated_reserve, MIN_THEIR_CHAN_RESERVE_SATOSHIS);
+	let channel_reserve_satoshis = cmp::max(channel_reserve_satoshis, their_dust_limit_satoshis);
+	cmp::min(channel_value_satoshis, channel_reserve_satoshis)
 }
 
 /// This is for legacy reasons, present for forward-compatibility.
@@ -13267,7 +13285,15 @@ impl<SP: SignerProvider> OutboundV1Channel<SP> {
 		channel_value_satoshis: u64, push_msat: u64, user_id: u128, config: &UserConfig, current_chain_height: u32,
 		outbound_scid_alias: u64, temporary_channel_id: Option<ChannelId>, logger: L
 	) -> Result<OutboundV1Channel<SP>, APIError> {
-		let holder_selected_channel_reserve_satoshis = get_holder_selected_channel_reserve_satoshis(channel_value_satoshis, config);
+		// At this point, we do not know what `dust_limit_satoshis` the counterparty will want for themselves,
+		// so we set the channel reserve with no regard for their dust limit, and fail the channel if they want
+		// a dust limit higher than our selected reserve.
+		let their_dust_limit_satoshis = 0;
+		let holder_selected_channel_reserve_satoshis = get_holder_selected_channel_reserve_satoshis(
+			channel_value_satoshis,
+			their_dust_limit_satoshis,
+			config
+		);
 		if holder_selected_channel_reserve_satoshis < MIN_CHAN_DUST_LIMIT_SATOSHIS {
 			// Protocol level safety check in place, although it should never happen because
 			// of `MIN_THEIR_CHAN_RESERVE_SATOSHIS`
@@ -13649,7 +13675,11 @@ impl<SP: SignerProvider> InboundV1Channel<SP> {
 		// support this channel type.
 		let channel_type = channel_type_from_open_channel(&msg.common_fields, our_supported_features)?;
 
-		let holder_selected_channel_reserve_satoshis = get_holder_selected_channel_reserve_satoshis(msg.common_fields.funding_satoshis, config);
+		let holder_selected_channel_reserve_satoshis = get_holder_selected_channel_reserve_satoshis(
+			msg.common_fields.funding_satoshis,
+			msg.common_fields.dust_limit_satoshis,
+			config
+		);
 		let counterparty_pubkeys = ChannelPublicKeys {
 			funding_pubkey: msg.common_fields.funding_pubkey,
 			revocation_basepoint: RevocationBasepoint::from(msg.common_fields.revocation_basepoint),
