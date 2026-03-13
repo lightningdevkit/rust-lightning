@@ -51,8 +51,6 @@ use crate::ln::channel_keys::{
 	RevocationBasepoint, RevocationKey,
 };
 use crate::ln::inbound_payment::ExpandedKey;
-#[cfg(taproot)]
-use crate::ln::msgs::PartialSignatureWithNonce;
 use crate::ln::msgs::{UnsignedChannelAnnouncement, UnsignedGossipMessage};
 use crate::ln::script::ShutdownScript;
 use crate::offers::invoice::UnsignedBolt12Invoice;
@@ -65,22 +63,14 @@ use crate::util::transaction_utils;
 use crate::crypto::chacha20::ChaCha20;
 use crate::prelude::*;
 use crate::sign::ecdsa::EcdsaChannelSigner;
-#[cfg(taproot)]
-use crate::sign::taproot::TaprootChannelSigner;
 use crate::util::atomic_counter::AtomicCounter;
 
 use core::convert::TryInto;
 use core::future::Future;
 use core::ops::Deref;
 use core::sync::atomic::{AtomicUsize, Ordering};
-#[cfg(taproot)]
-use musig2::types::{PartialSignature, PublicNonce};
-
-pub(crate) mod type_resolver;
 
 pub mod ecdsa;
-#[cfg(taproot)]
-pub mod taproot;
 pub mod tx_builder;
 
 pub(crate) const COMPRESSED_PUBLIC_KEY_SIZE: usize = bitcoin::secp256k1::constants::PUBLIC_KEY_SIZE;
@@ -1084,18 +1074,7 @@ impl<T: OutputSpender + ?Sized, O: Deref<Target = T>> OutputSpender for O {
 /// A dynamic [`SignerProvider`] temporarily needed for doc tests.
 ///
 /// This is not exported to bindings users as it is not intended for public consumption.
-#[cfg(taproot)]
 #[doc(hidden)]
-#[deprecated(note = "Remove once taproot cfg is removed")]
-pub type DynSignerProvider =
-	dyn SignerProvider<EcdsaSigner = InMemorySigner, TaprootSigner = InMemorySigner>;
-
-/// A dynamic [`SignerProvider`] temporarily needed for doc tests.
-///
-/// This is not exported to bindings users as it is not intended for public consumption.
-#[cfg(not(taproot))]
-#[doc(hidden)]
-#[deprecated(note = "Remove once taproot cfg is removed")]
 pub type DynSignerProvider = dyn SignerProvider<EcdsaSigner = InMemorySigner>;
 
 /// A trait that can return signer instances for individual channels.
@@ -1107,11 +1086,9 @@ pub type DynSignerProvider = dyn SignerProvider<EcdsaSigner = InMemorySigner>;
 /// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 /// [`MonitorUpdatingPersister`]: crate::util::persist::MonitorUpdatingPersister
 pub trait SignerProvider {
-	/// A type which implements [`EcdsaChannelSigner`] which will be returned by [`Self::derive_channel_signer`].
+	/// A type which implements [`EcdsaChannelSigner`] which will be returned by
+	/// [`Self::derive_channel_signer`].
 	type EcdsaSigner: EcdsaChannelSigner;
-	#[cfg(taproot)]
-	/// A type which implements [`TaprootChannelSigner`]
-	type TaprootSigner: TaprootChannelSigner;
 
 	/// Generates a unique `channel_keys_id` that can be used to obtain a [`Self::EcdsaSigner`] through
 	/// [`SignerProvider::derive_channel_signer`]. The `user_channel_id` is provided to allow
@@ -1151,8 +1128,6 @@ pub trait SignerProvider {
 
 impl<T: SignerProvider + ?Sized, SP: Deref<Target = T>> SignerProvider for SP {
 	type EcdsaSigner = T::EcdsaSigner;
-	#[cfg(taproot)]
-	type TaprootSigner = T::TaprootSigner;
 
 	fn generate_channel_keys_id(&self, inbound: bool, user_channel_id: u128) -> [u8; 32] {
 		self.deref().generate_channel_keys_id(inbound, user_channel_id)
@@ -1983,65 +1958,6 @@ impl EcdsaChannelSigner for InMemorySigner {
 	}
 }
 
-#[cfg(taproot)]
-#[allow(unused)]
-impl TaprootChannelSigner for InMemorySigner {
-	fn generate_local_nonce_pair(
-		&self, commitment_number: u64, secp_ctx: &Secp256k1<All>,
-	) -> PublicNonce {
-		todo!()
-	}
-
-	fn partially_sign_counterparty_commitment(
-		&self, counterparty_nonce: PublicNonce, commitment_tx: &CommitmentTransaction,
-		inbound_htlc_preimages: Vec<PaymentPreimage>,
-		outbound_htlc_preimages: Vec<PaymentPreimage>, secp_ctx: &Secp256k1<All>,
-	) -> Result<(PartialSignatureWithNonce, Vec<schnorr::Signature>), ()> {
-		todo!()
-	}
-
-	fn finalize_holder_commitment(
-		&self, commitment_tx: &HolderCommitmentTransaction,
-		counterparty_partial_signature: PartialSignatureWithNonce, secp_ctx: &Secp256k1<All>,
-	) -> Result<PartialSignature, ()> {
-		todo!()
-	}
-
-	fn sign_justice_revoked_output(
-		&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey,
-		secp_ctx: &Secp256k1<All>,
-	) -> Result<schnorr::Signature, ()> {
-		todo!()
-	}
-
-	fn sign_justice_revoked_htlc(
-		&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey,
-		htlc: &HTLCOutputInCommitment, secp_ctx: &Secp256k1<All>,
-	) -> Result<schnorr::Signature, ()> {
-		todo!()
-	}
-
-	fn sign_holder_htlc_transaction(
-		&self, htlc_tx: &Transaction, input: usize, htlc_descriptor: &HTLCDescriptor,
-		secp_ctx: &Secp256k1<All>,
-	) -> Result<schnorr::Signature, ()> {
-		todo!()
-	}
-
-	fn sign_counterparty_htlc_transaction(
-		&self, htlc_tx: &Transaction, input: usize, amount: u64, per_commitment_point: &PublicKey,
-		htlc: &HTLCOutputInCommitment, secp_ctx: &Secp256k1<All>,
-	) -> Result<schnorr::Signature, ()> {
-		todo!()
-	}
-
-	fn partially_sign_closing_transaction(
-		&self, closing_tx: &ClosingTransaction, secp_ctx: &Secp256k1<All>,
-	) -> Result<PartialSignature, ()> {
-		todo!()
-	}
-}
-
 /// Simple implementation of [`EntropySource`], [`NodeSigner`], and [`SignerProvider`] that takes a
 /// 32-byte seed for use as a BIP 32 extended key and derives keys from that.
 ///
@@ -2548,8 +2464,6 @@ impl OutputSpender for KeysManager {
 
 impl SignerProvider for KeysManager {
 	type EcdsaSigner = InMemorySigner;
-	#[cfg(taproot)]
-	type TaprootSigner = InMemorySigner;
 
 	fn generate_channel_keys_id(&self, _inbound: bool, user_channel_id: u128) -> [u8; 32] {
 		let child_idx = self.channel_child_index.fetch_add(1, Ordering::AcqRel);
@@ -2697,8 +2611,6 @@ impl OutputSpender for PhantomKeysManager {
 
 impl SignerProvider for PhantomKeysManager {
 	type EcdsaSigner = InMemorySigner;
-	#[cfg(taproot)]
-	type TaprootSigner = InMemorySigner;
 
 	fn generate_channel_keys_id(&self, inbound: bool, user_channel_id: u128) -> [u8; 32] {
 		self.inner.generate_channel_keys_id(inbound, user_channel_id)
