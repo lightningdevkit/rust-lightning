@@ -143,6 +143,8 @@ pub(crate) enum AbortReason {
 	NegotiationInProgress,
 	/// The initiator's feerate exceeds our maximum.
 	FeeRateTooHigh,
+	/// The user manually intervened to abort the funding negotiation.
+	ManualIntervention,
 	/// Internal error
 	InternalError(&'static str),
 }
@@ -209,6 +211,7 @@ impl Display for AbortReason {
 			AbortReason::FeeRateTooHigh => {
 				f.write_str("The initiator's feerate exceeds our maximum")
 			},
+			AbortReason::ManualIntervention => f.write_str("Manually aborted funding negotiation"),
 			AbortReason::InternalError(text) => {
 				f.write_fmt(format_args!("Internal error: {}", text))
 			},
