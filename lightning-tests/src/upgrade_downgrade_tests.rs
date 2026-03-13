@@ -466,7 +466,7 @@ fn do_test_0_1_htlc_forward_after_splice(fail_htlc: bool) {
 	}
 
 	let splice_locked = get_event_msg!(nodes[0], MessageSendEvent::SendSpliceLocked, node_b_id);
-	lock_splice(&nodes[0], &nodes[1], &splice_locked, false);
+	lock_splice(&nodes[0], &nodes[1], &splice_locked, false, &[]);
 
 	for node in nodes.iter() {
 		connect_blocks(node, EXTRA_BLOCKS_BEFORE_FAIL - ANTI_REORG_DELAY);
