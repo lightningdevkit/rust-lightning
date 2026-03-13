@@ -18,6 +18,7 @@ use crate::routing::router::{PaymentParameters, RouteParameters};
 use crate::sign::EntropySource;
 use crate::chain::transaction::OutPoint;
 use crate::events::{ClosureReason, Event, HTLCHandlingFailureType};
+use crate::ln::chan_utils::HTLCClaim;
 use crate::ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, PaymentId, RAACommitmentOrder};
 use crate::ln::outbound_payment::RecipientOnionFields;
 use crate::ln::msgs;
@@ -853,16 +854,18 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool, double_rest
 	if persist_both_monitors {
 		if let Event::ChannelClosed { reason: ClosureReason::OutdatedChannelManager, .. } = events[2] { } else { panic!(); }
 		if let Event::PaymentClaimed { amount_msat: 15_000_000, .. } = events[3] { } else { panic!(); }
-		check_added_monitors(&nodes[3], 4);
+		// One update per channel closure + an update for PaymentClaimed being processed
+		check_added_monitors(&nodes[3], 3);
 	} else {
 		if let Event::PaymentClaimed { amount_msat: 15_000_000, .. } = events[2] { } else { panic!(); }
-		check_added_monitors(&nodes[3], 3);
+		// One update for channel closure, one for preimage replay to non-persisted monitor
+		check_added_monitors(&nodes[3], 2);
 	}
 
 	// Now that we've processed background events, the preimage should have been copied into the
 	// non-persisted monitor:
-	assert!(get_monitor!(nodes[3], chan_id_persisted).get_stored_preimages().contains_key(&payment_hash));
-	assert!(get_monitor!(nodes[3], chan_id_not_persisted).get_stored_preimages().contains_key(&payment_hash));
+	assert!(get_monitor!(nodes[3], chan_id_persisted).test_get_all_stored_preimages().contains_key(&payment_hash));
+	assert!(get_monitor!(nodes[3], chan_id_not_persisted).test_get_all_stored_preimages().contains_key(&payment_hash));
 
 	// On restart, we should also get a duplicate PaymentClaimed event as we persisted the
 	// ChannelManager prior to handling the original one.
@@ -925,10 +928,19 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool, double_rest
 }
 
 #[test]
-fn test_partial_claim_before_restart() {
+fn test_partial_claim_before_restart_a() {
 	do_test_partial_claim_before_restart(false, false);
+}
+#[test]
+fn test_partial_claim_before_restart_b() {
 	do_test_partial_claim_before_restart(false, true);
+}
+#[test]
+fn test_partial_claim_before_restart_c() {
 	do_test_partial_claim_before_restart(true, false);
+}
+#[test]
+fn test_partial_claim_before_restart_d() {
 	do_test_partial_claim_before_restart(true, true);
 }
 
@@ -1964,7 +1976,7 @@ fn test_reload_node_with_preimage_in_monitor_claims_htlc() {
 		persister,
 		new_chain_monitor,
 		nodes_1_deserialized,
-		Some(true)
+		TestReloadNodeCfg::new().with_reconstruct_htlcs(true)
 	);
 
 	// When the claim is reconstructed during reload, a PaymentForwarded event is generated.
@@ -2067,7 +2079,7 @@ fn test_reload_node_without_preimage_fails_htlc() {
 		persister,
 		new_chain_monitor,
 		nodes_1_deserialized,
-		Some(true)
+		TestReloadNodeCfg::new().with_reconstruct_htlcs(true)
 	);
 
 	// After reload, nodes[1] should have generated an HTLCHandlingFailed event.
@@ -2214,7 +2226,7 @@ fn test_reload_with_mpp_claims_on_same_channel() {
 		persister,
 		new_chain_monitor,
 		nodes_1_deserialized,
-		Some(true)
+		TestReloadNodeCfg::new().with_reconstruct_htlcs(true)
 	);
 
 	// When the claims are reconstructed during reload, PaymentForwarded events are regenerated.
@@ -2235,4 +2247,218 @@ fn test_reload_with_mpp_claims_on_same_channel() {
 
 	// nodes[0] should now have received both fulfills and generate PaymentSent.
 	expect_payment_sent(&nodes[0], payment_preimage, None, true, true);
+}
+
+#[test]
+fn test_reload_with_in_flight_preimage_claim() {
+	do_test_reload_with_in_flight_preimage_claim(false);
+	do_test_reload_with_in_flight_preimage_claim(true);
+}
+
+fn do_test_reload_with_in_flight_preimage_claim(close_channel: bool) {
+	// Test that if a node receives a payment and calls `claim_funds`, but the
+	// `ChannelMonitorUpdate` containing the preimage is still in-flight (not yet persisted),
+	// then after a restart the payment claim completes correctly using the preimage from the
+	// in-flight monitor update.
+	//
+	// If close_channel is set, the channel is force-closed before reload to test that in-flight
+	// monitor updates are preserved across channel closure.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let persister;
+	let new_chain_monitor;
+	let persister_2;
+	let new_chain_monitor_2;
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes_1_deserialized;
+	let nodes_1_deserialized_2;
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_0_id = nodes[0].node.get_our_node_id();
+	let node_1_id = nodes[1].node.get_our_node_id();
+
+	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
+
+	// Send a payment from nodes[0] to nodes[1].
+	let amt_msat = 1_000_000;
+	let (route, payment_hash, payment_preimage, payment_secret) =
+		get_route_and_payment_hash!(nodes[0], nodes[1], amt_msat);
+	send_along_route_with_secret(
+		&nodes[0], route, &[&[&nodes[1]]], amt_msat, payment_hash, payment_secret,
+	);
+
+	// Serialize the monitor before claiming so it doesn't have the preimage update.
+	let mon_serialized_pre_claim = get_monitor!(nodes[1], chan_id).encode();
+
+	// Set the persister to return InProgress so the preimage monitor update will be stored as
+	// in-flight.
+	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
+
+	nodes[1].node.claim_funds(payment_preimage);
+	check_added_monitors(&nodes[1], 1);
+
+	// The PaymentClaimed event is held back until the monitor update completes.
+	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
+
+	// Disconnect peers before reload/close.
+	nodes[0].node.peer_disconnected(node_1_id);
+	nodes[1].node.peer_disconnected(node_0_id);
+
+	let (commitment_tx, coinbase_tx) = if close_channel {
+		// Provide anchor reserves for fee bumping (anchors are enabled by default).
+		let coinbase_tx = provide_anchor_reserves(&nodes);
+
+		// Force close the channel - the in-flight preimage update should be preserved
+		nodes[1].node.force_close_broadcasting_latest_txn(&chan_id, &node_0_id, "test".to_string()).unwrap();
+		check_closed_broadcast(&nodes[1], 1, false);
+		check_added_monitors(&nodes[1], 1);
+		let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message: "test".to_string() };
+		check_closed_event(&nodes[1], 1, reason, &[node_0_id], 100_000);
+		// Handle the bump event to broadcast the commitment tx (anchors are enabled by default).
+		handle_bump_close_event(&nodes[1]);
+		let txn = nodes[1].tx_broadcaster.txn_broadcast();
+		assert_eq!(txn.len(), 1);
+		(Some(txn.into_iter().next().unwrap()), Some(coinbase_tx))
+	} else {
+		(None, None)
+	};
+
+	// Serialize the ChannelManager containing the in-flight preimage monitor update.
+	let node_1_serialized = nodes[1].node.encode();
+
+	reload_node!(
+		nodes[1],
+		node_1_serialized,
+		&[&mon_serialized_pre_claim],
+		persister,
+		new_chain_monitor,
+		nodes_1_deserialized
+	);
+
+	// The PaymentClaimed event should be regenerated from the in-flight update.
+	expect_payment_claimed!(nodes[1], payment_hash, amt_msat);
+
+	if close_channel {
+		check_added_monitors(&nodes[1], 4);
+		{
+			let monitor_updates = nodes[1].chain_monitor.monitor_updates.lock().unwrap();
+			let updates = monitor_updates.get(&chan_id).unwrap();
+			for (i, update) in updates.iter().rev().take(4).enumerate() {
+				match i {
+					0 => {
+						// The latest update should be because we processed PaymentClaimed on a closed channel.
+						assert_eq!(update.updates.len(), 1);
+						assert!(matches!(update.updates[0], ChannelMonitorUpdateStep::InboundPaymentClaimed { .. }));
+					},
+					1 => {
+						// Because pre-reload our preimage update was in-flight, we will still generate a
+						// redundant one on startup
+						assert_eq!(update.updates.len(), 1);
+						assert!(matches!(update.updates[0], ChannelMonitorUpdateStep::PaymentPreimage { payment_info: None, .. }))
+					},
+					2 => {
+						// The force close update
+						assert_eq!(update.updates.len(), 1);
+						assert!(matches!(update.updates[0], ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast: true }));
+					},
+					3 => {
+						// The original in-flight claim with full payment info and counterparty commitment
+						assert_eq!(update.updates.len(), 2);
+						assert!(matches!(update.updates[0], ChannelMonitorUpdateStep::PaymentPreimage { payment_info: Some(_), .. }));
+						assert!(matches!(update.updates[1], ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo { .. }));
+					},
+					_ => panic!("Unexpected update index"),
+				}
+			}
+		}
+	} else {
+		check_added_monitors(&nodes[1], 1);
+		{
+			let monitor_updates = nodes[1].chain_monitor.monitor_updates.lock().unwrap();
+			let updates = monitor_updates.get(&chan_id).unwrap();
+			let update = updates.last().unwrap();
+			assert_eq!(update.updates.len(), 2);
+			assert!(matches!(update.updates[0], ChannelMonitorUpdateStep::PaymentPreimage { payment_info: Some(_), .. }));
+			assert!(matches!(update.updates[1], ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo { .. }));
+		}
+	}
+
+	// Verify the monitor now has the preimage (the in-flight update was applied during reload).
+	assert!(
+		get_monitor!(nodes[1], chan_id).test_get_all_stored_preimages().contains_key(&payment_hash),
+		"Monitor should have preimage after in-flight update replay"
+	);
+
+	// Second reload to test for redundant PaymentClaimed events.
+	let node_1_serialized_2 = nodes[1].node.encode();
+	let mon_serialized_2 = get_monitor!(nodes[1], chan_id).encode();
+
+	reload_node!(
+		nodes[1],
+		node_1_serialized_2,
+		&[&mon_serialized_2],
+		persister_2,
+		new_chain_monitor_2,
+		nodes_1_deserialized_2
+	);
+
+	// The second reload should not replay any monitor updates (they were already applied).
+	check_added_monitors(&nodes[1], 0);
+
+	if !close_channel {
+		// If the channel is still open, there will be a redundant PaymentClaimed event generated each
+		// restart until the HTLC is removed.
+		expect_payment_claimed!(nodes[1], payment_hash, amt_msat);
+
+		// Complete the payment. Use pending_htlc_claims instead of pending_cell_htlc_claims
+		// because the latter expects a monitor update, but the claim is already in the monitor.
+		let mut reconnect_args = ReconnectArgs::new(&nodes[1], &nodes[0]);
+		reconnect_args.pending_htlc_claims = (0, 1);
+		reconnect_nodes(reconnect_args);
+
+		expect_payment_sent(&nodes[0], payment_preimage, None, true, true);
+	} else {
+		// No redundant PaymentClaimed event.
+		assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
+
+		// Mine the commitment tx on both nodes so nodes[0] sees the channel is closed.
+		let commitment_tx = commitment_tx.unwrap();
+		let coinbase_tx = coinbase_tx.unwrap();
+		mine_transaction(&nodes[0], &commitment_tx);
+		mine_transaction(&nodes[1], &commitment_tx);
+
+		// Peers are disconnected, so no error message is sent.
+		check_closed_broadcast(&nodes[0], 1, false);
+		check_added_monitors(&nodes[0], 1);
+		check_closed_event(&nodes[0], 1, ClosureReason::CommitmentTxConfirmed, &[node_1_id], 100_000);
+
+		// nodes[1] broadcasts HTLC claim tx with the preimage.
+		// We get 2 BumpTransaction events: ChannelClose (for anchor) and HTLCResolution.
+		let events = nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events();
+		assert!(events.len() <= 2);
+		for event in events {
+			if let Event::BumpTransaction(bump) = event {
+				nodes[1].bump_tx_handler.handle_event(&bump);
+			} else {
+				panic!("Unexpected event: {:?}", event);
+			}
+		}
+		// Filter for HTLC claim tx by checking for preimage in the witness.
+		let htlc_claim_txn: Vec<_> = nodes[1]
+			.tx_broadcaster
+			.txn_broadcast()
+			.into_iter()
+			.filter(|tx| {
+				tx.input.iter().any(|inp| {
+					matches!(HTLCClaim::from_witness(&inp.witness), Some(HTLCClaim::AcceptedPreimage))
+				})
+			})
+			.collect();
+		assert_eq!(htlc_claim_txn.len(), 1);
+		check_spends!(htlc_claim_txn[0], commitment_tx, coinbase_tx);
+
+		// Mine the HTLC claim on nodes[0] - it learns the preimage and generates PaymentSent.
+		mine_transaction(&nodes[0], &htlc_claim_txn[0]);
+		expect_payment_sent(&nodes[0], payment_preimage, None, true, true);
+	}
 }

@@ -706,6 +706,17 @@ pub(crate) enum ChannelMonitorUpdateStep {
 	ReleasePaymentComplete {
 		htlc: SentHTLCId,
 	},
+	/// When an [`Event::PaymentClaimed`] is processed by the user, we need to track that so we don't
+	/// keep regenerating the event redundantly on startup.
+	///
+	/// This will remove the HTLC from [`ChannelMonitor::get_stored_preimages`].
+	///
+	/// Note that this is only generated for closed channels -- if the channel is open, the inbound
+	/// payment is pruned automatically when the HTLC is no longer present in any unrevoked
+	/// commitment transaction.
+	InboundPaymentClaimed {
+		payment_hash: PaymentHash,
+	},
 }
 
 impl ChannelMonitorUpdateStep {
@@ -723,6 +734,7 @@ impl ChannelMonitorUpdateStep {
 			ChannelMonitorUpdateStep::RenegotiatedFunding { .. } => "RenegotiatedFunding",
 			ChannelMonitorUpdateStep::RenegotiatedFundingLocked { .. } => "RenegotiatedFundingLocked",
 			ChannelMonitorUpdateStep::ReleasePaymentComplete { .. } => "ReleasePaymentComplete",
+			ChannelMonitorUpdateStep::InboundPaymentClaimed { .. } => "InboundPaymentClaimed",
 		}
 	}
 }
@@ -768,6 +780,9 @@ impl_writeable_tlv_based_enum_upgradable!(ChannelMonitorUpdateStep,
 		(1, commitment_txs, required_vec),
 		(3, htlc_data, required),
 		(5, claimed_htlcs, required_vec),
+	},
+	(9, InboundPaymentClaimed) => {
+		(1, payment_hash, required),
 	},
 	(10, RenegotiatedFunding) => {
 		(1, channel_parameters, (required: ReadableArgs, None)),
@@ -1342,6 +1357,10 @@ pub(crate) struct ChannelMonitorImpl<Signer: EcdsaChannelSigner> {
 	/// this and we'll store the set of fully resolved payments here.
 	htlcs_resolved_to_user: HashSet<SentHTLCId>,
 
+	/// The set of inbound payments for which the user has processed an [`Event::PaymentClaimed`].
+	/// This is used to avoid regenerating the event redundantly on restart for closed channels.
+	inbound_payments_claimed: HashSet<PaymentHash>,
+
 	/// The set of `SpendableOutput` events which we have already passed upstream to be claimed.
 	/// These are tracked explicitly to ensure that we don't generate the same events redundantly
 	/// if users duplicatively confirm old transactions. Specifically for transactions claiming a
@@ -1755,6 +1774,7 @@ pub(crate) fn write_chanmon_internal<Signer: EcdsaChannelSigner, W: Writer>(
 		(34, channel_monitor.alternative_funding_confirmed, option),
 		(35, channel_monitor.is_manual_broadcast, required),
 		(37, channel_monitor.funding_seen_onchain, required),
+		(39, channel_monitor.inbound_payments_claimed, required),
 	});
 
 	Ok(())
@@ -1954,6 +1974,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 			confirmed_commitment_tx_counterparty_output: None,
 			htlcs_resolved_on_chain: Vec::new(),
 			htlcs_resolved_to_user: new_hash_set(),
+			inbound_payments_claimed: new_hash_set(),
 			spendable_txids_confirmed: Vec::new(),
 
 			best_block,
@@ -3252,6 +3273,20 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	pub(crate) fn get_stored_preimages(
 		&self,
 	) -> HashMap<PaymentHash, (PaymentPreimage, Vec<PaymentClaimDetails>)> {
+		let inner = self.inner.lock().unwrap();
+		inner
+			.payment_preimages
+			.iter()
+			.filter(|(hash, _)| !inner.inbound_payments_claimed.contains(*hash))
+			.map(|(hash, value)| (*hash, value.clone()))
+			.collect()
+	}
+
+	/// Used in tests to verify preimage propagation.
+	#[cfg(test)]
+	pub(crate) fn test_get_all_stored_preimages(
+		&self,
+	) -> HashMap<PaymentHash, (PaymentPreimage, Vec<PaymentClaimDetails>)> {
 		self.inner.lock().unwrap().payment_preimages.clone()
 	}
 }
@@ -4152,6 +4187,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			assert_eq!(updates.updates.len(), 1);
 			match updates.updates[0] {
 				ChannelMonitorUpdateStep::ReleasePaymentComplete { .. } => {},
+				ChannelMonitorUpdateStep::InboundPaymentClaimed { .. } => {},
 				ChannelMonitorUpdateStep::ChannelForceClosed { .. } => {},
 				// We should have already seen a `ChannelForceClosed` update if we're trying to
 				// provide a preimage at this point.
@@ -4283,6 +4319,10 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					log_trace!(logger, "HTLC {htlc:?} permanently and fully resolved");
 					self.htlcs_resolved_to_user.insert(*htlc);
 				},
+				ChannelMonitorUpdateStep::InboundPaymentClaimed { payment_hash } => {
+					log_trace!(logger, "Inbound payment {} claimed", payment_hash);
+					self.inbound_payments_claimed.insert(*payment_hash);
+				},
 			}
 		}
 
@@ -4315,6 +4355,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				ChannelMonitorUpdateStep::PaymentPreimage { .. } => {},
 				ChannelMonitorUpdateStep::ChannelForceClosed { .. } => {},
 				ChannelMonitorUpdateStep::ReleasePaymentComplete { .. } => {},
+				ChannelMonitorUpdateStep::InboundPaymentClaimed { .. } => {},
 			}
 		}
 
@@ -6506,6 +6547,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		let mut funding_spend_confirmed = None;
 		let mut htlcs_resolved_on_chain = Some(Vec::new());
 		let mut htlcs_resolved_to_user = Some(new_hash_set());
+		let mut inbound_payments_claimed = Some(new_hash_set());
 		let mut funding_spend_seen = Some(false);
 		let mut counterparty_node_id = None;
 		let mut confirmed_commitment_tx_counterparty_output = None;
@@ -6545,6 +6587,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			(34, alternative_funding_confirmed, option),
 			(35, is_manual_broadcast, (default_value, false)),
 			(37, funding_seen_onchain, (default_value, true)),
+			(39, inbound_payments_claimed, option),
 		});
 		// Note that `payment_preimages_with_info` was added (and is always written) in LDK 0.1, so
 		// we can use it to determine if this monitor was last written by LDK 0.1 or later.
@@ -6710,6 +6753,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			confirmed_commitment_tx_counterparty_output,
 			htlcs_resolved_on_chain: htlcs_resolved_on_chain.unwrap(),
 			htlcs_resolved_to_user: htlcs_resolved_to_user.unwrap(),
+			inbound_payments_claimed: inbound_payments_claimed.unwrap(),
 			spendable_txids_confirmed: spendable_txids_confirmed.unwrap(),
 
 			best_block,
