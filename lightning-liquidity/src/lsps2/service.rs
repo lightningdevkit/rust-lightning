@@ -1871,7 +1871,7 @@ where
 	}
 
 	pub(crate) fn peer_disconnected(&self, counterparty_node_id: PublicKey) {
-		let outer_state_lock = self.per_peer_state.write().unwrap();
+		let outer_state_lock = self.per_peer_state.read().unwrap();
 		if let Some(inner_state_lock) = outer_state_lock.get(&counterparty_node_id) {
 			let mut peer_state_lock = inner_state_lock.lock().unwrap();
 			// We clean up the peer state, but leave removing the peer entry to the prune logic in
