@@ -2420,72 +2420,86 @@ fn test_trampoline_blinded_receive() {
 	do_test_trampoline_relay(true, TrampolineTestCase::OuterCLTVLessThanTrampoline);
 }
 
-enum TrampolineTailType {
-	Receive { auth_key: ReceiveAuthKey, payment_secret: PaymentSecret },
-	Forward,
-}
-
+/// Creates a blinded tail where Carol receives via a blinded path.
 fn create_blinded_tail(
 	secp_ctx: &Secp256k1<All>, override_random_bytes: [u8; 32], carol_node_id: PublicKey,
-	trampoline_cltv_expiry_delta: u32, excess_final_cltv_delta: u32, final_value_msat: u64,
-	tail_type: TrampolineTailType,
+	carol_auth_key: ReceiveAuthKey, trampoline_cltv_expiry_delta: u32,
+	excess_final_cltv_delta: u32, final_value_msat: u64, payment_secret: PaymentSecret,
 ) -> BlindedTail {
 	let outer_session_priv = SecretKey::from_slice(&override_random_bytes).unwrap();
 	let trampoline_session_priv = onion_utils::compute_trampoline_session_priv(&outer_session_priv);
-	let carol_blinding_point = PublicKey::from_secret_key(&secp_ctx, &trampoline_session_priv);
 
-	let mut hops = match &tail_type {
-		TrampolineTailType::Receive { auth_key, payment_secret } => {
-			let payee_tlvs = ReceiveTlvs {
-				payment_secret: *payment_secret,
-				payment_constraints: PaymentConstraints {
-					max_cltv_expiry: u32::max_value(),
-					htlc_minimum_msat: final_value_msat,
-				},
-				payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
-			}
-			.encode();
-			let path = [((carol_node_id, Some(*auth_key)), WithoutLength(&payee_tlvs))];
-			blinded_path::utils::construct_blinded_hops(
-				&secp_ctx,
-				path.into_iter(),
-				&trampoline_session_priv,
-			)
-		},
-		// For now, create a fake forward path with a dummy next hop because we expect all
-		// forwards to fail anyway.
-		TrampolineTailType::Forward => {
-			let forward_tlvs = blinded_path::payment::TrampolineForwardTlvs {
-				next_trampoline: PublicKey::from_slice(&[2; 33]).unwrap(),
-				payment_constraints: PaymentConstraints {
-					max_cltv_expiry: u32::max_value(),
-					htlc_minimum_msat: 1,
-				},
-				features: BlindedHopFeatures::empty(),
-				payment_relay: PaymentRelay {
-					cltv_expiry_delta: 36,
-					fee_proportional_millionths: 0,
-					fee_base_msat: 100,
-				},
-				next_blinding_override: None,
-			}
-			.encode();
-			let path = [((carol_node_id, None), WithoutLength(&forward_tlvs))];
-			blinded_path::utils::construct_blinded_hops(
-				&secp_ctx,
-				path.into_iter(),
-				&trampoline_session_priv,
-			)
-		},
+	let carol_blinding_point = PublicKey::from_secret_key(&secp_ctx, &trampoline_session_priv);
+	let carol_blinded_hops = {
+		let payee_tlvs = ReceiveTlvs {
+			payment_secret,
+			payment_constraints: PaymentConstraints {
+				max_cltv_expiry: u32::max_value(),
+				htlc_minimum_msat: final_value_msat,
+			},
+			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
+		}
+		.encode();
+
+		let path = [((carol_node_id, Some(carol_auth_key)), WithoutLength(&payee_tlvs))];
+
+		blinded_path::utils::construct_blinded_hops(
+			&secp_ctx,
+			path.into_iter(),
+			&trampoline_session_priv,
+		)
 	};
 
-	// Dummy next hop so the onion builder sees forwards as multi-hop paths.
-	if matches!(tail_type, TrampolineTailType::Forward) {
-		hops.push(BlindedHop {
-			blinded_node_id: PublicKey::from_slice(&[2; 33]).unwrap(),
-			encrypted_payload: vec![0; 32],
-		});
+	BlindedTail {
+		trampoline_hops: vec![TrampolineHop {
+			pubkey: carol_node_id,
+			node_features: Features::empty(),
+			fee_msat: final_value_msat,
+			cltv_expiry_delta: trampoline_cltv_expiry_delta + excess_final_cltv_delta,
+		}],
+		hops: carol_blinded_hops,
+		blinding_point: carol_blinding_point,
+		excess_final_cltv_expiry_delta: excess_final_cltv_delta,
+		final_value_msat,
 	}
+}
+
+/// Creates a dummy blinded tail where Carol forwards via trampoline. The forward uses fake relay
+/// values and a dummy next hop because we expect all forwards to fail anyway.
+fn create_trampoline_forward_blinded_tail(
+	secp_ctx: &Secp256k1<All>, session_priv_bytes: [u8; 32], carol_node_id: PublicKey,
+	trampoline_cltv_expiry_delta: u32, excess_final_cltv_delta: u32, final_value_msat: u64,
+) -> BlindedTail {
+	let outer_session_priv = SecretKey::from_slice(&session_priv_bytes).unwrap();
+	let trampoline_session_priv = onion_utils::compute_trampoline_session_priv(&outer_session_priv);
+	let carol_blinding_point = PublicKey::from_secret_key(&secp_ctx, &trampoline_session_priv);
+
+	let forward_tlvs = blinded_path::payment::TrampolineForwardTlvs {
+		next_trampoline: PublicKey::from_slice(&[2; 33]).unwrap(),
+		payment_constraints: PaymentConstraints {
+			max_cltv_expiry: u32::max_value(),
+			htlc_minimum_msat: 1,
+		},
+		features: BlindedHopFeatures::empty(),
+		payment_relay: PaymentRelay {
+			cltv_expiry_delta: 36,
+			fee_proportional_millionths: 0,
+			fee_base_msat: 100,
+		},
+		next_blinding_override: None,
+	}
+	.encode();
+	let path = [((carol_node_id, None), WithoutLength(&forward_tlvs))];
+	let mut hops = blinded_path::utils::construct_blinded_hops(
+		&secp_ctx,
+		path.into_iter(),
+		&trampoline_session_priv,
+	);
+	// Dummy next hop so the onion builder sees this as a multi-hop (forward) path.
+	hops.push(BlindedHop {
+		blinded_node_id: PublicKey::from_slice(&[2; 33]).unwrap(),
+		encrypted_payload: vec![0; 32],
+	});
 
 	BlindedTail {
 		trampoline_hops: vec![TrampolineHop {
@@ -2672,13 +2686,11 @@ fn do_test_trampoline_relay(blinded: bool, test_case: TrampolineTestCase) {
 				&secp_ctx,
 				override_random_bytes,
 				carol_node_id,
+				nodes[2].keys_manager.get_receive_auth_key(),
 				original_trampoline_cltv,
 				excess_final_cltv,
 				original_amt_msat,
-				TrampolineTailType::Receive {
-					auth_key: nodes[2].keys_manager.get_receive_auth_key(),
-					payment_secret,
-				},
+				payment_secret,
 			)),
 		}],
 		route_params: None,
@@ -2834,14 +2846,13 @@ fn send_trampoline_mpp_payment<'a, 'b, 'c>(
 	let excess_final_cltv = 70;
 
 	let fwd_tail = |session_priv: [u8; 32]| {
-		create_blinded_tail(
+		create_trampoline_forward_blinded_tail(
 			&secp_ctx,
 			session_priv,
 			carol_node_id,
 			trampoline_cltv,
 			excess_final_cltv,
 			per_path_amt,
-			TrampolineTailType::Forward,
 		)
 	};
 
