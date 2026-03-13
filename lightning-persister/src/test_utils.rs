@@ -120,6 +120,7 @@ pub(crate) fn do_test_store<K: KVStoreSync + Sync>(store_0: &K, store_1: &K) {
 		&chanmon_cfgs[0].fee_estimator,
 		store_0,
 		node_cfgs[0].keys_manager,
+		false,
 	);
 	let chain_mon_1 = test_utils::TestChainMonitor::new(
 		Some(&chanmon_cfgs[1].chain_source),
@@ -128,6 +129,7 @@ pub(crate) fn do_test_store<K: KVStoreSync + Sync>(store_0: &K, store_1: &K) {
 		&chanmon_cfgs[1].fee_estimator,
 		store_1,
 		node_cfgs[1].keys_manager,
+		false,
 	);
 	node_cfgs[0].chain_monitor = chain_mon_0;
 	node_cfgs[1].chain_monitor = chain_mon_1;

@@ -94,6 +94,10 @@ fn test_monitor_and_persister_update_fail() {
 				(nodes[0].keys_manager, nodes[0].keys_manager),
 			)
 			.unwrap();
+			// Compare events separately since we don't ever persist [`Event::PersistClaimInfo`] event.
+			let events = monitor.get_and_clear_pending_events();
+			let new_events = new_monitor.get_and_clear_pending_events();
+			assert_eq!(new_events, events);
 			assert!(new_monitor == *monitor);
 			new_monitor
 		};
@@ -104,6 +108,7 @@ fn test_monitor_and_persister_update_fail() {
 			&chanmon_cfgs[0].fee_estimator,
 			&persister,
 			&node_cfgs[0].keys_manager,
+			false,
 		);
 		assert_eq!(
 			chain_mon.watch_channel(chan.2, new_monitor),
@@ -3546,7 +3551,7 @@ fn do_test_blocked_chan_preimage_release(completion_mode: BlockedUpdateComplMode
 
 	// The event processing should release the last RAA update.
 	// It should also generate the next update for nodes[2].
-	check_added_monitors(&nodes[1], 2);
+	check_added_monitors_with_claim_info_events(&nodes[1], 2, 1);
 	let mut bs_htlc_fulfill = get_htlc_update_msgs(&nodes[1], &node_c_id);
 	check_added_monitors(&nodes[1], 0);
 
@@ -4927,6 +4932,7 @@ fn native_async_persist() {
 		native_async_persister,
 		Arc::clone(&keys_manager),
 		keys_manager.get_peer_storage_key(),
+		false,
 	);
 
 	// Write the initial ChannelMonitor async, testing primarily that the `MonitorEvent::Completed`

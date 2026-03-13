@@ -17,7 +17,8 @@ use crate::chain::chaininterface::FEERATE_FLOOR_SATS_PER_KW;
 use crate::chain::chaininterface::{ConfirmationTarget, TransactionType};
 use crate::chain::chainmonitor::{ChainMonitor, Persist};
 use crate::chain::channelmonitor::{
-	ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, MonitorEvent,
+	ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, ClaimInfo, ClaimKey,
+	MonitorEvent,
 };
 use crate::chain::transaction::OutPoint;
 use crate::chain::WatchedOutput;
@@ -495,7 +496,8 @@ impl<T: chaininterface::BroadcasterInterface> SyncBroadcaster for T {}
 impl<T: Persist<TestChannelSigner>> SyncPersist for T {}
 
 pub struct TestChainMonitor<'a> {
-	pub added_monitors: Mutex<Vec<(ChannelId, ChannelMonitor<TestChannelSigner>)>>,
+	pub added_monitors:
+		Mutex<Vec<(ChannelId, ChannelMonitor<TestChannelSigner>, Option<ChannelMonitorUpdate>)>>,
 	pub monitor_updates: Mutex<HashMap<ChannelId, Vec<ChannelMonitorUpdate>>>,
 	pub latest_monitor_update_id: Mutex<HashMap<ChannelId, (u64, u64)>>,
 	pub chain_monitor: ChainMonitor<
@@ -507,6 +509,7 @@ pub struct TestChainMonitor<'a> {
 		&'a dyn SyncPersist,
 		&'a TestKeysInterface,
 	>,
+	pub persisted_claim_infos: Mutex<HashMap<(ChannelId, ClaimKey), ClaimInfo>>,
 	pub keys_manager: &'a TestKeysInterface,
 	/// If this is set to Some(), the next update_channel call (not watch_channel) must be a
 	/// ChannelForceClosed event for the given channel_id with should_broadcast set to the given
@@ -523,6 +526,7 @@ impl<'a> TestChainMonitor<'a> {
 		chain_source: Option<&'a TestChainSource>, broadcaster: &'a dyn SyncBroadcaster,
 		logger: &'a TestLogger, fee_estimator: &'a TestFeeEstimator,
 		persister: &'a dyn SyncPersist, keys_manager: &'a TestKeysInterface,
+		offload_claim_info: bool,
 	) -> Self {
 		Self {
 			added_monitors: Mutex::new(Vec::new()),
@@ -536,7 +540,9 @@ impl<'a> TestChainMonitor<'a> {
 				persister,
 				keys_manager,
 				keys_manager.get_peer_storage_key(),
+				offload_claim_info,
 			),
+			persisted_claim_infos: Mutex::new(new_hash_map()),
 			keys_manager,
 			expect_channel_force_closed: Mutex::new(None),
 			expect_monitor_round_trip_fail: Mutex::new(None),
@@ -577,7 +583,7 @@ impl<'a> TestChainMonitor<'a> {
 			.lock()
 			.unwrap()
 			.insert(channel_id, (monitor.get_latest_update_id(), monitor.get_latest_update_id()));
-		self.added_monitors.lock().unwrap().push((channel_id, monitor));
+		self.added_monitors.lock().unwrap().push((channel_id, monitor, None));
 		self.chain_monitor.load_existing_monitor(channel_id, new_monitor)
 	}
 
@@ -611,7 +617,7 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 			.lock()
 			.unwrap()
 			.insert(channel_id, (monitor.get_latest_update_id(), monitor.get_latest_update_id()));
-		self.added_monitors.lock().unwrap().push((channel_id, monitor));
+		self.added_monitors.lock().unwrap().push((channel_id, monitor, None));
 		self.chain_monitor.watch_channel(channel_id, new_monitor)
 	}
 
@@ -666,9 +672,12 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 			assert_eq!(chan_id, channel_id);
 			assert!(new_monitor != *monitor);
 		} else {
-			assert!(new_monitor == *monitor);
+			let expected_monitor = monitor.clone();
+			// Compare without [`Event::PersistClaimInfo`] events since we don't persist them.
+			expected_monitor.get_and_clear_claim_info_events();
+			assert!(new_monitor == expected_monitor);
 		}
-		self.added_monitors.lock().unwrap().push((channel_id, new_monitor));
+		self.added_monitors.lock().unwrap().push((channel_id, new_monitor, Some(update.clone())));
 		update_res
 	}
 

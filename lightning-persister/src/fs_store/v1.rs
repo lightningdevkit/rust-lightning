@@ -217,6 +217,7 @@ mod tests {
 			&chanmon_cfgs[0].fee_estimator,
 			&store,
 			node_cfgs[0].keys_manager,
+			false,
 		);
 		node_cfgs[0].chain_monitor = chain_mon_0;
 		let node_chanmgrs = create_node_chanmgrs(1, &node_cfgs, &[None]);
