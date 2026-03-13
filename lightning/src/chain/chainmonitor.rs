@@ -1032,11 +1032,13 @@ where
 	/// See the release notes for LDK 0.1 for more information on this requirement.
 	///
 	/// [`ChannelMonitor`]s which do not need to be persisted (i.e. were last written by LDK 0.1 or
-	/// later) will be loaded without persistence and this method will return
-	/// [`ChannelMonitorUpdateStatus::Completed`].
+	/// later) will be loaded without persistence and a [`MonitorEvent::Completed`] will be
+	/// immediately queued.
+	///
+	/// [`MonitorEvent::Completed`]: channelmonitor::MonitorEvent::Completed
 	pub fn load_existing_monitor(
 		&self, channel_id: ChannelId, monitor: ChannelMonitor<ChannelSigner>,
-	) -> Result<ChannelMonitorUpdateStatus, ()> {
+	) -> Result<(), ()> {
 		if !monitor.written_by_0_1_or_later() {
 			return chain::Watch::watch_channel(self, channel_id, monitor);
 		}
@@ -1054,9 +1056,20 @@ where
 		if let Some(ref chain_source) = self.chain_source {
 			monitor.load_outputs_to_watch(chain_source, &self.logger);
 		}
+		// The monitor is already persisted, so generate MonitorEvent::Completed immediately.
+		let funding_txo = monitor.get_funding_txo();
+		let counterparty_node_id = monitor.get_counterparty_node_id();
+		let update_id = monitor.get_latest_update_id();
 		entry.insert(MonitorHolder { monitor, pending_monitor_updates: Mutex::new(Vec::new()) });
+		self.pending_monitor_events.lock().unwrap().push((
+			funding_txo,
+			channel_id,
+			vec![MonitorEvent::Completed { funding_txo, channel_id, monitor_update_id: update_id }],
+			counterparty_node_id,
+		));
+		self.event_notifier.notify();
 
-		Ok(ChannelMonitorUpdateStatus::Completed)
+		Ok(())
 	}
 }
 
@@ -1271,7 +1284,7 @@ where
 {
 	fn watch_channel(
 		&self, channel_id: ChannelId, monitor: ChannelMonitor<ChannelSigner>,
-	) -> Result<ChannelMonitorUpdateStatus, ()> {
+	) -> Result<(), ()> {
 		let logger = WithChannelMonitor::from(&self.logger, &monitor, None);
 		let mut monitors = self.monitors.write().unwrap();
 		let entry = match monitors.entry(channel_id) {
@@ -1285,33 +1298,52 @@ where
 		let update_id = monitor.get_latest_update_id();
 		let mut pending_monitor_updates = Vec::new();
 		let persist_res = self.persister.persist_new_channel(monitor.persistence_key(), &monitor);
-		match persist_res {
+		let persist_completed = match persist_res {
 			ChannelMonitorUpdateStatus::InProgress => {
 				log_info!(logger, "Persistence of new ChannelMonitor in progress",);
 				pending_monitor_updates.push(update_id);
+				false
 			},
 			ChannelMonitorUpdateStatus::Completed => {
 				log_info!(logger, "Persistence of new ChannelMonitor completed",);
+				true
 			},
 			ChannelMonitorUpdateStatus::UnrecoverableError => {
 				let err_str = "ChannelMonitor[Update] persistence failed unrecoverably. This indicates we cannot continue normal operation and must shut down.";
 				log_error!(logger, "{}", err_str);
 				panic!("{}", err_str);
 			},
-		}
+		};
 		if let Some(ref chain_source) = self.chain_source {
 			monitor.load_outputs_to_watch(chain_source, &self.logger);
 		}
+		// Capture monitor info before moving it into the map.
+		let funding_txo = monitor.get_funding_txo();
+		let counterparty_node_id = monitor.get_counterparty_node_id();
 		entry.insert(MonitorHolder {
 			monitor,
 			pending_monitor_updates: Mutex::new(pending_monitor_updates),
 		});
-		Ok(persist_res)
+		if persist_completed {
+			// Persist returned Completed, so generate MonitorEvent::Completed immediately.
+			// We can't call channel_monitor_updated here because we hold the monitors write
+			// lock. Instead, push directly to pending_monitor_events which is a separate Mutex.
+			self.pending_monitor_events.lock().unwrap().push((
+				funding_txo,
+				channel_id,
+				vec![MonitorEvent::Completed {
+					funding_txo,
+					channel_id,
+					monitor_update_id: update_id,
+				}],
+				counterparty_node_id,
+			));
+			self.event_notifier.notify();
+		}
+		Ok(())
 	}
 
-	fn update_channel(
-		&self, channel_id: ChannelId, update: &ChannelMonitorUpdate,
-	) -> ChannelMonitorUpdateStatus {
+	fn update_channel(&self, channel_id: ChannelId, update: &ChannelMonitorUpdate) {
 		// `ChannelMonitorUpdate`'s `channel_id` is `None` prior to 0.0.121 and all channels in those
 		// versions are V1-established. For 0.0.121+ the `channel_id` fields is always `Some`.
 		debug_assert_eq!(update.channel_id.unwrap(), channel_id);
@@ -1328,7 +1360,7 @@ where
 				#[cfg(debug_assertions)]
 				panic!("ChannelManager generated a channel update for a channel that was not yet registered!");
 				#[cfg(not(debug_assertions))]
-				ChannelMonitorUpdateStatus::InProgress
+				return;
 			},
 			Some(monitor_state) => {
 				let monitor = &monitor_state.monitor;
@@ -1382,6 +1414,24 @@ where
 							"Persistence of ChannelMonitorUpdate id {:?} completed",
 							update_id,
 						);
+						// If no prior async updates are pending, we can immediately signal
+						// completion. Otherwise, completion of those prior updates via
+						// channel_monitor_updated will eventually generate the event (using
+						// monitor.get_latest_update_id() which covers this update too).
+						if !monitor_state.has_pending_updates(&pending_monitor_updates) {
+							let funding_txo = monitor.get_funding_txo();
+							self.pending_monitor_events.lock().unwrap().push((
+								funding_txo,
+								channel_id,
+								vec![MonitorEvent::Completed {
+									funding_txo,
+									channel_id,
+									monitor_update_id: monitor.get_latest_update_id(),
+								}],
+								monitor.get_counterparty_node_id(),
+							));
+							self.event_notifier.notify();
+						}
 					},
 					ChannelMonitorUpdateStatus::UnrecoverableError => {
 						// Take the monitors lock for writing so that we poison it and any future
@@ -1412,12 +1462,6 @@ where
 							script_pubkey: funding_script,
 						});
 					}
-				}
-
-				if update_res.is_err() {
-					ChannelMonitorUpdateStatus::InProgress
-				} else {
-					persist_res
 				}
 			},
 		}

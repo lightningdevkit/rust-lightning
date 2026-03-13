@@ -207,7 +207,7 @@ pub trait Confirm {
 
 /// An enum representing the status of a channel monitor update persistence.
 ///
-/// These are generally used as the return value for an implementation of [`Persist`] which is used
+/// These are used as the return value for an implementation of [`Persist`] which is used
 /// as the storage layer for a [`ChainMonitor`]. See the docs on [`Persist`] for a high-level
 /// explanation of how to handle different cases.
 ///
@@ -234,7 +234,7 @@ pub enum ChannelMonitorUpdateStatus {
 	/// be available on restart even if the application crashes.
 	///
 	/// If you return this variant, you cannot later return [`InProgress`] from the same instance of
-	/// [`Persist`]/[`Watch`] without first restarting.
+	/// [`Persist`] without first restarting.
 	///
 	/// [`InProgress`]: ChannelMonitorUpdateStatus::InProgress
 	/// [`Persist`]: chainmonitor::Persist
@@ -264,7 +264,7 @@ pub enum ChannelMonitorUpdateStatus {
 	/// remaining cases are fixed, in rare cases, *using this feature may lead to funds loss*.
 	///
 	/// If you return this variant, you cannot later return [`Completed`] from the same instance of
-	/// [`Persist`]/[`Watch`] without first restarting.
+	/// [`Persist`] without first restarting.
 	///
 	/// [`InProgress`]: ChannelMonitorUpdateStatus::InProgress
 	/// [`Completed`]: ChannelMonitorUpdateStatus::Completed
@@ -293,7 +293,8 @@ pub enum ChannelMonitorUpdateStatus {
 /// persisted to disk to ensure that the latest [`ChannelMonitor`] state can be reloaded if the
 /// application crashes.
 ///
-/// See method documentation and [`ChannelMonitorUpdateStatus`] for specific requirements.
+/// Updates are always considered in-progress until completion is signaled asynchronously via
+/// [`MonitorEvent::Completed`] in [`Watch::release_pending_monitor_events`].
 pub trait Watch<ChannelSigner: EcdsaChannelSigner> {
 	/// Watches a channel identified by `channel_id` using `monitor`.
 	///
@@ -312,26 +313,30 @@ pub trait Watch<ChannelSigner: EcdsaChannelSigner> {
 	/// [`blocks_disconnected`]: channelmonitor::ChannelMonitor::blocks_disconnected
 	fn watch_channel(
 		&self, channel_id: ChannelId, monitor: ChannelMonitor<ChannelSigner>,
-	) -> Result<ChannelMonitorUpdateStatus, ()>;
+	) -> Result<(), ()>;
 
 	/// Updates a channel identified by `channel_id` by applying `update` to its monitor.
 	///
 	/// Implementations must call [`ChannelMonitor::update_monitor`] with the given update. This
-	/// may fail (returning an `Err(())`), in which case this should return
-	/// [`ChannelMonitorUpdateStatus::InProgress`] (and the update should never complete). This
+	/// may fail (returning an `Err(())`), in which case the update should never complete. This
 	/// generally implies the channel has been closed (either by the funding outpoint being spent
 	/// on-chain or the [`ChannelMonitor`] having decided to do so and broadcasted a transaction),
 	/// and the [`ChannelManager`] state will be updated once it sees the funding spend on-chain.
 	///
-	/// In general, persistence failures should be retried after returning
-	/// [`ChannelMonitorUpdateStatus::InProgress`] and eventually complete. If a failure truly
-	/// cannot be retried, the node should shut down immediately after returning
-	/// [`ChannelMonitorUpdateStatus::UnrecoverableError`], see its documentation for more info.
+	/// The update is considered in-progress until a [`MonitorEvent::Completed`] is provided via
+	/// [`Watch::release_pending_monitor_events`]. While in-progress, the channel will be
+	/// "frozen", preventing us from revoking old states or submitting a new commitment
+	/// transaction to the counterparty.
+	///
+	/// Even when a channel has been "frozen", updates to the [`ChannelMonitor`] can continue to
+	/// occur (e.g. if an inbound HTLC which we forwarded was claimed upstream, resulting in us
+	/// attempting to claim it on this channel) and those updates must still be persisted.
+	///
+	/// In general, persistence failures should be retried in the background and eventually
+	/// complete. If a failure truly cannot be retried, the node should shut down.
 	///
 	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
-	fn update_channel(
-		&self, channel_id: ChannelId, update: &ChannelMonitorUpdate,
-	) -> ChannelMonitorUpdateStatus;
+	fn update_channel(&self, channel_id: ChannelId, update: &ChannelMonitorUpdate);
 
 	/// Returns any monitor events since the last call. Subsequent calls must only return new
 	/// events.
@@ -339,9 +344,6 @@ pub trait Watch<ChannelSigner: EcdsaChannelSigner> {
 	/// Note that after any block- or transaction-connection calls to a [`ChannelMonitor`], no
 	/// further events may be returned here until the [`ChannelMonitor`] has been fully persisted
 	/// to disk.
-	///
-	/// For details on asynchronous [`ChannelMonitor`] updating and returning
-	/// [`MonitorEvent::Completed`] here, see [`ChannelMonitorUpdateStatus::InProgress`].
 	fn release_pending_monitor_events(
 		&self,
 	) -> Vec<(OutPoint, ChannelId, Vec<MonitorEvent>, PublicKey)>;
@@ -352,13 +354,11 @@ impl<ChannelSigner: EcdsaChannelSigner, T: Watch<ChannelSigner> + ?Sized, W: Der
 {
 	fn watch_channel(
 		&self, channel_id: ChannelId, monitor: ChannelMonitor<ChannelSigner>,
-	) -> Result<ChannelMonitorUpdateStatus, ()> {
+	) -> Result<(), ()> {
 		self.deref().watch_channel(channel_id, monitor)
 	}
 
-	fn update_channel(
-		&self, channel_id: ChannelId, update: &ChannelMonitorUpdate,
-	) -> ChannelMonitorUpdateStatus {
+	fn update_channel(&self, channel_id: ChannelId, update: &ChannelMonitorUpdate) {
 		self.deref().update_channel(channel_id, update)
 	}
 
@@ -384,9 +384,8 @@ impl<ChannelSigner: EcdsaChannelSigner, T: Watch<ChannelSigner> + ?Sized, W: Der
 /// Note that use as part of a [`Watch`] implementation involves reentrancy. Therefore, the `Filter`
 /// should not block on I/O. Implementations should instead queue the newly monitored data to be
 /// processed later. Then, in order to block until the data has been processed, any [`Watch`]
-/// invocation that has called the `Filter` must return [`InProgress`].
-///
-/// [`InProgress`]: ChannelMonitorUpdateStatus::InProgress
+/// invocation that has called the `Filter` should delay its [`MonitorEvent::Completed`] until
+/// processing finishes.
 /// [BIP 157]: https://github.com/bitcoin/bips/blob/master/bip-0157.mediawiki
 /// [BIP 158]: https://github.com/bitcoin/bips/blob/master/bip-0158.mediawiki
 pub trait Filter {
