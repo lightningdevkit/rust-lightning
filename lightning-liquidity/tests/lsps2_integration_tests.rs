@@ -1513,10 +1513,12 @@ fn create_channel_with_manual_broadcast(
 		Event::OpenChannelRequest { temporary_channel_id, .. } => {
 			client_node
 				.node
-				.accept_inbound_channel_from_trusted_peer_0conf(
+				.accept_inbound_channel_from_trusted_peer(
 					&temporary_channel_id,
 					&service_node_id,
 					user_channel_id,
+					true,
+					false,
 					None,
 				)
 				.unwrap();

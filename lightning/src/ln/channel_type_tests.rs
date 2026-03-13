@@ -144,6 +144,7 @@ fn test_zero_conf_channel_type_support() {
 		42,
 		None,
 		&logger,
+		false,
 	)
 	.unwrap();
 
@@ -168,6 +169,7 @@ fn test_zero_conf_channel_type_support() {
 		0,
 		&&logger,
 		/*is_0conf=*/ false,
+		/*is_0reserve=*/ false,
 	);
 	assert!(res.is_ok());
 }
@@ -244,6 +246,7 @@ fn do_test_supports_channel_type(config: UserConfig, expected_channel_type: Chan
 		42,
 		None,
 		&logger,
+		false,
 	)
 	.unwrap();
 	assert_eq!(
@@ -265,6 +268,7 @@ fn do_test_supports_channel_type(config: UserConfig, expected_channel_type: Chan
 		42,
 		None,
 		&logger,
+		false,
 	)
 	.unwrap();
 
@@ -283,6 +287,7 @@ fn do_test_supports_channel_type(config: UserConfig, expected_channel_type: Chan
 		0,
 		&&logger,
 		/*is_0conf=*/ false,
+		/*is_0reserve=*/ false,
 	)
 	.unwrap();
 
@@ -330,6 +335,7 @@ fn test_rejects_if_channel_type_not_set() {
 		42,
 		None,
 		&logger,
+		false,
 	)
 	.unwrap();
 
@@ -351,6 +357,7 @@ fn test_rejects_if_channel_type_not_set() {
 		0,
 		&&logger,
 		/*is_0conf=*/ false,
+		/*is_0reserve=*/ false,
 	);
 	assert!(channel_b.is_err());
 
@@ -369,6 +376,7 @@ fn test_rejects_if_channel_type_not_set() {
 		0,
 		&&logger,
 		/*is_0conf=*/ false,
+		/*is_0reserve=*/ false,
 	)
 	.unwrap();
 
@@ -416,6 +424,7 @@ fn test_rejects_if_channel_type_differ() {
 		42,
 		None,
 		&logger,
+		false,
 	)
 	.unwrap();
 
@@ -435,6 +444,7 @@ fn test_rejects_if_channel_type_differ() {
 		0,
 		&&logger,
 		/*is_0conf=*/ false,
+		/*is_0reserve=*/ false,
 	)
 	.unwrap();
 
@@ -499,6 +509,7 @@ fn test_rejects_simple_anchors_channel_type() {
 		42,
 		None,
 		&logger,
+		false,
 	)
 	.unwrap();
 
@@ -519,6 +530,7 @@ fn test_rejects_simple_anchors_channel_type() {
 		0,
 		&&logger,
 		/*is_0conf=*/ false,
+		/*is_0reserve=*/ false,
 	);
 	assert!(res.is_err());
 
@@ -540,6 +552,7 @@ fn test_rejects_simple_anchors_channel_type() {
 		42,
 		None,
 		&logger,
+		false,
 	)
 	.unwrap();
 
@@ -559,6 +572,7 @@ fn test_rejects_simple_anchors_channel_type() {
 		0,
 		&&logger,
 		/*is_0conf=*/ false,
+		/*is_0reserve=*/ false,
 	)
 	.unwrap();
 

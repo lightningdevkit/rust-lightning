@@ -2,12 +2,13 @@
 
 use crate::events::{ClosureReason, Event, HTLCHandlingFailureType, PaymentPurpose};
 use crate::ln::chan_utils::{
-	self, commitment_tx_base_weight, second_stage_tx_fees_sat, CommitmentTransaction,
-	COMMITMENT_TX_WEIGHT_PER_HTLC,
+	self, commit_tx_fee_sat, commitment_tx_base_weight, second_stage_tx_fees_sat,
+	CommitmentTransaction, COMMITMENT_TX_WEIGHT_PER_HTLC,
 };
 use crate::ln::channel::{
-	get_holder_selected_channel_reserve_satoshis, Channel, FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE,
-	MIN_AFFORDABLE_HTLC_COUNT, MIN_CHAN_DUST_LIMIT_SATOSHIS,
+	get_holder_selected_channel_reserve_satoshis, Channel, ANCHOR_OUTPUT_VALUE_SATOSHI,
+	FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE, MIN_AFFORDABLE_HTLC_COUNT,
+	MIN_CHAN_DUST_LIMIT_SATOSHIS,
 };
 use crate::ln::channelmanager::{PaymentId, RAACommitmentOrder};
 use crate::ln::functional_test_utils::*;
@@ -2438,4 +2439,798 @@ pub fn do_test_dust_limit_fee_accounting(can_afford: bool) {
 
 		check_added_monitors(&nodes[1], 3);
 	}
+}
+
+#[test]
+fn test_create_channel_to_trusted_peer_0reserve() {
+	let mut config = test_default_channel_config();
+
+	// Legacy channels
+	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = false;
+	config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = false;
+	let channel_type = do_test_create_channel_to_trusted_peer_0reserve(config.clone());
+	assert_eq!(channel_type, ChannelTypeFeatures::only_static_remote_key());
+
+	// Anchor channels
+	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+	config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = false;
+	let channel_type = do_test_create_channel_to_trusted_peer_0reserve(config.clone());
+	assert_eq!(channel_type, ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies());
+
+	// 0FC channels
+	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = false;
+	config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
+	let channel_type = do_test_create_channel_to_trusted_peer_0reserve(config.clone());
+	assert_eq!(channel_type, ChannelTypeFeatures::anchors_zero_fee_commitments());
+}
+
+#[cfg(test)]
+fn do_test_create_channel_to_trusted_peer_0reserve(mut config: UserConfig) -> ChannelTypeFeatures {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	config.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 100;
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
+
+	let channel_value_sat = 100_000;
+
+	let temp_channel_id = nodes[0]
+		.node
+		.create_channel_to_trusted_peer_0reserve(node_b_id, channel_value_sat, 0, 42, None, None)
+		.unwrap();
+	let mut open_channel_message =
+		get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
+	handle_and_accept_open_channel(&nodes[1], node_a_id, &open_channel_message);
+	let mut accept_channel_message =
+		get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, node_a_id);
+	nodes[0].node.handle_accept_channel(node_b_id, &accept_channel_message);
+	let funding_tx = sign_funding_transaction(&nodes[0], &nodes[1], 100_000, temp_channel_id);
+	let funding_msgs =
+		create_chan_between_nodes_with_value_confirm(&nodes[0], &nodes[1], &funding_tx);
+	create_chan_between_nodes_with_value_b(&nodes[0], &nodes[1], &funding_msgs.0);
+
+	let details = &nodes[0].node.list_channels()[0];
+	let reserve_sat = details.unspendable_punishment_reserve.unwrap();
+	assert_ne!(reserve_sat, 0);
+	let channel_type = details.channel_type.clone().unwrap();
+	let feerate_per_kw = details.feerate_sat_per_1000_weight.unwrap();
+	let anchors_sat =
+		if channel_type == ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies() {
+			2 * 330
+		} else {
+			0
+		};
+	let spike_multiple = if channel_type == ChannelTypeFeatures::only_static_remote_key() {
+		FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE as u32
+	} else {
+		1
+	};
+	let spiked_feerate = spike_multiple * feerate_per_kw;
+	let reserved_commit_tx_fee_sat = chan_utils::commit_tx_fee_sat(
+		spiked_feerate,
+		2, // We reserve space for two HTLCs, the next outbound non-dust HTLC, and the fee spike buffer HTLC
+		&channel_type,
+	);
+
+	let max_outbound_htlc_sat =
+		channel_value_sat - anchors_sat - reserved_commit_tx_fee_sat - reserve_sat;
+	assert_eq!(details.next_outbound_htlc_limit_msat, max_outbound_htlc_sat * 1000);
+	send_payment(&nodes[0], &[&nodes[1]], max_outbound_htlc_sat * 1000);
+
+	let details = &nodes[1].node.list_channels()[0];
+	assert_eq!(details.unspendable_punishment_reserve.unwrap(), 0);
+	assert_eq!(details.next_outbound_htlc_limit_msat, max_outbound_htlc_sat * 1000);
+	send_payment(&nodes[1], &[&nodes[0]], max_outbound_htlc_sat * 1000);
+
+	channel_type
+}
+
+#[test]
+fn test_accept_inbound_channel_from_trusted_peer_0reserve() {
+	let mut config = test_default_channel_config();
+
+	// Legacy channels
+	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = false;
+	config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = false;
+	let channel_type = do_test_accept_inbound_channel_from_trusted_peer_0reserve(config.clone());
+	assert_eq!(channel_type, ChannelTypeFeatures::only_static_remote_key());
+
+	// Anchor channels
+	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+	config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = false;
+	let channel_type = do_test_accept_inbound_channel_from_trusted_peer_0reserve(config.clone());
+	assert_eq!(channel_type, ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies());
+
+	// 0FC channels
+	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = false;
+	config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
+	let channel_type = do_test_accept_inbound_channel_from_trusted_peer_0reserve(config.clone());
+	assert_eq!(channel_type, ChannelTypeFeatures::anchors_zero_fee_commitments());
+}
+
+#[cfg(test)]
+fn do_test_accept_inbound_channel_from_trusted_peer_0reserve(
+	mut config: UserConfig,
+) -> ChannelTypeFeatures {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	config.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 100;
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let channel_value_sat = 100_000;
+	let (_, _, _chan_id, _) = create_announced_zero_reserve_chan_between_nodes_with_value(
+		&nodes,
+		0,
+		1,
+		channel_value_sat,
+		0,
+	);
+	let details = &nodes[0].node.list_channels()[0];
+	assert_eq!(details.unspendable_punishment_reserve.unwrap(), 0);
+	let channel_type = details.channel_type.clone().unwrap();
+	let feerate_per_kw = details.feerate_sat_per_1000_weight.unwrap();
+	let anchors_sat =
+		if channel_type == ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies() {
+			2 * 330
+		} else {
+			0
+		};
+	let spike_multiple = if channel_type == ChannelTypeFeatures::only_static_remote_key() {
+		FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE as u32
+	} else {
+		1
+	};
+	let spiked_feerate = spike_multiple * feerate_per_kw;
+	let reserved_commit_tx_fee_sat = chan_utils::commit_tx_fee_sat(
+		spiked_feerate,
+		2, // We reserve space for two HTLCs, the next outbound non-dust HTLC, and the fee spike buffer HTLC
+		&channel_type,
+	);
+
+	let max_outbound_htlc_sat = channel_value_sat - reserved_commit_tx_fee_sat - anchors_sat;
+	assert_eq!(details.next_outbound_htlc_limit_msat, max_outbound_htlc_sat * 1000);
+	send_payment(&nodes[0], &[&nodes[1]], max_outbound_htlc_sat * 1000);
+
+	let details = &nodes[1].node.list_channels()[0];
+	let reserve_sat = details.unspendable_punishment_reserve.unwrap();
+	assert_ne!(reserve_sat, 0);
+	let max_outbound_htlc_sat = max_outbound_htlc_sat - reserve_sat;
+	assert_eq!(details.next_outbound_htlc_limit_msat, max_outbound_htlc_sat * 1000);
+	send_payment(&nodes[1], &[&nodes[0]], max_outbound_htlc_sat * 1000);
+
+	channel_type
+}
+
+enum NoOutputs {
+	PaymentSucceeds,
+	FailsReceiverUpdateAddHTLC,
+	ReceiverCanAcceptHTLCA,
+	ReceiverCanAcceptHTLCB,
+}
+
+#[test]
+fn test_zero_reserve_no_outputs() {
+	let mut config = test_default_channel_config();
+
+	// Legacy channels
+	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = false;
+	config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = false;
+
+	let channel_type = do_test_zero_reserve_no_outputs(config.clone(), NoOutputs::PaymentSucceeds);
+	assert_eq!(channel_type, ChannelTypeFeatures::only_static_remote_key());
+	let channel_type =
+		do_test_zero_reserve_no_outputs(config.clone(), NoOutputs::ReceiverCanAcceptHTLCA);
+	assert_eq!(channel_type, ChannelTypeFeatures::only_static_remote_key());
+	let channel_type =
+		do_test_zero_reserve_no_outputs(config.clone(), NoOutputs::ReceiverCanAcceptHTLCB);
+	assert_eq!(channel_type, ChannelTypeFeatures::only_static_remote_key());
+	let channel_type =
+		do_test_zero_reserve_no_outputs(config.clone(), NoOutputs::FailsReceiverUpdateAddHTLC);
+	assert_eq!(channel_type, ChannelTypeFeatures::only_static_remote_key());
+
+	// Anchor channels
+	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+	config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = false;
+
+	let channel_type = do_test_zero_reserve_no_outputs(config.clone(), NoOutputs::PaymentSucceeds);
+	assert_eq!(channel_type, ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies());
+
+	let channel_type =
+		do_test_zero_reserve_no_outputs(config.clone(), NoOutputs::FailsReceiverUpdateAddHTLC);
+	assert_eq!(channel_type, ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies());
+
+	// 0FC channels
+	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = false;
+	config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
+
+	let channel_type = do_test_zero_reserve_no_outputs(config.clone(), NoOutputs::PaymentSucceeds);
+	assert_eq!(channel_type, ChannelTypeFeatures::anchors_zero_fee_commitments());
+}
+
+fn do_test_zero_reserve_no_outputs(
+	mut config: UserConfig, no_outputs_case: NoOutputs,
+) -> ChannelTypeFeatures {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	config.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 100;
+
+	let channel_type = if config.channel_handshake_config.negotiate_anchor_zero_fee_commitments {
+		ChannelTypeFeatures::anchors_zero_fee_commitments()
+	} else if config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx {
+		ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies()
+	} else {
+		ChannelTypeFeatures::only_static_remote_key()
+	};
+
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
+
+	let feerate_per_kw = 253;
+	let spike_multiple = FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE as u32;
+	let anchors_sat = 2 * ANCHOR_OUTPUT_VALUE_SATOSHI;
+	let dust_limit_satoshis: u64 = 546;
+	let channel_value_sat = if channel_type == ChannelTypeFeatures::only_static_remote_key() {
+		// This is the fundee 1000sat reserve + 2 min HTLCs
+		1002
+	} else if channel_type == ChannelTypeFeatures::anchors_zero_fee_commitments() {
+		// This is the fundee 1000sat reserve + 2 min HTLCs
+		1002
+	} else if channel_type == ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies() {
+		// min opener balance is the fee for 4 HTLCs, the anchors, and the dust limit
+		let min_channel_size =
+			commit_tx_fee_sat(feerate_per_kw, MIN_AFFORDABLE_HTLC_COUNT, &channel_type)
+				+ anchors_sat + dust_limit_satoshis;
+		assert!(min_channel_size > 1002);
+		min_channel_size
+	} else {
+		panic!("Unexpected channel type");
+	};
+
+	// Create a channel with an identical, high dust limit and zero-reserve on both sides to make our lives easier
+
+	nodes[0]
+		.node
+		.create_channel_to_trusted_peer_0reserve(node_b_id, channel_value_sat, 0, 42, None, None)
+		.unwrap();
+
+	let mut open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
+	open_channel.common_fields.dust_limit_satoshis = dust_limit_satoshis;
+	nodes[1].node.handle_open_channel(node_a_id, &open_channel);
+	let events = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		Event::OpenChannelRequest { temporary_channel_id: chan_id, .. } => {
+			nodes[1]
+				.node
+				.accept_inbound_channel_from_trusted_peer(
+					&chan_id, &node_a_id, 0, false, true, None,
+				)
+				.unwrap();
+		},
+		_ => panic!("Unexpected event"),
+	};
+
+	let mut accept_channel_msg =
+		get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, node_a_id);
+	accept_channel_msg.common_fields.dust_limit_satoshis = dust_limit_satoshis;
+	nodes[0].node.handle_accept_channel(node_b_id, &accept_channel_msg);
+
+	let (chan_id, tx, _) = create_funding_transaction(&nodes[0], &node_b_id, channel_value_sat, 42);
+
+	nodes[0].node.funding_transaction_generated(chan_id, node_b_id, tx.clone()).unwrap();
+	nodes[1].node.handle_funding_created(
+		node_a_id,
+		&get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, node_b_id),
+	);
+	check_added_monitors(&nodes[1], 1);
+	expect_channel_pending_event(&nodes[1], &node_a_id);
+
+	nodes[0].node.handle_funding_signed(
+		node_b_id,
+		&get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, node_a_id),
+	);
+	check_added_monitors(&nodes[0], 1);
+	expect_channel_pending_event(&nodes[0], &node_b_id);
+
+	let (channel_ready, channel_id) =
+		create_chan_between_nodes_with_value_confirm(&nodes[0], &nodes[1], &tx);
+	let (announcement, as_update, bs_update) =
+		create_chan_between_nodes_with_value_b(&nodes[0], &nodes[1], &channel_ready);
+	update_nodes_with_chan_announce(&nodes, 0, 1, &announcement, &as_update, &bs_update);
+
+	{
+		let mut per_peer_lock;
+		let mut peer_state_lock;
+		let channel =
+			get_channel_ref!(nodes[0], nodes[1], per_peer_lock, peer_state_lock, channel_id);
+		if let Some(mut chan) = channel.as_funded_mut() {
+			chan.context.holder_dust_limit_satoshis = dust_limit_satoshis;
+		} else {
+			panic!("Unexpected Channel phase");
+		}
+	}
+
+	{
+		let mut per_peer_lock;
+		let mut peer_state_lock;
+		let channel =
+			get_channel_ref!(nodes[1], nodes[0], per_peer_lock, peer_state_lock, channel_id);
+		if let Some(mut chan) = channel.as_funded_mut() {
+			chan.context.holder_dust_limit_satoshis = dust_limit_satoshis;
+		} else {
+			panic!("Unexpected Channel phase");
+		}
+	}
+
+	let (sender_amount_msat, receiver_amount_msat) = if channel_type
+		== ChannelTypeFeatures::only_static_remote_key()
+	{
+		// We can't afford the fee for an additional non-dust HTLC + the fee spike HTLC, so we can only send
+		// dust HTLCs...
+		// We don't bother to add the second stage tx fees, these would only make this min bigger
+		let min_nondust_htlc_sat = dust_limit_satoshis;
+		assert!(
+			channel_value_sat
+				- commit_tx_fee_sat(spike_multiple * feerate_per_kw, 2, &channel_type)
+				< min_nondust_htlc_sat
+		);
+		// But sending a big (not biggest) dust HTLC trims our balance output!
+		let max_dust_htlc = dust_limit_satoshis - 1;
+		assert!(
+			channel_value_sat - commit_tx_fee_sat(feerate_per_kw, 0, &channel_type) - max_dust_htlc
+				< dust_limit_satoshis
+		);
+		// We cannot trim our own balance output, otherwise we'd have no outputs on the commitment. We must
+		// also reserve enough fees to pay for an incoming non-dust HTLC, aka the fee spike buffer HTLC.
+		let min_value_sat = core::cmp::max(
+			commit_tx_fee_sat(spike_multiple * feerate_per_kw, 0, &channel_type)
+				+ dust_limit_satoshis,
+			commit_tx_fee_sat(spike_multiple * feerate_per_kw, 1, &channel_type),
+		);
+		// At this point the tighter requirement is "must have an output"
+		assert!(
+			commit_tx_fee_sat(spike_multiple * feerate_per_kw, 0, &channel_type)
+				+ dust_limit_satoshis
+				> commit_tx_fee_sat(spike_multiple * feerate_per_kw, 1, &channel_type)
+		);
+		// But say at 9sat/vb with default dust limit,
+		// the tighter requirement is actually "must have funds for an inbound HTLC" !
+		assert!(
+			commit_tx_fee_sat(9 * 250, 0, &channel_type) + 354
+				< commit_tx_fee_sat(9 * 250, 1, &channel_type)
+		);
+		let sender_amount_msat = (channel_value_sat - min_value_sat) * 1000;
+		let details_0 = &nodes[0].node.list_channels()[0];
+		assert_eq!(details_0.next_outbound_htlc_minimum_msat, 1000);
+		assert_eq!(details_0.next_outbound_htlc_limit_msat, sender_amount_msat);
+		assert!(
+			details_0.next_outbound_htlc_limit_msat > details_0.next_outbound_htlc_minimum_msat
+		);
+
+		match no_outputs_case {
+			NoOutputs::PaymentSucceeds => (sender_amount_msat, sender_amount_msat),
+			NoOutputs::ReceiverCanAcceptHTLCA => {
+				// A dust HTLC with 1msat added to it will break counterparty `can_accept_incoming_htlc`
+				// validation, as this dust HTLC would push the holder's balance output below the
+				// dust limit at the spike multiple feerate.
+				(sender_amount_msat, sender_amount_msat + 1)
+			},
+			NoOutputs::ReceiverCanAcceptHTLCB => {
+				// In `validate_update_add_htlc`, we check that there is still some output present on
+				// the commitment given the *current* set of HTLCs, and the *current* feerate. So this
+				// HTLC will pass at `validate_update_add_htlc`, but will fail in
+				// `can_accept_incoming_htlc` due to failed fee spike buffer checks.
+				let receiver_amount_msat = (channel_value_sat
+					- commit_tx_fee_sat(feerate_per_kw, 0, &channel_type)
+					- dust_limit_satoshis)
+					* 1000;
+				(sender_amount_msat, receiver_amount_msat)
+			},
+			NoOutputs::FailsReceiverUpdateAddHTLC => {
+				// Same value as above, just add 1msat, and this fails at `validate_update_add_htlc`
+				let receiver_amount_msat = (channel_value_sat
+					- commit_tx_fee_sat(feerate_per_kw, 0, &channel_type)
+					- dust_limit_satoshis)
+					* 1000;
+				(sender_amount_msat, receiver_amount_msat + 1)
+			},
+		}
+	} else if channel_type == ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies() {
+		// We can afford the fee for an additional non-dust HTLC plus the fee spike HTLC, so we can send
+		// non-dust HTLCs
+		assert!(
+			channel_value_sat - anchors_sat - commit_tx_fee_sat(feerate_per_kw, 2, &channel_type)
+				> dust_limit_satoshis
+		);
+		// But sending the biggest dust HTLC possible trims our balance output!
+		let max_dust_htlc = dust_limit_satoshis - 1;
+		assert!(
+			channel_value_sat
+				- anchors_sat - commit_tx_fee_sat(feerate_per_kw, 0, &channel_type)
+				- max_dust_htlc < dust_limit_satoshis
+		);
+		// So we can *only* send non-dust HTLCs
+		let details_0 = &nodes[0].node.list_channels()[0];
+		assert_eq!(details_0.next_outbound_htlc_minimum_msat, dust_limit_satoshis * 1000);
+		assert_eq!(
+			details_0.next_outbound_htlc_limit_msat,
+			(channel_value_sat - anchors_sat - commit_tx_fee_sat(feerate_per_kw, 2, &channel_type))
+				* 1000
+		);
+
+		// Send the smallest non-dust HTLC possible, this will pass both holder and counterparty validation
+		//
+		// One msat below the non-dust HTLC value will break counterparty validation at
+		// `validate_update_add_htlc`. This is why we don't bother taking a look at the range between the
+		// failure of `can_accept_incoming_htlc` and the failure of `validate_update_add_htlc`.
+		let sender_amount_msat = dust_limit_satoshis * 1000;
+
+		match no_outputs_case {
+			NoOutputs::PaymentSucceeds => (sender_amount_msat, sender_amount_msat),
+			NoOutputs::ReceiverCanAcceptHTLCA => panic!("This case is not run"),
+			NoOutputs::ReceiverCanAcceptHTLCB => panic!("This case is not run"),
+			NoOutputs::FailsReceiverUpdateAddHTLC => (sender_amount_msat, sender_amount_msat - 1),
+		}
+	} else if channel_type == ChannelTypeFeatures::anchors_zero_fee_commitments() {
+		// We can afford to send a non-dust HTLC
+		assert!(channel_value_sat > dust_limit_satoshis);
+		// Sending the biggest dust HTLC possible trims our balance output!
+		let max_dust_htlc_sat = dust_limit_satoshis - 1;
+		assert!(channel_value_sat - max_dust_htlc_sat < dust_limit_satoshis);
+		// But we'll always have the P2A output on the commitment, so we are free to send any size HTLC,
+		// including those that result in only a single output on the commitment, the P2A output.
+		let details_0 = &nodes[0].node.list_channels()[0];
+		assert_eq!(details_0.next_outbound_htlc_minimum_msat, 1000);
+		// 0FC + 0-reserve baby!
+		assert_eq!(details_0.next_outbound_htlc_limit_msat, channel_value_sat * 1000);
+
+		// Send the max size dust HTLC; this results in a commitment with only the P2A output present
+		let sender_amount_msat = max_dust_htlc_sat * 1000;
+
+		match no_outputs_case {
+			NoOutputs::PaymentSucceeds => (sender_amount_msat, sender_amount_msat),
+			NoOutputs::ReceiverCanAcceptHTLCA => panic!("This case is not run"),
+			NoOutputs::ReceiverCanAcceptHTLCB => panic!("This case is not run"),
+			NoOutputs::FailsReceiverUpdateAddHTLC => panic!("This case is not run"),
+		}
+	} else {
+		panic!("Unexpected channel type");
+	};
+
+	if let NoOutputs::PaymentSucceeds = no_outputs_case {
+		send_payment(&nodes[0], &[&nodes[1]], sender_amount_msat);
+		// Node 1 the fundee has 0-reserve too, so whatever they receive, they can send right back!
+		// Node 0 should *always* have the funds to cover the fee of a single non-dust HTLC from node 1.
+		assert_eq!(
+			nodes[1].node.list_channels()[0].next_outbound_htlc_limit_msat,
+			sender_amount_msat
+		);
+		send_payment(&nodes[1], &[&nodes[0]], sender_amount_msat);
+	} else {
+		let (route, payment_hash, _, payment_secret) =
+			get_route_and_payment_hash!(nodes[0], nodes[1], sender_amount_msat);
+		let secp_ctx = Secp256k1::new();
+		let session_priv = SecretKey::from_slice(&[42; 32]).unwrap();
+		let cur_height = nodes[0].node.best_block.read().unwrap().height + 1;
+		let onion_keys =
+			onion_utils::construct_onion_keys(&secp_ctx, &route.paths[0], &session_priv);
+		let recipient_onion_fields =
+			RecipientOnionFields::secret_only(payment_secret, sender_amount_msat);
+		let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::test_build_onion_payloads(
+			&route.paths[0],
+			&recipient_onion_fields,
+			cur_height,
+			&None,
+			None,
+			None,
+		)
+		.unwrap();
+		assert_eq!(htlc_msat, sender_amount_msat);
+		let onion_packet =
+			onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &payment_hash)
+				.unwrap();
+		let msg = msgs::UpdateAddHTLC {
+			channel_id,
+			htlc_id: 0,
+			amount_msat: receiver_amount_msat,
+			payment_hash,
+			cltv_expiry: htlc_cltv,
+			onion_routing_packet: onion_packet,
+			skimmed_fee_msat: None,
+			blinding_point: None,
+			hold_htlc: None,
+			accountable: None,
+		};
+
+		nodes[1].node.handle_update_add_htlc(node_a_id, &msg);
+
+		if let NoOutputs::FailsReceiverUpdateAddHTLC = no_outputs_case {
+			nodes[1].logger.assert_log_contains(
+				"lightning::ln::channelmanager",
+				"Remote HTLC add would overdraw remaining funds",
+				3,
+			);
+			assert_eq!(nodes[1].node.list_channels().len(), 0);
+			let err_msg = check_closed_broadcast(&nodes[1], 1, true).pop().unwrap();
+			assert_eq!(err_msg.data, "Remote HTLC add would overdraw remaining funds");
+			let reason = ClosureReason::ProcessingError {
+				err: "Remote HTLC add would overdraw remaining funds".to_string(),
+			};
+			check_added_monitors(&nodes[1], 1);
+			check_closed_event(&nodes[1], 1, reason, &[node_a_id], channel_value_sat);
+
+			return channel_type;
+		}
+
+		// Now manually create the commitment_signed message corresponding to the update_add
+		// nodes[0] just sent. In the code for construction of this message, "local" refers
+		// to the sender of the message, and "remote" refers to the receiver.
+
+		let feerate_per_kw = get_feerate!(nodes[0], nodes[1], channel_id);
+
+		const INITIAL_COMMITMENT_NUMBER: u64 = (1 << 48) - 1;
+
+		let (local_secret, next_local_point) = {
+			let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
+			let chan_lock = per_peer_state.get(&node_b_id).unwrap().lock().unwrap();
+			let local_chan =
+				chan_lock.channel_by_id.get(&channel_id).and_then(Channel::as_funded).unwrap();
+			let chan_signer = local_chan.get_signer();
+			// Make the signer believe we validated another commitment, so we can release the secret
+			chan_signer.as_ecdsa().unwrap().get_enforcement_state().last_holder_commitment -= 1;
+
+			(
+				chan_signer.as_ref().release_commitment_secret(INITIAL_COMMITMENT_NUMBER).unwrap(),
+				chan_signer
+					.as_ref()
+					.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 2, &secp_ctx)
+					.unwrap(),
+			)
+		};
+		let remote_point = {
+			let per_peer_lock;
+			let mut peer_state_lock;
+
+			let channel =
+				get_channel_ref!(nodes[1], nodes[0], per_peer_lock, peer_state_lock, channel_id);
+			let chan_signer = channel.as_funded().unwrap().get_signer();
+			chan_signer
+				.as_ref()
+				.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, &secp_ctx)
+				.unwrap()
+		};
+
+		// Build the remote commitment transaction so we can sign it, and then later use the
+		// signature for the commitment_signed message.
+		let accepted_htlc_info = chan_utils::HTLCOutputInCommitment {
+			offered: false,
+			amount_msat: receiver_amount_msat,
+			cltv_expiry: htlc_cltv,
+			payment_hash,
+			transaction_output_index: Some(1),
+		};
+
+		let local_chan_balance_msat = channel_value_sat * 1000;
+		let commitment_number = INITIAL_COMMITMENT_NUMBER - 1;
+
+		let res = {
+			let per_peer_lock;
+			let mut peer_state_lock;
+
+			let channel =
+				get_channel_ref!(nodes[0], nodes[1], per_peer_lock, peer_state_lock, channel_id);
+			let chan_signer = channel.as_funded().unwrap().get_signer();
+
+			let (commitment_tx, _stats) = SpecTxBuilder {}.build_commitment_transaction(
+				false,
+				commitment_number,
+				&remote_point,
+				&channel.funding().channel_transaction_parameters,
+				&secp_ctx,
+				local_chan_balance_msat,
+				vec![accepted_htlc_info],
+				feerate_per_kw,
+				dust_limit_satoshis,
+				&nodes[0].logger,
+			);
+			let params = &channel.funding().channel_transaction_parameters;
+			chan_signer
+				.as_ecdsa()
+				.unwrap()
+				.sign_counterparty_commitment(
+					params,
+					&commitment_tx,
+					Vec::new(),
+					Vec::new(),
+					&secp_ctx,
+				)
+				.unwrap()
+		};
+
+		let commit_signed_msg = msgs::CommitmentSigned {
+			channel_id,
+			signature: res.0,
+			htlc_signatures: res.1,
+			funding_txid: None,
+			#[cfg(taproot)]
+			partial_signature_with_nonce: None,
+		};
+
+		// Send the commitment_signed message to the nodes[1].
+		nodes[1].node.handle_commitment_signed(node_a_id, &commit_signed_msg);
+		let _ = nodes[1].node.get_and_clear_pending_msg_events();
+
+		// Send the RAA to nodes[1].
+		let raa_msg = msgs::RevokeAndACK {
+			channel_id,
+			per_commitment_secret: local_secret,
+			next_per_commitment_point: next_local_point,
+			#[cfg(taproot)]
+			next_local_nonce: None,
+			release_htlc_message_paths: Vec::new(),
+		};
+		nodes[1].node.handle_revoke_and_ack(node_a_id, &raa_msg);
+		expect_and_process_pending_htlcs(&nodes[1], false);
+
+		expect_htlc_handling_failed_destinations!(
+			nodes[1].node.get_and_clear_pending_events(),
+			&[HTLCHandlingFailureType::Receive { payment_hash }]
+		);
+
+		let events = nodes[1].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+
+		// Make sure the HTLC failed in the way we expect.
+		match events[0] {
+			MessageSendEvent::UpdateHTLCs {
+				updates: msgs::CommitmentUpdate { ref update_fail_htlcs, .. },
+				..
+			} => {
+				assert_eq!(update_fail_htlcs.len(), 1);
+				update_fail_htlcs[0].clone()
+			},
+			_ => panic!("Unexpected event"),
+		};
+		nodes[1].logger.assert_log(
+			"lightning::ln::channel",
+			"Attempting to fail HTLC due to balance exhausted on remote commitment".to_string(),
+			1,
+		);
+
+		check_added_monitors(&nodes[1], 3);
+	}
+
+	channel_type
+}
+
+#[test]
+fn test_zero_reserve_zero_conf_combined() {
+	// Test that zero-reserve and zero-conf features work together: a channel that
+	// is immediately usable (no confirmations needed) and has zero reserve for the opener.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let mut config = test_default_channel_config();
+	config.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 100;
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
+
+	let channel_value_sat = 100_000;
+
+	// Node 0 creates a channel to node 1.
+	nodes[0].node.create_channel(node_b_id, channel_value_sat, 0, 42, None, None).unwrap();
+	let open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
+
+	// Node 1 accepts with both zero-conf AND zero-reserve.
+	nodes[1].node.handle_open_channel(node_a_id, &open_channel);
+	let events = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		Event::OpenChannelRequest { temporary_channel_id: chan_id, .. } => {
+			nodes[1]
+				.node
+				.accept_inbound_channel_from_trusted_peer(&chan_id, &node_a_id, 0, true, true, None)
+				.unwrap();
+		},
+		_ => panic!("Unexpected event"),
+	};
+
+	// Verify zero-conf: minimum_depth should be 0.
+	let accept_channel = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, node_a_id);
+	assert_eq!(accept_channel.common_fields.minimum_depth, 0);
+	nodes[0].node.handle_accept_channel(node_b_id, &accept_channel);
+
+	// Create the funding transaction (no block confirmations needed for zero-conf).
+	let (temporary_channel_id, tx, _) =
+		create_funding_transaction(&nodes[0], &node_b_id, channel_value_sat, 42);
+	nodes[0]
+		.node
+		.funding_transaction_generated(temporary_channel_id, node_b_id, tx.clone())
+		.unwrap();
+	let funding_created = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, node_b_id);
+
+	// Node 1 handles funding_created and immediately sends both FundingSigned and ChannelReady.
+	nodes[1].node.handle_funding_created(node_a_id, &funding_created);
+	check_added_monitors(&nodes[1], 1);
+	let bs_signed_locked = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(bs_signed_locked.len(), 2);
+
+	let as_channel_ready;
+	match &bs_signed_locked[0] {
+		MessageSendEvent::SendFundingSigned { node_id, msg } => {
+			assert_eq!(*node_id, node_a_id);
+			nodes[0].node.handle_funding_signed(node_b_id, &msg);
+			expect_channel_pending_event(&nodes[0], &node_b_id);
+			expect_channel_pending_event(&nodes[1], &node_a_id);
+			check_added_monitors(&nodes[0], 1);
+
+			assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
+			assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap()[0], tx);
+			nodes[0].tx_broadcaster.clear();
+
+			as_channel_ready =
+				get_event_msg!(nodes[0], MessageSendEvent::SendChannelReady, node_b_id);
+		},
+		_ => panic!("Unexpected event"),
+	}
+	match &bs_signed_locked[1] {
+		MessageSendEvent::SendChannelReady { node_id, msg } => {
+			assert_eq!(*node_id, node_a_id);
+			nodes[0].node.handle_channel_ready(node_b_id, &msg);
+			expect_channel_ready_event(&nodes[0], &node_b_id);
+		},
+		_ => panic!("Unexpected event"),
+	}
+
+	nodes[1].node.handle_channel_ready(node_a_id, &as_channel_ready);
+	expect_channel_ready_event(&nodes[1], &node_a_id);
+
+	let as_channel_update =
+		get_event_msg!(nodes[0], MessageSendEvent::SendChannelUpdate, node_b_id);
+	let bs_channel_update =
+		get_event_msg!(nodes[1], MessageSendEvent::SendChannelUpdate, node_a_id);
+	nodes[0].node.handle_channel_update(node_b_id, &bs_channel_update);
+	nodes[1].node.handle_channel_update(node_a_id, &as_channel_update);
+
+	// Channel should be immediately usable without any block confirmations.
+	assert_eq!(nodes[0].node.list_usable_channels().len(), 1);
+	assert_eq!(nodes[1].node.list_usable_channels().len(), 1);
+
+	// Verify zero-reserve: opener (node 0) should have 0 reserve.
+	let details_a = &nodes[0].node.list_channels()[0];
+	let node_0_reserve = details_a.unspendable_punishment_reserve.unwrap();
+	let node_0_max_htlc = details_a.next_outbound_htlc_limit_msat;
+	let channel_type = details_a.channel_type.clone().unwrap();
+	assert_eq!(node_0_reserve, 0);
+	assert_eq!(channel_type, ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies());
+	assert!(details_a.is_usable);
+	assert_eq!(details_a.confirmations.unwrap(), 0);
+	assert_eq!(
+		node_0_max_htlc,
+		(channel_value_sat - commit_tx_fee_sat(253, 2, &channel_type) - 2 * 330) * 1000
+	);
+
+	// Verify acceptor (node 1) has a non-zero reserve.
+	let details_b = &nodes[1].node.list_channels()[0];
+	assert_ne!(details_b.unspendable_punishment_reserve.unwrap(), 0);
+	assert!(details_b.is_usable);
+
+	// Send payments in both directions to verify the combined feature works end-to-end.
+	send_payment(&nodes[0], &[&nodes[1]], node_0_max_htlc);
+
+	let details_b = &nodes[1].node.list_channels()[0];
+	let node_1_reserve = details_b.unspendable_punishment_reserve.unwrap();
+	let node_1_max_htlc = details_b.next_outbound_htlc_limit_msat;
+	assert_eq!(node_1_reserve, 1000);
+	assert_eq!(node_1_max_htlc, node_0_max_htlc - node_1_reserve * 1000);
+	send_payment(&nodes[1], &[&nodes[0]], node_1_max_htlc);
 }
