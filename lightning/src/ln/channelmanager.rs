@@ -1553,6 +1553,21 @@ impl_writeable_tlv_based!(PaymentCompleteUpdate, {
 });
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct InboundPaymentClaimedUpdate {
+	pub counterparty_node_id: PublicKey,
+	pub channel_funding_outpoint: OutPoint,
+	pub channel_id: ChannelId,
+	pub payment_hash: PaymentHash,
+}
+
+impl_writeable_tlv_based!(InboundPaymentClaimedUpdate, {
+	(1, counterparty_node_id, required),
+	(3, channel_funding_outpoint, required),
+	(5, channel_id, required),
+	(7, payment_hash, required),
+});
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum EventCompletionAction {
 	ReleaseRAAChannelMonitorUpdate {
 		counterparty_node_id: PublicKey,
@@ -1566,6 +1581,12 @@ pub(crate) enum EventCompletionAction {
 	/// fully-resolved in the [`ChannelMonitor`], which we do via this action.
 	/// Note that this action will be dropped on downgrade to LDK prior to 0.2!
 	ReleasePaymentCompleteChannelMonitorUpdate(PaymentCompleteUpdate),
+
+	/// When a payment's resolution is communicated to the downstream logic via
+	/// [`Event::PaymentClaimed`], we may want to mark the payment as fully-resolved in the
+	/// [`ChannelMonitor`], which we do via this action.
+	/// Note that this action will be dropped on downgrade to LDK prior to 0.3!
+	InboundPaymentClaimedChannelMonitorUpdate(InboundPaymentClaimedUpdate),
 }
 impl_writeable_tlv_based_enum!(EventCompletionAction,
 	(0, ReleaseRAAChannelMonitorUpdate) => {
@@ -1577,8 +1598,9 @@ impl_writeable_tlv_based_enum!(EventCompletionAction,
 			}
 			ChannelId::v1_from_funding_outpoint(channel_funding_outpoint.unwrap())
 		})),
-	}
+	},
 	{1, ReleasePaymentCompleteChannelMonitorUpdate} => (),
+	{3, InboundPaymentClaimedChannelMonitorUpdate} => (),
 );
 
 /// The source argument which is passed to [`ChannelManager::claim_mpp_part`].
@@ -10198,11 +10220,34 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						let action = if let Some((outpoint, counterparty_node_id, channel_id)) =
 							durable_preimage_channel
 						{
-							Some(EventCompletionAction::ReleaseRAAChannelMonitorUpdate {
-								channel_funding_outpoint: Some(outpoint),
-								counterparty_node_id,
-								channel_id,
-							})
+							let per_peer_state = self.per_peer_state.read().unwrap();
+							let is_channel_closed = per_peer_state
+								.get(&counterparty_node_id)
+								.map(|peer_state_mutex| {
+									let peer_state = peer_state_mutex.lock().unwrap();
+									!peer_state.channel_by_id.contains_key(&channel_id)
+								})
+								.unwrap_or(true);
+							// For open channels, we use ReleaseRAAChannelMonitorUpdate to maintain the blocking
+							// behavior (RAA updates are blocked until the PaymentClaimed event is handled).
+							// For closed channels, we use InboundPaymentClaimedChannelMonitorUpdate to persist
+							// that the PaymentClaimed event has been handled, preventing regeneration on restart.
+							if is_channel_closed {
+								Some(EventCompletionAction::InboundPaymentClaimedChannelMonitorUpdate(
+										InboundPaymentClaimedUpdate {
+											channel_funding_outpoint: outpoint,
+											counterparty_node_id,
+											channel_id,
+											payment_hash,
+										},
+								))
+							} else {
+								Some(EventCompletionAction::ReleaseRAAChannelMonitorUpdate {
+									channel_funding_outpoint: Some(outpoint),
+									counterparty_node_id,
+									channel_id,
+								})
+							}
 						} else {
 							None
 						};
@@ -15062,56 +15107,85 @@ impl<
 						htlc_id,
 					},
 				) => {
-					let per_peer_state = self.per_peer_state.read().unwrap();
-					let mut peer_state_lock = per_peer_state
-						.get(&counterparty_node_id)
-						.map(|state| state.lock().unwrap())
-						.expect("Channels originating a payment resolution must have peer state");
-					let peer_state = &mut *peer_state_lock;
-					let update_id = peer_state
-						.closed_channel_monitor_update_ids
-						.get_mut(&channel_id)
-						.expect("Channels originating a payment resolution must have a monitor");
-					// Note that for channels closed pre-0.1, the latest update_id is `u64::MAX`.
-					*update_id = update_id.saturating_add(1);
-
-					let update = ChannelMonitorUpdate {
-						update_id: *update_id,
-						channel_id: Some(channel_id),
-						updates: vec![ChannelMonitorUpdateStep::ReleasePaymentComplete {
-							htlc: htlc_id,
-						}],
-					};
-
-					let during_startup =
-						!self.background_events_processed_since_startup.load(Ordering::Acquire);
-					if during_startup {
-						let event = BackgroundEvent::MonitorUpdateRegeneratedOnStartup {
-							counterparty_node_id,
-							funding_txo: channel_funding_outpoint,
-							channel_id,
-							update,
-						};
-						self.pending_background_events.lock().unwrap().push(event);
-					} else {
-						if let Some(actions) = self.handle_post_close_monitor_update(
-							&mut peer_state.in_flight_monitor_updates,
-							&mut peer_state.monitor_update_blocked_actions,
-							channel_funding_outpoint,
-							update,
-							counterparty_node_id,
-							channel_id,
-						) {
-							mem::drop(peer_state_lock);
-							mem::drop(per_peer_state);
-							self.handle_monitor_update_completion_actions(actions);
-						}
-					}
+					let update_step =
+						ChannelMonitorUpdateStep::ReleasePaymentComplete { htlc: htlc_id };
+					self.handle_closed_channel_monitor_update_for_event(
+						counterparty_node_id,
+						channel_funding_outpoint,
+						channel_id,
+						update_step,
+					);
+				},
+				EventCompletionAction::InboundPaymentClaimedChannelMonitorUpdate(
+					InboundPaymentClaimedUpdate {
+						counterparty_node_id,
+						channel_funding_outpoint,
+						channel_id,
+						payment_hash,
+					},
+				) => {
+					let update_step =
+						ChannelMonitorUpdateStep::InboundPaymentClaimed { payment_hash };
+					self.handle_closed_channel_monitor_update_for_event(
+						counterparty_node_id,
+						channel_funding_outpoint,
+						channel_id,
+						update_step,
+					);
 				},
 			}
 		}
 	}
 
+	/// Helper for handling closed-channel monitor updates triggered by [`EventCompletionAction`]s.
+	fn handle_closed_channel_monitor_update_for_event(
+		&self, counterparty_node_id: PublicKey, funding_outpoint: OutPoint, channel_id: ChannelId,
+		update_step: ChannelMonitorUpdateStep,
+	) {
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let mut peer_state_lock = per_peer_state
+			.get(&counterparty_node_id)
+			.map(|state| state.lock().unwrap())
+			.expect("Channels originating a payment resolution must have peer state");
+		let peer_state = &mut *peer_state_lock;
+		let update_id = peer_state
+			.closed_channel_monitor_update_ids
+			.get_mut(&channel_id)
+			.expect("Channels originating a payment resolution must have a monitor");
+		// Note that for channels closed pre-0.1, the latest update_id is `u64::MAX`.
+		*update_id = update_id.saturating_add(1);
+
+		let update = ChannelMonitorUpdate {
+			update_id: *update_id,
+			channel_id: Some(channel_id),
+			updates: vec![update_step],
+		};
+
+		let during_startup =
+			!self.background_events_processed_since_startup.load(Ordering::Acquire);
+		if during_startup {
+			let event = BackgroundEvent::MonitorUpdateRegeneratedOnStartup {
+				counterparty_node_id,
+				funding_txo: funding_outpoint,
+				channel_id,
+				update,
+			};
+			self.pending_background_events.lock().unwrap().push(event);
+		} else {
+			if let Some(actions) = self.handle_post_close_monitor_update(
+				&mut peer_state.in_flight_monitor_updates,
+				&mut peer_state.monitor_update_blocked_actions,
+				funding_outpoint,
+				update,
+				counterparty_node_id,
+				channel_id,
+			) {
+				mem::drop(peer_state_lock);
+				mem::drop(per_peer_state);
+				self.handle_monitor_update_completion_actions(actions);
+			}
+		}
+	}
 	/// Processes any events asynchronously in the order they were generated since the last call
 	/// using the given event handler.
 	///
