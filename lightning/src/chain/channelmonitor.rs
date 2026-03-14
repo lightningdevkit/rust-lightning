@@ -4292,6 +4292,55 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 		self.latest_update_id = updates.update_id;
 
+		// If a counterparty commitment update was applied while the funding output has already
+		// been spent on-chain, fail back the outbound HTLCs from the update. This handles the
+		// race where a monitor update is dispatched before the channel force-closes but only
+		// applied after the commitment transaction confirms.
+		for update in updates.updates.iter() {
+			match update {
+				ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo {
+					htlc_outputs, ..
+				} => {
+					// Only outbound HTLCs have a source; inbound ones are `None`
+					// and skipped by the `filter_map`.
+					self.fail_htlcs_from_update_after_funding_spend(
+						htlc_outputs.iter().filter_map(|(htlc, source)| {
+							source.as_ref().map(|s| (&**s, htlc.payment_hash, htlc.amount_msat))
+						}),
+						logger,
+					);
+				},
+				ChannelMonitorUpdateStep::LatestCounterpartyCommitment {
+					commitment_txs, htlc_data,
+				} => {
+					// On a counterparty commitment, `offered=false` means offered by
+					// us (outbound). `nondust_htlc_sources` contains sources only for
+					// these outbound nondust HTLCs, matching the filter order.
+					debug_assert_eq!(
+						commitment_txs[0].nondust_htlcs().iter()
+							.filter(|htlc| !htlc.offered).count(),
+						htlc_data.nondust_htlc_sources.len(),
+					);
+					let nondust = commitment_txs[0]
+						.nondust_htlcs()
+						.iter()
+						.filter(|htlc| !htlc.offered)
+						.zip(htlc_data.nondust_htlc_sources.iter())
+						.map(|(htlc, source)| (source, htlc.payment_hash, htlc.amount_msat));
+					// Only outbound dust HTLCs have a source; inbound ones are `None`
+					// and skipped by the `filter_map`.
+					let dust = htlc_data.dust_htlcs.iter().filter_map(|(htlc, source)| {
+						source.as_ref().map(|s| (s, htlc.payment_hash, htlc.amount_msat))
+					});
+					self.fail_htlcs_from_update_after_funding_spend(
+						nondust.chain(dust),
+						logger,
+					);
+				},
+				_ => {},
+			}
+		}
+
 		// Refuse updates after we've detected a spend onchain (or if the channel was otherwise
 		// closed), but only if the update isn't the kind of update we expect to see after channel
 		// closure.
@@ -4336,6 +4385,121 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 	fn no_further_updates_allowed(&self) -> bool {
 		self.funding_spend_seen || self.lockdown_from_offchain || self.holder_tx_signed
+	}
+
+	/// Given outbound HTLCs from a counterparty commitment update, checks if the funding output
+	/// has been spent on-chain. If so, creates `OnchainEvent::HTLCUpdate` entries to fail back
+	/// HTLCs that weren't already known to the monitor.
+	///
+	/// This handles the race where a `ChannelMonitorUpdate` with a new counterparty commitment
+	/// is dispatched (e.g., via deferred writes) before the channel force-closes, but only
+	/// applied to the in-memory monitor after the commitment transaction has already confirmed.
+	///
+	/// Only truly new HTLCs (not present in any previously-known commitment) need to be failed
+	/// here. HTLCs that were already tracked by the monitor will be handled by the existing
+	/// `fail_unbroadcast_htlcs` logic when the spending transaction confirms.
+	fn fail_htlcs_from_update_after_funding_spend<'a, L: Logger>(
+		&mut self, htlcs: impl Iterator<Item = (&'a HTLCSource, PaymentHash, u64)>,
+		logger: &WithContext<L>,
+	) {
+		let pending_spend_entry = self
+			.onchain_events_awaiting_threshold_conf
+			.iter()
+			.find(|event| matches!(event.event, OnchainEvent::FundingSpendConfirmation { .. }))
+			.map(|entry| (entry.txid, entry.transaction.clone(), entry.height, entry.block_hash));
+		if self.funding_spend_confirmed.is_none() && pending_spend_entry.is_none() {
+			return;
+		}
+
+		// Check HTLC sources against all previously-known commitments to find truly new
+		// ones. After the update has been applied, `prev_counterparty_commitment_txid` holds
+		// what was `current` before this update, so it represents the already-known
+		// counterparty state. HTLCs already present in any of these will be handled by
+		// `fail_unbroadcast_htlcs` when the spending transaction confirms.
+		let is_source_known = |source: &HTLCSource| {
+			if let Some(ref txid) = self.funding.prev_counterparty_commitment_txid {
+				if let Some(htlc_list) = self.funding.counterparty_claimable_outpoints.get(txid) {
+					if htlc_list.iter().any(|(_, s)| s.as_ref().map(|s| s.as_ref()) == Some(source))
+					{
+						return true;
+					}
+				}
+			}
+			// Note that we don't care about the case where a counterparty sent us a fresh local commitment transaction
+			// post-closure (with the `ChannelManager` still operating the channel). First of all we only care about
+			// resolving outbound HTLCs, which fundamentally have to be initiated by us. However we also don't mind
+			// looking at the current holder commitment transaction's HTLCs as any fresh outbound HTLCs will have to
+			// first come in a locally-initiated update to the counterparty's commitment transaction which we can, by
+			// refusing to apply the update, prevent the counterparty from ever seeing (as no messages can be sent until
+			// the monitor is updated). Thus, the HTLCs we care about can never appear in the holder commitment
+			// transaction.
+			if holder_commitment_htlcs!(self, CURRENT_WITH_SOURCES).any(|(_, s)| s == Some(source))
+			{
+				return true;
+			}
+			if let Some(mut iter) = holder_commitment_htlcs!(self, PREV_WITH_SOURCES) {
+				if iter.any(|(_, s)| s == Some(source)) {
+					return true;
+				}
+			}
+			false
+		};
+		for (source, payment_hash, amount_msat) in htlcs {
+			if is_source_known(source) {
+				continue;
+			}
+			if self.counterparty_fulfilled_htlcs.get(&SentHTLCId::from_source(source)).is_some() {
+				continue;
+			}
+			let htlc_value_satoshis = Some(amount_msat / 1000);
+			let logger = WithContext::from(logger, None, None, Some(payment_hash));
+			// Defensively mark the HTLC as failed back so the expiry-based failure
+			// path in `block_connected` doesn't generate a duplicate `HTLCUpdate`
+			// event for the same source.
+			self.failed_back_htlc_ids.insert(SentHTLCId::from_source(source));
+			if let Some(confirmed_txid) = self.funding_spend_confirmed {
+				// Funding spend already confirmed past ANTI_REORG_DELAY: resolve immediately.
+				log_trace!(
+					logger,
+					"Failing HTLC from late counterparty commitment update immediately \
+					(funding spend already confirmed)"
+				);
+				self.pending_monitor_events.push(MonitorEvent::HTLCEvent(HTLCUpdate {
+					payment_hash,
+					payment_preimage: None,
+					source: source.clone(),
+					htlc_value_satoshis,
+				}));
+				self.htlcs_resolved_on_chain.push(IrrevocablyResolvedHTLC {
+					commitment_tx_output_idx: None,
+					resolving_txid: Some(confirmed_txid),
+					resolving_tx: None,
+					payment_preimage: None,
+				});
+			} else {
+				// Funding spend still awaiting ANTI_REORG_DELAY: queue the failure.
+				let (txid, transaction, height, block_hash) = pending_spend_entry.clone().unwrap();
+				let entry = OnchainEventEntry {
+					txid,
+					transaction,
+					height,
+					block_hash,
+					event: OnchainEvent::HTLCUpdate {
+						source: source.clone(),
+						payment_hash,
+						htlc_value_satoshis,
+						commitment_tx_output_idx: None,
+					},
+				};
+				log_trace!(
+					logger,
+					"Failing HTLC from late counterparty commitment update, \
+					waiting for confirmation (at height {})",
+					entry.confirmation_threshold()
+				);
+				self.onchain_events_awaiting_threshold_conf.push(entry);
+			}
+		}
 	}
 
 	fn get_latest_update_id(&self) -> u64 {
@@ -6762,7 +6926,7 @@ mod tests {
 	use bitcoin::{Sequence, Witness};
 
 	use crate::chain::chaininterface::LowerBoundedFeeEstimator;
-	use crate::events::ClosureReason;
+	use crate::events::{ClosureReason, Event};
 
 	use super::ChannelMonitorUpdateStep;
 	use crate::chain::channelmonitor::{ChannelMonitor, WithChannelMonitor};
@@ -6771,23 +6935,16 @@ mod tests {
 		weight_revoked_received_htlc, WEIGHT_REVOKED_OUTPUT,
 	};
 	use crate::chain::transaction::OutPoint;
-	use crate::chain::{BestBlock, Confirm};
+	use crate::chain::Confirm;
 	use crate::io;
-	use crate::ln::chan_utils::{
-		self, ChannelPublicKeys, ChannelTransactionParameters,
-		CounterpartyChannelTransactionParameters, HTLCOutputInCommitment,
-		HolderCommitmentTransaction,
-	};
+	use crate::ln::chan_utils::{self, HTLCOutputInCommitment, HolderCommitmentTransaction};
 	use crate::ln::channel_keys::{
-		DelayedPaymentBasepoint, DelayedPaymentKey, HtlcBasepoint, RevocationBasepoint,
-		RevocationKey,
+		DelayedPaymentBasepoint, DelayedPaymentKey, RevocationBasepoint, RevocationKey,
 	};
 	use crate::ln::channelmanager::{HTLCSource, PaymentId};
 	use crate::ln::functional_test_utils::*;
 	use crate::ln::outbound_payment::RecipientOnionFields;
-	use crate::ln::script::ShutdownScript;
 	use crate::ln::types::ChannelId;
-	use crate::sign::{ChannelSigner, InMemorySigner};
 	use crate::sync::Arc;
 	use crate::types::features::ChannelTypeFeatures;
 	use crate::types::payment::{PaymentHash, PaymentPreimage};
@@ -6892,8 +7049,21 @@ mod tests {
 		check_spends!(htlc_txn[1], broadcast_tx);
 
 		check_closed_broadcast(&nodes[1], 1, true);
-		check_closed_event(&nodes[1], 1, ClosureReason::CommitmentTxConfirmed, &[nodes[0].node.get_our_node_id()], 100000);
-		check_added_monitors(&nodes[1], 1);
+		if !use_local_txn {
+			// When the counterparty commitment confirms, FundingSpendConfirmation matures
+			// immediately (no CSV delay), so funding_spend_confirmed is set. The new payment's
+			// commitment update then triggers immediate HTLC failure, generating payment events
+			// alongside the channel close event.
+			let events = nodes[1].node.get_and_clear_pending_events();
+			assert_eq!(events.len(), 3);
+			assert!(events.iter().any(|e| matches!(e, Event::PaymentPathFailed { .. })));
+			assert!(events.iter().any(|e| matches!(e, Event::PaymentFailed { .. })));
+			assert!(events.iter().any(|e| matches!(e, Event::ChannelClosed { .. })));
+			check_added_monitors(&nodes[1], 2);
+		} else {
+			check_closed_event(&nodes[1], 1, ClosureReason::CommitmentTxConfirmed, &[nodes[0].node.get_our_node_id()], 100000);
+			check_added_monitors(&nodes[1], 1);
+		}
 	}
 
 	#[test]
@@ -6957,51 +7127,11 @@ mod tests {
 			}
 		}
 
-		let keys = InMemorySigner::new(
-			SecretKey::from_slice(&[41; 32]).unwrap(),
-			SecretKey::from_slice(&[41; 32]).unwrap(),
-			SecretKey::from_slice(&[41; 32]).unwrap(),
-			SecretKey::from_slice(&[41; 32]).unwrap(),
-			true,
-			SecretKey::from_slice(&[41; 32]).unwrap(),
-			SecretKey::from_slice(&[41; 32]).unwrap(),
-			[41; 32],
-			[0; 32],
-			[0; 32],
-		);
-
-		let counterparty_pubkeys = ChannelPublicKeys {
-			funding_pubkey: PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[44; 32]).unwrap()),
-			revocation_basepoint: RevocationBasepoint::from(PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[45; 32]).unwrap())),
-			payment_point: PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[46; 32]).unwrap()),
-			delayed_payment_basepoint: DelayedPaymentBasepoint::from(PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[47; 32]).unwrap())),
-			htlc_basepoint: HtlcBasepoint::from(PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[48; 32]).unwrap()))
-		};
 		let funding_outpoint = OutPoint { txid: Txid::all_zeros(), index: u16::MAX };
 		let channel_id = ChannelId::v1_from_funding_outpoint(funding_outpoint);
-		let channel_parameters = ChannelTransactionParameters {
-			holder_pubkeys: keys.pubkeys(&secp_ctx),
-			holder_selected_contest_delay: 66,
-			is_outbound_from_holder: true,
-			counterparty_parameters: Some(CounterpartyChannelTransactionParameters {
-				pubkeys: counterparty_pubkeys,
-				selected_contest_delay: 67,
-			}),
-			funding_outpoint: Some(funding_outpoint),
-			splice_parent_funding_txid: None,
-			channel_type_features: ChannelTypeFeatures::only_static_remote_key(),
-			channel_value_satoshis: 0,
-		};
 		// Prune with one old state and a holder commitment tx holding a few overlaps with the
 		// old state.
-		let shutdown_pubkey = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
-		let shutdown_script = ShutdownScript::new_p2wpkh_from_pubkey(shutdown_pubkey);
-		let best_block = BestBlock::from_network(Network::Testnet);
-		let monitor = ChannelMonitor::new(
-			Secp256k1::new(), keys, Some(shutdown_script.into_inner()), 0, &ScriptBuf::new(),
-			&channel_parameters, true, 0, HolderCommitmentTransaction::dummy(0, funding_outpoint, Vec::new()),
-			best_block, dummy_key, channel_id, false,
-		);
+		let monitor = crate::util::test_utils::dummy_monitor(channel_id, |keys| keys);
 
 		let nondust_htlcs = preimages_slice_to_htlcs!(preimages[0..10]);
 		let dummy_commitment_tx = HolderCommitmentTransaction::dummy(0, funding_outpoint, nondust_htlcs);
@@ -7220,49 +7350,9 @@ mod tests {
 
 		let dummy_key = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 
-		let keys = InMemorySigner::new(
-			SecretKey::from_slice(&[41; 32]).unwrap(),
-			SecretKey::from_slice(&[41; 32]).unwrap(),
-			SecretKey::from_slice(&[41; 32]).unwrap(),
-			SecretKey::from_slice(&[41; 32]).unwrap(),
-			true,
-			SecretKey::from_slice(&[41; 32]).unwrap(),
-			SecretKey::from_slice(&[41; 32]).unwrap(),
-			[41; 32],
-			[0; 32],
-			[0; 32],
-		);
-
-		let counterparty_pubkeys = ChannelPublicKeys {
-			funding_pubkey: PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[44; 32]).unwrap()),
-			revocation_basepoint: RevocationBasepoint::from(PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[45; 32]).unwrap())),
-			payment_point: PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[46; 32]).unwrap()),
-			delayed_payment_basepoint: DelayedPaymentBasepoint::from(PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[47; 32]).unwrap())),
-			htlc_basepoint: HtlcBasepoint::from(PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[48; 32]).unwrap())),
-		};
 		let funding_outpoint = OutPoint { txid: Txid::all_zeros(), index: u16::MAX };
 		let channel_id = ChannelId::v1_from_funding_outpoint(funding_outpoint);
-		let channel_parameters = ChannelTransactionParameters {
-			holder_pubkeys: keys.pubkeys(&secp_ctx),
-			holder_selected_contest_delay: 66,
-			is_outbound_from_holder: true,
-			counterparty_parameters: Some(CounterpartyChannelTransactionParameters {
-				pubkeys: counterparty_pubkeys,
-				selected_contest_delay: 67,
-			}),
-			funding_outpoint: Some(funding_outpoint),
-			splice_parent_funding_txid: None,
-			channel_type_features: ChannelTypeFeatures::only_static_remote_key(),
-			channel_value_satoshis: 0,
-		};
-		let shutdown_pubkey = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
-		let shutdown_script = ShutdownScript::new_p2wpkh_from_pubkey(shutdown_pubkey);
-		let best_block = BestBlock::from_network(Network::Testnet);
-		let monitor = ChannelMonitor::new(
-			Secp256k1::new(), keys, Some(shutdown_script.into_inner()), 0, &ScriptBuf::new(),
-			&channel_parameters, true, 0, HolderCommitmentTransaction::dummy(0, funding_outpoint, Vec::new()),
-			best_block, dummy_key, channel_id, false,
-		);
+		let monitor = crate::util::test_utils::dummy_monitor(channel_id, |keys| keys);
 
 		let chan_id = monitor.inner.lock().unwrap().channel_id();
 		let payment_hash = PaymentHash([1; 32]);
