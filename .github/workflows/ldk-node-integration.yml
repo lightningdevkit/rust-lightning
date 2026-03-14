@@ -12,11 +12,11 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v6
         with:
           path: rust-lightning
       - name: Checkout LDK Node
-        uses: actions/checkout@v3
+        uses: actions/checkout@v6
         with:
           repository: lightningdevkit/ldk-node
           path: ldk-node
