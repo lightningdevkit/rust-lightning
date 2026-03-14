@@ -16,7 +16,7 @@ use crate::chain::chaininterface::LowerBoundedFeeEstimator;
 use crate::chain::chainmonitor::ChainMonitor;
 use crate::chain::channelmonitor::{ChannelMonitor, MonitorEvent, ANTI_REORG_DELAY};
 use crate::chain::transaction::OutPoint;
-use crate::chain::{ChannelMonitorUpdateStatus, Listen, Watch};
+use crate::chain::{BestBlock, ChannelMonitorUpdateStatus, Listen, Watch};
 use crate::events::{ClosureReason, Event, HTLCHandlingFailureType, PaymentPurpose};
 use crate::ln::channel::AnnouncementSigsState;
 use crate::ln::channelmanager::{PaymentId, RAACommitmentOrder};
@@ -89,7 +89,7 @@ fn test_monitor_and_persister_update_fail() {
 	let chain_mon = {
 		let new_monitor = {
 			let monitor = nodes[0].chain_monitor.chain_monitor.get_monitor(chan.2).unwrap();
-			let (_, new_monitor) = <(BlockHash, ChannelMonitor<TestChannelSigner>)>::read(
+			let (_, new_monitor) = <(BestBlock, ChannelMonitor<TestChannelSigner>)>::read(
 				&mut &monitor.encode()[..],
 				(nodes[0].keys_manager, nodes[0].keys_manager),
 			)

@@ -31,6 +31,11 @@ pub trait Poll {
 	fn fetch_block<'a>(
 		&'a self, header: &'a ValidatedBlockHeader,
 	) -> impl Future<Output = BlockSourceResult<ValidatedBlock>> + Send + 'a;
+
+	/// Returns the header for a given hash and optional height hint.
+	fn get_header<'a>(
+		&'a self, block_hash: &'a BlockHash, height_hint: Option<u32>,
+	) -> impl Future<Output = BlockSourceResult<ValidatedBlockHeader>> + Send + 'a;
 }
 
 /// A chain tip relative to another chain tip in terms of block hash and chainwork.
@@ -257,6 +262,14 @@ impl<B: Deref<Target = T> + Sized + Send + Sync, T: BlockSource + ?Sized> Poll
 		&'a self, header: &'a ValidatedBlockHeader,
 	) -> impl Future<Output = BlockSourceResult<ValidatedBlock>> + Send + 'a {
 		async move { self.block_source.get_block(&header.block_hash).await?.validate(header.block_hash) }
+	}
+
+	fn get_header<'a>(
+		&'a self, block_hash: &'a BlockHash, height_hint: Option<u32>,
+	) -> impl Future<Output = BlockSourceResult<ValidatedBlockHeader>> + Send + 'a {
+		Box::pin(async move {
+			self.block_source.get_header(block_hash, height_hint).await?.validate(*block_hash)
+		})
 	}
 }
 
