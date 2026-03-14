@@ -24,6 +24,7 @@ use crate::ln::channelmanager::{
 use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils;
 use crate::ln::onion_utils::{DecodedOnionFailure, HTLCFailReason};
+use crate::offers::currency::CurrencyConversion;
 use crate::offers::invoice::{Bolt12Invoice, DerivedSigningPubkey, InvoiceBuilder};
 use crate::offers::invoice_request::InvoiceRequest;
 use crate::offers::nonce::Nonce;
@@ -1230,9 +1231,10 @@ impl OutboundPayments {
 		Ok(())
 	}
 
-	pub(super) fn static_invoice_received<ES: EntropySource>(
-		&self, invoice: &StaticInvoice, payment_id: PaymentId, features: Bolt12InvoiceFeatures,
-		best_block_height: u32, duration_since_epoch: Duration, entropy_source: ES,
+	pub(super) fn static_invoice_received<'a, ES: EntropySource, CC: CurrencyConversion>(
+		&'a self, invoice: &StaticInvoice, currency_conversion: &'a CC, payment_id: PaymentId,
+		features: Bolt12InvoiceFeatures, best_block_height: u32, duration_since_epoch: Duration,
+		entropy_source: ES,
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
 	) -> Result<(), Bolt12PaymentError> {
 		macro_rules! abandon_with_entry {
@@ -1280,6 +1282,7 @@ impl OutboundPayments {
 
 					let amount_msat = match InvoiceBuilder::<DerivedSigningPubkey>::amount_msats(
 						invreq,
+						currency_conversion,
 					) {
 						Ok(amt) => amt,
 						Err(_) => {
@@ -2932,7 +2935,7 @@ mod tests {
 	use crate::util::errors::APIError;
 	use crate::util::hash_tables::new_hash_map;
 	use crate::util::logger::WithContext;
-	use crate::util::test_utils;
+	use crate::util::test_utils::{self, TestCurrencyConversion};
 
 	use alloc::collections::VecDeque;
 
@@ -3295,6 +3298,7 @@ mod tests {
 		let pending_events = Mutex::new(VecDeque::new());
 		let outbound_payments = OutboundPayments::new(new_hash_map());
 		let payment_id = PaymentId([0; 32]);
+		let conversion = TestCurrencyConversion;
 		let expiration = StaleExpiration::AbsoluteTimeout(Duration::from_secs(100));
 
 		assert!(
@@ -3306,11 +3310,11 @@ mod tests {
 
 		let created_at = now() - DEFAULT_RELATIVE_EXPIRY;
 		let invoice = OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
-			.build().unwrap()
-			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
+			.amount_msats(1000).unwrap()
+			.build()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id, &conversion).unwrap()
 			.build_and_sign().unwrap()
-			.respond_with_no_std(payment_paths(), payment_hash(), created_at).unwrap()
+			.respond_with_no_std(&conversion, payment_paths(), payment_hash(), created_at).unwrap()
 			.build().unwrap()
 			.sign(recipient_sign).unwrap();
 
@@ -3352,14 +3356,15 @@ mod tests {
 		let expanded_key = ExpandedKey::new([42; 32]);
 		let nonce = Nonce([0; 16]);
 		let payment_id = PaymentId([0; 32]);
+		let conversion = TestCurrencyConversion;
 		let expiration = StaleExpiration::AbsoluteTimeout(Duration::from_secs(100));
 
 		let invoice = OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
-			.build().unwrap()
-			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
+			.amount_msats(1000).unwrap()
+			.build()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id, &conversion).unwrap()
 			.build_and_sign().unwrap()
-			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap()
+			.respond_with_no_std(&conversion, payment_paths(), payment_hash(), now()).unwrap()
 			.build().unwrap()
 			.sign(recipient_sign).unwrap();
 
@@ -3417,14 +3422,15 @@ mod tests {
 		let expanded_key = ExpandedKey::new([42; 32]);
 		let nonce = Nonce([0; 16]);
 		let payment_id = PaymentId([0; 32]);
+		let conversion = TestCurrencyConversion;
 		let expiration = StaleExpiration::AbsoluteTimeout(Duration::from_secs(100));
 
 		let invoice = OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
-			.build().unwrap()
-			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
+			.amount_msats(1000).unwrap()
+			.build()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id, &conversion).unwrap()
 			.build_and_sign().unwrap()
-			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap()
+			.respond_with_no_std(&conversion, payment_paths(), payment_hash(), now()).unwrap()
 			.build().unwrap()
 			.sign(recipient_sign).unwrap();
 
@@ -3507,11 +3513,12 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
 
 		OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
-			.build().unwrap()
-			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
+			.amount_msats(1000).unwrap()
+			.build()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id, &conversion)
 			.unwrap()
 			.build_and_sign()
 			.unwrap()

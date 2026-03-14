@@ -16,6 +16,8 @@
 pub mod offer;
 pub mod flow;
 
+pub mod currency;
+
 pub mod async_receive_offer_cache;
 pub mod invoice;
 pub mod invoice_error;

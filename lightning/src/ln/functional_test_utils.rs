@@ -501,6 +501,7 @@ pub struct NodeCfg<'a> {
 	pub fee_estimator: &'a test_utils::TestFeeEstimator,
 	pub router: test_utils::TestRouter<'a>,
 	pub message_router: test_utils::TestMessageRouter<'a>,
+	pub currency_conversion: test_utils::TestCurrencyConversion,
 	pub chain_monitor: test_utils::TestChainMonitor<'a>,
 	pub keys_manager: &'a test_utils::TestKeysInterface,
 	pub logger: &'a test_utils::TestLogger,
@@ -518,6 +519,7 @@ pub type TestChannelManager<'node_cfg, 'chan_mon_cfg> = ChannelManager<
 	&'chan_mon_cfg test_utils::TestFeeEstimator,
 	&'node_cfg test_utils::TestRouter<'chan_mon_cfg>,
 	&'node_cfg test_utils::TestMessageRouter<'chan_mon_cfg>,
+	&'node_cfg test_utils::TestCurrencyConversion,
 	&'chan_mon_cfg test_utils::TestLogger,
 >;
 
@@ -566,6 +568,7 @@ pub struct Node<'chan_man, 'node_cfg: 'chan_man, 'chan_mon_cfg: 'node_cfg> {
 	pub fee_estimator: &'chan_mon_cfg test_utils::TestFeeEstimator,
 	pub router: &'node_cfg test_utils::TestRouter<'chan_mon_cfg>,
 	pub message_router: &'node_cfg test_utils::TestMessageRouter<'chan_mon_cfg>,
+	pub currency_conversion: &'node_cfg test_utils::TestCurrencyConversion,
 	pub chain_monitor: &'node_cfg test_utils::TestChainMonitor<'chan_mon_cfg>,
 	pub keys_manager: &'chan_mon_cfg test_utils::TestKeysInterface,
 	pub node: &'chan_man TestChannelManager<'node_cfg, 'chan_mon_cfg>,
@@ -743,6 +746,7 @@ pub trait NodeHolder {
 		<Self::CM as AChannelManager>::FeeEstimator,
 		<Self::CM as AChannelManager>::Router,
 		<Self::CM as AChannelManager>::MessageRouter,
+		<Self::CM as AChannelManager>::CurrencyConversion,
 		<Self::CM as AChannelManager>::Logger,
 	>;
 	fn chain_monitor(&self) -> Option<&test_utils::TestChainMonitor<'_>>;
@@ -760,6 +764,7 @@ impl<H: NodeHolder> NodeHolder for &H {
 		<Self::CM as AChannelManager>::FeeEstimator,
 		<Self::CM as AChannelManager>::Router,
 		<Self::CM as AChannelManager>::MessageRouter,
+		<Self::CM as AChannelManager>::CurrencyConversion,
 		<Self::CM as AChannelManager>::Logger,
 	> {
 		(*self).node()
@@ -890,6 +895,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 						&test_utils::TestFeeEstimator,
 						&test_utils::TestRouter,
 						&test_utils::TestMessageRouter,
+						&test_utils::TestCurrencyConversion,
 						&test_utils::TestLogger,
 					>,
 				)>::read(
@@ -909,6 +915,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 							network_graph,
 							self.keys_manager,
 						),
+						currency_conversion: &test_utils::TestCurrencyConversion,
 						chain_monitor: self.chain_monitor,
 						tx_broadcaster: &broadcaster,
 						logger: &self.logger,
@@ -1344,6 +1351,7 @@ pub fn _reload_node<'a, 'b, 'c>(
 				fee_estimator: node.fee_estimator,
 				router: node.router,
 				message_router: node.message_router,
+				currency_conversion: node.currency_conversion,
 				chain_monitor: node.chain_monitor,
 				tx_broadcaster: node.tx_broadcaster,
 				logger: node.logger,
@@ -4602,6 +4610,7 @@ where
 				Arc::clone(&network_graph),
 				&cfg.keys_manager,
 			),
+			currency_conversion: test_utils::TestCurrencyConversion,
 			chain_monitor,
 			keys_manager: &cfg.keys_manager,
 			node_seed: seed,
@@ -4687,6 +4696,7 @@ pub fn create_node_chanmgrs<'a, 'b>(
 		&'b test_utils::TestFeeEstimator,
 		&'a test_utils::TestRouter<'b>,
 		&'a test_utils::TestMessageRouter<'b>,
+		&'a test_utils::TestCurrencyConversion,
 		&'b test_utils::TestLogger,
 	>,
 > {
@@ -4701,6 +4711,7 @@ pub fn create_node_chanmgrs<'a, 'b>(
 			cfgs[i].tx_broadcaster,
 			&cfgs[i].router,
 			&cfgs[i].message_router,
+			&cfgs[i].currency_conversion,
 			cfgs[i].logger,
 			cfgs[i].keys_manager,
 			cfgs[i].keys_manager,
@@ -4731,6 +4742,7 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(
 			&'c test_utils::TestFeeEstimator,
 			&'c test_utils::TestRouter,
 			&'c test_utils::TestMessageRouter,
+			&'c test_utils::TestCurrencyConversion,
 			&'c test_utils::TestLogger,
 		>,
 	>,
@@ -4799,6 +4811,7 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(
 			fee_estimator: cfgs[i].fee_estimator,
 			router: &cfgs[i].router,
 			message_router: &cfgs[i].message_router,
+			currency_conversion: &cfgs[i].currency_conversion,
 			chain_monitor: &cfgs[i].chain_monitor,
 			keys_manager: &cfgs[i].keys_manager,
 			node: &chan_mgrs[i],
