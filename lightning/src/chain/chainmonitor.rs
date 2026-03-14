@@ -227,6 +227,11 @@ struct MonitorHolder<ChannelSigner: EcdsaChannelSigner> {
 	/// [`ChannelMonitorUpdate`] which was already applied. While this isn't an issue for the
 	/// LDK-provided update-based [`Persist`], it is somewhat surprising for users so we avoid it.
 	pending_monitor_updates: Mutex<Vec<u64>>,
+	/// Monitor update IDs for which the persister returned `Completed` but we overrode the return
+	/// to `InProgress` because the channel is post-close (`no_further_updates_allowed()` is true).
+	/// Resolved during the next monitor event release so that `ChannelManager` sees them complete
+	/// together with the force-close `MonitorEvent`s.
+	deferred_monitor_update_completions: Mutex<Vec<u64>>,
 }
 
 impl<ChannelSigner: EcdsaChannelSigner> MonitorHolder<ChannelSigner> {
@@ -1054,7 +1059,11 @@ where
 		if let Some(ref chain_source) = self.chain_source {
 			monitor.load_outputs_to_watch(chain_source, &self.logger);
 		}
-		entry.insert(MonitorHolder { monitor, pending_monitor_updates: Mutex::new(Vec::new()) });
+		entry.insert(MonitorHolder {
+			monitor,
+			pending_monitor_updates: Mutex::new(Vec::new()),
+			deferred_monitor_update_completions: Mutex::new(Vec::new()),
+		});
 
 		Ok(ChannelMonitorUpdateStatus::Completed)
 	}
@@ -1305,6 +1314,7 @@ where
 		entry.insert(MonitorHolder {
 			monitor,
 			pending_monitor_updates: Mutex::new(pending_monitor_updates),
+			deferred_monitor_update_completions: Mutex::new(Vec::new()),
 		});
 		Ok(persist_res)
 	}
@@ -1414,7 +1424,26 @@ where
 					}
 				}
 
-				if update_res.is_err() {
+				if monitor.no_further_updates_allowed()
+					&& persist_res == ChannelMonitorUpdateStatus::Completed
+				{
+					// The channel is post-close (funding spend seen, lockdown, or holder
+					// tx signed). Return InProgress so ChannelManager freezes the
+					// channel until the force-close MonitorEvents are processed. We
+					// track this update_id in deferred_monitor_update_completions so it
+					// gets resolved during release_pending_monitor_events, together with
+					// those MonitorEvents.
+					pending_monitor_updates.push(update_id);
+					monitor_state
+						.deferred_monitor_update_completions
+						.lock()
+						.unwrap()
+						.push(update_id);
+					log_debug!(
+						logger,
+						"Deferring completion of ChannelMonitorUpdate id {:?} (channel is post-close)",
+						update_id,
+					);
 					ChannelMonitorUpdateStatus::InProgress
 				} else {
 					persist_res
@@ -1429,8 +1458,9 @@ where
 		for (channel_id, update_id) in self.persister.get_and_clear_completed_updates() {
 			let _ = self.channel_monitor_updated(channel_id, update_id);
 		}
+		let monitors = self.monitors.read().unwrap();
 		let mut pending_monitor_events = self.pending_monitor_events.lock().unwrap().split_off(0);
-		for monitor_state in self.monitors.read().unwrap().values() {
+		for monitor_state in monitors.values() {
 			let monitor_events = monitor_state.monitor.get_and_clear_pending_monitor_events();
 			if monitor_events.len() > 0 {
 				let monitor_funding_txo = monitor_state.monitor.get_funding_txo();
@@ -1442,6 +1472,34 @@ where
 					monitor_events,
 					counterparty_node_id,
 				));
+			}
+		}
+		// Resolve any deferred monitor update completions after collecting regular monitor
+		// events. The regular events include the force-close (CommitmentTxConfirmed), which
+		// ChannelManager processes first. The deferred completions come after, so that
+		// completion actions resolve once the ChannelForceClosed update (generated during
+		// force-close processing) also gets deferred and resolved in the next event cycle.
+		for monitor_state in monitors.values() {
+			let deferred =
+				monitor_state.deferred_monitor_update_completions.lock().unwrap().split_off(0);
+			for update_id in deferred {
+				let mut pending = monitor_state.pending_monitor_updates.lock().unwrap();
+				pending.retain(|id| *id != update_id);
+				let monitor_is_pending_updates = monitor_state.has_pending_updates(&pending);
+				if !monitor_is_pending_updates {
+					let funding_txo = monitor_state.monitor.get_funding_txo();
+					let channel_id = monitor_state.monitor.channel_id();
+					pending_monitor_events.push((
+						funding_txo,
+						channel_id,
+						vec![MonitorEvent::Completed {
+							funding_txo,
+							channel_id,
+							monitor_update_id: monitor_state.monitor.get_latest_update_id(),
+						}],
+						monitor_state.monitor.get_counterparty_node_id(),
+					));
+				}
 			}
 		}
 		pending_monitor_events
