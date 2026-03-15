@@ -746,8 +746,16 @@ pub fn lock_splice<'a, 'b, 'c, 'd>(
 		check_added_monitors(node, 1);
 	}
 
+	let mut node_a_stfu = None;
 	if !is_0conf {
 		let mut msg_events = node_a.node.get_and_clear_pending_msg_events();
+
+		// If node_a had a pending QuiescentAction, filter out the stfu message.
+		node_a_stfu = msg_events
+			.iter()
+			.position(|event| matches!(event, MessageSendEvent::SendStfu { .. }))
+			.map(|i| msg_events.remove(i));
+
 		assert_eq!(msg_events.len(), 2, "{msg_events:?}");
 		if let MessageSendEvent::SendAnnouncementSignatures { msg, .. } = msg_events.remove(0) {
 			node_b.node.handle_announcement_signatures(node_id_a, &msg);
@@ -776,7 +784,7 @@ pub fn lock_splice<'a, 'b, 'c, 'd>(
 		}
 	}
 
-	node_b_stfu
+	node_a_stfu.or(node_b_stfu)
 }
 
 pub fn lock_rbf_splice_after_blocks<'a, 'b, 'c, 'd>(
@@ -5654,4 +5662,200 @@ fn test_splice_channel_with_pending_splice_includes_rbf_floor() {
 	assert!(funding_template
 		.splice_in_sync(added_value, expected_floor, FeeRate::MAX, &wallet)
 		.is_ok());
+}
+
+#[test]
+fn test_funding_contributed_adjusts_feerate_for_rbf() {
+	// Test that funding_contributed adjusts the contribution's feerate to the minimum RBF feerate when a
+	// pending splice appears between splice_channel and funding_contributed.
+	//
+	// Node 0 calls splice_channel (no pending splice → min_rbf_feerate = None) and builds a
+	// contribution at floor feerate. Node 1 then initiates and completes a splice. When node 0
+	// calls funding_contributed, the contribution is adjusted to the minimum RBF feerate and STFU is sent
+	// immediately.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 4, added_value * 2);
+
+	// Node 0 calls splice_channel before any pending splice exists.
+	let floor_feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64);
+	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
+	assert!(funding_template.min_rbf_feerate().is_none());
+
+	// Build contribution at floor feerate with high max_feerate to allow adjustment.
+	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
+	let contribution =
+		funding_template.splice_in_sync(added_value, floor_feerate, FeeRate::MAX, &wallet).unwrap();
+
+	// Node 1 initiates and completes a splice, creating pending_splice with negotiated candidates.
+	let node_1_contribution = do_initiate_splice_in(&nodes[1], &nodes[0], channel_id, added_value);
+	let (_first_splice_tx, _new_funding_script) =
+		splice_channel(&nodes[1], &nodes[0], channel_id, node_1_contribution);
+
+	// Node 0 calls funding_contributed. The contribution's feerate (floor) is below the RBF
+	// floor (25/24 of floor), but funding_contributed adjusts it upward.
+	nodes[0].node.funding_contributed(&channel_id, &node_id_1, contribution.clone(), None).unwrap();
+
+	// STFU should be sent immediately (the adjusted feerate satisfies the RBF check).
+	let stfu = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+	nodes[1].node.handle_stfu(node_id_0, &stfu);
+	let stfu_resp = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
+	nodes[0].node.handle_stfu(node_id_1, &stfu_resp);
+
+	// Verify the RBF handshake proceeds.
+	let tx_init_rbf = get_event_msg!(nodes[0], MessageSendEvent::SendTxInitRbf, node_id_1);
+	let rbf_feerate = FeeRate::from_sat_per_kwu(tx_init_rbf.feerate_sat_per_1000_weight as u64);
+	let expected_floor =
+		FeeRate::from_sat_per_kwu((FEERATE_FLOOR_SATS_PER_KW as u64 * 25).div_ceil(24));
+	assert!(rbf_feerate >= expected_floor);
+}
+
+#[test]
+fn test_funding_contributed_rbf_adjustment_exceeds_max_feerate() {
+	// Test that when the minimum RBF feerate exceeds max_feerate, the adjustment in funding_contributed
+	// fails gracefully and the contribution keeps its original feerate. The splice still
+	// proceeds (STFU is sent) and the RBF negotiation handles the feerate mismatch.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 4, added_value * 2);
+
+	// Node 0 calls splice_channel and builds contribution with max_feerate = floor_feerate.
+	// This means the minimum RBF feerate (25/24 of floor) will exceed max_feerate, preventing adjustment.
+	let floor_feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64);
+	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
+	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
+	let contribution = funding_template
+		.splice_in_sync(added_value, floor_feerate, floor_feerate, &wallet)
+		.unwrap();
+
+	// Node 1 initiates and completes a splice.
+	let node_1_contribution = do_initiate_splice_in(&nodes[1], &nodes[0], channel_id, added_value);
+	let (_splice_tx, _) = splice_channel(&nodes[1], &nodes[0], channel_id, node_1_contribution);
+
+	// Node 0 calls funding_contributed. The adjustment fails (minimum RBF feerate > max_feerate), but
+	// funding_contributed still succeeds — the contribution keeps its original feerate.
+	nodes[0].node.funding_contributed(&channel_id, &node_id_1, contribution, None).unwrap();
+
+	// STFU is NOT sent — the feerate is below the minimum RBF feerate so try_send_stfu delays.
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+
+	// Mine and lock the pending splice → pending_splice is cleared.
+	mine_transaction(&nodes[0], &_splice_tx);
+	mine_transaction(&nodes[1], &_splice_tx);
+	let stfu = lock_splice_after_blocks(&nodes[0], &nodes[1], ANTI_REORG_DELAY - 1);
+
+	// STFU is sent during lock — the splice proceeds as a fresh splice (not RBF).
+	let stfu = match stfu {
+		Some(MessageSendEvent::SendStfu { msg, .. }) => {
+			assert!(msg.initiator);
+			msg
+		},
+		other => panic!("Expected SendStfu, got {:?}", other),
+	};
+
+	// Complete the fresh splice and verify it uses the original floor feerate.
+	nodes[1].node.handle_stfu(node_id_0, &stfu);
+	let stfu_resp = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
+	nodes[0].node.handle_stfu(node_id_1, &stfu_resp);
+
+	let splice_init = get_event_msg!(nodes[0], MessageSendEvent::SendSpliceInit, node_id_1);
+	assert_eq!(splice_init.funding_feerate_per_kw, FEERATE_FLOOR_SATS_PER_KW);
+}
+
+#[test]
+fn test_funding_contributed_rbf_adjustment_insufficient_budget() {
+	// Test that when the change output can't absorb the fee increase needed for the minimum RBF feerate
+	// (even though max_feerate allows it), the adjustment fails gracefully and the splice
+	// proceeds with the original feerate.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 4, added_value * 2);
+
+	// Node 0 calls splice_channel before any pending splice exists.
+	let floor_feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64);
+	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
+
+	// Build node 0's contribution at floor feerate with a tight budget.
+	let wallet = TightBudgetWallet {
+		utxo_value: added_value + Amount::from_sat(3000),
+		change_value: Amount::from_sat(300),
+	};
+	let contribution =
+		funding_template.splice_in_sync(added_value, floor_feerate, FeeRate::MAX, &wallet).unwrap();
+
+	// Node 1 initiates a splice at a HIGH feerate (10,000 sat/kwu). The minimum RBF feerate will be
+	// 25/24 of 10,000 = 10,417 sat/kwu — far above what node 0's tight budget can handle.
+	let high_feerate = FeeRate::from_sat_per_kwu(10_000);
+	let node_1_template = nodes[1].node.splice_channel(&channel_id, &node_id_0).unwrap();
+	let node_1_wallet = WalletSync::new(Arc::clone(&nodes[1].wallet_source), nodes[1].logger);
+	let node_1_contribution = node_1_template
+		.splice_in_sync(added_value, high_feerate, FeeRate::MAX, &node_1_wallet)
+		.unwrap();
+	nodes[1]
+		.node
+		.funding_contributed(&channel_id, &node_id_0, node_1_contribution.clone(), None)
+		.unwrap();
+	let (_splice_tx, _) = splice_channel(&nodes[1], &nodes[0], channel_id, node_1_contribution);
+
+	// Node 0 calls funding_contributed. Adjustment fails (insufficient fee buffer), so the
+	// contribution keeps its original feerate.
+	nodes[0].node.funding_contributed(&channel_id, &node_id_1, contribution, None).unwrap();
+
+	// STFU is NOT sent — the feerate is below the minimum RBF feerate so try_send_stfu delays.
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+
+	// Mine and lock the pending splice → pending_splice is cleared.
+	mine_transaction(&nodes[0], &_splice_tx);
+	mine_transaction(&nodes[1], &_splice_tx);
+	let stfu = lock_splice_after_blocks(&nodes[0], &nodes[1], ANTI_REORG_DELAY - 1);
+
+	// STFU is sent during lock — the splice proceeds as a fresh splice (not RBF).
+	let stfu = match stfu {
+		Some(MessageSendEvent::SendStfu { msg, .. }) => {
+			assert!(msg.initiator);
+			msg
+		},
+		other => panic!("Expected SendStfu, got {:?}", other),
+	};
+
+	// Complete the fresh splice and verify it uses the original floor feerate.
+	nodes[1].node.handle_stfu(node_id_0, &stfu);
+	let stfu_resp = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
+	nodes[0].node.handle_stfu(node_id_1, &stfu_resp);
+
+	let splice_init = get_event_msg!(nodes[0], MessageSendEvent::SendSpliceInit, node_id_1);
+	assert_eq!(splice_init.funding_feerate_per_kw, FEERATE_FLOOR_SATS_PER_KW);
 }
