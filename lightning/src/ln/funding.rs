@@ -121,30 +121,44 @@ pub struct FundingTemplate {
 	/// transaction.
 	shared_input: Option<Input>,
 
-	/// The minimum fee rate for the splice transaction, used to propose as initiator.
-	min_feerate: FeeRate,
-
-	/// The maximum fee rate to accept as acceptor before declining to add our contribution to the
-	/// splice.
-	max_feerate: FeeRate,
+	/// The minimum RBF feerate (25/24 of the previous feerate), if this template is for an
+	/// RBF attempt. `None` for fresh splices with no pending splice candidates.
+	min_rbf_feerate: Option<FeeRate>,
 }
 
 impl FundingTemplate {
 	/// Constructs a [`FundingTemplate`] for a splice using the provided shared input.
-	pub(super) fn new(
-		shared_input: Option<Input>, min_feerate: FeeRate, max_feerate: FeeRate,
-	) -> Self {
-		Self { shared_input, min_feerate, max_feerate }
+	pub(super) fn new(shared_input: Option<Input>, min_rbf_feerate: Option<FeeRate>) -> Self {
+		Self { shared_input, min_rbf_feerate }
+	}
+
+	/// Returns the minimum RBF feerate, if this template is for an RBF attempt.
+	///
+	/// When set, the `min_feerate` passed to the splice methods (e.g.,
+	/// [`FundingTemplate::splice_in_sync`]) must be at least this value.
+	pub fn min_rbf_feerate(&self) -> Option<FeeRate> {
+		self.min_rbf_feerate
 	}
 }
 
 macro_rules! build_funding_contribution {
-    ($value_added:expr, $outputs:expr, $shared_input:expr, $feerate:expr, $max_feerate:expr, $wallet:ident, $($await:tt)*) => {{
+    ($value_added:expr, $outputs:expr, $shared_input:expr, $min_rbf_feerate:expr, $feerate:expr, $max_feerate:expr, $wallet:ident, $($await:tt)*) => {{
 		let value_added: Amount = $value_added;
 		let outputs: Vec<TxOut> = $outputs;
 		let shared_input: Option<Input> = $shared_input;
+		let min_rbf_feerate: Option<FeeRate> = $min_rbf_feerate;
 		let feerate: FeeRate = $feerate;
 		let max_feerate: FeeRate = $max_feerate;
+
+		if feerate > max_feerate {
+			return Err(());
+		}
+
+		if let Some(min_rbf_feerate) = min_rbf_feerate {
+			if feerate < min_rbf_feerate {
+				return Err(());
+			}
+		}
 
 		// Validate user-provided amounts are within MAX_MONEY before coin selection to
 		// ensure FundingContribution::net_value() arithmetic cannot overflow. With all
@@ -224,28 +238,29 @@ impl FundingTemplate {
 	/// Creates a [`FundingContribution`] for adding funds to a channel using `wallet` to perform
 	/// coin selection.
 	pub async fn splice_in<W: CoinSelectionSource + MaybeSend>(
-		self, value_added: Amount, wallet: W,
+		self, value_added: Amount, min_feerate: FeeRate, max_feerate: FeeRate, wallet: W,
 	) -> Result<FundingContribution, ()> {
 		if value_added == Amount::ZERO {
 			return Err(());
 		}
-		let FundingTemplate { shared_input, min_feerate, max_feerate } = self;
-		build_funding_contribution!(value_added, vec![], shared_input, min_feerate, max_feerate, wallet, await)
+		let FundingTemplate { shared_input, min_rbf_feerate } = self;
+		build_funding_contribution!(value_added, vec![], shared_input, min_rbf_feerate, min_feerate, max_feerate, wallet, await)
 	}
 
 	/// Creates a [`FundingContribution`] for adding funds to a channel using `wallet` to perform
 	/// coin selection.
 	pub fn splice_in_sync<W: CoinSelectionSourceSync>(
-		self, value_added: Amount, wallet: W,
+		self, value_added: Amount, min_feerate: FeeRate, max_feerate: FeeRate, wallet: W,
 	) -> Result<FundingContribution, ()> {
 		if value_added == Amount::ZERO {
 			return Err(());
 		}
-		let FundingTemplate { shared_input, min_feerate, max_feerate } = self;
+		let FundingTemplate { shared_input, min_rbf_feerate } = self;
 		build_funding_contribution!(
 			value_added,
 			vec![],
 			shared_input,
+			min_rbf_feerate,
 			min_feerate,
 			max_feerate,
 			wallet,
@@ -255,28 +270,29 @@ impl FundingTemplate {
 	/// Creates a [`FundingContribution`] for removing funds from a channel using `wallet` to
 	/// perform coin selection.
 	pub async fn splice_out<W: CoinSelectionSource + MaybeSend>(
-		self, outputs: Vec<TxOut>, wallet: W,
+		self, outputs: Vec<TxOut>, min_feerate: FeeRate, max_feerate: FeeRate, wallet: W,
 	) -> Result<FundingContribution, ()> {
 		if outputs.is_empty() {
 			return Err(());
 		}
-		let FundingTemplate { shared_input, min_feerate, max_feerate } = self;
-		build_funding_contribution!(Amount::ZERO, outputs, shared_input, min_feerate, max_feerate, wallet, await)
+		let FundingTemplate { shared_input, min_rbf_feerate } = self;
+		build_funding_contribution!(Amount::ZERO, outputs, shared_input, min_rbf_feerate, min_feerate, max_feerate, wallet, await)
 	}
 
 	/// Creates a [`FundingContribution`] for removing funds from a channel using `wallet` to
 	/// perform coin selection.
 	pub fn splice_out_sync<W: CoinSelectionSourceSync>(
-		self, outputs: Vec<TxOut>, wallet: W,
+		self, outputs: Vec<TxOut>, min_feerate: FeeRate, max_feerate: FeeRate, wallet: W,
 	) -> Result<FundingContribution, ()> {
 		if outputs.is_empty() {
 			return Err(());
 		}
-		let FundingTemplate { shared_input, min_feerate, max_feerate } = self;
+		let FundingTemplate { shared_input, min_rbf_feerate } = self;
 		build_funding_contribution!(
 			Amount::ZERO,
 			outputs,
 			shared_input,
+			min_rbf_feerate,
 			min_feerate,
 			max_feerate,
 			wallet,
@@ -286,28 +302,31 @@ impl FundingTemplate {
 	/// Creates a [`FundingContribution`] for both adding and removing funds from a channel using
 	/// `wallet` to perform coin selection.
 	pub async fn splice_in_and_out<W: CoinSelectionSource + MaybeSend>(
-		self, value_added: Amount, outputs: Vec<TxOut>, wallet: W,
+		self, value_added: Amount, outputs: Vec<TxOut>, min_feerate: FeeRate, max_feerate: FeeRate,
+		wallet: W,
 	) -> Result<FundingContribution, ()> {
 		if value_added == Amount::ZERO && outputs.is_empty() {
 			return Err(());
 		}
-		let FundingTemplate { shared_input, min_feerate, max_feerate } = self;
-		build_funding_contribution!(value_added, outputs, shared_input, min_feerate, max_feerate, wallet, await)
+		let FundingTemplate { shared_input, min_rbf_feerate } = self;
+		build_funding_contribution!(value_added, outputs, shared_input, min_rbf_feerate, min_feerate, max_feerate, wallet, await)
 	}
 
 	/// Creates a [`FundingContribution`] for both adding and removing funds from a channel using
 	/// `wallet` to perform coin selection.
 	pub fn splice_in_and_out_sync<W: CoinSelectionSourceSync>(
-		self, value_added: Amount, outputs: Vec<TxOut>, wallet: W,
+		self, value_added: Amount, outputs: Vec<TxOut>, min_feerate: FeeRate, max_feerate: FeeRate,
+		wallet: W,
 	) -> Result<FundingContribution, ()> {
 		if value_added == Amount::ZERO && outputs.is_empty() {
 			return Err(());
 		}
-		let FundingTemplate { shared_input, min_feerate, max_feerate } = self;
+		let FundingTemplate { shared_input, min_rbf_feerate } = self;
 		build_funding_contribution!(
 			value_added,
 			outputs,
 			shared_input,
+			min_rbf_feerate,
 			min_feerate,
 			max_feerate,
 			wallet,
@@ -1082,41 +1101,77 @@ mod tests {
 
 		// splice_in_sync with value_added > MAX_MONEY
 		{
-			let template = FundingTemplate::new(None, feerate, feerate);
-			assert!(template.splice_in_sync(over_max, UnreachableWallet).is_err());
+			let template = FundingTemplate::new(None, None);
+			assert!(template
+				.splice_in_sync(over_max, feerate, feerate, UnreachableWallet)
+				.is_err());
 		}
 
 		// splice_out_sync with single output value > MAX_MONEY
 		{
-			let template = FundingTemplate::new(None, feerate, feerate);
+			let template = FundingTemplate::new(None, None);
 			let outputs = vec![funding_output_sats(over_max.to_sat())];
-			assert!(template.splice_out_sync(outputs, UnreachableWallet).is_err());
+			assert!(template
+				.splice_out_sync(outputs, feerate, feerate, UnreachableWallet)
+				.is_err());
 		}
 
 		// splice_out_sync with multiple outputs summing > MAX_MONEY
 		{
-			let template = FundingTemplate::new(None, feerate, feerate);
+			let template = FundingTemplate::new(None, None);
 			let half_over = Amount::MAX_MONEY / 2 + Amount::from_sat(1);
 			let outputs = vec![
 				funding_output_sats(half_over.to_sat()),
 				funding_output_sats(half_over.to_sat()),
 			];
-			assert!(template.splice_out_sync(outputs, UnreachableWallet).is_err());
+			assert!(template
+				.splice_out_sync(outputs, feerate, feerate, UnreachableWallet)
+				.is_err());
 		}
 
 		// splice_in_and_out_sync with value_added > MAX_MONEY
 		{
-			let template = FundingTemplate::new(None, feerate, feerate);
+			let template = FundingTemplate::new(None, None);
 			let outputs = vec![funding_output_sats(1_000)];
-			assert!(template.splice_in_and_out_sync(over_max, outputs, UnreachableWallet).is_err());
+			assert!(template
+				.splice_in_and_out_sync(over_max, outputs, feerate, feerate, UnreachableWallet)
+				.is_err());
 		}
 
 		// splice_in_and_out_sync with output sum > MAX_MONEY
 		{
-			let template = FundingTemplate::new(None, feerate, feerate);
+			let template = FundingTemplate::new(None, None);
 			let outputs = vec![funding_output_sats(over_max.to_sat())];
 			assert!(template
-				.splice_in_and_out_sync(Amount::from_sat(1_000), outputs, UnreachableWallet)
+				.splice_in_and_out_sync(
+					Amount::from_sat(1_000),
+					outputs,
+					feerate,
+					feerate,
+					UnreachableWallet,
+				)
+				.is_err());
+		}
+	}
+
+	#[test]
+	fn test_build_funding_contribution_validates_feerate_range() {
+		let low = FeeRate::from_sat_per_kwu(1000);
+		let high = FeeRate::from_sat_per_kwu(2000);
+
+		// min_feerate > max_feerate is rejected
+		{
+			let template = FundingTemplate::new(None, None);
+			assert!(template
+				.splice_in_sync(Amount::from_sat(10_000), high, low, UnreachableWallet)
+				.is_err());
+		}
+
+		// min_feerate < min_rbf_feerate is rejected
+		{
+			let template = FundingTemplate::new(None, Some(high));
+			assert!(template
+				.splice_in_sync(Amount::from_sat(10_000), low, FeeRate::MAX, UnreachableWallet)
 				.is_err());
 		}
 	}

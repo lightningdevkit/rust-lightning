@@ -1032,16 +1032,19 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger + MaybeSend + MaybeSync>
 				}
 				let chan_id = chan.channel_id;
 				let counterparty = chan.counterparty.node_id;
-				if let Ok(funding_template) = channelmanager.splice_channel(
-					&chan_id,
-					&counterparty,
-					FeeRate::from_sat_per_kwu(253),
-					FeeRate::MAX,
-				) {
+				if let Ok(funding_template) =
+					channelmanager.splice_channel(&chan_id, &counterparty)
+				{
+					let feerate = funding_template
+						.min_rbf_feerate()
+						.unwrap_or(FeeRate::from_sat_per_kwu(253));
 					let wallet_sync = WalletSync::new(&wallet, Arc::clone(&logger));
-					if let Ok(contribution) = funding_template
-						.splice_in_sync(Amount::from_sat(splice_in_sats.min(900_000)), &wallet_sync)
-					{
+					if let Ok(contribution) = funding_template.splice_in_sync(
+						Amount::from_sat(splice_in_sats.min(900_000)),
+						feerate,
+						FeeRate::MAX,
+						&wallet_sync,
+					) {
 						let _ = channelmanager.funding_contributed(
 							&chan_id,
 							&counterparty,
@@ -1073,19 +1076,19 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger + MaybeSend + MaybeSync>
 				let splice_out_sats = splice_out_sats.min(max_splice_out).max(546); // At least dust limit
 				let chan_id = chan.channel_id;
 				let counterparty = chan.counterparty.node_id;
-				if let Ok(funding_template) = channelmanager.splice_channel(
-					&chan_id,
-					&counterparty,
-					FeeRate::from_sat_per_kwu(253),
-					FeeRate::MAX,
-				) {
+				if let Ok(funding_template) =
+					channelmanager.splice_channel(&chan_id, &counterparty)
+				{
+					let feerate = funding_template
+						.min_rbf_feerate()
+						.unwrap_or(FeeRate::from_sat_per_kwu(253));
 					let outputs = vec![TxOut {
 						value: Amount::from_sat(splice_out_sats),
 						script_pubkey: wallet.get_change_script().unwrap(),
 					}];
 					let wallet_sync = WalletSync::new(&wallet, Arc::clone(&logger));
 					if let Ok(contribution) =
-						funding_template.splice_out_sync(outputs, &wallet_sync)
+						funding_template.splice_out_sync(outputs, feerate, FeeRate::MAX, &wallet_sync)
 					{
 						let _ = channelmanager.funding_contributed(
 							&chan_id,

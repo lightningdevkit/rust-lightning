@@ -2973,6 +2973,21 @@ impl FundingNegotiation {
 		}
 	}
 
+	fn funding_feerate_sat_per_1000_weight(&self) -> u32 {
+		match self {
+			FundingNegotiation::AwaitingAck { context, .. } => {
+				context.funding_feerate_sat_per_1000_weight
+			},
+			FundingNegotiation::ConstructingTransaction {
+				funding_feerate_sat_per_1000_weight,
+				..
+			} => *funding_feerate_sat_per_1000_weight,
+			FundingNegotiation::AwaitingSignatures {
+				funding_feerate_sat_per_1000_weight, ..
+			} => *funding_feerate_sat_per_1000_weight,
+		}
+	}
+
 	fn is_initiator(&self) -> bool {
 		match self {
 			FundingNegotiation::AwaitingAck { context, .. } => context.is_initiator,
@@ -11893,9 +11908,7 @@ where
 	}
 
 	/// Initiate splicing.
-	pub fn splice_channel(
-		&self, min_feerate: FeeRate, max_feerate: FeeRate,
-	) -> Result<FundingTemplate, APIError> {
+	pub fn splice_channel(&self) -> Result<FundingTemplate, APIError> {
 		if self.holder_commitment_point.current_point().is_none() {
 			return Err(APIError::APIMisuseError {
 				err: format!(
@@ -11937,16 +11950,19 @@ where
 			});
 		}
 
-		if min_feerate > max_feerate {
-			return Err(APIError::APIMisuseError {
-				err: format!(
-					"Channel {} min_feerate {} exceeds max_feerate {}",
-					self.context.channel_id(),
-					min_feerate,
-					max_feerate,
-				),
-			});
-		}
+		// Compute the RBF feerate floor from either negotiated candidates (via
+		// can_initiate_rbf) or an in-progress funding negotiation (which will become a
+		// negotiated candidate once it completes).
+		let min_rbf_feerate = self.can_initiate_rbf().ok().flatten().or_else(|| {
+			self.pending_splice
+				.as_ref()
+				.and_then(|pending_splice| pending_splice.funding_negotiation.as_ref())
+				.map(|negotiation| {
+					let prev_feerate = negotiation.funding_feerate_sat_per_1000_weight();
+					let min_feerate_kwu = ((prev_feerate as u64) * 25).div_ceil(24);
+					FeeRate::from_sat_per_kwu(min_feerate_kwu)
+				})
+		});
 
 		let funding_txo = self.funding.get_funding_txo().expect("funding_txo should be set");
 		let previous_utxo =
@@ -11957,13 +11973,11 @@ where
 			satisfaction_weight: EMPTY_SCRIPT_SIG_WEIGHT + FUNDING_TRANSACTION_WITNESS_WEIGHT,
 		};
 
-		Ok(FundingTemplate::new(Some(shared_input), min_feerate, max_feerate))
+		Ok(FundingTemplate::new(Some(shared_input), min_rbf_feerate))
 	}
 
 	/// Initiate an RBF of a pending splice transaction.
-	pub fn rbf_channel(
-		&self, min_feerate: FeeRate, max_feerate: FeeRate,
-	) -> Result<FundingTemplate, APIError> {
+	pub fn rbf_channel(&self) -> Result<FundingTemplate, APIError> {
 		if self.holder_commitment_point.current_point().is_none() {
 			return Err(APIError::APIMisuseError {
 				err: format!(
@@ -12000,18 +12014,8 @@ where
 			});
 		}
 
-		if min_feerate > max_feerate {
-			return Err(APIError::APIMisuseError {
-				err: format!(
-					"Channel {} min_feerate {} exceeds max_feerate {}",
-					self.context.channel_id(),
-					min_feerate,
-					max_feerate,
-				),
-			});
-		}
-
-		self.can_initiate_rbf(min_feerate).map_err(|err| APIError::APIMisuseError { err })?;
+		let min_rbf_feerate =
+			self.can_initiate_rbf().map_err(|err| APIError::APIMisuseError { err })?;
 
 		let funding_txo = self.funding.get_funding_txo().expect("funding_txo should be set");
 		let previous_utxo =
@@ -12022,10 +12026,10 @@ where
 			satisfaction_weight: EMPTY_SCRIPT_SIG_WEIGHT + FUNDING_TRANSACTION_WITNESS_WEIGHT,
 		};
 
-		Ok(FundingTemplate::new(Some(shared_input), min_feerate, max_feerate))
+		Ok(FundingTemplate::new(Some(shared_input), min_rbf_feerate))
 	}
 
-	fn can_initiate_rbf(&self, feerate: FeeRate) -> Result<(), String> {
+	fn can_initiate_rbf(&self) -> Result<Option<FeeRate>, String> {
 		let pending_splice = match &self.pending_splice {
 			Some(pending_splice) => pending_splice,
 			None => {
@@ -12064,20 +12068,13 @@ where
 			));
 		}
 
-		// Check the 25/24 feerate increase rule
-		let new_feerate = feerate.to_sat_per_kwu() as u32;
-		if let Some(prev_feerate) = pending_splice.last_funding_feerate_sat_per_1000_weight {
-			if (new_feerate as u64) * 24 < (prev_feerate as u64) * 25 {
-				return Err(format!(
-					"Channel {} RBF feerate {} is less than 25/24 of the previous feerate {}",
-					self.context.channel_id(),
-					new_feerate,
-					prev_feerate,
-				));
-			}
-		}
+		let min_rbf_feerate =
+			pending_splice.last_funding_feerate_sat_per_1000_weight.map(|prev_feerate| {
+				let min_feerate_kwu = ((prev_feerate as u64) * 25).div_ceil(24);
+				FeeRate::from_sat_per_kwu(min_feerate_kwu)
+			});
 
-		Ok(())
+		Ok(min_rbf_feerate)
 	}
 
 	pub fn funding_contributed<L: Logger>(
@@ -13761,7 +13758,7 @@ where
 			#[allow(irrefutable_let_patterns)]
 			if let QuiescentAction::Splice { contribution, .. } = action {
 				if self.pending_splice.is_some() {
-					if let Err(msg) = self.can_initiate_rbf(contribution.feerate()) {
+					if let Err(msg) = self.can_initiate_rbf() {
 						log_given_level!(
 							logger,
 							logger_level,

@@ -1391,14 +1391,8 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 	let splice_channel = |node: &ChanMan,
 	                      counterparty_node_id: &PublicKey,
 	                      channel_id: &ChannelId,
-	                      f: &dyn Fn(FundingTemplate) -> Result<FundingContribution, ()>,
-	                      funding_feerate_sat_per_kw: FeeRate| {
-		match node.splice_channel(
-			channel_id,
-			counterparty_node_id,
-			funding_feerate_sat_per_kw,
-			FeeRate::MAX,
-		) {
+	                      f: &dyn Fn(FundingTemplate) -> Result<FundingContribution, ()>| {
+		match node.splice_channel(channel_id, counterparty_node_id) {
 			Ok(funding_template) => {
 				if let Ok(contribution) = f(funding_template) {
 					let _ = node.funding_contributed(
@@ -1425,15 +1419,10 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 		 channel_id: &ChannelId,
 		 wallet: &WalletSync<&TestWalletSource, Arc<dyn Logger + MaybeSend + MaybeSync>>,
 		 funding_feerate_sat_per_kw: FeeRate| {
-			splice_channel(
-				node,
-				counterparty_node_id,
-				channel_id,
-				&move |funding_template: FundingTemplate| {
-					funding_template.splice_in_sync(Amount::from_sat(10_000), wallet)
-				},
-				funding_feerate_sat_per_kw,
-			);
+			splice_channel(node, counterparty_node_id, channel_id, &move |funding_template: FundingTemplate| {
+				let feerate = funding_template.min_rbf_feerate().unwrap_or(funding_feerate_sat_per_kw);
+				funding_template.splice_in_sync(Amount::from_sat(10_000), feerate, FeeRate::MAX, wallet)
+			});
 		};
 
 	let splice_out = |node: &ChanMan,
@@ -1454,19 +1443,20 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 		if outbound_capacity_msat < 20_000_000 {
 			return;
 		}
-		splice_channel(
-			node,
-			counterparty_node_id,
-			channel_id,
-			&move |funding_template| {
-				let outputs = vec![TxOut {
-					value: Amount::from_sat(MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS),
-					script_pubkey: wallet.get_change_script().unwrap(),
-				}];
-				funding_template.splice_out_sync(outputs, &WalletSync::new(wallet, logger.clone()))
-			},
-			funding_feerate_sat_per_kw,
-		);
+		splice_channel(node, counterparty_node_id, channel_id, &move |funding_template| {
+			let feerate =
+				funding_template.min_rbf_feerate().unwrap_or(funding_feerate_sat_per_kw);
+			let outputs = vec![TxOut {
+				value: Amount::from_sat(MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS),
+				script_pubkey: wallet.get_change_script().unwrap(),
+			}];
+			funding_template.splice_out_sync(
+				outputs,
+				feerate,
+				FeeRate::MAX,
+				&WalletSync::new(wallet, logger.clone()),
+			)
+		});
 	};
 
 	loop {
