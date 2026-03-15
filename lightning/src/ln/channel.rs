@@ -12077,6 +12077,47 @@ where
 		Ok(min_rbf_feerate)
 	}
 
+	/// Attempts to adjust the contribution's feerate to the minimum RBF feerate so the splice can
+	/// proceed as an RBF immediately rather than waiting for the pending splice to lock.
+	/// Returns the adjusted contribution on success, or the original on failure.
+	fn maybe_adjust_for_rbf<L: Logger>(
+		&self, contribution: FundingContribution, min_rbf_feerate: FeeRate, logger: &L,
+	) -> FundingContribution {
+		if contribution.feerate() >= min_rbf_feerate {
+			return contribution;
+		}
+
+		let holder_balance = match self
+			.get_holder_counterparty_balances_floor_incl_fee(&self.funding)
+			.map(|(holder, _)| holder)
+		{
+			Ok(balance) => balance,
+			Err(_) => return contribution,
+		};
+
+		if let Err(e) =
+			contribution.net_value_for_initiator_at_feerate(min_rbf_feerate, holder_balance)
+		{
+			log_info!(
+				logger,
+				"Cannot adjust to minimum RBF feerate {}: {}; will proceed as fresh splice after lock",
+				min_rbf_feerate,
+				e,
+			);
+			return contribution;
+		}
+
+		log_info!(
+			logger,
+			"Adjusting contribution feerate from {} to minimum RBF feerate {}",
+			contribution.feerate(),
+			min_rbf_feerate,
+		);
+		contribution
+			.for_initiator_at_feerate(min_rbf_feerate, holder_balance)
+			.expect("feerate compatibility already checked")
+	}
+
 	pub fn funding_contributed<L: Logger>(
 		&mut self, contribution: FundingContribution, locktime: LockTime, logger: &L,
 	) -> Result<Option<msgs::Stfu>, QuiescentError> {
@@ -12160,6 +12201,15 @@ where
 				contributed_outputs,
 			}));
 		}
+
+		// If a pending splice exists with negotiated candidates, attempt to adjust the
+		// contribution's feerate to the minimum RBF feerate so it can proceed as an RBF immediately
+		// rather than waiting for the splice to lock.
+		let contribution = if let Ok(Some(min_rbf_feerate)) = self.can_initiate_rbf() {
+			self.maybe_adjust_for_rbf(contribution, min_rbf_feerate, logger)
+		} else {
+			contribution
+		};
 
 		self.propose_quiescence(logger, QuiescentAction::Splice { contribution, locktime })
 	}
@@ -13758,13 +13808,26 @@ where
 			#[allow(irrefutable_let_patterns)]
 			if let QuiescentAction::Splice { contribution, .. } = action {
 				if self.pending_splice.is_some() {
-					if let Err(msg) = self.can_initiate_rbf() {
-						log_given_level!(
-							logger,
-							logger_level,
-							"Waiting on sending stfu for splice RBF: {msg}"
-						);
-						return None;
+					match self.can_initiate_rbf() {
+						Err(msg) => {
+							log_given_level!(
+								logger,
+								logger_level,
+								"Waiting on sending stfu for splice RBF: {msg}"
+							);
+							return None;
+						},
+						Ok(Some(min_rbf_feerate)) if contribution.feerate() < min_rbf_feerate => {
+							log_given_level!(
+								logger,
+								logger_level,
+								"Waiting for splice to lock: feerate {} below minimum RBF feerate {}",
+								contribution.feerate(),
+								min_rbf_feerate,
+							);
+							return None;
+						},
+						_ => {},
 					}
 				}
 			}

@@ -545,8 +545,12 @@ impl FundingContribution {
 		Ok(())
 	}
 
-	/// Computes the adjusted fee and change output value for the acceptor at the initiator's
-	/// proposed feerate, which may differ from the feerate used during coin selection.
+	/// Computes the adjusted fee and change output value at the given target feerate, which may
+	/// differ from the feerate used during coin selection.
+	///
+	/// The `is_initiator` parameter determines fee responsibility: the initiator pays for common
+	/// transaction fields, the shared input, and the shared output, while the acceptor only pays
+	/// for their own contributed inputs and outputs.
 	///
 	/// On success, returns the new estimated fee and, if applicable, the new change output value:
 	/// - `Some(change)` — the adjusted change output value
@@ -554,7 +558,7 @@ impl FundingContribution {
 	///
 	/// Returns `Err` if the contribution cannot accommodate the target feerate.
 	fn compute_feerate_adjustment(
-		&self, target_feerate: FeeRate, holder_balance: Amount,
+		&self, target_feerate: FeeRate, holder_balance: Amount, is_initiator: bool,
 	) -> Result<(Amount, Option<Amount>), FeeRateAdjustmentError> {
 		if target_feerate < self.feerate {
 			return Err(FeeRateAdjustmentError::FeeRateTooLow {
@@ -564,14 +568,15 @@ impl FundingContribution {
 		}
 
 		// If the target fee rate exceeds our max fee rate, we may still add our contribution
-		// if we pay less in fees. This may happen because the acceptor doesn't pay for common
-		// fields and the shared input / output.
+		// if we pay less in fees at the target feerate than at the original feerate. This can
+		// happen when adjusting as acceptor, since the acceptor doesn't pay for common fields
+		// and the shared input / output.
 		if target_feerate > self.max_feerate {
 			let target_fee = estimate_transaction_fee(
 				&self.inputs,
 				&self.outputs,
 				self.change_output.as_ref(),
-				false,
+				is_initiator,
 				self.is_splice,
 				target_feerate,
 			);
@@ -595,7 +600,7 @@ impl FundingContribution {
 					&self.inputs,
 					&self.outputs,
 					self.change_output.as_ref(),
-					false,
+					is_initiator,
 					self.is_splice,
 					target_feerate,
 				);
@@ -615,7 +620,7 @@ impl FundingContribution {
 							&self.inputs,
 							&self.outputs,
 							None,
-							false,
+							is_initiator,
 							self.is_splice,
 							target_feerate,
 						);
@@ -636,7 +641,7 @@ impl FundingContribution {
 					&self.inputs,
 					&self.outputs,
 					None,
-					false,
+					is_initiator,
 					self.is_splice,
 					target_feerate,
 				);
@@ -666,7 +671,7 @@ impl FundingContribution {
 				&[],
 				&self.outputs,
 				None,
-				false,
+				is_initiator,
 				self.is_splice,
 				target_feerate,
 			);
@@ -688,17 +693,14 @@ impl FundingContribution {
 		}
 	}
 
-	/// Adjusts the contribution's change output for the initiator's feerate.
-	///
-	/// When the acceptor has a pending contribution (from the quiescence tie-breaker scenario),
-	/// the initiator's proposed feerate may differ from the feerate used during coin selection.
-	/// This adjusts the change output so the acceptor pays their target fee at the target
-	/// feerate.
-	pub(super) fn for_acceptor_at_feerate(
-		mut self, feerate: FeeRate, holder_balance: Amount,
+	/// Adjusts the contribution for a different feerate, updating the change output, fee
+	/// estimate, and feerate. Returns the adjusted contribution, or an error if the feerate
+	/// can't be accommodated.
+	fn at_feerate(
+		mut self, feerate: FeeRate, holder_balance: Amount, is_initiator: bool,
 	) -> Result<Self, FeeRateAdjustmentError> {
 		let (new_estimated_fee, new_change) =
-			self.compute_feerate_adjustment(feerate, holder_balance)?;
+			self.compute_feerate_adjustment(feerate, holder_balance, is_initiator)?;
 		let surplus = self.fee_buffer_surplus(new_estimated_fee, &new_change);
 		match new_change {
 			Some(value) => self.change_output.as_mut().unwrap().value = value,
@@ -710,16 +712,39 @@ impl FundingContribution {
 		Ok(self)
 	}
 
+	/// Adjusts the contribution's change output for the initiator's feerate.
+	///
+	/// When the acceptor has a pending contribution (from the quiescence tie-breaker scenario),
+	/// the initiator's proposed feerate may differ from the feerate used during coin selection.
+	/// This adjusts the change output so the acceptor pays their target fee at the target
+	/// feerate.
+	pub(super) fn for_acceptor_at_feerate(
+		self, feerate: FeeRate, holder_balance: Amount,
+	) -> Result<Self, FeeRateAdjustmentError> {
+		self.at_feerate(feerate, holder_balance, false)
+	}
+
+	/// Adjusts the contribution's change output for the minimum RBF feerate.
+	///
+	/// When a pending splice exists with negotiated candidates and the contribution's feerate
+	/// is below the minimum RBF feerate (25/24 of the previous feerate), this adjusts the change output
+	/// so the initiator pays fees at the minimum RBF feerate.
+	pub(super) fn for_initiator_at_feerate(
+		self, feerate: FeeRate, holder_balance: Amount,
+	) -> Result<Self, FeeRateAdjustmentError> {
+		self.at_feerate(feerate, holder_balance, true)
+	}
+
 	/// Returns the net value at the given target feerate without mutating `self`.
 	///
 	/// This serves double duty: it checks feerate compatibility (returning `Err` if the feerate
 	/// can't be accommodated) and computes the adjusted net value (returning `Ok` with the value
 	/// accounting for the target feerate).
-	pub(super) fn net_value_for_acceptor_at_feerate(
-		&self, target_feerate: FeeRate, holder_balance: Amount,
+	fn net_value_at_feerate(
+		&self, target_feerate: FeeRate, holder_balance: Amount, is_initiator: bool,
 	) -> Result<SignedAmount, FeeRateAdjustmentError> {
 		let (new_estimated_fee, new_change) =
-			self.compute_feerate_adjustment(target_feerate, holder_balance)?;
+			self.compute_feerate_adjustment(target_feerate, holder_balance, is_initiator)?;
 		let surplus = self
 			.fee_buffer_surplus(new_estimated_fee, &new_change)
 			.to_signed()
@@ -729,6 +754,22 @@ impl FundingContribution {
 			.checked_add(surplus)
 			.expect("net_value + surplus does not overflow");
 		Ok(net_value)
+	}
+
+	/// Returns the net value at the given target feerate without mutating `self`,
+	/// assuming acceptor fee responsibility.
+	pub(super) fn net_value_for_acceptor_at_feerate(
+		&self, target_feerate: FeeRate, holder_balance: Amount,
+	) -> Result<SignedAmount, FeeRateAdjustmentError> {
+		self.net_value_at_feerate(target_feerate, holder_balance, false)
+	}
+
+	/// Returns the net value at the given target feerate without mutating `self`,
+	/// assuming initiator fee responsibility.
+	pub(super) fn net_value_for_initiator_at_feerate(
+		&self, target_feerate: FeeRate, holder_balance: Amount,
+	) -> Result<SignedAmount, FeeRateAdjustmentError> {
+		self.net_value_at_feerate(target_feerate, holder_balance, true)
 	}
 
 	/// Returns the fee buffer surplus when a change output is removed.
@@ -1866,5 +1907,44 @@ mod tests {
 		let holder_balance = Amount::from_sat(40_000);
 		let result = contribution.net_value_for_acceptor_at_feerate(target_feerate, holder_balance);
 		assert!(matches!(result, Err(FeeRateAdjustmentError::FeeBufferInsufficient { .. })));
+	}
+
+	#[test]
+	fn test_for_initiator_at_feerate_higher_fee_than_acceptor() {
+		// Verify that the initiator fee estimate is higher than the acceptor estimate at the
+		// same feerate, since the initiator pays for common fields + shared input/output.
+		let original_feerate = FeeRate::from_sat_per_kwu(2000);
+		let target_feerate = FeeRate::from_sat_per_kwu(3000);
+		let inputs = vec![funding_input_sats(100_000)];
+		let change = funding_output_sats(10_000);
+
+		let estimated_fee =
+			estimate_transaction_fee(&inputs, &[], Some(&change), true, true, original_feerate);
+
+		let contribution = FundingContribution {
+			value_added: Amount::from_sat(50_000),
+			estimated_fee,
+			inputs,
+			outputs: vec![],
+			change_output: Some(change),
+			feerate: original_feerate,
+			max_feerate: FeeRate::MAX,
+			is_splice: true,
+		};
+
+		let acceptor =
+			contribution.clone().for_acceptor_at_feerate(target_feerate, Amount::MAX).unwrap();
+		let initiator = contribution.for_initiator_at_feerate(target_feerate, Amount::MAX).unwrap();
+
+		// Initiator pays more in fees (common fields + shared input/output weight).
+		assert!(initiator.estimated_fee > acceptor.estimated_fee);
+		// Initiator has less change remaining.
+		assert!(
+			initiator.change_output.as_ref().unwrap().value
+				< acceptor.change_output.as_ref().unwrap().value
+		);
+		// Both have the adjusted feerate.
+		assert_eq!(initiator.feerate, target_feerate);
+		assert_eq!(acceptor.feerate, target_feerate);
 	}
 }
