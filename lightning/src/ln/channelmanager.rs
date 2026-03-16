@@ -4701,8 +4701,7 @@ impl<
 	}
 
 	/// Initiate a splice in order to add value to (splice-in) or remove value from (splice-out)
-	/// the channel. This will spend the channel's funding transaction output, effectively replacing
-	/// it with a new one.
+	/// the channel, or to RBF a pending splice transaction.
 	///
 	/// # Required Feature Flags
 	///
@@ -4710,15 +4709,13 @@ impl<
 	/// channel (no matter the type) can be spliced, as long as the counterparty is currently
 	/// connected.
 	///
-	/// Returns a [`FundingTemplate`] which should be used to build a [`FundingContribution`] via
-	/// one of its splice methods (e.g., [`FundingTemplate::splice_in_sync`]). The `min_feerate`
-	/// and `max_feerate` parameters are provided when calling those splice methods. The resulting
-	/// contribution must then be passed to [`ChannelManager::funding_contributed`].
+	/// # Return Value
 	///
-	/// When a pending splice exists with negotiated candidates (i.e., a splice that hasn't been
-	/// locked yet), [`FundingTemplate::min_rbf_feerate`] will return the minimum feerate required
-	/// for an RBF attempt (25/24 of the previous feerate). This can be used to choose an
-	/// appropriate `min_feerate` when calling the splice methods.
+	/// Returns a [`FundingTemplate`] which should be used to obtain a [`FundingContribution`]
+	/// to pass to [`ChannelManager::funding_contributed`]. If a splice has been negotiated but
+	/// not yet locked, it can be replaced with a higher feerate transaction to speed up
+	/// confirmation via Replace By Fee (RBF). See [`FundingTemplate`] for details on building
+	/// a fresh contribution or reusing a prior one for RBF.
 	#[rustfmt::skip]
 	pub fn splice_channel(
 		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey,
@@ -4754,67 +4751,6 @@ impl<
 					Err(APIError::ChannelUnavailable {
 						err: format!(
 							"Channel with id {} is not funded, cannot splice it",
-							channel_id
-						),
-					})
-				}
-			},
-			hash_map::Entry::Vacant(_) => {
-				Err(APIError::no_such_channel_for_peer(channel_id, counterparty_node_id))
-			},
-		}
-	}
-
-	/// Initiate an RBF of a pending splice transaction for an existing channel.
-	///
-	/// This is used after a splice has been negotiated but before it has been locked, in order
-	/// to bump the feerate of the funding transaction via replace-by-fee.
-	///
-	/// # Required Feature Flags
-	///
-	/// Initiating an RBF requires that the channel counterparty supports splicing. The
-	/// counterparty must be currently connected.
-	///
-	/// Returns a [`FundingTemplate`] which should be used to build a [`FundingContribution`] via
-	/// one of its splice methods (e.g., [`FundingTemplate::splice_in_sync`]). The `min_feerate`
-	/// and `max_feerate` parameters are provided when calling those splice methods.
-	/// [`FundingTemplate::min_rbf_feerate`] returns the minimum feerate required for the RBF
-	/// (25/24 of the previous feerate). The resulting contribution must then be passed to
-	/// [`ChannelManager::funding_contributed`].
-	pub fn rbf_channel(
-		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey,
-	) -> Result<FundingTemplate, APIError> {
-		let per_peer_state = self.per_peer_state.read().unwrap();
-
-		let peer_state_mutex = match per_peer_state
-			.get(counterparty_node_id)
-			.ok_or_else(|| APIError::no_such_peer(counterparty_node_id))
-		{
-			Ok(p) => p,
-			Err(e) => return Err(e),
-		};
-
-		let mut peer_state = peer_state_mutex.lock().unwrap();
-		if !peer_state.latest_features.supports_splicing() {
-			return Err(APIError::ChannelUnavailable {
-				err: "Peer does not support splicing".to_owned(),
-			});
-		}
-		if !peer_state.latest_features.supports_quiescence() {
-			return Err(APIError::ChannelUnavailable {
-				err: "Peer does not support quiescence, a splicing prerequisite".to_owned(),
-			});
-		}
-
-		// Look for the channel
-		match peer_state.channel_by_id.entry(*channel_id) {
-			hash_map::Entry::Occupied(chan_phase_entry) => {
-				if let Some(chan) = chan_phase_entry.get().as_funded() {
-					chan.rbf_channel()
-				} else {
-					Err(APIError::ChannelUnavailable {
-						err: format!(
-							"Channel with id {} is not funded, cannot RBF splice",
 							channel_id
 						),
 					})
@@ -6590,13 +6526,16 @@ impl<
 	///
 	/// If any failures occur while negotiating the funding transaction, an [`Event::SpliceFailed`]
 	/// will be emitted. Any contributed inputs no longer used will be included in an
-	/// [`Event::DiscardFunding`] and thus can be re-spent.
+	/// [`Event::DiscardFunding`] and thus can be re-spent. If a [`FundingTemplate`] was obtained
+	/// while a previous splice was still being negotiated, its
+	/// [`min_rbf_feerate`][FundingTemplate::min_rbf_feerate] may be stale after the failure.
+	/// Call this method again to get a fresh template.
 	///
 	/// After initial signatures have been exchanged, [`Event::FundingTransactionReadyForSigning`]
 	/// will be generated and [`ChannelManager::funding_transaction_signed`] should be called.
 	///
 	/// Once the splice has been locked by both counterparties, an [`Event::ChannelReady`] will be
-	/// emitted with the new funding output. At this point, a new splice can be negotiated by
+	/// emitted with the new funding output. At this point, a new (non-RBF) splice can be negotiated by
 	/// calling [`ChannelManager::splice_channel`] again on this channel.
 	///
 	/// # Errors
