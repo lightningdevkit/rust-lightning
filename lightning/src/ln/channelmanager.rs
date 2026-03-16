@@ -1545,12 +1545,29 @@ enum PostMonitorUpdateChanResume {
 	},
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Eq)]
 pub(crate) struct PaymentCompleteUpdate {
 	counterparty_node_id: PublicKey,
 	channel_funding_outpoint: OutPoint,
 	channel_id: ChannelId,
 	htlc_id: SentHTLCId,
+	/// The id of the [`MonitorEvent`] that triggered this update.
+	///
+	/// Used when the [`Event`] corresponding to this update's [`EventCompletionAction`] has been
+	/// processed by the user, to remove the [`MonitorEvent`] from the [`ChannelMonitor`] and prevent
+	/// it from being re-provided on startup.
+	monitor_event_id: Option<u64>,
+}
+
+impl PartialEq for PaymentCompleteUpdate {
+	fn eq(&self, other: &Self) -> bool {
+		self.counterparty_node_id == other.counterparty_node_id
+			&& self.channel_funding_outpoint == other.channel_funding_outpoint
+			&& self.channel_id == other.channel_id
+			&& self.htlc_id == other.htlc_id
+		// monitor_event_id is excluded: it's metadata about the event source,
+		// not part of the semantic identity of the payment resolution.
+	}
 }
 
 impl_writeable_tlv_based!(PaymentCompleteUpdate, {
@@ -1558,6 +1575,7 @@ impl_writeable_tlv_based!(PaymentCompleteUpdate, {
 	(3, counterparty_node_id, required),
 	(5, channel_id, required),
 	(7, htlc_id, required),
+	(9, monitor_event_id, option),
 });
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -9965,6 +9983,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		next_channel_counterparty_node_id: PublicKey, next_channel_outpoint: OutPoint,
 		next_channel_id: ChannelId, next_user_channel_id: Option<u128>,
 		attribution_data: Option<AttributionData>, send_timestamp: Option<Duration>,
+		monitor_event_id: Option<u64>,
 	) {
 		let startup_replay =
 			!self.background_events_processed_since_startup.load(Ordering::Acquire);
@@ -9983,6 +10002,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						channel_funding_outpoint: next_channel_outpoint,
 						channel_id: next_channel_id,
 						htlc_id,
+						monitor_event_id,
 					};
 					Some(EventCompletionAction::ReleasePaymentCompleteChannelMonitorUpdate(release))
 				} else {
@@ -12611,6 +12631,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			Some(next_user_channel_id),
 			msg.attribution_data,
 			send_timestamp,
+			None,
 		);
 
 		Ok(())
@@ -13536,6 +13557,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								None,
 								None,
 								None,
+								Some(event_id),
 							);
 						} else {
 							log_trace!(logger, "Failing HTLC from our monitor");
@@ -13548,6 +13570,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								channel_funding_outpoint: funding_outpoint,
 								channel_id,
 								htlc_id: SentHTLCId::from_source(&htlc_update.source),
+								monitor_event_id: Some(event_id),
 							});
 							self.fail_htlc_backwards_internal(
 								&htlc_update.source,
@@ -15325,8 +15348,13 @@ impl<
 						channel_funding_outpoint,
 						channel_id,
 						htlc_id,
+						monitor_event_id,
 					},
 				) => {
+					if let Some(event_id) = monitor_event_id {
+						self.chain_monitor
+							.ack_monitor_event(MonitorEventSource { channel_id, event_id });
+					}
 					let per_peer_state = self.per_peer_state.read().unwrap();
 					let mut peer_state_lock = per_peer_state
 						.get(&counterparty_node_id)
@@ -19730,6 +19758,7 @@ impl<
 										channel_funding_outpoint: monitor.get_funding_txo(),
 										channel_id: monitor.channel_id(),
 										htlc_id,
+										monitor_event_id: None,
 									};
 									let mut compl_action = Some(
 									EventCompletionAction::ReleasePaymentCompleteChannelMonitorUpdate(update)
@@ -19809,6 +19838,7 @@ impl<
 							channel_funding_outpoint: monitor.get_funding_txo(),
 							channel_id: monitor.channel_id(),
 							htlc_id: SentHTLCId::from_source(&htlc_source),
+							monitor_event_id: None,
 						});
 
 						failed_htlcs.push((
@@ -20564,6 +20594,7 @@ impl<
 				downstream_funding,
 				downstream_channel_id,
 				downstream_user_channel_id,
+				None,
 				None,
 				None,
 			);
