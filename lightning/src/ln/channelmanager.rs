@@ -497,8 +497,21 @@ impl PendingAddHTLCInfo {
 #[cfg_attr(test, derive(Clone, Debug, PartialEq))]
 pub(super) enum HTLCForwardInfo {
 	AddHTLC(PendingAddHTLCInfo),
-	FailHTLC { htlc_id: u64, err_packet: msgs::OnionErrorPacket },
-	FailMalformedHTLC { htlc_id: u64, failure_code: u16, sha256_of_onion: [u8; 32] },
+	FailHTLC {
+		htlc_id: u64,
+		err_packet: msgs::OnionErrorPacket,
+		/// A pointer to a [`MonitorEvent`] that can be removed from the outbound edge of this failed
+		/// forward, once the failure is durably persisted on the inbound edge.
+		monitor_event_source: Option<MonitorEventSource>,
+	},
+	FailMalformedHTLC {
+		htlc_id: u64,
+		failure_code: u16,
+		sha256_of_onion: [u8; 32],
+		/// A pointer to a [`MonitorEvent`] that can be removed from the outbound edge of this failed
+		/// forward, once the failure is durably persisted on the inbound edge.
+		monitor_event_source: Option<MonitorEventSource>,
+	},
 }
 
 /// Whether this blinded HTLC is being failed backwards by the introduction node or a blinded node,
@@ -7626,12 +7639,14 @@ impl<
 					HTLCFailureMsg::Relay(fail_htlc) => HTLCForwardInfo::FailHTLC {
 						htlc_id: fail_htlc.htlc_id,
 						err_packet: fail_htlc.into(),
+						monitor_event_source: None,
 					},
 					HTLCFailureMsg::Malformed(fail_malformed_htlc) => {
 						HTLCForwardInfo::FailMalformedHTLC {
 							htlc_id: fail_malformed_htlc.htlc_id,
 							sha256_of_onion: fail_malformed_htlc.sha256_of_onion,
 							failure_code: fail_malformed_htlc.failure_code.into(),
+							monitor_event_source: None,
 						}
 					},
 				};
@@ -8161,7 +8176,7 @@ impl<
 					}
 					None
 				},
-				HTLCForwardInfo::FailHTLC { htlc_id, ref err_packet } => {
+				HTLCForwardInfo::FailHTLC { htlc_id, ref err_packet, .. } => {
 					if let Some(chan) = peer_state
 						.channel_by_id
 						.get_mut(&forward_chan_id)
@@ -8181,7 +8196,12 @@ impl<
 						break;
 					}
 				},
-				HTLCForwardInfo::FailMalformedHTLC { htlc_id, failure_code, sha256_of_onion } => {
+				HTLCForwardInfo::FailMalformedHTLC {
+					htlc_id,
+					failure_code,
+					sha256_of_onion,
+					..
+				} => {
 					if let Some(chan) = peer_state
 						.channel_by_id
 						.get_mut(&forward_chan_id)
@@ -9219,6 +9239,10 @@ impl<
 					onion_error
 				);
 
+				let monitor_event_source = from_monitor_update_completion.as_ref().and_then(|u| {
+					u.monitor_event_id
+						.map(|id| MonitorEventSource { event_id: id, channel_id: u.channel_id })
+				});
 				push_forward_htlcs_failure(
 					*prev_outbound_scid_alias,
 					get_htlc_forward_failure(
@@ -9228,6 +9252,7 @@ impl<
 						trampoline_shared_secret,
 						phantom_shared_secret,
 						*htlc_id,
+						monitor_event_source,
 					),
 				);
 
@@ -9263,7 +9288,12 @@ impl<
 				// necessarily want to fail all of our incoming HTLCs back yet. We may have other
 				// outgoing HTLCs that need to resolve first. This will be tracked in our
 				// pending_outbound_payments in a followup.
-				for current_hop_data in previous_hop_data {
+				let trampoline_monitor_event_source =
+					from_monitor_update_completion.as_ref().and_then(|u| {
+						u.monitor_event_id
+							.map(|id| MonitorEventSource { event_id: id, channel_id: u.channel_id })
+					});
+				for (i, current_hop_data) in previous_hop_data.iter().enumerate() {
 					let HTLCPreviousHopData {
 						prev_outbound_scid_alias,
 						htlc_id,
@@ -9290,6 +9320,7 @@ impl<
 							&incoming_trampoline_shared_secret,
 							&None,
 							*htlc_id,
+							if i == 0 { trampoline_monitor_event_source } else { None },
 						),
 					);
 				}
@@ -14273,6 +14304,7 @@ fn get_htlc_forward_failure(
 	blinded_failure: &Option<BlindedFailure>, onion_error: &HTLCFailReason,
 	incoming_packet_shared_secret: &[u8; 32], trampoline_shared_secret: &Option<[u8; 32]>,
 	phantom_shared_secret: &Option<[u8; 32]>, htlc_id: u64,
+	monitor_event_source: Option<MonitorEventSource>,
 ) -> HTLCForwardInfo {
 	// TODO: Correctly wrap the error packet twice if failing back a trampoline + phantom HTLC.
 	let secondary_shared_secret = trampoline_shared_secret.or(*phantom_shared_secret);
@@ -14284,19 +14316,20 @@ fn get_htlc_forward_failure(
 				incoming_packet_shared_secret,
 				&secondary_shared_secret,
 			);
-			HTLCForwardInfo::FailHTLC { htlc_id, err_packet }
+			HTLCForwardInfo::FailHTLC { htlc_id, err_packet, monitor_event_source }
 		},
 		Some(BlindedFailure::FromBlindedNode) => HTLCForwardInfo::FailMalformedHTLC {
 			htlc_id,
 			failure_code: LocalHTLCFailureReason::InvalidOnionBlinding.failure_code(),
 			sha256_of_onion: [0; 32],
+			monitor_event_source,
 		},
 		None => {
 			let err_packet = onion_error.get_encrypted_failure_packet(
 				incoming_packet_shared_secret,
 				&secondary_shared_secret,
 			);
-			HTLCForwardInfo::FailHTLC { htlc_id, err_packet }
+			HTLCForwardInfo::FailHTLC { htlc_id, err_packet, monitor_event_source }
 		},
 	}
 }
@@ -17966,15 +17999,21 @@ impl Writeable for HTLCForwardInfo {
 				0u8.write(w)?;
 				info.write(w)?;
 			},
-			Self::FailHTLC { htlc_id, err_packet } => {
+			Self::FailHTLC { htlc_id, err_packet, monitor_event_source } => {
 				FAIL_HTLC_VARIANT_ID.write(w)?;
 				write_tlv_fields!(w, {
 					(0, htlc_id, required),
 					(2, err_packet.data, required),
 					(5, err_packet.attribution_data, option),
+					(7, monitor_event_source, option),
 				});
 			},
-			Self::FailMalformedHTLC { htlc_id, failure_code, sha256_of_onion } => {
+			Self::FailMalformedHTLC {
+				htlc_id,
+				failure_code,
+				sha256_of_onion,
+				monitor_event_source,
+			} => {
 				// Since this variant was added in 0.0.119, write this as `::FailHTLC` with an empty error
 				// packet so older versions have something to fail back with, but serialize the real data as
 				// optional TLVs for the benefit of newer versions.
@@ -17984,6 +18023,7 @@ impl Writeable for HTLCForwardInfo {
 					(1, failure_code, required),
 					(2, Vec::<u8>::new(), required),
 					(3, sha256_of_onion, required),
+					(7, monitor_event_source, option),
 				});
 			},
 		}
@@ -18004,6 +18044,7 @@ impl Readable for HTLCForwardInfo {
 					(2, err_packet, required),
 					(3, sha256_of_onion, option),
 					(5, attribution_data, option),
+					(7, monitor_event_source, option),
 				});
 				if let Some(failure_code) = malformed_htlc_failure_code {
 					if attribution_data.is_some() {
@@ -18013,6 +18054,7 @@ impl Readable for HTLCForwardInfo {
 						htlc_id: _init_tlv_based_struct_field!(htlc_id, required),
 						failure_code,
 						sha256_of_onion: sha256_of_onion.ok_or(DecodeError::InvalidValue)?,
+						monitor_event_source,
 					}
 				} else {
 					Self::FailHTLC {
@@ -18021,6 +18063,7 @@ impl Readable for HTLCForwardInfo {
 							data: _init_tlv_based_struct_field!(err_packet, required),
 							attribution_data: _init_tlv_based_struct_field!(attribution_data, option),
 						},
+						monitor_event_source,
 					}
 				}
 			},
