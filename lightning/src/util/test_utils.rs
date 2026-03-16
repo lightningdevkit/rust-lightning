@@ -15,7 +15,7 @@ use crate::chain::chaininterface;
 #[cfg(any(test, feature = "_externalize_tests"))]
 use crate::chain::chaininterface::FEERATE_FLOOR_SATS_PER_KW;
 use crate::chain::chaininterface::{ConfirmationTarget, TransactionType};
-use crate::chain::chainmonitor::{ChainMonitor, Persist};
+use crate::chain::chainmonitor::{ChainMonitor, MonitorEventSource, Persist};
 use crate::chain::channelmonitor::{
 	ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, MonitorEvent,
 };
@@ -733,6 +733,10 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 			self.chain_monitor.flush(count, &self.logger);
 		}
 		return self.chain_monitor.release_pending_monitor_events();
+	}
+
+	fn ack_monitor_event(&self, source: MonitorEventSource) {
+		self.chain_monitor.ack_monitor_event(source);
 	}
 }
 

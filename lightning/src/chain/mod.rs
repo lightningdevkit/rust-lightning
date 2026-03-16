@@ -18,6 +18,7 @@ use bitcoin::network::Network;
 use bitcoin::script::{Script, ScriptBuf};
 use bitcoin::secp256k1::PublicKey;
 
+use crate::chain::chainmonitor::MonitorEventSource;
 use crate::chain::channelmonitor::{
 	ChannelMonitor, ChannelMonitorUpdate, MonitorEvent, ANTI_REORG_DELAY,
 };
@@ -425,6 +426,15 @@ pub trait Watch<ChannelSigner: EcdsaChannelSigner> {
 	fn release_pending_monitor_events(
 		&self,
 	) -> Vec<(OutPoint, ChannelId, Vec<MonitorEvent>, PublicKey)>;
+
+	/// Acknowledges and removes a [`MonitorEvent`] previously returned by
+	/// [`Watch::release_pending_monitor_events`] by its event ID.
+	///
+	/// Once acknowledged, the event will no longer be returned by future calls to
+	/// [`Watch::release_pending_monitor_events`] and will not be replayed on restart.
+	///
+	/// Events may be acknowledged in any order.
+	fn ack_monitor_event(&self, source: MonitorEventSource);
 }
 
 impl<ChannelSigner: EcdsaChannelSigner, T: Watch<ChannelSigner> + ?Sized, W: Deref<Target = T>>
@@ -446,6 +456,10 @@ impl<ChannelSigner: EcdsaChannelSigner, T: Watch<ChannelSigner> + ?Sized, W: Der
 		&self,
 	) -> Vec<(OutPoint, ChannelId, Vec<MonitorEvent>, PublicKey)> {
 		self.deref().release_pending_monitor_events()
+	}
+
+	fn ack_monitor_event(&self, source: MonitorEventSource) {
+		self.deref().ack_monitor_event(source)
 	}
 }
 

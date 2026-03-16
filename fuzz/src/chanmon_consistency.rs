@@ -41,6 +41,7 @@ use lightning::chain;
 use lightning::chain::chaininterface::{
 	BroadcasterInterface, ConfirmationTarget, FeeEstimator, TransactionType,
 };
+use lightning::chain::chainmonitor::MonitorEventSource;
 use lightning::chain::channelmonitor::{ChannelMonitor, MonitorEvent};
 use lightning::chain::transaction::OutPoint;
 use lightning::chain::{
@@ -366,6 +367,10 @@ impl chain::Watch<TestChannelSigner> for TestChainMonitor {
 		&self,
 	) -> Vec<(OutPoint, ChannelId, Vec<MonitorEvent>, PublicKey)> {
 		return self.chain_monitor.release_pending_monitor_events();
+	}
+
+	fn ack_monitor_event(&self, source: MonitorEventSource) {
+		self.chain_monitor.ack_monitor_event(source);
 	}
 }
 
