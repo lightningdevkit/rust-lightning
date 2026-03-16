@@ -42,6 +42,7 @@ use crate::chain::chaininterface::{
 	BroadcasterInterface, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator,
 	TransactionType,
 };
+use crate::chain::chainmonitor::MonitorEventSource;
 use crate::chain::channelmonitor::{
 	ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, MonitorEvent,
 	WithChannelMonitor, ANTI_REORG_DELAY, CLTV_CLAIM_BUFFER, HTLC_FAIL_BACK_BUFFER,
@@ -13823,7 +13824,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		for (funding_outpoint, channel_id, mut monitor_events, counterparty_node_id) in
 			pending_monitor_events.drain(..)
 		{
-			for (_event_id, monitor_event) in monitor_events.drain(..) {
+			for (event_id, monitor_event) in monitor_events.drain(..) {
+				let monitor_event_source = MonitorEventSource { event_id, channel_id };
 				match monitor_event {
 					MonitorEvent::HTLCEvent(htlc_update) => {
 						needs_persist = true;
@@ -13874,6 +13876,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								completion_update,
 							);
 						}
+						self.chain_monitor.ack_monitor_event(monitor_event_source);
 					},
 					MonitorEvent::HolderForceClosed(_)
 					| MonitorEvent::HolderForceClosedWithInfo { .. } => {
@@ -13908,6 +13911,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								failed_channels.push((Err(e), counterparty_node_id));
 							}
 						}
+						// Channel close monitor events do not need to be replayed on startup because we
+						// already check the monitors to see if the channel is closed.
+						self.chain_monitor.ack_monitor_event(monitor_event_source);
 					},
 					MonitorEvent::CommitmentTxConfirmed(_) => {
 						needs_persist = true;
@@ -13930,6 +13936,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								failed_channels.push((Err(e), counterparty_node_id));
 							}
 						}
+						// Channel close monitor events do not need to be replayed on startup because we
+						// already check the monitors to see if the channel is closed.
+						self.chain_monitor.ack_monitor_event(monitor_event_source);
 					},
 					MonitorEvent::Completed { channel_id, monitor_update_id, .. } => {
 						needs_persist |= self.channel_monitor_updated(
@@ -13937,6 +13946,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							Some(monitor_update_id),
 							&counterparty_node_id,
 						);
+						self.chain_monitor.ack_monitor_event(monitor_event_source);
 					},
 				}
 			}
