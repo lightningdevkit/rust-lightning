@@ -67,6 +67,21 @@ use core::iter::Cycle;
 use core::ops::Deref;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
+/// Identifies the source of a [`MonitorEvent`] for acknowledgment via
+/// [`chain::Watch::ack_monitor_event`] once the event has been processed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MonitorEventSource {
+	/// The event ID assigned by the [`ChannelMonitor`].
+	pub event_id: u64,
+	/// The channel from which the [`MonitorEvent`] originated.
+	pub channel_id: ChannelId,
+}
+
+impl_writeable_tlv_based!(MonitorEventSource, {
+	(0, event_id, required),
+	(2, channel_id, required),
+});
+
 /// A pending operation queued for later execution when `ChainMonitor` is in deferred mode.
 enum PendingMonitorOp<ChannelSigner: EcdsaChannelSigner> {
 	/// A new monitor to insert and persist.
@@ -1644,6 +1659,13 @@ where
 			}
 		}
 		pending_monitor_events
+	}
+
+	fn ack_monitor_event(&self, source: MonitorEventSource) {
+		let monitors = self.monitors.read().unwrap();
+		if let Some(monitor_state) = monitors.get(&source.channel_id) {
+			monitor_state.monitor.ack_monitor_event(source.event_id);
+		}
 	}
 }
 
