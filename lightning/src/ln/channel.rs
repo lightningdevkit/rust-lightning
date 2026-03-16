@@ -8328,7 +8328,7 @@ where
 	/// returns `(None, Vec::new())`.
 	pub fn maybe_free_holding_cell_htlcs<F: FeeEstimator, L: Logger>(
 		&mut self, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
-	) -> (Option<ChannelMonitorUpdate>, Vec<(HTLCSource, PaymentHash)>) {
+	) -> (Option<(ChannelMonitorUpdate, Vec<MonitorEventSource>)>, Vec<(HTLCSource, PaymentHash)>) {
 		if matches!(self.context.channel_state, ChannelState::ChannelReady(_))
 			&& self.context.channel_state.can_generate_new_commitment()
 		{
@@ -8342,7 +8342,7 @@ where
 	/// for our counterparty.
 	fn free_holding_cell_htlcs<F: FeeEstimator, L: Logger>(
 		&mut self, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
-	) -> (Option<ChannelMonitorUpdate>, Vec<(HTLCSource, PaymentHash)>) {
+	) -> (Option<(ChannelMonitorUpdate, Vec<MonitorEventSource>)>, Vec<(HTLCSource, PaymentHash)>) {
 		assert!(matches!(self.context.channel_state, ChannelState::ChannelReady(_)));
 		assert!(!self.context.channel_state.is_monitor_update_in_progress());
 		assert!(!self.context.channel_state.is_quiescent());
@@ -8372,6 +8372,7 @@ where
 			let mut update_fulfill_count = 0;
 			let mut update_fail_count = 0;
 			let mut htlcs_to_fail = Vec::new();
+			let mut monitor_events_to_ack = Vec::new();
 			for htlc_update in htlc_updates.drain(..) {
 				// Note that this *can* fail, though it should be due to rather-rare conditions on
 				// fee races with adding too many outputs which push our total payments just over
@@ -8467,31 +8468,41 @@ where
 						htlc_id,
 						ref err_packet,
 						monitor_event_source,
-					} => Some(
-						self.fail_htlc(
-							htlc_id,
-							err_packet.clone(),
-							false,
-							monitor_event_source,
-							logger,
+					} => {
+						if let Some(source) = monitor_event_source {
+							monitor_events_to_ack.push(source);
+						}
+						Some(
+							self.fail_htlc(
+								htlc_id,
+								err_packet.clone(),
+								false,
+								monitor_event_source,
+								logger,
+							)
+							.map(|fail_msg_opt| fail_msg_opt.map(|_| ())),
 						)
-						.map(|fail_msg_opt| fail_msg_opt.map(|_| ())),
-					),
+					},
 					&HTLCUpdateAwaitingACK::FailMalformedHTLC {
 						htlc_id,
 						failure_code,
 						sha256_of_onion,
 						monitor_event_source,
-					} => Some(
-						self.fail_htlc(
-							htlc_id,
-							(sha256_of_onion, failure_code),
-							false,
-							monitor_event_source,
-							logger,
+					} => {
+						if let Some(source) = monitor_event_source {
+							monitor_events_to_ack.push(source);
+						}
+						Some(
+							self.fail_htlc(
+								htlc_id,
+								(sha256_of_onion, failure_code),
+								false,
+								monitor_event_source,
+								logger,
+							)
+							.map(|fail_msg_opt| fail_msg_opt.map(|_| ())),
 						)
-						.map(|fail_msg_opt| fail_msg_opt.map(|_| ())),
-					),
+					},
 				};
 				if let Some(res) = fail_htlc_res {
 					match res {
@@ -8543,7 +8554,11 @@ where
 				Vec::new(),
 				logger,
 			);
-			(self.push_ret_blockable_mon_update(monitor_update), htlcs_to_fail)
+			(
+				self.push_ret_blockable_mon_update(monitor_update)
+					.map(|upd| (upd, monitor_events_to_ack)),
+				htlcs_to_fail,
+			)
 		} else {
 			(None, Vec::new())
 		}
@@ -8896,7 +8911,10 @@ where
 		self.context.monitor_pending_update_adds.append(&mut pending_update_adds);
 
 		match self.maybe_free_holding_cell_htlcs(fee_estimator, logger) {
-			(Some(mut additional_update), htlcs_to_fail) => {
+			// TODO: Thread monitor_events_to_ack through the revoke_and_ack return
+			// value so the ChannelManager can attach an AckMonitorEvents completion
+			// action to this monitor update.
+			(Some((mut additional_update, _monitor_events_to_ack)), htlcs_to_fail) => {
 				// free_holding_cell_htlcs may bump latest_monitor_id multiple times but we want them to be
 				// strictly increasing by one, so decrement it here.
 				self.context.latest_monitor_update_id = monitor_update.update_id;
