@@ -8176,7 +8176,7 @@ impl<
 					}
 					None
 				},
-				HTLCForwardInfo::FailHTLC { htlc_id, ref err_packet, .. } => {
+				HTLCForwardInfo::FailHTLC { htlc_id, ref err_packet, monitor_event_source } => {
 					if let Some(chan) = peer_state
 						.channel_by_id
 						.get_mut(&forward_chan_id)
@@ -8184,7 +8184,15 @@ impl<
 					{
 						let logger = WithChannelContext::from(&self.logger, &chan.context, None);
 						log_trace!(logger, "Failing HTLC back to channel with short id {} (backward HTLC ID {}) after delay", short_chan_id, htlc_id);
-						Some((chan.queue_fail_htlc(htlc_id, err_packet.clone(), &&logger), htlc_id))
+						Some((
+							chan.queue_fail_htlc(
+								htlc_id,
+								err_packet.clone(),
+								monitor_event_source,
+								&&logger,
+							),
+							htlc_id,
+						))
 					} else {
 						self.forwarding_channel_not_found(
 							core::iter::once(forward_info).chain(draining_pending_forwards),
@@ -8200,7 +8208,7 @@ impl<
 					htlc_id,
 					failure_code,
 					sha256_of_onion,
-					..
+					monitor_event_source,
 				} => {
 					if let Some(chan) = peer_state
 						.channel_by_id
@@ -8213,6 +8221,7 @@ impl<
 							htlc_id,
 							failure_code,
 							sha256_of_onion,
+							monitor_event_source,
 							&&logger,
 						);
 						Some((res, htlc_id))

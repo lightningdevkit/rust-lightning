@@ -6561,7 +6561,9 @@ trait FailHTLCContents {
 	type Message: FailHTLCMessageName;
 	fn to_message(self, htlc_id: u64, channel_id: ChannelId) -> Self::Message;
 	fn to_inbound_htlc_state(self) -> InboundHTLCState;
-	fn to_htlc_update_awaiting_ack(self, htlc_id: u64) -> HTLCUpdateAwaitingACK;
+	fn to_htlc_update_awaiting_ack(
+		self, htlc_id: u64, monitor_event_source: Option<MonitorEventSource>,
+	) -> HTLCUpdateAwaitingACK;
 }
 impl FailHTLCContents for msgs::OnionErrorPacket {
 	type Message = msgs::UpdateFailHTLC;
@@ -6576,8 +6578,10 @@ impl FailHTLCContents for msgs::OnionErrorPacket {
 	fn to_inbound_htlc_state(self) -> InboundHTLCState {
 		InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailRelay(self))
 	}
-	fn to_htlc_update_awaiting_ack(self, htlc_id: u64) -> HTLCUpdateAwaitingACK {
-		HTLCUpdateAwaitingACK::FailHTLC { htlc_id, err_packet: self, monitor_event_source: None }
+	fn to_htlc_update_awaiting_ack(
+		self, htlc_id: u64, monitor_event_source: Option<MonitorEventSource>,
+	) -> HTLCUpdateAwaitingACK {
+		HTLCUpdateAwaitingACK::FailHTLC { htlc_id, err_packet: self, monitor_event_source }
 	}
 }
 impl FailHTLCContents for ([u8; 32], u16) {
@@ -6596,12 +6600,14 @@ impl FailHTLCContents for ([u8; 32], u16) {
 			failure_code: self.1,
 		})
 	}
-	fn to_htlc_update_awaiting_ack(self, htlc_id: u64) -> HTLCUpdateAwaitingACK {
+	fn to_htlc_update_awaiting_ack(
+		self, htlc_id: u64, monitor_event_source: Option<MonitorEventSource>,
+	) -> HTLCUpdateAwaitingACK {
 		HTLCUpdateAwaitingACK::FailMalformedHTLC {
 			htlc_id,
 			sha256_of_onion: self.0,
 			failure_code: self.1,
-			monitor_event_source: None,
+			monitor_event_source,
 		}
 	}
 }
@@ -7343,9 +7349,10 @@ where
 	/// Returns `Err` (always with [`ChannelError::Ignore`]) if the HTLC could not be failed (e.g.
 	/// if it was already resolved). Otherwise returns `Ok`.
 	pub fn queue_fail_htlc<L: Logger>(
-		&mut self, htlc_id_arg: u64, err_packet: msgs::OnionErrorPacket, logger: &L,
+		&mut self, htlc_id_arg: u64, err_packet: msgs::OnionErrorPacket,
+		monitor_event_source: Option<MonitorEventSource>, logger: &L,
 	) -> Result<(), ChannelError> {
-		self.fail_htlc(htlc_id_arg, err_packet, true, logger)
+		self.fail_htlc(htlc_id_arg, err_packet, true, monitor_event_source, logger)
 			.map(|msg_opt| assert!(msg_opt.is_none(), "We forced holding cell?"))
 	}
 
@@ -7354,10 +7361,17 @@ where
 	///
 	/// See [`Self::queue_fail_htlc`] for more info.
 	pub fn queue_fail_malformed_htlc<L: Logger>(
-		&mut self, htlc_id_arg: u64, failure_code: u16, sha256_of_onion: [u8; 32], logger: &L,
+		&mut self, htlc_id_arg: u64, failure_code: u16, sha256_of_onion: [u8; 32],
+		monitor_event_source: Option<MonitorEventSource>, logger: &L,
 	) -> Result<(), ChannelError> {
-		self.fail_htlc(htlc_id_arg, (sha256_of_onion, failure_code), true, logger)
-			.map(|msg_opt| assert!(msg_opt.is_none(), "We forced holding cell?"))
+		self.fail_htlc(
+			htlc_id_arg,
+			(sha256_of_onion, failure_code),
+			true,
+			monitor_event_source,
+			logger,
+		)
+		.map(|msg_opt| assert!(msg_opt.is_none(), "We forced holding cell?"))
 	}
 
 	/// Returns `Err` (always with [`ChannelError::Ignore`]) if the HTLC could not be failed (e.g.
@@ -7365,7 +7379,7 @@ where
 	#[rustfmt::skip]
 	fn fail_htlc<L: Logger, E: FailHTLCContents + Clone>(
 		&mut self, htlc_id_arg: u64, err_contents: E, mut force_holding_cell: bool,
-		logger: &L
+		monitor_event_source: Option<MonitorEventSource>, logger: &L
 	) -> Result<Option<E::Message>, ChannelError> {
 		if !matches!(self.context.channel_state, ChannelState::ChannelReady(_)) {
 			panic!("Was asked to fail an HTLC when channel was not in an operational state");
@@ -7402,17 +7416,20 @@ where
 
 		// Now update local state:
 		if force_holding_cell {
-			for pending_update in self.context.holding_cell_htlc_updates.iter() {
+			for pending_update in self.context.holding_cell_htlc_updates.iter_mut() {
 				match pending_update {
-					&HTLCUpdateAwaitingACK::ClaimHTLC { htlc_id, .. } => {
+					&mut HTLCUpdateAwaitingACK::ClaimHTLC { htlc_id, .. } => {
 						if htlc_id_arg == htlc_id {
 							return Err(ChannelError::Ignore(format!("HTLC {} was already claimed!", htlc_id)));
 						}
 					},
-					&HTLCUpdateAwaitingACK::FailHTLC { htlc_id, .. } |
-						&HTLCUpdateAwaitingACK::FailMalformedHTLC { htlc_id, .. } =>
+					&mut HTLCUpdateAwaitingACK::FailHTLC { htlc_id, monitor_event_source: ref mut src, .. } |
+						&mut HTLCUpdateAwaitingACK::FailMalformedHTLC { htlc_id, monitor_event_source: ref mut src, .. } =>
 					{
 						if htlc_id_arg == htlc_id {
+							if src.is_none() {
+								*src = monitor_event_source;
+							}
 							return Err(ChannelError::Ignore(format!("HTLC {} was already pending failure", htlc_id)));
 						}
 					},
@@ -7420,7 +7437,7 @@ where
 				}
 			}
 			log_trace!(logger, "Placing failure for HTLC ID {} in holding cell.", htlc_id_arg);
-			self.context.holding_cell_htlc_updates.push(err_contents.to_htlc_update_awaiting_ack(htlc_id_arg));
+			self.context.holding_cell_htlc_updates.push(err_contents.to_htlc_update_awaiting_ack(htlc_id_arg, monitor_event_source));
 			return Ok(None);
 		}
 
@@ -8449,18 +8466,34 @@ where
 						monitor_update.updates.append(&mut additional_monitor_update.updates);
 						None
 					},
-					&HTLCUpdateAwaitingACK::FailHTLC { htlc_id, ref err_packet, .. } => Some(
-						self.fail_htlc(htlc_id, err_packet.clone(), false, logger)
-							.map(|fail_msg_opt| fail_msg_opt.map(|_| ())),
+					&HTLCUpdateAwaitingACK::FailHTLC {
+						htlc_id,
+						ref err_packet,
+						monitor_event_source,
+					} => Some(
+						self.fail_htlc(
+							htlc_id,
+							err_packet.clone(),
+							false,
+							monitor_event_source,
+							logger,
+						)
+						.map(|fail_msg_opt| fail_msg_opt.map(|_| ())),
 					),
 					&HTLCUpdateAwaitingACK::FailMalformedHTLC {
 						htlc_id,
 						failure_code,
 						sha256_of_onion,
-						..
+						monitor_event_source,
 					} => Some(
-						self.fail_htlc(htlc_id, (sha256_of_onion, failure_code), false, logger)
-							.map(|fail_msg_opt| fail_msg_opt.map(|_| ())),
+						self.fail_htlc(
+							htlc_id,
+							(sha256_of_onion, failure_code),
+							false,
+							monitor_event_source,
+							logger,
+						)
+						.map(|fail_msg_opt| fail_msg_opt.map(|_| ())),
 					),
 				};
 				if let Some(res) = fail_htlc_res {
