@@ -30,6 +30,7 @@ use crate::blinded_path::message::BlindedMessagePath;
 use crate::chain::chaininterface::{
 	ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator, TransactionType,
 };
+use crate::chain::chainmonitor::MonitorEventSource;
 use crate::chain::channelmonitor::{
 	ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, CommitmentHTLCData,
 	LATENCY_GRACE_PERIOD_BLOCKS,
@@ -551,11 +552,21 @@ enum HTLCUpdateAwaitingACK {
 	FailHTLC {
 		htlc_id: u64,
 		err_packet: msgs::OnionErrorPacket,
+		/// Contains a pointer to a [`MonitorEvent`] that can be removed from the outbound edge of this
+		/// failed forward, once the failure is durably persisted in this channel (the inbound edge).
+		///
+		/// [`MonitorEvent`]: crate::chain::channelmonitor::MonitorEvent
+		monitor_event_source: Option<MonitorEventSource>,
 	},
 	FailMalformedHTLC {
 		htlc_id: u64,
 		failure_code: u16,
 		sha256_of_onion: [u8; 32],
+		/// Contains a pointer to a [`MonitorEvent`] that can be removed from the outbound edge of this
+		/// failed forward, once the failure is durably persisted in this channel (the inbound edge).
+		///
+		/// [`MonitorEvent`]: crate::chain::channelmonitor::MonitorEvent
+		monitor_event_source: Option<MonitorEventSource>,
 	},
 }
 
@@ -6566,7 +6577,7 @@ impl FailHTLCContents for msgs::OnionErrorPacket {
 		InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailRelay(self))
 	}
 	fn to_htlc_update_awaiting_ack(self, htlc_id: u64) -> HTLCUpdateAwaitingACK {
-		HTLCUpdateAwaitingACK::FailHTLC { htlc_id, err_packet: self }
+		HTLCUpdateAwaitingACK::FailHTLC { htlc_id, err_packet: self, monitor_event_source: None }
 	}
 }
 impl FailHTLCContents for ([u8; 32], u16) {
@@ -6590,6 +6601,7 @@ impl FailHTLCContents for ([u8; 32], u16) {
 			htlc_id,
 			sha256_of_onion: self.0,
 			failure_code: self.1,
+			monitor_event_source: None,
 		}
 	}
 }
@@ -8437,7 +8449,7 @@ where
 						monitor_update.updates.append(&mut additional_monitor_update.updates);
 						None
 					},
-					&HTLCUpdateAwaitingACK::FailHTLC { htlc_id, ref err_packet } => Some(
+					&HTLCUpdateAwaitingACK::FailHTLC { htlc_id, ref err_packet, .. } => Some(
 						self.fail_htlc(htlc_id, err_packet.clone(), false, logger)
 							.map(|fail_msg_opt| fail_msg_opt.map(|_| ())),
 					),
@@ -8445,6 +8457,7 @@ where
 						htlc_id,
 						failure_code,
 						sha256_of_onion,
+						..
 					} => Some(
 						self.fail_htlc(htlc_id, (sha256_of_onion, failure_code), false, logger)
 							.map(|fail_msg_opt| fail_msg_opt.map(|_| ())),
@@ -15091,7 +15104,7 @@ impl<SP: SignerProvider> Writeable for FundedChannel<SP> {
 					// Store the attribution data for later writing.
 					holding_cell_attribution_data.push(attribution_data.as_ref());
 				},
-				&HTLCUpdateAwaitingACK::FailHTLC { ref htlc_id, ref err_packet } => {
+				&HTLCUpdateAwaitingACK::FailHTLC { ref htlc_id, ref err_packet, .. } => {
 					2u8.write(writer)?;
 					htlc_id.write(writer)?;
 					err_packet.data.write(writer)?;
@@ -15103,6 +15116,7 @@ impl<SP: SignerProvider> Writeable for FundedChannel<SP> {
 					htlc_id,
 					failure_code,
 					sha256_of_onion,
+					..
 				} => {
 					// We don't want to break downgrading by adding a new variant, so write a dummy
 					// `::FailHTLC` variant and write the real malformed error as an optional TLV.
@@ -15542,6 +15556,7 @@ impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
 						data: Readable::read(reader)?,
 						attribution_data: None,
 					},
+					monitor_event_source: None,
 				},
 				_ => return Err(DecodeError::InvalidValue),
 			});
@@ -15996,7 +16011,7 @@ impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
 				let htlc_idx = holding_cell_htlc_updates
 					.iter()
 					.position(|htlc| {
-						if let HTLCUpdateAwaitingACK::FailHTLC { htlc_id, err_packet } = htlc {
+						if let HTLCUpdateAwaitingACK::FailHTLC { htlc_id, err_packet, .. } = htlc {
 							let matches = *htlc_id == malformed_htlc_id;
 							if matches {
 								debug_assert!(err_packet.data.is_empty())
@@ -16011,6 +16026,7 @@ impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
 					htlc_id: malformed_htlc_id,
 					failure_code,
 					sha256_of_onion,
+					monitor_event_source: None,
 				};
 				let _ =
 					core::mem::replace(&mut holding_cell_htlc_updates[htlc_idx], malformed_htlc);
@@ -17036,12 +17052,14 @@ mod tests {
 			|htlc_id, attribution_data| HTLCUpdateAwaitingACK::FailHTLC {
 				htlc_id,
 				err_packet: msgs::OnionErrorPacket { data: vec![42], attribution_data },
+				monitor_event_source: None,
 			};
 		let dummy_holding_cell_malformed_htlc =
 			|htlc_id| HTLCUpdateAwaitingACK::FailMalformedHTLC {
 				htlc_id,
 				failure_code: LocalHTLCFailureReason::InvalidOnionBlinding.failure_code(),
 				sha256_of_onion: [0; 32],
+				monitor_event_source: None,
 			};
 		let mut holding_cell_htlc_updates = Vec::with_capacity(12);
 		for i in 0..16 {
