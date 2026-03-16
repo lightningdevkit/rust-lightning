@@ -13782,7 +13782,16 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			);
 			if monitor_opt.is_some() || !holding_cell_failed_htlcs.is_empty() {
 				let update_res = monitor_opt
-					.map(|monitor_update| {
+					.map(|(monitor_update, monitor_events_to_ack)| {
+						if !monitor_events_to_ack.is_empty() {
+							peer_state
+								.monitor_update_blocked_actions
+								.entry(*chan_id)
+								.or_default()
+								.push(MonitorUpdateCompletionAction::AckMonitorEvents {
+									monitor_events_to_ack,
+								});
+						}
 						self.handle_new_monitor_update(
 							&mut peer_state.in_flight_monitor_updates,
 							&mut peer_state.monitor_update_blocked_actions,
