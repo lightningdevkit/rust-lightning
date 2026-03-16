@@ -2143,6 +2143,10 @@ impl TestChainSource {
 		self.watched_outputs.lock().unwrap().remove(&(outpoint, script_pubkey.clone()));
 		self.watched_txn.lock().unwrap().remove(&(outpoint.txid, script_pubkey));
 	}
+	pub fn remove_watched_by_txid(&self, txid: Txid) {
+		self.watched_outputs.lock().unwrap().retain(|(op, _)| op.txid != txid);
+		self.watched_txn.lock().unwrap().retain(|(tid, _)| *tid != txid);
+	}
 }
 
 impl UtxoLookup for TestChainSource {
