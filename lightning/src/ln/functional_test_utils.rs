@@ -1212,7 +1212,7 @@ macro_rules! get_channel_type_features {
 			peer_state_lock,
 			$channel_id
 		);
-		chan.funding().get_channel_type().clone()
+		chan.get_channel_type().clone()
 	}};
 }
 

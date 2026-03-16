@@ -1617,24 +1617,18 @@ impl ChannelSigner for InMemorySigner {
 	}
 }
 
-const MISSING_PARAMS_ERR: &'static str =
-	"ChannelTransactionParameters must be populated before signing operations";
-
 impl EcdsaChannelSigner for InMemorySigner {
 	fn sign_counterparty_commitment(
 		&self, channel_parameters: &ChannelTransactionParameters,
 		commitment_tx: &CommitmentTransaction, _inbound_htlc_preimages: Vec<PaymentPreimage>,
 		_outbound_htlc_preimages: Vec<PaymentPreimage>, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<(Signature, Vec<Signature>), ()> {
-		assert!(channel_parameters.is_populated(), "Channel parameters must be fully populated");
-
 		let trusted_tx = commitment_tx.trust();
 		let keys = trusted_tx.keys();
 
 		let funding_key = self.funding_key(channel_parameters.splice_parent_funding_txid);
 		let funding_pubkey = funding_key.public_key(secp_ctx);
-		let counterparty_keys =
-			channel_parameters.counterparty_pubkeys().expect(MISSING_PARAMS_ERR);
+		let counterparty_keys = &channel_parameters.counterparty_parameters.pubkeys;
 		let channel_funding_redeemscript =
 			make_funding_redeemscript(&funding_pubkey, &counterparty_keys.funding_pubkey);
 
@@ -1693,12 +1687,9 @@ impl EcdsaChannelSigner for InMemorySigner {
 		&self, channel_parameters: &ChannelTransactionParameters,
 		commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()> {
-		assert!(channel_parameters.is_populated(), "Channel parameters must be fully populated");
-
 		let funding_key = self.funding_key(channel_parameters.splice_parent_funding_txid);
 		let funding_pubkey = funding_key.public_key(secp_ctx);
-		let counterparty_keys =
-			channel_parameters.counterparty_pubkeys().expect(MISSING_PARAMS_ERR);
+		let counterparty_keys = &channel_parameters.counterparty_parameters.pubkeys;
 		let funding_redeemscript =
 			make_funding_redeemscript(&funding_pubkey, &counterparty_keys.funding_pubkey);
 		let trusted_tx = commitment_tx.trust();
@@ -1716,12 +1707,9 @@ impl EcdsaChannelSigner for InMemorySigner {
 		&self, channel_parameters: &ChannelTransactionParameters,
 		commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()> {
-		assert!(channel_parameters.is_populated(), "Channel parameters must be fully populated");
-
 		let funding_key = self.funding_key(channel_parameters.splice_parent_funding_txid);
 		let funding_pubkey = funding_key.public_key(secp_ctx);
-		let counterparty_keys =
-			channel_parameters.counterparty_pubkeys().expect(MISSING_PARAMS_ERR);
+		let counterparty_keys = &channel_parameters.counterparty_parameters.pubkeys;
 		let funding_redeemscript =
 			make_funding_redeemscript(&funding_pubkey, &counterparty_keys.funding_pubkey);
 		let trusted_tx = commitment_tx.trust();
@@ -1739,8 +1727,6 @@ impl EcdsaChannelSigner for InMemorySigner {
 		input: usize, amount: u64, per_commitment_key: &SecretKey,
 		secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()> {
-		assert!(channel_parameters.is_populated(), "Channel parameters must be fully populated");
-
 		let revocation_key = chan_utils::derive_private_revocation_key(
 			&secp_ctx,
 			&per_commitment_key,
@@ -1753,8 +1739,7 @@ impl EcdsaChannelSigner for InMemorySigner {
 			&per_commitment_point,
 		);
 		let witness_script = {
-			let counterparty_keys =
-				channel_parameters.counterparty_pubkeys().expect(MISSING_PARAMS_ERR);
+			let counterparty_keys = &channel_parameters.counterparty_parameters.pubkeys;
 			let holder_selected_contest_delay = channel_parameters.holder_selected_contest_delay;
 			let counterparty_delayedpubkey = DelayedPaymentKey::from_basepoint(
 				&secp_ctx,
@@ -1786,8 +1771,6 @@ impl EcdsaChannelSigner for InMemorySigner {
 		input: usize, amount: u64, per_commitment_key: &SecretKey, htlc: &HTLCOutputInCommitment,
 		secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()> {
-		assert!(channel_parameters.is_populated(), "Channel parameters must be fully populated");
-
 		let revocation_key = chan_utils::derive_private_revocation_key(
 			&secp_ctx,
 			&per_commitment_key,
@@ -1800,8 +1783,7 @@ impl EcdsaChannelSigner for InMemorySigner {
 			&per_commitment_point,
 		);
 		let witness_script = {
-			let counterparty_keys =
-				channel_parameters.counterparty_pubkeys().expect(MISSING_PARAMS_ERR);
+			let counterparty_keys = &channel_parameters.counterparty_parameters.pubkeys;
 			let counterparty_htlcpubkey = HtlcKey::from_basepoint(
 				&secp_ctx,
 				&counterparty_keys.htlc_basepoint,
@@ -1838,10 +1820,6 @@ impl EcdsaChannelSigner for InMemorySigner {
 		&self, htlc_tx: &Transaction, input: usize, htlc_descriptor: &HTLCDescriptor,
 		secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()> {
-		let channel_parameters =
-			&htlc_descriptor.channel_derivation_parameters.transaction_parameters;
-		assert!(channel_parameters.is_populated(), "Channel parameters must be fully populated");
-
 		let witness_script = htlc_descriptor.witness_script(secp_ctx);
 		let sighash = &sighash::SighashCache::new(&*htlc_tx)
 			.p2wsh_signature_hash(
@@ -1865,8 +1843,6 @@ impl EcdsaChannelSigner for InMemorySigner {
 		input: usize, amount: u64, per_commitment_point: &PublicKey, htlc: &HTLCOutputInCommitment,
 		secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()> {
-		assert!(channel_parameters.is_populated(), "Channel parameters must be fully populated");
-
 		let htlc_key =
 			chan_utils::derive_private_key(&secp_ctx, &per_commitment_point, &self.htlc_base_key);
 		let revocation_pubkey = RevocationKey::from_basepoint(
@@ -1874,8 +1850,7 @@ impl EcdsaChannelSigner for InMemorySigner {
 			&channel_parameters.holder_pubkeys.revocation_basepoint,
 			&per_commitment_point,
 		);
-		let counterparty_keys =
-			channel_parameters.counterparty_pubkeys().expect(MISSING_PARAMS_ERR);
+		let counterparty_keys = &channel_parameters.counterparty_parameters.pubkeys;
 		let counterparty_htlcpubkey = HtlcKey::from_basepoint(
 			&secp_ctx,
 			&counterparty_keys.htlc_basepoint,
@@ -1909,12 +1884,10 @@ impl EcdsaChannelSigner for InMemorySigner {
 		&self, channel_parameters: &ChannelTransactionParameters, closing_tx: &ClosingTransaction,
 		secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()> {
-		assert!(channel_parameters.is_populated(), "Channel parameters must be fully populated");
-
 		let funding_key = self.funding_key(channel_parameters.splice_parent_funding_txid);
 		let funding_pubkey = funding_key.public_key(secp_ctx);
 		let counterparty_funding_key =
-			&channel_parameters.counterparty_pubkeys().expect(MISSING_PARAMS_ERR).funding_pubkey;
+			&channel_parameters.counterparty_parameters.pubkeys.funding_pubkey;
 		let channel_funding_redeemscript =
 			make_funding_redeemscript(&funding_pubkey, counterparty_funding_key);
 		Ok(closing_tx.trust().sign(
@@ -1929,8 +1902,6 @@ impl EcdsaChannelSigner for InMemorySigner {
 		&self, chan_params: &ChannelTransactionParameters, anchor_tx: &Transaction, input: usize,
 		secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()> {
-		assert!(chan_params.is_populated(), "Channel parameters must be fully populated");
-
 		let witness_script =
 			chan_utils::get_keyed_anchor_redeemscript(&chan_params.holder_pubkeys.funding_pubkey);
 		let amt = Amount::from_sat(ANCHOR_OUTPUT_VALUE_SATOSHI);
@@ -1954,20 +1925,15 @@ impl EcdsaChannelSigner for InMemorySigner {
 		&self, channel_parameters: &ChannelTransactionParameters, tx: &Transaction,
 		input_index: usize, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Signature {
-		assert!(channel_parameters.is_populated(), "Channel parameters must be fully populated");
 		assert_eq!(
 			tx.input[input_index].previous_output,
-			channel_parameters
-				.funding_outpoint
-				.as_ref()
-				.expect("Funding outpoint must be known prior to signing")
-				.into_bitcoin_outpoint()
+			channel_parameters.funding_outpoint.into_bitcoin_outpoint()
 		);
 
 		let funding_key = self.funding_key(channel_parameters.splice_parent_funding_txid);
 		let funding_pubkey = funding_key.public_key(secp_ctx);
 		let counterparty_funding_key =
-			&channel_parameters.counterparty_pubkeys().expect(MISSING_PARAMS_ERR).funding_pubkey;
+			&channel_parameters.counterparty_parameters.pubkeys.funding_pubkey;
 		let funding_redeemscript =
 			make_funding_redeemscript(&funding_pubkey, counterparty_funding_key);
 		let sighash = &sighash::SighashCache::new(tx)
