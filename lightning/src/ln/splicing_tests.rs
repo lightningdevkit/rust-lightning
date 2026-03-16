@@ -237,7 +237,7 @@ pub fn do_initiate_rbf_splice_in<'a, 'b, 'c, 'd>(
 	value_added: Amount, feerate: FeeRate,
 ) -> FundingContribution {
 	let node_id_counterparty = counterparty.node.get_our_node_id();
-	let funding_template = node.node.rbf_channel(&channel_id, &node_id_counterparty).unwrap();
+	let funding_template = node.node.splice_channel(&channel_id, &node_id_counterparty).unwrap();
 	let wallet = WalletSync::new(Arc::clone(&node.wallet_source), node.logger);
 	let funding_contribution =
 		funding_template.splice_in_sync(value_added, feerate, FeeRate::MAX, &wallet).unwrap();
@@ -252,7 +252,7 @@ pub fn do_initiate_rbf_splice_in_and_out<'a, 'b, 'c, 'd>(
 	value_added: Amount, outputs: Vec<TxOut>, feerate: FeeRate,
 ) -> FundingContribution {
 	let node_id_counterparty = counterparty.node.get_our_node_id();
-	let funding_template = node.node.rbf_channel(&channel_id, &node_id_counterparty).unwrap();
+	let funding_template = node.node.splice_channel(&channel_id, &node_id_counterparty).unwrap();
 	let wallet = WalletSync::new(Arc::clone(&node.wallet_source), node.logger);
 	let funding_contribution = funding_template
 		.splice_in_and_out_sync(value_added, outputs, feerate, FeeRate::MAX, &wallet)
@@ -4294,7 +4294,7 @@ fn test_splice_acceptor_disconnect_emits_events() {
 #[test]
 fn test_splice_rbf_acceptor_basic() {
 	// Test the full end-to-end flow for RBF of a pending splice transaction.
-	// Complete a splice-in, then use rbf_channel API to initiate an RBF attempt
+	// Complete a splice-in, then use splice_channel API to initiate an RBF attempt
 	// with a higher feerate, going through the full tx_init_rbf → tx_ack_rbf →
 	// interactive TX → signing → mining → splice_locked flow.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -4321,7 +4321,7 @@ fn test_splice_rbf_acceptor_basic() {
 	// Step 2: Provide more UTXO reserves for the RBF attempt.
 	provide_utxo_reserves(&nodes, 2, added_value * 2);
 
-	// Step 3: Use rbf_channel API to initiate the RBF.
+	// Step 3: Use splice_channel API to initiate the RBF.
 	// Original feerate was FEERATE_FLOOR_SATS_PER_KW (253). 253 * 25 / 24 = 263.54, so 264 works.
 	let rbf_feerate_sat_per_kwu = (FEERATE_FLOOR_SATS_PER_KW as u64 * 25).div_ceil(24);
 	let rbf_feerate = FeeRate::from_sat_per_kwu(rbf_feerate_sat_per_kwu);
@@ -4384,7 +4384,7 @@ fn test_splice_rbf_insufficient_feerate() {
 	// Initiator-side: splice_in_sync rejects an insufficient feerate.
 	// Original feerate was 253. Using exactly 253 should fail since 253 * 24 < 253 * 25.
 	let same_feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64);
-	let funding_template = nodes[0].node.rbf_channel(&channel_id, &node_id_1).unwrap();
+	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
 
 	// Verify that the template exposes the RBF floor.
 	let min_rbf_feerate = funding_template.min_rbf_feerate().unwrap();
@@ -4398,7 +4398,7 @@ fn test_splice_rbf_insufficient_feerate() {
 		.is_err());
 
 	// Verify that the floor feerate succeeds.
-	let funding_template = nodes[0].node.rbf_channel(&channel_id, &node_id_1).unwrap();
+	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
 	assert!(funding_template
 		.splice_in_sync(added_value, min_rbf_feerate, FeeRate::MAX, &wallet)
 		.is_ok());
@@ -4580,6 +4580,43 @@ fn test_splice_rbf_after_splice_locked() {
 }
 
 #[test]
+fn test_splice_zeroconf_no_rbf_feerate() {
+	// Test that splice_channel returns a FundingTemplate with min_rbf_feerate = None for a
+	// zero-conf channel, even when a splice negotiation is in progress.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let mut config = test_default_channel_config();
+	config.channel_handshake_limits.trust_own_funding_0conf = true;
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (funding_tx, channel_id) =
+		open_zero_conf_channel_with_value(&nodes[0], &nodes[1], None, initial_channel_value_sat, 0);
+	mine_transaction(&nodes[0], &funding_tx);
+	mine_transaction(&nodes[1], &funding_tx);
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 1, added_value * 2);
+
+	// Initiate a splice (node 0) and complete the handshake so a funding negotiation is in
+	// progress.
+	let _funding_contribution =
+		do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+	let _new_funding_script = complete_splice_handshake(&nodes[0], &nodes[1]);
+
+	// The acceptor (node 1) calling splice_channel should return no RBF feerate since
+	// zero-conf channels cannot RBF.
+	let funding_template = nodes[1].node.splice_channel(&channel_id, &node_id_0).unwrap();
+	assert!(funding_template.min_rbf_feerate().is_none());
+
+	// Drain pending interactive tx messages from the splice handshake.
+	nodes[0].node.get_and_clear_pending_msg_events();
+}
+
+#[test]
 fn test_splice_rbf_zeroconf_rejected() {
 	// Test that tx_init_rbf is rejected when option_zeroconf is negotiated.
 	// The zero-conf check happens before the pending_splice check, so we don't need to complete
@@ -4621,10 +4658,7 @@ fn test_splice_rbf_zeroconf_rejected() {
 				msgs::ErrorAction::DisconnectPeerWithWarning {
 					msg: msgs::WarningMessage {
 						channel_id,
-						data: format!(
-							"Channel {} has option_zeroconf, cannot RBF splice",
-							channel_id,
-						),
+						data: format!("Channel {} has option_zeroconf, cannot RBF", channel_id,),
 					},
 				}
 			);
@@ -4740,7 +4774,7 @@ fn test_splice_rbf_tiebreak_feerate_too_high() {
 
 /// Runs the tie-breaker test with the given per-node feerates and node 1's splice value.
 ///
-/// Both nodes call `rbf_channel` + `funding_contributed`, both send STFU, and node 0 (the outbound
+/// Both nodes call `splice_channel` + `funding_contributed`, both send STFU, and node 0 (the outbound
 /// channel funder) wins the quiescence tie-break. The loser (node 1) becomes the acceptor. Whether
 /// node 1 contributes to the RBF transaction depends on the feerate and budget constraints.
 ///
@@ -4772,11 +4806,11 @@ pub fn do_test_splice_rbf_tiebreak(
 	// Provide more UTXOs for both nodes' RBF attempts.
 	provide_utxo_reserves(&nodes, 2, added_value * 2);
 
-	// Node 0 calls rbf_channel + funding_contributed.
+	// Node 0 calls splice_channel + funding_contributed.
 	let node_0_funding_contribution =
 		do_initiate_rbf_splice_in(&nodes[0], &nodes[1], channel_id, added_value, rbf_feerate_0);
 
-	// Node 1 calls rbf_channel + funding_contributed.
+	// Node 1 calls splice_channel + funding_contributed.
 	let node_1_funding_contribution = do_initiate_rbf_splice_in(
 		&nodes[1],
 		&nodes[0],
@@ -5034,7 +5068,7 @@ fn test_splice_rbf_tiebreak_feerate_too_high_rejected() {
 	let min_rbf_feerate = FeeRate::from_sat_per_kwu(min_rbf_feerate_sat_per_kwu);
 	let node_1_max_feerate = FeeRate::from_sat_per_kwu(3_000);
 
-	let funding_template_0 = nodes[0].node.rbf_channel(&channel_id, &node_id_1).unwrap();
+	let funding_template_0 = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
 	let wallet_0 = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
 	let node_0_funding_contribution = funding_template_0
 		.splice_in_sync(added_value, high_feerate, FeeRate::MAX, &wallet_0)
@@ -5044,7 +5078,7 @@ fn test_splice_rbf_tiebreak_feerate_too_high_rejected() {
 		.funding_contributed(&channel_id, &node_id_1, node_0_funding_contribution.clone(), None)
 		.unwrap();
 
-	let funding_template_1 = nodes[1].node.rbf_channel(&channel_id, &node_id_0).unwrap();
+	let funding_template_1 = nodes[1].node.splice_channel(&channel_id, &node_id_0).unwrap();
 	let wallet_1 = WalletSync::new(Arc::clone(&nodes[1].wallet_source), nodes[1].logger);
 	let node_1_funding_contribution = funding_template_1
 		.splice_in_sync(added_value, min_rbf_feerate, node_1_max_feerate, &wallet_1)
@@ -5159,7 +5193,7 @@ fn test_splice_rbf_acceptor_recontributes() {
 	// Step 4: Provide new UTXOs for node 0's RBF (node 1 does NOT initiate RBF).
 	provide_utxo_reserves(&nodes, 2, added_value * 2);
 
-	// Step 5: Only node 0 calls rbf_channel + funding_contributed.
+	// Step 5: Only node 0 calls splice_channel + funding_contributed.
 	let rbf_feerate_sat_per_kwu = (FEERATE_FLOOR_SATS_PER_KW as u64 * 25).div_ceil(24);
 	let rbf_feerate = FeeRate::from_sat_per_kwu(rbf_feerate_sat_per_kwu);
 	let rbf_funding_contribution =
@@ -5201,6 +5235,127 @@ fn test_splice_rbf_acceptor_recontributes() {
 		ANTI_REORG_DELAY - 1,
 		&[first_splice_tx.compute_txid()],
 	);
+}
+
+#[test]
+fn test_splice_rbf_after_counterparty_rbf_aborted() {
+	// When a counterparty-initiated RBF is aborted, the acceptor's prior contribution retains
+	// the adjusted feerate. Initiating our own RBF afterward must not panic even though the
+	// prior contribution's feerate may be >= the new rbf_feerate.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 2, Amount::from_sat(100_000));
+
+	// Step 1: Both nodes initiate a splice at floor feerate.
+	let feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64);
+
+	let funding_template_0 = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
+	let wallet_0 = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
+	let node_0_funding_contribution =
+		funding_template_0.splice_in_sync(added_value, feerate, FeeRate::MAX, &wallet_0).unwrap();
+	nodes[0]
+		.node
+		.funding_contributed(&channel_id, &node_id_1, node_0_funding_contribution.clone(), None)
+		.unwrap();
+
+	let funding_template_1 = nodes[1].node.splice_channel(&channel_id, &node_id_0).unwrap();
+	let wallet_1 = WalletSync::new(Arc::clone(&nodes[1].wallet_source), nodes[1].logger);
+	let node_1_funding_contribution =
+		funding_template_1.splice_in_sync(added_value, feerate, FeeRate::MAX, &wallet_1).unwrap();
+	nodes[1]
+		.node
+		.funding_contributed(&channel_id, &node_id_0, node_1_funding_contribution.clone(), None)
+		.unwrap();
+
+	// Step 2: Tiebreak — node 0 wins, both contribute to initial splice.
+	let stfu_0 = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+	let stfu_1 = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
+
+	nodes[1].node.handle_stfu(node_id_0, &stfu_0);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+	nodes[0].node.handle_stfu(node_id_1, &stfu_1);
+
+	let splice_init = get_event_msg!(nodes[0], MessageSendEvent::SendSpliceInit, node_id_1);
+	nodes[1].node.handle_splice_init(node_id_0, &splice_init);
+	let splice_ack = get_event_msg!(nodes[1], MessageSendEvent::SendSpliceAck, node_id_0);
+	nodes[0].node.handle_splice_ack(node_id_1, &splice_ack);
+
+	let new_funding_script = chan_utils::make_funding_redeemscript(
+		&splice_init.funding_pubkey,
+		&splice_ack.funding_pubkey,
+	)
+	.to_p2wsh();
+
+	complete_interactive_funding_negotiation_for_both(
+		&nodes[0],
+		&nodes[1],
+		channel_id,
+		node_0_funding_contribution,
+		Some(node_1_funding_contribution),
+		splice_ack.funding_contribution_satoshis,
+		new_funding_script,
+	);
+
+	let (_first_splice_tx, splice_locked) =
+		sign_interactive_funding_tx_with_acceptor_contribution(&nodes[0], &nodes[1], false, true);
+	assert!(splice_locked.is_none());
+
+	expect_splice_pending_event(&nodes[0], &node_id_1);
+	expect_splice_pending_event(&nodes[1], &node_id_0);
+
+	// Step 3: Node 0 initiates RBF. Node 1 has no QuiescentAction, so its prior contribution
+	// is adjusted to the RBF feerate via for_acceptor_at_feerate.
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+
+	let rbf_feerate =
+		FeeRate::from_sat_per_kwu((FEERATE_FLOOR_SATS_PER_KW as u64 * 25).div_ceil(24));
+	let _rbf_funding_contribution =
+		do_initiate_rbf_splice_in(&nodes[0], &nodes[1], channel_id, added_value, rbf_feerate);
+
+	let tx_ack_rbf = complete_rbf_handshake(&nodes[0], &nodes[1]);
+	assert!(tx_ack_rbf.funding_output_contribution.is_some());
+
+	// Step 4: Abort the RBF. Node 0 sends tx_abort; node 1's prior contribution retains the
+	// adjusted feerate.
+	// Drain node 0's pending TxAddInput from the interactive tx negotiation start.
+	nodes[0].node.get_and_clear_pending_msg_events();
+
+	let tx_abort = msgs::TxAbort { channel_id, data: vec![] };
+	nodes[1].node.handle_tx_abort(node_id_0, &tx_abort);
+
+	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert!(!msg_events.is_empty());
+	let tx_abort_echo = match &msg_events[0] {
+		MessageSendEvent::SendTxAbort { msg, .. } => msg.clone(),
+		other => panic!("Expected SendTxAbort, got {:?}", other),
+	};
+
+	nodes[0].node.handle_tx_abort(node_id_1, &tx_abort_echo);
+	nodes[0].node.get_and_clear_pending_msg_events();
+	nodes[0].node.get_and_clear_pending_events();
+	nodes[1].node.get_and_clear_pending_events();
+
+	// Step 5: Node 1 initiates its own RBF via splice_channel → rbf_sync.
+	// The prior contribution's feerate is now >= rbf_feerate. This must not panic.
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+
+	let funding_template = nodes[1].node.splice_channel(&channel_id, &node_id_0).unwrap();
+	assert!(funding_template.min_rbf_feerate().is_some());
+
+	let wallet = WalletSync::new(Arc::clone(&nodes[1].wallet_source), nodes[1].logger);
+	let rbf_contribution = funding_template.rbf_sync(FeeRate::MAX, &wallet);
+	assert!(rbf_contribution.is_ok());
 }
 
 #[test]
@@ -5288,7 +5443,7 @@ fn test_splice_rbf_recontributes_feerate_too_high() {
 	provide_utxo_reserves(&nodes, 2, Amount::from_sat(100_000));
 
 	let high_feerate = FeeRate::from_sat_per_kwu(20_000);
-	let funding_template = nodes[0].node.rbf_channel(&channel_id, &node_id_1).unwrap();
+	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
 	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
 	let rbf_funding_contribution = funding_template
 		.splice_in_sync(Amount::from_sat(50_000), high_feerate, FeeRate::MAX, &wallet)
@@ -5630,8 +5785,8 @@ fn test_splice_rbf_disconnect_filters_prior_contributions() {
 
 #[test]
 fn test_splice_channel_with_pending_splice_includes_rbf_floor() {
-	// Test that splice_channel (not rbf_channel) includes the RBF floor when a pending splice
-	// exists with negotiated candidates.
+	// Test that splice_channel includes the RBF floor when a pending splice exists with
+	// negotiated candidates.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -5646,33 +5801,39 @@ fn test_splice_channel_with_pending_splice_includes_rbf_floor() {
 	let added_value = Amount::from_sat(50_000);
 	provide_utxo_reserves(&nodes, 2, added_value * 2);
 
+	// Fresh splice — no pending splice, so no prior contribution or minimum RBF feerate.
+	{
+		let template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
+		assert!(template.min_rbf_feerate().is_none());
+		assert!(template.prior_contribution().is_none());
+	}
+
 	// Complete a splice-in at floor feerate.
 	let funding_contribution = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
 	let (_splice_tx, _) = splice_channel(&nodes[0], &nodes[1], channel_id, funding_contribution);
 
-	// Call splice_channel (not rbf_channel) — the pending splice should cause
-	// min_rbf_feerate to be set.
+	// Call splice_channel again — the pending splice should cause min_rbf_feerate to be set
+	// and the prior contribution to be available.
 	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
 	let expected_floor =
 		FeeRate::from_sat_per_kwu(((FEERATE_FLOOR_SATS_PER_KW as u64) * 25).div_ceil(24));
 	assert_eq!(funding_template.min_rbf_feerate(), Some(expected_floor));
+	assert!(funding_template.prior_contribution().is_some());
 
-	// Successfully build a contribution at the floor feerate.
+	// rbf_sync returns the Adjusted prior contribution directly.
 	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
-	assert!(funding_template
-		.splice_in_sync(added_value, expected_floor, FeeRate::MAX, &wallet)
-		.is_ok());
+	assert!(funding_template.rbf_sync(FeeRate::MAX, &wallet).is_ok());
 }
 
 #[test]
 fn test_funding_contributed_adjusts_feerate_for_rbf() {
-	// Test that funding_contributed adjusts the contribution's feerate to the minimum RBF feerate when a
-	// pending splice appears between splice_channel and funding_contributed.
+	// Test that funding_contributed adjusts the contribution's feerate to the minimum RBF feerate
+	// when a pending splice appears between splice_channel and funding_contributed.
 	//
 	// Node 0 calls splice_channel (no pending splice → min_rbf_feerate = None) and builds a
 	// contribution at floor feerate. Node 1 then initiates and completes a splice. When node 0
-	// calls funding_contributed, the contribution is adjusted to the minimum RBF feerate and STFU is sent
-	// immediately.
+	// calls funding_contributed, the contribution is adjusted to the minimum RBF feerate and STFU
+	// is sent immediately.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -5723,9 +5884,9 @@ fn test_funding_contributed_adjusts_feerate_for_rbf() {
 
 #[test]
 fn test_funding_contributed_rbf_adjustment_exceeds_max_feerate() {
-	// Test that when the minimum RBF feerate exceeds max_feerate, the adjustment in funding_contributed
-	// fails gracefully and the contribution keeps its original feerate. The splice still
-	// proceeds (STFU is sent) and the RBF negotiation handles the feerate mismatch.
+	// Test that when the minimum RBF feerate exceeds max_feerate, the adjustment in
+	// funding_contributed fails gracefully and the contribution keeps its original feerate. The
+	// splice still proceeds (STFU is sent) and the RBF negotiation handles the feerate mismatch.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -5754,8 +5915,8 @@ fn test_funding_contributed_rbf_adjustment_exceeds_max_feerate() {
 	let node_1_contribution = do_initiate_splice_in(&nodes[1], &nodes[0], channel_id, added_value);
 	let (_splice_tx, _) = splice_channel(&nodes[1], &nodes[0], channel_id, node_1_contribution);
 
-	// Node 0 calls funding_contributed. The adjustment fails (minimum RBF feerate > max_feerate), but
-	// funding_contributed still succeeds — the contribution keeps its original feerate.
+	// Node 0 calls funding_contributed. The adjustment fails (minimum RBF feerate > max_feerate),
+	// but funding_contributed still succeeds — the contribution keeps its original feerate.
 	nodes[0].node.funding_contributed(&channel_id, &node_id_1, contribution, None).unwrap();
 
 	// STFU is NOT sent — the feerate is below the minimum RBF feerate so try_send_stfu delays.
@@ -5858,4 +6019,152 @@ fn test_funding_contributed_rbf_adjustment_insufficient_budget() {
 
 	let splice_init = get_event_msg!(nodes[0], MessageSendEvent::SendSpliceInit, node_id_1);
 	assert_eq!(splice_init.funding_feerate_per_kw, FEERATE_FLOOR_SATS_PER_KW);
+}
+
+#[test]
+fn test_prior_contribution_unadjusted_when_max_feerate_too_low() {
+	// Test that rbf_sync re-runs coin selection when the prior contribution's max_feerate is
+	// too low to accommodate the minimum RBF feerate.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+
+	// Complete a splice with max_feerate = floor_feerate. This means the prior contribution
+	// stored in pending_splice.contributions will have a tight max_feerate.
+	let floor_feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64);
+	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
+	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
+	let funding_contribution = funding_template
+		.splice_in_sync(added_value, floor_feerate, floor_feerate, &wallet)
+		.unwrap();
+	nodes[0]
+		.node
+		.funding_contributed(&channel_id, &node_id_1, funding_contribution.clone(), None)
+		.unwrap();
+	let (_splice_tx, _) = splice_channel(&nodes[0], &nodes[1], channel_id, funding_contribution);
+
+	// Call splice_channel again — the minimum RBF feerate (25/24 of floor) exceeds the prior
+	// contribution's max_feerate (floor), so adjustment fails. rbf_sync re-runs coin selection
+	// with the caller's max_feerate.
+	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
+	assert!(funding_template.min_rbf_feerate().is_some());
+	assert!(funding_template.prior_contribution().is_some());
+	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
+	assert!(funding_template.rbf_sync(FeeRate::MAX, &wallet).is_ok());
+}
+
+#[test]
+fn test_splice_channel_during_negotiation_includes_rbf_feerate() {
+	// Test that splice_channel returns min_rbf_feerate derived from the in-progress
+	// negotiation's feerate when the acceptor calls it during active negotiation.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+
+	// Node 1 initiates a splice. Perform stfu exchange and splice_init handling, which creates
+	// a pending_splice with funding_negotiation on node 0 (the acceptor).
+	let _funding_contribution =
+		do_initiate_splice_in(&nodes[1], &nodes[0], channel_id, added_value);
+	let stfu_init = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
+	nodes[0].node.handle_stfu(node_id_1, &stfu_init);
+	let stfu_ack = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+	nodes[1].node.handle_stfu(node_id_0, &stfu_ack);
+
+	let splice_init = get_event_msg!(nodes[1], MessageSendEvent::SendSpliceInit, node_id_0);
+	nodes[0].node.handle_splice_init(node_id_1, &splice_init);
+	let _splice_ack = get_event_msg!(nodes[0], MessageSendEvent::SendSpliceAck, node_id_1);
+
+	// Node 0 (acceptor) calls splice_channel while the negotiation is in progress.
+	// min_rbf_feerate should be derived from the in-progress negotiation's feerate.
+	let template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
+	let expected_floor =
+		FeeRate::from_sat_per_kwu(((FEERATE_FLOOR_SATS_PER_KW as u64) * 25).div_ceil(24));
+	assert_eq!(template.min_rbf_feerate(), Some(expected_floor));
+
+	// No prior contribution since there are no negotiated candidates yet. rbf_sync runs
+	// fee-bump-only coin selection.
+	assert!(template.prior_contribution().is_none());
+	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
+	assert!(template.rbf_sync(FeeRate::MAX, &wallet).is_ok());
+}
+
+#[test]
+fn test_rbf_sync_returns_err_when_no_min_rbf_feerate() {
+	// Test that rbf_sync returns Err(()) when there is no pending splice (min_rbf_feerate is
+	// None), indicating this is not an RBF scenario.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+
+	// Fresh splice — no pending splice, so min_rbf_feerate is None.
+	let template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
+	assert!(template.min_rbf_feerate().is_none());
+	assert!(template.prior_contribution().is_none());
+
+	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
+	assert!(template.rbf_sync(FeeRate::MAX, &wallet).is_err());
+}
+
+#[test]
+fn test_rbf_sync_returns_err_when_max_feerate_below_min_rbf() {
+	// Test that rbf_sync returns Err(()) when the caller's max_feerate is below the minimum
+	// RBF feerate.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+
+	// Complete a splice to create a pending splice.
+	let funding_contribution = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+	let (_splice_tx, _) = splice_channel(&nodes[0], &nodes[1], channel_id, funding_contribution);
+
+	// Call splice_channel again to get the RBF template.
+	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
+	let min_rbf_feerate = funding_template.min_rbf_feerate().unwrap();
+
+	// Use a max_feerate that is 1 sat/kwu below the minimum RBF feerate.
+	let too_low_feerate =
+		FeeRate::from_sat_per_kwu(min_rbf_feerate.to_sat_per_kwu().saturating_sub(1));
+	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
+	assert!(funding_template.rbf_sync(too_low_feerate, &wallet).is_err());
 }
