@@ -1475,6 +1475,9 @@ pub(crate) enum MonitorUpdateCompletionAction {
 	EmitEventOptionAndFreeOtherChannel {
 		event: Option<events::Event>,
 		downstream_counterparty_and_funding_outpoint: EventUnblockedChannel,
+		/// If this action originated from a [`MonitorEvent`], the source to acknowledge once the
+		/// action is handled.
+		monitor_event_source: Option<MonitorEventSource>,
 	},
 	/// Indicates we should immediately resume the operation of another channel, unless there is
 	/// some other reason why the channel is blocked. In practice this simply means immediately
@@ -1492,6 +1495,9 @@ pub(crate) enum MonitorUpdateCompletionAction {
 		downstream_counterparty_node_id: PublicKey,
 		blocking_action: RAAMonitorUpdateBlockingAction,
 		downstream_channel_id: ChannelId,
+		/// If this action originated from a [`MonitorEvent`], the source to acknowledge once the
+		/// action is handled.
+		monitor_event_source: Option<MonitorEventSource>,
 	},
 	/// Indicates that one or more [`MonitorEvent`]s should be acknowledged via
 	/// [`chain::Watch::ack_monitor_event`] once the associated [`ChannelMonitorUpdate`] has been
@@ -1510,6 +1516,7 @@ impl_writeable_tlv_based_enum_upgradable!(MonitorUpdateCompletionAction,
 		(0, downstream_counterparty_node_id, required),
 		(4, blocking_action, upgradable_required),
 		(5, downstream_channel_id, required),
+		(7, monitor_event_source, option),
 	},
 	(2, EmitEventOptionAndFreeOtherChannel) => {
 		// LDK prior to 0.3 required this field. It will not be present for trampoline payments
@@ -1517,6 +1524,7 @@ impl_writeable_tlv_based_enum_upgradable!(MonitorUpdateCompletionAction,
 		// are in the process of being resolved.
 		(0, event, upgradable_option),
 		(1, downstream_counterparty_and_funding_outpoint, upgradable_required),
+		(3, monitor_event_source, option),
 	},
 	(3, AckMonitorEvents) => {
 		(0, monitor_events_to_ack, required_vec),
@@ -9535,6 +9543,7 @@ impl<
 		startup_replay: bool, next_channel_counterparty_node_id: PublicKey,
 		next_channel_outpoint: OutPoint, next_channel_id: ChannelId, hop_data: HTLCPreviousHopData,
 		attribution_data: Option<AttributionData>, send_timestamp: Option<Duration>,
+		monitor_event_source: Option<MonitorEventSource>,
 	) {
 		let _prev_channel_id = hop_data.channel_id;
 		let completed_blocker = RAAMonitorUpdateBlockingAction::from_prev_hop_data(&hop_data);
@@ -9624,6 +9633,7 @@ impl<
 							downstream_counterparty_node_id: chan_to_release.counterparty_node_id,
 							downstream_channel_id: chan_to_release.channel_id,
 							blocking_action: chan_to_release.blocking_action,
+							monitor_event_source,
 						}),
 						None,
 					)
@@ -9639,6 +9649,7 @@ impl<
 						Some(MonitorUpdateCompletionAction::EmitEventOptionAndFreeOtherChannel {
 							event,
 							downstream_counterparty_and_funding_outpoint: chan_to_release,
+							monitor_event_source,
 						}),
 						None,
 					)
@@ -9823,8 +9834,12 @@ impl<
 								downstream_counterparty_node_id: node_id,
 								blocking_action: blocker,
 								downstream_channel_id: channel_id,
+								monitor_event_source,
 							} = action
 							{
+								if let Some(source) = monitor_event_source {
+									self.chain_monitor.ack_monitor_event(source);
+								}
 								if let Some(peer_state_mtx) = per_peer_state.get(&node_id) {
 									let mut peer_state = peer_state_mtx.lock().unwrap();
 									if let Some(blockers) = peer_state
@@ -10083,6 +10098,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					hop_data,
 					attribution_data,
 					send_timestamp,
+					monitor_event_id
+						.map(|id| MonitorEventSource { event_id: id, channel_id: next_channel_id }),
 				);
 			},
 			HTLCSource::TrampolineForward { previous_hop_data, .. } => {
@@ -10126,6 +10143,22 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						current_previous_hop_data,
 						attribution_data.clone(),
 						send_timestamp,
+						// Only pass the monitor event ID for the first hop. Once one inbound channel durably
+						// has the preimage, the outbound monitor event can be acked. The preimage remains in
+						// the outbound monitor's storage and will be replayed to all remaining inbound hops on
+						// restart via pending_claims_to_replay.
+						//
+						// Note that we plan to move away from this restart replay in the future, and instead
+						// on restart push temporary monitor events, reusing existing MonitorEvent handling
+						// logic to do the multi-claim.
+						if i == 0 {
+							monitor_event_id.map(|id| MonitorEventSource {
+								event_id: id,
+								channel_id: next_channel_id,
+							})
+						} else {
+							None
+						},
 					);
 				}
 			},
@@ -10352,7 +10385,11 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				MonitorUpdateCompletionAction::EmitEventOptionAndFreeOtherChannel {
 					event,
 					downstream_counterparty_and_funding_outpoint,
+					monitor_event_source,
 				} => {
+					if let Some(source) = monitor_event_source {
+						self.chain_monitor.ack_monitor_event(source);
+					}
 					if let Some(event) = event {
 						self.pending_events.lock().unwrap().push_back((event, None));
 					}
@@ -10366,7 +10403,11 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					downstream_counterparty_node_id,
 					downstream_channel_id,
 					blocking_action,
+					monitor_event_source,
 				} => {
+					if let Some(source) = monitor_event_source {
+						self.chain_monitor.ack_monitor_event(source);
+					}
 					self.handle_monitor_update_release(
 						downstream_counterparty_node_id,
 						downstream_channel_id,
