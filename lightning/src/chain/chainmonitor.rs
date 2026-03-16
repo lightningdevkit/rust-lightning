@@ -66,6 +66,21 @@ use core::iter::Cycle;
 use core::ops::Deref;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
+/// Identifies the source of a [`MonitorEvent`] for acknowledgment via
+/// [`chain::Watch::ack_monitor_event`] once the event has been processed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MonitorEventSource {
+	/// The randomly-generated event ID.
+	pub event_id: u128,
+	/// The channel from which the [`MonitorEvent`] originated.
+	pub channel_id: ChannelId,
+}
+
+impl_ser_tlv_based!(MonitorEventSource, {
+	(1, event_id, required),
+	(3, channel_id, required),
+});
+
 /// A pending operation queued for later execution when `ChainMonitor` is in deferred mode.
 enum PendingMonitorOp<ChannelSigner: EcdsaChannelSigner> {
 	/// A new monitor to insert and persist.
@@ -1673,6 +1688,18 @@ where
 		// MonitorEvents are processed by ChannelManager first.
 		pending_monitor_events.extend(self.pending_monitor_events.lock().unwrap().split_off(0));
 		pending_monitor_events
+	}
+
+	fn ack_monitor_event(&self, source: MonitorEventSource) {
+		let monitors = self.monitors.read().unwrap();
+		if let Some(monitor_state) = monitors.get(&source.channel_id) {
+			monitor_state.monitor.ack_monitor_event(source.event_id);
+		} else {
+			// A monitor is only archived once all of its events have been acknowledged, but an
+			// acknowledgement may be replayed after the monitor was archived (e.g. if the
+			// `ChannelManager` was last persisted before it processed the event that triggered
+			// the original acknowledgement), so simply ignore acks for missing monitors.
+		}
 	}
 }
 

@@ -2196,6 +2196,12 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		self.inner.lock().unwrap().get_and_clear_pending_monitor_events()
 	}
 
+	/// Removes a [`MonitorEvent`] by its event ID, acknowledging that it has been processed.
+	/// Generally called by [`chain::Watch::ack_monitor_event`].
+	pub fn ack_monitor_event(&self, _event_id: u128) {
+		// TODO: once events have ids, remove the corresponding event here
+	}
+
 	/// Processes [`SpendableOutputs`] events produced from each [`ChannelMonitor`] upon maturity.
 	///
 	/// For channels featuring anchor outputs, this method will also process [`BumpTransaction`]
