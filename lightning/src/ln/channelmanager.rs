@@ -42,6 +42,7 @@ use crate::chain::chaininterface::{
 	BroadcasterInterface, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator,
 	TransactionType,
 };
+use crate::chain::chainmonitor::MonitorEventSource;
 use crate::chain::channelmonitor::{
 	ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, MonitorEvent,
 	WithChannelMonitor, ANTI_REORG_DELAY, CLTV_CLAIM_BUFFER, HTLC_FAIL_BACK_BUFFER,
@@ -1492,6 +1493,10 @@ pub(crate) enum MonitorUpdateCompletionAction {
 		blocking_action: RAAMonitorUpdateBlockingAction,
 		downstream_channel_id: ChannelId,
 	},
+	/// Indicates that one or more [`MonitorEvent`]s should be acknowledged via
+	/// [`chain::Watch::ack_monitor_event`] once the associated [`ChannelMonitorUpdate`] has been
+	/// durably persisted.
+	AckMonitorEvents { monitor_events_to_ack: Vec<MonitorEventSource> },
 }
 
 impl_writeable_tlv_based_enum_upgradable!(MonitorUpdateCompletionAction,
@@ -1512,6 +1517,9 @@ impl_writeable_tlv_based_enum_upgradable!(MonitorUpdateCompletionAction,
 		// are in the process of being resolved.
 		(0, event, upgradable_option),
 		(1, downstream_counterparty_and_funding_outpoint, upgradable_required),
+	},
+	(3, AckMonitorEvents) => {
+		(0, monitor_events_to_ack, required_vec),
 	},
 );
 
@@ -10344,6 +10352,11 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						downstream_channel_id,
 						Some(blocking_action),
 					);
+				},
+				MonitorUpdateCompletionAction::AckMonitorEvents { monitor_events_to_ack } => {
+					for source in monitor_events_to_ack {
+						self.chain_monitor.ack_monitor_event(source);
+					}
 				},
 			}
 		}
