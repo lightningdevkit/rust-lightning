@@ -13118,6 +13118,15 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						&self.fee_estimator,
 						&self.logger,
 					);
+					if let Err(ChannelError::Abort(_)) = &init_res {
+						funded_channel.exit_quiescence();
+						let chan_id = funded_channel.context.channel_id();
+						let res = MsgHandleErrInternal::from_chan_no_close(
+							init_res.unwrap_err(),
+							chan_id,
+						);
+						return Err(res.with_exited_quiescence(true));
+					}
 					let tx_ack_rbf_msg = try_channel_entry!(self, peer_state, init_res, chan_entry);
 					peer_state.pending_msg_events.push(MessageSendEvent::SendTxAckRbf {
 						node_id: *counterparty_node_id,

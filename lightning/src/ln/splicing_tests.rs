@@ -4404,33 +4404,54 @@ fn test_splice_rbf_insufficient_feerate() {
 		.is_ok());
 
 	// Acceptor-side: tx_init_rbf with an insufficient feerate is also rejected.
-	reenter_quiescence(&nodes[0], &nodes[1], &channel_id);
+	// Node 0 initiates a proper RBF but we tamper the feerate to be insufficient.
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+	let _funding_contribution =
+		do_initiate_rbf_splice_in(&nodes[0], &nodes[1], channel_id, added_value, min_rbf_feerate);
 
-	let tx_init_rbf = msgs::TxInitRbf {
-		channel_id,
-		locktime: 0,
-		feerate_sat_per_1000_weight: FEERATE_FLOOR_SATS_PER_KW,
-		funding_output_contribution: Some(added_value.to_sat() as i64),
-	};
+	let stfu_0 = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+	nodes[1].node.handle_stfu(node_id_0, &stfu_0);
+	let stfu_1 = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
+	nodes[0].node.handle_stfu(node_id_1, &stfu_1);
 
+	let mut tx_init_rbf = get_event_msg!(nodes[0], MessageSendEvent::SendTxInitRbf, node_id_1);
+	tx_init_rbf.feerate_sat_per_1000_weight = FEERATE_FLOOR_SATS_PER_KW;
 	nodes[1].node.handle_tx_init_rbf(node_id_0, &tx_init_rbf);
 
 	let tx_abort = get_event_msg!(nodes[1], MessageSendEvent::SendTxAbort, node_id_0);
 	assert_eq!(tx_abort.channel_id, channel_id);
 
+	// Node 0 echoes tx_abort and exits quiescence.
+	nodes[0].node.handle_tx_abort(node_id_1, &tx_abort);
+	let tx_abort_echo = get_event_msg!(nodes[0], MessageSendEvent::SendTxAbort, node_id_1);
+
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 2);
+	assert!(
+		matches!(&events[0], Event::SpliceFailed { channel_id: cid, .. } if *cid == channel_id)
+	);
+	assert!(
+		matches!(&events[1], Event::DiscardFunding { channel_id: cid, .. } if *cid == channel_id)
+	);
+
+	// Node 1 handles the echo (no-op since it already aborted).
+	nodes[1].node.handle_tx_abort(node_id_0, &tx_abort_echo);
+
 	// Acceptor-side: a counterparty feerate that satisfies the spec's 25/24 rule (264) is
 	// accepted, even though our own RBF floor (+25 sat/kwu = 278) is higher.
-	// After tx_abort the channel remains quiescent, so no need to re-enter quiescence.
-	nodes[0].node.handle_tx_abort(node_id_1, &tx_abort);
+	// Node 0 initiates another proper RBF but we tamper the feerate to the 25/24 value.
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+	let _funding_contribution =
+		do_initiate_rbf_splice_in(&nodes[0], &nodes[1], channel_id, added_value, min_rbf_feerate);
 
+	let stfu_0 = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+	nodes[1].node.handle_stfu(node_id_0, &stfu_0);
+	let stfu_1 = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
+	nodes[0].node.handle_stfu(node_id_1, &stfu_1);
+
+	let mut tx_init_rbf = get_event_msg!(nodes[0], MessageSendEvent::SendTxInitRbf, node_id_1);
 	let rbf_feerate_25_24 = ((FEERATE_FLOOR_SATS_PER_KW as u64) * 25).div_ceil(24) as u32;
-	let tx_init_rbf = msgs::TxInitRbf {
-		channel_id,
-		locktime: 0,
-		feerate_sat_per_1000_weight: rbf_feerate_25_24,
-		funding_output_contribution: Some(added_value.to_sat() as i64),
-	};
-
+	tx_init_rbf.feerate_sat_per_1000_weight = rbf_feerate_25_24;
 	nodes[1].node.handle_tx_init_rbf(node_id_0, &tx_init_rbf);
 	let _tx_ack_rbf = get_event_msg!(nodes[1], MessageSendEvent::SendTxAckRbf, node_id_0);
 }
@@ -5118,10 +5139,25 @@ fn test_splice_rbf_tiebreak_feerate_too_high_rejected() {
 	assert_eq!(tx_init_rbf.feerate_sat_per_1000_weight, high_feerate.to_sat_per_kwu() as u32);
 
 	// Node 1 handles tx_init_rbf — TooHigh: target (100k) >> max (3k) and fair fee > budget.
+	// Node 1 exits quiescence upon rejecting with tx_abort, and since it has a pending
+	// QuiescentAction (from its own splice RBF attempt), it immediately re-proposes quiescence.
 	nodes[1].node.handle_tx_init_rbf(node_id_0, &tx_init_rbf);
 
-	let tx_abort = get_event_msg!(nodes[1], MessageSendEvent::SendTxAbort, node_id_0);
-	assert_eq!(tx_abort.channel_id, channel_id);
+	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 2);
+	match &msg_events[0] {
+		MessageSendEvent::SendTxAbort { node_id, msg } => {
+			assert_eq!(*node_id, node_id_0);
+			assert_eq!(msg.channel_id, channel_id);
+		},
+		_ => panic!("Expected SendTxAbort, got {:?}", msg_events[0]),
+	};
+	match &msg_events[1] {
+		MessageSendEvent::SendStfu { node_id, .. } => {
+			assert_eq!(*node_id, node_id_0);
+		},
+		_ => panic!("Expected SendStfu, got {:?}", msg_events[1]),
+	};
 }
 
 #[test]
