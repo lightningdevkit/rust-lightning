@@ -2040,6 +2040,12 @@ mod tests {
 			Err(e) => assert_eq!(e, Bolt12SemanticError::MissingAmount),
 		}
 
+		// An offer with amount_msats(0) must be rejected by the builder per BOLT 12.
+		match OfferBuilder::new(recipient_pubkey()).amount_msats(0).build() {
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, Bolt12SemanticError::InvalidAmount),
+		}
+
 		match OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
 			.supported_quantity(Quantity::Unbounded)
