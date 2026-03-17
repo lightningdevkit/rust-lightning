@@ -12981,7 +12981,16 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							*counterparty_node_id);
 						let (htlcs_to_fail, static_invoices, monitor_update_opt) = try_channel_entry!(self, peer_state,
 							chan.revoke_and_ack(&msg, &self.fee_estimator, &&logger, mon_update_blocked), chan_entry);
-						if let Some(monitor_update) = monitor_update_opt {
+						if let Some((monitor_update, monitor_events_to_ack)) = monitor_update_opt {
+							if !monitor_events_to_ack.is_empty() {
+								peer_state
+									.monitor_update_blocked_actions
+									.entry(msg.channel_id)
+									.or_default()
+									.push(MonitorUpdateCompletionAction::AckMonitorEvents {
+										monitor_events_to_ack,
+									});
+							}
 							let funding_txo = funding_txo_opt
 								.expect("Funding outpoint must have been set for RAA handling to succeed");
 							if let Some(data) = self.handle_new_monitor_update(
