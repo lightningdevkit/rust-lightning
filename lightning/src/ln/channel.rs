@@ -3133,7 +3133,7 @@ impl PendingFunding {
 		self.contributions.iter().flat_map(|c| c.contributed_inputs())
 	}
 
-	fn contributed_outputs(&self) -> impl Iterator<Item = &TxOut> + '_ {
+	fn contributed_outputs(&self) -> impl Iterator<Item = &bitcoin::Script> + '_ {
 		self.contributions.iter().flat_map(|c| c.contributed_outputs())
 	}
 
@@ -3142,7 +3142,7 @@ impl PendingFunding {
 		self.contributions[..len.saturating_sub(1)].iter().flat_map(|c| c.contributed_inputs())
 	}
 
-	fn prior_contributed_outputs(&self) -> impl Iterator<Item = &TxOut> + '_ {
+	fn prior_contributed_outputs(&self) -> impl Iterator<Item = &bitcoin::Script> + '_ {
 		let len = self.contributions.len();
 		self.contributions[..len.saturating_sub(1)].iter().flat_map(|c| c.contributed_outputs())
 	}
@@ -3191,7 +3191,7 @@ pub(crate) enum QuiescentAction {
 
 pub(super) enum QuiescentError {
 	DoNothing,
-	DiscardFunding { inputs: Vec<bitcoin::OutPoint>, outputs: Vec<bitcoin::TxOut> },
+	DiscardFunding { inputs: Vec<bitcoin::OutPoint>, outputs: Vec<bitcoin::ScriptBuf> },
 	FailSplice(SpliceFundingFailed, NegotiationFailureReason),
 }
 
@@ -6887,8 +6887,8 @@ impl FundingNegotiationContext {
 		self.our_funding_inputs.iter().map(|input| input.utxo.outpoint)
 	}
 
-	fn contributed_outputs(&self) -> impl Iterator<Item = &TxOut> + '_ {
-		self.our_funding_outputs.iter()
+	fn contributed_outputs(&self) -> impl Iterator<Item = &bitcoin::Script> + '_ {
+		self.our_funding_outputs.iter().map(|output| output.script_pubkey.as_script())
 	}
 }
 
@@ -7046,7 +7046,7 @@ pub struct SpliceFundingFailed {
 
 	/// Outputs contributed to the splice transaction. Excludes outputs already contributed
 	/// in prior rounds, which may be included in `contribution`.
-	contributed_outputs: Vec<bitcoin::TxOut>,
+	contributed_outputs: Vec<ScriptBuf>,
 
 	/// The funding contribution from the failed round, if available.
 	contribution: Option<FundingContribution>,
@@ -11689,7 +11689,7 @@ where
 				.filter_map(|contribution| {
 					contribution.into_unique_contributions(
 						promoted_tx.input.iter().map(|i| i.previous_output),
-						promoted_tx.output.iter(),
+						promoted_tx.output.iter().map(|o| o.script_pubkey.as_script()),
 					)
 				})
 				.map(|(inputs, outputs)| FundingInfo::Contribution { inputs, outputs })
