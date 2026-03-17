@@ -6462,6 +6462,16 @@ fn get_v2_channel_reserve_satoshis(channel_value_satoshis: u64, dust_limit_satos
 	cmp::min(channel_value_satoshis, cmp::max(q, dust_limit_satoshis))
 }
 
+/// Returns the minimum feerate for our own RBF attempts given a previous feerate.
+///
+/// The spec (tx_init_rbf) requires the new feerate to be >= 25/24 of the previous feerate.
+/// However, that multiplier doesn't always satisfy BIP125's relay requirement of an absolute fee
+/// increase, so for our own RBFs we use a flat +25 sat/kwu (0.1 sat/vB) increment instead. We
+/// still accept the 25/24 rule from counterparties in [`FundedChannel::validate_tx_init_rbf`].
+fn min_rbf_feerate(prev_feerate: u32) -> FeeRate {
+	FeeRate::from_sat_per_kwu((prev_feerate as u64).saturating_add(25))
+}
+
 /// Context for negotiating channels (dual-funded V2 open, splicing)
 #[derive(Debug)]
 pub(super) struct FundingNegotiationContext {
@@ -11972,8 +11982,7 @@ where
 			//   slightly higher feerate than necessary. Call splice_channel again after
 			//   receiving SpliceFailed to get a fresh template without the RBF constraint.
 			let prev_feerate = negotiation.funding_feerate_sat_per_1000_weight();
-			let min_feerate_kwu = ((prev_feerate as u64) * 25).div_ceil(24);
-			(Some(FeeRate::from_sat_per_kwu(min_feerate_kwu)), None)
+			(Some(min_rbf_feerate(prev_feerate)), None)
 		} else {
 			// No RBF feerate to derive — either a fresh splice or a pending splice that
 			// can't be RBF'd (e.g., splice_locked already exchanged).
@@ -12057,10 +12066,7 @@ where
 		}
 
 		match pending_splice.last_funding_feerate_sat_per_1000_weight {
-			Some(prev_feerate) => {
-				let min_feerate_kwu = ((prev_feerate as u64) * 25).div_ceil(24);
-				Ok(FeeRate::from_sat_per_kwu(min_feerate_kwu))
-			},
+			Some(prev_feerate) => Ok(min_rbf_feerate(prev_feerate)),
 			None => Err(format!(
 				"Channel {} has no prior feerate to compute RBF minimum",
 				self.context.channel_id(),

@@ -153,8 +153,8 @@ impl PriorContribution {
 /// prior contribution logic internally — reusing an adjusted prior when possible, re-running
 /// coin selection when needed, or creating a fee-bump-only contribution.
 ///
-/// Check [`FundingTemplate::min_rbf_feerate`] for the minimum feerate required (25/24 of
-/// the previous feerate). Use [`FundingTemplate::prior_contribution`] to inspect the prior
+/// Check [`FundingTemplate::min_rbf_feerate`] for the minimum feerate required (previous
+/// feerate + 25 sat/kwu). Use [`FundingTemplate::prior_contribution`] to inspect the prior
 /// contribution's parameters (e.g., [`FundingContribution::value_added`],
 /// [`FundingContribution::outputs`]) before deciding whether to reuse it via the RBF methods
 /// or build a fresh contribution with different parameters using the splice methods above.
@@ -167,7 +167,7 @@ pub struct FundingTemplate {
 	/// transaction.
 	shared_input: Option<Input>,
 
-	/// The minimum RBF feerate (25/24 of the previous feerate), if this template is for an
+	/// The minimum RBF feerate (previous feerate + 25 sat/kwu), if this template is for an
 	/// RBF attempt. `None` for fresh splices with no pending splice candidates.
 	min_rbf_feerate: Option<FeeRate>,
 
@@ -2161,8 +2161,8 @@ mod tests {
 		// When the caller's max_feerate is below the minimum RBF feerate, rbf_sync should
 		// return Err(()).
 		let prior_feerate = FeeRate::from_sat_per_kwu(2000);
-		let min_rbf_feerate = FeeRate::from_sat_per_kwu(5000);
-		let max_feerate = FeeRate::from_sat_per_kwu(3000);
+		let min_rbf_feerate = FeeRate::from_sat_per_kwu(2025);
+		let max_feerate = FeeRate::from_sat_per_kwu(2020);
 
 		let prior = FundingContribution {
 			value_added: Amount::from_sat(50_000),
@@ -2175,7 +2175,7 @@ mod tests {
 			is_splice: true,
 		};
 
-		// max_feerate (3000) < min_rbf_feerate (5000).
+		// max_feerate (2020) < min_rbf_feerate (2025).
 		let template = FundingTemplate::new(
 			None,
 			Some(min_rbf_feerate),
@@ -2255,8 +2255,8 @@ mod tests {
 		// When the prior contribution's feerate is below the minimum RBF feerate and no
 		// holder balance is available, rbf_sync should run coin selection to add inputs that
 		// cover the higher RBF fee.
-		let min_rbf_feerate = FeeRate::from_sat_per_kwu(5000);
 		let prior_feerate = FeeRate::from_sat_per_kwu(2000);
+		let min_rbf_feerate = FeeRate::from_sat_per_kwu(2025);
 		let withdrawal = funding_output_sats(20_000);
 
 		let prior = FundingContribution {
@@ -2293,7 +2293,7 @@ mod tests {
 	fn test_rbf_sync_no_prior_fee_bump_only_runs_coin_selection() {
 		// When there is no prior contribution (e.g., acceptor), rbf_sync should run coin
 		// selection to add inputs for a fee-bump-only contribution.
-		let min_rbf_feerate = FeeRate::from_sat_per_kwu(5000);
+		let min_rbf_feerate = FeeRate::from_sat_per_kwu(2025);
 
 		let template =
 			FundingTemplate::new(Some(shared_input(100_000)), Some(min_rbf_feerate), None);
@@ -2315,7 +2315,7 @@ mod tests {
 		// When the prior contribution's feerate is below the minimum RBF feerate and no
 		// holder balance is available, rbf_sync should use the caller's max_feerate (not the
 		// prior's) for the resulting contribution.
-		let min_rbf_feerate = FeeRate::from_sat_per_kwu(5000);
+		let min_rbf_feerate = FeeRate::from_sat_per_kwu(2025);
 		let prior_max_feerate = FeeRate::from_sat_per_kwu(50_000);
 		let callers_max_feerate = FeeRate::from_sat_per_kwu(10_000);
 		let withdrawal = funding_output_sats(20_000);
@@ -2354,8 +2354,8 @@ mod tests {
 		// When splice_out_sync is called on a template with min_rbf_feerate set (user
 		// choosing a fresh splice-out instead of rbf_sync), coin selection should NOT run.
 		// Fees come from the channel balance.
-		let min_rbf_feerate = FeeRate::from_sat_per_kwu(5000);
-		let feerate = FeeRate::from_sat_per_kwu(5000);
+		let min_rbf_feerate = FeeRate::from_sat_per_kwu(2025);
+		let feerate = FeeRate::from_sat_per_kwu(2025);
 		let withdrawal = funding_output_sats(20_000);
 
 		let template =
