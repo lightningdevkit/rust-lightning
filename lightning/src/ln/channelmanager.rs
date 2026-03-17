@@ -7971,11 +7971,15 @@ impl<
 						continue;
 					}
 				},
-				HTLCForwardInfo::FailHTLC { .. } | HTLCForwardInfo::FailMalformedHTLC { .. } => {
+				HTLCForwardInfo::FailHTLC { monitor_event_source, .. }
+				| HTLCForwardInfo::FailMalformedHTLC { monitor_event_source, .. } => {
 					// Channel went away before we could fail it. This implies
 					// the channel is now on chain and our counterparty is
 					// trying to broadcast the HTLC-Timeout, but that's their
 					// problem, not ours.
+					if let Some(source) = monitor_event_source {
+						self.chain_monitor.ack_monitor_event(source);
+					}
 				},
 			}
 		}
