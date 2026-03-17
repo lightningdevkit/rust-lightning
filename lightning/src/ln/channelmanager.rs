@@ -8196,6 +8196,7 @@ impl<
 								&&logger,
 							),
 							htlc_id,
+							monitor_event_source,
 						))
 					} else {
 						self.forwarding_channel_not_found(
@@ -8228,7 +8229,7 @@ impl<
 							monitor_event_source,
 							&&logger,
 						);
-						Some((res, htlc_id))
+						Some((res, htlc_id, monitor_event_source))
 					} else {
 						self.forwarding_channel_not_found(
 							core::iter::once(forward_info).chain(draining_pending_forwards),
@@ -8241,8 +8242,12 @@ impl<
 					}
 				},
 			};
-			if let Some((queue_fail_htlc_res, htlc_id)) = queue_fail_htlc_res {
+			if let Some((queue_fail_htlc_res, htlc_id, monitor_event_source)) = queue_fail_htlc_res
+			{
 				if let Err(e) = queue_fail_htlc_res {
+					if let Some(source) = monitor_event_source {
+						self.chain_monitor.ack_monitor_event(source);
+					}
 					if let ChannelError::Ignore(msg) = e {
 						if let Some(chan) = peer_state
 							.channel_by_id
