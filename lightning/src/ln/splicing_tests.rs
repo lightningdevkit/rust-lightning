@@ -1816,10 +1816,25 @@ fn test_splice_tiebreak_feerate_too_high_rejected() {
 	let splice_init = get_event_msg!(nodes[0], MessageSendEvent::SendSpliceInit, node_id_1);
 
 	// Node 1 handles SpliceInit — TooHigh: target (100k) >> max (3k) and fair fee > budget.
+	// Node 1 exits quiescence upon rejecting with tx_abort, and since it has a pending
+	// QuiescentAction (from its own splice attempt), it immediately re-proposes quiescence.
 	nodes[1].node.handle_splice_init(node_id_0, &splice_init);
 
-	let tx_abort = get_event_msg!(nodes[1], MessageSendEvent::SendTxAbort, node_id_0);
-	assert_eq!(tx_abort.channel_id, channel_id);
+	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 2);
+	match &msg_events[0] {
+		MessageSendEvent::SendTxAbort { node_id, msg } => {
+			assert_eq!(*node_id, node_id_0);
+			assert_eq!(msg.channel_id, channel_id);
+		},
+		_ => panic!("Expected SendTxAbort, got {:?}", msg_events[0]),
+	};
+	match &msg_events[1] {
+		MessageSendEvent::SendStfu { node_id, .. } => {
+			assert_eq!(*node_id, node_id_0);
+		},
+		_ => panic!("Expected SendStfu, got {:?}", msg_events[1]),
+	};
 }
 
 #[cfg(test)]
