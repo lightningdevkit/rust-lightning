@@ -29,6 +29,7 @@ use bitcoin::{secp256k1, sighash, FeeRate, Sequence, TxIn};
 use crate::blinded_path::message::BlindedMessagePath;
 use crate::chain::chaininterface::{
 	fee_for_weight, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator, TransactionType,
+	FEERATE_FLOOR_SATS_PER_KW,
 };
 use crate::chain::channelmonitor::{
 	ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, CommitmentHTLCData,
@@ -10150,8 +10151,15 @@ where
 		// Propose a range from our current Background feerate to our Normal feerate plus our
 		// force_close_avoidance_max_fee_satoshis.
 		// If we fail to come to consensus, we'll have to force-close.
-		let mut proposed_feerate =
-			fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::ChannelCloseMinimum);
+		//
+		// Use the raw fee estimator for ChannelCloseMinimum to avoid the
+		// FEERATE_FLOOR_SATS_PER_KW (253) clamp. Cooperative closes are not
+		// time-sensitive and accepting a lower-than-relay fee is preferable to
+		// falling back to a force close.
+		let mut proposed_feerate = cmp::max(
+			fee_estimator.0.get_est_sat_per_1000_weight(ConfirmationTarget::ChannelCloseMinimum),
+			FEERATE_FLOOR_SATS_PER_KW / 2,
+		);
 		// Use NonAnchorChannelFee because this should be an estimate for a channel close
 		// that we don't expect to need fee bumping
 		let normal_feerate =
