@@ -1281,6 +1281,12 @@ pub(crate) struct ChannelMonitorImpl<Signer: EcdsaChannelSigner> {
 	// block/transaction-connected events and *not* during block/transaction-disconnected events,
 	// we further MUST NOT generate events during block/transaction-disconnection.
 	pending_monitor_events: Vec<MonitorEvent>,
+	/// When set, monitor events are retained until explicitly acked rather than cleared on read.
+	///
+	/// Allows the ChannelManager to reconstruct pending HTLC state by replaying monitor events on
+	/// startup, and make the monitor responsible for both off- and on-chain payment resolution. Will
+	/// be always set once support for this feature is complete.
+	persistent_events_enabled: bool,
 
 	pub(super) pending_events: Vec<Event>,
 	pub(super) is_processing_pending_events: bool,
@@ -1732,8 +1738,12 @@ pub(crate) fn write_chanmon_internal<Signer: EcdsaChannelSigner, W: Writer>(
 		channel_monitor.pending_monitor_events.iter().chain(holder_force_closed_compat.as_ref()),
 	);
 
+	// Only write `persistent_events_enabled` if it's set to true, as it's an even TLV.
+	let persistent_events_enabled = channel_monitor.persistent_events_enabled.then_some(());
+
 	write_tlv_fields!(writer, {
 		(1, channel_monitor.funding_spend_confirmed, option),
+		(2, persistent_events_enabled, option),
 		(3, channel_monitor.htlcs_resolved_on_chain, required_vec),
 		(5, pending_monitor_events, required),
 		(7, channel_monitor.funding_spend_seen, required),
@@ -1937,6 +1947,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 
 			payment_preimages: new_hash_map(),
 			pending_monitor_events: Vec::new(),
+			persistent_events_enabled: false,
 			pending_events: Vec::new(),
 			is_processing_pending_events: false,
 
@@ -6693,8 +6704,10 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		let mut alternative_funding_confirmed = None;
 		let mut is_manual_broadcast = RequiredWrapper(None);
 		let mut funding_seen_onchain = RequiredWrapper(None);
+		let mut persistent_events_enabled: Option<()> = None;
 		read_tlv_fields!(reader, {
 			(1, funding_spend_confirmed, option),
+			(2, persistent_events_enabled, option),
 			(3, htlcs_resolved_on_chain, optional_vec),
 			(5, pending_monitor_events, optional_vec),
 			(7, funding_spend_seen, option),
@@ -6716,6 +6729,13 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			(35, is_manual_broadcast, (default_value, false)),
 			(37, funding_seen_onchain, (default_value, true)),
 		});
+
+		#[cfg(not(any(feature = "_test_utils", test)))]
+		if persistent_events_enabled.is_some() {
+			// This feature isn't supported yet so error if the writer expected it to be.
+			return Err(DecodeError::InvalidValue)
+		}
+
 		// Note that `payment_preimages_with_info` was added (and is always written) in LDK 0.1, so
 		// we can use it to determine if this monitor was last written by LDK 0.1 or later.
 		let written_by_0_1_or_later = payment_preimages_with_info.is_some();
@@ -6864,6 +6884,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 
 			payment_preimages,
 			pending_monitor_events: pending_monitor_events.unwrap(),
+			persistent_events_enabled: persistent_events_enabled.is_some(),
 			pending_events,
 			is_processing_pending_events: false,
 
