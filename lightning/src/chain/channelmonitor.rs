@@ -198,8 +198,9 @@ fn push_monitor_event<ES: EntropySource>(
 	pending_monitor_events.push((id, event));
 }
 
-/// An event to be processed by the ChannelManager.
-#[derive(Clone, PartialEq, Eq)]
+/// An event to be processed by the ChannelManager. Will be re-provided to the ChannelManager on
+/// startup until persistently acked via [`chain::Watch::ack_monitor_event`].
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum MonitorEvent {
 	/// A monitor event containing an HTLCUpdate.
 	HTLCEvent(HTLCUpdate),
@@ -263,7 +264,7 @@ impl_writeable_tlv_based_enum_upgradable_legacy!(MonitorEvent,
 /// Simple structure sent back by `chain::Watch` when an HTLC from a forward channel is detected on
 /// chain. Used to update the corresponding HTLC in the backward channel. Failing to pass the
 /// preimage claim backward will lead to loss of funds.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct HTLCUpdate {
 	pub(crate) payment_hash: PaymentHash,
 	pub(crate) payment_preimage: Option<PaymentPreimage>,
@@ -1310,6 +1311,12 @@ pub(crate) struct ChannelMonitorImpl<Signer: EcdsaChannelSigner> {
 	// block/transaction-connected events and *not* during block/transaction-disconnected events,
 	// we further MUST NOT generate events during block/transaction-disconnection.
 	pending_monitor_events: Vec<(u128, MonitorEvent)>,
+	// `MonitorEvent`s that have been provided to the `ChannelManager` via
+	// [`ChannelMonitor::get_and_clear_pending_monitor_events`] and are awaiting
+	// [`ChannelMonitor::ack_monitor_event`] for removal. If an event in this queue is not acked, it
+	// will be re-provided to the `ChannelManager` on startup; this field is not persisted
+	// and any events here will move back to `pending_monitor_events` after a restart.
+	provided_monitor_events: Vec<(u128, MonitorEvent)>,
 
 	pub(super) pending_events: Vec<Event>,
 	pub(super) is_processing_pending_events: bool,
@@ -1775,7 +1782,12 @@ pub(crate) fn write_chanmon_internal<Signer: EcdsaChannelSigner, W: Writer>(
 			.map(|(_, ev)| ev)
 			.chain(holder_force_closed_compat.as_ref()),
 	));
-	let pending_mon_evs_with_ids = Some(Iterable(channel_monitor.pending_monitor_events.iter()));
+	let pending_mon_evs_with_ids = Some(Iterable(
+		channel_monitor
+			.provided_monitor_events
+			.iter()
+			.chain(channel_monitor.pending_monitor_events.iter()),
+	));
 
 	let legacy_alternative_funding_confirmed = channel_monitor
 		.alternative_funding_confirmed
@@ -1995,6 +2007,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 
 			payment_preimages: new_hash_map(),
 			pending_monitor_events: Vec::new(),
+			provided_monitor_events: Vec::new(),
 			pending_events: Vec::new(),
 			is_processing_pending_events: false,
 
@@ -2213,16 +2226,20 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		}
 	}
 
-	/// Get the list of HTLCs who's status has been updated on chain. This should be called by
-	/// ChannelManager via [`chain::Watch::release_pending_monitor_events`].
+	/// Get the list of HTLCs whose status has been updated. This should be called by ChannelManager
+	/// via [`chain::Watch::release_pending_monitor_events`].
+	///
+	/// Returned events are retained internally until [Self::ack_monitor_event] is called with their
+	/// ID.
 	pub fn get_and_clear_pending_monitor_events(&self) -> Vec<(u128, MonitorEvent)> {
 		self.inner.lock().unwrap().get_and_clear_pending_monitor_events()
 	}
 
 	/// Removes a [`MonitorEvent`] by its event ID, acknowledging that it has been processed.
 	/// Generally called by [`chain::Watch::ack_monitor_event`].
-	pub fn ack_monitor_event(&self, _event_id: u128) {
-		// TODO: once events have ids, remove the corresponding event here
+	pub fn ack_monitor_event(&self, event_id: u128) {
+		let inner = &mut *self.inner.lock().unwrap();
+		inner.ack_monitor_event(event_id);
 	}
 
 	/// Copies [`MonitorEvent`] state from `other` into `self`.
@@ -2231,15 +2248,23 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// original.
 	#[cfg(any(test, feature = "_test_utils"))]
 	pub fn copy_monitor_event_state(&self, other: &ChannelMonitor<Signer>) {
-		let pending = {
+		let (provided, pending) = {
 			let other_inner = other.inner.lock().unwrap();
-			other_inner.pending_monitor_events.clone()
+			(
+				other_inner.provided_monitor_events.clone(),
+				other_inner.pending_monitor_events.clone(),
+			)
 		};
+
+		// Check that the events match between monitors, even if they're in different queues.
 		let mut self_inner = self.inner.lock().unwrap();
-		assert!(
-			self_inner.pending_monitor_events == pending,
+		let expected_pending: Vec<_> = provided.iter().chain(pending.iter()).cloned().collect();
+		assert_eq!(
+			self_inner.pending_monitor_events, expected_pending,
 			"Monitor events failed to round-trip serialization"
 		);
+
+		self_inner.provided_monitor_events = provided;
 		self_inner.pending_monitor_events = pending;
 	}
 
@@ -4707,9 +4732,16 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		push_monitor_event(&mut self.pending_monitor_events, event, entropy_source);
 	}
 
+	fn ack_monitor_event(&mut self, event_id: u128) {
+		self.provided_monitor_events.retain(|(id, _)| *id != event_id);
+		// If this event was generated prior to a restart, it may be in this queue instead
+		self.pending_monitor_events.retain(|(id, _)| *id != event_id);
+	}
+
 	fn get_and_clear_pending_monitor_events(&mut self) -> Vec<(u128, MonitorEvent)> {
 		let mut ret = Vec::new();
 		mem::swap(&mut ret, &mut self.pending_monitor_events);
+		self.provided_monitor_events.extend(ret.iter().cloned());
 		ret
 	}
 
@@ -6049,8 +6081,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				if inbound_htlc_expiry > max_expiry_height {
 					continue;
 				}
-				let duplicate_event = self.pending_monitor_events.iter().any(
-					|(_, update)| if let &MonitorEvent::HTLCEvent(ref upd) = update {
+				let duplicate_event = self.pending_monitor_events.iter().chain(self.provided_monitor_events.iter())
+					.any(|(_, update)| if let &MonitorEvent::HTLCEvent(ref upd) = update {
 						upd.source == *source
 					} else { false });
 				if duplicate_event {
@@ -6541,13 +6573,15 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					self.counterparty_fulfilled_htlcs.insert(SentHTLCId::from_source(&source), payment_preimage);
 					// We may have already queued a failure of this HTLC upstream because the upstream HTLC
 					// was about to expire while this one was still unresolved on chain. The counterparty
-					// has now revealed the preimage instead, and events still queued here have not been
-					// provided to anyone yet, so drop the failure in favor of claiming upstream.
-					self.pending_monitor_events.retain(|(_, update)| match update {
+					// has now revealed the preimage instead, so drop the failure in favor of claiming
+					// upstream.
+					let not_htlc_fail = |(_, update): &(u128, MonitorEvent)| match update {
 						MonitorEvent::HTLCEvent(upd) => upd.source != source || upd.payment_preimage.is_some(),
 						_ => true,
-					});
-					if !self.pending_monitor_events.iter().any(
+					};
+					self.pending_monitor_events.retain(not_htlc_fail);
+					self.provided_monitor_events.retain(not_htlc_fail);
+					if !self.pending_monitor_events.iter().chain(self.provided_monitor_events.iter()).any(
 						|(_, update)| if let &MonitorEvent::HTLCEvent(ref upd) = update { upd.source == source } else { false }) {
 						push_monitor_event(&mut self.pending_monitor_events, MonitorEvent::HTLCEvent(HTLCUpdate {
 							source,
@@ -7133,6 +7167,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 
 			payment_preimages,
 			pending_monitor_events,
+			provided_monitor_events: Vec::new(),
 			pending_events,
 			is_processing_pending_events: false,
 
