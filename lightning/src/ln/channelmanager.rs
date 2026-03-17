@@ -3641,6 +3641,8 @@ impl<
 			our_network_pubkey, current_timestamp, expanded_inbound_key,
 			node_signer.get_receive_auth_key(), secp_ctx.clone(), message_router, logger.clone(),
 		);
+		#[cfg(test)]
+		let override_persistent_monitor_events = config.override_persistent_monitor_events;
 
 		ChannelManager {
 			config: RwLock::new(config),
@@ -3697,7 +3699,27 @@ impl<
 
 			logger,
 
-			persistent_monitor_events: false,
+			persistent_monitor_events: {
+				#[cfg(not(test))]
+				{ false }
+				#[cfg(test)]
+				{
+					override_persistent_monitor_events.unwrap_or_else(|| {
+						use core::hash::{BuildHasher, Hasher};
+						match std::env::var("LDK_TEST_PERSISTENT_MON_EVENTS") {
+							Ok(val) => match val.as_str() {
+								"1" => true,
+								"0" => false,
+								_ => panic!("LDK_TEST_PERSISTENT_MON_EVENTS must be 0 or 1, got: {}", val),
+							},
+							Err(_) => {
+								let rand_val = std::collections::hash_map::RandomState::new().build_hasher().finish();
+								rand_val % 2 == 0
+							},
+						}
+					})
+				}
+			},
 
 			#[cfg(feature = "_test_utils")]
 			testing_dnssec_proof_offer_resolution_override: Mutex::new(new_hash_map()),
@@ -11721,6 +11743,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				fail_chan!("Already had channel with the new channel_id");
 			},
 			hash_map::Entry::Vacant(e) => {
+				monitor.set_persistent_events_enabled(self.persistent_monitor_events);
 				let monitor_res = self.chain_monitor.watch_channel(monitor.channel_id(), monitor);
 				if let Ok(persist_state) = monitor_res {
 					// There's no problem signing a counterparty's funding transaction if our monitor
@@ -11891,6 +11914,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				match chan
 					.funding_signed(&msg, best_block, &self.signer_provider, &self.logger)
 					.and_then(|(funded_chan, monitor)| {
+						monitor.set_persistent_events_enabled(self.persistent_monitor_events);
 						self.chain_monitor
 							.watch_channel(funded_chan.context.channel_id(), monitor)
 							.map_err(|()| {
@@ -12806,6 +12830,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 				if let Some(chan) = chan.as_funded_mut() {
 					if let Some(monitor) = monitor_opt {
+						monitor.set_persistent_events_enabled(self.persistent_monitor_events);
 						let monitor_res =
 							self.chain_monitor.watch_channel(monitor.channel_id(), monitor);
 						if let Ok(persist_state) = monitor_res {

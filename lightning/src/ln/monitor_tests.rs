@@ -3592,6 +3592,9 @@ fn do_test_lost_timeout_monitor_events(confirm_tx: CommitmentType, dust_htlcs: b
 	let mut cfg = test_default_channel_config();
 	cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 	cfg.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
+	// This test specifically tests lost monitor events, which requires the legacy
+	// (non-persistent) monitor event behavior.
+	cfg.override_persistent_monitor_events = Some(false);
 	let cfgs = [Some(cfg.clone()), Some(cfg.clone()), Some(cfg.clone())];
 
 	let chanmon_cfgs = create_chanmon_cfgs(3);
