@@ -8584,7 +8584,7 @@ where
 		(
 			Vec<(HTLCSource, PaymentHash)>,
 			Vec<(StaticInvoice, BlindedMessagePath)>,
-			Option<ChannelMonitorUpdate>,
+			Option<(ChannelMonitorUpdate, Vec<MonitorEventSource>)>,
 		),
 		ChannelError,
 	> {
@@ -8895,6 +8895,7 @@ where
 		} else {
 			"Blocked"
 		};
+		let mut monitor_events_to_ack = Vec::new();
 		macro_rules! return_with_htlcs_to_fail {
 			($htlcs_to_fail: expr) => {
 				if !release_monitor {
@@ -8903,7 +8904,12 @@ where
 						.push(PendingChannelMonitorUpdate { update: monitor_update });
 					return Ok(($htlcs_to_fail, static_invoices, None));
 				} else {
-					return Ok(($htlcs_to_fail, static_invoices, Some(monitor_update)));
+					let events_to_ack = core::mem::take(&mut monitor_events_to_ack);
+					return Ok((
+						$htlcs_to_fail,
+						static_invoices,
+						Some((monitor_update, events_to_ack)),
+					));
 				}
 			};
 		}
@@ -8911,10 +8917,8 @@ where
 		self.context.monitor_pending_update_adds.append(&mut pending_update_adds);
 
 		match self.maybe_free_holding_cell_htlcs(fee_estimator, logger) {
-			// TODO: Thread monitor_events_to_ack through the revoke_and_ack return
-			// value so the ChannelManager can attach an AckMonitorEvents completion
-			// action to this monitor update.
-			(Some((mut additional_update, _monitor_events_to_ack)), htlcs_to_fail) => {
+			(Some((mut additional_update, holding_cell_monitor_events_to_ack)), htlcs_to_fail) => {
+				monitor_events_to_ack = holding_cell_monitor_events_to_ack;
 				// free_holding_cell_htlcs may bump latest_monitor_id multiple times but we want them to be
 				// strictly increasing by one, so decrement it here.
 				self.context.latest_monitor_update_id = monitor_update.update_id;
