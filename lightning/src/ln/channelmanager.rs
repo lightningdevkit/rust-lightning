@@ -11650,6 +11650,39 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		}
 	}
 
+	fn handle_interactive_tx_msg_err(
+		&self, err: InteractiveTxMsgError, channel_id: ChannelId, counterparty_node_id: &PublicKey,
+		user_channel_id: u128,
+	) -> MsgHandleErrInternal {
+		if let Some(splice_funding_failed) = err.splice_funding_failed {
+			let pending_events = &mut self.pending_events.lock().unwrap();
+			pending_events.push_back((
+				events::Event::SpliceFailed {
+					channel_id,
+					counterparty_node_id: *counterparty_node_id,
+					user_channel_id,
+					abandoned_funding_txo: splice_funding_failed.funding_txo,
+					channel_type: splice_funding_failed.channel_type.clone(),
+				},
+				None,
+			));
+			pending_events.push_back((
+				events::Event::DiscardFunding {
+					channel_id,
+					funding_info: FundingInfo::Contribution {
+						inputs: splice_funding_failed.contributed_inputs,
+						outputs: splice_funding_failed.contributed_outputs,
+					},
+				},
+				None,
+			));
+		}
+		debug_assert!(!err.exited_quiescence || matches!(err.err, ChannelError::Abort(_)));
+
+		MsgHandleErrInternal::from_chan_no_close(err.err, channel_id)
+			.with_exited_quiescence(err.exited_quiescence)
+	}
+
 	fn internal_tx_msg<
 		HandleTxMsgFn: Fn(&mut Channel<SP>) -> Result<InteractiveTxMessageSend, InteractiveTxMsgError>,
 	>(
@@ -11671,38 +11704,14 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						peer_state.pending_msg_events.push(msg_send_event);
 						Ok(())
 					},
-					Err(InteractiveTxMsgError {
-						err,
-						splice_funding_failed,
-						exited_quiescence,
-					}) => {
-						if let Some(splice_funding_failed) = splice_funding_failed {
-							let pending_events = &mut self.pending_events.lock().unwrap();
-							pending_events.push_back((
-								events::Event::SpliceFailed {
-									channel_id,
-									counterparty_node_id: *counterparty_node_id,
-									user_channel_id: channel.context().get_user_id(),
-									abandoned_funding_txo: splice_funding_failed.funding_txo,
-									channel_type: splice_funding_failed.channel_type.clone(),
-								},
-								None,
-							));
-							pending_events.push_back((
-								events::Event::DiscardFunding {
-									channel_id,
-									funding_info: FundingInfo::Contribution {
-										inputs: splice_funding_failed.contributed_inputs,
-										outputs: splice_funding_failed.contributed_outputs,
-									},
-								},
-								None,
-							));
-						}
-						debug_assert!(!exited_quiescence || matches!(err, ChannelError::Abort(_)));
-
-						Err(MsgHandleErrInternal::from_chan_no_close(err, channel_id)
-							.with_exited_quiescence(exited_quiescence))
+					Err(err) => {
+						let user_channel_id = channel.context().get_user_id();
+						Err(self.handle_interactive_tx_msg_err(
+							err,
+							channel_id,
+							counterparty_node_id,
+							user_channel_id,
+						))
 					},
 				}
 			},
@@ -13067,27 +13076,30 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				}
 
 				if let Some(ref mut funded_channel) = chan_entry.get_mut().as_funded_mut() {
-					let init_res = funded_channel.splice_init(
+					let user_channel_id = funded_channel.context.get_user_id();
+					match funded_channel.splice_init(
 						msg,
 						&self.entropy_source,
 						&self.get_our_node_id(),
 						&self.logger,
-					);
-					if let Err(ChannelError::Abort(_)) = &init_res {
-						funded_channel.exit_quiescence();
-						let chan_id = funded_channel.context.channel_id();
-						let res = MsgHandleErrInternal::from_chan_no_close(
-							init_res.unwrap_err(),
-							chan_id,
-						);
-						return Err(res.with_exited_quiescence(true));
+					) {
+						Ok(splice_ack_msg) => {
+							peer_state.pending_msg_events.push(MessageSendEvent::SendSpliceAck {
+								node_id: *counterparty_node_id,
+								msg: splice_ack_msg,
+							});
+							Ok(())
+						},
+						Err(err) => {
+							debug_assert!(err.splice_funding_failed.is_none());
+							Err(self.handle_interactive_tx_msg_err(
+								err,
+								msg.channel_id,
+								counterparty_node_id,
+								user_channel_id,
+							))
+						},
 					}
-					let splice_ack_msg = try_channel_entry!(self, peer_state, init_res, chan_entry);
-					peer_state.pending_msg_events.push(MessageSendEvent::SendSpliceAck {
-						node_id: *counterparty_node_id,
-						msg: splice_ack_msg,
-					});
-					Ok(())
 				} else {
 					try_channel_entry!(
 						self,
@@ -13120,28 +13132,31 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			},
 			hash_map::Entry::Occupied(mut chan_entry) => {
 				if let Some(ref mut funded_channel) = chan_entry.get_mut().as_funded_mut() {
-					let init_res = funded_channel.tx_init_rbf(
+					let user_channel_id = funded_channel.context.get_user_id();
+					match funded_channel.tx_init_rbf(
 						msg,
 						&self.entropy_source,
 						&self.get_our_node_id(),
 						&self.fee_estimator,
 						&self.logger,
-					);
-					if let Err(ChannelError::Abort(_)) = &init_res {
-						funded_channel.exit_quiescence();
-						let chan_id = funded_channel.context.channel_id();
-						let res = MsgHandleErrInternal::from_chan_no_close(
-							init_res.unwrap_err(),
-							chan_id,
-						);
-						return Err(res.with_exited_quiescence(true));
+					) {
+						Ok(tx_ack_rbf_msg) => {
+							peer_state.pending_msg_events.push(MessageSendEvent::SendTxAckRbf {
+								node_id: *counterparty_node_id,
+								msg: tx_ack_rbf_msg,
+							});
+							Ok(())
+						},
+						Err(err) => {
+							debug_assert!(err.splice_funding_failed.is_none());
+							Err(self.handle_interactive_tx_msg_err(
+								err,
+								msg.channel_id,
+								counterparty_node_id,
+								user_channel_id,
+							))
+						},
 					}
-					let tx_ack_rbf_msg = try_channel_entry!(self, peer_state, init_res, chan_entry);
-					peer_state.pending_msg_events.push(MessageSendEvent::SendTxAckRbf {
-						node_id: *counterparty_node_id,
-						msg: tx_ack_rbf_msg,
-					});
-					Ok(())
 				} else {
 					try_channel_entry!(
 						self,

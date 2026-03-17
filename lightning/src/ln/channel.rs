@@ -12524,13 +12524,15 @@ where
 	pub(crate) fn splice_init<ES: EntropySource, L: Logger>(
 		&mut self, msg: &msgs::SpliceInit, entropy_source: &ES, holder_node_id: &PublicKey,
 		logger: &L,
-	) -> Result<msgs::SpliceAck, ChannelError> {
+	) -> Result<msgs::SpliceAck, InteractiveTxMsgError> {
 		let feerate = FeeRate::from_sat_per_kwu(msg.funding_feerate_per_kw as u64);
-		let (our_funding_contribution, holder_balance) =
-			self.resolve_queued_contribution(feerate, logger)?;
+		let (our_funding_contribution, holder_balance) = self
+			.resolve_queued_contribution(feerate, logger)
+			.map_err(|e| self.quiescent_negotiation_err(e))?;
 
-		let splice_funding =
-			self.validate_splice_init(msg, our_funding_contribution.unwrap_or(SignedAmount::ZERO))?;
+		let splice_funding = self
+			.validate_splice_init(msg, our_funding_contribution.unwrap_or(SignedAmount::ZERO))
+			.map_err(|e| self.quiescent_negotiation_err(e))?;
 
 		// Adjust for the feerate and clone so we can store it for future RBF re-use.
 		let (adjusted_contribution, our_funding_inputs, our_funding_outputs) =
@@ -12678,10 +12680,11 @@ where
 	pub(crate) fn tx_init_rbf<ES: EntropySource, F: FeeEstimator, L: Logger>(
 		&mut self, msg: &msgs::TxInitRbf, entropy_source: &ES, holder_node_id: &PublicKey,
 		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
-	) -> Result<msgs::TxAckRbf, ChannelError> {
+	) -> Result<msgs::TxAckRbf, InteractiveTxMsgError> {
 		let feerate = FeeRate::from_sat_per_kwu(msg.feerate_sat_per_1000_weight as u64);
-		let (queued_net_value, holder_balance) =
-			self.resolve_queued_contribution(feerate, logger)?;
+		let (queued_net_value, holder_balance) = self
+			.resolve_queued_contribution(feerate, logger)
+			.map_err(|e| self.quiescent_negotiation_err(e))?;
 
 		// If no queued contribution, try prior contribution from previous negotiation.
 		// Failing here means the RBF would erase our splice — reject it.
@@ -12698,7 +12701,8 @@ where
 					prior
 						.net_value_for_acceptor_at_feerate(feerate, holder_balance)
 						.map_err(|_| ChannelError::Abort(AbortReason::InsufficientRbfFeerate))
-				})?;
+				})
+				.map_err(|e| self.quiescent_negotiation_err(e))?;
 			Some(net_value)
 		} else {
 			None
@@ -12706,11 +12710,13 @@ where
 
 		let our_funding_contribution = queued_net_value.or(prior_net_value);
 
-		let rbf_funding = self.validate_tx_init_rbf(
-			msg,
-			our_funding_contribution.unwrap_or(SignedAmount::ZERO),
-			fee_estimator,
-		)?;
+		let rbf_funding = self
+			.validate_tx_init_rbf(
+				msg,
+				our_funding_contribution.unwrap_or(SignedAmount::ZERO),
+				fee_estimator,
+			)
+			.map_err(|e| self.quiescent_negotiation_err(e))?;
 
 		// Consume the appropriate contribution source.
 		let (our_funding_inputs, our_funding_outputs) = if queued_net_value.is_some() {
@@ -13861,6 +13867,12 @@ where
 		let was_quiescent = self.context.channel_state.is_quiescent();
 		self.context.channel_state.clear_quiescent();
 		was_quiescent
+	}
+
+	fn quiescent_negotiation_err(&mut self, err: ChannelError) -> InteractiveTxMsgError {
+		let exited_quiescence =
+			if matches!(err, ChannelError::Abort(_)) { self.exit_quiescence() } else { false };
+		InteractiveTxMsgError { err, splice_funding_failed: None, exited_quiescence }
 	}
 
 	pub fn remove_legacy_scids_before_block(&mut self, height: u32) -> alloc::vec::Drain<'_, u64> {
