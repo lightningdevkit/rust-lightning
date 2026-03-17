@@ -13122,9 +13122,9 @@ where
 		self.context.pending_outbound_htlcs.push(OutboundHTLCOutput {
 			htlc_id: self.context.next_holder_htlc_id,
 			amount_msat,
-			payment_hash: payment_hash.clone(),
+			payment_hash,
 			cltv_expiry,
-			state: OutboundHTLCState::LocalAnnounced(Box::new(onion_routing_packet.clone())),
+			state: OutboundHTLCState::LocalAnnounced(Box::new(onion_routing_packet)),
 			source,
 			blinding_point,
 			skimmed_fee_msat,
