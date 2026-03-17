@@ -1288,6 +1288,11 @@ pub(crate) struct ChannelMonitorImpl<Signer: EcdsaChannelSigner> {
 	// block/transaction-connected events and *not* during block/transaction-disconnected events,
 	// we further MUST NOT generate events during block/transaction-disconnection.
 	pending_monitor_events: Vec<(u64, MonitorEvent)>,
+	// `MonitorEvent`s that have been provided to the `ChannelManager` via
+	// [`ChannelMonitor::get_and_clear_pending_monitor_events`] and are awaiting
+	// [`ChannelMonitor::ack_monitor_event`] for removal. If an event in this queue is not ack'd, it
+	// will be re-provided to the `ChannelManager` on startup.
+	provided_monitor_events: Vec<(u64, MonitorEvent)>,
 	/// When set, monitor events are retained until explicitly acked rather than cleared on read.
 	///
 	/// Allows the ChannelManager to reconstruct pending HTLC state by replaying monitor events on
@@ -1764,7 +1769,12 @@ pub(crate) fn write_chanmon_internal<Signer: EcdsaChannelSigner, W: Writer>(
 	// Only write `persistent_events_enabled` if it's set to true, as it's an even TLV.
 	let persistent_events_enabled = channel_monitor.persistent_events_enabled.then_some(());
 	let pending_mon_evs_with_ids = if persistent_events_enabled.is_some() {
-		Some(Iterable(channel_monitor.pending_monitor_events.iter()))
+		Some(Iterable(
+			channel_monitor
+				.provided_monitor_events
+				.iter()
+				.chain(channel_monitor.pending_monitor_events.iter()),
+		))
 	} else {
 		None
 	};
@@ -1978,6 +1988,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 
 			payment_preimages: new_hash_map(),
 			pending_monitor_events: Vec::new(),
+			provided_monitor_events: Vec::new(),
 			persistent_events_enabled: false,
 			next_monitor_event_id: 0,
 			pending_events: Vec::new(),
@@ -2203,8 +2214,15 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 
 	/// Removes a [`MonitorEvent`] by its event ID, acknowledging that it has been processed.
 	/// Generally called by [`chain::Watch::ack_monitor_event`].
-	pub fn ack_monitor_event(&self, _event_id: u64) {
-		// TODO: once events have ids, remove the corresponding event here
+	pub fn ack_monitor_event(&self, event_id: u64) {
+		let inner = &mut *self.inner.lock().unwrap();
+		inner.ack_monitor_event(event_id);
+	}
+
+	/// Enables persistent monitor events mode. When enabled, monitor events are retained until
+	/// explicitly acked rather than cleared on read.
+	pub(crate) fn set_persistent_events_enabled(&self, enabled: bool) {
+		self.inner.lock().unwrap().persistent_events_enabled = enabled;
 	}
 
 	/// Copies [`MonitorEvent`] state from `other` into `self`.
@@ -2212,11 +2230,16 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// serialization round-trip.
 	#[cfg(any(test, feature = "_test_utils"))]
 	pub fn copy_monitor_event_state(&self, other: &ChannelMonitor<Signer>) {
-		let (pending, next_id) = {
+		let (provided, pending, next_id) = {
 			let other_inner = other.inner.lock().unwrap();
-			(other_inner.pending_monitor_events.clone(), other_inner.next_monitor_event_id)
+			(
+				other_inner.provided_monitor_events.clone(),
+				other_inner.pending_monitor_events.clone(),
+				other_inner.next_monitor_event_id,
+			)
 		};
 		let mut self_inner = self.inner.lock().unwrap();
+		self_inner.provided_monitor_events = provided;
 		self_inner.pending_monitor_events = pending;
 		self_inner.next_monitor_event_id = next_id;
 	}
@@ -4619,10 +4642,23 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		);
 	}
 
+	fn ack_monitor_event(&mut self, event_id: u64) {
+		self.provided_monitor_events.retain(|(id, _)| *id != event_id);
+		// If this event was generated prior to a restart, it may be in this queue instead
+		self.pending_monitor_events.retain(|(id, _)| *id != event_id);
+	}
+
 	fn get_and_clear_pending_monitor_events(&mut self) -> Vec<(u64, MonitorEvent)> {
-		let mut ret = Vec::new();
-		mem::swap(&mut ret, &mut self.pending_monitor_events);
-		ret
+		if self.persistent_events_enabled {
+			let mut ret = Vec::new();
+			mem::swap(&mut ret, &mut self.pending_monitor_events);
+			self.provided_monitor_events.extend(ret.iter().cloned());
+			ret
+		} else {
+			let mut ret = Vec::new();
+			mem::swap(&mut ret, &mut self.pending_monitor_events);
+			ret
+		}
 	}
 
 	/// Gets the set of events that are repeated regularly (e.g. those which RBF bump
@@ -5949,8 +5985,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				if inbound_htlc_expiry > max_expiry_height {
 					continue;
 				}
-				let duplicate_event = self.pending_monitor_events.iter().any(
-					|(_, update)| if let &MonitorEvent::HTLCEvent(ref upd) = update {
+				let duplicate_event = self.pending_monitor_events.iter().chain(self.provided_monitor_events.iter())
+					.any(|(_, update)| if let &MonitorEvent::HTLCEvent(ref upd) = update {
 						upd.source == *source
 					} else { false });
 				if duplicate_event {
@@ -6366,7 +6402,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			// HTLC resolution backwards to and figure out whether we learned a preimage from it.
 			if let Some((source, payment_hash, amount_msat)) = payment_data {
 				if accepted_preimage_claim {
-					if !self.pending_monitor_events.iter().any(
+					if !self.pending_monitor_events.iter().chain(self.provided_monitor_events.iter()).any(
 						|(_, update)| if let &MonitorEvent::HTLCEvent(ref upd) = update { upd.source == source } else { false }) {
 						self.onchain_events_awaiting_threshold_conf.push(OnchainEventEntry {
 							txid: tx.compute_txid(),
@@ -6388,7 +6424,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						}), &mut self.next_monitor_event_id);
 					}
 				} else if offered_preimage_claim {
-					if !self.pending_monitor_events.iter().any(
+					if !self.pending_monitor_events.iter().chain(self.provided_monitor_events.iter()).any(
 						|(_, update)| if let &MonitorEvent::HTLCEvent(ref upd) = update {
 							upd.source == source
 						} else { false }) {
@@ -6977,6 +7013,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 
 			payment_preimages,
 			pending_monitor_events,
+			provided_monitor_events: Vec::new(),
 			persistent_events_enabled: persistent_events_enabled.is_some(),
 			next_monitor_event_id,
 			pending_events,

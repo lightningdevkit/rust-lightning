@@ -1132,6 +1132,10 @@ pub struct UserConfig {
 	///
 	/// [`ChannelManager::splice_channel`]: crate::ln::channelmanager::ChannelManager::splice_channel
 	pub reject_inbound_splices: bool,
+	/// If set to `Some`, overrides the random selection of whether to use persistent monitor
+	/// events. Only available in tests.
+	#[cfg(any(test, feature = "_test_utils"))]
+	pub override_persistent_monitor_events: Option<bool>,
 }
 
 impl Default for UserConfig {
@@ -1148,6 +1152,8 @@ impl Default for UserConfig {
 			enable_htlc_hold: false,
 			hold_outbound_htlcs_at_next_hop: false,
 			reject_inbound_splices: true,
+			#[cfg(any(test, feature = "_test_utils"))]
+			override_persistent_monitor_events: None,
 		}
 	}
 }
@@ -1170,6 +1176,8 @@ impl Readable for UserConfig {
 			hold_outbound_htlcs_at_next_hop: Readable::read(reader)?,
 			enable_htlc_hold: Readable::read(reader)?,
 			reject_inbound_splices: Readable::read(reader)?,
+			#[cfg(any(test, feature = "_test_utils"))]
+			override_persistent_monitor_events: None,
 		})
 	}
 }
