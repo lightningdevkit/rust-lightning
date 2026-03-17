@@ -14237,8 +14237,6 @@ where
 		Some(msgs::Stfu { channel_id: self.context.channel_id, initiator })
 	}
 
-	#[cfg(any(test, fuzzing, feature = "_test_utils"))]
-	#[rustfmt::skip]
 	pub fn exit_quiescence(&mut self) -> bool {
 		// Make sure we either finished the quiescence handshake and are quiescent, or we never
 		// attempted to initiate quiescence at all.
