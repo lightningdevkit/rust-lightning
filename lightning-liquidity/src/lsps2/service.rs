@@ -1786,13 +1786,21 @@ where
 		// TODO: We should eventually persist in parallel, however, when we do, we probably want to
 		// introduce some batching to upper-bound the number of requests inflight at any given
 		// time.
-		let mut did_persist = false;
 
 		if self.persistence_in_flight.fetch_add(1, Ordering::AcqRel) > 0 {
 			// If we're not the first event processor to get here, just return early, the increment
 			// we just did will be treated as "go around again" at the end.
-			return Ok(did_persist);
+			return Ok(false);
 		}
+
+		let res = self.do_persist().await;
+		debug_assert!(res.is_err() || self.persistence_in_flight.load(Ordering::Acquire) == 0);
+		self.persistence_in_flight.store(0, Ordering::Release);
+		res
+	}
+
+	async fn do_persist(&self) -> Result<bool, lightning::io::Error> {
+		let mut did_persist = false;
 
 		loop {
 			let mut need_remove = Vec::new();
