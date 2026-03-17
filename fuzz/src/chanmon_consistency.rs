@@ -282,6 +282,7 @@ impl TestChainMonitor {
 				Arc::clone(&persister),
 				Arc::clone(&keys),
 				keys.get_peer_storage_key(),
+				channelmonitor::CLTV_CLAIM_BUFFER,
 			)),
 			logger,
 			keys,

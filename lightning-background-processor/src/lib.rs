@@ -1896,7 +1896,7 @@ mod tests {
 	use bitcoin::transaction::{Transaction, TxOut};
 	use bitcoin::{Amount, ScriptBuf, Txid};
 	use core::sync::atomic::{AtomicBool, Ordering};
-	use lightning::chain::channelmonitor::ANTI_REORG_DELAY;
+	use lightning::chain::channelmonitor::{self as channelmonitor, ANTI_REORG_DELAY};
 	use lightning::chain::transaction::OutPoint;
 	use lightning::chain::{chainmonitor, BestBlock, Confirm, Filter};
 	use lightning::events::{Event, PathFailure, ReplayEvent};
@@ -2444,6 +2444,7 @@ mod tests {
 				Arc::clone(&kv_store),
 				Arc::clone(&keys_manager),
 				keys_manager.get_peer_storage_key(),
+				channelmonitor::CLTV_CLAIM_BUFFER,
 			));
 			let best_block = BestBlock::from_network(network);
 			let params = ChainParameters { network, best_block };
