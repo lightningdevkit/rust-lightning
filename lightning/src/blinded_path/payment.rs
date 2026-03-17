@@ -161,6 +161,29 @@ impl BlindedPaymentPath {
 		)
 	}
 
+	/// Create a blinded path for a trampoline payment, to be forwarded along `intermediate_nodes`.
+	#[cfg(any(test, feature = "_test_utils"))]
+	pub(crate) fn new_for_trampoline<
+		ES: EntropySource,
+		T: secp256k1::Signing + secp256k1::Verification,
+	>(
+		intermediate_nodes: &[ForwardNode<TrampolineForwardTlvs>], payee_node_id: PublicKey,
+		local_node_receive_key: ReceiveAuthKey, payee_tlvs: ReceiveTlvs, htlc_maximum_msat: u64,
+		min_final_cltv_expiry_delta: u16, entropy_source: ES, secp_ctx: &Secp256k1<T>,
+	) -> Result<Self, ()> {
+		Self::new_inner(
+			intermediate_nodes,
+			payee_node_id,
+			local_node_receive_key,
+			&[],
+			payee_tlvs,
+			htlc_maximum_msat,
+			min_final_cltv_expiry_delta,
+			entropy_source,
+			secp_ctx,
+		)
+	}
+
 	fn new_inner<
 		F: ForwardTlvsInfo,
 		ES: EntropySource,
