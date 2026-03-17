@@ -4322,8 +4322,8 @@ fn test_splice_rbf_acceptor_basic() {
 	provide_utxo_reserves(&nodes, 2, added_value * 2);
 
 	// Step 3: Use splice_channel API to initiate the RBF.
-	// Original feerate was FEERATE_FLOOR_SATS_PER_KW (253). 253 * 25 / 24 = 263.54, so 264 works.
-	let rbf_feerate_sat_per_kwu = (FEERATE_FLOOR_SATS_PER_KW as u64 * 25).div_ceil(24);
+	// Original feerate was FEERATE_FLOOR_SATS_PER_KW (253). 253 + 25 = 278.
+	let rbf_feerate_sat_per_kwu = FEERATE_FLOOR_SATS_PER_KW as u64 + 25;
 	let rbf_feerate = FeeRate::from_sat_per_kwu(rbf_feerate_sat_per_kwu);
 	let funding_contribution =
 		do_initiate_rbf_splice_in(&nodes[0], &nodes[1], channel_id, added_value, rbf_feerate);
@@ -4358,8 +4358,72 @@ fn test_splice_rbf_acceptor_basic() {
 }
 
 #[test]
+fn test_splice_rbf_at_high_feerate() {
+	// Test that min_rbf_feerate satisfies the spec's 25/24 rule at high feerates (above 600
+	// sat/kwu, where a flat +25 increment alone would be insufficient).
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+
+	// Step 1: Complete a splice-in at floor feerate.
+	let funding_contribution = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+	let (_first_splice_tx, new_funding_script) =
+		splice_channel(&nodes[0], &nodes[1], channel_id, funding_contribution);
+
+	// Step 2: RBF to a high feerate (1000 sat/kwu, well above the 600 crossover point).
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+	let high_feerate = FeeRate::from_sat_per_kwu(1000);
+	let contribution =
+		do_initiate_rbf_splice_in(&nodes[0], &nodes[1], channel_id, added_value, high_feerate);
+	complete_rbf_handshake(&nodes[0], &nodes[1]);
+	complete_interactive_funding_negotiation(
+		&nodes[0],
+		&nodes[1],
+		channel_id,
+		contribution,
+		new_funding_script.clone(),
+	);
+	let (_, splice_locked) = sign_interactive_funding_tx(&nodes[0], &nodes[1], false);
+	assert!(splice_locked.is_none());
+	expect_splice_pending_event(&nodes[0], &node_id_1);
+	expect_splice_pending_event(&nodes[1], &node_id_0);
+
+	// Step 3: RBF again using the template's min_rbf_feerate. The counterparty must accept it.
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+	let rbf_feerate = {
+		let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
+		funding_template.min_rbf_feerate().unwrap()
+	};
+	let contribution =
+		do_initiate_rbf_splice_in(&nodes[0], &nodes[1], channel_id, added_value, rbf_feerate);
+	complete_rbf_handshake(&nodes[0], &nodes[1]);
+	complete_interactive_funding_negotiation(
+		&nodes[0],
+		&nodes[1],
+		channel_id,
+		contribution,
+		new_funding_script,
+	);
+	let (_, splice_locked) = sign_interactive_funding_tx(&nodes[0], &nodes[1], false);
+	assert!(splice_locked.is_none());
+	expect_splice_pending_event(&nodes[0], &node_id_1);
+	expect_splice_pending_event(&nodes[1], &node_id_0);
+}
+
+#[test]
 fn test_splice_rbf_insufficient_feerate() {
-	// Test that splice_in_sync rejects a feerate that doesn't satisfy the 25/24 rule, and that the
+	// Test that splice_in_sync rejects a feerate that doesn't satisfy the +25 sat/kwu rule, and that the
 	// acceptor also rejects tx_init_rbf with an insufficient feerate from a misbehaving peer.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -4388,8 +4452,7 @@ fn test_splice_rbf_insufficient_feerate() {
 
 	// Verify that the template exposes the RBF floor.
 	let min_rbf_feerate = funding_template.min_rbf_feerate().unwrap();
-	let expected_floor =
-		FeeRate::from_sat_per_kwu(((FEERATE_FLOOR_SATS_PER_KW as u64) * 25).div_ceil(24));
+	let expected_floor = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64 + 25);
 	assert_eq!(min_rbf_feerate, expected_floor);
 
 	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
@@ -4417,6 +4480,22 @@ fn test_splice_rbf_insufficient_feerate() {
 
 	let tx_abort = get_event_msg!(nodes[1], MessageSendEvent::SendTxAbort, node_id_0);
 	assert_eq!(tx_abort.channel_id, channel_id);
+
+	// Acceptor-side: a counterparty feerate that satisfies the spec's 25/24 rule (264) is
+	// accepted, even though our own RBF floor (+25 sat/kwu = 278) is higher.
+	// After tx_abort the channel remains quiescent, so no need to re-enter quiescence.
+	nodes[0].node.handle_tx_abort(node_id_1, &tx_abort);
+
+	let rbf_feerate_25_24 = ((FEERATE_FLOOR_SATS_PER_KW as u64) * 25).div_ceil(24) as u32;
+	let tx_init_rbf = msgs::TxInitRbf {
+		channel_id,
+		locktime: 0,
+		feerate_sat_per_1000_weight: rbf_feerate_25_24,
+		funding_output_contribution: Some(added_value.to_sat() as i64),
+	};
+
+	nodes[1].node.handle_tx_init_rbf(node_id_0, &tx_init_rbf);
+	let _tx_ack_rbf = get_event_msg!(nodes[1], MessageSendEvent::SendTxAckRbf, node_id_0);
 }
 
 #[test]
@@ -4695,7 +4774,7 @@ fn test_splice_rbf_not_quiescence_initiator() {
 	provide_utxo_reserves(&nodes, 2, added_value * 2);
 
 	// Initiate RBF from node 0 (quiescence initiator).
-	let rbf_feerate_sat_per_kwu = (FEERATE_FLOOR_SATS_PER_KW as u64 * 25).div_ceil(24);
+	let rbf_feerate_sat_per_kwu = FEERATE_FLOOR_SATS_PER_KW as u64 + 25;
 	let rbf_feerate = FeeRate::from_sat_per_kwu(rbf_feerate_sat_per_kwu);
 	let _funding_contribution =
 		do_initiate_rbf_splice_in(&nodes[0], &nodes[1], channel_id, added_value, rbf_feerate);
@@ -4725,7 +4804,7 @@ fn test_splice_rbf_not_quiescence_initiator() {
 
 #[test]
 fn test_splice_rbf_both_contribute_tiebreak() {
-	let min_rbf_feerate = (FEERATE_FLOOR_SATS_PER_KW as u64 * 25).div_ceil(24);
+	let min_rbf_feerate = FEERATE_FLOOR_SATS_PER_KW as u64 + 25;
 	let feerate = FeeRate::from_sat_per_kwu(min_rbf_feerate);
 	let added_value = Amount::from_sat(50_000);
 	do_test_splice_rbf_tiebreak(feerate, feerate, added_value, true);
@@ -4735,7 +4814,7 @@ fn test_splice_rbf_both_contribute_tiebreak() {
 fn test_splice_rbf_tiebreak_higher_feerate() {
 	// Node 0 (winner) uses a higher feerate than node 1 (loser). Node 1's change output is
 	// adjusted (reduced) to accommodate the higher feerate. Negotiation succeeds.
-	let min_rbf_feerate = (FEERATE_FLOOR_SATS_PER_KW as u64 * 25).div_ceil(24);
+	let min_rbf_feerate = FEERATE_FLOOR_SATS_PER_KW as u64 + 25;
 	do_test_splice_rbf_tiebreak(
 		FeeRate::from_sat_per_kwu(min_rbf_feerate * 3),
 		FeeRate::from_sat_per_kwu(min_rbf_feerate),
@@ -4749,7 +4828,7 @@ fn test_splice_rbf_tiebreak_lower_feerate() {
 	// Node 0 (winner) uses a lower feerate than node 1 (loser). Since the initiator's feerate
 	// is below node 1's minimum, node 1 proceeds without contribution and will retry via a new
 	// splice at its preferred feerate after the RBF locks.
-	let min_rbf_feerate = (FEERATE_FLOOR_SATS_PER_KW as u64 * 25).div_ceil(24);
+	let min_rbf_feerate = FEERATE_FLOOR_SATS_PER_KW as u64 + 25;
 	do_test_splice_rbf_tiebreak(
 		FeeRate::from_sat_per_kwu(min_rbf_feerate),
 		FeeRate::from_sat_per_kwu(min_rbf_feerate * 3),
@@ -4763,7 +4842,7 @@ fn test_splice_rbf_tiebreak_feerate_too_high() {
 	// Node 0 (winner) uses a feerate high enough that node 1's (loser) contribution cannot
 	// cover the fees. Node 1 proceeds without its contribution (QuiescentAction is preserved
 	// for a future splice). The RBF completes with only node 0's inputs/outputs.
-	let min_rbf_feerate = (FEERATE_FLOOR_SATS_PER_KW as u64 * 25).div_ceil(24);
+	let min_rbf_feerate = FEERATE_FLOOR_SATS_PER_KW as u64 + 25;
 	do_test_splice_rbf_tiebreak(
 		FeeRate::from_sat_per_kwu(20_000),
 		FeeRate::from_sat_per_kwu(min_rbf_feerate),
@@ -5064,7 +5143,7 @@ fn test_splice_rbf_tiebreak_feerate_too_high_rejected() {
 	// The target (100k) far exceeds node 1's max (3k), and the fair fee at 100k exceeds
 	// node 1's budget, triggering TooHigh.
 	let high_feerate = FeeRate::from_sat_per_kwu(100_000);
-	let min_rbf_feerate_sat_per_kwu = (FEERATE_FLOOR_SATS_PER_KW as u64 * 25).div_ceil(24);
+	let min_rbf_feerate_sat_per_kwu = FEERATE_FLOOR_SATS_PER_KW as u64 + 25;
 	let min_rbf_feerate = FeeRate::from_sat_per_kwu(min_rbf_feerate_sat_per_kwu);
 	let node_1_max_feerate = FeeRate::from_sat_per_kwu(3_000);
 
@@ -5194,7 +5273,7 @@ fn test_splice_rbf_acceptor_recontributes() {
 	provide_utxo_reserves(&nodes, 2, added_value * 2);
 
 	// Step 5: Only node 0 calls splice_channel + funding_contributed.
-	let rbf_feerate_sat_per_kwu = (FEERATE_FLOOR_SATS_PER_KW as u64 * 25).div_ceil(24);
+	let rbf_feerate_sat_per_kwu = FEERATE_FLOOR_SATS_PER_KW as u64 + 25;
 	let rbf_feerate = FeeRate::from_sat_per_kwu(rbf_feerate_sat_per_kwu);
 	let rbf_funding_contribution =
 		do_initiate_rbf_splice_in(&nodes[0], &nodes[1], channel_id, added_value, rbf_feerate);
@@ -5318,8 +5397,7 @@ fn test_splice_rbf_after_counterparty_rbf_aborted() {
 	// is adjusted to the RBF feerate via for_acceptor_at_feerate.
 	provide_utxo_reserves(&nodes, 2, added_value * 2);
 
-	let rbf_feerate =
-		FeeRate::from_sat_per_kwu((FEERATE_FLOOR_SATS_PER_KW as u64 * 25).div_ceil(24));
+	let rbf_feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64 + 25);
 	let _rbf_funding_contribution =
 		do_initiate_rbf_splice_in(&nodes[0], &nodes[1], channel_id, added_value, rbf_feerate);
 
@@ -5482,7 +5560,7 @@ fn test_splice_rbf_sequential() {
 	// Three consecutive RBF rounds on the same splice (initial → RBF #1 → RBF #2).
 	// Node 0 is the quiescence initiator; node 1 is the acceptor with no contribution.
 	// Verifies:
-	// - Each round satisfies the 25/24 feerate rule
+	// - Each round satisfies the +25 sat/kwu feerate rule
 	// - DiscardFunding events reference the correct txids from previous rounds
 	// - The final RBF can be mined and splice_locked successfully
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -5505,11 +5583,11 @@ fn test_splice_rbf_sequential() {
 	let (splice_tx_0, new_funding_script) =
 		splice_channel(&nodes[0], &nodes[1], channel_id, funding_contribution);
 
-	// Feerate progression: 253 → ceil(253*25/24) = 264 → ceil(264*25/24) = 275
-	let feerate_1_sat_per_kwu = (FEERATE_FLOOR_SATS_PER_KW as u64 * 25).div_ceil(24); // 264
-	let feerate_2_sat_per_kwu = (feerate_1_sat_per_kwu * 25).div_ceil(24);
+	// Feerate progression: 253 → 253+25 = 278 → 278+25 = 303
+	let feerate_1_sat_per_kwu = FEERATE_FLOOR_SATS_PER_KW as u64 + 25; // 278
+	let feerate_2_sat_per_kwu = feerate_1_sat_per_kwu + 25;
 
-	// --- Round 1: RBF #1 at feerate 264. ---
+	// --- Round 1: RBF #1 at feerate 278. ---
 	provide_utxo_reserves(&nodes, 2, added_value * 2);
 
 	let rbf_feerate_1 = FeeRate::from_sat_per_kwu(feerate_1_sat_per_kwu);
@@ -5529,7 +5607,7 @@ fn test_splice_rbf_sequential() {
 	expect_splice_pending_event(&nodes[0], &node_id_1);
 	expect_splice_pending_event(&nodes[1], &node_id_0);
 
-	// --- Round 2: RBF #2 at feerate 275. ---
+	// --- Round 2: RBF #2 at feerate 303. ---
 	provide_utxo_reserves(&nodes, 2, added_value * 2);
 
 	let rbf_feerate_2 = FeeRate::from_sat_per_kwu(feerate_2_sat_per_kwu);
@@ -5625,7 +5703,7 @@ fn test_splice_rbf_acceptor_contributes_then_disconnects() {
 	// --- Round 1: Node 0 initiates RBF; node 1 re-contributes via prior. ---
 	provide_utxo_reserves(&nodes, 2, added_value * 2);
 
-	let rbf_feerate_sat_per_kwu = (FEERATE_FLOOR_SATS_PER_KW as u64 * 25).div_ceil(24);
+	let rbf_feerate_sat_per_kwu = FEERATE_FLOOR_SATS_PER_KW as u64 + 25;
 	let rbf_feerate = FeeRate::from_sat_per_kwu(rbf_feerate_sat_per_kwu);
 	let _rbf_funding_contribution =
 		do_initiate_rbf_splice_in(&nodes[0], &nodes[1], channel_id, added_value, rbf_feerate);
@@ -5697,7 +5775,7 @@ fn test_splice_rbf_disconnect_filters_prior_contributions() {
 	// Include a splice-out output with a different script_pubkey so the test can verify
 	// selective filtering: the change output (same script_pubkey as round 0) is filtered,
 	// while the splice-out output (different script_pubkey) survives.
-	let feerate_1_sat_per_kwu = (FEERATE_FLOOR_SATS_PER_KW as u64 * 25).div_ceil(24);
+	let feerate_1_sat_per_kwu = FEERATE_FLOOR_SATS_PER_KW as u64 + 25;
 	let rbf_feerate = FeeRate::from_sat_per_kwu(feerate_1_sat_per_kwu);
 	let splice_out_output = TxOut {
 		value: Amount::from_sat(1_000),
@@ -5747,9 +5825,9 @@ fn test_splice_rbf_disconnect_filters_prior_contributions() {
 	reconnect_args.send_announcement_sigs = (true, true);
 	reconnect_nodes(reconnect_args);
 
-	// --- Round 2: RBF at the same feerate as the failed round 1 (264). ---
+	// --- Round 2: RBF at the same feerate as the failed round 1 (278). ---
 	// This should succeed because the failed round never updated the feerate floor, which
-	// remains at round 0's rate (253), and 264 >= ceil(253 * 25/24).
+	// remains at round 0's rate (253), and 278 >= 253 + 25.
 	provide_utxo_reserves(&nodes, 1, added_value * 2);
 
 	let rbf_feerate_2 = FeeRate::from_sat_per_kwu(feerate_1_sat_per_kwu);
@@ -5809,8 +5887,7 @@ fn test_splice_channel_with_pending_splice_includes_rbf_floor() {
 	// Call splice_channel again — the pending splice should cause min_rbf_feerate to be set
 	// and the prior contribution to be available.
 	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
-	let expected_floor =
-		FeeRate::from_sat_per_kwu(((FEERATE_FLOOR_SATS_PER_KW as u64) * 25).div_ceil(24));
+	let expected_floor = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64 + 25);
 	assert_eq!(funding_template.min_rbf_feerate(), Some(expected_floor));
 	assert!(funding_template.prior_contribution().is_some());
 
@@ -5859,7 +5936,7 @@ fn test_funding_contributed_adjusts_feerate_for_rbf() {
 		splice_channel(&nodes[1], &nodes[0], channel_id, node_1_contribution);
 
 	// Node 0 calls funding_contributed. The contribution's feerate (floor) is below the RBF
-	// floor (25/24 of floor), but funding_contributed adjusts it upward.
+	// floor (floor + 25 sat/kwu), but funding_contributed adjusts it upward.
 	nodes[0].node.funding_contributed(&channel_id, &node_id_1, contribution.clone(), None).unwrap();
 
 	// STFU should be sent immediately (the adjusted feerate satisfies the RBF check).
@@ -5871,8 +5948,7 @@ fn test_funding_contributed_adjusts_feerate_for_rbf() {
 	// Verify the RBF handshake proceeds.
 	let tx_init_rbf = get_event_msg!(nodes[0], MessageSendEvent::SendTxInitRbf, node_id_1);
 	let rbf_feerate = FeeRate::from_sat_per_kwu(tx_init_rbf.feerate_sat_per_1000_weight as u64);
-	let expected_floor =
-		FeeRate::from_sat_per_kwu((FEERATE_FLOOR_SATS_PER_KW as u64 * 25).div_ceil(24));
+	let expected_floor = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64 + 25);
 	assert!(rbf_feerate >= expected_floor);
 }
 
@@ -5897,7 +5973,7 @@ fn test_funding_contributed_rbf_adjustment_exceeds_max_feerate() {
 	provide_utxo_reserves(&nodes, 4, added_value * 2);
 
 	// Node 0 calls splice_channel and builds contribution with max_feerate = floor_feerate.
-	// This means the minimum RBF feerate (25/24 of floor) will exceed max_feerate, preventing adjustment.
+	// This means the minimum RBF feerate (floor + 25 sat/kwu) will exceed max_feerate, preventing adjustment.
 	let floor_feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64);
 	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
 	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
@@ -5972,7 +6048,8 @@ fn test_funding_contributed_rbf_adjustment_insufficient_budget() {
 		funding_template.splice_in_sync(added_value, floor_feerate, FeeRate::MAX, &wallet).unwrap();
 
 	// Node 1 initiates a splice at a HIGH feerate (10,000 sat/kwu). The minimum RBF feerate will be
-	// 25/24 of 10,000 = 10,417 sat/kwu — far above what node 0's tight budget can handle.
+	// max(10,000 + 25, ceil(10,000 * 25/24)) = 10,417 sat/kwu — far above what node 0's tight
+	// budget can handle.
 	let high_feerate = FeeRate::from_sat_per_kwu(10_000);
 	let node_1_template = nodes[1].node.splice_channel(&channel_id, &node_id_0).unwrap();
 	let node_1_wallet = WalletSync::new(Arc::clone(&nodes[1].wallet_source), nodes[1].logger);
@@ -6047,7 +6124,7 @@ fn test_prior_contribution_unadjusted_when_max_feerate_too_low() {
 		.unwrap();
 	let (_splice_tx, _) = splice_channel(&nodes[0], &nodes[1], channel_id, funding_contribution);
 
-	// Call splice_channel again — the minimum RBF feerate (25/24 of floor) exceeds the prior
+	// Call splice_channel again — the minimum RBF feerate (floor + 25 sat/kwu) exceeds the prior
 	// contribution's max_feerate (floor), so adjustment fails. rbf_sync re-runs coin selection
 	// with the caller's max_feerate.
 	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
@@ -6092,8 +6169,7 @@ fn test_splice_channel_during_negotiation_includes_rbf_feerate() {
 	// Node 0 (acceptor) calls splice_channel while the negotiation is in progress.
 	// min_rbf_feerate should be derived from the in-progress negotiation's feerate.
 	let template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
-	let expected_floor =
-		FeeRate::from_sat_per_kwu(((FEERATE_FLOOR_SATS_PER_KW as u64) * 25).div_ceil(24));
+	let expected_floor = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64 + 25);
 	assert_eq!(template.min_rbf_feerate(), Some(expected_floor));
 
 	// No prior contribution since there are no negotiated candidates yet. rbf_sync runs
@@ -6339,7 +6415,7 @@ fn test_splice_rbf_rejects_low_feerate_after_several_attempts() {
 	// Rounds 1-10: RBF at minimum bump. Accepted (at or below threshold).
 	let mut prev_feerate = FEERATE_FLOOR_SATS_PER_KW as u64;
 	for _ in 0..10 {
-		let feerate = (prev_feerate * 25).div_ceil(24);
+		let feerate = prev_feerate + 25;
 		provide_utxo_reserves(&nodes, 2, added_value * 2);
 		let rbf_feerate = FeeRate::from_sat_per_kwu(feerate);
 		let contribution =
@@ -6360,7 +6436,7 @@ fn test_splice_rbf_rejects_low_feerate_after_several_attempts() {
 	}
 
 	// Round 11: RBF at minimum bump. Should be rejected because feerate < fee estimator.
-	let next_feerate = (prev_feerate * 25).div_ceil(24);
+	let next_feerate = prev_feerate + 25;
 	provide_utxo_reserves(&nodes, 2, added_value * 2);
 	let rbf_feerate = FeeRate::from_sat_per_kwu(next_feerate);
 	let _contribution =
@@ -6410,7 +6486,7 @@ fn test_splice_rbf_rejects_own_low_feerate_after_several_attempts() {
 	// Rounds 1-10: RBF at minimum bump. Accepted (at or below threshold).
 	let mut prev_feerate = FEERATE_FLOOR_SATS_PER_KW as u64;
 	for _ in 0..10 {
-		let feerate = (prev_feerate * 25).div_ceil(24);
+		let feerate = prev_feerate + 25;
 		provide_utxo_reserves(&nodes, 2, added_value * 2);
 		let rbf_feerate = FeeRate::from_sat_per_kwu(feerate);
 		let contribution =
@@ -6431,7 +6507,7 @@ fn test_splice_rbf_rejects_own_low_feerate_after_several_attempts() {
 	}
 
 	// Round 11: Our own RBF at minimum bump. funding_contributed should reject it.
-	let next_feerate = (prev_feerate * 25).div_ceil(24);
+	let next_feerate = prev_feerate + 25;
 	provide_utxo_reserves(&nodes, 2, added_value * 2);
 	let rbf_feerate = FeeRate::from_sat_per_kwu(next_feerate);
 	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
