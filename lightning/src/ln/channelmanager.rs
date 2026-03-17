@@ -5308,7 +5308,8 @@ impl<
 	#[rustfmt::skip]
 	fn construct_pending_htlc_fail_msg<'a>(
 		&self, msg: &msgs::UpdateAddHTLC, counterparty_node_id: &PublicKey,
-		shared_secret: [u8; 32], inbound_err: InboundHTLCErr
+		shared_secret: [u8; 32], trampoline_shared_secret: &Option<[u8; 32]>,
+		inbound_err: InboundHTLCErr,
 	) -> HTLCFailureMsg {
 		let logger = WithContext::from(&self.logger, Some(*counterparty_node_id), Some(msg.channel_id), Some(msg.payment_hash));
 		log_info!(logger, "Failed to accept/forward incoming HTLC: {}", inbound_err.msg);
@@ -5325,7 +5326,7 @@ impl<
 		}
 
 		let failure = HTLCFailReason::reason(inbound_err.reason, inbound_err.err_data.to_vec())
-					.get_encrypted_failure_packet(&shared_secret, &None);
+					.get_encrypted_failure_packet(&shared_secret, trampoline_shared_secret);
 		return HTLCFailureMsg::Relay(msgs::UpdateFailHTLC {
 			channel_id: msg.channel_id,
 			htlc_id: msg.htlc_id,
@@ -7592,6 +7593,16 @@ impl<
 					}
 				}
 
+				// Extract the trampoline shared secret before `next_hop` is consumed,
+				// so we can double-encrypt errors for trampoline receives.
+				let trampoline_shared_secret = match &next_hop {
+					onion_utils::Hop::TrampolineReceive { trampoline_shared_secret, .. }
+					| onion_utils::Hop::TrampolineBlindedReceive {
+						trampoline_shared_secret, ..
+					} => Some(trampoline_shared_secret.secret_bytes()),
+					_ => None,
+				};
+
 				match self.get_pending_htlc_info(
 					&update_add_htlc,
 					shared_secret,
@@ -7697,6 +7708,7 @@ impl<
 							&update_add_htlc,
 							&incoming_counterparty_node_id,
 							shared_secret,
+							&trampoline_shared_secret,
 							inbound_err,
 						);
 						htlc_fails.push((htlc_fail, failure_type, htlc_failure));
