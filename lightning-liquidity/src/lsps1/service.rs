@@ -929,6 +929,11 @@ fn check_range(min: u64, max: u64, value: u64) -> bool {
 }
 
 fn is_valid(order: &LSPS1OrderParams, options: &LSPS1Options) -> bool {
+	let channel_balance_sat = match order.lsp_balance_sat.checked_add(order.client_balance_sat) {
+		Some(sum) => sum,
+		None => return false,
+	};
+
 	check_range(
 		options.min_initial_client_balance_sat,
 		options.max_initial_client_balance_sat,
@@ -941,5 +946,10 @@ fn is_valid(order: &LSPS1OrderParams, options: &LSPS1Options) -> bool {
 		1,
 		options.max_channel_expiry_blocks.into(),
 		order.channel_expiry_blocks.into(),
-	)
+	) && check_range(
+		options.min_channel_balance_sat,
+		options.max_channel_balance_sat,
+		channel_balance_sat,
+	) && order.required_channel_confirmations >= options.min_required_channel_confirmations
+		&& order.funding_confirms_within_blocks >= options.min_funding_confirms_within_blocks
 }
