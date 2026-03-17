@@ -8,13 +8,14 @@
 // licenses.
 
 use crate::blinded_path::payment::{
-	BlindedPaymentPath, Bolt12RefundContext, DummyTlvs, ForwardTlvs, PaymentConstraints,
-	PaymentContext, PaymentForwardNode, PaymentRelay, ReceiveTlvs, PAYMENT_PADDING_ROUND_OFF,
+	BlindedPaymentPath, Bolt12RefundContext, DummyTlvs, ForwardNode, ForwardTlvs,
+	PaymentConstraints, PaymentContext, PaymentForwardNode, PaymentRelay, ReceiveTlvs,
+	PAYMENT_PADDING_ROUND_OFF,
 };
 use crate::blinded_path::utils::is_padded;
 use crate::blinded_path::{self, BlindedHop};
 use crate::events::{Event, HTLCHandlingFailureType, PaymentFailureReason};
-use crate::ln::channelmanager::{self, HTLCFailureMsg, PaymentId};
+use crate::ln::channelmanager::{self, HTLCFailureMsg, PaymentId, MPP_TIMEOUT_TICKS};
 use crate::ln::functional_test_utils::*;
 use crate::ln::inbound_payment::ExpandedKey;
 use crate::ln::msgs::{
@@ -34,7 +35,7 @@ use crate::routing::router::{
 use crate::sign::{NodeSigner, PeerStorageKey, ReceiveAuthKey, Recipient};
 use crate::types::features::{BlindedHopFeatures, ChannelFeatures, NodeFeatures};
 use crate::types::payment::{PaymentHash, PaymentSecret};
-use crate::util::config::{HTLCInterceptionFlags, UserConfig};
+use crate::util::config::{ChannelConfig, HTLCInterceptionFlags, UserConfig};
 use crate::util::ser::{WithoutLength, Writeable};
 use crate::util::test_utils::{self, bytes_from_hex, pubkey_from_hex, secret_from_hex};
 use bitcoin::hex::DisplayHex;
@@ -2714,4 +2715,291 @@ fn do_test_trampoline_relay(blinded: bool, test_case: TrampolineTestCase) {
 	} else {
 		claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
 	}
+}
+
+/// Sets up channels and sends a trampoline MPP payment across two paths.
+///
+/// Topology:
+///   Alice (0) --> Bob (1) --> Carol (2, trampoline node)
+///   Alice (0) --> Barry (3) --> Carol (2, trampoline node)
+///
+/// Carol's inner trampoline onion is a forward to an unknown next node. We don't need the
+/// next hop as a real node since forwarding isn't implemented yet -- we just need the onion to
+/// contain a valid forward payload.
+///
+/// Returns (payment_hash, per_path_amount, ev_to_bob, ev_to_barry).
+fn send_trampoline_mpp_payment<'a, 'b, 'c>(
+	nodes: &'a Vec<Node<'a, 'b, 'c>>,
+) -> (PaymentHash, u64, MessageSendEvent, MessageSendEvent) {
+	let secp_ctx = Secp256k1::new();
+
+	let alice_bob_chan =
+		create_announced_chan_between_nodes_with_value(nodes, 0, 1, 1_000_000, 0).2;
+	let bob_carol_chan =
+		create_announced_chan_between_nodes_with_value(nodes, 1, 2, 1_000_000, 0).2;
+	let alice_barry_chan =
+		create_announced_chan_between_nodes_with_value(nodes, 0, 3, 1_000_000, 0).2;
+	let barry_carol_chan =
+		create_announced_chan_between_nodes_with_value(nodes, 3, 2, 1_000_000, 0).2;
+
+	let per_path_amt = 500_000;
+	let total_amt = per_path_amt * 2;
+	let (_, payment_hash, payment_secret) =
+		get_payment_preimage_hash(&nodes[2], Some(total_amt), None);
+
+	let bob_node_id = nodes[1].node.get_our_node_id();
+	let carol_node_id = nodes[2].node.get_our_node_id();
+	let barry_node_id = nodes[3].node.get_our_node_id();
+
+	let alice_bob_scid = get_scid_from_channel_id(&nodes[0], alice_bob_chan);
+	let bob_carol_scid = get_scid_from_channel_id(&nodes[1], bob_carol_chan);
+	let alice_barry_scid = get_scid_from_channel_id(&nodes[0], alice_barry_chan);
+	let barry_carol_scid = get_scid_from_channel_id(&nodes[3], barry_carol_chan);
+
+	let trampoline_cltv = 42;
+	let excess_final_cltv = 70;
+
+	// Not we don't actually have an outgoing channel for Carol, we just use our default fee
+	// policy.
+	let carol_relay = ChannelConfig::default();
+
+	let next_trampoline = PublicKey::from_slice(&[2; 33]).unwrap();
+	let fwd_tail = || {
+		let intermediate_nodes = [ForwardNode {
+			tlvs: blinded_path::payment::TrampolineForwardTlvs {
+				next_trampoline,
+				payment_constraints: PaymentConstraints {
+					max_cltv_expiry: u32::max_value(),
+					htlc_minimum_msat: 1,
+				},
+				features: BlindedHopFeatures::empty(),
+				payment_relay: PaymentRelay {
+					cltv_expiry_delta: carol_relay.cltv_expiry_delta,
+					fee_proportional_millionths: carol_relay.forwarding_fee_proportional_millionths,
+					fee_base_msat: carol_relay.forwarding_fee_base_msat,
+				},
+				next_blinding_override: None,
+			},
+			node_id: carol_node_id,
+			htlc_maximum_msat: u64::max_value(),
+		}];
+		let payee_tlvs = ReceiveTlvs {
+			payment_secret: PaymentSecret([0; 32]),
+			payment_constraints: PaymentConstraints {
+				max_cltv_expiry: u32::max_value(),
+				htlc_minimum_msat: 1,
+			},
+			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
+		};
+		create_trampoline_forward_blinded_tail(
+			&secp_ctx,
+			&nodes[2].keys_manager,
+			&intermediate_nodes,
+			next_trampoline,
+			ReceiveAuthKey([0; 32]),
+			payee_tlvs,
+			trampoline_cltv,
+			excess_final_cltv,
+			per_path_amt,
+		)
+	};
+
+	let hop = |pubkey, short_channel_id, fee_msat, cltv_expiry_delta| RouteHop {
+		pubkey,
+		node_features: NodeFeatures::empty(),
+		short_channel_id,
+		channel_features: ChannelFeatures::empty(),
+		fee_msat,
+		cltv_expiry_delta,
+		maybe_announced_channel: true,
+	};
+	let build_path_hops = |first_hop_node_id, first_hop_scid, second_hop_scid| {
+		vec![
+			hop(first_hop_node_id, first_hop_scid, 1000, 48),
+			hop(carol_node_id, second_hop_scid, 0, trampoline_cltv + excess_final_cltv),
+		]
+	};
+
+	let placeholder_tail = fwd_tail();
+	let mut route = Route {
+		paths: vec![
+			Path {
+				hops: build_path_hops(bob_node_id, alice_bob_scid, bob_carol_scid),
+				blinded_tail: Some(placeholder_tail.clone()),
+			},
+			Path {
+				hops: build_path_hops(barry_node_id, alice_barry_scid, barry_carol_scid),
+				blinded_tail: Some(placeholder_tail),
+			},
+		],
+		route_params: None,
+	};
+
+	let cur_height = nodes[0].best_block_info().1 + 1;
+	let payment_id = PaymentId(payment_hash.0);
+	let onion = RecipientOnionFields::secret_only(payment_secret, total_amt);
+	let session_privs = nodes[0]
+		.node
+		.test_add_new_pending_payment(payment_hash, onion.clone(), payment_id, &route)
+		.unwrap();
+
+	route.paths[0].blinded_tail = Some(fwd_tail());
+	route.paths[1].blinded_tail = Some(fwd_tail());
+
+	for (i, path) in route.paths.iter().enumerate() {
+		nodes[0]
+			.node
+			.test_send_payment_along_path(
+				path,
+				&payment_hash,
+				onion.clone(),
+				cur_height,
+				payment_id,
+				&None,
+				session_privs[i],
+			)
+			.unwrap();
+		check_added_monitors(&nodes[0], 1);
+	}
+
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 2);
+	let ev_bob = remove_first_msg_event_to_node(&bob_node_id, &mut events);
+	let ev_barry = remove_first_msg_event_to_node(&barry_node_id, &mut events);
+	(payment_hash, per_path_amt, ev_bob, ev_barry)
+}
+
+/// How an incomplete trampoline MPP times out (if at all).
+enum TrampolineTimeout {
+	/// Tick timers until MPP timeout fires.
+	Ticks,
+	/// Mine blocks until on-chain CLTV timeout fires.
+	OnChain,
+}
+
+fn do_trampoline_mpp_test(timeout: Option<TrampolineTimeout>) {
+	let chanmon_cfgs = create_chanmon_cfgs(4);
+	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &vec![None; 4]);
+	let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
+
+	let (payment_hash, per_path_amt, ev_bob, ev_barry) = send_trampoline_mpp_payment(&nodes);
+	let send_both = timeout.is_none();
+
+	let bob_path: &[&Node] = &[&nodes[1], &nodes[2]];
+	let barry_path: &[&Node] = &[&nodes[3], &nodes[2]];
+
+	// Pass first part along Alice -> Bob -> Carol.
+	let args = PassAlongPathArgs::new(&nodes[0], bob_path, per_path_amt, payment_hash, ev_bob)
+		.without_claimable_event();
+	do_pass_along_path(args);
+
+	// Either complete the MPP (triggering trampoline rejection) or trigger a timeout.
+	let expected_reason = match timeout {
+		None => {
+			let args =
+				PassAlongPathArgs::new(&nodes[0], barry_path, per_path_amt, payment_hash, ev_barry)
+					.without_clearing_recipient_events();
+			do_pass_along_path(args);
+			LocalHTLCFailureReason::TemporaryTrampolineFailure
+		},
+		Some(TrampolineTimeout::Ticks) => {
+			for _ in 0..MPP_TIMEOUT_TICKS {
+				nodes[2].node.timer_tick_occurred();
+			}
+			LocalHTLCFailureReason::MPPTimeout
+		},
+		Some(TrampolineTimeout::OnChain) => {
+			let current_height = nodes[2].best_block_info().1;
+			connect_blocks(&nodes[2], 200 - current_height);
+			LocalHTLCFailureReason::CLTVExpiryTooSoon
+		},
+	};
+
+	// Carol rejects the trampoline forward (either after MPP completion or timeout).
+	let events = nodes[2].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		crate::events::Event::HTLCHandlingFailed {
+			ref failure_type, ref failure_reason, ..
+		} => {
+			assert_eq!(failure_type, &HTLCHandlingFailureType::TrampolineForward {});
+			match failure_reason {
+				Some(crate::events::HTLCHandlingFailureReason::Local { reason }) => {
+					assert_eq!(*reason, expected_reason)
+				},
+				Some(_) | None => panic!("expected failure_reason for failed trampoline"),
+			}
+		},
+		_ => panic!("Unexpected destination"),
+	}
+	expect_and_process_pending_htlcs(&nodes[2], false);
+	assert!(nodes[2].node.get_and_clear_pending_events().is_empty());
+
+	// Propagate failures back through each forwarded path to Alice.
+	let both: [&[&Node]; 2] = [bob_path, barry_path];
+	let one: [&[&Node]; 1] = [bob_path];
+	let forwarded: &[&[&Node]] = if send_both { &both } else { &one };
+	let carol_id = nodes[2].node.get_our_node_id();
+	check_added_monitors(&nodes[2], forwarded.len());
+	let mut carol_msgs = nodes[2].node.get_and_clear_pending_msg_events();
+	assert_eq!(carol_msgs.len(), forwarded.len());
+	for path in forwarded {
+		let hop = path[0];
+		let hop_id = hop.node.get_our_node_id();
+		let ev = remove_first_msg_event_to_node(&hop_id, &mut carol_msgs);
+		let updates = match ev {
+			MessageSendEvent::UpdateHTLCs { updates, .. } => updates,
+			_ => panic!("Expected UpdateHTLCs"),
+		};
+		hop.node.handle_update_fail_htlc(carol_id, &updates.update_fail_htlcs[0]);
+		do_commitment_signed_dance(hop, &nodes[2], &updates.commitment_signed, true, false);
+
+		let fwd = get_htlc_update_msgs(hop, &nodes[0].node.get_our_node_id());
+		nodes[0].node.handle_update_fail_htlc(hop_id, &fwd.update_fail_htlcs[0]);
+		do_commitment_signed_dance(&nodes[0], hop, &fwd.commitment_signed, false, false);
+	}
+
+	// Check Alice's failure events.
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), if send_both { 3 } else { 1 });
+	for ev in &events[..forwarded.len()] {
+		match ev {
+			Event::PaymentPathFailed { payment_hash: h, payment_failed_permanently, .. } => {
+				assert_eq!(*h, payment_hash);
+				assert!(!payment_failed_permanently);
+			},
+			_ => panic!("Expected PaymentPathFailed, got {:?}", ev),
+		}
+	}
+	if send_both {
+		match &events[2] {
+			Event::PaymentFailed { payment_hash: h, reason, .. } => {
+				assert_eq!(*h, Some(payment_hash));
+				assert_eq!(*reason, Some(PaymentFailureReason::RetriesExhausted));
+			},
+			_ => panic!("Expected PaymentFailed, got {:?}", events[2]),
+		}
+
+		// Verify no spurious timeout fires after the MPP set was dispatched.
+		for _ in 0..(MPP_TIMEOUT_TICKS * 3) {
+			nodes[2].node.timer_tick_occurred();
+		}
+		assert!(nodes[2].node.get_and_clear_pending_events().is_empty());
+	}
+}
+
+#[test]
+fn test_trampoline_mpp_receive_success() {
+	do_trampoline_mpp_test(None);
+}
+
+#[test]
+fn test_trampoline_mpp_timeout_partial() {
+	do_trampoline_mpp_test(Some(TrampolineTimeout::Ticks));
+}
+
+#[test]
+fn test_trampoline_mpp_onchain_timeout() {
+	do_trampoline_mpp_test(Some(TrampolineTimeout::OnChain));
 }
