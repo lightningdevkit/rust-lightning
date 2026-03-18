@@ -2519,6 +2519,7 @@ mod tests {
 					Arc::clone(&tx_broadcaster),
 					None,
 					None,
+					None,
 				)
 				.unwrap(),
 			);
