@@ -748,6 +748,22 @@ where
 		self.monitors.write().unwrap().remove(channel_id).unwrap().monitor
 	}
 
+	/// Pushes a [`MonitorEvent::Completed`] to be provided to the [`ChannelManager`] in the next
+	/// [`chain::Watch::release_pending_monitor_events`] call.
+	///
+	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+	fn push_update_completed_event(
+		&self, funding_txo: OutPoint, channel_id: ChannelId, monitor_update_id: u64,
+		counterparty_node_id: PublicKey,
+	) {
+		self.pending_monitor_events.lock().unwrap().push((
+			funding_txo,
+			channel_id,
+			vec![MonitorEvent::Completed { funding_txo, channel_id, monitor_update_id }],
+			counterparty_node_id,
+		));
+	}
+
 	/// Indicates the persistence of a [`ChannelMonitor`] has completed after
 	/// [`ChannelMonitorUpdateStatus::InProgress`] was returned from an update operation.
 	///
@@ -801,17 +817,12 @@ where
 			// Completed event.
 			return Ok(());
 		}
-		let funding_txo = monitor_data.monitor.get_funding_txo();
-		self.pending_monitor_events.lock().unwrap().push((
-			funding_txo,
+		self.push_update_completed_event(
+			monitor_data.monitor.get_funding_txo(),
 			channel_id,
-			vec![MonitorEvent::Completed {
-				funding_txo,
-				channel_id,
-				monitor_update_id: monitor_data.monitor.get_latest_update_id(),
-			}],
+			monitor_data.monitor.get_latest_update_id(),
 			monitor_data.monitor.get_counterparty_node_id(),
-		));
+		);
 
 		self.event_notifier.notify();
 		Ok(())
@@ -824,14 +835,12 @@ where
 	pub fn force_channel_monitor_updated(&self, channel_id: ChannelId, monitor_update_id: u64) {
 		let monitors = self.monitors.read().unwrap();
 		let monitor = &monitors.get(&channel_id).unwrap().monitor;
-		let counterparty_node_id = monitor.get_counterparty_node_id();
-		let funding_txo = monitor.get_funding_txo();
-		self.pending_monitor_events.lock().unwrap().push((
-			funding_txo,
+		self.push_update_completed_event(
+			monitor.get_funding_txo(),
 			channel_id,
-			vec![MonitorEvent::Completed { funding_txo, channel_id, monitor_update_id }],
-			counterparty_node_id,
-		));
+			monitor_update_id,
+			monitor.get_counterparty_node_id(),
+		);
 		self.event_notifier.notify();
 	}
 
@@ -1269,18 +1278,12 @@ where
 					// Push a Completed event into pending_monitor_events so it gets
 					// picked up after the per-monitor events in the next
 					// release_pending_monitor_events call.
-					let funding_txo = monitor.get_funding_txo();
-					let channel_id = monitor.channel_id();
-					self.pending_monitor_events.lock().unwrap().push((
-						funding_txo,
-						channel_id,
-						vec![MonitorEvent::Completed {
-							funding_txo,
-							channel_id,
-							monitor_update_id: monitor.get_latest_update_id(),
-						}],
+					self.push_update_completed_event(
+						monitor.get_funding_txo(),
+						monitor.channel_id(),
+						monitor.get_latest_update_id(),
 						monitor.get_counterparty_node_id(),
-					));
+					);
 					log_debug!(
 						logger,
 						"Deferring completion of ChannelMonitorUpdate id {:?} (channel is post-close)",
