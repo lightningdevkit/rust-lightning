@@ -6757,6 +6757,7 @@ pub struct SpliceFundingPromotion {
 	pub monitor_update: Option<ChannelMonitorUpdate>,
 	pub announcement_sigs: Option<msgs::AnnouncementSignatures>,
 	pub discarded_funding: Vec<FundingInfo>,
+	pub spent_funding_txo: Option<bitcoin::OutPoint>,
 }
 
 impl<SP: SignerProvider> FundedChannel<SP>
@@ -11187,7 +11188,7 @@ where
 
 		log_info!(logger, "Promoting splice funding txid {}", splice_txid);
 
-		let discarded_funding = {
+		let (spent_funding_txo, discarded_funding) = {
 			// Scope `funding` to avoid unintentionally using it later since it is swapped below.
 			let funding = pending_splice
 				.negotiated_candidates
@@ -11195,6 +11196,8 @@ where
 				.find(|funding| funding.get_funding_txid() == Some(splice_txid))
 				.unwrap();
 			let prev_funding_txid = self.funding.get_funding_txid();
+			let spent_funding_txo =
+				self.funding.get_funding_txo().map(|o| o.into_bitcoin_outpoint());
 
 			if let Some(scid) = self.funding.short_channel_id {
 				self.context.historical_scids.push(scid);
@@ -11203,7 +11206,7 @@ where
 			core::mem::swap(&mut self.funding, funding);
 
 			// The swap above places the previous `FundingScope` into `pending_funding`.
-			pending_splice
+			let discarded_funding = pending_splice
 				.negotiated_candidates
 				.drain(..)
 				.filter(|funding| funding.get_funding_txid() != prev_funding_txid)
@@ -11218,7 +11221,8 @@ where
 								.expect("Negotiated splices must have a known funding outpoint"),
 						})
 				})
-				.collect::<Vec<_>>()
+				.collect::<Vec<_>>();
+			(spent_funding_txo, discarded_funding)
 		};
 
 		self.context.interactive_tx_signing_session = None;
@@ -11258,6 +11262,7 @@ where
 			monitor_update,
 			announcement_sigs,
 			discarded_funding,
+			spent_funding_txo,
 		})
 	}
 
@@ -11328,7 +11333,7 @@ where
 							&self.context.channel_id,
 						);
 
-						let (funding_txo, monitor_update, announcement_sigs, discarded_funding) =
+						let (funding_txo, monitor_update, announcement_sigs, discarded_funding, spent_funding_txo) =
 							self.maybe_promote_splice_funding(
 								node_signer, chain_hash, user_config, height, logger,
 							).map(|splice_promotion| (
@@ -11336,9 +11341,10 @@ where
 								splice_promotion.monitor_update,
 								splice_promotion.announcement_sigs,
 								splice_promotion.discarded_funding,
-							)).unwrap_or((None, None, None, Vec::new()));
+								splice_promotion.spent_funding_txo,
+							)).unwrap_or((None, None, None, Vec::new(), None));
 
-						return Ok((Some(FundingConfirmedMessage::Splice(splice_locked, funding_txo, monitor_update, discarded_funding)), announcement_sigs));
+						return Ok((Some(FundingConfirmedMessage::Splice(splice_locked, funding_txo, monitor_update, discarded_funding, spent_funding_txo)), announcement_sigs));
 					}
 				}
 			}
@@ -11500,7 +11506,7 @@ where
 
 					);
 
-					let (funding_txo, monitor_update, announcement_sigs, discarded_funding) = chain_node_signer
+					let (funding_txo, monitor_update, announcement_sigs, discarded_funding, spent_funding_txo) = chain_node_signer
 						.and_then(|(chain_hash, node_signer, user_config)| {
 							// We can only promote on blocks connected, which is when we expect
 							// `chain_node_signer` to be `Some`.
@@ -11511,10 +11517,11 @@ where
 							splice_promotion.monitor_update,
 							splice_promotion.announcement_sigs,
 							splice_promotion.discarded_funding,
+							splice_promotion.spent_funding_txo,
 						))
-						.unwrap_or((None, None, None, Vec::new()));
+						.unwrap_or((None, None, None, Vec::new(), None));
 
-					return Ok((Some(FundingConfirmedMessage::Splice(splice_locked, funding_txo, monitor_update, discarded_funding)), timed_out_htlcs, announcement_sigs));
+					return Ok((Some(FundingConfirmedMessage::Splice(splice_locked, funding_txo, monitor_update, discarded_funding, spent_funding_txo)), timed_out_htlcs, announcement_sigs));
 				}
 			}
 		}

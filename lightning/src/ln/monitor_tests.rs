@@ -24,6 +24,7 @@ use crate::ln::chan_utils;
 use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, PaymentId};
 use crate::ln::outbound_payment::RecipientOnionFields;
 use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, MessageSendEvent};
+use crate::ln::splicing_tests::{initiate_splice_in, splice_channel};
 use crate::crypto::utils::sign;
 use crate::util::ser::Writeable;
 use crate::util::scid_utils::block_from_scid;
@@ -40,6 +41,7 @@ use bitcoin::transaction::Version;
 use crate::prelude::*;
 
 use crate::ln::functional_test_utils::*;
+use crate::util::test_utils::TestChainMonitor;
 
 #[test]
 fn chanmon_fail_from_stale_commitment() {
@@ -106,13 +108,17 @@ fn test_spendable_output<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, spendable_t
 		if let Event::BumpTransaction(BumpTransactionEvent::HTLCResolution { .. }) = spendable.pop().unwrap() {}
 		else { panic!(); }
 	}
-	if let Event::SpendableOutputs { outputs, .. } = spendable.pop().unwrap() {
+	test_spendable_output_event(node, spendable_tx, spendable.pop().unwrap())
+}
+
+fn test_spendable_output_event<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, spendable_tx: &Transaction, event: Event) -> Vec<SpendableOutputDescriptor> {
+	if let Event::SpendableOutputs { outputs, .. } = event {
 		assert_eq!(outputs.len(), 1);
 		let spend_tx = node.keys_manager.backing.spend_spendable_outputs(&[&outputs[0]], Vec::new(),
 			Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script(), 253, None, &Secp256k1::new()).unwrap();
 		check_spends!(spend_tx, spendable_tx);
 		outputs
-	} else { panic!(); }
+	} else { panic!("{event:?}"); }
 }
 
 #[test]
@@ -2853,7 +2859,7 @@ fn do_test_anchors_aggregated_revoked_htlc_tx(p2a_anchor: bool) {
 
 	// Since Bob was able to confirm his revoked commitment, he'll now try to claim the HTLCs
 	// through the success path.
-	assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
+	assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().iter().filter(|e| !matches!(e, Event::ClaimInfoRequest {..})).collect::<Vec<_>>().is_empty());
 	let mut events = nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events();
 	// Certain block `ConnectStyle`s cause an extra `ChannelClose` event to be emitted since the
 	// best block is updated before the confirmed transactions are notified.
@@ -3905,4 +3911,569 @@ fn test_ladder_preimage_htlc_claims() {
 
 	expect_payment_sent(&nodes[0], payment_preimage2, None, true, false);
 	check_added_monitors(&nodes[0], 1);
+}
+
+#[test]
+fn test_revoked_claim_with_offloaded_claim_info() {
+	for do_splice in [true, false] {
+		for confirm_splice in [true, false] {
+			if !do_splice && confirm_splice {
+				continue;
+			}
+			for confirm_htlcs_before_claim_info in [true, false] {
+				for claim_htlcs_on_commitment in [true, false] {
+					if confirm_htlcs_before_claim_info && claim_htlcs_on_commitment {
+						continue;
+					}
+					for claim_to_self_before_claim_info in [true, false] {
+						do_test_revoked_claim_with_offloaded_claim_info(
+							do_splice,
+							confirm_splice,
+							confirm_htlcs_before_claim_info,
+							claim_htlcs_on_commitment,
+							claim_to_self_before_claim_info,
+						);
+					}
+				}
+			}
+		}
+	}
+}
+
+fn do_test_revoked_claim_with_offloaded_claim_info(
+	do_splice: bool, confirm_splice: bool, confirm_htlc_before_claim_info: bool,
+	claim_htlcs_on_commitment: bool, claim_to_self_before_claim_info: bool,
+) {
+	// Tests claim info with a simple test of node A broadcasting a revoked commitment transaction
+	// with two HTLCs (one inbound, one outbound) and validating that claimable balances and
+	// eventual claims work correctly at each step of resolution.
+	//
+	// `do_splice` results in testing with a pending splice in-flight, `confirm_splice` the same
+	// but broadcasts a commitment transaction based on that splice rather than cancelling that
+	// splice implicitly..
+	//
+	// `confirm_htlc_before_claim_info` selects whether we mine A's revoked HTLC claim transactions
+	// (prior to B receiving the claim info).
+	//
+	// `claim_htlcs_on_commitment` tests B claiming HTLC outputs directly on the commitment
+	// transaction, rather than HTLC transactions (implies
+	// `!confirm_htlc_before_claim_info` as we can't generate HTLC claims on the commitment until
+	// we've gotten the claim info).
+	//
+	// `claim_to_self_before_claim_info` tests B claiming A's revoked to_self output prior to the
+	// claim info being provided. This should be somewhat unrealistic as claim info should be
+	// provided faster than a block comes in, but we do it for completeness.
+	assert!(!confirm_splice || do_splice, "Can't confirm a splice that didn't happen");
+	assert!(!claim_htlcs_on_commitment || !confirm_htlc_before_claim_info);
+
+	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+	// We broadcast a revoked commitment transaction and then expect the monitor to spend from it,
+	// so have to disable the test validation that checks that we don't do that.
+	chanmon_cfgs[0].keys_manager.disable_revocation_policy_check = true;
+	let mut node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	// Enable claim info offloading on node B so that PersistClaimInfo and ClaimInfoRequest
+	// events are surfaced.
+	node_cfgs[1].chain_monitor = TestChainMonitor::new(
+		Some(&chanmon_cfgs[1].chain_source),
+		&chanmon_cfgs[1].tx_broadcaster,
+		&chanmon_cfgs[1].logger,
+		&chanmon_cfgs[1].fee_estimator,
+		&chanmon_cfgs[1].persister,
+		&chanmon_cfgs[1].keys_manager,
+		true,
+	);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let coinbase_tx = provide_anchor_reserves(&nodes);
+
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
+
+	let chan_value = 1_000_000;
+	let (_, _, chan_id, ..) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, chan_value, 100_000_000);
+
+	let splice_tx = if do_splice {
+		let amt = Amount::from_sat(200_000);
+		let funding_contribution = initiate_splice_in(&nodes[0], &nodes[1], chan_id, amt);
+		let (tx, ..) = splice_channel(&nodes[0], &nodes[1], chan_id, funding_contribution);
+		Some(tx)
+	} else {
+		None
+	};
+
+	route_payment(&nodes[0], &[&nodes[1]], 3_000_000);
+	let (payment_preimage_ba, payment_hash_ba, ..) =
+		route_payment(&nodes[1], &[&nodes[0]], 4_000_000);
+
+	// Give A's monitor the preimage for the B->A HTLC so that A can later broadcast an
+	// HTLC-Success transaction for it from the revoked commitment.
+	get_monitor!(nodes[0], chan_id).provide_payment_preimage_unsafe_legacy(
+		&payment_hash_ba,
+		&payment_preimage_ba,
+		&node_cfgs[0].tx_broadcaster,
+		&LowerBoundedFeeEstimator::new(node_cfgs[0].fee_estimator),
+		&nodes[0].logger,
+	);
+
+	// Get A's commitment transaction before it's revoked.
+	let (as_revoked_tx, splice_value) = if confirm_splice {
+		let stx = splice_tx.as_ref().unwrap();
+		mine_transaction(&nodes[0], stx);
+		mine_transaction(&nodes[1], stx);
+
+		(
+			get_monitor!(nodes[0], chan_id)
+				.unsafe_get_latest_holder_commitment_txn_for_confirmed_scope(&nodes[0].logger),
+			200_000,
+		)
+	} else {
+		(get_local_commitment_txn!(nodes[0], chan_id), 0)
+	};
+	assert_eq!(as_revoked_tx.len(), 1);
+	assert_eq!(as_revoked_tx[0].output.len(), 6); // Two HTLCs, two anchors, two balances
+	let revoked_txid = as_revoked_tx[0].compute_txid();
+	let spends_revoked = |inp: &&TxIn| inp.previous_output.txid == revoked_txid;
+
+	// Revoke A's old commitment by routing another payment.
+	let (_, payment_hash_revoke, ..) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+
+	// Get A's revoked HTLC transactions by mining the revoked commitment on A.
+	mine_transaction(&nodes[0], &as_revoked_tx[0]);
+	check_closed_broadcast(&nodes[0], 1, true);
+	check_added_monitors(&nodes[0], 1);
+	let reason = ClosureReason::CommitmentTxConfirmed;
+	check_closed_event(&nodes[0], 1, reason, &[node_b_id], chan_value);
+
+	// A should immediately get a BumpTransaction event for the inbound HTLC A has the preimage
+	// for.
+	let events = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	if let Event::BumpTransaction(bump) = &events[0] {
+		nodes[0].bump_tx_handler.handle_event(bump);
+	} else {
+		panic!("Wrong event {events:?}");
+	}
+
+	// After CLTV timeout, A should resolve the outbound HTLC.
+	connect_blocks(&nodes[0], TEST_FINAL_CLTV);
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 3, "{:?}", events);
+	assert!(events.iter().any(|ev| matches!(
+		ev,
+		Event::HTLCHandlingFailed {
+			failure_type: HTLCHandlingFailureType::Receive { payment_hash },
+			..
+		} if *payment_hash == payment_hash_ba
+	)));
+	assert!(events.iter().any(|ev| matches!(
+		ev,
+		Event::PaymentPathFailed { payment_hash, .. } if *payment_hash == payment_hash_revoke
+	)));
+	assert!(events.iter().any(|ev| matches!(
+		ev,
+		Event::PaymentFailed { payment_hash: Some(h), .. } if *h == payment_hash_revoke
+	)));
+	check_added_monitors(&nodes[0], 1);
+	let events = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
+	assert_eq!(events.len(), 2, "Expected two events, one RBF bump one timeout claim");
+	for event in events {
+		if let Event::BumpTransaction(bump) = event {
+			nodes[0].bump_tx_handler.handle_event(&bump);
+		} else {
+			panic!("Wrong event {event:?}");
+		}
+	}
+
+	// Finally, get the actual HTLC transactions
+	let a_htlc_txn = {
+		let txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+		// Deduplicate by the commitment output being spent (there may be RBF replacements
+		// when the HTLC-Success is re-broadcast after the HTLC-Timeout becomes available).
+		let mut seen_vouts = new_hash_set();
+		txn.into_iter()
+			.filter(|tx| {
+				let vout = tx.input.iter().find(spends_revoked).unwrap();
+				seen_vouts.insert(vout.previous_output.vout)
+			})
+			.collect::<Vec<_>>()
+	};
+	assert_eq!(a_htlc_txn.len(), 2);
+	for tx in a_htlc_txn.iter() {
+		if confirm_splice {
+			check_spends!(tx, as_revoked_tx[0], splice_tx.as_ref().unwrap());
+		} else {
+			check_spends!(tx, as_revoked_tx[0], coinbase_tx);
+		}
+	}
+
+	// Call `claim_info_persisted` for each stored claim info to remove it from B's monitor.
+	{
+		let persisted = nodes[1].chain_monitor.persisted_claim_infos.lock().unwrap();
+		for &(channel_id, ref claim_key) in persisted.keys() {
+			let chain_monitor = &nodes[1].chain_monitor.chain_monitor;
+			chain_monitor.claim_info_persisted(channel_id, claim_key.clone()).unwrap();
+		}
+	}
+
+	// Now that we're done with setup, actually broadcast the revoked commitment transaction on
+	// node B.
+	mine_transaction(&nodes[1], &as_revoked_tx[0]);
+	check_closed_broadcast(&nodes[1], 1, true);
+	check_added_monitors(&nodes[1], 1);
+	let reason = ClosureReason::CommitmentTxConfirmed;
+	check_closed_event(&nodes[1], 1, reason, &[node_a_id], chan_value);
+
+	// B immediately claims the to_self (revokeable) output without needing the offloaded
+	// claim info.
+	let bs_to_self_claim_tx = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+	assert_eq!(bs_to_self_claim_tx.len(), 1);
+	assert_eq!(bs_to_self_claim_tx[0].input.len(), 1);
+	check_spends!(bs_to_self_claim_tx[0], as_revoked_tx[0]);
+
+	let mut events = nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	let (claim_key, claim_meta) = if let Event::ClaimInfoRequest {
+		channel_id,
+		claim_key,
+		claim_metadata,
+		..
+	} = events.pop().unwrap() {
+		assert_eq!(channel_id, chan_id);
+		(claim_key, claim_metadata)
+	} else {
+		panic!("Wront event {events:?}");
+	};
+
+	// Note that `Event::ChannelClosed`s will miss the additional splice value that was never fully
+	// locked and thus the splice_value is only relevant when looking at claimable balances.
+	let chan_value = chan_value + splice_value;
+	let commit_tx_fee = Amount::from_sat(chan_value)
+		- as_revoked_tx[0].output.iter().map(|outp| outp.value).sum();
+	let anchor_outputs_value = 2 * channel::ANCHOR_OUTPUT_VALUE_SATOSHI;
+	let bs_to_remote = 96_000;
+	let as_to_local =
+		chan_value - bs_to_remote - 3_000 - 4_000 - commit_tx_fee.to_sat() - anchor_outputs_value;
+	let to_remote_spendable_height = nodes[1].best_block_info().1 + ANTI_REORG_DELAY - 1;
+
+	let bs_output_bal = Balance::ClaimableAwaitingConfirmations {
+		amount_satoshis: bs_to_remote,
+		confirmation_height: to_remote_spendable_height,
+		source: BalanceSource::CounterpartyForceClosed,
+	};
+
+	let mut as_revoked_confirmation_height = nodes[1].best_block_info().1 + ANTI_REORG_DELAY;
+	let mut as_revoked_bal = if claim_to_self_before_claim_info {
+		mine_transaction(&nodes[1], &bs_to_self_claim_tx[0]);
+		Balance::ClaimableAwaitingConfirmations {
+			amount_satoshis: bs_to_self_claim_tx[0].output[0].value.to_sat(),
+			confirmation_height: nodes[1].best_block_info().1 + ANTI_REORG_DELAY - 1,
+			source: BalanceSource::CounterpartyForceClosed,
+		}
+	} else {
+		Balance::CounterpartyRevokedOutputClaimable {
+			amount_satoshis: as_to_local,
+		}
+	};
+
+	assert_eq!(
+		sorted_vec(nodes[1].chain_monitor.chain_monitor.get_claimable_balances(&[])),
+		sorted_vec(vec![
+			bs_output_bal.clone(),
+			as_revoked_bal.clone(),
+			Balance::CounterpartyRevokedOutputClaimableAwaitingClaimInfo {
+				claim_key: claim_key.clone(),
+			},
+		])
+	);
+
+	let claim_info = {
+		let mut infos = nodes[1].chain_monitor.persisted_claim_infos.lock().unwrap();
+		infos.remove(&(chan_id, claim_key.clone())).unwrap()
+	};
+
+	let (first_htlc_claim_bal, first_htlc_claim, second_htlc_claim) =
+		if confirm_htlc_before_claim_info {
+			// Mine one of A's HTLC transactions on B before providing claim info. Even without the
+			// claim ifno, B can claim the revoked HTLC outputs
+			mine_transaction(&nodes[1], &a_htlc_txn[0]);
+
+			let mut first_claim =
+				nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+			assert_eq!(first_claim.len(), 1);
+			check_spends!(first_claim[0], a_htlc_txn[0], coinbase_tx);
+
+			mine_transaction(&nodes[1], &a_htlc_txn[1]);
+			let mut second_claim =
+				nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+			assert_eq!(second_claim.len(), 1);
+			check_spends!(second_claim[0], a_htlc_txn[1], coinbase_tx);
+
+			assert_eq!(
+				sorted_vec(vec![
+					bs_output_bal.clone(),
+					as_revoked_bal.clone(),
+					Balance::CounterpartyRevokedOutputClaimableAwaitingClaimInfo {
+						claim_key: claim_key.clone(),
+					},
+				]),
+				sorted_vec(nodes[1].chain_monitor.chain_monitor.get_claimable_balances(&[]))
+			);
+
+			// Mine one of the two claims before we even provide the claim info
+			mine_transaction(&nodes[1], &first_claim[0]);
+			let first_htlc_claim_bal = Balance::ClaimableAwaitingConfirmations {
+				amount_satoshis: first_claim[0].output[0].value.to_sat(),
+				confirmation_height: nodes[1].best_block_info().1 + ANTI_REORG_DELAY - 1,
+				source: BalanceSource::CounterpartyForceClosed,
+			};
+			assert_eq!(
+				sorted_vec(vec![
+					bs_output_bal.clone(),
+					as_revoked_bal.clone(),
+					first_htlc_claim_bal.clone(),
+					Balance::CounterpartyRevokedOutputClaimableAwaitingClaimInfo {
+						claim_key: claim_key.clone(),
+					},
+				]),
+				sorted_vec(nodes[1].chain_monitor.chain_monitor.get_claimable_balances(&[]))
+			);
+
+			// Now provide the claim info, which shouldn't broadcast any new transactions but will
+			// result in replaying the HTLC transactions, allowing B to discover an HTLC preimage.
+			let chain_monitor = &nodes[1].chain_monitor.chain_monitor;
+			chain_monitor.provide_claim_info(chan_id, claim_key, claim_meta, claim_info).unwrap();
+			expect_payment_sent!(&nodes[1], payment_preimage_ba);
+			assert!(nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().is_empty());
+
+			// With the claim info in place, B can now generate full claimable balances.
+			assert_eq!(
+				sorted_vec(vec![
+					bs_output_bal.clone(),
+					as_revoked_bal.clone(),
+					first_htlc_claim_bal.clone(),
+					Balance::CounterpartyRevokedOutputClaimable {
+						amount_satoshis: 3_000,
+					},
+				]),
+				sorted_vec(nodes[1].chain_monitor.chain_monitor.get_claimable_balances(&[]))
+			);
+
+			(first_htlc_claim_bal, first_claim.pop().unwrap(), second_claim.pop().unwrap())
+		} else {
+			// Provide claim info immediately and then test HTLC claiming.
+			let chain_monitor = &nodes[1].chain_monitor.chain_monitor;
+			chain_monitor.provide_claim_info(chan_id, claim_key, claim_meta, claim_info).unwrap();
+
+			let bs_balances_before_htlcs = sorted_vec(vec![
+				bs_output_bal.clone(),
+				as_revoked_bal.clone(),
+				Balance::CounterpartyRevokedOutputClaimable {
+					amount_satoshis: 3_000,
+				},
+				Balance::CounterpartyRevokedOutputClaimable {
+					amount_satoshis: 4_000,
+				},
+			]);
+
+			assert_eq!(
+				bs_balances_before_htlcs,
+				sorted_vec(nodes[1].chain_monitor.chain_monitor.get_claimable_balances(&[]))
+			);
+
+			let mut claim_txn =
+				nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+			assert_eq!(claim_txn.len(), 2);
+			assert_eq!(claim_txn[0].input.len(), 1);
+			assert_eq!(claim_txn[1].input.len(), 1);
+			assert_ne!(claim_txn[0].input[0].previous_output, claim_txn[1].input[0].previous_output);
+			assert_ne!(claim_txn[0].input[0].previous_output, bs_to_self_claim_tx[0].input[0].previous_output);
+			assert_ne!(claim_txn[1].input[0].previous_output, bs_to_self_claim_tx[0].input[0].previous_output);
+			for tx in &claim_txn {
+				check_spends!(tx, as_revoked_tx[0]);
+			}
+
+			let (first_htlc_claim, second_htlc_claim) = if claim_htlcs_on_commitment {
+				(claim_txn.pop().unwrap(), claim_txn.pop().unwrap())
+			} else {
+				mine_transaction(&nodes[1], &a_htlc_txn[0]);
+				let mut htlc_claim_txn =
+					nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+				assert_eq!(htlc_claim_txn.len(), 1);
+				check_spends!(htlc_claim_txn[0], a_htlc_txn[0], coinbase_tx);
+
+				assert_eq!(
+					bs_balances_before_htlcs,
+					sorted_vec(nodes[1].chain_monitor.chain_monitor.get_claimable_balances(&[]))
+				);
+
+				mine_transaction(&nodes[1], &a_htlc_txn[1]);
+				let mut second_htlc_claim_txn =
+					nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+				assert_eq!(second_htlc_claim_txn.len(), 1);
+				check_spends!(second_htlc_claim_txn[0], a_htlc_txn[1], coinbase_tx);
+				assert_eq!(
+					bs_balances_before_htlcs,
+					sorted_vec(nodes[1].chain_monitor.chain_monitor.get_claimable_balances(&[]))
+				);
+
+				// B generates a PaymentSent for the HTLC after learning the preimage.
+				expect_payment_sent!(&nodes[1], payment_preimage_ba);
+
+				(htlc_claim_txn.pop().unwrap(), second_htlc_claim_txn.pop().unwrap())
+			};
+
+			mine_transaction(&nodes[1], &first_htlc_claim);
+			let first_htlc_claim_bal = Balance::ClaimableAwaitingConfirmations {
+				amount_satoshis: first_htlc_claim.output[0].value.to_sat(),
+				confirmation_height: nodes[1].best_block_info().1 + ANTI_REORG_DELAY - 1,
+				source: BalanceSource::CounterpartyForceClosed,
+			};
+			assert_eq!(
+				sorted_vec(vec![
+					bs_output_bal.clone(),
+					as_revoked_bal.clone(),
+					first_htlc_claim_bal.clone(),
+					Balance::CounterpartyRevokedOutputClaimable {
+						amount_satoshis: 3_000,
+					},
+				]),
+				sorted_vec(nodes[1].chain_monitor.chain_monitor.get_claimable_balances(&[]))
+			);
+
+			(first_htlc_claim_bal, first_htlc_claim, second_htlc_claim)
+		};
+
+	let first_htlc_claim_conf_height = nodes[1].best_block_info().1 + ANTI_REORG_DELAY - 1;
+
+	let mut bs_output_bal_opt = Some(bs_output_bal);
+	macro_rules! check_bs_output_spendable {
+		() => {
+			if bs_output_bal_opt.is_some()
+				&& nodes[1].best_block_info().1 >= to_remote_spendable_height
+			{
+				let mut events =
+					nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events();
+				if do_splice && !confirm_splice {
+					assert_eq!(events.len(), 2);
+					if let Event::DiscardFunding { .. } = &events[0] {
+						// Remove the watched splice tx which would otherwise cause an assertion
+						// failure after test completion due to mismatched Filter loads on reload.
+						let stx = splice_tx.as_ref().unwrap();
+						nodes[1].chain_source.remove_watched_txn_and_outputs(
+							OutPoint { txid: stx.compute_txid(), index: 0 },
+							stx.output[0].script_pubkey.clone(),
+						);
+					} else {
+						panic!("Wrong event {events:?}");
+					}
+					events.remove(0);
+				}
+				assert_eq!(events.len(), 1);
+				test_spendable_output_event(&nodes[1], &as_revoked_tx[0], events.pop().unwrap());
+				bs_output_bal_opt = None;
+			}
+		}
+	}
+
+	mine_transaction(&nodes[1], &second_htlc_claim);
+	let second_htlc_claim_bal = Balance::ClaimableAwaitingConfirmations {
+		amount_satoshis: second_htlc_claim.output[0].value.to_sat(),
+		confirmation_height: nodes[1].best_block_info().1 + ANTI_REORG_DELAY - 1,
+		source: BalanceSource::CounterpartyForceClosed,
+	};
+	check_bs_output_spendable!();
+	assert_eq!(
+		sorted_vec([
+			as_revoked_bal.clone(),
+			first_htlc_claim_bal.clone(),
+			second_htlc_claim_bal.clone(),
+		].into_iter().chain(bs_output_bal_opt.clone()).collect()),
+		sorted_vec(nodes[1].chain_monitor.chain_monitor.get_claimable_balances(&[]))
+	);
+
+	if !claim_to_self_before_claim_info {
+		mine_transaction(&nodes[1], &bs_to_self_claim_tx[0]);
+		as_revoked_confirmation_height = nodes[1].best_block_info().1 + ANTI_REORG_DELAY - 1;
+		as_revoked_bal = Balance::ClaimableAwaitingConfirmations {
+			amount_satoshis: bs_to_self_claim_tx[0].output[0].value.to_sat(),
+			confirmation_height: nodes[1].best_block_info().1 + ANTI_REORG_DELAY - 1,
+			source: BalanceSource::CounterpartyForceClosed,
+		};
+		check_bs_output_spendable!();
+		assert_eq!(
+			sorted_vec([
+				as_revoked_bal.clone(),
+				first_htlc_claim_bal.clone(),
+				second_htlc_claim_bal.clone(),
+			].into_iter().chain(bs_output_bal_opt.clone()).collect()),
+			sorted_vec(nodes[1].chain_monitor.chain_monitor.get_claimable_balances(&[]))
+		);
+	}
+
+	while bs_output_bal_opt.is_some() {
+		connect_blocks(&nodes[1], 1);
+		check_bs_output_spendable!();
+	}
+	assert_eq!(
+		sorted_vec(vec![
+			as_revoked_bal.clone(),
+			first_htlc_claim_bal.clone(),
+			second_htlc_claim_bal.clone(),
+		]),
+		sorted_vec(nodes[1].chain_monitor.chain_monitor.get_claimable_balances(&[]))
+	);
+
+	if first_htlc_claim_conf_height < as_revoked_confirmation_height {
+		connect_blocks(&nodes[1], first_htlc_claim_conf_height - nodes[1].best_block_info().1);
+		test_spendable_output(&nodes[1], &first_htlc_claim, false);
+		assert_eq!(
+			sorted_vec(vec![
+				as_revoked_bal.clone(),
+				second_htlc_claim_bal,
+			]),
+			sorted_vec(nodes[1].chain_monitor.chain_monitor.get_claimable_balances(&[]))
+		);
+		if claim_htlcs_on_commitment {
+			expect_payment_failed!(nodes[1], payment_hash_ba, false);
+			check_added_monitors(&nodes[1], 1);
+		}
+
+		connect_blocks(&nodes[1], 1);
+		test_spendable_output(&nodes[1], &second_htlc_claim, false);
+		assert_eq!(
+			vec![as_revoked_bal],
+			nodes[1].chain_monitor.chain_monitor.get_claimable_balances(&[])
+		);
+
+		connect_blocks(&nodes[1], as_revoked_confirmation_height - nodes[1].best_block_info().1);
+		test_spendable_output(&nodes[1], &bs_to_self_claim_tx[0], false);
+		assert!(nodes[1].chain_monitor.chain_monitor.get_claimable_balances(&[]).is_empty());
+	} else {
+		connect_blocks(&nodes[1], as_revoked_confirmation_height - nodes[1].best_block_info().1);
+		test_spendable_output(&nodes[1], &bs_to_self_claim_tx[0], false);
+		assert_eq!(
+			sorted_vec(vec![
+				first_htlc_claim_bal,
+				second_htlc_claim_bal.clone(),
+			]),
+			sorted_vec(nodes[1].chain_monitor.chain_monitor.get_claimable_balances(&[]))
+		);
+
+		connect_blocks(&nodes[1], first_htlc_claim_conf_height - nodes[1].best_block_info().1);
+		test_spendable_output(&nodes[1], &first_htlc_claim, false);
+		assert_eq!(
+			vec![second_htlc_claim_bal],
+			nodes[1].chain_monitor.chain_monitor.get_claimable_balances(&[])
+		);
+		if claim_htlcs_on_commitment {
+			expect_payment_failed!(nodes[1], payment_hash_ba, false);
+			check_added_monitors(&nodes[1], 1);
+		}
+
+		connect_blocks(&nodes[1], 1);
+		test_spendable_output(&nodes[1], &second_htlc_claim, false);
+		assert!(nodes[1].chain_monitor.chain_monitor.get_claimable_balances(&[]).is_empty());
+	}
 }

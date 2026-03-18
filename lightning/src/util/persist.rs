@@ -1831,6 +1831,7 @@ mod tests {
 			&chanmon_cfgs[0].fee_estimator,
 			&persister_0,
 			&chanmon_cfgs[0].keys_manager,
+			false,
 		);
 		let chain_mon_1 = test_utils::TestChainMonitor::new(
 			Some(&chanmon_cfgs[1].chain_source),
@@ -1839,6 +1840,7 @@ mod tests {
 			&chanmon_cfgs[1].fee_estimator,
 			&persister_1,
 			&chanmon_cfgs[1].keys_manager,
+			false,
 		);
 		node_cfgs[0].chain_monitor = chain_mon_0;
 		node_cfgs[1].chain_monitor = chain_mon_1;
@@ -2072,6 +2074,7 @@ mod tests {
 			&chanmon_cfgs[0].fee_estimator,
 			&persister_0,
 			&chanmon_cfgs[0].keys_manager,
+			false,
 		);
 		let chain_mon_1 = test_utils::TestChainMonitor::new(
 			Some(&chanmon_cfgs[1].chain_source),
@@ -2080,6 +2083,7 @@ mod tests {
 			&chanmon_cfgs[1].fee_estimator,
 			&persister_1,
 			&chanmon_cfgs[1].keys_manager,
+			false,
 		);
 		node_cfgs[0].chain_monitor = chain_mon_0;
 		node_cfgs[1].chain_monitor = chain_mon_1;

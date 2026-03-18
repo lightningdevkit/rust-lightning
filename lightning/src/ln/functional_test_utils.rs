@@ -11,7 +11,7 @@
 //! nodes for functional tests.
 
 use crate::blinded_path::payment::DummyTlvs;
-use crate::chain::channelmonitor::{ChannelMonitor, HTLC_FAIL_BACK_BUFFER};
+use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdateStep, HTLC_FAIL_BACK_BUFFER};
 use crate::chain::transaction::OutPoint;
 use crate::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Listen, Watch};
 use crate::events::bump_transaction::sync::BumpTransactionEventHandlerSync;
@@ -929,6 +929,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 				&feeest,
 				&persister,
 				&self.keys_manager,
+				false,
 			);
 			for deserialized_monitor in deserialized_monitors.drain(..) {
 				let channel_id = deserialized_monitor.channel_id();
@@ -1267,11 +1268,72 @@ pub fn commit_tx_fee_msat(
 
 /// Check whether N channel monitor(s) have been added.
 pub fn check_added_monitors<CM: AChannelManager, H: NodeHolder<CM = CM>>(node: &H, count: usize) {
+	do_check_added_monitors(node, count, None);
+}
+
+pub fn check_added_monitors_with_claim_info_events<CM: AChannelManager, H: NodeHolder<CM = CM>>(
+	node: &H, count: usize, expected_claim_info_events: usize,
+) {
+	do_check_added_monitors(node, count, Some(expected_claim_info_events));
+}
+
+pub fn do_check_added_monitors<CM: AChannelManager, H: NodeHolder<CM = CM>>(
+	node: &H, count: usize, expected_claim_info_events: Option<usize>,
+) {
 	if let Some(chain_monitor) = node.chain_monitor() {
-		let mut added_monitors = chain_monitor.added_monitors.lock().unwrap();
+		let added_monitors = chain_monitor.added_monitors.lock().unwrap().split_off(0);
 		let n = added_monitors.len();
+		let mut channels_with_commitment_secrets = new_hash_set();
+		let commitment_secret_updates = added_monitors
+			.iter()
+			.map(|(channel_id, _, updates_opt)| {
+				if let Some(updates) = updates_opt {
+					let is_commitment_secret = |update: &&ChannelMonitorUpdateStep| {
+						matches!(update, ChannelMonitorUpdateStep::CommitmentSecret { .. })
+					};
+					let count = updates.updates.iter().filter(is_commitment_secret).count();
+					if count > 0 {
+						channels_with_commitment_secrets.insert(*channel_id);
+					}
+					count
+				} else {
+					0
+				}
+			})
+			.sum();
+		let mut added_claim_info_events: usize = 0;
+		if commitment_secret_updates > 0 {
+			let persist_claim_info_events =
+				chain_monitor.chain_monitor.get_and_clear_claim_info_events();
+			added_claim_info_events += persist_claim_info_events.len();
+
+			let mut seen_channel_fundings = new_hash_set();
+			let mut claim_info_channel_ids = new_hash_set();
+			for event in persist_claim_info_events {
+				match event {
+					Event::PersistClaimInfo { channel_id, funding_txo, claim_key, claim_info } => {
+						assert!(seen_channel_fundings.insert(funding_txo));
+						claim_info_channel_ids.insert(channel_id);
+						let mut persisted_claim_infos =
+							chain_monitor.persisted_claim_infos.lock().unwrap();
+						let persist_key = (channel_id, claim_key);
+						persisted_claim_infos.insert(persist_key, claim_info);
+					},
+					_ => panic!(),
+				}
+			}
+			assert_eq!(claim_info_channel_ids, channels_with_commitment_secrets);
+		}
+
+		if let Some(expected_claim_info_events) = expected_claim_info_events {
+			assert_eq!(added_claim_info_events, expected_claim_info_events);
+		} else {
+			// Each CommitmentSecret update produces one PersistClaimInfo event per
+			// active funding. For spliced channels with a pending funding, this means
+			// more claim info events than commitment secret updates.
+			assert!(added_claim_info_events >= commitment_secret_updates);
+		}
 		assert_eq!(n, count, "expected {} monitors to be added, not {}", count, n);
-		added_monitors.clear();
 	}
 }
 
@@ -1383,6 +1445,7 @@ macro_rules! _reload_node_inner {
 			$node.fee_estimator,
 			&$persister,
 			&$node.keys_manager,
+			false,
 		);
 		$node.chain_monitor = &$new_chain_monitor;
 
@@ -4585,6 +4648,7 @@ where
 			&cfg.fee_estimator,
 			persisters[i],
 			&cfg.keys_manager,
+			false,
 		);
 
 		let seed = [i as u8; 32];
