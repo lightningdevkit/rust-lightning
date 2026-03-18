@@ -524,7 +524,7 @@ pub enum BlindedFailure {
 }
 
 #[derive(PartialEq, Eq)]
-enum OnionPayload {
+pub(crate) enum OnionPayload {
 	/// Indicates this incoming onion payload is for the purpose of paying an invoice.
 	Invoice {
 		/// This is only here for backwards-compatibility in serialization, in the future it can be
@@ -539,7 +539,7 @@ enum OnionPayload {
 
 /// HTLCs that are to us and can be failed/claimed by the user
 #[derive(PartialEq, Eq)]
-struct ClaimableHTLC {
+pub(crate) struct ClaimableHTLC {
 	prev_hop: HTLCPreviousHopData,
 	cltv_expiry: u32,
 	/// The amount (in msats) of this MPP part
@@ -5786,6 +5786,20 @@ impl<
 		&self, payment_id: PaymentId, new_payment_metadata: Option<Vec<u8>>,
 	) {
 		self.pending_outbound_payments.test_set_payment_metadata(payment_id, new_payment_metadata);
+	}
+
+	#[cfg(test)]
+	pub(crate) fn test_handle_trampoline_htlc(
+		&self, claimable_htlc: ClaimableHTLC, onion_fields: RecipientOnionFields,
+		payment_hash: PaymentHash, next_hop_info: NextTrampolineHopInfo, next_node_id: PublicKey,
+	) -> Result<(), (HTLCSource, onion_utils::HTLCFailReason)> {
+		self.handle_trampoline_htlc(
+			claimable_htlc,
+			onion_fields,
+			payment_hash,
+			next_hop_info,
+			next_node_id,
+		)
 	}
 
 	/// Pays a [`Bolt11Invoice`] associated with the `payment_id`. See [`Self::send_payment`] for more info.
