@@ -1909,7 +1909,7 @@ impl From<&HTLCFailReason> for HTLCHandlingFailureReason {
 
 #[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
 #[cfg_attr(test, derive(PartialEq))]
-pub(super) struct HTLCFailReason(HTLCFailReasonRepr);
+pub(crate) struct HTLCFailReason(HTLCFailReasonRepr);
 
 #[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
 #[cfg_attr(test, derive(PartialEq))]
