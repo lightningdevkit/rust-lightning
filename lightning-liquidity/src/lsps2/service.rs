@@ -1786,13 +1786,21 @@ where
 		// TODO: We should eventually persist in parallel, however, when we do, we probably want to
 		// introduce some batching to upper-bound the number of requests inflight at any given
 		// time.
-		let mut did_persist = false;
 
 		if self.persistence_in_flight.fetch_add(1, Ordering::AcqRel) > 0 {
 			// If we're not the first event processor to get here, just return early, the increment
 			// we just did will be treated as "go around again" at the end.
-			return Ok(did_persist);
+			return Ok(false);
 		}
+
+		let res = self.do_persist().await;
+		debug_assert!(res.is_err() || self.persistence_in_flight.load(Ordering::Acquire) == 0);
+		self.persistence_in_flight.store(0, Ordering::Release);
+		res
+	}
+
+	async fn do_persist(&self) -> Result<bool, lightning::io::Error> {
+		let mut did_persist = false;
 
 		loop {
 			let mut need_remove = Vec::new();
@@ -1871,7 +1879,7 @@ where
 	}
 
 	pub(crate) fn peer_disconnected(&self, counterparty_node_id: PublicKey) {
-		let outer_state_lock = self.per_peer_state.write().unwrap();
+		let outer_state_lock = self.per_peer_state.read().unwrap();
 		if let Some(inner_state_lock) = outer_state_lock.get(&counterparty_node_id) {
 			let mut peer_state_lock = inner_state_lock.lock().unwrap();
 			// We clean up the peer state, but leave removing the peer entry to the prune logic in
