@@ -1736,7 +1736,7 @@ pub(crate) fn write_chanmon_internal<Signer: EcdsaChannelSigner, W: Writer>(
 			None
 		}
 	});
-	let pending_monitor_events = Iterable(
+	let pending_monitor_events_legacy = Iterable(
 		channel_monitor.pending_monitor_events.iter().chain(holder_force_closed_compat.as_ref()),
 	);
 
@@ -1747,7 +1747,7 @@ pub(crate) fn write_chanmon_internal<Signer: EcdsaChannelSigner, W: Writer>(
 		(1, channel_monitor.funding_spend_confirmed, option),
 		(2, persistent_events_enabled, option),
 		(3, channel_monitor.htlcs_resolved_on_chain, required_vec),
-		(5, pending_monitor_events, required), // Equivalent to required_vec because Iterable also writes as WithoutLength
+		(5, pending_monitor_events_legacy, required), // Equivalent to required_vec because Iterable also writes as WithoutLength
 		(7, channel_monitor.funding_spend_seen, required),
 		(9, channel_monitor.counterparty_node_id, required),
 		(11, channel_monitor.confirmed_commitment_tx_counterparty_output, option),
@@ -6645,16 +6645,16 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			}
 		}
 
-		let pending_monitor_events_len: u64 = Readable::read(reader)?;
-		let mut pending_monitor_events = Some(
-			Vec::with_capacity(cmp::min(pending_monitor_events_len as usize, MAX_ALLOC_SIZE / (32 + 8*3))));
-		for _ in 0..pending_monitor_events_len {
+		let pending_monitor_events_legacy_len: u64 = Readable::read(reader)?;
+		let mut pending_monitor_events_legacy = Some(
+			Vec::with_capacity(cmp::min(pending_monitor_events_legacy_len as usize, MAX_ALLOC_SIZE / (32 + 8*3))));
+		for _ in 0..pending_monitor_events_legacy_len {
 			let ev = match <u8 as Readable>::read(reader)? {
 				0 => MonitorEvent::HTLCEvent(Readable::read(reader)?),
 				1 => MonitorEvent::HolderForceClosed(outpoint),
 				_ => return Err(DecodeError::InvalidValue)
 			};
-			pending_monitor_events.as_mut().unwrap().push(ev);
+			pending_monitor_events_legacy.as_mut().unwrap().push(ev);
 		}
 
 		let pending_events_len: u64 = Readable::read(reader)?;
@@ -6721,7 +6721,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			(1, funding_spend_confirmed, option),
 			(2, persistent_events_enabled, option),
 			(3, htlcs_resolved_on_chain, optional_vec),
-			(5, pending_monitor_events, optional_vec),
+			(5, pending_monitor_events_legacy, optional_vec),
 			(7, funding_spend_seen, option),
 			(9, counterparty_node_id, option),
 			(11, confirmed_commitment_tx_counterparty_output, option),
@@ -6774,11 +6774,11 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 
 		// `HolderForceClosedWithInfo` replaced `HolderForceClosed` in v0.0.122. If we have both
 		// events, we can remove the `HolderForceClosed` event and just keep the `HolderForceClosedWithInfo`.
-		if let Some(ref mut pending_monitor_events) = pending_monitor_events {
-			if pending_monitor_events.iter().any(|e| matches!(e, MonitorEvent::HolderForceClosed(_))) &&
-				pending_monitor_events.iter().any(|e| matches!(e, MonitorEvent::HolderForceClosedWithInfo { .. }))
+		if let Some(ref mut evs) = pending_monitor_events_legacy {
+			if evs.iter().any(|e| matches!(e, MonitorEvent::HolderForceClosed(_))) &&
+				evs.iter().any(|e| matches!(e, MonitorEvent::HolderForceClosedWithInfo { .. }))
 			{
-				pending_monitor_events.retain(|e| !matches!(e, MonitorEvent::HolderForceClosed(_)));
+				evs.retain(|e| !matches!(e, MonitorEvent::HolderForceClosed(_)));
 			}
 		}
 
@@ -6899,7 +6899,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			current_holder_commitment_number,
 
 			payment_preimages,
-			pending_monitor_events: pending_monitor_events.unwrap(),
+			pending_monitor_events: pending_monitor_events_legacy.unwrap(),
 			persistent_events_enabled: persistent_events_enabled.is_some(),
 			pending_events,
 			is_processing_pending_events: false,
