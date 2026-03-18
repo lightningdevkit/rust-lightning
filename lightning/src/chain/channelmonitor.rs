@@ -183,6 +183,10 @@ impl Readable for ChannelMonitorUpdate {
 	}
 }
 
+fn push_monitor_event(pending_monitor_events: &mut Vec<MonitorEvent>, event: MonitorEvent) {
+	pending_monitor_events.push(event);
+}
+
 /// An event to be processed by the ChannelManager.
 #[derive(Clone, PartialEq, Eq)]
 pub enum MonitorEvent {
@@ -226,8 +230,6 @@ pub enum MonitorEvent {
 	},
 }
 impl_writeable_tlv_based_enum_upgradable_legacy!(MonitorEvent,
-	// Note that Completed is currently never serialized to disk as it is generated only in
-	// ChainMonitor.
 	(0, Completed) => {
 		(0, funding_txo, required),
 		(2, monitor_update_id, required),
@@ -2165,6 +2167,10 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		self.inner.lock().unwrap().get_and_clear_pending_monitor_events()
 	}
 
+	pub(super) fn push_monitor_event(&self, event: MonitorEvent) {
+		self.inner.lock().unwrap().push_monitor_event(event);
+	}
+
 	/// Processes [`SpendableOutputs`] events produced from each [`ChannelMonitor`] upon maturity.
 	///
 	/// For channels featuring anchor outputs, this method will also process [`BumpTransaction`]
@@ -3890,7 +3896,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				outpoint: funding_outpoint,
 				channel_id: self.channel_id,
 			};
-			self.pending_monitor_events.push(event);
+			push_monitor_event(&mut self.pending_monitor_events, event);
 		}
 
 		// Although we aren't signing the transaction directly here, the transaction will be signed
@@ -4549,6 +4555,10 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			self.outputs_to_watch.get(txid).expect("Counterparty commitment txn which have been broadcast should have outputs registered");
 		}
 		&self.outputs_to_watch
+	}
+
+	fn push_monitor_event(&mut self, event: MonitorEvent) {
+		push_monitor_event(&mut self.pending_monitor_events, event);
 	}
 
 	fn get_and_clear_pending_monitor_events(&mut self) -> Vec<MonitorEvent> {
@@ -5610,7 +5620,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					);
 					log_info!(logger, "Channel closed by funding output spend in txid {txid}");
 					if !self.funding_spend_seen {
-						self.pending_monitor_events.push(MonitorEvent::CommitmentTxConfirmed(()));
+						self.push_monitor_event(MonitorEvent::CommitmentTxConfirmed(()));
 					}
 					self.funding_spend_seen = true;
 
@@ -5785,7 +5795,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 					log_debug!(logger, "HTLC {} failure update in {} has got enough confirmations to be passed upstream",
 						&payment_hash, entry.txid);
-					self.pending_monitor_events.push(MonitorEvent::HTLCEvent(HTLCUpdate {
+					self.push_monitor_event(MonitorEvent::HTLCEvent(HTLCUpdate {
 						payment_hash,
 						payment_preimage: None,
 						source,
@@ -5895,7 +5905,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					log_error!(logger, "Failing back HTLC {} upstream to preserve the \
 						channel as the forward HTLC hasn't resolved and our backward HTLC \
 						expires soon at {}", log_bytes!(htlc.payment_hash.0), inbound_htlc_expiry);
-					self.pending_monitor_events.push(MonitorEvent::HTLCEvent(HTLCUpdate {
+					push_monitor_event(&mut self.pending_monitor_events, MonitorEvent::HTLCEvent(HTLCUpdate {
 						source: source.clone(),
 						payment_preimage: None,
 						payment_hash: htlc.payment_hash,
@@ -6312,7 +6322,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 							},
 						});
 						self.counterparty_fulfilled_htlcs.insert(SentHTLCId::from_source(&source), payment_preimage);
-						self.pending_monitor_events.push(MonitorEvent::HTLCEvent(HTLCUpdate {
+						push_monitor_event(&mut self.pending_monitor_events, MonitorEvent::HTLCEvent(HTLCUpdate {
 							source,
 							payment_preimage: Some(payment_preimage),
 							payment_hash,
@@ -6336,7 +6346,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 							},
 						});
 						self.counterparty_fulfilled_htlcs.insert(SentHTLCId::from_source(&source), payment_preimage);
-						self.pending_monitor_events.push(MonitorEvent::HTLCEvent(HTLCUpdate {
+						push_monitor_event(&mut self.pending_monitor_events, MonitorEvent::HTLCEvent(HTLCUpdate {
 							source,
 							payment_preimage: Some(payment_preimage),
 							payment_hash,
