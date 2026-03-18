@@ -35,7 +35,6 @@ use crate::offers::nonce::Nonce;
 use crate::offers::offer::{OFFER_DESCRIPTION_TYPE, OFFER_ISSUER_TYPE};
 use crate::offers::parse::Bech32Encode;
 use crate::offers::payer::PAYER_METADATA_TYPE;
-use crate::types::features::Bolt12InvoiceFeatures;
 use crate::types::payment::{PaymentHash, PaymentPreimage};
 use crate::util::ser::{BigSize, Readable, Writeable};
 
@@ -156,7 +155,15 @@ impl<'a> PayerProofBuilder<'a> {
 		included_types.insert(INVOICE_PAYMENT_HASH_TYPE);
 		included_types.insert(INVOICE_NODE_ID_TYPE);
 
-		if invoice.invoice_features() != &Bolt12InvoiceFeatures::empty() {
+		// Per spec, invoice_features MUST be included "if present" — meaning if the
+		// TLV exists in the invoice byte stream, regardless of whether the parsed
+		// value is empty. Check the raw bytes so we handle invoices from other
+		// implementations that may serialize empty features.
+		let mut invoice_bytes = Vec::new();
+		invoice.write(&mut invoice_bytes).expect("Vec write should not fail");
+		let has_features_tlv =
+			TlvStream::new(&invoice_bytes).any(|r| r.r#type == INVOICE_FEATURES_TYPE);
+		if has_features_tlv {
 			included_types.insert(INVOICE_FEATURES_TYPE);
 		}
 
@@ -224,7 +231,7 @@ impl<'a> PayerProofBuilder<'a> {
 	pub fn build_with_derived_key(
 		self, expanded_key: &ExpandedKey, nonce: Nonce, payment_id: PaymentId, note: Option<&str>,
 	) -> Result<PayerProof, PayerProofError> {
-		let secp_ctx = Secp256k1::new();
+		let secp_ctx = Secp256k1::signing_only();
 		let keys = self
 			.invoice
 			.derive_payer_signing_keys(payment_id, nonce, expanded_key, &secp_ctx)
