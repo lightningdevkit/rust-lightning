@@ -13931,7 +13931,7 @@ impl<SP: SignerProvider> PendingV2Channel<SP> {
 		counterparty_node_id: PublicKey, their_features: &InitFeatures, funding_satoshis: u64,
 		funding_inputs: Vec<FundingTxInput>, user_id: u128, config: &UserConfig,
 		current_chain_height: u32, outbound_scid_alias: u64, funding_confirmation_target: ConfirmationTarget,
-		logger: L,
+		logger: L, trusted_channel_features: Option<TrustedChannelFeatures>,
 	) -> Result<Self, APIError> {
 		let channel_keys_id = signer_provider.generate_channel_keys_id(false, user_id);
 		let holder_signer = signer_provider.derive_channel_signer(channel_keys_id);
@@ -13941,7 +13941,7 @@ impl<SP: SignerProvider> PendingV2Channel<SP> {
 		});
 
 		let holder_selected_channel_reserve_satoshis = get_v2_channel_reserve_satoshis(
-			funding_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS, false);
+			funding_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS, trusted_channel_features.is_some_and(|f| f.is_0reserve()));
 
 		let funding_feerate_sat_per_1000_weight = fee_estimator.bounded_sat_per_1000_weight(funding_confirmation_target);
 		let funding_tx_locktime = LockTime::from_height(current_chain_height)
@@ -14059,6 +14059,7 @@ impl<SP: SignerProvider> PendingV2Channel<SP> {
 			second_per_commitment_point,
 			locktime: self.funding_negotiation_context.funding_tx_locktime.to_consensus_u32(),
 			require_confirmed_inputs: None,
+			disable_channel_reserve: (self.funding.holder_selected_channel_reserve_satoshis == 0).then_some(()),
 		}
 	}
 
@@ -14071,7 +14072,7 @@ impl<SP: SignerProvider> PendingV2Channel<SP> {
 		fee_estimator: &LowerBoundedFeeEstimator<F>, entropy_source: &ES, signer_provider: &SP,
 		holder_node_id: PublicKey, counterparty_node_id: PublicKey, our_supported_features: &ChannelTypeFeatures,
 		their_features: &InitFeatures, msg: &msgs::OpenChannelV2,
-		user_id: u128, config: &UserConfig, current_chain_height: u32, logger: &L,
+		user_id: u128, config: &UserConfig, current_chain_height: u32, logger: &L, trusted_channel_features: Option<TrustedChannelFeatures>,
 	) -> Result<Self, ChannelError> {
 		// TODO(dual_funding): Take these as input once supported
 		let (our_funding_contribution, our_funding_contribution_sats) = (SignedAmount::ZERO, 0u64);
@@ -14080,9 +14081,9 @@ impl<SP: SignerProvider> PendingV2Channel<SP> {
 		let channel_value_satoshis =
 			our_funding_contribution_sats.saturating_add(msg.common_fields.funding_satoshis);
 		let counterparty_selected_channel_reserve_satoshis = get_v2_channel_reserve_satoshis(
-			channel_value_satoshis, msg.common_fields.dust_limit_satoshis, false);
+			channel_value_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS, msg.disable_channel_reserve.is_some());
 		let holder_selected_channel_reserve_satoshis = get_v2_channel_reserve_satoshis(
-			channel_value_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS, false);
+			channel_value_satoshis, msg.common_fields.dust_limit_satoshis, trusted_channel_features.is_some_and(|f| f.is_0reserve()));
 
 		let channel_type = channel_type_from_open_channel(&msg.common_fields, our_supported_features)?;
 
@@ -14104,7 +14105,7 @@ impl<SP: SignerProvider> PendingV2Channel<SP> {
 			config,
 			current_chain_height,
 			logger,
-			None,
+			trusted_channel_features,
 			our_funding_contribution_sats,
 			counterparty_pubkeys,
 			channel_type,
@@ -14223,6 +14224,8 @@ impl<SP: SignerProvider> PendingV2Channel<SP> {
 				as u64,
 			second_per_commitment_point,
 			require_confirmed_inputs: None,
+			disable_channel_reserve: (self.funding.holder_selected_channel_reserve_satoshis == 0)
+				.then_some(()),
 		}
 	}
 

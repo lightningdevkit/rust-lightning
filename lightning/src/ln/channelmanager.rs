@@ -10927,6 +10927,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						&config,
 						best_block_height,
 						&self.logger,
+						trusted_channel_features,
 					)
 					.map_err(|e| {
 						let channel_id = open_channel_msg.common_fields.temporary_channel_id;

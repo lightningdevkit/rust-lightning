@@ -311,6 +311,8 @@ pub struct OpenChannelV2 {
 	pub second_per_commitment_point: PublicKey,
 	/// Optionally, a requirement that only confirmed inputs can be added
 	pub require_confirmed_inputs: Option<()>,
+	/// Optionally, disables the channel reserve of the receiver
+	pub disable_channel_reserve: Option<()>,
 }
 
 /// Contains fields that are both common to [`accept_channel`] and [`accept_channel2`] messages.
@@ -390,6 +392,8 @@ pub struct AcceptChannelV2 {
 	pub second_per_commitment_point: PublicKey,
 	/// Optionally, a requirement that only confirmed inputs can be added
 	pub require_confirmed_inputs: Option<()>,
+	/// Optionally, disables the channel reserve of the receiver
+	pub disable_channel_reserve: Option<()>,
 }
 
 /// A [`funding_created`] message to be sent to or received from a peer.
@@ -3004,6 +3008,7 @@ impl Writeable for AcceptChannelV2 {
 			(0, self.common_fields.shutdown_scriptpubkey.as_ref().map(|s| WithoutLength(s)), option), // Don't encode length twice.
 			(1, self.common_fields.channel_type, option),
 			(2, self.require_confirmed_inputs, option),
+			(4, self.disable_channel_reserve, option),
 		});
 		Ok(())
 	}
@@ -3030,10 +3035,12 @@ impl LengthReadable for AcceptChannelV2 {
 		let mut shutdown_scriptpubkey: Option<ScriptBuf> = None;
 		let mut channel_type: Option<ChannelTypeFeatures> = None;
 		let mut require_confirmed_inputs: Option<()> = None;
+		let mut disable_channel_reserve: Option<()> = None;
 		decode_tlv_stream!(r, {
 			(0, shutdown_scriptpubkey, (option, encoding: (ScriptBuf, WithoutLength))),
 			(1, channel_type, option),
 			(2, require_confirmed_inputs, option),
+			(4, disable_channel_reserve, option),
 		});
 
 		Ok(AcceptChannelV2 {
@@ -3057,6 +3064,7 @@ impl LengthReadable for AcceptChannelV2 {
 			funding_satoshis,
 			second_per_commitment_point,
 			require_confirmed_inputs,
+			disable_channel_reserve,
 		})
 	}
 }
@@ -3465,6 +3473,7 @@ impl Writeable for OpenChannelV2 {
 			(0, self.common_fields.shutdown_scriptpubkey.as_ref().map(|s| WithoutLength(s)), option), // Don't encode length twice.
 			(1, self.common_fields.channel_type, option),
 			(2, self.require_confirmed_inputs, option),
+			(4, self.disable_channel_reserve, option),
 		});
 		Ok(())
 	}
@@ -3495,10 +3504,12 @@ impl LengthReadable for OpenChannelV2 {
 		let mut shutdown_scriptpubkey: Option<ScriptBuf> = None;
 		let mut channel_type: Option<ChannelTypeFeatures> = None;
 		let mut require_confirmed_inputs: Option<()> = None;
+		let mut disable_channel_reserve: Option<()> = None;
 		decode_tlv_stream!(r, {
 			(0, shutdown_scriptpubkey, (option, encoding: (ScriptBuf, WithoutLength))),
 			(1, channel_type, option),
 			(2, require_confirmed_inputs, option),
+			(4, disable_channel_reserve, option),
 		});
 		Ok(OpenChannelV2 {
 			common_fields: CommonOpenChannelFields {
@@ -3525,6 +3536,7 @@ impl LengthReadable for OpenChannelV2 {
 			locktime,
 			second_per_commitment_point,
 			require_confirmed_inputs,
+			disable_channel_reserve,
 		})
 	}
 }
@@ -5273,6 +5285,7 @@ mod tests {
 
 	fn do_encoding_open_channelv2(
 		random_bit: bool, shutdown: bool, incl_chan_type: bool, require_confirmed_inputs: bool,
+		disable_channel_reserve: bool,
 	) {
 		let secp_ctx = Secp256k1::new();
 		let (_, pubkey_1) = get_keys_from!(
@@ -5341,7 +5354,8 @@ mod tests {
 			funding_feerate_sat_per_1000_weight: 821716,
 			locktime: 305419896,
 			second_per_commitment_point: pubkey_7,
-			require_confirmed_inputs: if require_confirmed_inputs { Some(()) } else { None },
+			require_confirmed_inputs: require_confirmed_inputs.then_some(()),
+			disable_channel_reserve: disable_channel_reserve.then_some(()),
 		};
 		let encoded_value = open_channelv2.encode();
 		let mut target_value = Vec::new();
@@ -5426,27 +5440,46 @@ mod tests {
 		if require_confirmed_inputs {
 			target_value.append(&mut <Vec<u8>>::from_hex("0200").unwrap());
 		}
+		if disable_channel_reserve {
+			target_value.append(&mut <Vec<u8>>::from_hex("0400").unwrap());
+		}
 		assert_eq!(encoded_value, target_value);
 	}
 
 	#[test]
 	fn encoding_open_channelv2() {
-		do_encoding_open_channelv2(false, false, false, false);
-		do_encoding_open_channelv2(false, false, false, true);
-		do_encoding_open_channelv2(false, false, true, false);
-		do_encoding_open_channelv2(false, false, true, true);
-		do_encoding_open_channelv2(false, true, false, false);
-		do_encoding_open_channelv2(false, true, false, true);
-		do_encoding_open_channelv2(false, true, true, false);
-		do_encoding_open_channelv2(false, true, true, true);
-		do_encoding_open_channelv2(true, false, false, false);
-		do_encoding_open_channelv2(true, false, false, true);
-		do_encoding_open_channelv2(true, false, true, false);
-		do_encoding_open_channelv2(true, false, true, true);
-		do_encoding_open_channelv2(true, true, false, false);
-		do_encoding_open_channelv2(true, true, false, true);
-		do_encoding_open_channelv2(true, true, true, false);
-		do_encoding_open_channelv2(true, true, true, true);
+		do_encoding_open_channelv2(false, false, false, false, false);
+		do_encoding_open_channelv2(false, false, false, false, true);
+		do_encoding_open_channelv2(false, false, false, true, false);
+		do_encoding_open_channelv2(false, false, false, true, true);
+		do_encoding_open_channelv2(false, false, true, false, false);
+		do_encoding_open_channelv2(false, false, true, false, true);
+		do_encoding_open_channelv2(false, false, true, true, false);
+		do_encoding_open_channelv2(false, false, true, true, true);
+		do_encoding_open_channelv2(false, true, false, false, false);
+		do_encoding_open_channelv2(false, true, false, false, true);
+		do_encoding_open_channelv2(false, true, false, true, false);
+		do_encoding_open_channelv2(false, true, false, true, true);
+		do_encoding_open_channelv2(false, true, true, false, false);
+		do_encoding_open_channelv2(false, true, true, false, true);
+		do_encoding_open_channelv2(false, true, true, true, false);
+		do_encoding_open_channelv2(false, true, true, true, true);
+		do_encoding_open_channelv2(true, false, false, false, false);
+		do_encoding_open_channelv2(true, false, false, false, true);
+		do_encoding_open_channelv2(true, false, false, true, false);
+		do_encoding_open_channelv2(true, false, false, true, true);
+		do_encoding_open_channelv2(true, false, true, false, false);
+		do_encoding_open_channelv2(true, false, true, false, true);
+		do_encoding_open_channelv2(true, false, true, true, false);
+		do_encoding_open_channelv2(true, false, true, true, true);
+		do_encoding_open_channelv2(true, true, false, false, false);
+		do_encoding_open_channelv2(true, true, false, false, true);
+		do_encoding_open_channelv2(true, true, false, true, false);
+		do_encoding_open_channelv2(true, true, false, true, true);
+		do_encoding_open_channelv2(true, true, true, false, false);
+		do_encoding_open_channelv2(true, true, true, false, true);
+		do_encoding_open_channelv2(true, true, true, true, false);
+		do_encoding_open_channelv2(true, true, true, true, true);
 	}
 
 	fn do_encoding_accept_channel(shutdown: bool) {
@@ -5524,7 +5557,10 @@ mod tests {
 		do_encoding_accept_channel(true);
 	}
 
-	fn do_encoding_accept_channelv2(shutdown: bool) {
+	fn do_encoding_accept_channelv2(
+		shutdown: bool, incl_chan_type: bool, require_confirmed_inputs: bool,
+		disable_channel_reserve: bool,
+	) {
 		let secp_ctx = Secp256k1::new();
 		let (_, pubkey_1) = get_keys_from!(
 			"0101010101010101010101010101010101010101010101010101010101010101",
@@ -5580,11 +5616,16 @@ mod tests {
 				} else {
 					None
 				},
-				channel_type: None,
+				channel_type: if incl_chan_type {
+					Some(ChannelTypeFeatures::empty())
+				} else {
+					None
+				},
 			},
 			funding_satoshis: 1311768467284833366,
 			second_per_commitment_point: pubkey_7,
-			require_confirmed_inputs: None,
+			require_confirmed_inputs: require_confirmed_inputs.then_some(()),
+			disable_channel_reserve: disable_channel_reserve.then_some(()),
 		};
 		let encoded_value = accept_channelv2.encode();
 		let mut target_value =
@@ -5645,13 +5686,36 @@ mod tests {
 					.unwrap(),
 			);
 		}
+		if incl_chan_type {
+			target_value.append(&mut <Vec<u8>>::from_hex("0100").unwrap());
+		}
+		if require_confirmed_inputs {
+			target_value.append(&mut <Vec<u8>>::from_hex("0200").unwrap());
+		}
+		if disable_channel_reserve {
+			target_value.append(&mut <Vec<u8>>::from_hex("0400").unwrap());
+		}
 		assert_eq!(encoded_value, target_value);
 	}
 
 	#[test]
 	fn encoding_accept_channelv2() {
-		do_encoding_accept_channelv2(false);
-		do_encoding_accept_channelv2(true);
+		do_encoding_accept_channelv2(false, false, false, false);
+		do_encoding_accept_channelv2(false, false, false, true);
+		do_encoding_accept_channelv2(false, false, true, false);
+		do_encoding_accept_channelv2(false, false, true, true);
+		do_encoding_accept_channelv2(false, true, false, false);
+		do_encoding_accept_channelv2(false, true, false, true);
+		do_encoding_accept_channelv2(false, true, true, false);
+		do_encoding_accept_channelv2(false, true, true, true);
+		do_encoding_accept_channelv2(true, false, false, false);
+		do_encoding_accept_channelv2(true, false, false, true);
+		do_encoding_accept_channelv2(true, false, true, false);
+		do_encoding_accept_channelv2(true, false, true, true);
+		do_encoding_accept_channelv2(true, true, false, false);
+		do_encoding_accept_channelv2(true, true, false, true);
+		do_encoding_accept_channelv2(true, true, true, false);
+		do_encoding_accept_channelv2(true, true, true, true);
 	}
 
 	#[test]
