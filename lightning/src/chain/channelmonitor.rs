@@ -183,8 +183,13 @@ impl Readable for ChannelMonitorUpdate {
 	}
 }
 
-fn push_monitor_event(pending_monitor_events: &mut Vec<MonitorEvent>, event: MonitorEvent) {
-	pending_monitor_events.push(event);
+fn push_monitor_event(
+	pending_monitor_events: &mut Vec<(u64, MonitorEvent)>, event: MonitorEvent,
+	next_monitor_event_id: &mut u64,
+) {
+	let id = *next_monitor_event_id;
+	*next_monitor_event_id += 1;
+	pending_monitor_events.push((id, event));
 }
 
 /// An event to be processed by the ChannelManager.
@@ -1282,13 +1287,14 @@ pub(crate) struct ChannelMonitorImpl<Signer: EcdsaChannelSigner> {
 	// Note that because the `event_lock` in `ChainMonitor` is only taken in
 	// block/transaction-connected events and *not* during block/transaction-disconnected events,
 	// we further MUST NOT generate events during block/transaction-disconnection.
-	pending_monitor_events: Vec<MonitorEvent>,
+	pending_monitor_events: Vec<(u64, MonitorEvent)>,
 	/// When set, monitor events are retained until explicitly acked rather than cleared on read.
 	///
 	/// Allows the ChannelManager to reconstruct pending HTLC state by replaying monitor events on
 	/// startup, and make the monitor responsible for both off- and on-chain payment resolution. Will
 	/// be always set once support for this feature is complete.
 	persistent_events_enabled: bool,
+	next_monitor_event_id: u64,
 
 	pub(super) pending_events: Vec<Event>,
 	pub(super) is_processing_pending_events: bool,
@@ -1669,32 +1675,38 @@ pub(crate) fn write_chanmon_internal<Signer: EcdsaChannelSigner, W: Writer>(
 		writer.write_all(&payment_preimage.0[..])?;
 	}
 
-	writer.write_all(
-		&(channel_monitor
-			.pending_monitor_events
-			.iter()
-			.filter(|ev| match ev {
-				MonitorEvent::HTLCEvent(_) => true,
-				MonitorEvent::HolderForceClosed(_) => true,
-				MonitorEvent::HolderForceClosedWithInfo { .. } => true,
-				_ => false,
-			})
-			.count() as u64)
-			.to_be_bytes(),
-	)?;
-	for event in channel_monitor.pending_monitor_events.iter() {
-		match event {
-			MonitorEvent::HTLCEvent(upd) => {
-				0u8.write(writer)?;
-				upd.write(writer)?;
-			},
-			MonitorEvent::HolderForceClosed(_) => 1u8.write(writer)?,
-			// `HolderForceClosedWithInfo` replaced `HolderForceClosed` in v0.0.122. To keep
-			// backwards compatibility, we write a `HolderForceClosed` event along with the
-			// `HolderForceClosedWithInfo` event. This is deduplicated in the reader.
-			MonitorEvent::HolderForceClosedWithInfo { .. } => 1u8.write(writer)?,
-			_ => {}, // Covered in the TLV writes below
+	if !channel_monitor.persistent_events_enabled {
+		writer.write_all(
+			&(channel_monitor
+				.pending_monitor_events
+				.iter()
+				.filter(|(_, ev)| match ev {
+					MonitorEvent::HTLCEvent(_) => true,
+					MonitorEvent::HolderForceClosed(_) => true,
+					MonitorEvent::HolderForceClosedWithInfo { .. } => true,
+					_ => false,
+				})
+				.count() as u64)
+				.to_be_bytes(),
+		)?;
+		for (_, event) in channel_monitor.pending_monitor_events.iter() {
+			match event {
+				MonitorEvent::HTLCEvent(upd) => {
+					0u8.write(writer)?;
+					upd.write(writer)?;
+				},
+				MonitorEvent::HolderForceClosed(_) => 1u8.write(writer)?,
+				// `HolderForceClosedWithInfo` replaced `HolderForceClosed` in v0.0.122. To keep
+				// backwards compatibility, we write a `HolderForceClosed` event along with the
+				// `HolderForceClosedWithInfo` event. This is deduplicated in the reader.
+				MonitorEvent::HolderForceClosedWithInfo { .. } => 1u8.write(writer)?,
+				_ => {}, // Covered in the TLV writes below
+			}
 		}
+	} else {
+		// If `persistent_events_enabled` is set, we'll write the events with their event ids in the
+		// TLV section below.
+		writer.write_all(&(0u64).to_be_bytes())?;
 	}
 
 	writer.write_all(&(channel_monitor.pending_events.len() as u64).to_be_bytes())?;
@@ -1729,25 +1741,40 @@ pub(crate) fn write_chanmon_internal<Signer: EcdsaChannelSigner, W: Writer>(
 
 	// If we have a `HolderForceClosedWithInfo` event, we need to write the `HolderForceClosed`
 	// for backwards compatibility.
-	let holder_force_closed_compat = channel_monitor.pending_monitor_events.iter().find_map(|ev| {
-		if let MonitorEvent::HolderForceClosedWithInfo { outpoint, .. } = ev {
-			Some(MonitorEvent::HolderForceClosed(*outpoint))
-		} else {
-			None
-		}
-	});
-	let pending_monitor_events_legacy = Iterable(
-		channel_monitor.pending_monitor_events.iter().chain(holder_force_closed_compat.as_ref()),
-	);
+	let holder_force_closed_compat =
+		channel_monitor.pending_monitor_events.iter().find_map(|(_, ev)| {
+			if let MonitorEvent::HolderForceClosedWithInfo { outpoint, .. } = ev {
+				Some(MonitorEvent::HolderForceClosed(*outpoint))
+			} else {
+				None
+			}
+		});
+	let pending_monitor_events_legacy = if !channel_monitor.persistent_events_enabled {
+		Some(Iterable(
+			channel_monitor
+				.pending_monitor_events
+				.iter()
+				.map(|(_, ev)| ev)
+				.chain(holder_force_closed_compat.as_ref()),
+		))
+	} else {
+		None
+	};
 
 	// Only write `persistent_events_enabled` if it's set to true, as it's an even TLV.
 	let persistent_events_enabled = channel_monitor.persistent_events_enabled.then_some(());
+	let pending_mon_evs_with_ids = if persistent_events_enabled.is_some() {
+		Some(Iterable(channel_monitor.pending_monitor_events.iter()))
+	} else {
+		None
+	};
 
 	write_tlv_fields!(writer, {
 		(1, channel_monitor.funding_spend_confirmed, option),
 		(2, persistent_events_enabled, option),
 		(3, channel_monitor.htlcs_resolved_on_chain, required_vec),
-		(5, pending_monitor_events_legacy, required),
+		(4, pending_mon_evs_with_ids, option),
+		(5, pending_monitor_events_legacy, option),
 		(7, channel_monitor.funding_spend_seen, required),
 		(9, channel_monitor.counterparty_node_id, required),
 		(11, channel_monitor.confirmed_commitment_tx_counterparty_output, option),
@@ -1766,6 +1793,7 @@ pub(crate) fn write_chanmon_internal<Signer: EcdsaChannelSigner, W: Writer>(
 		(34, channel_monitor.alternative_funding_confirmed, option),
 		(35, channel_monitor.is_manual_broadcast, required),
 		(37, channel_monitor.funding_seen_onchain, required),
+		(39, channel_monitor.next_monitor_event_id, required),
 	});
 
 	Ok(())
@@ -1950,6 +1978,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 			payment_preimages: new_hash_map(),
 			pending_monitor_events: Vec::new(),
 			persistent_events_enabled: false,
+			next_monitor_event_id: 0,
 			pending_events: Vec::new(),
 			is_processing_pending_events: false,
 
@@ -2163,7 +2192,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 
 	/// Get the list of HTLCs who's status has been updated on chain. This should be called by
 	/// ChannelManager via [`chain::Watch::release_pending_monitor_events`].
-	pub fn get_and_clear_pending_monitor_events(&self) -> Vec<MonitorEvent> {
+	pub fn get_and_clear_pending_monitor_events(&self) -> Vec<(u64, MonitorEvent)> {
 		self.inner.lock().unwrap().get_and_clear_pending_monitor_events()
 	}
 
@@ -2175,6 +2204,20 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// Generally called by [`chain::Watch::ack_monitor_event`].
 	pub fn ack_monitor_event(&self, _event_id: u64) {
 		// TODO: once events have ids, remove the corresponding event here
+	}
+
+	/// Copies [`MonitorEvent`] state from `other` into `self`.
+	/// Used in tests to align transient runtime state before equality comparison after a
+	/// serialization round-trip.
+	#[cfg(any(test, feature = "_test_utils"))]
+	pub fn copy_monitor_event_state(&self, other: &ChannelMonitor<Signer>) {
+		let (pending, next_id) = {
+			let other_inner = other.inner.lock().unwrap();
+			(other_inner.pending_monitor_events.clone(), other_inner.next_monitor_event_id)
+		};
+		let mut self_inner = self.inner.lock().unwrap();
+		self_inner.pending_monitor_events = pending;
+		self_inner.next_monitor_event_id = next_id;
 	}
 
 	/// Processes [`SpendableOutputs`] events produced from each [`ChannelMonitor`] upon maturity.
@@ -3902,7 +3945,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				outpoint: funding_outpoint,
 				channel_id: self.channel_id,
 			};
-			push_monitor_event(&mut self.pending_monitor_events, event);
+			push_monitor_event(&mut self.pending_monitor_events, event, &mut self.next_monitor_event_id);
 		}
 
 		// Although we aren't signing the transaction directly here, the transaction will be signed
@@ -4493,12 +4536,16 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					"Failing HTLC from late counterparty commitment update immediately \
 					(funding spend already confirmed)"
 				);
-				self.pending_monitor_events.push(MonitorEvent::HTLCEvent(HTLCUpdate {
-					payment_hash,
-					payment_preimage: None,
-					source: source.clone(),
-					htlc_value_satoshis,
-				}));
+				push_monitor_event(
+					&mut self.pending_monitor_events,
+					MonitorEvent::HTLCEvent(HTLCUpdate {
+						payment_hash,
+						payment_preimage: None,
+						source: source.clone(),
+						htlc_value_satoshis,
+					}),
+					&mut self.next_monitor_event_id,
+				);
 				self.htlcs_resolved_on_chain.push(IrrevocablyResolvedHTLC {
 					commitment_tx_output_idx: None,
 					resolving_txid: Some(confirmed_txid),
@@ -4564,10 +4611,14 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	}
 
 	fn push_monitor_event(&mut self, event: MonitorEvent) {
-		push_monitor_event(&mut self.pending_monitor_events, event);
+		push_monitor_event(
+			&mut self.pending_monitor_events,
+			event,
+			&mut self.next_monitor_event_id,
+		);
 	}
 
-	fn get_and_clear_pending_monitor_events(&mut self) -> Vec<MonitorEvent> {
+	fn get_and_clear_pending_monitor_events(&mut self) -> Vec<(u64, MonitorEvent)> {
 		let mut ret = Vec::new();
 		mem::swap(&mut ret, &mut self.pending_monitor_events);
 		ret
@@ -5898,7 +5949,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					continue;
 				}
 				let duplicate_event = self.pending_monitor_events.iter().any(
-					|update| if let &MonitorEvent::HTLCEvent(ref upd) = update {
+					|(_, update)| if let &MonitorEvent::HTLCEvent(ref upd) = update {
 						upd.source == *source
 					} else { false });
 				if duplicate_event {
@@ -5916,7 +5967,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						payment_preimage: None,
 						payment_hash: htlc.payment_hash,
 						htlc_value_satoshis: Some(htlc.amount_msat / 1000),
-					}));
+					}), &mut self.next_monitor_event_id);
 				}
 			}
 		}
@@ -6315,7 +6366,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			if let Some((source, payment_hash, amount_msat)) = payment_data {
 				if accepted_preimage_claim {
 					if !self.pending_monitor_events.iter().any(
-						|update| if let &MonitorEvent::HTLCEvent(ref upd) = update { upd.source == source } else { false }) {
+						|(_, update)| if let &MonitorEvent::HTLCEvent(ref upd) = update { upd.source == source } else { false }) {
 						self.onchain_events_awaiting_threshold_conf.push(OnchainEventEntry {
 							txid: tx.compute_txid(),
 							height,
@@ -6333,11 +6384,11 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 							payment_preimage: Some(payment_preimage),
 							payment_hash,
 							htlc_value_satoshis: Some(amount_msat / 1000),
-						}));
+						}), &mut self.next_monitor_event_id);
 					}
 				} else if offered_preimage_claim {
 					if !self.pending_monitor_events.iter().any(
-						|update| if let &MonitorEvent::HTLCEvent(ref upd) = update {
+						|(_, update)| if let &MonitorEvent::HTLCEvent(ref upd) = update {
 							upd.source == source
 						} else { false }) {
 						self.onchain_events_awaiting_threshold_conf.push(OnchainEventEntry {
@@ -6357,7 +6408,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 							payment_preimage: Some(payment_preimage),
 							payment_hash,
 							htlc_value_satoshis: Some(amount_msat / 1000),
-						}));
+						}), &mut self.next_monitor_event_id);
 					}
 				} else {
 					self.onchain_events_awaiting_threshold_conf.retain(|ref entry| {
@@ -6721,10 +6772,13 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		let mut is_manual_broadcast = RequiredWrapper(None);
 		let mut funding_seen_onchain = RequiredWrapper(None);
 		let mut persistent_events_enabled: Option<()> = None;
+		let mut next_monitor_event_id: Option<u64> = None;
+		let mut pending_mon_evs_with_ids: Option<Vec<ReadableIdMonitorEvent>> = None;
 		read_tlv_fields!(reader, {
 			(1, funding_spend_confirmed, option),
 			(2, persistent_events_enabled, option),
 			(3, htlcs_resolved_on_chain, optional_vec),
+			(4, pending_mon_evs_with_ids, optional_vec),
 			(5, pending_monitor_events_legacy, optional_vec),
 			(7, funding_spend_seen, option),
 			(9, counterparty_node_id, option),
@@ -6744,6 +6798,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			(34, alternative_funding_confirmed, option),
 			(35, is_manual_broadcast, (default_value, false)),
 			(37, funding_seen_onchain, (default_value, true)),
+			(39, next_monitor_event_id, option),
 		});
 
 		#[cfg(not(any(feature = "_test_utils", test)))]
@@ -6781,6 +6836,22 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 				evs.retain(|e| !matches!(e, MonitorEvent::HolderForceClosed(_)));
 			}
 		}
+
+		// If persistent events are enabled, use the events with their persisted IDs from TLV 4.
+		// Otherwise, use the legacy events from TLV 5 and assign sequential IDs.
+		let (next_monitor_event_id, pending_monitor_events): (u64, Vec<(u64, MonitorEvent)>) =
+			if persistent_events_enabled.is_some() {
+				let evs = pending_mon_evs_with_ids.unwrap_or_default()
+					.into_iter().map(|ev| (ev.0, ev.1)).collect();
+				(next_monitor_event_id.unwrap_or(0), evs)
+			} else if let Some(events) = pending_monitor_events_legacy {
+				let next_id = next_monitor_event_id.unwrap_or(events.len() as u64);
+				let evs = events.into_iter().enumerate()
+					.map(|(i, ev)| (i as u64, ev)).collect();
+				(next_id, evs)
+			} else {
+				(next_monitor_event_id.unwrap_or(0), Vec::new())
+			};
 
 		let channel_parameters = channel_parameters.unwrap_or_else(|| {
 			onchain_tx_handler.channel_parameters().clone()
@@ -6899,8 +6970,9 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			current_holder_commitment_number,
 
 			payment_preimages,
-			pending_monitor_events: pending_monitor_events_legacy.unwrap(),
+			pending_monitor_events,
 			persistent_events_enabled: persistent_events_enabled.is_some(),
+			next_monitor_event_id,
 			pending_events,
 			is_processing_pending_events: false,
 
@@ -6946,6 +7018,22 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			}
 		}
 		Ok(Some((best_block.block_hash, monitor)))
+	}
+}
+
+/// Deserialization wrapper for reading a `(u64, MonitorEvent)`.
+/// Necessary because we can't deserialize a (Readable, MaybeReadable) tuple due to trait
+/// conflicts.
+struct ReadableIdMonitorEvent(u64, MonitorEvent);
+
+impl MaybeReadable for ReadableIdMonitorEvent {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Option<Self>, DecodeError> {
+		let id: u64 = Readable::read(reader)?;
+		let event_opt: Option<MonitorEvent> = MaybeReadable::read(reader)?;
+		match event_opt {
+			Some(ev) => Ok(Some(ReadableIdMonitorEvent(id, ev))),
+			None => Ok(None),
+		}
 	}
 }
 
