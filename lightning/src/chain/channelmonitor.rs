@@ -184,10 +184,18 @@ impl Readable for ChannelMonitorUpdate {
 	}
 }
 
+/// Generates a random ID used to identify a [`MonitorEvent`] until it is acknowledged.
+pub(super) fn random_monitor_event_id<ES: EntropySource>(entropy_source: ES) -> u128 {
+	let mut random_bytes = [0u8; 16];
+	random_bytes.copy_from_slice(&entropy_source.get_secure_random_bytes()[..16]);
+	u128::from_be_bytes(random_bytes)
+}
+
 fn push_monitor_event<ES: EntropySource>(
-	pending_monitor_events: &mut Vec<MonitorEvent>, event: MonitorEvent, _entropy_source: ES,
+	pending_monitor_events: &mut Vec<(u128, MonitorEvent)>, event: MonitorEvent, entropy_source: ES,
 ) {
-	pending_monitor_events.push(event);
+	let id = random_monitor_event_id(entropy_source);
+	pending_monitor_events.push((id, event));
 }
 
 /// An event to be processed by the ChannelManager.
@@ -1301,7 +1309,7 @@ pub(crate) struct ChannelMonitorImpl<Signer: EcdsaChannelSigner> {
 	// Note that because the `event_lock` in `ChainMonitor` is only taken in
 	// block/transaction-connected events and *not* during block/transaction-disconnected events,
 	// we further MUST NOT generate events during block/transaction-disconnection.
-	pending_monitor_events: Vec<MonitorEvent>,
+	pending_monitor_events: Vec<(u128, MonitorEvent)>,
 
 	pub(super) pending_events: Vec<Event>,
 	pub(super) is_processing_pending_events: bool,
@@ -1696,7 +1704,7 @@ pub(crate) fn write_chanmon_internal<Signer: EcdsaChannelSigner, W: Writer>(
 		&(channel_monitor
 			.pending_monitor_events
 			.iter()
-			.filter(|ev| match ev {
+			.filter(|(_, ev)| match ev {
 				MonitorEvent::HTLCEvent(_) => true,
 				MonitorEvent::HolderForceClosed(_) => true,
 				MonitorEvent::HolderForceClosedWithInfo { .. } => true,
@@ -1705,7 +1713,7 @@ pub(crate) fn write_chanmon_internal<Signer: EcdsaChannelSigner, W: Writer>(
 			.count() as u64)
 			.to_be_bytes(),
 	)?;
-	for event in channel_monitor.pending_monitor_events.iter() {
+	for (_, event) in channel_monitor.pending_monitor_events.iter() {
 		match event {
 			MonitorEvent::HTLCEvent(upd) => {
 				0u8.write(writer)?;
@@ -1752,16 +1760,22 @@ pub(crate) fn write_chanmon_internal<Signer: EcdsaChannelSigner, W: Writer>(
 
 	// If we have a `HolderForceClosedWithInfo` event, we need to write the `HolderForceClosed`
 	// for backwards compatibility.
-	let holder_force_closed_compat = channel_monitor.pending_monitor_events.iter().find_map(|ev| {
-		if let MonitorEvent::HolderForceClosedWithInfo { outpoint, .. } = ev {
-			Some(MonitorEvent::HolderForceClosed(*outpoint))
-		} else {
-			None
-		}
-	});
-	let pending_monitor_events_legacy = Iterable(
-		channel_monitor.pending_monitor_events.iter().chain(holder_force_closed_compat.as_ref()),
-	);
+	let holder_force_closed_compat =
+		channel_monitor.pending_monitor_events.iter().find_map(|(_, ev)| {
+			if let MonitorEvent::HolderForceClosedWithInfo { outpoint, .. } = ev {
+				Some(MonitorEvent::HolderForceClosed(*outpoint))
+			} else {
+				None
+			}
+		});
+	let pending_monitor_events_legacy = Some(Iterable(
+		channel_monitor
+			.pending_monitor_events
+			.iter()
+			.map(|(_, ev)| ev)
+			.chain(holder_force_closed_compat.as_ref()),
+	));
+	let pending_mon_evs_with_ids = Some(Iterable(channel_monitor.pending_monitor_events.iter()));
 
 	let legacy_alternative_funding_confirmed = channel_monitor
 		.alternative_funding_confirmed
@@ -1772,7 +1786,7 @@ pub(crate) fn write_chanmon_internal<Signer: EcdsaChannelSigner, W: Writer>(
 	write_tlv_fields!(writer, {
 		(1, channel_monitor.funding_spend_confirmed, option),
 		(3, channel_monitor.htlcs_resolved_on_chain, required_vec),
-		(5, pending_monitor_events_legacy, required), // Equivalent to required_vec because Iterable also writes as WithoutLength
+		(5, pending_monitor_events_legacy, option), // Equivalent to optional_vec because Iterable also writes as WithoutLength
 		(7, channel_monitor.funding_spend_seen, required),
 		(9, channel_monitor.counterparty_node_id, required),
 		(11, channel_monitor.confirmed_commitment_tx_counterparty_output, option),
@@ -1795,6 +1809,7 @@ pub(crate) fn write_chanmon_internal<Signer: EcdsaChannelSigner, W: Writer>(
 		(41, channel_monitor.funding.contribution, option),
 		(43, channel_monitor.funding_tx_confirmed_in, option),
 		(45, alternative_funding_confirmed_block, option),
+		(47, pending_mon_evs_with_ids, option),
 	});
 
 	Ok(())
@@ -2200,7 +2215,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 
 	/// Get the list of HTLCs who's status has been updated on chain. This should be called by
 	/// ChannelManager via [`chain::Watch::release_pending_monitor_events`].
-	pub fn get_and_clear_pending_monitor_events(&self) -> Vec<MonitorEvent> {
+	pub fn get_and_clear_pending_monitor_events(&self) -> Vec<(u128, MonitorEvent)> {
 		self.inner.lock().unwrap().get_and_clear_pending_monitor_events()
 	}
 
@@ -2208,6 +2223,24 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// Generally called by [`chain::Watch::ack_monitor_event`].
 	pub fn ack_monitor_event(&self, _event_id: u128) {
 		// TODO: once events have ids, remove the corresponding event here
+	}
+
+	/// Copies [`MonitorEvent`] state from `other` into `self`.
+	/// Used in tests to align transient runtime state before equality comparison after a
+	/// serialization round-trip, where `self` is the round-tripped monitor and `other` is the
+	/// original.
+	#[cfg(any(test, feature = "_test_utils"))]
+	pub fn copy_monitor_event_state(&self, other: &ChannelMonitor<Signer>) {
+		let pending = {
+			let other_inner = other.inner.lock().unwrap();
+			other_inner.pending_monitor_events.clone()
+		};
+		let mut self_inner = self.inner.lock().unwrap();
+		assert!(
+			self_inner.pending_monitor_events == pending,
+			"Monitor events failed to round-trip serialization"
+		);
+		self_inner.pending_monitor_events = pending;
 	}
 
 	/// Processes [`SpendableOutputs`] events produced from each [`ChannelMonitor`] upon maturity.
@@ -4674,7 +4707,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		push_monitor_event(&mut self.pending_monitor_events, event, entropy_source);
 	}
 
-	fn get_and_clear_pending_monitor_events(&mut self) -> Vec<MonitorEvent> {
+	fn get_and_clear_pending_monitor_events(&mut self) -> Vec<(u128, MonitorEvent)> {
 		let mut ret = Vec::new();
 		mem::swap(&mut ret, &mut self.pending_monitor_events);
 		ret
@@ -6017,7 +6050,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					continue;
 				}
 				let duplicate_event = self.pending_monitor_events.iter().any(
-					|update| if let &MonitorEvent::HTLCEvent(ref upd) = update {
+					|(_, update)| if let &MonitorEvent::HTLCEvent(ref upd) = update {
 						upd.source == *source
 					} else { false });
 				if duplicate_event {
@@ -6510,12 +6543,12 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					// was about to expire while this one was still unresolved on chain. The counterparty
 					// has now revealed the preimage instead, and events still queued here have not been
 					// provided to anyone yet, so drop the failure in favor of claiming upstream.
-					self.pending_monitor_events.retain(|update| match update {
+					self.pending_monitor_events.retain(|(_, update)| match update {
 						MonitorEvent::HTLCEvent(upd) => upd.source != source || upd.payment_preimage.is_some(),
 						_ => true,
 					});
 					if !self.pending_monitor_events.iter().any(
-						|update| if let &MonitorEvent::HTLCEvent(ref upd) = update { upd.source == source } else { false }) {
+						|(_, update)| if let &MonitorEvent::HTLCEvent(ref upd) = update { upd.source == source } else { false }) {
 						push_monitor_event(&mut self.pending_monitor_events, MonitorEvent::HTLCEvent(HTLCUpdate {
 							source,
 							payment_preimage: Some(payment_preimage),
@@ -6899,6 +6932,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		let mut current_funding_contribution = None;
 		let mut funding_tx_confirmed_in = None;
 		let mut alternative_funding_confirmed_block = None;
+		let mut pending_mon_evs_with_ids: Option<Vec<ReadableIdMonitorEvent>> = None;
 		read_tlv_fields!(reader, {
 			(1, funding_spend_confirmed, option),
 			(3, htlcs_resolved_on_chain, optional_vec),
@@ -6925,6 +6959,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			(41, current_funding_contribution, option),
 			(43, funding_tx_confirmed_in, option),
 			(45, alternative_funding_confirmed_block, option),
+			(47, pending_mon_evs_with_ids, optional_vec),
 		});
 		if let Some(previous_blocks) = best_block_previous_blocks {
 			best_block.previous_blocks = previous_blocks;
@@ -6967,6 +7002,17 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 				evs.retain(|e| !matches!(e, MonitorEvent::HolderForceClosed(_)));
 			}
 		}
+
+		let pending_monitor_events: Vec<(u128, MonitorEvent)> =
+			if let Some(pending_mon_evs_with_ids) = pending_mon_evs_with_ids {
+				pending_mon_evs_with_ids.into_iter().map(|ev| (ev.0, ev.1)).collect()
+			} else if let Some(events) = pending_monitor_events_legacy {
+				events.into_iter()
+					.map(|ev| (random_monitor_event_id(entropy_source), ev))
+					.collect()
+			} else {
+				Vec::new()
+			};
 
 		let channel_parameters = channel_parameters.unwrap_or_else(|| {
 			onchain_tx_handler.channel_parameters().clone()
@@ -7086,7 +7132,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			current_holder_commitment_number,
 
 			payment_preimages,
-			pending_monitor_events: pending_monitor_events_legacy.unwrap(),
+			pending_monitor_events,
 			pending_events,
 			is_processing_pending_events: false,
 
@@ -7133,6 +7179,22 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			}
 		}
 		Ok(Some((best_block, monitor)))
+	}
+}
+
+/// Deserialization wrapper for reading a `(u128, MonitorEvent)`.
+/// Necessary because we can't deserialize a `(Readable, MaybeReadable)` tuple due to trait
+/// conflicts.
+struct ReadableIdMonitorEvent(u128, MonitorEvent);
+
+impl MaybeReadable for ReadableIdMonitorEvent {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Option<Self>, DecodeError> {
+		let id: u128 = Readable::read(reader)?;
+		let event_opt: Option<MonitorEvent> = MaybeReadable::read(reader)?;
+		match event_opt {
+			Some(ev) => Ok(Some(ReadableIdMonitorEvent(id, ev))),
+			None => Ok(None),
+		}
 	}
 }
 

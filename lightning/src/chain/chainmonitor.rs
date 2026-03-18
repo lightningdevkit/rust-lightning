@@ -33,8 +33,8 @@ use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 #[cfg(peer_storage)]
 use crate::chain::channelmonitor::write_chanmon_internal;
 use crate::chain::channelmonitor::{
-	Balance, ChannelMonitor, ChannelMonitorUpdate, MonitorEvent, TransactionOutputs,
-	WithChannelMonitor,
+	random_monitor_event_id, Balance, ChannelMonitor, ChannelMonitorUpdate, MonitorEvent,
+	TransactionOutputs, WithChannelMonitor,
 };
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::chain::{BlockLocator, ChannelMonitorUpdateStatus, WatchedOutput};
@@ -383,7 +383,7 @@ pub struct ChainMonitor<
 	entropy_source: ES,
 	/// "User-provided" (ie persistence-completion/-failed) [`MonitorEvent`]s. These came directly
 	/// from the user and not from a [`ChannelMonitor`].
-	pending_monitor_events: Mutex<Vec<(OutPoint, ChannelId, Vec<MonitorEvent>, PublicKey)>>,
+	pending_monitor_events: Mutex<Vec<(OutPoint, ChannelId, Vec<(u128, MonitorEvent)>, PublicKey)>>,
 	/// The best block height seen, used as a proxy for the passage of time.
 	highest_chain_height: AtomicUsize,
 
@@ -771,10 +771,14 @@ where
 		&self, funding_txo: OutPoint, channel_id: ChannelId, monitor_update_id: u64,
 		counterparty_node_id: PublicKey,
 	) {
+		let event_id = random_monitor_event_id(&self.entropy_source);
 		self.pending_monitor_events.lock().unwrap().push((
 			funding_txo,
 			channel_id,
-			vec![MonitorEvent::Completed { funding_txo, channel_id, monitor_update_id }],
+			vec![(
+				event_id,
+				MonitorEvent::Completed { funding_txo, channel_id, monitor_update_id },
+			)],
 			counterparty_node_id,
 		));
 	}
@@ -1669,7 +1673,7 @@ where
 
 	fn release_pending_monitor_events(
 		&self,
-	) -> Vec<(OutPoint, ChannelId, Vec<MonitorEvent>, PublicKey)> {
+	) -> Vec<(OutPoint, ChannelId, Vec<(u128, MonitorEvent)>, PublicKey)> {
 		for (channel_id, update_id) in self.persister.get_and_clear_completed_updates() {
 			let _ = self.channel_monitor_updated(channel_id, update_id);
 		}
