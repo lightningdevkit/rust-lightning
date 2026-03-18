@@ -13493,7 +13493,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		for (funding_outpoint, channel_id, mut monitor_events, counterparty_node_id) in
 			pending_monitor_events.drain(..)
 		{
-			for monitor_event in monitor_events.drain(..) {
+			for (_event_id, monitor_event) in monitor_events.drain(..) {
 				match monitor_event {
 					MonitorEvent::HTLCEvent(htlc_update) => {
 						let logger = WithContext::from(
