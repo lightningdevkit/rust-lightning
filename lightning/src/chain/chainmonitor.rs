@@ -1639,7 +1639,7 @@ where
 
 	fn release_pending_monitor_events(
 		&self,
-	) -> Vec<(OutPoint, ChannelId, Vec<MonitorEvent>, PublicKey)> {
+	) -> Vec<(OutPoint, ChannelId, Vec<(u64, MonitorEvent)>, PublicKey)> {
 		for (channel_id, update_id) in self.persister.get_and_clear_completed_updates() {
 			let _ = self.channel_monitor_updated(channel_id, update_id);
 		}

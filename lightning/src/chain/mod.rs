@@ -417,6 +417,10 @@ pub trait Watch<ChannelSigner: EcdsaChannelSigner> {
 	/// Returns any monitor events since the last call. Subsequent calls must only return new
 	/// events.
 	///
+	/// Each event comes with a corresponding id. Once the event is processed, call
+	/// [`Watch::ack_monitor_event`] with the corresponding id and channel id. Unacknowledged events
+	/// will be re-provided by this method after startup.
+	///
 	/// Note that after any block- or transaction-connection calls to a [`ChannelMonitor`], no
 	/// further events may be returned here until the [`ChannelMonitor`] has been fully persisted
 	/// to disk.
@@ -425,7 +429,7 @@ pub trait Watch<ChannelSigner: EcdsaChannelSigner> {
 	/// [`MonitorEvent::Completed`] here, see [`ChannelMonitorUpdateStatus::InProgress`].
 	fn release_pending_monitor_events(
 		&self,
-	) -> Vec<(OutPoint, ChannelId, Vec<MonitorEvent>, PublicKey)>;
+	) -> Vec<(OutPoint, ChannelId, Vec<(u64, MonitorEvent)>, PublicKey)>;
 
 	/// Acknowledges and removes a [`MonitorEvent`] previously returned by
 	/// [`Watch::release_pending_monitor_events`] by its event ID.
@@ -454,7 +458,7 @@ impl<ChannelSigner: EcdsaChannelSigner, T: Watch<ChannelSigner> + ?Sized, W: Der
 
 	fn release_pending_monitor_events(
 		&self,
-	) -> Vec<(OutPoint, ChannelId, Vec<MonitorEvent>, PublicKey)> {
+	) -> Vec<(OutPoint, ChannelId, Vec<(u64, MonitorEvent)>, PublicKey)> {
 		self.deref().release_pending_monitor_events()
 	}
 
