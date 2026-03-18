@@ -549,6 +549,22 @@ struct ClaimableHTLC {
 }
 
 impl ClaimableHTLC {
+	pub(crate) fn new(
+		prev_hop: HTLCPreviousHopData, value: u64, sender_intended_value: u64, cltv_expiry: u32,
+		onion_payload: OnionPayload, counterparty_skimmed_fee_msat: Option<u64>,
+	) -> Self {
+		ClaimableHTLC {
+			prev_hop,
+			cltv_expiry,
+			value,
+			sender_intended_value,
+			onion_payload,
+			timer_ticks: 0,
+			total_value_received: None,
+			counterparty_skimmed_fee_msat,
+		}
+	}
+
 	// Increments timer ticks and returns a boolean indicating whether HTLC is timed out.
 	fn mpp_timer_tick(&mut self) -> bool {
 		self.timer_ticks += 1;
@@ -8479,19 +8495,17 @@ impl<
 						..
 					} = prev_hop;
 
-					let claimable_htlc = ClaimableHTLC {
+					let claimable_htlc = ClaimableHTLC::new(
 						prev_hop,
 						// We differentiate the received value from the sender intended value
 						// if possible so that we don't prematurely mark MPP payments complete
 						// if routing nodes overpay
-						value: htlc_value,
-						sender_intended_value: outgoing_amt_msat,
-						timer_ticks: 0,
-						total_value_received: None,
+						htlc_value,
+						outgoing_amt_msat,
 						cltv_expiry,
 						onion_payload,
-						counterparty_skimmed_fee_msat: skimmed_fee_msat,
-					};
+						skimmed_fee_msat,
+					);
 
 					macro_rules! fail_receive_htlc {
 						($committed_to_claimable: expr) => {
