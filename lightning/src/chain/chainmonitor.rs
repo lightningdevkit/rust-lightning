@@ -366,9 +366,6 @@ pub struct ChainMonitor<
 	fee_estimator: F,
 	persister: P,
 	_entropy_source: ES,
-	/// "User-provided" (ie persistence-completion/-failed) [`MonitorEvent`]s. These came directly
-	/// from the user and not from a [`ChannelMonitor`].
-	pending_monitor_events: Mutex<Vec<(OutPoint, ChannelId, Vec<MonitorEvent>, PublicKey)>>,
 	/// The best block height seen, used as a proxy for the passage of time.
 	highest_chain_height: AtomicUsize,
 
@@ -436,7 +433,6 @@ where
 			logger,
 			fee_estimator: feeest,
 			_entropy_source,
-			pending_monitor_events: Mutex::new(Vec::new()),
 			highest_chain_height: AtomicUsize::new(0),
 			event_notifier: Arc::clone(&event_notifier),
 			persister: AsyncPersister { persister, event_notifier },
@@ -657,7 +653,6 @@ where
 			fee_estimator: feeest,
 			persister,
 			_entropy_source,
-			pending_monitor_events: Mutex::new(Vec::new()),
 			highest_chain_height: AtomicUsize::new(0),
 			event_notifier: Arc::new(Notifier::new()),
 			pending_send_only_events: Mutex::new(Vec::new()),
@@ -802,16 +797,11 @@ where
 			return Ok(());
 		}
 		let funding_txo = monitor_data.monitor.get_funding_txo();
-		self.pending_monitor_events.lock().unwrap().push((
+		monitor_data.monitor.push_monitor_event(MonitorEvent::Completed {
 			funding_txo,
 			channel_id,
-			vec![MonitorEvent::Completed {
-				funding_txo,
-				channel_id,
-				monitor_update_id: monitor_data.monitor.get_latest_update_id(),
-			}],
-			monitor_data.monitor.get_counterparty_node_id(),
-		));
+			monitor_update_id: monitor_data.monitor.get_latest_update_id(),
+		});
 
 		self.event_notifier.notify();
 		Ok(())
@@ -824,14 +814,11 @@ where
 	pub fn force_channel_monitor_updated(&self, channel_id: ChannelId, monitor_update_id: u64) {
 		let monitors = self.monitors.read().unwrap();
 		let monitor = &monitors.get(&channel_id).unwrap().monitor;
-		let counterparty_node_id = monitor.get_counterparty_node_id();
-		let funding_txo = monitor.get_funding_txo();
-		self.pending_monitor_events.lock().unwrap().push((
-			funding_txo,
+		monitor.push_monitor_event(MonitorEvent::Completed {
+			funding_txo: monitor.get_funding_txo(),
 			channel_id,
-			vec![MonitorEvent::Completed { funding_txo, channel_id, monitor_update_id }],
-			counterparty_node_id,
-		));
+			monitor_update_id,
+		});
 		self.event_notifier.notify();
 	}
 
@@ -1266,21 +1253,13 @@ where
 					// The channel is post-close (funding spend seen, lockdown, or
 					// holder tx signed). Return InProgress so ChannelManager freezes
 					// the channel until the force-close MonitorEvents are processed.
-					// Push a Completed event into pending_monitor_events so it gets
-					// picked up after the per-monitor events in the next
-					// release_pending_monitor_events call.
-					let funding_txo = monitor.get_funding_txo();
-					let channel_id = monitor.channel_id();
-					self.pending_monitor_events.lock().unwrap().push((
-						funding_txo,
-						channel_id,
-						vec![MonitorEvent::Completed {
-							funding_txo,
-							channel_id,
-							monitor_update_id: monitor.get_latest_update_id(),
-						}],
-						monitor.get_counterparty_node_id(),
-					));
+					// Push a Completed event into the monitor so it gets picked up
+					// in the next release_pending_monitor_events call.
+					monitor.push_monitor_event(MonitorEvent::Completed {
+						funding_txo: monitor.get_funding_txo(),
+						channel_id: monitor.channel_id(),
+						monitor_update_id: monitor.get_latest_update_id(),
+					});
 					log_debug!(
 						logger,
 						"Deferring completion of ChannelMonitorUpdate id {:?} (channel is post-close)",
@@ -1665,10 +1644,6 @@ where
 				));
 			}
 		}
-		// Drain pending_monitor_events (which includes deferred post-close
-		// completions) after per-monitor events so that force-close
-		// MonitorEvents are processed by ChannelManager first.
-		pending_monitor_events.extend(self.pending_monitor_events.lock().unwrap().split_off(0));
 		pending_monitor_events
 	}
 }
