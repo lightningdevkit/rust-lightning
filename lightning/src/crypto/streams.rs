@@ -248,7 +248,7 @@ impl<T: Readable> LengthReadableArgs<[u8; 32]> for ChaChaPolyReadAdapter<T> {
 		let readable: T = Readable::read(&mut chacha_stream)?;
 		while chacha_stream.read.bytes_remain() {
 			let mut buf = [0; 256];
-			if chacha_stream.read(&mut buf)? == 0{
+			if chacha_stream.read(&mut buf)? == 0 {
 				return Err(DecodeError::ShortRead);
 			}
 		}
