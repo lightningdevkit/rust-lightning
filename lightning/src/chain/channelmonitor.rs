@@ -68,8 +68,8 @@ use crate::util::byte_utils;
 use crate::util::logger::{Logger, WithContext};
 use crate::util::persist::MonitorName;
 use crate::util::ser::{
-	MaybeReadable, Readable, ReadableArgs, RequiredWrapper, UpgradableRequired, Writeable, Writer,
-	U48,
+	Iterable, MaybeReadable, Readable, ReadableArgs, RequiredWrapper, UpgradableRequired,
+	Writeable, Writer, U48,
 };
 
 #[allow(unused_imports)]
@@ -1719,24 +1719,23 @@ pub(crate) fn write_chanmon_internal<Signer: EcdsaChannelSigner, W: Writer>(
 	channel_monitor.lockdown_from_offchain.write(writer)?;
 	channel_monitor.holder_tx_signed.write(writer)?;
 
-	// If we have a `HolderForceClosedWithInfo` event, we need to write the `HolderForceClosed` for backwards compatibility.
-	let pending_monitor_events =
-		match channel_monitor.pending_monitor_events.iter().find(|ev| match ev {
-			MonitorEvent::HolderForceClosedWithInfo { .. } => true,
-			_ => false,
-		}) {
-			Some(MonitorEvent::HolderForceClosedWithInfo { outpoint, .. }) => {
-				let mut pending_monitor_events = channel_monitor.pending_monitor_events.clone();
-				pending_monitor_events.push(MonitorEvent::HolderForceClosed(*outpoint));
-				pending_monitor_events
-			},
-			_ => channel_monitor.pending_monitor_events.clone(),
-		};
+	// If we have a `HolderForceClosedWithInfo` event, we need to write the `HolderForceClosed`
+	// for backwards compatibility.
+	let holder_force_closed_compat = channel_monitor.pending_monitor_events.iter().find_map(|ev| {
+		if let MonitorEvent::HolderForceClosedWithInfo { outpoint, .. } = ev {
+			Some(MonitorEvent::HolderForceClosed(*outpoint))
+		} else {
+			None
+		}
+	});
+	let pending_monitor_events = Iterable(
+		channel_monitor.pending_monitor_events.iter().chain(holder_force_closed_compat.as_ref()),
+	);
 
 	write_tlv_fields!(writer, {
 		(1, channel_monitor.funding_spend_confirmed, option),
 		(3, channel_monitor.htlcs_resolved_on_chain, required_vec),
-		(5, pending_monitor_events, required_vec),
+		(5, pending_monitor_events, required), // Equivalent to required_vec because Iterable also writes as WithoutLength
 		(7, channel_monitor.funding_spend_seen, required),
 		(9, channel_monitor.counterparty_node_id, required),
 		(11, channel_monitor.confirmed_commitment_tx_counterparty_output, option),
