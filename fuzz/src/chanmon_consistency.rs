@@ -864,36 +864,41 @@ fn assert_action_timeout_awaiting_response(action: &msgs::ErrorAction) {
 	));
 }
 
-pub enum ChanType {
+enum ChanType {
 	Legacy,
 	KeyedAnchors,
 	ZeroFeeCommitments,
 }
 
 #[inline]
-pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
-	data: &[u8], underlying_out: Out, chan_type: ChanType,
-) {
+pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], underlying_out: Out) {
 	let out = SearchingOutput::new(underlying_out);
 	let broadcast_a = Arc::new(TestBroadcaster { txn_broadcasted: RefCell::new(Vec::new()) });
 	let broadcast_b = Arc::new(TestBroadcaster { txn_broadcasted: RefCell::new(Vec::new()) });
 	let broadcast_c = Arc::new(TestBroadcaster { txn_broadcasted: RefCell::new(Vec::new()) });
 	let router = FuzzRouter {};
 
-	// Read initial monitor styles from fuzz input (1 byte: 2 bits per node)
-	let initial_mon_styles = if !data.is_empty() { data[0] } else { 0 };
+	// Read initial monitor styles and channel type from fuzz input byte 0:
+	// bits 0-2: monitor styles (1 bit per node)
+	// bits 3-4: channel type (0=Legacy, 1=KeyedAnchors, 2=ZeroFeeCommitments)
+	let config_byte = if !data.is_empty() { data[0] } else { 0 };
+	let chan_type = match (config_byte >> 3) & 0b11 {
+		0 => ChanType::Legacy,
+		1 => ChanType::KeyedAnchors,
+		_ => ChanType::ZeroFeeCommitments,
+	};
 	let mon_style = [
-		RefCell::new(if initial_mon_styles & 0b01 != 0 {
+		RefCell::new(if config_byte & 0b01 != 0 {
 			ChannelMonitorUpdateStatus::InProgress
 		} else {
 			ChannelMonitorUpdateStatus::Completed
 		}),
-		RefCell::new(if initial_mon_styles & 0b10 != 0 {
+		RefCell::new(if config_byte & 0b10 != 0 {
 			ChannelMonitorUpdateStatus::InProgress
 		} else {
 			ChannelMonitorUpdateStatus::Completed
 		}),
-		RefCell::new(if initial_mon_styles & 0b100 != 0 {
+		RefCell::new(if config_byte & 0b100 != 0 {
 			ChannelMonitorUpdateStatus::InProgress
 		} else {
 			ChannelMonitorUpdateStatus::Completed
@@ -1436,7 +1441,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 		}};
 	}
 
-	let mut read_pos = 1; // First byte was consumed for initial mon_style
+	let mut read_pos = 1; // First byte was consumed for initial config (mon_style + chan_type)
 	macro_rules! get_slice {
 		($len: expr) => {{
 			let slice_len = $len as usize;
@@ -2843,26 +2848,10 @@ impl<O: Output> SearchingOutput<O> {
 }
 
 pub fn chanmon_consistency_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
-	do_test(data, out.clone(), ChanType::Legacy);
-	do_test(data, out.clone(), ChanType::KeyedAnchors);
-	do_test(data, out, ChanType::ZeroFeeCommitments);
+	do_test(data, out);
 }
 
 #[no_mangle]
 pub extern "C" fn chanmon_consistency_run(data: *const u8, datalen: usize) {
-	do_test(
-		unsafe { std::slice::from_raw_parts(data, datalen) },
-		test_logger::DevNull {},
-		ChanType::Legacy,
-	);
-	do_test(
-		unsafe { std::slice::from_raw_parts(data, datalen) },
-		test_logger::DevNull {},
-		ChanType::KeyedAnchors,
-	);
-	do_test(
-		unsafe { std::slice::from_raw_parts(data, datalen) },
-		test_logger::DevNull {},
-		ChanType::ZeroFeeCommitments,
-	);
+	do_test(unsafe { std::slice::from_raw_parts(data, datalen) }, test_logger::DevNull {});
 }
