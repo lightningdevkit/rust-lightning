@@ -250,6 +250,7 @@ jobs:
         with:
           name: hfuzz-corpus
           path: fuzz/hfuzz_workspace
+          compression-level: 0
 
   linting:
     runs-on: ubuntu-latest
