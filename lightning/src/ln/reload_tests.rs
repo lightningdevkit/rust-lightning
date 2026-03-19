@@ -853,16 +853,20 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool, double_rest
 	if persist_both_monitors {
 		if let Event::ChannelClosed { reason: ClosureReason::OutdatedChannelManager, .. } = events[2] { } else { panic!(); }
 		if let Event::PaymentClaimed { amount_msat: 15_000_000, .. } = events[3] { } else { panic!(); }
-		check_added_monitors(&nodes[3], 4);
+		// 4 monitors for preimage updates + 1 for InboundPaymentClaimed marking the payment as
+		// claimed in the closed channel's monitor.
+		check_added_monitors(&nodes[3], 5);
 	} else {
 		if let Event::PaymentClaimed { amount_msat: 15_000_000, .. } = events[2] { } else { panic!(); }
+		// Only one channel closed; the durable_preimage_channel is the live one, so no extra
+		// InboundPaymentClaimed update is generated.
 		check_added_monitors(&nodes[3], 3);
 	}
 
 	// Now that we've processed background events, the preimage should have been copied into the
 	// non-persisted monitor:
-	assert!(get_monitor!(nodes[3], chan_id_persisted).get_stored_preimages().contains_key(&payment_hash));
-	assert!(get_monitor!(nodes[3], chan_id_not_persisted).get_stored_preimages().contains_key(&payment_hash));
+	assert!(get_monitor!(nodes[3], chan_id_persisted).test_get_all_stored_preimages().contains_key(&payment_hash));
+	assert!(get_monitor!(nodes[3], chan_id_not_persisted).test_get_all_stored_preimages().contains_key(&payment_hash));
 
 	// On restart, we should also get a duplicate PaymentClaimed event as we persisted the
 	// ChannelManager prior to handling the original one.
