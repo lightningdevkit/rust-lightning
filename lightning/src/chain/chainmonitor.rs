@@ -1279,15 +1279,17 @@ where
 	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 	pub fn flush(&self, count: usize, logger: &L) {
 		let _guard = self.flush_lock.lock().unwrap();
-		if count > 0 {
-			log_info!(logger, "Flushing up to {} monitor operations", count);
+		if count == 0 {
+			return;
 		}
+		log_info!(logger, "Flushing up to {} monitor operations", count);
 		for _ in 0..count {
 			let mut queue = self.pending_ops.lock().unwrap();
 			let op = match queue.pop_front() {
 				Some(op) => op,
 				None => {
 					debug_assert!(false, "flush count exceeded queue length");
+					log_error!(logger, "flush count exceeded queue length");
 					return;
 				},
 			};
@@ -1341,6 +1343,10 @@ where
 				},
 			}
 		}
+
+		// A flushed monitor update may have generated new events, so assume we have
+		// some and wake the event processor.
+		self.event_notifier.notify();
 	}
 }
 

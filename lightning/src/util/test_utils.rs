@@ -518,6 +518,10 @@ pub struct TestChainMonitor<'a> {
 	pub expect_monitor_round_trip_fail: Mutex<Option<ChannelId>>,
 	#[cfg(feature = "std")]
 	pub write_blocker: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+	/// When set to `true`, `release_pending_monitor_events` will not auto-flush pending
+	/// deferred operations. This allows tests to control exactly when queued monitor updates
+	/// are applied to the in-memory monitor.
+	pub pause_flush: AtomicBool,
 }
 impl<'a> TestChainMonitor<'a> {
 	pub fn new(
@@ -577,6 +581,7 @@ impl<'a> TestChainMonitor<'a> {
 			expect_monitor_round_trip_fail: Mutex::new(None),
 			#[cfg(feature = "std")]
 			write_blocker: Mutex::new(None),
+			pause_flush: AtomicBool::new(false),
 		}
 	}
 
@@ -701,12 +706,18 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 		)
 		.unwrap()
 		.1;
+		// failed_back_htlc_ids is an in-memory-only dedup guard that is intentionally not
+		// serialized. Copy it to the deserialized monitor for the comparison, then clear
+		// it so it doesn't leak into the rest of the test.
+		let failed_back = monitor.inner.lock().unwrap().failed_back_htlc_ids.clone();
+		new_monitor.inner.lock().unwrap().failed_back_htlc_ids = failed_back;
 		if let Some(chan_id) = self.expect_monitor_round_trip_fail.lock().unwrap().take() {
 			assert_eq!(chan_id, channel_id);
 			assert!(new_monitor != *monitor);
 		} else {
 			assert!(new_monitor == *monitor);
 		}
+		new_monitor.inner.lock().unwrap().failed_back_htlc_ids.clear();
 		self.added_monitors.lock().unwrap().push((channel_id, new_monitor));
 		update_res
 	}
@@ -718,8 +729,10 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 		// completion events. When not in deferred mode the queue is empty so this only
 		// costs a lock acquisition. It ensures standard test helpers (route_payment, etc.)
 		// work with deferred chain monitors.
-		let count = self.chain_monitor.pending_operation_count();
-		self.chain_monitor.flush(count, &self.logger);
+		if !self.pause_flush.load(Ordering::Acquire) {
+			let count = self.chain_monitor.pending_operation_count();
+			self.chain_monitor.flush(count, &self.logger);
+		}
 		return self.chain_monitor.release_pending_monitor_events();
 	}
 }
