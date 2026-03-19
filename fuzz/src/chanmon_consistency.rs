@@ -1505,7 +1505,6 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], underlying_out:
 	                  counterparty_node_id: &PublicKey,
 	                  channel_id: &ChannelId,
 	                  wallet: &TestWalletSource,
-	                  logger: Arc<dyn Logger + MaybeSend + MaybeSync>,
 	                  funding_feerate_sat_per_kw: FeeRate| {
 		// We conditionally splice out `MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS` only when the node
 		// has double the balance required to send a payment upon a `0xff` byte. We do this to
@@ -1525,12 +1524,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], underlying_out:
 				value: Amount::from_sat(MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS),
 				script_pubkey: wallet.get_change_script().unwrap(),
 			}];
-			funding_template.splice_out_sync(
-				outputs,
-				feerate,
-				FeeRate::MAX,
-				&WalletSync::new(wallet, logger.clone()),
-			)
+			funding_template.splice_out(outputs, feerate, FeeRate::MAX)
 		});
 	};
 
@@ -2473,30 +2467,26 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], underlying_out:
 			0xa4 => {
 				let cp_node_id = nodes[1].get_our_node_id();
 				let wallet = &wallets[0];
-				let logger = Arc::clone(&loggers[0]);
 				let feerate_sat_per_kw = fee_estimators[0].feerate_sat_per_kw();
-				splice_out(&nodes[0], &cp_node_id, &chan_a_id, wallet, logger, feerate_sat_per_kw);
+				splice_out(&nodes[0], &cp_node_id, &chan_a_id, wallet, feerate_sat_per_kw);
 			},
 			0xa5 => {
 				let cp_node_id = nodes[0].get_our_node_id();
 				let wallet = &wallets[1];
-				let logger = Arc::clone(&loggers[1]);
 				let feerate_sat_per_kw = fee_estimators[1].feerate_sat_per_kw();
-				splice_out(&nodes[1], &cp_node_id, &chan_a_id, wallet, logger, feerate_sat_per_kw);
+				splice_out(&nodes[1], &cp_node_id, &chan_a_id, wallet, feerate_sat_per_kw);
 			},
 			0xa6 => {
 				let cp_node_id = nodes[2].get_our_node_id();
 				let wallet = &wallets[1];
-				let logger = Arc::clone(&loggers[1]);
 				let feerate_sat_per_kw = fee_estimators[1].feerate_sat_per_kw();
-				splice_out(&nodes[1], &cp_node_id, &chan_b_id, wallet, logger, feerate_sat_per_kw);
+				splice_out(&nodes[1], &cp_node_id, &chan_b_id, wallet, feerate_sat_per_kw);
 			},
 			0xa7 => {
 				let cp_node_id = nodes[1].get_our_node_id();
 				let wallet = &wallets[2];
-				let logger = Arc::clone(&loggers[2]);
 				let feerate_sat_per_kw = fee_estimators[2].feerate_sat_per_kw();
-				splice_out(&nodes[2], &cp_node_id, &chan_b_id, wallet, logger, feerate_sat_per_kw);
+				splice_out(&nodes[2], &cp_node_id, &chan_b_id, wallet, feerate_sat_per_kw);
 			},
 
 			// Sync node by 1 block to cover confirmation of a transaction.
