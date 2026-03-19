@@ -16,6 +16,7 @@ use crate::ln::msgs::{
 };
 use crate::ln::outbound_payment::RecipientOnionFields;
 use crate::sign::ecdsa::EcdsaChannelSigner;
+use crate::sign::ChannelSigner;
 use crate::types::features::ChannelTypeFeatures;
 use crate::util::config::UserConfig;
 use crate::util::errors::APIError;
@@ -472,7 +473,7 @@ pub fn do_test_update_fee_that_funder_cannot_afford(channel_type_features: Chann
 		let channel = get_channel_ref!(nodes[1], nodes[0], per_peer_lock, peer_state_lock, chan.2);
 		let chan_signer = channel.as_funded().unwrap().get_signer();
 		let point_number = INITIAL_COMMITMENT_NUMBER - 1;
-		chan_signer.as_ref().get_per_commitment_point(point_number, &secp_ctx).unwrap()
+		chan_signer.get_per_commitment_point(point_number, &secp_ctx).unwrap()
 	};
 
 	let res = {
@@ -498,8 +499,6 @@ pub fn do_test_update_fee_that_funder_cannot_afford(channel_type_features: Chann
 		);
 		let params = &local_chan.funding().channel_transaction_parameters;
 		local_chan_signer
-			.as_ecdsa()
-			.unwrap()
 			.sign_counterparty_commitment(params, &commitment_tx, Vec::new(), Vec::new(), &secp_ctx)
 			.unwrap()
 	};
@@ -509,8 +508,6 @@ pub fn do_test_update_fee_that_funder_cannot_afford(channel_type_features: Chann
 		signature: res.0,
 		htlc_signatures: res.1,
 		funding_txid: None,
-		#[cfg(taproot)]
-		partial_signature_with_nonce: None,
 	};
 
 	let update_fee = msgs::UpdateFee { channel_id: chan.2, feerate_per_kw: non_buffer_feerate + 4 };
@@ -573,7 +570,7 @@ pub fn test_update_fee_that_saturates_subs() {
 
 		let channel = get_channel_ref!(nodes[1], nodes[0], per_peer_lock, peer_state_lock, chan_id);
 		let chan_signer = channel.as_funded().unwrap().get_signer();
-		chan_signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER, &secp_ctx).unwrap()
+		chan_signer.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER, &secp_ctx).unwrap()
 	};
 
 	let res = {
@@ -598,8 +595,6 @@ pub fn test_update_fee_that_saturates_subs() {
 		);
 		let params = &local_chan.funding().channel_transaction_parameters;
 		local_chan_signer
-			.as_ecdsa()
-			.unwrap()
 			.sign_counterparty_commitment(params, &commitment_tx, Vec::new(), Vec::new(), &secp_ctx)
 			.unwrap()
 	};
@@ -609,8 +604,6 @@ pub fn test_update_fee_that_saturates_subs() {
 		signature: res.0,
 		htlc_signatures: res.1,
 		funding_txid: None,
-		#[cfg(taproot)]
-		partial_signature_with_nonce: None,
 	};
 
 	let update_fee = msgs::UpdateFee { channel_id: chan_id, feerate_per_kw: FEERATE };

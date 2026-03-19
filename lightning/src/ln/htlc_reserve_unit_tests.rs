@@ -17,6 +17,7 @@ use crate::ln::outbound_payment::RecipientOnionFields;
 use crate::routing::router::PaymentParameters;
 use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::sign::tx_builder::{SpecTxBuilder, TxBuilder};
+use crate::sign::ChannelSigner;
 use crate::types::features::ChannelTypeFeatures;
 use crate::types::payment::PaymentPreimage;
 use crate::util::config::UserConfig;
@@ -863,14 +864,11 @@ pub fn do_test_fee_spike_buffer(cfg: Option<UserConfig>, htlc_fails: bool) {
 		let local_chan = chan_lock.channel_by_id.get(&chan.2).and_then(Channel::as_funded).unwrap();
 		let chan_signer = local_chan.get_signer();
 		// Make the signer believe we validated another commitment, so we can release the secret
-		chan_signer.as_ecdsa().unwrap().get_enforcement_state().last_holder_commitment -= 1;
+		chan_signer.get_enforcement_state().last_holder_commitment -= 1;
 
 		(
-			chan_signer.as_ref().release_commitment_secret(INITIAL_COMMITMENT_NUMBER).unwrap(),
-			chan_signer
-				.as_ref()
-				.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 2, &secp_ctx)
-				.unwrap(),
+			chan_signer.release_commitment_secret(INITIAL_COMMITMENT_NUMBER).unwrap(),
+			chan_signer.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 2, &secp_ctx).unwrap(),
 		)
 	};
 	let remote_point = {
@@ -879,10 +877,7 @@ pub fn do_test_fee_spike_buffer(cfg: Option<UserConfig>, htlc_fails: bool) {
 
 		let channel = get_channel_ref!(nodes[1], nodes[0], per_peer_lock, peer_state_lock, chan.2);
 		let chan_signer = channel.as_funded().unwrap().get_signer();
-		chan_signer
-			.as_ref()
-			.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, &secp_ctx)
-			.unwrap()
+		chan_signer.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, &secp_ctx).unwrap()
 	};
 
 	// Build the remote commitment transaction so we can sign it, and then later use the
@@ -919,8 +914,6 @@ pub fn do_test_fee_spike_buffer(cfg: Option<UserConfig>, htlc_fails: bool) {
 		);
 		let params = &channel.funding().channel_transaction_parameters;
 		chan_signer
-			.as_ecdsa()
-			.unwrap()
 			.sign_counterparty_commitment(params, &commitment_tx, Vec::new(), Vec::new(), &secp_ctx)
 			.unwrap()
 	};
@@ -930,8 +923,6 @@ pub fn do_test_fee_spike_buffer(cfg: Option<UserConfig>, htlc_fails: bool) {
 		signature: res.0,
 		htlc_signatures: res.1,
 		funding_txid: None,
-		#[cfg(taproot)]
-		partial_signature_with_nonce: None,
 	};
 
 	// Send the commitment_signed message to the nodes[1].
@@ -943,8 +934,6 @@ pub fn do_test_fee_spike_buffer(cfg: Option<UserConfig>, htlc_fails: bool) {
 		channel_id: chan.2,
 		per_commitment_secret: local_secret,
 		next_per_commitment_point: next_local_point,
-		#[cfg(taproot)]
-		next_local_nonce: None,
 		release_htlc_message_paths: Vec::new(),
 	};
 	nodes[1].node.handle_revoke_and_ack(node_a_id, &raa_msg);
@@ -2295,17 +2284,15 @@ pub fn do_test_dust_limit_fee_accounting(can_afford: bool) {
 				chan_lock.channel_by_id.get(&chan_id).and_then(Channel::as_funded).unwrap();
 			let chan_signer = local_chan.get_signer();
 			// Make the signer believe we validated another commitment, so we can release the secret
-			chan_signer.as_ecdsa().unwrap().get_enforcement_state().last_holder_commitment -= 1;
+			chan_signer.get_enforcement_state().last_holder_commitment -= 1;
 
 			(
 				chan_signer
-					.as_ref()
 					.release_commitment_secret(
 						INITIAL_COMMITMENT_NUMBER - MIN_AFFORDABLE_HTLC_COUNT as u64 + 1,
 					)
 					.unwrap(),
 				chan_signer
-					.as_ref()
 					.get_per_commitment_point(
 						INITIAL_COMMITMENT_NUMBER - MIN_AFFORDABLE_HTLC_COUNT as u64,
 						&secp_ctx,
@@ -2321,7 +2308,6 @@ pub fn do_test_dust_limit_fee_accounting(can_afford: bool) {
 				get_channel_ref!(nodes[1], nodes[0], per_peer_lock, peer_state_lock, chan_id);
 			let chan_signer = channel.as_funded().unwrap().get_signer();
 			chan_signer
-				.as_ref()
 				.get_per_commitment_point(
 					INITIAL_COMMITMENT_NUMBER - MIN_AFFORDABLE_HTLC_COUNT as u64,
 					&secp_ctx,
@@ -2371,8 +2357,6 @@ pub fn do_test_dust_limit_fee_accounting(can_afford: bool) {
 			);
 			let params = &channel.funding().channel_transaction_parameters;
 			chan_signer
-				.as_ecdsa()
-				.unwrap()
 				.sign_counterparty_commitment(
 					params,
 					&commitment_tx,
@@ -2388,8 +2372,6 @@ pub fn do_test_dust_limit_fee_accounting(can_afford: bool) {
 			signature: res.0,
 			htlc_signatures: res.1,
 			funding_txid: None,
-			#[cfg(taproot)]
-			partial_signature_with_nonce: None,
 		};
 
 		// Send the commitment_signed message to the nodes[1].
@@ -2401,8 +2383,6 @@ pub fn do_test_dust_limit_fee_accounting(can_afford: bool) {
 			channel_id: chan_id,
 			per_commitment_secret: local_secret,
 			next_per_commitment_point: next_local_point,
-			#[cfg(taproot)]
-			next_local_nonce: None,
 			release_htlc_message_paths: Vec::new(),
 		};
 		nodes[1].node.handle_revoke_and_ack(node_a_id, &raa_msg);

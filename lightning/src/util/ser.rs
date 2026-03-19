@@ -51,8 +51,6 @@ use dnssec_prover::rr::Name;
 use lightning_invoice::Bolt11Invoice;
 
 use crate::chain::ClaimId;
-#[cfg(taproot)]
-use crate::ln::msgs::PartialSignatureWithNonce;
 use crate::ln::msgs::{DecodeError, SerialId};
 use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::types::string::UntrustedString;
@@ -738,7 +736,6 @@ impl_array!(16, u8); // for IPv6
 impl_array!(32, u8); // for channel id & hmac
 impl_array!(PUBLIC_KEY_SIZE, u8); // for PublicKey
 impl_array!(64, u8); // for ecdsa::Signature and schnorr::Signature
-impl_array!(66, u8); // for MuSig2 nonces
 impl_array!(1300, u8); // for OnionPacket.hop_data
 
 impl_array!(8, u16);
@@ -1205,40 +1202,6 @@ impl Readable for SecretKey {
 			Ok(key) => Ok(key),
 			Err(_) => return Err(DecodeError::InvalidValue),
 		}
-	}
-}
-
-#[cfg(taproot)]
-impl Writeable for musig2::types::PublicNonce {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		self.serialize().write(w)
-	}
-}
-
-#[cfg(taproot)]
-impl Readable for musig2::types::PublicNonce {
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
-		let buf: [u8; PUBLIC_KEY_SIZE * 2] = Readable::read(r)?;
-		musig2::types::PublicNonce::from_slice(&buf).map_err(|_| DecodeError::InvalidValue)
-	}
-}
-
-#[cfg(taproot)]
-impl Writeable for PartialSignatureWithNonce {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		self.0.serialize().write(w)?;
-		self.1.write(w)
-	}
-}
-
-#[cfg(taproot)]
-impl Readable for PartialSignatureWithNonce {
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
-		let partial_signature_buf: [u8; SECRET_KEY_SIZE] = Readable::read(r)?;
-		let partial_signature = musig2::types::PartialSignature::from_slice(&partial_signature_buf)
-			.map_err(|_| DecodeError::InvalidValue)?;
-		let public_nonce: musig2::types::PublicNonce = Readable::read(r)?;
-		Ok(PartialSignatureWithNonce(partial_signature, public_nonce))
 	}
 }
 

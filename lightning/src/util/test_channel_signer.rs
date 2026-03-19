@@ -34,19 +34,11 @@ use bitcoin::sighash::EcdsaSighashType;
 use bitcoin::transaction::Transaction;
 use bitcoin::Txid;
 
-#[cfg(taproot)]
-use crate::ln::msgs::PartialSignatureWithNonce;
-#[cfg(taproot)]
-use crate::sign::taproot::TaprootChannelSigner;
 use crate::sign::HTLCDescriptor;
 use crate::util::dyn_signer::DynSigner;
 use bitcoin::secp256k1;
-#[cfg(taproot)]
-use bitcoin::secp256k1::All;
 use bitcoin::secp256k1::{ecdsa::Signature, Secp256k1};
 use bitcoin::secp256k1::{PublicKey, SecretKey};
-#[cfg(taproot)]
-use musig2::types::{PartialSignature, PublicNonce};
 
 /// Initial value for revoked commitment downward counter
 pub const INITIAL_REVOKED_COMMITMENT_NUMBER: u64 = 1 << 48;
@@ -517,65 +509,6 @@ impl EcdsaChannelSigner for TestChannelSigner {
 		input_index: usize, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Signature {
 		self.inner.sign_splice_shared_input(channel_parameters, tx, input_index, secp_ctx)
-	}
-}
-
-#[cfg(taproot)]
-#[allow(unused)]
-impl TaprootChannelSigner for TestChannelSigner {
-	fn generate_local_nonce_pair(
-		&self, commitment_number: u64, secp_ctx: &Secp256k1<All>,
-	) -> PublicNonce {
-		todo!()
-	}
-
-	fn partially_sign_counterparty_commitment(
-		&self, counterparty_nonce: PublicNonce, commitment_tx: &CommitmentTransaction,
-		inbound_htlc_preimages: Vec<PaymentPreimage>,
-		outbound_htlc_preimages: Vec<PaymentPreimage>, secp_ctx: &Secp256k1<All>,
-	) -> Result<(PartialSignatureWithNonce, Vec<secp256k1::schnorr::Signature>), ()> {
-		todo!()
-	}
-
-	fn finalize_holder_commitment(
-		&self, commitment_tx: &HolderCommitmentTransaction,
-		counterparty_partial_signature: PartialSignatureWithNonce, secp_ctx: &Secp256k1<All>,
-	) -> Result<PartialSignature, ()> {
-		todo!()
-	}
-
-	fn sign_justice_revoked_output(
-		&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey,
-		secp_ctx: &Secp256k1<All>,
-	) -> Result<secp256k1::schnorr::Signature, ()> {
-		todo!()
-	}
-
-	fn sign_justice_revoked_htlc(
-		&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey,
-		htlc: &HTLCOutputInCommitment, secp_ctx: &Secp256k1<All>,
-	) -> Result<secp256k1::schnorr::Signature, ()> {
-		todo!()
-	}
-
-	fn sign_holder_htlc_transaction(
-		&self, htlc_tx: &Transaction, input: usize, htlc_descriptor: &HTLCDescriptor,
-		secp_ctx: &Secp256k1<All>,
-	) -> Result<secp256k1::schnorr::Signature, ()> {
-		todo!()
-	}
-
-	fn sign_counterparty_htlc_transaction(
-		&self, htlc_tx: &Transaction, input: usize, amount: u64, per_commitment_point: &PublicKey,
-		htlc: &HTLCOutputInCommitment, secp_ctx: &Secp256k1<All>,
-	) -> Result<secp256k1::schnorr::Signature, ()> {
-		todo!()
-	}
-
-	fn partially_sign_closing_transaction(
-		&self, closing_tx: &ClosingTransaction, secp_ctx: &Secp256k1<All>,
-	) -> Result<PartialSignature, ()> {
-		todo!()
 	}
 }
 

@@ -93,7 +93,6 @@ use alloc::collections::{btree_map, BTreeMap};
 
 use crate::io;
 use crate::prelude::*;
-use crate::sign::type_resolver::ChannelSignerType;
 #[cfg(any(test, fuzzing, debug_assertions))]
 use crate::sync::Mutex;
 use core::time::Duration;
@@ -1291,14 +1290,14 @@ struct HolderCommitmentPoint {
 
 impl HolderCommitmentPoint {
 	#[rustfmt::skip]
-	pub fn new<SP: SignerProvider>(signer: &ChannelSignerType<SP>, secp_ctx: &Secp256k1<secp256k1::All>) -> Option<Self> {
+	pub fn new<S: ChannelSigner>(signer: &S, secp_ctx: &Secp256k1<secp256k1::All>) -> Option<Self> {
 		Some(HolderCommitmentPoint {
 			next_transaction_number: INITIAL_COMMITMENT_NUMBER,
 			previous_revoked_point: None,
 			last_revoked_point: None,
 			current_point: None,
-			next_point: signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER, secp_ctx).ok()?,
-			pending_next_point: signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, secp_ctx).ok(),
+			next_point: signer.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER, secp_ctx).ok()?,
+			pending_next_point: signer.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, secp_ctx).ok(),
 		})
 	}
 
@@ -1332,13 +1331,12 @@ impl HolderCommitmentPoint {
 
 	/// If we are pending advancing the next commitment point, this method tries asking the signer
 	/// again.
-	pub fn try_resolve_pending<SP: SignerProvider, L: Logger>(
-		&mut self, signer: &ChannelSignerType<SP>, secp_ctx: &Secp256k1<secp256k1::All>, logger: &L,
+	pub fn try_resolve_pending<S: ChannelSigner, L: Logger>(
+		&mut self, signer: &S, secp_ctx: &Secp256k1<secp256k1::All>, logger: &L,
 	) {
 		if !self.can_advance() {
-			let pending_next_point = signer
-				.as_ref()
-				.get_per_commitment_point(self.next_transaction_number - 1, secp_ctx);
+			let pending_next_point =
+				signer.get_per_commitment_point(self.next_transaction_number - 1, secp_ctx);
 			if let Ok(point) = pending_next_point {
 				log_trace!(
 					logger,
@@ -1366,8 +1364,8 @@ impl HolderCommitmentPoint {
 	///
 	/// If our signer is ready to provide the next commitment point, the next call to `advance` will
 	/// succeed.
-	pub fn advance<SP: SignerProvider, L: Logger>(
-		&mut self, signer: &ChannelSignerType<SP>, secp_ctx: &Secp256k1<secp256k1::All>, logger: &L,
+	pub fn advance<S: ChannelSigner, L: Logger>(
+		&mut self, signer: &S, secp_ctx: &Secp256k1<secp256k1::All>, logger: &L,
 	) -> Result<(), ()> {
 		if let Some(next_point) = self.pending_next_point {
 			*self = Self {
@@ -2229,16 +2227,12 @@ where
 
 		let shared_input_signature =
 			if let Some(splice_input_index) = signing_session.unsigned_tx().shared_input_index() {
-				let sig = match &context.holder_signer {
-					ChannelSignerType::Ecdsa(signer) => signer.sign_splice_shared_input(
-						&funding.channel_transaction_parameters,
-						tx,
-						splice_input_index as usize,
-						&context.secp_ctx,
-					),
-					#[cfg(taproot)]
-					ChannelSignerType::Taproot(_) => todo!(),
-				};
+				let sig = context.holder_signer.sign_splice_shared_input(
+					&funding.channel_transaction_parameters,
+					tx,
+					splice_input_index as usize,
+					&context.secp_ctx,
+				);
 				Some(sig)
 			} else {
 				None
@@ -3176,7 +3170,6 @@ impl<'a> From<&'a Transaction> for ConfirmedTransaction<'a> {
 }
 
 /// Contains everything about the channel including state, and various flags.
-#[cfg_attr(test, derive(Debug))]
 pub(super) struct ChannelContext<SP: SignerProvider> {
 	config: LegacyChannelConfig,
 
@@ -3212,7 +3205,7 @@ pub(super) struct ChannelContext<SP: SignerProvider> {
 
 	latest_monitor_update_id: u64,
 
-	holder_signer: ChannelSignerType<SP>,
+	holder_signer: SP::EcdsaSigner,
 	shutdown_scriptpubkey: Option<ShutdownScript>,
 	destination_script: ScriptBuf,
 
@@ -3465,6 +3458,13 @@ pub(super) struct ChannelContext<SP: SignerProvider> {
 	pub interactive_tx_signing_session: Option<InteractiveTxSigningSession>,
 }
 
+#[cfg(test)]
+impl<SP: SignerProvider> fmt::Debug for ChannelContext<SP> {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		f.debug_struct("ChannelContext").finish()
+	}
+}
+
 /// A channel struct implementing this trait can receive an initial counterparty commitment
 /// transaction signature.
 trait InitialRemoteCommitmentReceiver<SP: SignerProvider> {
@@ -3540,7 +3540,7 @@ trait InitialRemoteCommitmentReceiver<SP: SignerProvider> {
 			&self.funding().counterparty_funding_pubkey()
 		);
 
-		if context.holder_signer.as_ref().validate_holder_commitment(&holder_commitment_tx, Vec::new()).is_err() {
+		if context.holder_signer.validate_holder_commitment(&holder_commitment_tx, Vec::new()).is_err() {
 			return Err(ChannelError::close("Failed to validate our commitment".to_owned()));
 		}
 
@@ -3907,7 +3907,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 
 			latest_monitor_update_id: 0,
 
-			holder_signer: ChannelSignerType::Ecdsa(holder_signer),
+			holder_signer,
 			shutdown_scriptpubkey,
 			destination_script,
 
@@ -4152,7 +4152,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 
 			latest_monitor_update_id: 0,
 
-			holder_signer: ChannelSignerType::Ecdsa(holder_signer),
+			holder_signer,
 			shutdown_scriptpubkey,
 			destination_script,
 
@@ -4467,7 +4467,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 
 	/// Returns the holder signer for this channel.
 	#[cfg(any(test, feature = "_test_utils"))]
-	pub fn get_mut_signer(&mut self) -> &mut ChannelSignerType<SP> {
+	pub fn get_mut_signer(&mut self) -> &mut SP::EcdsaSigner {
 		return &mut self.holder_signer;
 	}
 
@@ -5373,7 +5373,6 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		);
 
 		self.holder_signer
-			.as_ref()
 			.validate_holder_commitment(
 				&holder_commitment_tx,
 				commitment_data.outbound_htlc_preimages,
@@ -6116,15 +6115,16 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			&self.channel_id(), counterparty_initial_bitcoin_tx.txid, encode::serialize_hex(&counterparty_initial_bitcoin_tx.transaction));
 
 		// We sign "counterparty" commitment transaction, allowing them to broadcast the tx if they wish.
-		let signature = match &self.holder_signer {
-			// TODO (arik): move match into calling method for Taproot
-			ChannelSignerType::Ecdsa(ecdsa) => ecdsa.sign_counterparty_commitment(
-				channel_parameters, &counterparty_initial_commitment_tx, Vec::new(), Vec::new(), &self.secp_ctx
-			).ok(),
-			// TODO (taproot|arik)
-			#[cfg(taproot)]
-			_ => todo!()
-		};
+		let signature = self
+			.holder_signer
+			.sign_counterparty_commitment(
+				channel_parameters,
+				&counterparty_initial_commitment_tx,
+				Vec::new(),
+				Vec::new(),
+				&self.secp_ctx,
+			)
+			.ok();
 
 		if signature.is_some() && self.signer_pending_funding {
 			log_trace!(logger, "Counterparty commitment signature available for funding_signed message; clearing signer_pending_funding");
@@ -6137,8 +6137,6 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		signature.map(|(signature, _)| msgs::FundingSigned {
 			channel_id: self.channel_id(),
 			signature,
-			#[cfg(taproot)]
-			partial_signature_with_nonce: None,
 		})
 	}
 
@@ -6232,24 +6230,16 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			logger,
 		);
 		let counterparty_initial_commitment_tx = commitment_data.tx;
-		match self.holder_signer {
-			// TODO (taproot|arik): move match into calling method for Taproot
-			ChannelSignerType::Ecdsa(ref ecdsa) => {
-				let channel_parameters = &funding.channel_transaction_parameters;
-				ecdsa
-					.sign_counterparty_commitment(
-						channel_parameters,
-						&counterparty_initial_commitment_tx,
-						Vec::new(),
-						Vec::new(),
-						&self.secp_ctx,
-					)
-					.ok()
-			},
-			// TODO (taproot|arik)
-			#[cfg(taproot)]
-			_ => todo!(),
-		}
+		let channel_parameters = &funding.channel_transaction_parameters;
+		self.holder_signer
+			.sign_counterparty_commitment(
+				channel_parameters,
+				&counterparty_initial_commitment_tx,
+				Vec::new(),
+				Vec::new(),
+				&self.secp_ctx,
+			)
+			.ok()
 	}
 
 	fn get_initial_commitment_signed_v2<L: Logger>(
@@ -6268,8 +6258,6 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 				htlc_signatures,
 				signature,
 				funding_txid: funding.get_funding_txo().map(|funding_txo| funding_txo.txid),
-				#[cfg(taproot)]
-				partial_signature_with_nonce: None,
 			})
 		} else {
 			log_debug!(
@@ -8596,21 +8584,15 @@ where
 			return Err(ChannelError::close("Received an unexpected revoke_and_ack".to_owned()));
 		}
 
-		match &self.context.holder_signer {
-			ChannelSignerType::Ecdsa(ecdsa) => {
-				ecdsa
-					.validate_counterparty_revocation(
-						self.context.counterparty_next_commitment_transaction_number + 1,
-						&secret,
-					)
-					.map_err(|_| {
-						ChannelError::close("Failed to validate revocation from peer".to_owned())
-					})?;
-			},
-			// TODO (taproot|arik)
-			#[cfg(taproot)]
-			_ => todo!(),
-		};
+		self.context
+			.holder_signer
+			.validate_counterparty_revocation(
+				self.context.counterparty_next_commitment_transaction_number + 1,
+				&secret,
+			)
+			.map_err(|_| {
+				ChannelError::close("Failed to validate revocation from peer".to_owned())
+			})?;
 
 		self.context
 			.commitment_secrets
@@ -9477,7 +9459,9 @@ where
 		&mut self, logger: &L, path_for_release_htlc: CBP
 	) -> Result<SignerResumeUpdates, ChannelError> where CBP: Fn(u64) -> BlindedMessagePath {
 		if let Some((commitment_number, commitment_secret)) = self.context.signer_pending_stale_state_verification.clone() {
-			if let Ok(expected_point) = self.context.holder_signer.as_ref()
+			if let Ok(expected_point) = self
+				.context
+				.holder_signer
 				.get_per_commitment_point(commitment_number, &self.context.secp_ctx)
 			{
 				self.context.signer_pending_stale_state_verification.take();
@@ -9643,7 +9627,6 @@ where
 		let signer = &self.context.holder_signer;
 		self.holder_commitment_point.try_resolve_pending(signer, &self.context.secp_ctx, logger);
 		let per_commitment_secret = signer
-			.as_ref()
 			.release_commitment_secret(self.holder_commitment_point.next_transaction_number() + 2)
 			.ok();
 		if let Some(per_commitment_secret) = per_commitment_secret {
@@ -9661,8 +9644,6 @@ where
 					channel_id: self.context.channel_id,
 					per_commitment_secret,
 					next_per_commitment_point: self.holder_commitment_point.next_point(),
-					#[cfg(taproot)]
-					next_local_nonce: None,
 					release_htlc_message_paths,
 				});
 			}
@@ -9854,7 +9835,7 @@ where
 				.map_err(|_| ChannelError::close("Peer sent a garbage channel_reestablish with unparseable secret key".to_owned()))?;
 			if msg.next_remote_commitment_number > our_commitment_transaction {
 				let given_commitment_number = INITIAL_COMMITMENT_NUMBER - msg.next_remote_commitment_number + 1;
-				let expected_point = self.context.holder_signer.as_ref()
+				let expected_point = self.context.holder_signer
 					.get_per_commitment_point(given_commitment_number, &self.context.secp_ctx)
 					.ok();
 				if expected_point.is_none() {
@@ -10561,18 +10542,15 @@ where
 		&mut self, closing_tx: &ClosingTransaction, skip_remote_output: bool, fee_satoshis: u64,
 		min_fee_satoshis: u64, max_fee_satoshis: u64, logger: &L,
 	) -> Option<msgs::ClosingSigned> {
-		let sig = match &self.context.holder_signer {
-			ChannelSignerType::Ecdsa(ecdsa) => ecdsa
-				.sign_closing_transaction(
-					&self.funding.channel_transaction_parameters,
-					closing_tx,
-					&self.context.secp_ctx,
-				)
-				.ok(),
-			// TODO (taproot|arik)
-			#[cfg(taproot)]
-			_ => todo!(),
-		};
+		let sig = self
+			.context
+			.holder_signer
+			.sign_closing_transaction(
+				&self.funding.channel_transaction_parameters,
+				closing_tx,
+				&self.context.secp_ctx,
+			)
+			.ok();
 		if sig.is_none() {
 			log_trace!(logger, "Closing transaction signature unavailable, waiting on signer");
 			self.context.signer_pending_closing = true;
@@ -10894,7 +10872,7 @@ where
 	}
 
 	#[cfg(any(test, feature = "_externalize_tests"))]
-	pub fn get_signer(&self) -> &ChannelSignerType<SP> {
+	pub fn get_signer(&self) -> &SP::EcdsaSigner {
 		&self.context.holder_signer
 	}
 
@@ -11666,35 +11644,30 @@ where
 			},
 			Ok(v) => v
 		};
-		match &self.context.holder_signer {
-			ChannelSignerType::Ecdsa(ecdsa) => {
-				let our_bitcoin_sig = match ecdsa.sign_channel_announcement_with_funding_key(
-					&self.funding.channel_transaction_parameters, &announcement, &self.context.secp_ctx,
-				) {
-					Err(_) => {
-						log_error!(logger, "Signer rejected channel_announcement signing. Channel will not be announced!");
-						return None;
-					},
-					Ok(v) => v
-				};
-				let short_channel_id = match self.funding.get_short_channel_id() {
-					Some(scid) => scid,
-					None => return None,
-				};
-
-				self.context.announcement_sigs_state = AnnouncementSigsState::MessageSent;
-
-				Some(msgs::AnnouncementSignatures {
-					channel_id: self.context.channel_id(),
-					short_channel_id,
-					node_signature: our_node_sig,
-					bitcoin_signature: our_bitcoin_sig,
-				})
+		let our_bitcoin_sig = match self.context.holder_signer.sign_channel_announcement_with_funding_key(
+			&self.funding.channel_transaction_parameters,
+			&announcement,
+			&self.context.secp_ctx,
+		) {
+			Err(_) => {
+				log_error!(logger, "Signer rejected channel_announcement signing. Channel will not be announced!");
+				return None;
 			},
-			// TODO (taproot|arik)
-			#[cfg(taproot)]
-			_ => todo!()
-		}
+			Ok(v) => v
+		};
+		let short_channel_id = match self.funding.get_short_channel_id() {
+			Some(scid) => scid,
+			None => return None,
+		};
+
+		self.context.announcement_sigs_state = AnnouncementSigsState::MessageSent;
+
+		Some(msgs::AnnouncementSignatures {
+			channel_id: self.context.channel_id(),
+			short_channel_id,
+			node_signature: our_node_sig,
+			bitcoin_signature: our_bitcoin_sig,
+		})
 	}
 
 	/// Signs the given channel announcement, returning a ChannelError::Ignore if no keys are
@@ -11710,24 +11683,20 @@ where
 
 			let our_node_sig = node_signer.sign_gossip_message(msgs::UnsignedGossipMessage::ChannelAnnouncement(&announcement))
 				.map_err(|_| ChannelError::Ignore("Failed to generate node signature for channel_announcement".to_owned()))?;
-			match &self.context.holder_signer {
-				ChannelSignerType::Ecdsa(ecdsa) => {
-					let our_bitcoin_sig = ecdsa.sign_channel_announcement_with_funding_key(
-						&self.funding.channel_transaction_parameters, &announcement, &self.context.secp_ctx,
-					)
-						.map_err(|_| ChannelError::Ignore("Signer rejected channel_announcement".to_owned()))?;
-					Ok(msgs::ChannelAnnouncement {
-						node_signature_1: if were_node_one { our_node_sig } else { their_node_sig },
-						node_signature_2: if were_node_one { their_node_sig } else { our_node_sig },
-						bitcoin_signature_1: if were_node_one { our_bitcoin_sig } else { their_bitcoin_sig },
-						bitcoin_signature_2: if were_node_one { their_bitcoin_sig } else { our_bitcoin_sig },
-						contents: announcement,
-					})
-				},
-				// TODO (taproot|arik)
-				#[cfg(taproot)]
-				_ => todo!()
-			}
+			let our_bitcoin_sig = self.context.holder_signer
+				.sign_channel_announcement_with_funding_key(
+					&self.funding.channel_transaction_parameters,
+					&announcement,
+					&self.context.secp_ctx,
+				)
+				.map_err(|_| ChannelError::Ignore("Signer rejected channel_announcement".to_owned()))?;
+			Ok(msgs::ChannelAnnouncement {
+				node_signature_1: if were_node_one { our_node_sig } else { their_node_sig },
+				node_signature_2: if were_node_one { their_node_sig } else { our_node_sig },
+				bitcoin_signature_1: if were_node_one { our_bitcoin_sig } else { their_bitcoin_sig },
+				bitcoin_signature_2: if were_node_one { their_bitcoin_sig } else { our_bitcoin_sig },
+				contents: announcement,
+			})
 		} else {
 			Err(ChannelError::Ignore("Attempted to sign channel announcement before we'd received announcement_signatures".to_string()))
 		}
@@ -12191,16 +12160,15 @@ where
 		debug_assert!(self.pending_splice.is_none());
 		// Rotate the funding pubkey using the prev_funding_txid as a tweak
 		let prev_funding_txid = self.funding.get_funding_txid();
-		let funding_pubkey = match (prev_funding_txid, &self.context.holder_signer) {
-			(None, _) => {
+		let funding_pubkey = match prev_funding_txid {
+			None => {
 				debug_assert!(false);
 				self.funding.get_holder_pubkeys().funding_pubkey
 			},
-			(Some(prev_funding_txid), ChannelSignerType::Ecdsa(ecdsa)) => {
-				ecdsa.new_funding_pubkey(prev_funding_txid, &self.context.secp_ctx)
-			},
-			#[cfg(taproot)]
-			_ => todo!(),
+			Some(prev_funding_txid) => self
+				.context
+				.holder_signer
+				.new_funding_pubkey(prev_funding_txid, &self.context.secp_ctx),
 		};
 
 		let funding_feerate_per_kw = context.funding_feerate_sat_per_1000_weight;
@@ -12326,16 +12294,15 @@ where
 
 		// Rotate the pubkeys using the prev_funding_txid as a tweak
 		let prev_funding_txid = self.funding.get_funding_txid();
-		let funding_pubkey = match (prev_funding_txid, &self.context.holder_signer) {
-			(None, _) => {
+		let funding_pubkey = match prev_funding_txid {
+			None => {
 				debug_assert!(false);
 				self.funding.get_holder_pubkeys().funding_pubkey
 			},
-			(Some(prev_funding_txid), ChannelSignerType::Ecdsa(ecdsa)) => {
-				ecdsa.new_funding_pubkey(prev_funding_txid, &self.context.secp_ctx)
-			},
-			#[cfg(taproot)]
-			_ => todo!(),
+			Some(prev_funding_txid) => self
+				.context
+				.holder_signer
+				.new_funding_pubkey(prev_funding_txid, &self.context.secp_ctx),
 		};
 		let mut new_keys = self.funding.get_holder_pubkeys().clone();
 		new_keys.funding_pubkey = funding_pubkey;
@@ -13315,51 +13282,44 @@ where
 		);
 		let counterparty_commitment_tx = commitment_data.tx;
 
-		match &self.context.holder_signer {
-			ChannelSignerType::Ecdsa(ecdsa) => {
-				let (signature, htlc_signatures);
+		let (signature, htlc_signatures);
 
-				{
-					let res = ecdsa.sign_counterparty_commitment(
-							&funding.channel_transaction_parameters,
-							&counterparty_commitment_tx,
-							commitment_data.inbound_htlc_preimages,
-							commitment_data.outbound_htlc_preimages,
-							&self.context.secp_ctx,
-						).map_err(|_| ChannelError::Ignore("Failed to get signatures for new commitment_signed".to_owned()))?;
-					signature = res.0;
-					htlc_signatures = res.1;
+		{
+			let res = self.context.holder_signer
+				.sign_counterparty_commitment(
+					&funding.channel_transaction_parameters,
+					&counterparty_commitment_tx,
+					commitment_data.inbound_htlc_preimages,
+					commitment_data.outbound_htlc_preimages,
+					&self.context.secp_ctx,
+				)
+				.map_err(|_| ChannelError::Ignore("Failed to get signatures for new commitment_signed".to_owned()))?;
+			signature = res.0;
+			htlc_signatures = res.1;
 
-					let trusted_tx = counterparty_commitment_tx.trust();
-					log_trace!(logger, "Signed remote commitment tx {} (txid {}) with redeemscript {} -> {}",
-						encode::serialize_hex(&trusted_tx.built_transaction().transaction),
-						&trusted_tx.txid(), encode::serialize_hex(&funding.get_funding_redeemscript()),
-						log_bytes!(signature.serialize_compact()[..]));
+			let trusted_tx = counterparty_commitment_tx.trust();
+			log_trace!(logger, "Signed remote commitment tx {} (txid {}) with redeemscript {} -> {}",
+				encode::serialize_hex(&trusted_tx.built_transaction().transaction),
+				&trusted_tx.txid(), encode::serialize_hex(&funding.get_funding_redeemscript()),
+				log_bytes!(signature.serialize_compact()[..]));
 
-					let counterparty_keys = trusted_tx.keys();
-					debug_assert_eq!(htlc_signatures.len(), trusted_tx.nondust_htlcs().len());
-					for (ref htlc_sig, ref htlc) in htlc_signatures.iter().zip(trusted_tx.nondust_htlcs()) {
-						log_trace!(logger, "Signed remote HTLC tx {} with redeemscript {} with pubkey {} -> {}",
-							encode::serialize_hex(&chan_utils::build_htlc_transaction(&trusted_tx.txid(), trusted_tx.negotiated_feerate_per_kw(), funding.get_holder_selected_contest_delay(), htlc, funding.get_channel_type(), &counterparty_keys.broadcaster_delayed_payment_key, &counterparty_keys.revocation_key)),
-							encode::serialize_hex(&chan_utils::get_htlc_redeemscript(&htlc, funding.get_channel_type(), &counterparty_keys)),
-							log_bytes!(counterparty_keys.broadcaster_htlc_key.to_public_key().serialize()),
-							log_bytes!(htlc_sig.serialize_compact()[..]));
-					}
-				}
-
-				Ok(msgs::CommitmentSigned {
-					channel_id: self.context.channel_id,
-					signature,
-					htlc_signatures,
-					funding_txid: funding.get_funding_txo().map(|funding_txo| funding_txo.txid),
-					#[cfg(taproot)]
-					partial_signature_with_nonce: None,
-				})
-			},
-			// TODO (taproot|arik)
-			#[cfg(taproot)]
-			_ => todo!()
+			let counterparty_keys = trusted_tx.keys();
+			debug_assert_eq!(htlc_signatures.len(), trusted_tx.nondust_htlcs().len());
+			for (ref htlc_sig, ref htlc) in htlc_signatures.iter().zip(trusted_tx.nondust_htlcs()) {
+				log_trace!(logger, "Signed remote HTLC tx {} with redeemscript {} with pubkey {} -> {}",
+					encode::serialize_hex(&chan_utils::build_htlc_transaction(&trusted_tx.txid(), trusted_tx.negotiated_feerate_per_kw(), funding.get_holder_selected_contest_delay(), htlc, funding.get_channel_type(), &counterparty_keys.broadcaster_delayed_payment_key, &counterparty_keys.revocation_key)),
+					encode::serialize_hex(&chan_utils::get_htlc_redeemscript(&htlc, funding.get_channel_type(), &counterparty_keys)),
+					log_bytes!(counterparty_keys.broadcaster_htlc_key.to_public_key().serialize()),
+					log_bytes!(htlc_sig.serialize_compact()[..]));
+			}
 		}
+
+		Ok(msgs::CommitmentSigned {
+			channel_id: self.context.channel_id,
+			signature,
+			htlc_signatures,
+			funding_txid: funding.get_funding_txo().map(|funding_txo| funding_txo.txid),
+		})
 	}
 
 	/// Adds a pending outbound HTLC to this channel, and builds a new remote commitment
@@ -13920,16 +13880,19 @@ impl<SP: SignerProvider> OutboundV1Channel<SP> {
 			self.context.counterparty_next_commitment_transaction_number,
 			&self.context.counterparty_next_commitment_point.unwrap(), false, false, logger);
 		let counterparty_initial_commitment_tx = commitment_data.tx;
-		let signature = match &self.context.holder_signer {
-			// TODO (taproot|arik): move match into calling method for Taproot
-			ChannelSignerType::Ecdsa(ecdsa) => {
-				let channel_parameters = &self.funding.channel_transaction_parameters;
-				ecdsa.sign_counterparty_commitment(channel_parameters, &counterparty_initial_commitment_tx, Vec::new(), Vec::new(), &self.context.secp_ctx)
-					.map(|(sig, _)| sig).ok()
-			},
-			// TODO (taproot|arik)
-			#[cfg(taproot)]
-			_ => todo!()
+		let signature = {
+			let channel_parameters = &self.funding.channel_transaction_parameters;
+			self.context
+				.holder_signer
+				.sign_counterparty_commitment(
+					channel_parameters,
+					&counterparty_initial_commitment_tx,
+					Vec::new(),
+					Vec::new(),
+					&self.context.secp_ctx,
+				)
+				.map(|(sig, _)| sig)
+				.ok()
 		};
 
 		if signature.is_some() && self.context.signer_pending_funding {
@@ -13945,10 +13908,6 @@ impl<SP: SignerProvider> OutboundV1Channel<SP> {
 			funding_txid: self.funding.channel_transaction_parameters.funding_outpoint.as_ref().unwrap().txid,
 			funding_output_index: self.funding.channel_transaction_parameters.funding_outpoint.as_ref().unwrap().index,
 			signature,
-			#[cfg(taproot)]
-			partial_signature_with_nonce: None,
-			#[cfg(taproot)]
-			next_local_nonce: None,
 		})
 	}
 
@@ -14357,8 +14316,6 @@ impl<SP: SignerProvider> InboundV1Channel<SP> {
 				channel_type: Some(self.funding.get_channel_type().clone()),
 			},
 			channel_reserve_satoshis: self.funding.holder_selected_channel_reserve_satoshis,
-			#[cfg(taproot)]
-			next_local_nonce: None,
 		})
 	}
 
@@ -14589,11 +14546,11 @@ impl<SP: SignerProvider> PendingV2Channel<SP> {
 			debug_assert!(false, "Tried to send an open_channel2 for a channel that has already advanced");
 		}
 
-		let first_per_commitment_point = self.context.holder_signer.as_ref()
+		let first_per_commitment_point = self.context.holder_signer
 			.get_per_commitment_point(self.unfunded_context.transaction_number(),
 				&self.context.secp_ctx)
 				.expect("TODO: async signing is not yet supported for commitment points in v2 channel establishment");
-		let second_per_commitment_point = self.context.holder_signer.as_ref()
+		let second_per_commitment_point = self.context.holder_signer
 			.get_per_commitment_point(self.unfunded_context.transaction_number() - 1,
 				&self.context.secp_ctx)
 				.expect("TODO: async signing is not yet supported for commitment points in v2 channel establishment");
@@ -14758,10 +14715,10 @@ impl<SP: SignerProvider> PendingV2Channel<SP> {
 	/// [`msgs::AcceptChannelV2`]: crate::ln::msgs::AcceptChannelV2
 	#[allow(dead_code)] // TODO(dual_funding): Remove once V2 channels is enabled.
 	fn generate_accept_channel_v2_message(&self) -> msgs::AcceptChannelV2 {
-		let first_per_commitment_point = self.context.holder_signer.as_ref().get_per_commitment_point(
+		let first_per_commitment_point = self.context.holder_signer.get_per_commitment_point(
 			self.unfunded_context.transaction_number(), &self.context.secp_ctx)
 			.expect("TODO: async signing is not yet supported for commitment points in v2 channel establishment");
-		let second_per_commitment_point = self.context.holder_signer.as_ref().get_per_commitment_point(
+		let second_per_commitment_point = self.context.holder_signer.get_per_commitment_point(
 			self.unfunded_context.transaction_number() - 1, &self.context.secp_ctx)
 			.expect("TODO: async signing is not yet supported for commitment points in v2 channel establishment");
 		let keys = self.funding.get_holder_pubkeys();
@@ -16174,7 +16131,7 @@ impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
 
 				latest_monitor_update_id,
 
-				holder_signer: ChannelSignerType::Ecdsa(holder_signer),
+				holder_signer,
 				shutdown_scriptpubkey,
 				destination_script,
 
@@ -16381,8 +16338,6 @@ mod tests {
 	#[cfg(ldk_test_vectors)]
 	impl SignerProvider for Keys {
 		type EcdsaSigner = InMemorySigner;
-		#[cfg(taproot)]
-		type TaprootSigner = InMemorySigner;
 
 		fn generate_channel_keys_id(&self, _inbound: bool, _user_channel_id: u128) -> [u8; 32] {
 			self.signer.channel_keys_id()

@@ -29,6 +29,4 @@ level = "forbid"
 #
 # Note that Cargo automatically declares corresponding cfgs for every feature
 # defined in the member-level [features] tables as "expected".
-check-cfg = [
-    "cfg(taproot)",
-]
+check-cfg = []

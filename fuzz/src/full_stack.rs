@@ -457,8 +457,6 @@ impl NodeSigner for KeyProvider {
 
 impl SignerProvider for KeyProvider {
 	type EcdsaSigner = TestChannelSigner;
-	#[cfg(taproot)]
-	type TaprootSigner = TestChannelSigner;
 
 	fn generate_channel_keys_id(&self, inbound: bool, _user_channel_id: u128) -> [u8; 32] {
 		let ctr = self.counter.fetch_add(1, Ordering::Relaxed) as u8;

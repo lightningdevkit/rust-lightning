@@ -1246,7 +1246,7 @@ fn do_test_closing_signed(extra_closing_signed: bool, reconnect: bool) {
 			let channel = chan_lock.channel_by_id.get_mut(&chan_id).unwrap();
 			let (funding, context) = channel.funding_and_context_mut();
 
-			let signer = context.get_mut_signer().as_mut_ecdsa().unwrap();
+			let signer = context.get_mut_signer();
 			let signature = signer
 				.sign_closing_transaction(
 					&funding.channel_transaction_parameters,
