@@ -1959,9 +1959,12 @@ where
 
 		let tx_abort = should_ack.then(|| {
 			let logger = WithChannelContext::from(logger, &self.context(), None);
-			let reason =
-				types::string::UntrustedString(String::from_utf8_lossy(&msg.data).to_string());
-			log_info!(logger, "Counterparty failed interactive transaction negotiation: {reason}");
+			let reason = String::from_utf8_lossy(&msg.data);
+			log_info!(
+				logger,
+				"Counterparty failed interactive transaction negotiation: {}",
+				log_msg!(reason)
+			);
 			msgs::TxAbort {
 				channel_id: msg.channel_id,
 				data: "Acknowledged tx_abort".to_string().into_bytes(),
