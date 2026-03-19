@@ -2087,7 +2087,8 @@ fn do_test_splice_reestablish(reload: bool, async_monitor_update: bool) {
 	let prev_funding_script = get_monitor!(nodes[0], channel_id).get_funding_script();
 
 	// Keep a pending HTLC throughout the reestablish flow to make sure we can handle them.
-	route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+	let amt_msat = 1_000_000;
+	let (_, hash, secret, ..) = route_payment(&nodes[0], &[&nodes[1]], amt_msat);
 
 	// Negotiate the splice up until the nodes exchange `tx_complete`.
 	let outputs = vec![
@@ -2130,8 +2131,11 @@ fn do_test_splice_reestablish(reload: bool, async_monitor_update: bool) {
 			&[&encoded_monitor_1],
 			persister_1a,
 			chain_monitor_1a,
-			node_1a
+			node_1a,
+			TestReloadNodeCfg::new().with_reconstruct_htlcs(true)
 		);
+		nodes[1].node.process_pending_htlc_forwards();
+		expect_payment_claimable!(&nodes[1], hash, secret, amt_msat);
 		// We should have another signing event generated upon reload as they're not persisted.
 		let _ = get_event!(nodes[0], Event::FundingTransactionReadyForSigning);
 		if async_monitor_update {
@@ -2230,8 +2234,11 @@ fn do_test_splice_reestablish(reload: bool, async_monitor_update: bool) {
 			&[&encoded_monitor_1],
 			persister_1b,
 			chain_monitor_1b,
-			node_1b
+			node_1b,
+			TestReloadNodeCfg::new().with_reconstruct_htlcs(true)
 		);
+		nodes[1].node.process_pending_htlc_forwards();
+		expect_payment_claimable!(&nodes[1], hash, secret, amt_msat);
 	} else {
 		nodes[0].node.peer_disconnected(node_id_1);
 		nodes[1].node.peer_disconnected(node_id_0);

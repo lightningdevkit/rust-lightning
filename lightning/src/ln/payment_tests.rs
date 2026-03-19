@@ -1455,7 +1455,9 @@ fn test_fulfill_restart_failure() {
 	let node_b_id = nodes[1].node.get_our_node_id();
 
 	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
-	let (payment_preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 100_000);
+	let amt_msat = 100_000;
+	let (payment_preimage, payment_hash, payment_secret, ..) =
+		route_payment(&nodes[0], &[&nodes[1]], amt_msat);
 
 	// The simplest way to get a failure after a fulfill is to reload nodes[1] from a state
 	// pre-fulfill, which we do by serializing it here.
@@ -1472,10 +1474,28 @@ fn test_fulfill_restart_failure() {
 	expect_payment_sent(&nodes[0], payment_preimage, None, false, false);
 
 	// Now reload nodes[1]...
-	reload_node!(nodes[1], &node_b_ser, &[&mon_ser], persister, chain_monitor, node_b_reload);
+	reload_node!(
+		nodes[1],
+		&node_b_ser,
+		&[&mon_ser],
+		persister,
+		chain_monitor,
+		node_b_reload,
+		TestReloadNodeCfg::new().with_reconstruct_htlcs(true)
+	);
 
 	nodes[0].node.peer_disconnected(node_b_id);
 	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
+
+	nodes[1].node.process_pending_htlc_forwards();
+	expect_payment_claimable!(
+		&nodes[1],
+		payment_hash,
+		payment_secret,
+		amt_msat,
+		None,
+		nodes[1].node.get_our_node_id()
+	);
 
 	nodes[1].node.fail_htlc_backwards(&payment_hash);
 	let fail_type = HTLCHandlingFailureType::Receive { payment_hash };
@@ -4890,6 +4910,9 @@ fn do_test_payment_metadata_consistency(do_reload: bool, do_modify: bool) {
 		reload_node!(nodes[3], config, &node_d_ser, &mons[..], persister, chain_mon, node_d_reload);
 		nodes[1].node.peer_disconnected(node_d_id);
 		reconnect_nodes(ReconnectArgs::new(&nodes[1], &nodes[3]));
+		// After reload, HTLCs need to be reprocessed since claimable_payments
+		// is no longer persisted. This is an incomplete MPP, so no event is generated.
+		nodes[3].node.process_pending_htlc_forwards();
 	}
 	let mut reconnect_args = ReconnectArgs::new(&nodes[2], &nodes[3]);
 	reconnect_args.send_channel_ready = (true, true);
