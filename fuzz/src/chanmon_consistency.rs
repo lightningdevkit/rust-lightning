@@ -1515,11 +1515,27 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
 							*node_id == a_id
 						},
+						MessageSendEvent::SendTxRemoveInput { ref node_id, .. } => {
+							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
+							*node_id == a_id
+						},
+						MessageSendEvent::SendTxRemoveOutput { ref node_id, .. } => {
+							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
+							*node_id == a_id
+						},
 						MessageSendEvent::SendTxComplete { ref node_id, .. } => {
 							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
 							*node_id == a_id
 						},
 						MessageSendEvent::SendTxAbort { ref node_id, .. } => {
+							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
+							*node_id == a_id
+						},
+						MessageSendEvent::SendTxInitRbf { ref node_id, .. } => {
+							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
+							*node_id == a_id
+						},
+						MessageSendEvent::SendTxAckRbf { ref node_id, .. } => {
 							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
 							*node_id == a_id
 						},
@@ -1712,6 +1728,22 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 								if dest.get_our_node_id() == *node_id {
 									out.locked_write(format!("Delivering tx_abort from node {} to node {}.\n", $node, idx).as_bytes());
 									dest.handle_tx_abort(nodes[$node].get_our_node_id(), msg);
+								}
+							}
+						},
+						MessageSendEvent::SendTxInitRbf { ref node_id, ref msg } => {
+							for (idx, dest) in nodes.iter().enumerate() {
+								if dest.get_our_node_id() == *node_id {
+									out.locked_write(format!("Delivering tx_init_rbf from node {} to node {}.\n", $node, idx).as_bytes());
+									dest.handle_tx_init_rbf(nodes[$node].get_our_node_id(), msg);
+								}
+							}
+						},
+						MessageSendEvent::SendTxAckRbf { ref node_id, ref msg } => {
+							for (idx, dest) in nodes.iter().enumerate() {
+								if dest.get_our_node_id() == *node_id {
+									out.locked_write(format!("Delivering tx_ack_rbf from node {} to node {}.\n", $node, idx).as_bytes());
+									dest.handle_tx_ack_rbf(nodes[$node].get_our_node_id(), msg);
 								}
 							}
 						},
