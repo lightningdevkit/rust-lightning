@@ -271,9 +271,7 @@ pub fn initiate_splice_out<'a, 'b, 'c, 'd>(
 	let floor_feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64);
 	let funding_template = initiator.node.splice_channel(&channel_id, &node_id_acceptor).unwrap();
 	let feerate = funding_template.min_rbf_feerate().unwrap_or(floor_feerate);
-	let wallet = WalletSync::new(Arc::clone(&initiator.wallet_source), initiator.logger);
-	let funding_contribution =
-		funding_template.splice_out_sync(outputs, feerate, FeeRate::MAX, &wallet).unwrap();
+	let funding_contribution = funding_template.splice_out(outputs, feerate, FeeRate::MAX).unwrap();
 	match initiator.node.funding_contributed(
 		&channel_id,
 		&node_id_acceptor,
@@ -1370,9 +1368,8 @@ fn fails_initiating_concurrent_splices(reconnect: bool) {
 	let feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64);
 
 	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_1_id).unwrap();
-	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
 	let funding_contribution =
-		funding_template.splice_out_sync(outputs.clone(), feerate, FeeRate::MAX, &wallet).unwrap();
+		funding_template.splice_out(outputs.clone(), feerate, FeeRate::MAX).unwrap();
 	nodes[0]
 		.node
 		.funding_contributed(&channel_id, &node_1_id, funding_contribution.clone(), None)
@@ -6420,9 +6417,7 @@ fn test_splice_revalidation_at_quiescence() {
 
 	let feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64);
 	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
-	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
-	let contribution =
-		funding_template.splice_out_sync(outputs, feerate, FeeRate::MAX, &wallet).unwrap();
+	let contribution = funding_template.splice_out(outputs, feerate, FeeRate::MAX).unwrap();
 
 	nodes[0].node.funding_contributed(&channel_id, &node_id_1, contribution.clone(), None).unwrap();
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty(), "stfu should be delayed");

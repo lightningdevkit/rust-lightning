@@ -1083,13 +1083,9 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger + MaybeSend + MaybeSync>
 						value: Amount::from_sat(splice_out_sats),
 						script_pubkey: wallet.get_change_script().unwrap(),
 					}];
-					let wallet_sync = WalletSync::new(&wallet, Arc::clone(&logger));
-					if let Ok(contribution) = funding_template.splice_out_sync(
-						outputs,
-						feerate,
-						FeeRate::MAX,
-						&wallet_sync,
-					) {
+					if let Ok(contribution) =
+						funding_template.splice_out(outputs, feerate, FeeRate::MAX)
+					{
 						let _ = channelmanager.funding_contributed(
 							&chan_id,
 							&counterparty,
