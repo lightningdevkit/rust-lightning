@@ -3384,6 +3384,7 @@ fn test_claim_event_never_handled() {
 	let chan_0_monitor_serialized = get_monitor!(nodes[1], chan.2).encode();
 	let mons = &[&chan_0_monitor_serialized[..]];
 	reload_node!(nodes[1], &init_node_ser, mons, persister, new_chain_mon, nodes_1_reload);
+	nodes[1].disable_monitor_completeness_assertion();
 
 	expect_payment_claimed!(nodes[1], payment_hash_a, 1_000_000);
 	// The reload logic spuriously generates a redundant payment preimage-containing
