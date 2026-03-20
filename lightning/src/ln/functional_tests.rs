@@ -1095,6 +1095,70 @@ fn do_test_forming_justice_tx_from_monitor_updates(broadcast_initial_commitment:
 }
 
 #[xtest(feature = "_externalize_tests")]
+pub fn test_justice_tx_htlc_from_monitor_updates() {
+	// Verify that justice txs formed by the WatchtowerPersister cover both the
+	// to_local output and any in-flight HTLC outputs on a revoked commitment.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let destination_script = chanmon_cfgs[1].keys_manager.get_destination_script([0; 32]).unwrap();
+	let persisters = [
+		WatchtowerPersister::new(chanmon_cfgs[0].keys_manager.get_destination_script([0; 32]).unwrap()),
+		WatchtowerPersister::new(destination_script.clone()),
+	];
+	let node_cfgs = create_node_cfgs_with_persisters(2, &chanmon_cfgs, persisters.iter().collect());
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs =
+		create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
+
+	let (_, _, channel_id, _) = create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	// Route a payment that stays pending (creates an HTLC output on the commitment tx)
+	let (payment_preimage, _payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 3_000_000);
+
+	// Capture the commitment tx with the pending HTLC
+	let revoked_local_txn = get_local_commitment_txn!(nodes[0], channel_id);
+	assert_eq!(revoked_local_txn.len(), 2); // commitment tx + HTLC-timeout tx
+	let revoked_commitment_tx = &revoked_local_txn[0];
+	// Should have 2 outputs: to_local (revokeable) + HTLC output
+	assert_eq!(revoked_commitment_tx.output.len(), 2);
+
+	// Claim the payment, which revokes the commitment we just captured
+	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage);
+
+	// The watchtower should now have justice txs for both to_local and the HTLC
+	let justice_txs = persisters[1].justice_txs(channel_id, &revoked_commitment_tx.compute_txid());
+	assert!(justice_txs.len() >= 2, "Expected justice txs for to_local and HTLC, got {}", justice_txs.len());
+
+	// Each justice tx should spend from the revoked commitment
+	for jtx in &justice_txs {
+		check_spends!(jtx, revoked_commitment_tx);
+		// Output should pay to our destination script
+		assert_eq!(jtx.output[0].script_pubkey, destination_script);
+	}
+
+	// Verify the justice txs spend different outputs (to_local vs HTLC)
+	let spent_vouts: std::collections::HashSet<u32> = justice_txs.iter()
+		.map(|tx| tx.input[0].previous_output.vout)
+		.collect();
+	assert_eq!(spent_vouts.len(), justice_txs.len(), "Justice txs should spend different outputs");
+
+	// Mine the revoked commitment and all justice txs
+	let mut txs_to_mine: Vec<&bitcoin::Transaction> = vec![revoked_commitment_tx];
+	txs_to_mine.extend(justice_txs.iter());
+	mine_transactions(&nodes[1], &txs_to_mine);
+	mine_transactions(&nodes[0], &txs_to_mine);
+
+	get_announce_close_broadcast_events(&nodes, 1, 0);
+	check_added_monitors(&nodes[1], 1);
+	check_closed_event(&nodes[1], 1, ClosureReason::CommitmentTxConfirmed, &[node_a_id], 100_000);
+	check_added_monitors(&nodes[0], 1);
+	check_closed_event(&nodes[0], 1, ClosureReason::CommitmentTxConfirmed, &[node_b_id], 100_000);
+}
+
+#[xtest(feature = "_externalize_tests")]
 pub fn claim_htlc_outputs() {
 	// Node revoked old state, htlcs haven't time out yet, claim them in shared justice tx
 	let mut chanmon_cfgs = create_chanmon_cfgs(2);
