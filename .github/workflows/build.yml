@@ -255,6 +255,8 @@ jobs:
             fuzz-corpus-refs/heads/main-
       - name: Run fuzzers
         run: cd fuzz && ./ci-fuzz.sh && cd ..
+        env:
+          FUZZ_MINIMIZE: ${{ contains(github.event.pull_request.labels.*.name, 'fuzz-minimize') }}
       - name: Upload honggfuzz corpus
         uses: actions/upload-artifact@v4
         with:
