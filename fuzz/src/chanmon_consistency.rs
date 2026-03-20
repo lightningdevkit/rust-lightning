@@ -953,6 +953,15 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 		}};
 	}
 
+	let append_dummy_tlv = |ser: Vec<u8>, dummy_type: u64| -> Vec<u8> {
+		use lightning::util::ser::BigSize;
+		let mut writer = VecWriter(ser);
+		BigSize(dummy_type).write(&mut writer).unwrap();
+		BigSize(4).write(&mut writer).unwrap();
+		writer.0.extend_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
+		writer.0
+	};
+
 	let reload_node = |ser: &Vec<u8>,
 	                   node_id: u8,
 	                   old_monitors: &TestChainMonitor,
@@ -1034,8 +1043,13 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 			channel_monitors: monitor_refs,
 		};
 
+		let mut modified_ser = ser.clone();
+		if use_old_mons % 2 == 0 {
+			modified_ser = append_dummy_tlv(modified_ser, 0xBADF00D1);
+		}
+
 		let manager =
-			<(BlockHash, ChanMan)>::read(&mut &ser[..], read_args).expect("Failed to read manager");
+			<(BlockHash, ChanMan)>::read(&mut &modified_ser[..], read_args).expect("Failed to read manager");
 		let res = (manager.1, chain_monitor.clone());
 		for (channel_id, mon) in monitors.drain() {
 			assert_eq!(

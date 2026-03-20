@@ -334,6 +334,8 @@ mod fuzzy_chacha {
 		}
 
 		pub fn process_in_place(&mut self, _input_output: &mut [u8]) {}
+
+		pub fn seek_to_block(&mut self, _block_offset: u32) {}
 	}
 }
 #[cfg(fuzzing)]
