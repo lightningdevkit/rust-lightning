@@ -127,6 +127,8 @@ pub struct AvailableBalances {
 	/// transactions, and includes both the value of all pending HTLCs that are below the dust
 	/// threshold as well as any excess commitment transaction fees that contribute to dust
 	/// exposure.
+	///
+	/// See [`ChannelConfig::max_dust_htlc_exposure`] for the config knob that limits this.
 	pub dust_exposure_msat: u64,
 }
 
