@@ -82,8 +82,8 @@ pub enum PayerProofError {
 	InvalidData(&'static str),
 	/// The invreq_metadata field cannot be included (per spec).
 	InvreqMetadataNotAllowed,
-	/// Signature-range TLV types (240-1000) cannot be included — they are
-	/// handled separately by the payer proof format.
+	/// TLV types >= 240 cannot be included — they are in the
+	/// signature/payer-proof range and handled separately.
 	SignatureTypeNotAllowed,
 	/// The omitted_markers contains an included TLV type.
 	OmittedMarkersContainIncluded,
@@ -173,12 +173,13 @@ impl<'a> PayerProofBuilder<'a> {
 	/// Include a specific TLV type in the proof.
 	///
 	/// Returns an error if the type is not allowed (e.g., invreq_metadata or
-	/// signature-range types 240-1000 which are handled separately).
+	/// types >= 240 which are in the signature/payer-proof range and handled
+	/// separately).
 	pub fn include_type(mut self, tlv_type: u64) -> Result<Self, PayerProofError> {
 		if tlv_type == PAYER_METADATA_TYPE {
 			return Err(PayerProofError::InvreqMetadataNotAllowed);
 		}
-		if SIGNATURE_TYPES.contains(&tlv_type) {
+		if tlv_type >= TLV_SIGNATURE {
 			return Err(PayerProofError::SignatureTypeNotAllowed);
 		}
 		self.included_types.insert(tlv_type);
@@ -458,6 +459,27 @@ fn read_tlv_value<T: Readable>(record_bytes: &[u8]) -> Result<T, crate::ln::msgs
 	Readable::read(&mut cursor)
 }
 
+/// Validate that the byte slice is a well-formed TLV stream.
+///
+/// `TlvStream::new()` assumes well-formed input and panics on malformed BigSize
+/// values or out-of-bounds lengths. This function validates the framing first,
+/// returning an error instead of panicking on untrusted input.
+fn validate_tlv_framing(bytes: &[u8]) -> Result<(), crate::ln::msgs::DecodeError> {
+	use crate::ln::msgs::DecodeError;
+	let mut cursor = io::Cursor::new(bytes);
+	while (cursor.position() as usize) < bytes.len() {
+		let _type: BigSize = Readable::read(&mut cursor).map_err(|_| DecodeError::InvalidValue)?;
+		let length: BigSize = Readable::read(&mut cursor).map_err(|_| DecodeError::InvalidValue)?;
+		let end = cursor.position().checked_add(length.0).ok_or(DecodeError::InvalidValue)?;
+		let end_usize = usize::try_from(end).map_err(|_| DecodeError::InvalidValue)?;
+		if end_usize > bytes.len() {
+			return Err(DecodeError::ShortRead);
+		}
+		cursor.set_position(end);
+	}
+	Ok(())
+}
+
 // Payer proofs use manual TLV parsing rather than `ParsedMessage` / `tlv_stream!`
 // because of their hybrid structure: a dynamic, variable set of included invoice
 // TLV records (types 0-239, preserved as raw bytes for merkle reconstruction) plus
@@ -472,6 +494,13 @@ impl TryFrom<Vec<u8>> for PayerProof {
 	fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
 		use crate::ln::msgs::DecodeError;
 		use crate::offers::parse::Bolt12ParseError;
+
+		// Validate TLV framing before passing to TlvStream, which assumes
+		// well-formed input and panics on malformed BigSize or out-of-bounds
+		// lengths. This mirrors the validation that ParsedMessage / CursorReadable
+		// provides for other BOLT 12 types.
+		validate_tlv_framing(&bytes)
+			.map_err(|_| Bolt12ParseError::Decode(DecodeError::InvalidValue))?;
 
 		let mut payer_id: Option<PublicKey> = None;
 		let mut payment_hash: Option<PaymentHash> = None;
@@ -488,16 +517,18 @@ impl TryFrom<Vec<u8>> for PayerProof {
 		let mut included_types: BTreeSet<u64> = BTreeSet::new();
 		let mut included_records: Vec<(u64, usize, usize)> = Vec::new();
 
-		let mut prev_tlv_type: u64 = 0;
+		let mut prev_tlv_type: Option<u64> = None;
 
 		for record in TlvStream::new(&bytes) {
 			let tlv_type = record.r#type;
 
 			// Strict ascending order check covers both ordering and duplicates.
-			if tlv_type <= prev_tlv_type && prev_tlv_type != 0 {
-				return Err(Bolt12ParseError::Decode(DecodeError::InvalidValue));
+			if let Some(prev) = prev_tlv_type {
+				if tlv_type <= prev {
+					return Err(Bolt12ParseError::Decode(DecodeError::InvalidValue));
+				}
 			}
-			prev_tlv_type = tlv_type;
+			prev_tlv_type = Some(tlv_type);
 
 			match tlv_type {
 				INVOICE_REQUEST_PAYER_ID_TYPE => {
@@ -589,10 +620,15 @@ impl TryFrom<Vec<u8>> for PayerProof {
 					let mut record_cursor = io::Cursor::new(record.record_bytes);
 					let _type: BigSize = Readable::read(&mut record_cursor)?;
 					let len: BigSize = Readable::read(&mut record_cursor)?;
+					if len.0 < 64 {
+						return Err(Bolt12ParseError::Decode(DecodeError::InvalidValue));
+					}
 					payer_signature = Some(Readable::read(&mut record_cursor)?);
-					let note_len = len.0.saturating_sub(64);
+					let note_len = len.0 - 64;
 					if note_len > 0 {
-						let mut note_bytes = vec![0u8; note_len as usize];
+						let note_len_usize =
+							usize::try_from(note_len).map_err(|_| DecodeError::InvalidValue)?;
+						let mut note_bytes = vec![0u8; note_len_usize];
 						record_cursor
 							.read_exact(&mut note_bytes)
 							.map_err(|_| DecodeError::ShortRead)?;
@@ -1079,46 +1115,36 @@ mod tests {
 		assert!(result.is_err());
 	}
 
-	/// Test that signature-range TLV types (240-1000) are rejected by include_type.
+	/// Test that TLV types >= 240 are rejected by include_type.
 	///
-	/// Per spec, the signature (type 240) is handled separately by the payer proof
-	/// format. Allowing include_type(240) would produce a malformed TLV stream with
-	/// duplicate type 240: once from the included invoice records loop, and again
-	/// from the explicit signature serialization.
+	/// Per spec, all types >= 240 are in the signature/payer-proof range and
+	/// handled separately. This includes types > 1000 (experimental range)
+	/// which were previously allowed through.
 	#[test]
 	fn test_include_type_rejects_signature_types() {
-		// Test the type validation logic directly via a minimal PayerProofBuilder.
-		// We construct a builder with empty included_types and test include_type.
-		let mut included_types = BTreeSet::new();
-		included_types.insert(INVOICE_REQUEST_PAYER_ID_TYPE);
-
-		// Simulate what include_type does, testing the guard:
-		// Type 240 (TLV_SIGNATURE) — in SIGNATURE_TYPES, must be rejected
-		assert!(SIGNATURE_TYPES.contains(&240));
-		assert!(SIGNATURE_TYPES.contains(&250));
-		assert!(SIGNATURE_TYPES.contains(&1000));
-		assert!(!SIGNATURE_TYPES.contains(&239));
-		assert!(!SIGNATURE_TYPES.contains(&1001));
-
-		// Now test via the actual error path by checking PayerProofError variant
-		// exists and the guard condition works:
+		// Test the type validation logic directly.
 		fn check_include_type(tlv_type: u64) -> Result<(), PayerProofError> {
 			if tlv_type == PAYER_METADATA_TYPE {
 				return Err(PayerProofError::InvreqMetadataNotAllowed);
 			}
-			if SIGNATURE_TYPES.contains(&tlv_type) {
+			if tlv_type >= TLV_SIGNATURE {
 				return Err(PayerProofError::SignatureTypeNotAllowed);
 			}
 			Ok(())
 		}
 
-		// Signature range boundaries
+		// All types >= 240 must be rejected
 		assert!(matches!(check_include_type(240), Err(PayerProofError::SignatureTypeNotAllowed)));
 		assert!(matches!(check_include_type(250), Err(PayerProofError::SignatureTypeNotAllowed)));
 		assert!(matches!(check_include_type(1000), Err(PayerProofError::SignatureTypeNotAllowed)));
-		// Just outside the range
+		// Types > 1000 (experimental) must also be rejected
+		assert!(matches!(check_include_type(1001), Err(PayerProofError::SignatureTypeNotAllowed)));
+		assert!(matches!(
+			check_include_type(u64::MAX),
+			Err(PayerProofError::SignatureTypeNotAllowed)
+		));
+		// Just below the boundary
 		assert!(check_include_type(239).is_ok());
-		assert!(check_include_type(1001).is_ok());
 		// Payer metadata still rejected
 		assert!(matches!(check_include_type(0), Err(PayerProofError::InvreqMetadataNotAllowed)));
 	}
@@ -1144,5 +1170,70 @@ mod tests {
 
 		let result = PayerProof::try_from(bytes);
 		assert!(result.is_err(), "Unknown even type 252 should be rejected");
+	}
+
+	/// Test that malformed TLV framing is rejected without panicking.
+	///
+	/// TlvStream::new() panics on malformed BigSize values or out-of-bounds
+	/// lengths. The parser must validate framing before constructing TlvStream.
+	#[test]
+	fn test_parsing_rejects_malformed_tlv_framing() {
+		use core::convert::TryFrom;
+
+		// Truncated BigSize type (0xFD prefix requires 2 more bytes)
+		let result = PayerProof::try_from(vec![0xFD, 0x01]);
+		assert!(result.is_err(), "Truncated BigSize type should be rejected");
+
+		// Valid type but truncated length
+		let result = PayerProof::try_from(vec![0x0a]);
+		assert!(result.is_err(), "Missing length should be rejected");
+
+		// Length exceeds remaining bytes
+		let result = PayerProof::try_from(vec![0x0a, 0x04, 0x00, 0x00]);
+		assert!(result.is_err(), "Length exceeding data should be rejected");
+
+		// Empty input should not panic
+		let result = PayerProof::try_from(vec![]);
+		assert!(result.is_err(), "Empty input should be rejected");
+
+		// Completely invalid bytes
+		let result = PayerProof::try_from(vec![0xFF, 0xFF]);
+		assert!(result.is_err(), "Invalid bytes should be rejected");
+	}
+
+	/// Test that duplicate type-0 TLVs are rejected.
+	///
+	/// Previously the ordering check used `u64` initialized to 0, which
+	/// skipped the check for the first TLV if its type was 0, allowing
+	/// duplicate type-0 records.
+	#[test]
+	fn test_parsing_rejects_duplicate_type_zero() {
+		use core::convert::TryFrom;
+
+		// Two TLV records both with type 0
+		let mut bytes = Vec::new();
+		bytes.extend_from_slice(&[0x00, 0x02, 0x00, 0x00]); // type 0, len 2
+		bytes.extend_from_slice(&[0x00, 0x02, 0x00, 0x00]); // type 0 again (DUPLICATE!)
+
+		let result = PayerProof::try_from(bytes);
+		assert!(result.is_err(), "Duplicate type-0 TLVs should be rejected");
+	}
+
+	/// Test that payer_signature TLV with length < 64 is rejected.
+	///
+	/// The payer_signature value contains a 64-byte schnorr signature
+	/// followed by an optional note. A length < 64 is always invalid.
+	#[test]
+	fn test_parsing_rejects_short_payer_signature() {
+		use core::convert::TryFrom;
+
+		// Craft a TLV with type 250 (payer_signature) but only 32 bytes of value
+		let mut bytes = Vec::new();
+		bytes.push(0xfa); // type 250
+		bytes.push(0x20); // length 32 (too short for 64-byte signature)
+		bytes.extend_from_slice(&[0x00; 32]);
+
+		let result = PayerProof::try_from(bytes);
+		assert!(result.is_err(), "payer_signature with len < 64 should be rejected");
 	}
 }
