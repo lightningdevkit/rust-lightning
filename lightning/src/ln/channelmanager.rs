@@ -10602,7 +10602,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		} else {
 			log_debug!(logger, "Channel is open and awaiting update, resuming it");
 			let updates = chan.monitor_updating_restored(
-				&&logger,
+				&logger,
 				&self.node_signer,
 				self.chain_hash,
 				&*self.config.read().unwrap(),
@@ -10640,7 +10640,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				updates.funding_broadcastable,
 				updates.channel_ready,
 				updates.announcement_sigs,
-				updates.tx_signatures,
+				updates.funding_tx_signed,
 				None,
 				updates.channel_ready_order,
 			);
@@ -10792,19 +10792,20 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		pending_forwards: Vec<(PendingHTLCInfo, u64)>, pending_update_adds: Vec<msgs::UpdateAddHTLC>,
 		funding_broadcastable: Option<Transaction>,
 		channel_ready: Option<msgs::ChannelReady>, announcement_sigs: Option<msgs::AnnouncementSignatures>,
-		tx_signatures: Option<msgs::TxSignatures>, tx_abort: Option<msgs::TxAbort>,
+		mut funding_tx_signed: Option<FundingTxSigned>, tx_abort: Option<msgs::TxAbort>,
 		channel_ready_order: ChannelReadyOrder,
 	) -> (Vec<PendingAddHTLCInfo>, Option<(u64, Vec<msgs::UpdateAddHTLC>)>) {
 		let logger = WithChannelContext::from(&self.logger, &channel.context, None);
-		log_trace!(logger, "Handling channel resumption with {} RAA, {} commitment update, {} pending forwards, {} pending update_add_htlcs, {}broadcasting funding, {} channel ready, {} announcement, {} tx_signatures, {} tx_abort",
+		log_trace!(logger, "Handling channel resumption with {} RAA, {} commitment update, {} pending forwards, {} pending update_add_htlcs, {}broadcasting funding, {} channel ready, {} announcement, {} tx_signatures, {} tx_abort, {} splice_locked",
 			if raa.is_some() { "an" } else { "no" },
 			if commitment_update.is_some() { "a" } else { "no" },
 			pending_forwards.len(), pending_update_adds.len(),
 			if funding_broadcastable.is_some() { "" } else { "not " },
 			if channel_ready.is_some() { "sending" } else { "without" },
 			if announcement_sigs.is_some() { "sending" } else { "without" },
-			if tx_signatures.is_some() { "sending" } else { "without" },
+			if funding_tx_signed.as_ref().map(|v| v.tx_signatures.is_some()).unwrap_or(false) { "sending" } else { "without" },
 			if tx_abort.is_some() { "sending" } else { "without" },
+			if funding_tx_signed.as_ref().map(|v| v.splice_locked.is_some()).unwrap_or(false) { "sending" } else { "without" },
 		);
 
 		let counterparty_node_id = channel.context.get_counterparty_node_id();
@@ -10871,7 +10872,13 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				},
 			}
 
-			if let Some(msg) = tx_signatures {
+			if let Some(funding_tx_signed) = funding_tx_signed.as_ref() {
+				// These [`FundingTxSigned`] fields are only expected as a result of calling
+				// [`ChannelManager::funding_transaction_signed`].
+				debug_assert!(funding_tx_signed.commitment_signed.is_none());
+				debug_assert!(funding_tx_signed.counterparty_initial_commitment_signed_result.is_none());
+			}
+			if let Some(msg) = funding_tx_signed.as_mut().and_then(|v| v.tx_signatures.take()) {
 				pending_msg_events.push(MessageSendEvent::SendTxSignatures {
 					node_id: counterparty_node_id,
 					msg,
@@ -10896,10 +10903,20 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					});
 				}
 			}
+
+			if let Some(msg) = funding_tx_signed.as_mut().and_then(|v| v.splice_locked.take()) {
+				pending_msg_events.push(MessageSendEvent::SendSpliceLocked {
+					node_id: counterparty_node_id,
+					msg,
+				});
+			}
 		} else if let Some(msg) = channel_ready {
 			self.send_channel_ready(pending_msg_events, channel, msg);
 		}
 
+		// If we just finished a pending interactive funding negotiation and are ready to broadcast
+		// the transaction, `funding_broadcastable` will only contain the transaction for a
+		// dual-funded channel. Splice transactions need to be broadcast separately.
 		if let Some(tx) = funding_broadcastable {
 			if channel.context.is_manual_broadcast() {
 				log_info!(logger, "Not broadcasting funding transaction with txid {} as it is manually managed", tx.compute_txid());
@@ -10914,18 +10931,45 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					}
 				};
 			} else {
+				if let Some((funding_tx, tx_type)) = funding_tx_signed.as_ref().and_then(|v| v.funding_tx.as_ref()) {
+					debug_assert_eq!(&tx, funding_tx);
+					debug_assert!(matches!(tx_type, TransactionType::Funding { .. }));
+				}
 				log_info!(logger, "Broadcasting funding transaction with txid {}", tx.compute_txid());
 				self.tx_broadcaster.broadcast_transactions(&[(
 					&tx,
 					TransactionType::Funding { channels: vec![(counterparty_node_id, channel.context.channel_id())] },
 				)]);
 			}
+		} else if let Some((splice_tx, tx_type)) = funding_tx_signed
+			.as_mut()
+			.and_then(|v| v.funding_tx.take())
+			.filter(|(_, tx_type)| matches!(tx_type, TransactionType::Splice { .. }))
+		{
+			log_info!(logger, "Broadcasting signed splice transaction with txid {}", splice_tx.compute_txid());
+			self.tx_broadcaster.broadcast_transactions(&[(&splice_tx, tx_type)]);
 		}
 
 		{
 			let mut pending_events = self.pending_events.lock().unwrap();
 			emit_channel_pending_event!(pending_events, channel);
 			emit_initial_channel_ready_event!(pending_events, channel);
+			if let Some(splice_negotiated) = funding_tx_signed
+				.as_mut()
+				.and_then(|v| v.splice_negotiated.take())
+			{
+				pending_events.push_back((
+					events::Event::SplicePending {
+						channel_id: channel.context.channel_id(),
+						counterparty_node_id,
+						user_channel_id: channel.context.get_user_id(),
+						new_funding_txo: splice_negotiated.funding_txo,
+						channel_type: splice_negotiated.channel_type,
+						new_funding_redeem_script: splice_negotiated.funding_redeem_script,
+					},
+					None,
+				));
+			}
 		}
 
 		(htlc_forwards, decode_update_add_htlcs)
@@ -13072,10 +13116,14 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							}
 						}
 						let need_lnd_workaround = chan.context.workaround_lnd_bug_4006.take();
+						let funding_tx_signed = responses.tx_signatures.map(|tx_signatures| FundingTxSigned {
+							tx_signatures: Some(tx_signatures),
+							..Default::default()
+						});
 						let (htlc_forwards, decode_update_add_htlcs) = self.handle_channel_resumption(
 							&mut peer_state.pending_msg_events, chan, responses.raa, responses.commitment_update, responses.commitment_order,
 							Vec::new(), Vec::new(), None, responses.channel_ready, responses.announcement_sigs,
-							responses.tx_signatures, responses.tx_abort, responses.channel_ready_order,
+							funding_tx_signed, responses.tx_abort, responses.channel_ready_order,
 						);
 						debug_assert!(htlc_forwards.is_empty());
 						debug_assert!(decode_update_add_htlcs.is_none());
@@ -20046,7 +20094,7 @@ impl<
 				if let Some(signing_session) =
 					chan.context().interactive_tx_signing_session.as_ref()
 				{
-					if signing_session.holder_tx_signatures().is_none()
+					if !signing_session.has_holder_tx_signatures()
 						&& signing_session.has_local_contribution()
 					{
 						let unsigned_transaction = signing_session.unsigned_tx().tx().clone();
