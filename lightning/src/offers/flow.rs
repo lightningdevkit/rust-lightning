@@ -590,6 +590,46 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 		Ok((builder.into(), nonce))
 	}
 
+	/// Creates a minimal [`OfferBuilder`] with derived metadata and an optional blinded path.
+	///
+	/// If `intro_node_id` is `None`, creates an offer with no blinded paths (~70 bytes) suitable
+	/// for scenarios like BLIP-42 where the payer intentionally shares their contact info.
+	///
+	/// If `intro_node_id` is `Some`, creates an offer with a single blinded path (~200 bytes)
+	/// providing privacy/routability for unannounced nodes. The intro node must be a public
+	/// peer (routable via gossip) with an outbound channel.
+	///
+	/// # Privacy
+	///
+	/// - `None`: Exposes the derived signing pubkey directly without blinded path privacy
+	/// - `Some`: Intro node learns payer identity (choose trusted/routable peer)
+	///
+	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
+	pub fn create_compact_offer_builder<ES: Deref>(
+		&self, entropy_source: ES, intro_node_id: Option<PublicKey>,
+	) -> Result<OfferBuilder<'_, DerivedMetadata, secp256k1::All>, Bolt12SemanticError>
+	where
+		ES::Target: EntropySource,
+	{
+		match intro_node_id {
+			None => {
+				// Use the internal builder but don't add any paths
+				self.create_offer_builder_intern(
+					&*entropy_source,
+					|_, _, _| Ok(core::iter::empty()),
+				)
+				.map(|(builder, _)| builder)
+			},
+			Some(node_id) => {
+				// Delegate to create_offer_builder with a single-peer list to reuse the router logic
+				self.create_offer_builder(
+					entropy_source,
+					vec![MessageForwardNode { node_id, short_channel_id: None }],
+				)
+			},
+		}
+	}
+
 	/// Creates an [`OfferBuilder`] such that the [`Offer`] it builds is recognized by the
 	/// [`OffersMessageFlow`], and any corresponding [`InvoiceRequest`] can be verified using
 	/// [`Self::verify_invoice_request`].
