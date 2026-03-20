@@ -29,6 +29,7 @@ GEN_TEST fromstr_to_netaddress
 GEN_TEST feature_flags
 GEN_TEST lsps_message
 GEN_TEST fs_store
+GEN_TEST gossip_discovery
 
 GEN_TEST msg_accept_channel msg_targets::
 GEN_TEST msg_announcement_signatures msg_targets::

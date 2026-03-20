@@ -31,6 +31,7 @@ pub mod chanmon_deser;
 pub mod feature_flags;
 pub mod fromstr_to_netaddress;
 pub mod full_stack;
+pub mod gossip_discovery;
 pub mod indexedmap;
 pub mod invoice_deser;
 pub mod invoice_request_deser;
