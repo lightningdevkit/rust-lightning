@@ -109,7 +109,6 @@ impl BlindedPaymentPath {
 	/// Errors if:
 	/// * [`BlindedPayInfo`] calculation results in an integer overflow
 	/// * any unknown features are required in the provided [`ForwardTlvs`]
-	//  TODO: make all payloads the same size with padding + add dummy hops
 	pub fn new<ES: EntropySource, T: secp256k1::Signing + secp256k1::Verification>(
 		intermediate_nodes: &[PaymentForwardNode], payee_node_id: PublicKey,
 		local_node_receive_key: ReceiveAuthKey, payee_tlvs: ReceiveTlvs, htlc_maximum_msat: u64,
@@ -136,10 +135,7 @@ impl BlindedPaymentPath {
 	///
 	/// This improves privacy by making path-length analysis based on fee and CLTV delta
 	/// values less reliable.
-	///
-	/// TODO: Add end-to-end tests validating fee aggregation, CLTV deltas, and
-	/// HTLC bounds when dummy hops are present, before exposing this API publicly.
-	pub(crate) fn new_with_dummy_hops<
+	pub fn new_with_dummy_hops<
 		ES: EntropySource,
 		T: secp256k1::Signing + secp256k1::Verification,
 	>(
