@@ -60,6 +60,7 @@ use crate::types::features::Bolt12InvoiceFeatures;
 use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::util::config::{HTLCInterceptionFlags, UserConfig};
 use crate::util::ser::Writeable;
+use crate::util::test_utils::TestCurrencyConversion;
 use bitcoin::constants::ChainHash;
 use bitcoin::network::Network;
 use bitcoin::secp256k1;
@@ -324,7 +325,7 @@ fn create_static_invoice<T: secp256k1::Signing + secp256k1::Verification>(
 		.flow
 		.create_async_receive_offer_builder(entropy_source, blinded_paths_to_always_online_node)
 		.unwrap();
-	let offer = offer_builder.build().unwrap();
+	let offer = offer_builder.build();
 	let static_invoice =
 		create_static_invoice_builder(recipient, &offer, offer_nonce, relative_expiry)
 			.build_and_sign(&secp_ctx)
@@ -692,7 +693,7 @@ fn static_invoice_unknown_required_features() {
 		.flow
 		.create_async_receive_offer_builder(entropy_source, blinded_paths_to_always_online_node)
 		.unwrap();
-	let offer = offer_builder.build().unwrap();
+	let offer = offer_builder.build();
 	let static_invoice_unknown_req_features =
 		create_static_invoice_builder(&nodes[2], &offer, nonce, None)
 			.features_unchecked(Bolt12InvoiceFeatures::unknown())
@@ -1448,6 +1449,8 @@ fn amount_doesnt_match_invreq() {
 
 	let amt_msat = 5000;
 	let payment_id = PaymentId([1; 32]);
+	let conversion = TestCurrencyConversion;
+
 	nodes[0].node.pay_for_offer(&offer, Some(amt_msat), payment_id, Default::default()).unwrap();
 	let release_held_htlc_om_3_0 = pass_async_payments_oms(
 		static_invoice,
@@ -1471,6 +1474,7 @@ fn amount_doesnt_match_invreq() {
 					Nonce::from_entropy_source(nodes[0].keys_manager),
 					&secp_ctx,
 					payment_id,
+					&conversion,
 				)
 				.unwrap()
 				.amount_msats(amt_msat + 1)
@@ -1672,7 +1676,7 @@ fn invalid_async_receive_with_retry<F1, F2>(
 		.flow
 		.create_async_receive_offer_builder(entropy_source, blinded_paths_to_always_online_node)
 		.unwrap();
-	let offer = offer_builder.build().unwrap();
+	let offer = offer_builder.build();
 	let amt_msat = 5000;
 	let payment_id = PaymentId([1; 32]);
 

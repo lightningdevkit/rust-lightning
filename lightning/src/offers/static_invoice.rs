@@ -819,8 +819,7 @@ mod tests {
 
 		let offer = OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
 			.path(blinded_path())
-			.build()
-			.unwrap();
+			.build();
 
 		StaticInvoiceBuilder::for_offer_using_derived_keys(
 			&offer,
@@ -859,8 +858,7 @@ mod tests {
 
 		let offer = OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
 			.path(blinded_path())
-			.build()
-			.unwrap();
+			.build();
 
 		let invoice = StaticInvoiceBuilder::for_offer_using_derived_keys(
 			&offer,
@@ -961,8 +959,7 @@ mod tests {
 			OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
 				.path(blinded_path())
 				.absolute_expiry(future_expiry)
-				.build()
-				.unwrap();
+				.build();
 
 		let invoice = StaticInvoiceBuilder::for_offer_using_derived_keys(
 			&valid_offer,
@@ -983,8 +980,7 @@ mod tests {
 			OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
 				.path(blinded_path())
 				.absolute_expiry(past_expiry)
-				.build()
-				.unwrap();
+				.build();
 		if let Err(e) = StaticInvoiceBuilder::for_offer_using_derived_keys(
 			&expired_offer,
 			payment_paths(),
@@ -1015,8 +1011,7 @@ mod tests {
 		let offer = OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
 			.path(blinded_path())
 			.experimental_foo(42)
-			.build()
-			.unwrap();
+			.build();
 
 		if let Err(e) = StaticInvoiceBuilder::for_offer_using_derived_keys(
 			&offer,
@@ -1061,8 +1056,7 @@ mod tests {
 		let valid_offer =
 			OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
 				.path(blinded_path())
-				.build()
-				.unwrap();
+				.build();
 
 		// Error if payment paths are missing.
 		if let Err(e) = StaticInvoiceBuilder::for_offer_using_derived_keys(
@@ -1128,8 +1122,7 @@ mod tests {
 		let valid_offer =
 			OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
 				.path(blinded_path())
-				.build()
-				.unwrap();
+				.build();
 
 		let mut offer_missing_issuer_id = valid_offer.clone();
 		let (mut offer_tlv_stream, _) = offer_missing_issuer_id.as_tlv_stream();
@@ -1165,8 +1158,7 @@ mod tests {
 			.path(blinded_path())
 			.metadata(vec![42; 32])
 			.unwrap()
-			.build()
-			.unwrap();
+			.build();
 		if let Err(e) = StaticInvoiceBuilder::for_offer_using_derived_keys(
 			&offer,
 			payment_paths(),
@@ -1196,8 +1188,7 @@ mod tests {
 				.path(blinded_path())
 				.chain(Network::Bitcoin)
 				.chain(Network::Testnet)
-				.build()
-				.unwrap();
+				.build();
 
 		if let Err(e) = StaticInvoiceBuilder::for_offer_using_derived_keys(
 			&offer_with_extra_chain,
@@ -1226,8 +1217,7 @@ mod tests {
 
 		let offer = OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
 			.path(blinded_path())
-			.build()
-			.unwrap();
+			.build();
 
 		const TEST_RELATIVE_EXPIRY: u32 = 3600;
 		let invoice = StaticInvoiceBuilder::for_offer_using_derived_keys(
@@ -1268,8 +1258,7 @@ mod tests {
 
 		let offer = OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
 			.path(blinded_path())
-			.build()
-			.unwrap();
+			.build();
 
 		let invoice = StaticInvoiceBuilder::for_offer_using_derived_keys(
 			&offer,
@@ -1405,8 +1394,7 @@ mod tests {
 
 		let offer = OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
 			.path(blinded_path())
-			.build()
-			.unwrap();
+			.build();
 
 		const UNKNOWN_ODD_TYPE: u64 = INVOICE_TYPES.end - 1;
 		assert!(UNKNOWN_ODD_TYPE % 2 == 1);
@@ -1499,8 +1487,7 @@ mod tests {
 
 		let offer = OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
 			.path(blinded_path())
-			.build()
-			.unwrap();
+			.build();
 
 		let invoice = StaticInvoiceBuilder::for_offer_using_derived_keys(
 			&offer,
@@ -1605,8 +1592,7 @@ mod tests {
 
 		let offer = OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
 			.path(blinded_path())
-			.build()
-			.unwrap();
+			.build();
 
 		let invoice = StaticInvoiceBuilder::for_offer_using_derived_keys(
 			&offer,
@@ -1699,8 +1685,7 @@ mod tests {
 
 		let offer = OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
 			.path(blinded_path())
-			.build()
-			.unwrap();
+			.build();
 
 		let offer_id = offer.id();
 
