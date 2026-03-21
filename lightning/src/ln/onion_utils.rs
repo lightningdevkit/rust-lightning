@@ -1909,7 +1909,7 @@ impl From<&HTLCFailReason> for HTLCHandlingFailureReason {
 
 #[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
 #[cfg_attr(test, derive(PartialEq))]
-pub(super) struct HTLCFailReason(HTLCFailReasonRepr);
+pub(crate) struct HTLCFailReason(HTLCFailReasonRepr);
 
 #[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
 #[cfg_attr(test, derive(PartialEq))]
@@ -2124,6 +2124,10 @@ impl HTLCFailReason {
 				let mut err = err.clone();
 				let hold_time = hold_time.unwrap_or(0);
 
+				if let Some(secondary_shared_secret) = secondary_shared_secret {
+					process_failure_packet(&mut err, secondary_shared_secret, hold_time);
+					crypt_failure_packet(secondary_shared_secret, &mut err);
+				}
 				process_failure_packet(&mut err, incoming_packet_shared_secret, hold_time);
 				crypt_failure_packet(incoming_packet_shared_secret, &mut err);
 
@@ -2135,6 +2139,23 @@ impl HTLCFailReason {
 	pub(super) fn decode_onion_failure<T: secp256k1::Signing, L: Logger>(
 		&self, secp_ctx: &Secp256k1<T>, logger: &L, htlc_source: &HTLCSource,
 	) -> DecodedOnionFailure {
+		macro_rules! decoded_onion_failure {
+			($short_channel_id:expr, $failure_reason:expr, $data:expr) => {
+				DecodedOnionFailure {
+					network_update: None,
+					payment_failed_permanently: false,
+					short_channel_id: $short_channel_id,
+					failed_within_blinded_path: false,
+					hold_times: Vec::new(),
+					#[cfg(any(test, feature = "_test_utils"))]
+					onion_error_code: Some($failure_reason),
+					#[cfg(any(test, feature = "_test_utils"))]
+					onion_error_data: Some($data.clone()),
+					#[cfg(test)]
+					attribution_failed_channel: None,
+				}
+			};
+		}
 		match self.0 {
 			HTLCFailReasonRepr::LightningError { ref err, .. } => {
 				process_onion_failure(secp_ctx, logger, &htlc_source, err.clone())
@@ -2146,22 +2167,19 @@ impl HTLCFailReason {
 				// failures here, but that would be insufficient as find_route
 				// generally ignores its view of our own channels as we provide them via
 				// ChannelDetails.
-				if let &HTLCSource::OutboundRoute { ref path, .. } = htlc_source {
-					DecodedOnionFailure {
-						network_update: None,
-						payment_failed_permanently: false,
-						short_channel_id: Some(path.hops[0].short_channel_id),
-						failed_within_blinded_path: false,
-						hold_times: Vec::new(),
-						#[cfg(any(test, feature = "_test_utils"))]
-						onion_error_code: Some(*failure_reason),
-						#[cfg(any(test, feature = "_test_utils"))]
-						onion_error_data: Some(data.clone()),
-						#[cfg(test)]
-						attribution_failed_channel: None,
-					}
-				} else {
-					unreachable!();
+				match htlc_source {
+					&HTLCSource::OutboundRoute { ref path, .. } => {
+						decoded_onion_failure!(
+							(Some(path.hops[0].short_channel_id)),
+							*failure_reason,
+							data
+						)
+					},
+					&HTLCSource::TrampolineForward { ref outbound_payment, .. } => {
+						debug_assert!(outbound_payment.is_none());
+						decoded_onion_failure!(None, *failure_reason, data)
+					},
+					_ => unreachable!(),
 				}
 			},
 		}
