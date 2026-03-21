@@ -250,7 +250,17 @@ pub(super) struct TlvRecord<'a> {
 	type_bytes: &'a [u8],
 	// The entire TLV record.
 	pub(super) record_bytes: &'a [u8],
+	// The value portion of the TLV record (after type and length).
+	pub(super) value_bytes: &'a [u8],
 	pub(super) end: usize,
+}
+
+impl<'a> TlvRecord<'a> {
+	/// Read a value from this TLV record's value bytes using [`Readable`].
+	pub(super) fn read_value<T: Readable>(&self) -> Result<T, crate::ln::msgs::DecodeError> {
+		let mut cursor = io::Cursor::new(self.value_bytes);
+		Readable::read(&mut cursor)
+	}
 }
 
 impl<'a> Iterator for TlvStream<'a> {
@@ -269,10 +279,11 @@ impl<'a> Iterator for TlvStream<'a> {
 			let end = offset + length;
 
 			let record_bytes = &self.data.get_ref()[start as usize..end as usize];
+			let value_bytes = &self.data.get_ref()[offset as usize..end as usize];
 
 			self.data.set_position(end);
 
-			Some(TlvRecord { r#type, type_bytes, record_bytes, end: end as usize })
+			Some(TlvRecord { r#type, type_bytes, record_bytes, value_bytes, end: end as usize })
 		} else {
 			None
 		}
@@ -381,31 +392,25 @@ pub(super) fn compute_selective_disclosure(
 }
 
 /// Compute omitted markers per BOLT 12 payer proof spec.
+///
+/// Each omitted TLV gets a marker equal to `prev_value + 1`, where `prev_value`
+/// tracks the last included type or last marker. TLV type 0 is implicitly
+/// omitted (never included in markers).
 fn compute_omitted_markers(tlv_data: &[TlvMerkleData]) -> Vec<u64> {
 	let mut markers = Vec::new();
-	let mut prev_included_type: Option<u64> = None;
-	let mut prev_marker: Option<u64> = None;
+	let mut prev_value: u64 = 0;
 
 	for data in tlv_data {
 		if data.tlv_type == 0 {
 			continue;
 		}
 
-		if !data.is_included {
-			let marker = if let Some(prev_type) = prev_included_type {
-				prev_type + 1
-			} else if let Some(last_marker) = prev_marker {
-				last_marker + 1
-			} else {
-				1
-			};
-
-			markers.push(marker);
-			prev_marker = Some(marker);
-			prev_included_type = None;
+		if data.is_included {
+			prev_value = data.tlv_type;
 		} else {
-			prev_included_type = Some(data.tlv_type);
-			prev_marker = None;
+			let marker = prev_value + 1;
+			markers.push(marker);
+			prev_value = marker;
 		}
 	}
 
@@ -462,37 +467,23 @@ fn build_tree_with_disclosure(
 			let right_incl = nodes[right_pos].included;
 			let right_min_type = nodes[right_pos].min_type;
 
-			match (left_hash, right_hash, left_incl, right_incl) {
-				(Some(l), Some(r), true, false) => {
-					missing_with_types.push((right_min_type, r));
+			match (left_hash, right_hash) {
+				(Some(l), Some(r)) => {
+					if left_incl != right_incl {
+						let (missing_type, missing_hash) = if right_incl {
+							(nodes[left_pos].min_type, l)
+						} else {
+							(right_min_type, r)
+						};
+						missing_with_types.push((missing_type, missing_hash));
+					}
 					nodes[left_pos].hash =
 						Some(tagged_branch_hash_from_engine(branch_tag.clone(), l, r));
-					nodes[left_pos].included = true;
+					nodes[left_pos].included |= left_incl || right_incl;
 					nodes[left_pos].min_type =
 						core::cmp::min(nodes[left_pos].min_type, right_min_type);
 				},
-				(Some(l), Some(r), false, true) => {
-					missing_with_types.push((nodes[left_pos].min_type, l));
-					let left_min = nodes[left_pos].min_type;
-					nodes[left_pos].hash =
-						Some(tagged_branch_hash_from_engine(branch_tag.clone(), l, r));
-					nodes[left_pos].included = true;
-					nodes[left_pos].min_type = core::cmp::min(left_min, right_min_type);
-				},
-				(Some(l), Some(r), true, true) => {
-					nodes[left_pos].hash =
-						Some(tagged_branch_hash_from_engine(branch_tag.clone(), l, r));
-					nodes[left_pos].included = true;
-					nodes[left_pos].min_type =
-						core::cmp::min(nodes[left_pos].min_type, right_min_type);
-				},
-				(Some(l), Some(r), false, false) => {
-					nodes[left_pos].hash =
-						Some(tagged_branch_hash_from_engine(branch_tag.clone(), l, r));
-					nodes[left_pos].min_type =
-						core::cmp::min(nodes[left_pos].min_type, right_min_type);
-				},
-				(Some(_), None, _, _) => {},
+				(Some(_), None) => {},
 				_ => unreachable!("Invalid state in merkle tree construction"),
 			}
 		}

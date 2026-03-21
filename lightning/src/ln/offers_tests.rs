@@ -2889,7 +2889,7 @@ fn creates_payer_proof_with_note_and_selective_disclosure() {
 		.include_invoice_created_at()
 		.build_with_derived_key(&expanded_key, payer_nonce, payment_id, Some("Paid for coffee"))
 		.unwrap();
-	assert_eq!(proof_with_note.payer_note(), Some("Paid for coffee"));
+	assert_eq!(proof_with_note.payer_note().map(|p| p.0), Some("Paid for coffee"));
 
 	// Both proofs should verify and have the same core fields
 	assert_eq!(minimal_proof.preimage(), proof_with_note.preimage());
@@ -2905,6 +2905,6 @@ fn creates_payer_proof_with_note_and_selective_disclosure() {
 	assert!(encoded.starts_with("lnp1"));
 
 	let decoded = PayerProof::try_from(proof_with_note.bytes().to_vec()).unwrap();
-	assert_eq!(decoded.payer_note(), Some("Paid for coffee"));
+	assert_eq!(decoded.payer_note().map(|p| p.0), Some("Paid for coffee"));
 	assert_eq!(decoded.preimage(), payment_preimage);
 }
