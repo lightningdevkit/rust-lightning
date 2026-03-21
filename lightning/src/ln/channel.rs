@@ -56,7 +56,7 @@ use crate::ln::channelmanager::{
 	MAX_LOCAL_BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA,
 };
 use crate::ln::funding::{
-	FeeRateAdjustmentError, FundingContribution, FundingTemplate, FundingTxInput,
+	FeeRateAdjustmentError, FundingContribution, FundingTemplate, FundingTxInput, PriorContribution,
 };
 use crate::ln::interactivetxs::{
 	AbortReason, HandleTxCompleteValue, InteractiveTxConstructor, InteractiveTxConstructorArgs,
@@ -2958,6 +2958,21 @@ impl FundingNegotiation {
 			FundingNegotiation::AwaitingAck { .. } => None,
 			FundingNegotiation::ConstructingTransaction { funding, .. } => Some(funding),
 			FundingNegotiation::AwaitingSignatures { funding, .. } => Some(funding),
+		}
+	}
+
+	fn funding_feerate_sat_per_1000_weight(&self) -> u32 {
+		match self {
+			FundingNegotiation::AwaitingAck { context, .. } => {
+				context.funding_feerate_sat_per_1000_weight
+			},
+			FundingNegotiation::ConstructingTransaction {
+				funding_feerate_sat_per_1000_weight,
+				..
+			} => *funding_feerate_sat_per_1000_weight,
+			FundingNegotiation::AwaitingSignatures {
+				funding_feerate_sat_per_1000_weight, ..
+			} => *funding_feerate_sat_per_1000_weight,
 		}
 	}
 
@@ -6427,6 +6442,16 @@ fn get_v2_channel_reserve_satoshis(channel_value_satoshis: u64, dust_limit_satos
 	// Fixed at 1% of channel value by spec.
 	let (q, _) = channel_value_satoshis.overflowing_div(100);
 	cmp::min(channel_value_satoshis, cmp::max(q, dust_limit_satoshis))
+}
+
+/// Returns the minimum feerate for our own RBF attempts given a previous feerate.
+///
+/// The spec (tx_init_rbf) requires the new feerate to be >= 25/24 of the previous feerate.
+/// However, that multiplier doesn't always satisfy BIP125's relay requirement of an absolute fee
+/// increase, so for our own RBFs we use a flat +25 sat/kwu (0.1 sat/vB) increment instead. We
+/// still accept the 25/24 rule from counterparties in [`FundedChannel::validate_tx_init_rbf`].
+fn min_rbf_feerate(prev_feerate: u32) -> FeeRate {
+	FeeRate::from_sat_per_kwu((prev_feerate as u64).saturating_add(25))
 }
 
 /// Context for negotiating channels (dual-funded V2 open, splicing)
@@ -11879,10 +11904,8 @@ where
 		}
 	}
 
-	/// Initiate splicing.
-	pub fn splice_channel(
-		&self, min_feerate: FeeRate, max_feerate: FeeRate,
-	) -> Result<FundingTemplate, APIError> {
+	/// Builds a [`FundingTemplate`] for splicing or RBF, if the channel state allows it.
+	pub fn splice_channel(&self) -> Result<FundingTemplate, APIError> {
 		if self.holder_commitment_point.current_point().is_none() {
 			return Err(APIError::APIMisuseError {
 				err: format!(
@@ -11924,16 +11947,34 @@ where
 			});
 		}
 
-		if min_feerate > max_feerate {
-			return Err(APIError::APIMisuseError {
-				err: format!(
-					"Channel {} min_feerate {} exceeds max_feerate {}",
-					self.context.channel_id(),
-					min_feerate,
-					max_feerate,
-				),
-			});
-		}
+		let (min_rbf_feerate, prior_contribution) = if self.is_rbf_compatible().is_err() {
+			// Channel can never RBF (e.g., zero-conf).
+			(None, None)
+		} else if let Ok(min_rbf_feerate) = self.can_initiate_rbf() {
+			// A previous splice was negotiated but not yet locked. The user's splice
+			// will be an RBF, so provide the minimum RBF feerate and prior contribution.
+			let prior = self.build_prior_contribution();
+			(Some(min_rbf_feerate), prior)
+		} else if let Some(negotiation) = self
+			.pending_splice
+			.as_ref()
+			.and_then(|pending_splice| pending_splice.funding_negotiation.as_ref())
+		{
+			// A splice is currently being negotiated.
+			// - If the negotiation succeeds, the user's splice will need to satisfy the RBF
+			//   feerate requirement. Derive the minimum RBF feerate from the negotiation's
+			//   feerate so the user can choose an appropriate feerate.
+			// - If the negotiation fails (e.g., tx_abort), the splice will proceed as a fresh
+			//   splice instead. In this case, the min_rbf_feerate becomes stale, causing a
+			//   slightly higher feerate than necessary. Call splice_channel again after
+			//   receiving SpliceFailed to get a fresh template without the RBF constraint.
+			let prev_feerate = negotiation.funding_feerate_sat_per_1000_weight();
+			(Some(min_rbf_feerate(prev_feerate)), None)
+		} else {
+			// No RBF feerate to derive — either a fresh splice or a pending splice that
+			// can't be RBF'd (e.g., splice_locked already exchanged).
+			(None, None)
+		};
 
 		let funding_txo = self.funding.get_funding_txo().expect("funding_txo should be set");
 		let previous_utxo =
@@ -11944,75 +11985,35 @@ where
 			satisfaction_weight: EMPTY_SCRIPT_SIG_WEIGHT + FUNDING_TRANSACTION_WITNESS_WEIGHT,
 		};
 
-		Ok(FundingTemplate::new(Some(shared_input), min_feerate, max_feerate))
+		Ok(FundingTemplate::new(Some(shared_input), min_rbf_feerate, prior_contribution))
 	}
 
-	/// Initiate an RBF of a pending splice transaction.
-	pub fn rbf_channel(
-		&self, min_feerate: FeeRate, max_feerate: FeeRate,
-	) -> Result<FundingTemplate, APIError> {
-		if self.holder_commitment_point.current_point().is_none() {
-			return Err(APIError::APIMisuseError {
-				err: format!(
-					"Channel {} cannot RBF until a payment is routed",
-					self.context.channel_id(),
-				),
-			});
-		}
+	/// Clones the prior contribution and fetches the holder balance for deferred feerate
+	/// adjustment.
+	fn build_prior_contribution(&self) -> Option<PriorContribution> {
+		debug_assert!(self.pending_splice.is_some(), "can_initiate_rbf requires pending_splice");
+		let prior = self.pending_splice.as_ref()?.contributions.last()?;
+		let holder_balance = self
+			.get_holder_counterparty_balances_floor_incl_fee(&self.funding)
+			.map(|(h, _)| h)
+			.ok();
+		Some(PriorContribution::new(prior.clone(), holder_balance))
+	}
 
-		if self.quiescent_action.is_some() {
-			return Err(APIError::APIMisuseError {
-				err: format!(
-					"Channel {} cannot RBF as one is waiting to be negotiated",
-					self.context.channel_id(),
-				),
-			});
-		}
-
-		if !self.context.is_usable() {
-			return Err(APIError::APIMisuseError {
-				err: format!(
-					"Channel {} cannot RBF as it is either pending open/close",
-					self.context.channel_id()
-				),
-			});
-		}
-
+	/// Returns whether this channel can ever RBF, independent of splice state.
+	fn is_rbf_compatible(&self) -> Result<(), String> {
 		if self.context.minimum_depth(&self.funding) == Some(0) {
-			return Err(APIError::APIMisuseError {
-				err: format!(
-					"Channel {} has option_zeroconf, cannot RBF splice",
-					self.context.channel_id(),
-				),
-			});
+			return Err(format!(
+				"Channel {} has option_zeroconf, cannot RBF",
+				self.context.channel_id(),
+			));
 		}
-
-		if min_feerate > max_feerate {
-			return Err(APIError::APIMisuseError {
-				err: format!(
-					"Channel {} min_feerate {} exceeds max_feerate {}",
-					self.context.channel_id(),
-					min_feerate,
-					max_feerate,
-				),
-			});
-		}
-
-		self.can_initiate_rbf(min_feerate).map_err(|err| APIError::APIMisuseError { err })?;
-
-		let funding_txo = self.funding.get_funding_txo().expect("funding_txo should be set");
-		let previous_utxo =
-			self.funding.get_funding_output().expect("funding_output should be set");
-		let shared_input = Input {
-			outpoint: funding_txo.into_bitcoin_outpoint(),
-			previous_utxo,
-			satisfaction_weight: EMPTY_SCRIPT_SIG_WEIGHT + FUNDING_TRANSACTION_WITNESS_WEIGHT,
-		};
-
-		Ok(FundingTemplate::new(Some(shared_input), min_feerate, max_feerate))
+		Ok(())
 	}
 
-	fn can_initiate_rbf(&self, feerate: FeeRate) -> Result<(), String> {
+	fn can_initiate_rbf(&self) -> Result<FeeRate, String> {
+		self.is_rbf_compatible()?;
+
 		let pending_splice = match &self.pending_splice {
 			Some(pending_splice) => pending_splice,
 			None => {
@@ -12051,20 +12052,54 @@ where
 			));
 		}
 
-		// Check the 25/24 feerate increase rule
-		let new_feerate = feerate.to_sat_per_kwu() as u32;
-		if let Some(prev_feerate) = pending_splice.last_funding_feerate_sat_per_1000_weight {
-			if (new_feerate as u64) * 24 < (prev_feerate as u64) * 25 {
-				return Err(format!(
-					"Channel {} RBF feerate {} is less than 25/24 of the previous feerate {}",
-					self.context.channel_id(),
-					new_feerate,
-					prev_feerate,
-				));
-			}
+		match pending_splice.last_funding_feerate_sat_per_1000_weight {
+			Some(prev_feerate) => Ok(min_rbf_feerate(prev_feerate)),
+			None => Err(format!(
+				"Channel {} has no prior feerate to compute RBF minimum",
+				self.context.channel_id(),
+			)),
+		}
+	}
+
+	/// Attempts to adjust the contribution's feerate to the minimum RBF feerate so the splice can
+	/// proceed as an RBF immediately rather than waiting for the pending splice to lock.
+	/// Returns the adjusted contribution on success, or the original on failure.
+	fn maybe_adjust_for_rbf<L: Logger>(
+		&self, contribution: FundingContribution, min_rbf_feerate: FeeRate, logger: &L,
+	) -> FundingContribution {
+		if contribution.feerate() >= min_rbf_feerate {
+			return contribution;
 		}
 
-		Ok(())
+		let holder_balance = match self
+			.get_holder_counterparty_balances_floor_incl_fee(&self.funding)
+			.map(|(holder, _)| holder)
+		{
+			Ok(balance) => balance,
+			Err(_) => return contribution,
+		};
+
+		if let Err(e) =
+			contribution.net_value_for_initiator_at_feerate(min_rbf_feerate, holder_balance)
+		{
+			log_info!(
+				logger,
+				"Cannot adjust to minimum RBF feerate {}: {}; will proceed as fresh splice after lock",
+				min_rbf_feerate,
+				e,
+			);
+			return contribution;
+		}
+
+		log_info!(
+			logger,
+			"Adjusting contribution feerate from {} to minimum RBF feerate {}",
+			contribution.feerate(),
+			min_rbf_feerate,
+		);
+		contribution
+			.for_initiator_at_feerate(min_rbf_feerate, holder_balance)
+			.expect("feerate compatibility already checked")
 	}
 
 	pub fn funding_contributed<L: Logger>(
@@ -12150,6 +12185,15 @@ where
 				contributed_outputs,
 			}));
 		}
+
+		// If a pending splice exists with negotiated candidates, attempt to adjust the
+		// contribution's feerate to the minimum RBF feerate so it can proceed as an RBF immediately
+		// rather than waiting for the splice to lock.
+		let contribution = if let Ok(min_rbf_feerate) = self.can_initiate_rbf() {
+			self.maybe_adjust_for_rbf(contribution, min_rbf_feerate, logger)
+		} else {
+			contribution
+		};
 
 		self.propose_quiescence(logger, QuiescentAction::Splice { contribution, locktime })
 	}
@@ -12543,12 +12587,7 @@ where
 			return Err(ChannelError::WarnAndDisconnect("Quiescence needed for RBF".to_owned()));
 		}
 
-		if self.context.minimum_depth(&self.funding) == Some(0) {
-			return Err(ChannelError::WarnAndDisconnect(format!(
-				"Channel {} has option_zeroconf, cannot RBF splice",
-				self.context.channel_id(),
-			)));
-		}
+		self.is_rbf_compatible().map_err(|msg| ChannelError::WarnAndDisconnect(msg))?;
 
 		let pending_splice = match &self.pending_splice {
 			Some(pending_splice) => pending_splice,
@@ -13739,13 +13778,26 @@ where
 			#[allow(irrefutable_let_patterns)]
 			if let QuiescentAction::Splice { contribution, .. } = action {
 				if self.pending_splice.is_some() {
-					if let Err(msg) = self.can_initiate_rbf(contribution.feerate()) {
-						log_given_level!(
-							logger,
-							logger_level,
-							"Waiting on sending stfu for splice RBF: {msg}"
-						);
-						return None;
+					match self.can_initiate_rbf() {
+						Err(msg) => {
+							log_given_level!(
+								logger,
+								logger_level,
+								"Waiting on sending stfu for splice RBF: {msg}"
+							);
+							return None;
+						},
+						Ok(min_rbf_feerate) if contribution.feerate() < min_rbf_feerate => {
+							log_given_level!(
+								logger,
+								logger_level,
+								"Waiting for splice to lock: feerate {} below minimum RBF feerate {}",
+								contribution.feerate(),
+								min_rbf_feerate,
+							);
+							return None;
+						},
+						_ => {},
 					}
 				}
 			}
