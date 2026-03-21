@@ -94,7 +94,7 @@ impl SerialIdExt for SerialId {
 pub(crate) struct NegotiationError {
 	pub reason: AbortReason,
 	pub contributed_inputs: Vec<BitcoinOutPoint>,
-	pub contributed_outputs: Vec<TxOut>,
+	pub contributed_outputs: Vec<ScriptBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -390,7 +390,7 @@ impl ConstructedTransaction {
 			.map(|(_, (txin, _))| txin.previous_output)
 	}
 
-	fn contributed_outputs(&self) -> impl Iterator<Item = &TxOut> + '_ {
+	fn contributed_outputs(&self) -> impl Iterator<Item = &bitcoin::Script> + '_ {
 		self.tx
 			.output
 			.iter()
@@ -398,14 +398,17 @@ impl ConstructedTransaction {
 			.enumerate()
 			.filter(|(_, (_, output))| output.is_local(self.holder_is_initiator))
 			.filter(|(index, _)| *index != self.shared_output_index as usize)
-			.map(|(_, (txout, _))| txout)
+			.map(|(_, (txout, _))| txout.script_pubkey.as_script())
 	}
 
-	fn to_contributed_inputs_and_outputs(&self) -> (Vec<BitcoinOutPoint>, Vec<TxOut>) {
-		(self.contributed_inputs().collect(), self.contributed_outputs().cloned().collect())
+	fn to_contributed_inputs_and_outputs(&self) -> (Vec<BitcoinOutPoint>, Vec<ScriptBuf>) {
+		(
+			self.contributed_inputs().collect(),
+			self.contributed_outputs().map(|script| script.into()).collect(),
+		)
 	}
 
-	fn into_contributed_inputs_and_outputs(self) -> (Vec<BitcoinOutPoint>, Vec<TxOut>) {
+	fn into_contributed_inputs_and_outputs(self) -> (Vec<BitcoinOutPoint>, Vec<ScriptBuf>) {
 		let contributed_inputs = self
 			.tx
 			.input
@@ -429,7 +432,7 @@ impl ConstructedTransaction {
 			.enumerate()
 			.filter(|(_, (_, output))| output.is_local(self.holder_is_initiator))
 			.filter(|(index, _)| *index != self.shared_output_index as usize)
-			.map(|(_, (txout, _))| txout)
+			.map(|(_, (txout, _))| txout.script_pubkey)
 			.collect();
 
 		(contributed_inputs, contributed_outputs)
@@ -929,15 +932,19 @@ impl InteractiveTxSigningSession {
 		self.unsigned_tx.contributed_inputs()
 	}
 
-	pub(super) fn contributed_outputs(&self) -> impl Iterator<Item = &TxOut> + '_ {
+	pub(super) fn contributed_outputs(&self) -> impl Iterator<Item = &bitcoin::Script> + '_ {
 		self.unsigned_tx.contributed_outputs()
 	}
 
-	pub(super) fn to_contributed_inputs_and_outputs(&self) -> (Vec<BitcoinOutPoint>, Vec<TxOut>) {
-		(self.contributed_inputs().collect(), self.contributed_outputs().cloned().collect())
+	pub(super) fn to_contributed_inputs_and_outputs(
+		&self,
+	) -> (Vec<BitcoinOutPoint>, Vec<ScriptBuf>) {
+		self.unsigned_tx.to_contributed_inputs_and_outputs()
 	}
 
-	pub(super) fn into_contributed_inputs_and_outputs(self) -> (Vec<BitcoinOutPoint>, Vec<TxOut>) {
+	pub(super) fn into_contributed_inputs_and_outputs(
+		self,
+	) -> (Vec<BitcoinOutPoint>, Vec<ScriptBuf>) {
 		self.unsigned_tx.into_contributed_inputs_and_outputs()
 	}
 }
@@ -2177,7 +2184,9 @@ impl InteractiveTxConstructor {
 		NegotiationError { reason, contributed_inputs, contributed_outputs }
 	}
 
-	pub(super) fn into_contributed_inputs_and_outputs(self) -> (Vec<BitcoinOutPoint>, Vec<TxOut>) {
+	pub(super) fn into_contributed_inputs_and_outputs(
+		self,
+	) -> (Vec<BitcoinOutPoint>, Vec<ScriptBuf>) {
 		let contributed_inputs = self
 			.inputs_to_contribute
 			.into_iter()
@@ -2188,8 +2197,9 @@ impl InteractiveTxConstructor {
 			.outputs_to_contribute
 			.into_iter()
 			.filter(|(_, output)| !output.is_shared())
-			.map(|(_, output)| output.into_tx_out())
+			.map(|(_, output)| output.into_tx_out().script_pubkey)
 			.collect();
+
 		(contributed_inputs, contributed_outputs)
 	}
 
@@ -2200,15 +2210,20 @@ impl InteractiveTxConstructor {
 			.map(|(_, input)| input.tx_in().previous_output)
 	}
 
-	pub(super) fn contributed_outputs(&self) -> impl Iterator<Item = &TxOut> + '_ {
+	pub(super) fn contributed_outputs(&self) -> impl Iterator<Item = &bitcoin::Script> + '_ {
 		self.outputs_to_contribute
 			.iter()
 			.filter(|(_, output)| !output.is_shared())
-			.map(|(_, output)| output.tx_out())
+			.map(|(_, output)| output.tx_out().script_pubkey.as_script())
 	}
 
-	pub(super) fn to_contributed_inputs_and_outputs(&self) -> (Vec<BitcoinOutPoint>, Vec<TxOut>) {
-		(self.contributed_inputs().collect(), self.contributed_outputs().cloned().collect())
+	pub(super) fn to_contributed_inputs_and_outputs(
+		&self,
+	) -> (Vec<BitcoinOutPoint>, Vec<ScriptBuf>) {
+		(
+			self.contributed_inputs().collect(),
+			self.contributed_outputs().map(|script| script.into()).collect(),
+		)
 	}
 
 	pub fn is_initiator(&self) -> bool {

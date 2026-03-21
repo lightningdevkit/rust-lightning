@@ -3071,7 +3071,7 @@ impl PendingFunding {
 		self.contributions.iter().flat_map(|c| c.contributed_inputs())
 	}
 
-	fn contributed_outputs(&self) -> impl Iterator<Item = &TxOut> + '_ {
+	fn contributed_outputs(&self) -> impl Iterator<Item = &bitcoin::Script> + '_ {
 		self.contributions.iter().flat_map(|c| c.contributed_outputs())
 	}
 
@@ -3080,7 +3080,7 @@ impl PendingFunding {
 		self.contributions[..len.saturating_sub(1)].iter().flat_map(|c| c.contributed_inputs())
 	}
 
-	fn prior_contributed_outputs(&self) -> impl Iterator<Item = &TxOut> + '_ {
+	fn prior_contributed_outputs(&self) -> impl Iterator<Item = &bitcoin::Script> + '_ {
 		let len = self.contributions.len();
 		self.contributions[..len.saturating_sub(1)].iter().flat_map(|c| c.contributed_outputs())
 	}
@@ -3129,7 +3129,7 @@ pub(crate) enum QuiescentAction {
 
 pub(super) enum QuiescentError {
 	DoNothing,
-	DiscardFunding { inputs: Vec<bitcoin::OutPoint>, outputs: Vec<bitcoin::TxOut> },
+	DiscardFunding { inputs: Vec<bitcoin::OutPoint>, outputs: Vec<ScriptBuf> },
 	FailSplice(SpliceFundingFailed),
 }
 
@@ -6498,10 +6498,11 @@ impl FundingNegotiationContext {
 		}
 	}
 
-	fn into_contributed_inputs_and_outputs(self) -> (Vec<bitcoin::OutPoint>, Vec<TxOut>) {
+	fn into_contributed_inputs_and_outputs(self) -> (Vec<bitcoin::OutPoint>, Vec<ScriptBuf>) {
 		let contributed_inputs =
 			self.our_funding_inputs.into_iter().map(|input| input.utxo.outpoint).collect();
-		let contributed_outputs = self.our_funding_outputs;
+		let contributed_outputs =
+			self.our_funding_outputs.into_iter().map(|output| output.script_pubkey).collect();
 		(contributed_inputs, contributed_outputs)
 	}
 
@@ -6509,12 +6510,15 @@ impl FundingNegotiationContext {
 		self.our_funding_inputs.iter().map(|input| input.utxo.outpoint)
 	}
 
-	fn contributed_outputs(&self) -> impl Iterator<Item = &TxOut> + '_ {
-		self.our_funding_outputs.iter()
+	fn contributed_outputs(&self) -> impl Iterator<Item = &bitcoin::Script> + '_ {
+		self.our_funding_outputs.iter().map(|output| output.script_pubkey.as_script())
 	}
 
-	fn to_contributed_inputs_and_outputs(&self) -> (Vec<bitcoin::OutPoint>, Vec<TxOut>) {
-		(self.contributed_inputs().collect(), self.contributed_outputs().cloned().collect())
+	fn to_contributed_inputs_and_outputs(&self) -> (Vec<bitcoin::OutPoint>, Vec<ScriptBuf>) {
+		(
+			self.contributed_inputs().collect(),
+			self.contributed_outputs().map(|script| script.into()).collect(),
+		)
 	}
 }
 
@@ -6675,8 +6679,8 @@ pub struct SpliceFundingFailed {
 	/// UTXOs spent as inputs contributed to the splice transaction.
 	pub contributed_inputs: Vec<bitcoin::OutPoint>,
 
-	/// Outputs contributed to the splice transaction.
-	pub contributed_outputs: Vec<bitcoin::TxOut>,
+	/// Output scripts contributed to the splice transaction.
+	pub contributed_outputs: Vec<ScriptBuf>,
 }
 
 macro_rules! maybe_create_splice_funding_failed {
@@ -6716,7 +6720,7 @@ macro_rules! maybe_create_splice_funding_failed {
 						contributed_inputs.retain(|i| *i != input);
 					}
 					for output in pending_splice.prior_contributed_outputs() {
-						contributed_outputs.retain(|o| o.script_pubkey != output.script_pubkey);
+						contributed_outputs.retain(|i| i != output);
 					}
 				}
 
@@ -6761,15 +6765,16 @@ where
 	fn quiescent_action_into_error(&self, action: QuiescentAction) -> QuiescentError {
 		match action {
 			QuiescentAction::Splice { contribution, .. } => {
-				let (mut inputs, mut outputs) = contribution.into_contributed_inputs_and_outputs();
-				if let Some(ref pending_splice) = self.pending_splice {
-					for input in pending_splice.contributed_inputs() {
-						inputs.retain(|i| *i != input);
-					}
-					for output in pending_splice.contributed_outputs() {
-						outputs.retain(|o| o.script_pubkey != output.script_pubkey);
-					}
-				}
+				let (inputs, outputs) = if let Some(ref pending_splice) = self.pending_splice {
+					contribution
+						.into_unique_contributions(
+							pending_splice.contributed_inputs(),
+							pending_splice.contributed_outputs(),
+						)
+						.unwrap_or((Vec::new(), Vec::new()))
+				} else {
+					contribution.into_contributed_inputs_and_outputs()
+				};
 				QuiescentError::FailSplice(SpliceFundingFailed {
 					funding_txo: None,
 					channel_type: None,
@@ -7903,12 +7908,12 @@ where
 		&mut self, msg: &msgs::CommitmentSigned, fee_estimator: &LowerBoundedFeeEstimator<F>,
 		logger: &L,
 	) -> Result<Option<ChannelMonitorUpdate>, ChannelError> {
-		debug_assert!(self
+		let signing_session = self
 			.context
 			.interactive_tx_signing_session
 			.as_ref()
-			.map(|signing_session| !signing_session.has_received_tx_signatures())
-			.unwrap_or(false));
+			.expect("Signing session must exist for negotiated pending splice");
+		debug_assert!(!signing_session.has_received_tx_signatures());
 
 		let pending_splice_funding = self
 			.pending_splice
@@ -7960,6 +7965,9 @@ where
 			);
 		}
 
+		let (contributed_inputs, contributed_outputs) =
+			signing_session.to_contributed_inputs_and_outputs();
+
 		log_info!(
 			logger,
 			"Received splice initial commitment_signed from peer with funding txid {}",
@@ -7973,6 +7981,8 @@ where
 				channel_parameters: pending_splice_funding.channel_transaction_parameters.clone(),
 				holder_commitment_tx,
 				counterparty_commitment_tx,
+				contributed_inputs,
+				contributed_outputs,
 			}],
 			channel_id: Some(self.context.channel_id()),
 		};
