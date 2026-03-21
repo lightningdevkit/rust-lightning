@@ -2308,6 +2308,7 @@ pub fn fail_backward_pending_htlc_upon_channel_failure() {
 			payment_hash,
 			cltv_expiry,
 			onion_routing_packet,
+			dummy_hops_skimmed_fee_msat: None,
 			skimmed_fee_msat: None,
 			blinding_point: None,
 			hold_htlc: None,

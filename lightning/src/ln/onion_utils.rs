@@ -2574,6 +2574,10 @@ pub(super) fn peel_dummy_hop_update_add_htlc<NS: NodeSigner, T: secp256k1::Verif
 		"Dummy hop must always map to HopConnector::Dummy"
 	);
 
+	let this_dummy_fee = msg.amount_msat.saturating_sub(outgoing_amt_msat);
+	let dummy_hops_skimmed_fee_msat =
+		msg.dummy_hops_skimmed_fee_msat.unwrap_or(0).saturating_add(this_dummy_fee);
+
 	let next_blinding_point = dummy_hop_data
 		.intro_node_blinding_point
 		.or(msg.blinding_point)
@@ -2595,6 +2599,7 @@ pub(super) fn peel_dummy_hop_update_add_htlc<NS: NodeSigner, T: secp256k1::Verif
 		blinding_point: next_blinding_point,
 		amount_msat: outgoing_amt_msat,
 		cltv_expiry: outgoing_cltv_value,
+		dummy_hops_skimmed_fee_msat: Some(dummy_hops_skimmed_fee_msat),
 		..msg.clone()
 	}
 }

@@ -150,6 +150,7 @@ where
 		let network_graph = self.network_graph.deref().read_only();
 		let is_recipient_announced =
 			network_graph.nodes().contains_key(&NodeId::from_pubkey(&recipient));
+		let dummy_tlvs = DummyTlvs::default();
 
 		let paths = first_hops.into_iter()
 			.filter(|details| details.counterparty.features.supports_route_blinding())
@@ -176,12 +177,17 @@ where
 					None => return None,
 				};
 
-				let cltv_expiry_delta = payment_relay.cltv_expiry_delta as u32;
+				let cltv_expiry_delta = payment_relay.cltv_expiry_delta as u32
+					+ dummy_tlvs.payment_relay.cltv_expiry_delta as u32 * DEFAULT_PAYMENT_DUMMY_HOPS as u32;
+				let htlc_minimum_msat = cmp::max(
+					details.inbound_htlc_minimum_msat.unwrap_or(0),
+					dummy_tlvs.payment_constraints.htlc_minimum_msat,
+				);
 				let payment_constraints = PaymentConstraints {
 					max_cltv_expiry: tlvs.payment_constraints
 						.max_cltv_expiry
 						.saturating_add(cltv_expiry_delta),
-					htlc_minimum_msat: details.inbound_htlc_minimum_msat.unwrap_or(0),
+					htlc_minimum_msat,
 				};
 				Some(PaymentForwardNode {
 					tlvs: ForwardTlvs {
@@ -197,7 +203,7 @@ where
 			})
 			.map(|forward_node| {
 				BlindedPaymentPath::new_with_dummy_hops(
-					&[forward_node], recipient, &[DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS],
+					&[forward_node], recipient, &[dummy_tlvs; DEFAULT_PAYMENT_DUMMY_HOPS],
 					local_node_receive_key, tlvs.clone(), u64::MAX, MIN_FINAL_CLTV_EXPIRY_DELTA, &self.entropy_source, secp_ctx
 				)
 			})
@@ -209,7 +215,7 @@ where
 			_ => {
 				if network_graph.nodes().contains_key(&NodeId::from_pubkey(&recipient)) {
 					BlindedPaymentPath::new_with_dummy_hops(
-						&[], recipient, &[DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS],
+						&[], recipient, &[dummy_tlvs; DEFAULT_PAYMENT_DUMMY_HOPS],
 						local_node_receive_key, tlvs, u64::MAX, MIN_FINAL_CLTV_EXPIRY_DELTA, &self.entropy_source, secp_ctx
 					).map(|path| vec![path])
 				} else {

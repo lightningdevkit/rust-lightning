@@ -219,7 +219,30 @@ fn one_hop_blinded_path_with_dummy_hops() {
 		payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
 	};
 	let receive_auth_key = chanmon_cfgs[1].keys_manager.get_receive_auth_key();
-	let dummy_tlvs = [DummyTlvs::default(); 2];
+	let dummy_tlvs = [
+		DummyTlvs {
+			payment_relay: PaymentRelay {
+				cltv_expiry_delta: 21,
+				fee_proportional_millionths: 0,
+				fee_base_msat: 750,
+			},
+			payment_constraints: PaymentConstraints {
+				max_cltv_expiry: u32::max_value(),
+				htlc_minimum_msat: chan_upd.htlc_minimum_msat,
+			},
+		},
+		DummyTlvs {
+			payment_relay: PaymentRelay {
+				cltv_expiry_delta: 33,
+				fee_proportional_millionths: 0,
+				fee_base_msat: 1_250,
+			},
+			payment_constraints: PaymentConstraints {
+				max_cltv_expiry: u32::max_value(),
+				htlc_minimum_msat: chan_upd.htlc_minimum_msat,
+			},
+		},
+	];
 
 	let mut secp_ctx = Secp256k1::new();
 	let blinded_path = BlindedPaymentPath::new_with_dummy_hops(
@@ -234,6 +257,9 @@ fn one_hop_blinded_path_with_dummy_hops() {
 		&secp_ctx,
 	)
 	.unwrap();
+	assert_eq!(blinded_path.payinfo.fee_base_msat, 2_000);
+	assert_eq!(blinded_path.payinfo.fee_proportional_millionths, 0);
+	assert_eq!(blinded_path.payinfo.cltv_expiry_delta, TEST_FINAL_CLTV as u16 + 21 + 33);
 
 	let route_params = RouteParameters::from_payment_params_and_value(
 		PaymentParameters::blinded(vec![blinded_path]),
@@ -254,14 +280,202 @@ fn one_hop_blinded_path_with_dummy_hops() {
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
 	let ev = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
+	let payment_event = SendEvent::from_event(ev.clone());
+	let expected_claimable_cltv = payment_event.msgs[0].cltv_expiry - (21 + 33) as u32;
 
 	let path = &[&nodes[1]];
 	let args = PassAlongPathArgs::new(&nodes[0], path, amt_msat, payment_hash, ev)
 		.with_dummy_tlvs(&dummy_tlvs)
-		.with_payment_secret(payment_secret);
+		.with_payment_secret(payment_secret)
+		.with_payment_claimable_cltv(expected_claimable_cltv);
 
 	do_pass_along_path(args);
-	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage);
+	let path: &[&[&Node<'_, '_, '_>]] = &[&[&nodes[1]]];
+	let claim_args =
+		ClaimAlongRouteArgs::new(&nodes[0], path, payment_preimage).with_dummy_tlvs(&dummy_tlvs);
+	claim_payment_along_route(claim_args);
+}
+
+#[test]
+fn one_hop_blinded_path_with_dummy_hops_underpaid() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let chan_upd =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0).0.contents;
+
+	let amt_msat = 5000;
+	let (_, payment_hash, payment_secret) =
+		get_payment_preimage_hash(&nodes[1], Some(amt_msat), None);
+	let payee_tlvs = ReceiveTlvs {
+		payment_secret,
+		payment_constraints: PaymentConstraints {
+			max_cltv_expiry: u32::max_value(),
+			htlc_minimum_msat: chan_upd.htlc_minimum_msat,
+		},
+		payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
+	};
+	let receive_auth_key = chanmon_cfgs[1].keys_manager.get_receive_auth_key();
+	let dummy_tlvs = [DummyTlvs::default(); 2];
+
+	let mut secp_ctx = Secp256k1::new();
+	// Advertise a receive path that includes dummy-hop relay requirements.
+	let blinded_path = BlindedPaymentPath::new_with_dummy_hops(
+		&[],
+		nodes[1].node.get_our_node_id(),
+		&dummy_tlvs,
+		receive_auth_key,
+		payee_tlvs,
+		u64::MAX,
+		TEST_FINAL_CLTV as u16,
+		&chanmon_cfgs[1].keys_manager,
+		&secp_ctx,
+	)
+	.unwrap();
+	assert!(blinded_path.payinfo.fee_base_msat > 0);
+	assert!(blinded_path.payinfo.cltv_expiry_delta > TEST_FINAL_CLTV as u16);
+
+	let mut route_params = RouteParameters::from_payment_params_and_value(
+		PaymentParameters::blinded(vec![blinded_path]),
+		amt_msat,
+	);
+	if let Payee::Blinded { ref mut route_hints, .. } = route_params.payment_params.payee {
+		// Simulate a payer that funds only the recipient amount, not the dummy-hop fees.
+		route_hints[0].payinfo.fee_base_msat = 0;
+		route_hints[0].payinfo.fee_proportional_millionths = 0;
+	} else {
+		panic!();
+	}
+
+	nodes[0]
+		.node
+		.send_payment(
+			payment_hash,
+			RecipientOnionFields::spontaneous_empty(amt_msat),
+			PaymentId(payment_hash.0),
+			route_params,
+			Retry::Attempts(0),
+		)
+		.unwrap();
+	check_added_monitors(&nodes[0], 1);
+
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let ev = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
+
+	let path = &[&nodes[1]];
+	let args = PassAlongPathArgs::new(&nodes[0], path, amt_msat, payment_hash, ev)
+		// The receiver rejects the HTLC while processing the hidden dummy hops.
+		.expect_failure(HTLCHandlingFailureType::Receive { payment_hash })
+		.with_payment_secret(payment_secret)
+		.with_dummy_tlvs(&dummy_tlvs);
+	do_pass_along_path(args);
+
+	let mut updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
+	// Blinded receive failures are surfaced to the sender as malformed onion blinding errors.
+	nodes[0].node.handle_update_fail_malformed_htlc(
+		nodes[1].node.get_our_node_id(),
+		&updates.update_fail_malformed_htlcs[0],
+	);
+	do_commitment_signed_dance(&nodes[0], &nodes[1], &updates.commitment_signed, false, false);
+	expect_payment_failed_conditions(
+		&nodes[0],
+		payment_hash,
+		false,
+		PaymentFailedConditions::new()
+			.expected_htlc_error_data(LocalHTLCFailureReason::InvalidOnionBlinding, &[0; 32]),
+	);
+}
+
+#[test]
+fn one_hop_blinded_path_with_dummy_hops_underadvertised_htlc_minimum_fails() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let chan_upd =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0).0.contents;
+
+	let amt_msat = 5_000;
+	let (_, payment_hash, payment_secret) =
+		get_payment_preimage_hash(&nodes[1], Some(amt_msat), None);
+	let payee_tlvs = ReceiveTlvs {
+		payment_secret,
+		payment_constraints: PaymentConstraints {
+			max_cltv_expiry: u32::max_value(),
+			htlc_minimum_msat: chan_upd.htlc_minimum_msat,
+		},
+		payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
+	};
+	let receive_auth_key = chanmon_cfgs[1].keys_manager.get_receive_auth_key();
+	let dummy_tlvs = [DummyTlvs {
+		payment_relay: PaymentRelay {
+			cltv_expiry_delta: 18,
+			fee_proportional_millionths: 0,
+			fee_base_msat: 500,
+		},
+		payment_constraints: PaymentConstraints {
+			max_cltv_expiry: u32::max_value(),
+			htlc_minimum_msat: amt_msat + 2_000,
+		},
+	}];
+
+	let mut secp_ctx = Secp256k1::new();
+	let blinded_path = BlindedPaymentPath::new_with_dummy_hops(
+		&[],
+		nodes[1].node.get_our_node_id(),
+		&dummy_tlvs,
+		receive_auth_key,
+		payee_tlvs,
+		u64::MAX,
+		TEST_FINAL_CLTV as u16,
+		&chanmon_cfgs[1].keys_manager,
+		&secp_ctx,
+	)
+	.unwrap();
+	assert!(blinded_path.payinfo.htlc_minimum_msat > amt_msat);
+
+	let mut route_params = RouteParameters::from_payment_params_and_value(
+		PaymentParameters::blinded(vec![blinded_path]),
+		amt_msat,
+	);
+	if let Payee::Blinded { ref mut route_hints, .. } = route_params.payment_params.payee {
+		route_hints[0].payinfo.htlc_minimum_msat = amt_msat;
+	} else {
+		panic!();
+	}
+
+	nodes[0]
+		.node
+		.send_payment(
+			payment_hash,
+			RecipientOnionFields::spontaneous_empty(amt_msat),
+			PaymentId(payment_hash.0),
+			route_params,
+			Retry::Attempts(0),
+		)
+		.unwrap();
+	check_added_monitors(&nodes[0], 1);
+
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let ev = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
+
+	let payment_event = SendEvent::from_event(ev);
+	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
+	check_added_monitors(&nodes[1], 0);
+	do_commitment_signed_dance(&nodes[1], &nodes[0], &payment_event.commitment_msg, false, false);
+	while nodes[1].node.needs_pending_htlc_processing() {
+		nodes[1].node.process_pending_htlc_forwards();
+	}
+	expect_htlc_handling_failed_destinations!(
+		nodes[1].node.get_and_clear_pending_events(),
+		&[HTLCHandlingFailureType::InvalidOnion]
+	);
+	let mut updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
+	assert_eq!(updates.update_fail_htlcs.len() + updates.update_fail_malformed_htlcs.len(), 1);
+	check_added_monitors(&nodes[1], 1);
 }
 
 #[test]
@@ -1586,6 +1800,7 @@ fn update_add_msg(
 		cltv_expiry,
 		payment_hash: PaymentHash([0; 32]),
 		onion_routing_packet,
+		dummy_hops_skimmed_fee_msat: None,
 		skimmed_fee_msat: None,
 		blinding_point,
 		hold_htlc: None,

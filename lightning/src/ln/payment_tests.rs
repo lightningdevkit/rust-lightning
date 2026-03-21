@@ -5110,6 +5110,7 @@ fn peel_payment_onion_custom_tlvs() {
 		amount_msat: first_hop_msat,
 		payment_hash,
 		cltv_expiry,
+		dummy_hops_skimmed_fee_msat: None,
 		skimmed_fee_msat: None,
 		onion_routing_packet,
 		blinding_point: None,
