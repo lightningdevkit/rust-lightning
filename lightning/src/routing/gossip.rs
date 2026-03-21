@@ -3900,6 +3900,10 @@ pub(crate) mod tests {
 			let mut features = InitFeatures::empty();
 			features.set_gossip_queries_optional();
 			let init_msg = Init { features, networks: None, remote_network_address: None };
+			let expected_timestamp = SystemTime::now()
+				.duration_since(UNIX_EPOCH)
+				.expect("Time must be > 1970")
+				.as_secs();
 			gossip_sync.peer_connected(node_id_1, &init_msg, true).unwrap();
 			let events = gossip_sync.get_and_clear_pending_msg_events();
 			assert_eq!(events.len(), 1);
@@ -3907,10 +3911,6 @@ pub(crate) mod tests {
 				MessageSendEvent::SendGossipTimestampFilter { node_id, msg } => {
 					assert_eq!(node_id, &node_id_1);
 					assert_eq!(msg.chain_hash, chain_hash);
-					let expected_timestamp = SystemTime::now()
-						.duration_since(UNIX_EPOCH)
-						.expect("Time must be > 1970")
-						.as_secs();
 					assert!(
 						(msg.first_timestamp as u64) >= expected_timestamp - 60 * 60 * 24 * 7 * 2
 					);
