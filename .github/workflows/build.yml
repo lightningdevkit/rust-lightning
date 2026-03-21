@@ -205,6 +205,21 @@ jobs:
       - name: Simulate docs.rs build
         run: ci/check-docsrs.sh
 
+  fuzz_sanity:
+    runs-on: self-hosted
+    env:
+      TOOLCHAIN: 1.75
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+      - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ env.TOOLCHAIN }}
+      - name: Sanity check fuzz targets on Rust ${{ env.TOOLCHAIN }}
+        run: |
+          cd fuzz
+          RUSTFLAGS="--cfg=fuzzing --cfg=secp256k1_fuzz --cfg=hashes_fuzz" cargo test --quiet --color always --lib --bins -j8
+
   fuzz:
     runs-on: self-hosted
     env:
@@ -238,13 +253,10 @@ jobs:
           key: fuzz-corpus-refs/heads/main-${{ github.sha }}
           restore-keys: |
             fuzz-corpus-refs/heads/main-
-      - name: Sanity check fuzz targets on Rust ${{ env.TOOLCHAIN }}
-        run: |
-          cd fuzz
-          RUSTFLAGS="--cfg=fuzzing --cfg=secp256k1_fuzz --cfg=hashes_fuzz" cargo test --verbose --color always --lib --bins -j8
-          cargo clean
       - name: Run fuzzers
         run: cd fuzz && ./ci-fuzz.sh && cd ..
+        env:
+          FUZZ_MINIMIZE: ${{ contains(github.event.pull_request.labels.*.name, 'fuzz-minimize') }}
       - name: Upload honggfuzz corpus
         uses: actions/upload-artifact@v4
         with:
@@ -308,7 +320,7 @@ jobs:
           TOR_PROXY="127.0.0.1:9050" RUSTFLAGS="--cfg=tor" cargo test --verbose --color always -p lightning-net-tokio
 
   notify-failure:
-    needs: [build-workspace, build-features, build-bindings, build-nostd, build-cfg-flags, build-sync, fuzz, linting, rustfmt, check_release, check_docs, benchmark, ext-test, tor-connect, coverage]
+    needs: [build-workspace, build-features, build-bindings, build-nostd, build-cfg-flags, build-sync, fuzz_sanity, fuzz, linting, rustfmt, check_release, check_docs, benchmark, ext-test, tor-connect, coverage]
     if: failure() && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
