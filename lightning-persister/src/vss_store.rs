@@ -578,7 +578,7 @@ impl VssStoreInner {
 			delete_items: vec![],
 		};
 
-		self.execute_locked_write(inner_lock_ref, locking_key, version, async move || {
+		self.execute_locked_write(inner_lock_ref, locking_key, version, move || async move {
 			client.put_object(&request).await.map_err(|e| {
 				let msg = format!(
 					"Failed to write to key {}/{}/{}: {}",
