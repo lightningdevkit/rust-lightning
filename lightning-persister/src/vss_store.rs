@@ -22,11 +22,12 @@ use bitcoin::hashes::{sha256, Hash, HashEngine, Hmac, HmacEngine};
 use bitcoin::key::Secp256k1;
 use lightning::impl_writeable_tlv_based_enum;
 use lightning::io::{self, Error, ErrorKind};
+use lightning::sign::{EntropySource as LdkEntropySource, RandomBytes};
 use lightning::util::persist::{KVStore, KVStoreSync};
 use lightning::util::ser::{Readable, Writeable};
-use rand::RngCore;
 use vss_client::client::VssClient;
 use vss_client::error::VssError;
+use vss_client::headers::sigs_auth::SigsAuthProvider;
 use vss_client::headers::{FixedHeaders, LnurlAuthToJwtProvider, VssHeaderProvider};
 use vss_client::prost::Message;
 use vss_client::types::{
@@ -66,6 +67,7 @@ impl_writeable_tlv_based_enum!(VssSchemaVersion,
 );
 
 const VSS_LNURL_AUTH_HARDENED_CHILD_INDEX: u32 = 138;
+const VSS_SIGS_AUTH_HARDENED_CHILD_INDEX: u32 = 139;
 const VSS_SCHEMA_VERSION_KEY: &str = "vss_schema_version";
 
 // We set this to a small number of threads that would still allow to make some progress if one
@@ -111,6 +113,10 @@ impl VssStore {
 			derive_data_encryption_and_obfuscation_keys(&vss_seed);
 		let key_obfuscator = KeyObfuscator::new(obfuscation_master_key);
 
+		let mut entropy_seed = [0u8; 32];
+		getrandom::fill(&mut entropy_seed).expect("Failed to generate random bytes");
+		let entropy_source = RandomBytes::new(entropy_seed);
+
 		let sync_retry_policy = retry_policy();
 		let blocking_client = VssClient::new_with_headers(
 			base_url.clone(),
@@ -126,6 +132,7 @@ impl VssStore {
 					&store_id,
 					data_encryption_key,
 					&key_obfuscator,
+					&entropy_source,
 				)
 				.await
 			})
@@ -142,6 +149,7 @@ impl VssStore {
 			store_id,
 			data_encryption_key,
 			key_obfuscator,
+			entropy_source,
 		));
 
 		Ok(Self { inner, next_version, internal_runtime: Some(internal_runtime) })
@@ -380,6 +388,7 @@ struct VssStoreInner {
 	store_id: String,
 	data_encryption_key: [u8; 32],
 	key_obfuscator: KeyObfuscator,
+	entropy_source: RandomBytes,
 	// Per-key locks that ensures that we don't have concurrent writes to the same namespace/key.
 	// The lock also encapsulates the latest written version per key.
 	locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<u64>>>>,
@@ -389,7 +398,7 @@ impl VssStoreInner {
 	pub(crate) fn new(
 		schema_version: VssSchemaVersion, blocking_client: VssClient<CustomRetryPolicy>,
 		async_client: VssClient<CustomRetryPolicy>, store_id: String,
-		data_encryption_key: [u8; 32], key_obfuscator: KeyObfuscator,
+		data_encryption_key: [u8; 32], key_obfuscator: KeyObfuscator, entropy_source: RandomBytes,
 	) -> Self {
 		let locks = Mutex::new(HashMap::new());
 		Self {
@@ -399,6 +408,7 @@ impl VssStoreInner {
 			store_id,
 			data_encryption_key,
 			key_obfuscator,
+			entropy_source,
 			locks,
 		}
 	}
@@ -519,7 +529,7 @@ impl VssStoreInner {
 			Error::new(ErrorKind::Other, msg)
 		})?;
 
-		let storable_builder = StorableBuilder::new(RandEntropySource);
+		let storable_builder = StorableBuilder::new(VssEntropySource(&self.entropy_source));
 		let aad =
 			if self.schema_version == VssSchemaVersion::V1 { store_key.as_bytes() } else { &[] };
 		let decrypted = storable_builder.deconstruct(storable, &self.data_encryption_key, aad)?.0;
@@ -540,7 +550,7 @@ impl VssStoreInner {
 
 		let store_key = self.build_obfuscated_key(&primary_namespace, &secondary_namespace, &key);
 		let vss_version = -1;
-		let storable_builder = StorableBuilder::new(RandEntropySource);
+		let storable_builder = StorableBuilder::new(VssEntropySource(&self.entropy_source));
 		let aad =
 			if self.schema_version == VssSchemaVersion::V1 { store_key.as_bytes() } else { &[] };
 		let storable =
@@ -698,7 +708,7 @@ fn retry_policy() -> CustomRetryPolicy {
 
 async fn determine_and_write_schema_version(
 	client: &VssClient<CustomRetryPolicy>, store_id: &String, data_encryption_key: [u8; 32],
-	key_obfuscator: &KeyObfuscator,
+	key_obfuscator: &KeyObfuscator, entropy_source: &RandomBytes,
 ) -> io::Result<VssSchemaVersion> {
 	// Build the obfuscated `vss_schema_version` key.
 	let obfuscated_prefix = key_obfuscator.obfuscate(&format! {"{}#{}", "", ""});
@@ -729,7 +739,7 @@ async fn determine_and_write_schema_version(
 			Error::new(ErrorKind::Other, msg)
 		})?;
 
-		let storable_builder = StorableBuilder::new(RandEntropySource);
+		let storable_builder = StorableBuilder::new(VssEntropySource(entropy_source));
 		// Schema version was added starting with V1, so if set at all, we use the key as `aad`
 		let aad = store_key.as_bytes();
 		let decrypted = storable_builder
@@ -773,7 +783,7 @@ async fn determine_and_write_schema_version(
 			let schema_version = VssSchemaVersion::V1;
 			let encoded_version = schema_version.encode();
 
-			let storable_builder = StorableBuilder::new(RandEntropySource);
+			let storable_builder = StorableBuilder::new(VssEntropySource(entropy_source));
 			let vss_version = -1;
 			let aad = store_key.as_bytes();
 			let storable =
@@ -800,12 +810,18 @@ async fn determine_and_write_schema_version(
 	}
 }
 
-/// A source for generating entropy/randomness using [`rand`].
-pub(crate) struct RandEntropySource;
+/// A thin wrapper bridging LDK's [`RandomBytes`] to the vss-client [`EntropySource`] trait.
+struct VssEntropySource<'a>(&'a RandomBytes);
 
-impl EntropySource for RandEntropySource {
+impl EntropySource for VssEntropySource<'_> {
 	fn fill_bytes(&self, buffer: &mut [u8]) {
-		rand::rng().fill_bytes(buffer);
+		let mut offset = 0;
+		while offset < buffer.len() {
+			let random = self.0.get_secure_random_bytes();
+			let to_copy = (buffer.len() - offset).min(32);
+			buffer[offset..offset + to_copy].copy_from_slice(&random[..to_copy]);
+			offset += to_copy;
+		}
 	}
 }
 
@@ -817,8 +833,6 @@ impl RefUnwindSafe for VssStore {}
 pub enum VssStoreBuildError {
 	/// Key derivation failed
 	KeyDerivationFailed,
-	/// Authentication provider setup failed
-	AuthProviderSetupFailed,
 	/// Store setup failed
 	StoreSetupFailed,
 }
@@ -827,7 +841,6 @@ impl fmt::Display for VssStoreBuildError {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		match *self {
 			Self::KeyDerivationFailed => write!(f, "Key derivation failed"),
-			Self::AuthProviderSetupFailed => write!(f, "Authentication provider setup failed"),
 			Self::StoreSetupFailed => write!(f, "Store setup failed"),
 		}
 	}
@@ -848,6 +861,30 @@ impl VssStoreBuilder {
 		Self { vss_xprv, vss_url, store_id }
 	}
 
+	/// Builds a [`VssStore`] with the simple signature-based authentication scheme.
+	///
+	/// `fixed_headers` are included as it is in all the requests made to VSS.
+	///
+	/// **Caution**: VSS support is in **alpha** and is considered experimental. Using VSS (or any
+	/// remote persistence) may cause LDK to panic if persistence failures are unrecoverable, i.e.,
+	/// if they remain unresolved after internal retries are exhausted.
+	///
+	/// [VSS]: https://github.com/lightningdevkit/vss-server/blob/main/README.md
+	pub fn build_with_sigs_auth(
+		&self, fixed_headers: HashMap<String, String>,
+	) -> Result<VssStore, VssStoreBuildError> {
+		let secp_ctx = Secp256k1::new();
+		let sigs_auth_xprv = self
+			.vss_xprv
+			.derive_priv(
+				&secp_ctx,
+				&[ChildNumber::Hardened { index: VSS_SIGS_AUTH_HARDENED_CHILD_INDEX }],
+			)
+			.map_err(|_| VssStoreBuildError::KeyDerivationFailed)?;
+		let auth_provider = SigsAuthProvider::new(sigs_auth_xprv.private_key, fixed_headers);
+		self.build_with_header_provider(Arc::new(auth_provider))
+	}
+
 	/// Builds a [`VssStore`] with [LNURL-auth] based authentication scheme as default method for
 	/// authentication/authorization.
 	///
@@ -864,7 +901,7 @@ impl VssStoreBuilder {
 	///
 	/// [VSS]: https://github.com/lightningdevkit/vss-server/blob/main/README.md
 	/// [LNURL-auth]: https://github.com/lnurl/luds/blob/luds/04.md
-	pub fn build(
+	pub fn build_with_lnurl(
 		&self, lnurl_auth_server_url: String, fixed_headers: HashMap<String, String>,
 	) -> Result<VssStore, VssStoreBuildError> {
 		let secp_ctx = Secp256k1::new();
@@ -877,8 +914,7 @@ impl VssStoreBuilder {
 			.map_err(|_| VssStoreBuildError::KeyDerivationFailed)?;
 
 		let lnurl_auth_jwt_provider =
-			LnurlAuthToJwtProvider::new(lnurl_auth_xprv, lnurl_auth_server_url, fixed_headers)
-				.map_err(|_| VssStoreBuildError::AuthProviderSetupFailed)?;
+			LnurlAuthToJwtProvider::new(lnurl_auth_xprv, lnurl_auth_server_url, fixed_headers);
 
 		let header_provider = Arc::new(lnurl_auth_jwt_provider);
 
@@ -933,9 +969,9 @@ impl VssStoreBuilder {
 mod tests {
 	use std::collections::HashMap;
 
+	use bitcoin::bip32::Xpriv;
 	use rand::distr::Alphanumeric;
 	use rand::{rng, Rng, RngCore};
-	use vss_client::headers::FixedHeaders;
 
 	use super::*;
 	use crate::io::test_utils::do_read_write_remove_list_persist;
@@ -947,9 +983,10 @@ mod tests {
 		let rand_store_id: String = (0..7).map(|_| rng.sample(Alphanumeric) as char).collect();
 		let mut vss_seed = [0u8; 32];
 		rng.fill_bytes(&mut vss_seed);
-		let header_provider = Arc::new(FixedHeaders::new(HashMap::new()));
-		let vss_store =
-			VssStore::new(vss_base_url, rand_store_id, vss_seed, header_provider).unwrap();
+		let vss_xprv = Xpriv::new_master(bitcoin::Network::Testnet, &vss_seed).unwrap();
+		let vss_store = VssStoreBuilder::new(vss_xprv, vss_base_url, rand_store_id)
+			.build_with_fixed_headers(HashMap::new())
+			.unwrap();
 		do_read_write_remove_list_persist(&vss_store);
 	}
 
@@ -960,9 +997,10 @@ mod tests {
 		let rand_store_id: String = (0..7).map(|_| rng.sample(Alphanumeric) as char).collect();
 		let mut vss_seed = [0u8; 32];
 		rng.fill_bytes(&mut vss_seed);
-		let header_provider = Arc::new(FixedHeaders::new(HashMap::new()));
-		let vss_store =
-			VssStore::new(vss_base_url, rand_store_id, vss_seed, header_provider).unwrap();
+		let vss_xprv = Xpriv::new_master(bitcoin::Network::Testnet, &vss_seed).unwrap();
+		let vss_store = VssStoreBuilder::new(vss_xprv, vss_base_url, rand_store_id)
+			.build_with_fixed_headers(HashMap::new())
+			.unwrap();
 
 		do_read_write_remove_list_persist(&vss_store);
 		drop(vss_store)

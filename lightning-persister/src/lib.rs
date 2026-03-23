@@ -13,6 +13,9 @@ pub mod fs_store;
 #[cfg(feature = "vss")]
 pub mod vss_store;
 
+#[cfg(feature = "vss")]
+pub use vss_client;
+
 mod utils;
 
 #[cfg(test)]
