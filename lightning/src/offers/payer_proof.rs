@@ -775,8 +775,10 @@ mod tests {
 	#[cfg(c_bindings)]
 	use crate::offers::refund::RefundMaybeWithDerivedMetadataBuilder as RefundBuilder;
 	use crate::offers::test_utils::*;
+	use crate::util::ser::HighZeroBytesDroppedBigSize;
 	use bitcoin::hashes::Hash;
 	use bitcoin::secp256k1::{Keypair, Secp256k1, SecretKey};
+	use core::time::Duration;
 
 	const EXPERIMENTAL_TEST_TLV_TYPE: u64 = 1_000_000_001;
 
@@ -882,6 +884,71 @@ mod tests {
 				.collect();
 		let disclosure = compute_selective_disclosure(&invoice_bytes, &included_types).unwrap();
 		assert_eq!(disclosure.omitted_markers, vec![177, 178]);
+
+		let unsigned = UnsignedPayerProof {
+			invoice_signature,
+			preimage,
+			payer_id,
+			payment_hash,
+			issuer_signing_pubkey,
+			invoice_bytes,
+			included_types,
+			disclosure,
+		};
+
+		unsigned
+			.sign(|message| Ok(secp_ctx.sign_schnorr_no_aux_rand(message, &payer_keys)), None)
+			.unwrap()
+	}
+
+	fn build_round_trip_proof_with_disclosed_fields() -> PayerProof {
+		let secp_ctx = Secp256k1::new();
+
+		let payer_secret = SecretKey::from_slice(&[62; 32]).unwrap();
+		let payer_keys = Keypair::from_secret_key(&secp_ctx, &payer_secret);
+		let payer_id = payer_keys.public_key();
+
+		let issuer_secret = SecretKey::from_slice(&[63; 32]).unwrap();
+		let issuer_keys = Keypair::from_secret_key(&secp_ctx, &issuer_secret);
+		let issuer_signing_pubkey = issuer_keys.public_key();
+
+		let preimage = PaymentPreimage([64; 32]);
+		let payment_hash = PaymentHash(sha256::Hash::hash(&preimage.0).to_byte_array());
+
+		let mut invoice_bytes = Vec::new();
+		write_tlv_record_bytes(&mut invoice_bytes, PAYER_METADATA_TYPE, &[65; 32]);
+		write_tlv_record_bytes(&mut invoice_bytes, OFFER_DESCRIPTION_TYPE, b"coffee beans");
+		write_tlv_record_bytes(&mut invoice_bytes, OFFER_ISSUER_TYPE, b"LDK Roastery");
+		write_tlv_record(&mut invoice_bytes, INVOICE_REQUEST_PAYER_ID_TYPE, &payer_id);
+		write_tlv_record(
+			&mut invoice_bytes,
+			INVOICE_CREATED_AT_TYPE,
+			&HighZeroBytesDroppedBigSize(1_700_000_000u64),
+		);
+		write_tlv_record(&mut invoice_bytes, INVOICE_PAYMENT_HASH_TYPE, &payment_hash);
+		write_tlv_record(
+			&mut invoice_bytes,
+			INVOICE_AMOUNT_TYPE,
+			&HighZeroBytesDroppedBigSize(42_000u64),
+		);
+		write_tlv_record(&mut invoice_bytes, INVOICE_NODE_ID_TYPE, &issuer_signing_pubkey);
+
+		let invoice_message = TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &invoice_bytes);
+		let invoice_signature =
+			secp_ctx.sign_schnorr_no_aux_rand(invoice_message.as_digest(), &issuer_keys);
+
+		let included_types: BTreeSet<u64> = [
+			OFFER_DESCRIPTION_TYPE,
+			OFFER_ISSUER_TYPE,
+			INVOICE_REQUEST_PAYER_ID_TYPE,
+			INVOICE_CREATED_AT_TYPE,
+			INVOICE_PAYMENT_HASH_TYPE,
+			INVOICE_AMOUNT_TYPE,
+			INVOICE_NODE_ID_TYPE,
+		]
+		.into_iter()
+		.collect();
+		let disclosure = compute_selective_disclosure(&invoice_bytes, &included_types).unwrap();
 
 		let unsigned = UnsignedPayerProof {
 			invoice_signature,
@@ -1244,6 +1311,17 @@ mod tests {
 			"Multiple trailing omitted TLVs should survive payer proof parsing: {:?}",
 			result
 		);
+	}
+
+	#[test]
+	fn test_parsed_proof_exposes_disclosed_fields() {
+		let proof = build_round_trip_proof_with_disclosed_fields();
+		let parsed = PayerProof::try_from(proof.bytes().to_vec()).unwrap();
+
+		assert_eq!(parsed.offer_description().map(|s| s.0), Some("coffee beans"));
+		assert_eq!(parsed.offer_issuer().map(|s| s.0), Some("LDK Roastery"));
+		assert_eq!(parsed.invoice_amount_msats(), Some(42_000));
+		assert_eq!(parsed.invoice_created_at(), Some(Duration::from_secs(1_700_000_000)));
 	}
 
 	/// Test that unknown even TLV types >= 240 are rejected during parsing.
