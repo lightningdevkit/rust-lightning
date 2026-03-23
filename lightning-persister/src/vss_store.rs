@@ -526,9 +526,14 @@ impl VssStoreInner {
 			}
 		})?;
 
-		// unwrap safety: resp.value must be always present for a non-erroneous VSS response, otherwise
-		// it is an API-violation which is converted to [`VssError::InternalServerError`] in [`VssClient`]
-		let storable = Storable::decode(&resp.value.unwrap().value[..]).map_err(|e| {
+		let resp_value = resp.value.ok_or_else(|| {
+			let msg = format!(
+				"Missing value in response for key {}/{}/{}",
+				primary_namespace, secondary_namespace, key,
+			);
+			Error::new(ErrorKind::Other, msg)
+		})?;
+		let storable = Storable::decode(&resp_value.value[..]).map_err(|e| {
 			let msg = format!(
 				"Failed to decode data read from key {}/{}/{}: {}",
 				primary_namespace, secondary_namespace, key, e
@@ -739,9 +744,10 @@ async fn determine_and_write_schema_version(
 	if let Some(resp) = resp {
 		// The schema version was present, so just decrypt the stored data.
 
-		// unwrap safety: resp.value must be always present for a non-erroneous VSS response, otherwise
-		// it is an API-violation which is converted to [`VssError::InternalServerError`] in [`VssClient`]
-		let storable = Storable::decode(&resp.value.unwrap().value[..]).map_err(|e| {
+		let resp_value = resp.value.ok_or_else(|| {
+			Error::new(ErrorKind::Other, "Missing value in schema version response")
+		})?;
+		let storable = Storable::decode(&resp_value.value[..]).map_err(|e| {
 			let msg = format!("Failed to decode schema version: {}", e);
 			Error::new(ErrorKind::Other, msg)
 		})?;
