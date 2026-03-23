@@ -3838,8 +3838,7 @@ impl<
 		if channel_value_satoshis < 1000 {
 			return Err(APIError::APIMisuseError {
 				err: format!(
-					"Channel value must be at least 1000 satoshis. It was {}",
-					channel_value_satoshis
+					"Channel value must be at least 1000 satoshis. It was {channel_value_satoshis}"
 				),
 			});
 		}
@@ -3850,15 +3849,14 @@ impl<
 
 		let per_peer_state = self.per_peer_state.read().unwrap();
 
-		let peer_state_mutex =
-			per_peer_state.get(&their_network_key).ok_or_else(|| APIError::APIMisuseError {
-				err: format!("Not connected to node: {}", their_network_key),
-			})?;
+		let peer_state_mutex = per_peer_state.get(&their_network_key).ok_or_else(|| {
+			APIError::APIMisuseError { err: format!("Not connected to node: {their_network_key}") }
+		})?;
 
 		let mut peer_state = peer_state_mutex.lock().unwrap();
 		if !peer_state.is_connected {
 			return Err(APIError::APIMisuseError {
-				err: format!("Not connected to node: {}", their_network_key),
+				err: format!("Not connected to node: {their_network_key}"),
 			});
 		}
 
@@ -3866,8 +3864,7 @@ impl<
 			if peer_state.channel_by_id.contains_key(&temporary_channel_id) {
 				return Err(APIError::APIMisuseError {
 					err: format!(
-						"Channel with temporary channel ID {} already exists!",
-						temporary_channel_id
+						"Channel with temporary channel ID {temporary_channel_id} already exists!"
 					),
 				});
 			}

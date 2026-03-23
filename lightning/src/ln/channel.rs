@@ -3708,41 +3708,38 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 
 		if config.channel_handshake_config.our_to_self_delay < BREAKDOWN_TIMEOUT {
 			return Err(ChannelError::close(format!(
-				"Configured with an unreasonable our_to_self_delay ({}) putting user funds at risks. It must be greater than {}",
-				config.channel_handshake_config.our_to_self_delay, BREAKDOWN_TIMEOUT
+				"Configured with an unreasonable our_to_self_delay ({}) putting user funds at risks. It must be greater than {BREAKDOWN_TIMEOUT}",
+				config.channel_handshake_config.our_to_self_delay
 			)));
 		}
 
 		if channel_value_satoshis >= TOTAL_BITCOIN_SUPPLY_SATOSHIS {
 			return Err(ChannelError::close(format!(
-				"Funding must be smaller than the total bitcoin supply. It was {}",
-				channel_value_satoshis
+				"Funding must be smaller than the total bitcoin supply. It was {channel_value_satoshis}"
 			)));
 		}
 		if msg_channel_reserve_satoshis > channel_value_satoshis {
 			return Err(ChannelError::close(format!(
-				"Bogus channel_reserve_satoshis ({}). Must be no greater than channel_value_satoshis: {}",
-				msg_channel_reserve_satoshis, channel_value_satoshis
+				"Bogus channel_reserve_satoshis ({msg_channel_reserve_satoshis}). Must be no greater than channel_value_satoshis: {channel_value_satoshis}"
 			)));
 		}
 		let full_channel_value_msat =
 			(channel_value_satoshis - msg_channel_reserve_satoshis) * 1000;
 		if msg_push_msat > full_channel_value_msat {
 			return Err(ChannelError::close(format!(
-				"push_msat {} was larger than channel amount minus reserve ({})",
-				msg_push_msat, full_channel_value_msat
+				"push_msat {msg_push_msat} was larger than channel amount minus reserve ({full_channel_value_msat})"
 			)));
 		}
 		if open_channel_fields.dust_limit_satoshis > channel_value_satoshis {
 			return Err(ChannelError::close(format!(
-				"dust_limit_satoshis {} was larger than channel_value_satoshis {}. Peer never wants payout outputs?",
-				open_channel_fields.dust_limit_satoshis, channel_value_satoshis
+				"dust_limit_satoshis {} was larger than channel_value_satoshis {channel_value_satoshis}. Peer never wants payout outputs?",
+				open_channel_fields.dust_limit_satoshis
 			)));
 		}
 		if open_channel_fields.htlc_minimum_msat >= full_channel_value_msat {
 			return Err(ChannelError::close(format!(
-				"Minimum htlc value ({}) was larger than full channel value ({})",
-				open_channel_fields.htlc_minimum_msat, full_channel_value_msat
+				"Minimum htlc value ({}) was larger than full channel value ({full_channel_value_msat})",
+				open_channel_fields.htlc_minimum_msat
 			)));
 		}
 		FundedChannel::<SP>::check_remote_fee(
@@ -3759,8 +3756,8 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		);
 		if open_channel_fields.to_self_delay > max_counterparty_selected_contest_delay {
 			return Err(ChannelError::close(format!(
-				"They wanted our payments to be delayed by a needlessly long period. Upper limit: {}. Actual: {}",
-				max_counterparty_selected_contest_delay, open_channel_fields.to_self_delay
+				"They wanted our payments to be delayed by a needlessly long period. Upper limit: {max_counterparty_selected_contest_delay}. Actual: {}",
+				open_channel_fields.to_self_delay
 			)));
 		}
 		if open_channel_fields.max_accepted_htlcs < 1 {
@@ -3779,8 +3776,8 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		// Now check against optional parameters as set by config...
 		if channel_value_satoshis < config.channel_handshake_limits.min_funding_satoshis {
 			return Err(ChannelError::close(format!(
-				"Funding satoshis ({}) is less than the user specified limit ({})",
-				channel_value_satoshis, config.channel_handshake_limits.min_funding_satoshis
+				"Funding satoshis ({channel_value_satoshis}) is less than the user specified limit ({})",
+				config.channel_handshake_limits.min_funding_satoshis
 			)));
 		}
 		if open_channel_fields.htlc_minimum_msat
@@ -3805,8 +3802,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			> config.channel_handshake_limits.max_channel_reserve_satoshis
 		{
 			return Err(ChannelError::close(format!(
-				"channel_reserve_satoshis ({}) is higher than the user specified limit ({})",
-				msg_channel_reserve_satoshis,
+				"channel_reserve_satoshis ({msg_channel_reserve_satoshis}) is higher than the user specified limit ({})",
 				config.channel_handshake_limits.max_channel_reserve_satoshis
 			)));
 		}
@@ -3821,8 +3817,8 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		}
 		if open_channel_fields.dust_limit_satoshis < MIN_CHAN_DUST_LIMIT_SATOSHIS {
 			return Err(ChannelError::close(format!(
-				"dust_limit_satoshis ({}) is less than the implementation limit ({})",
-				open_channel_fields.dust_limit_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS
+				"dust_limit_satoshis ({}) is less than the implementation limit ({MIN_CHAN_DUST_LIMIT_SATOSHIS})",
+				open_channel_fields.dust_limit_satoshis
 			)));
 		}
 
@@ -3835,8 +3831,8 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		};
 		if open_channel_fields.dust_limit_satoshis > max_chan_dust_limit_satoshis {
 			return Err(ChannelError::close(format!(
-				"dust_limit_satoshis ({}) is greater than the implementation limit ({})",
-				open_channel_fields.dust_limit_satoshis, max_chan_dust_limit_satoshis
+				"dust_limit_satoshis ({}) is greater than the implementation limit ({max_chan_dust_limit_satoshis})",
+				open_channel_fields.dust_limit_satoshis
 			)));
 		}
 
@@ -3856,29 +3852,27 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			// Protocol level safety check in place, although it should never happen because
 			// of `MIN_THEIR_CHAN_RESERVE_SATOSHIS`
 			return Err(ChannelError::close(format!(
-				"Suitable channel reserve not found. remote_channel_reserve was ({}). dust_limit_satoshis is ({}).",
-				holder_selected_channel_reserve_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS
+				"Suitable channel reserve not found. remote_channel_reserve was ({holder_selected_channel_reserve_satoshis}). dust_limit_satoshis is ({MIN_CHAN_DUST_LIMIT_SATOSHIS})."
 			)));
 		}
 		if holder_selected_channel_reserve_satoshis * 1000 >= full_channel_value_msat {
 			return Err(ChannelError::close(format!(
-				"Suitable channel reserve not found. remote_channel_reserve was ({})msats. Channel value is ({} - {})msats.",
-				holder_selected_channel_reserve_satoshis * 1000, full_channel_value_msat, msg_push_msat
+				"Suitable channel reserve not found. remote_channel_reserve was ({})msats. Channel value is ({full_channel_value_msat} - {msg_push_msat})msats.",
+				holder_selected_channel_reserve_satoshis * 1000
 			)));
 		}
 		if msg_channel_reserve_satoshis < MIN_CHAN_DUST_LIMIT_SATOSHIS {
 			log_debug!(
 				logger,
-				"channel_reserve_satoshis ({}) is smaller than our dust limit ({}). We can broadcast \
-				stale states without any risk, implying this channel is very insecure for our counterparty.",
-				msg_channel_reserve_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS);
+				"channel_reserve_satoshis ({msg_channel_reserve_satoshis}) is smaller than our dust limit ({MIN_CHAN_DUST_LIMIT_SATOSHIS}). We can broadcast \
+				stale states without any risk, implying this channel is very insecure for our counterparty.");
 		}
 		if holder_selected_channel_reserve_satoshis < open_channel_fields.dust_limit_satoshis
 			&& holder_selected_channel_reserve_satoshis != 0
 		{
 			return Err(ChannelError::close(format!(
-				"Dust limit ({}) too high for the channel reserve we require the remote to keep ({})",
-				open_channel_fields.dust_limit_satoshis, holder_selected_channel_reserve_satoshis
+				"Dust limit ({}) too high for the channel reserve we require the remote to keep ({holder_selected_channel_reserve_satoshis})",
+				open_channel_fields.dust_limit_satoshis
 			)));
 		}
 
@@ -3896,8 +3890,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 						} else {
 							if !script::is_bolt2_compliant(&script, their_features) {
 								return Err(ChannelError::close(format!(
-								"Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: {}",
-								script
+								"Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: {script}"
 							)));
 							}
 							Some(script.clone())
@@ -3931,8 +3924,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		if let Some(shutdown_scriptpubkey) = &shutdown_scriptpubkey {
 			if !shutdown_scriptpubkey.is_compatible(&their_features) {
 				return Err(ChannelError::close(format!(
-					"Provided a scriptpubkey format not accepted by peer: {}",
-					shutdown_scriptpubkey
+					"Provided a scriptpubkey format not accepted by peer: {shutdown_scriptpubkey}"
 				)));
 			}
 		}
@@ -4187,16 +4179,14 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		{
 			return Err(APIError::APIMisuseError {
 				err: format!(
-					"funding_value must not exceed {}, it was {}",
-					MAX_FUNDING_SATOSHIS_NO_WUMBO, channel_value_satoshis
+					"funding_value must not exceed {MAX_FUNDING_SATOSHIS_NO_WUMBO}, it was {channel_value_satoshis}"
 				),
 			});
 		}
 		if channel_value_satoshis >= TOTAL_BITCOIN_SUPPLY_SATOSHIS {
 			return Err(APIError::APIMisuseError {
 				err: format!(
-					"funding_value must be smaller than the total bitcoin supply, it was {}",
-					channel_value_satoshis
+					"funding_value must be smaller than the total bitcoin supply, it was {channel_value_satoshis}"
 				),
 			});
 		}
@@ -4204,16 +4194,14 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		if push_msat > channel_value_msat {
 			return Err(APIError::APIMisuseError {
 				err: format!(
-					"Push value ({}) was larger than channel_value ({})",
-					push_msat, channel_value_msat
+					"Push value ({push_msat}) was larger than channel_value ({channel_value_msat})"
 				),
 			});
 		}
 		if holder_selected_contest_delay < BREAKDOWN_TIMEOUT {
 			return Err(APIError::APIMisuseError {
 				err: format!(
-				"Configured with an unreasonable our_to_self_delay ({}) putting user funds at risks",
-				holder_selected_contest_delay
+				"Configured with an unreasonable our_to_self_delay ({holder_selected_contest_delay}) putting user funds at risks"
 			),
 			});
 		}
@@ -4720,8 +4708,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		}
 		if channel_reserve_satoshis > funding.get_value_satoshis() {
 			return Err(ChannelError::close(format!(
-				"Bogus channel_reserve_satoshis ({}). Must not be greater than ({})",
-				channel_reserve_satoshis,
+				"Bogus channel_reserve_satoshis ({channel_reserve_satoshis}). Must not be greater than ({})",
 				funding.get_value_satoshis()
 			)));
 		}
@@ -4737,8 +4724,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			> funding.get_value_satoshis() - funding.holder_selected_channel_reserve_satoshis
 		{
 			return Err(ChannelError::close(format!(
-				"Bogus channel_reserve_satoshis ({}). Must not be greater than channel value minus our reserve ({})",
-				channel_reserve_satoshis,
+				"Bogus channel_reserve_satoshis ({channel_reserve_satoshis}). Must not be greater than channel value minus our reserve ({})",
 				funding.get_value_satoshis() - funding.holder_selected_channel_reserve_satoshis
 			)));
 		}
@@ -4746,16 +4732,16 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			(funding.get_value_satoshis() - channel_reserve_satoshis) * 1000;
 		if common_fields.htlc_minimum_msat >= full_channel_value_msat {
 			return Err(ChannelError::close(format!(
-				"Minimum htlc value ({}) is full channel value ({})",
-				common_fields.htlc_minimum_msat, full_channel_value_msat
+				"Minimum htlc value ({}) is full channel value ({full_channel_value_msat})",
+				common_fields.htlc_minimum_msat
 			)));
 		}
 		let max_delay_acceptable =
 			u16::min(peer_limits.their_to_self_delay, MAX_LOCAL_BREAKDOWN_TIMEOUT);
 		if common_fields.to_self_delay > max_delay_acceptable {
 			return Err(ChannelError::close(format!(
-				"They wanted our payments to be delayed by a needlessly long period. Upper limit: {}. Actual: {}",
-				max_delay_acceptable, common_fields.to_self_delay
+				"They wanted our payments to be delayed by a needlessly long period. Upper limit: {max_delay_acceptable}. Actual: {}",
+				common_fields.to_self_delay
 			)));
 		}
 		if common_fields.max_accepted_htlcs < 1 {
@@ -4791,8 +4777,8 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		}
 		if channel_reserve_satoshis > peer_limits.max_channel_reserve_satoshis {
 			return Err(ChannelError::close(format!(
-				"channel_reserve_satoshis ({}) is higher than the user specified limit ({})",
-				channel_reserve_satoshis, peer_limits.max_channel_reserve_satoshis
+				"channel_reserve_satoshis ({channel_reserve_satoshis}) is higher than the user specified limit ({})",
+				peer_limits.max_channel_reserve_satoshis
 			)));
 		}
 		if common_fields.max_accepted_htlcs < peer_limits.min_max_accepted_htlcs {
@@ -4803,8 +4789,8 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		}
 		if common_fields.dust_limit_satoshis < MIN_CHAN_DUST_LIMIT_SATOSHIS {
 			return Err(ChannelError::close(format!(
-				"dust_limit_satoshis ({}) is less than the implementation limit ({})",
-				common_fields.dust_limit_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS
+				"dust_limit_satoshis ({}) is less than the implementation limit ({MIN_CHAN_DUST_LIMIT_SATOSHIS})",
+				common_fields.dust_limit_satoshis
 			)));
 		}
 
@@ -4817,8 +4803,8 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		};
 		if common_fields.dust_limit_satoshis > max_chan_dust_limit_satoshis {
 			return Err(ChannelError::close(format!(
-				"dust_limit_satoshis ({}) is greater than the implementation limit ({})",
-				common_fields.dust_limit_satoshis, max_chan_dust_limit_satoshis
+				"dust_limit_satoshis ({}) is greater than the implementation limit ({max_chan_dust_limit_satoshis})",
+				common_fields.dust_limit_satoshis
 			)));
 		}
 		if common_fields.minimum_depth > peer_limits.max_minimum_depth {
@@ -4838,8 +4824,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 						} else {
 							if !script::is_bolt2_compliant(&script, their_features) {
 								return Err(ChannelError::close(format!(
-								"Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: {}",
-								script
+								"Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: {script}"
 							)));
 							}
 							Some(script.clone())
@@ -14163,8 +14148,7 @@ impl<SP: SignerProvider> OutboundV1Channel<SP> {
 			// of `MIN_THEIR_CHAN_RESERVE_SATOSHIS`
 			return Err(APIError::APIMisuseError {
 				err: format!(
-					"Holder selected channel reserve below implementation limit dust_limit_satoshis {}",
-					holder_selected_channel_reserve_satoshis,
+					"Holder selected channel reserve below implementation limit dust_limit_satoshis {holder_selected_channel_reserve_satoshis}"
 				),
 			});
 		}
