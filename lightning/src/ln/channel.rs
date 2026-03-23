@@ -13690,27 +13690,27 @@ where
 	#[rustfmt::skip]
 	pub fn stfu<L: Logger>(
 		&mut self, msg: &msgs::Stfu, logger: &L
-	) -> Result<Option<StfuResponse>, ChannelError> {
+	) -> Result<Option<StfuResponse>, (ChannelError, QuiescentError)> {
 		if self.context.channel_state.is_quiescent() {
-			return Err(ChannelError::Warn("Channel is already quiescent".to_owned()));
+			return Err((ChannelError::Warn("Channel is already quiescent".to_owned()), QuiescentError::DoNothing));
 		}
 		if self.context.channel_state.is_remote_stfu_sent() {
-			return Err(ChannelError::Warn(
+			return Err((ChannelError::Warn(
 				"Peer sent `stfu` when they already sent it and we've yet to become quiescent".to_owned()
-			));
+			), QuiescentError::DoNothing));
 		}
 
 		if !self.context.is_live() {
-			return Err(ChannelError::Warn(
+			return Err((ChannelError::Warn(
 				"Peer sent `stfu` when we were not in a live state".to_owned()
-			));
+			), QuiescentError::DoNothing));
 		}
 
 		if !self.context.channel_state.is_local_stfu_sent() {
 			if !msg.initiator {
-				return Err(ChannelError::WarnAndDisconnect(
+				return Err((ChannelError::WarnAndDisconnect(
 					"Peer sent unexpected `stfu` without signaling as initiator".to_owned()
-				));
+				), QuiescentError::DoNothing));
 			}
 
 			// We don't check `is_waiting_on_peer_pending_channel_update` prior to setting the flag
@@ -13740,9 +13740,9 @@ where
 			// have a monitor update pending if we've processed a message from the counterparty, but
 			// we don't consider this when becoming quiescent since the states are not mutually
 			// exclusive.
-			return Err(ChannelError::WarnAndDisconnect(
+			return Err((ChannelError::WarnAndDisconnect(
 				"Received counterparty stfu while having pending counterparty updates".to_owned()
-			));
+			), QuiescentError::DoNothing));
 		}
 
 		self.context.channel_state.clear_local_stfu_sent();
@@ -13758,11 +13758,33 @@ where
 			match self.quiescent_action.take() {
 				None => {
 					debug_assert!(false);
-					return Err(ChannelError::WarnAndDisconnect(
+					return Err((ChannelError::WarnAndDisconnect(
 						"Internal Error: Didn't have anything to do after reaching quiescence".to_owned()
-					));
+					), QuiescentError::DoNothing));
 				},
 				Some(QuiescentAction::Splice { contribution, locktime }) => {
+					// Re-validate the contribution now that we're quiescent and
+					// balances are stable. Outbound HTLCs may have been sent between
+					// funding_contributed and quiescence, reducing the holder's
+					// balance. If invalid, disconnect and return the contribution so
+					// the user can reclaim their inputs.
+					if let Err(e) = contribution.validate().and_then(|()| {
+						let our_funding_contribution = contribution.net_value();
+						self.validate_splice_contributions(
+							our_funding_contribution,
+							SignedAmount::ZERO,
+						)
+					}) {
+						let failed = self.splice_funding_failed_for(contribution);
+						return Err((
+							ChannelError::WarnAndDisconnect(format!(
+								"Channel {} contribution no longer valid at quiescence: {}",
+								self.context.channel_id(),
+								e,
+							)),
+							QuiescentError::FailSplice(failed),
+						));
+					}
 					let prior_contribution = contribution.clone();
 					let prev_funding_input = self.funding.to_splice_funding_input();
 					let our_funding_contribution = contribution.net_value();

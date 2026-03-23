@@ -1949,6 +1949,10 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 							chain_state.confirm_tx(splice_tx);
 						},
 						events::Event::SpliceFailed { .. } => {},
+						events::Event::DiscardFunding {
+							funding_info: events::FundingInfo::Contribution { .. },
+							..
+						} => {},
 
 						_ => {
 							if out.may_fail.load(atomic::Ordering::Acquire) {

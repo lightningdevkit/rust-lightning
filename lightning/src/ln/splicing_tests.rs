@@ -6168,3 +6168,139 @@ fn test_rbf_sync_returns_err_when_max_feerate_below_min_rbf() {
 		Err(crate::ln::funding::FundingContributionError::FeeRateExceedsMaximum { .. }),
 	));
 }
+
+#[test]
+fn test_splice_revalidation_at_quiescence() {
+	// When an outbound HTLC is committed between funding_contributed and quiescence, the
+	// holder's balance decreases. If the splice-out was marginal at funding_contributed time,
+	// the re-validation at quiescence should fail and emit SpliceFailed + DiscardFunding.
+	//
+	// Flow:
+	// 1. Send payment #1 (update_add + CS) → node 0 awaits RAA
+	// 2. funding_contributed with splice-out → passes, stfu delayed (awaiting RAA)
+	// 3. Process node 1's RAA → node 0 free to send
+	// 4. Send payment #2 (update_add + CS) → balance reduced
+	// 5. Process node 1's CS → node 0 sends RAA, stfu delayed (payment #2 pending)
+	// 6. Complete payment #2's exchange → stfu fires
+	// 7. stfu exchange → quiescence → re-validation fails
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let mut config = test_default_channel_config();
+	config.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 100;
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let _ = provide_anchor_reserves(&nodes);
+
+	// Step 1: Send payment #1 (update_add + CS). Node 0 awaits RAA.
+	let payment_1_msat = 20_000_000;
+	let (route_1, payment_hash_1, _, payment_secret_1) =
+		get_route_and_payment_hash!(nodes[0], nodes[1], payment_1_msat);
+	nodes[0]
+		.node
+		.send_payment_with_route(
+			route_1,
+			payment_hash_1,
+			RecipientOnionFields::secret_only(payment_secret_1, payment_1_msat),
+			PaymentId(payment_hash_1.0),
+		)
+		.unwrap();
+	check_added_monitors(&nodes[0], 1);
+	let payment_1_msgs = nodes[0].node.get_and_clear_pending_msg_events();
+
+	// Step 2: funding_contributed with splice-out. Passes because the balance floor only
+	// includes payment #1. stfu is delayed — awaiting RAA.
+	let outputs = vec![TxOut {
+		value: Amount::from_sat(70_000),
+		script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
+	}];
+
+	let feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64);
+	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
+	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
+	let contribution =
+		funding_template.splice_out_sync(outputs, feerate, FeeRate::MAX, &wallet).unwrap();
+
+	nodes[0].node.funding_contributed(&channel_id, &node_id_1, contribution.clone(), None).unwrap();
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty(), "stfu should be delayed");
+
+	// Step 3: Deliver payment #1 to node 1 and process RAA.
+	let payment_1_event = SendEvent::from_event(payment_1_msgs.into_iter().next().unwrap());
+	nodes[1].node.handle_update_add_htlc(node_id_0, &payment_1_event.msgs[0]);
+	nodes[1].node.handle_commitment_signed_batch_test(node_id_0, &payment_1_event.commitment_msg);
+	check_added_monitors(&nodes[1], 1);
+	let (raa, cs) = get_revoke_commit_msgs(&nodes[1], &node_id_0);
+
+	// Process node 1's RAA. After this, node 0 is free to send new HTLCs.
+	nodes[0].node.handle_revoke_and_ack(node_id_1, &raa);
+	check_added_monitors(&nodes[0], 1);
+
+	// Step 4: Send payment #2 in the window between RAA and CS processing.
+	let payment_2_msat = 20_000_000;
+	let (route_2, payment_hash_2, _, payment_secret_2) =
+		get_route_and_payment_hash!(nodes[0], nodes[1], payment_2_msat);
+	nodes[0]
+		.node
+		.send_payment_with_route(
+			route_2,
+			payment_hash_2,
+			RecipientOnionFields::secret_only(payment_secret_2, payment_2_msat),
+			PaymentId(payment_hash_2.0),
+		)
+		.unwrap();
+	check_added_monitors(&nodes[0], 1);
+	let payment_2_msgs = nodes[0].node.get_and_clear_pending_msg_events();
+
+	// Step 5: Process node 1's CS. Node 0 sends RAA but stfu is delayed (payment #2 pending).
+	nodes[0].node.handle_commitment_signed_batch_test(node_id_1, &cs);
+	check_added_monitors(&nodes[0], 1);
+	let raa_0 = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, node_id_1);
+	nodes[1].node.handle_revoke_and_ack(node_id_0, &raa_0);
+	check_added_monitors(&nodes[1], 1);
+
+	// Step 6: Complete payment #2's commitment exchange. stfu fires afterward.
+	let payment_2_event = SendEvent::from_event(payment_2_msgs.into_iter().next().unwrap());
+	nodes[1].node.handle_update_add_htlc(node_id_0, &payment_2_event.msgs[0]);
+	nodes[1].node.handle_commitment_signed_batch_test(node_id_0, &payment_2_event.commitment_msg);
+	check_added_monitors(&nodes[1], 1);
+	let (raa_1b, cs_1b) = get_revoke_commit_msgs(&nodes[1], &node_id_0);
+	nodes[0].node.handle_revoke_and_ack(node_id_1, &raa_1b);
+	check_added_monitors(&nodes[0], 1);
+	nodes[0].node.handle_commitment_signed_batch_test(node_id_1, &cs_1b);
+	check_added_monitors(&nodes[0], 1);
+
+	// RAA and stfu sent together.
+	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 2, "{msg_events:?}");
+	let raa_0b = match &msg_events[0] {
+		MessageSendEvent::SendRevokeAndACK { msg, .. } => msg.clone(),
+		other => panic!("Expected SendRevokeAndACK, got {:?}", other),
+	};
+	let stfu_0 = match &msg_events[1] {
+		MessageSendEvent::SendStfu { msg, .. } => msg.clone(),
+		other => panic!("Expected SendStfu, got {:?}", other),
+	};
+
+	nodes[1].node.handle_revoke_and_ack(node_id_0, &raa_0b);
+	check_added_monitors(&nodes[1], 1);
+
+	// Step 7: stfu exchange → quiescence → re-validation fails → disconnect.
+	nodes[1].node.handle_stfu(node_id_0, &stfu_0);
+	let stfu_1 = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
+	nodes[0].node.handle_stfu(node_id_1, &stfu_1);
+
+	// handle_stfu returns WarnAndDisconnect (triggering disconnect) alongside the
+	// QuiescentError containing the failed contribution's events.
+	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1, "{msg_events:?}");
+	assert!(matches!(msg_events[0], MessageSendEvent::HandleError { .. }));
+
+	expect_splice_failed_events(&nodes[0], &channel_id, contribution);
+}

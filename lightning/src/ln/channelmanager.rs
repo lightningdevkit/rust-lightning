@@ -6487,6 +6487,57 @@ impl<
 		result
 	}
 
+	/// Emits events for a [`QuiescentError`], if applicable.
+	fn handle_quiescent_error(
+		&self, channel_id: ChannelId, counterparty_node_id: PublicKey, user_channel_id: u128,
+		error: QuiescentError,
+	) {
+		match error {
+			QuiescentError::DoNothing => {},
+			QuiescentError::DiscardFunding { inputs, outputs } => {
+				if !inputs.is_empty() || !outputs.is_empty() {
+					self.pending_events.lock().unwrap().push_back((
+						events::Event::DiscardFunding {
+							channel_id,
+							funding_info: FundingInfo::Contribution { inputs, outputs },
+						},
+						None,
+					));
+				}
+			},
+			QuiescentError::FailSplice(SpliceFundingFailed {
+				funding_txo,
+				channel_type,
+				contributed_inputs,
+				contributed_outputs,
+			}) => {
+				let pending_events = &mut self.pending_events.lock().unwrap();
+				pending_events.push_back((
+					events::Event::SpliceFailed {
+						channel_id,
+						counterparty_node_id,
+						user_channel_id,
+						abandoned_funding_txo: funding_txo,
+						channel_type,
+					},
+					None,
+				));
+				if !contributed_inputs.is_empty() || !contributed_outputs.is_empty() {
+					pending_events.push_back((
+						events::Event::DiscardFunding {
+							channel_id,
+							funding_info: FundingInfo::Contribution {
+								inputs: contributed_inputs,
+								outputs: contributed_outputs,
+							},
+						},
+						None,
+					));
+				}
+			},
+		}
+	}
+
 	/// Adds or removes funds from the given channel as specified by a [`FundingContribution`].
 	///
 	/// Used after [`ChannelManager::splice_channel`] by constructing a [`FundingContribution`]
@@ -6593,62 +6644,29 @@ impl<
 									);
 								}
 							},
-							Err(QuiescentError::DoNothing) => {
+							Err(e) => {
 								result = Err(APIError::APIMisuseError {
-									err: format!(
-										"Duplicate funding contribution for channel {}",
-										channel_id
-									),
-								});
-							},
-							Err(QuiescentError::DiscardFunding { inputs, outputs }) => {
-								self.pending_events.lock().unwrap().push_back((
-									events::Event::DiscardFunding {
-										channel_id: *channel_id,
-										funding_info: FundingInfo::Contribution { inputs, outputs },
+									err: match &e {
+										QuiescentError::DoNothing => format!(
+											"Duplicate funding contribution for channel {}",
+											channel_id,
+										),
+										QuiescentError::DiscardFunding { .. } => format!(
+											"Channel {} already has a pending funding contribution",
+											channel_id,
+										),
+										QuiescentError::FailSplice(_) => format!(
+											"Channel {} cannot accept funding contribution",
+											channel_id,
+										),
 									},
-									None,
-								));
-								result = Err(APIError::APIMisuseError {
-									err: format!(
-										"Channel {} already has a pending funding contribution",
-										channel_id
-									),
 								});
-							},
-							Err(QuiescentError::FailSplice(SpliceFundingFailed {
-								funding_txo,
-								channel_type,
-								contributed_inputs,
-								contributed_outputs,
-							})) => {
-								let pending_events = &mut self.pending_events.lock().unwrap();
-								pending_events.push_back((
-									events::Event::SpliceFailed {
-										channel_id: *channel_id,
-										counterparty_node_id: *counterparty_node_id,
-										user_channel_id: channel.context().get_user_id(),
-										abandoned_funding_txo: funding_txo,
-										channel_type,
-									},
-									None,
-								));
-								pending_events.push_back((
-									events::Event::DiscardFunding {
-										channel_id: *channel_id,
-										funding_info: FundingInfo::Contribution {
-											inputs: contributed_inputs,
-											outputs: contributed_outputs,
-										},
-									},
-									None,
-								));
-								result = Err(APIError::APIMisuseError {
-									err: format!(
-										"Channel {} cannot accept funding contribution",
-										channel_id
-									),
-								});
+								self.handle_quiescent_error(
+									*channel_id,
+									*counterparty_node_id,
+									channel.context().get_user_id(),
+									e,
+								);
 							},
 						}
 
@@ -12793,6 +12811,16 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					);
 
 					let res = chan.stfu(&msg, &&logger);
+					let (res, quiescent_error) = match res {
+						Ok(resp) => (Ok(resp), QuiescentError::DoNothing),
+						Err((chan_err, quiescent_err)) => (Err(chan_err), quiescent_err),
+					};
+					self.handle_quiescent_error(
+						chan_entry.get().context().channel_id(),
+						*counterparty_node_id,
+						chan_entry.get().context().get_user_id(),
+						quiescent_error,
+					);
 					let resp = try_channel_entry!(self, peer_state, res, chan_entry);
 					match resp {
 						None => Ok(false),

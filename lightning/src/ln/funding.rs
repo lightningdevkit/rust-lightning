@@ -176,6 +176,16 @@ pub(super) struct PriorContribution {
 	contribution: FundingContribution,
 	/// The holder's balance, used for feerate adjustment. `None` when the balance computation
 	/// fails, in which case adjustment is skipped and coin selection is re-run.
+	///
+	/// This value is captured at [`ChannelManager::splice_channel`] time and may become stale
+	/// if balances change before the contribution is used. Staleness is acceptable here because
+	/// this is only used as an optimization to determine if the prior contribution can be
+	/// reused with adjusted fees — the contribution is re-validated at
+	/// [`ChannelManager::funding_contributed`] time and again at quiescence time against the
+	/// current balances.
+	///
+	/// [`ChannelManager::splice_channel`]: crate::ln::channelmanager::ChannelManager::splice_channel
+	/// [`ChannelManager::funding_contributed`]: crate::ln::channelmanager::ChannelManager::funding_contributed
 	holder_balance: Option<Amount>,
 }
 
