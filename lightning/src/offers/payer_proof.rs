@@ -35,7 +35,7 @@ use crate::offers::offer::{OFFER_DESCRIPTION_TYPE, OFFER_ISSUER_TYPE};
 use crate::offers::parse::Bech32Encode;
 use crate::offers::payer::PAYER_METADATA_TYPE;
 use crate::types::payment::{PaymentHash, PaymentPreimage};
-use crate::util::ser::{BigSize, Readable, Writeable};
+use crate::util::ser::{BigSize, HighZeroBytesDroppedBigSize, Readable, Writeable};
 use lightning_types::string::PrintableString;
 
 use bitcoin::hashes::{sha256, Hash, HashEngine};
@@ -43,6 +43,7 @@ use bitcoin::secp256k1::schnorr::Signature;
 use bitcoin::secp256k1::{Message, PublicKey, Secp256k1};
 
 use core::convert::TryFrom;
+use core::time::Duration;
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -118,6 +119,15 @@ struct PayerProofContents {
 	invoice_signature: Signature,
 	payer_signature: Signature,
 	payer_note: Option<String>,
+	disclosed_fields: DisclosedFields,
+}
+
+#[derive(Clone, Debug, Default)]
+struct DisclosedFields {
+	offer_description: Option<String>,
+	offer_issuer: Option<String>,
+	invoice_amount_msats: Option<u64>,
+	invoice_created_at: Option<Duration>,
 }
 
 /// Builds a [`PayerProof`] from a paid invoice and its preimage.
@@ -243,6 +253,10 @@ impl<'a> PayerProofBuilder<'a> {
 		for r in TlvStream::new(&invoice_bytes).filter(|r| !SIGNATURE_TYPES.contains(&r.r#type)) {
 			bytes_without_sig.extend_from_slice(r.record_bytes);
 		}
+		let disclosed_fields = extract_disclosed_fields(
+			TlvStream::new(&invoice_bytes)
+				.filter(|r| self.included_types.contains(&r.r#type) && !SIGNATURE_TYPES.contains(&r.r#type)),
+		)?;
 
 		let disclosure =
 			merkle::compute_selective_disclosure(&bytes_without_sig, &self.included_types)?;
@@ -257,6 +271,7 @@ impl<'a> PayerProofBuilder<'a> {
 			issuer_signing_pubkey: self.invoice.signing_pubkey(),
 			invoice_bytes,
 			included_types: self.included_types,
+			disclosed_fields,
 			disclosure,
 		})
 	}
@@ -271,6 +286,7 @@ struct UnsignedPayerProof {
 	issuer_signing_pubkey: PublicKey,
 	invoice_bytes: Vec<u8>,
 	included_types: BTreeSet<u64>,
+	disclosed_fields: DisclosedFields,
 	disclosure: SelectiveDisclosure,
 }
 
@@ -299,6 +315,7 @@ impl UnsignedPayerProof {
 				invoice_signature: self.invoice_signature,
 				payer_signature,
 				payer_note: note.map(String::from),
+				disclosed_fields: self.disclosed_fields,
 			},
 			merkle_root: self.disclosure.merkle_root,
 		})
@@ -426,6 +443,26 @@ impl PayerProof {
 		self.contents.payer_signature
 	}
 
+	/// The disclosed offer description, if included in the proof.
+	pub fn offer_description(&self) -> Option<PrintableString<'_>> {
+		self.contents.disclosed_fields.offer_description.as_deref().map(PrintableString)
+	}
+
+	/// The disclosed offer issuer, if included in the proof.
+	pub fn offer_issuer(&self) -> Option<PrintableString<'_>> {
+		self.contents.disclosed_fields.offer_issuer.as_deref().map(PrintableString)
+	}
+
+	/// The disclosed invoice amount, if included in the proof.
+	pub fn invoice_amount_msats(&self) -> Option<u64> {
+		self.contents.disclosed_fields.invoice_amount_msats
+	}
+
+	/// The disclosed invoice creation time, if included in the proof.
+	pub fn invoice_created_at(&self) -> Option<Duration> {
+		self.contents.disclosed_fields.invoice_created_at
+	}
+
 	/// The payer's note, if any.
 	pub fn payer_note(&self) -> Option<PrintableString<'_>> {
 		self.contents.payer_note.as_deref().map(PrintableString)
@@ -473,6 +510,47 @@ fn validate_tlv_framing(bytes: &[u8]) -> Result<(), crate::ln::msgs::DecodeError
 	Ok(())
 }
 
+fn update_disclosed_fields(
+	record: &crate::offers::merkle::TlvRecord<'_>, disclosed_fields: &mut DisclosedFields,
+) -> Result<(), crate::ln::msgs::DecodeError> {
+	use crate::ln::msgs::DecodeError;
+
+	match record.r#type {
+		OFFER_DESCRIPTION_TYPE => {
+			disclosed_fields.offer_description = Some(
+				String::from_utf8(record.value_bytes.to_vec()).map_err(|_| DecodeError::InvalidValue)?,
+			);
+		},
+		OFFER_ISSUER_TYPE => {
+			disclosed_fields.offer_issuer = Some(
+				String::from_utf8(record.value_bytes.to_vec()).map_err(|_| DecodeError::InvalidValue)?,
+			);
+		},
+		INVOICE_CREATED_AT_TYPE => {
+			disclosed_fields.invoice_created_at = Some(Duration::from_secs(
+				record.read_value::<HighZeroBytesDroppedBigSize<u64>>()?.0,
+			));
+		},
+		INVOICE_AMOUNT_TYPE => {
+			disclosed_fields.invoice_amount_msats =
+				Some(record.read_value::<HighZeroBytesDroppedBigSize<u64>>()?.0);
+		},
+		_ => {},
+	}
+
+	Ok(())
+}
+
+fn extract_disclosed_fields<'a>(
+	records: impl core::iter::Iterator<Item = crate::offers::merkle::TlvRecord<'a>>,
+) -> Result<DisclosedFields, crate::ln::msgs::DecodeError> {
+	let mut disclosed_fields = DisclosedFields::default();
+	for record in records {
+		update_disclosed_fields(&record, &mut disclosed_fields)?;
+	}
+	Ok(disclosed_fields)
+}
+
 // Payer proofs use manual TLV parsing rather than `ParsedMessage` / `tlv_stream!`
 // because of their hybrid structure: a dynamic, variable set of included invoice
 // TLV records (types 0-239, preserved as raw bytes for merkle reconstruction) plus
@@ -502,6 +580,7 @@ impl TryFrom<Vec<u8>> for PayerProof {
 		let mut preimage: Option<PaymentPreimage> = None;
 		let mut payer_signature: Option<Signature> = None;
 		let mut payer_note: Option<String> = None;
+		let mut disclosed_fields = DisclosedFields::default();
 
 		let mut leaf_hashes: Vec<sha256::Hash> = Vec::new();
 		let mut omitted_markers: Vec<u64> = Vec::new();
@@ -522,6 +601,7 @@ impl TryFrom<Vec<u8>> for PayerProof {
 				}
 			}
 			prev_tlv_type = Some(tlv_type);
+			update_disclosed_fields(&record, &mut disclosed_fields)?;
 
 			match tlv_type {
 				INVOICE_REQUEST_PAYER_ID_TYPE => {
@@ -677,17 +757,18 @@ impl TryFrom<Vec<u8>> for PayerProof {
 
 		Ok(PayerProof {
 			bytes,
-			contents: PayerProofContents {
-				payer_id,
-				payment_hash,
-				issuer_signing_pubkey,
-				preimage,
-				invoice_signature,
-				payer_signature,
-				payer_note,
-			},
-			merkle_root,
-		})
+				contents: PayerProofContents {
+					payer_id,
+					payment_hash,
+					issuer_signing_pubkey,
+					preimage,
+					invoice_signature,
+					payer_signature,
+					payer_note,
+					disclosed_fields,
+				},
+				merkle_root,
+			})
 	}
 }
 
@@ -834,6 +915,10 @@ mod tests {
 		]
 		.into_iter()
 		.collect();
+		let disclosed_fields = extract_disclosed_fields(
+			TlvStream::new(&invoice_bytes).filter(|r| included_types.contains(&r.r#type)),
+		)
+		.unwrap();
 		let disclosure = compute_selective_disclosure(&invoice_bytes, &included_types).unwrap();
 
 		let unsigned = UnsignedPayerProof {
@@ -844,6 +929,7 @@ mod tests {
 			issuer_signing_pubkey,
 			invoice_bytes,
 			included_types,
+			disclosed_fields,
 			disclosure,
 		};
 
@@ -882,6 +968,10 @@ mod tests {
 			[INVOICE_REQUEST_PAYER_ID_TYPE, INVOICE_PAYMENT_HASH_TYPE, INVOICE_NODE_ID_TYPE]
 				.into_iter()
 				.collect();
+		let disclosed_fields = extract_disclosed_fields(
+			TlvStream::new(&invoice_bytes).filter(|r| included_types.contains(&r.r#type)),
+		)
+		.unwrap();
 		let disclosure = compute_selective_disclosure(&invoice_bytes, &included_types).unwrap();
 		assert_eq!(disclosure.omitted_markers, vec![177, 178]);
 
@@ -893,6 +983,7 @@ mod tests {
 			issuer_signing_pubkey,
 			invoice_bytes,
 			included_types,
+			disclosed_fields,
 			disclosure,
 		};
 
@@ -948,6 +1039,10 @@ mod tests {
 		]
 		.into_iter()
 		.collect();
+		let disclosed_fields = extract_disclosed_fields(
+			TlvStream::new(&invoice_bytes).filter(|r| included_types.contains(&r.r#type)),
+		)
+		.unwrap();
 		let disclosure = compute_selective_disclosure(&invoice_bytes, &included_types).unwrap();
 
 		let unsigned = UnsignedPayerProof {
@@ -958,6 +1053,7 @@ mod tests {
 			issuer_signing_pubkey,
 			invoice_bytes,
 			included_types,
+			disclosed_fields,
 			disclosure,
 		};
 
