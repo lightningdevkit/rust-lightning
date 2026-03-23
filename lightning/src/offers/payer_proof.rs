@@ -767,6 +767,80 @@ mod tests {
 	#[cfg(c_bindings)]
 	use crate::offers::refund::RefundMaybeWithDerivedMetadataBuilder as RefundBuilder;
 	use crate::offers::test_utils::*;
+	use bitcoin::hashes::Hash;
+	use bitcoin::secp256k1::{Keypair, Secp256k1, SecretKey};
+
+	const EXPERIMENTAL_TEST_TLV_TYPE: u64 = 1_000_000_001;
+
+	fn write_tlv_record<T: Writeable>(bytes: &mut Vec<u8>, tlv_type: u64, value: &T) {
+		let mut value_bytes = Vec::new();
+		value.write(&mut value_bytes).expect("Vec write should not fail");
+
+		BigSize(tlv_type).write(bytes).expect("Vec write should not fail");
+		BigSize(value_bytes.len() as u64).write(bytes).expect("Vec write should not fail");
+		bytes.extend_from_slice(&value_bytes);
+	}
+
+	fn write_tlv_record_bytes(bytes: &mut Vec<u8>, tlv_type: u64, value_bytes: &[u8]) {
+		BigSize(tlv_type).write(bytes).expect("Vec write should not fail");
+		BigSize(value_bytes.len() as u64).write(bytes).expect("Vec write should not fail");
+		bytes.extend_from_slice(value_bytes);
+	}
+
+	fn build_round_trip_proof_with_included_experimental_tlv() -> PayerProof {
+		let secp_ctx = Secp256k1::new();
+
+		let payer_secret = SecretKey::from_slice(&[42; 32]).unwrap();
+		let payer_keys = Keypair::from_secret_key(&secp_ctx, &payer_secret);
+		let payer_id = payer_keys.public_key();
+
+		let issuer_secret = SecretKey::from_slice(&[43; 32]).unwrap();
+		let issuer_keys = Keypair::from_secret_key(&secp_ctx, &issuer_secret);
+		let issuer_signing_pubkey = issuer_keys.public_key();
+
+		let preimage = PaymentPreimage([44; 32]);
+		let payment_hash = PaymentHash(sha256::Hash::hash(&preimage.0).to_byte_array());
+
+		let mut invoice_bytes = Vec::new();
+		write_tlv_record_bytes(&mut invoice_bytes, PAYER_METADATA_TYPE, &[45; 32]);
+		write_tlv_record(&mut invoice_bytes, INVOICE_REQUEST_PAYER_ID_TYPE, &payer_id);
+		write_tlv_record(&mut invoice_bytes, INVOICE_PAYMENT_HASH_TYPE, &payment_hash);
+		write_tlv_record(&mut invoice_bytes, INVOICE_NODE_ID_TYPE, &issuer_signing_pubkey);
+		write_tlv_record_bytes(
+			&mut invoice_bytes,
+			EXPERIMENTAL_TEST_TLV_TYPE,
+			b"experimental-payer-proof-field",
+		);
+
+		let invoice_message = TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &invoice_bytes);
+		let invoice_signature =
+			secp_ctx.sign_schnorr_no_aux_rand(invoice_message.as_digest(), &issuer_keys);
+
+		let included_types: BTreeSet<u64> = [
+			INVOICE_REQUEST_PAYER_ID_TYPE,
+			INVOICE_PAYMENT_HASH_TYPE,
+			INVOICE_NODE_ID_TYPE,
+			EXPERIMENTAL_TEST_TLV_TYPE,
+		]
+		.into_iter()
+		.collect();
+		let disclosure = compute_selective_disclosure(&invoice_bytes, &included_types).unwrap();
+
+		let unsigned = UnsignedPayerProof {
+			invoice_signature,
+			preimage,
+			payer_id,
+			payment_hash,
+			issuer_signing_pubkey,
+			invoice_bytes,
+			included_types,
+			disclosure,
+		};
+
+		unsigned
+			.sign(|message| Ok(secp_ctx.sign_schnorr_no_aux_rand(message, &payer_keys)), None)
+			.unwrap()
+	}
 
 	#[test]
 	fn test_selective_disclosure_computation() {
@@ -1074,26 +1148,34 @@ mod tests {
 			if tlv_type == PAYER_METADATA_TYPE {
 				return Err(PayerProofError::InvreqMetadataNotAllowed);
 			}
-			if tlv_type >= TLV_SIGNATURE {
+			if SIGNATURE_TYPES.contains(&tlv_type) {
 				return Err(PayerProofError::SignatureTypeNotAllowed);
 			}
 			Ok(())
 		}
 
-		// All types >= 240 must be rejected
+		// Signature-range types 240..=1000 must be rejected.
 		assert!(matches!(check_include_type(240), Err(PayerProofError::SignatureTypeNotAllowed)));
 		assert!(matches!(check_include_type(250), Err(PayerProofError::SignatureTypeNotAllowed)));
 		assert!(matches!(check_include_type(1000), Err(PayerProofError::SignatureTypeNotAllowed)));
-		// Types > 1000 (experimental) must also be rejected
-		assert!(matches!(check_include_type(1001), Err(PayerProofError::SignatureTypeNotAllowed)));
-		assert!(matches!(
-			check_include_type(u64::MAX),
-			Err(PayerProofError::SignatureTypeNotAllowed)
-		));
+		// Types above 1000 are experimental/non-signature TLVs and should remain includable.
+		assert!(check_include_type(1001).is_ok());
+		assert!(check_include_type(u64::MAX).is_ok());
 		// Just below the boundary
 		assert!(check_include_type(239).is_ok());
 		// Payer metadata still rejected
 		assert!(matches!(check_include_type(0), Err(PayerProofError::InvreqMetadataNotAllowed)));
+	}
+
+	#[test]
+	fn test_round_trip_accepts_included_experimental_tlv() {
+		let proof = build_round_trip_proof_with_included_experimental_tlv();
+		let result = PayerProof::try_from(proof.bytes().to_vec());
+		assert!(
+			result.is_ok(),
+			"Included experimental TLVs should survive payer proof parsing: {:?}",
+			result
+		);
 	}
 
 	/// Test that unknown even TLV types >= 240 are rejected during parsing.
