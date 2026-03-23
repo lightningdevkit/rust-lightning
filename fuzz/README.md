@@ -134,7 +134,6 @@ mkdir -p ./test_cases/$TARGET
 echo $HEX | xxd -r -p > ./test_cases/$TARGET/any_filename_works
 
 export RUST_BACKTRACE=1
-export RUSTFLAGS="--cfg=fuzzing --cfg=secp256k1_fuzz --cfg=hashes_fuzz"
 cargo test
 ```
 
@@ -152,7 +151,7 @@ Alternatively, you can use the `stdin_fuzz` feature to pipe the crash input dire
 creating test case files on disk:
 
 ```shell
-echo -ne '\x2d\x31\x36\x38\x37\x34\x09\x01...' | RUSTFLAGS="--cfg=fuzzing --cfg=secp256k1_fuzz --cfg=hashes_fuzz" cargo run --features stdin_fuzz --bin full_stack_target
+echo -ne '\x2d\x31\x36\x38\x37\x34\x09\x01...' | cargo run --features stdin_fuzz --bin full_stack_target
 ```
 
 Panics will abort the process directly (the crate uses `panic = "abort"`), resulting in a

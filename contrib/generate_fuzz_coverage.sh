@@ -55,8 +55,6 @@ fi
 # Create output directory if it doesn't exist
 mkdir -p "$OUTPUT_DIR"
 
-export RUSTFLAGS="--cfg=fuzzing --cfg=secp256k1_fuzz --cfg=hashes_fuzz"
-
 # dont run this command when running in CI
 if [ "$OUTPUT_CODECOV_JSON" = "0" ]; then
     cargo llvm-cov --html --ignore-filename-regex "fuzz/" --output-dir "$OUTPUT_DIR"
