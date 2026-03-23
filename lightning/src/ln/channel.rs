@@ -2908,11 +2908,17 @@ struct PendingFunding {
 	/// Used for validating the 25/24 feerate increase rule on RBF attempts.
 	last_funding_feerate_sat_per_1000_weight: Option<u32>,
 
-	/// The funding contributions from all explicit splice/RBF attempts on this channel.
-	/// Each entry reflects the feerate-adjusted contribution that was actually used in that
-	/// negotiation. The last entry is re-used when the counterparty initiates an RBF and we
-	/// have no pending `QuiescentAction`. When re-used as acceptor, the last entry is replaced
-	/// with the version adjusted for the new feerate.
+	/// The funding contributions from splice/RBF rounds where we contributed.
+	///
+	/// A new entry is appended when we contribute to a negotiation round (either as initiator
+	/// or acceptor). Rounds where we don't contribute (e.g., counterparty-only splice) do not
+	/// add an entry. Once non-empty, every subsequent round appends: when the counterparty
+	/// initiates an RBF, the last entry is adjusted to the new feerate and appended as a new
+	/// entry (or the RBF is rejected if the adjustment fails, in which case no round starts).
+	///
+	/// If the round aborts, the last entry is popped in
+	/// [`FundedChannel::reset_pending_splice_state`], restoring the prior round's contribution
+	/// as the most recent entry.
 	contributions: Vec<FundingContribution>,
 }
 
@@ -6957,6 +6963,22 @@ where
 			take,
 			into_contributed_inputs_and_outputs
 		);
+
+		// Pop the current round's contribution if it wasn't from a negotiated round. Each round
+		// pushes a new entry to `contributions`; if the round aborts, we undo the push so that
+		// `contributions.last()` reflects the most recent negotiated round's contribution. This
+		// must happen after `maybe_create_splice_funding_failed` so that
+		// `prior_contributed_inputs` still includes the prior rounds' entries for filtering.
+		if let Some(pending_splice) = self.pending_splice.as_mut() {
+			if let Some(last) = pending_splice.contributions.last() {
+				let was_negotiated = pending_splice
+					.last_funding_feerate_sat_per_1000_weight
+					.is_some_and(|f| last.feerate() == FeeRate::from_sat_per_kwu(f as u64));
+				if !was_negotiated {
+					pending_splice.contributions.pop();
+				}
+			}
+		}
 
 		if self.pending_funding().is_empty() {
 			self.pending_splice.take();
@@ -12736,11 +12758,12 @@ where
 		} else if prior_net_value.is_some() {
 			let prior_contribution = self
 				.pending_splice
-				.as_mut()
+				.as_ref()
 				.expect("pending_splice is Some")
 				.contributions
-				.pop()
-				.expect("prior_net_value was Some");
+				.last()
+				.expect("prior_net_value was Some")
+				.clone();
 			let adjusted_contribution = prior_contribution
 				.for_acceptor_at_feerate(feerate, holder_balance.unwrap())
 				.expect("feerate compatibility already checked");

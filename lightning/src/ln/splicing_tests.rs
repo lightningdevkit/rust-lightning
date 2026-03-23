@@ -5239,9 +5239,9 @@ fn test_splice_rbf_acceptor_recontributes() {
 
 #[test]
 fn test_splice_rbf_after_counterparty_rbf_aborted() {
-	// When a counterparty-initiated RBF is aborted, the acceptor's prior contribution retains
-	// the adjusted feerate. Initiating our own RBF afterward must not panic even though the
-	// prior contribution's feerate may be >= the new rbf_feerate.
+	// When a counterparty-initiated RBF is aborted, the acceptor's prior contribution is
+	// restored to the original feerate (before adjustment). Initiating our own RBF afterward
+	// uses this restored contribution.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -5326,8 +5326,8 @@ fn test_splice_rbf_after_counterparty_rbf_aborted() {
 	let tx_ack_rbf = complete_rbf_handshake(&nodes[0], &nodes[1]);
 	assert!(tx_ack_rbf.funding_output_contribution.is_some());
 
-	// Step 4: Abort the RBF. Node 0 sends tx_abort; node 1's prior contribution retains the
-	// adjusted feerate.
+	// Step 4: Abort the RBF. Node 0 sends tx_abort; node 1's prior contribution is restored
+	// to the original feerate (the RBF round's adjusted entry is popped from contributions).
 	// Drain node 0's pending TxAddInput from the interactive tx negotiation start.
 	nodes[0].node.get_and_clear_pending_msg_events();
 
@@ -5347,11 +5347,17 @@ fn test_splice_rbf_after_counterparty_rbf_aborted() {
 	nodes[1].node.get_and_clear_pending_events();
 
 	// Step 5: Node 1 initiates its own RBF via splice_channel → rbf_sync.
-	// The prior contribution's feerate is now >= rbf_feerate. This must not panic.
+	// The prior contribution's feerate is restored to the original floor feerate, not the
+	// RBF-adjusted feerate.
 	provide_utxo_reserves(&nodes, 2, added_value * 2);
 
 	let funding_template = nodes[1].node.splice_channel(&channel_id, &node_id_0).unwrap();
 	assert!(funding_template.min_rbf_feerate().is_some());
+	assert_eq!(
+		funding_template.prior_contribution().unwrap().feerate(),
+		feerate,
+		"Prior contribution should have the original feerate, not the RBF-adjusted one",
+	);
 
 	let wallet = WalletSync::new(Arc::clone(&nodes[1].wallet_source), nodes[1].logger);
 	let rbf_contribution = funding_template.rbf_sync(FeeRate::MAX, &wallet);
@@ -5646,24 +5652,12 @@ fn test_splice_rbf_acceptor_contributes_then_disconnects() {
 		other => panic!("Expected DiscardFunding with Contribution, got {:?}", other),
 	}
 
-	// The acceptor should also get SpliceFailed + DiscardFunding with its contributed
-	// inputs/outputs so it can reclaim its UTXOs.
+	// The acceptor re-contributed the same UTXOs as round 0 (via prior contribution
+	// adjustment). Since those UTXOs are still committed to round 0's splice, they are
+	// filtered from the DiscardFunding event. With all inputs/outputs filtered, no events
+	// are emitted for the acceptor.
 	let events = nodes[1].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 2, "{events:?}");
-	match &events[0] {
-		Event::SpliceFailed { channel_id: cid, .. } => assert_eq!(*cid, channel_id),
-		other => panic!("Expected SpliceFailed, got {:?}", other),
-	}
-	match &events[1] {
-		Event::DiscardFunding {
-			funding_info: FundingInfo::Contribution { inputs, outputs },
-			..
-		} => {
-			assert!(!inputs.is_empty(), "Expected acceptor inputs, got empty");
-			assert!(!outputs.is_empty(), "Expected acceptor outputs, got empty");
-		},
-		other => panic!("Expected DiscardFunding with Contribution, got {:?}", other),
-	}
+	assert_eq!(events.len(), 0, "{events:?}");
 
 	// Reconnect.
 	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
