@@ -168,13 +168,13 @@ impl<'a> PayerProofBuilder<'a> {
 	/// Include a specific TLV type in the proof.
 	///
 	/// Returns an error if the type is not allowed (e.g., invreq_metadata or
-	/// types >= 240 which are in the signature/payer-proof range and handled
-	/// separately).
+	/// types in the signature/payer-proof range (240..=1000), which are handled
+	/// separately.
 	pub fn include_type(mut self, tlv_type: u64) -> Result<Self, PayerProofError> {
 		if tlv_type == PAYER_METADATA_TYPE {
 			return Err(PayerProofError::InvreqMetadataNotAllowed);
 		}
-		if tlv_type >= TLV_SIGNATURE {
+		if SIGNATURE_TYPES.contains(&tlv_type) {
 			return Err(PayerProofError::SignatureTypeNotAllowed);
 		}
 		self.included_types.insert(tlv_type);
@@ -327,11 +327,11 @@ impl UnsignedPayerProof {
 	fn serialize_payer_proof(&self, payer_signature: &Signature, note: Option<&str>) -> Vec<u8> {
 		let mut bytes = Vec::new();
 
-		// Filter out SIGNATURE_TYPES defensively: the invoice bytes contain the
-		// invoice's own signature (type 240) which must not appear as an included
-		// invoice record — the payer proof writes its own signature TLV below.
+		// Preserve TLV ordering by emitting included invoice records below the
+		// payer-proof range first, then payer-proof TLVs (240..=250), then any
+		// disclosed experimental invoice records above the reserved range.
 		for record in TlvStream::new(&self.invoice_bytes).filter(|r| {
-			self.included_types.contains(&r.r#type) && !SIGNATURE_TYPES.contains(&r.r#type)
+			self.included_types.contains(&r.r#type) && r.r#type < TLV_SIGNATURE
 		}) {
 			bytes.extend_from_slice(record.record_bytes);
 		}
@@ -382,6 +382,14 @@ impl UnsignedPayerProof {
 		BigSize(payer_sig_len as u64).write(&mut bytes).expect("Vec write should not fail");
 		payer_signature.write(&mut bytes).expect("Vec write should not fail");
 		bytes.extend_from_slice(note_bytes);
+
+		for record in TlvStream::new(&self.invoice_bytes).filter(|r| {
+			self.included_types.contains(&r.r#type)
+				&& !SIGNATURE_TYPES.contains(&r.r#type)
+				&& r.r#type > *SIGNATURE_TYPES.end()
+		}) {
+			bytes.extend_from_slice(record.record_bytes);
+		}
 
 		bytes
 	}
@@ -592,7 +600,7 @@ impl TryFrom<Vec<u8>> for PayerProof {
 					if tlv_type == PAYER_METADATA_TYPE {
 						return Err(Bolt12ParseError::Decode(DecodeError::InvalidValue));
 					}
-					if tlv_type < TLV_SIGNATURE {
+					if !SIGNATURE_TYPES.contains(&tlv_type) {
 						// Included invoice TLV record (passthrough for merkle
 						// reconstruction).
 						included_types.insert(tlv_type);
