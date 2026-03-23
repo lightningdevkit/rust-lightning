@@ -607,7 +607,7 @@ impl VssStoreInner {
 			self.build_obfuscated_key(&primary_namespace, &secondary_namespace, &key);
 
 		let key_value = KeyValue { key: obfuscated_key, version: -1, value: vec![] };
-		self.execute_locked_write(inner_lock_ref, locking_key, version, async move || {
+		self.execute_locked_write(inner_lock_ref, locking_key, version, move || async move {
 			let request =
 				DeleteObjectRequest { store_id: self.store_id.clone(), key_value: Some(key_value) };
 
