@@ -54,34 +54,27 @@ impl DecayingAverage {
 	}
 }
 
-/// Tracks an average value over multiple rolling windows to smooth out volatility.
-///
-/// It tracks the average value using a single window duration but extends observation over
-/// [`Self::window_count`]s to protect against short-term shocks.
-///
-/// For example: if we're interested in tracking revenue over 2 weeks with a window count of 12,
-/// we will track the revenue for 12 periods of 2 weeks.
-///
-/// During the initial period after initialization, the average is computed over the elapsed
-/// time rather than the full window count, preventing artificially low values from a brief
-/// history. Once sufficient time has passed, the average stabilizes across the full configured
-/// number of windows.
+/// Approximates an [`Self::avg_weeks`]-week average by tracking a decaying average over a larger
+/// [`Self::window_weeks`] window to smooth out volatility.
 struct AggregatedWindowAverage {
 	start_timestamp_unix_secs: u64,
-	window_count: u8,
+	avg_weeks: u8,
+	window_weeks: u8,
 	window_duration: Duration,
 	aggregated_revenue_decaying: DecayingAverage,
 }
 
 impl AggregatedWindowAverage {
-	fn new(window: Duration, window_count: u8, start_timestamp_unix_secs: u64) -> Self {
+	fn new(avg_weeks: u8, window_weeks: u8, start_timestamp_unix_secs: u64) -> Self {
+		let window_duration = Duration::from_secs(60 * 60 * 24 * 7 * window_weeks as u64);
 		AggregatedWindowAverage {
 			start_timestamp_unix_secs,
-			window_count,
-			window_duration: window,
+			avg_weeks,
+			window_weeks,
+			window_duration,
 			aggregated_revenue_decaying: DecayingAverage::new(
 				start_timestamp_unix_secs,
-				window * window_count.into(),
+				window_duration,
 			),
 		}
 	}
@@ -90,30 +83,18 @@ impl AggregatedWindowAverage {
 		self.aggregated_revenue_decaying.add_value(value, timestamp)
 	}
 
-	fn windows_tracked(&self, timestamp_unix_secs: u64) -> f64 {
-		let elapsed_secs = (timestamp_unix_secs - self.start_timestamp_unix_secs) as f64;
-		elapsed_secs / self.window_duration.as_secs_f64()
-	}
-
 	fn value_at_timestamp(&mut self, timestamp_unix_secs: u64) -> Result<i64, ()> {
 		if timestamp_unix_secs < self.start_timestamp_unix_secs {
 			return Err(());
 		}
 
-		let windows_tracked = self.windows_tracked(timestamp_unix_secs);
-		// To calculate the average, we need to get the real number of windows we have been
-		// tracking in the case that it is less than the window count. Meaning, if we have
-		// tracked the average for only 2 windows but are averaging over 12 windows, we use 2
-		// to avoid averaging for 10 windows of 0.
-		let window_divisor = f64::min(
-			if windows_tracked < 1.0 { 1.0 } else { windows_tracked },
-			self.window_count as f64,
-		);
+		let num_windows = (self.window_weeks / self.avg_weeks) as f64;
+		let elapsed = (timestamp_unix_secs - self.start_timestamp_unix_secs) as f64;
+		let warmup_factor = 1.0 - (-elapsed / self.window_duration.as_secs_f64()).exp();
+		let divisor = f64::max(num_windows * warmup_factor, 1.0);
 
-		// We are not concerned with the rounding precision loss for this value because it is
-		// negligible when dealing with a long rolling average.
 		Ok((self.aggregated_revenue_decaying.value_at_timestamp(timestamp_unix_secs)? as f64
-			/ window_divisor)
+			/ divisor)
 			.round() as i64)
 	}
 }
@@ -122,7 +103,10 @@ impl AggregatedWindowAverage {
 mod tests {
 	use std::time::Duration;
 
-	use crate::ln::resource_manager::{AggregatedWindowAverage, DecayingAverage};
+	use crate::{
+		crypto::chacha20::ChaCha20,
+		ln::resource_manager::{AggregatedWindowAverage, DecayingAverage},
+	};
 
 	const WINDOW: Duration = Duration::from_secs(2016 * 10 * 60);
 
@@ -156,63 +140,88 @@ mod tests {
 	}
 
 	#[test]
-	fn test_revenue_average() {
-		let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-		let window_count = 12;
+	fn test_aggregated_window_average() {
+		let avg_weeks: u8 = 2;
+		let window_weeks: u8 = 12;
+		let num_windows = (window_weeks / avg_weeks) as usize;
+		let week_secs: u64 = 60 * 60 * 24 * 7;
+		let sum_window_secs = avg_weeks as u64 * week_secs;
 
-		let mut revenue_average = AggregatedWindowAverage::new(WINDOW, window_count, timestamp);
-		assert_eq!(revenue_average.value_at_timestamp(timestamp).unwrap(), 0);
-		assert!(revenue_average.value_at_timestamp(timestamp - 100).is_err());
+		let num_points: usize = 50_000;
+		let duration_weeks: u64 = 120;
+		let skip_weeks: u64 = 10;
+		let duration_secs = duration_weeks * week_secs;
+		let start_timestamp: u64 = 0;
 
-		let value = 10_000;
-		revenue_average.add_value(value, timestamp).unwrap();
-		assert_eq!(revenue_average.value_at_timestamp(timestamp).unwrap(), value);
+		let mut prng = ChaCha20::new(&[42u8; 32], &[0u8; 12]);
+		let mut timestamps = Vec::with_capacity(num_points);
+		let mut values = Vec::with_capacity(num_points);
+		for _ in 0..num_points {
+			let mut buf = [0u8; 8];
+			prng.process_in_place(&mut buf);
+			let ts_offset = u64::from_le_bytes(buf) % duration_secs;
+			timestamps.push(start_timestamp + ts_offset);
 
-		let revenue_window = revenue_average.window_duration.as_secs();
-		let end_first_window = timestamp.checked_add(revenue_window).unwrap();
-		let decayed_value = revenue_average
-			.aggregated_revenue_decaying
-			.value_at_timestamp(end_first_window)
-			.unwrap();
+			let mut buf = [0u8; 4];
+			prng.process_in_place(&mut buf);
+			let val = (u32::from_le_bytes(buf) % 49_001 + 1_000) as i64;
+			values.push(val);
+		}
 
-		assert_eq!(revenue_average.value_at_timestamp(end_first_window).unwrap(), decayed_value);
+		let mut indices: Vec<usize> = (0..num_points).collect();
+		indices.sort_by_key(|&i| timestamps[i]);
+		let sorted_ts: Vec<u64> = indices.iter().map(|&i| timestamps[i]).collect();
+		let sorted_vals: Vec<i64> = indices.iter().map(|&i| values[i]).collect();
 
-		// Move halfway through the second window. Now the decayed revenue average should be
-		// divided over how many windows we've been tracking revenue.
-		let half_second_window = end_first_window.checked_add(revenue_window / 2).unwrap();
-		let decayed_value = revenue_average
-			.aggregated_revenue_decaying
-			.value_at_timestamp(half_second_window)
-			.unwrap();
+		let mut avg = AggregatedWindowAverage::new(avg_weeks, window_weeks, start_timestamp);
+		let mut data_idx = 0;
 
-		assert_eq!(
-			revenue_average.value_at_timestamp(half_second_window).unwrap(),
-			(decayed_value as f64 / 1.5).round() as i64,
-		);
+		for w in 1..=duration_weeks {
+			let sample_time = start_timestamp + w * week_secs;
 
-		let final_window =
-			timestamp.checked_add(revenue_window * revenue_average.window_count as u64).unwrap();
-		let decayed_value =
-			revenue_average.aggregated_revenue_decaying.value_at_timestamp(final_window).unwrap();
+			// Add all data points up to this sample time.
+			while data_idx < num_points && sorted_ts[data_idx] <= sample_time {
+				avg.add_value(sorted_vals[data_idx], sorted_ts[data_idx]).unwrap();
+				data_idx += 1;
+			}
 
-		assert_eq!(
-			revenue_average.value_at_timestamp(final_window).unwrap(),
-			(decayed_value as f64 / revenue_average.window_count as f64).round() as i64,
-		);
+			let approx_avg = avg.value_at_timestamp(sample_time).unwrap();
 
-		// If we've been tracking the revenue for more than revenue_window * window_count periods,
-		// then the average will be divided by the window count.
-		let beyond_final_window = timestamp
-			.checked_add(revenue_window * revenue_average.window_count as u64 * 5)
-			.unwrap();
-		let decayed_value = revenue_average
-			.aggregated_revenue_decaying
-			.value_at_timestamp(beyond_final_window)
-			.unwrap();
+			let mut window_sums = Vec::with_capacity(num_windows);
+			for i in 0..num_windows {
+				let window_end = sample_time - i as u64 * sum_window_secs;
+				if window_end < sum_window_secs + start_timestamp {
+					break;
+				}
+				let window_start = window_end - sum_window_secs;
+				let window_sum: i64 = sorted_ts
+					.iter()
+					.zip(sorted_vals.iter())
+					.filter(|(&t, _)| t > window_start && t <= window_end)
+					.map(|(_, &v)| v)
+					.sum();
+				window_sums.push(window_sum);
+			}
 
-		assert_eq!(
-			revenue_average.value_at_timestamp(beyond_final_window).unwrap(),
-			(decayed_value as f64 / revenue_average.window_count as f64).round() as i64,
-		);
+			let actual_avg = if window_sums.is_empty() {
+				0
+			} else {
+				(window_sums.iter().sum::<i64>() as f64 / window_sums.len() as f64).round() as i64
+			};
+
+			let error_pct = if actual_avg != 0 {
+				(approx_avg - actual_avg) as f64 / actual_avg as f64 * 100.0
+			} else {
+				0.0
+			};
+
+			if w >= skip_weeks {
+				assert!(
+					error_pct.abs() < 3.0,
+					"week {w}: error {error_pct:.2}% exceeds 3% \
+					 (approx={approx_avg}, actual={actual_avg})"
+				);
+			}
+		}
 	}
 }
