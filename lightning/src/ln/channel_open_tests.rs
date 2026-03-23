@@ -470,7 +470,7 @@ pub fn test_insane_channel_opens() {
 	// funding satoshis
 	let channel_value_sat = 31337; // same as funding satoshis
 	let channel_reserve_satoshis =
-		get_holder_selected_channel_reserve_satoshis(channel_value_sat, 0, &legacy_cfg);
+		get_holder_selected_channel_reserve_satoshis(channel_value_sat, 0, &legacy_cfg, false);
 	let push_msat = (channel_value_sat - channel_reserve_satoshis) * 1000;
 
 	// Have node0 initiate a channel to node1 with aforementioned parameters

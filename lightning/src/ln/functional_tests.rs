@@ -414,7 +414,7 @@ pub fn test_inbound_outbound_capacity_is_not_zero() {
 	assert_eq!(channels0.len(), 1);
 	assert_eq!(channels1.len(), 1);
 
-	let reserve = get_holder_selected_channel_reserve_satoshis(100_000, 0, &default_config);
+	let reserve = get_holder_selected_channel_reserve_satoshis(100_000, 0, &default_config, false);
 	assert_eq!(channels0[0].inbound_capacity_msat, 95000000 - reserve * 1000);
 	assert_eq!(channels1[0].outbound_capacity_msat, 95000000 - reserve * 1000);
 
