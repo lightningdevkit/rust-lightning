@@ -95,49 +95,33 @@ fn commit_plus_htlc_tx_fees_msat(
 	(total_fees_msat, extra_accepted_htlc_total_fees_msat)
 }
 
-fn checked_sub_anchor_outputs(
-	is_outbound_from_holder: bool, value_to_self_after_htlcs_msat: u64,
-	value_to_remote_after_htlcs_msat: u64, channel_type: &ChannelTypeFeatures,
-) -> Result<(u64, u64), ()> {
-	let total_anchors_sat = if channel_type.supports_anchors_zero_fee_htlc_tx() {
+fn total_anchors_sat(channel_type: &ChannelTypeFeatures) -> u64 {
+	if channel_type.supports_anchors_zero_fee_htlc_tx() {
 		ANCHOR_OUTPUT_VALUE_SATOSHI * 2
 	} else {
 		0
-	};
-
-	if is_outbound_from_holder {
-		Ok((
-			value_to_self_after_htlcs_msat.checked_sub(total_anchors_sat * 1000).ok_or(())?,
-			value_to_remote_after_htlcs_msat,
-		))
-	} else {
-		Ok((
-			value_to_self_after_htlcs_msat,
-			value_to_remote_after_htlcs_msat.checked_sub(total_anchors_sat * 1000).ok_or(())?,
-		))
 	}
 }
 
-fn saturating_sub_anchor_outputs(
-	is_outbound_from_holder: bool, value_to_self_after_htlcs: u64,
-	value_to_remote_after_htlcs: u64, channel_type: &ChannelTypeFeatures,
-) -> (u64, u64) {
-	let total_anchors_sat = if channel_type.supports_anchors_zero_fee_htlc_tx() {
-		ANCHOR_OUTPUT_VALUE_SATOSHI * 2
-	} else {
-		0
-	};
-
+fn checked_sub_from_funder(
+	is_outbound_from_holder: bool, value_to_holder: u64, value_to_counterparty: u64,
+	value_to_subtract: u64,
+) -> Result<(u64, u64), ()> {
 	if is_outbound_from_holder {
-		(
-			value_to_self_after_htlcs.saturating_sub(total_anchors_sat * 1000),
-			value_to_remote_after_htlcs,
-		)
+		Ok((value_to_holder.checked_sub(value_to_subtract).ok_or(())?, value_to_counterparty))
 	} else {
-		(
-			value_to_self_after_htlcs,
-			value_to_remote_after_htlcs.saturating_sub(total_anchors_sat * 1000),
-		)
+		Ok((value_to_holder, value_to_counterparty.checked_sub(value_to_subtract).ok_or(())?))
+	}
+}
+
+fn saturating_sub_from_funder(
+	is_outbound_from_holder: bool, value_to_holder: u64, value_to_counterparty: u64,
+	value_to_subtract: u64,
+) -> (u64, u64) {
+	if is_outbound_from_holder {
+		(value_to_holder.saturating_sub(value_to_subtract), value_to_counterparty)
+	} else {
+		(value_to_holder, value_to_counterparty.saturating_sub(value_to_subtract))
 	}
 }
 
@@ -212,23 +196,17 @@ fn has_output(
 	broadcaster_dust_limit_satoshis: u64, channel_type: &ChannelTypeFeatures,
 ) -> bool {
 	let commit_tx_fee_sat = commit_tx_fee_sat(feerate_per_kw, nondust_htlc_count, channel_type);
-
-	let (real_holder_balance_msat, real_counterparty_balance_msat) = if is_outbound_from_holder {
-		(
-			holder_balance_before_fee_msat.saturating_sub(commit_tx_fee_sat * 1000),
-			counterparty_balance_before_fee_msat,
-		)
-	} else {
-		(
-			holder_balance_before_fee_msat,
-			counterparty_balance_before_fee_msat.saturating_sub(commit_tx_fee_sat * 1000),
-		)
-	};
+	let (holder_balance_msat, counterparty_balance_msat) = saturating_sub_from_funder(
+		is_outbound_from_holder,
+		holder_balance_before_fee_msat,
+		counterparty_balance_before_fee_msat,
+		commit_tx_fee_sat.saturating_mul(1000),
+	);
 
 	// Make sure the commitment transaction has at least one output
 	let dust_limit_msat = broadcaster_dust_limit_satoshis * 1000;
-	let has_no_output = real_holder_balance_msat < dust_limit_msat
-		&& real_counterparty_balance_msat < dust_limit_msat
+	let has_no_output = holder_balance_msat < dust_limit_msat
+		&& counterparty_balance_msat < dust_limit_msat
 		&& nondust_htlc_count == 0
 		// 0FC channels always have a P2A output on the commitment transaction
 		&& !channel_type.supports_anchor_zero_fee_commitments();
@@ -271,12 +249,13 @@ fn get_next_commitment_stats(
 	// commitment transaction *before* checking whether the remote party's balance is enough to
 	// cover the total anchor sum.
 
+	let total_anchors_sat = total_anchors_sat(channel_type);
 	let (holder_balance_before_fee_msat, counterparty_balance_before_fee_msat) =
-		checked_sub_anchor_outputs(
+		checked_sub_from_funder(
 			is_outbound_from_holder,
 			value_to_holder_after_htlcs_msat,
 			value_to_counterparty_after_htlcs_msat,
-			channel_type,
+			total_anchors_sat.saturating_mul(1000),
 		)?;
 
 	let (dust_exposure_msat, _extra_accepted_htlc_dust_exposure_msat) = get_dust_exposure_stats(
@@ -318,18 +297,12 @@ fn get_next_commitment_stats(
 		nondust_htlc_count + addl_nondust_htlc_count,
 		channel_type,
 	);
-
-	let (holder_balance_msat, counterparty_balance_msat) = if is_outbound_from_holder {
-		(
-			holder_balance_before_fee_msat.checked_sub(commit_tx_fee_sat * 1000).ok_or(())?,
-			counterparty_balance_before_fee_msat,
-		)
-	} else {
-		(
-			holder_balance_before_fee_msat,
-			counterparty_balance_before_fee_msat.checked_sub(commit_tx_fee_sat * 1000).ok_or(())?,
-		)
-	};
+	let (holder_balance_msat, counterparty_balance_msat) = checked_sub_from_funder(
+		is_outbound_from_holder,
+		holder_balance_before_fee_msat,
+		counterparty_balance_before_fee_msat,
+		commit_tx_fee_sat.saturating_mul(1000),
+	)?;
 
 	Ok(NextCommitmentStats {
 		holder_balance_msat,
@@ -425,15 +398,16 @@ fn get_available_balances(
 		pending_htlcs.iter().filter_map(|htlc| htlc.outbound.then_some(htlc.amount_msat)).sum();
 	let inbound_htlcs_value_msat: u64 =
 		pending_htlcs.iter().filter_map(|htlc| (!htlc.outbound).then_some(htlc.amount_msat)).sum();
+	let total_anchors_sat = total_anchors_sat(channel_type);
 	let (local_balance_before_fee_msat, remote_balance_before_fee_msat) =
-		saturating_sub_anchor_outputs(
+		saturating_sub_from_funder(
 			is_outbound_from_holder,
 			value_to_holder_msat.saturating_sub(outbound_htlcs_value_msat),
 			(channel_value_satoshis * 1000)
 				.checked_sub(value_to_holder_msat)
 				.unwrap()
 				.saturating_sub(inbound_htlcs_value_msat),
-			&channel_type,
+			total_anchors_sat.saturating_mul(1000),
 		);
 
 	let outbound_capacity_msat = local_balance_before_fee_msat
@@ -821,12 +795,13 @@ impl TxBuilder for SpecTxBuilder {
 		// commitment transaction *before* checking whether the remote party's balance is enough to
 		// cover the total anchor sum.
 
+		let total_anchors_sat = total_anchors_sat(&channel_parameters.channel_type_features);
 		let (local_balance_before_fee_msat, remote_balance_before_fee_msat) =
-			saturating_sub_anchor_outputs(
+			saturating_sub_from_funder(
 				channel_parameters.is_outbound_from_holder,
 				value_to_self_after_htlcs_msat,
 				value_to_remote_after_htlcs_msat,
-				&channel_parameters.channel_type_features,
+				total_anchors_sat.saturating_mul(1000),
 			);
 
 		// We MUST use saturating subs here, as the funder's balance is not guaranteed to be greater
@@ -836,17 +811,12 @@ impl TxBuilder for SpecTxBuilder {
 		// commitment transaction *before* checking whether the remote party's balance is enough to
 		// cover the total fee.
 
-		let (value_to_self, value_to_remote) = if channel_parameters.is_outbound_from_holder {
-			(
-				(local_balance_before_fee_msat / 1000).saturating_sub(commit_tx_fee_sat),
-				remote_balance_before_fee_msat / 1000,
-			)
-		} else {
-			(
-				local_balance_before_fee_msat / 1000,
-				(remote_balance_before_fee_msat / 1000).saturating_sub(commit_tx_fee_sat),
-			)
-		};
+		let (value_to_self, value_to_remote) = saturating_sub_from_funder(
+			channel_parameters.is_outbound_from_holder,
+			local_balance_before_fee_msat / 1000,
+			remote_balance_before_fee_msat / 1000,
+			commit_tx_fee_sat,
+		);
 
 		let mut to_broadcaster_value_sat = if local { value_to_self } else { value_to_remote };
 		let mut to_countersignatory_value_sat = if local { value_to_remote } else { value_to_self };
