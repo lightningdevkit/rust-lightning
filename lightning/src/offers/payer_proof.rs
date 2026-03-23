@@ -850,6 +850,55 @@ mod tests {
 			.unwrap()
 	}
 
+	fn build_round_trip_proof_with_multiple_trailing_omitted_tlvs() -> PayerProof {
+		let secp_ctx = Secp256k1::new();
+
+		let payer_secret = SecretKey::from_slice(&[52; 32]).unwrap();
+		let payer_keys = Keypair::from_secret_key(&secp_ctx, &payer_secret);
+		let payer_id = payer_keys.public_key();
+
+		let issuer_secret = SecretKey::from_slice(&[53; 32]).unwrap();
+		let issuer_keys = Keypair::from_secret_key(&secp_ctx, &issuer_secret);
+		let issuer_signing_pubkey = issuer_keys.public_key();
+
+		let preimage = PaymentPreimage([54; 32]);
+		let payment_hash = PaymentHash(sha256::Hash::hash(&preimage.0).to_byte_array());
+
+		let mut invoice_bytes = Vec::new();
+		write_tlv_record_bytes(&mut invoice_bytes, PAYER_METADATA_TYPE, &[55; 32]);
+		write_tlv_record(&mut invoice_bytes, INVOICE_REQUEST_PAYER_ID_TYPE, &payer_id);
+		write_tlv_record(&mut invoice_bytes, INVOICE_PAYMENT_HASH_TYPE, &payment_hash);
+		write_tlv_record(&mut invoice_bytes, INVOICE_NODE_ID_TYPE, &issuer_signing_pubkey);
+		write_tlv_record_bytes(&mut invoice_bytes, 1_000_000_001, b"first-omitted-experimental");
+		write_tlv_record_bytes(&mut invoice_bytes, 1_000_000_003, b"second-omitted-experimental");
+
+		let invoice_message = TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &invoice_bytes);
+		let invoice_signature =
+			secp_ctx.sign_schnorr_no_aux_rand(invoice_message.as_digest(), &issuer_keys);
+
+		let included_types: BTreeSet<u64> =
+			[INVOICE_REQUEST_PAYER_ID_TYPE, INVOICE_PAYMENT_HASH_TYPE, INVOICE_NODE_ID_TYPE]
+				.into_iter()
+				.collect();
+		let disclosure = compute_selective_disclosure(&invoice_bytes, &included_types).unwrap();
+		assert_eq!(disclosure.omitted_markers, vec![177, 178]);
+
+		let unsigned = UnsignedPayerProof {
+			invoice_signature,
+			preimage,
+			payer_id,
+			payment_hash,
+			issuer_signing_pubkey,
+			invoice_bytes,
+			included_types,
+			disclosure,
+		};
+
+		unsigned
+			.sign(|message| Ok(secp_ctx.sign_schnorr_no_aux_rand(message, &payer_keys)), None)
+			.unwrap()
+	}
+
 	#[test]
 	fn test_selective_disclosure_computation() {
 		// Test that the merkle selective disclosure works correctly
@@ -1182,6 +1231,17 @@ mod tests {
 		assert!(
 			result.is_ok(),
 			"Included experimental TLVs should survive payer proof parsing: {:?}",
+			result
+		);
+	}
+
+	#[test]
+	fn test_round_trip_accepts_multiple_trailing_omitted_tlvs() {
+		let proof = build_round_trip_proof_with_multiple_trailing_omitted_tlvs();
+		let result = PayerProof::try_from(proof.bytes().to_vec());
+		assert!(
+			result.is_ok(),
+			"Multiple trailing omitted TLVs should survive payer proof parsing: {:?}",
 			result
 		);
 	}
