@@ -6127,12 +6127,15 @@ fn test_rbf_sync_returns_err_when_no_min_rbf_feerate() {
 	assert!(template.prior_contribution().is_none());
 
 	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
-	assert!(template.rbf_sync(FeeRate::MAX, &wallet).is_err());
+	assert!(matches!(
+		template.rbf_sync(FeeRate::MAX, &wallet),
+		Err(crate::ln::funding::FundingContributionError::NotRbfScenario),
+	));
 }
 
 #[test]
 fn test_rbf_sync_returns_err_when_max_feerate_below_min_rbf() {
-	// Test that rbf_sync returns Err(()) when the caller's max_feerate is below the minimum
+	// Test that rbf_sync returns Err when the caller's max_feerate is below the minimum
 	// RBF feerate.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -6160,5 +6163,8 @@ fn test_rbf_sync_returns_err_when_max_feerate_below_min_rbf() {
 	let too_low_feerate =
 		FeeRate::from_sat_per_kwu(min_rbf_feerate.to_sat_per_kwu().saturating_sub(1));
 	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
-	assert!(funding_template.rbf_sync(too_low_feerate, &wallet).is_err());
+	assert!(matches!(
+		funding_template.rbf_sync(too_low_feerate, &wallet),
+		Err(crate::ln::funding::FundingContributionError::FeeRateExceedsMaximum { .. }),
+	));
 }

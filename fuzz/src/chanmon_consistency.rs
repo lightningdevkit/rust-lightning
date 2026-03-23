@@ -55,7 +55,7 @@ use lightning::ln::channelmanager::{
 	ChainParameters, ChannelManager, ChannelManagerReadArgs, PaymentId, RecentPaymentDetails,
 };
 use lightning::ln::functional_test_utils::*;
-use lightning::ln::funding::{FundingContribution, FundingTemplate};
+use lightning::ln::funding::{FundingContribution, FundingContributionError, FundingTemplate};
 use lightning::ln::inbound_payment::ExpandedKey;
 use lightning::ln::msgs::{
 	self, BaseMessageHandler, ChannelMessageHandler, CommitmentUpdate, Init, MessageSendEvent,
@@ -1392,7 +1392,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 		|node: &ChanMan,
 		 counterparty_node_id: &PublicKey,
 		 channel_id: &ChannelId,
-		 f: &dyn Fn(FundingTemplate) -> Result<FundingContribution, ()>| {
+		 f: &dyn Fn(FundingTemplate) -> Result<FundingContribution, FundingContributionError>| {
 			match node.splice_channel(channel_id, counterparty_node_id) {
 				Ok(funding_template) => {
 					if let Ok(contribution) = f(funding_template) {
