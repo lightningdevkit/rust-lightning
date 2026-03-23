@@ -443,6 +443,8 @@ impl VssStoreInner {
 		if self.schema_version == VssSchemaVersion::V1 {
 			let prefix = format!("{}#{}", primary_namespace, secondary_namespace);
 			self.key_obfuscator.obfuscate(&prefix)
+		} else if primary_namespace.is_empty() {
+			String::new()
 		} else {
 			// Default to V0 schema
 			format!("{}#{}", primary_namespace, secondary_namespace)
@@ -450,21 +452,20 @@ impl VssStoreInner {
 	}
 
 	fn extract_key(&self, unified_key: &str) -> io::Result<String> {
-		let mut parts = if self.schema_version == VssSchemaVersion::V1 {
+		let obfuscated_key = if self.schema_version == VssSchemaVersion::V1 {
 			let mut parts = unified_key.splitn(2, '#');
 			let _obfuscated_namespace = parts.next();
-			parts
-		} else {
+			parts.next()
+		} else if unified_key.contains('#') {
 			// Default to V0 schema
 			let mut parts = unified_key.splitn(3, '#');
 			let (_primary_namespace, _secondary_namespace) = (parts.next(), parts.next());
-			parts
+			parts.next()
+		} else {
+			Some(unified_key)
 		};
-		match parts.next() {
-			Some(obfuscated_key) => {
-				let actual_key = self.key_obfuscator.deobfuscate(obfuscated_key)?;
-				Ok(actual_key)
-			},
+		match obfuscated_key {
+			Some(obfuscated_key) => Ok(self.key_obfuscator.deobfuscate(obfuscated_key)?),
 			None => Err(Error::new(ErrorKind::InvalidData, "Invalid key format")),
 		}
 	}
