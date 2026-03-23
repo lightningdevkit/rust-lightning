@@ -590,7 +590,7 @@ impl DefaultResourceManager {
 					max_accepted_htlcs,
 					self.config.general_allocation_pct,
 					self.config.congestion_allocation_pct,
-					self.config.revenue_window * self.config.reputation_multiplier as u32,
+					self.config.revenue_window * self.config.reputation_multiplier.into(),
 					self.config.reputation_multiplier,
 					revenue_window_weeks_avg as u8,
 					timestamp_unix_secs,
@@ -607,10 +607,30 @@ impl DefaultResourceManager {
 	/// This should be called when a channel is closing.
 	pub fn remove_channel(&self, channel_id: u64) -> Result<(), ()> {
 		let mut channels_lock = self.channels.lock().unwrap();
-		channels_lock.remove(&channel_id);
 
-		// Remove slots assigned to channel being removed across all other channels.
+		// Release bucket resources on each incoming channel for its pending HTLCs.
+		if let Some(removed_channel) = channels_lock.remove(&channel_id) {
+			for (htlc_ref, pending_htlc) in &removed_channel.pending_htlcs {
+				if let Some(incoming_channel) = channels_lock.get_mut(&htlc_ref.incoming_channel_id)
+				{
+					let _ = match pending_htlc.bucket {
+						BucketAssigned::General => incoming_channel
+							.general_bucket
+							.remove_htlc(channel_id, pending_htlc.incoming_amount_msat),
+						BucketAssigned::Congestion => incoming_channel
+							.congestion_bucket
+							.remove_htlc(pending_htlc.incoming_amount_msat),
+						BucketAssigned::Protected => incoming_channel
+							.protected_bucket
+							.remove_htlc(pending_htlc.incoming_amount_msat),
+					};
+				}
+			}
+		}
+
+		// Clean up pending HTLC entries and channel slots.
 		for (_, channel) in channels_lock.iter_mut() {
+			channel.pending_htlcs.retain(|htlc_ref, _| htlc_ref.incoming_channel_id != channel_id);
 			channel.general_bucket.remove_channel_slots(channel_id);
 		}
 		Ok(())
@@ -752,7 +772,7 @@ impl DefaultResourceManager {
 		let outgoing_channel = channels_lock.get_mut(&outgoing_channel_id).ok_or(())?;
 
 		let htlc_ref = HtlcRef { incoming_channel_id, htlc_id };
-		let pending_htlc = outgoing_channel.pending_htlcs.remove(&htlc_ref).ok_or(())?;
+		let pending_htlc = outgoing_channel.pending_htlcs.get(&htlc_ref).ok_or(())?.clone();
 
 		if resolved_at < pending_htlc.added_at_unix_seconds {
 			return Err(());
@@ -765,6 +785,7 @@ impl DefaultResourceManager {
 			settled,
 		);
 		outgoing_channel.outgoing_reputation.add_value(effective_fee, resolved_at)?;
+		outgoing_channel.pending_htlcs.remove(&htlc_ref).ok_or(())?;
 
 		let incoming_channel = channels_lock.get_mut(&incoming_channel_id).ok_or(())?;
 		match pending_htlc.bucket {
@@ -1114,7 +1135,7 @@ mod tests {
 	fn test_channel(config: &ResourceManagerConfig) -> Channel {
 		Channel::new(
 			0,
-			100_000,
+			100_000_000,
 			100,
 			config.general_allocation_pct,
 			config.congestion_allocation_pct,
@@ -1718,7 +1739,7 @@ mod tests {
 			TestCase {
 				hold_time: slow_resolve,
 				settled: true,
-				expected_reputation: 0,              // effective_fee = 0 (slow unaccountable)
+				expected_reputation: 0, // effective_fee = 0 (slow unaccountable)
 				expected_revenue: FEE_AMOUNT as i64, // revenue increases regardless of speed
 			},
 			TestCase {
