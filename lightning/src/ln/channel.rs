@@ -1485,10 +1485,13 @@ pub(crate) const CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY: u32 = 144;
 #[derive(Debug)]
 struct PendingChannelMonitorUpdate {
 	update: ChannelMonitorUpdate,
+	/// `MonitorEvent`s that can be ack'd after `update` is durably persisted.
+	post_update_ackable_events: Vec<MonitorEventSource>,
 }
 
 impl_writeable_tlv_based!(PendingChannelMonitorUpdate, {
 	(0, update, required),
+	(1, post_update_ackable_events, optional_vec),
 });
 
 /// A payment channel with a counterparty throughout its life-cycle, encapsulating negotiation and
@@ -7325,9 +7328,10 @@ where
 					if !update_blocked {
 						debug_assert!(false, "If there is a pending blocked monitor we should have MonitorUpdateInProgress set");
 						let update = self.build_commitment_no_status_check(logger);
-						self.context
-							.blocked_monitor_updates
-							.push(PendingChannelMonitorUpdate { update });
+						self.context.blocked_monitor_updates.push(PendingChannelMonitorUpdate {
+							update,
+							post_update_ackable_events: Vec::new(),
+						});
 					}
 				}
 
@@ -8558,8 +8562,10 @@ where
 				logger,
 			);
 			(
-				self.push_ret_blockable_mon_update(monitor_update)
-					.map(|upd| (upd, monitor_events_to_ack)),
+				self.push_ret_blockable_mon_update_with_event_sources(
+					monitor_update,
+					monitor_events_to_ack,
+				),
 				htlcs_to_fail,
 			)
 		} else {
@@ -8901,13 +8907,14 @@ where
 		let mut monitor_events_to_ack = Vec::new();
 		macro_rules! return_with_htlcs_to_fail {
 			($htlcs_to_fail: expr) => {
+				let events_to_ack = core::mem::take(&mut monitor_events_to_ack);
 				if !release_monitor {
-					self.context
-						.blocked_monitor_updates
-						.push(PendingChannelMonitorUpdate { update: monitor_update });
+					self.context.blocked_monitor_updates.push(PendingChannelMonitorUpdate {
+						update: monitor_update,
+						post_update_ackable_events: events_to_ack,
+					});
 					return Ok(($htlcs_to_fail, static_invoices, None));
 				} else {
-					let events_to_ack = core::mem::take(&mut monitor_events_to_ack);
 					return Ok((
 						$htlcs_to_fail,
 						static_invoices,
@@ -11001,12 +11008,16 @@ where
 
 	/// Returns the next blocked monitor update, if one exists, and a bool which indicates a
 	/// further blocked monitor update exists after the next.
-	pub fn unblock_next_blocked_monitor_update(&mut self) -> Option<(ChannelMonitorUpdate, bool)> {
+	pub fn unblock_next_blocked_monitor_update(
+		&mut self,
+	) -> Option<(ChannelMonitorUpdate, Vec<MonitorEventSource>, bool)> {
 		if self.context.blocked_monitor_updates.is_empty() {
 			return None;
 		}
+		let pending = self.context.blocked_monitor_updates.remove(0);
 		Some((
-			self.context.blocked_monitor_updates.remove(0).update,
+			pending.update,
+			pending.post_update_ackable_events,
 			!self.context.blocked_monitor_updates.is_empty(),
 		))
 	}
@@ -11016,14 +11027,24 @@ where
 	#[rustfmt::skip]
 	fn push_ret_blockable_mon_update(&mut self, update: ChannelMonitorUpdate)
 	-> Option<ChannelMonitorUpdate> {
+		self.push_ret_blockable_mon_update_with_event_sources(update, Vec::new())
+			.map(|(upd, _)| upd)
+	}
+
+	/// Similar to `push_ret_blockable_mon_update`, but allows including a list of
+	/// `MonitorEventSource`s that can be ack'd after the `update` is durably persisted.
+	fn push_ret_blockable_mon_update_with_event_sources(
+		&mut self, update: ChannelMonitorUpdate, monitor_event_sources: Vec<MonitorEventSource>,
+	) -> Option<(ChannelMonitorUpdate, Vec<MonitorEventSource>)> {
 		let release_monitor = self.context.blocked_monitor_updates.is_empty();
 		if !release_monitor {
 			self.context.blocked_monitor_updates.push(PendingChannelMonitorUpdate {
 				update,
+				post_update_ackable_events: monitor_event_sources,
 			});
 			None
 		} else {
-			Some(update)
+			Some((update, monitor_event_sources))
 		}
 	}
 
@@ -11032,19 +11053,23 @@ where
 	/// here after logging them.
 	pub fn on_startup_drop_completed_blocked_mon_updates_through<L: Logger>(
 		&mut self, logger: &L, loaded_mon_update_id: u64,
-	) {
-		self.context.blocked_monitor_updates.retain(|update| {
+	) -> Vec<MonitorEventSource> {
+		let mut monitor_events_to_ack = Vec::new();
+		self.context.blocked_monitor_updates.retain_mut(|update| {
 			if update.update.update_id <= loaded_mon_update_id {
 				log_info!(
 					logger,
 					"Dropping completed ChannelMonitorUpdate id {} due to a stale ChannelManager",
 					update.update.update_id,
 				);
+				monitor_events_to_ack
+					.extend(core::mem::take(&mut update.post_update_ackable_events));
 				false
 			} else {
 				true
 			}
 		});
+		monitor_events_to_ack
 	}
 
 	pub fn blocked_monitor_updates_pending(&self) -> usize {

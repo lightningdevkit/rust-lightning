@@ -15392,9 +15392,18 @@ impl<
 					channel_id) {
 					if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
 						let channel_funding_outpoint = chan.funding_outpoint();
-						if let Some((monitor_update, further_update_exists)) = chan.unblock_next_blocked_monitor_update() {
+						if let Some((monitor_update, monitor_events_to_ack, further_update_exists)) = chan.unblock_next_blocked_monitor_update() {
 							log_debug!(logger, "Unlocking monitor updating and updating monitor",
 								);
+							if !monitor_events_to_ack.is_empty() {
+								peer_state
+									.monitor_update_blocked_actions
+									.entry(channel_id)
+									.or_default()
+									.push(MonitorUpdateCompletionAction::AckMonitorEvents {
+										monitor_events_to_ack,
+									});
+							}
 							let post_update_data = self.handle_new_monitor_update(
 								&mut peer_state.in_flight_monitor_updates,
 								&mut peer_state.monitor_update_blocked_actions,
@@ -19270,10 +19279,14 @@ impl<
 						}
 					}
 				} else {
-					channel.on_startup_drop_completed_blocked_mon_updates_through(
-						&logger,
-						monitor.get_latest_update_id(),
-					);
+					let events_to_ack = channel
+						.on_startup_drop_completed_blocked_mon_updates_through(
+							&logger,
+							monitor.get_latest_update_id(),
+						);
+					for source in events_to_ack {
+						args.chain_monitor.ack_monitor_event(source);
+					}
 					log_info!(logger, "Successfully loaded at update_id {} against monitor at update id {} with {} blocked updates",
 						channel.context.get_latest_monitor_update_id(),
 						monitor.get_latest_update_id(), channel.blocked_monitor_updates_pending());
