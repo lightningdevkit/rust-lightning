@@ -10365,11 +10365,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		// During startup, we push monitor updates as background events through to here in
 		// order to replay updates that were in-flight when we shut down. Thus, we have to
 		// filter for uniqueness here.
-		let update_idx =
-			in_flight_updates.iter().position(|upd| upd == &new_update).unwrap_or_else(|| {
-				in_flight_updates.push(new_update);
-				in_flight_updates.len() - 1
-			});
+		let existing_idx = in_flight_updates.iter().position(|upd| upd == &new_update);
+		let is_replay = existing_idx.is_some();
+		let update_idx = existing_idx.unwrap_or_else(|| {
+			in_flight_updates.push(new_update);
+			in_flight_updates.len() - 1
+		});
 
 		if self.background_events_processed_since_startup.load(Ordering::Acquire) {
 			let update_res =
@@ -10382,11 +10383,18 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			}
 			// A Watch implementation must not return Completed while prior updates are
 			// still InProgress, as this would violate the async persistence contract.
+			// We skip this check for replayed updates (startup background events)
+			// because during startup replay, the remaining in-flight updates may not
+			// have been submitted to the Watch yet and will be processed by subsequent
+			// background events. This is specifically necessary when switching from
+			// async to sync persistence across a restart: the replayed update
+			// returns Completed from the now-sync Watch while earlier in-flight
+			// updates are still queued as background events.
 			#[cfg(test)]
 			let skip_check = self.skip_monitor_update_assertion.load(Ordering::Relaxed);
 			#[cfg(not(test))]
 			let skip_check = false;
-			if !skip_check && update_completed && !in_flight_updates.is_empty() {
+			if !skip_check && !is_replay && update_completed && !in_flight_updates.is_empty() {
 				panic!("Watch::update_channel returned Completed while prior updates are still InProgress");
 			}
 			(update_completed, update_completed && in_flight_updates.is_empty())
