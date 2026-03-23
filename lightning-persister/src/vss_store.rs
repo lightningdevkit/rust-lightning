@@ -565,8 +565,7 @@ impl VssStoreInner {
 		let storable_builder = StorableBuilder::new(VssEntropySource(&self.entropy_source));
 		let aad =
 			if self.schema_version == VssSchemaVersion::V1 { store_key.as_bytes() } else { &[] };
-		let storable =
-			storable_builder.build(buf.to_vec(), vss_version, &self.data_encryption_key, aad);
+		let storable = storable_builder.build(buf, vss_version, &self.data_encryption_key, aad);
 		let request = PutObjectRequest {
 			store_id: self.store_id.clone(),
 			global_version: None,
