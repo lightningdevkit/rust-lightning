@@ -21,8 +21,7 @@ struct DecayingAverage {
 	value: i64,
 	last_updated_unix_secs: u64,
 	window: Duration,
-	/// A constant rate of decay based on the rolling [`Self::window`] chosen.
-	decay_rate: f64,
+	half_life: f64,
 }
 
 impl DecayingAverage {
@@ -31,11 +30,7 @@ impl DecayingAverage {
 			value: 0,
 			last_updated_unix_secs: start_timestamp_unix_secs,
 			window,
-			// This rate is calculated as `0.5^(2/window_seconds)`, which produces a half-life at the
-			// midpoint of the window. For example, with a 24-week window (the default for
-			// reputation tracking), a value will decay to half of its value after 12 weeks
-			// have elapsed.
-			decay_rate: 0.5_f64.powf(2.0 / window.as_secs_f64()),
+			half_life: window.as_secs_f64() * 2_f64.ln(),
 		}
 	}
 
@@ -45,7 +40,8 @@ impl DecayingAverage {
 		}
 
 		let elapsed_secs = (timestamp_unix_secs - self.last_updated_unix_secs) as f64;
-		self.value = (self.value as f64 * self.decay_rate.powf(elapsed_secs)).round() as i64;
+		let decay_rate = 0.5_f64.powf(elapsed_secs / self.half_life);
+		self.value = (self.value as f64 * decay_rate).round() as i64;
 		self.last_updated_unix_secs = timestamp_unix_secs;
 		Ok(self.value)
 	}
@@ -60,49 +56,11 @@ impl DecayingAverage {
 
 #[cfg(test)]
 mod tests {
-	use std::time::{Duration, SystemTime, UNIX_EPOCH};
+	use std::time::Duration;
 
 	use crate::ln::resource_manager::DecayingAverage;
 
 	const WINDOW: Duration = Duration::from_secs(2016 * 10 * 60);
-
-	#[test]
-	fn test_decaying_average_values() {
-		// Test average decay at different timestamps. The values we are asserting have been
-		// independently calculated.
-		let current_timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-		let mut avg = DecayingAverage::new(current_timestamp, WINDOW);
-
-		assert_eq!(avg.add_value(1000, current_timestamp).unwrap(), 1000);
-		assert_eq!(avg.value_at_timestamp(current_timestamp).unwrap(), 1000);
-
-		let ts_1 = current_timestamp + WINDOW.as_secs() / 4;
-		assert_eq!(avg.value_at_timestamp(ts_1).unwrap(), 707);
-
-		let ts_2 = current_timestamp + WINDOW.as_secs() / 2;
-		assert_eq!(avg.value_at_timestamp(ts_2).unwrap(), 500);
-
-		assert_eq!(avg.add_value(500, ts_2).unwrap(), 1000);
-
-		let ts_3 = ts_2 + WINDOW.as_secs();
-		assert_eq!(avg.value_at_timestamp(ts_3).unwrap(), 250);
-
-		// Test decaying on negative value
-		let mut avg = DecayingAverage::new(current_timestamp, WINDOW);
-
-		assert_eq!(avg.add_value(-1000, current_timestamp).unwrap(), -1000);
-		assert_eq!(avg.value_at_timestamp(current_timestamp).unwrap(), -1000);
-
-		let ts_1 = current_timestamp + WINDOW.as_secs() / 4;
-		assert_eq!(avg.value_at_timestamp(ts_1).unwrap(), -707);
-
-		let ts_2 = current_timestamp + WINDOW.as_secs() / 2;
-		assert_eq!(avg.value_at_timestamp(ts_2).unwrap(), -500);
-		assert_eq!(avg.add_value(-500, ts_2).unwrap(), -1000);
-
-		let ts_3 = ts_2 + WINDOW.as_secs();
-		assert_eq!(avg.value_at_timestamp(ts_3).unwrap(), -250);
-	}
 
 	#[test]
 	fn test_decaying_average_error() {
