@@ -974,7 +974,7 @@ mod tests {
 	use rand::{rng, Rng, RngCore};
 
 	use super::*;
-	use crate::io::test_utils::do_read_write_remove_list_persist;
+	use crate::test_utils::do_read_write_remove_list_persist;
 
 	#[test]
 	fn vss_read_write_remove_list_persist() {
