@@ -476,7 +476,7 @@ impl VssStoreInner {
 		let mut page_token = None;
 		let mut keys = vec![];
 		let key_prefix = self.build_obfuscated_prefix(primary_namespace, secondary_namespace);
-		while page_token != Some("".to_string()) {
+		loop {
 			let request = ListKeyVersionsRequest {
 				store_id: self.store_id.clone(),
 				key_prefix: Some(key_prefix.clone()),
@@ -495,7 +495,14 @@ impl VssStoreInner {
 			for kv in response.key_versions {
 				keys.push(self.extract_key(&kv.key)?);
 			}
-			page_token = response.next_page_token;
+			if let Some(next_page_token) = response.next_page_token {
+				if next_page_token.is_empty() {
+					break;
+				}
+				page_token = Some(next_page_token);
+			} else {
+				break;
+			}
 		}
 		Ok(keys)
 	}
