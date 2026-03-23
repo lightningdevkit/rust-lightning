@@ -43,7 +43,6 @@ jobs:
           until curl -sf http://localhost:8080/vss > /dev/null; do sleep 1; done
       - name: Run VSS tests
         run: |
-          ls -la
           cd rust-lightning/lightning-persister
           export TEST_VSS_BASE_URL="http://localhost:8080/vss"
           RUSTFLAGS="--cfg vss_test" cargo test --features vss vss_store
