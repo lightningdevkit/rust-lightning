@@ -21,6 +21,9 @@ macro_rules! _encode_tlv {
 	($stream: expr, $type: expr, $field: expr, (default_value, $default: expr) $(, $self: ident)?) => {
 		$crate::_encode_tlv!($stream, $type, $field, required)
 	};
+	($stream: expr, $type: expr, $field: expr, (default_value_vec, $default: expr) $(, $self: ident)?) => {
+		$crate::_encode_tlv!($stream, $type, $field, required_vec)
+	};
 	($stream: expr, $type: expr, $field: expr, (static_value, $value: expr) $(, $self: ident)?) => {
 		let _ = &$field; // Ensure we "use" the $field
 	};
@@ -200,6 +203,9 @@ macro_rules! _get_varint_length_prefixed_tlv_length {
 	($len: expr, $type: expr, $field: expr, (default_value, $default: expr) $(, $self: ident)?) => {
 		$crate::_get_varint_length_prefixed_tlv_length!($len, $type, $field, required)
 	};
+	($len: expr, $type: expr, $field: expr, (default_value_vec, $default: expr) $(, $self: ident)?) => {
+		$crate::_get_varint_length_prefixed_tlv_length!($len, $type, $field, required_vec)
+	};
 	($len: expr, $type: expr, $field: expr, (static_value, $value: expr) $(, $self: ident)?) => {};
 	($len: expr, $type: expr, $field: expr, required $(, $self: ident)?) => {
 		BigSize($type).write(&mut $len).expect("No in-memory data may fail to serialize");
@@ -301,6 +307,15 @@ macro_rules! _check_decoded_tlv_order {
 			$field = $default.into();
 		}
 	}};
+	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, (default_value_vec, $default: expr)) => {{
+		$crate::_check_decoded_tlv_order!(
+			$last_seen_type,
+			$typ,
+			$type,
+			$field,
+			(default_value, $default)
+		);
+	}};
 	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, (static_value, $value: expr)) => {};
 	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, required) => {{
 		// Note that $type may be 0 making the second comparison always false
@@ -372,6 +387,9 @@ macro_rules! _check_missing_tlv {
 			$field = $default.into();
 		}
 	}};
+	($last_seen_type: expr, $type: expr, $field: ident, (default_value_vec, $default: expr)) => {{
+		$crate::_check_missing_tlv!($last_seen_type, $type, $field, (default_value, $default));
+	}};
 	($last_seen_type: expr, $type: expr, $field: expr, (static_value, $value: expr)) => {
 		$field = $value;
 	};
@@ -439,6 +457,10 @@ macro_rules! _check_missing_tlv {
 macro_rules! _decode_tlv {
 	($outer_reader: expr, $reader: expr, $field: ident, (default_value, $default: expr)) => {{
 		$crate::_decode_tlv!($outer_reader, $reader, $field, required)
+	}};
+	($outer_reader: expr, $reader: expr, $field: ident, (default_value_vec, $default: expr)) => {{
+		let f: $crate::util::ser::WithoutLength<Vec<_>> = $crate::util::ser::LengthReadable::read_from_fixed_length_buffer(&mut $reader)?;
+		$field = $crate::util::ser::RequiredWrapper(Some(f.0));
 	}};
 	($outer_reader: expr, $reader: expr, $field: ident, (static_value, $value: expr)) => {{
 	}};
@@ -854,6 +876,9 @@ macro_rules! _init_tlv_based_struct_field {
 	($field: ident, (default_value, $default: expr)) => {
 		$field.0.unwrap()
 	};
+	($field: ident, (default_value_vec, $default: expr)) => {
+		$crate::_init_tlv_based_struct_field!($field, (default_value, $default))
+	};
 	($field: ident, (static_value, $value: expr)) => {
 		$field
 	};
@@ -904,6 +929,9 @@ macro_rules! _init_tlv_based_struct_field {
 macro_rules! _init_tlv_field_var {
 	($field: ident, (default_value, $default: expr)) => {
 		let mut $field = $crate::util::ser::RequiredWrapper(None);
+	};
+	($field: ident, (default_value_vec, $default: expr)) => {
+		$crate::_init_tlv_field_var!($field, (default_value, $default));
 	};
 	($field: ident, (static_value, $value: expr)) => {
 		let $field;
@@ -1007,6 +1035,9 @@ macro_rules! _decode_and_build {
 ///
 /// If `$fieldty` is `required`, then `$field` is a required field that is not an [`Option`] nor a [`Vec`].
 /// If `$fieldty` is `(default_value, $default)`, then `$field` will be set to `$default` if not present.
+/// If `$fieldty` is `(default_value_vec, $default)`, then `$field` is a [`Vec`] which will be set to `$default`
+///    if not present. Elements are serialized individually without a count prefix (like `required_vec`).
+///    The TLV is always written, even if the vec is empty (matching `default_value` behavior).
 /// If `$fieldty` is `(static_value, $static)`, then `$field` will be set to `$static`.
 /// If `$fieldty` is `option`, then `$field` is optional field.
 /// If `$fieldty` is `upgradable_option`, then `$field` is optional and read via [`MaybeReadable`].
@@ -1019,7 +1050,7 @@ macro_rules! _decode_and_build {
 ///    `Some`. When reading, an optional field of type `$ty` is read, and after all TLV fields are
 ///    read, the `$read` closure is called with the `Option<&$ty>` value. The `$read` closure should
 ///    return a `Result<(), DecodeError>`. Legacy field values can be used in later
-///    `default_value` or `static_value` fields by referring to the value by name.
+///    `default_value`, `default_value_vec`, or `static_value` fields by referring to the value by name.
 /// If `$fieldty` is `(custom, $ty, $read, $write)` then, when writing, the same behavior as
 ///    `legacy`, above is used. When reading, if a TLV is present, it is read as `$ty` and the
 ///    `$read` method is called with `Some(decoded_$ty_object)`. If no TLV is present, the field
@@ -1954,6 +1985,59 @@ mod tests {
 		let encoded = <Vec<u8>>::from_hex("0300012a").unwrap();
 		let read = <ExpandedField as Readable>::read(&mut &encoded[..]).unwrap();
 		assert_eq!(read, ExpandedField { new_field: (42, 0) });
+	}
+
+	#[derive(Debug, PartialEq, Eq)]
+	struct DefaultValueVecStruct {
+		items: Vec<u32>,
+	}
+	impl_writeable_tlv_based!(DefaultValueVecStruct, {
+		(1, items, (default_value_vec, vec![4, 5, 6])),
+	});
+
+	#[test]
+	fn test_default_value_vec() {
+		// Non-empty vec round-trips correctly.
+		let instance = DefaultValueVecStruct { items: vec![1, 2, 3] };
+		let encoded = instance.encode();
+		let decoded: DefaultValueVecStruct = Readable::read(&mut &encoded[..]).unwrap();
+		assert_eq!(decoded, instance);
+
+		// Empty TLV stream falls back to the default.
+		let empty_encoded = <Vec<u8>>::from_hex("00").unwrap(); // zero-length TLV stream
+		let decoded: DefaultValueVecStruct = Readable::read(&mut &empty_encoded[..]).unwrap();
+		assert_eq!(decoded, DefaultValueVecStruct { items: vec![4, 5, 6] });
+
+		// Empty vec round-trips to empty vec (TLV is always written).
+		let empty_vec = DefaultValueVecStruct { items: vec![] };
+		let encoded = empty_vec.encode();
+		let decoded: DefaultValueVecStruct = Readable::read(&mut &encoded[..]).unwrap();
+		assert_eq!(decoded, DefaultValueVecStruct { items: vec![] });
+	}
+
+	#[derive(Debug, PartialEq, Eq)]
+	struct LegacyToVecStruct {
+		new_items: Vec<u32>,
+	}
+	impl_writeable_tlv_based!(LegacyToVecStruct, {
+		(0, old_item, (legacy, u32, |_| Ok(()),
+			|us: &LegacyToVecStruct| us.new_items.first().copied())),
+		(1, new_items, (default_value_vec,
+			old_item.map(|v| vec![v]).unwrap_or_default())),
+	});
+
+	#[test]
+	fn test_default_value_vec_with_legacy_fallback() {
+		// New format: round-trips via the new TLV.
+		let instance = LegacyToVecStruct { new_items: vec![10, 20, 30] };
+		let encoded = instance.encode();
+		let decoded: LegacyToVecStruct = Readable::read(&mut &encoded[..]).unwrap();
+		assert_eq!(decoded, instance);
+
+		// Old format: only the legacy type-0 field is present, falls back via default expression.
+		let old_encoded = <Vec<u8>>::from_hex("0600040000002a").unwrap(); // TLV len 6, type 0, len 4, value 42u32
+		let decoded: LegacyToVecStruct = Readable::read(&mut &old_encoded[..]).unwrap();
+		assert_eq!(decoded, LegacyToVecStruct { new_items: vec![42] });
 	}
 
 	#[test]
