@@ -102,7 +102,7 @@ impl VssStore {
 			.thread_name_fn(|| {
 				static ATOMIC_ID: AtomicUsize = AtomicUsize::new(0);
 				let id = ATOMIC_ID.fetch_add(1, Ordering::SeqCst);
-				format!("ldk-node-vss-runtime-{}", id)
+				format!("ldk-vss-runtime-{}", id)
 			})
 			.worker_threads(INTERNAL_RUNTIME_WORKERS)
 			.max_blocking_threads(INTERNAL_RUNTIME_WORKERS)
