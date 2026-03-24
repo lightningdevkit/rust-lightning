@@ -5162,7 +5162,10 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			));
 		}
 
-		let (local_stats, _local_htlcs) = self
+		// Here we check two things 1) that our local commitment still has at least 1 output
+		// (particularly relevant in 0-reserve channels), and 2) that the counterparty can
+		// still afford the fee on our commitment if they are the funder.
+		let (_local_stats, _local_htlcs) = self
 			.get_next_local_commitment_stats(
 				funding,
 				Some(HTLCAmountDirection { outbound: false, amount_msat: msg.amount_msat }),
@@ -5174,16 +5177,6 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			.map_err(|()| {
 				ChannelError::close(String::from("Balance exhausted on local commitment"))
 			})?;
-
-		// Check that they won't violate our local required channel reserve by adding this HTLC.
-		if funding.is_outbound()
-			&& local_stats.commitment_stats.holder_balance_msat
-				< funding.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000
-		{
-			return Err(ChannelError::close(
-				"Cannot accept HTLC that would put our balance under counterparty-announced channel reserve value".to_owned()
-			));
-		}
 
 		Ok(())
 	}
@@ -5717,6 +5710,11 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 				funding.counterparty_prev_commitment_tx_balance.lock().unwrap()
 			};
 
+			// This assumes that once our balance rises above the counterparty selected
+			// reserve, it never drops below again. But we allow our counterparty to
+			// push us under our reserve when we are the funder and they add a HTLC, as
+			// this is really their problem. Hence, we only run this assert in tests.
+			#[cfg(test)]
 			if _stats.local_balance_before_fee_msat / 1000 < funding.counterparty_selected_channel_reserve_satoshis.unwrap() {
 				// If the local balance is below the reserve on this new commitment, it MUST be
 				// greater than or equal to the one on the previous commitment.
