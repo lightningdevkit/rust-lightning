@@ -1121,10 +1121,6 @@ pub fn get_htlc_update_msgs(node: &Node, recipient: &PublicKey) -> msgs::Commitm
 
 /// Fetches the first `msg_event` to the passed `node_id` in the passed `msg_events` vec.
 /// Returns the `msg_event`.
-///
-/// Note that even though `BroadcastChannelAnnouncement` and `BroadcastChannelUpdate`
-/// `msg_events` are stored under specific peers, this function does not fetch such `msg_events` as
-/// such messages are intended to all peers.
 pub fn remove_first_msg_event_to_node(
 	msg_node_id: &PublicKey, msg_events: &mut Vec<MessageSendEvent>,
 ) -> MessageSendEvent {
