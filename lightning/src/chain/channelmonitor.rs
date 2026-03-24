@@ -642,6 +642,21 @@ impl_writeable_tlv_based_enum_upgradable!(OnchainEvent,
 	},
 );
 
+/// Information about an HTLC forward that was claimed via preimage on the outbound edge, included
+/// in [`ChannelMonitorUpdateStep`] so the monitor can generate events with the full claim context.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct OutboundHTLCClaim {
+	pub htlc_id: SentHTLCId,
+	pub preimage: PaymentPreimage,
+	pub skimmed_fee_msat: Option<u64>,
+}
+
+impl_writeable_tlv_based!(OutboundHTLCClaim, {
+	(1, htlc_id, required),
+	(3, preimage, required),
+	(5, skimmed_fee_msat, option),
+});
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ChannelMonitorUpdateStep {
 	LatestHolderCommitmentTXInfo {
@@ -653,13 +668,13 @@ pub(crate) enum ChannelMonitorUpdateStep {
 		/// `htlc_outputs` will only include dust HTLCs. We still have to track the
 		/// `Option<Signature>` for backwards compatibility.
 		htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Signature>, Option<HTLCSource>)>,
-		claimed_htlcs: Vec<(SentHTLCId, PaymentPreimage)>,
+		claimed_htlcs: Vec<OutboundHTLCClaim>,
 		nondust_htlc_sources: Vec<HTLCSource>,
 	},
 	LatestHolderCommitment {
 		commitment_txs: Vec<HolderCommitmentTransaction>,
 		htlc_data: CommitmentHTLCData,
-		claimed_htlcs: Vec<(SentHTLCId, PaymentPreimage)>,
+		claimed_htlcs: Vec<OutboundHTLCClaim>,
 	},
 	LatestCounterpartyCommitmentTXInfo {
 		commitment_txid: Txid,
@@ -740,9 +755,29 @@ impl ChannelMonitorUpdateStep {
 impl_writeable_tlv_based_enum_upgradable!(ChannelMonitorUpdateStep,
 	(0, LatestHolderCommitmentTXInfo) => {
 		(0, commitment_tx, required),
-		(1, claimed_htlcs, optional_vec),
+		(1, _legacy_claimed_htlcs, (legacy, Vec<(SentHTLCId, PaymentPreimage)>,
+			|v: Option<&Vec<(SentHTLCId, PaymentPreimage)>>| {
+				// Only populate from legacy if the new-format tag 5 wasn't read.
+				if let Some(legacy) = v {
+					if claimed_htlcs.as_ref().map_or(true, |v| v.is_empty()) {
+						claimed_htlcs = Some(legacy.iter().map(|(htlc_id, preimage)| OutboundHTLCClaim {
+							htlc_id: *htlc_id, preimage: *preimage, skimmed_fee_msat: None,
+						}).collect());
+					}
+				}
+				Ok(())
+			},
+			|us: &ChannelMonitorUpdateStep| match us {
+				ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo { claimed_htlcs, .. } => {
+					let claims: Vec<(SentHTLCId, PaymentPreimage)> =
+						claimed_htlcs.iter().map(|claim| (claim.htlc_id, claim.preimage)).collect();
+					Some(claims)
+				}
+				_ => None
+			})),
 		(2, htlc_outputs, required_vec),
 		(4, nondust_htlc_sources, optional_vec),
+		(5, claimed_htlcs, optional_vec), // Added in 0.4
 	},
 	(1, LatestCounterpartyCommitmentTXInfo) => {
 		(0, commitment_txid, required),
@@ -777,7 +812,27 @@ impl_writeable_tlv_based_enum_upgradable!(ChannelMonitorUpdateStep,
 	(8, LatestHolderCommitment) => {
 		(1, commitment_txs, required_vec),
 		(3, htlc_data, required),
-		(5, claimed_htlcs, required_vec),
+		(5, _legacy_claimed_htlcs, (legacy, Vec<(SentHTLCId, PaymentPreimage)>,
+			|v: Option<&Vec<(SentHTLCId, PaymentPreimage)>>| {
+				// Only populate from legacy if the new-format tag 7 wasn't read.
+				if let Some(legacy) = v {
+					if claimed_htlcs.as_ref().map_or(true, |v| v.is_empty()) {
+						claimed_htlcs = Some(legacy.iter().map(|(htlc_id, preimage)| OutboundHTLCClaim {
+							htlc_id: *htlc_id, preimage: *preimage, skimmed_fee_msat: None,
+						}).collect());
+					}
+				}
+				Ok(())
+			},
+			|us: &ChannelMonitorUpdateStep| match us {
+				ChannelMonitorUpdateStep::LatestHolderCommitment { claimed_htlcs, .. } => {
+					let claims: Vec<(SentHTLCId, PaymentPreimage)> =
+						claimed_htlcs.iter().map(|claim| (claim.htlc_id, claim.preimage)).collect();
+					Some(claims)
+				}
+				_ => None
+			})),
+		(7, claimed_htlcs, optional_vec), // Added in 0.4
 	},
 	(10, RenegotiatedFunding) => {
 		(1, channel_parameters, (required: ReadableArgs, None)),
@@ -3691,7 +3746,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	fn provide_latest_holder_commitment_tx(
 		&mut self, holder_commitment_tx: HolderCommitmentTransaction,
 		htlc_outputs: &[(HTLCOutputInCommitment, Option<Signature>, Option<HTLCSource>)],
-		claimed_htlcs: &[(SentHTLCId, PaymentPreimage)], mut nondust_htlc_sources: Vec<HTLCSource>,
+		claimed_htlcs: &[OutboundHTLCClaim], mut nondust_htlc_sources: Vec<HTLCSource>,
 	) -> Result<(), &'static str> {
 		let dust_htlcs = if htlc_outputs.iter().any(|(_, s, _)| s.is_some()) {
 			// If we have non-dust HTLCs in htlc_outputs, ensure they match the HTLCs in the
@@ -3812,7 +3867,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 	fn update_holder_commitment_data(
 		&mut self, commitment_txs: Vec<HolderCommitmentTransaction>,
-		mut htlc_data: CommitmentHTLCData, claimed_htlcs: &[(SentHTLCId, PaymentPreimage)],
+		mut htlc_data: CommitmentHTLCData, claimed_htlcs: &[OutboundHTLCClaim],
 	) -> Result<(), &'static str> {
 		self.verify_matching_commitment_transactions(
 			commitment_txs.iter().map(|holder_commitment_tx| holder_commitment_tx.deref()),
@@ -3832,7 +3887,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		mem::swap(&mut htlc_data, &mut self.current_holder_htlc_data);
 		self.prev_holder_htlc_data = Some(htlc_data);
 
-		for (claimed_htlc_id, claimed_preimage) in claimed_htlcs {
+		for claim in claimed_htlcs {
 			let htlc_opt = self
 				.funding
 				.counterparty_claimable_outpoints
@@ -3841,7 +3896,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				.iter()
 				.find_map(|(htlc, source_opt)| {
 					if let Some(source) = source_opt {
-						if SentHTLCId::from_source(source) == *claimed_htlc_id {
+						if SentHTLCId::from_source(source) == claim.htlc_id {
 							return Some((htlc, source));
 						}
 					}
@@ -3855,14 +3910,14 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					// startup until it is explicitly acked.
 					self.push_monitor_event(MonitorEvent::HTLCEvent(HTLCUpdate {
 						payment_hash: htlc.payment_hash,
-						payment_preimage: Some(*claimed_preimage),
+						payment_preimage: Some(claim.preimage),
 						source: *source.clone(),
 						htlc_value_msat: Some(htlc.amount_msat),
 						user_channel_id: self.user_channel_id,
 					}));
 				}
 			}
-			self.counterparty_fulfilled_htlcs.insert(*claimed_htlc_id, *claimed_preimage);
+			self.counterparty_fulfilled_htlcs.insert(claim.htlc_id, claim.preimage);
 		}
 
 		Ok(())

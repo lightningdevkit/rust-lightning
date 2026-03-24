@@ -1113,6 +1113,7 @@ impl_writeable_for_vec_with_element_length_prefix!(&crate::ln::msgs::UpdateAddHT
 impl_for_vec!(u32);
 impl_for_vec!(crate::events::HTLCLocator);
 impl_for_vec!(crate::ln::types::ChannelId);
+impl_for_vec!(crate::chain::channelmonitor::OutboundHTLCClaim);
 
 impl Writeable for Vec<Witness> {
 	#[inline]

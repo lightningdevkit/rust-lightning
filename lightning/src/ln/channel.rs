@@ -33,7 +33,7 @@ use crate::chain::chaininterface::{
 use crate::chain::chainmonitor::MonitorEventSource;
 use crate::chain::channelmonitor::{
 	ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, CommitmentHTLCData,
-	LATENCY_GRACE_PERIOD_BLOCKS,
+	OutboundHTLCClaim, LATENCY_GRACE_PERIOD_BLOCKS,
 };
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::chain::BestBlock;
@@ -8632,7 +8632,11 @@ where
 					// claims, but such an upgrade is unlikely and including claimed HTLCs here
 					// fixes a bug which the user was exposed to on 0.0.104 when they started the
 					// claim anyway.
-					claimed_htlcs.push((SentHTLCId::from_source(&htlc.source), preimage));
+					claimed_htlcs.push(OutboundHTLCClaim {
+						htlc_id: SentHTLCId::from_source(&htlc.source),
+						preimage,
+						skimmed_fee_msat: htlc.skimmed_fee_msat,
+					});
 				}
 				htlc.state = OutboundHTLCState::AwaitingRemoteRevokeToRemove(reason);
 				need_commitment = true;
