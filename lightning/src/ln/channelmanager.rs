@@ -13575,7 +13575,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								counterparty_node_id,
 								funding_outpoint,
 								channel_id,
-								None,
+								htlc_update.user_channel_id,
 								None,
 								None,
 							);

@@ -261,12 +261,14 @@ pub struct HTLCUpdate {
 	pub(crate) payment_preimage: Option<PaymentPreimage>,
 	pub(crate) source: HTLCSource,
 	pub(crate) htlc_value_satoshis: Option<u64>,
+	pub(crate) user_channel_id: Option<u128>,
 }
 impl_writeable_tlv_based!(HTLCUpdate, {
 	(0, payment_hash, required),
 	(1, htlc_value_satoshis, option),
 	(2, source, required),
 	(4, payment_preimage, option),
+	(5, user_channel_id, option),
 });
 
 /// If an output goes from claimable only by us to claimable by us or our counterparty within this
@@ -4571,6 +4573,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						payment_preimage: None,
 						source: source.clone(),
 						htlc_value_satoshis,
+						user_channel_id: self.user_channel_id,
 					}),
 					&mut self.next_monitor_event_id,
 				);
@@ -5898,6 +5901,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						payment_preimage: None,
 						source,
 						htlc_value_satoshis,
+						user_channel_id: self.user_channel_id,
 					}));
 					self.htlcs_resolved_on_chain.push(IrrevocablyResolvedHTLC {
 						commitment_tx_output_idx,
@@ -6008,6 +6012,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						payment_preimage: None,
 						payment_hash: htlc.payment_hash,
 						htlc_value_satoshis: Some(htlc.amount_msat / 1000),
+						user_channel_id: self.user_channel_id,
 					}), &mut self.next_monitor_event_id);
 				}
 			}
@@ -6425,6 +6430,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 							payment_preimage: Some(payment_preimage),
 							payment_hash,
 							htlc_value_satoshis: Some(amount_msat / 1000),
+							user_channel_id: self.user_channel_id,
 						}), &mut self.next_monitor_event_id);
 					}
 				} else if offered_preimage_claim {
@@ -6449,6 +6455,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 							payment_preimage: Some(payment_preimage),
 							payment_hash,
 							htlc_value_satoshis: Some(amount_msat / 1000),
+							user_channel_id: self.user_channel_id,
 						}), &mut self.next_monitor_event_id);
 					}
 				} else {
