@@ -184,8 +184,8 @@ jobs:
           cargo doc --release
           cargo doc --no-default-features --release
         env:
-          RUSTFLAGS: '--cfg=taproot'
-          RUSTDOCFLAGS: '--cfg=taproot'
+          RUSTFLAGS: "--cfg=taproot"
+          RUSTDOCFLAGS: "--cfg=taproot"
 
   check_docs:
     runs-on: self-hosted
@@ -308,7 +308,24 @@ jobs:
           TOR_PROXY="127.0.0.1:9050" RUSTFLAGS="--cfg=tor" cargo test --verbose --color always -p lightning-net-tokio
 
   notify-failure:
-    needs: [build-workspace, build-features, build-bindings, build-nostd, build-cfg-flags, build-sync, fuzz, linting, rustfmt, check_release, check_docs, benchmark, ext-test, tor-connect, coverage]
+    needs:
+      [
+        build-workspace,
+        build-features,
+        build-bindings,
+        build-nostd,
+        build-cfg-flags,
+        build-sync,
+        fuzz,
+        linting,
+        rustfmt,
+        check_release,
+        check_docs,
+        benchmark,
+        ext-test,
+        tor-connect,
+        coverage,
+      ]
     if: failure() && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
