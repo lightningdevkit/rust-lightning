@@ -870,8 +870,7 @@ enum ChanType {
 }
 
 #[inline]
-pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], underlying_out: Out) {
-	let out = SearchingOutput::new(underlying_out);
+pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 	let broadcast_a = Arc::new(TestBroadcaster { txn_broadcasted: RefCell::new(Vec::new()) });
 	let broadcast_b = Arc::new(TestBroadcaster { txn_broadcasted: RefCell::new(Vec::new()) });
 	let broadcast_c = Arc::new(TestBroadcaster { txn_broadcasted: RefCell::new(Vec::new()) });
@@ -1859,11 +1858,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], underlying_out:
 							// Can be generated as a result of calling `timer_tick_occurred` enough
 							// times while peers are disconnected
 						},
-						_ => if out.may_fail.load(atomic::Ordering::Acquire) {
-							return;
-						} else {
-							panic!("Unhandled message event {:?}", event)
-						},
+						_ => panic!("Unhandled message event {:?}", event),
 					}
 					if $limit_events != ProcessMessages::AllMessages {
 						break;
@@ -1903,13 +1898,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], underlying_out:
 							MessageSendEvent::HandleError { ref action, .. } => {
 								assert_action_timeout_awaiting_response(action);
 							},
-							_ => {
-								if out.may_fail.load(atomic::Ordering::Acquire) {
-									return;
-								} else {
-									panic!("Unhandled message event")
-								}
-							},
+							_ => panic!("Unhandled message event"),
 						}
 					}
 					push_excess_b_events!(
@@ -1931,13 +1920,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], underlying_out:
 							MessageSendEvent::HandleError { ref action, .. } => {
 								assert_action_timeout_awaiting_response(action);
 							},
-							_ => {
-								if out.may_fail.load(atomic::Ordering::Acquire) {
-									return;
-								} else {
-									panic!("Unhandled message event")
-								}
-							},
+							_ => panic!("Unhandled message event"),
 						}
 					}
 					push_excess_b_events!(
@@ -2050,13 +2033,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], underlying_out:
 							..
 						} => {},
 
-						_ => {
-							if out.may_fail.load(atomic::Ordering::Acquire) {
-								return;
-							} else {
-								panic!("Unhandled event")
-							}
-						},
+						_ => panic!("Unhandled event"),
 					}
 				}
 				while nodes[$node].needs_pending_htlc_processing() {
@@ -2876,28 +2853,6 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], underlying_out:
 		if nodes[2].get_and_clear_needs_persistence() == true {
 			node_c_ser = nodes[2].encode();
 		}
-	}
-}
-
-/// We actually have different behavior based on if a certain log string has been seen, so we have
-/// to do a bit more tracking.
-#[derive(Clone)]
-struct SearchingOutput<O: Output> {
-	output: O,
-	may_fail: Arc<atomic::AtomicBool>,
-}
-impl<O: Output> Output for SearchingOutput<O> {
-	fn locked_write(&self, data: &[u8]) {
-		// We hit a design limitation of LN state machine (see CONCURRENT_INBOUND_HTLC_FEE_BUFFER)
-		if std::str::from_utf8(data).unwrap().contains("Outbound update_fee HTLC buffer overflow - counterparty should force-close this channel") {
-			self.may_fail.store(true, atomic::Ordering::Release);
-		}
-		self.output.locked_write(data)
-	}
-}
-impl<O: Output> SearchingOutput<O> {
-	pub fn new(output: O) -> Self {
-		Self { output, may_fail: Arc::new(atomic::AtomicBool::new(false)) }
 	}
 }
 
