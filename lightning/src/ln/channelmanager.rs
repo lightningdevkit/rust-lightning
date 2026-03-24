@@ -18285,8 +18285,7 @@ impl Readable for AmountlessClaimablePaymentHTLCOnion {
 // This is an internal DTO used in the two-stage deserialization process.
 pub(super) struct ChannelManagerData<SP: SignerProvider> {
 	chain_hash: ChainHash,
-	best_block_height: u32,
-	best_block_hash: BlockHash,
+	best_block: BestBlock,
 	channels: Vec<FundedChannel<SP>>,
 	claimable_payments: HashMap<PaymentHash, ClaimablePayment>,
 	peer_init_features: Vec<(PublicKey, InitFeatures)>,
@@ -18303,7 +18302,6 @@ pub(super) struct ChannelManagerData<SP: SignerProvider> {
 	in_flight_monitor_updates: HashMap<(PublicKey, ChannelId), Vec<ChannelMonitorUpdate>>,
 	peer_storage_dir: Vec<(PublicKey, Vec<u8>)>,
 	async_receive_offer_cache: AsyncReceiveOfferCache,
-	best_block_previous_blocks: Option<[Option<BlockHash>; ANTI_REORG_DELAY as usize * 2]>,
 	// Marked `_legacy` because in versions > 0.2 we are taking steps to remove the requirement of
 	// regularly persisting the `ChannelManager` and instead rebuild the set of HTLC forwards from
 	// `Channel{Monitor}` data.
@@ -18609,8 +18607,11 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 
 		Ok(ChannelManagerData {
 			chain_hash,
-			best_block_height,
-			best_block_hash,
+			best_block: BestBlock {
+				block_hash: best_block_hash,
+				height: best_block_height,
+				previous_blocks: best_block_previous_blocks.unwrap_or([None; 12]),
+			},
 			channels,
 			forward_htlcs_legacy,
 			claimable_payments,
@@ -18632,7 +18633,6 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 			in_flight_monitor_updates: in_flight_monitor_updates.unwrap_or_default(),
 			peer_storage_dir: peer_storage_dir.unwrap_or_default(),
 			async_receive_offer_cache,
-			best_block_previous_blocks,
 			version,
 		})
 	}
@@ -18915,8 +18915,7 @@ impl<
 	) -> Result<(BlockHash, Self), DecodeError> {
 		let ChannelManagerData {
 			chain_hash,
-			best_block_height,
-			best_block_hash,
+			best_block,
 			channels,
 			mut forward_htlcs_legacy,
 			claimable_payments,
@@ -18935,7 +18934,6 @@ impl<
 			mut in_flight_monitor_updates,
 			peer_storage_dir,
 			async_receive_offer_cache,
-			best_block_previous_blocks,
 			version: _version,
 		} = data;
 
@@ -19602,7 +19600,7 @@ impl<
 								htlc.payment_hash,
 								session_priv_bytes,
 								&path,
-								best_block_height,
+								best_block.height,
 								&logger,
 							);
 						}
@@ -19923,7 +19921,7 @@ impl<
 						loop {
 							outbound_scid_alias = fake_scid::Namespace::OutboundAlias
 								.get_fake_scid(
-									best_block_height,
+									best_block.height,
 									&chain_hash,
 									fake_scid_rand_bytes.as_ref().unwrap(),
 									&args.entropy_source,
@@ -20123,11 +20121,6 @@ impl<
 					}
 				}
 			}
-		}
-
-		let mut best_block = BestBlock::new(best_block_hash, best_block_height);
-		if let Some(previous_blocks) = best_block_previous_blocks {
-			best_block.previous_blocks = previous_blocks;
 		}
 
 		let flow = OffersMessageFlow::new(
@@ -20541,7 +20534,7 @@ impl<
 		//TODO: Broadcast channel update for closed channels, but only after we've made a
 		//connection or two.
 
-		Ok((best_block_hash, channel_manager))
+		Ok((best_block.block_hash, channel_manager))
 	}
 }
 
