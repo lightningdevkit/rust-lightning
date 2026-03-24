@@ -598,7 +598,7 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger + MaybeSend + MaybeSync>
 		broadcast.clone(),
 		Arc::clone(&logger),
 		fee_est.clone(),
-		Arc::new(TestPersister { update_ret: Mutex::new(ChannelMonitorUpdateStatus::Completed) }),
+		Arc::new(TestPersister::new(ChannelMonitorUpdateStatus::Completed)),
 		Arc::clone(&keys_manager),
 		keys_manager.get_peer_storage_key(),
 		false,

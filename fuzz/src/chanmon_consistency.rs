@@ -244,16 +244,14 @@ struct LatestMonitorState {
 	/// which we haven't yet completed. We're allowed to reload with those as well, at least until
 	/// they're completed.
 	persisted_monitor_id: u64,
-	/// The latest serialized `ChannelMonitor` that we told LDK we persisted.
-	persisted_monitor: Vec<u8>,
-	/// A set of (monitor id, serialized `ChannelMonitor`)s which we're currently "persisting",
+	/// The latest `ChannelMonitor` that we told LDK we persisted, if any.
+	persisted_monitor: Option<channelmonitor::ChannelMonitor<TestChannelSigner>>,
+	/// A set of (monitor id, `ChannelMonitor`)s which we're currently "persisting",
 	/// from LDK's perspective.
-	pending_monitors: Vec<(u64, Vec<u8>)>,
+	pending_monitors: Vec<(u64, channelmonitor::ChannelMonitor<TestChannelSigner>)>,
 }
 
 struct TestChainMonitor {
-	pub logger: Arc<dyn Logger>,
-	pub keys: Arc<KeyProvider>,
 	pub persister: Arc<TestPersister>,
 	pub chain_monitor: Arc<
 		chainmonitor::ChainMonitor<
@@ -277,15 +275,13 @@ impl TestChainMonitor {
 			chain_monitor: Arc::new(chainmonitor::ChainMonitor::new(
 				None,
 				broadcaster,
-				logger.clone(),
+				logger,
 				feeest,
 				Arc::clone(&persister),
 				Arc::clone(&keys),
 				keys.get_peer_storage_key(),
 				false,
 			)),
-			logger,
-			keys,
 			persister,
 			latest_monitors: Mutex::new(new_hash_map()),
 		}
@@ -295,20 +291,19 @@ impl chain::Watch<TestChannelSigner> for TestChainMonitor {
 	fn watch_channel(
 		&self, channel_id: ChannelId, monitor: channelmonitor::ChannelMonitor<TestChannelSigner>,
 	) -> Result<chain::ChannelMonitorUpdateStatus, ()> {
-		let mut ser = VecWriter(Vec::new());
-		monitor.write(&mut ser).unwrap();
 		let monitor_id = monitor.get_latest_update_id();
 		let res = self.chain_monitor.watch_channel(channel_id, monitor);
+		let mon = self.persister.take_latest_monitor(&channel_id);
 		let state = match res {
 			Ok(chain::ChannelMonitorUpdateStatus::Completed) => LatestMonitorState {
 				persisted_monitor_id: monitor_id,
-				persisted_monitor: ser.0,
+				persisted_monitor: Some(mon),
 				pending_monitors: Vec::new(),
 			},
 			Ok(chain::ChannelMonitorUpdateStatus::InProgress) => LatestMonitorState {
 				persisted_monitor_id: monitor_id,
-				persisted_monitor: Vec::new(),
-				pending_monitors: vec![(monitor_id, ser.0)],
+				persisted_monitor: None,
+				pending_monitors: vec![(monitor_id, mon)],
 			},
 			Ok(chain::ChannelMonitorUpdateStatus::UnrecoverableError) => panic!(),
 			Err(()) => panic!(),
@@ -324,37 +319,15 @@ impl chain::Watch<TestChannelSigner> for TestChainMonitor {
 	) -> chain::ChannelMonitorUpdateStatus {
 		let mut map_lock = self.latest_monitors.lock().unwrap();
 		let map_entry = map_lock.get_mut(&channel_id).expect("Didn't have monitor on update call");
-		let latest_monitor_data = map_entry
-			.pending_monitors
-			.last()
-			.as_ref()
-			.map(|(_, data)| data)
-			.unwrap_or(&map_entry.persisted_monitor);
-		let deserialized_monitor =
-			<(BlockHash, channelmonitor::ChannelMonitor<TestChannelSigner>)>::read(
-				&mut &latest_monitor_data[..],
-				(&*self.keys, &*self.keys),
-			)
-			.unwrap()
-			.1;
-		deserialized_monitor
-			.update_monitor(
-				update,
-				&&TestBroadcaster { txn_broadcasted: RefCell::new(Vec::new()) },
-				&&FuzzEstimator { ret_val: atomic::AtomicU32::new(253) },
-				&self.logger,
-			)
-			.unwrap();
-		let mut ser = VecWriter(Vec::new());
-		deserialized_monitor.write(&mut ser).unwrap();
 		let res = self.chain_monitor.update_channel(channel_id, update);
+		let mon = self.persister.take_latest_monitor(&channel_id);
 		match res {
 			chain::ChannelMonitorUpdateStatus::Completed => {
 				map_entry.persisted_monitor_id = update.update_id;
-				map_entry.persisted_monitor = ser.0;
+				map_entry.persisted_monitor = Some(mon);
 			},
 			chain::ChannelMonitorUpdateStatus::InProgress => {
-				map_entry.pending_monitors.push((update.update_id, ser.0));
+				map_entry.pending_monitors.push((update.update_id, mon));
 			},
 			chain::ChannelMonitorUpdateStatus::UnrecoverableError => panic!(),
 		}
@@ -914,9 +887,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 				$broadcaster.clone(),
 				logger.clone(),
 				$fee_estimator.clone(),
-				Arc::new(TestPersister {
-					update_ret: Mutex::new(mon_style[$node_id as usize].borrow().clone()),
-				}),
+				Arc::new(TestPersister::new(mon_style[$node_id as usize].borrow().clone())),
 				Arc::clone(&keys_manager),
 			));
 
@@ -966,9 +937,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 			broadcaster.clone(),
 			logger.clone(),
 			Arc::clone(fee_estimator),
-			Arc::new(TestPersister {
-				update_ret: Mutex::new(ChannelMonitorUpdateStatus::Completed),
-			}),
+			Arc::new(TestPersister::new(ChannelMonitorUpdateStatus::Completed)),
 			Arc::clone(keys),
 		));
 
@@ -983,30 +952,35 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 		let mut monitors = new_hash_map();
 		let mut old_monitors = old_monitors.latest_monitors.lock().unwrap();
 		for (channel_id, mut prev_state) in old_monitors.drain() {
-			let (mon_id, serialized_mon) = if use_old_mons % 3 == 0 {
+			let old_mon =
+				prev_state.persisted_monitor.map(|m| (prev_state.persisted_monitor_id, m));
+			let (mon_id, mon) = if use_old_mons % 3 == 0 {
 				// Reload with the oldest `ChannelMonitor` (the one that we already told
 				// `ChannelManager` we finished persisting).
-				(prev_state.persisted_monitor_id, prev_state.persisted_monitor)
+				old_mon.expect("no persisted monitor to reload")
 			} else if use_old_mons % 3 == 1 {
 				// Reload with the second-oldest `ChannelMonitor`
-				let old_mon = (prev_state.persisted_monitor_id, prev_state.persisted_monitor);
-				prev_state.pending_monitors.drain(..).next().unwrap_or(old_mon)
+				prev_state.pending_monitors.drain(..).next().or(old_mon)
+					.expect("no monitor to reload")
 			} else {
 				// Reload with the newest `ChannelMonitor`
-				let old_mon = (prev_state.persisted_monitor_id, prev_state.persisted_monitor);
-				prev_state.pending_monitors.pop().unwrap_or(old_mon)
+				prev_state.pending_monitors.pop().or(old_mon)
+					.expect("no monitor to reload")
 			};
 			// Use a different value of `use_old_mons` if we have another monitor (only for node B)
 			// by shifting `use_old_mons` one in base-3.
 			use_old_mons /= 3;
-			let mon = <(BlockHash, ChannelMonitor<TestChannelSigner>)>::read(
-				&mut &serialized_mon[..],
+			// Serialize and deserialize the monitor to verify round-trip correctness.
+			let mut ser = VecWriter(Vec::new());
+			mon.write(&mut ser).unwrap();
+			let (_, deserialized_mon) = <(BlockHash, ChannelMonitor<TestChannelSigner>)>::read(
+				&mut &ser.0[..],
 				(&**keys, &**keys),
 			)
 			.expect("Failed to read monitor");
-			monitors.insert(channel_id, mon.1);
+			monitors.insert(channel_id, deserialized_mon);
 			// Update the latest `ChannelMonitor` state to match what we just told LDK.
-			prev_state.persisted_monitor = serialized_mon;
+			prev_state.persisted_monitor = Some(mon);
 			prev_state.persisted_monitor_id = mon_id;
 			// Wipe any `ChannelMonitor`s which we never told LDK we finished persisting,
 			// considering them discarded. LDK should replay these for us as they're stored in
@@ -1053,7 +1027,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 					$monitor.chain_monitor.channel_monitor_updated(*channel_id, id).unwrap();
 					if id >= state.persisted_monitor_id {
 						state.persisted_monitor_id = id;
-						state.persisted_monitor = data;
+						state.persisted_monitor = Some(data);
 					}
 				}
 			}
@@ -1981,10 +1955,11 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 
 		let complete_first = |v: &mut Vec<_>| if !v.is_empty() { Some(v.remove(0)) } else { None };
 		let complete_second = |v: &mut Vec<_>| if v.len() > 1 { Some(v.remove(1)) } else { None };
+		type PendingMonitors = Vec<(u64, channelmonitor::ChannelMonitor<TestChannelSigner>)>;
 		let complete_monitor_update =
 			|monitor: &Arc<TestChainMonitor>,
 			 chan_funding,
-			 compl_selector: &dyn Fn(&mut Vec<(u64, Vec<u8>)>) -> Option<(u64, Vec<u8>)>| {
+			 compl_selector: &dyn Fn(&mut PendingMonitors) -> Option<(u64, channelmonitor::ChannelMonitor<TestChannelSigner>)>| {
 				if let Some(state) = monitor.latest_monitors.lock().unwrap().get_mut(chan_funding) {
 					assert!(
 						state.pending_monitors.windows(2).all(|pair| pair[0].0 < pair[1].0),
@@ -1994,7 +1969,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 						monitor.chain_monitor.channel_monitor_updated(*chan_funding, id).unwrap();
 						if id > state.persisted_monitor_id {
 							state.persisted_monitor_id = id;
-							state.persisted_monitor = data;
+							state.persisted_monitor = Some(data);
 						}
 					}
 				}
@@ -2010,7 +1985,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 					monitor.chain_monitor.channel_monitor_updated(*chan_id, id).unwrap();
 					if id > state.persisted_monitor_id {
 						state.persisted_monitor_id = id;
-						state.persisted_monitor = data;
+						state.persisted_monitor = Some(data);
 					}
 				}
 			}
