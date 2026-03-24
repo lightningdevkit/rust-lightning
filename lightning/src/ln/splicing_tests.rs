@@ -6304,3 +6304,150 @@ fn test_splice_revalidation_at_quiescence() {
 
 	expect_splice_failed_events(&nodes[0], &channel_id, contribution);
 }
+
+#[test]
+fn test_splice_rbf_rejects_low_feerate_after_several_attempts() {
+	// After several RBF attempts, the counterparty's RBF feerate must be high enough to
+	// confirm (per the fee estimator). Early attempts at low feerates are accepted, but
+	// once the threshold is crossed and the fee estimator expects a higher feerate, the
+	// attempt is rejected.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+
+	// Round 0: Initial splice-in at floor feerate (253).
+	let funding_contribution = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+	let (_, new_funding_script) =
+		splice_channel(&nodes[0], &nodes[1], channel_id, funding_contribution);
+
+	// Bump the fee estimator on node 1 (the RBF receiver) early so the feerate check
+	// would reject once the threshold is crossed.
+	let high_feerate = 10_000;
+	*chanmon_cfgs[1].fee_estimator.sat_per_kw.lock().unwrap() = high_feerate;
+
+	// Rounds 1-10: RBF at minimum bump. Accepted (at or below threshold).
+	let mut prev_feerate = FEERATE_FLOOR_SATS_PER_KW as u64;
+	for _ in 0..10 {
+		let feerate = (prev_feerate * 25).div_ceil(24);
+		provide_utxo_reserves(&nodes, 2, added_value * 2);
+		let rbf_feerate = FeeRate::from_sat_per_kwu(feerate);
+		let contribution =
+			do_initiate_rbf_splice_in(&nodes[0], &nodes[1], channel_id, added_value, rbf_feerate);
+		complete_rbf_handshake(&nodes[0], &nodes[1]);
+		complete_interactive_funding_negotiation(
+			&nodes[0],
+			&nodes[1],
+			channel_id,
+			contribution,
+			new_funding_script.clone(),
+		);
+		let (_, splice_locked) = sign_interactive_funding_tx(&nodes[0], &nodes[1], false);
+		assert!(splice_locked.is_none());
+		expect_splice_pending_event(&nodes[0], &node_id_1);
+		expect_splice_pending_event(&nodes[1], &node_id_0);
+		prev_feerate = feerate;
+	}
+
+	// Round 11: RBF at minimum bump. Should be rejected because feerate < fee estimator.
+	let next_feerate = (prev_feerate * 25).div_ceil(24);
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+	let rbf_feerate = FeeRate::from_sat_per_kwu(next_feerate);
+	let _contribution =
+		do_initiate_rbf_splice_in(&nodes[0], &nodes[1], channel_id, added_value, rbf_feerate);
+	let stfu_0 = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+	nodes[1].node.handle_stfu(node_id_0, &stfu_0);
+	let stfu_1 = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
+	nodes[0].node.handle_stfu(node_id_1, &stfu_1);
+
+	// Node 0 sends tx_init_rbf. Node 1 rejects the low feerate after the threshold.
+	let tx_init_rbf = get_event_msg!(nodes[0], MessageSendEvent::SendTxInitRbf, node_id_1);
+	nodes[1].node.handle_tx_init_rbf(node_id_0, &tx_init_rbf);
+	get_event_msg!(nodes[1], MessageSendEvent::SendTxAbort, node_id_0);
+}
+
+#[test]
+fn test_splice_rbf_rejects_own_low_feerate_after_several_attempts() {
+	// Same as test_splice_rbf_rejects_low_feerate_after_several_attempts, but for our own
+	// initiated RBF. The spec requires: "MUST set a high enough feerate to ensure quick
+	// confirmation." After several attempts, funding_contributed should reject our contribution
+	// if the feerate is below the fee estimator's target.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+
+	// Round 0: Initial splice-in at floor feerate (253).
+	let funding_contribution = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+	let (_, new_funding_script) =
+		splice_channel(&nodes[0], &nodes[1], channel_id, funding_contribution);
+
+	// Bump node 0's fee estimator early so the feerate check would reject once the
+	// threshold is crossed.
+	let high_feerate = 10_000;
+	*chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap() = high_feerate;
+
+	// Rounds 1-10: RBF at minimum bump. Accepted (at or below threshold).
+	let mut prev_feerate = FEERATE_FLOOR_SATS_PER_KW as u64;
+	for _ in 0..10 {
+		let feerate = (prev_feerate * 25).div_ceil(24);
+		provide_utxo_reserves(&nodes, 2, added_value * 2);
+		let rbf_feerate = FeeRate::from_sat_per_kwu(feerate);
+		let contribution =
+			do_initiate_rbf_splice_in(&nodes[0], &nodes[1], channel_id, added_value, rbf_feerate);
+		complete_rbf_handshake(&nodes[0], &nodes[1]);
+		complete_interactive_funding_negotiation(
+			&nodes[0],
+			&nodes[1],
+			channel_id,
+			contribution,
+			new_funding_script.clone(),
+		);
+		let (_, splice_locked) = sign_interactive_funding_tx(&nodes[0], &nodes[1], false);
+		assert!(splice_locked.is_none());
+		expect_splice_pending_event(&nodes[0], &node_id_1);
+		expect_splice_pending_event(&nodes[1], &node_id_0);
+		prev_feerate = feerate;
+	}
+
+	// Round 11: Our own RBF at minimum bump. funding_contributed should reject it.
+	let next_feerate = (prev_feerate * 25).div_ceil(24);
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+	let rbf_feerate = FeeRate::from_sat_per_kwu(next_feerate);
+	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
+	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
+	let contribution =
+		funding_template.splice_in_sync(added_value, rbf_feerate, FeeRate::MAX, &wallet).unwrap();
+
+	let result = nodes[0].node.funding_contributed(&channel_id, &node_id_1, contribution, None);
+	assert!(result.is_err(), "Expected rejection for low feerate: {:?}", result);
+
+	// SpliceFailed is emitted. DiscardFunding is not emitted because all inputs/outputs
+	// are filtered out (same UTXOs reused for RBF, still committed to the prior splice tx).
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1, "{events:?}");
+	match &events[0] {
+		Event::SpliceFailed { channel_id: cid, .. } => assert_eq!(*cid, channel_id),
+		other => panic!("Expected SpliceFailed, got {:?}", other),
+	}
+}

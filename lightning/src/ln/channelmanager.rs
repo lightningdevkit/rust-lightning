@@ -6633,7 +6633,12 @@ impl<
 							locktime.unwrap_or_else(|| self.current_best_block().height),
 						);
 						let logger = WithChannelContext::from(&self.logger, chan.context(), None);
-						match chan.funding_contributed(contribution, locktime, &&logger) {
+						match chan.funding_contributed(
+							contribution,
+							locktime,
+							&self.fee_estimator,
+							&&logger,
+						) {
 							Ok(msg_opt) => {
 								if let Some(msg) = msg_opt {
 									peer_state.pending_msg_events.push(

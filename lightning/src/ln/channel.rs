@@ -3100,6 +3100,22 @@ impl PendingFunding {
 		}
 	}
 
+	/// After several RBF attempts, checks that the feerate is high enough to confirm. Returns
+	/// `true` if the feerate is sufficient or the threshold hasn't been reached.
+	///
+	/// The spec requires: "MUST set a high enough feerate to ensure quick confirmation."
+	fn is_rbf_feerate_sufficient<F: FeeEstimator>(
+		&self, feerate_sat_per_kw: u32, fee_estimator: &LowerBoundedFeeEstimator<F>,
+	) -> bool {
+		const MAX_LOW_FEERATE_RBF_ATTEMPTS: usize = 10;
+		if self.negotiated_candidates.len() <= MAX_LOW_FEERATE_RBF_ATTEMPTS {
+			return true;
+		}
+		let min_feerate =
+			fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::NonAnchorChannelFee);
+		feerate_sat_per_kw >= min_feerate
+	}
+
 	fn contributed_inputs(&self) -> impl Iterator<Item = bitcoin::OutPoint> + '_ {
 		self.contributions.iter().flat_map(|c| c.contributed_inputs())
 	}
@@ -12153,8 +12169,9 @@ where
 			.expect("feerate compatibility already checked")
 	}
 
-	pub fn funding_contributed<L: Logger>(
-		&mut self, contribution: FundingContribution, locktime: LockTime, logger: &L,
+	pub fn funding_contributed<F: FeeEstimator, L: Logger>(
+		&mut self, contribution: FundingContribution, locktime: LockTime,
+		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
 	) -> Result<Option<msgs::Stfu>, QuiescentError> {
 		debug_assert!(contribution.is_splice());
 
@@ -12227,6 +12244,23 @@ where
 			log_error!(logger, "Channel {} cannot be funded: {}", self.context.channel_id(), e);
 
 			return Err(QuiescentError::FailSplice(self.splice_funding_failed_for(contribution)));
+		}
+
+		if let Some(pending_splice) = self.pending_splice.as_ref() {
+			if !pending_splice.is_rbf_feerate_sufficient(
+				contribution.feerate().to_sat_per_kwu() as u32,
+				fee_estimator,
+			) {
+				log_error!(
+					logger,
+					"Channel {} RBF feerate {} below fee estimator minimum",
+					self.context.channel_id(),
+					contribution.feerate(),
+				);
+				return Err(QuiescentError::FailSplice(
+					self.splice_funding_failed_for(contribution),
+				));
+			}
 		}
 
 		// If a pending splice exists with negotiated candidates, attempt to adjust the
@@ -12679,6 +12713,10 @@ where
 			});
 		let new_feerate = msg.feerate_sat_per_1000_weight;
 		if (new_feerate as u64) * 24 < (prev_feerate as u64) * 25 {
+			return Err(ChannelError::Abort(AbortReason::InsufficientRbfFeerate));
+		}
+
+		if !pending_splice.is_rbf_feerate_sufficient(new_feerate, fee_estimator) {
 			return Err(ChannelError::Abort(AbortReason::InsufficientRbfFeerate));
 		}
 
