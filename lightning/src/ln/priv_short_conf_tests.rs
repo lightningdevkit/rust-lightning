@@ -255,7 +255,7 @@ fn do_test_1_conf_open(connect_style: ConnectStyle) {
 	assert_eq!(bs_announce_events.len(), 2);
 	let bs_announcement_sigs =
 		if let MessageSendEvent::SendAnnouncementSignatures { ref node_id, ref msg } =
-			bs_announce_events[1]
+			bs_announce_events[0]
 		{
 			assert_eq!(*node_id, node_a_id);
 			msg.clone()
@@ -264,7 +264,7 @@ fn do_test_1_conf_open(connect_style: ConnectStyle) {
 		};
 	let (bs_announcement, bs_update) =
 		if let MessageSendEvent::BroadcastChannelAnnouncement { ref msg, ref update_msg } =
-			bs_announce_events[0]
+			bs_announce_events[1]
 		{
 			(msg.clone(), update_msg.clone().unwrap())
 		} else {

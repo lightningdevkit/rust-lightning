@@ -13004,12 +13004,16 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						msg,
 						&self.config.read().unwrap(),
 					);
-					peer_state.pending_msg_events.push(MessageSendEvent::BroadcastChannelAnnouncement {
-						msg: try_channel_entry!(self, peer_state, res, chan_entry),
-						// Note that announcement_signatures fails if the channel cannot be announced,
-						// so get_channel_update_for_broadcast will never fail by the time we get here.
-						update_msg: Some(self.get_channel_update_for_broadcast(chan).unwrap().0),
-					});
+					let announcement_msg = try_channel_entry!(self, peer_state, res, chan_entry);
+					// Note that announcement_signatures fails if the channel cannot be announced,
+					// so get_channel_update_for_broadcast will never fail by the time we get here.
+					let update_msg = self.get_channel_update_for_broadcast(chan).unwrap().0;
+					self.pending_broadcast_messages.lock().unwrap().push(
+						MessageSendEvent::BroadcastChannelAnnouncement {
+							msg: announcement_msg,
+							update_msg: Some(update_msg),
+						},
+					);
 				} else {
 					return try_channel_entry!(self, peer_state, Err(ChannelError::close(
 						"Got an announcement_signatures message for an unfunded channel!".into())), chan_entry);
@@ -15485,11 +15489,14 @@ impl<
 							&MessageSendEvent::HandleError { .. } => false,
 							// Gossip
 							&MessageSendEvent::SendChannelAnnouncement { .. } => false,
-							&MessageSendEvent::BroadcastChannelAnnouncement { .. } => true,
-							// [`ChannelManager::pending_broadcast_events`] holds the [`BroadcastChannelUpdate`]
-							// This check here is to ensure exhaustivity.
+							// [`ChannelManager::pending_broadcast_messages`] holds broadcast events,
+							// not per-peer queues.
+							&MessageSendEvent::BroadcastChannelAnnouncement { .. } => {
+								debug_assert!(false, "BroadcastChannelAnnouncement should be in pending_broadcast_messages");
+								false
+							},
 							&MessageSendEvent::BroadcastChannelUpdate { .. } => {
-								debug_assert!(false, "This event shouldn't have been here");
+								debug_assert!(false, "BroadcastChannelUpdate should be in pending_broadcast_messages");
 								false
 							},
 							&MessageSendEvent::BroadcastNodeAnnouncement { .. } => true,
@@ -15687,10 +15694,6 @@ impl<
 	/// the chunks of `MessageSendEvent`s for different peers is random. I.e. if the array contains
 	/// `MessageSendEvent`s  for both `node_a` and `node_b`, the `MessageSendEvent`s for `node_a`
 	/// will randomly be placed first or last in the returned array.
-	///
-	/// Note that even though `BroadcastChannelAnnouncement` and `BroadcastChannelUpdate`
-	/// `MessageSendEvent`s are intended to be broadcasted to all peers, they will be placed among
-	/// the `MessageSendEvent`s to the specific peer they were generated under.
 	fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> {
 		let events = RefCell::new(Vec::new());
 		PersistenceNotifierGuard::optionally_notify(self, || {
@@ -16143,14 +16146,16 @@ impl<
 										if let Some(announcement) = funded_channel.get_signed_channel_announcement(
 											&self.node_signer, self.chain_hash, height, &self.config.read().unwrap(),
 										) {
-											pending_msg_events.push(MessageSendEvent::BroadcastChannelAnnouncement {
-												msg: announcement,
-												// Note that get_signed_channel_announcement fails
-												// if the channel cannot be announced, so
-												// get_channel_update_for_broadcast will never fail
-												// by the time we get here.
-												update_msg: Some(self.get_channel_update_for_broadcast(funded_channel).unwrap().0),
-											});
+											self.pending_broadcast_messages.lock().unwrap().push(
+												MessageSendEvent::BroadcastChannelAnnouncement {
+													msg: announcement,
+													// Note that get_signed_channel_announcement
+													// fails if the channel cannot be announced, so
+													// get_channel_update_for_broadcast will never
+													// fail by the time we get here.
+													update_msg: Some(self.get_channel_update_for_broadcast(funded_channel).unwrap().0),
+												},
+											);
 										}
 									}
 								}
