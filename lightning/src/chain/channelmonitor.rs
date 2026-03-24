@@ -5406,12 +5406,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	) -> Vec<TransactionOutputs> {
 		let block_hash = header.block_hash();
 
-		if height == self.best_block.height + 1 {
-			self.best_block.advance(block_hash);
-			log_trace!(logger, "Connecting new block {} at height {}", block_hash, height);
-			self.block_confirmed(height, block_hash, vec![], vec![], vec![], &broadcaster, &fee_estimator, logger)
-		} else if height > self.best_block.height {
-			self.best_block = BestBlock::new(block_hash, height);
+		if height > self.best_block.height {
+			self.best_block.update_for_new_tip(block_hash, height);
 			log_trace!(logger, "Connecting new block {} at height {}", block_hash, height);
 			self.block_confirmed(height, block_hash, vec![], vec![], vec![], &broadcaster, &fee_estimator, logger)
 		} else if block_hash != self.best_block.block_hash {
@@ -5684,10 +5680,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			}
 		}
 
-		if height == self.best_block.height + 1 {
-			self.best_block.advance(block_hash);
-		} else if height > self.best_block.height {
-			self.best_block = BestBlock::new(block_hash, height);
+		if height > self.best_block.height {
+			self.best_block.update_for_new_tip(block_hash, height);
 		}
 
 		if should_broadcast_commitment {

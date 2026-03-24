@@ -15887,14 +15887,7 @@ impl<
 		let _persistence_guard =
 			PersistenceNotifierGuard::optionally_notify_skipping_background_events(
 				self, || -> NotifyOption { NotifyOption::DoPersist });
-		{
-			let mut best_block = self.best_block.write().unwrap();
-			if height == best_block.height + 1 {
-				best_block.advance(block_hash);
-			} else {
-				*best_block = BestBlock::new(block_hash, height);
-			}
-		}
+		self.best_block.write().unwrap().update_for_new_tip(block_hash, height);
 
 		let mut min_anchor_feerate = None;
 		let mut min_non_anchor_feerate = None;

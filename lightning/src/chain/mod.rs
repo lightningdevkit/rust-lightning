@@ -85,6 +85,17 @@ impl BestBlock {
 		self.height += 1;
 	}
 
+	/// Updates this object for a new best-block, either delegating to [`Self::advance`] if the new
+	/// block is simply one higher than the current tip and wiping [`Self::previous_blocks`] if a
+	/// few blocks have been skipped.
+	pub fn update_for_new_tip(&mut self, new_tip_hash: BlockHash, new_tip_height: u32) {
+		if new_tip_height == self.height + 1 {
+			self.advance(new_tip_hash);
+		} else {
+			*self = BestBlock::new(new_tip_hash, new_tip_height);
+		}
+	}
+
 	/// Returns the block hash at the given height, if available in our history.
 	pub fn get_hash_at_height(&self, height: u32) -> Option<BlockHash> {
 		if height > self.height {
