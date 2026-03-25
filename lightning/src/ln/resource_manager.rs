@@ -65,16 +65,23 @@ impl GeneralBucket {
 	) -> Result<Option<Vec<u16>>, ()> {
 		let slots_needed = u64::max(1, htlc_amount_msat.div_ceil(self.per_slot_msat));
 
-		let assigned;
-		let channel_slots: &[u16] = match self.channels_slots.get(&outgoing_scid) {
-			Some(slots) => slots.0.as_ref(),
-			None => {
-				assigned = self.assign_slots_for_channel(outgoing_scid, None, entropy_source)?;
-				&assigned
+		let channel_entry = match self.channels_slots.entry(outgoing_scid) {
+			Entry::Occupied(e) => e.into_mut(),
+			Entry::Vacant(entry) => {
+				let (slots, salt) = assign_slots_for_channel(
+					self.scid,
+					outgoing_scid,
+					None,
+					entropy_source,
+					self.per_channel_slots,
+					self.total_slots,
+				)?;
+				entry.insert((slots, salt))
 			},
 		};
 
-		let slots_to_use: Vec<u16> = channel_slots
+		let slots_to_use: Vec<u16> = channel_entry
+			.0
 			.iter()
 			.filter(|idx| match self.slots_occupied.get(**idx as usize) {
 				Some(is_occupied) => is_occupied.is_none(),
@@ -142,48 +149,6 @@ impl GeneralBucket {
 		Ok(())
 	}
 
-	fn assign_slots_for_channel<ES: EntropySource>(
-		&mut self, outgoing_scid: u64, salt: Option<[u8; 32]>, entropy_source: &ES,
-	) -> Result<Vec<u16>, ()> {
-		debug_assert_ne!(self.scid, outgoing_scid);
-
-		match self.channels_slots.entry(outgoing_scid) {
-			Entry::Occupied(e) => Ok(e.get().0.clone()),
-			Entry::Vacant(entry) => {
-				let mut channel_slots = Vec::with_capacity(self.per_channel_slots.into());
-				let mut slots_assigned_counter = 0;
-				let salt = salt.unwrap_or(entropy_source.get_secure_random_bytes());
-
-				let mut nonce = [0u8; 12];
-				nonce[..4].copy_from_slice(&self.scid.to_be_bytes()[..4]);
-				nonce[4..].copy_from_slice(&outgoing_scid.to_be_bytes());
-				let mut prng = ChaCha20::new(&salt, &nonce);
-				let mut buf = [0u8; 4];
-
-				let max_attempts = self.per_channel_slots * 2;
-				for _ in 0..max_attempts {
-					if slots_assigned_counter == self.per_channel_slots {
-						break;
-					}
-
-					prng.process_in_place(&mut buf);
-					let slot_idx: u16 = (u32::from_le_bytes(buf) % self.total_slots as u32) as u16;
-					if !channel_slots.contains(&slot_idx) {
-						channel_slots.push(slot_idx);
-						slots_assigned_counter += 1;
-					}
-				}
-
-				if slots_assigned_counter < self.per_channel_slots {
-					return Err(());
-				}
-
-				entry.insert((channel_slots.clone(), salt));
-				Ok(channel_slots)
-			},
-		}
-	}
-
 	fn remove_channel_slots(&mut self, outgoing_scid: u64) {
 		if let Some((slots, _)) = self.channels_slots.remove(&outgoing_scid) {
 			for slot_idx in slots {
@@ -193,6 +158,43 @@ impl GeneralBucket {
 			}
 		}
 	}
+}
+
+fn assign_slots_for_channel<ES: EntropySource>(
+	incoming_scid: u64, outgoing_scid: u64, salt: Option<[u8; 32]>, entropy_source: &ES,
+	per_channel_slots: u8, total_slots: u16,
+) -> Result<(Vec<u16>, [u8; 32]), ()> {
+	debug_assert_ne!(incoming_scid, outgoing_scid);
+
+	let mut channel_slots = Vec::with_capacity(per_channel_slots.into());
+	let mut slots_assigned_counter = 0;
+	let salt = salt.unwrap_or(entropy_source.get_secure_random_bytes());
+
+	let mut nonce = [0u8; 12];
+	nonce[..4].copy_from_slice(&incoming_scid.to_be_bytes()[..4]);
+	nonce[4..].copy_from_slice(&outgoing_scid.to_be_bytes());
+	let mut prng = ChaCha20::new(&salt, &nonce);
+	let mut buf = [0u8; 4];
+
+	let max_attempts = per_channel_slots * 10;
+	for _ in 0..max_attempts {
+		if slots_assigned_counter == per_channel_slots {
+			break;
+		}
+
+		prng.process_in_place(&mut buf);
+		let slot_idx: u16 = (u32::from_le_bytes(buf) % total_slots as u32) as u16;
+		if !channel_slots.contains(&slot_idx) {
+			channel_slots.push(slot_idx);
+			slots_assigned_counter += 1;
+		}
+	}
+
+	if slots_assigned_counter < per_channel_slots {
+		return Err(());
+	}
+
+	Ok((channel_slots, salt))
 }
 
 /// A weighted average that decays over a specified window.
@@ -291,7 +293,9 @@ mod tests {
 
 	use crate::{
 		crypto::chacha20::ChaCha20,
-		ln::resource_manager::{AggregatedWindowAverage, DecayingAverage, GeneralBucket},
+		ln::resource_manager::{
+			assign_slots_for_channel, AggregatedWindowAverage, DecayingAverage, GeneralBucket,
+		},
 		util::test_utils::TestKeysInterface,
 	};
 	use bitcoin::Network;
@@ -345,33 +349,51 @@ mod tests {
 		let scid = 21;
 		let entropy_source = TestKeysInterface::new(&[0; 32], Network::Testnet);
 		for case in cases {
-			let mut general_bucket =
-				GeneralBucket::new(0, case.general_slots, case.general_liquidity);
+			let general_bucket = GeneralBucket::new(0, case.general_slots, case.general_liquidity);
 
 			assert_eq!(general_bucket.per_channel_slots, case.expected_slots);
 			assert_eq!(general_bucket.per_slot_msat, case.expected_liquidity);
 			assert!(general_bucket.slots_occupied.iter().all(|slot| slot.is_none()));
 
-			general_bucket.assign_slots_for_channel(scid, None, &entropy_source).unwrap();
-			let slots = general_bucket.channels_slots.get(&scid).unwrap();
-			assert_eq!(slots.0.len(), case.expected_slots as usize);
+			let (slots, _) = assign_slots_for_channel(
+				general_bucket.scid,
+				scid,
+				None,
+				&entropy_source,
+				general_bucket.per_channel_slots,
+				general_bucket.total_slots,
+			)
+			.unwrap();
+			assert_eq!(slots.len(), case.expected_slots as usize);
 		}
 	}
 
 	#[test]
-	fn test_general_bucket_slots_from_salt() {
+	fn test_slots_from_salt() {
 		// Test deterministic slot generation from salt
 		let entropy_source = TestKeysInterface::new(&[0; 32], Network::Testnet);
-		let mut general_bucket = GeneralBucket::new(0, 100, 100_000_000);
-
+		let general_bucket = GeneralBucket::new(0, 100, 100_000_000);
 		let scid = 21;
-		general_bucket.assign_slots_for_channel(scid, None, &entropy_source).unwrap();
-		let (slots, salt) = general_bucket.channels_slots.get(&scid).unwrap().clone();
 
-		general_bucket.remove_channel_slots(scid);
-		assert!(general_bucket.channels_slots.get(&scid).is_none());
-		general_bucket.assign_slots_for_channel(scid, Some(salt), &entropy_source).unwrap();
-		let slots_from_salt: Vec<u16> = general_bucket.channels_slots.get(&scid).unwrap().0.clone();
+		let (slots, salt) = assign_slots_for_channel(
+			general_bucket.scid,
+			scid,
+			None,
+			&entropy_source,
+			general_bucket.per_channel_slots,
+			general_bucket.total_slots,
+		)
+		.unwrap();
+
+		let (slots_from_salt, _) = assign_slots_for_channel(
+			general_bucket.scid,
+			scid,
+			Some(salt),
+			&entropy_source,
+			general_bucket.per_channel_slots,
+			general_bucket.total_slots,
+		)
+		.unwrap();
 
 		// Test that slots initially assigned are equal to slots assigned from salt.
 		assert_eq!(slots, slots_from_salt);
