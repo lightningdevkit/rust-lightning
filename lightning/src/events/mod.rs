@@ -32,6 +32,7 @@ use crate::ln::types::ChannelId;
 use crate::offers::invoice::Bolt12Invoice;
 use crate::offers::invoice_request::InvoiceRequest;
 use crate::offers::static_invoice::StaticInvoice;
+use crate::onion_message::dns_resolution::DNSSECProof;
 use crate::onion_message::messenger::Responder;
 use crate::routing::gossip::NetworkUpdate;
 use crate::routing::router::{BlindedTail, Path, RouteHop, RouteParameters};
@@ -1101,6 +1102,12 @@ pub enum Event {
 		///
 		/// [`StaticInvoice`]: crate::offers::static_invoice::StaticInvoice
 		bolt12_invoice: Option<PaidBolt12Invoice>,
+		/// The DNSSEC proof for BIP 353 proof of payment, if this payment originated from
+		/// a Human Readable Name resolution. This proof, combined with the [`Bolt12Invoice`],
+		/// provides a complete chain of proof from the DNS name to the payment.
+		///
+		/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
+		dnssec_proof: Option<DNSSECProof>,
 	},
 	/// Indicates an outbound payment failed. Individual [`Event::PaymentPathFailed`] events
 	/// provide failure information for each path attempt in the payment, including retries.
@@ -1973,6 +1980,7 @@ impl Writeable for Event {
 				ref amount_msat,
 				ref fee_paid_msat,
 				ref bolt12_invoice,
+				ref dnssec_proof,
 			} => {
 				2u8.write(writer)?;
 				write_tlv_fields!(writer, {
@@ -1982,6 +1990,7 @@ impl Writeable for Event {
 					(5, fee_paid_msat, option),
 					(7, amount_msat, option),
 					(9, bolt12_invoice, option),
+					(11, dnssec_proof, option),
 				});
 			},
 			&Event::PaymentPathFailed {
@@ -2474,6 +2483,7 @@ impl MaybeReadable for Event {
 					let mut amount_msat = None;
 					let mut fee_paid_msat = None;
 					let mut bolt12_invoice = None;
+					let mut dnssec_proof: Option<DNSSECProof> = None;
 					read_tlv_fields!(reader, {
 						(0, payment_preimage, required),
 						(1, payment_hash, option),
@@ -2481,6 +2491,7 @@ impl MaybeReadable for Event {
 						(5, fee_paid_msat, option),
 						(7, amount_msat, option),
 						(9, bolt12_invoice, option),
+						(11, dnssec_proof, option),
 					});
 					if payment_hash.is_none() {
 						payment_hash = Some(PaymentHash(
@@ -2494,6 +2505,7 @@ impl MaybeReadable for Event {
 						amount_msat,
 						fee_paid_msat,
 						bolt12_invoice,
+						dnssec_proof,
 					}))
 				};
 				f()

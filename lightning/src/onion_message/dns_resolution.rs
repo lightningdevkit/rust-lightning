@@ -181,6 +181,23 @@ impl ReadableArgs<u64> for DNSResolverMessage {
 	}
 }
 
+impl Writeable for DNSSECProof {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		(self.name.as_str().len() as u8).write(w)?;
+		w.write_all(self.name.as_str().as_bytes())?;
+		self.proof.write(w)
+	}
+}
+
+impl Readable for DNSSECProof {
+	fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let s = Hostname::read(r)?;
+		let name = s.try_into().map_err(|_| DecodeError::InvalidValue)?;
+		let proof = Readable::read(r)?;
+		Ok(DNSSECProof { name, proof })
+	}
+}
+
 impl OnionMessageContents for DNSResolverMessage {
 	#[cfg(c_bindings)]
 	fn msg_type(&self) -> String {

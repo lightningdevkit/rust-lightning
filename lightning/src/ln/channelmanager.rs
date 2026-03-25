@@ -108,7 +108,7 @@ use crate::onion_message::async_payments::{
 	AsyncPaymentsMessage, AsyncPaymentsMessageHandler, HeldHtlcAvailable, OfferPaths,
 	OfferPathsRequest, ReleaseHeldHtlc, ServeStaticInvoice, StaticInvoicePersisted,
 };
-use crate::onion_message::dns_resolution::HumanReadableName;
+use crate::onion_message::dns_resolution::{DNSSECProof, HumanReadableName};
 use crate::onion_message::messenger::{
 	MessageRouter, MessageSendInstructions, Responder, ResponseInstruction,
 };
@@ -836,6 +836,10 @@ mod fuzzy_channelmanager {
 			/// we can provide proof-of-payment details in payment claim events even after a restart
 			/// with a stale ChannelManager state.
 			bolt12_invoice: Option<PaidBolt12Invoice>,
+			/// The DNSSEC proof for BIP 353 proof of payment, if this payment originated from
+			/// a Human Readable Name resolution. Stored here to ensure we can provide it in
+			/// payment claim events even after a restart with a stale ChannelManager state.
+			dnssec_proof: Option<DNSSECProof>,
 		},
 	}
 
@@ -909,6 +913,7 @@ impl core::hash::Hash for HTLCSource {
 				payment_id,
 				first_hop_htlc_msat,
 				bolt12_invoice,
+				dnssec_proof,
 			} => {
 				1u8.hash(hasher);
 				path.hash(hasher);
@@ -916,6 +921,7 @@ impl core::hash::Hash for HTLCSource {
 				payment_id.hash(hasher);
 				first_hop_htlc_msat.hash(hasher);
 				bolt12_invoice.hash(hasher);
+				dnssec_proof.hash(hasher);
 			},
 			HTLCSource::TrampolineForward {
 				previous_hop_data,
@@ -943,6 +949,7 @@ impl HTLCSource {
 			first_hop_htlc_msat: 0,
 			payment_id: PaymentId([2; 32]),
 			bolt12_invoice: None,
+			dnssec_proof: None,
 		}
 	}
 
@@ -5394,6 +5401,7 @@ impl<
 			keysend_preimage,
 			invoice_request: None,
 			bolt12_invoice: None,
+			dnssec_proof: None,
 			session_priv_bytes,
 			hold_htlc_at_next_hop: false,
 		})
@@ -5409,6 +5417,7 @@ impl<
 			keysend_preimage,
 			invoice_request,
 			bolt12_invoice,
+			dnssec_proof,
 			session_priv_bytes,
 			hold_htlc_at_next_hop,
 		} = args;
@@ -5485,6 +5494,7 @@ impl<
 							first_hop_htlc_msat: htlc_msat,
 							payment_id,
 							bolt12_invoice: bolt12_invoice.cloned(),
+							dnssec_proof: dnssec_proof.cloned(),
 						};
 						let send_res = chan.send_htlc_and_commit(
 							htlc_msat,
@@ -9614,7 +9624,8 @@ impl<
 		ComplFunc: FnOnce(
 			Option<u64>,
 			bool,
-		) -> (Option<MonitorUpdateCompletionAction>, Option<RAAMonitorUpdateBlockingAction>),
+		)
+			-> (Option<MonitorUpdateCompletionAction>, Option<RAAMonitorUpdateBlockingAction>),
 	>(
 		&self, prev_hop: HTLCPreviousHopData, payment_preimage: PaymentPreimage,
 		payment_info: Option<PaymentClaimDetails>, attribution_data: Option<AttributionData>,
@@ -9652,7 +9663,8 @@ impl<
 		ComplFunc: FnOnce(
 			Option<u64>,
 			bool,
-		) -> (Option<MonitorUpdateCompletionAction>, Option<RAAMonitorUpdateBlockingAction>),
+		)
+			-> (Option<MonitorUpdateCompletionAction>, Option<RAAMonitorUpdateBlockingAction>),
 	>(
 		&self, prev_hop: HTLCClaimSource, payment_preimage: PaymentPreimage,
 		payment_info: Option<PaymentClaimDetails>, attribution_data: Option<AttributionData>,
@@ -9952,7 +9964,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let htlc_id = SentHTLCId::from_source(&source);
 		match source {
 			HTLCSource::OutboundRoute {
-				session_priv, payment_id, path, bolt12_invoice, ..
+				session_priv,
+				payment_id,
+				path,
+				bolt12_invoice,
+				dnssec_proof,
+				..
 			} => {
 				debug_assert!(!startup_replay,
 					"We don't support claim_htlc claims during startup - monitors may not be available yet");
@@ -9984,6 +10001,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					payment_id,
 					payment_preimage,
 					bolt12_invoice,
+					dnssec_proof,
 					session_priv,
 					path,
 					from_onchain,
@@ -17386,6 +17404,7 @@ impl<
 
 	#[rustfmt::skip]
 	fn handle_dnssec_proof(&self, message: DNSSECProof, context: DNSResolverContext) {
+		let proof = message.clone();
 		let offer_opt = self.flow.hrn_resolver.handle_dnssec_proof_for_offer(message, context);
 		#[cfg_attr(not(feature = "_test_utils"), allow(unused_mut))]
 		if let Some((completed_requests, mut offer)) = offer_opt {
@@ -17404,7 +17423,12 @@ impl<
 									.received_offer(payment_id, Some(retryable_invoice_request))
 									.map_err(|_| Bolt12SemanticError::DuplicatePaymentId)
 						});
-					if offer_pay_res.is_err() {
+					if offer_pay_res.is_ok() {
+						// Store the DNSSEC proof for BIP 353 proof of payment. The proof is
+						// now attached to the AwaitingInvoice state and will be carried through
+						// to the PaymentSent event.
+						self.pending_outbound_payments.set_dnssec_proof(payment_id, proof.clone());
+					} else {
 						// The offer we tried to pay is the canonical current offer for the name we
 						// wanted to pay. If we can't pay it, there's no way to recover so fail the
 						// payment.
@@ -17767,6 +17791,7 @@ impl Readable for HTLCSource {
 				let mut payment_params: Option<PaymentParameters> = None;
 				let mut blinded_tail: Option<BlindedTail> = None;
 				let mut bolt12_invoice: Option<PaidBolt12Invoice> = None;
+				let mut dnssec_proof: Option<DNSSECProof> = None;
 				read_tlv_fields!(reader, {
 					(0, session_priv, required),
 					(1, payment_id, option),
@@ -17775,6 +17800,7 @@ impl Readable for HTLCSource {
 					(5, payment_params, (option: ReadableArgs, 0)),
 					(6, blinded_tail, option),
 					(7, bolt12_invoice, option),
+					(9, dnssec_proof, option),
 				});
 				if payment_id.is_none() {
 					// For backwards compat, if there was no payment_id written, use the session_priv bytes
@@ -17798,6 +17824,7 @@ impl Readable for HTLCSource {
 					path,
 					payment_id: payment_id.unwrap(),
 					bolt12_invoice,
+					dnssec_proof,
 				})
 			}
 			1 => Ok(HTLCSource::PreviousHopData(Readable::read(reader)?)),
@@ -17817,6 +17844,7 @@ impl Writeable for HTLCSource {
 				ref path,
 				payment_id,
 				bolt12_invoice,
+				dnssec_proof,
 			} => {
 				0u8.write(writer)?;
 				let payment_id_opt = Some(payment_id);
@@ -17829,6 +17857,7 @@ impl Writeable for HTLCSource {
 				   (5, None::<PaymentParameters>, option), // payment_params in LDK versions prior to 0.0.115
 				   (6, path.blinded_tail, option),
 				   (7, bolt12_invoice, option),
+				   (9, dnssec_proof, option),
 				});
 			},
 			HTLCSource::PreviousHopData(ref field) => {
@@ -19687,6 +19716,7 @@ impl<
 								session_priv,
 								path,
 								bolt12_invoice,
+								dnssec_proof,
 								..
 							} => {
 								if let Some(preimage) = preimage_opt {
@@ -19704,6 +19734,7 @@ impl<
 										payment_id,
 										preimage,
 										bolt12_invoice,
+										dnssec_proof,
 										session_priv,
 										path,
 										true,
