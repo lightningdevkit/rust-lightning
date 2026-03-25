@@ -99,6 +99,67 @@ impl_writeable_tlv_based_enum!(FundingInfo,
 	}
 );
 
+/// The reason a funding negotiation round failed.
+///
+/// Each negotiation attempt (initial or RBF) resolves to either success or failure. This enum
+/// indicates what caused the failure.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NegotiationFailureReason {
+	/// The reason was not available (e.g., from an older serialization).
+	Unknown,
+	/// The peer disconnected during negotiation. Retry by calling
+	/// [`ChannelManager::splice_channel`] after the peer reconnects.
+	///
+	/// [`ChannelManager::splice_channel`]: crate::ln::channelmanager::ChannelManager::splice_channel
+	PeerDisconnected,
+	/// The counterparty aborted the negotiation by sending `tx_abort`. Retry by calling
+	/// [`ChannelManager::splice_channel`], or wait for the counterparty to initiate.
+	///
+	/// [`ChannelManager::splice_channel`]: crate::ln::channelmanager::ChannelManager::splice_channel
+	CounterpartyAborted,
+	/// An error occurred while negotiating the interactive transaction (e.g., the counterparty
+	/// sent an invalid message). Retry by calling [`ChannelManager::splice_channel`].
+	///
+	/// [`ChannelManager::splice_channel`]: crate::ln::channelmanager::ChannelManager::splice_channel
+	NegotiationError,
+	/// The funding contribution was invalid (e.g., insufficient balance for the splice amount).
+	/// Adjust the contribution and retry via [`ChannelManager::splice_channel`].
+	///
+	/// [`ChannelManager::splice_channel`]: crate::ln::channelmanager::ChannelManager::splice_channel
+	ContributionInvalid,
+	/// The negotiation was locally abandoned via [`ChannelManager::abandon_splice`].
+	///
+	/// [`ChannelManager::abandon_splice`]: crate::ln::channelmanager::ChannelManager::abandon_splice
+	LocallyAbandoned,
+	/// The channel was not in a state to accept the funding contribution. Retry by calling
+	/// [`ChannelManager::splice_channel`] once [`ChannelDetails::is_usable`] returns `true`.
+	///
+	/// [`ChannelManager::splice_channel`]: crate::ln::channelmanager::ChannelManager::splice_channel
+	/// [`ChannelDetails::is_usable`]: crate::ln::channelmanager::ChannelDetails::is_usable
+	ChannelNotReady,
+	/// The channel is closing, so the negotiation cannot continue. See [`Event::ChannelClosed`]
+	/// for the closure reason.
+	ChannelClosing,
+	/// The contribution's feerate was too low. Retry with a higher feerate by calling
+	/// [`ChannelManager::splice_channel`] to obtain a new [`FundingTemplate`].
+	///
+	/// [`ChannelManager::splice_channel`]: crate::ln::channelmanager::ChannelManager::splice_channel
+	/// [`FundingTemplate`]: crate::ln::channelmanager::FundingTemplate
+	FeeRateTooLow,
+}
+
+impl_writeable_tlv_based_enum!(NegotiationFailureReason,
+	(0, Unknown) => {},
+	(2, PeerDisconnected) => {},
+	(4, CounterpartyAborted) => {},
+	(6, NegotiationError) => {},
+	(8, ContributionInvalid) => {},
+	(10, LocallyAbandoned) => {},
+	(12, ChannelNotReady) => {},
+	(14, ChannelClosing) => {},
+	(16, FeeRateTooLow) => {},
+);
+
 /// Some information provided on receipt of payment depends on whether the payment received is a
 /// spontaneous payment or a "conventional" lightning payment that's paying an invoice.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1586,6 +1647,8 @@ pub enum Event {
 		abandoned_funding_txo: Option<OutPoint>,
 		/// The features that this channel will operate with, if available.
 		channel_type: Option<ChannelTypeFeatures>,
+		/// The reason the splice negotiation failed.
+		reason: NegotiationFailureReason,
 	},
 	/// Used to indicate to the user that they can abandon the funding transaction and recycle the
 	/// inputs for another purpose.
@@ -2379,6 +2442,7 @@ impl Writeable for Event {
 				ref counterparty_node_id,
 				ref abandoned_funding_txo,
 				ref channel_type,
+				ref reason,
 			} => {
 				52u8.write(writer)?;
 				write_tlv_fields!(writer, {
@@ -2387,6 +2451,7 @@ impl Writeable for Event {
 					(5, user_channel_id, required),
 					(7, counterparty_node_id, required),
 					(9, abandoned_funding_txo, option),
+					(11, reason, required),
 				});
 			},
 			// Note that, going forward, all new events must only write data inside of
@@ -3031,6 +3096,7 @@ impl MaybeReadable for Event {
 						(5, user_channel_id, required),
 						(7, counterparty_node_id, required),
 						(9, abandoned_funding_txo, option),
+						(11, reason, (default_value, NegotiationFailureReason::Unknown)),
 					});
 
 					Ok(Some(Event::SpliceFailed {
@@ -3039,6 +3105,7 @@ impl MaybeReadable for Event {
 						counterparty_node_id: counterparty_node_id.0.unwrap(),
 						abandoned_funding_txo,
 						channel_type,
+						reason: reason.0.unwrap(),
 					}))
 				};
 				f()
