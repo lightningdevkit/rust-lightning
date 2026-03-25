@@ -253,10 +253,10 @@ impl<'a> PayerProofBuilder<'a> {
 		for r in TlvStream::new(&invoice_bytes).filter(|r| !SIGNATURE_TYPES.contains(&r.r#type)) {
 			bytes_without_sig.extend_from_slice(r.record_bytes);
 		}
-		let disclosed_fields = extract_disclosed_fields(
-			TlvStream::new(&invoice_bytes)
-				.filter(|r| self.included_types.contains(&r.r#type) && !SIGNATURE_TYPES.contains(&r.r#type)),
-		)?;
+		let disclosed_fields =
+			extract_disclosed_fields(TlvStream::new(&invoice_bytes).filter(|r| {
+				self.included_types.contains(&r.r#type) && !SIGNATURE_TYPES.contains(&r.r#type)
+			}))?;
 
 		let disclosure =
 			merkle::compute_selective_disclosure(&bytes_without_sig, &self.included_types)?;
@@ -347,9 +347,9 @@ impl UnsignedPayerProof {
 		// Preserve TLV ordering by emitting included invoice records below the
 		// payer-proof range first, then payer-proof TLVs (240..=250), then any
 		// disclosed experimental invoice records above the reserved range.
-		for record in TlvStream::new(&self.invoice_bytes).filter(|r| {
-			self.included_types.contains(&r.r#type) && r.r#type < TLV_SIGNATURE
-		}) {
+		for record in TlvStream::new(&self.invoice_bytes)
+			.filter(|r| self.included_types.contains(&r.r#type) && r.r#type < TLV_SIGNATURE)
+		{
 			bytes.extend_from_slice(record.record_bytes);
 		}
 
@@ -518,12 +518,14 @@ fn update_disclosed_fields(
 	match record.r#type {
 		OFFER_DESCRIPTION_TYPE => {
 			disclosed_fields.offer_description = Some(
-				String::from_utf8(record.value_bytes.to_vec()).map_err(|_| DecodeError::InvalidValue)?,
+				String::from_utf8(record.value_bytes.to_vec())
+					.map_err(|_| DecodeError::InvalidValue)?,
 			);
 		},
 		OFFER_ISSUER_TYPE => {
 			disclosed_fields.offer_issuer = Some(
-				String::from_utf8(record.value_bytes.to_vec()).map_err(|_| DecodeError::InvalidValue)?,
+				String::from_utf8(record.value_bytes.to_vec())
+					.map_err(|_| DecodeError::InvalidValue)?,
 			);
 		},
 		INVOICE_CREATED_AT_TYPE => {
@@ -757,18 +759,18 @@ impl TryFrom<Vec<u8>> for PayerProof {
 
 		Ok(PayerProof {
 			bytes,
-				contents: PayerProofContents {
-					payer_id,
-					payment_hash,
-					issuer_signing_pubkey,
-					preimage,
-					invoice_signature,
-					payer_signature,
-					payer_note,
-					disclosed_fields,
-				},
-				merkle_root,
-			})
+			contents: PayerProofContents {
+				payer_id,
+				payment_hash,
+				issuer_signing_pubkey,
+				preimage,
+				invoice_signature,
+				payer_signature,
+				payer_note,
+				disclosed_fields,
+			},
+			merkle_root,
+		})
 	}
 }
 
@@ -903,7 +905,8 @@ mod tests {
 			b"experimental-payer-proof-field",
 		);
 
-		let invoice_message = TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &invoice_bytes);
+		let invoice_message =
+			TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &invoice_bytes);
 		let invoice_signature =
 			secp_ctx.sign_schnorr_no_aux_rand(invoice_message.as_digest(), &issuer_keys);
 
@@ -960,7 +963,8 @@ mod tests {
 		write_tlv_record_bytes(&mut invoice_bytes, 1_000_000_001, b"first-omitted-experimental");
 		write_tlv_record_bytes(&mut invoice_bytes, 1_000_000_003, b"second-omitted-experimental");
 
-		let invoice_message = TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &invoice_bytes);
+		let invoice_message =
+			TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &invoice_bytes);
 		let invoice_signature =
 			secp_ctx.sign_schnorr_no_aux_rand(invoice_message.as_digest(), &issuer_keys);
 
@@ -1024,7 +1028,8 @@ mod tests {
 		);
 		write_tlv_record(&mut invoice_bytes, INVOICE_NODE_ID_TYPE, &issuer_signing_pubkey);
 
-		let invoice_message = TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &invoice_bytes);
+		let invoice_message =
+			TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &invoice_bytes);
 		let invoice_signature =
 			secp_ctx.sign_schnorr_no_aux_rand(invoice_message.as_digest(), &issuer_keys);
 
