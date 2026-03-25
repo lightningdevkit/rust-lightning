@@ -1645,6 +1645,6 @@ fn test_async_splice_initial_commit_sig() {
 		get_event_msg!(initiator, MessageSendEvent::SendTxSignatures, acceptor_node_id);
 	acceptor.node.handle_tx_signatures(initiator_node_id, &tx_signatures);
 
-	let _ = get_event!(initiator, Event::SplicePending);
-	let _ = get_event!(acceptor, Event::SplicePending);
+	let _ = get_event!(initiator, Event::SpliceNegotiated);
+	let _ = get_event!(acceptor, Event::SpliceNegotiated);
 }

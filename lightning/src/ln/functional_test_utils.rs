@@ -2384,7 +2384,7 @@ pub fn check_closed_events(node: &Node, expected_close_events: &[ExpectedCloseEv
 		discard_events_count
 	);
 	assert_eq!(
-		events.iter().filter(|e| matches!(e, Event::SpliceFailed { .. },)).count(),
+		events.iter().filter(|e| matches!(e, Event::SpliceNegotiationFailed { .. },)).count(),
 		splice_events_count
 	);
 }
@@ -3227,7 +3227,7 @@ pub fn expect_splice_pending_event<'a, 'b, 'c, 'd>(
 	let events = node.node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match &events[0] {
-		crate::events::Event::SplicePending { channel_id, counterparty_node_id, .. } => {
+		crate::events::Event::SpliceNegotiated { channel_id, counterparty_node_id, .. } => {
 			assert_eq!(*expected_counterparty_node_id, *counterparty_node_id);
 			*channel_id
 		},
@@ -3256,7 +3256,7 @@ pub fn expect_splice_failed_events<'a, 'b, 'c, 'd>(
 		_ => panic!("Unexpected event"),
 	}
 	match &events[1] {
-		Event::SpliceFailed { channel_id, reason, contribution, .. } => {
+		Event::SpliceNegotiationFailed { channel_id, reason, contribution, .. } => {
 			assert_eq!(*expected_channel_id, *channel_id);
 			assert_eq!(*reason, expected_reason);
 			assert_eq!(contribution.as_ref(), Some(&funding_contribution));

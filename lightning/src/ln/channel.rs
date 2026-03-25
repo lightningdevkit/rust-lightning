@@ -1171,7 +1171,7 @@ pub(super) struct InteractiveTxMsgError {
 	/// The underlying error.
 	pub(super) err: ChannelError,
 	/// If a splice was in progress when processing the message, this contains the splice funding
-	/// information for emitting a `SpliceFailed` event.
+	/// information for emitting a `SpliceNegotiationFailed` event.
 	pub(super) splice_funding_failed: Option<SpliceFundingFailed>,
 	/// Whether we were quiescent when we received the message, and are no longer due to aborting
 	/// the session.
@@ -1259,7 +1259,7 @@ pub(crate) struct ShutdownResult {
 	pub(crate) channel_funding_txo: Option<OutPoint>,
 	pub(crate) last_local_balance_msat: u64,
 	/// If a splice was in progress when the channel was shut down, this contains
-	/// the splice funding information for emitting a SpliceFailed event.
+	/// the splice funding information for emitting a SpliceNegotiationFailed event.
 	pub(crate) splice_funding_failed: Option<SpliceFundingFailed>,
 }
 
@@ -1267,7 +1267,7 @@ pub(crate) struct ShutdownResult {
 pub(crate) struct DisconnectResult {
 	pub(crate) is_resumable: bool,
 	/// If a splice was in progress when the channel was shut down, this contains
-	/// the splice funding information for emitting a SpliceFailed event.
+	/// the splice funding information for emitting a SpliceNegotiationFailed event.
 	pub(crate) splice_funding_failed: Option<SpliceFundingFailed>,
 }
 
@@ -12003,7 +12003,7 @@ where
 			//
 			// If the in-progress negotiation later fails (e.g., tx_abort), the derived
 			// min_rbf_feerate becomes stale, causing a slightly higher feerate than
-			// necessary. Call splice_channel again after receiving SpliceFailed to get a
+			// necessary. Call splice_channel again after receiving SpliceNegotiationFailed to get a
 			// fresh template without the stale RBF constraint.
 			let prev_feerate =
 				pending_splice.last_funding_feerate_sat_per_1000_weight.or_else(|| {

@@ -1936,7 +1936,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 								)
 								.unwrap();
 						},
-						events::Event::SplicePending { new_funding_txo, .. } => {
+						events::Event::SpliceNegotiated { new_funding_txo, .. } => {
 							let broadcaster = match $node {
 								0 => &broadcast_a,
 								1 => &broadcast_b,
@@ -1948,7 +1948,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 							assert_eq!(new_funding_txo.txid, splice_tx.compute_txid());
 							chain_state.confirm_tx(splice_tx);
 						},
-						events::Event::SpliceFailed { .. } => {},
+						events::Event::SpliceNegotiationFailed { .. } => {},
 						events::Event::DiscardFunding {
 							funding_info: events::FundingInfo::Contribution { .. },
 							..

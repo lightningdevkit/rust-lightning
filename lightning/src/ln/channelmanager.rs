@@ -4015,7 +4015,7 @@ impl<
 								None,
 							));
 							pending_events.push_back((
-								events::Event::SpliceFailed {
+								events::Event::SpliceNegotiationFailed {
 									channel_id: *chan_id,
 									counterparty_node_id: *counterparty_node_id,
 									user_channel_id: chan.context().get_user_id(),
@@ -4321,7 +4321,7 @@ impl<
 					None,
 				));
 				pending_events.push_back((
-					events::Event::SpliceFailed {
+					events::Event::SpliceNegotiationFailed {
 						channel_id: shutdown_res.channel_id,
 						counterparty_node_id: shutdown_res.counterparty_node_id,
 						user_channel_id: shutdown_res.user_channel_id,
@@ -4827,7 +4827,7 @@ impl<
 							None,
 						));
 						pending_events.push_back((
-							events::Event::SpliceFailed {
+							events::Event::SpliceNegotiationFailed {
 								channel_id: *channel_id,
 								counterparty_node_id: *counterparty_node_id,
 								user_channel_id: chan.context.get_user_id(),
@@ -6525,7 +6525,7 @@ impl<
 					));
 				}
 				pending_events.push_back((
-					events::Event::SpliceFailed {
+					events::Event::SpliceNegotiationFailed {
 						channel_id,
 						counterparty_node_id,
 						user_channel_id,
@@ -6571,14 +6571,14 @@ impl<
 	/// # Events
 	///
 	/// Calling this method will commence the process of creating a new funding transaction for the
-	/// channel. Once the funding transaction has been constructed, an [`Event::SplicePending`]
+	/// channel. Once the funding transaction has been constructed, an [`Event::SpliceNegotiated`]
 	/// will be emitted. At this point, any inputs contributed to the splice can only be re-spent
 	/// if an [`Event::DiscardFunding`] is seen.
 	///
-	/// If any failures occur while negotiating the funding transaction, an [`Event::SpliceFailed`]
-	/// will be emitted. Any contributed inputs no longer used will be included in an
-	/// [`Event::DiscardFunding`] and thus can be re-spent. If a [`FundingTemplate`] was obtained
-	/// while a previous splice was still being negotiated, its
+	/// If any failures occur while negotiating the funding transaction, an
+	/// [`Event::SpliceNegotiationFailed`] will be emitted. Any contributed inputs no longer used
+	/// will be included in an [`Event::DiscardFunding`] and thus can be re-spent. If a
+	/// [`FundingTemplate`] was obtained while a previous splice was still being negotiated, its
 	/// [`min_rbf_feerate`][FundingTemplate::min_rbf_feerate] may be stale after the failure.
 	/// Call [`ChannelManager::splice_channel`] again to get a fresh template.
 	///
@@ -6797,7 +6797,7 @@ impl<
 							}
 							if let Some(splice_negotiated) = splice_negotiated {
 								self.pending_events.lock().unwrap().push_back((
-									events::Event::SplicePending {
+									events::Event::SpliceNegotiated {
 										channel_id: *channel_id,
 										counterparty_node_id: *counterparty_node_id,
 										user_channel_id: chan.context().get_user_id(),
@@ -11712,7 +11712,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								None,
 							));
 							pending_events.push_back((
-								events::Event::SpliceFailed {
+								events::Event::SpliceNegotiationFailed {
 									channel_id,
 									counterparty_node_id: *counterparty_node_id,
 									user_channel_id: channel.context().get_user_id(),
@@ -11871,7 +11871,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								None,
 							));
 							pending_events.push_back((
-								events::Event::SpliceFailed {
+								events::Event::SpliceNegotiationFailed {
 									channel_id: msg.channel_id,
 									counterparty_node_id,
 									user_channel_id: chan.context().get_user_id(),
@@ -11958,7 +11958,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							let exited_quiescence = splice_negotiated.is_some();
 							if let Some(splice_negotiated) = splice_negotiated {
 								self.pending_events.lock().unwrap().push_back((
-									events::Event::SplicePending {
+									events::Event::SpliceNegotiated {
 										channel_id: msg.channel_id,
 										counterparty_node_id: *counterparty_node_id,
 										user_channel_id: chan.context.get_user_id(),
@@ -12041,7 +12041,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							None,
 						));
 						pending_events.push_back((
-							events::Event::SpliceFailed {
+							events::Event::SpliceNegotiationFailed {
 								channel_id: msg.channel_id,
 								counterparty_node_id: *counterparty_node_id,
 								user_channel_id: chan_entry.get().context().get_user_id(),
@@ -12189,7 +12189,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								None,
 							));
 							pending_events.push_back((
-								events::Event::SpliceFailed {
+								events::Event::SpliceNegotiationFailed {
 									channel_id: msg.channel_id,
 									counterparty_node_id: *counterparty_node_id,
 									user_channel_id: chan.context().get_user_id(),
@@ -15294,7 +15294,7 @@ impl<
 									outputs: splice_funding_failed.contributed_outputs,
 								},
 							});
-							splice_failed_events.push(events::Event::SpliceFailed {
+							splice_failed_events.push(events::Event::SpliceNegotiationFailed {
 								channel_id: chan.context().channel_id(),
 								counterparty_node_id,
 								user_channel_id: chan.context().get_user_id(),
@@ -17928,8 +17928,9 @@ impl<
 		let our_pending_intercepts = self.pending_intercepted_htlcs.lock().unwrap();
 
 		// Since some FundingNegotiation variants are not persisted, any splice in such state must
-		// be failed upon reload. However, as the necessary information for the SpliceFailed and
-		// DiscardFunding events is not persisted, the events need to be persisted even though they
+		// be failed upon reload. However, as the necessary information for the
+		// SpliceNegotiationFailed and DiscardFunding events is not persisted, the events need to
+		// be persisted even though they
 		// haven't been emitted yet. These are removed after the events are written.
 		let mut events = self.pending_events.lock().unwrap();
 		let event_count = events.len();
@@ -17947,7 +17948,7 @@ impl<
 						None,
 					));
 					events.push_back((
-						events::Event::SpliceFailed {
+						events::Event::SpliceNegotiationFailed {
 							channel_id: chan.context.channel_id(),
 							counterparty_node_id: chan.context.get_counterparty_node_id(),
 							user_channel_id: chan.context.get_user_id(),
@@ -18075,7 +18076,7 @@ impl<
 			(21, WithoutLength(&self.flow.writeable_async_receive_offer_cache()), required),
 		});
 
-		// Remove the SpliceFailed and DiscardFunding events added earlier.
+		// Remove the SpliceNegotiationFailed and DiscardFunding events added earlier.
 		events.truncate(event_count);
 
 		Ok(())
