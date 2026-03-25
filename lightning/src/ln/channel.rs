@@ -15302,6 +15302,11 @@ impl<SP: SignerProvider> Writeable for FundedChannel<SP> {
 		}
 		let is_manual_broadcast = Some(self.context.is_manual_broadcast);
 
+		// We prevent downgrades from 0.3 only in the case where the holder-selected reserve
+		// is 0, as we've had support for counterparty selected 0-reserves in prior
+		// releases.
+		let has_0reserve =
+			(self.funding.holder_selected_channel_reserve_satoshis == 0).then_some(());
 		let holder_commitment_point_previous_revoked =
 			self.holder_commitment_point.previous_revoked_point();
 		let holder_commitment_point_last_revoked =
@@ -15371,6 +15376,7 @@ impl<SP: SignerProvider> Writeable for FundedChannel<SP> {
 			// 65 was previously used for quiescent_action
 			(67, pending_outbound_held_htlc_flags, optional_vec), // Added in 0.2
 			(69, holding_cell_held_htlc_flags, optional_vec), // Added in 0.2
+			(70, has_0reserve, option), // Added in 0.3 to prevent downgrades
 			(71, holder_commitment_point_previous_revoked, option), // Added in 0.3
 			(73, holder_commitment_point_last_revoked, option), // Added in 0.3
 			(75, inbound_committed_update_adds, optional_vec),
@@ -15744,6 +15750,7 @@ impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
 		let mut malformed_htlcs: Option<Vec<(u64, u16, [u8; 32])>> = None;
 		let mut monitor_pending_update_adds: Option<Vec<msgs::UpdateAddHTLC>> = None;
 
+		let mut _has_0reserve: Option<()> = None;
 		let mut holder_commitment_point_previous_revoked_opt: Option<PublicKey> = None;
 		let mut holder_commitment_point_last_revoked_opt: Option<PublicKey> = None;
 		let mut holder_commitment_point_current_opt: Option<PublicKey> = None;
@@ -15814,6 +15821,7 @@ impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
 			// 65 quiescent_action: Added in 0.2; removed in 0.3
 			(67, pending_outbound_held_htlc_flags_opt, optional_vec), // Added in 0.2
 			(69, holding_cell_held_htlc_flags_opt, optional_vec), // Added in 0.2
+			(70, _has_0reserve, option), // Added in 0.3 to prevent downgrades
 			(71, holder_commitment_point_previous_revoked_opt, option), // Added in 0.3
 			(73, holder_commitment_point_last_revoked_opt, option), // Added in 0.3
 			(75, inbound_committed_update_adds_opt, optional_vec),
