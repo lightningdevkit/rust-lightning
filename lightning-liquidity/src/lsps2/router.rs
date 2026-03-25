@@ -41,8 +41,10 @@ pub struct LSPS2Bolt12InvoiceParameters {
 /// A router wrapper that injects LSPS2-specific BOLT12 blinded payment paths for registered
 /// intercept SCIDs while delegating all other blinded path creation behaviors to the inner router.
 ///
-/// For **payment** blinded paths (in invoices), it returns the intercept SCID as the forwarding
-/// hop so that the LSP can intercept the HTLC and open a JIT channel.
+/// For **payment** blinded paths (in invoices), it appends paths using the intercept SCID as the
+/// forwarding hop so that the LSP can intercept the HTLC and open a JIT channel. Paths from the
+/// inner router (e.g., through pre-existing channels) are included as well, allowing payers to
+/// use existing inbound liquidity when available.
 ///
 /// This wrapper does **not** modify blinded onion-message paths. Async static-invoice and LSPS5
 /// users should rely on their normal [`MessageRouter`] integration and any out-of-band SCID to
