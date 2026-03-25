@@ -17,8 +17,8 @@ use crate::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Listen, Watch
 use crate::events::bump_transaction::sync::BumpTransactionEventHandlerSync;
 use crate::events::bump_transaction::BumpTransactionEvent;
 use crate::events::{
-	ClaimedHTLC, ClosureReason, Event, FundingInfo, HTLCHandlingFailureType, PaidBolt12Invoice,
-	PathFailure, PaymentFailureReason, PaymentPurpose,
+	ClaimedHTLC, ClosureReason, Event, FundingInfo, HTLCHandlingFailureType,
+	NegotiationFailureReason, PaidBolt12Invoice, PathFailure, PaymentFailureReason, PaymentPurpose,
 };
 use crate::ln::chan_utils::{
 	commitment_tx_base_weight, COMMITMENT_TX_WEIGHT_PER_HTLC, TRUC_MAX_WEIGHT,
@@ -3243,13 +3243,14 @@ pub fn expect_splice_pending_event<'a, 'b, 'c, 'd>(
 #[cfg(any(test, ldk_bench, feature = "_test_utils"))]
 pub fn expect_splice_failed_events<'a, 'b, 'c, 'd>(
 	node: &'a Node<'b, 'c, 'd>, expected_channel_id: &ChannelId,
-	funding_contribution: FundingContribution,
+	funding_contribution: FundingContribution, expected_reason: NegotiationFailureReason,
 ) {
 	let events = node.node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 2);
 	match &events[0] {
-		Event::SpliceFailed { channel_id, .. } => {
+		Event::SpliceFailed { channel_id, reason, .. } => {
 			assert_eq!(*expected_channel_id, *channel_id);
+			assert_eq!(expected_reason, *reason);
 		},
 		_ => panic!("Unexpected event"),
 	}
