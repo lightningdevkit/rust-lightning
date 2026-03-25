@@ -7029,17 +7029,31 @@ pub struct SpliceFundingNegotiated {
 
 /// Information about a splice funding negotiation that has failed.
 pub struct SpliceFundingFailed {
-	/// The outpoint of the channel's splice funding transaction, if one was created.
-	pub funding_txo: Option<bitcoin::OutPoint>,
-
-	/// The features that this channel will operate with, if available.
-	pub channel_type: Option<ChannelTypeFeatures>,
-
 	/// UTXOs spent as inputs contributed to the splice transaction.
-	pub contributed_inputs: Vec<bitcoin::OutPoint>,
+	contributed_inputs: Vec<bitcoin::OutPoint>,
 
 	/// Outputs contributed to the splice transaction.
-	pub contributed_outputs: Vec<bitcoin::TxOut>,
+	contributed_outputs: Vec<bitcoin::TxOut>,
+
+	/// The funding contribution from the failed round, if available.
+	contribution: Option<FundingContribution>,
+}
+
+impl SpliceFundingFailed {
+	/// Splits into the funding info for `DiscardFunding` (if there are inputs or outputs to
+	/// discard) and the contribution for `SpliceFailed`.
+	pub(super) fn into_parts(self) -> (Option<FundingInfo>, Option<FundingContribution>) {
+		let funding_info =
+			if !self.contributed_inputs.is_empty() || !self.contributed_outputs.is_empty() {
+				Some(FundingInfo::Contribution {
+					inputs: self.contributed_inputs,
+					outputs: self.contributed_outputs,
+				})
+			} else {
+				None
+			};
+		(funding_info, self.contribution)
+	}
 }
 
 macro_rules! maybe_create_splice_funding_failed {
@@ -7048,15 +7062,6 @@ macro_rules! maybe_create_splice_funding_failed {
 			.and_then(|pending_splice| pending_splice.funding_negotiation.$get())
 			.and_then(|funding_negotiation| {
 				let is_initiator = funding_negotiation.is_initiator();
-
-				let funding_txo = funding_negotiation
-					.as_funding()
-					.and_then(|funding| funding.get_funding_txo())
-					.map(|txo| txo.into_bitcoin_outpoint());
-
-				let channel_type = funding_negotiation
-					.as_funding()
-					.map(|funding| funding.get_channel_type().clone());
 
 				let (mut contributed_inputs, mut contributed_outputs) = match funding_negotiation {
 					FundingNegotiation::AwaitingAck { context, .. } => {
@@ -7088,12 +7093,10 @@ macro_rules! maybe_create_splice_funding_failed {
 					return None;
 				}
 
-				Some(SpliceFundingFailed {
-					funding_txo,
-					channel_type,
-					contributed_inputs,
-					contributed_outputs,
-				})
+				let contribution =
+					$pending_splice_ref.and_then(|ps| ps.contributions.last().cloned());
+
+				Some(SpliceFundingFailed { contributed_inputs, contributed_outputs, contribution })
 			})
 	}};
 }
@@ -7124,6 +7127,7 @@ where
 	/// Builds a [`SpliceFundingFailed`] from a contribution, filtering out inputs/outputs
 	/// that are still committed to a prior splice round.
 	fn splice_funding_failed_for(&self, contribution: FundingContribution) -> SpliceFundingFailed {
+		let cloned_contribution = contribution.clone();
 		let (mut inputs, mut outputs) = contribution.into_contributed_inputs_and_outputs();
 		if let Some(ref pending_splice) = self.pending_splice {
 			for input in pending_splice.contributed_inputs() {
@@ -7134,10 +7138,9 @@ where
 			}
 		}
 		SpliceFundingFailed {
-			funding_txo: None,
-			channel_type: None,
 			contributed_inputs: inputs,
 			contributed_outputs: outputs,
+			contribution: Some(cloned_contribution),
 		}
 	}
 

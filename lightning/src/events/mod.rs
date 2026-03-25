@@ -25,6 +25,7 @@ use crate::blinded_path::payment::{
 use crate::chain::transaction;
 use crate::ln::channel::FUNDING_CONF_DEADLINE_BLOCKS;
 use crate::ln::channelmanager::{InterceptId, PaymentId};
+use crate::ln::funding::FundingContribution;
 use crate::ln::msgs;
 use crate::ln::onion_utils::LocalHTLCFailureReason;
 use crate::ln::outbound_payment::RecipientOnionFields;
@@ -1663,19 +1664,20 @@ pub enum Event {
 		/// The witness script that is used to lock the channel's funding output to commitment transactions.
 		new_funding_redeem_script: ScriptBuf,
 	},
-	/// Used to indicate that a splice for the given `channel_id` has failed.
+	/// Used to indicate that a splice negotiation round for the given `channel_id` has failed.
 	///
-	/// This event may be emitted if a splice fails after it has been initiated but prior to signing
-	/// any negotiated funding transaction.
+	/// Each splice attempt (initial or RBF) resolves to either [`Event::SplicePending`] on
+	/// success or this event on failure. Prior successfully negotiated splice transactions are
+	/// unaffected.
 	///
-	/// Any UTXOs contributed to be spent by the funding transaction may be reused and will be
-	/// given in `contributed_inputs`.
+	/// Any UTXOs contributed to the failed round that are not committed to a prior negotiated
+	/// splice transaction will be returned via a preceding [`Event::DiscardFunding`].
 	///
 	/// # Failure Behavior and Persistence
 	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
 	/// returning `Err(ReplayEvent ())`) and will be persisted across restarts.
 	SpliceFailed {
-		/// The `channel_id` of the channel for which the splice failed.
+		/// The `channel_id` of the channel for which the splice negotiation round failed.
 		channel_id: ChannelId,
 		/// The `user_channel_id` value passed in to [`ChannelManager::create_channel`] for outbound
 		/// channels, or to [`ChannelManager::accept_inbound_channel`] for inbound channels.
@@ -1685,12 +1687,17 @@ pub enum Event {
 		user_channel_id: u128,
 		/// The `node_id` of the channel counterparty.
 		counterparty_node_id: PublicKey,
-		/// The outpoint of the channel's splice funding transaction, if one was created.
-		abandoned_funding_txo: Option<OutPoint>,
-		/// The features that this channel will operate with, if available.
-		channel_type: Option<ChannelTypeFeatures>,
 		/// The reason the splice negotiation failed.
 		reason: NegotiationFailureReason,
+		/// The funding contribution from the failed negotiation round, if available. This can be
+		/// fed back to [`ChannelManager::funding_contributed`] to retry with the same parameters.
+		/// Alternatively, call [`ChannelManager::splice_channel`] to obtain a fresh
+		/// [`FundingTemplate`] and build a new contribution.
+		///
+		/// [`ChannelManager::funding_contributed`]: crate::ln::channelmanager::ChannelManager::funding_contributed
+		/// [`ChannelManager::splice_channel`]: crate::ln::channelmanager::ChannelManager::splice_channel
+		/// [`FundingTemplate`]: crate::ln::funding::FundingTemplate
+		contribution: Option<FundingContribution>,
 	},
 	/// Used to indicate to the user that they can abandon the funding transaction and recycle the
 	/// inputs for another purpose.
@@ -2482,18 +2489,16 @@ impl Writeable for Event {
 				ref channel_id,
 				ref user_channel_id,
 				ref counterparty_node_id,
-				ref abandoned_funding_txo,
-				ref channel_type,
 				ref reason,
+				ref contribution,
 			} => {
 				52u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(1, channel_id, required),
-					(3, channel_type, option),
 					(5, user_channel_id, required),
 					(7, counterparty_node_id, required),
-					(9, abandoned_funding_txo, option),
 					(11, reason, required),
+					(13, contribution, option),
 				});
 			},
 			// Note that, going forward, all new events must only write data inside of
@@ -3134,20 +3139,18 @@ impl MaybeReadable for Event {
 				let mut f = || {
 					_init_and_read_len_prefixed_tlv_fields!(reader, {
 						(1, channel_id, required),
-						(3, channel_type, option),
 						(5, user_channel_id, required),
 						(7, counterparty_node_id, required),
-						(9, abandoned_funding_txo, option),
 						(11, reason, upgradable_option),
+						(13, contribution, option),
 					});
 
 					Ok(Some(Event::SpliceFailed {
 						channel_id: channel_id.0.unwrap(),
 						user_channel_id: user_channel_id.0.unwrap(),
 						counterparty_node_id: counterparty_node_id.0.unwrap(),
-						abandoned_funding_txo,
-						channel_type,
 						reason: reason.unwrap_or(NegotiationFailureReason::Unknown),
+						contribution,
 					}))
 				};
 				f()
