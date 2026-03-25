@@ -1646,8 +1646,8 @@ pub enum Event {
 	/// # Failure Behavior and Persistence
 	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
 	/// returning `Err(ReplayEvent ())`) and will be persisted across restarts.
-	SplicePending {
-		/// The `channel_id` of the channel that has a pending splice funding transaction.
+	SpliceNegotiated {
+		/// The `channel_id` of the channel with the negotiated splice funding transaction.
 		channel_id: ChannelId,
 		/// The `user_channel_id` value passed in to [`ChannelManager::create_channel`] for outbound
 		/// channels, or to [`ChannelManager::accept_inbound_channel`] for inbound channels.
@@ -1667,7 +1667,7 @@ pub enum Event {
 	},
 	/// Used to indicate that a splice negotiation round for the given `channel_id` has failed.
 	///
-	/// Each splice attempt (initial or RBF) resolves to either [`Event::SplicePending`] on
+	/// Each splice attempt (initial or RBF) resolves to either [`Event::SpliceNegotiated`] on
 	/// success or this event on failure. Prior successfully negotiated splice transactions are
 	/// unaffected.
 	///
@@ -1677,7 +1677,7 @@ pub enum Event {
 	/// # Failure Behavior and Persistence
 	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
 	/// returning `Err(ReplayEvent ())`) and will be persisted across restarts.
-	SpliceFailed {
+	SpliceNegotiationFailed {
 		/// The `channel_id` of the channel for which the splice negotiation round failed.
 		channel_id: ChannelId,
 		/// The `user_channel_id` value passed in to [`ChannelManager::create_channel`] for outbound
@@ -2468,7 +2468,7 @@ impl Writeable for Event {
 				// We never write out FundingTransactionReadyForSigning events as they will be regenerated when
 				// necessary.
 			},
-			&Event::SplicePending {
+			&Event::SpliceNegotiated {
 				ref channel_id,
 				ref user_channel_id,
 				ref counterparty_node_id,
@@ -2486,7 +2486,7 @@ impl Writeable for Event {
 					(11, new_funding_redeem_script, required),
 				});
 			},
-			&Event::SpliceFailed {
+			&Event::SpliceNegotiationFailed {
 				ref channel_id,
 				ref user_channel_id,
 				ref counterparty_node_id,
@@ -3125,7 +3125,7 @@ impl MaybeReadable for Event {
 						(11, new_funding_redeem_script, required),
 					});
 
-					Ok(Some(Event::SplicePending {
+					Ok(Some(Event::SpliceNegotiated {
 						channel_id: channel_id.0.unwrap(),
 						user_channel_id: user_channel_id.0.unwrap(),
 						counterparty_node_id: counterparty_node_id.0.unwrap(),
@@ -3146,7 +3146,7 @@ impl MaybeReadable for Event {
 						(13, contribution, option),
 					});
 
-					Ok(Some(Event::SpliceFailed {
+					Ok(Some(Event::SpliceNegotiationFailed {
 						channel_id: channel_id.0.unwrap(),
 						user_channel_id: user_channel_id.0.unwrap(),
 						counterparty_node_id: counterparty_node_id.0.unwrap(),
