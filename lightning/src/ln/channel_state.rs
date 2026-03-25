@@ -479,6 +479,21 @@ pub struct ChannelDetails {
 	///
 	/// This field will be `None` for objects serialized with LDK versions prior to 0.2.0.
 	pub funding_redeem_script: Option<bitcoin::ScriptBuf>,
+	/// The current total dust exposure on this channel, in millisatoshis.
+	///
+	/// This is the maximum of the dust exposure on the holder and counterparty commitment
+	/// transactions, and includes both the value of all pending HTLCs that are below the dust
+	/// threshold as well as the portion of commitment transaction fees that contribute to dust
+	/// exposure.
+	///
+	/// The dust exposure is compared against
+	/// [`ChannelConfig::max_dust_htlc_exposure`] to determine whether new HTLCs can be
+	/// accepted or offered on this channel.
+	///
+	/// This field will be `None` for objects serialized with LDK versions prior to 0.3.
+	///
+	/// [`ChannelConfig::max_dust_htlc_exposure`]: crate::util::config::ChannelConfig::max_dust_htlc_exposure
+	pub current_dust_exposure_msat: Option<u64>,
 }
 
 impl ChannelDetails {
@@ -533,6 +548,7 @@ impl ChannelDetails {
 				outbound_capacity_msat: 0,
 				next_outbound_htlc_limit_msat: 0,
 				next_outbound_htlc_minimum_msat: u64::MAX,
+				dust_exposure_msat: 0,
 			}
 		});
 		let (to_remote_reserve_satoshis, to_self_reserve_satoshis) =
@@ -596,6 +612,7 @@ impl ChannelDetails {
 			channel_shutdown_state: Some(context.shutdown_state()),
 			pending_inbound_htlcs: context.get_pending_inbound_htlc_details(funding),
 			pending_outbound_htlcs: context.get_pending_outbound_htlc_details(funding),
+			current_dust_exposure_msat: Some(balance.dust_exposure_msat),
 		}
 	}
 }
@@ -636,6 +653,7 @@ impl_writeable_tlv_based!(ChannelDetails, {
 	(43, pending_inbound_htlcs, optional_vec),
 	(45, pending_outbound_htlcs, optional_vec),
 	(47, funding_redeem_script, option),
+	(49, current_dust_exposure_msat, option),
 	(_unused, user_channel_id, (static_value,
 		_user_channel_id_low.unwrap_or(0) as u128 | ((_user_channel_id_high.unwrap_or(0) as u128) << 64)
 	)),
@@ -756,6 +774,7 @@ mod tests {
 				skimmed_fee_msat: Some(42),
 				is_dust: false,
 			}],
+			current_dust_exposure_msat: Some(150_000),
 		};
 		let mut buffer = Vec::new();
 		channel_details.write(&mut buffer).unwrap();
