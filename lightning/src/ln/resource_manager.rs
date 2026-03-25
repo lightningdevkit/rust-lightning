@@ -555,6 +555,7 @@ pub struct DefaultResourceManager {
 
 impl DefaultResourceManager {
 	pub fn new(config: ResourceManagerConfig) -> Self {
+		debug_assert!(config.resolution_period > Duration::ZERO);
 		DefaultResourceManager { config, channels: Mutex::new(new_hash_map()) }
 	}
 
