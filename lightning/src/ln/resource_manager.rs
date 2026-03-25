@@ -18,6 +18,19 @@ use crate::{
 	sign::EntropySource,
 };
 
+/// The minimum number of accepted HTLCs required for a channel to be added to the resource
+/// manager. With the default bucket allocations of 40%/20%/40% (general/congestion/protected),
+/// the general bucket (40%) needs at least 5 usable HTLC slots to function effectively. To
+/// ensure the general bucket gets 5 slots at its 40% share, we need at least 12 total HTLC
+/// slots.
+const MIN_ACCEPTED_HTLCS: u16 = 12;
+
+/// The minimum `max_htlc_value_in_flight_msat` required for a channel to be added to the resource
+/// manager. This corresponds to the default `min_funding_satoshis` of 1000 in
+/// [`crate::util::config::ChannelHandshakeLimits`], which is the smallest channel size LDK will
+/// accept.
+const MIN_MAX_IN_FLIGHT_MSAT: u64 = 1_000_000;
+
 #[derive(Clone, PartialEq, Eq, Debug)]
 enum BucketAssigned {
 	General,
@@ -283,12 +296,15 @@ impl Channel {
 		general_bucket_pct: u8, congestion_bucket_pct: u8, reputation_window: Duration,
 		revenue_window_weeks: u8, revenue_week_avg: u8, timestamp_unix_secs: u64,
 	) -> Result<Self, ()> {
-		let max_in_flight_sat = max_htlc_value_in_flight_msat / 1000;
-		if max_accepted_htlcs > 483 || max_in_flight_sat >= TOTAL_BITCOIN_SUPPLY_SATOSHIS {
+		if max_accepted_htlcs > 483
+			|| max_htlc_value_in_flight_msat >= TOTAL_BITCOIN_SUPPLY_SATOSHIS * 1000
+		{
 			return Err(());
 		}
 
-		if max_accepted_htlcs < 12 || max_in_flight_sat < 1000 {
+		if max_accepted_htlcs < MIN_ACCEPTED_HTLCS
+			|| max_htlc_value_in_flight_msat < MIN_MAX_IN_FLIGHT_MSAT
+		{
 			return Err(());
 		}
 
@@ -301,18 +317,24 @@ impl Channel {
 		let general_bucket_liquidity_allocated =
 			(max_htlc_value_in_flight_msat as f64 * general_bucket_pct as f64 / 100.0).round()
 				as u64;
+		debug_assert!(
+			general_bucket_slots_allocated >= 5,
+			"5 is the minimum we need for general bucket"
+		);
 
 		let congestion_bucket_slots_allocated =
 			(max_accepted_htlcs as f64 * congestion_bucket_pct as f64 / 100.0).round() as u16;
 		let congestion_bucket_liquidity_allocated =
 			(max_htlc_value_in_flight_msat as f64 * congestion_bucket_pct as f64 / 100.0).round()
 				as u64;
+		debug_assert!(congestion_bucket_slots_allocated > 0);
 
 		let protected_bucket_slots_allocated =
 			max_accepted_htlcs - general_bucket_slots_allocated - congestion_bucket_slots_allocated;
 		let protected_bucket_liquidity_allocated = max_htlc_value_in_flight_msat
 			- general_bucket_liquidity_allocated
 			- congestion_bucket_liquidity_allocated;
+		debug_assert!(protected_bucket_slots_allocated > 0);
 
 		Ok(Channel {
 			outgoing_reputation: DecayingAverage::new(timestamp_unix_secs, reputation_window),
