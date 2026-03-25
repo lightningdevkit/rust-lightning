@@ -708,7 +708,8 @@ impl_writeable_tlv_based!(FundingContribution, {
 });
 
 impl FundingContribution {
-	pub(super) fn feerate(&self) -> FeeRate {
+	/// Returns the feerate of this contribution.
+	pub fn feerate(&self) -> FeeRate {
 		self.feerate
 	}
 
@@ -727,6 +728,11 @@ impl FundingContribution {
 	/// Returns the amount added to the channel by this contribution.
 	pub fn value_added(&self) -> Amount {
 		self.value_added
+	}
+
+	/// Returns the inputs included in this contribution.
+	pub fn inputs(&self) -> &[FundingTxInput] {
+		&self.inputs
 	}
 
 	/// Returns the outputs (e.g., withdrawal destinations) included in this contribution.

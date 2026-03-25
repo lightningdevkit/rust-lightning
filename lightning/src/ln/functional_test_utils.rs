@@ -3243,9 +3243,10 @@ pub fn expect_splice_failed_events<'a, 'b, 'c, 'd>(
 	let events = node.node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 2);
 	match &events[0] {
-		Event::SpliceFailed { channel_id, reason, .. } => {
+		Event::SpliceFailed { channel_id, reason, contribution, .. } => {
 			assert_eq!(*expected_channel_id, *channel_id);
 			assert_eq!(*reason, expected_reason);
+			assert_eq!(contribution.as_ref(), Some(&funding_contribution));
 		},
 		_ => panic!("Unexpected event"),
 	}

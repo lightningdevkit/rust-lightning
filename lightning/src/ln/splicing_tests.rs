@@ -3056,9 +3056,10 @@ fn do_abandon_splice_quiescent_action_on_shutdown(local_shutdown: bool, pending_
 		let events = nodes[0].node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 2, "{events:?}");
 		match &events[0] {
-			Event::SpliceFailed { channel_id: cid, reason, .. } => {
+			Event::SpliceFailed { channel_id: cid, reason, contribution, .. } => {
 				assert_eq!(*cid, channel_id);
 				assert_eq!(*reason, NegotiationFailureReason::ChannelClosing);
+				assert!(contribution.is_some());
 			},
 			other => panic!("Expected SpliceFailed, got {:?}", other),
 		}
@@ -4338,9 +4339,10 @@ fn test_splice_acceptor_disconnect_emits_events() {
 	let events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 2, "{events:?}");
 	match &events[0] {
-		Event::SpliceFailed { channel_id: cid, reason, .. } => {
+		Event::SpliceFailed { channel_id: cid, reason, contribution, .. } => {
 			assert_eq!(*cid, channel_id);
 			assert_eq!(*reason, NegotiationFailureReason::PeerDisconnected);
+			assert!(contribution.is_some());
 		},
 		other => panic!("Expected SpliceFailed, got {:?}", other),
 	}
@@ -5715,9 +5717,10 @@ fn test_splice_rbf_acceptor_contributes_then_disconnects() {
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 2, "{events:?}");
 	match &events[0] {
-		Event::SpliceFailed { channel_id: cid, reason, .. } => {
+		Event::SpliceFailed { channel_id: cid, reason, contribution, .. } => {
 			assert_eq!(*cid, channel_id);
 			assert_eq!(*reason, NegotiationFailureReason::PeerDisconnected);
+			assert!(contribution.is_some());
 		},
 		other => panic!("Expected SpliceFailed, got {:?}", other),
 	}
@@ -5797,9 +5800,10 @@ fn test_splice_rbf_disconnect_filters_prior_contributions() {
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 2, "{events:?}");
 	match &events[0] {
-		Event::SpliceFailed { channel_id: cid, reason, .. } => {
+		Event::SpliceFailed { channel_id: cid, reason, contribution, .. } => {
 			assert_eq!(*cid, channel_id);
 			assert_eq!(*reason, NegotiationFailureReason::PeerDisconnected);
+			assert!(contribution.is_some());
 		},
 		other => panic!("Expected SpliceFailed, got {:?}", other),
 	}
@@ -5839,9 +5843,10 @@ fn test_splice_rbf_disconnect_filters_prior_contributions() {
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 2, "{events:?}");
 	match &events[0] {
-		Event::SpliceFailed { channel_id: cid, reason, .. } => {
+		Event::SpliceFailed { channel_id: cid, reason, contribution, .. } => {
 			assert_eq!(*cid, channel_id);
 			assert_eq!(*reason, NegotiationFailureReason::PeerDisconnected);
+			assert!(contribution.is_some());
 		},
 		other => panic!("Expected SpliceFailed, got {:?}", other),
 	}
@@ -6530,9 +6535,10 @@ fn test_splice_rbf_rejects_own_low_feerate_after_several_attempts() {
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1, "{events:?}");
 	match &events[0] {
-		Event::SpliceFailed { channel_id: cid, reason, .. } => {
+		Event::SpliceFailed { channel_id: cid, reason, contribution, .. } => {
 			assert_eq!(*cid, channel_id);
 			assert_eq!(*reason, NegotiationFailureReason::FeeRateTooLow);
+			assert!(contribution.is_some());
 		},
 		other => panic!("Expected SpliceFailed, got {:?}", other),
 	}

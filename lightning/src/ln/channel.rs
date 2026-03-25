@@ -6741,6 +6741,9 @@ pub struct SpliceFundingFailed {
 
 	/// Outputs contributed to the splice transaction.
 	pub contributed_outputs: Vec<bitcoin::TxOut>,
+
+	/// The funding contribution from the failed round, if available.
+	pub contribution: Option<FundingContribution>,
 }
 
 macro_rules! maybe_create_splice_funding_failed {
@@ -6789,11 +6792,15 @@ macro_rules! maybe_create_splice_funding_failed {
 					return None;
 				}
 
+				let contribution =
+					$pending_splice_ref.and_then(|ps| ps.contributions.last().cloned());
+
 				Some(SpliceFundingFailed {
 					funding_txo,
 					channel_type,
 					contributed_inputs,
 					contributed_outputs,
+					contribution,
 				})
 			})
 	}};
@@ -6825,6 +6832,7 @@ where
 	/// Builds a [`SpliceFundingFailed`] from a contribution, filtering out inputs/outputs
 	/// that are still committed to a prior splice round.
 	fn splice_funding_failed_for(&self, contribution: FundingContribution) -> SpliceFundingFailed {
+		let cloned_contribution = contribution.clone();
 		let (mut inputs, mut outputs) = contribution.into_contributed_inputs_and_outputs();
 		if let Some(ref pending_splice) = self.pending_splice {
 			for input in pending_splice.contributed_inputs() {
@@ -6839,6 +6847,7 @@ where
 			channel_type: None,
 			contributed_inputs: inputs,
 			contributed_outputs: outputs,
+			contribution: Some(cloned_contribution),
 		}
 	}
 
