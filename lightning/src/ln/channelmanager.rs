@@ -4119,7 +4119,7 @@ impl<
 								));
 							}
 							pending_events.push_back((
-								events::Event::SpliceFailed {
+								events::Event::SpliceNegotiationFailed {
 									channel_id: *chan_id,
 									counterparty_node_id: *counterparty_node_id,
 									user_channel_id: chan.context().get_user_id(),
@@ -4425,7 +4425,7 @@ impl<
 					));
 				}
 				pending_events.push_back((
-					events::Event::SpliceFailed {
+					events::Event::SpliceNegotiationFailed {
 						channel_id: shutdown_res.channel_id,
 						counterparty_node_id: shutdown_res.counterparty_node_id,
 						user_channel_id: shutdown_res.user_channel_id,
@@ -4931,7 +4931,7 @@ impl<
 							));
 						}
 						pending_events.push_back((
-							events::Event::SpliceFailed {
+							events::Event::SpliceNegotiationFailed {
 								channel_id: *channel_id,
 								counterparty_node_id: *counterparty_node_id,
 								user_channel_id: chan.context.get_user_id(),
@@ -6619,7 +6619,7 @@ impl<
 					));
 				}
 				pending_events.push_back((
-					events::Event::SpliceFailed {
+					events::Event::SpliceNegotiationFailed {
 						channel_id,
 						counterparty_node_id,
 						user_channel_id,
@@ -6665,14 +6665,14 @@ impl<
 	/// # Events
 	///
 	/// Calling this method will commence the process of creating a new funding transaction for the
-	/// channel. Once the funding transaction has been constructed, an [`Event::SplicePending`]
+	/// channel. Once the funding transaction has been constructed, an [`Event::SpliceNegotiated`]
 	/// will be emitted. At this point, any inputs contributed to the splice can only be re-spent
 	/// if an [`Event::DiscardFunding`] is seen.
 	///
-	/// If any failures occur while negotiating the funding transaction, an [`Event::SpliceFailed`]
-	/// will be emitted. Any contributed inputs no longer used will be included in an
-	/// [`Event::DiscardFunding`] and thus can be re-spent. If a [`FundingTemplate`] was obtained
-	/// while a previous splice was still being negotiated, its
+	/// If any failures occur while negotiating the funding transaction, an
+	/// [`Event::SpliceNegotiationFailed`] will be emitted. Any contributed inputs no longer used
+	/// will be included in an [`Event::DiscardFunding`] and thus can be re-spent. If a
+	/// [`FundingTemplate`] was obtained while a previous splice was still being negotiated, its
 	/// [`min_rbf_feerate`][FundingTemplate::min_rbf_feerate] may be stale after the failure.
 	/// Call [`ChannelManager::splice_channel`] again to get a fresh template.
 	///
@@ -6891,7 +6891,7 @@ impl<
 							}
 							if let Some(splice_negotiated) = splice_negotiated {
 								self.pending_events.lock().unwrap().push_back((
-									events::Event::SplicePending {
+									events::Event::SpliceNegotiated {
 										channel_id: *channel_id,
 										counterparty_node_id: *counterparty_node_id,
 										user_channel_id: chan.context().get_user_id(),
@@ -10984,7 +10984,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				.and_then(|v| v.splice_negotiated.take())
 			{
 				pending_events.push_back((
-					events::Event::SplicePending {
+					events::Event::SpliceNegotiated {
 						channel_id: channel.context.channel_id(),
 						counterparty_node_id,
 						user_channel_id: channel.context.get_user_id(),
@@ -11849,7 +11849,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								));
 							}
 							pending_events.push_back((
-								events::Event::SpliceFailed {
+								events::Event::SpliceNegotiationFailed {
 									channel_id,
 									counterparty_node_id: *counterparty_node_id,
 									user_channel_id: channel.context().get_user_id(),
@@ -12010,7 +12010,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								));
 							}
 							pending_events.push_back((
-								events::Event::SpliceFailed {
+								events::Event::SpliceNegotiationFailed {
 									channel_id: msg.channel_id,
 									counterparty_node_id,
 									user_channel_id: chan.context().get_user_id(),
@@ -12099,7 +12099,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							let exited_quiescence = splice_negotiated.is_some();
 							if let Some(splice_negotiated) = splice_negotiated {
 								self.pending_events.lock().unwrap().push_back((
-									events::Event::SplicePending {
+									events::Event::SpliceNegotiated {
 										channel_id: msg.channel_id,
 										counterparty_node_id: *counterparty_node_id,
 										user_channel_id: chan.context.get_user_id(),
@@ -12182,7 +12182,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							));
 						}
 						pending_events.push_back((
-							events::Event::SpliceFailed {
+							events::Event::SpliceNegotiationFailed {
 								channel_id: msg.channel_id,
 								counterparty_node_id: *counterparty_node_id,
 								user_channel_id: chan_entry.get().context().get_user_id(),
@@ -12334,7 +12334,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								));
 							}
 							pending_events.push_back((
-								events::Event::SpliceFailed {
+								events::Event::SpliceNegotiationFailed {
 									channel_id: msg.channel_id,
 									counterparty_node_id: *counterparty_node_id,
 									user_channel_id: chan.context().get_user_id(),
@@ -15167,16 +15167,16 @@ impl<
 		self.process_pending_events(&event_handler);
 		let collected_events = events.into_inner();
 
-		// When both DiscardFunding and SpliceFailed are emitted for the same channel,
-		// DiscardFunding must come first so that inputs are unlocked before any retry.
-		// Each pair is emitted adjacently under a single lock, so checking adjacent
-		// events is sufficient.
+		// When both DiscardFunding and SpliceNegotiationFailed are emitted for the same
+		// channel, DiscardFunding must come first so that inputs are unlocked before any
+		// retry. Each pair is emitted adjacently under a single lock, so checking
+		// adjacent events is sufficient.
 		for window in collected_events.windows(2) {
-			if let events::Event::SpliceFailed { channel_id, .. } = &window[0] {
+			if let events::Event::SpliceNegotiationFailed { channel_id, .. } = &window[0] {
 				if let events::Event::DiscardFunding { channel_id: cid, .. } = &window[1] {
 					assert!(
 						channel_id != cid,
-						"DiscardFunding must precede SpliceFailed for channel {}",
+						"DiscardFunding must precede SpliceNegotiationFailed for channel {}",
 						channel_id,
 					);
 				}
@@ -15463,7 +15463,7 @@ impl<
 									funding_info,
 								});
 							}
-							splice_failed_events.push(events::Event::SpliceFailed {
+							splice_failed_events.push(events::Event::SpliceNegotiationFailed {
 								channel_id: chan.context().channel_id(),
 								counterparty_node_id,
 								user_channel_id: chan.context().get_user_id(),
@@ -18119,8 +18119,9 @@ impl<
 		let our_pending_intercepts = self.pending_intercepted_htlcs.lock().unwrap();
 
 		// Since some FundingNegotiation variants are not persisted, any splice in such state must
-		// be failed upon reload. However, as the necessary information for the SpliceFailed and
-		// DiscardFunding events is not persisted, the events need to be persisted even though they
+		// be failed upon reload. However, as the necessary information for the
+		// SpliceNegotiationFailed and DiscardFunding events is not persisted, the events need to
+		// be persisted even though they
 		// haven't been emitted yet. These are removed after the events are written.
 		let mut events = self.pending_events.lock().unwrap();
 		let event_count = events.len();
@@ -18138,7 +18139,7 @@ impl<
 						));
 					}
 					events.push_back((
-						events::Event::SpliceFailed {
+						events::Event::SpliceNegotiationFailed {
 							channel_id: chan.context.channel_id(),
 							counterparty_node_id: chan.context.get_counterparty_node_id(),
 							user_channel_id: chan.context.get_user_id(),
@@ -18267,7 +18268,7 @@ impl<
 			(23, self.best_block.read().unwrap().previous_blocks, required),
 		});
 
-		// Remove the SpliceFailed and DiscardFunding events added earlier.
+		// Remove the SpliceNegotiationFailed and DiscardFunding events added earlier.
 		events.truncate(event_count);
 
 		Ok(())

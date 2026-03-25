@@ -3052,7 +3052,7 @@ fn do_abandon_splice_quiescent_action_on_shutdown(local_shutdown: bool, pending_
 	};
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 
-	// Close the channel. We should see a `SpliceFailed` event for the pending splice
+	// Close the channel. We should see a `SpliceNegotiationFailed` event for the pending splice
 	// `QuiescentAction`.
 	let (closer_node, closee_node) =
 		if local_shutdown { (&nodes[0], &nodes[1]) } else { (&nodes[1], &nodes[0]) };
@@ -3082,12 +3082,12 @@ fn do_abandon_splice_quiescent_action_on_shutdown(local_shutdown: bool, pending_
 			other => panic!("Expected DiscardFunding with Contribution, got {:?}", other),
 		}
 		match &events[1] {
-			Event::SpliceFailed { channel_id: cid, reason, contribution, .. } => {
+			Event::SpliceNegotiationFailed { channel_id: cid, reason, contribution, .. } => {
 				assert_eq!(*cid, channel_id);
 				assert_eq!(*reason, NegotiationFailureReason::ChannelClosing);
 				assert!(contribution.is_some());
 			},
-			other => panic!("Expected SpliceFailed, got {:?}", other),
+			other => panic!("Expected SpliceNegotiationFailed, got {:?}", other),
 		}
 	} else {
 		expect_splice_failed_events(
@@ -3894,7 +3894,7 @@ fn test_funding_contributed_active_funding_negotiation() {
 fn do_test_funding_contributed_active_funding_negotiation(state: u8) {
 	// Tests that calling funding_contributed when a splice is already being actively negotiated
 	// (pending_splice.funding_negotiation exists and is_initiator()) returns Err(APIMisuseError)
-	// and emits SpliceFailed + DiscardFunding events for non-duplicate contributions, or
+	// and emits SpliceNegotiationFailed + DiscardFunding events for non-duplicate contributions, or
 	// returns Err(APIMisuseError) with no events for duplicate contributions.
 	//
 	// State 0: AwaitingAck (splice_init sent, splice_ack not yet received)
@@ -4030,7 +4030,7 @@ fn do_test_funding_contributed_active_funding_negotiation(state: u8) {
 #[test]
 fn test_funding_contributed_channel_shutdown() {
 	// Tests that calling funding_contributed after initiating channel shutdown returns Err(APIMisuseError)
-	// and emits both SpliceFailed and DiscardFunding events. The channel is no longer usable
+	// and emits both SpliceNegotiationFailed and DiscardFunding events. The channel is no longer usable
 	// after shutdown is initiated, so quiescence cannot be proposed.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -4059,7 +4059,7 @@ fn test_funding_contributed_channel_shutdown() {
 
 	// Now call funding_contributed - this should trigger FailSplice because
 	// propose_quiescence() will fail when is_usable() returns false.
-	// Returns Err(APIMisuseError) and emits both SpliceFailed and DiscardFunding.
+	// Returns Err(APIMisuseError) and emits both SpliceNegotiationFailed and DiscardFunding.
 	assert_eq!(
 		nodes[0].node.funding_contributed(
 			&channel_id,
@@ -4414,7 +4414,7 @@ pub fn reenter_quiescence<'a, 'b, 'c>(
 #[test]
 fn test_splice_acceptor_disconnect_emits_events() {
 	// When both nodes contribute to a splice and the negotiation fails due to disconnect,
-	// both the initiator and acceptor should receive SpliceFailed + DiscardFunding events
+	// both the initiator and acceptor should receive SpliceNegotiationFailed + DiscardFunding events
 	// so each can reclaim their UTXOs.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -4453,7 +4453,7 @@ fn test_splice_acceptor_disconnect_emits_events() {
 	nodes[0].node.peer_disconnected(node_id_1);
 	nodes[1].node.peer_disconnected(node_id_0);
 
-	// The initiator should get SpliceFailed + DiscardFunding.
+	// The initiator should get SpliceNegotiationFailed + DiscardFunding.
 	expect_splice_failed_events(
 		&nodes[0],
 		&channel_id,
@@ -4461,7 +4461,7 @@ fn test_splice_acceptor_disconnect_emits_events() {
 		NegotiationFailureReason::PeerDisconnected,
 	);
 
-	// The acceptor should also get SpliceFailed + DiscardFunding with its contributions
+	// The acceptor should also get SpliceNegotiationFailed + DiscardFunding with its contributions
 	// so it can reclaim its UTXOs. The contribution is feerate-adjusted by handle_splice_init,
 	// so we check for non-empty inputs/outputs rather than exact values.
 	let events = nodes[1].node.get_and_clear_pending_events();
@@ -4477,12 +4477,12 @@ fn test_splice_acceptor_disconnect_emits_events() {
 		other => panic!("Expected DiscardFunding with Contribution, got {:?}", other),
 	}
 	match &events[1] {
-		Event::SpliceFailed { channel_id: cid, reason, contribution, .. } => {
+		Event::SpliceNegotiationFailed { channel_id: cid, reason, contribution, .. } => {
 			assert_eq!(*cid, channel_id);
 			assert_eq!(*reason, NegotiationFailureReason::PeerDisconnected);
 			assert!(contribution.is_some());
 		},
-		other => panic!("Expected SpliceFailed, got {:?}", other),
+		other => panic!("Expected SpliceNegotiationFailed, got {:?}", other),
 	}
 
 	// Reconnect and verify the channel is still operational.
@@ -5844,7 +5844,7 @@ fn test_splice_rbf_sequential() {
 fn test_splice_rbf_acceptor_contributes_then_disconnects() {
 	// When both nodes contribute to a splice and the initiator RBFs (with the acceptor
 	// re-contributing via prior contribution), disconnecting mid-interactive-TX should emit
-	// SpliceFailed + DiscardFunding for both nodes so each can reclaim their UTXOs.
+	// SpliceNegotiationFailed + DiscardFunding for both nodes so each can reclaim their UTXOs.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -5924,12 +5924,12 @@ fn test_splice_rbf_acceptor_contributes_then_disconnects() {
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1, "{events:?}");
 	match &events[0] {
-		Event::SpliceFailed { channel_id: cid, reason, contribution, .. } => {
+		Event::SpliceNegotiationFailed { channel_id: cid, reason, contribution, .. } => {
 			assert_eq!(*cid, channel_id);
 			assert_eq!(*reason, NegotiationFailureReason::PeerDisconnected);
 			assert!(contribution.is_some());
 		},
-		other => panic!("Expected SpliceFailed, got {:?}", other),
+		other => panic!("Expected SpliceNegotiationFailed, got {:?}", other),
 	}
 
 	// The acceptor re-contributed the same UTXOs as round 0 (via prior contribution
@@ -5999,7 +5999,7 @@ fn test_splice_rbf_disconnect_filters_prior_contributions() {
 	nodes[0].node.peer_disconnected(node_id_1);
 	nodes[1].node.peer_disconnected(node_id_0);
 
-	// The initiator should get DiscardFunding + SpliceFailed with filtered contributions.
+	// The initiator should get DiscardFunding + SpliceNegotiationFailed with filtered contributions.
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 2, "{events:?}");
 	match &events[0] {
@@ -6016,12 +6016,12 @@ fn test_splice_rbf_disconnect_filters_prior_contributions() {
 		other => panic!("Expected DiscardFunding with Contribution, got {:?}", other),
 	}
 	match &events[1] {
-		Event::SpliceFailed { channel_id: cid, reason, contribution, .. } => {
+		Event::SpliceNegotiationFailed { channel_id: cid, reason, contribution, .. } => {
 			assert_eq!(*cid, channel_id);
 			assert_eq!(*reason, NegotiationFailureReason::PeerDisconnected);
 			assert!(contribution.is_some());
 		},
-		other => panic!("Expected SpliceFailed, got {:?}", other),
+		other => panic!("Expected SpliceNegotiationFailed, got {:?}", other),
 	}
 
 	// Reconnect. After a completed splice, channel_ready is not re-sent.
@@ -6046,12 +6046,12 @@ fn test_splice_rbf_disconnect_filters_prior_contributions() {
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1, "{events:?}");
 	match &events[0] {
-		Event::SpliceFailed { channel_id: cid, reason, contribution, .. } => {
+		Event::SpliceNegotiationFailed { channel_id: cid, reason, contribution, .. } => {
 			assert_eq!(*cid, channel_id);
 			assert_eq!(*reason, NegotiationFailureReason::PeerDisconnected);
 			assert!(contribution.is_some());
 		},
-		other => panic!("Expected SpliceFailed, got {:?}", other),
+		other => panic!("Expected SpliceNegotiationFailed, got {:?}", other),
 	}
 
 	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
@@ -6453,7 +6453,7 @@ fn test_rbf_sync_returns_err_when_max_feerate_below_min_rbf() {
 fn test_splice_revalidation_at_quiescence() {
 	// When an outbound HTLC is committed between funding_contributed and quiescence, the
 	// holder's balance decreases. If the splice-out was marginal at funding_contributed time,
-	// the re-validation at quiescence should fail and emit SpliceFailed + DiscardFunding.
+	// the re-validation at quiescence should fail and emit SpliceNegotiationFailed + DiscardFunding.
 	//
 	// Flow:
 	// 1. Send payment #1 (update_add + CS) → node 0 awaits RAA
@@ -6728,16 +6728,16 @@ fn test_splice_rbf_rejects_own_low_feerate_after_several_attempts() {
 	let result = nodes[0].node.funding_contributed(&channel_id, &node_id_1, contribution, None);
 	assert!(result.is_err(), "Expected rejection for low feerate: {:?}", result);
 
-	// SpliceFailed is emitted. DiscardFunding is not emitted because all inputs/outputs
+	// SpliceNegotiationFailed is emitted. DiscardFunding is not emitted because all inputs/outputs
 	// are filtered out (same UTXOs reused for RBF, still committed to the prior splice tx).
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1, "{events:?}");
 	match &events[0] {
-		Event::SpliceFailed { channel_id: cid, reason, contribution, .. } => {
+		Event::SpliceNegotiationFailed { channel_id: cid, reason, contribution, .. } => {
 			assert_eq!(*cid, channel_id);
 			assert_eq!(*reason, NegotiationFailureReason::FeeRateTooLow);
 			assert!(contribution.is_some());
 		},
-		other => panic!("Expected SpliceFailed, got {:?}", other),
+		other => panic!("Expected SpliceNegotiationFailed, got {:?}", other),
 	}
 }

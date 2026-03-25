@@ -1141,10 +1141,10 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger + MaybeSend + MaybeSync>
 						signed_tx,
 					);
 				},
-				Event::SplicePending { .. } => {
+				Event::SpliceNegotiated { .. } => {
 					// Splice negotiation completed, waiting for confirmation
 				},
-				Event::SpliceFailed { .. } => {
+				Event::SpliceNegotiationFailed { .. } => {
 					// Splice failed, inputs can be re-spent
 				},
 				Event::OpenChannelRequest {
