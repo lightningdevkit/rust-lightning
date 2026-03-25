@@ -60,18 +60,17 @@ struct AggregatedWindowAverage {
 	start_timestamp_unix_secs: u64,
 	avg_weeks: u8,
 	window_weeks: u8,
-	window_duration: Duration,
 	aggregated_revenue_decaying: DecayingAverage,
 }
 
 impl AggregatedWindowAverage {
-	fn new(avg_weeks: u8, window_weeks: u8, start_timestamp_unix_secs: u64) -> Self {
+	fn new(avg_weeks: u8, window_multiplier: u8, start_timestamp_unix_secs: u64) -> Self {
+		let window_weeks = avg_weeks * window_multiplier;
 		let window_duration = Duration::from_secs(60 * 60 * 24 * 7 * window_weeks as u64);
 		AggregatedWindowAverage {
 			start_timestamp_unix_secs,
 			avg_weeks,
 			window_weeks,
-			window_duration,
 			aggregated_revenue_decaying: DecayingAverage::new(
 				start_timestamp_unix_secs,
 				window_duration,
@@ -90,7 +89,10 @@ impl AggregatedWindowAverage {
 
 		let num_windows = (self.window_weeks / self.avg_weeks) as f64;
 		let elapsed = (timestamp_unix_secs - self.start_timestamp_unix_secs) as f64;
-		let warmup_factor = 1.0 - (-elapsed / self.window_duration.as_secs_f64()).exp();
+		// Early on when elapsed < 5*window, the decaying average underestimates the true sum.
+		// The warmup_factor (1 - e^(-elapsed/window)) corrects for this.
+		let warmup_factor =
+			1.0 - (-elapsed / (self.window_weeks as u64 * 60 * 60 * 24 * 7) as f64).exp();
 		let divisor = f64::max(num_windows * warmup_factor, 1.0);
 
 		Ok((self.aggregated_revenue_decaying.value_at_timestamp(timestamp_unix_secs)? as f64
