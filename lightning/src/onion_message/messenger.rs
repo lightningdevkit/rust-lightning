@@ -125,6 +125,72 @@ impl<
 	}
 }
 
+/// A trait for registering peers and SCIDs for onion message interception.
+///
+/// When a peer is registered for interception and is currently offline, any onion messages
+/// intended to be forwarded to them will generate an [`Event::OnionMessageIntercepted`] instead
+/// of being dropped. When a registered peer connects, an [`Event::OnionMessagePeerConnected`]
+/// will be generated.
+///
+/// Additionally, SCIDs (short channel IDs) can be registered for interception. When an onion
+/// message is forwarded with a [`NextMessageHop::ShortChannelId`] that cannot be resolved via
+/// [`NodeIdLookUp`] but is registered here, an [`Event::OnionMessageIntercepted`] will be
+/// generated using the associated peer's node ID. This enables compact SCID-based encoding in
+/// blinded message paths for scenarios like LSPS2 JIT channels where the SCID is a fake
+/// intercept SCID that does not correspond to a real channel.
+///
+/// [`OnionMessenger`] implements this trait, but it is also useful as a trait object to allow
+/// external components (e.g., an LSPS2 service) to register peers for interception without
+/// needing to know the concrete [`OnionMessenger`] type.
+///
+/// [`NextMessageHop::ShortChannelId`]: crate::blinded_path::message::NextMessageHop::ShortChannelId
+/// [`Event::OnionMessageIntercepted`]: crate::events::Event::OnionMessageIntercepted
+/// [`Event::OnionMessagePeerConnected`]: crate::events::Event::OnionMessagePeerConnected
+pub trait OnionMessageInterceptor {
+	/// Registers a short channel ID for onion message interception.
+	///
+	/// See [`OnionMessenger::register_scid_for_interception`] for more details.
+	fn register_scid_for_interception(&self, scid: u64, peer_node_id: PublicKey);
+
+	/// Deregisters a short channel ID from onion message interception.
+	///
+	/// See [`OnionMessenger::deregister_scid_for_interception`] for more details.
+	///
+	/// Returns whether the SCID was previously registered.
+	fn deregister_scid_for_interception(&self, scid: u64) -> bool;
+}
+
+impl<
+		ES: EntropySource,
+		NS: NodeSigner,
+		L: Logger,
+		NL: NodeIdLookUp,
+		MR: MessageRouter,
+		OMH: OffersMessageHandler,
+		APH: AsyncPaymentsMessageHandler,
+		DRH: DNSResolverMessageHandler,
+		CMH: CustomOnionMessageHandler,
+	> OnionMessageInterceptor for OnionMessenger<ES, NS, L, NL, MR, OMH, APH, DRH, CMH>
+{
+	fn register_scid_for_interception(&self, scid: u64, peer_node_id: PublicKey) {
+		OnionMessenger::register_scid_for_interception(self, scid, peer_node_id)
+	}
+
+	fn deregister_scid_for_interception(&self, scid: u64) -> bool {
+		OnionMessenger::deregister_scid_for_interception(self, scid)
+	}
+}
+
+impl<T: OnionMessageInterceptor + ?Sized, B: Deref<Target = T>> OnionMessageInterceptor for B {
+	fn register_scid_for_interception(&self, scid: u64, peer_node_id: PublicKey) {
+		self.deref().register_scid_for_interception(scid, peer_node_id);
+	}
+
+	fn deregister_scid_for_interception(&self, scid: u64) -> bool {
+		self.deref().deregister_scid_for_interception(scid)
+	}
+}
+
 /// A sender, receiver and forwarder of [`OnionMessage`]s.
 ///
 /// # Handling Messages
@@ -273,6 +339,7 @@ pub struct OnionMessenger<
 	dns_resolver_handler: DRH,
 	custom_handler: CMH,
 	intercept_messages_for_offline_peers: bool,
+	scids_registered_for_interception: Mutex<HashMap<u64, PublicKey>>,
 	pending_intercepted_msgs_events: Mutex<Vec<Event>>,
 	pending_peer_connected_events: Mutex<Vec<Event>>,
 	pending_events_processor: AtomicBool,
@@ -1453,6 +1520,7 @@ impl<
 			dns_resolver_handler: dns_resolver,
 			custom_handler,
 			intercept_messages_for_offline_peers,
+			scids_registered_for_interception: Mutex::new(new_hash_map()),
 			pending_intercepted_msgs_events: Mutex::new(Vec::new()),
 			pending_peer_connected_events: Mutex::new(Vec::new()),
 			pending_events_processor: AtomicBool::new(false),
@@ -1468,6 +1536,34 @@ impl<
 	#[cfg(any(test, feature = "_test_utils"))]
 	pub fn set_async_payments_handler(&mut self, async_payments_handler: APH) {
 		self.async_payments_handler = async_payments_handler;
+	}
+
+	/// Registers a short channel ID for onion message interception, associating it with
+	/// `peer_node_id`.
+	///
+	/// When an onion message is forwarded with a [`NextMessageHop::ShortChannelId`] that cannot
+	/// be resolved via [`NodeIdLookUp`] but matches a registered SCID, an
+	/// [`Event::OnionMessageIntercepted`] will be generated using the associated `peer_node_id`.
+	///
+	/// This is useful for services like LSPS2 where fake intercept SCIDs are used in compact
+	/// blinded message paths. The SCID does not correspond to a real channel, so
+	/// [`NodeIdLookUp`] cannot resolve it, but the message should still be intercepted rather
+	/// than dropped.
+	///
+	/// Use [`Self::deregister_scid_for_interception`] to stop intercepting messages for this
+	/// SCID.
+	///
+	/// [`NextMessageHop::ShortChannelId`]: crate::blinded_path::message::NextMessageHop::ShortChannelId
+	/// [`Event::OnionMessageIntercepted`]: crate::events::Event::OnionMessageIntercepted
+	pub fn register_scid_for_interception(&self, scid: u64, peer_node_id: PublicKey) {
+		self.scids_registered_for_interception.lock().unwrap().insert(scid, peer_node_id);
+	}
+
+	/// Deregisters a short channel ID from onion message interception.
+	///
+	/// Returns whether the SCID was previously registered.
+	pub fn deregister_scid_for_interception(&self, scid: u64) -> bool {
+		self.scids_registered_for_interception.lock().unwrap().remove(&scid).is_some()
 	}
 
 	/// Sends an [`OnionMessage`] based on its [`MessageSendInstructions`].
@@ -1659,15 +1755,32 @@ impl<
 	fn enqueue_forwarded_onion_message(
 		&self, next_hop: NextMessageHop, onion_message: OnionMessage, log_suffix: fmt::Arguments,
 	) -> Result<(), SendError> {
-		let next_node_id = match next_hop {
-			NextMessageHop::NodeId(pubkey) => pubkey,
-			NextMessageHop::ShortChannelId(scid) => match self.node_id_lookup.next_node_id(scid) {
-				Some(pubkey) => pubkey,
-				None => {
-					log_trace!(self.logger, "Dropping forwarded onion messager: unable to resolve next hop using SCID {} {}", scid, log_suffix);
-					return Err(SendError::GetNodeIdFailed);
+		let (next_node_id, is_registered_for_interception) = {
+			let scids_registered_for_interception =
+				self.scids_registered_for_interception.lock().unwrap();
+			match next_hop {
+				NextMessageHop::NodeId(pubkey) => {
+					let is_registered =
+						scids_registered_for_interception.values().any(|nid| *nid == pubkey);
+					(pubkey, is_registered)
 				},
-			},
+				NextMessageHop::ShortChannelId(scid) => {
+					match self.node_id_lookup.next_node_id(scid) {
+						Some(pubkey) => (pubkey, false),
+						None => {
+							// The SCID is unknown to NodeIdLookUp (not a real channel). Check
+							// if it's registered for SCID-based interception before dropping.
+							match scids_registered_for_interception.get(&scid).copied() {
+								Some(peer_node_id) => (peer_node_id, true),
+								None => {
+									log_trace!(self.logger, "Dropping forwarded onion message: unable to resolve next hop using SCID {} {}", scid, log_suffix);
+									return Err(SendError::GetNodeIdFailed);
+								},
+							}
+						},
+					}
+				},
+			}
 		};
 
 		let mut message_recipients = self.message_recipients.lock().unwrap();
@@ -1686,6 +1799,9 @@ impl<
 			.entry(next_node_id)
 			.or_insert_with(|| OnionMessageRecipient::ConnectedPeer(VecDeque::new()));
 
+		let should_intercept =
+			self.intercept_messages_for_offline_peers || is_registered_for_interception;
+
 		match message_recipients.entry(next_node_id) {
 			hash_map::Entry::Occupied(mut e)
 				if matches!(e.get(), OnionMessageRecipient::ConnectedPeer(..)) =>
@@ -1699,7 +1815,7 @@ impl<
 				);
 				Ok(())
 			},
-			_ if self.intercept_messages_for_offline_peers => {
+			_ if should_intercept => {
 				log_trace!(
 					self.logger,
 					"Generating OnionMessageIntercepted event for peer {} {}",
@@ -2142,7 +2258,13 @@ impl<
 					.or_insert_with(|| OnionMessageRecipient::ConnectedPeer(VecDeque::new()))
 					.mark_connected();
 			}
-			if self.intercept_messages_for_offline_peers {
+			let is_registered_for_interception = self
+				.scids_registered_for_interception
+				.lock()
+				.unwrap()
+				.values()
+				.any(|nid| *nid == their_node_id);
+			if self.intercept_messages_for_offline_peers || is_registered_for_interception {
 				let mut pending_peer_connected_events =
 					self.pending_peer_connected_events.lock().unwrap();
 				pending_peer_connected_events
