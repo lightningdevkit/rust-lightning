@@ -3243,23 +3243,23 @@ pub fn expect_splice_failed_events<'a, 'b, 'c, 'd>(
 	let events = node.node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 2);
 	match &events[0] {
-		Event::SpliceFailed { channel_id, reason, contribution, .. } => {
-			assert_eq!(*expected_channel_id, *channel_id);
-			assert_eq!(*reason, expected_reason);
-			assert_eq!(contribution.as_ref(), Some(&funding_contribution));
-		},
-		_ => panic!("Unexpected event"),
-	}
-	match &events[1] {
 		Event::DiscardFunding { funding_info, .. } => {
 			if let FundingInfo::Contribution { inputs, outputs } = &funding_info {
 				let (expected_inputs, expected_outputs) =
-					funding_contribution.into_contributed_inputs_and_outputs();
+					funding_contribution.clone().into_contributed_inputs_and_outputs();
 				assert_eq!(*inputs, expected_inputs);
 				assert_eq!(*outputs, expected_outputs);
 			} else {
 				panic!("Expected FundingInfo::Contribution");
 			}
+		},
+		_ => panic!("Unexpected event"),
+	}
+	match &events[1] {
+		Event::SpliceFailed { channel_id, reason, contribution, .. } => {
+			assert_eq!(*expected_channel_id, *channel_id);
+			assert_eq!(*reason, expected_reason);
+			assert_eq!(contribution.as_ref(), Some(&funding_contribution));
 		},
 		_ => panic!("Unexpected event"),
 	}

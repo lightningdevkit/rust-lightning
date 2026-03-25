@@ -3056,14 +3056,6 @@ fn do_abandon_splice_quiescent_action_on_shutdown(local_shutdown: bool, pending_
 		let events = nodes[0].node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 2, "{events:?}");
 		match &events[0] {
-			Event::SpliceFailed { channel_id: cid, reason, contribution, .. } => {
-				assert_eq!(*cid, channel_id);
-				assert_eq!(*reason, NegotiationFailureReason::ChannelClosing);
-				assert!(contribution.is_some());
-			},
-			other => panic!("Expected SpliceFailed, got {:?}", other),
-		}
-		match &events[1] {
 			Event::DiscardFunding {
 				funding_info: FundingInfo::Contribution { inputs, outputs },
 				..
@@ -3076,6 +3068,14 @@ fn do_abandon_splice_quiescent_action_on_shutdown(local_shutdown: bool, pending_
 				assert_eq!(*outputs, expected_outputs);
 			},
 			other => panic!("Expected DiscardFunding with Contribution, got {:?}", other),
+		}
+		match &events[1] {
+			Event::SpliceFailed { channel_id: cid, reason, contribution, .. } => {
+				assert_eq!(*cid, channel_id);
+				assert_eq!(*reason, NegotiationFailureReason::ChannelClosing);
+				assert!(contribution.is_some());
+			},
+			other => panic!("Expected SpliceFailed, got {:?}", other),
 		}
 	} else {
 		expect_splice_failed_events(
@@ -4339,14 +4339,6 @@ fn test_splice_acceptor_disconnect_emits_events() {
 	let events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 2, "{events:?}");
 	match &events[0] {
-		Event::SpliceFailed { channel_id: cid, reason, contribution, .. } => {
-			assert_eq!(*cid, channel_id);
-			assert_eq!(*reason, NegotiationFailureReason::PeerDisconnected);
-			assert!(contribution.is_some());
-		},
-		other => panic!("Expected SpliceFailed, got {:?}", other),
-	}
-	match &events[1] {
 		Event::DiscardFunding {
 			funding_info: FundingInfo::Contribution { inputs, outputs },
 			..
@@ -4355,6 +4347,14 @@ fn test_splice_acceptor_disconnect_emits_events() {
 			assert!(!outputs.is_empty(), "Expected acceptor outputs, got empty");
 		},
 		other => panic!("Expected DiscardFunding with Contribution, got {:?}", other),
+	}
+	match &events[1] {
+		Event::SpliceFailed { channel_id: cid, reason, contribution, .. } => {
+			assert_eq!(*cid, channel_id);
+			assert_eq!(*reason, NegotiationFailureReason::PeerDisconnected);
+			assert!(contribution.is_some());
+		},
+		other => panic!("Expected SpliceFailed, got {:?}", other),
 	}
 
 	// Reconnect and verify the channel is still operational.
@@ -5713,20 +5713,20 @@ fn test_splice_rbf_acceptor_contributes_then_disconnects() {
 	nodes[0].node.peer_disconnected(node_id_1);
 	nodes[1].node.peer_disconnected(node_id_0);
 
-	// The initiator should get SpliceFailed + DiscardFunding.
+	// The initiator should get DiscardFunding + SpliceFailed.
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 2, "{events:?}");
 	match &events[0] {
+		Event::DiscardFunding { funding_info: FundingInfo::Contribution { .. }, .. } => {},
+		other => panic!("Expected DiscardFunding with Contribution, got {:?}", other),
+	}
+	match &events[1] {
 		Event::SpliceFailed { channel_id: cid, reason, contribution, .. } => {
 			assert_eq!(*cid, channel_id);
 			assert_eq!(*reason, NegotiationFailureReason::PeerDisconnected);
 			assert!(contribution.is_some());
 		},
 		other => panic!("Expected SpliceFailed, got {:?}", other),
-	}
-	match &events[1] {
-		Event::DiscardFunding { funding_info: FundingInfo::Contribution { .. }, .. } => {},
-		other => panic!("Expected DiscardFunding with Contribution, got {:?}", other),
 	}
 
 	// The acceptor re-contributed the same UTXOs as round 0 (via prior contribution
@@ -5796,18 +5796,10 @@ fn test_splice_rbf_disconnect_filters_prior_contributions() {
 	nodes[0].node.peer_disconnected(node_id_1);
 	nodes[1].node.peer_disconnected(node_id_0);
 
-	// The initiator should get SpliceFailed + DiscardFunding with filtered contributions.
+	// The initiator should get DiscardFunding + SpliceFailed with filtered contributions.
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 2, "{events:?}");
 	match &events[0] {
-		Event::SpliceFailed { channel_id: cid, reason, contribution, .. } => {
-			assert_eq!(*cid, channel_id);
-			assert_eq!(*reason, NegotiationFailureReason::PeerDisconnected);
-			assert!(contribution.is_some());
-		},
-		other => panic!("Expected SpliceFailed, got {:?}", other),
-	}
-	match &events[1] {
 		Event::DiscardFunding {
 			funding_info: FundingInfo::Contribution { inputs, outputs },
 			..
@@ -5819,6 +5811,14 @@ fn test_splice_rbf_disconnect_filters_prior_contributions() {
 			assert_eq!(*outputs, vec![splice_out_output.clone()]);
 		},
 		other => panic!("Expected DiscardFunding with Contribution, got {:?}", other),
+	}
+	match &events[1] {
+		Event::SpliceFailed { channel_id: cid, reason, contribution, .. } => {
+			assert_eq!(*cid, channel_id);
+			assert_eq!(*reason, NegotiationFailureReason::PeerDisconnected);
+			assert!(contribution.is_some());
+		},
+		other => panic!("Expected SpliceFailed, got {:?}", other),
 	}
 
 	// Reconnect. After a completed splice, channel_ready is not re-sent.
@@ -5843,16 +5843,16 @@ fn test_splice_rbf_disconnect_filters_prior_contributions() {
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 2, "{events:?}");
 	match &events[0] {
+		Event::DiscardFunding { .. } => {},
+		other => panic!("Expected DiscardFunding, got {:?}", other),
+	}
+	match &events[1] {
 		Event::SpliceFailed { channel_id: cid, reason, contribution, .. } => {
 			assert_eq!(*cid, channel_id);
 			assert_eq!(*reason, NegotiationFailureReason::PeerDisconnected);
 			assert!(contribution.is_some());
 		},
 		other => panic!("Expected SpliceFailed, got {:?}", other),
-	}
-	match &events[1] {
-		Event::DiscardFunding { .. } => {},
-		other => panic!("Expected DiscardFunding, got {:?}", other),
 	}
 
 	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);

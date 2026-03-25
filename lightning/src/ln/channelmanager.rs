@@ -4005,22 +4005,22 @@ impl<
 						if let Some(splice_funding_failed) = splice_funding_failed {
 							let mut pending_events = self.pending_events.lock().unwrap();
 							pending_events.push_back((
-								events::Event::SpliceFailed {
-									channel_id: *chan_id,
-									counterparty_node_id: *counterparty_node_id,
-									user_channel_id: chan.context().get_user_id(),
-									contribution: splice_funding_failed.contribution,
-									reason: events::NegotiationFailureReason::ChannelClosing,
-								},
-								None,
-							));
-							pending_events.push_back((
 								events::Event::DiscardFunding {
 									channel_id: *chan_id,
 									funding_info: FundingInfo::Contribution {
 										inputs: splice_funding_failed.contributed_inputs,
 										outputs: splice_funding_failed.contributed_outputs,
 									},
+								},
+								None,
+							));
+							pending_events.push_back((
+								events::Event::SpliceFailed {
+									channel_id: *chan_id,
+									counterparty_node_id: *counterparty_node_id,
+									user_channel_id: chan.context().get_user_id(),
+									contribution: splice_funding_failed.contribution,
+									reason: events::NegotiationFailureReason::ChannelClosing,
 								},
 								None,
 							));
@@ -4311,22 +4311,22 @@ impl<
 
 			if let Some(splice_funding_failed) = shutdown_res.splice_funding_failed.take() {
 				pending_events.push_back((
-					events::Event::SpliceFailed {
-						channel_id: shutdown_res.channel_id,
-						counterparty_node_id: shutdown_res.counterparty_node_id,
-						user_channel_id: shutdown_res.user_channel_id,
-						contribution: splice_funding_failed.contribution,
-						reason: events::NegotiationFailureReason::ChannelClosing,
-					},
-					None,
-				));
-				pending_events.push_back((
 					events::Event::DiscardFunding {
 						channel_id: shutdown_res.channel_id,
 						funding_info: FundingInfo::Contribution {
 							inputs: splice_funding_failed.contributed_inputs,
 							outputs: splice_funding_failed.contributed_outputs,
 						},
+					},
+					None,
+				));
+				pending_events.push_back((
+					events::Event::SpliceFailed {
+						channel_id: shutdown_res.channel_id,
+						counterparty_node_id: shutdown_res.counterparty_node_id,
+						user_channel_id: shutdown_res.user_channel_id,
+						contribution: splice_funding_failed.contribution,
+						reason: events::NegotiationFailureReason::ChannelClosing,
 					},
 					None,
 				));
@@ -4817,22 +4817,22 @@ impl<
 					if let Some(splice_funding_failed) = splice_funding_failed {
 						let pending_events = &mut self.pending_events.lock().unwrap();
 						pending_events.push_back((
-							events::Event::SpliceFailed {
-								channel_id: *channel_id,
-								counterparty_node_id: *counterparty_node_id,
-								user_channel_id: chan.context.get_user_id(),
-								contribution: splice_funding_failed.contribution,
-								reason: events::NegotiationFailureReason::LocallyAbandoned,
-							},
-							None,
-						));
-						pending_events.push_back((
 							events::Event::DiscardFunding {
 								channel_id: *channel_id,
 								funding_info: FundingInfo::Contribution {
 									inputs: splice_funding_failed.contributed_inputs,
 									outputs: splice_funding_failed.contributed_outputs,
 								},
+							},
+							None,
+						));
+						pending_events.push_back((
+							events::Event::SpliceFailed {
+								channel_id: *channel_id,
+								counterparty_node_id: *counterparty_node_id,
+								user_channel_id: chan.context.get_user_id(),
+								contribution: splice_funding_failed.contribution,
+								reason: events::NegotiationFailureReason::LocallyAbandoned,
 							},
 							None,
 						));
@@ -6512,16 +6512,6 @@ impl<
 				reason,
 			) => {
 				let pending_events = &mut self.pending_events.lock().unwrap();
-				pending_events.push_back((
-					events::Event::SpliceFailed {
-						channel_id,
-						counterparty_node_id,
-						user_channel_id,
-						reason,
-						contribution,
-					},
-					None,
-				));
 				if !contributed_inputs.is_empty() || !contributed_outputs.is_empty() {
 					pending_events.push_back((
 						events::Event::DiscardFunding {
@@ -6534,6 +6524,16 @@ impl<
 						None,
 					));
 				}
+				pending_events.push_back((
+					events::Event::SpliceFailed {
+						channel_id,
+						counterparty_node_id,
+						user_channel_id,
+						reason,
+						contribution,
+					},
+					None,
+				));
 			},
 		}
 	}
@@ -11702,22 +11702,22 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						if let Some(splice_funding_failed) = splice_funding_failed {
 							let pending_events = &mut self.pending_events.lock().unwrap();
 							pending_events.push_back((
-								events::Event::SpliceFailed {
-									channel_id,
-									counterparty_node_id: *counterparty_node_id,
-									user_channel_id: channel.context().get_user_id(),
-									contribution: splice_funding_failed.contribution.clone(),
-									reason: events::NegotiationFailureReason::NegotiationError,
-								},
-								None,
-							));
-							pending_events.push_back((
 								events::Event::DiscardFunding {
 									channel_id,
 									funding_info: FundingInfo::Contribution {
 										inputs: splice_funding_failed.contributed_inputs,
 										outputs: splice_funding_failed.contributed_outputs,
 									},
+								},
+								None,
+							));
+							pending_events.push_back((
+								events::Event::SpliceFailed {
+									channel_id,
+									counterparty_node_id: *counterparty_node_id,
+									user_channel_id: channel.context().get_user_id(),
+									contribution: splice_funding_failed.contribution.clone(),
+									reason: events::NegotiationFailureReason::NegotiationError,
 								},
 								None,
 							));
@@ -11861,22 +11861,22 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						if let Some(splice_funding_failed) = splice_funding_failed {
 							let pending_events = &mut self.pending_events.lock().unwrap();
 							pending_events.push_back((
-								events::Event::SpliceFailed {
-									channel_id: msg.channel_id,
-									counterparty_node_id,
-									user_channel_id: chan.context().get_user_id(),
-									contribution: splice_funding_failed.contribution.clone(),
-									reason: events::NegotiationFailureReason::NegotiationError,
-								},
-								None,
-							));
-							pending_events.push_back((
 								events::Event::DiscardFunding {
 									channel_id: msg.channel_id,
 									funding_info: FundingInfo::Contribution {
 										inputs: splice_funding_failed.contributed_inputs,
 										outputs: splice_funding_failed.contributed_outputs,
 									},
+								},
+								None,
+							));
+							pending_events.push_back((
+								events::Event::SpliceFailed {
+									channel_id: msg.channel_id,
+									counterparty_node_id,
+									user_channel_id: chan.context().get_user_id(),
+									contribution: splice_funding_failed.contribution.clone(),
+									reason: events::NegotiationFailureReason::NegotiationError,
 								},
 								None,
 							));
@@ -12031,22 +12031,22 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					if let Some(splice_funding_failed) = splice_failed {
 						let pending_events = &mut self.pending_events.lock().unwrap();
 						pending_events.push_back((
-							events::Event::SpliceFailed {
-								channel_id: msg.channel_id,
-								counterparty_node_id: *counterparty_node_id,
-								user_channel_id: chan_entry.get().context().get_user_id(),
-								contribution: splice_funding_failed.contribution,
-								reason: events::NegotiationFailureReason::CounterpartyAborted,
-							},
-							None,
-						));
-						pending_events.push_back((
 							events::Event::DiscardFunding {
 								channel_id: msg.channel_id,
 								funding_info: FundingInfo::Contribution {
 									inputs: splice_funding_failed.contributed_inputs,
 									outputs: splice_funding_failed.contributed_outputs,
 								},
+							},
+							None,
+						));
+						pending_events.push_back((
+							events::Event::SpliceFailed {
+								channel_id: msg.channel_id,
+								counterparty_node_id: *counterparty_node_id,
+								user_channel_id: chan_entry.get().context().get_user_id(),
+								contribution: splice_funding_failed.contribution,
+								reason: events::NegotiationFailureReason::CounterpartyAborted,
 							},
 							None,
 						));
@@ -12179,22 +12179,22 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						if let Some(splice_funding_failed) = splice_funding_failed {
 							let mut pending_events = self.pending_events.lock().unwrap();
 							pending_events.push_back((
-								events::Event::SpliceFailed {
-									channel_id: msg.channel_id,
-									counterparty_node_id: *counterparty_node_id,
-									user_channel_id: chan.context().get_user_id(),
-									contribution: splice_funding_failed.contribution,
-									reason: events::NegotiationFailureReason::ChannelClosing,
-								},
-								None,
-							));
-							pending_events.push_back((
 								events::Event::DiscardFunding {
 									channel_id: msg.channel_id,
 									funding_info: FundingInfo::Contribution {
 										inputs: splice_funding_failed.contributed_inputs,
 										outputs: splice_funding_failed.contributed_outputs,
 									},
+								},
+								None,
+							));
+							pending_events.push_back((
+								events::Event::SpliceFailed {
+									channel_id: msg.channel_id,
+									counterparty_node_id: *counterparty_node_id,
+									user_channel_id: chan.context().get_user_id(),
+									contribution: splice_funding_failed.contribution,
+									reason: events::NegotiationFailureReason::ChannelClosing,
 								},
 								None,
 							));
@@ -15287,19 +15287,19 @@ impl<
 							chan.peer_disconnected_is_resumable(&&logger);
 
 						if let Some(splice_funding_failed) = splice_funding_failed {
-							splice_failed_events.push(events::Event::SpliceFailed {
-								channel_id: chan.context().channel_id(),
-								counterparty_node_id,
-								user_channel_id: chan.context().get_user_id(),
-								contribution: splice_funding_failed.contribution,
-								reason: events::NegotiationFailureReason::PeerDisconnected,
-							});
 							splice_failed_events.push(events::Event::DiscardFunding {
 								channel_id: chan.context().channel_id(),
 								funding_info: FundingInfo::Contribution {
 									inputs: splice_funding_failed.contributed_inputs,
 									outputs: splice_funding_failed.contributed_outputs,
 								},
+							});
+							splice_failed_events.push(events::Event::SpliceFailed {
+								channel_id: chan.context().channel_id(),
+								counterparty_node_id,
+								user_channel_id: chan.context().get_user_id(),
+								contribution: splice_funding_failed.contribution,
+								reason: events::NegotiationFailureReason::PeerDisconnected,
 							});
 						}
 
@@ -17937,22 +17937,22 @@ impl<
 			for chan in peer_state.channel_by_id.values().filter_map(Channel::as_funded) {
 				if let Some(splice_funding_failed) = chan.maybe_splice_funding_failed() {
 					events.push_back((
-						events::Event::SpliceFailed {
-							channel_id: chan.context.channel_id(),
-							counterparty_node_id: chan.context.get_counterparty_node_id(),
-							user_channel_id: chan.context.get_user_id(),
-							reason: events::NegotiationFailureReason::PeerDisconnected,
-							contribution: splice_funding_failed.contribution,
-						},
-						None,
-					));
-					events.push_back((
 						events::Event::DiscardFunding {
 							channel_id: chan.context().channel_id(),
 							funding_info: FundingInfo::Contribution {
 								inputs: splice_funding_failed.contributed_inputs,
 								outputs: splice_funding_failed.contributed_outputs,
 							},
+						},
+						None,
+					));
+					events.push_back((
+						events::Event::SpliceFailed {
+							channel_id: chan.context.channel_id(),
+							counterparty_node_id: chan.context.get_counterparty_node_id(),
+							user_channel_id: chan.context.get_user_id(),
+							reason: events::NegotiationFailureReason::PeerDisconnected,
+							contribution: splice_funding_failed.contribution,
 						},
 						None,
 					));
