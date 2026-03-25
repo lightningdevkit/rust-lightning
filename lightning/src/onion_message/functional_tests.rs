@@ -24,7 +24,7 @@ use super::offers::{OffersMessage, OffersMessageHandler};
 use super::packet::{OnionMessageContents, Packet};
 use crate::blinded_path::message::{
 	AsyncPaymentsContext, BlindedMessagePath, DNSResolverContext, MessageContext,
-	MessageForwardNode, OffersContext, MESSAGE_PADDING_ROUND_OFF,
+	MessageForwardNode, NextMessageHop, OffersContext, MESSAGE_PADDING_ROUND_OFF,
 };
 use crate::blinded_path::utils::is_padded;
 use crate::blinded_path::EmptyNodeIdLookUp;
@@ -1144,9 +1144,13 @@ fn intercept_offline_peer_oms() {
 	let mut events = release_events(&nodes[1]);
 	assert_eq!(events.len(), 1);
 	let onion_message = match events.remove(0) {
-		Event::OnionMessageIntercepted { peer_node_id, message } => {
-			assert_eq!(peer_node_id, final_node_vec[0].node_id);
-			message
+		Event::OnionMessageIntercepted { next_hop, message } => {
+			if let NextMessageHop::NodeId(peer_node_id) = next_hop {
+				assert_eq!(peer_node_id, final_node_vec[0].node_id);
+				message
+			} else {
+				panic!();
+			}
 		},
 		_ => panic!(),
 	};
