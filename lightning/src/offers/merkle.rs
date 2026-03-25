@@ -645,9 +645,7 @@ pub(super) fn reconstruct_merkle_root<'a>(
 						Some(tagged_branch_hash_from_engine(branch_tag.clone(), l, r));
 				},
 				(Some(_), None) => {},
-				(None, _) => {
-					return Err(SelectiveDisclosureError::InsufficientMissingHashes);
-				},
+				(None, _) => {},
 			};
 		}
 	}
