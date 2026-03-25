@@ -8,6 +8,7 @@
 // licenses.
 
 use lightning::util::logger::{Logger, Record};
+use std::any::TypeId;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
@@ -66,6 +67,9 @@ impl<'a, Out: Output> Write for LockedWriteAdapter<'a, Out> {
 
 impl<Out: Output> Logger for TestLogger<Out> {
 	fn log(&self, record: Record) {
+		if TypeId::of::<Out>() == TypeId::of::<DevNull>() {
+			return;
+		}
 		writeln!(LockedWriteAdapter(&self.out), "{:<6} {}", self.id, record).unwrap();
 	}
 }
