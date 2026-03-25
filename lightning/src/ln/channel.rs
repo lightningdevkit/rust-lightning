@@ -37,7 +37,7 @@ use crate::chain::channelmonitor::{
 };
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::chain::BlockLocator;
-use crate::events::{ClosureReason, FundingInfo};
+use crate::events::{ClosureReason, FundingInfo, NegotiationFailureReason};
 use crate::ln::chan_utils;
 use crate::ln::chan_utils::{
 	get_commitment_transaction_number_obscure_factor, max_htlcs, second_stage_tx_fees_sat,
@@ -3192,7 +3192,17 @@ pub(crate) enum QuiescentAction {
 pub(super) enum QuiescentError {
 	DoNothing,
 	DiscardFunding { inputs: Vec<bitcoin::OutPoint>, outputs: Vec<bitcoin::TxOut> },
-	FailSplice(SpliceFundingFailed),
+	FailSplice(SpliceFundingFailed, NegotiationFailureReason),
+}
+
+impl QuiescentError {
+	fn with_negotiation_failure_reason(mut self, reason: NegotiationFailureReason) -> Self {
+		match self {
+			QuiescentError::FailSplice(_, ref mut r) => *r = reason,
+			_ => debug_assert!(false, "Expected FailSplice variant"),
+		}
+		self
+	}
 }
 
 pub(crate) enum StfuResponse {
@@ -7155,9 +7165,10 @@ where
 
 	fn quiescent_action_into_error(&self, action: QuiescentAction) -> QuiescentError {
 		match action {
-			QuiescentAction::Splice { contribution, .. } => {
-				QuiescentError::FailSplice(self.splice_funding_failed_for(contribution))
-			},
+			QuiescentAction::Splice { contribution, .. } => QuiescentError::FailSplice(
+				self.splice_funding_failed_for(contribution),
+				NegotiationFailureReason::Unknown,
+			),
 			#[cfg(any(test, fuzzing, feature = "_test_utils"))]
 			QuiescentAction::DoNothing => QuiescentError::DoNothing,
 		}
@@ -7166,7 +7177,7 @@ where
 	fn abandon_quiescent_action(&mut self) -> Option<SpliceFundingFailed> {
 		let action = self.quiescent_action.take()?;
 		match self.quiescent_action_into_error(action) {
-			QuiescentError::FailSplice(failed) => Some(failed),
+			QuiescentError::FailSplice(failed, _) => Some(failed),
 			#[cfg(any(test, fuzzing, feature = "_test_utils"))]
 			QuiescentError::DoNothing => None,
 			_ => {
@@ -10446,7 +10457,7 @@ where
 				tx_abort = Some(msgs::TxAbort {
 					channel_id: self.context.channel_id(),
 					data:
-						"No active signing session. The associated funding transaction may have already been broadcast.".as_bytes().to_vec() });
+						"Signing was not completed for this funding transaction; it may be forgotten.".as_bytes().to_vec() });
 			}
 		}
 		if let Some(funding_txid) = retransmit_funding_commit_sig {
@@ -12652,7 +12663,10 @@ where
 			)
 		{
 			log_error!(logger, "Channel {} cannot be funded: {}", self.context.channel_id(), e);
-			return Err(QuiescentError::FailSplice(self.splice_funding_failed_for(contribution)));
+			return Err(QuiescentError::FailSplice(
+				self.splice_funding_failed_for(contribution),
+				NegotiationFailureReason::ContributionInvalid,
+			));
 		}
 
 		if let Some(pending_splice) = self.pending_splice.as_ref() {
@@ -12668,6 +12682,7 @@ where
 				);
 				return Err(QuiescentError::FailSplice(
 					self.splice_funding_failed_for(contribution),
+					NegotiationFailureReason::FeeRateTooLow,
 				));
 			}
 		}
@@ -14165,9 +14180,18 @@ where
 	) -> Result<Option<msgs::Stfu>, QuiescentError> {
 		log_debug!(logger, "Attempting to initiate quiescence");
 
+		// TODO: NegotiationFailureReason is splice-specific, but propose_quiescence is
+		// generic. The reason should be selected by the caller, but it currently can't
+		// distinguish why quiescence failed. Revisit when a second quiescent protocol is added.
 		if !self.context.is_usable() {
+			debug_assert!(
+				self.context.channel_state.is_local_shutdown_sent()
+					|| self.context.channel_state.is_remote_shutdown_sent(),
+				"splice_channel should have prevented reaching propose_quiescence on a non-ready channel"
+			);
 			log_debug!(logger, "Channel is not in a usable state to propose quiescence");
-			return Err(self.quiescent_action_into_error(action));
+			return Err(self.quiescent_action_into_error(action)
+				.with_negotiation_failure_reason(NegotiationFailureReason::ChannelClosing));
 		}
 		if self.quiescent_action.is_some() {
 			log_debug!(
@@ -14286,7 +14310,10 @@ where
 								self.context.channel_id(),
 								e,
 							)),
-							QuiescentError::FailSplice(failed),
+							QuiescentError::FailSplice(
+								failed,
+								NegotiationFailureReason::ContributionInvalid,
+							),
 						));
 					}
 					let prior_contribution = contribution.clone();

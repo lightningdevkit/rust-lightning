@@ -4169,6 +4169,7 @@ impl<
 									user_channel_id: chan.context().get_user_id(),
 									abandoned_funding_txo: splice_funding_failed.funding_txo,
 									channel_type: splice_funding_failed.channel_type,
+									reason: events::NegotiationFailureReason::ChannelClosing,
 								},
 								None,
 							));
@@ -4475,6 +4476,7 @@ impl<
 						user_channel_id: shutdown_res.user_channel_id,
 						abandoned_funding_txo: splice_funding_failed.funding_txo,
 						channel_type: splice_funding_failed.channel_type,
+						reason: events::NegotiationFailureReason::ChannelClosing,
 					},
 					None,
 				));
@@ -4981,6 +4983,7 @@ impl<
 								user_channel_id: chan.context.get_user_id(),
 								abandoned_funding_txo: splice_funding_failed.funding_txo,
 								channel_type: splice_funding_failed.channel_type,
+								reason: events::NegotiationFailureReason::LocallyAbandoned,
 							},
 							None,
 						));
@@ -6673,12 +6676,15 @@ impl<
 					));
 				}
 			},
-			QuiescentError::FailSplice(SpliceFundingFailed {
-				funding_txo,
-				channel_type,
-				contributed_inputs,
-				contributed_outputs,
-			}) => {
+			QuiescentError::FailSplice(
+				SpliceFundingFailed {
+					funding_txo,
+					channel_type,
+					contributed_inputs,
+					contributed_outputs,
+				},
+				reason,
+			) => {
 				let pending_events = &mut self.pending_events.lock().unwrap();
 				pending_events.push_back((
 					events::Event::SpliceFailed {
@@ -6687,6 +6693,7 @@ impl<
 						user_channel_id,
 						abandoned_funding_txo: funding_txo,
 						channel_type,
+						reason,
 					},
 					None,
 				));
@@ -6840,7 +6847,7 @@ impl<
 											"Channel {} already has a pending funding contribution",
 											channel_id,
 										),
-										QuiescentError::FailSplice(_) => format!(
+										QuiescentError::FailSplice(..) => format!(
 											"Channel {} cannot accept funding contribution",
 											channel_id,
 										),
@@ -11983,6 +11990,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					user_channel_id,
 					abandoned_funding_txo: splice_funding_failed.funding_txo,
 					channel_type: splice_funding_failed.channel_type.clone(),
+					reason: events::NegotiationFailureReason::NegotiationError {
+						msg: format!("{:?}", err.err),
+					},
 				},
 				None,
 			));
@@ -12319,6 +12329,11 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								user_channel_id: chan_entry.get().context().get_user_id(),
 								abandoned_funding_txo: splice_funding_failed.funding_txo,
 								channel_type: splice_funding_failed.channel_type,
+								reason: events::NegotiationFailureReason::CounterpartyAborted {
+									msg: UntrustedString(
+										String::from_utf8_lossy(&msg.data).to_string(),
+									),
+								},
 							},
 							None,
 						));
@@ -12467,6 +12482,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 									user_channel_id: chan.context().get_user_id(),
 									abandoned_funding_txo: splice_funding_failed.funding_txo,
 									channel_type: splice_funding_failed.channel_type,
+									reason: events::NegotiationFailureReason::ChannelClosing,
 								},
 								None,
 							));
@@ -15543,6 +15559,7 @@ impl<
 								user_channel_id: chan.context().get_user_id(),
 								abandoned_funding_txo: splice_funding_failed.funding_txo,
 								channel_type: splice_funding_failed.channel_type,
+								reason: events::NegotiationFailureReason::PeerDisconnected,
 							});
 							splice_failed_events.push(events::Event::DiscardFunding {
 								channel_id: chan.context().channel_id(),
@@ -18171,6 +18188,7 @@ impl<
 							user_channel_id: chan.context.get_user_id(),
 							abandoned_funding_txo: splice_funding_failed.funding_txo,
 							channel_type: splice_funding_failed.channel_type,
+							reason: events::NegotiationFailureReason::PeerDisconnected,
 						},
 						None,
 					));
