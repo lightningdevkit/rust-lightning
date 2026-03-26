@@ -30,7 +30,7 @@ use bitcoin::hashes::{Hash, HashEngine, HmacEngine};
 
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::secp256k1::{PublicKey, SecretKey};
-use bitcoin::{secp256k1, FeeRate, Sequence, SignedAmount};
+use bitcoin::{secp256k1, Sequence, SignedAmount};
 
 use crate::blinded_path::message::{
 	AsyncPaymentsContext, BlindedMessagePath, MessageForwardNode, OffersContext,
@@ -4807,8 +4807,7 @@ impl<
 	}
 
 	/// Initiate a splice in order to add value to (splice-in) or remove value from (splice-out)
-	/// the channel. This will spend the channel's funding transaction output, effectively replacing
-	/// it with a new one.
+	/// the channel, or to RBF a pending splice transaction.
 	///
 	/// # Required Feature Flags
 	///
@@ -4816,52 +4815,16 @@ impl<
 	/// channel (no matter the type) can be spliced, as long as the counterparty is currently
 	/// connected.
 	///
-	/// # Arguments
+	/// # Return Value
 	///
-	/// The splice initiator is responsible for paying fees for common fields, shared inputs, and
-	/// shared outputs along with any contributed inputs and outputs. When building a
-	/// [`FundingContribution`], fees are estimated at `min_feerate` assuming initiator
-	/// responsibility and must be covered by the supplied inputs for splice-in or the channel
-	/// balance for splice-out. If the counterparty also initiates a splice and wins the
-	/// tie-break, they become the initiator and choose the feerate. The fee is then
-	/// re-estimated at the counterparty's feerate for only our contributed inputs and outputs,
-	/// which may be higher or lower than the original estimate. The contribution is dropped and
-	/// the splice proceeds without it when:
-	/// - the counterparty's feerate is below `min_feerate`
-	/// - the counterparty's feerate is above `max_feerate` and the re-estimated fee exceeds the
-	///   original fee estimate
-	/// - the re-estimated fee exceeds the *fee buffer* regardless of `max_feerate`
-	///
-	/// The fee buffer is the maximum fee that can be accommodated:
-	/// - **splice-in**: the selected inputs' value minus the contributed amount
-	/// - **splice-out**: the channel balance minus the withdrawal outputs
-	///
-	/// Returns a [`FundingTemplate`] which should be used to build a [`FundingContribution`] via
-	/// one of its splice methods (e.g., [`FundingTemplate::splice_in_sync`]). The resulting
-	/// contribution must then be passed to [`ChannelManager::funding_contributed`].
-	///
-	/// # Events
-	///
-	/// Once the funding transaction has been constructed, an [`Event::SplicePending`] will be
-	/// emitted. At this point, any inputs contributed to the splice can only be re-spent if an
-	/// [`Event::DiscardFunding`] is seen.
-	///
-	/// After initial signatures have been exchanged, [`Event::FundingTransactionReadyForSigning`]
-	/// will be generated and [`ChannelManager::funding_transaction_signed`] should be called.
-	///
-	/// If any failures occur while negotiating the funding transaction, an [`Event::SpliceFailed`]
-	/// will be emitted. Any contributed inputs no longer used will be included here and thus can
-	/// be re-spent.
-	///
-	/// Once the splice has been locked by both counterparties, an [`Event::ChannelReady`] will be
-	/// emitted with the new funding output. At this point, a new splice can be negotiated by
-	/// calling `splice_channel` again on this channel.
-	///
-	/// [`FundingContribution`]: crate::ln::funding::FundingContribution
+	/// Returns a [`FundingTemplate`] which should be used to obtain a [`FundingContribution`]
+	/// to pass to [`ChannelManager::funding_contributed`]. If a splice has been negotiated but
+	/// not yet locked, it can be replaced with a higher feerate transaction to speed up
+	/// confirmation via Replace By Fee (RBF). See [`FundingTemplate`] for details on building
+	/// a fresh contribution or reusing a prior one for RBF.
 	#[rustfmt::skip]
 	pub fn splice_channel(
 		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey,
-		min_feerate: FeeRate, max_feerate: FeeRate,
 	) -> Result<FundingTemplate, APIError> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 
@@ -4889,99 +4852,11 @@ impl<
 		match peer_state.channel_by_id.entry(*channel_id) {
 			hash_map::Entry::Occupied(chan_phase_entry) => {
 				if let Some(chan) = chan_phase_entry.get().as_funded() {
-					chan.splice_channel(min_feerate, max_feerate)
+					chan.splice_channel()
 				} else {
 					Err(APIError::ChannelUnavailable {
 						err: format!(
 							"Channel with id {} is not funded, cannot splice it",
-							channel_id
-						),
-					})
-				}
-			},
-			hash_map::Entry::Vacant(_) => {
-				Err(APIError::no_such_channel_for_peer(channel_id, counterparty_node_id))
-			},
-		}
-	}
-
-	/// Initiate an RBF of a pending splice transaction for an existing channel.
-	///
-	/// This is used after a splice has been negotiated but before it has been locked, in order
-	/// to bump the feerate of the funding transaction via replace-by-fee.
-	///
-	/// # Required Feature Flags
-	///
-	/// Initiating an RBF requires that the channel counterparty supports splicing. The
-	/// counterparty must be currently connected.
-	///
-	/// # Arguments
-	///
-	/// The RBF initiator is responsible for paying fees for common fields, shared inputs, and
-	/// shared outputs along with any contributed inputs and outputs. When building a
-	/// [`FundingContribution`], fees are estimated using `min_feerate` and must be covered by the
-	/// supplied inputs for splice-in or the channel balance for splice-out. If the counterparty
-	/// also initiates an RBF and wins the tie-break, they become the initiator and choose the
-	/// feerate. In that case, `max_feerate` is used to reject a feerate that is too high for our
-	/// contribution.
-	///
-	/// Returns a [`FundingTemplate`] which should be used to build a [`FundingContribution`] via
-	/// one of its splice methods (e.g., [`FundingTemplate::splice_in_sync`]). The resulting
-	/// contribution must then be passed to [`ChannelManager::funding_contributed`].
-	///
-	/// # Events
-	///
-	/// Once the funding transaction has been constructed, an [`Event::SplicePending`] will be
-	/// emitted. At this point, any inputs contributed to the splice can only be re-spent if an
-	/// [`Event::DiscardFunding`] is seen.
-	///
-	/// After initial signatures have been exchanged, [`Event::FundingTransactionReadyForSigning`]
-	/// will be generated and [`ChannelManager::funding_transaction_signed`] should be called.
-	///
-	/// If any failures occur while negotiating the funding transaction, an [`Event::SpliceFailed`]
-	/// will be emitted. Any contributed inputs no longer used will be included here and thus can
-	/// be re-spent.
-	///
-	/// Once the splice has been locked by both counterparties, an [`Event::ChannelReady`] will be
-	/// emitted with the new funding output. At this point, a new splice can be negotiated by
-	/// calling `splice_channel` again on this channel.
-	///
-	/// [`FundingContribution`]: crate::ln::funding::FundingContribution
-	pub fn rbf_channel(
-		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey, min_feerate: FeeRate,
-		max_feerate: FeeRate,
-	) -> Result<FundingTemplate, APIError> {
-		let per_peer_state = self.per_peer_state.read().unwrap();
-
-		let peer_state_mutex = match per_peer_state
-			.get(counterparty_node_id)
-			.ok_or_else(|| APIError::no_such_peer(counterparty_node_id))
-		{
-			Ok(p) => p,
-			Err(e) => return Err(e),
-		};
-
-		let mut peer_state = peer_state_mutex.lock().unwrap();
-		if !peer_state.latest_features.supports_splicing() {
-			return Err(APIError::ChannelUnavailable {
-				err: "Peer does not support splicing".to_owned(),
-			});
-		}
-		if !peer_state.latest_features.supports_quiescence() {
-			return Err(APIError::ChannelUnavailable {
-				err: "Peer does not support quiescence, a splicing prerequisite".to_owned(),
-			});
-		}
-
-		// Look for the channel
-		match peer_state.channel_by_id.entry(*channel_id) {
-			hash_map::Entry::Occupied(chan_phase_entry) => {
-				if let Some(chan) = chan_phase_entry.get().as_funded() {
-					chan.rbf_channel(min_feerate, max_feerate)
-				} else {
-					Err(APIError::ChannelUnavailable {
-						err: format!(
-							"Channel with id {} is not funded, cannot RBF splice",
 							channel_id
 						),
 					})
@@ -6718,6 +6593,57 @@ impl<
 		result
 	}
 
+	/// Emits events for a [`QuiescentError`], if applicable.
+	fn handle_quiescent_error(
+		&self, channel_id: ChannelId, counterparty_node_id: PublicKey, user_channel_id: u128,
+		error: QuiescentError,
+	) {
+		match error {
+			QuiescentError::DoNothing => {},
+			QuiescentError::DiscardFunding { inputs, outputs } => {
+				if !inputs.is_empty() || !outputs.is_empty() {
+					self.pending_events.lock().unwrap().push_back((
+						events::Event::DiscardFunding {
+							channel_id,
+							funding_info: FundingInfo::Contribution { inputs, outputs },
+						},
+						None,
+					));
+				}
+			},
+			QuiescentError::FailSplice(SpliceFundingFailed {
+				funding_txo,
+				channel_type,
+				contributed_inputs,
+				contributed_outputs,
+			}) => {
+				let pending_events = &mut self.pending_events.lock().unwrap();
+				pending_events.push_back((
+					events::Event::SpliceFailed {
+						channel_id,
+						counterparty_node_id,
+						user_channel_id,
+						abandoned_funding_txo: funding_txo,
+						channel_type,
+					},
+					None,
+				));
+				if !contributed_inputs.is_empty() || !contributed_outputs.is_empty() {
+					pending_events.push_back((
+						events::Event::DiscardFunding {
+							channel_id,
+							funding_info: FundingInfo::Contribution {
+								inputs: contributed_inputs,
+								outputs: contributed_outputs,
+							},
+						},
+						None,
+					));
+				}
+			},
+		}
+	}
+
 	/// Adds or removes funds from the given channel as specified by a [`FundingContribution`].
 	///
 	/// Used after [`ChannelManager::splice_channel`] by constructing a [`FundingContribution`]
@@ -6728,20 +6654,46 @@ impl<
 	/// An optional `locktime` for the funding transaction may be specified. If not given, the
 	/// current best block height is used.
 	///
+	/// # Fee Estimation
+	///
+	/// The splice initiator is responsible for paying fees for common fields, shared inputs, and
+	/// shared outputs along with any contributed inputs and outputs. When building a
+	/// [`FundingContribution`], fees are estimated at `min_feerate` assuming initiator
+	/// responsibility and must be covered by the supplied inputs for splice-in or the channel
+	/// balance for splice-out. If the counterparty also initiates a splice and wins the
+	/// tie-break, they become the initiator and choose the feerate. The fee is then
+	/// re-estimated at the counterparty's feerate for only our contributed inputs and outputs,
+	/// which may be higher or lower than the original estimate. The contribution is dropped and
+	/// the splice proceeds without it when:
+	/// - the counterparty's feerate is below `min_feerate`
+	/// - the counterparty's feerate is above `max_feerate` and the re-estimated fee exceeds the
+	///   original fee estimate
+	/// - the re-estimated fee exceeds the *fee buffer* regardless of `max_feerate`
+	///
+	/// The fee buffer is the maximum fee that can be accommodated:
+	/// - **splice-in**: the selected inputs' value minus the contributed amount
+	/// - **splice-out**: the channel balance minus the withdrawal outputs
+	///
 	/// # Events
 	///
 	/// Calling this method will commence the process of creating a new funding transaction for the
-	/// channel. An [`Event::FundingTransactionReadyForSigning`] will be generated once the
-	/// transaction is successfully constructed interactively with the counterparty.
+	/// channel. Once the funding transaction has been constructed, an [`Event::SplicePending`]
+	/// will be emitted. At this point, any inputs contributed to the splice can only be re-spent
+	/// if an [`Event::DiscardFunding`] is seen.
 	///
-	/// If unsuccessful, an [`Event::SpliceFailed`] will be produced if there aren't any earlier
-	/// splice attempts for the channel outstanding (i.e., haven't yet produced either
-	/// [`Event::SplicePending`] or [`Event::SpliceFailed`]).
+	/// If any failures occur while negotiating the funding transaction, an [`Event::SpliceFailed`]
+	/// will be emitted. Any contributed inputs no longer used will be included in an
+	/// [`Event::DiscardFunding`] and thus can be re-spent. If a [`FundingTemplate`] was obtained
+	/// while a previous splice was still being negotiated, its
+	/// [`min_rbf_feerate`][FundingTemplate::min_rbf_feerate] may be stale after the failure.
+	/// Call [`ChannelManager::splice_channel`] again to get a fresh template.
 	///
-	/// If unsuccessful, an [`Event::DiscardFunding`] will be produced for any contributions
-	/// passed in that are not found in any outstanding attempts for the channel. If there are no
-	/// such contributions, then the [`Event::DiscardFunding`] will not be produced since these
-	/// contributions must not be reused yet.
+	/// After initial signatures have been exchanged, [`Event::FundingTransactionReadyForSigning`]
+	/// will be generated and [`ChannelManager::funding_transaction_signed`] should be called.
+	///
+	/// Once the splice has been locked by both counterparties, an [`Event::ChannelReady`] will be
+	/// emitted with the new funding output. At this point, a new (non-RBF) splice can be negotiated by
+	/// calling [`ChannelManager::splice_channel`] again on this channel.
 	///
 	/// # Errors
 	///
@@ -6787,7 +6739,12 @@ impl<
 							locktime.unwrap_or_else(|| self.current_best_block().height),
 						);
 						let logger = WithChannelContext::from(&self.logger, chan.context(), None);
-						match chan.funding_contributed(contribution, locktime, &&logger) {
+						match chan.funding_contributed(
+							contribution,
+							locktime,
+							&self.fee_estimator,
+							&&logger,
+						) {
 							Ok(msg_opt) => {
 								if let Some(msg) = msg_opt {
 									peer_state.pending_msg_events.push(
@@ -6798,62 +6755,29 @@ impl<
 									);
 								}
 							},
-							Err(QuiescentError::DoNothing) => {
+							Err(e) => {
 								result = Err(APIError::APIMisuseError {
-									err: format!(
-										"Duplicate funding contribution for channel {}",
-										channel_id
-									),
-								});
-							},
-							Err(QuiescentError::DiscardFunding { inputs, outputs }) => {
-								self.pending_events.lock().unwrap().push_back((
-									events::Event::DiscardFunding {
-										channel_id: *channel_id,
-										funding_info: FundingInfo::Contribution { inputs, outputs },
+									err: match &e {
+										QuiescentError::DoNothing => format!(
+											"Duplicate funding contribution for channel {}",
+											channel_id,
+										),
+										QuiescentError::DiscardFunding { .. } => format!(
+											"Channel {} already has a pending funding contribution",
+											channel_id,
+										),
+										QuiescentError::FailSplice(_) => format!(
+											"Channel {} cannot accept funding contribution",
+											channel_id,
+										),
 									},
-									None,
-								));
-								result = Err(APIError::APIMisuseError {
-									err: format!(
-										"Channel {} already has a pending funding contribution",
-										channel_id
-									),
 								});
-							},
-							Err(QuiescentError::FailSplice(SpliceFundingFailed {
-								funding_txo,
-								channel_type,
-								contributed_inputs,
-								contributed_outputs,
-							})) => {
-								let pending_events = &mut self.pending_events.lock().unwrap();
-								pending_events.push_back((
-									events::Event::SpliceFailed {
-										channel_id: *channel_id,
-										counterparty_node_id: *counterparty_node_id,
-										user_channel_id: channel.context().get_user_id(),
-										abandoned_funding_txo: funding_txo,
-										channel_type,
-									},
-									None,
-								));
-								pending_events.push_back((
-									events::Event::DiscardFunding {
-										channel_id: *channel_id,
-										funding_info: FundingInfo::Contribution {
-											inputs: contributed_inputs,
-											outputs: contributed_outputs,
-										},
-									},
-									None,
-								));
-								result = Err(APIError::APIMisuseError {
-									err: format!(
-										"Channel {} cannot accept funding contribution",
-										channel_id
-									),
-								});
+								self.handle_quiescent_error(
+									*channel_id,
+									*counterparty_node_id,
+									channel.context().get_user_id(),
+									e,
+								);
 							},
 						}
 
@@ -13044,6 +12968,16 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					);
 
 					let res = chan.stfu(&msg, &&logger);
+					let (res, quiescent_error) = match res {
+						Ok(resp) => (Ok(resp), QuiescentError::DoNothing),
+						Err((chan_err, quiescent_err)) => (Err(chan_err), quiescent_err),
+					};
+					self.handle_quiescent_error(
+						chan_entry.get().context().channel_id(),
+						*counterparty_node_id,
+						chan_entry.get().context().get_user_id(),
+						quiescent_error,
+					);
 					let resp = try_channel_entry!(self, peer_state, res, chan_entry);
 					match resp {
 						None => Ok(false),

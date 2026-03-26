@@ -56,7 +56,7 @@ use lightning::ln::channelmanager::{
 	TrustedChannelFeatures,
 };
 use lightning::ln::functional_test_utils::*;
-use lightning::ln::funding::{FundingContribution, FundingTemplate};
+use lightning::ln::funding::{FundingContribution, FundingContributionError, FundingTemplate};
 use lightning::ln::inbound_payment::ExpandedKey;
 use lightning::ln::msgs::{
 	self, BaseMessageHandler, ChannelMessageHandler, CommitmentUpdate, Init, MessageSendEvent,
@@ -1452,36 +1452,31 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], underlying_out:
 		}};
 	}
 
-	let splice_channel = |node: &ChanMan,
-	                      counterparty_node_id: &PublicKey,
-	                      channel_id: &ChannelId,
-	                      f: &dyn Fn(FundingTemplate) -> Result<FundingContribution, ()>,
-	                      funding_feerate_sat_per_kw: FeeRate| {
-		match node.splice_channel(
-			channel_id,
-			counterparty_node_id,
-			funding_feerate_sat_per_kw,
-			FeeRate::MAX,
-		) {
-			Ok(funding_template) => {
-				if let Ok(contribution) = f(funding_template) {
-					let _ = node.funding_contributed(
-						channel_id,
-						counterparty_node_id,
-						contribution,
-						None,
+	let splice_channel =
+		|node: &ChanMan,
+		 counterparty_node_id: &PublicKey,
+		 channel_id: &ChannelId,
+		 f: &dyn Fn(FundingTemplate) -> Result<FundingContribution, FundingContributionError>| {
+			match node.splice_channel(channel_id, counterparty_node_id) {
+				Ok(funding_template) => {
+					if let Ok(contribution) = f(funding_template) {
+						let _ = node.funding_contributed(
+							channel_id,
+							counterparty_node_id,
+							contribution,
+							None,
+						);
+					}
+				},
+				Err(e) => {
+					assert!(
+						matches!(e, APIError::APIMisuseError { ref err } if err.contains("splice")),
+						"{:?}",
+						e
 					);
-				}
-			},
-			Err(e) => {
-				assert!(
-					matches!(e, APIError::APIMisuseError { ref err } if err.contains("splice")),
-					"{:?}",
-					e
-				);
-			},
-		}
-	};
+				},
+			}
+		};
 
 	let splice_in =
 		|node: &ChanMan,
@@ -1494,9 +1489,15 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], underlying_out:
 				counterparty_node_id,
 				channel_id,
 				&move |funding_template: FundingTemplate| {
-					funding_template.splice_in_sync(Amount::from_sat(10_000), wallet)
+					let feerate =
+						funding_template.min_rbf_feerate().unwrap_or(funding_feerate_sat_per_kw);
+					funding_template.splice_in_sync(
+						Amount::from_sat(10_000),
+						feerate,
+						FeeRate::MAX,
+						wallet,
+					)
 				},
-				funding_feerate_sat_per_kw,
 			);
 		};
 
@@ -1518,19 +1519,19 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], underlying_out:
 		if outbound_capacity_msat < 20_000_000 {
 			return;
 		}
-		splice_channel(
-			node,
-			counterparty_node_id,
-			channel_id,
-			&move |funding_template| {
-				let outputs = vec![TxOut {
-					value: Amount::from_sat(MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS),
-					script_pubkey: wallet.get_change_script().unwrap(),
-				}];
-				funding_template.splice_out_sync(outputs, &WalletSync::new(wallet, logger.clone()))
-			},
-			funding_feerate_sat_per_kw,
-		);
+		splice_channel(node, counterparty_node_id, channel_id, &move |funding_template| {
+			let feerate = funding_template.min_rbf_feerate().unwrap_or(funding_feerate_sat_per_kw);
+			let outputs = vec![TxOut {
+				value: Amount::from_sat(MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS),
+				script_pubkey: wallet.get_change_script().unwrap(),
+			}];
+			funding_template.splice_out_sync(
+				outputs,
+				feerate,
+				FeeRate::MAX,
+				&WalletSync::new(wallet, logger.clone()),
+			)
+		});
 	};
 
 	loop {
@@ -2044,6 +2045,10 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], underlying_out:
 							chain_state.confirm_tx(splice_tx);
 						},
 						events::Event::SpliceFailed { .. } => {},
+						events::Event::DiscardFunding {
+							funding_info: events::FundingInfo::Contribution { .. },
+							..
+						} => {},
 
 						_ => {
 							if out.may_fail.load(atomic::Ordering::Acquire) {
