@@ -23,9 +23,7 @@ use crate::ln::types::ChannelId;
 use crate::ln::LN_MAX_MSG_LEN;
 use crate::prelude::*;
 use crate::util::async_poll::MaybeSend;
-use crate::util::wallet_utils::{
-	CoinSelection, CoinSelectionSource, CoinSelectionSourceSync, Input,
-};
+use crate::util::wallet_utils::{CoinSelectionSource, CoinSelectionSourceSync, Input};
 
 /// Error returned when the acceptor's contribution cannot accommodate the initiator's proposed
 /// feerate.
@@ -135,6 +133,8 @@ pub enum FundingContributionError {
 	InvalidSpliceValue,
 	/// Coin selection failed to find suitable inputs.
 	CoinSelectionFailed,
+	/// Coin selection is required but no coin selection source was provided.
+	MissingCoinSelectionSource,
 	/// This is not an RBF scenario (no minimum RBF feerate available).
 	NotRbfScenario,
 }
@@ -154,6 +154,9 @@ impl core::fmt::Display for FundingContributionError {
 			FundingContributionError::CoinSelectionFailed => {
 				write!(f, "Coin selection failed to find suitable inputs")
 			},
+			FundingContributionError::MissingCoinSelectionSource => {
+				write!(f, "Coin selection source required to build this contribution")
+			},
 			FundingContributionError::NotRbfScenario => {
 				write!(f, "Not an RBF scenario (no minimum RBF feerate)")
 			},
@@ -165,12 +168,12 @@ impl core::fmt::Display for FundingContributionError {
 ///
 /// When a pending splice exists with negotiated candidates, the prior contribution is
 /// available for reuse (e.g., to bump the feerate via RBF). Contains the raw contribution and
-/// the holder's balance for deferred feerate adjustment in [`FundingTemplate::rbf_sync`] or
-/// [`FundingTemplate::rbf`].
+/// the holder's balance for deferred feerate adjustment in
+/// [`FundingTemplate::rbf_prior_contribution_sync`] or [`FundingTemplate::rbf_prior_contribution`].
 ///
-/// Use [`FundingTemplate::prior_contribution`] to inspect the prior contribution before
-/// deciding whether to call [`FundingTemplate::rbf_sync`] or one of the splice methods
-/// with different parameters.
+/// Use [`FundingTemplate::prior_contribution`] to inspect the prior contribution before deciding
+/// whether to call [`FundingTemplate::rbf_prior_contribution_sync`] or start a fresh
+/// [`FundingContributionBuilder`] with different parameters.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct PriorContribution {
 	contribution: FundingContribution,
@@ -203,28 +206,29 @@ impl PriorContribution {
 ///
 /// # Building a Contribution
 ///
-/// For a fresh splice (no pending splice to replace), build a new contribution using one of
-/// the splice methods:
-/// - [`FundingTemplate::splice_in_sync`] to add funds to the channel
-/// - [`FundingTemplate::splice_out`] to remove funds from the channel
-/// - [`FundingTemplate::splice_in_and_out_sync`] to do both
+/// For a fresh splice (no pending splice to replace), build a new contribution using either:
+/// - [`FundingTemplate::contribution_builder`] for builder-style construction, or
+/// - [`FundingTemplate::splice_in`] to add funds to the channel directly.
+/// - [`FundingTemplate::splice_out`] to remove funds from the channel directly.
 ///
-/// These require `min_feerate` and `max_feerate` parameters. The splice-in variants perform
-/// coin selection when wallet inputs are needed, while splice-out spends only from the channel
-/// balance.
+/// Both builder creation and the splice convenience method take `min_feerate` and
+/// `max_feerate`. The builder can take a wallet via
+/// [`FundingContributionBuilder::with_coin_selection_source`] /
+/// [`FundingContributionBuilder::with_coin_selection_source_sync`]. Coin selection is only
+/// performed when wallet inputs are needed.
 ///
 /// # Replace By Fee (RBF)
 ///
-/// When a pending splice exists that hasn't been locked yet, use [`FundingTemplate::rbf_sync`]
-/// (or [`FundingTemplate::rbf`] for async) to build an RBF contribution. This handles the
-/// prior contribution logic internally — reusing an adjusted prior when possible, re-running
-/// coin selection when needed, or creating a fee-bump-only contribution.
+/// When a pending splice exists that hasn't been locked yet, use
+/// [`FundingTemplate::rbf_prior_contribution_builder`] to start from the prior contribution before
+/// building, or [`FundingTemplate::rbf_prior_contribution_sync`] (or
+/// [`FundingTemplate::rbf_prior_contribution`] for async) to reuse the prior contribution as-is.
 ///
 /// Check [`FundingTemplate::min_rbf_feerate`] for the minimum feerate required (25/24 of
 /// the previous feerate). Use [`FundingTemplate::prior_contribution`] to inspect the prior
 /// contribution's parameters (e.g., [`FundingContribution::value_added`],
 /// [`FundingContribution::outputs`]) before deciding whether to reuse it via the RBF methods
-/// or build a fresh contribution with different parameters using the splice methods above.
+/// or build a fresh contribution with different parameters using the builder above.
 ///
 /// [`ChannelManager::splice_channel`]: crate::ln::channelmanager::ChannelManager::splice_channel
 /// [`ChannelManager::funding_contributed`]: crate::ln::channelmanager::ChannelManager::funding_contributed
@@ -253,8 +257,9 @@ impl FundingTemplate {
 
 	/// Returns the minimum RBF feerate, if this template is for an RBF attempt.
 	///
-	/// When set, the `min_feerate` passed to the splice methods (e.g.,
-	/// [`FundingTemplate::splice_in_sync`]) must be at least this value.
+	/// When set, the feerate passed to [`FundingTemplate::splice_in_sync`],
+	/// [`FundingTemplate::contribution_builder`], or implied by
+	/// [`FundingTemplate::rbf_prior_contribution_builder`] must be at least this value.
 	pub fn min_rbf_feerate(&self) -> Option<FeeRate> {
 		self.min_rbf_feerate
 	}
@@ -264,8 +269,8 @@ impl FundingTemplate {
 	///
 	/// Use this to inspect the prior contribution's parameters (e.g.,
 	/// [`FundingContribution::value_added`], [`FundingContribution::outputs`]) before deciding
-	/// whether to reuse it via [`FundingTemplate::rbf_sync`] or build a fresh contribution
-	/// with different parameters using the splice methods.
+	/// whether to reuse it via [`FundingTemplate::rbf_prior_contribution`] or build a fresh
+	/// contribution with different parameters using [`FundingTemplate::contribution_builder`].
 	///
 	/// Note: the returned contribution may reflect a different feerate than originally provided,
 	/// as it may have been adjusted for RBF or for the counterparty's feerate when acting as
@@ -275,109 +280,412 @@ impl FundingTemplate {
 	pub fn prior_contribution(&self) -> Option<&FundingContribution> {
 		self.prior_contribution.as_ref().map(|p| &p.contribution)
 	}
-}
 
-macro_rules! build_funding_contribution {
-    ($value_added:expr, $outputs:expr, $shared_input:expr, $min_rbf_feerate:expr, $feerate:expr, $max_feerate:expr, $force_coin_selection:expr, $wallet:ident, $($await:tt)*) => {{
-		let value_added: Amount = $value_added;
-		let outputs: Vec<TxOut> = $outputs;
-		let shared_input: Option<Input> = $shared_input;
-		let min_rbf_feerate: Option<FeeRate> = $min_rbf_feerate;
-		let feerate: FeeRate = $feerate;
-		let max_feerate: FeeRate = $max_feerate;
-		let force_coin_selection: bool = $force_coin_selection;
-
-		let value_removed = validate_funding_contribution_params(
-			value_added,
-			&outputs,
-			min_rbf_feerate,
+	/// Creates a [`FundingContributionBuilder`] for constructing a contribution from scratch.
+	///
+	/// Use [`FundingContributionBuilder::use_prior_contribution`] to seed the builder from
+	/// [`FundingTemplate::prior_contribution`] instead of starting empty.
+	pub fn contribution_builder(
+		self, feerate: FeeRate, max_feerate: FeeRate,
+	) -> FundingContributionBuilder {
+		FundingContributionBuilder {
+			shared_input: self.shared_input,
+			min_rbf_feerate: self.min_rbf_feerate,
+			prior_contribution: self.prior_contribution,
+			value_added: Amount::ZERO,
+			outputs: vec![],
 			feerate,
 			max_feerate,
-		)?;
-
-		let is_splice = shared_input.is_some();
-
-		let coin_selection = if value_added == Amount::ZERO && !force_coin_selection {
-			CoinSelection { confirmed_utxos: vec![], change_output: None }
-		} else {
-			// Used for creating a redeem script for the new funding txo, since the funding pubkeys
-			// are unknown at this point. Only needed when selecting which UTXOs to include in the
-			// funding tx that would be sufficient to pay for fees. Hence, the value doesn't matter.
-			let dummy_pubkey = PublicKey::from_slice(&[2; 33]).unwrap();
-
-			let shared_output = bitcoin::TxOut {
-				value: shared_input
-					.as_ref()
-					.map(|shared_input| shared_input.previous_utxo.value)
-					.unwrap_or(Amount::ZERO)
-					.checked_add(value_added)
-					.ok_or(FundingContributionError::InvalidSpliceValue)?
-					.checked_sub(value_removed)
-					.ok_or(FundingContributionError::InvalidSpliceValue)?,
-				script_pubkey: make_funding_redeemscript(&dummy_pubkey, &dummy_pubkey).to_p2wsh(),
-			};
-
-			let claim_id = None;
-			let must_spend = shared_input.map(|input| vec![input]).unwrap_or_default();
-			if outputs.is_empty() {
-				let must_pay_to = &[shared_output];
-				$wallet.select_confirmed_utxos(claim_id, must_spend, must_pay_to, feerate.to_sat_per_kwu() as u32, u64::MAX)$(.$await)*.map_err(|_| FundingContributionError::CoinSelectionFailed)?
-			} else {
-				let must_pay_to: Vec<_> = outputs.iter().cloned().chain(core::iter::once(shared_output)).collect();
-				$wallet.select_confirmed_utxos(claim_id, must_spend, &must_pay_to, feerate.to_sat_per_kwu() as u32, u64::MAX)$(.$await)*.map_err(|_| FundingContributionError::CoinSelectionFailed)?
-			}
-		};
-
-		// NOTE: Must NOT fail after UTXO selection
-
-		let CoinSelection { confirmed_utxos: inputs, change_output } = coin_selection;
-
-		Ok(FundingContribution::new(
-			value_added,
-			outputs,
-			inputs,
-			change_output,
-			feerate,
-			max_feerate,
-			is_splice,
-		))
-	}};
-}
-
-fn validate_funding_contribution_params(
-	value_added: Amount, outputs: &[TxOut], min_rbf_feerate: Option<FeeRate>, feerate: FeeRate,
-	max_feerate: FeeRate,
-) -> Result<Amount, FundingContributionError> {
-	if feerate > max_feerate {
-		return Err(FundingContributionError::FeeRateExceedsMaximum { feerate, max_feerate });
-	}
-
-	if let Some(min_rbf_feerate) = min_rbf_feerate {
-		if feerate < min_rbf_feerate {
-			return Err(FundingContributionError::FeeRateBelowRbfMinimum {
-				feerate,
-				min_rbf_feerate,
-			});
+			using_prior_contribution: false,
 		}
 	}
 
-	// Validate user-provided amounts are within MAX_MONEY before coin selection to
-	// ensure FundingContribution::net_value() arithmetic cannot overflow. With all
-	// amounts bounded by MAX_MONEY (~2.1e15 sat), the worst-case net_value()
-	// computation is -2 * MAX_MONEY (~-4.2e15), well within i64::MIN (~-9.2e18).
-	if value_added > Amount::MAX_MONEY {
-		return Err(FundingContributionError::InvalidSpliceValue);
-	}
-
-	let mut value_removed = Amount::ZERO;
-	for txout in outputs.iter() {
-		value_removed = match value_removed.checked_add(txout.value) {
-			Some(sum) if sum <= Amount::MAX_MONEY => sum,
-			_ => return Err(FundingContributionError::InvalidSpliceValue),
+	/// Creates a [`FundingContributionBuilder`] for an RBF attempt re-using the prior contribution
+	/// made.
+	///
+	/// If `feerate` is `None`, the next valid minimum RBF feerate is used.
+	///
+	/// Returns:
+	///
+	/// - `Err(FundingContributionError::NotRbfScenario)` if there is no prior contribution
+	/// available.
+	/// - `Err(FundingContributionError::FeeRateBelowRbfMinimum)` if the provided feerate is below
+	/// the minimum required to RBF.
+	/// - `Err(FundingContributionError::FeeRateExceedsMaximum)` if the provided `feerate` exceeds
+	/// the provided `max_feerate`.
+	pub fn rbf_prior_contribution_builder(
+		self, feerate: Option<FeeRate>, max_feerate: FeeRate,
+	) -> Result<FundingContributionBuilder, FundingContributionError> {
+		if self.prior_contribution.is_none() {
+			return Err(FundingContributionError::NotRbfScenario);
+		}
+		let min_rbf_feerate =
+			self.min_rbf_feerate.ok_or(FundingContributionError::NotRbfScenario)?;
+		let rbf_feerate = if let Some(rbf_feerate) = feerate {
+			if rbf_feerate < min_rbf_feerate {
+				return Err(FundingContributionError::FeeRateBelowRbfMinimum {
+					feerate: rbf_feerate,
+					min_rbf_feerate,
+				});
+			}
+			rbf_feerate
+		} else {
+			min_rbf_feerate
 		};
+		if rbf_feerate > max_feerate {
+			return Err(FundingContributionError::FeeRateExceedsMaximum {
+				feerate: rbf_feerate,
+				max_feerate,
+			});
+		}
+		let builder = self.contribution_builder(rbf_feerate, max_feerate);
+		Ok(builder.use_prior_contribution())
+	}
+}
+
+/// A builder for creating or amending a [`FundingContribution`].
+///
+/// Use [`FundingTemplate::contribution_builder`] to build a fresh contribution or
+/// [`FundingTemplate::rbf_prior_contribution_builder`] to amend a prior contribution for RBF.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FundingContributionBuilder {
+	shared_input: Option<Input>,
+	min_rbf_feerate: Option<FeeRate>,
+	prior_contribution: Option<PriorContribution>,
+	value_added: Amount,
+	outputs: Vec<TxOut>,
+	feerate: FeeRate,
+	max_feerate: FeeRate,
+	using_prior_contribution: bool,
+}
+
+/// A [`FundingContributionBuilder`] with an attached wallet source.
+pub struct FundingContributionBuilderWithWallet<W> {
+	builder: FundingContributionBuilder,
+	wallet: W,
+}
+
+impl FundingContributionBuilder {
+	fn request_matches_prior(&self, prior_contribution: &FundingContribution) -> bool {
+		self.value_added == prior_contribution.value_added
+			&& self.outputs == prior_contribution.outputs
 	}
 
-	Ok(value_removed)
+	fn build_from_prior_contribution(&mut self) -> Option<FundingContribution> {
+		let prior_contribution = match self.prior_contribution.take() {
+			Some(prior) if self.using_prior_contribution => prior,
+			_ => return None,
+		};
+		let PriorContribution { contribution, holder_balance } = prior_contribution;
+
+		if self.request_matches_prior(&contribution) {
+			if let Some(holder_balance) = holder_balance {
+				if contribution
+					.net_value_for_initiator_at_feerate(self.feerate, holder_balance)
+					.is_ok()
+				{
+					let mut adjusted = contribution
+						.for_initiator_at_feerate(self.feerate, holder_balance)
+						.expect("feerate compatibility already checked");
+					adjusted.max_feerate = self.max_feerate;
+					return Some(adjusted);
+				}
+			}
+			return None;
+		}
+
+		contribution.amend_without_coin_selection(
+			self.value_added,
+			self.outputs.clone(),
+			self.feerate,
+			self.max_feerate,
+			holder_balance,
+		)
+	}
+
+	fn build_without_coin_selection(&mut self) -> Option<FundingContribution> {
+		if let Some(contribution) = self.build_from_prior_contribution() {
+			return Some(contribution);
+		}
+
+		if !self.using_prior_contribution
+			&& self.value_added == Amount::ZERO
+			&& !self.outputs.is_empty()
+		{
+			return Some(FundingContribution::new(
+				Amount::ZERO,
+				self.outputs.clone(),
+				vec![],
+				None,
+				self.feerate,
+				self.max_feerate,
+				self.shared_input.is_some(),
+			));
+		}
+
+		None
+	}
+
+	/// Seeds the builder from [`FundingTemplate::prior_contribution`], if one is available.
+	pub fn use_prior_contribution(mut self) -> Self {
+		if let Some(prior_contribution) = self.prior_contribution.as_ref() {
+			self.value_added = prior_contribution.contribution.value_added;
+			self.outputs = prior_contribution.contribution.outputs.clone();
+			self.using_prior_contribution = true;
+		}
+		self
+	}
+
+	/// Increases the requested amount added to the channel.
+	fn add_value(mut self, value: Amount) -> Self {
+		self.value_added =
+			Amount::from_sat(self.value_added.to_sat().saturating_add(value.to_sat()));
+		self
+	}
+
+	/// Decreases the requested amount added to the channel.
+	fn remove_value(mut self, value: Amount) -> Self {
+		self.value_added =
+			Amount::from_sat(self.value_added.to_sat().saturating_sub(value.to_sat()));
+		self
+	}
+
+	/// Adds a withdrawal output to the request.
+	pub fn add_output(mut self, output: TxOut) -> Self {
+		self.outputs.push(output);
+		self
+	}
+
+	/// Removes all withdrawal outputs whose script pubkey matches `script_pubkey`.
+	pub fn remove_outputs(mut self, script_pubkey: &ScriptBuf) -> Self {
+		self.outputs.retain(|output| output.script_pubkey != *script_pubkey);
+		self
+	}
+
+	/// Attaches an asynchronous [`CoinSelectionSource`] for later use.
+	pub fn with_coin_selection_source<W: CoinSelectionSource + MaybeSend>(
+		self, wallet: W,
+	) -> FundingContributionBuilderWithWallet<wallet_types::CoinSelectionSource<W>> {
+		FundingContributionBuilderWithWallet {
+			builder: self,
+			wallet: wallet_types::CoinSelectionSource(wallet),
+		}
+	}
+
+	/// Attaches a synchronous [`CoinSelectionSourceSync`] for later use.
+	pub fn with_coin_selection_source_sync<W: CoinSelectionSourceSync>(
+		self, wallet: W,
+	) -> FundingContributionBuilderWithWallet<wallet_types::CoinSelectionSourceSync<W>> {
+		FundingContributionBuilderWithWallet {
+			builder: self,
+			wallet: wallet_types::CoinSelectionSourceSync(wallet),
+		}
+	}
+
+	fn prepare_coin_selection_request(
+		&self,
+	) -> Result<(Vec<Input>, Vec<TxOut>), FundingContributionError> {
+		let value_removed = self.outputs.iter().map(|output| output.value).sum();
+
+		let dummy_pubkey = PublicKey::from_slice(&[2; 33]).unwrap();
+		let shared_output = bitcoin::TxOut {
+			value: self
+				.shared_input
+				.as_ref()
+				.map(|shared_input| shared_input.previous_utxo.value)
+				.unwrap_or(Amount::ZERO)
+				.checked_add(self.value_added)
+				.ok_or(FundingContributionError::InvalidSpliceValue)?
+				.checked_sub(value_removed)
+				.ok_or(FundingContributionError::InvalidSpliceValue)?,
+			script_pubkey: make_funding_redeemscript(&dummy_pubkey, &dummy_pubkey).to_p2wsh(),
+		};
+
+		let must_spend = self.shared_input.clone().map(|input| vec![input]).unwrap_or_default();
+		let must_pay_to = if self.outputs.is_empty() {
+			vec![shared_output]
+		} else {
+			self.outputs.iter().cloned().chain(core::iter::once(shared_output)).collect()
+		};
+
+		Ok((must_spend, must_pay_to))
+	}
+
+	fn validate_contribution_parameters(&self) -> Result<(), FundingContributionError> {
+		if self.feerate > self.max_feerate {
+			return Err(FundingContributionError::FeeRateExceedsMaximum {
+				feerate: self.feerate,
+				max_feerate: self.max_feerate,
+			});
+		}
+
+		if let Some(min_rbf_feerate) = self.min_rbf_feerate.as_ref() {
+			if self.feerate < *min_rbf_feerate {
+				return Err(FundingContributionError::FeeRateBelowRbfMinimum {
+					feerate: self.feerate,
+					min_rbf_feerate: *min_rbf_feerate,
+				});
+			}
+		}
+
+		if self.value_added == Amount::ZERO && self.outputs.is_empty() {
+			return Err(FundingContributionError::InvalidSpliceValue);
+		}
+
+		// Validate user-provided amounts are within MAX_MONEY before coin selection to
+		// ensure FundingContribution::net_value() arithmetic cannot overflow. With all
+		// amounts bounded by MAX_MONEY (~2.1e15 sat), the worst-case net_value()
+		// computation is -2 * MAX_MONEY (~-4.2e15), well within i64::MIN (~-9.2e18).
+		if self.value_added > Amount::MAX_MONEY {
+			return Err(FundingContributionError::InvalidSpliceValue);
+		}
+
+		let mut value_removed = Amount::ZERO;
+		for output in self.outputs.iter() {
+			value_removed = match value_removed.checked_add(output.value) {
+				Some(sum) if sum <= Amount::MAX_MONEY => sum,
+				_ => return Err(FundingContributionError::InvalidSpliceValue),
+			};
+		}
+
+		Ok(())
+	}
+
+	/// Builds a [`FundingContribution`] without coin selection.
+	///
+	/// Returns [`FundingContributionError::MissingCoinSelectionSource`] if wallet inputs are needed.
+	pub fn build(mut self) -> Result<FundingContribution, FundingContributionError> {
+		self.validate_contribution_parameters()?;
+
+		if let Some(contribution) = self.build_without_coin_selection() {
+			return Ok(contribution);
+		}
+
+		Err(FundingContributionError::MissingCoinSelectionSource)
+	}
+}
+
+mod wallet_types {
+	pub struct CoinSelectionSource<W>(pub W);
+	pub struct CoinSelectionSourceSync<W>(pub W);
+}
+
+impl<W> FundingContributionBuilderWithWallet<W> {
+	fn map_builder(
+		self, map: impl FnOnce(FundingContributionBuilder) -> FundingContributionBuilder,
+	) -> Self {
+		Self { builder: map(self.builder), wallet: self.wallet }
+	}
+
+	/// Seeds the builder from the prior contribution, if one is available.
+	pub fn use_prior_contribution(self) -> Self {
+		self.map_builder(FundingContributionBuilder::use_prior_contribution)
+	}
+
+	/// Adds a withdrawal output to the request.
+	pub fn add_output(self, output: TxOut) -> Self {
+		self.map_builder(|builder| builder.add_output(output))
+	}
+
+	/// Removes all withdrawal outputs whose script pubkey matches `script_pubkey`.
+	pub fn remove_outputs(self, script_pubkey: &ScriptBuf) -> Self {
+		self.map_builder(|builder| builder.remove_outputs(script_pubkey))
+	}
+}
+
+impl<W: CoinSelectionSource + MaybeSend>
+	FundingContributionBuilderWithWallet<wallet_types::CoinSelectionSource<W>>
+{
+	/// Increases the requested amount added to the channel.
+	pub fn add_value(self, value: Amount) -> Self {
+		self.map_builder(|builder| builder.add_value(value))
+	}
+
+	/// Decreases the requested amount added to the channel.
+	pub fn remove_value(self, value: Amount) -> Self {
+		self.map_builder(|builder| builder.remove_value(value))
+	}
+
+	/// Builds a [`FundingContribution`] using the attached asynchronous coin selection source when
+	/// coin selection is required.
+	pub async fn build(mut self) -> Result<FundingContribution, FundingContributionError> {
+		self.builder.validate_contribution_parameters()?;
+
+		if let Some(contribution) = self.builder.build_without_coin_selection() {
+			return Ok(contribution);
+		}
+
+		let (must_spend, must_pay_to) = self.builder.prepare_coin_selection_request()?;
+		let coin_selection = self
+			.wallet
+			.0
+			.select_confirmed_utxos(
+				None,
+				must_spend,
+				&must_pay_to,
+				self.builder.feerate.to_sat_per_kwu() as u32,
+				u64::MAX,
+			)
+			.await
+			.map_err(|_| FundingContributionError::CoinSelectionFailed)?;
+
+		return Ok(FundingContribution::new(
+			self.builder.value_added,
+			self.builder.outputs,
+			coin_selection.confirmed_utxos,
+			coin_selection.change_output,
+			self.builder.feerate,
+			self.builder.max_feerate,
+			self.builder.shared_input.is_some(),
+		));
+	}
+}
+
+impl<W: CoinSelectionSourceSync>
+	FundingContributionBuilderWithWallet<wallet_types::CoinSelectionSourceSync<W>>
+{
+	/// Increases the requested amount added to the channel.
+	pub fn add_value(self, value: Amount) -> Self {
+		self.map_builder(|builder| builder.add_value(value))
+	}
+
+	/// Decreases the requested amount added to the channel.
+	pub fn remove_value(self, value: Amount) -> Self {
+		self.map_builder(|builder| builder.remove_value(value))
+	}
+
+	/// Builds a [`FundingContribution`] using the attached synchronous coin selection source when
+	/// coin selection is required.
+	pub fn build(mut self) -> Result<FundingContribution, FundingContributionError> {
+		self.builder.validate_contribution_parameters()?;
+
+		if let Some(contribution) = self.builder.build_without_coin_selection() {
+			return Ok(contribution);
+		}
+
+		let (must_spend, must_pay_to) = self.builder.prepare_coin_selection_request()?;
+		let coin_selection = self
+			.wallet
+			.0
+			.select_confirmed_utxos(
+				None,
+				must_spend,
+				&must_pay_to,
+				self.builder.feerate.to_sat_per_kwu() as u32,
+				u64::MAX,
+			)
+			.map_err(|_| FundingContributionError::CoinSelectionFailed)?;
+
+		return Ok(FundingContribution::new(
+			self.builder.value_added,
+			self.builder.outputs,
+			coin_selection.confirmed_utxos,
+			coin_selection.change_output,
+			self.builder.feerate,
+			self.builder.max_feerate,
+			self.builder.shared_input.is_some(),
+		));
+	}
 }
 
 impl FundingTemplate {
@@ -391,11 +699,11 @@ impl FundingTemplate {
 	pub async fn splice_in<W: CoinSelectionSource + MaybeSend>(
 		self, value_added: Amount, min_feerate: FeeRate, max_feerate: FeeRate, wallet: W,
 	) -> Result<FundingContribution, FundingContributionError> {
-		if value_added == Amount::ZERO {
-			return Err(FundingContributionError::InvalidSpliceValue);
-		}
-		let FundingTemplate { shared_input, min_rbf_feerate, .. } = self;
-		build_funding_contribution!(value_added, vec![], shared_input, min_rbf_feerate, min_feerate, max_feerate, false, wallet, await)
+		self.contribution_builder(min_feerate, max_feerate)
+			.with_coin_selection_source(wallet)
+			.add_value(value_added)
+			.build()
+			.await
 	}
 
 	/// Creates a [`FundingContribution`] for adding funds to a channel using `wallet` to perform
@@ -405,20 +713,10 @@ impl FundingTemplate {
 	pub fn splice_in_sync<W: CoinSelectionSourceSync>(
 		self, value_added: Amount, min_feerate: FeeRate, max_feerate: FeeRate, wallet: W,
 	) -> Result<FundingContribution, FundingContributionError> {
-		if value_added == Amount::ZERO {
-			return Err(FundingContributionError::InvalidSpliceValue);
-		}
-		let FundingTemplate { shared_input, min_rbf_feerate, .. } = self;
-		build_funding_contribution!(
-			value_added,
-			vec![],
-			shared_input,
-			min_rbf_feerate,
-			min_feerate,
-			max_feerate,
-			false,
-			wallet,
-		)
+		self.contribution_builder(min_feerate, max_feerate)
+			.with_coin_selection_source_sync(wallet)
+			.add_value(value_added)
+			.build()
 	}
 
 	/// Creates a [`FundingContribution`] for removing funds from a channel.
@@ -433,75 +731,18 @@ impl FundingTemplate {
 	pub fn splice_out(
 		self, outputs: Vec<TxOut>, min_feerate: FeeRate, max_feerate: FeeRate,
 	) -> Result<FundingContribution, FundingContributionError> {
-		if outputs.is_empty() {
-			return Err(FundingContributionError::InvalidSpliceValue);
+		let mut builder = self.contribution_builder(min_feerate, max_feerate);
+		for output in outputs {
+			builder = builder.add_output(output);
 		}
-		validate_funding_contribution_params(
-			Amount::ZERO,
-			&outputs,
-			self.min_rbf_feerate,
-			min_feerate,
-			max_feerate,
-		)?;
-		Ok(FundingContribution::new(
-			Amount::ZERO,
-			outputs,
-			vec![],
-			None,
-			min_feerate,
-			max_feerate,
-			self.shared_input.is_some(),
-		))
-	}
-
-	/// Creates a [`FundingContribution`] for both adding and removing funds from a channel using
-	/// `wallet` to perform coin selection.
-	///
-	/// `value_added` and `outputs` are the complete parameters for this contribution, not
-	/// increments on top of a prior contribution. When replacing a prior contribution via RBF,
-	/// use [`FundingTemplate::prior_contribution`] to inspect the prior parameters and combine
-	/// them as needed.
-	pub async fn splice_in_and_out<W: CoinSelectionSource + MaybeSend>(
-		self, value_added: Amount, outputs: Vec<TxOut>, min_feerate: FeeRate, max_feerate: FeeRate,
-		wallet: W,
-	) -> Result<FundingContribution, FundingContributionError> {
-		if value_added == Amount::ZERO && outputs.is_empty() {
-			return Err(FundingContributionError::InvalidSpliceValue);
-		}
-		let FundingTemplate { shared_input, min_rbf_feerate, .. } = self;
-		build_funding_contribution!(value_added, outputs, shared_input, min_rbf_feerate, min_feerate, max_feerate, false, wallet, await)
-	}
-
-	/// Creates a [`FundingContribution`] for both adding and removing funds from a channel using
-	/// `wallet` to perform coin selection.
-	///
-	/// See [`FundingTemplate::splice_in_and_out`] for details.
-	pub fn splice_in_and_out_sync<W: CoinSelectionSourceSync>(
-		self, value_added: Amount, outputs: Vec<TxOut>, min_feerate: FeeRate, max_feerate: FeeRate,
-		wallet: W,
-	) -> Result<FundingContribution, FundingContributionError> {
-		if value_added == Amount::ZERO && outputs.is_empty() {
-			return Err(FundingContributionError::InvalidSpliceValue);
-		}
-		let FundingTemplate { shared_input, min_rbf_feerate, .. } = self;
-		build_funding_contribution!(
-			value_added,
-			outputs,
-			shared_input,
-			min_rbf_feerate,
-			min_feerate,
-			max_feerate,
-			false,
-			wallet,
-		)
+		builder.build()
 	}
 
 	/// Creates a [`FundingContribution`] for an RBF (Replace-By-Fee) attempt on a pending splice.
 	///
 	/// `max_feerate` is the maximum feerate the caller is willing to accept as acceptor. It is
 	/// used as the returned contribution's `max_feerate` and also constrains coin selection when
-	/// re-running it for prior contributions that cannot be adjusted or fee-bump-only
-	/// contributions.
+	/// re-running it for prior contributions that cannot be adjusted.
 	///
 	/// This handles the prior contribution logic internally:
 	/// - If the prior contribution's feerate can be adjusted to the minimum RBF feerate, the
@@ -512,108 +753,29 @@ impl FundingTemplate {
 	///   parameters and the caller's `max_feerate`. For splice-out contributions, this changes
 	///   the fee source: wallet inputs are selected to cover fees instead of deducting them
 	///   from the channel balance.
-	/// - If no prior contribution exists, coin selection is run for a fee-bump-only contribution
-	///   (`value_added = 0`), covering fees for the common fields and shared input/output via
-	///   a newly selected input. Check [`FundingTemplate::prior_contribution`] to see if this
-	///   is intended.
 	///
 	/// # Errors
 	///
 	/// Returns a [`FundingContributionError`] if this is not an RBF scenario, if `max_feerate`
 	/// is below the minimum RBF feerate, or if coin selection fails.
-	pub async fn rbf<W: CoinSelectionSource + MaybeSend>(
-		self, max_feerate: FeeRate, wallet: W,
+	pub async fn rbf_prior_contribution<W: CoinSelectionSource + MaybeSend>(
+		self, feerate: Option<FeeRate>, max_feerate: FeeRate, wallet: W,
 	) -> Result<FundingContribution, FundingContributionError> {
-		let FundingTemplate { shared_input, min_rbf_feerate, prior_contribution } = self;
-		let rbf_feerate = min_rbf_feerate.ok_or(FundingContributionError::NotRbfScenario)?;
-		if rbf_feerate > max_feerate {
-			return Err(FundingContributionError::FeeRateExceedsMaximum {
-				feerate: rbf_feerate,
-				max_feerate,
-			});
-		}
-
-		match prior_contribution {
-			Some(PriorContribution { contribution, holder_balance }) => {
-				// Try to adjust the prior contribution to the RBF feerate. This fails if
-				// the holder balance can't cover the adjustment (splice-out) or the fee
-				// buffer is insufficient (splice-in), or if the prior's feerate is already
-				// above rbf_feerate (e.g., from a counterparty-initiated RBF that locked
-				// at a higher feerate). In all cases, fall through to re-run coin selection.
-				if let Some(holder_balance) = holder_balance {
-					if contribution
-						.net_value_for_initiator_at_feerate(rbf_feerate, holder_balance)
-						.is_ok()
-					{
-						let mut adjusted = contribution
-							.for_initiator_at_feerate(rbf_feerate, holder_balance)
-							.expect("feerate compatibility already checked");
-						adjusted.max_feerate = max_feerate;
-						return Ok(adjusted);
-					}
-				}
-				build_funding_contribution!(contribution.value_added, contribution.outputs, shared_input, min_rbf_feerate, rbf_feerate, max_feerate, true, wallet, await)
-			},
-			None => {
-				build_funding_contribution!(Amount::ZERO, vec![], shared_input, min_rbf_feerate, rbf_feerate, max_feerate, true, wallet, await)
-			},
-		}
+		self.rbf_prior_contribution_builder(feerate, max_feerate)?
+			.with_coin_selection_source(wallet)
+			.build()
+			.await
 	}
 
 	/// Creates a [`FundingContribution`] for an RBF (Replace-By-Fee) attempt on a pending splice.
 	///
-	/// See [`FundingTemplate::rbf`] for details.
-	pub fn rbf_sync<W: CoinSelectionSourceSync>(
-		self, max_feerate: FeeRate, wallet: W,
+	/// See [`FundingTemplate::rbf_prior_contribution`] for details.
+	pub fn rbf_prior_contribution_sync<W: CoinSelectionSourceSync>(
+		self, feerate: Option<FeeRate>, max_feerate: FeeRate, wallet: W,
 	) -> Result<FundingContribution, FundingContributionError> {
-		let FundingTemplate { shared_input, min_rbf_feerate, prior_contribution } = self;
-		let rbf_feerate = min_rbf_feerate.ok_or(FundingContributionError::NotRbfScenario)?;
-		if rbf_feerate > max_feerate {
-			return Err(FundingContributionError::FeeRateExceedsMaximum {
-				feerate: rbf_feerate,
-				max_feerate,
-			});
-		}
-
-		match prior_contribution {
-			Some(PriorContribution { contribution, holder_balance }) => {
-				// See comment in `rbf` for details on when this adjustment fails.
-				if let Some(holder_balance) = holder_balance {
-					if contribution
-						.net_value_for_initiator_at_feerate(rbf_feerate, holder_balance)
-						.is_ok()
-					{
-						let mut adjusted = contribution
-							.for_initiator_at_feerate(rbf_feerate, holder_balance)
-							.expect("feerate compatibility already checked");
-						adjusted.max_feerate = max_feerate;
-						return Ok(adjusted);
-					}
-				}
-				build_funding_contribution!(
-					contribution.value_added,
-					contribution.outputs,
-					shared_input,
-					min_rbf_feerate,
-					rbf_feerate,
-					max_feerate,
-					true,
-					wallet,
-				)
-			},
-			None => {
-				build_funding_contribution!(
-					Amount::ZERO,
-					vec![],
-					shared_input,
-					min_rbf_feerate,
-					rbf_feerate,
-					max_feerate,
-					true,
-					wallet,
-				)
-			},
-		}
+		self.rbf_prior_contribution_builder(feerate, max_feerate)?
+			.with_coin_selection_source_sync(wallet)
+			.build()
 	}
 }
 
@@ -775,6 +937,93 @@ impl FundingContribution {
 	/// the surplus is returned to the wallet via this change output.
 	pub fn change_output(&self) -> Option<&TxOut> {
 		self.change_output.as_ref()
+	}
+
+	// FIXME: Return Result?
+	fn amend_without_coin_selection(
+		&self, value_added: Amount, outputs: Vec<TxOut>, feerate: FeeRate, max_feerate: FeeRate,
+		holder_balance: Option<Amount>,
+	) -> Option<Self> {
+		if self.inputs.is_empty() {
+			let holder_balance = holder_balance?;
+			if value_added != Amount::ZERO {
+				// Prior contribution didn't have any inputs, but now we need some.
+				return None;
+			}
+
+			let estimated_fee =
+				estimate_transaction_fee(&[], &outputs, None, true, self.is_splice, feerate);
+			let value_removed = outputs.iter().map(|output| output.value).sum();
+			let total_cost = estimated_fee.checked_add(value_removed)?;
+			if total_cost > holder_balance {
+				return None;
+			}
+
+			return Some(FundingContribution {
+				value_added,
+				estimated_fee,
+				inputs: vec![],
+				outputs,
+				change_output: None,
+				feerate,
+				max_feerate,
+				is_splice: self.is_splice,
+			});
+		}
+
+		let total_input_value: Amount =
+			self.inputs.iter().map(|input| input.utxo.output.value).sum();
+		let value_removed = outputs.iter().map(|output| output.value).sum();
+
+		if let Some(change_output) = self.change_output.as_ref() {
+			let estimated_fee = estimate_transaction_fee(
+				&self.inputs,
+				&outputs,
+				Some(change_output),
+				true,
+				self.is_splice,
+				feerate,
+			);
+			let required_value =
+				value_added.checked_add(value_removed)?.checked_add(estimated_fee)?;
+			if total_input_value >= required_value {
+				let new_change_value = total_input_value.checked_sub(required_value)?;
+				if new_change_value >= change_output.script_pubkey.minimal_non_dust() {
+					let new_change_output = TxOut {
+						value: new_change_value,
+						script_pubkey: change_output.script_pubkey.clone(),
+					};
+					return Some(FundingContribution {
+						value_added,
+						estimated_fee,
+						inputs: self.inputs.clone(),
+						outputs,
+						change_output: Some(new_change_output),
+						feerate,
+						max_feerate,
+						is_splice: self.is_splice,
+					});
+				}
+			}
+		}
+
+		let estimated_fee =
+			estimate_transaction_fee(&self.inputs, &outputs, None, true, self.is_splice, feerate);
+		let required_value = value_added.checked_add(value_removed)?.checked_add(estimated_fee)?;
+		if total_input_value < required_value {
+			return None;
+		}
+
+		Some(FundingContribution {
+			value_added,
+			estimated_fee,
+			inputs: self.inputs.clone(),
+			outputs,
+			change_output: None,
+			feerate,
+			max_feerate,
+			is_splice: self.is_splice,
+		})
 	}
 
 	pub(super) fn into_tx_parts(self) -> (Vec<FundingTxInput>, Vec<TxOut>) {
@@ -1496,38 +1745,96 @@ mod tests {
 				Err(FundingContributionError::InvalidSpliceValue),
 			));
 		}
+	}
 
-		// splice_in_and_out_sync with value_added > MAX_MONEY
-		{
-			let template = FundingTemplate::new(None, None, None);
-			let outputs = vec![funding_output_sats(1_000)];
-			assert!(matches!(
-				template.splice_in_and_out_sync(
-					over_max,
-					outputs,
-					feerate,
-					feerate,
-					UnreachableWallet
-				),
-				Err(FundingContributionError::InvalidSpliceValue),
-			));
-		}
+	#[test]
+	fn test_contribution_builder_rejects_empty_contribution() {
+		let builder = FundingTemplate::new(Some(shared_input(100_000)), None, None)
+			.contribution_builder(FeeRate::from_sat_per_kwu(2000), FeeRate::MAX);
+		assert!(matches!(builder.build(), Err(FundingContributionError::InvalidSpliceValue)));
+	}
 
-		// splice_in_and_out_sync with output sum > MAX_MONEY
-		{
-			let template = FundingTemplate::new(None, None, None);
-			let outputs = vec![funding_output_sats(over_max.to_sat())];
-			assert!(matches!(
-				template.splice_in_and_out_sync(
-					Amount::from_sat(1_000),
-					outputs,
-					feerate,
-					feerate,
-					UnreachableWallet,
-				),
-				Err(FundingContributionError::InvalidSpliceValue),
-			));
-		}
+	#[test]
+	fn test_rbf_contribution_builder_rejects_empty_prior_contribution() {
+		let prior_feerate = FeeRate::from_sat_per_kwu(2000);
+		let min_rbf_feerate = FeeRate::from_sat_per_kwu(2500);
+		let change = funding_output_sats(90_000);
+		let inputs = vec![funding_input_sats(100_000)];
+		let estimated_fee =
+			estimate_transaction_fee(&inputs, &[], Some(&change), true, true, prior_feerate);
+
+		let prior = FundingContribution {
+			value_added: Amount::ZERO,
+			estimated_fee,
+			inputs,
+			outputs: vec![],
+			change_output: Some(change),
+			feerate: prior_feerate,
+			max_feerate: FeeRate::MAX,
+			is_splice: true,
+		};
+
+		let builder = FundingTemplate::new(
+			Some(shared_input(100_000)),
+			Some(min_rbf_feerate),
+			Some(PriorContribution::new(prior, Some(Amount::MAX))),
+		)
+		.rbf_prior_contribution_builder(None, FeeRate::MAX)
+		.unwrap();
+
+		assert!(matches!(builder.build(), Err(FundingContributionError::InvalidSpliceValue)));
+	}
+
+	#[test]
+	fn test_rbf_contribution_builder_rejects_explicit_feerate_below_min_rbf_feerate() {
+		let prior_feerate = FeeRate::from_sat_per_kwu(2000);
+		let min_rbf_feerate = FeeRate::from_sat_per_kwu(2500);
+		let low_feerate = FeeRate::from_sat_per_kwu(2400);
+
+		let inputs = vec![funding_input_sats(100_000)];
+		let estimated_fee = estimate_transaction_fee(&inputs, &[], None, true, true, prior_feerate);
+		let prior = FundingContribution {
+			value_added: Amount::from_sat(50_000),
+			estimated_fee,
+			inputs,
+			outputs: vec![],
+			change_output: None,
+			feerate: prior_feerate,
+			max_feerate: FeeRate::MAX,
+			is_splice: true,
+		};
+
+		let template = FundingTemplate::new(
+			Some(shared_input(100_000)),
+			Some(min_rbf_feerate),
+			Some(PriorContribution::new(prior, Some(Amount::MAX))),
+		);
+
+		assert!(matches!(
+			template.rbf_prior_contribution_builder(Some(low_feerate), FeeRate::MAX),
+			Err(FundingContributionError::FeeRateBelowRbfMinimum {
+				feerate,
+				min_rbf_feerate: min_feerate,
+			}) if feerate == low_feerate && min_feerate == min_rbf_feerate,
+		));
+	}
+
+	#[test]
+	fn test_contribution_builder_with_coin_selection_source_sync_builds() {
+		let wallet = SingleUtxoWallet {
+			utxo: funding_input_sats(60_000),
+			change_output: Some(funding_output_sats(5_000)),
+		};
+
+		let contribution = FundingTemplate::new(Some(shared_input(100_000)), None, None)
+			.contribution_builder(FeeRate::from_sat_per_kwu(2000), FeeRate::MAX)
+			.with_coin_selection_source_sync(wallet)
+			.add_value(Amount::from_sat(50_000))
+			.build()
+			.unwrap();
+
+		assert_eq!(contribution.value_added, Amount::from_sat(50_000));
+		assert!(!contribution.inputs.is_empty());
 	}
 
 	#[test]
@@ -2316,7 +2623,7 @@ mod tests {
 			Some(PriorContribution::new(prior, None)),
 		);
 		assert!(matches!(
-			template.rbf_sync(max_feerate, UnreachableWallet),
+			template.rbf_prior_contribution_sync(None, max_feerate, UnreachableWallet),
 			Err(FundingContributionError::FeeRateExceedsMaximum { .. }),
 		));
 	}
@@ -2350,9 +2657,403 @@ mod tests {
 			Some(min_rbf_feerate),
 			Some(PriorContribution::new(prior, Some(Amount::MAX))),
 		);
-		let contribution = template.rbf_sync(max_feerate, UnreachableWallet).unwrap();
+		let contribution =
+			template.rbf_prior_contribution_sync(None, max_feerate, UnreachableWallet).unwrap();
 		assert_eq!(contribution.feerate, min_rbf_feerate);
 		assert_eq!(contribution.max_feerate, max_feerate);
+	}
+
+	#[test]
+	fn test_rbf_sync_same_request_uses_coin_selection_when_holder_balance_missing() {
+		let prior_feerate = FeeRate::from_sat_per_kwu(2000);
+		let min_rbf_feerate = FeeRate::from_sat_per_kwu(2500);
+		let value_added = Amount::from_sat(50_000);
+		let change = funding_output_sats(10_000);
+
+		let dummy_inputs = vec![funding_input_sats(1)];
+		let estimated_fee =
+			estimate_transaction_fee(&dummy_inputs, &[], Some(&change), true, true, prior_feerate);
+		let input_value = value_added + estimated_fee + change.value;
+		let prior = FundingContribution {
+			value_added,
+			estimated_fee,
+			inputs: vec![funding_input_sats(input_value.to_sat())],
+			outputs: vec![],
+			change_output: Some(change),
+			feerate: prior_feerate,
+			max_feerate: FeeRate::MAX,
+			is_splice: true,
+		};
+
+		let template = FundingTemplate::new(
+			Some(shared_input(100_000)),
+			Some(min_rbf_feerate),
+			Some(PriorContribution::new(prior, None)),
+		);
+
+		let wallet_utxo = funding_input_sats(80_000);
+		let wallet_change = funding_output_sats(5_000);
+		let wallet = SingleUtxoWallet {
+			utxo: wallet_utxo.clone(),
+			change_output: Some(wallet_change.clone()),
+		};
+
+		let contribution =
+			template.rbf_prior_contribution_sync(None, FeeRate::MAX, &wallet).unwrap();
+		assert_eq!(contribution.value_added, value_added);
+		assert_eq!(contribution.inputs, vec![wallet_utxo]);
+		assert_eq!(contribution.change_output, Some(wallet_change));
+		assert_eq!(contribution.feerate, min_rbf_feerate);
+	}
+
+	#[test]
+	fn test_rbf_sync_same_request_uses_coin_selection_when_prior_cannot_adjust() {
+		let prior_feerate = FeeRate::from_sat_per_kwu(2000);
+		let min_rbf_feerate = FeeRate::from_sat_per_kwu(20_000);
+		let value_added = Amount::from_sat(50_000);
+
+		let dummy_inputs = vec![funding_input_sats(1)];
+		let estimated_fee =
+			estimate_transaction_fee(&dummy_inputs, &[], None, true, true, prior_feerate);
+		let inputs = vec![funding_input_sats((value_added + estimated_fee).to_sat())];
+		let target_fee = estimate_transaction_fee(&inputs, &[], None, true, true, min_rbf_feerate);
+		assert!(target_fee > estimated_fee);
+
+		let prior = FundingContribution {
+			value_added,
+			estimated_fee,
+			inputs,
+			outputs: vec![],
+			change_output: None,
+			feerate: prior_feerate,
+			max_feerate: FeeRate::MAX,
+			is_splice: true,
+		};
+
+		let template = FundingTemplate::new(
+			Some(shared_input(100_000)),
+			Some(min_rbf_feerate),
+			Some(PriorContribution::new(prior, Some(Amount::MAX))),
+		);
+
+		let wallet_utxo = funding_input_sats(80_000);
+		let wallet_change = funding_output_sats(5_000);
+		let wallet = SingleUtxoWallet {
+			utxo: wallet_utxo.clone(),
+			change_output: Some(wallet_change.clone()),
+		};
+
+		let contribution =
+			template.rbf_prior_contribution_sync(None, FeeRate::MAX, &wallet).unwrap();
+		assert_eq!(contribution.value_added, value_added);
+		assert_eq!(contribution.inputs, vec![wallet_utxo]);
+		assert_eq!(contribution.change_output, Some(wallet_change));
+		assert_eq!(contribution.feerate, min_rbf_feerate);
+	}
+
+	#[test]
+	fn test_rbf_contribution_builder_amends_prior_without_coin_selection() {
+		let prior_feerate = FeeRate::from_sat_per_kwu(2000);
+		let min_rbf_feerate = FeeRate::from_sat_per_kwu(2500);
+		let original_value_added = Amount::from_sat(50_000);
+		let added_value = Amount::from_sat(5_000);
+		let withdrawal = funding_output_sats(20_000);
+		let change = funding_output_sats(10_000);
+
+		let dummy_inputs = vec![funding_input_sats(1)];
+		let estimated_fee = estimate_transaction_fee(
+			&dummy_inputs,
+			&[withdrawal.clone()],
+			Some(&change),
+			true,
+			true,
+			prior_feerate,
+		);
+		let input_value = original_value_added + withdrawal.value + estimated_fee + change.value;
+		let inputs = vec![funding_input_sats(input_value.to_sat())];
+
+		let prior = FundingContribution {
+			value_added: original_value_added,
+			estimated_fee,
+			inputs: inputs.clone(),
+			outputs: vec![withdrawal.clone()],
+			change_output: Some(change),
+			feerate: prior_feerate,
+			max_feerate: FeeRate::MAX,
+			is_splice: true,
+		};
+
+		let template = FundingTemplate::new(
+			Some(shared_input(100_000)),
+			Some(min_rbf_feerate),
+			Some(PriorContribution::new(prior, Some(Amount::MAX))),
+		);
+
+		let builder = template
+			.rbf_prior_contribution_builder(None, FeeRate::MAX)
+			.unwrap()
+			.remove_outputs(&withdrawal.script_pubkey)
+			.add_value(added_value);
+
+		let contribution = builder.build().unwrap();
+		assert_eq!(contribution.value_added, original_value_added + added_value);
+		assert!(contribution.outputs.is_empty());
+		assert_eq!(contribution.inputs, inputs);
+		assert!(contribution.change_output.is_some());
+		assert_eq!(contribution.feerate, min_rbf_feerate);
+	}
+
+	#[test]
+	fn test_amend_prior_splice_out_without_inputs_succeeds() {
+		let prior_feerate = FeeRate::from_sat_per_kwu(2000);
+		let prior_outputs = vec![funding_output_sats(10_000)];
+		let prior_estimated_fee =
+			estimate_transaction_fee(&[], &prior_outputs, None, true, true, prior_feerate);
+		let prior = FundingContribution {
+			value_added: Amount::ZERO,
+			estimated_fee: prior_estimated_fee,
+			inputs: vec![],
+			outputs: prior_outputs,
+			change_output: None,
+			feerate: prior_feerate,
+			max_feerate: FeeRate::MAX,
+			is_splice: true,
+		};
+
+		let amended_outputs = vec![funding_output_sats(20_000)];
+		let amended_feerate = FeeRate::from_sat_per_kwu(3000);
+		let max_feerate = FeeRate::from_sat_per_kwu(10_000);
+		let amended = prior
+			.amend_without_coin_selection(
+				Amount::ZERO,
+				amended_outputs.clone(),
+				amended_feerate,
+				max_feerate,
+				Some(Amount::from_sat(100_000)),
+			)
+			.unwrap();
+
+		assert_eq!(amended.value_added, Amount::ZERO);
+		assert!(amended.inputs.is_empty());
+		assert_eq!(amended.outputs, amended_outputs.clone());
+		assert!(amended.change_output.is_none());
+		assert_eq!(
+			amended.estimated_fee,
+			estimate_transaction_fee(&[], &amended_outputs, None, true, true, amended_feerate),
+		);
+		assert_eq!(amended.feerate, amended_feerate);
+		assert_eq!(amended.max_feerate, max_feerate);
+	}
+
+	#[test]
+	fn test_amend_prior_splice_out_without_inputs_rejects_value_added() {
+		let prior_feerate = FeeRate::from_sat_per_kwu(2000);
+		let prior_outputs = vec![funding_output_sats(10_000)];
+		let prior_estimated_fee =
+			estimate_transaction_fee(&[], &prior_outputs, None, true, true, prior_feerate);
+		let prior = FundingContribution {
+			value_added: Amount::ZERO,
+			estimated_fee: prior_estimated_fee,
+			inputs: vec![],
+			outputs: prior_outputs,
+			change_output: None,
+			feerate: prior_feerate,
+			max_feerate: FeeRate::MAX,
+			is_splice: true,
+		};
+
+		assert!(prior
+			.amend_without_coin_selection(
+				Amount::ONE_SAT,
+				vec![funding_output_sats(20_000)],
+				FeeRate::from_sat_per_kwu(3000),
+				FeeRate::MAX,
+				Some(Amount::MAX),
+			)
+			.is_none());
+	}
+
+	#[test]
+	fn test_amend_prior_splice_out_without_inputs_fails_when_holder_balance_is_too_low() {
+		let prior_feerate = FeeRate::from_sat_per_kwu(2000);
+		let prior_outputs = vec![funding_output_sats(10_000)];
+		let prior_estimated_fee =
+			estimate_transaction_fee(&[], &prior_outputs, None, true, true, prior_feerate);
+		let prior = FundingContribution {
+			value_added: Amount::ZERO,
+			estimated_fee: prior_estimated_fee,
+			inputs: vec![],
+			outputs: prior_outputs,
+			change_output: None,
+			feerate: prior_feerate,
+			max_feerate: FeeRate::MAX,
+			is_splice: true,
+		};
+
+		assert!(prior
+			.amend_without_coin_selection(
+				Amount::ZERO,
+				vec![funding_output_sats(50_000)],
+				FeeRate::from_sat_per_kwu(3000),
+				FeeRate::MAX,
+				Some(Amount::from_sat(50_000)),
+			)
+			.is_none());
+	}
+
+	#[test]
+	fn test_amend_prior_with_change_removes_dust_change_output() {
+		let prior_feerate = FeeRate::from_sat_per_kwu(2000);
+		let amended_feerate = FeeRate::from_sat_per_kwu(7000);
+		let value_added = Amount::from_sat(50_000);
+		let change = funding_output_sats(500);
+
+		let dummy_inputs = vec![funding_input_sats(1)];
+		let estimated_fee =
+			estimate_transaction_fee(&dummy_inputs, &[], Some(&change), true, true, prior_feerate);
+		let target_fee_no_change =
+			estimate_transaction_fee(&dummy_inputs, &[], None, true, true, amended_feerate);
+		let input_value = value_added + target_fee_no_change + Amount::from_sat(100);
+		let inputs = vec![funding_input_sats(input_value.to_sat())];
+		let target_fee_with_change =
+			estimate_transaction_fee(&inputs, &[], Some(&change), true, true, amended_feerate);
+		let dust_limit = change.script_pubkey.minimal_non_dust();
+		let amended_change_value = input_value
+			.checked_sub(value_added)
+			.and_then(|value| value.checked_sub(target_fee_with_change));
+		assert!(amended_change_value.map_or(true, |value| value < dust_limit));
+
+		let prior = FundingContribution {
+			value_added,
+			estimated_fee,
+			inputs: inputs.clone(),
+			outputs: vec![],
+			change_output: Some(change.clone()),
+			feerate: prior_feerate,
+			max_feerate: FeeRate::MAX,
+			is_splice: true,
+		};
+
+		let amended = prior
+			.amend_without_coin_selection(
+				value_added,
+				vec![],
+				amended_feerate,
+				FeeRate::MAX,
+				Some(Amount::MAX),
+			)
+			.unwrap();
+
+		assert_eq!(amended.inputs, inputs.clone());
+		assert!(amended.change_output.is_none());
+		assert_eq!(amended.estimated_fee, target_fee_no_change);
+		assert_eq!(amended.value_added, value_added);
+	}
+
+	#[test]
+	fn test_amend_prior_without_change_uses_existing_fee_buffer() {
+		let prior_feerate = FeeRate::from_sat_per_kwu(2000);
+		let amended_feerate = FeeRate::from_sat_per_kwu(4000);
+		let value_added = Amount::from_sat(50_000);
+		let outputs = vec![funding_output_sats(20_000)];
+
+		let dummy_inputs = vec![funding_input_sats(1)];
+		let prior_estimated_fee =
+			estimate_transaction_fee(&dummy_inputs, &outputs, None, true, true, prior_feerate);
+		let target_fee =
+			estimate_transaction_fee(&dummy_inputs, &outputs, None, true, true, amended_feerate);
+		let inputs = vec![funding_input_sats(
+			(value_added + outputs[0].value + target_fee + Amount::from_sat(1_000)).to_sat(),
+		)];
+
+		let prior = FundingContribution {
+			value_added,
+			estimated_fee: prior_estimated_fee,
+			inputs: inputs.clone(),
+			outputs: outputs.clone(),
+			change_output: None,
+			feerate: prior_feerate,
+			max_feerate: FeeRate::MAX,
+			is_splice: true,
+		};
+
+		let amended = prior
+			.amend_without_coin_selection(
+				value_added,
+				outputs.clone(),
+				amended_feerate,
+				FeeRate::MAX,
+				Some(Amount::MAX),
+			)
+			.unwrap();
+
+		assert_eq!(amended.inputs, inputs.clone());
+		assert_eq!(amended.outputs, outputs);
+		assert!(amended.change_output.is_none());
+		assert_eq!(
+			amended.estimated_fee,
+			estimate_transaction_fee(&inputs, &amended.outputs, None, true, true, amended_feerate),
+		);
+		assert_eq!(amended.value_added, value_added);
+	}
+
+	#[test]
+	fn test_rbf_contribution_builder_uses_coin_selection_when_required() {
+		let prior_feerate = FeeRate::from_sat_per_kwu(2000);
+		let min_rbf_feerate = FeeRate::from_sat_per_kwu(2500);
+		let value_added = Amount::from_sat(50_000);
+
+		let dummy_inputs = vec![funding_input_sats(1)];
+		let estimated_fee =
+			estimate_transaction_fee(&dummy_inputs, &[], None, true, true, prior_feerate);
+		let inputs = vec![funding_input_sats((value_added + estimated_fee).to_sat())];
+
+		let prior = FundingContribution {
+			value_added,
+			estimated_fee,
+			inputs,
+			outputs: vec![],
+			change_output: None,
+			feerate: prior_feerate,
+			max_feerate: FeeRate::MAX,
+			is_splice: true,
+		};
+
+		let template = FundingTemplate::new(
+			Some(shared_input(100_000)),
+			Some(min_rbf_feerate),
+			Some(PriorContribution::new(prior, Some(Amount::MAX))),
+		);
+
+		let builder = template
+			.rbf_prior_contribution_builder(None, FeeRate::MAX)
+			.unwrap()
+			.add_value(Amount::ONE_SAT);
+
+		let wallet = SingleUtxoWallet {
+			utxo: funding_input_sats(60_000),
+			change_output: Some(funding_output_sats(5_000)),
+		};
+		let contribution = builder.with_coin_selection_source_sync(wallet).build().unwrap();
+		assert_eq!(contribution.value_added, value_added + Amount::ONE_SAT);
+		assert_eq!(contribution.feerate, min_rbf_feerate);
+		assert!(!contribution.inputs.is_empty());
+	}
+
+	#[test]
+	fn test_contribution_builder_splice_out_build_skips_coin_selection() {
+		let feerate = FeeRate::from_sat_per_kwu(2000);
+		let withdrawal = funding_output_sats(20_000);
+
+		let builder = FundingTemplate::new(Some(shared_input(100_000)), None, None)
+			.contribution_builder(feerate, FeeRate::MAX)
+			.add_output(withdrawal.clone());
+
+		let contribution = builder.build().unwrap();
+		assert_eq!(contribution.value_added, Amount::ZERO);
+		assert!(contribution.inputs.is_empty());
+		assert!(contribution.change_output.is_none());
+		assert_eq!(contribution.outputs, vec![withdrawal]);
 	}
 
 	/// A mock wallet that returns a single UTXO for coin selection.
@@ -2419,7 +3120,8 @@ mod tests {
 		};
 
 		// rbf_sync should succeed and the contribution should have inputs from coin selection.
-		let contribution = template.rbf_sync(FeeRate::MAX, &wallet).unwrap();
+		let contribution =
+			template.rbf_prior_contribution_sync(None, FeeRate::MAX, &wallet).unwrap();
 		assert_eq!(contribution.value_added, Amount::ZERO);
 		assert!(!contribution.inputs.is_empty(), "coin selection should have added inputs");
 		assert_eq!(contribution.outputs, vec![withdrawal]);
@@ -2427,9 +3129,8 @@ mod tests {
 	}
 
 	#[test]
-	fn test_rbf_sync_no_prior_fee_bump_only_runs_coin_selection() {
-		// When there is no prior contribution (e.g., acceptor), rbf_sync should run coin
-		// selection to add inputs for a fee-bump-only contribution.
+	fn test_rbf_sync_returns_err_without_prior_contribution() {
+		// When there is no prior contribution (e.g., acceptor), RBF should be rejected.
 		let min_rbf_feerate = FeeRate::from_sat_per_kwu(5000);
 
 		let template =
@@ -2440,11 +3141,8 @@ mod tests {
 			change_output: Some(funding_output_sats(45_000)),
 		};
 
-		let contribution = template.rbf_sync(FeeRate::MAX, &wallet).unwrap();
-		assert_eq!(contribution.value_added, Amount::ZERO);
-		assert!(!contribution.inputs.is_empty(), "coin selection should have added inputs");
-		assert!(contribution.outputs.is_empty());
-		assert_eq!(contribution.feerate, min_rbf_feerate);
+		assert!(template.clone().rbf_prior_contribution_builder(None, FeeRate::MAX).is_err());
+		assert!(template.rbf_prior_contribution_sync(None, FeeRate::MAX, &wallet).is_err());
 	}
 
 	#[test]
@@ -2479,7 +3177,8 @@ mod tests {
 			change_output: Some(funding_output_sats(40_000)),
 		};
 
-		let contribution = template.rbf_sync(callers_max_feerate, &wallet).unwrap();
+		let contribution =
+			template.rbf_prior_contribution_sync(None, callers_max_feerate, &wallet).unwrap();
 		assert_eq!(
 			contribution.max_feerate, callers_max_feerate,
 			"should use caller's max_feerate, not prior's"
