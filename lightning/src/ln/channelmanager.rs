@@ -11450,7 +11450,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				},
 				channel_type,
 				is_announced,
-				params: common_fields.channel_parameters(),
+				params: common_fields.channel_parameters(match msg {
+					OpenChannelMessageRef::V1(msg) => Some(msg.channel_reserve_satoshis),
+					OpenChannelMessageRef::V2(_) => None,
+				}),
 			},
 			None,
 		));
