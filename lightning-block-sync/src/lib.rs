@@ -49,7 +49,7 @@ use bitcoin::hash_types::BlockHash;
 use bitcoin::pow::Work;
 
 use lightning::chain;
-use lightning::chain::{BestBlock, Listen};
+use lightning::chain::BestBlock;
 
 use std::future::Future;
 use std::ops::Deref;
@@ -176,32 +176,8 @@ where
 {
 	chain_tip: ValidatedBlockHeader,
 	chain_poller: P,
-	chain_notifier: ChainNotifier<HeaderCache, L>,
-}
-
-/// The `Cache` trait defines behavior for managing a block header cache, where block headers are
-/// keyed by block hash.
-///
-/// Used by [`ChainNotifier`] to store headers along the best chain, which is important for ensuring
-/// that blocks can be disconnected if they are no longer accessible from a block source (e.g., if
-/// the block source does not store stale forks indefinitely).
-///
-/// Implementations may define how long to retain headers such that it's unlikely they will ever be
-/// needed to disconnect a block.  In cases where block sources provide access to headers on stale
-/// forks reliably, caches may be entirely unnecessary.
-pub(crate) trait Cache {
-	/// Retrieves the block header keyed by the given block hash.
-	fn look_up(&self, block_hash: &BlockHash) -> Option<&ValidatedBlockHeader>;
-
-	/// Called when a block has been connected to the best chain to ensure it is available to be
-	/// disconnected later if needed.
-	fn block_connected(&mut self, block_hash: BlockHash, block_header: ValidatedBlockHeader);
-
-	/// Called when blocks have been disconnected from the best chain. Only the fork point
-	/// (best common ancestor) is provided.
-	///
-	/// Once disconnected, a block's header is no longer needed and thus can be removed.
-	fn blocks_disconnected(&mut self, fork_point: &ValidatedBlockHeader);
+	header_cache: HeaderCache,
+	chain_listener: L,
 }
 
 /// The maximum number of [`ValidatedBlockHeader`]s stored in a [`HeaderCache`].
@@ -210,44 +186,40 @@ pub const HEADER_CACHE_LIMIT: u32 = 6 * 24 * 7;
 /// Bounded cache of block headers keyed by block hash.
 ///
 /// Retains only the latest [`HEADER_CACHE_LIMIT`] block headers based on height.
-pub struct HeaderCache(std::collections::HashMap<BlockHash, ValidatedBlockHeader>);
+pub struct HeaderCache {
+	headers: std::collections::HashMap<BlockHash, ValidatedBlockHeader>,
+}
 
 impl HeaderCache {
 	/// Creates a new empty header cache.
 	pub fn new() -> Self {
-		Self(std::collections::HashMap::new())
-	}
-}
-
-impl Cache for HeaderCache {
-	fn look_up(&self, block_hash: &BlockHash) -> Option<&ValidatedBlockHeader> {
-		self.0.get(block_hash)
+		Self { headers: std::collections::HashMap::new() }
 	}
 
-	fn block_connected(&mut self, block_hash: BlockHash, block_header: ValidatedBlockHeader) {
-		self.0.insert(block_hash, block_header);
+	/// Retrieves the block header keyed by the given block hash.
+	pub fn look_up(&self, block_hash: &BlockHash) -> Option<&ValidatedBlockHeader> {
+		self.headers.get(block_hash)
+	}
+
+
+	/// Called when a block has been connected to the best chain to ensure it is available to be
+	/// disconnected later if needed.
+	pub(crate) fn block_connected(
+		&mut self, block_hash: BlockHash, block_header: ValidatedBlockHeader,
+	) {
+		self.headers.insert(block_hash, block_header);
 
 		// Remove headers older than a week.
 		let cutoff_height = block_header.height.saturating_sub(HEADER_CACHE_LIMIT);
-		self.0.retain(|_, header| header.height >= cutoff_height);
+		self.headers.retain(|_, header| header.height >= cutoff_height);
 	}
 
-	fn blocks_disconnected(&mut self, fork_point: &ValidatedBlockHeader) {
-		self.0.retain(|_, block_info| block_info.height <= fork_point.height);
-	}
-}
-
-impl Cache for &mut HeaderCache {
-	fn look_up(&self, block_hash: &BlockHash) -> Option<&ValidatedBlockHeader> {
-		self.0.get(block_hash)
-	}
-
-	fn block_connected(&mut self, block_hash: BlockHash, block_header: ValidatedBlockHeader) {
-		(*self).block_connected(block_hash, block_header);
-	}
-
-	fn blocks_disconnected(&mut self, fork_point: &ValidatedBlockHeader) {
-		self.0.retain(|_, block_info| block_info.height <= fork_point.height);
+	/// Called when blocks have been disconnected from the best chain. Only the fork point
+	/// (best common ancestor) is provided.
+	///
+	/// Once disconnected, a block's header is no longer needed and thus can be removed.
+	pub(crate) fn blocks_disconnected(&mut self, fork_point: &ValidatedBlockHeader) {
+		self.headers.retain(|_, block_info| block_info.height <= fork_point.height);
 	}
 }
 
@@ -269,8 +241,7 @@ where
 		chain_tip: ValidatedBlockHeader, chain_poller: P, header_cache: HeaderCache,
 		chain_listener: L,
 	) -> Self {
-		let chain_notifier = ChainNotifier { header_cache, chain_listener };
-		Self { chain_tip, chain_poller, chain_notifier }
+		Self { chain_tip, chain_poller, header_cache, chain_listener }
 	}
 
 	/// Polls for the best tip and updates the chain listener with any connected or disconnected
@@ -299,8 +270,11 @@ where
 	/// Updates the chain tip, syncing the chain listener with any connected or disconnected
 	/// blocks. Returns whether there were any such blocks.
 	async fn update_chain_tip(&mut self, best_chain_tip: ValidatedBlockHeader) -> bool {
-		match self
-			.chain_notifier
+		let mut chain_notifier = ChainNotifier {
+			header_cache: &mut self.header_cache,
+			chain_listener: &*self.chain_listener,
+		};
+		match chain_notifier
 			.synchronize_listener(best_chain_tip, &self.chain_tip, &mut self.chain_poller)
 			.await
 		{
@@ -320,15 +294,12 @@ where
 /// Notifies [listeners] of blocks that have been connected or disconnected from the chain.
 ///
 /// [listeners]: lightning::chain::Listen
-pub(crate) struct ChainNotifier<C: Cache, L: Deref>
-where
-	L::Target: chain::Listen,
-{
+pub(crate) struct ChainNotifier<'a, L: chain::Listen + ?Sized> {
 	/// Cache for looking up headers before fetching from a block source.
-	pub(crate) header_cache: C,
+	pub(crate) header_cache: &'a mut HeaderCache,
 
 	/// Listener that will be notified of connected or disconnected blocks.
-	pub(crate) chain_listener: L,
+	pub(crate) chain_listener: &'a L,
 }
 
 /// Changes made to the chain between subsequent polls that transformed it from having one chain tip
@@ -346,10 +317,7 @@ struct ChainDifference {
 	connected_blocks: Vec<ValidatedBlockHeader>,
 }
 
-impl<C: Cache, L: Deref> ChainNotifier<C, L>
-where
-	L::Target: chain::Listen,
-{
+impl<'a, L: chain::Listen + ?Sized> ChainNotifier<'a, L> {
 	/// Finds the first common ancestor between `new_header` and `old_header`, disconnecting blocks
 	/// from `old_header` to get to that point and then connecting blocks until `new_header`.
 	///
