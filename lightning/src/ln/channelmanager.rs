@@ -42,6 +42,7 @@ use crate::chain::chaininterface::{
 	BroadcasterInterface, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator,
 	TransactionType,
 };
+use crate::chain::chainmonitor::MonitorEventSource;
 use crate::chain::channelmonitor::{
 	ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, MonitorEvent,
 	WithChannelMonitor, ANTI_REORG_DELAY, CLTV_CLAIM_BUFFER, HTLC_FAIL_BACK_BUFFER,
@@ -496,8 +497,21 @@ impl PendingAddHTLCInfo {
 #[cfg_attr(test, derive(Clone, Debug, PartialEq))]
 pub(super) enum HTLCForwardInfo {
 	AddHTLC(PendingAddHTLCInfo),
-	FailHTLC { htlc_id: u64, err_packet: msgs::OnionErrorPacket },
-	FailMalformedHTLC { htlc_id: u64, failure_code: u16, sha256_of_onion: [u8; 32] },
+	FailHTLC {
+		htlc_id: u64,
+		err_packet: msgs::OnionErrorPacket,
+		/// A pointer to a [`MonitorEvent`] that can be removed from the outbound edge of this failed
+		/// forward, once the failure is durably persisted on the inbound edge.
+		monitor_event_source: Option<MonitorEventSource>,
+	},
+	FailMalformedHTLC {
+		htlc_id: u64,
+		failure_code: u16,
+		sha256_of_onion: [u8; 32],
+		/// A pointer to a [`MonitorEvent`] that can be removed from the outbound edge of this failed
+		/// forward, once the failure is durably persisted on the inbound edge.
+		monitor_event_source: Option<MonitorEventSource>,
+	},
 }
 
 /// Whether this blinded HTLC is being failed backwards by the introduction node or a blinded node,
@@ -1474,6 +1488,9 @@ pub(crate) enum MonitorUpdateCompletionAction {
 	EmitEventOptionAndFreeOtherChannel {
 		event: Option<events::Event>,
 		downstream_counterparty_and_funding_outpoint: EventUnblockedChannel,
+		/// If this action originated from a [`MonitorEvent`], the source to acknowledge once the
+		/// action is handled.
+		monitor_event_source: Option<MonitorEventSource>,
 	},
 	/// Indicates we should immediately resume the operation of another channel, unless there is
 	/// some other reason why the channel is blocked. In practice this simply means immediately
@@ -1491,7 +1508,14 @@ pub(crate) enum MonitorUpdateCompletionAction {
 		downstream_counterparty_node_id: PublicKey,
 		blocking_action: RAAMonitorUpdateBlockingAction,
 		downstream_channel_id: ChannelId,
+		/// If this action originated from a [`MonitorEvent`], the source to acknowledge once the
+		/// action is handled.
+		monitor_event_source: Option<MonitorEventSource>,
 	},
+	/// Indicates that one or more [`MonitorEvent`]s should be acknowledged via
+	/// [`chain::Watch::ack_monitor_event`] once the associated [`ChannelMonitorUpdate`] has been
+	/// durably persisted.
+	AckMonitorEvents { monitor_events_to_ack: Vec<MonitorEventSource> },
 }
 
 impl_writeable_tlv_based_enum_upgradable!(MonitorUpdateCompletionAction,
@@ -1505,6 +1529,7 @@ impl_writeable_tlv_based_enum_upgradable!(MonitorUpdateCompletionAction,
 		(0, downstream_counterparty_node_id, required),
 		(4, blocking_action, upgradable_required),
 		(5, downstream_channel_id, required),
+		(7, monitor_event_source, option),
 	},
 	(2, EmitEventOptionAndFreeOtherChannel) => {
 		// LDK prior to 0.3 required this field. It will not be present for trampoline payments
@@ -1512,6 +1537,10 @@ impl_writeable_tlv_based_enum_upgradable!(MonitorUpdateCompletionAction,
 		// are in the process of being resolved.
 		(0, event, upgradable_option),
 		(1, downstream_counterparty_and_funding_outpoint, upgradable_required),
+		(3, monitor_event_source, option),
+	},
+	(3, AckMonitorEvents) => {
+		(0, monitor_events_to_ack, required_vec),
 	},
 );
 
@@ -1537,12 +1566,29 @@ enum PostMonitorUpdateChanResume {
 	},
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Eq)]
 pub(crate) struct PaymentCompleteUpdate {
 	counterparty_node_id: PublicKey,
 	channel_funding_outpoint: OutPoint,
 	channel_id: ChannelId,
 	htlc_id: SentHTLCId,
+	/// The id of the [`MonitorEvent`] that triggered this update.
+	///
+	/// Used when the [`Event`] corresponding to this update's [`EventCompletionAction`] has been
+	/// processed by the user, to remove the [`MonitorEvent`] from the [`ChannelMonitor`] and prevent
+	/// it from being re-provided on startup.
+	monitor_event_id: Option<u64>,
+}
+
+impl PartialEq for PaymentCompleteUpdate {
+	fn eq(&self, other: &Self) -> bool {
+		self.counterparty_node_id == other.counterparty_node_id
+			&& self.channel_funding_outpoint == other.channel_funding_outpoint
+			&& self.channel_id == other.channel_id
+			&& self.htlc_id == other.htlc_id
+		// monitor_event_id is excluded: it's metadata about the event source,
+		// not part of the semantic identity of the payment resolution.
+	}
 }
 
 impl_writeable_tlv_based!(PaymentCompleteUpdate, {
@@ -1550,6 +1596,7 @@ impl_writeable_tlv_based!(PaymentCompleteUpdate, {
 	(3, counterparty_node_id, required),
 	(5, channel_id, required),
 	(7, htlc_id, required),
+	(9, monitor_event_id, option),
 });
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2952,6 +2999,15 @@ pub struct ChannelManager<
 	/// offer they resolve to to the given one.
 	pub testing_dnssec_proof_offer_resolution_override: Mutex<HashMap<HumanReadableName, Offer>>,
 
+	/// When set, monitors will repeatedly provide an event back to the `ChannelManager` on restart
+	/// until the event is explicitly acknowledged as processed.
+	///
+	/// Allows us to reconstruct pending HTLC state by replaying monitor events on startup, rather
+	/// than from complexly polling and reconciling Channel{Monitor} APIs, as well as move the
+	/// responsibility of off-chain payment resolution from the Channel to the monitor. Will be
+	/// always set once support is complete.
+	persistent_monitor_events: bool,
+
 	#[cfg(test)]
 	pub(super) entropy_source: ES,
 	#[cfg(not(test))]
@@ -3627,6 +3683,8 @@ impl<
 			our_network_pubkey, current_timestamp, expanded_inbound_key,
 			node_signer.get_receive_auth_key(), secp_ctx.clone(), message_router, logger.clone(),
 		);
+		#[cfg(test)]
+		let override_persistent_monitor_events = config.override_persistent_monitor_events;
 
 		ChannelManager {
 			config: RwLock::new(config),
@@ -3682,6 +3740,28 @@ impl<
 			signer_provider,
 
 			logger,
+
+			persistent_monitor_events: {
+				#[cfg(not(test))]
+				{ false }
+				#[cfg(test)]
+				{
+					override_persistent_monitor_events.unwrap_or_else(|| {
+						use core::hash::{BuildHasher, Hasher};
+						match std::env::var("LDK_TEST_PERSISTENT_MON_EVENTS") {
+							Ok(val) => match val.as_str() {
+								"1" => true,
+								"0" => false,
+								_ => panic!("LDK_TEST_PERSISTENT_MON_EVENTS must be 0 or 1, got: {}", val),
+							},
+							Err(_) => {
+								let rand_val = std::collections::hash_map::RandomState::new().build_hasher().finish();
+								rand_val % 2 == 0
+							},
+						}
+					})
+				}
+			},
 
 			#[cfg(feature = "_test_utils")]
 			testing_dnssec_proof_offer_resolution_override: Mutex::new(new_hash_map()),
@@ -7687,12 +7767,14 @@ impl<
 					HTLCFailureMsg::Relay(fail_htlc) => HTLCForwardInfo::FailHTLC {
 						htlc_id: fail_htlc.htlc_id,
 						err_packet: fail_htlc.into(),
+						monitor_event_source: None,
 					},
 					HTLCFailureMsg::Malformed(fail_malformed_htlc) => {
 						HTLCForwardInfo::FailMalformedHTLC {
 							htlc_id: fail_malformed_htlc.htlc_id,
 							sha256_of_onion: fail_malformed_htlc.sha256_of_onion,
 							failure_code: fail_malformed_htlc.failure_code.into(),
+							monitor_event_source: None,
 						}
 					},
 				};
@@ -8017,11 +8099,15 @@ impl<
 						continue;
 					}
 				},
-				HTLCForwardInfo::FailHTLC { .. } | HTLCForwardInfo::FailMalformedHTLC { .. } => {
+				HTLCForwardInfo::FailHTLC { monitor_event_source, .. }
+				| HTLCForwardInfo::FailMalformedHTLC { monitor_event_source, .. } => {
 					// Channel went away before we could fail it. This implies
 					// the channel is now on chain and our counterparty is
 					// trying to broadcast the HTLC-Timeout, but that's their
 					// problem, not ours.
+					if let Some(source) = monitor_event_source {
+						self.chain_monitor.ack_monitor_event(source);
+					}
 				},
 			}
 		}
@@ -8222,7 +8308,7 @@ impl<
 					}
 					None
 				},
-				HTLCForwardInfo::FailHTLC { htlc_id, ref err_packet } => {
+				HTLCForwardInfo::FailHTLC { htlc_id, ref err_packet, monitor_event_source } => {
 					if let Some(chan) = peer_state
 						.channel_by_id
 						.get_mut(&forward_chan_id)
@@ -8230,7 +8316,16 @@ impl<
 					{
 						let logger = WithChannelContext::from(&self.logger, &chan.context, None);
 						log_trace!(logger, "Failing HTLC back to channel with short id {} (backward HTLC ID {}) after delay", short_chan_id, htlc_id);
-						Some((chan.queue_fail_htlc(htlc_id, err_packet.clone(), &&logger), htlc_id))
+						Some((
+							chan.queue_fail_htlc(
+								htlc_id,
+								err_packet.clone(),
+								monitor_event_source,
+								&&logger,
+							),
+							htlc_id,
+							monitor_event_source,
+						))
 					} else {
 						self.forwarding_channel_not_found(
 							core::iter::once(forward_info).chain(draining_pending_forwards),
@@ -8242,7 +8337,12 @@ impl<
 						break;
 					}
 				},
-				HTLCForwardInfo::FailMalformedHTLC { htlc_id, failure_code, sha256_of_onion } => {
+				HTLCForwardInfo::FailMalformedHTLC {
+					htlc_id,
+					failure_code,
+					sha256_of_onion,
+					monitor_event_source,
+				} => {
 					if let Some(chan) = peer_state
 						.channel_by_id
 						.get_mut(&forward_chan_id)
@@ -8254,9 +8354,10 @@ impl<
 							htlc_id,
 							failure_code,
 							sha256_of_onion,
+							monitor_event_source,
 							&&logger,
 						);
-						Some((res, htlc_id))
+						Some((res, htlc_id, monitor_event_source))
 					} else {
 						self.forwarding_channel_not_found(
 							core::iter::once(forward_info).chain(draining_pending_forwards),
@@ -8269,8 +8370,12 @@ impl<
 					}
 				},
 			};
-			if let Some((queue_fail_htlc_res, htlc_id)) = queue_fail_htlc_res {
+			if let Some((queue_fail_htlc_res, htlc_id, monitor_event_source)) = queue_fail_htlc_res
+			{
 				if let Err(e) = queue_fail_htlc_res {
+					if let Some(source) = monitor_event_source {
+						self.chain_monitor.ack_monitor_event(source);
+					}
 					if let ChannelError::Ignore(msg) = e {
 						if let Some(chan) = peer_state
 							.channel_by_id
@@ -9280,6 +9385,10 @@ impl<
 					onion_error
 				);
 
+				let monitor_event_source = from_monitor_update_completion.as_ref().and_then(|u| {
+					u.monitor_event_id
+						.map(|id| MonitorEventSource { event_id: id, channel_id: u.channel_id })
+				});
 				push_forward_htlcs_failure(
 					*prev_outbound_scid_alias,
 					get_htlc_forward_failure(
@@ -9289,6 +9398,7 @@ impl<
 						trampoline_shared_secret,
 						phantom_shared_secret,
 						*htlc_id,
+						monitor_event_source,
 					),
 				);
 
@@ -9324,7 +9434,12 @@ impl<
 				// necessarily want to fail all of our incoming HTLCs back yet. We may have other
 				// outgoing HTLCs that need to resolve first. This will be tracked in our
 				// pending_outbound_payments in a followup.
-				for current_hop_data in previous_hop_data {
+				let trampoline_monitor_event_source =
+					from_monitor_update_completion.as_ref().and_then(|u| {
+						u.monitor_event_id
+							.map(|id| MonitorEventSource { event_id: id, channel_id: u.channel_id })
+					});
+				for (i, current_hop_data) in previous_hop_data.iter().enumerate() {
 					let HTLCPreviousHopData {
 						prev_outbound_scid_alias,
 						htlc_id,
@@ -9351,6 +9466,7 @@ impl<
 							&incoming_trampoline_shared_secret,
 							&None,
 							*htlc_id,
+							if i == 0 { trampoline_monitor_event_source } else { None },
 						),
 					);
 				}
@@ -9604,6 +9720,7 @@ impl<
 		startup_replay: bool, next_channel_counterparty_node_id: PublicKey,
 		next_channel_outpoint: OutPoint, next_channel_id: ChannelId, hop_data: HTLCPreviousHopData,
 		attribution_data: Option<AttributionData>, send_timestamp: Option<Duration>,
+		monitor_event_source: Option<MonitorEventSource>,
 	) {
 		let _prev_channel_id = hop_data.channel_id;
 		let completed_blocker = RAAMonitorUpdateBlockingAction::from_prev_hop_data(&hop_data);
@@ -9693,6 +9810,7 @@ impl<
 							downstream_counterparty_node_id: chan_to_release.counterparty_node_id,
 							downstream_channel_id: chan_to_release.channel_id,
 							blocking_action: chan_to_release.blocking_action,
+							monitor_event_source,
 						}),
 						None,
 					)
@@ -9708,6 +9826,7 @@ impl<
 						Some(MonitorUpdateCompletionAction::EmitEventOptionAndFreeOtherChannel {
 							event,
 							downstream_counterparty_and_funding_outpoint: chan_to_release,
+							monitor_event_source,
 						}),
 						None,
 					)
@@ -9892,8 +10011,12 @@ impl<
 								downstream_counterparty_node_id: node_id,
 								blocking_action: blocker,
 								downstream_channel_id: channel_id,
+								monitor_event_source,
 							} = action
 							{
+								if let Some(source) = monitor_event_source {
+									self.chain_monitor.ack_monitor_event(source);
+								}
 								if let Some(peer_state_mtx) = per_peer_state.get(&node_id) {
 									let mut peer_state = peer_state_mtx.lock().unwrap();
 									if let Some(blockers) = peer_state
@@ -10052,6 +10175,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		next_channel_counterparty_node_id: PublicKey, next_channel_outpoint: OutPoint,
 		next_channel_id: ChannelId, next_user_channel_id: Option<u128>,
 		attribution_data: Option<AttributionData>, send_timestamp: Option<Duration>,
+		monitor_event_id: Option<u64>,
 	) {
 		let startup_replay =
 			!self.background_events_processed_since_startup.load(Ordering::Acquire);
@@ -10070,6 +10194,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						channel_funding_outpoint: next_channel_outpoint,
 						channel_id: next_channel_id,
 						htlc_id,
+						monitor_event_id,
 					};
 					Some(EventCompletionAction::ReleasePaymentCompleteChannelMonitorUpdate(release))
 				} else {
@@ -10150,6 +10275,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					hop_data,
 					attribution_data,
 					send_timestamp,
+					monitor_event_id
+						.map(|id| MonitorEventSource { event_id: id, channel_id: next_channel_id }),
 				);
 			},
 			HTLCSource::TrampolineForward { previous_hop_data, .. } => {
@@ -10193,6 +10320,22 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						current_previous_hop_data,
 						attribution_data.clone(),
 						send_timestamp,
+						// Only pass the monitor event ID for the first hop. Once one inbound channel durably
+						// has the preimage, the outbound monitor event can be acked. The preimage remains in
+						// the outbound monitor's storage and will be replayed to all remaining inbound hops on
+						// restart via pending_claims_to_replay.
+						//
+						// Note that we plan to move away from this restart replay in the future, and instead
+						// on restart push temporary monitor events, reusing existing MonitorEvent handling
+						// logic to do the multi-claim.
+						if i == 0 {
+							monitor_event_id.map(|id| MonitorEventSource {
+								event_id: id,
+								channel_id: next_channel_id,
+							})
+						} else {
+							None
+						},
 					);
 				}
 			},
@@ -10419,7 +10562,11 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				MonitorUpdateCompletionAction::EmitEventOptionAndFreeOtherChannel {
 					event,
 					downstream_counterparty_and_funding_outpoint,
+					monitor_event_source,
 				} => {
+					if let Some(source) = monitor_event_source {
+						self.chain_monitor.ack_monitor_event(source);
+					}
 					if let Some(event) = event {
 						self.pending_events.lock().unwrap().push_back((event, None));
 					}
@@ -10433,12 +10580,21 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					downstream_counterparty_node_id,
 					downstream_channel_id,
 					blocking_action,
+					monitor_event_source,
 				} => {
+					if let Some(source) = monitor_event_source {
+						self.chain_monitor.ack_monitor_event(source);
+					}
 					self.handle_monitor_update_release(
 						downstream_counterparty_node_id,
 						downstream_channel_id,
 						Some(blocking_action),
 					);
+				},
+				MonitorUpdateCompletionAction::AckMonitorEvents { monitor_events_to_ack } => {
+					for source in monitor_events_to_ack {
+						self.chain_monitor.ack_monitor_event(source);
+					}
 				},
 			}
 		}
@@ -11696,6 +11852,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				fail_chan!("Already had channel with the new channel_id");
 			},
 			hash_map::Entry::Vacant(e) => {
+				monitor.set_persistent_events_enabled(self.persistent_monitor_events);
 				let monitor_res = self.chain_monitor.watch_channel(monitor.channel_id(), monitor);
 				if let Ok(persist_state) = monitor_res {
 					// There's no problem signing a counterparty's funding transaction if our monitor
@@ -11866,6 +12023,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				match chan
 					.funding_signed(&msg, best_block, &self.signer_provider, &self.logger)
 					.and_then(|(funded_chan, monitor)| {
+						monitor.set_persistent_events_enabled(self.persistent_monitor_events);
 						self.chain_monitor
 							.watch_channel(funded_chan.context.channel_id(), monitor)
 							.map_err(|()| {
@@ -12696,6 +12854,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			Some(next_user_channel_id),
 			msg.attribution_data,
 			send_timestamp,
+			None,
 		);
 
 		Ok(())
@@ -12780,6 +12939,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 				if let Some(chan) = chan.as_funded_mut() {
 					if let Some(monitor) = monitor_opt {
+						monitor.set_persistent_events_enabled(self.persistent_monitor_events);
 						let monitor_res =
 							self.chain_monitor.watch_channel(monitor.channel_id(), monitor);
 						if let Ok(persist_state) = monitor_res {
@@ -12964,7 +13124,16 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							*counterparty_node_id);
 						let (htlcs_to_fail, static_invoices, monitor_update_opt) = try_channel_entry!(self, peer_state,
 							chan.revoke_and_ack(&msg, &self.fee_estimator, &&logger, mon_update_blocked), chan_entry);
-						if let Some(monitor_update) = monitor_update_opt {
+						if let Some((monitor_update, monitor_events_to_ack)) = monitor_update_opt {
+							if !monitor_events_to_ack.is_empty() {
+								peer_state
+									.monitor_update_blocked_actions
+									.entry(msg.channel_id)
+									.or_default()
+									.push(MonitorUpdateCompletionAction::AckMonitorEvents {
+										monitor_events_to_ack,
+									});
+							}
 							let funding_txo = funding_txo_opt
 								.expect("Funding outpoint must have been set for RAA handling to succeed");
 							if let Some(data) = self.handle_new_monitor_update(
@@ -13595,7 +13764,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		for (funding_outpoint, channel_id, mut monitor_events, counterparty_node_id) in
 			pending_monitor_events.drain(..)
 		{
-			for monitor_event in monitor_events.drain(..) {
+			for (event_id, monitor_event) in monitor_events.drain(..) {
+				let monitor_event_source = MonitorEventSource { event_id, channel_id };
 				match monitor_event {
 					MonitorEvent::HTLCEvent(htlc_update) => {
 						let logger = WithContext::from(
@@ -13624,6 +13794,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								None,
 								None,
 								None,
+								Some(event_id),
 							);
 						} else {
 							log_trace!(logger, "Failing HTLC from our monitor");
@@ -13636,6 +13807,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								channel_funding_outpoint: funding_outpoint,
 								channel_id,
 								htlc_id: SentHTLCId::from_source(&htlc_update.source),
+								monitor_event_id: Some(event_id),
 							});
 							self.fail_htlc_backwards_internal(
 								&htlc_update.source,
@@ -13678,6 +13850,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								failed_channels.push((Err(e), counterparty_node_id));
 							}
 						}
+						// Channel close monitor events do not need to be replayed on startup because we
+						// already check the monitors to see if the channel is closed.
+						self.chain_monitor.ack_monitor_event(monitor_event_source);
 					},
 					MonitorEvent::CommitmentTxConfirmed(_) => {
 						let per_peer_state = self.per_peer_state.read().unwrap();
@@ -13699,6 +13874,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								failed_channels.push((Err(e), counterparty_node_id));
 							}
 						}
+						// Channel close monitor events do not need to be replayed on startup because we
+						// already check the monitors to see if the channel is closed.
+						self.chain_monitor.ack_monitor_event(monitor_event_source);
 					},
 					MonitorEvent::Completed { channel_id, monitor_update_id, .. } => {
 						self.channel_monitor_updated(
@@ -13706,6 +13884,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							Some(monitor_update_id),
 							&counterparty_node_id,
 						);
+						self.chain_monitor.ack_monitor_event(monitor_event_source);
 					},
 				}
 			}
@@ -13759,7 +13938,16 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			);
 			if monitor_opt.is_some() || !holding_cell_failed_htlcs.is_empty() {
 				let update_res = monitor_opt
-					.map(|monitor_update| {
+					.map(|(monitor_update, monitor_events_to_ack)| {
+						if !monitor_events_to_ack.is_empty() {
+							peer_state
+								.monitor_update_blocked_actions
+								.entry(*chan_id)
+								.or_default()
+								.push(MonitorUpdateCompletionAction::AckMonitorEvents {
+									monitor_events_to_ack,
+								});
+						}
 						self.handle_new_monitor_update(
 							&mut peer_state.in_flight_monitor_updates,
 							&mut peer_state.monitor_update_blocked_actions,
@@ -14290,6 +14478,7 @@ fn get_htlc_forward_failure(
 	blinded_failure: &Option<BlindedFailure>, onion_error: &HTLCFailReason,
 	incoming_packet_shared_secret: &[u8; 32], trampoline_shared_secret: &Option<[u8; 32]>,
 	phantom_shared_secret: &Option<[u8; 32]>, htlc_id: u64,
+	monitor_event_source: Option<MonitorEventSource>,
 ) -> HTLCForwardInfo {
 	// TODO: Correctly wrap the error packet twice if failing back a trampoline + phantom HTLC.
 	let secondary_shared_secret = trampoline_shared_secret.or(*phantom_shared_secret);
@@ -14301,19 +14490,20 @@ fn get_htlc_forward_failure(
 				incoming_packet_shared_secret,
 				&secondary_shared_secret,
 			);
-			HTLCForwardInfo::FailHTLC { htlc_id, err_packet }
+			HTLCForwardInfo::FailHTLC { htlc_id, err_packet, monitor_event_source }
 		},
 		Some(BlindedFailure::FromBlindedNode) => HTLCForwardInfo::FailMalformedHTLC {
 			htlc_id,
 			failure_code: LocalHTLCFailureReason::InvalidOnionBlinding.failure_code(),
 			sha256_of_onion: [0; 32],
+			monitor_event_source,
 		},
 		None => {
 			let err_packet = onion_error.get_encrypted_failure_packet(
 				incoming_packet_shared_secret,
 				&secondary_shared_secret,
 			);
-			HTLCForwardInfo::FailHTLC { htlc_id, err_packet }
+			HTLCForwardInfo::FailHTLC { htlc_id, err_packet, monitor_event_source }
 		},
 	}
 }
@@ -15340,9 +15530,18 @@ impl<
 					channel_id) {
 					if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
 						let channel_funding_outpoint = chan.funding_outpoint();
-						if let Some((monitor_update, further_update_exists)) = chan.unblock_next_blocked_monitor_update() {
+						if let Some((monitor_update, monitor_events_to_ack, further_update_exists)) = chan.unblock_next_blocked_monitor_update() {
 							log_debug!(logger, "Unlocking monitor updating and updating monitor",
 								);
+							if !monitor_events_to_ack.is_empty() {
+								peer_state
+									.monitor_update_blocked_actions
+									.entry(channel_id)
+									.or_default()
+									.push(MonitorUpdateCompletionAction::AckMonitorEvents {
+										monitor_events_to_ack,
+									});
+							}
 							let post_update_data = self.handle_new_monitor_update(
 								&mut peer_state.in_flight_monitor_updates,
 								&mut peer_state.monitor_update_blocked_actions,
@@ -15406,8 +15605,13 @@ impl<
 						channel_funding_outpoint,
 						channel_id,
 						htlc_id,
+						monitor_event_id,
 					},
 				) => {
+					if let Some(event_id) = monitor_event_id {
+						self.chain_monitor
+							.ack_monitor_event(MonitorEventSource { channel_id, event_id });
+					}
 					let per_peer_state = self.per_peer_state.read().unwrap();
 					let mut peer_state_lock = per_peer_state
 						.get(&counterparty_node_id)
@@ -17979,15 +18183,21 @@ impl Writeable for HTLCForwardInfo {
 				0u8.write(w)?;
 				info.write(w)?;
 			},
-			Self::FailHTLC { htlc_id, err_packet } => {
+			Self::FailHTLC { htlc_id, err_packet, monitor_event_source } => {
 				FAIL_HTLC_VARIANT_ID.write(w)?;
 				write_tlv_fields!(w, {
 					(0, htlc_id, required),
 					(2, err_packet.data, required),
 					(5, err_packet.attribution_data, option),
+					(7, monitor_event_source, option),
 				});
 			},
-			Self::FailMalformedHTLC { htlc_id, failure_code, sha256_of_onion } => {
+			Self::FailMalformedHTLC {
+				htlc_id,
+				failure_code,
+				sha256_of_onion,
+				monitor_event_source,
+			} => {
 				// Since this variant was added in 0.0.119, write this as `::FailHTLC` with an empty error
 				// packet so older versions have something to fail back with, but serialize the real data as
 				// optional TLVs for the benefit of newer versions.
@@ -17997,6 +18207,7 @@ impl Writeable for HTLCForwardInfo {
 					(1, failure_code, required),
 					(2, Vec::<u8>::new(), required),
 					(3, sha256_of_onion, required),
+					(7, monitor_event_source, option),
 				});
 			},
 		}
@@ -18017,6 +18228,7 @@ impl Readable for HTLCForwardInfo {
 					(2, err_packet, required),
 					(3, sha256_of_onion, option),
 					(5, attribution_data, option),
+					(7, monitor_event_source, option),
 				});
 				if let Some(failure_code) = malformed_htlc_failure_code {
 					if attribution_data.is_some() {
@@ -18026,6 +18238,7 @@ impl Readable for HTLCForwardInfo {
 						htlc_id: _init_tlv_based_struct_field!(htlc_id, required),
 						failure_code,
 						sha256_of_onion: sha256_of_onion.ok_or(DecodeError::InvalidValue)?,
+						monitor_event_source,
 					}
 				} else {
 					Self::FailHTLC {
@@ -18034,6 +18247,7 @@ impl Readable for HTLCForwardInfo {
 							data: _init_tlv_based_struct_field!(err_packet, required),
 							attribution_data: _init_tlv_based_struct_field!(attribution_data, option),
 						},
+						monitor_event_source,
 					}
 				}
 			},
@@ -18303,6 +18517,9 @@ impl<
 			}
 		}
 
+		// Only write `persistent_events_enabled` if it's set to true, as it's an even TLV.
+		let persistent_monitor_events = self.persistent_monitor_events.then_some(());
+
 		write_tlv_fields!(writer, {
 			(1, pending_outbound_payments_no_retry, required),
 			(2, pending_intercepted_htlcs, option),
@@ -18315,6 +18532,7 @@ impl<
 			(9, htlc_purposes, required_vec),
 			(10, legacy_in_flight_monitor_updates, option),
 			(11, self.probing_cookie_secret, required),
+			(12, persistent_monitor_events, option),
 			(13, htlc_onion_fields, optional_vec),
 			(14, decode_update_add_htlcs_opt, option),
 			(15, self.inbound_payment_id_secret, required),
@@ -18414,6 +18632,7 @@ pub(super) struct ChannelManagerData<SP: SignerProvider> {
 	forward_htlcs_legacy: HashMap<u64, Vec<HTLCForwardInfo>>,
 	pending_intercepted_htlcs_legacy: HashMap<InterceptId, PendingAddHTLCInfo>,
 	decode_update_add_htlcs_legacy: HashMap<u64, Vec<msgs::UpdateAddHTLC>>,
+	persistent_monitor_events: bool,
 	// The `ChannelManager` version that was written.
 	version: u8,
 }
@@ -18599,6 +18818,7 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 		let mut inbound_payment_id_secret = None;
 		let mut peer_storage_dir: Option<Vec<(PublicKey, Vec<u8>)>> = None;
 		let mut async_receive_offer_cache: AsyncReceiveOfferCache = AsyncReceiveOfferCache::new();
+		let mut persistent_monitor_events: Option<()> = None;
 		read_tlv_fields!(reader, {
 			(1, pending_outbound_payments_no_retry, option),
 			(2, pending_intercepted_htlcs_legacy, option),
@@ -18611,6 +18831,7 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 			(9, claimable_htlc_purposes, optional_vec),
 			(10, legacy_in_flight_monitor_updates, option),
 			(11, probing_cookie_secret, option),
+			(12, persistent_monitor_events, option),
 			(13, amountless_claimable_htlc_onion_fields, optional_vec),
 			(14, decode_update_add_htlcs_legacy, option),
 			(15, inbound_payment_id_secret, option),
@@ -18618,6 +18839,12 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 			(19, peer_storage_dir, optional_vec),
 			(21, async_receive_offer_cache, (default_value, async_receive_offer_cache)),
 		});
+
+		#[cfg(not(any(feature = "_test_utils", test)))]
+		if persistent_monitor_events.is_some() {
+			// This feature isn't supported yet so error if the writer expected it to be.
+			return Err(DecodeError::InvalidValue);
+		}
 
 		// Merge legacy pending_outbound_payments fields into a single HashMap.
 		// Priority: pending_outbound_payments (TLV 3) > pending_outbound_payments_no_retry (TLV 1)
@@ -18735,6 +18962,7 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 			peer_storage_dir: peer_storage_dir.unwrap_or_default(),
 			async_receive_offer_cache,
 			version,
+			persistent_monitor_events: persistent_monitor_events.is_some(),
 		})
 	}
 }
@@ -19036,6 +19264,7 @@ impl<
 			mut in_flight_monitor_updates,
 			peer_storage_dir,
 			async_receive_offer_cache,
+			persistent_monitor_events,
 			version: _version,
 		} = data;
 
@@ -19189,10 +19418,14 @@ impl<
 						}
 					}
 				} else {
-					channel.on_startup_drop_completed_blocked_mon_updates_through(
-						&logger,
-						monitor.get_latest_update_id(),
-					);
+					let events_to_ack = channel
+						.on_startup_drop_completed_blocked_mon_updates_through(
+							&logger,
+							monitor.get_latest_update_id(),
+						);
+					for source in events_to_ack {
+						args.chain_monitor.ack_monitor_event(source);
+					}
 					log_info!(logger, "Successfully loaded at update_id {} against monitor at update id {} with {} blocked updates",
 						channel.context.get_latest_monitor_update_id(),
 						monitor.get_latest_update_id(), channel.blocked_monitor_updates_pending());
@@ -19797,6 +20030,7 @@ impl<
 										channel_funding_outpoint: monitor.get_funding_txo(),
 										channel_id: monitor.channel_id(),
 										htlc_id,
+										monitor_event_id: None,
 									};
 									let mut compl_action = Some(
 									EventCompletionAction::ReleasePaymentCompleteChannelMonitorUpdate(update)
@@ -19876,6 +20110,7 @@ impl<
 							channel_funding_outpoint: monitor.get_funding_txo(),
 							channel_id: monitor.channel_id(),
 							htlc_id: SentHTLCId::from_source(&htlc_source),
+							monitor_event_id: None,
 						});
 
 						failed_htlcs.push((
@@ -20299,6 +20534,8 @@ impl<
 			logger: args.logger,
 			config: RwLock::new(args.config),
 
+			persistent_monitor_events,
+
 			#[cfg(feature = "_test_utils")]
 			testing_dnssec_proof_offer_resolution_override: Mutex::new(new_hash_map()),
 		};
@@ -20629,6 +20866,7 @@ impl<
 				downstream_funding,
 				downstream_channel_id,
 				downstream_user_channel_id,
+				None,
 				None,
 				None,
 			);

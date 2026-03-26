@@ -30,6 +30,7 @@ use crate::blinded_path::message::BlindedMessagePath;
 use crate::chain::chaininterface::{
 	ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator, TransactionType,
 };
+use crate::chain::chainmonitor::MonitorEventSource;
 use crate::chain::channelmonitor::{
 	ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, CommitmentHTLCData,
 	LATENCY_GRACE_PERIOD_BLOCKS,
@@ -551,11 +552,21 @@ enum HTLCUpdateAwaitingACK {
 	FailHTLC {
 		htlc_id: u64,
 		err_packet: msgs::OnionErrorPacket,
+		/// Contains a pointer to a [`MonitorEvent`] that can be removed from the outbound edge of this
+		/// failed forward, once the failure is durably persisted in this channel (the inbound edge).
+		///
+		/// [`MonitorEvent`]: crate::chain::channelmonitor::MonitorEvent
+		monitor_event_source: Option<MonitorEventSource>,
 	},
 	FailMalformedHTLC {
 		htlc_id: u64,
 		failure_code: u16,
 		sha256_of_onion: [u8; 32],
+		/// Contains a pointer to a [`MonitorEvent`] that can be removed from the outbound edge of this
+		/// failed forward, once the failure is durably persisted in this channel (the inbound edge).
+		///
+		/// [`MonitorEvent`]: crate::chain::channelmonitor::MonitorEvent
+		monitor_event_source: Option<MonitorEventSource>,
 	},
 }
 
@@ -1474,10 +1485,13 @@ pub(crate) const CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY: u32 = 144;
 #[derive(Debug)]
 struct PendingChannelMonitorUpdate {
 	update: ChannelMonitorUpdate,
+	/// `MonitorEvent`s that can be ack'd after `update` is durably persisted.
+	post_update_ackable_events: Vec<MonitorEventSource>,
 }
 
 impl_writeable_tlv_based!(PendingChannelMonitorUpdate, {
 	(0, update, required),
+	(1, post_update_ackable_events, optional_vec),
 });
 
 /// A payment channel with a counterparty throughout its life-cycle, encapsulating negotiation and
@@ -6834,7 +6848,9 @@ trait FailHTLCContents {
 	type Message: FailHTLCMessageName;
 	fn to_message(self, htlc_id: u64, channel_id: ChannelId) -> Self::Message;
 	fn to_inbound_htlc_state(self) -> InboundHTLCState;
-	fn to_htlc_update_awaiting_ack(self, htlc_id: u64) -> HTLCUpdateAwaitingACK;
+	fn to_htlc_update_awaiting_ack(
+		self, htlc_id: u64, monitor_event_source: Option<MonitorEventSource>,
+	) -> HTLCUpdateAwaitingACK;
 }
 impl FailHTLCContents for msgs::OnionErrorPacket {
 	type Message = msgs::UpdateFailHTLC;
@@ -6849,8 +6865,10 @@ impl FailHTLCContents for msgs::OnionErrorPacket {
 	fn to_inbound_htlc_state(self) -> InboundHTLCState {
 		InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailRelay(self))
 	}
-	fn to_htlc_update_awaiting_ack(self, htlc_id: u64) -> HTLCUpdateAwaitingACK {
-		HTLCUpdateAwaitingACK::FailHTLC { htlc_id, err_packet: self }
+	fn to_htlc_update_awaiting_ack(
+		self, htlc_id: u64, monitor_event_source: Option<MonitorEventSource>,
+	) -> HTLCUpdateAwaitingACK {
+		HTLCUpdateAwaitingACK::FailHTLC { htlc_id, err_packet: self, monitor_event_source }
 	}
 }
 impl FailHTLCContents for ([u8; 32], u16) {
@@ -6869,11 +6887,14 @@ impl FailHTLCContents for ([u8; 32], u16) {
 			failure_code: self.1,
 		})
 	}
-	fn to_htlc_update_awaiting_ack(self, htlc_id: u64) -> HTLCUpdateAwaitingACK {
+	fn to_htlc_update_awaiting_ack(
+		self, htlc_id: u64, monitor_event_source: Option<MonitorEventSource>,
+	) -> HTLCUpdateAwaitingACK {
 		HTLCUpdateAwaitingACK::FailMalformedHTLC {
 			htlc_id,
 			sha256_of_onion: self.0,
 			failure_code: self.1,
+			monitor_event_source,
 		}
 	}
 }
@@ -7591,9 +7612,10 @@ where
 					if !update_blocked {
 						debug_assert!(false, "If there is a pending blocked monitor we should have MonitorUpdateInProgress set");
 						let update = self.build_commitment_no_status_check(logger);
-						self.context
-							.blocked_monitor_updates
-							.push(PendingChannelMonitorUpdate { update });
+						self.context.blocked_monitor_updates.push(PendingChannelMonitorUpdate {
+							update,
+							post_update_ackable_events: Vec::new(),
+						});
 					}
 				}
 
@@ -7615,9 +7637,10 @@ where
 	/// Returns `Err` (always with [`ChannelError::Ignore`]) if the HTLC could not be failed (e.g.
 	/// if it was already resolved). Otherwise returns `Ok`.
 	pub fn queue_fail_htlc<L: Logger>(
-		&mut self, htlc_id_arg: u64, err_packet: msgs::OnionErrorPacket, logger: &L,
+		&mut self, htlc_id_arg: u64, err_packet: msgs::OnionErrorPacket,
+		monitor_event_source: Option<MonitorEventSource>, logger: &L,
 	) -> Result<(), ChannelError> {
-		self.fail_htlc(htlc_id_arg, err_packet, true, logger)
+		self.fail_htlc(htlc_id_arg, err_packet, true, monitor_event_source, logger)
 			.map(|msg_opt| assert!(msg_opt.is_none(), "We forced holding cell?"))
 	}
 
@@ -7626,10 +7649,17 @@ where
 	///
 	/// See [`Self::queue_fail_htlc`] for more info.
 	pub fn queue_fail_malformed_htlc<L: Logger>(
-		&mut self, htlc_id_arg: u64, failure_code: u16, sha256_of_onion: [u8; 32], logger: &L,
+		&mut self, htlc_id_arg: u64, failure_code: u16, sha256_of_onion: [u8; 32],
+		monitor_event_source: Option<MonitorEventSource>, logger: &L,
 	) -> Result<(), ChannelError> {
-		self.fail_htlc(htlc_id_arg, (sha256_of_onion, failure_code), true, logger)
-			.map(|msg_opt| assert!(msg_opt.is_none(), "We forced holding cell?"))
+		self.fail_htlc(
+			htlc_id_arg,
+			(sha256_of_onion, failure_code),
+			true,
+			monitor_event_source,
+			logger,
+		)
+		.map(|msg_opt| assert!(msg_opt.is_none(), "We forced holding cell?"))
 	}
 
 	/// Returns `Err` (always with [`ChannelError::Ignore`]) if the HTLC could not be failed (e.g.
@@ -7637,7 +7667,7 @@ where
 	#[rustfmt::skip]
 	fn fail_htlc<L: Logger, E: FailHTLCContents + Clone>(
 		&mut self, htlc_id_arg: u64, err_contents: E, mut force_holding_cell: bool,
-		logger: &L
+		monitor_event_source: Option<MonitorEventSource>, logger: &L
 	) -> Result<Option<E::Message>, ChannelError> {
 		if !matches!(self.context.channel_state, ChannelState::ChannelReady(_)) {
 			panic!("Was asked to fail an HTLC when channel was not in an operational state");
@@ -7674,17 +7704,20 @@ where
 
 		// Now update local state:
 		if force_holding_cell {
-			for pending_update in self.context.holding_cell_htlc_updates.iter() {
+			for pending_update in self.context.holding_cell_htlc_updates.iter_mut() {
 				match pending_update {
-					&HTLCUpdateAwaitingACK::ClaimHTLC { htlc_id, .. } => {
+					&mut HTLCUpdateAwaitingACK::ClaimHTLC { htlc_id, .. } => {
 						if htlc_id_arg == htlc_id {
 							return Err(ChannelError::Ignore(format!("HTLC {} was already claimed!", htlc_id)));
 						}
 					},
-					&HTLCUpdateAwaitingACK::FailHTLC { htlc_id, .. } |
-						&HTLCUpdateAwaitingACK::FailMalformedHTLC { htlc_id, .. } =>
+					&mut HTLCUpdateAwaitingACK::FailHTLC { htlc_id, monitor_event_source: ref mut src, .. } |
+						&mut HTLCUpdateAwaitingACK::FailMalformedHTLC { htlc_id, monitor_event_source: ref mut src, .. } =>
 					{
 						if htlc_id_arg == htlc_id {
+							if src.is_none() {
+								*src = monitor_event_source;
+							}
 							return Err(ChannelError::Ignore(format!("HTLC {} was already pending failure", htlc_id)));
 						}
 					},
@@ -7692,7 +7725,7 @@ where
 				}
 			}
 			log_trace!(logger, "Placing failure for HTLC ID {} in holding cell.", htlc_id_arg);
-			self.context.holding_cell_htlc_updates.push(err_contents.to_htlc_update_awaiting_ack(htlc_id_arg));
+			self.context.holding_cell_htlc_updates.push(err_contents.to_htlc_update_awaiting_ack(htlc_id_arg, monitor_event_source));
 			return Ok(None);
 		}
 
@@ -8586,7 +8619,7 @@ where
 	/// returns `(None, Vec::new())`.
 	pub fn maybe_free_holding_cell_htlcs<F: FeeEstimator, L: Logger>(
 		&mut self, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
-	) -> (Option<ChannelMonitorUpdate>, Vec<(HTLCSource, PaymentHash)>) {
+	) -> (Option<(ChannelMonitorUpdate, Vec<MonitorEventSource>)>, Vec<(HTLCSource, PaymentHash)>) {
 		if matches!(self.context.channel_state, ChannelState::ChannelReady(_))
 			&& self.context.channel_state.can_generate_new_commitment()
 		{
@@ -8600,7 +8633,7 @@ where
 	/// for our counterparty.
 	fn free_holding_cell_htlcs<F: FeeEstimator, L: Logger>(
 		&mut self, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
-	) -> (Option<ChannelMonitorUpdate>, Vec<(HTLCSource, PaymentHash)>) {
+	) -> (Option<(ChannelMonitorUpdate, Vec<MonitorEventSource>)>, Vec<(HTLCSource, PaymentHash)>) {
 		assert!(matches!(self.context.channel_state, ChannelState::ChannelReady(_)));
 		assert!(!self.context.channel_state.is_monitor_update_in_progress());
 		assert!(!self.context.channel_state.is_quiescent());
@@ -8630,6 +8663,7 @@ where
 			let mut update_fulfill_count = 0;
 			let mut update_fail_count = 0;
 			let mut htlcs_to_fail = Vec::new();
+			let mut monitor_events_to_ack = Vec::new();
 			for htlc_update in htlc_updates.drain(..) {
 				// Note that this *can* fail, though it should be due to rather-rare conditions on
 				// fee races with adding too many outputs which push our total payments just over
@@ -8721,18 +8755,45 @@ where
 						monitor_update.updates.append(&mut additional_monitor_update.updates);
 						None
 					},
-					&HTLCUpdateAwaitingACK::FailHTLC { htlc_id, ref err_packet } => Some(
-						self.fail_htlc(htlc_id, err_packet.clone(), false, logger)
+					&HTLCUpdateAwaitingACK::FailHTLC {
+						htlc_id,
+						ref err_packet,
+						monitor_event_source,
+					} => {
+						if let Some(source) = monitor_event_source {
+							monitor_events_to_ack.push(source);
+						}
+						Some(
+							self.fail_htlc(
+								htlc_id,
+								err_packet.clone(),
+								false,
+								monitor_event_source,
+								logger,
+							)
 							.map(|fail_msg_opt| fail_msg_opt.map(|_| ())),
-					),
+						)
+					},
 					&HTLCUpdateAwaitingACK::FailMalformedHTLC {
 						htlc_id,
 						failure_code,
 						sha256_of_onion,
-					} => Some(
-						self.fail_htlc(htlc_id, (sha256_of_onion, failure_code), false, logger)
+						monitor_event_source,
+					} => {
+						if let Some(source) = monitor_event_source {
+							monitor_events_to_ack.push(source);
+						}
+						Some(
+							self.fail_htlc(
+								htlc_id,
+								(sha256_of_onion, failure_code),
+								false,
+								monitor_event_source,
+								logger,
+							)
 							.map(|fail_msg_opt| fail_msg_opt.map(|_| ())),
-					),
+						)
+					},
 				};
 				if let Some(res) = fail_htlc_res {
 					match res {
@@ -8784,7 +8845,13 @@ where
 				Vec::new(),
 				logger,
 			);
-			(self.push_ret_blockable_mon_update(monitor_update), htlcs_to_fail)
+			(
+				self.push_ret_blockable_mon_update_with_event_sources(
+					monitor_update,
+					monitor_events_to_ack,
+				),
+				htlcs_to_fail,
+			)
 		} else {
 			(None, Vec::new())
 		}
@@ -8810,7 +8877,7 @@ where
 		(
 			Vec<(HTLCSource, PaymentHash)>,
 			Vec<(StaticInvoice, BlindedMessagePath)>,
-			Option<ChannelMonitorUpdate>,
+			Option<(ChannelMonitorUpdate, Vec<MonitorEventSource>)>,
 		),
 		ChannelError,
 	> {
@@ -9121,15 +9188,22 @@ where
 		} else {
 			"Blocked"
 		};
+		let mut monitor_events_to_ack = Vec::new();
 		macro_rules! return_with_htlcs_to_fail {
 			($htlcs_to_fail: expr) => {
+				let events_to_ack = core::mem::take(&mut monitor_events_to_ack);
 				if !release_monitor {
-					self.context
-						.blocked_monitor_updates
-						.push(PendingChannelMonitorUpdate { update: monitor_update });
+					self.context.blocked_monitor_updates.push(PendingChannelMonitorUpdate {
+						update: monitor_update,
+						post_update_ackable_events: events_to_ack,
+					});
 					return Ok(($htlcs_to_fail, static_invoices, None));
 				} else {
-					return Ok(($htlcs_to_fail, static_invoices, Some(monitor_update)));
+					return Ok((
+						$htlcs_to_fail,
+						static_invoices,
+						Some((monitor_update, events_to_ack)),
+					));
 				}
 			};
 		}
@@ -9137,7 +9211,8 @@ where
 		self.context.monitor_pending_update_adds.append(&mut pending_update_adds);
 
 		match self.maybe_free_holding_cell_htlcs(fee_estimator, logger) {
-			(Some(mut additional_update), htlcs_to_fail) => {
+			(Some((mut additional_update, holding_cell_monitor_events_to_ack)), htlcs_to_fail) => {
+				monitor_events_to_ack = holding_cell_monitor_events_to_ack;
 				// free_holding_cell_htlcs may bump latest_monitor_id multiple times but we want them to be
 				// strictly increasing by one, so decrement it here.
 				self.context.latest_monitor_update_id = monitor_update.update_id;
@@ -11217,12 +11292,16 @@ where
 
 	/// Returns the next blocked monitor update, if one exists, and a bool which indicates a
 	/// further blocked monitor update exists after the next.
-	pub fn unblock_next_blocked_monitor_update(&mut self) -> Option<(ChannelMonitorUpdate, bool)> {
+	pub fn unblock_next_blocked_monitor_update(
+		&mut self,
+	) -> Option<(ChannelMonitorUpdate, Vec<MonitorEventSource>, bool)> {
 		if self.context.blocked_monitor_updates.is_empty() {
 			return None;
 		}
+		let pending = self.context.blocked_monitor_updates.remove(0);
 		Some((
-			self.context.blocked_monitor_updates.remove(0).update,
+			pending.update,
+			pending.post_update_ackable_events,
 			!self.context.blocked_monitor_updates.is_empty(),
 		))
 	}
@@ -11232,14 +11311,24 @@ where
 	#[rustfmt::skip]
 	fn push_ret_blockable_mon_update(&mut self, update: ChannelMonitorUpdate)
 	-> Option<ChannelMonitorUpdate> {
+		self.push_ret_blockable_mon_update_with_event_sources(update, Vec::new())
+			.map(|(upd, _)| upd)
+	}
+
+	/// Similar to `push_ret_blockable_mon_update`, but allows including a list of
+	/// `MonitorEventSource`s that can be ack'd after the `update` is durably persisted.
+	fn push_ret_blockable_mon_update_with_event_sources(
+		&mut self, update: ChannelMonitorUpdate, monitor_event_sources: Vec<MonitorEventSource>,
+	) -> Option<(ChannelMonitorUpdate, Vec<MonitorEventSource>)> {
 		let release_monitor = self.context.blocked_monitor_updates.is_empty();
 		if !release_monitor {
 			self.context.blocked_monitor_updates.push(PendingChannelMonitorUpdate {
 				update,
+				post_update_ackable_events: monitor_event_sources,
 			});
 			None
 		} else {
-			Some(update)
+			Some((update, monitor_event_sources))
 		}
 	}
 
@@ -11248,19 +11337,23 @@ where
 	/// here after logging them.
 	pub fn on_startup_drop_completed_blocked_mon_updates_through<L: Logger>(
 		&mut self, logger: &L, loaded_mon_update_id: u64,
-	) {
-		self.context.blocked_monitor_updates.retain(|update| {
+	) -> Vec<MonitorEventSource> {
+		let mut monitor_events_to_ack = Vec::new();
+		self.context.blocked_monitor_updates.retain_mut(|update| {
 			if update.update.update_id <= loaded_mon_update_id {
 				log_info!(
 					logger,
 					"Dropping completed ChannelMonitorUpdate id {} due to a stale ChannelManager",
 					update.update.update_id,
 				);
+				monitor_events_to_ack
+					.extend(core::mem::take(&mut update.post_update_ackable_events));
 				false
 			} else {
 				true
 			}
 		});
+		monitor_events_to_ack
 	}
 
 	pub fn blocked_monitor_updates_pending(&self) -> usize {
@@ -15406,7 +15499,7 @@ impl<SP: SignerProvider> Writeable for FundedChannel<SP> {
 					// Store the attribution data for later writing.
 					holding_cell_attribution_data.push(attribution_data.as_ref());
 				},
-				&HTLCUpdateAwaitingACK::FailHTLC { ref htlc_id, ref err_packet } => {
+				&HTLCUpdateAwaitingACK::FailHTLC { ref htlc_id, ref err_packet, .. } => {
 					2u8.write(writer)?;
 					htlc_id.write(writer)?;
 					err_packet.data.write(writer)?;
@@ -15418,6 +15511,7 @@ impl<SP: SignerProvider> Writeable for FundedChannel<SP> {
 					htlc_id,
 					failure_code,
 					sha256_of_onion,
+					..
 				} => {
 					// We don't want to break downgrading by adding a new variant, so write a dummy
 					// `::FailHTLC` variant and write the real malformed error as an optional TLV.
@@ -15863,6 +15957,7 @@ impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
 						data: Readable::read(reader)?,
 						attribution_data: None,
 					},
+					monitor_event_source: None,
 				},
 				_ => return Err(DecodeError::InvalidValue),
 			});
@@ -16319,7 +16414,7 @@ impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
 				let htlc_idx = holding_cell_htlc_updates
 					.iter()
 					.position(|htlc| {
-						if let HTLCUpdateAwaitingACK::FailHTLC { htlc_id, err_packet } = htlc {
+						if let HTLCUpdateAwaitingACK::FailHTLC { htlc_id, err_packet, .. } = htlc {
 							let matches = *htlc_id == malformed_htlc_id;
 							if matches {
 								debug_assert!(err_packet.data.is_empty())
@@ -16334,6 +16429,7 @@ impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
 					htlc_id: malformed_htlc_id,
 					failure_code,
 					sha256_of_onion,
+					monitor_event_source: None,
 				};
 				let _ =
 					core::mem::replace(&mut holding_cell_htlc_updates[htlc_idx], malformed_htlc);
@@ -17361,12 +17457,14 @@ mod tests {
 			|htlc_id, attribution_data| HTLCUpdateAwaitingACK::FailHTLC {
 				htlc_id,
 				err_packet: msgs::OnionErrorPacket { data: vec![42], attribution_data },
+				monitor_event_source: None,
 			};
 		let dummy_holding_cell_malformed_htlc =
 			|htlc_id| HTLCUpdateAwaitingACK::FailMalformedHTLC {
 				htlc_id,
 				failure_code: LocalHTLCFailureReason::InvalidOnionBlinding.failure_code(),
 				sha256_of_onion: [0; 32],
+				monitor_event_source: None,
 			};
 		let mut holding_cell_htlc_updates = Vec::with_capacity(12);
 		for i in 0..16 {

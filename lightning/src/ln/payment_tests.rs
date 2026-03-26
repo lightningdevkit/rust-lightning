@@ -1423,15 +1423,39 @@ fn do_test_dup_htlc_onchain_doesnt_fail_on_reload(
 }
 
 #[test]
-fn test_dup_htlc_onchain_doesnt_fail_on_reload() {
+fn test_dup_htlc_onchain_doesnt_fail_on_reload_a() {
 	do_test_dup_htlc_onchain_doesnt_fail_on_reload(true, true, true, true);
+}
+#[test]
+fn test_dup_htlc_onchain_doesnt_fail_on_reload_b() {
 	do_test_dup_htlc_onchain_doesnt_fail_on_reload(true, true, true, false);
+}
+#[test]
+fn test_dup_htlc_onchain_doesnt_fail_on_reload_c() {
 	do_test_dup_htlc_onchain_doesnt_fail_on_reload(true, true, false, false);
+}
+#[test]
+fn test_dup_htlc_onchain_doesnt_fail_on_reload_d() {
 	do_test_dup_htlc_onchain_doesnt_fail_on_reload(true, false, true, true);
+}
+#[test]
+fn test_dup_htlc_onchain_doesnt_fail_on_reload_e() {
 	do_test_dup_htlc_onchain_doesnt_fail_on_reload(true, false, true, false);
+}
+#[test]
+fn test_dup_htlc_onchain_doesnt_fail_on_reload_f() {
 	do_test_dup_htlc_onchain_doesnt_fail_on_reload(true, false, false, false);
+}
+#[test]
+fn test_dup_htlc_onchain_doesnt_fail_on_reload_g() {
 	do_test_dup_htlc_onchain_doesnt_fail_on_reload(false, false, true, true);
+}
+#[test]
+fn test_dup_htlc_onchain_doesnt_fail_on_reload_h() {
 	do_test_dup_htlc_onchain_doesnt_fail_on_reload(false, false, true, false);
+}
+#[test]
+fn test_dup_htlc_onchain_doesnt_fail_on_reload_i() {
 	do_test_dup_htlc_onchain_doesnt_fail_on_reload(false, false, false, false);
 }
 
