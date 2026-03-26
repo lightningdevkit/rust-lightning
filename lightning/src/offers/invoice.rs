@@ -131,7 +131,8 @@ use crate::offers::invoice_request::{
 	IV_BYTES as INVOICE_REQUEST_IV_BYTES,
 };
 use crate::offers::merkle::{
-	self, SignError, SignFn, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash, TlvStream,
+	self, SignError, SignFn, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash, TlvRecord,
+	TlvStream,
 };
 use crate::offers::nonce::Nonce;
 use crate::offers::offer::{
@@ -140,6 +141,7 @@ use crate::offers::offer::{
 };
 use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
 use crate::offers::payer::{PayerTlvStream, PayerTlvStreamRef, PAYER_METADATA_TYPE};
+use crate::offers::payer_proof::{PayerProofBuilder, PayerProofError};
 use crate::offers::refund::{
 	Refund, RefundContents, IV_BYTES_WITHOUT_METADATA as REFUND_IV_BYTES_WITHOUT_METADATA,
 	IV_BYTES_WITH_METADATA as REFUND_IV_BYTES_WITH_METADATA,
@@ -147,6 +149,7 @@ use crate::offers::refund::{
 use crate::offers::signer::{self, Metadata};
 use crate::types::features::{Bolt12InvoiceFeatures, InvoiceRequestFeatures, OfferFeatures};
 use crate::types::payment::PaymentHash;
+use crate::types::payment::PaymentPreimage;
 use crate::types::string::PrintableString;
 use crate::util::ser::{
 	CursorReadable, HighZeroBytesDroppedBigSize, Iterable, LengthLimitedRead, LengthReadable,
@@ -1032,6 +1035,42 @@ impl Bolt12Invoice {
 		)
 	}
 
+	/// Creates a [`PayerProofBuilder`] for this invoice using the given payment preimage.
+	///
+	/// Returns an error if the preimage doesn't match the invoice's payment hash.
+	///
+	/// [`PayerProofBuilder`]: crate::offers::payer_proof::PayerProofBuilder
+	pub fn payer_proof_builder(
+		&self, preimage: PaymentPreimage,
+	) -> Result<PayerProofBuilder<'_>, PayerProofError> {
+		PayerProofBuilder::new(self, preimage)
+	}
+
+	/// Re-derives the payer's signing keypair for payer proof creation.
+	///
+	/// This performs the same key derivation that occurs during invoice request creation
+	/// with `deriving_signing_pubkey`, allowing the payer to recover their signing keypair.
+	/// The `nonce` and `payment_id` must be the same ones used when creating the original
+	/// invoice request (available from [`OffersContext::OutboundPaymentForOffer`]).
+	///
+	/// [`OffersContext::OutboundPaymentForOffer`]: crate::blinded_path::message::OffersContext::OutboundPaymentForOffer
+	pub(crate) fn derive_payer_signing_keys<T: secp256k1::Signing>(
+		&self, payment_id: PaymentId, nonce: Nonce, key: &ExpandedKey, secp_ctx: &Secp256k1<T>,
+	) -> Result<Keypair, ()> {
+		let iv_bytes = match &self.contents {
+			InvoiceContents::ForOffer { .. } => INVOICE_REQUEST_IV_BYTES,
+			InvoiceContents::ForRefund { .. } => REFUND_IV_BYTES_WITHOUT_METADATA,
+		};
+		self.contents.derive_payer_signing_keys(
+			&self.bytes,
+			payment_id,
+			nonce,
+			key,
+			iv_bytes,
+			secp_ctx,
+		)
+	}
+
 	pub(crate) fn as_tlv_stream(&self) -> FullInvoiceTlvStreamRef<'_> {
 		let (
 			payer_tlv_stream,
@@ -1317,20 +1356,8 @@ impl InvoiceContents {
 		&self, bytes: &[u8], metadata: &Metadata, key: &ExpandedKey, iv_bytes: &[u8; IV_LEN],
 		secp_ctx: &Secp256k1<T>,
 	) -> Result<PaymentId, ()> {
-		const EXPERIMENTAL_TYPES: core::ops::Range<u64> =
-			EXPERIMENTAL_OFFER_TYPES.start..EXPERIMENTAL_INVOICE_REQUEST_TYPES.end;
-
-		let offer_records = TlvStream::new(bytes).range(OFFER_TYPES);
-		let invreq_records = TlvStream::new(bytes).range(INVOICE_REQUEST_TYPES).filter(|record| {
-			match record.r#type {
-				PAYER_METADATA_TYPE => false, // Should be outside range
-				INVOICE_REQUEST_PAYER_ID_TYPE => !metadata.derives_payer_keys(),
-				_ => true,
-			}
-		});
-		let experimental_records = TlvStream::new(bytes).range(EXPERIMENTAL_TYPES);
-		let tlv_stream = offer_records.chain(invreq_records).chain(experimental_records);
-
+		let exclude_payer_id = metadata.derives_payer_keys();
+		let tlv_stream = Self::payer_tlv_stream(bytes, exclude_payer_id);
 		let signing_pubkey = self.payer_signing_pubkey();
 		signer::verify_payer_metadata(
 			metadata.as_ref(),
@@ -1340,6 +1367,46 @@ impl InvoiceContents {
 			tlv_stream,
 			secp_ctx,
 		)
+	}
+
+	fn derive_payer_signing_keys<T: secp256k1::Signing>(
+		&self, bytes: &[u8], payment_id: PaymentId, nonce: Nonce, key: &ExpandedKey,
+		iv_bytes: &[u8; IV_LEN], secp_ctx: &Secp256k1<T>,
+	) -> Result<Keypair, ()> {
+		let tlv_stream = Self::payer_tlv_stream(bytes, true);
+		let signing_pubkey = self.payer_signing_pubkey();
+		signer::derive_payer_keys(
+			payment_id,
+			nonce,
+			key,
+			iv_bytes,
+			signing_pubkey,
+			tlv_stream,
+			secp_ctx,
+		)
+	}
+
+	/// Builds the TLV stream used for payer metadata verification and key derivation.
+	///
+	/// When `exclude_payer_id` is true, the payer signing pubkey (type 88) is excluded
+	/// from the stream, which is needed when deriving payer keys.
+	fn payer_tlv_stream(
+		bytes: &[u8], exclude_payer_id: bool,
+	) -> impl core::iter::Iterator<Item = TlvRecord<'_>> {
+		const EXPERIMENTAL_TYPES: core::ops::Range<u64> =
+			EXPERIMENTAL_OFFER_TYPES.start..EXPERIMENTAL_INVOICE_REQUEST_TYPES.end;
+
+		let offer_records = TlvStream::new(bytes).range(OFFER_TYPES);
+		let invreq_records =
+			TlvStream::new(bytes).range(INVOICE_REQUEST_TYPES).filter(move |record| {
+				match record.r#type {
+					PAYER_METADATA_TYPE => false,
+					INVOICE_REQUEST_PAYER_ID_TYPE => !exclude_payer_id,
+					_ => true,
+				}
+			});
+		let experimental_records = TlvStream::new(bytes).range(EXPERIMENTAL_TYPES);
+		offer_records.chain(invreq_records).chain(experimental_records)
 	}
 
 	fn as_tlv_stream(&self) -> PartialInvoiceTlvStreamRef<'_> {
@@ -1499,6 +1566,21 @@ impl TryFrom<Vec<u8>> for Bolt12Invoice {
 
 /// Valid type range for invoice TLV records.
 pub(super) const INVOICE_TYPES: core::ops::Range<u64> = 160..240;
+
+/// TLV record type for the invoice creation timestamp.
+pub(super) const INVOICE_CREATED_AT_TYPE: u64 = 164;
+
+/// TLV record type for [`Bolt12Invoice::payment_hash`].
+pub(super) const INVOICE_PAYMENT_HASH_TYPE: u64 = 168;
+
+/// TLV record type for [`Bolt12Invoice::amount_msats`].
+pub(super) const INVOICE_AMOUNT_TYPE: u64 = 170;
+
+/// TLV record type for [`Bolt12Invoice::invoice_features`].
+pub(super) const INVOICE_FEATURES_TYPE: u64 = 174;
+
+/// TLV record type for [`Bolt12Invoice::signing_pubkey`].
+pub(super) const INVOICE_NODE_ID_TYPE: u64 = 176;
 
 tlv_stream!(InvoiceTlvStream, InvoiceTlvStreamRef<'a>, INVOICE_TYPES, {
 	(160, paths: (Vec<BlindedPath>, WithoutLength, Iterable<'a, BlindedPathIter<'a>, BlindedPath>)),

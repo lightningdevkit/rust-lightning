@@ -31,6 +31,7 @@ use crate::ln::outbound_payment::RecipientOnionFields;
 use crate::ln::types::ChannelId;
 use crate::offers::invoice::Bolt12Invoice;
 use crate::offers::invoice_request::InvoiceRequest;
+use crate::offers::nonce::Nonce;
 use crate::offers::static_invoice::StaticInvoice;
 use crate::onion_message::messenger::Responder;
 use crate::routing::gossip::NetworkUpdate;
@@ -1101,6 +1102,17 @@ pub enum Event {
 		///
 		/// [`StaticInvoice`]: crate::offers::static_invoice::StaticInvoice
 		bolt12_invoice: Option<PaidBolt12Invoice>,
+		/// The [`Nonce`] used when the BOLT 12 [`InvoiceRequest`] was created for the corresponding
+		/// [`Offer`] or [`Refund`].
+		///
+		/// This is needed to build a payer proof, as it allows deriving the signing keys used for
+		/// the [`InvoiceRequest`]. `None` for non-BOLT 12 payments or for payments initiated on
+		/// LDK versions prior to 0.2.
+		///
+		/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+		/// [`Offer`]: crate::offers::offer::Offer
+		/// [`Refund`]: crate::offers::refund::Refund
+		payment_nonce: Option<Nonce>,
 	},
 	/// Indicates an outbound payment failed. Individual [`Event::PaymentPathFailed`] events
 	/// provide failure information for each path attempt in the payment, including retries.
@@ -1973,6 +1985,7 @@ impl Writeable for Event {
 				ref amount_msat,
 				ref fee_paid_msat,
 				ref bolt12_invoice,
+				ref payment_nonce,
 			} => {
 				2u8.write(writer)?;
 				write_tlv_fields!(writer, {
@@ -1982,6 +1995,7 @@ impl Writeable for Event {
 					(5, fee_paid_msat, option),
 					(7, amount_msat, option),
 					(9, bolt12_invoice, option),
+					(11, payment_nonce, option),
 				});
 			},
 			&Event::PaymentPathFailed {
@@ -2474,6 +2488,7 @@ impl MaybeReadable for Event {
 					let mut amount_msat = None;
 					let mut fee_paid_msat = None;
 					let mut bolt12_invoice = None;
+					let mut payment_nonce = None;
 					read_tlv_fields!(reader, {
 						(0, payment_preimage, required),
 						(1, payment_hash, option),
@@ -2481,6 +2496,7 @@ impl MaybeReadable for Event {
 						(5, fee_paid_msat, option),
 						(7, amount_msat, option),
 						(9, bolt12_invoice, option),
+						(11, payment_nonce, option),
 					});
 					if payment_hash.is_none() {
 						payment_hash = Some(PaymentHash(
@@ -2494,6 +2510,7 @@ impl MaybeReadable for Event {
 						amount_msat,
 						fee_paid_msat,
 						bolt12_invoice,
+						payment_nonce,
 					}))
 				};
 				f()
