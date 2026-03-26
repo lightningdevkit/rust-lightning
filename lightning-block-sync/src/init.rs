@@ -33,8 +33,11 @@ where
 /// listener's view of the chain from its paired block hash to `block_source`'s best chain tip.
 ///
 /// Upon success, the returned header and header cache can be used to initialize [`SpvClient`]. In
-/// the case of failure, each listener may be left at a different block hash than the one it was
-/// originally paired with.
+/// the case of failure, *each listener may be left at a different block hash than the one it was
+/// originally paired with*.
+///
+/// Thus, in case of errors you likely need to reload each object via deserialization or check its
+/// current tip directly via accessors on the object before trying again.
 ///
 /// Useful during startup to bring the [`ChannelManager`] and each [`ChannelMonitor`] in sync before
 /// switching to [`SpvClient`]. For example:
