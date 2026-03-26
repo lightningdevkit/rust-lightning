@@ -362,6 +362,9 @@ impl<'a, L: chain::Listen + ?Sized> ChainNotifier<'a, L> {
 	///
 	/// First resolves `prev_best_block` to a `ValidatedBlockHeader` using the `previous_blocks`
 	/// field as fallback if needed, then finds the common ancestor.
+	///
+	/// Updates the header cache as it goes, tracking headers needed to find the diff to reuse for
+	/// other objects that might need similar headers.
 	async fn find_difference_from_best_block<P: Poll>(
 		&mut self, current_header: ValidatedBlockHeader, prev_best_block: BestBlock,
 		chain_poller: &mut P,
