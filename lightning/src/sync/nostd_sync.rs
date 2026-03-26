@@ -61,7 +61,7 @@ impl<'a, T: 'a> LockTestExt<'a> for Mutex<T> {
 	}
 	type ExclLock = MutexGuard<'a, T>;
 	#[inline]
-	fn unsafe_well_ordered_double_lock_self(&'a self) -> MutexGuard<T> {
+	fn unsafe_well_ordered_double_lock_self(&'a self) -> MutexGuard<'a, T> {
 		self.lock().unwrap()
 	}
 }
@@ -132,7 +132,7 @@ impl<'a, T: 'a> LockTestExt<'a> for RwLock<T> {
 	}
 	type ExclLock = RwLockWriteGuard<'a, T>;
 	#[inline]
-	fn unsafe_well_ordered_double_lock_self(&'a self) -> RwLockWriteGuard<T> {
+	fn unsafe_well_ordered_double_lock_self(&'a self) -> RwLockWriteGuard<'a, T> {
 		self.write().unwrap()
 	}
 }

@@ -2048,7 +2048,6 @@ impl<
 /// detailed in the [`ChannelManagerReadArgs`] documentation.
 ///
 /// ```
-/// use bitcoin::BlockHash;
 /// use bitcoin::network::Network;
 /// use lightning::chain::BestBlock;
 /// # use lightning::chain::channelmonitor::ChannelMonitor;
@@ -2097,8 +2096,8 @@ impl<
 ///     entropy_source, node_signer, signer_provider, fee_estimator, chain_monitor, tx_broadcaster,
 ///     router, message_router, logger, config, channel_monitors.iter().collect(),
 /// );
-/// let (block_hash, channel_manager) =
-///     <(BlockHash, ChannelManager<_, _, _, _, _, _, _, _, _>)>::read(&mut reader, args)?;
+/// let (best_block, channel_manager) =
+///     <(BestBlock, ChannelManager<_, _, _, _, _, _, _, _, _>)>::read(&mut reader, args)?;
 ///
 /// // Update the ChannelManager and ChannelMonitors with the latest chain data
 /// // ...
@@ -2665,7 +2664,7 @@ impl<
 /// [`read`], those channels will be force-closed based on the `ChannelMonitor` state and no funds
 /// will be lost (modulo on-chain transaction fees).
 ///
-/// Note that the deserializer is only implemented for `(`[`BlockHash`]`, `[`ChannelManager`]`)`, which
+/// Note that the deserializer is only implemented for `(`[`BestBlock`]`, `[`ChannelManager`]`)`, which
 /// tells you the last block hash which was connected. You should get the best block tip before using the manager.
 /// See [`chain::Listen`] and [`chain::Confirm`] for more details.
 ///
@@ -2732,7 +2731,6 @@ impl<
 /// [`peer_disconnected`]: msgs::BaseMessageHandler::peer_disconnected
 /// [`funding_created`]: msgs::FundingCreated
 /// [`funding_transaction_generated`]: Self::funding_transaction_generated
-/// [`BlockHash`]: bitcoin::hash_types::BlockHash
 /// [`update_channel`]: chain::Watch::update_channel
 /// [`ChannelUpdate`]: msgs::ChannelUpdate
 /// [`read`]: ReadableArgs::read
@@ -15890,7 +15888,7 @@ impl<
 		let _persistence_guard =
 			PersistenceNotifierGuard::optionally_notify_skipping_background_events(
 				self, || -> NotifyOption { NotifyOption::DoPersist });
-		*self.best_block.write().unwrap() = BestBlock::new(block_hash, height);
+		self.best_block.write().unwrap().update_for_new_tip(block_hash, height);
 
 		let mut min_anchor_feerate = None;
 		let mut min_non_anchor_feerate = None;
@@ -18220,6 +18218,7 @@ impl<
 			(17, in_flight_monitor_updates, option),
 			(19, peer_storage_dir, optional_vec),
 			(21, WithoutLength(&self.flow.writeable_async_receive_offer_cache()), required),
+			(23, self.best_block.read().unwrap().previous_blocks, required),
 		});
 
 		// Remove the SpliceFailed and DiscardFunding events added earlier.
@@ -18289,8 +18288,7 @@ impl Readable for AmountlessClaimablePaymentHTLCOnion {
 // This is an internal DTO used in the two-stage deserialization process.
 pub(super) struct ChannelManagerData<SP: SignerProvider> {
 	chain_hash: ChainHash,
-	best_block_height: u32,
-	best_block_hash: BlockHash,
+	best_block: BestBlock,
 	channels: Vec<FundedChannel<SP>>,
 	claimable_payments: HashMap<PaymentHash, ClaimablePayment>,
 	peer_init_features: Vec<(PublicKey, InitFeatures)>,
@@ -18498,6 +18496,7 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 		let mut inbound_payment_id_secret = None;
 		let mut peer_storage_dir: Option<Vec<(PublicKey, Vec<u8>)>> = None;
 		let mut async_receive_offer_cache: AsyncReceiveOfferCache = AsyncReceiveOfferCache::new();
+		let mut best_block_previous_blocks = None;
 		read_tlv_fields!(reader, {
 			(1, pending_outbound_payments_no_retry, option),
 			(2, pending_intercepted_htlcs_legacy, option),
@@ -18516,6 +18515,7 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 			(17, in_flight_monitor_updates, option),
 			(19, peer_storage_dir, optional_vec),
 			(21, async_receive_offer_cache, (default_value, async_receive_offer_cache)),
+			(23, best_block_previous_blocks, option),
 		});
 
 		// Merge legacy pending_outbound_payments fields into a single HashMap.
@@ -18610,8 +18610,11 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 
 		Ok(ChannelManagerData {
 			chain_hash,
-			best_block_height,
-			best_block_hash,
+			best_block: BestBlock {
+				block_hash: best_block_hash,
+				height: best_block_height,
+				previous_blocks: best_block_previous_blocks.unwrap_or([None; 12]),
+			},
 			channels,
 			forward_htlcs_legacy,
 			claimable_payments,
@@ -18644,7 +18647,7 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 /// is:
 /// 1) Deserialize all stored [`ChannelMonitor`]s.
 /// 2) Deserialize the [`ChannelManager`] by filling in this struct and calling:
-///    `<(BlockHash, ChannelManager)>::read(reader, args)`
+///    `<(BestBlock, ChannelManager)>::read(reader, args)`
 ///    This may result in closing some channels if the [`ChannelMonitor`] is newer than the stored
 ///    [`ChannelManager`] state to ensure no loss of funds. Thus, transactions may be broadcasted.
 /// 3) If you are not fetching full blocks, register all relevant [`ChannelMonitor`] outpoints the
@@ -18845,14 +18848,14 @@ impl<
 		MR: MessageRouter,
 		L: Logger + Clone,
 	> ReadableArgs<ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>>
-	for (BlockHash, Arc<ChannelManager<M, T, ES, NS, SP, F, R, MR, L>>)
+	for (BestBlock, Arc<ChannelManager<M, T, ES, NS, SP, F, R, MR, L>>)
 {
 	fn read<Reader: io::Read>(
 		reader: &mut Reader, args: ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>,
 	) -> Result<Self, DecodeError> {
-		let (blockhash, chan_manager) =
-			<(BlockHash, ChannelManager<M, T, ES, NS, SP, F, R, MR, L>)>::read(reader, args)?;
-		Ok((blockhash, Arc::new(chan_manager)))
+		let (best_block, chan_manager) =
+			<(BestBlock, ChannelManager<M, T, ES, NS, SP, F, R, MR, L>)>::read(reader, args)?;
+		Ok((best_block, Arc::new(chan_manager)))
 	}
 }
 
@@ -18868,7 +18871,7 @@ impl<
 		MR: MessageRouter,
 		L: Logger + Clone,
 	> ReadableArgs<ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>>
-	for (BlockHash, ChannelManager<M, T, ES, NS, SP, F, R, MR, L>)
+	for (BestBlock, ChannelManager<M, T, ES, NS, SP, F, R, MR, L>)
 {
 	fn read<Reader: io::Read>(
 		reader: &mut Reader, args: ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>,
@@ -18912,11 +18915,10 @@ impl<
 	pub(super) fn from_channel_manager_data(
 		data: ChannelManagerData<SP>,
 		mut args: ChannelManagerReadArgs<'_, M, T, ES, NS, SP, F, R, MR, L>,
-	) -> Result<(BlockHash, Self), DecodeError> {
+	) -> Result<(BestBlock, Self), DecodeError> {
 		let ChannelManagerData {
 			chain_hash,
-			best_block_height,
-			best_block_hash,
+			best_block,
 			channels,
 			mut forward_htlcs_legacy,
 			claimable_payments,
@@ -19601,7 +19603,7 @@ impl<
 								htlc.payment_hash,
 								session_priv_bytes,
 								&path,
-								best_block_height,
+								best_block.height,
 								&logger,
 							);
 						}
@@ -19922,7 +19924,7 @@ impl<
 						loop {
 							outbound_scid_alias = fake_scid::Namespace::OutboundAlias
 								.get_fake_scid(
-									best_block_height,
+									best_block.height,
 									&chain_hash,
 									fake_scid_rand_bytes.as_ref().unwrap(),
 									&args.entropy_source,
@@ -20124,7 +20126,6 @@ impl<
 			}
 		}
 
-		let best_block = BestBlock::new(best_block_hash, best_block_height);
 		let flow = OffersMessageFlow::new(
 			chain_hash,
 			best_block,
@@ -20536,7 +20537,7 @@ impl<
 		//TODO: Broadcast channel update for closed channels, but only after we've made a
 		//connection or two.
 
-		Ok((best_block_hash, channel_manager))
+		Ok((best_block, channel_manager))
 	}
 }
 
