@@ -144,6 +144,7 @@ fn test_zero_conf_channel_type_support() {
 		42,
 		None,
 		&logger,
+		None,
 	)
 	.unwrap();
 
@@ -167,7 +168,7 @@ fn test_zero_conf_channel_type_support() {
 		&config,
 		0,
 		&&logger,
-		/*is_0conf=*/ false,
+		None,
 	);
 	assert!(res.is_ok());
 }
@@ -244,6 +245,7 @@ fn do_test_supports_channel_type(config: UserConfig, expected_channel_type: Chan
 		42,
 		None,
 		&logger,
+		None,
 	)
 	.unwrap();
 	assert_eq!(
@@ -265,6 +267,7 @@ fn do_test_supports_channel_type(config: UserConfig, expected_channel_type: Chan
 		42,
 		None,
 		&logger,
+		None,
 	)
 	.unwrap();
 
@@ -282,7 +285,7 @@ fn do_test_supports_channel_type(config: UserConfig, expected_channel_type: Chan
 		&config,
 		0,
 		&&logger,
-		/*is_0conf=*/ false,
+		None,
 	)
 	.unwrap();
 
@@ -330,6 +333,7 @@ fn test_rejects_if_channel_type_not_set() {
 		42,
 		None,
 		&logger,
+		None,
 	)
 	.unwrap();
 
@@ -350,7 +354,7 @@ fn test_rejects_if_channel_type_not_set() {
 		&config,
 		0,
 		&&logger,
-		/*is_0conf=*/ false,
+		None,
 	);
 	assert!(channel_b.is_err());
 
@@ -368,7 +372,7 @@ fn test_rejects_if_channel_type_not_set() {
 		&config,
 		0,
 		&&logger,
-		/*is_0conf=*/ false,
+		None,
 	)
 	.unwrap();
 
@@ -416,6 +420,7 @@ fn test_rejects_if_channel_type_differ() {
 		42,
 		None,
 		&logger,
+		None,
 	)
 	.unwrap();
 
@@ -434,7 +439,7 @@ fn test_rejects_if_channel_type_differ() {
 		&config,
 		0,
 		&&logger,
-		/*is_0conf=*/ false,
+		None,
 	)
 	.unwrap();
 
@@ -499,6 +504,7 @@ fn test_rejects_simple_anchors_channel_type() {
 		42,
 		None,
 		&logger,
+		None,
 	)
 	.unwrap();
 
@@ -518,7 +524,7 @@ fn test_rejects_simple_anchors_channel_type() {
 		&config,
 		0,
 		&&logger,
-		/*is_0conf=*/ false,
+		None,
 	);
 	assert!(res.is_err());
 
@@ -540,6 +546,7 @@ fn test_rejects_simple_anchors_channel_type() {
 		42,
 		None,
 		&logger,
+		None,
 	)
 	.unwrap();
 
@@ -558,7 +565,7 @@ fn test_rejects_simple_anchors_channel_type() {
 		&config,
 		0,
 		&&logger,
-		/*is_0conf=*/ false,
+		None,
 	)
 	.unwrap();
 
