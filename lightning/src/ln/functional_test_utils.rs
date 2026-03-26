@@ -3025,6 +3025,7 @@ pub fn expect_payment_sent<CM: AChannelManager, H: NodeHolder<CM = CM>>(
 			ref amount_msat,
 			ref fee_paid_msat,
 			ref bolt12_invoice,
+			..
 		} => {
 			assert_eq!(expected_payment_preimage, *payment_preimage);
 			assert_eq!(expected_payment_hash, *payment_hash);
