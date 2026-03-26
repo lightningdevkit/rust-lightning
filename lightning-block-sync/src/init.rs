@@ -3,7 +3,7 @@
 
 use crate::async_poll::{MultiResultFuturePoller, ResultFuture};
 use crate::poll::{ChainPoller, Poll, Validate, ValidatedBlockHeader};
-use crate::{BlockData, BlockSource, BlockSourceResult, Cache, ChainNotifier, HeaderCache};
+use crate::{BlockData, BlockSource, BlockSourceResult, ChainNotifier, HeaderCache};
 
 use bitcoin::block::Header;
 use bitcoin::network::Network;
@@ -152,13 +152,13 @@ where
 	let mut chain_listeners_at_height = Vec::new();
 	let mut most_connected_blocks = Vec::new();
 	let mut header_cache = HeaderCache::new();
+	header_cache.retain_on_disconnect = true;
 	for (old_best_block, chain_listener) in chain_listeners.drain(..) {
 		// Disconnect any stale blocks, but keep them in the cache for the next iteration.
 		let (common_ancestor, connected_blocks) = {
 			let chain_listener = &DynamicChainListener(chain_listener);
-			let mut cache_wrapper = HeaderCacheNoDisconnect(&mut header_cache);
 			let mut chain_notifier =
-				ChainNotifier { header_cache: &mut cache_wrapper, chain_listener };
+				ChainNotifier { header_cache: &mut header_cache, chain_listener };
 			let difference = chain_notifier
 				.find_difference_from_best_block(best_header, old_best_block, &mut chain_poller)
 				.await?;
@@ -228,6 +228,7 @@ where
 			.truncate(most_connected_blocks.len().saturating_sub(MAX_BLOCKS_AT_ONCE));
 	}
 
+	header_cache.retain_on_disconnect = false;
 	Ok((header_cache, best_header))
 }
 
@@ -246,40 +247,12 @@ impl<'a, L: chain::Listen + ?Sized> chain::Listen for DynamicChainListener<'a, L
 	}
 }
 
-/// Wrapper around HeaderCache that ignores `blocks_disconnected` calls, retaining disconnected
-/// blocks in the cache. This is useful during initial sync to keep headers available across
-/// multiple listeners.
-struct HeaderCacheNoDisconnect<'a>(&'a mut HeaderCache);
-
-impl<'a> crate::Cache for &mut HeaderCacheNoDisconnect<'a> {
-	fn look_up(
-		&self, block_hash: &bitcoin::hash_types::BlockHash,
-	) -> Option<&ValidatedBlockHeader> {
-		self.0.look_up(block_hash)
-	}
-
-	fn insert_during_diff(
-		&mut self, block_hash: bitcoin::hash_types::BlockHash, block_header: ValidatedBlockHeader,
-	) {
-		self.0.insert_during_diff(block_hash, block_header);
-	}
-
-	fn block_connected(
-		&mut self, block_hash: bitcoin::hash_types::BlockHash, block_header: ValidatedBlockHeader,
-	) {
-		self.0.block_connected(block_hash, block_header);
-	}
-
-	fn blocks_disconnected(&mut self, _fork_point: &ValidatedBlockHeader) {
-		// Intentionally ignore disconnections to retain blocks in cache
-	}
-}
 
 #[cfg(test)]
 mod tests {
 	use super::*;
 	use crate::test_utils::{Blockchain, MockChainListener};
-	use crate::Cache;
+
 
 	#[tokio::test]
 	async fn sync_from_same_chain() {
