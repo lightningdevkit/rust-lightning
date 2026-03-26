@@ -249,7 +249,7 @@ pub(super) fn create_fwd_pending_htlc_info(
 				hmac: next_hop_hmac,
 			};
 			PendingHTLCRouting::TrampolineForward {
-				incoming_shared_secret: shared_secret.secret_bytes(),
+				trampoline_shared_secret: shared_secret.secret_bytes(),
 				onion_packet: outgoing_packet,
 				node_id: next_trampoline,
 				incoming_cltv_expiry: msg.cltv_expiry,
@@ -515,7 +515,7 @@ pub fn peel_payment_onion<NS: NodeSigner, L: Logger, T: secp256k1::Verification>
 			};
 
 			if let Err(reason) = check_incoming_htlc_cltv(
-				cur_height, outgoing_cltv_value, msg.cltv_expiry,
+				cur_height, outgoing_cltv_value, msg.cltv_expiry, MIN_CLTV_EXPIRY_DELTA,
 			) {
 				return Err(InboundHTLCErr {
 					msg: "incoming cltv check failed",
@@ -719,9 +719,9 @@ pub(super) fn decode_incoming_update_add_htlc_onion<NS: NodeSigner, L: Logger, T
 }
 
 pub(super) fn check_incoming_htlc_cltv(
-	cur_height: u32, outgoing_cltv_value: u32, cltv_expiry: u32,
+	cur_height: u32, outgoing_cltv_value: u32, cltv_expiry: u32, min_cltv_expiry_delta: u16,
 ) -> Result<(), LocalHTLCFailureReason> {
-	if (cltv_expiry as u64) < (outgoing_cltv_value) as u64 + MIN_CLTV_EXPIRY_DELTA as u64 {
+	if (cltv_expiry as u64) < (outgoing_cltv_value) as u64 + min_cltv_expiry_delta as u64 {
 		return Err(LocalHTLCFailureReason::IncorrectCLTVExpiry);
 	}
 	// Theoretically, channel counterparty shouldn't send us a HTLC expiring now,

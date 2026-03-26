@@ -231,11 +231,12 @@ pub enum PendingHTLCRouting {
 	},
 	/// An HTLC which should be forwarded on to another Trampoline node.
 	TrampolineForward {
-		/// The onion shared secret we build with the sender (or the preceding Trampoline node) used
-		/// to decrypt the onion.
+		/// The onion shared secret we build with the node that forwarded us this trampoline
+		/// forward (either the original sender, or a preceding Trampoline node), used to decrypt
+		/// the inner trampoline onion.
 		///
 		/// This is later used to encrypt failure packets in the event that the HTLC is failed.
-		incoming_shared_secret: [u8; 32],
+		trampoline_shared_secret: [u8; 32],
 		/// The onion which should be included in the forwarded HTLC, telling the next hop what to
 		/// do with the HTLC.
 		onion_packet: msgs::TrampolineOnionPacket,
@@ -474,6 +475,9 @@ impl PendingAddHTLCInfo {
 			PendingHTLCRouting::Receive { trampoline_shared_secret, .. } => {
 				trampoline_shared_secret
 			},
+			PendingHTLCRouting::TrampolineForward { trampoline_shared_secret, .. } => {
+				Some(trampoline_shared_secret)
+			},
 			_ => None,
 		};
 
@@ -542,6 +546,36 @@ struct ClaimableHTLC {
 	total_value_received: Option<u64>,
 	/// The extra fee our counterparty skimmed off the top of this HTLC.
 	counterparty_skimmed_fee_msat: Option<u64>,
+}
+
+impl ClaimableHTLC {
+	pub(crate) fn new(
+		prev_hop: HTLCPreviousHopData, value: u64, sender_intended_value: u64, cltv_expiry: u32,
+		onion_payload: OnionPayload, counterparty_skimmed_fee_msat: Option<u64>,
+	) -> Self {
+		ClaimableHTLC {
+			prev_hop,
+			cltv_expiry,
+			value,
+			sender_intended_value,
+			onion_payload,
+			timer_ticks: 0,
+			total_value_received: None,
+			counterparty_skimmed_fee_msat,
+		}
+	}
+
+	// Increments timer ticks and returns a boolean indicating whether HTLC is timed out.
+	fn mpp_timer_tick(&mut self) -> bool {
+		self.timer_ticks += 1;
+		self.timer_ticks >= MPP_TIMEOUT_TICKS
+	}
+
+	/// Returns a boolean indicating whether the HTLC has timed out on chain, accounting for a buffer
+	/// that gives us time to resolve it.
+	fn check_onchain_timeout(&self, height: u32, buffer: u32) -> bool {
+		height >= self.cltv_expiry - buffer
+	}
 }
 
 impl From<&ClaimableHTLC> for events::ClaimedHTLC {
@@ -855,6 +889,14 @@ mod fuzzy_channelmanager {
 				HTLCSource::TrampolineForward { .. } => {
 					HTLCHandlingFailureType::TrampolineForward {}
 				},
+			}
+		}
+
+		pub(crate) fn previous_hop_data(&self) -> &[HTLCPreviousHopData] {
+			match self {
+				HTLCSource::PreviousHopData(prev_hop) => core::slice::from_ref(prev_hop),
+				HTLCSource::TrampolineForward { previous_hop_data, .. } => &previous_hop_data[..],
+				HTLCSource::OutboundRoute { .. } => &[],
 			}
 		}
 	}
@@ -1231,6 +1273,25 @@ impl ClaimablePayment {
 			.map(|htlc| (htlc.prev_hop.channel_id, htlc.prev_hop.user_channel_id))
 			.collect()
 	}
+
+	/// Returns the total counterparty skimmed fee across all HTLCs.
+	fn total_counterparty_skimmed_msat(&self) -> u64 {
+		self.htlcs.iter().map(|htlc| htlc.counterparty_skimmed_fee_msat.unwrap_or(0)).sum()
+	}
+}
+
+/// Increments MPP timeout tick for all HTLCs and returns a boolean indicating whether the HTLC
+/// set has hit its MPP timeout. Will return false if the set has reached the sender's intended
+/// total, as the MPP has completed in this case.
+fn check_mpp_timeout(payment: &mut ClaimablePayment) -> bool {
+	// This condition determining whether the MPP is complete here must match exactly the condition
+	// used in `process_pending_htlc_forwards`.
+	let total_intended_recvd_value = payment.htlcs.iter().map(|h| h.sender_intended_value).sum();
+	let total_mpp_value = payment.onion_fields.total_mpp_amount_msat;
+	if total_mpp_value <= total_intended_recvd_value {
+		return false;
+	}
+	payment.htlcs.iter_mut().any(|htlc| htlc.mpp_timer_tick())
 }
 
 /// Represent the channel funding transaction type.
@@ -5264,8 +5325,12 @@ impl<
 			};
 
 		let cur_height = self.best_block.read().unwrap().height + 1;
-		check_incoming_htlc_cltv(cur_height, next_hop.outgoing_cltv_value, msg.cltv_expiry)?;
-
+		check_incoming_htlc_cltv(
+			cur_height,
+			next_hop.outgoing_cltv_value,
+			msg.cltv_expiry,
+			MIN_CLTV_EXPIRY_DELTA,
+		)?;
 		Ok(intercept)
 	}
 
@@ -8298,6 +8363,136 @@ impl<
 		}
 	}
 
+	// Checks whether an incoming htlc can be added to our [`claimable_payments`], and handles
+	// MPP accumulation. On successful add, returns Ok() with a boolean indicating whether all
+	// MPP parts have arrived. Callers *MUST NOT* fail htlcs if Ok(..) is returned.
+	fn check_claimable_incoming_htlc(
+		&self, claimable_payment: &mut ClaimablePayment, claimable_htlc: ClaimableHTLC,
+		mut onion_fields: RecipientOnionFields, payment_hash: PaymentHash,
+	) -> Result<bool, ()> {
+		let onions_compatible = claimable_payment.onion_fields.check_merge(&mut onion_fields);
+		if onions_compatible.is_err() {
+			return Err(());
+		}
+		let mut total_intended_recvd_value = claimable_htlc.sender_intended_value;
+		for htlc in claimable_payment.htlcs.iter() {
+			total_intended_recvd_value += htlc.sender_intended_value;
+			if total_intended_recvd_value >= msgs::MAX_VALUE_MSAT {
+				break;
+			}
+		}
+		let total_mpp_value = claimable_payment.onion_fields.total_mpp_amount_msat;
+		// The condition determining whether an MPP is complete must
+		// match exactly the condition used in `timer_tick_occurred`
+		if total_intended_recvd_value >= msgs::MAX_VALUE_MSAT {
+			return Err(());
+		} else if total_intended_recvd_value - claimable_htlc.sender_intended_value
+			>= total_mpp_value
+		{
+			log_trace!(
+				self.logger,
+				"Failing HTLC with payment_hash {} as payment is already claimable",
+				&payment_hash
+			);
+			return Err(());
+		} else if total_intended_recvd_value >= total_mpp_value {
+			claimable_payment.htlcs.push(claimable_htlc);
+			let amount_msat = claimable_payment.htlcs.iter().map(|htlc| htlc.value).sum();
+			claimable_payment
+				.htlcs
+				.iter_mut()
+				.for_each(|htlc| htlc.total_value_received = Some(amount_msat));
+			let counterparty_skimmed_fee_msat = claimable_payment.total_counterparty_skimmed_msat();
+			debug_assert!(
+				total_intended_recvd_value.saturating_sub(amount_msat)
+					<= counterparty_skimmed_fee_msat
+			);
+			claimable_payment.htlcs.sort();
+			Ok(true)
+		} else {
+			// Nothing to do - we haven't reached the total
+			// payment value yet, wait until we receive more
+			// MPP parts.
+			claimable_payment.htlcs.push(claimable_htlc);
+			Ok(false)
+		}
+	}
+
+	// Handles the addition of a HTLC associated with a payment we're receiving. Err(bool) indicates
+	// whether we have failed after committing to the HTLC - callers should assert that this
+	// value is false.
+	fn handle_claimable_htlc(
+		&self, purpose: events::PaymentPurpose, claimable_htlc: ClaimableHTLC,
+		onion_fields: RecipientOnionFields, payment_hash: PaymentHash, receiver_node_id: PublicKey,
+		new_events: &mut VecDeque<(Event, Option<EventCompletionAction>)>,
+	) -> Result<(), bool> {
+		let mut committed_to_claimable = false;
+
+		let mut claimable_payments = self.claimable_payments.lock().unwrap();
+		if claimable_payments.pending_claiming_payments.contains_key(&payment_hash) {
+			return Err(committed_to_claimable);
+		}
+
+		let ref mut claimable_payment = claimable_payments
+			.claimable_payments
+			.entry(payment_hash)
+			// Note that if we insert here we MUST NOT fail_htlc!()
+			.or_insert_with(|| {
+				committed_to_claimable = true;
+				ClaimablePayment {
+					purpose: purpose.clone(),
+					htlcs: Vec::new(),
+					onion_fields: onion_fields.clone(),
+				}
+			});
+
+		let is_keysend = purpose.is_keysend();
+		if purpose != claimable_payment.purpose {
+			let log_keysend = |keysend| if keysend { "keysend" } else { "non-keysend" };
+			log_trace!(self.logger, "Failing new {} HTLC with payment_hash {} as we already had an existing {} HTLC with the same payment hash", log_keysend(is_keysend), &payment_hash, log_keysend(!is_keysend));
+			return Err(committed_to_claimable);
+		}
+
+		let htlc_expiry = claimable_htlc.cltv_expiry;
+		if self
+			.check_claimable_incoming_htlc(
+				claimable_payment,
+				claimable_htlc,
+				onion_fields,
+				payment_hash,
+			)
+			.map_err(|_| committed_to_claimable)?
+		{
+			let claim_deadline = Some(
+				match claimable_payment.htlcs.iter().map(|h| h.cltv_expiry).min() {
+					Some(claim_deadline) => claim_deadline,
+					None => {
+						debug_assert!(false, "no htlcs in completed claimable_payment");
+						htlc_expiry
+					},
+				} - HTLC_FAIL_BACK_BUFFER,
+			);
+			new_events.push_back((
+				events::Event::PaymentClaimable {
+					receiver_node_id: Some(receiver_node_id),
+					payment_hash,
+					purpose,
+					amount_msat: claimable_payment.htlcs.iter().map(|htlc| htlc.value).sum(),
+					counterparty_skimmed_fee_msat: claimable_payment
+						.total_counterparty_skimmed_msat(),
+					receiving_channel_ids: claimable_payment.receiving_channel_ids(),
+					claim_deadline,
+					onion_fields: Some(claimable_payment.onion_fields.clone()),
+					payment_id: Some(
+						claimable_payment.inbound_payment_id(&self.inbound_payment_id_secret),
+					),
+				},
+				None,
+			));
+		}
+		Ok(())
+	}
+
 	fn process_receive_htlcs(
 		&self, pending_forwards: &mut Vec<HTLCForwardInfo>,
 		new_events: &mut VecDeque<(Event, Option<EventCompletionAction>)>,
@@ -8328,7 +8523,7 @@ impl<
 						payment_data,
 						payment_context,
 						phantom_shared_secret,
-						mut onion_fields,
+						onion_fields,
 						has_recipient_created_payment_secret,
 						invoice_request_opt,
 						trampoline_shared_secret,
@@ -8400,53 +8595,56 @@ impl<
 							panic!("short_channel_id == 0 should imply any pending_forward entries are of type Receive");
 						},
 					};
-					let claimable_htlc = ClaimableHTLC {
+					let htlc_value = incoming_amt_msat.unwrap_or(outgoing_amt_msat);
+					let HTLCPreviousHopData {
+						prev_outbound_scid_alias,
+						user_channel_id,
+						counterparty_node_id,
+						htlc_id,
+						incoming_packet_shared_secret,
+						..
+					} = prev_hop;
+
+					let claimable_htlc = ClaimableHTLC::new(
 						prev_hop,
 						// We differentiate the received value from the sender intended value
 						// if possible so that we don't prematurely mark MPP payments complete
 						// if routing nodes overpay
-						value: incoming_amt_msat.unwrap_or(outgoing_amt_msat),
-						sender_intended_value: outgoing_amt_msat,
-						timer_ticks: 0,
-						total_value_received: None,
+						htlc_value,
+						outgoing_amt_msat,
 						cltv_expiry,
 						onion_payload,
-						counterparty_skimmed_fee_msat: skimmed_fee_msat,
-					};
+						skimmed_fee_msat,
+					);
 
-					let mut committed_to_claimable = false;
-
-					macro_rules! fail_htlc {
-						($htlc: expr, $payment_hash: expr) => {
-							debug_assert!(!committed_to_claimable);
+					macro_rules! fail_receive_htlc {
+						($committed_to_claimable: expr) => {
+							let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
+								prev_outbound_scid_alias,
+								user_channel_id,
+								counterparty_node_id,
+								channel_id: prev_channel_id,
+								outpoint: prev_funding_outpoint,
+								htlc_id,
+								incoming_packet_shared_secret,
+								phantom_shared_secret,
+								trampoline_shared_secret,
+								blinded_failure,
+								cltv_expiry: Some(cltv_expiry),
+							});
+							debug_assert!(!$committed_to_claimable);
 							let err_data = invalid_payment_err_data(
-								$htlc.value,
+								htlc_value,
 								self.best_block.read().unwrap().height,
 							);
-							let counterparty_node_id = $htlc.prev_hop.counterparty_node_id;
-							let incoming_packet_shared_secret =
-								$htlc.prev_hop.incoming_packet_shared_secret;
-							let prev_outbound_scid_alias = $htlc.prev_hop.prev_outbound_scid_alias;
 							failed_forwards.push((
-								HTLCSource::PreviousHopData(HTLCPreviousHopData {
-									prev_outbound_scid_alias,
-									user_channel_id: $htlc.prev_hop.user_channel_id,
-									counterparty_node_id,
-									channel_id: prev_channel_id,
-									outpoint: prev_funding_outpoint,
-									htlc_id: $htlc.prev_hop.htlc_id,
-									incoming_packet_shared_secret,
-									phantom_shared_secret,
-									trampoline_shared_secret,
-									blinded_failure,
-									cltv_expiry: Some(cltv_expiry),
-								}),
+								htlc_source,
 								payment_hash,
 								HTLCFailReason::reason(
 									LocalHTLCFailureReason::IncorrectPaymentDetails,
 									err_data,
 								),
-								HTLCHandlingFailureType::Receive { payment_hash: $payment_hash },
+								HTLCHandlingFailureType::Receive { payment_hash },
 							));
 							continue 'next_forwardable_htlc;
 						};
@@ -8458,94 +8656,6 @@ impl<
 							.node_signer
 							.get_node_id(Recipient::PhantomNode)
 							.expect("Failed to get node_id for phantom node recipient");
-					}
-
-					macro_rules! check_total_value {
-						($purpose: expr) => {{
-							let mut payment_claimable_generated = false;
-							let is_keysend = $purpose.is_keysend();
-							let mut claimable_payments = self.claimable_payments.lock().unwrap();
-							if claimable_payments.pending_claiming_payments.contains_key(&payment_hash) {
-								fail_htlc!(claimable_htlc, payment_hash);
-							}
-							let ref mut claimable_payment = claimable_payments.claimable_payments
-								.entry(payment_hash)
-								// Note that if we insert here we MUST NOT fail_htlc!()
-								.or_insert_with(|| {
-									committed_to_claimable = true;
-									ClaimablePayment {
-										purpose: $purpose.clone(),
-										htlcs: Vec::new(),
-										onion_fields: onion_fields.clone(),
-									}
-								});
-							if $purpose != claimable_payment.purpose {
-								let log_keysend = |keysend| if keysend { "keysend" } else { "non-keysend" };
-								log_trace!(self.logger, "Failing new {} HTLC with payment_hash {} as we already had an existing {} HTLC with the same payment hash", log_keysend(is_keysend), &payment_hash, log_keysend(!is_keysend));
-								fail_htlc!(claimable_htlc, payment_hash);
-							}
-							let onions_compatible =
-								claimable_payment.onion_fields.check_merge(&mut onion_fields);
-							if onions_compatible.is_err() {
-								fail_htlc!(claimable_htlc, payment_hash);
-							}
-							let mut total_intended_recvd_value =
-								claimable_htlc.sender_intended_value;
-							let mut earliest_expiry = claimable_htlc.cltv_expiry;
-							for htlc in claimable_payment.htlcs.iter() {
-								total_intended_recvd_value += htlc.sender_intended_value;
-								earliest_expiry = cmp::min(earliest_expiry, htlc.cltv_expiry);
-								if total_intended_recvd_value >= msgs::MAX_VALUE_MSAT { break; }
-							}
-							let total_mpp_value =
-								claimable_payment.onion_fields.total_mpp_amount_msat;
-							// The condition determining whether an MPP is complete must
-							// match exactly the condition used in `timer_tick_occurred`
-							if total_intended_recvd_value >= msgs::MAX_VALUE_MSAT {
-								fail_htlc!(claimable_htlc, payment_hash);
-							} else if total_intended_recvd_value - claimable_htlc.sender_intended_value >= total_mpp_value {
-								log_trace!(self.logger, "Failing HTLC with payment_hash {} as payment is already claimable",
-									&payment_hash);
-								fail_htlc!(claimable_htlc, payment_hash);
-							} else if total_intended_recvd_value >= total_mpp_value {
-								#[allow(unused_assignments)] {
-									committed_to_claimable = true;
-								}
-								claimable_payment.htlcs.push(claimable_htlc);
-								let amount_msat =
-									claimable_payment.htlcs.iter().map(|htlc| htlc.value).sum();
-								claimable_payment.htlcs.iter_mut()
-									.for_each(|htlc| htlc.total_value_received = Some(amount_msat));
-								let counterparty_skimmed_fee_msat = claimable_payment.htlcs.iter()
-									.map(|htlc| htlc.counterparty_skimmed_fee_msat.unwrap_or(0)).sum();
-								debug_assert!(total_intended_recvd_value.saturating_sub(amount_msat)
-									<= counterparty_skimmed_fee_msat);
-								claimable_payment.htlcs.sort();
-								let payment_id =
-									claimable_payment.inbound_payment_id(&self.inbound_payment_id_secret);
-								new_events.push_back((events::Event::PaymentClaimable {
-									receiver_node_id: Some(receiver_node_id),
-									payment_hash,
-									purpose: $purpose,
-									amount_msat,
-									counterparty_skimmed_fee_msat,
-									receiving_channel_ids: claimable_payment.receiving_channel_ids(),
-									claim_deadline: Some(earliest_expiry - HTLC_FAIL_BACK_BUFFER),
-									onion_fields: Some(claimable_payment.onion_fields.clone()),
-									payment_id: Some(payment_id),
-								}, None));
-								payment_claimable_generated = true;
-							} else {
-								// Nothing to do - we haven't reached the total
-								// payment value yet, wait until we receive more
-								// MPP parts.
-								claimable_payment.htlcs.push(claimable_htlc);
-								#[allow(unused_assignments)] {
-									committed_to_claimable = true;
-								}
-							}
-							payment_claimable_generated
-						}}
 					}
 
 					// Check that the payment hash and secret are known. Note that we
@@ -8567,7 +8677,7 @@ impl<
 								Ok(result) => result,
 								Err(()) => {
 									log_trace!(self.logger, "Failing new HTLC with payment_hash {} as payment verification failed", &payment_hash);
-									fail_htlc!(claimable_htlc, payment_hash);
+									fail_receive_htlc!(false);
 								},
 							};
 							if let Some(min_final_cltv_expiry_delta) = min_final_cltv_expiry_delta {
@@ -8577,12 +8687,12 @@ impl<
 								if (cltv_expiry as u64) < expected_min_expiry_height {
 									log_trace!(self.logger, "Failing new HTLC with payment_hash {} as its CLTV expiry was too soon (had {}, earliest expected {})",
 									&payment_hash, cltv_expiry, expected_min_expiry_height);
-									fail_htlc!(claimable_htlc, payment_hash);
+									fail_receive_htlc!(false);
 								}
 							}
 							payment_preimage
 						} else {
-							fail_htlc!(claimable_htlc, payment_hash);
+							fail_receive_htlc!(false);
 						}
 					} else {
 						None
@@ -8598,10 +8708,20 @@ impl<
 							let purpose = match from_parts_res {
 								Ok(purpose) => purpose,
 								Err(()) => {
-									fail_htlc!(claimable_htlc, payment_hash);
+									fail_receive_htlc!(false);
 								},
 							};
-							check_total_value!(purpose);
+
+							if let Err(committed_to_claimable) = self.handle_claimable_htlc(
+								purpose,
+								claimable_htlc,
+								onion_fields,
+								payment_hash,
+								receiver_node_id,
+								new_events,
+							) {
+								fail_receive_htlc!(committed_to_claimable);
+							}
 						},
 						OnionPayload::Spontaneous(keysend_preimage) => {
 							let purpose = if let Some(PaymentContext::AsyncBolt12Offer(
@@ -8615,7 +8735,7 @@ impl<
 											false,
 											"We checked that payment_data is Some above"
 										);
-										fail_htlc!(claimable_htlc, payment_hash);
+										fail_receive_htlc!(false);
 									},
 								};
 
@@ -8634,13 +8754,13 @@ impl<
 											verified_invreq.amount_msats()
 										{
 											if payment_data.total_msat < invreq_amt_msat {
-												fail_htlc!(claimable_htlc, payment_hash);
+												fail_receive_htlc!(false);
 											}
 										}
 										verified_invreq
 									},
 									None => {
-										fail_htlc!(claimable_htlc, payment_hash);
+										fail_receive_htlc!(false);
 									},
 								};
 								let payment_purpose_context =
@@ -8656,16 +8776,25 @@ impl<
 								match from_parts_res {
 									Ok(purpose) => purpose,
 									Err(()) => {
-										fail_htlc!(claimable_htlc, payment_hash);
+										fail_receive_htlc!(false);
 									},
 								}
 							} else if payment_context.is_some() {
 								log_trace!(self.logger, "Failing new HTLC with payment_hash {}: received a keysend payment to a non-async payments context {:#?}", payment_hash, payment_context);
-								fail_htlc!(claimable_htlc, payment_hash);
+								fail_receive_htlc!(false);
 							} else {
 								events::PaymentPurpose::SpontaneousPayment(keysend_preimage)
 							};
-							check_total_value!(purpose);
+							if let Err(committed_to_claimable) = self.handle_claimable_htlc(
+								purpose,
+								claimable_htlc,
+								onion_fields,
+								payment_hash,
+								receiver_node_id,
+								new_events,
+							) {
+								fail_receive_htlc!(committed_to_claimable);
+							}
 						},
 					}
 				},
@@ -8972,42 +9101,38 @@ impl<
 			self.claimable_payments.lock().unwrap().claimable_payments.retain(
 				|payment_hash, payment| {
 					if payment.htlcs.is_empty() {
-						// This should be unreachable
 						debug_assert!(false);
 						return false;
 					}
 					if let OnionPayload::Invoice { .. } = payment.htlcs[0].onion_payload {
-						// Check if we've received all the parts we need for an MPP (the value of the parts adds to total_msat).
-						// In this case we're not going to handle any timeouts of the parts here.
-						// This condition determining whether the MPP is complete here must match
-						// exactly the condition used in `process_pending_htlc_forwards`.
-						let total_intended_recvd_value =
-							payment.htlcs.iter().map(|h| h.sender_intended_value).sum();
-						let total_mpp_value = payment.onion_fields.total_mpp_amount_msat;
-						if total_mpp_value <= total_intended_recvd_value {
-							return true;
-						} else if payment.htlcs.iter_mut().any(|htlc| {
-							htlc.timer_ticks += 1;
-							return htlc.timer_ticks >= MPP_TIMEOUT_TICKS;
-						}) {
-							let htlcs = payment
-								.htlcs
-								.drain(..)
-								.map(|htlc: ClaimableHTLC| (htlc.prev_hop, *payment_hash));
-							timed_out_mpp_htlcs.extend(htlcs);
-							return false;
+						let mpp_timeout = check_mpp_timeout(payment);
+						if mpp_timeout {
+							timed_out_mpp_htlcs.extend(payment.htlcs.drain(..).map(|h| {
+								(
+									HTLCSource::PreviousHopData(h.prev_hop),
+									*payment_hash,
+									HTLCHandlingFailureType::Receive {
+										payment_hash: *payment_hash,
+									},
+								)
+							}));
 						}
+						return !mpp_timeout;
 					}
 					true
 				},
 			);
 
-			for htlc_source in timed_out_mpp_htlcs.drain(..) {
-				let source = HTLCSource::PreviousHopData(htlc_source.0.clone());
+			for (htlc_source, payment_hash, failure_type) in timed_out_mpp_htlcs.drain(..) {
 				let failure_reason = LocalHTLCFailureReason::MPPTimeout;
 				let reason = HTLCFailReason::from_failure_code(failure_reason);
-				let receiver = HTLCHandlingFailureType::Receive { payment_hash: htlc_source.1 };
-				self.fail_htlc_backwards_internal(&source, &htlc_source.1, &reason, receiver, None);
+				self.fail_htlc_backwards_internal(
+					&htlc_source,
+					&payment_hash,
+					&reason,
+					failure_type,
+					None,
+				);
 			}
 
 			for (err, counterparty_node_id) in handle_errors {
@@ -12633,15 +12758,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							chan.update_fulfill_htlc(&msg),
 							chan_entry
 						);
-						let prev_hops = match &res.0 {
-							HTLCSource::PreviousHopData(prev_hop) => vec![prev_hop],
-							HTLCSource::TrampolineForward { previous_hop_data, .. } => {
-								previous_hop_data.iter().collect()
-							},
-							_ => vec![],
-						};
 						let logger = WithChannelContext::from(&self.logger, &chan.context, None);
-						for prev_hop in prev_hops {
+						for prev_hop in res.0.previous_hop_data() {
 							log_trace!(logger,
 								"Holding the next revoke_and_ack until the preimage is durably persisted in the inbound edge's ChannelMonitor",
 							);
@@ -16308,14 +16426,16 @@ impl<
 		}
 
 		if let Some(height) = height_opt {
+			// If height is approaching the number of blocks we think it takes us to get our
+			// commitment transaction confirmed before the HTLC expires, plus the number of blocks
+			// we generally consider it to take to do a commitment update, just give up on it and
+			// fail the HTLC.
 			self.claimable_payments.lock().unwrap().claimable_payments.retain(
 				|payment_hash, payment| {
 					payment.htlcs.retain(|htlc| {
-						// If height is approaching the number of blocks we think it takes us to get
-						// our commitment transaction confirmed before the HTLC expires, plus the
-						// number of blocks we generally consider it to take to do a commitment update,
-						// just give up on it and fail the HTLC.
-						if height >= htlc.cltv_expiry - HTLC_FAIL_BACK_BUFFER {
+						let htlc_timed_out =
+							htlc.check_onchain_timeout(height, HTLC_FAIL_BACK_BUFFER);
+						if htlc_timed_out {
 							let reason = LocalHTLCFailureReason::PaymentClaimBuffer;
 							timed_out_htlcs.push((
 								HTLCSource::PreviousHopData(htlc.prev_hop.clone()),
@@ -16328,10 +16448,8 @@ impl<
 									payment_hash: payment_hash.clone(),
 								},
 							));
-							false
-						} else {
-							true
 						}
+						!htlc_timed_out
 					});
 					!payment.htlcs.is_empty() // Only retain this entry if htlcs has at least one entry.
 				},
@@ -17677,7 +17795,7 @@ impl_writeable_tlv_based_enum!(PendingHTLCRouting,
 		(11, invoice_request, option),
 	},
 	(3, TrampolineForward) => {
-		(0, incoming_shared_secret, required),
+		(0, trampoline_shared_secret, required),
 		(2, onion_packet, required),
 		(4, blinded, option),
 		(6, node_id, required),
@@ -19898,17 +20016,11 @@ impl<
 					.into_iter()
 					.filter_map(|(htlc_source, (htlc, preimage_opt))| {
 						let payment_preimage = preimage_opt?;
-						let prev_htlcs = match &htlc_source {
-							HTLCSource::PreviousHopData(prev_hop) => vec![prev_hop],
-							HTLCSource::TrampolineForward { previous_hop_data, .. } => {
-								previous_hop_data.iter().collect()
-							},
-							// If it was an outbound payment, we've handled it above - if a preimage
-							// came in and we persisted the `ChannelManager` we either handled it
-							// and are good to go or the channel force-closed - we don't have to
-							// handle the channel still live case here.
-							_ => vec![],
-						};
+						// If it was an outbound payment, we've handled it above - if a preimage
+						// came in and we persisted the `ChannelManager` we either handled it
+						// and are good to go or the channel force-closed - we don't have to
+						// handle the channel still live case here.
+						let prev_htlcs = htlc_source.previous_hop_data();
 						let prev_htlcs_count = prev_htlcs.len();
 						if prev_htlcs_count == 0 {
 							return None;
