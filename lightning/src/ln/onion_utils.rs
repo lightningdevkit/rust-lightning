@@ -3734,7 +3734,7 @@ mod tests {
 				first_hop_htlc_msat: dummy_amt_msat,
 				payment_id: PaymentId([1; 32]),
 				bolt12_invoice: None,
-			payment_nonce: None,
+				payment_nonce: None,
 			};
 
 			{

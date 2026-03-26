@@ -5789,7 +5789,9 @@ impl<
 			_ => None,
 		});
 		match self.flow.verify_bolt12_invoice(invoice, context) {
-			Ok(payment_id) => self.send_payment_for_verified_bolt12_invoice(invoice, payment_id, nonce),
+			Ok(payment_id) => {
+				self.send_payment_for_verified_bolt12_invoice(invoice, payment_id, nonce)
+			},
 			Err(()) => Err(Bolt12PaymentError::UnexpectedInvoice),
 		}
 	}
@@ -9969,7 +9971,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let htlc_id = SentHTLCId::from_source(&source);
 		match source {
 			HTLCSource::OutboundRoute {
-				session_priv, payment_id, path, bolt12_invoice, payment_nonce, ..
+				session_priv,
+				payment_id,
+				path,
+				bolt12_invoice,
+				payment_nonce,
+				..
 			} => {
 				debug_assert!(!startup_replay,
 					"We don't support claim_htlc claims during startup - monitors may not be available yet");
