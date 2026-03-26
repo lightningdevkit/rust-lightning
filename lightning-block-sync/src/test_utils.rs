@@ -1,7 +1,6 @@
 use crate::poll::{Validate, ValidatedBlockHeader};
 use crate::{
-	BlockData, BlockHeaderData, BlockSource, BlockSourceError, BlockSourceResult, Cache,
-	HeaderCache,
+	BlockData, BlockHeaderData, BlockSource, BlockSourceError, BlockSourceResult, HeaderCache,
 };
 
 use bitcoin::block::{Block, Header, Version};
