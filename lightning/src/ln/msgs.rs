@@ -275,11 +275,8 @@ pub struct ChannelParameters {
 	/// The maximum number of pending HTLCs towards the channel initiator.
 	pub max_accepted_htlcs: u16,
 	/// The minimum value in satoshis the initiator requires the counterparty to keep in the
-	/// channel. Only set for V1 (tainted) channels; `None` for V2 (dual-funded) channels where
+	/// channel. Only set for V1 (legacy) channels; `None` for V2 (dual-funded) channels where
 	/// the reserve is not negotiated during the initial open.
-	///
-	/// Exposing this field allows users to reject inbound channels where the counterparty sets
-	/// an unreasonably high reserve.
 	pub channel_reserve_satoshis: Option<u64>,
 }
 
