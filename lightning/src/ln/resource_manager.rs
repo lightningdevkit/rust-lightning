@@ -90,4 +90,37 @@ mod tests {
 		let result = avg.value_at_timestamp(timestamp * 1000);
 		assert_eq!(result, Ok(0));
 	}
+
+	#[test]
+	fn test_decaying_average_values() {
+		// Test average decay at different timestamps. The values we are asserting have been
+		// independently calculated.
+		let mut current_timestamp = 0;
+		let mut avg = DecayingAverage::new(current_timestamp, WINDOW);
+
+		assert_eq!(avg.add_value(1000, current_timestamp).unwrap(), 1000);
+
+		let one_week = 60 * 60 * 24 * 7;
+
+		current_timestamp += one_week; // 1 week
+		assert_eq!(avg.value_at_timestamp(current_timestamp).unwrap(), 607);
+		assert_eq!(avg.add_value(500, current_timestamp).unwrap(), 1107);
+
+		current_timestamp += one_week / 2; // 1.5 weeks
+		assert_eq!(avg.value_at_timestamp(current_timestamp).unwrap(), 862);
+
+		current_timestamp += one_week / 2; // 2 weeks
+		assert_eq!(avg.value_at_timestamp(current_timestamp).unwrap(), 671);
+		assert_eq!(avg.add_value(200, current_timestamp).unwrap(), 871);
+
+		current_timestamp += one_week * 2; // 4 weeks
+		assert_eq!(avg.value_at_timestamp(current_timestamp).unwrap(), 320);
+
+		current_timestamp += one_week * 6; // 10 weeks
+		assert_eq!(avg.value_at_timestamp(current_timestamp).unwrap(), 16);
+		assert_eq!(avg.add_value(1000, current_timestamp).unwrap(), 1016);
+
+		current_timestamp += avg.half_life as u64;
+		assert_eq!(avg.value_at_timestamp(current_timestamp).unwrap(), 1016 / 2);
+	}
 }
