@@ -1399,10 +1399,9 @@ impl<
 	/// later forwarding.
 	///
 	/// Interception flow:
-	/// 1. If an onion message for an offline peer is received, `OnionMessenger` will
-	///    generate an [`Event::OnionMessageIntercepted`]. Event handlers can
-	///    then choose to persist this onion message for later forwarding, or drop
-	///    it.
+	/// 1. If an onion message for an offline peer or unknown SCIDs is received, `OnionMessenger`
+	///    will generate an [`Event::OnionMessageIntercepted`]. Event handlers can then choose
+	///    to persist this onion message for later forwarding, or drop it.
 	/// 2. When the offline peer later comes back online, `OnionMessenger` will
 	///    generate an [`Event::OnionMessagePeerConnected`]. Event handlers will
 	///    then fetch all previously intercepted onion messages for this peer.
@@ -1664,6 +1663,19 @@ impl<
 			NextMessageHop::ShortChannelId(scid) => match self.node_id_lookup.next_node_id(scid) {
 				Some(pubkey) => pubkey,
 				None => {
+					if self.intercept_messages_for_offline_peers {
+						log_trace!(
+							self.logger,
+							"Generating OnionMessageIntercepted event for SCID {} {}",
+							scid,
+							log_suffix
+						);
+						self.enqueue_intercepted_event(Event::OnionMessageIntercepted {
+							next_hop,
+							message: onion_message,
+						});
+						return Ok(());
+					}
 					log_trace!(self.logger, "Dropping forwarded onion messager: unable to resolve next hop using SCID {} {}", scid, log_suffix);
 					return Err(SendError::GetNodeIdFailed);
 				},
@@ -1707,7 +1719,7 @@ impl<
 					log_suffix
 				);
 				self.enqueue_intercepted_event(Event::OnionMessageIntercepted {
-					peer_node_id: next_node_id,
+					next_hop,
 					message: onion_message,
 				});
 				Ok(())
