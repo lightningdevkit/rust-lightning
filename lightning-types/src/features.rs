@@ -649,9 +649,17 @@ mod sealed {
 		supports_payment_metadata,
 		requires_payment_metadata
 	);
-	define_feature!(51, ZeroConf, [InitContext, NodeContext, ChannelTypeContext],
+	define_feature!(
+		51,
+		ZeroConf,
+		[InitContext, NodeContext, ChannelTypeContext],
 		"Feature flags for accepting channels with zero confirmations. Called `option_zeroconf` in the BOLTs",
-		set_zero_conf_optional, set_zero_conf_required, supports_zero_conf, requires_zero_conf);
+		set_zero_conf_optional,
+		set_zero_conf_required,
+		clear_zero_conf,
+		supports_zero_conf,
+		requires_zero_conf
+	);
 	define_feature!(
 		55,
 		Keysend,
