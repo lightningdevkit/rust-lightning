@@ -3641,11 +3641,11 @@ fn test_funding_contributed_splice_already_pending() {
 		)
 		.unwrap();
 
-	// Initiate a second splice with a DIFFERENT output to test that different outputs
-	// are included in DiscardFunding (not filtered out)
+	// Initiate a second splice with a DIFFERENT output (different script_pubkey) to test that
+	// non-overlapping outputs are included in DiscardFunding (not filtered out).
 	let second_splice_out = TxOut {
-		value: Amount::from_sat(6_000), // Different amount
-		script_pubkey: ScriptBuf::new_p2wpkh(&WPubkeyHash::from_raw_hash(Hash::all_zeros())),
+		value: Amount::from_sat(6_000),
+		script_pubkey: nodes[1].wallet_source.get_change_script().unwrap(),
 	};
 
 	// Clear UTXOs and add a LARGER one for the second contribution to ensure
@@ -3678,8 +3678,7 @@ fn test_funding_contributed_splice_already_pending() {
 	// Second funding_contributed with a different contribution - this should trigger
 	// DiscardFunding because there's already a pending quiescent action (splice contribution).
 	// Only inputs/outputs NOT in the existing contribution should be discarded.
-	let (expected_inputs, expected_outputs) =
-		second_contribution.clone().into_contributed_inputs_and_outputs();
+	let expected_inputs: Vec<_> = second_contribution.contributed_inputs().collect();
 
 	// Returns Err(APIMisuseError) and emits DiscardFunding for the non-duplicate parts of the second contribution
 	assert_eq!(
@@ -3699,11 +3698,10 @@ fn test_funding_contributed_splice_already_pending() {
 			if let FundingInfo::Contribution { inputs, outputs } = funding_info {
 				// The input is different, so it should be in the discard event
 				assert_eq!(*inputs, expected_inputs);
-				// The splice-out output is different (6000 vs 5000), so it should be in discard event
-				assert!(expected_outputs.contains(&second_splice_out));
-				assert!(!expected_outputs.contains(&first_splice_out));
-				// The different outputs should NOT be filtered out
-				assert_eq!(*outputs, expected_outputs);
+				// The splice-out output (different script_pubkey) survives filtering;
+				// the change output (same script_pubkey as first contribution) is filtered.
+				assert_eq!(outputs.len(), 1);
+				assert!(outputs.contains(&second_splice_out));
 			} else {
 				panic!("Expected FundingInfo::Contribution");
 			}
@@ -3796,14 +3794,26 @@ fn do_test_funding_contributed_active_funding_negotiation(state: u8) {
 	let first_contribution =
 		funding_template.splice_in_sync(splice_in_amount, feerate, FeeRate::MAX, &wallet).unwrap();
 
-	// Build second contribution with different UTXOs so inputs/outputs don't overlap
+	// Build second contribution with different UTXOs and a splice-out output using a different
+	// script_pubkey (node 1's address) so it survives script_pubkey-based filtering.
 	nodes[0].wallet_source.clear_utxos();
 	provide_utxo_reserves(&nodes, 1, splice_in_amount * 3);
+	let splice_out_output = TxOut {
+		value: Amount::from_sat(1_000),
+		script_pubkey: nodes[1].wallet_source.get_change_script().unwrap(),
+	};
 
 	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
 	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
-	let second_contribution =
-		funding_template.splice_in_sync(splice_in_amount, feerate, FeeRate::MAX, &wallet).unwrap();
+	let second_contribution = funding_template
+		.splice_in_and_out_sync(
+			splice_in_amount,
+			vec![splice_out_output.clone()],
+			feerate,
+			FeeRate::MAX,
+			&wallet,
+		)
+		.unwrap();
 
 	// First funding_contributed - sets up the quiescent action and queues STFU
 	nodes[0]
@@ -3848,10 +3858,10 @@ fn do_test_funding_contributed_active_funding_negotiation(state: u8) {
 		}
 	}
 
-	// Call funding_contributed with a different contribution (non-overlapping inputs/outputs).
-	// This hits the funding_negotiation path and returns DiscardFunding.
-	let (expected_inputs, expected_outputs) =
-		second_contribution.clone().into_contributed_inputs_and_outputs();
+	// Call funding_contributed with the second contribution. Inputs don't overlap (different
+	// UTXOs) so they all survive. The splice-out output (different script_pubkey) survives
+	// while the change output (same script_pubkey as first contribution) is filtered.
+	let expected_inputs: Vec<_> = second_contribution.contributed_inputs().collect();
 	assert_eq!(
 		nodes[0].node.funding_contributed(&channel_id, &node_id_1, second_contribution, None),
 		Err(APIError::APIMisuseError {
@@ -3859,15 +3869,17 @@ fn do_test_funding_contributed_active_funding_negotiation(state: u8) {
 		})
 	);
 
-	// Assert DiscardFunding event with the non-duplicate inputs/outputs
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1, "{events:?}");
 	match &events[0] {
 		Event::DiscardFunding { channel_id: event_channel_id, funding_info } => {
 			assert_eq!(*event_channel_id, channel_id);
 			if let FundingInfo::Contribution { inputs, outputs } = funding_info {
+				// Inputs are unique (different UTXOs) so none are filtered.
 				assert_eq!(*inputs, expected_inputs);
-				assert_eq!(*outputs, expected_outputs);
+				// Only the splice-out output survives; the change output is filtered
+				// (same script_pubkey as first contribution's change).
+				assert_eq!(*outputs, vec![splice_out_output]);
 			} else {
 				panic!("Expected FundingInfo::Contribution");
 			}
