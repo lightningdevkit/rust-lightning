@@ -777,7 +777,7 @@ impl FundingContribution {
 			inputs.retain(|input| *input != existing);
 		}
 		for existing in existing_outputs {
-			outputs.retain(|output| *output != *existing);
+			outputs.retain(|output| output.script_pubkey != existing.script_pubkey);
 		}
 		if inputs.is_empty() && outputs.is_empty() {
 			None
