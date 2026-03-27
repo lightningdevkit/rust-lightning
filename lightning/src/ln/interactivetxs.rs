@@ -90,13 +90,6 @@ impl SerialIdExt for SerialId {
 	}
 }
 
-#[derive(Clone, Debug)]
-pub(crate) struct NegotiationError {
-	pub reason: AbortReason,
-	pub contributed_inputs: Vec<BitcoinOutPoint>,
-	pub contributed_outputs: Vec<TxOut>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum AbortReason {
 	InvalidStateTransition,
@@ -370,11 +363,6 @@ impl ConstructedTransaction {
 		Ok(tx)
 	}
 
-	fn into_negotiation_error(self, reason: AbortReason) -> NegotiationError {
-		let (contributed_inputs, contributed_outputs) = self.into_contributed_inputs_and_outputs();
-		NegotiationError { reason, contributed_inputs, contributed_outputs }
-	}
-
 	fn contributed_inputs(&self) -> impl Iterator<Item = BitcoinOutPoint> + '_ {
 		self.tx
 			.input
@@ -399,40 +387,6 @@ impl ConstructedTransaction {
 			.filter(|(_, (_, output))| output.is_local(self.holder_is_initiator))
 			.filter(|(index, _)| *index != self.shared_output_index as usize)
 			.map(|(_, (txout, _))| txout)
-	}
-
-	fn to_contributed_inputs_and_outputs(&self) -> (Vec<BitcoinOutPoint>, Vec<TxOut>) {
-		(self.contributed_inputs().collect(), self.contributed_outputs().cloned().collect())
-	}
-
-	fn into_contributed_inputs_and_outputs(self) -> (Vec<BitcoinOutPoint>, Vec<TxOut>) {
-		let contributed_inputs = self
-			.tx
-			.input
-			.into_iter()
-			.zip(self.input_metadata.iter())
-			.enumerate()
-			.filter(|(_, (_, input))| input.is_local(self.holder_is_initiator))
-			.filter(|(index, _)| {
-				self.shared_input_index
-					.map(|shared_index| *index != shared_index as usize)
-					.unwrap_or(true)
-			})
-			.map(|(_, (txin, _))| txin.previous_output)
-			.collect();
-
-		let contributed_outputs = self
-			.tx
-			.output
-			.into_iter()
-			.zip(self.output_metadata.iter())
-			.enumerate()
-			.filter(|(_, (_, output))| output.is_local(self.holder_is_initiator))
-			.filter(|(index, _)| *index != self.shared_output_index as usize)
-			.map(|(_, (txout, _))| txout)
-			.collect();
-
-		(contributed_inputs, contributed_outputs)
 	}
 
 	pub fn tx(&self) -> &Transaction {
@@ -909,24 +863,12 @@ impl InteractiveTxSigningSession {
 		Ok(())
 	}
 
-	pub(crate) fn into_negotiation_error(self, reason: AbortReason) -> NegotiationError {
-		self.unsigned_tx.into_negotiation_error(reason)
-	}
-
 	pub(super) fn contributed_inputs(&self) -> impl Iterator<Item = BitcoinOutPoint> + '_ {
 		self.unsigned_tx.contributed_inputs()
 	}
 
 	pub(super) fn contributed_outputs(&self) -> impl Iterator<Item = &TxOut> + '_ {
 		self.unsigned_tx.contributed_outputs()
-	}
-
-	pub(super) fn to_contributed_inputs_and_outputs(&self) -> (Vec<BitcoinOutPoint>, Vec<TxOut>) {
-		(self.contributed_inputs().collect(), self.contributed_outputs().cloned().collect())
-	}
-
-	pub(super) fn into_contributed_inputs_and_outputs(self) -> (Vec<BitcoinOutPoint>, Vec<TxOut>) {
-		self.unsigned_tx.into_contributed_inputs_and_outputs()
 	}
 }
 
@@ -2160,27 +2102,6 @@ impl InteractiveTxConstructor {
 		Self::new(args, false)
 	}
 
-	fn into_negotiation_error(self, reason: AbortReason) -> NegotiationError {
-		let (contributed_inputs, contributed_outputs) = self.into_contributed_inputs_and_outputs();
-		NegotiationError { reason, contributed_inputs, contributed_outputs }
-	}
-
-	pub(super) fn into_contributed_inputs_and_outputs(self) -> (Vec<BitcoinOutPoint>, Vec<TxOut>) {
-		let contributed_inputs = self
-			.inputs_to_contribute
-			.into_iter()
-			.filter(|(_, input)| !input.is_shared())
-			.map(|(_, input)| input.into_tx_in().previous_output)
-			.collect();
-		let contributed_outputs = self
-			.outputs_to_contribute
-			.into_iter()
-			.filter(|(_, output)| !output.is_shared())
-			.map(|(_, output)| output.into_tx_out())
-			.collect();
-		(contributed_inputs, contributed_outputs)
-	}
-
 	pub(super) fn contributed_inputs(&self) -> impl Iterator<Item = BitcoinOutPoint> + '_ {
 		self.inputs_to_contribute
 			.iter()
@@ -2193,10 +2114,6 @@ impl InteractiveTxConstructor {
 			.iter()
 			.filter(|(_, output)| !output.is_shared())
 			.map(|(_, output)| output.tx_out())
-	}
-
-	pub(super) fn to_contributed_inputs_and_outputs(&self) -> (Vec<BitcoinOutPoint>, Vec<TxOut>) {
-		(self.contributed_inputs().collect(), self.contributed_outputs().cloned().collect())
 	}
 
 	pub fn is_initiator(&self) -> bool {
