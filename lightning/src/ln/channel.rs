@@ -6740,48 +6740,29 @@ pub struct SpliceFundingFailed {
 	pub contribution: Option<FundingContribution>,
 }
 
-macro_rules! maybe_create_splice_funding_failed {
-	($funded_channel: expr, $pending_splice: expr, $pending_splice_ref: expr, $get: ident, $contributed_inputs_and_outputs: ident) => {{
-		$pending_splice
-			.and_then(|pending_splice| pending_splice.funding_negotiation.$get())
-			.and_then(|funding_negotiation| {
-				let is_initiator = funding_negotiation.is_initiator();
-
-				let (mut contributed_inputs, mut contributed_outputs) = match funding_negotiation {
-					FundingNegotiation::AwaitingAck { context, .. } => {
-						context.$contributed_inputs_and_outputs()
-					},
-					FundingNegotiation::ConstructingTransaction {
-						interactive_tx_constructor,
-						..
-					} => interactive_tx_constructor.$contributed_inputs_and_outputs(),
-					FundingNegotiation::AwaitingSignatures { .. } => $funded_channel
-						.context
-						.interactive_tx_signing_session
-						.$get()
-						.expect("We have a pending splice awaiting signatures")
-						.$contributed_inputs_and_outputs(),
-				};
-
-				if let Some(pending_splice) = $pending_splice_ref {
-					for input in pending_splice.prior_contributed_inputs() {
-						contributed_inputs.retain(|i| *i != input);
-					}
-					for output in pending_splice.prior_contributed_outputs() {
-						contributed_outputs.retain(|o| o.script_pubkey != output.script_pubkey);
-					}
-				}
-
-				if !is_initiator && contributed_inputs.is_empty() && contributed_outputs.is_empty()
-				{
-					return None;
-				}
-
-				let contribution =
-					$pending_splice_ref.and_then(|ps| ps.contributions.last().cloned());
-
-				Some(SpliceFundingFailed { contributed_inputs, contributed_outputs, contribution })
-			})
+macro_rules! splice_funding_failed_for {
+	($self: expr, $is_initiator: expr, $contribution: expr,
+	 $contributed_inputs: ident, $contributed_outputs: ident) => {{
+		let contribution = $contribution;
+		let existing_inputs =
+			$self.pending_splice.as_ref().into_iter().flat_map(|ps| ps.$contributed_inputs());
+		let existing_outputs =
+			$self.pending_splice.as_ref().into_iter().flat_map(|ps| ps.$contributed_outputs());
+		let filtered =
+			contribution.clone().into_unique_contributions(existing_inputs, existing_outputs);
+		match filtered {
+			None if !$is_initiator => None,
+			None => Some(SpliceFundingFailed {
+				contributed_inputs: vec![],
+				contributed_outputs: vec![],
+				contribution: Some(contribution),
+			}),
+			Some((contributed_inputs, contributed_outputs)) => Some(SpliceFundingFailed {
+				contributed_inputs,
+				contributed_outputs,
+				contribution: Some(contribution),
+			}),
+		}
 	}};
 }
 
@@ -6811,21 +6792,16 @@ where
 	/// Builds a [`SpliceFundingFailed`] from a contribution, filtering out inputs/outputs
 	/// that are still committed to a prior splice round.
 	fn splice_funding_failed_for(&self, contribution: FundingContribution) -> SpliceFundingFailed {
-		let cloned_contribution = contribution.clone();
-		let (mut inputs, mut outputs) = contribution.into_contributed_inputs_and_outputs();
-		if let Some(ref pending_splice) = self.pending_splice {
-			for input in pending_splice.contributed_inputs() {
-				inputs.retain(|i| *i != input);
-			}
-			for output in pending_splice.contributed_outputs() {
-				outputs.retain(|o| o.script_pubkey != output.script_pubkey);
-			}
-		}
-		SpliceFundingFailed {
-			contributed_inputs: inputs,
-			contributed_outputs: outputs,
-			contribution: Some(cloned_contribution),
-		}
+		// The contribution was never pushed to `contributions`, so `contributed_inputs()` and
+		// `contributed_outputs()` return only prior rounds' entries for filtering.
+		splice_funding_failed_for!(
+			self,
+			true,
+			contribution,
+			contributed_inputs,
+			contributed_outputs
+		)
+		.expect("is_initiator is true so this always returns Some")
 	}
 
 	fn quiescent_action_into_error(&self, action: QuiescentAction) -> QuiescentError {
@@ -6969,21 +6945,19 @@ where
 			);
 		}
 
-		let splice_funding_failed = maybe_create_splice_funding_failed!(
-			self,
-			self.pending_splice.as_mut(),
-			self.pending_splice.as_ref(),
-			take,
-			into_contributed_inputs_and_outputs
-		);
-
-		// Pop the current round's contribution, if any (acceptors may not have one). This
-		// must happen after `maybe_create_splice_funding_failed` for correct filtering.
+		// Take the funding negotiation and pop the current round's contribution, if any
+		// (acceptors may not have one).
 		let pending_splice = self
 			.pending_splice
 			.as_mut()
 			.expect("reset_pending_splice_state requires pending_splice");
-		if let Some(contribution) = pending_splice.contributions.pop() {
+		let is_initiator = pending_splice
+			.funding_negotiation
+			.take()
+			.map(|negotiation| negotiation.is_initiator())
+			.unwrap_or(false);
+		let contribution = pending_splice.contributions.pop();
+		if let Some(ref contribution) = contribution {
 			debug_assert!(
 				pending_splice
 					.last_funding_feerate_sat_per_1000_weight
@@ -6992,6 +6966,18 @@ where
 				"current round's feerate should be greater than the last negotiated feerate",
 			);
 		}
+
+		// After pop, `contributed_inputs()` / `contributed_outputs()` return only prior
+		// rounds for filtering.
+		let splice_funding_failed = contribution.and_then(|contribution| {
+			splice_funding_failed_for!(
+				self,
+				is_initiator,
+				contribution,
+				contributed_inputs,
+				contributed_outputs
+			)
+		});
 
 		if self.pending_funding().is_empty() {
 			self.pending_splice.take();
@@ -7010,12 +6996,19 @@ where
 			return None;
 		}
 
-		maybe_create_splice_funding_failed!(
+		let pending_splice = self.pending_splice.as_ref()?;
+		let is_initiator = pending_splice
+			.funding_negotiation
+			.as_ref()
+			.map(|negotiation| negotiation.is_initiator())
+			.unwrap_or(false);
+		let contribution = pending_splice.contributions.last().cloned()?;
+		splice_funding_failed_for!(
 			self,
-			self.pending_splice.as_ref(),
-			self.pending_splice.as_ref(),
-			as_ref,
-			to_contributed_inputs_and_outputs
+			is_initiator,
+			contribution,
+			prior_contributed_inputs,
+			prior_contributed_outputs
 		)
 	}
 
