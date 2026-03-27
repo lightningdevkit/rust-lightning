@@ -50,12 +50,16 @@ pub struct LSPS2Bolt12InvoiceParameters {
 /// hop so that the LSP can intercept the HTLC and open a JIT channel.
 ///
 /// For **message** blinded paths (in offers), it injects the intercept SCID as the
-/// [`MessageForwardNode::short_channel_id`] for compact encoding, resulting in significantly
-/// smaller offers when bech32-encoded (e.g., for QR codes). The LSP must register the intercept
-/// SCID for interception via [`OnionMessageInterceptor::register_scid_for_interception`] so that
-/// forwarded messages using the compact encoding are intercepted rather than dropped.
+/// [`MessageForwardNode::short_channel_id`] so that [`Event::HTLCIntercepted`] is emitted when the
+/// HTLC arrives, prompting the LSP to open the channel just-in-time.
 ///
-/// [`OnionMessageInterceptor::register_scid_for_interception`]: lightning::onion_message::messenger::OnionMessageInterceptor::register_scid_for_interception
+/// The LSP must use an [`OnionMessenger`] that is setup via
+/// [`OnionMessenger::new_with_offline_peer_interception`] so that forwarded messages are
+/// intercepted rather than dropped.
+///
+/// [`OnionMessenger`]: lightning::onion_message::messenger::OnionMessenger
+/// [`OnionMessenger::new_with_offline_peer_interception`]: lightning::onion_message::messenger::OnionMessenger::new_with_offline_peer_interception
+/// [`Event::HTLCIntercepted`]: lightning::events::Event::HTLCIntercepted
 pub struct LSPS2BOLT12Router<R: Router, MR: MessageRouter, ES: EntropySource + Send + Sync> {
 	inner_router: R,
 	inner_message_router: MR,
@@ -206,10 +210,8 @@ impl<R: Router, MR: MessageRouter, ES: EntropySource + Send + Sync> MessageRoute
 		&self, recipient: PublicKey, local_node_receive_key: ReceiveAuthKey,
 		context: MessageContext, peers: Vec<MessageForwardNode>, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedMessagePath>, ()> {
-		// Inject intercept SCIDs for size-constrained contexts (offer QR codes) so that
-		// the message blinded path uses compact SCID encoding instead of full pubkeys.
-		// We use the first matching intercept SCID for each peer since the message path
-		// is only used for routing InvoiceRequests, not for payment interception.
+		// Inject intercept SCIDs to have the payer use them when sending HTLCs, prompting the LSP
+		// node to emit Event::HTLCIntercepted and hence trigger channel open
 		let peers = match &context {
 			MessageContext::Offers(OffersContext::InvoiceRequest { .. }) => {
 				let params = self.offer_to_invoice_params.lock().unwrap();
