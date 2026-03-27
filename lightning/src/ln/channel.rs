@@ -6977,20 +6977,20 @@ where
 			into_contributed_inputs_and_outputs
 		);
 
-		// Pop the current round's contribution if it wasn't from a negotiated round. Each round
-		// pushes a new entry to `contributions`; if the round aborts, we undo the push so that
-		// `contributions.last()` reflects the most recent negotiated round's contribution. This
-		// must happen after `maybe_create_splice_funding_failed` so that
-		// `prior_contributed_inputs` still includes the prior rounds' entries for filtering.
-		if let Some(pending_splice) = self.pending_splice.as_mut() {
-			if let Some(last) = pending_splice.contributions.last() {
-				let was_negotiated = pending_splice
+		// Pop the current round's contribution, if any (acceptors may not have one). This
+		// must happen after `maybe_create_splice_funding_failed` for correct filtering.
+		let pending_splice = self
+			.pending_splice
+			.as_mut()
+			.expect("reset_pending_splice_state requires pending_splice");
+		if let Some(contribution) = pending_splice.contributions.pop() {
+			debug_assert!(
+				pending_splice
 					.last_funding_feerate_sat_per_1000_weight
-					.is_some_and(|f| last.feerate() == FeeRate::from_sat_per_kwu(f as u64));
-				if !was_negotiated {
-					pending_splice.contributions.pop();
-				}
-			}
+					.map(|f| contribution.feerate() > FeeRate::from_sat_per_kwu(f as u64))
+					.unwrap_or(true),
+				"current round's feerate should be greater than the last negotiated feerate",
+			);
 		}
 
 		if self.pending_funding().is_empty() {
