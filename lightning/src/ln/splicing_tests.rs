@@ -128,6 +128,9 @@ struct TightBudgetWallet {
 }
 
 #[cfg(test)]
+struct UnreachableCoinSelectionWallet;
+
+#[cfg(test)]
 impl CoinSelectionSourceSync for TightBudgetWallet {
 	fn select_confirmed_utxos(
 		&self, _claim_id: Option<crate::chain::ClaimId>, _must_spend: Vec<Input>,
@@ -151,6 +154,20 @@ impl CoinSelectionSourceSync for TightBudgetWallet {
 		};
 
 		Ok(CoinSelection { confirmed_utxos: vec![utxo], change_output: Some(change_output) })
+	}
+
+	fn sign_psbt(&self, _psbt: Psbt) -> Result<Transaction, ()> {
+		unreachable!("should not reach signing")
+	}
+}
+
+#[cfg(test)]
+impl CoinSelectionSourceSync for UnreachableCoinSelectionWallet {
+	fn select_confirmed_utxos(
+		&self, _claim_id: Option<crate::chain::ClaimId>, _must_spend: Vec<Input>,
+		_must_pay_to: &[TxOut], _target_feerate_sat_per_1000_weight: u32, _max_tx_weight: u64,
+	) -> Result<CoinSelection, ()> {
+		panic!("coin selection should not run")
 	}
 
 	fn sign_psbt(&self, _psbt: Psbt) -> Result<Transaction, ()> {
@@ -254,9 +271,14 @@ pub fn do_initiate_rbf_splice_in_and_out<'a, 'b, 'c, 'd>(
 	let node_id_counterparty = counterparty.node.get_our_node_id();
 	let funding_template = node.node.splice_channel(&channel_id, &node_id_counterparty).unwrap();
 	let wallet = WalletSync::new(Arc::clone(&node.wallet_source), node.logger);
-	let funding_contribution = funding_template
-		.splice_in_and_out_sync(value_added, outputs, feerate, FeeRate::MAX, &wallet)
-		.unwrap();
+	let mut builder = funding_template
+		.contribution_builder(feerate, FeeRate::MAX)
+		.with_coin_selection_source_sync(&wallet)
+		.add_value(value_added);
+	for output in outputs {
+		builder = builder.add_output(output);
+	}
+	let funding_contribution = builder.build().unwrap();
 	node.node
 		.funding_contributed(&channel_id, &node_id_counterparty, funding_contribution.clone(), None)
 		.unwrap();
@@ -271,9 +293,7 @@ pub fn initiate_splice_out<'a, 'b, 'c, 'd>(
 	let floor_feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64);
 	let funding_template = initiator.node.splice_channel(&channel_id, &node_id_acceptor).unwrap();
 	let feerate = funding_template.min_rbf_feerate().unwrap_or(floor_feerate);
-	let wallet = WalletSync::new(Arc::clone(&initiator.wallet_source), initiator.logger);
-	let funding_contribution =
-		funding_template.splice_out_sync(outputs, feerate, FeeRate::MAX, &wallet).unwrap();
+	let funding_contribution = funding_template.splice_out(outputs, feerate, FeeRate::MAX).unwrap();
 	match initiator.node.funding_contributed(
 		&channel_id,
 		&node_id_acceptor,
@@ -304,9 +324,14 @@ pub fn do_initiate_splice_in_and_out<'a, 'b, 'c, 'd>(
 	let funding_template = initiator.node.splice_channel(&channel_id, &node_id_acceptor).unwrap();
 	let feerate = funding_template.min_rbf_feerate().unwrap_or(floor_feerate);
 	let wallet = WalletSync::new(Arc::clone(&initiator.wallet_source), initiator.logger);
-	let funding_contribution = funding_template
-		.splice_in_and_out_sync(value_added, outputs, feerate, FeeRate::MAX, &wallet)
-		.unwrap();
+	let mut builder = funding_template
+		.contribution_builder(feerate, FeeRate::MAX)
+		.with_coin_selection_source_sync(&wallet)
+		.add_value(value_added);
+	for output in outputs {
+		builder = builder.add_output(output);
+	}
+	let funding_contribution = builder.build().unwrap();
 	initiator
 		.node
 		.funding_contributed(&channel_id, &node_id_acceptor, funding_contribution.clone(), None)
@@ -1367,9 +1392,8 @@ fn fails_initiating_concurrent_splices(reconnect: bool) {
 	let feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64);
 
 	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_1_id).unwrap();
-	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
 	let funding_contribution =
-		funding_template.splice_out_sync(outputs.clone(), feerate, FeeRate::MAX, &wallet).unwrap();
+		funding_template.splice_out(outputs.clone(), feerate, FeeRate::MAX).unwrap();
 	nodes[0]
 		.node
 		.funding_contributed(&channel_id, &node_1_id, funding_contribution.clone(), None)
@@ -3686,7 +3710,7 @@ fn test_funding_contributed_splice_already_pending() {
 	let splice_in_amount = Amount::from_sat(20_000);
 	provide_utxo_reserves(&nodes, 2, splice_in_amount * 2);
 
-	// Use splice_in_and_out with an output so we can test output filtering
+	// Use the contribution builder with an output so we can test output filtering
 	let first_splice_out = TxOut {
 		value: Amount::from_sat(5_000),
 		script_pubkey: ScriptBuf::new_p2wpkh(&WPubkeyHash::from_raw_hash(Hash::all_zeros())),
@@ -3695,13 +3719,11 @@ fn test_funding_contributed_splice_already_pending() {
 	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
 	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
 	let first_contribution = funding_template
-		.splice_in_and_out_sync(
-			splice_in_amount,
-			vec![first_splice_out.clone()],
-			feerate,
-			FeeRate::MAX,
-			&wallet,
-		)
+		.contribution_builder(feerate, FeeRate::MAX)
+		.with_coin_selection_source_sync(&wallet)
+		.add_value(splice_in_amount)
+		.add_output(first_splice_out.clone())
+		.build()
 		.unwrap();
 
 	// Initiate a second splice with a DIFFERENT output to test that different outputs
@@ -3723,13 +3745,11 @@ fn test_funding_contributed_splice_already_pending() {
 	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
 	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
 	let second_contribution = funding_template
-		.splice_in_and_out_sync(
-			splice_in_amount,
-			vec![second_splice_out.clone()],
-			feerate,
-			FeeRate::MAX,
-			&wallet,
-		)
+		.contribution_builder(feerate, FeeRate::MAX)
+		.with_coin_selection_source_sync(&wallet)
+		.add_value(splice_in_amount)
+		.add_output(second_splice_out.clone())
+		.build()
 		.unwrap();
 
 	// First funding_contributed - this sets up the quiescent action
@@ -5458,7 +5478,7 @@ fn test_splice_rbf_after_counterparty_rbf_aborted() {
 	nodes[0].node.get_and_clear_pending_events();
 	nodes[1].node.get_and_clear_pending_events();
 
-	// Step 5: Node 1 initiates its own RBF via splice_channel → rbf_sync.
+	// Step 5: Node 1 initiates its own RBF via splice_channel → rbf_prior_contribution_sync.
 	// The prior contribution's feerate is restored to the original floor feerate, not the
 	// RBF-adjusted feerate.
 	provide_utxo_reserves(&nodes, 2, added_value * 2);
@@ -5472,7 +5492,8 @@ fn test_splice_rbf_after_counterparty_rbf_aborted() {
 	);
 
 	let wallet = WalletSync::new(Arc::clone(&nodes[1].wallet_source), nodes[1].logger);
-	let rbf_contribution = funding_template.rbf_sync(FeeRate::MAX, &wallet);
+	let rbf_contribution =
+		funding_template.rbf_prior_contribution_sync(None, FeeRate::MAX, &wallet);
 	assert!(rbf_contribution.is_ok());
 }
 
@@ -5671,6 +5692,254 @@ fn test_splice_rbf_sequential() {
 		ANTI_REORG_DELAY - 1,
 		&[splice_tx_0_txid, splice_tx_1_txid],
 	);
+}
+
+#[test]
+fn test_splice_rbf_iterative_contribution_amendments() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let splice_in_value = Amount::from_sat(20_000);
+	let splice_out = TxOut {
+		value: Amount::from_sat(10_000),
+		script_pubkey: ScriptBuf::new_p2wpkh(&WPubkeyHash::from_raw_hash(Hash::all_zeros())),
+	};
+
+	// Round 0: start with a splice-out only.
+	let initial_contribution =
+		initiate_splice_out(&nodes[0], &nodes[1], channel_id, vec![splice_out.clone()]).unwrap();
+	assert_eq!(initial_contribution.value_added(), Amount::ZERO);
+	assert_eq!(initial_contribution.outputs(), &[splice_out.clone()][..]);
+
+	let (splice_tx_0, new_funding_script) =
+		splice_channel(&nodes[0], &nodes[1], channel_id, initial_contribution);
+
+	// Round 1: RBF the splice-out to also splice funds in.
+	provide_utxo_reserves(&nodes, 2, splice_in_value * 2);
+	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
+	let prior_contribution = funding_template.prior_contribution().unwrap();
+	assert_eq!(prior_contribution.value_added(), Amount::ZERO);
+	assert_eq!(prior_contribution.outputs(), &[splice_out.clone()][..]);
+
+	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
+	let first_rbf_contribution = funding_template
+		.rbf_prior_contribution_builder(None, FeeRate::MAX)
+		.unwrap()
+		.with_coin_selection_source_sync(&wallet)
+		.add_value(splice_in_value)
+		.build()
+		.unwrap();
+	assert_eq!(first_rbf_contribution.value_added(), splice_in_value);
+	assert_eq!(first_rbf_contribution.outputs(), &[splice_out.clone()][..]);
+
+	nodes[0]
+		.node
+		.funding_contributed(&channel_id, &node_id_1, first_rbf_contribution.clone(), None)
+		.unwrap();
+	complete_rbf_handshake(&nodes[0], &nodes[1]);
+	complete_interactive_funding_negotiation(
+		&nodes[0],
+		&nodes[1],
+		channel_id,
+		first_rbf_contribution,
+		new_funding_script.clone(),
+	);
+	let (splice_tx_1, splice_locked) = sign_interactive_funding_tx(&nodes[0], &nodes[1], false);
+	assert!(splice_locked.is_none());
+	expect_splice_pending_event(&nodes[0], &node_id_1);
+	expect_splice_pending_event(&nodes[1], &node_id_0);
+
+	// Round 2: RBF again, removing the splice-out while keeping the splice-in. We intentionally
+	// don't use `with_coin_selection_source_sync` to ensure coin selection is only re-run when
+	// necessary.
+	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
+	let prior_contribution = funding_template.prior_contribution().unwrap();
+	assert_eq!(prior_contribution.value_added(), splice_in_value);
+	assert_eq!(prior_contribution.outputs(), &[splice_out.clone()][..]);
+
+	let second_rbf_contribution = funding_template
+		.rbf_prior_contribution_builder(None, FeeRate::MAX)
+		.unwrap()
+		.remove_outputs(&splice_out.script_pubkey)
+		.build()
+		.unwrap();
+	assert_eq!(second_rbf_contribution.value_added(), splice_in_value);
+	assert!(second_rbf_contribution.outputs().is_empty());
+
+	nodes[0]
+		.node
+		.funding_contributed(&channel_id, &node_id_1, second_rbf_contribution.clone(), None)
+		.unwrap();
+	complete_rbf_handshake(&nodes[0], &nodes[1]);
+	complete_interactive_funding_negotiation(
+		&nodes[0],
+		&nodes[1],
+		channel_id,
+		second_rbf_contribution,
+		new_funding_script.clone(),
+	);
+	let (splice_tx_2, splice_locked) = sign_interactive_funding_tx(&nodes[0], &nodes[1], false);
+	assert!(splice_locked.is_none());
+	expect_splice_pending_event(&nodes[0], &node_id_1);
+	expect_splice_pending_event(&nodes[1], &node_id_0);
+
+	// Round 3: first try to RBF away the remaining splice-in entirely. This leaves an empty
+	// contribution, so building it should fail locally.
+	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
+	let prior_contribution = funding_template.prior_contribution().unwrap();
+	assert_eq!(prior_contribution.value_added(), splice_in_value);
+	assert!(prior_contribution.outputs().is_empty());
+
+	assert!(matches!(
+		funding_template
+			.rbf_prior_contribution_builder(None, FeeRate::MAX)
+			.unwrap()
+			.with_coin_selection_source_sync(UnreachableCoinSelectionWallet)
+			.remove_value(splice_in_value)
+			.build(),
+		Err(crate::ln::funding::FundingContributionError::InvalidSpliceValue),
+	));
+
+	// The failed local build should not disturb the prior contribution tracked for the pending
+	// splice. Retry with a valid amendment that removes only half the splice-in value. Attach a
+	// wallet that panics if coin selection runs so we prove this round amends the prior
+	// contribution directly.
+	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
+	let prior_contribution = funding_template.prior_contribution().unwrap();
+	assert_eq!(prior_contribution.value_added(), splice_in_value);
+	assert!(prior_contribution.outputs().is_empty());
+
+	let half_splice_in_value = splice_in_value / 2;
+	let third_rbf_contribution = funding_template
+		.rbf_prior_contribution_builder(None, FeeRate::MAX)
+		.unwrap()
+		.with_coin_selection_source_sync(UnreachableCoinSelectionWallet)
+		.remove_value(half_splice_in_value)
+		.build()
+		.unwrap();
+	assert_eq!(third_rbf_contribution.value_added(), splice_in_value - half_splice_in_value);
+	assert!(third_rbf_contribution.outputs().is_empty());
+
+	nodes[0]
+		.node
+		.funding_contributed(&channel_id, &node_id_1, third_rbf_contribution.clone(), None)
+		.unwrap();
+	complete_rbf_handshake(&nodes[0], &nodes[1]);
+	complete_interactive_funding_negotiation(
+		&nodes[0],
+		&nodes[1],
+		channel_id,
+		third_rbf_contribution,
+		new_funding_script.clone(),
+	);
+	let (splice_tx_3, splice_locked) = sign_interactive_funding_tx(&nodes[0], &nodes[1], false);
+	assert!(splice_locked.is_none());
+	expect_splice_pending_event(&nodes[0], &node_id_1);
+	expect_splice_pending_event(&nodes[1], &node_id_0);
+
+	// Round 4: splice the removed value back in and prove we still amend the prior contribution
+	// without coin selection.
+	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
+	let prior_contribution = funding_template.prior_contribution().unwrap();
+	assert_eq!(prior_contribution.value_added(), splice_in_value - half_splice_in_value);
+	assert!(prior_contribution.outputs().is_empty());
+
+	let fourth_rbf_contribution = funding_template
+		.rbf_prior_contribution_builder(None, FeeRate::MAX)
+		.unwrap()
+		.with_coin_selection_source_sync(UnreachableCoinSelectionWallet)
+		.add_value(half_splice_in_value)
+		.build()
+		.unwrap();
+	assert_eq!(fourth_rbf_contribution.value_added(), splice_in_value);
+	assert!(fourth_rbf_contribution.outputs().is_empty());
+
+	nodes[0]
+		.node
+		.funding_contributed(&channel_id, &node_id_1, fourth_rbf_contribution.clone(), None)
+		.unwrap();
+	complete_rbf_handshake(&nodes[0], &nodes[1]);
+	complete_interactive_funding_negotiation(
+		&nodes[0],
+		&nodes[1],
+		channel_id,
+		fourth_rbf_contribution,
+		new_funding_script.clone(),
+	);
+	let (splice_tx_4, splice_locked) = sign_interactive_funding_tx(&nodes[0], &nodes[1], false);
+	assert!(splice_locked.is_none());
+	expect_splice_pending_event(&nodes[0], &node_id_1);
+	expect_splice_pending_event(&nodes[1], &node_id_0);
+
+	// Round 5: add enough value that the prior inputs can no longer cover the amended
+	// contribution, forcing coin selection to run and add another wallet input.
+	provide_utxo_reserves(&nodes, 1, Amount::from_sat(40_000));
+	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
+	let prior_contribution = funding_template.prior_contribution().unwrap();
+	assert_eq!(prior_contribution.value_added(), splice_in_value);
+	assert!(prior_contribution.outputs().is_empty());
+	let prior_input_count = prior_contribution.contributed_inputs().count();
+
+	let coin_selection_splice_in_value = Amount::from_sat(50_000);
+	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
+	let fifth_rbf_contribution = funding_template
+		.rbf_prior_contribution_builder(None, FeeRate::MAX)
+		.unwrap()
+		.with_coin_selection_source_sync(wallet)
+		.add_value(coin_selection_splice_in_value)
+		.build()
+		.unwrap();
+	assert_eq!(
+		fifth_rbf_contribution.value_added(),
+		splice_in_value + coin_selection_splice_in_value
+	);
+	assert!(fifth_rbf_contribution.outputs().is_empty());
+	assert!(fifth_rbf_contribution.contributed_inputs().count() > prior_input_count);
+
+	nodes[0]
+		.node
+		.funding_contributed(&channel_id, &node_id_1, fifth_rbf_contribution.clone(), None)
+		.unwrap();
+	complete_rbf_handshake(&nodes[0], &nodes[1]);
+	complete_interactive_funding_negotiation(
+		&nodes[0],
+		&nodes[1],
+		channel_id,
+		fifth_rbf_contribution,
+		new_funding_script.clone(),
+	);
+	let (rbf_tx_final, splice_locked) = sign_interactive_funding_tx(&nodes[0], &nodes[1], false);
+	assert!(splice_locked.is_none());
+	expect_splice_pending_event(&nodes[0], &node_id_1);
+	expect_splice_pending_event(&nodes[1], &node_id_0);
+
+	// Lock the latest valid RBF and ensure the replaced splice candidates were discarded.
+	lock_rbf_splice_after_blocks(
+		&nodes[0],
+		&nodes[1],
+		&rbf_tx_final,
+		ANTI_REORG_DELAY - 1,
+		&[
+			splice_tx_0.compute_txid(),
+			splice_tx_1.compute_txid(),
+			splice_tx_2.compute_txid(),
+			splice_tx_3.compute_txid(),
+			splice_tx_4.compute_txid(),
+		],
+	);
+
+	let fresh_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
+	assert!(fresh_template.min_rbf_feerate().is_none());
+	assert!(fresh_template.prior_contribution().is_none());
 }
 
 #[test]
@@ -5928,7 +6197,7 @@ fn test_splice_channel_with_pending_splice_includes_rbf_floor() {
 
 	// rbf_sync returns the Adjusted prior contribution directly.
 	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
-	assert!(funding_template.rbf_sync(FeeRate::MAX, &wallet).is_ok());
+	assert!(funding_template.rbf_prior_contribution_sync(None, FeeRate::MAX, &wallet).is_ok());
 }
 
 #[test]
@@ -5986,6 +6255,50 @@ fn test_funding_contributed_adjusts_feerate_for_rbf() {
 	let expected_floor =
 		FeeRate::from_sat_per_kwu((FEERATE_FLOOR_SATS_PER_KW as u64 * 25).div_ceil(24));
 	assert!(rbf_feerate >= expected_floor);
+}
+
+#[test]
+fn test_rbf_contribution_builder_amends_template_prior_contribution() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let added_value = Amount::from_sat(50_000);
+	let extra_value = Amount::from_sat(5_000);
+	let output = TxOut {
+		value: Amount::from_sat(20_000),
+		script_pubkey: ScriptBuf::new_p2wpkh(&WPubkeyHash::all_zeros()),
+	};
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+
+	let funding_contribution = do_initiate_splice_in_and_out(
+		&nodes[0],
+		&nodes[1],
+		channel_id,
+		added_value,
+		vec![output.clone()],
+	);
+	let (_splice_tx, _) = splice_channel(&nodes[0], &nodes[1], channel_id, funding_contribution);
+
+	let template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
+	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
+	let contribution = template
+		.rbf_prior_contribution_builder(None, FeeRate::MAX)
+		.unwrap()
+		.remove_outputs(&output.script_pubkey)
+		.with_coin_selection_source_sync(&wallet)
+		.add_value(extra_value)
+		.build()
+		.unwrap();
+	assert_eq!(contribution.value_added(), added_value + extra_value);
+	assert!(contribution.outputs().is_empty());
 }
 
 #[test]
@@ -6166,7 +6479,7 @@ fn test_prior_contribution_unadjusted_when_max_feerate_too_low() {
 	assert!(funding_template.min_rbf_feerate().is_some());
 	assert!(funding_template.prior_contribution().is_some());
 	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
-	assert!(funding_template.rbf_sync(FeeRate::MAX, &wallet).is_ok());
+	assert!(funding_template.rbf_prior_contribution_sync(None, FeeRate::MAX, &wallet).is_ok());
 }
 
 #[test]
@@ -6208,11 +6521,11 @@ fn test_splice_channel_during_negotiation_includes_rbf_feerate() {
 		FeeRate::from_sat_per_kwu(((FEERATE_FLOOR_SATS_PER_KW as u64) * 25).div_ceil(24));
 	assert_eq!(template.min_rbf_feerate(), Some(expected_floor));
 
-	// No prior contribution since there are no negotiated candidates yet. rbf_sync runs
-	// fee-bump-only coin selection.
+	// No prior contribution since there are no negotiated candidates yet, so RBF is rejected.
 	assert!(template.prior_contribution().is_none());
 	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
-	assert!(template.rbf_sync(FeeRate::MAX, &wallet).is_ok());
+	assert!(template.clone().rbf_prior_contribution_builder(None, FeeRate::MAX).is_err());
+	assert!(template.rbf_prior_contribution_sync(None, FeeRate::MAX, &wallet).is_err());
 }
 
 #[test]
@@ -6240,7 +6553,7 @@ fn test_rbf_sync_returns_err_when_no_min_rbf_feerate() {
 
 	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
 	assert!(matches!(
-		template.rbf_sync(FeeRate::MAX, &wallet),
+		template.rbf_prior_contribution_sync(None, FeeRate::MAX, &wallet),
 		Err(crate::ln::funding::FundingContributionError::NotRbfScenario),
 	));
 }
@@ -6276,7 +6589,7 @@ fn test_rbf_sync_returns_err_when_max_feerate_below_min_rbf() {
 		FeeRate::from_sat_per_kwu(min_rbf_feerate.to_sat_per_kwu().saturating_sub(1));
 	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
 	assert!(matches!(
-		funding_template.rbf_sync(too_low_feerate, &wallet),
+		funding_template.rbf_prior_contribution_sync(None, too_low_feerate, &wallet),
 		Err(crate::ln::funding::FundingContributionError::FeeRateExceedsMaximum { .. }),
 	));
 }
@@ -6336,9 +6649,7 @@ fn test_splice_revalidation_at_quiescence() {
 
 	let feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64);
 	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
-	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
-	let contribution =
-		funding_template.splice_out_sync(outputs, feerate, FeeRate::MAX, &wallet).unwrap();
+	let contribution = funding_template.splice_out(outputs, feerate, FeeRate::MAX).unwrap();
 
 	nodes[0].node.funding_contributed(&channel_id, &node_id_1, contribution.clone(), None).unwrap();
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty(), "stfu should be delayed");
