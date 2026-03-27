@@ -1705,8 +1705,10 @@ pub enum Event {
 	/// [`ChannelHandshakeConfig::negotiate_anchor_zero_fee_commitments`]: crate::util::config::ChannelHandshakeConfig::negotiate_anchor_zero_fee_commitments
 	BumpTransaction(BumpTransactionEvent),
 	/// We received an onion message that is intended to be forwarded to a peer
-	/// that is currently offline. This event will only be generated if the
-	/// `OnionMessenger` was initialized with
+	/// that is currently offline *or* that is intended to be forwarded along a channel with an
+	/// SCID unknown to us.
+	///
+	/// This event will only be generated if the `OnionMessenger` was initialized with
 	/// [`OnionMessenger::new_with_offline_peer_interception`], see its docs.
 	///
 	/// The offline peer should be awoken if possible on receipt of this event, such as via the LSPS5

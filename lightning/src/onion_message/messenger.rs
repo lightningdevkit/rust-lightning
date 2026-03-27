@@ -1399,10 +1399,9 @@ impl<
 	/// later forwarding.
 	///
 	/// Interception flow:
-	/// 1. If an onion message for an offline peer is received, `OnionMessenger` will
-	///    generate an [`Event::OnionMessageIntercepted`]. Event handlers can
-	///    then choose to persist this onion message for later forwarding, or drop
-	///    it.
+	/// 1. If an onion message for an offline peer or unknown SCIDs is received, `OnionMessenger`
+	///    will generate an [`Event::OnionMessageIntercepted`]. Event handlers can then choose
+	///    to persist this onion message for later forwarding, or drop it.
 	/// 2. When the offline peer later comes back online, `OnionMessenger` will
 	///    generate an [`Event::OnionMessagePeerConnected`]. Event handlers will
 	///    then fetch all previously intercepted onion messages for this peer.
