@@ -64,7 +64,7 @@ pub struct LSPS2BOLT12Router<R: Router, MR: MessageRouter, ES: EntropySource + S
 	inner_router: R,
 	inner_message_router: MR,
 	entropy_source: ES,
-	offer_to_invoice_params: Mutex<HashMap<[u8; 32], LSPS2Bolt12InvoiceParameters>>,
+	offer_to_invoice_params: Mutex<HashMap<OfferId, LSPS2Bolt12InvoiceParameters>>,
 }
 
 impl<R: Router, MR: MessageRouter, ES: EntropySource + Send + Sync> LSPS2BOLT12Router<R, MR, ES> {
@@ -82,12 +82,12 @@ impl<R: Router, MR: MessageRouter, ES: EntropySource + Send + Sync> LSPS2BOLT12R
 	pub fn register_offer(
 		&self, offer_id: OfferId, invoice_params: LSPS2Bolt12InvoiceParameters,
 	) -> Option<LSPS2Bolt12InvoiceParameters> {
-		self.offer_to_invoice_params.lock().unwrap().insert(offer_id.0, invoice_params)
+		self.offer_to_invoice_params.lock().unwrap().insert(offer_id, invoice_params)
 	}
 
 	/// Removes any previously registered LSPS2 parameters for `offer_id`.
-	pub fn unregister_offer(&self, offer_id: &OfferId) -> Option<LSPS2Bolt12InvoiceParameters> {
-		self.offer_to_invoice_params.lock().unwrap().remove(&offer_id.0)
+	pub fn unregister_offer(&self, offer_id: OfferId) -> Option<LSPS2Bolt12InvoiceParameters> {
+		self.offer_to_invoice_params.lock().unwrap().remove(&offer_id)
 	}
 
 	/// Clears all LSPS2 parameters previously registered via [`Self::register_offer`].
@@ -105,7 +105,7 @@ impl<R: Router, MR: MessageRouter, ES: EntropySource + Send + Sync> LSPS2BOLT12R
 			_ => return None,
 		};
 
-		self.offer_to_invoice_params.lock().unwrap().get(&offer_id.0).copied()
+		self.offer_to_invoice_params.lock().unwrap().get(offer_id).copied()
 	}
 }
 
@@ -508,8 +508,8 @@ mod tests {
 			cltv_expiry_delta: 40,
 		};
 		assert_eq!(router.register_offer(offer_id, params), None);
-		assert_eq!(router.unregister_offer(&offer_id), Some(params));
-		assert_eq!(router.unregister_offer(&offer_id), None);
+		assert_eq!(router.unregister_offer(offer_id), Some(params));
+		assert_eq!(router.unregister_offer(offer_id), None);
 	}
 
 	#[test]
@@ -536,7 +536,7 @@ mod tests {
 		);
 
 		router.clear_registered_offers();
-		assert_eq!(router.unregister_offer(&OfferId([1; 32])), None);
-		assert_eq!(router.unregister_offer(&OfferId([2; 32])), None);
+		assert_eq!(router.unregister_offer(OfferId([1; 32])), None);
+		assert_eq!(router.unregister_offer(OfferId([2; 32])), None);
 	}
 }
