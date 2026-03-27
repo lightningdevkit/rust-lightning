@@ -18,7 +18,7 @@ pub mod bump_transaction;
 
 pub use bump_transaction::BumpTransactionEvent;
 
-use crate::blinded_path::message::{BlindedMessagePath, OffersContext};
+use crate::blinded_path::message::{BlindedMessagePath, NextMessageHop, OffersContext};
 use crate::blinded_path::payment::{
 	Bolt12OfferContext, Bolt12RefundContext, PaymentContext, PaymentContextRef,
 };
@@ -1721,8 +1721,8 @@ pub enum Event {
 	///
 	/// [`OnionMessenger::new_with_offline_peer_interception`]: crate::onion_message::messenger::OnionMessenger::new_with_offline_peer_interception
 	OnionMessageIntercepted {
-		/// The node id of the offline peer.
-		peer_node_id: PublicKey,
+		/// The next hop (offline peer or unkown SCID).
+		next_hop: NextMessageHop,
 		/// The onion message intended to be forwarded to `peer_node_id`.
 		message: msgs::OnionMessage,
 	},
@@ -2303,12 +2303,25 @@ impl Writeable for Event {
 				35u8.write(writer)?;
 				// Never write ConnectionNeeded events as buffered onion messages aren't serialized.
 			},
-			&Event::OnionMessageIntercepted { ref peer_node_id, ref message } => {
+			&Event::OnionMessageIntercepted { ref next_hop, ref message } => {
 				37u8.write(writer)?;
-				write_tlv_fields!(writer, {
-					(0, peer_node_id, required),
-					(2, message, required),
-				});
+				match next_hop {
+					NextMessageHop::NodeId(peer_node_id) => {
+						// If we have the node_id, we keep writing it for backwards compatibility.
+						write_tlv_fields!(writer, {
+							(0, peer_node_id, required),
+							(1, next_hop, required),
+							(2, message, required),
+						});
+					},
+					NextMessageHop::ShortChannelId(_) => {
+						write_tlv_fields!(writer, {
+							// 0 used to be peer_node_id in LDK v0.2 and prior.
+							(1, next_hop, required),
+							(2, message, required),
+						});
+					},
+				}
 			},
 			&Event::OnionMessagePeerConnected { ref peer_node_id } => {
 				39u8.write(writer)?;
@@ -2936,13 +2949,23 @@ impl MaybeReadable for Event {
 			37u8 => {
 				let mut f = || {
 					_init_and_read_len_prefixed_tlv_fields!(reader, {
-						(0, peer_node_id, required),
+						(0, peer_node_id, option),
+						(1, next_hop, option),
 						(2, message, required),
 					});
-					Ok(Some(Event::OnionMessageIntercepted {
-						peer_node_id: peer_node_id.0.unwrap(),
-						message: message.0.unwrap(),
-					}))
+
+					if let Some(next_hop) = next_hop.or(peer_node_id.map(NextMessageHop::NodeId)) {
+						Ok(Some(Event::OnionMessageIntercepted {
+							next_hop,
+							message: message.0.unwrap(),
+						}))
+					} else {
+						debug_assert!(
+							false,
+							"Either next_hop or peer_node_id should always been set"
+						);
+						Ok(None)
+					}
 				};
 				f()
 			},

@@ -24,7 +24,7 @@ use super::offers::{OffersMessage, OffersMessageHandler};
 use super::packet::{OnionMessageContents, Packet};
 use crate::blinded_path::message::{
 	AsyncPaymentsContext, BlindedMessagePath, DNSResolverContext, MessageContext,
-	MessageForwardNode, OffersContext, MESSAGE_PADDING_ROUND_OFF,
+	MessageForwardNode, NextMessageHop, OffersContext, MESSAGE_PADDING_ROUND_OFF,
 };
 use crate::blinded_path::utils::is_padded;
 use crate::blinded_path::EmptyNodeIdLookUp;
@@ -1144,9 +1144,13 @@ fn intercept_offline_peer_oms() {
 	let mut events = release_events(&nodes[1]);
 	assert_eq!(events.len(), 1);
 	let onion_message = match events.remove(0) {
-		Event::OnionMessageIntercepted { peer_node_id, message } => {
-			assert_eq!(peer_node_id, final_node_vec[0].node_id);
-			message
+		Event::OnionMessageIntercepted { next_hop, message } => {
+			if let NextMessageHop::NodeId(peer_node_id) = next_hop {
+				assert_eq!(peer_node_id, final_node_vec[0].node_id);
+				message
+			} else {
+				panic!();
+			}
 		},
 		_ => panic!(),
 	};
@@ -1157,58 +1161,6 @@ fn intercept_offline_peer_oms() {
 	let err =
 		nodes[1].messenger.forward_onion_message(onion_message.clone(), next_node_id).unwrap_err();
 	assert_eq!(err, SendError::InvalidFirstHop(final_node_vec[0].node_id));
-
-	connect_peers(&nodes[1], &final_node_vec[0]);
-	let peer_conn_ev = release_events(&nodes[1]);
-	assert_eq!(peer_conn_ev.len(), 1);
-	match peer_conn_ev[0] {
-		Event::OnionMessagePeerConnected { peer_node_id } => {
-			assert_eq!(peer_node_id, final_node_vec[0].node_id);
-		},
-		_ => panic!(),
-	}
-
-	nodes[1].messenger.forward_onion_message(onion_message, &final_node_vec[0].node_id).unwrap();
-	final_node_vec[0].custom_message_handler.expect_message(TestCustomMessage::Pong);
-	pass_along_path(&vec![nodes.remove(1), final_node_vec.remove(0)]);
-}
-
-#[test]
-fn intercept_offline_peer_oms_registered_by_scid() {
-	let mut nodes = create_nodes(3);
-	let fake_scid = 42;
-
-	nodes[1].messenger.register_scid_for_interception(fake_scid, nodes[2].node_id);
-
-	let message = TestCustomMessage::Pong;
-	let intermediate_nodes =
-		[MessageForwardNode { node_id: nodes[1].node_id, short_channel_id: Some(fake_scid) }];
-	let blinded_path = BlindedMessagePath::new(
-		&intermediate_nodes,
-		nodes[2].node_id,
-		nodes[2].messenger.node_signer.get_receive_auth_key(),
-		MessageContext::Custom(Vec::new()),
-		false,
-		&*nodes[2].entropy_source,
-		&Secp256k1::new(),
-	);
-	let destination = Destination::BlindedPath(blinded_path);
-	let instructions = MessageSendInstructions::WithoutReplyPath { destination };
-
-	disconnect_peers(&nodes[1], &nodes[2]);
-	nodes[0].messenger.send_onion_message(message, instructions).unwrap();
-	let mut final_node_vec = nodes.split_off(2);
-	pass_along_path(&nodes);
-
-	let mut events = release_events(&nodes[1]);
-	assert_eq!(events.len(), 1);
-	let onion_message = match events.remove(0) {
-		Event::OnionMessageIntercepted { peer_node_id, message } => {
-			assert_eq!(peer_node_id, final_node_vec[0].node_id);
-			message
-		},
-		_ => panic!(),
-	};
 
 	connect_peers(&nodes[1], &final_node_vec[0]);
 	let peer_conn_ev = release_events(&nodes[1]);
