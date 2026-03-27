@@ -7,6 +7,7 @@ use common::{
 	get_lsps_message, LSPSNodes, LSPSNodesWithPayer, LiquidityNode,
 };
 
+use lightning::blinded_path::message::NextMessageHop;
 use lightning::events::{ClosureReason, Event, EventsProvider};
 use lightning::get_event_msg;
 use lightning::ln::channelmanager::{OptionalBolt11PaymentParams, PaymentId};
@@ -22,7 +23,6 @@ use lightning::onion_message::messenger::NullMessageRouter;
 use lightning::routing::router::{InFlightHtlcs, Route, RouteParameters, Router};
 use lightning::sign::{RandomBytes, ReceiveAuthKey};
 
-use lightning::onion_message::messenger::NullMessageRouter;
 use lightning_liquidity::events::LiquidityEvent;
 use lightning_liquidity::lsps0::ser::LSPSDateTime;
 use lightning_liquidity::lsps2::client::LSPS2ClientConfig;
@@ -1924,11 +1924,6 @@ fn bolt12_lsps2_compact_message_path_test() {
 		fee_base_msat,
 	);
 
-	// Register the intercept SCID for onion message interception on the service node.
-	// This enables the service to intercept forwarded messages addressed by SCID rather than
-	// dropping them when NodeIdLookUp can't resolve the fake intercept SCID.
-	service_node.onion_messenger.register_scid_for_interception(intercept_scid, client_node_id);
-
 	// Configure the client's message router to use compact SCID encoding for message
 	// blinded paths through the service node.
 	client_node.message_router.peers_override.lock().unwrap().push(service_node_id);
@@ -2021,8 +2016,8 @@ fn bolt12_lsps2_compact_message_path_test() {
 	let intercepted_msg = events
 		.into_iter()
 		.find_map(|e| match e {
-			Event::OnionMessageIntercepted { peer_node_id, message } => {
-				assert_eq!(peer_node_id, client_node_id);
+			Event::OnionMessageIntercepted { next_hop, message } => {
+				assert_eq!(next_hop, NextMessageHop::ShortChannelId(intercept_scid));
 				Some(message)
 			},
 			_ => None,
