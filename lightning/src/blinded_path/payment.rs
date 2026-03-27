@@ -109,7 +109,6 @@ impl BlindedPaymentPath {
 	/// Errors if:
 	/// * [`BlindedPayInfo`] calculation results in an integer overflow
 	/// * any unknown features are required in the provided [`ForwardTlvs`]
-	//  TODO: make all payloads the same size with padding + add dummy hops
 	pub fn new<ES: EntropySource, T: secp256k1::Signing + secp256k1::Verification>(
 		intermediate_nodes: &[PaymentForwardNode], payee_node_id: PublicKey,
 		local_node_receive_key: ReceiveAuthKey, payee_tlvs: ReceiveTlvs, htlc_maximum_msat: u64,
@@ -136,10 +135,7 @@ impl BlindedPaymentPath {
 	///
 	/// This improves privacy by making path-length analysis based on fee and CLTV delta
 	/// values less reliable.
-	///
-	/// TODO: Add end-to-end tests validating fee aggregation, CLTV deltas, and
-	/// HTLC bounds when dummy hops are present, before exposing this API publicly.
-	pub(crate) fn new_with_dummy_hops<
+	pub fn new_with_dummy_hops<
 		ES: EntropySource,
 		T: secp256k1::Signing + secp256k1::Verification,
 	>(
@@ -392,15 +388,57 @@ pub struct DummyTlvs {
 	pub payment_constraints: PaymentConstraints,
 }
 
+// Default parameters used for dummy hops in blinded paths.
+//
+// These values are chosen to resemble typical forwarding hops while remaining
+// stable and predictable for tests.
+
+/// Adds a realistic but stable CLTV cost per dummy hop.
+///
+/// The router folds this into the blinded path's advertised CLTV delta, so it must
+/// be non-trivial enough to model hidden relay latency while remaining predictable
+/// for tests and callers reasoning about timeout budgets.
+pub(crate) const DEFAULT_DUMMY_HOP_CLTV_EXPIRY_DELTA: u16 = 80;
+
+/// Keeps dummy-hop fee aggregation linear and deterministic.
+///
+/// A non-zero proportional fee would compound across dummy hops and introduce rounding
+/// effects into blinded payinfo. The base fee still makes dummy hops look like plausible relays.
+pub(crate) const DEFAULT_DUMMY_HOP_FEE_PROPORTIONAL_MILLIONTHS: u32 = 0;
+
+/// Matches the default relay base fee used by the standard test channel configuration.
+///
+/// This keeps dummy hops aligned with typical forwarding hops in tests rather than
+/// making them appear unrealistically cheap or expensive.
+pub(crate) const DEFAULT_DUMMY_HOP_FEE_BASE_MSAT: u32 = 1000;
+
+/// Leaves the dummy hop's absolute CLTV ceiling effectively unbounded by default.
+///
+/// `PaymentConstraints::max_cltv_expiry` is interpreted as an absolute block height, so using a
+/// fixed low value here would cause dummy hops to reject otherwise-valid payments on live chains.
+pub(crate) const DEFAULT_DUMMY_HOP_MAX_CLTV_EXPIRY: u32 = u32::MAX;
+
+/// Matches the default test channel HTLC minimum.
+///
+/// The router takes the max of the introduction node's inbound HTLC minimum and this value,
+/// so keeping them aligned prevents dummy hops from unexpectedly tightening or loosening
+/// admission.
+pub(crate) const DEFAULT_DUMMY_HOP_HTLC_MINIMUM_MSAT: u64 = 1000;
+
 impl Default for DummyTlvs {
+	/// Returns the documented default relay requirements and constraints for synthetic hops.
 	fn default() -> Self {
-		let payment_relay =
-			PaymentRelay { cltv_expiry_delta: 0, fee_proportional_millionths: 0, fee_base_msat: 0 };
-
-		let payment_constraints =
-			PaymentConstraints { max_cltv_expiry: u32::MAX, htlc_minimum_msat: 0 };
-
-		Self { payment_relay, payment_constraints }
+		Self {
+			payment_relay: PaymentRelay {
+				cltv_expiry_delta: DEFAULT_DUMMY_HOP_CLTV_EXPIRY_DELTA,
+				fee_proportional_millionths: DEFAULT_DUMMY_HOP_FEE_PROPORTIONAL_MILLIONTHS,
+				fee_base_msat: DEFAULT_DUMMY_HOP_FEE_BASE_MSAT,
+			},
+			payment_constraints: PaymentConstraints {
+				max_cltv_expiry: DEFAULT_DUMMY_HOP_MAX_CLTV_EXPIRY,
+				htlc_minimum_msat: DEFAULT_DUMMY_HOP_HTLC_MINIMUM_MSAT,
+			},
+		}
 	}
 }
 
@@ -791,6 +829,20 @@ pub(crate) fn amt_to_forward_msat(
 	u64::try_from(amt_to_forward).ok()
 }
 
+pub(crate) fn compute_next_htlc_minimum_msat(
+	htlc_minimum_msat: u64, payment_constraints: &PaymentConstraints, payment_relay: &PaymentRelay,
+) -> u64 {
+	// Fold the next hop's minimum backwards through its relay fees to recover the minimum amount the
+	// previous hop must receive.
+	amt_to_forward_msat(
+		core::cmp::max(payment_constraints.htlc_minimum_msat, htlc_minimum_msat),
+		payment_relay,
+	)
+	// If reversing the fee calculation would require less than 1 msat, clamp to 1 since any
+	// positive incoming amount already satisfies the next hop's minimum once fees are accounted for.
+	.unwrap_or(1)
+}
+
 // Returns (aggregated_base_fee, aggregated_proportional_fee)
 pub(crate) fn compute_aggregated_base_prop_fee<I>(hops_fees: I) -> Result<(u64, u64), ()>
 where
@@ -854,14 +906,14 @@ pub(super) fn compute_payinfo(
 		cltv_expiry_delta =
 			cltv_expiry_delta.checked_add(node.tlvs.payment_relay.cltv_expiry_delta).ok_or(())?;
 
-		// The min htlc for an intermediate node is that node's min minus the fees charged by all of the
-		// following hops for forwarding that min, since that fee amount will automatically be included
-		// in the amount that this node receives and contribute towards reaching its min.
-		htlc_minimum_msat = amt_to_forward_msat(
-			core::cmp::max(node.tlvs.payment_constraints.htlc_minimum_msat, htlc_minimum_msat),
+		// The min htlc for an intermediate node is that node's min minus the fees charged by all of
+		// the following hops for forwarding that min, since that fee amount will automatically be
+		// included in the amount that this node receives and contribute towards reaching its min.
+		htlc_minimum_msat = compute_next_htlc_minimum_msat(
+			htlc_minimum_msat,
+			&node.tlvs.payment_constraints,
 			&node.tlvs.payment_relay,
-		)
-		.unwrap_or(1); // If underflow occurs, we definitely reached this node's min
+		);
 		htlc_maximum_msat = amt_to_forward_msat(
 			core::cmp::min(node.htlc_maximum_msat, htlc_maximum_msat),
 			&node.tlvs.payment_relay,
@@ -872,11 +924,11 @@ pub(super) fn compute_payinfo(
 		cltv_expiry_delta =
 			cltv_expiry_delta.checked_add(dummy_tlvs.payment_relay.cltv_expiry_delta).ok_or(())?;
 
-		htlc_minimum_msat = amt_to_forward_msat(
-			core::cmp::max(dummy_tlvs.payment_constraints.htlc_minimum_msat, htlc_minimum_msat),
+		htlc_minimum_msat = compute_next_htlc_minimum_msat(
+			htlc_minimum_msat,
+			&dummy_tlvs.payment_constraints,
 			&dummy_tlvs.payment_relay,
-		)
-		.unwrap_or(1); // If underflow occurs, we definitely reached this node's min
+		);
 	}
 	htlc_minimum_msat =
 		core::cmp::max(payee_tlvs.payment_constraints.htlc_minimum_msat, htlc_minimum_msat);
