@@ -1723,9 +1723,10 @@ pub enum Event {
 	///
 	/// [`OnionMessenger::new_with_offline_peer_interception`]: crate::onion_message::messenger::OnionMessenger::new_with_offline_peer_interception
 	OnionMessageIntercepted {
-		/// The next hop (offline peer or unkown SCID).
+		/// The next hop (offline peer or unknown SCID).
 		next_hop: NextMessageHop,
-		/// The onion message intended to be forwarded to `peer_node_id`.
+		/// The onion message intended to be forwarded to the offline peer or via the unknown
+		/// channel once established.
 		message: msgs::OnionMessage,
 	},
 	/// Indicates that an onion message supporting peer has come online and any messages previously
@@ -2964,7 +2965,7 @@ impl MaybeReadable for Event {
 					} else {
 						debug_assert!(
 							false,
-							"Either next_hop or peer_node_id should always been set"
+							"Either next_hop or peer_node_id should always be set"
 						);
 						Ok(None)
 					}
