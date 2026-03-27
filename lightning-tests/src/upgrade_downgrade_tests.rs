@@ -17,7 +17,10 @@ use lightning_0_2::ln::channelmanager::PaymentId as PaymentId_0_2;
 use lightning_0_2::ln::channelmanager::RecipientOnionFields as RecipientOnionFields_0_2;
 use lightning_0_2::ln::functional_test_utils as lightning_0_2_utils;
 use lightning_0_2::ln::msgs::ChannelMessageHandler as _;
+use lightning_0_2::ln::msgs::OnionMessage as OnionMessage_0_2;
+use lightning_0_2::onion_message::packet::Packet as Packet_0_2;
 use lightning_0_2::routing::router as router_0_2;
+use lightning_0_2::util::ser::MaybeReadable as MaybeReadable_0_2;
 use lightning_0_2::util::ser::Writeable as _;
 
 use lightning_0_1::commitment_signed_dance as commitment_signed_dance_0_1;
@@ -45,22 +48,28 @@ use lightning_0_0_125::ln::msgs::ChannelMessageHandler as _;
 use lightning_0_0_125::routing::router as router_0_0_125;
 use lightning_0_0_125::util::ser::Writeable as _;
 
+use lightning::blinded_path::message::NextMessageHop;
 use lightning::chain::channelmonitor::{ANTI_REORG_DELAY, HTLC_FAIL_BACK_BUFFER};
 use lightning::events::{ClosureReason, Event, HTLCHandlingFailureType};
 use lightning::ln::functional_test_utils::*;
+use lightning::ln::msgs;
 use lightning::ln::msgs::BaseMessageHandler as _;
 use lightning::ln::msgs::ChannelMessageHandler as _;
 use lightning::ln::msgs::MessageSendEvent;
 use lightning::ln::splicing_tests::*;
 use lightning::ln::types::ChannelId;
+use lightning::onion_message::packet::Packet;
 use lightning::sign::OutputSpender;
+use lightning::util::ser::{MaybeReadable, Writeable};
 use lightning::util::wallet_utils::WalletSourceSync;
 
 use lightning_types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 
 use bitcoin::script::Builder;
-use bitcoin::secp256k1::Secp256k1;
+use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 use bitcoin::{opcodes, Amount, TxOut};
+
+use lightning::io::Cursor;
 
 use std::sync::Arc;
 
@@ -700,4 +709,108 @@ fn do_upgrade_mid_htlc_forward(test: MidHtlcForwardCase) {
 	expect_and_process_pending_htlcs(&nodes[2], false);
 	expect_payment_claimable!(nodes[2], pay_hash, pay_secret, 1_000_000);
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], pay_preimage);
+}
+
+/// Constructs a dummy `OnionMessage` (current version) for use in serialization tests.
+fn dummy_onion_message() -> msgs::OnionMessage {
+	let pubkey =
+		PublicKey::from_secret_key(&Secp256k1::new(), &SecretKey::from_slice(&[42; 32]).unwrap());
+	msgs::OnionMessage {
+		blinding_point: pubkey,
+		onion_routing_packet: Packet {
+			version: 0,
+			public_key: pubkey,
+			hop_data: vec![1; 64],
+			hmac: [2; 32],
+		},
+	}
+}
+
+/// Constructs a dummy `OnionMessage` (0.2 version) for use in serialization tests.
+fn dummy_onion_message_0_2() -> OnionMessage_0_2 {
+	let pubkey = bitcoin::secp256k1::PublicKey::from_secret_key(
+		&Secp256k1::new(),
+		&SecretKey::from_slice(&[42; 32]).unwrap(),
+	);
+	OnionMessage_0_2 {
+		blinding_point: pubkey,
+		onion_routing_packet: Packet_0_2 {
+			version: 0,
+			public_key: pubkey,
+			hop_data: vec![1; 64],
+			hmac: [2; 32],
+		},
+	}
+}
+
+#[test]
+fn test_onion_message_intercepted_upgrade_from_0_2() {
+	// Ensure that an `Event::OnionMessageIntercepted` serialized by LDK 0.2 (which uses
+	// `peer_node_id: PublicKey` in TLV field 0) can be deserialized by the current version,
+	// producing `NextMessageHop::NodeId`.
+	let pubkey =
+		PublicKey::from_secret_key(&Secp256k1::new(), &SecretKey::from_slice(&[42; 32]).unwrap());
+
+	let event_0_2 = Event_0_2::OnionMessageIntercepted {
+		peer_node_id: pubkey,
+		message: dummy_onion_message_0_2(),
+	};
+
+	let serialized = lightning_0_2::util::ser::Writeable::encode(&event_0_2);
+
+	let mut reader = Cursor::new(&serialized);
+	let deserialized = <Event as MaybeReadable>::read(&mut reader).unwrap().unwrap();
+
+	match deserialized {
+		Event::OnionMessageIntercepted { next_hop, message } => {
+			assert_eq!(next_hop, NextMessageHop::NodeId(pubkey));
+			assert_eq!(message, dummy_onion_message());
+		},
+		_ => panic!("Expected OnionMessageIntercepted event"),
+	}
+}
+
+#[test]
+fn test_onion_message_intercepted_node_id_downgrade_to_0_2() {
+	// Ensure that an `Event::OnionMessageIntercepted` with a `NodeId` next hop serialized by
+	// the current version can be deserialized by LDK 0.2 (which expects `peer_node_id` in TLV
+	// field 0).
+	let pubkey =
+		PublicKey::from_secret_key(&Secp256k1::new(), &SecretKey::from_slice(&[42; 32]).unwrap());
+
+	let event = Event::OnionMessageIntercepted {
+		next_hop: NextMessageHop::NodeId(pubkey),
+		message: dummy_onion_message(),
+	};
+
+	let serialized = event.encode();
+
+	let mut reader = Cursor::new(&serialized);
+	let deserialized = <Event_0_2 as MaybeReadable_0_2>::read(&mut reader).unwrap().unwrap();
+
+	match deserialized {
+		Event_0_2::OnionMessageIntercepted { peer_node_id, message } => {
+			assert_eq!(peer_node_id, pubkey);
+			assert_eq!(message, dummy_onion_message_0_2());
+		},
+		_ => panic!("Expected OnionMessageIntercepted event"),
+	}
+}
+
+#[test]
+fn test_onion_message_intercepted_scid_downgrade_to_0_2() {
+	// Ensure that an `Event::OnionMessageIntercepted` with a `ShortChannelId` next hop
+	// serialized by the current version cannot be deserialized by LDK 0.2, since the
+	// `peer_node_id` field (0) is not written for SCID variants and LDK 0.2 requires it.
+	let event = Event::OnionMessageIntercepted {
+		next_hop: NextMessageHop::ShortChannelId(42),
+		message: dummy_onion_message(),
+	};
+
+	let serialized = event.encode();
+
+	// LDK 0.2 will try to read field 0 as required. Since it's absent, the read will fail.
+	let mut reader = Cursor::new(&serialized);
+	let result = <Event_0_2 as MaybeReadable_0_2>::read(&mut reader);
+	assert!(result.is_err(), "LDK 0.2 should fail to decode a ShortChannelId variant");
 }
