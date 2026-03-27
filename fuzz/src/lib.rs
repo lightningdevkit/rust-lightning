@@ -9,6 +9,7 @@
 
 extern crate bitcoin;
 extern crate lightning;
+extern crate lightning_block_sync;
 extern crate lightning_persister;
 extern crate lightning_rapid_gossip_sync;
 
@@ -31,6 +32,7 @@ pub mod chanmon_deser;
 pub mod feature_flags;
 pub mod fromstr_to_netaddress;
 pub mod full_stack;
+pub mod gossip_verifier;
 pub mod indexedmap;
 pub mod invoice_deser;
 pub mod invoice_request_deser;
@@ -44,6 +46,7 @@ pub mod process_onion_failure;
 pub mod refund_deser;
 pub mod router;
 pub mod static_invoice_deser;
+pub mod utxo_validation;
 pub mod zbase32;
 
 pub mod fs_store;
