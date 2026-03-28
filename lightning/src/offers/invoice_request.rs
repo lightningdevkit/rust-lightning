@@ -2558,6 +2558,60 @@ mod tests {
 		}
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
+			.description("foo".to_string())
+			.amount(
+				Amount::Currency {
+					iso4217_code: CurrencyCode::new(*b"USD").unwrap(),
+					amount: 1000,
+				},
+				&conversion,
+			)
+			.unwrap()
+			.build_unchecked()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
+			.unwrap()
+			.amount_msats(1_000_000)
+			.unwrap()
+			.build_unchecked_and_sign();
+
+		let mut buffer = Vec::new();
+		invoice_request.write(&mut buffer).unwrap();
+
+		// Parsing still accepts explicit amounts for currency-denominated offers when the
+		// serialized msat amount is well-formed. Any conversion-dependent minimum check is
+		// deferred until a later stage where currency conversion is available.
+		if let Err(e) = InvoiceRequest::try_from(buffer) {
+			panic!("error parsing invoice_request with explicit amount: {:?}", e);
+		}
+
+		let invoice_request = OfferBuilder::new(recipient_pubkey())
+			.description("foo".to_string())
+			.amount(
+				Amount::Currency {
+					iso4217_code: CurrencyCode::new(*b"USD").unwrap(),
+					amount: 1000,
+				},
+				&conversion,
+			)
+			.unwrap()
+			.build_unchecked()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
+			.unwrap()
+			.amount_msats_unchecked(MAX_VALUE_MSAT + 1)
+			.build_unchecked_and_sign();
+
+		let mut buffer = Vec::new();
+		invoice_request.write(&mut buffer).unwrap();
+
+		match InvoiceRequest::try_from(buffer) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(
+				e,
+				Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::InvalidAmount)
+			),
+		}
+
+		let invoice_request = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
 			.unwrap()
 			.supported_quantity(Quantity::Unbounded)
