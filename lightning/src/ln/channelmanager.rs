@@ -1079,6 +1079,11 @@ enum BackgroundEvent {
 		channel_id: ChannelId,
 		highest_update_id_completed: u64,
 	},
+	/// A channel had blocked monitor updates waiting on startup. If the updates were blocked on
+	/// an MPP claim blocker not written to disk, we may be able to unblock them now.
+	///
+	/// This event is never written to disk.
+	AttemptUnblockMonitorUpdates { counterparty_node_id: PublicKey, channel_id: ChannelId },
 }
 
 /// A pointer to a channel that is unblocked when an event is surfaced
@@ -6444,6 +6449,12 @@ where
 						Some(highest_update_id_completed),
 						Some(&counterparty_node_id),
 					);
+				},
+				BackgroundEvent::AttemptUnblockMonitorUpdates {
+					counterparty_node_id,
+					channel_id,
+				} => {
+					self.handle_monitor_update_release(counterparty_node_id, channel_id, None);
 				},
 			}
 		}
@@ -14014,6 +14025,7 @@ where
 					// Channels that were persisted have to be funded, otherwise they should have been
 					// discarded.
 					let funding_txo = chan.context.get_funding_txo().ok_or(DecodeError::InvalidValue)?;
+					let chan_id = chan.context.channel_id();
 					let monitor = args.channel_monitors.get(&funding_txo)
 						.expect("We already checked for monitor presence when loading channels");
 					let mut max_in_flight_update_id = monitor.get_latest_update_id();
@@ -14035,6 +14047,14 @@ where
 						log_error!(logger, " Without the latest ChannelMonitor we cannot continue without risking funds.");
 						log_error!(logger, " Please ensure the chain::Watch API requirements are met and file a bug report at https://github.com/lightningdevkit/rust-lightning");
 						return Err(DecodeError::DangerousValue);
+					}
+					if chan.blocked_monitor_updates_pending() > 0 {
+						pending_background_events.push(
+							BackgroundEvent::AttemptUnblockMonitorUpdates {
+								counterparty_node_id: *counterparty_id,
+								channel_id: chan_id,
+							},
+						);
 					}
 				} else {
 					// We shouldn't have persisted (or read) any unfunded channel types so none should have been
