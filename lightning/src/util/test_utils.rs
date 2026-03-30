@@ -521,6 +521,8 @@ pub struct TestChainMonitor<'a> {
 	/// deferred operations. This allows tests to control exactly when queued monitor updates
 	/// are applied to the in-memory monitor.
 	pub pause_flush: AtomicBool,
+	/// Buffer of the last 20 monitor updates, most recent first.
+	pub recent_monitor_updates: Mutex<Vec<(ChannelId, ChannelMonitorUpdate)>>,
 }
 impl<'a> TestChainMonitor<'a> {
 	pub fn new(
@@ -581,6 +583,7 @@ impl<'a> TestChainMonitor<'a> {
 			#[cfg(feature = "std")]
 			write_blocker: Mutex::new(None),
 			pause_flush: AtomicBool::new(false),
+			recent_monitor_updates: Mutex::new(Vec::new()),
 		}
 	}
 
@@ -678,6 +681,12 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 			.entry(channel_id)
 			.or_insert(Vec::new())
 			.push(update.clone());
+
+		{
+			let mut recent = self.recent_monitor_updates.lock().unwrap();
+			recent.insert(0, (channel_id, update.clone()));
+			recent.truncate(20);
+		}
 
 		if let Some(exp) = self.expect_channel_force_closed.lock().unwrap().take() {
 			assert_eq!(channel_id, exp.0);

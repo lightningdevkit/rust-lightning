@@ -1260,7 +1260,20 @@ pub fn check_added_monitors<CM: AChannelManager, H: NodeHolder<CM = CM>>(node: &
 	if let Some(chain_monitor) = node.chain_monitor() {
 		let mut added_monitors = chain_monitor.added_monitors.lock().unwrap();
 		let n = added_monitors.len();
-		assert_eq!(n, count, "expected {} monitors to be added, not {}", count, n);
+		if n != count {
+			let recent = chain_monitor.recent_monitor_updates.lock().unwrap();
+			let mut desc = String::new();
+			for (i, (chan_id, update)) in recent.iter().take(n).enumerate() {
+				desc += &format!(
+					"\n  [{}] chan={} update_id={} steps={:?}",
+					i, chan_id, update.update_id, update.updates
+				);
+			}
+			panic!(
+				"expected {} monitors to be added, not {}. Last {} updates (most recent first):{}",
+				count, n, n, desc
+			);
+		}
 		added_monitors.clear();
 	}
 }
