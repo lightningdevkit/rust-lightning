@@ -22,7 +22,7 @@ use crate::ln::msgs;
 use crate::ln::types::ChannelId;
 use crate::ln::LN_MAX_MSG_LEN;
 use crate::prelude::*;
-use crate::util::async_poll::MaybeSend;
+use crate::util::native_async::MaybeSend;
 use crate::util::wallet_utils::{
 	CoinSelection, CoinSelectionSource, CoinSelectionSourceSync, Input,
 };

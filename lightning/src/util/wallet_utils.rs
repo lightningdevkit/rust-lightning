@@ -24,9 +24,10 @@ use crate::ln::chan_utils::{
 use crate::prelude::*;
 use crate::sign::{P2TR_KEY_PATH_WITNESS_WEIGHT, P2WPKH_WITNESS_WEIGHT};
 use crate::sync::Mutex;
-use crate::util::async_poll::{dummy_waker, MaybeSend, MaybeSync};
+use crate::util::async_poll::dummy_waker;
 use crate::util::hash_tables::{new_hash_map, HashMap};
 use crate::util::logger::Logger;
+use crate::util::native_async::{MaybeSend, MaybeSync};
 
 use bitcoin::amount::Amount;
 use bitcoin::consensus::Encodable;

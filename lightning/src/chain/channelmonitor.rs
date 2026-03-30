@@ -1058,7 +1058,7 @@ impl Readable for IrrevocablyResolvedHTLC {
 /// You MUST ensure that no ChannelMonitors for a given channel anywhere contain out-of-date
 /// information and are actively monitoring the chain.
 ///
-/// Like the [`ChannelManager`], deserialization is implemented for `(BlockHash, ChannelMonitor)`,
+/// Like the [`ChannelManager`], deserialization is implemented for `(BestBlock, ChannelMonitor)`,
 /// providing you with the last block hash which was connected before shutting down. You must begin
 /// syncing the chain from that point, disconnecting and connecting blocks as required to get to
 /// the best chain on startup. Note that all [`ChannelMonitor`]s passed to a [`ChainMonitor`] must
@@ -1066,7 +1066,7 @@ impl Readable for IrrevocablyResolvedHTLC {
 /// initialization.
 ///
 /// For those loading potentially-ancient [`ChannelMonitor`]s, deserialization is also implemented
-/// for `Option<(BlockHash, ChannelMonitor)>`. LDK can no longer deserialize a [`ChannelMonitor`]
+/// for `Option<(BestBlock, ChannelMonitor)>`. LDK can no longer deserialize a [`ChannelMonitor`]
 /// that was first created in LDK prior to 0.0.110 and last updated prior to LDK 0.0.119. In such
 /// cases, the `Option<(..)>` deserialization option may return `Ok(None)` rather than failing to
 /// deserialize, allowing you to differentiate between the two cases.
@@ -1755,6 +1755,7 @@ pub(crate) fn write_chanmon_internal<Signer: EcdsaChannelSigner, W: Writer>(
 		(34, channel_monitor.alternative_funding_confirmed, option),
 		(35, channel_monitor.is_manual_broadcast, required),
 		(37, channel_monitor.funding_seen_onchain, required),
+		(39, channel_monitor.best_block.previous_blocks, required),
 	});
 
 	Ok(())
@@ -5390,9 +5391,6 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		&mut self, header: &Header, txdata: &TransactionData, height: u32, broadcaster: B,
 		fee_estimator: F, logger: &WithContext<L>,
 	) -> Vec<TransactionOutputs> {
-		let block_hash = header.block_hash();
-		self.best_block = BestBlock::new(block_hash, height);
-
 		let bounded_fee_estimator = LowerBoundedFeeEstimator::new(fee_estimator);
 		self.transactions_confirmed(header, txdata, height, broadcaster, &bounded_fee_estimator, logger)
 	}
@@ -5409,7 +5407,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		let block_hash = header.block_hash();
 
 		if height > self.best_block.height {
-			self.best_block = BestBlock::new(block_hash, height);
+			self.best_block.update_for_new_tip(block_hash, height);
 			log_trace!(logger, "Connecting new block {} at height {}", block_hash, height);
 			self.block_confirmed(height, block_hash, vec![], vec![], vec![], &broadcaster, &fee_estimator, logger)
 		} else if block_hash != self.best_block.block_hash {
@@ -5683,7 +5681,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		}
 
 		if height > self.best_block.height {
-			self.best_block = BestBlock::new(block_hash, height);
+			self.best_block.update_for_new_tip(block_hash, height);
 		}
 
 		if should_broadcast_commitment {
@@ -6469,7 +6467,7 @@ where
 const MAX_ALLOC_SIZE: usize = 64 * 1024;
 
 impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP)>
-	for (BlockHash, ChannelMonitor<SP::EcdsaSigner>)
+	for (BestBlock, ChannelMonitor<SP::EcdsaSigner>)
 {
 	fn read<R: io::Read>(reader: &mut R, args: (&'a ES, &'b SP)) -> Result<Self, DecodeError> {
 		match <Option<Self>>::read(reader, args) {
@@ -6481,7 +6479,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 }
 
 impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP)>
-	for Option<(BlockHash, ChannelMonitor<SP::EcdsaSigner>)>
+	for Option<(BestBlock, ChannelMonitor<SP::EcdsaSigner>)>
 {
 	#[rustfmt::skip]
 	fn read<R: io::Read>(reader: &mut R, args: (&'a ES, &'b SP)) -> Result<Self, DecodeError> {
@@ -6644,7 +6642,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			}
 		}
 
-		let best_block = BestBlock::new(Readable::read(reader)?, Readable::read(reader)?);
+		let mut best_block = BestBlock::new(Readable::read(reader)?, Readable::read(reader)?);
 
 		let waiting_threshold_conf_len: u64 = Readable::read(reader)?;
 		let mut onchain_events_awaiting_threshold_conf = Vec::with_capacity(cmp::min(waiting_threshold_conf_len as usize, MAX_ALLOC_SIZE / 128));
@@ -6694,6 +6692,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		let mut alternative_funding_confirmed = None;
 		let mut is_manual_broadcast = RequiredWrapper(None);
 		let mut funding_seen_onchain = RequiredWrapper(None);
+		let mut best_block_previous_blocks = None;
 		read_tlv_fields!(reader, {
 			(1, funding_spend_confirmed, option),
 			(3, htlcs_resolved_on_chain, optional_vec),
@@ -6716,7 +6715,12 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			(34, alternative_funding_confirmed, option),
 			(35, is_manual_broadcast, (default_value, false)),
 			(37, funding_seen_onchain, (default_value, true)),
+			(39, best_block_previous_blocks, option), // Added and always set in 0.3
 		});
+		if let Some(previous_blocks) = best_block_previous_blocks {
+			best_block.previous_blocks = previous_blocks;
+		}
+
 		// Note that `payment_preimages_with_info` was added (and is always written) in LDK 0.1, so
 		// we can use it to determine if this monitor was last written by LDK 0.1 or later.
 		let written_by_0_1_or_later = payment_preimages_with_info.is_some();
@@ -6909,7 +6913,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 					To continue, run a v0.1 release, send/route a payment over the channel or close it.");
 			}
 		}
-		Ok(Some((best_block.block_hash, monitor)))
+		Ok(Some((best_block, monitor)))
 	}
 }
 
@@ -6981,7 +6985,7 @@ pub(super) fn dummy_monitor<S: EcdsaChannelSigner + 'static>(
 #[cfg(test)]
 mod tests {
 	use bitcoin::amount::Amount;
-	use bitcoin::hash_types::{BlockHash, Txid};
+	use bitcoin::hash_types::Txid;
 	use bitcoin::hashes::sha256::Hash as Sha256;
 	use bitcoin::hashes::Hash;
 	use bitcoin::hex::FromHex;
@@ -7007,7 +7011,7 @@ mod tests {
 		weight_revoked_received_htlc, WEIGHT_REVOKED_OUTPUT,
 	};
 	use crate::chain::transaction::OutPoint;
-	use crate::chain::Confirm;
+	use crate::chain::{BestBlock, Confirm};
 	use crate::io;
 	use crate::ln::chan_utils::{self, HTLCOutputInCommitment, HolderCommitmentTransaction};
 	use crate::ln::channel_keys::{
@@ -7074,7 +7078,7 @@ mod tests {
 		nodes[1].chain_monitor.chain_monitor.transactions_confirmed(&new_header,
 			&[(0, broadcast_tx)], conf_height);
 
-		let (_, pre_update_monitor) = <(BlockHash, ChannelMonitor<_>)>::read(
+		let (_, pre_update_monitor) = <(BestBlock, ChannelMonitor<_>)>::read(
 						&mut io::Cursor::new(&get_monitor!(nodes[1], channel.2).encode()),
 						(&nodes[1].keys_manager.backing, &nodes[1].keys_manager.backing)).unwrap();
 

@@ -11,7 +11,7 @@
 
 //! Functional tests which test for correct behavior across node restarts.
 
-use crate::chain::{ChannelMonitorUpdateStatus, Watch};
+use crate::chain::{BestBlock, ChannelMonitorUpdateStatus, Watch};
 use crate::chain::chaininterface::LowerBoundedFeeEstimator;
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdateStep};
 use crate::routing::router::{PaymentParameters, RouteParameters};
@@ -30,7 +30,6 @@ use crate::util::ser::{Writeable, ReadableArgs};
 use crate::util::config::{HTLCInterceptionFlags, UserConfig};
 
 use bitcoin::hashes::Hash;
-use bitcoin::hash_types::BlockHash;
 use types::payment::{PaymentHash, PaymentPreimage};
 
 use crate::prelude::*;
@@ -412,7 +411,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	let mut node_0_stale_monitors = Vec::new();
 	for serialized in node_0_stale_monitors_serialized.iter() {
 		let mut read = &serialized[..];
-		let (_, monitor) = <(BlockHash, ChannelMonitor<TestChannelSigner>)>::read(&mut read, (keys_manager, keys_manager)).unwrap();
+		let (_, monitor) = <(BestBlock, ChannelMonitor<TestChannelSigner>)>::read(&mut read, (keys_manager, keys_manager)).unwrap();
 		assert!(read.is_empty());
 		node_0_stale_monitors.push(monitor);
 	}
@@ -420,14 +419,14 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	let mut node_0_monitors = Vec::new();
 	for serialized in node_0_monitors_serialized.iter() {
 		let mut read = &serialized[..];
-		let (_, monitor) = <(BlockHash, ChannelMonitor<TestChannelSigner>)>::read(&mut read, (keys_manager, keys_manager)).unwrap();
+		let (_, monitor) = <(BestBlock, ChannelMonitor<TestChannelSigner>)>::read(&mut read, (keys_manager, keys_manager)).unwrap();
 		assert!(read.is_empty());
 		node_0_monitors.push(monitor);
 	}
 
 	let mut nodes_0_read = &nodes_0_serialized[..];
 	if let Err(msgs::DecodeError::DangerousValue) =
-		<(BlockHash, ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestRouter, &test_utils::TestMessageRouter, &test_utils::TestLogger>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
+		<(BestBlock, ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestRouter, &test_utils::TestMessageRouter, &test_utils::TestLogger>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
 		config: UserConfig::default(),
 		entropy_source: keys_manager,
 		node_signer: keys_manager,
@@ -446,7 +445,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 
 	let mut nodes_0_read = &nodes_0_serialized[..];
 	let (_, nodes_0_deserialized_tmp) =
-		<(BlockHash, ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestRouter, &test_utils::TestMessageRouter, &test_utils::TestLogger>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
+		<(BestBlock, ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestRouter, &test_utils::TestMessageRouter, &test_utils::TestLogger>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
 		config: UserConfig::default(),
 		entropy_source: keys_manager,
 		node_signer: keys_manager,

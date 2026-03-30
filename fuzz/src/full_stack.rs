@@ -63,10 +63,10 @@ use lightning::sign::{
 	SignerProvider,
 };
 use lightning::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
-use lightning::util::async_poll::{MaybeSend, MaybeSync};
 use lightning::util::config::{ChannelConfig, UserConfig};
 use lightning::util::hash_tables::*;
 use lightning::util::logger::Logger;
+use lightning::util::native_async::{MaybeSend, MaybeSync};
 use lightning::util::ser::{Readable, Writeable};
 use lightning::util::test_channel_signer::{EnforcementState, TestChannelSigner};
 use lightning::util::test_utils::TestWalletSource;
@@ -1958,8 +1958,8 @@ pub fn write_fst_seeds(path: &str) {
 
 #[cfg(test)]
 mod tests {
-	use lightning::util::async_poll::{MaybeSend, MaybeSync};
 	use lightning::util::logger::{Logger, Record};
+	use lightning::util::native_async::{MaybeSend, MaybeSync};
 	use std::collections::HashMap;
 	use std::sync::{Arc, Mutex};
 
