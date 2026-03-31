@@ -459,9 +459,9 @@ impl Channel {
 			general_bucket_pct,
 			congestion_bucket_pct,
 		);
-		debug_assert!(alloc.general_slots >= 5, "5 is the minimum we need for general bucket");
-		debug_assert!(alloc.congestion_slots > 0);
-		debug_assert!(alloc.protected_slots > 0);
+		if alloc.general_slots < 5 || alloc.congestion_slots == 0 || alloc.protected_slots == 0 {
+			return Err(());
+		}
 
 		Ok(Channel {
 			max_htlc_value_in_flight_msat,
