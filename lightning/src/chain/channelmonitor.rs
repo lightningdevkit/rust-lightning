@@ -1400,6 +1400,10 @@ pub(crate) struct ChannelMonitorImpl<Signer: EcdsaChannelSigner> {
 	counterparty_hash_commitment_number: HashMap<PaymentHash, u64>,
 
 	counterparty_fulfilled_htlcs: HashMap<SentHTLCId, PaymentPreimage>,
+	/// Stores the failure reason for outbound HTLCs that were failed back by the counterparty,
+	/// keyed by the HTLC's source identifier. Populated during `update_holder_commitment_data`
+	/// and consumed during `provide_secret` when the failure event is generated.
+	counterparty_failed_htlcs: HashMap<SentHTLCId, HTLCFailReason>,
 
 	// Used just for ChannelManager to make sure it has the latest channel data during
 	// deserialization
@@ -1952,6 +1956,7 @@ pub(crate) fn write_chanmon_internal<Signer: EcdsaChannelSigner, W: Writer>(
 		(41, channel_monitor.funding.contribution, option),
 		(43, channel_monitor.next_monitor_event_id, required),
 		(45, channel_monitor.user_channel_id, option), // Added in 0.4
+		(47, channel_monitor.counterparty_failed_htlcs, required), // Added in 0.4
 	});
 
 	Ok(())
@@ -2132,6 +2137,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 			counterparty_commitment_txn_on_chain: new_hash_map(),
 			counterparty_hash_commitment_number: new_hash_map(),
 			counterparty_fulfilled_htlcs: new_hash_map(),
+			counterparty_failed_htlcs: new_hash_map(),
 
 			current_counterparty_commitment_number: 1 << 48,
 			current_holder_commitment_number,
@@ -7023,6 +7029,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		let mut confirmed_commitment_tx_counterparty_output = None;
 		let mut spendable_txids_confirmed = Some(Vec::new());
 		let mut counterparty_fulfilled_htlcs = Some(new_hash_map());
+		let mut counterparty_failed_htlcs = Some(new_hash_map());
 		let mut initial_counterparty_commitment_info = None;
 		let mut initial_counterparty_commitment_tx = None;
 		let mut balances_empty_height = None;
@@ -7069,6 +7076,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			(41, current_funding_contribution, option),
 			(43, next_monitor_event_id, option),
 			(45, user_channel_id, option), // Added in 0.4
+			(47, counterparty_failed_htlcs, option), // Added in 0.4
 		});
 		if let Some(previous_blocks) = best_block_previous_blocks {
 			best_block.previous_blocks = previous_blocks;
@@ -7240,6 +7248,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			counterparty_commitment_txn_on_chain,
 			counterparty_hash_commitment_number,
 			counterparty_fulfilled_htlcs: counterparty_fulfilled_htlcs.unwrap(),
+			counterparty_failed_htlcs: counterparty_failed_htlcs.unwrap_or_default(),
 
 			current_counterparty_commitment_number,
 			current_holder_commitment_number,
