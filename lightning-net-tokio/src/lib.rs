@@ -1120,6 +1120,19 @@ mod tests {
 		// Set TOR_PROXY=127.0.0.1:9050
 		let tor_proxy_addr: SocketAddr = std::env!("TOR_PROXY").parse().unwrap();
 
+		let mut google_addresses: Vec<_> =
+			tokio::net::lookup_host("google.com:80").await.unwrap().collect();
+		let ipv6_pos = google_addresses
+			.iter()
+			.position(|a| a.is_ipv6())
+			.expect("must resolve at least one ipv6 address");
+		let mut google_ipv6 = google_addresses.remove(ipv6_pos);
+		let ipv4_pos = google_addresses
+			.iter()
+			.position(|a| a.is_ipv4())
+			.expect("must resolve at least one ipv4 address");
+		let mut google_ipv4 = google_addresses.remove(ipv4_pos);
+
 		struct TestEntropySource;
 
 		impl EntropySource for TestEntropySource {
@@ -1132,17 +1145,16 @@ mod tests {
 
 		// Success cases
 
-		for addr_str in [
+		for addr in [
 			// google.com
-			"142.250.189.196:80",
+			google_ipv4.into(),
 			// google.com
-			"[2607:f8b0:4005:813::2004]:80",
+			google_ipv6.into(),
 			// torproject.org
-			"torproject.org:80",
+			"torproject.org:80".parse().unwrap(),
 			// torproject.org
-			"2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion:80",
+			"2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion:80".parse().unwrap(),
 		] {
-			let addr: SocketAddress = addr_str.parse().unwrap();
 			let tcp_stream = tor_connect(addr, tor_proxy_addr, &entropy_source).await.unwrap();
 			assert_eq!(
 				tcp_stream.try_read(&mut [0u8; 1]).unwrap_err().kind(),
@@ -1151,18 +1163,19 @@ mod tests {
 		}
 
 		// Failure cases
+		google_ipv4.set_port(1234);
+		google_ipv6.set_port(1234);
 
-		for addr_str in [
+		for addr in [
 			// google.com, with some invalid port
-			"142.250.189.196:1234",
+			google_ipv4.into(),
 			// google.com, with some invalid port
-			"[2607:f8b0:4005:813::2004]:1234",
+			google_ipv6.into(),
 			// torproject.org, with some invalid port
-			"torproject.org:1234",
+			"torproject.org:1234".parse().unwrap(),
 			// torproject.org, with a typo
-			"3gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion:80",
+			"3gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion:80".parse().unwrap(),
 		] {
-			let addr: SocketAddress = addr_str.parse().unwrap();
 			assert!(tor_connect(addr, tor_proxy_addr, &entropy_source).await.is_err());
 		}
 	}
