@@ -594,33 +594,27 @@ impl Writeable for Channel {
 				.collect(),
 		};
 		write_tlv_fields!(writer, {
-			(1, self.max_htlc_value_in_flight_msat, required),
-			(3, self.max_accepted_htlcs, required),
-			(5, self.outgoing_reputation, required),
-			(7, self.incoming_revenue, required),
-			(9, general_bucket_data, required),
-			(11, self.last_congestion_misuse, required),
+			(1, self.outgoing_reputation, required),
+			(3, self.incoming_revenue, required),
+			(5, general_bucket_data, required),
+			(7, self.last_congestion_misuse, required),
 		});
 		Ok(())
 	}
 }
 
-impl<ES: EntropySource> ReadableArgs<(&ResourceManagerConfig, &ES)> for Channel {
+impl<ES: EntropySource> ReadableArgs<(u64, u16, &ResourceManagerConfig, &ES)> for Channel {
 	fn read<R: Read>(
-		reader: &mut R, args: (&ResourceManagerConfig, &ES),
+		reader: &mut R, args: (u64, u16, &ResourceManagerConfig, &ES),
 	) -> Result<Self, DecodeError> {
-		let (config, entropy_source) = args;
+		let (max_htlc_value_in_flight_msat, max_accepted_htlcs, config, entropy_source) = args;
 		_init_and_read_len_prefixed_tlv_fields!(reader, {
-			(1, max_htlc_value_in_flight_msat, required),
-			(3, max_accepted_htlcs, required),
-			(5, outgoing_reputation, required),
-			(7, incoming_revenue, required),
-			(9, general_bucket_data, required),
-			(11, last_congestion_misuse, required),
+			(1, outgoing_reputation, required),
+			(3, incoming_revenue, required),
+			(5, general_bucket_data, required),
+			(7, last_congestion_misuse, required),
 		});
 
-		let max_htlc_value_in_flight_msat: u64 = max_htlc_value_in_flight_msat.0.unwrap();
-		let max_accepted_htlcs: u16 = max_accepted_htlcs.0.unwrap();
 		let general_bucket_data: GeneralBucketData = general_bucket_data.0.unwrap();
 
 		let alloc = bucket_allocations(
@@ -1001,13 +995,15 @@ impl Writeable for DefaultResourceManager {
 	}
 }
 
-impl<ES: EntropySource> ReadableArgs<(ResourceManagerConfig, &ES)> for DefaultResourceManager {
+impl<ES: EntropySource> ReadableArgs<(ResourceManagerConfig, &ES, &HashMap<u64, (u64, u16)>)>
+	for DefaultResourceManager
+{
 	fn read<R: Read>(
-		reader: &mut R, args: (ResourceManagerConfig, &ES),
+		reader: &mut R, args: (ResourceManagerConfig, &ES, &HashMap<u64, (u64, u16)>),
 	) -> Result<DefaultResourceManager, DecodeError> {
-		let (config, entropy_source) = args;
+		let (config, entropy_source, channel_limits) = args;
 		_init_and_read_len_prefixed_tlv_fields!(reader, {
-			(1, channels, (required: ReadableArgs, (&config, entropy_source))),
+			(1, channels, (required: ReadableArgs, (&config, entropy_source, channel_limits))),
 		});
 		let channels: HashMap<u64, Channel> = channels.0.unwrap();
 		Ok(DefaultResourceManager {
@@ -1018,13 +1014,23 @@ impl<ES: EntropySource> ReadableArgs<(ResourceManagerConfig, &ES)> for DefaultRe
 	}
 }
 
-impl<ES: EntropySource> ReadableArgs<(&ResourceManagerConfig, &ES)> for HashMap<u64, Channel> {
-	fn read<R: Read>(r: &mut R, args: (&ResourceManagerConfig, &ES)) -> Result<Self, DecodeError> {
+impl<ES: EntropySource> ReadableArgs<(&ResourceManagerConfig, &ES, &HashMap<u64, (u64, u16)>)>
+	for HashMap<u64, Channel>
+{
+	fn read<R: Read>(
+		r: &mut R, args: (&ResourceManagerConfig, &ES, &HashMap<u64, (u64, u16)>),
+	) -> Result<Self, DecodeError> {
+		let (config, entropy_source, channel_limits) = args;
 		let len: CollectionLength = Readable::read(r)?;
 		let mut ret = new_hash_map();
 		for _ in 0..len.0 {
 			let k: u64 = Readable::read(r)?;
-			let v = Channel::read(r, args)?;
+			let &(max_htlc_value_in_flight_msat, max_accepted_htlcs) =
+				channel_limits.get(&k).ok_or(DecodeError::InvalidValue)?;
+			let v = Channel::read(
+				r,
+				(max_htlc_value_in_flight_msat, max_accepted_htlcs, config, entropy_source),
+			)?;
 			if ret.insert(k, v).is_some() {
 				return Err(DecodeError::InvalidValue);
 			}
@@ -2539,9 +2545,13 @@ mod tests {
 			.unwrap()
 			.clone();
 
+		let mut channel_limits = crate::prelude::new_hash_map();
+		channel_limits.insert(INCOMING_SCID, (5_000_000_000u64, 114u16));
+		channel_limits.insert(OUTGOING_SCID, (5_000_000_000u64, 114u16));
+
 		let deserialized_rm = DefaultResourceManager::read(
 			&mut serialized_rm.as_slice(),
-			(ResourceManagerConfig::default(), &entropy_source),
+			(ResourceManagerConfig::default(), &entropy_source, &channel_limits),
 		)
 		.unwrap();
 		let deserialized_channels = deserialized_rm.channels.lock().unwrap();
