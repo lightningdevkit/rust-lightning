@@ -33,7 +33,7 @@ use crate::chain::chaininterface::{
 };
 use crate::chain::channelmonitor::{
 	ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, CommitmentHTLCData,
-	OutboundHTLCClaim, LATENCY_GRACE_PERIOD_BLOCKS,
+	OutboundHTLCClaim, OutboundHTLCFail, LATENCY_GRACE_PERIOD_BLOCKS,
 };
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::chain::BlockLocator;
@@ -8772,6 +8772,7 @@ where
 			}
 		}
 		let mut claimed_htlcs = Vec::new();
+		let mut failed_htlcs = Vec::new();
 		for htlc in self.context.pending_outbound_htlcs.iter_mut() {
 			if let &mut OutboundHTLCState::RemoteRemoved(ref mut outcome) = &mut htlc.state {
 				log_trace!(logger, "Updating HTLC {} to AwaitingRemoteRevokeToRemove due to commitment_signed in channel {}.",
@@ -8782,18 +8783,26 @@ where
 					attribution_data: None,
 				};
 				mem::swap(outcome, &mut reason);
-				if let OutboundHTLCOutcome::Success { preimage, .. } = reason {
-					// If a user (a) receives an HTLC claim using LDK 0.0.104 or before, then (b)
-					// upgrades to LDK 0.0.114 or later before the HTLC is fully resolved, we could
-					// have a `Success(None)` reason. In this case we could forget some HTLC
-					// claims, but such an upgrade is unlikely and including claimed HTLCs here
-					// fixes a bug which the user was exposed to on 0.0.104 when they started the
-					// claim anyway.
-					claimed_htlcs.push(OutboundHTLCClaim {
-						htlc_id: SentHTLCId::from_source(&htlc.source),
-						preimage,
-						skimmed_fee_msat: htlc.skimmed_fee_msat,
-					});
+				match reason {
+					OutboundHTLCOutcome::Success { preimage, .. } => {
+						// If a user (a) receives an HTLC claim using LDK 0.0.104 or before, then (b)
+						// upgrades to LDK 0.0.114 or later before the HTLC is fully resolved, we could
+						// have a `Success(None)` reason. In this case we could forget some HTLC
+						// claims, but such an upgrade is unlikely and including claimed HTLCs here
+						// fixes a bug which the user was exposed to on 0.0.104 when they started the
+						// claim anyway.
+						claimed_htlcs.push(OutboundHTLCClaim {
+							htlc_id: SentHTLCId::from_source(&htlc.source),
+							preimage,
+							skimmed_fee_msat: htlc.skimmed_fee_msat,
+						});
+					},
+					OutboundHTLCOutcome::Failure(ref fail_reason) => {
+						failed_htlcs.push(OutboundHTLCFail {
+							htlc_id: SentHTLCId::from_source(&htlc.source),
+							failure_reason: fail_reason.clone(),
+						});
+					},
 				}
 				htlc.state = OutboundHTLCState::AwaitingRemoteRevokeToRemove(reason);
 				need_commitment = true;
@@ -8803,17 +8812,23 @@ where
 		match &mut update {
 			ChannelMonitorUpdateStep::LatestHolderCommitment {
 				claimed_htlcs: ref mut update_claimed_htlcs,
+				failed_htlcs: ref mut update_failed_htlcs,
 				..
 			} => {
 				debug_assert!(update_claimed_htlcs.is_empty());
 				*update_claimed_htlcs = claimed_htlcs.clone();
+				debug_assert!(update_failed_htlcs.is_empty());
+				*update_failed_htlcs = failed_htlcs.clone();
 			},
 			ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo {
 				claimed_htlcs: ref mut update_claimed_htlcs,
+				failed_htlcs: ref mut update_failed_htlcs,
 				..
 			} => {
 				debug_assert!(update_claimed_htlcs.is_empty());
 				*update_claimed_htlcs = claimed_htlcs.clone();
+				debug_assert!(update_failed_htlcs.is_empty());
+				*update_failed_htlcs = failed_htlcs.clone();
 			},
 			_ => debug_assert!(false),
 		}
