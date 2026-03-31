@@ -17,6 +17,7 @@ use core::ops::Deref;
 use core::pin::pin;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::task;
+use core::time::Duration;
 
 use super::event::LSPS1ServiceEvent;
 use super::msgs::{
@@ -752,6 +753,52 @@ where
 		Ok(())
 	}
 
+	/// Prunes terminal orders for a peer that are at least `max_age` old, freeing memory and
+	/// per-peer quota.
+	///
+	/// Terminal orders are those in the [`LSPS1OrderState::Completed`] or
+	/// [`LSPS1OrderState::Failed`] state. `max_age` is measured from each order's `created_at`
+	/// timestamp. Pass [`Duration::ZERO`] to prune all terminal orders regardless of age,
+	/// which is useful to immediately free per-peer quota when a client is blocked by the
+	/// per-peer request limit due to accumulated failed orders.
+	///
+	/// Returns the number of orders removed, or an [`APIError::APIMisuseError`] if no state
+	/// exists for the given counterparty.
+	pub async fn prune_orders(
+		&self, counterparty_node_id: PublicKey, max_age: Duration,
+	) -> Result<usize, APIError> {
+		let now =
+			LSPSDateTime::new_from_duration_since_epoch(self.time_provider.duration_since_epoch());
+		let pruned;
+		{
+			let outer_state_lock = self.per_peer_state.read().unwrap();
+			let inner_state_lock =
+				outer_state_lock.get(&counterparty_node_id).ok_or_else(|| {
+					APIError::APIMisuseError {
+						err: format!(
+							"No existing state with counterparty {}",
+							counterparty_node_id
+						),
+					}
+				})?;
+			let mut peer_state = inner_state_lock.lock().unwrap();
+			pruned = peer_state.prune_terminal_orders(&now, max_age);
+		}
+
+		if pruned > 0 {
+			self.persist_peer_state(counterparty_node_id).await.map_err(|e| {
+				APIError::APIMisuseError {
+					err: format!(
+						"Failed to persist peer state for {}: {}",
+						counterparty_node_id, e
+					),
+				}
+			})?;
+		}
+
+		Ok(pruned)
+	}
+
 	fn generate_order_id(&self) -> LSPS1OrderId {
 		let bytes = self.entropy_source.get_secure_random_bytes();
 		LSPS1OrderId(utils::hex_str(&bytes[0..16]))
@@ -919,6 +966,25 @@ where
 		&self, counterparty_node_id: PublicKey, order_id: LSPS1OrderId,
 	) -> Result<(), APIError> {
 		let mut fut = pin!(self.inner.order_failed_and_refunded(counterparty_node_id, order_id));
+
+		let mut waker = dummy_waker();
+		let mut ctx = task::Context::from_waker(&mut waker);
+		match fut.as_mut().poll(&mut ctx) {
+			task::Poll::Ready(result) => result,
+			task::Poll::Pending => {
+				// In a sync context, we can't wait for the future to complete.
+				unreachable!("Should not be pending in a sync context");
+			},
+		}
+	}
+
+	/// Prunes terminal orders for a peer that are at least `max_age` old.
+	///
+	/// Wraps [`LSPS1ServiceHandler::prune_orders`].
+	pub fn prune_orders(
+		&self, counterparty_node_id: PublicKey, max_age: Duration,
+	) -> Result<usize, APIError> {
+		let mut fut = pin!(self.inner.prune_orders(counterparty_node_id, max_age));
 
 		let mut waker = dummy_waker();
 		let mut ctx = task::Context::from_waker(&mut waker);
