@@ -57,7 +57,11 @@ mkdir -p "$OUTPUT_DIR"
 
 # dont run this command when running in CI
 if [ "$OUTPUT_CODECOV_JSON" = "0" ]; then
-    cargo llvm-cov --html --ignore-filename-regex "fuzz/" --output-dir "$OUTPUT_DIR"
+    cargo llvm-cov --html \
+        --dep-coverage lightning,lightning-invoice,lightning-liquidity,lightning-rapid-gossip-sync,lightning-persister \
+        --no-default-ignore-filename-regex \
+        --ignore-filename-regex "(\.cargo/registry|\.rustup/toolchains|/fuzz/)" \
+        --output-dir "$OUTPUT_DIR"
     echo "Coverage report generated in $OUTPUT_DIR/html/index.html"
 else
     # Clean previous coverage artifacts to ensure a fresh run.
@@ -78,7 +82,10 @@ else
     fi
 
     echo "Replaying imported corpus (if found) via tests to generate coverage..."
-    cargo llvm-cov -j8 --codecov --ignore-filename-regex "fuzz/" \
+    cargo llvm-cov -j8 --codecov \
+        --dep-coverage lightning,lightning-invoice,lightning-liquidity,lightning-rapid-gossip-sync,lightning-persister \
+        --no-default-ignore-filename-regex \
+        --ignore-filename-regex "(\.cargo/registry|\.rustup/toolchains|/fuzz/)" \
         --output-path "$OUTPUT_DIR/fuzz-codecov.json" --tests
 
     echo "Fuzz codecov report available at $OUTPUT_DIR/fuzz-codecov.json"
