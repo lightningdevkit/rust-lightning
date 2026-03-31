@@ -711,6 +711,19 @@ impl_ser_tlv_based!(OutboundHTLCClaim, {
 	(5, skimmed_fee_msat, option),
 });
 
+/// Information about an HTLC that was failed on the outbound edge, included in
+/// [`ChannelMonitorUpdateStep`] so the monitor can generate persistent failure events.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct OutboundHTLCFail {
+	pub htlc_id: SentHTLCId,
+	pub failure_reason: HTLCFailReason,
+}
+
+impl_ser_tlv_based!(OutboundHTLCFail, {
+	(0, htlc_id, required),
+	(2, failure_reason, required),
+});
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ChannelMonitorUpdateStep {
 	LatestHolderCommitmentTXInfo {
@@ -723,12 +736,14 @@ pub(crate) enum ChannelMonitorUpdateStep {
 		/// `Option<Signature>` for backwards compatibility.
 		htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Signature>, Option<HTLCSource>)>,
 		claimed_htlcs: Vec<OutboundHTLCClaim>,
+		failed_htlcs: Vec<OutboundHTLCFail>,
 		nondust_htlc_sources: Vec<HTLCSource>,
 	},
 	LatestHolderCommitment {
 		commitment_txs: Vec<HolderCommitmentTransaction>,
 		htlc_data: CommitmentHTLCData,
 		claimed_htlcs: Vec<OutboundHTLCClaim>,
+		failed_htlcs: Vec<OutboundHTLCFail>,
 	},
 	LatestCounterpartyCommitmentTXInfo {
 		commitment_txid: Txid,
@@ -833,6 +848,7 @@ impl_writeable_tlv_based_enum_upgradable!(ChannelMonitorUpdateStep,
 		(2, htlc_outputs, required_vec),
 		(4, nondust_htlc_sources, optional_vec),
 		(5, claimed_htlcs, optional_vec), // Added in 0.4
+		(7, failed_htlcs, optional_vec),
 	},
 	(1, LatestCounterpartyCommitmentTXInfo) => {
 		(0, commitment_txid, required),
@@ -888,6 +904,7 @@ impl_writeable_tlv_based_enum_upgradable!(ChannelMonitorUpdateStep,
 				_ => None
 			})),
 		(7, claimed_htlcs, optional_vec), // Added in 0.4
+		(9, failed_htlcs, optional_vec),
 	},
 	(10, RenegotiatedFunding) => {
 		(1, channel_parameters, (required: ReadableArgs, None)),
@@ -4463,7 +4480,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		let bounded_fee_estimator = LowerBoundedFeeEstimator::new(fee_estimator);
 		for update in updates.updates.iter() {
 			match update {
-				ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo { commitment_tx, htlc_outputs, claimed_htlcs, nondust_htlc_sources } => {
+				ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo { commitment_tx, htlc_outputs, claimed_htlcs, failed_htlcs: _, nondust_htlc_sources } => {
 					log_trace!(logger, "Updating ChannelMonitor with latest holder commitment transaction info");
 					if self.lockdown_from_offchain { panic!(); }
 					if let Err(e) = self.provide_latest_holder_commitment_tx(
@@ -4475,7 +4492,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					}
 				}
 				ChannelMonitorUpdateStep::LatestHolderCommitment {
-					commitment_txs, htlc_data, claimed_htlcs,
+					commitment_txs, htlc_data, claimed_htlcs, failed_htlcs: _,
 				} => {
 					log_trace!(logger, "Updating ChannelMonitor with {} latest holder commitment(s)", commitment_txs.len());
 					assert!(!self.lockdown_from_offchain);
