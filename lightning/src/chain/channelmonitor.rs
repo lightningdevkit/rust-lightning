@@ -2247,7 +2247,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		htlc_outputs: &[(HTLCOutputInCommitment, Option<Signature>, Option<HTLCSource>)],
 	) {
 		self.inner.lock().unwrap().provide_latest_holder_commitment_tx(
-			holder_commitment_tx, htlc_outputs, &Vec::new(), Vec::new(),
+			holder_commitment_tx, htlc_outputs, &Vec::new(), &Vec::new(), Vec::new(),
 		).unwrap()
 	}
 
@@ -3850,7 +3850,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	fn provide_latest_holder_commitment_tx(
 		&mut self, holder_commitment_tx: HolderCommitmentTransaction,
 		htlc_outputs: &[(HTLCOutputInCommitment, Option<Signature>, Option<HTLCSource>)],
-		claimed_htlcs: &[OutboundHTLCClaim], mut nondust_htlc_sources: Vec<HTLCSource>,
+		claimed_htlcs: &[OutboundHTLCClaim], failed_htlcs: &[OutboundHTLCFail], mut nondust_htlc_sources: Vec<HTLCSource>,
 	) -> Result<(), &'static str> {
 		let dust_htlcs = if htlc_outputs.iter().any(|(_, s, _)| s.is_some()) {
 			// If we have non-dust HTLCs in htlc_outputs, ensure they match the HTLCs in the
@@ -3909,7 +3909,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		};
 
 		let htlc_data = CommitmentHTLCData { nondust_htlc_sources, dust_htlcs };
-		self.update_holder_commitment_data(vec![holder_commitment_tx], htlc_data, claimed_htlcs)
+		self.update_holder_commitment_data(vec![holder_commitment_tx], htlc_data, claimed_htlcs, failed_htlcs)
 	}
 
 	fn verify_matching_commitment_transactions<
@@ -3972,6 +3972,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	fn update_holder_commitment_data(
 		&mut self, commitment_txs: Vec<HolderCommitmentTransaction>,
 		mut htlc_data: CommitmentHTLCData, claimed_htlcs: &[OutboundHTLCClaim],
+		failed_htlcs: &[OutboundHTLCFail],
 	) -> Result<(), &'static str> {
 		self.verify_matching_commitment_transactions(
 			commitment_txs.iter().map(|holder_commitment_tx| holder_commitment_tx.deref()),
@@ -4025,6 +4026,12 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				}
 			}
 			self.counterparty_fulfilled_htlcs.insert(claim.htlc_id, claim.preimage);
+		}
+
+		if self.persistent_events_enabled {
+			for fail in failed_htlcs {
+				self.counterparty_failed_htlcs.insert(fail.htlc_id, fail.failure_reason.clone());
+			}
 		}
 
 		Ok(())
@@ -4486,11 +4493,11 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		let bounded_fee_estimator = LowerBoundedFeeEstimator::new(fee_estimator);
 		for update in updates.updates.iter() {
 			match update {
-				ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo { commitment_tx, htlc_outputs, claimed_htlcs, failed_htlcs: _, nondust_htlc_sources } => {
+				ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo { commitment_tx, htlc_outputs, claimed_htlcs, failed_htlcs, nondust_htlc_sources } => {
 					log_trace!(logger, "Updating ChannelMonitor with latest holder commitment transaction info");
 					if self.lockdown_from_offchain { panic!(); }
 					if let Err(e) = self.provide_latest_holder_commitment_tx(
-						commitment_tx.clone(), htlc_outputs, &claimed_htlcs,
+						commitment_tx.clone(), htlc_outputs, &claimed_htlcs, &failed_htlcs,
 						nondust_htlc_sources.clone()
 					) {
 						log_error!(logger, "Failed updating latest holder commitment transaction info: {}", e);
@@ -4498,12 +4505,12 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					}
 				}
 				ChannelMonitorUpdateStep::LatestHolderCommitment {
-					commitment_txs, htlc_data, claimed_htlcs, failed_htlcs: _,
+					commitment_txs, htlc_data, claimed_htlcs, failed_htlcs,
 				} => {
 					log_trace!(logger, "Updating ChannelMonitor with {} latest holder commitment(s)", commitment_txs.len());
 					assert!(!self.lockdown_from_offchain);
 					if let Err(e) = self.update_holder_commitment_data(
-						commitment_txs.clone(), htlc_data.clone(), claimed_htlcs,
+						commitment_txs.clone(), htlc_data.clone(), claimed_htlcs, failed_htlcs
 					) {
 						log_error!(logger, "Failed updating latest holder commitment state: {}", e);
 						ret = Err(());
