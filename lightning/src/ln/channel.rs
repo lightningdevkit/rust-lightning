@@ -8612,6 +8612,7 @@ where
 					commitment_tx,
 					htlc_outputs,
 					claimed_htlcs: vec![],
+					failed_htlcs: vec![],
 					nondust_htlc_sources: nondust_htlc_sources.collect(),
 				}
 			})?;
@@ -8687,6 +8688,7 @@ where
 			commitment_txs,
 			htlc_data: htlc_data.expect("At least one funding scope must have been considered"),
 			claimed_htlcs: Vec::new(),
+			failed_htlcs: Vec::new(),
 		};
 		self.commitment_signed_update_monitor(update, logger)
 	}
