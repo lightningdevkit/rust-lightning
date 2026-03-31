@@ -150,6 +150,7 @@ fn min_final_cltv_expiry_delta_from_info(bytes: [u8; INFO_LEN]) -> u16 {
 pub fn create<ES: EntropySource>(
 	keys: &ExpandedKey, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32,
 	entropy_source: &ES, current_time: u64, min_final_cltv_expiry_delta: Option<u16>,
+	payment_metadata: Option<&[u8]>,
 ) -> Result<(PaymentHash, PaymentSecret), ()> {
 	let info_bytes = construct_info_bytes(
 		min_value_msat,
@@ -170,6 +171,9 @@ pub fn create<ES: EntropySource>(
 	let mut hmac = HmacEngine::<Sha256>::new(&keys.ldk_pmt_hash_key);
 	hmac.input(&iv_bytes);
 	hmac.input(&info_bytes);
+	if let Some(metadata) = payment_metadata {
+		hmac.input(metadata);
+	}
 	let payment_preimage_bytes = Hmac::from_engine(hmac).to_byte_array();
 
 	let ldk_pmt_hash = PaymentHash(Sha256::hash(&payment_preimage_bytes).to_byte_array());
@@ -190,6 +194,7 @@ pub fn create<ES: EntropySource>(
 pub fn create_from_hash(
 	keys: &ExpandedKey, min_value_msat: Option<u64>, payment_hash: PaymentHash,
 	invoice_expiry_delta_secs: u32, current_time: u64, min_final_cltv_expiry_delta: Option<u16>,
+	payment_metadata: Option<&[u8]>,
 ) -> Result<PaymentSecret, ()> {
 	let info_bytes = construct_info_bytes(
 		min_value_msat,
@@ -206,6 +211,9 @@ pub fn create_from_hash(
 	let mut hmac = HmacEngine::<Sha256>::new(&keys.user_pmt_hash_key);
 	hmac.input(&info_bytes);
 	hmac.input(&payment_hash.0);
+	if let Some(metadata) = payment_metadata {
+		hmac.input(metadata);
+	}
 	let hmac_bytes = Hmac::from_engine(hmac).to_byte_array();
 
 	let mut iv_bytes = [0 as u8; IV_LEN];
@@ -341,8 +349,9 @@ fn construct_payment_secret(
 /// [`create_inbound_payment`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment
 /// [`create_inbound_payment_for_hash`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment_for_hash
 pub(super) fn verify<L: Logger>(
-	payment_hash: PaymentHash, payment_data: &msgs::FinalOnionHopData, highest_seen_timestamp: u64,
-	keys: &ExpandedKey, logger: &L,
+	payment_hash: PaymentHash, payment_data: &msgs::FinalOnionHopData,
+	payment_metadata: Option<&[u8]>, highest_seen_timestamp: u64, keys: &ExpandedKey,
+	logger: &L,
 ) -> Result<(Option<PaymentPreimage>, Option<u16>), ()> {
 	let (iv_bytes, info_bytes) = decrypt_info(payment_data.payment_secret, keys);
 
@@ -363,6 +372,9 @@ pub(super) fn verify<L: Logger>(
 			let mut hmac = HmacEngine::<Sha256>::new(&keys.user_pmt_hash_key);
 			hmac.input(&info_bytes[..]);
 			hmac.input(&payment_hash.0);
+			if let Some(metadata) = payment_metadata {
+				hmac.input(metadata);
+			}
 			if !fixed_time_eq(
 				&iv_bytes,
 				&Hmac::from_engine(hmac).to_byte_array().split_at_mut(IV_LEN).0,
@@ -376,7 +388,13 @@ pub(super) fn verify<L: Logger>(
 			}
 		},
 		Ok(Method::LdkPaymentHash) | Ok(Method::LdkPaymentHashCustomFinalCltv) => {
-			match derive_ldk_payment_preimage(payment_hash, &iv_bytes, &info_bytes, keys) {
+			match derive_ldk_payment_preimage(
+				payment_hash,
+				&iv_bytes,
+				&info_bytes,
+				payment_metadata,
+				keys,
+			) {
 				Ok(preimage) => payment_preimage = Some(preimage),
 				Err(bad_preimage_bytes) => {
 					log_trace!(
@@ -438,21 +456,27 @@ pub(super) fn verify<L: Logger>(
 }
 
 pub(super) fn get_payment_preimage(
-	payment_hash: PaymentHash, payment_secret: PaymentSecret, keys: &ExpandedKey,
+	payment_hash: PaymentHash, payment_secret: PaymentSecret, payment_metadata: Option<&[u8]>,
+	keys: &ExpandedKey,
 ) -> Result<PaymentPreimage, APIError> {
 	let (iv_bytes, info_bytes) = decrypt_info(payment_secret, keys);
 
 	match Method::from_bits((info_bytes[0] & 0b1110_0000) >> METHOD_TYPE_OFFSET) {
 		Ok(Method::LdkPaymentHash) | Ok(Method::LdkPaymentHashCustomFinalCltv) => {
-			derive_ldk_payment_preimage(payment_hash, &iv_bytes, &info_bytes, keys).map_err(
-				|bad_preimage_bytes| APIError::APIMisuseError {
-					err: format!(
-						"Payment hash {} did not match decoded preimage {}",
-						&payment_hash,
-						log_bytes!(bad_preimage_bytes)
-					),
-				},
+			derive_ldk_payment_preimage(
+				payment_hash,
+				&iv_bytes,
+				&info_bytes,
+				payment_metadata,
+				keys,
 			)
+			.map_err(|bad_preimage_bytes| APIError::APIMisuseError {
+				err: format!(
+					"Payment hash {} did not match decoded preimage {}",
+					&payment_hash,
+					log_bytes!(bad_preimage_bytes)
+				),
+			})
 		},
 		Ok(Method::UserPaymentHash) | Ok(Method::UserPaymentHashCustomFinalCltv) => {
 			Err(APIError::APIMisuseError {
@@ -491,11 +515,14 @@ fn decrypt_info(
 // this case.
 fn derive_ldk_payment_preimage(
 	payment_hash: PaymentHash, iv_bytes: &[u8; IV_LEN], info_bytes: &[u8; INFO_LEN],
-	keys: &ExpandedKey,
+	payment_metadata: Option<&[u8]>, keys: &ExpandedKey,
 ) -> Result<PaymentPreimage, [u8; 32]> {
 	let mut hmac = HmacEngine::<Sha256>::new(&keys.ldk_pmt_hash_key);
 	hmac.input(iv_bytes);
 	hmac.input(info_bytes);
+	if let Some(metadata) = payment_metadata {
+		hmac.input(metadata);
+	}
 	let decoded_payment_preimage = Hmac::from_engine(hmac).to_byte_array();
 	if !fixed_time_eq(&payment_hash.0, &Sha256::hash(&decoded_payment_preimage).to_byte_array()) {
 		return Err(decoded_payment_preimage);

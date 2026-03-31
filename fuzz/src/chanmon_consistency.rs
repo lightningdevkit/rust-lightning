@@ -572,7 +572,7 @@ fn get_payment_secret_hash(dest: &ChanMan, payment_ctr: &mut u64) -> (PaymentSec
 	*payment_ctr += 1;
 	let payment_hash = PaymentHash(Sha256::hash(&[*payment_ctr as u8]).to_byte_array());
 	let payment_secret = dest
-		.create_inbound_payment_for_hash(payment_hash, None, 3600, None)
+		.create_inbound_payment_for_hash(payment_hash, None, 3600, None, None)
 		.expect("create_inbound_payment_for_hash failed");
 	(payment_secret, payment_hash)
 }

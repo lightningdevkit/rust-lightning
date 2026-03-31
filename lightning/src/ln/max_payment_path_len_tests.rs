@@ -32,7 +32,7 @@ use crate::routing::router::{
 };
 use crate::sign::NodeSigner;
 use crate::types::features::BlindedHopFeatures;
-use crate::types::payment::PaymentSecret;
+use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::util::errors::APIError;
 use crate::util::ser::Writeable;
 use crate::util::test_utils;
@@ -80,9 +80,29 @@ fn large_payment_metadata() {
 		- final_payload_len_without_metadata;
 	let mut payment_metadata = vec![42; max_metadata_len];
 
+	let mut counter = 42;
+	macro_rules! get_payment_hash {
+		($node: expr, $metadata: expr) => { {
+			let payment_preimage = PaymentPreimage([counter; 32]);
+			counter += 1;
+			let payment_hash: PaymentHash = payment_preimage.into();
+			let payment_secret = $node
+				.node
+				.create_inbound_payment_for_hash(
+					payment_hash,
+					Some(amt_msat),
+					7200,
+					None,
+					Some($metadata),
+				)
+				.unwrap();
+			(payment_hash, payment_preimage, payment_secret)
+		} };
+	}
+
 	// Check that the maximum-size metadata is sendable.
-	let (mut route_0_1, payment_hash, payment_preimage, payment_secret) =
-		get_route_and_payment_hash!(&nodes[0], &nodes[1], amt_msat);
+	let (payment_hash, payment_preimage, payment_secret) = get_payment_hash!(nodes[1], &payment_metadata);
+	let (mut route_0_1, ..) = get_route_and_payment_hash!(&nodes[0], &nodes[1], amt_msat);
 	let mut max_sized_onion = RecipientOnionFields {
 		payment_secret: Some(payment_secret),
 		payment_metadata: Some(payment_metadata.clone()),
@@ -112,14 +132,17 @@ fn large_payment_metadata() {
 
 	// Check that the payment parameter for max path length will prevent us from routing past our
 	// next-hop peer given the payment_metadata size.
-	let (mut route_0_2, payment_hash_2, payment_preimage_2, payment_secret_2) =
-		get_route_and_payment_hash!(&nodes[0], &nodes[2], amt_msat);
+
+	let (payment_hash_2, payment_preimage_2, payment_secret_2) =
+		get_payment_hash!(nodes[2], &max_sized_onion.payment_metadata.as_ref().unwrap());
+	let (mut route_0_2, ..) = get_route_and_payment_hash!(&nodes[0], &nodes[2], amt_msat);
 	let mut route_params_0_2 = route_0_2.route_params.clone().unwrap();
 	route_params_0_2.payment_params.max_path_length = 1;
 	nodes[0].router.expect_find_route_query(route_params_0_2);
+	max_sized_onion.payment_secret = Some(payment_secret_2);
 
 	let id = PaymentId(payment_hash_2.0);
-	let route_params = route_0_2.route_params.clone().unwrap();
+	let mut route_params = route_0_2.route_params.clone().unwrap();
 	let err = nodes[0]
 		.node
 		.send_payment(payment_hash_2, max_sized_onion.clone(), id, route_params, Retry::Attempts(0))
@@ -130,6 +153,9 @@ fn large_payment_metadata() {
 	let mut too_large_onion = max_sized_onion.clone();
 	too_large_onion.payment_metadata.as_mut().map(|mut md| md.push(42));
 	too_large_onion.total_mpp_amount_msat = MIN_FINAL_VALUE_ESTIMATE_WITH_OVERPAY;
+	let (payment_hash_2, payment_preimage_2, payment_secret_2) =
+		get_payment_hash!(nodes[2], &too_large_onion.payment_metadata.as_ref().unwrap());
+	too_large_onion.payment_secret = Some(payment_secret_2);
 
 	// First confirm we'll fail to create the onion packet directly.
 	let secp_ctx = Secp256k1::signing_only();
@@ -164,6 +190,8 @@ fn large_payment_metadata() {
 	// If we remove enough payment_metadata bytes to allow for 2 hops, we're now able to send to
 	// nodes[2].
 	let two_hop_metadata = vec![42; max_metadata_len - INTERMED_PAYLOAD_LEN_ESTIMATE];
+	let (payment_hash_2, payment_preimage_2, payment_secret_2) =
+		get_payment_hash!(nodes[2], &two_hop_metadata);
 	let mut onion_allowing_2_hops = RecipientOnionFields {
 		payment_secret: Some(payment_secret_2),
 		payment_metadata: Some(two_hop_metadata.clone()),

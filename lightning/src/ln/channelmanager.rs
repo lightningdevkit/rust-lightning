@@ -8481,6 +8481,7 @@ impl<
 							let verify_res = inbound_payment::verify(
 								payment_hash,
 								&payment_data,
+								onion_fields.payment_metadata.as_deref(),
 								self.highest_seen_timestamp.load(Ordering::Acquire) as u64,
 								&self.inbound_payment_key,
 								&self.logger,
@@ -14123,7 +14124,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	) -> Result<Bolt11Invoice, SignOrCreationError<()>> {
 		let Bolt11InvoiceParameters {
 			amount_msats, description, invoice_expiry_delta_secs, min_final_cltv_expiry_delta,
-			payment_hash,
+			payment_hash, payment_metadata,
 		} = params;
 
 		let currency =
@@ -14156,6 +14157,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						payment_hash, amount_msats,
 						invoice_expiry_delta_secs.unwrap_or(DEFAULT_EXPIRY_TIME as u32),
 						min_final_cltv_expiry_delta,
+						payment_metadata.as_deref(),
 					)
 					.map_err(|()| SignOrCreationError::CreationError(CreationError::InvalidAmount))?;
 				(payment_hash, payment_secret)
@@ -14165,6 +14167,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					.create_inbound_payment(
 						amount_msats, invoice_expiry_delta_secs.unwrap_or(DEFAULT_EXPIRY_TIME as u32),
 						min_final_cltv_expiry_delta,
+						payment_metadata.as_deref(),
 					)
 					.map_err(|()| SignOrCreationError::CreationError(CreationError::InvalidAmount))?
 			},
@@ -14203,7 +14206,11 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			invoice = invoice.private_route(hint);
 		}
 
-		let raw_invoice = invoice.build_raw().map_err(|e| SignOrCreationError::CreationError(e))?;
+		let raw_invoice = if let Some(payment_metadata) = payment_metadata {
+			invoice.payment_metadata(payment_metadata).build_raw()
+		} else {
+			invoice.build_raw()
+		}.map_err(|e| SignOrCreationError::CreationError(e))?;
 		let signature = self.node_signer.sign_invoice(&raw_invoice, Recipient::Node);
 
 		raw_invoice
@@ -14282,6 +14289,14 @@ pub struct Bolt11InvoiceParameters {
 	/// involving another protocol where the payment hash is also involved outside the scope of
 	/// lightning.
 	pub payment_hash: Option<PaymentHash>,
+
+	/// The `payment_metadata` to include in the invoice. This is provided back to us in the payment
+	/// onion by the sender, available as [`RecipientOnionFields::payment_metadata`] via
+	/// [`Event::PaymentClaimable::onion_fields`].
+	///
+	/// Note that because it is exposed to the sender in the invoice you should consider encrypting
+	/// it. It is committed to, however, so cannot be modified by the sender.
+	pub payment_metadata: Option<Vec<u8>>,
 }
 
 impl Default for Bolt11InvoiceParameters {
@@ -14292,6 +14307,7 @@ impl Default for Bolt11InvoiceParameters {
 			invoice_expiry_delta_secs: None,
 			min_final_cltv_expiry_delta: None,
 			payment_hash: None,
+			payment_metadata: None,
 		}
 	}
 }
@@ -14776,7 +14792,7 @@ impl<
 			refund,
 			self.list_usable_channels(),
 			|amount_msats, relative_expiry| {
-				self.create_inbound_payment(Some(amount_msats), relative_expiry, None)
+				self.create_inbound_payment(Some(amount_msats), relative_expiry, None, None)
 					.map_err(|()| Bolt12SemanticError::InvalidAmount)
 			},
 		)?;
@@ -14885,7 +14901,7 @@ impl<
 	/// [`create_inbound_payment_for_hash`]: Self::create_inbound_payment_for_hash
 	pub fn create_inbound_payment(
 		&self, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32,
-		min_final_cltv_expiry_delta: Option<u16>,
+		min_final_cltv_expiry_delta: Option<u16>, payment_metadata: Option<&[u8]>,
 	) -> Result<(PaymentHash, PaymentSecret), ()> {
 		inbound_payment::create(
 			&self.inbound_payment_key,
@@ -14894,6 +14910,7 @@ impl<
 			&self.entropy_source,
 			self.highest_seen_timestamp.load(Ordering::Acquire) as u64,
 			min_final_cltv_expiry_delta,
+			payment_metadata,
 		)
 	}
 
@@ -14946,6 +14963,7 @@ impl<
 	pub fn create_inbound_payment_for_hash(
 		&self, payment_hash: PaymentHash, min_value_msat: Option<u64>,
 		invoice_expiry_delta_secs: u32, min_final_cltv_expiry: Option<u16>,
+		payment_metadata: Option<&[u8]>,
 	) -> Result<PaymentSecret, ()> {
 		inbound_payment::create_from_hash(
 			&self.inbound_payment_key,
@@ -14954,6 +14972,7 @@ impl<
 			invoice_expiry_delta_secs,
 			self.highest_seen_timestamp.load(Ordering::Acquire) as u64,
 			min_final_cltv_expiry,
+			payment_metadata,
 		)
 	}
 
@@ -14963,9 +14982,15 @@ impl<
 	/// [`create_inbound_payment`]: Self::create_inbound_payment
 	pub fn get_payment_preimage(
 		&self, payment_hash: PaymentHash, payment_secret: PaymentSecret,
+		payment_metadata: Option<&[u8]>,
 	) -> Result<PaymentPreimage, APIError> {
 		let expanded_key = &self.inbound_payment_key;
-		inbound_payment::get_payment_preimage(payment_hash, payment_secret, expanded_key)
+		inbound_payment::get_payment_preimage(
+			payment_hash,
+			payment_secret,
+			payment_metadata,
+			expanded_key,
+		)
 	}
 
 	/// [`BlindedMessagePath`]s for an async recipient to communicate with this node and interactively
@@ -17017,7 +17042,8 @@ impl<
 					self.create_inbound_payment(
 						Some(amount_msats),
 						relative_expiry,
-						None
+						None,
+						None,
 					).map_err(|_| Bolt12SemanticError::InvalidAmount)
 				};
 
@@ -21275,7 +21301,7 @@ mod tests {
 		// payment verification fails as expected.
 		let mut bad_payment_hash = payment_hash.clone();
 		bad_payment_hash.0[0] += 1;
-		match inbound_payment::verify(bad_payment_hash, &payment_data, nodes[0].node.highest_seen_timestamp.load(Ordering::Acquire) as u64, &nodes[0].node.inbound_payment_key, &nodes[0].logger) {
+		match inbound_payment::verify(bad_payment_hash, &payment_data, None, nodes[0].node.highest_seen_timestamp.load(Ordering::Acquire) as u64, &nodes[0].node.inbound_payment_key, &nodes[0].logger) {
 			Ok(_) => panic!("Unexpected ok"),
 			Err(()) => {
 				nodes[0].logger.assert_log_contains("lightning::ln::inbound_payment", "Failing HTLC with user-generated payment_hash", 1);
@@ -21283,7 +21309,7 @@ mod tests {
 		}
 
 		// Check that using the original payment hash succeeds.
-		assert!(inbound_payment::verify(payment_hash, &payment_data, nodes[0].node.highest_seen_timestamp.load(Ordering::Acquire) as u64, &nodes[0].node.inbound_payment_key, &nodes[0].logger).is_ok());
+		assert!(inbound_payment::verify(payment_hash, &payment_data, None, nodes[0].node.highest_seen_timestamp.load(Ordering::Acquire) as u64, &nodes[0].node.inbound_payment_key, &nodes[0].logger).is_ok());
 	}
 
 	fn check_not_connected_to_peer_error<T>(
@@ -21956,7 +21982,7 @@ pub mod bench {
 				payment_preimage.0[0..8].copy_from_slice(&payment_count.to_le_bytes());
 				payment_count += 1;
 				let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0[..]).to_byte_array());
-				let payment_secret = $node_b.create_inbound_payment_for_hash(payment_hash, None, 7200, None).unwrap();
+				let payment_secret = $node_b.create_inbound_payment_for_hash(payment_hash, None, 7200, None, None).unwrap();
 
 				$node_a.send_payment(payment_hash, RecipientOnionFields::secret_only(payment_secret, 10_000),
 					PaymentId(payment_hash.0),
