@@ -2029,11 +2029,12 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 						},
 						events::Event::SpliceFailed { .. } => {},
 						events::Event::DiscardFunding {
-							funding_info: events::FundingInfo::Contribution { .. },
+							funding_info: events::FundingInfo::Contribution { .. }
+								| events::FundingInfo::Tx { .. },
 							..
 						} => {},
 
-						_ => panic!("Unhandled event"),
+						_ => panic!("Unhandled event: {:?}", event),
 					}
 				}
 				while nodes[$node].needs_pending_htlc_processing() {
