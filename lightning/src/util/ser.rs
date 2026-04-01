@@ -960,7 +960,9 @@ macro_rules! impl_for_map {
 			#[inline]
 			fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 				let len: CollectionLength = Readable::read(r)?;
-				let mut ret = $constr(len.0 as usize);
+				let entry_size = ::core::mem::size_of::<K>() + ::core::mem::size_of::<V>();
+				let max_alloc = MAX_BUF_SIZE / (entry_size + 1);
+				let mut ret = $constr(cmp::min(len.0 as usize, max_alloc));
 				for _ in 0..len.0 {
 					let k = K::read(r)?;
 					let v_opt = V::read(r)?;
