@@ -2376,7 +2376,8 @@ fn test_create_channel_to_trusted_peer_0reserve() {
 fn do_test_create_channel_to_trusted_peer_0reserve(mut config: UserConfig) -> ChannelTypeFeatures {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	config.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 100;
+	config.channel_handshake_config.announced_channel_max_inbound_htlc_value_in_flight_percentage =
+		100;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
@@ -2465,7 +2466,8 @@ fn do_test_accept_inbound_channel_from_trusted_peer_0reserve(
 ) -> ChannelTypeFeatures {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	config.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 100;
+	config.channel_handshake_config.announced_channel_max_inbound_htlc_value_in_flight_percentage =
+		100;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
@@ -2679,7 +2681,8 @@ fn do_test_0reserve_no_outputs_legacy(no_outputs_case: LegacyChannelsNoOutputs) 
 
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	config.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 100;
+	config.channel_handshake_config.announced_channel_max_inbound_htlc_value_in_flight_percentage =
+		100;
 
 	let channel_type = ChannelTypeFeatures::only_static_remote_key();
 
@@ -2979,7 +2982,8 @@ fn do_test_0reserve_no_outputs_keyed_anchors(payment_success: bool) {
 
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	config.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 100;
+	config.channel_handshake_config.announced_channel_max_inbound_htlc_value_in_flight_percentage =
+		100;
 
 	let channel_type = ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
 
@@ -3112,7 +3116,8 @@ fn do_test_0reserve_no_outputs_p2a_anchor() {
 
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	config.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 100;
+	config.channel_handshake_config.announced_channel_max_inbound_htlc_value_in_flight_percentage =
+		100;
 
 	let channel_type = ChannelTypeFeatures::anchors_zero_fee_commitments();
 
@@ -3170,7 +3175,8 @@ fn do_test_0reserve_force_close_with_single_p2a_output(high_feerate: bool) {
 		*feerate_lock = 2500;
 	}
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	config.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 100;
+	config.channel_handshake_config.announced_channel_max_inbound_htlc_value_in_flight_percentage =
+		100;
 
 	let channel_type = ChannelTypeFeatures::anchors_zero_fee_commitments();
 
@@ -3276,7 +3282,8 @@ fn test_0reserve_zero_conf_combined() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let mut config = test_default_channel_config();
-	config.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 100;
+	config.channel_handshake_config.announced_channel_max_inbound_htlc_value_in_flight_percentage =
+		100;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 

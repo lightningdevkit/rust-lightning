@@ -504,6 +504,9 @@ fn often_offline_node_cfg() -> UserConfig {
 	cfg.channel_handshake_config.announce_for_forwarding = false;
 	cfg.channel_handshake_limits.force_announced_channel_preference = true;
 	cfg.hold_outbound_htlcs_at_next_hop = true;
+	// Use the setting that matches the default at the time these tests were written
+	cfg.channel_handshake_config.unannounced_channel_max_inbound_htlc_value_in_flight_percentage =
+		10;
 	cfg
 }
 
@@ -1310,6 +1313,10 @@ fn async_receive_mpp() {
 
 	let mut allow_priv_chan_fwds_cfg = test_default_channel_config();
 	allow_priv_chan_fwds_cfg.accept_forwards_to_priv_channels = true;
+	// Set the percentage to the default value at the time this test was written
+	allow_priv_chan_fwds_cfg
+		.channel_handshake_config
+		.announced_channel_max_inbound_htlc_value_in_flight_percentage = 10;
 
 	let node_chanmgrs = create_node_chanmgrs(
 		4,

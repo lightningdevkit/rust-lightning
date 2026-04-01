@@ -2724,6 +2724,8 @@ fn do_test_anchors_aggregated_revoked_htlc_tx(p2a_anchor: bool) {
 	anchors_config.channel_handshake_config.announce_for_forwarding = true;
 	anchors_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 	anchors_config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
+	// Set the percentage to the default value at the time this test was written
+	anchors_config.channel_handshake_config.announced_channel_max_inbound_htlc_value_in_flight_percentage = 10;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(anchors_config.clone()), Some(anchors_config.clone())]);
 	let bob_deserialized;
 

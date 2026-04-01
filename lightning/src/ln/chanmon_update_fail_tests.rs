@@ -4656,6 +4656,7 @@ fn test_claim_to_closed_channel_blocks_claimed_event() {
 #[test]
 #[cfg(all(feature = "std", not(target_os = "windows")))]
 fn test_single_channel_multiple_mpp() {
+	use crate::util::config::UserConfig;
 	use std::sync::atomic::{AtomicBool, Ordering};
 
 	// Test what happens when we attempt to claim an MPP with many parts that came to us through
@@ -4667,7 +4668,11 @@ fn test_single_channel_multiple_mpp() {
 	// for more info.
 	let chanmon_cfgs = create_chanmon_cfgs(9);
 	let node_cfgs = create_node_cfgs(9, &chanmon_cfgs);
-	let configs = [None, None, None, None, None, None, None, None, None];
+	let mut config = test_default_channel_config();
+	// Set the percentage to the default value at the time this test was written
+	config.channel_handshake_config.announced_channel_max_inbound_htlc_value_in_flight_percentage =
+		10;
+	let configs: [Option<UserConfig>; 9] = core::array::from_fn(|_| Some(config.clone()));
 	let node_chanmgrs = create_node_chanmgrs(9, &node_cfgs, &configs);
 	let mut nodes = create_network(9, &node_cfgs, &node_chanmgrs);
 

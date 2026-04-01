@@ -745,7 +745,11 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool, double_rest
 	let (persist_d_1, persist_d_2);
 	let (chain_d_1, chain_d_2);
 
-	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
+	let mut config = test_default_channel_config();
+	// Set the percentage to the default value at the time this test was written
+	config.channel_handshake_config.announced_channel_max_inbound_htlc_value_in_flight_percentage = 10;
+	let configs: [Option<UserConfig>; 4] = core::array::from_fn(|_| Some(config.clone()));
+	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &configs);
 	let (node_d_1, node_d_2);
 
 	let mut nodes = create_network(4, &node_cfgs, &node_chanmgrs);
@@ -2107,7 +2111,11 @@ fn test_reload_with_mpp_claims_on_same_channel() {
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let persister;
 	let new_chain_monitor;
-	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let mut config = test_default_channel_config();
+	// Set the percentage to the default value at the time this test was written
+	config.channel_handshake_config.announced_channel_max_inbound_htlc_value_in_flight_percentage = 10;
+	let configs: [Option<UserConfig>; 3] = core::array::from_fn(|_| Some(config.clone()));
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &configs);
 	let nodes_1_deserialized;
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 

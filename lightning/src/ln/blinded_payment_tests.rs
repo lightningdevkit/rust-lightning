@@ -269,7 +269,11 @@ fn one_hop_blinded_path_with_dummy_hops() {
 fn mpp_to_one_hop_blinded_path() {
 	let chanmon_cfgs = create_chanmon_cfgs(4);
 	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
+	let mut config = test_default_channel_config();
+	// Set the percentage to the default value at the time this test was written
+	config.channel_handshake_config.announced_channel_max_inbound_htlc_value_in_flight_percentage = 10;
+	let configs: [Option<UserConfig>; 4] = core::array::from_fn(|_| Some(config.clone()));
+	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &configs);
 	let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
 	let mut secp_ctx = Secp256k1::new();
 
@@ -349,7 +353,11 @@ fn mpp_to_one_hop_blinded_path() {
 fn mpp_to_three_hop_blinded_paths() {
 	let chanmon_cfgs = create_chanmon_cfgs(6);
 	let node_cfgs = create_node_cfgs(6, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(6, &node_cfgs, &[None, None, None, None, None, None]);
+	let mut config = test_default_channel_config();
+	// Set the percentage to the default value at the time this test was written
+	config.channel_handshake_config.announced_channel_max_inbound_htlc_value_in_flight_percentage = 10;
+	let configs: [Option<UserConfig>; 6] = core::array::from_fn(|_| Some(config.clone()));
+	let node_chanmgrs = create_node_chanmgrs(6, &node_cfgs, &configs);
 	let nodes = create_network(6, &node_cfgs, &node_chanmgrs);
 
 	// Create this network topology so node 0 MPP's over 2 3-hop blinded paths:
