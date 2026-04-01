@@ -1682,6 +1682,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 						},
 						MessageSendEvent::SendChannelReady { .. } => continue,
 						MessageSendEvent::SendAnnouncementSignatures { .. } => continue,
+						MessageSendEvent::BroadcastChannelUpdate { .. } => continue,
 						MessageSendEvent::SendChannelUpdate { ref node_id, .. } => {
 							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
 							*node_id == a_id
