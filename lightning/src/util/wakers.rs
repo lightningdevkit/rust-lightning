@@ -165,6 +165,8 @@ impl Future {
 	/// Registers a callback to be called upon completion of this future. If the future has already
 	/// completed, the callback will be called immediately.
 	///
+	/// Note that callbacks *must not* reenter this [`Future`] or the corresponding [`Notifier`].
+	///
 	/// This is not exported to bindings users, use the bindings-only `register_callback_fn` instead
 	pub fn register_callback(&self, callback: Box<dyn FutureCallback>) {
 		let mut state = self.state.lock().unwrap();
@@ -182,6 +184,8 @@ impl Future {
 	// here.
 	/// Registers a callback to be called upon completion of this future. If the future has already
 	/// completed, the callback will be called immediately.
+	///
+	/// Note that callbacks *must not* reenter this [`Future`] or the corresponding [`Notifier`].
 	#[cfg(c_bindings)]
 	pub fn register_callback_fn<F: 'static + FutureCallback>(&self, callback: F) {
 		self.register_callback(Box::new(callback));
