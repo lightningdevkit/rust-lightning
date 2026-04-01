@@ -2327,7 +2327,7 @@ impl<
 
 				#[allow(unused_mut)]
 				let mut should_do_full_sync = true;
-				#[cfg(feature = "std")]
+				#[cfg(all(feature = "std", not(fuzzing)))]
 				{
 					// Forward ad-hoc gossip if the timestamp range is less than six hours ago.
 					// Otherwise, do a full sync.

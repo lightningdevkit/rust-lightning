@@ -501,7 +501,7 @@ impl OMNameResolver {
 			if let Ok(validated_rrs) = validated_rrs {
 				#[allow(unused_assignments, unused_mut)]
 				let mut time = self.latest_block_time.load(Ordering::Acquire) as u64;
-				#[cfg(feature = "std")]
+				#[cfg(all(feature = "std", not(fuzzing)))]
 				{
 					use std::time::{SystemTime, UNIX_EPOCH};
 					let now = SystemTime::now().duration_since(UNIX_EPOCH);
@@ -512,7 +512,8 @@ impl OMNameResolver {
 					// (we assume no more than two hours, though the actual limits are rather
 					// complicated).
 					// Thus, we have to let the proof times be rather fuzzy.
-					let max_time_offset = if cfg!(feature = "std") { 0 } else { 60 * 2 };
+					let max_time_offset =
+						if cfg!(all(feature = "std", not(fuzzing))) { 0 } else { 60 * 2 };
 					if validated_rrs.valid_from > time + max_time_offset {
 						return None;
 					}

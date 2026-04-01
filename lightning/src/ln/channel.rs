@@ -16717,10 +16717,10 @@ impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
 }
 
 fn duration_since_epoch() -> Option<Duration> {
-	#[cfg(not(feature = "std"))]
+	#[cfg(any(not(feature = "std"), fuzzing))]
 	let now = None;
 
-	#[cfg(feature = "std")]
+	#[cfg(all(feature = "std", not(fuzzing)))]
 	let now = Some(
 		std::time::SystemTime::now()
 			.duration_since(std::time::SystemTime::UNIX_EPOCH)

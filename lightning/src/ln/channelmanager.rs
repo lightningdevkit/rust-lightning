@@ -8936,11 +8936,11 @@ impl<
 				let _ = self.handle_error(err, counterparty_node_id);
 			}
 
-			#[cfg(feature = "std")]
+			#[cfg(all(feature = "std", not(fuzzing)))]
 			let duration_since_epoch = std::time::SystemTime::now()
 				.duration_since(std::time::SystemTime::UNIX_EPOCH)
 				.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH");
-			#[cfg(not(feature = "std"))]
+			#[cfg(any(not(feature = "std"), fuzzing))]
 			let duration_since_epoch = Duration::from_secs(
 				self.highest_seen_timestamp.load(Ordering::Acquire).saturating_sub(7200) as u64,
 			);
@@ -14129,7 +14129,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let currency =
 			Network::from_chain_hash(self.chain_hash).map(Into::into).unwrap_or(Currency::Bitcoin);
 
-		#[cfg(feature = "std")]
+		#[cfg(all(feature = "std", not(fuzzing)))]
 		let duration_since_epoch = {
 			use std::time::SystemTime;
 			SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)
@@ -14139,7 +14139,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		// This may be up to 2 hours in the future because of bitcoin's block time rule or about
 		// 10-30 minutes in the past if a block hasn't been found recently. This should be fine as
 		// the default invoice expiration is 2 hours, though shorter expirations may be problematic.
-		#[cfg(not(feature = "std"))]
+		#[cfg(any(not(feature = "std"), fuzzing))]
 		let duration_since_epoch =
 			Duration::from_secs(self.highest_seen_timestamp.load(Ordering::Acquire) as u64);
 
@@ -14996,9 +14996,9 @@ impl<
 	}
 
 	pub(super) fn duration_since_epoch(&self) -> Duration {
-		#[cfg(not(feature = "std"))]
+		#[cfg(any(not(feature = "std"), fuzzing))]
 		let now = Duration::from_secs(self.highest_seen_timestamp.load(Ordering::Acquire) as u64);
-		#[cfg(feature = "std")]
+		#[cfg(all(feature = "std", not(fuzzing)))]
 		let now = std::time::SystemTime::now()
 			.duration_since(std::time::SystemTime::UNIX_EPOCH)
 			.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH");

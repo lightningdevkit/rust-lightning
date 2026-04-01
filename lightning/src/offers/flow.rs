@@ -183,9 +183,9 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 	}
 
 	fn duration_since_epoch(&self) -> Duration {
-		#[cfg(not(feature = "std"))]
+		#[cfg(any(not(feature = "std"), fuzzing))]
 		let now = Duration::from_secs(self.highest_seen_timestamp.load(Ordering::Acquire) as u64);
-		#[cfg(feature = "std")]
+		#[cfg(all(feature = "std", not(fuzzing)))]
 		let now = std::time::SystemTime::now()
 			.duration_since(std::time::SystemTime::UNIX_EPOCH)
 			.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH");
@@ -942,7 +942,7 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 			)
 			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
-		#[cfg(feature = "std")]
+		#[cfg(all(feature = "std", not(fuzzing)))]
 		let builder = refund.respond_using_derived_keys(
 			payment_paths,
 			payment_hash,
@@ -950,9 +950,9 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 			entropy,
 		)?;
 
-		#[cfg(not(feature = "std"))]
+		#[cfg(any(not(feature = "std"), fuzzing))]
 		let created_at = Duration::from_secs(self.highest_seen_timestamp.load(Ordering::Acquire) as u64);
-		#[cfg(not(feature = "std"))]
+		#[cfg(any(not(feature = "std"), fuzzing))]
 		let builder = refund.respond_using_derived_keys_no_std(
 			payment_paths,
 			payment_hash,
@@ -1008,9 +1008,9 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 			)
 			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
-		#[cfg(feature = "std")]
+		#[cfg(all(feature = "std", not(fuzzing)))]
 		let builder = invoice_request.respond_using_derived_keys(payment_paths, payment_hash);
-		#[cfg(not(feature = "std"))]
+		#[cfg(any(not(feature = "std"), fuzzing))]
 		let builder = invoice_request.respond_using_derived_keys_no_std(
 			payment_paths,
 			payment_hash,
@@ -1067,9 +1067,9 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 			)
 			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
-		#[cfg(feature = "std")]
+		#[cfg(all(feature = "std", not(fuzzing)))]
 		let builder = invoice_request.respond_with(payment_paths, payment_hash);
-		#[cfg(not(feature = "std"))]
+		#[cfg(any(not(feature = "std"), fuzzing))]
 		let builder = invoice_request.respond_with_no_std(
 			payment_paths,
 			payment_hash,
