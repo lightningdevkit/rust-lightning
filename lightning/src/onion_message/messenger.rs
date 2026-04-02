@@ -2340,28 +2340,6 @@ impl<
 /// [`SimpleArcChannelManager`]: crate::ln::channelmanager::SimpleArcChannelManager
 /// [`SimpleArcPeerManager`]: crate::ln::peer_handler::SimpleArcPeerManager
 #[cfg(not(c_bindings))]
-#[cfg(feature = "dnssec")]
-pub type SimpleArcOnionMessenger<M, T, F, L> = OnionMessenger<
-	Arc<KeysManager>,
-	Arc<KeysManager>,
-	Arc<L>,
-	Arc<SimpleArcChannelManager<M, T, F, L>>,
-	Arc<DefaultMessageRouter<Arc<NetworkGraph<Arc<L>>>, Arc<L>, Arc<KeysManager>>>,
-	Arc<SimpleArcChannelManager<M, T, F, L>>,
-	Arc<SimpleArcChannelManager<M, T, F, L>>,
-	Arc<SimpleArcChannelManager<M, T, F, L>>,
-	IgnoringMessageHandler,
->;
-
-/// Useful for simplifying the parameters of [`SimpleArcChannelManager`] and
-/// [`SimpleArcPeerManager`]. See their docs for more details.
-///
-/// This is not exported to bindings users as type aliases aren't supported in most languages.
-///
-/// [`SimpleArcChannelManager`]: crate::ln::channelmanager::SimpleArcChannelManager
-/// [`SimpleArcPeerManager`]: crate::ln::peer_handler::SimpleArcPeerManager
-#[cfg(not(c_bindings))]
-#[cfg(not(feature = "dnssec"))]
 pub type SimpleArcOnionMessenger<M, T, F, L> = OnionMessenger<
 	Arc<KeysManager>,
 	Arc<KeysManager>,
@@ -2382,29 +2360,6 @@ pub type SimpleArcOnionMessenger<M, T, F, L> = OnionMessenger<
 /// [`SimpleRefChannelManager`]: crate::ln::channelmanager::SimpleRefChannelManager
 /// [`SimpleRefPeerManager`]: crate::ln::peer_handler::SimpleRefPeerManager
 #[cfg(not(c_bindings))]
-#[cfg(feature = "dnssec")]
-pub type SimpleRefOnionMessenger<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, 'i, 'j, M, T, F, L> =
-	OnionMessenger<
-		&'a KeysManager,
-		&'a KeysManager,
-		&'b L,
-		&'j SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, 'i, M, T, F, L>,
-		&'i DefaultMessageRouter<&'g NetworkGraph<&'b L>, &'b L, &'a KeysManager>,
-		&'j SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, 'i, M, T, F, L>,
-		&'j SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, 'i, M, T, F, L>,
-		&'j SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, 'i, M, T, F, L>,
-		IgnoringMessageHandler,
-	>;
-
-/// Useful for simplifying the parameters of [`SimpleRefChannelManager`] and
-/// [`SimpleRefPeerManager`]. See their docs for more details.
-///
-/// This is not exported to bindings users as type aliases aren't supported in most languages.
-///
-/// [`SimpleRefChannelManager`]: crate::ln::channelmanager::SimpleRefChannelManager
-/// [`SimpleRefPeerManager`]: crate::ln::peer_handler::SimpleRefPeerManager
-#[cfg(not(c_bindings))]
-#[cfg(not(feature = "dnssec"))]
 pub type SimpleRefOnionMessenger<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, 'i, 'j, M, T, F, L> =
 	OnionMessenger<
 		&'a KeysManager,

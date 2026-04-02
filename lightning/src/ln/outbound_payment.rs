@@ -2033,65 +2033,6 @@ impl OutboundPayments {
 		(payment, onion_session_privs)
 	}
 
-	#[cfg(feature = "dnssec")]
-	pub(super) fn add_new_awaiting_offer(
-		&self, payment_id: PaymentId, expiration: StaleExpiration, retry_strategy: Retry,
-		route_params_config: RouteParametersConfig, amount_msats: u64, payer_note: Option<String>,
-	) -> Result<(), ()> {
-		let mut pending_outbounds = self.pending_outbound_payments.lock().unwrap();
-		match pending_outbounds.entry(payment_id) {
-			hash_map::Entry::Occupied(_) => Err(()),
-			hash_map::Entry::Vacant(entry) => {
-				entry.insert(PendingOutboundPayment::AwaitingOffer {
-					expiration,
-					retry_strategy,
-					route_params_config,
-					amount_msats,
-					payer_note,
-				});
-
-				Ok(())
-			},
-		}
-	}
-
-	#[cfg(feature = "dnssec")]
-	#[rustfmt::skip]
-	pub(super) fn params_for_payment_awaiting_offer(&self, payment_id: PaymentId) -> Result<(u64, Option<String>), ()> {
-		match self.pending_outbound_payments.lock().unwrap().entry(payment_id) {
-			hash_map::Entry::Occupied(entry) => match entry.get() {
-				PendingOutboundPayment::AwaitingOffer { amount_msats, payer_note, .. } => Ok((*amount_msats, payer_note.clone())),
-				_ => Err(()),
-			},
-			_ => Err(()),
-		}
-	}
-
-	#[cfg(feature = "dnssec")]
-	#[rustfmt::skip]
-	pub(super) fn received_offer(
-		&self, payment_id: PaymentId, retryable_invoice_request: Option<RetryableInvoiceRequest>,
-	) -> Result<(), ()> {
-		match self.pending_outbound_payments.lock().unwrap().entry(payment_id) {
-			hash_map::Entry::Occupied(entry) => match entry.get() {
-				PendingOutboundPayment::AwaitingOffer {
-					expiration, retry_strategy, route_params_config, ..
-				} => {
-					let mut new_val = PendingOutboundPayment::AwaitingInvoice {
-						expiration: *expiration,
-						retry_strategy: *retry_strategy,
-						route_params_config: *route_params_config,
-						retryable_invoice_request,
-					};
-					core::mem::swap(&mut new_val, entry.into_mut());
-					Ok(())
-				},
-				_ => Err(()),
-			},
-			hash_map::Entry::Vacant(_) => Err(()),
-		}
-	}
-
 	pub(super) fn add_new_awaiting_invoice(
 		&self, payment_id: PaymentId, expiration: StaleExpiration, retry_strategy: Retry,
 		route_params_config: RouteParametersConfig,
@@ -2886,6 +2827,8 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 	},
 	// Added in 0.1. Prior versions will drop these outbounds on downgrade, which is safe because
 	// no HTLCs are in-flight.
+	// No longer created in 0.3 as we now expect BIP 353 to happen before a payment makes it into
+	// the `lightning` crate.
 	(11, AwaitingOffer) => {
 		(0, expiration, required),
 		(2, retry_strategy, required),
