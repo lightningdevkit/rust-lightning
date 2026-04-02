@@ -1418,6 +1418,7 @@ mod tests {
 	use crate::ln::channelmanager::PaymentId;
 	use crate::ln::inbound_payment::ExpandedKey;
 	use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
+	use crate::offers::currency::CurrencyConversion;
 	use crate::offers::nonce::Nonce;
 	use crate::offers::offer::CurrencyCode;
 	use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError};
@@ -1430,6 +1431,14 @@ mod tests {
 	use bitcoin::secp256k1::Secp256k1;
 	use core::num::NonZeroU64;
 	use core::time::Duration;
+
+	struct InfiniteCurrencyConversion;
+
+	impl CurrencyConversion for InfiniteCurrencyConversion {
+		fn msats_per_minor_unit(&self, _iso4217_code: CurrencyCode) -> Result<(f64, u8), ()> {
+			Ok((f64::INFINITY, 0))
+		}
+	}
 
 	#[test]
 	fn builds_offer_with_defaults() {
@@ -1732,6 +1741,26 @@ mod tests {
 			Ok(_) => panic!("expected error"),
 			Err(e) => assert_eq!(e, Bolt12SemanticError::InvalidAmount),
 		}
+	}
+
+	#[test]
+	fn resolves_currency_amounts_into_msats() {
+		let conversion = TestCurrencyConversion;
+		let unsupported_conversion = InfiniteCurrencyConversion;
+		let supported_amount =
+			Amount::Currency { iso4217_code: CurrencyCode::new(*b"USD").unwrap(), amount: 10 };
+		let unsupported_amount =
+			Amount::Currency { iso4217_code: CurrencyCode::new(*b"EUR").unwrap(), amount: 10 };
+
+		assert_eq!(supported_amount.into_msats(&conversion), Ok(10_000));
+		assert_eq!(
+			unsupported_amount.into_msats(&conversion),
+			Err(Bolt12SemanticError::UnsupportedCurrency)
+		);
+		assert_eq!(
+			supported_amount.into_msats(&unsupported_conversion),
+			Err(Bolt12SemanticError::InvalidAmount)
+		);
 	}
 
 	#[test]
