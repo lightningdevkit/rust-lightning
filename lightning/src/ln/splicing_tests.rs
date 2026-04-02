@@ -1122,7 +1122,8 @@ fn test_splice_in() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let mut config = test_default_channel_config();
-	config.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 100;
+	config.channel_handshake_config.announced_channel_max_inbound_htlc_value_in_flight_percentage =
+		100;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
@@ -1172,7 +1173,8 @@ fn test_splice_out() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let mut config = test_default_channel_config();
-	config.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 100;
+	config.channel_handshake_config.announced_channel_max_inbound_htlc_value_in_flight_percentage =
+		100;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
@@ -1215,7 +1217,8 @@ fn test_splice_in_and_out() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let mut config = test_default_channel_config();
-	config.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 100;
+	config.channel_handshake_config.announced_channel_max_inbound_htlc_value_in_flight_percentage =
+		100;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
@@ -3546,7 +3549,8 @@ fn test_splice_balance_falls_below_reserve() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let mut config = test_default_channel_config();
-	config.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 100;
+	config.channel_handshake_config.announced_channel_max_inbound_htlc_value_in_flight_percentage =
+		100;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
@@ -4066,19 +4070,22 @@ fn test_funding_contributed_unfunded_channel() {
 #[test]
 fn test_splice_pending_htlcs() {
 	let mut config = test_default_channel_config();
-	config.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 100;
+	config.channel_handshake_config.announced_channel_max_inbound_htlc_value_in_flight_percentage =
+		100;
 	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = false;
 	config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = false;
 	do_test_splice_pending_htlcs(config);
 
 	let mut config = test_default_channel_config();
-	config.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 100;
+	config.channel_handshake_config.announced_channel_max_inbound_htlc_value_in_flight_percentage =
+		100;
 	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 	config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = false;
 	do_test_splice_pending_htlcs(config);
 
 	let mut config = test_default_channel_config();
-	config.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 100;
+	config.channel_handshake_config.announced_channel_max_inbound_htlc_value_in_flight_percentage =
+		100;
 	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = false;
 	config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
 	do_test_splice_pending_htlcs(config);
@@ -6374,7 +6381,8 @@ fn test_splice_revalidation_at_quiescence() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let mut config = test_default_channel_config();
-	config.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 100;
+	config.channel_handshake_config.announced_channel_max_inbound_htlc_value_in_flight_percentage =
+		100;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 

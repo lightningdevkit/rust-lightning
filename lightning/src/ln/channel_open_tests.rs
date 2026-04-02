@@ -182,7 +182,8 @@ fn test_inbound_anchors_manual_acceptance() {
 fn test_inbound_anchors_config_overridden() {
 	let overrides = ChannelConfigOverrides {
 		handshake_overrides: Some(ChannelHandshakeConfigUpdate {
-			max_inbound_htlc_value_in_flight_percent_of_channel: Some(5),
+			announced_channel_max_inbound_htlc_value_in_flight_percentage: Some(5),
+			unannounced_channel_max_inbound_htlc_value_in_flight_percentage: None,
 			htlc_minimum_msat: Some(1000),
 			minimum_depth: Some(2),
 			to_self_delay: Some(200),
@@ -1070,7 +1071,8 @@ pub fn test_accept_inbound_channel_config_override() {
 
 	let config_overrides = ChannelConfigOverrides {
 		handshake_overrides: Some(ChannelHandshakeConfigUpdate {
-			max_inbound_htlc_value_in_flight_percent_of_channel: None,
+			announced_channel_max_inbound_htlc_value_in_flight_percentage: None,
+			unannounced_channel_max_inbound_htlc_value_in_flight_percentage: None,
 			htlc_minimum_msat: None,
 			minimum_depth: None,
 			to_self_delay: None,

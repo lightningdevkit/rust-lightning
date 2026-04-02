@@ -1031,7 +1031,8 @@ pub fn do_cannot_afford_on_holding_cell_release(
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 
 	let mut cfg = test_legacy_channel_config();
-	cfg.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 100;
+	cfg.channel_handshake_config.announced_channel_max_inbound_htlc_value_in_flight_percentage =
+		100;
 	if channel_type_features.supports_anchors_zero_fee_htlc_tx() {
 		cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 	}
@@ -1225,7 +1226,9 @@ pub fn do_can_afford_given_trimmed_htlcs(inequality_regions: core::cmp::Ordering
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 
 	let mut legacy_cfg = test_legacy_channel_config();
-	legacy_cfg.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 100;
+	legacy_cfg
+		.channel_handshake_config
+		.announced_channel_max_inbound_htlc_value_in_flight_percentage = 100;
 
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs =

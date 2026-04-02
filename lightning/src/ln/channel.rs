@@ -4102,6 +4102,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			),
 			holder_max_htlc_value_in_flight_msat: get_holder_max_htlc_value_in_flight_msat(
 				channel_value_satoshis,
+				announce_for_forwarding,
 				&config.channel_handshake_config,
 			),
 			counterparty_htlc_minimum_msat: open_channel_fields.htlc_minimum_msat,
@@ -4405,6 +4406,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			// receive `accept_channel2`.
 			holder_max_htlc_value_in_flight_msat: get_holder_max_htlc_value_in_flight_msat(
 				channel_value_satoshis,
+				config.channel_handshake_config.announce_for_forwarding,
 				&config.channel_handshake_config,
 			),
 			counterparty_htlc_minimum_msat: 0,
@@ -6678,22 +6680,39 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 
 /// Returns the value to use for `holder_max_htlc_value_in_flight_msat` as a percentage of the
 /// `channel_value_satoshis` in msat, set through
-/// [`ChannelHandshakeConfig::max_inbound_htlc_value_in_flight_percent_of_channel`]
+/// [`ChannelHandshakeConfig::announced_channel_max_inbound_htlc_value_in_flight_percentage`]
+/// or [`ChannelHandshakeConfig::unannounced_channel_max_inbound_htlc_value_in_flight_percentage`]
+/// depending on the value of [`ChannelHandshakeConfig::announce_for_forwarding`].
 ///
 /// The effective percentage is lower bounded by 1% and upper bounded by 100%.
 ///
-/// [`ChannelHandshakeConfig::max_inbound_htlc_value_in_flight_percent_of_channel`]: crate::util::config::ChannelHandshakeConfig::max_inbound_htlc_value_in_flight_percent_of_channel
+/// [`ChannelHandshakeConfig::announced_channel_max_inbound_htlc_value_in_flight_percentage`]: crate::util::config::ChannelHandshakeConfig::announced_channel_max_inbound_htlc_value_in_flight_percentage
+/// [`ChannelHandshakeConfig::unannounced_channel_max_inbound_htlc_value_in_flight_percentage`]: crate::util::config::ChannelHandshakeConfig::unannounced_channel_max_inbound_htlc_value_in_flight_percentage
+/// [`ChannelHandshakeConfig::announce_for_forwarding`]: crate::util::config::ChannelHandshakeConfig::announce_for_forwarding
 fn get_holder_max_htlc_value_in_flight_msat(
-	channel_value_satoshis: u64, config: &ChannelHandshakeConfig,
+	channel_value_satoshis: u64, is_announced_channel: bool, config: &ChannelHandshakeConfig,
 ) -> u64 {
-	let configured_percent = if config.max_inbound_htlc_value_in_flight_percent_of_channel < 1 {
+	let config_setting = if is_announced_channel {
+		config.announced_channel_max_inbound_htlc_value_in_flight_percentage
+	} else {
+		config.unannounced_channel_max_inbound_htlc_value_in_flight_percentage
+	};
+	let configured_percent = if config_setting < 1 {
 		1
-	} else if config.max_inbound_htlc_value_in_flight_percent_of_channel > 100 {
+	} else if config_setting > 100 {
 		100
 	} else {
-		config.max_inbound_htlc_value_in_flight_percent_of_channel as u64
+		config_setting as u64
 	};
 	channel_value_satoshis * 10 * configured_percent
+}
+
+/// This is for legacy reasons, present for forward-compatibility.
+/// LDK versions older than 0.0.104 don't know how read/handle values other than the legacy
+/// percentage from storage. Hence, we use this function to not persist legacy values of
+/// `holder_max_htlc_value_in_flight_msat` for channels into storage.
+fn get_legacy_default_holder_max_htlc_value_in_flight_msat(channel_value_satoshis: u64) -> u64 {
+	channel_value_satoshis * 10 * MAX_IN_FLIGHT_PERCENT_LEGACY as u64
 }
 
 /// Returns a minimum channel reserve value the remote needs to maintain,
@@ -15698,15 +15717,11 @@ impl<SP: SignerProvider> Writeable for FundedChannel<SP> {
 				None
 			};
 
-		let mut old_max_in_flight_percent_config = UserConfig::default().channel_handshake_config;
-		old_max_in_flight_percent_config.max_inbound_htlc_value_in_flight_percent_of_channel =
-			MAX_IN_FLIGHT_PERCENT_LEGACY;
-		let max_in_flight_msat = get_holder_max_htlc_value_in_flight_msat(
+		let legacy_max_in_flight_msat = get_legacy_default_holder_max_htlc_value_in_flight_msat(
 			self.funding.get_value_satoshis(),
-			&old_max_in_flight_percent_config,
 		);
 		let serialized_holder_htlc_max_in_flight =
-			if self.context.holder_max_htlc_value_in_flight_msat != max_in_flight_msat {
+			if self.context.holder_max_htlc_value_in_flight_msat != legacy_max_in_flight_msat {
 				Some(self.context.holder_max_htlc_value_in_flight_msat)
 			} else {
 				None
@@ -16138,11 +16153,9 @@ impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
 		let mut holder_selected_channel_reserve_satoshis = Some(
 			get_legacy_default_holder_selected_channel_reserve_satoshis(channel_value_satoshis),
 		);
+
 		let mut holder_max_htlc_value_in_flight_msat =
-			Some(get_holder_max_htlc_value_in_flight_msat(
-				channel_value_satoshis,
-				&UserConfig::default().channel_handshake_config,
-			));
+			Some(get_legacy_default_holder_max_htlc_value_in_flight_msat(channel_value_satoshis));
 		// Prior to supporting channel type negotiation, all of our channels were static_remotekey
 		// only, so we default to that if none was written.
 		let mut channel_type = Some(ChannelTypeFeatures::only_static_remote_key());
@@ -17148,8 +17161,13 @@ mod tests {
 	}
 
 	#[test]
-	#[rustfmt::skip]
 	fn test_configured_holder_max_htlc_value_in_flight() {
+		do_test_configured_holder_max_htlc_value_in_flight(true);
+		do_test_configured_holder_max_htlc_value_in_flight(false);
+	}
+
+	#[rustfmt::skip]
+	fn do_test_configured_holder_max_htlc_value_in_flight(announce_channel: bool) {
 		let test_est = TestFeeEstimator::new(15000);
 		let feeest = LowerBoundedFeeEstimator::new(&test_est);
 		let logger = TestLogger::new();
@@ -17161,13 +17179,49 @@ mod tests {
 		let inbound_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
 
 		let mut config_2_percent = UserConfig::default();
-		config_2_percent.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 2;
+		config_2_percent.channel_handshake_config.announce_for_forwarding = announce_channel;
+		if announce_channel {
+			config_2_percent
+				.channel_handshake_config
+				.announced_channel_max_inbound_htlc_value_in_flight_percentage = 2;
+		} else {
+			config_2_percent
+				.channel_handshake_config
+				.unannounced_channel_max_inbound_htlc_value_in_flight_percentage = 2;
+		}
 		let mut config_99_percent = UserConfig::default();
-		config_99_percent.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 99;
+		config_99_percent.channel_handshake_config.announce_for_forwarding = announce_channel;
+		if announce_channel {
+			config_99_percent
+				.channel_handshake_config
+				.announced_channel_max_inbound_htlc_value_in_flight_percentage = 99;
+		} else {
+			config_99_percent
+				.channel_handshake_config
+				.unannounced_channel_max_inbound_htlc_value_in_flight_percentage = 99;
+		}
 		let mut config_0_percent = UserConfig::default();
-		config_0_percent.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 0;
+		config_0_percent.channel_handshake_config.announce_for_forwarding = announce_channel;
+		if announce_channel {
+			config_0_percent
+				.channel_handshake_config
+				.announced_channel_max_inbound_htlc_value_in_flight_percentage = 0;
+		} else {
+			config_0_percent
+				.channel_handshake_config
+				.unannounced_channel_max_inbound_htlc_value_in_flight_percentage = 0;
+		}
 		let mut config_101_percent = UserConfig::default();
-		config_101_percent.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 101;
+		config_101_percent.channel_handshake_config.announce_for_forwarding = announce_channel;
+		if announce_channel {
+			config_101_percent
+				.channel_handshake_config
+				.announced_channel_max_inbound_htlc_value_in_flight_percentage = 101;
+		} else {
+			config_101_percent
+				.channel_handshake_config
+				.unannounced_channel_max_inbound_htlc_value_in_flight_percentage = 101;
+		}
 
 		// Test that `OutboundV1Channel::new` creates a channel with the correct value for
 		// `holder_max_htlc_value_in_flight_msat`, when configured with a valid percentage value,
@@ -17196,26 +17250,26 @@ mod tests {
 		assert_eq!(chan_4.context.holder_max_htlc_value_in_flight_msat, (chan_4_value_msat as f64 * 0.99) as u64);
 
 		// Test that `OutboundV1Channel::new` uses the lower bound of the configurable percentage values (1%)
-		// if `max_inbound_htlc_value_in_flight_percent_of_channel` is set to a value less than 1.
+		// if `(un)announced_channel_max_inbound_htlc_value_in_flight_percentage` is set to a value less than 1.
 		let chan_5 = OutboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider, outbound_node_id, &channelmanager::provided_init_features(&config_0_percent), 10000000, 100000, 42, &config_0_percent, 0, 42, None, &logger, None).unwrap();
 		let chan_5_value_msat = chan_5.funding.get_value_satoshis() * 1000;
 		assert_eq!(chan_5.context.holder_max_htlc_value_in_flight_msat, (chan_5_value_msat as f64 * 0.01) as u64);
 
 		// Test that `OutboundV1Channel::new` uses the upper bound of the configurable percentage values
-		// (100%) if `max_inbound_htlc_value_in_flight_percent_of_channel` is set to a larger value
+		// (100%) if `(un)announced_channel_max_inbound_htlc_value_in_flight_percentage` is set to a larger value
 		// than 100.
 		let chan_6 = OutboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider, outbound_node_id, &channelmanager::provided_init_features(&config_101_percent), 10000000, 100000, 42, &config_101_percent, 0, 42, None, &logger, None).unwrap();
 		let chan_6_value_msat = chan_6.funding.get_value_satoshis() * 1000;
 		assert_eq!(chan_6.context.holder_max_htlc_value_in_flight_msat, chan_6_value_msat);
 
 		// Test that `InboundV1Channel::new` uses the lower bound of the configurable percentage values (1%)
-		// if `max_inbound_htlc_value_in_flight_percent_of_channel` is set to a value less than 1.
+		// if `(un)announced_channel_max_inbound_htlc_value_in_flight_percentage` is set to a value less than 1.
 		let chan_7 = InboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider, inbound_node_id, &channelmanager::provided_channel_type_features(&config_0_percent), &channelmanager::provided_init_features(&config_0_percent), &chan_1_open_channel_msg, 7, &config_0_percent, 0, &&logger, None).unwrap();
 		let chan_7_value_msat = chan_7.funding.get_value_satoshis() * 1000;
 		assert_eq!(chan_7.context.holder_max_htlc_value_in_flight_msat, (chan_7_value_msat as f64 * 0.01) as u64);
 
 		// Test that `InboundV1Channel::new` uses the upper bound of the configurable percentage values
-		// (100%) if `max_inbound_htlc_value_in_flight_percent_of_channel` is set to a larger value
+		// (100%) if `(un)announced_channel_max_inbound_htlc_value_in_flight_percentage` is set to a larger value
 		// than 100.
 		let chan_8 = InboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider, inbound_node_id, &channelmanager::provided_channel_type_features(&config_101_percent), &channelmanager::provided_init_features(&config_101_percent), &chan_1_open_channel_msg, 7, &config_101_percent, 0, &&logger, None).unwrap();
 		let chan_8_value_msat = chan_8.funding.get_value_satoshis() * 1000;

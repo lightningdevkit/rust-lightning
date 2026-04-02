@@ -6903,22 +6903,22 @@ pub fn test_channel_update_has_correct_htlc_maximum_msat() {
 	config_30_percent.channel_handshake_config.announce_for_forwarding = true;
 	config_30_percent
 		.channel_handshake_config
-		.max_inbound_htlc_value_in_flight_percent_of_channel = 30;
+		.announced_channel_max_inbound_htlc_value_in_flight_percentage = 30;
 	let mut config_50_percent = UserConfig::default();
 	config_50_percent.channel_handshake_config.announce_for_forwarding = true;
 	config_50_percent
 		.channel_handshake_config
-		.max_inbound_htlc_value_in_flight_percent_of_channel = 50;
+		.announced_channel_max_inbound_htlc_value_in_flight_percentage = 50;
 	let mut config_95_percent = UserConfig::default();
 	config_95_percent.channel_handshake_config.announce_for_forwarding = true;
 	config_95_percent
 		.channel_handshake_config
-		.max_inbound_htlc_value_in_flight_percent_of_channel = 95;
+		.announced_channel_max_inbound_htlc_value_in_flight_percentage = 95;
 	let mut config_100_percent = UserConfig::default();
 	config_100_percent.channel_handshake_config.announce_for_forwarding = true;
 	config_100_percent
 		.channel_handshake_config
-		.max_inbound_htlc_value_in_flight_percent_of_channel = 100;
+		.announced_channel_max_inbound_htlc_value_in_flight_percentage = 100;
 
 	let chanmon_cfgs = create_chanmon_cfgs(4);
 	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
@@ -8436,7 +8436,12 @@ pub fn test_inconsistent_mpp_params() {
 	// such HTLC and allow the second to stay.
 	let chanmon_cfgs = create_chanmon_cfgs(4);
 	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
+	let mut config = test_default_channel_config();
+	// Set the percentage to the default value at the time this test was written
+	config.channel_handshake_config.announced_channel_max_inbound_htlc_value_in_flight_percentage =
+		10;
+	let configs: [Option<UserConfig>; 4] = core::array::from_fn(|_| Some(config.clone()));
+	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &configs);
 	let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
@@ -8580,7 +8585,12 @@ pub fn test_double_partial_claim() {
 	// amount.
 	let chanmon_cfgs = create_chanmon_cfgs(4);
 	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
+	let mut config = test_default_channel_config();
+	// Set the percentage to the default value at the time this test was written
+	config.channel_handshake_config.announced_channel_max_inbound_htlc_value_in_flight_percentage =
+		10;
+	let configs: [Option<UserConfig>; 4] = core::array::from_fn(|_| Some(config.clone()));
+	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &configs);
 	let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
 
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -9067,7 +9077,8 @@ pub fn test_nondust_htlc_excess_fees_are_dust() {
 	config.channel_handshake_limits.min_max_accepted_htlcs = chan_utils::max_htlcs(&chan_ty);
 	config.channel_handshake_config.our_max_accepted_htlcs = chan_utils::max_htlcs(&chan_ty);
 	config.channel_handshake_config.our_htlc_minimum_msat = 1;
-	config.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 100;
+	config.channel_handshake_config.announced_channel_max_inbound_htlc_value_in_flight_percentage =
+		100;
 
 	let node_chanmgrs = create_node_chanmgrs(
 		3,
@@ -10039,7 +10050,8 @@ pub fn test_dust_exposure_holding_cell_assertion() {
 	// Use a fixed dust exposure limit to make the test simpler
 	const DUST_HTLC_VALUE_MSAT: u64 = 500_000;
 	config.channel_config.max_dust_htlc_exposure = MaxDustHTLCExposure::FixedLimitMsat(5_000_000);
-	config.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 100;
+	config.channel_handshake_config.announced_channel_max_inbound_htlc_value_in_flight_percentage =
+		100;
 
 	let configs = [Some(config.clone()), Some(config.clone()), Some(config.clone())];
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &configs);
