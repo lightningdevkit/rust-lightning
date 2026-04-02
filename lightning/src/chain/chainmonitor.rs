@@ -691,7 +691,7 @@ where
 		ret
 	}
 
-	/// Gets the [`LockedChannelMonitor`] for a given funding outpoint, returning an `Err` if no
+	/// Gets the [`LockedChannelMonitor`] for a given channel ID, returning an `Err` if no
 	/// such [`ChannelMonitor`] is currently being monitored for.
 	///
 	/// Note that the result holds a mutex over our monitor set, and should not be held
@@ -707,7 +707,7 @@ where
 		}
 	}
 
-	/// Lists the funding outpoint and channel ID of each [`ChannelMonitor`] being monitored.
+	/// Lists the channel ID of each [`ChannelMonitor`] being monitored.
 	///
 	/// Note that [`ChannelMonitor`]s are not removed when a channel is closed as they are always
 	/// monitoring for on-chain state resolutions.
@@ -764,7 +764,7 @@ where
 	/// Note that we don't care about calls to [`Persist::update_persisted_channel`] where no
 	/// [`ChannelMonitorUpdate`] was provided.
 	///
-	/// Returns an [`APIError::APIMisuseError`] if `funding_txo` does not match any currently
+	/// Returns an [`APIError::APIMisuseError`] if `channel_id` does not match any currently
 	/// registered [`ChannelMonitor`]s.
 	pub fn channel_monitor_updated(
 		&self, channel_id: ChannelId, completed_update_id: u64,
