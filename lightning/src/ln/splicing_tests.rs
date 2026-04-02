@@ -6584,6 +6584,96 @@ fn test_splice_revalidation_at_quiescence() {
 }
 
 #[test]
+fn test_splice_init_before_quiescence_sends_warning() {
+	// A misbehaving peer sends splice_init before quiescence is established. The receiver
+	// should send a warning and disconnect.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	// Node 0 initiates quiescence.
+	nodes[0].node.maybe_propose_quiescence(&node_id_1, &channel_id).unwrap();
+	let _stfu = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+
+	// Misbehaving node 1 sends splice_init before completing the STFU handshake.
+	let funding_pubkey =
+		PublicKey::from_secret_key(&Secp256k1::new(), &SecretKey::from_slice(&[42; 32]).unwrap());
+	let splice_init = msgs::SpliceInit {
+		channel_id,
+		funding_contribution_satoshis: 50_000,
+		funding_feerate_per_kw: FEERATE_FLOOR_SATS_PER_KW,
+		locktime: 0,
+		funding_pubkey,
+		require_confirmed_inputs: None,
+	};
+	nodes[0].node.handle_splice_init(node_id_1, &splice_init);
+
+	// Node 0 should send a warning and disconnect.
+	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1);
+	match &msg_events[0] {
+		MessageSendEvent::HandleError { node_id, .. } => assert_eq!(*node_id, node_id_1),
+		other => panic!("Expected HandleError, got {:?}", other),
+	}
+}
+
+#[test]
+fn test_tx_init_rbf_before_quiescence_sends_warning() {
+	// A misbehaving peer sends tx_init_rbf before quiescence is established. The receiver
+	// should send a warning and disconnect.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+
+	// Complete a splice-in so there's a pending splice to RBF.
+	let funding_contribution = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+	let (_splice_tx, _new_funding_script) =
+		splice_channel(&nodes[0], &nodes[1], channel_id, funding_contribution);
+
+	// Node 0 initiates quiescence.
+	nodes[0].node.maybe_propose_quiescence(&node_id_1, &channel_id).unwrap();
+	let _stfu = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+
+	// Misbehaving node 1 sends tx_init_rbf before completing the STFU handshake.
+	let tx_init_rbf = msgs::TxInitRbf {
+		channel_id,
+		locktime: 0,
+		feerate_sat_per_1000_weight: FEERATE_FLOOR_SATS_PER_KW + 25,
+		funding_output_contribution: Some(added_value.to_sat() as i64),
+	};
+	nodes[0].node.handle_tx_init_rbf(node_id_1, &tx_init_rbf);
+
+	// Node 0 should send a warning and disconnect.
+	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1);
+	match &msg_events[0] {
+		MessageSendEvent::HandleError { node_id, .. } => assert_eq!(*node_id, node_id_1),
+		other => panic!("Expected HandleError, got {:?}", other),
+	}
+
+	// Clean up events from the splice setup.
+	nodes[0].node.get_and_clear_pending_events();
+	nodes[1].node.get_and_clear_pending_events();
+}
+
+#[test]
 fn test_splice_rbf_rejects_low_feerate_after_several_attempts() {
 	// After several RBF attempts, the counterparty's RBF feerate must be high enough to
 	// confirm (per the fee estimator). Early attempts at low feerates are accepted, but
