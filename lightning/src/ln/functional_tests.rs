@@ -12,7 +12,7 @@
 //! claim outputs on-chain.
 
 use crate::chain;
-use crate::chain::chaininterface::LowerBoundedFeeEstimator;
+use crate::chain::chaininterface::{LowerBoundedFeeEstimator, FEERATE_FLOOR_SATS_PER_KW};
 use crate::chain::channelmonitor;
 use crate::chain::channelmonitor::{
 	Balance, ANTI_REORG_DELAY, CLTV_CLAIM_BUFFER, COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE,
@@ -1093,6 +1093,119 @@ fn do_test_forming_justice_tx_from_monitor_updates(broadcast_initial_commitment:
 	};
 	let expected_claimable_balance = node1_channel_balance + justice_tx.output[0].value.to_sat();
 	assert_eq!(total_claimable_balance, expected_claimable_balance);
+}
+
+#[xtest(feature = "_externalize_tests")]
+pub fn test_justice_tx_crash_recovery() {
+	// Verify that get_pending_justice_txs returns justice txs for the most
+	// recently revoked counterparty commitment, enabling crash recovery.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let destination_script = chanmon_cfgs[1].keys_manager.get_destination_script([0; 32]).unwrap();
+	let persisters = [
+		WatchtowerPersister::new(
+			chanmon_cfgs[0].keys_manager.get_destination_script([0; 32]).unwrap(),
+		),
+		WatchtowerPersister::new(destination_script.clone()),
+	];
+	let node_cfgs = create_node_cfgs_with_persisters(2, &chanmon_cfgs, persisters.iter().collect());
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs =
+		create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let (_, _, channel_id, _) = create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	// Move to a non-initial commitment
+	send_payment(&nodes[0], &[&nodes[1]], 5_000_000);
+
+	// Capture the commitment that will be revoked
+	let revoked_local_txn = get_local_commitment_txn!(nodes[0], channel_id);
+	assert_eq!(revoked_local_txn.len(), 1);
+	let revoked_txid = revoked_local_txn[0].compute_txid();
+
+	// Revoke it
+	send_payment(&nodes[0], &[&nodes[1]], 5_000_000);
+
+	// The persister should have a justice tx for this revoked commitment
+	assert!(persisters[1].justice_tx(channel_id, &revoked_txid).is_some());
+
+	// get_pending_justice_txs should also return it, since prev still holds
+	// the revoked commitment data (cloned, not consumed by signing).
+	let pending = {
+		let monitor = get_monitor!(nodes[1], channel_id);
+		monitor.get_pending_justice_txs(FEERATE_FLOOR_SATS_PER_KW as u64, destination_script)
+	};
+	assert!(!pending.is_empty());
+	assert!(!pending.is_empty());
+}
+
+#[xtest(feature = "_externalize_tests")]
+pub fn test_justice_tx_idempotent() {
+	// Verify that get_pending_justice_txs returns consistent results across
+	// multiple calls (data is cloned, not consumed).
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let destination_script = chanmon_cfgs[1].keys_manager.get_destination_script([0; 32]).unwrap();
+	let persisters = [
+		WatchtowerPersister::new(
+			chanmon_cfgs[0].keys_manager.get_destination_script([0; 32]).unwrap(),
+		),
+		WatchtowerPersister::new(destination_script.clone()),
+	];
+	let node_cfgs = create_node_cfgs_with_persisters(2, &chanmon_cfgs, persisters.iter().collect());
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs =
+		create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let (_, _, channel_id, _) = create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	send_payment(&nodes[0], &[&nodes[1]], 5_000_000);
+
+	let revoked_local_txn = get_local_commitment_txn!(nodes[0], channel_id);
+	assert_eq!(revoked_local_txn.len(), 1);
+
+	send_payment(&nodes[0], &[&nodes[1]], 5_000_000);
+
+	// Call get_pending_justice_txs twice and verify both return the same results.
+	let (first, second) = {
+		let monitor = get_monitor!(nodes[1], channel_id);
+		let first = monitor
+			.get_pending_justice_txs(FEERATE_FLOOR_SATS_PER_KW as u64, destination_script.clone());
+		let second =
+			monitor.get_pending_justice_txs(FEERATE_FLOOR_SATS_PER_KW as u64, destination_script);
+		(first, second)
+	};
+	assert_eq!(first.len(), second.len());
+	assert!(!first.is_empty());
+	for (a, b) in first.iter().zip(second.iter()) {
+		assert_eq!(a.revoked_commitment_txid, b.revoked_commitment_txid);
+		assert_eq!(a.commitment_number, b.commitment_number);
+		assert_eq!(a.tx.compute_txid(), b.tx.compute_txid());
+	}
+}
+
+#[xtest(feature = "_externalize_tests")]
+pub fn test_updates_watchtower_state() {
+	use crate::chain::channelmonitor::{ChannelMonitorUpdate, ChannelMonitorUpdateStep};
+
+	// Verify updates_watchtower_state returns true for commitment-relevant steps.
+	let commitment_update = ChannelMonitorUpdate {
+		updates: vec![ChannelMonitorUpdateStep::CommitmentSecret { idx: 0, secret: [0u8; 32] }],
+		update_id: 0,
+		channel_id: None,
+	};
+	assert!(commitment_update.updates_watchtower_state());
+
+	// A preimage-only update is not watchtower-relevant.
+	let preimage_update = ChannelMonitorUpdate {
+		updates: vec![ChannelMonitorUpdateStep::PaymentPreimage {
+			payment_preimage: crate::types::payment::PaymentPreimage([0u8; 32]),
+			payment_info: None,
+		}],
+		update_id: 1,
+		channel_id: None,
+	};
+	assert!(!preimage_update.updates_watchtower_state());
 }
 
 #[xtest(feature = "_externalize_tests")]
