@@ -446,14 +446,16 @@ impl Retry {
 			(Retry::Attempts(max_retry_count), PaymentAttempts { count, .. }) => {
 				max_retry_count > count
 			},
-			#[cfg(feature = "std")]
+			#[cfg(all(feature = "std", not(fuzzing)))]
 			(Retry::Timeout(max_duration), PaymentAttempts { first_attempted_at, .. }) =>
 				*max_duration >= Instant::now().duration_since(*first_attempted_at),
+			#[cfg(all(feature = "std", fuzzing))]
+			(Retry::Timeout(_), _) => true,
 		}
 	}
 }
 
-#[cfg(feature = "std")]
+#[cfg(all(feature = "std", not(fuzzing)))]
 #[rustfmt::skip]
 pub(super) fn has_expired(route_params: &RouteParameters) -> bool {
 	if let Some(expiry_time) = route_params.payment_params.expiry_time {
@@ -464,6 +466,11 @@ pub(super) fn has_expired(route_params: &RouteParameters) -> bool {
 	false
 }
 
+#[cfg(all(feature = "std", fuzzing))]
+pub(super) fn has_expired(_route_params: &RouteParameters) -> bool {
+	false
+}
+
 /// Storing minimal payment attempts information required for determining if a outbound payment can
 /// be retried.
 pub(crate) struct PaymentAttempts {
@@ -471,7 +478,7 @@ pub(crate) struct PaymentAttempts {
 	/// it means the result of the first attempt is not known yet.
 	pub(crate) count: u32,
 	/// This field is only used when retry is `Retry::Timeout` which is only build with feature std
-	#[cfg(feature = "std")]
+	#[cfg(all(feature = "std", not(fuzzing)))]
 	first_attempted_at: Instant,
 }
 
@@ -479,7 +486,7 @@ impl PaymentAttempts {
 	pub(crate) fn new() -> Self {
 		PaymentAttempts {
 			count: 0,
-			#[cfg(feature = "std")]
+			#[cfg(all(feature = "std", not(fuzzing)))]
 			first_attempted_at: Instant::now(),
 		}
 	}
@@ -487,9 +494,9 @@ impl PaymentAttempts {
 
 impl Display for PaymentAttempts {
 	fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
-		#[cfg(not(feature = "std"))]
+		#[cfg(any(not(feature = "std"), fuzzing))]
 		return write!(f, "attempts: {}", self.count);
-		#[cfg(feature = "std")]
+		#[cfg(all(feature = "std", not(fuzzing)))]
 		return write!(
 			f,
 			"attempts: {}, duration: {}s",

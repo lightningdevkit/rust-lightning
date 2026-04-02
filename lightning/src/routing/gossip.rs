@@ -843,7 +843,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, U: UtxoLookup, L: Logger> BaseMessageHa
 		let mut gossip_start_time = 0;
 		#[allow(unused)]
 		let should_sync = self.should_request_full_sync();
-		#[cfg(feature = "std")]
+		#[cfg(all(feature = "std", not(fuzzing)))]
 		{
 			gossip_start_time = SystemTime::now()
 				.duration_since(UNIX_EPOCH)
@@ -2195,7 +2195,7 @@ impl<L: Logger> NetworkGraph<L> {
 
 		#[allow(unused_mut, unused_assignments)]
 		let mut announcement_received_time = 0;
-		#[cfg(feature = "std")]
+		#[cfg(all(feature = "std", not(fuzzing)))]
 		{
 			announcement_received_time = SystemTime::now()
 				.duration_since(UNIX_EPOCH)
@@ -2235,11 +2235,11 @@ impl<L: Logger> NetworkGraph<L> {
 	///
 	/// The channel and any node for which this was their last channel are removed from the graph.
 	pub fn channel_failed_permanent(&self, short_channel_id: u64) {
-		#[cfg(feature = "std")]
+		#[cfg(all(feature = "std", not(fuzzing)))]
 		let current_time_unix = Some(
 			SystemTime::now().duration_since(UNIX_EPOCH).expect("Time must be > 1970").as_secs(),
 		);
-		#[cfg(not(feature = "std"))]
+		#[cfg(any(not(feature = "std"), fuzzing))]
 		let current_time_unix = None;
 
 		self.channel_failed_permanent_with_time(short_channel_id, current_time_unix)
@@ -2262,11 +2262,11 @@ impl<L: Logger> NetworkGraph<L> {
 	/// Marks a node in the graph as permanently failed, effectively removing it and its channels
 	/// from local storage.
 	pub fn node_failed_permanent(&self, node_id: &PublicKey) {
-		#[cfg(feature = "std")]
+		#[cfg(all(feature = "std", not(fuzzing)))]
 		let current_time_unix = Some(
 			SystemTime::now().duration_since(UNIX_EPOCH).expect("Time must be > 1970").as_secs(),
 		);
-		#[cfg(not(feature = "std"))]
+		#[cfg(any(not(feature = "std"), fuzzing))]
 		let current_time_unix = None;
 
 		let node_id = NodeId::from_pubkey(node_id);
@@ -2303,7 +2303,6 @@ impl<L: Logger> NetworkGraph<L> {
 		}
 	}
 
-	#[cfg(feature = "std")]
 	/// Removes information about channels that we haven't heard any updates about in some time.
 	/// This can be used regularly to prune the network graph of channels that likely no longer
 	/// exist.
@@ -2320,6 +2319,7 @@ impl<L: Logger> NetworkGraph<L> {
 	///
 	/// This method is only available with the `std` feature. See
 	/// [`NetworkGraph::remove_stale_channels_and_tracking_with_time`] for non-`std` use.
+	#[cfg(all(feature = "std", not(fuzzing)))]
 	pub fn remove_stale_channels_and_tracking(&self) {
 		let time =
 			SystemTime::now().duration_since(UNIX_EPOCH).expect("Time must be > 1970").as_secs();
@@ -2403,10 +2403,10 @@ impl<L: Logger> NetworkGraph<L> {
 			if let Some(time) = time {
 				current_time_unix.saturating_sub(*time) < REMOVED_ENTRIES_TRACKING_AGE_LIMIT_SECS
 			} else {
-				// NOTE: In the case of non-`std`, we won't have access to the current UNIX time at the time of removal,
-				// so we'll just set the removal time here to the current UNIX time on the very next invocation
-				// of this function.
-				#[cfg(not(feature = "std"))]
+				// NOTE: In the case of non-`std` or fuzzing, we won't have access to the current UNIX
+				// time at the time of removal, so we'll just set the removal time here to the current
+				// UNIX time on the very next invocation of this function.
+				#[cfg(any(not(feature = "std"), fuzzing))]
 				{
 					let mut tracked_time = Some(current_time_unix);
 					core::mem::swap(time, &mut tracked_time);
@@ -2476,7 +2476,7 @@ impl<L: Logger> NetworkGraph<L> {
 			});
 		}
 
-		#[cfg(all(feature = "std", not(test), not(feature = "_test_utils")))]
+		#[cfg(all(feature = "std", not(test), not(feature = "_test_utils"), not(fuzzing)))]
 		{
 			// Note that many tests rely on being able to set arbitrarily old timestamps, thus we
 			// disable this check during tests!
