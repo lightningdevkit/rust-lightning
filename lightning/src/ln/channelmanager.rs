@@ -9818,12 +9818,12 @@ impl<
 							{
 								if let Some(peer_state_mtx) = per_peer_state.get(&node_id) {
 									let mut peer_state = peer_state_mtx.lock().unwrap();
-									if let Some(blockers) = peer_state
+									let entry = peer_state
 										.actions_blocking_raa_monitor_updates
-										.get_mut(&channel_id)
-									{
+										.entry(channel_id);
+									if let btree_map::Entry::Occupied(mut entry) = entry {
 										let mut found_blocker = false;
-										blockers.retain(|iter| {
+										entry.get_mut().retain(|iter| {
 											// Note that we could actually be blocked, in
 											// which case we need to only remove the one
 											// blocker which was added duplicatively.
@@ -9833,6 +9833,9 @@ impl<
 											}
 											*iter != blocker || !first_blocker
 										});
+										if entry.get().is_empty() {
+											entry.remove();
+										}
 										debug_assert!(found_blocker);
 									}
 								} else {
@@ -15251,10 +15254,12 @@ impl<
 				let peer_state = &mut *peer_state_lck;
 				if let Some(blocker) = completed_blocker.take() {
 					// Only do this on the first iteration of the loop.
-					if let Some(blockers) = peer_state.actions_blocking_raa_monitor_updates
-						.get_mut(&channel_id)
-					{
-						blockers.retain(|iter| iter != &blocker);
+					let entry = peer_state.actions_blocking_raa_monitor_updates.entry(channel_id);
+					if let btree_map::Entry::Occupied(mut entry) = entry {
+						entry.get_mut().retain(|iter| iter != &blocker);
+						if entry.get().is_empty() {
+							entry.remove();
+						}
 					}
 				}
 
