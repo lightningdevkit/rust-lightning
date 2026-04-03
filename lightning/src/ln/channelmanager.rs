@@ -10164,6 +10164,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		next_channel_counterparty_node_id: PublicKey, next_channel_outpoint: OutPoint,
 		next_channel_id: ChannelId, next_user_channel_id: Option<u128>,
 		attribution_data: Option<AttributionData>, send_timestamp: Option<Duration>,
+		monitor_event_id: Option<u64>,
 	) {
 		let startup_replay =
 			!self.background_events_processed_since_startup.load(Ordering::Acquire);
@@ -12828,6 +12829,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			Some(next_user_channel_id),
 			msg.attribution_data,
 			send_timestamp,
+			None,
 		);
 
 		Ok(())
@@ -13849,6 +13851,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								htlc_update.user_channel_id,
 								None,
 								None,
+								Some(event_id),
 							);
 						} else {
 							log_trace!(logger, "Failing HTLC from our monitor");
@@ -20907,6 +20910,7 @@ impl<
 				downstream_funding,
 				downstream_channel_id,
 				downstream_user_channel_id,
+				None,
 				None,
 				None,
 			);
