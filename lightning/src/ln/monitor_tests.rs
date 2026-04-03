@@ -3250,14 +3250,15 @@ fn test_event_replay_causing_monitor_replay() {
 	// Now process the `PaymentSent` to get the final RAA `ChannelMonitorUpdate`, checking that it
 	// resulted in a `ChannelManager` persistence request.
 	nodes[0].node.get_and_clear_needs_persistence();
-	expect_payment_sent(&nodes[0], payment_preimage, None, true, true /* expected post-event monitor update*/);
+	expect_payment_sent!(nodes[0], payment_preimage);
 	assert!(nodes[0].node.get_and_clear_needs_persistence());
 
 	let serialized_monitor = get_monitor!(nodes[0], chan.2).encode();
 	reload_node!(nodes[0], &serialized_channel_manager, &[&serialized_monitor], persister, new_chain_monitor, node_deserialized);
 
 	// Expect the `PaymentSent` to get replayed, this time without the duplicate monitor update
-	expect_payment_sent(&nodes[0], payment_preimage, None, false, false /* expected post-event monitor update*/);
+	let per_path_evs = if nodes[0].node.test_persistent_monitor_events_enabled() { true } else { false };
+	expect_payment_sent(&nodes[0], payment_preimage, None, per_path_evs, false /* expected post-event monitor update*/);
 }
 
 #[test]
@@ -3555,7 +3556,7 @@ fn do_test_lost_preimage_monitor_events(on_counterparty_tx: bool, p2a_anchor: bo
 	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
 	reconnect_args.pending_cell_htlc_claims = (1, 0);
 	reconnect_nodes(reconnect_args);
-	expect_payment_sent(&nodes[0], preimage_a, None, true, true);
+	expect_payment_sent!(&nodes[0], preimage_a);
 }
 
 #[test]
