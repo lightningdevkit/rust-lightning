@@ -1886,8 +1886,8 @@ fn splice_seed() -> Vec<u8> {
 	// CommitmentSigned message with proper signature (r=f7, s=01...) and funding_txid TLV
 	// signature r encodes sighash first byte f7, s follows the pattern from funding_created
 	// TLV type 1 (odd/optional) for funding_txid as per impl_writeable_msg!(CommitmentSigned, ...)
-	// Note: txid is encoded in reverse byte order (Bitcoin standard), so to get display 0000...0033, encode 3300...0000
-	ext_from_hex("0084 c000000000000000000000000000000000000000000000000000000000000000 00000000000000000000000000000000000000000000000000000000000000f7 0100000000000000000000000000000000000000000000000000000000000000 0000 01 20 3300000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
+	// Note: txid is encoded in reverse byte order (Bitcoin standard), so to get display 0000...0031, encode 3100...0000
+	ext_from_hex("0084 c000000000000000000000000000000000000000000000000000000000000000 00000000000000000000000000000000000000000000000000000000000000f7 0100000000000000000000000000000000000000000000000000000000000000 0000 01 20 3100000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
 
 	// After commitment_signed exchange, we need to exchange tx_signatures.
 	// Message type IDs: TxSignatures = 71 (0x0047)
@@ -1900,19 +1900,19 @@ fn splice_seed() -> Vec<u8> {
 	// inbound read from peer id 0 of len 150 (134 message + 16 MAC)
 	ext_from_hex("030096", &mut test);
 	// TxSignatures message with shared_input_signature TLV (type 0)
-	// txid must match the splice funding txid (0x33 in reverse byte order)
+	// txid must match the splice funding txid (0x31 in reverse byte order)
 	// shared_input_signature: 64-byte fuzz signature for the shared input
-	ext_from_hex("0047 c000000000000000000000000000000000000000000000000000000000000000 3300000000000000000000000000000000000000000000000000000000000000 0000 00 40 00000000000000000000000000000000000000000000000000000000000000dc 0100000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
+	ext_from_hex("0047 c000000000000000000000000000000000000000000000000000000000000000 3100000000000000000000000000000000000000000000000000000000000000 0000 00 40 00000000000000000000000000000000000000000000000000000000000000dc 0100000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
 
 	// Connect a block with the splice funding transaction to confirm it
 	// The splice funding tx: version(4) + input_count(1) + txid(32) + vout(4) + script_len(1) + sequence(4)
 	//                       + output_count(1) + value(8) + script_len(1) + script(34) + locktime(4) = 94 bytes = 0x5e
 	// Transaction structure from FundingTransactionReadyForSigning:
 	// - Input: spending c000...00:0 with sequence 0xfffffffd
-	// - Output: 115536 sats to OP_0 PUSH32 6e00...00
+	// - Output: 115538 sats to OP_0 PUSH32 6e00...00
 	// - Locktime: 13
 	ext_from_hex("0c005e", &mut test);
-	ext_from_hex("02000000 01 c000000000000000000000000000000000000000000000000000000000000000 00000000 00 fdffffff 01 50c3010000000000 22 00206e00000000000000000000000000000000000000000000000000000000000000 0d000000", &mut test);
+	ext_from_hex("02000000 01 c000000000000000000000000000000000000000000000000000000000000000 00000000 00 fdffffff 01 52c3010000000000 22 00206e00000000000000000000000000000000000000000000000000000000000000 0d000000", &mut test);
 
 	// Connect additional blocks to reach minimum_depth confirmations
 	for _ in 0..5 {
@@ -1929,8 +1929,8 @@ fn splice_seed() -> Vec<u8> {
 	// inbound read from peer id 0 of len 82 (66 message + 16 MAC)
 	ext_from_hex("030052", &mut test);
 	// SpliceLocked message (type 77 = 0x004d): channel_id + splice_txid + mac
-	// splice_txid must match the splice funding txid (0x33 in reverse byte order)
-	ext_from_hex("004d c000000000000000000000000000000000000000000000000000000000000000 3300000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
+	// splice_txid must match the splice funding txid (0x31 in reverse byte order)
+	ext_from_hex("004d c000000000000000000000000000000000000000000000000000000000000000 3100000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
 
 	test
 }
@@ -2060,6 +2060,6 @@ mod tests {
 
 		// Splice locked
 		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendSpliceLocked event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 for channel c000000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&1));
-		assert_eq!(log_entries.get(&("lightning::ln::channel".to_string(), "Promoting splice funding txid 0000000000000000000000000000000000000000000000000000000000000033".to_string())), Some(&1));
+		assert_eq!(log_entries.get(&("lightning::ln::channel".to_string(), "Promoting splice funding txid 0000000000000000000000000000000000000000000000000000000000000031".to_string())), Some(&1));
 	}
 }

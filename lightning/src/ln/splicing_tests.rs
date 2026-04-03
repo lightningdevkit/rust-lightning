@@ -158,40 +158,6 @@ impl CoinSelectionSourceSync for TightBudgetWallet {
 	}
 }
 
-#[test]
-fn test_validate_accounts_for_change_output_weight() {
-	// Demonstrates that estimated_fee includes the change output's weight when building a
-	// FundingContribution. A mock wallet returns a single input whose value is between
-	// estimated_fee_without_change (1736/1740 sats) and estimated_fee_with_change (1984/1988
-	// sats) above value_added. The validate() check correctly catches that the inputs are
-	// insufficient when the change output weight is included. Without accounting for the change
-	// output weight, the check would incorrectly pass.
-	let chanmon_cfgs = create_chanmon_cfgs(2);
-	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-
-	let (_, _, channel_id, _) =
-		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 0);
-
-	let feerate = FeeRate::from_sat_per_kwu(2000);
-	let funding_template =
-		nodes[0].node.splice_channel(&channel_id, &nodes[1].node.get_our_node_id()).unwrap();
-
-	// Input value = value_added + 1800: above 1736/1740 (fee without change), below 1984/1988
-	// (fee with change).
-	let value_added = Amount::from_sat(20_000);
-	let wallet = TightBudgetWallet {
-		utxo_value: value_added + Amount::from_sat(1800),
-		change_value: Amount::from_sat(1000),
-	};
-	let contribution =
-		funding_template.splice_in_sync(value_added, feerate, FeeRate::MAX, &wallet).unwrap();
-
-	assert!(contribution.change_output().is_some());
-	assert!(contribution.validate().is_err());
-}
-
 pub fn negotiate_splice_tx<'a, 'b, 'c, 'd>(
 	initiator: &'a Node<'b, 'c, 'd>, acceptor: &'a Node<'b, 'c, 'd>, channel_id: ChannelId,
 	funding_contribution: FundingContribution,
@@ -1862,7 +1828,8 @@ fn do_test_splice_commitment_broadcast(splice_status: SpliceStatus, claim_htlcs:
 	let splice_in_amount = initial_channel_capacity / 2;
 	let initiator_contribution =
 		do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, Amount::from_sat(splice_in_amount));
-	let (splice_tx, _) = splice_channel(&nodes[0], &nodes[1], channel_id, initiator_contribution);
+	let (splice_tx, _) =
+		splice_channel(&nodes[0], &nodes[1], channel_id, initiator_contribution.clone());
 	let (preimage2, payment_hash2, ..) = route_payment(&nodes[0], &[&nodes[1]], payment_amount);
 	let htlc_expiry = nodes[0].best_block_info().1 + TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS;
 
@@ -1913,7 +1880,7 @@ fn do_test_splice_commitment_broadcast(splice_status: SpliceStatus, claim_htlcs:
 		message: "test".to_owned(),
 	};
 	let closed_channel_capacity = if splice_status == SpliceStatus::Locked {
-		initial_channel_capacity + splice_in_amount
+		initial_channel_capacity + initiator_contribution.net_value().to_sat() as u64
 	} else {
 		initial_channel_capacity
 	};
