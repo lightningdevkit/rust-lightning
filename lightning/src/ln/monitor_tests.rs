@@ -274,7 +274,7 @@ fn archive_fully_resolved_monitors() {
 
 	// Finally, we process the pending `MonitorEvent` from nodes[0], allowing the `ChannelMonitor`
 	// to be archived `ARCHIVAL_DELAY_BLOCKS` blocks later.
-	expect_payment_sent(&nodes[0], payment_preimage, None, true, true);
+	expect_payment_sent!(&nodes[0], payment_preimage);
 	nodes[0].chain_monitor.chain_monitor.archive_fully_resolved_channel_monitors();
 	assert_eq!(nodes[0].chain_monitor.chain_monitor.list_monitors().len(), 1);
 	connect_blocks(&nodes[0], ARCHIVAL_DELAY_BLOCKS - 1);
@@ -747,9 +747,9 @@ fn do_test_claim_value_force_close(keyed_anchors: bool, p2a_anchor: bool, prev_c
 	mine_transaction(&nodes[0], &b_broadcast_txn[0]);
 	if prev_commitment_tx {
 		expect_payment_path_successful!(nodes[0]);
-		check_added_monitors(&nodes[0], 1);
+		check_added_monitors(&nodes[0], if nodes[0].node.test_persistent_monitor_events_enabled() { 0 } else { 1 });
 	} else {
-		expect_payment_sent(&nodes[0], payment_preimage, None, true, true);
+		expect_payment_sent!(&nodes[0], payment_preimage);
 	}
 	assert_eq!(sorted_vec(vec![sent_htlc_balance.clone(), sent_htlc_timeout_balance.clone()]),
 		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(chan_id).unwrap().get_claimable_balances()));
@@ -1015,7 +1015,7 @@ fn do_test_balances_on_local_commitment_htlcs(keyed_anchors: bool, p2a_anchor: b
 	// Now confirm nodes[1]'s HTLC claim, giving nodes[0] the preimage. Note that the "maybe
 	// claimable" balance remains until we see ANTI_REORG_DELAY blocks.
 	mine_transaction(&nodes[0], &bs_htlc_claim_txn[0]);
-	expect_payment_sent(&nodes[0], payment_preimage_2, None, true, true);
+	expect_payment_sent!(&nodes[0], payment_preimage_2);
 	assert_eq!(sorted_vec(vec![Balance::ClaimableAwaitingConfirmations {
 			amount_satoshis: 1_000_000 - 10_000 - 20_000 - commitment_tx_fee - anchor_outputs_value,
 			confirmation_height: node_a_commitment_claimable,
@@ -2097,7 +2097,7 @@ fn do_test_revoked_counterparty_aggregated_claims(keyed_anchors: bool, p2a_ancho
 		as_revoked_txn[1].clone()
 	};
 	mine_transaction(&nodes[1], &htlc_success_claim);
-	expect_payment_sent(&nodes[1], claimed_payment_preimage, None, true, true);
+	expect_payment_sent!(&nodes[1], claimed_payment_preimage);
 
 	let mut claim_txn_2 = nodes[1].tx_broadcaster.txn_broadcast();
 	// Once B sees the HTLC-Success transaction it splits its claim transaction into two, though in
@@ -3547,9 +3547,13 @@ fn do_test_lost_preimage_monitor_events(on_counterparty_tx: bool, p2a_anchor: bo
 	// After the background events are processed in `get_and_clear_pending_events`, above, node B
 	// will create the requisite `ChannelMontiorUpdate` for claiming the forwarded payment back.
 	// The HTLC, however, is added to the holding cell for replay after the peer connects, below.
-	// It will also apply a `ChannelMonitorUpdate` to let the `ChannelMonitor` know that the
-	// payment can now be forgotten as the `PaymentSent` event was handled.
-	check_added_monitors(&nodes[1], 2);
+	if nodes[1].node.test_persistent_monitor_events_enabled() {
+		check_added_monitors(&nodes[1], 1);
+	} else {
+		// It will also apply a `ChannelMonitorUpdate` to let the `ChannelMonitor` know that the
+		// payment can now be forgotten as the `PaymentSent` event was handled.
+		check_added_monitors(&nodes[1], 2);
+	}
 
 	nodes[0].node.peer_disconnected(nodes[1].node.get_our_node_id());
 
@@ -3943,8 +3947,7 @@ fn test_ladder_preimage_htlc_claims() {
 	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 
-	expect_payment_sent(&nodes[0], payment_preimage1, None, true, false);
-	check_added_monitors(&nodes[0], 1);
+	expect_payment_sent!(&nodes[0], payment_preimage1);
 
 	nodes[1].node.claim_funds(payment_preimage2);
 	expect_payment_claimed!(&nodes[1], payment_hash2, 1_000_000);
@@ -3966,6 +3969,5 @@ fn test_ladder_preimage_htlc_claims() {
 	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 
-	expect_payment_sent(&nodes[0], payment_preimage2, None, true, false);
-	check_added_monitors(&nodes[0], 1);
+	expect_payment_sent!(&nodes[0], payment_preimage2);
 }
