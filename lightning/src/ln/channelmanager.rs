@@ -1553,6 +1553,11 @@ pub(crate) enum EventCompletionAction {
 	/// fully-resolved in the [`ChannelMonitor`], which we do via this action.
 	/// Note that this action will be dropped on downgrade to LDK prior to 0.2!
 	ReleasePaymentCompleteChannelMonitorUpdate(PaymentCompleteUpdate),
+	/// If [`ChannelManager::persistent_monitor_events`] is enabled, we may want to avoid acking a
+	/// monitor event via [`Watch::ack_monitor_event`] until after an [`Event`] is processed by the
+	/// user. For example, we may want a [`MonitorEvent::HTLCEvent`] to keep being re-provided to us
+	/// until after an [`Event::PaymentSent`] is processed.
+	AckMonitorEvent { event_id: MonitorEventSource },
 }
 impl_writeable_tlv_based_enum!(EventCompletionAction,
 	(0, ReleaseRAAChannelMonitorUpdate) => {
@@ -1564,6 +1569,9 @@ impl_writeable_tlv_based_enum!(EventCompletionAction,
 			}
 			ChannelId::v1_from_funding_outpoint(channel_funding_outpoint.unwrap())
 		})),
+	},
+	(3, AckMonitorEvent) => {
+		(1, event_id, required),
 	}
 	{1, ReleasePaymentCompleteChannelMonitorUpdate} => (),
 );
@@ -15374,6 +15382,9 @@ impl<
 							self.handle_monitor_update_completion_actions(actions);
 						}
 					}
+				},
+				EventCompletionAction::AckMonitorEvent { event_id } => {
+					self.chain_monitor.ack_monitor_event(event_id);
 				},
 			}
 		}
