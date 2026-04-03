@@ -3954,7 +3954,7 @@ fn do_test_durable_preimages_on_closed_channel(
 
 	mine_transactions(&nodes[0], &[&as_closing_tx[0], bs_preimage_tx]);
 	check_closed_broadcast(&nodes[0], 1, false);
-	expect_payment_sent(&nodes[0], payment_preimage, None, true, true);
+	expect_payment_sent!(&nodes[0], payment_preimage);
 
 	if close_chans_before_reload && !hold_post_reload_mon_update {
 		// For close_chans_before_reload with hold=false, the deferred completions

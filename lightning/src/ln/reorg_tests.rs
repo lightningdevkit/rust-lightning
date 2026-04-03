@@ -254,7 +254,7 @@ fn test_counterparty_revoked_reorg() {
 
 	// Connect the HTLC claim transaction for HTLC 3
 	mine_transaction(&nodes[1], &unrevoked_local_txn[2]);
-	expect_payment_sent(&nodes[1], payment_preimage_3, None, true, true);
+	expect_payment_sent!(&nodes[1], payment_preimage_3);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
 	// Connect blocks to confirm the unrevoked commitment transaction
@@ -1228,7 +1228,10 @@ fn do_test_split_htlc_expiry_tracking(use_third_htlc: bool, reorg_out: bool, p2a
 
 	check_added_monitors(&nodes[0], 0);
 	let sent_events = nodes[0].node.get_and_clear_pending_events();
-	check_added_monitors(&nodes[0], 2);
+	check_added_monitors(
+		&nodes[0],
+		if nodes[0].node.test_persistent_monitor_events_enabled() { 0 } else { 2 },
+	);
 	assert_eq!(sent_events.len(), 4, "{sent_events:?}");
 	let mut found_expected_events = [false, false, false, false];
 	for event in sent_events {
