@@ -10198,6 +10198,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					Some(payment_preimage.into()),
 					payment_id,
 				);
+				let best_block_height = self.best_block.read().unwrap().height;
 				self.pending_outbound_payments.claim_htlc(
 					payment_id,
 					payment_preimage,
@@ -10205,6 +10206,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					session_priv,
 					path,
 					from_onchain,
+					best_block_height,
 					&mut ev_completion_action,
 					&self.pending_events,
 					&logger,
@@ -20086,6 +20088,7 @@ impl<
 										session_priv,
 										path,
 										true,
+										best_block.height,
 										&mut compl_action,
 										&pending_events,
 										&logger,
