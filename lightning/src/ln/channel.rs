@@ -12535,14 +12535,12 @@ where
 			};
 		}
 
-		if let Err(e) = contribution.validate().and_then(|()| {
-			// For splice-out, our_funding_contribution is adjusted to cover fees if there
-			// aren't any inputs.
-			let our_funding_contribution = contribution.net_value();
-			self.validate_splice_contributions(our_funding_contribution, SignedAmount::ZERO)
-		}) {
-			log_error!(logger, "Channel {} cannot be funded: {}", self.context.channel_id(), e);
+		let our_funding_contribution = contribution.net_value();
 
+		if let Err(e) =
+			self.validate_splice_contributions(our_funding_contribution, SignedAmount::ZERO)
+		{
+			log_error!(logger, "Channel {} cannot be funded: {}", self.context.channel_id(), e);
 			return Err(QuiescentError::FailSplice(self.splice_funding_failed_for(contribution)));
 		}
 
@@ -14104,13 +14102,11 @@ where
 					// funding_contributed and quiescence, reducing the holder's
 					// balance. If invalid, disconnect and return the contribution so
 					// the user can reclaim their inputs.
-					if let Err(e) = contribution.validate().and_then(|()| {
-						let our_funding_contribution = contribution.net_value();
-						self.validate_splice_contributions(
-							our_funding_contribution,
-							SignedAmount::ZERO,
-						)
-					}) {
+					let our_funding_contribution = contribution.net_value();
+					if let Err(e) = self.validate_splice_contributions(
+						our_funding_contribution,
+						SignedAmount::ZERO,
+					) {
 						let failed = self.splice_funding_failed_for(contribution);
 						return Err((
 							ChannelError::WarnAndDisconnect(format!(
