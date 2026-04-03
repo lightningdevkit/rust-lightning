@@ -3300,7 +3300,11 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 							// The HTLC was not included in the confirmed commitment transaction,
 							// which has now reached ANTI_REORG_DELAY confirmations and thus the
 							// HTLC has been failed.
-							res.insert(source.clone(), candidate_htlc.payment_hash);
+							// However, if we have the preimage, the HTLC was fulfilled off-chain
+							// and should not be reported as failed.
+							if !us.counterparty_fulfilled_htlcs.contains_key(&htlc_id) {
+								res.insert(source.clone(), candidate_htlc.payment_hash);
+							}
 						}
 					}
 				};
