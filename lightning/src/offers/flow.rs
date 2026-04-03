@@ -61,6 +61,8 @@ use crate::sync::{Mutex, RwLock};
 use crate::types::payment::{PaymentHash, PaymentSecret};
 use crate::util::logger::Logger;
 use crate::util::ser::Writeable;
+#[cfg(feature = "std")]
+use crate::util::wakers::Notifier;
 
 #[cfg(feature = "dnssec")]
 use {
@@ -93,6 +95,8 @@ pub struct OffersMessageFlow<MR: MessageRouter, L: Logger> {
 
 	pending_async_payments_messages: Mutex<Vec<(AsyncPaymentsMessage, MessageSendInstructions)>>,
 	async_receive_offer_cache: Mutex<AsyncReceiveOfferCache>,
+	#[cfg(feature = "std")]
+	async_receive_offer_ready_notifier: Notifier,
 
 	#[cfg(feature = "dnssec")]
 	pub(crate) hrn_resolver: OMNameResolver,
@@ -132,6 +136,8 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 			pending_dns_onion_messages: Mutex::new(Vec::new()),
 
 			async_receive_offer_cache: Mutex::new(AsyncReceiveOfferCache::new()),
+			#[cfg(feature = "std")]
+			async_receive_offer_ready_notifier: Notifier::new(),
 
 			logger,
 		}
@@ -1422,7 +1428,6 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 				Some(idx) => idx,
 				None => return Ok(()),
 			};
-
 		// If we need new offers, send out offer paths request messages to the static invoice server.
 		let context = MessageContext::AsyncPayments(AsyncPaymentsContext::OfferPaths {
 			path_absolute_expiry: duration_since_epoch
@@ -1536,7 +1541,6 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 			},
 			_ => return None,
 		};
-
 		// Create the blinded paths that will be included in the async recipient's offer.
 		let (offer_paths, paths_expiry) = {
 			let path_absolute_expiry =
@@ -1598,7 +1602,6 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 			},
 			_ => return None,
 		};
-
 		{
 			// Only respond with `ServeStaticInvoice` if we actually need a new offer built.
 			let mut cache = self.async_receive_offer_cache.lock().unwrap();
@@ -1630,7 +1633,6 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 				return None;
 			},
 		};
-
 		let (invoice, forward_invoice_request_path) = match self.create_static_invoice_for_server(
 			&offer,
 			offer_nonce,
@@ -1644,7 +1646,6 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 				return None;
 			},
 		};
-
 		if let Err(()) = self.async_receive_offer_cache.lock().unwrap().cache_pending_offer(
 			offer,
 			message.paths_absolute_expiry,
@@ -1656,7 +1657,6 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 			log_error!(self.logger, "Failed to cache pending offer");
 			return None;
 		}
-
 		let reply_path_context = {
 			MessageContext::AsyncPayments(AsyncPaymentsContext::StaticInvoicePersisted {
 				offer_id,
@@ -1772,7 +1772,17 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 	/// [`StaticInvoicePersisted`]: crate::onion_message::async_payments::StaticInvoicePersisted
 	pub fn handle_static_invoice_persisted(&self, context: AsyncPaymentsContext) -> bool {
 		let mut cache = self.async_receive_offer_cache.lock().unwrap();
-		cache.static_invoice_persisted(context)
+		let updated = cache.static_invoice_persisted(context);
+		#[cfg(feature = "std")]
+		if updated {
+			self.async_receive_offer_ready_notifier.notify();
+		}
+		updated
+	}
+
+	#[cfg(feature = "std")]
+	pub(crate) fn wait_for_async_receive_offer_ready(&self, max_wait: Duration) -> bool {
+		self.async_receive_offer_ready_notifier.get_future().wait_timeout(max_wait)
 	}
 
 	/// Get the encoded [`AsyncReceiveOfferCache`] for persistence.

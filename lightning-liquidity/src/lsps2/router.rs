@@ -89,10 +89,11 @@ impl<R: Router, ES: EntropySource + Send + Sync> LSPS2BOLT12Router<R, ES> {
 	fn registered_lsps2_params(
 		&self, payment_context: &PaymentContext,
 	) -> Vec<LSPS2Bolt12InvoiceParameters> {
-		// We intentionally only match `Bolt12Offer` here and not `AsyncBolt12Offer`, as LSPS2
-		// JIT channels are not applicable to async (always-online) BOLT12 offer flows.
+		// LSPS2 paths are applicable both to normal offers and async offers that resolve via a
+		// static invoice server. In both cases the intercept SCID lets the LSP intercept the HTLC
+		// and open the JIT channel before forwarding the payment.
 		match payment_context {
-			PaymentContext::Bolt12Offer(_) => {},
+			PaymentContext::Bolt12Offer(_) | PaymentContext::AsyncBolt12Offer(_) => {},
 			_ => return Vec::new(),
 		};
 
