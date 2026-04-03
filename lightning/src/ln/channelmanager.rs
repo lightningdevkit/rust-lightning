@@ -142,15 +142,6 @@ use crate::util::wakers::{Future, Notifier};
 #[cfg(test)]
 use crate::blinded_path::payment::BlindedPaymentPath;
 
-#[cfg(feature = "dnssec")]
-use {
-	crate::blinded_path::message::DNSResolverContext,
-	crate::onion_message::dns_resolution::{
-		DNSResolverMessage, DNSResolverMessageHandler, DNSSECProof, DNSSECQuery,
-	},
-	crate::onion_message::messenger::Destination,
-};
-
 #[cfg(c_bindings)]
 use {
 	crate::offers::offer::OfferWithDerivedMetadataBuilder,
@@ -715,12 +706,7 @@ impl Default for OptionalBolt11PaymentParams {
 	}
 }
 
-/// Optional arguments to [`ChannelManager::pay_for_offer`]
-#[cfg_attr(
-	feature = "dnssec",
-	doc = "and [`ChannelManager::pay_for_offer_from_human_readable_name`]"
-)]
-/// .
+/// Optional arguments to [`ChannelManager::pay_for_offer`].
 ///
 /// These fields will often not need to be set, and the provided [`Self::default`] can be used.
 pub struct OptionalOfferPaymentParams {
@@ -2942,14 +2928,6 @@ pub struct ChannelManager<
 	/// [`ConfirmationTarget::MinAllowedNonAnchorChannelRemoteFee`] estimate.
 	last_days_feerates: Mutex<VecDeque<(u32, u32)>>,
 
-	#[cfg(feature = "_test_utils")]
-	/// In testing, it is useful be able to forge a name -> offer mapping so that we can pay an
-	/// offer generated in the test.
-	///
-	/// This allows for doing so, validating proofs as normal, but, if they pass, replacing the
-	/// offer they resolve to to the given one.
-	pub testing_dnssec_proof_offer_resolution_override: Mutex<HashMap<HumanReadableName, Offer>>,
-
 	#[cfg(test)]
 	pub(super) entropy_source: ES,
 	#[cfg(not(test))]
@@ -3680,9 +3658,6 @@ impl<
 			signer_provider,
 
 			logger,
-
-			#[cfg(feature = "_test_utils")]
-			testing_dnssec_proof_offer_resolution_override: Mutex::new(new_hash_map()),
 		}
 	}
 
@@ -5704,6 +5679,12 @@ impl<
 	/// # Custom Routing Parameters
 	/// Users can customize routing parameters via [`RouteParametersConfig`].
 	/// To use default settings, call the function with [`RouteParametersConfig::default`].
+	///
+	/// In general, you should use the
+	/// [`bitcoin-payment-instructions` crate](https://docs.rs/bitcoin-payment-instructions/) to
+	/// resolve payment instructions strings (e.g. from QR codes, link opens, pasted instructions,
+	/// or typed instructions) into payment instructions and use this when the instructions resolve
+	/// to a BOLT 11 invoice.
 	pub fn pay_for_bolt11_invoice(
 		&self, invoice: &Bolt11Invoice, payment_id: PaymentId, amount_msats: Option<u64>,
 		optional_params: OptionalBolt11PaymentParams,
@@ -14588,6 +14569,12 @@ impl<
 	/// - the parameterized [`Router`] is unable to create a blinded reply path for the invoice
 	///   request.
 	///
+	/// In general, you should use the
+	/// [`bitcoin-payment-instructions` crate](https://docs.rs/bitcoin-payment-instructions/) to
+	/// resolve payment instructions strings (e.g. from QR codes, link opens, pasted instructions,
+	/// or typed instructions) into payment instructions and use this when the instructions resolve
+	/// to a BOLT 12 offer.
+	///
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 	/// [`InvoiceRequestBuilder`]: crate::offers::invoice_request::InvoiceRequestBuilder
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
@@ -14785,72 +14772,6 @@ impl<
 
 		self.flow.enqueue_invoice(invoice.clone(), refund, self.get_peers_for_blinded_path())?;
 		Ok(invoice)
-	}
-
-	/// Pays for an [`Offer`] looked up using [BIP 353] Human Readable Names resolved by the DNS
-	/// resolver(s) at `dns_resolvers` which resolve names according to [bLIP 32].
-	///
-	/// Because most wallets support on-chain or other payment schemes beyond only offers, this is
-	/// deprecated in favor of the [`bitcoin-payment-instructions`] crate, which can be used to
-	/// build an [`OfferFromHrn`] and call [`Self::pay_for_offer_from_hrn`]. Thus, this method is
-	/// deprecated.
-	///
-	/// # Payment
-	///
-	/// The provided `payment_id` is used to ensure that only one invoice is paid for the request
-	/// when received. See [Avoiding Duplicate Payments] for other requirements once the payment has
-	/// been sent.
-	///
-	/// To revoke the request, use [`ChannelManager::abandon_payment`] prior to receiving the
-	/// invoice. If abandoned, or an invoice isn't received in a reasonable amount of time, the
-	/// payment will fail with an [`PaymentFailureReason::UserAbandoned`] or
-	/// [`PaymentFailureReason::InvoiceRequestExpired`], respectively.
-	///
-	/// # Privacy
-	///
-	/// For payer privacy, uses a derived payer id and uses [`MessageRouter::create_blinded_paths`]
-	/// to construct a [`BlindedMessagePath`] for the reply path.
-	///
-	/// # Errors
-	///
-	/// Errors if a duplicate `payment_id` is provided given the caveats in the aforementioned link.
-	///
-	/// [BIP 353]: https://github.com/bitcoin/bips/blob/master/bip-0353.mediawiki
-	/// [bLIP 32]: https://github.com/lightning/blips/blob/master/blip-0032.md
-	/// [`OMNameResolver::resolve_name`]: crate::onion_message::dns_resolution::OMNameResolver::resolve_name
-	/// [`OMNameResolver::handle_dnssec_proof_for_uri`]: crate::onion_message::dns_resolution::OMNameResolver::handle_dnssec_proof_for_uri
-	/// [`bitcoin-payment-instructions`]: https://docs.rs/bitcoin-payment-instructions/
-	/// [Avoiding Duplicate Payments]: #avoiding-duplicate-payments
-	/// [`BlindedMessagePath`]: crate::blinded_path::message::BlindedMessagePath
-	/// [`PaymentFailureReason::UserAbandoned`]: crate::events::PaymentFailureReason::UserAbandoned
-	/// [`PaymentFailureReason::InvoiceRequestRejected`]: crate::events::PaymentFailureReason::InvoiceRequestRejected
-	#[cfg(feature = "dnssec")]
-	#[deprecated(note = "Use bitcoin-payment-instructions and pay_for_offer_from_hrn instead")]
-	pub fn pay_for_offer_from_human_readable_name(
-		&self, name: HumanReadableName, amount_msats: u64, payment_id: PaymentId,
-		optional_params: OptionalOfferPaymentParams, dns_resolvers: Vec<Destination>,
-	) -> Result<(), ()> {
-		let (onion_message, context) =
-			self.flow.hrn_resolver.resolve_name(payment_id, name, &self.entropy_source)?;
-
-		let expiration = StaleExpiration::TimerTicks(1);
-		self.pending_outbound_payments.add_new_awaiting_offer(
-			payment_id,
-			expiration,
-			optional_params.retry_strategy,
-			optional_params.route_params_config,
-			amount_msats,
-			optional_params.payer_note,
-		)?;
-
-		self.flow
-			.enqueue_dns_onion_message(
-				onion_message,
-				context,
-				dns_resolvers,
-				self.get_peers_for_blinded_path(),
-			)
-			.map_err(|_| ())
 	}
 
 	/// Gets a payment secret and payment hash for use in an invoice given to a third party wishing
@@ -17395,65 +17316,6 @@ impl<
 
 	fn release_pending_messages(&self) -> Vec<(AsyncPaymentsMessage, MessageSendInstructions)> {
 		self.flow.release_pending_async_messages()
-	}
-}
-
-#[cfg(feature = "dnssec")]
-impl<
-		M: chain::Watch<SP::EcdsaSigner>,
-		T: BroadcasterInterface,
-		ES: EntropySource,
-		NS: NodeSigner,
-		SP: SignerProvider,
-		F: FeeEstimator,
-		R: Router,
-		MR: MessageRouter,
-		L: Logger,
-	> DNSResolverMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
-{
-	fn handle_dnssec_query(
-		&self, _message: DNSSECQuery, _responder: Option<Responder>,
-	) -> Option<(DNSResolverMessage, ResponseInstruction)> {
-		None
-	}
-
-	#[rustfmt::skip]
-	fn handle_dnssec_proof(&self, message: DNSSECProof, context: DNSResolverContext) {
-		let offer_opt = self.flow.hrn_resolver.handle_dnssec_proof_for_offer(message, context);
-		#[cfg_attr(not(feature = "_test_utils"), allow(unused_mut))]
-		if let Some((completed_requests, mut offer)) = offer_opt {
-			for (name, payment_id) in completed_requests {
-				#[cfg(feature = "_test_utils")]
-				if let Some(replacement_offer) = self.testing_dnssec_proof_offer_resolution_override.lock().unwrap().remove(&name) {
-					// If we have multiple pending requests we may end up over-using the override
-					// offer, but tests can deal with that.
-					offer = replacement_offer;
-				}
-				if let Ok((amt_msats, payer_note)) = self.pending_outbound_payments.params_for_payment_awaiting_offer(payment_id) {
-					let offer_pay_res =
-						self.pay_for_offer_intern(&offer, None, Some(amt_msats), payer_note, payment_id, Some(name),
-							|retryable_invoice_request| {
-								self.pending_outbound_payments
-									.received_offer(payment_id, Some(retryable_invoice_request))
-									.map_err(|_| Bolt12SemanticError::DuplicatePaymentId)
-						});
-					if offer_pay_res.is_err() {
-						// The offer we tried to pay is the canonical current offer for the name we
-						// wanted to pay. If we can't pay it, there's no way to recover so fail the
-						// payment.
-						// Note that the PaymentFailureReason should be ignored for an
-						// AwaitingInvoice payment.
-						self.pending_outbound_payments.abandon_payment(
-							payment_id, PaymentFailureReason::RouteNotFound, &self.pending_events,
-						);
-					}
-				}
-			}
-		}
-	}
-
-	fn release_pending_messages(&self) -> Vec<(DNSResolverMessage, MessageSendInstructions)> {
-		self.flow.release_pending_dns_messages()
 	}
 }
 
@@ -20233,9 +20095,6 @@ impl<
 
 			logger: args.logger,
 			config: RwLock::new(args.config),
-
-			#[cfg(feature = "_test_utils")]
-			testing_dnssec_proof_offer_resolution_override: Mutex::new(new_hash_map()),
 		};
 
 		let mut processed_claims: HashSet<Vec<MPPClaimHTLCSource>> = new_hash_set();
