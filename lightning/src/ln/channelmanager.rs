@@ -13568,6 +13568,18 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								"Claiming HTLC with preimage {} from our monitor",
 								preimage
 							);
+							let from_onchain = self
+								.per_peer_state
+								.read()
+								.unwrap()
+								.get(&counterparty_node_id)
+								.map_or(true, |peer_state_mtx| {
+									!peer_state_mtx
+										.lock()
+										.unwrap()
+										.channel_by_id
+										.contains_key(&channel_id)
+								});
 							// Claim the funds from the previous hop, if there is one. Because this is in response to a
 							// chain event, no attribution data is available.
 							self.claim_funds_internal(
@@ -13575,7 +13587,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								preimage,
 								htlc_update.htlc_value_satoshis.map(|v| v * 1000),
 								None,
-								true,
+								from_onchain,
 								counterparty_node_id,
 								funding_outpoint,
 								channel_id,
