@@ -14573,7 +14573,8 @@ impl<
 	/// [`bitcoin-payment-instructions` crate](https://docs.rs/bitcoin-payment-instructions/) to
 	/// resolve payment instructions strings (e.g. from QR codes, link opens, pasted instructions,
 	/// or typed instructions) into payment instructions and use this when the instructions resolve
-	/// to a BOLT 12 offer.
+	/// to a BOLT 12 offer or [`Self::pay_for_offer_from_hrn`] when they resolve to a BOLT 12 offer
+	/// via a human-readable name.
 	///
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 	/// [`InvoiceRequestBuilder`]: crate::offers::invoice_request::InvoiceRequestBuilder
