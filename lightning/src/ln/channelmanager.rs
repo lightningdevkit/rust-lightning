@@ -10013,7 +10013,18 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					"We don't support claim_htlc claims during startup - monitors may not be available yet");
 				debug_assert_eq!(next_channel_counterparty_node_id, path.hops[0].pubkey);
 
-				let mut ev_completion_action = if from_onchain {
+				let mut ev_completion_action = if self.persistent_monitor_events {
+					// If persistent monitor events is enabled:
+					// * If the channel is on-chain, we don't need to use ReleasePaymentComplete like we do
+					//   below because we will stop hearing about this payment after the relevant monitor event
+					//   is acked
+					// * If the channel is open, we don't need to block the preimage-removing monitor update
+					//   like we do below because we will keep hearing about the preimage until we explicitly
+					//   ack the monitor event for this payment
+					monitor_event_id.map(|event_id| EventCompletionAction::AckMonitorEvent {
+						event_id: MonitorEventSource { channel_id: next_channel_id, event_id },
+					})
+				} else if from_onchain {
 					let release = PaymentCompleteUpdate {
 						counterparty_node_id: next_channel_counterparty_node_id,
 						channel_funding_outpoint: next_channel_outpoint,
@@ -10022,17 +10033,11 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					};
 					Some(EventCompletionAction::ReleasePaymentCompleteChannelMonitorUpdate(release))
 				} else {
-					if self.persistent_monitor_events {
-						monitor_event_id.map(|event_id| EventCompletionAction::AckMonitorEvent {
-							event_id: MonitorEventSource { channel_id: next_channel_id, event_id },
-						})
-					} else {
-						Some(EventCompletionAction::ReleaseRAAChannelMonitorUpdate {
-							channel_funding_outpoint: Some(next_channel_outpoint),
-							channel_id: next_channel_id,
-							counterparty_node_id: path.hops[0].pubkey,
-						})
-					}
+					Some(EventCompletionAction::ReleaseRAAChannelMonitorUpdate {
+						channel_funding_outpoint: Some(next_channel_outpoint),
+						channel_id: next_channel_id,
+						counterparty_node_id: path.hops[0].pubkey,
+					})
 				};
 				let logger = WithContext::for_payment(
 					&self.logger,
@@ -13640,7 +13645,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 									Some(event_id),
 								);
 							}
-							if from_onchain | !we_are_sender {
+							if !we_are_sender {
 								self.chain_monitor.ack_monitor_event(monitor_event_source);
 							}
 						} else {
@@ -19730,6 +19735,12 @@ impl<
 								..
 							} => {
 								if let Some(preimage) = preimage_opt {
+									if persistent_monitor_events {
+										// If persistent_monitor_events is enabled, then the monitor will keep
+										// providing us with a monitor event for this claim until the ChannelManager
+										// explicitly marks it as resolved, no need to explicitly handle it here.
+										continue;
+									}
 									let pending_events = Mutex::new(pending_events_read);
 									let update = PaymentCompleteUpdate {
 										counterparty_node_id: monitor.get_counterparty_node_id(),

@@ -957,7 +957,7 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 		assert_eq!(txn[0].compute_txid(), as_commitment_tx.compute_txid());
 	}
 	mine_transaction(&nodes[0], &bs_htlc_claim_txn);
-	expect_payment_sent(&nodes[0], payment_preimage_1, None, true, true);
+	expect_payment_sent!(&nodes[0], payment_preimage_1);
 	connect_blocks(&nodes[0], TEST_FINAL_CLTV * 4 + 20);
 	let (first_htlc_timeout_tx, second_htlc_timeout_tx) = {
 		let mut txn = nodes[0].tx_broadcaster.unique_txn_broadcast();
@@ -1368,7 +1368,7 @@ fn do_test_dup_htlc_onchain_doesnt_fail_on_reload(
 		let conditions = PaymentFailedConditions::new().from_mon_update();
 		expect_payment_failed_conditions(&nodes[0], payment_hash, false, conditions);
 	} else {
-		expect_payment_sent(&nodes[0], payment_preimage, None, true, true);
+		expect_payment_sent!(&nodes[0], payment_preimage);
 	}
 	// Note that if we persist the monitor before processing the events, above, we'll always get
 	// them replayed on restart no matter what
@@ -1406,18 +1406,22 @@ fn do_test_dup_htlc_onchain_doesnt_fail_on_reload(
 		} else {
 			expect_payment_sent(&nodes[0], payment_preimage, None, true, false);
 		}
-		if persist_manager_post_event {
-			// After reload, the ChannelManager identified the failed payment and queued up the
-			// PaymentSent (or not, if `persist_manager_post_event` resulted in us detecting we
-			// already did that) and corresponding ChannelMonitorUpdate to mark the payment
-			// handled, but while processing the pending `MonitorEvent`s (which were not processed
-			// before the monitor was persisted) we will end up with a duplicate
-			// ChannelMonitorUpdate.
-			check_added_monitors(&nodes[0], 2);
+		if !nodes[0].node.test_persistent_monitor_events_enabled() {
+			if persist_manager_post_event {
+				// After reload, the ChannelManager identified the failed payment and queued up the
+				// PaymentSent (or not, if `persist_manager_post_event` resulted in us detecting we
+				// already did that) and corresponding ChannelMonitorUpdate to mark the payment
+				// handled, but while processing the pending `MonitorEvent`s (which were not processed
+				// before the monitor was persisted) we will end up with a duplicate
+				// ChannelMonitorUpdate.
+				check_added_monitors(&nodes[0], 2);
+			} else {
+				// ...unless we got the PaymentSent event, in which case we have de-duplication logic
+				// preventing a redundant monitor event.
+				check_added_monitors(&nodes[0], 1);
+			}
 		} else {
-			// ...unless we got the PaymentSent event, in which case we have de-duplication logic
-			// preventing a redundant monitor event.
-			check_added_monitors(&nodes[0], 1);
+			check_added_monitors(&nodes[0], 0);
 		}
 	}
 
@@ -4198,10 +4202,14 @@ fn do_no_missing_sent_on_reload(persist_manager_with_payment: bool, at_midpoint:
 	check_added_monitors(&nodes[0], 0);
 	nodes[0].node.test_process_background_events();
 	check_added_monitors(&nodes[0], 1);
-	// Then once we process the PaymentSent event we'll apply a monitor update to remove the
-	// pending payment from being re-hydrated on the next startup.
 	let events = nodes[0].node.get_and_clear_pending_events();
-	check_added_monitors(&nodes[0], 1);
+	if nodes[0].node.test_persistent_monitor_events_enabled() {
+		check_added_monitors(&nodes[0], 0);
+	} else {
+		// Once we process the PaymentSent event we'll apply a monitor update to remove the
+		// pending payment from being re-hydrated on the next startup.
+		check_added_monitors(&nodes[0], 1);
+	}
 	assert_eq!(events.len(), 3, "{events:?}");
 	if let Event::ChannelClosed { reason: ClosureReason::OutdatedChannelManager, .. } = events[0] {
 	} else {

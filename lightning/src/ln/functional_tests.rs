@@ -1629,7 +1629,10 @@ pub fn test_htlc_on_chain_success() {
 	check_closed_broadcast(&nodes[0], 1, true);
 	check_added_monitors(&nodes[0], 1);
 	let events = nodes[0].node.get_and_clear_pending_events();
-	check_added_monitors(&nodes[0], 2);
+	check_added_monitors(
+		&nodes[0],
+		if nodes[0].node.test_persistent_monitor_events_enabled() { 0 } else { 2 },
+	);
 	assert_eq!(events.len(), 5);
 	let mut first_claimed = false;
 	for event in events {

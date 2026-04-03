@@ -1984,7 +1984,12 @@ fn do_test_splice_commitment_broadcast(splice_status: SpliceStatus, claim_htlcs:
 			2
 		);
 	}
-	check_added_monitors(&nodes[0], 2); // Two `ReleasePaymentComplete` monitor updates
+	let expected_mons = if nodes[0].node.test_persistent_monitor_events_enabled() && claim_htlcs {
+		0
+	} else {
+		2 // Two `ReleasePaymentComplete` monitor updates
+	};
+	check_added_monitors(&nodes[0], expected_mons);
 
 	// When the splice never confirms and we see a commitment transaction broadcast and confirm for
 	// the current funding instead, we should expect to see an `Event::DiscardFunding` for the
