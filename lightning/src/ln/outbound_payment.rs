@@ -2248,7 +2248,7 @@ impl OutboundPayments {
 	#[rustfmt::skip]
 	pub(super) fn claim_htlc<L: Logger>(
 		&self, payment_id: PaymentId, payment_preimage: PaymentPreimage, bolt12_invoice: Option<PaidBolt12Invoice>,
-		session_priv: SecretKey, path: Path, from_onchain: bool, ev_completion_action: &mut Option<EventCompletionAction>,
+		session_priv: SecretKey, path: Path, from_onchain: bool, best_block_height: u32, ev_completion_action: &mut Option<EventCompletionAction>,
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
 		logger: &WithContext<L>,
 	)
