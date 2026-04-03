@@ -153,7 +153,10 @@ fn build_response<T: secp256k1::Signing + secp256k1::Verification>(
 	.unwrap();
 
 	let payment_hash = PaymentHash([42; 32]);
-	invoice_request.respond_with(vec![payment_path], payment_hash)?.build()
+	let conversion = FuzzCurrencyConversion;
+	invoice_request
+		.respond_with(&conversion, vec![payment_path], payment_hash)?
+		.build()
 }
 
 pub fn invoice_request_deser_test<Out: test_logger::Output>(data: &[u8], out: Out) {

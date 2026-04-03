@@ -43,7 +43,7 @@ use crate::offers::invoice_request::{
 	InvoiceRequest, InvoiceRequestBuilder, InvoiceRequestVerifiedFromOffer, VerifiedInvoiceRequest,
 };
 use crate::offers::nonce::Nonce;
-use crate::offers::offer::{Amount, DerivedMetadata, Offer, OfferBuilder};
+use crate::offers::offer::{DerivedMetadata, Offer, OfferBuilder};
 use crate::offers::parse::Bolt12SemanticError;
 use crate::offers::refund::{Refund, RefundBuilder};
 use crate::offers::static_invoice::{StaticInvoice, StaticInvoiceBuilder};
@@ -822,8 +822,9 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 	/// by the [`OffersMessageFlow`], and any corresponding [`Bolt12Invoice`] received in response
 	/// can be verified using [`Self::verify_bolt12_invoice`].
 	///
-	/// The provided [`CurrencyConversion`] is used to resolve any currency-denominated offer amount
-	/// while building the request.
+	/// The provided [`CurrencyConversion`] is retained on the [`InvoiceRequest`] so
+	/// currency-denominated offer amounts can later be resolved when
+	/// [`InvoiceRequest::amount_msats`] is evaluated.
 	///
 	/// # Nonce
 	/// The nonce is used to create a unique [`InvoiceRequest::payer_metadata`] for the invoice request.
@@ -1715,9 +1716,10 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 		// Set the invoice to expire at the same time as the offer. We aim to update this invoice as
 		// often as possible, so there shouldn't be any reason to have it expire earlier than the
 		// offer.
+		let amount_msat = offer.resolve_offer_amount(currency_conversion).map_err(|_| ())?;
 		let payment_secret = inbound_payment::create_for_spontaneous_payment(
 			expanded_key,
-			None, // The async receive offers we create are always amount-less
+			amount_msat,
 			offer_relative_expiry,
 			duration_since_epoch.as_secs(),
 			None,
