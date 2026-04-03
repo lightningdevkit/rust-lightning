@@ -2677,6 +2677,46 @@ mod tests {
 	}
 
 	#[test]
+	fn responding_to_parsed_fiat_request_rejects_insufficient_explicit_amount() {
+		let expanded_key = ExpandedKey::new([42; 32]);
+		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
+		let secp_ctx = Secp256k1::new();
+		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
+
+		let invoice_request = OfferBuilder::new(recipient_pubkey())
+			.description("foo".to_string())
+			.amount(
+				Amount::Currency {
+					iso4217_code: CurrencyCode::new(*b"USD").unwrap(),
+					amount: 1000,
+				},
+				&conversion,
+			)
+			.unwrap()
+			.build_unchecked()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id, &conversion)
+			.unwrap()
+			.amount_msats_unchecked(999_999)
+			.build_unchecked_and_sign();
+
+		let mut buffer = Vec::new();
+		invoice_request.write(&mut buffer).unwrap();
+		let parsed_invoice_request = InvoiceRequest::try_from(buffer).unwrap();
+
+		match parsed_invoice_request.respond_with_no_std(
+			&conversion,
+			payment_paths(),
+			payment_hash(),
+			now(),
+		) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, Bolt12SemanticError::InsufficientAmount),
+		}
+	}
+
+	#[test]
 	fn parses_invoice_request_with_quantity() {
 		let expanded_key = ExpandedKey::new([42; 32]);
 		let entropy = FixedEntropy {};
