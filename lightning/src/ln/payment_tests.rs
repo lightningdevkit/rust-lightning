@@ -2405,7 +2405,11 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 			},
 			_ => panic!("Unexpected event"),
 		}
-		check_added_monitors(&nodes[0], 1);
+		if nodes[0].node.test_persistent_monitor_events_enabled() {
+			check_added_monitors(&nodes[0], 0);
+		} else {
+			check_added_monitors(&nodes[0], 1);
+		}
 	} else if test == InterceptTest::Timeout {
 		let mut block = create_dummy_block(nodes[0].best_block_hash(), 42, Vec::new());
 		connect_block(&nodes[0], &block);
@@ -2610,7 +2614,7 @@ fn do_accept_underpaying_htlcs_config(num_mpp_parts: usize) {
 	let total_fee_msat = pass_claimed_payment_along_route(args);
 	// The sender doesn't know that the penultimate hop took an extra fee.
 	let amt = total_fee_msat - skimmed_fee_msat * num_mpp_parts as u64;
-	expect_payment_sent(&nodes[0], payment_preimage, Some(Some(amt)), true, true);
+	expect_payment_sent!(nodes[0], payment_preimage, Some(amt));
 }
 
 #[derive(PartialEq)]
@@ -4791,7 +4795,7 @@ fn do_test_custom_tlvs_consistency(
 			ClaimAlongRouteArgs::new(&nodes[0], &[path_a, &[&nodes[2], &nodes[3]]], preimage)
 				.with_custom_tlvs(expected_tlvs),
 		);
-		expect_payment_sent(&nodes[0], preimage, Some(Some(2000)), true, true);
+		expect_payment_sent!(nodes[0], preimage, Some(2000));
 	} else {
 		// Expect fail back
 		let expected_destinations = [HTLCHandlingFailureType::Receive { payment_hash: hash }];
@@ -5589,7 +5593,10 @@ fn do_bolt11_multi_node_mpp(use_bolt11_pay: bool) {
 	}
 
 	let payment_sent = nodes[0].node.get_and_clear_pending_events();
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(
+		&nodes[0],
+		if nodes[0].node.test_persistent_monitor_events_enabled() { 0 } else { 1 },
+	);
 
 	assert_eq!(payment_sent.len(), 2, "{payment_sent:?}");
 	if let Event::PaymentSent { payment_id, payment_hash, amount_msat, fee_paid_msat, .. } =
@@ -5618,7 +5625,10 @@ fn do_bolt11_multi_node_mpp(use_bolt11_pay: bool) {
 	}
 
 	let payment_sent = nodes[1].node.get_and_clear_pending_events();
-	check_added_monitors(&nodes[1], 1);
+	check_added_monitors(
+		&nodes[1],
+		if nodes[1].node.test_persistent_monitor_events_enabled() { 0 } else { 1 },
+	);
 
 	assert_eq!(payment_sent.len(), 2, "{payment_sent:?}");
 	if let Event::PaymentSent { payment_id, payment_hash, amount_msat, fee_paid_msat, .. } =
@@ -5874,7 +5884,10 @@ fn bolt11_multi_node_mpp_with_retry() {
 	}
 
 	let payment_sent_a = nodes[0].node.get_and_clear_pending_events();
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(
+		&nodes[0],
+		if nodes[0].node.test_persistent_monitor_events_enabled() { 0 } else { 1 },
+	);
 
 	assert_eq!(payment_sent_a.len(), 2, "{payment_sent_a:?}");
 	if let Event::PaymentSent { payment_id, payment_hash, amount_msat, .. } = &payment_sent_a[0] {
@@ -5899,7 +5912,10 @@ fn bolt11_multi_node_mpp_with_retry() {
 	}
 
 	let payment_sent_b = nodes[1].node.get_and_clear_pending_events();
-	check_added_monitors(&nodes[1], 1);
+	check_added_monitors(
+		&nodes[1],
+		if nodes[1].node.test_persistent_monitor_events_enabled() { 0 } else { 1 },
+	);
 
 	assert_eq!(payment_sent_b.len(), 2, "{payment_sent_b:?}");
 	if let Event::PaymentSent { payment_id, payment_hash, amount_msat, .. } = &payment_sent_b[0] {

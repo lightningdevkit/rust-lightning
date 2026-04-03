@@ -10022,11 +10022,17 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					};
 					Some(EventCompletionAction::ReleasePaymentCompleteChannelMonitorUpdate(release))
 				} else {
-					Some(EventCompletionAction::ReleaseRAAChannelMonitorUpdate {
-						channel_funding_outpoint: Some(next_channel_outpoint),
-						channel_id: next_channel_id,
-						counterparty_node_id: path.hops[0].pubkey,
-					})
+					if self.persistent_monitor_events {
+						monitor_event_id.map(|event_id| EventCompletionAction::AckMonitorEvent {
+							event_id: MonitorEventSource { channel_id: next_channel_id, event_id },
+						})
+					} else {
+						Some(EventCompletionAction::ReleaseRAAChannelMonitorUpdate {
+							channel_funding_outpoint: Some(next_channel_outpoint),
+							channel_id: next_channel_id,
+							counterparty_node_id: path.hops[0].pubkey,
+						})
+					}
 				};
 				let logger = WithContext::for_payment(
 					&self.logger,
@@ -10048,6 +10054,25 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					&self.pending_events,
 					&logger,
 				);
+
+				if matches!(
+					ev_completion_action,
+					Some(EventCompletionAction::AckMonitorEvent { .. })
+				) {
+					// If the `PaymentSent` for this redundant claim is still pending, add the event
+					// completion action here to ensure the `PaymentSent` will always be regenerated until it
+					// is processed by the user -- as long as the monitor event corresponding to this
+					// completion action is not acked, it will continue to be re-provided on startup.
+					let mut pending_events = self.pending_events.lock().unwrap();
+					for (ev, act_opt) in pending_events.iter_mut() {
+						let found_payment_sent = matches!(ev, Event::PaymentSent { payment_id: Some(id), .. } if *id == payment_id);
+						if found_payment_sent && act_opt.is_none() {
+							*act_opt = ev_completion_action.take();
+							break;
+						}
+					}
+				}
+
 				// If an event was generated, `claim_htlc` set `ev_completion_action` to None, if
 				// not, we should go ahead and run it now (as the claim was duplicative), at least
 				// if a PaymentClaimed event with the same action isn't already pending.
@@ -12882,6 +12907,13 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		})
 	}
 
+	/// Returns `true` if `ChannelManager::persistent_monitor_events` is enabled. This flag will only
+	/// be set randomly in tests for now.
+	#[cfg(any(test, feature = "_test_utils"))]
+	pub fn test_persistent_monitor_events_enabled(&self) -> bool {
+		self.persistent_monitor_events
+	}
+
 	#[cfg(any(test, feature = "_test_utils"))]
 	pub(crate) fn test_raa_monitor_updates_held(
 		&self, counterparty_node_id: PublicKey, channel_id: ChannelId,
@@ -13588,22 +13620,29 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 										.channel_by_id
 										.contains_key(&channel_id)
 								});
-							// Claim the funds from the previous hop, if there is one. Because this is in response to a
-							// chain event, no attribution data is available.
-							self.claim_funds_internal(
-								htlc_update.source,
-								preimage,
-								htlc_update.htlc_value_satoshis.map(|v| v * 1000),
-								None,
-								from_onchain,
-								counterparty_node_id,
-								funding_outpoint,
-								channel_id,
-								htlc_update.user_channel_id,
-								None,
-								None,
-								Some(event_id),
-							);
+							let we_are_sender =
+								matches!(htlc_update.source, HTLCSource::OutboundRoute { .. });
+							if from_onchain | we_are_sender {
+								// Claim the funds from the previous hop, if there is one. In the future we can
+								// store attribution data in the `ChannelMonitor` and provide it here.
+								self.claim_funds_internal(
+									htlc_update.source,
+									preimage,
+									htlc_update.htlc_value_satoshis.map(|v| v * 1000),
+									None,
+									from_onchain,
+									counterparty_node_id,
+									funding_outpoint,
+									channel_id,
+									htlc_update.user_channel_id,
+									None,
+									None,
+									Some(event_id),
+								);
+							}
+							if from_onchain | !we_are_sender {
+								self.chain_monitor.ack_monitor_event(monitor_event_source);
+							}
 						} else {
 							log_trace!(logger, "Failing HTLC from our monitor");
 							let failure_reason = LocalHTLCFailureReason::OnChainTimeout;
@@ -13623,8 +13662,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								failure_type,
 								completion_update,
 							);
+							self.chain_monitor.ack_monitor_event(monitor_event_source);
 						}
-						self.chain_monitor.ack_monitor_event(monitor_event_source);
 					},
 					MonitorEvent::HolderForceClosed(_)
 					| MonitorEvent::HolderForceClosedWithInfo { .. } => {
@@ -19053,6 +19092,14 @@ impl<
 							if *channel_htlc_source == monitor_htlc_source {
 								found_htlc = true;
 								break;
+							}
+						}
+						if persistent_monitor_events {
+							// This will not be necessary once we have persistent events for HTLC failures, we
+							// can delete this whole loop and wait to re-process the pending monitor events
+							// rather than failing them proactively below.
+							if monitor.has_pending_event_for_htlc(&channel_htlc_source) {
+								found_htlc = true;
 							}
 						}
 						if !found_htlc {

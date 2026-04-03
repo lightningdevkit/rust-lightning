@@ -3074,7 +3074,7 @@ macro_rules! expect_payment_sent {
 			$expected_payment_preimage,
 			$expected_fee_msat_opt.map(|o| Some(o)),
 			$expect_paths,
-			true,
+			if $node.node.test_persistent_monitor_events_enabled() { false } else { true },
 		)
 	};
 }
@@ -4235,7 +4235,15 @@ pub fn claim_payment_along_route(
 		do_claim_payment_along_route(args) + expected_extra_total_fees_msat;
 
 	if !skip_last {
-		expect_payment_sent!(origin_node, payment_preimage, Some(expected_total_fee_msat))
+		let expect_post_ev_mon_update =
+			if origin_node.node.test_persistent_monitor_events_enabled() { false } else { true };
+		expect_payment_sent(
+			origin_node,
+			payment_preimage,
+			Some(Some(expected_total_fee_msat)),
+			true,
+			expect_post_ev_mon_update,
+		)
 	} else {
 		(None, Vec::new())
 	}

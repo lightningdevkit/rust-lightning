@@ -2231,6 +2231,10 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		self.inner.lock().unwrap().persistent_events_enabled = enabled;
 	}
 
+	pub(crate) fn has_pending_event_for_htlc(&self, source: &HTLCSource) -> bool {
+		self.inner.lock().unwrap().has_pending_event_for_htlc(source)
+	}
+
 	/// Copies [`MonitorEvent`] state from `other` into `self`.
 	/// Used in tests to align transient runtime state before equality comparison after a
 	/// serialization round-trip.
@@ -3824,20 +3828,34 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		self.prev_holder_htlc_data = Some(htlc_data);
 
 		for (claimed_htlc_id, claimed_preimage) in claimed_htlcs {
-			#[cfg(debug_assertions)]
-			{
-				let cur_counterparty_htlcs = self
-					.funding
-					.counterparty_claimable_outpoints
-					.get(&self.funding.current_counterparty_commitment_txid.unwrap())
-					.unwrap();
-				assert!(cur_counterparty_htlcs.iter().any(|(_, source_opt)| {
+			let htlc_opt = self
+				.funding
+				.counterparty_claimable_outpoints
+				.get(&self.funding.current_counterparty_commitment_txid.unwrap())
+				.unwrap()
+				.iter()
+				.find_map(|(htlc, source_opt)| {
 					if let Some(source) = source_opt {
-						SentHTLCId::from_source(source) == *claimed_htlc_id
-					} else {
-						false
+						if SentHTLCId::from_source(source) == *claimed_htlc_id {
+							return Some((htlc, source));
+						}
 					}
-				}));
+					None
+				});
+			debug_assert!(htlc_opt.is_some());
+			if self.persistent_events_enabled {
+				if let Some((htlc, source)) = htlc_opt {
+					// If persistent_events_enabled is set, the ChannelMonitor is responsible for providing
+					// off-chain resolutions of HTLCs to the ChannelManager, will re-provide this event on
+					// startup until it is explicitly acked.
+					self.push_monitor_event(MonitorEvent::HTLCEvent(HTLCUpdate {
+						payment_hash: htlc.payment_hash,
+						payment_preimage: Some(*claimed_preimage),
+						source: *source.clone(),
+						htlc_value_satoshis: Some(htlc.amount_msat),
+						user_channel_id: self.user_channel_id,
+					}));
+				}
 			}
 			self.counterparty_fulfilled_htlcs.insert(*claimed_htlc_id, *claimed_preimage);
 		}
@@ -4653,6 +4671,16 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		self.provided_monitor_events.retain(|(id, _)| *id != event_id);
 		// If this event was generated prior to a restart, it may be in this queue instead
 		self.pending_monitor_events.retain(|(id, _)| *id != event_id);
+	}
+
+	fn has_pending_event_for_htlc(&self, htlc: &HTLCSource) -> bool {
+		let htlc_id = SentHTLCId::from_source(htlc);
+		self.pending_monitor_events.iter().any(|(_, ev)| {
+			if let MonitorEvent::HTLCEvent(upd) = ev {
+				return htlc_id == SentHTLCId::from_source(&upd.source);
+			}
+			false
+		})
 	}
 
 	fn get_and_clear_pending_monitor_events(&mut self) -> Vec<(u64, MonitorEvent)> {

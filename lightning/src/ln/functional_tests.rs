@@ -1358,6 +1358,10 @@ pub fn do_test_multiple_package_conflicts(p2a_anchor: bool) {
 	};
 	assert_eq!(updates.update_fulfill_htlcs.len(), 1);
 	nodes[0].node.handle_update_fulfill_htlc(node_b_id, updates.update_fulfill_htlcs.remove(0));
+	if nodes[0].node.test_persistent_monitor_events_enabled() {
+		// If persistent_monitor_events is enabled, the RAA monitor update is not blocked.
+		check_added_monitors(&nodes[0], 1);
+	}
 	do_commitment_signed_dance(&nodes[0], &nodes[1], &updates.commitment_signed, false, false);
 	expect_payment_sent!(nodes[0], preimage_2);
 
@@ -2672,7 +2676,10 @@ pub fn test_simple_peer_disconnect() {
 			_ => panic!("Unexpected event"),
 		}
 	}
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(
+		&nodes[0],
+		if nodes[0].node.test_persistent_monitor_events_enabled() { 0 } else { 1 },
+	);
 
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage_4);
 	fail_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_hash_6);
@@ -4295,7 +4302,7 @@ pub fn test_duplicate_payment_hash_one_failure_one_success() {
 
 	nodes[0].node.handle_update_fulfill_htlc(node_b_id, updates.update_fulfill_htlcs.remove(0));
 	do_commitment_signed_dance(&nodes[0], &nodes[1], &updates.commitment_signed, false, false);
-	expect_payment_sent(&nodes[0], our_payment_preimage, None, true, true);
+	expect_payment_sent!(&nodes[0], our_payment_preimage);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -8574,7 +8581,9 @@ pub fn test_inconsistent_mpp_params() {
 	pass_along_path(&nodes[0], path_b, real_amt, hash, Some(payment_secret), event, true, None);
 
 	do_claim_payment_along_route(ClaimAlongRouteArgs::new(&nodes[0], &[path_a, path_b], preimage));
-	expect_payment_sent(&nodes[0], preimage, Some(None), true, true);
+	let expect_post_ev_mon_update =
+		if nodes[0].node.test_persistent_monitor_events_enabled() { false } else { true };
+	expect_payment_sent(&nodes[0], preimage, Some(None), true, expect_post_ev_mon_update);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -9932,7 +9941,10 @@ fn do_test_multi_post_event_actions(do_reload: bool) {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let (persister, chain_monitor);
-	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let mut cfg = test_default_channel_config();
+	// If persistent_monitor_events is enabled, RAAs will not be blocked on events.
+	cfg.override_persistent_monitor_events = Some(false);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[Some(cfg), None, None]);
 	let node_a_reload;
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 

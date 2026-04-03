@@ -1296,7 +1296,7 @@ fn do_manager_persisted_pre_outbound_edge_forward(intercept_htlc: bool) {
 	expect_payment_claimable!(nodes[2], payment_hash, payment_secret, amt_msat, None, nodes[2].node.get_our_node_id());
 	let path: &[&[_]] = &[&[&nodes[1], &nodes[2]]];
 	do_claim_payment_along_route(ClaimAlongRouteArgs::new(&nodes[0], path, payment_preimage));
-	expect_payment_sent(&nodes[0], payment_preimage, None, true, true);
+	expect_payment_sent!(&nodes[0], payment_preimage);
 }
 
 #[test]
@@ -1354,7 +1354,7 @@ fn test_manager_persisted_post_outbound_edge_forward() {
 	expect_payment_claimable!(nodes[2], payment_hash, payment_secret, amt_msat, None, nodes[2].node.get_our_node_id());
 	let path: &[&[_]] = &[&[&nodes[1], &nodes[2]]];
 	do_claim_payment_along_route(ClaimAlongRouteArgs::new(&nodes[0], path, payment_preimage));
-	expect_payment_sent(&nodes[0], payment_preimage, None, true, true);
+	expect_payment_sent!(nodes[0], payment_preimage);
 }
 
 #[test]
@@ -1458,7 +1458,7 @@ fn test_manager_persisted_post_outbound_edge_holding_cell() {
 	// Claim the a->b->c payment on node_c.
 	let path: &[&[_]] = &[&[&nodes[1], &nodes[2]]];
 	do_claim_payment_along_route(ClaimAlongRouteArgs::new(&nodes[0], path, payment_preimage));
-	expect_payment_sent(&nodes[0], payment_preimage, None, true, true);
+	expect_payment_sent!(&nodes[0], payment_preimage);
 
 	// Claim the c->b payment on node_b.
 	nodes[1].node.claim_funds(payment_preimage_2);
@@ -1467,7 +1467,7 @@ fn test_manager_persisted_post_outbound_edge_holding_cell() {
 	let mut update = get_htlc_update_msgs(&nodes[1], &nodes[2].node.get_our_node_id());
 	nodes[2].node.handle_update_fulfill_htlc(nodes[1].node.get_our_node_id(), update.update_fulfill_htlcs.remove(0));
 	do_commitment_signed_dance(&nodes[2], &nodes[1], &update.commitment_signed, false, false);
-	expect_payment_sent(&nodes[2], payment_preimage_2, None, true, true);
+	expect_payment_sent!(&nodes[2], payment_preimage_2);
 }
 
 #[test]
@@ -1879,7 +1879,7 @@ fn outbound_removed_holding_cell_resolved_no_double_forward() {
 	reconnect_nodes(reconnect_args);
 
 	// nodes[0] should now have received the fulfill and generate PaymentSent.
-	expect_payment_sent(&nodes[0], payment_preimage, None, true, true);
+	expect_payment_sent!(&nodes[0], payment_preimage);
 }
 
 #[test]
@@ -1983,7 +1983,7 @@ fn test_reload_node_with_preimage_in_monitor_claims_htlc() {
 	reconnect_nodes(reconnect_args);
 
 	// nodes[0] should now have received the fulfill and generate PaymentSent.
-	expect_payment_sent(&nodes[0], payment_preimage, None, true, true);
+	expect_payment_sent!(&nodes[0], payment_preimage);
 }
 
 #[test]
@@ -2244,5 +2244,5 @@ fn test_reload_with_mpp_claims_on_same_channel() {
 	reconnect_nodes(reconnect_args);
 
 	// nodes[0] should now have received both fulfills and generate PaymentSent.
-	expect_payment_sent(&nodes[0], payment_preimage, None, true, true);
+	expect_payment_sent!(&nodes[0], payment_preimage);
 }

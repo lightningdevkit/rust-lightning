@@ -2108,7 +2108,7 @@ fn monitor_update_claim_fail_no_response() {
 	let mut bs_updates = get_htlc_update_msgs(&nodes[1], &node_a_id);
 	nodes[0].node.handle_update_fulfill_htlc(node_b_id, bs_updates.update_fulfill_htlcs.remove(0));
 	do_commitment_signed_dance(&nodes[0], &nodes[1], &bs_updates.commitment_signed, false, false);
-	expect_payment_sent!(nodes[0], payment_preimage_1);
+	expect_payment_sent!(&nodes[0], payment_preimage_1);
 
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_2);
 }
@@ -3450,7 +3450,10 @@ fn do_test_blocked_chan_preimage_release(completion_mode: BlockedUpdateComplMode
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let persister;
 	let new_chain_mon;
-	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let mut cfg = test_default_channel_config();
+	// If persistent_monitor_events is enabed, monitor updates will never be blocked.
+	cfg.override_persistent_monitor_events = Some(false);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, Some(cfg.clone()), Some(cfg)]);
 	let nodes_1_reload;
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
@@ -3763,7 +3766,7 @@ fn do_test_inverted_mon_completion_order(
 	);
 
 	// Finally, check that the payment was, ultimately, seen as sent by node A.
-	expect_payment_sent(&nodes[0], payment_preimage, None, true, true);
+	expect_payment_sent!(&nodes[0], payment_preimage);
 }
 
 #[test]
@@ -4256,7 +4259,7 @@ fn do_test_glacial_peer_cant_hang(hold_chan_a: bool) {
 		nodes[0].node.handle_update_fulfill_htlc(node_b_id, update_fulfill);
 		let commitment = &a_update[0].commitment_signed;
 		do_commitment_signed_dance(&nodes[0], &nodes[1], commitment, false, false);
-		expect_payment_sent(&nodes[0], payment_preimage, None, true, true);
+		expect_payment_sent!(nodes[0], payment_preimage);
 		expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], Some(1000), false, false);
 
 		pass_along_path(
@@ -4936,6 +4939,7 @@ fn native_async_persist() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let persistent_monitor_events = nodes[0].node.test_persistent_monitor_events_enabled();
 
 	let (_, _, chan_id, funding_tx) = create_announced_chan_between_nodes(&nodes, 0, 1);
 
@@ -5081,7 +5085,16 @@ fn native_async_persist() {
 	assert_eq!(update_status, ChannelMonitorUpdateStatus::InProgress);
 
 	persist_futures.poll_futures();
-	assert_eq!(async_chain_monitor.release_pending_monitor_events().len(), 0);
+	let events = async_chain_monitor.release_pending_monitor_events();
+	if persistent_monitor_events {
+		// With persistent monitor events, the LatestHolderCommitmentTXInfo update containing
+		// claimed_htlcs generates an HTLCEvent with the preimage.
+		assert_eq!(events.len(), 1);
+		assert_eq!(events[0].2.len(), 1);
+		assert!(matches!(events[0].2[0].1, MonitorEvent::HTLCEvent(..)));
+	} else {
+		assert!(events.is_empty());
+	}
 
 	let pending_writes = kv_store.list_pending_async_writes(
 		CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
@@ -5223,7 +5236,7 @@ fn test_mpp_claim_to_holding_cell() {
 	let claims = vec![(b_claim_msgs, node_b_id), (c_claim_msgs, node_c_id)];
 	pass_claimed_payment_along_route_from_ev(250_000, claims, args);
 
-	expect_payment_sent(&nodes[0], preimage_1, None, true, true);
+	expect_payment_sent!(nodes[0], preimage_1);
 
 	expect_and_process_pending_htlcs(&nodes[3], false);
 	expect_payment_claimable!(nodes[3], paymnt_hash_2, payment_secret_2, 400_000);
