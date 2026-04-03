@@ -4603,18 +4603,49 @@ fn test_splice_rbf_insufficient_feerate() {
 	let tx_abort = get_event_msg!(nodes[1], MessageSendEvent::SendTxAbort, node_id_0);
 	assert_eq!(tx_abort.channel_id, channel_id);
 
-	// Node 0 echoes tx_abort and exits quiescence.
+	// Queue a payment while quiescent. It should go to the holding cell and be freed once
+	// quiescence is exited by the tx_abort exchange.
+	let (route, payment_hash, _payment_preimage, payment_secret) =
+		get_route_and_payment_hash!(nodes[0], nodes[1], 1_000_000);
+	let onion = RecipientOnionFields::secret_only(payment_secret, 1_000_000);
+	let payment_id = PaymentId(payment_hash.0);
+	nodes[0].node.send_payment_with_route(route, payment_hash, onion, payment_id).unwrap();
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+
+	// Node 0 echoes tx_abort and exits quiescence, freeing the holding cell.
 	nodes[0].node.handle_tx_abort(node_id_1, &tx_abort);
-	let tx_abort_echo = get_event_msg!(nodes[0], MessageSendEvent::SendTxAbort, node_id_1);
 
 	let events = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 2);
+	assert_eq!(events.len(), 2, "{events:?}");
 	assert!(
 		matches!(&events[0], Event::SpliceFailed { channel_id: cid, .. } if *cid == channel_id)
 	);
 	assert!(
 		matches!(&events[1], Event::DiscardFunding { channel_id: cid, .. } if *cid == channel_id)
 	);
+
+	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 2, "{msg_events:?}");
+	let tx_abort_echo = match &msg_events[0] {
+		MessageSendEvent::SendTxAbort { msg, .. } => msg.clone(),
+		other => panic!("Expected SendTxAbort, got {:?}", other),
+	};
+	match &msg_events[1] {
+		MessageSendEvent::UpdateHTLCs { updates, .. } => {
+			assert_eq!(updates.update_add_htlcs.len(), 1);
+		},
+		other => panic!("Expected UpdateHTLCs, got {:?}", other),
+	}
+
+	// Complete the HTLC commitment exchange so the channel is ready for the next RBF attempt.
+	// The holding cell free generated a monitor update for the outgoing HTLC.
+	check_added_monitors(&nodes[0], 1);
+	if let MessageSendEvent::UpdateHTLCs { updates, .. } = &msg_events[1] {
+		nodes[1].node.handle_update_add_htlc(node_id_0, &updates.update_add_htlcs[0]);
+		do_commitment_signed_dance(&nodes[1], &nodes[0], &updates.commitment_signed, false, false);
+	} else {
+		unreachable!();
+	}
 
 	// Node 1 handles the echo (no-op since it already aborted).
 	nodes[1].node.handle_tx_abort(node_id_0, &tx_abort_echo);
