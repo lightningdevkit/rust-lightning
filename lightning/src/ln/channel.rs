@@ -30,6 +30,7 @@ use crate::blinded_path::message::BlindedMessagePath;
 use crate::chain::chaininterface::{
 	ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator, TransactionType,
 };
+use crate::chain::chainmonitor::MonitorEventSource;
 use crate::chain::channelmonitor::{
 	ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, CommitmentHTLCData,
 	LATENCY_GRACE_PERIOD_BLOCKS,
@@ -7482,8 +7483,14 @@ where
 		// (see equivalent if condition there).
 		assert!(!self.context.channel_state.can_generate_new_commitment());
 		let mon_update_id = self.context.latest_monitor_update_id; // Forget the ChannelMonitor update
-		let fulfill_resp =
-			self.get_update_fulfill_htlc(htlc_id_arg, payment_preimage_arg, None, None, logger);
+		let fulfill_resp = self.get_update_fulfill_htlc(
+			htlc_id_arg,
+			payment_preimage_arg,
+			None,
+			None,
+			None,
+			logger,
+		);
 		self.context.latest_monitor_update_id = mon_update_id;
 		if let UpdateFulfillFetch::NewClaim { update_blocked, .. } = fulfill_resp {
 			assert!(update_blocked); // The HTLC must have ended up in the holding cell.
@@ -7493,7 +7500,7 @@ where
 	fn get_update_fulfill_htlc<L: Logger>(
 		&mut self, htlc_id_arg: u64, payment_preimage_arg: PaymentPreimage,
 		payment_info: Option<PaymentClaimDetails>, attribution_data: Option<AttributionData>,
-		logger: &L,
+		monitor_event_id: Option<MonitorEventSource>, logger: &L,
 	) -> UpdateFulfillFetch {
 		// Either ChannelReady got set (which means it won't be unset) or there is no way any
 		// caller thought we could have something claimed (cause we wouldn't have accepted in an
@@ -7644,7 +7651,7 @@ where
 	pub fn get_update_fulfill_htlc_and_commit<L: Logger>(
 		&mut self, htlc_id: u64, payment_preimage: PaymentPreimage,
 		payment_info: Option<PaymentClaimDetails>, attribution_data: Option<AttributionData>,
-		logger: &L,
+		monitor_event_id: Option<MonitorEventSource>, logger: &L,
 	) -> UpdateFulfillCommitFetch {
 		let release_cs_monitor = self.context.blocked_monitor_updates.is_empty();
 		match self.get_update_fulfill_htlc(
@@ -7652,6 +7659,7 @@ where
 			payment_preimage,
 			payment_info,
 			attribution_data,
+			monitor_event_id,
 			logger,
 		) {
 			UpdateFulfillFetch::NewClaim {
@@ -8800,6 +8808,7 @@ where
 							*payment_preimage,
 							None,
 							attribution_data.clone(),
+							None,
 							logger,
 						);
 						let mut additional_monitor_update =

@@ -9777,6 +9777,7 @@ impl<
 						payment_preimage,
 						payment_info,
 						attribution_data,
+						monitor_event_id,
 						&&logger,
 					);
 
