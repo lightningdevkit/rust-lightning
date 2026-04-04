@@ -548,6 +548,7 @@ enum HTLCUpdateAwaitingACK {
 		payment_preimage: PaymentPreimage,
 		attribution_data: Option<AttributionData>,
 		htlc_id: u64,
+		monitor_event_id: Option<MonitorEventSource>,
 	},
 	FailHTLC {
 		htlc_id: u64,
@@ -7612,6 +7613,7 @@ where
 				payment_preimage: payment_preimage_arg,
 				htlc_id: htlc_id_arg,
 				attribution_data,
+				monitor_event_id,
 			});
 			return UpdateFulfillFetch::NewClaim {
 				monitor_update,
@@ -8792,6 +8794,7 @@ where
 						ref payment_preimage,
 						htlc_id,
 						ref attribution_data,
+						monitor_event_id,
 					} => {
 						// If an HTLC claim was previously added to the holding cell (via
 						// `get_update_fulfill_htlc`, then generating the claim message itself must
@@ -8808,7 +8811,7 @@ where
 							*payment_preimage,
 							None,
 							attribution_data.clone(),
-							None,
+							monitor_event_id,
 							logger,
 						);
 						let mut additional_monitor_update =
@@ -15576,6 +15579,7 @@ impl<SP: SignerProvider> Writeable for FundedChannel<SP> {
 					ref payment_preimage,
 					ref htlc_id,
 					ref attribution_data,
+					monitor_event_id: _, // Will be re-provided on startup
 				} => {
 					1u8.write(writer)?;
 					payment_preimage.write(writer)?;
@@ -16030,6 +16034,7 @@ impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
 					payment_preimage: Readable::read(reader)?,
 					htlc_id: Readable::read(reader)?,
 					attribution_data: None,
+					monitor_event_id: None,
 				},
 				2 => HTLCUpdateAwaitingACK::FailHTLC {
 					htlc_id: Readable::read(reader)?,
@@ -17569,6 +17574,7 @@ mod tests {
 			payment_preimage: PaymentPreimage([42; 32]),
 			htlc_id: 0,
 			attribution_data,
+			monitor_event_id: None,
 		};
 		let dummy_holding_cell_failed_htlc =
 			|htlc_id, attribution_data| HTLCUpdateAwaitingACK::FailHTLC {
