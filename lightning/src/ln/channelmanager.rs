@@ -1479,6 +1479,12 @@ pub(crate) enum MonitorUpdateCompletionAction {
 		blocking_action: RAAMonitorUpdateBlockingAction,
 		downstream_channel_id: ChannelId,
 	},
+	/// Indicates we should ack the set of monitor event ids via [`Watch::ack_monitor_event`].
+	///
+	/// This is generated when [`ChannelManager::persistent_monitor_events`] is enabled and we want
+	/// to avoid acking a monitor event until after an HTLC is fully removed via revoke_and_ack, to
+	/// ensure that the HTLC gets resolved even if we lose the holding cell.
+	AckMonitorEvents { event_ids: Vec<MonitorEventSource> },
 }
 
 impl_writeable_tlv_based_enum_upgradable!(MonitorUpdateCompletionAction,
@@ -1500,6 +1506,9 @@ impl_writeable_tlv_based_enum_upgradable!(MonitorUpdateCompletionAction,
 		(0, event, upgradable_option),
 		(1, downstream_counterparty_and_funding_outpoint, upgradable_required),
 	},
+	(3, AckMonitorEvents) => {
+		(1, event_ids, required_vec),
+	}
 );
 
 /// Contents of an [`Event::PaymentForwarded`], useful for parent structs to contain a forward
@@ -10457,6 +10466,11 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						Some(blocking_action),
 					);
 				},
+				MonitorUpdateCompletionAction::AckMonitorEvents { event_ids } => {
+					for id in event_ids {
+						self.chain_monitor.ack_monitor_event(id);
+					}
+				},
 			}
 		}
 
@@ -12992,7 +13006,16 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							*counterparty_node_id);
 						let (htlcs_to_fail, static_invoices, monitor_update_opt) = try_channel_entry!(self, peer_state,
 							chan.revoke_and_ack(&msg, &self.fee_estimator, &&logger, mon_update_blocked), chan_entry);
-						if let Some(monitor_update) = monitor_update_opt {
+						if let Some((monitor_update, monitor_events_to_ack)) = monitor_update_opt {
+							if !monitor_events_to_ack.is_empty() {
+								peer_state
+									.monitor_update_blocked_actions
+									.entry(msg.channel_id)
+									.or_default()
+									.push(MonitorUpdateCompletionAction::AckMonitorEvents {
+										event_ids: monitor_events_to_ack,
+									});
+							}
 							let funding_txo = funding_txo_opt
 								.expect("Funding outpoint must have been set for RAA handling to succeed");
 							if let Some(data) = self.handle_new_monitor_update(
