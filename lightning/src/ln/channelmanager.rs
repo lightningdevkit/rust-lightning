@@ -9535,6 +9535,7 @@ impl<
 					payment_preimage,
 					payment_info.clone(),
 					Some(attribution_data),
+					None,
 					|_, definitely_duplicate| {
 						debug_assert!(
 							!definitely_duplicate,
@@ -9583,6 +9584,7 @@ impl<
 		startup_replay: bool, next_channel_counterparty_node_id: PublicKey,
 		next_channel_outpoint: OutPoint, next_channel_id: ChannelId, hop_data: HTLCPreviousHopData,
 		attribution_data: Option<AttributionData>, send_timestamp: Option<Duration>,
+		monitor_event_id: Option<u64>,
 	) {
 		let _prev_channel_id = hop_data.channel_id;
 		let completed_blocker = RAAMonitorUpdateBlockingAction::from_prev_hop_data(&hop_data);
@@ -9606,6 +9608,8 @@ impl<
 			payment_preimage,
 			None,
 			Some(attribution_data),
+			monitor_event_id
+				.map(|event_id| MonitorEventSource { event_id, channel_id: next_channel_id }),
 			|htlc_claim_value_msat, definitely_duplicate| {
 				let chan_to_release = EventUnblockedChannel {
 					counterparty_node_id: next_channel_counterparty_node_id,
@@ -9697,7 +9701,7 @@ impl<
 	>(
 		&self, prev_hop: HTLCPreviousHopData, payment_preimage: PaymentPreimage,
 		payment_info: Option<PaymentClaimDetails>, attribution_data: Option<AttributionData>,
-		completion_action: ComplFunc,
+		monitor_event_id: Option<MonitorEventSource>, completion_action: ComplFunc,
 	) {
 		let counterparty_node_id = prev_hop.counterparty_node_id.or_else(|| {
 			let short_to_chan_info = self.short_to_chan_info.read().unwrap();
@@ -9723,6 +9727,7 @@ impl<
 			payment_preimage,
 			payment_info,
 			attribution_data,
+			monitor_event_id,
 			completion_action,
 		)
 	}
@@ -9735,7 +9740,7 @@ impl<
 	>(
 		&self, prev_hop: HTLCClaimSource, payment_preimage: PaymentPreimage,
 		payment_info: Option<PaymentClaimDetails>, attribution_data: Option<AttributionData>,
-		completion_action: ComplFunc,
+		monitor_event_id: Option<MonitorEventSource>, completion_action: ComplFunc,
 	) {
 		//TODO: Delay the claimed_funds relaying just like we do outbound relay!
 
@@ -10159,6 +10164,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					hop_data,
 					attribution_data,
 					send_timestamp,
+					monitor_event_id,
 				);
 			},
 			HTLCSource::TrampolineForward { previous_hop_data, .. } => {
@@ -10202,6 +10208,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						current_previous_hop_data,
 						attribution_data.clone(),
 						send_timestamp,
+						monitor_event_id,
 					);
 				}
 			},
@@ -20427,6 +20434,7 @@ impl<
 							channel_manager.claim_mpp_part(
 								part.into(),
 								payment_preimage,
+								None,
 								None,
 								None,
 								|_, _| {
