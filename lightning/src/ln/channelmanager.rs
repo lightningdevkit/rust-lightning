@@ -51,7 +51,7 @@ use crate::chain::channelmonitor::{
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Watch};
 use crate::events::{
-	self, ClosureReason, Event, EventHandler, EventsProvider, HTLCHandlingFailureType,
+	self, ClosureReason, Event, EventHandler, EventsProvider, HTLCHandlingFailureType, HTLCLocator,
 	InboundChannelFunds, PaymentFailureReason, ReplayEvent,
 };
 use crate::events::{FundingInfo, PaidBolt12Invoice};
@@ -1501,6 +1501,40 @@ impl_writeable_tlv_based_enum_upgradable!(MonitorUpdateCompletionAction,
 		(1, downstream_counterparty_and_funding_outpoint, upgradable_required),
 	},
 );
+
+/// Contents of an [`Event::PaymentForwarded`], useful for parent structs to contain a forward
+/// event specifically.
+#[derive(Debug)]
+pub(crate) struct ForwardEventContents {
+	prev_htlcs: Vec<HTLCLocator>,
+	next_htlcs: Vec<HTLCLocator>,
+	total_fee_earned_msat: Option<u64>,
+	skimmed_fee_msat: Option<u64>,
+	claim_from_onchain_tx: bool,
+	outbound_amount_forwarded_msat: Option<u64>,
+}
+
+impl From<ForwardEventContents> for Event {
+	fn from(contents: ForwardEventContents) -> Self {
+		Event::PaymentForwarded {
+			prev_htlcs: contents.prev_htlcs,
+			next_htlcs: contents.next_htlcs,
+			total_fee_earned_msat: contents.total_fee_earned_msat,
+			skimmed_fee_msat: contents.skimmed_fee_msat,
+			claim_from_onchain_tx: contents.claim_from_onchain_tx,
+			outbound_amount_forwarded_msat: contents.outbound_amount_forwarded_msat,
+		}
+	}
+}
+
+impl_writeable_tlv_based!(ForwardEventContents, {
+	   (1, prev_htlcs, required_vec),
+	   (3, next_htlcs, required_vec),
+	   (5, total_fee_earned_msat, option),
+	   (7, skimmed_fee_msat, option),
+	   (9, claim_from_onchain_tx, required),
+	   (11, outbound_amount_forwarded_msat, option),
+});
 
 /// Result of attempting to resume a channel after a monitor update completes while locks are held.
 /// Contains remaining work to be processed after locks are released.
@@ -9545,7 +9579,7 @@ impl<
 	/// single [`Event::PaymentForwarded`] event that represents the forward.
 	fn claim_funds_from_htlc_forward_hop(
 		&self, payment_preimage: PaymentPreimage,
-		make_payment_forwarded_event: impl FnOnce(Option<u64>) -> Option<events::Event>,
+		make_payment_forwarded_event: impl FnOnce(Option<u64>) -> Option<ForwardEventContents>,
 		startup_replay: bool, next_channel_counterparty_node_id: PublicKey,
 		next_channel_outpoint: OutPoint, next_channel_id: ChannelId, hop_data: HTLCPreviousHopData,
 		attribution_data: Option<AttributionData>, send_timestamp: Option<Duration>,
@@ -9643,15 +9677,9 @@ impl<
 					)
 				} else {
 					let event = make_payment_forwarded_event(htlc_claim_value_msat);
-					if let Some(ref payment_forwarded) = event {
-						debug_assert!(matches!(
-							payment_forwarded,
-							&events::Event::PaymentForwarded { .. }
-						));
-					}
 					(
 						Some(MonitorUpdateCompletionAction::EmitEventOptionAndFreeOtherChannel {
-							event,
+							event: event.map(|ev| ev.into()),
 							downstream_counterparty_and_funding_outpoint: chan_to_release,
 						}),
 						None,
@@ -10095,7 +10123,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				let prev_htlcs = vec![events::HTLCLocator::from(&hop_data)];
 				self.claim_funds_from_htlc_forward_hop(
 					payment_preimage,
-					|htlc_claim_value_msat: Option<u64>| -> Option<events::Event> {
+					|htlc_claim_value_msat: Option<u64>| -> Option<ForwardEventContents> {
 						let total_fee_earned_msat =
 							if let Some(forwarded_htlc_value) = forwarded_htlc_value_msat {
 								if let Some(claimed_htlc_value) = htlc_claim_value_msat {
@@ -10111,7 +10139,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							"skimmed_fee_msat must always be included in total_fee_earned_msat"
 						);
 
-						Some(events::Event::PaymentForwarded {
+						Some(ForwardEventContents {
 							prev_htlcs,
 							next_htlcs: vec![events::HTLCLocator {
 								channel_id: next_channel_id,
@@ -10140,9 +10168,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				for (i, current_previous_hop_data) in previous_hop_data.into_iter().enumerate() {
 					self.claim_funds_from_htlc_forward_hop(
 						payment_preimage,
-						|_: Option<u64>| -> Option<events::Event> {
+						|_: Option<u64>| -> Option<ForwardEventContents> {
 							if i == 0 {
-								Some(events::Event::PaymentForwarded {
+								Some(ForwardEventContents {
 									prev_htlcs: prev_htlcs.clone(),
 									// TODO: When trampoline payments are tracked in our
 									// pending_outbound_payments, we'll be able to provide all the
