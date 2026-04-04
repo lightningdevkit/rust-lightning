@@ -9061,7 +9061,7 @@ where
 		(
 			Vec<(HTLCSource, PaymentHash)>,
 			Vec<(StaticInvoice, BlindedMessagePath)>,
-			Option<ChannelMonitorUpdate>,
+			Option<(ChannelMonitorUpdate, Vec<u64>)>,
 		),
 		ChannelError,
 	> {
@@ -9168,6 +9168,7 @@ where
 		let mut static_invoices = Vec::new();
 		let mut require_commitment = false;
 		let mut value_to_self_msat_diff: i64 = 0;
+		let mut htlc_ids_to_ack = Vec::new();
 
 		{
 			// Take references explicitly so that we can hold multiple references to self.context.
@@ -9182,6 +9183,7 @@ where
 					log_trace!(logger, " ...removing inbound LocalRemoved {}", &htlc.payment_hash);
 					if let &InboundHTLCRemovalReason::Fulfill { .. } = reason {
 						value_to_self_msat_diff += htlc.amount_msat as i64;
+						htlc_ids_to_ack.push(htlc.htlc_id);
 					}
 					*expecting_peer_commitment_signed = true;
 					false
@@ -9374,13 +9376,18 @@ where
 		};
 		macro_rules! return_with_htlcs_to_fail {
 			($htlcs_to_fail: expr) => {
+				let htlc_ids_to_ack = core::mem::take(&mut htlc_ids_to_ack);
 				if !release_monitor {
 					self.context
 						.blocked_monitor_updates
 						.push(PendingChannelMonitorUpdate { update: monitor_update });
 					return Ok(($htlcs_to_fail, static_invoices, None));
 				} else {
-					return Ok(($htlcs_to_fail, static_invoices, Some(monitor_update)));
+					return Ok((
+						$htlcs_to_fail,
+						static_invoices,
+						Some((monitor_update, htlc_ids_to_ack)),
+					));
 				}
 			};
 		}

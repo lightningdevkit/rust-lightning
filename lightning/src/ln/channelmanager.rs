@@ -1613,6 +1613,20 @@ pub(crate) enum MonitorUpdateCompletionAction {
 		blocking_action: RAAMonitorUpdateBlockingAction,
 		downstream_channel_id: ChannelId,
 	},
+	/// Indicates we should ack any outbound [`MonitorEvent`]s corresponding to these inbound HTLCs
+	/// via [`ChannelManager::handle_monitor_event_htlc_ack`]. Only generated when
+	/// [`ChannelManager::persistent_monitor_events`] is enabled.
+	///
+	/// If the inbound edge is open, this action fires when an inbound edge RAA update removing an
+	/// HTLC completes. If closed, it fires when the inbound edge has durably persisted the preimage
+	/// monitor update.
+	///
+	/// For claims, we could theoretically ack the outbound edge event once the preimage is durably
+	/// persisted in the inbound edge monitor, but if we stop persisting the holding cell in the
+	/// future then that approach could cause us to forget to claim upstream via update_fulfill.
+	///
+	/// Not persisted because monitor events are replayed on startup.
+	AckMonitorEvents { channel_id: ChannelId, htlc_ids: Vec<u64> },
 }
 
 impl_writeable_tlv_based_enum_upgradable!(MonitorUpdateCompletionAction,
@@ -1634,6 +1648,7 @@ impl_writeable_tlv_based_enum_upgradable!(MonitorUpdateCompletionAction,
 		(0, event, upgradable_option),
 		(1, downstream_counterparty_and_funding_outpoint, upgradable_required),
 	},
+	unread_variants: AckMonitorEvents
 );
 
 /// Contents of an [`Event::PaymentForwarded`], useful for parent structs to contain a forward
@@ -10809,6 +10824,11 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						Some(blocking_action),
 					);
 				},
+				MonitorUpdateCompletionAction::AckMonitorEvents { channel_id, htlc_ids } => {
+					for htlc_id in htlc_ids {
+						self.handle_monitor_event_htlc_ack(htlc_id, channel_id);
+					}
+				},
 			}
 		}
 
@@ -13323,7 +13343,17 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							*counterparty_node_id);
 						let (htlcs_to_fail, static_invoices, monitor_update_opt) = try_channel_entry!(self, peer_state,
 							chan.revoke_and_ack(&msg, &self.fee_estimator, &&logger, mon_update_blocked), chan_entry);
-						if let Some(monitor_update) = monitor_update_opt {
+						if let Some((monitor_update, htlc_ids_to_ack)) = monitor_update_opt {
+							if self.persistent_monitor_events && !htlc_ids_to_ack.is_empty() {
+								peer_state
+									.monitor_update_blocked_actions
+									.entry(msg.channel_id)
+									.or_default()
+									.push(MonitorUpdateCompletionAction::AckMonitorEvents {
+										channel_id: msg.channel_id,
+										htlc_ids: htlc_ids_to_ack,
+									});
+							}
 							let funding_txo = funding_txo_opt
 								.expect("Funding outpoint must have been set for RAA handling to succeed");
 							if let Some(data) = self.handle_new_monitor_update(
