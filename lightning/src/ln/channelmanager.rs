@@ -3695,6 +3695,22 @@ impl TrustedChannelFeatures {
 	}
 }
 
+/// Parameters of the closure passed to [`ChannelManager::claim_mpp_part`]. Contains information
+/// about the claim after it was attempted to be passed to the relevant channel.
+struct ClaimCompletionActionParams {
+	definitely_duplicate: bool,
+	inbound_htlc_value_msat: Option<u64>,
+}
+
+impl ClaimCompletionActionParams {
+	fn new_claim(inbound_htlc_value_msat: u64) -> Self {
+		Self { definitely_duplicate: false, inbound_htlc_value_msat: Some(inbound_htlc_value_msat) }
+	}
+	fn duplicate_claim() -> Self {
+		Self { definitely_duplicate: true, inbound_htlc_value_msat: None }
+	}
+}
+
 impl<
 		M: chain::Watch<SP::EcdsaSigner>,
 		T: BroadcasterInterface,
@@ -9699,9 +9715,9 @@ impl<
 					payment_preimage,
 					payment_info.clone(),
 					Some(attribution_data),
-					|_, definitely_duplicate| {
+					|claim_action_params| {
 						debug_assert!(
-							!definitely_duplicate,
+							!claim_action_params.definitely_duplicate,
 							"We shouldn't claim duplicatively from a payment"
 						);
 						(
@@ -9772,7 +9788,9 @@ impl<
 			payment_preimage,
 			None,
 			Some(attribution_data),
-			|htlc_claim_value_msat, definitely_duplicate| {
+			|claim_completion_action_params| {
+				let ClaimCompletionActionParams { definitely_duplicate, inbound_htlc_value_msat } =
+					claim_completion_action_params;
 				let chan_to_release = EventUnblockedChannel {
 					counterparty_node_id: next_channel_counterparty_node_id,
 					funding_txo: next_channel_outpoint,
@@ -9843,7 +9861,7 @@ impl<
 						None,
 					)
 				} else {
-					let event = make_payment_forwarded_event(htlc_claim_value_msat);
+					let event = make_payment_forwarded_event(inbound_htlc_value_msat);
 					(
 						Some(MonitorUpdateCompletionAction::EmitEventOptionAndFreeOtherChannel {
 							event: event.map(|ev| ev.into()),
@@ -9858,8 +9876,7 @@ impl<
 
 	fn claim_funds_from_hop<
 		ComplFunc: FnOnce(
-			Option<u64>,
-			bool,
+			ClaimCompletionActionParams,
 		) -> (Option<MonitorUpdateCompletionAction>, Option<RAAMonitorUpdateBlockingAction>),
 	>(
 		&self, prev_hop: &HTLCPreviousHopData, payment_preimage: PaymentPreimage,
@@ -9896,8 +9913,7 @@ impl<
 
 	fn claim_mpp_part<
 		ComplFunc: FnOnce(
-			Option<u64>,
-			bool,
+			ClaimCompletionActionParams,
 		) -> (Option<MonitorUpdateCompletionAction>, Option<RAAMonitorUpdateBlockingAction>),
 	>(
 		&self, prev_hop: HTLCClaimSource, payment_preimage: PaymentPreimage,
@@ -9944,8 +9960,9 @@ impl<
 
 					match fulfill_res {
 						UpdateFulfillCommitFetch::NewClaim { htlc_value_msat, monitor_update } => {
-							let (action_opt, raa_blocker_opt) =
-								completion_action(Some(htlc_value_msat), false);
+							let (action_opt, raa_blocker_opt) = completion_action(
+								ClaimCompletionActionParams::new_claim(htlc_value_msat),
+							);
 							if let Some(action) = action_opt {
 								log_trace!(
 									logger,
@@ -9980,7 +9997,8 @@ impl<
 							}
 						},
 						UpdateFulfillCommitFetch::DuplicateClaim {} => {
-							let (action_opt, raa_blocker_opt) = completion_action(None, true);
+							let (action_opt, raa_blocker_opt) =
+								completion_action(ClaimCompletionActionParams::duplicate_claim());
 							if let Some(raa_blocker) = raa_blocker_opt {
 								// If we're making a claim during startup, its a replay of a
 								// payment claim from a `ChannelMonitor`. In some cases (MPP or
@@ -10108,7 +10126,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		// `ChannelMonitorUpdate` we're about to generate. This may result in a duplicate `Event`,
 		// but note that `Event`s are generally always allowed to be duplicative (and it's
 		// specifically noted in `PaymentForwarded`).
-		let (action_opt, raa_blocker_opt) = completion_action(None, false);
+		let (action_opt, raa_blocker_opt) = completion_action(ClaimCompletionActionParams {
+			definitely_duplicate: false,
+			inbound_htlc_value_msat: None,
+		});
 
 		if let Some(raa_blocker) = raa_blocker_opt {
 			peer_state
@@ -20744,7 +20765,7 @@ impl<
 								payment_preimage,
 								None,
 								None,
-								|_, _| {
+								|_| {
 									(
 										Some(MonitorUpdateCompletionAction::PaymentClaimed {
 											payment_hash,
