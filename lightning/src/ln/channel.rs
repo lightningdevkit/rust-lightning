@@ -231,7 +231,7 @@ enum InboundHTLCState {
 	/// ChannelMonitor::should_broadcast_holder_commitment_txn) so we actually remove the HTLC from
 	/// our own local state before then, once we're sure that the next commitment_signed and
 	/// ChannelMonitor::provide_latest_local_commitment_tx will not include this HTLC.
-	LocalRemoved(InboundHTLCRemovalReason),
+	LocalRemoved { reason: InboundHTLCRemovalReason, monitor_event_id: Option<MonitorEventSource> },
 }
 
 impl From<&InboundHTLCState> for Option<InboundHTLCStateDetails> {
@@ -245,15 +245,18 @@ impl From<&InboundHTLCState> for Option<InboundHTLCStateDetails> {
 				Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToAdd)
 			},
 			InboundHTLCState::Committed { .. } => Some(InboundHTLCStateDetails::Committed),
-			InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailRelay(_)) => {
-				Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFail)
-			},
-			InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailMalformed { .. }) => {
-				Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFail)
-			},
-			InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill { .. }) => {
-				Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFulfill)
-			},
+			InboundHTLCState::LocalRemoved {
+				reason: InboundHTLCRemovalReason::FailRelay(_),
+				..
+			} => Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFail),
+			InboundHTLCState::LocalRemoved {
+				reason: InboundHTLCRemovalReason::FailMalformed { .. },
+				..
+			} => Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFail),
+			InboundHTLCState::LocalRemoved {
+				reason: InboundHTLCRemovalReason::Fulfill { .. },
+				..
+			} => Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFulfill),
 		}
 	}
 }
@@ -266,7 +269,7 @@ impl fmt::Display for InboundHTLCState {
 			InboundHTLCState::AwaitingRemoteRevokeToAnnounce(_) => write!(f, "AwaitingRemoteRevokeToAnnounce"),
 			InboundHTLCState::AwaitingAnnouncedRemoteRevoke(_) => write!(f, "AwaitingAnnouncedRemoteRevoke"),
 			InboundHTLCState::Committed { .. } => write!(f, "Committed"),
-			InboundHTLCState::LocalRemoved(_) => write!(f, "LocalRemoved"),
+			InboundHTLCState::LocalRemoved { .. } => write!(f, "LocalRemoved"),
 		}
 	}
 }
@@ -278,15 +281,16 @@ impl InboundHTLCState {
 			InboundHTLCState::AwaitingRemoteRevokeToAnnounce(_) => !generated_by_local,
 			InboundHTLCState::AwaitingAnnouncedRemoteRevoke(_) => true,
 			InboundHTLCState::Committed { .. } => true,
-			InboundHTLCState::LocalRemoved(_) => !generated_by_local,
+			InboundHTLCState::LocalRemoved { .. } => !generated_by_local,
 		}
 	}
 
 	fn preimage(&self) -> Option<PaymentPreimage> {
 		match self {
-			InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill {
-				preimage, ..
-			}) => Some(*preimage),
+			InboundHTLCState::LocalRemoved {
+				reason: InboundHTLCRemovalReason::Fulfill { preimage, .. },
+				..
+			} => Some(*preimage),
 			_ => None,
 		}
 	}
@@ -305,7 +309,7 @@ impl InboundHTLCState {
 				},
 				InboundHTLCResolution::Resolved { .. } => false,
 			},
-			InboundHTLCState::Committed { .. } | InboundHTLCState::LocalRemoved(_) => false,
+			InboundHTLCState::Committed { .. } | InboundHTLCState::LocalRemoved { .. } => false,
 		}
 	}
 }
@@ -4636,7 +4640,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			.any(|htlc| match htlc.state {
 				InboundHTLCState::Committed { .. } => false,
 				// An HTLC removal from the local node is pending on the remote commitment.
-				InboundHTLCState::LocalRemoved(_) => true,
+				InboundHTLCState::LocalRemoved { .. } => true,
 				// An HTLC add from the remote node is pending on the local commitment.
 				InboundHTLCState::RemoteAnnounced(_)
 					| InboundHTLCState::AwaitingRemoteRevokeToAnnounce(_)
@@ -5147,8 +5151,8 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 				(InboundHTLCState::AwaitingRemoteRevokeToAnnounce(..), _) => true,
 				(InboundHTLCState::AwaitingAnnouncedRemoteRevoke(..), _) => true,
 				(InboundHTLCState::Committed { .. }, _) => true,
-				(InboundHTLCState::LocalRemoved(..), true) => true,
-				(InboundHTLCState::LocalRemoved(..), false) => false,
+				(InboundHTLCState::LocalRemoved { .. }, true) => true,
+				(InboundHTLCState::LocalRemoved { .. }, false) => false,
 			})
 			.map(|&InboundHTLCOutput { amount_msat, .. }| HTLCAmountDirection {
 				outbound: false,
@@ -5220,8 +5224,8 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			.pending_inbound_htlcs
 			.iter()
 			.filter(|InboundHTLCOutput { state, .. }| match (state, local) {
-				(InboundHTLCState::LocalRemoved(Fulfill { .. }), true) => false,
-				(InboundHTLCState::LocalRemoved(Fulfill { .. }), false) => true,
+				(InboundHTLCState::LocalRemoved { reason: Fulfill { .. }, .. }, true) => false,
+				(InboundHTLCState::LocalRemoved { reason: Fulfill { .. }, .. }, false) => true,
 				_ => false,
 			})
 			.map(|InboundHTLCOutput { amount_msat, .. }| amount_msat)
@@ -6918,7 +6922,10 @@ impl FailHTLCContents for msgs::OnionErrorPacket {
 		}
 	}
 	fn to_inbound_htlc_state(self) -> InboundHTLCState {
-		InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailRelay(self))
+		InboundHTLCState::LocalRemoved {
+			reason: InboundHTLCRemovalReason::FailRelay(self),
+			monitor_event_id: None,
+		}
 	}
 	fn to_htlc_update_awaiting_ack(self, htlc_id: u64) -> HTLCUpdateAwaitingACK {
 		HTLCUpdateAwaitingACK::FailHTLC { htlc_id, err_packet: self }
@@ -6935,10 +6942,13 @@ impl FailHTLCContents for ([u8; 32], u16) {
 		}
 	}
 	fn to_inbound_htlc_state(self) -> InboundHTLCState {
-		InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailMalformed {
-			sha256_of_onion: self.0,
-			failure_code: self.1,
-		})
+		InboundHTLCState::LocalRemoved {
+			reason: InboundHTLCRemovalReason::FailMalformed {
+				sha256_of_onion: self.0,
+				failure_code: self.1,
+			},
+			monitor_event_id: None,
+		}
 	}
 	fn to_htlc_update_awaiting_ack(self, htlc_id: u64) -> HTLCUpdateAwaitingACK {
 		HTLCUpdateAwaitingACK::FailMalformedHTLC {
@@ -7531,7 +7541,7 @@ where
 				);
 				match htlc.state {
 					InboundHTLCState::Committed { .. } => {},
-					InboundHTLCState::LocalRemoved(ref reason) => {
+					InboundHTLCState::LocalRemoved { ref reason, .. } => {
 						if let &InboundHTLCRemovalReason::Fulfill { .. } = reason {
 						} else {
 							log_warn!(logger, "Have preimage and want to fulfill HTLC with payment hash {} we already failed against channel {}", &htlc.payment_hash, &self.context.channel_id());
@@ -7641,10 +7651,13 @@ where
 				"Upgrading HTLC {} to LocalRemoved with a Fulfill!",
 				&htlc.payment_hash,
 			);
-			htlc.state = InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill {
-				preimage: payment_preimage_arg.clone(),
-				attribution_data,
-			});
+			htlc.state = InboundHTLCState::LocalRemoved {
+				reason: InboundHTLCRemovalReason::Fulfill {
+					preimage: payment_preimage_arg.clone(),
+					attribution_data,
+				},
+				monitor_event_id,
+			};
 		}
 
 		UpdateFulfillFetch::NewClaim { monitor_update, htlc_value_msat, update_blocked: false }
@@ -7753,7 +7766,7 @@ where
 			if htlc.htlc_id == htlc_id_arg {
 				match htlc.state {
 					InboundHTLCState::Committed { .. } => {},
-					InboundHTLCState::LocalRemoved(_) => {
+					InboundHTLCState::LocalRemoved { .. } => {
 						return Err(ChannelError::Ignore(format!("HTLC {} was already resolved", htlc.htlc_id)));
 					},
 					_ => {
@@ -9030,7 +9043,7 @@ where
 
 			// We really shouldnt have two passes here, but retain gives a non-mutable ref (Rust bug)
 			pending_inbound_htlcs.retain(|htlc| {
-				if let &InboundHTLCState::LocalRemoved(ref reason) = &htlc.state {
+				if let &InboundHTLCState::LocalRemoved { ref reason, .. } = &htlc.state {
 					log_trace!(logger, " ...removing inbound LocalRemoved {}", &htlc.payment_hash);
 					if let &InboundHTLCRemovalReason::Fulfill { .. } = reason {
 						value_to_self_msat_diff += htlc.amount_msat as i64;
@@ -9099,20 +9112,23 @@ where
 										require_commitment = true;
 										match fail_msg {
 											HTLCFailureMsg::Relay(msg) => {
-												htlc.state = InboundHTLCState::LocalRemoved(
-													InboundHTLCRemovalReason::FailRelay(
+												htlc.state = InboundHTLCState::LocalRemoved {
+													reason: InboundHTLCRemovalReason::FailRelay(
 														msg.clone().into(),
 													),
-												);
+													monitor_event_id: None,
+												};
 												update_fail_htlcs.push(msg)
 											},
 											HTLCFailureMsg::Malformed(msg) => {
-												htlc.state = InboundHTLCState::LocalRemoved(
-													InboundHTLCRemovalReason::FailMalformed {
-														sha256_of_onion: msg.sha256_of_onion,
-														failure_code: msg.failure_code,
-													},
-												);
+												htlc.state = InboundHTLCState::LocalRemoved {
+													reason:
+														InboundHTLCRemovalReason::FailMalformed {
+															sha256_of_onion: msg.sha256_of_onion,
+															failure_code: msg.failure_code,
+														},
+													monitor_event_id: None,
+												};
 												update_fail_malformed_htlcs.push(msg)
 											},
 										}
@@ -9597,7 +9613,7 @@ where
 					true
 				},
 				InboundHTLCState::Committed { .. } => true,
-				InboundHTLCState::LocalRemoved(_) => {
+				InboundHTLCState::LocalRemoved { .. } => {
 					// We (hopefully) sent a commitment_signed updating this HTLC (which we can
 					// re-transmit if needed) and they may have even sent a revoke_and_ack back
 					// (that we missed). Keep this around for now and if they tell us they missed
@@ -10104,7 +10120,7 @@ where
 		}
 
 		for htlc in self.context.pending_inbound_htlcs.iter() {
-			if let &InboundHTLCState::LocalRemoved(ref reason) = &htlc.state {
+			if let &InboundHTLCState::LocalRemoved { ref reason, .. } = &htlc.state {
 				match reason {
 					&InboundHTLCRemovalReason::FailRelay(ref err_packet) => {
 						update_fail_htlcs.push(msgs::UpdateFailHTLC {
@@ -15454,9 +15470,9 @@ impl<SP: SignerProvider> Writeable for FundedChannel<SP> {
 					3u8.write(writer)?;
 					inbound_committed_update_adds.push(update_add_htlc);
 				},
-				&InboundHTLCState::LocalRemoved(ref removal_reason) => {
+				&InboundHTLCState::LocalRemoved { ref reason, monitor_event_id: _ } => {
 					4u8.write(writer)?;
-					match removal_reason {
+					match reason {
 						InboundHTLCRemovalReason::FailRelay(msgs::OnionErrorPacket {
 							data,
 							attribution_data,
@@ -15944,7 +15960,7 @@ impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
 							},
 							_ => return Err(DecodeError::InvalidValue),
 						};
-						InboundHTLCState::LocalRemoved(reason)
+						InboundHTLCState::LocalRemoved { reason, monitor_event_id: None }
 					},
 					_ => return Err(DecodeError::InvalidValue),
 				},
@@ -16447,7 +16463,7 @@ impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
 		}
 		if let Some(attribution_data_list) = removed_htlc_attribution_data {
 			let mut removed_htlcs = pending_inbound_htlcs.iter_mut().filter_map(|status| {
-				if let InboundHTLCState::LocalRemoved(reason) = &mut status.state {
+				if let InboundHTLCState::LocalRemoved { ref mut reason, .. } = &mut status.state {
 					match reason {
 						InboundHTLCRemovalReason::FailRelay(ref mut packet) => {
 							Some(&mut packet.attribution_data)
