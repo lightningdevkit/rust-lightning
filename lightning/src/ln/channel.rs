@@ -1480,10 +1480,18 @@ pub(crate) const CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY: u32 = 144;
 #[derive(Debug)]
 struct PendingChannelMonitorUpdate {
 	update: ChannelMonitorUpdate,
+	monitor_events_to_ack: Vec<MonitorEventSource>,
+}
+
+impl PendingChannelMonitorUpdate {
+	fn new(update: ChannelMonitorUpdate) -> Self {
+		Self { update, monitor_events_to_ack: Vec::new() }
+	}
 }
 
 impl_writeable_tlv_based!(PendingChannelMonitorUpdate, {
 	(0, update, required),
+	(1, monitor_events_to_ack, optional_vec),
 });
 
 /// A payment channel with a counterparty throughout its life-cycle, encapsulating negotiation and
@@ -7707,7 +7715,7 @@ where
 						let update = self.build_commitment_no_status_check(logger);
 						self.context
 							.blocked_monitor_updates
-							.push(PendingChannelMonitorUpdate { update });
+							.push(PendingChannelMonitorUpdate::new(update));
 					}
 				}
 
@@ -9250,9 +9258,10 @@ where
 			($htlcs_to_fail: expr) => {
 				let events_to_ack = core::mem::take(&mut monitor_events_to_ack);
 				if !release_monitor {
-					self.context
-						.blocked_monitor_updates
-						.push(PendingChannelMonitorUpdate { update: monitor_update });
+					self.context.blocked_monitor_updates.push(PendingChannelMonitorUpdate {
+						update: monitor_update,
+						monitor_events_to_ack: events_to_ack,
+					});
 					return Ok(($htlcs_to_fail, static_invoices, None));
 				} else {
 					return Ok((
@@ -11347,14 +11356,15 @@ where
 
 	/// Returns the next blocked monitor update, if one exists, and a bool which indicates a
 	/// further blocked monitor update exists after the next.
-	pub fn unblock_next_blocked_monitor_update(&mut self) -> Option<(ChannelMonitorUpdate, bool)> {
+	pub fn unblock_next_blocked_monitor_update(
+		&mut self,
+	) -> Option<(ChannelMonitorUpdate, Vec<MonitorEventSource>, bool)> {
 		if self.context.blocked_monitor_updates.is_empty() {
 			return None;
 		}
-		Some((
-			self.context.blocked_monitor_updates.remove(0).update,
-			!self.context.blocked_monitor_updates.is_empty(),
-		))
+		let PendingChannelMonitorUpdate { update, monitor_events_to_ack } =
+			self.context.blocked_monitor_updates.remove(0);
+		Some((update, monitor_events_to_ack, !self.context.blocked_monitor_updates.is_empty()))
 	}
 
 	/// Pushes a new monitor update into our monitor update queue, returning it if it should be
@@ -11364,9 +11374,7 @@ where
 	-> Option<ChannelMonitorUpdate> {
 		let release_monitor = self.context.blocked_monitor_updates.is_empty();
 		if !release_monitor {
-			self.context.blocked_monitor_updates.push(PendingChannelMonitorUpdate {
-				update,
-			});
+			self.context.blocked_monitor_updates.push(PendingChannelMonitorUpdate::new(update));
 			None
 		} else {
 			Some(update)
