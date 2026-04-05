@@ -1485,6 +1485,17 @@ pub(crate) enum MonitorUpdateCompletionAction {
 	/// to avoid acking a monitor event until after an HTLC is fully removed via revoke_and_ack, to
 	/// ensure that the HTLC gets resolved even if we lose the holding cell.
 	AckMonitorEvents { event_ids: Vec<MonitorEventSource> },
+	/// Indicates we should emit an [`Event::PaymentForwarded`] and possibly ack a monitor event via
+	/// [`Watch::ack_monitor_event`].
+	///
+	/// This is generated when we've completed an inbound edge preimage update for an HTLC forward,
+	/// at which point it's safe to generate the forward event. If the inbound edge is closed, a
+	/// monitor event id may be included so we can tell the outbound edge to stop telling us about
+	/// the claim once the forward event is processed by the user.
+	EmitForwardEvent {
+		event: ForwardEventContents,
+		post_event_ackable_monitor_event: Option<MonitorEventSource>,
+	},
 }
 
 impl_writeable_tlv_based_enum_upgradable!(MonitorUpdateCompletionAction,
@@ -1508,6 +1519,10 @@ impl_writeable_tlv_based_enum_upgradable!(MonitorUpdateCompletionAction,
 	},
 	(3, AckMonitorEvents) => {
 		(1, event_ids, required_vec),
+	},
+	(5, EmitForwardEvent) => {
+		(1, event, required),
+		(3, post_event_ackable_monitor_event, option),
 	}
 );
 
@@ -10490,6 +10505,17 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					for id in event_ids {
 						self.chain_monitor.ack_monitor_event(id);
 					}
+				},
+				MonitorUpdateCompletionAction::EmitForwardEvent {
+					event,
+					post_event_ackable_monitor_event,
+				} => {
+					let post_event_action = post_event_ackable_monitor_event
+						.map(|event_id| EventCompletionAction::AckMonitorEvent { event_id });
+					self.pending_events
+						.lock()
+						.unwrap()
+						.push_back((event.into(), post_event_action));
 				},
 			}
 		}
