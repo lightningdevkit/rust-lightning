@@ -1520,11 +1520,16 @@ impl MaybeReadable for EventUnblockedChannel {
 /// A unique identifier for an inbound HTLC corresponding to an outbound edge [`MonitorEvent`].
 /// Used when tracking when the monitor event should be acked within
 /// [`ChannelManager::pending_forward_monitor_event_acks`].
-#[derive(Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
-struct InboundHTLCId {
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct InboundHTLCId {
 	htlc_id: u64,
 	channel_id: ChannelId,
 }
+
+impl_ser_tlv_based!(InboundHTLCId, {
+	(1, htlc_id, required),
+	(3, channel_id, required),
+});
 
 impl From<&HTLCPreviousHopData> for InboundHTLCId {
 	fn from(prev_hop: &HTLCPreviousHopData) -> Self {
@@ -1627,6 +1632,19 @@ pub(crate) enum MonitorUpdateCompletionAction {
 	///
 	/// Not persisted because monitor events are replayed on startup.
 	AckMonitorEvents { channel_id: ChannelId, htlc_ids: Vec<u64> },
+	/// Indicates we should emit an [`Event::PaymentForwarded`].
+	///
+	/// This is generated when we've completed an inbound edge preimage update for an HTLC forward,
+	/// at which point it's safe to generate the forward event.
+	EmitForwardEvent {
+		/// The contents of the [`Event::PaymentForwarded`].
+		event: ForwardEventContents,
+		/// If set, a [`MonitorEvent`] corresponding to this HTLC will be acked via
+		/// [`ChannelManager::handle_monitor_event_htlc_ack`] once the user processes the forward
+		/// event. This ensure the user processes the event -- if they don't, the monitor event will go
+		/// un-acked and be re-provided on startup, causing the event to be regenerated.
+		htlc_to_ack: Option<InboundHTLCId>,
+	},
 }
 
 impl_writeable_tlv_based_enum_upgradable!(MonitorUpdateCompletionAction,
@@ -1647,6 +1665,10 @@ impl_writeable_tlv_based_enum_upgradable!(MonitorUpdateCompletionAction,
 		// are in the process of being resolved.
 		(0, event, upgradable_option),
 		(1, downstream_counterparty_and_funding_outpoint, upgradable_required),
+	},
+	(5, EmitForwardEvent) => {
+		(1, event, required),
+		(3, htlc_to_ack, option),
 	},
 	unread_variants: AckMonitorEvents
 );
@@ -10840,6 +10862,16 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					for htlc_id in htlc_ids {
 						self.handle_monitor_event_htlc_ack(htlc_id, channel_id);
 					}
+				},
+				MonitorUpdateCompletionAction::EmitForwardEvent { event, htlc_to_ack } => {
+					let post_event_action =
+						htlc_to_ack.map(|InboundHTLCId { htlc_id, channel_id }| {
+							EventCompletionAction::AckMonitorEventForHtlc { htlc_id, channel_id }
+						});
+					self.pending_events
+						.lock()
+						.unwrap()
+						.push_back((event.into(), post_event_action));
 				},
 			}
 		}
