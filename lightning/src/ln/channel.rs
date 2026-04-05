@@ -1511,10 +1511,18 @@ pub(crate) const CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY: u32 = 144;
 #[derive(Debug)]
 struct PendingChannelMonitorUpdate {
 	update: ChannelMonitorUpdate,
+	/// Set if (a) we are the inbound edge to a forwarded HTLC and (b) this monitor update
+	/// irrevocably removes said HTLC (or HTLCs). The caller will use these ids to ack any monitor
+	/// events that were waiting on these HTLCs to resolve once the monitor update is complete.
+	///
+	/// This is not persisted; monitor events are replayed on startup and reconstruct any pending
+	/// ack state.
+	htlc_ids_to_ack: Vec<u64>,
 }
 
 impl_writeable_tlv_based!(PendingChannelMonitorUpdate, {
 	(0, update, required),
+	(_unused, htlc_ids_to_ack, (static_value, Vec::new())),
 });
 
 /// A payment channel with a counterparty throughout its life-cycle, encapsulating negotiation and
@@ -7797,9 +7805,10 @@ where
 					if !update_blocked {
 						debug_assert!(false, "If there is a pending blocked monitor we should have MonitorUpdateInProgress set");
 						let update = self.build_commitment_no_status_check(logger);
-						self.context
-							.blocked_monitor_updates
-							.push(PendingChannelMonitorUpdate { update });
+						self.context.blocked_monitor_updates.push(PendingChannelMonitorUpdate {
+							update,
+							htlc_ids_to_ack: Vec::new(),
+						});
 					}
 				}
 
@@ -9378,9 +9387,10 @@ where
 			($htlcs_to_fail: expr) => {
 				let htlc_ids_to_ack = core::mem::take(&mut htlc_ids_to_ack);
 				if !release_monitor {
-					self.context
-						.blocked_monitor_updates
-						.push(PendingChannelMonitorUpdate { update: monitor_update });
+					self.context.blocked_monitor_updates.push(PendingChannelMonitorUpdate {
+						update: monitor_update,
+						htlc_ids_to_ack,
+					});
 					return Ok(($htlcs_to_fail, static_invoices, None));
 				} else {
 					return Ok((
@@ -11571,14 +11581,15 @@ where
 
 	/// Returns the next blocked monitor update, if one exists, and a bool which indicates a
 	/// further blocked monitor update exists after the next.
-	pub fn unblock_next_blocked_monitor_update(&mut self) -> Option<(ChannelMonitorUpdate, bool)> {
+	pub fn unblock_next_blocked_monitor_update(
+		&mut self,
+	) -> Option<(ChannelMonitorUpdate, Vec<u64>, bool)> {
 		if self.context.blocked_monitor_updates.is_empty() {
 			return None;
 		}
-		Some((
-			self.context.blocked_monitor_updates.remove(0).update,
-			!self.context.blocked_monitor_updates.is_empty(),
-		))
+		let PendingChannelMonitorUpdate { update, htlc_ids_to_ack } =
+			self.context.blocked_monitor_updates.remove(0);
+		Some((update, htlc_ids_to_ack, !self.context.blocked_monitor_updates.is_empty()))
 	}
 
 	/// Pushes a new monitor update into our monitor update queue, returning it if it should be
@@ -11589,7 +11600,7 @@ where
 		let release_monitor = self.context.blocked_monitor_updates.is_empty();
 		if !release_monitor {
 			self.context.blocked_monitor_updates.push(PendingChannelMonitorUpdate {
-				update,
+				update, htlc_ids_to_ack: Vec::new()
 			});
 			None
 		} else {

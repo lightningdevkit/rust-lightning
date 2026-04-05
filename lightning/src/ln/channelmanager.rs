@@ -15852,9 +15852,19 @@ impl<
 					channel_id) {
 					if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
 						let channel_funding_outpoint = chan.funding_outpoint();
-						if let Some((monitor_update, further_update_exists)) = chan.unblock_next_blocked_monitor_update() {
+						if let Some((monitor_update, htlc_ids_to_ack, further_update_exists)) = chan.unblock_next_blocked_monitor_update() {
 							log_debug!(logger, "Unlocking monitor updating and updating monitor",
 								);
+							if self.persistent_monitor_events && !htlc_ids_to_ack.is_empty() {
+								peer_state
+									.monitor_update_blocked_actions
+									.entry(channel_id)
+									.or_default()
+									.push(MonitorUpdateCompletionAction::AckMonitorEvents {
+										channel_id,
+										htlc_ids: htlc_ids_to_ack,
+									});
+							}
 							let post_update_data = self.handle_new_monitor_update(
 								&mut peer_state.in_flight_monitor_updates,
 								&mut peer_state.monitor_update_blocked_actions,
