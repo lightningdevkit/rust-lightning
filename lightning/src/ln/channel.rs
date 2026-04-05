@@ -7535,7 +7535,8 @@ where
 
 		let mut pending_idx = core::usize::MAX;
 		let mut htlc_value_msat = 0;
-		for (idx, htlc) in self.context.pending_inbound_htlcs.iter().enumerate() {
+		let channel_id = self.context.channel_id();
+		for (idx, htlc) in self.context.pending_inbound_htlcs.iter_mut().enumerate() {
 			if htlc.htlc_id == htlc_id_arg {
 				let expected_hash =
 					PaymentHash(Sha256::hash(&payment_preimage_arg.0[..]).to_byte_array());
@@ -7549,10 +7550,17 @@ where
 				);
 				match htlc.state {
 					InboundHTLCState::Committed { .. } => {},
-					InboundHTLCState::LocalRemoved { ref reason, .. } => {
+					InboundHTLCState::LocalRemoved {
+						ref reason,
+						monitor_event_id: ref mut id,
+						..
+					} => {
+						if monitor_event_id.is_some() {
+							*id = monitor_event_id;
+						}
 						if let &InboundHTLCRemovalReason::Fulfill { .. } = reason {
 						} else {
-							log_warn!(logger, "Have preimage and want to fulfill HTLC with payment hash {} we already failed against channel {}", &htlc.payment_hash, &self.context.channel_id());
+							log_warn!(logger, "Have preimage and want to fulfill HTLC with payment hash {} we already failed against channel {channel_id}", &htlc.payment_hash);
 							debug_assert!(
 								false,
 								"Tried to fulfill an HTLC that was already failed"
@@ -7593,17 +7601,24 @@ where
 			// `claim_htlc_while_disconnected_dropping_mon_update` and must match exactly -
 			// `claim_htlc_while_disconnected_dropping_mon_update` would not work correctly if we
 			// do not not get into this branch.
-			for pending_update in self.context.holding_cell_htlc_updates.iter() {
+			for pending_update in self.context.holding_cell_htlc_updates.iter_mut() {
 				match pending_update {
-					&HTLCUpdateAwaitingACK::ClaimHTLC { htlc_id, .. } => {
+					&mut HTLCUpdateAwaitingACK::ClaimHTLC {
+						htlc_id,
+						monitor_event_id: ref mut id,
+						..
+					} => {
 						if htlc_id_arg == htlc_id {
 							// Make sure we don't leave latest_monitor_update_id incremented here:
 							self.context.latest_monitor_update_id -= 1;
+							if monitor_event_id.is_some() {
+								*id = monitor_event_id;
+							}
 							return UpdateFulfillFetch::DuplicateClaim {};
 						}
 					},
-					&HTLCUpdateAwaitingACK::FailHTLC { htlc_id, .. }
-					| &HTLCUpdateAwaitingACK::FailMalformedHTLC { htlc_id, .. } => {
+					&mut HTLCUpdateAwaitingACK::FailHTLC { htlc_id, .. }
+					| &mut HTLCUpdateAwaitingACK::FailMalformedHTLC { htlc_id, .. } => {
 						if htlc_id_arg == htlc_id {
 							log_warn!(logger, "Have preimage and want to fulfill HTLC with pending failure against channel {}", &self.context.channel_id());
 							// TODO: We may actually be able to switch to a fulfill here, though its
