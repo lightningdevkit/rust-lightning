@@ -82,6 +82,7 @@ use crate::io;
 use crate::ln::channelmanager::PaymentId;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN};
 use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
+use crate::offers::currency::CurrencyConversion;
 use crate::offers::merkle::{TaggedHash, TlvRecord, TlvStream};
 use crate::offers::nonce::Nonce;
 use crate::offers::parse::{Bech32Encode, Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
@@ -1123,6 +1124,93 @@ pub enum Amount {
 		/// The amount in the currency unit adjusted by the ISO 4217 exponent (e.g., USD cents).
 		amount: u64,
 	},
+}
+
+/// A resolved millisatoshi amount together with the tolerated range around it.
+///
+/// Currency-denominated amounts may be independently resolved using different
+/// conversion snapshots. The nominal amount is the value used locally, while
+/// the tolerance defines the acceptable range for tolerant comparisons.
+///
+/// Use the accessor methods to read the nominal amount or tolerated bounds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MsatsRange {
+	pub(crate) amount_msats: u64,
+	pub(crate) tolerance: u8,
+}
+
+impl MsatsRange {
+	/// Returns the nominal amount in millisatoshis.
+	pub fn amount_msats(&self) -> u64 {
+		self.amount_msats
+	}
+
+	/// Returns the smallest amount accepted within the configured tolerance.
+	pub fn minimum_msats(&self) -> u64 {
+		let amount_msats = self.amount_msats as u128;
+		let minimum_msats = if self.tolerance >= 100 {
+			0
+		} else {
+			amount_msats * (100 - self.tolerance as u128) / 100
+		};
+
+		u64::try_from(minimum_msats).expect("tolerance range cannot underflow")
+	}
+
+	/// Returns the largest amount accepted within the configured tolerance.
+	///
+	/// The upper bound rounds up so integer division does not exclude boundary
+	/// values that should remain accepted.
+	pub fn maximum_msats(&self) -> u64 {
+		let amount_msats = self.amount_msats as u128;
+		let maximum_msats = (amount_msats * (100 + self.tolerance as u128)).div_ceil(100);
+		u64::try_from(maximum_msats).expect("tolerance range cannot overflow")
+	}
+
+	/// Returns whether `amount_msats` falls within the tolerated range.
+	pub fn contains(&self, amount_msats: u64) -> bool {
+		amount_msats >= self.minimum_msats() && amount_msats <= self.maximum_msats()
+	}
+
+	/// Multiplies the nominal amount by `quantity`, preserving the tolerance.
+	///
+	/// This keeps unit-amount tolerance semantics intact while scaling the
+	/// full tolerated range to the requested quantity.
+	pub fn checked_mul(self, quantity: u64) -> Result<Self, Bolt12SemanticError> {
+		Ok(Self {
+			amount_msats: self
+				.amount_msats
+				.checked_mul(quantity)
+				.ok_or(Bolt12SemanticError::InvalidAmount)?,
+			tolerance: self.tolerance,
+		})
+	}
+}
+
+impl Amount {
+	/// Resolves an [`Amount`] into a nominal millisatoshi value together with the
+	/// tolerated range implied by the current conversion snapshot.
+	pub(crate) fn resolve_msats<CC: CurrencyConversion>(
+		self, currency_conversion: &CC,
+	) -> Result<MsatsRange, Bolt12SemanticError> {
+		match self {
+			Amount::Bitcoin { amount_msats } => Ok(MsatsRange { amount_msats, tolerance: 0 }),
+			Amount::Currency { iso4217_code, amount } => {
+				let (msats_per_minor_unit, tolerance_percent) = currency_conversion
+					.msats_per_minor_unit(iso4217_code)
+					.map_err(|_| Bolt12SemanticError::UnsupportedCurrency)?;
+				let amount_msats = libm::round(msats_per_minor_unit * amount as f64);
+
+				if !amount_msats.is_finite() {
+					return Err(Bolt12SemanticError::InvalidAmount);
+				}
+
+				let exact_msats = u64::try_from(amount_msats as i128)
+					.map_err(|_| Bolt12SemanticError::InvalidAmount)?;
+				Ok(MsatsRange { amount_msats: exact_msats, tolerance: tolerance_percent })
+			},
+		}
+	}
 }
 
 /// An ISO 4217 three-letter currency code (e.g., USD).
