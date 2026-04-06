@@ -261,15 +261,16 @@ pub struct HTLCUpdate {
 	pub(crate) payment_hash: PaymentHash,
 	pub(crate) payment_preimage: Option<PaymentPreimage>,
 	pub(crate) source: HTLCSource,
-	pub(crate) htlc_value_satoshis: Option<u64>,
+	pub(crate) htlc_value_msat: Option<u64>,
 	pub(crate) user_channel_id: Option<u128>,
 }
 impl_ser_tlv_based!(HTLCUpdate, {
 	(0, payment_hash, required),
-	(1, htlc_value_satoshis, option),
+	(1, htlc_value_satoshis, (legacy, u64, |_| Ok(()), |us: &HTLCUpdate| us.htlc_value_msat.map(|v| v / 1000))),
 	(2, source, required),
 	(4, payment_preimage, option),
 	(5, user_channel_id, option),
+	(7, htlc_value_msat, (default_value, htlc_value_satoshis.map(|v: u64| v * 1000))), // Added in 0.4
 });
 
 /// If an output goes from claimable only by us to claimable by us or our counterparty within this
@@ -3884,7 +3885,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						payment_hash: htlc.payment_hash,
 						payment_preimage: Some(*claimed_preimage),
 						source: *source.clone(),
-						htlc_value_satoshis: Some(htlc.amount_msat),
+						htlc_value_msat: Some(htlc.amount_msat),
 						user_channel_id: self.user_channel_id,
 					}));
 				}
@@ -4632,7 +4633,6 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			if self.counterparty_fulfilled_htlcs.get(&SentHTLCId::from_source(source)).is_some() {
 				continue;
 			}
-			let htlc_value_satoshis = Some(amount_msat / 1000);
 			let logger = WithContext::from(logger, None, None, Some(payment_hash));
 			// Defensively mark the HTLC as failed back so the expiry-based failure
 			// path in `block_connected` doesn't generate a duplicate `HTLCUpdate`
@@ -4651,7 +4651,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						payment_hash,
 						payment_preimage: None,
 						source: source.clone(),
-						htlc_value_satoshis,
+						htlc_value_msat: Some(amount_msat),
 						user_channel_id: self.user_channel_id,
 					}),
 					&mut self.next_monitor_event_id,
@@ -4673,7 +4673,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					event: OnchainEvent::HTLCUpdate {
 						source: source.clone(),
 						payment_hash,
-						htlc_value_satoshis,
+						htlc_value_satoshis: Some(amount_msat / 1000),
 						commitment_tx_output_idx: None,
 					},
 				};
@@ -5989,7 +5989,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						payment_hash,
 						payment_preimage: None,
 						source,
-						htlc_value_satoshis,
+						htlc_value_msat: htlc_value_satoshis.map(|v| v * 1000),
 						user_channel_id: self.user_channel_id,
 					}));
 					self.htlcs_resolved_on_chain.push(IrrevocablyResolvedHTLC {
@@ -6099,7 +6099,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						source: source.clone(),
 						payment_preimage: None,
 						payment_hash: htlc.payment_hash,
-						htlc_value_satoshis: Some(htlc.amount_msat / 1000),
+						htlc_value_msat: Some(htlc.amount_msat),
 						user_channel_id: self.user_channel_id,
 					}), &mut self.next_monitor_event_id);
 				}
@@ -6517,7 +6517,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 							source,
 							payment_preimage: Some(payment_preimage),
 							payment_hash,
-							htlc_value_satoshis: Some(amount_msat / 1000),
+							htlc_value_msat: Some(amount_msat),
 							user_channel_id: self.user_channel_id,
 						}), &mut self.next_monitor_event_id);
 					}
@@ -6542,7 +6542,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 							source,
 							payment_preimage: Some(payment_preimage),
 							payment_hash,
-							htlc_value_satoshis: Some(amount_msat / 1000),
+							htlc_value_msat: Some(amount_msat),
 							user_channel_id: self.user_channel_id,
 						}), &mut self.next_monitor_event_id);
 					}
