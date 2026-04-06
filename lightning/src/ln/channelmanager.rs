@@ -2798,6 +2798,7 @@ pub struct ChannelManager<
 	/// 2. HTLCs that are being held on behalf of an often-offline sender until receipt of a
 	///    [`ReleaseHeldHtlc`] onion message from an often-offline recipient
 	pending_intercepted_htlcs: Mutex<HashMap<InterceptId, PendingAddHTLCInfo>>,
+	pending_released_async_htlcs: Mutex<HashSet<InterceptId>>,
 
 	/// Outbound SCID Alias -> pending `update_add_htlc`s to decode.
 	/// We use the scid alias because regular scids may change if a splice occurs.
@@ -3143,6 +3144,11 @@ pub(crate) const CLTV_FAR_FAR_AWAY: u32 = 14 * 24 * 6;
 // any payments to succeed. Further, we don't want payments to fail if a block was found while
 // a payment was being routed, so we add an extra block to be safe.
 pub const MIN_FINAL_CLTV_EXPIRY_DELTA: u16 = HTLC_FAIL_BACK_BUFFER as u16 + 3;
+
+// `ReleaseHeldHtlc` can legitimately arrive before a held HTLC completes pending-update-add
+// processing, but unsolicited onion messages should not be able to grow this bookkeeping without
+// bound.
+const MAX_PENDING_ASYNC_EARLY_RELEASES: usize = 4096;
 
 // Check that our MIN_CLTV_EXPIRY_DELTA gives us enough time to get everything on chain and locked
 // in with enough time left to fail the corresponding HTLC back to our inbound edge before they
@@ -3603,6 +3609,7 @@ impl<
 			decode_update_add_htlcs: Mutex::new(new_hash_map()),
 			claimable_payments: Mutex::new(ClaimablePayments { claimable_payments: new_hash_map(), pending_claiming_payments: new_hash_map() }),
 			pending_intercepted_htlcs: Mutex::new(new_hash_map()),
+			pending_released_async_htlcs: Mutex::new(new_hash_set()),
 			short_to_chan_info: FairRwLock::new(new_hash_map()),
 
 			our_network_pubkey,
@@ -6002,6 +6009,82 @@ impl<
 		)
 	}
 
+	fn release_held_htlc(&self, intercept_id: InterceptId, mut htlc: PendingAddHTLCInfo) {
+		let next_hop_scid = match htlc.forward_info.routing {
+			PendingHTLCRouting::Forward { ref mut hold_htlc, short_channel_id, .. } => {
+				debug_assert!(hold_htlc.is_some());
+				*hold_htlc = None;
+				short_channel_id
+			},
+			_ => {
+				debug_assert!(false, "HTLC intercepts can only be forwards");
+				return;
+			},
+		};
+
+		let logger = WithContext::from(
+			&self.logger,
+			Some(htlc.prev_counterparty_node_id),
+			Some(htlc.prev_channel_id),
+			Some(htlc.forward_info.payment_hash),
+		);
+		log_trace!(logger, "Releasing held htlc with intercept_id {}", intercept_id);
+
+		let prev_chan_public = {
+			let per_peer_state = self.per_peer_state.read().unwrap();
+			let peer_state =
+				per_peer_state.get(&htlc.prev_counterparty_node_id).map(|mtx| mtx.lock().unwrap());
+			let chan_state = peer_state
+				.as_ref()
+				.map(|state| state.channel_by_id.get(&htlc.prev_channel_id))
+				.flatten();
+			if let Some(chan_state) = chan_state {
+				chan_state.context().should_announce()
+			} else {
+				return;
+			}
+		};
+
+		let should_intercept = self
+			.do_funded_channel_callback(next_hop_scid, |chan| {
+				self.forward_needs_intercept_to_known_chan(prev_chan_public, chan)
+			})
+			.unwrap_or_else(|| self.forward_needs_intercept_to_unknown_chan(next_hop_scid));
+
+		if should_intercept {
+			let intercept_id = InterceptId::from_htlc_id_and_chan_id(
+				htlc.prev_htlc_id,
+				&htlc.prev_channel_id,
+				&htlc.prev_counterparty_node_id,
+			);
+			let mut pending_intercepts = self.pending_intercepted_htlcs.lock().unwrap();
+			match pending_intercepts.entry(intercept_id) {
+				hash_map::Entry::Vacant(entry) => {
+					if let Ok(intercept_ev) = create_htlc_intercepted_event(intercept_id, &htlc) {
+						self.pending_events.lock().unwrap().push_back((intercept_ev, None));
+						entry.insert(htlc);
+					} else {
+						debug_assert!(false);
+						return;
+					}
+				},
+				hash_map::Entry::Occupied(_) => {
+					log_error!(
+						logger,
+						"Failed to forward incoming HTLC: detected duplicate intercepted payment",
+					);
+					debug_assert!(
+						false,
+						"Should never have two HTLCs with the same channel id and htlc id",
+					);
+					return;
+				},
+			}
+		} else {
+			self.forward_htlcs([htlc]);
+		}
+	}
+
 	/// Signals that no further attempts for the given payment should occur. Useful if you have a
 	/// pending outbound payment with retries remaining, but wish to stop retrying the payment before
 	/// retries are exhausted.
@@ -7492,23 +7575,32 @@ impl<
 							Some(update_add_htlc.payment_hash),
 						);
 						if pending_add.forward_info.routing.should_hold_htlc() {
-							let mut held_htlcs = self.pending_intercepted_htlcs.lock().unwrap();
 							let intercept_id = intercept_id();
-							match held_htlcs.entry(intercept_id) {
-								hash_map::Entry::Vacant(entry) => {
-									log_debug!(
-										logger,
-										"Intercepted held HTLC with id {intercept_id}, holding until the recipient is online"
-									);
-									entry.insert(pending_add);
-								},
-								hash_map::Entry::Occupied(_) => {
-									debug_assert!(false, "Should never have two HTLCs with the same channel id and htlc id");
-									log_error!(logger, "Duplicate intercept id for HTLC");
-									fail_htlc_continue_to_next!(
-										LocalHTLCFailureReason::TemporaryNodeFailure
-									);
-								},
+							if self
+								.pending_released_async_htlcs
+								.lock()
+								.unwrap()
+								.remove(&intercept_id)
+							{
+								self.release_held_htlc(intercept_id, pending_add);
+							} else {
+								let mut held_htlcs = self.pending_intercepted_htlcs.lock().unwrap();
+								match held_htlcs.entry(intercept_id) {
+									hash_map::Entry::Vacant(entry) => {
+										log_debug!(
+											logger,
+											"Intercepted held HTLC with id {intercept_id}, holding until the recipient is online"
+										);
+										entry.insert(pending_add);
+									},
+									hash_map::Entry::Occupied(_) => {
+										debug_assert!(false, "Should never have two HTLCs with the same channel id and htlc id");
+										log_error!(logger, "Duplicate intercept id for HTLC");
+										fail_htlc_continue_to_next!(
+											LocalHTLCFailureReason::TemporaryNodeFailure
+										);
+									},
+								}
 							}
 						} else if intercept_forward {
 							let intercept_id = intercept_id();
@@ -17197,104 +17289,35 @@ impl<
 				}
 				core::mem::drop(decode_update_add_htlcs);
 
-				let mut htlc = {
+				let htlc = {
 					let mut pending_intercept_htlcs =
 						self.pending_intercepted_htlcs.lock().unwrap();
 					match pending_intercept_htlcs.remove(&intercept_id) {
 						Some(htlc) => htlc,
 						None => {
-							log_trace!(
-								self.logger,
-								"Failed to release HTLC with intercept_id {}: HTLC not found",
-								intercept_id
-							);
-							return;
-						},
-					}
-				};
-				let next_hop_scid = match htlc.forward_info.routing {
-					PendingHTLCRouting::Forward { ref mut hold_htlc, short_channel_id, .. } => {
-						debug_assert!(hold_htlc.is_some());
-						*hold_htlc = None;
-						short_channel_id
-					},
-					_ => {
-						debug_assert!(false, "HTLC intercepts can only be forwards");
-						// Let the HTLC be auto-failed before it expires.
-						return;
-					},
-				};
-
-				let logger = WithContext::from(
-					&self.logger,
-					Some(htlc.prev_counterparty_node_id),
-					Some(htlc.prev_channel_id),
-					Some(htlc.forward_info.payment_hash),
-				);
-				log_trace!(logger, "Releasing held htlc with intercept_id {}", intercept_id);
-
-				let prev_chan_public = {
-					let per_peer_state = self.per_peer_state.read().unwrap();
-					let peer_state = per_peer_state
-						.get(&htlc.prev_counterparty_node_id)
-						.map(|mtx| mtx.lock().unwrap());
-					let chan_state = peer_state
-						.as_ref()
-						.map(|state| state.channel_by_id.get(&htlc.prev_channel_id))
-						.flatten();
-					if let Some(chan_state) = chan_state {
-						chan_state.context().should_announce()
-					} else {
-						// If the inbound channel has closed since the HTLC was held, we really
-						// shouldn't forward it - forwarding it now would result in, at best,
-						// having to claim the HTLC on chain. Instead, drop the HTLC and let the
-						// counterparty claim their money on chain.
-						return;
-					}
-				};
-
-				let should_intercept = self
-					.do_funded_channel_callback(next_hop_scid, |chan| {
-						self.forward_needs_intercept_to_known_chan(prev_chan_public, chan)
-					})
-					.unwrap_or_else(|| self.forward_needs_intercept_to_unknown_chan(next_hop_scid));
-
-				if should_intercept {
-					let intercept_id = InterceptId::from_htlc_id_and_chan_id(
-						htlc.prev_htlc_id,
-						&htlc.prev_channel_id,
-						&htlc.prev_counterparty_node_id,
-					);
-					let mut pending_intercepts = self.pending_intercepted_htlcs.lock().unwrap();
-					match pending_intercepts.entry(intercept_id) {
-						hash_map::Entry::Vacant(entry) => {
-							if let Ok(intercept_ev) =
-								create_htlc_intercepted_event(intercept_id, &htlc)
+							let mut pending_releases =
+								self.pending_released_async_htlcs.lock().unwrap();
+							if pending_releases.len() < MAX_PENDING_ASYNC_EARLY_RELEASES
+								|| pending_releases.contains(&intercept_id)
 							{
-								self.pending_events.lock().unwrap().push_back((intercept_ev, None));
-								entry.insert(htlc);
+								pending_releases.insert(intercept_id);
+								log_trace!(
+									self.logger,
+									"Queued release request for HTLC with intercept_id {} until it is fully held",
+									intercept_id
+								);
 							} else {
-								debug_assert!(false);
-								// Let the HTLC be auto-failed before it expires.
-								return;
+								log_trace!(
+									self.logger,
+									"Dropping early release request for intercept_id {} because the pending queue is full",
+									intercept_id
+								);
 							}
-						},
-						hash_map::Entry::Occupied(_) => {
-							log_error!(
-								logger,
-								"Failed to forward incoming HTLC: detected duplicate intercepted payment",
-							);
-							debug_assert!(
-								false,
-								"Should never have two HTLCs with the same channel id and htlc id",
-							);
-							// Let the HTLC be auto-failed before it expires.
 							return;
 						},
 					}
-				} else {
-					self.forward_htlcs([htlc]);
-				}
+				};
+				self.release_held_htlc(intercept_id, htlc);
 			},
 			_ => return,
 		}
@@ -20091,6 +20114,7 @@ impl<
 			inbound_payment_key: expanded_inbound_key,
 			pending_outbound_payments: pending_outbounds,
 			pending_intercepted_htlcs: Mutex::new(pending_intercepted_htlcs),
+			pending_released_async_htlcs: Mutex::new(new_hash_set()),
 
 			forward_htlcs: Mutex::new(forward_htlcs),
 			decode_update_add_htlcs: Mutex::new(decode_update_add_htlcs),
