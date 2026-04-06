@@ -1491,9 +1491,9 @@ pub struct UnsignedChannelUpdate {
 	/// The number of blocks such that if:
 	/// `incoming_htlc.cltv_expiry < outgoing_htlc.cltv_expiry + cltv_expiry_delta`
 	/// then we need to fail the HTLC backwards. When forwarding an HTLC, `cltv_expiry_delta` determines
-	/// the outgoing HTLC's minimum `cltv_expiry` value -- so, if an incoming HTLC comes in with a
+	/// the outgoing HTLC's maximum `cltv_expiry` value -- so, if an incoming HTLC comes in with a
 	/// `cltv_expiry` of 100000, and the node we're forwarding to has a `cltv_expiry_delta` value of 10,
-	/// then we'll check that the outgoing HTLC's `cltv_expiry` value is at least 100010 before
+	/// then we'll check that the outgoing HTLC's `cltv_expiry` value is at most 99990 before
 	/// forwarding. Note that the HTLC sender is the one who originally sets this value when
 	/// constructing the route.
 	pub cltv_expiry_delta: u16,
