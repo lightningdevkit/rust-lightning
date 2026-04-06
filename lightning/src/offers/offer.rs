@@ -1474,7 +1474,7 @@ mod tests {
 	#[cfg(c_bindings)]
 	use super::OfferWithExplicitMetadataBuilder as OfferBuilder;
 	use super::{
-		Amount, ExperimentalOfferTlvStreamRef, Offer, OfferTlvStreamRef, Quantity,
+		Amount, ExperimentalOfferTlvStreamRef, MsatsRange, Offer, OfferTlvStreamRef, Quantity,
 		EXPERIMENTAL_OFFER_TYPES, OFFER_TYPES,
 	};
 
@@ -1483,6 +1483,7 @@ mod tests {
 	use crate::ln::channelmanager::PaymentId;
 	use crate::ln::inbound_payment::ExpandedKey;
 	use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
+	use crate::offers::currency::CurrencyConversion;
 	use crate::offers::nonce::Nonce;
 	use crate::offers::offer::CurrencyCode;
 	use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError};
@@ -1490,11 +1491,20 @@ mod tests {
 	use crate::types::features::OfferFeatures;
 	use crate::types::string::PrintableString;
 	use crate::util::ser::{BigSize, Writeable};
+	use crate::util::test_utils::TestCurrencyConversion;
 	use bitcoin::constants::ChainHash;
 	use bitcoin::network::Network;
 	use bitcoin::secp256k1::Secp256k1;
 	use core::num::NonZeroU64;
 	use core::time::Duration;
+
+	struct InfiniteCurrencyConversion;
+
+	impl CurrencyConversion for InfiniteCurrencyConversion {
+		fn msats_per_minor_unit(&self, _iso4217_code: CurrencyCode) -> Result<(f64, u8), ()> {
+			Ok((f64::INFINITY, 0))
+		}
+	}
 
 	#[test]
 	fn builds_offer_with_defaults() {
@@ -1797,6 +1807,51 @@ mod tests {
 			Ok(_) => panic!("expected error"),
 			Err(e) => assert_eq!(e, Bolt12SemanticError::InvalidAmount),
 		}
+	}
+
+	#[test]
+	fn resolves_amount_into_msats_range() {
+		let conversion = TestCurrencyConversion;
+		let invalid_conversion = InfiniteCurrencyConversion;
+
+		let bitcoin_range =
+			Amount::Bitcoin { amount_msats: 1_000 }.resolve_msats(&conversion).unwrap();
+		assert_eq!(bitcoin_range.amount_msats(), 1_000);
+		assert_eq!(bitcoin_range.minimum_msats(), 1_000);
+		assert_eq!(bitcoin_range.maximum_msats(), 1_000);
+		assert!(bitcoin_range.contains(1_000));
+
+		let currency_range =
+			Amount::Currency { iso4217_code: CurrencyCode::new(*b"USD").unwrap(), amount: 10 }
+				.resolve_msats(&conversion)
+				.unwrap();
+		assert_eq!(currency_range.amount_msats(), 10_000);
+		assert_eq!(currency_range.minimum_msats(), 9_000);
+		assert_eq!(currency_range.maximum_msats(), 11_000);
+		assert!(currency_range.contains(10_500));
+		assert!(!currency_range.contains(11_001));
+
+		let unsupported_amount =
+			Amount::Currency { iso4217_code: CurrencyCode::new(*b"EUR").unwrap(), amount: 10 };
+		assert_eq!(
+			unsupported_amount.resolve_msats(&conversion),
+			Err(Bolt12SemanticError::UnsupportedCurrency)
+		);
+		assert_eq!(
+			Amount::Currency { iso4217_code: CurrencyCode::new(*b"USD").unwrap(), amount: 10 }
+				.resolve_msats(&invalid_conversion),
+			Err(Bolt12SemanticError::InvalidAmount)
+		);
+	}
+
+	#[test]
+	fn multiplies_msats_range_by_quantity() {
+		let range = MsatsRange { amount_msats: 10_000, tolerance: 10 }.checked_mul(2).unwrap();
+		assert_eq!(range.amount_msats(), 20_000);
+		assert_eq!(range.minimum_msats(), 18_000);
+		assert_eq!(range.maximum_msats(), 22_000);
+		assert!(range.contains(21_000));
+		assert!(!range.contains(22_001));
 	}
 
 	#[test]
