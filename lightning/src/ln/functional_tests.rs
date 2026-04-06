@@ -4294,7 +4294,7 @@ pub fn test_duplicate_payment_hash_one_failure_one_success() {
 	// Finally, give node B the HTLC success transaction and ensure it extracts the preimage to
 	// provide to node A.
 	mine_transaction(&nodes[1], htlc_success_tx_to_confirm);
-	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], Some(392), true, true);
+	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], Some(196), true, true);
 	let mut updates = get_htlc_update_msgs(&nodes[1], &node_a_id);
 	assert!(updates.update_add_htlcs.is_empty());
 	assert!(updates.update_fail_htlcs.is_empty());

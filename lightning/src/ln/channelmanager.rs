@@ -13738,7 +13738,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								self.claim_funds_internal(
 									htlc_update.source,
 									preimage,
-									htlc_update.htlc_value_satoshis.map(|v| v * 1000),
+									htlc_update.htlc_value_msat,
 									None,
 									from_onchain,
 									counterparty_node_id,
