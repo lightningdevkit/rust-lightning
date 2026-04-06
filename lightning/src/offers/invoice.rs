@@ -396,16 +396,7 @@ macro_rules! invoice_builder_methods {
 		pub(crate) fn amount_msats(
 			invoice_request: &InvoiceRequest,
 		) -> Result<u64, Bolt12SemanticError> {
-			match invoice_request.contents.inner.amount_msats() {
-				Some(amount_msats) => Ok(amount_msats),
-				None => match invoice_request.contents.inner.offer.amount() {
-					Some(Amount::Bitcoin { amount_msats }) => amount_msats
-						.checked_mul(invoice_request.quantity().unwrap_or(1))
-						.ok_or(Bolt12SemanticError::InvalidAmount),
-					Some(Amount::Currency { .. }) => Err(Bolt12SemanticError::UnsupportedCurrency),
-					None => Err(Bolt12SemanticError::MissingAmount),
-				},
-			}
+			invoice_request.payable_amount_msats()
 		}
 
 		#[cfg_attr(c_bindings, allow(dead_code))]

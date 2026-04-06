@@ -704,21 +704,24 @@ macro_rules! invoice_request_accessors { ($self: ident, $contents: expr) => {
 		$contents.chain()
 	}
 
-	/// The amount to pay in msats (i.e., the minimum lightning-payable unit for [`chain`]), which
-	/// must be greater than or equal to [`Offer::amount`], converted if necessary.
+	/// The amount set directly on the invoice request, in msats (i.e., the minimum
+	/// lightning-payable unit for [`chain`]).
 	///
 	/// [`chain`]: Self::chain
 	pub fn amount_msats(&$self) -> Option<u64> {
 		$contents.amount_msats()
 	}
 
-	/// Returns whether an amount was set in the request; otherwise, if [`amount_msats`] is `Some`
-	/// then it was inferred from the [`Offer::amount`] and [`quantity`].
+	/// The amount payable for the request, in msats.
 	///
-	/// [`amount_msats`]: Self::amount_msats
-	/// [`quantity`]: Self::quantity
-	pub fn has_amount_msats(&$self) -> bool {
-		$contents.has_amount_msats()
+	/// If the invoice request explicitly sets an amount, that amount is returned.
+	/// Otherwise, the amount is inferred from [`Offer::amount`] and [`quantity`]
+	/// when the offer amount is already bitcoin-denominated.
+	///
+	/// Returns an error if the payable amount is missing, unsupported, or
+	/// semantically invalid.
+	pub fn payable_amount_msats(&$self) -> Result<u64, Bolt12SemanticError> {
+		$contents.payable_amount_msats()
 	}
 
 	/// Features pertaining to requesting an invoice.
@@ -1143,20 +1146,24 @@ impl InvoiceRequestContents {
 	}
 
 	pub(super) fn amount_msats(&self) -> Option<u64> {
-		self.inner.amount_msats().or_else(|| match self.inner.offer.amount() {
-			Some(Amount::Bitcoin { amount_msats }) => {
-				Some(amount_msats.saturating_mul(self.quantity().unwrap_or(1)))
-			},
-			Some(Amount::Currency { .. }) => None,
-			None => {
-				debug_assert!(false);
-				None
-			},
-		})
+		self.inner.amount_msats()
 	}
 
-	pub(super) fn has_amount_msats(&self) -> bool {
-		self.inner.amount_msats().is_some()
+	pub(super) fn payable_amount_msats(&self) -> Result<u64, Bolt12SemanticError> {
+		if let Some(amount_msats) = self.inner.amount_msats() {
+			return Ok(amount_msats);
+		}
+
+		match self.inner.offer.amount() {
+			Some(Amount::Bitcoin { amount_msats }) => amount_msats
+				.checked_mul(self.quantity().unwrap_or(1))
+				.ok_or(Bolt12SemanticError::InvalidAmount),
+			Some(Amount::Currency { .. }) => Err(Bolt12SemanticError::UnsupportedCurrency),
+			None => {
+				debug_assert!(false);
+				Err(Bolt12SemanticError::MissingAmount)
+			},
+		}
 	}
 
 	pub(super) fn features(&self) -> &InvoiceRequestFeatures {
@@ -1617,7 +1624,8 @@ mod tests {
 		assert_eq!(invoice_request.supported_quantity(), Quantity::One);
 		assert_eq!(invoice_request.issuer_signing_pubkey(), Some(recipient_pubkey()));
 		assert_eq!(invoice_request.chain(), ChainHash::using_genesis_block(Network::Bitcoin));
-		assert_eq!(invoice_request.amount_msats(), Some(1000));
+		assert_eq!(invoice_request.amount_msats(), None);
+		assert_eq!(invoice_request.payable_amount_msats(), Ok(1000));
 		assert_eq!(invoice_request.invoice_request_features(), &InvoiceRequestFeatures::empty());
 		assert_eq!(invoice_request.quantity(), None);
 		assert_eq!(invoice_request.payer_note(), None);
@@ -1937,8 +1945,9 @@ mod tests {
 			.build_and_sign()
 			.unwrap();
 		let (_, _, tlv_stream, _, _, _) = invoice_request.as_tlv_stream();
-		assert!(invoice_request.has_amount_msats());
+		assert!(invoice_request.amount_msats().is_some());
 		assert_eq!(invoice_request.amount_msats(), Some(1000));
+		assert_eq!(invoice_request.payable_amount_msats(), Ok(1000));
 		assert_eq!(tlv_stream.amount, Some(1000));
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
@@ -1954,8 +1963,9 @@ mod tests {
 			.build_and_sign()
 			.unwrap();
 		let (_, _, tlv_stream, _, _, _) = invoice_request.as_tlv_stream();
-		assert!(invoice_request.has_amount_msats());
+		assert!(invoice_request.amount_msats().is_some());
 		assert_eq!(invoice_request.amount_msats(), Some(1000));
+		assert_eq!(invoice_request.payable_amount_msats(), Ok(1000));
 		assert_eq!(tlv_stream.amount, Some(1000));
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
@@ -1969,8 +1979,9 @@ mod tests {
 			.build_and_sign()
 			.unwrap();
 		let (_, _, tlv_stream, _, _, _) = invoice_request.as_tlv_stream();
-		assert!(invoice_request.has_amount_msats());
+		assert!(invoice_request.amount_msats().is_some());
 		assert_eq!(invoice_request.amount_msats(), Some(1001));
+		assert_eq!(invoice_request.payable_amount_msats(), Ok(1001));
 		assert_eq!(tlv_stream.amount, Some(1001));
 
 		match OfferBuilder::new(recipient_pubkey())
@@ -2079,8 +2090,8 @@ mod tests {
 			.build_and_sign()
 			.unwrap();
 		let (_, _, tlv_stream, _, _, _) = invoice_request.as_tlv_stream();
-		assert!(!invoice_request.has_amount_msats());
-		assert_eq!(invoice_request.amount_msats(), Some(1000));
+		assert_eq!(invoice_request.amount_msats(), None);
+		assert_eq!(invoice_request.payable_amount_msats(), Ok(1000));
 		assert_eq!(tlv_stream.amount, None);
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
@@ -2095,8 +2106,8 @@ mod tests {
 			.build_and_sign()
 			.unwrap();
 		let (_, _, tlv_stream, _, _, _) = invoice_request.as_tlv_stream();
-		assert!(!invoice_request.has_amount_msats());
-		assert_eq!(invoice_request.amount_msats(), Some(2000));
+		assert_eq!(invoice_request.amount_msats(), None);
+		assert_eq!(invoice_request.payable_amount_msats(), Ok(2000));
 		assert_eq!(tlv_stream.amount, None);
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
@@ -2109,8 +2120,11 @@ mod tests {
 			.unwrap()
 			.build_unchecked_and_sign();
 		let (_, _, tlv_stream, _, _, _) = invoice_request.as_tlv_stream();
-		assert!(!invoice_request.has_amount_msats());
 		assert_eq!(invoice_request.amount_msats(), None);
+		assert_eq!(
+			invoice_request.payable_amount_msats(),
+			Err(Bolt12SemanticError::UnsupportedCurrency)
+		);
 		assert_eq!(tlv_stream.amount, None);
 	}
 

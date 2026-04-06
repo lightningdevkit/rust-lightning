@@ -8533,12 +8533,17 @@ impl<
 								});
 								let verified_invreq = match verify_opt {
 									Some(verified_invreq) => {
-										if let Some(invreq_amt_msat) =
-											verified_invreq.amount_msats()
-										{
-											if payment_data.total_msat < invreq_amt_msat {
+										match verified_invreq.payable_amount_msats() {
+											Ok(invreq_amt_msat) => {
+												if payment_data.total_msat < invreq_amt_msat {
+													fail_htlc!(claimable_htlc, payment_hash);
+												}
+											},
+											Err(Bolt12SemanticError::UnsupportedCurrency)
+											| Err(Bolt12SemanticError::MissingAmount) => {},
+											Err(_) => {
 												fail_htlc!(claimable_htlc, payment_hash);
-											}
+											},
 										}
 										verified_invreq
 									},
