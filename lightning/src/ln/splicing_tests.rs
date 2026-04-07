@@ -16,7 +16,8 @@ use crate::chain::ChannelMonitorUpdateStatus;
 use crate::events::{ClosureReason, Event, FundingInfo, HTLCHandlingFailureType};
 use crate::ln::chan_utils;
 use crate::ln::channel::{
-	CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY, FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE,
+	CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY, DISCONNECT_PEER_AWAITING_RESPONSE_TICKS,
+	FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE,
 };
 use crate::ln::channelmanager::{provided_init_features, PaymentId, BREAKDOWN_TIMEOUT};
 use crate::ln::functional_test_utils::*;
@@ -6818,4 +6819,195 @@ fn test_splice_rbf_rejects_own_low_feerate_after_several_attempts() {
 		Event::SpliceFailed { channel_id: cid, .. } => assert_eq!(*cid, channel_id),
 		other => panic!("Expected SpliceFailed, got {:?}", other),
 	}
+}
+
+#[test]
+fn test_no_disconnect_after_splice_completes() {
+	// Test that the disconnect timer is cleared when exiting quiescence after a successful splice
+	// negotiation. Previously, `on_tx_signatures_exchange` cleared the quiescent state but not the
+	// disconnect timer, causing a spurious disconnect after the splice completed.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+
+	let funding_contribution = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+	let new_funding_script = complete_splice_handshake(&nodes[0], &nodes[1]);
+
+	// Fire a tick while quiescent to arm the disconnect timer.
+	nodes[0].node.timer_tick_occurred();
+	nodes[1].node.timer_tick_occurred();
+
+	// Complete the splice negotiation, which should clear the timer when exiting quiescence.
+	complete_interactive_funding_negotiation(
+		&nodes[0],
+		&nodes[1],
+		channel_id,
+		funding_contribution,
+		new_funding_script,
+	);
+	let (_, splice_locked) = sign_interactive_funding_tx(&nodes[0], &nodes[1], false);
+	assert!(splice_locked.is_none());
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+	expect_splice_pending_event(&nodes[0], &node_id_1);
+	expect_splice_pending_event(&nodes[1], &node_id_0);
+
+	// Fire enough ticks to trigger a disconnect if the timer wasn't properly cleared.
+	for _ in 0..DISCONNECT_PEER_AWAITING_RESPONSE_TICKS {
+		nodes[0].node.timer_tick_occurred();
+		nodes[1].node.timer_tick_occurred();
+	}
+
+	let has_disconnect = |events: &[MessageSendEvent]| {
+		events.iter().any(|event| {
+			matches!(
+				event,
+				MessageSendEvent::HandleError {
+					action: msgs::ErrorAction::DisconnectPeerWithWarning { .. },
+					..
+				}
+			)
+		})
+	};
+	assert!(!has_disconnect(&nodes[0].node.get_and_clear_pending_msg_events()));
+	assert!(!has_disconnect(&nodes[1].node.get_and_clear_pending_msg_events()));
+}
+
+#[test]
+fn test_no_disconnect_after_splice_aborted() {
+	// Test that the disconnect timer is cleared when exiting quiescence after a splice negotiation
+	// is aborted via tx_abort. Previously, `reset_pending_splice_state` cleared the quiescent
+	// state but not the disconnect timer, causing a spurious disconnect after the abort.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+
+	let funding_contribution = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+	complete_splice_handshake(&nodes[0], &nodes[1]);
+
+	// Fire a tick while quiescent to arm the disconnect timer.
+	nodes[0].node.timer_tick_occurred();
+	nodes[1].node.timer_tick_occurred();
+
+	// Abort the splice, which should clear the timer when exiting quiescence.
+	nodes[0].node.abandon_splice(&channel_id, &node_id_1).unwrap();
+
+	expect_splice_failed_events(&nodes[0], &channel_id, funding_contribution);
+
+	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+	let tx_abort = msg_events
+		.iter()
+		.find_map(|event| {
+			if let MessageSendEvent::SendTxAbort { msg, .. } = event {
+				Some(msg.clone())
+			} else {
+				None
+			}
+		})
+		.expect("Expected SendTxAbort");
+
+	nodes[1].node.handle_tx_abort(node_id_0, &tx_abort);
+	let tx_abort_echo = get_event_msg!(nodes[1], MessageSendEvent::SendTxAbort, node_id_0);
+	nodes[1].node.get_and_clear_pending_events();
+
+	nodes[0].node.handle_tx_abort(node_id_1, &tx_abort_echo);
+
+	// Fire enough ticks to trigger a disconnect if the timer wasn't properly cleared.
+	for _ in 0..DISCONNECT_PEER_AWAITING_RESPONSE_TICKS {
+		nodes[0].node.timer_tick_occurred();
+		nodes[1].node.timer_tick_occurred();
+	}
+
+	let has_disconnect = |events: &[MessageSendEvent]| {
+		events.iter().any(|event| {
+			matches!(
+				event,
+				MessageSendEvent::HandleError {
+					action: msgs::ErrorAction::DisconnectPeerWithWarning { .. },
+					..
+				}
+			)
+		})
+	};
+	assert!(!has_disconnect(&nodes[0].node.get_and_clear_pending_msg_events()));
+	assert!(!has_disconnect(&nodes[1].node.get_and_clear_pending_msg_events()));
+}
+
+#[test]
+fn test_no_disconnect_after_quiescence_on_reconnect() {
+	// Test that there is no spurious disconnect after reconnecting from a quiescent state. The
+	// disconnect timer is cleared by `remove_uncommitted_htlcs_and_mark_paused` during
+	// disconnection and by `exit_quiescence` during reconnection.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+
+	let funding_contribution = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+	complete_splice_handshake(&nodes[0], &nodes[1]);
+
+	// Fire a tick while quiescent to arm the disconnect timer.
+	nodes[0].node.timer_tick_occurred();
+	nodes[1].node.timer_tick_occurred();
+
+	// Disconnect and reconnect.
+	nodes[0].node.peer_disconnected(node_id_1);
+	nodes[1].node.peer_disconnected(node_id_0);
+
+	expect_splice_failed_events(&nodes[0], &channel_id, funding_contribution);
+
+	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
+	reconnect_args.send_channel_ready = (true, true);
+	reconnect_args.send_announcement_sigs = (true, true);
+	reconnect_nodes(reconnect_args);
+
+	// Fire enough ticks to trigger a disconnect if the timer wasn't properly cleared.
+	for _ in 0..DISCONNECT_PEER_AWAITING_RESPONSE_TICKS {
+		nodes[0].node.timer_tick_occurred();
+		nodes[1].node.timer_tick_occurred();
+	}
+
+	let has_disconnect = |events: &[MessageSendEvent]| {
+		events.iter().any(|event| {
+			matches!(
+				event,
+				MessageSendEvent::HandleError {
+					action: msgs::ErrorAction::DisconnectPeerWithWarning { .. },
+					..
+				}
+			)
+		})
+	};
+	assert!(!has_disconnect(&nodes[0].node.get_and_clear_pending_msg_events()));
+	assert!(!has_disconnect(&nodes[1].node.get_and_clear_pending_msg_events()));
 }

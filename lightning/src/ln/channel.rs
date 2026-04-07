@@ -1719,7 +1719,10 @@ where
 					// We shouldn't be quiescent anymore upon reconnecting if:
 					// - We were in quiescence but a splice/RBF was never negotiated or
 					// - We were in quiescence but the splice negotiation failed due to disconnecting
-					chan.context.channel_state.clear_quiescent();
+					//
+					// NOTE: While `exit_quiescence` clears the disconnect timer, it should already
+					// have been cleared by `remove_uncommitted_htlcs_and_mark_paused`.
+					chan.exit_quiescence();
 					None
 				} else {
 					None
@@ -7285,7 +7288,7 @@ where
 			self.pending_splice.take();
 		}
 
-		self.context.channel_state.clear_quiescent();
+		self.exit_quiescence();
 		if current_is_awaiting_signatures {
 			self.context.interactive_tx_signing_session.take();
 		}
@@ -9305,7 +9308,6 @@ where
 		debug_assert!(!self.context.channel_state.is_awaiting_remote_revoke());
 
 		if let Some(pending_splice) = self.pending_splice.as_mut() {
-			self.context.channel_state.clear_quiescent();
 			if let Some(FundingNegotiation::AwaitingSignatures {
 				mut funding,
 				funding_feerate_sat_per_1000_weight,
@@ -9354,6 +9356,8 @@ where
 			} else {
 				debug_assert!(false);
 			}
+
+			self.exit_quiescence();
 		} else {
 			self.funding.funding_transaction = Some(funding_tx.clone());
 			self.context.channel_state =
