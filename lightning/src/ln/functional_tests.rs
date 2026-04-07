@@ -7921,7 +7921,15 @@ fn do_test_onchain_htlc_settlement_after_close(
 		_ => panic!("Unexpected event"),
 	};
 	nodes[1].node.handle_revoke_and_ack(node_c_id, &carol_revocation);
-	check_added_monitors(&nodes[1], 1);
+	if nodes[1].node.test_persistent_monitor_events_enabled() {
+		if broadcast_alice && !go_onchain_before_fulfill {
+			check_added_monitors(&nodes[1], 1);
+		} else {
+			check_added_monitors(&nodes[1], 2);
+		}
+	} else {
+		check_added_monitors(&nodes[1], 1);
+	}
 
 	// If this test requires the force-closed channel to not be on-chain until after the fulfill,
 	// here's where we put said channel's commitment tx on-chain.
@@ -7953,6 +7961,13 @@ fn do_test_onchain_htlc_settlement_after_close(
 				assert_eq!(bob_txn.len(), 2);
 			}
 			check_spends!(bob_txn[0], chan_ab.3);
+		}
+	}
+	if nodes[1].node.test_persistent_monitor_events_enabled() {
+		if !broadcast_alice || go_onchain_before_fulfill {
+			// In some cases we'll replay the claim via a MonitorEvent and be unable to detect that it's
+			// a duplicate since the inbound edge is on-chain.
+			expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], fee, went_onchain, false);
 		}
 	}
 
@@ -10220,6 +10235,7 @@ fn test_dup_htlc_claim_onchain_and_offchain() {
 	);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
+	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
 	let node_c_id = nodes[2].node.get_our_node_id();
 
@@ -10243,8 +10259,8 @@ fn test_dup_htlc_claim_onchain_and_offchain() {
 	nodes[1].node.handle_update_fulfill_htlc(node_c_id, cs_updates.update_fulfill_htlcs[0].clone());
 	check_added_monitors(&nodes[1], 1);
 
-	// Ignore B's attempts to claim the HTLC from A.
-	nodes[1].node.get_and_clear_pending_msg_events();
+	// Capture B's updates but ignore them for now.
+	let mut bs_updates = get_htlc_update_msgs(&nodes[1], &node_a_id);
 
 	// Get C's commitment transactions. C's commitment includes the HTLC and C has
 	// an HTLC-success transaction (claiming with preimage). Mine both on B.
@@ -10269,4 +10285,9 @@ fn test_dup_htlc_claim_onchain_and_offchain() {
 	// the monitor to generate an HTLCEvent with the preimage via process_pending_monitor_events,
 	// which calls claim_funds_internal a second time.
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY);
+
+	// Finally, complete the payment.
+	nodes[0].node.handle_update_fulfill_htlc(node_b_id, bs_updates.update_fulfill_htlcs.remove(0));
+	do_commitment_signed_dance(&nodes[0], &nodes[1], &bs_updates.commitment_signed, false, false);
+	expect_payment_sent!(nodes[0], payment_preimage);
 }
