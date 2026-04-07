@@ -523,6 +523,9 @@ pub struct TestChainMonitor<'a> {
 	pub pause_flush: AtomicBool,
 	/// Buffer of the last 20 monitor updates, most recent first.
 	pub recent_monitor_updates: Mutex<Vec<(ChannelId, ChannelMonitorUpdate)>>,
+	/// When set to `true`, `release_pending_monitor_events` sorts events by `ChannelId` to
+	/// ensure deterministic processing order regardless of HashMap iteration order.
+	pub deterministic_mon_events_order: AtomicBool,
 }
 impl<'a> TestChainMonitor<'a> {
 	pub fn new(
@@ -584,6 +587,7 @@ impl<'a> TestChainMonitor<'a> {
 			write_blocker: Mutex::new(None),
 			pause_flush: AtomicBool::new(false),
 			recent_monitor_updates: Mutex::new(Vec::new()),
+			deterministic_mon_events_order: AtomicBool::new(false),
 		}
 	}
 
@@ -745,7 +749,11 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 			let count = self.chain_monitor.pending_operation_count();
 			self.chain_monitor.flush(count, &self.logger);
 		}
-		return self.chain_monitor.release_pending_monitor_events();
+		let mut events = self.chain_monitor.release_pending_monitor_events();
+		if self.deterministic_mon_events_order.load(Ordering::Acquire) {
+			events.sort_by_key(|(_, channel_id, _, _)| *channel_id);
+		}
+		events
 	}
 
 	fn ack_monitor_event(&self, source: MonitorEventSource) {

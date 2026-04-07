@@ -3166,7 +3166,7 @@ pub fn expect_payment_forwarded<CM: AChannelManager, H: NodeHolder<CM = CM>>(
 macro_rules! expect_payment_forwarded {
 	($node: expr, $prev_node: expr, $next_node: expr, $expected_fee: expr, $upstream_force_closed: expr, $downstream_force_closed: expr) => {
 		let mut events = $node.node.get_and_clear_pending_events();
-		assert_eq!(events.len(), 1);
+		assert_eq!(events.len(), 1, "{events:?}");
 		$crate::ln::functional_test_utils::expect_payment_forwarded(
 			events.pop().unwrap(),
 			&$node,
@@ -5673,7 +5673,13 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 				node_a.node.handle_revoke_and_ack(node_b_id, &bs_revoke_and_ack);
 				check_added_monitors(
 					&node_a,
-					if pending_responding_commitment_signed_dup_monitor.1 { 0 } else { 1 },
+					if pending_responding_commitment_signed_dup_monitor.1
+						&& !node_a.node.test_persistent_monitor_events_enabled()
+					{
+						0
+					} else {
+						1
+					},
 				);
 				if !allow_post_commitment_dance_msgs.1 {
 					assert!(node_a.node.get_and_clear_pending_msg_events().is_empty());

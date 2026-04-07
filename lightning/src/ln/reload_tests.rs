@@ -1972,6 +1972,13 @@ fn test_reload_node_with_preimage_in_monitor_claims_htlc() {
 		Some(true)
 	);
 
+	if nodes[1].node.test_persistent_monitor_events_enabled() {
+		// Polling messages causes us to re-release the unacked HTLC claim monitor event, which
+		// regenerates a preimage monitor update and forward event below.
+		let msgs = nodes[1].node.get_and_clear_pending_msg_events();
+		assert!(msgs.is_empty());
+	}
+
 	// When the claim is reconstructed during reload, a PaymentForwarded event is generated.
 	// Fetching events triggers the pending monitor update (adding preimage) to be applied.
 	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], Some(1000), false, false);

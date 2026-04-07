@@ -927,8 +927,33 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	let fulfill_msg = htlc_fulfill.update_fulfill_htlcs.remove(0);
 	nodes[1].node.handle_update_fulfill_htlc(node_c_id, fulfill_msg);
 	check_added_monitors(&nodes[1], 1);
-	do_commitment_signed_dance(&nodes[1], &nodes[2], &htlc_fulfill.commitment_signed, false, false);
-	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], None, true, false);
+	{
+		// Drive the commitment signed dance manually so we can account for the extra monitor
+		// update when persistent monitor events are enabled.
+		let persistent = nodes[1].node.test_persistent_monitor_events_enabled();
+		nodes[1].node.handle_commitment_signed_batch_test(node_c_id, &htlc_fulfill.commitment_signed);
+		check_added_monitors(&nodes[1], 1);
+		let (extra_msg, cs_raa, htlcs) =
+			do_main_commitment_signed_dance(&nodes[1], &nodes[2], false);
+		assert!(htlcs.is_empty());
+		assert!(extra_msg.is_none());
+		// nodes[1] handles nodes[2]'s RAA. When persistent monitor events are enabled, this
+		// triggers the re-provided outbound monitor event, generating an extra preimage update
+		// on the (closed) inbound channel.
+		nodes[1].node.handle_revoke_and_ack(node_c_id, &cs_raa);
+		check_added_monitors(&nodes[1], if persistent { 2 } else { 1 });
+	}
+	if nodes[1].node.test_persistent_monitor_events_enabled() {
+		// The re-provided monitor event generates a duplicate PaymentForwarded against the
+		// closed inbound channel.
+		let events = nodes[1].node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 2);
+		for event in events {
+			assert!(matches!(event, Event::PaymentForwarded { .. }));
+		}
+	} else {
+		expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], None, true, false);
+	}
 
 	if confirm_before_reload {
 		let best_block = nodes[0].blocks.lock().unwrap().last().unwrap().clone();

@@ -7916,7 +7916,15 @@ fn do_test_onchain_htlc_settlement_after_close(
 		_ => panic!("Unexpected event"),
 	};
 	nodes[1].node.handle_revoke_and_ack(node_c_id, &carol_revocation);
-	check_added_monitors(&nodes[1], 1);
+	if nodes[1].node.test_persistent_monitor_events_enabled() {
+		if broadcast_alice && !go_onchain_before_fulfill {
+			check_added_monitors(&nodes[1], 1);
+		} else {
+			check_added_monitors(&nodes[1], 2);
+		}
+	} else {
+		check_added_monitors(&nodes[1], 1);
+	}
 
 	// If this test requires the force-closed channel to not be on-chain until after the fulfill,
 	// here's where we put said channel's commitment tx on-chain.
@@ -7948,6 +7956,13 @@ fn do_test_onchain_htlc_settlement_after_close(
 				assert_eq!(bob_txn.len(), 2);
 			}
 			check_spends!(bob_txn[0], chan_ab.3);
+		}
+	}
+	if nodes[1].node.test_persistent_monitor_events_enabled() {
+		if !broadcast_alice || go_onchain_before_fulfill {
+			// In some cases we'll replay the claim via a MonitorEvent and be unable to detect that it's
+			// a duplicate since the inbound edge is on-chain.
+			expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], fee, went_onchain, false);
 		}
 	}
 

@@ -3633,14 +3633,23 @@ impl TrustedChannelFeatures {
 struct ClaimCompletionActionParams {
 	definitely_duplicate: bool,
 	inbound_htlc_value_msat: Option<u64>,
+	inbound_edge_closed: bool,
 }
 
 impl ClaimCompletionActionParams {
 	fn new_claim(inbound_htlc_value_msat: u64) -> Self {
-		Self { definitely_duplicate: false, inbound_htlc_value_msat: Some(inbound_htlc_value_msat) }
+		Self {
+			definitely_duplicate: false,
+			inbound_htlc_value_msat: Some(inbound_htlc_value_msat),
+			inbound_edge_closed: false,
+		}
 	}
 	fn duplicate_claim() -> Self {
-		Self { definitely_duplicate: true, inbound_htlc_value_msat: None }
+		Self {
+			definitely_duplicate: true,
+			inbound_htlc_value_msat: None,
+			inbound_edge_closed: false,
+		}
 	}
 }
 
@@ -9649,8 +9658,11 @@ impl<
 			monitor_event_id
 				.map(|event_id| MonitorEventSource { event_id, channel_id: next_channel_id }),
 			|claim_completion_action_params| {
-				let ClaimCompletionActionParams { definitely_duplicate, inbound_htlc_value_msat } =
-					claim_completion_action_params;
+				let ClaimCompletionActionParams {
+					definitely_duplicate,
+					inbound_htlc_value_msat,
+					inbound_edge_closed,
+				} = claim_completion_action_params;
 				let chan_to_release = EventUnblockedChannel {
 					counterparty_node_id: next_channel_counterparty_node_id,
 					funding_txo: next_channel_outpoint,
@@ -9658,7 +9670,44 @@ impl<
 					blocking_action: completed_blocker,
 				};
 
-				if definitely_duplicate && startup_replay {
+				if self.persistent_monitor_events {
+					let monitor_event_source = monitor_event_id.map(|event_id| {
+						MonitorEventSource { event_id, channel_id: next_channel_id }
+					});
+					// If persistent_monitor_events is enabled, then we'll get a MonitorEvent for this HTLC
+					// claim re-provided to us until we explicitly ack it.
+					// * If the inbound edge is closed, then we can ack it when we know the preimage is
+					// durably persisted there + the user has processed a `PaymentForwarded` event
+					// * If the inbound edge is open, then we'll ack the monitor event when HTLC has been
+					// irrevocably removed via revoke_and_ack. This prevents forgetting to claim the HTLC
+					// backwards if we lose the off-chain HTLC from the holding cell after a restart.
+					if definitely_duplicate {
+						if inbound_edge_closed {
+							if let Some(id) = monitor_event_source {
+								self.chain_monitor.ack_monitor_event(id);
+							}
+						}
+						(None, None)
+					} else if let Some(event) =
+						make_payment_forwarded_event(inbound_htlc_value_msat)
+					{
+						let preimage_update_action =
+							MonitorUpdateCompletionAction::EmitForwardEvent {
+								event,
+								post_event_ackable_monitor_event: inbound_edge_closed
+									.then_some(monitor_event_source)
+									.flatten(),
+							};
+						(Some(preimage_update_action), None)
+					} else if inbound_edge_closed {
+						let preimage_update_action = monitor_event_source.map(|src| {
+							MonitorUpdateCompletionAction::AckMonitorEvents { event_ids: vec![src] }
+						});
+						(preimage_update_action, None)
+					} else {
+						(None, None)
+					}
+				} else if definitely_duplicate && startup_replay {
 					// On startup we may get redundant claims which are related to
 					// monitor updates still in flight. In that case, we shouldn't
 					// immediately free, but instead let that monitor update complete
@@ -9991,6 +10040,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let (action_opt, raa_blocker_opt) = completion_action(ClaimCompletionActionParams {
 			definitely_duplicate: false,
 			inbound_htlc_value_msat: None,
+			inbound_edge_closed: true,
 		});
 
 		if let Some(raa_blocker) = raa_blocker_opt {
@@ -12712,23 +12762,32 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							chan.update_fulfill_htlc(&msg),
 							chan_entry
 						);
-						let prev_hops = match &res.0 {
-							HTLCSource::PreviousHopData(prev_hop) => vec![prev_hop],
-							HTLCSource::TrampolineForward { previous_hop_data, .. } => {
-								previous_hop_data.iter().collect()
-							},
-							_ => vec![],
-						};
-						let logger = WithChannelContext::from(&self.logger, &chan.context, None);
-						for prev_hop in prev_hops {
-							log_trace!(logger,
-								"Holding the next revoke_and_ack until the preimage is durably persisted in the inbound edge's ChannelMonitor",
-							);
-							peer_state
-								.actions_blocking_raa_monitor_updates
-								.entry(msg.channel_id)
-								.or_insert_with(Vec::new)
-								.push(RAAMonitorUpdateBlockingAction::from_prev_hop_data(prev_hop));
+						// If persistent_monitor_events is enabled, we don't need to block preimage-removing
+						// monitor updates because we'll get the preimage from monitor events (that are
+						// guaranteed to be re-provided until they are explicitly acked) rather than from
+						// polling the monitor's internal state.
+						if !self.persistent_monitor_events {
+							let prev_hops = match &res.0 {
+								HTLCSource::PreviousHopData(prev_hop) => vec![prev_hop],
+								HTLCSource::TrampolineForward { previous_hop_data, .. } => {
+									previous_hop_data.iter().collect()
+								},
+								_ => vec![],
+							};
+							let logger =
+								WithChannelContext::from(&self.logger, &chan.context, None);
+							for prev_hop in prev_hops {
+								log_trace!(logger,
+									"Holding the next revoke_and_ack until the preimage is durably persisted in the inbound edge's ChannelMonitor",
+								);
+								peer_state
+									.actions_blocking_raa_monitor_updates
+									.entry(msg.channel_id)
+									.or_insert_with(Vec::new)
+									.push(RAAMonitorUpdateBlockingAction::from_prev_hop_data(
+										prev_hop,
+									));
+							}
 						}
 
 						// Note that we do not need to push an `actions_blocking_raa_monitor_updates`
@@ -13730,29 +13789,22 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 										.channel_by_id
 										.contains_key(&channel_id)
 								});
-							let we_are_sender =
-								matches!(htlc_update.source, HTLCSource::OutboundRoute { .. });
-							if from_onchain | we_are_sender {
-								// Claim the funds from the previous hop, if there is one. In the future we can
-								// store attribution data in the `ChannelMonitor` and provide it here.
-								self.claim_funds_internal(
-									htlc_update.source,
-									preimage,
-									htlc_update.htlc_value_msat,
-									None,
-									from_onchain,
-									counterparty_node_id,
-									funding_outpoint,
-									channel_id,
-									htlc_update.user_channel_id,
-									None,
-									None,
-									Some(event_id),
-								);
-							}
-							if !we_are_sender {
-								self.chain_monitor.ack_monitor_event(monitor_event_source);
-							}
+							// Claim the funds from the previous hop, if there is one. In the future we can
+							// store attribution data in the `ChannelMonitor` and provide it here.
+							self.claim_funds_internal(
+								htlc_update.source,
+								preimage,
+								htlc_update.htlc_value_msat,
+								None,
+								from_onchain,
+								counterparty_node_id,
+								funding_outpoint,
+								channel_id,
+								htlc_update.user_channel_id,
+								None,
+								None,
+								Some(event_id),
+							);
 						} else {
 							log_trace!(logger, "Failing HTLC from our monitor");
 							let failure_reason = LocalHTLCFailureReason::OnChainTimeout;
@@ -20679,6 +20731,12 @@ impl<
 			downstream_user_channel_id,
 		) in pending_claims_to_replay
 		{
+			// If persistent_monitor_events is enabled, we don't need to explicitly reclaim HTLCs on
+			// startup because we can just wait for the relevant MonitorEvents to be re-provided to us
+			// during runtime.
+			if channel_manager.persistent_monitor_events {
+				continue;
+			}
 			// We use `downstream_closed` in place of `from_onchain` here just as a guess - we
 			// don't remember in the `ChannelMonitor` where we got a preimage from, but if the
 			// channel is closed we just assume that it probably came from an on-chain claim.
