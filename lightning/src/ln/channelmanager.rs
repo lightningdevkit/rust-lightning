@@ -8612,7 +8612,7 @@ impl<
 								},
 							};
 
-							if let Err(_) = self.handle_claimable_htlc(
+							if let Err(()) = self.handle_claimable_htlc(
 								purpose,
 								claimable_htlc,
 								onion_fields,
