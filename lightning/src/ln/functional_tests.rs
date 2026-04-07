@@ -10180,3 +10180,69 @@ pub fn test_dust_exposure_holding_cell_assertion() {
 	// Now that everything has settled, make sure the channels still work with a simple claim.
 	claim_payment(&nodes[2], &[&nodes[1]], payment_preimage_cb);
 }
+
+#[test]
+fn test_dup_htlc_claim_onchain_and_offchain() {
+	// Tests what happens if we receive a claim first offchain, then see a counterparty broadcast
+	// their commitment transaction and re-claim the same HTLC on-chain. This was never broken, but
+	// the very specific ordering in this test did hit a debug assertion failure.
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs = create_node_chanmgrs(
+		3,
+		&node_cfgs,
+		&[Some(legacy_cfg.clone()), Some(legacy_cfg.clone()), Some(legacy_cfg)],
+	);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	let node_b_id = nodes[1].node.get_our_node_id();
+	let node_c_id = nodes[2].node.get_our_node_id();
+
+	create_announced_chan_between_nodes(&nodes, 0, 1);
+	let chan_bc = create_announced_chan_between_nodes(&nodes, 1, 2);
+
+	// Route payment A -> B -> C.
+	let (payment_preimage, payment_hash, _, _) =
+		route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1_000_000);
+
+	// C claims the payment.
+	nodes[2].node.claim_funds(payment_preimage);
+	expect_payment_claimed!(nodes[2], payment_hash, 1_000_000);
+	check_added_monitors(&nodes[2], 1);
+
+	// Deliver only C's update_fulfill_htlc to B (NOT the commitment_signed). B learns
+	// the preimage and claims from A (adding an RAA blocker on B-C via
+	// internal_update_fulfill_htlc, then removing it when the A-B monitor update completes
+	// and the EmitEventOptionAndFreeOtherChannel action runs).
+	let cs_updates = get_htlc_update_msgs(&nodes[2], &node_b_id);
+	nodes[1].node.handle_update_fulfill_htlc(node_c_id, cs_updates.update_fulfill_htlcs[0].clone());
+	check_added_monitors(&nodes[1], 1);
+
+	// Ignore B's attempts to claim the HTLC from A.
+	nodes[1].node.get_and_clear_pending_msg_events();
+
+	// Get C's commitment transactions. C's commitment includes the HTLC and C has
+	// an HTLC-success transaction (claiming with preimage). Mine both on B.
+	let cs_txn = get_local_commitment_txn!(nodes[2], chan_bc.2);
+	assert!(cs_txn.len() >= 2, "Expected commitment + HTLC-success tx, got {}", cs_txn.len());
+
+	// Mine C's commitment on B. B sees the counterparty commitment on-chain.
+	mine_transaction(&nodes[1], &cs_txn[0]);
+	check_closed_broadcast(&nodes[1], 1, true);
+	check_added_monitors(&nodes[1], 1);
+	let events = nodes[1].node.get_and_clear_pending_events();
+	assert!(
+		events.iter().any(|e| matches!(e, Event::ChannelClosed { .. })),
+		"Expected ChannelClosed event"
+	);
+
+	// Mine C's HTLC-success transaction. B's monitor sees the preimage being used on-chain
+	// and generates an HTLCEvent with the preimage.
+	mine_transaction(&nodes[1], &cs_txn[1]);
+
+	// Advance past ANTI_REORG_DELAY so the on-chain HTLC resolution matures. This triggers
+	// the monitor to generate an HTLCEvent with the preimage via process_pending_monitor_events,
+	// which calls claim_funds_internal a second time.
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY);
+}
