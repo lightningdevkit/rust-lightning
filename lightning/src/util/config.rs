@@ -1230,6 +1230,26 @@ pub struct ChannelHandshakeConfigUpdate {
 	pub channel_reserve_proportional_millionths: Option<u32>,
 }
 
+impl From<ChannelHandshakeConfig> for ChannelHandshakeConfigUpdate {
+	fn from(config: ChannelHandshakeConfig) -> Self {
+		Self {
+			announced_channel_max_inbound_htlc_value_in_flight_percentage: Some(
+				config.announced_channel_max_inbound_htlc_value_in_flight_percentage,
+			),
+			unannounced_channel_max_inbound_htlc_value_in_flight_percentage: Some(
+				config.unannounced_channel_max_inbound_htlc_value_in_flight_percentage,
+			),
+			htlc_minimum_msat: Some(config.our_htlc_minimum_msat),
+			minimum_depth: Some(config.minimum_depth),
+			to_self_delay: Some(config.our_to_self_delay),
+			max_accepted_htlcs: Some(config.our_max_accepted_htlcs),
+			channel_reserve_proportional_millionths: Some(
+				config.their_channel_reserve_proportional_millionths,
+			),
+		}
+	}
+}
+
 impl ChannelHandshakeConfig {
 	/// Applies the provided handshake config update.
 	pub fn apply(&mut self, config: &ChannelHandshakeConfigUpdate) {
