@@ -183,9 +183,11 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 	///
 	/// Must be called whenever a new chain tip becomes available. May be skipped
 	/// for intermediary blocks.
-	pub fn best_block_updated(&self, header: &Header, _height: u32) {
+	pub fn best_block_updated(&self, header: &Header, height: u32) {
 		let timestamp = &self.highest_seen_timestamp;
 		let block_time = header.time as usize;
+
+		*self.best_block.write().unwrap() = BestBlock::new(header.block_hash(), height);
 
 		loop {
 			// Update timestamp to be the max of its current value and the block
