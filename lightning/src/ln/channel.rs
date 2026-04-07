@@ -8108,6 +8108,43 @@ where
 		debug_assert!(false, "If we go to prune an inbound HTLC it should be present")
 	}
 
+	/// Clears the `hold_htlc` flag for a pending inbound HTLC, returning `true` if the HTLC was
+	/// successfully released. Useful when a [`ReleaseHeldHtlc`] onion message arrives before the
+	/// HTLC has been fully committed.
+	///
+	/// [`ReleaseHeldHtlc`]: crate::onion_message::async_payments::ReleaseHeldHtlc
+	pub(super) fn release_pending_inbound_held_htlc(&mut self, htlc_id: u64) -> bool {
+		for update_add in self.context.monitor_pending_update_adds.iter_mut() {
+			if update_add.htlc_id == htlc_id {
+				update_add.hold_htlc.take();
+				return true;
+			}
+		}
+		for htlc in self.context.pending_inbound_htlcs.iter_mut() {
+			if htlc.htlc_id != htlc_id {
+				continue;
+			}
+			match &mut htlc.state {
+				// Clearing `hold_htlc` here directly affects the copy that will be cloned into the decode
+				// pipeline when RAA promotes the HTLC.
+				InboundHTLCState::RemoteAnnounced(InboundHTLCResolution::Pending {
+					update_add_htlc,
+				})
+				| InboundHTLCState::AwaitingRemoteRevokeToAnnounce(
+					InboundHTLCResolution::Pending { update_add_htlc },
+				)
+				| InboundHTLCState::AwaitingAnnouncedRemoteRevoke(
+					InboundHTLCResolution::Pending { update_add_htlc },
+				) => {
+					update_add_htlc.hold_htlc.take();
+					return true;
+				},
+				_ => return false,
+			}
+		}
+		false
+	}
+
 	/// Useful for testing crash scenarios where the holding cell is not persisted.
 	#[cfg(test)]
 	pub(super) fn test_clear_holding_cell(&mut self) {

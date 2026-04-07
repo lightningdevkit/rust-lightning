@@ -17189,6 +17189,18 @@ impl<
 				htlc_id,
 			} => {
 				let _serialize_guard = PersistenceNotifierGuard::notify_on_drop(self);
+				// It's possible the release_held_htlc message raced ahead of us fully committing to the
+				// HTLC. If that's the case, update the pending update_add to indicate that the HTLC should
+				// be released immediately.
+				let released_pre_commitment_htlc = self
+					.do_funded_channel_callback(prev_outbound_scid_alias, |chan| {
+						chan.release_pending_inbound_held_htlc(htlc_id)
+					})
+					.unwrap_or(false);
+				if released_pre_commitment_htlc {
+					return;
+				}
+
 				// It's possible the release_held_htlc message raced ahead of us transitioning the pending
 				// update_add to `Self::pending_intercept_htlcs`. If that's the case, update the pending
 				// update_add to indicate that the HTLC should be released immediately.

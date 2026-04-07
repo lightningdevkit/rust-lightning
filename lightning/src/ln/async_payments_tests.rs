@@ -3458,3 +3458,167 @@ fn release_htlc_races_htlc_onion_decode() {
 		claim_payment_along_route(ClaimAlongRouteArgs::new(sender, route, keysend_preimage));
 	assert_eq!(res, Some(PaidBolt12Invoice::StaticInvoice(static_invoice)));
 }
+
+#[test]
+fn async_payment_e2e_release_before_hold_registered() {
+	// Tests that an LSP will release a held htlc if the `ReleaseHeldHtlc` message was received
+	// before the HTLC was fully committed to the channel, which was previously broken.
+	let chanmon_cfgs = create_chanmon_cfgs(4);
+	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
+
+	let (sender_cfg, recipient_cfg) = (often_offline_node_cfg(), often_offline_node_cfg());
+	let mut sender_lsp_cfg = test_default_channel_config();
+	sender_lsp_cfg.enable_htlc_hold = true;
+	let mut invoice_server_cfg = test_default_channel_config();
+	invoice_server_cfg.accept_forwards_to_priv_channels = true;
+
+	let node_chanmgrs = create_node_chanmgrs(
+		4,
+		&node_cfgs,
+		&[Some(sender_cfg), Some(sender_lsp_cfg), Some(invoice_server_cfg), Some(recipient_cfg)],
+	);
+	let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
+	create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
+	create_unannounced_chan_between_nodes_with_value(&nodes, 2, 3, 1_000_000, 0);
+	unify_blockheight_across_nodes(&nodes);
+	let sender = &nodes[0];
+	let sender_lsp = &nodes[1];
+	let invoice_server = &nodes[2];
+	let recipient = &nodes[3];
+
+	let recipient_id = vec![42; 32];
+	let inv_server_paths =
+		invoice_server.node.blinded_paths_for_async_recipient(recipient_id.clone(), None).unwrap();
+	recipient.node.set_paths_to_static_invoice_server(inv_server_paths).unwrap();
+	expect_offer_paths_requests(recipient, &[invoice_server, sender_lsp]);
+	let invoice_flow_res =
+		pass_static_invoice_server_messages(invoice_server, recipient, recipient_id.clone());
+	let invoice = invoice_flow_res.invoice;
+	let invreq_path = invoice_flow_res.invoice_request_path;
+
+	let offer = recipient.node.get_async_receive_offer().unwrap();
+	recipient.node.peer_disconnected(invoice_server.node.get_our_node_id());
+	recipient.onion_messenger.peer_disconnected(invoice_server.node.get_our_node_id());
+	invoice_server.node.peer_disconnected(recipient.node.get_our_node_id());
+	invoice_server.onion_messenger.peer_disconnected(recipient.node.get_our_node_id());
+
+	let amt_msat = 5000;
+	let payment_id = PaymentId([1; 32]);
+	sender.node.pay_for_offer(&offer, Some(amt_msat), payment_id, Default::default()).unwrap();
+
+	let (peer_id, invreq_om) = extract_invoice_request_om(sender, &[sender_lsp, invoice_server]);
+	invoice_server.onion_messenger.handle_onion_message(peer_id, &invreq_om);
+
+	let mut events = invoice_server.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	let (reply_path, invreq) = match events.pop().unwrap() {
+		Event::StaticInvoiceRequested {
+			recipient_id: ev_id, reply_path, invoice_request, ..
+		} => {
+			assert_eq!(recipient_id, ev_id);
+			(reply_path, invoice_request)
+		},
+		_ => panic!(),
+	};
+
+	invoice_server
+		.node
+		.respond_to_static_invoice_request(invoice, reply_path, invreq, invreq_path)
+		.unwrap();
+	let (peer_node_id, static_invoice_om, static_invoice) =
+		extract_static_invoice_om(invoice_server, &[sender_lsp, sender]);
+
+	// Lock the HTLC in with the sender LSP, but stop before the sender's revoke_and_ack is handed
+	// back to the sender LSP. This reproduces the real LSPS2 timing where ReleaseHeldHtlc can
+	// arrive before the held HTLC is queued for decode on the sender LSP.
+	sender.onion_messenger.handle_onion_message(peer_node_id, &static_invoice_om);
+	check_added_monitors(sender, 1);
+	let commitment_update = get_htlc_update_msgs(&sender, &sender_lsp.node.get_our_node_id());
+	let update_add = commitment_update.update_add_htlcs[0].clone();
+	let payment_hash = update_add.payment_hash;
+	assert!(update_add.hold_htlc.is_some());
+	sender_lsp.node.handle_update_add_htlc(sender.node.get_our_node_id(), &update_add);
+	sender_lsp.node.handle_commitment_signed_batch_test(
+		sender.node.get_our_node_id(),
+		&commitment_update.commitment_signed,
+	);
+	check_added_monitors(sender_lsp, 1);
+	let (_extra_msg_option, sender_raa, sender_holding_cell_htlcs) =
+		do_main_commitment_signed_dance(sender_lsp, sender, false);
+	assert!(sender_holding_cell_htlcs.is_empty());
+
+	let held_htlc_om_to_inv_server = sender
+		.onion_messenger
+		.next_onion_message_for_peer(invoice_server.node.get_our_node_id())
+		.unwrap();
+	invoice_server
+		.onion_messenger
+		.handle_onion_message(sender_lsp.node.get_our_node_id(), &held_htlc_om_to_inv_server);
+
+	let mut events_rc = core::cell::RefCell::new(Vec::new());
+	invoice_server.onion_messenger.process_pending_events(&|e| Ok(events_rc.borrow_mut().push(e)));
+	let events = events_rc.into_inner();
+	let held_htlc_om = events
+		.into_iter()
+		.find_map(|ev| {
+			if let Event::OnionMessageIntercepted { message, .. } = ev {
+				let peeled_onion = recipient.onion_messenger.peel_onion_message(&message).unwrap();
+				if matches!(
+					peeled_onion,
+					PeeledOnion::Offers(OffersMessage::InvoiceRequest { .. }, _, _)
+				) {
+					return None;
+				}
+
+				assert!(matches!(
+					peeled_onion,
+					PeeledOnion::AsyncPayments(AsyncPaymentsMessage::HeldHtlcAvailable(_), _, _)
+				));
+				Some(message)
+			} else {
+				None
+			}
+		})
+		.unwrap();
+
+	let mut reconnect_args = ReconnectArgs::new(invoice_server, recipient);
+	reconnect_args.send_channel_ready = (true, true);
+	reconnect_nodes(reconnect_args);
+
+	let events = core::cell::RefCell::new(Vec::new());
+	invoice_server.onion_messenger.process_pending_events(&|e| Ok(events.borrow_mut().push(e)));
+	assert_eq!(events.borrow().len(), 1);
+	assert!(matches!(events.into_inner().pop().unwrap(), Event::OnionMessagePeerConnected { .. }));
+	expect_offer_paths_requests(recipient, &[invoice_server]);
+
+	recipient
+		.onion_messenger
+		.handle_onion_message(invoice_server.node.get_our_node_id(), &held_htlc_om);
+	let (peer_id, release_htlc_om) =
+		extract_release_htlc_oms(recipient, &[sender, sender_lsp, invoice_server]).pop().unwrap();
+	sender_lsp.onion_messenger.handle_onion_message(peer_id, &release_htlc_om);
+
+	// Now let the sender LSP receive the sender's revoke_and_ack and continue processing the held
+	// HTLC, which previously would've resulted in holding the HTLC even though the release message
+	// was already received.
+	sender_lsp.node.handle_revoke_and_ack(sender.node.get_our_node_id(), &sender_raa);
+	check_added_monitors(sender_lsp, 1);
+	assert!(sender_lsp.node.get_and_clear_pending_msg_events().is_empty());
+	sender_lsp.node.process_pending_htlc_forwards();
+	let mut events = sender_lsp.node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let ev = remove_first_msg_event_to_node(&invoice_server.node.get_our_node_id(), &mut events);
+	check_added_monitors(&sender_lsp, 1);
+
+	let path: &[&Node] = &[invoice_server, recipient];
+	let args = PassAlongPathArgs::new(sender_lsp, path, amt_msat, payment_hash, ev)
+		.with_dummy_tlvs(&[DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS]);
+	let claimable_ev = do_pass_along_path(args).unwrap();
+
+	let route: &[&[&Node]] = &[&[sender_lsp, invoice_server, recipient]];
+	let keysend_preimage = extract_payment_preimage(&claimable_ev);
+	let (res, _) =
+		claim_payment_along_route(ClaimAlongRouteArgs::new(sender, route, keysend_preimage));
+	assert_eq!(res, Some(PaidBolt12Invoice::StaticInvoice(static_invoice)));
+}
