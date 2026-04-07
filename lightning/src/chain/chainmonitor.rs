@@ -555,7 +555,7 @@ where
 				channel_id_bytes[2],
 				channel_id_bytes[3],
 			]);
-			channel_id_u32.wrapping_add(best_height.unwrap_or_default())
+			best_height.map(|height| channel_id_u32.wrapping_add(height))
 		};
 
 		let partition_factor = if channel_count < 15 {
@@ -565,7 +565,7 @@ where
 		};
 
 		let has_pending_claims = monitor_state.monitor.has_pending_claims();
-		if has_pending_claims || get_partition_key(channel_id) % partition_factor == 0 {
+		if has_pending_claims || get_partition_key(channel_id).is_some_and(|key| key % partition_factor == 0) {
 			log_trace!(logger, "Syncing Channel Monitor");
 			// Even though we don't track monitor updates from chain-sync as pending, we still want
 			// updates per-channel to be well-ordered so that users don't see a
