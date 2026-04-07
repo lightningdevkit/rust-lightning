@@ -187,6 +187,8 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 		let timestamp = &self.highest_seen_timestamp;
 		let block_time = header.time as usize;
 
+		// Note that we deliberately don't use `update_for_new_tip` as we dont rely on receiving
+		// disconnection information instead expecting to simply "jump" to the new tip.
 		*self.best_block.write().unwrap() = BestBlock::new(header.block_hash(), height);
 
 		loop {
