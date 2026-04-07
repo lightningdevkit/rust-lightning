@@ -62,12 +62,6 @@ use crate::types::payment::{PaymentHash, PaymentSecret};
 use crate::util::logger::Logger;
 use crate::util::ser::Writeable;
 
-#[cfg(feature = "dnssec")]
-use {
-	crate::blinded_path::message::DNSResolverContext,
-	crate::onion_message::dns_resolution::{DNSResolverMessage, DNSSECQuery, OMNameResolver},
-};
-
 /// A BOLT12 offers code and flow utility provider, which facilitates
 /// BOLT12 builder generation and onion message handling.
 ///
@@ -93,11 +87,6 @@ pub struct OffersMessageFlow<MR: MessageRouter, L: Logger> {
 
 	pending_async_payments_messages: Mutex<Vec<(AsyncPaymentsMessage, MessageSendInstructions)>>,
 	async_receive_offer_cache: Mutex<AsyncReceiveOfferCache>,
-
-	#[cfg(feature = "dnssec")]
-	pub(crate) hrn_resolver: OMNameResolver,
-	#[cfg(feature = "dnssec")]
-	pending_dns_onion_messages: Mutex<Vec<(DNSResolverMessage, MessageSendInstructions)>>,
 
 	logger: L,
 }
@@ -125,11 +114,6 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 
 			pending_offers_messages: Mutex::new(Vec::new()),
 			pending_async_payments_messages: Mutex::new(Vec::new()),
-
-			#[cfg(feature = "dnssec")]
-			hrn_resolver: OMNameResolver::new(current_timestamp, best_block.height),
-			#[cfg(feature = "dnssec")]
-			pending_dns_onion_messages: Mutex::new(Vec::new()),
 
 			async_receive_offer_cache: Mutex::new(AsyncReceiveOfferCache::new()),
 
@@ -199,9 +183,13 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 	///
 	/// Must be called whenever a new chain tip becomes available. May be skipped
 	/// for intermediary blocks.
-	pub fn best_block_updated(&self, header: &Header, _height: u32) {
+	pub fn best_block_updated(&self, header: &Header, height: u32) {
 		let timestamp = &self.highest_seen_timestamp;
 		let block_time = header.time as usize;
+
+		// Note that we deliberately don't use `update_for_new_tip` as we dont rely on receiving
+		// disconnection information instead expecting to simply "jump" to the new tip.
+		*self.best_block.write().unwrap() = BestBlock::new(header.block_hash(), height);
 
 		loop {
 			// Update timestamp to be the max of its current value and the block
@@ -219,12 +207,6 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 			{
 				break;
 			}
-		}
-
-		#[cfg(feature = "dnssec")]
-		{
-			let updated_time = timestamp.load(Ordering::Acquire) as u32;
-			self.hrn_resolver.new_best_block(_height, updated_time);
 		}
 	}
 }
@@ -1306,41 +1288,6 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 		)
 	}
 
-	/// Enqueues the created [`DNSSECQuery`] to be sent to the counterparty.
-	///
-	/// # Peers
-	///
-	/// The user must provide a list of [`MessageForwardNode`] that will be used to generate
-	/// valid reply paths for the counterparty to send back the corresponding response for
-	/// the [`DNSSECQuery`] message.
-	///
-	/// [`supports_onion_messages`]: crate::types::features::Features::supports_onion_messages
-	#[cfg(feature = "dnssec")]
-	pub fn enqueue_dns_onion_message(
-		&self, message: DNSSECQuery, context: DNSResolverContext, dns_resolvers: Vec<Destination>,
-		peers: Vec<MessageForwardNode>,
-	) -> Result<(), Bolt12SemanticError> {
-		let reply_paths = self
-			.create_blinded_paths(peers, MessageContext::DNSResolver(context))
-			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
-
-		let message_params = dns_resolvers
-			.iter()
-			.flat_map(|destination| reply_paths.iter().map(move |path| (path, destination)))
-			.take(OFFERS_MESSAGE_REQUEST_LIMIT);
-		for (reply_path, destination) in message_params {
-			self.pending_dns_onion_messages.lock().unwrap().push((
-				DNSResolverMessage::DNSSECQuery(message.clone()),
-				MessageSendInstructions::WithSpecifiedReplyPath {
-					destination: destination.clone(),
-					reply_path: reply_path.clone(),
-				},
-			));
-		}
-
-		Ok(())
-	}
-
 	/// Gets the enqueued [`OffersMessage`] with their corresponding [`MessageSendInstructions`].
 	pub fn release_pending_offers_messages(&self) -> Vec<(OffersMessage, MessageSendInstructions)> {
 		core::mem::take(&mut self.pending_offers_messages.lock().unwrap())
@@ -1351,14 +1298,6 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 		&self,
 	) -> Vec<(AsyncPaymentsMessage, MessageSendInstructions)> {
 		core::mem::take(&mut self.pending_async_payments_messages.lock().unwrap())
-	}
-
-	/// Gets the enqueued [`DNSResolverMessage`] with their corresponding [`MessageSendInstructions`].
-	#[cfg(feature = "dnssec")]
-	pub fn release_pending_dns_messages(
-		&self,
-	) -> Vec<(DNSResolverMessage, MessageSendInstructions)> {
-		core::mem::take(&mut self.pending_dns_onion_messages.lock().unwrap())
 	}
 
 	/// Retrieve an [`Offer`] for receiving async payments as an often-offline recipient. Will only
