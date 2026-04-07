@@ -102,7 +102,7 @@ impl Default for ResourceManagerConfig {
 
 impl ResourceManagerConfig {
 	fn validate(&self) -> Result<(), ()> {
-		if self.general_allocation_pct + self.congestion_allocation_pct >= 100 {
+		if self.general_allocation_pct as u16 + self.congestion_allocation_pct as u16 >= 100 {
 			return Err(());
 		}
 		if self.resolution_period == Duration::ZERO {
@@ -140,7 +140,7 @@ impl Display for ForwardingOutcome {
 	}
 }
 
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum BucketAssigned {
 	General,
 	Congestion,
@@ -452,6 +452,11 @@ struct Channel {
 	/// Tracks which channels have misused the congestion bucket and the unix timestamp.
 	last_congestion_misuse: HashMap<u64, u64>,
 	protected_bucket: BucketResources,
+
+	/// Whether this channel has been closed. We keep channels around until all its
+	/// [`Self::pending_htlcs`] have been resolved. This ensures that HTLC resolutions that
+	/// arrive after a force-close can still update reputation and revenue correctly.
+	closed: bool,
 }
 
 impl Channel {
@@ -483,6 +488,7 @@ impl Channel {
 				bucket_allocations.protected_slots,
 				bucket_allocations.protected_liquidity,
 			),
+			closed: false,
 		})
 	}
 
@@ -541,9 +547,8 @@ impl Channel {
 
 	fn pending_htlcs_in_congestion(&self) -> bool {
 		self.pending_htlcs
-			.iter()
-			.find(|(_, pending_htlc)| pending_htlc.bucket == BucketAssigned::Congestion)
-			.is_some()
+			.values()
+			.any(|pending_htlc| pending_htlc.bucket == BucketAssigned::Congestion)
 	}
 
 	fn sufficient_reputation(
@@ -565,6 +570,16 @@ impl Channel {
 			.map(|htlc| if htlc.1.outgoing_accountable { htlc.1.in_flight_risk } else { 0 })
 			.sum()
 	}
+}
+
+fn has_incoming_htlc_references(channels: &HashMap<u64, Channel>, channel_id: u64) -> bool {
+	channels.iter().any(|channel| {
+		channel
+			.1
+			.pending_htlcs
+			.iter()
+			.any(|pending_htlc| pending_htlc.0.incoming_channel_id == channel_id)
+	})
 }
 
 /// An implementation for managing channel resources and informing HTLC forwarding decisions. It
@@ -622,9 +637,7 @@ impl DefaultResourceManager {
 			}
 		}
 	}
-}
 
-impl DefaultResourceManager {
 	/// Registers a new channel with the resource manager for tracking.
 	///
 	/// This should be called when a channel becomes ready for forwarding
@@ -667,7 +680,7 @@ impl DefaultResourceManager {
 				entry.insert(channel);
 				Ok(())
 			},
-			Entry::Occupied(_) => Ok(()),
+			Entry::Occupied(_) => Err(()),
 		}
 	}
 
@@ -677,31 +690,19 @@ impl DefaultResourceManager {
 	pub fn remove_channel(&self, channel_id: u64) -> Result<(), ()> {
 		let mut channels_lock = self.channels.lock().unwrap();
 
-		// Release bucket resources on each incoming channel for its pending HTLCs.
-		if let Some(removed_channel) = channels_lock.remove(&channel_id) {
-			for (htlc_ref, pending_htlc) in &removed_channel.pending_htlcs {
-				debug_assert!(channels_lock.get(&htlc_ref.incoming_channel_id).is_some());
-				if let Some(incoming_channel) = channels_lock.get_mut(&htlc_ref.incoming_channel_id)
-				{
-					let _ = match pending_htlc.bucket {
-						BucketAssigned::General => incoming_channel
-							.general_bucket
-							.remove_htlc(channel_id, pending_htlc.incoming_amount_msat),
-						BucketAssigned::Congestion => incoming_channel
-							.congestion_bucket
-							.remove_htlc(pending_htlc.incoming_amount_msat),
-						BucketAssigned::Protected => incoming_channel
-							.protected_bucket
-							.remove_htlc(pending_htlc.incoming_amount_msat),
-					};
-				}
-			}
-		}
+		let incoming_htlcs_pending = has_incoming_htlc_references(&channels_lock, channel_id);
 
-		// Clean up pending HTLC entries and channel slots.
-		for (_, channel) in channels_lock.iter_mut() {
-			channel.pending_htlcs.retain(|htlc_ref, _| htlc_ref.incoming_channel_id != channel_id);
-			channel.general_bucket.remove_channel_slots(channel_id);
+		// If the channel has pending HTLCs, it is soft-deleted and will be fully removed once
+		// all its pending HTLCs have been resolved.
+		let channel = channels_lock.get_mut(&channel_id).ok_or(())?;
+		if channel.pending_htlcs.is_empty() && !incoming_htlcs_pending {
+			// If the channel had no pending HTLCs, we can remove it.
+			channels_lock.remove(&channel_id);
+			for (_, channel) in channels_lock.iter_mut() {
+				channel.general_bucket.remove_channel_slots(channel_id);
+			}
+		} else {
+			channel.closed = true;
 		}
 		Ok(())
 	}
@@ -728,7 +729,8 @@ impl DefaultResourceManager {
 		let mut channels_lock = self.channels.lock().unwrap();
 
 		let htlc_ref = HtlcRef { incoming_channel_id, htlc_id };
-		let outgoing_channel = channels_lock.get_mut(&outgoing_channel_id).ok_or(())?;
+		let outgoing_channel =
+			channels_lock.get_mut(&outgoing_channel_id).filter(|c| !c.closed).ok_or(())?;
 
 		if outgoing_channel.pending_htlcs.get(&htlc_ref).is_some() {
 			return Err(());
@@ -741,7 +743,8 @@ impl DefaultResourceManager {
 		let in_flight_htlc_risk = self.htlc_in_flight_risk(fee, incoming_cltv_expiry, height_added);
 		let pending_htlcs_in_congestion = outgoing_channel.pending_htlcs_in_congestion();
 
-		let incoming_channel = channels_lock.get_mut(&incoming_channel_id).ok_or(())?;
+		let incoming_channel =
+			channels_lock.get_mut(&incoming_channel_id).filter(|c| !c.closed).ok_or(())?;
 
 		let (accountable, bucket_assigned) = if !incoming_accountable {
 			if incoming_channel.general_available(
@@ -837,41 +840,42 @@ impl DefaultResourceManager {
 		resolved_at: u64,
 	) -> Result<(), ()> {
 		let mut channels_lock = self.channels.lock().unwrap();
-		if channels_lock.get(&incoming_channel_id).is_none()
-			|| channels_lock.get(&outgoing_channel_id).is_none()
-		{
-			return Err(());
-		}
-
 		let outgoing_channel = channels_lock.get_mut(&outgoing_channel_id).ok_or(())?;
 
 		let htlc_ref = HtlcRef { incoming_channel_id, htlc_id };
 		let pending_htlc = outgoing_channel.pending_htlcs.remove(&htlc_ref).ok_or(())?;
 
-		if resolved_at < pending_htlc.added_at_unix_seconds {
-			return Err(());
+		let outgoing_closed = outgoing_channel.closed && outgoing_channel.pending_htlcs.is_empty();
+		if resolved_at >= pending_htlc.added_at_unix_seconds {
+			let resolution_time =
+				Duration::from_secs(resolved_at - pending_htlc.added_at_unix_seconds);
+			let effective_fee = self.effective_fees(
+				pending_htlc.fee,
+				resolution_time,
+				pending_htlc.outgoing_accountable,
+				settled,
+			);
+			// Note that the decaying averages for reputation and revenue clamp `resolved_at` to
+			// `last_updated_unix_secs` if it falls behind. This could happen because
+			// `last_updated_unix_secs` is frequently mutated. We accept the clamping rather
+			// than erroring, as rejecting out-of-order timestamps would leave resources stuck.
+			outgoing_channel.outgoing_reputation.add_value(effective_fee, resolved_at);
 		}
-		let resolution_time = Duration::from_secs(resolved_at - pending_htlc.added_at_unix_seconds);
-		let effective_fee = self.effective_fees(
-			pending_htlc.fee,
-			resolution_time,
-			pending_htlc.outgoing_accountable,
-			settled,
-		);
-		// Note that the decaying averages for reputation and revenue clamp `resolved_at` to
-		// `last_updated_unix_secs` if it falls behind. This could happen because
-		// `last_updated_unix_secs` is frequently mutated. We accept the clamping rather
-		// than erroring, as rejecting out-of-order timestamps would leave resources stuck.
-		outgoing_channel.outgoing_reputation.add_value(effective_fee, resolved_at);
 
 		let incoming_channel = channels_lock.get_mut(&incoming_channel_id).ok_or(())?;
+		let incoming_closed = incoming_channel.closed && incoming_channel.pending_htlcs.is_empty();
 		match pending_htlc.bucket {
 			BucketAssigned::General => incoming_channel
 				.general_bucket
 				.remove_htlc(outgoing_channel_id, pending_htlc.incoming_amount_msat)?,
 			BucketAssigned::Congestion => {
 				// Mark that congestion bucket was misused if it took more than the valid
-				// resolution period
+				// resolution period. Here we are bit lenient if resolve_at < added_at.
+				// This means there is a bug as resolution can't be before added time but
+				// no reason to mark congestion as misused in this case.
+				let resolution_time = Duration::from_secs(
+					resolved_at.saturating_sub(pending_htlc.added_at_unix_seconds),
+				);
 				if resolution_time > self.config.resolution_period {
 					incoming_channel.misused_congestion(outgoing_channel_id, resolved_at);
 				}
@@ -883,9 +887,31 @@ impl DefaultResourceManager {
 			},
 		}
 
-		if settled {
+		if settled && resolved_at >= pending_htlc.added_at_unix_seconds {
 			let fee: i64 = i64::try_from(pending_htlc.fee).unwrap_or(i64::MAX);
 			incoming_channel.incoming_revenue.add_value(fee, resolved_at);
+		}
+
+		let mut remove_channel = |closed: bool, channel_id: u64| {
+			// If the channel had been marked as closed and it does not have any other pending
+			// HTLCs, it can be fully removed now.
+			if closed {
+				if !has_incoming_htlc_references(&channels_lock, channel_id) {
+					channels_lock.remove(&channel_id);
+					for (_, channel) in channels_lock.iter_mut() {
+						channel.general_bucket.remove_channel_slots(channel_id);
+					}
+				}
+			}
+		};
+		remove_channel(incoming_closed, incoming_channel_id);
+		remove_channel(outgoing_closed, outgoing_channel_id);
+
+		// This is a bug as resolution time can't be before added time. This prevents us from
+		// properly updating the reputation and revenue as those need accurate timestamps but
+		// we error here rather than earlier to optimistically release bucket resources.
+		if resolved_at < pending_htlc.added_at_unix_seconds {
+			return Err(());
 		}
 
 		Ok(())
@@ -1429,7 +1455,7 @@ mod tests {
 		let channels = rm.channels.lock().unwrap();
 		let htlc_ref = HtlcRef { incoming_channel_id, htlc_id };
 		let htlc = channels.get(&outgoing_channel_id).unwrap().pending_htlcs.get(&htlc_ref);
-		htlc.map(|htlc| htlc.bucket.clone())
+		htlc.map(|htlc| htlc.bucket)
 	}
 
 	fn count_pending_htlcs(rm: &DefaultResourceManager, outgoing_scid: u64) -> usize {
@@ -2292,6 +2318,112 @@ mod tests {
 			ForwardingOutcome::Fail,
 		);
 		assert!(get_htlc_bucket(&rm, INCOMING_SCID, htlc_id, OUTGOING_SCID_2).is_none());
+	}
+
+	#[test]
+	fn test_remove_channel_no_pending_htlcs() {
+		let rm = create_test_resource_manager_with_channels();
+		let channels = rm.channels.lock().unwrap();
+		assert!(channels.get(&OUTGOING_SCID).is_some());
+		drop(channels);
+
+		rm.remove_channel(OUTGOING_SCID).unwrap();
+
+		let channels = rm.channels.lock().unwrap();
+		assert!(channels.get(&OUTGOING_SCID).is_none());
+	}
+
+	#[test]
+	fn test_resolve_htlc_after_channel_close() {
+		let entropy_source = TestKeysInterface::new(&[0; 32], Network::Testnet);
+		let rm = create_test_resource_manager_with_channel_pairs(2);
+
+		let added_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+
+		// HTLC 1: INCOMING_SCID (100) -> OUTGOING_SCID (200)
+		assert_eq!(
+			add_test_htlc(&rm, false, 1, Some(added_at), &entropy_source).unwrap(),
+			ForwardingOutcome::Forward(false),
+		);
+
+		// HTLC 2: INCOMING_SCID_2 (101) -> OUTGOING_SCID_2 (201)
+		assert_eq!(
+			rm.add_htlc(
+				INCOMING_SCID_2,
+				HTLC_AMOUNT + FEE_AMOUNT,
+				CLTV_EXPIRY,
+				OUTGOING_SCID_2,
+				HTLC_AMOUNT,
+				false,
+				1,
+				CURRENT_HEIGHT,
+				added_at,
+				&entropy_source,
+			)
+			.unwrap(),
+			ForwardingOutcome::Forward(false),
+		);
+
+		// Close the outgoing channel for HTLC 1. It has a pending HTLC so it is soft-deleted.
+		rm.remove_channel(OUTGOING_SCID).unwrap();
+		{
+			let channels = rm.channels.lock().unwrap();
+			let outgoing = channels.get(&OUTGOING_SCID).unwrap();
+			assert!(outgoing.closed);
+			assert_eq!(outgoing.pending_htlcs.len(), 1);
+		}
+
+		// Close the incoming channel for HTLC 2. It is referenced as incoming by an HTLC on
+		// OUTGOING_SCID_2, so it is soft-deleted.
+		rm.remove_channel(INCOMING_SCID_2).unwrap();
+		{
+			let channels = rm.channels.lock().unwrap();
+			let incoming = channels.get(&INCOMING_SCID_2).unwrap();
+			assert!(incoming.closed);
+		}
+
+		// New HTLCs should be rejected on closed channels.
+		assert!(add_test_htlc(&rm, false, 2, None, &entropy_source).is_err());
+		assert!(rm
+			.add_htlc(
+				INCOMING_SCID_2,
+				HTLC_AMOUNT + FEE_AMOUNT,
+				CLTV_EXPIRY,
+				OUTGOING_SCID_2,
+				HTLC_AMOUNT,
+				false,
+				2,
+				CURRENT_HEIGHT,
+				added_at,
+				&entropy_source,
+			)
+			.is_err());
+
+		let resolved_at = added_at + 10;
+
+		// Resolve HTLC 1. Outgoing channel (200) is closed and now has no pending HTLCs,
+		// so it is fully removed. Incoming channel (100) gets revenue updated.
+		rm.resolve_htlc(INCOMING_SCID, 1, OUTGOING_SCID, true, resolved_at).unwrap();
+		{
+			let channels = rm.channels.lock().unwrap();
+			assert!(channels.get(&OUTGOING_SCID).is_none());
+			let incoming = channels.get(&INCOMING_SCID).unwrap();
+			assert_eq!(
+				incoming.incoming_revenue.aggregated_decaying_average.value,
+				FEE_AMOUNT as i64,
+			);
+		}
+
+		// Resolve HTLC 2. Incoming channel (101) is closed and has no pending HTLCs or
+		// incoming references remaining, so it is fully removed. Outgoing channel (201)
+		// gets reputation updated.
+		rm.resolve_htlc(INCOMING_SCID_2, 1, OUTGOING_SCID_2, true, resolved_at).unwrap();
+		{
+			let channels = rm.channels.lock().unwrap();
+			assert!(channels.get(&INCOMING_SCID_2).is_none());
+			let outgoing = channels.get(&OUTGOING_SCID_2).unwrap();
+			assert_eq!(outgoing.outgoing_reputation.value, FEE_AMOUNT as i64);
+		}
 	}
 
 	#[test]
