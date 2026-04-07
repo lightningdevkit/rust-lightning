@@ -386,7 +386,17 @@ impl FundingTemplate {
 			return Err(FundingContributionError::InvalidSpliceValue);
 		}
 		let FundingTemplate { shared_input, min_rbf_feerate, .. } = self;
-		build_funding_contribution!(value_added, vec![], shared_input, min_rbf_feerate, min_feerate, max_feerate, false, wallet, await)
+		build_funding_contribution!(
+			value_added,
+			vec![],
+			shared_input,
+			min_rbf_feerate,
+			min_feerate,
+			max_feerate,
+			false,
+			wallet,
+			await
+		)
 	}
 
 	/// Creates a [`FundingContribution`] for adding funds to a channel using `wallet` to perform
@@ -426,7 +436,17 @@ impl FundingTemplate {
 			return Err(FundingContributionError::InvalidSpliceValue);
 		}
 		let FundingTemplate { shared_input, min_rbf_feerate, .. } = self;
-		build_funding_contribution!(Amount::ZERO, outputs, shared_input, min_rbf_feerate, min_feerate, max_feerate, false, wallet, await)
+		build_funding_contribution!(
+			Amount::ZERO,
+			outputs,
+			shared_input,
+			min_rbf_feerate,
+			min_feerate,
+			max_feerate,
+			false,
+			wallet,
+			await
+		)
 	}
 
 	/// Creates a [`FundingContribution`] for removing funds from a channel using `wallet` to
@@ -467,7 +487,17 @@ impl FundingTemplate {
 			return Err(FundingContributionError::InvalidSpliceValue);
 		}
 		let FundingTemplate { shared_input, min_rbf_feerate, .. } = self;
-		build_funding_contribution!(value_added, outputs, shared_input, min_rbf_feerate, min_feerate, max_feerate, false, wallet, await)
+		build_funding_contribution!(
+			value_added,
+			outputs,
+			shared_input,
+			min_rbf_feerate,
+			min_feerate,
+			max_feerate,
+			false,
+			wallet,
+			await
+		)
 	}
 
 	/// Creates a [`FundingContribution`] for both adding and removing funds from a channel using
@@ -550,10 +580,30 @@ impl FundingTemplate {
 						return Ok(adjusted);
 					}
 				}
-				build_funding_contribution!(contribution.value_added, contribution.outputs, shared_input, min_rbf_feerate, rbf_feerate, max_feerate, true, wallet, await)
+				build_funding_contribution!(
+					contribution.value_added,
+					contribution.outputs,
+					shared_input,
+					min_rbf_feerate,
+					rbf_feerate,
+					max_feerate,
+					true,
+					wallet,
+					await
+				)
 			},
 			None => {
-				build_funding_contribution!(Amount::ZERO, vec![], shared_input, min_rbf_feerate, rbf_feerate, max_feerate, true, wallet, await)
+				build_funding_contribution!(
+					Amount::ZERO,
+					vec![],
+					shared_input,
+					min_rbf_feerate,
+					rbf_feerate,
+					max_feerate,
+					true,
+					wallet,
+					await
+				)
 			},
 		}
 	}
