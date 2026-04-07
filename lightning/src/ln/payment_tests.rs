@@ -969,7 +969,9 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 		// Drive the commitment signed dance manually so we can account for the extra monitor
 		// update when persistent monitor events are enabled.
 		let persistent = nodes[1].node.test_persistent_monitor_events_enabled();
-		nodes[1].node.handle_commitment_signed_batch_test(node_c_id, &htlc_fulfill.commitment_signed);
+		nodes[1]
+			.node
+			.handle_commitment_signed_batch_test(node_c_id, &htlc_fulfill.commitment_signed);
 		check_added_monitors(&nodes[1], 1);
 		let (extra_msg, cs_raa, htlcs) =
 			do_main_commitment_signed_dance(&nodes[1], &nodes[2], false);
