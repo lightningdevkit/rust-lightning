@@ -45,8 +45,8 @@ use crate::chain::chaininterface::{
 use crate::chain::chainmonitor::MonitorEventSource;
 use crate::chain::channelmonitor::{
 	ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, MonitorEvent,
-	WithChannelMonitor, ANTI_REORG_DELAY, CLTV_CLAIM_BUFFER, HTLC_FAIL_BACK_BUFFER,
-	LATENCY_GRACE_PERIOD_BLOCKS, MAX_BLOCKS_FOR_CONF,
+	OutboundHTLCResolution, WithChannelMonitor, ANTI_REORG_DELAY, CLTV_CLAIM_BUFFER,
+	HTLC_FAIL_BACK_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, MAX_BLOCKS_FOR_CONF,
 };
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Watch};
@@ -13771,60 +13771,62 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							Some(channel_id),
 							Some(htlc_update.payment_hash),
 						);
-						if let Some(preimage) = htlc_update.payment_preimage {
-							log_trace!(
-								logger,
-								"Claiming HTLC with preimage {} from our monitor",
-								preimage
-							);
-							let from_onchain = self
-								.per_peer_state
-								.read()
-								.unwrap()
-								.get(&counterparty_node_id)
-								.map_or(true, |peer_state_mtx| {
-									!peer_state_mtx
-										.lock()
-										.unwrap()
-										.channel_by_id
-										.contains_key(&channel_id)
+						match htlc_update.resolution {
+							OutboundHTLCResolution::Claimed { preimage, skimmed_fee_msat } => {
+								log_trace!(
+									logger,
+									"Claiming HTLC with preimage {} from our monitor",
+									preimage
+								);
+								let from_onchain = self
+									.per_peer_state
+									.read()
+									.unwrap()
+									.get(&counterparty_node_id)
+									.map_or(true, |peer_state_mtx| {
+										!peer_state_mtx
+											.lock()
+											.unwrap()
+											.channel_by_id
+											.contains_key(&channel_id)
+									});
+								// Claim the funds from the previous hop, if there is one. In the future we can
+								// store attribution data in the `ChannelMonitor` and provide it here.
+								self.claim_funds_internal(
+									htlc_update.source,
+									preimage,
+									htlc_update.htlc_value_msat,
+									skimmed_fee_msat,
+									from_onchain,
+									counterparty_node_id,
+									funding_outpoint,
+									channel_id,
+									htlc_update.user_channel_id,
+									None,
+									None,
+									Some(event_id),
+								);
+							},
+							OutboundHTLCResolution::Failed { reason } => {
+								log_trace!(logger, "Failing HTLC from our monitor");
+								let failure_type = htlc_update
+									.source
+									.failure_type(counterparty_node_id, channel_id);
+								let completion_update = Some(PaymentCompleteUpdate {
+									counterparty_node_id,
+									channel_funding_outpoint: funding_outpoint,
+									channel_id,
+									htlc_id: SentHTLCId::from_source(&htlc_update.source),
 								});
-							// Claim the funds from the previous hop, if there is one. In the future we can
-							// store attribution data in the `ChannelMonitor` and provide it here.
-							self.claim_funds_internal(
-								htlc_update.source,
-								preimage,
-								htlc_update.htlc_value_msat,
-								None,
-								from_onchain,
-								counterparty_node_id,
-								funding_outpoint,
-								channel_id,
-								htlc_update.user_channel_id,
-								None,
-								None,
-								Some(event_id),
-							);
-						} else {
-							log_trace!(logger, "Failing HTLC from our monitor");
-							let failure_reason = LocalHTLCFailureReason::OnChainTimeout;
-							let failure_type =
-								htlc_update.source.failure_type(counterparty_node_id, channel_id);
-							let reason = HTLCFailReason::from_failure_code(failure_reason);
-							let completion_update = Some(PaymentCompleteUpdate {
-								counterparty_node_id,
-								channel_funding_outpoint: funding_outpoint,
-								channel_id,
-								htlc_id: SentHTLCId::from_source(&htlc_update.source),
-							});
-							self.fail_htlc_backwards_internal(
-								&htlc_update.source,
-								&htlc_update.payment_hash,
-								&reason,
-								failure_type,
-								completion_update,
-							);
-							self.chain_monitor.ack_monitor_event(monitor_event_source);
+								self.fail_htlc_backwards_internal(
+									&htlc_update.source,
+									&htlc_update.payment_hash,
+									&reason,
+									failure_type,
+									completion_update,
+								);
+								self.chain_monitor.ack_monitor_event(monitor_event_source);
+							},
 						}
 					},
 					MonitorEvent::HolderForceClosed(_)

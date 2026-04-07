@@ -14,12 +14,13 @@
 use crate::chain::{BestBlock, ChannelMonitorUpdateStatus, Watch};
 use crate::chain::chaininterface::LowerBoundedFeeEstimator;
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdateStep};
-use crate::routing::router::{PaymentParameters, RouteParameters};
+use crate::routing::gossip::RoutingFees;
+use crate::routing::router::{PaymentParameters, RouteHint, RouteHintHop, RouteParameters};
 use crate::sign::EntropySource;
 use crate::chain::transaction::OutPoint;
 use crate::events::{ClosureReason, Event, HTLCHandlingFailureType};
-use crate::ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, PaymentId, RAACommitmentOrder};
-use crate::ln::outbound_payment::RecipientOnionFields;
+use crate::ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, MIN_CLTV_EXPIRY_DELTA, PaymentId, RAACommitmentOrder};
+use crate::ln::outbound_payment::{RecipientOnionFields, Retry};
 use crate::ln::msgs;
 use crate::ln::types::ChannelId;
 use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, RoutingMessageHandler, ErrorAction, MessageSendEvent};
@@ -511,7 +512,6 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 
 #[cfg(feature = "std")]
 fn do_test_data_loss_protect(reconnect_panicing: bool, substantially_old: bool, not_stale: bool) {
-	use crate::ln::outbound_payment::Retry;
 	use crate::types::string::UntrustedString;
 	// When we get a data_loss_protect proving we're behind, we immediately panic as the
 	// chain::Watch API requirements have been violated (e.g. the user restored from a backup). The
@@ -2251,5 +2251,189 @@ fn test_reload_with_mpp_claims_on_same_channel() {
 	reconnect_nodes(reconnect_args);
 
 	// nodes[0] should now have received both fulfills and generate PaymentSent.
+	expect_payment_sent!(&nodes[0], payment_preimage);
+}
+
+#[test]
+fn test_reload_mon_event_skimmed_fee() {
+	// Test that skimmed fees survive the serialize/deserialize round-trip through monitor events.
+	// When a forwarding node learns about a claim only through a re-provided persistent monitor
+	// event (not the off-chain path), the PaymentForwarded event must still include the correct
+	// skimmed_fee_msat.
+	//
+	// We set up a payment with a skimmed fee via HTLC interception, claim it on the recipient,
+	// process the fulfill on the forwarding node but disconnect the sender before the claim
+	// propagates back, clear the holding cell, reload, and verify the re-provided monitor event
+	// produces a PaymentForwarded with the correct skimmed fee.
+
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let persister;
+	let new_chain_monitor;
+
+	let mut intercept_forwards_config = test_default_channel_config();
+	intercept_forwards_config.htlc_interception_flags =
+		HTLCInterceptionFlags::ToInterceptSCIDs as u8;
+	intercept_forwards_config.override_persistent_monitor_events = Some(true);
+	let mut underpay_config = test_default_channel_config();
+	underpay_config.channel_config.accept_underpaying_htlcs = true;
+
+	let node_chanmgrs = create_node_chanmgrs(
+		3, &node_cfgs, &[None, Some(intercept_forwards_config), Some(underpay_config)],
+	);
+	let nodes_1_deserialized;
+	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	let node_0_id = nodes[0].node.get_our_node_id();
+	let node_1_id = nodes[1].node.get_our_node_id();
+	let node_2_id = nodes[2].node.get_our_node_id();
+
+	let chan_0_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
+	let chan_1_2 = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 2, 100_000, 0);
+
+	let chan_id_0_1 = chan_0_1.2;
+	let chan_id_1_2 = chan_1_2.0.channel_id;
+
+	let amt_msat = 900_000;
+	let skimmed_fee_msat = 20;
+
+	// Build a route via the intercept SCID so nodes[1] can skim a fee.
+	let route_hint = RouteHint(vec![RouteHintHop {
+		src_node_id: node_1_id,
+		short_channel_id: nodes[1].node.get_intercept_scid(),
+		fees: RoutingFees { base_msat: 1000, proportional_millionths: 0 },
+		cltv_expiry_delta: MIN_CLTV_EXPIRY_DELTA,
+		htlc_minimum_msat: None,
+		htlc_maximum_msat: Some(amt_msat + 5),
+	}]);
+	let payment_params = PaymentParameters::from_node_id(node_2_id, TEST_FINAL_CLTV)
+		.with_route_hints(vec![route_hint])
+		.unwrap()
+		.with_bolt11_features(nodes[2].node.bolt11_invoice_features())
+		.unwrap();
+	let route_params = RouteParameters::from_payment_params_and_value(payment_params, amt_msat);
+	let (payment_hash, payment_secret) =
+		nodes[2].node.create_inbound_payment(Some(amt_msat), 60 * 60, None).unwrap();
+	let onion = RecipientOnionFields::secret_only(payment_secret, amt_msat);
+	let payment_id = PaymentId(payment_hash.0);
+	nodes[0]
+		.node
+		.send_payment(payment_hash, onion, payment_id, route_params, Retry::Attempts(0))
+		.unwrap();
+	check_added_monitors(&nodes[0], 1);
+	let events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+
+	// Forward the payment via intercept, skimming a fee.
+	let ev = SendEvent::from_event(events.into_iter().next().unwrap());
+	nodes[1].node.handle_update_add_htlc(node_0_id, &ev.msgs[0]);
+	do_commitment_signed_dance(&nodes[1], &nodes[0], &ev.commitment_msg, false, true);
+	expect_and_process_pending_htlcs(&nodes[1], false);
+
+	let events = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	let (intercept_id, expected_outbound_amt_msat) = match events[0] {
+		Event::HTLCIntercepted {
+			intercept_id, expected_outbound_amount_msat, payment_hash: pmt_hash, ..
+		} => {
+			assert_eq!(pmt_hash, payment_hash);
+			(intercept_id, expected_outbound_amount_msat)
+		},
+		_ => panic!("Unexpected event"),
+	};
+	nodes[1]
+		.node
+		.forward_intercepted_htlc(
+			intercept_id, &chan_id_1_2, node_2_id,
+			expected_outbound_amt_msat - skimmed_fee_msat,
+		)
+		.unwrap();
+	expect_and_process_pending_htlcs(&nodes[1], false);
+	let pay_event = {
+		{
+			let mut added_monitors = nodes[1].chain_monitor.added_monitors.lock().unwrap();
+			assert_eq!(added_monitors.len(), 1);
+			added_monitors.clear();
+		}
+		let mut events = nodes[1].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		SendEvent::from_event(events.remove(0))
+	};
+	nodes[2].node.handle_update_add_htlc(node_1_id, &pay_event.msgs[0]);
+	do_commitment_signed_dance(&nodes[2], &nodes[1], &pay_event.commitment_msg, false, true);
+	expect_and_process_pending_htlcs(&nodes[2], false);
+
+	// Drain the PaymentClaimable event and claim the payment on nodes[2].
+	let payment_preimage =
+		nodes[2].node.get_payment_preimage(payment_hash, payment_secret).unwrap();
+	let events = nodes[2].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	assert!(matches!(events[0], Event::PaymentClaimable { .. }));
+	nodes[2].node.claim_funds(payment_preimage);
+	check_added_monitors(&nodes[2], 1);
+	expect_payment_claimed!(nodes[2], payment_hash, amt_msat - skimmed_fee_msat);
+
+	// Disconnect nodes[0] from nodes[1] BEFORE processing the fulfill, so the claim goes into
+	// the holding cell on chan_0_1.
+	nodes[0].node.peer_disconnected(node_1_id);
+	nodes[1].node.peer_disconnected(node_0_id);
+
+	// Process the fulfill from nodes[2] to nodes[1].
+	let updates_2_1 = get_htlc_update_msgs(&nodes[2], &node_1_id);
+	nodes[1]
+		.node
+		.handle_update_fulfill_htlc(node_2_id, updates_2_1.update_fulfill_htlcs[0].clone());
+	check_added_monitors(&nodes[1], 1);
+	do_commitment_signed_dance(&nodes[1], &nodes[2], &updates_2_1.commitment_signed, false, false);
+
+	// Consume the original PaymentForwarded event (with skimmed fee) from the off-chain path.
+	let events = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match &events[0] {
+		Event::PaymentForwarded { skimmed_fee_msat: skimmed, .. } => {
+			assert_eq!(*skimmed, Some(skimmed_fee_msat));
+		},
+		_ => panic!("Expected PaymentForwarded, got {:?}", events[0]),
+	}
+
+	// Clear the holding cell to simulate a crash where the claim didn't make it to a commitment.
+	nodes[1].node.test_clear_channel_holding_cell(node_0_id, chan_id_0_1);
+
+	// Serialize and reload nodes[1].
+	let node_1_serialized = nodes[1].node.encode();
+	let mon_0_1_serialized = get_monitor!(nodes[1], chan_id_0_1).encode();
+	let mon_1_2_serialized = get_monitor!(nodes[1], chan_id_1_2).encode();
+
+	reload_node!(
+		nodes[1],
+		node_1_serialized,
+		&[&mon_0_1_serialized, &mon_1_2_serialized],
+		persister,
+		new_chain_monitor,
+		nodes_1_deserialized,
+		Some(true)
+	);
+
+	// The persistent monitor event is re-provided, triggering the claim and a preimage
+	// monitor update.
+	let msgs = nodes[1].node.get_and_clear_pending_msg_events();
+	assert!(msgs.is_empty());
+
+	// The re-provided monitor event (or the startup replay) should produce a PaymentForwarded
+	// that includes the skimmed fee.
+	let events = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1, "{events:?}");
+	match &events[0] {
+		Event::PaymentForwarded { skimmed_fee_msat: skimmed, .. } => {
+			assert_eq!(*skimmed, Some(skimmed_fee_msat));
+		},
+		_ => panic!("Expected PaymentForwarded, got {:?}", events[0]),
+	}
+	check_added_monitors(&nodes[1], 1);
+
+	// Reconnect and finish the payment.
+	let mut reconnect_args = ReconnectArgs::new(&nodes[1], &nodes[0]);
+	reconnect_args.pending_cell_htlc_claims = (0, 1);
+	reconnect_nodes(reconnect_args);
 	expect_payment_sent!(&nodes[0], payment_preimage);
 }

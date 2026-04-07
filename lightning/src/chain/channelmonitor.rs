@@ -56,6 +56,7 @@ use crate::ln::channel_keys::{
 };
 use crate::ln::channelmanager::{HTLCSource, PaymentClaimDetails, SentHTLCId};
 use crate::ln::msgs::DecodeError;
+use crate::ln::onion_utils::{HTLCFailReason, LocalHTLCFailureReason};
 use crate::ln::types::ChannelId;
 use crate::sign::{
 	ecdsa::EcdsaChannelSigner, ChannelDerivationParameters, DelayedPaymentOutputDescriptor,
@@ -252,24 +253,76 @@ impl_writeable_tlv_based_enum_upgradable_legacy!(MonitorEvent,
 	// 6 was `UpdateFailed` until LDK 0.0.117
 );
 
+/// The resolution of an outbound HTLC — either claimed with a preimage or failed back. Used in
+/// [`MonitorEvent::HTLCEvent`]s to provide resolution data to the `ChannelManager`.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub(crate) enum OutboundHTLCResolution {
+	Claimed {
+		preimage: PaymentPreimage,
+		skimmed_fee_msat: Option<u64>,
+	},
+	/// The failure resolution may come from on-chain in the [`ChannelMonitor`] or off-chain from the
+	/// `ChannelManager`, such as from an outbound edge to provide the manager with a resolution for
+	/// the inbound edge.
+	Failed {
+		reason: HTLCFailReason,
+	},
+}
+
+impl OutboundHTLCResolution {
+	/// Returns an on-chain timeout failure resolution.
+	pub fn on_chain_timeout() -> Self {
+		OutboundHTLCResolution::Failed {
+			reason: HTLCFailReason::from_failure_code(LocalHTLCFailureReason::OnChainTimeout),
+		}
+	}
+}
+
+impl_writeable_tlv_based_enum!(OutboundHTLCResolution,
+	(1, Claimed) => {
+		(1, preimage, required),
+		(3, skimmed_fee_msat, option),
+	},
+	(3, Failed) => {
+		(1, reason, required),
+	},
+);
+
 /// Simple structure sent back by `chain::Watch` when an HTLC from a forward channel is detected on
 /// chain. Used to update the corresponding HTLC in the backward channel. Failing to pass the
 /// preimage claim backward will lead to loss of funds.
 #[derive(Clone, PartialEq, Eq)]
 pub struct HTLCUpdate {
 	pub(crate) payment_hash: PaymentHash,
-	pub(crate) payment_preimage: Option<PaymentPreimage>,
 	pub(crate) source: HTLCSource,
 	pub(crate) htlc_value_msat: Option<u64>,
 	pub(crate) user_channel_id: Option<u128>,
+	pub(crate) resolution: OutboundHTLCResolution,
 }
 impl_writeable_tlv_based!(HTLCUpdate, {
 	(0, payment_hash, required),
 	(1, htlc_value_satoshis, (legacy, u64, |_| Ok(()), |us: &HTLCUpdate| us.htlc_value_msat.map(|v| v / 1000))),
 	(2, source, required),
-	(4, payment_preimage, option),
+	(4, _legacy_payment_preimage, (legacy, Option<PaymentPreimage>,
+		|v: Option<&Option<PaymentPreimage>>| {
+			// Only use the legacy preimage if the new `resolution` TLV (9) wasn't read,
+			// otherwise we'd clobber it (losing e.g. skimmed_fee_msat).
+			if resolution.0.is_none() {
+				if let Some(Some(preimage)) = v {
+					resolution = crate::util::ser::RequiredWrapper(Some(
+						OutboundHTLCResolution::Claimed { preimage: *preimage, skimmed_fee_msat: None }
+					));
+				}
+			}
+			Ok(())
+		},
+		|us: &HTLCUpdate| match &us.resolution {
+			OutboundHTLCResolution::Claimed { preimage, .. } => Some(Some(*preimage)),
+			_ => None,
+		})),
 	(5, user_channel_id, option),
 	(7, htlc_value_msat, (default_value, htlc_value_satoshis.map(|v: u64| v * 1000))), // Added in 0.4
+	(9, resolution, (default_value, OutboundHTLCResolution::on_chain_timeout())),
 });
 
 /// If an output goes from claimable only by us to claimable by us or our counterparty within this
@@ -3910,7 +3963,10 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					// startup until it is explicitly acked.
 					self.push_monitor_event(MonitorEvent::HTLCEvent(HTLCUpdate {
 						payment_hash: htlc.payment_hash,
-						payment_preimage: Some(claim.preimage),
+						resolution: OutboundHTLCResolution::Claimed {
+							preimage: claim.preimage,
+							skimmed_fee_msat: claim.skimmed_fee_msat,
+						},
 						source: *source.clone(),
 						htlc_value_msat: Some(htlc.amount_msat),
 						user_channel_id: self.user_channel_id,
@@ -4647,7 +4703,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					&mut self.pending_monitor_events,
 					MonitorEvent::HTLCEvent(HTLCUpdate {
 						payment_hash,
-						payment_preimage: None,
+						resolution: OutboundHTLCResolution::on_chain_timeout(),
 						source: source.clone(),
 						htlc_value_msat: Some(amount_msat),
 						user_channel_id: self.user_channel_id,
@@ -5985,7 +6041,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						&payment_hash, entry.txid);
 					self.push_monitor_event(MonitorEvent::HTLCEvent(HTLCUpdate {
 						payment_hash,
-						payment_preimage: None,
+						resolution: OutboundHTLCResolution::on_chain_timeout(),
 						source,
 						htlc_value_msat: htlc_value_satoshis.map(|v| v * 1000),
 						user_channel_id: self.user_channel_id,
@@ -6096,7 +6152,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						expires soon at {}", log_bytes!(htlc.payment_hash.0), inbound_htlc_expiry);
 					push_monitor_event(&mut self.pending_monitor_events, MonitorEvent::HTLCEvent(HTLCUpdate {
 						source: source.clone(),
-						payment_preimage: None,
+						resolution: OutboundHTLCResolution::on_chain_timeout(),
 						payment_hash: htlc.payment_hash,
 						htlc_value_msat: Some(htlc.amount_msat),
 						user_channel_id: self.user_channel_id,
@@ -6514,7 +6570,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						self.counterparty_fulfilled_htlcs.insert(SentHTLCId::from_source(&source), payment_preimage);
 						push_monitor_event(&mut self.pending_monitor_events, MonitorEvent::HTLCEvent(HTLCUpdate {
 							source,
-							payment_preimage: Some(payment_preimage),
+							resolution: OutboundHTLCResolution::Claimed { preimage: payment_preimage, skimmed_fee_msat: None },
 							payment_hash,
 							htlc_value_msat: Some(amount_msat),
 							user_channel_id: self.user_channel_id,
@@ -6539,7 +6595,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						self.counterparty_fulfilled_htlcs.insert(SentHTLCId::from_source(&source), payment_preimage);
 						push_monitor_event(&mut self.pending_monitor_events, MonitorEvent::HTLCEvent(HTLCUpdate {
 							source,
-							payment_preimage: Some(payment_preimage),
+							resolution: OutboundHTLCResolution::Claimed { preimage: payment_preimage, skimmed_fee_msat: None },
 							payment_hash,
 							htlc_value_msat: Some(amount_msat),
 							user_channel_id: self.user_channel_id,

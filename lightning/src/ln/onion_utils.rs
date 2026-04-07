@@ -1908,11 +1908,11 @@ impl From<&HTLCFailReason> for HTLCHandlingFailureReason {
 }
 
 #[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
-#[cfg_attr(test, derive(PartialEq))]
-pub(super) struct HTLCFailReason(HTLCFailReasonRepr);
+#[derive(PartialEq, Eq)]
+pub(crate) struct HTLCFailReason(HTLCFailReasonRepr);
 
 #[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
-#[cfg_attr(test, derive(PartialEq))]
+#[derive(PartialEq, Eq)]
 enum HTLCFailReasonRepr {
 	LightningError { err: msgs::OnionErrorPacket, hold_time: Option<u32> },
 	Reason { data: Vec<u8>, failure_reason: LocalHTLCFailureReason },
@@ -2071,7 +2071,7 @@ impl HTLCFailReason {
 		Self(HTLCFailReasonRepr::Reason { data, failure_reason })
 	}
 
-	pub(super) fn from_failure_code(failure_reason: LocalHTLCFailureReason) -> Self {
+	pub(crate) fn from_failure_code(failure_reason: LocalHTLCFailureReason) -> Self {
 		Self::reason(failure_reason, Vec::new())
 	}
 
