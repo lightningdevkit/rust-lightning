@@ -10776,6 +10776,13 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		self.forward_htlcs(htlc_forwards);
 		self.finalize_claims(finalized_claimed_htlcs);
 		for failure in failed_htlcs {
+			if self.persistent_monitor_events
+				&& matches!(failure.0, HTLCSource::OutboundRoute { .. })
+			{
+				// The MonitorEvent::HTLCEvent generated when the previous counterparty commitment
+				// is pruned will drive the failure instead.
+				continue;
+			}
 			let failure_type = failure.0.failure_type(counterparty_node_id, channel_id);
 			self.fail_htlc_backwards_internal(
 				&failure.0,
@@ -14305,26 +14312,40 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							OutboundHTLCResolution::Failed { reason } => {
 								let from_onchain =
 									self.channel_is_closed(&channel_id, &counterparty_node_id);
-								if from_onchain {
+								let we_are_sender =
+									matches!(htlc_update.source, HTLCSource::OutboundRoute { .. });
+								if from_onchain | we_are_sender {
 									log_trace!(logger, "Failing HTLC from our monitor");
 									let failure_type = htlc_update
 										.source
 										.failure_type(counterparty_node_id, channel_id);
-									let completion_update = Some(EventCompletionAction::ReleasePaymentCompleteChannelMonitorUpdate(PaymentCompleteUpdate {
-										counterparty_node_id,
-										channel_funding_outpoint: funding_outpoint,
-										channel_id,
-										htlc_id: SentHTLCId::from_source(&htlc_update.source),
-									}));
+
+									let completion_update = if self.persistent_monitor_events
+										&& we_are_sender && !from_onchain
+									{
+										EventCompletionAction::AckMonitorEvent {
+											event_id: monitor_event_source,
+										}
+									} else {
+										EventCompletionAction::ReleasePaymentCompleteChannelMonitorUpdate(PaymentCompleteUpdate {
+											counterparty_node_id,
+											channel_funding_outpoint: funding_outpoint,
+											channel_id,
+											htlc_id: SentHTLCId::from_source(&htlc_update.source),
+										})
+									};
+
 									self.fail_htlc_backwards_internal(
 										&htlc_update.source,
 										&htlc_update.payment_hash,
 										&reason,
 										failure_type,
-										completion_update,
+										Some(completion_update),
 									);
 								}
-								self.chain_monitor.ack_monitor_event(monitor_event_source);
+								if from_onchain | !we_are_sender {
+									self.chain_monitor.ack_monitor_event(monitor_event_source);
+								}
 							},
 						}
 					},
