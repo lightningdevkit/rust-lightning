@@ -1,0 +1,6 @@
+# Backwards compat
+ * Payment metadata is now comitted to in the HMAC used to build payment secrets.
+   As such, any existing BOLT 11 invoices issued with payment metadata will be
+   implicitly invalidated on upgrade and any BOLT 11 invoices issued with payment
+   metadata will be invalidated on downgrade. If this is problematic for you
+   please reach out.

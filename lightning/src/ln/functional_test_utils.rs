@@ -2804,6 +2804,7 @@ pub fn get_payment_preimage_hash(
 			min_value_msat,
 			7200,
 			min_final_cltv_expiry_delta,
+			None,
 		)
 		.unwrap();
 	(payment_preimage, payment_hash, payment_secret)

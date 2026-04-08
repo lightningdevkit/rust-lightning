@@ -122,7 +122,7 @@ fn create_jit_invoice(
 	let min_final_cltv_expiry_delta = MIN_FINAL_CLTV_EXPIRY_DELTA + 2;
 	let (payment_hash, payment_secret) = node
 		.node
-		.create_inbound_payment(None, expiry_secs, Some(min_final_cltv_expiry_delta))
+		.create_inbound_payment(None, expiry_secs, Some(min_final_cltv_expiry_delta), None)
 		.map_err(|e| {
 			log_error!(node.logger, "Failed to register inbound payment: {:?}", e);
 		})?;

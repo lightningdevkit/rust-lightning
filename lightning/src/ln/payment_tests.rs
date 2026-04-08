@@ -1513,7 +1513,7 @@ fn get_ldk_payment_preimage() {
 	let amt_msat = 60_000;
 	let expiry_secs = 60 * 60;
 	let (payment_hash, payment_secret) =
-		nodes[1].node.create_inbound_payment(Some(amt_msat), expiry_secs, None).unwrap();
+		nodes[1].node.create_inbound_payment(Some(amt_msat), expiry_secs, None, None).unwrap();
 
 	let payment_params = PaymentParameters::from_node_id(node_b_id, TEST_FINAL_CLTV)
 		.with_bolt11_features(nodes[1].node.bolt11_invoice_features())
@@ -1526,7 +1526,8 @@ fn get_ldk_payment_preimage() {
 	check_added_monitors(&nodes[0], 1);
 
 	// Make sure to use `get_payment_preimage`
-	let preimage = Some(nodes[1].node.get_payment_preimage(payment_hash, payment_secret).unwrap());
+	let preimage =
+		Some(nodes[1].node.get_payment_preimage(payment_hash, payment_secret, None).unwrap());
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
 	let event = events.pop().unwrap();
@@ -2250,7 +2251,7 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 	let route = get_route(&nodes[0], &route_params).unwrap();
 
 	let (hash, payment_secret) =
-		nodes[2].node.create_inbound_payment(Some(amt_msat), 60 * 60, None).unwrap();
+		nodes[2].node.create_inbound_payment(Some(amt_msat), 60 * 60, None, None).unwrap();
 	let onion = RecipientOnionFields::secret_only(payment_secret, amt_msat);
 	let id = PaymentId(hash.0);
 	nodes[0].node.send_payment_with_route(route.clone(), hash, onion, id).unwrap();
@@ -2359,7 +2360,8 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 		do_commitment_signed_dance(&nodes[2], &nodes[1], commitment, false, true);
 		expect_and_process_pending_htlcs(&nodes[2], false);
 
-		let preimage = Some(nodes[2].node.get_payment_preimage(hash, payment_secret).unwrap());
+		let preimage =
+			Some(nodes[2].node.get_payment_preimage(hash, payment_secret, None).unwrap());
 		expect_payment_claimable!(&nodes[2], hash, payment_secret, amt_msat, preimage, node_c_id);
 
 		let path: &[&[_]] = &[&[&nodes[1], &nodes[2]]];
@@ -2486,7 +2488,7 @@ fn do_accept_underpaying_htlcs_config(num_mpp_parts: usize) {
 		.unwrap();
 	let route_params = RouteParameters::from_payment_params_and_value(payment_params, amt_msat);
 	let (payment_hash, payment_secret) =
-		nodes[2].node.create_inbound_payment(Some(amt_msat), 60 * 60, None).unwrap();
+		nodes[2].node.create_inbound_payment(Some(amt_msat), 60 * 60, None, None).unwrap();
 
 	let onion = RecipientOnionFields::secret_only(payment_secret, amt_msat);
 	let id = PaymentId(payment_hash.0);
@@ -2542,7 +2544,7 @@ fn do_accept_underpaying_htlcs_config(num_mpp_parts: usize) {
 
 	// Claim the payment and check that the skimmed fee is as expected.
 	let payment_preimage =
-		nodes[2].node.get_payment_preimage(payment_hash, payment_secret).unwrap();
+		nodes[2].node.get_payment_preimage(payment_hash, payment_secret, None).unwrap();
 	let events = nodes[2].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
@@ -4830,10 +4832,20 @@ fn do_test_payment_metadata_consistency(do_reload: bool, do_modify: bool) {
 
 	// Pay more than half of each channel's max, requiring MPP
 	let amt_msat = 750_000_000;
-	let (payment_preimage, payment_hash, payment_secret) =
-		get_payment_preimage_hash(&nodes[3], Some(amt_msat), None);
-	let payment_id = PaymentId(payment_hash.0);
 	let payment_metadata = vec![44, 49, 52, 142];
+	let payment_preimage = PaymentPreimage([42; 32]);
+	let payment_hash: PaymentHash = payment_preimage.into();
+	let payment_secret = nodes[3]
+		.node
+		.create_inbound_payment_for_hash(
+			payment_hash,
+			Some(amt_msat),
+			7200,
+			None,
+			Some(&payment_metadata),
+		)
+		.unwrap();
+	let payment_id = PaymentId(payment_hash.0);
 
 	let payment_params = PaymentParameters::from_node_id(node_d_id, TEST_FINAL_CLTV)
 		.with_bolt11_features(nodes[1].node.bolt11_invoice_features())
