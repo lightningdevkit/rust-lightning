@@ -9506,7 +9506,7 @@ impl<
 	fn fail_htlc_backwards_internal(
 		&self, source: &HTLCSource, payment_hash: &PaymentHash, onion_error: &HTLCFailReason,
 		failure_type: HTLCHandlingFailureType,
-		mut from_monitor_update_completion: Option<PaymentCompleteUpdate>,
+		mut from_monitor_update_completion: Option<EventCompletionAction>,
 	) {
 		// Ensure that no peer state channel storage lock is held when calling this function.
 		// This ensures that future code doesn't introduce a lock-order requirement for
@@ -9560,7 +9560,7 @@ impl<
 					&mut from_monitor_update_completion,
 					&logger,
 				);
-				if let Some(update) = from_monitor_update_completion {
+				if let Some(action) = from_monitor_update_completion {
 					// If `fail_htlc` didn't `take` the post-event action, we should go ahead and
 					// complete it here as the failure was duplicative - we've already handled it.
 					// This can happen in rare cases where a MonitorUpdate is replayed after
@@ -9568,8 +9568,6 @@ impl<
 					// though the ChannelManager was).
 					// For such cases, we also check that there's no existing pending event to
 					// complete this action already, which we let finish instead.
-					let action =
-						EventCompletionAction::ReleasePaymentCompleteChannelMonitorUpdate(update);
 					let have_action = {
 						let pending_events = self.pending_events.lock().unwrap();
 						pending_events.iter().any(|(_, act)| act.as_ref() == Some(&action))
@@ -14312,12 +14310,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 									let failure_type = htlc_update
 										.source
 										.failure_type(counterparty_node_id, channel_id);
-									let completion_update = Some(PaymentCompleteUpdate {
+									let completion_update = Some(EventCompletionAction::ReleasePaymentCompleteChannelMonitorUpdate(PaymentCompleteUpdate {
 										counterparty_node_id,
 										channel_funding_outpoint: funding_outpoint,
 										channel_id,
 										htlc_id: SentHTLCId::from_source(&htlc_update.source),
-									});
+									}));
 									self.fail_htlc_backwards_internal(
 										&htlc_update.source,
 										&htlc_update.payment_hash,
@@ -20640,12 +20638,16 @@ impl<
 							"Failing HTLC with payment hash {} as it was resolved on-chain.",
 							payment_hash
 						);
-						let completion_action = Some(PaymentCompleteUpdate {
-							counterparty_node_id: monitor.get_counterparty_node_id(),
-							channel_funding_outpoint: monitor.get_funding_txo(),
-							channel_id: monitor.channel_id(),
-							htlc_id: SentHTLCId::from_source(&htlc_source),
-						});
+						let completion_action = Some(
+							EventCompletionAction::ReleasePaymentCompleteChannelMonitorUpdate(
+								PaymentCompleteUpdate {
+									counterparty_node_id: monitor.get_counterparty_node_id(),
+									channel_funding_outpoint: monitor.get_funding_txo(),
+									channel_id: monitor.channel_id(),
+									htlc_id: SentHTLCId::from_source(&htlc_source),
+								},
+							),
+						);
 
 						failed_htlcs.push((
 							htlc_source,
