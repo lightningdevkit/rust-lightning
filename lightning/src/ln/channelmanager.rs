@@ -8026,6 +8026,7 @@ impl<
 									outbound_capacity_msat: 0,
 									next_outbound_htlc_limit_msat: 0,
 									next_outbound_htlc_minimum_msat: u64::MAX,
+									next_splice_out_maximum_sat: 0,
 								}
 							});
 							let is_in_range = (balances.next_outbound_htlc_minimum_msat

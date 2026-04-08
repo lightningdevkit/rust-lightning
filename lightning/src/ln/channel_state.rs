@@ -533,6 +533,7 @@ impl ChannelDetails {
 				outbound_capacity_msat: 0,
 				next_outbound_htlc_limit_msat: 0,
 				next_outbound_htlc_minimum_msat: u64::MAX,
+				next_splice_out_maximum_sat: 0,
 			}
 		});
 		let (to_remote_reserve_satoshis, to_self_reserve_satoshis) =

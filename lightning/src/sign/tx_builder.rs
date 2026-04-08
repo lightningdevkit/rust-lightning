@@ -9,7 +9,9 @@ use crate::ln::chan_utils::{
 	second_stage_tx_fees_sat, ChannelTransactionParameters, CommitmentTransaction,
 	HTLCOutputInCommitment,
 };
-use crate::ln::channel::{CommitmentStats, ANCHOR_OUTPUT_VALUE_SATOSHI};
+use crate::ln::channel::{
+	get_v2_channel_reserve_satoshis, CommitmentStats, ANCHOR_OUTPUT_VALUE_SATOSHI,
+};
 use crate::prelude::*;
 use crate::types::features::ChannelTypeFeatures;
 use crate::util::logger::Logger;
@@ -315,6 +317,105 @@ fn get_next_commitment_stats(
 	})
 }
 
+/// Determines the maximum value that the holder can splice out of the channel, accounting
+/// for the updated reserves after said splice. This maximum also makes sure the local commitment
+/// retains at least one output after the splice, which is particularly relevant for
+/// zero-reserve channels.
+//
+// The equation to determine `percent_max_splice_out_sat` is:
+// 1) floor((c - s) / 100) == h - s - p
+// We want the maximum value of s that will satisfy this equation, therefore, we solve:
+// 2) (c - s) / 100 < h - s - p + 1
+// where c: `channel_value_satoshis`
+//       s: `percent_max_splice_out_sat`
+//       h: `local_balance_before_fee_sat`
+//       p: `post_splice_min_balance_sat`
+// This results in:
+// 3) s < (100h + 100 - 100p - c) / 99
+fn get_next_splice_out_maximum_sat(
+	is_outbound_from_holder: bool, channel_value_satoshis: u64, local_balance_before_fee_msat: u64,
+	remote_balance_before_fee_msat: u64, spiked_feerate: u32,
+	spiked_feerate_nondust_htlc_count: usize, post_splice_min_balance_sat: u64,
+	channel_constraints: &ChannelConstraints, channel_type: &ChannelTypeFeatures,
+) -> u64 {
+	let local_balance_before_fee_sat = local_balance_before_fee_msat / 1000;
+	let mut next_splice_out_maximum_sat =
+		if channel_constraints.counterparty_selected_channel_reserve_satoshis != 0 {
+			let dividend = local_balance_before_fee_sat
+				.saturating_mul(100)
+				.saturating_add(100)
+				.saturating_sub(post_splice_min_balance_sat.saturating_mul(100))
+				.saturating_sub(channel_value_satoshis);
+			let percent_max_splice_out_sat = dividend.saturating_sub(1) / 99;
+			let dust_limit_max_splice_out_sat = local_balance_before_fee_sat
+				.saturating_sub(channel_constraints.holder_dust_limit_satoshis)
+				.saturating_sub(post_splice_min_balance_sat);
+			// Take whichever constraint you hit first as you increase `splice_out_max`
+			let max_splice_out_sat =
+				cmp::min(percent_max_splice_out_sat, dust_limit_max_splice_out_sat);
+			#[cfg(debug_assertions)]
+			if max_splice_out_sat == 0 {
+				let current_balance_sat =
+					local_balance_before_fee_sat.saturating_sub(post_splice_min_balance_sat);
+				let v2_reserve_sat = get_v2_channel_reserve_satoshis(
+					channel_value_satoshis,
+					channel_constraints.holder_dust_limit_satoshis,
+					false,
+				);
+				// If the holder cannot splice out anything, they must be at or
+				// below the v2 reserve
+				debug_assert!(current_balance_sat <= v2_reserve_sat);
+			} else {
+				let post_splice_reserve_sat = get_v2_channel_reserve_satoshis(
+					channel_value_satoshis.saturating_sub(max_splice_out_sat),
+					channel_constraints.holder_dust_limit_satoshis,
+					false,
+				);
+				// If the holder can splice out some maximum, splicing out that
+				// maximum lands them at exactly the new v2 reserve + the
+				// `post_splice_min_balance_sat`
+				debug_assert_eq!(
+					local_balance_before_fee_sat.saturating_sub(max_splice_out_sat),
+					post_splice_reserve_sat.saturating_add(post_splice_min_balance_sat)
+				);
+			}
+			max_splice_out_sat
+		} else {
+			// In a zero-reserve channel, the holder is free to withdraw up to its `post_splice_min_balance_sat`
+			local_balance_before_fee_sat.saturating_sub(post_splice_min_balance_sat)
+		};
+
+	// We only bother to check the local commitment here, the counterparty will check its own commitment.
+	//
+	// If the current `next_splice_out_maximum_sat` would produce a local commitment with no
+	// outputs, bump this maximum such that, after the splice, the holder's balance covers at
+	// least `dust_limit_satoshis` and, if they are the funder, `current_spiked_tx_fee_sat`.
+	// We don't include an additional non-dust inbound HTLC in the `current_spiked_tx_fee_sat`,
+	// because we don't mind if the holder dips below their dust limit to cover the fee for that
+	// inbound non-dust HTLC.
+	if !has_output(
+		is_outbound_from_holder,
+		local_balance_before_fee_msat.saturating_sub(next_splice_out_maximum_sat * 1000),
+		remote_balance_before_fee_msat,
+		spiked_feerate,
+		spiked_feerate_nondust_htlc_count,
+		channel_constraints.holder_dust_limit_satoshis,
+		channel_type,
+	) {
+		let dust_limit_satoshis = channel_constraints.holder_dust_limit_satoshis;
+		let current_spiked_tx_fee_sat = commit_tx_fee_sat(spiked_feerate, 0, channel_type);
+		let min_balance_sat = if is_outbound_from_holder {
+			dust_limit_satoshis.saturating_add(current_spiked_tx_fee_sat)
+		} else {
+			dust_limit_satoshis
+		};
+		next_splice_out_maximum_sat =
+			(local_balance_before_fee_msat / 1000).saturating_sub(min_balance_sat);
+	}
+
+	next_splice_out_maximum_sat
+}
+
 fn get_available_balances(
 	is_outbound_from_holder: bool, channel_value_satoshis: u64, value_to_holder_msat: u64,
 	pending_htlcs: &[HTLCAmountDirection], feerate_per_kw: u32,
@@ -409,6 +510,20 @@ fn get_available_balances(
 				.saturating_sub(inbound_htlcs_value_msat),
 			total_anchors_sat.saturating_mul(1000),
 		);
+
+	let next_splice_out_maximum_sat = get_next_splice_out_maximum_sat(
+		is_outbound_from_holder,
+		channel_value_satoshis,
+		local_balance_before_fee_msat,
+		remote_balance_before_fee_msat,
+		spiked_feerate,
+		// The number of non-dust HTLCs on the local commitment at the spiked feerate
+		local_nondust_htlc_count,
+		// The post-splice minimum balance of the holder
+		if is_outbound_from_holder { local_min_commit_tx_fee_sat } else { 0 },
+		&channel_constraints,
+		channel_type,
+	);
 
 	let outbound_capacity_msat = local_balance_before_fee_msat
 		.saturating_sub(channel_constraints.counterparty_selected_channel_reserve_satoshis * 1000);
@@ -582,6 +697,7 @@ fn get_available_balances(
 		outbound_capacity_msat,
 		next_outbound_htlc_limit_msat: available_capacity_msat,
 		next_outbound_htlc_minimum_msat,
+		next_splice_out_maximum_sat,
 	}
 }
 
