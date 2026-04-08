@@ -14144,6 +14144,16 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		Ok(())
 	}
 
+	fn channel_is_closed(&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey) -> bool {
+		self.per_peer_state
+			.read()
+			.unwrap()
+			.get(counterparty_node_id)
+			.map_or(true, |peer_state_mtx| {
+				!peer_state_mtx.lock().unwrap().channel_by_id.contains_key(channel_id)
+			})
+	}
+
 	/// Process pending events from the [`chain::Watch`], returning whether any events were processed.
 	fn process_pending_monitor_events(&self) -> bool {
 		debug_assert!(self.total_consistency_lock.try_write().is_err()); // Caller holds read lock
@@ -14171,18 +14181,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 									"Claiming HTLC with preimage {} from our monitor",
 									preimage
 								);
-								let from_onchain = self
-									.per_peer_state
-									.read()
-									.unwrap()
-									.get(&counterparty_node_id)
-									.map_or(true, |peer_state_mtx| {
-										!peer_state_mtx
-											.lock()
-											.unwrap()
-											.channel_by_id
-											.contains_key(&channel_id)
-									});
 								if self.persistent_monitor_events {
 									self.register_pending_forward_monitor_event_acks(
 										htlc_update.payment_hash,
@@ -14197,7 +14195,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 									preimage,
 									htlc_update.htlc_value_msat,
 									skimmed_fee_msat,
-									from_onchain,
+									self.channel_is_closed(&channel_id, &counterparty_node_id),
 									counterparty_node_id,
 									funding_outpoint,
 									channel_id,
@@ -14208,23 +14206,27 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								);
 							},
 							OutboundHTLCResolution::Failed { reason } => {
-								log_trace!(logger, "Failing HTLC from our monitor");
-								let failure_type = htlc_update
-									.source
-									.failure_type(counterparty_node_id, channel_id);
-								let completion_update = Some(PaymentCompleteUpdate {
-									counterparty_node_id,
-									channel_funding_outpoint: funding_outpoint,
-									channel_id,
-									htlc_id: SentHTLCId::from_source(&htlc_update.source),
-								});
-								self.fail_htlc_backwards_internal(
-									&htlc_update.source,
-									&htlc_update.payment_hash,
-									&reason,
-									failure_type,
-									completion_update,
-								);
+								let from_onchain =
+									self.channel_is_closed(&channel_id, &counterparty_node_id);
+								if from_onchain {
+									log_trace!(logger, "Failing HTLC from our monitor");
+									let failure_type = htlc_update
+										.source
+										.failure_type(counterparty_node_id, channel_id);
+									let completion_update = Some(PaymentCompleteUpdate {
+										counterparty_node_id,
+										channel_funding_outpoint: funding_outpoint,
+										channel_id,
+										htlc_id: SentHTLCId::from_source(&htlc_update.source),
+									});
+									self.fail_htlc_backwards_internal(
+										&htlc_update.source,
+										&htlc_update.payment_hash,
+										&reason,
+										failure_type,
+										completion_update,
+									);
+								}
 								self.chain_monitor.ack_monitor_event(monitor_event_source);
 							},
 						}

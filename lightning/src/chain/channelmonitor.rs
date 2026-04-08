@@ -3668,8 +3668,16 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		}
 
 		// Prune HTLCs from the previous counterparty commitment tx so we don't generate failure/fulfill
-		// events for now-revoked/fulfilled HTLCs.
+		// events for now-revoked/fulfilled HTLCs. For HTLCs that were failed (not fulfilled),
+		// generate a persistent failure event if enabled.
 		let mut removed_fulfilled_htlcs = false;
+		let counterparty_fulfilled_htlcs = &mut self.counterparty_fulfilled_htlcs;
+		let counterparty_failed_htlcs = &mut self.counterparty_failed_htlcs;
+		let persistent_events_enabled = self.persistent_events_enabled;
+		let pending_monitor_events = &mut self.pending_monitor_events;
+		let provided_monitor_events = &self.provided_monitor_events;
+		let next_monitor_event_id = &mut self.next_monitor_event_id;
+		let user_channel_id = self.user_channel_id;
 		let prune_htlc_sources = |funding: &mut FundingScope| {
 			if let Some(txid) = funding.prev_counterparty_commitment_txid.take() {
 				if funding.current_counterparty_commitment_txid.unwrap() != txid {
@@ -3678,12 +3686,50 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					// We only need to remove fulfilled HTLCs once for the first `FundingScope` we
 					// come across since all `FundingScope`s share the same set of HTLC sources.
 					if !removed_fulfilled_htlcs {
-						for (_, ref source_opt) in funding.counterparty_claimable_outpoints.get(&txid).unwrap() {
+						for (ref htlc, ref source_opt) in funding.counterparty_claimable_outpoints.get(&txid).unwrap() {
 							if let Some(source) = source_opt {
 								if !cur_claimables.iter()
 									.any(|(_, cur_source_opt)| cur_source_opt == source_opt)
 								{
-									self.counterparty_fulfilled_htlcs.remove(&SentHTLCId::from_source(source));
+									let htlc_id = SentHTLCId::from_source(source);
+									let was_fulfilled = counterparty_fulfilled_htlcs.remove(&htlc_id).is_some();
+									if !was_fulfilled && persistent_events_enabled {
+										// The HTLC was removed without a preimage, i.e.
+										// it was failed back. Generate a persistent
+										// failure event so the ChannelManager can fail
+										// it back upstream on replay.
+										//
+										// Skip if an event for this source already exists
+										// (e.g. from a prior provide_secret call).
+										let already_pending = pending_monitor_events.iter()
+											.chain(provided_monitor_events.iter())
+											.any(|(_, ev)| {
+												if let MonitorEvent::HTLCEvent(ref existing) = ev {
+													existing.source == **source
+												} else {
+													false
+												}
+											});
+										if !already_pending {
+											let resolution = if let Some(reason) = counterparty_failed_htlcs.remove(&htlc_id) {
+												OutboundHTLCResolution::Failed { reason }
+											} else {
+												debug_assert!(false);
+												OutboundHTLCResolution::on_chain_timeout()
+											};
+											push_monitor_event(
+												pending_monitor_events,
+												MonitorEvent::HTLCEvent(HTLCUpdate {
+													payment_hash: htlc.payment_hash,
+													resolution,
+													source: *source.clone(),
+													htlc_value_msat: Some(htlc.amount_msat),
+													user_channel_id,
+												}),
+												next_monitor_event_id,
+											);
+										}
+									}
 								}
 							}
 						}
