@@ -50,8 +50,13 @@ impl DecayingAverage {
 	}
 }
 
-/// Approximates an [`Self::average_duration`] average by tracking a decaying average over a larger
-/// [`Self::tracked_duration`] window to smooth out volatility.
+/// Tracks an average value over [`Self::average_duration`], smoothing out short-term volatility.
+/// This tells us what our average value was over [`Self::average_duration`] of time, measured
+/// across the last N periods of [`Self::average_duration`] length (where
+/// [`Self::tracked_duration`] = [`Self::average_duration`] * N).
+///
+///  Implemented by aggregating several such windows into a single longer decaying average whose
+///  window equals the total duration being tracked.
 struct AggregatedWindowAverage {
 	start_timestamp_unix_secs: u64,
 	average_duration: Duration,
