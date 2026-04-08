@@ -1172,9 +1172,6 @@ pub(super) struct InteractiveTxMsgError {
 	/// If a splice was in progress when processing the message, this contains the splice funding
 	/// information for emitting a `SpliceFailed` event.
 	pub(super) splice_funding_failed: Option<SpliceFundingFailed>,
-	/// Whether we were quiescent when we received the message, and are no longer due to aborting
-	/// the session.
-	pub(super) exited_quiescence: bool,
 }
 
 /// The return value of `monitor_updating_restored`
@@ -1818,30 +1815,24 @@ where
 		let logger = WithChannelContext::from(logger, &self.context(), None);
 		log_info!(logger, "Failed interactive transaction negotiation: {reason}");
 
-		let (splice_funding_failed, exited_quiescence) = match &mut self.phase {
+		let splice_funding_failed = match &mut self.phase {
 			ChannelPhase::Undefined => unreachable!(),
-			ChannelPhase::UnfundedOutboundV1(_) | ChannelPhase::UnfundedInboundV1(_) => {
-				(None, false)
-			},
+			ChannelPhase::UnfundedOutboundV1(_) | ChannelPhase::UnfundedInboundV1(_) => None,
 			ChannelPhase::UnfundedV2(pending_v2_channel) => {
 				pending_v2_channel.interactive_tx_constructor.take();
-				(None, false)
+				None
 			},
 			ChannelPhase::Funded(funded_channel) => {
 				if funded_channel.should_reset_pending_splice_state(false) {
-					(funded_channel.reset_pending_splice_state(), true)
+					funded_channel.reset_pending_splice_state()
 				} else {
 					debug_assert!(false, "We should never fail an interactive funding negotiation once we're exchanging tx_signatures");
-					(None, false)
+					None
 				}
 			},
 		};
 
-		InteractiveTxMsgError {
-			err: ChannelError::Abort(reason),
-			splice_funding_failed,
-			exited_quiescence,
-		}
+		InteractiveTxMsgError { err: ChannelError::Abort(reason), splice_funding_failed }
 	}
 
 	pub fn tx_add_input<L: Logger>(
@@ -1856,7 +1847,6 @@ where
 					"Received unexpected interactive transaction negotiation message".to_owned(),
 				),
 				splice_funding_failed: None,
-				exited_quiescence: false,
 			}),
 		}
 	}
@@ -1873,7 +1863,6 @@ where
 					"Received unexpected interactive transaction negotiation message".to_owned(),
 				),
 				splice_funding_failed: None,
-				exited_quiescence: false,
 			}),
 		}
 	}
@@ -1890,7 +1879,6 @@ where
 					"Received unexpected interactive transaction negotiation message".to_owned(),
 				),
 				splice_funding_failed: None,
-				exited_quiescence: false,
 			}),
 		}
 	}
@@ -1907,7 +1895,6 @@ where
 					"Received unexpected interactive transaction negotiation message".to_owned(),
 				),
 				splice_funding_failed: None,
-				exited_quiescence: false,
 			}),
 		}
 	}
@@ -1924,7 +1911,6 @@ where
 				return Err(InteractiveTxMsgError {
 					err: ChannelError::WarnAndDisconnect(err.to_owned()),
 					splice_funding_failed: None,
-					exited_quiescence: false,
 				});
 			},
 		};
@@ -1985,13 +1971,13 @@ where
 
 	pub fn tx_abort<L: Logger>(
 		&mut self, msg: &msgs::TxAbort, logger: &L,
-	) -> Result<(Option<msgs::TxAbort>, Option<SpliceFundingFailed>, bool), ChannelError> {
+	) -> Result<(Option<msgs::TxAbort>, Option<SpliceFundingFailed>), ChannelError> {
 		// If we have not sent a `tx_abort` message for this negotiation previously, we need to echo
 		// back a tx_abort message according to the spec:
 		//   https://github.com/lightning/bolts/blob/247e83d/02-peer-protocol.md?plain=1#L560-L561
 		// For rationale why we echo back `tx_abort`:
 		//   https://github.com/lightning/bolts/blob/247e83d/02-peer-protocol.md?plain=1#L578-L580
-		let (should_ack, splice_funding_failed, exited_quiescence) = match &mut self.phase {
+		let (should_ack, splice_funding_failed) = match &mut self.phase {
 			ChannelPhase::Undefined => unreachable!(),
 			ChannelPhase::UnfundedOutboundV1(_) | ChannelPhase::UnfundedInboundV1(_) => {
 				let err = "Got an unexpected tx_abort message: This is an unfunded channel created with V1 channel establishment";
@@ -2000,7 +1986,7 @@ where
 			ChannelPhase::UnfundedV2(pending_v2_channel) => {
 				let had_constructor =
 					pending_v2_channel.interactive_tx_constructor.take().is_some();
-				(had_constructor, None, false)
+				(had_constructor, None)
 			},
 			ChannelPhase::Funded(funded_channel) => {
 				if funded_channel.has_pending_splice_awaiting_signatures()
@@ -2028,11 +2014,11 @@ where
 						.unwrap_or(false);
 					debug_assert!(has_funding_negotiation);
 					let splice_funding_failed = funded_channel.reset_pending_splice_state();
-					(true, splice_funding_failed, true)
+					(true, splice_funding_failed)
 				} else {
 					// We were not tracking the pending funding negotiation state anymore, likely
 					// due to a disconnection or already having sent our own `tx_abort`.
-					(false, None, false)
+					(false, None)
 				}
 			},
 		};
@@ -2048,7 +2034,7 @@ where
 			}
 		});
 
-		Ok((tx_abort, splice_funding_failed, exited_quiescence))
+		Ok((tx_abort, splice_funding_failed))
 	}
 
 	#[rustfmt::skip]
@@ -14250,13 +14236,11 @@ where
 	}
 
 	fn quiescent_negotiation_err(&mut self, err: ChannelError) -> InteractiveTxMsgError {
-		let exited_quiescence = if matches!(err, ChannelError::Abort(_)) {
+		if matches!(err, ChannelError::Abort(_)) {
 			debug_assert!(self.context.channel_state.is_quiescent());
-			self.exit_quiescence()
-		} else {
-			false
-		};
-		InteractiveTxMsgError { err, splice_funding_failed: None, exited_quiescence }
+			self.exit_quiescence();
+		}
+		InteractiveTxMsgError { err, splice_funding_failed: None }
 	}
 
 	pub fn remove_legacy_scids_before_block(&mut self, height: u32) -> alloc::vec::Drain<'_, u64> {
