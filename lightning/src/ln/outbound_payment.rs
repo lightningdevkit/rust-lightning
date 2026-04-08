@@ -18,8 +18,7 @@ use crate::blinded_path::{IntroductionNode, NodeIdLookUp};
 use crate::events::{self, PaidBolt12Invoice, PaymentFailureReason};
 use crate::ln::channel_state::ChannelDetails;
 use crate::ln::channelmanager::{
-	EventCompletionAction, HTLCSource, OptionalBolt11PaymentParams, PaymentCompleteUpdate,
-	PaymentId,
+	EventCompletionAction, HTLCSource, OptionalBolt11PaymentParams, PaymentId,
 };
 use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils;
@@ -2426,7 +2425,7 @@ impl OutboundPayments {
 		path: &Path, session_priv: &SecretKey, payment_id: &PaymentId,
 		probing_cookie_secret: [u8; 32], secp_ctx: &Secp256k1<secp256k1::All>,
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
-		completion_action: &mut Option<PaymentCompleteUpdate>, logger: &WithContext<L>,
+		completion_action: &mut Option<EventCompletionAction>, logger: &WithContext<L>,
 	) {
 		#[cfg(any(test, feature = "_test_utils"))]
 		let DecodedOnionFailure {
@@ -2574,9 +2573,7 @@ impl OutboundPayments {
 			}
 		};
 		let mut pending_events = pending_events.lock().unwrap();
-		let completion_action = completion_action
-			.take()
-			.map(|act| EventCompletionAction::ReleasePaymentCompleteChannelMonitorUpdate(act));
+		let completion_action = completion_action.take();
 		if let Some(ev) = full_failure_ev {
 			pending_events.push_back((path_failure, None));
 			pending_events.push_back((ev, completion_action));
