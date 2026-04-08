@@ -165,7 +165,7 @@ fn setup_test_lsps2_nodes_with_payer<'a, 'b, 'c>(
 
 fn create_jit_invoice(
 	node: &LiquidityNode<'_, '_, '_>, service_node_id: PublicKey, intercept_scid: u64,
-	cltv_expiry_delta: u32, payment_size_msat: Option<u64>, description: &str, expiry_secs: u32,
+	cltv_expiry_delta: u16, payment_size_msat: Option<u64>, description: &str, expiry_secs: u32,
 ) -> Result<Bolt11Invoice, ()> {
 	// LSPS2 requires min_final_cltv_expiry_delta to be at least 2 more than usual.
 	let min_final_cltv_expiry_delta = MIN_FINAL_CLTV_EXPIRY_DELTA + 2;
@@ -180,7 +180,7 @@ fn create_jit_invoice(
 		src_node_id: service_node_id,
 		short_channel_id: intercept_scid,
 		fees: RoutingFees { base_msat: 0, proportional_millionths: 0 },
-		cltv_expiry_delta: cltv_expiry_delta as u16,
+		cltv_expiry_delta,
 		htlc_minimum_msat: None,
 		htlc_maximum_msat: None,
 	}]);
@@ -1216,7 +1216,7 @@ fn client_trusts_lsp_end_to_end_test() {
 
 	let intercept_scid = service_node.node.get_intercept_scid();
 	let user_channel_id = 42;
-	let cltv_expiry_delta: u32 = 144;
+	let cltv_expiry_delta: u16 = 144;
 	let payment_size_msat = Some(1_000_000);
 
 	let fee_base_msat = 1000;
@@ -1394,7 +1394,7 @@ fn client_trusts_lsp_end_to_end_test() {
 
 fn execute_lsps2_dance(
 	lsps_nodes: &LSPSNodesWithPayer, intercept_scid: u64, user_channel_id: u128,
-	cltv_expiry_delta: u32, promise_secret: [u8; 32], payment_size_msat: Option<u64>,
+	cltv_expiry_delta: u16, promise_secret: [u8; 32], payment_size_msat: Option<u64>,
 	fee_base_msat: u64,
 ) {
 	let service_node = &lsps_nodes.service_node;
@@ -1638,7 +1638,7 @@ fn bolt12_lsps2_end_to_end_test() {
 
 	let intercept_scid = service_node.node.get_intercept_scid();
 	let user_channel_id = 42;
-	let cltv_expiry_delta: u32 = 144;
+	let cltv_expiry_delta: u16 = 144;
 	let payment_size_msat = Some(1_000_000);
 	let fee_base_msat = 1_000;
 
@@ -1902,7 +1902,7 @@ fn bolt12_lsps2_compact_message_path_test() {
 
 	let intercept_scid = service_node.node.get_intercept_scid();
 	let user_channel_id = 42;
-	let cltv_expiry_delta: u32 = 144;
+	let cltv_expiry_delta: u16 = 144;
 	let payment_size_msat = Some(1_000_000);
 	let fee_base_msat = 1_000;
 
@@ -2225,7 +2225,7 @@ fn late_payment_forwarded_and_safe_after_force_close_does_not_broadcast() {
 
 	let intercept_scid = service_node.node.get_intercept_scid();
 	let user_channel_id = 43u128;
-	let cltv_expiry_delta: u32 = 144;
+	let cltv_expiry_delta: u16 = 144;
 	let payment_size_msat = Some(1_000_000);
 	let fee_base_msat: u64 = 10_000;
 
@@ -2414,7 +2414,7 @@ fn htlc_timeout_before_client_claim_results_in_handling_failed() {
 
 	let intercept_scid = service_node.node.get_intercept_scid();
 	let user_channel_id = 44u128;
-	let cltv_expiry_delta: u32 = 144;
+	let cltv_expiry_delta: u16 = 144;
 	let payment_size_msat = Some(1_000_000);
 	let fee_base_msat: u64 = 10_000;
 
@@ -2748,7 +2748,7 @@ fn client_trusts_lsp_partial_fee_does_not_trigger_broadcast() {
 
 	let intercept_scid = service_node.node.get_intercept_scid();
 	let user_channel_id = 42;
-	let cltv_expiry_delta: u32 = 144;
+	let cltv_expiry_delta: u16 = 144;
 	let payment_size_msat = Some(1_000_000);
 
 	let fee_base_msat: u64 = 10_000;

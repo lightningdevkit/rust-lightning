@@ -35,7 +35,7 @@ pub struct LSPS2Bolt12InvoiceParameters {
 	/// The LSPS2 intercept short channel id.
 	pub intercept_scid: u64,
 	/// The CLTV expiry delta the LSP requires for forwarding over `intercept_scid`.
-	pub cltv_expiry_delta: u32,
+	pub cltv_expiry_delta: u16,
 }
 
 /// A router wrapper that injects LSPS2-specific BOLT12 blinded payment paths for registered
@@ -155,19 +155,16 @@ impl<R: Router, ES: EntropySource + Send + Sync> Router for LSPS2BOLT12Router<R,
 		// the paths in this exact order.
 		let mut paths = inner_res.unwrap_or_default();
 		for lsps2_invoice_params in all_params {
-			let payment_relay = match u16::try_from(lsps2_invoice_params.cltv_expiry_delta) {
-				Ok(cltv_expiry_delta) => PaymentRelay {
-					cltv_expiry_delta,
-					fee_proportional_millionths: 0,
-					fee_base_msat: 0,
-				},
-				Err(_) => continue,
+			let payment_relay = PaymentRelay {
+				cltv_expiry_delta: lsps2_invoice_params.cltv_expiry_delta,
+				fee_proportional_millionths: 0,
+				fee_base_msat: 0,
 			};
 			let payment_constraints = PaymentConstraints {
 				max_cltv_expiry: tlvs
 					.payment_constraints
 					.max_cltv_expiry
-					.saturating_add(lsps2_invoice_params.cltv_expiry_delta),
+					.saturating_add(lsps2_invoice_params.cltv_expiry_delta as u32),
 				htlc_minimum_msat: 0,
 			};
 
@@ -371,7 +368,7 @@ mod tests {
 		assert_eq!(path.payinfo.fee_proportional_millionths, 0);
 		assert_eq!(
 			path.payinfo.cltv_expiry_delta,
-			expected_cltv_delta as u16 + MIN_FINAL_CLTV_EXPIRY_DELTA
+			expected_cltv_delta + MIN_FINAL_CLTV_EXPIRY_DELTA
 		);
 
 		let lookup =
@@ -419,62 +416,6 @@ mod tests {
 		);
 
 		assert!(result.is_err());
-		assert_eq!(router.inner_router.create_blinded_payment_paths_calls(), 1);
-	}
-
-	#[test]
-	fn skips_out_of_range_cltv_delta_and_keeps_valid_paths() {
-		let inner_router = MockRouter::new();
-		let recipient = pubkey(13);
-		let secp_ctx = Secp256k1::new();
-
-		let existing_tlvs = bolt12_offer_tlvs(OfferId([11; 32]));
-		let existing_path = lightning::blinded_path::payment::BlindedPaymentPath::new(
-			&[],
-			recipient,
-			ReceiveAuthKey([3; 32]),
-			existing_tlvs,
-			u64::MAX,
-			MIN_FINAL_CLTV_EXPIRY_DELTA,
-			&TestEntropy,
-			&secp_ctx,
-		)
-		.unwrap();
-		*inner_router.paths_to_return.lock().unwrap() = Some(vec![existing_path]);
-
-		let entropy_source = TestEntropy;
-		let router = LSPS2BOLT12Router::new(inner_router, entropy_source);
-
-		let valid_scid = 21;
-		router.register_intercept_scid(
-			valid_scid,
-			LSPS2Bolt12InvoiceParameters {
-				counterparty_node_id: pubkey(12),
-				intercept_scid: valid_scid,
-				cltv_expiry_delta: 48,
-			},
-		);
-		router.register_intercept_scid(
-			22,
-			LSPS2Bolt12InvoiceParameters {
-				counterparty_node_id: pubkey(14),
-				intercept_scid: 22,
-				cltv_expiry_delta: u32::from(u16::MAX) + 1,
-			},
-		);
-
-		let paths = router
-			.create_blinded_payment_paths(
-				recipient,
-				ReceiveAuthKey([3; 32]),
-				Vec::new(),
-				bolt12_offer_tlvs(OfferId([11; 32])),
-				Some(1_000),
-				&secp_ctx,
-			)
-			.unwrap();
-
-		assert_eq!(paths.len(), 2);
 		assert_eq!(router.inner_router.create_blinded_payment_paths_calls(), 1);
 	}
 

@@ -73,7 +73,7 @@ pub enum LSPS2ClientEvent {
 		/// The intercept short channel id to use in the route hint.
 		intercept_scid: u64,
 		/// The `cltv_expiry_delta` to use in the route hint.
-		cltv_expiry_delta: u32,
+		cltv_expiry_delta: u16,
 		/// The initial payment size you specified.
 		payment_size_msat: Option<u64>,
 	},
