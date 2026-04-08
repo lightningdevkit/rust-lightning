@@ -7,7 +7,7 @@ use common::{
 	get_lsps_message, LSPSNodes, LSPSNodesWithPayer, LiquidityNode,
 };
 
-use lightning::blinded_path::message::NextMessageHop;
+use lightning::blinded_path::message::{BlindedMessagePath, NextMessageHop};
 use lightning::events::{ClosureReason, Event, EventsProvider};
 use lightning::get_event_msg;
 use lightning::ln::channelmanager::{OptionalBolt11PaymentParams, PaymentId};
@@ -2936,4 +2936,417 @@ fn client_trusts_lsp_partial_fee_does_not_trigger_broadcast() {
 	service_node.inner.chain_monitor.added_monitors.lock().unwrap().clear();
 	client_node.inner.chain_monitor.added_monitors.lock().unwrap().clear();
 	payer_node.chain_monitor.added_monitors.lock().unwrap().clear();
+}
+
+#[test]
+fn async_payment_via_lsps2_jit_channel() {
+	// Test async payments through an LSPS2 JIT channel. Three nodes: payer, service (LSP +
+	// static invoice server), client (often-offline async recipient). The client has no channel
+	// with the service and relies on LSPS2 to open a JIT channel when the payment arrives.
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+
+	let mut service_node_config = test_default_channel_config();
+	service_node_config.htlc_interception_flags = HTLCInterceptionFlags::ToInterceptSCIDs as u8;
+	service_node_config.accept_forwards_to_priv_channels = true;
+
+	let mut client_node_config = test_default_channel_config();
+	client_node_config.accept_inbound_channels = true;
+	client_node_config.channel_config.accept_underpaying_htlcs = true;
+
+	let node_chanmgrs = create_node_chanmgrs(
+		3,
+		&node_cfgs,
+		&[Some(service_node_config), Some(client_node_config), None],
+	);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let (lsps_nodes, promise_secret) = setup_test_lsps2_nodes_with_payer(nodes);
+	let LSPSNodesWithPayer { ref service_node, ref client_node, ref payer_node } = lsps_nodes;
+
+	let payer_node_id = payer_node.node.get_our_node_id();
+	let service_node_id = service_node.inner.node.get_our_node_id();
+	let client_node_id = client_node.inner.node.get_our_node_id();
+
+	let service_handler = service_node.liquidity_manager.lsps2_service_handler().unwrap();
+
+	// Create channel: payer ↔ service.
+	create_chan_between_nodes_with_value(&payer_node, &service_node.inner, 2_000_000, 100_000);
+
+	// Run the LSPS2 dance to get an intercept SCID and fee parameters.
+	let intercept_scid = service_node.node.get_intercept_scid();
+	let user_channel_id = 42;
+	let cltv_expiry_delta: u16 = 144;
+	let payment_size_msat = None;
+	let fee_base_msat = 1_000;
+
+	execute_lsps2_dance(
+		&lsps_nodes,
+		intercept_scid,
+		user_channel_id,
+		cltv_expiry_delta,
+		promise_secret,
+		payment_size_msat,
+		fee_base_msat,
+	);
+
+	// Set up the LSPS2BOLT12Router on the client BEFORE the static invoice is created, so
+	// the invoice's blinded payment paths route through the LSP's intercept SCID.
+	let lsps2_router = Arc::new(LSPS2BOLT12Router::new(
+		FailingRouter::new(),
+		Arc::new(RandomBytes::new([43; 32])),
+	));
+	lsps2_router.register_intercept_scid(
+		intercept_scid,
+		LSPS2Bolt12InvoiceParameters {
+			counterparty_node_id: service_node_id,
+			intercept_scid,
+			cltv_expiry_delta,
+		},
+	);
+
+	let lsps2_router_clone = Arc::clone(&lsps2_router);
+	*client_node.router.override_create_blinded_payment_paths.lock().unwrap() =
+		Some(Box::new(move |recipient, local_node_receive_key, first_hops, tlvs, amount_msats| {
+			let secp_ctx = Secp256k1::new();
+			lsps2_router_clone.create_blinded_payment_paths(
+				recipient,
+				local_node_receive_key,
+				first_hops,
+				tlvs,
+				amount_msats,
+				&secp_ctx,
+			)
+		}));
+
+	// --- Static invoice server setup ---
+	// The service needs the client as a peer for blinded path creation, since they don't share
+	// a channel yet.
+	service_node.inner.message_router.peers_override.lock().unwrap().push(client_node_id);
+	client_node.inner.message_router.peers_override.lock().unwrap().push(service_node_id);
+
+	// The service node acts as the always-online static invoice server for the client.
+	let recipient_id = vec![42; 32];
+	let inv_server_paths: Vec<BlindedMessagePath> = service_node
+		.inner
+		.node
+		.blinded_paths_for_async_recipient(recipient_id.clone(), None)
+		.unwrap();
+	client_node.inner.node.set_paths_to_static_invoice_server(inv_server_paths).unwrap();
+
+	// Trigger OfferPathsRequest from client to service. timer_tick_occurred may queue multiple
+	// OfferPathsRequest messages; forward all of them to the service.
+	client_node.inner.node.timer_tick_occurred();
+	while let Some(msg) =
+		client_node.inner.onion_messenger.next_onion_message_for_peer(service_node_id)
+	{
+		service_node.inner.onion_messenger.handle_onion_message(client_node_id, &msg);
+	}
+
+	// Service responds with OfferPaths. Forward all to the client.
+	while let Some(msg) =
+		service_node.inner.onion_messenger.next_onion_message_for_peer(client_node_id)
+	{
+		client_node.inner.onion_messenger.handle_onion_message(service_node_id, &msg);
+	}
+
+	// Client constructs the static invoice and sends ServeStaticInvoice (plus possibly more
+	// OfferPathsRequests). Forward all messages from client to service.
+	while let Some(msg) =
+		client_node.inner.onion_messenger.next_onion_message_for_peer(service_node_id)
+	{
+		service_node.inner.onion_messenger.handle_onion_message(client_node_id, &msg);
+	}
+
+	// Clear overrides — all blinded paths have been created.
+	service_node.inner.message_router.peers_override.lock().unwrap().clear();
+	client_node.inner.message_router.peers_override.lock().unwrap().clear();
+
+	// Drain any remaining service → client messages (additional OfferPaths responses).
+	while let Some(msg) =
+		service_node.inner.onion_messenger.next_onion_message_for_peer(client_node_id)
+	{
+		client_node.inner.onion_messenger.handle_onion_message(service_node_id, &msg);
+	}
+
+	// Service should have emitted at least one PersistStaticInvoice event.
+	let events = service_node.inner.node.get_and_clear_pending_events();
+	assert!(!events.is_empty(), "Expected PersistStaticInvoice event(s), got none");
+	let (static_invoice, invoice_request_path, ack_path) = events
+		.into_iter()
+		.find_map(|e| match e {
+			Event::PersistStaticInvoice {
+				invoice,
+				invoice_persisted_path,
+				invoice_request_path,
+				..
+			} => Some((invoice, invoice_request_path, invoice_persisted_path)),
+			_ => None,
+		})
+		.expect("Expected a PersistStaticInvoice event");
+
+	// Service calls static_invoice_persisted to acknowledge.
+	service_node.inner.node.static_invoice_persisted(ack_path);
+	while let Some(msg) =
+		service_node.inner.onion_messenger.next_onion_message_for_peer(client_node_id)
+	{
+		client_node.inner.onion_messenger.handle_onion_message(service_node_id, &msg);
+	}
+
+	// Get the async receive offer from the client.
+	let offer = client_node.inner.node.get_async_receive_offer().unwrap();
+
+	// --- Payer initiates async payment ---
+	// The payer also needs an explicit peer for creating blinded reply paths.
+	payer_node.message_router.peers_override.lock().unwrap().push(service_node_id);
+
+	let amt_msat = 100_000;
+	let payment_id = PaymentId([1; 32]);
+	payer_node.node.pay_for_offer(&offer, Some(amt_msat), payment_id, Default::default()).unwrap();
+
+	// InvoiceRequest: payer → client (the offer issuer). The client forwards it to the service
+	// (static invoice server) via the offer's blinded path.
+	let invreq_om = payer_node
+		.onion_messenger
+		.next_onion_message_for_peer(client_node_id)
+		.expect("Payer should send InvoiceRequest toward client");
+	client_node.inner.onion_messenger.handle_onion_message(payer_node_id, &invreq_om);
+
+	// Client forwards InvoiceRequest to service (static invoice server).
+	let invreq_fwd = client_node
+		.inner
+		.onion_messenger
+		.next_onion_message_for_peer(service_node_id)
+		.expect("Client should forward InvoiceRequest to service");
+	service_node.inner.onion_messenger.handle_onion_message(client_node_id, &invreq_fwd);
+
+	// Service emits StaticInvoiceRequested — respond with the persisted static invoice.
+	let events = service_node.inner.node.get_and_clear_pending_events();
+	assert!(!events.is_empty(), "Expected StaticInvoiceRequested event");
+	let (reply_path, invoice_request) = events
+		.into_iter()
+		.find_map(|e| match e {
+			Event::StaticInvoiceRequested { reply_path, invoice_request, .. } => {
+				Some((reply_path, invoice_request))
+			},
+			_ => None,
+		})
+		.expect("Expected StaticInvoiceRequested event");
+	service_node
+		.inner
+		.node
+		.respond_to_static_invoice_request(
+			static_invoice,
+			reply_path,
+			invoice_request,
+			invoice_request_path,
+		)
+		.unwrap();
+
+	// Service sends InvoiceRequest forward (to client) and StaticInvoice response (to payer).
+	// Drain service → client messages first.
+	while let Some(msg) =
+		service_node.inner.onion_messenger.next_onion_message_for_peer(client_node_id)
+	{
+		client_node.inner.onion_messenger.handle_onion_message(service_node_id, &msg);
+	}
+	let static_invoice_om = service_node
+		.inner
+		.onion_messenger
+		.next_onion_message_for_peer(payer_node_id)
+		.expect("Service should send StaticInvoice to payer");
+	payer_node.onion_messenger.handle_onion_message(service_node_id, &static_invoice_om);
+
+	// Sender should NOT lock in HTLCs yet — it waits for ReleaseHeldHtlc.
+	payer_node.node.process_pending_htlc_forwards();
+	assert!(payer_node.node.get_and_clear_pending_msg_events().is_empty());
+
+	// HeldHtlcAvailable: payer → service → client. Simulate the client being offline when the
+	// service receives the message: disconnect client, let the service handle the payer's
+	// message (triggering OnionMessageIntercepted), then reconnect and forward.
+	let held_htlc_om = payer_node
+		.onion_messenger
+		.next_onion_message_for_peer(service_node_id)
+		.expect("Payer should send HeldHtlcAvailable toward service");
+
+	service_node.inner.node.peer_disconnected(client_node_id);
+	client_node.inner.node.peer_disconnected(service_node_id);
+	service_node.inner.onion_messenger.peer_disconnected(client_node_id);
+	client_node.inner.onion_messenger.peer_disconnected(service_node_id);
+
+	service_node.inner.onion_messenger.handle_onion_message(payer_node_id, &held_htlc_om);
+
+	let events = core::cell::RefCell::new(Vec::new());
+	service_node.inner.onion_messenger.process_pending_events(&|e| Ok(events.borrow_mut().push(e)));
+	let intercepted: Vec<_> = events
+		.into_inner()
+		.into_iter()
+		.filter_map(|e| match e {
+			Event::OnionMessageIntercepted { next_hop, message } => {
+				assert_eq!(next_hop, NextMessageHop::NodeId(client_node_id));
+				Some(message)
+			},
+			_ => None,
+		})
+		.collect();
+	assert!(!intercepted.is_empty(), "Expected OnionMessageIntercepted for HeldHtlcAvailable");
+
+	reconnect_nodes(ReconnectArgs::new(&service_node.inner, &client_node.inner));
+	for message in intercepted {
+		service_node.inner.onion_messenger.forward_onion_message(message, &client_node_id).unwrap();
+	}
+	while let Some(msg) =
+		service_node.inner.onion_messenger.next_onion_message_for_peer(client_node_id)
+	{
+		client_node.inner.onion_messenger.handle_onion_message(service_node_id, &msg);
+	}
+
+	// ReleaseHeldHtlc: client → service → payer (reply path goes through service).
+	let release_om = client_node
+		.inner
+		.onion_messenger
+		.next_onion_message_for_peer(service_node_id)
+		.expect("Client should send ReleaseHeldHtlc toward service");
+	service_node.inner.onion_messenger.handle_onion_message(client_node_id, &release_om);
+
+	let release_fwd = service_node
+		.inner
+		.onion_messenger
+		.next_onion_message_for_peer(payer_node_id)
+		.expect("Service should forward ReleaseHeldHtlc to payer");
+	payer_node.onion_messenger.handle_onion_message(service_node_id, &release_fwd);
+
+	// --- Payer creates the HTLC ---
+	let mut events = payer_node.node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let ev = remove_first_msg_event_to_node(&service_node_id, &mut events);
+	check_added_monitors(&payer_node, 1);
+
+	let send_ev = SendEvent::from_event(ev);
+	let payment_hash = send_ev.msgs[0].payment_hash;
+	service_node.inner.node.handle_update_add_htlc(payer_node_id, &send_ev.msgs[0]);
+	do_commitment_signed_dance(
+		&service_node.inner,
+		&payer_node,
+		&send_ev.commitment_msg,
+		false,
+		true,
+	);
+	service_node.inner.node.process_pending_htlc_forwards();
+
+	// Service intercepts the HTLC on the LSPS2 intercept SCID.
+	let events = service_node.inner.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	let expected_outbound_amount_msat = match &events[0] {
+		Event::HTLCIntercepted {
+			intercept_id,
+			requested_next_hop_scid,
+			payment_hash: ph,
+			expected_outbound_amount_msat,
+			..
+		} => {
+			assert_eq!(*requested_next_hop_scid, intercept_scid);
+			assert_eq!(*ph, payment_hash);
+			service_handler
+				.htlc_intercepted(
+					*requested_next_hop_scid,
+					*intercept_id,
+					*expected_outbound_amount_msat,
+					*ph,
+				)
+				.unwrap();
+			expected_outbound_amount_msat
+		},
+		other => panic!("Expected HTLCIntercepted event, got: {:?}", other),
+	};
+
+	// Service emits OpenChannel event for the JIT channel.
+	let open_channel_event = service_node.liquidity_manager.next_event().unwrap();
+	match open_channel_event {
+		LiquidityEvent::LSPS2Service(LSPS2ServiceEvent::OpenChannel {
+			their_network_key,
+			user_channel_id: uc_id,
+			intercept_scid: iscd,
+			..
+		}) => {
+			assert_eq!(their_network_key, client_node_id);
+			assert_eq!(uc_id, user_channel_id);
+			assert_eq!(iscd, intercept_scid);
+		},
+		other => panic!("Expected OpenChannel event, got: {:?}", other),
+	};
+
+	let result =
+		service_handler.channel_needs_manual_broadcast(user_channel_id, &client_node_id).unwrap();
+	assert!(result, "Channel should require manual broadcast");
+
+	// Open the JIT channel between service and client.
+	let (channel_id, _funding_tx) = create_channel_with_manual_broadcast(
+		&service_node_id,
+		&client_node_id,
+		&service_node,
+		&client_node,
+		user_channel_id,
+		expected_outbound_amount_msat,
+		true,
+	);
+
+	service_handler.channel_ready(user_channel_id, &channel_id, &client_node_id).unwrap();
+	service_node.inner.node.process_pending_htlc_forwards();
+
+	// Service forwards the payment to the client through the new JIT channel.
+	let pay_event = {
+		{
+			let mut added_monitors =
+				service_node.inner.chain_monitor.added_monitors.lock().unwrap();
+			assert_eq!(added_monitors.len(), 1);
+			added_monitors.clear();
+		}
+		let mut events = service_node.inner.node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		SendEvent::from_event(events.remove(0))
+	};
+
+	client_node.inner.node.handle_update_add_htlc(service_node_id, &pay_event.msgs[0]);
+	do_commitment_signed_dance(
+		&client_node.inner,
+		&service_node.inner,
+		&pay_event.commitment_msg,
+		false,
+		true,
+	);
+	client_node.inner.node.process_pending_htlc_forwards();
+
+	// Client receives the payment.
+	let client_events = client_node.inner.node.get_and_clear_pending_events();
+	assert_eq!(client_events.len(), 1);
+	let preimage = match &client_events[0] {
+		Event::PaymentClaimable { payment_hash: ph, purpose, .. } => {
+			assert_eq!(*ph, payment_hash);
+			purpose.preimage()
+		},
+		other => panic!("Expected PaymentClaimable event on client, got: {:?}", other),
+	};
+
+	// Client claims the payment.
+	client_node.inner.node.claim_funds(preimage.unwrap());
+
+	claim_and_assert_forwarded_only(
+		&payer_node,
+		&service_node.inner,
+		&client_node.inner,
+		preimage.unwrap(),
+	);
+
+	let service_events = service_node.node.get_and_clear_pending_events();
+	assert_eq!(service_events.len(), 1);
+	match service_events[0].clone() {
+		Event::PaymentForwarded { prev_htlcs, next_htlcs, skimmed_fee_msat, .. } => {
+			assert_eq!(prev_htlcs[0].node_id, Some(payer_node_id));
+			assert_eq!(next_htlcs[0].node_id, Some(client_node_id));
+			service_handler.payment_forwarded(channel_id, skimmed_fee_msat.unwrap_or(0)).unwrap();
+		},
+		other => panic!("Expected PaymentForwarded event, got: {:?}", other),
+	};
+
+	expect_payment_sent(&payer_node, preimage.unwrap(), None, true, true);
 }
