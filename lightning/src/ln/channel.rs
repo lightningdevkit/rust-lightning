@@ -2752,16 +2752,14 @@ impl FundingScope {
 	) -> Result<Self, String> {
 		if our_funding_contribution.unsigned_abs() > Amount::MAX_MONEY {
 			return Err(format!(
-				"Channel {} cannot be spliced; our {} contribution exceeds the total bitcoin supply",
-				context.channel_id(),
+				"Our {} contribution exceeds the total bitcoin supply",
 				our_funding_contribution,
 			));
 		}
 
 		if their_funding_contribution.unsigned_abs() > Amount::MAX_MONEY {
 			return Err(format!(
-				"Channel {} cannot be spliced; their {} contribution exceeds the total bitcoin supply",
-				context.channel_id(),
+				"Their {} contribution exceeds the total bitcoin supply",
 				their_funding_contribution,
 			));
 		}
@@ -2821,17 +2819,31 @@ impl FundingScope {
 		// New reserve values are based on the new channel value and are v2-specific
 		let counterparty_selected_channel_reserve_satoshis = get_v2_channel_reserve_satoshis(
 			post_channel_value_sat,
-			MIN_CHAN_DUST_LIMIT_SATOSHIS,
+			context.holder_dust_limit_satoshis,
 			prev_funding
 				.counterparty_selected_channel_reserve_satoshis
 				.expect("counterparty reserve is set")
 				== 0,
-		);
+		)
+		.map_err(|()| {
+			format!(
+				"The post-splice channel value {post_channel_value_sat} is smaller \
+				than our dust limit {}",
+				context.holder_dust_limit_satoshis
+			)
+		})?;
 		let holder_selected_channel_reserve_satoshis = get_v2_channel_reserve_satoshis(
 			post_channel_value_sat,
 			context.counterparty_dust_limit_satoshis,
 			prev_funding.holder_selected_channel_reserve_satoshis == 0,
-		);
+		)
+		.map_err(|()| {
+			format!(
+				"The post-splice channel value {post_channel_value_sat} is smaller \
+				than their dust limit {}",
+				context.counterparty_dust_limit_satoshis,
+			)
+		})?;
 
 		Ok(Self {
 			channel_transaction_parameters: post_channel_transaction_parameters,
@@ -3384,6 +3396,9 @@ pub(super) struct ChannelContext<SP: SignerProvider> {
 	/// We use this to close if funding is never broadcasted.
 	pub(super) channel_creation_height: u32,
 
+	#[cfg(any(test, feature = "_test_utils"))]
+	pub(crate) counterparty_dust_limit_satoshis: u64,
+	#[cfg(not(any(test, feature = "_test_utils")))]
 	counterparty_dust_limit_satoshis: u64,
 
 	#[cfg(any(test, feature = "_test_utils"))]
@@ -6776,19 +6791,24 @@ pub(crate) fn get_legacy_default_holder_selected_channel_reserve_satoshis(
 /// Returns a minimum channel reserve value each party needs to maintain, fixed in the spec to a
 /// default of 1% of the total channel value.
 ///
-/// Guaranteed to return a value no larger than channel_value_satoshis
+/// Guaranteed to return a value no larger than `channel_value_satoshis`
 ///
 /// This is used both for outbound and inbound channels and has lower bound
 /// of `dust_limit_satoshis`.
+///
+/// Returns `Err` if `channel_value_satoshis` is smaller than `dust_limit_satoshis`.
 pub(crate) fn get_v2_channel_reserve_satoshis(
 	channel_value_satoshis: u64, dust_limit_satoshis: u64, is_0reserve: bool,
-) -> u64 {
+) -> Result<u64, ()> {
+	if channel_value_satoshis < dust_limit_satoshis {
+		return Err(());
+	}
 	if is_0reserve {
-		return 0;
+		return Ok(0);
 	}
 	// Fixed at 1% of channel value by spec.
 	let (q, _) = channel_value_satoshis.overflowing_div(100);
-	cmp::min(channel_value_satoshis, cmp::max(q, dust_limit_satoshis))
+	Ok(cmp::max(q, dust_limit_satoshis))
 }
 
 /// Returns the minimum feerate for RBF attempts given a previous feerate.
@@ -12824,7 +12844,8 @@ where
 			their_funding_contribution,
 			counterparty_funding_pubkey,
 			our_new_holder_keys,
-		)?;
+		)
+		.map_err(|e| format!("Channel {} cannot be spliced; {}", self.context.channel_id(), e))?;
 
 		let (post_splice_holder_balance, post_splice_counterparty_balance) =
 			self.get_holder_counterparty_balances_floor_incl_fee(&candidate_scope).map_err(
@@ -15117,8 +15138,13 @@ impl<SP: SignerProvider> PendingV2Channel<SP> {
 		});
 
 		let holder_selected_channel_reserve_satoshis = get_v2_channel_reserve_satoshis(
-			funding_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS, trusted_channel_features.is_some_and(|f| f.is_0reserve()));
-
+			funding_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS, trusted_channel_features.is_some_and(|f| f.is_0reserve())
+		).map_err(|()| APIError::APIMisuseError {
+			err: format!(
+				"The channel value {funding_satoshis} is smaller than their dust \
+				limit {MIN_CHAN_DUST_LIMIT_SATOSHIS}"
+			)
+		})?;
 		let funding_feerate_sat_per_1000_weight = fee_estimator.bounded_sat_per_1000_weight(funding_confirmation_target);
 		let funding_tx_locktime = LockTime::from_height(current_chain_height)
 			.map_err(|_| APIError::APIMisuseError {
@@ -15257,9 +15283,16 @@ impl<SP: SignerProvider> PendingV2Channel<SP> {
 		let channel_value_satoshis =
 			our_funding_contribution_sats.saturating_add(msg.common_fields.funding_satoshis);
 		let counterparty_selected_channel_reserve_satoshis = get_v2_channel_reserve_satoshis(
-			channel_value_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS, msg.disable_channel_reserve.is_some());
+			channel_value_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS, msg.disable_channel_reserve.is_some()
+		).map_err(|()| ChannelError::close(format!(
+			"The channel value {channel_value_satoshis} is smaller than our dust limit {MIN_CHAN_DUST_LIMIT_SATOSHIS}"
+		)))?;
+		let their_dust_limit_satoshis = msg.common_fields.dust_limit_satoshis;
 		let holder_selected_channel_reserve_satoshis = get_v2_channel_reserve_satoshis(
-			channel_value_satoshis, msg.common_fields.dust_limit_satoshis, trusted_channel_features.is_some_and(|f| f.is_0reserve()));
+			channel_value_satoshis, their_dust_limit_satoshis, trusted_channel_features.is_some_and(|f| f.is_0reserve())
+		).map_err(|()| ChannelError::close(format!(
+			"The channel value {channel_value_satoshis} is smaller than their dust limit {their_dust_limit_satoshis}"
+		)))?;
 
 		let channel_type = channel_type_from_open_channel(&msg.common_fields, our_supported_features)?;
 
