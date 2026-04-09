@@ -16,7 +16,8 @@ use crate::chain::ChannelMonitorUpdateStatus;
 use crate::events::{ClosureReason, Event, FundingInfo, HTLCHandlingFailureType};
 use crate::ln::chan_utils;
 use crate::ln::channel::{
-	CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY, FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE,
+	ANCHOR_OUTPUT_VALUE_SATOSHI, CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY,
+	FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE,
 };
 use crate::ln::channelmanager::{provided_init_features, PaymentId, BREAKDOWN_TIMEOUT};
 use crate::ln::functional_test_utils::*;
@@ -6646,4 +6647,203 @@ fn test_splice_rbf_rejects_own_low_feerate_after_several_attempts() {
 		Event::SpliceFailed { channel_id: cid, .. } => assert_eq!(*cid, channel_id),
 		other => panic!("Expected SpliceFailed, got {:?}", other),
 	}
+}
+
+#[test]
+fn test_0reserve_splice() {
+	let mut config = test_default_channel_config();
+	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = false;
+	config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = false;
+	let a = do_test_0reserve_splice_holder_validation(false, config.clone());
+	let b = do_test_0reserve_splice_holder_validation(true, config.clone());
+	assert_eq!(a, b);
+	assert_eq!(a, ChannelTypeFeatures::only_static_remote_key());
+
+	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+	config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = false;
+	let a = do_test_0reserve_splice_holder_validation(false, config.clone());
+	let b = do_test_0reserve_splice_holder_validation(true, config.clone());
+	assert_eq!(a, b);
+	assert_eq!(a, ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies());
+
+	let mut config = test_default_channel_config();
+	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = false;
+	config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = false;
+	let a = do_test_0reserve_splice_counterparty_validation(false, config.clone());
+	let b = do_test_0reserve_splice_counterparty_validation(true, config.clone());
+	assert_eq!(a, b);
+	assert_eq!(a, ChannelTypeFeatures::only_static_remote_key());
+
+	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+	config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = false;
+	let a = do_test_0reserve_splice_counterparty_validation(false, config.clone());
+	let b = do_test_0reserve_splice_counterparty_validation(true, config.clone());
+	assert_eq!(a, b);
+	assert_eq!(a, ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies());
+
+	// TODO: Skip 0FC channels for now as these always have an output on the commitment, the P2A
+	// output. We will be able to withdraw up to the dust limit of the funding script, which
+	// is checked in interactivetx. Still need to double check whether that's what we actually
+	// want.
+}
+
+#[cfg(test)]
+fn do_test_0reserve_splice_holder_validation(
+	splice_passes: bool, config: UserConfig,
+) -> ChannelTypeFeatures {
+	use crate::ln::htlc_reserve_unit_tests::setup_0reserve_no_outputs_channels;
+
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs =
+		create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config.clone())]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let _node_id_0 = nodes[0].node.get_our_node_id();
+	let _node_id_1 = nodes[1].node.get_our_node_id();
+
+	let channel_value_sat = 100_000;
+	// Some dust limit, does not matter
+	let dust_limit_satoshis = 546;
+
+	let (channel_id, _tx) =
+		setup_0reserve_no_outputs_channels(&nodes, channel_value_sat, dust_limit_satoshis);
+	let details = &nodes[0].node.list_channels()[0];
+	let channel_type = details.channel_type.clone().unwrap();
+
+	let feerate = if channel_type == ChannelTypeFeatures::only_static_remote_key() {
+		253 * FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE as u32
+	} else if channel_type == ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies() {
+		253
+	} else {
+		panic!("Unexpected channel type");
+	};
+	let commit_tx_fee_sat = chan_utils::commit_tx_fee_sat(feerate, 0, &channel_type);
+	let anchors_sat =
+		if channel_type == ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies() {
+			ANCHOR_OUTPUT_VALUE_SATOSHI * 2
+		} else {
+			0
+		};
+
+	let estimated_fees = 183;
+	let splice_out_max_value = Amount::from_sat(
+		channel_value_sat - commit_tx_fee_sat - anchors_sat - estimated_fees - dust_limit_satoshis,
+	);
+	let outputs = vec![TxOut {
+		value: splice_out_max_value + if splice_passes { Amount::ZERO } else { Amount::ONE_SAT },
+		script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
+	}];
+
+	if splice_passes {
+		let contribution = initiate_splice_out(&nodes[0], &nodes[1], channel_id, outputs).unwrap();
+
+		let (splice_tx, _) = splice_channel(&nodes[0], &nodes[1], channel_id, contribution);
+		mine_transaction(&nodes[0], &splice_tx);
+		mine_transaction(&nodes[1], &splice_tx);
+		lock_splice_after_blocks(&nodes[0], &nodes[1], ANTI_REORG_DELAY - 1);
+	} else {
+		assert!(initiate_splice_out(&nodes[0], &nodes[1], channel_id, outputs).is_err());
+		let splice_out_value =
+			splice_out_max_value + Amount::from_sat(estimated_fees) + Amount::ONE_SAT;
+		let splice_out_max_value = splice_out_max_value + Amount::from_sat(estimated_fees);
+		let cannot_be_funded = format!(
+			"Channel {channel_id} cannot be funded: Our \
+			splice-out value of {splice_out_value} is greater than the maximum \
+			{splice_out_max_value}"
+		);
+		nodes[0].logger.assert_log("lightning::ln::channel", cannot_be_funded, 1);
+	}
+
+	channel_type
+}
+
+#[cfg(test)]
+fn do_test_0reserve_splice_counterparty_validation(
+	splice_passes: bool, config: UserConfig,
+) -> ChannelTypeFeatures {
+	use crate::ln::htlc_reserve_unit_tests::setup_0reserve_no_outputs_channels;
+
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs =
+		create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config.clone())]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let _node_id_0 = nodes[0].node.get_our_node_id();
+	let _node_id_1 = nodes[1].node.get_our_node_id();
+
+	let channel_value_sat = 100_000;
+	// Some dust limit, does not matter
+	let dust_limit_satoshis = 546;
+
+	let (channel_id, _tx) =
+		setup_0reserve_no_outputs_channels(&nodes, channel_value_sat, dust_limit_satoshis);
+	let details = &nodes[0].node.list_channels()[0];
+	let channel_type = details.channel_type.clone().unwrap();
+
+	let feerate = if channel_type == ChannelTypeFeatures::only_static_remote_key() {
+		253 * FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE as u32
+	} else if channel_type == ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies() {
+		253
+	} else {
+		panic!("Unexpected channel type");
+	};
+	let commit_tx_fee_sat = chan_utils::commit_tx_fee_sat(feerate, 0, &channel_type);
+	let anchors_sat =
+		if channel_type == ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies() {
+			ANCHOR_OUTPUT_VALUE_SATOSHI * 2
+		} else {
+			0
+		};
+
+	let splice_out_value_incl_fees =
+		Amount::from_sat(channel_value_sat - commit_tx_fee_sat - anchors_sat - dust_limit_satoshis);
+
+	let funding_contribution_sat =
+		-(splice_out_value_incl_fees.to_sat() as i64) - if splice_passes { 0 } else { 1 };
+	let outputs = vec![TxOut {
+		// Splice out some dummy amount to get past the initiator's validation,
+		// we'll modify the message in-flight.
+		value: Amount::from_sat(1_000),
+		script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
+	}];
+	let _contribution = initiate_splice_out(&nodes[0], &nodes[1], channel_id, outputs).unwrap();
+
+	let initiator = &nodes[0];
+	let acceptor = &nodes[1];
+	let node_id_initiator = initiator.node.get_our_node_id();
+	let node_id_acceptor = acceptor.node.get_our_node_id();
+
+	let stfu_init = get_event_msg!(initiator, MessageSendEvent::SendStfu, node_id_acceptor);
+	acceptor.node.handle_stfu(node_id_initiator, &stfu_init);
+	let stfu_ack = get_event_msg!(acceptor, MessageSendEvent::SendStfu, node_id_initiator);
+	initiator.node.handle_stfu(node_id_acceptor, &stfu_ack);
+
+	let mut splice_init =
+		get_event_msg!(initiator, MessageSendEvent::SendSpliceInit, node_id_acceptor);
+	// Make the modification here
+	splice_init.funding_contribution_satoshis = funding_contribution_sat;
+
+	if splice_passes {
+		acceptor.node.handle_splice_init(node_id_initiator, &splice_init);
+		let _splice_ack =
+			get_event_msg!(acceptor, MessageSendEvent::SendSpliceAck, node_id_initiator);
+	} else {
+		acceptor.node.handle_splice_init(node_id_initiator, &splice_init);
+		let msg_events = acceptor.node.get_and_clear_pending_msg_events();
+		assert_eq!(msg_events.len(), 1);
+		if let MessageSendEvent::HandleError { action, .. } = &msg_events[0] {
+			assert!(matches!(action, msgs::ErrorAction::DisconnectPeerWithWarning { .. }));
+		} else {
+			panic!("Expected MessageSendEvent::HandleError");
+		}
+		let cannot_splice_out = format!(
+			"Got non-closing error: Channel {channel_id} cannot \
+			be spliced; Balance exhausted on local commitment"
+		);
+		acceptor.logger.assert_log("lightning::ln::channelmanager", cannot_splice_out, 1);
+	}
+
+	channel_type
 }

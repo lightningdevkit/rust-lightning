@@ -2581,7 +2581,7 @@ fn test_0reserve_no_outputs() {
 	do_test_0reserve_no_outputs_p2a_anchor();
 }
 
-fn setup_0reserve_no_outputs_channels<'a, 'b, 'c, 'd>(
+pub(crate) fn setup_0reserve_no_outputs_channels<'a, 'b, 'c, 'd>(
 	nodes: &'a Vec<Node<'b, 'c, 'd>>, channel_value_sat: u64, dust_limit_satoshis: u64,
 ) -> (ChannelId, Transaction) {
 	let node_a_id = nodes[0].node.get_our_node_id();
