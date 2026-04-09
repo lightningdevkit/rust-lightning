@@ -723,7 +723,7 @@ macro_rules! offer_accessors { ($self: ident, $contents: expr) => {
 	/// - `Ok(Some(range))` if the offer specifies an amount and it can be resolved.
 	/// - `Ok(None)` if the offer does not specify an amount.
 	/// - `Err(_)` if the amount cannot be resolved (e.g., unsupported currency).
-	pub fn resolve_offer_amount<CC: CurrencyConversion>(&$self, currency_conversion: &CC) -> Result<Option<crate::offers::offer::MsatsRange>, Bolt12SemanticError>
+	pub fn resolve_offer_amount<CC: CurrencyConversion>(&$self, currency_conversion: &CC) -> Result<Option<MsatsRange>, Bolt12SemanticError>
 	{
 		$contents.resolve_offer_amount(currency_conversion)
 	}

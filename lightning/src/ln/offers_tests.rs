@@ -56,10 +56,10 @@ use crate::types::features::Bolt12InvoiceFeatures;
 use crate::ln::functional_test_utils::*;
 use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, Init, NodeAnnouncement, OnionMessage, OnionMessageHandler, RoutingMessageHandler, SocketAddress, UnsignedGossipMessage, UnsignedNodeAnnouncement};
 use crate::ln::outbound_payment::IDEMPOTENCY_TIMEOUT_TICKS;
+use crate::offers::currency::DefaultCurrencyConversion;
 use crate::offers::invoice::Bolt12Invoice;
 use crate::offers::invoice_error::InvoiceError;
 use crate::offers::invoice_request::{InvoiceRequest, InvoiceRequestFields, InvoiceRequestVerifiedFromOffer};
-use crate::offers::currency::DefaultCurrencyConversion;
 use crate::offers::nonce::Nonce;
 use crate::offers::parse::Bolt12SemanticError;
 use crate::onion_message::messenger::{DefaultMessageRouter, Destination, MessageSendInstructions, NodeIdMessageRouter, NullMessageRouter, PeeledOnion, DUMMY_HOPS_PATH_LENGTH, QR_CODED_DUMMY_HOPS_PATH_LENGTH};
@@ -68,6 +68,7 @@ use crate::routing::gossip::{NodeAlias, NodeId};
 use crate::routing::router::{DEFAULT_PAYMENT_DUMMY_HOPS, PaymentParameters, RouteParameters, RouteParametersConfig};
 use crate::sign::{NodeSigner, Recipient};
 use crate::util::ser::Writeable;
+use crate::util::test_utils::TestCurrencyConversion;
 
 /// This used to determine whether we built a compact path or not, but now its just a random
 /// constant we apply to blinded path expiry in these tests.
@@ -525,7 +526,7 @@ fn check_dummy_hop_pattern_in_offer() {
 	let (invoice_request, reply_path) = extract_invoice_request(alice, &onion_message);
 
 	assert_eq!(
-		invoice_request.payable_amount_msats(),
+		invoice_request.payable_amount(&DefaultCurrencyConversion).map(|amount| amount.amount_msats()),
 		Ok(10_000_000)
 	);
 	assert_ne!(invoice_request.payer_signing_pubkey(), bob_id);
@@ -550,7 +551,7 @@ fn check_dummy_hop_pattern_in_offer() {
 	let (invoice_request, reply_path) = extract_invoice_request(alice, &onion_message);
 
 	assert_eq!(
-		invoice_request.payable_amount_msats(),
+		invoice_request.payable_amount(&DefaultCurrencyConversion).map(|amount| amount.amount_msats()),
 		Ok(10_000_000)
 	);
 	assert_ne!(invoice_request.payer_signing_pubkey(), bob_id);
@@ -739,7 +740,7 @@ fn creates_and_pays_for_offer_using_two_hop_blinded_path() {
 		},
 	});
 	assert_eq!(
-		invoice_request.payable_amount_msats(),
+		invoice_request.payable_amount(&DefaultCurrencyConversion).map(|amount| amount.amount_msats()),
 		Ok(10_000_000)
 	);
 	assert_ne!(invoice_request.payer_signing_pubkey(), david_id);
@@ -900,7 +901,7 @@ fn creates_and_pays_for_offer_using_one_hop_blinded_path() {
 		},
 	});
 	assert_eq!(
-		invoice_request.payable_amount_msats(),
+		invoice_request.payable_amount(&DefaultCurrencyConversion).map(|amount| amount.amount_msats()),
 		Ok(10_000_000)
 	);
 	assert_ne!(invoice_request.payer_signing_pubkey(), bob_id);
@@ -1292,7 +1293,7 @@ fn creates_and_pays_for_offer_with_retry() {
 		},
 	});
 	assert_eq!(
-		invoice_request.payable_amount_msats(),
+		invoice_request.payable_amount(&DefaultCurrencyConversion).map(|amount| amount.amount_msats()),
 		Ok(10_000_000)
 	);
 	assert_ne!(invoice_request.payer_signing_pubkey(), bob_id);
@@ -1610,7 +1611,7 @@ fn fails_authentication_when_handling_invoice_request() {
 
 	let (invoice_request, reply_path) = extract_invoice_request(alice, &onion_message);
 	assert_eq!(
-		invoice_request.payable_amount_msats(),
+		invoice_request.payable_amount(&DefaultCurrencyConversion).map(|amount| amount.amount_msats()),
 		Ok(10_000_000)
 	);
 	assert_ne!(invoice_request.payer_signing_pubkey(), david_id);
@@ -1642,7 +1643,7 @@ fn fails_authentication_when_handling_invoice_request() {
 
 	let (invoice_request, reply_path) = extract_invoice_request(alice, &onion_message);
 	assert_eq!(
-		invoice_request.payable_amount_msats(),
+		invoice_request.payable_amount(&DefaultCurrencyConversion).map(|amount| amount.amount_msats()),
 		Ok(10_000_000)
 	);
 	assert_ne!(invoice_request.payer_signing_pubkey(), david_id);
@@ -1746,7 +1747,7 @@ fn fails_authentication_when_handling_invoice_for_offer() {
 
 	let (invoice_request, reply_path) = extract_invoice_request(alice, &onion_message);
 	assert_eq!(
-		invoice_request.payable_amount_msats(),
+		invoice_request.payable_amount(&DefaultCurrencyConversion).map(|amount| amount.amount_msats()),
 		Ok(10_000_000)
 	);
 	assert_ne!(invoice_request.payer_signing_pubkey(), david_id);
@@ -2385,6 +2386,7 @@ fn fails_paying_invoice_with_unknown_required_features() {
 		.build();
 
 	let payment_id = PaymentId([1; 32]);
+	let conversion = TestCurrencyConversion;
 	david.node.pay_for_offer(&offer, None, payment_id, Default::default()).unwrap();
 
 	connect_peers(david, bob);
@@ -2420,7 +2422,9 @@ fn fails_paying_invoice_with_unknown_required_features() {
 	let invoice = match verified_invoice_request {
 		InvoiceRequestVerifiedFromOffer::DerivedKeys(request) => {
 			request
-				.respond_using_derived_keys_no_std(payment_paths,
+				.respond_using_derived_keys_no_std(
+					&conversion,
+					payment_paths,
 					payment_hash,
 					created_at,
 				)

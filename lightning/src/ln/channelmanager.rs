@@ -5760,6 +5760,14 @@ impl<
 	fn send_payment_for_verified_bolt12_invoice(
 		&self, invoice: &Bolt12Invoice, payment_id: PaymentId,
 	) -> Result<(), Bolt12PaymentError> {
+		match self.check_bolt12_invoice_amount(invoice) {
+			Ok(()) => {},
+			Err(e) => {
+				self.abandon_payment_with_reason(payment_id, PaymentFailureReason::UnexpectedError);
+				return Err(e);
+			},
+		}
+
 		let best_block_height = self.best_block.read().unwrap().height;
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let features = self.bolt12_invoice_features();
@@ -5781,6 +5789,24 @@ impl<
 		)
 	}
 
+	fn check_bolt12_invoice_amount(
+		&self, invoice: &Bolt12Invoice,
+	) -> Result<(), Bolt12PaymentError> {
+		let requested_amount =
+			invoice.payable_amount(&self.currency_conversion).map_err(|e| match e {
+				Bolt12SemanticError::UnsupportedCurrency => Bolt12PaymentError::UnsupportedCurrency,
+				_ => Bolt12PaymentError::UnexpectedInvoice,
+			})?;
+		// A returned invoice quotes the amount the payee expects to receive. Make
+		// sure it matches the payer's locally expected amount before recording the
+		// invoice as received or initiating payment.
+		if !requested_amount.contains(invoice.amount_msats()) {
+			return Err(Bolt12PaymentError::InvalidAmount);
+		}
+
+		Ok(())
+	}
+
 	fn check_refresh_async_receive_offer_cache(&self, timer_tick_occurred: bool) {
 		let peers = self.get_peers_for_blinded_path();
 		let channels = self.list_usable_channels();
@@ -5789,6 +5815,7 @@ impl<
 			peers,
 			channels,
 			router,
+			&self.currency_conversion,
 			timer_tick_occurred,
 		);
 		match refresh_res {
@@ -16909,12 +16936,12 @@ impl<
 {
 	#[rustfmt::skip]
 	fn handle_message(
-		&self, message: OffersMessage, context: Option<OffersContext>, responder: Option<Responder>,
-	) -> Option<(OffersMessage, ResponseInstruction)> {
-		macro_rules! handle_pay_invoice_res {
-			($res: expr, $invoice: expr, $logger: expr) => {{
-				let error = match $res {
-					Err(Bolt12PaymentError::UnknownRequiredFeatures) => {
+			&self, message: OffersMessage, context: Option<OffersContext>, responder: Option<Responder>,
+		) -> Option<(OffersMessage, ResponseInstruction)> {
+			macro_rules! handle_pay_invoice_res {
+				($res: expr, $invoice: expr, $payment_id: expr, $logger: expr) => {{
+					let error = match $res {
+						Err(Bolt12PaymentError::UnknownRequiredFeatures) => {
 						log_trace!(
 							$logger, "Invoice requires unknown features: {:?}",
 							$invoice.invoice_features()
@@ -16929,6 +16956,13 @@ impl<
 						let err_msg = "Failed to create a blinded path back to ourselves";
 						log_trace!($logger, "{}", err_msg);
 						InvoiceError::from_string(err_msg.to_string())
+					},
+					Err(Bolt12PaymentError::InvalidAmount)
+						| Err(Bolt12PaymentError::UnsupportedCurrency) => {
+						self.abandon_payment_with_reason(
+							$payment_id, PaymentFailureReason::UnexpectedError
+						);
+						return None;
 					},
 					Err(Bolt12PaymentError::UnexpectedInvoice)
 						| Err(Bolt12PaymentError::DuplicateInvoice)
@@ -16978,6 +17012,7 @@ impl<
 							&self.router,
 							&request,
 							self.list_usable_channels(),
+							&self.currency_conversion,
 							get_payment_info,
 						);
 
@@ -17002,6 +17037,7 @@ impl<
 							&self.router,
 							&request,
 							self.list_usable_channels(),
+							&self.currency_conversion,
 							get_payment_info,
 						);
 
@@ -17051,6 +17087,10 @@ impl<
 				);
 
 				if self.config.read().unwrap().manually_handle_bolt12_invoices {
+					if let Err(e) = self.check_bolt12_invoice_amount(&invoice) {
+						handle_pay_invoice_res!(Err(e), invoice, payment_id, logger);
+					}
+
 					// Update the corresponding entry in `PendingOutboundPayment` for this invoice.
 					// This ensures that event generation remains idempotent in case we receive
 					// the same invoice multiple times.
@@ -17064,7 +17104,7 @@ impl<
 				}
 
 				let res = self.send_payment_for_verified_bolt12_invoice(&invoice, payment_id);
-				handle_pay_invoice_res!(res, invoice, logger);
+				handle_pay_invoice_res!(res, invoice, payment_id, logger);
 			},
 			OffersMessage::StaticInvoice(invoice) => {
 				let payment_id = match context {
@@ -17072,7 +17112,7 @@ impl<
 					_ => return None
 				};
 				let res = self.initiate_async_payment(&invoice, payment_id);
-				handle_pay_invoice_res!(res, invoice, self.logger);
+				handle_pay_invoice_res!(res, invoice, payment_id, self.logger);
 			},
 			OffersMessage::InvoiceError(invoice_error) => {
 				let payment_hash = match context {
@@ -17144,6 +17184,7 @@ impl<
 			self.list_usable_channels(),
 			&self.entropy_source,
 			&self.router,
+			&self.currency_conversion,
 		) {
 			Some((msg, ctx)) => (msg, ctx),
 			None => return None,

@@ -78,7 +78,7 @@ use crate::offers::merkle::{
 };
 use crate::offers::nonce::Nonce;
 use crate::offers::offer::{
-	Amount, ExperimentalOfferTlvStream, ExperimentalOfferTlvStreamRef, Offer, OfferContents,
+	ExperimentalOfferTlvStream, ExperimentalOfferTlvStreamRef, MsatsRange, Offer, OfferContents,
 	OfferId, OfferTlvStream, OfferTlvStreamRef, EXPERIMENTAL_OFFER_TYPES, OFFER_TYPES,
 };
 use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
@@ -726,16 +726,13 @@ macro_rules! invoice_request_accessors { ($self: ident, $contents: expr) => {
 		$contents.amount_msats()
 	}
 
-	/// The amount payable for the request, in msats.
-	///
-	/// If the invoice request explicitly sets an amount, that amount is returned.
-	/// Otherwise, the amount is inferred from [`Offer::amount`] and [`quantity`]
-	/// when the offer amount is already bitcoin-denominated.
-	///
-	/// Returns an error if the payable amount is missing, unsupported, or
-	/// semantically invalid.
-	pub fn payable_amount_msats(&$self) -> Result<u64, Bolt12SemanticError> {
-		$contents.payable_amount_msats()
+	/// The payable amount for the request, resolved using the provided currency
+	/// conversion snapshot when the offer amount is currency-denominated.
+	#[allow(dead_code)]
+	pub(crate) fn payable_amount<CC: CurrencyConversion>(
+		&$self, currency_conversion: &CC
+	) -> Result<MsatsRange, Bolt12SemanticError> {
+		$contents.payable_amount(currency_conversion)
 	}
 
 	/// Features pertaining to requesting an invoice.
@@ -782,14 +779,15 @@ macro_rules! invoice_request_respond_with_explicit_signing_pubkey_methods { (
 	///
 	/// [`Duration`]: core::time::Duration
 	#[cfg(feature = "std")]
-	pub fn respond_with(
-		&$self, payment_paths: Vec<BlindedPaymentPath>, payment_hash: PaymentHash
+	pub fn respond_with<CC: CurrencyConversion>(
+		&$self, currency_conversion: &CC, payment_paths: Vec<BlindedPaymentPath>,
+		payment_hash: PaymentHash
 	) -> Result<$builder, Bolt12SemanticError> {
 		let created_at = std::time::SystemTime::now()
 			.duration_since(std::time::SystemTime::UNIX_EPOCH)
 			.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH");
 
-		$contents.respond_with_no_std(payment_paths, payment_hash, created_at)
+		$contents.respond_with_no_std(currency_conversion, payment_paths, payment_hash, created_at)
 	}
 
 	/// Creates an [`InvoiceBuilder`] for the request with the given required fields.
@@ -817,10 +815,9 @@ macro_rules! invoice_request_respond_with_explicit_signing_pubkey_methods { (
 	///
 	/// [`Bolt12Invoice::created_at`]: crate::offers::invoice::Bolt12Invoice::created_at
 	/// [`OfferBuilder::deriving_signing_pubkey`]: crate::offers::offer::OfferBuilder::deriving_signing_pubkey
-	pub fn respond_with_no_std(
-		&$self,
-		payment_paths: Vec<BlindedPaymentPath>, payment_hash: PaymentHash,
-		created_at: core::time::Duration,
+	pub fn respond_with_no_std<CC: CurrencyConversion>(
+		&$self, currency_conversion: &CC, payment_paths: Vec<BlindedPaymentPath>,
+		payment_hash: PaymentHash, created_at: core::time::Duration,
 	) -> Result<$builder, Bolt12SemanticError> {
 		if $contents.invoice_request_features().requires_unknown_bits() {
 			return Err(Bolt12SemanticError::UnknownRequiredFeatures);
@@ -831,15 +828,17 @@ macro_rules! invoice_request_respond_with_explicit_signing_pubkey_methods { (
 			None => return Err(Bolt12SemanticError::MissingIssuerSigningPubkey),
 		};
 
-		<$builder>::for_offer(&$contents, payment_paths, created_at, payment_hash, signing_pubkey)
+		<$builder>::for_offer(
+			&$contents, currency_conversion, payment_paths, created_at, payment_hash, signing_pubkey
+		)
 	}
 
 	#[cfg(test)]
 	#[allow(dead_code)]
-	pub(super) fn respond_with_no_std_using_signing_pubkey(
-		&$self,
-		payment_paths: Vec<BlindedPaymentPath>, payment_hash: PaymentHash,
-		created_at: core::time::Duration, signing_pubkey: PublicKey,
+	pub(super) fn respond_with_no_std_using_signing_pubkey<CC: CurrencyConversion>(
+		&$self, currency_conversion: &CC, payment_paths: Vec<BlindedPaymentPath>,
+		payment_hash: PaymentHash, created_at: core::time::Duration,
+		signing_pubkey: PublicKey,
 	) -> Result<$builder, Bolt12SemanticError> {
 		debug_assert!($contents.contents.inner.offer.issuer_signing_pubkey().is_none());
 
@@ -847,7 +846,9 @@ macro_rules! invoice_request_respond_with_explicit_signing_pubkey_methods { (
 			return Err(Bolt12SemanticError::UnknownRequiredFeatures);
 		}
 
-		<$builder>::for_offer(&$contents, payment_paths, created_at, payment_hash, signing_pubkey)
+		<$builder>::for_offer(
+			&$contents, currency_conversion, payment_paths, created_at, payment_hash, signing_pubkey
+		)
 	}
 } }
 
@@ -1016,15 +1017,17 @@ macro_rules! invoice_request_respond_with_derived_signing_pubkey_methods { (
 	///
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	#[cfg(feature = "std")]
-	pub fn respond_using_derived_keys(
-		&$self,
-		payment_paths: Vec<BlindedPaymentPath>, payment_hash: PaymentHash
+	pub fn respond_using_derived_keys<CC: CurrencyConversion>(
+		&$self, currency_conversion: &CC, payment_paths: Vec<BlindedPaymentPath>,
+		payment_hash: PaymentHash
 	) -> Result<$builder, Bolt12SemanticError> {
 		let created_at = std::time::SystemTime::now()
 			.duration_since(std::time::SystemTime::UNIX_EPOCH)
 			.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH");
 
-		$self.respond_using_derived_keys_no_std(payment_paths, payment_hash, created_at)
+		$self.respond_using_derived_keys_no_std(
+			currency_conversion, payment_paths, payment_hash, created_at
+		)
 	}
 
 	/// Creates an [`InvoiceBuilder`] for the request using the given required fields and that uses
@@ -1034,11 +1037,11 @@ macro_rules! invoice_request_respond_with_derived_signing_pubkey_methods { (
 	/// See [`InvoiceRequest::respond_with_no_std`] for further details.
 	///
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
-	pub fn respond_using_derived_keys_no_std(
-		&$self,
-		payment_paths: Vec<BlindedPaymentPath>, payment_hash: PaymentHash,
-		created_at: core::time::Duration
-	) -> Result<$builder, Bolt12SemanticError> {
+	pub fn respond_using_derived_keys_no_std<CC: CurrencyConversion>(
+		&$self, currency_conversion: &CC, payment_paths: Vec<BlindedPaymentPath>,
+		payment_hash: PaymentHash, created_at: core::time::Duration
+	) -> Result<$builder, Bolt12SemanticError>
+	{
 		if $self.inner.invoice_request_features().requires_unknown_bits() {
 			return Err(Bolt12SemanticError::UnknownRequiredFeatures);
 		}
@@ -1051,7 +1054,7 @@ macro_rules! invoice_request_respond_with_derived_signing_pubkey_methods { (
 		}
 
 		<$builder>::for_offer_using_keys(
-			&$self.inner, payment_paths, created_at, payment_hash, keys
+			&$self.inner, currency_conversion, payment_paths, created_at, payment_hash, keys
 		)
 	}
 } }
@@ -1167,18 +1170,23 @@ impl InvoiceRequestContents {
 		self.inner.amount_msats()
 	}
 
-	pub(super) fn payable_amount_msats(&self) -> Result<u64, Bolt12SemanticError> {
+	pub(crate) fn resolve_offer_amount<CC: CurrencyConversion>(
+		&self, currency_conversion: &CC,
+	) -> Result<Option<MsatsRange>, Bolt12SemanticError> {
+		self.inner.offer.resolve_offer_amount(currency_conversion)
+	}
+
+	pub(crate) fn payable_amount<CC: CurrencyConversion>(
+		&self, currency_conversion: &CC,
+	) -> Result<MsatsRange, Bolt12SemanticError> {
 		if let Some(amount_msats) = self.inner.amount_msats() {
-			return Ok(amount_msats);
+			return Ok(MsatsRange { amount_msats, tolerance: 0 });
 		}
 
-		match self.inner.offer.amount() {
-			Some(Amount::Bitcoin { amount_msats }) => amount_msats
-				.checked_mul(self.quantity().unwrap_or(1))
-				.ok_or(Bolt12SemanticError::InvalidAmount),
-			Some(Amount::Currency { .. }) => Err(Bolt12SemanticError::UnsupportedCurrency),
-			None => Err(Bolt12SemanticError::MissingAmount),
-		}
+		let amount = self
+			.resolve_offer_amount(currency_conversion)?
+			.ok_or(Bolt12SemanticError::MissingAmount)?;
+		amount.checked_mul(self.quantity().unwrap_or(1))
 	}
 
 	pub(super) fn features(&self) -> &InvoiceRequestFeatures {
@@ -1585,6 +1593,7 @@ mod tests {
 	use crate::ln::channelmanager::PaymentId;
 	use crate::ln::inbound_payment::ExpandedKey;
 	use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
+	use crate::offers::currency::DefaultCurrencyConversion;
 	use crate::offers::invoice::{Bolt12Invoice, SIGNATURE_TAG as INVOICE_SIGNATURE_TAG};
 	use crate::offers::invoice_request::string_truncate_safe;
 	use crate::offers::merkle::{self, SignatureTlvStreamRef, TaggedHash, TlvStream};
@@ -1649,7 +1658,12 @@ mod tests {
 		assert_eq!(invoice_request.issuer_signing_pubkey(), Some(recipient_pubkey()));
 		assert_eq!(invoice_request.chain(), ChainHash::using_genesis_block(Network::Bitcoin));
 		assert_eq!(invoice_request.amount_msats(), None);
-		assert_eq!(invoice_request.payable_amount_msats(), Ok(1000));
+		assert_eq!(
+			invoice_request
+				.payable_amount(&DefaultCurrencyConversion)
+				.map(|amount| amount.amount_msats()),
+			Ok(1000)
+		);
 		assert_eq!(invoice_request.invoice_request_features(), &InvoiceRequestFeatures::empty());
 		assert_eq!(invoice_request.quantity(), None);
 		assert_eq!(invoice_request.payer_note(), None);
@@ -1762,7 +1776,7 @@ mod tests {
 			.unwrap();
 
 		let invoice = invoice_request
-			.respond_with_no_std(payment_paths(), payment_hash(), now())
+			.respond_with_no_std(&DefaultCurrencyConversion, payment_paths(), payment_hash(), now())
 			.unwrap()
 			.experimental_baz(42)
 			.build()
@@ -1975,7 +1989,12 @@ mod tests {
 		let (_, _, tlv_stream, _, _, _) = invoice_request.as_tlv_stream();
 		assert!(invoice_request.amount_msats().is_some());
 		assert_eq!(invoice_request.amount_msats(), Some(1000));
-		assert_eq!(invoice_request.payable_amount_msats(), Ok(1000));
+		assert_eq!(
+			invoice_request
+				.payable_amount(&DefaultCurrencyConversion)
+				.map(|amount| amount.amount_msats()),
+			Ok(1000)
+		);
 		assert_eq!(tlv_stream.amount, Some(1000));
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
@@ -1993,7 +2012,12 @@ mod tests {
 		let (_, _, tlv_stream, _, _, _) = invoice_request.as_tlv_stream();
 		assert!(invoice_request.amount_msats().is_some());
 		assert_eq!(invoice_request.amount_msats(), Some(1000));
-		assert_eq!(invoice_request.payable_amount_msats(), Ok(1000));
+		assert_eq!(
+			invoice_request
+				.payable_amount(&DefaultCurrencyConversion)
+				.map(|amount| amount.amount_msats()),
+			Ok(1000)
+		);
 		assert_eq!(tlv_stream.amount, Some(1000));
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
@@ -2009,7 +2033,12 @@ mod tests {
 		let (_, _, tlv_stream, _, _, _) = invoice_request.as_tlv_stream();
 		assert!(invoice_request.amount_msats().is_some());
 		assert_eq!(invoice_request.amount_msats(), Some(1001));
-		assert_eq!(invoice_request.payable_amount_msats(), Ok(1001));
+		assert_eq!(
+			invoice_request
+				.payable_amount(&DefaultCurrencyConversion)
+				.map(|amount| amount.amount_msats()),
+			Ok(1001)
+		);
 		assert_eq!(tlv_stream.amount, Some(1001));
 
 		match OfferBuilder::new(recipient_pubkey())
@@ -2119,7 +2148,12 @@ mod tests {
 			.unwrap();
 		let (_, _, tlv_stream, _, _, _) = invoice_request.as_tlv_stream();
 		assert_eq!(invoice_request.amount_msats(), None);
-		assert_eq!(invoice_request.payable_amount_msats(), Ok(1000));
+		assert_eq!(
+			invoice_request
+				.payable_amount(&DefaultCurrencyConversion)
+				.map(|amount| amount.amount_msats()),
+			Ok(1000)
+		);
 		assert_eq!(tlv_stream.amount, None);
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
@@ -2135,7 +2169,12 @@ mod tests {
 			.unwrap();
 		let (_, _, tlv_stream, _, _, _) = invoice_request.as_tlv_stream();
 		assert_eq!(invoice_request.amount_msats(), None);
-		assert_eq!(invoice_request.payable_amount_msats(), Ok(2000));
+		assert_eq!(
+			invoice_request
+				.payable_amount(&DefaultCurrencyConversion)
+				.map(|amount| amount.amount_msats()),
+			Ok(2000)
+		);
 		assert_eq!(tlv_stream.amount, None);
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
@@ -2151,7 +2190,9 @@ mod tests {
 		let (_, _, tlv_stream, _, _, _) = invoice_request.as_tlv_stream();
 		assert_eq!(invoice_request.amount_msats(), None);
 		assert_eq!(
-			invoice_request.payable_amount_msats(),
+			invoice_request
+				.payable_amount(&DefaultCurrencyConversion)
+				.map(|amount| amount.amount_msats()),
 			Err(Bolt12SemanticError::UnsupportedCurrency)
 		);
 		assert_eq!(tlv_stream.amount, None);
@@ -2163,7 +2204,12 @@ mod tests {
 			.build_unchecked_and_sign();
 		let (_, _, tlv_stream, _, _, _) = invoice_request.as_tlv_stream();
 		assert_eq!(invoice_request.amount_msats(), None);
-		assert_eq!(invoice_request.payable_amount_msats(), Err(Bolt12SemanticError::MissingAmount));
+		assert_eq!(
+			invoice_request
+				.payable_amount(&DefaultCurrencyConversion)
+				.map(|amount| amount.amount_msats()),
+			Err(Bolt12SemanticError::MissingAmount)
+		);
 		assert_eq!(tlv_stream.amount, None);
 	}
 
@@ -2258,7 +2304,12 @@ mod tests {
 			.build_and_sign()
 			.unwrap();
 		let (_, _, tlv_stream, _, _, _) = invoice_request.as_tlv_stream();
-		assert_eq!(invoice_request.payable_amount_msats(), Ok(10_000));
+		assert_eq!(
+			invoice_request
+				.payable_amount(&DefaultCurrencyConversion)
+				.map(|amount| amount.amount_msats()),
+			Ok(10_000)
+		);
 		assert_eq!(tlv_stream.amount, Some(10_000));
 
 		match OfferBuilder::new(recipient_pubkey())
@@ -2290,7 +2341,12 @@ mod tests {
 			.build_and_sign()
 			.unwrap();
 		let (_, _, tlv_stream, _, _, _) = invoice_request.as_tlv_stream();
-		assert_eq!(invoice_request.payable_amount_msats(), Ok(2_000));
+		assert_eq!(
+			invoice_request
+				.payable_amount(&DefaultCurrencyConversion)
+				.map(|amount| amount.amount_msats()),
+			Ok(2_000)
+		);
 		assert_eq!(tlv_stream.amount, Some(2_000));
 
 		match OfferBuilder::new(recipient_pubkey())
@@ -2375,7 +2431,7 @@ mod tests {
 			.features_unchecked(InvoiceRequestFeatures::unknown())
 			.build_and_sign()
 			.unwrap()
-			.respond_with_no_std(payment_paths(), payment_hash(), now())
+			.respond_with_no_std(&DefaultCurrencyConversion, payment_paths(), payment_hash(), now())
 		{
 			Ok(_) => panic!("expected error"),
 			Err(e) => assert_eq!(e, Bolt12SemanticError::UnknownRequiredFeatures),

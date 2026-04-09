@@ -24,6 +24,7 @@ use crate::ln::channelmanager::{
 use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils;
 use crate::ln::onion_utils::{DecodedOnionFailure, HTLCFailReason};
+use crate::offers::currency::DefaultCurrencyConversion;
 use crate::offers::invoice::Bolt12Invoice;
 use crate::offers::invoice_request::InvoiceRequest;
 use crate::offers::nonce::Nonce;
@@ -655,6 +656,11 @@ pub enum Bolt12PaymentError {
 	UnexpectedInvoice,
 	/// Payment for an invoice with the corresponding [`PaymentId`] was already initiated.
 	DuplicateInvoice,
+	/// The invoice was valid for the corresponding [`PaymentId`], but quoted an invalid amount.
+	InvalidAmount,
+	/// The invoice was valid for the corresponding [`PaymentId`], but the payer could not validate
+	/// its amount because local currency conversion was unavailable.
+	UnsupportedCurrency,
 	/// The invoice was valid for the corresponding [`PaymentId`], but required unknown features.
 	UnknownRequiredFeatures,
 	/// The invoice was valid for the corresponding [`PaymentId`], but sending the payment failed.
@@ -1104,7 +1110,6 @@ impl OutboundPayments {
 		IH: Fn() -> InFlightHtlcs,
 		SP: Fn(SendAlongPathArgs) -> Result<(), APIError>,
 	{
-
 		let (payment_hash, retry_strategy, params_config, _) = self
 			.mark_invoice_received_and_get_details(invoice, payment_id)?;
 
@@ -1285,7 +1290,10 @@ impl OutboundPayments {
 						));
 					}
 
-					let amount_msat = match invreq.payable_amount_msats() {
+					let amount_msat = match invreq
+						.payable_amount(&DefaultCurrencyConversion)
+						.map(|amount| amount.amount_msats())
+					{
 						Ok(amt) => amt,
 						Err(_) => {
 							// We check this during invoice request parsing, when constructing the invreq's
@@ -2092,9 +2100,12 @@ impl OutboundPayments {
 				// event generation remains idempotent, even if the same invoice is received again before the
 				// event is handled by the user.
 				PendingOutboundPayment::InvoiceReceived {
-					retry_strategy, route_params_config, ..
+					payment_hash, retry_strategy, route_params_config,
 				} => {
-					Ok((invoice.payment_hash(), *retry_strategy, *route_params_config, false))
+					if *payment_hash != invoice.payment_hash() {
+						return Err(Bolt12PaymentError::DuplicateInvoice);
+					}
+					Ok((*payment_hash, *retry_strategy, *route_params_config, false))
 				},
 				_ => Err(Bolt12PaymentError::DuplicateInvoice),
 			},
@@ -3259,7 +3270,7 @@ mod tests {
 			.build()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
 			.build_and_sign().unwrap()
-			.respond_with_no_std(payment_paths(), payment_hash(), created_at).unwrap()
+			.respond_with_no_std(&TestCurrencyConversion, payment_paths(), payment_hash(), created_at).unwrap()
 			.build().unwrap()
 			.sign(recipient_sign).unwrap();
 
@@ -3309,7 +3320,7 @@ mod tests {
 			.build()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
 			.build_and_sign().unwrap()
-			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap()
+			.respond_with_no_std(&conversion, payment_paths(), payment_hash(), now()).unwrap()
 			.build().unwrap()
 			.sign(recipient_sign).unwrap();
 
@@ -3375,7 +3386,7 @@ mod tests {
 			.build()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
 			.build_and_sign().unwrap()
-			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap()
+			.respond_with_no_std(&conversion, payment_paths(), payment_hash(), now()).unwrap()
 			.build().unwrap()
 			.sign(recipient_sign).unwrap();
 
