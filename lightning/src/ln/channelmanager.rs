@@ -10267,6 +10267,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		pending_msg_events: &mut Vec<MessageSendEvent>, is_connected: bool,
 		chan: &mut FundedChannel<SP>,
 	) -> PostMonitorUpdateChanResume {
+		debug_assert!(self.total_consistency_lock.try_write().is_err());
+
 		let chan_id = chan.context.channel_id();
 		let outbound_alias = chan.context.outbound_scid_alias();
 		let counterparty_node_id = chan.context.get_counterparty_node_id();
@@ -10284,6 +10286,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 		if chan.blocked_monitor_updates_pending() != 0 {
 			log_debug!(logger, "Channel has blocked monitor updates, completing update actions but leaving channel blocked");
+			if !update_actions.is_empty() {
+				self.needs_persist_flag.store(true, Ordering::Release);
+			}
 			PostMonitorUpdateChanResume::Blocked { update_actions }
 		} else {
 			log_debug!(logger, "Channel is open and awaiting update, resuming it");
@@ -10315,6 +10320,11 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				None
 			};
 
+			// Checked before handle_channel_resumption moves these fields.
+			let has_state_changes = updates.funding_broadcastable.is_some()
+				|| updates.channel_ready.is_some()
+				|| updates.announcement_sigs.is_some();
+
 			let (htlc_forwards, decode_update_add_htlcs) = self.handle_channel_resumption(
 				pending_msg_events,
 				chan,
@@ -10336,6 +10346,20 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 			let unbroadcasted_batch_funding_txid =
 				chan.context.unbroadcasted_batch_funding_txid(&chan.funding);
+
+			// Queuing outbound messages (commitment_update, raa) alone does
+			// not require ChannelManager persistence.
+			let needs_persist = has_state_changes
+				|| !updates.finalized_claimed_htlcs.is_empty()
+				|| !updates.failed_htlcs.is_empty()
+				|| !update_actions.is_empty()
+				|| unbroadcasted_batch_funding_txid.is_some()
+				|| !htlc_forwards.is_empty()
+				|| decode_update_add_htlcs.is_some();
+
+			if needs_persist {
+				self.needs_persist_flag.store(true, Ordering::Release);
+			}
 
 			PostMonitorUpdateChanResume::Unblocked {
 				channel_id: chan_id,
@@ -10624,7 +10648,11 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let mut peer_state_lock;
 		let peer_state_mutex_opt = per_peer_state.get(counterparty_node_id);
-		if peer_state_mutex_opt.is_none() { return }
+		if peer_state_mutex_opt.is_none() {
+			// Peer is gone; conservatively request persistence.
+			self.needs_persist_flag.store(true, Ordering::Release);
+			return;
+		}
 		peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 
@@ -10685,6 +10713,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		} else {
 			let update_actions = peer_state.monitor_update_blocked_actions
 				.remove(channel_id).unwrap_or(Vec::new());
+			if !update_actions.is_empty() {
+				self.needs_persist_flag.store(true, Ordering::Release);
+			}
 			log_trace!(logger, "Channel is closed, applying {} post-update actions", update_actions.len());
 			mem::drop(peer_state_lock);
 			mem::drop(per_peer_state);
@@ -13027,12 +13058,14 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		if pending_monitor_events.is_empty() {
 			return NotifyOption::SkipPersistNoEvents;
 		}
+		let mut needs_persist = false;
 		for (funding_outpoint, channel_id, mut monitor_events, counterparty_node_id) in
 			pending_monitor_events.drain(..)
 		{
 			for monitor_event in monitor_events.drain(..) {
 				match monitor_event {
 					MonitorEvent::HTLCEvent(htlc_update) => {
+						needs_persist = true;
 						let logger = WithContext::from(
 							&self.logger,
 							Some(counterparty_node_id),
@@ -13085,6 +13118,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					},
 					MonitorEvent::HolderForceClosed(_)
 					| MonitorEvent::HolderForceClosedWithInfo { .. } => {
+						needs_persist = true;
 						let per_peer_state = self.per_peer_state.read().unwrap();
 						if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
 							let mut peer_state_lock = peer_state_mutex.lock().unwrap();
@@ -13117,6 +13151,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						}
 					},
 					MonitorEvent::CommitmentTxConfirmed(_) => {
+						needs_persist = true;
 						let per_peer_state = self.per_peer_state.read().unwrap();
 						if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
 							let mut peer_state_lock = peer_state_mutex.lock().unwrap();
@@ -13152,7 +13187,11 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			let _ = self.handle_error(err, counterparty_node_id);
 		}
 
-		NotifyOption::DoPersist
+		if needs_persist {
+			NotifyOption::DoPersist
+		} else {
+			NotifyOption::SkipPersistHandleEvents
+		}
 	}
 
 	fn handle_holding_cell_free_result(&self, result: FreeHoldingCellsResult) {
