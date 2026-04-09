@@ -1797,4 +1797,146 @@ mod tests {
 		assert_eq!(parsed.payment_hash(), payment_hash);
 		assert_eq!(parsed.payer_note().map(|note| note.to_string()), Some("refund".to_string()));
 	}
+
+	// BOLT 12 payer proof test vectors (from bolt12/payer-proof-test.json).
+	// All four vectors share the same invoice and preimage.
+	const PAYER_SECRET_HEX: &str =
+		"4242424242424242424242424242424242424242424242424242424242424242";
+	const INVOICE_HEX: &str = "0010000000000000000000000000000000001621024bc2a31265153f07e70e0bab08724e6b85e217f8cd628ceb62974247bb493382520203e858210324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1ca076027f31ebc5462c1fdce1b737ecff52d37d75dea43ce11c74d25aa297165faa2007032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e6686809910102edabbd16b41c8371b92ef2f04c1185b4f03b6dcd52ba9b78d9d7c89c8f221145001000000000000000000000000000000000a21c00000001000000020003000000000000000400000000000000050000a40467527988a82072cd6e8422c407fb6d098690f1130b7ded7ec2f7f5e1d30bd9d521f015363793aa0203e8b021024bc2a31265153f07e70e0bab08724e6b85e217f8cd628ceb62974247bb493382f04098c093015fb630fa7aeeecebb7af826edc447244d4fab5d535fbf1ca008ff086bcb7d612f105d0aeeaf5711c30af20e8b438d736ca4d774af4cbdc7d855c8f88feb2d05e010142";
+	const PREIMAGE_HEX: &str = "0101010101010101010101010101010101010101010101010101010101010101";
+
+	struct PayerProofVector {
+		name: &'static str,
+		included_types: &'static [u64],
+		note: Option<&'static str>,
+		leaf_hashes_hex: &'static str,
+		omitted_tlvs: &'static [u64],
+		missing_hashes_hex: &'static str,
+		merkle_root_hex: &'static str,
+		bech32: &'static str,
+	}
+
+	const PAYER_PROOF_VECTORS: &[PayerProofVector] = &[
+		PayerProofVector {
+			name: "full_disclosure",
+			included_types: &[22, 82, 160, 162, 164, 170, 3000000001],
+			note: None,
+			leaf_hashes_hex: "8c9057ed88f3c5a6b6441dcac3b5e4cefb3615904d7362b86e78427fb695f4618dc54a97453dee6f207fa5216a30f1567442712ca98852bc789b73885029283cf2deaf5f30be3ced89fc7c24d422819bf06af0e48a31423bbd0e2634f3c3de67f54f80c94a87383f2a8ef7c3e461c62b67a51da5bccf6cd96a7dbab29bea51fa7849b8b856e1d2a63d9ce7dc1a78e05cbb2def1f5d7709c48e8707e0a59fe51e19e7e4eee6bf56c6c589fe50035490c1a7c91b753cb8007c4b52838a6772f997f0191c35000247554b8d0a196898a794bf3de89982571178d931affb654f0c1adc0b8de03f1a0b0531bff146982d7d613ef6e1ef8d3bdd9590971fc18d835ffb7e92b77b9e3843650f6cd7ee94b6753ea9df3533710b04dee686ad376515a5cbabaab91b367e30fea7026daf9f2590bb7e9cc31db8221f4013c67289e38f22c8",
+			omitted_tlvs: &[],
+			missing_hashes_hex: "0b510ba4c6884d603159ced2f0ca21e772424b59e52a2191bbfbcf07377805a1",
+			merkle_root_hex: "d75cc1c4a81b39f841f8db4e8b3156f73d973f32fc982cdce884f2d396504db1",
+			bech32: "lnp1zcssyj7z5vfx29flqlnsuzatppeyu6u9ugtl3ntz3n4k996zg7a5jvuz2gpq86zcyypjgef743p5fzqq9nqxh0ah7y87rzv3ud0eleps9kl2d5348hq2k89qwcp87v0tc4rzc87uuxmn0m8l2tfh6aw75s7wz8r56fd299ckt74zqpcr9s9he72nyjs86pfe3vjqzaxups47g3xedv2e4fk877c7v6rgpxgszqhd4w73ddqusdcmjthj7pxprpd57qakmn2jh2dh3kwhezwg7gs3g5qpqqqqqqqqqqqqqqqqqqqqqqqqqq9zrsqqqqqpqqqqqqsqqvqqqqqqqqqqqpqqqqqqqqqqqqzsqq9yq3n4y7vg4qs89ntwss3vgplmd5ycdy83zv9hmmt7ctmltcwnp0va2g0sz5mr0ya2qgp73vppqf9u9gcjv52n7pl8pc96kzrjfe4ctcshlrxk9r8tv2t5y3amfyec9uzqnrqfxq2lkcc057hwan4m0tuzdmwygujy6natt4f4l0cu5qy07zrted7kztcst59wat6hz8ps4usw3dpc6umv5nthft6vhhras4wglz8jyqqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqsra3qpdgshfxx3pxkqv2eemf0pj3puaeyyj6eu54zrydml08swdmcqksl3lgpgzxfq4ld3reutf4kgswu4sa4un80kds4jpxhxc4cdeuyylakjh6xrrw9f2t5200wdus8lffpdgc0z4n5gfcje2vg22783xmn3pgzj2pu7t027heshc7wmz0u0sjdgg5pn0cx4u8y3gc5ywaapcnrfu7rmenl2nuqe99gwwpl92800slyv8rzkea9rkjmenmvm948mw4jn049r7ncfxuts4hp62nrm888msd83czuhvk7786awuyufr58qls2t8l9rcv70e8wu6l4d3k938l9qq65jrq60jgmw57tsqrufdfg8zn8wtue0uqers6sqqj8249c6zsedzv2099l8h5fnqjhz9udjvd0ldj57rq6ms9cmcplrg9s2vdl79rfsttavyl0dc0035aam9vsju0urrvrtlahay4h0w0rssm9pakd0m55ke6na2wlx5ehzzcymmngdtfhv526tjat42u3kdn7xrl2wqnd470jty9m06wvx8dcyg05qy7xw2y78rezerayq3hqtyn5aat00khnft954rp9e9xe5rcjwujcf9haa46ngfrszv8pctgspa890llf6qh0emq2gr2lv87ta6ly7vrnk583tcaj0kvv33p0avkstcqszss",
+		},
+		PayerProofVector {
+			name: "minimal_disclosure",
+			included_types: &[],
+			note: None,
+			leaf_hashes_hex: "f2deaf5f30be3ced89fc7c24d422819bf06af0e48a31423bbd0e2634f3c3de67f0191c35000247554b8d0a196898a794bf3de89982571178d931affb654f0c1a7e92b77b9e3843650f6cd7ee94b6753ea9df3533710b04dee686ad376515a5cb",
+			omitted_tlvs: &[1, 2, 89, 90, 91, 169, 177],
+			missing_hashes_hex: "bf8cb2b1d6fa9bcdcab501b59f82c65c506b7f43514737f7197f1fcfeaebad41b9406f4ce526a6a0d4e0b3a63ed89a832e31cb9939dfe1a7b5dd7232d32c02abcd9c44b53b31700c9ed0e3330ce425f7f18fac2fc1d566a34468439274f0e3169f9830f2c3070cfbad13fde30ee36cd7143591164ed12040a9cd595c96840ac9998ab7fa9c743fb9dbdb0d8d46fbe3ad333400bd07f328dcdb6008790bc9d2db3358d8be254efbc28a1f7f9caa8c21432ba93b512d07349764d61386f186471a",
+			merkle_root_hex: "d75cc1c4a81b39f841f8db4e8b3156f73d973f32fc982cdce884f2d396504db1",
+			bech32: "lnp1tqssxfr986kyx3ygqqkvq6alklcslcvfj834l8lyxqkmafkjx57up2cu4qs89ntwss3vgplmd5ycdy83zv9hmmt7ctmltcwnp0va2g0sz5mr0yasyypyhs4rzfj320c8uu8qh2cgwf8xhp0zzluv6c5vad3fwsj8hdyn8qhsgzvvpycpt7mrp7n6amkwhda0sfhdc3rjgn204dw4xhalrjsq3lcgd09h6cf0zpws4m402uguxzhjp6958rtndjjdwa90fj7u0kz4erug7gsqzqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszq05quqsyk26tw5mrakqh7xt9vwkl2dumj44qx6elqkxt3gxkl6r29rn0ace0u0ul6ht44qmjsr0fnjjdf4q6nst8f37mzdgxt33ewvnnhlp576a6u3j6vkq927dn3zt2we3wqxfa58rxvxwgf0h7x86ct7p64n2x3rggwf8fu8rz60esv8jcvrse7adz077xrhrdnt3gdv3ze8dzgzq48x4jhykss9vnxv2klafcaplh8dakrvdgma78tfnxsqt6pln9rwdkcqg0y9un5kmxdvd3039fmau9zsl07w24rppgv46jw6395rnf9my6cfcduvxgud0sc8jm6h47v978nkcnlruyn2z9qvm7p40pey2x9prh0gwyc608s77vlcpj8p4qqpyw42t359pj6yc572t700gnxp9wytcmyc6l7m9fuxp5l5jkaaeuwzrv58ke4lwjjm8204fmu6nxugtqn0wdp4dxaj3tfwtlfqydczeya802mma4u62ed9gcfwffkdq7ynhykzfdl0dw56zguqnpcwz6yq0fetll6ws9m7wczjq6hmpljlwhe8nqua4pu278vnanryvgg",
+		},
+		PayerProofVector {
+			name: "with_note",
+			included_types: &[],
+			note: Some("test note"),
+			leaf_hashes_hex: "f2deaf5f30be3ced89fc7c24d422819bf06af0e48a31423bbd0e2634f3c3de67f0191c35000247554b8d0a196898a794bf3de89982571178d931affb654f0c1a7e92b77b9e3843650f6cd7ee94b6753ea9df3533710b04dee686ad376515a5cb",
+			omitted_tlvs: &[1, 2, 89, 90, 91, 169, 177],
+			missing_hashes_hex: "bf8cb2b1d6fa9bcdcab501b59f82c65c506b7f43514737f7197f1fcfeaebad41b9406f4ce526a6a0d4e0b3a63ed89a832e31cb9939dfe1a7b5dd7232d32c02abcd9c44b53b31700c9ed0e3330ce425f7f18fac2fc1d566a34468439274f0e3169f9830f2c3070cfbad13fde30ee36cd7143591164ed12040a9cd595c96840ac9998ab7fa9c743fb9dbdb0d8d46fbe3ad333400bd07f328dcdb6008790bc9d2db3358d8be254efbc28a1f7f9caa8c21432ba93b512d07349764d61386f186471a",
+			merkle_root_hex: "d75cc1c4a81b39f841f8db4e8b3156f73d973f32fc982cdce884f2d396504db1",
+			bech32: "lnp1tqssxfr986kyx3ygqqkvq6alklcslcvfj834l8lyxqkmafkjx57up2cu4qs89ntwss3vgplmd5ycdy83zv9hmmt7ctmltcwnp0va2g0sz5mr0yasyypyhs4rzfj320c8uu8qh2cgwf8xhp0zzluv6c5vad3fwsj8hdyn8qhsgzvvpycpt7mrp7n6amkwhda0sfhdc3rjgn204dw4xhalrjsq3lcgd09h6cf0zpws4m402uguxzhjp6958rtndjjdwa90fj7u0kz4erug7gsqzqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszq05quqsyk26tw5mrakqh7xt9vwkl2dumj44qx6elqkxt3gxkl6r29rn0ace0u0ul6ht44qmjsr0fnjjdf4q6nst8f37mzdgxt33ewvnnhlp576a6u3j6vkq927dn3zt2we3wqxfa58rxvxwgf0h7x86ct7p64n2x3rggwf8fu8rz60esv8jcvrse7adz077xrhrdnt3gdv3ze8dzgzq48x4jhykss9vnxv2klafcaplh8dakrvdgma78tfnxsqt6pln9rwdkcqg0y9un5kmxdvd3039fmau9zsl07w24rppgv46jw6395rnf9my6cfcduvxgud0sc8jm6h47v978nkcnlruyn2z9qvm7p40pey2x9prh0gwyc608s77vlcpj8p4qqpyw42t359pj6yc572t700gnxp9wytcmyc6l7m9fuxp5l5jkaaeuwzrv58ke4lwjjm8204fmu6nxugtqn0wdp4dxaj3tfwtlfyuphgt5cgcrfg50lvxftvudtmrf7ns44kal2njhfqqqy23vh0v0vn4uv74dv966eq8gmsx3xkgt3nmq6f0kzztcj9xqfcs80g6aj6sde6x2um5yphx7ar9",
+		},
+		PayerProofVector {
+			name: "left_subtree_omitted",
+			included_types: &[170],
+			note: None,
+			leaf_hashes_hex: "f2deaf5f30be3ced89fc7c24d422819bf06af0e48a31423bbd0e2634f3c3de67f0191c35000247554b8d0a196898a794bf3de89982571178d931affb654f0c1adc0b8de03f1a0b0531bff146982d7d613ef6e1ef8d3bdd9590971fc18d835ffb7e92b77b9e3843650f6cd7ee94b6753ea9df3533710b04dee686ad376515a5cb",
+			omitted_tlvs: &[1, 2, 89, 90, 91, 177],
+			missing_hashes_hex: "bf8cb2b1d6fa9bcdcab501b59f82c65c506b7f43514737f7197f1fcfeaebad41b9406f4ce526a6a0d4e0b3a63ed89a832e31cb9939dfe1a7b5dd7232d32c02abcd9c44b53b31700c9ed0e3330ce425f7f18fac2fc1d566a34468439274f0e3169f9830f2c3070cfbad13fde30ee36cd7143591164ed12040a9cd595c96840ac93358d8be254efbc28a1f7f9caa8c21432ba93b512d07349764d61386f186471a",
+			merkle_root_hex: "d75cc1c4a81b39f841f8db4e8b3156f73d973f32fc982cdce884f2d396504db1",
+			bech32: "lnp1tqssxfr986kyx3ygqqkvq6alklcslcvfj834l8lyxqkmafkjx57up2cu4qs89ntwss3vgplmd5ycdy83zv9hmmt7ctmltcwnp0va2g0sz5mr0ya2qgp73vppqf9u9gcjv52n7pl8pc96kzrjfe4ctcshlrxk9r8tv2t5y3amfyec9uzqnrqfxq2lkcc057hwan4m0tuzdmwygujy6natt4f4l0cu5qy07zrted7kztcst59wat6hz8ps4usw3dpc6umv5nthft6vhhras4wglz8jyqqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqsraqxqyp9jkjmk8m2p0uvk2cad75meh9t2qd4n7pvvhzsddl5x528xlm3jlclel4wht2ph9qx7n89y6n2p48qkwnraky6svhrrjue8807rfa4m4er95evq24um8zyk5anzuqvnmgwxvcvusjl0uv04shur4tx5dzxssujwncwx95lnqc09sc8pna66ylauv8wxmxhzs6ez9jw6ysyp2wdt9wfdpq2eye43k97y480hs52ralee25vy9pjh2fm2ykswdyhvntp8ph3ser347yq7t027heshc7wmz0u0sjdgg5pn0cx4u8y3gc5ywaapcnrfu7rmenlqxgux5qqy364fwxs5xtgnznef0eaazvcy4c30rvnrtlmv48scxkupwx7q0c6pvznr0l3g6vz6ltp8mmwrmud80wetyyhrlqcmq6lldlf9dmmncuyxeg0dnt7a99kw5l2nhe4xdcskpx7u6r26dm9zkjuh7jqgms9jf6w74hhmte54j623sjujnv6puf8wfvyjm776af5y3cpxrsu95gq7njhll5aqthuas9yp40krl97a0j0xpem2rc4uwe8mxxgcss",
+		},
+	];
+
+	fn hex_decode(s: &str) -> Vec<u8> {
+		(0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
+	}
+
+	fn hex_encode(b: &[u8]) -> String {
+		b.iter().map(|x| format!("{:02x}", x)).collect()
+	}
+
+	/// Split a concatenated hex string into 32-byte hash hex strings.
+	fn split_hashes_hex(hex: &str) -> Vec<String> {
+		(0..hex.len()).step_by(64).map(|i| hex[i..i + 64].to_string()).collect()
+	}
+
+	#[test]
+	fn check_against_spec_vectors() {
+		let secp_ctx = Secp256k1::new();
+		let payer_keys = Keypair::from_secret_key(
+			&secp_ctx,
+			&SecretKey::from_slice(&hex_decode(PAYER_SECRET_HEX)).unwrap(),
+		);
+
+		let invoice = Bolt12Invoice::try_from(hex_decode(INVOICE_HEX))
+			.expect("failed to parse invoice from test vector");
+
+		let preimage = PaymentPreimage(hex_decode(PREIMAGE_HEX).try_into().unwrap());
+
+		for vector in PAYER_PROOF_VECTORS {
+			let mut builder = PayerProofBuilder::new(&invoice, preimage)
+				.unwrap_or_else(|e| panic!("{}: builder failed: {:?}", vector.name, e));
+			for &typ in vector.included_types {
+				if typ != INVOICE_REQUEST_PAYER_ID_TYPE
+					&& typ != INVOICE_PAYMENT_HASH_TYPE
+					&& typ != INVOICE_NODE_ID_TYPE
+				{
+					builder = builder.include_type(typ).unwrap_or_else(|e| {
+						panic!("{}: include_type({}) failed: {:?}", vector.name, typ, e)
+					});
+				}
+			}
+
+			let unsigned = builder
+				.build_unsigned(vector.note.map(str::to_owned))
+				.unwrap_or_else(|e| panic!("{}: build failed: {:?}", vector.name, e));
+
+			let got_leaves: Vec<String> =
+				unsigned.disclosure.leaf_hashes.iter().map(|h| hex_encode(h.as_ref())).collect();
+			assert_eq!(
+				got_leaves,
+				split_hashes_hex(vector.leaf_hashes_hex),
+				"{}: leaf_hashes mismatch",
+				vector.name
+			);
+
+			assert_eq!(
+				unsigned.disclosure.omitted_markers, vector.omitted_tlvs,
+				"{}: omitted_tlvs mismatch",
+				vector.name
+			);
+
+			let got_missing: Vec<String> =
+				unsigned.disclosure.missing_hashes.iter().map(|h| hex_encode(h.as_ref())).collect();
+			assert_eq!(
+				got_missing,
+				split_hashes_hex(vector.missing_hashes_hex),
+				"{}: missing_hashes mismatch",
+				vector.name
+			);
+
+			let got_root = hex_encode(unsigned.disclosure.merkle_root.as_ref());
+			assert_eq!(got_root, vector.merkle_root_hex, "{}: merkle_root mismatch", vector.name);
+
+			let proof = unsigned
+				.sign(|proof: &UnsignedPayerProof| {
+					Ok(secp_ctx.sign_schnorr_no_aux_rand(proof.as_ref().as_digest(), &payer_keys))
+				})
+				.unwrap_or_else(|e| panic!("{}: sign failed: {:?}", vector.name, e));
+
+			assert_eq!(proof.to_string(), vector.bech32, "{}: bech32 mismatch", vector.name);
+		}
+	}
 }
