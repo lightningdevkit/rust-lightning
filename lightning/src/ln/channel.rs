@@ -12633,7 +12633,13 @@ where
 			// For splice-out, our_funding_contribution is adjusted to cover fees if there
 			// aren't any inputs.
 			let our_funding_contribution = contribution.net_value();
-			self.validate_splice_contributions(our_funding_contribution, SignedAmount::ZERO)
+			let next_splice_out_maximum = self.get_next_splice_out_maximum(&self.funding)?;
+			if our_funding_contribution.is_negative() && our_funding_contribution.unsigned_abs() > next_splice_out_maximum {
+				let unsigned_contribution = our_funding_contribution.unsigned_abs();
+				Err(format!("Our splice-out value of {unsigned_contribution} is greater than the maximum {next_splice_out_maximum}"))
+			} else {
+				Ok(())
+			}
 		}) {
 			log_error!(logger, "Channel {} cannot be funded: {}", self.context.channel_id(), e);
 

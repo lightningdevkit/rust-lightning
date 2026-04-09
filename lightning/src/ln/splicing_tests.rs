@@ -4155,8 +4155,8 @@ fn do_test_splice_pending_htlcs(config: UserConfig) {
 			format!("Channel {} cannot accept funding contribution", channel_id);
 		assert_eq!(error, APIError::APIMisuseError { err: cannot_accept_contribution });
 		let cannot_be_funded = format!(
-			"Channel {} cannot be funded: Channel {} cannot be spliced out; our post-splice channel balance {} is smaller than their selected v2 reserve {}",
-			channel_id, channel_id, post_splice_reserve - Amount::ONE_SAT, post_splice_reserve
+			"Channel {} cannot be funded: Our splice-out value of {} is greater than the maximum {}",
+			channel_id, splice_out_incl_fees + Amount::ONE_SAT, splice_out_incl_fees,
 		);
 		initiator.logger.assert_log("lightning::ln::channel", cannot_be_funded, 1);
 
