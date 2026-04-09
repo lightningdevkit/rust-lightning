@@ -53,7 +53,7 @@ use crate::events::{
 	self, ClosureReason, Event, EventHandler, EventsProvider, HTLCHandlingFailureType,
 	InboundChannelFunds, PaymentFailureReason, ReplayEvent,
 };
-use crate::events::{FundingInfo, PaidBolt12Invoice};
+use crate::events::FundingInfo;
 use crate::ln::chan_utils::selected_commitment_sat_per_1000_weight;
 #[cfg(any(test, fuzzing, feature = "_test_utils"))]
 use crate::ln::channel::QuiescentAction;
@@ -102,6 +102,7 @@ use crate::offers::invoice_request::{InvoiceRequest, InvoiceRequestVerifiedFromO
 use crate::offers::nonce::Nonce;
 use crate::offers::offer::{Offer, OfferFromHrn};
 use crate::offers::parse::Bolt12SemanticError;
+use crate::offers::payer_proof::Bolt12InvoiceType;
 use crate::offers::refund::Refund;
 use crate::offers::static_invoice::StaticInvoice;
 use crate::onion_message::async_payments::{
@@ -835,7 +836,7 @@ mod fuzzy_channelmanager {
 			/// The BOLT12 invoice associated with this payment, if any. This is stored here to ensure
 			/// we can provide proof-of-payment details in payment claim events even after a restart
 			/// with a stale ChannelManager state.
-			bolt12_invoice: Option<PaidBolt12Invoice>,
+			bolt12_invoice: Option<Bolt12InvoiceType>,
 		},
 	}
 
@@ -971,7 +972,7 @@ impl HTLCSource {
 	pub(crate) fn static_invoice(&self) -> Option<StaticInvoice> {
 		match self {
 			Self::OutboundRoute {
-				bolt12_invoice: Some(PaidBolt12Invoice::StaticInvoice(inv)),
+				bolt12_invoice: Some(Bolt12InvoiceType::StaticInvoice(inv)),
 				..
 			} => Some(inv.clone()),
 			_ => None,
@@ -17766,7 +17767,7 @@ impl Readable for HTLCSource {
 				let mut payment_id = None;
 				let mut payment_params: Option<PaymentParameters> = None;
 				let mut blinded_tail: Option<BlindedTail> = None;
-				let mut bolt12_invoice: Option<PaidBolt12Invoice> = None;
+				let mut bolt12_invoice: Option<Bolt12InvoiceType> = None;
 				read_tlv_fields!(reader, {
 					(0, session_priv, required),
 					(1, payment_id, option),

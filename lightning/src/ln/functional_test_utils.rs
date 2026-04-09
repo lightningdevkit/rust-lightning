@@ -17,7 +17,7 @@ use crate::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Listen, Watch
 use crate::events::bump_transaction::sync::BumpTransactionEventHandlerSync;
 use crate::events::bump_transaction::BumpTransactionEvent;
 use crate::events::{
-	ClaimedHTLC, ClosureReason, Event, FundingInfo, HTLCHandlingFailureType, PaidBolt12Invoice,
+	ClaimedHTLC, ClosureReason, Event, FundingInfo, HTLCHandlingFailureType,
 	PathFailure, PaymentFailureReason, PaymentPurpose,
 };
 use crate::ln::chan_utils::{
@@ -33,6 +33,7 @@ use crate::ln::msgs::{
 	BaseMessageHandler, ChannelMessageHandler, MessageSendEvent, RoutingMessageHandler,
 };
 use crate::ln::onion_utils::LocalHTLCFailureReason;
+use crate::offers::payer_proof::Bolt12InvoiceType;
 use crate::ln::outbound_payment::RecipientOnionFields;
 use crate::ln::outbound_payment::Retry;
 use crate::ln::peer_handler::IgnoringMessageHandler;
@@ -2998,7 +2999,7 @@ pub fn expect_payment_sent<CM: AChannelManager, H: NodeHolder<CM = CM>>(
 	node: &H, expected_payment_preimage: PaymentPreimage,
 	expected_fee_msat_opt: Option<Option<u64>>, expect_per_path_claims: bool,
 	expect_post_ev_mon_update: bool,
-) -> (Option<PaidBolt12Invoice>, Vec<Event>) {
+) -> (Option<Bolt12InvoiceType>, Vec<Event>) {
 	if expect_post_ev_mon_update {
 		check_added_monitors(node, 0);
 	}
@@ -4222,7 +4223,7 @@ pub fn pass_claimed_payment_along_route_from_ev(
 
 pub fn claim_payment_along_route(
 	args: ClaimAlongRouteArgs,
-) -> (Option<PaidBolt12Invoice>, Vec<Event>) {
+) -> (Option<Bolt12InvoiceType>, Vec<Event>) {
 	let ClaimAlongRouteArgs {
 		origin_node,
 		payment_preimage,
@@ -4244,7 +4245,7 @@ pub fn claim_payment_along_route(
 pub fn claim_payment<'a, 'b, 'c>(
 	origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>],
 	our_payment_preimage: PaymentPreimage,
-) -> Option<PaidBolt12Invoice> {
+) -> Option<Bolt12InvoiceType> {
 	claim_payment_along_route(ClaimAlongRouteArgs::new(
 		origin_node,
 		&[expected_route],

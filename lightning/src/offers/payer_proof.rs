@@ -34,6 +34,7 @@ use crate::offers::nonce::Nonce;
 use crate::offers::offer::{OFFER_DESCRIPTION_TYPE, OFFER_ISSUER_TYPE};
 use crate::offers::parse::Bech32Encode;
 use crate::offers::payer::PAYER_METADATA_TYPE;
+use crate::offers::static_invoice::StaticInvoice;
 use crate::types::payment::{PaymentHash, PaymentPreimage};
 use crate::util::ser::{BigSize, HighZeroBytesDroppedBigSize, Readable, Writeable};
 use lightning_types::string::PrintableString;
@@ -61,6 +62,22 @@ pub const PAYER_PROOF_HRP: &str = "lnp";
 /// Tag for payer signature computation per BOLT 12 signature calculation.
 /// Format: "lightning" || messagename || fieldname
 const PAYER_SIGNATURE_TAG: &str = concat!("lightning", "payer_proof", "payer_signature");
+
+/// The type of BOLT 12 invoice that was paid.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Bolt12InvoiceType {
+	/// The BOLT 12 invoice specified by the BOLT 12 specification,
+	/// allowing the user to perform proof of payment.
+	Bolt12Invoice(Bolt12Invoice),
+	/// The Static invoice, used in the async payment specification update proposal,
+	/// where the user cannot perform proof of payment.
+	StaticInvoice(StaticInvoice),
+}
+
+impl_writeable_tlv_based_enum!(Bolt12InvoiceType,
+	{0, Bolt12Invoice} => (),
+	{2, StaticInvoice} => (),
+);
 
 /// Error when building or verifying a payer proof.
 #[derive(Debug, Clone, PartialEq, Eq)]

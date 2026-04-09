@@ -49,7 +49,7 @@ use crate::blinded_path::IntroductionNode;
 use crate::blinded_path::message::BlindedMessagePath;
 use crate::blinded_path::payment::{Bolt12OfferContext, Bolt12RefundContext, DummyTlvs, PaymentContext};
 use crate::blinded_path::message::OffersContext;
-use crate::events::{ClosureReason, Event, HTLCHandlingFailureType, PaidBolt12Invoice, PaymentFailureReason, PaymentPurpose};
+use crate::events::{ClosureReason, Event, HTLCHandlingFailureType, PaymentFailureReason, PaymentPurpose};
 use crate::ln::channelmanager::{PaymentId, RecentPaymentDetails, self};
 use crate::ln::outbound_payment::{Bolt12PaymentError, RecipientOnionFields, Retry};
 use crate::types::features::Bolt12InvoiceFeatures;
@@ -58,6 +58,7 @@ use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, Init, NodeAnnou
 use crate::ln::outbound_payment::IDEMPOTENCY_TIMEOUT_TICKS;
 use crate::offers::invoice::Bolt12Invoice;
 use crate::offers::invoice_error::InvoiceError;
+use crate::offers::payer_proof::Bolt12InvoiceType;
 use crate::offers::invoice_request::{InvoiceRequest, InvoiceRequestFields, InvoiceRequestVerifiedFromOffer};
 use crate::offers::nonce::Nonce;
 use crate::offers::parse::Bolt12SemanticError;
@@ -253,7 +254,7 @@ fn claim_bolt12_payment_with_extra_fees<'a, 'b, 'c>(
 	}
 
 	let (inv, _) = claim_payment_along_route(args);
-	assert_eq!(inv, Some(PaidBolt12Invoice::Bolt12Invoice(invoice.clone())));
+	assert_eq!(inv, Some(Bolt12InvoiceType::Bolt12Invoice(invoice.clone())));
 }
 
 fn extract_offer_nonce<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, message: &OnionMessage) -> Nonce {
