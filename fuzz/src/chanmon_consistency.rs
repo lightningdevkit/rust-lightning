@@ -207,7 +207,11 @@ impl ChainState {
 	}
 
 	fn is_outpoint_spent(&self, outpoint: &bitcoin::OutPoint) -> bool {
-		self.blocks.iter().any(|(_, txs)| {
+		// Only check the last 6 blocks (1 confirmation block + 5 post-confirmation) to avoid
+		// false positives from hash collisions in older blocks. Under fuzz hashing, txids have
+		// only 8 effective bits, so unrelated outpoints in old blocks frequently collide.
+		let start = self.blocks.len().saturating_sub(6);
+		self.blocks[start..].iter().any(|(_, txs)| {
 			txs.iter().any(|tx| {
 				tx.input.iter().any(|input| input.previous_output == *outpoint)
 			})
@@ -237,13 +241,8 @@ impl ChainState {
 	}
 
 	/// Add a transaction to the pending pool (mempool). Multiple conflicting transactions (RBF
-	/// candidates) may coexist; `confirm_pending_txs` selects which one to confirm. If the
-	/// conflicting transaction was already confirmed, the new transaction is dropped since a
-	/// confirmed transaction cannot be replaced on chain.
+	/// candidates) may coexist; `confirm_pending_txs` selects which one to confirm.
 	fn add_pending_tx(&mut self, tx: Transaction) {
-		if tx.input.iter().any(|i| self.is_outpoint_spent(&i.previous_output)) {
-			return;
-		}
 		self.pending_txs.push(tx);
 	}
 
