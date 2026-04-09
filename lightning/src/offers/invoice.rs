@@ -1911,7 +1911,7 @@ mod tests {
 	use crate::offers::merkle::{self, SignError, SignatureTlvStreamRef, TaggedHash, TlvStream};
 	use crate::offers::nonce::Nonce;
 	use crate::offers::offer::{
-		Amount, ExperimentalOfferTlvStreamRef, OfferTlvStreamRef, Quantity,
+		Amount, CurrencyCode, ExperimentalOfferTlvStreamRef, OfferTlvStreamRef, Quantity,
 	};
 	use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError};
 	use crate::offers::payer::PayerTlvStreamRef;
@@ -2116,6 +2116,44 @@ mod tests {
 		if let Err(e) = Bolt12Invoice::try_from(buffer) {
 			panic!("error parsing invoice: {:?}", e);
 		}
+	}
+
+	#[test]
+	fn parses_invoice_for_fiat_offer_without_explicit_request_amount() {
+		let expanded_key = ExpandedKey::new([42; 32]);
+		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
+		let secp_ctx = Secp256k1::new();
+		let payment_id = PaymentId([1; 32]);
+		let conversion = TestCurrencyConversion;
+
+		let invoice = OfferBuilder::new(recipient_pubkey())
+			.amount(
+				Amount::Currency { iso4217_code: CurrencyCode::new(*b"USD").unwrap(), amount: 10 },
+				&conversion,
+			)
+			.unwrap()
+			.build()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
+			.unwrap()
+			.build_and_sign()
+			.unwrap()
+			.respond_with_no_std(&conversion, payment_paths(), payment_hash(), now())
+			.unwrap()
+			.build()
+			.unwrap()
+			.sign(recipient_sign)
+			.unwrap();
+
+		let mut encoded_invoice = Vec::new();
+		invoice.write(&mut encoded_invoice).unwrap();
+
+		let parsed_invoice = Bolt12Invoice::try_from(encoded_invoice).unwrap();
+		let (_, _, invoice_request_tlv_stream, invoice_tlv_stream, _, _, _, _) =
+			parsed_invoice.as_tlv_stream();
+		assert_eq!(invoice_request_tlv_stream.amount, None);
+		assert_eq!(invoice_tlv_stream.amount, Some(10_000));
+		assert_eq!(parsed_invoice.amount_msats(), 10_000);
 	}
 
 	#[test]

@@ -56,11 +56,12 @@ use crate::types::features::Bolt12InvoiceFeatures;
 use crate::ln::functional_test_utils::*;
 use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, Init, NodeAnnouncement, OnionMessage, OnionMessageHandler, RoutingMessageHandler, SocketAddress, UnsignedGossipMessage, UnsignedNodeAnnouncement};
 use crate::ln::outbound_payment::IDEMPOTENCY_TIMEOUT_TICKS;
-use crate::offers::currency::DefaultCurrencyConversion;
+use crate::offers::currency::{CurrencyConversion, DefaultCurrencyConversion};
 use crate::offers::invoice::Bolt12Invoice;
 use crate::offers::invoice_error::InvoiceError;
 use crate::offers::invoice_request::{InvoiceRequest, InvoiceRequestFields, InvoiceRequestVerifiedFromOffer};
 use crate::offers::nonce::Nonce;
+use crate::offers::offer::{Amount, CurrencyCode};
 use crate::offers::parse::Bolt12SemanticError;
 use crate::onion_message::messenger::{DefaultMessageRouter, Destination, MessageSendInstructions, NodeIdMessageRouter, NullMessageRouter, PeeledOnion, DUMMY_HOPS_PATH_LENGTH, QR_CODED_DUMMY_HOPS_PATH_LENGTH};
 use crate::onion_message::offers::OffersMessage;
@@ -91,6 +92,20 @@ macro_rules! expect_recent_payment {
 			}
 		}
 		assert!(found_payment);
+	}}
+}
+
+macro_rules! expect_no_recent_payment {
+	($node: expr, $payment_id: expr) => {{
+		let found_payment = $node.node.list_recent_payments().iter().any(|payment| {
+			match payment {
+				RecentPaymentDetails::AwaitingInvoice { payment_id, .. }
+				| RecentPaymentDetails::Pending { payment_id, .. }
+				| RecentPaymentDetails::Fulfilled { payment_id, .. }
+				| RecentPaymentDetails::Abandoned { payment_id, .. } => *payment_id == $payment_id,
+			}
+		});
+		assert!(!found_payment);
 	}}
 }
 
@@ -2463,6 +2478,249 @@ fn fails_paying_invoice_with_unknown_required_features() {
 		},
 		_ => panic!("Expected Event::PaymentFailed with reason"),
 	}
+	expect_no_recent_payment!(david, payment_id);
+}
+
+#[test]
+fn fails_paying_invoice_with_invalid_amount() {
+	let mut accept_forward_cfg = test_default_channel_config();
+	accept_forward_cfg.accept_forwards_to_priv_channels = true;
+
+	let chanmon_cfgs = create_chanmon_cfgs(6);
+	let node_cfgs = create_node_cfgs(6, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(
+		6, &node_cfgs, &[None, Some(accept_forward_cfg), None, None, None, None]
+	);
+	let nodes = create_network(6, &node_cfgs, &node_chanmgrs);
+
+	create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000);
+	create_unannounced_chan_between_nodes_with_value(&nodes, 2, 3, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 4, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 5, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 2, 4, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 2, 5, 10_000_000, 1_000_000_000);
+
+	let (alice, bob, charlie, david) = (&nodes[0], &nodes[1], &nodes[2], &nodes[3]);
+	let alice_id = alice.node.get_our_node_id();
+	let bob_id = bob.node.get_our_node_id();
+	let charlie_id = charlie.node.get_our_node_id();
+	let david_id = david.node.get_our_node_id();
+
+	disconnect_peers(alice, &[charlie, david, &nodes[4], &nodes[5]]);
+	disconnect_peers(david, &[bob, &nodes[4], &nodes[5]]);
+
+	let conversion = TestCurrencyConversion;
+	let offer = alice.node
+		.create_offer_builder()
+		.unwrap()
+		.amount(
+			Amount::Currency {
+				iso4217_code: CurrencyCode::new(*b"USD").unwrap(),
+				amount: 10,
+			},
+			&conversion,
+		)
+		.unwrap()
+		.build();
+
+	let payment_id = PaymentId([1; 32]);
+	david.node.pay_for_offer(&offer, None, payment_id, Default::default()).unwrap();
+
+	connect_peers(david, bob);
+
+	let onion_message = david.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
+	bob.onion_messenger.handle_onion_message(david_id, &onion_message);
+
+	connect_peers(alice, charlie);
+
+	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
+	let (invoice_request, reply_path) = extract_invoice_request(alice, &onion_message);
+	let nonce = extract_offer_nonce(alice, &onion_message);
+	let payment_context = PaymentContext::Bolt12Offer(Bolt12OfferContext {
+		offer_id: offer.id(),
+		invoice_request: InvoiceRequestFields {
+			payer_signing_pubkey: invoice_request.payer_signing_pubkey(),
+			quantity: None,
+			payer_note_truncated: None,
+			human_readable_name: None,
+		},
+	});
+
+	let expanded_key = alice.keys_manager.get_expanded_key();
+	let secp_ctx = Secp256k1::new();
+	let created_at = alice.node.duration_since_epoch();
+	let requested_amount = invoice_request.payable_amount(&conversion).unwrap();
+	let amount_msats = requested_amount.amount_msats();
+	let invalid_amount_msats = requested_amount.maximum_msats().checked_add(1).unwrap();
+	let (payment_hash, payment_secret) =
+		alice.node.create_inbound_payment(Some(amount_msats), 3600, None).unwrap();
+	let payment_paths = alice
+		.node
+		.test_create_blinded_payment_paths(Some(amount_msats), payment_secret, payment_context, 3600)
+		.unwrap();
+	let verified_invoice_request = invoice_request
+		.verify_using_recipient_data(nonce, &expanded_key, &secp_ctx)
+		.unwrap();
+
+	let invoice = match verified_invoice_request {
+		InvoiceRequestVerifiedFromOffer::DerivedKeys(request) => request
+			.respond_using_derived_keys_no_std(&conversion, payment_paths, payment_hash, created_at)
+			.unwrap()
+			.amount_msats_unchecked(invalid_amount_msats)
+			.build_and_sign(&secp_ctx)
+			.unwrap(),
+		InvoiceRequestVerifiedFromOffer::ExplicitKeys(_) => panic!("Expected invoice request with keys"),
+	};
+
+	let instructions = MessageSendInstructions::WithoutReplyPath {
+		destination: Destination::BlindedPath(reply_path),
+	};
+	let message = OffersMessage::Invoice(invoice);
+	alice.node.flow.pending_offers_messages.lock().unwrap().push((message, instructions));
+
+	let onion_message = alice.onion_messenger.next_onion_message_for_peer(charlie_id).unwrap();
+	charlie.onion_messenger.handle_onion_message(alice_id, &onion_message);
+
+	let onion_message = charlie.onion_messenger.next_onion_message_for_peer(david_id).unwrap();
+	david.onion_messenger.handle_onion_message(charlie_id, &onion_message);
+
+	match get_event!(david, Event::PaymentFailed) {
+		Event::PaymentFailed {
+			payment_id: event_payment_id,
+			payment_hash: None,
+			reason: Some(event_reason),
+		} => {
+			assert_eq!(event_payment_id, payment_id);
+			assert_eq!(event_reason, PaymentFailureReason::UnexpectedError);
+		},
+		_ => panic!("Expected Event::PaymentFailed with reason"),
+	}
+	expect_no_recent_payment!(david, payment_id);
+}
+
+#[test]
+fn fails_paying_invoice_with_unsupported_currency() {
+	struct EuroConversion;
+
+	impl CurrencyConversion for EuroConversion {
+		fn msats_per_minor_unit(&self, iso4217_code: CurrencyCode) -> Result<(f64, u8), ()> {
+			if iso4217_code.as_str() == "EUR" {
+				Ok((2_000.0, 5))
+			} else {
+				Err(())
+			}
+		}
+	}
+
+	let mut accept_forward_cfg = test_default_channel_config();
+	accept_forward_cfg.accept_forwards_to_priv_channels = true;
+
+	let chanmon_cfgs = create_chanmon_cfgs(6);
+	let node_cfgs = create_node_cfgs(6, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(
+		6, &node_cfgs, &[None, Some(accept_forward_cfg), None, None, None, None]
+	);
+	let nodes = create_network(6, &node_cfgs, &node_chanmgrs);
+
+	create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000);
+	create_unannounced_chan_between_nodes_with_value(&nodes, 2, 3, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 4, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 5, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 2, 4, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 2, 5, 10_000_000, 1_000_000_000);
+
+	let (alice, bob, charlie, david) = (&nodes[0], &nodes[1], &nodes[2], &nodes[3]);
+	let alice_id = alice.node.get_our_node_id();
+	let bob_id = bob.node.get_our_node_id();
+	let charlie_id = charlie.node.get_our_node_id();
+	let david_id = david.node.get_our_node_id();
+
+	disconnect_peers(alice, &[charlie, david, &nodes[4], &nodes[5]]);
+	disconnect_peers(david, &[bob, &nodes[4], &nodes[5]]);
+
+	let offer = alice.node
+		.create_offer_builder()
+		.unwrap()
+		.amount(Amount::Currency { iso4217_code: CurrencyCode::new(*b"EUR").unwrap(), amount: 10 }, &EuroConversion)
+		.unwrap()
+		.build();
+
+	let payment_id = PaymentId([1; 32]);
+	david.node.pay_for_offer(&offer, None, payment_id, Default::default()).unwrap();
+
+	connect_peers(david, bob);
+
+	let onion_message = david.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
+	bob.onion_messenger.handle_onion_message(david_id, &onion_message);
+
+	connect_peers(alice, charlie);
+
+	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
+	let (invoice_request, reply_path) = extract_invoice_request(alice, &onion_message);
+	let nonce = extract_offer_nonce(alice, &onion_message);
+	let amount_msats = invoice_request.payable_amount(&EuroConversion).unwrap().amount_msats();
+	let payment_context = PaymentContext::Bolt12Offer(Bolt12OfferContext {
+		offer_id: offer.id(),
+		invoice_request: InvoiceRequestFields {
+			payer_signing_pubkey: invoice_request.payer_signing_pubkey(),
+			quantity: None,
+			payer_note_truncated: None,
+			human_readable_name: None,
+		},
+	});
+
+	let expanded_key = alice.keys_manager.get_expanded_key();
+	let secp_ctx = Secp256k1::new();
+	let created_at = alice.node.duration_since_epoch();
+	let (payment_hash, payment_secret) =
+		alice.node.create_inbound_payment(Some(amount_msats), 3600, None).unwrap();
+	let payment_paths = alice
+		.node
+		.test_create_blinded_payment_paths(Some(amount_msats), payment_secret, payment_context, 3600)
+		.unwrap();
+	let verified_invoice_request = invoice_request
+		.verify_using_recipient_data(nonce, &expanded_key, &secp_ctx)
+		.unwrap();
+
+	let invoice = match verified_invoice_request {
+		InvoiceRequestVerifiedFromOffer::DerivedKeys(request) => request
+			.respond_using_derived_keys_no_std(
+				&EuroConversion,
+				payment_paths,
+				payment_hash,
+				created_at,
+			)
+			.unwrap()
+			.build_and_sign(&secp_ctx)
+			.unwrap(),
+		InvoiceRequestVerifiedFromOffer::ExplicitKeys(_) => panic!("Expected invoice request with keys"),
+	};
+	let instructions = MessageSendInstructions::WithoutReplyPath {
+		destination: Destination::BlindedPath(reply_path),
+	};
+	let message = OffersMessage::Invoice(invoice);
+	alice.node.flow.pending_offers_messages.lock().unwrap().push((message, instructions));
+
+	let onion_message = alice.onion_messenger.next_onion_message_for_peer(charlie_id).unwrap();
+	charlie.onion_messenger.handle_onion_message(alice_id, &onion_message);
+
+	let onion_message = charlie.onion_messenger.next_onion_message_for_peer(david_id).unwrap();
+	david.onion_messenger.handle_onion_message(charlie_id, &onion_message);
+
+	match get_event!(david, Event::PaymentFailed) {
+		Event::PaymentFailed {
+			payment_id: event_payment_id,
+			payment_hash: None,
+			reason: Some(event_reason),
+		} => {
+			assert_eq!(event_payment_id, payment_id);
+			assert_eq!(event_reason, PaymentFailureReason::UnexpectedError);
+		},
+		_ => panic!("Expected Event::PaymentFailed with reason"),
+	}
+	expect_no_recent_payment!(david, payment_id);
 }
 
 #[test]
