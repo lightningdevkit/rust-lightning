@@ -5259,6 +5259,104 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		}
 	}
 
+	/// The balances returned here should only be used to check that both parties still hold
+	/// their respective reserves *after* a splice. This function also checks that both local
+	/// and remote commitments still have at least one output after the splice, which is
+	/// particularly relevant for zero-reserve channels.
+	///
+	/// Do NOT use this to determine how much the holder can splice out of the channel. The balance
+	/// of the holder after a splice is not necessarily equal to the funds they can splice out
+	/// of the channel due to the reserve, and the zero-reserve-at-least-one-output
+	/// requirements. Note you cannot simply subtract out the reserve, as splicing funds out
+	/// of the channel changes the reserve the holder must keep in the channel.
+	fn get_post_splice_holder_counterparty_balances(
+		&self, funding: &FundingScope, our_contribution_candidate: SignedAmount,
+		their_contribution_candidate: SignedAmount, addl_nondust_htlc_count: usize,
+		feerate_per_kw: u32,
+	) -> Result<(Amount, Amount), String> {
+		let htlc_candidate = None;
+		// There shouldn't be any pending HTLC adds at this point. We nonetheless choose to
+		// take the remote's view of the pending HTLCs to make this function consistent
+		// with `FundedChannel::get_next_splice_out_maximum`. In debug mode, we check that
+		// these two functions are consistent *before* clearing any HTLC updates from the
+		// channel, see `FundedChannel::funding_contributed`.
+		let include_counterparty_unknown_htlcs = true;
+		let post_splice_channel_value_satoshis = funding.compute_post_splice_value(
+			our_contribution_candidate.to_sat(),
+			their_contribution_candidate.to_sat(),
+		);
+		let value_to_self_msat = self.get_next_commitment_value_to_self_msat(
+			false, // Take the remote's view of the pending HTLCs
+			funding,
+		);
+		let our_contribution_candidate_msat = our_contribution_candidate.to_sat() * 1000;
+		let post_splice_value_to_self_msat = value_to_self_msat
+			.checked_add_signed(our_contribution_candidate_msat)
+			.ok_or(format!(
+				"Our contribution candidate {our_contribution_candidate_msat}msat is \
+				greater than our total balance in the channel {value_to_self_msat}msat"
+			))?;
+
+		let commitment_htlcs = self.get_next_commitment_htlcs(
+			false, // Take the remote's view of the pending HTLCs
+			htlc_candidate,
+			include_counterparty_unknown_htlcs,
+		);
+
+		// We are not interested in dust exposure at this point, so use the 250sat/kw default
+		let max_dust_htlc_exposure_msat = self.get_max_dust_htlc_exposure_msat(None);
+		// Again, not interested in dust exposure, so no need to pass this feerate
+		let dust_exposure_limiting_feerate = None;
+
+		let channel_constraints = self.get_channel_constraints(funding);
+
+		let get_channel_stats = |local: bool| {
+			SpecTxBuilder {}.get_channel_stats(
+				local,
+				funding.is_outbound(),
+				post_splice_channel_value_satoshis,
+				post_splice_value_to_self_msat,
+				&commitment_htlcs,
+				addl_nondust_htlc_count,
+				feerate_per_kw,
+				dust_exposure_limiting_feerate,
+				max_dust_htlc_exposure_msat,
+				channel_constraints,
+				funding.get_channel_type(),
+			)
+		};
+
+		// Different dust limits on the local and remote commitments cause the commitment
+		// transaction fee to be different depending on the commitment, so we grab the floor
+		// of both balances across both commitments here.
+		//
+		// `get_channel_stats` also checks for at least one output on the commitment given
+		// these parameters. This is particularly relevant for zero-reserve channels.
+		//
+		// This "at-least-one-output" check is why we still run both checks on
+		// zero-fee-commitment channels, even though those channels don't suffer from the
+		// commitment transaction fee asymmetry.
+		let local_stats =
+			get_channel_stats(true).map_err(|()| "Balance exhausted on local commitment")?;
+		let remote_stats =
+			get_channel_stats(false).map_err(|()| "Balance exhausted on remote commitment")?;
+
+		let holder_balance_floor = Amount::from_sat(
+			cmp::min(
+				local_stats.commitment_stats.holder_balance_msat,
+				remote_stats.commitment_stats.holder_balance_msat,
+			) / 1000,
+		);
+		let counterparty_balance_floor = Amount::from_sat(
+			cmp::min(
+				local_stats.commitment_stats.counterparty_balance_msat,
+				remote_stats.commitment_stats.counterparty_balance_msat,
+			) / 1000,
+		);
+
+		Ok((holder_balance_floor, counterparty_balance_floor))
+	}
+
 	fn get_next_local_commitment_stats(
 		&self, funding: &FundingScope, htlc_candidate: Option<HTLCAmountDirection>,
 		include_counterparty_unknown_htlcs: bool, addl_nondust_htlc_count: usize,
@@ -12772,11 +12870,6 @@ where
 			));
 		}
 
-		let (holder_balance_remaining, counterparty_balance_remaining) =
-			self.get_holder_counterparty_balances_floor_incl_fee(&self.funding).map_err(|e| {
-				format!("Channel {} cannot be spliced; {}", self.context.channel_id(), e)
-			})?;
-
 		let post_channel_value = self.funding.compute_post_splice_value(
 			our_funding_contribution.to_sat(),
 			their_funding_contribution.to_sat(),
@@ -12796,20 +12889,35 @@ where
 			self.funding.holder_selected_channel_reserve_satoshis == 0,
 		));
 
+		// At all times, require that the channel funder have the fees for an additional
+		// inbound HTLC on the channel.
+		let addl_nondust_htlc_count = 1;
+		// Note that the feerate is 0 in zero-fee commitment channels, so this statement is a noop
+		let feerate_per_kw = if !self.funding.get_channel_type().supports_anchors_zero_fee_htlc_tx()
+		{
+			// Similar to HTLC-add validation, require the funder to have enough funds
+			// reserved for fees such that the feerate can jump without rendering the
+			// channel useless.
+			self.context.feerate_per_kw * FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE as u32
+		} else {
+			self.context.feerate_per_kw
+		};
+
+		let (post_splice_holder_balance, post_splice_counterparty_balance) = self
+			.context
+			.get_post_splice_holder_counterparty_balances(
+				&self.funding,
+				our_funding_contribution,
+				their_funding_contribution,
+				addl_nondust_htlc_count,
+				feerate_per_kw,
+			)
+			.map_err(|e| {
+				format!("Channel {} cannot be spliced; {}", self.context.channel_id(), e)
+			})?;
+
 		// We allow parties to draw from their previous reserve, as long as they satisfy their v2 reserve
-
 		if our_funding_contribution != SignedAmount::ZERO {
-			let post_splice_holder_balance = Amount::from_sat(
-				holder_balance_remaining.to_sat()
-				.checked_add_signed(our_funding_contribution.to_sat())
-				.ok_or(format!(
-					"Channel {} cannot be spliced out; our remaining balance {} does not cover our negative funding contribution {}",
-					self.context.channel_id(),
-					holder_balance_remaining,
-					our_funding_contribution,
-				))?,
-			);
-
 			post_splice_holder_balance.checked_sub(counterparty_selected_channel_reserve)
 				.ok_or(format!(
 						"Channel {} cannot be {}; our post-splice channel balance {} is smaller than their selected v2 reserve {}",
@@ -12821,17 +12929,6 @@ where
 		}
 
 		if their_funding_contribution != SignedAmount::ZERO {
-			let post_splice_counterparty_balance = Amount::from_sat(
-				counterparty_balance_remaining.to_sat()
-				.checked_add_signed(their_funding_contribution.to_sat())
-				.ok_or(format!(
-					"Channel {} cannot be spliced out; their remaining balance {} does not cover their negative funding contribution {}",
-					self.context.channel_id(),
-					counterparty_balance_remaining,
-					their_funding_contribution,
-				))?,
-			);
-
 			post_splice_counterparty_balance.checked_sub(holder_selected_channel_reserve)
 				.ok_or(format!(
 						"Channel {} cannot be {}; their post-splice channel balance {} is smaller than our selected v2 reserve {}",
