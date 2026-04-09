@@ -248,6 +248,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 							outbound_capacity_msat: capacity.saturating_mul(1000),
 							next_outbound_htlc_limit_msat: capacity.saturating_mul(1000),
 							next_outbound_htlc_minimum_msat: 0,
+							next_splice_out_maximum_sat: capacity,
 							inbound_htlc_minimum_msat: None,
 							inbound_htlc_maximum_msat: None,
 							config: None,
