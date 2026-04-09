@@ -246,15 +246,45 @@ impl ChainState {
 		self.pending_txs.push(tx);
 	}
 
-	/// Confirm pending transactions, selecting deterministically among conflicting RBF candidates.
-	/// Sorting by txid before confirming means the winner depends on the fuzz input (which
-	/// determines tx content and thus txid), while `confirm_tx` rejects double-spends so only one
-	/// conflicting tx confirms.
+	/// Confirm pending transactions in a single block, selecting deterministically among
+	/// conflicting RBF candidates. Sorting by txid ensures the winner is determined by fuzz input
+	/// content. Transactions that double-spend an already-confirmed outpoint are skipped.
 	fn confirm_pending_txs(&mut self) {
 		let mut txs = std::mem::take(&mut self.pending_txs);
 		txs.sort_by_key(|tx| tx.compute_txid());
+
+		let mut confirmed = Vec::new();
+		let mut spent_outpoints = Vec::new();
 		for tx in txs {
-			self.confirm_tx(tx);
+			let txid = tx.compute_txid();
+			if self.confirmed_txids.contains(&txid) {
+				continue;
+			}
+			if tx.input.iter().any(|input| {
+				self.is_outpoint_spent(&input.previous_output)
+					|| spent_outpoints.contains(&input.previous_output)
+			}) {
+				continue;
+			}
+			self.confirmed_txids.insert(txid);
+			for input in &tx.input {
+				spent_outpoints.push(input.previous_output);
+			}
+			confirmed.push(tx);
+		}
+
+		if confirmed.is_empty() {
+			return;
+		}
+
+		let prev_hash = self.blocks.last().unwrap().0.block_hash();
+		let header = create_dummy_header(prev_hash, 42);
+		self.blocks.push((header, confirmed));
+
+		for _ in 0..5 {
+			let prev_hash = self.blocks.last().unwrap().0.block_hash();
+			let header = create_dummy_header(prev_hash, 42);
+			self.blocks.push((header, Vec::new()));
 		}
 	}
 
