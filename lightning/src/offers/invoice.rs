@@ -141,7 +141,6 @@ use crate::offers::offer::{
 };
 use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
 use crate::offers::payer::{PayerTlvStream, PayerTlvStreamRef, PAYER_METADATA_TYPE};
-use crate::offers::payer_proof::{PayerProofBuilder, PayerProofError};
 use crate::offers::refund::{
 	Refund, RefundContents, IV_BYTES_WITHOUT_METADATA as REFUND_IV_BYTES_WITHOUT_METADATA,
 	IV_BYTES_WITH_METADATA as REFUND_IV_BYTES_WITH_METADATA,
@@ -149,7 +148,6 @@ use crate::offers::refund::{
 use crate::offers::signer::{self, Metadata};
 use crate::types::features::{Bolt12InvoiceFeatures, InvoiceRequestFeatures, OfferFeatures};
 use crate::types::payment::PaymentHash;
-use crate::types::payment::PaymentPreimage;
 use crate::types::string::PrintableString;
 use crate::util::ser::{
 	CursorReadable, HighZeroBytesDroppedBigSize, Iterable, LengthLimitedRead, LengthReadable,
@@ -987,6 +985,11 @@ impl Bolt12Invoice {
 		self.signature
 	}
 
+	/// The raw serialized bytes of the invoice.
+	pub(super) fn invoice_bytes(&self) -> &[u8] {
+		&self.bytes
+	}
+
 	/// Hash that was used for signing the invoice.
 	pub fn signable_hash(&self) -> [u8; 32] {
 		self.tagged_hash.as_digest().as_ref().clone()
@@ -1033,17 +1036,6 @@ impl Bolt12Invoice {
 				(payment_id == extracted_payment_id).then(|| payment_id).ok_or(())
 			},
 		)
-	}
-
-	/// Creates a [`PayerProofBuilder`] for this invoice using the given payment preimage.
-	///
-	/// Returns an error if the preimage doesn't match the invoice's payment hash.
-	///
-	/// [`PayerProofBuilder`]: crate::offers::payer_proof::PayerProofBuilder
-	pub fn payer_proof_builder(
-		&self, preimage: PaymentPreimage,
-	) -> Result<PayerProofBuilder<'_>, PayerProofError> {
-		PayerProofBuilder::new(self, preimage)
 	}
 
 	/// Re-derives the payer's signing keypair for payer proof creation.
@@ -1589,13 +1581,13 @@ pub(super) const INVOICE_NODE_ID_TYPE: u64 = 176;
 tlv_stream!(InvoiceTlvStream, InvoiceTlvStreamRef<'a>, INVOICE_TYPES, {
 	(160, paths: (Vec<BlindedPath>, WithoutLength, Iterable<'a, BlindedPathIter<'a>, BlindedPath>)),
 	(162, blindedpay: (Vec<BlindedPayInfo>, WithoutLength, Iterable<'a, BlindedPayInfoIter<'a>, BlindedPayInfo>)),
-	(164, created_at: (u64, HighZeroBytesDroppedBigSize)),
+	(INVOICE_CREATED_AT_TYPE, created_at: (u64, HighZeroBytesDroppedBigSize)),
 	(166, relative_expiry: (u32, HighZeroBytesDroppedBigSize)),
-	(168, payment_hash: PaymentHash),
-	(170, amount: (u64, HighZeroBytesDroppedBigSize)),
+	(INVOICE_PAYMENT_HASH_TYPE, payment_hash: PaymentHash),
+	(INVOICE_AMOUNT_TYPE, amount: (u64, HighZeroBytesDroppedBigSize)),
 	(172, fallbacks: (Vec<FallbackAddress>, WithoutLength)),
-	(174, features: (Bolt12InvoiceFeatures, WithoutLength)),
-	(176, node_id: PublicKey),
+	(INVOICE_FEATURES_TYPE, features: (Bolt12InvoiceFeatures, WithoutLength)),
+	(INVOICE_NODE_ID_TYPE, node_id: PublicKey),
 	// Only present in `StaticInvoice`s.
 	(236, held_htlc_available_paths: (Vec<BlindedMessagePath>, WithoutLength)),
 });

@@ -33,6 +33,7 @@ use bitcoin::consensus::Encodable;
 use bitcoin::constants::ChainHash;
 use bitcoin::hash_types::{BlockHash, Txid};
 use bitcoin::hashes::hmac::Hmac;
+use bitcoin::hashes::sha256;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::script::{self, ScriptBuf};
@@ -1202,6 +1203,21 @@ impl Readable for SecretKey {
 			Ok(key) => Ok(key),
 			Err(_) => return Err(DecodeError::InvalidValue),
 		}
+	}
+}
+
+impl Writeable for sha256::Hash {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		w.write_all(&self[..])
+	}
+}
+
+impl Readable for sha256::Hash {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		use bitcoin::hashes::Hash;
+
+		let buf: [u8; 32] = Readable::read(r)?;
+		Ok(sha256::Hash::from_byte_array(buf))
 	}
 }
 

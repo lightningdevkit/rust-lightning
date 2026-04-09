@@ -353,13 +353,13 @@ struct TlvMerkleData {
 /// - `missing_hashes`: minimal merkle hashes for omitted subtrees
 ///
 /// # Arguments
-/// * `tlv_bytes` - Complete TLV stream (e.g., invoice bytes without signature)
+/// * `records` - Iterator of [`TlvRecord`]s (non-signature TLVs from the invoice)
 /// * `included_types` - Set of TLV types to include in the disclosure
-pub(super) fn compute_selective_disclosure(
-	tlv_bytes: &[u8], included_types: &BTreeSet<u64>,
+pub(super) fn compute_selective_disclosure<'a>(
+	records: impl Iterator<Item = TlvRecord<'a>>, included_types: &BTreeSet<u64>,
 ) -> Result<SelectiveDisclosure, SelectiveDisclosureError> {
-	let mut tlv_stream = TlvStream::new(tlv_bytes).peekable();
-	let first_record = tlv_stream.peek().ok_or(SelectiveDisclosureError::EmptyTlvStream)?;
+	let mut records = records.peekable();
+	let first_record = records.peek().ok_or(SelectiveDisclosureError::EmptyTlvStream)?;
 	let nonce_tag_hash = sha256::Hash::from_engine({
 		let mut engine = sha256::Hash::engine();
 		engine.input("LnNonce".as_bytes());
@@ -373,7 +373,7 @@ pub(super) fn compute_selective_disclosure(
 
 	let mut tlv_data: Vec<TlvMerkleData> = Vec::new();
 	let mut leaf_hashes: Vec<sha256::Hash> = Vec::new();
-	for record in tlv_stream.filter(|r| !SIGNATURE_TYPES.contains(&r.r#type)) {
+	for record in records {
 		let leaf_hash = tagged_hash_from_engine(leaf_tag.clone(), record.record_bytes);
 		let nonce_hash = tagged_hash_from_engine(nonce_tag.clone(), record.type_bytes);
 		let per_tlv_hash =
@@ -507,8 +507,8 @@ fn build_tree_with_disclosure(
 /// Uses `n` tree nodes (one per TLV position) rather than `2n`, since per-TLV
 /// hashes already combine leaf and nonce. Two passes over the tree determine
 /// where missing hashes are needed and then combine all hashes to the root.
-pub(super) fn reconstruct_merkle_root<'a>(
-	included_records: &[(u64, &'a [u8])], leaf_hashes: &[sha256::Hash], omitted_markers: &[u64],
+pub(super) fn reconstruct_merkle_root(
+	included_records: &[TlvRecord<'_>], leaf_hashes: &[sha256::Hash], omitted_markers: &[u64],
 	missing_hashes: &[sha256::Hash],
 ) -> Result<sha256::Hash, SelectiveDisclosureError> {
 	// Callers are expected to validate omitted_markers before calling this function
@@ -538,8 +538,8 @@ pub(super) fn reconstruct_merkle_root<'a>(
 	while inc_idx < included_records.len() || mrk_idx < omitted_markers.len() {
 		if mrk_idx >= omitted_markers.len() {
 			// No more markers, remaining positions are included
-			let (_, record_bytes) = included_records[inc_idx];
-			let leaf_hash = tagged_hash_from_engine(leaf_tag.clone(), record_bytes);
+			let record = &included_records[inc_idx];
+			let leaf_hash = tagged_hash_from_engine(leaf_tag.clone(), record.record_bytes);
 			let nonce_hash = leaf_hashes[inc_idx];
 			let hash = tagged_branch_hash_from_engine(branch_tag.clone(), leaf_hash, nonce_hash);
 			nodes.push(TreeNode { hash: Some(hash), included: true, min_type: node_idx });
@@ -551,7 +551,7 @@ pub(super) fn reconstruct_merkle_root<'a>(
 			mrk_idx += 1;
 		} else {
 			let marker = omitted_markers[mrk_idx];
-			let (inc_type, _) = included_records[inc_idx];
+			let inc_type = included_records[inc_idx].r#type;
 
 			if marker == prev_marker + 1 {
 				// Continuation of current run -> omitted position
@@ -560,8 +560,8 @@ pub(super) fn reconstruct_merkle_root<'a>(
 				mrk_idx += 1;
 			} else {
 				// Jump detected -> included position comes first
-				let (_, record_bytes) = included_records[inc_idx];
-				let leaf_hash = tagged_hash_from_engine(leaf_tag.clone(), record_bytes);
+				let record = &included_records[inc_idx];
+				let leaf_hash = tagged_hash_from_engine(leaf_tag.clone(), record.record_bytes);
 				let nonce_hash = leaf_hashes[inc_idx];
 				let hash =
 					tagged_branch_hash_from_engine(branch_tag.clone(), leaf_hash, nonce_hash);
@@ -737,7 +737,7 @@ fn reconstruct_positions(included_types: &[u64], omitted_markers: &[u64]) -> Vec
 
 #[cfg(test)]
 mod tests {
-	use super::{TlvStream, SIGNATURE_TYPES};
+	use super::{TlvRecord, TlvStream, SIGNATURE_TYPES};
 
 	use crate::ln::channelmanager::PaymentId;
 	use crate::ln::inbound_payment::ExpandedKey;
@@ -1031,7 +1031,8 @@ mod tests {
 		included.insert(40);
 
 		// Compute selective disclosure
-		let disclosure = super::compute_selective_disclosure(&tlv_bytes, &included).unwrap();
+		let disclosure =
+			super::compute_selective_disclosure(TlvStream::new(&tlv_bytes), &included).unwrap();
 
 		// Verify markers match spec example
 		assert_eq!(disclosure.omitted_markers, vec![11, 12, 41, 42]);
@@ -1040,10 +1041,8 @@ mod tests {
 		assert_eq!(disclosure.leaf_hashes.len(), 2);
 
 		// Collect included records for reconstruction
-		let included_records: Vec<(u64, &[u8])> = TlvStream::new(&tlv_bytes)
-			.filter(|r| included.contains(&r.r#type))
-			.map(|r| (r.r#type, r.record_bytes))
-			.collect();
+		let included_records: Vec<TlvRecord<'_>> =
+			TlvStream::new(&tlv_bytes).filter(|r| included.contains(&r.r#type)).collect();
 
 		// Reconstruct merkle root
 		let reconstructed = super::reconstruct_merkle_root(
@@ -1090,7 +1089,8 @@ mod tests {
 		included.insert(10);
 		included.insert(40);
 
-		let disclosure = super::compute_selective_disclosure(&tlv_bytes, &included).unwrap();
+		let disclosure =
+			super::compute_selective_disclosure(TlvStream::new(&tlv_bytes), &included).unwrap();
 
 		// We should have 4 missing hashes for omitted types:
 		// - type 0 (single leaf)
@@ -1107,10 +1107,8 @@ mod tests {
 		);
 
 		// Verify the round-trip still works with the correct ordering
-		let included_records: Vec<(u64, &[u8])> = TlvStream::new(&tlv_bytes)
-			.filter(|r| included.contains(&r.r#type))
-			.map(|r| (r.r#type, r.record_bytes))
-			.collect();
+		let included_records: Vec<TlvRecord<'_>> =
+			TlvStream::new(&tlv_bytes).filter(|r| included.contains(&r.r#type)).collect();
 
 		let reconstructed = super::reconstruct_merkle_root(
 			&included_records,
@@ -1136,12 +1134,11 @@ mod tests {
 		let mut included = BTreeSet::new();
 		included.insert(10);
 
-		let disclosure = super::compute_selective_disclosure(&tlv_bytes, &included).unwrap();
+		let disclosure =
+			super::compute_selective_disclosure(TlvStream::new(&tlv_bytes), &included).unwrap();
 
-		let included_records: Vec<(u64, &[u8])> = TlvStream::new(&tlv_bytes)
-			.filter(|r| included.contains(&r.r#type))
-			.map(|r| (r.r#type, r.record_bytes))
-			.collect();
+		let included_records: Vec<TlvRecord<'_>> =
+			TlvStream::new(&tlv_bytes).filter(|r| included.contains(&r.r#type)).collect();
 
 		// Try with empty missing_hashes (should fail)
 		let result = super::reconstruct_merkle_root(

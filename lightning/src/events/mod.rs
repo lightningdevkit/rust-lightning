@@ -31,7 +31,9 @@ use crate::ln::outbound_payment::RecipientOnionFields;
 use crate::ln::types::ChannelId;
 use crate::offers::invoice::Bolt12Invoice;
 use crate::offers::invoice_request::InvoiceRequest;
+use crate::offers::nonce::Nonce;
 use crate::offers::payer_proof::Bolt12InvoiceType;
+pub use crate::offers::payer_proof::PaidBolt12Invoice;
 use crate::offers::static_invoice::StaticInvoice;
 use crate::onion_message::messenger::Responder;
 use crate::routing::gossip::NetworkUpdate;
@@ -1090,19 +1092,14 @@ pub enum Event {
 		///
 		/// [`Route::get_total_fees`]: crate::routing::router::Route::get_total_fees
 		fee_paid_msat: Option<u64>,
-		/// The BOLT 12 invoice that was paid. `None` if the payment was a non BOLT 12 payment.
+		/// The paid BOLT 12 invoice bundled with the data needed to construct a
+		/// [`PayerProof`], which selectively discloses invoice fields to prove payment to a
+		/// third party.
 		///
-		/// The BOLT 12 invoice is useful for proof of payment because it contains the
-		/// payment hash. A third party can verify that the payment was made by
-		/// showing the invoice and confirming that the payment hash matches
-		/// the hash of the payment preimage.
+		/// `None` for non-BOLT 12 payments.
 		///
-		/// However, the [`Bolt12InvoiceType`] can also be of type [`StaticInvoice`], which
-		/// is a special [`Bolt12Invoice`] where proof of payment is not possible.
-		///
-		/// [`Bolt12InvoiceType`]: crate::offers::payer_proof::Bolt12InvoiceType
-		/// [`StaticInvoice`]: crate::offers::static_invoice::StaticInvoice
-		bolt12_invoice: Option<Bolt12InvoiceType>,
+		/// [`PayerProof`]: crate::offers::payer_proof::PayerProof
+		bolt12_invoice: Option<PaidBolt12Invoice>,
 	},
 	/// Indicates an outbound payment failed. Individual [`Event::PaymentPathFailed`] events
 	/// provide failure information for each path attempt in the payment, including retries.
@@ -1977,13 +1974,16 @@ impl Writeable for Event {
 				ref bolt12_invoice,
 			} => {
 				2u8.write(writer)?;
+				let invoice_type = bolt12_invoice.as_ref().map(|paid| paid.invoice_type());
+				let payment_nonce = bolt12_invoice.as_ref().and_then(|paid| paid.nonce());
 				write_tlv_fields!(writer, {
 					(0, payment_preimage, required),
 					(1, payment_hash, required),
 					(3, payment_id, option),
 					(5, fee_paid_msat, option),
 					(7, amount_msat, option),
-					(9, bolt12_invoice, option),
+					(9, invoice_type, option),
+					(11, payment_nonce, option),
 				});
 			},
 			&Event::PaymentPathFailed {
@@ -2475,20 +2475,25 @@ impl MaybeReadable for Event {
 					let mut payment_id = None;
 					let mut amount_msat = None;
 					let mut fee_paid_msat = None;
-					let mut bolt12_invoice = None;
+					let mut invoice_type: Option<Bolt12InvoiceType> = None;
+					let mut payment_nonce: Option<Nonce> = None;
 					read_tlv_fields!(reader, {
 						(0, payment_preimage, required),
 						(1, payment_hash, option),
 						(3, payment_id, option),
 						(5, fee_paid_msat, option),
 						(7, amount_msat, option),
-						(9, bolt12_invoice, option),
+						(9, invoice_type, option),
+						(11, payment_nonce, option),
 					});
 					if payment_hash.is_none() {
 						payment_hash = Some(PaymentHash(
 							Sha256::hash(&payment_preimage.0[..]).to_byte_array(),
 						));
 					}
+					let bolt12_invoice = invoice_type.map(|invoice| {
+						PaidBolt12Invoice::new(invoice, payment_preimage, payment_nonce)
+					});
 					Ok(Some(Event::PaymentSent {
 						payment_id,
 						payment_preimage,

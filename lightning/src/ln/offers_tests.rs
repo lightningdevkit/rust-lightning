@@ -58,11 +58,10 @@ use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, Init, NodeAnnou
 use crate::ln::outbound_payment::IDEMPOTENCY_TIMEOUT_TICKS;
 use crate::offers::invoice::Bolt12Invoice;
 use crate::offers::invoice_error::InvoiceError;
-use crate::offers::payer_proof::Bolt12InvoiceType;
 use crate::offers::invoice_request::{InvoiceRequest, InvoiceRequestFields, InvoiceRequestVerifiedFromOffer};
 use crate::offers::nonce::Nonce;
 use crate::offers::parse::Bolt12SemanticError;
-use crate::offers::payer_proof::{PayerProof, PayerProofError};
+use crate::offers::payer_proof::{Bolt12InvoiceType, PaidBolt12Invoice, PayerProof, PayerProofError};
 use crate::types::payment::PaymentPreimage;
 use crate::onion_message::messenger::{DefaultMessageRouter, Destination, MessageSendInstructions, NodeIdMessageRouter, NullMessageRouter, PeeledOnion, DUMMY_HOPS_PATH_LENGTH, QR_CODED_DUMMY_HOPS_PATH_LENGTH};
 use crate::onion_message::offers::OffersMessage;
@@ -253,8 +252,8 @@ fn claim_bolt12_payment_with_extra_fees<'a, 'b, 'c>(
 		args = args.with_expected_extra_total_fees_msat(extra);
 	}
 
-	let (inv, _) = claim_payment_along_route(args);
-	assert_eq!(inv, Some(Bolt12InvoiceType::Bolt12Invoice(invoice.clone())));
+	let (paid_invoice, _) = claim_payment_along_route(args);
+	assert_eq!(paid_invoice.as_ref().and_then(|paid| paid.bolt12_invoice()), Some(invoice));
 }
 
 fn extract_offer_nonce<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, message: &OnionMessage) -> Nonce {
@@ -271,7 +270,7 @@ fn extract_offer_nonce<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, message: &OnionMessa
 ///
 /// When the payer receives an invoice through their reply path, the blinded path context
 /// contains the nonce originally used for deriving their payer signing key. This nonce is
-/// needed to build a [`PayerProof`] using [`PayerProofBuilder::build_with_derived_key`].
+/// needed to build a [`PayerProof`] using [`PaidBolt12Invoice::prove_payer_derived`].
 fn extract_payer_context<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, message: &OnionMessage) -> (PaymentId, Nonce) {
 	match node.onion_messenger.peel_onion_message(message) {
 		Ok(PeeledOnion::Offers(_, Some(OffersContext::OutboundPaymentForOffer { payment_id, nonce, .. }), _)) => (payment_id, nonce),
@@ -2731,7 +2730,7 @@ fn creates_and_verifies_payer_proof_after_offer_payment() {
 
 	// Extract the payer nonce and payment_id from Bob's reply path context. In a real wallet,
 	// these would be persisted alongside the payment for later payer proof creation.
-	let (context_payment_id, payer_nonce) = extract_payer_context(bob, &onion_message);
+	let (context_payment_id, _payer_nonce) = extract_payer_context(bob, &onion_message);
 	assert_eq!(context_payment_id, payment_id);
 
 	// Route the payment
@@ -2758,39 +2757,42 @@ fn creates_and_verifies_payer_proof_after_offer_payment() {
 		_ => panic!("Expected Event::PaymentClaimable"),
 	};
 
-	claim_payment(bob, &[alice], payment_preimage);
+	let paid_invoice = claim_payment(bob, &[alice], payment_preimage).unwrap();
 	expect_recent_payment!(bob, RecentPaymentDetails::Fulfilled, payment_id);
 
 	// --- Payer Proof Creation ---
 	// Bob (the payer) creates a proof-of-payment with selective disclosure.
 	// He includes the offer description and invoice amount, but omits other fields for privacy.
 	let expanded_key = bob.keys_manager.get_expanded_key();
-	let proof = invoice.payer_proof_builder(payment_preimage).unwrap()
+	let secp_ctx = Secp256k1::new();
+	let payer_proof = paid_invoice.prove_payer_derived(
+		&expanded_key, payment_id, &secp_ctx,
+	).unwrap()
 		.include_offer_description()
 		.include_invoice_amount()
 		.include_invoice_created_at()
-		.build_with_derived_key(&expanded_key, payer_nonce, payment_id, None)
+		.build_and_sign(None)
 		.unwrap();
 
 	// Check proof contents match the original payment
-	assert_eq!(proof.preimage(), payment_preimage);
-	assert_eq!(proof.payment_hash(), invoice.payment_hash());
-	assert_eq!(proof.payer_id(), invoice.payer_signing_pubkey());
-	assert_eq!(proof.issuer_signing_pubkey(), invoice.signing_pubkey());
-	assert!(proof.payer_note().is_none());
+	assert_eq!(payer_proof.preimage(), payment_preimage);
+	assert_eq!(payer_proof.payment_hash(), invoice.payment_hash());
+	assert_eq!(payer_proof.payer_id(), invoice.payer_signing_pubkey());
+	assert_eq!(payer_proof.issuer_signing_pubkey(), invoice.signing_pubkey());
+	assert!(payer_proof.payer_note().is_none());
 
 	// --- Serialization Round-Trip ---
 	// The proof can be serialized to a bech32 string (lnp...) for sharing.
-	let encoded = proof.to_string();
+	let encoded = payer_proof.to_string();
 	assert!(encoded.starts_with("lnp1"));
 
 	// Round-trip through TLV bytes: re-parse the raw bytes (verification happens at parse time).
-	let decoded = PayerProof::try_from(proof.bytes().to_vec()).unwrap();
-	assert_eq!(decoded.preimage(), proof.preimage());
-	assert_eq!(decoded.payment_hash(), proof.payment_hash());
-	assert_eq!(decoded.payer_id(), proof.payer_id());
-	assert_eq!(decoded.issuer_signing_pubkey(), proof.issuer_signing_pubkey());
-	assert_eq!(decoded.merkle_root(), proof.merkle_root());
+	let decoded = PayerProof::try_from(payer_proof.bytes().to_vec()).unwrap();
+	assert_eq!(decoded.preimage(), payer_proof.preimage());
+	assert_eq!(decoded.payment_hash(), payer_proof.payment_hash());
+	assert_eq!(decoded.payer_id(), payer_proof.payer_id());
+	assert_eq!(decoded.issuer_signing_pubkey(), payer_proof.issuer_signing_pubkey());
+	assert_eq!(decoded.merkle_root(), payer_proof.merkle_root());
 }
 
 /// Tests payer proof creation with a payer note, selective disclosure of specific invoice
@@ -2858,54 +2860,67 @@ fn creates_payer_proof_with_note_and_selective_disclosure() {
 		_ => panic!("Expected Event::PaymentClaimable"),
 	};
 
-	claim_payment(bob, &[alice], payment_preimage);
+	let paid_invoice = claim_payment(bob, &[alice], payment_preimage).unwrap();
 	expect_recent_payment!(bob, RecentPaymentDetails::Fulfilled, payment_id);
 
 	// --- Test 1: Wrong preimage is rejected ---
 	let wrong_preimage = PaymentPreimage([0xDE; 32]);
-	assert!(invoice.payer_proof_builder(wrong_preimage).is_err());
+	let wrong_paid = PaidBolt12Invoice::new(
+		Bolt12InvoiceType::Bolt12Invoice(invoice.clone()), wrong_preimage, Some(payer_nonce),
+	);
+	assert!(matches!(wrong_paid.prove_payer(), Err(PayerProofError::PreimageMismatch)));
 
-	// --- Test 2: Wrong payment_id causes key derivation failure ---
+	// --- Test 2: Wrong payment_id causes key derivation failure at construction ---
 	let expanded_key = bob.keys_manager.get_expanded_key();
+	let secp_ctx = Secp256k1::new();
 	let wrong_payment_id = PaymentId([0xFF; 32]);
-	let result = invoice.payer_proof_builder(payment_preimage).unwrap()
-		.build_with_derived_key(&expanded_key, payer_nonce, wrong_payment_id, None);
+	let result = paid_invoice.prove_payer_derived(
+		&expanded_key, wrong_payment_id, &secp_ctx,
+	);
 	assert!(matches!(result, Err(PayerProofError::KeyDerivationFailed)));
 
-	// --- Test 3: Wrong nonce causes key derivation failure ---
+	// --- Test 3: Wrong nonce causes key derivation failure at construction ---
 	let wrong_nonce = Nonce::from_entropy_source(&chanmon_cfgs[0].keys_manager);
-	let result = invoice.payer_proof_builder(payment_preimage).unwrap()
-		.build_with_derived_key(&expanded_key, wrong_nonce, payment_id, None);
+	let wrong_nonce_paid = PaidBolt12Invoice::new(
+		Bolt12InvoiceType::Bolt12Invoice(invoice.clone()), payment_preimage, Some(wrong_nonce),
+	);
+	let result = wrong_nonce_paid.prove_payer_derived(
+		&expanded_key, payment_id, &secp_ctx,
+	);
 	assert!(matches!(result, Err(PayerProofError::KeyDerivationFailed)));
 
 	// --- Test 4: Minimal proof (only required fields) ---
-	let minimal_proof = invoice.payer_proof_builder(payment_preimage).unwrap()
-		.build_with_derived_key(&expanded_key, payer_nonce, payment_id, None)
+	let minimal_payer_proof = paid_invoice.prove_payer_derived(
+		&expanded_key, payment_id, &secp_ctx,
+	).unwrap()
+		.build_and_sign(None)
 		.unwrap();
 	// --- Test 5: Proof with selective disclosure and payer note ---
-	let proof_with_note = invoice.payer_proof_builder(payment_preimage).unwrap()
+	let payer_proof_with_note = paid_invoice.prove_payer_derived(
+		&expanded_key, payment_id, &secp_ctx,
+	).unwrap()
 		.include_offer_description()
 		.include_offer_issuer()
 		.include_invoice_amount()
 		.include_invoice_created_at()
-		.build_with_derived_key(&expanded_key, payer_nonce, payment_id, Some("Paid for coffee"))
+		.build_and_sign(Some("Paid for coffee".into()))
 		.unwrap();
-	assert_eq!(proof_with_note.payer_note().map(|p| p.0), Some("Paid for coffee"));
+	assert_eq!(payer_proof_with_note.payer_note().map(|note| note.0), Some("Paid for coffee"));
 
 	// Both proofs should verify and have the same core fields
-	assert_eq!(minimal_proof.preimage(), proof_with_note.preimage());
-	assert_eq!(minimal_proof.payment_hash(), proof_with_note.payment_hash());
-	assert_eq!(minimal_proof.payer_id(), proof_with_note.payer_id());
-	assert_eq!(minimal_proof.issuer_signing_pubkey(), proof_with_note.issuer_signing_pubkey());
+	assert_eq!(minimal_payer_proof.preimage(), payer_proof_with_note.preimage());
+	assert_eq!(minimal_payer_proof.payment_hash(), payer_proof_with_note.payment_hash());
+	assert_eq!(minimal_payer_proof.payer_id(), payer_proof_with_note.payer_id());
+	assert_eq!(minimal_payer_proof.issuer_signing_pubkey(), payer_proof_with_note.issuer_signing_pubkey());
 
 	// The merkle roots are the same since both reconstruct from the same invoice
-	assert_eq!(minimal_proof.merkle_root(), proof_with_note.merkle_root());
+	assert_eq!(minimal_payer_proof.merkle_root(), payer_proof_with_note.merkle_root());
 
 	// --- Test 6: Round-trip the proof with note through TLV bytes ---
-	let encoded = proof_with_note.to_string();
+	let encoded = payer_proof_with_note.to_string();
 	assert!(encoded.starts_with("lnp1"));
 
-	let decoded = PayerProof::try_from(proof_with_note.bytes().to_vec()).unwrap();
-	assert_eq!(decoded.payer_note().map(|p| p.0), Some("Paid for coffee"));
+	let decoded = PayerProof::try_from(payer_proof_with_note.bytes().to_vec()).unwrap();
+	assert_eq!(decoded.payer_note().map(|note| note.0), Some("Paid for coffee"));
 	assert_eq!(decoded.preimage(), payment_preimage);
 }

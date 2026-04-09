@@ -1225,11 +1225,11 @@ tlv_stream!(OfferTlvStream, OfferTlvStreamRef<'a>, OFFER_TYPES, {
 	(OFFER_METADATA_TYPE, metadata: (Vec<u8>, WithoutLength)),
 	(6, currency: [u8; 3]),
 	(8, amount: (u64, HighZeroBytesDroppedBigSize)),
-	(10, description: (String, WithoutLength)),
+	(OFFER_DESCRIPTION_TYPE, description: (String, WithoutLength)),
 	(12, features: (OfferFeatures, WithoutLength)),
 	(14, absolute_expiry: (u64, HighZeroBytesDroppedBigSize)),
 	(16, paths: (Vec<BlindedMessagePath>, WithoutLength)),
-	(18, issuer: (String, WithoutLength)),
+	(OFFER_ISSUER_TYPE, issuer: (String, WithoutLength)),
 	(20, quantity_max: (u64, HighZeroBytesDroppedBigSize)),
 	(OFFER_ISSUER_ID_TYPE, issuer_id: PublicKey),
 });

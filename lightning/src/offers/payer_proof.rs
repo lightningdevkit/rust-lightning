@@ -22,26 +22,33 @@ use alloc::collections::BTreeSet;
 use crate::io;
 use crate::ln::channelmanager::PaymentId;
 use crate::ln::inbound_payment::ExpandedKey;
+use crate::ln::msgs::DecodeError;
 use crate::offers::invoice::{
 	Bolt12Invoice, INVOICE_AMOUNT_TYPE, INVOICE_CREATED_AT_TYPE, INVOICE_FEATURES_TYPE,
 	INVOICE_NODE_ID_TYPE, INVOICE_PAYMENT_HASH_TYPE, SIGNATURE_TAG,
 };
 use crate::offers::invoice_request::INVOICE_REQUEST_PAYER_ID_TYPE;
 use crate::offers::merkle::{
-	self, SelectiveDisclosure, SelectiveDisclosureError, TaggedHash, TlvStream, SIGNATURE_TYPES,
+	self, SelectiveDisclosure, SelectiveDisclosureError, SignError, TaggedHash, TlvRecord,
+	TlvStream, SIGNATURE_TYPES,
 };
 use crate::offers::nonce::Nonce;
-use crate::offers::offer::{OFFER_DESCRIPTION_TYPE, OFFER_ISSUER_TYPE};
-use crate::offers::parse::Bech32Encode;
+use crate::offers::offer::{EXPERIMENTAL_OFFER_TYPES, OFFER_DESCRIPTION_TYPE, OFFER_ISSUER_TYPE};
+use crate::offers::parse::{Bech32Encode, Bolt12ParseError, Bolt12SemanticError};
 use crate::offers::payer::PAYER_METADATA_TYPE;
 use crate::offers::static_invoice::StaticInvoice;
 use crate::types::payment::{PaymentHash, PaymentPreimage};
-use crate::util::ser::{BigSize, HighZeroBytesDroppedBigSize, Readable, Writeable};
+use crate::util::ser::{
+	BigSize, HighZeroBytesDroppedBigSize, IterableOwned, LengthReadable, Readable, WithoutLength,
+	Writeable, Writer,
+};
 use lightning_types::string::PrintableString;
 
 use bitcoin::hashes::{sha256, Hash, HashEngine};
+use bitcoin::secp256k1;
+use bitcoin::secp256k1::constants::SCHNORR_SIGNATURE_SIZE;
 use bitcoin::secp256k1::schnorr::Signature;
-use bitcoin::secp256k1::{Message, PublicKey, Secp256k1};
+use bitcoin::secp256k1::{Keypair, PublicKey, Secp256k1};
 
 use core::convert::TryFrom;
 use core::time::Duration;
@@ -49,28 +56,12 @@ use core::time::Duration;
 #[allow(unused_imports)]
 use crate::prelude::*;
 
-const TLV_SIGNATURE: u64 = 240;
-const TLV_PREIMAGE: u64 = 242;
-const TLV_OMITTED_TLVS: u64 = 244;
-const TLV_MISSING_HASHES: u64 = 246;
-const TLV_LEAF_HASHES: u64 = 248;
-const TLV_PAYER_SIGNATURE: u64 = 250;
-
-/// Human-readable prefix for payer proofs in bech32 encoding.
-pub const PAYER_PROOF_HRP: &str = "lnp";
-
-/// Tag for payer signature computation per BOLT 12 signature calculation.
-/// Format: "lightning" || messagename || fieldname
-const PAYER_SIGNATURE_TAG: &str = concat!("lightning", "payer_proof", "payer_signature");
-
 /// The type of BOLT 12 invoice that was paid.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Bolt12InvoiceType {
-	/// The BOLT 12 invoice specified by the BOLT 12 specification,
-	/// allowing the user to perform proof of payment.
+	/// A standard BOLT 12 invoice, allowing proof of payment.
 	Bolt12Invoice(Bolt12Invoice),
-	/// The Static invoice, used in the async payment specification update proposal,
-	/// where the user cannot perform proof of payment.
+	/// A static invoice used in async payments, where proof of payment is not possible.
 	StaticInvoice(StaticInvoice),
 }
 
@@ -79,9 +70,109 @@ impl_writeable_tlv_based_enum!(Bolt12InvoiceType,
 	{2, StaticInvoice} => (),
 );
 
+/// A paid BOLT 12 invoice with the data needed to construct payer proofs.
+///
+/// For standard [`Bolt12Invoice`] payments, use [`Self::prove_payer`] or
+/// [`Self::prove_payer_derived`] to build a [`PayerProof`] that selectively discloses
+/// invoice fields to a third-party verifier.
+///
+/// For async payments (i.e., [`StaticInvoice`]), payer proofs are not supported and those
+/// methods will return [`PayerProofError::IncompatibleInvoice`].
+///
+/// Surfaced in [`Event::PaymentSent::bolt12_invoice`].
+///
+/// [`Event::PaymentSent::bolt12_invoice`]: crate::events::Event::PaymentSent::bolt12_invoice
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PaidBolt12Invoice {
+	invoice: Bolt12InvoiceType,
+	preimage: PaymentPreimage,
+	nonce: Option<Nonce>,
+}
+
+impl PaidBolt12Invoice {
+	pub(crate) fn new(
+		invoice: Bolt12InvoiceType, preimage: PaymentPreimage, nonce: Option<Nonce>,
+	) -> Self {
+		Self { invoice, preimage, nonce }
+	}
+
+	/// The payment preimage proving the invoice was paid.
+	pub fn preimage(&self) -> PaymentPreimage {
+		self.preimage
+	}
+
+	pub(crate) fn invoice_type(&self) -> &Bolt12InvoiceType {
+		&self.invoice
+	}
+
+	pub(crate) fn nonce(&self) -> Option<Nonce> {
+		self.nonce
+	}
+
+	/// Returns the [`Bolt12Invoice`] if the payment was for a standard BOLT 12 invoice.
+	pub fn bolt12_invoice(&self) -> Option<&Bolt12Invoice> {
+		match &self.invoice {
+			Bolt12InvoiceType::Bolt12Invoice(invoice) => Some(invoice),
+			_ => None,
+		}
+	}
+
+	/// Returns the [`StaticInvoice`] if the payment was for an async payment.
+	pub fn static_invoice(&self) -> Option<&StaticInvoice> {
+		match &self.invoice {
+			Bolt12InvoiceType::StaticInvoice(invoice) => Some(invoice),
+			_ => None,
+		}
+	}
+
+	/// Creates a [`PayerProofBuilder`] for this paid invoice.
+	pub fn prove_payer(
+		&self,
+	) -> Result<PayerProofBuilder<'_, ExplicitSigningKey>, PayerProofError> {
+		let invoice = self.bolt12_invoice().ok_or(PayerProofError::IncompatibleInvoice)?;
+		PayerProofBuilder::new(invoice, self.preimage)
+	}
+
+	/// Creates a [`PayerProofBuilder`] with a pre-derived signing keypair.
+	///
+	/// This re-derives the payer signing key, failing early if derivation fails.
+	pub fn prove_payer_derived<T: secp256k1::Signing>(
+		&self, expanded_key: &ExpandedKey, payment_id: PaymentId, secp_ctx: &Secp256k1<T>,
+	) -> Result<PayerProofBuilder<'_, DerivedSigningKey>, PayerProofError> {
+		let nonce = self.nonce.ok_or(PayerProofError::KeyDerivationFailed)?;
+		let invoice = self.bolt12_invoice().ok_or(PayerProofError::IncompatibleInvoice)?;
+		PayerProofBuilder::new_derived(
+			invoice,
+			self.preimage,
+			expanded_key,
+			nonce,
+			payment_id,
+			secp_ctx,
+		)
+	}
+}
+
+const PAYER_PROOF_SIGNATURE_TYPE: u64 = 240;
+const PAYER_PROOF_PREIMAGE_TYPE: u64 = 242;
+const PAYER_PROOF_OMITTED_TLVS_TYPE: u64 = 244;
+const PAYER_PROOF_MISSING_HASHES_TYPE: u64 = 246;
+const PAYER_PROOF_LEAF_HASHES_TYPE: u64 = 248;
+const PAYER_PROOF_PAYER_SIGNATURE_TYPE: u64 = 250;
+
+/// Human-readable prefix for payer proofs in bech32 encoding.
+pub const PAYER_PROOF_HRP: &str = "lnp";
+
+/// Tag for payer signature computation per BOLT 12 signature calculation.
+/// Format: "lightning" || messagename || fieldname
+const PAYER_SIGNATURE_TAG: &str = concat!("lightning", "payer_proof", "payer_signature");
+
 /// Error when building or verifying a payer proof.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PayerProofError {
+	/// The invoice is not a [`Bolt12Invoice`] (e.g., it is a [`StaticInvoice`]).
+	///
+	/// [`StaticInvoice`]: crate::offers::static_invoice::StaticInvoice
+	IncompatibleInvoice,
 	/// The preimage doesn't match the invoice's payment hash.
 	PreimageMismatch,
 	/// Error during merkle tree operations.
@@ -101,7 +192,7 @@ pub enum PayerProofError {
 	SignatureTypeNotAllowed,
 
 	/// Error decoding the payer proof.
-	DecodeError(crate::ln::msgs::DecodeError),
+	DecodeError(DecodeError),
 }
 
 impl From<SelectiveDisclosureError> for PayerProofError {
@@ -110,8 +201,8 @@ impl From<SelectiveDisclosureError> for PayerProofError {
 	}
 }
 
-impl From<crate::ln::msgs::DecodeError> for PayerProofError {
-	fn from(e: crate::ln::msgs::DecodeError) -> Self {
+impl From<DecodeError> for PayerProofError {
+	fn from(e: DecodeError) -> Self {
 		PayerProofError::DecodeError(e)
 	}
 }
@@ -147,51 +238,115 @@ struct DisclosedFields {
 	invoice_created_at: Option<Duration>,
 }
 
+/// The signing key was explicitly provided.
+pub struct ExplicitSigningKey {}
+
+/// The signing key was derived from an [`ExpandedKey`] and [`Nonce`].
+pub struct DerivedSigningKey(Keypair);
+
 /// Builds a [`PayerProof`] from a paid invoice and its preimage.
 ///
 /// By default, only the required fields are included (payer_id, payment_hash,
 /// issuer_signing_pubkey). Additional fields can be included for selective disclosure
 /// using the `include_*` methods.
-pub struct PayerProofBuilder<'a> {
+pub struct PayerProofBuilder<'a, S: SigningStrategy> {
 	invoice: &'a Bolt12Invoice,
 	preimage: PaymentPreimage,
 	included_types: BTreeSet<u64>,
-	invoice_bytes: Vec<u8>,
+	signing_strategy: S,
 }
 
-impl<'a> PayerProofBuilder<'a> {
-	/// Create a new builder from a paid invoice and its preimage.
+/// Sealed trait for signing strategy type-state.
+pub trait SigningStrategy: sealed_signing::Sealed {}
+impl SigningStrategy for ExplicitSigningKey {}
+impl SigningStrategy for DerivedSigningKey {}
+
+mod sealed_signing {
+	pub trait Sealed {}
+	impl Sealed for super::ExplicitSigningKey {}
+	impl Sealed for super::DerivedSigningKey {}
+}
+
+impl<'a> PayerProofBuilder<'a, ExplicitSigningKey> {
+	/// Create a new builder from an invoice and its payment preimage.
 	///
 	/// Returns an error if the preimage doesn't match the invoice's payment hash.
-	pub(super) fn new(
-		invoice: &'a Bolt12Invoice, preimage: PaymentPreimage,
-	) -> Result<Self, PayerProofError> {
+	fn new(invoice: &'a Bolt12Invoice, preimage: PaymentPreimage) -> Result<Self, PayerProofError> {
 		let computed_hash = sha256::Hash::hash(&preimage.0);
 		if computed_hash.as_byte_array() != &invoice.payment_hash().0 {
 			return Err(PayerProofError::PreimageMismatch);
 		}
 
-		let mut invoice_bytes = Vec::new();
-		invoice.write(&mut invoice_bytes).expect("Vec write should not fail");
+		let invoice_bytes = invoice.invoice_bytes();
 
 		let mut included_types = BTreeSet::new();
 		included_types.insert(INVOICE_REQUEST_PAYER_ID_TYPE);
 		included_types.insert(INVOICE_PAYMENT_HASH_TYPE);
 		included_types.insert(INVOICE_NODE_ID_TYPE);
 
-		// Per spec, invoice_features MUST be included "if present" — meaning if the
-		// TLV exists in the invoice byte stream, regardless of whether the parsed
-		// value is empty. Check the raw bytes so we handle invoices from other
-		// implementations that may serialize empty features.
 		let has_features_tlv =
-			TlvStream::new(&invoice_bytes).any(|r| r.r#type == INVOICE_FEATURES_TYPE);
+			TlvStream::new(invoice_bytes).any(|r| r.r#type == INVOICE_FEATURES_TYPE);
 		if has_features_tlv {
 			included_types.insert(INVOICE_FEATURES_TYPE);
 		}
 
-		Ok(Self { invoice, preimage, included_types, invoice_bytes })
+		Ok(Self { invoice, preimage, included_types, signing_strategy: ExplicitSigningKey {} })
 	}
 
+	/// Builds an [`UnsignedPayerProof`] that can be signed with [`UnsignedPayerProof::sign`].
+	pub fn build(
+		self, payer_note: Option<String>,
+	) -> Result<UnsignedPayerProof<'a>, PayerProofError> {
+		self.build_unsigned(payer_note)
+	}
+}
+
+impl<'a> PayerProofBuilder<'a, DerivedSigningKey> {
+	/// Create a new builder with a pre-derived signing keypair.
+	///
+	/// Derives the payer signing key using the same derivation scheme as invoice requests
+	/// created with `deriving_signing_pubkey`. Fails early if key derivation fails.
+	fn new_derived<T: secp256k1::Signing>(
+		invoice: &'a Bolt12Invoice, preimage: PaymentPreimage, expanded_key: &ExpandedKey,
+		nonce: Nonce, payment_id: PaymentId, secp_ctx: &Secp256k1<T>,
+	) -> Result<Self, PayerProofError> {
+		let computed_hash = sha256::Hash::hash(&preimage.0);
+		if computed_hash.as_byte_array() != &invoice.payment_hash().0 {
+			return Err(PayerProofError::PreimageMismatch);
+		}
+
+		let keys = invoice
+			.derive_payer_signing_keys(payment_id, nonce, expanded_key, secp_ctx)
+			.map_err(|_| PayerProofError::KeyDerivationFailed)?;
+
+		let invoice_bytes = invoice.invoice_bytes();
+
+		let mut included_types = BTreeSet::new();
+		included_types.insert(INVOICE_REQUEST_PAYER_ID_TYPE);
+		included_types.insert(INVOICE_PAYMENT_HASH_TYPE);
+		included_types.insert(INVOICE_NODE_ID_TYPE);
+
+		let has_features_tlv =
+			TlvStream::new(invoice_bytes).any(|r| r.r#type == INVOICE_FEATURES_TYPE);
+		if has_features_tlv {
+			included_types.insert(INVOICE_FEATURES_TYPE);
+		}
+
+		Ok(Self { invoice, preimage, included_types, signing_strategy: DerivedSigningKey(keys) })
+	}
+
+	/// Builds and signs a [`PayerProof`] using the keypair derived at construction time.
+	pub fn build_and_sign(self, payer_note: Option<String>) -> Result<PayerProof, PayerProofError> {
+		let secp_ctx = Secp256k1::signing_only();
+		let keys = self.signing_strategy.0;
+		let unsigned = self.build_unsigned(payer_note)?;
+		unsigned.sign(|proof: &UnsignedPayerProof| {
+			Ok(secp_ctx.sign_schnorr_no_aux_rand(proof.as_ref().as_digest(), &keys))
+		})
+	}
+}
+
+impl<'a, S: SigningStrategy> PayerProofBuilder<'a, S> {
 	/// Include a specific TLV type in the proof.
 	///
 	/// Returns an error if the type is not allowed (e.g., invreq_metadata or
@@ -232,53 +387,23 @@ impl<'a> PayerProofBuilder<'a> {
 		self
 	}
 
-	/// Builds a signed [`PayerProof`] using the provided signing function.
-	///
-	/// Use this when you have direct access to the payer's signing key.
-	pub fn build<F>(self, sign_fn: F, note: Option<&str>) -> Result<PayerProof, PayerProofError>
-	where
-		F: FnOnce(&Message) -> Result<Signature, ()>,
-	{
-		let unsigned = self.build_unsigned()?;
-		unsigned.sign(sign_fn, note)
-	}
-
-	/// Builds a signed [`PayerProof`] using a key derived from an [`ExpandedKey`] and [`Nonce`].
-	///
-	/// This re-derives the payer signing key using the same derivation scheme as invoice requests
-	/// created with `deriving_signing_pubkey`. The `nonce` and `payment_id` must be the same ones
-	/// used when creating the original invoice request (available from the
-	/// [`OffersContext::OutboundPaymentForOffer`]).
-	///
-	/// [`OffersContext::OutboundPaymentForOffer`]: crate::blinded_path::message::OffersContext::OutboundPaymentForOffer
-	pub fn build_with_derived_key(
-		self, expanded_key: &ExpandedKey, nonce: Nonce, payment_id: PaymentId, note: Option<&str>,
-	) -> Result<PayerProof, PayerProofError> {
-		let secp_ctx = Secp256k1::signing_only();
-		let keys = self
-			.invoice
-			.derive_payer_signing_keys(payment_id, nonce, expanded_key, &secp_ctx)
-			.map_err(|_| PayerProofError::KeyDerivationFailed)?;
-
-		let unsigned = self.build_unsigned()?;
-		unsigned.sign(|message| Ok(secp_ctx.sign_schnorr_no_aux_rand(message, &keys)), note)
-	}
-
-	fn build_unsigned(self) -> Result<UnsignedPayerProof, PayerProofError> {
-		let invoice_bytes = self.invoice_bytes;
-		let mut bytes_without_sig = Vec::with_capacity(invoice_bytes.len());
-		for r in TlvStream::new(&invoice_bytes).filter(|r| !SIGNATURE_TYPES.contains(&r.r#type)) {
-			bytes_without_sig.extend_from_slice(r.record_bytes);
-		}
+	fn build_unsigned(
+		self, payer_note: Option<String>,
+	) -> Result<UnsignedPayerProof<'a>, PayerProofError> {
+		let invoice_bytes = self.invoice.invoice_bytes();
 		let disclosed_fields =
-			extract_disclosed_fields(TlvStream::new(&invoice_bytes).filter(|r| {
+			DisclosedFields::from_records(TlvStream::new(invoice_bytes).filter(|r| {
 				self.included_types.contains(&r.r#type) && !SIGNATURE_TYPES.contains(&r.r#type)
 			}))?;
 
-		let disclosure =
-			merkle::compute_selective_disclosure(&bytes_without_sig, &self.included_types)?;
+		let disclosure = merkle::compute_selective_disclosure(
+			TlvStream::new(invoice_bytes).filter(|r| !SIGNATURE_TYPES.contains(&r.r#type)),
+			&self.included_types,
+		)?;
 
 		let invoice_signature = self.invoice.signature();
+
+		let tagged_hash = payer_signature_hash(payer_note.as_deref(), &disclosure.merkle_root);
 
 		Ok(UnsignedPayerProof {
 			invoice_signature,
@@ -290,37 +415,97 @@ impl<'a> PayerProofBuilder<'a> {
 			included_types: self.included_types,
 			disclosed_fields,
 			disclosure,
+			payer_note,
+			tagged_hash,
 		})
 	}
 }
 
+/// Computes the [`TaggedHash`] for a payer proof signature.
+///
+/// The payer signature is computed over `H(tag||tag||H(note||merkle_root))`. The inner
+/// hash `H(note||merkle_root)` serves as the "merkle root" for [`TaggedHash::from_merkle_root`].
+fn payer_signature_hash(note: Option<&str>, merkle_root: &sha256::Hash) -> TaggedHash {
+	let mut engine = sha256::Hash::engine();
+	if let Some(n) = note {
+		engine.input(n.as_bytes());
+	}
+	engine.input(merkle_root.as_ref());
+	let inner_hash = sha256::Hash::from_engine(engine);
+
+	TaggedHash::from_merkle_root(PAYER_SIGNATURE_TAG, inner_hash)
+}
+
 /// An unsigned [`PayerProof`] ready for signing.
-struct UnsignedPayerProof {
+pub struct UnsignedPayerProof<'a> {
 	invoice_signature: Signature,
 	preimage: PaymentPreimage,
 	payer_id: PublicKey,
 	payment_hash: PaymentHash,
 	issuer_signing_pubkey: PublicKey,
-	invoice_bytes: Vec<u8>,
+	invoice_bytes: &'a [u8],
 	included_types: BTreeSet<u64>,
 	disclosed_fields: DisclosedFields,
 	disclosure: SelectiveDisclosure,
+	payer_note: Option<String>,
+	tagged_hash: TaggedHash,
 }
 
-impl UnsignedPayerProof {
-	fn sign<F>(self, sign_fn: F, note: Option<&str>) -> Result<PayerProof, PayerProofError>
-	where
-		F: FnOnce(&Message) -> Result<Signature, ()>,
-	{
-		let message = Self::compute_payer_signature_message(note, &self.disclosure.merkle_root);
-		let payer_signature = sign_fn(&message).map_err(|_| PayerProofError::SigningError)?;
+impl AsRef<TaggedHash> for UnsignedPayerProof<'_> {
+	fn as_ref(&self) -> &TaggedHash {
+		&self.tagged_hash
+	}
+}
 
-		let secp_ctx = Secp256k1::verification_only();
-		secp_ctx
-			.verify_schnorr(&payer_signature, &message, &self.payer_id.into())
-			.map_err(|_| PayerProofError::InvalidPayerSignature)?;
+/// A function for signing an [`UnsignedPayerProof`].
+pub trait SignPayerProofFn {
+	/// Signs a [`TaggedHash`] computed over the payer note and the invoice's merkle root.
+	fn sign_payer_proof(&self, message: &UnsignedPayerProof) -> Result<Signature, ()>;
+}
 
-		let bytes = self.serialize_payer_proof(&payer_signature, note);
+impl<F> SignPayerProofFn for F
+where
+	F: Fn(&UnsignedPayerProof) -> Result<Signature, ()>,
+{
+	fn sign_payer_proof(&self, message: &UnsignedPayerProof) -> Result<Signature, ()> {
+		self(message)
+	}
+}
+
+impl<F> merkle::SignFn<UnsignedPayerProof<'_>> for F
+where
+	F: SignPayerProofFn,
+{
+	fn sign(&self, message: &UnsignedPayerProof) -> Result<Signature, ()> {
+		self.sign_payer_proof(message)
+	}
+}
+
+/// Compound value for the payer signature TLV (type 250): a schnorr signature
+/// followed by optional UTF-8 note bytes.
+struct PayerSignatureWithNote<'a> {
+	signature: &'a Signature,
+	note_bytes: &'a [u8],
+}
+
+impl Writeable for PayerSignatureWithNote<'_> {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.signature.write(w)?;
+		w.write_all(self.note_bytes)
+	}
+}
+
+impl UnsignedPayerProof<'_> {
+	/// Signs the [`UnsignedPayerProof`] using the given function.
+	pub fn sign<F: SignPayerProofFn>(self, sign: F) -> Result<PayerProof, PayerProofError> {
+		let pubkey = self.payer_id;
+		let payer_signature = merkle::sign_message(sign, &self, pubkey).map_err(|e| match e {
+			SignError::Signing => PayerProofError::SigningError,
+			SignError::Verification(_) => PayerProofError::InvalidPayerSignature,
+		})?;
+
+		let bytes =
+			self.serialize_payer_proof(&payer_signature).expect("Vec write should not fail");
 
 		Ok(PayerProof {
 			bytes,
@@ -331,101 +516,52 @@ impl UnsignedPayerProof {
 				preimage: self.preimage,
 				invoice_signature: self.invoice_signature,
 				payer_signature,
-				payer_note: note.map(String::from),
+				payer_note: self.payer_note,
 				disclosed_fields: self.disclosed_fields,
 			},
 			merkle_root: self.disclosure.merkle_root,
 		})
 	}
 
-	/// Compute the payer signature message per BOLT 12 signature calculation.
-	fn compute_payer_signature_message(note: Option<&str>, merkle_root: &sha256::Hash) -> Message {
-		let mut inner_hasher = sha256::Hash::engine();
-		if let Some(n) = note {
-			inner_hasher.input(n.as_bytes());
-		}
-		inner_hasher.input(merkle_root.as_ref());
-		let inner_msg = sha256::Hash::from_engine(inner_hasher);
-
-		let tag_hash = sha256::Hash::hash(PAYER_SIGNATURE_TAG.as_bytes());
-
-		let mut final_hasher = sha256::Hash::engine();
-		final_hasher.input(tag_hash.as_ref());
-		final_hasher.input(tag_hash.as_ref());
-		final_hasher.input(inner_msg.as_ref());
-		let final_digest = sha256::Hash::from_engine(final_hasher);
-
-		Message::from_digest(*final_digest.as_byte_array())
-	}
-
-	fn serialize_payer_proof(&self, payer_signature: &Signature, note: Option<&str>) -> Vec<u8> {
-		let mut bytes = Vec::new();
+	fn serialize_payer_proof(&self, payer_signature: &Signature) -> Result<Vec<u8>, io::Error> {
+		const PAYER_PROOF_ALLOCATION_SIZE: usize = 512;
+		let mut bytes = Vec::with_capacity(PAYER_PROOF_ALLOCATION_SIZE);
 
 		// Preserve TLV ordering by emitting included invoice records below the
 		// payer-proof range first, then payer-proof TLVs (240..=250), then any
 		// disclosed experimental invoice records above the reserved range.
 		for record in TlvStream::new(&self.invoice_bytes)
-			.filter(|r| self.included_types.contains(&r.r#type) && r.r#type < TLV_SIGNATURE)
+			.range(0..PAYER_PROOF_SIGNATURE_TYPE)
+			.filter(|r| self.included_types.contains(&r.r#type))
 		{
 			bytes.extend_from_slice(record.record_bytes);
 		}
 
-		BigSize(TLV_SIGNATURE).write(&mut bytes).expect("Vec write should not fail");
-		BigSize(64).write(&mut bytes).expect("Vec write should not fail");
-		self.invoice_signature.write(&mut bytes).expect("Vec write should not fail");
+		let note_bytes = self.payer_note.as_deref().map(|n| n.as_bytes()).unwrap_or(&[]);
+		let payer_sig = PayerSignatureWithNote { signature: payer_signature, note_bytes };
+		let omitted_markers = if self.disclosure.omitted_markers.is_empty() {
+			None
+		} else {
+			Some(IterableOwned(self.disclosure.omitted_markers.iter().map(|m| BigSize(*m))))
+		};
 
-		BigSize(TLV_PREIMAGE).write(&mut bytes).expect("Vec write should not fail");
-		BigSize(32).write(&mut bytes).expect("Vec write should not fail");
-		bytes.extend_from_slice(&self.preimage.0);
+		encode_tlv_stream!(&mut bytes, {
+			(PAYER_PROOF_SIGNATURE_TYPE, &self.invoice_signature, required),
+			(PAYER_PROOF_PREIMAGE_TYPE, &self.preimage, required),
+			(PAYER_PROOF_OMITTED_TLVS_TYPE, omitted_markers, option),
+			(PAYER_PROOF_MISSING_HASHES_TYPE, &self.disclosure.missing_hashes, optional_vec),
+			(PAYER_PROOF_LEAF_HASHES_TYPE, &self.disclosure.leaf_hashes, optional_vec),
+			(PAYER_PROOF_PAYER_SIGNATURE_TYPE, &payer_sig, required),
+		});
 
-		if !self.disclosure.omitted_markers.is_empty() {
-			let omitted_len: u64 = self
-				.disclosure
-				.omitted_markers
-				.iter()
-				.map(|m| BigSize(*m).serialized_length() as u64)
-				.sum();
-			BigSize(TLV_OMITTED_TLVS).write(&mut bytes).expect("Vec write should not fail");
-			BigSize(omitted_len).write(&mut bytes).expect("Vec write should not fail");
-			for marker in &self.disclosure.omitted_markers {
-				BigSize(*marker).write(&mut bytes).expect("Vec write should not fail");
-			}
-		}
-
-		if !self.disclosure.missing_hashes.is_empty() {
-			let len = self.disclosure.missing_hashes.len() * 32;
-			BigSize(TLV_MISSING_HASHES).write(&mut bytes).expect("Vec write should not fail");
-			BigSize(len as u64).write(&mut bytes).expect("Vec write should not fail");
-			for hash in &self.disclosure.missing_hashes {
-				bytes.extend_from_slice(hash.as_ref());
-			}
-		}
-
-		if !self.disclosure.leaf_hashes.is_empty() {
-			let len = self.disclosure.leaf_hashes.len() * 32;
-			BigSize(TLV_LEAF_HASHES).write(&mut bytes).expect("Vec write should not fail");
-			BigSize(len as u64).write(&mut bytes).expect("Vec write should not fail");
-			for hash in &self.disclosure.leaf_hashes {
-				bytes.extend_from_slice(hash.as_ref());
-			}
-		}
-
-		let note_bytes = note.map(|n| n.as_bytes()).unwrap_or(&[]);
-		let payer_sig_len = 64 + note_bytes.len();
-		BigSize(TLV_PAYER_SIGNATURE).write(&mut bytes).expect("Vec write should not fail");
-		BigSize(payer_sig_len as u64).write(&mut bytes).expect("Vec write should not fail");
-		payer_signature.write(&mut bytes).expect("Vec write should not fail");
-		bytes.extend_from_slice(note_bytes);
-
-		for record in TlvStream::new(&self.invoice_bytes).filter(|r| {
-			self.included_types.contains(&r.r#type)
-				&& !SIGNATURE_TYPES.contains(&r.r#type)
-				&& r.r#type > *SIGNATURE_TYPES.end()
-		}) {
+		for record in TlvStream::new(&self.invoice_bytes)
+			.range(EXPERIMENTAL_OFFER_TYPES.start..)
+			.filter(|r| self.included_types.contains(&r.r#type))
+		{
 			bytes.extend_from_slice(record.record_bytes);
 		}
 
-		bytes
+		Ok(bytes)
 	}
 }
 
@@ -510,12 +646,20 @@ impl AsRef<[u8]> for PayerProof {
 ///
 /// `TlvStream::new()` assumes well-formed input and panics on malformed BigSize
 /// values or out-of-bounds lengths. This function validates the framing first,
-/// returning an error instead of panicking on untrusted input.
-fn validate_tlv_framing(bytes: &[u8]) -> Result<(), crate::ln::msgs::DecodeError> {
-	use crate::ln::msgs::DecodeError;
+/// returning an error instead of panicking on untrusted input. It also checks
+/// strict ascending TLV type ordering (which covers duplicates).
+fn validate_tlv_framing(bytes: &[u8]) -> Result<(), DecodeError> {
 	let mut cursor = io::Cursor::new(bytes);
+	let mut prev_type: Option<u64> = None;
 	while (cursor.position() as usize) < bytes.len() {
-		let _type: BigSize = Readable::read(&mut cursor).map_err(|_| DecodeError::InvalidValue)?;
+		let tlv_type: BigSize =
+			Readable::read(&mut cursor).map_err(|_| DecodeError::InvalidValue)?;
+		if let Some(prev) = prev_type {
+			if tlv_type.0 <= prev {
+				return Err(DecodeError::InvalidValue);
+			}
+		}
+		prev_type = Some(tlv_type.0);
 		let length: BigSize = Readable::read(&mut cursor).map_err(|_| DecodeError::InvalidValue)?;
 		let end = cursor.position().checked_add(length.0).ok_or(DecodeError::InvalidValue)?;
 		let end_usize = usize::try_from(end).map_err(|_| DecodeError::InvalidValue)?;
@@ -527,47 +671,45 @@ fn validate_tlv_framing(bytes: &[u8]) -> Result<(), crate::ln::msgs::DecodeError
 	Ok(())
 }
 
-fn update_disclosed_fields(
-	record: &crate::offers::merkle::TlvRecord<'_>, disclosed_fields: &mut DisclosedFields,
-) -> Result<(), crate::ln::msgs::DecodeError> {
-	use crate::ln::msgs::DecodeError;
+impl DisclosedFields {
+	fn update(&mut self, record: &TlvRecord<'_>) -> Result<(), DecodeError> {
+		match record.r#type {
+			OFFER_DESCRIPTION_TYPE => {
+				self.offer_description = Some(
+					String::from_utf8(record.value_bytes.to_vec())
+						.map_err(|_| DecodeError::InvalidValue)?,
+				);
+			},
+			OFFER_ISSUER_TYPE => {
+				self.offer_issuer = Some(
+					String::from_utf8(record.value_bytes.to_vec())
+						.map_err(|_| DecodeError::InvalidValue)?,
+				);
+			},
+			INVOICE_CREATED_AT_TYPE => {
+				self.invoice_created_at = Some(Duration::from_secs(
+					record.read_value::<HighZeroBytesDroppedBigSize<u64>>()?.0,
+				));
+			},
+			INVOICE_AMOUNT_TYPE => {
+				self.invoice_amount_msats =
+					Some(record.read_value::<HighZeroBytesDroppedBigSize<u64>>()?.0);
+			},
+			_ => {},
+		}
 
-	match record.r#type {
-		OFFER_DESCRIPTION_TYPE => {
-			disclosed_fields.offer_description = Some(
-				String::from_utf8(record.value_bytes.to_vec())
-					.map_err(|_| DecodeError::InvalidValue)?,
-			);
-		},
-		OFFER_ISSUER_TYPE => {
-			disclosed_fields.offer_issuer = Some(
-				String::from_utf8(record.value_bytes.to_vec())
-					.map_err(|_| DecodeError::InvalidValue)?,
-			);
-		},
-		INVOICE_CREATED_AT_TYPE => {
-			disclosed_fields.invoice_created_at = Some(Duration::from_secs(
-				record.read_value::<HighZeroBytesDroppedBigSize<u64>>()?.0,
-			));
-		},
-		INVOICE_AMOUNT_TYPE => {
-			disclosed_fields.invoice_amount_msats =
-				Some(record.read_value::<HighZeroBytesDroppedBigSize<u64>>()?.0);
-		},
-		_ => {},
+		Ok(())
 	}
 
-	Ok(())
-}
-
-fn extract_disclosed_fields<'a>(
-	records: impl core::iter::Iterator<Item = crate::offers::merkle::TlvRecord<'a>>,
-) -> Result<DisclosedFields, crate::ln::msgs::DecodeError> {
-	let mut disclosed_fields = DisclosedFields::default();
-	for record in records {
-		update_disclosed_fields(&record, &mut disclosed_fields)?;
+	fn from_records<'a>(
+		records: impl core::iter::Iterator<Item = TlvRecord<'a>>,
+	) -> Result<Self, DecodeError> {
+		let mut disclosed_fields = DisclosedFields::default();
+		for record in records {
+			disclosed_fields.update(&record)?;
+		}
+		Ok(disclosed_fields)
 	}
-	Ok(disclosed_fields)
 }
 
 // Payer proofs use manual TLV parsing rather than `ParsedMessage` / `tlv_stream!`
@@ -579,12 +721,9 @@ fn extract_disclosed_fields<'a>(
 // of known fields with standard `Readable`/`Writeable` encodings, so it cannot
 // express the passthrough-or-parse logic required here.
 impl TryFrom<Vec<u8>> for PayerProof {
-	type Error = crate::offers::parse::Bolt12ParseError;
+	type Error = Bolt12ParseError;
 
 	fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
-		use crate::ln::msgs::DecodeError;
-		use crate::offers::parse::Bolt12ParseError;
-
 		// Validate TLV framing before passing to TlvStream, which assumes
 		// well-formed input and panics on malformed BigSize or out-of-bounds
 		// lengths. This mirrors the validation that ParsedMessage / CursorReadable
@@ -606,89 +745,61 @@ impl TryFrom<Vec<u8>> for PayerProof {
 		let mut missing_hashes: Vec<sha256::Hash> = Vec::new();
 
 		let mut included_types: BTreeSet<u64> = BTreeSet::new();
-		let mut included_records: Vec<(u64, usize, usize)> = Vec::new();
-
-		let mut prev_tlv_type: Option<u64> = None;
+		let mut included_records: Vec<merkle::TlvRecord<'_>> = Vec::new();
 
 		for record in TlvStream::new(&bytes) {
 			let tlv_type = record.r#type;
-
-			// Strict ascending order check covers both ordering and duplicates.
-			if let Some(prev) = prev_tlv_type {
-				if tlv_type <= prev {
-					return Err(Bolt12ParseError::Decode(DecodeError::InvalidValue));
-				}
-			}
-			prev_tlv_type = Some(tlv_type);
-			update_disclosed_fields(&record, &mut disclosed_fields)?;
+			disclosed_fields.update(&record)?;
 
 			match tlv_type {
 				INVOICE_REQUEST_PAYER_ID_TYPE => {
 					payer_id = Some(record.read_value()?);
 					included_types.insert(tlv_type);
-					included_records.push((
-						tlv_type,
-						record.end - record.record_bytes.len(),
-						record.end,
-					));
+					included_records.push(record);
 				},
 				INVOICE_PAYMENT_HASH_TYPE => {
 					payment_hash = Some(record.read_value()?);
 					included_types.insert(tlv_type);
-					included_records.push((
-						tlv_type,
-						record.end - record.record_bytes.len(),
-						record.end,
-					));
+					included_records.push(record);
 				},
 				INVOICE_NODE_ID_TYPE => {
 					issuer_signing_pubkey = Some(record.read_value()?);
 					included_types.insert(tlv_type);
-					included_records.push((
-						tlv_type,
-						record.end - record.record_bytes.len(),
-						record.end,
-					));
+					included_records.push(record);
 				},
-				TLV_SIGNATURE => {
+				PAYER_PROOF_SIGNATURE_TYPE => {
 					invoice_signature = Some(record.read_value()?);
 				},
-				TLV_PREIMAGE => {
+				PAYER_PROOF_PREIMAGE_TYPE => {
 					preimage = Some(record.read_value()?);
 				},
-				TLV_OMITTED_TLVS => {
+				PAYER_PROOF_OMITTED_TLVS_TYPE => {
 					let mut cursor = io::Cursor::new(record.value_bytes);
 					while (cursor.position() as usize) < record.value_bytes.len() {
 						let marker: BigSize = Readable::read(&mut cursor)?;
 						omitted_markers.push(marker.0);
 					}
 				},
-				TLV_MISSING_HASHES => {
-					if record.value_bytes.len() % 32 != 0 {
-						return Err(Bolt12ParseError::Decode(DecodeError::InvalidValue));
-					}
-					for chunk in record.value_bytes.chunks_exact(32) {
-						let hash_bytes: [u8; 32] = chunk.try_into().expect("chunks_exact(32)");
-						missing_hashes.push(sha256::Hash::from_byte_array(hash_bytes));
-					}
+				PAYER_PROOF_MISSING_HASHES_TYPE => {
+					let WithoutLength(hashes) = LengthReadable::read_from_fixed_length_buffer(
+						&mut &record.value_bytes[..],
+					)?;
+					missing_hashes = hashes;
 				},
-				TLV_LEAF_HASHES => {
-					if record.value_bytes.len() % 32 != 0 {
-						return Err(Bolt12ParseError::Decode(DecodeError::InvalidValue));
-					}
-					for chunk in record.value_bytes.chunks_exact(32) {
-						let hash_bytes: [u8; 32] = chunk.try_into().expect("chunks_exact(32)");
-						leaf_hashes.push(sha256::Hash::from_byte_array(hash_bytes));
-					}
+				PAYER_PROOF_LEAF_HASHES_TYPE => {
+					let WithoutLength(hashes) = LengthReadable::read_from_fixed_length_buffer(
+						&mut &record.value_bytes[..],
+					)?;
+					leaf_hashes = hashes;
 				},
-				TLV_PAYER_SIGNATURE => {
-					if record.value_bytes.len() < 64 {
+				PAYER_PROOF_PAYER_SIGNATURE_TYPE => {
+					if record.value_bytes.len() < SCHNORR_SIGNATURE_SIZE {
 						return Err(Bolt12ParseError::Decode(DecodeError::InvalidValue));
 					}
 					let mut cursor = io::Cursor::new(record.value_bytes);
 					payer_signature = Some(Readable::read(&mut cursor)?);
-					if record.value_bytes.len() > 64 {
-						let note_bytes = &record.value_bytes[64..];
+					if record.value_bytes.len() > SCHNORR_SIGNATURE_SIZE {
+						let note_bytes = &record.value_bytes[SCHNORR_SIGNATURE_SIZE..];
 						payer_note = Some(
 							String::from_utf8(note_bytes.to_vec())
 								.map_err(|_| DecodeError::InvalidValue)?,
@@ -701,13 +812,13 @@ impl TryFrom<Vec<u8>> for PayerProof {
 					}
 					if !SIGNATURE_TYPES.contains(&tlv_type) {
 						// Included invoice TLV record (passthrough for merkle
-						// reconstruction).
+						// reconstruction). These are raw bytes the payer selected
+						// for disclosure; we don't apply the unknown-even check
+						// here because all standard invoice TLV types are even
+						// and the verifier will reject any record that doesn't
+						// match the original invoice's merkle root.
 						included_types.insert(tlv_type);
-						included_records.push((
-							tlv_type,
-							record.end - record.record_bytes.len(),
-							record.end,
-						));
+						included_records.push(record);
 					} else if tlv_type % 2 == 0 {
 						// Unknown even types are mandatory-to-understand per
 						// BOLT convention — reject them.
@@ -719,22 +830,17 @@ impl TryFrom<Vec<u8>> for PayerProof {
 		}
 
 		let payer_id = payer_id.ok_or(Bolt12ParseError::InvalidSemantics(
-			crate::offers::parse::Bolt12SemanticError::MissingPayerSigningPubkey,
+			Bolt12SemanticError::MissingPayerSigningPubkey,
 		))?;
-		let payment_hash = payment_hash.ok_or(Bolt12ParseError::InvalidSemantics(
-			crate::offers::parse::Bolt12SemanticError::MissingPaymentHash,
-		))?;
-		let issuer_signing_pubkey =
-			issuer_signing_pubkey.ok_or(Bolt12ParseError::InvalidSemantics(
-				crate::offers::parse::Bolt12SemanticError::MissingSigningPubkey,
-			))?;
-		let invoice_signature = invoice_signature.ok_or(Bolt12ParseError::InvalidSemantics(
-			crate::offers::parse::Bolt12SemanticError::MissingSignature,
-		))?;
+		let payment_hash = payment_hash
+			.ok_or(Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::MissingPaymentHash))?;
+		let issuer_signing_pubkey = issuer_signing_pubkey
+			.ok_or(Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::MissingSigningPubkey))?;
+		let invoice_signature = invoice_signature
+			.ok_or(Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::MissingSignature))?;
 		let preimage = preimage.ok_or(Bolt12ParseError::Decode(DecodeError::InvalidValue))?;
-		let payer_signature = payer_signature.ok_or(Bolt12ParseError::InvalidSemantics(
-			crate::offers::parse::Bolt12SemanticError::MissingSignature,
-		))?;
+		let payer_signature = payer_signature
+			.ok_or(Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::MissingSignature))?;
 
 		validate_omitted_markers_for_parsing(&omitted_markers, &included_types)
 			.map_err(Bolt12ParseError::Decode)?;
@@ -743,10 +849,8 @@ impl TryFrom<Vec<u8>> for PayerProof {
 			return Err(Bolt12ParseError::Decode(DecodeError::InvalidValue));
 		}
 
-		let included_refs: Vec<(u64, &[u8])> =
-			included_records.iter().map(|&(t, start, end)| (t, &bytes[start..end])).collect();
 		let merkle_root = merkle::reconstruct_merkle_root(
-			&included_refs,
+			&included_records,
 			&leaf_hashes,
 			&omitted_markers,
 			&missing_hashes,
@@ -765,13 +869,8 @@ impl TryFrom<Vec<u8>> for PayerProof {
 			.map_err(|_| Bolt12ParseError::Decode(DecodeError::InvalidValue))?;
 
 		// Verify the payer signature.
-		let message = UnsignedPayerProof::compute_payer_signature_message(
-			payer_note.as_deref(),
-			&merkle_root,
-		);
-		let secp_ctx = Secp256k1::verification_only();
-		secp_ctx
-			.verify_schnorr(&payer_signature, &message, &payer_id.into())
+		let payer_tagged_hash = payer_signature_hash(payer_note.as_deref(), &merkle_root);
+		merkle::verify_signature(&payer_signature, &payer_tagged_hash, payer_id)
 			.map_err(|_| Bolt12ParseError::Decode(DecodeError::InvalidValue))?;
 
 		Ok(PayerProof {
@@ -804,7 +903,7 @@ impl TryFrom<Vec<u8>> for PayerProof {
 ///   type.
 fn validate_omitted_markers_for_parsing(
 	omitted_markers: &[u64], included_types: &BTreeSet<u64>,
-) -> Result<(), crate::ln::msgs::DecodeError> {
+) -> Result<(), DecodeError> {
 	let mut inc_iter = included_types.iter().copied().peekable();
 	// After implicit TLV0 (marker 0), the first minimized marker would be 1
 	let mut expected_next: u64 = 1;
@@ -813,22 +912,22 @@ fn validate_omitted_markers_for_parsing(
 	for &marker in omitted_markers {
 		// MUST NOT contain 0
 		if marker == 0 {
-			return Err(crate::ln::msgs::DecodeError::InvalidValue);
+			return Err(DecodeError::InvalidValue);
 		}
 
 		// MUST NOT contain signature TLV types
 		if SIGNATURE_TYPES.contains(&marker) {
-			return Err(crate::ln::msgs::DecodeError::InvalidValue);
+			return Err(DecodeError::InvalidValue);
 		}
 
 		// MUST be strictly ascending
 		if marker <= prev {
-			return Err(crate::ln::msgs::DecodeError::InvalidValue);
+			return Err(DecodeError::InvalidValue);
 		}
 
 		// MUST NOT contain included TLV types
 		if included_types.contains(&marker) {
-			return Err(crate::ln::msgs::DecodeError::InvalidValue);
+			return Err(DecodeError::InvalidValue);
 		}
 
 		// Validate minimization: marker must equal expected_next (continuation
@@ -842,11 +941,11 @@ fn validate_omitted_markers_for_parsing(
 					break;
 				}
 				if inc_type >= marker {
-					return Err(crate::ln::msgs::DecodeError::InvalidValue);
+					return Err(DecodeError::InvalidValue);
 				}
 			}
 			if !found {
-				return Err(crate::ln::msgs::DecodeError::InvalidValue);
+				return Err(DecodeError::InvalidValue);
 			}
 		}
 
@@ -855,6 +954,14 @@ fn validate_omitted_markers_for_parsing(
 	}
 
 	Ok(())
+}
+
+impl core::str::FromStr for PayerProof {
+	type Err = Bolt12ParseError;
+
+	fn from_str(s: &str) -> Result<Self, <Self as core::str::FromStr>::Err> {
+		Self::from_bech32_str(s)
+	}
 }
 
 impl core::fmt::Display for PayerProof {
@@ -935,11 +1042,12 @@ mod tests {
 		]
 		.into_iter()
 		.collect();
-		let disclosed_fields = extract_disclosed_fields(
+		let disclosed_fields = DisclosedFields::from_records(
 			TlvStream::new(&invoice_bytes).filter(|r| included_types.contains(&r.r#type)),
 		)
 		.unwrap();
-		let disclosure = compute_selective_disclosure(&invoice_bytes, &included_types).unwrap();
+		let disclosure =
+			compute_selective_disclosure(TlvStream::new(&invoice_bytes), &included_types).unwrap();
 
 		let unsigned = UnsignedPayerProof {
 			invoice_signature,
@@ -947,14 +1055,18 @@ mod tests {
 			payer_id,
 			payment_hash,
 			issuer_signing_pubkey,
-			invoice_bytes,
+			invoice_bytes: &invoice_bytes,
 			included_types,
 			disclosed_fields,
+			tagged_hash: payer_signature_hash(None, &disclosure.merkle_root),
 			disclosure,
+			payer_note: None,
 		};
 
 		unsigned
-			.sign(|message| Ok(secp_ctx.sign_schnorr_no_aux_rand(message, &payer_keys)), None)
+			.sign(|proof: &UnsignedPayerProof| {
+				Ok(secp_ctx.sign_schnorr_no_aux_rand(proof.as_ref().as_digest(), &payer_keys))
+			})
 			.unwrap()
 	}
 
@@ -989,11 +1101,12 @@ mod tests {
 			[INVOICE_REQUEST_PAYER_ID_TYPE, INVOICE_PAYMENT_HASH_TYPE, INVOICE_NODE_ID_TYPE]
 				.into_iter()
 				.collect();
-		let disclosed_fields = extract_disclosed_fields(
+		let disclosed_fields = DisclosedFields::from_records(
 			TlvStream::new(&invoice_bytes).filter(|r| included_types.contains(&r.r#type)),
 		)
 		.unwrap();
-		let disclosure = compute_selective_disclosure(&invoice_bytes, &included_types).unwrap();
+		let disclosure =
+			compute_selective_disclosure(TlvStream::new(&invoice_bytes), &included_types).unwrap();
 		assert_eq!(disclosure.omitted_markers, vec![177, 178]);
 
 		let unsigned = UnsignedPayerProof {
@@ -1002,14 +1115,18 @@ mod tests {
 			payer_id,
 			payment_hash,
 			issuer_signing_pubkey,
-			invoice_bytes,
+			invoice_bytes: &invoice_bytes,
 			included_types,
 			disclosed_fields,
+			tagged_hash: payer_signature_hash(None, &disclosure.merkle_root),
 			disclosure,
+			payer_note: None,
 		};
 
 		unsigned
-			.sign(|message| Ok(secp_ctx.sign_schnorr_no_aux_rand(message, &payer_keys)), None)
+			.sign(|proof: &UnsignedPayerProof| {
+				Ok(secp_ctx.sign_schnorr_no_aux_rand(proof.as_ref().as_digest(), &payer_keys))
+			})
 			.unwrap()
 	}
 
@@ -1061,11 +1178,12 @@ mod tests {
 		]
 		.into_iter()
 		.collect();
-		let disclosed_fields = extract_disclosed_fields(
+		let disclosed_fields = DisclosedFields::from_records(
 			TlvStream::new(&invoice_bytes).filter(|r| included_types.contains(&r.r#type)),
 		)
 		.unwrap();
-		let disclosure = compute_selective_disclosure(&invoice_bytes, &included_types).unwrap();
+		let disclosure =
+			compute_selective_disclosure(TlvStream::new(&invoice_bytes), &included_types).unwrap();
 
 		let unsigned = UnsignedPayerProof {
 			invoice_signature,
@@ -1073,14 +1191,18 @@ mod tests {
 			payer_id,
 			payment_hash,
 			issuer_signing_pubkey,
-			invoice_bytes,
+			invoice_bytes: &invoice_bytes,
 			included_types,
 			disclosed_fields,
+			tagged_hash: payer_signature_hash(None, &disclosure.merkle_root),
 			disclosure,
+			payer_note: None,
 		};
 
 		unsigned
-			.sign(|message| Ok(secp_ctx.sign_schnorr_no_aux_rand(message, &payer_keys)), None)
+			.sign(|proof: &UnsignedPayerProof| {
+				Ok(secp_ctx.sign_schnorr_no_aux_rand(proof.as_ref().as_digest(), &payer_keys))
+			})
 			.unwrap()
 	}
 
@@ -1096,7 +1218,7 @@ mod tests {
 		let mut included = BTreeSet::new();
 		included.insert(1);
 
-		let result = compute_selective_disclosure(&tlv_bytes, &included);
+		let result = compute_selective_disclosure(TlvStream::new(&tlv_bytes), &included);
 		assert!(result.is_ok());
 
 		let disclosure = result.unwrap();
@@ -1142,7 +1264,8 @@ mod tests {
 		included.insert(10);
 		included.insert(40);
 
-		let disclosure = compute_selective_disclosure(&tlv_bytes, &included).unwrap();
+		let disclosure =
+			compute_selective_disclosure(TlvStream::new(&tlv_bytes), &included).unwrap();
 
 		// Per spec example, omitted_markers should be [11, 12, 41, 42]
 		assert_eq!(disclosure.omitted_markers, vec![11, 12, 41, 42]);
@@ -1164,7 +1287,8 @@ mod tests {
 		let mut included = BTreeSet::new();
 		included.insert(10);
 
-		let disclosure = compute_selective_disclosure(&tlv_bytes, &included).unwrap();
+		let disclosure =
+			compute_selective_disclosure(TlvStream::new(&tlv_bytes), &included).unwrap();
 
 		// After included type 10, omitted types 20 and 30 get markers 11 and 12
 		assert_eq!(disclosure.omitted_markers, vec![11, 12]);
@@ -1182,7 +1306,8 @@ mod tests {
 		included.insert(10);
 		included.insert(20);
 
-		let disclosure = compute_selective_disclosure(&tlv_bytes, &included).unwrap();
+		let disclosure =
+			compute_selective_disclosure(TlvStream::new(&tlv_bytes), &included).unwrap();
 
 		// Only TLV 0 is omitted (implicit), so no markers needed
 		assert!(disclosure.omitted_markers.is_empty());
@@ -1228,7 +1353,7 @@ mod tests {
 		let included: BTreeSet<u64> = [10, 30].iter().copied().collect();
 
 		let result = validate_omitted_markers_for_parsing(&omitted, &included);
-		assert!(matches!(result, Err(crate::ln::msgs::DecodeError::InvalidValue)));
+		assert!(matches!(result, Err(DecodeError::InvalidValue)));
 	}
 
 	/// Test that a minimized trailing run is accepted.
@@ -1465,6 +1590,58 @@ mod tests {
 		assert!(result.is_err(), "Unknown even type 252 should be rejected");
 	}
 
+	/// Test that even TLV types outside the signature range are accepted as
+	/// passthrough invoice records, while unknown even types inside the
+	/// signature range (240..=1000) are rejected.
+	///
+	/// Non-signature types are invoice TLV records selected for disclosure.
+	/// They bypass the unknown-even check because all standard invoice TLV
+	/// types are even and the verifier rejects any record not matching the
+	/// original invoice's merkle root.
+	#[test]
+	fn test_parsing_even_type_handling_by_range() {
+		use core::convert::TryFrom;
+
+		// Craft minimal TLV streams to test just the parsing logic.
+		// These will fail later validation (missing required fields), but the
+		// match arm behavior is what we're testing.
+
+		// Case 1: Unknown even type 200 (outside signature range) — should be
+		// accepted as a passthrough record. The parse will fail later due to
+		// missing required fields, not due to the even type.
+		let mut bytes = Vec::new();
+		BigSize(200).write(&mut bytes).unwrap();
+		BigSize(4).write(&mut bytes).unwrap();
+		bytes.extend_from_slice(b"test");
+
+		let result = PayerProof::try_from(bytes);
+		// Fails because required fields (payer_id, etc.) are missing — but NOT
+		// because of an unknown-even-type rejection.
+		match result {
+			Err(Bolt12ParseError::InvalidSemantics(_)) => {},
+			Err(Bolt12ParseError::Decode(DecodeError::InvalidValue)) => {
+				panic!(
+					"Even type 200 was rejected as invalid, but should be accepted as passthrough"
+				);
+			},
+			Ok(_) => panic!("Should fail due to missing required fields"),
+			Err(e) => panic!("Unexpected error: {:?}", e),
+		}
+
+		// Case 2: Unknown even type 252 (inside signature range) — should be
+		// rejected immediately as unknown-even.
+		let mut bytes = Vec::new();
+		BigSize(252).write(&mut bytes).unwrap();
+		BigSize(4).write(&mut bytes).unwrap();
+		bytes.extend_from_slice(b"test");
+
+		let result = PayerProof::try_from(bytes);
+		match result {
+			Err(Bolt12ParseError::Decode(DecodeError::InvalidValue)) => {},
+			_ => panic!("Even type 252 in signature range should be rejected"),
+		}
+	}
+
 	/// Test that malformed TLV framing is rejected without panicking.
 	///
 	/// TlvStream::new() panics on malformed BigSize values or out-of-bounds
@@ -1552,20 +1729,26 @@ mod tests {
 
 		let secp_ctx = Secp256k1::signing_only();
 		let payer_keys = payer_keys();
-		let proof = invoice
-			.payer_proof_builder(preimage)
+		let paid_invoice =
+			PaidBolt12Invoice::new(Bolt12InvoiceType::Bolt12Invoice(invoice), preimage, None);
+		let payer_proof = paid_invoice
+			.prove_payer()
 			.unwrap()
-			.build(|message| Ok(secp_ctx.sign_schnorr_no_aux_rand(message, &payer_keys)), None)
+			.build(None)
+			.unwrap()
+			.sign(|proof: &UnsignedPayerProof| {
+				Ok(secp_ctx.sign_schnorr_no_aux_rand(proof.as_ref().as_digest(), &payer_keys))
+			})
 			.unwrap();
-		let parsed = PayerProof::try_from(proof.bytes().to_vec()).unwrap();
+		let parsed = PayerProof::try_from(payer_proof.bytes().to_vec()).unwrap();
 
-		assert_eq!(parsed.bytes(), proof.bytes());
+		assert_eq!(parsed.bytes(), payer_proof.bytes());
 		assert_eq!(parsed.preimage(), preimage);
 		assert_eq!(parsed.payment_hash(), payment_hash);
 	}
 
 	#[test]
-	fn test_build_with_derived_key_for_refund_invoice() {
+	fn test_build_with_derived_signing_keys_for_refund_invoice() {
 		use core::convert::TryFrom;
 
 		let expanded_key = ExpandedKey::new([42; 32]);
@@ -1598,12 +1781,17 @@ mod tests {
 		.sign(recipient_sign)
 		.unwrap();
 
-		let proof = invoice
-			.payer_proof_builder(preimage)
+		let paid_invoice = PaidBolt12Invoice::new(
+			Bolt12InvoiceType::Bolt12Invoice(invoice),
+			preimage,
+			Some(nonce),
+		);
+		let payer_proof = paid_invoice
+			.prove_payer_derived(&expanded_key, payment_id, &secp_ctx)
 			.unwrap()
-			.build_with_derived_key(&expanded_key, nonce, payment_id, Some("refund"))
+			.build_and_sign(Some("refund".into()))
 			.unwrap();
-		let parsed = PayerProof::try_from(proof.bytes().to_vec()).unwrap();
+		let parsed = PayerProof::try_from(payer_proof.bytes().to_vec()).unwrap();
 
 		assert_eq!(parsed.preimage(), preimage);
 		assert_eq!(parsed.payment_hash(), payment_hash);
