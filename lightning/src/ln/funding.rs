@@ -174,8 +174,7 @@ impl core::fmt::Display for FundingContributionError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct PriorContribution {
 	contribution: FundingContribution,
-	/// The holder's balance, used for feerate adjustment. `None` when the balance computation
-	/// fails, in which case adjustment is skipped and coin selection is re-run.
+	/// The holder's balance, used for feerate adjustment.
 	///
 	/// This value is captured at [`ChannelManager::splice_channel`] time and may become stale
 	/// if balances change before the contribution is used. Staleness is acceptable here because
@@ -186,11 +185,11 @@ pub(super) struct PriorContribution {
 	///
 	/// [`ChannelManager::splice_channel`]: crate::ln::channelmanager::ChannelManager::splice_channel
 	/// [`ChannelManager::funding_contributed`]: crate::ln::channelmanager::ChannelManager::funding_contributed
-	holder_balance: Option<Amount>,
+	holder_balance: Amount,
 }
 
 impl PriorContribution {
-	pub(super) fn new(contribution: FundingContribution, holder_balance: Option<Amount>) -> Self {
+	pub(super) fn new(contribution: FundingContribution, holder_balance: Amount) -> Self {
 		Self { contribution, holder_balance }
 	}
 }
@@ -562,17 +561,15 @@ impl FundingTemplate {
 				// buffer is insufficient (splice-in), or if the prior's feerate is already
 				// above rbf_feerate (e.g., from a counterparty-initiated RBF that locked
 				// at a higher feerate). In all cases, fall through to re-run coin selection.
-				if let Some(holder_balance) = holder_balance {
-					if contribution
-						.net_value_for_initiator_at_feerate(rbf_feerate, holder_balance)
-						.is_ok()
-					{
-						let mut adjusted = contribution
-							.for_initiator_at_feerate(rbf_feerate, holder_balance)
-							.expect("feerate compatibility already checked");
-						adjusted.max_feerate = max_feerate;
-						return Ok(adjusted);
-					}
+				if contribution
+					.net_value_for_initiator_at_feerate(rbf_feerate, holder_balance)
+					.is_ok()
+				{
+					let mut adjusted = contribution
+						.for_initiator_at_feerate(rbf_feerate, holder_balance)
+						.expect("feerate compatibility already checked");
+					adjusted.max_feerate = max_feerate;
+					return Ok(adjusted);
 				}
 				build_funding_contribution!(
 					contribution.value_added,
@@ -620,17 +617,15 @@ impl FundingTemplate {
 		match prior_contribution {
 			Some(PriorContribution { contribution, holder_balance }) => {
 				// See comment in `rbf` for details on when this adjustment fails.
-				if let Some(holder_balance) = holder_balance {
-					if contribution
-						.net_value_for_initiator_at_feerate(rbf_feerate, holder_balance)
-						.is_ok()
-					{
-						let mut adjusted = contribution
-							.for_initiator_at_feerate(rbf_feerate, holder_balance)
-							.expect("feerate compatibility already checked");
-						adjusted.max_feerate = max_feerate;
-						return Ok(adjusted);
-					}
+				if contribution
+					.net_value_for_initiator_at_feerate(rbf_feerate, holder_balance)
+					.is_ok()
+				{
+					let mut adjusted = contribution
+						.for_initiator_at_feerate(rbf_feerate, holder_balance)
+						.expect("feerate compatibility already checked");
+					adjusted.max_feerate = max_feerate;
+					return Ok(adjusted);
 				}
 				build_funding_contribution!(
 					contribution.value_added,
@@ -2355,7 +2350,7 @@ mod tests {
 		let template = FundingTemplate::new(
 			None,
 			Some(min_rbf_feerate),
-			Some(PriorContribution::new(prior, None)),
+			Some(PriorContribution::new(prior, Amount::MAX)),
 		);
 		assert!(matches!(
 			template.rbf_sync(max_feerate, UnreachableWallet),
@@ -2390,7 +2385,7 @@ mod tests {
 		let template = FundingTemplate::new(
 			None,
 			Some(min_rbf_feerate),
-			Some(PriorContribution::new(prior, Some(Amount::MAX))),
+			Some(PriorContribution::new(prior, Amount::MAX)),
 		);
 		let contribution = template.rbf_sync(max_feerate, UnreachableWallet).unwrap();
 		assert_eq!(contribution.feerate, min_rbf_feerate);
@@ -2452,7 +2447,7 @@ mod tests {
 		let template = FundingTemplate::new(
 			Some(shared_input(100_000)),
 			Some(min_rbf_feerate),
-			Some(PriorContribution::new(prior, None)),
+			Some(PriorContribution::new(prior, Amount::ZERO)),
 		);
 
 		let wallet = SingleUtxoWallet {
@@ -2513,7 +2508,7 @@ mod tests {
 		let template = FundingTemplate::new(
 			Some(shared_input(100_000)),
 			Some(min_rbf_feerate),
-			Some(PriorContribution::new(prior, None)),
+			Some(PriorContribution::new(prior, Amount::MAX)),
 		);
 
 		let wallet = SingleUtxoWallet {

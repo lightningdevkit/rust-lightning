@@ -12324,7 +12324,25 @@ where
 			);
 			let min_rbf_feerate = prev_feerate.map(min_rbf_feerate);
 			let prior = if pending_splice.last_funding_feerate_sat_per_1000_weight.is_some() {
-				self.build_prior_contribution()
+				if let Some(prior) = self
+					.pending_splice
+					.as_ref()
+					.and_then(|pending_splice| pending_splice.contributions.last())
+				{
+					let holder_balance = self
+						.get_holder_counterparty_balances_floor_incl_fee(&self.funding)
+						.map(|(h, _)| h)
+						.map_err(|e| APIError::ChannelUnavailable {
+							err: format!(
+								"Channel {} cannot be spliced at this time: {}",
+								self.context.channel_id(),
+								e
+							),
+						})?;
+					Some(PriorContribution::new(prior.clone(), holder_balance))
+				} else {
+					None
+				}
 			} else {
 				None
 			};
@@ -12344,21 +12362,6 @@ where
 		};
 
 		Ok(FundingTemplate::new(Some(shared_input), min_rbf_feerate, prior_contribution))
-	}
-
-	/// Clones the prior contribution and fetches the holder balance for deferred feerate
-	/// adjustment.
-	fn build_prior_contribution(&self) -> Option<PriorContribution> {
-		debug_assert!(
-			self.pending_splice.is_some(),
-			"build_prior_contribution requires pending_splice"
-		);
-		let prior = self.pending_splice.as_ref()?.contributions.last()?;
-		let holder_balance = self
-			.get_holder_counterparty_balances_floor_incl_fee(&self.funding)
-			.map(|(h, _)| h)
-			.ok();
-		Some(PriorContribution::new(prior.clone(), holder_balance))
 	}
 
 	/// Returns whether this channel can ever RBF, independent of splice state.
