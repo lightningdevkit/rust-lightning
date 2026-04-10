@@ -2428,50 +2428,6 @@ fn test_trampoline_blinded_receive() {
 	do_test_trampoline_relay(true, TrampolineTestCase::OuterCLTVLessThanTrampoline);
 }
 
-/// Creates a blinded tail where Carol receives via a blinded path.
-fn create_blinded_tail(
-	secp_ctx: &Secp256k1<All>, override_random_bytes: [u8; 32], carol_node_id: PublicKey,
-	carol_auth_key: ReceiveAuthKey, trampoline_cltv_expiry_delta: u32,
-	excess_final_cltv_delta: u32, final_value_msat: u64, payment_secret: PaymentSecret,
-) -> BlindedTail {
-	let outer_session_priv = SecretKey::from_slice(&override_random_bytes).unwrap();
-	let trampoline_session_priv = onion_utils::compute_trampoline_session_priv(&outer_session_priv);
-
-	let carol_blinding_point = PublicKey::from_secret_key(&secp_ctx, &trampoline_session_priv);
-	let carol_blinded_hops = {
-		let payee_tlvs = ReceiveTlvs {
-			payment_secret,
-			payment_constraints: PaymentConstraints {
-				max_cltv_expiry: u32::max_value(),
-				htlc_minimum_msat: final_value_msat,
-			},
-			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
-		}
-		.encode();
-
-		let path = [((carol_node_id, Some(carol_auth_key)), WithoutLength(&payee_tlvs))];
-
-		blinded_path::utils::construct_blinded_hops(
-			&secp_ctx,
-			path.into_iter(),
-			&trampoline_session_priv,
-		)
-	};
-
-	BlindedTail {
-		trampoline_hops: vec![TrampolineHop {
-			pubkey: carol_node_id,
-			node_features: Features::empty(),
-			fee_msat: final_value_msat,
-			cltv_expiry_delta: trampoline_cltv_expiry_delta + excess_final_cltv_delta,
-		}],
-		hops: carol_blinded_hops,
-		blinding_point: carol_blinding_point,
-		excess_final_cltv_expiry_delta: excess_final_cltv_delta,
-		final_value_msat,
-	}
-}
-
 // Creates a replacement onion that is used to produce scenarios that we don't support, specifically
 // payloads that send to unblinded receives and invalid payloads.
 fn replacement_onion(
@@ -2639,15 +2595,23 @@ fn do_test_trampoline_relay(blinded: bool, test_case: TrampolineTestCase) {
 			// Create a blinded tail where Carol is receiving. In our unblinded test cases, we'll
 			// override this anyway (with a tail sending to an unblinded receive, which LDK doesn't
 			// allow).
-			blinded_tail: Some(create_blinded_tail(
+			blinded_tail: Some(create_trampoline_forward_blinded_tail(
 				&secp_ctx,
-				override_random_bytes,
+				&nodes[2].keys_manager,
+				&[],
 				carol_node_id,
 				nodes[2].keys_manager.get_receive_auth_key(),
+				ReceiveTlvs {
+					payment_secret,
+					payment_constraints: PaymentConstraints {
+						max_cltv_expiry: u32::max_value(),
+						htlc_minimum_msat: original_amt_msat,
+					},
+					payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
+				},
 				original_trampoline_cltv,
 				excess_final_cltv,
 				original_amt_msat,
-				payment_secret,
 			)),
 		}],
 		route_params: None,

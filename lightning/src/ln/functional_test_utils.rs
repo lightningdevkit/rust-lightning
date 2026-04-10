@@ -10,7 +10,9 @@
 //! A bunch of useful utilities for building networks of nodes and exchanging messages between
 //! nodes for functional tests.
 
-use crate::blinded_path::payment::DummyTlvs;
+use crate::blinded_path::payment::{
+	BlindedPaymentPath, DummyTlvs, ForwardNode, ReceiveTlvs, TrampolineForwardTlvs,
+};
 use crate::chain::channelmonitor::{ChannelMonitor, HTLC_FAIL_BACK_BUFFER};
 use crate::chain::transaction::OutPoint;
 use crate::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Listen, Watch};
@@ -40,7 +42,8 @@ use crate::ln::types::ChannelId;
 use crate::onion_message::messenger::OnionMessenger;
 use crate::routing::gossip::{NetworkGraph, NetworkUpdate, P2PGossipSync};
 use crate::routing::router::{self, PaymentParameters, Route, RouteParameters};
-use crate::sign::{EntropySource, RandomBytes};
+use crate::routing::router::{compute_fees, BlindedTail, TrampolineHop};
+use crate::sign::{EntropySource, RandomBytes, ReceiveAuthKey};
 use crate::types::features::ChannelTypeFeatures;
 use crate::types::features::InitFeatures;
 use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
@@ -5767,4 +5770,48 @@ pub fn get_scid_from_channel_id<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, channel_id:
 		.unwrap()
 		.short_channel_id
 		.unwrap()
+}
+
+/// Creates a [`BlindedTail`] for a trampoline forward through a single intermediate node.
+///
+/// The resulting tail contains blinded hops built from `intermediate_nodes` plus a dummy receive
+/// TLV, with the `TrampolineHop` fee and CLTV derived from the blinded path's aggregated payinfo.
+pub fn create_trampoline_forward_blinded_tail<ES: EntropySource>(
+	secp_ctx: &bitcoin::secp256k1::Secp256k1<bitcoin::secp256k1::All>, entropy_source: ES,
+	intermediate_nodes: &[ForwardNode<TrampolineForwardTlvs>], payee_node_id: PublicKey,
+	payee_receive_key: ReceiveAuthKey, payee_tlvs: ReceiveTlvs, min_final_cltv_expiry_delta: u32,
+	excess_final_cltv_delta: u32, final_value_msat: u64,
+) -> BlindedTail {
+	let blinded_path = BlindedPaymentPath::new_for_trampoline(
+		intermediate_nodes,
+		payee_node_id,
+		payee_receive_key,
+		payee_tlvs,
+		u64::max_value(),
+		min_final_cltv_expiry_delta as u16,
+		entropy_source,
+		secp_ctx,
+	)
+	.unwrap();
+
+	BlindedTail {
+		trampoline_hops: vec![TrampolineHop {
+			pubkey: intermediate_nodes.first().map(|n| n.node_id).unwrap_or(payee_node_id),
+			node_features: types::features::Features::empty(),
+			fee_msat: compute_fees(
+				final_value_msat,
+				lightning_types::routing::RoutingFees {
+					base_msat: blinded_path.payinfo.fee_base_msat,
+					proportional_millionths: blinded_path.payinfo.fee_proportional_millionths,
+				},
+			)
+			.unwrap(),
+			cltv_expiry_delta: blinded_path.payinfo.cltv_expiry_delta as u32
+				+ excess_final_cltv_delta,
+		}],
+		hops: blinded_path.blinded_hops().to_vec(),
+		blinding_point: blinded_path.blinding_point(),
+		excess_final_cltv_expiry_delta: excess_final_cltv_delta,
+		final_value_msat,
+	}
 }
