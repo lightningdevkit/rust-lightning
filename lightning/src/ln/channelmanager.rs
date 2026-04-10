@@ -16428,10 +16428,8 @@ impl<
 					debug_assert!(false);
 					return false;
 				}
-				let htlc_timed_out = payment
-					.htlcs
-					.iter()
-					.any(|htlc| htlc.check_onchain_timeout(height, HTLC_FAIL_BACK_BUFFER));
+				let htlc_timed_out =
+					payment.htlcs.iter().any(|htlc| htlc.check_onchain_timeout(height));
 				if htlc_timed_out {
 					let previous_hop_data =
 						payment.htlcs.drain(..).map(|claimable| claimable.prev_hop).collect();
