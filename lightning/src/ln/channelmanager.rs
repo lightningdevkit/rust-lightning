@@ -547,8 +547,8 @@ struct MppPart {
 impl MppPart {
 	/// Returns a boolean indicating whether the HTLC has timed out on chain, accounting for a buffer
 	/// that gives us time to resolve it.
-	fn check_onchain_timeout(&self, height: u32, buffer: u32) -> bool {
-		height >= self.cltv_expiry - buffer
+	fn check_onchain_timeout(&self, height: u32) -> bool {
+		height >= self.cltv_expiry - HTLC_FAIL_BACK_BUFFER
 	}
 }
 
@@ -16273,8 +16273,7 @@ impl<
 			self.claimable_payments.lock().unwrap().claimable_payments.retain(
 				|payment_hash, payment| {
 					payment.htlcs.retain(|htlc| {
-						let htlc_timed_out =
-							htlc.mpp_part.check_onchain_timeout(height, HTLC_FAIL_BACK_BUFFER);
+						let htlc_timed_out = htlc.mpp_part.check_onchain_timeout(height);
 						if htlc_timed_out {
 							let reason = LocalHTLCFailureReason::PaymentClaimBuffer;
 							timed_out_htlcs.push((
