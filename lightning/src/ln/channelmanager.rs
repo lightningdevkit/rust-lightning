@@ -8331,11 +8331,8 @@ impl<
 		// msats because each htlc's amount is individually validated - overflow is only possible
 		// with multiple parts).
 		let mut first_claimable_htlc = false;
-		let ref mut claimable_payment = claimable_payments
-			.claimable_payments
-			.entry(payment_hash)
-			// Note that if we insert here we MUST NOT fail_htlc!()
-			.or_insert_with(|| {
+		let ref mut claimable_payment =
+			claimable_payments.claimable_payments.entry(payment_hash).or_insert_with(|| {
 				first_claimable_htlc = true;
 				ClaimablePayment {
 					purpose: purpose.clone(),
