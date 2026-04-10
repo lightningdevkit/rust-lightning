@@ -2556,12 +2556,14 @@ pub(crate) fn decode_next_payment_hop<NS: NodeSigner>(
 /// values.
 ///
 /// This function performs no validation and does not enqueue or forward the HTLC.
-/// It only reconstructs the next `UpdateAddHTLC` for further local processing.
+/// It only reconstructs the next `UpdateAddHTLC` for further local processing and returns the
+/// locally accumulated dummy-hop skimmed fee. That fee must not be re-serialized into the peer
+/// message as it represents trusted local accounting, not sender-provided wire data.
 pub(super) fn peel_dummy_hop_update_add_htlc<NS: NodeSigner, T: secp256k1::Verification>(
 	msg: &UpdateAddHTLC, dummy_hop_data: InboundOnionDummyPayload, next_hop_hmac: [u8; 32],
 	new_packet_bytes: [u8; ONION_DATA_LEN], next_packet_details: NextPacketDetails,
-	node_signer: NS, secp_ctx: &Secp256k1<T>,
-) -> UpdateAddHTLC {
+	dummy_hops_skimmed_fee_msat: u64, node_signer: NS, secp_ctx: &Secp256k1<T>,
+) -> (UpdateAddHTLC, u64) {
 	let NextPacketDetails {
 		next_packet_pubkey,
 		outgoing_amt_msat,
@@ -2573,6 +2575,9 @@ pub(super) fn peel_dummy_hop_update_add_htlc<NS: NodeSigner, T: secp256k1::Verif
 		matches!(outgoing_connector, HopConnector::Dummy),
 		"Dummy hop must always map to HopConnector::Dummy"
 	);
+
+	let this_dummy_fee = msg.amount_msat.saturating_sub(outgoing_amt_msat);
+	let dummy_hops_skimmed_fee_msat = dummy_hops_skimmed_fee_msat.saturating_add(this_dummy_fee);
 
 	let next_blinding_point = dummy_hop_data
 		.intro_node_blinding_point
@@ -2590,13 +2595,16 @@ pub(super) fn peel_dummy_hop_update_add_htlc<NS: NodeSigner, T: secp256k1::Verif
 		hmac: next_hop_hmac,
 	};
 
-	UpdateAddHTLC {
-		onion_routing_packet: new_onion_packet,
-		blinding_point: next_blinding_point,
-		amount_msat: outgoing_amt_msat,
-		cltv_expiry: outgoing_cltv_value,
-		..msg.clone()
-	}
+	(
+		UpdateAddHTLC {
+			onion_routing_packet: new_onion_packet,
+			blinding_point: next_blinding_point,
+			amount_msat: outgoing_amt_msat,
+			cltv_expiry: outgoing_cltv_value,
+			..msg.clone()
+		},
+		dummy_hops_skimmed_fee_msat,
+	)
 }
 
 /// Build a payment onion, returning the first hop msat and cltv values as well.

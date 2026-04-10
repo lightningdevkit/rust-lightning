@@ -11,7 +11,9 @@ use crate::blinded_path::message::{
 	BlindedMessagePath, MessageContext, NextMessageHop, OffersContext,
 };
 use crate::blinded_path::payment::{AsyncBolt12OfferContext, BlindedPaymentTlvs};
-use crate::blinded_path::payment::{DummyTlvs, PaymentContext};
+use crate::blinded_path::payment::{
+	DummyTlvs, PaymentContext, DEFAULT_DUMMY_HOP_CLTV_EXPIRY_DELTA,
+};
 use crate::chain::channelmonitor::{HTLC_FAIL_BACK_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS};
 use crate::events::{
 	Event, EventsProvider, HTLCHandlingFailureReason, HTLCHandlingFailureType, PaidBolt12Invoice,
@@ -985,12 +987,14 @@ fn ignore_duplicate_invoice() {
 	check_added_monitors(&sender, 1);
 
 	let route: &[&[&Node]] = &[&[always_online_node, async_recipient]];
+	let dummy_tlvs = [DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS];
 	let args = PassAlongPathArgs::new(sender, route[0], amt_msat, payment_hash, ev)
-		.with_dummy_tlvs(&[DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS]);
+		.with_dummy_tlvs(&dummy_tlvs);
 	let claimable_ev = do_pass_along_path(args).unwrap();
 	let keysend_preimage = extract_payment_preimage(&claimable_ev);
-	let (res, _) =
-		claim_payment_along_route(ClaimAlongRouteArgs::new(sender, route, keysend_preimage));
+	let (res, _) = claim_payment_along_route(
+		ClaimAlongRouteArgs::new(sender, route, keysend_preimage).with_dummy_tlvs(&dummy_tlvs),
+	);
 	assert_eq!(res, Some(PaidBolt12Invoice::StaticInvoice(static_invoice.clone())));
 
 	// After paying the static invoice, check that regular invoice received from async recipient is ignored.
@@ -1066,7 +1070,7 @@ fn ignore_duplicate_invoice() {
 
 	let args = PassAlongPathArgs::new(sender, route[0], amt_msat, payment_hash, ev)
 		.without_clearing_recipient_events()
-		.with_dummy_tlvs(&[DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS]);
+		.with_dummy_tlvs(&dummy_tlvs);
 	do_pass_along_path(args);
 
 	let payment_preimage = match get_event!(async_recipient, Event::PaymentClaimable) {
@@ -1075,7 +1079,11 @@ fn ignore_duplicate_invoice() {
 	};
 
 	// After paying invoice, check that static invoice is ignored.
-	let res = claim_payment(sender, route[0], payment_preimage);
+	let res = claim_payment_along_route(
+		ClaimAlongRouteArgs::new(sender, &[route[0]], payment_preimage)
+			.with_dummy_tlvs(&dummy_tlvs),
+	)
+	.0;
 	assert_eq!(res, Some(PaidBolt12Invoice::Bolt12Invoice(invoice)));
 
 	sender.onion_messenger.handle_onion_message(always_online_node_id, &static_invoice_om);
@@ -1141,12 +1149,14 @@ fn async_receive_flow_success() {
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 
 	let route: &[&[&Node]] = &[&[&nodes[1], &nodes[2]]];
+	let dummy_tlvs = [DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS];
 	let args = PassAlongPathArgs::new(&nodes[0], route[0], amt_msat, payment_hash, ev)
-		.with_dummy_tlvs(&[DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS]);
+		.with_dummy_tlvs(&dummy_tlvs);
 	let claimable_ev = do_pass_along_path(args).unwrap();
 	let keysend_preimage = extract_payment_preimage(&claimable_ev);
-	let (res, _) =
-		claim_payment_along_route(ClaimAlongRouteArgs::new(&nodes[0], route, keysend_preimage));
+	let (res, _) = claim_payment_along_route(
+		ClaimAlongRouteArgs::new(&nodes[0], route, keysend_preimage).with_dummy_tlvs(&dummy_tlvs),
+	);
 	assert_eq!(res, Some(PaidBolt12Invoice::StaticInvoice(static_invoice)));
 }
 
@@ -1382,14 +1392,15 @@ fn async_receive_mpp() {
 		_ => panic!(),
 	};
 
+	let dummy_tlvs = [DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS];
 	let args = PassAlongPathArgs::new(&nodes[0], expected_route[0], amt_msat, payment_hash, ev)
 		.without_claimable_event()
-		.with_dummy_tlvs(&[DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS]);
+		.with_dummy_tlvs(&dummy_tlvs);
 	do_pass_along_path(args);
 
 	let ev = remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &mut events);
 	let args = PassAlongPathArgs::new(&nodes[0], expected_route[1], amt_msat, payment_hash, ev)
-		.with_dummy_tlvs(&[DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS]);
+		.with_dummy_tlvs(&dummy_tlvs);
 	let claimable_ev = do_pass_along_path(args).unwrap();
 	let keysend_preimage = match claimable_ev {
 		Event::PaymentClaimable {
@@ -1398,11 +1409,10 @@ fn async_receive_mpp() {
 		} => payment_preimage.unwrap(),
 		_ => panic!(),
 	};
-	claim_payment_along_route(ClaimAlongRouteArgs::new(
-		&nodes[0],
-		expected_route,
-		keysend_preimage,
-	));
+	claim_payment_along_route(
+		ClaimAlongRouteArgs::new(&nodes[0], expected_route, keysend_preimage)
+			.with_dummy_tlvs(&dummy_tlvs),
+	);
 }
 
 #[test]
@@ -1505,10 +1515,11 @@ fn amount_doesnt_match_invreq() {
 	let payment_hash = extract_payment_hash(&ev);
 
 	let route: &[&[&Node]] = &[&[&nodes[1], &nodes[3]]];
+	let dummy_tlvs = [DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS];
 	let args = PassAlongPathArgs::new(&nodes[0], route[0], amt_msat, payment_hash, ev)
 		.without_claimable_event()
 		.expect_failure(HTLCHandlingFailureType::Receive { payment_hash })
-		.with_dummy_tlvs(&[DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS]);
+		.with_dummy_tlvs(&dummy_tlvs);
 	do_pass_along_path(args);
 
 	// Modify the invoice request stored in our outbounds to be the correct one, to make sure the
@@ -1533,10 +1544,12 @@ fn amount_doesnt_match_invreq() {
 	check_added_monitors(&nodes[0], 1);
 	let route: &[&[&Node]] = &[&[&nodes[2], &nodes[3]]];
 	let args = PassAlongPathArgs::new(&nodes[0], route[0], amt_msat, payment_hash, ev)
-		.with_dummy_tlvs(&[DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS]);
+		.with_dummy_tlvs(&dummy_tlvs);
 	let claimable_ev = do_pass_along_path(args).unwrap();
 	let keysend_preimage = extract_payment_preimage(&claimable_ev);
-	claim_payment_along_route(ClaimAlongRouteArgs::new(&nodes[0], route, keysend_preimage));
+	claim_payment_along_route(
+		ClaimAlongRouteArgs::new(&nodes[0], route, keysend_preimage).with_dummy_tlvs(&dummy_tlvs),
+	);
 }
 
 #[test]
@@ -1724,8 +1737,9 @@ fn invalid_async_receive_with_retry<F1, F2>(
 	let payment_hash = extract_payment_hash(&ev);
 
 	let route: &[&[&Node]] = &[&[&nodes[1], &nodes[2]]];
+	let dummy_tlvs = [DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS];
 	let args = PassAlongPathArgs::new(&nodes[0], route[0], amt_msat, payment_hash, ev)
-		.with_dummy_tlvs(&[DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS]);
+		.with_dummy_tlvs(&dummy_tlvs);
 	do_pass_along_path(args);
 
 	// Fail the HTLC backwards to enable us to more easily modify the now-Retryable outbound to test
@@ -1753,7 +1767,7 @@ fn invalid_async_receive_with_retry<F1, F2>(
 	let args = PassAlongPathArgs::new(&nodes[0], route[0], amt_msat, payment_hash, ev)
 		.without_claimable_event()
 		.expect_failure(HTLCHandlingFailureType::Receive { payment_hash })
-		.with_dummy_tlvs(&[DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS]);
+		.with_dummy_tlvs(&dummy_tlvs);
 	do_pass_along_path(args);
 	fail_blinded_htlc_backwards(payment_hash, 1, &[&nodes[0], &nodes[1], &nodes[2]], true);
 
@@ -1766,10 +1780,12 @@ fn invalid_async_receive_with_retry<F1, F2>(
 	check_added_monitors(&nodes[0], 1);
 	let route: &[&[&Node]] = &[&[&nodes[1], &nodes[2]]];
 	let args = PassAlongPathArgs::new(&nodes[0], route[0], amt_msat, payment_hash, ev)
-		.with_dummy_tlvs(&[DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS]);
+		.with_dummy_tlvs(&dummy_tlvs);
 	let claimable_ev = do_pass_along_path(args).unwrap();
 	let keysend_preimage = extract_payment_preimage(&claimable_ev);
-	claim_payment_along_route(ClaimAlongRouteArgs::new(&nodes[0], route, keysend_preimage));
+	claim_payment_along_route(
+		ClaimAlongRouteArgs::new(&nodes[0], route, keysend_preimage).with_dummy_tlvs(&dummy_tlvs),
+	);
 }
 
 #[cfg_attr(feature = "std", ignore)]
@@ -1940,10 +1956,11 @@ fn expired_static_invoice_payment_path() {
 	check_added_monitors(&nodes[0], 1);
 
 	let route: &[&[&Node]] = &[&[&nodes[1], &nodes[2]]];
+	let dummy_tlvs = [DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS];
 	let args = PassAlongPathArgs::new(&nodes[0], route[0], amt_msat, payment_hash, ev)
 		.without_claimable_event()
 		.expect_failure(HTLCHandlingFailureType::Receive { payment_hash })
-		.with_dummy_tlvs(&[DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS]);
+		.with_dummy_tlvs(&dummy_tlvs);
 	do_pass_along_path(args);
 	fail_blinded_htlc_backwards(payment_hash, 1, &[&nodes[0], &nodes[1], &nodes[2]], false);
 	nodes[2].logger.assert_log_contains(
@@ -2386,11 +2403,14 @@ fn refresh_static_invoices_for_used_offers() {
 	check_added_monitors(&sender, 1);
 
 	let route: &[&[&Node]] = &[&[server, recipient]];
+	let dummy_tlvs = [DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS];
 	let args = PassAlongPathArgs::new(sender, route[0], amt_msat, payment_hash, ev)
-		.with_dummy_tlvs(&[DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS]);
+		.with_dummy_tlvs(&dummy_tlvs);
 	let claimable_ev = do_pass_along_path(args).unwrap();
 	let keysend_preimage = extract_payment_preimage(&claimable_ev);
-	let res = claim_payment_along_route(ClaimAlongRouteArgs::new(sender, route, keysend_preimage));
+	let res = claim_payment_along_route(
+		ClaimAlongRouteArgs::new(sender, route, keysend_preimage).with_dummy_tlvs(&dummy_tlvs),
+	);
 	assert_eq!(res.0, Some(PaidBolt12Invoice::StaticInvoice(updated_invoice)));
 }
 
@@ -2721,11 +2741,14 @@ fn invoice_server_is_not_channel_peer() {
 	check_added_monitors(&sender, 1);
 
 	let route: &[&[&Node]] = &[&[forwarding_node, recipient]];
+	let dummy_tlvs = [DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS];
 	let args = PassAlongPathArgs::new(sender, route[0], amt_msat, payment_hash, ev)
-		.with_dummy_tlvs(&[DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS]);
+		.with_dummy_tlvs(&dummy_tlvs);
 	let claimable_ev = do_pass_along_path(args).unwrap();
 	let keysend_preimage = extract_payment_preimage(&claimable_ev);
-	let res = claim_payment_along_route(ClaimAlongRouteArgs::new(sender, route, keysend_preimage));
+	let res = claim_payment_along_route(
+		ClaimAlongRouteArgs::new(sender, route, keysend_preimage).with_dummy_tlvs(&dummy_tlvs),
+	);
 	assert_eq!(res.0, Some(PaidBolt12Invoice::StaticInvoice(invoice)));
 }
 
@@ -2961,14 +2984,16 @@ fn async_payment_e2e() {
 	check_added_monitors(&sender_lsp, 1);
 
 	let path: &[&Node] = &[invoice_server, recipient];
+	let dummy_tlvs = [DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS];
 	let args = PassAlongPathArgs::new(sender_lsp, path, amt_msat, payment_hash, ev)
-		.with_dummy_tlvs(&[DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS]);
+		.with_dummy_tlvs(&dummy_tlvs);
 	let claimable_ev = do_pass_along_path(args).unwrap();
 
 	let route: &[&[&Node]] = &[&[sender_lsp, invoice_server, recipient]];
 	let keysend_preimage = extract_payment_preimage(&claimable_ev);
-	let (res, _) =
-		claim_payment_along_route(ClaimAlongRouteArgs::new(sender, route, keysend_preimage));
+	let (res, _) = claim_payment_along_route(
+		ClaimAlongRouteArgs::new(sender, route, keysend_preimage).with_dummy_tlvs(&dummy_tlvs),
+	);
 	assert_eq!(res, Some(PaidBolt12Invoice::StaticInvoice(static_invoice)));
 }
 
@@ -3018,11 +3043,16 @@ fn held_htlc_timeout() {
 	// Extract the release_htlc_om, but don't deliver it to the sender's LSP.
 	let _ = extract_release_htlc_oms(recipient, &[sender, sender_lsp, invoice_server]);
 
+	// Dummy hops add to the blinded path's total advertised CLTV delta.
+	let additional_cltv_expiry =
+		DEFAULT_PAYMENT_DUMMY_HOPS as u32 * DEFAULT_DUMMY_HOP_CLTV_EXPIRY_DELTA as u32;
+
 	// Connect blocks to the sender's LSP until they timeout the HTLC.
 	connect_blocks(
 		sender_lsp,
 		MIN_CLTV_EXPIRY_DELTA as u32
 			+ TEST_FINAL_CLTV
+			+ additional_cltv_expiry
 			+ HTLC_FAIL_BACK_BUFFER
 			+ LATENCY_GRACE_PERIOD_BLOCKS,
 	);
@@ -3198,14 +3228,16 @@ fn intercepted_hold_htlc() {
 	check_added_monitors(&lsp, 1);
 
 	let path: &[&Node] = &[recipient];
-	let args = PassAlongPathArgs::new(lsp, path, amt_msat, payment_hash, ev)
-		.with_dummy_tlvs(&[DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS]);
+	let dummy_tlvs = [DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS];
+	let args =
+		PassAlongPathArgs::new(lsp, path, amt_msat, payment_hash, ev).with_dummy_tlvs(&dummy_tlvs);
 	let claimable_ev = do_pass_along_path(args).unwrap();
 
 	let route: &[&[&Node]] = &[&[lsp, recipient]];
 	let keysend_preimage = extract_payment_preimage(&claimable_ev);
-	let (res, _) =
-		claim_payment_along_route(ClaimAlongRouteArgs::new(sender, route, keysend_preimage));
+	let (res, _) = claim_payment_along_route(
+		ClaimAlongRouteArgs::new(sender, route, keysend_preimage).with_dummy_tlvs(&dummy_tlvs),
+	);
 	assert_eq!(res, Some(PaidBolt12Invoice::StaticInvoice(static_invoice)));
 }
 
@@ -3301,9 +3333,10 @@ fn async_payment_mpp() {
 	let mut events = lsp_a.node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
 	let ev = remove_first_msg_event_to_node(&recipient.node.get_our_node_id(), &mut events);
+	let dummy_tlvs = [DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS];
 	let args = PassAlongPathArgs::new(lsp_a, expected_path, amt_msat, payment_hash, ev)
 		.without_claimable_event()
-		.with_dummy_tlvs(&[DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS]);
+		.with_dummy_tlvs(&dummy_tlvs);
 	do_pass_along_path(args);
 
 	lsp_b.node.process_pending_htlc_forwards();
@@ -3312,7 +3345,7 @@ fn async_payment_mpp() {
 	assert_eq!(events.len(), 1);
 	let ev = remove_first_msg_event_to_node(&recipient.node.get_our_node_id(), &mut events);
 	let args = PassAlongPathArgs::new(lsp_b, expected_path, amt_msat, payment_hash, ev)
-		.with_dummy_tlvs(&[DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS]);
+		.with_dummy_tlvs(&dummy_tlvs);
 	let claimable_ev = do_pass_along_path(args).unwrap();
 
 	let keysend_preimage = match claimable_ev {
@@ -3324,7 +3357,10 @@ fn async_payment_mpp() {
 	};
 
 	let expected_route: &[&[&Node]] = &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]];
-	claim_payment_along_route(ClaimAlongRouteArgs::new(sender, expected_route, keysend_preimage));
+	claim_payment_along_route(
+		ClaimAlongRouteArgs::new(sender, expected_route, keysend_preimage)
+			.with_per_path_dummy_tlvs(&vec![dummy_tlvs.to_vec(); expected_route.len()]),
+	);
 }
 
 #[test]
@@ -3448,13 +3484,15 @@ fn release_htlc_races_htlc_onion_decode() {
 	check_added_monitors(&sender_lsp, 1);
 
 	let path: &[&Node] = &[invoice_server, recipient];
+	let dummy_tlvs = [DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS];
 	let args = PassAlongPathArgs::new(sender_lsp, path, amt_msat, payment_hash, ev)
-		.with_dummy_tlvs(&[DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS]);
+		.with_dummy_tlvs(&dummy_tlvs);
 	let claimable_ev = do_pass_along_path(args).unwrap();
 
 	let route: &[&[&Node]] = &[&[sender_lsp, invoice_server, recipient]];
 	let keysend_preimage = extract_payment_preimage(&claimable_ev);
-	let (res, _) =
-		claim_payment_along_route(ClaimAlongRouteArgs::new(sender, route, keysend_preimage));
+	let (res, _) = claim_payment_along_route(
+		ClaimAlongRouteArgs::new(sender, route, keysend_preimage).with_dummy_tlvs(&dummy_tlvs),
+	);
 	assert_eq!(res, Some(PaidBolt12Invoice::StaticInvoice(static_invoice)));
 }
