@@ -1516,7 +1516,6 @@ enum PostMonitorUpdateChanResume {
 		unbroadcasted_batch_funding_txid: Option<Txid>,
 		update_actions: Vec<MonitorUpdateCompletionAction>,
 		htlc_forwards: Vec<PendingAddHTLCInfo>,
-		decode_update_add_htlcs: Option<(u64, Vec<msgs::UpdateAddHTLC>)>,
 		finalized_claimed_htlcs: Vec<(HTLCSource, Option<AttributionData>)>,
 		failed_htlcs: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
 		committed_outbound_htlc_sources: Vec<(HTLCPreviousHopData, u64)>,
@@ -10116,7 +10115,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		&self, channel_id: ChannelId, counterparty_node_id: PublicKey, funding_txo: OutPoint,
 		user_channel_id: u128, unbroadcasted_batch_funding_txid: Option<Txid>,
 		update_actions: Vec<MonitorUpdateCompletionAction>, htlc_forwards: Vec<PendingAddHTLCInfo>,
-		decode_update_add_htlcs: Option<(u64, Vec<msgs::UpdateAddHTLC>)>,
 		finalized_claimed_htlcs: Vec<(HTLCSource, Option<AttributionData>)>,
 		failed_htlcs: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
 		committed_outbound_htlc_sources: Vec<(HTLCPreviousHopData, u64)>,
@@ -10177,9 +10175,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		self.handle_monitor_update_completion_actions(update_actions);
 
 		self.forward_htlcs(htlc_forwards);
-		if let Some(decode) = decode_update_add_htlcs {
-			self.push_decode_update_add_htlcs(decode);
-		}
 		self.finalize_claims(finalized_claimed_htlcs);
 		for failure in failed_htlcs {
 			let failure_type = failure.0.failure_type(counterparty_node_id, channel_id);
@@ -10667,6 +10662,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				pending_msg_events.push(upd);
 			}
 
+			if let Some(update_adds) = decode_update_add_htlcs {
+				self.push_decode_update_add_htlcs(update_adds);
+			}
+
 			let unbroadcasted_batch_funding_txid =
 				chan.context.unbroadcasted_batch_funding_txid(&chan.funding);
 
@@ -10678,7 +10677,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				unbroadcasted_batch_funding_txid,
 				update_actions,
 				htlc_forwards,
-				decode_update_add_htlcs,
 				finalized_claimed_htlcs: updates.finalized_claimed_htlcs,
 				failed_htlcs: updates.failed_htlcs,
 				committed_outbound_htlc_sources: updates.committed_outbound_htlc_sources,
@@ -10780,7 +10778,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				unbroadcasted_batch_funding_txid,
 				update_actions,
 				htlc_forwards,
-				decode_update_add_htlcs,
 				finalized_claimed_htlcs,
 				failed_htlcs,
 				committed_outbound_htlc_sources,
@@ -10793,7 +10790,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					unbroadcasted_batch_funding_txid,
 					update_actions,
 					htlc_forwards,
-					decode_update_add_htlcs,
 					finalized_claimed_htlcs,
 					failed_htlcs,
 					committed_outbound_htlc_sources,
@@ -17194,6 +17190,18 @@ impl<
 				htlc_id,
 			} => {
 				let _serialize_guard = PersistenceNotifierGuard::notify_on_drop(self);
+				// It's possible the release_held_htlc message raced ahead of us fully committing to the
+				// HTLC. If that's the case, update the pending update_add to indicate that the HTLC should
+				// be released immediately.
+				let released_pre_commitment_htlc = self
+					.do_funded_channel_callback(prev_outbound_scid_alias, |chan| {
+						chan.release_pending_inbound_held_htlc(htlc_id)
+					})
+					.unwrap_or(false);
+				if released_pre_commitment_htlc {
+					return;
+				}
+
 				// It's possible the release_held_htlc message raced ahead of us transitioning the pending
 				// update_add to `Self::pending_intercept_htlcs`. If that's the case, update the pending
 				// update_add to indicate that the HTLC should be released immediately.
@@ -17921,12 +17929,6 @@ impl<
 			}
 		}
 
-		let mut decode_update_add_htlcs_opt = None;
-		let decode_update_add_htlcs = self.decode_update_add_htlcs.lock().unwrap();
-		if !decode_update_add_htlcs.is_empty() {
-			decode_update_add_htlcs_opt = Some(decode_update_add_htlcs);
-		}
-
 		let claimable_payments = self.claimable_payments.lock().unwrap();
 		let pending_outbound_payments = self.pending_outbound_payments.pending_outbound_payments.lock().unwrap();
 
@@ -17950,6 +17952,14 @@ impl<
 			// of a lockorder violation deadlock - no other thread can be holding any
 			// per_peer_state lock at all.
 			peer_states.push(peer_state_mutex.unsafe_well_ordered_double_lock_self());
+		}
+
+		let mut decode_update_add_htlcs_opt = None;
+		{
+			let decode_update_add_htlcs = self.decode_update_add_htlcs.lock().unwrap();
+			if !decode_update_add_htlcs.is_empty() {
+				decode_update_add_htlcs_opt = Some(decode_update_add_htlcs);
+			}
 		}
 
 		let mut peer_storage_dir: Vec<(&PublicKey, &Vec<u8>)> = Vec::new();
