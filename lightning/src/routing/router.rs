@@ -2464,7 +2464,7 @@ impl<'a> PaymentPath<'a> {
 #[inline(always)]
 /// Calculate the fees required to route the given amount over a channel with the given fees.
 #[rustfmt::skip]
-fn compute_fees(amount_msat: u64, channel_fees: RoutingFees) -> Option<u64> {
+pub(crate) fn compute_fees(amount_msat: u64, channel_fees: RoutingFees) -> Option<u64> {
 	amount_msat.checked_mul(channel_fees.proportional_millionths as u64)
 		.and_then(|part| (channel_fees.base_msat as u64).checked_add(part / 1_000_000))
 }
