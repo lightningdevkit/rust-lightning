@@ -120,10 +120,10 @@ pub enum FundingContributionError {
 	///
 	/// Note: [`FundingTemplate::min_rbf_feerate`] may be derived from an in-progress
 	/// negotiation that later aborts, leaving a stale (higher than necessary) minimum. If
-	/// this error occurs after receiving [`Event::SpliceFailed`], call
+	/// this error occurs after receiving [`Event::SpliceNegotiationFailed`], call
 	/// [`ChannelManager::splice_channel`] again to get a fresh template.
 	///
-	/// [`Event::SpliceFailed`]: crate::events::Event::SpliceFailed
+	/// [`Event::SpliceNegotiationFailed`]: crate::events::Event::SpliceNegotiationFailed
 	/// [`ChannelManager::splice_channel`]: crate::ln::channelmanager::ChannelManager::splice_channel
 	FeeRateBelowRbfMinimum {
 		/// The requested feerate.
@@ -760,7 +760,8 @@ impl_writeable_tlv_based!(FundingContribution, {
 });
 
 impl FundingContribution {
-	pub(super) fn feerate(&self) -> FeeRate {
+	/// Returns the feerate of this contribution.
+	pub fn feerate(&self) -> FeeRate {
 		self.feerate
 	}
 
@@ -779,6 +780,11 @@ impl FundingContribution {
 	/// Returns the amount added to the channel by this contribution.
 	pub fn value_added(&self) -> Amount {
 		self.value_added
+	}
+
+	/// Returns the inputs included in this contribution.
+	pub fn inputs(&self) -> &[FundingTxInput] {
+		&self.inputs
 	}
 
 	/// Returns the outputs (e.g., withdrawal destinations) included in this contribution.
@@ -821,7 +827,7 @@ impl FundingContribution {
 			inputs.retain(|input| *input != existing);
 		}
 		for existing in existing_outputs {
-			outputs.retain(|output| *output != *existing);
+			outputs.retain(|output| output.script_pubkey != existing.script_pubkey);
 		}
 		if inputs.is_empty() && outputs.is_empty() {
 			None

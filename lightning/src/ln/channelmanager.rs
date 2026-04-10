@@ -61,8 +61,8 @@ use crate::ln::channel::QuiescentError;
 use crate::ln::channel::{
 	self, hold_time_since, Channel, ChannelError, ChannelUpdateStatus, DisconnectResult,
 	FundedChannel, FundingTxSigned, InboundV1Channel, InteractiveTxMsgError, OutboundHop,
-	OutboundV1Channel, PendingV2Channel, ReconnectionMsg, ShutdownResult, SpliceFundingFailed,
-	StfuResponse, UpdateFulfillCommitFetch, WithChannelContext,
+	OutboundV1Channel, PendingV2Channel, ReconnectionMsg, ShutdownResult, StfuResponse,
+	UpdateFulfillCommitFetch, WithChannelContext,
 };
 use crate::ln::channel_state::ChannelDetails;
 use crate::ln::funding::{FundingContribution, FundingTemplate};
@@ -4081,24 +4081,24 @@ impl<
 						failed_htlcs = htlcs;
 
 						if let Some(splice_funding_failed) = splice_funding_failed {
+							let (funding_info, contribution) = splice_funding_failed.into_parts();
 							let mut pending_events = self.pending_events.lock().unwrap();
+							if let Some(funding_info) = funding_info {
+								pending_events.push_back((
+									events::Event::DiscardFunding {
+										channel_id: *chan_id,
+										funding_info,
+									},
+									None,
+								));
+							}
 							pending_events.push_back((
-								events::Event::SpliceFailed {
+								events::Event::SpliceNegotiationFailed {
 									channel_id: *chan_id,
 									counterparty_node_id: *counterparty_node_id,
 									user_channel_id: chan.context().get_user_id(),
-									abandoned_funding_txo: splice_funding_failed.funding_txo,
-									channel_type: splice_funding_failed.channel_type,
-								},
-								None,
-							));
-							pending_events.push_back((
-								events::Event::DiscardFunding {
-									channel_id: *chan_id,
-									funding_info: FundingInfo::Contribution {
-										inputs: splice_funding_failed.contributed_inputs,
-										outputs: splice_funding_failed.contributed_outputs,
-									},
+									contribution,
+									reason: events::NegotiationFailureReason::ChannelClosing,
 								},
 								None,
 							));
@@ -4388,23 +4388,23 @@ impl<
 			));
 
 			if let Some(splice_funding_failed) = shutdown_res.splice_funding_failed.take() {
+				let (funding_info, contribution) = splice_funding_failed.into_parts();
+				if let Some(funding_info) = funding_info {
+					pending_events.push_back((
+						events::Event::DiscardFunding {
+							channel_id: shutdown_res.channel_id,
+							funding_info,
+						},
+						None,
+					));
+				}
 				pending_events.push_back((
-					events::Event::SpliceFailed {
+					events::Event::SpliceNegotiationFailed {
 						channel_id: shutdown_res.channel_id,
 						counterparty_node_id: shutdown_res.counterparty_node_id,
 						user_channel_id: shutdown_res.user_channel_id,
-						abandoned_funding_txo: splice_funding_failed.funding_txo,
-						channel_type: splice_funding_failed.channel_type,
-					},
-					None,
-				));
-				pending_events.push_back((
-					events::Event::DiscardFunding {
-						channel_id: shutdown_res.channel_id,
-						funding_info: FundingInfo::Contribution {
-							inputs: splice_funding_failed.contributed_inputs,
-							outputs: splice_funding_failed.contributed_outputs,
-						},
+						contribution,
+						reason: events::NegotiationFailureReason::ChannelClosing,
 					},
 					None,
 				));
@@ -4893,24 +4893,24 @@ impl<
 					});
 
 					if let Some(splice_funding_failed) = splice_funding_failed {
+						let (funding_info, contribution) = splice_funding_failed.into_parts();
 						let pending_events = &mut self.pending_events.lock().unwrap();
+						if let Some(funding_info) = funding_info {
+							pending_events.push_back((
+								events::Event::DiscardFunding {
+									channel_id: *channel_id,
+									funding_info,
+								},
+								None,
+							));
+						}
 						pending_events.push_back((
-							events::Event::SpliceFailed {
+							events::Event::SpliceNegotiationFailed {
 								channel_id: *channel_id,
 								counterparty_node_id: *counterparty_node_id,
 								user_channel_id: chan.context.get_user_id(),
-								abandoned_funding_txo: splice_funding_failed.funding_txo,
-								channel_type: splice_funding_failed.channel_type,
-							},
-							None,
-						));
-						pending_events.push_back((
-							events::Event::DiscardFunding {
-								channel_id: *channel_id,
-								funding_info: FundingInfo::Contribution {
-									inputs: splice_funding_failed.contributed_inputs,
-									outputs: splice_funding_failed.contributed_outputs,
-								},
+								contribution,
+								reason: events::NegotiationFailureReason::LocallyAbandoned,
 							},
 							None,
 						));
@@ -6589,35 +6589,25 @@ impl<
 					));
 				}
 			},
-			QuiescentError::FailSplice(SpliceFundingFailed {
-				funding_txo,
-				channel_type,
-				contributed_inputs,
-				contributed_outputs,
-			}) => {
+			QuiescentError::FailSplice(splice_funding_failed, reason) => {
+				let (funding_info, contribution) = splice_funding_failed.into_parts();
 				let pending_events = &mut self.pending_events.lock().unwrap();
-				pending_events.push_back((
-					events::Event::SpliceFailed {
-						channel_id,
-						counterparty_node_id,
-						user_channel_id,
-						abandoned_funding_txo: funding_txo,
-						channel_type,
-					},
-					None,
-				));
-				if !contributed_inputs.is_empty() || !contributed_outputs.is_empty() {
+				if let Some(funding_info) = funding_info {
 					pending_events.push_back((
-						events::Event::DiscardFunding {
-							channel_id,
-							funding_info: FundingInfo::Contribution {
-								inputs: contributed_inputs,
-								outputs: contributed_outputs,
-							},
-						},
+						events::Event::DiscardFunding { channel_id, funding_info },
 						None,
 					));
 				}
+				pending_events.push_back((
+					events::Event::SpliceNegotiationFailed {
+						channel_id,
+						counterparty_node_id,
+						user_channel_id,
+						reason,
+						contribution,
+					},
+					None,
+				));
 			},
 		}
 	}
@@ -6655,14 +6645,14 @@ impl<
 	/// # Events
 	///
 	/// Calling this method will commence the process of creating a new funding transaction for the
-	/// channel. Once the funding transaction has been constructed, an [`Event::SplicePending`]
+	/// channel. Once the funding transaction has been constructed, an [`Event::SpliceNegotiated`]
 	/// will be emitted. At this point, any inputs contributed to the splice can only be re-spent
 	/// if an [`Event::DiscardFunding`] is seen.
 	///
-	/// If any failures occur while negotiating the funding transaction, an [`Event::SpliceFailed`]
-	/// will be emitted. Any contributed inputs no longer used will be included in an
-	/// [`Event::DiscardFunding`] and thus can be re-spent. If a [`FundingTemplate`] was obtained
-	/// while a previous splice was still being negotiated, its
+	/// If any failures occur while negotiating the funding transaction, an
+	/// [`Event::SpliceNegotiationFailed`] will be emitted. Any contributed inputs no longer used
+	/// will be included in an [`Event::DiscardFunding`] and thus can be re-spent. If a
+	/// [`FundingTemplate`] was obtained while a previous splice was still being negotiated, its
 	/// [`min_rbf_feerate`][FundingTemplate::min_rbf_feerate] may be stale after the failure.
 	/// Call [`ChannelManager::splice_channel`] again to get a fresh template.
 	///
@@ -6744,7 +6734,7 @@ impl<
 											"Channel {} already has a pending funding contribution",
 											channel_id,
 										),
-										QuiescentError::FailSplice(_) => format!(
+										QuiescentError::FailSplice(..) => format!(
 											"Channel {} cannot accept funding contribution",
 											channel_id,
 										),
@@ -6881,7 +6871,7 @@ impl<
 							}
 							if let Some(splice_negotiated) = splice_negotiated {
 								self.pending_events.lock().unwrap().push_back((
-									events::Event::SplicePending {
+									events::Event::SpliceNegotiated {
 										channel_id: *channel_id,
 										counterparty_node_id: *counterparty_node_id,
 										user_channel_id: chan.context().get_user_id(),
@@ -10974,7 +10964,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				.and_then(|v| v.splice_negotiated.take())
 			{
 				pending_events.push_back((
-					events::Event::SplicePending {
+					events::Event::SpliceNegotiated {
 						channel_id: channel.context.channel_id(),
 						counterparty_node_id,
 						user_channel_id: channel.context.get_user_id(),
@@ -11830,23 +11820,22 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						exited_quiescence,
 					}) => {
 						if let Some(splice_funding_failed) = splice_funding_failed {
+							let (funding_info, contribution) = splice_funding_failed.into_parts();
 							let pending_events = &mut self.pending_events.lock().unwrap();
+							if let Some(funding_info) = funding_info {
+								pending_events.push_back((
+									events::Event::DiscardFunding { channel_id, funding_info },
+									None,
+								));
+							}
 							pending_events.push_back((
-								events::Event::SpliceFailed {
+								events::Event::SpliceNegotiationFailed {
 									channel_id,
 									counterparty_node_id: *counterparty_node_id,
 									user_channel_id: channel.context().get_user_id(),
-									abandoned_funding_txo: splice_funding_failed.funding_txo,
-									channel_type: splice_funding_failed.channel_type.clone(),
-								},
-								None,
-							));
-							pending_events.push_back((
-								events::Event::DiscardFunding {
-									channel_id,
-									funding_info: FundingInfo::Contribution {
-										inputs: splice_funding_failed.contributed_inputs,
-										outputs: splice_funding_failed.contributed_outputs,
+									contribution,
+									reason: events::NegotiationFailureReason::NegotiationError {
+										msg: format!("{:?}", err),
 									},
 								},
 								None,
@@ -11989,23 +11978,25 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						exited_quiescence,
 					}) => {
 						if let Some(splice_funding_failed) = splice_funding_failed {
+							let (funding_info, contribution) = splice_funding_failed.into_parts();
 							let pending_events = &mut self.pending_events.lock().unwrap();
+							if let Some(funding_info) = funding_info {
+								pending_events.push_back((
+									events::Event::DiscardFunding {
+										channel_id: msg.channel_id,
+										funding_info,
+									},
+									None,
+								));
+							}
 							pending_events.push_back((
-								events::Event::SpliceFailed {
+								events::Event::SpliceNegotiationFailed {
 									channel_id: msg.channel_id,
 									counterparty_node_id,
 									user_channel_id: chan.context().get_user_id(),
-									abandoned_funding_txo: splice_funding_failed.funding_txo,
-									channel_type: splice_funding_failed.channel_type.clone(),
-								},
-								None,
-							));
-							pending_events.push_back((
-								events::Event::DiscardFunding {
-									channel_id: msg.channel_id,
-									funding_info: FundingInfo::Contribution {
-										inputs: splice_funding_failed.contributed_inputs,
-										outputs: splice_funding_failed.contributed_outputs,
+									contribution,
+									reason: events::NegotiationFailureReason::NegotiationError {
+										msg: format!("{:?}", err),
 									},
 								},
 								None,
@@ -12088,7 +12079,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							let exited_quiescence = splice_negotiated.is_some();
 							if let Some(splice_negotiated) = splice_negotiated {
 								self.pending_events.lock().unwrap().push_back((
-									events::Event::SplicePending {
+									events::Event::SpliceNegotiated {
 										channel_id: msg.channel_id,
 										counterparty_node_id: *counterparty_node_id,
 										user_channel_id: chan.context.get_user_id(),
@@ -12159,23 +12150,27 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					}
 
 					if let Some(splice_funding_failed) = splice_failed {
+						let (funding_info, contribution) = splice_funding_failed.into_parts();
 						let pending_events = &mut self.pending_events.lock().unwrap();
+						if let Some(funding_info) = funding_info {
+							pending_events.push_back((
+								events::Event::DiscardFunding {
+									channel_id: msg.channel_id,
+									funding_info,
+								},
+								None,
+							));
+						}
 						pending_events.push_back((
-							events::Event::SpliceFailed {
+							events::Event::SpliceNegotiationFailed {
 								channel_id: msg.channel_id,
 								counterparty_node_id: *counterparty_node_id,
 								user_channel_id: chan_entry.get().context().get_user_id(),
-								abandoned_funding_txo: splice_funding_failed.funding_txo,
-								channel_type: splice_funding_failed.channel_type,
-							},
-							None,
-						));
-						pending_events.push_back((
-							events::Event::DiscardFunding {
-								channel_id: msg.channel_id,
-								funding_info: FundingInfo::Contribution {
-									inputs: splice_funding_failed.contributed_inputs,
-									outputs: splice_funding_failed.contributed_outputs,
+								contribution,
+								reason: events::NegotiationFailureReason::CounterpartyAborted {
+									msg: UntrustedString(
+										String::from_utf8_lossy(&msg.data).to_string(),
+									),
 								},
 							},
 							None,
@@ -12307,24 +12302,24 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						dropped_htlcs = htlcs;
 
 						if let Some(splice_funding_failed) = splice_funding_failed {
+							let (funding_info, contribution) = splice_funding_failed.into_parts();
 							let mut pending_events = self.pending_events.lock().unwrap();
+							if let Some(funding_info) = funding_info {
+								pending_events.push_back((
+									events::Event::DiscardFunding {
+										channel_id: msg.channel_id,
+										funding_info,
+									},
+									None,
+								));
+							}
 							pending_events.push_back((
-								events::Event::SpliceFailed {
+								events::Event::SpliceNegotiationFailed {
 									channel_id: msg.channel_id,
 									counterparty_node_id: *counterparty_node_id,
 									user_channel_id: chan.context().get_user_id(),
-									abandoned_funding_txo: splice_funding_failed.funding_txo,
-									channel_type: splice_funding_failed.channel_type,
-								},
-								None,
-							));
-							pending_events.push_back((
-								events::Event::DiscardFunding {
-									channel_id: msg.channel_id,
-									funding_info: FundingInfo::Contribution {
-										inputs: splice_funding_failed.contributed_inputs,
-										outputs: splice_funding_failed.contributed_outputs,
-									},
+									contribution,
+									reason: events::NegotiationFailureReason::ChannelClosing,
 								},
 								None,
 							));
@@ -15093,6 +15088,22 @@ impl<
 		self.process_pending_events(&event_handler);
 		let collected_events = events.into_inner();
 
+		// When both DiscardFunding and SpliceNegotiationFailed are emitted for the same
+		// channel, DiscardFunding must come first so that inputs are unlocked before any
+		// retry. Each pair is emitted adjacently under a single lock, so checking
+		// adjacent events is sufficient.
+		for window in collected_events.windows(2) {
+			if let events::Event::SpliceNegotiationFailed { channel_id, .. } = &window[0] {
+				if let events::Event::DiscardFunding { channel_id: cid, .. } = &window[1] {
+					assert!(
+						channel_id != cid,
+						"DiscardFunding must precede SpliceNegotiationFailed for channel {}",
+						channel_id,
+					);
+				}
+			}
+		}
+
 		// To expand the coverage and make sure all events are properly serialised and deserialised,
 		// we test all generated events round-trip:
 		for event in &collected_events {
@@ -15368,19 +15379,19 @@ impl<
 							chan.peer_disconnected_is_resumable(&&logger);
 
 						if let Some(splice_funding_failed) = splice_funding_failed {
-							splice_failed_events.push(events::Event::SpliceFailed {
+							let (funding_info, contribution) = splice_funding_failed.into_parts();
+							if let Some(funding_info) = funding_info {
+								splice_failed_events.push(events::Event::DiscardFunding {
+									channel_id: chan.context().channel_id(),
+									funding_info,
+								});
+							}
+							splice_failed_events.push(events::Event::SpliceNegotiationFailed {
 								channel_id: chan.context().channel_id(),
 								counterparty_node_id,
 								user_channel_id: chan.context().get_user_id(),
-								abandoned_funding_txo: splice_funding_failed.funding_txo,
-								channel_type: splice_funding_failed.channel_type,
-							});
-							splice_failed_events.push(events::Event::DiscardFunding {
-								channel_id: chan.context().channel_id(),
-								funding_info: FundingInfo::Contribution {
-									inputs: splice_funding_failed.contributed_inputs,
-									outputs: splice_funding_failed.contributed_outputs,
-								},
+								contribution,
+								reason: events::NegotiationFailureReason::PeerDisconnected,
 							});
 						}
 
@@ -17986,31 +17997,32 @@ impl<
 		let our_pending_intercepts = self.pending_intercepted_htlcs.lock().unwrap();
 
 		// Since some FundingNegotiation variants are not persisted, any splice in such state must
-		// be failed upon reload. However, as the necessary information for the SpliceFailed and
-		// DiscardFunding events is not persisted, the events need to be persisted even though they
+		// be failed upon reload. However, as the necessary information for the
+		// SpliceNegotiationFailed and DiscardFunding events is not persisted, the events need to
+		// be persisted even though they
 		// haven't been emitted yet. These are removed after the events are written.
 		let mut events = self.pending_events.lock().unwrap();
 		let event_count = events.len();
 		for peer_state in peer_states.iter() {
 			for chan in peer_state.channel_by_id.values().filter_map(Channel::as_funded) {
 				if let Some(splice_funding_failed) = chan.maybe_splice_funding_failed() {
+					let (funding_info, contribution) = splice_funding_failed.into_parts();
+					if let Some(funding_info) = funding_info {
+						events.push_back((
+							events::Event::DiscardFunding {
+								channel_id: chan.context().channel_id(),
+								funding_info,
+							},
+							None,
+						));
+					}
 					events.push_back((
-						events::Event::SpliceFailed {
+						events::Event::SpliceNegotiationFailed {
 							channel_id: chan.context.channel_id(),
 							counterparty_node_id: chan.context.get_counterparty_node_id(),
 							user_channel_id: chan.context.get_user_id(),
-							abandoned_funding_txo: splice_funding_failed.funding_txo,
-							channel_type: splice_funding_failed.channel_type,
-						},
-						None,
-					));
-					events.push_back((
-						events::Event::DiscardFunding {
-							channel_id: chan.context().channel_id(),
-							funding_info: FundingInfo::Contribution {
-								inputs: splice_funding_failed.contributed_inputs,
-								outputs: splice_funding_failed.contributed_outputs,
-							},
+							reason: events::NegotiationFailureReason::PeerDisconnected,
+							contribution,
 						},
 						None,
 					));
@@ -18134,7 +18146,7 @@ impl<
 			(23, self.best_block.read().unwrap().previous_blocks, required),
 		});
 
-		// Remove the SpliceFailed and DiscardFunding events added earlier.
+		// Remove the SpliceNegotiationFailed and DiscardFunding events added earlier.
 		events.truncate(event_count);
 
 		Ok(())

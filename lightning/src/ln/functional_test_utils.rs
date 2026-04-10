@@ -17,8 +17,8 @@ use crate::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Listen, Watch
 use crate::events::bump_transaction::sync::BumpTransactionEventHandlerSync;
 use crate::events::bump_transaction::BumpTransactionEvent;
 use crate::events::{
-	ClaimedHTLC, ClosureReason, Event, FundingInfo, HTLCHandlingFailureType, PaidBolt12Invoice,
-	PathFailure, PaymentFailureReason, PaymentPurpose,
+	ClaimedHTLC, ClosureReason, Event, FundingInfo, HTLCHandlingFailureType,
+	NegotiationFailureReason, PaidBolt12Invoice, PathFailure, PaymentFailureReason, PaymentPurpose,
 };
 use crate::ln::chan_utils::{
 	commitment_tx_base_weight, COMMITMENT_TX_WEIGHT_PER_HTLC, TRUC_MAX_WEIGHT,
@@ -2375,7 +2375,7 @@ pub fn check_closed_events(node: &Node, expected_close_events: &[ExpectedCloseEv
 		discard_events_count
 	);
 	assert_eq!(
-		events.iter().filter(|e| matches!(e, Event::SpliceFailed { .. },)).count(),
+		events.iter().filter(|e| matches!(e, Event::SpliceNegotiationFailed { .. },)).count(),
 		splice_events_count
 	);
 }
@@ -3218,7 +3218,7 @@ pub fn expect_splice_pending_event<'a, 'b, 'c, 'd>(
 	let events = node.node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match &events[0] {
-		crate::events::Event::SplicePending { channel_id, counterparty_node_id, .. } => {
+		crate::events::Event::SpliceNegotiated { channel_id, counterparty_node_id, .. } => {
 			assert_eq!(*expected_counterparty_node_id, *counterparty_node_id);
 			*channel_id
 		},
@@ -3229,26 +3229,28 @@ pub fn expect_splice_pending_event<'a, 'b, 'c, 'd>(
 #[cfg(any(test, ldk_bench, feature = "_test_utils"))]
 pub fn expect_splice_failed_events<'a, 'b, 'c, 'd>(
 	node: &'a Node<'b, 'c, 'd>, expected_channel_id: &ChannelId,
-	funding_contribution: FundingContribution,
+	funding_contribution: FundingContribution, expected_reason: NegotiationFailureReason,
 ) {
 	let events = node.node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 2);
 	match &events[0] {
-		Event::SpliceFailed { channel_id, .. } => {
-			assert_eq!(*expected_channel_id, *channel_id);
-		},
-		_ => panic!("Unexpected event"),
-	}
-	match &events[1] {
 		Event::DiscardFunding { funding_info, .. } => {
 			if let FundingInfo::Contribution { inputs, outputs } = &funding_info {
 				let (expected_inputs, expected_outputs) =
-					funding_contribution.into_contributed_inputs_and_outputs();
+					funding_contribution.clone().into_contributed_inputs_and_outputs();
 				assert_eq!(*inputs, expected_inputs);
 				assert_eq!(*outputs, expected_outputs);
 			} else {
 				panic!("Expected FundingInfo::Contribution");
 			}
+		},
+		_ => panic!("Unexpected event"),
+	}
+	match &events[1] {
+		Event::SpliceNegotiationFailed { channel_id, reason, contribution, .. } => {
+			assert_eq!(*expected_channel_id, *channel_id);
+			assert_eq!(expected_reason, *reason);
+			assert_eq!(contribution.as_ref(), Some(&funding_contribution));
 		},
 		_ => panic!("Unexpected event"),
 	}
