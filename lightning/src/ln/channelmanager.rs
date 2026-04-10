@@ -89,9 +89,9 @@ use crate::ln::outbound_payment;
 #[cfg(any(test, feature = "_externalize_tests"))]
 use crate::ln::outbound_payment::PaymentSendFailure;
 use crate::ln::outbound_payment::{
-	Bolt11PaymentError, Bolt12PaymentError, OutboundPayments, PendingOutboundPayment,
-	ProbeSendFailure, RecipientCustomTlvs, RecipientOnionFields, Retry, RetryableInvoiceRequest,
-	RetryableSendFailure, SendAlongPathArgs, StaleExpiration,
+	Bolt11PaymentError, Bolt12PaymentError, NextTrampolineHopInfo, OutboundPayments,
+	PendingOutboundPayment, ProbeSendFailure, RecipientCustomTlvs, RecipientOnionFields, Retry,
+	RetryableInvoiceRequest, RetryableSendFailure, SendAlongPathArgs, StaleExpiration,
 };
 use crate::ln::types::ChannelId;
 use crate::offers::async_receive_offer_cache::AsyncReceiveOfferCache;
@@ -113,9 +113,9 @@ use crate::onion_message::messenger::{
 	MessageRouter, MessageSendInstructions, Responder, ResponseInstruction,
 };
 use crate::onion_message::offers::{OffersMessage, OffersMessageHandler};
-use crate::routing::gossip::NodeId;
+use crate::routing::gossip::{NodeId, RoutingFees};
 use crate::routing::router::{
-	BlindedTail, FixedRouter, InFlightHtlcs, Path, Payee, PaymentParameters, Route,
+	compute_fees, BlindedTail, FixedRouter, InFlightHtlcs, Path, Payee, PaymentParameters, Route,
 	RouteParameters, RouteParametersConfig, Router,
 };
 use crate::sign::ecdsa::EcdsaChannelSigner;
@@ -8450,6 +8450,144 @@ impl<
 		}
 	}
 
+	/// Handles the addition of a HTLC associated with a trampoline forward that we need to
+	/// accumulate on the incoming link before forwarding onwards. If the HTLC is failed, it
+	/// returns the source and error that should be used to fail the HTLC(s) back.
+	fn handle_trampoline_htlc(
+		&self, mpp_part: MppPart, onion_fields: RecipientOnionFields, payment_hash: PaymentHash,
+		next_hop_info: NextTrampolineHopInfo, _next_node_id: PublicKey,
+	) -> Result<(), (HTLCSource, HTLCFailReason)> {
+		let mut trampoline_payments = self.awaiting_trampoline_forwards.lock().unwrap();
+
+		// We should not fail if we're adding the first htlc to a ClaimablePayment (as our
+		// validation compares fields across parts, and our first part can't overflow maximum
+		// msats because each htlc's amount is individually validated - overflow is only possible
+		// with multiple parts).
+		let mut first_trampoline_htlc = false;
+		trampoline_payments.entry(payment_hash).or_insert_with(|| {
+			first_trampoline_htlc = true;
+			TrampolinePayment { htlcs: Vec::new(), onion_fields: onion_fields.clone() }
+		});
+
+		// TODO: add restriction to specification that trampoline should be consistent across
+		// MPP parts? Currently, we'll accept a MPP trampoline payments that specify different
+		// next_node_id destinations (just forwarding to the last one that arrives).
+
+		// If MPP hasn't fully arrived yet, return early (saving indentation below). Once it has
+		// arrived, remove the entry from the map so that all downstream paths consume it.
+		let prev_hop = mpp_part.prev_hop.clone();
+		let check_result = {
+			let trampoline_payment =
+				trampoline_payments.get_mut(&payment_hash).expect("just inserted");
+			self.check_incoming_mpp_part(
+				&mut trampoline_payment.htlcs,
+				&mut trampoline_payment.onion_fields,
+				mpp_part,
+				onion_fields,
+				payment_hash,
+			)
+		};
+		let trampoline_payment = match check_result {
+			Ok(false) => return Ok(()),
+			Err(()) => {
+				debug_assert!(
+					!first_trampoline_htlc,
+					"first trampoline HTLC should not fail check_incoming_mpp_part"
+				);
+				return Err((
+					// When we couldn't add a new HTLC, we just fail back our last received htlc,
+					// allowing others to wait for more MPP parts to arrive.
+					HTLCSource::TrampolineForward {
+						previous_hop_data: vec![prev_hop],
+						outbound_payment: None,
+					},
+					HTLCFailReason::reason(
+						LocalHTLCFailureReason::InvalidTrampolineForward,
+						vec![],
+					),
+				));
+			},
+			Ok(true) => trampoline_payments.remove(&payment_hash).expect("just inserted"),
+		};
+
+		let incoming_amt_msat: u64 = trampoline_payment.htlcs.iter().map(|h| h.value).sum();
+		let incoming_cltv_expiry =
+			trampoline_payment.htlcs.iter().map(|h| h.cltv_expiry).min().unwrap();
+
+		let (forwarding_fee_proportional_millionths, forwarding_fee_base_msat, cltv_delta) = {
+			let config = self.config.read().unwrap();
+			(
+				config.channel_config.forwarding_fee_proportional_millionths,
+				config.channel_config.forwarding_fee_base_msat,
+				config.channel_config.cltv_expiry_delta as u32,
+			)
+		};
+		let trampoline_source = || -> HTLCSource {
+			HTLCSource::TrampolineForward {
+				previous_hop_data: trampoline_payment
+					.htlcs
+					.iter()
+					.map(|htlc| htlc.prev_hop.clone())
+					.collect(),
+				outbound_payment: None,
+			}
+		};
+		let trampoline_failure = || -> HTLCFailReason {
+			let mut err_data = Vec::with_capacity(10);
+			err_data.extend_from_slice(&forwarding_fee_base_msat.to_be_bytes());
+			err_data.extend_from_slice(&forwarding_fee_proportional_millionths.to_be_bytes());
+			err_data.extend_from_slice(&(cltv_delta as u16).to_be_bytes());
+			HTLCFailReason::reason(
+				LocalHTLCFailureReason::TrampolineFeeOrExpiryInsufficient,
+				err_data,
+			)
+		};
+
+		// We need to pick the maximum fee that we'll charge as a trampoline node. This could
+		// be any trampoline fee policy - this isn't specified or advertised. To keep things
+		// simple, we just calculate the amount that we would have charged to forward the amount
+		// going to the trampoline with our default fees, and make sure we have at least that.
+		// The amount that we actually dispatch will be slightly more than the amount for the next
+		// trampoline (since it'll also include fees for subsequent hops), so we're actually
+		// charging a little less than we would if this were a regular forward of that amount. As
+		// use of trampoline grows, we can investigate more sophisticated options.
+		let routing_fees = RoutingFees {
+			base_msat: forwarding_fee_base_msat,
+			proportional_millionths: forwarding_fee_proportional_millionths,
+		};
+		let our_forwarding_fee_msat = compute_fees(next_hop_info.amount_msat, routing_fees);
+		let _max_total_routing_fee_msat = match our_forwarding_fee_msat
+			.and_then(|our_fee| our_fee.checked_add(next_hop_info.amount_msat))
+			.and_then(|total| incoming_amt_msat.checked_sub(total))
+		{
+			Some(amount) => amount,
+			None => {
+				return Err((trampoline_source(), trampoline_failure()));
+			},
+		};
+
+		let _max_total_cltv_expiry_delta = match next_hop_info
+			.cltv_expiry_height
+			.checked_add(cltv_delta)
+			.and_then(|total| incoming_cltv_expiry.checked_sub(total))
+		{
+			Some(cltv_delta) => cltv_delta,
+			None => {
+				return Err((trampoline_source(), trampoline_failure()));
+			},
+		};
+
+		log_debug!(
+			self.logger,
+			"Rejecting trampoline forward because we do not fully support forwarding yet.",
+		);
+
+		Err((
+			trampoline_source(),
+			HTLCFailReason::reason(LocalHTLCFailureReason::TemporaryTrampolineFailure, vec![]),
+		))
+	}
+
 	fn process_receive_htlcs(
 		&self, pending_forwards: &mut Vec<HTLCForwardInfo>,
 		new_events: &mut VecDeque<(Event, Option<EventCompletionAction>)>,
@@ -8484,6 +8622,7 @@ impl<
 						has_recipient_created_payment_secret,
 						invoice_request_opt,
 						trampoline_shared_secret,
+						trampoline_info,
 					) = match routing {
 						PendingHTLCRouting::Receive {
 							payment_data,
@@ -8512,6 +8651,7 @@ impl<
 								true,
 								None,
 								trampoline_shared_secret,
+								None,
 							)
 						},
 						PendingHTLCRouting::ReceiveKeysend {
@@ -8546,6 +8686,62 @@ impl<
 								has_recipient_created_payment_secret,
 								invoice_request,
 								None,
+								None,
+							)
+						},
+						PendingHTLCRouting::TrampolineForward {
+							trampoline_shared_secret: incoming_trampoline_shared_secret,
+							onion_packet,
+							node_id: next_trampoline,
+							blinded,
+							incoming_cltv_expiry,
+							incoming_multipath_data,
+							next_trampoline_amt_msat,
+							next_trampoline_cltv_expiry,
+						} => {
+							// Trampoline forwards only *need* to have MPP data if they're
+							// multi-part.
+							let onion_fields = match incoming_multipath_data {
+								Some(ref final_mpp) => RecipientOnionFields::secret_only(
+									final_mpp.payment_secret,
+									final_mpp.total_msat,
+								),
+								None => RecipientOnionFields::spontaneous_empty(outgoing_amt_msat),
+							};
+
+							let next_hop_info = NextTrampolineHopInfo {
+								onion_packet,
+								blinding_point: blinded.and_then(|b| {
+									b.next_blinding_override.or_else(|| {
+										let encrypted_tlvs_ss = self
+											.node_signer
+											.ecdh(Recipient::Node, &b.inbound_blinding_point, None)
+											.unwrap()
+											.secret_bytes();
+										onion_utils::next_hop_pubkey(
+											&self.secp_ctx,
+											b.inbound_blinding_point,
+											&encrypted_tlvs_ss,
+										)
+										.ok()
+									})
+								}),
+								amount_msat: next_trampoline_amt_msat,
+								cltv_expiry_height: next_trampoline_cltv_expiry,
+							};
+							(
+								incoming_cltv_expiry,
+								// Unused for trampoline forwards; MppPart is constructed
+								// directly below.
+								OnionPayload::Invoice { _legacy_hop_data: None },
+								incoming_multipath_data,
+								None,
+								None,
+								onion_fields,
+								false,
+								None,
+								Some(incoming_trampoline_shared_secret),
+								Some((next_hop_info, next_trampoline)),
 							)
 						},
 						_ => {
@@ -8556,6 +8752,35 @@ impl<
 					// if possible so that we don't prematurely mark MPP payments complete
 					// if routing nodes overpay
 					let value = incoming_amt_msat.unwrap_or(outgoing_amt_msat);
+					// For trampoline forwards, construct MppPart directly and handle separately
+					// from claimable HTLCs.
+					if let Some((next_hop_info, next_trampoline)) = trampoline_info {
+						let mpp_part = MppPart {
+							prev_hop,
+							cltv_expiry,
+							value,
+							sender_intended_value: outgoing_amt_msat,
+							timer_ticks: 0,
+							total_value_received: None,
+						};
+						if let Err((htlc_source, failure_reason)) = self.handle_trampoline_htlc(
+							mpp_part,
+							onion_fields,
+							payment_hash,
+							next_hop_info,
+							next_trampoline,
+						) {
+							failed_forwards.push((
+								htlc_source,
+								payment_hash,
+								failure_reason,
+								HTLCHandlingFailureType::TrampolineForward {},
+							));
+						}
+						continue 'next_forwardable_htlc;
+					}
+
+					// If we don't have a trampoline forward, we're dealing with a MPP receive.
 					let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
 						prev_outbound_scid_alias: prev_hop.prev_outbound_scid_alias,
 						user_channel_id: prev_hop.user_channel_id,
