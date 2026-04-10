@@ -536,7 +536,7 @@ enum OnionPayload {
 }
 
 #[derive(PartialEq, Eq)]
-struct MppPart {
+pub(super) struct MppPart {
 	prev_hop: HTLCPreviousHopData,
 	cltv_expiry: u32,
 	/// The amount (in msats) of this MPP part
@@ -551,6 +551,20 @@ struct MppPart {
 }
 
 impl MppPart {
+	#[cfg(test)]
+	pub(super) fn new(
+		prev_hop: HTLCPreviousHopData, value: u64, sender_intended_value: u64, cltv_expiry: u32,
+	) -> Self {
+		MppPart {
+			prev_hop,
+			cltv_expiry,
+			value,
+			sender_intended_value,
+			timer_ticks: 0,
+			total_value_received: None,
+		}
+	}
+
 	/// Returns a boolean indicating whether the HTLC has timed out on chain, accounting for a buffer
 	/// that gives us time to resolve it.
 	fn check_onchain_timeout(&self, height: u32) -> bool {
@@ -5821,6 +5835,20 @@ impl<
 		&self, payment_id: PaymentId, new_payment_metadata: Option<Vec<u8>>,
 	) {
 		self.pending_outbound_payments.test_set_payment_metadata(payment_id, new_payment_metadata);
+	}
+
+	#[cfg(test)]
+	pub(super) fn test_handle_trampoline_htlc(
+		&self, mpp_part: MppPart, onion_fields: RecipientOnionFields, payment_hash: PaymentHash,
+		next_hop_info: NextTrampolineHopInfo, next_node_id: PublicKey,
+	) -> Result<(), (HTLCSource, onion_utils::HTLCFailReason)> {
+		self.handle_trampoline_htlc(
+			mpp_part,
+			onion_fields,
+			payment_hash,
+			next_hop_info,
+			next_node_id,
+		)
 	}
 
 	/// Pays a [`Bolt11Invoice`] associated with the `payment_id`. See [`Self::send_payment`] for more info.
