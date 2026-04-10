@@ -544,21 +544,6 @@ struct MppPart {
 	total_value_received: Option<u64>,
 }
 
-impl MppPart {
-	fn new(
-		prev_hop: HTLCPreviousHopData, value: u64, sender_intended_value: u64, cltv_expiry: u32,
-	) -> Self {
-		MppPart {
-			prev_hop,
-			cltv_expiry,
-			value,
-			sender_intended_value,
-			timer_ticks: 0,
-			total_value_received: None,
-		}
-	}
-}
-
 impl PartialOrd for MppPart {
 	fn partial_cmp(&self, other: &MppPart) -> Option<cmp::Ordering> {
 		Some(self.cmp(other))
@@ -583,19 +568,6 @@ struct ClaimableHTLC {
 	onion_payload: OnionPayload,
 	/// The extra fee our counterparty skimmed off the top of this HTLC.
 	counterparty_skimmed_fee_msat: Option<u64>,
-}
-
-impl ClaimableHTLC {
-	fn new(
-		prev_hop: HTLCPreviousHopData, value: u64, sender_intended_value: u64, cltv_expiry: u32,
-		onion_payload: OnionPayload, counterparty_skimmed_fee_msat: Option<u64>,
-	) -> Self {
-		ClaimableHTLC {
-			mpp_part: MppPart::new(prev_hop, value, sender_intended_value, cltv_expiry),
-			onion_payload,
-			counterparty_skimmed_fee_msat,
-		}
-	}
 }
 
 impl From<&ClaimableHTLC> for events::ClaimedHTLC {
@@ -8353,17 +8325,21 @@ impl<
 							panic!("short_channel_id == 0 should imply any pending_forward entries are of type Receive");
 						},
 					};
-					let claimable_htlc = ClaimableHTLC::new(
-						prev_hop,
-						// We differentiate the received value from the sender intended value
-						// if possible so that we don't prematurely mark MPP payments complete
-						// if routing nodes overpay
-						incoming_amt_msat.unwrap_or(outgoing_amt_msat),
-						outgoing_amt_msat,
-						cltv_expiry,
+					let claimable_htlc = ClaimableHTLC {
+						mpp_part: MppPart {
+							prev_hop,
+							cltv_expiry,
+							// We differentiate the received value from the sender intended value
+							// if possible so that we don't prematurely mark MPP payments complete
+							// if routing nodes overpay
+							value: incoming_amt_msat.unwrap_or(outgoing_amt_msat),
+							sender_intended_value: outgoing_amt_msat,
+							timer_ticks: 0,
+							total_value_received: None,
+						},
 						onion_payload,
-						skimmed_fee_msat,
-					);
+						counterparty_skimmed_fee_msat: skimmed_fee_msat,
+					};
 
 					let mut committed_to_claimable = false;
 
