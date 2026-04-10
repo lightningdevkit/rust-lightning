@@ -569,6 +569,20 @@ impl Ord for MppPart {
 	}
 }
 
+trait HasMppPart {
+	fn mpp_part(&self) -> &MppPart;
+	fn mpp_part_mut(&mut self) -> &mut MppPart;
+}
+
+impl HasMppPart for MppPart {
+	fn mpp_part(&self) -> &MppPart {
+		self
+	}
+	fn mpp_part_mut(&mut self) -> &mut MppPart {
+		self
+	}
+}
+
 /// Represents an incoming HTLC that can be claimed or failed by the user.
 #[derive(PartialEq, Eq)]
 struct ClaimableHTLC {
@@ -576,6 +590,15 @@ struct ClaimableHTLC {
 	onion_payload: OnionPayload,
 	/// The extra fee our counterparty skimmed off the top of this HTLC.
 	counterparty_skimmed_fee_msat: Option<u64>,
+}
+
+impl HasMppPart for ClaimableHTLC {
+	fn mpp_part(&self) -> &MppPart {
+		&self.mpp_part
+	}
+	fn mpp_part_mut(&mut self) -> &mut MppPart {
+		&mut self.mpp_part
+	}
 }
 
 impl From<&ClaimableHTLC> for events::ClaimedHTLC {
@@ -8263,28 +8286,28 @@ impl<
 
 	// Checks whether an incoming HTLC can be added to an in-progress MPP payment, verifying onion
 	// field compatibility and that the total value is sensible. On success, the HTLC is added to
-	// the payment's claimable set and Ok(true) is returned if all MPP parts have arrived.
-	fn check_incoming_mpp_part(
-		&self, claimable_payment: &mut ClaimablePayment, claimable_htlc: ClaimableHTLC,
+	// the htlc claimable set and Ok(true) is returned if all MPP parts have arrived.
+	fn check_incoming_mpp_part<H: HasMppPart + Ord>(
+		&self, htlc_set: &mut Vec<H>, payment_onion_fields: &mut RecipientOnionFields, new_htlc: H,
 		mut onion_fields: RecipientOnionFields, payment_hash: PaymentHash,
 	) -> Result<bool, ()> {
-		let onions_compatible = claimable_payment.onion_fields.check_merge(&mut onion_fields);
+		let onions_compatible = payment_onion_fields.check_merge(&mut onion_fields);
 		if onions_compatible.is_err() {
 			return Err(());
 		}
-		let mut total_intended_recvd_value = claimable_htlc.mpp_part.sender_intended_value;
-		for htlc in claimable_payment.htlcs.iter() {
-			total_intended_recvd_value += htlc.mpp_part.sender_intended_value;
+		let mut total_intended_recvd_value = new_htlc.mpp_part().sender_intended_value;
+		for htlc in htlc_set.iter() {
+			total_intended_recvd_value += htlc.mpp_part().sender_intended_value;
 			if total_intended_recvd_value >= msgs::MAX_VALUE_MSAT {
 				break;
 			}
 		}
-		let total_mpp_value = claimable_payment.onion_fields.total_mpp_amount_msat;
+		let total_mpp_value = payment_onion_fields.total_mpp_amount_msat;
 		// The condition determining whether an MPP is complete must match exactly the condition
 		// used in `timer_tick_occurred`
 		if total_intended_recvd_value >= msgs::MAX_VALUE_MSAT {
 			return Err(());
-		} else if total_intended_recvd_value - claimable_htlc.mpp_part.sender_intended_value
+		} else if total_intended_recvd_value - new_htlc.mpp_part().sender_intended_value
 			>= total_mpp_value
 		{
 			log_trace!(
@@ -8294,23 +8317,17 @@ impl<
 			);
 			return Err(());
 		} else if total_intended_recvd_value >= total_mpp_value {
-			claimable_payment.htlcs.push(claimable_htlc);
-			let amount_msat = claimable_payment.htlcs.iter().map(|htlc| htlc.mpp_part.value).sum();
-			claimable_payment
-				.htlcs
+			htlc_set.push(new_htlc);
+			let amount_msat = htlc_set.iter().map(|htlc| htlc.mpp_part().value).sum();
+			htlc_set
 				.iter_mut()
-				.for_each(|htlc| htlc.mpp_part.total_value_received = Some(amount_msat));
-			let counterparty_skimmed_fee_msat = claimable_payment.total_counterparty_skimmed_msat();
-			debug_assert!(
-				total_intended_recvd_value.saturating_sub(amount_msat)
-					<= counterparty_skimmed_fee_msat
-			);
-			claimable_payment.htlcs.sort();
+				.for_each(|htlc| htlc.mpp_part_mut().total_value_received = Some(amount_msat));
+			htlc_set.sort();
 			Ok(true)
 		} else {
-			// Nothing to do - we haven't reached the total payment value yet, wait until we receive
-			// more MPP parts.
-			claimable_payment.htlcs.push(claimable_htlc);
+			// Nothing to do - we haven't reached the total payment value yet, wait until we
+			// receive more MPP parts.
+			htlc_set.push(new_htlc);
 			Ok(false)
 		}
 	}
@@ -8351,12 +8368,23 @@ impl<
 
 		let htlc_expiry = claimable_htlc.mpp_part.cltv_expiry;
 		match self.check_incoming_mpp_part(
-			claimable_payment,
+			&mut claimable_payment.htlcs,
+			&mut claimable_payment.onion_fields,
 			claimable_htlc,
 			onion_fields,
 			payment_hash,
 		) {
 			Ok(true) => {
+				let counterparty_skimmed_fee_msat =
+					claimable_payment.total_counterparty_skimmed_msat();
+				let amount_msat: u64 =
+					claimable_payment.htlcs.iter().map(|h| h.mpp_part.value).sum();
+				let total_sender_intended: u64 =
+					claimable_payment.htlcs.iter().map(|h| h.mpp_part.sender_intended_value).sum();
+				debug_assert!(
+					total_sender_intended.saturating_sub(amount_msat)
+						<= counterparty_skimmed_fee_msat
+				);
 				let claim_deadline = Some(
 					match claimable_payment.htlcs.iter().map(|h| h.mpp_part.cltv_expiry).min() {
 						Some(claim_deadline) => claim_deadline,
