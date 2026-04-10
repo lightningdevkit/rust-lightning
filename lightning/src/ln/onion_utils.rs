@@ -26,12 +26,12 @@ use crate::sign::{NodeSigner, Recipient};
 use crate::types::features::{ChannelFeatures, NodeFeatures};
 use crate::types::payment::{PaymentHash, PaymentPreimage};
 use crate::util::errors::APIError;
+use crate::util::fuzz_wrappers::digest_bytes_match;
 use crate::util::logger::Logger;
 use crate::util::ser::{
 	LengthCalculatingWriter, Readable, ReadableArgs, VecWriter, Writeable, Writer,
 };
 
-use bitcoin::hashes::cmp::fixed_time_eq;
 use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::{Hash, HashEngine};
@@ -1298,7 +1298,8 @@ fn process_onion_failure_inner<T: secp256k1::Signing, L: Logger>(
 		let mut hmac = HmacEngine::<Sha256>::new(&um);
 		hmac.input(&encrypted_packet.data[32..]);
 
-		if &Hmac::from_engine(hmac).to_byte_array() != &encrypted_packet.data[..32] {
+		let expected_hmac = Hmac::from_engine(hmac).to_byte_array();
+		if !digest_bytes_match(&expected_hmac, &encrypted_packet.data[..32]) {
 			continue;
 		}
 
@@ -2727,7 +2728,8 @@ fn decode_next_hop<T, R: ReadableArgs<T>, N: NextPacketBytes>(
 	if let Some(tag) = payment_hash {
 		hmac.input(&tag.0[..]);
 	}
-	if !fixed_time_eq(&Hmac::from_engine(hmac).to_byte_array(), &hmac_bytes) {
+	let expected_hmac = Hmac::from_engine(hmac).to_byte_array();
+	if !digest_bytes_match(&expected_hmac, &hmac_bytes) {
 		return Err(OnionDecodeErr::Malformed {
 			err_msg: "HMAC Check failed",
 			reason: LocalHTLCFailureReason::InvalidOnionHMAC,
@@ -2907,7 +2909,7 @@ impl AttributionData {
 		// Compare with the actual HMAC.
 		let hmac_idx = MAX_HOPS - position - 1;
 		let actual_hmac = self.get_hmac(hmac_idx);
-		if !fixed_time_eq(expected_hmac, actual_hmac) {
+		if !digest_bytes_match(expected_hmac, actual_hmac) {
 			return Err(());
 		}
 

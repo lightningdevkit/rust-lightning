@@ -61,5 +61,4 @@ level = "forbid"
 check-cfg = [
     "cfg(fuzzing)",
     "cfg(secp256k1_fuzz)",
-    "cfg(hashes_fuzz)",
 ]

@@ -15,6 +15,23 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::secp256k1::PublicKey;
 
+#[inline]
+fn promise_matches(expected_promise: &str, actual_promise: &str) -> bool {
+	if expected_promise.len() != actual_promise.len() {
+		return false;
+	}
+
+	#[cfg(not(fuzzing))]
+	{
+		expected_promise == actual_promise
+	}
+	#[cfg(fuzzing)]
+	{
+		expected_promise.len() < 2
+			|| expected_promise.as_bytes()[..2] == actual_promise.as_bytes()[..2]
+	}
+}
+
 /// Determines if the given parameters are valid given the secret used to generate the promise.
 pub fn is_valid_opening_fee_params(
 	fee_params: &LSPS2OpeningFeeParams, promise_secret: &[u8; 32], counterparty_node_id: &PublicKey,
@@ -33,7 +50,7 @@ pub fn is_valid_opening_fee_params(
 	hmac.input(&fee_params.max_payment_size_msat.to_be_bytes());
 	let promise_bytes = Hmac::from_engine(hmac).to_byte_array();
 	let promise = utils::hex_str(&promise_bytes[..]);
-	promise == fee_params.promise
+	promise_matches(&promise, &fee_params.promise)
 }
 
 /// Determines if the given parameters are expired, or still valid.

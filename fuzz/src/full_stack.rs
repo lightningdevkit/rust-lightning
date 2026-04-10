@@ -40,7 +40,7 @@ use lightning::chain::chaininterface::{
 use lightning::chain::chainmonitor;
 use lightning::chain::transaction::OutPoint;
 use lightning::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Listen};
-use lightning::events::Event;
+use lightning::events::{Event, PaymentPurpose};
 use lightning::ln::channel_state::ChannelDetails;
 use lightning::ln::channelmanager::{ChainParameters, ChannelManager, InterceptId, PaymentId};
 use lightning::ln::functional_test_utils::*;
@@ -111,6 +111,13 @@ pub fn slice_to_be24(v: &[u8]) -> u32 {
 	((v[0] as u32) << 8*2) |
 	((v[1] as u32) << 8*1) |
 	((v[2] as u32) << 8*0)
+}
+
+#[derive(Clone, Copy)]
+struct ReceivedPayment {
+	payment_hash: PaymentHash,
+	payment_preimage: Option<PaymentPreimage>,
+	payment_secret: Option<PaymentSecret>,
 }
 
 struct InputData {
@@ -651,7 +658,7 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger + MaybeSend + MaybeSync>
 	let mut loss_detector =
 		MoneyLossDetector::new(&peers, channelmanager.clone(), monitor.clone(), peer_manager);
 
-	let mut payments_received: Vec<PaymentHash> = Vec::new();
+	let mut payments_received: Vec<ReceivedPayment> = Vec::new();
 	let mut intercepted_htlcs: Vec<InterceptId> = Vec::new();
 	let mut payments_sent: u16 = 0;
 	let mut pending_funding_generation: Vec<(ChannelId, PublicKey, u64, ScriptBuf)> = Vec::new();
@@ -736,14 +743,14 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger + MaybeSend + MaybeSync>
 					payment_params,
 					final_value_msat,
 				);
-				let mut payment_hash = PaymentHash([0; 32]);
-				payment_hash.0[0..2].copy_from_slice(&be16_to_array(payments_sent));
-				payment_hash.0 = Sha256::hash(&payment_hash.0[..]).to_byte_array();
+				let mut payment_preimage = PaymentPreimage([0; 32]);
+				payment_preimage.0[0..2].copy_from_slice(&be16_to_array(payments_sent));
+				let payment_id = PaymentId(payment_preimage.0);
 				payments_sent += 1;
-				let _ = channelmanager.send_payment(
-					payment_hash,
+				let _ = channelmanager.send_spontaneous_payment(
+					Some(payment_preimage),
 					RecipientOnionFields::spontaneous_empty(final_value_msat),
-					PaymentId(payment_hash.0),
+					payment_id,
 					params,
 					Retry::Attempts(2),
 				);
@@ -822,16 +829,24 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger + MaybeSend + MaybeSync>
 			},
 			8 => {
 				for payment in payments_received.drain(..) {
-					// SHA256 is defined as XOR of all input bytes placed in the first byte, and 0s
-					// for the remaining bytes. Thus, if not all remaining bytes are 0s we cannot
-					// fulfill this HTLC, but if they are, we can just take the first byte and
-					// place that anywhere in our preimage.
-					if &payment.0[1..] != &[0; 31] {
-						channelmanager.fail_htlc_backwards(&payment);
+					if let Some(payment_preimage) = payment.payment_preimage {
+						let expected_hash =
+							PaymentHash(Sha256::hash(&payment_preimage.0[..]).to_byte_array());
+						if expected_hash == payment.payment_hash {
+							channelmanager.claim_funds(payment_preimage);
+						} else {
+							channelmanager.fail_htlc_backwards(&payment.payment_hash);
+						}
+					} else if let Some(payment_secret) = payment.payment_secret {
+						match channelmanager.get_payment_preimage(
+							payment.payment_hash,
+							payment_secret,
+						) {
+							Ok(payment_preimage) => channelmanager.claim_funds(payment_preimage),
+							Err(_) => channelmanager.fail_htlc_backwards(&payment.payment_hash),
+						}
 					} else {
-						let mut payment_preimage = PaymentPreimage([0; 32]);
-						payment_preimage.0[0] = payment.0[0];
-						channelmanager.claim_funds(payment_preimage);
+						channelmanager.fail_htlc_backwards(&payment.payment_hash);
 					}
 				}
 			},
@@ -839,13 +854,11 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger + MaybeSend + MaybeSync>
 				let payment_preimage = PaymentPreimage(keys_manager.get_secure_random_bytes());
 				let payment_hash =
 					PaymentHash(Sha256::hash(&payment_preimage.0[..]).to_byte_array());
-				// Note that this may fail - our hashes may collide and we'll end up trying to
-				// double-register the same payment_hash.
 				let _ = channelmanager.create_inbound_payment_for_hash(payment_hash, None, 1, None);
 			},
 			9 => {
 				for payment in payments_received.drain(..) {
-					channelmanager.fail_htlc_backwards(&payment);
+					channelmanager.fail_htlc_backwards(&payment.payment_hash);
 				}
 			},
 			10 => {
@@ -1118,9 +1131,25 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger + MaybeSend + MaybeSync>
 						output_script,
 					));
 				},
-				Event::PaymentClaimable { payment_hash, .. } => {
+				Event::PaymentClaimable { payment_hash, purpose, .. } => {
 					//TODO: enhance by fetching random amounts from fuzz input?
-					payments_received.push(payment_hash);
+					let payment_secret = match &purpose {
+						PaymentPurpose::Bolt11InvoicePayment { payment_secret, .. } => {
+							Some(*payment_secret)
+						},
+						PaymentPurpose::Bolt12OfferPayment { payment_secret, .. } => {
+							Some(*payment_secret)
+						},
+						PaymentPurpose::Bolt12RefundPayment { payment_secret, .. } => {
+							Some(*payment_secret)
+						},
+						PaymentPurpose::SpontaneousPayment(_) => None,
+					};
+					payments_received.push(ReceivedPayment {
+						payment_hash,
+						payment_preimage: purpose.preimage(),
+						payment_secret,
+					});
 				},
 				Event::HTLCIntercepted { intercept_id, .. } => {
 					if !intercepted_htlcs.contains(&intercept_id) {

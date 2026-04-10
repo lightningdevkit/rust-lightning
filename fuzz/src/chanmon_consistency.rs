@@ -568,12 +568,18 @@ type ChanMan<'a> = ChannelManager<
 >;
 
 #[inline]
-fn get_payment_secret_hash(dest: &ChanMan, payment_ctr: &mut u64) -> (PaymentSecret, PaymentHash) {
+fn get_payment_secret_hash(
+	dest: &ChanMan, payment_ctr: &mut u64,
+	payment_preimages: &RefCell<HashMap<PaymentHash, PaymentPreimage>>,
+) -> (PaymentSecret, PaymentHash) {
 	*payment_ctr += 1;
-	let payment_hash = PaymentHash(Sha256::hash(&[*payment_ctr as u8]).to_byte_array());
+	let mut payment_preimage = PaymentPreimage([0; 32]);
+	payment_preimage.0[0..8].copy_from_slice(&payment_ctr.to_be_bytes());
+	let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0).to_byte_array());
 	let payment_secret = dest
 		.create_inbound_payment_for_hash(payment_hash, None, 3600, None)
 		.expect("create_inbound_payment_for_hash failed");
+	assert!(payment_preimages.borrow_mut().insert(payment_hash, payment_preimage).is_none());
 	(payment_secret, payment_hash)
 }
 
@@ -1342,10 +1348,8 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 
 	// Create 3 channels between A-B and 3 channels between B-C (6 total).
 	//
-	// Use version numbers 1-6 to avoid txid collisions under fuzz hashing.
-	// Fuzz mode uses XOR-based hashing (all bytes XOR to one byte), and
-	// versions 0-5 cause collisions between A-B and B-C channel pairs
-	// (e.g., A-B with Version(1) collides with B-C with Version(3)).
+	// Use distinct version numbers for each funding transaction so each test channel gets its own
+	// txid and funding outpoint.
 	// A-B: channel 2 A and B have 0-reserve (trusted open + trusted accept),
 	//       channel 3 A has 0-reserve (trusted accept)
 	make_channel!(nodes[0], nodes[1], monitor_a, monitor_b, keys_manager_b, 1, false, false);
@@ -1422,6 +1426,8 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 	let resolved_payments: RefCell<[HashMap<PaymentId, Option<PaymentHash>>; 3]> =
 		RefCell::new([new_hash_map(), new_hash_map(), new_hash_map()]);
 	let claimed_payment_hashes: RefCell<HashSet<PaymentHash>> = RefCell::new(HashSet::new());
+	let payment_preimages: RefCell<HashMap<PaymentHash, PaymentPreimage>> =
+		RefCell::new(new_hash_map());
 
 	macro_rules! test_return {
 		() => {{
@@ -1935,9 +1941,8 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 
 		macro_rules! process_events {
 			($node: expr, $fail: expr) => {{
-				// In case we get 256 payments we may have a hash collision, resulting in the
-				// second claim/fail call not finding the duplicate-hash HTLC, so we have to
-				// deduplicate the calls here.
+				// Multiple HTLCs can resolve for the same payment hash, so deduplicate
+				// claim/fail handling per event batch.
 				let mut claim_set = new_hash_map();
 				let mut events = nodes[$node].get_and_clear_pending_events();
 				let had_events = !events.is_empty();
@@ -1950,7 +1955,11 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 								if $fail {
 									nodes[$node].fail_htlc_backwards(&payment_hash);
 								} else {
-									nodes[$node].claim_funds(PaymentPreimage(payment_hash.0));
+									let payment_preimage = *payment_preimages
+										.borrow()
+										.get(&payment_hash)
+										.expect("PaymentClaimable for unknown payment hash");
+									nodes[$node].claim_funds(payment_preimage);
 									claimed_payment_hashes.borrow_mut().insert(payment_hash);
 								}
 							}
@@ -2090,7 +2099,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 			|source_idx: usize, dest_idx: usize, dest_chan_id, amt, payment_ctr: &mut u64| {
 				let source = &nodes[source_idx];
 				let dest = &nodes[dest_idx];
-				let (secret, hash) = get_payment_secret_hash(dest, payment_ctr);
+				let (secret, hash) = get_payment_secret_hash(dest, payment_ctr, &payment_preimages);
 				let mut id = PaymentId([0; 32]);
 				id.0[0..8].copy_from_slice(&payment_ctr.to_ne_bytes());
 				let succeeded = send_payment(source, dest, dest_chan_id, amt, secret, hash, id);
@@ -2113,7 +2122,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 			let source = &nodes[source_idx];
 			let middle = &nodes[middle_idx];
 			let dest = &nodes[dest_idx];
-			let (secret, hash) = get_payment_secret_hash(dest, payment_ctr);
+			let (secret, hash) = get_payment_secret_hash(dest, payment_ctr, &payment_preimages);
 			let mut id = PaymentId([0; 32]);
 			id.0[0..8].copy_from_slice(&payment_ctr.to_ne_bytes());
 			let succeeded = send_hop_payment(
@@ -2140,7 +2149,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 		                       payment_ctr: &mut u64| {
 			let source = &nodes[source_idx];
 			let dest = &nodes[dest_idx];
-			let (secret, hash) = get_payment_secret_hash(dest, payment_ctr);
+			let (secret, hash) = get_payment_secret_hash(dest, payment_ctr, &payment_preimages);
 			let mut id = PaymentId([0; 32]);
 			id.0[0..8].copy_from_slice(&payment_ctr.to_ne_bytes());
 			let succeeded = send_mpp_payment(source, dest, dest_chan_ids, amt, secret, hash, id);
@@ -2160,7 +2169,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 			let source = &nodes[source_idx];
 			let middle = &nodes[middle_idx];
 			let dest = &nodes[dest_idx];
-			let (secret, hash) = get_payment_secret_hash(dest, payment_ctr);
+			let (secret, hash) = get_payment_secret_hash(dest, payment_ctr, &payment_preimages);
 			let mut id = PaymentId([0; 32]);
 			id.0[0..8].copy_from_slice(&payment_ctr.to_ne_bytes());
 			let succeeded = send_mpp_hop_payment(
