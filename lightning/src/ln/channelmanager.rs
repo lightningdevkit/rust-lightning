@@ -544,14 +544,6 @@ struct MppPart {
 	total_value_received: Option<u64>,
 }
 
-impl MppPart {
-	// Increments timer ticks and returns a boolean indicating whether HTLC is timed out.
-	fn mpp_timer_tick(&mut self) -> bool {
-		self.timer_ticks += 1;
-		self.timer_ticks >= MPP_TIMEOUT_TICKS
-	}
-}
-
 impl PartialOrd for MppPart {
 	fn partial_cmp(&self, other: &MppPart) -> Option<cmp::Ordering> {
 		Some(self.cmp(other))
@@ -1285,7 +1277,8 @@ fn check_mpp_timeout<'a>(
 	let mut timed_out = false;
 	for htlc in htlcs {
 		total_intended_recvd_value += htlc.sender_intended_value;
-		if htlc.mpp_timer_tick() {
+		htlc.timer_ticks += 1;
+		if htlc.timer_ticks >= MPP_TIMEOUT_TICKS {
 			timed_out = true;
 		}
 	}
