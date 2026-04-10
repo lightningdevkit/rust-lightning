@@ -327,12 +327,18 @@ impl BlindedPaymentPath {
 	}
 }
 
+mod sealed {
+	pub trait ForwardTlvsInfo {}
+}
+
 /// Common interface for forward TLV types used in blinded payment paths.
 ///
 /// Both [`ForwardTlvs`] (channel-based forwarding) and [`TrampolineForwardTlvs`] (trampoline
 /// node-based forwarding) implement this trait, allowing blinded path construction to be generic
 /// over the forwarding mechanism.
-pub trait ForwardTlvsInfo: Writeable + Clone {
+///
+/// This trait is sealed and is not intended for implementation outside of this crate.
+pub trait ForwardTlvsInfo: Writeable + Clone + sealed::ForwardTlvsInfo {
 	/// The payment relay parameters for this hop.
 	fn payment_relay(&self) -> &PaymentRelay;
 	/// The payment constraints for this hop.
@@ -376,6 +382,8 @@ pub struct ForwardTlvs {
 	pub next_blinding_override: Option<PublicKey>,
 }
 
+impl sealed::ForwardTlvsInfo for ForwardTlvs {}
+
 impl ForwardTlvsInfo for ForwardTlvs {
 	fn payment_relay(&self) -> &PaymentRelay {
 		&self.payment_relay
@@ -406,6 +414,8 @@ pub struct TrampolineForwardTlvs {
 	/// [`BlindedPaymentPath::blinding_point`] of the appended blinded path.
 	pub next_blinding_override: Option<PublicKey>,
 }
+
+impl sealed::ForwardTlvsInfo for TrampolineForwardTlvs {}
 
 impl ForwardTlvsInfo for TrampolineForwardTlvs {
 	fn payment_relay(&self) -> &PaymentRelay {
