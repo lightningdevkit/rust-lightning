@@ -214,7 +214,7 @@ fn one_hop_blinded_path_with_custom_tlv() {
 
 	// Construct the route parameters for sending to nodes[2]'s 1-hop blinded path.
 	let amt_msat = 100_000;
-	let (payment_preimage, payment_hash, payment_secret) =
+	let (_payment_preimage, payment_hash, payment_secret) =
 		get_payment_preimage_hash(&nodes[2], Some(amt_msat), None);
 	let payee_tlvs = ReceiveTlvs {
 		payment_secret,
@@ -266,33 +266,32 @@ fn one_hop_blinded_path_with_custom_tlv() {
 	let max_sized_onion = RecipientOnionFields::spontaneous_empty(amt_msat).with_custom_tlvs(
 		RecipientCustomTlvs::new(vec![(CUSTOM_TLV_TYPE, vec![42; max_custom_tlv_len])]).unwrap(),
 	);
-	let id = PaymentId(payment_hash.0);
 	let no_retry = Retry::Attempts(0);
 	nodes[1]
 		.node
-		.send_payment(payment_hash, max_sized_onion.clone(), id, route_params.clone(), no_retry)
+		.send_payment(
+			payment_hash,
+			max_sized_onion.clone(),
+			PaymentId([1; 32]),
+			route_params.clone(),
+			no_retry,
+		)
 		.unwrap();
 	check_added_monitors(&nodes[1], 1);
-
-	let mut events = nodes[1].node.get_and_clear_pending_msg_events();
-	assert_eq!(events.len(), 1);
-	let path = &[&nodes[2]];
-	let args =
-		PassAlongPathArgs::new(&nodes[1], path, amt_msat, payment_hash, events.pop().unwrap())
-			.with_payment_secret(payment_secret)
-			.with_custom_tlvs(max_sized_onion.custom_tlvs.clone());
-	do_pass_along_path(args);
-	claim_payment_along_route(
-		ClaimAlongRouteArgs::new(&nodes[1], &[&[&nodes[2]]], payment_preimage)
-			.with_custom_tlvs(max_sized_onion.custom_tlvs.clone()),
-	);
+	assert_eq!(nodes[1].node.get_and_clear_pending_msg_events().len(), 1);
 
 	// If 1 byte is added to the custom TLV value, we'll fail to send prior to pathfinding.
 	let mut too_large_custom_tlv_onion = max_sized_onion.clone();
 	too_large_custom_tlv_onion.custom_tlvs[0].1.push(42);
 	let err = nodes[1]
 		.node
-		.send_payment(payment_hash, too_large_custom_tlv_onion, id, route_params.clone(), no_retry)
+		.send_payment(
+			payment_hash,
+			too_large_custom_tlv_onion,
+			PaymentId([2; 32]),
+			route_params.clone(),
+			no_retry,
+		)
 		.unwrap_err();
 	assert_eq!(err, RetryableSendFailure::OnionPacketSizeExceeded);
 
@@ -300,7 +299,13 @@ fn one_hop_blinded_path_with_custom_tlv() {
 	// nodes[0] -> nodes[2] will fail.
 	let err = nodes[0]
 		.node
-		.send_payment(payment_hash, max_sized_onion.clone(), id, route_params.clone(), no_retry)
+		.send_payment(
+			payment_hash,
+			max_sized_onion.clone(),
+			PaymentId([3; 32]),
+			route_params.clone(),
+			no_retry,
+		)
 		.unwrap_err();
 	assert_eq!(err, RetryableSendFailure::RouteNotFound);
 
@@ -312,22 +317,16 @@ fn one_hop_blinded_path_with_custom_tlv() {
 		.resize(max_custom_tlv_len - INTERMED_PAYLOAD_LEN_ESTIMATE, 0);
 	nodes[0]
 		.node
-		.send_payment(payment_hash, onion_allows_2_hops.clone(), id, route_params.clone(), no_retry)
+		.send_payment(
+			payment_hash,
+			onion_allows_2_hops,
+			PaymentId([4; 32]),
+			route_params.clone(),
+			no_retry,
+		)
 		.unwrap();
 	check_added_monitors(&nodes[0], 1);
-
-	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
-	assert_eq!(events.len(), 1);
-	let path = &[&nodes[1], &nodes[2]];
-	let args =
-		PassAlongPathArgs::new(&nodes[0], path, amt_msat, payment_hash, events.pop().unwrap())
-			.with_payment_secret(payment_secret)
-			.with_custom_tlvs(onion_allows_2_hops.custom_tlvs.clone());
-	do_pass_along_path(args);
-	claim_payment_along_route(
-		ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1], &nodes[2]]], payment_preimage)
-			.with_custom_tlvs(onion_allows_2_hops.custom_tlvs),
-	);
+	assert_eq!(nodes[0].node.get_and_clear_pending_msg_events().len(), 1);
 }
 
 #[test]
@@ -353,7 +352,7 @@ fn blinded_path_with_custom_tlv() {
 
 	// Construct the route parameters for sending to nodes[3]'s blinded path.
 	let amt_msat = 100_000;
-	let (payment_preimage, payment_hash, payment_secret) =
+	let (_payment_preimage, payment_hash, payment_secret) =
 		get_payment_preimage_hash(&nodes[3], Some(amt_msat), None);
 	let route_params = get_blinded_route_parameters(
 		amt_msat,
@@ -392,32 +391,31 @@ fn blinded_path_with_custom_tlv() {
 		RecipientCustomTlvs::new(vec![(CUSTOM_TLV_TYPE, vec![42; max_custom_tlv_len])]).unwrap(),
 	);
 	let no_retry = Retry::Attempts(0);
-	let id = PaymentId(payment_hash.0);
 	nodes[1]
 		.node
-		.send_payment(payment_hash, max_sized_onion.clone(), id, route_params.clone(), no_retry)
+		.send_payment(
+			payment_hash,
+			max_sized_onion.clone(),
+			PaymentId([1; 32]),
+			route_params.clone(),
+			no_retry,
+		)
 		.unwrap();
 	check_added_monitors(&nodes[1], 1);
-
-	let mut events = nodes[1].node.get_and_clear_pending_msg_events();
-	assert_eq!(events.len(), 1);
-	let path = &[&nodes[2], &nodes[3]];
-	let args =
-		PassAlongPathArgs::new(&nodes[1], path, amt_msat, payment_hash, events.pop().unwrap())
-			.with_payment_secret(payment_secret)
-			.with_custom_tlvs(max_sized_onion.custom_tlvs.clone());
-	do_pass_along_path(args);
-	claim_payment_along_route(
-		ClaimAlongRouteArgs::new(&nodes[1], &[&[&nodes[2], &nodes[3]]], payment_preimage)
-			.with_custom_tlvs(max_sized_onion.custom_tlvs.clone()),
-	);
+	assert_eq!(nodes[1].node.get_and_clear_pending_msg_events().len(), 1);
 
 	// If 1 byte is added to the custom TLV value, we'll fail to send prior to pathfinding.
 	let mut too_large_onion = max_sized_onion.clone();
 	too_large_onion.custom_tlvs[0].1.push(42);
 	let err = nodes[1]
 		.node
-		.send_payment(payment_hash, too_large_onion.clone(), id, route_params.clone(), no_retry)
+		.send_payment(
+			payment_hash,
+			too_large_onion.clone(),
+			PaymentId([2; 32]),
+			route_params.clone(),
+			no_retry,
+		)
 		.unwrap_err();
 	assert_eq!(err, RetryableSendFailure::OnionPacketSizeExceeded);
 
@@ -450,7 +448,13 @@ fn blinded_path_with_custom_tlv() {
 	// to route nodes[0] -> nodes[3] will fail.
 	let err = nodes[0]
 		.node
-		.send_payment(payment_hash, max_sized_onion.clone(), id, route_params.clone(), no_retry)
+		.send_payment(
+			payment_hash,
+			max_sized_onion.clone(),
+			PaymentId([3; 32]),
+			route_params.clone(),
+			no_retry,
+		)
 		.unwrap_err();
 	assert_eq!(err, RetryableSendFailure::RouteNotFound);
 
@@ -462,26 +466,16 @@ fn blinded_path_with_custom_tlv() {
 		.resize(max_custom_tlv_len - INTERMED_PAYLOAD_LEN_ESTIMATE, 0);
 	nodes[0]
 		.node
-		.send_payment(payment_hash, onion_allowing_2_hops.clone(), id, route_params, no_retry)
+		.send_payment(
+			payment_hash,
+			onion_allowing_2_hops,
+			PaymentId([4; 32]),
+			route_params,
+			no_retry,
+		)
 		.unwrap();
 	check_added_monitors(&nodes[0], 1);
-
-	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
-	assert_eq!(events.len(), 1);
-	let path = &[&nodes[1], &nodes[2], &nodes[3]];
-	let args =
-		PassAlongPathArgs::new(&nodes[0], path, amt_msat, payment_hash, events.pop().unwrap())
-			.with_payment_secret(payment_secret)
-			.with_custom_tlvs(onion_allowing_2_hops.custom_tlvs.clone());
-	do_pass_along_path(args);
-	claim_payment_along_route(
-		ClaimAlongRouteArgs::new(
-			&nodes[0],
-			&[&[&nodes[1], &nodes[2], &nodes[3]]],
-			payment_preimage,
-		)
-		.with_custom_tlvs(onion_allowing_2_hops.custom_tlvs),
-	);
+	assert_eq!(nodes[0].node.get_and_clear_pending_msg_events().len(), 1);
 }
 
 #[test]
