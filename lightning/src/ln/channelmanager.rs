@@ -49,11 +49,11 @@ use crate::chain::channelmonitor::{
 };
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Watch};
+use crate::events::FundingInfo;
 use crate::events::{
 	self, ClosureReason, Event, EventHandler, EventsProvider, HTLCHandlingFailureType,
 	InboundChannelFunds, PaymentFailureReason, ReplayEvent,
 };
-use crate::events::{FundingInfo, PaidBolt12Invoice};
 use crate::ln::chan_utils::selected_commitment_sat_per_1000_weight;
 #[cfg(any(test, fuzzing, feature = "_test_utils"))]
 use crate::ln::channel::QuiescentAction;
@@ -102,6 +102,7 @@ use crate::offers::invoice_request::{InvoiceRequest, InvoiceRequestVerifiedFromO
 use crate::offers::nonce::Nonce;
 use crate::offers::offer::{Offer, OfferFromHrn};
 use crate::offers::parse::Bolt12SemanticError;
+use crate::offers::payer_proof::Bolt12InvoiceType;
 use crate::offers::refund::Refund;
 use crate::offers::static_invoice::StaticInvoice;
 use crate::onion_message::async_payments::{
@@ -818,10 +819,20 @@ mod fuzzy_channelmanager {
 			/// doing a double-pass on route when we get a failure back
 			first_hop_htlc_msat: u64,
 			payment_id: PaymentId,
-			/// The BOLT12 invoice associated with this payment, if any. This is stored here to ensure
-			/// we can provide proof-of-payment details in payment claim events even after a restart
-			/// with a stale ChannelManager state.
-			bolt12_invoice: Option<PaidBolt12Invoice>,
+			/// The BOLT 12 invoice associated with this payment, if any. Stored here so it can
+			/// be bundled into [`PaidBolt12Invoice`] in [`Event::PaymentSent`] even after a
+			/// restart with a stale `ChannelManager` state.
+			///
+			/// [`PaidBolt12Invoice`]: crate::offers::payer_proof::PaidBolt12Invoice
+			/// [`Event::PaymentSent`]: crate::events::Event::PaymentSent
+			bolt12_invoice: Option<Bolt12InvoiceType>,
+			/// The [`Nonce`] used when the BOLT 12 [`InvoiceRequest`] was created. Stored here so
+			/// it can be bundled into [`PaidBolt12Invoice`] for building payer proofs, even after
+			/// a restart with a stale `ChannelManager` state.
+			///
+			/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+			/// [`PaidBolt12Invoice`]: crate::offers::payer_proof::PaidBolt12Invoice
+			payment_nonce: Option<Nonce>,
 		},
 	}
 
@@ -895,6 +906,7 @@ impl core::hash::Hash for HTLCSource {
 				payment_id,
 				first_hop_htlc_msat,
 				bolt12_invoice,
+				..
 			} => {
 				1u8.hash(hasher);
 				path.hash(hasher);
@@ -929,6 +941,7 @@ impl HTLCSource {
 			first_hop_htlc_msat: 0,
 			payment_id: PaymentId([2; 32]),
 			bolt12_invoice: None,
+			payment_nonce: None,
 		}
 	}
 
@@ -957,9 +970,9 @@ impl HTLCSource {
 	pub(crate) fn static_invoice(&self) -> Option<StaticInvoice> {
 		match self {
 			Self::OutboundRoute {
-				bolt12_invoice: Some(PaidBolt12Invoice::StaticInvoice(inv)),
+				bolt12_invoice: Some(Bolt12InvoiceType::StaticInvoice(invoice)),
 				..
-			} => Some(inv.clone()),
+			} => Some(invoice.clone()),
 			_ => None,
 		}
 	}
@@ -5348,6 +5361,7 @@ impl<
 			keysend_preimage,
 			invoice_request: None,
 			bolt12_invoice: None,
+			payment_nonce: None,
 			session_priv_bytes,
 			hold_htlc_at_next_hop: false,
 		})
@@ -5363,6 +5377,7 @@ impl<
 			keysend_preimage,
 			invoice_request,
 			bolt12_invoice,
+			payment_nonce,
 			session_priv_bytes,
 			hold_htlc_at_next_hop,
 		} = args;
@@ -5439,6 +5454,7 @@ impl<
 							first_hop_htlc_msat: htlc_msat,
 							payment_id,
 							bolt12_invoice: bolt12_invoice.cloned(),
+							payment_nonce,
 						};
 						let send_res = chan.send_htlc_and_commit(
 							htlc_msat,
@@ -5732,14 +5748,21 @@ impl<
 	pub fn send_payment_for_bolt12_invoice(
 		&self, invoice: &Bolt12Invoice, context: Option<&OffersContext>,
 	) -> Result<(), Bolt12PaymentError> {
+		let nonce = context.and_then(|ctx| match ctx {
+			OffersContext::OutboundPaymentForOffer { nonce, .. }
+			| OffersContext::OutboundPaymentForRefund { nonce, .. } => Some(*nonce),
+			_ => None,
+		});
 		match self.flow.verify_bolt12_invoice(invoice, context) {
-			Ok(payment_id) => self.send_payment_for_verified_bolt12_invoice(invoice, payment_id),
+			Ok(payment_id) => {
+				self.send_payment_for_verified_bolt12_invoice(invoice, payment_id, nonce)
+			},
 			Err(()) => Err(Bolt12PaymentError::UnexpectedInvoice),
 		}
 	}
 
 	fn send_payment_for_verified_bolt12_invoice(
-		&self, invoice: &Bolt12Invoice, payment_id: PaymentId,
+		&self, invoice: &Bolt12Invoice, payment_id: PaymentId, payment_nonce: Option<Nonce>,
 	) -> Result<(), Bolt12PaymentError> {
 		let best_block_height = self.best_block.read().unwrap().height;
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
@@ -5747,6 +5770,7 @@ impl<
 		self.pending_outbound_payments.send_payment_for_bolt12_invoice(
 			invoice,
 			payment_id,
+			payment_nonce,
 			&self.router,
 			self.list_usable_channels(),
 			features,
@@ -9964,7 +9988,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let htlc_id = SentHTLCId::from_source(&source);
 		match source {
 			HTLCSource::OutboundRoute {
-				session_priv, payment_id, path, bolt12_invoice, ..
+				session_priv,
+				payment_id,
+				path,
+				bolt12_invoice,
+				payment_nonce,
+				..
 			} => {
 				debug_assert!(!startup_replay,
 					"We don't support claim_htlc claims during startup - monitors may not be available yet");
@@ -9996,6 +10025,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					payment_id,
 					payment_preimage,
 					bolt12_invoice,
+					payment_nonce,
 					session_priv,
 					path,
 					from_onchain,
@@ -17039,7 +17069,12 @@ impl<
 					return None;
 				}
 
-				let res = self.send_payment_for_verified_bolt12_invoice(&invoice, payment_id);
+				let payment_nonce = context.as_ref().and_then(|ctx| match ctx {
+					OffersContext::OutboundPaymentForOffer { nonce, .. }
+					| OffersContext::OutboundPaymentForRefund { nonce, .. } => Some(*nonce),
+					_ => None,
+				});
+				let res = self.send_payment_for_verified_bolt12_invoice(&invoice, payment_id, payment_nonce);
 				handle_pay_invoice_res!(res, invoice, logger);
 			},
 			OffersMessage::StaticInvoice(invoice) => {
@@ -17667,7 +17702,8 @@ impl Readable for HTLCSource {
 				let mut payment_id = None;
 				let mut payment_params: Option<PaymentParameters> = None;
 				let mut blinded_tail: Option<BlindedTail> = None;
-				let mut bolt12_invoice: Option<PaidBolt12Invoice> = None;
+				let mut bolt12_invoice: Option<Bolt12InvoiceType> = None;
+				let mut payment_nonce: Option<Nonce> = None;
 				read_tlv_fields!(reader, {
 					(0, session_priv, required),
 					(1, payment_id, option),
@@ -17676,6 +17712,7 @@ impl Readable for HTLCSource {
 					(5, payment_params, (option: ReadableArgs, 0)),
 					(6, blinded_tail, option),
 					(7, bolt12_invoice, option),
+					(9, payment_nonce, option),
 				});
 				if payment_id.is_none() {
 					// For backwards compat, if there was no payment_id written, use the session_priv bytes
@@ -17699,6 +17736,7 @@ impl Readable for HTLCSource {
 					path,
 					payment_id: payment_id.unwrap(),
 					bolt12_invoice,
+					payment_nonce,
 				})
 			}
 			1 => Ok(HTLCSource::PreviousHopData(Readable::read(reader)?)),
@@ -17718,6 +17756,7 @@ impl Writeable for HTLCSource {
 				ref path,
 				payment_id,
 				bolt12_invoice,
+				payment_nonce,
 			} => {
 				0u8.write(writer)?;
 				let payment_id_opt = Some(payment_id);
@@ -17730,6 +17769,7 @@ impl Writeable for HTLCSource {
 				   (5, None::<PaymentParameters>, option), // payment_params in LDK versions prior to 0.0.115
 				   (6, path.blinded_tail, option),
 				   (7, bolt12_invoice, option),
+				   (9, payment_nonce, option),
 				});
 			},
 			HTLCSource::PreviousHopData(ref field) => {
@@ -19592,6 +19632,7 @@ impl<
 								session_priv,
 								path,
 								bolt12_invoice,
+								payment_nonce,
 								..
 							} => {
 								if let Some(preimage) = preimage_opt {
@@ -19609,6 +19650,7 @@ impl<
 										payment_id,
 										preimage,
 										bolt12_invoice,
+										payment_nonce,
 										session_priv,
 										path,
 										true,

@@ -73,6 +73,13 @@ impl TaggedHash {
 		self.merkle_root
 	}
 
+	/// Creates a tagged hash from a pre-computed merkle root.
+	pub(super) fn from_merkle_root(tag: &'static str, merkle_root: sha256::Hash) -> Self {
+		let tag_hash = sha256::Hash::hash(tag.as_bytes());
+		let digest = Message::from_digest(tagged_hash(tag_hash, merkle_root).to_byte_array());
+		Self { tag, merkle_root, digest }
+	}
+
 	pub(super) fn to_bytes(&self) -> [u8; 32] {
 		*self.digest.as_ref()
 	}
@@ -243,7 +250,21 @@ pub(super) struct TlvRecord<'a> {
 	type_bytes: &'a [u8],
 	// The entire TLV record.
 	pub(super) record_bytes: &'a [u8],
+	// The value portion of the TLV record (after type and length).
+	pub(super) value_bytes: &'a [u8],
 	pub(super) end: usize,
+}
+
+impl<'a> TlvRecord<'a> {
+	/// Read a value from this TLV record's value bytes using [`Readable`].
+	pub(super) fn read_value<T: Readable>(&self) -> Result<T, crate::ln::msgs::DecodeError> {
+		let mut value_bytes = self.value_bytes;
+		let value = Readable::read(&mut value_bytes)?;
+		if !value_bytes.is_empty() {
+			return Err(crate::ln::msgs::DecodeError::InvalidValue);
+		}
+		Ok(value)
+	}
 }
 
 impl<'a> Iterator for TlvStream<'a> {
@@ -261,12 +282,12 @@ impl<'a> Iterator for TlvStream<'a> {
 			let offset = self.data.position();
 			let end = offset + length;
 
-			let _value = &self.data.get_ref()[offset as usize..end as usize];
 			let record_bytes = &self.data.get_ref()[start as usize..end as usize];
+			let value_bytes = &self.data.get_ref()[offset as usize..end as usize];
 
 			self.data.set_position(end);
 
-			Some(TlvRecord { r#type, type_bytes, record_bytes, end: end as usize })
+			Some(TlvRecord { r#type, type_bytes, record_bytes, value_bytes, end: end as usize })
 		} else {
 			None
 		}
@@ -280,9 +301,403 @@ impl<'a> Writeable for TlvRecord<'a> {
 	}
 }
 
+// ============================================================================
+// Selective Disclosure for Payer Proofs (BOLT 12 extension)
+// ============================================================================
+
+use alloc::collections::BTreeSet;
+
+/// Error during selective disclosure operations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SelectiveDisclosureError {
+	/// The omitted markers are not in strict ascending order.
+	InvalidOmittedMarkersOrder,
+	/// The omitted markers contain an invalid marker (0 or signature type).
+	InvalidOmittedMarkersMarker,
+	/// The leaf_hashes count doesn't match included TLVs.
+	LeafHashCountMismatch,
+	/// Insufficient missing_hashes to reconstruct the tree.
+	InsufficientMissingHashes,
+	/// The TLV stream is empty.
+	EmptyTlvStream,
+}
+
+/// Data needed to reconstruct a merkle root with selective disclosure.
+///
+/// This is used in payer proofs to allow verification of an invoice signature
+/// without revealing all invoice fields.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct SelectiveDisclosure {
+	/// Nonce hashes for included TLVs (in TLV type order).
+	pub(super) leaf_hashes: Vec<sha256::Hash>,
+	/// Marker numbers for omitted TLVs (excluding implicit TLV0).
+	pub(super) omitted_markers: Vec<u64>,
+	/// Minimal merkle hashes for omitted subtrees.
+	pub(super) missing_hashes: Vec<sha256::Hash>,
+	/// The complete merkle root.
+	pub(super) merkle_root: sha256::Hash,
+}
+
+/// Internal data for each TLV during tree construction.
+struct TlvMerkleData {
+	tlv_type: u64,
+	per_tlv_hash: sha256::Hash,
+	is_included: bool,
+}
+
+/// Compute selective disclosure data from a TLV stream.
+///
+/// This builds the full merkle tree and extracts the data needed for a payer proof:
+/// - `leaf_hashes`: nonce hashes for included TLVs
+/// - `omitted_markers`: marker numbers for omitted TLVs
+/// - `missing_hashes`: minimal merkle hashes for omitted subtrees
+///
+/// # Arguments
+/// * `records` - Iterator of [`TlvRecord`]s (non-signature TLVs from the invoice)
+/// * `included_types` - Set of TLV types to include in the disclosure
+pub(super) fn compute_selective_disclosure<'a>(
+	records: impl Iterator<Item = TlvRecord<'a>>, included_types: &BTreeSet<u64>,
+) -> Result<SelectiveDisclosure, SelectiveDisclosureError> {
+	let mut records = records.peekable();
+	let first_record = records.peek().ok_or(SelectiveDisclosureError::EmptyTlvStream)?;
+	let nonce_tag_hash = sha256::Hash::from_engine({
+		let mut engine = sha256::Hash::engine();
+		engine.input("LnNonce".as_bytes());
+		engine.input(first_record.record_bytes);
+		engine
+	});
+
+	let leaf_tag = tagged_hash_engine(sha256::Hash::hash("LnLeaf".as_bytes()));
+	let nonce_tag = tagged_hash_engine(nonce_tag_hash);
+	let branch_tag = tagged_hash_engine(sha256::Hash::hash("LnBranch".as_bytes()));
+
+	let mut tlv_data: Vec<TlvMerkleData> = Vec::new();
+	let mut leaf_hashes: Vec<sha256::Hash> = Vec::new();
+	for record in records {
+		let leaf_hash = tagged_hash_from_engine(leaf_tag.clone(), record.record_bytes);
+		let nonce_hash = tagged_hash_from_engine(nonce_tag.clone(), record.type_bytes);
+		let per_tlv_hash =
+			tagged_branch_hash_from_engine(branch_tag.clone(), leaf_hash, nonce_hash);
+
+		let is_included = included_types.contains(&record.r#type);
+		if is_included {
+			leaf_hashes.push(nonce_hash);
+		}
+		tlv_data.push(TlvMerkleData { tlv_type: record.r#type, per_tlv_hash, is_included });
+	}
+
+	if tlv_data.is_empty() {
+		return Err(SelectiveDisclosureError::EmptyTlvStream);
+	}
+	let num_omitted_markers =
+		tlv_data.iter().filter(|data| !data.is_included && data.tlv_type != 0).count();
+	let mut omitted_markers = Vec::with_capacity(num_omitted_markers);
+	omitted_markers.extend(compute_omitted_markers(tlv_data.iter()));
+	let (merkle_root, missing_hashes) = build_tree_with_disclosure(&tlv_data, &branch_tag);
+
+	Ok(SelectiveDisclosure { leaf_hashes, omitted_markers, missing_hashes, merkle_root })
+}
+
+/// Compute omitted markers per BOLT 12 payer proof spec.
+///
+/// Each omitted TLV gets a marker equal to `prev_value + 1`, where `prev_value`
+/// tracks the last included type or last marker. TLV type 0 is implicitly
+/// omitted (never included in markers).
+fn compute_omitted_markers<'a>(
+	tlv_data: impl Iterator<Item = &'a TlvMerkleData> + 'a,
+) -> impl Iterator<Item = u64> + 'a {
+	tlv_data
+		.filter(|data| data.tlv_type != 0)
+		.scan(0u64, |prev_value, data| {
+			if data.is_included {
+				*prev_value = data.tlv_type;
+				Some(None)
+			} else {
+				let marker = *prev_value + 1;
+				*prev_value = marker;
+				Some(Some(marker))
+			}
+		})
+		.flatten()
+}
+
+/// Task for iterative post-order DFS over the implicit merkle tree.
+enum DfsTask {
+	/// Descend into a subtree covering the range [start..start+len).
+	Descend { start: usize, len: usize },
+	/// Combine two child hashes after both subtrees have been processed.
+	Combine,
+}
+
+/// Build merkle tree iteratively (DFS, left-to-right) and collect missing_hashes.
+///
+/// Per the spec, missing_hashes are in depth-first left-to-right order.
+/// Uses an explicit stack to simulate post-order DFS without recursion.
+///
+/// Note: a level-by-level approach (as used by `root_hash()`) cannot produce
+/// DFS-ordered missing_hashes because it processes all subtrees at each depth
+/// simultaneously rather than completing each subtree before the next.
+fn build_tree_with_disclosure(
+	tlv_data: &[TlvMerkleData], branch_tag: &sha256::HashEngine,
+) -> (sha256::Hash, Vec<sha256::Hash>) {
+	debug_assert!(!tlv_data.is_empty(), "TLV stream must contain at least one record");
+
+	let mut missing_hashes = Vec::new();
+	// Each entry: (hash, has_included_leaf_in_subtree)
+	let mut hash_stack: Vec<(sha256::Hash, bool)> = Vec::new();
+	let mut task_stack: Vec<DfsTask> = vec![DfsTask::Descend { start: 0, len: tlv_data.len() }];
+
+	while let Some(task) = task_stack.pop() {
+		match task {
+			DfsTask::Descend { start, len } => {
+				if len == 1 {
+					hash_stack.push((tlv_data[start].per_tlv_hash, tlv_data[start].is_included));
+				} else {
+					let mid = len.next_power_of_two() / 2;
+					// Push combine first (processed after both children).
+					task_stack.push(DfsTask::Combine);
+					// Push right then left so left is processed first (LIFO).
+					task_stack.push(DfsTask::Descend { start: start + mid, len: len - mid });
+					task_stack.push(DfsTask::Descend { start, len: mid });
+				}
+			},
+			DfsTask::Combine => {
+				let (right_hash, right_incl) = hash_stack.pop().unwrap();
+				let (left_hash, left_incl) = hash_stack.pop().unwrap();
+
+				if left_incl && !right_incl {
+					missing_hashes.push(right_hash);
+				} else if !left_incl && right_incl {
+					missing_hashes.push(left_hash);
+				}
+
+				let combined =
+					tagged_branch_hash_from_engine(branch_tag.clone(), left_hash, right_hash);
+				hash_stack.push((combined, left_incl || right_incl));
+			},
+		}
+	}
+
+	let (root, _) = hash_stack.pop().unwrap();
+	(root, missing_hashes)
+}
+
+/// Reconstruct merkle root from selective disclosure data.
+///
+/// `missing_hashes` must be in DFS (left-to-right recursive traversal) order,
+/// matching the order produced by [`build_tree_with_disclosure`].
+pub(super) fn reconstruct_merkle_root(
+	included_records: &[TlvRecord<'_>], leaf_hashes: &[sha256::Hash], omitted_markers: &[u64],
+	missing_hashes: &[sha256::Hash],
+) -> Result<sha256::Hash, SelectiveDisclosureError> {
+	debug_assert!(validate_omitted_markers(omitted_markers).is_ok());
+
+	if included_records.len() != leaf_hashes.len() {
+		return Err(SelectiveDisclosureError::LeafHashCountMismatch);
+	}
+
+	let leaf_tag = tagged_hash_engine(sha256::Hash::hash("LnLeaf".as_bytes()));
+	let branch_tag = tagged_hash_engine(sha256::Hash::hash("LnBranch".as_bytes()));
+
+	// Build per-position hash array: Some(hash) for included positions, None for omitted.
+	// TLV0 is always at position 0 (implicitly omitted).
+	let num_nodes = 1 + included_records.len() + omitted_markers.len();
+	let mut hashes: Vec<Option<sha256::Hash>> = Vec::with_capacity(num_nodes);
+	hashes.push(None); // TLV0 always omitted
+
+	let mut inc_idx = 0;
+	let mut mrk_idx = 0;
+	let mut prev_marker: u64 = 0;
+
+	while inc_idx < included_records.len() || mrk_idx < omitted_markers.len() {
+		if mrk_idx >= omitted_markers.len() {
+			let record = &included_records[inc_idx];
+			let leaf_hash = tagged_hash_from_engine(leaf_tag.clone(), record.record_bytes);
+			let nonce_hash = leaf_hashes[inc_idx];
+			hashes.push(Some(tagged_branch_hash_from_engine(
+				branch_tag.clone(),
+				leaf_hash,
+				nonce_hash,
+			)));
+			inc_idx += 1;
+		} else if inc_idx >= included_records.len() {
+			hashes.push(None);
+			prev_marker = omitted_markers[mrk_idx];
+			mrk_idx += 1;
+		} else {
+			let marker = omitted_markers[mrk_idx];
+			let inc_type = included_records[inc_idx].r#type;
+			if marker == prev_marker + 1 {
+				hashes.push(None);
+				prev_marker = marker;
+				mrk_idx += 1;
+			} else {
+				let record = &included_records[inc_idx];
+				let leaf_hash = tagged_hash_from_engine(leaf_tag.clone(), record.record_bytes);
+				let nonce_hash = leaf_hashes[inc_idx];
+				hashes.push(Some(tagged_branch_hash_from_engine(
+					branch_tag.clone(),
+					leaf_hash,
+					nonce_hash,
+				)));
+				prev_marker = inc_type;
+				inc_idx += 1;
+			}
+		}
+	}
+
+	// Iterative DFS reconstruction: consume missing_hashes in DFS order.
+	// result_stack holds Option<hash>: Some = subtree has included leaves, None = all omitted.
+	let mut result_stack: Vec<Option<sha256::Hash>> = Vec::new();
+	let mut task_stack: Vec<DfsTask> = vec![DfsTask::Descend { start: 0, len: num_nodes }];
+	let mut missing_idx: usize = 0;
+
+	while let Some(task) = task_stack.pop() {
+		match task {
+			DfsTask::Descend { start, len } => {
+				if len == 1 {
+					result_stack.push(hashes[start]);
+				} else {
+					let mid = len.next_power_of_two() / 2;
+					task_stack.push(DfsTask::Combine);
+					task_stack.push(DfsTask::Descend { start: start + mid, len: len - mid });
+					task_stack.push(DfsTask::Descend { start, len: mid });
+				}
+			},
+			DfsTask::Combine => {
+				let right = result_stack.pop().unwrap();
+				let left = result_stack.pop().unwrap();
+
+				match (left, right) {
+					(None, None) => result_stack.push(None),
+					(Some(l), None) => {
+						if missing_idx >= missing_hashes.len() {
+							return Err(SelectiveDisclosureError::InsufficientMissingHashes);
+						}
+						let r = missing_hashes[missing_idx];
+						missing_idx += 1;
+						result_stack.push(Some(tagged_branch_hash_from_engine(
+							branch_tag.clone(),
+							l,
+							r,
+						)));
+					},
+					(None, Some(r)) => {
+						if missing_idx >= missing_hashes.len() {
+							return Err(SelectiveDisclosureError::InsufficientMissingHashes);
+						}
+						let l = missing_hashes[missing_idx];
+						missing_idx += 1;
+						result_stack.push(Some(tagged_branch_hash_from_engine(
+							branch_tag.clone(),
+							l,
+							r,
+						)));
+					},
+					(Some(l), Some(r)) => {
+						result_stack.push(Some(tagged_branch_hash_from_engine(
+							branch_tag.clone(),
+							l,
+							r,
+						)));
+					},
+				}
+			},
+		}
+	}
+
+	if missing_idx != missing_hashes.len() {
+		return Err(SelectiveDisclosureError::InsufficientMissingHashes);
+	}
+
+	result_stack.pop().unwrap().ok_or(SelectiveDisclosureError::InsufficientMissingHashes)
+}
+
+fn validate_omitted_markers(markers: &[u64]) -> Result<(), SelectiveDisclosureError> {
+	let mut prev = 0u64;
+	for &marker in markers {
+		if marker == 0 {
+			return Err(SelectiveDisclosureError::InvalidOmittedMarkersMarker);
+		}
+		if SIGNATURE_TYPES.contains(&marker) {
+			return Err(SelectiveDisclosureError::InvalidOmittedMarkersMarker);
+		}
+		if marker <= prev {
+			return Err(SelectiveDisclosureError::InvalidOmittedMarkersOrder);
+		}
+		prev = marker;
+	}
+	Ok(())
+}
+
+/// Reconstruct position inclusion map from included types and omitted markers.
+///
+/// This reverses the marker encoding algorithm from `compute_omitted_markers`:
+/// - Markers form "runs" of consecutive values (e.g., [11, 12] is a run)
+/// - A "jump" in markers (e.g., 12 → 41) indicates an included TLV came between
+/// - After included type X, the next marker in that run equals X + 1
+///
+/// The algorithm tracks `prev_marker` to detect continuations vs jumps:
+/// - If `marker == prev_marker + 1`: continuation → omitted position
+/// - Otherwise: jump → included position comes first, then process marker as continuation
+///
+/// Example: included=[10, 40], markers=[11, 12, 41, 42]
+/// - Position 0: TLV0 (always omitted)
+/// - marker=11, prev=0: 11 != 1, jump! Insert included (10), prev=10
+/// - marker=11, prev=10: 11 == 11, continuation → omitted, prev=11
+/// - marker=12, prev=11: 12 == 12, continuation → omitted, prev=12
+/// - marker=41, prev=12: 41 != 13, jump! Insert included (40), prev=40
+/// - marker=41, prev=40: 41 == 41, continuation → omitted, prev=41
+/// - marker=42, prev=41: 42 == 42, continuation → omitted, prev=42
+/// Result: [O, I, O, O, I, O, O]
+#[cfg(test)]
+fn reconstruct_positions(included_types: &[u64], omitted_markers: &[u64]) -> Vec<bool> {
+	let total = 1 + included_types.len() + omitted_markers.len();
+	let mut positions = Vec::with_capacity(total);
+	positions.push(false); // TLV0 is always omitted
+
+	let mut inc_idx = 0;
+	let mut mrk_idx = 0;
+	// After TLV0 (implicit marker 0), next continuation would be marker 1
+	let mut prev_marker: u64 = 0;
+
+	while inc_idx < included_types.len() || mrk_idx < omitted_markers.len() {
+		if mrk_idx >= omitted_markers.len() {
+			// No more markers, remaining positions are included
+			positions.push(true);
+			inc_idx += 1;
+		} else if inc_idx >= included_types.len() {
+			// No more included types, remaining positions are omitted
+			positions.push(false);
+			prev_marker = omitted_markers[mrk_idx];
+			mrk_idx += 1;
+		} else {
+			let marker = omitted_markers[mrk_idx];
+			let inc_type = included_types[inc_idx];
+
+			if marker == prev_marker + 1 {
+				// Continuation of current run → this position is omitted
+				positions.push(false);
+				prev_marker = marker;
+				mrk_idx += 1;
+			} else {
+				// Jump detected! An included TLV comes before this marker.
+				// After the included type, prev_marker resets to that type,
+				// so the marker will be processed as a continuation next iteration.
+				positions.push(true);
+				prev_marker = inc_type;
+				inc_idx += 1;
+				// Don't advance mrk_idx - same marker will be continuation next
+			}
+		}
+	}
+
+	positions
+}
+
 #[cfg(test)]
 mod tests {
-	use super::{TlvStream, SIGNATURE_TYPES};
+	use super::{TlvRecord, TlvStream, SIGNATURE_TYPES};
 
 	use crate::ln::channelmanager::PaymentId;
 	use crate::ln::inbound_payment::ExpandedKey;
@@ -496,5 +911,216 @@ mod tests {
 		fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
 			self.fmt_bech32_str(f)
 		}
+	}
+
+	// ============================================================================
+	// Tests for selective disclosure / payer proof reconstruction
+	// ============================================================================
+
+	/// Test reconstruct_positions with the BOLT 12 payer proof spec example.
+	///
+	/// TLVs: 0(omit), 10(incl), 20(omit), 30(omit), 40(incl), 50(omit), 60(omit)
+	/// Markers: [11, 12, 41, 42]
+	/// Expected positions: [O, I, O, O, I, O, O]
+	#[test]
+	fn test_reconstruct_positions_spec_example() {
+		let included_types = vec![10, 40];
+		let markers = vec![11, 12, 41, 42];
+		let positions = super::reconstruct_positions(&included_types, &markers);
+		assert_eq!(positions, vec![false, true, false, false, true, false, false]);
+	}
+
+	/// Test reconstruct_positions when there are omitted TLVs before the first included.
+	///
+	/// TLVs: 0(omit), 5(omit), 10(incl), 20(omit)
+	/// Markers: [1, 11] (1 is first omitted after TLV0, 11 is after included 10)
+	/// Expected positions: [O, O, I, O]
+	#[test]
+	fn test_reconstruct_positions_omitted_before_included() {
+		let included_types = vec![10];
+		let markers = vec![1, 11];
+		let positions = super::reconstruct_positions(&included_types, &markers);
+		assert_eq!(positions, vec![false, false, true, false]);
+	}
+
+	/// Test reconstruct_positions with only included TLVs (no omitted except TLV0).
+	///
+	/// TLVs: 0(omit), 10(incl), 20(incl)
+	/// Markers: [] (no omitted TLVs after TLV0)
+	/// Expected positions: [O, I, I]
+	#[test]
+	fn test_reconstruct_positions_no_omitted() {
+		let included_types = vec![10, 20];
+		let markers = vec![];
+		let positions = super::reconstruct_positions(&included_types, &markers);
+		assert_eq!(positions, vec![false, true, true]);
+	}
+
+	/// Test reconstruct_positions with only omitted TLVs (no included).
+	///
+	/// TLVs: 0(omit), 5(omit), 10(omit)
+	/// Markers: [1, 2] (consecutive omitted after TLV0)
+	/// Expected positions: [O, O, O]
+	#[test]
+	fn test_reconstruct_positions_no_included() {
+		let included_types = vec![];
+		let markers = vec![1, 2];
+		let positions = super::reconstruct_positions(&included_types, &markers);
+		assert_eq!(positions, vec![false, false, false]);
+	}
+
+	/// Test round-trip: compute selective disclosure then reconstruct merkle root.
+	#[test]
+	fn test_selective_disclosure_round_trip() {
+		use alloc::collections::BTreeSet;
+
+		// Build TLV stream matching spec example structure
+		// TLVs: 0, 10, 20, 30, 40, 50, 60
+		let mut tlv_bytes = Vec::new();
+		tlv_bytes.extend_from_slice(&[0x00, 0x04, 0x00, 0x00, 0x00, 0x00]); // TLV 0
+		tlv_bytes.extend_from_slice(&[0x0a, 0x02, 0x00, 0x00]); // TLV 10
+		tlv_bytes.extend_from_slice(&[0x14, 0x02, 0x00, 0x00]); // TLV 20
+		tlv_bytes.extend_from_slice(&[0x1e, 0x02, 0x00, 0x00]); // TLV 30
+		tlv_bytes.extend_from_slice(&[0x28, 0x02, 0x00, 0x00]); // TLV 40
+		tlv_bytes.extend_from_slice(&[0x32, 0x02, 0x00, 0x00]); // TLV 50
+		tlv_bytes.extend_from_slice(&[0x3c, 0x02, 0x00, 0x00]); // TLV 60
+
+		// Include types 10 and 40
+		let mut included = BTreeSet::new();
+		included.insert(10);
+		included.insert(40);
+
+		// Compute selective disclosure
+		let disclosure =
+			super::compute_selective_disclosure(TlvStream::new(&tlv_bytes), &included).unwrap();
+
+		// Verify markers match spec example
+		assert_eq!(disclosure.omitted_markers, vec![11, 12, 41, 42]);
+
+		// Verify leaf_hashes count matches included TLVs
+		assert_eq!(disclosure.leaf_hashes.len(), 2);
+
+		// Collect included records for reconstruction
+		let included_records: Vec<TlvRecord<'_>> =
+			TlvStream::new(&tlv_bytes).filter(|r| included.contains(&r.r#type)).collect();
+
+		// Reconstruct merkle root
+		let reconstructed = super::reconstruct_merkle_root(
+			&included_records,
+			&disclosure.leaf_hashes,
+			&disclosure.omitted_markers,
+			&disclosure.missing_hashes,
+		)
+		.unwrap();
+
+		// Must match original
+		assert_eq!(reconstructed, disclosure.merkle_root);
+	}
+
+	/// Test that the synthetic 7-node example still requires four missing hashes.
+	///
+	/// For the synthetic tree with TLVs [0(o), 10(I), 20(o), 30(o), 40(I), 50(o), 60(o)]:
+	/// - hash(0) covers type 0
+	/// - hash(B(20,30)) covers types 20-30
+	/// - hash(50) covers type 50
+	/// - hash(60) covers type 60
+	///
+	/// This still needs 4 missing hashes. The DFS-ordering fix changes the order
+	/// they are emitted and consumed in, but not the count for this tree shape.
+	#[test]
+	fn test_missing_hashes_for_synthetic_tree() {
+		use alloc::collections::BTreeSet;
+
+		// Build TLV stream: 0, 10, 20, 30, 40, 50, 60
+		let mut tlv_bytes = Vec::new();
+		tlv_bytes.extend_from_slice(&[0x00, 0x04, 0x00, 0x00, 0x00, 0x00]); // TLV 0
+		tlv_bytes.extend_from_slice(&[0x0a, 0x02, 0x00, 0x00]); // TLV 10
+		tlv_bytes.extend_from_slice(&[0x14, 0x02, 0x00, 0x00]); // TLV 20
+		tlv_bytes.extend_from_slice(&[0x1e, 0x02, 0x00, 0x00]); // TLV 30
+		tlv_bytes.extend_from_slice(&[0x28, 0x02, 0x00, 0x00]); // TLV 40
+		tlv_bytes.extend_from_slice(&[0x32, 0x02, 0x00, 0x00]); // TLV 50
+		tlv_bytes.extend_from_slice(&[0x3c, 0x02, 0x00, 0x00]); // TLV 60
+
+		// Include types 10 and 40 (same as spec example)
+		let mut included = BTreeSet::new();
+		included.insert(10);
+		included.insert(40);
+
+		let disclosure =
+			super::compute_selective_disclosure(TlvStream::new(&tlv_bytes), &included).unwrap();
+
+		// We should still have 4 missing hashes for omitted types:
+		// - type 0 (single leaf)
+		// - types 20+30 (combined branch)
+		// - type 50 (single leaf)
+		// - type 60 (single leaf)
+		assert_eq!(
+			disclosure.missing_hashes.len(),
+			4,
+			"Expected 4 missing hashes for omitted types [0, 20+30, 50, 60]"
+		);
+
+		// Verify the round-trip still works with the correct ordering
+		let included_records: Vec<TlvRecord<'_>> =
+			TlvStream::new(&tlv_bytes).filter(|r| included.contains(&r.r#type)).collect();
+
+		let reconstructed = super::reconstruct_merkle_root(
+			&included_records,
+			&disclosure.leaf_hashes,
+			&disclosure.omitted_markers,
+			&disclosure.missing_hashes,
+		)
+		.unwrap();
+
+		assert_eq!(reconstructed, disclosure.merkle_root);
+	}
+
+	/// Test that reconstruction fails with wrong number of missing_hashes.
+	#[test]
+	fn test_reconstruction_fails_with_wrong_missing_hashes() {
+		use alloc::collections::BTreeSet;
+
+		let mut tlv_bytes = Vec::new();
+		tlv_bytes.extend_from_slice(&[0x00, 0x04, 0x00, 0x00, 0x00, 0x00]); // TLV 0
+		tlv_bytes.extend_from_slice(&[0x0a, 0x02, 0x00, 0x00]); // TLV 10
+		tlv_bytes.extend_from_slice(&[0x14, 0x02, 0x00, 0x00]); // TLV 20
+
+		let mut included = BTreeSet::new();
+		included.insert(10);
+
+		let disclosure =
+			super::compute_selective_disclosure(TlvStream::new(&tlv_bytes), &included).unwrap();
+
+		let included_records: Vec<TlvRecord<'_>> =
+			TlvStream::new(&tlv_bytes).filter(|r| included.contains(&r.r#type)).collect();
+
+		// Try with empty missing_hashes (should fail)
+		let result = super::reconstruct_merkle_root(
+			&included_records,
+			&disclosure.leaf_hashes,
+			&disclosure.omitted_markers,
+			&[], // Wrong!
+		);
+
+		assert!(result.is_err());
+	}
+
+	#[test]
+	fn test_tlv_record_read_value_rejects_trailing_bytes() {
+		use bitcoin::secp256k1::PublicKey;
+
+		use crate::offers::test_utils::payer_pubkey;
+		use crate::util::ser::{BigSize, Writeable};
+
+		let pubkey = payer_pubkey();
+		let mut tlv_bytes = Vec::new();
+		BigSize(88).write(&mut tlv_bytes).unwrap();
+		BigSize(35).write(&mut tlv_bytes).unwrap();
+		pubkey.write(&mut tlv_bytes).unwrap();
+		tlv_bytes.extend_from_slice(&[0x00, 0x01]);
+
+		let record = TlvStream::new(&tlv_bytes).next().unwrap();
+		let result: Result<PublicKey, _> = record.read_value();
+		assert!(matches!(result, Err(crate::ln::msgs::DecodeError::InvalidValue)));
 	}
 }

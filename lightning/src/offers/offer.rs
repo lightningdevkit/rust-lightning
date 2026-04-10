@@ -1211,6 +1211,12 @@ pub(super) const OFFER_TYPES: core::ops::Range<u64> = 1..80;
 /// TLV record type for [`Offer::metadata`].
 const OFFER_METADATA_TYPE: u64 = 4;
 
+/// TLV record type for [`Offer::description`].
+pub(super) const OFFER_DESCRIPTION_TYPE: u64 = 10;
+
+/// TLV record type for [`Offer::issuer`].
+pub(super) const OFFER_ISSUER_TYPE: u64 = 18;
+
 /// TLV record type for [`Offer::issuer_signing_pubkey`].
 const OFFER_ISSUER_ID_TYPE: u64 = 22;
 
@@ -1219,11 +1225,11 @@ tlv_stream!(OfferTlvStream, OfferTlvStreamRef<'a>, OFFER_TYPES, {
 	(OFFER_METADATA_TYPE, metadata: (Vec<u8>, WithoutLength)),
 	(6, currency: [u8; 3]),
 	(8, amount: (u64, HighZeroBytesDroppedBigSize)),
-	(10, description: (String, WithoutLength)),
+	(OFFER_DESCRIPTION_TYPE, description: (String, WithoutLength)),
 	(12, features: (OfferFeatures, WithoutLength)),
 	(14, absolute_expiry: (u64, HighZeroBytesDroppedBigSize)),
 	(16, paths: (Vec<BlindedMessagePath>, WithoutLength)),
-	(18, issuer: (String, WithoutLength)),
+	(OFFER_ISSUER_TYPE, issuer: (String, WithoutLength)),
 	(20, quantity_max: (u64, HighZeroBytesDroppedBigSize)),
 	(OFFER_ISSUER_ID_TYPE, issuer_id: PublicKey),
 });
