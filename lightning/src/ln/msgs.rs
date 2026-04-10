@@ -3795,6 +3795,7 @@ impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPaylo
 		let mut trampoline_onion_packet: Option<TrampolineOnionPacket> = None;
 		let mut invoice_request: Option<InvoiceRequest> = None;
 		let mut custom_tlvs = Vec::new();
+		let mut has_unknown_odd_tlvs = false;
 
 		let tlv_len = BigSize::read(r)?;
 		let mut rd = FixedLengthReader::new(r, tlv_len.0);
@@ -3813,7 +3814,12 @@ impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPaylo
 			// See https://github.com/lightning/blips/blob/master/blip-0003.md
 			(5482373484, keysend_preimage, option)
 		}, |msg_type: u64, msg_reader: &mut FixedLengthReader<_>| -> Result<bool, DecodeError> {
-			if msg_type < 1 << 16 { return Ok(false) }
+			if msg_type < 1 << 16 {
+				if msg_type % 2 == 1 {
+					has_unknown_odd_tlvs = true;
+				}
+				return Ok(false);
+			}
 			let mut value = Vec::new();
 			msg_reader.read_to_limit(&mut value, u64::MAX)?;
 			custom_tlvs.push((msg_type, value));
@@ -3826,6 +3832,7 @@ impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPaylo
 		if intro_node_blinding_point.is_some() && update_add_blinding_point.is_some() {
 			return Err(DecodeError::InvalidValue);
 		}
+		let has_disallowed_blinded_tlvs = has_unknown_odd_tlvs || !custom_tlvs.is_empty();
 
 		if let Some(trampoline_onion_packet) = trampoline_onion_packet {
 			if payment_metadata.is_some() || encrypted_tlvs_opt.is_some() || total_msat.is_some() {
@@ -3867,6 +3874,9 @@ impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPaylo
 						}),
 					used_aad,
 				} => {
+					if has_disallowed_blinded_tlvs {
+						return Err(DecodeError::UnknownRequiredFeature);
+					}
 					if amt.is_some()
 						|| cltv_value.is_some() || total_msat.is_some()
 						|| keysend_preimage.is_some()
@@ -3889,6 +3899,9 @@ impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPaylo
 						BlindedPaymentTlvs::Dummy(DummyTlvs { payment_relay, payment_constraints }),
 					used_aad,
 				} => {
+					if has_disallowed_blinded_tlvs {
+						return Err(DecodeError::UnknownRequiredFeature);
+					}
 					if amt.is_some()
 						|| cltv_value.is_some() || total_msat.is_some()
 						|| keysend_preimage.is_some()
@@ -3907,6 +3920,9 @@ impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPaylo
 					readable: BlindedPaymentTlvs::Receive(receive_tlvs),
 					used_aad,
 				} => {
+					if has_disallowed_blinded_tlvs {
+						return Err(DecodeError::UnknownRequiredFeature);
+					}
 					if used_aad == TriPolyAADUsed::None {
 						return Err(DecodeError::InvalidValue);
 					}
@@ -3983,6 +3999,7 @@ impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundTrampoline
 		let mut keysend_preimage: Option<PaymentPreimage> = None;
 		let mut invoice_request: Option<InvoiceRequest> = None;
 		let mut custom_tlvs = Vec::new();
+		let mut has_unknown_odd_tlvs = false;
 
 		let tlv_len = BigSize::read(r)?;
 		let mut rd = FixedLengthReader::new(r, tlv_len.0);
@@ -3999,7 +4016,12 @@ impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundTrampoline
 			// See https://github.com/lightning/blips/blob/master/blip-0003.md
 			(5482373484, keysend_preimage, option)
 		}, |msg_type: u64, msg_reader: &mut FixedLengthReader<_>| -> Result<bool, DecodeError> {
-			if msg_type < 1 << 16 { return Ok(false) }
+			if msg_type < 1 << 16 {
+				if msg_type % 2 == 1 {
+					has_unknown_odd_tlvs = true;
+				}
+				return Ok(false);
+			}
 			let mut value = Vec::new();
 			msg_reader.read_to_limit(&mut value, u64::MAX)?;
 			custom_tlvs.push((msg_type, value));
@@ -4012,6 +4034,7 @@ impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundTrampoline
 		if intro_node_blinding_point.is_some() && update_add_blinding_point.is_some() {
 			return Err(DecodeError::InvalidValue);
 		}
+		let has_disallowed_blinded_tlvs = has_unknown_odd_tlvs || !custom_tlvs.is_empty();
 
 		if let Some(blinding_point) = intro_node_blinding_point.or(update_add_blinding_point) {
 			if next_trampoline.is_some() || payment_data.is_some() || payment_metadata.is_some() {
@@ -4037,6 +4060,9 @@ impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundTrampoline
 						}),
 					used_aad,
 				} => {
+					if has_disallowed_blinded_tlvs {
+						return Err(DecodeError::UnknownRequiredFeature);
+					}
 					if amt.is_some()
 						|| cltv_value.is_some() || total_msat.is_some()
 						|| keysend_preimage.is_some()
@@ -4058,6 +4084,9 @@ impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundTrampoline
 					readable: BlindedTrampolineTlvs::Receive(receive_tlvs),
 					used_aad,
 				} => {
+					if has_disallowed_blinded_tlvs {
+						return Err(DecodeError::UnknownRequiredFeature);
+					}
 					if used_aad == TriPolyAADUsed::None {
 						return Err(DecodeError::InvalidValue);
 					}
@@ -4566,6 +4595,10 @@ impl_writeable_msg!(GossipTimestampFilter, {
 
 #[cfg(test)]
 mod tests {
+	use crate::blinded_path::payment::{
+		BlindedPayInfo, BlindedPaymentPath, Bolt12RefundContext, PaymentConstraints,
+		PaymentContext, ReceiveTlvs,
+	};
 	use crate::ln::msgs::SocketAddress;
 	use crate::ln::msgs::{
 		self, CommonAcceptChannelFields, CommonOpenChannelFields, FinalOnionHopData,
@@ -4575,6 +4608,7 @@ mod tests {
 	use crate::ln::onion_utils::AttributionData;
 	use crate::ln::types::ChannelId;
 	use crate::routing::gossip::{NodeAlias, NodeId};
+	use crate::sign::{NodeSigner, Recipient};
 	use crate::types::features::{
 		ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures,
 	};
@@ -4599,12 +4633,10 @@ mod tests {
 
 	use crate::chain::transaction::OutPoint;
 	use crate::io::{self, Cursor};
-	use crate::prelude::*;
-	use core::str::FromStr;
-
-	use crate::blinded_path::payment::{BlindedPayInfo, BlindedPaymentPath};
 	#[cfg(feature = "std")]
 	use crate::ln::msgs::SocketAddressParseError;
+	use crate::prelude::*;
+	use core::str::FromStr;
 	#[cfg(feature = "std")]
 	use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs};
 	use types::features::{BlindedHopFeatures, Bolt12InvoiceFeatures};
@@ -6533,6 +6565,62 @@ mod tests {
 		} else {
 			panic!();
 		}
+	}
+
+	#[test]
+	fn decoding_blinded_final_onion_hop_data_rejects_unknown_odd_tlvs() {
+		let node_signer = test_utils::TestKeysInterface::new(&[42; 32], Network::Testnet);
+		let payee_tlvs = ReceiveTlvs {
+			payment_secret: PaymentSecret([43; 32]),
+			payment_constraints: PaymentConstraints {
+				max_cltv_expiry: u32::MAX,
+				htlc_minimum_msat: 1,
+			},
+			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
+		};
+		let receive_auth_key = node_signer.get_receive_auth_key();
+		let secp_ctx = Secp256k1::new();
+		let blinded_path = BlindedPaymentPath::new(
+			&[],
+			node_signer.get_node_id(Recipient::Node).unwrap(),
+			receive_auth_key,
+			payee_tlvs,
+			u64::MAX,
+			18,
+			&node_signer,
+			&secp_ctx,
+		)
+		.unwrap();
+		let custom_tlvs = Vec::new();
+
+		let payload = msgs::OutboundOnionPayload::BlindedReceive {
+			sender_intended_htlc_amt_msat: 1000,
+			total_msat: 1000,
+			cltv_expiry_height: 144,
+			encrypted_tlvs: &blinded_path.blinded_hops()[0].encrypted_payload,
+			intro_node_blinding_point: Some(blinded_path.blinding_point()),
+			keysend_preimage: None,
+			custom_tlvs: &custom_tlvs,
+			invoice_request: None,
+		};
+		let encoded = payload.encode();
+		let mut cursor = Cursor::new(&encoded);
+		let _: BigSize = Readable::read(&mut cursor).unwrap();
+		let mut tlv_stream = encoded[cursor.position() as usize..].to_vec();
+		BigSize(21).write(&mut tlv_stream).unwrap();
+		BigSize(0).write(&mut tlv_stream).unwrap();
+
+		let mut invalid_payload = Vec::new();
+		BigSize(tlv_stream.len() as u64).write(&mut invalid_payload).unwrap();
+		invalid_payload.extend_from_slice(&tlv_stream);
+
+		assert!(matches!(
+			msgs::InboundOnionPayload::read(
+				&mut Cursor::new(&invalid_payload),
+				(None, &node_signer)
+			),
+			Err(msgs::DecodeError::UnknownRequiredFeature),
+		));
 	}
 
 	#[test]

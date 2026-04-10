@@ -1015,6 +1015,23 @@ macro_rules! _init_and_read_tlv_stream {
 	}
 }
 
+/// Equivalent to running [`_init_tlv_field_var`] then
+/// [`decode_tlv_stream_with_custom_tlv_decode`].
+///
+/// If any unused values are read, their type MUST be specified or else `rustc` will read them as an
+/// `i64`.
+macro_rules! _init_and_read_tlv_stream_with_custom_tlv_decode {
+	($reader: ident, {$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}
+	 $(, $decode_custom_tlv: expr)?) => {
+		$(
+			$crate::_init_tlv_field_var!($field, $fieldty);
+		)*
+		decode_tlv_stream_with_custom_tlv_decode!($reader, {
+			$(($type, $field, $fieldty)),*
+		} $(, $decode_custom_tlv)?);
+	}
+}
+
 /// Reads a TLV stream with the given fields to build a struct/enum variant of type `$thing`
 #[doc(hidden)]
 #[macro_export]
