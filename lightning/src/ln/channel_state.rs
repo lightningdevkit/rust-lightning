@@ -399,6 +399,8 @@ pub struct ChannelDetails {
 	/// an upper-bound. This is intended for use when routing, allowing us to ensure we pick a
 	/// route which is valid.
 	pub next_outbound_htlc_minimum_msat: u64,
+	/// The maximum value of the next splice out from our channel balance.
+	pub next_splice_out_maximum_sat: u64,
 	/// The available inbound capacity for the remote peer to send HTLCs to us. This does not
 	/// include any pending HTLCs which are not yet fully resolved (and, thus, whose balance is not
 	/// available for inclusion in new inbound HTLCs).
@@ -533,6 +535,7 @@ impl ChannelDetails {
 				outbound_capacity_msat: 0,
 				next_outbound_htlc_limit_msat: 0,
 				next_outbound_htlc_minimum_msat: u64::MAX,
+				next_splice_out_maximum_sat: 0,
 			}
 		});
 		let (to_remote_reserve_satoshis, to_self_reserve_satoshis) =
@@ -582,6 +585,7 @@ impl ChannelDetails {
 			outbound_capacity_msat: balance.outbound_capacity_msat,
 			next_outbound_htlc_limit_msat: balance.next_outbound_htlc_limit_msat,
 			next_outbound_htlc_minimum_msat: balance.next_outbound_htlc_minimum_msat,
+			next_splice_out_maximum_sat: balance.next_splice_out_maximum_sat,
 			user_channel_id: context.get_user_id(),
 			confirmations_required: channel.minimum_depth(),
 			confirmations: Some(funding.get_funding_tx_confirmations(best_block_height)),
@@ -621,6 +625,7 @@ impl_writeable_tlv_based!(ChannelDetails, {
 	(20, inbound_capacity_msat, required),
 	(21, next_outbound_htlc_minimum_msat, (default_value, 0)),
 	(22, confirmations_required, option),
+	(23, next_splice_out_maximum_sat, (default_value, u64::from(outbound_capacity_msat.0.unwrap()) / 1000)),
 	(24, force_close_spend_delay, option),
 	(26, is_outbound, required),
 	(28, is_channel_ready, required),
@@ -725,6 +730,7 @@ mod tests {
 			outbound_capacity_msat: 24_300,
 			next_outbound_htlc_limit_msat: 20_000,
 			next_outbound_htlc_minimum_msat: 132,
+			next_splice_out_maximum_sat: 20,
 			inbound_capacity_msat: 42,
 			unspendable_punishment_reserve: Some(8273),
 			confirmations_required: Some(5),
