@@ -12361,7 +12361,25 @@ where
 			);
 			let min_rbf_feerate = prev_feerate.map(min_rbf_feerate);
 			let prior = if pending_splice.last_funding_feerate_sat_per_1000_weight.is_some() {
-				self.build_prior_contribution()
+				if let Some(prior) = self
+					.pending_splice
+					.as_ref()
+					.and_then(|pending_splice| pending_splice.contributions.last())
+				{
+					let holder_balance = self
+						.get_holder_counterparty_balances_floor_incl_fee(&self.funding)
+						.map(|(h, _)| h)
+						.map_err(|e| APIError::ChannelUnavailable {
+							err: format!(
+								"Channel {} cannot be spliced at this time: {}",
+								self.context.channel_id(),
+								e
+							),
+						})?;
+					Some(PriorContribution::new(prior.clone(), holder_balance))
+				} else {
+					None
+				}
 			} else {
 				None
 			};
@@ -12381,21 +12399,6 @@ where
 		};
 
 		Ok(FundingTemplate::new(Some(shared_input), min_rbf_feerate, prior_contribution))
-	}
-
-	/// Clones the prior contribution and fetches the holder balance for deferred feerate
-	/// adjustment.
-	fn build_prior_contribution(&self) -> Option<PriorContribution> {
-		debug_assert!(
-			self.pending_splice.is_some(),
-			"build_prior_contribution requires pending_splice"
-		);
-		let prior = self.pending_splice.as_ref()?.contributions.last()?;
-		let holder_balance = self
-			.get_holder_counterparty_balances_floor_incl_fee(&self.funding)
-			.map(|(h, _)| h)
-			.ok();
-		Some(PriorContribution::new(prior.clone(), holder_balance))
 	}
 
 	/// Returns whether this channel can ever RBF, independent of splice state.
@@ -12569,14 +12572,12 @@ where
 			};
 		}
 
-		if let Err(e) = contribution.validate().and_then(|()| {
-			// For splice-out, our_funding_contribution is adjusted to cover fees if there
-			// aren't any inputs.
-			let our_funding_contribution = contribution.net_value();
-			self.validate_splice_contributions(our_funding_contribution, SignedAmount::ZERO)
-		}) {
-			log_error!(logger, "Channel {} cannot be funded: {}", self.context.channel_id(), e);
+		let our_funding_contribution = contribution.net_value();
 
+		if let Err(e) =
+			self.validate_splice_contributions(our_funding_contribution, SignedAmount::ZERO)
+		{
+			log_error!(logger, "Channel {} cannot be funded: {}", self.context.channel_id(), e);
 			return Err(QuiescentError::FailSplice(self.splice_funding_failed_for(contribution)));
 		}
 
@@ -14138,13 +14139,11 @@ where
 					// funding_contributed and quiescence, reducing the holder's
 					// balance. If invalid, disconnect and return the contribution so
 					// the user can reclaim their inputs.
-					if let Err(e) = contribution.validate().and_then(|()| {
-						let our_funding_contribution = contribution.net_value();
-						self.validate_splice_contributions(
-							our_funding_contribution,
-							SignedAmount::ZERO,
-						)
-					}) {
+					let our_funding_contribution = contribution.net_value();
+					if let Err(e) = self.validate_splice_contributions(
+						our_funding_contribution,
+						SignedAmount::ZERO,
+					) {
 						let failed = self.splice_funding_failed_for(contribution);
 						return Err((
 							ChannelError::WarnAndDisconnect(format!(

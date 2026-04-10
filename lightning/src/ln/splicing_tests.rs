@@ -20,7 +20,7 @@ use crate::ln::channel::{
 };
 use crate::ln::channelmanager::{provided_init_features, PaymentId, BREAKDOWN_TIMEOUT};
 use crate::ln::functional_test_utils::*;
-use crate::ln::funding::FundingContribution;
+use crate::ln::funding::{FundingContribution, FundingContributionError};
 use crate::ln::msgs::{self, BaseMessageHandler, ChannelMessageHandler, MessageSendEvent};
 use crate::ln::outbound_payment::RecipientOnionFields;
 use crate::ln::types::ChannelId;
@@ -41,7 +41,7 @@ use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 use bitcoin::transaction::Version;
 use bitcoin::{
 	Amount, FeeRate, OutPoint as BitcoinOutPoint, Psbt, ScriptBuf, Transaction, TxOut, Txid,
-	WPubkeyHash,
+	WPubkeyHash, WScriptHash,
 };
 
 #[test]
@@ -158,40 +158,6 @@ impl CoinSelectionSourceSync for TightBudgetWallet {
 	}
 }
 
-#[test]
-fn test_validate_accounts_for_change_output_weight() {
-	// Demonstrates that estimated_fee includes the change output's weight when building a
-	// FundingContribution. A mock wallet returns a single input whose value is between
-	// estimated_fee_without_change (1736/1740 sats) and estimated_fee_with_change (1984/1988
-	// sats) above value_added. The validate() check correctly catches that the inputs are
-	// insufficient when the change output weight is included. Without accounting for the change
-	// output weight, the check would incorrectly pass.
-	let chanmon_cfgs = create_chanmon_cfgs(2);
-	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-
-	let (_, _, channel_id, _) =
-		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 0);
-
-	let feerate = FeeRate::from_sat_per_kwu(2000);
-	let funding_template =
-		nodes[0].node.splice_channel(&channel_id, &nodes[1].node.get_our_node_id()).unwrap();
-
-	// Input value = value_added + 1800: above 1736/1740 (fee without change), below 1984/1988
-	// (fee with change).
-	let value_added = Amount::from_sat(20_000);
-	let wallet = TightBudgetWallet {
-		utxo_value: value_added + Amount::from_sat(1800),
-		change_value: Amount::from_sat(1000),
-	};
-	let contribution =
-		funding_template.splice_in_sync(value_added, feerate, FeeRate::MAX, &wallet).unwrap();
-
-	assert!(contribution.change_output().is_some());
-	assert!(contribution.validate().is_err());
-}
-
 pub fn negotiate_splice_tx<'a, 'b, 'c, 'd>(
 	initiator: &'a Node<'b, 'c, 'd>, acceptor: &'a Node<'b, 'c, 'd>, channel_id: ChannelId,
 	funding_contribution: FundingContribution,
@@ -255,7 +221,11 @@ pub fn do_initiate_rbf_splice_in_and_out<'a, 'b, 'c, 'd>(
 	let funding_template = node.node.splice_channel(&channel_id, &node_id_counterparty).unwrap();
 	let wallet = WalletSync::new(Arc::clone(&node.wallet_source), node.logger);
 	let funding_contribution = funding_template
-		.splice_in_and_out_sync(value_added, outputs, feerate, FeeRate::MAX, &wallet)
+		.without_prior_contribution(feerate, FeeRate::MAX)
+		.with_coin_selection_source_sync(&wallet)
+		.add_value(value_added)
+		.add_outputs(outputs)
+		.build()
 		.unwrap();
 	node.node
 		.funding_contributed(&channel_id, &node_id_counterparty, funding_contribution.clone(), None)
@@ -271,9 +241,7 @@ pub fn initiate_splice_out<'a, 'b, 'c, 'd>(
 	let floor_feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64);
 	let funding_template = initiator.node.splice_channel(&channel_id, &node_id_acceptor).unwrap();
 	let feerate = funding_template.min_rbf_feerate().unwrap_or(floor_feerate);
-	let wallet = WalletSync::new(Arc::clone(&initiator.wallet_source), initiator.logger);
-	let funding_contribution =
-		funding_template.splice_out_sync(outputs, feerate, FeeRate::MAX, &wallet).unwrap();
+	let funding_contribution = funding_template.splice_out(outputs, feerate, FeeRate::MAX).unwrap();
 	match initiator.node.funding_contributed(
 		&channel_id,
 		&node_id_acceptor,
@@ -305,7 +273,11 @@ pub fn do_initiate_splice_in_and_out<'a, 'b, 'c, 'd>(
 	let feerate = funding_template.min_rbf_feerate().unwrap_or(floor_feerate);
 	let wallet = WalletSync::new(Arc::clone(&initiator.wallet_source), initiator.logger);
 	let funding_contribution = funding_template
-		.splice_in_and_out_sync(value_added, outputs, feerate, FeeRate::MAX, &wallet)
+		.without_prior_contribution(feerate, FeeRate::MAX)
+		.with_coin_selection_source_sync(&wallet)
+		.add_value(value_added)
+		.add_outputs(outputs)
+		.build()
 		.unwrap();
 	initiator
 		.node
@@ -1370,9 +1342,8 @@ fn fails_initiating_concurrent_splices(reconnect: bool) {
 	let feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64);
 
 	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_1_id).unwrap();
-	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
 	let funding_contribution =
-		funding_template.splice_out_sync(outputs.clone(), feerate, FeeRate::MAX, &wallet).unwrap();
+		funding_template.splice_out(outputs.clone(), feerate, FeeRate::MAX).unwrap();
 	nodes[0]
 		.node
 		.funding_contributed(&channel_id, &node_1_id, funding_contribution.clone(), None)
@@ -1865,7 +1836,8 @@ fn do_test_splice_commitment_broadcast(splice_status: SpliceStatus, claim_htlcs:
 	let splice_in_amount = initial_channel_capacity / 2;
 	let initiator_contribution =
 		do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, Amount::from_sat(splice_in_amount));
-	let (splice_tx, _) = splice_channel(&nodes[0], &nodes[1], channel_id, initiator_contribution);
+	let (splice_tx, _) =
+		splice_channel(&nodes[0], &nodes[1], channel_id, initiator_contribution.clone());
 	let (preimage2, payment_hash2, ..) = route_payment(&nodes[0], &[&nodes[1]], payment_amount);
 	let htlc_expiry = nodes[0].best_block_info().1 + TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS;
 
@@ -1916,7 +1888,7 @@ fn do_test_splice_commitment_broadcast(splice_status: SpliceStatus, claim_htlcs:
 		message: "test".to_owned(),
 	};
 	let closed_channel_capacity = if splice_status == SpliceStatus::Locked {
-		initial_channel_capacity + splice_in_amount
+		initial_channel_capacity + initiator_contribution.net_value().to_sat() as u64
 	} else {
 		initial_channel_capacity
 	};
@@ -3690,7 +3662,7 @@ fn test_funding_contributed_splice_already_pending() {
 	let splice_in_amount = Amount::from_sat(20_000);
 	provide_utxo_reserves(&nodes, 2, splice_in_amount * 2);
 
-	// Use splice_in_and_out with an output so we can test output filtering
+	// Use the contribution builder with an output so we can test output filtering
 	let first_splice_out = TxOut {
 		value: Amount::from_sat(5_000),
 		script_pubkey: ScriptBuf::new_p2wpkh(&WPubkeyHash::from_raw_hash(Hash::all_zeros())),
@@ -3699,13 +3671,11 @@ fn test_funding_contributed_splice_already_pending() {
 	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
 	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
 	let first_contribution = funding_template
-		.splice_in_and_out_sync(
-			splice_in_amount,
-			vec![first_splice_out.clone()],
-			feerate,
-			FeeRate::MAX,
-			&wallet,
-		)
+		.with_prior_contribution(feerate, FeeRate::MAX)
+		.with_coin_selection_source_sync(&wallet)
+		.add_value(splice_in_amount)
+		.add_output(first_splice_out.clone())
+		.build()
 		.unwrap();
 
 	// Initiate a second splice with a DIFFERENT output to test that different outputs
@@ -3727,13 +3697,11 @@ fn test_funding_contributed_splice_already_pending() {
 	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
 	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
 	let second_contribution = funding_template
-		.splice_in_and_out_sync(
-			splice_in_amount,
-			vec![second_splice_out.clone()],
-			feerate,
-			FeeRate::MAX,
-			&wallet,
-		)
+		.without_prior_contribution(feerate, FeeRate::MAX)
+		.with_coin_selection_source_sync(&wallet)
+		.add_value(splice_in_amount)
+		.add_output(second_splice_out.clone())
+		.build()
 		.unwrap();
 
 	// First funding_contributed - this sets up the quiescent action
@@ -5543,7 +5511,8 @@ fn test_splice_rbf_after_counterparty_rbf_aborted() {
 	nodes[0].node.get_and_clear_pending_events();
 	nodes[1].node.get_and_clear_pending_events();
 
-	// Step 5: Node 1 initiates its own RBF via splice_channel → rbf_sync.
+	// Step 5: Node 1 initiates its own RBF via splice_channel →
+	// rbf_prior_contribution_sync.
 	// The prior contribution's feerate is restored to the original floor feerate, not the
 	// RBF-adjusted feerate.
 	provide_utxo_reserves(&nodes, 2, added_value * 2);
@@ -5557,7 +5526,8 @@ fn test_splice_rbf_after_counterparty_rbf_aborted() {
 	);
 
 	let wallet = WalletSync::new(Arc::clone(&nodes[1].wallet_source), nodes[1].logger);
-	let rbf_contribution = funding_template.rbf_sync(FeeRate::MAX, &wallet);
+	let rbf_contribution =
+		funding_template.rbf_prior_contribution_sync(None, FeeRate::MAX, &wallet);
 	assert!(rbf_contribution.is_ok());
 }
 
@@ -5755,6 +5725,128 @@ fn test_splice_rbf_sequential() {
 		&rbf_tx_final,
 		ANTI_REORG_DELAY - 1,
 		&[splice_tx_0_txid, splice_tx_1_txid],
+	);
+}
+
+#[test]
+fn test_splice_rbf_amends_prior_contribution_request() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 0);
+
+	let initial_added_value = Amount::from_sat(100_000);
+	let half_added_value = Amount::from_sat(initial_added_value.to_sat() / 2);
+	provide_utxo_reserves(&nodes, 1, Amount::from_sat(250_000));
+
+	let initial_contribution =
+		do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, initial_added_value);
+	let (initial_inputs, _) = initial_contribution.clone().into_contributed_inputs_and_outputs();
+	let (splice_tx_0, new_funding_script) =
+		splice_channel(&nodes[0], &nodes[1], channel_id, initial_contribution.clone());
+
+	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
+	let first_output = TxOut {
+		value: Amount::from_sat(10_000),
+		script_pubkey: ScriptBuf::new_p2wpkh(&WPubkeyHash::from_raw_hash(Hash::all_zeros())),
+	};
+	let second_output = TxOut {
+		value: Amount::from_sat(15_000),
+		script_pubkey: ScriptBuf::new_p2wsh(&WScriptHash::all_zeros()),
+	};
+
+	let run_rbf_round = |contribution: FundingContribution| {
+		nodes[0]
+			.node
+			.funding_contributed(&channel_id, &node_id_1, contribution.clone(), None)
+			.unwrap();
+		complete_rbf_handshake(&nodes[0], &nodes[1]);
+		complete_interactive_funding_negotiation(
+			&nodes[0],
+			&nodes[1],
+			channel_id,
+			contribution,
+			new_funding_script.clone(),
+		);
+		let (tx, splice_locked) = sign_interactive_funding_tx(&nodes[0], &nodes[1], false);
+		assert!(splice_locked.is_none());
+		expect_splice_pending_event(&nodes[0], &node_id_1);
+		expect_splice_pending_event(&nodes[1], &node_id_0);
+		tx
+	};
+
+	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
+	assert!(funding_template.prior_contribution().unwrap().outputs().is_empty());
+	let rbf_feerate = funding_template.min_rbf_feerate().unwrap();
+	let contribution_1 = funding_template
+		.splice_out(vec![first_output.clone(), second_output.clone()], rbf_feerate, FeeRate::MAX)
+		.unwrap();
+	let (inputs_1, _) = contribution_1.clone().into_contributed_inputs_and_outputs();
+	assert_eq!(inputs_1, initial_inputs);
+	assert_eq!(contribution_1.outputs(), &[first_output.clone(), second_output.clone()]);
+	assert!(contribution_1.net_value() < initial_contribution.net_value());
+	let splice_tx_1 = run_rbf_round(contribution_1.clone());
+
+	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
+	assert_eq!(funding_template.prior_contribution().unwrap().outputs(), contribution_1.outputs());
+	let rbf_feerate = funding_template.min_rbf_feerate().unwrap();
+	let contribution_2 = funding_template
+		.with_prior_contribution(rbf_feerate, FeeRate::MAX)
+		.with_coin_selection_source_sync(&wallet)
+		.remove_value(half_added_value)
+		.build()
+		.unwrap();
+	let (inputs_2, _) = contribution_2.clone().into_contributed_inputs_and_outputs();
+	assert_eq!(inputs_2, initial_inputs);
+	assert_eq!(contribution_2.outputs(), contribution_1.outputs());
+	assert!(contribution_2.net_value() < contribution_1.net_value());
+	let splice_tx_2 = run_rbf_round(contribution_2.clone());
+
+	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
+	assert_eq!(funding_template.prior_contribution().unwrap().outputs(), contribution_2.outputs());
+	let rbf_feerate = funding_template.min_rbf_feerate().unwrap();
+	let contribution_3 = funding_template
+		.with_prior_contribution(rbf_feerate, FeeRate::MAX)
+		.remove_outputs(&first_output.script_pubkey)
+		.build()
+		.unwrap();
+	let (inputs_3, _) = contribution_3.clone().into_contributed_inputs_and_outputs();
+	assert_eq!(inputs_3, initial_inputs);
+	assert_eq!(contribution_3.outputs(), std::slice::from_ref(&second_output));
+	assert!(contribution_3.net_value() > contribution_2.net_value());
+	let splice_tx_3 = run_rbf_round(contribution_3.clone());
+
+	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
+	assert_eq!(funding_template.prior_contribution().unwrap().outputs(), contribution_3.outputs());
+	let contribution_4 =
+		funding_template.rbf_prior_contribution_sync(None, FeeRate::MAX, &wallet).unwrap();
+	let (inputs_4, _) = contribution_4.clone().into_contributed_inputs_and_outputs();
+	assert_eq!(inputs_4, initial_inputs);
+	assert_eq!(contribution_4.outputs(), contribution_3.outputs());
+	assert_eq!(contribution_4.net_value(), contribution_3.net_value());
+	assert!(
+		contribution_4.change_output().unwrap().value
+			< contribution_3.change_output().unwrap().value
+	);
+	let rbf_tx_final = run_rbf_round(contribution_4);
+
+	lock_rbf_splice_after_blocks(
+		&nodes[0],
+		&nodes[1],
+		&rbf_tx_final,
+		ANTI_REORG_DELAY - 1,
+		&[
+			splice_tx_0.compute_txid(),
+			splice_tx_1.compute_txid(),
+			splice_tx_2.compute_txid(),
+			splice_tx_3.compute_txid(),
+		],
 	);
 }
 
@@ -6010,9 +6102,9 @@ fn test_splice_channel_with_pending_splice_includes_rbf_floor() {
 	assert_eq!(funding_template.min_rbf_feerate(), Some(expected_floor));
 	assert!(funding_template.prior_contribution().is_some());
 
-	// rbf_sync returns the Adjusted prior contribution directly.
+	// rbf_prior_contribution_sync returns the adjusted prior contribution directly.
 	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
-	assert!(funding_template.rbf_sync(FeeRate::MAX, &wallet).is_ok());
+	assert!(funding_template.rbf_prior_contribution_sync(None, FeeRate::MAX, &wallet).is_ok());
 }
 
 #[test]
@@ -6213,8 +6305,8 @@ fn test_funding_contributed_rbf_adjustment_insufficient_budget() {
 
 #[test]
 fn test_prior_contribution_unadjusted_when_max_feerate_too_low() {
-	// Test that rbf_sync re-runs coin selection when the prior contribution's max_feerate is
-	// too low to accommodate the minimum RBF feerate.
+	// Test that rbf_prior_contribution_sync re-runs coin selection when the prior
+	// contribution's max_feerate is too low to accommodate the minimum RBF feerate.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -6244,13 +6336,13 @@ fn test_prior_contribution_unadjusted_when_max_feerate_too_low() {
 	let (_splice_tx, _) = splice_channel(&nodes[0], &nodes[1], channel_id, funding_contribution);
 
 	// Call splice_channel again — the minimum RBF feerate (floor + 25 sat/kwu) exceeds the prior
-	// contribution's max_feerate (floor), so adjustment fails. rbf_sync re-runs coin selection
-	// with the caller's max_feerate.
+	// contribution's max_feerate (floor), so adjustment fails.
+	// rbf_prior_contribution_sync re-runs coin selection with the caller's max_feerate.
 	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
 	assert!(funding_template.min_rbf_feerate().is_some());
 	assert!(funding_template.prior_contribution().is_some());
 	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
-	assert!(funding_template.rbf_sync(FeeRate::MAX, &wallet).is_ok());
+	assert!(funding_template.rbf_prior_contribution_sync(None, FeeRate::MAX, &wallet).is_ok());
 }
 
 #[test]
@@ -6291,17 +6383,19 @@ fn test_splice_channel_during_negotiation_includes_rbf_feerate() {
 	let expected_floor = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64 + 25);
 	assert_eq!(template.min_rbf_feerate(), Some(expected_floor));
 
-	// No prior contribution since there are no negotiated candidates yet. rbf_sync runs
-	// fee-bump-only coin selection.
+	// No prior contribution since there are no negotiated candidates yet, so RBF is rejected.
 	assert!(template.prior_contribution().is_none());
 	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
-	assert!(template.rbf_sync(FeeRate::MAX, &wallet).is_ok());
+	assert!(matches!(
+		template.rbf_prior_contribution_sync(None, FeeRate::MAX, &wallet),
+		Err(FundingContributionError::NotRbfScenario)
+	));
 }
 
 #[test]
 fn test_rbf_sync_returns_err_when_no_min_rbf_feerate() {
-	// Test that rbf_sync returns Err(()) when there is no pending splice (min_rbf_feerate is
-	// None), indicating this is not an RBF scenario.
+	// Test that rbf_prior_contribution_sync returns `NotRbfScenario` when there is no pending
+	// splice (min_rbf_feerate is None).
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -6323,15 +6417,15 @@ fn test_rbf_sync_returns_err_when_no_min_rbf_feerate() {
 
 	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
 	assert!(matches!(
-		template.rbf_sync(FeeRate::MAX, &wallet),
+		template.rbf_prior_contribution_sync(None, FeeRate::MAX, &wallet),
 		Err(crate::ln::funding::FundingContributionError::NotRbfScenario),
 	));
 }
 
 #[test]
 fn test_rbf_sync_returns_err_when_max_feerate_below_min_rbf() {
-	// Test that rbf_sync returns Err when the caller's max_feerate is below the minimum
-	// RBF feerate.
+	// Test that rbf_prior_contribution_sync returns an error when the caller's max_feerate is
+	// below the minimum RBF feerate.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -6359,7 +6453,7 @@ fn test_rbf_sync_returns_err_when_max_feerate_below_min_rbf() {
 		FeeRate::from_sat_per_kwu(min_rbf_feerate.to_sat_per_kwu().saturating_sub(1));
 	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
 	assert!(matches!(
-		funding_template.rbf_sync(too_low_feerate, &wallet),
+		funding_template.rbf_prior_contribution_sync(None, too_low_feerate, &wallet),
 		Err(crate::ln::funding::FundingContributionError::FeeRateExceedsMaximum { .. }),
 	));
 }
@@ -6420,9 +6514,7 @@ fn test_splice_revalidation_at_quiescence() {
 
 	let feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64);
 	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
-	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
-	let contribution =
-		funding_template.splice_out_sync(outputs, feerate, FeeRate::MAX, &wallet).unwrap();
+	let contribution = funding_template.splice_out(outputs, feerate, FeeRate::MAX).unwrap();
 
 	nodes[0].node.funding_contributed(&channel_id, &node_id_1, contribution.clone(), None).unwrap();
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty(), "stfu should be delayed");
@@ -6632,9 +6724,12 @@ fn test_splice_rbf_rejects_own_low_feerate_after_several_attempts() {
 	let rbf_feerate = FeeRate::from_sat_per_kwu(next_feerate);
 	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
 	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
-	let contribution =
-		funding_template.splice_in_sync(added_value, rbf_feerate, FeeRate::MAX, &wallet).unwrap();
-
+	let contribution = funding_template
+		.without_prior_contribution(rbf_feerate, FeeRate::MAX)
+		.with_coin_selection_source_sync(&wallet)
+		.add_value(added_value)
+		.build()
+		.unwrap();
 	let result = nodes[0].node.funding_contributed(&channel_id, &node_id_1, contribution, None);
 	assert!(result.is_err(), "Expected rejection for low feerate: {:?}", result);
 
