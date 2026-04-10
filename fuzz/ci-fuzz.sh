@@ -13,7 +13,7 @@ rm *_target.rs
 [ "$(git diff)" != "" ] && exit 1
 popd
 
-export RUSTFLAGS="--cfg=secp256k1_fuzz --cfg=hashes_fuzz"
+export RUSTFLAGS="--cfg=secp256k1_fuzz"
 
 mkdir -p hfuzz_workspace/full_stack_target/input
 pushd write-seeds

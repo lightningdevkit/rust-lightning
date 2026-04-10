@@ -21,6 +21,7 @@ use crate::ln::onion_utils::{HTLCFailReason, LocalHTLCFailureReason, ONION_DATA_
 use crate::sign::{NodeSigner, Recipient};
 use crate::types::features::BlindedHopFeatures;
 use crate::types::payment::PaymentHash;
+use crate::util::fuzz_wrappers::payment_hash_matches_preimage;
 use crate::util::logger::Logger;
 
 #[allow(unused_imports)]
@@ -426,8 +427,7 @@ pub(super) fn create_recv_pending_htlc_info(
 		// could discover the final destination of X, by probing the adjacent nodes on the route
 		// with a keysend payment of identical payment hash to X and observing the processing
 		// time discrepancies due to a hash collision with X.
-		let hashed_preimage = PaymentHash(Sha256::hash(&payment_preimage.0).to_byte_array());
-		if hashed_preimage != payment_hash {
+		if !payment_hash_matches_preimage(&payment_hash, &payment_preimage) {
 			return Err(InboundHTLCErr {
 				reason: LocalHTLCFailureReason::InvalidKeysendPreimage,
 				err_data: invalid_payment_err_data(amt_msat, current_height),

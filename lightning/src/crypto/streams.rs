@@ -1,10 +1,10 @@
 use crate::crypto::chacha20::ChaCha20;
 use crate::crypto::chacha20poly1305rfc::ChaCha20Poly1305RFC;
-use crate::crypto::fixed_time_eq;
 use crate::crypto::poly1305::Poly1305;
 
 use crate::io::{self, Read, Write};
 use crate::ln::msgs::DecodeError;
+use crate::util::fuzz_wrappers::digest_bytes_match;
 use crate::util::ser::{
 	FixedLengthReader, LengthLimitedRead, LengthReadableArgs, Readable, Writeable, Writer,
 };
@@ -175,11 +175,11 @@ impl<T: Readable> LengthReadableArgs<([u8; 32], [u8; 32], [u8; 32])>
 
 		let mut tag = [0 as u8; 16];
 		r.read_exact(&mut tag)?;
-		if fixed_time_eq(&mac.result(), &tag) {
+		if digest_bytes_match(&mac.result(), &tag) {
 			Ok(Self { readable, used_aad: TriPolyAADUsed::None })
-		} else if fixed_time_eq(&mac_aad_a.result(), &tag) {
+		} else if digest_bytes_match(&mac_aad_a.result(), &tag) {
 			Ok(Self { readable, used_aad: TriPolyAADUsed::First })
-		} else if fixed_time_eq(&mac_aad_b.result(), &tag) {
+		} else if digest_bytes_match(&mac_aad_b.result(), &tag) {
 			Ok(Self { readable, used_aad: TriPolyAADUsed::Second })
 		} else {
 			return Err(DecodeError::InvalidValue);

@@ -9,7 +9,6 @@
 
 //! Utilities to generate inbound payment information in service of invoice creation.
 
-use bitcoin::hashes::cmp::fixed_time_eq;
 use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::{Hash, HashEngine};
@@ -22,6 +21,7 @@ use crate::offers::nonce::Nonce;
 use crate::sign::EntropySource;
 use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::util::errors::APIError;
+use crate::util::fuzz_wrappers::{digest_bytes_match, payment_hash_matches_digest};
 use crate::util::logger::Logger;
 
 #[allow(unused_imports)]
@@ -370,10 +370,8 @@ pub(super) fn verify<L: Logger>(
 			let mut hmac = HmacEngine::<Sha256>::new(&keys.user_pmt_hash_key);
 			hmac.input(&metadata_bytes[..]);
 			hmac.input(&payment_hash.0);
-			if !fixed_time_eq(
-				&iv_bytes,
-				&Hmac::from_engine(hmac).to_byte_array().split_at_mut(IV_LEN).0,
-			) {
+			let expected_iv = Hmac::from_engine(hmac).to_byte_array();
+			if !digest_bytes_match(&iv_bytes, &expected_iv[..IV_LEN]) {
 				log_trace!(
 					logger,
 					"Failing HTLC with user-generated payment_hash {}: unexpected payment_secret",
@@ -399,10 +397,8 @@ pub(super) fn verify<L: Logger>(
 		Ok(Method::SpontaneousPayment) => {
 			let mut hmac = HmacEngine::<Sha256>::new(&keys.spontaneous_pmt_key);
 			hmac.input(&metadata_bytes[..]);
-			if !fixed_time_eq(
-				&iv_bytes,
-				&Hmac::from_engine(hmac).to_byte_array().split_at_mut(IV_LEN).0,
-			) {
+			let expected_iv = Hmac::from_engine(hmac).to_byte_array();
+			if !digest_bytes_match(&iv_bytes, &expected_iv[..IV_LEN]) {
 				log_trace!(logger, "Failing async payment HTLC with sender-generated payment_hash {}: unexpected payment_secret", &payment_hash);
 				return Err(());
 			}
@@ -505,7 +501,8 @@ fn derive_ldk_payment_preimage(
 	hmac.input(iv_bytes);
 	hmac.input(metadata_bytes);
 	let decoded_payment_preimage = Hmac::from_engine(hmac).to_byte_array();
-	if !fixed_time_eq(&payment_hash.0, &Sha256::hash(&decoded_payment_preimage).to_byte_array()) {
+	let expected_digest = Sha256::hash(&decoded_payment_preimage).to_byte_array();
+	if !payment_hash_matches_digest(&payment_hash, &expected_digest) {
 		return Err(decoded_payment_preimage);
 	}
 	return Ok(PaymentPreimage(decoded_payment_preimage));

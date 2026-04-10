@@ -11,8 +11,8 @@
 // https://github.com/floodyberry/poly1305-donna
 
 use super::chacha20::ChaCha20;
-use super::fixed_time_eq;
 use super::poly1305::Poly1305;
+use crate::util::fuzz_wrappers::digest_bytes_match;
 
 pub struct ChaCha20Poly1305RFC {
 	cipher: ChaCha20,
@@ -108,7 +108,7 @@ impl ChaCha20Poly1305RFC {
 		self.mac.input(&(self.data_len as u64).to_le_bytes());
 
 		let calc_tag = self.mac.result();
-		if fixed_time_eq(&calc_tag, tag) {
+		if digest_bytes_match(&calc_tag, tag) {
 			self.cipher.process(input, output);
 			Ok(())
 		} else {
@@ -148,7 +148,7 @@ impl ChaCha20Poly1305RFC {
 		self.mac.input(&(self.data_len as u64).to_le_bytes());
 
 		let calc_tag = self.mac.result();
-		if fixed_time_eq(&calc_tag, tag) {
+		if digest_bytes_match(&calc_tag, tag) {
 			true
 		} else {
 			false
