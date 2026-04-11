@@ -42,6 +42,7 @@ use crate::chain::chaininterface::{
 	BroadcasterInterface, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator,
 	TransactionType,
 };
+use crate::chain::chainmonitor::MonitorEventSource;
 use crate::chain::channelmonitor::{
 	ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, MonitorEvent,
 	WithChannelMonitor, ANTI_REORG_DELAY, CLTV_CLAIM_BUFFER, HTLC_FAIL_BACK_BUFFER,
@@ -2927,6 +2928,15 @@ pub struct ChannelManager<
 	/// [`ConfirmationTarget::MinAllowedNonAnchorChannelRemoteFee`] estimate.
 	last_days_feerates: Mutex<VecDeque<(u32, u32)>>,
 
+	/// When set, monitors will repeatedly provide an event back to the `ChannelManager` on restart
+	/// until the event is explicitly acknowledged as processed.
+	///
+	/// Allows us to reconstruct pending HTLC state by replaying monitor events on startup, rather
+	/// than from complexly polling and reconciling Channel{Monitor} APIs, as well as move the
+	/// responsibility of off-chain payment resolution from the Channel to the monitor. Will be
+	/// always set once support is complete.
+	persistent_monitor_events: bool,
+
 	#[cfg(test)]
 	pub(super) entropy_source: ES,
 	#[cfg(not(test))]
@@ -3602,6 +3612,8 @@ impl<
 			our_network_pubkey, current_timestamp, expanded_inbound_key,
 			node_signer.get_receive_auth_key(), secp_ctx.clone(), message_router, logger.clone(),
 		);
+		#[cfg(any(test, feature = "_test_utils"))]
+		let override_persistent_monitor_events = config.override_persistent_monitor_events;
 
 		ChannelManager {
 			config: RwLock::new(config),
@@ -3657,6 +3669,28 @@ impl<
 			signer_provider,
 
 			logger,
+
+			persistent_monitor_events: {
+				#[cfg(not(any(test, feature = "_test_utils")))]
+				{ false }
+				#[cfg(any(test, feature = "_test_utils"))]
+				{
+					override_persistent_monitor_events.unwrap_or_else(|| {
+						use core::hash::{BuildHasher, Hasher};
+						match std::env::var("LDK_TEST_PERSISTENT_MON_EVENTS") {
+							Ok(val) => match val.as_str() {
+								"1" => true,
+								"0" => false,
+								_ => panic!("LDK_TEST_PERSISTENT_MON_EVENTS must be 0 or 1, got: {}", val),
+							},
+							Err(_) => {
+								let rand_val = std::collections::hash_map::RandomState::new().build_hasher().finish();
+								rand_val % 2 == 0
+							},
+						}
+					})
+				}
+			},
 		}
 	}
 
@@ -11598,6 +11632,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				fail_chan!("Already had channel with the new channel_id");
 			},
 			hash_map::Entry::Vacant(e) => {
+				monitor.set_persistent_events_enabled(self.persistent_monitor_events);
 				let monitor_res = self.chain_monitor.watch_channel(monitor.channel_id(), monitor);
 				if let Ok(persist_state) = monitor_res {
 					// There's no problem signing a counterparty's funding transaction if our monitor
@@ -11768,6 +11803,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				match chan
 					.funding_signed(&msg, best_block, &self.signer_provider, &self.logger)
 					.and_then(|(funded_chan, monitor)| {
+						monitor.set_persistent_events_enabled(self.persistent_monitor_events);
 						self.chain_monitor
 							.watch_channel(funded_chan.context.channel_id(), monitor)
 							.map_err(|()| {
@@ -12682,6 +12718,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 				if let Some(chan) = chan.as_funded_mut() {
 					if let Some(monitor) = monitor_opt {
+						monitor.set_persistent_events_enabled(self.persistent_monitor_events);
 						let monitor_res =
 							self.chain_monitor.watch_channel(monitor.channel_id(), monitor);
 						if let Ok(persist_state) = monitor_res {
@@ -13507,7 +13544,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		for (funding_outpoint, channel_id, mut monitor_events, counterparty_node_id) in
 			pending_monitor_events.drain(..)
 		{
-			for monitor_event in monitor_events.drain(..) {
+			for (event_id, monitor_event) in monitor_events.drain(..) {
+				let monitor_event_source = MonitorEventSource { event_id, channel_id };
 				match monitor_event {
 					MonitorEvent::HTLCEvent(htlc_update) => {
 						let logger = WithContext::from(
@@ -13557,6 +13595,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								completion_update,
 							);
 						}
+						self.chain_monitor.ack_monitor_event(monitor_event_source);
 					},
 					MonitorEvent::HolderForceClosed(_)
 					| MonitorEvent::HolderForceClosedWithInfo { .. } => {
@@ -13590,6 +13629,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								failed_channels.push((Err(e), counterparty_node_id));
 							}
 						}
+						// Channel close monitor events do not need to be replayed on startup because we
+						// already check the monitors to see if the channel is closed.
+						self.chain_monitor.ack_monitor_event(monitor_event_source);
 					},
 					MonitorEvent::CommitmentTxConfirmed(_) => {
 						let per_peer_state = self.per_peer_state.read().unwrap();
@@ -13611,6 +13653,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								failed_channels.push((Err(e), counterparty_node_id));
 							}
 						}
+						// Channel close monitor events do not need to be replayed on startup because we
+						// already check the monitors to see if the channel is closed.
+						self.chain_monitor.ack_monitor_event(monitor_event_source);
 					},
 					MonitorEvent::Completed { channel_id, monitor_update_id, .. } => {
 						self.channel_monitor_updated(
@@ -13618,6 +13663,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							Some(monitor_update_id),
 							&counterparty_node_id,
 						);
+						self.chain_monitor.ack_monitor_event(monitor_event_source);
 					},
 				}
 			}
@@ -18113,6 +18159,9 @@ impl<
 			}
 		}
 
+		// Only write `persistent_events_enabled` if it's set to true, as it's an even TLV.
+		let persistent_monitor_events = self.persistent_monitor_events.then_some(());
+
 		write_tlv_fields!(writer, {
 			(1, pending_outbound_payments_no_retry, required),
 			(2, pending_intercepted_htlcs, option),
@@ -18125,6 +18174,7 @@ impl<
 			(9, htlc_purposes, required_vec),
 			(10, legacy_in_flight_monitor_updates, option),
 			(11, self.probing_cookie_secret, required),
+			(12, persistent_monitor_events, option),
 			(13, htlc_onion_fields, optional_vec),
 			(14, decode_update_add_htlcs_opt, option),
 			(15, self.inbound_payment_id_secret, required),
@@ -18224,6 +18274,7 @@ pub(super) struct ChannelManagerData<SP: SignerProvider> {
 	forward_htlcs_legacy: HashMap<u64, Vec<HTLCForwardInfo>>,
 	pending_intercepted_htlcs_legacy: HashMap<InterceptId, PendingAddHTLCInfo>,
 	decode_update_add_htlcs_legacy: HashMap<u64, Vec<msgs::UpdateAddHTLC>>,
+	persistent_monitor_events: bool,
 	// The `ChannelManager` version that was written.
 	version: u8,
 }
@@ -18410,6 +18461,7 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 		let mut peer_storage_dir: Option<Vec<(PublicKey, Vec<u8>)>> = None;
 		let mut async_receive_offer_cache: AsyncReceiveOfferCache = AsyncReceiveOfferCache::new();
 		let mut best_block_previous_blocks = None;
+		let mut persistent_monitor_events: Option<()> = None;
 		read_tlv_fields!(reader, {
 			(1, pending_outbound_payments_no_retry, option),
 			(2, pending_intercepted_htlcs_legacy, option),
@@ -18422,6 +18474,7 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 			(9, claimable_htlc_purposes, optional_vec),
 			(10, legacy_in_flight_monitor_updates, option),
 			(11, probing_cookie_secret, option),
+			(12, persistent_monitor_events, option),
 			(13, amountless_claimable_htlc_onion_fields, optional_vec),
 			(14, decode_update_add_htlcs_legacy, option),
 			(15, inbound_payment_id_secret, option),
@@ -18430,6 +18483,12 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 			(21, async_receive_offer_cache, (default_value, async_receive_offer_cache)),
 			(23, best_block_previous_blocks, option),
 		});
+
+		#[cfg(not(any(feature = "_test_utils", test)))]
+		if persistent_monitor_events.is_some() {
+			// This feature isn't supported yet so error if the writer expected it to be.
+			return Err(DecodeError::InvalidValue);
+		}
 
 		// Merge legacy pending_outbound_payments fields into a single HashMap.
 		// Priority: pending_outbound_payments (TLV 3) > pending_outbound_payments_no_retry (TLV 1)
@@ -18550,6 +18609,7 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 			peer_storage_dir: peer_storage_dir.unwrap_or_default(),
 			async_receive_offer_cache,
 			version,
+			persistent_monitor_events: persistent_monitor_events.is_some(),
 		})
 	}
 }
@@ -18850,6 +18910,7 @@ impl<
 			mut in_flight_monitor_updates,
 			peer_storage_dir,
 			async_receive_offer_cache,
+			persistent_monitor_events,
 			version: _version,
 		} = data;
 
@@ -20111,6 +20172,8 @@ impl<
 
 			logger: args.logger,
 			config: RwLock::new(args.config),
+
+			persistent_monitor_events,
 		};
 
 		let mut processed_claims: HashSet<Vec<MPPClaimHTLCSource>> = new_hash_set();

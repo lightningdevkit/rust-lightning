@@ -3594,6 +3594,9 @@ fn do_test_lost_timeout_monitor_events(confirm_tx: CommitmentType, dust_htlcs: b
 	let mut cfg = test_default_channel_config();
 	cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 	cfg.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
+	// This test specifically tests lost monitor events, which requires the legacy
+	// (non-persistent) monitor event behavior.
+	cfg.override_persistent_monitor_events = Some(false);
 	let cfgs = [Some(cfg.clone()), Some(cfg.clone()), Some(cfg.clone())];
 
 	let chanmon_cfgs = create_chanmon_cfgs(3);
@@ -3803,27 +3806,83 @@ fn do_test_lost_timeout_monitor_events(confirm_tx: CommitmentType, dust_htlcs: b
 }
 
 #[test]
-fn test_lost_timeout_monitor_events() {
+fn test_lost_timeout_monitor_events_a() {
 	do_test_lost_timeout_monitor_events(CommitmentType::RevokedCounterparty, false, false);
+}
+#[test]
+fn test_lost_timeout_monitor_events_b() {
 	do_test_lost_timeout_monitor_events(CommitmentType::RevokedCounterparty, true, false);
+}
+#[test]
+fn test_lost_timeout_monitor_events_c() {
 	do_test_lost_timeout_monitor_events(CommitmentType::PreviousCounterparty, false, false);
+}
+#[test]
+fn test_lost_timeout_monitor_events_d() {
 	do_test_lost_timeout_monitor_events(CommitmentType::PreviousCounterparty, true, false);
+}
+#[test]
+fn test_lost_timeout_monitor_events_e() {
 	do_test_lost_timeout_monitor_events(CommitmentType::LatestCounterparty, false, false);
+}
+#[test]
+fn test_lost_timeout_monitor_events_f() {
 	do_test_lost_timeout_monitor_events(CommitmentType::LatestCounterparty, true, false);
+}
+#[test]
+fn test_lost_timeout_monitor_events_g() {
 	do_test_lost_timeout_monitor_events(CommitmentType::LocalWithoutLastHTLC, false, false);
+}
+#[test]
+fn test_lost_timeout_monitor_events_h() {
 	do_test_lost_timeout_monitor_events(CommitmentType::LocalWithoutLastHTLC, true, false);
+}
+#[test]
+fn test_lost_timeout_monitor_events_i() {
 	do_test_lost_timeout_monitor_events(CommitmentType::LocalWithLastHTLC, false, false);
+}
+#[test]
+fn test_lost_timeout_monitor_events_j() {
 	do_test_lost_timeout_monitor_events(CommitmentType::LocalWithLastHTLC, true, false);
-
+}
+#[test]
+fn test_lost_timeout_monitor_events_k() {
 	do_test_lost_timeout_monitor_events(CommitmentType::RevokedCounterparty, false, true);
+}
+#[test]
+fn test_lost_timeout_monitor_events_l() {
 	do_test_lost_timeout_monitor_events(CommitmentType::RevokedCounterparty, true, true);
+}
+#[test]
+fn test_lost_timeout_monitor_events_m() {
 	do_test_lost_timeout_monitor_events(CommitmentType::PreviousCounterparty, false, true);
+}
+#[test]
+fn test_lost_timeout_monitor_events_n() {
 	do_test_lost_timeout_monitor_events(CommitmentType::PreviousCounterparty, true, true);
+}
+#[test]
+fn test_lost_timeout_monitor_events_o() {
 	do_test_lost_timeout_monitor_events(CommitmentType::LatestCounterparty, false, true);
+}
+#[test]
+fn test_lost_timeout_monitor_events_p() {
 	do_test_lost_timeout_monitor_events(CommitmentType::LatestCounterparty, true, true);
+}
+#[test]
+fn test_lost_timeout_monitor_events_q() {
 	do_test_lost_timeout_monitor_events(CommitmentType::LocalWithoutLastHTLC, false, true);
+}
+#[test]
+fn test_lost_timeout_monitor_events_r() {
 	do_test_lost_timeout_monitor_events(CommitmentType::LocalWithoutLastHTLC, true, true);
+}
+#[test]
+fn test_lost_timeout_monitor_events_s() {
 	do_test_lost_timeout_monitor_events(CommitmentType::LocalWithLastHTLC, false, true);
+}
+#[test]
+fn test_lost_timeout_monitor_events_t() {
 	do_test_lost_timeout_monitor_events(CommitmentType::LocalWithLastHTLC, true, true);
 }
 
