@@ -16,7 +16,8 @@ use crate::chain::ChannelMonitorUpdateStatus;
 use crate::events::{ClosureReason, Event, FundingInfo, HTLCHandlingFailureType};
 use crate::ln::chan_utils;
 use crate::ln::channel::{
-	CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY, FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE,
+	CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY, DISCONNECT_PEER_AWAITING_RESPONSE_TICKS,
+	FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE,
 };
 use crate::ln::channelmanager::{provided_init_features, PaymentId, BREAKDOWN_TIMEOUT};
 use crate::ln::functional_test_utils::*;
@@ -1816,10 +1817,25 @@ fn test_splice_tiebreak_feerate_too_high_rejected() {
 	let splice_init = get_event_msg!(nodes[0], MessageSendEvent::SendSpliceInit, node_id_1);
 
 	// Node 1 handles SpliceInit — TooHigh: target (100k) >> max (3k) and fair fee > budget.
+	// Node 1 exits quiescence upon rejecting with tx_abort, and since it has a pending
+	// QuiescentAction (from its own splice attempt), it immediately re-proposes quiescence.
 	nodes[1].node.handle_splice_init(node_id_0, &splice_init);
 
-	let tx_abort = get_event_msg!(nodes[1], MessageSendEvent::SendTxAbort, node_id_0);
-	assert_eq!(tx_abort.channel_id, channel_id);
+	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 2);
+	match &msg_events[0] {
+		MessageSendEvent::SendTxAbort { node_id, msg } => {
+			assert_eq!(*node_id, node_id_0);
+			assert_eq!(msg.channel_id, channel_id);
+		},
+		_ => panic!("Expected SendTxAbort, got {:?}", msg_events[0]),
+	};
+	match &msg_events[1] {
+		MessageSendEvent::SendStfu { node_id, .. } => {
+			assert_eq!(*node_id, node_id_0);
+		},
+		_ => panic!("Expected SendStfu, got {:?}", msg_events[1]),
+	};
 }
 
 #[cfg(test)]
@@ -4586,33 +4602,85 @@ fn test_splice_rbf_insufficient_feerate() {
 		.is_ok());
 
 	// Acceptor-side: tx_init_rbf with an insufficient feerate is also rejected.
-	reenter_quiescence(&nodes[0], &nodes[1], &channel_id);
+	// Node 0 initiates a proper RBF but we tamper the feerate to be insufficient.
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+	let _funding_contribution =
+		do_initiate_rbf_splice_in(&nodes[0], &nodes[1], channel_id, added_value, min_rbf_feerate);
 
-	let tx_init_rbf = msgs::TxInitRbf {
-		channel_id,
-		locktime: 0,
-		feerate_sat_per_1000_weight: FEERATE_FLOOR_SATS_PER_KW,
-		funding_output_contribution: Some(added_value.to_sat() as i64),
-	};
+	let stfu_0 = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+	nodes[1].node.handle_stfu(node_id_0, &stfu_0);
+	let stfu_1 = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
+	nodes[0].node.handle_stfu(node_id_1, &stfu_1);
 
+	let mut tx_init_rbf = get_event_msg!(nodes[0], MessageSendEvent::SendTxInitRbf, node_id_1);
+	tx_init_rbf.feerate_sat_per_1000_weight = FEERATE_FLOOR_SATS_PER_KW;
 	nodes[1].node.handle_tx_init_rbf(node_id_0, &tx_init_rbf);
 
 	let tx_abort = get_event_msg!(nodes[1], MessageSendEvent::SendTxAbort, node_id_0);
 	assert_eq!(tx_abort.channel_id, channel_id);
 
-	// Acceptor-side: a counterparty feerate that satisfies the spec's 25/24 rule (264) is
-	// accepted, even though our own RBF floor (+25 sat/kwu = 278) is higher.
-	// After tx_abort the channel remains quiescent, so no need to re-enter quiescence.
+	// Queue a payment while quiescent. It should go to the holding cell and be freed once
+	// quiescence is exited by the tx_abort exchange.
+	let (route, payment_hash, _payment_preimage, payment_secret) =
+		get_route_and_payment_hash!(nodes[0], nodes[1], 1_000_000);
+	let onion = RecipientOnionFields::secret_only(payment_secret, 1_000_000);
+	let payment_id = PaymentId(payment_hash.0);
+	nodes[0].node.send_payment_with_route(route, payment_hash, onion, payment_id).unwrap();
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+
+	// Node 0 echoes tx_abort and exits quiescence, freeing the holding cell.
 	nodes[0].node.handle_tx_abort(node_id_1, &tx_abort);
 
-	let rbf_feerate_25_24 = ((FEERATE_FLOOR_SATS_PER_KW as u64) * 25).div_ceil(24) as u32;
-	let tx_init_rbf = msgs::TxInitRbf {
-		channel_id,
-		locktime: 0,
-		feerate_sat_per_1000_weight: rbf_feerate_25_24,
-		funding_output_contribution: Some(added_value.to_sat() as i64),
-	};
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 2, "{events:?}");
+	assert!(
+		matches!(&events[0], Event::SpliceFailed { channel_id: cid, .. } if *cid == channel_id)
+	);
+	assert!(
+		matches!(&events[1], Event::DiscardFunding { channel_id: cid, .. } if *cid == channel_id)
+	);
 
+	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 2, "{msg_events:?}");
+	let tx_abort_echo = match &msg_events[0] {
+		MessageSendEvent::SendTxAbort { msg, .. } => msg.clone(),
+		other => panic!("Expected SendTxAbort, got {:?}", other),
+	};
+	match &msg_events[1] {
+		MessageSendEvent::UpdateHTLCs { updates, .. } => {
+			assert_eq!(updates.update_add_htlcs.len(), 1);
+		},
+		other => panic!("Expected UpdateHTLCs, got {:?}", other),
+	}
+
+	// Complete the HTLC commitment exchange so the channel is ready for the next RBF attempt.
+	// The holding cell free generated a monitor update for the outgoing HTLC.
+	check_added_monitors(&nodes[0], 1);
+	if let MessageSendEvent::UpdateHTLCs { updates, .. } = &msg_events[1] {
+		nodes[1].node.handle_update_add_htlc(node_id_0, &updates.update_add_htlcs[0]);
+		do_commitment_signed_dance(&nodes[1], &nodes[0], &updates.commitment_signed, false, false);
+	} else {
+		unreachable!();
+	}
+
+	// Node 1 handles the echo (no-op since it already aborted).
+	nodes[1].node.handle_tx_abort(node_id_0, &tx_abort_echo);
+
+	// Acceptor-side: a counterparty feerate that satisfies the spec's 25/24 rule (264) is
+	// accepted, even though our own RBF floor (+25 sat/kwu = 278) is higher.
+	// Node 0 initiates another proper RBF but we tamper the feerate to the 25/24 value.
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+	let _funding_contribution =
+		do_initiate_rbf_splice_in(&nodes[0], &nodes[1], channel_id, added_value, min_rbf_feerate);
+
+	let stfu_0 = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+	nodes[1].node.handle_stfu(node_id_0, &stfu_0);
+	let stfu_1 = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
+	nodes[0].node.handle_stfu(node_id_1, &stfu_1);
+
+	let mut tx_init_rbf = get_event_msg!(nodes[0], MessageSendEvent::SendTxInitRbf, node_id_1);
+	let rbf_feerate_25_24 = ((FEERATE_FLOOR_SATS_PER_KW as u64) * 25).div_ceil(24) as u32;
+	tx_init_rbf.feerate_sat_per_1000_weight = rbf_feerate_25_24;
 	nodes[1].node.handle_tx_init_rbf(node_id_0, &tx_init_rbf);
 	let _tx_ack_rbf = get_event_msg!(nodes[1], MessageSendEvent::SendTxAckRbf, node_id_0);
 }
@@ -5300,10 +5368,25 @@ fn test_splice_rbf_tiebreak_feerate_too_high_rejected() {
 	assert_eq!(tx_init_rbf.feerate_sat_per_1000_weight, high_feerate.to_sat_per_kwu() as u32);
 
 	// Node 1 handles tx_init_rbf — TooHigh: target (100k) >> max (3k) and fair fee > budget.
+	// Node 1 exits quiescence upon rejecting with tx_abort, and since it has a pending
+	// QuiescentAction (from its own splice RBF attempt), it immediately re-proposes quiescence.
 	nodes[1].node.handle_tx_init_rbf(node_id_0, &tx_init_rbf);
 
-	let tx_abort = get_event_msg!(nodes[1], MessageSendEvent::SendTxAbort, node_id_0);
-	assert_eq!(tx_abort.channel_id, channel_id);
+	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 2);
+	match &msg_events[0] {
+		MessageSendEvent::SendTxAbort { node_id, msg } => {
+			assert_eq!(*node_id, node_id_0);
+			assert_eq!(msg.channel_id, channel_id);
+		},
+		_ => panic!("Expected SendTxAbort, got {:?}", msg_events[0]),
+	};
+	match &msg_events[1] {
+		MessageSendEvent::SendStfu { node_id, .. } => {
+			assert_eq!(*node_id, node_id_0);
+		},
+		_ => panic!("Expected SendStfu, got {:?}", msg_events[1]),
+	};
 }
 
 #[test]
@@ -6502,6 +6585,96 @@ fn test_splice_revalidation_at_quiescence() {
 }
 
 #[test]
+fn test_splice_init_before_quiescence_sends_warning() {
+	// A misbehaving peer sends splice_init before quiescence is established. The receiver
+	// should send a warning and disconnect.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	// Node 0 initiates quiescence.
+	nodes[0].node.maybe_propose_quiescence(&node_id_1, &channel_id).unwrap();
+	let _stfu = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+
+	// Misbehaving node 1 sends splice_init before completing the STFU handshake.
+	let funding_pubkey =
+		PublicKey::from_secret_key(&Secp256k1::new(), &SecretKey::from_slice(&[42; 32]).unwrap());
+	let splice_init = msgs::SpliceInit {
+		channel_id,
+		funding_contribution_satoshis: 50_000,
+		funding_feerate_per_kw: FEERATE_FLOOR_SATS_PER_KW,
+		locktime: 0,
+		funding_pubkey,
+		require_confirmed_inputs: None,
+	};
+	nodes[0].node.handle_splice_init(node_id_1, &splice_init);
+
+	// Node 0 should send a warning and disconnect.
+	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1);
+	match &msg_events[0] {
+		MessageSendEvent::HandleError { node_id, .. } => assert_eq!(*node_id, node_id_1),
+		other => panic!("Expected HandleError, got {:?}", other),
+	}
+}
+
+#[test]
+fn test_tx_init_rbf_before_quiescence_sends_warning() {
+	// A misbehaving peer sends tx_init_rbf before quiescence is established. The receiver
+	// should send a warning and disconnect.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+
+	// Complete a splice-in so there's a pending splice to RBF.
+	let funding_contribution = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+	let (_splice_tx, _new_funding_script) =
+		splice_channel(&nodes[0], &nodes[1], channel_id, funding_contribution);
+
+	// Node 0 initiates quiescence.
+	nodes[0].node.maybe_propose_quiescence(&node_id_1, &channel_id).unwrap();
+	let _stfu = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+
+	// Misbehaving node 1 sends tx_init_rbf before completing the STFU handshake.
+	let tx_init_rbf = msgs::TxInitRbf {
+		channel_id,
+		locktime: 0,
+		feerate_sat_per_1000_weight: FEERATE_FLOOR_SATS_PER_KW + 25,
+		funding_output_contribution: Some(added_value.to_sat() as i64),
+	};
+	nodes[0].node.handle_tx_init_rbf(node_id_1, &tx_init_rbf);
+
+	// Node 0 should send a warning and disconnect.
+	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1);
+	match &msg_events[0] {
+		MessageSendEvent::HandleError { node_id, .. } => assert_eq!(*node_id, node_id_1),
+		other => panic!("Expected HandleError, got {:?}", other),
+	}
+
+	// Clean up events from the splice setup.
+	nodes[0].node.get_and_clear_pending_events();
+	nodes[1].node.get_and_clear_pending_events();
+}
+
+#[test]
 fn test_splice_rbf_rejects_low_feerate_after_several_attempts() {
 	// After several RBF attempts, the counterparty's RBF feerate must be high enough to
 	// confirm (per the fee estimator). Early attempts at low feerates are accepted, but
@@ -6646,4 +6819,195 @@ fn test_splice_rbf_rejects_own_low_feerate_after_several_attempts() {
 		Event::SpliceFailed { channel_id: cid, .. } => assert_eq!(*cid, channel_id),
 		other => panic!("Expected SpliceFailed, got {:?}", other),
 	}
+}
+
+#[test]
+fn test_no_disconnect_after_splice_completes() {
+	// Test that the disconnect timer is cleared when exiting quiescence after a successful splice
+	// negotiation. Previously, `on_tx_signatures_exchange` cleared the quiescent state but not the
+	// disconnect timer, causing a spurious disconnect after the splice completed.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+
+	let funding_contribution = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+	let new_funding_script = complete_splice_handshake(&nodes[0], &nodes[1]);
+
+	// Fire a tick while quiescent to arm the disconnect timer.
+	nodes[0].node.timer_tick_occurred();
+	nodes[1].node.timer_tick_occurred();
+
+	// Complete the splice negotiation, which should clear the timer when exiting quiescence.
+	complete_interactive_funding_negotiation(
+		&nodes[0],
+		&nodes[1],
+		channel_id,
+		funding_contribution,
+		new_funding_script,
+	);
+	let (_, splice_locked) = sign_interactive_funding_tx(&nodes[0], &nodes[1], false);
+	assert!(splice_locked.is_none());
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+	expect_splice_pending_event(&nodes[0], &node_id_1);
+	expect_splice_pending_event(&nodes[1], &node_id_0);
+
+	// Fire enough ticks to trigger a disconnect if the timer wasn't properly cleared.
+	for _ in 0..DISCONNECT_PEER_AWAITING_RESPONSE_TICKS {
+		nodes[0].node.timer_tick_occurred();
+		nodes[1].node.timer_tick_occurred();
+	}
+
+	let has_disconnect = |events: &[MessageSendEvent]| {
+		events.iter().any(|event| {
+			matches!(
+				event,
+				MessageSendEvent::HandleError {
+					action: msgs::ErrorAction::DisconnectPeerWithWarning { .. },
+					..
+				}
+			)
+		})
+	};
+	assert!(!has_disconnect(&nodes[0].node.get_and_clear_pending_msg_events()));
+	assert!(!has_disconnect(&nodes[1].node.get_and_clear_pending_msg_events()));
+}
+
+#[test]
+fn test_no_disconnect_after_splice_aborted() {
+	// Test that the disconnect timer is cleared when exiting quiescence after a splice negotiation
+	// is aborted via tx_abort. Previously, `reset_pending_splice_state` cleared the quiescent
+	// state but not the disconnect timer, causing a spurious disconnect after the abort.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+
+	let funding_contribution = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+	complete_splice_handshake(&nodes[0], &nodes[1]);
+
+	// Fire a tick while quiescent to arm the disconnect timer.
+	nodes[0].node.timer_tick_occurred();
+	nodes[1].node.timer_tick_occurred();
+
+	// Abort the splice, which should clear the timer when exiting quiescence.
+	nodes[0].node.abandon_splice(&channel_id, &node_id_1).unwrap();
+
+	expect_splice_failed_events(&nodes[0], &channel_id, funding_contribution);
+
+	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+	let tx_abort = msg_events
+		.iter()
+		.find_map(|event| {
+			if let MessageSendEvent::SendTxAbort { msg, .. } = event {
+				Some(msg.clone())
+			} else {
+				None
+			}
+		})
+		.expect("Expected SendTxAbort");
+
+	nodes[1].node.handle_tx_abort(node_id_0, &tx_abort);
+	let tx_abort_echo = get_event_msg!(nodes[1], MessageSendEvent::SendTxAbort, node_id_0);
+	nodes[1].node.get_and_clear_pending_events();
+
+	nodes[0].node.handle_tx_abort(node_id_1, &tx_abort_echo);
+
+	// Fire enough ticks to trigger a disconnect if the timer wasn't properly cleared.
+	for _ in 0..DISCONNECT_PEER_AWAITING_RESPONSE_TICKS {
+		nodes[0].node.timer_tick_occurred();
+		nodes[1].node.timer_tick_occurred();
+	}
+
+	let has_disconnect = |events: &[MessageSendEvent]| {
+		events.iter().any(|event| {
+			matches!(
+				event,
+				MessageSendEvent::HandleError {
+					action: msgs::ErrorAction::DisconnectPeerWithWarning { .. },
+					..
+				}
+			)
+		})
+	};
+	assert!(!has_disconnect(&nodes[0].node.get_and_clear_pending_msg_events()));
+	assert!(!has_disconnect(&nodes[1].node.get_and_clear_pending_msg_events()));
+}
+
+#[test]
+fn test_no_disconnect_after_quiescence_on_reconnect() {
+	// Test that there is no spurious disconnect after reconnecting from a quiescent state. The
+	// disconnect timer is cleared by `remove_uncommitted_htlcs_and_mark_paused` during
+	// disconnection and by `exit_quiescence` during reconnection.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+
+	let funding_contribution = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+	complete_splice_handshake(&nodes[0], &nodes[1]);
+
+	// Fire a tick while quiescent to arm the disconnect timer.
+	nodes[0].node.timer_tick_occurred();
+	nodes[1].node.timer_tick_occurred();
+
+	// Disconnect and reconnect.
+	nodes[0].node.peer_disconnected(node_id_1);
+	nodes[1].node.peer_disconnected(node_id_0);
+
+	expect_splice_failed_events(&nodes[0], &channel_id, funding_contribution);
+
+	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
+	reconnect_args.send_channel_ready = (true, true);
+	reconnect_args.send_announcement_sigs = (true, true);
+	reconnect_nodes(reconnect_args);
+
+	// Fire enough ticks to trigger a disconnect if the timer wasn't properly cleared.
+	for _ in 0..DISCONNECT_PEER_AWAITING_RESPONSE_TICKS {
+		nodes[0].node.timer_tick_occurred();
+		nodes[1].node.timer_tick_occurred();
+	}
+
+	let has_disconnect = |events: &[MessageSendEvent]| {
+		events.iter().any(|event| {
+			matches!(
+				event,
+				MessageSendEvent::HandleError {
+					action: msgs::ErrorAction::DisconnectPeerWithWarning { .. },
+					..
+				}
+			)
+		})
+	};
+	assert!(!has_disconnect(&nodes[0].node.get_and_clear_pending_msg_events()));
+	assert!(!has_disconnect(&nodes[1].node.get_and_clear_pending_msg_events()));
 }
