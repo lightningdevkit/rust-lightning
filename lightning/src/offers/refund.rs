@@ -666,8 +666,11 @@ impl Refund {
 
 #[cfg(c_bindings)]
 impl Refund {
-	respond_with_explicit_signing_pubkey_methods!(self, InvoiceWithExplicitSigningPubkeyBuilder);
-	respond_with_derived_signing_pubkey_methods!(self, InvoiceWithDerivedSigningPubkeyBuilder);
+	respond_with_explicit_signing_pubkey_methods!(
+		self,
+		InvoiceWithExplicitSigningPubkeyBuilder<'_>
+	);
+	respond_with_derived_signing_pubkey_methods!(self, InvoiceWithDerivedSigningPubkeyBuilder<'_>);
 }
 
 #[cfg(test)]

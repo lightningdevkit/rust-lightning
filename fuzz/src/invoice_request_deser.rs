@@ -16,9 +16,10 @@ use lightning::blinded_path::payment::{
 };
 use lightning::ln::channelmanager::MIN_FINAL_CLTV_EXPIRY_DELTA;
 use lightning::ln::inbound_payment::ExpandedKey;
+use lightning::offers::currency::CurrencyConversion;
 use lightning::offers::invoice::UnsignedBolt12Invoice;
 use lightning::offers::invoice_request::{InvoiceRequest, InvoiceRequestFields};
-use lightning::offers::offer::OfferId;
+use lightning::offers::offer::{CurrencyCode, OfferId};
 use lightning::offers::parse::Bolt12SemanticError;
 use lightning::sign::{EntropySource, ReceiveAuthKey};
 use lightning::types::features::BlindedHopFeatures;
@@ -58,6 +59,14 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], _out: Out) {
 					.unwrap_err();
 			}
 		}
+	}
+}
+
+struct FuzzCurrencyConversion;
+
+impl CurrencyConversion for FuzzCurrencyConversion {
+	fn msats_per_minor_unit(&self, _iso4217_code: CurrencyCode) -> Result<(f64, u8), ()> {
+		Err(())
 	}
 }
 
@@ -144,7 +153,10 @@ fn build_response<T: secp256k1::Signing + secp256k1::Verification>(
 	.unwrap();
 
 	let payment_hash = PaymentHash([42; 32]);
-	invoice_request.respond_with(vec![payment_path], payment_hash)?.build()
+	let conversion = FuzzCurrencyConversion;
+	invoice_request
+		.respond_with(&conversion, vec![payment_path], payment_hash)?
+		.build()
 }
 
 pub fn invoice_request_deser_test<Out: test_logger::Output>(data: &[u8], out: Out) {
