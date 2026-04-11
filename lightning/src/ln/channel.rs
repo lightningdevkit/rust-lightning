@@ -1165,6 +1165,21 @@ pub enum UpdateFulfillCommitFetch {
 	DuplicateClaim {},
 }
 
+/// The return type of get_update_fulfill_htlcs_and_commit.
+pub(crate) enum UpdateFulfillsCommitFetch {
+	/// At least one HTLC fulfill was new and a monitor update was generated.
+	NewClaims {
+		/// The ChannelMonitorUpdate containing all payment preimages (and possibly the
+		/// commitment update).
+		monitor_update: ChannelMonitorUpdate,
+		/// The value of each successfully claimed HTLC, in msat, in the same order as the input.
+		/// `None` entries indicate duplicate claims.
+		htlc_value_msat: Vec<Option<u64>>,
+	},
+	/// All HTLC fulfills were duplicates.
+	AllDuplicateClaims {},
+}
+
 /// Error returned when processing an invalid interactive-tx message from our counterparty.
 pub(super) struct InteractiveTxMsgError {
 	/// The underlying error.
@@ -7700,6 +7715,105 @@ where
 				UpdateFulfillCommitFetch::NewClaim { monitor_update, htlc_value_msat }
 			},
 			UpdateFulfillFetch::DuplicateClaim {} => UpdateFulfillCommitFetch::DuplicateClaim {},
+		}
+	}
+
+	/// Batch version of [`Self::get_update_fulfill_htlc_and_commit`] that fulfills multiple HTLCs
+	/// in a single commitment update, reducing round-trips when multiple MPP parts arrive on the
+	/// same channel.
+	pub fn get_update_fulfill_htlcs_and_commit<L: Logger>(
+		&mut self, htlcs: &[(u64, Option<PaymentClaimDetails>, Option<AttributionData>)],
+		payment_preimage: PaymentPreimage, logger: &L,
+	) -> UpdateFulfillsCommitFetch {
+		let release_cs_monitor = self.context.blocked_monitor_updates.is_empty();
+		let mut all_duplicate = true;
+		let mut htlc_value_msat = Vec::with_capacity(htlcs.len());
+		let mut combined_monitor_update = ChannelMonitorUpdate {
+			update_id: 0,
+			updates: Vec::new(),
+			channel_id: Some(self.context.channel_id()),
+		};
+		// Track whether any claim was not blocked (i.e. the HTLC was immediately fulfilled rather
+		// than placed in the holding cell).
+		let mut any_not_blocked = false;
+
+		for (htlc_id, payment_info, attribution_data) in htlcs {
+			match self.get_update_fulfill_htlc(
+				*htlc_id,
+				payment_preimage,
+				payment_info.clone(),
+				attribution_data.clone(),
+				logger,
+			) {
+				UpdateFulfillFetch::NewClaim {
+					monitor_update,
+					htlc_value_msat: value,
+					update_blocked,
+				} => {
+					if combined_monitor_update.update_id == 0 {
+						combined_monitor_update.update_id = monitor_update.update_id;
+					}
+					combined_monitor_update.updates.extend(monitor_update.updates);
+					htlc_value_msat.push(Some(value));
+					all_duplicate = false;
+					if !update_blocked {
+						any_not_blocked = true;
+					}
+				},
+				UpdateFulfillFetch::DuplicateClaim {} => {
+					htlc_value_msat.push(None);
+				},
+			}
+		}
+
+		if all_duplicate {
+			return UpdateFulfillsCommitFetch::AllDuplicateClaims {};
+		}
+
+		if release_cs_monitor && any_not_blocked {
+			let mut additional_update = self.build_commitment_no_status_check(logger);
+			// The N calls to get_update_fulfill_htlc and build_commitment_no_status_check
+			// each bumped latest_monitor_update_id, but we merged everything into a single
+			// ChannelMonitorUpdate with the first ID, so reset to that ID.
+			self.context.latest_monitor_update_id = combined_monitor_update.update_id;
+			combined_monitor_update.updates.append(&mut additional_update.updates);
+		} else {
+			let blocked_upd = self.context.blocked_monitor_updates.first();
+			let new_mon_id = blocked_upd
+				.map(|upd| upd.update.update_id)
+				.unwrap_or(combined_monitor_update.update_id);
+			combined_monitor_update.update_id = new_mon_id;
+			for held_update in self.context.blocked_monitor_updates.iter_mut() {
+				held_update.update.update_id += 1;
+			}
+
+			// Reset latest_monitor_update_id before building a new commitment so its ID is consecutive.
+			self.context.latest_monitor_update_id = self
+				.context
+				.blocked_monitor_updates
+				.last()
+				.map(|upd| upd.update.update_id)
+				.unwrap_or(combined_monitor_update.update_id);
+
+			if any_not_blocked {
+				debug_assert!(false, "If there is a pending blocked monitor we should have MonitorUpdateInProgress set");
+				let update = self.build_commitment_no_status_check(logger);
+				self.context.blocked_monitor_updates.push(PendingChannelMonitorUpdate { update });
+			}
+		}
+
+		self.monitor_updating_paused(
+			false,
+			any_not_blocked,
+			false,
+			Vec::new(),
+			Vec::new(),
+			Vec::new(),
+			logger,
+		);
+		UpdateFulfillsCommitFetch::NewClaims {
+			monitor_update: combined_monitor_update,
+			htlc_value_msat,
 		}
 	}
 

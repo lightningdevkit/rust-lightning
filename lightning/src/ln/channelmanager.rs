@@ -62,7 +62,7 @@ use crate::ln::channel::{
 	self, hold_time_since, Channel, ChannelError, ChannelUpdateStatus, DisconnectResult,
 	FundedChannel, FundingTxSigned, InboundV1Channel, InteractiveTxMsgError, OutboundHop,
 	OutboundV1Channel, PendingV2Channel, ReconnectionMsg, ShutdownResult, SpliceFundingFailed,
-	StfuResponse, UpdateFulfillCommitFetch, WithChannelContext,
+	StfuResponse, UpdateFulfillCommitFetch, UpdateFulfillsCommitFetch, WithChannelContext,
 };
 use crate::ln::channel_state::ChannelDetails;
 use crate::ln::funding::{FundingContribution, FundingTemplate};
@@ -9420,58 +9420,82 @@ impl<
 				None
 			};
 			let payment_info = Some(PaymentClaimDetails { mpp_parts, claiming_payment });
+
+			// Group sources by (counterparty_node_id, channel_id) so that multiple MPP
+			// parts on the same channel can be batched into a single commitment update.
+			let mut grouped_sources: Vec<(PublicKey, ChannelId, Vec<ClaimableHTLC>)> = Vec::new();
 			for htlc in sources {
-				let this_mpp_claim =
-					pending_mpp_claim_ptr_opt.as_ref().map(|pending_mpp_claim| {
-						let counterparty_id = htlc.prev_hop.counterparty_node_id;
-						let counterparty_id = counterparty_id
-							.expect("Prior to upgrading to LDK 0.1, all pending HTLCs forwarded by LDK 0.0.123 or before must be resolved. It appears at least one claimable payment was not resolved. Please downgrade to LDK 0.0.125 and resolve the HTLC by claiming the payment prior to upgrading.");
+				let counterparty_id = htlc.prev_hop.counterparty_node_id.expect("Prior to upgrading to LDK 0.1, all pending HTLCs forwarded by LDK 0.0.123 or before must be resolved. It appears at least one claimable payment was not resolved. Please downgrade to LDK 0.0.125 and resolve the HTLC by claiming the payment prior to upgrading.");
+				let chan_id = htlc.prev_hop.channel_id;
+				if let Some(group) = grouped_sources
+					.iter_mut()
+					.find(|(cp, cid, _)| *cp == counterparty_id && *cid == chan_id)
+				{
+					group.2.push(htlc);
+				} else {
+					grouped_sources.push((counterparty_id, chan_id, vec![htlc]));
+				}
+			}
+
+			for (_, _, group) in grouped_sources {
+				if group.len() == 1 {
+					// Single HTLC on this channel, use existing path.
+					let htlc = group.into_iter().next().unwrap();
+					let this_mpp_claim = pending_mpp_claim_ptr_opt.as_ref().map(|pending_mpp_claim| {
+						let counterparty_id = htlc.prev_hop.counterparty_node_id.expect("Prior to upgrading to LDK 0.1, all pending HTLCs forwarded by LDK 0.0.123 or before must be resolved. It appears at least one claimable payment was not resolved. Please downgrade to LDK 0.0.125 and resolve the HTLC by claiming the payment prior to upgrading.");
 						let claim_ptr = PendingMPPClaimPointer(Arc::clone(pending_mpp_claim));
 						(counterparty_id, htlc.prev_hop.channel_id, claim_ptr)
 					});
-				let raa_blocker = pending_mpp_claim_ptr_opt.as_ref().map(|pending_claim| {
-					RAAMonitorUpdateBlockingAction::ClaimedMPPPayment {
-						pending_claim: PendingMPPClaimPointer(Arc::clone(pending_claim)),
-					}
-				});
+					let raa_blocker = pending_mpp_claim_ptr_opt.as_ref().map(|pending_claim| {
+						RAAMonitorUpdateBlockingAction::ClaimedMPPPayment {
+							pending_claim: PendingMPPClaimPointer(Arc::clone(pending_claim)),
+						}
+					});
 
-				// Create new attribution data as the final hop. Always report a zero hold time, because reporting a
-				// non-zero value will not make a difference in the penalty that may be applied by the sender. If there
-				// is a phantom hop, we need to double-process.
-				let attribution_data =
-					if let Some(phantom_secret) = htlc.prev_hop.phantom_shared_secret {
-						let attribution_data =
-							process_fulfill_attribution_data(None, &phantom_secret, 0);
-						Some(attribution_data)
-					} else {
-						None
-					};
+					let attribution_data =
+						if let Some(phantom_secret) = htlc.prev_hop.phantom_shared_secret {
+							let attribution_data =
+								process_fulfill_attribution_data(None, &phantom_secret, 0);
+							Some(attribution_data)
+						} else {
+							None
+						};
 
-				let attribution_data = process_fulfill_attribution_data(
-					attribution_data,
-					&htlc.prev_hop.incoming_packet_shared_secret,
-					0,
-				);
+					let attribution_data = process_fulfill_attribution_data(
+						attribution_data,
+						&htlc.prev_hop.incoming_packet_shared_secret,
+						0,
+					);
 
-				self.claim_funds_from_hop(
-					htlc.prev_hop,
-					payment_preimage,
-					payment_info.clone(),
-					Some(attribution_data),
-					|_, definitely_duplicate| {
-						debug_assert!(
-							!definitely_duplicate,
-							"We shouldn't claim duplicatively from a payment"
-						);
-						(
-							Some(MonitorUpdateCompletionAction::PaymentClaimed {
-								payment_hash,
-								pending_mpp_claim: this_mpp_claim,
-							}),
-							raa_blocker,
-						)
-					},
-				);
+					self.claim_funds_from_hop(
+						htlc.prev_hop,
+						payment_preimage,
+						payment_info.clone(),
+						Some(attribution_data),
+						|_, definitely_duplicate| {
+							debug_assert!(
+								!definitely_duplicate,
+								"We shouldn't claim duplicatively from a payment"
+							);
+							(
+								Some(MonitorUpdateCompletionAction::PaymentClaimed {
+									payment_hash,
+									pending_mpp_claim: this_mpp_claim,
+								}),
+								raa_blocker,
+							)
+						},
+					);
+				} else {
+					// Multiple HTLCs on the same channel, batch into a single commitment.
+					self.claim_batch_funds_from_channel(
+						group,
+						payment_preimage,
+						payment_hash,
+						payment_info.clone(),
+						&pending_mpp_claim_ptr_opt,
+					);
+				}
 			}
 		} else {
 			for htlc in sources {
@@ -9914,6 +9938,221 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			mem::drop(peer_state_lock);
 			mem::drop(per_peer_state);
 			self.handle_monitor_update_completion_actions(actions);
+		}
+	}
+
+	/// Batch-claims multiple HTLCs from the same channel in a single commitment update.
+	///
+	/// This is used when an MPP payment has multiple parts arriving on the same channel, allowing
+	/// all of them to be fulfilled in one `commitment_signed` message rather than requiring a
+	/// round-trip (RAA) between each claim.
+	fn claim_batch_funds_from_channel(
+		&self, htlcs: Vec<ClaimableHTLC>, payment_preimage: PaymentPreimage,
+		payment_hash: PaymentHash, payment_info: Option<PaymentClaimDetails>,
+		pending_mpp_claim_ptr_opt: &Option<Arc<Mutex<PendingMPPClaim>>>,
+	) {
+		debug_assert!(htlcs.len() > 1);
+
+		// If we haven't yet run background events assume we're still deserializing and shouldn't
+		// actually pass `ChannelMonitorUpdate`s to users yet. Instead, queue them up as
+		// `BackgroundEvent`s.
+		let during_init = !self.background_events_processed_since_startup.load(Ordering::Acquire);
+
+		let per_peer_state = self.per_peer_state.read().unwrap();
+
+		let counterparty_node_id = htlcs[0].prev_hop.counterparty_node_id.expect("Prior to upgrading to LDK 0.1, all pending HTLCs forwarded by LDK 0.0.123 or before must be resolved. It appears at least one claimable payment was not resolved. Please downgrade to LDK 0.0.125 and resolve the HTLC by claiming the payment prior to upgrading.");
+		let chan_id = htlcs[0].prev_hop.channel_id;
+
+		// Build the per-HTLC attribution data and fulfill parameters.
+		let fulfill_params: Vec<_> = htlcs
+			.iter()
+			.enumerate()
+			.map(|(i, htlc)| {
+				let attribution_data =
+					if let Some(phantom_secret) = htlc.prev_hop.phantom_shared_secret {
+						Some(process_fulfill_attribution_data(None, &phantom_secret, 0))
+					} else {
+						None
+					};
+
+				let attribution_data = process_fulfill_attribution_data(
+					attribution_data,
+					&htlc.prev_hop.incoming_packet_shared_secret,
+					0,
+				);
+
+				// Only the first HTLC carries payment info, the ChannelMonitor deduplicates by
+				// payment hash so one preimage step with payment_info is sufficient.
+				let info = if i == 0 { payment_info.clone() } else { None };
+
+				(htlc.prev_hop.htlc_id, info, Some(attribution_data))
+			})
+			.collect();
+
+		let mut peer_state_lock = per_peer_state.get(&counterparty_node_id).map(|peer_mutex| peer_mutex.lock().unwrap()).expect("Prior to upgrading to LDK 0.1, all pending HTLCs forwarded by LDK 0.0.123 or before must be resolved. It appears at least one claimable payment was not resolved. Please downgrade to LDK 0.0.125 and resolve the HTLC by claiming the payment prior to upgrading.");
+
+		{
+			let peer_state = &mut *peer_state_lock;
+			if let hash_map::Entry::Occupied(mut chan_entry) =
+				peer_state.channel_by_id.entry(chan_id)
+			{
+				if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
+					let logger = WithChannelContext::from(&self.logger, &chan.context, None);
+					let fulfill_res = chan.get_update_fulfill_htlcs_and_commit(
+						&fulfill_params,
+						payment_preimage,
+						&&logger,
+					);
+
+					let this_mpp_claim = pending_mpp_claim_ptr_opt.as_ref().map(|pending_claim| {
+						(
+							counterparty_node_id,
+							chan_id,
+							PendingMPPClaimPointer(Arc::clone(pending_claim)),
+						)
+					});
+					let raa_blocker = pending_mpp_claim_ptr_opt.as_ref().map(|pending_claim| {
+						RAAMonitorUpdateBlockingAction::ClaimedMPPPayment {
+							pending_claim: PendingMPPClaimPointer(Arc::clone(pending_claim)),
+						}
+					});
+
+					match fulfill_res {
+						UpdateFulfillsCommitFetch::NewClaims {
+							monitor_update,
+							htlc_value_msat,
+						} => {
+							// Register a single completion action and RAA blocker for the
+							// combined ChannelMonitorUpdate covering all claims in this batch.
+							peer_state
+								.monitor_update_blocked_actions
+								.entry(chan_id)
+								.or_insert(Vec::new())
+								.push(MonitorUpdateCompletionAction::PaymentClaimed {
+									payment_hash,
+									pending_mpp_claim: this_mpp_claim,
+								});
+							let funding_txo = htlcs[0].prev_hop.outpoint;
+							if let Some(blocker) = raa_blocker {
+								peer_state
+									.actions_blocking_raa_monitor_updates
+									.entry(chan_id)
+									.or_insert_with(Vec::new)
+									.push(blocker);
+							}
+							if let Some(data) = self.handle_new_monitor_update(
+								&mut peer_state.in_flight_monitor_updates,
+								&mut peer_state.monitor_update_blocked_actions,
+								&mut peer_state.pending_msg_events,
+								peer_state.is_connected,
+								chan,
+								funding_txo,
+								monitor_update,
+							) {
+								mem::drop(peer_state_lock);
+								mem::drop(per_peer_state);
+								self.handle_post_monitor_update_chan_resume(data);
+							}
+							let _ = htlc_value_msat;
+						},
+						UpdateFulfillsCommitFetch::AllDuplicateClaims {} => {
+							// This is a startup replay — the `ChannelMonitorUpdate` containing the
+							// preimages was already persisted before shutdown, but the PaymentClaimed
+							// event may not have been generated yet. Mirrors the `DuplicateClaim`
+							// handling in claim_mpp_part.
+							if let Some(raa_blocker) = raa_blocker {
+								let actions = &mut peer_state.actions_blocking_raa_monitor_updates;
+								let actions_list = actions.entry(chan_id).or_insert_with(Vec::new);
+								if !actions_list.contains(&raa_blocker) {
+									debug_assert!(during_init);
+									actions_list.push(raa_blocker);
+								}
+							}
+
+							let action = MonitorUpdateCompletionAction::PaymentClaimed {
+								payment_hash,
+								pending_mpp_claim: this_mpp_claim,
+							};
+
+							let in_flight_mons = peer_state.in_flight_monitor_updates.get(&chan_id);
+							if in_flight_mons.map(|(_, mons)| !mons.is_empty()).unwrap_or(false) {
+								peer_state
+									.monitor_update_blocked_actions
+									.entry(chan_id)
+									.or_insert_with(Vec::new)
+									.push(action);
+								return;
+							}
+
+							mem::drop(peer_state_lock);
+							mem::drop(per_peer_state);
+
+							debug_assert!(
+								during_init,
+								"Duplicate batch claims should only occur during startup replay"
+							);
+							self.handle_monitor_update_completion_actions([action]);
+						},
+					}
+				}
+				return;
+			}
+		}
+
+		// Channel is closed, fall back to per-HTLC claiming against the closed channel monitor.
+		// We register exactly one PaymentClaimed action and one RAA blocker for the entire batch
+		// (on the first HTLC only), matching the single ChannelMonitorUpdate semantics. This
+		// avoids N redundant handle_monitor_update_release calls when the blockers all share the
+		// same PendingMPPClaimPointer.
+		mem::drop(peer_state_lock);
+		mem::drop(per_peer_state);
+		let mut this_mpp_claim = pending_mpp_claim_ptr_opt.as_ref().map(|pending_mpp_claim| {
+			let claim_ptr = PendingMPPClaimPointer(Arc::clone(pending_mpp_claim));
+			(counterparty_node_id, chan_id, claim_ptr)
+		});
+		let mut raa_blocker = pending_mpp_claim_ptr_opt.as_ref().map(|pending_claim| {
+			RAAMonitorUpdateBlockingAction::ClaimedMPPPayment {
+				pending_claim: PendingMPPClaimPointer(Arc::clone(pending_claim)),
+			}
+		});
+		for htlc in htlcs {
+			let attribution_data = if let Some(phantom_secret) = htlc.prev_hop.phantom_shared_secret
+			{
+				Some(process_fulfill_attribution_data(None, &phantom_secret, 0))
+			} else {
+				None
+			};
+
+			let attribution_data = process_fulfill_attribution_data(
+				attribution_data,
+				&htlc.prev_hop.incoming_packet_shared_secret,
+				0,
+			);
+
+			// Only the first HTLC carries the completion action and RAA blocker.
+			let first_mpp_claim = this_mpp_claim.take();
+			let first_raa_blocker = raa_blocker.take();
+			self.claim_funds_from_hop(
+				htlc.prev_hop,
+				payment_preimage,
+				payment_info.clone(),
+				Some(attribution_data),
+				|_, definitely_duplicate| {
+					debug_assert!(
+						!definitely_duplicate,
+						"We shouldn't claim duplicatively from a payment"
+					);
+					(
+						first_mpp_claim.map(|claim| {
+							MonitorUpdateCompletionAction::PaymentClaimed {
+								payment_hash,
+								pending_mpp_claim: Some(claim),
+							}
+						}),
+						first_raa_blocker,
+					)
+				},
+			);
 		}
 	}
 
@@ -20708,39 +20947,26 @@ mod tests {
 		assert_eq!(events.len(), 1);
 		pass_along_path(&nodes[0], &[&nodes[1]], 200_000, our_payment_hash, Some(payment_secret), events.drain(..).next().unwrap(), true, None);
 
-		// Claim the full MPP payment. Note that we can't use a test utility like
-		// claim_funds_along_route because the ordering of the messages causes the second half of the
-		// payment to be put in the holding cell, which confuses the test utilities. So we exchange the
-		// lightning messages manually.
+		// Claim the full MPP payment. Both parts are on the same channel, so they should be
+		// batched into a single commitment update.
 		nodes[1].node.claim_funds(payment_preimage);
 		expect_payment_claimed!(nodes[1], our_payment_hash, 200_000);
-		check_added_monitors(&nodes[1], 2);
+		check_added_monitors(&nodes[1], 1);
 
-		let mut bs_1st_updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
-		nodes[0].node.handle_update_fulfill_htlc(nodes[1].node.get_our_node_id(), bs_1st_updates.update_fulfill_htlcs.remove(0));
+		let mut bs_updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
+		assert_eq!(bs_updates.update_fulfill_htlcs.len(), 2);
+		nodes[0].node.handle_update_fulfill_htlc(nodes[1].node.get_our_node_id(), bs_updates.update_fulfill_htlcs.remove(0));
 		expect_payment_sent(&nodes[0], payment_preimage, None, false, false);
-		nodes[0].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &bs_1st_updates.commitment_signed);
+		nodes[0].node.handle_update_fulfill_htlc(nodes[1].node.get_our_node_id(), bs_updates.update_fulfill_htlcs.remove(0));
+		nodes[0].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &bs_updates.commitment_signed);
 		check_added_monitors(&nodes[0], 1);
-		let (as_first_raa, as_first_cs) = get_revoke_commit_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
-		nodes[1].node.handle_revoke_and_ack(nodes[0].node.get_our_node_id(), &as_first_raa);
+		let (as_raa, as_cs) = get_revoke_commit_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
+		nodes[1].node.handle_revoke_and_ack(nodes[0].node.get_our_node_id(), &as_raa);
 		check_added_monitors(&nodes[1], 1);
-		let mut bs_2nd_updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
-		nodes[1].node.handle_commitment_signed_batch_test(nodes[0].node.get_our_node_id(), &as_first_cs);
+		nodes[1].node.handle_commitment_signed_batch_test(nodes[0].node.get_our_node_id(), &as_cs);
 		check_added_monitors(&nodes[1], 1);
-		let bs_first_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
-		nodes[0].node.handle_update_fulfill_htlc(nodes[1].node.get_our_node_id(), bs_2nd_updates.update_fulfill_htlcs.remove(0));
-		nodes[0].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &bs_2nd_updates.commitment_signed);
-		check_added_monitors(&nodes[0], 1);
-		let as_second_raa = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
-		nodes[0].node.handle_revoke_and_ack(nodes[1].node.get_our_node_id(), &bs_first_raa);
-		let as_second_updates = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
-		check_added_monitors(&nodes[0], 1);
-		nodes[1].node.handle_revoke_and_ack(nodes[0].node.get_our_node_id(), &as_second_raa);
-		check_added_monitors(&nodes[1], 1);
-		nodes[1].node.handle_commitment_signed_batch_test(nodes[0].node.get_our_node_id(), &as_second_updates.commitment_signed);
-		check_added_monitors(&nodes[1], 1);
-		let bs_third_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
-		nodes[0].node.handle_revoke_and_ack(nodes[1].node.get_our_node_id(), &bs_third_raa);
+		let bs_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
+		nodes[0].node.handle_revoke_and_ack(nodes[1].node.get_our_node_id(), &bs_raa);
 		check_added_monitors(&nodes[0], 1);
 
 		// Note that successful MPP payments will generate a single PaymentSent event upon the first
