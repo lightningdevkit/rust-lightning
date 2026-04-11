@@ -1712,7 +1712,7 @@ where
 			if matches!(chan.context.channel_state, ChannelState::ChannelReady(_)) {
 				chan.context.channel_state.clear_local_stfu_sent();
 				chan.context.channel_state.clear_remote_stfu_sent();
-				if chan.should_reset_pending_splice_state(false) {
+				if chan.should_reset_pending_splice_state(true) {
 					// If there was a pending splice negotiation that failed due to disconnecting, we
 					// also take the opportunity to clean up our state.
 					let splice_funding_failed = chan.reset_pending_splice_state();
@@ -1828,7 +1828,7 @@ where
 				(None, false)
 			},
 			ChannelPhase::Funded(funded_channel) => {
-				if funded_channel.should_reset_pending_splice_state(false) {
+				if funded_channel.should_reset_pending_splice_state(true) {
 					(funded_channel.reset_pending_splice_state(), true)
 				} else {
 					debug_assert!(false, "We should never fail an interactive funding negotiation once we're exchanging tx_signatures");
@@ -2020,7 +2020,7 @@ where
 						"Received tx_abort while awaiting tx_signatures exchange".to_owned(),
 					));
 				}
-				if funded_channel.should_reset_pending_splice_state(true) {
+				if funded_channel.should_reset_pending_splice_state(false) {
 					let has_funding_negotiation = funded_channel
 						.pending_splice
 						.as_ref()
@@ -7156,7 +7156,7 @@ where
 
 	fn maybe_fail_splice_negotiation(&mut self) -> Option<SpliceFundingFailed> {
 		if matches!(self.context.channel_state, ChannelState::ChannelReady(_)) {
-			if self.should_reset_pending_splice_state(false) {
+			if self.should_reset_pending_splice_state(true) {
 				self.reset_pending_splice_state()
 			} else {
 				self.abandon_quiescent_action()
@@ -7213,7 +7213,7 @@ where
 
 	/// Returns a boolean indicating whether we should reset the splice's
 	/// [`PendingFunding::funding_negotiation`].
-	fn should_reset_pending_splice_state(&self, counterparty_aborted: bool) -> bool {
+	fn should_reset_pending_splice_state(&self, allow_resumption: bool) -> bool {
 		self.pending_splice
 			.as_ref()
 			.map(|pending_splice| {
@@ -7225,7 +7225,11 @@ where
 							funding_negotiation,
 							FundingNegotiation::AwaitingSignatures { .. }
 						);
-						if counterparty_aborted {
+						if allow_resumption {
+							// If we want to resume the negotiation after reconnecting, we must be
+							// in [`FundingNegotiation::AwaitingSignatures`] to not reset our state.
+							!is_awaiting_signatures
+						} else {
 							!is_awaiting_signatures
 								|| !self
 									.context()
@@ -7233,8 +7237,6 @@ where
 									.as_ref()
 									.expect("We have a pending splice awaiting signatures")
 									.has_received_commitment_signed()
-						} else {
-							!is_awaiting_signatures
 						}
 					})
 					.unwrap_or_else(|| {
@@ -7248,7 +7250,7 @@ where
 	}
 
 	fn reset_pending_splice_state(&mut self) -> Option<SpliceFundingFailed> {
-		debug_assert!(self.should_reset_pending_splice_state(true));
+		debug_assert!(self.should_reset_pending_splice_state(false));
 
 		// Only clear the signing session if the current round is mid-signing. When an earlier
 		// round completed signing and a later RBF round is in AwaitingAck or
@@ -7308,7 +7310,7 @@ where
 	}
 
 	pub(super) fn maybe_splice_funding_failed(&self) -> Option<SpliceFundingFailed> {
-		if !self.should_reset_pending_splice_state(false) {
+		if !self.should_reset_pending_splice_state(true) {
 			return None;
 		}
 
@@ -12696,30 +12698,76 @@ where
 		}
 	}
 
-	#[cfg(test)]
-	pub fn abandon_splice(
-		&mut self,
-	) -> Result<(msgs::TxAbort, Option<SpliceFundingFailed>), APIError> {
-		if self.should_reset_pending_splice_state(false) {
-			let tx_abort =
-				msgs::TxAbort { channel_id: self.context.channel_id(), data: Vec::new() };
-			let splice_funding_failed = self.reset_pending_splice_state();
-			Ok((tx_abort, splice_funding_failed))
-		} else if self.has_pending_splice_awaiting_signatures() {
-			Err(APIError::APIMisuseError {
+	pub fn cancel_funding_contributed(&mut self) -> Result<InteractiveTxMsgError, APIError> {
+		let funding_negotiation = self
+			.pending_splice
+			.as_ref()
+			.and_then(|pending_splice| pending_splice.funding_negotiation.as_ref());
+		let Some(funding_negotiation) = funding_negotiation else {
+			return Err(APIError::APIMisuseError {
 				err: format!(
-					"Channel {} splice cannot be abandoned; already awaiting signatures",
-					self.context.channel_id(),
+					"Channel {} does not have a pending splice negotiation",
+					self.context.channel_id()
 				),
-			})
-		} else {
-			Err(APIError::APIMisuseError {
+			});
+		};
+
+		let made_contribution = match funding_negotiation {
+			FundingNegotiation::AwaitingAck { context, .. } => {
+				context.contributed_inputs().next().is_some()
+					|| context.contributed_outputs().next().is_some()
+			},
+			FundingNegotiation::ConstructingTransaction { interactive_tx_constructor, .. } => {
+				interactive_tx_constructor.contributed_inputs().next().is_some()
+					|| interactive_tx_constructor.contributed_outputs().next().is_some()
+			},
+			FundingNegotiation::AwaitingSignatures { .. } => self
+				.context
+				.interactive_tx_signing_session
+				.as_ref()
+				.expect("We have a pending splice awaiting signatures")
+				.has_local_contribution(),
+		};
+		if !made_contribution {
+			return Err(APIError::APIMisuseError {
 				err: format!(
-					"Channel {} splice cannot be abandoned; no pending splice",
-					self.context.channel_id(),
+					"Channel {} has a pending splice negotiation with no contribution made",
+					self.context.channel_id()
 				),
-			})
+			});
 		}
+
+		// We typically don't reset the pending funding negotiation when we're in
+		// [`FundingNegotiation::AwaitingSignatures`] since we're able to resume it on
+		// re-establishment, so we still need to handle this case separately if the user wishes to
+		// cancel. If they've yet to call [`Channel::funding_transaction_signed`], then we can
+		// guarantee to never have sent any signatures to the counterparty, or have processed any
+		// signatures from them.
+		if matches!(funding_negotiation, FundingNegotiation::AwaitingSignatures { .. }) {
+			let already_signed = self
+				.context
+				.interactive_tx_signing_session
+				.as_ref()
+				.expect("We have a pending splice awaiting signatures")
+				.has_holder_tx_signatures();
+			if already_signed {
+				return Err(APIError::APIMisuseError {
+					err: format!(
+						"Channel {} has pending splice negotiation that was already signed",
+						self.context.channel_id(),
+					),
+				});
+			}
+		}
+
+		debug_assert!(self.context.channel_state.is_quiescent());
+		let splice_funding_failed = self.reset_pending_splice_state();
+		debug_assert!(splice_funding_failed.is_some());
+		Ok(InteractiveTxMsgError {
+			err: ChannelError::Abort(AbortReason::ManualIntervention),
+			splice_funding_failed,
+			exited_quiescence: true,
+		})
 	}
 
 	/// Checks during handling splice_init
@@ -15414,7 +15462,7 @@ impl<SP: SignerProvider> Writeable for FundedChannel<SP> {
 				ChannelState::ChannelReady(_) => {
 					channel_state.clear_local_stfu_sent();
 					channel_state.clear_remote_stfu_sent();
-					if self.should_reset_pending_splice_state(false)
+					if self.should_reset_pending_splice_state(true)
 						|| !self.has_pending_splice_awaiting_signatures()
 					{
 						// We shouldn't be quiescent anymore upon reconnecting if:
@@ -15804,7 +15852,7 @@ impl<SP: SignerProvider> Writeable for FundedChannel<SP> {
 		// We don't have to worry about resetting the pending `FundingNegotiation` because we
 		// can only read `FundingNegotiation::AwaitingSignatures` variants anyway.
 		let pending_splice =
-			self.pending_splice.as_ref().filter(|_| !self.should_reset_pending_splice_state(false));
+			self.pending_splice.as_ref().filter(|_| !self.should_reset_pending_splice_state(true));
 
 		let monitor_pending_tx_signatures =
 			self.context.monitor_pending_tx_signatures.then_some(());

@@ -2627,8 +2627,8 @@ fn fail_splice_on_tx_abort() {
 	let _tx_complete =
 		get_event_msg!(acceptor, MessageSendEvent::SendTxComplete, node_id_initiator);
 
-	acceptor.node.abandon_splice(&channel_id, &node_id_initiator).unwrap();
-	let tx_abort = get_event_msg!(acceptor, MessageSendEvent::SendTxAbort, node_id_initiator);
+	// Inject a fake `tx_abort` to the initiator to trigger the splice to be aborted.
+	let tx_abort = msgs::TxAbort { channel_id, data: Vec::new() };
 	initiator.node.handle_tx_abort(node_id_acceptor, &tx_abort);
 
 	expect_splice_failed_events(initiator, &channel_id, funding_contribution);
@@ -2640,6 +2640,9 @@ fn fail_splice_on_tx_abort() {
 	check_added_monitors(initiator, 1);
 	if let MessageSendEvent::SendTxAbort { msg, .. } = &msg_events[0] {
 		acceptor.node.handle_tx_abort(node_id_initiator, msg);
+		// The acceptor still tries to ack the abort by sending its own back to the initiator since
+		// a fake one was originally sent to it.
+		let _ = get_event_msg!(acceptor, MessageSendEvent::SendTxAbort, node_id_initiator);
 	} else {
 		panic!("Unexpected event {:?}", msg_events[0]);
 	};
@@ -2649,6 +2652,298 @@ fn fail_splice_on_tx_abort() {
 	} else {
 		panic!("Unexpected event {:?}", msg_events[1]);
 	};
+}
+
+#[test]
+fn acceptor_with_local_contribution_can_cancel_funding_contributed_before_funding_transaction_signed(
+) {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let initiator = &nodes[0];
+	let acceptor = &nodes[1];
+
+	let node_id_initiator = initiator.node.get_our_node_id();
+	let node_id_acceptor = acceptor.node.get_our_node_id();
+
+	let initial_channel_capacity = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_capacity, 0);
+
+	provide_utxo_reserves(&nodes, 2, Amount::ONE_BTC);
+
+	let outputs = vec![TxOut {
+		value: Amount::from_sat(1_000),
+		script_pubkey: initiator.wallet_source.get_change_script().unwrap(),
+	}];
+	let initiator_contribution =
+		initiate_splice_out(initiator, acceptor, channel_id, outputs).unwrap();
+	let acceptor_contribution = initiate_splice_in(
+		acceptor,
+		initiator,
+		channel_id,
+		Amount::from_sat(initial_channel_capacity / 2),
+	);
+
+	let stfu_initiator = get_event_msg!(initiator, MessageSendEvent::SendStfu, node_id_acceptor);
+	let stfu_acceptor = get_event_msg!(acceptor, MessageSendEvent::SendStfu, node_id_initiator);
+
+	acceptor.node.handle_stfu(node_id_initiator, &stfu_initiator);
+	assert!(acceptor.node.get_and_clear_pending_msg_events().is_empty());
+
+	initiator.node.handle_stfu(node_id_acceptor, &stfu_acceptor);
+
+	let splice_init = get_event_msg!(initiator, MessageSendEvent::SendSpliceInit, node_id_acceptor);
+	acceptor.node.handle_splice_init(node_id_initiator, &splice_init);
+	let splice_ack = get_event_msg!(acceptor, MessageSendEvent::SendSpliceAck, node_id_initiator);
+	assert_ne!(splice_ack.funding_contribution_satoshis, 0);
+	initiator.node.handle_splice_ack(node_id_acceptor, &splice_ack);
+
+	let new_funding_script = chan_utils::make_funding_redeemscript(
+		&splice_init.funding_pubkey,
+		&splice_ack.funding_pubkey,
+	)
+	.to_p2wsh();
+	complete_interactive_funding_negotiation_for_both(
+		initiator,
+		acceptor,
+		channel_id,
+		initiator_contribution.clone(),
+		Some(acceptor_contribution.clone()),
+		splice_ack.funding_contribution_satoshis,
+		new_funding_script,
+	);
+
+	let event = get_event!(initiator, Event::FundingTransactionReadyForSigning);
+	if let Event::FundingTransactionReadyForSigning {
+		channel_id,
+		counterparty_node_id,
+		unsigned_transaction,
+		..
+	} = event
+	{
+		let partially_signed_tx = initiator.wallet_source.sign_tx(unsigned_transaction).unwrap();
+		initiator
+			.node
+			.funding_transaction_signed(&channel_id, &counterparty_node_id, partially_signed_tx)
+			.unwrap();
+	} else {
+		unreachable!();
+	}
+
+	let msg_events = initiator.node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1, "{msg_events:?}");
+	let initial_commit_sig = if let MessageSendEvent::UpdateHTLCs { updates, .. } = &msg_events[0] {
+		updates.commitment_signed[0].clone()
+	} else {
+		panic!("Unexpected event {:?}", msg_events[0]);
+	};
+	acceptor.node.handle_commitment_signed(node_id_initiator, &initial_commit_sig);
+	assert!(acceptor.node.get_and_clear_pending_msg_events().is_empty());
+
+	let _signing_event = get_event!(acceptor, Event::FundingTransactionReadyForSigning);
+
+	acceptor.node.cancel_funding_contributed(&channel_id, &node_id_initiator).unwrap();
+	let events = acceptor.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 2);
+	assert!(matches!(events[0], Event::SpliceFailed { .. }));
+	assert!(matches!(events[1], Event::DiscardFunding { .. }));
+	let tx_abort = get_event_msg!(acceptor, MessageSendEvent::SendTxAbort, node_id_initiator);
+
+	initiator.node.handle_tx_abort(node_id_acceptor, &tx_abort);
+	expect_splice_failed_events(initiator, &channel_id, initiator_contribution);
+	let tx_abort = get_event_msg!(initiator, MessageSendEvent::SendTxAbort, node_id_acceptor);
+	acceptor.node.handle_tx_abort(node_id_initiator, &tx_abort);
+}
+
+#[test]
+fn cancel_funding_contributed_before_funding_transaction_signed() {
+	do_cancel_funding_contributed_before_funding_transaction_signed(0); // AwaitingAck
+	do_cancel_funding_contributed_before_funding_transaction_signed(1); // ConstructingTransaction
+	do_cancel_funding_contributed_before_funding_transaction_signed(2); // AwaitingSignatures
+}
+
+#[cfg(test)]
+fn do_cancel_funding_contributed_before_funding_transaction_signed(state: u8) {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let initiator = &nodes[0];
+	let acceptor = &nodes[1];
+
+	let node_id_initiator = initiator.node.get_our_node_id();
+	let node_id_acceptor = acceptor.node.get_our_node_id();
+
+	let initial_channel_capacity = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_capacity, 0);
+
+	let outputs = vec![TxOut {
+		value: Amount::from_sat(1_000),
+		script_pubkey: initiator.wallet_source.get_change_script().unwrap(),
+	}];
+	let funding_contribution =
+		initiate_splice_out(initiator, acceptor, channel_id, outputs).unwrap();
+
+	match state {
+		0 => {
+			// Deliver splice_init, but keep splice_ack queued so the initiator remains in
+			// FundingNegotiation::AwaitingAck while the acceptor tracks the pending splice.
+			let stfu_init = get_event_msg!(initiator, MessageSendEvent::SendStfu, node_id_acceptor);
+			acceptor.node.handle_stfu(node_id_initiator, &stfu_init);
+			let stfu_ack = get_event_msg!(acceptor, MessageSendEvent::SendStfu, node_id_initiator);
+			initiator.node.handle_stfu(node_id_acceptor, &stfu_ack);
+
+			let splice_init =
+				get_event_msg!(initiator, MessageSendEvent::SendSpliceInit, node_id_acceptor);
+			acceptor.node.handle_splice_init(node_id_initiator, &splice_init);
+			assert!(initiator.node.get_and_clear_pending_msg_events().is_empty());
+
+			let msg_events = acceptor.node.get_and_clear_pending_msg_events();
+			assert_eq!(msg_events.len(), 1, "{msg_events:?}");
+			assert!(matches!(msg_events[0], MessageSendEvent::SendSpliceAck { .. }));
+		},
+		1 => {
+			// Complete the splice handshake so the initiator is constructing the interactive tx.
+			let _new_funding_script = complete_splice_handshake(initiator, acceptor);
+
+			let msg_events = initiator.node.get_and_clear_pending_msg_events();
+			assert_eq!(msg_events.len(), 1, "{msg_events:?}");
+			assert!(matches!(msg_events[0], MessageSendEvent::SendTxAddInput { .. }));
+			assert!(acceptor.node.get_and_clear_pending_msg_events().is_empty());
+		},
+		2 => {
+			// Complete interactive tx negotiation so the initiator is awaiting funding signatures.
+			let new_funding_script = complete_splice_handshake(initiator, acceptor);
+			complete_interactive_funding_negotiation(
+				initiator,
+				acceptor,
+				channel_id,
+				funding_contribution.clone(),
+				new_funding_script,
+			);
+
+			// The initiator should have a signing event to handle, while the acceptor immediately
+			// sends their initial commitment_signed. Deliver it before canceling to ensure it gets
+			// discarded with the splice.
+			let _signing_event = get_event!(initiator, Event::FundingTransactionReadyForSigning);
+			assert!(acceptor.node.get_and_clear_pending_events().is_empty());
+			let acceptor_commit_sig = get_htlc_update_msgs(acceptor, &node_id_initiator);
+			initiator.node.handle_commitment_signed(
+				node_id_acceptor,
+				&acceptor_commit_sig.commitment_signed[0],
+			);
+			check_added_monitors(initiator, 0);
+			assert!(initiator.node.get_and_clear_pending_msg_events().is_empty());
+		},
+		_ => panic!("unexpected state {state}"),
+	}
+	assert!(initiator.node.get_and_clear_pending_events().is_empty());
+	assert!(acceptor.node.get_and_clear_pending_events().is_empty());
+
+	// Queue an outgoing HTLC to the holding cell. It should be freed once we cancel the splice and
+	// exit quiescence.
+	let (route, payment_hash, _payment_preimage, payment_secret) =
+		get_route_and_payment_hash!(initiator, acceptor, 1_000_000);
+	let onion = RecipientOnionFields::secret_only(payment_secret, 1_000_000);
+	let payment_id = PaymentId(payment_hash.0);
+	initiator.node.send_payment_with_route(route, payment_hash, onion, payment_id).unwrap();
+	assert!(initiator.node.get_and_clear_pending_msg_events().is_empty());
+
+	initiator.node.cancel_funding_contributed(&channel_id, &node_id_acceptor).unwrap();
+	expect_splice_failed_events(initiator, &channel_id, funding_contribution);
+
+	// We exit quiescence upon canceling the splice, so we should see a tx_abort followed by the
+	// holding cell HTLC being released immediately.
+	let msg_events = initiator.node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 2, "{msg_events:?}");
+	let tx_abort = if let MessageSendEvent::SendTxAbort { msg, .. } = &msg_events[0] {
+		msg
+	} else {
+		panic!("Unexpected event {:?}", msg_events[0]);
+	};
+	let update = if let MessageSendEvent::UpdateHTLCs { updates, .. } = &msg_events[1] {
+		updates
+	} else {
+		panic!("Unexpected event {:?}", msg_events[1]);
+	};
+	check_added_monitors(initiator, 1);
+
+	acceptor.node.handle_tx_abort(node_id_initiator, tx_abort);
+	let tx_abort = get_event_msg!(acceptor, MessageSendEvent::SendTxAbort, node_id_initiator);
+	initiator.node.handle_tx_abort(node_id_acceptor, &tx_abort);
+
+	acceptor.node.handle_update_add_htlc(node_id_initiator, &update.update_add_htlcs[0]);
+	do_commitment_signed_dance(acceptor, initiator, &update.commitment_signed, false, false);
+}
+
+#[test]
+fn cannot_cancel_funding_contributed_after_funding_transaction_signed() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let initiator = &nodes[0];
+	let acceptor = &nodes[1];
+
+	let node_id_initiator = initiator.node.get_our_node_id();
+	let node_id_acceptor = acceptor.node.get_our_node_id();
+
+	let initial_channel_capacity = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_capacity, 0);
+
+	let outputs = vec![TxOut {
+		value: Amount::from_sat(1_000),
+		script_pubkey: initiator.wallet_source.get_change_script().unwrap(),
+	}];
+	let funding_contribution =
+		initiate_splice_out(initiator, acceptor, channel_id, outputs).unwrap();
+	let new_funding_script = complete_splice_handshake(initiator, acceptor);
+	complete_interactive_funding_negotiation(
+		initiator,
+		acceptor,
+		channel_id,
+		funding_contribution,
+		new_funding_script,
+	);
+	assert!(acceptor.node.get_and_clear_pending_events().is_empty());
+	let _acceptor_commit_sig = get_htlc_update_msgs(acceptor, &node_id_initiator);
+
+	let event = get_event!(initiator, Event::FundingTransactionReadyForSigning);
+	if let Event::FundingTransactionReadyForSigning {
+		channel_id,
+		counterparty_node_id,
+		unsigned_transaction,
+		..
+	} = event
+	{
+		let partially_signed_tx = initiator.wallet_source.sign_tx(unsigned_transaction).unwrap();
+		initiator
+			.node
+			.funding_transaction_signed(&channel_id, &counterparty_node_id, partially_signed_tx)
+			.unwrap();
+	} else {
+		unreachable!();
+	}
+
+	let res = initiator.node.cancel_funding_contributed(&channel_id, &node_id_acceptor);
+	match res {
+		Err(APIError::APIMisuseError { err }) => assert!(err.contains("already signed")),
+		_ => panic!("Unexpected result {res:?}"),
+	}
+
+	assert!(initiator.node.get_and_clear_pending_events().is_empty());
+	let msg_events = initiator.node.get_and_clear_pending_msg_events();
+	assert!(
+		msg_events.iter().all(|event| !matches!(event, MessageSendEvent::SendTxAbort { .. })),
+		"{msg_events:?}"
+	);
 }
 
 #[test]

@@ -4840,96 +4840,103 @@ impl<
 		}
 	}
 
-	#[cfg(test)]
-	pub(crate) fn abandon_splice(
+	/// Cancels an in-flight [`FundingContribution`].
+	///
+	/// This is primarily useful after receiving an [`Event::FundingTransactionReadyForSigning`] for
+	/// a [`FundingContribution`] you no longer wish to proceed with. Canceling is only allowed up
+	/// until [`ChannelManager::funding_transaction_signed`] is called for the corresponding
+	/// [`FundingContribution`].
+	///
+	/// Returns [`ChannelUnavailable`] when a channel is not found or an incorrect
+	/// `counterparty_node_id` is provided, or [`APIMisuseError`] otherwise with the error details.
+	///
+	/// [`Event::FundingTransactionReadyForSigning`]: events::Event::FundingTransactionReadyForSigning
+	/// [`ChannelUnavailable`]: APIError::ChannelUnavailable
+	/// [`APIMisuseError`]: APIError::APIMisuseError
+	pub fn cancel_funding_contributed(
 		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey,
 	) -> Result<(), APIError> {
-		let mut res = Ok(());
-		PersistenceNotifierGuard::optionally_notify(self, || {
-			let result = self.internal_abandon_splice(channel_id, counterparty_node_id);
-			res = result;
-			match res {
-				Ok(_) => NotifyOption::SkipPersistHandleEvents,
-				Err(_) => NotifyOption::SkipPersistNoEvents,
+		let mut result = Ok(());
+		PersistenceNotifierGuard::manually_notify(self, || {
+			let per_peer_state = self.per_peer_state.read().unwrap();
+			let peer_state_mutex = match per_peer_state
+				.get(counterparty_node_id)
+				.ok_or_else(|| APIError::no_such_peer(counterparty_node_id))
+			{
+				Ok(p) => p,
+				Err(e) => {
+					result = Err(e);
+					return;
+				},
+			};
+			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+			let peer_state = &mut *peer_state_lock;
+
+			match peer_state.channel_by_id.entry(*channel_id) {
+				hash_map::Entry::Occupied(mut chan_entry) => {
+					if let Some(channel) = chan_entry.get_mut().as_funded_mut() {
+						let InteractiveTxMsgError { err, splice_funding_failed, exited_quiescence } =
+							match channel.cancel_funding_contributed() {
+								Ok(v) => v,
+								Err(e) => {
+									result = Err(e);
+									return;
+								},
+							};
+
+						let splice_funding_failed = splice_funding_failed
+							.expect("Only splices with local contributions can be canceled");
+						{
+							let pending_events = &mut self.pending_events.lock().unwrap();
+							pending_events.push_back((
+								events::Event::SpliceFailed {
+									channel_id: *channel_id,
+									counterparty_node_id: *counterparty_node_id,
+									user_channel_id: channel.context().get_user_id(),
+									abandoned_funding_txo: splice_funding_failed.funding_txo,
+									channel_type: splice_funding_failed.channel_type.clone(),
+								},
+								None,
+							));
+							pending_events.push_back((
+								events::Event::DiscardFunding {
+									channel_id: *channel_id,
+									funding_info: FundingInfo::Contribution {
+										inputs: splice_funding_failed.contributed_inputs,
+										outputs: splice_funding_failed.contributed_outputs,
+									},
+								},
+								None,
+							));
+						}
+
+						mem::drop(peer_state_lock);
+						mem::drop(per_peer_state);
+
+						self.needs_persist_flag.store(true, Ordering::Release);
+						self.event_persist_notifier.notify();
+						let err: Result<(), _> =
+							Err(MsgHandleErrInternal::from_chan_no_close(err, *channel_id)
+								.with_exited_quiescence(exited_quiescence));
+						let _ = self.handle_error(err, *counterparty_node_id);
+					} else {
+						result = Err(APIError::ChannelUnavailable {
+							err: format!(
+								"Channel with id {} is not funded, cannot cancel splice",
+								channel_id
+							),
+						});
+						return;
+					}
+				},
+				hash_map::Entry::Vacant(_) => {
+					result =
+						Err(APIError::no_such_channel_for_peer(channel_id, counterparty_node_id));
+					return;
+				},
 			}
 		});
-		res
-	}
-
-	#[cfg(test)]
-	fn internal_abandon_splice(
-		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey,
-	) -> Result<(), APIError> {
-		let per_peer_state = self.per_peer_state.read().unwrap();
-
-		let peer_state_mutex = match per_peer_state
-			.get(counterparty_node_id)
-			.ok_or_else(|| APIError::no_such_peer(counterparty_node_id))
-		{
-			Ok(p) => p,
-			Err(e) => return Err(e),
-		};
-
-		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
-		let peer_state = &mut *peer_state_lock;
-
-		// Look for the channel
-		match peer_state.channel_by_id.entry(*channel_id) {
-			hash_map::Entry::Occupied(mut chan_phase_entry) => {
-				if !chan_phase_entry.get().context().is_connected() {
-					// TODO: We should probably support this, but right now `splice_channel` refuses when
-					// the peer is disconnected, so we just check it here.
-					return Err(APIError::ChannelUnavailable {
-						err: "Cannot abandon splice while peer is disconnected".to_owned(),
-					});
-				}
-
-				if let Some(chan) = chan_phase_entry.get_mut().as_funded_mut() {
-					let (tx_abort, splice_funding_failed) = chan.abandon_splice()?;
-
-					peer_state.pending_msg_events.push(MessageSendEvent::SendTxAbort {
-						node_id: *counterparty_node_id,
-						msg: tx_abort,
-					});
-
-					if let Some(splice_funding_failed) = splice_funding_failed {
-						let pending_events = &mut self.pending_events.lock().unwrap();
-						pending_events.push_back((
-							events::Event::SpliceFailed {
-								channel_id: *channel_id,
-								counterparty_node_id: *counterparty_node_id,
-								user_channel_id: chan.context.get_user_id(),
-								abandoned_funding_txo: splice_funding_failed.funding_txo,
-								channel_type: splice_funding_failed.channel_type,
-							},
-							None,
-						));
-						pending_events.push_back((
-							events::Event::DiscardFunding {
-								channel_id: *channel_id,
-								funding_info: FundingInfo::Contribution {
-									inputs: splice_funding_failed.contributed_inputs,
-									outputs: splice_funding_failed.contributed_outputs,
-								},
-							},
-							None,
-						));
-					}
-
-					Ok(())
-				} else {
-					Err(APIError::ChannelUnavailable {
-						err: format!(
-							"Channel with id {} is not funded, cannot abandon splice",
-							channel_id
-						),
-					})
-				}
-			},
-			hash_map::Entry::Vacant(_) => {
-				Err(APIError::no_such_channel_for_peer(channel_id, counterparty_node_id))
-			},
-		}
+		result
 	}
 
 	fn forward_needs_intercept_to_known_chan(

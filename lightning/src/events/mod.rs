@@ -1833,7 +1833,7 @@ pub enum Event {
 		invoice_request: InvoiceRequest,
 	},
 	/// Indicates that a channel funding transaction constructed interactively is ready to be
-	/// signed. This event will only be triggered if at least one input was contributed.
+	/// signed. This event will only be triggered if a contribution was made to the transaction.
 	///
 	/// The transaction contains all inputs and outputs provided by both parties including the
 	/// channel's funding output and a change output if applicable.
@@ -1844,8 +1844,9 @@ pub enum Event {
 	/// Each signature MUST use the `SIGHASH_ALL` flag to avoid invalidation of the initial commitment and
 	/// hence possible loss of funds.
 	///
-	/// After signing, call [`ChannelManager::funding_transaction_signed`] with the (partially) signed
-	/// funding transaction.
+	/// After signing, call [`ChannelManager::funding_transaction_signed`] with the (partially)
+	/// signed funding transaction. For splices where you contributed inputs or outputs, call
+	/// [`ChannelManager::cancel_funding_contributed`] instead if you no longer wish to proceed.
 	///
 	/// Generated in [`ChannelManager`] message handling.
 	///
@@ -1854,6 +1855,7 @@ pub enum Event {
 	/// returning `Err(ReplayEvent ())`), but will only be regenerated as needed after restarts.
 	///
 	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+	/// [`ChannelManager::cancel_funding_contributed`]: crate::ln::channelmanager::ChannelManager::cancel_funding_contributed
 	/// [`ChannelManager::funding_transaction_signed`]: crate::ln::channelmanager::ChannelManager::funding_transaction_signed
 	FundingTransactionReadyForSigning {
 		/// The `channel_id` of the channel which you'll need to pass back into
