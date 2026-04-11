@@ -15,7 +15,7 @@ use crate::chain::chaininterface;
 #[cfg(any(test, feature = "_externalize_tests"))]
 use crate::chain::chaininterface::FEERATE_FLOOR_SATS_PER_KW;
 use crate::chain::chaininterface::{ConfirmationTarget, TransactionType};
-use crate::chain::chainmonitor::{ChainMonitor, Persist};
+use crate::chain::chainmonitor::{ChainMonitor, MonitorEventSource, Persist};
 use crate::chain::channelmonitor::{
 	ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, MonitorEvent,
 };
@@ -521,6 +521,11 @@ pub struct TestChainMonitor<'a> {
 	/// deferred operations. This allows tests to control exactly when queued monitor updates
 	/// are applied to the in-memory monitor.
 	pub pause_flush: AtomicBool,
+	/// Buffer of the last 20 monitor updates, most recent first.
+	pub recent_monitor_updates: Mutex<Vec<(ChannelId, ChannelMonitorUpdate)>>,
+	/// When set to `true`, `release_pending_monitor_events` sorts events by `ChannelId` to
+	/// ensure deterministic processing order regardless of HashMap iteration order.
+	pub deterministic_mon_events_order: AtomicBool,
 }
 impl<'a> TestChainMonitor<'a> {
 	pub fn new(
@@ -581,6 +586,8 @@ impl<'a> TestChainMonitor<'a> {
 			#[cfg(feature = "std")]
 			write_blocker: Mutex::new(None),
 			pause_flush: AtomicBool::new(false),
+			recent_monitor_updates: Mutex::new(Vec::new()),
+			deterministic_mon_events_order: AtomicBool::new(false),
 		}
 	}
 
@@ -649,6 +656,7 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 		)
 		.unwrap()
 		.1;
+		new_monitor.copy_monitor_event_state(&monitor);
 		assert!(new_monitor == monitor);
 		self.latest_monitor_update_id
 			.lock()
@@ -677,6 +685,12 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 			.entry(channel_id)
 			.or_insert(Vec::new())
 			.push(update.clone());
+
+		{
+			let mut recent = self.recent_monitor_updates.lock().unwrap();
+			recent.insert(0, (channel_id, update.clone()));
+			recent.truncate(20);
+		}
 
 		if let Some(exp) = self.expect_channel_force_closed.lock().unwrap().take() {
 			assert_eq!(channel_id, exp.0);
@@ -710,6 +724,9 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 		// it so it doesn't leak into the rest of the test.
 		let failed_back = monitor.inner.lock().unwrap().failed_back_htlc_ids.clone();
 		new_monitor.inner.lock().unwrap().failed_back_htlc_ids = failed_back;
+		// The deserialized monitor will reset the monitor event state, so copy it from the live
+		// monitor before comparing.
+		new_monitor.copy_monitor_event_state(&monitor);
 		if let Some(chan_id) = self.expect_monitor_round_trip_fail.lock().unwrap().take() {
 			assert_eq!(chan_id, channel_id);
 			assert!(new_monitor != *monitor);
@@ -723,7 +740,7 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 
 	fn release_pending_monitor_events(
 		&self,
-	) -> Vec<(OutPoint, ChannelId, Vec<MonitorEvent>, PublicKey)> {
+	) -> Vec<(OutPoint, ChannelId, Vec<(u64, MonitorEvent)>, PublicKey)> {
 		// Auto-flush pending operations so that the ChannelManager can pick up monitor
 		// completion events. When not in deferred mode the queue is empty so this only
 		// costs a lock acquisition. It ensures standard test helpers (route_payment, etc.)
@@ -732,7 +749,15 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 			let count = self.chain_monitor.pending_operation_count();
 			self.chain_monitor.flush(count, &self.logger);
 		}
-		return self.chain_monitor.release_pending_monitor_events();
+		let mut events = self.chain_monitor.release_pending_monitor_events();
+		if self.deterministic_mon_events_order.load(Ordering::Acquire) {
+			events.sort_by_key(|(_, channel_id, _, _)| *channel_id);
+		}
+		events
+	}
+
+	fn ack_monitor_event(&self, source: MonitorEventSource) {
+		self.chain_monitor.ack_monitor_event(source);
 	}
 }
 

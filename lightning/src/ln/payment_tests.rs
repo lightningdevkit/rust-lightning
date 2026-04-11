@@ -927,8 +927,33 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	let fulfill_msg = htlc_fulfill.update_fulfill_htlcs.remove(0);
 	nodes[1].node.handle_update_fulfill_htlc(node_c_id, fulfill_msg);
 	check_added_monitors(&nodes[1], 1);
-	do_commitment_signed_dance(&nodes[1], &nodes[2], &htlc_fulfill.commitment_signed, false, false);
-	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], None, true, false);
+	{
+		// Drive the commitment signed dance manually so we can account for the extra monitor
+		// update when persistent monitor events are enabled.
+		let persistent = nodes[1].node.test_persistent_monitor_events_enabled();
+		nodes[1].node.handle_commitment_signed_batch_test(node_c_id, &htlc_fulfill.commitment_signed);
+		check_added_monitors(&nodes[1], 1);
+		let (extra_msg, cs_raa, htlcs) =
+			do_main_commitment_signed_dance(&nodes[1], &nodes[2], false);
+		assert!(htlcs.is_empty());
+		assert!(extra_msg.is_none());
+		// nodes[1] handles nodes[2]'s RAA. When persistent monitor events are enabled, this
+		// triggers the re-provided outbound monitor event, generating an extra preimage update
+		// on the (closed) inbound channel.
+		nodes[1].node.handle_revoke_and_ack(node_c_id, &cs_raa);
+		check_added_monitors(&nodes[1], if persistent { 2 } else { 1 });
+	}
+	if nodes[1].node.test_persistent_monitor_events_enabled() {
+		// The re-provided monitor event generates a duplicate PaymentForwarded against the
+		// closed inbound channel.
+		let events = nodes[1].node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 2);
+		for event in events {
+			assert!(matches!(event, Event::PaymentForwarded { .. }));
+		}
+	} else {
+		expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], None, true, false);
+	}
 
 	if confirm_before_reload {
 		let best_block = nodes[0].blocks.lock().unwrap().last().unwrap().clone();
@@ -957,7 +982,7 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 		assert_eq!(txn[0].compute_txid(), as_commitment_tx.compute_txid());
 	}
 	mine_transaction(&nodes[0], &bs_htlc_claim_txn);
-	expect_payment_sent(&nodes[0], payment_preimage_1, None, true, true);
+	expect_payment_sent!(&nodes[0], payment_preimage_1);
 	connect_blocks(&nodes[0], TEST_FINAL_CLTV * 4 + 20);
 	let (first_htlc_timeout_tx, second_htlc_timeout_tx) = {
 		let mut txn = nodes[0].tx_broadcaster.unique_txn_broadcast();
@@ -1368,7 +1393,7 @@ fn do_test_dup_htlc_onchain_doesnt_fail_on_reload(
 		let conditions = PaymentFailedConditions::new().from_mon_update();
 		expect_payment_failed_conditions(&nodes[0], payment_hash, false, conditions);
 	} else {
-		expect_payment_sent(&nodes[0], payment_preimage, None, true, true);
+		expect_payment_sent!(&nodes[0], payment_preimage);
 	}
 	// Note that if we persist the monitor before processing the events, above, we'll always get
 	// them replayed on restart no matter what
@@ -1406,18 +1431,22 @@ fn do_test_dup_htlc_onchain_doesnt_fail_on_reload(
 		} else {
 			expect_payment_sent(&nodes[0], payment_preimage, None, true, false);
 		}
-		if persist_manager_post_event {
-			// After reload, the ChannelManager identified the failed payment and queued up the
-			// PaymentSent (or not, if `persist_manager_post_event` resulted in us detecting we
-			// already did that) and corresponding ChannelMonitorUpdate to mark the payment
-			// handled, but while processing the pending `MonitorEvent`s (which were not processed
-			// before the monitor was persisted) we will end up with a duplicate
-			// ChannelMonitorUpdate.
-			check_added_monitors(&nodes[0], 2);
+		if !nodes[0].node.test_persistent_monitor_events_enabled() {
+			if persist_manager_post_event {
+				// After reload, the ChannelManager identified the failed payment and queued up the
+				// PaymentSent (or not, if `persist_manager_post_event` resulted in us detecting we
+				// already did that) and corresponding ChannelMonitorUpdate to mark the payment
+				// handled, but while processing the pending `MonitorEvent`s (which were not processed
+				// before the monitor was persisted) we will end up with a duplicate
+				// ChannelMonitorUpdate.
+				check_added_monitors(&nodes[0], 2);
+			} else {
+				// ...unless we got the PaymentSent event, in which case we have de-duplication logic
+				// preventing a redundant monitor event.
+				check_added_monitors(&nodes[0], 1);
+			}
 		} else {
-			// ...unless we got the PaymentSent event, in which case we have de-duplication logic
-			// preventing a redundant monitor event.
-			check_added_monitors(&nodes[0], 1);
+			check_added_monitors(&nodes[0], 0);
 		}
 	}
 
@@ -1430,15 +1459,39 @@ fn do_test_dup_htlc_onchain_doesnt_fail_on_reload(
 }
 
 #[test]
-fn test_dup_htlc_onchain_doesnt_fail_on_reload() {
+fn test_dup_htlc_onchain_doesnt_fail_on_reload_a() {
 	do_test_dup_htlc_onchain_doesnt_fail_on_reload(true, true, true, true);
+}
+#[test]
+fn test_dup_htlc_onchain_doesnt_fail_on_reload_b() {
 	do_test_dup_htlc_onchain_doesnt_fail_on_reload(true, true, true, false);
+}
+#[test]
+fn test_dup_htlc_onchain_doesnt_fail_on_reload_c() {
 	do_test_dup_htlc_onchain_doesnt_fail_on_reload(true, true, false, false);
+}
+#[test]
+fn test_dup_htlc_onchain_doesnt_fail_on_reload_d() {
 	do_test_dup_htlc_onchain_doesnt_fail_on_reload(true, false, true, true);
+}
+#[test]
+fn test_dup_htlc_onchain_doesnt_fail_on_reload_e() {
 	do_test_dup_htlc_onchain_doesnt_fail_on_reload(true, false, true, false);
+}
+#[test]
+fn test_dup_htlc_onchain_doesnt_fail_on_reload_f() {
 	do_test_dup_htlc_onchain_doesnt_fail_on_reload(true, false, false, false);
+}
+#[test]
+fn test_dup_htlc_onchain_doesnt_fail_on_reload_g() {
 	do_test_dup_htlc_onchain_doesnt_fail_on_reload(false, false, true, true);
+}
+#[test]
+fn test_dup_htlc_onchain_doesnt_fail_on_reload_h() {
 	do_test_dup_htlc_onchain_doesnt_fail_on_reload(false, false, true, false);
+}
+#[test]
+fn test_dup_htlc_onchain_doesnt_fail_on_reload_i() {
 	do_test_dup_htlc_onchain_doesnt_fail_on_reload(false, false, false, false);
 }
 
@@ -2381,7 +2434,11 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 			},
 			_ => panic!("Unexpected event"),
 		}
-		check_added_monitors(&nodes[0], 1);
+		if nodes[0].node.test_persistent_monitor_events_enabled() {
+			check_added_monitors(&nodes[0], 0);
+		} else {
+			check_added_monitors(&nodes[0], 1);
+		}
 	} else if test == InterceptTest::Timeout {
 		let mut block = create_dummy_block(nodes[0].best_block_hash(), 42, Vec::new());
 		connect_block(&nodes[0], &block);
@@ -2586,7 +2643,7 @@ fn do_accept_underpaying_htlcs_config(num_mpp_parts: usize) {
 	let total_fee_msat = pass_claimed_payment_along_route(args);
 	// The sender doesn't know that the penultimate hop took an extra fee.
 	let amt = total_fee_msat - skimmed_fee_msat * num_mpp_parts as u64;
-	expect_payment_sent(&nodes[0], payment_preimage, Some(Some(amt)), true, true);
+	expect_payment_sent!(nodes[0], payment_preimage, Some(amt));
 }
 
 #[derive(PartialEq)]
@@ -4170,10 +4227,14 @@ fn do_no_missing_sent_on_reload(persist_manager_with_payment: bool, at_midpoint:
 	check_added_monitors(&nodes[0], 0);
 	nodes[0].node.test_process_background_events();
 	check_added_monitors(&nodes[0], 1);
-	// Then once we process the PaymentSent event we'll apply a monitor update to remove the
-	// pending payment from being re-hydrated on the next startup.
 	let events = nodes[0].node.get_and_clear_pending_events();
-	check_added_monitors(&nodes[0], 1);
+	if nodes[0].node.test_persistent_monitor_events_enabled() {
+		check_added_monitors(&nodes[0], 0);
+	} else {
+		// Once we process the PaymentSent event we'll apply a monitor update to remove the
+		// pending payment from being re-hydrated on the next startup.
+		check_added_monitors(&nodes[0], 1);
+	}
 	assert_eq!(events.len(), 3, "{events:?}");
 	if let Event::ChannelClosed { reason: ClosureReason::OutdatedChannelManager, .. } = events[0] {
 	} else {
@@ -4767,7 +4828,7 @@ fn do_test_custom_tlvs_consistency(
 			ClaimAlongRouteArgs::new(&nodes[0], &[path_a, &[&nodes[2], &nodes[3]]], preimage)
 				.with_custom_tlvs(expected_tlvs),
 		);
-		expect_payment_sent(&nodes[0], preimage, Some(Some(2000)), true, true);
+		expect_payment_sent!(nodes[0], preimage, Some(2000));
 	} else {
 		// Expect fail back
 		let expected_destinations = [HTLCHandlingFailureType::Receive { payment_hash: hash }];
@@ -5565,7 +5626,10 @@ fn do_bolt11_multi_node_mpp(use_bolt11_pay: bool) {
 	}
 
 	let payment_sent = nodes[0].node.get_and_clear_pending_events();
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(
+		&nodes[0],
+		if nodes[0].node.test_persistent_monitor_events_enabled() { 0 } else { 1 },
+	);
 
 	assert_eq!(payment_sent.len(), 2, "{payment_sent:?}");
 	if let Event::PaymentSent { payment_id, payment_hash, amount_msat, fee_paid_msat, .. } =
@@ -5594,7 +5658,10 @@ fn do_bolt11_multi_node_mpp(use_bolt11_pay: bool) {
 	}
 
 	let payment_sent = nodes[1].node.get_and_clear_pending_events();
-	check_added_monitors(&nodes[1], 1);
+	check_added_monitors(
+		&nodes[1],
+		if nodes[1].node.test_persistent_monitor_events_enabled() { 0 } else { 1 },
+	);
 
 	assert_eq!(payment_sent.len(), 2, "{payment_sent:?}");
 	if let Event::PaymentSent { payment_id, payment_hash, amount_msat, fee_paid_msat, .. } =
@@ -5850,7 +5917,10 @@ fn bolt11_multi_node_mpp_with_retry() {
 	}
 
 	let payment_sent_a = nodes[0].node.get_and_clear_pending_events();
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(
+		&nodes[0],
+		if nodes[0].node.test_persistent_monitor_events_enabled() { 0 } else { 1 },
+	);
 
 	assert_eq!(payment_sent_a.len(), 2, "{payment_sent_a:?}");
 	if let Event::PaymentSent { payment_id, payment_hash, amount_msat, .. } = &payment_sent_a[0] {
@@ -5875,7 +5945,10 @@ fn bolt11_multi_node_mpp_with_retry() {
 	}
 
 	let payment_sent_b = nodes[1].node.get_and_clear_pending_events();
-	check_added_monitors(&nodes[1], 1);
+	check_added_monitors(
+		&nodes[1],
+		if nodes[1].node.test_persistent_monitor_events_enabled() { 0 } else { 1 },
+	);
 
 	assert_eq!(payment_sent_b.len(), 2, "{payment_sent_b:?}");
 	if let Event::PaymentSent { payment_id, payment_hash, amount_msat, .. } = &payment_sent_b[0] {

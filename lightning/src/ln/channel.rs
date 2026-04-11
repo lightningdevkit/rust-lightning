@@ -30,9 +30,10 @@ use crate::blinded_path::message::BlindedMessagePath;
 use crate::chain::chaininterface::{
 	ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator, TransactionType,
 };
+use crate::chain::chainmonitor::MonitorEventSource;
 use crate::chain::channelmonitor::{
 	ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, CommitmentHTLCData,
-	LATENCY_GRACE_PERIOD_BLOCKS,
+	OutboundHTLCClaim, LATENCY_GRACE_PERIOD_BLOCKS,
 };
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::chain::BestBlock;
@@ -230,7 +231,7 @@ enum InboundHTLCState {
 	/// ChannelMonitor::should_broadcast_holder_commitment_txn) so we actually remove the HTLC from
 	/// our own local state before then, once we're sure that the next commitment_signed and
 	/// ChannelMonitor::provide_latest_local_commitment_tx will not include this HTLC.
-	LocalRemoved(InboundHTLCRemovalReason),
+	LocalRemoved { reason: InboundHTLCRemovalReason, monitor_event_id: Option<MonitorEventSource> },
 }
 
 impl From<&InboundHTLCState> for Option<InboundHTLCStateDetails> {
@@ -244,15 +245,18 @@ impl From<&InboundHTLCState> for Option<InboundHTLCStateDetails> {
 				Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToAdd)
 			},
 			InboundHTLCState::Committed { .. } => Some(InboundHTLCStateDetails::Committed),
-			InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailRelay(_)) => {
-				Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFail)
-			},
-			InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailMalformed { .. }) => {
-				Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFail)
-			},
-			InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill { .. }) => {
-				Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFulfill)
-			},
+			InboundHTLCState::LocalRemoved {
+				reason: InboundHTLCRemovalReason::FailRelay(_),
+				..
+			} => Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFail),
+			InboundHTLCState::LocalRemoved {
+				reason: InboundHTLCRemovalReason::FailMalformed { .. },
+				..
+			} => Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFail),
+			InboundHTLCState::LocalRemoved {
+				reason: InboundHTLCRemovalReason::Fulfill { .. },
+				..
+			} => Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFulfill),
 		}
 	}
 }
@@ -265,7 +269,7 @@ impl fmt::Display for InboundHTLCState {
 			InboundHTLCState::AwaitingRemoteRevokeToAnnounce(_) => write!(f, "AwaitingRemoteRevokeToAnnounce"),
 			InboundHTLCState::AwaitingAnnouncedRemoteRevoke(_) => write!(f, "AwaitingAnnouncedRemoteRevoke"),
 			InboundHTLCState::Committed { .. } => write!(f, "Committed"),
-			InboundHTLCState::LocalRemoved(_) => write!(f, "LocalRemoved"),
+			InboundHTLCState::LocalRemoved { .. } => write!(f, "LocalRemoved"),
 		}
 	}
 }
@@ -277,15 +281,16 @@ impl InboundHTLCState {
 			InboundHTLCState::AwaitingRemoteRevokeToAnnounce(_) => !generated_by_local,
 			InboundHTLCState::AwaitingAnnouncedRemoteRevoke(_) => true,
 			InboundHTLCState::Committed { .. } => true,
-			InboundHTLCState::LocalRemoved(_) => !generated_by_local,
+			InboundHTLCState::LocalRemoved { .. } => !generated_by_local,
 		}
 	}
 
 	fn preimage(&self) -> Option<PaymentPreimage> {
 		match self {
-			InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill {
-				preimage, ..
-			}) => Some(*preimage),
+			InboundHTLCState::LocalRemoved {
+				reason: InboundHTLCRemovalReason::Fulfill { preimage, .. },
+				..
+			} => Some(*preimage),
 			_ => None,
 		}
 	}
@@ -304,7 +309,7 @@ impl InboundHTLCState {
 				},
 				InboundHTLCResolution::Resolved { .. } => false,
 			},
-			InboundHTLCState::Committed { .. } | InboundHTLCState::LocalRemoved(_) => false,
+			InboundHTLCState::Committed { .. } | InboundHTLCState::LocalRemoved { .. } => false,
 		}
 	}
 }
@@ -547,6 +552,7 @@ enum HTLCUpdateAwaitingACK {
 		payment_preimage: PaymentPreimage,
 		attribution_data: Option<AttributionData>,
 		htlc_id: u64,
+		monitor_event_id: Option<MonitorEventSource>,
 	},
 	FailHTLC {
 		htlc_id: u64,
@@ -1474,10 +1480,18 @@ pub(crate) const CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY: u32 = 144;
 #[derive(Debug)]
 struct PendingChannelMonitorUpdate {
 	update: ChannelMonitorUpdate,
+	monitor_events_to_ack: Vec<MonitorEventSource>,
+}
+
+impl PendingChannelMonitorUpdate {
+	fn new(update: ChannelMonitorUpdate) -> Self {
+		Self { update, monitor_events_to_ack: Vec::new() }
+	}
 }
 
 impl_writeable_tlv_based!(PendingChannelMonitorUpdate, {
 	(0, update, required),
+	(1, monitor_events_to_ack, optional_vec),
 });
 
 /// A payment channel with a counterparty throughout its life-cycle, encapsulating negotiation and
@@ -3617,7 +3631,7 @@ trait InitialRemoteCommitmentReceiver<SP: SignerProvider> {
 			funding.get_holder_selected_contest_delay(), &context.destination_script,
 			&funding.channel_transaction_parameters, funding.is_outbound(), obscure_factor,
 			holder_commitment_tx, best_block, context.counterparty_node_id, context.channel_id(),
-			context.is_manual_broadcast,
+			context.is_manual_broadcast, context.get_user_id(),
 		);
 		channel_monitor.provide_initial_counterparty_commitment_tx(
 			counterparty_initial_commitment_tx.clone(),
@@ -4634,7 +4648,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			.any(|htlc| match htlc.state {
 				InboundHTLCState::Committed { .. } => false,
 				// An HTLC removal from the local node is pending on the remote commitment.
-				InboundHTLCState::LocalRemoved(_) => true,
+				InboundHTLCState::LocalRemoved { .. } => true,
 				// An HTLC add from the remote node is pending on the local commitment.
 				InboundHTLCState::RemoteAnnounced(_)
 					| InboundHTLCState::AwaitingRemoteRevokeToAnnounce(_)
@@ -5145,8 +5159,8 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 				(InboundHTLCState::AwaitingRemoteRevokeToAnnounce(..), _) => true,
 				(InboundHTLCState::AwaitingAnnouncedRemoteRevoke(..), _) => true,
 				(InboundHTLCState::Committed { .. }, _) => true,
-				(InboundHTLCState::LocalRemoved(..), true) => true,
-				(InboundHTLCState::LocalRemoved(..), false) => false,
+				(InboundHTLCState::LocalRemoved { .. }, true) => true,
+				(InboundHTLCState::LocalRemoved { .. }, false) => false,
 			})
 			.map(|&InboundHTLCOutput { amount_msat, .. }| HTLCAmountDirection {
 				outbound: false,
@@ -5218,8 +5232,8 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			.pending_inbound_htlcs
 			.iter()
 			.filter(|InboundHTLCOutput { state, .. }| match (state, local) {
-				(InboundHTLCState::LocalRemoved(Fulfill { .. }), true) => false,
-				(InboundHTLCState::LocalRemoved(Fulfill { .. }), false) => true,
+				(InboundHTLCState::LocalRemoved { reason: Fulfill { .. }, .. }, true) => false,
+				(InboundHTLCState::LocalRemoved { reason: Fulfill { .. }, .. }, false) => true,
 				_ => false,
 			})
 			.map(|InboundHTLCOutput { amount_msat, .. }| amount_msat)
@@ -6916,7 +6930,10 @@ impl FailHTLCContents for msgs::OnionErrorPacket {
 		}
 	}
 	fn to_inbound_htlc_state(self) -> InboundHTLCState {
-		InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailRelay(self))
+		InboundHTLCState::LocalRemoved {
+			reason: InboundHTLCRemovalReason::FailRelay(self),
+			monitor_event_id: None,
+		}
 	}
 	fn to_htlc_update_awaiting_ack(self, htlc_id: u64) -> HTLCUpdateAwaitingACK {
 		HTLCUpdateAwaitingACK::FailHTLC { htlc_id, err_packet: self }
@@ -6933,10 +6950,13 @@ impl FailHTLCContents for ([u8; 32], u16) {
 		}
 	}
 	fn to_inbound_htlc_state(self) -> InboundHTLCState {
-		InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailMalformed {
-			sha256_of_onion: self.0,
-			failure_code: self.1,
-		})
+		InboundHTLCState::LocalRemoved {
+			reason: InboundHTLCRemovalReason::FailMalformed {
+				sha256_of_onion: self.0,
+				failure_code: self.1,
+			},
+			monitor_event_id: None,
+		}
 	}
 	fn to_htlc_update_awaiting_ack(self, htlc_id: u64) -> HTLCUpdateAwaitingACK {
 		HTLCUpdateAwaitingACK::FailMalformedHTLC {
@@ -7482,8 +7502,14 @@ where
 		// (see equivalent if condition there).
 		assert!(!self.context.channel_state.can_generate_new_commitment());
 		let mon_update_id = self.context.latest_monitor_update_id; // Forget the ChannelMonitor update
-		let fulfill_resp =
-			self.get_update_fulfill_htlc(htlc_id_arg, payment_preimage_arg, None, None, logger);
+		let fulfill_resp = self.get_update_fulfill_htlc(
+			htlc_id_arg,
+			payment_preimage_arg,
+			None,
+			None,
+			None,
+			logger,
+		);
 		self.context.latest_monitor_update_id = mon_update_id;
 		if let UpdateFulfillFetch::NewClaim { update_blocked, .. } = fulfill_resp {
 			assert!(update_blocked); // The HTLC must have ended up in the holding cell.
@@ -7493,7 +7519,7 @@ where
 	fn get_update_fulfill_htlc<L: Logger>(
 		&mut self, htlc_id_arg: u64, payment_preimage_arg: PaymentPreimage,
 		payment_info: Option<PaymentClaimDetails>, attribution_data: Option<AttributionData>,
-		logger: &L,
+		monitor_event_id: Option<MonitorEventSource>, logger: &L,
 	) -> UpdateFulfillFetch {
 		// Either ChannelReady got set (which means it won't be unset) or there is no way any
 		// caller thought we could have something claimed (cause we wouldn't have accepted in an
@@ -7509,7 +7535,8 @@ where
 
 		let mut pending_idx = core::usize::MAX;
 		let mut htlc_value_msat = 0;
-		for (idx, htlc) in self.context.pending_inbound_htlcs.iter().enumerate() {
+		let channel_id = self.context.channel_id();
+		for (idx, htlc) in self.context.pending_inbound_htlcs.iter_mut().enumerate() {
 			if htlc.htlc_id == htlc_id_arg {
 				let expected_hash =
 					PaymentHash(Sha256::hash(&payment_preimage_arg.0[..]).to_byte_array());
@@ -7523,10 +7550,17 @@ where
 				);
 				match htlc.state {
 					InboundHTLCState::Committed { .. } => {},
-					InboundHTLCState::LocalRemoved(ref reason) => {
+					InboundHTLCState::LocalRemoved {
+						ref reason,
+						monitor_event_id: ref mut id,
+						..
+					} => {
+						if monitor_event_id.is_some() {
+							*id = monitor_event_id;
+						}
 						if let &InboundHTLCRemovalReason::Fulfill { .. } = reason {
 						} else {
-							log_warn!(logger, "Have preimage and want to fulfill HTLC with payment hash {} we already failed against channel {}", &htlc.payment_hash, &self.context.channel_id());
+							log_warn!(logger, "Have preimage and want to fulfill HTLC with payment hash {} we already failed against channel {channel_id}", &htlc.payment_hash);
 							debug_assert!(
 								false,
 								"Tried to fulfill an HTLC that was already failed"
@@ -7567,17 +7601,24 @@ where
 			// `claim_htlc_while_disconnected_dropping_mon_update` and must match exactly -
 			// `claim_htlc_while_disconnected_dropping_mon_update` would not work correctly if we
 			// do not not get into this branch.
-			for pending_update in self.context.holding_cell_htlc_updates.iter() {
+			for pending_update in self.context.holding_cell_htlc_updates.iter_mut() {
 				match pending_update {
-					&HTLCUpdateAwaitingACK::ClaimHTLC { htlc_id, .. } => {
+					&mut HTLCUpdateAwaitingACK::ClaimHTLC {
+						htlc_id,
+						monitor_event_id: ref mut id,
+						..
+					} => {
 						if htlc_id_arg == htlc_id {
 							// Make sure we don't leave latest_monitor_update_id incremented here:
 							self.context.latest_monitor_update_id -= 1;
+							if monitor_event_id.is_some() {
+								*id = monitor_event_id;
+							}
 							return UpdateFulfillFetch::DuplicateClaim {};
 						}
 					},
-					&HTLCUpdateAwaitingACK::FailHTLC { htlc_id, .. }
-					| &HTLCUpdateAwaitingACK::FailMalformedHTLC { htlc_id, .. } => {
+					&mut HTLCUpdateAwaitingACK::FailHTLC { htlc_id, .. }
+					| &mut HTLCUpdateAwaitingACK::FailMalformedHTLC { htlc_id, .. } => {
 						if htlc_id_arg == htlc_id {
 							log_warn!(logger, "Have preimage and want to fulfill HTLC with pending failure against channel {}", &self.context.channel_id());
 							// TODO: We may actually be able to switch to a fulfill here, though its
@@ -7605,6 +7646,7 @@ where
 				payment_preimage: payment_preimage_arg,
 				htlc_id: htlc_id_arg,
 				attribution_data,
+				monitor_event_id,
 			});
 			return UpdateFulfillFetch::NewClaim {
 				monitor_update,
@@ -7632,10 +7674,13 @@ where
 				"Upgrading HTLC {} to LocalRemoved with a Fulfill!",
 				&htlc.payment_hash,
 			);
-			htlc.state = InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill {
-				preimage: payment_preimage_arg.clone(),
-				attribution_data,
-			});
+			htlc.state = InboundHTLCState::LocalRemoved {
+				reason: InboundHTLCRemovalReason::Fulfill {
+					preimage: payment_preimage_arg.clone(),
+					attribution_data,
+				},
+				monitor_event_id,
+			};
 		}
 
 		UpdateFulfillFetch::NewClaim { monitor_update, htlc_value_msat, update_blocked: false }
@@ -7644,7 +7689,7 @@ where
 	pub fn get_update_fulfill_htlc_and_commit<L: Logger>(
 		&mut self, htlc_id: u64, payment_preimage: PaymentPreimage,
 		payment_info: Option<PaymentClaimDetails>, attribution_data: Option<AttributionData>,
-		logger: &L,
+		monitor_event_id: Option<MonitorEventSource>, logger: &L,
 	) -> UpdateFulfillCommitFetch {
 		let release_cs_monitor = self.context.blocked_monitor_updates.is_empty();
 		match self.get_update_fulfill_htlc(
@@ -7652,6 +7697,7 @@ where
 			payment_preimage,
 			payment_info,
 			attribution_data,
+			monitor_event_id,
 			logger,
 		) {
 			UpdateFulfillFetch::NewClaim {
@@ -7684,7 +7730,7 @@ where
 						let update = self.build_commitment_no_status_check(logger);
 						self.context
 							.blocked_monitor_updates
-							.push(PendingChannelMonitorUpdate { update });
+							.push(PendingChannelMonitorUpdate::new(update));
 					}
 				}
 
@@ -7743,7 +7789,7 @@ where
 			if htlc.htlc_id == htlc_id_arg {
 				match htlc.state {
 					InboundHTLCState::Committed { .. } => {},
-					InboundHTLCState::LocalRemoved(_) => {
+					InboundHTLCState::LocalRemoved { .. } => {
 						return Err(ChannelError::Ignore(format!("HTLC {} was already resolved", htlc.htlc_id)));
 					},
 					_ => {
@@ -8623,7 +8669,11 @@ where
 					// claims, but such an upgrade is unlikely and including claimed HTLCs here
 					// fixes a bug which the user was exposed to on 0.0.104 when they started the
 					// claim anyway.
-					claimed_htlcs.push((SentHTLCId::from_source(&htlc.source), preimage));
+					claimed_htlcs.push(OutboundHTLCClaim {
+						htlc_id: SentHTLCId::from_source(&htlc.source),
+						preimage,
+						skimmed_fee_msat: htlc.skimmed_fee_msat,
+					});
 				}
 				htlc.state = OutboundHTLCState::AwaitingRemoteRevokeToRemove(reason);
 				need_commitment = true;
@@ -8821,6 +8871,7 @@ where
 						ref payment_preimage,
 						htlc_id,
 						ref attribution_data,
+						monitor_event_id,
 					} => {
 						// If an HTLC claim was previously added to the holding cell (via
 						// `get_update_fulfill_htlc`, then generating the claim message itself must
@@ -8837,6 +8888,7 @@ where
 							*payment_preimage,
 							None,
 							attribution_data.clone(),
+							monitor_event_id,
 							logger,
 						);
 						let mut additional_monitor_update =
@@ -8938,7 +8990,7 @@ where
 		(
 			Vec<(HTLCSource, PaymentHash)>,
 			Vec<(StaticInvoice, BlindedMessagePath)>,
-			Option<ChannelMonitorUpdate>,
+			Option<(ChannelMonitorUpdate, Vec<MonitorEventSource>)>,
 		),
 		ChannelError,
 	> {
@@ -9045,6 +9097,7 @@ where
 		let mut static_invoices = Vec::new();
 		let mut require_commitment = false;
 		let mut value_to_self_msat_diff: i64 = 0;
+		let mut monitor_events_to_ack = Vec::new();
 
 		{
 			// Take references explicitly so that we can hold multiple references to self.context.
@@ -9055,12 +9108,17 @@ where
 
 			// We really shouldnt have two passes here, but retain gives a non-mutable ref (Rust bug)
 			pending_inbound_htlcs.retain(|htlc| {
-				if let &InboundHTLCState::LocalRemoved(ref reason) = &htlc.state {
+				if let &InboundHTLCState::LocalRemoved { ref reason, monitor_event_id, .. } =
+					&htlc.state
+				{
 					log_trace!(logger, " ...removing inbound LocalRemoved {}", &htlc.payment_hash);
 					if let &InboundHTLCRemovalReason::Fulfill { .. } = reason {
 						value_to_self_msat_diff += htlc.amount_msat as i64;
 					}
 					*expecting_peer_commitment_signed = true;
+					if let Some(id) = monitor_event_id {
+						monitor_events_to_ack.push(id);
+					}
 					false
 				} else {
 					true
@@ -9124,20 +9182,23 @@ where
 										require_commitment = true;
 										match fail_msg {
 											HTLCFailureMsg::Relay(msg) => {
-												htlc.state = InboundHTLCState::LocalRemoved(
-													InboundHTLCRemovalReason::FailRelay(
+												htlc.state = InboundHTLCState::LocalRemoved {
+													reason: InboundHTLCRemovalReason::FailRelay(
 														msg.clone().into(),
 													),
-												);
+													monitor_event_id: None,
+												};
 												update_fail_htlcs.push(msg)
 											},
 											HTLCFailureMsg::Malformed(msg) => {
-												htlc.state = InboundHTLCState::LocalRemoved(
-													InboundHTLCRemovalReason::FailMalformed {
-														sha256_of_onion: msg.sha256_of_onion,
-														failure_code: msg.failure_code,
-													},
-												);
+												htlc.state = InboundHTLCState::LocalRemoved {
+													reason:
+														InboundHTLCRemovalReason::FailMalformed {
+															sha256_of_onion: msg.sha256_of_onion,
+															failure_code: msg.failure_code,
+														},
+													monitor_event_id: None,
+												};
 												update_fail_malformed_htlcs.push(msg)
 											},
 										}
@@ -9251,13 +9312,19 @@ where
 		};
 		macro_rules! return_with_htlcs_to_fail {
 			($htlcs_to_fail: expr) => {
+				let events_to_ack = core::mem::take(&mut monitor_events_to_ack);
 				if !release_monitor {
-					self.context
-						.blocked_monitor_updates
-						.push(PendingChannelMonitorUpdate { update: monitor_update });
+					self.context.blocked_monitor_updates.push(PendingChannelMonitorUpdate {
+						update: monitor_update,
+						monitor_events_to_ack: events_to_ack,
+					});
 					return Ok(($htlcs_to_fail, static_invoices, None));
 				} else {
-					return Ok(($htlcs_to_fail, static_invoices, Some(monitor_update)));
+					return Ok((
+						$htlcs_to_fail,
+						static_invoices,
+						Some((monitor_update, events_to_ack)),
+					));
 				}
 			};
 		}
@@ -9622,7 +9689,7 @@ where
 					true
 				},
 				InboundHTLCState::Committed { .. } => true,
-				InboundHTLCState::LocalRemoved(_) => {
+				InboundHTLCState::LocalRemoved { .. } => {
 					// We (hopefully) sent a commitment_signed updating this HTLC (which we can
 					// re-transmit if needed) and they may have even sent a revoke_and_ack back
 					// (that we missed). Keep this around for now and if they tell us they missed
@@ -10129,7 +10196,7 @@ where
 		}
 
 		for htlc in self.context.pending_inbound_htlcs.iter() {
-			if let &InboundHTLCState::LocalRemoved(ref reason) = &htlc.state {
+			if let &InboundHTLCState::LocalRemoved { ref reason, .. } = &htlc.state {
 				match reason {
 					&InboundHTLCRemovalReason::FailRelay(ref err_packet) => {
 						update_fail_htlcs.push(msgs::UpdateFailHTLC {
@@ -11345,14 +11412,15 @@ where
 
 	/// Returns the next blocked monitor update, if one exists, and a bool which indicates a
 	/// further blocked monitor update exists after the next.
-	pub fn unblock_next_blocked_monitor_update(&mut self) -> Option<(ChannelMonitorUpdate, bool)> {
+	pub fn unblock_next_blocked_monitor_update(
+		&mut self,
+	) -> Option<(ChannelMonitorUpdate, Vec<MonitorEventSource>, bool)> {
 		if self.context.blocked_monitor_updates.is_empty() {
 			return None;
 		}
-		Some((
-			self.context.blocked_monitor_updates.remove(0).update,
-			!self.context.blocked_monitor_updates.is_empty(),
-		))
+		let PendingChannelMonitorUpdate { update, monitor_events_to_ack } =
+			self.context.blocked_monitor_updates.remove(0);
+		Some((update, monitor_events_to_ack, !self.context.blocked_monitor_updates.is_empty()))
 	}
 
 	/// Pushes a new monitor update into our monitor update queue, returning it if it should be
@@ -11362,9 +11430,7 @@ where
 	-> Option<ChannelMonitorUpdate> {
 		let release_monitor = self.context.blocked_monitor_updates.is_empty();
 		if !release_monitor {
-			self.context.blocked_monitor_updates.push(PendingChannelMonitorUpdate {
-				update,
-			});
+			self.context.blocked_monitor_updates.push(PendingChannelMonitorUpdate::new(update));
 			None
 		} else {
 			Some(update)
@@ -15479,9 +15545,9 @@ impl<SP: SignerProvider> Writeable for FundedChannel<SP> {
 					3u8.write(writer)?;
 					inbound_committed_update_adds.push(update_add_htlc);
 				},
-				&InboundHTLCState::LocalRemoved(ref removal_reason) => {
+				&InboundHTLCState::LocalRemoved { ref reason, monitor_event_id: _ } => {
 					4u8.write(writer)?;
-					match removal_reason {
+					match reason {
 						InboundHTLCRemovalReason::FailRelay(msgs::OnionErrorPacket {
 							data,
 							attribution_data,
@@ -15604,6 +15670,7 @@ impl<SP: SignerProvider> Writeable for FundedChannel<SP> {
 					ref payment_preimage,
 					ref htlc_id,
 					ref attribution_data,
+					monitor_event_id: _, // Will be re-provided on startup
 				} => {
 					1u8.write(writer)?;
 					payment_preimage.write(writer)?;
@@ -15968,7 +16035,7 @@ impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
 							},
 							_ => return Err(DecodeError::InvalidValue),
 						};
-						InboundHTLCState::LocalRemoved(reason)
+						InboundHTLCState::LocalRemoved { reason, monitor_event_id: None }
 					},
 					_ => return Err(DecodeError::InvalidValue),
 				},
@@ -16058,6 +16125,7 @@ impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
 					payment_preimage: Readable::read(reader)?,
 					htlc_id: Readable::read(reader)?,
 					attribution_data: None,
+					monitor_event_id: None,
 				},
 				2 => HTLCUpdateAwaitingACK::FailHTLC {
 					htlc_id: Readable::read(reader)?,
@@ -16470,7 +16538,7 @@ impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
 		}
 		if let Some(attribution_data_list) = removed_htlc_attribution_data {
 			let mut removed_htlcs = pending_inbound_htlcs.iter_mut().filter_map(|status| {
-				if let InboundHTLCState::LocalRemoved(reason) = &mut status.state {
+				if let InboundHTLCState::LocalRemoved { ref mut reason, .. } = &mut status.state {
 					match reason {
 						InboundHTLCRemovalReason::FailRelay(ref mut packet) => {
 							Some(&mut packet.attribution_data)
@@ -17597,6 +17665,7 @@ mod tests {
 			payment_preimage: PaymentPreimage([42; 32]),
 			htlc_id: 0,
 			attribution_data,
+			monitor_event_id: None,
 		};
 		let dummy_holding_cell_failed_htlc =
 			|htlc_id, attribution_data| HTLCUpdateAwaitingACK::FailHTLC {

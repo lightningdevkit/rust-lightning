@@ -1095,6 +1095,7 @@ impl Readable for Vec<u8> {
 
 impl_for_vec!(ecdsa::Signature);
 impl_for_vec!(crate::chain::channelmonitor::ChannelMonitorUpdate);
+impl_for_vec!(crate::chain::chainmonitor::MonitorEventSource);
 impl_for_vec!(crate::ln::channelmanager::MonitorUpdateCompletionAction);
 impl_for_vec!(crate::ln::channelmanager::PaymentClaimDetails);
 impl_for_vec!(crate::ln::msgs::SocketAddress);
@@ -1112,6 +1113,7 @@ impl_writeable_for_vec_with_element_length_prefix!(&crate::ln::msgs::UpdateAddHT
 impl_for_vec!(u32);
 impl_for_vec!(crate::events::HTLCLocator);
 impl_for_vec!(crate::ln::types::ChannelId);
+impl_for_vec!(crate::chain::channelmonitor::OutboundHTLCClaim);
 
 impl Writeable for Vec<Witness> {
 	#[inline]
