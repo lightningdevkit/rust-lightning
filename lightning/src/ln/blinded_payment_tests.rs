@@ -854,7 +854,7 @@ fn do_blinded_intercept_payment(intercept_node_fails: bool) {
 	do_claim_payment_along_route(
 		ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1], &nodes[2]]], payment_preimage)
 	);
-	expect_payment_sent(&nodes[0], payment_preimage, Some(Some(1000)), true, true);
+	expect_payment_sent!(nodes[0], payment_preimage, Some(1000));
 }
 
 #[test]
@@ -1399,7 +1399,7 @@ fn conditionally_round_fwd_amt() {
 	let mut args = ClaimAlongRouteArgs::new(&nodes[0], &expected_route[..], payment_preimage)
 		.allow_1_msat_fee_overpay();
 	let expected_fee = pass_claimed_payment_along_route(args);
-	expect_payment_sent(&nodes[0], payment_preimage, Some(Some(expected_fee)), true, true);
+	expect_payment_sent!(nodes[0], payment_preimage, Some(expected_fee));
 }
 
 #[test]

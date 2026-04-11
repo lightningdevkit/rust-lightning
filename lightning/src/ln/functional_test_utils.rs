@@ -1260,7 +1260,20 @@ pub fn check_added_monitors<CM: AChannelManager, H: NodeHolder<CM = CM>>(node: &
 	if let Some(chain_monitor) = node.chain_monitor() {
 		let mut added_monitors = chain_monitor.added_monitors.lock().unwrap();
 		let n = added_monitors.len();
-		assert_eq!(n, count, "expected {} monitors to be added, not {}", count, n);
+		if n != count {
+			let recent = chain_monitor.recent_monitor_updates.lock().unwrap();
+			let mut desc = String::new();
+			for (i, (chan_id, update)) in recent.iter().take(n).enumerate() {
+				desc += &format!(
+					"\n  [{}] chan={} update_id={} steps={:?}",
+					i, chan_id, update.update_id, update.updates
+				);
+			}
+			panic!(
+				"expected {} monitors to be added, not {}. Last {} updates (most recent first):{}",
+				count, n, n, desc
+			);
+		}
 		added_monitors.clear();
 	}
 }
@@ -3061,7 +3074,7 @@ macro_rules! expect_payment_sent {
 			$expected_payment_preimage,
 			$expected_fee_msat_opt.map(|o| Some(o)),
 			$expect_paths,
-			true,
+			if $node.node.test_persistent_monitor_events_enabled() { false } else { true },
 		)
 	};
 }
@@ -4222,7 +4235,15 @@ pub fn claim_payment_along_route(
 		do_claim_payment_along_route(args) + expected_extra_total_fees_msat;
 
 	if !skip_last {
-		expect_payment_sent!(origin_node, payment_preimage, Some(expected_total_fee_msat))
+		let expect_post_ev_mon_update =
+			if origin_node.node.test_persistent_monitor_events_enabled() { false } else { true };
+		expect_payment_sent(
+			origin_node,
+			payment_preimage,
+			Some(Some(expected_total_fee_msat)),
+			true,
+			expect_post_ev_mon_update,
+		)
 	} else {
 		(None, Vec::new())
 	}
