@@ -162,17 +162,13 @@ mod sealed {
 			// Byte 4
 			Quiescence | OnionMessages,
 			// Byte 5
-			ProvideStorage | ChannelType | SCIDPrivacy,
+			AnchorZeroFeeCommitments | ProvideStorage | ChannelType | SCIDPrivacy,
 			// Byte 6
 			ZeroConf,
 			// Byte 7
 			Trampoline | SimpleClose | Splice,
-			// Byte 8 - 16
-			,,,,,,,,,
-			// Byte 17
-			AnchorZeroFeeCommitmentsStaging,
-			// Byte 18
-			,
+			// Byte 8 - 18
+			,,,,,,,,,,,
 			// Byte 19
 			HtlcHold,
 		]
@@ -191,17 +187,13 @@ mod sealed {
 			// Byte 4
 			Quiescence | OnionMessages,
 			// Byte 5
-			ProvideStorage | ChannelType | SCIDPrivacy,
+			AnchorZeroFeeCommitments | ProvideStorage | ChannelType | SCIDPrivacy,
 			// Byte 6
 			ZeroConf | Keysend,
 			// Byte 7
 			Trampoline | SimpleClose | Splice,
-			// Byte 8 - 16
-			,,,,,,,,,
-			// Byte 17
-			AnchorZeroFeeCommitmentsStaging,
-			// Byte 18
-			,
+			// Byte 8 - 18
+			,,,,,,,,,,,
 			// Byte 19
 			HtlcHold,
 			// Byte 20 - 31
@@ -264,13 +256,9 @@ mod sealed {
 		// Byte 4
 		,
 		// Byte 5
-		SCIDPrivacy,
+		AnchorZeroFeeCommitments | SCIDPrivacy,
 		// Byte 6
 		ZeroConf,
-		// Byte 7 - 16
-		,,,,,,,,,,
-		// Byte 17
-		AnchorZeroFeeCommitmentsStaging,
 	]);
 
 	/// Defines a feature with the given bits for the specified [`Context`]s. The generated trait is
@@ -607,6 +595,17 @@ mod sealed {
 		requires_onion_messages
 	);
 	define_feature!(
+		41,
+		AnchorZeroFeeCommitments,
+		[InitContext, NodeContext, ChannelTypeContext],
+		"Feature flags for `option_zero_fee_commitments`.",
+		set_anchor_zero_fee_commitments_optional,
+		set_anchor_zero_fee_commitments_required,
+		clear_anchor_zero_fee_commitments,
+		supports_anchor_zero_fee_commitments,
+		requires_anchor_zero_fee_commitments
+	);
+	define_feature!(
 		43,
 		ProvideStorage,
 		[InitContext, NodeContext],
@@ -707,17 +706,6 @@ mod sealed {
 	// By default, allocate enough bytes to cover up to Splice. Update this as new features are
 	// added which we expect to appear commonly across contexts.
 	pub(super) const MIN_FEATURES_ALLOCATION_BYTES: usize = 63_usize.div_ceil(8);
-	define_feature!(
-		141, // The BOLTs PR uses feature bit 40/41, so add +100 for the experimental bit
-		AnchorZeroFeeCommitmentsStaging,
-		[InitContext, NodeContext, ChannelTypeContext],
-		"Feature flags for `option_zero_fee_commitments`.",
-		set_anchor_zero_fee_commitments_optional,
-		set_anchor_zero_fee_commitments_required,
-		clear_anchor_zero_fee_commitments,
-		supports_anchor_zero_fee_commitments,
-		requires_anchor_zero_fee_commitments
-	);
 	define_feature!(
 		153, // The BOLTs PR uses feature bit 52/53, so add +100 for the experimental bit
 		HtlcHold,
@@ -1094,7 +1082,7 @@ impl ChannelTypeFeatures {
 	/// Constructs a ChannelTypeFeatures with zero fee commitment anchors support.
 	pub fn anchors_zero_fee_commitments() -> Self {
 		let mut ret = Self::empty();
-		<sealed::ChannelTypeContext as sealed::AnchorZeroFeeCommitmentsStaging>::set_required_bit(
+		<sealed::ChannelTypeContext as sealed::AnchorZeroFeeCommitments>::set_required_bit(
 			&mut ret,
 		);
 		ret
