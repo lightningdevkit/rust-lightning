@@ -186,22 +186,44 @@ impl BroadcasterInterface for TestBroadcaster {
 struct ChainState {
 	blocks: Vec<(Header, Vec<Transaction>)>,
 	confirmed_txids: HashSet<Txid>,
+	/// Unconfirmed transactions (e.g., splice txs). Conflicting RBF candidates may coexist;
+	/// `confirm_pending_txs` determines which one confirms.
+	pending_txs: Vec<Transaction>,
 }
 
 impl ChainState {
 	fn new() -> Self {
 		let genesis_hash = genesis_block(Network::Bitcoin).block_hash();
 		let genesis_header = create_dummy_header(genesis_hash, 42);
-		Self { blocks: vec![(genesis_header, Vec::new())], confirmed_txids: HashSet::new() }
+		Self {
+			blocks: vec![(genesis_header, Vec::new())],
+			confirmed_txids: HashSet::new(),
+			pending_txs: Vec::new(),
+		}
 	}
 
 	fn tip_height(&self) -> u32 {
 		(self.blocks.len() - 1) as u32
 	}
 
+	fn is_outpoint_spent(&self, outpoint: &bitcoin::OutPoint) -> bool {
+		// Only check the last 6 blocks (1 confirmation block + 5 post-confirmation) to avoid
+		// false positives from hash collisions in older blocks. Under fuzz hashing, txids have
+		// only 8 effective bits, so unrelated outpoints in old blocks frequently collide.
+		let start = self.blocks.len().saturating_sub(6);
+		self.blocks[start..].iter().any(|(_, txs)| {
+			txs.iter().any(|tx| {
+				tx.input.iter().any(|input| input.previous_output == *outpoint)
+			})
+		})
+	}
+
 	fn confirm_tx(&mut self, tx: Transaction) -> bool {
 		let txid = tx.compute_txid();
 		if self.confirmed_txids.contains(&txid) {
+			return false;
+		}
+		if tx.input.iter().any(|input| self.is_outpoint_spent(&input.previous_output)) {
 			return false;
 		}
 		self.confirmed_txids.insert(txid);
@@ -216,6 +238,54 @@ impl ChainState {
 			self.blocks.push((header, Vec::new()));
 		}
 		true
+	}
+
+	/// Add a transaction to the pending pool (mempool). Multiple conflicting transactions (RBF
+	/// candidates) may coexist; `confirm_pending_txs` selects which one to confirm.
+	fn add_pending_tx(&mut self, tx: Transaction) {
+		self.pending_txs.push(tx);
+	}
+
+	/// Confirm pending transactions in a single block, selecting deterministically among
+	/// conflicting RBF candidates. Sorting by txid ensures the winner is determined by fuzz input
+	/// content. Transactions that double-spend an already-confirmed outpoint are skipped.
+	fn confirm_pending_txs(&mut self) {
+		let mut txs = std::mem::take(&mut self.pending_txs);
+		txs.sort_by_key(|tx| tx.compute_txid());
+
+		let mut confirmed = Vec::new();
+		let mut spent_outpoints = Vec::new();
+		for tx in txs {
+			let txid = tx.compute_txid();
+			if self.confirmed_txids.contains(&txid) {
+				continue;
+			}
+			if tx.input.iter().any(|input| {
+				self.is_outpoint_spent(&input.previous_output)
+					|| spent_outpoints.contains(&input.previous_output)
+			}) {
+				continue;
+			}
+			self.confirmed_txids.insert(txid);
+			for input in &tx.input {
+				spent_outpoints.push(input.previous_output);
+			}
+			confirmed.push(tx);
+		}
+
+		if confirmed.is_empty() {
+			return;
+		}
+
+		let prev_hash = self.blocks.last().unwrap().0.block_hash();
+		let header = create_dummy_header(prev_hash, 42);
+		self.blocks.push((header, confirmed));
+
+		for _ in 0..5 {
+			let prev_hash = self.blocks.last().unwrap().0.block_hash();
+			let header = create_dummy_header(prev_hash, 42);
+			self.blocks.push((header, Vec::new()));
+		}
 	}
 
 	fn block_at(&self, height: u32) -> &(Header, Vec<Transaction>) {
@@ -856,11 +926,15 @@ fn send_mpp_hop_payment(
 fn assert_action_timeout_awaiting_response(action: &msgs::ErrorAction) {
 	// Since sending/receiving messages may be delayed, `timer_tick_occurred` may cause a node to
 	// disconnect their counterparty if they're expecting a timely response.
-	assert!(matches!(
+	assert!(
+		matches!(
+			action,
+			msgs::ErrorAction::DisconnectPeerWithWarning { msg }
+			if msg.data.contains("Disconnecting due to timeout awaiting response")
+		),
+		"Expected timeout disconnect, got: {:?}",
 		action,
-		msgs::ErrorAction::DisconnectPeerWithWarning { msg }
-		if msg.data.contains("Disconnecting due to timeout awaiting response")
-	));
+	);
 }
 
 enum ChanType {
@@ -1608,6 +1682,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 						},
 						MessageSendEvent::SendChannelReady { .. } => continue,
 						MessageSendEvent::SendAnnouncementSignatures { .. } => continue,
+						MessageSendEvent::BroadcastChannelUpdate { .. } => continue,
 						MessageSendEvent::SendChannelUpdate { ref node_id, .. } => {
 							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
 							*node_id == a_id
@@ -2025,15 +2100,16 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 							assert!(txs.len() >= 1);
 							let splice_tx = txs.remove(0);
 							assert_eq!(new_funding_txo.txid, splice_tx.compute_txid());
-							chain_state.confirm_tx(splice_tx);
+							chain_state.add_pending_tx(splice_tx);
 						},
 						events::Event::SpliceFailed { .. } => {},
 						events::Event::DiscardFunding {
-							funding_info: events::FundingInfo::Contribution { .. },
+							funding_info: events::FundingInfo::Contribution { .. }
+								| events::FundingInfo::Tx { .. },
 							..
 						} => {},
 
-						_ => panic!("Unhandled event"),
+						_ => panic!("Unhandled event: {:?}", event),
 					}
 				}
 				while nodes[$node].needs_pending_htlc_processing() {
@@ -2477,13 +2553,31 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 			},
 
 			// Sync node by 1 block to cover confirmation of a transaction.
-			0xa8 => sync_with_chain_state(&mut chain_state, &nodes[0], &mut node_height_a, Some(1)),
-			0xa9 => sync_with_chain_state(&mut chain_state, &nodes[1], &mut node_height_b, Some(1)),
-			0xaa => sync_with_chain_state(&mut chain_state, &nodes[2], &mut node_height_c, Some(1)),
+			0xa8 => {
+				chain_state.confirm_pending_txs();
+				sync_with_chain_state(&mut chain_state, &nodes[0], &mut node_height_a, Some(1));
+			},
+			0xa9 => {
+				chain_state.confirm_pending_txs();
+				sync_with_chain_state(&mut chain_state, &nodes[1], &mut node_height_b, Some(1));
+			},
+			0xaa => {
+				chain_state.confirm_pending_txs();
+				sync_with_chain_state(&mut chain_state, &nodes[2], &mut node_height_c, Some(1));
+			},
 			// Sync node to chain tip to cover confirmation of a transaction post-reorg-risk.
-			0xab => sync_with_chain_state(&mut chain_state, &nodes[0], &mut node_height_a, None),
-			0xac => sync_with_chain_state(&mut chain_state, &nodes[1], &mut node_height_b, None),
-			0xad => sync_with_chain_state(&mut chain_state, &nodes[2], &mut node_height_c, None),
+			0xab => {
+				chain_state.confirm_pending_txs();
+				sync_with_chain_state(&mut chain_state, &nodes[0], &mut node_height_a, None);
+			},
+			0xac => {
+				chain_state.confirm_pending_txs();
+				sync_with_chain_state(&mut chain_state, &nodes[1], &mut node_height_b, None);
+			},
+			0xad => {
+				chain_state.confirm_pending_txs();
+				sync_with_chain_state(&mut chain_state, &nodes[2], &mut node_height_c, None);
+			},
 
 			0xb0 | 0xb1 | 0xb2 => {
 				// Restart node A, picking among the in-flight `ChannelMonitor`s to use based on
