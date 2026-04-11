@@ -520,7 +520,8 @@ impl OMNameResolver {
 					.filter_map(|data| String::from_utf8(data).ok())
 					.filter(|data_string| data_string.len() > URI_PREFIX.len())
 					.filter(|data_string| {
-						data_string[..URI_PREFIX.len()].eq_ignore_ascii_case(URI_PREFIX)
+						let pfx = &data_string.as_bytes()[..URI_PREFIX.len()];
+						pfx.eq_ignore_ascii_case(URI_PREFIX.as_bytes())
 					});
 				// Check that there is exactly one TXT record that begins with
 				// bitcoin: as required by BIP 353 (and is valid UTF-8).
