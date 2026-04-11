@@ -22,8 +22,10 @@
 
 use bitcoin::amount::Amount;
 use bitcoin::block::Header;
+use bitcoin::locktime::absolute::LockTime;
 use bitcoin::script::{Script, ScriptBuf};
-use bitcoin::transaction::{OutPoint as BitcoinOutPoint, Transaction, TxOut};
+use bitcoin::transaction::{OutPoint as BitcoinOutPoint, Transaction, TxIn, TxOut, Version};
+use bitcoin::{Sequence, Witness};
 
 use bitcoin::hash_types::{BlockHash, Txid};
 use bitcoin::hashes::sha256::Hash as Sha256;
@@ -31,6 +33,7 @@ use bitcoin::hashes::Hash;
 
 use bitcoin::ecdsa::Signature as BitcoinSignature;
 use bitcoin::secp256k1::{self, ecdsa::Signature, PublicKey, Secp256k1, SecretKey};
+use bitcoin::sighash::EcdsaSighashType;
 
 use crate::chain;
 use crate::chain::chaininterface::{
@@ -47,7 +50,7 @@ use crate::events::bump_transaction::{AnchorDescriptor, BumpTransactionEvent};
 use crate::events::{ClosureReason, Event, EventHandler, ReplayEvent};
 use crate::ln::chan_utils::{
 	self, ChannelTransactionParameters, CommitmentTransaction, CounterpartyCommitmentSecrets,
-	HTLCClaim, HTLCOutputInCommitment, HolderCommitmentTransaction,
+	HTLCClaim, HTLCOutputInCommitment, HolderCommitmentTransaction, TxCreationKeys,
 };
 use crate::ln::channel::INITIAL_COMMITMENT_NUMBER;
 use crate::ln::channel_keys::{
@@ -140,6 +143,20 @@ impl ChannelMonitorUpdate {
 	#[cfg(not(c_bindings))]
 	pub fn renegotiated_funding_data(&self) -> impl Iterator<Item = (OutPoint, ScriptBuf)> + '_ {
 		self.internal_renegotiated_funding_data()
+	}
+
+	/// Returns `true` if this update contains counterparty commitment data
+	/// relevant to a watchtower (a new commitment or a revocation secret).
+	pub fn updates_watchtower_state(&self) -> bool {
+		self.updates.iter().any(|step| {
+			matches!(
+				step,
+				ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo { .. }
+					| ChannelMonitorUpdateStep::LatestCounterpartyCommitment { .. }
+					| ChannelMonitorUpdateStep::CommitmentSecret { .. }
+					| ChannelMonitorUpdateStep::RenegotiatedFunding { .. }
+			)
+		})
 	}
 }
 
@@ -261,6 +278,17 @@ impl_writeable_tlv_based!(HTLCUpdate, {
 	(2, source, required),
 	(4, payment_preimage, option),
 });
+
+/// A signed justice transaction ready for broadcast or watchtower submission.
+#[derive(Clone, Debug)]
+pub struct JusticeTransaction {
+	/// The fully signed justice transaction.
+	pub tx: Transaction,
+	/// The txid of the revoked counterparty commitment transaction.
+	pub revoked_commitment_txid: Txid,
+	/// The commitment number of the revoked commitment transaction.
+	pub commitment_number: u64,
+}
 
 /// If an output goes from claimable only by us to claimable by us or our counterparty within this
 /// many blocks, we consider it pinnable for the purposes of aggregating claims in a single
@@ -1166,6 +1194,11 @@ struct FundingScope {
 	// transaction for which we have deleted claim information on some watchtowers.
 	current_holder_commitment_tx: HolderCommitmentTransaction,
 	prev_holder_commitment_tx: Option<HolderCommitmentTransaction>,
+
+	/// The current counterparty commitment transaction, stored for justice tx signing.
+	cur_counterparty_commitment_tx: Option<CommitmentTransaction>,
+	/// The previous counterparty commitment transaction, stored for justice tx signing.
+	prev_counterparty_commitment_tx: Option<CommitmentTransaction>,
 }
 
 impl FundingScope {
@@ -1194,6 +1227,8 @@ impl_writeable_tlv_based!(FundingScope, {
 	(7, current_holder_commitment_tx, required),
 	(9, prev_holder_commitment_tx, option),
 	(11, counterparty_claimable_outpoints, required),
+	(13, cur_counterparty_commitment_tx, option),
+	(15, prev_counterparty_commitment_tx, option),
 });
 
 #[derive(Clone, PartialEq)]
@@ -1756,6 +1791,8 @@ pub(crate) fn write_chanmon_internal<Signer: EcdsaChannelSigner, W: Writer>(
 		(35, channel_monitor.is_manual_broadcast, required),
 		(37, channel_monitor.funding_seen_onchain, required),
 		(39, channel_monitor.best_block.previous_blocks, required),
+		(43, channel_monitor.funding.cur_counterparty_commitment_tx, option),
+		(45, channel_monitor.funding.prev_counterparty_commitment_tx, option),
 	});
 
 	Ok(())
@@ -1905,6 +1942,9 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 
 				current_holder_commitment_tx: initial_holder_commitment_tx,
 				prev_holder_commitment_tx: None,
+
+				cur_counterparty_commitment_tx: None,
+				prev_counterparty_commitment_tx: None,
 			},
 			pending_funding: vec![],
 
@@ -2270,6 +2310,28 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	#[rustfmt::skip]
 	pub fn sign_to_local_justice_tx(&self, justice_tx: Transaction, input_idx: usize, value: u64, commitment_number: u64) -> Result<Transaction, ()> {
 		self.inner.lock().unwrap().sign_to_local_justice_tx(justice_tx, input_idx, value, commitment_number)
+	}
+
+	/// Returns signed justice transactions for all revoked counterparty commitments
+	/// currently stored in this monitor.
+	///
+	/// Call this after persisting the monitor when
+	/// [`ChannelMonitorUpdate::updates_watchtower_state`] returns `true`. Also call on
+	/// startup for each loaded monitor to recover any justice transactions not yet
+	/// delivered to a watchtower.
+	///
+	/// To avoid losing justice data when the watchtower is unreachable, the
+	/// [`Persist`] implementation should delay completing monitor updates until
+	/// previously obtained justice transactions have been delivered.
+	///
+	/// This method is read-only and returns the same results on repeated calls
+	/// for the same monitor state.
+	///
+	/// [`Persist`]: crate::chain::chainmonitor::Persist
+	pub fn get_pending_justice_txs(
+		&self, feerate_per_kw: u64, destination_script: ScriptBuf,
+	) -> Vec<JusticeTransaction> {
+		self.inner.lock().unwrap().get_pending_justice_txs(feerate_per_kw, destination_script)
 	}
 
 	pub(crate) fn get_min_seen_secret(&self) -> u64 {
@@ -3486,6 +3548,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		self.provide_latest_counterparty_commitment_tx(commitment_tx.trust().txid(), Vec::new(), commitment_tx.commitment_number(),
 				commitment_tx.per_commitment_point());
 		// Soon, we will only populate this field
+		self.funding.cur_counterparty_commitment_tx = Some(commitment_tx.clone());
 		self.initial_counterparty_commitment_tx = Some(commitment_tx);
 	}
 
@@ -3563,6 +3626,12 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			current_funding_commitment_tx.commitment_number(),
 			current_funding_commitment_tx.per_commitment_point(),
 		);
+		// Safe to overwrite prev: CommitmentSecret and new counterparty commitments
+		// are always in separate ChannelMonitorUpdates, so the Persist callback has
+		// a chance to call get_pending_justice_txs between revocation and rotation.
+		self.funding.prev_counterparty_commitment_tx =
+			self.funding.cur_counterparty_commitment_tx.take();
+		self.funding.cur_counterparty_commitment_tx = Some(current_funding_commitment_tx.clone());
 
 		for (pending_funding, commitment_tx) in
 			self.pending_funding.iter_mut().zip(commitment_txs.iter().skip(1))
@@ -3574,6 +3643,13 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			pending_funding
 				.counterparty_claimable_outpoints
 				.insert(commitment_txid, htlcs_for_commitment(commitment_tx));
+			if !pending_funding.prev_counterparty_commitment_tx.as_ref().is_some_and(|p| {
+				self.commitment_secrets.get_secret(p.commitment_number()).is_some()
+			}) {
+				pending_funding.prev_counterparty_commitment_tx =
+					pending_funding.cur_counterparty_commitment_tx.take();
+			}
+			pending_funding.cur_counterparty_commitment_tx = Some(commitment_tx.clone());
 		}
 
 		Ok(())
@@ -4025,6 +4101,9 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			counterparty_claimable_outpoints,
 			current_holder_commitment_tx: alternative_holder_commitment_tx.clone(),
 			prev_holder_commitment_tx: None,
+
+			cur_counterparty_commitment_tx: None,
+			prev_counterparty_commitment_tx: None,
 		};
 		let alternative_funding_outpoint = alternative_funding.funding_outpoint();
 
@@ -4294,8 +4373,21 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			}
 		}
 
-		#[cfg(debug_assertions)] {
-			self.counterparty_commitment_txs_from_update(updates);
+		// Populate cur/prev for the LatestCounterpartyCommitmentTXInfo path, which
+		// doesn't go through update_counterparty_commitment_data.
+		for commitment_tx in self.counterparty_commitment_txs_from_update(updates) {
+			let txid = commitment_tx.trust().built_transaction().txid;
+			let funding = core::iter::once(&mut self.funding)
+				.chain(self.pending_funding.iter_mut())
+				.find(|f| f.current_counterparty_commitment_txid == Some(txid));
+			if let Some(funding) = funding {
+				if funding.cur_counterparty_commitment_tx.as_ref()
+					.map(|c| c.trust().built_transaction().txid) != Some(txid)
+				{
+						funding.prev_counterparty_commitment_tx = funding.cur_counterparty_commitment_tx.take();
+					funding.cur_counterparty_commitment_tx = Some(commitment_tx);
+				}
+			}
 		}
 
 		self.latest_update_id = updates.update_id;
@@ -4740,6 +4832,167 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	/// Can only fail if idx is < get_min_seen_secret
 	fn get_secret(&self, idx: u64) -> Option<[u8; 32]> {
 		self.commitment_secrets.get_secret(idx)
+	}
+
+	/// Returns signed justice transactions for all revoked counterparty commitments
+	/// currently stored in this monitor. Checks both cur and prev per funding scope.
+	fn get_pending_justice_txs(
+		&self, feerate_per_kw: u64, destination_script: ScriptBuf,
+	) -> Vec<JusticeTransaction> {
+		let mut result = Vec::new();
+		for funding in core::iter::once(&self.funding).chain(self.pending_funding.iter()) {
+			for tx in
+				[&funding.prev_counterparty_commitment_tx, &funding.cur_counterparty_commitment_tx]
+					.into_iter()
+					.flatten()
+			{
+				if self.commitment_secrets.get_secret(tx.commitment_number()).is_some() {
+					result.extend(self.try_sign_justice_txs(
+						tx,
+						feerate_per_kw,
+						destination_script.clone(),
+					));
+				}
+			}
+		}
+		result
+	}
+
+	fn try_sign_justice_txs(
+		&self, commitment_tx: &CommitmentTransaction, feerate_per_kw: u64,
+		destination_script: ScriptBuf,
+	) -> Vec<JusticeTransaction> {
+		let commitment_number = commitment_tx.commitment_number();
+		let secret = match self.get_secret(commitment_number) {
+			Some(s) => s,
+			None => return Vec::new(),
+		};
+		let per_commitment_key = match SecretKey::from_slice(&secret) {
+			Ok(k) => k,
+			Err(_) => return Vec::new(),
+		};
+
+		let trusted = commitment_tx.trust();
+		let built = trusted.built_transaction();
+		let txid = built.txid;
+		let mut result = Vec::new();
+
+		// to_local justice tx
+		if let Some(output_idx) = trusted.revokeable_output_index() {
+			let value = built.transaction.output[output_idx].value;
+			if let Ok(justice_tx) =
+				trusted.build_to_local_justice_tx(feerate_per_kw, destination_script.clone())
+			{
+				if let Ok(signed) =
+					self.sign_to_local_justice_tx(justice_tx, 0, value.to_sat(), commitment_number)
+				{
+					result.push(JusticeTransaction {
+						tx: signed,
+						revoked_commitment_txid: txid,
+						commitment_number,
+					});
+				}
+			}
+		}
+
+		// HTLC justice txs
+		let channel_parameters = core::iter::once(&self.funding)
+			.chain(&self.pending_funding)
+			.find(|funding| funding.counterparty_claimable_outpoints.contains_key(&txid))
+			.map(|funding| &funding.channel_parameters);
+		if let Some(channel_parameters) = channel_parameters {
+			let per_commitment_point =
+				PublicKey::from_secret_key(&self.onchain_tx_handler.secp_ctx, &per_commitment_key);
+			let directed = channel_parameters.as_counterparty_broadcastable();
+			let keys = TxCreationKeys::from_channel_static_keys(
+				&per_commitment_point,
+				directed.broadcaster_pubkeys(),
+				directed.countersignatory_pubkeys(),
+				&self.onchain_tx_handler.secp_ctx,
+			);
+
+			for htlc in commitment_tx.nondust_htlcs() {
+				if let Some(output_index) = htlc.transaction_output_index {
+					let htlc_value = built.transaction.output[output_index as usize].value;
+					let witness_script = chan_utils::get_htlc_redeemscript(
+						htlc,
+						&channel_parameters.channel_type_features,
+						&keys,
+					);
+
+					// Build a spending tx for this HTLC output
+					let input = vec![TxIn {
+						previous_output: bitcoin::OutPoint { txid, vout: output_index },
+						script_sig: ScriptBuf::new(),
+						sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+						witness: Witness::new(),
+					}];
+					let weight_estimate = if htlc.offered {
+						crate::chain::package::weight_revoked_offered_htlc(
+							&channel_parameters.channel_type_features,
+						)
+					} else {
+						crate::chain::package::weight_revoked_received_htlc(
+							&channel_parameters.channel_type_features,
+						)
+					};
+					let fee = Amount::from_sat(crate::chain::chaininterface::fee_for_weight(
+						feerate_per_kw as u32,
+						// Base tx weight + witness weight
+						Transaction {
+							version: Version::TWO,
+							lock_time: LockTime::ZERO,
+							input: input.clone(),
+							output: vec![TxOut {
+								script_pubkey: destination_script.clone(),
+								value: htlc_value,
+							}],
+						}
+						.weight()
+						.to_wu() + weight_estimate,
+					));
+					let output_value = match htlc_value.checked_sub(fee) {
+						Some(v) => v,
+						None => continue, // Dust, skip
+					};
+
+					let mut justice_tx = Transaction {
+						version: Version::TWO,
+						lock_time: LockTime::ZERO,
+						input,
+						output: vec![TxOut {
+							script_pubkey: destination_script.clone(),
+							value: output_value,
+						}],
+					};
+
+					if let Ok(sig) = self.onchain_tx_handler.signer.sign_justice_revoked_htlc(
+						channel_parameters,
+						&justice_tx,
+						0,
+						htlc_value.to_sat(),
+						&per_commitment_key,
+						htlc,
+						&self.onchain_tx_handler.secp_ctx,
+					) {
+						let mut ser_sig = sig.serialize_der().to_vec();
+						ser_sig.push(EcdsaSighashType::All as u8);
+						justice_tx.input[0].witness.push(ser_sig);
+						justice_tx.input[0]
+							.witness
+							.push(keys.revocation_key.to_public_key().serialize().to_vec());
+						justice_tx.input[0].witness.push(witness_script.into_bytes());
+						result.push(JusticeTransaction {
+							tx: justice_tx,
+							revoked_commitment_txid: txid,
+							commitment_number,
+						});
+					}
+				}
+			}
+		}
+
+		result
 	}
 
 	fn get_min_seen_secret(&self) -> u64 {
@@ -6696,6 +6949,8 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		let mut is_manual_broadcast = RequiredWrapper(None);
 		let mut funding_seen_onchain = RequiredWrapper(None);
 		let mut best_block_previous_blocks = None;
+		let mut cur_counterparty_commitment_tx: Option<CommitmentTransaction> = None;
+		let mut prev_counterparty_commitment_tx_deser: Option<CommitmentTransaction> = None;
 		read_tlv_fields!(reader, {
 			(1, funding_spend_confirmed, option),
 			(3, htlcs_resolved_on_chain, optional_vec),
@@ -6719,6 +6974,8 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			(35, is_manual_broadcast, (default_value, false)),
 			(37, funding_seen_onchain, (default_value, true)),
 			(39, best_block_previous_blocks, option), // Added and always set in 0.3
+			(43, cur_counterparty_commitment_tx, option),
+			(45, prev_counterparty_commitment_tx_deser, option),
 		});
 		if let Some(previous_blocks) = best_block_previous_blocks {
 			best_block.previous_blocks = previous_blocks;
@@ -6837,6 +7094,9 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 
 				current_holder_commitment_tx,
 				prev_holder_commitment_tx,
+
+				cur_counterparty_commitment_tx,
+				prev_counterparty_commitment_tx: prev_counterparty_commitment_tx_deser,
 			},
 			pending_funding: pending_funding.unwrap_or(vec![]),
 			is_manual_broadcast: is_manual_broadcast.0.unwrap(),
