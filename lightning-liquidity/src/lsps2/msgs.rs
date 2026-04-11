@@ -182,7 +182,7 @@ pub struct LSPS2BuyResponse {
 	/// The intercept short channel id used by LSP to identify need to open channel.
 	pub jit_channel_scid: LSPS2InterceptScid,
 	/// The locktime expiry delta the lsp requires.
-	pub lsp_cltv_expiry_delta: u32,
+	pub lsp_cltv_expiry_delta: u16,
 	/// Trust model flag (default: false).
 	///
 	/// false => "LSP trusts client": LSP immediately (or as soon as safe) broadcasts the

@@ -166,6 +166,23 @@ impl chaininterface::FeeEstimator for TestFeeEstimator {
 	}
 }
 
+/// Override closure type for [`TestRouter::override_create_blinded_payment_paths`].
+///
+/// This closure is called instead of the default [`Router::create_blinded_payment_paths`]
+/// implementation when set, receiving the actual [`ReceiveTlvs`] so tests can construct custom
+/// blinded payment paths using the same TLVs the caller generated.
+pub type BlindedPaymentPathOverrideFn = Box<
+	dyn Fn(
+			PublicKey,
+			ReceiveAuthKey,
+			Vec<ChannelDetails>,
+			ReceiveTlvs,
+			Option<u64>,
+		) -> Result<Vec<BlindedPaymentPath>, ()>
+		+ Send
+		+ Sync,
+>;
+
 pub struct TestRouter<'a> {
 	pub router: DefaultRouter<
 		Arc<NetworkGraph<&'a TestLogger>>,
@@ -178,6 +195,7 @@ pub struct TestRouter<'a> {
 	pub network_graph: Arc<NetworkGraph<&'a TestLogger>>,
 	pub next_routes: Mutex<VecDeque<(RouteParameters, Option<Result<Route, &'static str>>)>>,
 	pub next_blinded_payment_paths: Mutex<Vec<BlindedPaymentPath>>,
+	pub override_create_blinded_payment_paths: Mutex<Option<BlindedPaymentPathOverrideFn>>,
 	pub scorer: &'a RwLock<TestScorer>,
 }
 
@@ -189,6 +207,7 @@ impl<'a> TestRouter<'a> {
 		let entropy_source = Arc::new(RandomBytes::new([42; 32]));
 		let next_routes = Mutex::new(VecDeque::new());
 		let next_blinded_payment_paths = Mutex::new(Vec::new());
+		let override_create_blinded_payment_paths = Mutex::new(None);
 		Self {
 			router: DefaultRouter::new(
 				Arc::clone(&network_graph),
@@ -200,6 +219,7 @@ impl<'a> TestRouter<'a> {
 			network_graph,
 			next_routes,
 			next_blinded_payment_paths,
+			override_create_blinded_payment_paths,
 			scorer,
 		}
 	}
@@ -322,6 +342,12 @@ impl<'a> Router for TestRouter<'a> {
 		first_hops: Vec<ChannelDetails>, tlvs: ReceiveTlvs, amount_msats: Option<u64>,
 		secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedPaymentPath>, ()> {
+		if let Some(override_fn) =
+			self.override_create_blinded_payment_paths.lock().unwrap().as_ref()
+		{
+			return override_fn(recipient, local_node_receive_key, first_hops, tlvs, amount_msats);
+		}
+
 		let mut expected_paths = self.next_blinded_payment_paths.lock().unwrap();
 		if expected_paths.is_empty() {
 			self.router.create_blinded_payment_paths(
@@ -367,6 +393,7 @@ pub enum TestMessageRouterInternal<'a> {
 pub struct TestMessageRouter<'a> {
 	pub inner: TestMessageRouterInternal<'a>,
 	pub peers_override: Mutex<Vec<PublicKey>>,
+	pub forward_node_scid_override: Mutex<HashMap<PublicKey, u64>>,
 }
 
 impl<'a> TestMessageRouter<'a> {
@@ -379,6 +406,7 @@ impl<'a> TestMessageRouter<'a> {
 				entropy_source,
 			)),
 			peers_override: Mutex::new(Vec::new()),
+			forward_node_scid_override: Mutex::new(new_hash_map()),
 		}
 	}
 
@@ -391,6 +419,7 @@ impl<'a> TestMessageRouter<'a> {
 				entropy_source,
 			)),
 			peers_override: Mutex::new(Vec::new()),
+			forward_node_scid_override: Mutex::new(new_hash_map()),
 		}
 	}
 }
@@ -422,9 +451,13 @@ impl<'a> MessageRouter for TestMessageRouter<'a> {
 		{
 			let peers_override = self.peers_override.lock().unwrap();
 			if !peers_override.is_empty() {
+				let scid_override = self.forward_node_scid_override.lock().unwrap();
 				let peer_override_nodes: Vec<_> = peers_override
 					.iter()
-					.map(|pk| MessageForwardNode { node_id: *pk, short_channel_id: None })
+					.map(|pk| MessageForwardNode {
+						node_id: *pk,
+						short_channel_id: scid_override.get(pk).copied(),
+					})
 					.collect();
 				peers = peer_override_nodes;
 			}

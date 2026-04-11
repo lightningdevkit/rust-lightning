@@ -271,6 +271,11 @@ pub enum NextMessageHop {
 	ShortChannelId(u64),
 }
 
+impl_writeable_tlv_based_enum!(NextMessageHop,
+	{0, NodeId} => (),
+	{2, ShortChannelId} => (),
+);
+
 /// An intermediate node, and possibly a short channel id leading to the next node.
 ///
 /// Note:

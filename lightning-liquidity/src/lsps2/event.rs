@@ -49,7 +49,17 @@ pub enum LSPS2ClientEvent {
 	/// When the invoice is paid, the LSP will open a channel with the previously agreed upon
 	/// parameters to you.
 	///
+	/// For BOLT11 JIT invoices, `intercept_scid` and `cltv_expiry_delta` can be used in a route
+	/// hint.
+	///
+	/// For BOLT12 JIT flows, register these parameters for your offer id on an
+	/// [`LSPS2BOLT12Router`] and then proceed with the regular BOLT12 offer
+	/// flow. The router will inject the LSPS2-specific blinded payment path when creating the
+	/// invoice.
+	///
 	/// **Note: ** This event will *not* be persisted across restarts.
+	///
+	/// [`LSPS2BOLT12Router`]: crate::lsps2::router::LSPS2BOLT12Router
 	InvoiceParametersReady {
 		/// The identifier of the issued bLIP-52 / LSPS2 `buy` request, as returned by
 		/// [`LSPS2ClientHandler::select_opening_params`].
@@ -63,7 +73,7 @@ pub enum LSPS2ClientEvent {
 		/// The intercept short channel id to use in the route hint.
 		intercept_scid: u64,
 		/// The `cltv_expiry_delta` to use in the route hint.
-		cltv_expiry_delta: u32,
+		cltv_expiry_delta: u16,
 		/// The initial payment size you specified.
 		payment_size_msat: Option<u64>,
 	},
