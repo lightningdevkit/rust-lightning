@@ -184,8 +184,8 @@ jobs:
           cargo doc --release
           cargo doc --no-default-features --release
         env:
-          RUSTFLAGS: '--cfg=taproot'
-          RUSTDOCFLAGS: '--cfg=taproot'
+          RUSTFLAGS: "--cfg=taproot"
+          RUSTDOCFLAGS: "--cfg=taproot"
 
   check_docs:
     runs-on: self-hosted

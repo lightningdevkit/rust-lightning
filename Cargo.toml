@@ -67,4 +67,5 @@ check-cfg = [
     "cfg(simple_close)",
     "cfg(peer_storage)",
     "cfg(tor)",
+    "cfg(chacha20_poly1305_fuzz)"
 ]
