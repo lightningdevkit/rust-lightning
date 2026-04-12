@@ -1765,12 +1765,13 @@ impl<L: Logger> PartialEq for NetworkGraph<L> {
 ///
 /// We over-allocate by a bit because ~15% more is better than the double we get if we're slightly
 /// too low.
-const CHAN_COUNT_ESTIMATE: usize = 63_000;
+pub const CHAN_COUNT_ESTIMATE: usize = 63_000;
+
 /// In Jan, 2026 there were about 17K nodes
 ///
 /// We over-allocate by a bit because 15% more is better than the double we get if we're slightly
 /// too low.
-const NODE_COUNT_ESTIMATE: usize = 20_000;
+pub const NODE_COUNT_ESTIMATE: usize = 20_000;
 
 impl<L: Logger> NetworkGraph<L> {
 	/// Creates a new, empty, network graph.
