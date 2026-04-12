@@ -3054,55 +3054,38 @@ fn auto_retry_partial_failure() {
 	expect_htlc_failure_conditions(nodes[1].node.get_and_clear_pending_events(), &[]);
 	nodes[1].node.process_pending_htlc_forwards();
 	expect_payment_claimable!(nodes[1], payment_hash, payment_secret, amt_msat);
+	// All 3 parts arrived on the same channel (chan_1), so claim_funds batches them
+	// into a single commitment update with all 3 update_fulfill_htlcmessages.
 	nodes[1].node.claim_funds(payment_preimage);
 	expect_payment_claimed!(nodes[1], payment_hash, amt_msat);
+	check_added_monitors(&nodes[1], 1);
 	let mut bs_claim = get_htlc_update_msgs(&nodes[1], &node_a_id);
-	assert_eq!(bs_claim.update_fulfill_htlcs.len(), 1);
+	assert_eq!(bs_claim.update_fulfill_htlcs.len(), 3);
 
 	nodes[0].node.handle_update_fulfill_htlc(node_b_id, bs_claim.update_fulfill_htlcs.remove(0));
 	expect_payment_sent(&nodes[0], payment_preimage, None, false, false);
+	nodes[0].node.handle_update_fulfill_htlc(node_b_id, bs_claim.update_fulfill_htlcs.remove(0));
+	nodes[0].node.handle_update_fulfill_htlc(node_b_id, bs_claim.update_fulfill_htlcs.remove(0));
 	nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &bs_claim.commitment_signed);
 	check_added_monitors(&nodes[0], 1);
 	let (as_third_raa, as_third_cs) = get_revoke_commit_msgs(&nodes[0], &node_b_id);
 
 	nodes[1].node.handle_revoke_and_ack(node_a_id, &as_third_raa);
-	check_added_monitors(&nodes[1], 4);
-	let mut bs_2nd_claim = get_htlc_update_msgs(&nodes[1], &node_a_id);
+	check_added_monitors(&nodes[1], 1);
 
 	nodes[1].node.handle_commitment_signed_batch_test(node_a_id, &as_third_cs);
 	check_added_monitors(&nodes[1], 1);
-	let bs_third_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, node_a_id);
+	let bs_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, node_a_id);
 
-	nodes[0].node.handle_revoke_and_ack(node_b_id, &bs_third_raa);
-	check_added_monitors(&nodes[0], 1);
-	expect_payment_path_successful!(nodes[0]);
-
-	let bs_second_fulfill_a = bs_2nd_claim.update_fulfill_htlcs.remove(0);
-	let bs_second_fulfill_b = bs_2nd_claim.update_fulfill_htlcs.remove(0);
-	nodes[0].node.handle_update_fulfill_htlc(node_b_id, bs_second_fulfill_a);
-	nodes[0].node.handle_update_fulfill_htlc(node_b_id, bs_second_fulfill_b);
-	nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &bs_2nd_claim.commitment_signed);
-	check_added_monitors(&nodes[0], 1);
-	let (as_fourth_raa, as_fourth_cs) = get_revoke_commit_msgs(&nodes[0], &node_b_id);
-
-	nodes[1].node.handle_revoke_and_ack(node_a_id, &as_fourth_raa);
-	check_added_monitors(&nodes[1], 1);
-
-	nodes[1].node.handle_commitment_signed_batch_test(node_a_id, &as_fourth_cs);
-	check_added_monitors(&nodes[1], 1);
-	let bs_second_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, node_a_id);
-
-	nodes[0].node.handle_revoke_and_ack(node_b_id, &bs_second_raa);
+	nodes[0].node.handle_revoke_and_ack(node_b_id, &bs_raa);
 	check_added_monitors(&nodes[0], 1);
 	let events = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 2);
-	if let Event::PaymentPathSuccessful { .. } = events[0] {
-	} else {
-		panic!();
-	}
-	if let Event::PaymentPathSuccessful { .. } = events[1] {
-	} else {
-		panic!();
+	assert_eq!(events.len(), 3);
+	for event in &events {
+		if let Event::PaymentPathSuccessful { .. } = event {
+		} else {
+			panic!("Unexpected event {:?}", event);
+		}
 	}
 }
 
