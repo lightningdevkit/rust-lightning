@@ -149,6 +149,12 @@ pub enum NegotiationFailureReason {
 	/// [`ChannelManager::splice_channel`]: crate::ln::channelmanager::ChannelManager::splice_channel
 	/// [`FundingTemplate`]: crate::ln::funding::FundingTemplate
 	FeeRateTooLow,
+	/// An RBF attempt could not be initiated (e.g., a prior splice transaction already
+	/// confirmed). The channel remains operational — start a new splice with
+	/// [`ChannelManager::splice_channel`] if further changes are needed.
+	///
+	/// [`ChannelManager::splice_channel`]: crate::ln::channelmanager::ChannelManager::splice_channel
+	CannotInitiateRbf,
 }
 
 impl NegotiationFailureReason {
@@ -166,7 +172,8 @@ impl NegotiationFailureReason {
 			Self::CounterpartyAborted { .. }
 			| Self::NegotiationError { .. }
 			| Self::LocallyAbandoned
-			| Self::ChannelClosing => false,
+			| Self::ChannelClosing
+			| Self::CannotInitiateRbf => false,
 		}
 	}
 }
@@ -185,6 +192,7 @@ impl core::fmt::Display for NegotiationFailureReason {
 
 			Self::ChannelClosing => f.write_str("channel is closing"),
 			Self::FeeRateTooLow => f.write_str("feerate too low for RBF"),
+			Self::CannotInitiateRbf => f.write_str("cannot initiate RBF"),
 		}
 	}
 }
@@ -202,6 +210,7 @@ impl_writeable_tlv_based_enum_upgradable!(NegotiationFailureReason,
 	(11, LocallyAbandoned) => {},
 	(13, ChannelClosing) => {},
 	(15, FeeRateTooLow) => {},
+	(17, CannotInitiateRbf) => {},
 );
 
 /// Some information provided on receipt of payment depends on whether the payment received is a

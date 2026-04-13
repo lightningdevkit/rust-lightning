@@ -14328,6 +14328,16 @@ where
 					};
 
 					if self.pending_splice.is_some() {
+						if let Err(e) = self.can_initiate_rbf() {
+							let failed = self.splice_funding_failed_for(prior_contribution);
+							return Err((
+								ChannelError::WarnAndDisconnect(e),
+								QuiescentError::FailSplice(
+									failed,
+									NegotiationFailureReason::CannotInitiateRbf,
+								),
+							));
+						}
 						let tx_init_rbf = self.send_tx_init_rbf(context);
 						self.pending_splice.as_mut().unwrap()
 							.contributions.push(prior_contribution);

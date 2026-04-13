@@ -5199,6 +5199,115 @@ fn test_splice_rbf_after_splice_locked() {
 }
 
 #[test]
+fn test_splice_rbf_stfu_after_splice_locked() {
+	// Test that we don't send tx_init_rbf when we've already sent splice_locked.
+	//
+	// Scenario: node 0 initiates an RBF and sends STFU, but before receiving the counterparty's
+	// STFU response, it mines enough blocks to send splice_locked (setting sent_funding_txid).
+	// When node 1's STFU arrives, the stfu() handler should detect that RBF is no longer valid
+	// and return WarnAndDisconnect instead of sending tx_init_rbf.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+
+	// Complete a splice-in from node 0.
+	let funding_contribution = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+	let (splice_tx, _) = splice_channel(&nodes[0], &nodes[1], channel_id, funding_contribution);
+
+	// Mine the splice tx on both nodes (not enough for splice_locked yet).
+	mine_transaction(&nodes[0], &splice_tx);
+	mine_transaction(&nodes[1], &splice_tx);
+
+	// Provide more UTXOs for the RBF attempt.
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+
+	// Initiate RBF from node 0 with fresh inputs so the RBF round has a unique input that
+	// survives filtering when the failure cleanup runs.
+	let rbf_feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64 + 25);
+	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
+	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
+	let funding_contribution = funding_template
+		.without_prior_contribution(rbf_feerate, FeeRate::MAX)
+		.with_coin_selection_source_sync(&wallet)
+		.add_value(added_value)
+		.build()
+		.unwrap();
+	nodes[0]
+		.node
+		.funding_contributed(&channel_id, &node_id_1, funding_contribution.clone(), None)
+		.unwrap();
+
+	// Node 0 sends STFU (can_initiate_rbf passes since no splice_locked yet).
+	let stfu_init = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+
+	// Deliver STFU to node 1; extract node 1's STFU response but don't deliver it yet.
+	nodes[1].node.handle_stfu(node_id_0, &stfu_init);
+	let stfu_ack = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
+
+	// Mine enough blocks on node 0 so it sends splice_locked (sets sent_funding_txid).
+	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
+	let _splice_locked = get_event_msg!(nodes[0], MessageSendEvent::SendSpliceLocked, node_id_1);
+
+	// Now deliver node 1's STFU to node 0. The stfu() handler should detect that RBF is no
+	// longer valid (we already sent splice_locked) and return WarnAndDisconnect.
+	nodes[0].node.handle_stfu(node_id_1, &stfu_ack);
+
+	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1, "{msg_events:?}");
+	match &msg_events[0] {
+		MessageSendEvent::HandleError { action, .. } => {
+			assert_eq!(
+				*action,
+				msgs::ErrorAction::DisconnectPeerWithWarning {
+					msg: msgs::WarningMessage {
+						channel_id,
+						data: format!(
+							"Channel {} already sent splice_locked, cannot RBF",
+							channel_id,
+						),
+					},
+				}
+			);
+		},
+		_ => panic!("Expected HandleError, got {:?}", msg_events[0]),
+	}
+
+	// Node 0 should emit DiscardFunding + SpliceNegotiationFailed for the RBF contribution.
+	// The change output is filtered (same script_pubkey as the first splice's change output),
+	// but the input survives because it's a different UTXO from the first splice.
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 2, "{events:?}");
+	match &events[0] {
+		Event::DiscardFunding {
+			funding_info: FundingInfo::Contribution { inputs, outputs },
+			..
+		} => {
+			assert!(!inputs.is_empty());
+			assert!(outputs.is_empty());
+		},
+		other => panic!("Expected DiscardFunding, got {:?}", other),
+	}
+	match &events[1] {
+		Event::SpliceNegotiationFailed { channel_id: cid, reason, .. } => {
+			assert_eq!(*cid, channel_id);
+			assert_eq!(*reason, NegotiationFailureReason::CannotInitiateRbf);
+		},
+		other => panic!("Expected SpliceNegotiationFailed, got {:?}", other),
+	}
+}
+
+#[test]
 fn test_splice_zeroconf_no_rbf_feerate() {
 	// Test that splice_channel returns a FundingTemplate with min_rbf_feerate = None for a
 	// zero-conf channel, even when a splice negotiation is in progress.

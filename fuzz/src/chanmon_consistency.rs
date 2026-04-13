@@ -930,6 +930,7 @@ fn assert_action_timeout_awaiting_response(action: &msgs::ErrorAction) {
 			action,
 			msgs::ErrorAction::DisconnectPeerWithWarning { msg }
 			if msg.data.contains("Disconnecting due to timeout awaiting response")
+				|| msg.data.contains("already sent splice_locked, cannot RBF")
 		),
 		"Expected timeout disconnect, got: {:?}",
 		action,
