@@ -285,7 +285,7 @@ pub struct LiquidityManager<
 	lsps0_service_handler: Option<LSPS0ServiceHandler>,
 	lsps1_service_handler: Option<LSPS1ServiceHandler<ES, CM, K, TP>>,
 	lsps1_client_handler: Option<LSPS1ClientHandler<ES, K>>,
-	lsps2_service_handler: Option<LSPS2ServiceHandler<CM, K, T>>,
+	lsps2_service_handler: Option<LSPS2ServiceHandler<CM, K, T, TP>>,
 	lsps2_client_handler: Option<LSPS2ClientHandler<ES, K>>,
 	lsps5_service_handler: Option<LSPS5ServiceHandler<CM, NS, K, TP>>,
 	lsps5_client_handler: Option<LSPS5ClientHandler<ES, K>>,
@@ -379,7 +379,7 @@ where
 		let lsps2_service_handler = if let Some(service_config) = service_config.as_ref() {
 			if let Some(lsps2_service_config) = service_config.lsps2_service_config.as_ref() {
 				if let Some(number) =
-					<LSPS2ServiceHandler<CM, K, T> as LSPSProtocolMessageHandler>::PROTOCOL_NUMBER
+					<LSPS2ServiceHandler<CM, K, T, TP> as LSPSProtocolMessageHandler>::PROTOCOL_NUMBER
 				{
 					supported_protocols.push(number);
 				}
@@ -393,6 +393,7 @@ where
 					kv_store.clone(),
 					transaction_broadcaster.clone(),
 					lsps2_service_config.clone(),
+					time_provider.clone(),
 				)?)
 			} else {
 				None
@@ -542,7 +543,7 @@ where
 	/// Returns a reference to the LSPS2 server-side handler.
 	///
 	/// The returned hendler allows to initiate the LSPS2 service-side flow.
-	pub fn lsps2_service_handler(&self) -> Option<&LSPS2ServiceHandler<CM, K, T>> {
+	pub fn lsps2_service_handler(&self) -> Option<&LSPS2ServiceHandler<CM, K, T, TP>> {
 		self.lsps2_service_handler.as_ref()
 	}
 
@@ -1055,7 +1056,7 @@ where
 	/// Wraps [`LiquidityManager::lsps2_service_handler`].
 	pub fn lsps2_service_handler<'a>(
 		&'a self,
-	) -> Option<LSPS2ServiceHandlerSync<'a, CM, KVStoreSyncWrapper<KS>, T>> {
+	) -> Option<LSPS2ServiceHandlerSync<'a, CM, KVStoreSyncWrapper<KS>, T, TP>> {
 		self.inner.lsps2_service_handler.as_ref().map(|r| LSPS2ServiceHandlerSync::from_inner(r))
 	}
 

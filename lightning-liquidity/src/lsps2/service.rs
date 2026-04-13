@@ -19,13 +19,15 @@ use core::ops::Deref;
 use core::pin::pin;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::task;
+use core::time::Duration;
 
 use crate::events::EventQueue;
 use crate::lsps0::ser::{
-	LSPSMessage, LSPSProtocolMessageHandler, LSPSRequestId, LSPSResponseError,
+	LSPSDateTime, LSPSMessage, LSPSProtocolMessageHandler, LSPSRequestId, LSPSResponseError,
 	JSONRPC_INTERNAL_ERROR_ERROR_CODE, JSONRPC_INTERNAL_ERROR_ERROR_MESSAGE,
 	LSPS0_CLIENT_REJECTED_ERROR_CODE,
 };
+use crate::utils::time::TimeProvider;
 use crate::lsps2::event::LSPS2ServiceEvent;
 use crate::lsps2::payment_queue::{InterceptedHTLC, PaymentQueue};
 use crate::lsps2::utils::{
@@ -497,6 +499,8 @@ struct OutboundJITChannel {
 	opening_fee_params: LSPS2OpeningFeeParams,
 	payment_size_msat: Option<u64>,
 	trust_model: TrustModel,
+	/// The time at which the JIT channel was created (i.e., the buy request was accepted).
+	created_at: LSPSDateTime,
 }
 
 impl_ser_tlv_based!(OutboundJITChannel, {
@@ -505,12 +509,13 @@ impl_ser_tlv_based!(OutboundJITChannel, {
 	(4, opening_fee_params, required),
 	(6, payment_size_msat, option),
 	(8, trust_model, required),
+	(10, created_at, (default_value, LSPSDateTime::new_from_duration_since_epoch(Duration::ZERO))),
 });
 
 impl OutboundJITChannel {
 	fn new(
 		payment_size_msat: Option<u64>, opening_fee_params: LSPS2OpeningFeeParams,
-		user_channel_id: u128, client_trusts_lsp: bool,
+		user_channel_id: u128, client_trusts_lsp: bool, created_at: LSPSDateTime,
 	) -> Self {
 		Self {
 			user_channel_id,
@@ -518,6 +523,7 @@ impl OutboundJITChannel {
 			opening_fee_params,
 			payment_size_msat,
 			trust_model: TrustModel::new(client_trusts_lsp),
+			created_at,
 		}
 	}
 
@@ -722,9 +728,10 @@ macro_rules! get_or_insert_peer_state_entry {
 }
 
 /// The main object allowing to send and receive bLIP-52 / LSPS2 messages.
-pub struct LSPS2ServiceHandler<CM: Deref, K: KVStore + Clone, T: BroadcasterInterface>
+pub struct LSPS2ServiceHandler<CM: Deref, K: KVStore + Clone, T: BroadcasterInterface, TP: Deref + Clone>
 where
 	CM::Target: AChannelManager,
+	TP::Target: TimeProvider,
 {
 	channel_manager: CM,
 	kv_store: K,
@@ -737,17 +744,20 @@ where
 	total_pending_requests: AtomicUsize,
 	config: LSPS2ServiceConfig,
 	persistence_in_flight: AtomicUsize,
+	time_provider: TP,
 }
 
-impl<CM: Deref, K: KVStore + Clone, T: BroadcasterInterface + Clone> LSPS2ServiceHandler<CM, K, T>
+impl<CM: Deref, K: KVStore + Clone, T: BroadcasterInterface + Clone, TP: Deref + Clone>
+	LSPS2ServiceHandler<CM, K, T, TP>
 where
 	CM::Target: AChannelManager,
+	TP::Target: TimeProvider,
 {
 	/// Constructs a `LSPS2ServiceHandler`.
 	pub(crate) fn new(
 		per_peer_state: HashMap<PublicKey, Mutex<PeerState>>, pending_messages: Arc<MessageQueue>,
 		pending_events: Arc<EventQueue<K>>, channel_manager: CM, kv_store: K, tx_broadcaster: T,
-		config: LSPS2ServiceConfig,
+		config: LSPS2ServiceConfig, time_provider: TP,
 	) -> Result<Self, lightning::io::Error> {
 		let mut peer_by_intercept_scid = new_hash_map();
 		let mut peer_by_channel_id = new_hash_map();
@@ -788,6 +798,7 @@ where
 			kv_store,
 			tx_broadcaster,
 			config,
+			time_provider,
 		})
 	}
 
@@ -941,11 +952,15 @@ where
 							peer_by_intercept_scid.insert(intercept_scid, *counterparty_node_id);
 						}
 
+						let created_at = LSPSDateTime::new_from_duration_since_epoch(
+							self.time_provider.duration_since_epoch(),
+						);
 						let outbound_jit_channel = OutboundJITChannel::new(
 							buy_request.payment_size_msat,
 							buy_request.opening_fee_params,
 							user_channel_id,
 							client_trusts_lsp,
+							created_at,
 						);
 
 						peer_state_lock
@@ -2112,10 +2127,11 @@ where
 	}
 }
 
-impl<CM: Deref, K: KVStore + Clone, T: BroadcasterInterface + Clone> LSPSProtocolMessageHandler
-	for LSPS2ServiceHandler<CM, K, T>
+impl<CM: Deref, K: KVStore + Clone, T: BroadcasterInterface + Clone, TP: Deref + Clone>
+	LSPSProtocolMessageHandler for LSPS2ServiceHandler<CM, K, T, TP>
 where
 	CM::Target: AChannelManager,
+	TP::Target: TimeProvider,
 {
 	type ProtocolMessage = LSPS2Message;
 	const PROTOCOL_NUMBER: Option<u16> = Some(2);
@@ -2190,18 +2206,21 @@ pub struct LSPS2ServiceHandlerSync<
 	CM: Deref,
 	K: KVStore + Clone,
 	T: BroadcasterInterface + Clone,
+	TP: Deref + Clone,
 > where
 	CM::Target: AChannelManager,
+	TP::Target: TimeProvider,
 {
-	inner: &'a LSPS2ServiceHandler<CM, K, T>,
+	inner: &'a LSPS2ServiceHandler<CM, K, T, TP>,
 }
 
-impl<'a, CM: Deref, K: KVStore + Clone, T: BroadcasterInterface + Clone>
-	LSPS2ServiceHandlerSync<'a, CM, K, T>
+impl<'a, CM: Deref, K: KVStore + Clone, T: BroadcasterInterface + Clone, TP: Deref + Clone>
+	LSPS2ServiceHandlerSync<'a, CM, K, T, TP>
 where
 	CM::Target: AChannelManager,
+	TP::Target: TimeProvider,
 {
-	pub(crate) fn from_inner(inner: &'a LSPS2ServiceHandler<CM, K, T>) -> Self {
+	pub(crate) fn from_inner(inner: &'a LSPS2ServiceHandler<CM, K, T, TP>) -> Self {
 		Self { inner }
 	}
 
@@ -2980,6 +2999,7 @@ mod tests {
 			opening_fee_params.clone(),
 			user_channel_id,
 			true,
+			LSPSDateTime::from_str("2024-01-01T00:00:00Z").unwrap(),
 		);
 
 		let opening_payment_hash = PaymentHash([42; 32]);
@@ -3058,5 +3078,48 @@ mod tests {
 			broadcast_allowed,
 			"Broadcast was not allowed even though all the skimmed fees were collected"
 		);
+	}
+
+	#[test]
+	fn test_outbound_jit_channel_created_at_stored() {
+		let opening_fee_params = LSPS2OpeningFeeParams {
+			min_fee_msat: 1_000,
+			proportional: 0,
+			valid_until: LSPSDateTime::from_str("2035-05-20T08:30:45Z").unwrap(),
+			min_lifetime: 144,
+			max_client_to_self_delay: 128,
+			min_payment_size_msat: 1,
+			max_payment_size_msat: 10_000_000_000,
+			promise: "ignore".to_string(),
+		};
+		let created_at = LSPSDateTime::from_str("2024-06-15T12:00:00Z").unwrap();
+		let channel =
+			OutboundJITChannel::new(Some(1_000_000), opening_fee_params, 1u128, true, created_at);
+		assert_eq!(channel.created_at, created_at);
+	}
+
+	#[test]
+	fn test_outbound_jit_channel_created_at_round_trips() {
+		use lightning::util::ser::{Readable, Writeable};
+
+		let opening_fee_params = LSPS2OpeningFeeParams {
+			min_fee_msat: 1_000,
+			proportional: 0,
+			valid_until: LSPSDateTime::from_str("2035-05-20T08:30:45Z").unwrap(),
+			min_lifetime: 144,
+			max_client_to_self_delay: 128,
+			min_payment_size_msat: 1,
+			max_payment_size_msat: 10_000_000_000,
+			promise: "ignore".to_string(),
+		};
+		let created_at = LSPSDateTime::from_str("2024-06-15T12:00:00Z").unwrap();
+		let channel =
+			OutboundJITChannel::new(Some(1_000_000), opening_fee_params, 1u128, true, created_at);
+
+		let mut buf = Vec::new();
+		channel.write(&mut buf).unwrap();
+
+		let decoded = <OutboundJITChannel as Readable>::read(&mut &buf[..]).unwrap();
+		assert_eq!(decoded.created_at, created_at);
 	}
 }
