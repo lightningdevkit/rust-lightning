@@ -8445,13 +8445,8 @@ impl<
 						receiver_node_id: Some(receiver_node_id),
 						payment_hash,
 						purpose,
-						amount_msat: claimable_payment
-							.htlcs
-							.iter()
-							.map(|htlc| htlc.mpp_part.value)
-							.sum(),
-						counterparty_skimmed_fee_msat: claimable_payment
-							.total_counterparty_skimmed_msat(),
+						amount_msat,
+						counterparty_skimmed_fee_msat,
 						receiving_channel_ids: claimable_payment.receiving_channel_ids(),
 						claim_deadline,
 						onion_fields: Some(claimable_payment.onion_fields.clone()),
