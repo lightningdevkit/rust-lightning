@@ -3549,21 +3549,63 @@ impl Readable for OnionPacket {
 	}
 }
 
-impl_writeable_msg!(UpdateAddHTLC, {
-	channel_id,
-	htlc_id,
-	amount_msat,
-	payment_hash,
-	cltv_expiry,
-	onion_routing_packet,
-}, {
-	(0, blinding_point, option),
-	(65537, skimmed_fee_msat, option),
-	// TODO: currently we may fail to read the `ChannelManager` if we write a new even TLV in this message
-	// and then downgrade. Once this is fixed, update the type here to match BOLTs PR 989.
-	(75537, hold_htlc, option),
-	(106823, accountable, (option, encoding: (bool, AccountableBool))),
-});
+impl Writeable for UpdateAddHTLC {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.channel_id.write(w)?;
+		self.htlc_id.write(w)?;
+		self.amount_msat.write(w)?;
+		self.payment_hash.write(w)?;
+		self.cltv_expiry.write(w)?;
+		self.onion_routing_packet.write(w)?;
+		encode_tlv_stream!(w, {
+			(0, &self.blinding_point, option),
+			(65537, &self.skimmed_fee_msat, option),
+			// Dummy-hop skimmed fees are derived locally while peeling blinded-path padding hops.
+			// They must not be transmitted by peers, but we still accept the legacy TLV on read
+			// below so older serialized state and peers remain decodable.
+			// TODO: currently we may fail to read the `ChannelManager` if we write a new even TLV in this message
+			// and then downgrade. Once this is fixed, update the type here to match BOLTs PR 989.
+			(75537, &self.hold_htlc, option),
+			(106823, &self.accountable, (option, encoding: (bool, AccountableBool))),
+		});
+		Ok(())
+	}
+}
+
+impl LengthReadable for UpdateAddHTLC {
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(r: &mut R) -> Result<Self, DecodeError> {
+		let channel_id = Readable::read(r)?;
+		let htlc_id = Readable::read(r)?;
+		let amount_msat = Readable::read(r)?;
+		let payment_hash = Readable::read(r)?;
+		let cltv_expiry = Readable::read(r)?;
+		let onion_routing_packet = Readable::read(r)?;
+		let mut blinding_point = None;
+		let mut skimmed_fee_msat = None;
+		let mut _legacy_dummy_hops_skimmed_fee_msat: Option<u64> = None;
+		let mut hold_htlc = None;
+		let mut accountable = None;
+		decode_tlv_stream!(r, {
+			(0, blinding_point, option),
+			(65537, skimmed_fee_msat, option),
+			(65539, _legacy_dummy_hops_skimmed_fee_msat, option),
+			(75537, hold_htlc, option),
+			(106823, accountable, (option, encoding: (bool, AccountableBool))),
+		});
+		Ok(Self {
+			channel_id,
+			htlc_id,
+			amount_msat,
+			payment_hash,
+			cltv_expiry,
+			skimmed_fee_msat,
+			onion_routing_packet,
+			blinding_point,
+			hold_htlc,
+			accountable,
+		})
+	}
+}
 
 impl LengthReadable for OnionMessage {
 	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(r: &mut R) -> Result<Self, DecodeError> {
@@ -7072,5 +7114,19 @@ mod tests {
 		do_test_htlc_accountable_from_u8(Some(7), Some(true));
 		do_test_htlc_accountable_from_u8(Some(3), Some(false));
 		do_test_htlc_accountable_from_u8(Some(0), Some(false));
+	}
+
+	#[test]
+	fn update_add_htlc_ignores_legacy_dummy_hops_skimmed_fee_tlv() {
+		let base_msg = test_update_add_htlc();
+		let mut encoded = base_msg.encode();
+		encoded.extend_from_slice(&[
+			0xfe, 0x00, 0x01, 0x00, 0x03, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x2a,
+		]);
+
+		let decoded: msgs::UpdateAddHTLC =
+			LengthReadable::read_from_fixed_length_buffer(&mut &encoded[..]).unwrap();
+
+		assert_eq!(decoded, base_msg);
 	}
 }

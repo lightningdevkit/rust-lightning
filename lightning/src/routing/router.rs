@@ -13,8 +13,8 @@ use bitcoin::secp256k1::{self, PublicKey, Secp256k1};
 use lightning_invoice::Bolt11Invoice;
 
 use crate::blinded_path::payment::{
-	BlindedPaymentPath, DummyTlvs, ForwardTlvs, PaymentConstraints, PaymentForwardNode,
-	PaymentRelay, ReceiveTlvs,
+	compute_next_htlc_minimum_msat, BlindedPaymentPath, DummyTlvs, ForwardTlvs, PaymentConstraints,
+	PaymentForwardNode, PaymentRelay, ReceiveTlvs,
 };
 use crate::blinded_path::{BlindedHop, Direction, IntroductionNode};
 use crate::crypto::chacha20::ChaCha20;
@@ -150,6 +150,7 @@ where
 		let network_graph = self.network_graph.deref().read_only();
 		let is_recipient_announced =
 			network_graph.nodes().contains_key(&NodeId::from_pubkey(&recipient));
+		let dummy_tlvs = DummyTlvs::default();
 
 		let paths = first_hops.into_iter()
 			.filter(|details| details.counterparty.features.supports_route_blinding())
@@ -176,12 +177,32 @@ where
 					None => return None,
 				};
 
-				let cltv_expiry_delta = payment_relay.cltv_expiry_delta as u32;
+				let cltv_expiry_delta = payment_relay.cltv_expiry_delta as u32
+					+ dummy_tlvs.payment_relay.cltv_expiry_delta as u32 * DEFAULT_PAYMENT_DUMMY_HOPS as u32;
+				let dummy_hops_htlc_minimum_msat = [dummy_tlvs; DEFAULT_PAYMENT_DUMMY_HOPS]
+					.iter()
+					.fold(1, |htlc_minimum_msat, dummy_tlvs| {
+						compute_next_htlc_minimum_msat(
+							htlc_minimum_msat,
+							&dummy_tlvs.payment_constraints,
+							&dummy_tlvs.payment_relay,
+						)
+					});
+				let htlc_minimum_msat = cmp::max(
+					details.inbound_htlc_minimum_msat.unwrap_or(0),
+					cmp::max(
+						tlvs.payment_constraints.htlc_minimum_msat,
+						dummy_hops_htlc_minimum_msat,
+					),
+				);
+				if amount_msats.unwrap_or(u64::MAX) < htlc_minimum_msat {
+					return None;
+				}
 				let payment_constraints = PaymentConstraints {
 					max_cltv_expiry: tlvs.payment_constraints
 						.max_cltv_expiry
 						.saturating_add(cltv_expiry_delta),
-					htlc_minimum_msat: details.inbound_htlc_minimum_msat.unwrap_or(0),
+					htlc_minimum_msat,
 				};
 				Some(PaymentForwardNode {
 					tlvs: ForwardTlvs {
@@ -197,7 +218,7 @@ where
 			})
 			.map(|forward_node| {
 				BlindedPaymentPath::new_with_dummy_hops(
-					&[forward_node], recipient, &[DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS],
+					&[forward_node], recipient, &[dummy_tlvs; DEFAULT_PAYMENT_DUMMY_HOPS],
 					local_node_receive_key, tlvs.clone(), u64::MAX, MIN_FINAL_CLTV_EXPIRY_DELTA, &self.entropy_source, secp_ctx
 				)
 			})
@@ -209,7 +230,7 @@ where
 			_ => {
 				if network_graph.nodes().contains_key(&NodeId::from_pubkey(&recipient)) {
 					BlindedPaymentPath::new_with_dummy_hops(
-						&[], recipient, &[DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS],
+						&[], recipient, &[dummy_tlvs; DEFAULT_PAYMENT_DUMMY_HOPS],
 						local_node_receive_key, tlvs, u64::MAX, MIN_FINAL_CLTV_EXPIRY_DELTA, &self.entropy_source, secp_ctx
 					).map(|path| vec![path])
 				} else {
@@ -4077,21 +4098,26 @@ fn build_route_from_hops_internal<L: Logger>(
 
 #[cfg(test)]
 mod tests {
-	use crate::blinded_path::payment::{BlindedPayInfo, BlindedPaymentPath};
+	use crate::blinded_path::payment::{
+		BlindedPayInfo, BlindedPaymentPath, Bolt12RefundContext, PaymentConstraints,
+		PaymentContext, ReceiveTlvs,
+	};
 	use crate::blinded_path::BlindedHop;
 	use crate::chain::transaction::OutPoint;
 	use crate::crypto::chacha20::ChaCha20;
 	use crate::ln::chan_utils::make_funding_redeemscript;
-	use crate::ln::channel_state::{ChannelCounterparty, ChannelDetails, ChannelShutdownState};
+	use crate::ln::channel_state::{
+		ChannelCounterparty, ChannelDetails, ChannelShutdownState, CounterpartyForwardingInfo,
+	};
 	use crate::ln::channelmanager;
 	use crate::ln::msgs::{UnsignedChannelUpdate, MAX_VALUE_MSAT};
 	use crate::ln::types::ChannelId;
 	use crate::routing::gossip::{EffectiveCapacity, NetworkGraph, NodeId, P2PGossipSync};
 	use crate::routing::router::{
 		add_random_cltv_offset, build_route_from_hops_internal, default_node_features, get_route,
-		BlindedPathCandidate, BlindedTail, CandidateRouteHop, InFlightHtlcs, Path,
+		BlindedPathCandidate, BlindedTail, CandidateRouteHop, DefaultRouter, InFlightHtlcs, Path,
 		PaymentParameters, PublicHopCandidate, Route, RouteHint, RouteHintHop, RouteHop,
-		RouteParameters, RoutingFees, ScorerAccountingForInFlightHtlcs,
+		RouteParameters, Router, RoutingFees, ScorerAccountingForInFlightHtlcs,
 		DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA, MAX_PATH_LENGTH_ESTIMATE,
 	};
 	use crate::routing::scoring::{
@@ -4101,6 +4127,7 @@ mod tests {
 	use crate::routing::test_utils::*;
 	use crate::routing::utxo::UtxoResult;
 	use crate::types::features::{BlindedHopFeatures, ChannelFeatures, InitFeatures, NodeFeatures};
+	use crate::types::payment::PaymentSecret;
 	use crate::util::config::UserConfig;
 	#[cfg(c_bindings)]
 	use crate::util::ser::Writer;
@@ -4120,7 +4147,8 @@ mod tests {
 
 	use crate::io::Cursor;
 	use crate::prelude::*;
-	use crate::sync::{Arc, Mutex};
+	use crate::sign::{RandomBytes, ReceiveAuthKey};
+	use crate::sync::{Arc, Mutex, RwLock};
 
 	#[rustfmt::skip]
 	fn get_channel_details(short_channel_id: Option<u64>, node_id: PublicKey,
@@ -8978,6 +9006,57 @@ mod tests {
 		) {
 			assert_eq!(err, "Failed to find a path to the given destination");
 		} else { panic!() }
+	}
+
+	#[test]
+	fn blinded_path_creation_respects_dummy_tail_htlc_minimum() {
+		let secp_ctx = Secp256k1::new();
+		let logger = Arc::new(ln_test_utils::TestLogger::new());
+		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, Arc::clone(&logger)));
+		let scorer = Arc::new(RwLock::new(ln_test_utils::TestScorer::new()));
+		let router = DefaultRouter::new(
+			Arc::clone(&network_graph),
+			Arc::clone(&logger),
+			Arc::new(RandomBytes::new([42; 32])),
+			Arc::clone(&scorer),
+			Default::default(),
+		);
+		let config = UserConfig::default();
+
+		let mut first_hop = get_channel_details(
+			Some(42),
+			ln_test_utils::pubkey(43),
+			channelmanager::provided_init_features(&config),
+			1_000_000,
+		);
+		first_hop.inbound_capacity_msat = 1_000_000;
+		first_hop.inbound_htlc_minimum_msat = Some(1_000);
+		first_hop.inbound_htlc_maximum_msat = Some(1_000_000);
+		first_hop.counterparty.forwarding_info = Some(CounterpartyForwardingInfo {
+			fee_base_msat: 1_000,
+			fee_proportional_millionths: 0,
+			cltv_expiry_delta: 18,
+		});
+
+		let tlvs = ReceiveTlvs {
+			payment_secret: PaymentSecret([0; 32]),
+			payment_constraints: PaymentConstraints {
+				max_cltv_expiry: u32::MAX,
+				htlc_minimum_msat: 2_500,
+			},
+			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
+		};
+
+		assert!(router
+			.create_blinded_payment_paths(
+				ln_test_utils::pubkey(44),
+				ReceiveAuthKey([41; 32]),
+				vec![first_hop],
+				tlvs,
+				Some(2_000),
+				&secp_ctx,
+			)
+			.is_err());
 	}
 
 	#[test]

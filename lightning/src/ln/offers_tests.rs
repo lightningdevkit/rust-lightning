@@ -244,7 +244,8 @@ fn claim_bolt12_payment_with_extra_fees<'a, 'b, 'c>(
 		node,
 		&expected_paths,
 		payment_preimage,
-	);
+	)
+	.with_dummy_tlvs(&[DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS]);
 
 	if let Some(extra) = expected_extra_fees_msat {
 		args = args.with_expected_extra_total_fees_msat(extra);
@@ -2454,7 +2455,11 @@ fn rejects_keysend_to_non_static_invoice_path() {
 		_ => panic!()
 	};
 
-	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage);
+	let path: &[&Node<'_, '_, '_>] = &[&nodes[1]];
+	let dummy_tlvs = [DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS];
+	claim_payment_along_route(
+		ClaimAlongRouteArgs::new(&nodes[0], &[path], payment_preimage).with_dummy_tlvs(&dummy_tlvs),
+	);
 	expect_recent_payment!(&nodes[0], RecentPaymentDetails::Fulfilled, payment_id);
 
 	// Time out the payment from recent payments so we can attempt to pay it again via keysend.
@@ -2481,7 +2486,7 @@ fn rejects_keysend_to_non_static_invoice_path() {
 	let args = PassAlongPathArgs::new(&nodes[0], route[0], amt_msat, payment_hash, ev)
 		.with_payment_preimage(payment_preimage)
 		.expect_failure(HTLCHandlingFailureType::Receive { payment_hash })
-		.with_dummy_tlvs(&[DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS]);
+		.with_dummy_tlvs(&dummy_tlvs);
 	do_pass_along_path(args);
 	let mut updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_update_fail_malformed_htlc(nodes[1].node.get_our_node_id(), &updates.update_fail_malformed_htlcs[0]);
