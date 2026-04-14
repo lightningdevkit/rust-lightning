@@ -250,13 +250,16 @@ fn mpp_retry_overpay() {
 	let (mut route, hash, payment_preimage, pay_secret) =
 		get_route_and_payment_hash!(nodes[0], nodes[3], payment_params, amt_msat, max_fee);
 
-	// Check we overpay on the second path which we're about to fail.
+	// Check we overpay on the second path which we're about to fail. Path ordering is not fixed,
+	// so we identify paths by first-hop pubkey.
 	assert_eq!(chan_1_update.contents.fee_proportional_millionths, 0);
-	let overpaid_amount_1 = route.paths[0].fee_msat() as u32 - chan_1_update.contents.fee_base_msat;
+	let path_via_b = route.paths.iter().find(|p| p.hops[0].pubkey == node_b_id).unwrap();
+	let overpaid_amount_1 = path_via_b.fee_msat() as u32 - chan_1_update.contents.fee_base_msat;
 	assert_eq!(overpaid_amount_1, 0);
 
 	assert_eq!(chan_2_update.contents.fee_proportional_millionths, 0);
-	let overpaid_amount_2 = route.paths[1].fee_msat() as u32 - chan_2_update.contents.fee_base_msat;
+	let path_via_c = route.paths.iter().find(|p| p.hops[0].pubkey == node_c_id).unwrap();
+	let overpaid_amount_2 = path_via_c.fee_msat() as u32 - chan_2_update.contents.fee_base_msat;
 
 	let total_overpaid_amount = overpaid_amount_1 + overpaid_amount_2;
 
@@ -304,11 +307,13 @@ fn mpp_retry_overpay() {
 	// Rebalance the channel so the second half of the payment can succeed.
 	send_payment(&nodes[3], &[&nodes[2]], 38_000_000);
 
-	// Retry the second half of the payment and make sure it succeeds.
-	let first_path_value = route.paths[0].final_value_msat();
+	// Retry the second half of the payment and make sure it succeeds. Identify the successful
+	// path (through nodes[1]) by first-hop pubkey, since path ordering is not stable.
+	let path_via_b_idx = route.paths.iter().position(|p| p.hops[0].pubkey == node_b_id).unwrap();
+	let first_path_value = route.paths[path_via_b_idx].final_value_msat();
 	assert_eq!(first_path_value, 36_000_000);
 
-	route.paths.remove(0);
+	route.paths.remove(path_via_b_idx);
 	route_params.final_value_msat -= first_path_value;
 	let chan_4_scid = chan_4_update.contents.short_channel_id;
 	route_params.payment_params.previously_failed_channels.push(chan_4_scid);
@@ -2023,8 +2028,18 @@ fn preflight_probes_yield_event() {
 	let route_params = RouteParameters::from_payment_params_and_value(payment_params, recv_value);
 	let res = nodes[0].node.send_preflight_probes(route_params, None).unwrap();
 
+	// Path ordering depends on outbound SCID selection. Determine which res entry corresponds
+	// to which path by comparing the alias SCIDs of the two channels.
+	let node_b_id = nodes[1].node.get_our_node_id();
+	let node_c_id = nodes[2].node.get_our_node_id();
+	let chans = nodes[0].node.list_usable_channels();
+	let chan_to_b = chans.iter().find(|c| c.counterparty.node_id == node_b_id).unwrap();
+	let chan_to_c = chans.iter().find(|c| c.counterparty.node_id == node_c_id).unwrap();
+	let b_first = chan_to_b.get_outbound_payment_scid() < chan_to_c.get_outbound_payment_scid();
+	let (hash_b, hash_c) = if b_first { (res[0].0, res[1].0) } else { (res[1].0, res[0].0) };
+
 	let expected_route: &[(&[&Node], PaymentHash)] =
-		&[(&[&nodes[1], &nodes[3]], res[0].0), (&[&nodes[2], &nodes[3]], res[1].0)];
+		&[(&[&nodes[1], &nodes[3]], hash_b), (&[&nodes[2], &nodes[3]], hash_c)];
 
 	assert_eq!(res.len(), expected_route.len());
 
@@ -2319,7 +2334,7 @@ fn test_trivial_inflight_htlc_tracking() {
 		let chan_1_used_liquidity = inflight_htlcs.used_liquidity_msat(
 			&NodeId::from_pubkey(&node_a_id),
 			&NodeId::from_pubkey(&node_b_id),
-			channel_1.funding().get_short_channel_id().unwrap(),
+			channel_1.context().outbound_scid_alias(),
 		);
 		// First hop accounts for expected 1000 msat fee
 		assert_eq!(chan_1_used_liquidity, Some(501000));
@@ -2429,7 +2444,7 @@ fn test_holding_cell_inflight_htlcs() {
 		let used_liquidity = inflight_htlcs.used_liquidity_msat(
 			&NodeId::from_pubkey(&node_a_id),
 			&NodeId::from_pubkey(&node_b_id),
-			channel.funding().get_short_channel_id().unwrap(),
+			channel.context().outbound_scid_alias(),
 		);
 
 		assert_eq!(used_liquidity, Some(2000000));

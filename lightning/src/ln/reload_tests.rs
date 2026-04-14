@@ -956,6 +956,12 @@ fn test_mpp_claim_htlc_fulfills_unblocked_on_reload() {
 	let chan_id_b = chan_b.2;
 	let scid_a = chan_a.0.contents.short_channel_id;
 	let scid_b = chan_b.0.contents.short_channel_id;
+	// Routes to a directly-connected peer use the outbound SCID alias, so payment path success
+	// events report the alias rather than the real SCID announced in gossip.
+	let payment_scid_a = nodes[0].node.list_channels().iter()
+		.find(|chan| chan.channel_id == chan_id_a).unwrap().get_outbound_payment_scid().unwrap();
+	let payment_scid_b = nodes[0].node.list_channels().iter()
+		.find(|chan| chan.channel_id == chan_id_b).unwrap().get_outbound_payment_scid().unwrap();
 
 	// Send an MPP payment to nodes[1]. `send_along_route_with_secret` leaves the payment
 	// claimable but unclaimed, so nodes[1] still has both inbound HTLCs live when we start
@@ -1214,7 +1220,7 @@ fn test_mpp_claim_htlc_fulfills_unblocked_on_reload() {
 		}
 	}
 	assert!(saw_startup_payment_sent);
-	assert_eq!(startup_success_scids, vec![scid_a]);
+	assert_eq!(startup_success_scids, vec![payment_scid_a]);
 
 	// Handling the claim event runs the event-completion action that releases the remaining
 	// RAA-blocked monitor update. The startup unblock path already released channel A, so channel B
@@ -1270,7 +1276,7 @@ fn test_mpp_claim_htlc_fulfills_unblocked_on_reload() {
 		Event::PaymentPathSuccessful { payment_hash: Some(path_hash), path, .. } => {
 			assert_eq!(*path_hash, payment_hash);
 			assert_eq!(path.hops.len(), 1);
-			assert_eq!(path.hops[0].short_channel_id, scid_b);
+			assert_eq!(path.hops[0].short_channel_id, payment_scid_b);
 		},
 		_ => panic!("Unexpected final payment event: {:?}", final_payment_events[0]),
 	}
