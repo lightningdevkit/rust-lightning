@@ -1236,6 +1236,9 @@ pub(super) struct MonitorRestoreUpdates {
 	/// (the outbound edge), along with their outbound amounts. Useful to store in the inbound HTLC
 	/// to ensure it gets resolved.
 	pub committed_outbound_htlc_sources: Vec<(HTLCPreviousHopData, u64)>,
+	/// Whether the restoration changed serialized channel state that needs ChannelManager
+	/// persistence.
+	pub requires_channel_manager_persistence: bool,
 }
 
 /// The return value of `signer_maybe_unblocked`
@@ -9860,6 +9863,9 @@ where
 		assert!(self.context.channel_state.is_monitor_update_in_progress());
 		self.context.channel_state.clear_monitor_update_in_progress();
 		assert_eq!(self.blocked_monitor_updates_pending(), 0);
+		// Some cases below may not strictly require ChannelManager persistence, but we err on
+		// the conservative side to avoid missing state changes.
+		let mut requires_channel_manager_persistence = false;
 
 		// We want to clear that the monitor update for our `tx_signatures` has completed, but
 		// we may still need to hold back the message until it's ready to be sent.
@@ -9887,6 +9893,7 @@ where
 					splice_negotiated: None,
 					splice_locked: None,
 				});
+				requires_channel_manager_persistence = true;
 				if let Some(funding_tx) = signing_session.signed_tx() {
 					self.on_tx_signatures_exchange(
 						funding_tx_signed.as_mut().unwrap(),
@@ -9911,7 +9918,8 @@ where
 			{
 				// Broadcast only if not yet confirmed
 				if self.funding.get_funding_tx_confirmation_height().is_none() {
-					funding_broadcastable = Some(funding_transaction.clone())
+					funding_broadcastable = Some(funding_transaction.clone());
+					requires_channel_manager_persistence = true;
 				}
 			}
 		}
@@ -9937,20 +9945,27 @@ where
 			assert!(!self.funding.is_outbound() || self.context.minimum_depth == Some(0),
 				"Funding transaction broadcast by the local client before it should have - LDK didn't do it!");
 			self.context.monitor_pending_channel_ready = false;
-			self.get_channel_ready(logger)
+			let channel_ready = self.get_channel_ready(logger);
+			requires_channel_manager_persistence |= channel_ready.is_some();
+			channel_ready
 		} else { None };
 
 		let announcement_sigs = self.get_announcement_sigs(node_signer, chain_hash, user_config, best_block_height, logger);
+		requires_channel_manager_persistence |= announcement_sigs.is_some();
 
 		let mut accepted_htlcs = Vec::new();
 		mem::swap(&mut accepted_htlcs, &mut self.context.monitor_pending_forwards);
+		requires_channel_manager_persistence |= !accepted_htlcs.is_empty();
 		let mut failed_htlcs = Vec::new();
 		mem::swap(&mut failed_htlcs, &mut self.context.monitor_pending_failures);
+		requires_channel_manager_persistence |= !failed_htlcs.is_empty();
 		let mut finalized_claimed_htlcs = Vec::new();
 		mem::swap(&mut finalized_claimed_htlcs, &mut self.context.monitor_pending_finalized_fulfills);
+		requires_channel_manager_persistence |= !finalized_claimed_htlcs.is_empty();
 		let mut pending_update_adds = Vec::new();
 		mem::swap(&mut pending_update_adds, &mut self.context.monitor_pending_update_adds);
-		let committed_outbound_htlc_sources = self.context.pending_outbound_htlcs.iter().filter_map(|htlc| {
+		requires_channel_manager_persistence |= !pending_update_adds.is_empty();
+		let committed_outbound_htlc_sources: Vec<(HTLCPreviousHopData, u64)> = self.context.pending_outbound_htlcs.iter().filter_map(|htlc| {
 			if let &OutboundHTLCState::LocalAnnounced(_) = &htlc.state {
 				if let HTLCSource::PreviousHopData(prev_hop_data) = &htlc.source {
 					return Some((prev_hop_data.clone(), htlc.amount_msat))
@@ -9958,6 +9973,7 @@ where
 			}
 			None
 		}).collect();
+		requires_channel_manager_persistence |= !committed_outbound_htlc_sources.is_empty();
 
 		if self.context.channel_state.is_peer_disconnected() {
 			self.context.monitor_pending_revoke_and_ack = false;
@@ -9965,8 +9981,9 @@ where
 			return MonitorRestoreUpdates {
 				raa: None, commitment_update: None, commitment_order: RAACommitmentOrder::RevokeAndACKFirst,
 				accepted_htlcs, failed_htlcs, finalized_claimed_htlcs, pending_update_adds,
-				funding_broadcastable, channel_ready, announcement_sigs, funding_tx_signed,
-				channel_ready_order, committed_outbound_htlc_sources
+				funding_broadcastable, channel_ready, channel_ready_order, announcement_sigs,
+				funding_tx_signed, committed_outbound_htlc_sources,
+				requires_channel_manager_persistence,
 			};
 		}
 
@@ -9996,8 +10013,9 @@ where
 			match commitment_order { RAACommitmentOrder::CommitmentFirst => "commitment", RAACommitmentOrder::RevokeAndACKFirst => "RAA"});
 		MonitorRestoreUpdates {
 			raa, commitment_update, commitment_order, accepted_htlcs, failed_htlcs, finalized_claimed_htlcs,
-			pending_update_adds, funding_broadcastable, channel_ready, announcement_sigs, funding_tx_signed,
-			channel_ready_order, committed_outbound_htlc_sources
+			pending_update_adds, funding_broadcastable, channel_ready, channel_ready_order,
+			announcement_sigs, funding_tx_signed, committed_outbound_htlc_sources,
+			requires_channel_manager_persistence,
 		}
 	}
 
