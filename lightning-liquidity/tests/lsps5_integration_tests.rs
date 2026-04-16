@@ -1838,3 +1838,89 @@ fn lsps5_service_persist_resets_in_flight_counter_on_io_error() {
 		res2,
 	);
 }
+
+#[test]
+fn prune_webhook_removes_registered_webhook() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let (lsps_nodes, _) = lsps5_test_setup(nodes, Arc::new(DefaultTimeProvider));
+	let LSPSNodes { service_node, client_node, .. } = lsps_nodes;
+	create_chan_between_nodes(&service_node.inner, &client_node.inner);
+
+	let service_node_id = service_node.inner.node.get_our_node_id();
+	let client_node_id = client_node.inner.node.get_our_node_id();
+	let service_handler = service_node.liquidity_manager.lsps5_service_handler().unwrap();
+
+	// assert_lsps5_accept registers a webhook with app_name "App".
+	let app_name = LSPS5AppName::from_string("App".to_string()).unwrap();
+
+	// Register a webhook through the normal request flow.
+	assert_lsps5_accept(&service_node, &client_node);
+
+	// The notification must be emitted before pruning to confirm the webhook is registered.
+	let result = service_handler.notify_payment_incoming(client_node_id);
+	assert!(result.is_ok());
+	assert!(service_node.liquidity_manager.next_event().is_some(), "Webhook notification expected");
+
+	// Prune the webhook.
+	let prune_result = service_handler.prune_webhook(client_node_id, &app_name);
+	assert!(prune_result.is_ok(), "prune_webhook should succeed for a registered webhook");
+
+	// After pruning, notify should succeed but produce no event (no webhooks left).
+	let result_after = service_handler.notify_payment_incoming(client_node_id);
+	assert!(result_after.is_ok());
+	assert!(
+		service_node.liquidity_manager.next_event().is_none(),
+		"No notification event expected after pruning"
+	);
+
+	// A second prune of the same app_name must fail.
+	let second_prune = service_handler.prune_webhook(client_node_id, &app_name);
+	assert!(second_prune.is_err(), "prune_webhook should fail when the webhook is already removed");
+
+	let _ = service_node_id; // suppress unused warning
+}
+
+#[test]
+fn prune_webhook_fails_for_unknown_counterparty() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let (lsps_nodes, _) = lsps5_test_setup(nodes, Arc::new(DefaultTimeProvider));
+	let LSPSNodes { service_node, client_node, .. } = lsps_nodes;
+	create_chan_between_nodes(&service_node.inner, &client_node.inner);
+
+	let client_node_id = client_node.inner.node.get_our_node_id();
+	let service_handler = service_node.liquidity_manager.lsps5_service_handler().unwrap();
+
+	let app_name = LSPS5AppName::from_string("SomeApp".to_string()).unwrap();
+
+	// Pruning for a peer with no state must return an error.
+	let result = service_handler.prune_webhook(client_node_id, &app_name);
+	assert!(result.is_err(), "prune_webhook should fail when counterparty has no state");
+}
+
+#[test]
+fn prune_webhook_fails_for_unknown_app_name() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let (lsps_nodes, _) = lsps5_test_setup(nodes, Arc::new(DefaultTimeProvider));
+	let LSPSNodes { service_node, client_node, .. } = lsps_nodes;
+	create_chan_between_nodes(&service_node.inner, &client_node.inner);
+
+	let client_node_id = client_node.inner.node.get_our_node_id();
+	let service_handler = service_node.liquidity_manager.lsps5_service_handler().unwrap();
+
+	// Register one webhook.
+	assert_lsps5_accept(&service_node, &client_node);
+
+	// Pruning with a different app_name must fail.
+	let unknown_app_name = LSPS5AppName::from_string("UnknownApp".to_string()).unwrap();
+	let result = service_handler.prune_webhook(client_node_id, &unknown_app_name);
+	assert!(result.is_err(), "prune_webhook should fail for an unregistered app_name");
+}
