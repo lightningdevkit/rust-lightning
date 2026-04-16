@@ -683,9 +683,15 @@ pub fn splice_channel<'a, 'b, 'c, 'd>(
 	(splice_tx, new_funding_script)
 }
 
+pub struct SpliceLockedResult {
+	pub stfu: Option<MessageSendEvent>,
+	pub node_a_discarded: Vec<(Vec<bitcoin::OutPoint>, Vec<TxOut>)>,
+	pub node_b_discarded: Vec<(Vec<bitcoin::OutPoint>, Vec<TxOut>)>,
+}
+
 pub fn lock_splice_after_blocks<'a, 'b, 'c, 'd>(
 	node_a: &'a Node<'b, 'c, 'd>, node_b: &'a Node<'b, 'c, 'd>, num_blocks: u32,
-) -> Option<MessageSendEvent> {
+) -> SpliceLockedResult {
 	connect_blocks(node_a, num_blocks);
 	connect_blocks(node_b, num_blocks);
 
@@ -698,7 +704,7 @@ pub fn lock_splice_after_blocks<'a, 'b, 'c, 'd>(
 pub fn lock_splice<'a, 'b, 'c, 'd>(
 	node_a: &'a Node<'b, 'c, 'd>, node_b: &'a Node<'b, 'c, 'd>,
 	splice_locked_for_node_b: &msgs::SpliceLocked, is_0conf: bool, expected_discard_txids: &[Txid],
-) -> Option<MessageSendEvent> {
+) -> SpliceLockedResult {
 	let prev_funding_txid = node_a
 		.chain_monitor
 		.chain_monitor
@@ -735,29 +741,23 @@ pub fn lock_splice<'a, 'b, 'c, 'd>(
 		}
 	}
 
-	let mut all_discard_txids = Vec::new();
-	let expected_num_events = 1 + expected_discard_txids.len();
-	for node in [node_a, node_b] {
+	let mut node_a_discarded = Vec::new();
+	let mut node_b_discarded = Vec::new();
+	for (idx, node) in [node_a, node_b].into_iter().enumerate() {
 		let events = node.node.get_and_clear_pending_events();
-		assert_eq!(events.len(), expected_num_events, "{events:?}");
+		assert!(!events.is_empty(), "Expected at least ChannelReady, got {events:?}");
 		assert!(matches!(events[0], Event::ChannelReady { .. }));
-		let discard_txids: Vec<_> = events[1..]
-			.iter()
-			.map(|e| match e {
-				Event::DiscardFunding { funding_info: FundingInfo::Tx { transaction }, .. } => {
-					transaction.compute_txid()
-				},
+		let discarded = if idx == 0 { &mut node_a_discarded } else { &mut node_b_discarded };
+		for event in &events[1..] {
+			match event {
 				Event::DiscardFunding {
-					funding_info: FundingInfo::OutPoint { outpoint }, ..
-				} => outpoint.txid,
-				other => panic!("Expected DiscardFunding, got {:?}", other),
-			})
-			.collect();
-		for txid in expected_discard_txids {
-			assert!(discard_txids.contains(txid), "Missing DiscardFunding for txid {}", txid);
-		}
-		if all_discard_txids.is_empty() {
-			all_discard_txids = discard_txids;
+					funding_info: FundingInfo::Contribution { inputs, outputs },
+					..
+				} => {
+					discarded.push((inputs.clone(), outputs.clone()));
+				},
+				other => panic!("Expected DiscardFunding with Contribution, got {:?}", other),
+			}
 		}
 		check_added_monitors(node, 1);
 	}
@@ -795,18 +795,18 @@ pub fn lock_splice<'a, 'b, 'c, 'd>(
 	// old funding as it is no longer being tracked.
 	for node in [node_a, node_b] {
 		node.chain_source.remove_watched_by_txid(prev_funding_txid);
-		for txid in &all_discard_txids {
+		for txid in expected_discard_txids {
 			node.chain_source.remove_watched_by_txid(*txid);
 		}
 	}
 
-	node_a_stfu.or(node_b_stfu)
+	SpliceLockedResult { stfu: node_a_stfu.or(node_b_stfu), node_a_discarded, node_b_discarded }
 }
 
 pub fn lock_rbf_splice_after_blocks<'a, 'b, 'c, 'd>(
 	node_a: &'a Node<'b, 'c, 'd>, node_b: &'a Node<'b, 'c, 'd>, tx: &Transaction, num_blocks: u32,
 	expected_discard_txids: &[Txid],
-) -> Option<MessageSendEvent> {
+) -> SpliceLockedResult {
 	mine_transaction(node_a, tx);
 	mine_transaction(node_b, tx);
 
@@ -1400,7 +1400,7 @@ fn fails_initiating_concurrent_splices(reconnect: bool) {
 
 	mine_transaction(&nodes[0], &splice_tx);
 	mine_transaction(&nodes[1], &splice_tx);
-	let stfu = lock_splice_after_blocks(&nodes[0], &nodes[1], ANTI_REORG_DELAY - 1);
+	let stfu = lock_splice_after_blocks(&nodes[0], &nodes[1], ANTI_REORG_DELAY - 1).stfu;
 	// Node 0 had called splice_channel (line above) but never funding_contributed, so no stfu
 	// is expected from node 0 at this point.
 	assert!(stfu.is_none());
@@ -1428,7 +1428,7 @@ fn test_initiating_splice_holds_stfu_with_pending_splice() {
 	// Mine and lock the splice.
 	mine_transaction(&nodes[0], &splice_tx);
 	mine_transaction(&nodes[1], &splice_tx);
-	let stfu = lock_splice_after_blocks(&nodes[0], &nodes[1], 5);
+	let stfu = lock_splice_after_blocks(&nodes[0], &nodes[1], 5).stfu;
 	assert!(stfu.is_none());
 }
 
@@ -1664,7 +1664,7 @@ fn do_test_splice_tiebreak(
 		mine_transaction(&nodes[1], &tx);
 
 		// After splice_locked, node 1's preserved QuiescentAction triggers STFU for retry.
-		let node_1_stfu = lock_splice_after_blocks(&nodes[0], &nodes[1], ANTI_REORG_DELAY - 1);
+		let node_1_stfu = lock_splice_after_blocks(&nodes[0], &nodes[1], ANTI_REORG_DELAY - 1).stfu;
 		let stfu_1 = if let Some(MessageSendEvent::SendStfu { msg, .. }) = node_1_stfu {
 			assert!(msg.initiator);
 			msg
@@ -4712,13 +4712,124 @@ fn test_splice_rbf_acceptor_basic() {
 	expect_splice_pending_event(&nodes[1], &node_id_0);
 
 	// Step 11: Mine, lock, and verify DiscardFunding for the replaced splice candidate.
-	lock_rbf_splice_after_blocks(
+	let result = lock_rbf_splice_after_blocks(
 		&nodes[0],
 		&nodes[1],
 		&rbf_tx,
 		ANTI_REORG_DELAY - 1,
 		&[first_splice_tx.compute_txid()],
 	);
+
+	// The test wallet reuses the same UTXO across RBF rounds (the wallet doesn't track
+	// in-flight spends), so all contributed inputs are in the promoted tx. No unique
+	// contributions to discard.
+	assert!(result.node_a_discarded.is_empty());
+	assert!(result.node_b_discarded.is_empty());
+}
+
+#[test]
+fn test_splice_rbf_discard_unique_contribution() {
+	// Verify that DiscardFunding events contain the correct unique inputs and outputs when the
+	// RBF round uses different UTXOs than the initial splice. By clearing the wallet between
+	// rounds and providing fresh UTXOs, we force distinct inputs per round. Round 0 also
+	// includes a splice-out output with a unique script_pubkey not present in the RBF tx.
+	// When the RBF is promoted, round 0's inputs and splice-out output should appear in
+	// DiscardFunding. The change output is filtered because it shares a script_pubkey with the
+	// promoted tx's change output.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+
+	// Round 0: Splice-in-and-out from node 0 with a splice-out output.
+	let splice_out_output = TxOut {
+		value: Amount::from_sat(5_000),
+		script_pubkey: ScriptBuf::new_p2wpkh(&WPubkeyHash::all_zeros()),
+	};
+	let funding_contribution = do_initiate_splice_in_and_out(
+		&nodes[0],
+		&nodes[1],
+		channel_id,
+		added_value,
+		vec![splice_out_output.clone()],
+	);
+	let round_0_inputs: Vec<_> = funding_contribution.contributed_inputs().collect();
+	assert!(!round_0_inputs.is_empty());
+
+	let (first_splice_tx, new_funding_script) =
+		splice_channel(&nodes[0], &nodes[1], channel_id, funding_contribution);
+
+	// Clear node 0's wallet so round 1 must use different UTXOs.
+	nodes[0].wallet_source.clear_utxos();
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+
+	// Round 1: RBF with fresh UTXOs, splice-in only (no splice-out output).
+	let rbf_feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64 + 25);
+	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
+	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
+	let funding_contribution = funding_template
+		.without_prior_contribution(rbf_feerate, FeeRate::MAX)
+		.with_coin_selection_source_sync(&wallet)
+		.add_value(added_value)
+		.build()
+		.unwrap();
+	nodes[0]
+		.node
+		.funding_contributed(&channel_id, &node_id_1, funding_contribution.clone(), None)
+		.unwrap();
+	let round_1_inputs: Vec<_> = funding_contribution.contributed_inputs().collect();
+	assert_ne!(round_0_inputs, round_1_inputs, "Rounds must use different UTXOs");
+
+	complete_rbf_handshake(&nodes[0], &nodes[1]);
+
+	complete_interactive_funding_negotiation(
+		&nodes[0],
+		&nodes[1],
+		channel_id,
+		funding_contribution,
+		new_funding_script.clone(),
+	);
+
+	let (rbf_tx, splice_locked) = sign_interactive_funding_tx(
+		&nodes[0],
+		&nodes[1],
+		false,
+		Some(first_splice_tx.compute_txid()),
+	);
+	assert!(splice_locked.is_none());
+
+	expect_splice_pending_event(&nodes[0], &node_id_1);
+	expect_splice_pending_event(&nodes[1], &node_id_0);
+
+	let result = lock_rbf_splice_after_blocks(
+		&nodes[0],
+		&nodes[1],
+		&rbf_tx,
+		ANTI_REORG_DELAY - 1,
+		&[first_splice_tx.compute_txid()],
+	);
+
+	// Node 0's round 0 inputs are NOT in the promoted tx (which uses round 1's fresh UTXOs),
+	// so they appear as unique contributions to discard. The splice-out output also survives
+	// because its script_pubkey is not in the promoted tx. The change output is filtered
+	// because it shares a script_pubkey with the promoted tx's change output.
+	assert_eq!(result.node_a_discarded.len(), 1);
+	let (ref inputs, ref outputs) = result.node_a_discarded[0];
+	assert_eq!(*inputs, round_0_inputs);
+	assert_eq!(*outputs, vec![splice_out_output]);
+
+	// Node 1 (non-contributing acceptor) has no contributions to discard.
+	assert!(result.node_b_discarded.is_empty());
 }
 
 #[test]
@@ -5663,13 +5774,18 @@ pub fn do_test_splice_rbf_tiebreak(
 		expect_splice_pending_event(&nodes[1], &node_id_0);
 
 		// Mine, lock, and verify DiscardFunding for the replaced splice candidate.
-		lock_rbf_splice_after_blocks(
+		let result = lock_rbf_splice_after_blocks(
 			&nodes[0],
 			&nodes[1],
 			&rbf_tx,
 			ANTI_REORG_DELAY - 1,
 			&[first_splice_tx.compute_txid()],
 		);
+
+		// The test wallet reuses the same UTXOs across RBF rounds, so all contributed inputs
+		// are in the promoted tx and nothing is unique to discard.
+		assert!(result.node_a_discarded.is_empty());
+		assert!(result.node_b_discarded.is_empty());
 	} else {
 		// Acceptor does not contribute — complete with only node 0's inputs/outputs.
 		complete_interactive_funding_negotiation_for_both(
@@ -5698,14 +5814,14 @@ pub fn do_test_splice_rbf_tiebreak(
 		// Mine, lock, and verify DiscardFunding for the replaced splice candidate.
 		// Node 1's QuiescentAction was preserved, so after splice_locked it re-initiates
 		// quiescence to retry its contribution in a future splice.
-		let node_b_stfu = lock_rbf_splice_after_blocks(
+		let result = lock_rbf_splice_after_blocks(
 			&nodes[0],
 			&nodes[1],
 			&rbf_tx,
 			ANTI_REORG_DELAY - 1,
 			&[first_splice_tx.compute_txid()],
 		);
-		let stfu_1 = if let Some(MessageSendEvent::SendStfu { msg, .. }) = node_b_stfu {
+		let stfu_1 = if let Some(MessageSendEvent::SendStfu { msg, .. }) = result.stfu {
 			msg
 		} else {
 			panic!("Expected SendStfu from node 1");
@@ -5985,13 +6101,18 @@ fn test_splice_rbf_acceptor_recontributes() {
 	expect_splice_pending_event(&nodes[1], &node_id_0);
 
 	// Step 12: Mine, lock, and verify DiscardFunding for the replaced splice candidate.
-	lock_rbf_splice_after_blocks(
+	let result = lock_rbf_splice_after_blocks(
 		&nodes[0],
 		&nodes[1],
 		&rbf_tx,
 		ANTI_REORG_DELAY - 1,
 		&[first_splice_tx.compute_txid()],
 	);
+
+	// The test wallet reuses the same UTXOs across RBF rounds, so all contributed inputs
+	// are in the promoted tx and nothing is unique to discard.
+	assert!(result.node_a_discarded.is_empty());
+	assert!(result.node_b_discarded.is_empty());
 }
 
 #[test]
@@ -6314,13 +6435,18 @@ fn test_splice_rbf_sequential() {
 	// --- Mine and lock the final RBF, verifying DiscardFunding for both replaced candidates. ---
 	let splice_tx_0_txid = splice_tx_0.compute_txid();
 	let splice_tx_1_txid = splice_tx_1.compute_txid();
-	lock_rbf_splice_after_blocks(
+	let result = lock_rbf_splice_after_blocks(
 		&nodes[0],
 		&nodes[1],
 		&rbf_tx_final,
 		ANTI_REORG_DELAY - 1,
 		&[splice_tx_0_txid, splice_tx_1_txid],
 	);
+
+	// The test wallet reuses the same UTXOs across RBF rounds, so all contributed inputs
+	// are in the promoted tx and nothing is unique to discard.
+	assert!(result.node_a_discarded.is_empty());
+	assert!(result.node_b_discarded.is_empty());
 }
 
 #[test]
@@ -6913,7 +7039,7 @@ fn test_funding_contributed_rbf_adjustment_exceeds_max_feerate() {
 	// Mine and lock the pending splice → pending_splice is cleared.
 	mine_transaction(&nodes[0], &_splice_tx);
 	mine_transaction(&nodes[1], &_splice_tx);
-	let stfu = lock_splice_after_blocks(&nodes[0], &nodes[1], ANTI_REORG_DELAY - 1);
+	let stfu = lock_splice_after_blocks(&nodes[0], &nodes[1], ANTI_REORG_DELAY - 1).stfu;
 
 	// STFU is sent during lock — the splice proceeds as a fresh splice (not RBF).
 	let stfu = match stfu {
@@ -6990,7 +7116,7 @@ fn test_funding_contributed_rbf_adjustment_insufficient_budget() {
 	// Mine and lock the pending splice → pending_splice is cleared.
 	mine_transaction(&nodes[0], &_splice_tx);
 	mine_transaction(&nodes[1], &_splice_tx);
-	let stfu = lock_splice_after_blocks(&nodes[0], &nodes[1], ANTI_REORG_DELAY - 1);
+	let stfu = lock_splice_after_blocks(&nodes[0], &nodes[1], ANTI_REORG_DELAY - 1).stfu;
 
 	// STFU is sent during lock — the splice proceeds as a fresh splice (not RBF).
 	let stfu = match stfu {

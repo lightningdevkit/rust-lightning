@@ -11671,7 +11671,6 @@ where
 				.iter_mut()
 				.find(|funding| funding.get_funding_txid() == Some(splice_txid))
 				.unwrap();
-			let prev_funding_txid = self.funding.get_funding_txid();
 
 			if let Some(scid) = self.funding.short_channel_id {
 				self.context.historical_scids.push(scid);
@@ -11679,22 +11678,21 @@ where
 
 			core::mem::swap(&mut self.funding, funding);
 
-			// The swap above places the previous `FundingScope` into `pending_funding`.
-			pending_splice
-				.negotiated_candidates
-				.drain(..)
-				.filter(|funding| funding.get_funding_txid() != prev_funding_txid)
-				.map(|mut funding| {
-					funding
-						.funding_transaction
-						.take()
-						.map(|tx| FundingInfo::Tx { transaction: tx })
-						.unwrap_or_else(|| FundingInfo::OutPoint {
-							outpoint: funding
-								.get_funding_txo()
-								.expect("Negotiated splices must have a known funding outpoint"),
-						})
+			let promoted_tx = self
+				.funding
+				.funding_transaction
+				.as_ref()
+				.expect("Promoted splice funding should have a funding transaction");
+			let contributions = core::mem::take(&mut pending_splice.contributions);
+			contributions
+				.into_iter()
+				.filter_map(|contribution| {
+					contribution.into_unique_contributions(
+						promoted_tx.input.iter().map(|i| i.previous_output),
+						promoted_tx.output.iter(),
+					)
 				})
+				.map(|(inputs, outputs)| FundingInfo::Contribution { inputs, outputs })
 				.collect::<Vec<_>>()
 		};
 
