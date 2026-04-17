@@ -17,7 +17,7 @@ jobs:
     runs-on: self-hosted
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       - name: Install Rust stable toolchain
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain stable
@@ -64,7 +64,7 @@ jobs:
     runs-on: self-hosted
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - name: Install Rust stable toolchain
@@ -83,7 +83,7 @@ jobs:
           ./codecov --verbose upload-process --disable-search --fail-on-error -f target/codecov.json -t "f421b687-4dc2-4387-ac3d-dc3b2528af57" -F 'tests'
           cargo clean
       - name: Download honggfuzz corpus
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: hfuzz-corpus
           path: fuzz/hfuzz_workspace
@@ -101,13 +101,13 @@ jobs:
       TOOLCHAIN: stable
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ env.TOOLCHAIN }}
       - name: Cache routing graph snapshot
         id: cache-graph
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: lightning/net_graph-2023-12-10.bin
           key: ldk-net_graph-v0.0.118-2023-12-10.bin
@@ -124,7 +124,7 @@ jobs:
           EXPECTED_ROUTING_GRAPH_SNAPSHOT_SHASUM: e94b38ef4b3ce683893bf6a3ee28d60cb37c73b059403ff77b7e7458157968c2
       - name: Cache scorer snapshot
         id: cache-scorer
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: lightning/scorer-2023-12-10.bin
           key: ldk-scorer-v0.0.118-2023-12-10.bin
@@ -165,7 +165,7 @@ jobs:
       TOOLCHAIN: stable
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
@@ -196,7 +196,7 @@ jobs:
       TOOLCHAIN: beta
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
@@ -211,7 +211,7 @@ jobs:
       TOOLCHAIN: 1.75
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ env.TOOLCHAIN }}
@@ -226,7 +226,7 @@ jobs:
       TOOLCHAIN: 1.75
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ env.TOOLCHAIN }}
@@ -235,7 +235,7 @@ jobs:
       # the `restore-keys` to find the latest global cache from the `main` branch.
       - name: Restore persistent fuzz corpus (PR)
         if: ${{ github.ref != 'refs/heads/main' }}
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: fuzz/hfuzz_workspace
           key: fuzz-corpus-${{ github.ref }}-${{ github.sha }}
@@ -247,7 +247,7 @@ jobs:
       # as caches are immutable.
       - name: Restore/Save persistent honggfuzz corpus (Main)
         if: ${{ github.ref == 'refs/heads/main' }}
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: fuzz/hfuzz_workspace
           key: fuzz-corpus-refs/heads/main-${{ github.sha }}
@@ -258,7 +258,7 @@ jobs:
         env:
           FUZZ_MINIMIZE: ${{ contains(github.event.pull_request.labels.*.name, 'fuzz-minimize') }}
       - name: Upload honggfuzz corpus
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: hfuzz-corpus
           path: fuzz/hfuzz_workspace
@@ -270,7 +270,7 @@ jobs:
       TOOLCHAIN: stable
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ env.TOOLCHAIN }}
@@ -291,7 +291,7 @@ jobs:
       TOOLCHAIN: 1.75.0
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ env.TOOLCHAIN }}
@@ -308,7 +308,7 @@ jobs:
       TOOLCHAIN: 1.75.0
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       - name: Install tor
         run: |
           sudo apt install -y tor
