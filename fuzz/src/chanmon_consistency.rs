@@ -937,10 +937,238 @@ fn assert_action_timeout_awaiting_response(action: &msgs::ErrorAction) {
 	);
 }
 
+#[derive(Copy, Clone)]
 enum ChanType {
 	Legacy,
 	KeyedAnchors,
 	ZeroFeeCommitments,
+}
+
+fn build_node_config(chan_type: ChanType) -> UserConfig {
+	let mut config = UserConfig::default();
+	config.channel_config.forwarding_fee_proportional_millionths = 0;
+	config.channel_handshake_config.announce_for_forwarding = true;
+	config.reject_inbound_splices = false;
+	match chan_type {
+		ChanType::Legacy => {
+			config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = false;
+			config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = false;
+		},
+		ChanType::KeyedAnchors => {
+			config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+			config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = false;
+		},
+		ChanType::ZeroFeeCommitments => {
+			config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = false;
+			config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
+		},
+	}
+	config
+}
+
+fn complete_all_pending_monitor_updates(monitor: &Arc<TestChainMonitor>) {
+	for (channel_id, state) in monitor.latest_monitors.lock().unwrap().iter_mut() {
+		for (id, data) in state.pending_monitors.drain(..) {
+			monitor.chain_monitor.channel_monitor_updated(*channel_id, id).unwrap();
+			if id >= state.persisted_monitor_id {
+				state.persisted_monitor_id = id;
+				state.persisted_monitor = data;
+			}
+		}
+	}
+}
+
+fn connect_peers(source: &ChanMan<'_>, dest: &ChanMan<'_>) {
+	let init_dest =
+		Init { features: dest.init_features(), networks: None, remote_network_address: None };
+	source.peer_connected(dest.get_our_node_id(), &init_dest, true).unwrap();
+	let init_src =
+		Init { features: source.init_features(), networks: None, remote_network_address: None };
+	dest.peer_connected(source.get_our_node_id(), &init_src, false).unwrap();
+}
+
+fn make_channel(
+	source: &ChanMan<'_>, dest: &ChanMan<'_>, source_monitor: &Arc<TestChainMonitor>,
+	dest_monitor: &Arc<TestChainMonitor>, dest_keys_manager: &Arc<KeyProvider>, chan_id: i32,
+	trusted_open: bool, trusted_accept: bool, chain_state: &mut ChainState,
+) {
+	if trusted_open {
+		source
+			.create_channel_to_trusted_peer_0reserve(
+				dest.get_our_node_id(),
+				100_000,
+				42,
+				0,
+				None,
+				None,
+			)
+			.unwrap();
+	} else {
+		source.create_channel(dest.get_our_node_id(), 100_000, 42, 0, None, None).unwrap();
+	}
+	let open_channel = {
+		let events = source.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		if let MessageSendEvent::SendOpenChannel { ref msg, .. } = events[0] {
+			msg.clone()
+		} else {
+			panic!("Wrong event type");
+		}
+	};
+
+	dest.handle_open_channel(source.get_our_node_id(), &open_channel);
+	let accept_channel = {
+		let events = dest.get_and_clear_pending_events();
+		assert_eq!(events.len(), 1);
+		if let events::Event::OpenChannelRequest {
+			ref temporary_channel_id,
+			ref counterparty_node_id,
+			..
+		} = events[0]
+		{
+			let mut random_bytes = [0u8; 16];
+			random_bytes.copy_from_slice(&dest_keys_manager.get_secure_random_bytes()[..16]);
+			let user_channel_id = u128::from_be_bytes(random_bytes);
+			if trusted_accept {
+				dest.accept_inbound_channel_from_trusted_peer(
+					temporary_channel_id,
+					counterparty_node_id,
+					user_channel_id,
+					TrustedChannelFeatures::ZeroReserve,
+					None,
+				)
+				.unwrap();
+			} else {
+				dest.accept_inbound_channel(
+					temporary_channel_id,
+					counterparty_node_id,
+					user_channel_id,
+					None,
+				)
+				.unwrap();
+			}
+		} else {
+			panic!("Wrong event type");
+		}
+		let events = dest.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		if let MessageSendEvent::SendAcceptChannel { ref msg, .. } = events[0] {
+			msg.clone()
+		} else {
+			panic!("Wrong event type");
+		}
+	};
+
+	source.handle_accept_channel(dest.get_our_node_id(), &accept_channel);
+	{
+		let mut events = source.get_and_clear_pending_events();
+		assert_eq!(events.len(), 1);
+		if let events::Event::FundingGenerationReady {
+			temporary_channel_id,
+			channel_value_satoshis,
+			output_script,
+			..
+		} = events.pop().unwrap()
+		{
+			let tx = Transaction {
+				version: Version(chan_id),
+				lock_time: LockTime::ZERO,
+				input: Vec::new(),
+				output: vec![TxOut {
+					value: Amount::from_sat(channel_value_satoshis),
+					script_pubkey: output_script,
+				}],
+			};
+			source
+				.funding_transaction_generated(
+					temporary_channel_id,
+					dest.get_our_node_id(),
+					tx.clone(),
+				)
+				.unwrap();
+			chain_state.confirm_tx(tx);
+		} else {
+			panic!("Wrong event type");
+		}
+	}
+
+	let funding_created = {
+		let events = source.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		if let MessageSendEvent::SendFundingCreated { ref msg, .. } = events[0] {
+			msg.clone()
+		} else {
+			panic!("Wrong event type");
+		}
+	};
+	dest.handle_funding_created(source.get_our_node_id(), &funding_created);
+	// Complete any pending monitor updates for dest after watch_channel.
+	complete_all_pending_monitor_updates(dest_monitor);
+
+	let (funding_signed, channel_id) = {
+		let events = dest.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		if let MessageSendEvent::SendFundingSigned { ref msg, .. } = events[0] {
+			(msg.clone(), msg.channel_id)
+		} else {
+			panic!("Wrong event type");
+		}
+	};
+	let events = dest.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	if let events::Event::ChannelPending { ref counterparty_node_id, .. } = events[0] {
+		assert_eq!(counterparty_node_id, &source.get_our_node_id());
+	} else {
+		panic!("Wrong event type");
+	}
+
+	source.handle_funding_signed(dest.get_our_node_id(), &funding_signed);
+	// Complete any pending monitor updates for source after watch_channel.
+	complete_all_pending_monitor_updates(source_monitor);
+
+	let events = source.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	if let events::Event::ChannelPending {
+		ref counterparty_node_id,
+		channel_id: ref event_channel_id,
+		..
+	} = events[0]
+	{
+		assert_eq!(counterparty_node_id, &dest.get_our_node_id());
+		assert_eq!(*event_channel_id, channel_id);
+	} else {
+		panic!("Wrong event type");
+	}
+}
+
+fn lock_fundings(nodes: &[ChanMan<'_>; 3]) {
+	let mut node_events = Vec::new();
+	for node in nodes.iter() {
+		node_events.push(node.get_and_clear_pending_msg_events());
+	}
+	for (idx, node_event) in node_events.iter().enumerate() {
+		for event in node_event {
+			if let MessageSendEvent::SendChannelReady { ref node_id, ref msg } = event {
+				for node in nodes.iter() {
+					if node.get_our_node_id() == *node_id {
+						node.handle_channel_ready(nodes[idx].get_our_node_id(), msg);
+					}
+				}
+			} else {
+				panic!("Wrong event type");
+			}
+		}
+	}
+
+	for node in nodes.iter() {
+		let events = node.get_and_clear_pending_msg_events();
+		for event in events {
+			if let MessageSendEvent::SendAnnouncementSignatures { .. } = event {
+			} else {
+				panic!("Wrong event type");
+			}
+		}
+	}
 }
 
 #[inline]
@@ -1006,24 +1234,6 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 				Arc::clone(&keys_manager),
 			));
 
-			let mut config = UserConfig::default();
-			config.channel_config.forwarding_fee_proportional_millionths = 0;
-			config.channel_handshake_config.announce_for_forwarding = true;
-			config.reject_inbound_splices = false;
-			match chan_type {
-				ChanType::Legacy => {
-					config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = false;
-					config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = false;
-				},
-				ChanType::KeyedAnchors => {
-					config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
-					config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = false;
-				},
-				ChanType::ZeroFeeCommitments => {
-					config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = false;
-					config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
-				},
-			}
 			let network = Network::Bitcoin;
 			let best_block_timestamp = genesis_block(network).header.time;
 			let params =
@@ -1039,7 +1249,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 					keys_manager.clone(),
 					keys_manager.clone(),
 					keys_manager.clone(),
-					config,
+					build_node_config(chan_type),
 					params,
 					best_block_timestamp,
 				),
@@ -1069,25 +1279,6 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 			}),
 			Arc::clone(keys),
 		));
-
-		let mut config = UserConfig::default();
-		config.channel_config.forwarding_fee_proportional_millionths = 0;
-		config.channel_handshake_config.announce_for_forwarding = true;
-		config.reject_inbound_splices = false;
-		match chan_type {
-			ChanType::Legacy => {
-				config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = false;
-				config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = false;
-			},
-			ChanType::KeyedAnchors => {
-				config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
-				config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = false;
-			},
-			ChanType::ZeroFeeCommitments => {
-				config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = false;
-				config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
-			},
-		}
 
 		let mut monitors = new_hash_map();
 		let mut old_monitors = old_monitors.latest_monitors.lock().unwrap();
@@ -1138,7 +1329,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 			router: &router,
 			message_router: &router,
 			logger,
-			config,
+			config: build_node_config(chan_type),
 			channel_monitors: monitor_refs,
 		};
 
@@ -1154,224 +1345,6 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 		*chain_monitor.persister.update_ret.lock().unwrap() = *mon_style[node_id as usize].borrow();
 		res
 	};
-
-	macro_rules! complete_all_pending_monitor_updates {
-		($monitor: expr) => {{
-			for (channel_id, state) in $monitor.latest_monitors.lock().unwrap().iter_mut() {
-				for (id, data) in state.pending_monitors.drain(..) {
-					$monitor.chain_monitor.channel_monitor_updated(*channel_id, id).unwrap();
-					if id >= state.persisted_monitor_id {
-						state.persisted_monitor_id = id;
-						state.persisted_monitor = data;
-					}
-				}
-			}
-		}};
-	}
-	macro_rules! connect_peers {
-		($source: expr, $dest: expr) => {{
-			let init_dest = Init {
-				features: $dest.init_features(),
-				networks: None,
-				remote_network_address: None,
-			};
-			$source.peer_connected($dest.get_our_node_id(), &init_dest, true).unwrap();
-			let init_src = Init {
-				features: $source.init_features(),
-				networks: None,
-				remote_network_address: None,
-			};
-			$dest.peer_connected($source.get_our_node_id(), &init_src, false).unwrap();
-		}};
-	}
-	macro_rules! make_channel {
-		($source: expr, $dest: expr, $source_monitor: expr, $dest_monitor: expr, $dest_keys_manager: expr, $chan_id: expr, $trusted_open: expr, $trusted_accept: expr) => {{
-			if $trusted_open {
-				$source
-					.create_channel_to_trusted_peer_0reserve(
-						$dest.get_our_node_id(),
-						100_000,
-						42,
-						0,
-						None,
-						None,
-					)
-					.unwrap();
-			} else {
-				$source
-					.create_channel($dest.get_our_node_id(), 100_000, 42, 0, None, None)
-					.unwrap();
-			}
-			let open_channel = {
-				let events = $source.get_and_clear_pending_msg_events();
-				assert_eq!(events.len(), 1);
-				if let MessageSendEvent::SendOpenChannel { ref msg, .. } = events[0] {
-					msg.clone()
-				} else {
-					panic!("Wrong event type");
-				}
-			};
-
-			$dest.handle_open_channel($source.get_our_node_id(), &open_channel);
-			let accept_channel = {
-				let events = $dest.get_and_clear_pending_events();
-				assert_eq!(events.len(), 1);
-				if let events::Event::OpenChannelRequest {
-					ref temporary_channel_id,
-					ref counterparty_node_id,
-					..
-				} = events[0]
-				{
-					let mut random_bytes = [0u8; 16];
-					random_bytes
-						.copy_from_slice(&$dest_keys_manager.get_secure_random_bytes()[..16]);
-					let user_channel_id = u128::from_be_bytes(random_bytes);
-					if $trusted_accept {
-						$dest
-							.accept_inbound_channel_from_trusted_peer(
-								temporary_channel_id,
-								counterparty_node_id,
-								user_channel_id,
-								TrustedChannelFeatures::ZeroReserve,
-								None,
-							)
-							.unwrap();
-					} else {
-						$dest
-							.accept_inbound_channel(
-								temporary_channel_id,
-								counterparty_node_id,
-								user_channel_id,
-								None,
-							)
-							.unwrap();
-					}
-				} else {
-					panic!("Wrong event type");
-				}
-				let events = $dest.get_and_clear_pending_msg_events();
-				assert_eq!(events.len(), 1);
-				if let MessageSendEvent::SendAcceptChannel { ref msg, .. } = events[0] {
-					msg.clone()
-				} else {
-					panic!("Wrong event type");
-				}
-			};
-
-			$source.handle_accept_channel($dest.get_our_node_id(), &accept_channel);
-			{
-				let mut events = $source.get_and_clear_pending_events();
-				assert_eq!(events.len(), 1);
-				if let events::Event::FundingGenerationReady {
-					temporary_channel_id,
-					channel_value_satoshis,
-					output_script,
-					..
-				} = events.pop().unwrap()
-				{
-					let tx = Transaction {
-						version: Version($chan_id),
-						lock_time: LockTime::ZERO,
-						input: Vec::new(),
-						output: vec![TxOut {
-							value: Amount::from_sat(channel_value_satoshis),
-							script_pubkey: output_script,
-						}],
-					};
-					$source
-						.funding_transaction_generated(
-							temporary_channel_id,
-							$dest.get_our_node_id(),
-							tx.clone(),
-						)
-						.unwrap();
-					chain_state.confirm_tx(tx);
-				} else {
-					panic!("Wrong event type");
-				}
-			}
-
-			let funding_created = {
-				let events = $source.get_and_clear_pending_msg_events();
-				assert_eq!(events.len(), 1);
-				if let MessageSendEvent::SendFundingCreated { ref msg, .. } = events[0] {
-					msg.clone()
-				} else {
-					panic!("Wrong event type");
-				}
-			};
-			$dest.handle_funding_created($source.get_our_node_id(), &funding_created);
-			// Complete any pending monitor updates for dest after watch_channel
-			complete_all_pending_monitor_updates!($dest_monitor);
-
-			let (funding_signed, channel_id) = {
-				let events = $dest.get_and_clear_pending_msg_events();
-				assert_eq!(events.len(), 1);
-				if let MessageSendEvent::SendFundingSigned { ref msg, .. } = events[0] {
-					(msg.clone(), msg.channel_id.clone())
-				} else {
-					panic!("Wrong event type");
-				}
-			};
-			let events = $dest.get_and_clear_pending_events();
-			assert_eq!(events.len(), 1);
-			if let events::Event::ChannelPending { ref counterparty_node_id, .. } = events[0] {
-				assert_eq!(counterparty_node_id, &$source.get_our_node_id());
-			} else {
-				panic!("Wrong event type");
-			}
-
-			$source.handle_funding_signed($dest.get_our_node_id(), &funding_signed);
-			// Complete any pending monitor updates for source after watch_channel
-			complete_all_pending_monitor_updates!($source_monitor);
-
-			let events = $source.get_and_clear_pending_events();
-			assert_eq!(events.len(), 1);
-			if let events::Event::ChannelPending {
-				ref counterparty_node_id,
-				channel_id: ref event_channel_id,
-				..
-			} = events[0]
-			{
-				assert_eq!(counterparty_node_id, &$dest.get_our_node_id());
-				assert_eq!(*event_channel_id, channel_id);
-			} else {
-				panic!("Wrong event type");
-			}
-		}};
-	}
-
-	macro_rules! lock_fundings {
-		($nodes: expr) => {{
-			let mut node_events = Vec::new();
-			for node in $nodes.iter() {
-				node_events.push(node.get_and_clear_pending_msg_events());
-			}
-			for (idx, node_event) in node_events.iter().enumerate() {
-				for event in node_event {
-					if let MessageSendEvent::SendChannelReady { ref node_id, ref msg } = event {
-						for node in $nodes.iter() {
-							if node.get_our_node_id() == *node_id {
-								node.handle_channel_ready($nodes[idx].get_our_node_id(), msg);
-							}
-						}
-					} else {
-						panic!("Wrong event type");
-					}
-				}
-			}
-
-			for node in $nodes.iter() {
-				let events = node.get_and_clear_pending_msg_events();
-				for event in events {
-					if let MessageSendEvent::SendAnnouncementSignatures { .. } = event {
-					} else {
-						panic!("Wrong event type");
-					}
-				}
-			}
-		}};
-	}
 
 	let wallet_a = TestWalletSource::new(SecretKey::from_slice(&[1; 32]).unwrap());
 	let wallet_b = TestWalletSource::new(SecretKey::from_slice(&[2; 32]).unwrap());
@@ -1414,8 +1387,8 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 	let fee_estimators = [Arc::clone(&fee_est_a), Arc::clone(&fee_est_b), Arc::clone(&fee_est_c)];
 
 	// Connect peers first, then create channels
-	connect_peers!(nodes[0], nodes[1]);
-	connect_peers!(nodes[1], nodes[2]);
+	connect_peers(&nodes[0], &nodes[1]);
+	connect_peers(&nodes[1], &nodes[2]);
 
 	// Create 3 channels between A-B and 3 channels between B-C (6 total).
 	//
@@ -1423,14 +1396,74 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 	// txid and funding outpoint.
 	// A-B: channel 2 A and B have 0-reserve (trusted open + trusted accept),
 	//       channel 3 A has 0-reserve (trusted accept)
-	make_channel!(nodes[0], nodes[1], monitor_a, monitor_b, keys_manager_b, 1, false, false);
-	make_channel!(nodes[0], nodes[1], monitor_a, monitor_b, keys_manager_b, 2, true, true);
-	make_channel!(nodes[0], nodes[1], monitor_a, monitor_b, keys_manager_b, 3, false, true);
+	make_channel(
+		&nodes[0],
+		&nodes[1],
+		&monitor_a,
+		&monitor_b,
+		&keys_manager_b,
+		1,
+		false,
+		false,
+		&mut chain_state,
+	);
+	make_channel(
+		&nodes[0],
+		&nodes[1],
+		&monitor_a,
+		&monitor_b,
+		&keys_manager_b,
+		2,
+		true,
+		true,
+		&mut chain_state,
+	);
+	make_channel(
+		&nodes[0],
+		&nodes[1],
+		&monitor_a,
+		&monitor_b,
+		&keys_manager_b,
+		3,
+		false,
+		true,
+		&mut chain_state,
+	);
 	// B-C: channel 4 B has 0-reserve (via trusted accept),
 	//       channel 5 C has 0-reserve (via trusted open)
-	make_channel!(nodes[1], nodes[2], monitor_b, monitor_c, keys_manager_c, 4, false, true);
-	make_channel!(nodes[1], nodes[2], monitor_b, monitor_c, keys_manager_c, 5, true, false);
-	make_channel!(nodes[1], nodes[2], monitor_b, monitor_c, keys_manager_c, 6, false, false);
+	make_channel(
+		&nodes[1],
+		&nodes[2],
+		&monitor_b,
+		&monitor_c,
+		&keys_manager_c,
+		4,
+		false,
+		true,
+		&mut chain_state,
+	);
+	make_channel(
+		&nodes[1],
+		&nodes[2],
+		&monitor_b,
+		&monitor_c,
+		&keys_manager_c,
+		5,
+		true,
+		false,
+		&mut chain_state,
+	);
+	make_channel(
+		&nodes[1],
+		&nodes[2],
+		&monitor_b,
+		&monitor_c,
+		&keys_manager_c,
+		6,
+		false,
+		false,
+		&mut chain_state,
+	);
 
 	// Wipe the transactions-broadcasted set to make sure we don't broadcast any transactions
 	// during normal operation in `test_return`.
@@ -1464,7 +1497,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 	sync_with_chain_state(&mut chain_state, &nodes[1], &mut node_height_b, None);
 	sync_with_chain_state(&mut chain_state, &nodes[2], &mut node_height_c, None);
 
-	lock_fundings!(nodes);
+	lock_fundings(&nodes);
 
 	// Get channel IDs for all A-B channels (from node A's perspective)
 	let chan_ab_ids = {
