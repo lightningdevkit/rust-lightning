@@ -1367,12 +1367,6 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 			chan_type,
 		),
 	];
-	let mut monitor_a = Arc::clone(&nodes[0].monitor);
-	let mut monitor_b = Arc::clone(&nodes[1].monitor);
-	let mut monitor_c = Arc::clone(&nodes[2].monitor);
-	let keys_manager_a = Arc::clone(&nodes[0].keys_manager);
-	let keys_manager_b = Arc::clone(&nodes[1].keys_manager);
-	let keys_manager_c = Arc::clone(&nodes[2].keys_manager);
 
 	// Connect peers first, then create channels
 	connect_peers(&nodes[0], &nodes[1]);
@@ -1467,25 +1461,18 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 		}};
 	}
 
-	let reload_node = |ser: &Vec<u8>,
-	                   node_id: u8,
-	                   old_monitors: &TestChainMonitor,
-	                   mut use_old_mons,
-	                   keys: &Arc<KeyProvider>,
-	                   fee_estimator: &Arc<FuzzEstimator>,
-	                   broadcaster: Arc<TestBroadcaster>| {
-		let keys_manager = Arc::clone(keys);
+	let reload_node = |ser: &Vec<u8>, node_id: u8, old_node: &HarnessNode<'_>, mut use_old_mons| {
 		let (logger_for_monitor, logger) = HarnessNode::build_loggers(node_id, &out);
 		let chain_monitor = HarnessNode::build_chain_monitor(
-			&broadcaster,
-			fee_estimator,
-			&keys_manager,
+			&old_node.broadcaster,
+			&old_node.fee_estimator,
+			&old_node.keys_manager,
 			logger_for_monitor,
 			ChannelMonitorUpdateStatus::Completed,
 		);
 
 		let mut monitors = new_hash_map();
-		let mut old_monitors = old_monitors.latest_monitors.lock().unwrap();
+		let mut old_monitors = old_node.monitor.latest_monitors.lock().unwrap();
 		for (channel_id, mut prev_state) in old_monitors.drain() {
 			let (mon_id, serialized_mon) = if use_old_mons % 3 == 0 {
 				// Reload with the oldest `ChannelMonitor` (the one that we already told
@@ -1505,7 +1492,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 			use_old_mons /= 3;
 			let mon = <(BlockLocator, ChannelMonitor<TestChannelSigner>)>::read(
 				&mut &serialized_mon[..],
-				(&*keys_manager, &*keys_manager),
+				(&*old_node.keys_manager, &*old_node.keys_manager),
 			)
 			.expect("Failed to read monitor");
 			monitors.insert(channel_id, mon.1);
@@ -1524,12 +1511,12 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 		}
 
 		let read_args = ChannelManagerReadArgs {
-			entropy_source: Arc::clone(&keys_manager),
-			node_signer: Arc::clone(&keys_manager),
-			signer_provider: Arc::clone(&keys_manager),
-			fee_estimator: Arc::clone(fee_estimator),
+			entropy_source: Arc::clone(&old_node.keys_manager),
+			node_signer: Arc::clone(&old_node.keys_manager),
+			signer_provider: Arc::clone(&old_node.keys_manager),
+			fee_estimator: Arc::clone(&old_node.fee_estimator),
 			chain_monitor: chain_monitor.clone(),
-			tx_broadcaster: broadcaster,
+			tx_broadcaster: Arc::clone(&old_node.broadcaster),
 			router: &router,
 			message_router: &router,
 			logger: Arc::clone(&logger),
@@ -2316,22 +2303,22 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 
 			0x08 => {
 				for id in &chan_ab_ids {
-					complete_all_monitor_updates(&monitor_a, id);
+					complete_all_monitor_updates(&nodes[0].monitor, id);
 				}
 			},
 			0x09 => {
 				for id in &chan_ab_ids {
-					complete_all_monitor_updates(&monitor_b, id);
+					complete_all_monitor_updates(&nodes[1].monitor, id);
 				}
 			},
 			0x0a => {
 				for id in &chan_bc_ids {
-					complete_all_monitor_updates(&monitor_b, id);
+					complete_all_monitor_updates(&nodes[1].monitor, id);
 				}
 			},
 			0x0b => {
 				for id in &chan_bc_ids {
-					complete_all_monitor_updates(&monitor_c, id);
+					complete_all_monitor_updates(&nodes[2].monitor, id);
 				}
 			},
 
@@ -2634,17 +2621,9 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 					ab_events.clear();
 					ba_events.clear();
 				}
-				let (new_node_a, new_monitor_a, new_logger_a) = reload_node(
-					&node_a_ser,
-					0,
-					&monitor_a,
-					v,
-					&keys_manager_a,
-					&fee_est_a,
-					Arc::clone(&broadcast_a),
-				);
+				let (new_node_a, new_monitor_a, new_logger_a) =
+					reload_node(&node_a_ser, 0, &nodes[0], v);
 				nodes[0].node = new_node_a;
-				monitor_a = Arc::clone(&new_monitor_a);
 				nodes[0].monitor = new_monitor_a;
 				nodes[0].logger = new_logger_a;
 			},
@@ -2665,17 +2644,9 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 					bc_events.clear();
 					cb_events.clear();
 				}
-				let (new_node_b, new_monitor_b, new_logger_b) = reload_node(
-					&node_b_ser,
-					1,
-					&monitor_b,
-					v,
-					&keys_manager_b,
-					&fee_est_b,
-					Arc::clone(&broadcast_b),
-				);
+				let (new_node_b, new_monitor_b, new_logger_b) =
+					reload_node(&node_b_ser, 1, &nodes[1], v);
 				nodes[1].node = new_node_b;
-				monitor_b = Arc::clone(&new_monitor_b);
 				nodes[1].monitor = new_monitor_b;
 				nodes[1].logger = new_logger_b;
 			},
@@ -2692,140 +2663,140 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 					bc_events.clear();
 					cb_events.clear();
 				}
-				let (new_node_c, new_monitor_c, new_logger_c) = reload_node(
-					&node_c_ser,
-					2,
-					&monitor_c,
-					v,
-					&keys_manager_c,
-					&fee_est_c,
-					Arc::clone(&broadcast_c),
-				);
+				let (new_node_c, new_monitor_c, new_logger_c) =
+					reload_node(&node_c_ser, 2, &nodes[2], v);
 				nodes[2].node = new_node_c;
-				monitor_c = Arc::clone(&new_monitor_c);
 				nodes[2].monitor = new_monitor_c;
 				nodes[2].logger = new_logger_c;
 			},
 
-			0xc0 => keys_manager_a.disable_supported_ops_for_all_signers(),
-			0xc1 => keys_manager_b.disable_supported_ops_for_all_signers(),
-			0xc2 => keys_manager_c.disable_supported_ops_for_all_signers(),
+			0xc0 => nodes[0].keys_manager.disable_supported_ops_for_all_signers(),
+			0xc1 => nodes[1].keys_manager.disable_supported_ops_for_all_signers(),
+			0xc2 => nodes[2].keys_manager.disable_supported_ops_for_all_signers(),
 			0xc3 => {
-				keys_manager_a.enable_op_for_all_signers(SignerOp::SignCounterpartyCommitment);
+				nodes[0]
+					.keys_manager
+					.enable_op_for_all_signers(SignerOp::SignCounterpartyCommitment);
 				nodes[0].signer_unblocked(None);
 			},
 			0xc4 => {
-				keys_manager_b.enable_op_for_all_signers(SignerOp::SignCounterpartyCommitment);
+				nodes[1]
+					.keys_manager
+					.enable_op_for_all_signers(SignerOp::SignCounterpartyCommitment);
 				let filter = Some((nodes[0].get_our_node_id(), chan_a_id));
 				nodes[1].signer_unblocked(filter);
 			},
 			0xc5 => {
-				keys_manager_b.enable_op_for_all_signers(SignerOp::SignCounterpartyCommitment);
+				nodes[1]
+					.keys_manager
+					.enable_op_for_all_signers(SignerOp::SignCounterpartyCommitment);
 				let filter = Some((nodes[2].get_our_node_id(), chan_b_id));
 				nodes[1].signer_unblocked(filter);
 			},
 			0xc6 => {
-				keys_manager_c.enable_op_for_all_signers(SignerOp::SignCounterpartyCommitment);
+				nodes[2]
+					.keys_manager
+					.enable_op_for_all_signers(SignerOp::SignCounterpartyCommitment);
 				nodes[2].signer_unblocked(None);
 			},
 			0xc7 => {
-				keys_manager_a.enable_op_for_all_signers(SignerOp::GetPerCommitmentPoint);
+				nodes[0].keys_manager.enable_op_for_all_signers(SignerOp::GetPerCommitmentPoint);
 				nodes[0].signer_unblocked(None);
 			},
 			0xc8 => {
-				keys_manager_b.enable_op_for_all_signers(SignerOp::GetPerCommitmentPoint);
+				nodes[1].keys_manager.enable_op_for_all_signers(SignerOp::GetPerCommitmentPoint);
 				let filter = Some((nodes[0].get_our_node_id(), chan_a_id));
 				nodes[1].signer_unblocked(filter);
 			},
 			0xc9 => {
-				keys_manager_b.enable_op_for_all_signers(SignerOp::GetPerCommitmentPoint);
+				nodes[1].keys_manager.enable_op_for_all_signers(SignerOp::GetPerCommitmentPoint);
 				let filter = Some((nodes[2].get_our_node_id(), chan_b_id));
 				nodes[1].signer_unblocked(filter);
 			},
 			0xca => {
-				keys_manager_c.enable_op_for_all_signers(SignerOp::GetPerCommitmentPoint);
+				nodes[2].keys_manager.enable_op_for_all_signers(SignerOp::GetPerCommitmentPoint);
 				nodes[2].signer_unblocked(None);
 			},
 			0xcb => {
-				keys_manager_a.enable_op_for_all_signers(SignerOp::ReleaseCommitmentSecret);
+				nodes[0].keys_manager.enable_op_for_all_signers(SignerOp::ReleaseCommitmentSecret);
 				nodes[0].signer_unblocked(None);
 			},
 			0xcc => {
-				keys_manager_b.enable_op_for_all_signers(SignerOp::ReleaseCommitmentSecret);
+				nodes[1].keys_manager.enable_op_for_all_signers(SignerOp::ReleaseCommitmentSecret);
 				let filter = Some((nodes[0].get_our_node_id(), chan_a_id));
 				nodes[1].signer_unblocked(filter);
 			},
 			0xcd => {
-				keys_manager_b.enable_op_for_all_signers(SignerOp::ReleaseCommitmentSecret);
+				nodes[1].keys_manager.enable_op_for_all_signers(SignerOp::ReleaseCommitmentSecret);
 				let filter = Some((nodes[2].get_our_node_id(), chan_b_id));
 				nodes[1].signer_unblocked(filter);
 			},
 			0xce => {
-				keys_manager_c.enable_op_for_all_signers(SignerOp::ReleaseCommitmentSecret);
+				nodes[2].keys_manager.enable_op_for_all_signers(SignerOp::ReleaseCommitmentSecret);
 				nodes[2].signer_unblocked(None);
 			},
 
 			0xf0 => {
 				for id in &chan_ab_ids {
-					complete_monitor_update(&monitor_a, id, &complete_first);
+					complete_monitor_update(&nodes[0].monitor, id, &complete_first);
 				}
 			},
 			0xf1 => {
 				for id in &chan_ab_ids {
-					complete_monitor_update(&monitor_a, id, &complete_second);
+					complete_monitor_update(&nodes[0].monitor, id, &complete_second);
 				}
 			},
 			0xf2 => {
 				for id in &chan_ab_ids {
-					complete_monitor_update(&monitor_a, id, &Vec::pop);
+					complete_monitor_update(&nodes[0].monitor, id, &Vec::pop);
 				}
 			},
 
 			0xf4 => {
 				for id in &chan_ab_ids {
-					complete_monitor_update(&monitor_b, id, &complete_first);
+					complete_monitor_update(&nodes[1].monitor, id, &complete_first);
 				}
 			},
 			0xf5 => {
 				for id in &chan_ab_ids {
-					complete_monitor_update(&monitor_b, id, &complete_second);
+					complete_monitor_update(&nodes[1].monitor, id, &complete_second);
 				}
 			},
 			0xf6 => {
 				for id in &chan_ab_ids {
-					complete_monitor_update(&monitor_b, id, &Vec::pop);
+					complete_monitor_update(&nodes[1].monitor, id, &Vec::pop);
 				}
 			},
 
 			0xf8 => {
 				for id in &chan_bc_ids {
-					complete_monitor_update(&monitor_b, id, &complete_first);
+					complete_monitor_update(&nodes[1].monitor, id, &complete_first);
 				}
 			},
 			0xf9 => {
 				for id in &chan_bc_ids {
-					complete_monitor_update(&monitor_b, id, &complete_second);
+					complete_monitor_update(&nodes[1].monitor, id, &complete_second);
 				}
 			},
 			0xfa => {
 				for id in &chan_bc_ids {
-					complete_monitor_update(&monitor_b, id, &Vec::pop);
+					complete_monitor_update(&nodes[1].monitor, id, &Vec::pop);
 				}
 			},
 
 			0xfc => {
 				for id in &chan_bc_ids {
-					complete_monitor_update(&monitor_c, id, &complete_first);
+					complete_monitor_update(&nodes[2].monitor, id, &complete_first);
 				}
 			},
 			0xfd => {
 				for id in &chan_bc_ids {
-					complete_monitor_update(&monitor_c, id, &complete_second);
+					complete_monitor_update(&nodes[2].monitor, id, &complete_second);
 				}
 			},
 			0xfe => {
 				for id in &chan_bc_ids {
-					complete_monitor_update(&monitor_c, id, &Vec::pop);
+					complete_monitor_update(&nodes[2].monitor, id, &Vec::pop);
 				}
 			},
 
@@ -2866,9 +2837,9 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 				}
 
 				for op in SUPPORTED_SIGNER_OPS {
-					keys_manager_a.enable_op_for_all_signers(op);
-					keys_manager_b.enable_op_for_all_signers(op);
-					keys_manager_c.enable_op_for_all_signers(op);
+					nodes[0].keys_manager.enable_op_for_all_signers(op);
+					nodes[1].keys_manager.enable_op_for_all_signers(op);
+					nodes[2].keys_manager.enable_op_for_all_signers(op);
 				}
 				nodes[0].signer_unblocked(None);
 				nodes[1].signer_unblocked(None);
@@ -2883,12 +2854,12 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 							}
 							// Next, make sure no monitor updates are pending
 							for id in &chan_ab_ids {
-								complete_all_monitor_updates(&monitor_a, id);
-								complete_all_monitor_updates(&monitor_b, id);
+								complete_all_monitor_updates(&nodes[0].monitor, id);
+								complete_all_monitor_updates(&nodes[1].monitor, id);
 							}
 							for id in &chan_bc_ids {
-								complete_all_monitor_updates(&monitor_b, id);
-								complete_all_monitor_updates(&monitor_c, id);
+								complete_all_monitor_updates(&nodes[1].monitor, id);
+								complete_all_monitor_updates(&nodes[2].monitor, id);
 							}
 							// Then, make sure any current forwards make their way to their destination
 							if process_msg_events!(0, false, ProcessMessages::AllMessages) {
