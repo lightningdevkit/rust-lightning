@@ -300,9 +300,18 @@ fn get_next_commitment_stats(
 	// 2) Now including any additional non-dust HTLCs (usually the fee spike buffer HTLC), does the funder cover
 	// this bigger transaction fee ? The funder can dip below their dust limit to cover this case, as the
 	// commitment will have at least one output: the non-dust fee spike buffer HTLC offered by the counterparty.
+	let nondust_htlc_count = next_commitment_htlcs
+		.iter()
+		.filter(|htlc| {
+			!htlc.is_dust(local, feerate_per_kw, broadcaster_dust_limit_satoshis, channel_type)
+		})
+		.count();
+	// Note here we use the htlc count at the current feerate together with the spiked feerate;
+	// this makes sure that the holder can afford any fee bump between 1x to 2x from the current
+	// feerate if the fee spike multiple is included.
 	let commit_tx_fee_sat = commit_tx_fee_sat(
 		spiked_feerate,
-		spiked_nondust_htlc_count + addl_nondust_htlc_count,
+		nondust_htlc_count + addl_nondust_htlc_count,
 		channel_type,
 	);
 	let (holder_balance_msat, counterparty_balance_msat) = checked_sub_from_funder(
@@ -317,7 +326,7 @@ fn get_next_commitment_stats(
 		counterparty_balance_msat,
 		dust_exposure_msat,
 		#[cfg(any(test, fuzzing))]
-		nondust_htlc_count: spiked_nondust_htlc_count + addl_nondust_htlc_count,
+		nondust_htlc_count: nondust_htlc_count + addl_nondust_htlc_count,
 		#[cfg(any(test, fuzzing))]
 		commit_tx_fee_sat,
 	})
