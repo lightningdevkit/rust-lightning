@@ -945,6 +945,7 @@ enum ChanType {
 }
 
 struct HarnessNode<'a> {
+	node_id: u8,
 	node: ChanMan<'a>,
 	monitor: Arc<TestChainMonitor>,
 	keys_manager: Arc<KeyProvider>,
@@ -952,6 +953,10 @@ struct HarnessNode<'a> {
 	broadcaster: Arc<TestBroadcaster>,
 	fee_estimator: Arc<FuzzEstimator>,
 	wallet: TestWalletSource,
+	persistence_style: ChannelMonitorUpdateStatus,
+	serialized_manager: Vec<u8>,
+	height: u32,
+	last_htlc_clear_fee: u32,
 }
 
 impl<'a> std::ops::Deref for HarnessNode<'a> {
@@ -1026,7 +1031,24 @@ impl<'a> HarnessNode<'a> {
 			params,
 			best_block_timestamp,
 		);
-		Self { node, monitor, keys_manager, logger, broadcaster, fee_estimator, wallet }
+		Self {
+			node_id,
+			node,
+			monitor,
+			keys_manager,
+			logger,
+			broadcaster,
+			fee_estimator,
+			wallet,
+			persistence_style,
+			serialized_manager: Vec::new(),
+			height: 0,
+			last_htlc_clear_fee: 253,
+		}
+	}
+
+	fn set_persistence_style(&mut self, style: ChannelMonitorUpdateStatus) {
+		self.persistence_style = style;
 	}
 
 	fn complete_all_pending_monitor_updates(&self) {
@@ -1039,6 +1061,94 @@ impl<'a> HarnessNode<'a> {
 				}
 			}
 		}
+	}
+
+	fn refresh_serialized_manager(&mut self) {
+		if self.node.get_and_clear_needs_persistence() {
+			self.serialized_manager = self.node.encode();
+		}
+	}
+
+	fn reload<Out: Output + MaybeSend + MaybeSync>(
+		&mut self, use_old_mons: u8, out: &Out, router: &'a FuzzRouter, chan_type: ChanType,
+	) {
+		let (logger_for_monitor, logger) = Self::build_loggers(self.node_id, out);
+		let chain_monitor = Self::build_chain_monitor(
+			&self.broadcaster,
+			&self.fee_estimator,
+			&self.keys_manager,
+			logger_for_monitor,
+			ChannelMonitorUpdateStatus::Completed,
+		);
+
+		let mut monitors = new_hash_map();
+		let mut use_old_mons = use_old_mons;
+		{
+			let mut old_monitors = self.monitor.latest_monitors.lock().unwrap();
+			for (channel_id, mut prev_state) in old_monitors.drain() {
+				let (mon_id, serialized_mon) = if use_old_mons % 3 == 0 {
+					// Reload with the oldest `ChannelMonitor` (the one that we already told
+					// `ChannelManager` we finished persisting).
+					(prev_state.persisted_monitor_id, prev_state.persisted_monitor)
+				} else if use_old_mons % 3 == 1 {
+					// Reload with the second-oldest `ChannelMonitor`.
+					let old_mon = (prev_state.persisted_monitor_id, prev_state.persisted_monitor);
+					prev_state.pending_monitors.drain(..).next().unwrap_or(old_mon)
+				} else {
+					// Reload with the newest `ChannelMonitor`.
+					let old_mon = (prev_state.persisted_monitor_id, prev_state.persisted_monitor);
+					prev_state.pending_monitors.pop().unwrap_or(old_mon)
+				};
+				// Use a different value of `use_old_mons` if we have another monitor
+				// (only for node B) by shifting `use_old_mons` one in base-3.
+				use_old_mons /= 3;
+				let mon = <(BlockLocator, ChannelMonitor<TestChannelSigner>)>::read(
+					&mut &serialized_mon[..],
+					(&*self.keys_manager, &*self.keys_manager),
+				)
+				.expect("Failed to read monitor");
+				monitors.insert(channel_id, mon.1);
+				// Update the latest `ChannelMonitor` state to match what we just told LDK.
+				prev_state.persisted_monitor = serialized_mon;
+				prev_state.persisted_monitor_id = mon_id;
+				// Wipe any `ChannelMonitor`s which we never told LDK we finished persisting,
+				// considering them discarded. LDK should replay these for us as they're stored in
+				// the `ChannelManager`.
+				prev_state.pending_monitors.clear();
+				chain_monitor.latest_monitors.lock().unwrap().insert(channel_id, prev_state);
+			}
+		}
+		let mut monitor_refs = new_hash_map();
+		for (channel_id, monitor) in monitors.iter() {
+			monitor_refs.insert(*channel_id, monitor);
+		}
+
+		let read_args = ChannelManagerReadArgs {
+			entropy_source: Arc::clone(&self.keys_manager),
+			node_signer: Arc::clone(&self.keys_manager),
+			signer_provider: Arc::clone(&self.keys_manager),
+			fee_estimator: Arc::clone(&self.fee_estimator),
+			chain_monitor: Arc::clone(&chain_monitor),
+			tx_broadcaster: Arc::clone(&self.broadcaster),
+			router,
+			message_router: router,
+			logger: Arc::clone(&logger),
+			config: build_node_config(chan_type),
+			channel_monitors: monitor_refs,
+		};
+
+		let manager = <(BlockLocator, ChanMan)>::read(&mut &self.serialized_manager[..], read_args)
+			.expect("Failed to read manager");
+		for (channel_id, mon) in monitors.drain() {
+			assert_eq!(
+				chain_monitor.chain_monitor.watch_channel(channel_id, mon),
+				Ok(ChannelMonitorUpdateStatus::Completed)
+			);
+		}
+		*chain_monitor.persister.update_ret.lock().unwrap() = self.persistence_style;
+		self.node = manager.1;
+		self.monitor = chain_monitor;
+		self.logger = logger;
 	}
 }
 
@@ -1280,28 +1390,25 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 		1 => ChanType::KeyedAnchors,
 		_ => ChanType::ZeroFeeCommitments,
 	};
-	let mon_style = [
-		RefCell::new(if config_byte & 0b01 != 0 {
+	let persistence_styles = [
+		if config_byte & 0b01 != 0 {
 			ChannelMonitorUpdateStatus::InProgress
 		} else {
 			ChannelMonitorUpdateStatus::Completed
-		}),
-		RefCell::new(if config_byte & 0b10 != 0 {
+		},
+		if config_byte & 0b10 != 0 {
 			ChannelMonitorUpdateStatus::InProgress
 		} else {
 			ChannelMonitorUpdateStatus::Completed
-		}),
-		RefCell::new(if config_byte & 0b100 != 0 {
+		},
+		if config_byte & 0b100 != 0 {
 			ChannelMonitorUpdateStatus::InProgress
 		} else {
 			ChannelMonitorUpdateStatus::Completed
-		}),
+		},
 	];
 
 	let mut chain_state = ChainState::new();
-	let mut node_height_a: u32 = 0;
-	let mut node_height_b: u32 = 0;
-	let mut node_height_c: u32 = 0;
 	let wallet_a = TestWalletSource::new(SecretKey::from_slice(&[1; 32]).unwrap());
 	let wallet_b = TestWalletSource::new(SecretKey::from_slice(&[2; 32]).unwrap());
 	let wallet_c = TestWalletSource::new(SecretKey::from_slice(&[3; 32]).unwrap());
@@ -1324,11 +1431,8 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 	}
 
 	let fee_est_a = Arc::new(FuzzEstimator { ret_val: atomic::AtomicU32::new(253) });
-	let mut last_htlc_clear_fee_a = 253;
 	let fee_est_b = Arc::new(FuzzEstimator { ret_val: atomic::AtomicU32::new(253) });
-	let mut last_htlc_clear_fee_b = 253;
 	let fee_est_c = Arc::new(FuzzEstimator { ret_val: atomic::AtomicU32::new(253) });
-	let mut last_htlc_clear_fee_c = 253;
 	let broadcast_a = Arc::new(TestBroadcaster { txn_broadcasted: RefCell::new(Vec::new()) });
 	let broadcast_b = Arc::new(TestBroadcaster { txn_broadcasted: RefCell::new(Vec::new()) });
 	let broadcast_c = Arc::new(TestBroadcaster { txn_broadcasted: RefCell::new(Vec::new()) });
@@ -1341,7 +1445,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 			wallet_a,
 			Arc::clone(&fee_est_a),
 			Arc::clone(&broadcast_a),
-			mon_style[0].borrow().clone(),
+			persistence_styles[0],
 			&out,
 			&router,
 			chan_type,
@@ -1351,7 +1455,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 			wallet_b,
 			Arc::clone(&fee_est_b),
 			Arc::clone(&broadcast_b),
-			mon_style[1].borrow().clone(),
+			persistence_styles[1],
 			&out,
 			&router,
 			chan_type,
@@ -1361,7 +1465,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 			wallet_c,
 			Arc::clone(&fee_est_c),
 			Arc::clone(&broadcast_c),
-			mon_style[2].borrow().clone(),
+			persistence_styles[2],
 			&out,
 			&router,
 			chan_type,
@@ -1393,30 +1497,28 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 	nodes[1].broadcaster.txn_broadcasted.borrow_mut().clear();
 	nodes[2].broadcaster.txn_broadcasted.borrow_mut().clear();
 
-	let sync_with_chain_state = |chain_state: &ChainState,
-	                             node: &HarnessNode<'_>,
-	                             node_height: &mut u32,
-	                             num_blocks: Option<u32>| {
-		let target_height = if let Some(num_blocks) = num_blocks {
-			std::cmp::min(*node_height + num_blocks, chain_state.tip_height())
-		} else {
-			chain_state.tip_height()
-		};
-		while *node_height < target_height {
-			*node_height += 1;
-			let (header, txn) = chain_state.block_at(*node_height);
-			let txdata: Vec<_> = txn.iter().enumerate().map(|(i, tx)| (i + 1, tx)).collect();
-			if !txdata.is_empty() {
-				node.transactions_confirmed(header, &txdata, *node_height);
+	let sync_with_chain_state =
+		|node: &mut HarnessNode<'_>, chain_state: &ChainState, num_blocks: Option<u32>| {
+			let target_height = if let Some(num_blocks) = num_blocks {
+				std::cmp::min(node.height + num_blocks, chain_state.tip_height())
+			} else {
+				chain_state.tip_height()
+			};
+			while node.height < target_height {
+				node.height += 1;
+				let (header, txn) = chain_state.block_at(node.height);
+				let txdata: Vec<_> = txn.iter().enumerate().map(|(i, tx)| (i + 1, tx)).collect();
+				if !txdata.is_empty() {
+					node.transactions_confirmed(header, &txdata, node.height);
+				}
+				node.best_block_updated(header, node.height);
 			}
-			node.best_block_updated(header, *node_height);
-		}
-	};
+		};
 
 	// Sync all nodes to tip to lock the funding.
-	sync_with_chain_state(&chain_state, &nodes[0], &mut node_height_a, None);
-	sync_with_chain_state(&chain_state, &nodes[1], &mut node_height_b, None);
-	sync_with_chain_state(&chain_state, &nodes[2], &mut node_height_c, None);
+	sync_with_chain_state(&mut nodes[0], &chain_state, None);
+	sync_with_chain_state(&mut nodes[1], &chain_state, None);
+	sync_with_chain_state(&mut nodes[2], &chain_state, None);
 
 	lock_fundings(&nodes);
 
@@ -1443,9 +1545,9 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 	let mut bc_events = Vec::new();
 	let mut cb_events = Vec::new();
 
-	let mut node_a_ser = nodes[0].encode();
-	let mut node_b_ser = nodes[1].encode();
-	let mut node_c_ser = nodes[2].encode();
+	for node in &mut nodes {
+		node.serialized_manager = node.encode();
+	}
 
 	let pending_payments = RefCell::new([Vec::new(), Vec::new(), Vec::new()]);
 	let resolved_payments: RefCell<[HashMap<PaymentId, Option<PaymentHash>>; 3]> =
@@ -1461,82 +1563,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 		}};
 	}
 
-	let reload_node = |ser: &Vec<u8>, node_id: u8, old_node: &HarnessNode<'_>, mut use_old_mons| {
-		let (logger_for_monitor, logger) = HarnessNode::build_loggers(node_id, &out);
-		let chain_monitor = HarnessNode::build_chain_monitor(
-			&old_node.broadcaster,
-			&old_node.fee_estimator,
-			&old_node.keys_manager,
-			logger_for_monitor,
-			ChannelMonitorUpdateStatus::Completed,
-		);
-
-		let mut monitors = new_hash_map();
-		let mut old_monitors = old_node.monitor.latest_monitors.lock().unwrap();
-		for (channel_id, mut prev_state) in old_monitors.drain() {
-			let (mon_id, serialized_mon) = if use_old_mons % 3 == 0 {
-				// Reload with the oldest `ChannelMonitor` (the one that we already told
-				// `ChannelManager` we finished persisting).
-				(prev_state.persisted_monitor_id, prev_state.persisted_monitor)
-			} else if use_old_mons % 3 == 1 {
-				// Reload with the second-oldest `ChannelMonitor`
-				let old_mon = (prev_state.persisted_monitor_id, prev_state.persisted_monitor);
-				prev_state.pending_monitors.drain(..).next().unwrap_or(old_mon)
-			} else {
-				// Reload with the newest `ChannelMonitor`
-				let old_mon = (prev_state.persisted_monitor_id, prev_state.persisted_monitor);
-				prev_state.pending_monitors.pop().unwrap_or(old_mon)
-			};
-			// Use a different value of `use_old_mons` if we have another monitor (only for node B)
-			// by shifting `use_old_mons` one in base-3.
-			use_old_mons /= 3;
-			let mon = <(BlockLocator, ChannelMonitor<TestChannelSigner>)>::read(
-				&mut &serialized_mon[..],
-				(&*old_node.keys_manager, &*old_node.keys_manager),
-			)
-			.expect("Failed to read monitor");
-			monitors.insert(channel_id, mon.1);
-			// Update the latest `ChannelMonitor` state to match what we just told LDK.
-			prev_state.persisted_monitor = serialized_mon;
-			prev_state.persisted_monitor_id = mon_id;
-			// Wipe any `ChannelMonitor`s which we never told LDK we finished persisting,
-			// considering them discarded. LDK should replay these for us as they're stored in
-			// the `ChannelManager`.
-			prev_state.pending_monitors.clear();
-			chain_monitor.latest_monitors.lock().unwrap().insert(channel_id, prev_state);
-		}
-		let mut monitor_refs = new_hash_map();
-		for (channel_id, monitor) in monitors.iter() {
-			monitor_refs.insert(*channel_id, monitor);
-		}
-
-		let read_args = ChannelManagerReadArgs {
-			entropy_source: Arc::clone(&old_node.keys_manager),
-			node_signer: Arc::clone(&old_node.keys_manager),
-			signer_provider: Arc::clone(&old_node.keys_manager),
-			fee_estimator: Arc::clone(&old_node.fee_estimator),
-			chain_monitor: chain_monitor.clone(),
-			tx_broadcaster: Arc::clone(&old_node.broadcaster),
-			router: &router,
-			message_router: &router,
-			logger: Arc::clone(&logger),
-			config: build_node_config(chan_type),
-			channel_monitors: monitor_refs,
-		};
-
-		let manager = <(BlockLocator, ChanMan)>::read(&mut &ser[..], read_args)
-			.expect("Failed to read manager");
-		for (channel_id, mon) in monitors.drain() {
-			assert_eq!(
-				chain_monitor.chain_monitor.watch_channel(channel_id, mon),
-				Ok(ChannelMonitorUpdateStatus::Completed)
-			);
-		}
-		*chain_monitor.persister.update_ret.lock().unwrap() = *mon_style[node_id as usize].borrow();
-		(manager.1, chain_monitor, logger)
-	};
-
-	let mut read_pos = 1; // First byte was consumed for initial config (mon_style + chan_type)
+	let mut read_pos = 1; // First byte was consumed for initial config (persistence styles + chan_type)
 	macro_rules! get_slice {
 		($len: expr) => {{
 			let slice_len = $len as usize;
@@ -2282,24 +2309,12 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 			// In general, we keep related message groups close together in binary form, allowing
 			// bit-twiddling mutations to have similar effects. This is probably overkill, but no
 			// harm in doing so.
-			0x00 => {
-				*mon_style[0].borrow_mut() = ChannelMonitorUpdateStatus::InProgress;
-			},
-			0x01 => {
-				*mon_style[1].borrow_mut() = ChannelMonitorUpdateStatus::InProgress;
-			},
-			0x02 => {
-				*mon_style[2].borrow_mut() = ChannelMonitorUpdateStatus::InProgress;
-			},
-			0x04 => {
-				*mon_style[0].borrow_mut() = ChannelMonitorUpdateStatus::Completed;
-			},
-			0x05 => {
-				*mon_style[1].borrow_mut() = ChannelMonitorUpdateStatus::Completed;
-			},
-			0x06 => {
-				*mon_style[2].borrow_mut() = ChannelMonitorUpdateStatus::Completed;
-			},
+			0x00 => nodes[0].set_persistence_style(ChannelMonitorUpdateStatus::InProgress),
+			0x01 => nodes[1].set_persistence_style(ChannelMonitorUpdateStatus::InProgress),
+			0x02 => nodes[2].set_persistence_style(ChannelMonitorUpdateStatus::InProgress),
+			0x04 => nodes[0].set_persistence_style(ChannelMonitorUpdateStatus::Completed),
+			0x05 => nodes[1].set_persistence_style(ChannelMonitorUpdateStatus::Completed),
+			0x06 => nodes[2].set_persistence_style(ChannelMonitorUpdateStatus::Completed),
 
 			0x08 => {
 				for id in &chan_ab_ids {
@@ -2475,7 +2490,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 			},
 
 			0x80 => {
-				let mut max_feerate = last_htlc_clear_fee_a;
+				let mut max_feerate = nodes[0].last_htlc_clear_fee;
 				if matches!(chan_type, ChanType::Legacy) {
 					max_feerate *= FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE as u32;
 				}
@@ -2491,7 +2506,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 				nodes[0].timer_tick_occurred();
 			},
 			0x84 => {
-				let mut max_feerate = last_htlc_clear_fee_b;
+				let mut max_feerate = nodes[1].last_htlc_clear_fee;
 				if matches!(chan_type, ChanType::Legacy) {
 					max_feerate *= FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE as u32;
 				}
@@ -2507,7 +2522,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 				nodes[1].timer_tick_occurred();
 			},
 			0x88 => {
-				let mut max_feerate = last_htlc_clear_fee_c;
+				let mut max_feerate = nodes[2].last_htlc_clear_fee;
 				if matches!(chan_type, ChanType::Legacy) {
 					max_feerate *= FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE as u32;
 				}
@@ -2584,28 +2599,28 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 			// Sync node by 1 block to cover confirmation of a transaction.
 			0xa8 => {
 				chain_state.confirm_pending_txs();
-				sync_with_chain_state(&chain_state, &nodes[0], &mut node_height_a, Some(1));
+				sync_with_chain_state(&mut nodes[0], &chain_state, Some(1));
 			},
 			0xa9 => {
 				chain_state.confirm_pending_txs();
-				sync_with_chain_state(&chain_state, &nodes[1], &mut node_height_b, Some(1));
+				sync_with_chain_state(&mut nodes[1], &chain_state, Some(1));
 			},
 			0xaa => {
 				chain_state.confirm_pending_txs();
-				sync_with_chain_state(&chain_state, &nodes[2], &mut node_height_c, Some(1));
+				sync_with_chain_state(&mut nodes[2], &chain_state, Some(1));
 			},
 			// Sync node to chain tip to cover confirmation of a transaction post-reorg-risk.
 			0xab => {
 				chain_state.confirm_pending_txs();
-				sync_with_chain_state(&chain_state, &nodes[0], &mut node_height_a, None);
+				sync_with_chain_state(&mut nodes[0], &chain_state, None);
 			},
 			0xac => {
 				chain_state.confirm_pending_txs();
-				sync_with_chain_state(&chain_state, &nodes[1], &mut node_height_b, None);
+				sync_with_chain_state(&mut nodes[1], &chain_state, None);
 			},
 			0xad => {
 				chain_state.confirm_pending_txs();
-				sync_with_chain_state(&chain_state, &nodes[2], &mut node_height_c, None);
+				sync_with_chain_state(&mut nodes[2], &chain_state, None);
 			},
 
 			0xb0 | 0xb1 | 0xb2 => {
@@ -2621,11 +2636,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 					ab_events.clear();
 					ba_events.clear();
 				}
-				let (new_node_a, new_monitor_a, new_logger_a) =
-					reload_node(&node_a_ser, 0, &nodes[0], v);
-				nodes[0].node = new_node_a;
-				nodes[0].monitor = new_monitor_a;
-				nodes[0].logger = new_logger_a;
+				nodes[0].reload(v, &out, &router, chan_type);
 			},
 			0xb3..=0xbb => {
 				// Restart node B, picking among the in-flight `ChannelMonitor`s to use based on
@@ -2644,11 +2655,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 					bc_events.clear();
 					cb_events.clear();
 				}
-				let (new_node_b, new_monitor_b, new_logger_b) =
-					reload_node(&node_b_ser, 1, &nodes[1], v);
-				nodes[1].node = new_node_b;
-				nodes[1].monitor = new_monitor_b;
-				nodes[1].logger = new_logger_b;
+				nodes[1].reload(v, &out, &router, chan_type);
 			},
 			0xbc | 0xbd | 0xbe => {
 				// Restart node C, picking among the in-flight `ChannelMonitor`s to use based on
@@ -2663,11 +2670,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 					bc_events.clear();
 					cb_events.clear();
 				}
-				let (new_node_c, new_monitor_c, new_logger_c) =
-					reload_node(&node_c_ser, 2, &nodes[2], v);
-				nodes[2].node = new_node_c;
-				nodes[2].monitor = new_monitor_c;
-				nodes[2].logger = new_logger_c;
+				nodes[2].reload(v, &out, &router, chan_type);
 			},
 
 			0xc0 => nodes[0].keys_manager.disable_supported_ops_for_all_signers(),
@@ -2950,24 +2953,18 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 					);
 				}
 
-				last_htlc_clear_fee_a =
+				nodes[0].last_htlc_clear_fee =
 					nodes[0].fee_estimator.ret_val.load(atomic::Ordering::Acquire);
-				last_htlc_clear_fee_b =
+				nodes[1].last_htlc_clear_fee =
 					nodes[1].fee_estimator.ret_val.load(atomic::Ordering::Acquire);
-				last_htlc_clear_fee_c =
+				nodes[2].last_htlc_clear_fee =
 					nodes[2].fee_estimator.ret_val.load(atomic::Ordering::Acquire);
 			},
 			_ => test_return!(),
 		}
 
-		if nodes[0].get_and_clear_needs_persistence() {
-			node_a_ser = nodes[0].encode();
-		}
-		if nodes[1].get_and_clear_needs_persistence() {
-			node_b_ser = nodes[1].encode();
-		}
-		if nodes[2].get_and_clear_needs_persistence() {
-			node_c_ser = nodes[2].encode();
+		for node in &mut nodes {
+			node.refresh_serialized_manager();
 		}
 	}
 }
