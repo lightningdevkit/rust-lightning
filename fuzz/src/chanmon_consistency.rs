@@ -944,6 +944,34 @@ enum ChanType {
 	ZeroFeeCommitments,
 }
 
+struct HarnessNode<'a> {
+	node: ChanMan<'a>,
+	monitor: Arc<TestChainMonitor>,
+	keys_manager: Arc<KeyProvider>,
+}
+
+impl<'a> std::ops::Deref for HarnessNode<'a> {
+	type Target = ChanMan<'a>;
+
+	fn deref(&self) -> &Self::Target {
+		&self.node
+	}
+}
+
+impl<'a> HarnessNode<'a> {
+	fn complete_all_pending_monitor_updates(&self) {
+		for (channel_id, state) in self.monitor.latest_monitors.lock().unwrap().iter_mut() {
+			for (id, data) in state.pending_monitors.drain(..) {
+				self.monitor.chain_monitor.channel_monitor_updated(*channel_id, id).unwrap();
+				if id >= state.persisted_monitor_id {
+					state.persisted_monitor_id = id;
+					state.persisted_monitor = data;
+				}
+			}
+		}
+	}
+}
+
 fn build_node_config(chan_type: ChanType) -> UserConfig {
 	let mut config = UserConfig::default();
 	config.channel_config.forwarding_fee_proportional_millionths = 0;
@@ -966,18 +994,6 @@ fn build_node_config(chan_type: ChanType) -> UserConfig {
 	config
 }
 
-fn complete_all_pending_monitor_updates(monitor: &Arc<TestChainMonitor>) {
-	for (channel_id, state) in monitor.latest_monitors.lock().unwrap().iter_mut() {
-		for (id, data) in state.pending_monitors.drain(..) {
-			monitor.chain_monitor.channel_monitor_updated(*channel_id, id).unwrap();
-			if id >= state.persisted_monitor_id {
-				state.persisted_monitor_id = id;
-				state.persisted_monitor = data;
-			}
-		}
-	}
-}
-
 fn connect_peers(source: &ChanMan<'_>, dest: &ChanMan<'_>) {
 	let init_dest =
 		Init { features: dest.init_features(), networks: None, remote_network_address: None };
@@ -988,9 +1004,8 @@ fn connect_peers(source: &ChanMan<'_>, dest: &ChanMan<'_>) {
 }
 
 fn make_channel(
-	source: &ChanMan<'_>, dest: &ChanMan<'_>, source_monitor: &Arc<TestChainMonitor>,
-	dest_monitor: &Arc<TestChainMonitor>, dest_keys_manager: &Arc<KeyProvider>, chan_id: i32,
-	trusted_open: bool, trusted_accept: bool, chain_state: &mut ChainState,
+	source: &HarnessNode<'_>, dest: &HarnessNode<'_>, chan_id: i32, trusted_open: bool,
+	trusted_accept: bool, chain_state: &mut ChainState,
 ) {
 	if trusted_open {
 		source
@@ -1027,7 +1042,7 @@ fn make_channel(
 		} = events[0]
 		{
 			let mut random_bytes = [0u8; 16];
-			random_bytes.copy_from_slice(&dest_keys_manager.get_secure_random_bytes()[..16]);
+			random_bytes.copy_from_slice(&dest.keys_manager.get_secure_random_bytes()[..16]);
 			let user_channel_id = u128::from_be_bytes(random_bytes);
 			if trusted_accept {
 				dest.accept_inbound_channel_from_trusted_peer(
@@ -1103,7 +1118,7 @@ fn make_channel(
 	};
 	dest.handle_funding_created(source.get_our_node_id(), &funding_created);
 	// Complete any pending monitor updates for dest after watch_channel.
-	complete_all_pending_monitor_updates(dest_monitor);
+	dest.complete_all_pending_monitor_updates();
 
 	let (funding_signed, channel_id) = {
 		let events = dest.get_and_clear_pending_msg_events();
@@ -1124,7 +1139,7 @@ fn make_channel(
 
 	source.handle_funding_signed(dest.get_our_node_id(), &funding_signed);
 	// Complete any pending monitor updates for source after watch_channel.
-	complete_all_pending_monitor_updates(source_monitor);
+	source.complete_all_pending_monitor_updates();
 
 	let events = source.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
@@ -1141,7 +1156,7 @@ fn make_channel(
 	}
 }
 
-fn lock_fundings(nodes: &[ChanMan<'_>; 3]) {
+fn lock_fundings(nodes: &[HarnessNode<'_>; 3]) {
 	let mut node_events = Vec::new();
 	for node in nodes.iter() {
 		node_events.push(node.get_and_clear_pending_msg_events());
@@ -1380,7 +1395,23 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 	let (node_b, mut monitor_b, keys_manager_b, logger_b) = make_node!(1, fee_est_b, broadcast_b);
 	let (node_c, mut monitor_c, keys_manager_c, logger_c) = make_node!(2, fee_est_c, broadcast_c);
 
-	let mut nodes = [node_a, node_b, node_c];
+	let mut nodes = [
+		HarnessNode {
+			node: node_a,
+			monitor: Arc::clone(&monitor_a),
+			keys_manager: Arc::clone(&keys_manager_a),
+		},
+		HarnessNode {
+			node: node_b,
+			monitor: Arc::clone(&monitor_b),
+			keys_manager: Arc::clone(&keys_manager_b),
+		},
+		HarnessNode {
+			node: node_c,
+			monitor: Arc::clone(&monitor_c),
+			keys_manager: Arc::clone(&keys_manager_c),
+		},
+	];
 	#[allow(unused_variables)]
 	let loggers = [logger_a, logger_b, logger_c];
 	#[allow(unused_variables)]
@@ -1396,74 +1427,14 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 	// txid and funding outpoint.
 	// A-B: channel 2 A and B have 0-reserve (trusted open + trusted accept),
 	//       channel 3 A has 0-reserve (trusted accept)
-	make_channel(
-		&nodes[0],
-		&nodes[1],
-		&monitor_a,
-		&monitor_b,
-		&keys_manager_b,
-		1,
-		false,
-		false,
-		&mut chain_state,
-	);
-	make_channel(
-		&nodes[0],
-		&nodes[1],
-		&monitor_a,
-		&monitor_b,
-		&keys_manager_b,
-		2,
-		true,
-		true,
-		&mut chain_state,
-	);
-	make_channel(
-		&nodes[0],
-		&nodes[1],
-		&monitor_a,
-		&monitor_b,
-		&keys_manager_b,
-		3,
-		false,
-		true,
-		&mut chain_state,
-	);
+	make_channel(&nodes[0], &nodes[1], 1, false, false, &mut chain_state);
+	make_channel(&nodes[0], &nodes[1], 2, true, true, &mut chain_state);
+	make_channel(&nodes[0], &nodes[1], 3, false, true, &mut chain_state);
 	// B-C: channel 4 B has 0-reserve (via trusted accept),
 	//       channel 5 C has 0-reserve (via trusted open)
-	make_channel(
-		&nodes[1],
-		&nodes[2],
-		&monitor_b,
-		&monitor_c,
-		&keys_manager_c,
-		4,
-		false,
-		true,
-		&mut chain_state,
-	);
-	make_channel(
-		&nodes[1],
-		&nodes[2],
-		&monitor_b,
-		&monitor_c,
-		&keys_manager_c,
-		5,
-		true,
-		false,
-		&mut chain_state,
-	);
-	make_channel(
-		&nodes[1],
-		&nodes[2],
-		&monitor_b,
-		&monitor_c,
-		&keys_manager_c,
-		6,
-		false,
-		false,
-		&mut chain_state,
-	);
+	make_channel(&nodes[1], &nodes[2], 4, false, true, &mut chain_state);
+	make_channel(&nodes[1], &nodes[2], 5, true, false, &mut chain_state);
+	make_channel(&nodes[1], &nodes[2], 6, false, false, &mut chain_state);
 
 	// Wipe the transactions-broadcasted set to make sure we don't broadcast any transactions
 	// during normal operation in `test_return`.
@@ -2657,8 +2628,9 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 					&fee_est_a,
 					broadcast_a.clone(),
 				);
-				nodes[0] = new_node_a;
-				monitor_a = new_monitor_a;
+				nodes[0].node = new_node_a;
+				monitor_a = Arc::clone(&new_monitor_a);
+				nodes[0].monitor = new_monitor_a;
 			},
 			0xb3..=0xbb => {
 				// Restart node B, picking among the in-flight `ChannelMonitor`s to use based on
@@ -2686,8 +2658,9 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 					&fee_est_b,
 					broadcast_b.clone(),
 				);
-				nodes[1] = new_node_b;
-				monitor_b = new_monitor_b;
+				nodes[1].node = new_node_b;
+				monitor_b = Arc::clone(&new_monitor_b);
+				nodes[1].monitor = new_monitor_b;
 			},
 			0xbc | 0xbd | 0xbe => {
 				// Restart node C, picking among the in-flight `ChannelMonitor`s to use based on
@@ -2711,8 +2684,9 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 					&fee_est_c,
 					broadcast_c.clone(),
 				);
-				nodes[2] = new_node_c;
-				monitor_c = new_monitor_c;
+				nodes[2].node = new_node_c;
+				monitor_c = Arc::clone(&new_monitor_c);
+				nodes[2].monitor = new_monitor_c;
 			},
 
 			0xc0 => keys_manager_a.disable_supported_ops_for_all_signers(),
