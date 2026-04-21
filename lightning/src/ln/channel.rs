@@ -4198,6 +4198,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 				include_counterparty_unknown_htlcs,
 				addl_nondust_htlc_count,
 				channel_context.feerate_per_kw,
+				false,
 				dust_exposure_limiting_feerate,
 			)
 			.map_err(|()| {
@@ -4494,6 +4495,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 				include_counterparty_unknown_htlcs,
 				addl_nondust_htlc_count,
 				channel_context.feerate_per_kw,
+				false,
 				dust_exposure_limiting_feerate,
 			)
 			.map_err(|()| APIError::APIMisuseError {
@@ -5284,7 +5286,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 	fn get_next_local_commitment_stats(
 		&self, funding: &FundingScope, htlc_candidate: Option<HTLCAmountDirection>,
 		include_counterparty_unknown_htlcs: bool, addl_nondust_htlc_count: usize,
-		feerate_per_kw: u32, dust_exposure_limiting_feerate: Option<u32>,
+		feerate_per_kw: u32, assume_fee_spike: bool, dust_exposure_limiting_feerate: Option<u32>,
 	) -> Result<(ChannelStats, Vec<HTLCAmountDirection>), ()> {
 		let next_commitment_htlcs = self.get_next_commitment_htlcs(
 			true,
@@ -5306,6 +5308,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			&next_commitment_htlcs,
 			addl_nondust_htlc_count,
 			feerate_per_kw,
+			assume_fee_spike,
 			dust_exposure_limiting_feerate,
 			max_dust_htlc_exposure_msat,
 			channel_constraints,
@@ -5330,6 +5333,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 						&next_commitment_htlcs,
 						0,
 						feerate_per_kw,
+						false,
 						dust_exposure_limiting_feerate,
 						max_dust_htlc_exposure_msat,
 						channel_constraints,
@@ -5351,7 +5355,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 	fn get_next_remote_commitment_stats(
 		&self, funding: &FundingScope, htlc_candidate: Option<HTLCAmountDirection>,
 		include_counterparty_unknown_htlcs: bool, addl_nondust_htlc_count: usize,
-		feerate_per_kw: u32, dust_exposure_limiting_feerate: Option<u32>,
+		feerate_per_kw: u32, assume_fee_spike: bool, dust_exposure_limiting_feerate: Option<u32>,
 	) -> Result<(ChannelStats, Vec<HTLCAmountDirection>), ()> {
 		let next_commitment_htlcs = self.get_next_commitment_htlcs(
 			false,
@@ -5373,6 +5377,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			&next_commitment_htlcs,
 			addl_nondust_htlc_count,
 			feerate_per_kw,
+			assume_fee_spike,
 			dust_exposure_limiting_feerate,
 			max_dust_htlc_exposure_msat,
 			channel_constraints,
@@ -5397,6 +5402,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 						&next_commitment_htlcs,
 						0,
 						feerate_per_kw,
+						false,
 						dust_exposure_limiting_feerate,
 						max_dust_htlc_exposure_msat,
 						channel_constraints,
@@ -5439,6 +5445,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 				include_counterparty_unknown_htlcs,
 				fee_spike_buffer_htlc,
 				self.feerate_per_kw,
+				false,
 				dust_exposure_limiting_feerate,
 			)
 			.map_err(|()| {
@@ -5497,6 +5504,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 				include_counterparty_unknown_htlcs,
 				fee_spike_buffer_htlc,
 				self.feerate_per_kw,
+				false,
 				dust_exposure_limiting_feerate,
 			)
 			.map_err(|()| {
@@ -5523,6 +5531,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 				include_counterparty_unknown_htlcs,
 				0,
 				new_feerate_per_kw,
+				false,
 				dust_exposure_limiting_feerate,
 			)
 			.map_err(|()| {
@@ -5544,6 +5553,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 				include_counterparty_unknown_htlcs,
 				0,
 				new_feerate_per_kw,
+				false,
 				dust_exposure_limiting_feerate,
 			)
 			.map_err(|()| {
@@ -5724,6 +5734,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 				include_counterparty_unknown_htlcs,
 				CONCURRENT_INBOUND_HTLC_FEE_BUFFER as usize,
 				feerate_per_kw,
+				false,
 				dust_exposure_limiting_feerate,
 			) {
 			stats
@@ -5763,6 +5774,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			include_counterparty_unknown_htlcs,
 			CONCURRENT_INBOUND_HTLC_FEE_BUFFER as usize,
 			feerate_per_kw,
+			false,
 			dust_exposure_limiting_feerate,
 		) {
 			stats
@@ -5810,6 +5822,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 				include_counterparty_unknown_htlcs,
 				fee_spike_buffer_htlc,
 				feerate,
+				false,
 				dust_exposure_limiting_feerate,
 			)
 			.map_err(|()| {
@@ -5826,6 +5839,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 				include_counterparty_unknown_htlcs,
 				fee_spike_buffer_htlc,
 				feerate,
+				false,
 				dust_exposure_limiting_feerate,
 			)
 			.map_err(|()| {
@@ -5862,21 +5876,14 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		if !funding.is_outbound() {
 			// Note that with anchor outputs we are no longer as sensitive to fee spikes, so we don't need
 			// to account for them.
-			let fee_spike_multiple =
-				if !funding.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
-					FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE as u32
-				} else {
-					1
-				};
-			// Note that the feerate is 0 in zero-fee commitment channels, so this statement is a noop
-			let spiked_feerate = feerate.saturating_mul(fee_spike_multiple);
 			let (remote_stats, _remote_htlcs) = self
 				.get_next_remote_commitment_stats(
 					funding,
 					None,
 					include_counterparty_unknown_htlcs,
 					fee_spike_buffer_htlc,
-					spiked_feerate,
+					feerate,
+					true,
 					dust_exposure_limiting_feerate,
 				)
 				.map_err(|()| {
@@ -6231,6 +6238,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 				include_counterparty_unknown_htlcs,
 				addl_nondust_htlc_count,
 				self.feerate_per_kw,
+				false,
 				dust_exposure_limiting_feerate,
 			)
 			.map(|(remote_stats, _)| remote_stats.available_balances)?;
@@ -6252,6 +6260,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 					include_counterparty_unknown_htlcs,
 					addl_nondust_htlc_count,
 					self.feerate_per_kw,
+					false,
 					dust_exposure_limiting_feerate,
 				)
 				.unwrap();
@@ -13372,16 +13381,6 @@ where
 		// We are not interested in dust exposure
 		let dust_exposure_limiting_feerate = None;
 
-		// Note that the feerate is 0 in zero-fee commitment channels, so this statement is a noop
-		let feerate_per_kw = if !funding.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
-			// Similar to HTLC additions, require the funder to have enough funds reserved for
-			// fees such that the feerate can jump without rendering the channel useless.
-			let spike_mul = FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE as u32;
-			self.context.feerate_per_kw.saturating_mul(spike_mul)
-		} else {
-			self.context.feerate_per_kw
-		};
-
 		// Different dust limits on the local and remote commitments cause the commitment
 		// transaction fee to be different depending on the commitment, so we grab the floor
 		// of both balances across both commitments here.
@@ -13399,7 +13398,8 @@ where
 				None, // htlc_candidate
 				include_counterparty_unknown_htlcs,
 				addl_nondust_htlc_count,
-				feerate_per_kw,
+				self.context.feerate_per_kw,
+				true,
 				dust_exposure_limiting_feerate,
 			)
 			.map_err(|()| "Balance exhausted on local commitment")?;
@@ -13411,7 +13411,8 @@ where
 				None, // htlc_candidate
 				include_counterparty_unknown_htlcs,
 				addl_nondust_htlc_count,
-				feerate_per_kw,
+				self.context.feerate_per_kw,
+				true,
 				dust_exposure_limiting_feerate,
 			)
 			.map_err(|()| "Balance exhausted on remote commitment")?;
@@ -13451,6 +13452,7 @@ where
 				include_counterparty_unknown_htlcs,
 				0,
 				self.context.feerate_per_kw,
+				false,
 				dust_exposure_limiting_feerate,
 			)
 			.map_err(|()| "Balance exhausted on remote commitment")?;
@@ -17186,7 +17188,7 @@ mod tests {
 		// Make sure when Node A calculates their local commitment transaction, none of the HTLCs pass
 		// the dust limit check.
 		let htlc_candidate = HTLCAmountDirection { amount_msat: htlc_amount_msat, outbound: true };
-		let local_commit_tx_fee = node_a_chan.context.get_next_local_commitment_stats(&node_a_chan.funding, Some(htlc_candidate), false, 0, node_a_chan.context.feerate_per_kw, None).unwrap().0.commitment_stats.commit_tx_fee_sat * 1000;
+		let local_commit_tx_fee = node_a_chan.context.get_next_local_commitment_stats(&node_a_chan.funding, Some(htlc_candidate), false, 0, node_a_chan.context.feerate_per_kw, false, None).unwrap().0.commitment_stats.commit_tx_fee_sat * 1000;
 		let local_commit_fee_0_htlcs = commit_tx_fee_sat(node_a_chan.context.feerate_per_kw, 0, node_a_chan.funding.get_channel_type()) * 1000;
 		assert_eq!(local_commit_tx_fee, local_commit_fee_0_htlcs);
 
@@ -17195,7 +17197,7 @@ mod tests {
 		node_a_chan.funding.channel_transaction_parameters.is_outbound_from_holder = false;
 		let remote_commit_fee_3_htlcs = commit_tx_fee_sat(node_a_chan.context.feerate_per_kw, 3, node_a_chan.funding.get_channel_type()) * 1000;
 		let htlc_candidate = HTLCAmountDirection { amount_msat: htlc_amount_msat, outbound: true };
-		let remote_commit_tx_fee = node_a_chan.context.get_next_remote_commitment_stats(&node_a_chan.funding, Some(htlc_candidate), false, 0, node_a_chan.context.feerate_per_kw, None).unwrap().0.commitment_stats.commit_tx_fee_sat * 1000;
+		let remote_commit_tx_fee = node_a_chan.context.get_next_remote_commitment_stats(&node_a_chan.funding, Some(htlc_candidate), false, 0, node_a_chan.context.feerate_per_kw, false, None).unwrap().0.commitment_stats.commit_tx_fee_sat * 1000;
 		assert_eq!(remote_commit_tx_fee, remote_commit_fee_3_htlcs);
 	}
 
@@ -17230,13 +17232,13 @@ mod tests {
 		// counted as dust when it shouldn't be.
 		let htlc_amt_above_timeout = (htlc_timeout_tx_fee_sat + chan.context.holder_dust_limit_satoshis + 1) * 1000;
 		let htlc_candidate = HTLCAmountDirection { amount_msat: htlc_amt_above_timeout, outbound: true };
-		let commitment_tx_fee = chan.context.get_next_local_commitment_stats(&chan.funding, Some(htlc_candidate), false, 0, chan.context.feerate_per_kw, None).unwrap().0.commitment_stats.commit_tx_fee_sat * 1000;
+		let commitment_tx_fee = chan.context.get_next_local_commitment_stats(&chan.funding, Some(htlc_candidate), false, 0, chan.context.feerate_per_kw, false, None).unwrap().0.commitment_stats.commit_tx_fee_sat * 1000;
 		assert_eq!(commitment_tx_fee, commitment_tx_fee_1_htlc);
 
 		// If swapped: this HTLC would be counted as non-dust when it shouldn't be.
 		let dust_htlc_amt_below_success = (htlc_success_tx_fee_sat + chan.context.holder_dust_limit_satoshis - 1) * 1000;
 		let htlc_candidate = HTLCAmountDirection { amount_msat: dust_htlc_amt_below_success, outbound: false };
-		let commitment_tx_fee = chan.context.get_next_local_commitment_stats(&chan.funding, Some(htlc_candidate), false, 0, chan.context.feerate_per_kw, None).unwrap().0.commitment_stats.commit_tx_fee_sat * 1000;
+		let commitment_tx_fee = chan.context.get_next_local_commitment_stats(&chan.funding, Some(htlc_candidate), false, 0, chan.context.feerate_per_kw, false, None).unwrap().0.commitment_stats.commit_tx_fee_sat * 1000;
 		assert_eq!(commitment_tx_fee, commitment_tx_fee_0_htlcs);
 
 		chan.funding.channel_transaction_parameters.is_outbound_from_holder = false;
@@ -17244,13 +17246,13 @@ mod tests {
 		// If swapped: this HTLC would be counted as non-dust when it shouldn't be.
 		let dust_htlc_amt_above_timeout = (htlc_timeout_tx_fee_sat + chan.context.counterparty_dust_limit_satoshis + 1) * 1000;
 		let htlc_candidate = HTLCAmountDirection { amount_msat: dust_htlc_amt_above_timeout, outbound: true };
-		let commitment_tx_fee = chan.context.get_next_remote_commitment_stats(&chan.funding, Some(htlc_candidate), false, 0, chan.context.feerate_per_kw, None).unwrap().0.commitment_stats.commit_tx_fee_sat * 1000;
+		let commitment_tx_fee = chan.context.get_next_remote_commitment_stats(&chan.funding, Some(htlc_candidate), false, 0, chan.context.feerate_per_kw, false, None).unwrap().0.commitment_stats.commit_tx_fee_sat * 1000;
 		assert_eq!(commitment_tx_fee, commitment_tx_fee_0_htlcs);
 
 		// If swapped: this HTLC would be counted as dust when it shouldn't be.
 		let htlc_amt_below_success = (htlc_success_tx_fee_sat + chan.context.counterparty_dust_limit_satoshis - 1) * 1000;
 		let htlc_candidate = HTLCAmountDirection { amount_msat: htlc_amt_below_success, outbound: false };
-		let commitment_tx_fee = chan.context.get_next_remote_commitment_stats(&chan.funding, Some(htlc_candidate), false, 0, chan.context.feerate_per_kw, None).unwrap().0.commitment_stats.commit_tx_fee_sat * 1000;
+		let commitment_tx_fee = chan.context.get_next_remote_commitment_stats(&chan.funding, Some(htlc_candidate), false, 0, chan.context.feerate_per_kw, false, None).unwrap().0.commitment_stats.commit_tx_fee_sat * 1000;
 		assert_eq!(commitment_tx_fee, commitment_tx_fee_1_htlc);
 	}
 

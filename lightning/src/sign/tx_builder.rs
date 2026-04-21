@@ -11,7 +11,7 @@ use crate::ln::chan_utils::{
 };
 use crate::ln::channel::{
 	get_v2_channel_reserve_satoshis, CommitmentStats, ANCHOR_OUTPUT_VALUE_SATOSHI,
-	MIN_CHANNEL_VALUE_SATOSHIS,
+	FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE, MIN_CHANNEL_VALUE_SATOSHIS,
 };
 use crate::prelude::*;
 use crate::types::features::ChannelTypeFeatures;
@@ -219,7 +219,7 @@ fn has_output(
 fn get_next_commitment_stats(
 	local: bool, is_outbound_from_holder: bool, channel_value_satoshis: u64,
 	value_to_holder_msat: u64, next_commitment_htlcs: &[HTLCAmountDirection],
-	addl_nondust_htlc_count: usize, feerate_per_kw: u32,
+	addl_nondust_htlc_count: usize, feerate_per_kw: u32, assume_fee_spike: bool,
 	dust_exposure_limiting_feerate: Option<u32>, broadcaster_dust_limit_satoshis: u64,
 	channel_type: &ChannelTypeFeatures,
 ) -> Result<NextCommitmentStats, ()> {
@@ -270,11 +270,16 @@ fn get_next_commitment_stats(
 		channel_type,
 	);
 
-	// Calculate fees on commitment transaction
-	let nondust_htlc_count = next_commitment_htlcs
+	let spiked_feerate = if assume_fee_spike && !channel_type.supports_anchors_zero_fee_htlc_tx() {
+		feerate_per_kw.saturating_mul(FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE as u32)
+	} else {
+		feerate_per_kw
+	};
+
+	let spiked_nondust_htlc_count = next_commitment_htlcs
 		.iter()
 		.filter(|htlc| {
-			!htlc.is_dust(local, feerate_per_kw, broadcaster_dust_limit_satoshis, channel_type)
+			!htlc.is_dust(local, spiked_feerate, broadcaster_dust_limit_satoshis, channel_type)
 		})
 		.count();
 
@@ -284,8 +289,8 @@ fn get_next_commitment_stats(
 		is_outbound_from_holder,
 		holder_balance_before_fee_msat,
 		counterparty_balance_before_fee_msat,
-		feerate_per_kw,
-		nondust_htlc_count,
+		spiked_feerate,
+		spiked_nondust_htlc_count,
 		broadcaster_dust_limit_satoshis,
 		channel_type,
 	) {
@@ -296,8 +301,8 @@ fn get_next_commitment_stats(
 	// this bigger transaction fee ? The funder can dip below their dust limit to cover this case, as the
 	// commitment will have at least one output: the non-dust fee spike buffer HTLC offered by the counterparty.
 	let commit_tx_fee_sat = commit_tx_fee_sat(
-		feerate_per_kw,
-		nondust_htlc_count + addl_nondust_htlc_count,
+		spiked_feerate,
+		spiked_nondust_htlc_count + addl_nondust_htlc_count,
 		channel_type,
 	);
 	let (holder_balance_msat, counterparty_balance_msat) = checked_sub_from_funder(
@@ -312,7 +317,7 @@ fn get_next_commitment_stats(
 		counterparty_balance_msat,
 		dust_exposure_msat,
 		#[cfg(any(test, fuzzing))]
-		nondust_htlc_count: nondust_htlc_count + addl_nondust_htlc_count,
+		nondust_htlc_count: spiked_nondust_htlc_count + addl_nondust_htlc_count,
 		#[cfg(any(test, fuzzing))]
 		commit_tx_fee_sat,
 	})
@@ -802,7 +807,7 @@ pub(crate) trait TxBuilder {
 	fn get_channel_stats(
 		&self, local: bool, is_outbound_from_holder: bool, channel_value_satoshis: u64,
 		value_to_holder_msat: u64, pending_htlcs: &[HTLCAmountDirection],
-		addl_nondust_htlc_count: usize, feerate_per_kw: u32,
+		addl_nondust_htlc_count: usize, feerate_per_kw: u32, assume_fee_spike: bool,
 		dust_exposure_limiting_feerate: Option<u32>, max_dust_htlc_exposure_msat: u64,
 		channel_constraints: ChannelConstraints, channel_type: &ChannelTypeFeatures,
 	) -> Result<ChannelStats, ()>;
@@ -820,7 +825,7 @@ impl TxBuilder for SpecTxBuilder {
 	fn get_channel_stats(
 		&self, local: bool, is_outbound_from_holder: bool, channel_value_satoshis: u64,
 		value_to_holder_msat: u64, pending_htlcs: &[HTLCAmountDirection],
-		addl_nondust_htlc_count: usize, feerate_per_kw: u32,
+		addl_nondust_htlc_count: usize, feerate_per_kw: u32, assume_fee_spike: bool,
 		dust_exposure_limiting_feerate: Option<u32>, max_dust_htlc_exposure_msat: u64,
 		channel_constraints: ChannelConstraints, channel_type: &ChannelTypeFeatures,
 	) -> Result<ChannelStats, ()> {
@@ -833,6 +838,7 @@ impl TxBuilder for SpecTxBuilder {
 				pending_htlcs,
 				addl_nondust_htlc_count,
 				feerate_per_kw,
+				assume_fee_spike,
 				dust_exposure_limiting_feerate,
 				channel_constraints.holder_dust_limit_satoshis,
 				channel_type,
@@ -846,6 +852,7 @@ impl TxBuilder for SpecTxBuilder {
 				pending_htlcs,
 				addl_nondust_htlc_count,
 				feerate_per_kw,
+				assume_fee_spike,
 				dust_exposure_limiting_feerate,
 				channel_constraints.counterparty_dust_limit_satoshis,
 				channel_type,
