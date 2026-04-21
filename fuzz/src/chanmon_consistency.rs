@@ -56,7 +56,6 @@ use lightning::ln::channelmanager::{
 	TrustedChannelFeatures,
 };
 use lightning::ln::functional_test_utils::*;
-use lightning::ln::funding::{FundingContribution, FundingContributionError, FundingTemplate};
 use lightning::ln::inbound_payment::ExpandedKey;
 use lightning::ln::msgs::{
 	self, BaseMessageHandler, ChannelMessageHandler, CommitmentUpdate, Init, MessageSendEvent,
@@ -1051,6 +1050,22 @@ impl<'a> HarnessNode<'a> {
 		self.persistence_style = style;
 	}
 
+	fn complete_all_monitor_updates(&self, chan_id: &ChannelId) {
+		if let Some(state) = self.monitor.latest_monitors.lock().unwrap().get_mut(chan_id) {
+			assert!(
+				state.pending_monitors.windows(2).all(|pair| pair[0].0 < pair[1].0),
+				"updates should be sorted by id"
+			);
+			for (id, data) in state.pending_monitors.drain(..) {
+				self.monitor.chain_monitor.channel_monitor_updated(*chan_id, id).unwrap();
+				if id > state.persisted_monitor_id {
+					state.persisted_monitor_id = id;
+					state.persisted_monitor = data;
+				}
+			}
+		}
+	}
+
 	fn complete_all_pending_monitor_updates(&self) {
 		for (channel_id, state) in self.monitor.latest_monitors.lock().unwrap().iter_mut() {
 			for (id, data) in state.pending_monitors.drain(..) {
@@ -1063,9 +1078,157 @@ impl<'a> HarnessNode<'a> {
 		}
 	}
 
+	fn complete_monitor_update(&self, chan_id: &ChannelId, selector: MonitorUpdateSelector) {
+		if let Some(state) = self.monitor.latest_monitors.lock().unwrap().get_mut(chan_id) {
+			assert!(
+				state.pending_monitors.windows(2).all(|pair| pair[0].0 < pair[1].0),
+				"updates should be sorted by id"
+			);
+			let update = match selector {
+				MonitorUpdateSelector::First => {
+					if state.pending_monitors.is_empty() {
+						None
+					} else {
+						Some(state.pending_monitors.remove(0))
+					}
+				},
+				MonitorUpdateSelector::Second => {
+					if state.pending_monitors.len() > 1 {
+						Some(state.pending_monitors.remove(1))
+					} else {
+						None
+					}
+				},
+				MonitorUpdateSelector::Last => state.pending_monitors.pop(),
+			};
+			if let Some((id, data)) = update {
+				self.monitor.chain_monitor.channel_monitor_updated(*chan_id, id).unwrap();
+				if id > state.persisted_monitor_id {
+					state.persisted_monitor_id = id;
+					state.persisted_monitor = data;
+				}
+			}
+		}
+	}
+
+	fn sync_with_chain_state(&mut self, chain_state: &ChainState, num_blocks: Option<u32>) {
+		let target_height = if let Some(num_blocks) = num_blocks {
+			std::cmp::min(self.height + num_blocks, chain_state.tip_height())
+		} else {
+			chain_state.tip_height()
+		};
+
+		while self.height < target_height {
+			self.height += 1;
+			let (header, txn) = chain_state.block_at(self.height);
+			let txdata: Vec<_> = txn.iter().enumerate().map(|(i, tx)| (i + 1, tx)).collect();
+			if !txdata.is_empty() {
+				self.node.transactions_confirmed(header, &txdata, self.height);
+			}
+			self.node.best_block_updated(header, self.height);
+		}
+	}
+
 	fn refresh_serialized_manager(&mut self) {
 		if self.node.get_and_clear_needs_persistence() {
 			self.serialized_manager = self.node.encode();
+		}
+	}
+
+	fn bump_fee_estimate(&mut self, chan_type: ChanType) {
+		let mut max_feerate = self.last_htlc_clear_fee;
+		if matches!(chan_type, ChanType::Legacy) {
+			max_feerate *= FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE as u32;
+		}
+		if self.fee_estimator.ret_val.fetch_add(250, atomic::Ordering::AcqRel) + 250 > max_feerate {
+			self.fee_estimator.ret_val.store(max_feerate, atomic::Ordering::Release);
+		}
+		self.node.timer_tick_occurred();
+	}
+
+	fn reset_fee_estimate(&self) {
+		self.fee_estimator.ret_val.store(253, atomic::Ordering::Release);
+		self.node.timer_tick_occurred();
+	}
+
+	fn current_feerate_sat_per_kw(&self) -> FeeRate {
+		self.fee_estimator.feerate_sat_per_kw()
+	}
+
+	fn record_last_htlc_clear_fee(&mut self) {
+		self.last_htlc_clear_fee = self.fee_estimator.ret_val.load(atomic::Ordering::Acquire);
+	}
+
+	fn splice_in(&self, counterparty_node_id: &PublicKey, channel_id: &ChannelId) {
+		let wallet = WalletSync::new(&self.wallet, Arc::clone(&self.logger));
+		match self.node.splice_channel(channel_id, counterparty_node_id) {
+			Ok(funding_template) => {
+				let feerate =
+					funding_template.min_rbf_feerate().unwrap_or(self.current_feerate_sat_per_kw());
+				if let Ok(contribution) = funding_template.splice_in_sync(
+					Amount::from_sat(10_000),
+					feerate,
+					FeeRate::MAX,
+					&wallet,
+				) {
+					let _ = self.node.funding_contributed(
+						channel_id,
+						counterparty_node_id,
+						contribution,
+						None,
+					);
+				}
+			},
+			Err(e) => {
+				assert!(
+					matches!(e, APIError::APIMisuseError { ref err } if err.contains("splice")),
+					"{:?}",
+					e
+				);
+			},
+		}
+	}
+
+	fn splice_out(&self, counterparty_node_id: &PublicKey, channel_id: &ChannelId) {
+		// We conditionally splice out `MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS` only when the node
+		// has double the balance required to send a payment upon a `0xff` byte. We do this to
+		// ensure there's always liquidity available for a payment to succeed then.
+		let outbound_capacity_msat = self
+			.node
+			.list_channels()
+			.iter()
+			.find(|chan| chan.channel_id == *channel_id)
+			.map(|chan| chan.outbound_capacity_msat)
+			.unwrap();
+		if outbound_capacity_msat < 20_000_000 {
+			return;
+		}
+		match self.node.splice_channel(channel_id, counterparty_node_id) {
+			Ok(funding_template) => {
+				let feerate =
+					funding_template.min_rbf_feerate().unwrap_or(self.current_feerate_sat_per_kw());
+				let outputs = vec![TxOut {
+					value: Amount::from_sat(MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS),
+					script_pubkey: self.wallet.get_change_script().unwrap(),
+				}];
+				if let Ok(contribution) =
+					funding_template.splice_out(outputs, feerate, FeeRate::MAX)
+				{
+					let _ = self.node.funding_contributed(
+						channel_id,
+						counterparty_node_id,
+						contribution,
+						None,
+					);
+				}
+			},
+			Err(e) => {
+				assert!(
+					matches!(e, APIError::APIMisuseError { ref err } if err.contains("splice")),
+					"{:?}",
+					e
+				);
+			},
 		}
 	}
 
@@ -1150,6 +1313,13 @@ impl<'a> HarnessNode<'a> {
 		self.monitor = chain_monitor;
 		self.logger = logger;
 	}
+}
+
+#[derive(Copy, Clone)]
+enum MonitorUpdateSelector {
+	First,
+	Second,
+	Last,
 }
 
 fn build_node_config(chan_type: ChanType) -> UserConfig {
@@ -1497,28 +1667,10 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 	nodes[1].broadcaster.txn_broadcasted.borrow_mut().clear();
 	nodes[2].broadcaster.txn_broadcasted.borrow_mut().clear();
 
-	let sync_with_chain_state =
-		|node: &mut HarnessNode<'_>, chain_state: &ChainState, num_blocks: Option<u32>| {
-			let target_height = if let Some(num_blocks) = num_blocks {
-				std::cmp::min(node.height + num_blocks, chain_state.tip_height())
-			} else {
-				chain_state.tip_height()
-			};
-			while node.height < target_height {
-				node.height += 1;
-				let (header, txn) = chain_state.block_at(node.height);
-				let txdata: Vec<_> = txn.iter().enumerate().map(|(i, tx)| (i + 1, tx)).collect();
-				if !txdata.is_empty() {
-					node.transactions_confirmed(header, &txdata, node.height);
-				}
-				node.best_block_updated(header, node.height);
-			}
-		};
-
 	// Sync all nodes to tip to lock the funding.
-	sync_with_chain_state(&mut nodes[0], &chain_state, None);
-	sync_with_chain_state(&mut nodes[1], &chain_state, None);
-	sync_with_chain_state(&mut nodes[2], &chain_state, None);
+	nodes[0].sync_with_chain_state(&chain_state, None);
+	nodes[1].sync_with_chain_state(&chain_state, None);
+	nodes[2].sync_with_chain_state(&chain_state, None);
 
 	lock_fundings(&nodes);
 
@@ -2095,121 +2247,6 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 			}};
 		}
 
-		let complete_first = |v: &mut Vec<_>| if !v.is_empty() { Some(v.remove(0)) } else { None };
-		let complete_second = |v: &mut Vec<_>| if v.len() > 1 { Some(v.remove(1)) } else { None };
-		let complete_monitor_update =
-			|monitor: &Arc<TestChainMonitor>,
-			 chan_funding,
-			 compl_selector: &dyn Fn(&mut Vec<(u64, Vec<u8>)>) -> Option<(u64, Vec<u8>)>| {
-				if let Some(state) = monitor.latest_monitors.lock().unwrap().get_mut(chan_funding) {
-					assert!(
-						state.pending_monitors.windows(2).all(|pair| pair[0].0 < pair[1].0),
-						"updates should be sorted by id"
-					);
-					if let Some((id, data)) = compl_selector(&mut state.pending_monitors) {
-						monitor.chain_monitor.channel_monitor_updated(*chan_funding, id).unwrap();
-						if id > state.persisted_monitor_id {
-							state.persisted_monitor_id = id;
-							state.persisted_monitor = data;
-						}
-					}
-				}
-			};
-		let complete_all_monitor_updates = |monitor: &Arc<TestChainMonitor>, chan_id| {
-			if let Some(state) = monitor.latest_monitors.lock().unwrap().get_mut(chan_id) {
-				assert!(
-					state.pending_monitors.windows(2).all(|pair| pair[0].0 < pair[1].0),
-					"updates should be sorted by id"
-				);
-				for (id, data) in state.pending_monitors.drain(..) {
-					monitor.chain_monitor.channel_monitor_updated(*chan_id, id).unwrap();
-					if id > state.persisted_monitor_id {
-						state.persisted_monitor_id = id;
-						state.persisted_monitor = data;
-					}
-				}
-			}
-		};
-
-		let splice_channel =
-			|node: &HarnessNode<'_>,
-			 counterparty_node_id: &PublicKey,
-			 channel_id: &ChannelId,
-			 f: &dyn Fn(
-				FundingTemplate,
-			) -> Result<FundingContribution, FundingContributionError>| {
-				match node.splice_channel(channel_id, counterparty_node_id) {
-					Ok(funding_template) => {
-						if let Ok(contribution) = f(funding_template) {
-							let _ = node.funding_contributed(
-								channel_id,
-								counterparty_node_id,
-								contribution,
-								None,
-							);
-						}
-					},
-					Err(e) => {
-						assert!(
-							matches!(e, APIError::APIMisuseError { ref err } if err.contains("splice")),
-							"{:?}",
-							e
-						);
-					},
-				}
-			};
-
-		let splice_in = |node: &HarnessNode<'_>,
-		                 counterparty_node_id: &PublicKey,
-		                 channel_id: &ChannelId| {
-			let wallet = WalletSync::new(&node.wallet, Arc::clone(&node.logger));
-			let funding_feerate_sat_per_kw = node.fee_estimator.feerate_sat_per_kw();
-			splice_channel(
-				node,
-				counterparty_node_id,
-				channel_id,
-				&move |funding_template: FundingTemplate| {
-					let feerate =
-						funding_template.min_rbf_feerate().unwrap_or(funding_feerate_sat_per_kw);
-					funding_template.splice_in_sync(
-						Amount::from_sat(10_000),
-						feerate,
-						FeeRate::MAX,
-						&wallet,
-					)
-				},
-			);
-		};
-
-		let splice_out = |node: &HarnessNode<'_>,
-		                  counterparty_node_id: &PublicKey,
-		                  channel_id: &ChannelId| {
-			let outbound_capacity_msat = node
-				.list_channels()
-				.iter()
-				.find(|chan| chan.channel_id == *channel_id)
-				.map(|chan| chan.outbound_capacity_msat)
-				.unwrap();
-			if outbound_capacity_msat < 20_000_000 {
-				return;
-			}
-			let funding_feerate_sat_per_kw = node.fee_estimator.feerate_sat_per_kw();
-			splice_channel(
-				node,
-				counterparty_node_id,
-				channel_id,
-				&move |funding_template: FundingTemplate| {
-					let feerate =
-						funding_template.min_rbf_feerate().unwrap_or(funding_feerate_sat_per_kw);
-					let outputs = vec![TxOut {
-						value: Amount::from_sat(MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS),
-						script_pubkey: node.wallet.get_change_script().unwrap(),
-					}];
-					funding_template.splice_out(outputs, feerate, FeeRate::MAX)
-				},
-			);
-		};
-
 		let send =
 			|source_idx: usize, dest_idx: usize, dest_chan_id, amt, payment_ctr: &mut u64| {
 				let source = &nodes[source_idx];
@@ -2318,22 +2355,22 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 
 			0x08 => {
 				for id in &chan_ab_ids {
-					complete_all_monitor_updates(&nodes[0].monitor, id);
+					nodes[0].complete_all_monitor_updates(id);
 				}
 			},
 			0x09 => {
 				for id in &chan_ab_ids {
-					complete_all_monitor_updates(&nodes[1].monitor, id);
+					nodes[1].complete_all_monitor_updates(id);
 				}
 			},
 			0x0a => {
 				for id in &chan_bc_ids {
-					complete_all_monitor_updates(&nodes[1].monitor, id);
+					nodes[1].complete_all_monitor_updates(id);
 				}
 			},
 			0x0b => {
 				for id in &chan_bc_ids {
-					complete_all_monitor_updates(&nodes[2].monitor, id);
+					nodes[2].complete_all_monitor_updates(id);
 				}
 			},
 
@@ -2489,82 +2526,40 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 				send_mpp_direct(0, 1, &[chan_a_id, chan_a_id, chan_a_id], 1_000_000, &mut p_ctr)
 			},
 
-			0x80 => {
-				let mut max_feerate = nodes[0].last_htlc_clear_fee;
-				if matches!(chan_type, ChanType::Legacy) {
-					max_feerate *= FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE as u32;
-				}
-				if nodes[0].fee_estimator.ret_val.fetch_add(250, atomic::Ordering::AcqRel) + 250
-					> max_feerate
-				{
-					nodes[0].fee_estimator.ret_val.store(max_feerate, atomic::Ordering::Release);
-				}
-				nodes[0].timer_tick_occurred();
-			},
-			0x81 => {
-				nodes[0].fee_estimator.ret_val.store(253, atomic::Ordering::Release);
-				nodes[0].timer_tick_occurred();
-			},
-			0x84 => {
-				let mut max_feerate = nodes[1].last_htlc_clear_fee;
-				if matches!(chan_type, ChanType::Legacy) {
-					max_feerate *= FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE as u32;
-				}
-				if nodes[1].fee_estimator.ret_val.fetch_add(250, atomic::Ordering::AcqRel) + 250
-					> max_feerate
-				{
-					nodes[1].fee_estimator.ret_val.store(max_feerate, atomic::Ordering::Release);
-				}
-				nodes[1].timer_tick_occurred();
-			},
-			0x85 => {
-				nodes[1].fee_estimator.ret_val.store(253, atomic::Ordering::Release);
-				nodes[1].timer_tick_occurred();
-			},
-			0x88 => {
-				let mut max_feerate = nodes[2].last_htlc_clear_fee;
-				if matches!(chan_type, ChanType::Legacy) {
-					max_feerate *= FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE as u32;
-				}
-				if nodes[2].fee_estimator.ret_val.fetch_add(250, atomic::Ordering::AcqRel) + 250
-					> max_feerate
-				{
-					nodes[2].fee_estimator.ret_val.store(max_feerate, atomic::Ordering::Release);
-				}
-				nodes[2].timer_tick_occurred();
-			},
-			0x89 => {
-				nodes[2].fee_estimator.ret_val.store(253, atomic::Ordering::Release);
-				nodes[2].timer_tick_occurred();
-			},
+			0x80 => nodes[0].bump_fee_estimate(chan_type),
+			0x81 => nodes[0].reset_fee_estimate(),
+			0x84 => nodes[1].bump_fee_estimate(chan_type),
+			0x85 => nodes[1].reset_fee_estimate(),
+			0x88 => nodes[2].bump_fee_estimate(chan_type),
+			0x89 => nodes[2].reset_fee_estimate(),
 
 			0xa0 => {
 				if !cfg!(splicing) {
 					test_return!();
 				}
 				let cp_node_id = nodes[1].get_our_node_id();
-				splice_in(&nodes[0], &cp_node_id, &chan_a_id);
+				nodes[0].splice_in(&cp_node_id, &chan_a_id);
 			},
 			0xa1 => {
 				if !cfg!(splicing) {
 					test_return!();
 				}
 				let cp_node_id = nodes[0].get_our_node_id();
-				splice_in(&nodes[1], &cp_node_id, &chan_a_id);
+				nodes[1].splice_in(&cp_node_id, &chan_a_id);
 			},
 			0xa2 => {
 				if !cfg!(splicing) {
 					test_return!();
 				}
 				let cp_node_id = nodes[2].get_our_node_id();
-				splice_in(&nodes[1], &cp_node_id, &chan_b_id);
+				nodes[1].splice_in(&cp_node_id, &chan_b_id);
 			},
 			0xa3 => {
 				if !cfg!(splicing) {
 					test_return!();
 				}
 				let cp_node_id = nodes[1].get_our_node_id();
-				splice_in(&nodes[2], &cp_node_id, &chan_b_id);
+				nodes[2].splice_in(&cp_node_id, &chan_b_id);
 			},
 
 			0xa4 => {
@@ -2572,55 +2567,55 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 					test_return!();
 				}
 				let cp_node_id = nodes[1].get_our_node_id();
-				splice_out(&nodes[0], &cp_node_id, &chan_a_id);
+				nodes[0].splice_out(&cp_node_id, &chan_a_id);
 			},
 			0xa5 => {
 				if !cfg!(splicing) {
 					test_return!();
 				}
 				let cp_node_id = nodes[0].get_our_node_id();
-				splice_out(&nodes[1], &cp_node_id, &chan_a_id);
+				nodes[1].splice_out(&cp_node_id, &chan_a_id);
 			},
 			0xa6 => {
 				if !cfg!(splicing) {
 					test_return!();
 				}
 				let cp_node_id = nodes[2].get_our_node_id();
-				splice_out(&nodes[1], &cp_node_id, &chan_b_id);
+				nodes[1].splice_out(&cp_node_id, &chan_b_id);
 			},
 			0xa7 => {
 				if !cfg!(splicing) {
 					test_return!();
 				}
 				let cp_node_id = nodes[1].get_our_node_id();
-				splice_out(&nodes[2], &cp_node_id, &chan_b_id);
+				nodes[2].splice_out(&cp_node_id, &chan_b_id);
 			},
 
 			// Sync node by 1 block to cover confirmation of a transaction.
 			0xa8 => {
 				chain_state.confirm_pending_txs();
-				sync_with_chain_state(&mut nodes[0], &chain_state, Some(1));
+				nodes[0].sync_with_chain_state(&chain_state, Some(1));
 			},
 			0xa9 => {
 				chain_state.confirm_pending_txs();
-				sync_with_chain_state(&mut nodes[1], &chain_state, Some(1));
+				nodes[1].sync_with_chain_state(&chain_state, Some(1));
 			},
 			0xaa => {
 				chain_state.confirm_pending_txs();
-				sync_with_chain_state(&mut nodes[2], &chain_state, Some(1));
+				nodes[2].sync_with_chain_state(&chain_state, Some(1));
 			},
 			// Sync node to chain tip to cover confirmation of a transaction post-reorg-risk.
 			0xab => {
 				chain_state.confirm_pending_txs();
-				sync_with_chain_state(&mut nodes[0], &chain_state, None);
+				nodes[0].sync_with_chain_state(&chain_state, None);
 			},
 			0xac => {
 				chain_state.confirm_pending_txs();
-				sync_with_chain_state(&mut nodes[1], &chain_state, None);
+				nodes[1].sync_with_chain_state(&chain_state, None);
 			},
 			0xad => {
 				chain_state.confirm_pending_txs();
-				sync_with_chain_state(&mut nodes[2], &chain_state, None);
+				nodes[2].sync_with_chain_state(&chain_state, None);
 			},
 
 			0xb0 | 0xb1 | 0xb2 => {
@@ -2741,65 +2736,65 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 
 			0xf0 => {
 				for id in &chan_ab_ids {
-					complete_monitor_update(&nodes[0].monitor, id, &complete_first);
+					nodes[0].complete_monitor_update(id, MonitorUpdateSelector::First);
 				}
 			},
 			0xf1 => {
 				for id in &chan_ab_ids {
-					complete_monitor_update(&nodes[0].monitor, id, &complete_second);
+					nodes[0].complete_monitor_update(id, MonitorUpdateSelector::Second);
 				}
 			},
 			0xf2 => {
 				for id in &chan_ab_ids {
-					complete_monitor_update(&nodes[0].monitor, id, &Vec::pop);
+					nodes[0].complete_monitor_update(id, MonitorUpdateSelector::Last);
 				}
 			},
 
 			0xf4 => {
 				for id in &chan_ab_ids {
-					complete_monitor_update(&nodes[1].monitor, id, &complete_first);
+					nodes[1].complete_monitor_update(id, MonitorUpdateSelector::First);
 				}
 			},
 			0xf5 => {
 				for id in &chan_ab_ids {
-					complete_monitor_update(&nodes[1].monitor, id, &complete_second);
+					nodes[1].complete_monitor_update(id, MonitorUpdateSelector::Second);
 				}
 			},
 			0xf6 => {
 				for id in &chan_ab_ids {
-					complete_monitor_update(&nodes[1].monitor, id, &Vec::pop);
+					nodes[1].complete_monitor_update(id, MonitorUpdateSelector::Last);
 				}
 			},
 
 			0xf8 => {
 				for id in &chan_bc_ids {
-					complete_monitor_update(&nodes[1].monitor, id, &complete_first);
+					nodes[1].complete_monitor_update(id, MonitorUpdateSelector::First);
 				}
 			},
 			0xf9 => {
 				for id in &chan_bc_ids {
-					complete_monitor_update(&nodes[1].monitor, id, &complete_second);
+					nodes[1].complete_monitor_update(id, MonitorUpdateSelector::Second);
 				}
 			},
 			0xfa => {
 				for id in &chan_bc_ids {
-					complete_monitor_update(&nodes[1].monitor, id, &Vec::pop);
+					nodes[1].complete_monitor_update(id, MonitorUpdateSelector::Last);
 				}
 			},
 
 			0xfc => {
 				for id in &chan_bc_ids {
-					complete_monitor_update(&nodes[2].monitor, id, &complete_first);
+					nodes[2].complete_monitor_update(id, MonitorUpdateSelector::First);
 				}
 			},
 			0xfd => {
 				for id in &chan_bc_ids {
-					complete_monitor_update(&nodes[2].monitor, id, &complete_second);
+					nodes[2].complete_monitor_update(id, MonitorUpdateSelector::Second);
 				}
 			},
 			0xfe => {
 				for id in &chan_bc_ids {
-					complete_monitor_update(&nodes[2].monitor, id, &Vec::pop);
+					nodes[2].complete_monitor_update(id, MonitorUpdateSelector::Last);
 				}
 			},
 
@@ -2857,12 +2852,12 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 							}
 							// Next, make sure no monitor updates are pending
 							for id in &chan_ab_ids {
-								complete_all_monitor_updates(&nodes[0].monitor, id);
-								complete_all_monitor_updates(&nodes[1].monitor, id);
+								nodes[0].complete_all_monitor_updates(id);
+								nodes[1].complete_all_monitor_updates(id);
 							}
 							for id in &chan_bc_ids {
-								complete_all_monitor_updates(&nodes[1].monitor, id);
-								complete_all_monitor_updates(&nodes[2].monitor, id);
+								nodes[1].complete_all_monitor_updates(id);
+								nodes[2].complete_all_monitor_updates(id);
 							}
 							// Then, make sure any current forwards make their way to their destination
 							if process_msg_events!(0, false, ProcessMessages::AllMessages) {
@@ -2953,12 +2948,9 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 					);
 				}
 
-				nodes[0].last_htlc_clear_fee =
-					nodes[0].fee_estimator.ret_val.load(atomic::Ordering::Acquire);
-				nodes[1].last_htlc_clear_fee =
-					nodes[1].fee_estimator.ret_val.load(atomic::Ordering::Acquire);
-				nodes[2].last_htlc_clear_fee =
-					nodes[2].fee_estimator.ret_val.load(atomic::Ordering::Acquire);
+				nodes[0].record_last_htlc_clear_fee();
+				nodes[1].record_last_htlc_clear_fee();
+				nodes[2].record_last_htlc_clear_fee();
 			},
 			_ => test_return!(),
 		}
