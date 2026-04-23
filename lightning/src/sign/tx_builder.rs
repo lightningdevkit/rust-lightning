@@ -459,12 +459,27 @@ fn get_available_balances(
 		.filter(|htlc| {
 			!htlc.is_dust(
 				true,
+				feerate_per_kw,
+				channel_constraints.holder_dust_limit_satoshis,
+				channel_type,
+			)
+		})
+		.count();
+	let local_spiked_nondust_htlc_count = pending_htlcs
+		.iter()
+		.filter(|htlc| {
+			!htlc.is_dust(
+				true,
 				spiked_feerate,
 				channel_constraints.holder_dust_limit_satoshis,
 				channel_type,
 			)
 		})
 		.count();
+
+	// Note here we use the htlc count at the current feerate together with the spiked feerate;
+	// this makes sure that the holder can afford any fee bump between 1x to 2x from the current
+	// feerate.
 	let local_max_commit_tx_fee_sat = commit_tx_fee_sat(
 		spiked_feerate,
 		local_nondust_htlc_count + fee_spike_buffer_htlc + 1,
@@ -528,7 +543,7 @@ fn get_available_balances(
 		remote_balance_before_fee_msat,
 		spiked_feerate,
 		// The number of non-dust HTLCs on the local commitment at the spiked feerate
-		local_nondust_htlc_count,
+		local_spiked_nondust_htlc_count,
 		// The post-splice minimum balance of the holder
 		if is_outbound_from_holder { local_min_commit_tx_fee_sat } else { 0 },
 		&channel_constraints,
@@ -661,7 +676,7 @@ fn get_available_balances(
 	// Now adjust our min and max size HTLC to make sure both the local and the remote commitments still have
 	// at least one output at the spiked feerate.
 
-	let remote_nondust_htlc_count = pending_htlcs
+	let remote_spiked_nondust_htlc_count = pending_htlcs
 		.iter()
 		.filter(|htlc| {
 			!htlc.is_dust(
@@ -679,8 +694,8 @@ fn get_available_balances(
 			is_outbound_from_holder,
 			local_balance_before_fee_msat,
 			remote_balance_before_fee_msat,
-			local_nondust_htlc_count,
 			spiked_feerate,
+			local_spiked_nondust_htlc_count,
 			channel_constraints.holder_dust_limit_satoshis,
 			channel_type,
 			next_outbound_htlc_minimum_msat,
@@ -693,8 +708,8 @@ fn get_available_balances(
 			is_outbound_from_holder,
 			local_balance_before_fee_msat,
 			remote_balance_before_fee_msat,
-			remote_nondust_htlc_count,
 			spiked_feerate,
+			remote_spiked_nondust_htlc_count,
 			channel_constraints.counterparty_dust_limit_satoshis,
 			channel_type,
 			next_outbound_htlc_minimum_msat,
@@ -715,9 +730,10 @@ fn get_available_balances(
 
 fn adjust_boundaries_if_max_dust_htlc_produces_no_output(
 	local: bool, is_outbound_from_holder: bool, holder_balance_before_fee_msat: u64,
-	counterparty_balance_before_fee_msat: u64, nondust_htlc_count: usize, spiked_feerate: u32,
-	dust_limit_satoshis: u64, channel_type: &ChannelTypeFeatures,
-	next_outbound_htlc_minimum_msat: u64, available_capacity_msat: u64,
+	counterparty_balance_before_fee_msat: u64, spiked_feerate: u32,
+	spiked_feerate_nondust_htlc_count: usize, dust_limit_satoshis: u64,
+	channel_type: &ChannelTypeFeatures, next_outbound_htlc_minimum_msat: u64,
+	available_capacity_msat: u64,
 ) -> (u64, u64) {
 	// First, determine the biggest dust HTLC we could send
 	let (htlc_success_tx_fee_sat, htlc_timeout_tx_fee_sat) =
@@ -733,7 +749,7 @@ fn adjust_boundaries_if_max_dust_htlc_produces_no_output(
 		holder_balance_before_fee_msat.saturating_sub(max_dust_htlc_msat),
 		counterparty_balance_before_fee_msat,
 		spiked_feerate,
-		nondust_htlc_count,
+		spiked_feerate_nondust_htlc_count,
 		dust_limit_satoshis,
 		channel_type,
 	) {
