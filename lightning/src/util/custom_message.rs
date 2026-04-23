@@ -1,0 +1,377 @@
+// This file is Copyright its original authors, visible in version control
+// history.
+//
+// This file is licensed under the Apache License, Version 2.0 <LICENSE-APACHE
+// or http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your option.
+// You may not use this file except in accordance with one or both of these
+// licenses.
+
+//! Utilities for supporting custom peer-to-peer messages in LDK.
+//!
+//! [BOLT 1] specifies a custom message type range for use with experimental or application-specific
+//! messages. While a [`CustomMessageHandler`] can be defined to support more than one message type,
+//! defining such a handler requires a significant amount of boilerplate and can be error prone.
+//!
+//! This module provides the [`composite_custom_message_handler!`](crate::composite_custom_message_handler!) macro for easily composing
+//! pre-defined custom message handlers into one handler. The resulting handler can be further
+//! composed with other custom message handlers using the same macro.
+//!
+//! The following example demonstrates defining a `FooBarHandler` to compose separate handlers for
+//! `Foo` and `Bar` messages, and further composing it with a handler for `Baz` messages.
+//!
+//!```
+//! # fn main() {} // Avoid #[macro_export] generating an in-function warning
+//! # use bitcoin::secp256k1::PublicKey;
+//! # use lightning::io;
+//! # use lightning::ln::msgs::{DecodeError, Init, LightningError};
+//! use lightning::composite_custom_message_handler;
+//! use lightning::ln::peer_handler::CustomMessageHandler;
+//! use lightning::ln::wire::{CustomMessageReader, self};
+//! # use lightning::types::features::{InitFeatures, NodeFeatures};
+//! use lightning::util::ser::{LengthLimitedRead, Writeable};
+//! # use lightning::util::ser::Writer;
+//!
+//! // Assume that `FooHandler` and `BarHandler` are defined in one crate and `BazHandler` is
+//! // defined in another crate, handling messages `Foo`, `Bar`, and `Baz`, respectively.
+//!
+//! #[derive(Debug)]
+//! pub struct Foo;
+//!
+//! macro_rules! foo_type_id {
+//!     () => { 32768 }
+//! }
+//!
+//! impl wire::Type for Foo {
+//!     fn type_id(&self) -> u16 { foo_type_id!() }
+//! }
+//! impl Writeable for Foo {
+//!     // ...
+//! #     fn write<W: Writer>(&self, _: &mut W) -> Result<(), io::Error> {
+//! #         unimplemented!()
+//! #     }
+//! }
+//!
+//! pub struct FooHandler;
+//!
+//! impl CustomMessageReader for FooHandler {
+//!     // ...
+//! #     type CustomMessage = Foo;
+//! #     fn read<R: LengthLimitedRead>(
+//! #         &self, _message_type: u16, _buffer: &mut R
+//! #     ) -> Result<Option<Self::CustomMessage>, DecodeError> {
+//! #         unimplemented!()
+//! #     }
+//! }
+//! impl CustomMessageHandler for FooHandler {
+//!     // ...
+//! #     fn handle_custom_message(
+//! #         &self, _msg: Self::CustomMessage, _sender_node_id: PublicKey
+//! #     ) -> Result<(), LightningError> {
+//! #         unimplemented!()
+//! #     }
+//! #     fn get_and_clear_pending_msg(&self) -> Vec<(PublicKey, Self::CustomMessage)> {
+//! #         unimplemented!()
+//! #     }
+//! #     fn peer_disconnected(&self, _their_node_id: PublicKey) {
+//! #         unimplemented!()
+//! #     }
+//! #     fn peer_connected(&self, _their_node_id: PublicKey, _msg: &Init, _inbound: bool) -> Result<(), ()> {
+//! #         unimplemented!()
+//! #     }
+//! #     fn provided_node_features(&self) -> NodeFeatures {
+//! #         unimplemented!()
+//! #     }
+//! #     fn provided_init_features(&self, _their_node_id: PublicKey) -> InitFeatures {
+//! #         unimplemented!()
+//! #     }
+//! }
+//!
+//! #[derive(Debug)]
+//! pub struct Bar;
+//!
+//! macro_rules! bar_type_id {
+//!     () => { 32769 }
+//! }
+//!
+//! impl wire::Type for Bar {
+//!     fn type_id(&self) -> u16 { bar_type_id!() }
+//! }
+//! impl Writeable for Bar {
+//!     // ...
+//! #     fn write<W: Writer>(&self, _: &mut W) -> Result<(), io::Error> {
+//! #         unimplemented!()
+//! #     }
+//! }
+//!
+//! pub struct BarHandler;
+//!
+//! impl CustomMessageReader for BarHandler {
+//!     // ...
+//! #     type CustomMessage = Bar;
+//! #     fn read<R: LengthLimitedRead>(
+//! #         &self, _message_type: u16, _buffer: &mut R
+//! #     ) -> Result<Option<Self::CustomMessage>, DecodeError> {
+//! #         unimplemented!()
+//! #     }
+//! }
+//! impl CustomMessageHandler for BarHandler {
+//!     // ...
+//! #     fn handle_custom_message(
+//! #         &self, _msg: Self::CustomMessage, _sender_node_id: PublicKey
+//! #     ) -> Result<(), LightningError> {
+//! #         unimplemented!()
+//! #     }
+//! #     fn get_and_clear_pending_msg(&self) -> Vec<(PublicKey, Self::CustomMessage)> {
+//! #         unimplemented!()
+//! #     }
+//! #     fn peer_disconnected(&self, _their_node_id: PublicKey) {
+//! #         unimplemented!()
+//! #     }
+//! #     fn peer_connected(&self, _their_node_id: PublicKey, _msg: &Init, _inbound: bool) -> Result<(), ()> {
+//! #         unimplemented!()
+//! #     }
+//! #     fn provided_node_features(&self) -> NodeFeatures {
+//! #         unimplemented!()
+//! #     }
+//! #     fn provided_init_features(&self, _their_node_id: PublicKey) -> InitFeatures {
+//! #         unimplemented!()
+//! #     }
+//! }
+//!
+//! #[derive(Debug)]
+//! pub struct Baz;
+//!
+//! macro_rules! baz_type_id {
+//!     () => { 32770 }
+//! }
+//!
+//! impl wire::Type for Baz {
+//!     fn type_id(&self) -> u16 { baz_type_id!() }
+//! }
+//! impl Writeable for Baz {
+//!     // ...
+//! #     fn write<W: Writer>(&self, _: &mut W) -> Result<(), io::Error> {
+//! #         unimplemented!()
+//! #     }
+//! }
+//!
+//! pub struct BazHandler;
+//!
+//! impl CustomMessageReader for BazHandler {
+//!     // ...
+//! #     type CustomMessage = Baz;
+//! #     fn read<R: LengthLimitedRead>(
+//! #         &self, _message_type: u16, _buffer: &mut R
+//! #     ) -> Result<Option<Self::CustomMessage>, DecodeError> {
+//! #         unimplemented!()
+//! #     }
+//! }
+//! impl CustomMessageHandler for BazHandler {
+//!     // ...
+//! #     fn handle_custom_message(
+//! #         &self, _msg: Self::CustomMessage, _sender_node_id: PublicKey
+//! #     ) -> Result<(), LightningError> {
+//! #         unimplemented!()
+//! #     }
+//! #     fn get_and_clear_pending_msg(&self) -> Vec<(PublicKey, Self::CustomMessage)> {
+//! #         unimplemented!()
+//! #     }
+//! #     fn peer_disconnected(&self, _their_node_id: PublicKey) {
+//! #         unimplemented!()
+//! #     }
+//! #     fn peer_connected(&self, _their_node_id: PublicKey, _msg: &Init, _inbound: bool) -> Result<(), ()> {
+//! #         unimplemented!()
+//! #     }
+//! #     fn provided_node_features(&self) -> NodeFeatures {
+//! #         unimplemented!()
+//! #     }
+//! #     fn provided_init_features(&self, _their_node_id: PublicKey) -> InitFeatures {
+//! #         unimplemented!()
+//! #     }
+//! }
+//!
+//! // The first crate may define a handler composing `FooHandler` and `BarHandler` and export the
+//! // corresponding message type ids as a macro to use in further composition.
+//!
+//! composite_custom_message_handler!(
+//!     pub struct FooBarHandler {
+//!         foo: FooHandler,
+//!         bar: BarHandler,
+//!     }
+//!
+//!     pub enum FooBarMessage {
+//!         Foo(foo_type_id!()),
+//!         Bar(bar_type_id!()),
+//!     }
+//! );
+//!
+//! #[macro_export]
+//! macro_rules! foo_bar_type_ids {
+//!     () => { foo_type_id!() | bar_type_id!() }
+//! }
+//!
+//! // Another crate can then define a handler further composing `FooBarHandler` with `BazHandler`
+//! // and similarly export the composition of message type ids as a macro.
+//!
+//! composite_custom_message_handler!(
+//!     pub struct FooBarBazHandler {
+//!         foo_bar: FooBarHandler,
+//!         baz: BazHandler,
+//!     }
+//!
+//!     pub enum FooBarBazMessage {
+//!         FooBar(foo_bar_type_ids!()),
+//!         Baz(baz_type_id!()),
+//!     }
+//! );
+//!
+//! #[macro_export]
+//! macro_rules! foo_bar_baz_type_ids {
+//!     () => { foo_bar_type_ids!() | baz_type_id!() }
+//! }
+//!```
+//!
+//! [BOLT 1]: https://github.com/lightning/bolts/blob/master/01-messaging.md
+//! [`CustomMessageHandler`]: crate::ln::peer_handler::CustomMessageHandler
+
+/// Defines a composite type implementing [`CustomMessageHandler`] (and therefore also implementing
+/// [`CustomMessageReader`]), along with a corresponding enumerated custom message [`Type`], from
+/// one or more previously defined custom message handlers.
+///
+/// Useful for parameterizing [`PeerManager`] with custom message handling for one or more sets of
+/// custom messages. Message type ids may be given as a valid `match` pattern, including ranges,
+/// though using OR-ed literal patterns is preferred in order to catch unreachable code for
+/// conflicting handlers.
+///
+/// See [module documentation](self) for example usage.
+///
+/// [`CustomMessageHandler`]: crate::ln::peer_handler::CustomMessageHandler
+/// [`CustomMessageReader`]: crate::ln::wire::CustomMessageReader
+/// [`Type`]: crate::ln::wire::Type
+/// [`PeerManager`]: crate::ln::peer_handler::PeerManager
+#[macro_export]
+macro_rules! composite_custom_message_handler {
+	(
+		$handler_visibility:vis struct $handler:ident {
+			$($field_visibility:vis $field:ident: $type:ty),* $(,)*
+		}
+
+		$message_visibility:vis enum $message:ident {
+			$($variant:ident($pattern:pat)),* $(,)*
+		}
+	) => {
+		#[allow(missing_docs)]
+		$handler_visibility struct $handler {
+			$(
+				$field_visibility $field: $type,
+			)*
+		}
+
+		#[allow(missing_docs)]
+		#[derive(Debug)]
+		$message_visibility enum $message {
+			$(
+				$variant(<$type as $crate::ln::wire::CustomMessageReader>::CustomMessage),
+			)*
+		}
+
+		impl $crate::ln::peer_handler::CustomMessageHandler for $handler {
+			fn handle_custom_message(
+				&self, msg: Self::CustomMessage, sender_node_id: $crate::bitcoin::secp256k1::PublicKey
+			) -> Result<(), $crate::ln::msgs::LightningError> {
+				match msg {
+					$(
+						$message::$variant(message) => {
+							$crate::ln::peer_handler::CustomMessageHandler::handle_custom_message(
+								&self.$field, message, sender_node_id
+							)
+						},
+					)*
+				}
+			}
+
+			fn get_and_clear_pending_msg(&self) -> Vec<($crate::bitcoin::secp256k1::PublicKey, Self::CustomMessage)> {
+				vec![].into_iter()
+					$(
+						.chain(
+							self.$field
+								.get_and_clear_pending_msg()
+								.into_iter()
+								.map(|(pubkey, message)| (pubkey, $message::$variant(message)))
+						)
+					)*
+					.collect()
+			}
+
+			fn peer_disconnected(&self, their_node_id: $crate::bitcoin::secp256k1::PublicKey) {
+				$(
+					self.$field.peer_disconnected(their_node_id);
+				)*
+			}
+
+			fn peer_connected(&self, their_node_id: $crate::bitcoin::secp256k1::PublicKey, msg: &$crate::ln::msgs::Init, inbound: bool) -> Result<(), ()> {
+				let mut result = Ok(());
+				$(
+					if let Err(e) = self.$field.peer_connected(their_node_id, msg, inbound) {
+						result = Err(e);
+					}
+				)*
+				result
+			}
+
+			fn provided_node_features(&self) -> $crate::types::features::NodeFeatures {
+				$crate::types::features::NodeFeatures::empty()
+					$(
+						| self.$field.provided_node_features()
+					)*
+			}
+
+			fn provided_init_features(
+				&self, their_node_id: $crate::bitcoin::secp256k1::PublicKey
+			) -> $crate::types::features::InitFeatures {
+				$crate::types::features::InitFeatures::empty()
+					$(
+						| self.$field.provided_init_features(their_node_id)
+					)*
+			}
+		}
+
+		impl $crate::ln::wire::CustomMessageReader for $handler {
+			type CustomMessage = $message;
+			fn read<R: $crate::util::ser::LengthLimitedRead>(
+				&self, message_type: u16, buffer: &mut R
+			) -> Result<Option<Self::CustomMessage>, $crate::ln::msgs::DecodeError> {
+				match message_type {
+					$(
+						$pattern => match <$type>::read(&self.$field, message_type, buffer)? {
+							None => unreachable!(),
+							Some(message) => Ok(Some($message::$variant(message))),
+						},
+					)*
+					_ => Ok(None),
+				}
+			}
+		}
+
+		impl $crate::ln::wire::Type for $message {
+			fn type_id(&self) -> u16 {
+				match self {
+					$(
+						Self::$variant(message) => message.type_id(),
+					)*
+				}
+			}
+		}
+
+		impl $crate::util::ser::Writeable for $message {
+			fn write<W: $crate::util::ser::Writer>(&self, writer: &mut W) -> Result<(), $crate::io::Error> {
+				match self {
+					$(
+						Self::$variant(message) => message.write(writer),
+					)*
+				}
+			}
+		}
+	}
+}
