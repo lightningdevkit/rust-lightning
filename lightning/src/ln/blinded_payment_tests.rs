@@ -2597,24 +2597,27 @@ fn do_test_trampoline_relay(blinded: bool, test_case: TrampolineTestCase) {
 			// Create a blinded tail where Carol is receiving. In our unblinded test cases, we'll
 			// override this anyway (with a tail sending to an unblinded receive, which LDK doesn't
 			// allow).
-			blinded_tail: Some(create_trampoline_forward_blinded_tail(
-				&secp_ctx,
-				&nodes[2].keys_manager,
-				&[],
-				carol_node_id,
-				nodes[2].keys_manager.get_receive_auth_key(),
-				ReceiveTlvs {
-					payment_secret,
-					payment_constraints: PaymentConstraints {
-						max_cltv_expiry: u32::max_value(),
-						htlc_minimum_msat: original_amt_msat,
+			blinded_tail: Some(
+				create_trampoline_forward_blinded_tail(
+					&secp_ctx,
+					&nodes[2].keys_manager,
+					&[],
+					carol_node_id,
+					nodes[2].keys_manager.get_receive_auth_key(),
+					ReceiveTlvs {
+						payment_secret,
+						payment_constraints: PaymentConstraints {
+							max_cltv_expiry: u32::max_value(),
+							htlc_minimum_msat: original_amt_msat,
+						},
+						payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
 					},
-					payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
-				},
-				original_trampoline_cltv,
-				excess_final_cltv,
-				original_amt_msat,
-			)),
+					original_trampoline_cltv,
+					excess_final_cltv,
+					original_amt_msat,
+				)
+				.0,
+			),
 		}],
 		route_params: None,
 	};
@@ -2736,10 +2739,10 @@ fn do_test_trampoline_relay(blinded: bool, test_case: TrampolineTestCase) {
 /// next hop as a real node since forwarding isn't implemented yet -- we just need the onion to
 /// contain a valid forward payload.
 ///
-/// Returns (payment_hash, per_path_amount, ev_to_bob, ev_to_barry).
+/// Returns (payment_hash, per_path_amount, last_hop_cltv_delta, ev_to_bob, ev_to_barry).
 fn send_trampoline_mpp_payment<'a, 'b, 'c>(
 	nodes: &'a Vec<Node<'a, 'b, 'c>>,
-) -> (PaymentHash, u64, MessageSendEvent, MessageSendEvent) {
+) -> (PaymentHash, u64, u32, MessageSendEvent, MessageSendEvent) {
 	let secp_ctx = Secp256k1::new();
 
 	let alice_bob_chan =
@@ -2822,60 +2825,47 @@ fn send_trampoline_mpp_payment<'a, 'b, 'c>(
 		cltv_expiry_delta,
 		maybe_announced_channel: true,
 	};
+	let last_hop_cltv_delta =
+		carol_relay.cltv_expiry_delta as u32 + trampoline_cltv + excess_final_cltv;
 	let build_path_hops = |first_hop_node_id, first_hop_scid, second_hop_scid| {
 		vec![
 			hop(first_hop_node_id, first_hop_scid, 1000, 48),
-			hop(carol_node_id, second_hop_scid, 0, trampoline_cltv + excess_final_cltv),
+			hop(carol_node_id, second_hop_scid, 0, last_hop_cltv_delta),
 		]
 	};
 
-	let placeholder_tail = fwd_tail();
-	let mut route = Route {
+	let (tail_bob, blinded_path_bob) = fwd_tail();
+	let (tail_barry, blinded_path_barry) = fwd_tail();
+	let payment_params = PaymentParameters::blinded(vec![blinded_path_bob, blinded_path_barry]);
+	let route_params = RouteParameters {
+		payment_params,
+		final_value_msat: total_amt,
+		max_total_routing_fee_msat: None,
+	};
+	let route = Route {
 		paths: vec![
 			Path {
 				hops: build_path_hops(bob_node_id, alice_bob_scid, bob_carol_scid),
-				blinded_tail: Some(placeholder_tail.clone()),
+				blinded_tail: Some(tail_bob),
 			},
 			Path {
 				hops: build_path_hops(barry_node_id, alice_barry_scid, barry_carol_scid),
-				blinded_tail: Some(placeholder_tail),
+				blinded_tail: Some(tail_barry),
 			},
 		],
-		route_params: None,
+		route_params: Some(route_params),
 	};
 
-	let cur_height = nodes[0].best_block_info().1 + 1;
 	let payment_id = PaymentId(payment_hash.0);
 	let onion = RecipientOnionFields::secret_only(payment_secret, total_amt);
-	let session_privs = nodes[0]
-		.node
-		.test_add_new_pending_payment(payment_hash, onion.clone(), payment_id, &route)
-		.unwrap();
-
-	route.paths[0].blinded_tail = Some(fwd_tail());
-	route.paths[1].blinded_tail = Some(fwd_tail());
-
-	for (i, path) in route.paths.iter().enumerate() {
-		nodes[0]
-			.node
-			.test_send_payment_along_path(
-				path,
-				&payment_hash,
-				onion.clone(),
-				cur_height,
-				payment_id,
-				&None,
-				session_privs[i],
-			)
-			.unwrap();
-		check_added_monitors(&nodes[0], 1);
-	}
+	nodes[0].node.send_payment_with_route(route, payment_hash, onion, payment_id).unwrap();
+	check_added_monitors(&nodes[0], 2);
 
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 2);
 	let ev_bob = remove_first_msg_event_to_node(&bob_node_id, &mut events);
 	let ev_barry = remove_first_msg_event_to_node(&barry_node_id, &mut events);
-	(payment_hash, per_path_amt, ev_bob, ev_barry)
+	(payment_hash, per_path_amt, last_hop_cltv_delta, ev_bob, ev_barry)
 }
 
 /// How an incomplete trampoline MPP times out (if at all).
@@ -2892,7 +2882,8 @@ fn do_trampoline_mpp_test(timeout: Option<TrampolineTimeout>) {
 	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &vec![None; 4]);
 	let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
 
-	let (payment_hash, per_path_amt, ev_bob, ev_barry) = send_trampoline_mpp_payment(&nodes);
+	let (payment_hash, per_path_amt, last_hop_cltv_delta, ev_bob, ev_barry) =
+		send_trampoline_mpp_payment(&nodes);
 	let send_both = timeout.is_none();
 
 	let bob_path: &[&Node] = &[&nodes[1], &nodes[2]];
@@ -2921,7 +2912,7 @@ fn do_trampoline_mpp_test(timeout: Option<TrampolineTimeout>) {
 		Some(TrampolineTimeout::OnChain) => {
 			let current_height = nodes[2].best_block_info().1;
 			let send_height = nodes[0].best_block_info().1;
-			let htlc_cltv = send_height + 1 + 48 + 42 + 70;
+			let htlc_cltv = send_height + 1 + last_hop_cltv_delta;
 			connect_blocks(&nodes[2], htlc_cltv - HTLC_FAIL_BACK_BUFFER - current_height);
 			LocalHTLCFailureReason::CLTVExpiryTooSoon
 		},

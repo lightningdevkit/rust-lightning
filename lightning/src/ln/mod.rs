@@ -118,6 +118,8 @@ mod reorg_tests;
 mod shutdown_tests;
 #[cfg(any(feature = "_test_utils", test))]
 pub mod splicing_tests;
+#[cfg(test)]
+mod trampoline_forward_tests;
 #[cfg(any(test, feature = "_externalize_tests"))]
 #[allow(unused_mut)]
 pub mod update_fee_tests;
