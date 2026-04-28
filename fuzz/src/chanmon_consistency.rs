@@ -1322,6 +1322,158 @@ enum MonitorUpdateSelector {
 	Last,
 }
 
+struct EventQueues {
+	ab: Vec<MessageSendEvent>,
+	ba: Vec<MessageSendEvent>,
+	bc: Vec<MessageSendEvent>,
+	cb: Vec<MessageSendEvent>,
+}
+
+impl EventQueues {
+	fn new() -> Self {
+		Self { ab: Vec::new(), ba: Vec::new(), bc: Vec::new(), cb: Vec::new() }
+	}
+
+	fn take_for_node(&mut self, node_idx: usize) -> Vec<MessageSendEvent> {
+		match node_idx {
+			0 => {
+				let mut events = Vec::new();
+				mem::swap(&mut events, &mut self.ab);
+				events
+			},
+			1 => {
+				let mut events = Vec::new();
+				mem::swap(&mut events, &mut self.ba);
+				events.extend_from_slice(&self.bc[..]);
+				self.bc.clear();
+				events
+			},
+			2 => {
+				let mut events = Vec::new();
+				mem::swap(&mut events, &mut self.cb);
+				events
+			},
+			_ => panic!("invalid node index"),
+		}
+	}
+
+	fn push_for_node(&mut self, node_idx: usize, event: MessageSendEvent) {
+		match node_idx {
+			0 => self.ab.push(event),
+			2 => self.cb.push(event),
+			_ => panic!("cannot directly queue messages for node {}", node_idx),
+		}
+	}
+
+	fn extend_for_node<I: IntoIterator<Item = MessageSendEvent>>(
+		&mut self, node_idx: usize, events: I,
+	) {
+		match node_idx {
+			0 => self.ab.extend(events),
+			2 => self.cb.extend(events),
+			_ => panic!("cannot directly queue messages for node {}", node_idx),
+		}
+	}
+
+	fn route_from_middle<'a, I: IntoIterator<Item = MessageSendEvent>>(
+		&mut self, excess_events: I, expect_drop_node: Option<usize>, nodes: &[HarnessNode<'a>; 3],
+	) {
+		// Push any events from Node B onto queues.ba and queues.bc.
+		let a_id = nodes[0].get_our_node_id();
+		let expect_drop_id = expect_drop_node.map(|id| nodes[id].get_our_node_id());
+		for event in excess_events {
+			let push_a = match event {
+				MessageSendEvent::UpdateHTLCs { ref node_id, .. }
+				| MessageSendEvent::SendRevokeAndACK { ref node_id, .. }
+				| MessageSendEvent::SendChannelReestablish { ref node_id, .. }
+				| MessageSendEvent::SendStfu { ref node_id, .. }
+				| MessageSendEvent::SendSpliceInit { ref node_id, .. }
+				| MessageSendEvent::SendSpliceAck { ref node_id, .. }
+				| MessageSendEvent::SendSpliceLocked { ref node_id, .. }
+				| MessageSendEvent::SendTxAddInput { ref node_id, .. }
+				| MessageSendEvent::SendTxAddOutput { ref node_id, .. }
+				| MessageSendEvent::SendTxRemoveInput { ref node_id, .. }
+				| MessageSendEvent::SendTxRemoveOutput { ref node_id, .. }
+				| MessageSendEvent::SendTxComplete { ref node_id, .. }
+				| MessageSendEvent::SendTxAbort { ref node_id, .. }
+				| MessageSendEvent::SendTxInitRbf { ref node_id, .. }
+				| MessageSendEvent::SendTxAckRbf { ref node_id, .. }
+				| MessageSendEvent::SendTxSignatures { ref node_id, .. }
+				| MessageSendEvent::SendChannelUpdate { ref node_id, .. } => {
+					if Some(*node_id) == expect_drop_id {
+						panic!(
+							"peer_disconnected should drop msgs bound for the disconnected peer"
+						);
+					}
+					*node_id == a_id
+				},
+				MessageSendEvent::HandleError { ref action, ref node_id } => {
+					assert_action_timeout_awaiting_response(action);
+					if Some(*node_id) == expect_drop_id {
+						panic!(
+							"peer_disconnected should drop msgs bound for the disconnected peer"
+						);
+					}
+					*node_id == a_id
+				},
+				MessageSendEvent::SendChannelReady { .. }
+				| MessageSendEvent::SendAnnouncementSignatures { .. }
+				| MessageSendEvent::BroadcastChannelUpdate { .. } => continue,
+				_ => panic!("Unhandled message event {:?}", event),
+			};
+			if push_a {
+				self.ba.push(event);
+			} else {
+				self.bc.push(event);
+			}
+		}
+	}
+
+	fn drain_on_disconnect(&mut self, edge_node: usize, nodes: &[HarnessNode<'_>; 3]) {
+		match edge_node {
+			0 => {
+				for event in nodes[0].get_and_clear_pending_msg_events() {
+					match event {
+						MessageSendEvent::UpdateHTLCs { .. } => {},
+						MessageSendEvent::SendRevokeAndACK { .. } => {},
+						MessageSendEvent::SendChannelReestablish { .. } => {},
+						MessageSendEvent::SendStfu { .. } => {},
+						MessageSendEvent::SendChannelReady { .. } => {},
+						MessageSendEvent::SendAnnouncementSignatures { .. } => {},
+						MessageSendEvent::BroadcastChannelUpdate { .. } => {},
+						MessageSendEvent::SendChannelUpdate { .. } => {},
+						MessageSendEvent::HandleError { ref action, .. } => {
+							assert_action_timeout_awaiting_response(action);
+						},
+						_ => panic!("Unhandled message event"),
+					}
+				}
+				self.route_from_middle(nodes[1].get_and_clear_pending_msg_events(), Some(0), nodes);
+			},
+			2 => {
+				for event in nodes[2].get_and_clear_pending_msg_events() {
+					match event {
+						MessageSendEvent::UpdateHTLCs { .. } => {},
+						MessageSendEvent::SendRevokeAndACK { .. } => {},
+						MessageSendEvent::SendChannelReestablish { .. } => {},
+						MessageSendEvent::SendStfu { .. } => {},
+						MessageSendEvent::SendChannelReady { .. } => {},
+						MessageSendEvent::SendAnnouncementSignatures { .. } => {},
+						MessageSendEvent::BroadcastChannelUpdate { .. } => {},
+						MessageSendEvent::SendChannelUpdate { .. } => {},
+						MessageSendEvent::HandleError { ref action, .. } => {
+							assert_action_timeout_awaiting_response(action);
+						},
+						_ => panic!("Unhandled message event"),
+					}
+				}
+				self.route_from_middle(nodes[1].get_and_clear_pending_msg_events(), Some(2), nodes);
+			},
+			_ => panic!("unsupported disconnected edge"),
+		}
+	}
+}
+
 fn build_node_config(chan_type: ChanType) -> UserConfig {
 	let mut config = UserConfig::default();
 	config.channel_config.forwarding_fee_proportional_millionths = 0;
@@ -1692,10 +1844,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 
 	let mut peers_ab_disconnected = false;
 	let mut peers_bc_disconnected = false;
-	let mut ab_events = Vec::new();
-	let mut ba_events = Vec::new();
-	let mut bc_events = Vec::new();
-	let mut cb_events = Vec::new();
+	let mut queues = EventQueues::new();
 
 	for node in &mut nodes {
 		node.serialized_manager = node.encode();
@@ -1728,97 +1877,6 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 	}
 
 	loop {
-		// Push any events from Node B onto ba_events and bc_events
-		macro_rules! push_excess_b_events {
-			($excess_events: expr, $expect_drop_node: expr) => { {
-				let a_id = nodes[0].get_our_node_id();
-				let expect_drop_node: Option<usize> = $expect_drop_node;
-				let expect_drop_id = if let Some(id) = expect_drop_node { Some(nodes[id].get_our_node_id()) } else { None };
-				for event in $excess_events {
-					let push_a = match event {
-						MessageSendEvent::UpdateHTLCs { ref node_id, .. } => {
-							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
-							*node_id == a_id
-						},
-						MessageSendEvent::SendRevokeAndACK { ref node_id, .. } => {
-							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
-							*node_id == a_id
-						},
-						MessageSendEvent::SendChannelReestablish { ref node_id, .. } => {
-							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
-							*node_id == a_id
-						},
-						MessageSendEvent::SendStfu { ref node_id, .. } => {
-							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
-							*node_id == a_id
-						},
-						MessageSendEvent::SendSpliceInit { ref node_id, .. } => {
-							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
-							*node_id == a_id
-						},
-						MessageSendEvent::SendSpliceAck { ref node_id, .. } => {
-							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
-							*node_id == a_id
-						},
-						MessageSendEvent::SendSpliceLocked { ref node_id, .. } => {
-							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
-							*node_id == a_id
-						},
-						MessageSendEvent::SendTxAddInput { ref node_id, .. } => {
-							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
-							*node_id == a_id
-						},
-						MessageSendEvent::SendTxAddOutput { ref node_id, .. } => {
-							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
-							*node_id == a_id
-						},
-						MessageSendEvent::SendTxRemoveInput { ref node_id, .. } => {
-							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
-							*node_id == a_id
-						},
-						MessageSendEvent::SendTxRemoveOutput { ref node_id, .. } => {
-							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
-							*node_id == a_id
-						},
-						MessageSendEvent::SendTxComplete { ref node_id, .. } => {
-							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
-							*node_id == a_id
-						},
-						MessageSendEvent::SendTxAbort { ref node_id, .. } => {
-							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
-							*node_id == a_id
-						},
-						MessageSendEvent::SendTxInitRbf { ref node_id, .. } => {
-							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
-							*node_id == a_id
-						},
-						MessageSendEvent::SendTxAckRbf { ref node_id, .. } => {
-							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
-							*node_id == a_id
-						},
-						MessageSendEvent::SendTxSignatures { ref node_id, .. } => {
-							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
-							*node_id == a_id
-						},
-						MessageSendEvent::SendChannelReady { .. } => continue,
-						MessageSendEvent::SendAnnouncementSignatures { .. } => continue,
-						MessageSendEvent::BroadcastChannelUpdate { .. } => continue,
-						MessageSendEvent::SendChannelUpdate { ref node_id, .. } => {
-							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
-							*node_id == a_id
-						},
-						MessageSendEvent::HandleError { ref action, ref node_id } => {
-							assert_action_timeout_awaiting_response(action);
-							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
-							*node_id == a_id
-						},
-						_ => panic!("Unhandled message event {:?}", event),
-					};
-					if push_a { ba_events.push(event); } else { bc_events.push(event); }
-				}
-			} }
-		}
-
 		// While delivering messages, we select across three possible message selection processes
 		// to ensure we get as much coverage as possible. See the individual enum variants for more
 		// details.
@@ -1838,21 +1896,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 
 		macro_rules! process_msg_events {
 			($node: expr, $corrupt_forward: expr, $limit_events: expr) => { {
-				let mut events = if $node == 1 {
-					let mut new_events = Vec::new();
-					mem::swap(&mut new_events, &mut ba_events);
-					new_events.extend_from_slice(&bc_events[..]);
-					bc_events.clear();
-					new_events
-				} else if $node == 0 {
-					let mut new_events = Vec::new();
-					mem::swap(&mut new_events, &mut ab_events);
-					new_events
-				} else {
-					let mut new_events = Vec::new();
-					mem::swap(&mut new_events, &mut cb_events);
-					new_events
-				};
+				let mut events = queues.take_for_node($node);
 				let mut new_events = Vec::new();
 				if $limit_events != ProcessMessages::OnePendingMessage {
 					new_events = nodes[$node].get_and_clear_pending_msg_events();
@@ -2060,13 +2104,14 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 					}
 				}
 				if $node == 1 {
-					push_excess_b_events!(extra_ev.into_iter().chain(events_iter), None);
+					let remaining = extra_ev.into_iter().chain(events_iter).collect::<Vec<_>>();
+					queues.route_from_middle(remaining, None, &nodes);
 				} else if $node == 0 {
-					if let Some(ev) = extra_ev { ab_events.push(ev); }
-					for event in events_iter { ab_events.push(event); }
+					if let Some(ev) = extra_ev { queues.push_for_node(0, ev); }
+					queues.extend_for_node(0, events_iter);
 				} else {
-					if let Some(ev) = extra_ev { cb_events.push(ev); }
-					for event in events_iter { cb_events.push(event); }
+					if let Some(ev) = extra_ev { queues.push_for_node(2, ev); }
+					queues.extend_for_node(2, events_iter);
 				}
 				had_events
 			} }
@@ -2075,58 +2120,6 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 		macro_rules! process_msg_noret {
 			($node: expr, $corrupt_forward: expr, $limit_events: expr) => {{
 				process_msg_events!($node, $corrupt_forward, $limit_events);
-			}};
-		}
-
-		macro_rules! drain_msg_events_on_disconnect {
-			($counterparty_id: expr) => {{
-				if $counterparty_id == 0 {
-					for event in nodes[0].get_and_clear_pending_msg_events() {
-						match event {
-							MessageSendEvent::UpdateHTLCs { .. } => {},
-							MessageSendEvent::SendRevokeAndACK { .. } => {},
-							MessageSendEvent::SendChannelReestablish { .. } => {},
-							MessageSendEvent::SendStfu { .. } => {},
-							MessageSendEvent::SendChannelReady { .. } => {},
-							MessageSendEvent::SendAnnouncementSignatures { .. } => {},
-							MessageSendEvent::BroadcastChannelUpdate { .. } => {},
-							MessageSendEvent::SendChannelUpdate { .. } => {},
-							MessageSendEvent::HandleError { ref action, .. } => {
-								assert_action_timeout_awaiting_response(action);
-							},
-							_ => panic!("Unhandled message event"),
-						}
-					}
-					push_excess_b_events!(
-						nodes[1].get_and_clear_pending_msg_events().drain(..),
-						Some(0)
-					);
-					ab_events.clear();
-					ba_events.clear();
-				} else {
-					for event in nodes[2].get_and_clear_pending_msg_events() {
-						match event {
-							MessageSendEvent::UpdateHTLCs { .. } => {},
-							MessageSendEvent::SendRevokeAndACK { .. } => {},
-							MessageSendEvent::SendChannelReestablish { .. } => {},
-							MessageSendEvent::SendStfu { .. } => {},
-							MessageSendEvent::SendChannelReady { .. } => {},
-							MessageSendEvent::SendAnnouncementSignatures { .. } => {},
-							MessageSendEvent::BroadcastChannelUpdate { .. } => {},
-							MessageSendEvent::SendChannelUpdate { .. } => {},
-							MessageSendEvent::HandleError { ref action, .. } => {
-								assert_action_timeout_awaiting_response(action);
-							},
-							_ => panic!("Unhandled message event"),
-						}
-					}
-					push_excess_b_events!(
-						nodes[1].get_and_clear_pending_msg_events().drain(..),
-						Some(2)
-					);
-					bc_events.clear();
-					cb_events.clear();
-				}
 			}};
 		}
 
@@ -2379,7 +2372,9 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 					nodes[0].peer_disconnected(nodes[1].get_our_node_id());
 					nodes[1].peer_disconnected(nodes[0].get_our_node_id());
 					peers_ab_disconnected = true;
-					drain_msg_events_on_disconnect!(0);
+					queues.drain_on_disconnect(0, &nodes);
+					queues.ab.clear();
+					queues.ba.clear();
 				}
 			},
 			0x0d => {
@@ -2387,7 +2382,9 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 					nodes[1].peer_disconnected(nodes[2].get_our_node_id());
 					nodes[2].peer_disconnected(nodes[1].get_our_node_id());
 					peers_bc_disconnected = true;
-					drain_msg_events_on_disconnect!(2);
+					queues.drain_on_disconnect(2, &nodes);
+					queues.bc.clear();
+					queues.cb.clear();
 				}
 			},
 			0x0e => {
@@ -2624,12 +2621,13 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 				if !peers_ab_disconnected {
 					nodes[1].peer_disconnected(nodes[0].get_our_node_id());
 					peers_ab_disconnected = true;
-					push_excess_b_events!(
-						nodes[1].get_and_clear_pending_msg_events().drain(..),
-						Some(0)
+					queues.route_from_middle(
+						nodes[1].get_and_clear_pending_msg_events(),
+						Some(0),
+						&nodes,
 					);
-					ab_events.clear();
-					ba_events.clear();
+					queues.ab.clear();
+					queues.ba.clear();
 				}
 				nodes[0].reload(v, &out, &router, chan_type);
 			},
@@ -2640,15 +2638,15 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 					nodes[0].peer_disconnected(nodes[1].get_our_node_id());
 					peers_ab_disconnected = true;
 					nodes[0].get_and_clear_pending_msg_events();
-					ab_events.clear();
-					ba_events.clear();
+					queues.ab.clear();
+					queues.ba.clear();
 				}
 				if !peers_bc_disconnected {
 					nodes[2].peer_disconnected(nodes[1].get_our_node_id());
 					peers_bc_disconnected = true;
 					nodes[2].get_and_clear_pending_msg_events();
-					bc_events.clear();
-					cb_events.clear();
+					queues.bc.clear();
+					queues.cb.clear();
 				}
 				nodes[1].reload(v, &out, &router, chan_type);
 			},
@@ -2658,12 +2656,13 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 				if !peers_bc_disconnected {
 					nodes[1].peer_disconnected(nodes[2].get_our_node_id());
 					peers_bc_disconnected = true;
-					push_excess_b_events!(
-						nodes[1].get_and_clear_pending_msg_events().drain(..),
-						Some(2)
+					queues.route_from_middle(
+						nodes[1].get_and_clear_pending_msg_events(),
+						Some(2),
+						&nodes,
 					);
-					bc_events.clear();
-					cb_events.clear();
+					queues.bc.clear();
+					queues.cb.clear();
 				}
 				nodes[2].reload(v, &out, &router, chan_type);
 			},
