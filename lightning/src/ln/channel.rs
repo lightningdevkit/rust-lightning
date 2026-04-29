@@ -1249,8 +1249,7 @@ pub(super) struct SignerResumeUpdates {
 	pub accept_channel: Option<msgs::AcceptChannel>,
 	pub funding_created: Option<msgs::FundingCreated>,
 	pub funding_signed: Option<msgs::FundingSigned>,
-	pub funding_commit_sig: Option<msgs::CommitmentSigned>,
-	pub tx_signatures: Option<msgs::TxSignatures>,
+	pub funding_tx_signed: Option<FundingTxSigned>,
 	pub channel_ready: Option<msgs::ChannelReady>,
 	pub order: RAACommitmentOrder,
 	pub closing_signed: Option<msgs::ClosingSigned>,
@@ -1683,11 +1682,11 @@ where
 
 	#[rustfmt::skip]
 	pub fn signer_maybe_unblocked<L: Logger, CBP>(
-		&mut self, chain_hash: ChainHash, logger: &L, path_for_release_htlc: CBP
+		&mut self, chain_hash: ChainHash, best_block_height: u32, logger: &L, path_for_release_htlc: CBP
 	) -> Result<Option<SignerResumeUpdates>, ChannelError> where CBP: Fn(u64) -> BlindedMessagePath {
 		match &mut self.phase {
 			ChannelPhase::Undefined => unreachable!(),
-			ChannelPhase::Funded(chan) => chan.signer_maybe_unblocked(logger, path_for_release_htlc).map(|r| Some(r)),
+			ChannelPhase::Funded(chan) => chan.signer_maybe_unblocked(best_block_height, logger, path_for_release_htlc).map(|r| Some(r)),
 			ChannelPhase::UnfundedOutboundV1(chan) => {
 				let (open_channel, funding_created) = chan.signer_maybe_unblocked(chain_hash, logger);
 				Ok(Some(SignerResumeUpdates {
@@ -1697,8 +1696,7 @@ where
 					accept_channel: None,
 					funding_created,
 					funding_signed: None,
-					funding_commit_sig: None,
-					tx_signatures: None,
+					funding_tx_signed: None,
 					channel_ready: None,
 					order: chan.context.resend_order.clone(),
 					closing_signed: None,
@@ -1715,8 +1713,7 @@ where
 					accept_channel,
 					funding_created: None,
 					funding_signed: None,
-					funding_commit_sig: None,
-					tx_signatures: None,
+					funding_tx_signed: None,
 					channel_ready: None,
 					order: chan.context.resend_order.clone(),
 					closing_signed: None,
@@ -2217,9 +2214,7 @@ where
 					.unwrap_or(false));
 			}
 
-			if signing_session.has_holder_tx_signatures() {
-				// Our `tx_signatures` either should've been the first time we processed them,
-				// or we're waiting for our counterparty to send theirs first.
+			if signing_session.has_holder_witnesses() {
 				return Ok(FundingTxSigned {
 					commitment_signed: None,
 					counterparty_initial_commitment_signed_result: None,
@@ -2248,36 +2243,42 @@ where
 			return Err(APIError::APIMisuseError { err });
 		};
 
-		let tx = signing_session.unsigned_tx().tx();
-		if funding_txid_signed != tx.compute_txid() {
-			return Err(APIError::APIMisuseError {
-				err: "Transaction was malleated prior to signing".to_owned(),
-			});
-		}
+		let (mut tx_signatures, mut funding_tx) = signing_session
+			.provide_holder_witnesses(
+				context.channel_id,
+				funding_txid_signed,
+				witnesses,
+				&context.secp_ctx,
+			)
+			.map_err(|err| APIError::APIMisuseError { err })?;
 
-		let shared_input_signature =
-			if let Some(splice_input_index) = signing_session.unsigned_tx().shared_input_index() {
-				let sig = context.holder_signer.sign_splice_shared_input(
+		debug_assert_eq!(
+			pending_splice.is_some(),
+			signing_session.unsigned_tx().shared_input_index().is_some()
+		);
+		if let Some(splice_input_index) = signing_session.unsigned_tx().shared_input_index() {
+			let sig = context
+				.holder_signer
+				.sign_splice_shared_input(
 					&funding.channel_transaction_parameters,
-					tx,
+					signing_session.unsigned_tx().tx(),
 					splice_input_index as usize,
 					&context.secp_ctx,
-				);
-				Some(sig)
+				)
+				.ok();
+			if let Some(sig) = sig {
+				(tx_signatures, funding_tx) = signing_session
+					.provide_holder_shared_input_signature(sig)
+					.map_err(|err| APIError::APIMisuseError { err })?;
 			} else {
-				None
-			};
-		debug_assert_eq!(pending_splice.is_some(), shared_input_signature.is_some());
-
-		let tx_signatures = msgs::TxSignatures {
-			channel_id: context.channel_id,
-			tx_hash: funding_txid_signed,
-			witnesses,
-			shared_input_signature,
-		};
-		let (tx_signatures, funding_tx) = signing_session
-			.provide_holder_witnesses(tx_signatures, &context.secp_ctx)
-			.map_err(|err| APIError::APIMisuseError { err })?;
+				log_debug!(
+					logger,
+					"Splice shared input signature not available, waiting on async signer"
+				);
+				debug_assert!(tx_signatures.is_none());
+				debug_assert!(funding_tx.is_none());
+			}
+		}
 
 		let logger = WithChannelContext::from(logger, &context, None);
 		if tx_signatures.is_some() {
@@ -2409,18 +2410,17 @@ where
 					// which must always come after the initial commitment signed is sent.
 					.unwrap_or(true);
 				let res = if has_negotiated_pending_splice && !session_received_commitment_signed {
-					let has_holder_tx_signatures = funded_channel
+					let has_holder_witnesses = funded_channel
 						.context
 						.interactive_tx_signing_session
 						.as_ref()
-						.map(|session| session.has_holder_tx_signatures())
+						.map(|session| session.has_holder_witnesses())
 						.unwrap_or(false);
 
 					// We delay processing this until the user manually approves the splice via
-					// [`Channel::funding_transaction_signed`], as otherwise, there would be a
-					// [`ChannelMonitorUpdateStep::RenegotiatedFunding`] committed that we would
-					// need to undo if they no longer wish to proceed.
-					if has_holder_tx_signatures {
+					// [`Channel::funding_transaction_signed`], as otherwise, it would prevent the
+					// user from canceling their contribution if they no longer wish to proceed.
+					if has_holder_witnesses {
 						funded_channel
 							.splice_initial_commitment_signed(msg, fee_estimator, logger)
 							.map(|monitor_update_opt| (None, monitor_update_opt))
@@ -5179,7 +5179,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			ChannelState::FundingNegotiated(_) => self
 				.interactive_tx_signing_session
 				.as_ref()
-				.map(|signing_session| signing_session.has_holder_tx_signatures())
+				.map(|signing_session| signing_session.has_holder_witnesses())
 				.unwrap_or(false),
 			ChannelState::AwaitingChannelReady(flags) => !flags.is_waiting_for_batch(),
 			_ => true,
@@ -7910,7 +7910,7 @@ where
 			.interactive_tx_signing_session
 			.as_ref()
 			.map(|signing_session| {
-				signing_session.has_holder_tx_signatures()
+				signing_session.has_holder_witnesses()
 					|| signing_session.has_received_tx_signatures()
 			})
 			.unwrap_or(false);
@@ -9584,6 +9584,8 @@ where
 			}
 		}
 
+		let awaiting_holder_shared_input_signature =
+			signing_session.awaiting_holder_shared_input_signature();
 		let (holder_tx_signatures, funding_tx) =
 			signing_session.received_tx_signatures(msg).map_err(|msg| ChannelError::Warn(msg))?;
 
@@ -9621,6 +9623,11 @@ where
 				funding_tx,
 				best_block_height,
 				&logger,
+			);
+		} else if awaiting_holder_shared_input_signature {
+			log_debug!(
+				logger,
+				"Waiting for funding transaction shared input signature before finalizing negotiation"
 			);
 		} else {
 			debug_assert!(
@@ -10016,7 +10023,7 @@ where
 	/// blocked.
 	#[rustfmt::skip]
 	pub fn signer_maybe_unblocked<L: Logger, CBP>(
-		&mut self, logger: &L, path_for_release_htlc: CBP
+		&mut self, best_block_height: u32, logger: &L, path_for_release_htlc: CBP
 	) -> Result<SignerResumeUpdates, ChannelError> where CBP: Fn(u64) -> BlindedMessagePath {
 		if let Some((commitment_number, commitment_secret)) = self.context.signer_pending_stale_state_verification.clone() {
 			if let Ok(expected_point) = self
@@ -10072,16 +10079,65 @@ where
 			None
 		};
 
-		let tx_signatures = if funding_commit_sig.is_some() {
+		let mut shared_input_signature_unblocked = false;
+		{
+			if let Some(signing_session) = self.context.interactive_tx_signing_session.as_mut() {
+				if signing_session.awaiting_holder_shared_input_signature() {
+					let splice_input_index = signing_session
+						.unsigned_tx()
+						.shared_input_index()
+						.expect("Missing shared input index while awaiting a splice signature");
+					log_trace!(logger, "Attempting to generate pending splice shared input signature...");
+					if let Ok(shared_input_signature) = self.context.holder_signer.sign_splice_shared_input(
+						&self.funding.channel_transaction_parameters,
+						signing_session.unsigned_tx().tx(),
+						splice_input_index as usize,
+						&self.context.secp_ctx,
+					) {
+						shared_input_signature_unblocked = true;
+						signing_session
+							.provide_holder_shared_input_signature(shared_input_signature)
+							.map_err(ChannelError::close)?;
+					}
+				}
+			}
+		}
+
+		let mut tx_signatures = None;
+		let mut funding_tx = None;
+		if funding_commit_sig.is_some() || shared_input_signature_unblocked {
 			if let Some(signing_session) = self.context.interactive_tx_signing_session.as_ref() {
-				signing_session.holder_tx_signatures().filter(|_| !self.is_awaiting_monitor_update())
+				if !self.is_awaiting_monitor_update() && !self.context.signer_pending_funding {
+					tx_signatures = signing_session.holder_tx_signatures();
+					funding_tx = tx_signatures.as_ref().and_then(|_| signing_session.signed_tx());
+				}
 			} else {
 				debug_assert!(false);
-				None
 			}
-		} else {
-			None
-		};
+		}
+
+		let mut funding_tx_signed = None;
+		if funding_commit_sig.is_some() || tx_signatures.is_some() || funding_tx.is_some() {
+			let mut resumed = FundingTxSigned {
+				commitment_signed: funding_commit_sig,
+				counterparty_initial_commitment_signed_result: None,
+				tx_signatures,
+				funding_tx: None,
+				splice_negotiated: None,
+				splice_locked: None,
+			};
+			if let Some(funding_tx) = funding_tx {
+				let funding_logger = WithChannelContext::from(logger, &self.context, None);
+				debug_assert!(resumed.tx_signatures.is_some());
+				self.on_tx_signatures_exchange(
+					&mut resumed,
+					funding_tx,
+					best_block_height,
+					&funding_logger,
+				);
+			}
+			funding_tx_signed = Some(resumed);
+		}
 
 		// Provide a `channel_ready` message if we need to, but only if we're _not_ still pending
 		// funding.
@@ -10147,8 +10203,8 @@ where
 			if revoke_and_ack.is_some() { "a" } else { "no" },
 			self.context.resend_order,
 			if funding_signed.is_some() { "a" } else { "no" },
-			if funding_commit_sig.is_some() { "a" } else { "no" },
-			if tx_signatures.is_some() { "a" } else { "no" },
+			if funding_tx_signed.as_ref().map(|v| v.commitment_signed.is_some()).unwrap_or(false) { "a" } else { "no" },
+			if funding_tx_signed.as_ref().map(|v| v.tx_signatures.is_some()).unwrap_or(false) { "a" } else { "no" },
 			if channel_ready.is_some() { "a" } else { "no" },
 			if closing_signed.is_some() { "a" } else { "no" },
 			if signed_closing_tx.is_some() { "a" } else { "no" },
@@ -10161,8 +10217,7 @@ where
 			accept_channel: None,
 			funding_created: None,
 			funding_signed,
-			funding_commit_sig,
-			tx_signatures,
+			funding_tx_signed,
 			channel_ready,
 			order: self.context.resend_order.clone(),
 			closing_signed,
@@ -10512,7 +10567,7 @@ where
 					} else {
 						tx_signatures = Some(holder_tx_signatures);
 					}
-				} else if !session.has_holder_tx_signatures() {
+				} else if !session.has_holder_witnesses() {
 					log_debug!(logger, "Waiting for funding transaction signatures to be provided");
 				}
 			} else {
@@ -10948,7 +11003,7 @@ where
 			matches!(self.context.channel_state, ChannelState::NegotiatingFunding(_));
 		if matches!(self.context.channel_state, ChannelState::FundingNegotiated(_)) {
 			if let Some(signing_session) = self.context.interactive_tx_signing_session.as_ref() {
-				if !signing_session.has_holder_tx_signatures() {
+				if !signing_session.has_holder_witnesses() {
 					// If we're a V1 channel or we haven't yet sent our `tx_signatures` for a dual
 					// funded channel, the funding tx couldn't be broadcasted yet, so just short-circuit
 					// the shutdown logic.
@@ -12919,7 +12974,7 @@ where
 				.interactive_tx_signing_session
 				.as_ref()
 				.expect("We have a pending splice awaiting signatures")
-				.has_holder_tx_signatures();
+				.has_holder_witnesses();
 			if already_signed {
 				return Err(APIError::APIMisuseError {
 					err: format!(

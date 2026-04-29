@@ -11106,13 +11106,13 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					TransactionType::Funding { channels: vec![(counterparty_node_id, channel.context.channel_id())] },
 				)]);
 			}
-		} else if let Some((splice_tx, tx_type)) = funding_tx_signed
+		} else if let Some((tx, tx_type)) = funding_tx_signed
 			.as_mut()
 			.and_then(|v| v.funding_tx.take())
 			.filter(|(_, tx_type)| matches!(tx_type, TransactionType::InteractiveFunding { .. }))
 		{
-			log_info!(logger, "Broadcasting signed splice transaction with txid {}", splice_tx.compute_txid());
-			self.tx_broadcaster.broadcast_transactions(&[(&splice_tx, tx_type)]);
+			log_info!(logger, "Broadcasting interactively funded transaction with txid {}", tx.compute_txid());
+			self.tx_broadcaster.broadcast_transactions(&[(&tx, tx_type)]);
 		}
 
 		{
@@ -13872,20 +13872,24 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	/// [`ChannelSigner`]: crate::sign::ChannelSigner
 	pub fn signer_unblocked(&self, channel_opt: Option<(PublicKey, ChannelId)>) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+		let mut needs_holding_cell_release = false;
 
 		// Returns whether we should remove this channel as it's just been closed.
 		let unblock_chan = |chan: &mut Channel<SP>,
-		                    pending_msg_events: &mut Vec<MessageSendEvent>|
+		                    pending_msg_events: &mut Vec<MessageSendEvent>,
+		                    needs_holding_cell_release: &mut bool|
 		 -> Result<Option<ShutdownResult>, ChannelError> {
 			let channel_id = chan.context().channel_id();
 			let outbound_scid_alias = chan.context().outbound_scid_alias();
 			let logger = WithChannelContext::from(&self.logger, &chan.context(), None);
 			let node_id = chan.context().get_counterparty_node_id();
+			let best_block_height = self.best_block.read().unwrap().height;
 			let cbp = |htlc_id| {
 				self.path_for_release_held_htlc(htlc_id, outbound_scid_alias, &channel_id, &node_id)
 			};
-			let msgs = chan.signer_maybe_unblocked(self.chain_hash, &&logger, cbp)?;
-			if let Some(msgs) = msgs {
+			let msgs =
+				chan.signer_maybe_unblocked(self.chain_hash, best_block_height, &&logger, cbp)?;
+			if let Some(mut msgs) = msgs {
 				if chan.context().is_connected() {
 					if let Some(msg) = msgs.open_channel {
 						pending_msg_events.push(MessageSendEvent::SendOpenChannel { node_id, msg });
@@ -13925,7 +13929,11 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						pending_msg_events
 							.push(MessageSendEvent::SendFundingSigned { node_id, msg });
 					}
-					if let Some(msg) = msgs.funding_commit_sig {
+					if let Some(msg) = msgs
+						.funding_tx_signed
+						.as_mut()
+						.and_then(|funding_tx_signed| funding_tx_signed.commitment_signed.take())
+					{
 						pending_msg_events.push(MessageSendEvent::UpdateHTLCs {
 							node_id,
 							channel_id,
@@ -13939,7 +13947,11 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							},
 						});
 					}
-					if let Some(msg) = msgs.tx_signatures {
+					if let Some(msg) = msgs
+						.funding_tx_signed
+						.as_mut()
+						.and_then(|funding_tx_signed| funding_tx_signed.tx_signatures.take())
+					{
 						pending_msg_events
 							.push(MessageSendEvent::SendTxSignatures { node_id, msg });
 					}
@@ -13951,6 +13963,55 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				if let Some(funded_chan) = chan.as_funded() {
 					if let Some(msg) = msgs.channel_ready {
 						self.send_channel_ready(pending_msg_events, funded_chan, msg);
+					}
+					debug_assert!(msgs
+						.funding_tx_signed
+						.as_ref()
+						.and_then(|funding_tx_signed| {
+							funding_tx_signed.counterparty_initial_commitment_signed_result.as_ref()
+						})
+						.is_none());
+					if let Some(msg) = msgs
+						.funding_tx_signed
+						.as_mut()
+						.and_then(|funding_tx_signed| funding_tx_signed.splice_locked.take())
+					{
+						pending_msg_events
+							.push(MessageSendEvent::SendSpliceLocked { node_id, msg });
+					}
+					if let Some((tx, tx_type)) = msgs
+						.funding_tx_signed
+						.as_mut()
+						.and_then(|funding_tx_signed| funding_tx_signed.funding_tx.take())
+					{
+						debug_assert!(matches!(
+							tx_type,
+							TransactionType::InteractiveFunding { .. }
+						));
+						log_info!(
+							logger,
+							"Broadcasting interactively funded transaction with txid {}",
+							tx.compute_txid(),
+						);
+						self.tx_broadcaster.broadcast_transactions(&[(&tx, tx_type)]);
+					}
+					if let Some(splice_negotiated) = msgs
+						.funding_tx_signed
+						.as_mut()
+						.and_then(|funding_tx_signed| funding_tx_signed.splice_negotiated.take())
+					{
+						*needs_holding_cell_release = true;
+						self.pending_events.lock().unwrap().push_back((
+							events::Event::SpliceNegotiated {
+								channel_id,
+								counterparty_node_id: node_id,
+								user_channel_id: funded_chan.context.get_user_id(),
+								new_funding_txo: splice_negotiated.funding_txo,
+								channel_type: splice_negotiated.channel_type,
+								new_funding_redeem_script: splice_negotiated.funding_redeem_script,
+							},
+							None,
+						));
 					}
 					if let Some(broadcast_tx) = msgs.signed_closing_tx {
 						log_info!(logger, "Broadcasting closing tx {}", log_tx!(broadcast_tx));
@@ -13966,6 +14027,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					// We don't know how to handle a channel_ready or signed_closing_tx for a
 					// non-funded channel.
 					debug_assert!(msgs.channel_ready.is_none());
+					debug_assert!(msgs.funding_tx_signed.is_none());
 					debug_assert!(msgs.signed_closing_tx.is_none());
 				}
 				Ok(msgs.shutdown_result)
@@ -13989,7 +14051,11 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			peer_state.channel_by_id.retain(|_, chan| {
 				let shutdown_result = match channel_opt {
 					Some((_, channel_id)) if chan.context().channel_id() != channel_id => None,
-					_ => match unblock_chan(chan, &mut peer_state.pending_msg_events) {
+					_ => match unblock_chan(
+						chan,
+						&mut peer_state.pending_msg_events,
+						&mut needs_holding_cell_release,
+					) {
 						Ok(shutdown_result) => shutdown_result,
 						Err(err) => {
 							let (_, err) = self.locked_handle_force_close(
@@ -14030,6 +14096,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			});
 		}
 		drop(per_peer_state);
+		if needs_holding_cell_release {
+			self.check_free_holding_cells();
+		}
 		for (err, counterparty_node_id) in shutdown_results {
 			let _ = self.handle_error(err, counterparty_node_id);
 		}
@@ -20188,7 +20257,7 @@ impl<
 				if let Some(signing_session) =
 					chan.context().interactive_tx_signing_session.as_ref()
 				{
-					if !signing_session.has_holder_tx_signatures()
+					if !signing_session.has_holder_witnesses()
 						&& signing_session.has_local_contribution()
 					{
 						let unsigned_transaction = signing_session.unsigned_tx().tx().clone();

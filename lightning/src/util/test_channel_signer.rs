@@ -103,6 +103,7 @@ pub enum SignerOp {
 	SignClosingTransaction,
 	SignHolderAnchorInput,
 	SignChannelAnnouncementWithFundingKey,
+	SignSpliceSharedInput,
 }
 
 impl SignerOp {
@@ -120,6 +121,7 @@ impl SignerOp {
 			SignerOp::SignClosingTransaction,
 			SignerOp::SignHolderAnchorInput,
 			SignerOp::SignChannelAnnouncementWithFundingKey,
+			SignerOp::SignSpliceSharedInput,
 		]
 	}
 }
@@ -507,7 +509,11 @@ impl EcdsaChannelSigner for TestChannelSigner {
 	fn sign_splice_shared_input(
 		&self, channel_parameters: &ChannelTransactionParameters, tx: &Transaction,
 		input_index: usize, secp_ctx: &Secp256k1<secp256k1::All>,
-	) -> Signature {
+	) -> Result<Signature, ()> {
+		#[cfg(any(test, feature = "_test_utils"))]
+		if !self.is_signer_available(SignerOp::SignSpliceSharedInput) {
+			return Err(());
+		}
 		self.inner.sign_splice_shared_input(channel_parameters, tx, input_index, secp_ctx)
 	}
 }
