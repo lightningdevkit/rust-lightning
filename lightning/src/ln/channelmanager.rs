@@ -17092,6 +17092,13 @@ impl<
 					None => return None,
 				};
 
+				let payment_metadata =
+					if let Some(OffersContext::InvoiceRequest { payment_metadata, .. }) = &context {
+						payment_metadata.clone()
+					} else {
+						None
+					};
+
 				let invoice_request = match self.flow.verify_invoice_request(invoice_request, context) {
 					Ok(InvreqResponseInstructions::SendInvoice(invoice_request)) => invoice_request,
 					Ok(InvreqResponseInstructions::SendStaticInvoice { recipient_id, invoice_slot, invoice_request }) => {
@@ -17119,7 +17126,7 @@ impl<
 							&request,
 							self.list_usable_channels(),
 							get_payment_info,
-							None,
+							payment_metadata,
 						);
 
 						match result {
@@ -17144,7 +17151,7 @@ impl<
 							&request,
 							self.list_usable_channels(),
 							get_payment_info,
-							None,
+							payment_metadata,
 						);
 
 						match result {

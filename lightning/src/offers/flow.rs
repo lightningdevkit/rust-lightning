@@ -454,7 +454,7 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 
 		let nonce = match context {
 			None if invoice_request.metadata().is_some() => None,
-			Some(OffersContext::InvoiceRequest { nonce }) => Some(nonce),
+			Some(OffersContext::InvoiceRequest { nonce, payment_metadata: _ }) => Some(nonce),
 			Some(OffersContext::StaticInvoiceRequested {
 				recipient_id,
 				invoice_slot,
@@ -561,7 +561,8 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 		let secp_ctx = &self.secp_ctx;
 
 		let nonce = Nonce::from_entropy_source(entropy);
-		let context = MessageContext::Offers(OffersContext::InvoiceRequest { nonce });
+		let context =
+			MessageContext::Offers(OffersContext::InvoiceRequest { nonce, payment_metadata: None });
 
 		let mut builder =
 			OfferBuilder::deriving_signing_pubkey(node_id, expanded_key, nonce, secp_ctx)
@@ -1658,7 +1659,10 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 			.and_then(|builder| builder.build_and_sign(secp_ctx))
 			.map_err(|_| ())?;
 
-		let context = MessageContext::Offers(OffersContext::InvoiceRequest { nonce: offer_nonce });
+		let context = MessageContext::Offers(OffersContext::InvoiceRequest {
+			nonce: offer_nonce,
+			payment_metadata: None,
+		});
 		let forward_invoice_request_path = self
 			.create_blinded_paths(peers, context)
 			.and_then(|paths| paths.into_iter().next().ok_or(()))?;

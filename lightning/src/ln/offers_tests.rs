@@ -50,7 +50,7 @@ use core::time::Duration;
 use crate::blinded_path::IntroductionNode;
 use crate::blinded_path::message::BlindedMessagePath;
 use crate::blinded_path::payment::{Bolt12OfferContext, Bolt12RefundContext, DummyTlvs, PaymentContext};
-use crate::blinded_path::message::OffersContext;
+use crate::blinded_path::message::{MessageContext, OffersContext};
 use crate::events::{ClosureReason, Event, HTLCHandlingFailureType, PaidBolt12Invoice, PaymentFailureReason, PaymentPurpose};
 use crate::ln::channelmanager::{PaymentId, RecentPaymentDetails, self};
 use crate::ln::outbound_payment::{Bolt12PaymentError, RecipientOnionFields, Retry};
@@ -62,8 +62,9 @@ use crate::offers::invoice::Bolt12Invoice;
 use crate::offers::invoice_error::InvoiceError;
 use crate::offers::invoice_request::{InvoiceRequest, InvoiceRequestFields, InvoiceRequestVerifiedFromOffer};
 use crate::offers::nonce::Nonce;
+use crate::offers::offer::OfferBuilder;
 use crate::offers::parse::Bolt12SemanticError;
-use crate::onion_message::messenger::{DefaultMessageRouter, Destination, MessageSendInstructions, NodeIdMessageRouter, NullMessageRouter, PeeledOnion, DUMMY_HOPS_PATH_LENGTH, QR_CODED_DUMMY_HOPS_PATH_LENGTH};
+use crate::onion_message::messenger::{DefaultMessageRouter, Destination, MessageRouter, MessageSendInstructions, NodeIdMessageRouter, NullMessageRouter, PeeledOnion, DUMMY_HOPS_PATH_LENGTH, QR_CODED_DUMMY_HOPS_PATH_LENGTH};
 use crate::onion_message::offers::OffersMessage;
 use crate::routing::gossip::{NodeAlias, NodeId};
 use crate::routing::router::{DEFAULT_PAYMENT_DUMMY_HOPS, PaymentParameters, RouteParameters, RouteParametersConfig};
@@ -258,7 +259,7 @@ fn claim_bolt12_payment_with_extra_fees<'a, 'b, 'c>(
 
 fn extract_offer_nonce<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, message: &OnionMessage) -> Nonce {
 	match node.onion_messenger.peel_onion_message(message) {
-		Ok(PeeledOnion::Offers(_, Some(OffersContext::InvoiceRequest { nonce }), _)) => nonce,
+		Ok(PeeledOnion::Offers(_, Some(OffersContext::InvoiceRequest { nonce, payment_metadata: _ }), _)) => nonce,
 		Ok(PeeledOnion::Offers(_, context, _)) => panic!("Unexpected onion message context: {:?}", context),
 		Ok(PeeledOnion::Forward(_, _)) => panic!("Unexpected onion message forward"),
 		Ok(_) => panic!("Unexpected onion message"),
@@ -979,6 +980,89 @@ fn router_modifies_payment_metadata_in_blinded_path() {
 
 	// Verifies that Alice's `Event::PaymentClaimable` carries the `payment_metadata` injected by
 	// the router (via the `expected_payment_context` equality check inside this helper).
+	claim_bolt12_payment(bob, &[alice], payment_context, &invoice);
+	expect_recent_payment!(bob, RecentPaymentDetails::Fulfilled, payment_id);
+}
+
+/// Checks that `payment_metadata` set in the [`OffersContext::InvoiceRequest`] of an offer's
+/// blinded message path is propagated to the [`Bolt12OfferContext`] in the resulting invoice's
+/// blinded payment paths and surfaced via [`Event::PaymentClaimable`] when the payment is received.
+#[test]
+fn pays_for_offer_with_payment_metadata_in_invoice_request_context() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000);
+
+	let alice = &nodes[0];
+	let alice_id = alice.node.get_our_node_id();
+	let bob = &nodes[1];
+	let bob_id = bob.node.get_our_node_id();
+
+	// Manually build an offer whose blinded message path carries `payment_metadata` in its
+	// `OffersContext::InvoiceRequest` context. The HEAD commit causes Alice's `ChannelManager` to
+	// copy this metadata onto the `Bolt12OfferContext` when she handles the inbound invoice
+	// request, embedding it in the invoice's blinded payment paths.
+	let mut expected_metadata = BTreeMap::new();
+	expected_metadata.insert(0u64, vec![1, 2, 3, 4]);
+	expected_metadata.insert(7u64, vec![0xab, 0xcd]);
+
+	let secp_ctx = Secp256k1::new();
+	let nonce = Nonce::from_entropy_source(alice.keys_manager);
+	let context = MessageContext::Offers(OffersContext::InvoiceRequest {
+		nonce,
+		payment_metadata: Some(expected_metadata.clone()),
+	});
+	let paths = alice.message_router.create_blinded_paths(
+		alice_id,
+		alice.keys_manager.get_receive_auth_key(),
+		context,
+		alice.node.test_get_peers_for_blinded_path(),
+		&secp_ctx,
+	).unwrap();
+	assert!(!paths.is_empty());
+
+	let expanded_key = alice.keys_manager.get_expanded_key();
+	let mut builder = OfferBuilder::deriving_signing_pubkey(alice_id, &expanded_key, nonce, &secp_ctx)
+		.chain(Network::Testnet)
+		.amount_msats(10_000_000);
+	for path in paths {
+		builder = builder.path(path);
+	}
+	let offer = builder.build().unwrap();
+
+	let payment_id = PaymentId([1; 32]);
+	bob.node.pay_for_offer(&offer, None, payment_id, Default::default()).unwrap();
+	expect_recent_payment!(bob, RecentPaymentDetails::AwaitingInvoice, payment_id);
+
+	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
+	alice.onion_messenger.handle_onion_message(bob_id, &onion_message);
+
+	let (invoice_request, _) = extract_invoice_request(alice, &onion_message);
+
+	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
+	bob.onion_messenger.handle_onion_message(alice_id, &onion_message);
+
+	let (invoice, _) = extract_invoice(bob, &onion_message);
+
+	let payment_context = PaymentContext::Bolt12Offer(Bolt12OfferContext {
+		offer_id: offer.id(),
+		invoice_request: InvoiceRequestFields {
+			payer_signing_pubkey: invoice_request.payer_signing_pubkey(),
+			quantity: None,
+			payer_note_truncated: None,
+			human_readable_name: None,
+		},
+		payment_metadata: Some(expected_metadata),
+	});
+
+	route_bolt12_payment(bob, &[alice], &invoice);
+	expect_recent_payment!(bob, RecentPaymentDetails::Pending, payment_id);
+
+	// `claim_bolt12_payment` asserts the surfaced `PaymentContext` matches `payment_context`
+	// above, including the embedded `payment_metadata`.
 	claim_bolt12_payment(bob, &[alice], payment_context, &invoice);
 	expect_recent_payment!(bob, RecentPaymentDetails::Fulfilled, payment_id);
 }

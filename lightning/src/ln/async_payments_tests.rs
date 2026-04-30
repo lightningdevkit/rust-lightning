@@ -317,7 +317,10 @@ fn create_static_invoice<T: secp256k1::Signing + secp256k1::Verification>(
 		.create_blinded_paths(
 			always_online_counterparty.node.get_our_node_id(),
 			always_online_counterparty.keys_manager.get_receive_auth_key(),
-			MessageContext::Offers(OffersContext::InvoiceRequest { nonce: Nonce([42; 16]) }),
+			MessageContext::Offers(OffersContext::InvoiceRequest {
+				nonce: Nonce([42; 16]),
+				payment_metadata: None,
+			}),
 			Vec::new(),
 			&secp_ctx,
 		)
@@ -688,7 +691,10 @@ fn static_invoice_unknown_required_features() {
 		.create_blinded_paths(
 			nodes[1].node.get_our_node_id(),
 			nodes[1].keys_manager.get_receive_auth_key(),
-			MessageContext::Offers(OffersContext::InvoiceRequest { nonce: Nonce([42; 16]) }),
+			MessageContext::Offers(OffersContext::InvoiceRequest {
+				nonce: Nonce([42; 16]),
+				payment_metadata: None,
+			}),
 			Vec::new(),
 			&secp_ctx,
 		)
@@ -1755,7 +1761,10 @@ fn invalid_async_receive_with_retry<F1, F2>(
 		.create_blinded_paths(
 			nodes[1].node.get_our_node_id(),
 			nodes[1].keys_manager.get_receive_auth_key(),
-			MessageContext::Offers(OffersContext::InvoiceRequest { nonce: Nonce([42; 16]) }),
+			MessageContext::Offers(OffersContext::InvoiceRequest {
+				nonce: Nonce([42; 16]),
+				payment_metadata: None,
+			}),
 			Vec::new(),
 			&secp_ctx,
 		)
