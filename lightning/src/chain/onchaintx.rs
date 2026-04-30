@@ -807,9 +807,10 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 					outpoint.txid, outpoint.vout);
 				false
 			} else {
-				let timelocked_equivalent_package = self.locktimed_packages.iter().map(|v| v.1.iter()).flatten()
-					.find(|locked_package| locked_package.outpoints().len() == 1 && locked_package.contains_outpoint(outpoint));
-				if let Some(package) = timelocked_equivalent_package {
+				let timelocked_covering_package = self.locktimed_packages.values()
+					.flat_map(|packages| packages.iter())
+					.find(|locked_package| locked_package.contains_outpoint(outpoint));
+				if let Some(package) = timelocked_covering_package {
 					log_info!(logger, "Ignoring second claim for outpoint {}:{}, we already have one which we're waiting on a timelock at {} for.",
 						outpoint.txid, outpoint.vout, package.package_locktime(cur_height));
 					false
@@ -1479,5 +1480,93 @@ mod tests {
 		let txs_broadcasted = broadcaster.txn_broadcast();
 		assert_eq!(txs_broadcasted.len(), 1);
 		assert_eq!(txs_broadcasted[0].lock_time.to_consensus_u32(), 2);
+	}
+
+	#[test]
+	fn test_duplicate_pending_claim_request_after_force_close_replay() {
+		let claim_height = 21;
+		let locktime = 42;
+		let mut nondust_htlcs = Vec::new();
+		for i in 0..2 {
+			let preimage = PaymentPreimage([i + 1; 32]);
+			let hash = PaymentHash(Sha256::hash(&preimage.0[..]).to_byte_array());
+			nondust_htlcs.push(HTLCOutputInCommitment {
+				offered: true,
+				amount_msat: 10000,
+				cltv_expiry: locktime,
+				payment_hash: hash,
+				transaction_output_index: Some(i as u32),
+			});
+		}
+
+		let mut tx_handler = new_test_tx_handler(
+			ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(),
+			nondust_htlcs,
+		);
+		let requests = build_offered_holder_htlc_requests(&tx_handler);
+		let destination_script = ScriptBuf::new();
+		let broadcaster = TestBroadcaster::new(Network::Testnet);
+		let fee_estimator = TestFeeEstimator::new(253);
+		let fee_estimator = LowerBoundedFeeEstimator::new(&fee_estimator);
+		let logger = TestLogger::new();
+
+		// Simulate the force-close path registering the two holder HTLC claims as
+		// a single delayed package.
+		tx_handler.update_claims_view_from_requests(
+			requests.clone(),
+			claim_height,
+			claim_height,
+			&&broadcaster,
+			ConfirmationTarget::UrgentOnChainSweep,
+			&destination_script,
+			&fee_estimator,
+			&logger,
+		);
+		assert_eq!(
+			tx_handler.locktimed_packages.get(&locktime).map(|packages| packages.len()),
+			Some(1),
+		);
+
+		// Replaying the same per-HTLC claim requests must match by outpoint
+		// coverage, otherwise each single-outpoint request would be added again.
+		tx_handler.update_claims_view_from_requests(
+			requests,
+			claim_height,
+			claim_height,
+			&&broadcaster,
+			ConfirmationTarget::UrgentOnChainSweep,
+			&destination_script,
+			&fee_estimator,
+			&logger,
+		);
+		assert_eq!(
+			tx_handler.locktimed_packages.get(&locktime).map(|packages| packages.len()),
+			Some(1),
+		);
+
+		// At locktime, the delayed package should still yield one bump event
+		// covering both HTLCs.
+		tx_handler.update_claims_view_from_requests(
+			Vec::new(),
+			locktime,
+			locktime,
+			&&broadcaster,
+			ConfirmationTarget::UrgentOnChainSweep,
+			&destination_script,
+			&fee_estimator,
+			&logger,
+		);
+
+		let pending_events = tx_handler.get_and_clear_pending_claim_events();
+		assert_eq!(pending_events.len(), 1);
+		assert_eq!(tx_handler.pending_claim_requests.len(), 1);
+		assert_eq!(tx_handler.claimable_outpoints.len(), 2);
+		match &pending_events[0].1 {
+			super::ClaimEvent::BumpHTLC { htlcs, tx_lock_time, .. } => {
+				assert_eq!(htlcs.len(), 2);
+				assert_eq!(tx_lock_time.to_consensus_u32(), locktime);
+			},
+			_ => panic!("expected a single HTLC bump event"),
+		}
 	}
 }
