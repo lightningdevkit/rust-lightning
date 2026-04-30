@@ -6761,20 +6761,32 @@ fn get_legacy_default_holder_max_htlc_value_in_flight_msat(channel_value_satoshi
 /// This is used both for outbound and inbound channels and has lower bound
 /// of `MIN_THEIR_CHAN_RESERVE_SATOSHIS`, and the `dust_limit_satoshis` of
 /// the counterparty.
+///
+/// Returns `Err` if `channel_value_satoshis` is smaller than
+/// `MIN_THEIR_CHAN_RESERVE_SATOSHIS` or the `dust_limit_satoshis` of the
+/// counterparty.
 pub(crate) fn get_holder_selected_channel_reserve_satoshis(
 	channel_value_satoshis: u64, their_dust_limit_satoshis: u64, config: &UserConfig,
 	is_0reserve: bool,
-) -> u64 {
-	if is_0reserve {
-		return 0;
+) -> Result<u64, ()> {
+	if channel_value_satoshis < MIN_THEIR_CHAN_RESERVE_SATOSHIS
+		|| channel_value_satoshis < their_dust_limit_satoshis
+	{
+		return Err(());
 	}
-	let counterparty_chan_reserve_prop_mil =
-		config.channel_handshake_config.their_channel_reserve_proportional_millionths as u64;
+	if is_0reserve {
+		return Ok(0);
+	}
+	// As described in the `ChannelHandshakeConfig` docs, we cap this value at 1_000_000.
+	let counterparty_chan_reserve_prop_mil = cmp::min(
+		config.channel_handshake_config.their_channel_reserve_proportional_millionths as u64,
+		1_000_000,
+	);
 	let calculated_reserve =
 		channel_value_satoshis.saturating_mul(counterparty_chan_reserve_prop_mil) / 1_000_000;
 	let channel_reserve_satoshis = cmp::max(calculated_reserve, MIN_THEIR_CHAN_RESERVE_SATOSHIS);
 	let channel_reserve_satoshis = cmp::max(channel_reserve_satoshis, their_dust_limit_satoshis);
-	cmp::min(channel_value_satoshis, channel_reserve_satoshis)
+	Ok(channel_reserve_satoshis)
 }
 
 /// This is for legacy reasons, present for forward-compatibility.
@@ -14479,12 +14491,19 @@ impl<SP: SignerProvider> OutboundV1Channel<SP> {
 		// a dust limit higher than our selected reserve.
 		let their_dust_limit_satoshis = 0;
 		let is_0reserve = trusted_channel_features.is_some_and(|f| f.is_0reserve());
-		let holder_selected_channel_reserve_satoshis = get_holder_selected_channel_reserve_satoshis(
-			channel_value_satoshis,
-			their_dust_limit_satoshis,
-			config,
-			is_0reserve,
-		);
+		let holder_selected_channel_reserve_satoshis =
+			get_holder_selected_channel_reserve_satoshis(
+				channel_value_satoshis,
+				their_dust_limit_satoshis,
+				config,
+				is_0reserve,
+			)
+			.map_err(|()| APIError::APIMisuseError {
+				err: format!(
+					"The channel value {channel_value_satoshis} is smaller than \
+					{MIN_THEIR_CHAN_RESERVE_SATOSHIS}"
+				),
+			})?;
 		if holder_selected_channel_reserve_satoshis < MIN_CHAN_DUST_LIMIT_SATOSHIS && !is_0reserve {
 			// Protocol level safety check in place, although it should never happen because
 			// of `MIN_THEIR_CHAN_RESERVE_SATOSHIS` and `MIN_CHANNEL_VALUE_SATOSHIS`
@@ -14876,12 +14895,20 @@ impl<SP: SignerProvider> InboundV1Channel<SP> {
 		let channel_type =
 			channel_type_from_open_channel(&msg.common_fields, our_supported_features)?;
 
-		let holder_selected_channel_reserve_satoshis = get_holder_selected_channel_reserve_satoshis(
-			msg.common_fields.funding_satoshis,
-			msg.common_fields.dust_limit_satoshis,
-			config,
-			trusted_channel_features.is_some_and(|f| f.is_0reserve()),
-		);
+		let holder_selected_channel_reserve_satoshis =
+			get_holder_selected_channel_reserve_satoshis(
+				msg.common_fields.funding_satoshis,
+				msg.common_fields.dust_limit_satoshis,
+				config,
+				trusted_channel_features.is_some_and(|f| f.is_0reserve()),
+			)
+			.map_err(|()| {
+				ChannelError::close(format!(
+					"The channel value {} is smaller than either their dust \
+					limit {}, or {MIN_THEIR_CHAN_RESERVE_SATOSHIS}",
+					msg.common_fields.funding_satoshis, msg.common_fields.dust_limit_satoshis,
+				))
+			})?;
 		let counterparty_pubkeys = ChannelPublicKeys {
 			funding_pubkey: msg.common_fields.funding_pubkey,
 			revocation_basepoint: RevocationBasepoint::from(msg.common_fields.revocation_basepoint),
@@ -17483,6 +17510,10 @@ mod tests {
 		// to channel value
 		test_self_and_counterparty_channel_reserve(10_000_000, 0.50, 0.50);
 		test_self_and_counterparty_channel_reserve(10_000_000, 0.60, 0.50);
+
+		// Make sure we correctly handle reserves greater than the channel value
+		test_self_and_counterparty_channel_reserve(100_000, 1.1, 0.30);
+		test_self_and_counterparty_channel_reserve(100_000, 0.30, 1.1);
 	}
 
 	#[rustfmt::skip]
@@ -17502,7 +17533,19 @@ mod tests {
 		outbound_node_config.channel_handshake_config.their_channel_reserve_proportional_millionths = (outbound_selected_channel_reserve_perc * 1_000_000.0) as u32;
 		let mut chan = OutboundV1Channel::<&TestKeysInterface>::new(&&fee_est, &&keys_provider, &&keys_provider, outbound_node_id, &channelmanager::provided_init_features(&outbound_node_config), channel_value_satoshis, 100_000, 42, &outbound_node_config, 0, 42, None, &logger, None).unwrap();
 
-		let expected_outbound_selected_chan_reserve = cmp::max(MIN_THEIR_CHAN_RESERVE_SATOSHIS, (chan.funding.get_value_satoshis() as f64 * outbound_selected_channel_reserve_perc) as u64);
+		let outbound_capped_reserve_perc = if outbound_selected_channel_reserve_perc.lt(&1.0) {
+			outbound_selected_channel_reserve_perc
+		} else {
+			1.0
+		};
+
+		let inbound_capped_reserve_perc = if inbound_selected_channel_reserve_perc.lt(&1.0) {
+			inbound_selected_channel_reserve_perc
+		} else {
+			1.0
+		};
+
+		let expected_outbound_selected_chan_reserve = cmp::max(MIN_THEIR_CHAN_RESERVE_SATOSHIS, (chan.funding.get_value_satoshis() as f64 * outbound_capped_reserve_perc) as u64);
 		assert_eq!(chan.funding.holder_selected_channel_reserve_satoshis, expected_outbound_selected_chan_reserve);
 
 		let chan_open_channel_msg = chan.get_open_channel(ChainHash::using_genesis_block(network), &&logger).unwrap();
@@ -17512,7 +17555,7 @@ mod tests {
 		if outbound_selected_channel_reserve_perc + inbound_selected_channel_reserve_perc < 1.0 {
 			let chan_inbound_node = InboundV1Channel::<&TestKeysInterface>::new(&&fee_est, &&keys_provider, &&keys_provider, inbound_node_id, &channelmanager::provided_channel_type_features(&inbound_node_config), &channelmanager::provided_init_features(&outbound_node_config), &chan_open_channel_msg, 7, &inbound_node_config, 0, &&logger, None).unwrap();
 
-			let expected_inbound_selected_chan_reserve = cmp::max(MIN_THEIR_CHAN_RESERVE_SATOSHIS, (chan.funding.get_value_satoshis() as f64 * inbound_selected_channel_reserve_perc) as u64);
+			let expected_inbound_selected_chan_reserve = cmp::max(MIN_THEIR_CHAN_RESERVE_SATOSHIS, (chan.funding.get_value_satoshis() as f64 * inbound_capped_reserve_perc) as u64);
 
 			assert_eq!(chan_inbound_node.funding.holder_selected_channel_reserve_satoshis, expected_inbound_selected_chan_reserve);
 			assert_eq!(chan_inbound_node.funding.counterparty_selected_channel_reserve_satoshis.unwrap(), expected_outbound_selected_chan_reserve);
