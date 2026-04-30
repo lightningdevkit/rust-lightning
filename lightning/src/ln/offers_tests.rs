@@ -42,6 +42,8 @@
 //! Nodes without channels are disconnected and connected as needed to ensure that deterministic
 //! blinded paths are used.
 
+use alloc::collections::BTreeMap;
+
 use bitcoin::network::Network;
 use bitcoin::secp256k1::{PublicKey, Secp256k1};
 use core::time::Duration;
@@ -728,6 +730,7 @@ fn creates_and_pays_for_offer_using_two_hop_blinded_path() {
 			payer_note_truncated: None,
 			human_readable_name: None,
 		},
+		payment_metadata: None,
 	});
 	assert_eq!(invoice_request.amount_msats(), Some(10_000_000));
 	assert_ne!(invoice_request.payer_signing_pubkey(), david_id);
@@ -814,7 +817,7 @@ fn creates_and_pays_for_refund_using_two_hop_blinded_path() {
 	}
 	expect_recent_payment!(david, RecentPaymentDetails::AwaitingInvoice, payment_id);
 
-	let payment_context = PaymentContext::Bolt12Refund(Bolt12RefundContext {});
+	let payment_context = PaymentContext::Bolt12Refund(Bolt12RefundContext { payment_metadata: None });
 	let expected_invoice = alice.node.request_refund_payment(&refund).unwrap();
 
 	connect_peers(alice, charlie);
@@ -886,6 +889,7 @@ fn creates_and_pays_for_offer_using_one_hop_blinded_path() {
 			payer_note_truncated: None,
 			human_readable_name: None,
 		},
+		payment_metadata: None,
 	});
 	assert_eq!(invoice_request.amount_msats(), Some(10_000_000));
 	assert_ne!(invoice_request.payer_signing_pubkey(), bob_id);
@@ -906,6 +910,75 @@ fn creates_and_pays_for_offer_using_one_hop_blinded_path() {
 	route_bolt12_payment(bob, &[alice], &invoice);
 	expect_recent_payment!(bob, RecentPaymentDetails::Pending, payment_id);
 
+	claim_bolt12_payment(bob, &[alice], payment_context, &invoice);
+	expect_recent_payment!(bob, RecentPaymentDetails::Fulfilled, payment_id);
+}
+
+/// Checks that a `Router` can attach `payment_metadata` to the [`PaymentContext`] of a blinded
+/// payment path while building it in response to an invoice request, and that the metadata is
+/// surfaced back via [`Event::PaymentClaimable`] when the payment is received.
+#[test]
+fn router_modifies_payment_metadata_in_blinded_path() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000);
+
+	let alice = &nodes[0];
+	let alice_id = alice.node.get_our_node_id();
+	let bob = &nodes[1];
+	let bob_id = bob.node.get_our_node_id();
+
+	// Configure Alice's router to inject `payment_metadata` into the `PaymentContext` of the
+	// `ReceiveTlvs` it builds blinded payment paths from. This simulates a recipient-side router
+	// that ties extra recipient data (e.g. an order ID) to the blinded path created in response to
+	// an inbound invoice request.
+	let mut expected_metadata = BTreeMap::new();
+	expected_metadata.insert(0u64, vec![1, 2, 3, 4]);
+	expected_metadata.insert(7u64, vec![0xab, 0xcd]);
+	alice.router.set_next_payment_context_metadata(expected_metadata.clone());
+
+	let offer = alice.node
+		.create_offer_builder().unwrap()
+		.amount_msats(10_000_000)
+		.build().unwrap();
+
+	let payment_id = PaymentId([1; 32]);
+	bob.node.pay_for_offer(&offer, None, payment_id, Default::default()).unwrap();
+	expect_recent_payment!(bob, RecentPaymentDetails::AwaitingInvoice, payment_id);
+
+	// Bob -> Alice: invoice_request. When Alice handles it, her flow asks the router for blinded
+	// payment paths; the router applies the configured metadata override before the path is built
+	// and embedded in the invoice.
+	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
+	alice.onion_messenger.handle_onion_message(bob_id, &onion_message);
+
+	let (invoice_request, _) = extract_invoice_request(alice, &onion_message);
+
+	// Alice -> Bob: invoice (carrying the blinded path with the modified payment_context).
+	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
+	bob.onion_messenger.handle_onion_message(alice_id, &onion_message);
+
+	let (invoice, _) = extract_invoice(bob, &onion_message);
+
+	let payment_context = PaymentContext::Bolt12Offer(Bolt12OfferContext {
+		offer_id: offer.id(),
+		invoice_request: InvoiceRequestFields {
+			payer_signing_pubkey: invoice_request.payer_signing_pubkey(),
+			quantity: None,
+			payer_note_truncated: None,
+			human_readable_name: None,
+		},
+		payment_metadata: Some(expected_metadata),
+	});
+
+	route_bolt12_payment(bob, &[alice], &invoice);
+	expect_recent_payment!(bob, RecentPaymentDetails::Pending, payment_id);
+
+	// Verifies that Alice's `Event::PaymentClaimable` carries the `payment_metadata` injected by
+	// the router (via the `expected_payment_context` equality check inside this helper).
 	claim_bolt12_payment(bob, &[alice], payment_context, &invoice);
 	expect_recent_payment!(bob, RecentPaymentDetails::Fulfilled, payment_id);
 }
@@ -942,7 +1015,7 @@ fn creates_and_pays_for_refund_using_one_hop_blinded_path() {
 	}
 	expect_recent_payment!(bob, RecentPaymentDetails::AwaitingInvoice, payment_id);
 
-	let payment_context = PaymentContext::Bolt12Refund(Bolt12RefundContext {});
+	let payment_context = PaymentContext::Bolt12Refund(Bolt12RefundContext { payment_metadata: None });
 	let expected_invoice = alice.node.request_refund_payment(&refund).unwrap();
 
 	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
@@ -1007,6 +1080,7 @@ fn pays_for_offer_without_blinded_paths() {
 			payer_note_truncated: None,
 			human_readable_name: None,
 		},
+		payment_metadata: None,
 	});
 
 	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
@@ -1047,7 +1121,7 @@ fn pays_for_refund_without_blinded_paths() {
 	assert!(refund.paths().is_empty());
 	expect_recent_payment!(bob, RecentPaymentDetails::AwaitingInvoice, payment_id);
 
-	let payment_context = PaymentContext::Bolt12Refund(Bolt12RefundContext {});
+	let payment_context = PaymentContext::Bolt12Refund(Bolt12RefundContext { payment_metadata: None });
 	let expected_invoice = alice.node.request_refund_payment(&refund).unwrap();
 
 	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
@@ -1275,6 +1349,7 @@ fn creates_and_pays_for_offer_with_retry() {
 			payer_note_truncated: None,
 			human_readable_name: None,
 		},
+		payment_metadata: None,
 	});
 	assert_eq!(invoice_request.amount_msats(), Some(10_000_000));
 	assert_ne!(invoice_request.payer_signing_pubkey(), bob_id);
@@ -1340,6 +1415,7 @@ fn pays_bolt12_invoice_asynchronously() {
 			payer_note_truncated: None,
 			human_readable_name: None,
 		},
+		payment_metadata: None,
 	});
 
 	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
@@ -1437,6 +1513,7 @@ fn creates_offer_with_blinded_path_using_unannounced_introduction_node() {
 			payer_note_truncated: None,
 			human_readable_name: None,
 		},
+		payment_metadata: None,
 	});
 	assert_ne!(invoice_request.payer_signing_pubkey(), bob_id);
 	assert_eq!(reply_path.introduction_node(), &IntroductionNode::NodeId(alice_id));
@@ -2280,7 +2357,7 @@ fn fails_paying_invoice_more_than_once() {
 	david.onion_messenger.handle_onion_message(charlie_id, &onion_message);
 
 	// David initiates paying the first invoice
-	let payment_context = PaymentContext::Bolt12Refund(Bolt12RefundContext {});
+	let payment_context = PaymentContext::Bolt12Refund(Bolt12RefundContext { payment_metadata: None });
 	let (invoice1, _) = extract_invoice(david, &onion_message);
 
 	route_bolt12_payment(david, &[charlie, bob, alice], &invoice1);
@@ -2648,6 +2725,7 @@ fn creates_and_pays_for_phantom_offer() {
 				payer_note_truncated: None,
 				human_readable_name: None,
 			},
+		payment_metadata: None,
 		});
 
 		let onion_message =

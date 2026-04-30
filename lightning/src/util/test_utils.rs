@@ -7,9 +7,11 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
+use alloc::collections::BTreeMap;
+
 use crate::blinded_path::message::MessageContext;
 use crate::blinded_path::message::{BlindedMessagePath, MessageForwardNode};
-use crate::blinded_path::payment::{BlindedPaymentPath, ReceiveTlvs};
+use crate::blinded_path::payment::{BlindedPaymentPath, PaymentContext, ReceiveTlvs};
 use crate::chain;
 use crate::chain::chaininterface;
 #[cfg(any(test, feature = "_externalize_tests"))]
@@ -178,6 +180,7 @@ pub struct TestRouter<'a> {
 	pub network_graph: Arc<NetworkGraph<&'a TestLogger>>,
 	pub next_routes: Mutex<VecDeque<(RouteParameters, Option<Result<Route, &'static str>>)>>,
 	pub next_blinded_payment_paths: Mutex<Vec<BlindedPaymentPath>>,
+	pub next_payment_context_metadata: Mutex<Option<BTreeMap<u64, Vec<u8>>>>,
 	pub scorer: &'a RwLock<TestScorer>,
 }
 
@@ -189,6 +192,7 @@ impl<'a> TestRouter<'a> {
 		let entropy_source = Arc::new(RandomBytes::new([42; 32]));
 		let next_routes = Mutex::new(VecDeque::new());
 		let next_blinded_payment_paths = Mutex::new(Vec::new());
+		let next_payment_context_metadata = Mutex::new(None);
 		Self {
 			router: DefaultRouter::new(
 				Arc::clone(&network_graph),
@@ -200,8 +204,13 @@ impl<'a> TestRouter<'a> {
 			network_graph,
 			next_routes,
 			next_blinded_payment_paths,
+			next_payment_context_metadata,
 			scorer,
 		}
+	}
+
+	pub fn set_next_payment_context_metadata(&self, metadata: BTreeMap<u64, Vec<u8>>) {
+		*self.next_payment_context_metadata.lock().unwrap() = Some(metadata);
 	}
 
 	pub fn expect_find_route(&self, query: RouteParameters, result: Result<Route, &'static str>) {
@@ -319,9 +328,16 @@ impl<'a> Router for TestRouter<'a> {
 
 	fn create_blinded_payment_paths<T: secp256k1::Signing + secp256k1::Verification>(
 		&self, recipient: PublicKey, local_node_receive_key: ReceiveAuthKey,
-		first_hops: Vec<ChannelDetails>, tlvs: ReceiveTlvs, amount_msats: Option<u64>,
+		first_hops: Vec<ChannelDetails>, mut tlvs: ReceiveTlvs, amount_msats: Option<u64>,
 		secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedPaymentPath>, ()> {
+		if let Some(metadata) = self.next_payment_context_metadata.lock().unwrap().take() {
+			match &mut tlvs.payment_context {
+				PaymentContext::Bolt12Offer(ctx) => ctx.payment_metadata = Some(metadata),
+				PaymentContext::AsyncBolt12Offer(ctx) => ctx.payment_metadata = Some(metadata),
+				PaymentContext::Bolt12Refund(ctx) => ctx.payment_metadata = Some(metadata),
+			}
+		}
 		let mut expected_paths = self.next_blinded_payment_paths.lock().unwrap();
 		if expected_paths.is_empty() {
 			self.router.create_blinded_payment_paths(

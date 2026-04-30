@@ -9,6 +9,8 @@
 
 //! Data structures and methods for constructing [`BlindedPaymentPath`]s to send a payment over.
 
+use alloc::collections::BTreeMap;
+
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
 
@@ -29,8 +31,8 @@ use crate::types::features::BlindedHopFeatures;
 use crate::types::payment::PaymentSecret;
 use crate::types::routing::RoutingFees;
 use crate::util::ser::{
-	FixedLengthReader, HighZeroBytesDroppedBigSize, LengthReadableArgs, Readable, WithoutLength,
-	Writeable, Writer,
+	BigSizeKeyedMap, FixedLengthReader, HighZeroBytesDroppedBigSize, LengthReadableArgs, Readable,
+	WithoutLength, Writeable, Writer,
 };
 
 #[allow(unused_imports)]
@@ -572,6 +574,20 @@ pub enum PaymentContext {
 	/// [`Refund`]: crate::offers::refund::Refund
 	Bolt12Refund(Bolt12RefundContext),
 }
+impl PaymentContext {
+	/// Returns the additional payment metadata stored alongside this payment context, if any.
+	///
+	/// Payment metadata is stored as a map from a numeric key to an arbitrary byte array value.
+	/// This allows for several types of metadata to be stored attached to a single payment. In the
+	/// future some optional features of LDK may use some keys.
+	pub fn payment_metadata(&self) -> Option<&BTreeMap<u64, Vec<u8>>> {
+		match self {
+			Self::Bolt12Offer(Bolt12OfferContext { payment_metadata, .. })
+			| Self::AsyncBolt12Offer(AsyncBolt12OfferContext { payment_metadata, .. })
+			| Self::Bolt12Refund(Bolt12RefundContext { payment_metadata, .. }) => payment_metadata.as_ref(),
+		}
+	}
+}
 
 // Used when writing PaymentContext in Event::PaymentClaimable to avoid cloning.
 pub(crate) enum PaymentContextRef<'a> {
@@ -594,6 +610,27 @@ pub struct Bolt12OfferContext {
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	pub invoice_request: InvoiceRequestFields,
+
+	/// Additional data about this payment which is not used in LDK and can be used for any
+	/// purpose.
+	///
+	/// This is analogous to the BOLT 11 [`RecipientOnionFields::payment_metadata`] (which is
+	/// provided to payers via [`Bolt11Invoice::payment_metadata`]) and can be used any time data
+	/// needs to be "stored" by a payment recipient for their own internal use, provided back to
+	/// them with the payment.
+	///
+	/// Payment metadata is stored as a map from a numeric key to an arbitrary byte array value.
+	/// This allows for several types of metadata to be stored attached to a single payment. In the
+	/// future some optional features of LDK may use some keys. For the sake of conflict
+	/// reduction, those features will attempt to use keys in the range 128-256.
+	///
+	/// Note that because this is included in the payment onion, its size must be tightly
+	/// constrained. More than a few hundred bytes and the payment will be entirely unpayable (with
+	/// limited routing options as size increases).
+	///
+	/// [`RecipientOnionFields::payment_metadata`]: crate::ln::outbound_payment::RecipientOnionFields::payment_metadata
+	/// [`Bolt11Invoice::payment_metadata`]: lightning_invoice::Bolt11Invoice::payment_metadata
+	pub payment_metadata: Option<BTreeMap<u64, Vec<u8>>>,
 }
 
 /// The context of a payment made for a static invoice requested from a BOLT 12 [`Offer`].
@@ -606,13 +643,55 @@ pub struct AsyncBolt12OfferContext {
 	///
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 	pub offer_nonce: Nonce,
+
+	/// Additional data about this payment which is not used in LDK and can be used for any
+	/// purpose.
+	///
+	/// This is analogous to the BOLT 11 [`RecipientOnionFields::payment_metadata`] (which is
+	/// provided to payers via [`Bolt11Invoice::payment_metadata`]) and can be used any time data
+	/// needs to be "stored" by a payment recipient for their own internal use, provided back to
+	/// them with the payment.
+	///
+	/// Payment metadata is stored as a map from a numeric key to an arbitrary byte array value.
+	/// This allows for several types of metadata to be stored attached to a single payment. In the
+	/// future some optional features of LDK may use some keys. For the sake of conflict
+	/// reduction, those features will attempt to use keys in the range 128-256.
+	///
+	/// Note that because this is included in the payment onion, its size must be tightly
+	/// constrained. More than a few hundred bytes and the payment will be entirely unpayable (with
+	/// limited routing options as size increases).
+	///
+	/// [`RecipientOnionFields::payment_metadata`]: crate::ln::outbound_payment::RecipientOnionFields::payment_metadata
+	/// [`Bolt11Invoice::payment_metadata`]: lightning_invoice::Bolt11Invoice::payment_metadata
+	pub payment_metadata: Option<BTreeMap<u64, Vec<u8>>>,
 }
 
 /// The context of a payment made for an invoice sent for a BOLT 12 [`Refund`].
 ///
 /// [`Refund`]: crate::offers::refund::Refund
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Bolt12RefundContext {}
+pub struct Bolt12RefundContext {
+	/// Additional data about this payment which is not used in LDK and can be used for any
+	/// purpose.
+	///
+	/// This is analogous to the BOLT 11 [`RecipientOnionFields::payment_metadata`] (which is
+	/// provided to payers via [`Bolt11Invoice::payment_metadata`]) and can be used any time data
+	/// needs to be "stored" by a payment recipient for their own internal use, provided back to
+	/// them with the payment.
+	///
+	/// Payment metadata is stored as a map from a numeric key to an arbitrary byte array value.
+	/// This allows for several types of metadata to be stored attached to a single payment. In the
+	/// future some optional features of LDK may use some keys. For the sake of conflict
+	/// reduction, those features will attempt to use keys in the range 128-256.
+	///
+	/// Note that because this is included in the payment onion, its size must be tightly
+	/// constrained. More than a few hundred bytes and the payment will be entirely unpayable (with
+	/// limited routing options as size increases).
+	///
+	/// [`RecipientOnionFields::payment_metadata`]: crate::ln::outbound_payment::RecipientOnionFields::payment_metadata
+	/// [`Bolt11Invoice::payment_metadata`]: lightning_invoice::Bolt11Invoice::payment_metadata
+	pub payment_metadata: Option<BTreeMap<u64, Vec<u8>>>,
+}
 
 impl TryFrom<CounterpartyForwardingInfo> for PaymentRelay {
 	type Error = ();
@@ -1031,14 +1110,18 @@ impl<'a> Writeable for PaymentContextRef<'a> {
 
 impl_writeable_tlv_based!(Bolt12OfferContext, {
 	(0, offer_id, required),
+	(1, payment_metadata, (option, encoding: (BTreeMap<u64, Vec<u8>>, BigSizeKeyedMap))),
 	(2, invoice_request, required),
 });
 
 impl_writeable_tlv_based!(AsyncBolt12OfferContext, {
 	(0, offer_nonce, required),
+	(1, payment_metadata, (option, encoding: (BTreeMap<u64, Vec<u8>>, BigSizeKeyedMap))),
 });
 
-impl_writeable_tlv_based!(Bolt12RefundContext, {});
+impl_writeable_tlv_based!(Bolt12RefundContext, {
+	(1, payment_metadata, (option, encoding: (BTreeMap<u64, Vec<u8>>, BigSizeKeyedMap))),
+});
 
 #[cfg(test)]
 mod tests {
@@ -1097,7 +1180,9 @@ mod tests {
 		let recv_tlvs = ReceiveTlvs {
 			payment_secret: PaymentSecret([0; 32]),
 			payment_constraints: PaymentConstraints { max_cltv_expiry: 0, htlc_minimum_msat: 1 },
-			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
+			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {
+				payment_metadata: None,
+			}),
 		};
 		let htlc_maximum_msat = 100_000;
 		let blinded_payinfo =
@@ -1115,7 +1200,9 @@ mod tests {
 		let recv_tlvs = ReceiveTlvs {
 			payment_secret: PaymentSecret([0; 32]),
 			payment_constraints: PaymentConstraints { max_cltv_expiry: 0, htlc_minimum_msat: 1 },
-			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
+			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {
+				payment_metadata: None,
+			}),
 		};
 		let blinded_payinfo = super::compute_payinfo::<ForwardTlvs>(
 			&[],
@@ -1178,7 +1265,9 @@ mod tests {
 		let recv_tlvs = ReceiveTlvs {
 			payment_secret: PaymentSecret([0; 32]),
 			payment_constraints: PaymentConstraints { max_cltv_expiry: 0, htlc_minimum_msat: 3 },
-			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
+			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {
+				payment_metadata: None,
+			}),
 		};
 		let htlc_maximum_msat = 100_000;
 		let blinded_payinfo = super::compute_payinfo(
@@ -1238,7 +1327,9 @@ mod tests {
 		let recv_tlvs = ReceiveTlvs {
 			payment_secret: PaymentSecret([0; 32]),
 			payment_constraints: PaymentConstraints { max_cltv_expiry: 0, htlc_minimum_msat: 1 },
-			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
+			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {
+				payment_metadata: None,
+			}),
 		};
 		let htlc_minimum_msat = 3798;
 		assert!(super::compute_payinfo(
@@ -1309,7 +1400,9 @@ mod tests {
 		let recv_tlvs = ReceiveTlvs {
 			payment_secret: PaymentSecret([0; 32]),
 			payment_constraints: PaymentConstraints { max_cltv_expiry: 0, htlc_minimum_msat: 1 },
-			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
+			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {
+				payment_metadata: None,
+			}),
 		};
 
 		let blinded_payinfo = super::compute_payinfo(

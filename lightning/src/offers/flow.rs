@@ -10,6 +10,8 @@
 //! Provides data structures and functions for creating and managing Offers messages,
 //! facilitating communication, and handling BOLT12 messages and payments.
 
+use alloc::collections::BTreeMap;
+
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
 
@@ -828,13 +830,15 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 	pub fn create_static_invoice_builder<'a, R: Router>(
 		&self, router: &R, offer: &'a Offer, offer_nonce: Nonce, payment_secret: PaymentSecret,
 		relative_expiry_secs: u32, usable_channels: Vec<ChannelDetails>,
-		peers: Vec<MessageForwardNode>,
+		peers: Vec<MessageForwardNode>, payment_metadata: Option<BTreeMap<u64, Vec<u8>>>,
 	) -> Result<StaticInvoiceBuilder<'a>, Bolt12SemanticError> {
 		let expanded_key = &self.inbound_payment_key;
 		let secp_ctx = &self.secp_ctx;
 
-		let payment_context =
-			PaymentContext::AsyncBolt12Offer(AsyncBolt12OfferContext { offer_nonce });
+		let payment_context = PaymentContext::AsyncBolt12Offer(AsyncBolt12OfferContext {
+			offer_nonce,
+			payment_metadata,
+		});
 
 		let amount_msat = offer.amount().and_then(|amount| match amount {
 			Amount::Bitcoin { amount_msats } => Some(amount_msats),
@@ -896,6 +900,7 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 	pub fn create_invoice_builder_from_refund<'a, ES: EntropySource, R: Router, F>(
 		&'a self, router: &R, entropy_source: ES, refund: &'a Refund,
 		usable_channels: Vec<ChannelDetails>, get_payment_info: F,
+		payment_metadata: Option<BTreeMap<u64, Vec<u8>>>,
 	) -> Result<InvoiceBuilder<'a, DerivedSigningPubkey>, Bolt12SemanticError>
 	where
 		F: Fn(u64, u32) -> Result<(PaymentHash, PaymentSecret), Bolt12SemanticError>,
@@ -912,7 +917,8 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 
 		let (payment_hash, payment_secret) = get_payment_info(amount_msats, relative_expiry)?;
 
-		let payment_context = PaymentContext::Bolt12Refund(Bolt12RefundContext {});
+		let payment_context =
+			PaymentContext::Bolt12Refund(Bolt12RefundContext { payment_metadata });
 		let payment_paths = self
 			.create_blinded_payment_paths(
 				router,
@@ -963,6 +969,7 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 	pub fn create_invoice_builder_from_invoice_request_with_keys<'a, R: Router, F>(
 		&self, router: &R, invoice_request: &'a VerifiedInvoiceRequest<DerivedSigningPubkey>,
 		usable_channels: Vec<ChannelDetails>, get_payment_info: F,
+		payment_metadata: Option<BTreeMap<u64, Vec<u8>>>,
 	) -> Result<(InvoiceBuilder<'a, DerivedSigningPubkey>, MessageContext), Bolt12SemanticError>
 	where
 		F: Fn(u64, u32) -> Result<(PaymentHash, PaymentSecret), Bolt12SemanticError>,
@@ -977,6 +984,7 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 		let context = PaymentContext::Bolt12Offer(Bolt12OfferContext {
 			offer_id: invoice_request.offer_id,
 			invoice_request: invoice_request.fields(),
+			payment_metadata,
 		});
 
 		let payment_paths = self
@@ -1022,6 +1030,7 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 	pub fn create_invoice_builder_from_invoice_request_without_keys<'a, R: Router, F>(
 		&self, router: &R, invoice_request: &'a VerifiedInvoiceRequest<ExplicitSigningPubkey>,
 		usable_channels: Vec<ChannelDetails>, get_payment_info: F,
+		payment_metadata: Option<BTreeMap<u64, Vec<u8>>>,
 	) -> Result<(InvoiceBuilder<'a, ExplicitSigningPubkey>, MessageContext), Bolt12SemanticError>
 	where
 		F: Fn(u64, u32) -> Result<(PaymentHash, PaymentSecret), Bolt12SemanticError>,
@@ -1036,6 +1045,7 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 		let context = PaymentContext::Bolt12Offer(Bolt12OfferContext {
 			offer_id: invoice_request.offer_id,
 			invoice_request: invoice_request.fields(),
+			payment_metadata,
 		});
 
 		let payment_paths = self
@@ -1643,6 +1653,7 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 				offer_relative_expiry,
 				usable_channels,
 				peers.clone(),
+				None,
 			)
 			.and_then(|builder| builder.build_and_sign(secp_ctx))
 			.map_err(|_| ())?;

@@ -969,6 +969,37 @@ macro_rules! impl_for_map {
 impl_for_map!(BTreeMap, Ord, |_| BTreeMap::new());
 impl_for_map!(HashMap, Hash, |len| hash_map_with_capacity(len));
 
+/// A wrapper used to serialize a `BTreeMap<u64, Vec<u8>>` with a few less bytes.
+pub(crate) struct BigSizeKeyedMap<T>(pub T);
+
+impl Writeable for BigSizeKeyedMap<&BTreeMap<u64, Vec<u8>>> {
+	#[inline]
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		BigSize(self.0.len() as u64).write(w)?;
+		for (key, value) in self.0.iter() {
+			BigSize(*key).write(w)?;
+			value.write(w)?;
+		}
+		Ok(())
+	}
+}
+
+impl LengthReadable for BigSizeKeyedMap<BTreeMap<u64, Vec<u8>>> {
+	#[inline]
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(r: &mut R) -> Result<Self, DecodeError> {
+		let len: BigSize = Readable::read(r)?;
+		let mut ret = BTreeMap::new();
+		for _ in 0..len.0 {
+			let key: BigSize = Readable::read(r)?;
+			let value: Vec<u8> = Readable::read(r)?;
+			if ret.insert(key.0, value).is_some() {
+				return Err(DecodeError::InvalidValue);
+			}
+		}
+		Ok(BigSizeKeyedMap(ret))
+	}
+}
+
 // HashSet
 impl<T> Writeable for HashSet<T>
 where
