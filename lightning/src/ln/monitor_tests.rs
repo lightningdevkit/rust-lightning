@@ -2455,6 +2455,119 @@ fn test_restored_packages_retry() {
 	do_test_restored_packages_retry(true);
 }
 
+fn do_test_duplicate_delayed_holder_htlc_claims_after_claim_funds_replay(p2a_anchor: bool) {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let mut anchors_config = test_default_channel_config();
+	anchors_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+	anchors_config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
+	let node_chanmgrs =
+		create_node_chanmgrs(2, &node_cfgs, &[Some(anchors_config.clone()), Some(anchors_config)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let coinbase_tx = provide_anchor_reserves(&nodes);
+	let (_, _, chan_id, funding_tx) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 50_000_000);
+
+	// Seed two unresolved outbound HTLCs that will be aggregated into one
+	// delayed holder-commitment package after force close.
+	route_payment(&nodes[0], &[&nodes[1]], 10_000_000);
+	route_payment(&nodes[0], &[&nodes[1]], 11_000_000);
+
+	// Add a third incoming HTLC which will later be claimed by preimage after
+	// the commitment transaction confirms, reproducing the replay path.
+	let (claim_route, claim_hash, claim_preimage, claim_secret) =
+		get_route_and_payment_hash!(nodes[1], nodes[0], 12_000_000);
+	nodes[1]
+		.node
+		.send_payment_with_route(
+			claim_route,
+			claim_hash,
+			RecipientOnionFields::secret_only(claim_secret, 12_000_000),
+			PaymentId(claim_hash.0),
+		)
+		.unwrap();
+	check_added_monitors(&nodes[1], 1);
+	let updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
+	nodes[0]
+		.node
+		.handle_update_add_htlc(nodes[1].node.get_our_node_id(), &updates.update_add_htlcs[0]);
+	do_commitment_signed_dance(&nodes[0], &nodes[1], &updates.commitment_signed, false, false);
+	expect_and_process_pending_htlcs(&nodes[0], false);
+	expect_payment_claimable!(nodes[0], claim_hash, claim_secret, 12_000_000);
+
+	// Force-close node 0 so its holder commitment hits chain and its HTLC
+	// claims are fed into OnchainTxHandler as delayed requests.
+	let message = "Channel force-closed".to_owned();
+	nodes[0]
+		.node
+		.force_close_broadcasting_latest_txn(
+			&chan_id,
+			&nodes[1].node.get_our_node_id(),
+			message.clone(),
+		)
+		.unwrap();
+	check_added_monitors(&nodes[0], 1);
+	check_closed_broadcast(&nodes[0], 1, true);
+	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
+	check_closed_event(&nodes[0], 1, reason, &[nodes[1].node.get_our_node_id()], 1_000_000);
+	handle_bump_close_event(&nodes[0]);
+
+	let (commitment_tx, anchor_tx) = {
+		let mut txn = nodes[0].tx_broadcaster.unique_txn_broadcast();
+		assert_eq!(txn.len(), if p2a_anchor { 2 } else { 1 });
+		let anchor_tx = p2a_anchor.then(|| txn.pop().unwrap());
+		let commitment_tx = txn.pop().unwrap();
+		check_spends!(commitment_tx, funding_tx);
+		if p2a_anchor {
+			check_spends!(anchor_tx.as_ref().unwrap(), commitment_tx, coinbase_tx);
+		}
+		(commitment_tx, anchor_tx)
+	};
+
+	let _ = mine_transaction(&nodes[0], &commitment_tx);
+	if p2a_anchor {
+		let _ = mine_transaction(&nodes[0], anchor_tx.as_ref().unwrap());
+	}
+
+	// Claim the incoming HTLC after the commitment is confirmed. This
+	// regenerates a single-outpoint claim request alongside the existing
+	// delayed package covering the two earlier HTLCs.
+	nodes[0].node.claim_funds(claim_preimage);
+	check_added_monitors(&nodes[0], 1);
+	expect_payment_claimed!(nodes[0], claim_hash, 12_000_000);
+
+	// Once all holder HTLCs reach their timelock, we should see the original two-HTLC
+	// delayed package plus the replayed single-HTLC claim, not duplicates of
+	// the delayed package's outpoints.
+	connect_blocks(&nodes[0], TEST_FINAL_CLTV + 1);
+
+	let mut htlc_event_sizes = nodes[0]
+		.chain_monitor
+		.chain_monitor
+		.get_and_clear_pending_events()
+		.into_iter()
+		.filter_map(|event| {
+			if let Event::BumpTransaction(BumpTransactionEvent::HTLCResolution {
+				htlc_descriptors, ..
+			}) = event
+			{
+				Some(htlc_descriptors.len())
+			} else {
+				None
+			}
+		})
+		.collect::<Vec<_>>();
+	htlc_event_sizes.sort_unstable();
+	assert_eq!(htlc_event_sizes, vec![1, 2]);
+}
+
+#[test]
+fn test_duplicate_delayed_holder_htlc_claims_after_claim_funds_replay() {
+	do_test_duplicate_delayed_holder_htlc_claims_after_claim_funds_replay(false);
+	do_test_duplicate_delayed_holder_htlc_claims_after_claim_funds_replay(true);
+}
+
 fn do_test_monitor_rebroadcast_pending_claims(keyed_anchors: bool, p2a_anchor: bool) {
 	// Test that we will retry broadcasting pending claims for a force-closed channel on every
 	// `ChainMonitor::rebroadcast_pending_claims` call.
