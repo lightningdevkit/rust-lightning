@@ -610,6 +610,13 @@ macro_rules! impl_writeable_primitive {
 				writer.write_all(&self.0.to_be_bytes()[(self.0.leading_zeros() / 8) as usize..$len])
 			}
 		}
+		impl Writeable for HighZeroBytesDroppedBigSize<&$val_type> {
+			#[inline]
+			fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+				// Skip any full leading 0 bytes when writing (in BE):
+				writer.write_all(&self.0.to_be_bytes()[(self.0.leading_zeros() / 8) as usize..$len])
+			}
+		}
 		impl Readable for $val_type {
 			#[inline]
 			fn read<R: Read>(reader: &mut R) -> Result<$val_type, DecodeError> {
@@ -751,12 +758,20 @@ impl_array!(HMAC_LEN * HMAC_COUNT, u8);
 /// This is not exported to bindings users as manual TLV building is not currently supported in bindings
 pub struct WithoutLength<T>(pub T);
 
+impl Writeable for WithoutLength<&&String> {
+	#[inline]
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		w.write_all(self.0.as_bytes())
+	}
+}
+
 impl Writeable for WithoutLength<&String> {
 	#[inline]
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		w.write_all(self.0.as_bytes())
 	}
 }
+
 impl LengthReadable for WithoutLength<String> {
 	#[inline]
 	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(r: &mut R) -> Result<Self, DecodeError> {
@@ -808,6 +823,14 @@ impl<T: Writeable> AsWriteableSlice for &Vec<T> {
 		&self
 	}
 }
+
+impl<T: Writeable> AsWriteableSlice for &&Vec<T> {
+	type Inner = T;
+	fn as_slice(&self) -> &[T] {
+		&self
+	}
+}
+
 impl<T: Writeable> AsWriteableSlice for &[T] {
 	type Inner = T;
 	fn as_slice(&self) -> &[T] {
