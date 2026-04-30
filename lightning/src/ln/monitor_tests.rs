@@ -2458,12 +2458,15 @@ fn test_restored_packages_retry() {
 fn do_test_duplicate_delayed_holder_htlc_claims_after_claim_funds_replay(p2a_anchor: bool) {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let persister;
+	let new_chain_monitor;
+	let node_deserialized;
 	let mut anchors_config = test_default_channel_config();
 	anchors_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 	anchors_config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
 	let node_chanmgrs =
 		create_node_chanmgrs(2, &node_cfgs, &[Some(anchors_config.clone()), Some(anchors_config)]);
-	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let coinbase_tx = provide_anchor_reserves(&nodes);
 	let (_, _, chan_id, funding_tx) =
@@ -2542,11 +2545,14 @@ fn do_test_duplicate_delayed_holder_htlc_claims_after_claim_funds_replay(p2a_anc
 	// the delayed package's outpoints.
 	connect_blocks(&nodes[0], TEST_FINAL_CLTV + 1);
 
-	let mut htlc_event_sizes = nodes[0]
+	let events = nodes[0]
 		.chain_monitor
 		.chain_monitor
 		.get_and_clear_pending_events()
 		.into_iter()
+		.collect::<Vec<_>>();
+	let mut htlc_event_sizes = events
+		.iter()
 		.filter_map(|event| {
 			if let Event::BumpTransaction(BumpTransactionEvent::HTLCResolution {
 				htlc_descriptors, ..
@@ -2560,6 +2566,80 @@ fn do_test_duplicate_delayed_holder_htlc_claims_after_claim_funds_replay(p2a_anc
 		.collect::<Vec<_>>();
 	htlc_event_sizes.sort_unstable();
 	assert_eq!(htlc_event_sizes, vec![1, 2]);
+
+	// Drive only the replayed single-HTLC event on-chain so we can replay the
+	// preimage once the spend is anti-reorg final, then again after reload.
+	for event in events {
+		if let Event::BumpTransaction(event) = event {
+			let is_single_htlc = if let BumpTransactionEvent::HTLCResolution {
+				ref htlc_descriptors,
+				..
+			} = event
+			{
+				htlc_descriptors.len() == 1
+			} else {
+				false
+			};
+			if is_single_htlc {
+				nodes[0].bump_tx_handler.handle_event(&event);
+				break;
+			}
+		}
+	}
+	let mut htlc_txn = nodes[0].tx_broadcaster.unique_txn_broadcast();
+	assert_eq!(htlc_txn.len(), 1);
+	let htlc_tx = htlc_txn.pop().unwrap();
+	mine_transaction(&nodes[0], &htlc_tx);
+	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
+	assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
+
+	// The spend has passed anti-reorg finality, but its CSV-delayed output is
+	// not yet spendable. Replaying the preimage in this window must not create
+	// a new conflicting claim for the already-spent commitment HTLC output.
+	get_monitor!(nodes[0], chan_id).provide_payment_preimage_unsafe_legacy(
+		&claim_hash,
+		&claim_preimage,
+		&node_cfgs[0].tx_broadcaster,
+		&LowerBoundedFeeEstimator::new(node_cfgs[0].fee_estimator),
+		&nodes[0].logger,
+	);
+	assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
+	let balances = nodes[0]
+		.chain_monitor
+		.chain_monitor
+		.get_monitor(chan_id)
+		.unwrap()
+		.get_claimable_balances();
+	assert!(balances.iter().any(|balance| matches!(
+		balance,
+		Balance::ClaimableAwaitingConfirmations {
+			amount_satoshis: 12_000,
+			source: BalanceSource::Htlc,
+			..
+		}
+	)));
+
+	connect_blocks(&nodes[0], BREAKDOWN_TIMEOUT as u32 - ANTI_REORG_DELAY);
+	let _ = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
+
+	// Reload before replaying the preimage so the regression covers persisted
+	// resolution state, not only in-memory filtering.
+	let serialized_channel_manager = nodes[0].node.encode();
+	let serialized_monitor = get_monitor!(nodes[0], chan_id).encode();
+	reload_node!(
+		nodes[0], &serialized_channel_manager, &[&serialized_monitor], persister,
+		new_chain_monitor, node_deserialized
+	);
+
+	// Replaying the preimage update must not regenerate a claim for the HTLC
+	// whose commitment output has anti-reorg persisted resolution state.
+	get_monitor!(nodes[0], chan_id).provide_payment_preimage_unsafe_legacy(
+		&claim_hash, &claim_preimage, &node_cfgs[0].tx_broadcaster,
+		&LowerBoundedFeeEstimator::new(node_cfgs[0].fee_estimator), &nodes[0].logger,
+	);
+	assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
+	expect_payment_claimed!(nodes[0], claim_hash, 12_000_000);
+	check_added_monitors(&nodes[0], 1);
 }
 
 #[test]

@@ -4938,7 +4938,10 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			.iter()
 			.filter_map(|(htlc, _)| {
 				if let Some(transaction_output_index) = htlc.transaction_output_index {
-					if htlc.offered && htlc.payment_hash == matching_payment_hash {
+					if htlc.offered
+						&& htlc.payment_hash == matching_payment_hash
+						&& !self.is_htlc_output_resolved_on_chain(htlc)
+					{
 						let htlc_data = PackageSolvingData::CounterpartyOfferedHTLCOutput(
 							CounterpartyOfferedHTLCOutput::build(
 								per_commitment_point,
@@ -4962,6 +4965,20 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				}
 			})
 			.collect()
+	}
+
+	fn is_htlc_output_resolved_on_chain(&self, htlc: &HTLCOutputInCommitment) -> bool {
+		if let Some(transaction_output_index) = htlc.transaction_output_index {
+			// Only suppress claims once the commitment HTLC output spend has
+			// reached anti-reorg finality. Any output created by that spend may
+			// still be CSV-delayed, but the original HTLC outpoint should not be
+			// re-claimed.
+			self.htlcs_resolved_on_chain.iter().any(|resolved_htlc| {
+				resolved_htlc.commitment_tx_output_idx == Some(transaction_output_index)
+			})
+		} else {
+			false
+		}
 	}
 
 	/// Returns the HTLC claim requests and the counterparty output info.
@@ -5010,6 +5027,9 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				{
 					// per_commitment_data is corrupt or our commitment signing key leaked!
 					return (claimable_outpoints, to_counterparty_output_info);
+				}
+				if self.is_htlc_output_resolved_on_chain(htlc) {
+					continue;
 				}
 				let preimage = if htlc.offered {
 					if let Some((p, _)) = self.payment_preimages.get(&htlc.payment_hash) {
@@ -5112,6 +5132,9 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		let mut htlcs = Vec::with_capacity(holder_tx.nondust_htlcs().len());
 		debug_assert_eq!(holder_tx.nondust_htlcs().len(), holder_tx.counterparty_htlc_sigs.len());
 		for (htlc, counterparty_sig) in holder_tx.nondust_htlcs().iter().zip(holder_tx.counterparty_htlc_sigs.iter()) {
+			if self.is_htlc_output_resolved_on_chain(htlc) {
+				continue;
+			}
 			assert!(htlc.transaction_output_index.is_some(), "Expected transaction output index for non-dust HTLC");
 
 			let preimage = if htlc.offered {
