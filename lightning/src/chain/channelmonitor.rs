@@ -38,8 +38,8 @@ use crate::chain::chaininterface::{
 };
 use crate::chain::onchaintx::{ClaimEvent, FeerateStrategy, OnchainTxHandler};
 use crate::chain::package::{
-	CounterpartyOfferedHTLCOutput, CounterpartyReceivedHTLCOutput, HolderFundingOutput,
-	HolderHTLCOutput, PackageSolvingData, PackageTemplate, RevokedHTLCOutput, RevokedOutput,
+	ClaimRequest, CounterpartyOfferedHTLCOutput, CounterpartyReceivedHTLCOutput,
+	HolderFundingOutput, HolderHTLCOutput, PackageSolvingData, RevokedHTLCOutput, RevokedOutput,
 };
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::chain::{BlockLocator, WatchedOutput};
@@ -3879,7 +3879,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	fn generate_claimable_outpoints_and_watch_outputs(
 		&mut self, generate_monitor_event_with_reason: Option<ClosureReason>,
 		require_funding_seen: bool,
-	) -> (Vec<PackageTemplate>, Vec<TransactionOutputs>) {
+	) -> (Vec<ClaimRequest>, Vec<TransactionOutputs>) {
 		let funding = get_confirmed_funding_scope!(self);
 		let holder_commitment_tx = &funding.current_holder_commitment_tx;
 		let funding_outp = HolderFundingOutput::build(
@@ -3887,7 +3887,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			funding.channel_parameters.clone(),
 		);
 		let funding_outpoint = funding.funding_outpoint();
-		let commitment_package = PackageTemplate::build_package(
+		let commitment_package = ClaimRequest::new(
 			funding_outpoint.txid.clone(), funding_outpoint.index as u32,
 			PackageSolvingData::HolderFundingOutput(funding_outp),
 			self.best_block.height,
@@ -3926,9 +3926,9 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		let zero_fee_commitments =
 			self.channel_type_features().supports_anchor_zero_fee_commitments();
 		if !zero_fee_htlcs && !zero_fee_commitments {
-			// Because we're broadcasting a commitment transaction, we should construct the package
-			// assuming it gets confirmed in the next block. Sadly, we have code which considers
-			// "not yet confirmed" things as discardable, so we cannot do that here.
+			// Because we're broadcasting a commitment transaction, we should construct claim
+			// requests assuming it gets confirmed in the next block. Sadly, we have code which
+			// considers "not yet confirmed" things as discardable, so we cannot do that here.
 			let (mut new_outpoints, _) = self.get_broadcasted_holder_claims(
 				funding, holder_commitment_tx, self.best_block.height,
 			);
@@ -4806,11 +4806,11 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	/// height > height + CLTV_SHARED_CLAIM_BUFFER. In any case, will install monitoring for
 	/// HTLC-Success/HTLC-Timeout transactions.
 	///
-	/// Returns packages to claim the revoked output(s) and general information about the output that
-	/// is to the counterparty in the commitment transaction.
+	/// Returns claim requests for the revoked output(s) and general information about the output
+	/// that is to the counterparty in the commitment transaction.
 	#[rustfmt::skip]
 	fn check_spend_counterparty_transaction<L: Logger>(&mut self, commitment_txid: Txid, commitment_tx: &Transaction, height: u32, block_hash: &BlockHash, logger: &L)
-		-> (Vec<PackageTemplate>, CommitmentTxCounterpartyOutputInfo)
+		-> (Vec<ClaimRequest>, CommitmentTxCounterpartyOutputInfo)
 	{
 		// Most secp and related errors trying to create keys means we have no hope of constructing
 		// a spend transaction...so we return no transactions to broadcast
@@ -4850,7 +4850,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						per_commitment_point, per_commitment_key, outp.value,
 						funding_spent.channel_parameters.clone(), height,
 					);
-					let justice_package = PackageTemplate::build_package(
+					let justice_package = ClaimRequest::new(
 						commitment_txid, idx as u32,
 						PackageSolvingData::RevokedOutput(revk_outp),
 						height + self.counterparty_commitment_params.on_counterparty_tx_csv as u32,
@@ -4879,7 +4879,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						} else {
 							height
 						};
-						let justice_package = PackageTemplate::build_package(
+						let justice_package = ClaimRequest::new(
 							commitment_txid,
 							transaction_output_index,
 							PackageSolvingData::RevokedHTLCOutput(revk_htlc_outp),
@@ -4968,7 +4968,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		commitment_txid: Txid,
 		per_commitment_option: Option<&Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)>>,
 		confirmation_height: Option<u32>,
-	) -> Vec<PackageTemplate> {
+	) -> Vec<ClaimRequest> {
 		let per_commitment_claimable_data = match per_commitment_option {
 			Some(outputs) => outputs,
 			None => return Vec::new(),
@@ -4993,7 +4993,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 								confirmation_height,
 							),
 						);
-						Some(PackageTemplate::build_package(
+						Some(ClaimRequest::new(
 							commitment_txid,
 							transaction_output_index,
 							htlc_data,
@@ -5009,13 +5009,13 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			.collect()
 	}
 
-	/// Returns the HTLC claim package templates and the counterparty output info
+	/// Returns the HTLC claim requests and the counterparty output info.
 	fn get_counterparty_output_claim_info(
 		&self, funding_spent: &FundingScope, commitment_number: u64, commitment_txid: Txid,
 		tx: &Transaction,
 		per_commitment_claimable_data: &[(HTLCOutputInCommitment, Option<Box<HTLCSource>>)],
 		confirmation_height: Option<u32>,
-	) -> (Vec<PackageTemplate>, CommitmentTxCounterpartyOutputInfo) {
+	) -> (Vec<ClaimRequest>, CommitmentTxCounterpartyOutputInfo) {
 		let mut claimable_outpoints = Vec::new();
 		let mut to_counterparty_output_info: CommitmentTxCounterpartyOutputInfo = None;
 
@@ -5086,7 +5086,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 							),
 						)
 					};
-					let counterparty_package = PackageTemplate::build_package(
+					let counterparty_package = ClaimRequest::new(
 						commitment_txid,
 						transaction_output_index,
 						counterparty_htlc_outp,
@@ -5104,7 +5104,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	#[rustfmt::skip]
 	fn check_spend_counterparty_htlc<L: Logger>(
 		&mut self, tx: &Transaction, commitment_number: u64, commitment_txid: &Txid, height: u32, logger: &L
-	) -> (Vec<PackageTemplate>, Option<TransactionOutputs>) {
+	) -> (Vec<ClaimRequest>, Option<TransactionOutputs>) {
 		let secret = if let Some(secret) = self.get_secret(commitment_number) { secret } else { return (Vec::new(), None); };
 		let per_commitment_key = match SecretKey::from_slice(&secret) {
 			Ok(key) => key,
@@ -5135,7 +5135,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					per_commitment_point, per_commitment_key, tx.output[idx].value,
 					self.funding.channel_parameters.clone(), height,
 				);
-				let justice_package = PackageTemplate::build_package(
+				let justice_package = ClaimRequest::new(
 					htlc_txid, idx as u32, PackageSolvingData::RevokedOutput(revk_outp),
 					height + self.counterparty_commitment_params.on_counterparty_tx_csv as u32,
 				);
@@ -5187,13 +5187,14 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		htlcs
 	}
 
-	// Returns (1) `PackageTemplate`s that can be given to the OnchainTxHandler, so that the handler can
-	// broadcast transactions claiming holder HTLC commitment outputs and (2) a holder revokable
-	// script so we can detect whether a holder transaction has been seen on-chain.
+	// Returns (1) `ClaimRequest`s that can be given to the OnchainTxHandler, so that the
+	// handler can broadcast transactions claiming holder HTLC commitment outputs and (2) a
+	// holder revokable script so we can detect whether a holder transaction has been seen
+	// on-chain.
 	#[rustfmt::skip]
 	fn get_broadcasted_holder_claims(
 		&self, funding: &FundingScope, holder_tx: &HolderCommitmentTransaction, conf_height: u32,
-	) -> (Vec<PackageTemplate>, Option<(ScriptBuf, PublicKey, RevocationKey)>) {
+	) -> (Vec<ClaimRequest>, Option<(ScriptBuf, PublicKey, RevocationKey)>) {
 		let tx = holder_tx.trust();
 		let keys = tx.keys();
 		let redeem_script = chan_utils::get_revokeable_redeemscript(
@@ -5212,7 +5213,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				};
 				let transaction_output_index = htlc_descriptor.htlc.transaction_output_index
 					.expect("Expected transaction output index for non-dust HTLC");
-				PackageTemplate::build_package(
+				ClaimRequest::new(
 					tx.txid(), transaction_output_index,
 					PackageSolvingData::HolderHTLCOutput(HolderHTLCOutput::build(htlc_descriptor, conf_height)),
 					counterparty_spendable_height,
@@ -5248,7 +5249,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	fn check_spend_holder_transaction<L: Logger>(
 		&mut self, commitment_txid: Txid, commitment_tx: &Transaction, height: u32,
 		block_hash: &BlockHash, logger: &L,
-	) -> Option<(Vec<PackageTemplate>, TransactionOutputs)> {
+	) -> Option<(Vec<ClaimRequest>, TransactionOutputs)> {
 		let funding_spent = get_confirmed_funding_scope!(self);
 
 		// HTLCs set may differ between last and previous holder commitment txn, in case of one them hitting chain, ensure we cancel all HTLCs backward
@@ -5759,7 +5760,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		conf_hash: BlockHash,
 		txn_matched: Vec<&Transaction>,
 		mut watch_outputs: Vec<TransactionOutputs>,
-		mut claimable_outpoints: Vec<PackageTemplate>,
+		mut claimable_outpoints: Vec<ClaimRequest>,
 		broadcaster: &B,
 		fee_estimator: &LowerBoundedFeeEstimator<F>,
 		logger: &WithContext<L>,

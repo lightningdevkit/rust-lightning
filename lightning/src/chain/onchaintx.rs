@@ -27,7 +27,7 @@ use crate::chain::chaininterface::{
 	BroadcasterInterface, FeeEstimator, LowerBoundedFeeEstimator, TransactionType,
 };
 use crate::chain::channelmonitor::ANTI_REORG_DELAY;
-use crate::chain::package::{PackageSolvingData, PackageTemplate};
+use crate::chain::package::{ClaimRequest, PackageSolvingData, PackageTemplate};
 use crate::chain::transaction::MaybeSignedTransaction;
 use crate::chain::ClaimId;
 use crate::ln::chan_utils::{
@@ -791,7 +791,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 	/// `cur_height`, however it must never be higher than `cur_height`.
 	#[rustfmt::skip]
 	pub(super) fn update_claims_view_from_requests<B: BroadcasterInterface, F: FeeEstimator, L: Logger>(
-		&mut self, mut requests: Vec<PackageTemplate>, conf_height: u32, cur_height: u32,
+		&mut self, mut requests: Vec<ClaimRequest>, conf_height: u32, cur_height: u32,
 		broadcaster: &B, conf_target: ConfirmationTarget, destination_script: &Script,
 		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
 	) {
@@ -801,33 +801,26 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 
 		// First drop any duplicate claims.
 		requests.retain(|req| {
-			debug_assert_eq!(
-				req.outpoints().len(),
-				1,
-				"Claims passed to `update_claims_view_from_requests` should not be aggregated"
-			);
-			let mut all_outpoints_claiming = true;
-			for outpoint in req.outpoints() {
-				if self.claimable_outpoints.get(outpoint).is_none() {
-					all_outpoints_claiming = false;
-				}
-			}
-			if all_outpoints_claiming {
+			let outpoint = req.outpoint();
+			if self.claimable_outpoints.get(outpoint).is_some() {
 				log_info!(logger, "Ignoring second claim for outpoint {}:{}, already registered its claiming request",
-					req.outpoints()[0].txid, req.outpoints()[0].vout);
+					outpoint.txid, outpoint.vout);
 				false
 			} else {
 				let timelocked_equivalent_package = self.locktimed_packages.iter().map(|v| v.1.iter()).flatten()
-					.find(|locked_package| locked_package.outpoints() == req.outpoints());
+					.find(|locked_package| locked_package.outpoints().len() == 1 && locked_package.contains_outpoint(outpoint));
 				if let Some(package) = timelocked_equivalent_package {
 					log_info!(logger, "Ignoring second claim for outpoint {}:{}, we already have one which we're waiting on a timelock at {} for.",
-						req.outpoints()[0].txid, req.outpoints()[0].vout, package.package_locktime(cur_height));
+						outpoint.txid, outpoint.vout, package.package_locktime(cur_height));
 					false
 				} else {
 					true
 				}
 			}
 		});
+		let mut requests = requests.into_iter()
+			.map(ClaimRequest::into_package_template)
+			.collect::<Vec<_>>();
 
 		// Then try to maximally aggregate `requests`.
 		for i in (1..requests.len()).rev() {
@@ -1290,7 +1283,7 @@ mod tests {
 	use types::features::ChannelTypeFeatures;
 
 	use crate::chain::chaininterface::{ConfirmationTarget, LowerBoundedFeeEstimator};
-	use crate::chain::package::{HolderHTLCOutput, PackageSolvingData, PackageTemplate};
+	use crate::chain::package::{ClaimRequest, HolderHTLCOutput, PackageSolvingData};
 	use crate::chain::transaction::OutPoint;
 	use crate::ln::chan_utils::{
 		ChannelPublicKeys, ChannelTransactionParameters, CounterpartyChannelTransactionParameters,
@@ -1412,7 +1405,7 @@ mod tests {
 		let holder_commit_txid = holder_commit.trust().txid();
 		let mut requests = Vec::new();
 		for (htlc, counterparty_sig) in holder_commit.nondust_htlcs().iter().zip(holder_commit.counterparty_htlc_sigs.iter()) {
-			requests.push(PackageTemplate::build_package(
+			requests.push(ClaimRequest::new(
 				holder_commit_txid,
 				htlc.transaction_output_index.unwrap(),
 				PackageSolvingData::HolderHTLCOutput(HolderHTLCOutput::build(HTLCDescriptor {
