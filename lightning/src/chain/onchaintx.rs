@@ -576,6 +576,16 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 		self.pending_claim_requests.len() != 0
 	}
 
+	fn is_outpoint_spend_waiting_threshold_conf(&self, outpoint: &BitcoinOutPoint) -> bool {
+		self.onchain_events_awaiting_threshold_conf.iter().any(|entry| {
+			if let OnchainEvent::ContentiousOutpoint { ref package } = entry.event {
+				package.contains_outpoint(outpoint)
+			} else {
+				false
+			}
+		})
+	}
+
 	/// Lightning security model (i.e being able to redeem/timeout HTLC or penalize counterparty
 	/// onchain) lays on the assumption of claim transactions getting confirmed before timelock
 	/// expiration (CSV or CLTV following cases). In case of high-fee spikes, claim tx may get stuck
@@ -802,7 +812,15 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 		// First drop any duplicate claims.
 		requests.retain(|req| {
 			let outpoint = req.outpoint();
-			if self.claimable_outpoints.get(outpoint).is_some() {
+			if self.is_outpoint_spend_waiting_threshold_conf(outpoint) {
+				// This is a package-layer guard. ChannelMonitor filters regenerated
+				// HTLC claims using HTLC resolution state, while this keeps outpoints
+				// split from an existing package from being re-added during the reorg
+				// window.
+				log_info!(logger, "Ignoring claim for outpoint {}:{}, it is already spent by a transaction awaiting anti-reorg finality",
+					outpoint.txid, outpoint.vout);
+				false
+			} else if self.claimable_outpoints.get(outpoint).is_some() {
 				log_info!(logger, "Ignoring second claim for outpoint {}:{}, already registered its claiming request",
 					outpoint.txid, outpoint.vout);
 				false
@@ -1276,11 +1294,14 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 
 #[cfg(test)]
 mod tests {
-	use bitcoin::hash_types::Txid;
+	use bitcoin::hash_types::{BlockHash, Txid};
 	use bitcoin::hashes::sha256::Hash as Sha256;
 	use bitcoin::hashes::Hash;
+	use bitcoin::locktime::absolute::LockTime;
+	use bitcoin::transaction::{OutPoint as BitcoinOutPoint, Version};
 	use bitcoin::Network;
-	use bitcoin::{key::Secp256k1, secp256k1::PublicKey, secp256k1::SecretKey, ScriptBuf};
+	use bitcoin::{key::Secp256k1, secp256k1::PublicKey, secp256k1::SecretKey};
+	use bitcoin::{Amount, ScriptBuf, Transaction, TxIn, TxOut};
 	use types::features::ChannelTypeFeatures;
 
 	use crate::chain::chaininterface::{ConfirmationTarget, LowerBoundedFeeEstimator};
@@ -1402,6 +1423,18 @@ mod tests {
 			));
 		}
 		requests
+	}
+
+	fn locked_outpoints(
+		tx_handler: &OnchainTxHandler<InMemorySigner>, locktime: u32,
+	) -> Vec<BitcoinOutPoint> {
+		tx_handler
+			.locktimed_packages
+			.get(&locktime)
+			.into_iter()
+			.flat_map(|packages| packages.iter())
+			.flat_map(|package| package.outpoints().into_iter().map(|outpoint| *outpoint))
+			.collect()
 	}
 
 	// Test that all claims with locktime equal to or less than the current height are broadcast
@@ -1568,5 +1601,106 @@ mod tests {
 			},
 			_ => panic!("expected a single HTLC bump event"),
 		}
+	}
+
+	#[test]
+	fn test_replayed_claim_ignored_for_pending_spent_outpoint() {
+		let claim_height = 21;
+		let spend_height = 22;
+		let locktime = 42;
+		let mut nondust_htlcs = Vec::new();
+		for i in 0..2 {
+			let preimage = PaymentPreimage([i + 1; 32]);
+			let hash = PaymentHash(Sha256::hash(&preimage.0[..]).to_byte_array());
+			nondust_htlcs.push(HTLCOutputInCommitment {
+				offered: true,
+				amount_msat: 10000,
+				cltv_expiry: locktime,
+				payment_hash: hash,
+				transaction_output_index: Some(i as u32),
+			});
+		}
+
+		let mut tx_handler = new_test_tx_handler(
+			ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(),
+			nondust_htlcs,
+		);
+		let requests = build_offered_holder_htlc_requests(&tx_handler);
+		let spent_outpoint = *requests[0].outpoint();
+		let still_delayed_outpoint = *requests[1].outpoint();
+		let destination_script = ScriptBuf::new();
+		let broadcaster = TestBroadcaster::new(Network::Testnet);
+		let fee_estimator = TestFeeEstimator::new(253);
+		let fee_estimator = LowerBoundedFeeEstimator::new(&fee_estimator);
+		let logger = TestLogger::new();
+
+		// Register both holder HTLC claims as one delayed package before any
+		// individual outpoint spends are observed.
+		tx_handler.update_claims_view_from_requests(
+			requests.clone(),
+			claim_height,
+			claim_height,
+			&&broadcaster,
+			ConfirmationTarget::UrgentOnChainSweep,
+			&destination_script,
+			&fee_estimator,
+			&logger,
+		);
+		assert_eq!(locked_outpoints(&tx_handler, locktime).len(), 2);
+
+		// Spend one outpoint before the package reaches its timelock. The handler
+		// should split it into a ContentiousOutpoint until the spend reaches
+		// anti-reorg finality.
+		let spend_tx = Transaction {
+			version: Version::TWO,
+			lock_time: LockTime::ZERO,
+			input: vec![TxIn { previous_output: spent_outpoint, ..Default::default() }],
+			output: vec![TxOut { value: Amount::from_sat(1000), script_pubkey: ScriptBuf::new() }],
+		};
+		tx_handler.update_claims_view_from_matched_txn(
+			&[&spend_tx],
+			spend_height,
+			BlockHash::all_zeros(),
+			spend_height,
+			&&broadcaster,
+			ConfirmationTarget::UrgentOnChainSweep,
+			&destination_script,
+			&fee_estimator,
+			&logger,
+		);
+		let locked = locked_outpoints(&tx_handler, locktime);
+		assert_eq!(locked, vec![still_delayed_outpoint]);
+
+		// Replaying both original claim requests during that window must not
+		// re-add the already-spent outpoint to the delayed package.
+		tx_handler.update_claims_view_from_requests(
+			requests,
+			spend_height,
+			spend_height,
+			&&broadcaster,
+			ConfirmationTarget::UrgentOnChainSweep,
+			&destination_script,
+			&fee_estimator,
+			&logger,
+		);
+		let locked = locked_outpoints(&tx_handler, locktime);
+		assert_eq!(locked, vec![still_delayed_outpoint]);
+		assert!(tx_handler.pending_claim_requests.is_empty());
+		assert!(tx_handler.claimable_outpoints.is_empty());
+
+		// If the spend reorgs out, the contentious outpoint is resurrected into
+		// the delayed package.
+		tx_handler.blocks_disconnected(
+			spend_height - 1,
+			&&broadcaster,
+			ConfirmationTarget::UrgentOnChainSweep,
+			&destination_script,
+			&fee_estimator,
+			&logger,
+		);
+		let locked = locked_outpoints(&tx_handler, locktime);
+		assert_eq!(locked.len(), 2);
+		assert!(locked.contains(&spent_outpoint));
+		assert!(locked.contains(&still_delayed_outpoint));
 	}
 }
