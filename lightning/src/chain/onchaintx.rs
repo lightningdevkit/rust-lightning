@@ -1298,12 +1298,9 @@ mod tests {
 
 	use super::OnchainTxHandler;
 
-	// Test that all claims with locktime equal to or less than the current height are broadcast
-	// immediately while claims with locktime greater than the current height are only broadcast
-	// once the locktime is reached.
-	#[test]
-	#[rustfmt::skip]
-	fn test_broadcast_height() {
+	fn new_test_tx_handler(
+		channel_type_features: ChannelTypeFeatures, nondust_htlcs: Vec<HTLCOutputInCommitment>,
+	) -> OnchainTxHandler<InMemorySigner> {
 		let secp_ctx = Secp256k1::new();
 		let signer = InMemorySigner::new(
 			SecretKey::from_slice(&[41; 32]).unwrap(),
@@ -1340,9 +1337,6 @@ mod tests {
 			)),
 		};
 		let funding_outpoint = OutPoint { txid: Txid::all_zeros(), index: u16::MAX };
-
-		// Use non-anchor channels so that HTLC-Timeouts are broadcast immediately instead of sent
-		// to the user for external funding.
 		let chan_params = ChannelTransactionParameters {
 			holder_pubkeys: signer.pubkeys(&secp_ctx),
 			holder_selected_contest_delay: 66,
@@ -1353,40 +1347,84 @@ mod tests {
 			}),
 			funding_outpoint: Some(funding_outpoint),
 			splice_parent_funding_txid: None,
-			channel_type_features: ChannelTypeFeatures::only_static_remote_key(),
+			channel_type_features,
 			channel_value_satoshis: 0,
 		};
+		let holder_commit =
+			HolderCommitmentTransaction::dummy(1000000, funding_outpoint, nondust_htlcs);
+		let counterparty_node_id = PublicKey::from_slice(&[2; 33]).unwrap();
+		OnchainTxHandler::new(
+			ChannelId::from_bytes([0; 32]),
+			counterparty_node_id,
+			1000000,
+			[0; 32],
+			ScriptBuf::new(),
+			signer,
+			chan_params,
+			holder_commit,
+			secp_ctx,
+		)
+	}
 
+	fn build_offered_holder_htlc_requests(
+		tx_handler: &OnchainTxHandler<InMemorySigner>,
+	) -> Vec<ClaimRequest> {
+		let holder_commit = tx_handler.current_holder_commitment_tx();
+		let holder_commit_txid = holder_commit.trust().txid();
+		let mut requests = Vec::new();
+		for (htlc, counterparty_sig) in
+			holder_commit.nondust_htlcs().iter().zip(holder_commit.counterparty_htlc_sigs.iter())
+		{
+			requests.push(ClaimRequest::new(
+				holder_commit_txid,
+				htlc.transaction_output_index.unwrap(),
+				PackageSolvingData::HolderHTLCOutput(HolderHTLCOutput::build(
+					HTLCDescriptor {
+						channel_derivation_parameters: ChannelDerivationParameters {
+							value_satoshis: tx_handler.channel_value_satoshis,
+							keys_id: tx_handler.channel_keys_id,
+							transaction_parameters: tx_handler
+								.channel_transaction_parameters
+								.clone(),
+						},
+						commitment_txid: holder_commit_txid,
+						per_commitment_number: holder_commit.commitment_number(),
+						per_commitment_point: holder_commit.per_commitment_point(),
+						feerate_per_kw: holder_commit.negotiated_feerate_per_kw(),
+						htlc: htlc.clone(),
+						preimage: None,
+						counterparty_sig: *counterparty_sig,
+					},
+					0,
+				)),
+				0,
+			));
+		}
+		requests
+	}
+
+	// Test that all claims with locktime equal to or less than the current height are broadcast
+	// immediately while claims with locktime greater than the current height are only broadcast
+	// once the locktime is reached.
+	#[test]
+	fn test_broadcast_height() {
 		// Create an OnchainTxHandler for a commitment containing HTLCs with CLTV expiries of 0, 1,
 		// and 2 blocks.
 		let mut nondust_htlcs = Vec::new();
 		for i in 0..3 {
 			let preimage = PaymentPreimage([i; 32]);
 			let hash = PaymentHash(Sha256::hash(&preimage.0[..]).to_byte_array());
-			nondust_htlcs.push(
-				HTLCOutputInCommitment {
-					offered: true,
-					amount_msat: 10000,
-					cltv_expiry: i as u32,
-					payment_hash: hash,
-					transaction_output_index: Some(i as u32),
-				}
-			);
+			nondust_htlcs.push(HTLCOutputInCommitment {
+				offered: true,
+				amount_msat: 10000,
+				cltv_expiry: i as u32,
+				payment_hash: hash,
+				transaction_output_index: Some(i as u32),
+			});
 		}
-		let holder_commit = HolderCommitmentTransaction::dummy(1000000, funding_outpoint, nondust_htlcs);
 		let destination_script = ScriptBuf::new();
-		let counterparty_node_id = PublicKey::from_slice(&[2; 33]).unwrap();
-		let mut tx_handler = OnchainTxHandler::new(
-			ChannelId::from_bytes([0; 32]),
-			counterparty_node_id,
-			1000000,
-			[0; 32],
-			destination_script.clone(),
-			signer,
-			chan_params,
-			holder_commit,
-			secp_ctx,
-		);
+		let mut tx_handler =
+			new_test_tx_handler(ChannelTypeFeatures::only_static_remote_key(), nondust_htlcs);
 
 		// Create a broadcaster with current block height 1.
 		let broadcaster = TestBroadcaster::new(Network::Testnet);
@@ -1401,32 +1439,7 @@ mod tests {
 		let logger = TestLogger::new();
 
 		// Request claiming of each HTLC on the holder's commitment, with current block height 1.
-		let holder_commit = tx_handler.current_holder_commitment_tx();
-		let holder_commit_txid = holder_commit.trust().txid();
-		let mut requests = Vec::new();
-		for (htlc, counterparty_sig) in holder_commit.nondust_htlcs().iter().zip(holder_commit.counterparty_htlc_sigs.iter()) {
-			requests.push(ClaimRequest::new(
-				holder_commit_txid,
-				htlc.transaction_output_index.unwrap(),
-				PackageSolvingData::HolderHTLCOutput(HolderHTLCOutput::build(HTLCDescriptor {
-						channel_derivation_parameters: ChannelDerivationParameters {
-							value_satoshis: tx_handler.channel_value_satoshis,
-							keys_id: tx_handler.channel_keys_id,
-							transaction_parameters: tx_handler.channel_transaction_parameters.clone(),
-						},
-						commitment_txid: holder_commit_txid,
-						per_commitment_number: holder_commit.commitment_number(),
-						per_commitment_point: holder_commit.per_commitment_point(),
-						feerate_per_kw: holder_commit.negotiated_feerate_per_kw(),
-						htlc: htlc.clone(),
-						preimage: None,
-						counterparty_sig: *counterparty_sig,
-					},
-					0
-				)),
-				0,
-			));
-		}
+		let requests = build_offered_holder_htlc_requests(&tx_handler);
 		tx_handler.update_claims_view_from_requests(
 			requests,
 			1,
