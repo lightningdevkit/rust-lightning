@@ -2061,7 +2061,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 	make_channel(&nodes[1], &nodes[2], 6, false, false, &mut chain_state);
 
 	// Wipe the transactions-broadcasted set to make sure we don't broadcast any transactions
-	// during normal operation in `test_return`.
+	// during normal operation after setup.
 	nodes[0].broadcaster.txn_broadcasted.borrow_mut().clear();
 	nodes[1].broadcaster.txn_broadcasted.borrow_mut().clear();
 	nodes[2].broadcaster.txn_broadcasted.borrow_mut().clear();
@@ -2096,26 +2096,8 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 		node.serialized_manager = node.encode();
 	}
 
-	macro_rules! test_return {
-		() => {{
-			assert_test_invariants(&nodes);
-			return;
-		}};
-	}
-
-	let mut read_pos = 1; // First byte was consumed for initial config (persistence styles + chan_type)
-	macro_rules! get_slice {
-		($len: expr) => {{
-			let slice_len = $len as usize;
-			if data.len() < read_pos + slice_len {
-				test_return!();
-			}
-			read_pos += slice_len;
-			&data[read_pos - slice_len..read_pos]
-		}};
-	}
-
-	loop {
+	let mut read_pos = 1; // First byte was consumed for initial config.
+	'fuzz_loop: loop {
 		// While delivering messages, we select across three possible message selection processes
 		// to ensure we get as much coverage as possible. See the individual enum variants for more
 		// details.
@@ -2495,7 +2477,11 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 			}};
 		}
 
-		let v = get_slice!(1)[0];
+		if data.len() < read_pos + 1 {
+			break 'fuzz_loop;
+		}
+		let v = data[read_pos];
+		read_pos += 1;
 		out.locked_write(format!("READ A BYTE! HANDLING INPUT {:x}...........\n", v).as_bytes());
 		match v {
 			// In general, we keep related message groups close together in binary form, allowing
@@ -2674,28 +2660,28 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 
 			0xa0 => {
 				if !cfg!(splicing) {
-					test_return!();
+					break 'fuzz_loop;
 				}
 				let cp_node_id = nodes[1].get_our_node_id();
 				nodes[0].splice_in(&cp_node_id, &chan_a_id);
 			},
 			0xa1 => {
 				if !cfg!(splicing) {
-					test_return!();
+					break 'fuzz_loop;
 				}
 				let cp_node_id = nodes[0].get_our_node_id();
 				nodes[1].splice_in(&cp_node_id, &chan_a_id);
 			},
 			0xa2 => {
 				if !cfg!(splicing) {
-					test_return!();
+					break 'fuzz_loop;
 				}
 				let cp_node_id = nodes[2].get_our_node_id();
 				nodes[1].splice_in(&cp_node_id, &chan_b_id);
 			},
 			0xa3 => {
 				if !cfg!(splicing) {
-					test_return!();
+					break 'fuzz_loop;
 				}
 				let cp_node_id = nodes[1].get_our_node_id();
 				nodes[2].splice_in(&cp_node_id, &chan_b_id);
@@ -2703,28 +2689,28 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 
 			0xa4 => {
 				if !cfg!(splicing) {
-					test_return!();
+					break 'fuzz_loop;
 				}
 				let cp_node_id = nodes[1].get_our_node_id();
 				nodes[0].splice_out(&cp_node_id, &chan_a_id);
 			},
 			0xa5 => {
 				if !cfg!(splicing) {
-					test_return!();
+					break 'fuzz_loop;
 				}
 				let cp_node_id = nodes[0].get_our_node_id();
 				nodes[1].splice_out(&cp_node_id, &chan_a_id);
 			},
 			0xa6 => {
 				if !cfg!(splicing) {
-					test_return!();
+					break 'fuzz_loop;
 				}
 				let cp_node_id = nodes[2].get_our_node_id();
 				nodes[1].splice_out(&cp_node_id, &chan_b_id);
 			},
 			0xa7 => {
 				if !cfg!(splicing) {
-					test_return!();
+					break 'fuzz_loop;
 				}
 				let cp_node_id = nodes[1].get_our_node_id();
 				nodes[2].splice_out(&cp_node_id, &chan_b_id);
@@ -2934,13 +2920,14 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 				nodes[1].record_last_htlc_clear_fee();
 				nodes[2].record_last_htlc_clear_fee();
 			},
-			_ => test_return!(),
+			_ => break 'fuzz_loop,
 		}
 
 		for node in &mut nodes {
 			node.refresh_serialized_manager();
 		}
 	}
+	assert_test_invariants(&nodes);
 }
 
 pub fn chanmon_consistency_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
