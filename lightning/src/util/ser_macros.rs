@@ -80,7 +80,7 @@ macro_rules! _encode_tlv {
 	($stream: expr, $type: expr, $field: expr, upgradable_option $(, $self: ident)?) => {
 		$crate::_encode_tlv!($stream, $type, $field, option);
 	};
-	($stream: expr, $type: expr, $field: expr, (option, encoding: ($fieldty: ty, $encoding: ident) $(, $self: ident)?)) => {
+	($stream: expr, $type: expr, $field: expr, (option, encoding: ($fieldty: ty, $encoding: ident)) $(, $self: ident)?) => {
 		$crate::_encode_tlv!($stream, $type, $field.as_ref().map(|f| $encoding(f)), option);
 	};
 	($stream: expr, $type: expr, $field: expr, (option, encoding: $fieldty: ty) $(, $self: ident)?) => {
