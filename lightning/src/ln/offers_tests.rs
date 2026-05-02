@@ -2667,3 +2667,144 @@ fn creates_and_pays_for_phantom_offer() {
 		assert!(nodes[0].onion_messenger.next_onion_message_for_peer(node_c_id).is_none());
 	}
 }
+
+/// Checks that a BOLT 12 invoice can be paid via [`ChannelManager::pay_for_bolt12_invoice`]
+/// without requiring a prior LDK-managed payment request.
+#[test]
+fn pay_for_bolt12_invoice_with_fresh_payment_id() {
+	let mut manually_pay_cfg = test_default_channel_config();
+	manually_pay_cfg.manually_handle_bolt12_invoices = true;
+
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(manually_pay_cfg)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000);
+
+	let alice = &nodes[0];
+	let alice_id = alice.node.get_our_node_id();
+	let bob = &nodes[1];
+	let bob_id = bob.node.get_our_node_id();
+
+	let offer = alice.node
+		.create_offer_builder().unwrap()
+		.amount_msats(10_000_000)
+		.build().unwrap();
+
+	// Use the standard offer flow to obtain an invoice, but pay it via the new API with a
+	// fresh payment_id rather than the one from the original request.
+	let orig_payment_id = PaymentId([1; 32]);
+	bob.node.pay_for_offer(&offer, None, orig_payment_id, Default::default()).unwrap();
+
+	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
+	alice.onion_messenger.handle_onion_message(bob_id, &onion_message);
+
+	let (invoice_request, _) = extract_invoice_request(alice, &onion_message);
+	let payment_context = PaymentContext::Bolt12Offer(Bolt12OfferContext {
+		offer_id: offer.id(),
+		invoice_request: InvoiceRequestFields {
+			payer_signing_pubkey: invoice_request.payer_signing_pubkey(),
+			quantity: None,
+			payer_note_truncated: None,
+			human_readable_name: None,
+		},
+	});
+
+	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
+	bob.onion_messenger.handle_onion_message(alice_id, &onion_message);
+
+	let invoice = match get_event!(bob, Event::InvoiceReceived) {
+		Event::InvoiceReceived { invoice, .. } => invoice,
+		_ => panic!("Expected InvoiceReceived"),
+	};
+
+	// Abandon the original payment since we're paying via a fresh payment_id below.
+	bob.node.abandon_payment(orig_payment_id);
+	get_event!(bob, Event::PaymentFailed);
+
+	let payment_id = PaymentId([2; 32]);
+	bob.node.pay_for_bolt12_invoice(&invoice, payment_id, None, Default::default()).unwrap();
+	expect_recent_payment!(bob, RecentPaymentDetails::Pending, payment_id);
+
+	route_bolt12_payment(bob, &[alice], &invoice);
+	claim_bolt12_payment(bob, &[alice], payment_context, &invoice);
+	expect_recent_payment!(bob, RecentPaymentDetails::Fulfilled, payment_id);
+}
+
+/// Checks error cases for [`ChannelManager::pay_for_bolt12_invoice`]:
+/// overpaying returns [`Bolt12PaymentError::InvalidAmount`] and re-using a payment_id
+/// returns [`Bolt12PaymentError::DuplicateInvoice`].
+#[test]
+fn pay_for_bolt12_invoice_error_cases() {
+	let mut manually_pay_cfg = test_default_channel_config();
+	manually_pay_cfg.manually_handle_bolt12_invoices = true;
+
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(manually_pay_cfg)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000);
+
+	let alice = &nodes[0];
+	let alice_id = alice.node.get_our_node_id();
+	let bob = &nodes[1];
+	let bob_id = bob.node.get_our_node_id();
+
+	let offer = alice.node
+		.create_offer_builder().unwrap()
+		.amount_msats(10_000_000)
+		.build().unwrap();
+
+	let orig_payment_id = PaymentId([1; 32]);
+	bob.node.pay_for_offer(&offer, None, orig_payment_id, Default::default()).unwrap();
+
+	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
+	alice.onion_messenger.handle_onion_message(bob_id, &onion_message);
+
+	let (invoice_request, _) = extract_invoice_request(alice, &onion_message);
+	let payment_context = PaymentContext::Bolt12Offer(Bolt12OfferContext {
+		offer_id: offer.id(),
+		invoice_request: InvoiceRequestFields {
+			payer_signing_pubkey: invoice_request.payer_signing_pubkey(),
+			quantity: None,
+			payer_note_truncated: None,
+			human_readable_name: None,
+		},
+	});
+
+	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
+	bob.onion_messenger.handle_onion_message(alice_id, &onion_message);
+
+	let invoice = match get_event!(bob, Event::InvoiceReceived) {
+		Event::InvoiceReceived { invoice, .. } => invoice,
+		_ => panic!("Expected InvoiceReceived"),
+	};
+
+	bob.node.abandon_payment(orig_payment_id);
+	get_event!(bob, Event::PaymentFailed);
+
+	let payment_id = PaymentId([2; 32]);
+
+	// Overpaying is rejected before any state is inserted.
+	assert_eq!(
+		bob.node.pay_for_bolt12_invoice(
+			&invoice, payment_id, Some(invoice.amount_msats() + 1), Default::default()
+		),
+		Err(Bolt12PaymentError::InvalidAmount),
+	);
+
+	// First call succeeds and starts the payment.
+	bob.node.pay_for_bolt12_invoice(&invoice, payment_id, None, Default::default()).unwrap();
+
+	// Re-using the same payment_id is rejected.
+	assert_eq!(
+		bob.node.pay_for_bolt12_invoice(&invoice, payment_id, None, Default::default()),
+		Err(Bolt12PaymentError::DuplicateInvoice),
+	);
+
+	route_bolt12_payment(bob, &[alice], &invoice);
+	claim_bolt12_payment(bob, &[alice], payment_context, &invoice);
+	expect_recent_payment!(bob, RecentPaymentDetails::Fulfilled, payment_id);
+}
