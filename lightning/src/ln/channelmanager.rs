@@ -5896,7 +5896,7 @@ impl<
 	/// recipient can correctly validate the payment.
 	///
 	/// Returns [`Bolt12PaymentError::DuplicateInvoice`] if a payment with the given `payment_id`
-	/// is already pending, or [`Bolt12PaymentError::InvalidAmount`] if `amount_msats` exceeds the
+	/// is already pending, or [`Bolt12PaymentError::InvalidAmount`] if `amount_msats` is zero or exceeds the
 	/// invoice amount.
 	///
 	/// Either [`Event::PaymentSent`] or [`Event::PaymentFailed`] will be generated once the

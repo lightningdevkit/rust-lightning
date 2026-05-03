@@ -659,7 +659,7 @@ pub enum Bolt12PaymentError {
 	UnknownRequiredFeatures,
 	/// Incorrect amount was provided to [`ChannelManager::pay_for_bolt12_invoice`].
 	///
-	/// This occurs when `amount_msats` exceeds the invoice amount.
+	/// This occurs when `amount_msats` is zero or exceeds the invoice amount.
 	///
 	/// [`ChannelManager::pay_for_bolt12_invoice`]: crate::ln::channelmanager::ChannelManager::pay_for_bolt12_invoice
 	InvalidAmount,

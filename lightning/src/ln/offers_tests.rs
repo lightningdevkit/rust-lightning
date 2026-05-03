@@ -2760,10 +2760,10 @@ fn pay_for_bolt12_invoice_error_cases() {
 	let orig_payment_id = PaymentId([1; 32]);
 	bob.node.pay_for_offer(&offer, None, orig_payment_id, Default::default()).unwrap();
 
-	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
-	alice.onion_messenger.handle_onion_message(bob_id, &onion_message);
+	let invoice_request_onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
+	alice.onion_messenger.handle_onion_message(bob_id, &invoice_request_onion_message);
 
-	let (invoice_request, _) = extract_invoice_request(alice, &onion_message);
+	let (invoice_request, _) = extract_invoice_request(alice, &invoice_request_onion_message);
 	let payment_context = PaymentContext::Bolt12Offer(Bolt12OfferContext {
 		offer_id: offer.id(),
 		invoice_request: InvoiceRequestFields {
@@ -2808,6 +2808,31 @@ fn pay_for_bolt12_invoice_error_cases() {
 	assert_eq!(
 		bob.node.pay_for_bolt12_invoice(&invoice, payment_id, None, Default::default()),
 		Err(Bolt12PaymentError::DuplicateInvoice),
+	);
+
+	// Creating an invoice with unknown required features should be rejected.
+	let expanded_key = alice.keys_manager.get_expanded_key();
+	let secp_ctx = Secp256k1::new();
+	let created_at = alice.node.duration_since_epoch();
+	let nonce = extract_offer_nonce(alice, &invoice_request_onion_message);
+	let verified_invoice_request = invoice_request
+		.verify_using_recipient_data(nonce, &expanded_key, &secp_ctx).unwrap();
+
+	let unknown_features_invoice = match verified_invoice_request {
+		InvoiceRequestVerifiedFromOffer::DerivedKeys(request) => {
+			request.respond_using_derived_keys_no_std(invoice.payment_paths().to_vec(), invoice.payment_hash(), created_at).unwrap()
+				.features_unchecked(Bolt12InvoiceFeatures::unknown())
+				.build_and_sign(&secp_ctx).unwrap()
+		},
+		InvoiceRequestVerifiedFromOffer::ExplicitKeys(_) => {
+			panic!("Expected invoice request with keys");
+		},
+	};
+
+	let unknown_features_payment_id = PaymentId([3; 32]);
+	assert_eq!(
+		bob.node.pay_for_bolt12_invoice(&unknown_features_invoice, unknown_features_payment_id, None, Default::default()),
+		Err(Bolt12PaymentError::UnknownRequiredFeatures),
 	);
 
 	route_bolt12_payment(bob, &[alice], &invoice);
