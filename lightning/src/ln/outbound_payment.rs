@@ -1157,7 +1157,7 @@ impl OutboundPayments {
 		let invoice_amount = invoice.amount_msats();
 		let send_amount = amount_msats.unwrap_or(invoice_amount);
 
-		if send_amount > invoice_amount {
+		if send_amount == 0 || send_amount > invoice_amount {
 			return Err(Bolt12PaymentError::InvalidAmount);
 		}
 

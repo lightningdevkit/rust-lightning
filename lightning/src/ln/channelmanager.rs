@@ -17131,6 +17131,7 @@ impl<
 						InvoiceError::from_string(err_msg.to_string())
 					},
 					Err(Bolt12PaymentError::InvalidAmount) => {
+						debug_assert!(false, "Got InvalidAmount paying internally-sourced invoice; this shouldn't happen");
 						log_error!($logger, "Got InvalidAmount paying internally-sourced invoice; this shouldn't happen");
 						return None
 					},

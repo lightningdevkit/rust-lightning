@@ -2733,8 +2733,8 @@ fn pay_for_bolt12_invoice_with_fresh_payment_id() {
 }
 
 /// Checks error cases for [`ChannelManager::pay_for_bolt12_invoice`]:
-/// overpaying returns [`Bolt12PaymentError::InvalidAmount`] and re-using a payment_id
-/// returns [`Bolt12PaymentError::DuplicateInvoice`].
+/// zero amount and overpaying return [`Bolt12PaymentError::InvalidAmount`], re-using a
+/// payment_id returns [`Bolt12PaymentError::DuplicateInvoice`].
 #[test]
 fn pay_for_bolt12_invoice_error_cases() {
 	let mut manually_pay_cfg = test_default_channel_config();
@@ -2787,6 +2787,12 @@ fn pay_for_bolt12_invoice_error_cases() {
 
 	let payment_id = PaymentId([2; 32]);
 
+	// Zero amount is rejected.
+	assert_eq!(
+		bob.node.pay_for_bolt12_invoice(&invoice, payment_id, Some(0), Default::default()),
+		Err(Bolt12PaymentError::InvalidAmount),
+	);
+
 	// Overpaying is rejected before any state is inserted.
 	assert_eq!(
 		bob.node.pay_for_bolt12_invoice(
@@ -2807,4 +2813,83 @@ fn pay_for_bolt12_invoice_error_cases() {
 	route_bolt12_payment(bob, &[alice], &invoice);
 	claim_bolt12_payment(bob, &[alice], payment_context, &invoice);
 	expect_recent_payment!(bob, RecentPaymentDetails::Fulfilled, payment_id);
+}
+
+/// Checks that pay_for_bolt12_invoice with a partial amount routes an HTLC for the partial
+/// amount while setting total_mpp_amount_msat to the full invoice amount in the onion, so the
+/// recipient holds the HTLC awaiting additional parts until the full amount arrives.
+#[test]
+fn pay_for_bolt12_invoice_partial_amount() {
+	let mut manually_pay_cfg = test_default_channel_config();
+	manually_pay_cfg.manually_handle_bolt12_invoices = true;
+
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(manually_pay_cfg)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000);
+
+	let alice = &nodes[0];
+	let alice_id = alice.node.get_our_node_id();
+	let bob = &nodes[1];
+	let bob_id = bob.node.get_our_node_id();
+
+	let invoice_amount = 10_000_000u64;
+	let partial_amount = 5_000_000u64;
+
+	let offer = alice.node
+		.create_offer_builder().unwrap()
+		.amount_msats(invoice_amount)
+		.build().unwrap();
+
+	let orig_payment_id = PaymentId([1; 32]);
+	bob.node.pay_for_offer(&offer, None, orig_payment_id, Default::default()).unwrap();
+
+	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
+	alice.onion_messenger.handle_onion_message(bob_id, &onion_message);
+
+	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
+	bob.onion_messenger.handle_onion_message(alice_id, &onion_message);
+
+	let invoice = match get_event!(bob, Event::InvoiceReceived) {
+		Event::InvoiceReceived { invoice, .. } => invoice,
+		_ => panic!("Expected InvoiceReceived"),
+	};
+
+	bob.node.abandon_payment(orig_payment_id);
+	get_event!(bob, Event::PaymentFailed);
+
+	let payment_hash = invoice.payment_hash();
+	let payment_id = PaymentId([2; 32]);
+
+	let params = channelmanager::OptionalBolt12PaymentParams {
+		retry_strategy: Retry::Attempts(0),
+		..Default::default()
+	};
+	bob.node.pay_for_bolt12_invoice(&invoice, payment_id, Some(partial_amount), params).unwrap();
+	expect_recent_payment!(bob, RecentPaymentDetails::Pending, payment_id);
+
+	check_added_monitors(bob, 1);
+	let mut events = bob.node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let ev = remove_first_msg_event_to_node(&alice_id, &mut events);
+
+	// The HTLC carries the partial amount, not the full invoice amount.
+	if let crate::ln::msgs::MessageSendEvent::UpdateHTLCs { ref updates, .. } = ev {
+		assert_eq!(updates.update_add_htlcs[0].amount_msat, partial_amount);
+	} else {
+		panic!("Expected UpdateHTLCs");
+	}
+
+	do_pass_along_path(
+		PassAlongPathArgs::new(bob, &[alice], partial_amount, payment_hash, ev)
+			.without_clearing_recipient_events()
+			.without_claimable_event()
+			.with_dummy_tlvs(&[DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS])
+	);
+
+	// Alice has not emitted PaymentClaimable: total_mpp_amount_msat in the onion equals the
+	// full invoice amount (10M), so she waits for the remaining 5M before settling.
+	assert!(alice.node.get_and_clear_pending_events().is_empty());
 }
