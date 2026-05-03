@@ -1188,7 +1188,7 @@ fn test_0conf_channel_reorg() {
 	assert_ne!(original_scid, new_scid);
 	assert_eq!(nodes[2].node.list_usable_channels()[0].short_channel_id.unwrap(), new_scid);
 
-	// At this point, the channel should happily forward or send payments with either the old SCID
+	// At this point, the channel should happily forward or send payments with either the alias SCID
 	// or the new SCID...
 	send_along_route_with_secret(
 		&nodes[1],
