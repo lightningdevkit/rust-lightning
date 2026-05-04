@@ -496,8 +496,7 @@ impl OnchainEventEntry {
 				// means we can hand it upstream when we see the previous block.
 				conf_threshold = cmp::max(conf_threshold, self.height + descriptor.to_self_delay as u32 - 1);
 			},
-			OnchainEvent::FundingSpendConfirmation { on_local_output_csv: Some(csv), .. } |
-			OnchainEvent::HTLCSpendConfirmation { on_to_local_output_csv: Some(csv), .. } => {
+			OnchainEvent::FundingSpendConfirmation { on_local_output_csv: Some(csv), .. } => {
 				// A CSV-delayed output is spendable in block (input height) + CSV delay, which
 				// means we can act on the event when we see the previous block.
 				conf_threshold = cmp::max(conf_threshold, self.height + csv as u32 - 1);
@@ -567,8 +566,9 @@ enum OnchainEvent {
 		/// If the claim was made by either party with a preimage, this is filled in
 		preimage: Option<PaymentPreimage>,
 		/// If the claim was made by us on an inbound HTLC against a local commitment transaction,
-		/// this records the CSV delay for the delayed output. While present, the event reaches
-		/// its threshold once the output is spendable.
+		/// this records the CSV delay for the delayed output. The CSV-mature output remains
+		/// tracked via the corresponding [`OnchainEvent::MaturingOutput`]; the HTLC spend itself
+		/// reaches anti-reorg finality.
 		on_to_local_output_csv: Option<u16>,
 	},
 	/// An alternative funding transaction (due to a splice/RBF) has confirmed but can no longer be
@@ -1346,9 +1346,10 @@ pub(crate) struct ChannelMonitorImpl<Signer: EcdsaChannelSigner> {
 	funding_spend_confirmed: Option<Txid>,
 
 	confirmed_commitment_tx_counterparty_output: CommitmentTxCounterpartyOutputInfo,
-	/// The set of HTLCs which have been either claimed or failed on chain and have reached
-	/// the requisite confirmations on the claim/fail transaction (either ANTI_REORG_DELAY or the
-	/// spending CSV for revocable outputs).
+	/// The set of HTLCs whose on-chain claim or fail outcome is irrevocably resolved because the
+	/// commitment transaction HTLC output spend has reached anti-reorg finality. Any resulting
+	/// output that is still waiting on CSV maturity is tracked separately as an
+	/// [`OnchainEvent::MaturingOutput`].
 	htlcs_resolved_on_chain: Vec<IrrevocablyResolvedHTLC>,
 
 	/// When a payment is resolved through an on-chain transaction, we tell the `ChannelManager`
@@ -6298,10 +6299,9 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 										commitment_tx_output_idx: input.previous_output.vout,
 										preimage: if accepted_preimage_claim || offered_preimage_claim {
 											Some(payment_preimage) } else { None },
-										// If this is a payment to us (ie !outbound_htlc), wait for
-										// the CSV delay before dropping the HTLC from claimable
-										// balance if the claim was an HTLC-Success transaction (ie
-										// accepted_preimage_claim).
+										// If this is a payment to us (ie !outbound_htlc), keep a
+										// record of the CSV delay. The delayed output is tracked
+										// separately as a MaturingOutput until it is spendable.
 										on_to_local_output_csv: if accepted_preimage_claim && !outbound_htlc {
 											Some(self.on_holder_tx_csv) } else { None },
 									},
