@@ -1013,6 +1013,15 @@ mod tests {
 	}
 
 	#[test]
+	fn datetime_duration_since_clock_skew_saturates_to_zero() {
+		// When `other` is in the apparent future relative to `self` (clock skew),
+		// duration_since must return Duration::ZERO rather than an erroneously large value.
+		let earlier = LSPSDateTime::from_str("2024-01-01T00:00:00Z").unwrap();
+		let later = LSPSDateTime::from_str("2024-01-01T01:00:00Z").unwrap();
+		assert_eq!(earlier.duration_since(&later), Duration::ZERO);
+	}
+
+	#[test]
 	fn is_past_handles_pre_epoch_datetime() {
 		// A peer-controlled RFC3339 datetime before 1970 must be rejected at parse
 		// time, so it can never reach `is_past` (or any other consumer) and panic.
