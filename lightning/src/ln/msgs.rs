@@ -238,7 +238,11 @@ pub struct CommonOpenChannelFields {
 
 impl CommonOpenChannelFields {
 	/// The [`ChannelParameters`] for this channel.
-	pub fn channel_parameters(&self) -> ChannelParameters {
+	///
+	/// `channel_reserve_satoshis` should be `Some` for V1 channels (where the initiator sets a
+	/// reserve on the responder in `open_channel`) and `None` for V2 dual-funded channels (where
+	/// no reserve is negotiated at channel open time).
+	pub fn channel_parameters(&self, channel_reserve_satoshis: Option<u64>) -> ChannelParameters {
 		ChannelParameters {
 			dust_limit_satoshis: self.dust_limit_satoshis,
 			max_htlc_value_in_flight_msat: self.max_htlc_value_in_flight_msat,
@@ -246,6 +250,7 @@ impl CommonOpenChannelFields {
 			commitment_feerate_sat_per_1000_weight: self.commitment_feerate_sat_per_1000_weight,
 			to_self_delay: self.to_self_delay,
 			max_accepted_htlcs: self.max_accepted_htlcs,
+			channel_reserve_satoshis,
 		}
 	}
 }
@@ -269,6 +274,10 @@ pub struct ChannelParameters {
 	pub to_self_delay: u16,
 	/// The maximum number of pending HTLCs towards the channel initiator.
 	pub max_accepted_htlcs: u16,
+	/// The minimum value in satoshis the initiator requires the counterparty to keep in the
+	/// channel. Only set for V1 (legacy) channels; `None` for V2 (dual-funded) channels where
+	/// the reserve is not negotiated during the initial open.
+	pub channel_reserve_satoshis: Option<u64>,
 }
 
 /// An [`open_channel`] message to be sent to or received from a peer.
