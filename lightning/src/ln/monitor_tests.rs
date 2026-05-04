@@ -116,6 +116,73 @@ fn test_spendable_output<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, spendable_t
 }
 
 #[test]
+fn preimage_claim_balance_unchanged_between_anti_reorg_and_csv() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs =
+		create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let (_, _, chan_id, funding_tx) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 500_000_000);
+	// Route an inbound HTLC to node 0 so its preimage claim spends an HTLC output from node 0's
+	// holder commitment and creates a CSV-delayed output.
+	let (route, payment_hash, payment_preimage, payment_secret) =
+		get_route_and_payment_hash!(nodes[1], nodes[0], 12_000_000);
+	nodes[1].node.send_payment_with_route(route, payment_hash,
+		RecipientOnionFields::secret_only(payment_secret, 12_000_000), PaymentId(payment_hash.0)).unwrap();
+	check_added_monitors(&nodes[1], 1);
+	let updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_update_add_htlc(nodes[1].node.get_our_node_id(), &updates.update_add_htlcs[0]);
+	do_commitment_signed_dance(&nodes[0], &nodes[1], &updates.commitment_signed, false, false);
+	expect_and_process_pending_htlcs(&nodes[0], false);
+	expect_payment_claimable!(nodes[0], payment_hash, payment_secret, 12_000_000);
+
+	// Confirm node 0's holder commitment before claiming the HTLC so the preimage claim has a
+	// delayed output that remains tracked as an HTLC balance until it becomes spendable.
+	let message = "Channel force-closed".to_owned();
+	nodes[0].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[1].node.get_our_node_id(), message.clone()).unwrap();
+	check_added_monitors(&nodes[0], 1);
+	check_closed_broadcast(&nodes[0], 1, true);
+	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
+	check_closed_event(&nodes[0], 1, reason, &[nodes[1].node.get_our_node_id()], 1000000);
+	let commitment_txn = nodes[0].tx_broadcaster.unique_txn_broadcast();
+	assert_eq!(commitment_txn.len(), 1);
+	check_spends!(commitment_txn[0], funding_tx);
+	mine_transaction(&nodes[0], &commitment_txn[0]);
+	nodes[0].tx_broadcaster.clear();
+
+	// Claiming the HTLC with the preimage broadcasts the HTLC-Success transaction. Once it
+	// confirms, the resulting delayed output should be reported as an HTLC balance awaiting
+	// confirmations.
+	nodes[0].node.claim_funds(payment_preimage);
+	check_added_monitors(&nodes[0], 1);
+	expect_payment_claimed!(nodes[0], payment_hash, 12_000_000);
+	let htlc_claim_txn = nodes[0].tx_broadcaster.unique_txn_broadcast();
+	assert_eq!(htlc_claim_txn.len(), 1);
+	check_spends!(htlc_claim_txn[0], commitment_txn[0]);
+	mine_transaction(&nodes[0], &htlc_claim_txn[0]);
+
+	let htlc_claim_balances = sorted_vec(nodes[0].chain_monitor.chain_monitor
+		.get_monitor(chan_id).unwrap().get_claimable_balances());
+	assert!(htlc_claim_balances.iter().any(|balance| matches!(balance,
+		Balance::ClaimableAwaitingConfirmations {
+			amount_satoshis: 12_000,
+			source: BalanceSource::Htlc,
+			..
+		}
+	)));
+
+	// Advance only to anti-reorg finality for the HTLC-Success transaction. The CSV-delayed
+	// output is not spendable yet, so the claimable HTLC balance should remain unchanged.
+	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
+	assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
+	assert_eq!(htlc_claim_balances, sorted_vec(nodes[0].chain_monitor.chain_monitor
+		.get_monitor(chan_id).unwrap().get_claimable_balances()));
+}
+
+#[test]
 fn revoked_output_htlc_resolution_timing() {
 	// Tests that HTLCs which were present in a broadcasted remote revoked commitment transaction
 	// are resolved only after a spend of the HTLC output reaches six confirmations. Previously
