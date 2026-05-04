@@ -473,7 +473,8 @@ impl Readable for CounterpartyCommitmentParameters {
 /// An entry for an [`OnchainEvent`], stating the block height and hash when the event was
 /// observed, as well as the transaction causing it.
 ///
-/// Used to determine when the on-chain event can be considered safe from a chain reorganization.
+/// Used to determine when the on-chain event can be considered safe from a chain reorganization
+/// or, for CSV-delayed outputs, spendable.
 #[derive(Clone, PartialEq, Eq)]
 struct OnchainEventEntry {
 	txid: Txid,
@@ -491,14 +492,14 @@ impl OnchainEventEntry {
 			OnchainEvent::MaturingOutput {
 				descriptor: SpendableOutputDescriptor::DelayedPaymentOutput(ref descriptor)
 			} => {
-				// A CSV'd transaction is confirmable in block (input height) + CSV delay, which means
-				// it's broadcastable when we see the previous block.
+				// A CSV-delayed output is spendable in block (input height) + CSV delay, which
+				// means we can hand it upstream when we see the previous block.
 				conf_threshold = cmp::max(conf_threshold, self.height + descriptor.to_self_delay as u32 - 1);
 			},
 			OnchainEvent::FundingSpendConfirmation { on_local_output_csv: Some(csv), .. } |
 			OnchainEvent::HTLCSpendConfirmation { on_to_local_output_csv: Some(csv), .. } => {
-				// A CSV'd transaction is confirmable in block (input height) + CSV delay, which means
-				// it's broadcastable when we see the previous block.
+				// A CSV-delayed output is spendable in block (input height) + CSV delay, which
+				// means we can act on the event when we see the previous block.
 				conf_threshold = cmp::max(conf_threshold, self.height + csv as u32 - 1);
 			},
 			_ => {},
@@ -517,7 +518,7 @@ impl OnchainEventEntry {
 type CommitmentTxCounterpartyOutputInfo = Option<(u32, Amount)>;
 
 /// Upon discovering of some classes of onchain tx by ChannelMonitor, we may have to take actions on it
-/// once they mature to enough confirmations (ANTI_REORG_DELAY)
+/// once they reach anti-reorg finality or, for CSV-delayed outputs, CSV maturity.
 #[derive(Clone, PartialEq, Eq)]
 enum OnchainEvent {
 	/// An outbound HTLC failing after a transaction is confirmed. Used
@@ -534,8 +535,8 @@ enum OnchainEvent {
 		/// transaction which appeared on chain.
 		commitment_tx_output_idx: Option<u32>,
 	},
-	/// An output waiting on [`ANTI_REORG_DELAY`] confirmations before we hand the user the
-	/// [`SpendableOutputDescriptor`].
+	/// An output waiting until it is anti-reorg final and, for CSV-delayed outputs, spendable
+	/// before we hand the user the [`SpendableOutputDescriptor`].
 	MaturingOutput { descriptor: SpendableOutputDescriptor },
 	/// A spend of the funding output, either a commitment transaction or a cooperative closing
 	/// transaction.
@@ -566,8 +567,8 @@ enum OnchainEvent {
 		/// If the claim was made by either party with a preimage, this is filled in
 		preimage: Option<PaymentPreimage>,
 		/// If the claim was made by us on an inbound HTLC against a local commitment transaction,
-		/// we set this to the output CSV value which we will have to wait until to spend the
-		/// output (and generate a SpendableOutput event).
+		/// this records the CSV delay for the delayed output. While present, the event reaches
+		/// its threshold once the output is spendable.
 		on_to_local_output_csv: Option<u16>,
 	},
 	/// An alternative funding transaction (due to a splice/RBF) has confirmed but can no longer be
@@ -1003,7 +1004,7 @@ impl Balance {
 	}
 }
 
-/// An HTLC which has been irrevocably resolved on-chain, and has reached ANTI_REORG_DELAY.
+/// An HTLC whose on-chain outcome has reached the threshold for irrevocable resolution.
 #[derive(Clone, PartialEq, Eq)]
 struct IrrevocablyResolvedHTLC {
 	commitment_tx_output_idx: Option<u32>,
@@ -1301,8 +1302,9 @@ pub(crate) struct ChannelMonitorImpl<Signer: EcdsaChannelSigner> {
 	pub(super) is_processing_pending_events: bool,
 
 	// Used to track on-chain events (i.e., transactions part of channels confirmed on chain) on
-	// which to take actions once they reach enough confirmations. Each entry includes the
-	// transaction's id and the height when the transaction was confirmed on chain.
+	// which to take actions once they reach anti-reorg finality or, for CSV-delayed outputs,
+	// CSV maturity. Each entry includes the transaction's id and the height when the transaction
+	// was confirmed on chain.
 	onchain_events_awaiting_threshold_conf: Vec<OnchainEventEntry>,
 
 	// If we get serialized out and re-read, we need to make sure that the chain monitoring
@@ -1339,8 +1341,8 @@ pub(crate) struct ChannelMonitorImpl<Signer: EcdsaChannelSigner> {
 	/// Added in 0.0.124.
 	holder_pays_commitment_tx_fee: Option<bool>,
 
-	/// Set to `Some` of the confirmed transaction spending the funding input of the channel after
-	/// reaching `ANTI_REORG_DELAY` confirmations.
+	/// Set to `Some` once the confirmed transaction spending the funding input of the channel has
+	/// reached its event threshold.
 	funding_spend_confirmed: Option<Txid>,
 
 	confirmed_commitment_tx_counterparty_output: CommitmentTxCounterpartyOutputInfo,
@@ -2763,11 +2765,10 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				source: BalanceSource::Htlc,
 			});
 		} else if htlc_resolved && !htlc_output_spend_pending {
-			// Funding transaction spends should be fully confirmed by the time any
-			// HTLC transactions are resolved, unless we're talking about a holder
-			// commitment tx, whose resolution is delayed until the CSV timeout is
-			// reached, even though HTLCs may be resolved after only
-			// ANTI_REORG_DELAY confirmations.
+			// Funding transaction spends should have reached their event threshold by the time any
+			// HTLC transactions are irrevocably resolved, unless we're talking about a holder
+			// commitment tx, whose resolution is delayed until CSV maturity, even though HTLCs
+			// may be resolved after anti-reorg finality.
 			debug_assert!(holder_commitment || self.funding_spend_confirmed.is_some());
 		} else if counterparty_revoked_commitment {
 			let htlc_output_claim_pending = self.onchain_events_awaiting_threshold_conf.iter().any(|event| {
@@ -2889,7 +2890,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		});
 		if let Some((txid, conf_thresh)) = funding_spend_pending {
 			debug_assert!(us.funding_spend_confirmed.is_none(),
-				"We have a pending funding spend awaiting anti-reorg confirmation, we can't have confirmed it already!");
+				"We have a pending funding spend awaiting its event threshold, it cannot have reached it already!");
 			confirmed_txid = Some(txid);
 			pending_commitment_tx_conf_thresh = Some(conf_thresh);
 		}
@@ -3347,7 +3348,7 @@ macro_rules! fail_unbroadcast_htlcs {
 									commitment_tx_output_idx: None,
 								},
 							};
-							log_trace!($logger, "Failing HTLC with payment_hash {} from {} counterparty commitment tx due to broadcast of {} commitment transaction {}, waiting for confirmation (at height {})",
+							log_trace!($logger, "Failing HTLC with payment_hash {} from {} counterparty commitment tx due to broadcast of {} commitment transaction {}, event reaches threshold at height {}",
 								&htlc.payment_hash, $commitment_tx, $commitment_tx_type,
 								$commitment_txid_confirmed, entry.confirmation_threshold());
 							$self.onchain_events_awaiting_threshold_conf.push(entry);
@@ -4513,7 +4514,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			// event for the same source.
 			self.failed_back_htlc_ids.insert(SentHTLCId::from_source(source));
 			if let Some(confirmed_txid) = self.funding_spend_confirmed {
-				// Funding spend already confirmed past ANTI_REORG_DELAY: resolve immediately.
+				// Funding spend already reached its event threshold: resolve immediately.
 				log_trace!(
 					logger,
 					"Failing HTLC from late counterparty commitment update immediately \
@@ -4549,7 +4550,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				log_trace!(
 					logger,
 					"Failing HTLC from late counterparty commitment update, \
-					waiting for confirmation (at height {})",
+					event reaches threshold at height {}",
 					entry.confirmation_threshold()
 				);
 				self.onchain_events_awaiting_threshold_conf.push(entry);
@@ -6403,7 +6404,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 							commitment_tx_output_idx: Some(input.previous_output.vout),
 						},
 					};
-					log_info!(logger, "Failing HTLC with payment_hash {} timeout by a spend tx, waiting for confirmation (at height {})", &payment_hash, entry.confirmation_threshold());
+					log_info!(logger, "Failing HTLC with payment_hash {} timeout by a spend tx, event reaches threshold at height {}", &payment_hash, entry.confirmation_threshold());
 					self.onchain_events_awaiting_threshold_conf.push(entry);
 				}
 			}
