@@ -1017,6 +1017,10 @@ mod fuzzy_onion_utils {
 		pub(crate) onion_error_code: Option<LocalHTLCFailureReason>,
 		#[cfg(any(test, feature = "_test_utils"))]
 		pub(crate) onion_error_data: Option<Vec<u8>>,
+		/// When processing a trampoline forward error that we couldn't decrypt with our
+		/// session keys, this is the packet with our outer layers peeled off — ready to
+		/// be re-wrapped and passed back to the original sender.
+		pub(crate) trampoline_peeled_packet: Option<super::msgs::OnionErrorPacket>,
 		#[cfg(test)]
 		pub(crate) attribution_failed_channel: Option<u64>,
 	}
@@ -1027,10 +1031,19 @@ mod fuzzy_onion_utils {
 	) -> DecodedOnionFailure {
 		let (path, session_priv) = match htlc_source {
 			HTLCSource::OutboundRoute { ref path, ref session_priv, .. } => (path, session_priv),
+			HTLCSource::TrampolineForward { outbound_payment, .. } => {
+				let Some(dispatch) = outbound_payment.as_ref() else {
+					debug_assert!(
+						false,
+						"Trampoline onion failure on forward with no outbound payment details"
+					);
+					return permanent_failure();
+				};
+				(&dispatch.path, &dispatch.session_priv)
+			},
 			_ => unreachable!(),
 		};
-
-		process_onion_failure_inner(secp_ctx, logger, path, &session_priv, None, encrypted_packet)
+		process_onion_failure_inner(secp_ctx, logger, path, session_priv, None, encrypted_packet)
 	}
 
 	/// Decodes the attribution data that we got back from upstream on a payment we sent.
@@ -1087,6 +1100,23 @@ pub use self::fuzzy_onion_utils::*;
 #[cfg(not(fuzzing))]
 pub(crate) use self::fuzzy_onion_utils::*;
 
+fn permanent_failure() -> DecodedOnionFailure {
+	DecodedOnionFailure {
+		network_update: None,
+		short_channel_id: None,
+		payment_failed_permanently: true,
+		failed_within_blinded_path: false,
+		hold_times: Vec::new(),
+		#[cfg(any(test, feature = "_test_utils"))]
+		onion_error_code: None,
+		#[cfg(any(test, feature = "_test_utils"))]
+		onion_error_data: None,
+		trampoline_peeled_packet: None,
+		#[cfg(test)]
+		attribution_failed_channel: None,
+	}
+}
+
 /// Process failure we got back from upstream on a payment we sent (implying htlc_source is an
 /// OutboundRoute).
 fn process_onion_failure_inner<T: secp256k1::Signing, L: Logger>(
@@ -1104,19 +1134,7 @@ fn process_onion_failure_inner<T: secp256k1::Signing, L: Logger>(
 
 		// Signal that we failed permanently. Without a valid hmac, we can't identify the failing node and we can't
 		// apply a penalty. Therefore there is nothing more we can do other than failing the payment.
-		return DecodedOnionFailure {
-			network_update: None,
-			short_channel_id: None,
-			payment_failed_permanently: true,
-			failed_within_blinded_path: false,
-			hold_times: Vec::new(),
-			#[cfg(any(test, feature = "_test_utils"))]
-			onion_error_code: None,
-			#[cfg(any(test, feature = "_test_utils"))]
-			onion_error_data: None,
-			#[cfg(test)]
-			attribution_failed_channel: None,
-		};
+		return permanent_failure();
 	}
 
 	// Learnings from the HTLC failure to inform future payment retries and scoring.
@@ -1504,6 +1522,7 @@ fn process_onion_failure_inner<T: secp256k1::Signing, L: Logger>(
 			onion_error_code: _error_code_ret,
 			#[cfg(any(test, feature = "_test_utils"))]
 			onion_error_data: _error_packet_ret,
+			trampoline_peeled_packet: None,
 			#[cfg(test)]
 			attribution_failed_channel,
 		}
@@ -1527,6 +1546,7 @@ fn process_onion_failure_inner<T: secp256k1::Signing, L: Logger>(
 			onion_error_code: None,
 			#[cfg(any(test, feature = "_test_utils"))]
 			onion_error_data: None,
+			trampoline_peeled_packet: Some(encrypted_packet),
 			#[cfg(test)]
 			attribution_failed_channel,
 		}
@@ -2173,6 +2193,7 @@ impl HTLCFailReason {
 				onion_error_code: Some(_failure_reason),
 				#[cfg(any(test, feature = "_test_utils"))]
 				onion_error_data: Some(_data.to_vec()),
+				trampoline_peeled_packet: None,
 				#[cfg(test)]
 				attribution_failed_channel: None,
 			}
