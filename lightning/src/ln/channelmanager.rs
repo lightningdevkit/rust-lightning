@@ -17600,16 +17600,16 @@ pub fn provided_init_features(config: &UserConfig) -> InitFeatures {
 const SERIALIZATION_VERSION: u8 = 1;
 const MIN_SERIALIZATION_VERSION: u8 = 1;
 
-// We plan to start writing this version in 0.5.
+// We plan to start writing this version a few versions after we start writing inbound committed
+// payment onions in `Channel`, which is already done in tests but not yet switched on in prod.
 //
-// LDK 0.5+ will reconstruct the set of pending HTLCs from `Channel{Monitor}` data that started
-// being written in 0.3, ignoring legacy `ChannelManager` HTLC maps on read and not writing them.
-// LDK 0.5+ will automatically fail to read if the pending HTLC set cannot be reconstructed, i.e.
-// if we were last written with pending HTLCs on 0.2- or if the new 0.3+ fields are missing.
+// If we see this version on read, we will use said onions when reconstructing the set of pending
+// HTLCs, ignoring legacy `ChannelManager` HTLC maps on read and not writing them. We'll also
+// automatically fail to read if the pending HTLC set cannot be reconstructed, i.e. if the new
+// payment onion field is missing.
 //
-// If 0.3 or 0.4 reads this manager version, it knows that the legacy maps were not written and
-// acts accordingly.
-const RECONSTRUCT_HTLCS_FROM_CHANS_VERSION: u8 = 2;
+// Left as `None` for now until we are committed to writing inbound committed onions in `Channel`s.
+const RECONSTRUCT_HTLCS_FROM_CHANS_VERSION: Option<u8> = None;
 
 impl_writeable_tlv_based!(PhantomRouteHints, {
 	(2, channels, required_vec),
@@ -18435,7 +18435,7 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 		}
 
 		let forward_htlcs_legacy: HashMap<u64, Vec<HTLCForwardInfo>> =
-			if version < RECONSTRUCT_HTLCS_FROM_CHANS_VERSION {
+			if RECONSTRUCT_HTLCS_FROM_CHANS_VERSION.map_or(true, |v| version < v) {
 				let forward_htlcs_count: u64 = Readable::read(reader)?;
 				let mut fwds = hash_map_with_capacity(cmp::min(forward_htlcs_count as usize, 128));
 				for _ in 0..forward_htlcs_count {
@@ -19573,7 +19573,8 @@ impl<
 		// `reconstruct_manager_from_monitors` is set below. Currently we set in tests randomly to
 		// ensure the legacy codepaths also have test coverage.
 		#[cfg(not(test))]
-		let reconstruct_manager_from_monitors = _version >= RECONSTRUCT_HTLCS_FROM_CHANS_VERSION;
+		let reconstruct_manager_from_monitors =
+			RECONSTRUCT_HTLCS_FROM_CHANS_VERSION.is_some_and(|v| _version >= v);
 		#[cfg(test)]
 		let reconstruct_manager_from_monitors =
 			args.reconstruct_manager_from_monitors.unwrap_or_else(|| {
@@ -19636,7 +19637,6 @@ impl<
 					if reconstruct_manager_from_monitors {
 						if let Some(chan) = peer_state.channel_by_id.get(channel_id) {
 							if let Some(funded_chan) = chan.as_funded() {
-								// Legacy HTLCs are from pre-LDK 0.3 and cannot be reconstructed.
 								if funded_chan.has_legacy_inbound_htlcs() {
 									return Err(DecodeError::InvalidValue);
 								}

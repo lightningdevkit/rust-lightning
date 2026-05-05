@@ -368,8 +368,7 @@ enum InboundUpdateAdd {
 		blinded_failure: Option<BlindedFailure>,
 		outbound_hop: OutboundHop,
 	},
-	/// This HTLC was received pre-LDK 0.3, before we started persisting the onion for inbound
-	/// committed HTLCs.
+	/// This HTLC was received before we started persisting the onion for inbound committed HTLCs.
 	Legacy,
 }
 
@@ -7982,8 +7981,9 @@ where
 		Ok(())
 	}
 
-	/// Returns true if any committed inbound HTLCs were received pre-LDK 0.3 and cannot be used
-	/// during `ChannelManager` deserialization to reconstruct the set of pending HTLCs.
+	/// Returns true if any committed inbound HTLCs were received before we started serializing
+	/// inbound committed payment onions in `Channel` and cannot be used during `ChannelManager`
+	/// deserialization to reconstruct the set of pending HTLCs.
 	pub(super) fn has_legacy_inbound_htlcs(&self) -> bool {
 		self.context.pending_inbound_htlcs.iter().any(|htlc| {
 			matches!(
@@ -15570,6 +15570,7 @@ impl<SP: SignerProvider> Writeable for FundedChannel<SP> {
 			}
 		}
 		let mut removed_htlc_attribution_data: Vec<&Option<AttributionData>> = Vec::new();
+		#[cfg_attr(not(test), allow(unused_mut))]
 		let mut inbound_committed_update_adds: Vec<&InboundUpdateAdd> = Vec::new();
 		(self.context.pending_inbound_htlcs.len() as u64 - dropped_inbound_htlcs).write(writer)?;
 		for htlc in self.context.pending_inbound_htlcs.iter() {
@@ -15590,9 +15591,10 @@ impl<SP: SignerProvider> Writeable for FundedChannel<SP> {
 					2u8.write(writer)?;
 					htlc_resolution.write(writer)?;
 				},
-				&InboundHTLCState::Committed { ref update_add_htlc } => {
+				&InboundHTLCState::Committed { update_add_htlc: ref _update_add } => {
 					3u8.write(writer)?;
-					inbound_committed_update_adds.push(update_add_htlc);
+					#[cfg(test)]
+					inbound_committed_update_adds.push(_update_add);
 				},
 				&InboundHTLCState::LocalRemoved(ref removal_reason) => {
 					4u8.write(writer)?;
