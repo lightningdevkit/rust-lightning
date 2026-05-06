@@ -91,6 +91,12 @@ enum OnchainEvent {
 	ContentiousOutpoint { package: PackageTemplate },
 }
 
+enum OutpointClaimState {
+	WaitingThresholdConf,
+	ClaimingRequestRegistered,
+	WaitingTimelock(u32),
+}
+
 impl Writeable for OnchainEventEntry {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		write_tlv_fields!(writer, {
@@ -576,14 +582,30 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 		self.pending_claim_requests.len() != 0
 	}
 
-	fn is_outpoint_spend_waiting_threshold_conf(&self, outpoint: &BitcoinOutPoint) -> bool {
-		self.onchain_events_awaiting_threshold_conf.iter().any(|entry| {
+	fn outpoint_claim_state(
+		&self, outpoint: &BitcoinOutPoint, cur_height: u32,
+	) -> Option<OutpointClaimState> {
+		if self.onchain_events_awaiting_threshold_conf.iter().any(|entry| {
 			if let OnchainEvent::ContentiousOutpoint { ref package } = entry.event {
 				package.contains_outpoint(outpoint)
 			} else {
 				false
 			}
-		})
+		}) {
+			return Some(OutpointClaimState::WaitingThresholdConf);
+		}
+
+		if self.claimable_outpoints.get(outpoint).is_some() {
+			return Some(OutpointClaimState::ClaimingRequestRegistered);
+		}
+
+		self.locktimed_packages
+			.values()
+			.flat_map(|packages| packages.iter())
+			.find(|locked_package| locked_package.contains_outpoint(outpoint))
+			.map(|package| {
+				OutpointClaimState::WaitingTimelock(package.package_locktime(cur_height))
+			})
 	}
 
 	/// Lightning security model (i.e being able to redeem/timeout HTLC or penalize counterparty
@@ -812,29 +834,30 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 		// First drop any duplicate claims.
 		requests.retain(|req| {
 			let outpoint = req.outpoint();
-			if self.is_outpoint_spend_waiting_threshold_conf(outpoint) {
-				// This is a package-layer guard. ChannelMonitor filters regenerated
-				// HTLC claims using HTLC resolution state, while this keeps outpoints
-				// split from an existing package from being re-added during the reorg
-				// window.
-				log_info!(logger, "Ignoring claim for outpoint {}:{}, it is already spent by a transaction awaiting anti-reorg finality",
-					outpoint.txid, outpoint.vout);
-				false
-			} else if self.claimable_outpoints.get(outpoint).is_some() {
-				log_info!(logger, "Ignoring second claim for outpoint {}:{}, already registered its claiming request",
-					outpoint.txid, outpoint.vout);
-				false
-			} else {
-				let timelocked_covering_package = self.locktimed_packages.values()
-					.flat_map(|packages| packages.iter())
-					.find(|locked_package| locked_package.contains_outpoint(outpoint));
-				if let Some(package) = timelocked_covering_package {
-					log_info!(logger, "Ignoring second claim for outpoint {}:{}, we already have one which we're waiting on a timelock at {} for.",
-						outpoint.txid, outpoint.vout, package.package_locktime(cur_height));
-					false
-				} else {
-					true
+			if let Some(claim_state) = self.outpoint_claim_state(outpoint, cur_height) {
+				match claim_state {
+					OutpointClaimState::WaitingThresholdConf => {
+						// This is a package-layer guard. ChannelMonitor filters regenerated
+						// HTLC claims using HTLC resolution state, while this keeps outpoints
+						// split from an existing package from being re-added during the reorg
+						// window.
+						log_info!(logger, "Ignoring claim for outpoint {}:{}, it is already spent by a transaction awaiting anti-reorg finality",
+							outpoint.txid, outpoint.vout);
+						false
+					},
+					OutpointClaimState::ClaimingRequestRegistered => {
+						log_info!(logger, "Ignoring second claim for outpoint {}:{}, already registered its claiming request",
+							outpoint.txid, outpoint.vout);
+						false
+					},
+					OutpointClaimState::WaitingTimelock(locktime) => {
+						log_info!(logger, "Ignoring second claim for outpoint {}:{}, we already have one which we're waiting on a timelock at {} for.",
+							outpoint.txid, outpoint.vout, locktime);
+						false
+					},
 				}
+			} else {
+				true
 			}
 		});
 		let mut requests = requests.into_iter()
