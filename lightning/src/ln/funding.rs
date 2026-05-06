@@ -132,8 +132,8 @@ pub enum FundingContributionError {
 		/// The minimum RBF feerate.
 		min_rbf_feerate: FeeRate,
 	},
-	/// The splice value is invalid (zero, empty outputs, exceeds the maximum money supply, or
-	/// splices out more than the available channel balance).
+	/// The splice value is invalid (zero, empty outputs, duplicate inputs or outputs, exceeds the
+	/// maximum money supply, or splices out more than the available channel balance).
 	InvalidSpliceValue,
 	/// An input's `prevtx` is too large to fit in a `tx_add_input` message.
 	PrevTxTooLarge,
@@ -164,7 +164,10 @@ impl core::fmt::Display for FundingContributionError {
 				write!(f, "Feerate {} is below minimum RBF feerate {}", feerate, min_rbf_feerate)
 			},
 			FundingContributionError::InvalidSpliceValue => {
-				write!(f, "Invalid splice value (zero, empty, exceeds limit, or overdraws balance)")
+				write!(
+					f,
+					"Invalid splice value (zero, empty, duplicate, exceeds limit, or overdraws balance)"
+				)
 			},
 			FundingContributionError::PrevTxTooLarge => {
 				write!(f, "Input prevtx is too large to fit in a tx_add_input message")
@@ -514,7 +517,14 @@ fn estimate_transaction_fee(
 
 fn validate_inputs(inputs: &[FundingTxInput]) -> Result<(), FundingContributionError> {
 	let mut total_value = Amount::ZERO;
-	for input in inputs {
+	for (idx, input) in inputs.iter().enumerate() {
+		if inputs[..idx]
+			.iter()
+			.any(|existing_input| existing_input.utxo.outpoint == input.utxo.outpoint)
+		{
+			return Err(FundingContributionError::InvalidSpliceValue);
+		}
+
 		use crate::util::ser::Writeable;
 		const MESSAGE_TEMPLATE: msgs::TxAddInput = msgs::TxAddInput {
 			channel_id: ChannelId([0; 32]),
@@ -1362,7 +1372,14 @@ impl<State> FundingBuilderInner<State> {
 		)?;
 
 		let mut value_removed = Amount::ZERO;
-		for output in self.outputs.iter() {
+		for (idx, output) in self.outputs.iter().enumerate() {
+			if self.outputs[..idx]
+				.iter()
+				.any(|existing_output| existing_output.script_pubkey == output.script_pubkey)
+			{
+				return Err(FundingContributionError::InvalidSpliceValue);
+			}
+
 			value_removed = match value_removed.checked_add(output.value) {
 				Some(sum) if sum <= Amount::MAX_MONEY => sum,
 				_ => return Err(FundingContributionError::InvalidSpliceValue),
@@ -2323,6 +2340,36 @@ mod tests {
 			contribution.value_added(),
 			Amount::from_sat(100_000) - output.value - expected_fee,
 		);
+	}
+
+	#[test]
+	fn test_funding_builder_rejects_duplicate_inputs() {
+		let feerate = FeeRate::from_sat_per_kwu(2000);
+		let input = funding_input_sats(100_000);
+
+		let result = FundingTemplate::new(None, None, None, Amount::ZERO)
+			.without_prior_contribution(feerate, FeeRate::MAX)
+			.add_inputs(vec![input.clone(), input])
+			.unwrap()
+			.build();
+
+		assert!(matches!(result, Err(FundingContributionError::InvalidSpliceValue),));
+	}
+
+	#[test]
+	fn test_funding_builder_rejects_duplicate_outputs() {
+		let feerate = FeeRate::from_sat_per_kwu(2000);
+		let first_output = funding_output_sats(25_000);
+		let second_output = funding_output_sats(30_000);
+		assert_ne!(first_output, second_output);
+		assert_eq!(first_output.script_pubkey, second_output.script_pubkey);
+
+		let result = FundingTemplate::new(None, None, None, Amount::MAX_MONEY)
+			.without_prior_contribution(feerate, FeeRate::MAX)
+			.add_outputs(vec![first_output, second_output])
+			.build();
+
+		assert!(matches!(result, Err(FundingContributionError::InvalidSpliceValue),));
 	}
 
 	#[test]
