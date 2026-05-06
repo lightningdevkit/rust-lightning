@@ -2450,6 +2450,57 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 			}
 		};
 
+		macro_rules! process_all_events {
+			() => { {
+				let mut last_pass_no_updates = false;
+				for i in 0..std::usize::MAX {
+					if i == 100 {
+						panic!("It may take may iterations to settle the state, but it should not take forever");
+					}
+					// Next, make sure no monitor updates are pending
+					ab_link.complete_all_monitor_updates(&nodes);
+					bc_link.complete_all_monitor_updates(&nodes);
+					// Then, make sure any current forwards make their way to their destination
+					if process_msg_events!(0, false, ProcessMessages::AllMessages) {
+						last_pass_no_updates = false;
+						continue;
+					}
+					if process_msg_events!(1, false, ProcessMessages::AllMessages) {
+						last_pass_no_updates = false;
+						continue;
+					}
+					if process_msg_events!(2, false, ProcessMessages::AllMessages) {
+						last_pass_no_updates = false;
+						continue;
+					}
+					// ...making sure any payments are claimed.
+					if process_events!(0, false) {
+						last_pass_no_updates = false;
+						continue;
+					}
+					if process_events!(1, false) {
+						last_pass_no_updates = false;
+						continue;
+					}
+					if process_events!(2, false) {
+						last_pass_no_updates = false;
+						continue;
+					}
+					if last_pass_no_updates {
+						// In some cases, we may generate a message to send in
+						// `process_msg_events`, but block sending until
+						// `complete_all_monitor_updates` gets called on the next
+						// iteration.
+						//
+						// Thus, we only exit if we manage two iterations with no messages
+						// or events to process.
+						break;
+					}
+					last_pass_no_updates = true;
+				}
+			} };
+		}
+
 		let v = get_slice!(1)[0];
 		out.locked_write(format!("READ A BYTE! HANDLING INPUT {:x}...........\n", v).as_bytes());
 		match v {
@@ -2824,57 +2875,6 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 				nodes[0].signer_unblocked(None);
 				nodes[1].signer_unblocked(None);
 				nodes[2].signer_unblocked(None);
-
-				macro_rules! process_all_events {
-					() => { {
-						let mut last_pass_no_updates = false;
-						for i in 0..std::usize::MAX {
-							if i == 100 {
-								panic!("It may take may iterations to settle the state, but it should not take forever");
-							}
-							// Next, make sure no monitor updates are pending
-							ab_link.complete_all_monitor_updates(&nodes);
-							bc_link.complete_all_monitor_updates(&nodes);
-							// Then, make sure any current forwards make their way to their destination
-							if process_msg_events!(0, false, ProcessMessages::AllMessages) {
-								last_pass_no_updates = false;
-								continue;
-							}
-							if process_msg_events!(1, false, ProcessMessages::AllMessages) {
-								last_pass_no_updates = false;
-								continue;
-							}
-							if process_msg_events!(2, false, ProcessMessages::AllMessages) {
-								last_pass_no_updates = false;
-								continue;
-							}
-							// ...making sure any payments are claimed.
-							if process_events!(0, false) {
-								last_pass_no_updates = false;
-								continue;
-							}
-							if process_events!(1, false) {
-								last_pass_no_updates = false;
-								continue;
-							}
-							if process_events!(2, false) {
-								last_pass_no_updates = false;
-								continue;
-							}
-							if last_pass_no_updates {
-								// In some cases, we may generate a message to send in
-								// `process_msg_events`, but block sending until
-								// `complete_all_monitor_updates` gets called on the next
-								// iteration.
-								//
-								// Thus, we only exit if we manage two iterations with no messages
-								// or events to process.
-								break;
-							}
-							last_pass_no_updates = true;
-						}
-					} };
-				}
 
 				process_all_events!();
 
