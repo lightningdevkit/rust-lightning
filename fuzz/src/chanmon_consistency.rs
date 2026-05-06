@@ -600,23 +600,6 @@ impl KeyProvider {
 	}
 }
 
-// Returns a bool indicating whether the payment failed.
-#[inline]
-fn check_payment_send_events(source: &ChanMan, sent_payment_id: PaymentId) -> bool {
-	for payment in source.list_recent_payments() {
-		match payment {
-			RecentPaymentDetails::Pending { payment_id, .. } if payment_id == sent_payment_id => {
-				return true;
-			},
-			RecentPaymentDetails::Abandoned { payment_id, .. } if payment_id == sent_payment_id => {
-				return false;
-			},
-			_ => {},
-		}
-	}
-	return false;
-}
-
 type ChanMan<'a> = ChannelManager<
 	Arc<TestChainMonitor>,
 	Arc<TestBroadcaster>,
@@ -628,297 +611,6 @@ type ChanMan<'a> = ChannelManager<
 	&'a FuzzRouter,
 	Arc<dyn Logger + MaybeSend + MaybeSync>,
 >;
-
-#[inline]
-fn get_payment_secret_hash(
-	dest: &ChanMan, payment_ctr: &mut u64,
-	payment_preimages: &RefCell<HashMap<PaymentHash, PaymentPreimage>>,
-) -> (PaymentSecret, PaymentHash) {
-	*payment_ctr += 1;
-	let mut payment_preimage = PaymentPreimage([0; 32]);
-	payment_preimage.0[0..8].copy_from_slice(&payment_ctr.to_be_bytes());
-	let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0).to_byte_array());
-	let payment_secret = dest
-		.create_inbound_payment_for_hash(payment_hash, None, 3600, None)
-		.expect("create_inbound_payment_for_hash failed");
-	assert!(payment_preimages.borrow_mut().insert(payment_hash, payment_preimage).is_none());
-	(payment_secret, payment_hash)
-}
-
-#[inline]
-fn send_payment(
-	source: &ChanMan, dest: &ChanMan, dest_chan_id: ChannelId, amt: u64,
-	payment_secret: PaymentSecret, payment_hash: PaymentHash, payment_id: PaymentId,
-) -> bool {
-	let (min_value_sendable, max_value_sendable, dest_scid) = source
-		.list_usable_channels()
-		.iter()
-		.find(|chan| chan.channel_id == dest_chan_id)
-		.map(|chan| {
-			(
-				chan.next_outbound_htlc_minimum_msat,
-				chan.next_outbound_htlc_limit_msat,
-				chan.short_channel_id.unwrap_or(0),
-			)
-		})
-		.unwrap_or((0, 0, 0));
-	let route_params = RouteParameters::from_payment_params_and_value(
-		PaymentParameters::from_node_id(source.get_our_node_id(), TEST_FINAL_CLTV),
-		amt,
-	);
-	let route = Route {
-		paths: vec![Path {
-			hops: vec![RouteHop {
-				pubkey: dest.get_our_node_id(),
-				node_features: dest.node_features(),
-				short_channel_id: dest_scid,
-				channel_features: dest.channel_features(),
-				fee_msat: amt,
-				cltv_expiry_delta: 200,
-				maybe_announced_channel: true,
-			}],
-			blinded_tail: None,
-		}],
-		route_params: Some(route_params.clone()),
-	};
-	let onion = RecipientOnionFields::secret_only(payment_secret, amt);
-	let res = source.send_payment_with_route(route, payment_hash, onion, payment_id);
-	match res {
-		Err(err) => {
-			panic!("Errored with {:?} on initial payment send", err);
-		},
-		Ok(()) => {
-			let expect_failure = amt < min_value_sendable || amt > max_value_sendable;
-			let succeeded = check_payment_send_events(source, payment_id);
-			assert_eq!(succeeded, !expect_failure);
-			succeeded
-		},
-	}
-}
-
-#[inline]
-fn send_hop_payment(
-	source: &ChanMan, middle: &ChanMan, middle_chan_id: ChannelId, dest: &ChanMan,
-	dest_chan_id: ChannelId, amt: u64, payment_secret: PaymentSecret, payment_hash: PaymentHash,
-	payment_id: PaymentId,
-) -> bool {
-	let (min_value_sendable, max_value_sendable, middle_scid) = source
-		.list_usable_channels()
-		.iter()
-		.find(|chan| chan.channel_id == middle_chan_id)
-		.map(|chan| {
-			(
-				chan.next_outbound_htlc_minimum_msat,
-				chan.next_outbound_htlc_limit_msat,
-				chan.short_channel_id.unwrap_or(0),
-			)
-		})
-		.unwrap_or((0, 0, 0));
-	let dest_scid = dest
-		.list_channels()
-		.iter()
-		.find(|chan| chan.channel_id == dest_chan_id)
-		.and_then(|chan| chan.short_channel_id)
-		.unwrap_or(0);
-	let first_hop_fee = 50_000;
-	let route_params = RouteParameters::from_payment_params_and_value(
-		PaymentParameters::from_node_id(source.get_our_node_id(), TEST_FINAL_CLTV),
-		amt,
-	);
-	let route = Route {
-		paths: vec![Path {
-			hops: vec![
-				RouteHop {
-					pubkey: middle.get_our_node_id(),
-					node_features: middle.node_features(),
-					short_channel_id: middle_scid,
-					channel_features: middle.channel_features(),
-					fee_msat: first_hop_fee,
-					cltv_expiry_delta: 100,
-					maybe_announced_channel: true,
-				},
-				RouteHop {
-					pubkey: dest.get_our_node_id(),
-					node_features: dest.node_features(),
-					short_channel_id: dest_scid,
-					channel_features: dest.channel_features(),
-					fee_msat: amt,
-					cltv_expiry_delta: 200,
-					maybe_announced_channel: true,
-				},
-			],
-			blinded_tail: None,
-		}],
-		route_params: Some(route_params.clone()),
-	};
-	let onion = RecipientOnionFields::secret_only(payment_secret, amt);
-	let res = source.send_payment_with_route(route, payment_hash, onion, payment_id);
-	match res {
-		Err(err) => {
-			panic!("Errored with {:?} on initial payment send", err);
-		},
-		Ok(()) => {
-			let sent_amt = amt + first_hop_fee;
-			let expect_failure = sent_amt < min_value_sendable || sent_amt > max_value_sendable;
-			let succeeded = check_payment_send_events(source, payment_id);
-			assert_eq!(succeeded, !expect_failure);
-			succeeded
-		},
-	}
-}
-
-/// Send an MPP payment directly from source to dest using multiple channels.
-#[inline]
-fn send_mpp_payment(
-	source: &ChanMan, dest: &ChanMan, dest_chan_ids: &[ChannelId], amt: u64,
-	payment_secret: PaymentSecret, payment_hash: PaymentHash, payment_id: PaymentId,
-) -> bool {
-	let num_paths = dest_chan_ids.len();
-	if num_paths == 0 {
-		return false;
-	}
-
-	let amt_per_path = amt / num_paths as u64;
-	let mut paths = Vec::with_capacity(num_paths);
-
-	let dest_chans = dest.list_channels();
-	let dest_scids = dest_chan_ids.iter().map(|chan_id| {
-		dest_chans
-			.iter()
-			.find(|chan| chan.channel_id == *chan_id)
-			.and_then(|chan| chan.short_channel_id)
-			.unwrap()
-	});
-
-	for (i, dest_scid) in dest_scids.enumerate() {
-		let path_amt = if i == num_paths - 1 {
-			amt - amt_per_path * (num_paths as u64 - 1)
-		} else {
-			amt_per_path
-		};
-
-		paths.push(Path {
-			hops: vec![RouteHop {
-				pubkey: dest.get_our_node_id(),
-				node_features: dest.node_features(),
-				short_channel_id: dest_scid,
-				channel_features: dest.channel_features(),
-				fee_msat: path_amt,
-				cltv_expiry_delta: 200,
-				maybe_announced_channel: true,
-			}],
-			blinded_tail: None,
-		});
-	}
-
-	let route_params = RouteParameters::from_payment_params_and_value(
-		PaymentParameters::from_node_id(dest.get_our_node_id(), TEST_FINAL_CLTV),
-		amt,
-	);
-	let route = Route { paths, route_params: Some(route_params) };
-	let onion = RecipientOnionFields::secret_only(payment_secret, amt);
-	let res = source.send_payment_with_route(route, payment_hash, onion, payment_id);
-	match res {
-		Err(_) => false,
-		Ok(()) => check_payment_send_events(source, payment_id),
-	}
-}
-
-/// Send an MPP payment from source to dest via middle node.
-/// Supports multiple channels on either or both hops.
-#[inline]
-fn send_mpp_hop_payment(
-	source: &ChanMan, middle: &ChanMan, middle_chan_ids: &[ChannelId], dest: &ChanMan,
-	dest_chan_ids: &[ChannelId], amt: u64, payment_secret: PaymentSecret,
-	payment_hash: PaymentHash, payment_id: PaymentId,
-) -> bool {
-	// Create paths by pairing middle_scids with dest_scids
-	let num_paths = middle_chan_ids.len().max(dest_chan_ids.len());
-	if num_paths == 0 {
-		return false;
-	}
-
-	let first_hop_fee = 50_000;
-	let amt_per_path = amt / num_paths as u64;
-	let fee_per_path = first_hop_fee / num_paths as u64;
-	let mut paths = Vec::with_capacity(num_paths);
-
-	let middle_chans = middle.list_channels();
-	let middle_scids: Vec<_> = middle_chan_ids
-		.iter()
-		.map(|chan_id| {
-			middle_chans
-				.iter()
-				.find(|chan| chan.channel_id == *chan_id)
-				.and_then(|chan| chan.short_channel_id)
-				.unwrap()
-		})
-		.collect();
-
-	let dest_chans = dest.list_channels();
-	let dest_scids: Vec<_> = dest_chan_ids
-		.iter()
-		.map(|chan_id| {
-			dest_chans
-				.iter()
-				.find(|chan| chan.channel_id == *chan_id)
-				.and_then(|chan| chan.short_channel_id)
-				.unwrap()
-		})
-		.collect();
-
-	for i in 0..num_paths {
-		let middle_scid = middle_scids[i % middle_scids.len()];
-		let dest_scid = dest_scids[i % dest_scids.len()];
-
-		let path_amt = if i == num_paths - 1 {
-			amt - amt_per_path * (num_paths as u64 - 1)
-		} else {
-			amt_per_path
-		};
-		let path_fee = if i == num_paths - 1 {
-			first_hop_fee - fee_per_path * (num_paths as u64 - 1)
-		} else {
-			fee_per_path
-		};
-
-		paths.push(Path {
-			hops: vec![
-				RouteHop {
-					pubkey: middle.get_our_node_id(),
-					node_features: middle.node_features(),
-					short_channel_id: middle_scid,
-					channel_features: middle.channel_features(),
-					fee_msat: path_fee,
-					cltv_expiry_delta: 100,
-					maybe_announced_channel: true,
-				},
-				RouteHop {
-					pubkey: dest.get_our_node_id(),
-					node_features: dest.node_features(),
-					short_channel_id: dest_scid,
-					channel_features: dest.channel_features(),
-					fee_msat: path_amt,
-					cltv_expiry_delta: 200,
-					maybe_announced_channel: true,
-				},
-			],
-			blinded_tail: None,
-		});
-	}
-
-	let route_params = RouteParameters::from_payment_params_and_value(
-		PaymentParameters::from_node_id(dest.get_our_node_id(), TEST_FINAL_CLTV),
-		amt,
-	);
-	let route = Route { paths, route_params: Some(route_params) };
-	let onion = RecipientOnionFields::secret_only(payment_secret, amt);
-	let res = source.send_payment_with_route(route, payment_hash, onion, payment_id);
-	match res {
-		Err(_) => false,
-		Ok(()) => check_payment_send_events(source, payment_id),
-	}
-}
 
 #[inline]
 fn assert_action_timeout_awaiting_response(action: &msgs::ErrorAction) {
@@ -1591,6 +1283,444 @@ impl PeerLink {
 	}
 }
 
+struct NodePayments {
+	pending: Vec<PaymentId>,
+	resolved: HashMap<PaymentId, Option<PaymentHash>>,
+}
+
+impl NodePayments {
+	fn new() -> Self {
+		Self { pending: Vec::new(), resolved: new_hash_map() }
+	}
+}
+
+struct PaymentTracker {
+	nodes: [NodePayments; 3],
+	claimed_payment_hashes: HashSet<PaymentHash>,
+	payment_preimages: HashMap<PaymentHash, PaymentPreimage>,
+	payment_ctr: u64,
+}
+
+impl PaymentTracker {
+	fn new() -> Self {
+		Self {
+			nodes: [NodePayments::new(), NodePayments::new(), NodePayments::new()],
+			claimed_payment_hashes: HashSet::new(),
+			payment_preimages: new_hash_map(),
+			payment_ctr: 0,
+		}
+	}
+
+	// Returns a bool indicating whether the payment failed.
+	fn check_payment_send_events(source: &ChanMan, sent_payment_id: PaymentId) -> bool {
+		for payment in source.list_recent_payments() {
+			match payment {
+				RecentPaymentDetails::Pending { payment_id, .. }
+					if payment_id == sent_payment_id =>
+				{
+					return true;
+				},
+				RecentPaymentDetails::Abandoned { payment_id, .. }
+					if payment_id == sent_payment_id =>
+				{
+					return false;
+				},
+				_ => {},
+			}
+		}
+		return false;
+	}
+
+	fn next_payment(&mut self, dest: &ChanMan) -> (PaymentSecret, PaymentHash, PaymentId) {
+		self.payment_ctr += 1;
+		let mut payment_preimage = PaymentPreimage([0; 32]);
+		payment_preimage.0[0..8].copy_from_slice(&self.payment_ctr.to_be_bytes());
+		let hash = PaymentHash(Sha256::hash(&payment_preimage.0).to_byte_array());
+		let secret = dest
+			.create_inbound_payment_for_hash(hash, None, 3600, None)
+			.expect("create_inbound_payment_for_hash failed");
+		assert!(self.payment_preimages.insert(hash, payment_preimage).is_none());
+		let mut id = PaymentId([0; 32]);
+		id.0[0..8].copy_from_slice(&self.payment_ctr.to_ne_bytes());
+		(secret, hash, id)
+	}
+
+	fn send(
+		&mut self, nodes: &[HarnessNode<'_>; 3], source_idx: usize, dest_idx: usize,
+		dest_chan_id: ChannelId, amt: u64,
+	) -> bool {
+		let source = &nodes[source_idx];
+		let dest = &nodes[dest_idx];
+		let (secret, hash, id) = self.next_payment(dest);
+		let (min_value_sendable, max_value_sendable, dest_scid) = source
+			.list_usable_channels()
+			.iter()
+			.find(|chan| chan.channel_id == dest_chan_id)
+			.map(|chan| {
+				(
+					chan.next_outbound_htlc_minimum_msat,
+					chan.next_outbound_htlc_limit_msat,
+					chan.short_channel_id.unwrap_or(0),
+				)
+			})
+			.unwrap_or((0, 0, 0));
+		let route_params = RouteParameters::from_payment_params_and_value(
+			PaymentParameters::from_node_id(source.get_our_node_id(), TEST_FINAL_CLTV),
+			amt,
+		);
+		let route = Route {
+			paths: vec![Path {
+				hops: vec![RouteHop {
+					pubkey: dest.get_our_node_id(),
+					node_features: dest.node_features(),
+					short_channel_id: dest_scid,
+					channel_features: dest.channel_features(),
+					fee_msat: amt,
+					cltv_expiry_delta: 200,
+					maybe_announced_channel: true,
+				}],
+				blinded_tail: None,
+			}],
+			route_params: Some(route_params.clone()),
+		};
+		let onion = RecipientOnionFields::secret_only(secret, amt);
+		let res = source.send_payment_with_route(route, hash, onion, id);
+		let succeeded = match res {
+			Err(err) => {
+				panic!("Errored with {:?} on initial payment send", err);
+			},
+			Ok(()) => {
+				let expect_failure = amt < min_value_sendable || amt > max_value_sendable;
+				let succeeded = Self::check_payment_send_events(source, id);
+				assert_eq!(succeeded, !expect_failure);
+				succeeded
+			},
+		};
+		if succeeded {
+			self.nodes[source_idx].pending.push(id);
+		}
+		succeeded
+	}
+
+	fn send_hop(
+		&mut self, nodes: &[HarnessNode<'_>; 3], source_idx: usize, middle_idx: usize,
+		middle_chan_id: ChannelId, dest_idx: usize, dest_chan_id: ChannelId, amt: u64,
+	) {
+		let source = &nodes[source_idx];
+		let middle = &nodes[middle_idx];
+		let dest = &nodes[dest_idx];
+		let (secret, hash, id) = self.next_payment(dest);
+		let (min_value_sendable, max_value_sendable, middle_scid) = source
+			.list_usable_channels()
+			.iter()
+			.find(|chan| chan.channel_id == middle_chan_id)
+			.map(|chan| {
+				(
+					chan.next_outbound_htlc_minimum_msat,
+					chan.next_outbound_htlc_limit_msat,
+					chan.short_channel_id.unwrap_or(0),
+				)
+			})
+			.unwrap_or((0, 0, 0));
+		let dest_scid = dest
+			.list_channels()
+			.iter()
+			.find(|chan| chan.channel_id == dest_chan_id)
+			.and_then(|chan| chan.short_channel_id)
+			.unwrap_or(0);
+		let first_hop_fee = 50_000;
+		let route_params = RouteParameters::from_payment_params_and_value(
+			PaymentParameters::from_node_id(source.get_our_node_id(), TEST_FINAL_CLTV),
+			amt,
+		);
+		let route = Route {
+			paths: vec![Path {
+				hops: vec![
+					RouteHop {
+						pubkey: middle.get_our_node_id(),
+						node_features: middle.node_features(),
+						short_channel_id: middle_scid,
+						channel_features: middle.channel_features(),
+						fee_msat: first_hop_fee,
+						cltv_expiry_delta: 100,
+						maybe_announced_channel: true,
+					},
+					RouteHop {
+						pubkey: dest.get_our_node_id(),
+						node_features: dest.node_features(),
+						short_channel_id: dest_scid,
+						channel_features: dest.channel_features(),
+						fee_msat: amt,
+						cltv_expiry_delta: 200,
+						maybe_announced_channel: true,
+					},
+				],
+				blinded_tail: None,
+			}],
+			route_params: Some(route_params.clone()),
+		};
+		let onion = RecipientOnionFields::secret_only(secret, amt);
+		let res = source.send_payment_with_route(route, hash, onion, id);
+		let succeeded = match res {
+			Err(err) => {
+				panic!("Errored with {:?} on initial payment send", err);
+			},
+			Ok(()) => {
+				let sent_amt = amt + first_hop_fee;
+				let expect_failure = sent_amt < min_value_sendable || sent_amt > max_value_sendable;
+				let succeeded = Self::check_payment_send_events(source, id);
+				assert_eq!(succeeded, !expect_failure);
+				succeeded
+			},
+		};
+		if succeeded {
+			self.nodes[source_idx].pending.push(id);
+		}
+	}
+
+	fn send_noret(
+		&mut self, nodes: &[HarnessNode<'_>; 3], source_idx: usize, dest_idx: usize,
+		dest_chan_id: ChannelId, amt: u64,
+	) {
+		self.send(nodes, source_idx, dest_idx, dest_chan_id, amt);
+	}
+
+	// Direct MPP payment (no hop)
+	fn send_mpp_direct(
+		&mut self, nodes: &[HarnessNode<'_>; 3], source_idx: usize, dest_idx: usize,
+		dest_chan_ids: &[ChannelId], amt: u64,
+	) {
+		let source = &nodes[source_idx];
+		let dest = &nodes[dest_idx];
+		let (secret, hash, id) = self.next_payment(dest);
+		let num_paths = dest_chan_ids.len();
+		if num_paths == 0 {
+			return;
+		}
+
+		let amt_per_path = amt / num_paths as u64;
+		let mut paths = Vec::with_capacity(num_paths);
+
+		let dest_chans = dest.list_channels();
+		let dest_scids = dest_chan_ids.iter().map(|chan_id| {
+			dest_chans
+				.iter()
+				.find(|chan| chan.channel_id == *chan_id)
+				.and_then(|chan| chan.short_channel_id)
+				.unwrap()
+		});
+
+		for (i, dest_scid) in dest_scids.enumerate() {
+			let path_amt = if i == num_paths - 1 {
+				amt - amt_per_path * (num_paths as u64 - 1)
+			} else {
+				amt_per_path
+			};
+
+			paths.push(Path {
+				hops: vec![RouteHop {
+					pubkey: dest.get_our_node_id(),
+					node_features: dest.node_features(),
+					short_channel_id: dest_scid,
+					channel_features: dest.channel_features(),
+					fee_msat: path_amt,
+					cltv_expiry_delta: 200,
+					maybe_announced_channel: true,
+				}],
+				blinded_tail: None,
+			});
+		}
+
+		let route_params = RouteParameters::from_payment_params_and_value(
+			PaymentParameters::from_node_id(dest.get_our_node_id(), TEST_FINAL_CLTV),
+			amt,
+		);
+		let route = Route { paths, route_params: Some(route_params) };
+		let onion = RecipientOnionFields::secret_only(secret, amt);
+		let res = source.send_payment_with_route(route, hash, onion, id);
+		let succeeded = match res {
+			Err(_) => false,
+			Ok(()) => Self::check_payment_send_events(source, id),
+		};
+		if succeeded {
+			self.nodes[source_idx].pending.push(id);
+		}
+	}
+
+	// MPP payment via hop - splits payment across multiple channels on either or both hops
+	fn send_mpp_hop(
+		&mut self, nodes: &[HarnessNode<'_>; 3], source_idx: usize, middle_idx: usize,
+		middle_chan_ids: &[ChannelId], dest_idx: usize, dest_chan_ids: &[ChannelId], amt: u64,
+	) {
+		let source = &nodes[source_idx];
+		let middle = &nodes[middle_idx];
+		let dest = &nodes[dest_idx];
+		let (secret, hash, id) = self.next_payment(dest);
+		// Create paths by pairing middle_scids with dest_scids.
+		let num_paths = middle_chan_ids.len().max(dest_chan_ids.len());
+		if num_paths == 0 {
+			return;
+		}
+
+		let first_hop_fee = 50_000;
+		let amt_per_path = amt / num_paths as u64;
+		let fee_per_path = first_hop_fee / num_paths as u64;
+		let mut paths = Vec::with_capacity(num_paths);
+
+		let middle_chans = middle.list_channels();
+		let middle_scids: Vec<_> = middle_chan_ids
+			.iter()
+			.map(|chan_id| {
+				middle_chans
+					.iter()
+					.find(|chan| chan.channel_id == *chan_id)
+					.and_then(|chan| chan.short_channel_id)
+					.unwrap()
+			})
+			.collect();
+
+		let dest_chans = dest.list_channels();
+		let dest_scids: Vec<_> = dest_chan_ids
+			.iter()
+			.map(|chan_id| {
+				dest_chans
+					.iter()
+					.find(|chan| chan.channel_id == *chan_id)
+					.and_then(|chan| chan.short_channel_id)
+					.unwrap()
+			})
+			.collect();
+
+		for i in 0..num_paths {
+			let middle_scid = middle_scids[i % middle_scids.len()];
+			let dest_scid = dest_scids[i % dest_scids.len()];
+
+			let path_amt = if i == num_paths - 1 {
+				amt - amt_per_path * (num_paths as u64 - 1)
+			} else {
+				amt_per_path
+			};
+			let path_fee = if i == num_paths - 1 {
+				first_hop_fee - fee_per_path * (num_paths as u64 - 1)
+			} else {
+				fee_per_path
+			};
+
+			paths.push(Path {
+				hops: vec![
+					RouteHop {
+						pubkey: middle.get_our_node_id(),
+						node_features: middle.node_features(),
+						short_channel_id: middle_scid,
+						channel_features: middle.channel_features(),
+						fee_msat: path_fee,
+						cltv_expiry_delta: 100,
+						maybe_announced_channel: true,
+					},
+					RouteHop {
+						pubkey: dest.get_our_node_id(),
+						node_features: dest.node_features(),
+						short_channel_id: dest_scid,
+						channel_features: dest.channel_features(),
+						fee_msat: path_amt,
+						cltv_expiry_delta: 200,
+						maybe_announced_channel: true,
+					},
+				],
+				blinded_tail: None,
+			});
+		}
+
+		let route_params = RouteParameters::from_payment_params_and_value(
+			PaymentParameters::from_node_id(dest.get_our_node_id(), TEST_FINAL_CLTV),
+			amt,
+		);
+		let route = Route { paths, route_params: Some(route_params) };
+		let onion = RecipientOnionFields::secret_only(secret, amt);
+		let res = source.send_payment_with_route(route, hash, onion, id);
+		let succeeded = match res {
+			Err(_) => false,
+			Ok(()) => Self::check_payment_send_events(source, id),
+		};
+		if succeeded {
+			self.nodes[source_idx].pending.push(id);
+		}
+	}
+
+	fn claim_payment(&mut self, node: &HarnessNode<'_>, payment_hash: PaymentHash, fail: bool) {
+		if fail {
+			node.fail_htlc_backwards(&payment_hash);
+		} else {
+			let payment_preimage = *self
+				.payment_preimages
+				.get(&payment_hash)
+				.expect("PaymentClaimable for unknown payment hash");
+			node.claim_funds(payment_preimage);
+			self.claimed_payment_hashes.insert(payment_hash);
+		}
+	}
+
+	fn mark_sent(&mut self, node_idx: usize, sent_id: PaymentId, payment_hash: PaymentHash) {
+		let node = &mut self.nodes[node_idx];
+		let idx_opt = node.pending.iter().position(|id| *id == sent_id);
+		if let Some(idx) = idx_opt {
+			node.pending.remove(idx);
+			node.resolved.insert(sent_id, Some(payment_hash));
+		} else {
+			assert!(node.resolved.contains_key(&sent_id));
+		}
+	}
+
+	fn mark_resolved_without_hash(&mut self, node_idx: usize, payment_id: PaymentId) {
+		let node = &mut self.nodes[node_idx];
+		let idx_opt = node.pending.iter().position(|id| *id == payment_id);
+		if let Some(idx) = idx_opt {
+			node.pending.remove(idx);
+			node.resolved.insert(payment_id, None);
+		} else if !node.resolved.contains_key(&payment_id) {
+			// Some resolutions can arrive immediately, before the send helper records
+			// the payment as pending. Track them so later duplicate events are accepted.
+			node.resolved.insert(payment_id, None);
+		}
+	}
+
+	fn mark_successful_probe(&mut self, node_idx: usize, payment_id: PaymentId) {
+		let node = &mut self.nodes[node_idx];
+		let idx_opt = node.pending.iter().position(|id| *id == payment_id);
+		if let Some(idx) = idx_opt {
+			node.pending.remove(idx);
+			node.resolved.insert(payment_id, None);
+		} else {
+			assert!(node.resolved.contains_key(&payment_id));
+		}
+	}
+
+	fn assert_all_resolved(&self) {
+		for (idx, node) in self.nodes.iter().enumerate() {
+			assert!(
+				node.pending.is_empty(),
+				"Node {} has {} stuck pending payments after settling all state",
+				idx,
+				node.pending.len()
+			);
+		}
+	}
+
+	fn assert_claims_reported(&self) {
+		for hash in self.claimed_payment_hashes.iter() {
+			let found = self
+				.nodes
+				.iter()
+				.any(|node| node.resolved.values().any(|h| h.as_ref() == Some(hash)));
+			assert!(
+				found,
+				"Payment {:?} was claimed by receiver but sender never got PaymentSent",
+				hash
+			);
+		}
+	}
+}
+
 fn build_node_config(chan_type: ChanType) -> UserConfig {
 	let mut config = UserConfig::default();
 	config.channel_config.forwarding_fee_proportional_millionths = 0;
@@ -1959,20 +2089,12 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 	let chan_a_id = ab_link.first_channel_id();
 	let chan_b_id = bc_link.first_channel_id();
 
-	let mut p_ctr: u64 = 0;
-
 	let mut queues = EventQueues::new();
+	let mut payments = PaymentTracker::new();
 
 	for node in &mut nodes {
 		node.serialized_manager = node.encode();
 	}
-
-	let pending_payments = RefCell::new([Vec::new(), Vec::new(), Vec::new()]);
-	let resolved_payments: RefCell<[HashMap<PaymentId, Option<PaymentHash>>; 3]> =
-		RefCell::new([new_hash_map(), new_hash_map(), new_hash_map()]);
-	let claimed_payment_hashes: RefCell<HashSet<PaymentHash>> = RefCell::new(HashSet::new());
-	let payment_preimages: RefCell<HashMap<PaymentHash, PaymentPreimage>> =
-		RefCell::new(new_hash_map());
 
 	macro_rules! test_return {
 		() => {{
@@ -2247,61 +2369,26 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 				let mut claim_set = new_hash_map();
 				let mut events = nodes[$node].get_and_clear_pending_events();
 				let had_events = !events.is_empty();
-				let mut pending_payments = pending_payments.borrow_mut();
-				let mut resolved_payments = resolved_payments.borrow_mut();
 				for event in events.drain(..) {
 					match event {
 						events::Event::PaymentClaimable { payment_hash, .. } => {
 							if claim_set.insert(payment_hash.0, ()).is_none() {
-								if $fail {
-									nodes[$node].fail_htlc_backwards(&payment_hash);
-								} else {
-									let payment_preimage = *payment_preimages
-										.borrow()
-										.get(&payment_hash)
-										.expect("PaymentClaimable for unknown payment hash");
-									nodes[$node].claim_funds(payment_preimage);
-									claimed_payment_hashes.borrow_mut().insert(payment_hash);
-								}
+								payments.claim_payment(&nodes[$node], payment_hash, $fail);
 							}
 						},
 						events::Event::PaymentSent { payment_id, payment_hash, .. } => {
-							let sent_id = payment_id.unwrap();
-							let idx_opt =
-								pending_payments[$node].iter().position(|id| *id == sent_id);
-							if let Some(idx) = idx_opt {
-								pending_payments[$node].remove(idx);
-								resolved_payments[$node].insert(sent_id, Some(payment_hash));
-							} else {
-								assert!(resolved_payments[$node].contains_key(&sent_id));
-							}
+							payments.mark_sent($node, payment_id.unwrap(), payment_hash);
 						},
 						// Even though we don't explicitly send probes, because probes are
-						// detected based on hashing the payment hash+preimage, its rather
+						// detected based on hashing the payment hash+preimage, it is rather
 						// trivial for the fuzzer to build payments that accidentally end up
 						// looking like probes.
 						events::Event::ProbeSuccessful { payment_id, .. } => {
-							let idx_opt =
-								pending_payments[$node].iter().position(|id| *id == payment_id);
-							if let Some(idx) = idx_opt {
-								pending_payments[$node].remove(idx);
-								resolved_payments[$node].insert(payment_id, None);
-							} else {
-								assert!(resolved_payments[$node].contains_key(&payment_id));
-							}
+							payments.mark_successful_probe($node, payment_id);
 						},
 						events::Event::PaymentFailed { payment_id, .. }
 						| events::Event::ProbeFailed { payment_id, .. } => {
-							let idx_opt =
-								pending_payments[$node].iter().position(|id| *id == payment_id);
-							if let Some(idx) = idx_opt {
-								pending_payments[$node].remove(idx);
-								resolved_payments[$node].insert(payment_id, None);
-							} else if !resolved_payments[$node].contains_key(&payment_id) {
-								// Payment failed immediately on send, so it was never added to
-								// pending_payments. Add it to resolved_payments to track it.
-								resolved_payments[$node].insert(payment_id, None);
-							}
+							payments.mark_resolved_without_hash($node, payment_id);
 						},
 						events::Event::PaymentClaimed { .. } => {},
 						events::Event::PaymentPathSuccessful { .. } => {},
@@ -2309,7 +2396,6 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 						events::Event::PaymentForwarded { .. } if $node == 1 => {},
 						events::Event::ChannelReady { .. } => {},
 						events::Event::HTLCHandlingFailed { .. } => {},
-
 						events::Event::FundingTransactionReadyForSigning {
 							channel_id,
 							counterparty_node_id,
@@ -2340,7 +2426,6 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 								| events::FundingInfo::Tx { .. },
 							..
 						} => {},
-
 						_ => panic!("Unhandled event: {:?}", event),
 					}
 				}
@@ -2357,110 +2442,19 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 			}};
 		}
 
-		let send =
-			|source_idx: usize, dest_idx: usize, dest_chan_id, amt, payment_ctr: &mut u64| {
-				let source = &nodes[source_idx];
-				let dest = &nodes[dest_idx];
-				let (secret, hash) = get_payment_secret_hash(dest, payment_ctr, &payment_preimages);
-				let mut id = PaymentId([0; 32]);
-				id.0[0..8].copy_from_slice(&payment_ctr.to_ne_bytes());
-				let succeeded = send_payment(source, dest, dest_chan_id, amt, secret, hash, id);
-				if succeeded {
-					pending_payments.borrow_mut()[source_idx].push(id);
-				}
-				succeeded
-			};
-		let send_noret = |source_idx, dest_idx, dest_chan_id, amt, payment_ctr: &mut u64| {
-			send(source_idx, dest_idx, dest_chan_id, amt, payment_ctr);
-		};
-
-		let send_hop_noret = |source_idx: usize,
-		                      middle_idx: usize,
-		                      middle_chan_id: ChannelId,
-		                      dest_idx: usize,
-		                      dest_chan_id: ChannelId,
-		                      amt: u64,
-		                      payment_ctr: &mut u64| {
-			let source = &nodes[source_idx];
-			let middle = &nodes[middle_idx];
-			let dest = &nodes[dest_idx];
-			let (secret, hash) = get_payment_secret_hash(dest, payment_ctr, &payment_preimages);
-			let mut id = PaymentId([0; 32]);
-			id.0[0..8].copy_from_slice(&payment_ctr.to_ne_bytes());
-			let succeeded = send_hop_payment(
-				source,
-				middle,
-				middle_chan_id,
-				dest,
-				dest_chan_id,
-				amt,
-				secret,
-				hash,
-				id,
-			);
-			if succeeded {
-				pending_payments.borrow_mut()[source_idx].push(id);
-			}
-		};
-
-		// Direct MPP payment (no hop)
-		let send_mpp_direct = |source_idx: usize,
-		                       dest_idx: usize,
-		                       dest_chan_ids: &[ChannelId],
-		                       amt: u64,
-		                       payment_ctr: &mut u64| {
-			let source = &nodes[source_idx];
-			let dest = &nodes[dest_idx];
-			let (secret, hash) = get_payment_secret_hash(dest, payment_ctr, &payment_preimages);
-			let mut id = PaymentId([0; 32]);
-			id.0[0..8].copy_from_slice(&payment_ctr.to_ne_bytes());
-			let succeeded = send_mpp_payment(source, dest, dest_chan_ids, amt, secret, hash, id);
-			if succeeded {
-				pending_payments.borrow_mut()[source_idx].push(id);
-			}
-		};
-
-		// MPP payment via hop - splits payment across multiple channels on either or both hops
-		let send_mpp_hop = |source_idx: usize,
-		                    middle_idx: usize,
-		                    middle_chan_ids: &[ChannelId],
-		                    dest_idx: usize,
-		                    dest_chan_ids: &[ChannelId],
-		                    amt: u64,
-		                    payment_ctr: &mut u64| {
-			let source = &nodes[source_idx];
-			let middle = &nodes[middle_idx];
-			let dest = &nodes[dest_idx];
-			let (secret, hash) = get_payment_secret_hash(dest, payment_ctr, &payment_preimages);
-			let mut id = PaymentId([0; 32]);
-			id.0[0..8].copy_from_slice(&payment_ctr.to_ne_bytes());
-			let succeeded = send_mpp_hop_payment(
-				source,
-				middle,
-				middle_chan_ids,
-				dest,
-				dest_chan_ids,
-				amt,
-				secret,
-				hash,
-				id,
-			);
-			if succeeded {
-				pending_payments.borrow_mut()[source_idx].push(id);
-			}
-		};
-
 		macro_rules! process_all_events {
-			() => { {
+			() => {{
 				let mut last_pass_no_updates = false;
 				for i in 0..std::usize::MAX {
 					if i == 100 {
-						panic!("It may take may iterations to settle the state, but it should not take forever");
+						panic!(
+							"It may take may iterations to settle the state, but it should not take forever"
+						);
 					}
-					// Next, make sure no monitor updates are pending
+					// Next, make sure no monitor updates are pending.
 					ab_link.complete_all_monitor_updates(&nodes);
 					bc_link.complete_all_monitor_updates(&nodes);
-					// Then, make sure any current forwards make their way to their destination
+					// Then, make sure any current forwards make their way to their destination.
 					if process_msg_events!(0, false, ProcessMessages::AllMessages) {
 						last_pass_no_updates = false;
 						continue;
@@ -2498,7 +2492,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 					}
 					last_pass_no_updates = true;
 				}
-			} };
+			}};
 		}
 
 		let v = get_slice!(1)[0];
@@ -2571,74 +2565,104 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 			0x27 => process_ev_noret!(2, false),
 
 			// 1/10th the channel size:
-			0x30 => send_noret(0, 1, chan_a_id, 10_000_000, &mut p_ctr),
-			0x31 => send_noret(1, 0, chan_a_id, 10_000_000, &mut p_ctr),
-			0x32 => send_noret(1, 2, chan_b_id, 10_000_000, &mut p_ctr),
-			0x33 => send_noret(2, 1, chan_b_id, 10_000_000, &mut p_ctr),
-			0x34 => send_hop_noret(0, 1, chan_a_id, 2, chan_b_id, 10_000_000, &mut p_ctr),
-			0x35 => send_hop_noret(2, 1, chan_b_id, 0, chan_a_id, 10_000_000, &mut p_ctr),
+			0x30 => payments.send_noret(&nodes, 0, 1, chan_a_id, 10_000_000),
+			0x31 => payments.send_noret(&nodes, 1, 0, chan_a_id, 10_000_000),
+			0x32 => payments.send_noret(&nodes, 1, 2, chan_b_id, 10_000_000),
+			0x33 => payments.send_noret(&nodes, 2, 1, chan_b_id, 10_000_000),
+			0x34 => payments.send_hop(&nodes, 0, 1, chan_a_id, 2, chan_b_id, 10_000_000),
+			0x35 => payments.send_hop(&nodes, 2, 1, chan_b_id, 0, chan_a_id, 10_000_000),
 
-			0x38 => send_noret(0, 1, chan_a_id, 1_000_000, &mut p_ctr),
-			0x39 => send_noret(1, 0, chan_a_id, 1_000_000, &mut p_ctr),
-			0x3a => send_noret(1, 2, chan_b_id, 1_000_000, &mut p_ctr),
-			0x3b => send_noret(2, 1, chan_b_id, 1_000_000, &mut p_ctr),
-			0x3c => send_hop_noret(0, 1, chan_a_id, 2, chan_b_id, 1_000_000, &mut p_ctr),
-			0x3d => send_hop_noret(2, 1, chan_b_id, 0, chan_a_id, 1_000_000, &mut p_ctr),
+			0x38 => payments.send_noret(&nodes, 0, 1, chan_a_id, 1_000_000),
+			0x39 => payments.send_noret(&nodes, 1, 0, chan_a_id, 1_000_000),
+			0x3a => payments.send_noret(&nodes, 1, 2, chan_b_id, 1_000_000),
+			0x3b => payments.send_noret(&nodes, 2, 1, chan_b_id, 1_000_000),
+			0x3c => payments.send_hop(&nodes, 0, 1, chan_a_id, 2, chan_b_id, 1_000_000),
+			0x3d => payments.send_hop(&nodes, 2, 1, chan_b_id, 0, chan_a_id, 1_000_000),
 
-			0x40 => send_noret(0, 1, chan_a_id, 100_000, &mut p_ctr),
-			0x41 => send_noret(1, 0, chan_a_id, 100_000, &mut p_ctr),
-			0x42 => send_noret(1, 2, chan_b_id, 100_000, &mut p_ctr),
-			0x43 => send_noret(2, 1, chan_b_id, 100_000, &mut p_ctr),
-			0x44 => send_hop_noret(0, 1, chan_a_id, 2, chan_b_id, 100_000, &mut p_ctr),
-			0x45 => send_hop_noret(2, 1, chan_b_id, 0, chan_a_id, 100_000, &mut p_ctr),
+			0x40 => payments.send_noret(&nodes, 0, 1, chan_a_id, 100_000),
+			0x41 => payments.send_noret(&nodes, 1, 0, chan_a_id, 100_000),
+			0x42 => payments.send_noret(&nodes, 1, 2, chan_b_id, 100_000),
+			0x43 => payments.send_noret(&nodes, 2, 1, chan_b_id, 100_000),
+			0x44 => payments.send_hop(&nodes, 0, 1, chan_a_id, 2, chan_b_id, 100_000),
+			0x45 => payments.send_hop(&nodes, 2, 1, chan_b_id, 0, chan_a_id, 100_000),
 
-			0x48 => send_noret(0, 1, chan_a_id, 10_000, &mut p_ctr),
-			0x49 => send_noret(1, 0, chan_a_id, 10_000, &mut p_ctr),
-			0x4a => send_noret(1, 2, chan_b_id, 10_000, &mut p_ctr),
-			0x4b => send_noret(2, 1, chan_b_id, 10_000, &mut p_ctr),
-			0x4c => send_hop_noret(0, 1, chan_a_id, 2, chan_b_id, 10_000, &mut p_ctr),
-			0x4d => send_hop_noret(2, 1, chan_b_id, 0, chan_a_id, 10_000, &mut p_ctr),
+			0x48 => payments.send_noret(&nodes, 0, 1, chan_a_id, 10_000),
+			0x49 => payments.send_noret(&nodes, 1, 0, chan_a_id, 10_000),
+			0x4a => payments.send_noret(&nodes, 1, 2, chan_b_id, 10_000),
+			0x4b => payments.send_noret(&nodes, 2, 1, chan_b_id, 10_000),
+			0x4c => payments.send_hop(&nodes, 0, 1, chan_a_id, 2, chan_b_id, 10_000),
+			0x4d => payments.send_hop(&nodes, 2, 1, chan_b_id, 0, chan_a_id, 10_000),
 
-			0x50 => send_noret(0, 1, chan_a_id, 1_000, &mut p_ctr),
-			0x51 => send_noret(1, 0, chan_a_id, 1_000, &mut p_ctr),
-			0x52 => send_noret(1, 2, chan_b_id, 1_000, &mut p_ctr),
-			0x53 => send_noret(2, 1, chan_b_id, 1_000, &mut p_ctr),
-			0x54 => send_hop_noret(0, 1, chan_a_id, 2, chan_b_id, 1_000, &mut p_ctr),
-			0x55 => send_hop_noret(2, 1, chan_b_id, 0, chan_a_id, 1_000, &mut p_ctr),
+			0x50 => payments.send_noret(&nodes, 0, 1, chan_a_id, 1_000),
+			0x51 => payments.send_noret(&nodes, 1, 0, chan_a_id, 1_000),
+			0x52 => payments.send_noret(&nodes, 1, 2, chan_b_id, 1_000),
+			0x53 => payments.send_noret(&nodes, 2, 1, chan_b_id, 1_000),
+			0x54 => payments.send_hop(&nodes, 0, 1, chan_a_id, 2, chan_b_id, 1_000),
+			0x55 => payments.send_hop(&nodes, 2, 1, chan_b_id, 0, chan_a_id, 1_000),
 
-			0x58 => send_noret(0, 1, chan_a_id, 100, &mut p_ctr),
-			0x59 => send_noret(1, 0, chan_a_id, 100, &mut p_ctr),
-			0x5a => send_noret(1, 2, chan_b_id, 100, &mut p_ctr),
-			0x5b => send_noret(2, 1, chan_b_id, 100, &mut p_ctr),
-			0x5c => send_hop_noret(0, 1, chan_a_id, 2, chan_b_id, 100, &mut p_ctr),
-			0x5d => send_hop_noret(2, 1, chan_b_id, 0, chan_a_id, 100, &mut p_ctr),
+			0x58 => payments.send_noret(&nodes, 0, 1, chan_a_id, 100),
+			0x59 => payments.send_noret(&nodes, 1, 0, chan_a_id, 100),
+			0x5a => payments.send_noret(&nodes, 1, 2, chan_b_id, 100),
+			0x5b => payments.send_noret(&nodes, 2, 1, chan_b_id, 100),
+			0x5c => payments.send_hop(&nodes, 0, 1, chan_a_id, 2, chan_b_id, 100),
+			0x5d => payments.send_hop(&nodes, 2, 1, chan_b_id, 0, chan_a_id, 100),
 
-			0x60 => send_noret(0, 1, chan_a_id, 10, &mut p_ctr),
-			0x61 => send_noret(1, 0, chan_a_id, 10, &mut p_ctr),
-			0x62 => send_noret(1, 2, chan_b_id, 10, &mut p_ctr),
-			0x63 => send_noret(2, 1, chan_b_id, 10, &mut p_ctr),
-			0x64 => send_hop_noret(0, 1, chan_a_id, 2, chan_b_id, 10, &mut p_ctr),
-			0x65 => send_hop_noret(2, 1, chan_b_id, 0, chan_a_id, 10, &mut p_ctr),
+			0x60 => payments.send_noret(&nodes, 0, 1, chan_a_id, 10),
+			0x61 => payments.send_noret(&nodes, 1, 0, chan_a_id, 10),
+			0x62 => payments.send_noret(&nodes, 1, 2, chan_b_id, 10),
+			0x63 => payments.send_noret(&nodes, 2, 1, chan_b_id, 10),
+			0x64 => payments.send_hop(&nodes, 0, 1, chan_a_id, 2, chan_b_id, 10),
+			0x65 => payments.send_hop(&nodes, 2, 1, chan_b_id, 0, chan_a_id, 10),
 
-			0x68 => send_noret(0, 1, chan_a_id, 1, &mut p_ctr),
-			0x69 => send_noret(1, 0, chan_a_id, 1, &mut p_ctr),
-			0x6a => send_noret(1, 2, chan_b_id, 1, &mut p_ctr),
-			0x6b => send_noret(2, 1, chan_b_id, 1, &mut p_ctr),
-			0x6c => send_hop_noret(0, 1, chan_a_id, 2, chan_b_id, 1, &mut p_ctr),
-			0x6d => send_hop_noret(2, 1, chan_b_id, 0, chan_a_id, 1, &mut p_ctr),
+			0x68 => payments.send_noret(&nodes, 0, 1, chan_a_id, 1),
+			0x69 => payments.send_noret(&nodes, 1, 0, chan_a_id, 1),
+			0x6a => payments.send_noret(&nodes, 1, 2, chan_b_id, 1),
+			0x6b => payments.send_noret(&nodes, 2, 1, chan_b_id, 1),
+			0x6c => payments.send_hop(&nodes, 0, 1, chan_a_id, 2, chan_b_id, 1),
+			0x6d => payments.send_hop(&nodes, 2, 1, chan_b_id, 0, chan_a_id, 1),
 
 			// MPP payments
 			// 0x70: direct MPP from 0 to 1 (multi A-B channels)
-			0x70 => send_mpp_direct(0, 1, &chan_ab_ids, 1_000_000, &mut p_ctr),
+			0x70 => payments.send_mpp_direct(&nodes, 0, 1, ab_link.channel_ids(), 1_000_000),
 			// 0x71: MPP 0->1->2, multi channels on first hop (A-B)
-			0x71 => send_mpp_hop(0, 1, &chan_ab_ids, 2, &[chan_b_id], 1_000_000, &mut p_ctr),
+			0x71 => payments.send_mpp_hop(
+				&nodes,
+				0,
+				1,
+				ab_link.channel_ids(),
+				2,
+				&[chan_b_id],
+				1_000_000,
+			),
 			// 0x72: MPP 0->1->2, multi channels on both hops (A-B and B-C)
-			0x72 => send_mpp_hop(0, 1, &chan_ab_ids, 2, &chan_bc_ids, 1_000_000, &mut p_ctr),
+			0x72 => payments.send_mpp_hop(
+				&nodes,
+				0,
+				1,
+				ab_link.channel_ids(),
+				2,
+				bc_link.channel_ids(),
+				1_000_000,
+			),
 			// 0x73: MPP 0->1->2, multi channels on second hop (B-C)
-			0x73 => send_mpp_hop(0, 1, &[chan_a_id], 2, &chan_bc_ids, 1_000_000, &mut p_ctr),
+			0x73 => payments.send_mpp_hop(
+				&nodes,
+				0,
+				1,
+				&[chan_a_id],
+				2,
+				bc_link.channel_ids(),
+				1_000_000,
+			),
 			// 0x74: direct MPP from 0 to 1, multi parts over single channel
 			0x74 => {
-				send_mpp_direct(0, 1, &[chan_a_id, chan_a_id, chan_a_id], 1_000_000, &mut p_ctr)
+				payments.send_mpp_direct(
+					&nodes,
+					0,
+					1,
+					&[chan_a_id, chan_a_id, chan_a_id],
+					1_000_000,
+				);
 			},
 
 			0x80 => nodes[0].bump_fee_estimate(chan_type),
@@ -2887,40 +2911,22 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 				process_all_events!();
 
 				// Verify no payments are stuck - all should have resolved
-				for (idx, pending) in pending_payments.borrow().iter().enumerate() {
-					assert!(
-						pending.is_empty(),
-						"Node {} has {} stuck pending payments after settling all state",
-						idx,
-						pending.len()
-					);
-				}
-
+				payments.assert_all_resolved();
 				// Verify that every payment claimed by a receiver resulted in a
 				// PaymentSent event at the sender.
-				let resolved = resolved_payments.borrow();
-				for hash in claimed_payment_hashes.borrow().iter() {
-					let found = resolved.iter().any(|node_resolved| {
-						node_resolved.values().any(|h| h.as_ref() == Some(hash))
-					});
-					assert!(
-						found,
-						"Payment {:?} was claimed by receiver but sender never got PaymentSent",
-						hash
-					);
-				}
+				payments.assert_claims_reported();
 
 				// Finally, make sure that at least one end of each channel can make a substantial payment
 				for &chan_id in ab_link.channel_ids() {
 					assert!(
-						send(0, 1, chan_id, 10_000_000, &mut p_ctr)
-							|| send(1, 0, chan_id, 10_000_000, &mut p_ctr)
+						payments.send(&nodes, 0, 1, chan_id, 10_000_000)
+							|| payments.send(&nodes, 1, 0, chan_id, 10_000_000)
 					);
 				}
 				for &chan_id in bc_link.channel_ids() {
 					assert!(
-						send(1, 2, chan_id, 10_000_000, &mut p_ctr)
-							|| send(2, 1, chan_id, 10_000_000, &mut p_ctr)
+						payments.send(&nodes, 1, 2, chan_id, 10_000_000)
+							|| payments.send(&nodes, 2, 1, chan_id, 10_000_000)
 					);
 				}
 
