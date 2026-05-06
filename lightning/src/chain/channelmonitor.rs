@@ -5727,9 +5727,9 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						break;
 					}
 				}
-				self.is_resolving_htlc_output(&tx, height, &block_hash, logger);
-
 				self.check_tx_and_push_spendable_outputs(&tx, height, &block_hash, logger);
+
+				self.is_resolving_htlc_output(&tx, height, &block_hash, logger);
 			}
 		}
 
@@ -6207,6 +6207,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		&mut self, tx: &Transaction, height: u32, block_hash: &BlockHash, logger: &WithContext<L>,
 	) {
 		let funding_spent = get_confirmed_funding_scope!(self);
+		let txid = tx.compute_txid();
 
 		'outer_loop: for input in &tx.input {
 			let mut payment_data = None;
@@ -6293,8 +6294,17 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 							if payment_data.is_none() {
 								log_claim!($tx_info, $holder_tx, htlc_output, false);
 								let outbound_htlc = $holder_tx == htlc_output.offered;
+								let on_to_local_output_csv = if accepted_preimage_claim && !outbound_htlc {
+									Some(self.on_holder_tx_csv) } else { None };
+								#[cfg(debug_assertions)]
+								if let Some(csv) = on_to_local_output_csv {
+									debug_assert!(
+										self.has_delayed_maturing_output_for_tx(txid, csv),
+										"CSV-delayed HTLC spend confirmation should have a matching MaturingOutput"
+									);
+								}
 								self.onchain_events_awaiting_threshold_conf.push(OnchainEventEntry {
-									txid: tx.compute_txid(), height, block_hash: Some(*block_hash), transaction: Some(tx.clone()),
+									txid, height, block_hash: Some(*block_hash), transaction: Some(tx.clone()),
 									event: OnchainEvent::HTLCSpendConfirmation {
 										commitment_tx_output_idx: input.previous_output.vout,
 										preimage: if accepted_preimage_claim || offered_preimage_claim {
@@ -6302,8 +6312,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 										// If this is a payment to us (ie !outbound_htlc), keep a
 										// record of the CSV delay. The delayed output is tracked
 										// separately as a MaturingOutput until it is spendable.
-										on_to_local_output_csv: if accepted_preimage_claim && !outbound_htlc {
-											Some(self.on_holder_tx_csv) } else { None },
+										on_to_local_output_csv,
 									},
 								});
 								continue 'outer_loop;
@@ -6454,6 +6463,19 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			}
 		}
 		spendable_outputs
+	}
+
+	#[cfg(debug_assertions)]
+	fn has_delayed_maturing_output_for_tx(&self, txid: Txid, csv: u16) -> bool {
+		self.onchain_events_awaiting_threshold_conf.iter().any(|entry| {
+			entry.txid == txid
+				&& match &entry.event {
+					OnchainEvent::MaturingOutput {
+						descriptor: SpendableOutputDescriptor::DelayedPaymentOutput(descriptor),
+					} => descriptor.to_self_delay == csv,
+					_ => false,
+				}
+		})
 	}
 
 	/// Checks if the confirmed transaction is paying funds back to some address we can assume to
