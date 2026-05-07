@@ -2753,9 +2753,9 @@ pub struct OnionPacket {
 }
 
 impl onion_utils::Packet for OnionPacket {
-	type Data = onion_utils::FixedSizeOnionPacket;
-	fn new(pubkey: PublicKey, hop_data: onion_utils::FixedSizeOnionPacket, hmac: [u8; 32]) -> Self {
-		Self { version: 0, public_key: Ok(pubkey), hop_data: hop_data.0, hmac }
+	type Data = [u8; onion_utils::ONION_DATA_LEN];
+	fn new(pubkey: PublicKey, hop_data: [u8; onion_utils::ONION_DATA_LEN], hmac: [u8; 32]) -> Self {
+		Self { version: 0, public_key: Ok(pubkey), hop_data, hmac }
 	}
 }
 

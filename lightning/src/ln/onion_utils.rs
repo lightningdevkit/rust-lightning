@@ -731,11 +731,10 @@ pub(super) fn construct_onion_packet(
 
 	debug_assert_eq!(payloads.len(), onion_keys.len(), "Payloads and keys must have equal lengths");
 
-	let packet = FixedSizeOnionPacket(packet_data);
 	construct_onion_packet_with_init_noise::<_, _>(
 		payloads,
 		onion_keys,
-		packet,
+		packet_data,
 		Some(associated_data),
 	)
 }
@@ -787,11 +786,10 @@ pub(super) fn construct_onion_packet_with_writable_hopdata<HD: Writeable>(
 	let mut chacha = ChaCha20::new(Key::new(prng_seed), Nonce::new([0; 12]), 0);
 	chacha.apply_keystream(&mut packet_data);
 
-	let packet = FixedSizeOnionPacket(packet_data);
 	construct_onion_packet_with_init_noise::<_, _>(
 		payloads,
 		onion_keys,
-		packet,
+		packet_data,
 		Some(associated_data),
 	)
 }
@@ -802,16 +800,6 @@ pub(super) fn construct_onion_packet_with_writable_hopdata<HD: Writeable>(
 pub(crate) trait Packet {
 	type Data: AsMut<[u8]>;
 	fn new(pubkey: PublicKey, hop_data: Self::Data, hmac: [u8; 32]) -> Self;
-}
-
-// Needed for rustc versions older than 1.47 to avoid E0277: "arrays only have std trait
-// implementations for lengths 0..=32".
-pub(crate) struct FixedSizeOnionPacket(pub(crate) [u8; ONION_DATA_LEN]);
-
-impl AsMut<[u8]> for FixedSizeOnionPacket {
-	fn as_mut(&mut self) -> &mut [u8] {
-		&mut self.0
-	}
 }
 
 pub(crate) fn payloads_serialized_length<HD: Writeable>(payloads: &Vec<HD>) -> usize {
@@ -2176,9 +2164,9 @@ pub(crate) trait NextPacketBytes: AsMut<[u8]> {
 	fn new(len: usize) -> Self;
 }
 
-impl NextPacketBytes for FixedSizeOnionPacket {
+impl NextPacketBytes for [u8; ONION_DATA_LEN] {
 	fn new(_len: usize) -> Self {
-		Self([0 as u8; ONION_DATA_LEN])
+		[0 as u8; ONION_DATA_LEN]
 	}
 }
 
@@ -2350,44 +2338,33 @@ pub(crate) fn decode_next_payment_hop<NS: NodeSigner>(
 		(blinding_point, &node_signer),
 	);
 	match decoded_hop {
-		Ok((next_hop_data, Some((next_hop_hmac, FixedSizeOnionPacket(new_packet_bytes))))) => {
-			match next_hop_data {
-				msgs::InboundOnionPayload::Forward(next_hop_data) => Ok(Hop::Forward {
-					shared_secret,
-					next_hop_data,
-					next_hop_hmac,
-					new_packet_bytes,
-				}),
-				msgs::InboundOnionPayload::BlindedForward(next_hop_data) => {
-					Ok(Hop::BlindedForward {
-						shared_secret,
-						next_hop_data,
-						next_hop_hmac,
-						new_packet_bytes,
-					})
-				},
-				msgs::InboundOnionPayload::Dummy(dummy_hop_data) => Ok(Hop::Dummy {
-					dummy_hop_data,
-					shared_secret,
-					next_hop_hmac,
-					new_packet_bytes,
-				}),
-				_ => {
-					if blinding_point.is_some() {
-						return Err(OnionDecodeErr::Malformed {
-							err_msg:
-								"Final Node OnionHopData provided for us as an intermediary node",
-							reason: LocalHTLCFailureReason::InvalidOnionBlinding,
-						});
-					}
-					Err(OnionDecodeErr::Relay {
+		Ok((next_hop_data, Some((next_hop_hmac, new_packet_bytes)))) => match next_hop_data {
+			msgs::InboundOnionPayload::Forward(next_hop_data) => {
+				Ok(Hop::Forward { shared_secret, next_hop_data, next_hop_hmac, new_packet_bytes })
+			},
+			msgs::InboundOnionPayload::BlindedForward(next_hop_data) => Ok(Hop::BlindedForward {
+				shared_secret,
+				next_hop_data,
+				next_hop_hmac,
+				new_packet_bytes,
+			}),
+			msgs::InboundOnionPayload::Dummy(dummy_hop_data) => {
+				Ok(Hop::Dummy { dummy_hop_data, shared_secret, next_hop_hmac, new_packet_bytes })
+			},
+			_ => {
+				if blinding_point.is_some() {
+					return Err(OnionDecodeErr::Malformed {
 						err_msg: "Final Node OnionHopData provided for us as an intermediary node",
-						reason: LocalHTLCFailureReason::InvalidOnionPayload,
-						shared_secret,
-						trampoline_shared_secret: None,
-					})
-				},
-			}
+						reason: LocalHTLCFailureReason::InvalidOnionBlinding,
+					});
+				}
+				Err(OnionDecodeErr::Relay {
+					err_msg: "Final Node OnionHopData provided for us as an intermediary node",
+					reason: LocalHTLCFailureReason::InvalidOnionPayload,
+					shared_secret,
+					trampoline_shared_secret: None,
+				})
+			},
 		},
 		Ok((next_hop_data, None)) => match next_hop_data {
 			msgs::InboundOnionPayload::Receive(hop_data) => {
