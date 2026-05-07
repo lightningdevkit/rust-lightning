@@ -5814,8 +5814,10 @@ fn do_test_late_counterparty_commitment_update_after_funding_spend(fully_confirm
 		false,
 		PaymentFailedConditions::new(),
 	);
-	// The payment failure generates a ReleasePaymentComplete monitor update.
-	check_added_monitors(&nodes[0], 1);
+	if !nodes[0].node.test_persistent_monitor_events_enabled() {
+		// The payment failure generates a ReleasePaymentComplete monitor update.
+		check_added_monitors(&nodes[0], 1);
+	}
 }
 
 #[test]
@@ -5916,7 +5918,9 @@ fn do_test_late_counterparty_commitment_update_after_holder_commitment_spend(dus
 		false,
 		PaymentFailedConditions::new(),
 	);
-	check_added_monitors(&nodes[0], 1);
+	if !nodes[0].node.test_persistent_monitor_events_enabled() {
+		check_added_monitors(&nodes[0], 1); // ReleasePaymentComplete monitor update
+	}
 
 	// Verify HTLC X was NOT failed (no payment failure event for it at this point).
 	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
@@ -5940,7 +5944,9 @@ fn do_test_late_counterparty_commitment_update_after_holder_commitment_spend(dus
 		false,
 		PaymentFailedConditions::new(),
 	);
-	check_added_monitors(&nodes[0], 1);
+	if !nodes[0].node.test_persistent_monitor_events_enabled() {
+		check_added_monitors(&nodes[0], 1); // ReleasePaymentComplete monitor update
+	}
 }
 
 #[test]

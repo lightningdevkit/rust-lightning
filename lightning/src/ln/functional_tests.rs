@@ -2069,7 +2069,8 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(
 	check_added_monitors(&nodes[1], 0);
 	let events = nodes[1].node.get_and_clear_pending_events();
 	if deliver_bs_raa {
-		check_added_monitors(&nodes[1], 2);
+		let persistent_mon_evs = nodes[1].node.test_persistent_monitor_events_enabled();
+		check_added_monitors(&nodes[1], if persistent_mon_evs { 1 } else { 2 });
 	} else {
 		check_added_monitors(&nodes[1], 1);
 	}
@@ -5895,7 +5896,9 @@ fn do_test_failure_delay_dust_htlc_local_commitment(announce_latest: bool) {
 	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
 	check_added_monitors(&nodes[0], 0);
 	let events = nodes[0].node.get_and_clear_pending_events();
-	check_added_monitors(&nodes[0], 2);
+	if !nodes[0].node.test_persistent_monitor_events_enabled() {
+		check_added_monitors(&nodes[0], 2); // ReleasePaymentComplete updates
+	}
 	// Only 2 PaymentPathFailed events should show up, over-dust HTLC has to be failed by timeout tx
 	assert_eq!(events.len(), 4);
 	let mut first_failed = false;

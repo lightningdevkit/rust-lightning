@@ -14221,20 +14221,19 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 										.source
 										.failure_type(counterparty_node_id, channel_id);
 
-									let completion_update = if self.persistent_monitor_events
-										&& we_are_sender && !from_onchain
-									{
-										EventCompletionAction::AckMonitorEvent {
-											event_id: monitor_event_source,
-										}
-									} else {
-										EventCompletionAction::ReleasePaymentCompleteChannelMonitorUpdate(PaymentCompleteUpdate {
-											counterparty_node_id,
-											channel_funding_outpoint: funding_outpoint,
-											channel_id,
-											htlc_id: SentHTLCId::from_source(&htlc_update.source),
-										})
-									};
+									let completion_update =
+										if self.persistent_monitor_events && we_are_sender {
+											EventCompletionAction::AckMonitorEvent {
+												event_id: monitor_event_source,
+											}
+										} else {
+											EventCompletionAction::ReleasePaymentCompleteChannelMonitorUpdate(PaymentCompleteUpdate {
+												counterparty_node_id,
+												channel_funding_outpoint: funding_outpoint,
+												channel_id,
+												htlc_id: SentHTLCId::from_source(&htlc_update.source),
+											})
+										};
 
 									self.fail_htlc_backwards_internal(
 										&htlc_update.source,
@@ -14244,7 +14243,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 										Some(completion_update),
 									);
 								}
-								if from_onchain | !we_are_sender {
+								if !we_are_sender {
 									self.chain_monitor.ack_monitor_event(monitor_event_source);
 								}
 							},
@@ -21274,6 +21273,13 @@ impl<
 				htlc_source;
 			let failure_type = source.failure_type(counterparty_id, channel_id);
 			let reason = HTLCFailReason::from_failure_code(failure_reason);
+			if channel_manager.persistent_monitor_events
+				&& matches!(source, HTLCSource::OutboundRoute { .. })
+			{
+				// The persistent monitor event generated for the failed HTLC will drive the failure
+				// instead.
+				continue;
+			}
 			channel_manager.fail_htlc_backwards_internal(
 				&source,
 				&hash,
