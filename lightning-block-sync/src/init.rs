@@ -198,14 +198,9 @@ where
 			*result = Some((header.height, block));
 		}
 		debug_assert!(fetched_blocks.iter().take(most_connected_blocks.len()).all(|r| r.is_some()));
-		// TODO: When our MSRV is 1.82, use is_sorted_by_key
-		debug_assert!(fetched_blocks.windows(2).all(|blocks| {
-			if let (Some(a), Some(b)) = (&blocks[0], &blocks[1]) {
-				a.0 < b.0
-			} else {
-				// Any non-None blocks have to come before any None entries
-				blocks[1].is_none()
-			}
+		debug_assert!(fetched_blocks.iter().is_sorted_by_key(|block| match block {
+			Some((height, _)) => (false, *height),
+			None => (true, 0),
 		}));
 
 		for (listener_height, listener) in chain_listeners_at_height.iter() {
