@@ -30,7 +30,7 @@ pub fn test_async_inbound_update_fee() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -148,7 +148,7 @@ pub fn test_update_fee_unordered_raa() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -467,7 +467,7 @@ pub fn do_test_update_fee_that_funder_cannot_afford(channel_type_features: Chann
 	const INITIAL_COMMITMENT_NUMBER: u64 = 281474976710654;
 
 	let remote_point = {
-		let mut per_peer_lock;
+		let per_peer_lock;
 		let mut peer_state_lock;
 
 		let channel = get_channel_ref!(nodes[1], nodes[0], per_peer_lock, peer_state_lock, chan.2);
@@ -477,7 +477,7 @@ pub fn do_test_update_fee_that_funder_cannot_afford(channel_type_features: Chann
 	};
 
 	let res = {
-		let mut per_peer_lock;
+		let per_peer_lock;
 		let mut peer_state_lock;
 
 		let local_chan =
@@ -540,13 +540,13 @@ pub fn test_update_fee_that_saturates_subs() {
 	// on the commitment transaction that is greater than her balance, we saturate the subtractions,
 	// and force close the channel.
 
-	let mut cfg = test_legacy_channel_config();
+	let cfg = test_legacy_channel_config();
 	let secp_ctx = Secp256k1::new();
 
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(cfg.clone()), Some(cfg)]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 
@@ -565,7 +565,7 @@ pub fn test_update_fee_that_saturates_subs() {
 	// in `commitment_signed`.
 
 	let remote_point = {
-		let mut per_peer_lock;
+		let per_peer_lock;
 		let mut peer_state_lock;
 
 		let channel = get_channel_ref!(nodes[1], nodes[0], per_peer_lock, peer_state_lock, chan_id);
@@ -574,7 +574,7 @@ pub fn test_update_fee_that_saturates_subs() {
 	};
 
 	let res = {
-		let mut per_peer_lock;
+		let per_peer_lock;
 		let mut peer_state_lock;
 
 		let local_chan =
@@ -624,7 +624,7 @@ pub fn test_update_fee_with_fundee_update_add_htlc() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -854,13 +854,13 @@ pub fn test_update_fee() {
 pub fn test_chan_init_feerate_unaffordability() {
 	// Test that we will reject channel opens which do not leave enough to pay for any HTLCs due to
 	// channel reserve and feerate requirements.
-	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let feerate_per_kw = *chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap();
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let legacy_cfg = test_legacy_channel_config();
 	let node_chanmgrs =
 		create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -922,7 +922,7 @@ pub fn accept_busted_but_better_fee() {
 	// If a peer sends us a fee update that is too low, but higher than our previous channel
 	// feerate, we should accept it. In the future we may want to consider closing the channel
 	// later, but for now we only accept the update.
-	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
@@ -1040,7 +1040,7 @@ pub fn do_cannot_afford_on_holding_cell_release(
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(cfg.clone()), Some(cfg)]);
 
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -1234,7 +1234,7 @@ pub fn do_can_afford_given_trimmed_htlcs(inequality_regions: core::cmp::Ordering
 	let node_chanmgrs =
 		create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
 
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();

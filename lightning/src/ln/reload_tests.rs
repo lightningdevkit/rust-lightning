@@ -620,7 +620,7 @@ fn do_test_data_loss_protect(reconnect_panicing: bool, substantially_old: bool, 
 		}
 
 		{
-			let mut node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
+			let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
 			// The node B should never force-close the channel.
 			assert!(node_txn.is_empty());
 		}
@@ -905,7 +905,7 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool, double_rest
 
 		let mut cs_updates = match ds_msgs.remove(1) {
 			MessageSendEvent::UpdateHTLCs { mut updates, .. } => {
-				let mut fulfill = updates.update_fulfill_htlcs.remove(0);
+				let fulfill = updates.update_fulfill_htlcs.remove(0);
 				nodes[2].node.handle_update_fulfill_htlc(nodes[3].node.get_our_node_id(), fulfill);
 				check_added_monitors(&nodes[2], 1);
 				let cs_updates = get_htlc_update_msgs(&nodes[2], &nodes[0].node.get_our_node_id());
@@ -1316,7 +1316,7 @@ fn test_manager_persisted_post_outbound_edge_forward() {
 
 	// Lock in the HTLC from node_a <> node_b.
 	let amt_msat = 5000;
-	let (mut route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], amt_msat);
+	let (route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], amt_msat);
 	nodes[0].node.send_payment_with_route(route, payment_hash, RecipientOnionFields::secret_only(payment_secret, amt_msat), PaymentId(payment_hash.0)).unwrap();
 	check_added_monitors(&nodes[0], 1);
 	let updates = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
@@ -1513,7 +1513,7 @@ fn test_reload_partial_funding_batch() {
 	// The monitor should become closed.
 	check_added_monitors(&nodes[0], 1);
 	{
-		let mut monitor_updates = nodes[0].chain_monitor.monitor_updates.lock().unwrap();
+		let monitor_updates = nodes[0].chain_monitor.monitor_updates.lock().unwrap();
 		let monitor_updates_1 = monitor_updates.get(&channel_id_1).unwrap();
 		assert_eq!(monitor_updates_1.len(), 1);
 		assert_eq!(monitor_updates_1[0].updates.len(), 1);
@@ -2183,7 +2183,7 @@ fn test_reload_with_mpp_claims_on_same_channel() {
 	nodes[0].node.peer_disconnected(node_1_id);
 	nodes[1].node.peer_disconnected(node_0_id);
 
-	let mut events = nodes[2].node.get_and_clear_pending_msg_events();
+	let events = nodes[2].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 2);
 	for ev in events {
 		match ev {

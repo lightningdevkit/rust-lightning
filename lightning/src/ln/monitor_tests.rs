@@ -61,7 +61,7 @@ fn chanmon_fail_from_stale_commitment() {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
-	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	create_announced_chan_between_nodes(&nodes, 0, 1);
 	let (update_a, _, chan_id_2, _) = create_announced_chan_between_nodes(&nodes, 1, 2);
@@ -175,9 +175,9 @@ fn archive_fully_resolved_monitors() {
 	// Test we archive fully resolved channel monitors at the right time.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let mut user_config = test_legacy_channel_config();
+	let user_config = test_legacy_channel_config();
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config.clone()), Some(user_config)]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let (_, _, chan_id, funding_tx) =
 		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 1_000_000);
@@ -870,7 +870,7 @@ fn do_test_balances_on_local_commitment_htlcs(keyed_anchors: bool, p2a_anchor: b
 	user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = keyed_anchors;
 	user_config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config.clone()), Some(user_config)]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let coinbase_tx = provide_anchor_reserves(&nodes);
 
@@ -941,7 +941,7 @@ fn do_test_balances_on_local_commitment_htlcs(keyed_anchors: bool, p2a_anchor: b
 		if keyed_anchors || p2a_anchor {
 			handle_bump_close_event(&nodes[0]);
 		}
-		let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
+		let txn = nodes[0].tx_broadcaster.txn_broadcast();
 		assert_eq!(txn.len(), if keyed_anchors || p2a_anchor { 2 } else { 1 });
 		assert_eq!(txn[0].compute_txid(), commitment_tx.compute_txid());
 		if p2a_anchor {
@@ -1123,7 +1123,7 @@ fn test_no_preimage_inbound_htlc_balances() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let legacy_cfg = test_legacy_channel_config();
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let (_, _, chan_id, funding_tx) = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 500_000_000);
 
@@ -1621,7 +1621,7 @@ fn do_test_revoked_counterparty_commitment_balances(keyed_anchors: bool, p2a_anc
 	test_spendable_output(&nodes[1], &as_revoked_txn[0], false);
 
 	check_added_monitors(&nodes[1], 0);
-	let mut payment_failed_events = nodes[1].node.get_and_clear_pending_events();
+	let payment_failed_events = nodes[1].node.get_and_clear_pending_events();
 	check_added_monitors(&nodes[1], 2);
 	expect_payment_failed_conditions_event(payment_failed_events[..2].to_vec(),
 		missing_htlc_payment_hash, false, PaymentFailedConditions::new());
@@ -1632,7 +1632,7 @@ fn do_test_revoked_counterparty_commitment_balances(keyed_anchors: bool, p2a_anc
 	if confirm_htlc_spend_first {
 		test_spendable_output(&nodes[1], &claim_txn[0], false);
 		check_added_monitors(&nodes[1], 0);
-		let mut payment_failed_events = nodes[1].node.get_and_clear_pending_events();
+		let payment_failed_events = nodes[1].node.get_and_clear_pending_events();
 		check_added_monitors(&nodes[1], 2);
 		expect_payment_failed_conditions_event(payment_failed_events[..2].to_vec(),
 			live_payment_hash, false, PaymentFailedConditions::new());
@@ -1647,7 +1647,7 @@ fn do_test_revoked_counterparty_commitment_balances(keyed_anchors: bool, p2a_anc
 	} else {
 		test_spendable_output(&nodes[1], &claim_txn[0], false);
 		check_added_monitors(&nodes[1], 0);
-		let mut payment_failed_events = nodes[1].node.get_and_clear_pending_events();
+		let payment_failed_events = nodes[1].node.get_and_clear_pending_events();
 		check_added_monitors(&nodes[1], 2);
 		expect_payment_failed_conditions_event(payment_failed_events[..2].to_vec(),
 			live_payment_hash, false, PaymentFailedConditions::new());
@@ -2046,7 +2046,7 @@ fn do_test_revoked_counterparty_aggregated_claims(keyed_anchors: bool, p2a_ancho
 	check_closed_event(&nodes[1], 1, ClosureReason::CommitmentTxConfirmed, &[nodes[0].node.get_our_node_id()], 1000000);
 	check_added_monitors(&nodes[1], 1);
 
-	let mut claim_txn = nodes[1].tx_broadcaster.txn_broadcast();
+	let claim_txn = nodes[1].tx_broadcaster.txn_broadcast();
 	assert_eq!(claim_txn.len(), 2);
 	// One unpinnable revoked to_self output.
 	assert_eq!(claim_txn[0].input.len(), 1);
@@ -2099,7 +2099,7 @@ fn do_test_revoked_counterparty_aggregated_claims(keyed_anchors: bool, p2a_ancho
 	mine_transaction(&nodes[1], &htlc_success_claim);
 	expect_payment_sent(&nodes[1], claimed_payment_preimage, None, true, true);
 
-	let mut claim_txn_2 = nodes[1].tx_broadcaster.txn_broadcast();
+	let claim_txn_2 = nodes[1].tx_broadcaster.txn_broadcast();
 	// Once B sees the HTLC-Success transaction it splits its claim transaction into two, though in
 	// theory it could re-aggregate the claims as well.
 	assert_eq!(claim_txn_2.len(), 2);
@@ -2243,7 +2243,7 @@ fn do_test_claimable_balance_correct_while_payment_pending(outbound_payment: boo
 	// is pending.
 	//
 	// This tests that we get the correct balance in either of the cases above.
-	let mut chanmon_cfgs = create_chanmon_cfgs(3);
+	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let mut user_config = test_default_channel_config();
 	user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = keyed_anchors;
@@ -2391,7 +2391,7 @@ fn test_restored_packages_retry() {
 fn do_test_monitor_rebroadcast_pending_claims(keyed_anchors: bool, p2a_anchor: bool) {
 	// Test that we will retry broadcasting pending claims for a force-closed channel on every
 	// `ChainMonitor::rebroadcast_pending_claims` call.
-	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let mut config = test_default_channel_config();
 	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = keyed_anchors;
@@ -2515,7 +2515,7 @@ fn do_test_yield_anchors_events(have_htlcs: bool, p2a_anchor: bool) {
 	// allowing the consumer to provide additional fees to the commitment transaction to be
 	// broadcast. Once the commitment transaction confirms, events for the HTLC resolution should be
 	// emitted by LDK, such that the consumer can attach fees to the zero fee HTLC transactions.
-	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let mut anchors_config = test_default_channel_config();
 	anchors_config.channel_handshake_config.announce_for_forwarding = true;
@@ -2641,7 +2641,7 @@ fn do_test_yield_anchors_events(have_htlcs: bool, p2a_anchor: bool) {
 		if nodes[1].connect_style.borrow().updates_best_block_first() {
 			handle_bump_close_event(&nodes[1]);
 		}
-		let mut txn = nodes[1].tx_broadcaster.unique_txn_broadcast();
+		let txn = nodes[1].tx_broadcaster.unique_txn_broadcast();
 		// Both HTLC claims are pinnable at this point,
 		// and will be broadcast in a single transaction.
 		assert_eq!(txn.len(), if nodes[1].connect_style.borrow().updates_best_block_first() { 3 } else { 1 });
@@ -3121,7 +3121,7 @@ fn do_test_monitor_claims_with_random_signatures(keyed_anchors: bool, p2a_anchor
 	user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = keyed_anchors;
 	user_config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config.clone()), Some(user_config)]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let coinbase_tx = provide_anchor_reserves(&nodes);
 
@@ -3203,7 +3203,7 @@ fn do_test_monitor_claims_with_random_signatures(keyed_anchors: bool, p2a_anchor
 		handle_bump_htlc_event(&nodes[0], 1);
 	}
 	{
-		let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
+		let txn = nodes[0].tx_broadcaster.txn_broadcast();
 		assert_eq!(txn.len(), 1);
 		assert_eq!(txn[0].compute_txid(), htlc_timeout_tx.compute_txid());
 		assert_ne!(txn[0].compute_wtxid(), htlc_timeout_tx.compute_wtxid());
@@ -3480,7 +3480,7 @@ fn do_test_lost_preimage_monitor_events(on_counterparty_tx: bool, p2a_anchor: bo
 	};
 
 	mine_transaction(&nodes[2], selected_commit_tx);
-	let mut cs_transactions = nodes[2].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+	let cs_transactions = nodes[2].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 	let c_replays_commitment = nodes[2].connect_style.borrow().updates_best_block_first();
 	let cs_htlc_claims = if on_counterparty_tx {
 		assert_eq!(cs_transactions.len(), 0);
@@ -3706,7 +3706,7 @@ fn do_test_lost_timeout_monitor_events(confirm_tx: CommitmentType, dust_htlcs: b
 	}
 
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
-	let mut events = nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events();
+	let events = nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events();
 	match confirm_tx {
 		CommitmentType::LocalWithoutLastHTLC|CommitmentType::LocalWithLastHTLC => {
 			assert_eq!(events.len(), 0, "{events:?}");
@@ -3837,7 +3837,7 @@ fn test_ladder_preimage_htlc_claims() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let legacy_cfg = test_legacy_channel_config();
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_id_0 = nodes[0].node.get_our_node_id();
 	let node_id_1 = nodes[1].node.get_our_node_id();

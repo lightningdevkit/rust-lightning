@@ -173,7 +173,7 @@ fn mpp_retry() {
 	check_added_monitors(&nodes[2], 1);
 	nodes[0].node.handle_update_fail_htlc(node_c_id, &htlc_updates.update_fail_htlcs[0]);
 	do_commitment_signed_dance(&nodes[0], &nodes[2], &htlc_updates.commitment_signed, false, false);
-	let mut events = nodes[0].node.get_and_clear_pending_events();
+	let events = nodes[0].node.get_and_clear_pending_events();
 
 	let conditions = PaymentFailedConditions::new().mpp_parts_remain();
 	expect_payment_failed_conditions_event(events, hash, false, conditions);
@@ -294,7 +294,7 @@ fn mpp_retry_overpay() {
 	check_added_monitors(&nodes[2], 1);
 	nodes[0].node.handle_update_fail_htlc(node_c_id, &htlc_updates.update_fail_htlcs[0]);
 	do_commitment_signed_dance(&nodes[0], &nodes[2], &htlc_updates.commitment_signed, false, false);
-	let mut events = nodes[0].node.get_and_clear_pending_events();
+	let events = nodes[0].node.get_and_clear_pending_events();
 	let fail_conditions = PaymentFailedConditions::new().mpp_parts_remain();
 	expect_payment_failed_conditions_event(events, hash, false, fail_conditions);
 
@@ -424,7 +424,7 @@ fn do_mpp_receive_timeout(send_partial_mpp: bool, keysend: bool) {
 		let commitment = &htlc_fail_updates.commitment_signed;
 		do_commitment_signed_dance(&nodes[0], &nodes[1], commitment, false, false);
 
-		let mut conditions = PaymentFailedConditions::new()
+		let conditions = PaymentFailedConditions::new()
 			.mpp_parts_remain()
 			.expected_htlc_error_data(LocalHTLCFailureReason::MPPTimeout, &[][..]);
 		expect_payment_failed_conditions(&nodes[0], hash, false, conditions);
@@ -786,7 +786,7 @@ fn no_pending_leak_on_initial_send_failure() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -1022,7 +1022,7 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	{
 		let per_peer_state = nodes[1].node.per_peer_state.read().unwrap();
 		let mut peer_state = per_peer_state.get(&node_c_id).unwrap().lock().unwrap();
-		let mut channel = peer_state.channel_by_id.get_mut(&chan_id_2).unwrap();
+		let channel = peer_state.channel_by_id.get_mut(&chan_id_2).unwrap();
 		let mut new_config = channel.context().config();
 		new_config.forwarding_fee_base_msat += 100_000;
 		channel.context_mut().update_config(&new_config);
@@ -1071,7 +1071,7 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 
-	let mut legacy_cfg = test_legacy_channel_config();
+	let legacy_cfg = test_legacy_channel_config();
 
 	let persist_1;
 	let chain_monitor_1;
@@ -1539,7 +1539,7 @@ fn get_ldk_payment_preimage() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_b_id = nodes[1].node.get_our_node_id();
 
@@ -2072,7 +2072,7 @@ fn test_trivial_inflight_htlc_tracking() {
 	let (_, payment_hash, _, payment_id) = send_payment(&nodes[0], &[&nodes[1], &nodes[2]], 500000);
 	let inflight_htlcs = node_chanmgrs[0].compute_inflight_htlcs();
 	{
-		let mut per_peer_lock;
+		let per_peer_lock;
 		let mut peer_state_lock;
 		let channel_1 =
 			get_channel_ref!(&nodes[0], nodes[1], per_peer_lock, peer_state_lock, chan_1_id);
@@ -2085,7 +2085,7 @@ fn test_trivial_inflight_htlc_tracking() {
 		assert_eq!(chan_1_used_liquidity, None);
 	}
 	{
-		let mut per_peer_lock;
+		let per_peer_lock;
 		let mut peer_state_lock;
 		let channel_2 =
 			get_channel_ref!(&nodes[1], nodes[2], per_peer_lock, peer_state_lock, chan_2_id);
@@ -2113,7 +2113,7 @@ fn test_trivial_inflight_htlc_tracking() {
 		route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 500000);
 	let inflight_htlcs = node_chanmgrs[0].compute_inflight_htlcs();
 	{
-		let mut per_peer_lock;
+		let per_peer_lock;
 		let mut peer_state_lock;
 		let channel_1 =
 			get_channel_ref!(&nodes[0], nodes[1], per_peer_lock, peer_state_lock, chan_1_id);
@@ -2127,7 +2127,7 @@ fn test_trivial_inflight_htlc_tracking() {
 		assert_eq!(chan_1_used_liquidity, Some(501000));
 	}
 	{
-		let mut per_peer_lock;
+		let per_peer_lock;
 		let mut peer_state_lock;
 		let channel_2 =
 			get_channel_ref!(&nodes[1], nodes[2], per_peer_lock, peer_state_lock, chan_2_id);
@@ -2155,7 +2155,7 @@ fn test_trivial_inflight_htlc_tracking() {
 
 	let inflight_htlcs = node_chanmgrs[0].compute_inflight_htlcs();
 	{
-		let mut per_peer_lock;
+		let per_peer_lock;
 		let mut peer_state_lock;
 		let channel_1 =
 			get_channel_ref!(&nodes[0], nodes[1], per_peer_lock, peer_state_lock, chan_1_id);
@@ -2168,7 +2168,7 @@ fn test_trivial_inflight_htlc_tracking() {
 		assert_eq!(chan_1_used_liquidity, None);
 	}
 	{
-		let mut per_peer_lock;
+		let per_peer_lock;
 		let mut peer_state_lock;
 		let channel_2 =
 			get_channel_ref!(&nodes[1], nodes[2], per_peer_lock, peer_state_lock, chan_2_id);
@@ -2190,7 +2190,7 @@ fn test_holding_cell_inflight_htlcs() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -2218,7 +2218,7 @@ fn test_holding_cell_inflight_htlcs() {
 	let inflight_htlcs = node_chanmgrs[0].compute_inflight_htlcs();
 
 	{
-		let mut per_peer_lock;
+		let per_peer_lock;
 		let mut peer_state_lock;
 		let channel =
 			get_channel_ref!(&nodes[0], nodes[1], per_peer_lock, peer_state_lock, channel_id);
@@ -2251,7 +2251,7 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 
-	let mut zero_conf_chan_config = test_default_channel_config();
+	let zero_conf_chan_config = test_default_channel_config();
 	let mut intercept_forwards_config = test_default_channel_config();
 	intercept_forwards_config.htlc_interception_flags =
 		HTLCInterceptionFlags::ToInterceptSCIDs as u8;
@@ -2686,7 +2686,7 @@ fn do_automatic_retries(test: AutoRetry) {
 			// Send a payment attempt that fails due to lack of liquidity on the second hop
 			check_added_monitors(&nodes[0], 1);
 			let update_0 = get_htlc_update_msgs(&nodes[0], &node_b_id);
-			let mut update_add = update_0.update_add_htlcs[0].clone();
+			let update_add = update_0.update_add_htlcs[0].clone();
 			nodes[1].node.handle_update_add_htlc(node_a_id, &update_add);
 			let commitment = &update_0.commitment_signed;
 			do_commitment_signed_dance(&nodes[1], &nodes[0], commitment, false, true);
@@ -2709,7 +2709,7 @@ fn do_automatic_retries(test: AutoRetry) {
 			do_commitment_signed_dance(&nodes[0], &nodes[1], commitment, false, false);
 
 			// Ensure the attempt fails
-			let mut events = nodes[0].node.get_and_clear_pending_events();
+			let events = nodes[0].node.get_and_clear_pending_events();
 			if $expect_pending_htlcs_forwardable {
 				assert_eq!(events.len(), 1);
 			} else {
@@ -2801,7 +2801,7 @@ fn do_automatic_retries(test: AutoRetry) {
 
 		// Ensure we won't retry a second time.
 		nodes[0].node.process_pending_htlc_forwards();
-		let mut msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+		let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(msg_events.len(), 0);
 	} else if test == AutoRetry::FailTimeout {
 		#[cfg(feature = "std")]
@@ -2818,10 +2818,10 @@ fn do_automatic_retries(test: AutoRetry) {
 
 			// Make sure we don't retry again.
 			nodes[0].node.process_pending_htlc_forwards();
-			let mut msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+			let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
 			assert_eq!(msg_events.len(), 0);
 
-			let mut events = nodes[0].node.get_and_clear_pending_events();
+			let events = nodes[0].node.get_and_clear_pending_events();
 			assert_eq!(events.len(), 1);
 			match events[0] {
 				Event::PaymentFailed { payment_hash, payment_id, reason } => {
@@ -2855,10 +2855,10 @@ fn do_automatic_retries(test: AutoRetry) {
 
 		nodes[0].node.process_pending_htlc_forwards();
 		// Make sure we don't retry again.
-		let mut msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+		let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(msg_events.len(), 0);
 
-		let mut events = nodes[0].node.get_and_clear_pending_events();
+		let events = nodes[0].node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
 		match events[0] {
 			Event::PaymentFailed { payment_hash, payment_id, reason } => {
@@ -2877,10 +2877,10 @@ fn do_automatic_retries(test: AutoRetry) {
 		// We retry payments in `process_pending_htlc_forwards`. Since our channel closed, we should
 		// fail to find a route.
 		nodes[0].node.process_pending_htlc_forwards();
-		let mut msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+		let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(msg_events.len(), 0);
 
-		let mut events = nodes[0].node.get_and_clear_pending_events();
+		let events = nodes[0].node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
 		match events[0] {
 			Event::PaymentFailed { payment_hash, payment_id, reason } => {
@@ -2901,7 +2901,7 @@ fn auto_retry_partial_failure() {
 	let legacy_cfg = test_legacy_channel_config();
 	let node_chanmgrs =
 		create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -3052,7 +3052,7 @@ fn auto_retry_partial_failure() {
 
 	// Only one HTLC/channel update actually made it out
 	assert_eq!(msg_events.len(), 1);
-	let mut payment_event = SendEvent::from_event(msg_events.remove(0));
+	let payment_event = SendEvent::from_event(msg_events.remove(0));
 
 	nodes[1].node.handle_update_add_htlc(node_a_id, &payment_event.msgs[0]);
 	nodes[1].node.handle_commitment_signed_batch_test(node_a_id, &payment_event.commitment_msg);
@@ -3148,7 +3148,7 @@ fn auto_retry_zero_attempts_send_error() {
 	let legacy_cfg = test_legacy_channel_config();
 	let node_chanmgrs =
 		create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_b_id = nodes[1].node.get_our_node_id();
 
@@ -3216,7 +3216,7 @@ fn fails_paying_after_rejected_by_payee() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -3247,7 +3247,7 @@ fn fails_paying_after_rejected_by_payee() {
 	check_added_monitors(&nodes[0], 1);
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
-	let mut payment_event = SendEvent::from_event(events.pop().unwrap());
+	let payment_event = SendEvent::from_event(events.pop().unwrap());
 	nodes[1].node.handle_update_add_htlc(node_a_id, &payment_event.msgs[0]);
 	check_added_monitors(&nodes[1], 0);
 	do_commitment_signed_dance(&nodes[1], &nodes[0], &payment_event.commitment_msg, false, false);
@@ -3655,7 +3655,7 @@ fn no_extra_retries_on_back_to_back_fail() {
 	//
 	// Because we now retry payments as a batch, we simply return a single-path route in the
 	// second, batched, request, have that fail, ensure the payment was abandoned.
-	let mut events = nodes[0].node.get_and_clear_pending_events();
+	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 2);
 	match events[0] {
 		Event::PaymentPathFailed {
@@ -3699,7 +3699,7 @@ fn no_extra_retries_on_back_to_back_fail() {
 	let commitment = &bs_fail_update.commitment_signed;
 	do_commitment_signed_dance(&nodes[0], &nodes[1], commitment, false, true);
 
-	let mut events = nodes[0].node.get_and_clear_pending_events();
+	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 2);
 	match events[0] {
 		Event::PaymentPathFailed {
@@ -3873,7 +3873,7 @@ fn test_simple_partial_retry() {
 	{
 		let mut msg_events = nodes[1].node.get_and_clear_pending_msg_events();
 		assert_eq!(msg_events.len(), 2);
-		let mut handle_update_htlcs = |event: MessageSendEvent| {
+		let handle_update_htlcs = |event: MessageSendEvent| {
 			if let MessageSendEvent::UpdateHTLCs { node_id, channel_id: _, updates } = event {
 				let commitment = &updates.commitment_signed;
 				if node_id == node_a_id {
@@ -3895,7 +3895,7 @@ fn test_simple_partial_retry() {
 		handle_update_htlcs(msg_events.remove(0));
 	}
 
-	let mut events = nodes[0].node.get_and_clear_pending_events();
+	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
 		Event::PaymentPathFailed {
@@ -4303,7 +4303,7 @@ fn do_claim_from_closed_chan(fail_payment: bool) {
 		.announced_channel_max_inbound_htlc_value_in_flight_percentage = 10;
 	let configs: [Option<UserConfig>; 4] = core::array::from_fn(|_| Some(legacy_cfg.clone()));
 	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &configs);
-	let mut nodes = create_network(4, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -4321,7 +4321,7 @@ fn do_claim_from_closed_chan(fail_payment: bool) {
 		.unwrap();
 
 	let amt_msat = 10_000_000;
-	let mut route_params = RouteParameters::from_payment_params_and_value(payment_params, amt_msat);
+	let route_params = RouteParameters::from_payment_params_and_value(payment_params, amt_msat);
 	let inflight = nodes[0].node.compute_inflight_htlcs();
 	let mut route = nodes[0].router.find_route(&node_a_id, &route_params, None, inflight).unwrap();
 
@@ -4491,7 +4491,7 @@ fn do_test_custom_tlvs(spontaneous: bool, even_tlvs: bool, known_tlvs: bool) {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -4499,7 +4499,7 @@ fn do_test_custom_tlvs(spontaneous: bool, even_tlvs: bool, known_tlvs: bool) {
 	create_announced_chan_between_nodes(&nodes, 0, 1);
 
 	let amt_msat = 100_000;
-	let (mut route, hash, preimage, payment_secret) =
+	let (route, hash, preimage, payment_secret) =
 		get_route_and_payment_hash!(&nodes[0], &nodes[1], amt_msat);
 	let id = PaymentId(hash.0);
 	let custom_tlvs = vec![
@@ -4523,7 +4523,7 @@ fn do_test_custom_tlvs(spontaneous: bool, even_tlvs: bool, known_tlvs: bool) {
 
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	let ev = remove_first_msg_event_to_node(&node_b_id, &mut events);
-	let mut payment_event = SendEvent::from_event(ev);
+	let payment_event = SendEvent::from_event(ev);
 
 	nodes[1].node.handle_update_add_htlc(node_a_id, &payment_event.msgs[0]);
 	check_added_monitors(&nodes[1], 0);
@@ -4618,7 +4618,7 @@ fn test_retry_custom_tlvs() {
 	nodes[0].node.handle_update_fail_htlc(node_b_id, &update_fail_htlcs[0]);
 	do_commitment_signed_dance(&nodes[0], &nodes[1], &commitment_signed, false, false);
 
-	let mut events = nodes[0].node.get_and_clear_pending_events();
+	let events = nodes[0].node.get_and_clear_pending_events();
 	let conditions = PaymentFailedConditions::new().mpp_parts_remain();
 	expect_payment_failed_conditions_event(events, hash, false, conditions);
 
@@ -4873,7 +4873,7 @@ fn do_test_payment_metadata_consistency(do_reload: bool, do_modify: bool) {
 	let payment_params = PaymentParameters::from_node_id(node_d_id, TEST_FINAL_CLTV)
 		.with_bolt11_features(nodes[1].node.bolt11_invoice_features())
 		.unwrap();
-	let mut route_params = RouteParameters::from_payment_params_and_value(payment_params, amt_msat);
+	let route_params = RouteParameters::from_payment_params_and_value(payment_params, amt_msat);
 
 	// Send the MPP payment, delivering the updated commitment state to nodes[1].
 	let onion = RecipientOnionFields {
@@ -5142,7 +5142,7 @@ fn peel_payment_onion_custom_tlvs() {
 	let payment_params = PaymentParameters::for_keysend(node_b_id, TEST_FINAL_CLTV, false);
 	let route_params = RouteParameters::from_payment_params_and_value(payment_params, amt_msat);
 	let route = functional_test_utils::get_route(&nodes[0], &route_params).unwrap();
-	let mut recipient_onion = RecipientOnionFields::spontaneous_empty(amt_msat)
+	let recipient_onion = RecipientOnionFields::spontaneous_empty(amt_msat)
 		.with_custom_tlvs(RecipientCustomTlvs::new(vec![(414141, vec![42; 1200])]).unwrap());
 	let prng_seed = chanmon_cfgs[0].keys_manager.get_secure_random_bytes();
 	let session_priv = SecretKey::from_slice(&prng_seed[..]).expect("RNG is busted");
@@ -5283,7 +5283,7 @@ fn test_non_strict_forwarding() {
 	check_added_monitors(&nodes[0], 1);
 	let mut msg_events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), 1);
-	let mut send_event = SendEvent::from_event(msg_events.remove(0));
+	let send_event = SendEvent::from_event(msg_events.remove(0));
 	nodes[1].node.handle_update_add_htlc(node_a_id, &send_event.msgs[0]);
 	do_commitment_signed_dance(&nodes[1], &nodes[0], &send_event.commitment_msg, false, false);
 
@@ -5575,7 +5575,7 @@ fn do_bolt11_multi_node_mpp(use_bolt11_pay: bool) {
 	check_added_monitors(&nodes[2], 2);
 
 	// Get the fulfill messages from C to both A and B
-	let mut events_c = nodes[2].node.get_and_clear_pending_msg_events();
+	let events_c = nodes[2].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_c.len(), 2);
 
 	// Handle fulfill message from C to A
@@ -5840,7 +5840,7 @@ fn bolt11_multi_node_mpp_with_retry() {
 	check_added_monitors(&nodes[3], 2);
 
 	// Get the fulfill messages from D to both C (for A) and B
-	let mut events_d = nodes[3].node.get_and_clear_pending_msg_events();
+	let events_d = nodes[3].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_d.len(), 2);
 
 	// Find which event goes to C and which to B

@@ -1180,7 +1180,7 @@ macro_rules! get_channel_ref {
 #[cfg(any(test, feature = "_externalize_tests"))]
 macro_rules! get_feerate {
 	($node: expr, $counterparty_node: expr, $channel_id: expr) => {{
-		let mut per_peer_state_lock;
+		let per_peer_state_lock;
 		let mut peer_state_lock;
 		let chan = get_channel_ref!(
 			$node,
@@ -1196,7 +1196,7 @@ macro_rules! get_feerate {
 #[cfg(any(test, feature = "_externalize_tests"))]
 macro_rules! get_channel_type_features {
 	($node: expr, $counterparty_node: expr, $channel_id: expr) => {{
-		let mut per_peer_state_lock;
+		let per_peer_state_lock;
 		let mut peer_state_lock;
 		let chan = get_channel_ref!(
 			$node,

@@ -80,7 +80,7 @@ fn do_test_counterparty_no_reserve(send_from_initiator: bool) {
 	{
 		let sender_node = if send_from_initiator { &nodes[1] } else { &nodes[0] };
 		let counterparty_node = if send_from_initiator { &nodes[0] } else { &nodes[1] };
-		let mut sender_node_per_peer_lock;
+		let sender_node_per_peer_lock;
 		let mut sender_node_peer_state_lock;
 
 		let channel = get_channel_ref!(
@@ -134,7 +134,7 @@ pub fn test_channel_reserve_holding_cell_htlcs() {
 
 	let configs = [Some(config.clone()), Some(config.clone()), Some(config.clone())];
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &configs);
-	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -484,7 +484,7 @@ pub fn channel_reserve_in_flight_removes() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -630,7 +630,7 @@ pub fn holding_cell_htlc_counting() {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
-	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -762,7 +762,7 @@ pub fn test_basic_channel_reserve() {
 	let legacy_cfg = test_legacy_channel_config();
 	let node_chanmgrs =
 		create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000);
 
@@ -806,7 +806,7 @@ pub fn do_test_fee_spike_buffer(cfg: Option<UserConfig>, htlc_fails: bool) {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[cfg.clone(), cfg]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -981,7 +981,7 @@ pub fn do_test_fee_spike_buffer(cfg: Option<UserConfig>, htlc_fails: bool) {
 
 #[xtest(feature = "_externalize_tests")]
 pub fn test_chan_reserve_violation_outbound_htlc_inbound_chan() {
-	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+	let chanmon_cfgs = create_chanmon_cfgs(2);
 	// Set the fee rate for the channel very high, to the point where the fundee
 	// sending any above-dust amount would result in a channel reserve violation.
 	// In this test we check that we would be prevented from sending an HTLC in
@@ -991,7 +991,7 @@ pub fn test_chan_reserve_violation_outbound_htlc_inbound_chan() {
 	let legacy_cfg = test_legacy_channel_config();
 	let node_chanmgrs =
 		create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let default_config = UserConfig::default();
 	let channel_type_features = ChannelTypeFeatures::only_static_remote_key();
@@ -1028,14 +1028,14 @@ pub fn test_chan_reserve_violation_outbound_htlc_inbound_chan() {
 pub fn test_chan_reserve_dust_inbound_htlcs_outbound_chan() {
 	// Test that if we receive many dust HTLCs over an outbound channel, they don't count when
 	// calculating our commitment transaction fee (this was previously broken).
-	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let feerate_per_kw = *chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap();
 
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let legacy_cfg = test_legacy_channel_config();
 	let node_chanmgrs =
 		create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let default_config = UserConfig::default();
 	let channel_type_features = ChannelTypeFeatures::only_static_remote_key();
@@ -1087,7 +1087,7 @@ pub fn test_chan_reserve_dust_inbound_htlcs_inbound_chan() {
 	let legacy_cfg = test_legacy_channel_config();
 	let node_chanmgrs =
 		create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 98000000);
 
@@ -1117,7 +1117,7 @@ pub fn test_chan_reserve_violation_inbound_htlc_inbound_chan() {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
-	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 
@@ -1224,7 +1224,7 @@ pub fn test_payment_route_reaching_same_channel_twice() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_b_id = nodes[1].node.get_our_node_id();
 
@@ -1257,7 +1257,7 @@ pub fn test_update_add_htlc_bolt2_sender_value_below_minimum_msat() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let _chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000);
 
@@ -1278,7 +1278,7 @@ pub fn test_update_add_htlc_bolt2_sender_zero_value_msat() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let _chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000);
 
@@ -1306,7 +1306,7 @@ pub fn test_update_add_htlc_bolt2_receiver_zero_value_msat() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -1343,7 +1343,7 @@ pub fn test_update_add_htlc_bolt2_sender_cltv_expiry_too_high() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_b_id = nodes[1].node.get_our_node_id();
 
@@ -1372,7 +1372,7 @@ pub fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_num_and_htlc_id_increme
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 
@@ -1432,7 +1432,7 @@ pub fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_value_in_flight() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let channel_value = 100000;
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, channel_value, 0);
@@ -1462,7 +1462,7 @@ pub fn test_update_add_htlc_bolt2_receiver_check_amount_received_more_than_min()
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -1501,7 +1501,7 @@ pub fn test_update_add_htlc_bolt2_receiver_sender_can_afford_amount_sent() {
 	let legacy_cfg = test_legacy_channel_config();
 	let node_chanmgrs =
 		create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -1545,7 +1545,7 @@ pub fn test_update_add_htlc_bolt2_receiver_check_max_htlc_limit() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 
@@ -1612,7 +1612,7 @@ pub fn test_update_add_htlc_bolt2_receiver_check_max_in_flight_msat() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -1647,7 +1647,7 @@ pub fn test_update_add_htlc_bolt2_receiver_check_cltv_expiry() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -1679,7 +1679,7 @@ pub fn test_update_add_htlc_bolt2_receiver_check_repeated_id_ignore() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -1744,7 +1744,7 @@ pub fn test_update_fulfill_htlc_bolt2_update_fulfill_htlc_before_commitment() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -1788,7 +1788,7 @@ pub fn test_update_fulfill_htlc_bolt2_update_fail_htlc_before_commitment() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -1832,7 +1832,7 @@ pub fn test_update_fulfill_htlc_bolt2_update_fail_malformed_htlc_before_commitme
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -1995,7 +1995,7 @@ pub fn test_update_fulfill_htlc_bolt2_missing_badonion_bit_for_malformed_htlc_me
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -2078,7 +2078,7 @@ pub fn do_test_dust_limit_fee_accounting(can_afford: bool) {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -2102,7 +2102,7 @@ pub fn do_test_dust_limit_fee_accounting(can_afford: bool) {
 		+ 2 * crate::ln::channel::ANCHOR_OUTPUT_VALUE_SATOSHI
 		+ MIN_AFFORDABLE_HTLC_COUNT as u64 * HTLC_AMT_SAT
 		- if can_afford { 0 } else { 1 };
-	let mut node_1_balance_sat = CHANNEL_VALUE_SAT - node_0_balance_sat;
+	let node_1_balance_sat = CHANNEL_VALUE_SAT - node_0_balance_sat;
 
 	let chan_id = create_chan_between_nodes_with_value(
 		&nodes[0],
@@ -2391,10 +2391,10 @@ fn do_test_create_channel_to_trusted_peer_0reserve(mut config: UserConfig) -> Ch
 		.node
 		.create_channel_to_trusted_peer_0reserve(node_b_id, channel_value_sat, 0, 42, None, None)
 		.unwrap();
-	let mut open_channel_message =
+	let open_channel_message =
 		get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 	handle_and_accept_open_channel(&nodes[1], node_a_id, &open_channel_message);
-	let mut accept_channel_message =
+	let accept_channel_message =
 		get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, node_a_id);
 	nodes[0].node.handle_accept_channel(node_b_id, &accept_channel_message);
 	let funding_tx = sign_funding_transaction(&nodes[0], &nodes[1], 100_000, temp_channel_id);
@@ -2479,7 +2479,7 @@ fn do_test_accept_inbound_channel_from_trusted_peer_0reserve(
 
 	nodes[0].node.create_channel(node_b_id, channel_value_sat, 0, 42, None, None).unwrap();
 
-	let mut open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
+	let open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 	nodes[1].node.handle_open_channel(node_a_id, &open_channel);
 	let events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
@@ -2499,7 +2499,7 @@ fn do_test_accept_inbound_channel_from_trusted_peer_0reserve(
 		_ => panic!("Unexpected event"),
 	};
 
-	let mut accept_channel_msg =
+	let accept_channel_msg =
 		get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, node_a_id);
 	nodes[0].node.handle_accept_channel(node_b_id, &accept_channel_msg);
 
@@ -2649,11 +2649,11 @@ pub(crate) fn setup_0reserve_no_outputs_channels<'a, 'b, 'c, 'd>(
 	update_nodes_with_chan_announce(nodes, 0, 1, &announcement, &as_update, &bs_update);
 
 	{
-		let mut per_peer_lock;
+		let per_peer_lock;
 		let mut peer_state_lock;
 		let channel =
 			get_channel_ref!(nodes[0], nodes[1], per_peer_lock, peer_state_lock, channel_id);
-		if let Some(mut chan) = channel.as_funded_mut() {
+		if let Some(chan) = channel.as_funded_mut() {
 			chan.context.holder_dust_limit_satoshis = dust_limit_satoshis;
 		} else {
 			panic!("Unexpected Channel phase");
@@ -2661,11 +2661,11 @@ pub(crate) fn setup_0reserve_no_outputs_channels<'a, 'b, 'c, 'd>(
 	}
 
 	{
-		let mut per_peer_lock;
+		let per_peer_lock;
 		let mut peer_state_lock;
 		let channel =
 			get_channel_ref!(nodes[1], nodes[0], per_peer_lock, peer_state_lock, channel_id);
-		if let Some(mut chan) = channel.as_funded_mut() {
+		if let Some(chan) = channel.as_funded_mut() {
 			chan.context.holder_dust_limit_satoshis = dust_limit_satoshis;
 		} else {
 			panic!("Unexpected Channel phase");

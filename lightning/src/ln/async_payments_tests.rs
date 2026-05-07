@@ -106,7 +106,7 @@ fn invoice_flow_up_to_send_serve_static_invoice(
 	// Check that the right number of requests were queued and that they were only queued for the
 	// server node.
 	let mut pending_oms = recipient.onion_messenger.release_pending_msgs();
-	let mut offer_paths_req_msgs = pending_oms.remove(&server.node.get_our_node_id()).unwrap();
+	let offer_paths_req_msgs = pending_oms.remove(&server.node.get_our_node_id()).unwrap();
 	assert!(offer_paths_req_msgs.len() <= TEST_OFFERS_MESSAGE_REQUEST_LIMIT);
 	for (_, msgs) in pending_oms {
 		assert!(msgs.is_empty());
@@ -120,7 +120,7 @@ fn invoice_flow_up_to_send_serve_static_invoice(
 	recipient.onion_messenger.handle_onion_message(server.node.get_our_node_id(), &offer_paths);
 
 	// Only one OfferPaths response should be queued.
-	let mut pending_oms = server.onion_messenger.release_pending_msgs();
+	let pending_oms = server.onion_messenger.release_pending_msgs();
 	for (_, msgs) in pending_oms {
 		assert!(msgs.is_empty());
 	}
@@ -388,7 +388,7 @@ fn extract_static_invoice_om<'a>(
 	invoice_server: &'a Node, next_hop_nodes: &[&'a Node],
 ) -> (PublicKey, msgs::OnionMessage, StaticInvoice) {
 	let mut static_invoice = None;
-	let mut expected_msg_type = |peeled_onion: &_| {
+	let expected_msg_type = |peeled_onion: &_| {
 		if let PeeledOnion::Offers(OffersMessage::StaticInvoice(inv), _, _) = peeled_onion {
 			static_invoice = Some(inv.clone());
 			true
@@ -596,7 +596,7 @@ fn invalid_keysend_payment_secret() {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
-	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
 	let chan_upd_1_2 =
 		create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0).0.contents;
@@ -1499,7 +1499,7 @@ fn amount_doesnt_match_invreq() {
 	// Check that we've queued the HTLCs of the async keysend payment.
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
-	let mut ev = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
+	let ev = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
 	assert!(matches!(
 			ev, MessageSendEvent::UpdateHTLCs { ref updates, .. } if updates.update_add_htlcs.len() == 1));
 	let payment_hash = extract_payment_hash(&ev);
@@ -1527,7 +1527,7 @@ fn amount_doesnt_match_invreq() {
 	nodes[0].node.process_pending_htlc_forwards();
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
-	let mut ev = remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &mut events);
+	let ev = remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &mut events);
 	assert!(matches!(
 				ev, MessageSendEvent::UpdateHTLCs { ref updates, .. } if updates.update_add_htlcs.len() == 1));
 	check_added_monitors(&nodes[0], 1);
@@ -1543,7 +1543,7 @@ fn amount_doesnt_match_invreq() {
 fn reject_missing_invreq() {
 	// Ensure we'll fail an async payment backwards if the HTLC onion doesn't contain the sender's
 	// original invoice request.
-	let mut valid_invreq: Mutex<Option<InvoiceRequest>> = Mutex::new(None);
+	let valid_invreq: Mutex<Option<InvoiceRequest>> = Mutex::new(None);
 
 	invalid_async_receive_with_retry(
 		|sender, _, payment_id| {
@@ -1575,7 +1575,7 @@ fn reject_missing_invreq() {
 fn reject_bad_payment_secret() {
 	// Ensure we'll fail an async payment backwards if the payment secret in the onion is invalid.
 
-	let mut valid_payment_params: Mutex<Option<PaymentParameters>> = Mutex::new(None);
+	let valid_payment_params: Mutex<Option<PaymentParameters>> = Mutex::new(None);
 	invalid_async_receive_with_retry(
 		|sender, recipient, payment_id| {
 			// Store invalid payment paths in the sender's outbound Retryable payment to induce the failure
@@ -1718,7 +1718,7 @@ fn invalid_async_receive_with_retry<F1, F2>(
 	// Check that we've queued the HTLCs of the async keysend payment.
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
-	let mut ev = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
+	let ev = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
 	assert!(matches!(
 					ev, MessageSendEvent::UpdateHTLCs { ref updates, .. } if updates.update_add_htlcs.len() == 1));
 	let payment_hash = extract_payment_hash(&ev);
@@ -1745,7 +1745,7 @@ fn invalid_async_receive_with_retry<F1, F2>(
 	nodes[0].node.process_pending_htlc_forwards();
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
-	let mut ev = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
+	let ev = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
 	assert!(matches!(
 						ev, MessageSendEvent::UpdateHTLCs { ref updates, .. } if updates.update_add_htlcs.len() == 1));
 	check_added_monitors(&nodes[0], 1);
@@ -1762,7 +1762,7 @@ fn invalid_async_receive_with_retry<F1, F2>(
 	nodes[0].node.process_pending_htlc_forwards();
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
-	let mut ev = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
+	let ev = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
 	check_added_monitors(&nodes[0], 1);
 	let route: &[&[&Node]] = &[&[&nodes[1], &nodes[2]]];
 	let args = PassAlongPathArgs::new(&nodes[0], route[0], amt_msat, payment_hash, ev)
@@ -2401,7 +2401,7 @@ fn ignore_expired_static_invoice() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
 	let server = &nodes[0];
 	let recipient = &nodes[1];
@@ -2421,7 +2421,7 @@ fn ignore_expired_static_invoice() {
 	server
 		.onion_messenger
 		.handle_onion_message(recipient.node.get_our_node_id(), &serve_static_invoice_om);
-	let mut events = server.node.get_and_clear_pending_events();
+	let events = server.node.get_and_clear_pending_events();
 	assert!(events.is_empty());
 }
 
@@ -2431,7 +2431,7 @@ fn ignore_offer_paths_expiry_too_soon() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
 	let server = &nodes[0];
 	let recipient = &nodes[1];
@@ -2637,7 +2637,7 @@ fn refresh_unused_offers() {
 
 	// The used offer should only get an invoice update.
 	recipient.node.timer_tick_occurred();
-	let mut pending_oms = recipient
+	let pending_oms = recipient
 		.onion_messenger
 		.release_pending_msgs()
 		.remove(&server.node.get_our_node_id())
@@ -2903,7 +2903,7 @@ fn async_payment_e2e() {
 		.handle_onion_message(sender_lsp.node.get_our_node_id(), &held_htlc_om_to_inv_server);
 
 	// Get the held_htlc OM from the interception event.
-	let mut events_rc = core::cell::RefCell::new(Vec::new());
+	let events_rc = core::cell::RefCell::new(Vec::new());
 	invoice_server.onion_messenger.process_pending_events(&|e| Ok(events_rc.borrow_mut().push(e)));
 	let events = events_rc.into_inner();
 	let held_htlc_om = events
@@ -3555,7 +3555,7 @@ fn async_payment_e2e_release_before_hold_registered() {
 		.onion_messenger
 		.handle_onion_message(sender_lsp.node.get_our_node_id(), &held_htlc_om_to_inv_server);
 
-	let mut events_rc = core::cell::RefCell::new(Vec::new());
+	let events_rc = core::cell::RefCell::new(Vec::new());
 	invoice_server.onion_messenger.process_pending_events(&|e| Ok(events_rc.borrow_mut().push(e)));
 	let events = events_rc.into_inner();
 	let held_htlc_om = events

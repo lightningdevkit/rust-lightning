@@ -1700,7 +1700,7 @@ fn fails_authentication_when_handling_invoice_for_offer() {
 	// will be sent over the wrong blinded path.
 	{
 		let mut pending_offers_messages = david.node.flow.pending_offers_messages.lock().unwrap();
-		let mut pending_invoice_request = pending_offers_messages.first_mut().unwrap();
+		let pending_invoice_request = pending_offers_messages.first_mut().unwrap();
 		match &mut pending_invoice_request.1 {
 			MessageSendInstructions::WithSpecifiedReplyPath { reply_path, .. } =>
 				*reply_path = invalid_reply_path,
@@ -2483,7 +2483,7 @@ fn rejects_keysend_to_non_static_invoice_path() {
 		.expect_failure(HTLCHandlingFailureType::Receive { payment_hash })
 		.with_dummy_tlvs(&[DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS]);
 	do_pass_along_path(args);
-	let mut updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
+	let updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_update_fail_malformed_htlc(nodes[1].node.get_our_node_id(), &updates.update_fail_malformed_htlcs[0]);
 	do_commitment_signed_dance(&nodes[0], &nodes[1], &updates.commitment_signed, false, false);
 	expect_payment_failed_conditions(&nodes[0], payment_hash, false, PaymentFailedConditions::new());

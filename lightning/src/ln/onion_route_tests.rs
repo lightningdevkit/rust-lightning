@@ -391,7 +391,7 @@ fn test_fee_failures() {
 		&node_cfgs,
 		&[Some(config.clone()), Some(config.clone()), Some(config)],
 	);
-	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	let channels = [
 		create_announced_chan_between_nodes(&nodes, 0, 1),
 		create_announced_chan_between_nodes(&nodes, 1, 2),
@@ -492,7 +492,7 @@ fn test_onion_failure() {
 		&node_cfgs,
 		&[Some(config.clone()), Some(config), Some(node_2_cfg)],
 	);
-	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	let channels = [
 		create_announced_chan_between_nodes(&nodes, 0, 1),
 		create_announced_chan_between_nodes(&nodes, 1, 2),
@@ -1536,7 +1536,7 @@ fn test_overshoot_final_cltv() {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
-	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes(&nodes, 0, 1);
 	create_announced_chan_between_nodes(&nodes, 1, 2);
 	let (route, payment_hash, payment_preimage, payment_secret) =
@@ -1551,7 +1551,7 @@ fn test_overshoot_final_cltv() {
 
 	check_added_monitors(&nodes[0], 1);
 	let update_0 = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
-	let mut update_add_0 = update_0.update_add_htlcs[0].clone();
+	let update_add_0 = update_0.update_add_htlcs[0].clone();
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &update_add_0);
 	do_commitment_signed_dance(&nodes[1], &nodes[0], &update_0.commitment_signed, false, true);
 
@@ -1570,7 +1570,7 @@ fn test_overshoot_final_cltv() {
 
 	check_added_monitors(&nodes[1], 1);
 	let update_1 = get_htlc_update_msgs(&nodes[1], &nodes[2].node.get_our_node_id());
-	let mut update_add_1 = update_1.update_add_htlcs[0].clone();
+	let update_add_1 = update_1.update_add_htlcs[0].clone();
 	nodes[2].node.handle_update_add_htlc(nodes[1].node.get_our_node_id(), &update_add_1);
 	do_commitment_signed_dance(&nodes[2], &nodes[1], &update_1.commitment_signed, false, true);
 
@@ -1810,7 +1810,7 @@ fn test_always_create_tlv_format_onion_payloads() {
 	// specifies no support for variable length onions, as the legacy payload format has been
 	// deprecated in BOLT4.
 	let chanmon_cfgs = create_chanmon_cfgs(3);
-	let mut node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 
 	// Set `node[1]`'s init features to features which return `false` for
 	// `supports_variable_length_onion()`
@@ -1819,7 +1819,7 @@ fn test_always_create_tlv_format_onion_payloads() {
 	*node_cfgs[1].override_init_features.borrow_mut() = Some(no_variable_length_onion_features);
 
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
-	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	create_announced_chan_between_nodes(&nodes, 0, 1);
 	create_announced_chan_between_nodes(&nodes, 1, 2);
@@ -2286,7 +2286,7 @@ fn do_test_fail_htlc_backwards_with_reason(failure_code: FailureCode) {
 	check_added_monitors(&nodes[0], 1);
 
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
-	let mut payment_event = SendEvent::from_event(events.pop().unwrap());
+	let payment_event = SendEvent::from_event(events.pop().unwrap());
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
 	do_commitment_signed_dance(&nodes[1], &nodes[0], &payment_event.commitment_msg, false, false);
 
@@ -2435,7 +2435,7 @@ fn test_phantom_onion_hmac_failure() {
 		.unwrap();
 	check_added_monitors(&nodes[0], 1);
 	let update_0 = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
-	let mut update_add = update_0.update_add_htlcs[0].clone();
+	let update_add = update_0.update_add_htlcs[0].clone();
 
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &update_add);
 	do_commitment_signed_dance(&nodes[1], &nodes[0], &update_0.commitment_signed, false, true);
@@ -2445,7 +2445,7 @@ fn test_phantom_onion_hmac_failure() {
 	// Modify the payload so the phantom hop's HMAC is bogus.
 	let sha256_of_onion = {
 		let mut forward_htlcs = nodes[1].node.forward_htlcs.lock().unwrap();
-		let mut pending_forward = forward_htlcs.get_mut(&phantom_scid).unwrap();
+		let pending_forward = forward_htlcs.get_mut(&phantom_scid).unwrap();
 		match pending_forward[0] {
 			HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
 				forward_info:
@@ -2475,7 +2475,7 @@ fn test_phantom_onion_hmac_failure() {
 	do_commitment_signed_dance(&nodes[0], &nodes[1], &update_1.commitment_signed, false, false);
 
 	// Ensure the payment fails with the expected error.
-	let mut fail_conditions = PaymentFailedConditions::new()
+	let fail_conditions = PaymentFailedConditions::new()
 		.blamed_scid(phantom_scid)
 		.blamed_chan_closed(true)
 		.expected_htlc_error_data(LocalHTLCFailureReason::InvalidOnionHMAC, &sha256_of_onion);
@@ -2487,7 +2487,7 @@ fn test_phantom_invalid_onion_payload() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let channel = create_announced_chan_between_nodes(&nodes, 0, 1);
 
@@ -2508,7 +2508,7 @@ fn test_phantom_invalid_onion_payload() {
 		.unwrap();
 	check_added_monitors(&nodes[0], 1);
 	let update_0 = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
-	let mut update_add = update_0.update_add_htlcs[0].clone();
+	let update_add = update_0.update_add_htlcs[0].clone();
 
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &update_add);
 	do_commitment_signed_dance(&nodes[1], &nodes[0], &update_0.commitment_signed, false, true);
@@ -2577,7 +2577,7 @@ fn test_phantom_invalid_onion_payload() {
 
 	// Ensure the payment fails with the expected error.
 	let error_data = Vec::new();
-	let mut fail_conditions = PaymentFailedConditions::new()
+	let fail_conditions = PaymentFailedConditions::new()
 		.blamed_scid(phantom_scid)
 		.blamed_chan_closed(true)
 		.expected_htlc_error_data(LocalHTLCFailureReason::InvalidOnionPayload, &error_data);
@@ -2607,7 +2607,7 @@ fn test_phantom_final_incorrect_cltv_expiry() {
 		.unwrap();
 	check_added_monitors(&nodes[0], 1);
 	let update_0 = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
-	let mut update_add = update_0.update_add_htlcs[0].clone();
+	let update_add = update_0.update_add_htlcs[0].clone();
 
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &update_add);
 	do_commitment_signed_dance(&nodes[1], &nodes[0], &update_0.commitment_signed, false, true);
@@ -2644,7 +2644,7 @@ fn test_phantom_final_incorrect_cltv_expiry() {
 	// Ensure the payment fails with the expected error.
 	let expected_cltv: u32 = 80;
 	let error_data = expected_cltv.to_be_bytes().to_vec();
-	let mut fail_conditions = PaymentFailedConditions::new()
+	let fail_conditions = PaymentFailedConditions::new()
 		.blamed_scid(phantom_scid)
 		.expected_htlc_error_data(LocalHTLCFailureReason::FinalIncorrectCLTVExpiry, &error_data);
 	expect_payment_failed_conditions(&nodes[0], payment_hash, false, fail_conditions);
@@ -2676,7 +2676,7 @@ fn test_phantom_failure_too_low_cltv() {
 		.unwrap();
 	check_added_monitors(&nodes[0], 1);
 	let update_0 = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
-	let mut update_add = update_0.update_add_htlcs[0].clone();
+	let update_add = update_0.update_add_htlcs[0].clone();
 
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &update_add);
 	do_commitment_signed_dance(&nodes[1], &nodes[0], &update_0.commitment_signed, false, true);
@@ -2698,7 +2698,7 @@ fn test_phantom_failure_too_low_cltv() {
 	// Ensure the payment fails with the expected error.
 	let mut error_data = recv_value_msat.to_be_bytes().to_vec();
 	error_data.extend_from_slice(&nodes[0].node.best_block.read().unwrap().height.to_be_bytes());
-	let mut fail_conditions = PaymentFailedConditions::new()
+	let fail_conditions = PaymentFailedConditions::new()
 		.blamed_scid(phantom_scid)
 		.expected_htlc_error_data(LocalHTLCFailureReason::IncorrectPaymentDetails, &error_data);
 	expect_payment_failed_conditions(&nodes[0], payment_hash, true, fail_conditions);
@@ -2719,7 +2719,7 @@ fn test_phantom_failure_modified_cltv() {
 	let recv_value_msat = 10_000;
 	let (_, payment_hash, payment_secret) =
 		get_payment_preimage_hash(&nodes[1], Some(recv_value_msat), None);
-	let (mut route, phantom_scid) = get_phantom_route!(nodes, recv_value_msat, channel);
+	let (route, phantom_scid) = get_phantom_route!(nodes, recv_value_msat, channel);
 
 	// Route the HTLC through to the destination.
 	let recipient_onion = RecipientOnionFields::secret_only(payment_secret, recv_value_msat);
@@ -2753,7 +2753,7 @@ fn test_phantom_failure_modified_cltv() {
 	let mut err_data = Vec::new();
 	err_data.extend_from_slice(&update_add.cltv_expiry.to_be_bytes());
 	err_data.extend_from_slice(&0u16.to_be_bytes());
-	let mut fail_conditions = PaymentFailedConditions::new()
+	let fail_conditions = PaymentFailedConditions::new()
 		.blamed_scid(phantom_scid)
 		.expected_htlc_error_data(LocalHTLCFailureReason::IncorrectCLTVExpiry, &err_data);
 	expect_payment_failed_conditions(&nodes[0], payment_hash, false, fail_conditions);
@@ -2774,7 +2774,7 @@ fn test_phantom_failure_expires_too_soon() {
 	let recv_value_msat = 10_000;
 	let (_, payment_hash, payment_secret) =
 		get_payment_preimage_hash(&nodes[1], Some(recv_value_msat), None);
-	let (mut route, phantom_scid) = get_phantom_route!(nodes, recv_value_msat, channel);
+	let (route, phantom_scid) = get_phantom_route!(nodes, recv_value_msat, channel);
 
 	// Route the HTLC through to the destination.
 	let recipient_onion = RecipientOnionFields::secret_only(payment_secret, recv_value_msat);
@@ -2784,7 +2784,7 @@ fn test_phantom_failure_expires_too_soon() {
 		.unwrap();
 	check_added_monitors(&nodes[0], 1);
 	let update_0 = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
-	let mut update_add = update_0.update_add_htlcs[0].clone();
+	let update_add = update_0.update_add_htlcs[0].clone();
 
 	connect_blocks(&nodes[1], CLTV_FAR_FAR_AWAY);
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &update_add);
@@ -2804,7 +2804,7 @@ fn test_phantom_failure_expires_too_soon() {
 
 	// Ensure the payment fails with the expected error.
 	let err_data = 0u16.to_be_bytes();
-	let mut fail_conditions = PaymentFailedConditions::new()
+	let fail_conditions = PaymentFailedConditions::new()
 		.blamed_scid(phantom_scid)
 		.expected_htlc_error_data(LocalHTLCFailureReason::CLTVExpiryTooSoon, &err_data);
 	expect_payment_failed_conditions(&nodes[0], payment_hash, false, fail_conditions);
@@ -2824,7 +2824,7 @@ fn test_phantom_failure_too_low_recv_amt() {
 	let bad_recv_amt_msat = recv_amt_msat - 10;
 	let (_, payment_hash, payment_secret) =
 		get_payment_preimage_hash(&nodes[1], Some(recv_amt_msat), None);
-	let (mut route, phantom_scid) = get_phantom_route!(nodes, bad_recv_amt_msat, channel);
+	let (route, phantom_scid) = get_phantom_route!(nodes, bad_recv_amt_msat, channel);
 
 	// Route the HTLC through to the destination.
 	let recipient_onion =
@@ -2835,7 +2835,7 @@ fn test_phantom_failure_too_low_recv_amt() {
 		.unwrap();
 	check_added_monitors(&nodes[0], 1);
 	let update_0 = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
-	let mut update_add = update_0.update_add_htlcs[0].clone();
+	let update_add = update_0.update_add_htlcs[0].clone();
 
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &update_add);
 	do_commitment_signed_dance(&nodes[1], &nodes[0], &update_0.commitment_signed, false, true);
@@ -2859,7 +2859,7 @@ fn test_phantom_failure_too_low_recv_amt() {
 	// Ensure the payment fails with the expected error.
 	let mut error_data = bad_recv_amt_msat.to_be_bytes().to_vec();
 	error_data.extend_from_slice(&nodes[1].node.best_block.read().unwrap().height.to_be_bytes());
-	let mut fail_conditions = PaymentFailedConditions::new()
+	let fail_conditions = PaymentFailedConditions::new()
 		.blamed_scid(phantom_scid)
 		.expected_htlc_error_data(LocalHTLCFailureReason::IncorrectPaymentDetails, &error_data);
 	expect_payment_failed_conditions(&nodes[0], payment_hash, true, fail_conditions);
@@ -2894,7 +2894,7 @@ fn do_test_phantom_dust_exposure_failure(multiplier_dust_limit: bool) {
 	// Get the route with an amount exceeding the dust exposure threshold of nodes[1].
 	let (_, payment_hash, payment_secret) =
 		get_payment_preimage_hash(&nodes[1], Some(max_dust_exposure + 1), None);
-	let (mut route, phantom_scid) = get_phantom_route!(nodes, max_dust_exposure + 1, channel);
+	let (route, phantom_scid) = get_phantom_route!(nodes, max_dust_exposure + 1, channel);
 
 	// Route the HTLC through to the destination.
 	let recipient_onion = RecipientOnionFields::secret_only(payment_secret, max_dust_exposure + 1);
@@ -2905,7 +2905,7 @@ fn do_test_phantom_dust_exposure_failure(multiplier_dust_limit: bool) {
 		.unwrap();
 	check_added_monitors(&nodes[0], 1);
 	let update_0 = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
-	let mut update_add = update_0.update_add_htlcs[0].clone();
+	let update_add = update_0.update_add_htlcs[0].clone();
 
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &update_add);
 	do_commitment_signed_dance(&nodes[1], &nodes[0], &update_0.commitment_signed, false, true);
@@ -2924,7 +2924,7 @@ fn do_test_phantom_dust_exposure_failure(multiplier_dust_limit: bool) {
 
 	// Ensure the payment fails with the expected error.
 	let err_data = 0u16.to_be_bytes();
-	let mut fail_conditions = PaymentFailedConditions::new()
+	let fail_conditions = PaymentFailedConditions::new()
 		.blamed_scid(phantom_scid)
 		.expected_htlc_error_data(LocalHTLCFailureReason::TemporaryChannelFailure, &err_data);
 	expect_payment_failed_conditions(&nodes[0], payment_hash, false, fail_conditions);
@@ -2944,7 +2944,7 @@ fn test_phantom_failure_reject_payment() {
 	let recv_amt_msat = 10_000;
 	let (_, payment_hash, payment_secret) =
 		get_payment_preimage_hash(&nodes[1], Some(recv_amt_msat), None);
-	let (mut route, phantom_scid) = get_phantom_route!(nodes, recv_amt_msat, channel);
+	let (route, phantom_scid) = get_phantom_route!(nodes, recv_amt_msat, channel);
 
 	// Route the HTLC through to the destination.
 	let recipient_onion = RecipientOnionFields::secret_only(payment_secret, recv_amt_msat);
@@ -2955,7 +2955,7 @@ fn test_phantom_failure_reject_payment() {
 		.unwrap();
 	check_added_monitors(&nodes[0], 1);
 	let update_0 = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
-	let mut update_add = update_0.update_add_htlcs[0].clone();
+	let update_add = update_0.update_add_htlcs[0].clone();
 
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &update_add);
 	do_commitment_signed_dance(&nodes[1], &nodes[0], &update_0.commitment_signed, false, true);
@@ -2989,7 +2989,7 @@ fn test_phantom_failure_reject_payment() {
 	// Ensure the payment fails with the expected error.
 	let mut error_data = recv_amt_msat.to_be_bytes().to_vec();
 	error_data.extend_from_slice(&nodes[1].node.best_block.read().unwrap().height.to_be_bytes());
-	let mut fail_conditions = PaymentFailedConditions::new()
+	let fail_conditions = PaymentFailedConditions::new()
 		.blamed_scid(phantom_scid)
 		.expected_htlc_error_data(LocalHTLCFailureReason::IncorrectPaymentDetails, &error_data);
 	expect_payment_failed_conditions(&nodes[0], payment_hash, true, fail_conditions);

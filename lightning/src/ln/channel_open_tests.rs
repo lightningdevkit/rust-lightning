@@ -193,7 +193,7 @@ fn test_inbound_anchors_config_overridden() {
 		update_overrides: None,
 	};
 
-	let mut anchors_cfg = test_default_channel_config();
+	let anchors_cfg = test_default_channel_config();
 	let accept_message = do_test_manual_inbound_accept_with_override(anchors_cfg, Some(overrides));
 	assert_eq!(accept_message.common_fields.max_htlc_value_in_flight_msat, 5_000_000);
 	assert_eq!(accept_message.common_fields.htlc_minimum_msat, 1_000);
@@ -370,7 +370,7 @@ fn test_no_channel_downgrade() {
 	// Tests that the local node will not retry when a `option_static_remote` channel is
 	// rejected by a peer that advertises support for the feature.
 	let initiator_cfg = test_legacy_channel_config();
-	let mut receiver_cfg = test_default_channel_config();
+	let receiver_cfg = test_default_channel_config();
 
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -650,7 +650,7 @@ pub fn test_funding_exceeds_no_wumbo_limit() {
 	// them.
 	use crate::ln::channel::MAX_FUNDING_SATOSHIS_NO_WUMBO;
 	let chanmon_cfgs = create_chanmon_cfgs(2);
-	let mut node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let mut features = channelmanager::provided_init_features(&test_default_channel_config());
 	features.clear_wumbo();
 	*node_cfgs[1].override_init_features.borrow_mut() = Some(features);
@@ -1291,7 +1291,7 @@ pub fn test_duplicate_temporary_channel_id_from_different_peers() {
 
 	// Create an first channel channel
 	nodes[1].node.create_channel(node_a_id, 100000, 10001, 42, None, None).unwrap();
-	let mut open_chan_msg_chan_1_0 =
+	let open_chan_msg_chan_1_0 =
 		get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, node_a_id);
 
 	// Create an second channel
@@ -1443,7 +1443,7 @@ pub fn test_duplicate_chan_id() {
 	nodes[0].node.funding_transaction_generated(temp_channel_id, node_b_id, tx.clone()).unwrap();
 	check_added_monitors(&nodes[0], 0);
 
-	let mut funding_created_msg =
+	let funding_created_msg =
 		get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, node_b_id);
 	let channel_id = ChannelId::v1_from_funding_txid(
 		funding_created_msg.funding_txid.as_byte_array(),
@@ -1513,7 +1513,7 @@ pub fn test_duplicate_chan_id() {
 		let chan_id = open_chan_2_msg.common_fields.temporary_channel_id;
 		let mut channel = a_peer_state.channel_by_id.remove(&chan_id).unwrap();
 
-		if let Some(mut chan) = channel.as_unfunded_outbound_v1_mut() {
+		if let Some(chan) = channel.as_unfunded_outbound_v1_mut() {
 			let logger = test_utils::TestLogger::new();
 			chan.get_funding_created(tx.clone(), funding_outpoint, false, &&logger)
 				.map_err(|_| ())
@@ -1614,8 +1614,7 @@ pub fn test_invalid_funding_tx() {
 	// 136 bytes long. This matches our "accepted HTLC preimage spend" matching, previously causing
 	// a panic as we'd try to extract a 32 byte preimage from a witness element without checking
 	// its length.
-	let mut wit_program: Vec<u8> =
-		channelmonitor::deliberately_bogus_accepted_htlc_witness_program();
+	let wit_program: Vec<u8> = channelmonitor::deliberately_bogus_accepted_htlc_witness_program();
 	let wit_program_script: ScriptBuf = wit_program.into();
 	for output in tx.output.iter_mut() {
 		// Make the confirmed funding transaction have a bogus script_pubkey
@@ -1674,7 +1673,7 @@ pub fn test_invalid_funding_tx() {
 	// Now confirm a spend of the (bogus) funding transaction. As long as the witness is 5 elements
 	// long the ChannelMonitor will try to read 32 bytes from the second-to-last element, panicing
 	// as its not 32 bytes long.
-	let mut spend_tx = Transaction {
+	let spend_tx = Transaction {
 		version: Version::TWO,
 		lock_time: LockTime::ZERO,
 		input: tx
@@ -1793,7 +1792,7 @@ pub fn test_non_final_funding_tx() {
 		witness: Witness::from_slice(&[&[1]]),
 	};
 	assert_eq!(events.len(), 1);
-	let mut tx = match events[0] {
+	let tx = match events[0] {
 		Event::FundingGenerationReady { ref channel_value_satoshis, ref output_script, .. } => {
 			// Timelock the transaction _beyond_ the best client height + 1.
 			Transaction {
@@ -1852,7 +1851,7 @@ pub fn test_non_final_funding_tx_within_headroom() {
 		witness: Witness::from_slice(&[[1]]),
 	};
 	assert_eq!(events.len(), 1);
-	let mut tx = match events[0] {
+	let tx = match events[0] {
 		Event::FundingGenerationReady { ref channel_value_satoshis, ref output_script, .. } => {
 			// Timelock the transaction within a +1 headroom from the best block.
 			Transaction {
@@ -2083,7 +2082,7 @@ pub fn test_close_in_funding_batch() {
 	// The monitor should become closed.
 	check_added_monitors(&nodes[0], 1);
 	{
-		let mut monitor_updates = nodes[0].chain_monitor.monitor_updates.lock().unwrap();
+		let monitor_updates = nodes[0].chain_monitor.monitor_updates.lock().unwrap();
 		let monitor_updates_1 = monitor_updates.get(&channel_id_1).unwrap();
 		assert_eq!(monitor_updates_1.len(), 1);
 		assert_eq!(monitor_updates_1[0].updates.len(), 1);
@@ -2179,7 +2178,7 @@ pub fn test_batch_funding_close_after_funding_signed() {
 	nodes[0].node.force_close_broadcasting_latest_txn(&channel_id_1, &node_b_id, err).unwrap();
 	check_added_monitors(&nodes[0], 2);
 	{
-		let mut monitor_updates = nodes[0].chain_monitor.monitor_updates.lock().unwrap();
+		let monitor_updates = nodes[0].chain_monitor.monitor_updates.lock().unwrap();
 		let monitor_updates_1 = monitor_updates.get(&channel_id_1).unwrap();
 		assert_eq!(monitor_updates_1.len(), 1);
 		assert_eq!(monitor_updates_1[0].updates.len(), 1);
@@ -2244,7 +2243,7 @@ pub fn test_funding_and_commitment_tx_confirm_same_block() {
 		&node_cfgs,
 		&[Some(min_depth_1_block_cfg.clone()), Some(min_depth_1_block_cfg)],
 	);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();

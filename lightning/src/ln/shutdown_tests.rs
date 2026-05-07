@@ -141,7 +141,7 @@ fn expect_channel_shutdown_state_with_htlc() {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
-	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
 	let node_c_id = nodes[2].node.get_our_node_id();
@@ -237,7 +237,7 @@ fn test_lnd_bug_6039() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
 	let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
@@ -387,7 +387,7 @@ fn updates_shutdown_wait() {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
-	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
 	let node_c_id = nodes[2].node.get_our_node_id();
@@ -518,7 +518,7 @@ fn do_htlc_fail_async_shutdown(blinded_recipient: bool) {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
-	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
 	let node_c_id = nodes[2].node.get_our_node_id();
@@ -879,7 +879,7 @@ fn test_upfront_shutdown_script() {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &user_cfgs);
-	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
 	let node_c_id = nodes[2].node.get_our_node_id();
@@ -976,7 +976,7 @@ fn test_upfront_shutdown_script() {
 #[test]
 fn test_unsupported_anysegwit_upfront_shutdown_script() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
-	let mut node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	// Clear shutdown_anysegwit on initiator
 	let mut features = channelmanager::provided_init_features(&test_default_channel_config());
 	features.clear_shutdown_anysegwit();
@@ -1020,7 +1020,7 @@ fn test_unsupported_anysegwit_upfront_shutdown_script() {
 	}
 
 	let chanmon_cfgs = create_chanmon_cfgs(2);
-	let mut node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	// Clear shutdown_anysegwit on responder
 	let mut features = channelmanager::provided_init_features(&test_default_channel_config());
 	features.clear_shutdown_anysegwit();
@@ -1184,7 +1184,7 @@ fn test_unsupported_anysegwit_shutdown_script() {
 	config.channel_handshake_config.commit_upfront_shutdown_pubkey = false;
 	let user_cfgs = [None, Some(config.clone()), None];
 	let chanmon_cfgs = create_chanmon_cfgs(3);
-	let mut node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let mut features = channelmanager::provided_init_features(&config);
 	features.clear_shutdown_anysegwit();
 	*node_cfgs[0].override_init_features.borrow_mut() = Some(features.clone());
@@ -1281,7 +1281,7 @@ fn test_user_shutdown_script() {
 		.unwrap();
 	check_added_monitors(&nodes[1], 1);
 
-	let mut node_0_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, node_a_id);
+	let node_0_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, node_a_id);
 
 	assert_eq!(node_0_shutdown.scriptpubkey, script);
 }
@@ -1339,7 +1339,7 @@ fn do_test_closing_signed_reinit_timeout(timeout_step: TimeoutStep) {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let legacy_cfg = test_legacy_channel_config();
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg), None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
 	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
@@ -1375,7 +1375,7 @@ fn do_test_closing_signed_reinit_timeout(timeout_step: TimeoutStep) {
 		// nodes[1] should happily accept and respond to.
 		node_0_closing_signed.fee_range.as_mut().unwrap().max_fee_satoshis *= 10;
 		{
-			let mut per_peer_lock;
+			let per_peer_lock;
 			let mut peer_state_lock;
 			let chan =
 				get_channel_ref!(nodes[0], nodes[1], per_peer_lock, peer_state_lock, chan_id);
@@ -1865,7 +1865,7 @@ fn test_pending_htlcs_arent_lost_on_mon_delay() {
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
-	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();

@@ -48,78 +48,53 @@ pub mod wire;
 #[allow(dead_code)] // TODO(dual_funding): Remove once contribution to V2 channels is enabled.
 pub(crate) mod interactivetxs;
 
-// Older rustc (which we support) refuses to let us call the get_payment_preimage_hash!() macro
-// without the node parameter being mut. This is incorrect, and thus newer rustcs will complain
-// about an unnecessary mut. Thus, we silence the unused_mut warning in two test modules below.
-
 #[cfg(test)]
 mod accountable_tests;
 #[cfg(test)]
-#[allow(unused_mut)]
 mod async_payments_tests;
 #[cfg(test)]
-#[allow(unused_mut)]
 mod async_signer_tests;
 #[cfg(test)]
-#[allow(unused_mut)]
 mod blinded_payment_tests;
 #[cfg(test)]
-#[allow(unused_mut)]
 pub mod bolt11_payment_tests;
 #[cfg(test)]
-#[allow(unused_mut)]
 mod chanmon_update_fail_tests;
 #[cfg(test)]
-#[allow(unused_mut)]
 mod channel_open_tests;
 #[cfg(test)]
-#[allow(unused_mut)]
 mod channel_type_tests;
 #[cfg(test)]
-#[allow(unused_mut)]
 mod dual_funding_tests;
 #[cfg(any(test, feature = "_externalize_tests"))]
-#[allow(unused_mut)]
 pub mod functional_tests;
 #[cfg(any(test, feature = "_externalize_tests"))]
-#[allow(unused_mut)]
 pub mod htlc_reserve_unit_tests;
 #[cfg(any(test, feature = "_externalize_tests"))]
-#[allow(unused_mut)]
 pub mod interception_tests;
 #[cfg(test)]
-#[allow(unused_mut)]
 mod max_payment_path_len_tests;
 #[cfg(test)]
-#[allow(unused_mut)]
 mod monitor_tests;
 #[cfg(test)]
-#[allow(unused_mut)]
 mod offers_tests;
 #[cfg(test)]
-#[allow(unused_mut)]
 mod onion_route_tests;
 #[cfg(test)]
-#[allow(unused_mut)]
 mod payment_tests;
 #[cfg(test)]
-#[allow(unused_mut)]
 mod priv_short_conf_tests;
 #[cfg(test)]
 mod quiescence_tests;
 #[cfg(test)]
-#[allow(unused_mut)]
 mod reload_tests;
 #[cfg(test)]
-#[allow(unused_mut)]
 mod reorg_tests;
 #[cfg(test)]
-#[allow(unused_mut)]
 mod shutdown_tests;
 #[cfg(any(feature = "_test_utils", test))]
 pub mod splicing_tests;
 #[cfg(any(test, feature = "_externalize_tests"))]
-#[allow(unused_mut)]
 pub mod update_fee_tests;
 #[cfg(test)]
 mod zero_fee_commitment_tests;
