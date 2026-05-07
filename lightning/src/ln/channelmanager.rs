@@ -211,7 +211,7 @@ pub enum PendingHTLCRouting {
 		/// This could be a real on-chain SCID, an SCID alias, or some other SCID which has meaning
 		/// to the receiving node, such as one returned from
 		/// [`ChannelManager::get_intercept_scid`] or [`ChannelManager::get_phantom_scid`].
-		short_channel_id: u64, // This should be NonZero<u64> eventually when we bump MSRV
+		short_channel_id: u64,
 		/// Set if this HTLC is being forwarded within a blinded path.
 		blinded: Option<BlindedForward>,
 		/// The absolute CLTV of the inbound HTLC
