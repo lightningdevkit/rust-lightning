@@ -8,6 +8,7 @@ description = """
 A crate that wraps getrandom and always compiles, returning 0s when no randomness is available.
 """
 edition = "2021"
+rust-version = "1.85"
 
 [package.metadata.docs.rs]
 all-features = true

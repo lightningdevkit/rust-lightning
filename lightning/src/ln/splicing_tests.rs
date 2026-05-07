@@ -7727,7 +7727,8 @@ fn do_test_0reserve_splice_holder_validation(
 		Amount::from_sat(
 			initiator_value_to_self_sat
 				- commit_tx_fee_sat
-				- anchors_sat - estimated_fees_sat
+				- anchors_sat
+				- estimated_fees_sat
 				- dust_limit_satoshis,
 		)
 	} else if counterparty_has_output && !node_0_is_initiator {

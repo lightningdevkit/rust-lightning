@@ -215,7 +215,7 @@ jobs:
   fuzz_sanity:
     runs-on: self-hosted
     env:
-      TOOLCHAIN: 1.75
+      TOOLCHAIN: 1.85.0
     steps:
       - name: Checkout source code
         uses: actions/checkout@v4
@@ -232,7 +232,7 @@ jobs:
   fuzz:
     runs-on: self-hosted
     env:
-      TOOLCHAIN: 1.75
+      TOOLCHAIN: 1.85.0
     steps:
       - name: Checkout source code
         uses: actions/checkout@v4
@@ -317,7 +317,7 @@ jobs:
   rustfmt:
     runs-on: ubuntu-latest
     env:
-      TOOLCHAIN: 1.75.0
+      TOOLCHAIN: 1.85.0
     steps:
       - name: Checkout source code
         uses: actions/checkout@v4
@@ -336,7 +336,7 @@ jobs:
   tor-connect:
     runs-on: ubuntu-latest
     env:
-      TOOLCHAIN: 1.75.0
+      TOOLCHAIN: 1.85.0
     steps:
       - name: Checkout source code
         uses: actions/checkout@v4

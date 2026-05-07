@@ -19,11 +19,11 @@ jobs:
             || fromJSON('["self-hosted"]') }}
         toolchain: >-
           ${{ github.event_name == 'push' && github.ref == 'refs/heads/main'
-            && fromJSON('["stable","beta","1.75.0"]')
-            || fromJSON('["1.75.0"]') }}
+            && fromJSON('["stable","beta","1.85.0"]')
+            || fromJSON('["1.85.0"]') }}
         exclude:
           - platform: windows-latest
-            toolchain: 1.75.0
+            toolchain: 1.85.0
           - platform: windows-latest
             toolchain: beta
           - platform: macos-latest
@@ -40,7 +40,7 @@ jobs:
         shell: bash
         run: echo "RUSTFLAGS=-C linker=rust-lld" >> "$GITHUB_ENV"
       - name: Set RUSTFLAGS to deny warnings
-        if: "matrix.toolchain == '1.75.0'"
+        if: "matrix.toolchain == '1.85.0'"
         run: echo "RUSTFLAGS=-D warnings" >> "$GITHUB_ENV"
       - name: Install no-std-check dependencies for ARM Embedded
         if: matrix.platform == 'self-hosted'

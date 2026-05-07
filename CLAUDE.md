@@ -11,11 +11,11 @@ See [README.md](README.md) for the workspace layout and [ARCH.md](ARCH.md) for s
 ## Development Rules
 
 - Always ensure tests pass before committing. To this end, you should run
-  `cargo +1.75.0 test` for all affected crates and/or features. Upon completion
+  `cargo +1.85.0 test` for all affected crates and/or features. Upon completion
   of the full task you might prompt the user whether they want you to run the
   full CI tests via `./ci/ci-tests.sh`. Note however that this script will run
   for a very long time, so please don't timeout when you do.
-- Run `cargo +1.75.0 fmt --all` before committing code changes. If rust 1.75.0 is
+- Run `cargo +1.85.0 fmt --all` before committing code changes. If rust 1.85.0 is
   not installed, skip this step.
 - Never add new dependencies unless explicitly requested
 - Please always disclose the use of any AI tools in commit messages and PR descriptions using a `Co-Authored-By:` line.
