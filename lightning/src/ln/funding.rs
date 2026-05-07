@@ -121,10 +121,10 @@ pub enum FundingContributionError {
 	///
 	/// Note: [`FundingTemplate::min_rbf_feerate`] may be derived from an in-progress
 	/// negotiation that later aborts, leaving a stale (higher than necessary) minimum. If
-	/// this error occurs after receiving [`Event::SpliceFailed`], call
+	/// this error occurs after receiving [`Event::SpliceNegotiationFailed`], call
 	/// [`ChannelManager::splice_channel`] again to get a fresh template.
 	///
-	/// [`Event::SpliceFailed`]: crate::events::Event::SpliceFailed
+	/// [`Event::SpliceNegotiationFailed`]: crate::events::Event::SpliceNegotiationFailed
 	/// [`ChannelManager::splice_channel`]: crate::ln::channelmanager::ChannelManager::splice_channel
 	FeeRateBelowRbfMinimum {
 		/// The requested feerate.
@@ -766,7 +766,7 @@ impl FundingContribution {
 			inputs.retain(|input| *input != existing);
 		}
 		for existing in existing_outputs {
-			outputs.retain(|output| *output != *existing);
+			outputs.retain(|output| output.script_pubkey != existing.script_pubkey);
 		}
 		if inputs.is_empty() && outputs.is_empty() {
 			None
