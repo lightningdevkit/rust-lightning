@@ -2033,16 +2033,16 @@ pub trait AChannelManager {
 }
 
 impl<
-		M: chain::Watch<SP::EcdsaSigner>,
-		T: BroadcasterInterface,
-		ES: EntropySource,
-		NS: NodeSigner,
-		SP: SignerProvider,
-		F: FeeEstimator,
-		R: Router,
-		MR: MessageRouter,
-		L: Logger,
-	> AChannelManager for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	M: chain::Watch<SP::EcdsaSigner>,
+	T: BroadcasterInterface,
+	ES: EntropySource,
+	NS: NodeSigner,
+	SP: SignerProvider,
+	F: FeeEstimator,
+	R: Router,
+	MR: MessageRouter,
+	L: Logger,
+> AChannelManager for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 {
 	type Watch = M;
 	type Broadcaster = T;
@@ -3633,16 +3633,16 @@ impl TrustedChannelFeatures {
 }
 
 impl<
-		M: chain::Watch<SP::EcdsaSigner>,
-		T: BroadcasterInterface,
-		ES: EntropySource,
-		NS: NodeSigner,
-		SP: SignerProvider,
-		F: FeeEstimator,
-		R: Router,
-		MR: MessageRouter,
-		L: Logger,
-	> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	M: chain::Watch<SP::EcdsaSigner>,
+	T: BroadcasterInterface,
+	ES: EntropySource,
+	NS: NodeSigner,
+	SP: SignerProvider,
+	F: FeeEstimator,
+	R: Router,
+	MR: MessageRouter,
+	L: Logger,
+> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 {
 	/// Constructs a new `ChannelManager` to hold several channels and route between them.
 	///
@@ -7284,10 +7284,10 @@ impl<
 						funded_chan.context.outbound_scid_alias()
 					} else {
 						return Err(APIError::ChannelUnavailable {
-						err: format!(
-							"Channel with id {next_hop_channel_id} for the passed counterparty node_id {next_node_id} is still opening."
+							err: format!(
+								"Channel with id {next_hop_channel_id} for the passed counterparty node_id {next_node_id} is still opening."
 							),
-					});
+						});
 					}
 				},
 				None => {
@@ -14749,16 +14749,16 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 } }
 
 impl<
-		M: Watch<SP::EcdsaSigner>,
-		T: BroadcasterInterface,
-		ES: EntropySource,
-		NS: NodeSigner,
-		SP: SignerProvider,
-		F: FeeEstimator,
-		R: Router,
-		MR: MessageRouter,
-		L: Logger,
-	> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	M: Watch<SP::EcdsaSigner>,
+	T: BroadcasterInterface,
+	ES: EntropySource,
+	NS: NodeSigner,
+	SP: SignerProvider,
+	F: FeeEstimator,
+	R: Router,
+	MR: MessageRouter,
+	L: Logger,
+> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 {
 	#[cfg(not(c_bindings))]
 	create_offer_builder!(self, OfferBuilder<'_, DerivedMetadata, secp256k1::All>);
@@ -15590,16 +15590,16 @@ impl<
 }
 
 impl<
-		M: chain::Watch<SP::EcdsaSigner>,
-		T: BroadcasterInterface,
-		ES: EntropySource,
-		NS: NodeSigner,
-		SP: SignerProvider,
-		F: FeeEstimator,
-		R: Router,
-		MR: MessageRouter,
-		L: Logger,
-	> BaseMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	M: chain::Watch<SP::EcdsaSigner>,
+	T: BroadcasterInterface,
+	ES: EntropySource,
+	NS: NodeSigner,
+	SP: SignerProvider,
+	F: FeeEstimator,
+	R: Router,
+	MR: MessageRouter,
+	L: Logger,
+> BaseMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 {
 	fn provided_node_features(&self) -> NodeFeatures {
 		provided_node_features(&self.config.read().unwrap())
@@ -15982,16 +15982,16 @@ impl<
 }
 
 impl<
-		M: chain::Watch<SP::EcdsaSigner>,
-		T: BroadcasterInterface,
-		ES: EntropySource,
-		NS: NodeSigner,
-		SP: SignerProvider,
-		F: FeeEstimator,
-		R: Router,
-		MR: MessageRouter,
-		L: Logger,
-	> EventsProvider for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	M: chain::Watch<SP::EcdsaSigner>,
+	T: BroadcasterInterface,
+	ES: EntropySource,
+	NS: NodeSigner,
+	SP: SignerProvider,
+	F: FeeEstimator,
+	R: Router,
+	MR: MessageRouter,
+	L: Logger,
+> EventsProvider for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 {
 	/// Processes events that must be periodically handled.
 	///
@@ -16007,16 +16007,16 @@ impl<
 }
 
 impl<
-		M: chain::Watch<SP::EcdsaSigner>,
-		T: BroadcasterInterface,
-		ES: EntropySource,
-		NS: NodeSigner,
-		SP: SignerProvider,
-		F: FeeEstimator,
-		R: Router,
-		MR: MessageRouter,
-		L: Logger,
-	> chain::Listen for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	M: chain::Watch<SP::EcdsaSigner>,
+	T: BroadcasterInterface,
+	ES: EntropySource,
+	NS: NodeSigner,
+	SP: SignerProvider,
+	F: FeeEstimator,
+	R: Router,
+	MR: MessageRouter,
+	L: Logger,
+> chain::Listen for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 {
 	fn filtered_block_connected(&self, header: &Header, txdata: &TransactionData, height: u32) {
 		{
@@ -16065,16 +16065,16 @@ impl<
 }
 
 impl<
-		M: chain::Watch<SP::EcdsaSigner>,
-		T: BroadcasterInterface,
-		ES: EntropySource,
-		NS: NodeSigner,
-		SP: SignerProvider,
-		F: FeeEstimator,
-		R: Router,
-		MR: MessageRouter,
-		L: Logger,
-	> chain::Confirm for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	M: chain::Watch<SP::EcdsaSigner>,
+	T: BroadcasterInterface,
+	ES: EntropySource,
+	NS: NodeSigner,
+	SP: SignerProvider,
+	F: FeeEstimator,
+	R: Router,
+	MR: MessageRouter,
+	L: Logger,
+> chain::Confirm for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 {
 	#[rustfmt::skip]
 	fn transactions_confirmed(&self, header: &Header, txdata: &TransactionData, height: u32) {
@@ -16228,16 +16228,16 @@ pub(super) enum FundingConfirmedMessage {
 }
 
 impl<
-		M: chain::Watch<SP::EcdsaSigner>,
-		T: BroadcasterInterface,
-		ES: EntropySource,
-		NS: NodeSigner,
-		SP: SignerProvider,
-		F: FeeEstimator,
-		R: Router,
-		MR: MessageRouter,
-		L: Logger,
-	> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	M: chain::Watch<SP::EcdsaSigner>,
+	T: BroadcasterInterface,
+	ES: EntropySource,
+	NS: NodeSigner,
+	SP: SignerProvider,
+	F: FeeEstimator,
+	R: Router,
+	MR: MessageRouter,
+	L: Logger,
+> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 {
 	/// Calls a function which handles an on-chain event (blocks dis/connected, transactions
 	/// un/confirmed, etc) on each channel, handling any resulting errors or messages generated by
@@ -16581,16 +16581,16 @@ impl<
 }
 
 impl<
-		M: chain::Watch<SP::EcdsaSigner>,
-		T: BroadcasterInterface,
-		ES: EntropySource,
-		NS: NodeSigner,
-		SP: SignerProvider,
-		F: FeeEstimator,
-		R: Router,
-		MR: MessageRouter,
-		L: Logger,
-	> ChannelMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	M: chain::Watch<SP::EcdsaSigner>,
+	T: BroadcasterInterface,
+	ES: EntropySource,
+	NS: NodeSigner,
+	SP: SignerProvider,
+	F: FeeEstimator,
+	R: Router,
+	MR: MessageRouter,
+	L: Logger,
+> ChannelMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 {
 	fn handle_open_channel(&self, counterparty_node_id: PublicKey, message: &msgs::OpenChannel) {
 		// Note that we never need to persist the updated ChannelManager for an inbound
@@ -17141,16 +17141,16 @@ impl<
 }
 
 impl<
-		M: chain::Watch<SP::EcdsaSigner>,
-		T: BroadcasterInterface,
-		ES: EntropySource,
-		NS: NodeSigner,
-		SP: SignerProvider,
-		F: FeeEstimator,
-		R: Router,
-		MR: MessageRouter,
-		L: Logger,
-	> OffersMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	M: chain::Watch<SP::EcdsaSigner>,
+	T: BroadcasterInterface,
+	ES: EntropySource,
+	NS: NodeSigner,
+	SP: SignerProvider,
+	F: FeeEstimator,
+	R: Router,
+	MR: MessageRouter,
+	L: Logger,
+> OffersMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 {
 	#[rustfmt::skip]
 	fn handle_message(
@@ -17349,16 +17349,16 @@ impl<
 }
 
 impl<
-		M: chain::Watch<SP::EcdsaSigner>,
-		T: BroadcasterInterface,
-		ES: EntropySource,
-		NS: NodeSigner,
-		SP: SignerProvider,
-		F: FeeEstimator,
-		R: Router,
-		MR: MessageRouter,
-		L: Logger,
-	> AsyncPaymentsMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	M: chain::Watch<SP::EcdsaSigner>,
+	T: BroadcasterInterface,
+	ES: EntropySource,
+	NS: NodeSigner,
+	SP: SignerProvider,
+	F: FeeEstimator,
+	R: Router,
+	MR: MessageRouter,
+	L: Logger,
+> AsyncPaymentsMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 {
 	fn handle_offer_paths_request(
 		&self, message: OfferPathsRequest, context: AsyncPaymentsContext,
@@ -17607,16 +17607,16 @@ impl<
 }
 
 impl<
-		M: chain::Watch<SP::EcdsaSigner>,
-		T: BroadcasterInterface,
-		ES: EntropySource,
-		NS: NodeSigner,
-		SP: SignerProvider,
-		F: FeeEstimator,
-		R: Router,
-		MR: MessageRouter,
-		L: Logger,
-	> NodeIdLookUp for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	M: chain::Watch<SP::EcdsaSigner>,
+	T: BroadcasterInterface,
+	ES: EntropySource,
+	NS: NodeSigner,
+	SP: SignerProvider,
+	F: FeeEstimator,
+	R: Router,
+	MR: MessageRouter,
+	L: Logger,
+> NodeIdLookUp for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 {
 	fn next_node_id(&self, short_channel_id: u64) -> Option<PublicKey> {
 		self.short_to_chan_info.read().unwrap().get(&short_channel_id).map(|(pubkey, _)| *pubkey)
@@ -18134,16 +18134,16 @@ impl_writeable_tlv_based!(PendingInboundPayment, {
 });
 
 impl<
-		M: chain::Watch<SP::EcdsaSigner>,
-		T: BroadcasterInterface,
-		ES: EntropySource,
-		NS: NodeSigner,
-		SP: SignerProvider,
-		F: FeeEstimator,
-		R: Router,
-		MR: MessageRouter,
-		L: Logger,
-	> Writeable for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	M: chain::Watch<SP::EcdsaSigner>,
+	T: BroadcasterInterface,
+	ES: EntropySource,
+	NS: NodeSigner,
+	SP: SignerProvider,
+	F: FeeEstimator,
+	R: Router,
+	MR: MessageRouter,
+	L: Logger,
+> Writeable for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 {
 	#[rustfmt::skip]
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
@@ -18948,17 +18948,17 @@ pub struct ChannelManagerReadArgs<
 }
 
 impl<
-		'a,
-		M: chain::Watch<SP::EcdsaSigner>,
-		T: BroadcasterInterface,
-		ES: EntropySource,
-		NS: NodeSigner,
-		SP: SignerProvider,
-		F: FeeEstimator,
-		R: Router,
-		MR: MessageRouter,
-		L: Logger + Clone,
-	> ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>
+	'a,
+	M: chain::Watch<SP::EcdsaSigner>,
+	T: BroadcasterInterface,
+	ES: EntropySource,
+	NS: NodeSigner,
+	SP: SignerProvider,
+	F: FeeEstimator,
+	R: Router,
+	MR: MessageRouter,
+	L: Logger + Clone,
+> ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>
 {
 	/// Simple utility function to create a ChannelManagerReadArgs which creates the monitor
 	/// HashMap for you. This is primarily useful for C bindings where it is not practical to
@@ -19025,17 +19025,17 @@ fn dedup_decode_update_add_htlcs<L: Logger>(
 // Implement ReadableArgs for an Arc'd ChannelManager to make it a bit easier to work with the
 // SipmleArcChannelManager type:
 impl<
-		'a,
-		M: chain::Watch<SP::EcdsaSigner>,
-		T: BroadcasterInterface,
-		ES: EntropySource,
-		NS: NodeSigner,
-		SP: SignerProvider,
-		F: FeeEstimator,
-		R: Router,
-		MR: MessageRouter,
-		L: Logger + Clone,
-	> ReadableArgs<ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>>
+	'a,
+	M: chain::Watch<SP::EcdsaSigner>,
+	T: BroadcasterInterface,
+	ES: EntropySource,
+	NS: NodeSigner,
+	SP: SignerProvider,
+	F: FeeEstimator,
+	R: Router,
+	MR: MessageRouter,
+	L: Logger + Clone,
+> ReadableArgs<ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>>
 	for (BlockLocator, Arc<ChannelManager<M, T, ES, NS, SP, F, R, MR, L>>)
 {
 	fn read<Reader: io::Read>(
@@ -19048,17 +19048,17 @@ impl<
 }
 
 impl<
-		'a,
-		M: chain::Watch<SP::EcdsaSigner>,
-		T: BroadcasterInterface,
-		ES: EntropySource,
-		NS: NodeSigner,
-		SP: SignerProvider,
-		F: FeeEstimator,
-		R: Router,
-		MR: MessageRouter,
-		L: Logger + Clone,
-	> ReadableArgs<ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>>
+	'a,
+	M: chain::Watch<SP::EcdsaSigner>,
+	T: BroadcasterInterface,
+	ES: EntropySource,
+	NS: NodeSigner,
+	SP: SignerProvider,
+	F: FeeEstimator,
+	R: Router,
+	MR: MessageRouter,
+	L: Logger + Clone,
+> ReadableArgs<ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>>
 	for (BlockLocator, ChannelManager<M, T, ES, NS, SP, F, R, MR, L>)
 {
 	fn read<Reader: io::Read>(
@@ -19081,16 +19081,16 @@ impl<
 }
 
 impl<
-		M: chain::Watch<SP::EcdsaSigner>,
-		T: BroadcasterInterface,
-		ES: EntropySource,
-		NS: NodeSigner,
-		SP: SignerProvider,
-		F: FeeEstimator,
-		R: Router,
-		MR: MessageRouter,
-		L: Logger + Clone,
-	> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	M: chain::Watch<SP::EcdsaSigner>,
+	T: BroadcasterInterface,
+	ES: EntropySource,
+	NS: NodeSigner,
+	SP: SignerProvider,
+	F: FeeEstimator,
+	R: Router,
+	MR: MessageRouter,
+	L: Logger + Clone,
+> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 {
 	/// Constructs a `ChannelManager` from deserialized data and runtime dependencies.
 	///
@@ -19483,7 +19483,7 @@ impl<
 		macro_rules! handle_in_flight_updates {
 			($counterparty_node_id: expr, $chan_in_flight_upds: expr, $monitor: expr,
 			 $peer_state: expr, $logger: expr, $channel_info_log: expr
-			) => { {
+			) => {{
 				// When all in-flight updates have completed after we were last serialized, we
 				// need to remove them. However, we can't guarantee that the next serialization
 				// will have happened after processing the
@@ -19518,10 +19518,10 @@ impl<
 						"All monitor updates completed since the ChannelManager was last serialized"
 					);
 					pending_background_events.push(BackgroundEvent::MonitorUpdatesComplete {
-							counterparty_node_id: $counterparty_node_id,
-							channel_id: $monitor.channel_id(),
-							highest_update_id_completed: max_in_flight_update_id,
-						});
+						counterparty_node_id: $counterparty_node_id,
+						channel_id: $monitor.channel_id(),
+						highest_update_id_completed: max_in_flight_update_id,
+					});
 				} else {
 					$chan_in_flight_upds.retain(|update| {
 						let replay = update.update_id > $monitor.get_latest_update_id();
@@ -19992,17 +19992,17 @@ impl<
 									};
 									if !have_action && compl_action.is_some() {
 										let mut peer_state = per_peer_state
-										.get(&counterparty_node_id)
-										.map(|state| state.lock().unwrap())
-										.expect(
-											"Channels originating a preimage must have peer state",
-										);
+											.get(&counterparty_node_id)
+											.map(|state| state.lock().unwrap())
+											.expect(
+												"Channels originating a preimage must have peer state",
+											);
 										let update_id = peer_state
-										.closed_channel_monitor_update_ids
-										.get_mut(channel_id)
-										.expect(
-											"Channels originating a preimage must have a monitor",
-										);
+											.closed_channel_monitor_update_ids
+											.get_mut(channel_id)
+											.expect(
+												"Channels originating a preimage must have a monitor",
+											);
 										// Note that for channels closed pre-0.1, the latest
 										// update_id is `u64::MAX`.
 										*update_id = update_id.saturating_add(1);

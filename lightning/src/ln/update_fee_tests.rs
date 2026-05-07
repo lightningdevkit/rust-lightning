@@ -899,8 +899,8 @@ pub fn test_chan_init_feerate_unaffordability() {
 		Event::OpenChannelRequest { temporary_channel_id, counterparty_node_id, .. } => {
 			assert!(
 				nodes[1]
-				.node
-				.accept_inbound_channel(temporary_channel_id, counterparty_node_id, 42, None,)
+					.node
+					.accept_inbound_channel(temporary_channel_id, counterparty_node_id, 42, None,)
 					.is_err()
 			);
 		},

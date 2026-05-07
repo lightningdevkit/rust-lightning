@@ -1319,7 +1319,7 @@ impl Display for SocketAddress {
 			SocketAddress::TcpIpV4 { addr, port } => {
 				write!(f, "{}.{}.{}.{}:{}", addr[0], addr[1], addr[2], addr[3], port)?
 			},
-			SocketAddress::TcpIpV6{addr, port} => write!(
+			SocketAddress::TcpIpV6 { addr, port } => write!(
 				f,
 				"[{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}]:{}",
 				addr[0],
@@ -2068,7 +2068,7 @@ pub trait BaseMessageHandler {
 	///
 	/// [`Self::peer_disconnected`] will not be called if `Err(())` is returned.
 	fn peer_connected(&self, their_node_id: PublicKey, msg: &Init, inbound: bool)
-		-> Result<(), ()>;
+	-> Result<(), ()>;
 }
 
 impl<T: BaseMessageHandler + ?Sized, B: Deref<Target = T>> BaseMessageHandler for B {
@@ -6291,9 +6291,9 @@ mod tests {
 		let mainnet_hash = ChainHash::using_genesis_block(Network::Bitcoin);
 		assert_eq!(
 			msgs::Init {
-			features: InitFeatures::from_le_bytes(vec![0xFF, 0xFF, 0xFF]),
-			networks: Some(vec![mainnet_hash]),
-			remote_network_address: None,
+				features: InitFeatures::from_le_bytes(vec![0xFF, 0xFF, 0xFF]),
+				networks: Some(vec![mainnet_hash]),
+				remote_network_address: None,
 			}
 			.encode(),
 			<Vec<u8>>::from_hex(
@@ -6520,9 +6520,9 @@ mod tests {
 		let node_signer = test_utils::TestKeysInterface::new(&[42; 32], Network::Testnet);
 		assert!(
 			msgs::InboundOnionPayload::read(
-			&mut Cursor::new(&encoded_value[..]),
-			(None, &node_signer)
-		)
+				&mut Cursor::new(&encoded_value[..]),
+				(None, &node_signer)
+			)
 			.is_err()
 		);
 		let good_type_range_tlvs = vec![((1 << 16) - 3, vec![42]), ((1 << 16) - 1, vec![42; 32])];
@@ -6998,8 +6998,8 @@ mod tests {
 		assert_eq!(Err(SocketAddressParseError::InvalidInput), "".parse::<SocketAddress>());
 		assert!(
 			SocketAddress::from_str(
-			"pg6mmjiyjmcrsslvykfwnntlaru7p5svn6y2ymmju6nubxndf4pscryd.onion.onion:9735:94"
-		)
+				"pg6mmjiyjmcrsslvykfwnntlaru7p5svn6y2ymmju6nubxndf4pscryd.onion.onion:9735:94"
+			)
 			.is_err()
 		);
 		assert!(SocketAddress::from_str("wrong$%#.com:1234").is_err());
@@ -7014,8 +7014,8 @@ mod tests {
 		assert!("invalid-address".parse::<SocketAddress>().is_err());
 		assert!(
 			SocketAddress::from_str(
-			"pg6mmjiyjmcrsslvykfwnntlaru7p5svn6y2ymmju6nubxndf4pscryd.onion.onion:1234"
-		)
+				"pg6mmjiyjmcrsslvykfwnntlaru7p5svn6y2ymmju6nubxndf4pscryd.onion.onion:1234"
+			)
 			.is_err()
 		);
 	}
@@ -7053,15 +7053,15 @@ mod tests {
 		assert!(SocketAddress::OnionV2([0u8; 12]).to_socket_addrs().is_err());
 		assert!(
 			SocketAddress::OnionV3 {
-			ed25519_pubkey: [
-				37, 24, 75, 5, 25, 73, 117, 194, 139, 102, 182, 107, 4, 105, 247, 246, 85, 111,
-				177, 172, 49, 137, 167, 155, 64, 221, 163, 47, 31, 33, 71, 3
-			],
-			checksum: 48326,
-			version: 121,
-			port: 1234
-		}
-		.to_socket_addrs()
+				ed25519_pubkey: [
+					37, 24, 75, 5, 25, 73, 117, 194, 139, 102, 182, 107, 4, 105, 247, 246, 85, 111,
+					177, 172, 49, 137, 167, 155, 64, 221, 163, 47, 31, 33, 71, 3
+				],
+				checksum: 48326,
+				version: 121,
+				port: 1234
+			}
+			.to_socket_addrs()
 			.is_err()
 		);
 	}

@@ -2258,7 +2258,7 @@ fn do_during_funding_monitor_fail(
 		let counterparty_node_id = nodes[(i + 1) % 2].node.get_our_node_id();
 		assert!(
 			node.gossip_sync
-			.handle_channel_announcement(Some(counterparty_node_id), &announcement)
+				.handle_channel_announcement(Some(counterparty_node_id), &announcement)
 				.unwrap()
 		);
 		node.gossip_sync.handle_channel_update(Some(counterparty_node_id), &as_update).unwrap();
@@ -4214,9 +4214,9 @@ fn do_test_glacial_peer_cant_hang(hold_chan_a: bool) {
 		let (ab_update_id, _) = nodes[1].chain_monitor.get_latest_mon_update_id(chan_id_ab);
 		assert!(
 			nodes[1]
-			.chain_monitor
-			.chain_monitor
-			.channel_monitor_updated(chan_id_ab, ab_update_id)
+				.chain_monitor
+				.chain_monitor
+				.channel_monitor_updated(chan_id_ab, ab_update_id)
 				.is_ok()
 		);
 
@@ -4569,8 +4569,8 @@ fn test_claim_to_closed_channel_blocks_forwarded_preimage_removal() {
 	// channel B's `ChannelMonitor`
 	assert!(
 		get_monitor!(nodes[1], chan_b.2)
-		.get_all_current_outbound_htlcs()
-		.iter()
+			.get_all_current_outbound_htlcs()
+			.iter()
 			.any(|(_, (_, preimage))| *preimage == Some(payment_preimage))
 	);
 
@@ -4587,8 +4587,8 @@ fn test_claim_to_closed_channel_blocks_forwarded_preimage_removal() {
 	check_added_monitors(&nodes[1], 1);
 	assert!(
 		!get_monitor!(nodes[1], chan_b.2)
-		.get_all_current_outbound_htlcs()
-		.iter()
+			.get_all_current_outbound_htlcs()
+			.iter()
 			.any(|(_, (_, preimage))| *preimage == Some(payment_preimage))
 	);
 	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], None, true, false);

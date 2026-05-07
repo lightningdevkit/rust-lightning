@@ -1243,12 +1243,12 @@ mod tests {
 		let htlc_minimum_msat = 3798;
 		assert!(
 			super::compute_payinfo(
-			&intermediate_nodes[..],
-			&[],
-			&recv_tlvs,
-			htlc_minimum_msat - 1,
-			TEST_FINAL_CLTV as u16
-		)
+				&intermediate_nodes[..],
+				&[],
+				&recv_tlvs,
+				htlc_minimum_msat - 1,
+				TEST_FINAL_CLTV as u16
+			)
 			.is_err()
 		);
 

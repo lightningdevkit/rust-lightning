@@ -288,7 +288,7 @@ fn do_test_1_conf_open(connect_style: ConnectStyle) {
 		let counterparty_node_id = nodes[(i + 1) % 2].node.get_our_node_id();
 		assert!(
 			node.gossip_sync
-			.handle_channel_announcement(Some(counterparty_node_id), &announcement)
+				.handle_channel_announcement(Some(counterparty_node_id), &announcement)
 				.unwrap()
 		);
 		node.gossip_sync.handle_channel_update(Some(counterparty_node_id), &as_update).unwrap();
@@ -1330,8 +1330,8 @@ fn test_zero_conf_accept_reject() {
 			// Assert we fail to accept via the non-0conf method
 			assert!(
 				nodes[1]
-				.node
-				.accept_inbound_channel(&temporary_channel_id, &node_a_id, 0, None)
+					.node
+					.accept_inbound_channel(&temporary_channel_id, &node_a_id, 0, None)
 					.is_err()
 			);
 		},
@@ -1365,14 +1365,14 @@ fn test_zero_conf_accept_reject() {
 			// Assert we can accept via the 0conf method
 			assert!(
 				nodes[1]
-				.node
-				.accept_inbound_channel_from_trusted_peer(
-					&temporary_channel_id,
-					&node_a_id,
-					0,
-					TrustedChannelFeatures::ZeroConf,
-					None,
-				)
+					.node
+					.accept_inbound_channel_from_trusted_peer(
+						&temporary_channel_id,
+						&node_a_id,
+						0,
+						TrustedChannelFeatures::ZeroConf,
+						None,
+					)
 					.is_ok()
 			);
 		},

@@ -100,16 +100,16 @@ pub trait AOnionMessenger {
 }
 
 impl<
-		ES: EntropySource,
-		NS: NodeSigner,
-		L: Logger,
-		NL: NodeIdLookUp,
-		MR: MessageRouter,
-		OMH: OffersMessageHandler,
-		APH: AsyncPaymentsMessageHandler,
-		DRH: DNSResolverMessageHandler,
-		CMH: CustomOnionMessageHandler,
-	> AOnionMessenger for OnionMessenger<ES, NS, L, NL, MR, OMH, APH, DRH, CMH>
+	ES: EntropySource,
+	NS: NodeSigner,
+	L: Logger,
+	NL: NodeIdLookUp,
+	MR: MessageRouter,
+	OMH: OffersMessageHandler,
+	APH: AsyncPaymentsMessageHandler,
+	DRH: DNSResolverMessageHandler,
+	CMH: CustomOnionMessageHandler,
+> AOnionMessenger for OnionMessenger<ES, NS, L, NL, MR, OMH, APH, DRH, CMH>
 {
 	type EntropySource = ES;
 	type NodeSigner = NS;
@@ -1366,16 +1366,16 @@ macro_rules! drop_handled_events_and_abort {
 }
 
 impl<
-		ES: EntropySource,
-		NS: NodeSigner,
-		L: Logger,
-		NL: NodeIdLookUp,
-		MR: MessageRouter,
-		OMH: OffersMessageHandler,
-		APH: AsyncPaymentsMessageHandler,
-		DRH: DNSResolverMessageHandler,
-		CMH: CustomOnionMessageHandler,
-	> OnionMessenger<ES, NS, L, NL, MR, OMH, APH, DRH, CMH>
+	ES: EntropySource,
+	NS: NodeSigner,
+	L: Logger,
+	NL: NodeIdLookUp,
+	MR: MessageRouter,
+	OMH: OffersMessageHandler,
+	APH: AsyncPaymentsMessageHandler,
+	DRH: DNSResolverMessageHandler,
+	CMH: CustomOnionMessageHandler,
+> OnionMessenger<ES, NS, L, NL, MR, OMH, APH, DRH, CMH>
 {
 	/// Constructs a new `OnionMessenger` to send, forward, and delegate received onion messages to
 	/// their respective handlers.
@@ -2005,16 +2005,16 @@ fn outbound_buffer_full(
 }
 
 impl<
-		ES: EntropySource,
-		NS: NodeSigner,
-		L: Logger,
-		NL: NodeIdLookUp,
-		MR: MessageRouter,
-		OMH: OffersMessageHandler,
-		APH: AsyncPaymentsMessageHandler,
-		DRH: DNSResolverMessageHandler,
-		CMH: CustomOnionMessageHandler,
-	> EventsProvider for OnionMessenger<ES, NS, L, NL, MR, OMH, APH, DRH, CMH>
+	ES: EntropySource,
+	NS: NodeSigner,
+	L: Logger,
+	NL: NodeIdLookUp,
+	MR: MessageRouter,
+	OMH: OffersMessageHandler,
+	APH: AsyncPaymentsMessageHandler,
+	DRH: DNSResolverMessageHandler,
+	CMH: CustomOnionMessageHandler,
+> EventsProvider for OnionMessenger<ES, NS, L, NL, MR, OMH, APH, DRH, CMH>
 {
 	fn process_pending_events<H: Deref>(&self, handler: H)
 	where
@@ -2116,16 +2116,16 @@ impl<
 }
 
 impl<
-		ES: EntropySource,
-		NS: NodeSigner,
-		L: Logger,
-		NL: NodeIdLookUp,
-		MR: MessageRouter,
-		OMH: OffersMessageHandler,
-		APH: AsyncPaymentsMessageHandler,
-		DRH: DNSResolverMessageHandler,
-		CMH: CustomOnionMessageHandler,
-	> BaseMessageHandler for OnionMessenger<ES, NS, L, NL, MR, OMH, APH, DRH, CMH>
+	ES: EntropySource,
+	NS: NodeSigner,
+	L: Logger,
+	NL: NodeIdLookUp,
+	MR: MessageRouter,
+	OMH: OffersMessageHandler,
+	APH: AsyncPaymentsMessageHandler,
+	DRH: DNSResolverMessageHandler,
+	CMH: CustomOnionMessageHandler,
+> BaseMessageHandler for OnionMessenger<ES, NS, L, NL, MR, OMH, APH, DRH, CMH>
 {
 	fn provided_node_features(&self) -> NodeFeatures {
 		let mut features = NodeFeatures::empty();
@@ -2178,16 +2178,16 @@ impl<
 }
 
 impl<
-		ES: EntropySource,
-		NS: NodeSigner,
-		L: Logger,
-		NL: NodeIdLookUp,
-		MR: MessageRouter,
-		OMH: OffersMessageHandler,
-		APH: AsyncPaymentsMessageHandler,
-		DRH: DNSResolverMessageHandler,
-		CMH: CustomOnionMessageHandler,
-	> OnionMessageHandler for OnionMessenger<ES, NS, L, NL, MR, OMH, APH, DRH, CMH>
+	ES: EntropySource,
+	NS: NodeSigner,
+	L: Logger,
+	NL: NodeIdLookUp,
+	MR: MessageRouter,
+	OMH: OffersMessageHandler,
+	APH: AsyncPaymentsMessageHandler,
+	DRH: DNSResolverMessageHandler,
+	CMH: CustomOnionMessageHandler,
+> OnionMessageHandler for OnionMessenger<ES, NS, L, NL, MR, OMH, APH, DRH, CMH>
 {
 	fn handle_onion_message(&self, peer_node_id: PublicKey, msg: &OnionMessage) {
 		let logger = WithContext::from(&self.logger, Some(peer_node_id), None, None);

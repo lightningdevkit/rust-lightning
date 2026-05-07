@@ -1626,10 +1626,10 @@ mod tests {
 			TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &invoice_request.bytes);
 		assert!(
 			merkle::verify_signature(
-			&invoice_request.signature,
-			&message,
-			invoice_request.payer_signing_pubkey(),
-		)
+				&invoice_request.signature,
+				&message,
+				invoice_request.payer_signing_pubkey(),
+			)
 			.is_ok()
 		);
 

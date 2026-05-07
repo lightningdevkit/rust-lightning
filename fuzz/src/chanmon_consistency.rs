@@ -1606,7 +1606,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 	loop {
 		// Push any events from Node B onto ba_events and bc_events
 		macro_rules! push_excess_b_events {
-			($excess_events: expr, $expect_drop_node: expr) => { {
+			($excess_events: expr, $expect_drop_node: expr) => {{
 				let a_id = nodes[0].get_our_node_id();
 				let expect_drop_node: Option<usize> = $expect_drop_node;
 				let expect_drop_id = if let Some(id) = expect_drop_node {
@@ -1770,7 +1770,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 						ba_events.push(event);
 					} else {
 						bc_events.push(event);
-				}
+					}
 				}
 			}};
 		}
@@ -1793,7 +1793,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 		}
 
 		macro_rules! process_msg_events {
-			($node: expr, $corrupt_forward: expr, $limit_events: expr) => { {
+			($node: expr, $corrupt_forward: expr, $limit_events: expr) => {{
 				let mut events = if $node == 1 {
 					let mut new_events = Vec::new();
 					mem::swap(&mut new_events, &mut ba_events);
@@ -1930,11 +1930,11 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 											node_id,
 											channel_id,
 											updates: CommitmentUpdate {
-											update_add_htlcs: Vec::new(),
-											update_fail_htlcs: Vec::new(),
-											update_fulfill_htlcs: Vec::new(),
-											update_fail_malformed_htlcs: Vec::new(),
-											update_fee: None,
+												update_add_htlcs: Vec::new(),
+												update_fail_htlcs: Vec::new(),
+												update_fulfill_htlcs: Vec::new(),
+												update_fail_malformed_htlcs: Vec::new(),
+												update_fee: None,
 												commitment_signed,
 											},
 										});

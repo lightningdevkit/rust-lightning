@@ -802,13 +802,13 @@ where
 	K::Target: KVStoreSync;
 
 impl<
-		K: Deref,
-		L: Logger,
-		ES: EntropySource,
-		SP: SignerProvider,
-		BI: BroadcasterInterface,
-		FE: FeeEstimator,
-	> MonitorUpdatingPersister<K, L, ES, SP, BI, FE>
+	K: Deref,
+	L: Logger,
+	ES: EntropySource,
+	SP: SignerProvider,
+	BI: BroadcasterInterface,
+	FE: FeeEstimator,
+> MonitorUpdatingPersister<K, L, ES, SP, BI, FE>
 where
 	K::Target: KVStoreSync,
 {
@@ -891,14 +891,14 @@ where
 }
 
 impl<
-		ChannelSigner: EcdsaChannelSigner,
-		K: Deref,
-		L: Logger,
-		ES: EntropySource,
-		SP: SignerProvider,
-		BI: BroadcasterInterface,
-		FE: FeeEstimator,
-	> Persist<ChannelSigner> for MonitorUpdatingPersister<K, L, ES, SP, BI, FE>
+	ChannelSigner: EcdsaChannelSigner,
+	K: Deref,
+	L: Logger,
+	ES: EntropySource,
+	SP: SignerProvider,
+	BI: BroadcasterInterface,
+	FE: FeeEstimator,
+> Persist<ChannelSigner> for MonitorUpdatingPersister<K, L, ES, SP, BI, FE>
 where
 	K::Target: KVStoreSync,
 {
@@ -907,12 +907,12 @@ where
 	fn persist_new_channel(
 		&self, monitor_name: MonitorName, monitor: &ChannelMonitor<ChannelSigner>,
 	) -> chain::ChannelMonitorUpdateStatus {
-		let res = poll_sync_future(self.0 .0.persist_new_channel(monitor_name, monitor));
+		let res = poll_sync_future(self.0.0.persist_new_channel(monitor_name, monitor));
 		match res {
 			Ok(_) => chain::ChannelMonitorUpdateStatus::Completed,
 			Err(e) => {
 				log_error!(
-					self.0 .0.logger,
+					self.0.0.logger,
 					"Failed to write ChannelMonitor {}/{}/{} reason: {}",
 					CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
 					CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
@@ -937,13 +937,13 @@ where
 		&self, monitor_name: MonitorName, update: Option<&ChannelMonitorUpdate>,
 		monitor: &ChannelMonitor<ChannelSigner>,
 	) -> chain::ChannelMonitorUpdateStatus {
-		let inner = Arc::clone(&self.0 .0);
+		let inner = Arc::clone(&self.0.0);
 		let res = poll_sync_future(inner.update_persisted_channel(monitor_name, update, monitor));
 		match res {
 			Ok(()) => chain::ChannelMonitorUpdateStatus::Completed,
 			Err(e) => {
 				log_error!(
-					self.0 .0.logger,
+					self.0.0.logger,
 					"Failed to write ChannelMonitorUpdate {} id {} reason: {}",
 					monitor_name,
 					update.as_ref().map(|upd| upd.update_id).unwrap_or(0),
@@ -955,7 +955,7 @@ where
 	}
 
 	fn archive_persisted_channel(&self, monitor_name: MonitorName) {
-		poll_sync_future(self.0 .0.archive_persisted_channel(monitor_name));
+		poll_sync_future(self.0.0.archive_persisted_channel(monitor_name));
 	}
 }
 
@@ -1002,14 +1002,14 @@ struct MonitorUpdatingPersisterAsyncInner<
 }
 
 impl<
-		K: KVStore,
-		S: FutureSpawner,
-		L: Logger,
-		ES: EntropySource,
-		SP: SignerProvider,
-		BI: BroadcasterInterface,
-		FE: FeeEstimator,
-	> MonitorUpdatingPersisterAsync<K, S, L, ES, SP, BI, FE>
+	K: KVStore,
+	S: FutureSpawner,
+	L: Logger,
+	ES: EntropySource,
+	SP: SignerProvider,
+	BI: BroadcasterInterface,
+	FE: FeeEstimator,
+> MonitorUpdatingPersisterAsync<K, S, L, ES, SP, BI, FE>
 {
 	/// Constructs a new [`MonitorUpdatingPersisterAsync`].
 	///
@@ -1139,14 +1139,14 @@ impl<
 }
 
 impl<
-		K: KVStore + MaybeSend + MaybeSync + 'static,
-		S: FutureSpawner,
-		L: Logger + MaybeSend + MaybeSync + 'static,
-		ES: EntropySource + MaybeSend + MaybeSync + 'static,
-		SP: SignerProvider + MaybeSend + MaybeSync + 'static,
-		BI: BroadcasterInterface + MaybeSend + MaybeSync + 'static,
-		FE: FeeEstimator + MaybeSend + MaybeSync + 'static,
-	> MonitorUpdatingPersisterAsync<K, S, L, ES, SP, BI, FE>
+	K: KVStore + MaybeSend + MaybeSync + 'static,
+	S: FutureSpawner,
+	L: Logger + MaybeSend + MaybeSync + 'static,
+	ES: EntropySource + MaybeSend + MaybeSync + 'static,
+	SP: SignerProvider + MaybeSend + MaybeSync + 'static,
+	BI: BroadcasterInterface + MaybeSend + MaybeSync + 'static,
+	FE: FeeEstimator + MaybeSend + MaybeSync + 'static,
+> MonitorUpdatingPersisterAsync<K, S, L, ES, SP, BI, FE>
 where
 	SP::EcdsaSigner: MaybeSend + 'static,
 {
@@ -1223,14 +1223,14 @@ trait MaybeSendableFuture: Future<Output = Result<(), io::Error>> + MaybeSend {}
 impl<F: Future<Output = Result<(), io::Error>> + MaybeSend> MaybeSendableFuture for F {}
 
 impl<
-		K: KVStore,
-		S: FutureSpawner,
-		L: Logger,
-		ES: EntropySource,
-		SP: SignerProvider,
-		BI: BroadcasterInterface,
-		FE: FeeEstimator,
-	> MonitorUpdatingPersisterAsyncInner<K, S, L, ES, SP, BI, FE>
+	K: KVStore,
+	S: FutureSpawner,
+	L: Logger,
+	ES: EntropySource,
+	SP: SignerProvider,
+	BI: BroadcasterInterface,
+	FE: FeeEstimator,
+> MonitorUpdatingPersisterAsyncInner<K, S, L, ES, SP, BI, FE>
 {
 	pub async fn read_channel_monitor_with_updates(
 		&self, monitor_key: &str,
@@ -1786,14 +1786,14 @@ mod tests {
 	fn fails_parsing_monitor_name() {
 		assert!(
 			MonitorName::from_str(
-			"deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef_"
-		)
+				"deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef_"
+			)
 			.is_err()
 		);
 		assert!(
 			MonitorName::from_str(
-			"deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef_65536"
-		)
+				"deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef_65536"
+			)
 			.is_err()
 		);
 		assert!(
@@ -2119,11 +2119,11 @@ mod tests {
 		// Confirm the stale update is unreadable/gone
 		assert!(
 			KVStoreSync::read(
-			&kv_store_0,
-			CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
-			&monitor_name.to_string(),
-			UpdateName::from(1).as_str()
-		)
+				&kv_store_0,
+				CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
+				&monitor_name.to_string(),
+				UpdateName::from(1).as_str()
+			)
 			.is_err()
 		);
 	}

@@ -1551,8 +1551,8 @@ pub fn sign_funding_transaction<'a, 'b, 'c>(
 
 	assert!(
 		node_a
-		.node
-		.funding_transaction_generated(temporary_channel_id, node_b_id, tx.clone())
+			.node
+			.funding_transaction_generated(temporary_channel_id, node_b_id, tx.clone())
 			.is_ok()
 	);
 	check_added_monitors(&node_a, 0);
@@ -1595,8 +1595,8 @@ pub fn sign_funding_transaction<'a, 'b, 'c>(
 	// Ensure that funding_transaction_generated is idempotent.
 	assert!(
 		node_a
-		.node
-		.funding_transaction_generated(temporary_channel_id, node_b_id, tx.clone())
+			.node
+			.funding_transaction_generated(temporary_channel_id, node_b_id, tx.clone())
 			.is_err()
 	);
 	assert!(node_a.node.get_and_clear_pending_msg_events().is_empty());
@@ -5733,11 +5733,11 @@ pub fn create_batch_channel_funding<'a, 'b, 'c>(
 	};
 	assert!(
 		funding_node
-		.node
-		.batch_funding_transaction_generated(
-			temp_chan_ids.iter().map(|(a, b)| (a, b)).collect::<Vec<_>>().as_slice(),
-			tx.clone(),
-		)
+			.node
+			.batch_funding_transaction_generated(
+				temp_chan_ids.iter().map(|(a, b)| (a, b)).collect::<Vec<_>>().as_slice(),
+				tx.clone(),
+			)
 			.is_ok()
 	);
 	check_added_monitors(&funding_node, 0);

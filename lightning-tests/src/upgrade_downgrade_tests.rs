@@ -78,7 +78,7 @@ fn simple_upgrade() {
 
 		let payment_preimage =
 			lightning_0_1_utils::route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
-		preimage = PaymentPreimage(payment_preimage.0 .0);
+		preimage = PaymentPreimage(payment_preimage.0.0);
 
 		node_a_ser = nodes[0].node.encode();
 		node_b_ser = nodes[1].node.encode();

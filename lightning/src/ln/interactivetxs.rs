@@ -810,7 +810,7 @@ impl InteractiveTxSigningSession {
 					format!(
 						"The witness for input at index {input_idx} contains an invalid signature"
 					)
-					})?;
+				})?;
 				if !matches!(sig.sighash_type, EcdsaSighashType::All) {
 					let err = format!(
 						"Signature does not use SIGHASH_ALL for input at index {input_idx} for P2WPKH spend"
@@ -3396,10 +3396,10 @@ mod tests {
 		// Uses transaction https://mempool.space/tx/c28d01b47b8426039306e4209534fc5235da4a31406179639c54c48212be7655
 		let transaction: Transaction = bitcoin::consensus::encode::deserialize_hex("02000000000105d08ef8a4eac88a9568d660732d6e1bd8f216fecb46b7ebc7fc7b5a85e3ba1da50000000000ffffffff3ae09cc085873112f0602cac61e005827e7f21ce03595c6bf1e5ab41643e2e240000000000ffffffff030d20d2b28c4f27797e90ab2259392e99070307f0ee14a621025f8adc9054720000000000100000007d2e78b06110de8ac2298e71fa6fd96e24a287597f3a3fbfaa60837e40453a990000000000100000007d2e78b06110de8ac2298e71fa6fd96e24a287597f3a3fbfaa60837e40453a990100000000100000000104310d01000000002251207434164bd41e2185651f084b6a79e11ce57abe69093b7f939bb1c8786e5d233b0140e612c3728bcc6ed6c4ef67238e57f0332fa77a4c2e76db183e28b7f3cea5eab6b235b6f0cbab8035fd79b3c1990c5c3f3a56e2c7d5e4609b390ddaad8ac1c1d7024730440220036e88464b21c8bd819d97ae746622da00053ec1374a932f33aa1ab60170c9da022041cabc146ebdd12f6316a2f72f870771e8e6ff51f3cadad4027eab2e443770110121030c7196376bc1df61b6da6ee711868fd30e370dd273332bfb02a2287d11e2e9c50200282102fd481d39bdbc090313b530fddfd1aa004a9e3263da1406cf806670fdeb8ebb91ac736460b2680200282102092f44ee333630b985e490dbbc69865e499853cba15a51426d0f4e5906087e55ac736460b26802002821021dadb5ffb2cb74f5427f039e2913738e5cd8e93cc0d12db4cfa4f555005c326aac736460b26800000000").unwrap();
 		let prev_outputs = vec![
-				// Added by holder
-				TxOut {
-					value: Amount::from_sat(17414236),
-					script_pubkey: ScriptBuf::new_p2tr_tweaked(
+			// Added by holder
+			TxOut {
+				value: Amount::from_sat(17414236),
+				script_pubkey: ScriptBuf::new_p2tr_tweaked(
 					TweakedPublicKey::dangerous_assume_tweaked(
 						XOnlyPublicKey::from_slice(
 							&<[u8; 32]>::from_hex(
@@ -3409,46 +3409,46 @@ mod tests {
 						)
 						.unwrap(),
 					),
-					),
-				},
-				// Added by remote (corresponding input should not be checked)
-				TxOut {
-					value: Amount::from_sat(227321),
-					script_pubkey: ScriptBuf::new_p2wpkh(&WPubkeyHash::from_byte_array(
-						<[u8; 20]>::from_hex("92b8c3a56fac121ddcdffbc85b02fb9ef681038a").unwrap(),
-					)),
-				},
-				// Added by holder
-				TxOut {
-					value: Amount::from_sat(330),
-					script_pubkey: ScriptBuf::new_p2wsh(&WScriptHash::from_byte_array(
-						<[u8; 32]>::from_hex(
-							"97a4f4b73947411e18486b7182063f160f9b3a238664b91ff70a56eaffca8b9d",
-						)
-						.unwrap(),
-					)),
-				},
-				// Added by remote (corresponding input should not be checked)
-				TxOut {
-					value: Amount::from_sat(330),
-					script_pubkey: ScriptBuf::new_p2wsh(&WScriptHash::from_byte_array(
-						<[u8; 32]>::from_hex(
-							"0d0f49839e6bbf78271ea31d979895758ed66312b4fbab215da8a68a951f36ee",
-						)
-						.unwrap(),
-					)),
-				},
-				// Added by holder
-				TxOut {
-					value: Amount::from_sat(330),
-					script_pubkey: ScriptBuf::new_p2wsh(&WScriptHash::from_byte_array(
-						<[u8; 32]>::from_hex(
-							"f2c42991382f63a20308c35ce67133cd8564ede8f8615062d814ec69112ddd46",
-						)
-						.unwrap(),
-					)),
+				),
 			},
-			];
+			// Added by remote (corresponding input should not be checked)
+			TxOut {
+				value: Amount::from_sat(227321),
+				script_pubkey: ScriptBuf::new_p2wpkh(&WPubkeyHash::from_byte_array(
+					<[u8; 20]>::from_hex("92b8c3a56fac121ddcdffbc85b02fb9ef681038a").unwrap(),
+				)),
+			},
+			// Added by holder
+			TxOut {
+				value: Amount::from_sat(330),
+				script_pubkey: ScriptBuf::new_p2wsh(&WScriptHash::from_byte_array(
+					<[u8; 32]>::from_hex(
+						"97a4f4b73947411e18486b7182063f160f9b3a238664b91ff70a56eaffca8b9d",
+					)
+					.unwrap(),
+				)),
+			},
+			// Added by remote (corresponding input should not be checked)
+			TxOut {
+				value: Amount::from_sat(330),
+				script_pubkey: ScriptBuf::new_p2wsh(&WScriptHash::from_byte_array(
+					<[u8; 32]>::from_hex(
+						"0d0f49839e6bbf78271ea31d979895758ed66312b4fbab215da8a68a951f36ee",
+					)
+					.unwrap(),
+				)),
+			},
+			// Added by holder
+			TxOut {
+				value: Amount::from_sat(330),
+				script_pubkey: ScriptBuf::new_p2wsh(&WScriptHash::from_byte_array(
+					<[u8; 32]>::from_hex(
+						"f2c42991382f63a20308c35ce67133cd8564ede8f8615062d814ec69112ddd46",
+					)
+					.unwrap(),
+				)),
+			},
+		];
 
 		assert!(do_verify_tx_signatures(transaction, prev_outputs).is_ok());
 	}
@@ -3520,10 +3520,10 @@ mod tests {
 				script_pubkey: ScriptBuf::new_p2tr_tweaked(
 					TweakedPublicKey::dangerous_assume_tweaked(
 						XOnlyPublicKey::from_slice(
-						&<[u8; 32]>::from_hex(
-							"cbc74f986822b48c4801ef5a1cadc44b27f7d23e699d8244c391d5defd69802a",
-						)
-						.unwrap(),
+							&<[u8; 32]>::from_hex(
+								"cbc74f986822b48c4801ef5a1cadc44b27f7d23e699d8244c391d5defd69802a",
+							)
+							.unwrap(),
 						)
 						.unwrap(),
 					),
@@ -3535,10 +3535,10 @@ mod tests {
 				script_pubkey: ScriptBuf::new_p2tr_tweaked(
 					TweakedPublicKey::dangerous_assume_tweaked(
 						XOnlyPublicKey::from_slice(
-						&<[u8; 32]>::from_hex(
-							"56cee5ccf725d94a428100de365fdfa134ff4deb1a0dca14470e70b4a64ff32b",
-						)
-						.unwrap(),
+							&<[u8; 32]>::from_hex(
+								"56cee5ccf725d94a428100de365fdfa134ff4deb1a0dca14470e70b4a64ff32b",
+							)
+							.unwrap(),
 						)
 						.unwrap(),
 					),
@@ -3615,10 +3615,10 @@ mod tests {
 				script_pubkey: ScriptBuf::new_p2tr_tweaked(
 					TweakedPublicKey::dangerous_assume_tweaked(
 						XOnlyPublicKey::from_slice(
-						&<[u8; 32]>::from_hex(
-							"ce78617dd8b31b96b24e89140639f9d87b6c6cf3b2cc8f3ff2b3afa0e505d7ec",
-						)
-						.unwrap(),
+							&<[u8; 32]>::from_hex(
+								"ce78617dd8b31b96b24e89140639f9d87b6c6cf3b2cc8f3ff2b3afa0e505d7ec",
+							)
+							.unwrap(),
 						)
 						.unwrap(),
 					),
@@ -3651,10 +3651,10 @@ mod tests {
 				script_pubkey: ScriptBuf::new_p2tr_tweaked(
 					TweakedPublicKey::dangerous_assume_tweaked(
 						XOnlyPublicKey::from_slice(
-						&<[u8; 32]>::from_hex(
-							"2fcad7470279652cc5f88b8908678d6f4d57af5627183b03fc8404cb4e16d889",
-						)
-						.unwrap(),
+							&<[u8; 32]>::from_hex(
+								"2fcad7470279652cc5f88b8908678d6f4d57af5627183b03fc8404cb4e16d889",
+							)
+							.unwrap(),
 						)
 						.unwrap(),
 					),

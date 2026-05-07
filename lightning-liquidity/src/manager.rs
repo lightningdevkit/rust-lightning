@@ -130,13 +130,13 @@ pub trait ALiquidityManager {
 }
 
 impl<
-		ES: EntropySource + Clone,
-		NS: NodeSigner + Clone,
-		CM: Deref + Clone,
-		K: KVStore + Clone,
-		TP: Deref + Clone,
-		T: BroadcasterInterface + Clone,
-	> ALiquidityManager for LiquidityManager<ES, NS, CM, K, TP, T>
+	ES: EntropySource + Clone,
+	NS: NodeSigner + Clone,
+	CM: Deref + Clone,
+	K: KVStore + Clone,
+	TP: Deref + Clone,
+	T: BroadcasterInterface + Clone,
+> ALiquidityManager for LiquidityManager<ES, NS, CM, K, TP, T>
 where
 	CM::Target: AChannelManager,
 	TP::Target: TimeProvider,
@@ -203,13 +203,13 @@ pub trait ALiquidityManagerSync {
 }
 
 impl<
-		ES: EntropySource + Clone,
-		NS: NodeSigner + Clone,
-		CM: Deref + Clone,
-		KS: Deref + Clone,
-		TP: Deref + Clone,
-		T: BroadcasterInterface + Clone,
-	> ALiquidityManagerSync for LiquidityManagerSync<ES, NS, CM, KS, TP, T>
+	ES: EntropySource + Clone,
+	NS: NodeSigner + Clone,
+	CM: Deref + Clone,
+	KS: Deref + Clone,
+	TP: Deref + Clone,
+	T: BroadcasterInterface + Clone,
+> ALiquidityManagerSync for LiquidityManagerSync<ES, NS, CM, KS, TP, T>
 where
 	CM::Target: AChannelManager,
 	KS::Target: KVStoreSync,
@@ -293,12 +293,12 @@ pub struct LiquidityManager<
 
 #[cfg(feature = "time")]
 impl<
-		ES: EntropySource + Clone,
-		NS: NodeSigner + Clone,
-		CM: Deref + Clone,
-		K: KVStore + Clone,
-		T: BroadcasterInterface + Clone,
-	> LiquidityManager<ES, NS, CM, K, DefaultTimeProvider, T>
+	ES: EntropySource + Clone,
+	NS: NodeSigner + Clone,
+	CM: Deref + Clone,
+	K: KVStore + Clone,
+	T: BroadcasterInterface + Clone,
+> LiquidityManager<ES, NS, CM, K, DefaultTimeProvider, T>
 where
 	CM::Target: AChannelManager,
 {
@@ -325,13 +325,13 @@ where
 }
 
 impl<
-		ES: EntropySource + Clone,
-		NS: NodeSigner + Clone,
-		CM: Deref + Clone,
-		K: KVStore + Clone,
-		TP: Deref + Clone,
-		T: BroadcasterInterface + Clone,
-	> LiquidityManager<ES, NS, CM, K, TP, T>
+	ES: EntropySource + Clone,
+	NS: NodeSigner + Clone,
+	CM: Deref + Clone,
+	K: KVStore + Clone,
+	TP: Deref + Clone,
+	T: BroadcasterInterface + Clone,
+> LiquidityManager<ES, NS, CM, K, TP, T>
 where
 	CM::Target: AChannelManager,
 	TP::Target: TimeProvider,
@@ -794,13 +794,13 @@ where
 }
 
 impl<
-		ES: EntropySource + Clone,
-		NS: NodeSigner + Clone,
-		CM: Deref + Clone,
-		K: KVStore + Clone,
-		TP: Deref + Clone,
-		T: BroadcasterInterface + Clone,
-	> CustomMessageReader for LiquidityManager<ES, NS, CM, K, TP, T>
+	ES: EntropySource + Clone,
+	NS: NodeSigner + Clone,
+	CM: Deref + Clone,
+	K: KVStore + Clone,
+	TP: Deref + Clone,
+	T: BroadcasterInterface + Clone,
+> CustomMessageReader for LiquidityManager<ES, NS, CM, K, TP, T>
 where
 	CM::Target: AChannelManager,
 	TP::Target: TimeProvider,
@@ -820,13 +820,13 @@ where
 }
 
 impl<
-		ES: EntropySource + Clone,
-		NS: NodeSigner + Clone,
-		CM: Deref + Clone,
-		K: KVStore + Clone,
-		TP: Deref + Clone,
-		T: BroadcasterInterface + Clone,
-	> CustomMessageHandler for LiquidityManager<ES, NS, CM, K, TP, T>
+	ES: EntropySource + Clone,
+	NS: NodeSigner + Clone,
+	CM: Deref + Clone,
+	K: KVStore + Clone,
+	TP: Deref + Clone,
+	T: BroadcasterInterface + Clone,
+> CustomMessageHandler for LiquidityManager<ES, NS, CM, K, TP, T>
 where
 	CM::Target: AChannelManager,
 	TP::Target: TimeProvider,
@@ -970,12 +970,12 @@ pub struct LiquidityManagerSync<
 
 #[cfg(feature = "time")]
 impl<
-		ES: EntropySource + Clone,
-		NS: NodeSigner + Clone,
-		CM: Deref + Clone,
-		KS: Deref + Clone,
-		T: BroadcasterInterface + Clone,
-	> LiquidityManagerSync<ES, NS, CM, KS, DefaultTimeProvider, T>
+	ES: EntropySource + Clone,
+	NS: NodeSigner + Clone,
+	CM: Deref + Clone,
+	KS: Deref + Clone,
+	T: BroadcasterInterface + Clone,
+> LiquidityManagerSync<ES, NS, CM, KS, DefaultTimeProvider, T>
 where
 	CM::Target: AChannelManager,
 	KS::Target: KVStoreSync,
@@ -1013,13 +1013,13 @@ where
 }
 
 impl<
-		ES: EntropySource + Clone,
-		NS: NodeSigner + Clone,
-		CM: Deref + Clone,
-		KS: Deref + Clone,
-		TP: Deref + Clone,
-		T: BroadcasterInterface + Clone,
-	> LiquidityManagerSync<ES, NS, CM, KS, TP, T>
+	ES: EntropySource + Clone,
+	NS: NodeSigner + Clone,
+	CM: Deref + Clone,
+	KS: Deref + Clone,
+	TP: Deref + Clone,
+	T: BroadcasterInterface + Clone,
+> LiquidityManagerSync<ES, NS, CM, KS, TP, T>
 where
 	CM::Target: AChannelManager,
 	KS::Target: KVStoreSync,
@@ -1172,13 +1172,13 @@ where
 }
 
 impl<
-		ES: EntropySource + Clone,
-		NS: NodeSigner + Clone,
-		CM: Deref + Clone,
-		KS: Deref + Clone,
-		TP: Deref + Clone,
-		T: BroadcasterInterface + Clone,
-	> CustomMessageReader for LiquidityManagerSync<ES, NS, CM, KS, TP, T>
+	ES: EntropySource + Clone,
+	NS: NodeSigner + Clone,
+	CM: Deref + Clone,
+	KS: Deref + Clone,
+	TP: Deref + Clone,
+	T: BroadcasterInterface + Clone,
+> CustomMessageReader for LiquidityManagerSync<ES, NS, CM, KS, TP, T>
 where
 	CM::Target: AChannelManager,
 	KS::Target: KVStoreSync,
@@ -1194,13 +1194,13 @@ where
 }
 
 impl<
-		ES: EntropySource + Clone,
-		NS: NodeSigner + Clone,
-		CM: Deref + Clone,
-		KS: Deref + Clone,
-		TP: Deref + Clone,
-		T: BroadcasterInterface + Clone,
-	> CustomMessageHandler for LiquidityManagerSync<ES, NS, CM, KS, TP, T>
+	ES: EntropySource + Clone,
+	NS: NodeSigner + Clone,
+	CM: Deref + Clone,
+	KS: Deref + Clone,
+	TP: Deref + Clone,
+	T: BroadcasterInterface + Clone,
+> CustomMessageHandler for LiquidityManagerSync<ES, NS, CM, KS, TP, T>
 where
 	CM::Target: AChannelManager,
 	KS::Target: KVStoreSync,

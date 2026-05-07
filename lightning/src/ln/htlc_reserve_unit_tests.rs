@@ -1617,7 +1617,7 @@ pub fn test_update_add_htlc_bolt2_receiver_check_max_htlc_limit() {
 	let err_msg = check_closed_broadcast(&nodes[1], 1, true).pop().unwrap();
 	assert!(
 		regex::Regex::new(r"Remote tried to push more than our max accepted HTLCs \(\d+\)")
-		.unwrap()
+			.unwrap()
 			.is_match(err_msg.data.as_str())
 	);
 	check_added_monitors(&nodes[1], 1);
@@ -1654,7 +1654,7 @@ pub fn test_update_add_htlc_bolt2_receiver_check_max_in_flight_msat() {
 	let err_msg = check_closed_broadcast(&nodes[1], 1, true).pop().unwrap();
 	assert!(
 		regex::Regex::new("Remote HTLC add would put them over our max HTLC value")
-		.unwrap()
+			.unwrap()
 			.is_match(err_msg.data.as_str())
 	);
 	check_added_monitors(&nodes[1], 1);
@@ -1752,7 +1752,7 @@ pub fn test_update_add_htlc_bolt2_receiver_check_repeated_id_ignore() {
 	let err_msg = check_closed_broadcast(&nodes[1], 1, true).pop().unwrap();
 	assert!(
 		regex::Regex::new(r"Remote skipped HTLC ID \(skipped ID: \d+\)")
-		.unwrap()
+			.unwrap()
 			.is_match(err_msg.data.as_str())
 	);
 	check_added_monitors(&nodes[1], 1);
@@ -1796,9 +1796,9 @@ pub fn test_update_fulfill_htlc_bolt2_update_fulfill_htlc_before_commitment() {
 	let err_msg = check_closed_broadcast(&nodes[0], 1, true).pop().unwrap();
 	assert!(
 		regex::Regex::new(
-		r"Remote tried to fulfill/fail HTLC \(\d+\) before it had been committed"
-	)
-	.unwrap()
+			r"Remote tried to fulfill/fail HTLC \(\d+\) before it had been committed"
+		)
+		.unwrap()
 		.is_match(err_msg.data.as_str())
 	);
 	check_added_monitors(&nodes[0], 1);
@@ -1842,9 +1842,9 @@ pub fn test_update_fulfill_htlc_bolt2_update_fail_htlc_before_commitment() {
 	let err_msg = check_closed_broadcast(&nodes[0], 1, true).pop().unwrap();
 	assert!(
 		regex::Regex::new(
-		r"Remote tried to fulfill/fail HTLC \(\d+\) before it had been committed"
-	)
-	.unwrap()
+			r"Remote tried to fulfill/fail HTLC \(\d+\) before it had been committed"
+		)
+		.unwrap()
 		.is_match(err_msg.data.as_str())
 	);
 	check_added_monitors(&nodes[0], 1);
@@ -1887,9 +1887,9 @@ pub fn test_update_fulfill_htlc_bolt2_update_fail_malformed_htlc_before_commitme
 	let err_msg = check_closed_broadcast(&nodes[0], 1, true).pop().unwrap();
 	assert!(
 		regex::Regex::new(
-		r"Remote tried to fulfill/fail HTLC \(\d+\) before it had been committed"
-	)
-	.unwrap()
+			r"Remote tried to fulfill/fail HTLC \(\d+\) before it had been committed"
+		)
+		.unwrap()
 		.is_match(err_msg.data.as_str())
 	);
 	check_added_monitors(&nodes[0], 1);
@@ -2011,7 +2011,7 @@ pub fn test_update_fulfill_htlc_bolt2_wrong_preimage() {
 	let err_msg = check_closed_broadcast(&nodes[0], 1, true).pop().unwrap();
 	assert!(
 		regex::Regex::new(r"Remote tried to fulfill HTLC \(\d+\) with an incorrect preimage")
-		.unwrap()
+			.unwrap()
 			.is_match(err_msg.data.as_str())
 	);
 	check_added_monitors(&nodes[0], 1);

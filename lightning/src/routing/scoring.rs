@@ -1439,10 +1439,10 @@ fn success_probability(
 }
 
 impl<
-		L: Deref<Target = u64>,
-		HT: Deref<Target = HistoricalLiquidityTracker>,
-		T: Deref<Target = Duration>,
-	> DirectedChannelLiquidity<L, HT, T>
+	L: Deref<Target = u64>,
+	HT: Deref<Target = HistoricalLiquidityTracker>,
+	T: Deref<Target = Duration>,
+> DirectedChannelLiquidity<L, HT, T>
 {
 	/// Returns a liquidity penalty for routing the given HTLC `amount_msat` through the channel in
 	/// this direction.
@@ -1580,10 +1580,10 @@ impl<
 }
 
 impl<
-		L: DerefMut<Target = u64>,
-		HT: DerefMut<Target = HistoricalLiquidityTracker>,
-		T: DerefMut<Target = Duration>,
-	> DirectedChannelLiquidity<L, HT, T>
+	L: DerefMut<Target = u64>,
+	HT: DerefMut<Target = HistoricalLiquidityTracker>,
+	T: DerefMut<Target = Duration>,
+> DirectedChannelLiquidity<L, HT, T>
 {
 	/// Adjusts the channel liquidity balance bounds when failing to route `amount_msat`.
 	#[rustfmt::skip]

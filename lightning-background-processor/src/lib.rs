@@ -211,12 +211,12 @@ pub enum GossipSync<
 }
 
 impl<
-		P: Deref<Target = P2PGossipSync<G, U, L>>,
-		R: Deref<Target = RapidGossipSync<G, L>>,
-		G: Deref<Target = NetworkGraph<L>>,
-		U: UtxoLookup,
-		L: Logger,
-	> GossipSync<P, R, G, U, L>
+	P: Deref<Target = P2PGossipSync<G, U, L>>,
+	R: Deref<Target = RapidGossipSync<G, L>>,
+	G: Deref<Target = NetworkGraph<L>>,
+	U: UtxoLookup,
+	L: Logger,
+> GossipSync<P, R, G, U, L>
 {
 	fn network_graph(&self) -> Option<&G> {
 		match self {
@@ -251,11 +251,11 @@ impl<
 
 /// This is not exported to bindings users as the bindings concretize everything and have constructors for us
 impl<
-		P: Deref<Target = P2PGossipSync<G, U, L>>,
-		G: Deref<Target = NetworkGraph<L>>,
-		U: UtxoLookup,
-		L: Logger,
-	> GossipSync<P, &RapidGossipSync<G, L>, G, U, L>
+	P: Deref<Target = P2PGossipSync<G, U, L>>,
+	G: Deref<Target = NetworkGraph<L>>,
+	U: UtxoLookup,
+	L: Logger,
+> GossipSync<P, &RapidGossipSync<G, L>, G, U, L>
 {
 	/// Initializes a new [`GossipSync::P2P`] variant.
 	pub fn p2p(gossip_sync: P) -> Self {
@@ -512,13 +512,13 @@ pub(crate) mod futures_util {
 	}
 
 	impl<
-			A: Future<Output = bool> + Unpin,
-			B: Future<Output = ()> + Unpin,
-			C: Future<Output = ()> + Unpin,
-			D: Future<Output = ()> + Unpin,
-			E: Future<Output = ()> + Unpin,
-			F: Future<Output = ()> + Unpin,
-		> Future for Selector<A, B, C, D, E, F>
+		A: Future<Output = bool> + Unpin,
+		B: Future<Output = ()> + Unpin,
+		C: Future<Output = ()> + Unpin,
+		D: Future<Output = ()> + Unpin,
+		E: Future<Output = ()> + Unpin,
+		F: Future<Output = ()> + Unpin,
+	> Future for Selector<A, B, C, D, E, F>
 	{
 		type Output = SelectorOutput;
 		fn poll(
@@ -615,13 +615,13 @@ pub(crate) mod futures_util {
 	}
 
 	impl<
-			ERR,
-			A: Future<Output = Result<(), ERR>> + Unpin,
-			B: Future<Output = Result<(), ERR>> + Unpin,
-			C: Future<Output = Result<(), ERR>> + Unpin,
-			D: Future<Output = Result<(), ERR>> + Unpin,
-			E: Future<Output = Result<(), ERR>> + Unpin,
-		> Joiner<ERR, A, B, C, D, E>
+		ERR,
+		A: Future<Output = Result<(), ERR>> + Unpin,
+		B: Future<Output = Result<(), ERR>> + Unpin,
+		C: Future<Output = Result<(), ERR>> + Unpin,
+		D: Future<Output = Result<(), ERR>> + Unpin,
+		E: Future<Output = Result<(), ERR>> + Unpin,
+	> Joiner<ERR, A, B, C, D, E>
 	{
 		pub(crate) fn new() -> Self {
 			Self {
@@ -654,13 +654,13 @@ pub(crate) mod futures_util {
 	}
 
 	impl<
-			ERR,
-			A: Future<Output = Result<(), ERR>> + Unpin,
-			B: Future<Output = Result<(), ERR>> + Unpin,
-			C: Future<Output = Result<(), ERR>> + Unpin,
-			D: Future<Output = Result<(), ERR>> + Unpin,
-			E: Future<Output = Result<(), ERR>> + Unpin,
-		> Future for Joiner<ERR, A, B, C, D, E>
+		ERR,
+		A: Future<Output = Result<(), ERR>> + Unpin,
+		B: Future<Output = Result<(), ERR>> + Unpin,
+		C: Future<Output = Result<(), ERR>> + Unpin,
+		D: Future<Output = Result<(), ERR>> + Unpin,
+		E: Future<Output = Result<(), ERR>> + Unpin,
+	> Future for Joiner<ERR, A, B, C, D, E>
 	where
 		Joiner<ERR, A, B, C, D, E>: Unpin,
 	{
@@ -946,43 +946,43 @@ where
 	D::Target: ChangeDestinationSource,
 {
 	let async_event_handler = async |event| {
-			let network_graph = gossip_sync.network_graph();
-			let event_handler = &event_handler;
-			let scorer = &scorer;
-			let logger = &logger;
-			let kv_store = &kv_store;
-			let fetch_time = &fetch_time;
-			if let Some(network_graph) = network_graph {
-				handle_network_graph_update(network_graph, &event)
-			}
+		let network_graph = gossip_sync.network_graph();
+		let event_handler = &event_handler;
+		let scorer = &scorer;
+		let logger = &logger;
+		let kv_store = &kv_store;
+		let fetch_time = &fetch_time;
+		if let Some(network_graph) = network_graph {
+			handle_network_graph_update(network_graph, &event)
+		}
 		if let Some(scorer) = scorer {
-				if let Some(duration_since_epoch) = fetch_time() {
-					if update_scorer(scorer, &event, duration_since_epoch) {
-						log_trace!(logger, "Persisting scorer after update");
-						if let Err(e) = kv_store
-							.write(
-								SCORER_PERSISTENCE_PRIMARY_NAMESPACE,
-								SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
-								SCORER_PERSISTENCE_KEY,
-								scorer.encode(),
-							)
-							.await
-						{
+			if let Some(duration_since_epoch) = fetch_time() {
+				if update_scorer(scorer, &event, duration_since_epoch) {
+					log_trace!(logger, "Persisting scorer after update");
+					if let Err(e) = kv_store
+						.write(
+							SCORER_PERSISTENCE_PRIMARY_NAMESPACE,
+							SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
+							SCORER_PERSISTENCE_KEY,
+							scorer.encode(),
+						)
+						.await
+					{
 						log_error!(
 							logger,
 							"Error: Failed to persist scorer, check your disk and permissions {}",
 							e
 						);
-							// We opt not to abort early on persistence failure here as persisting
-							// the scorer is non-critical and we still hope that it will have
-							// resolved itself when it is potentially critical in event handling
-							// below.
-						}
+						// We opt not to abort early on persistence failure here as persisting
+						// the scorer is non-critical and we still hope that it will have
+						// resolved itself when it is potentially critical in event handling
+						// below.
 					}
 				}
 			}
-			event_handler(event).await
-		};
+		}
+		event_handler(event).await
+	};
 	let mut batch_delay = BatchDelay::new();
 
 	log_trace!(logger, "Calling ChannelManager's timer_tick_occurred on startup");
@@ -1259,10 +1259,10 @@ where
 							.await
 						{
 							log_error!(
-							logger,
-							"Error: Failed to persist scorer, check your disk and permissions {}",
-							e
-						);
+								logger,
+								"Error: Failed to persist scorer, check your disk and permissions {}",
+								e
+							);
 						}
 
 						Ok(())

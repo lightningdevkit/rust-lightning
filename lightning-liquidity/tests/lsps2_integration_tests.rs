@@ -1485,15 +1485,15 @@ fn create_channel_with_manual_broadcast(
 ) -> (ChannelId, bitcoin::Transaction) {
 	assert!(
 		service_node
-		.node
-		.create_channel(
-			*client_node_id,
-			*expected_outbound_amount_msat,
-			0,
-			user_channel_id,
-			None,
-			None
-		)
+			.node
+			.create_channel(
+				*client_node_id,
+				*expected_outbound_amount_msat,
+				0,
+				user_channel_id,
+				None,
+				None
+			)
 			.is_ok()
 	);
 	let open_channel =

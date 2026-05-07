@@ -832,12 +832,12 @@ mod tests {
 			let act_one = <Vec<u8>>::from_hex(hex).unwrap().to_vec();
 			assert!(
 				inbound_peer
-				.process_act_one_with_keys(
-					&act_one[..],
-					&&node_signer,
-					our_ephemeral.clone(),
-					&secp_ctx
-				)
+					.process_act_one_with_keys(
+						&act_one[..],
+						&&node_signer,
+						our_ephemeral.clone(),
+						&secp_ctx
+					)
 					.is_err()
 			);
 		}
@@ -849,12 +849,12 @@ mod tests {
 			let act_one = <Vec<u8>>::from_hex(hex).unwrap().to_vec();
 			assert!(
 				inbound_peer
-				.process_act_one_with_keys(
-					&act_one[..],
-					&&node_signer,
-					our_ephemeral.clone(),
-					&secp_ctx
-				)
+					.process_act_one_with_keys(
+						&act_one[..],
+						&&node_signer,
+						our_ephemeral.clone(),
+						&secp_ctx
+					)
 					.is_err()
 			);
 		}
@@ -866,12 +866,12 @@ mod tests {
 			let act_one = <Vec<u8>>::from_hex(hex).unwrap().to_vec();
 			assert!(
 				inbound_peer
-				.process_act_one_with_keys(
-					&act_one[..],
-					&&node_signer,
-					our_ephemeral.clone(),
-					&secp_ctx
-				)
+					.process_act_one_with_keys(
+						&act_one[..],
+						&&node_signer,
+						our_ephemeral.clone(),
+						&secp_ctx
+					)
 					.is_err()
 			);
 		}

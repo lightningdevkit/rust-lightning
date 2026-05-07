@@ -2172,7 +2172,7 @@ impl<L: Logger> NetworkGraph<L> {
 				|| removed_nodes.contains_key(&msg.node_id_1)
 				|| removed_nodes.contains_key(&msg.node_id_2)
 			{
-				return Err(LightningError{
+				return Err(LightningError {
 					err: format!(
 						"Channel with SCID {} or one of its nodes was removed from our network graph recently",
 						&msg.short_channel_id
@@ -3395,7 +3395,7 @@ pub(crate) mod tests {
 			let chain_source: Option<&test_utils::TestChainSource> = None;
 			assert!(
 				network_graph
-				.update_channel_from_announcement(&valid_channel_announcement, &chain_source)
+					.update_channel_from_announcement(&valid_channel_announcement, &chain_source)
 					.is_ok()
 			);
 			assert!(network_graph.read_only().channels().get(&scid).is_some());
@@ -3450,7 +3450,7 @@ pub(crate) mod tests {
 			let chain_source: Option<&test_utils::TestChainSource> = None;
 			assert!(
 				network_graph
-				.update_channel_from_announcement(&valid_channel_announcement, &chain_source)
+					.update_channel_from_announcement(&valid_channel_announcement, &chain_source)
 					.is_ok()
 			);
 			assert!(network_graph.read_only().channels().get(&short_channel_id).is_some());
@@ -3495,7 +3495,7 @@ pub(crate) mod tests {
 		let chain_source: Option<&test_utils::TestChainSource> = None;
 		assert!(
 			network_graph
-			.update_channel_from_announcement(&valid_channel_announcement, &chain_source)
+				.update_channel_from_announcement(&valid_channel_announcement, &chain_source)
 				.is_ok()
 		);
 		assert!(network_graph.read_only().channels().get(&scid).is_some());
@@ -3562,7 +3562,7 @@ pub(crate) mod tests {
 			);
 			assert!(
 				gossip_sync
-				.handle_channel_update(Some(node_1_pubkey), &valid_channel_update)
+					.handle_channel_update(Some(node_1_pubkey), &valid_channel_update)
 					.is_ok()
 			);
 			assert!(network_graph.read_only().channels().get(&scid).unwrap().one_to_two.is_some());
@@ -3600,7 +3600,7 @@ pub(crate) mod tests {
 			// now only consist of two nodes and one channel between them.
 			assert!(
 				network_graph
-				.update_channel_from_announcement(&valid_channel_announcement, &chain_source)
+					.update_channel_from_announcement(&valid_channel_announcement, &chain_source)
 					.is_ok()
 			);
 
@@ -3651,7 +3651,7 @@ pub(crate) mod tests {
 			// now only consist of two nodes and one channel between them.
 			assert!(
 				network_graph
-				.update_channel_from_announcement(&valid_channel_announcement, &chain_source)
+					.update_channel_from_announcement(&valid_channel_announcement, &chain_source)
 					.is_ok()
 			);
 

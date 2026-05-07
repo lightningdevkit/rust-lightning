@@ -1287,18 +1287,18 @@ impl OutboundPayments {
 
 					let amount_msat =
 						match InvoiceBuilder::<DerivedSigningPubkey>::amount_msats(invreq) {
-						Ok(amt) => amt,
-						Err(_) => {
-							// We check this during invoice request parsing, when constructing the invreq's
-							// contents from its TLV stream.
+							Ok(amt) => amt,
+							Err(_) => {
+								// We check this during invoice request parsing, when constructing the invreq's
+								// contents from its TLV stream.
 								debug_assert!(
 									false,
 									"LDK requires an msat amount in either the invreq or the invreq's underlying offer"
 								);
-							abandon_with_entry!(entry, PaymentFailureReason::UnexpectedError);
-							return Err(Bolt12PaymentError::UnknownRequiredFeatures);
-						},
-					};
+								abandon_with_entry!(entry, PaymentFailureReason::UnexpectedError);
+								return Err(Bolt12PaymentError::UnknownRequiredFeatures);
+							},
+						};
 					let keysend_preimage =
 						PaymentPreimage(entropy_source.get_secure_random_bytes());
 					let payment_hash =

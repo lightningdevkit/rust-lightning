@@ -108,7 +108,7 @@ pub trait CustomMessageHandler: wire::CustomMessageReader {
 	///
 	/// [`Self::peer_disconnected`] will not be called if `Err(())` is returned.
 	fn peer_connected(&self, their_node_id: PublicKey, msg: &Init, inbound: bool)
-		-> Result<(), ()>;
+	-> Result<(), ()>;
 
 	/// Gets the node feature flags which this handler itself supports. All available handlers are
 	/// queried similarly and their feature flags are OR'd together to form the [`NodeFeatures`]
@@ -1003,15 +1003,15 @@ pub trait APeerManager {
 }
 
 impl<
-		Descriptor: SocketDescriptor,
-		CM: ChannelMessageHandler,
-		RM: RoutingMessageHandler,
-		OM: OnionMessageHandler,
-		L: Logger,
-		CMH: CustomMessageHandler,
-		NS: NodeSigner,
-		SM: SendOnlyMessageHandler,
-	> APeerManager for PeerManager<Descriptor, CM, RM, OM, L, CMH, NS, SM>
+	Descriptor: SocketDescriptor,
+	CM: ChannelMessageHandler,
+	RM: RoutingMessageHandler,
+	OM: OnionMessageHandler,
+	L: Logger,
+	CMH: CustomMessageHandler,
+	NS: NodeSigner,
+	SM: SendOnlyMessageHandler,
+> APeerManager for PeerManager<Descriptor, CM, RM, OM, L, CMH, NS, SM>
 {
 	type Descriptor = Descriptor;
 	type CM = CM;
@@ -1131,13 +1131,13 @@ fn encode_message<T: wire::Type>(message: wire::Message<T>) -> Vec<u8> {
 }
 
 impl<
-		Descriptor: SocketDescriptor,
-		CM: ChannelMessageHandler,
-		OM: OnionMessageHandler,
-		L: Logger,
-		NS: NodeSigner,
-		SM: SendOnlyMessageHandler,
-	> PeerManager<Descriptor, CM, IgnoringMessageHandler, OM, L, IgnoringMessageHandler, NS, SM>
+	Descriptor: SocketDescriptor,
+	CM: ChannelMessageHandler,
+	OM: OnionMessageHandler,
+	L: Logger,
+	NS: NodeSigner,
+	SM: SendOnlyMessageHandler,
+> PeerManager<Descriptor, CM, IgnoringMessageHandler, OM, L, IgnoringMessageHandler, NS, SM>
 {
 	/// Constructs a new `PeerManager` with the given `ChannelMessageHandler` and
 	/// `OnionMessageHandler`. No routing message handler is used and network graph messages are
@@ -1264,15 +1264,15 @@ fn filter_addresses(ip_address: Option<SocketAddress>) -> Option<SocketAddress> 
 }
 
 impl<
-		Descriptor: SocketDescriptor,
-		CM: ChannelMessageHandler,
-		RM: RoutingMessageHandler,
-		OM: OnionMessageHandler,
-		L: Logger,
-		CMH: CustomMessageHandler,
-		NS: NodeSigner,
-		SM: SendOnlyMessageHandler,
-	> PeerManager<Descriptor, CM, RM, OM, L, CMH, NS, SM>
+	Descriptor: SocketDescriptor,
+	CM: ChannelMessageHandler,
+	RM: RoutingMessageHandler,
+	OM: OnionMessageHandler,
+	L: Logger,
+	CMH: CustomMessageHandler,
+	NS: NodeSigner,
+	SM: SendOnlyMessageHandler,
+> PeerManager<Descriptor, CM, RM, OM, L, CMH, NS, SM>
 {
 	/// Constructs a new `PeerManager` with the given message handlers.
 	///
@@ -2881,7 +2881,7 @@ impl<
 									None
 								),
 								"Handling SendAcceptChannel event in peer_handler for node {} for channel {}",
-									node_id,
+								node_id,
 								&msg.common_fields.temporary_channel_id
 							);
 							let msg = Message::AcceptChannel(msg);
@@ -2896,7 +2896,7 @@ impl<
 									None
 								),
 								"Handling SendAcceptChannelV2 event in peer_handler for node {} for channel {}",
-									node_id,
+								node_id,
 								&msg.common_fields.temporary_channel_id
 							);
 							let msg = Message::AcceptChannelV2(msg);
@@ -2911,7 +2911,7 @@ impl<
 									None
 								),
 								"Handling SendOpenChannel event in peer_handler for node {} for channel {}",
-									node_id,
+								node_id,
 								&msg.common_fields.temporary_channel_id
 							);
 							let msg = Message::OpenChannel(msg);
@@ -2926,7 +2926,7 @@ impl<
 									None
 								),
 								"Handling SendOpenChannelV2 event in peer_handler for node {} for channel {}",
-									node_id,
+								node_id,
 								&msg.common_fields.temporary_channel_id
 							);
 							let msg = Message::OpenChannelV2(msg);
@@ -2941,8 +2941,8 @@ impl<
 									None
 								),
 								"Handling SendFundingCreated event in peer_handler for node {} for channel {} (which becomes {})",
-									node_id,
-									&msg.temporary_channel_id,
+								node_id,
+								&msg.temporary_channel_id,
 								ChannelId::v1_from_funding_txid(
 									msg.funding_txid.as_byte_array(),
 									msg.funding_output_index
@@ -2962,7 +2962,7 @@ impl<
 									None
 								),
 								"Handling SendFundingSigned event in peer_handler for node {} for channel {}",
-									node_id,
+								node_id,
 								&msg.channel_id
 							);
 							let msg = Message::FundingSigned(msg);
@@ -2977,7 +2977,7 @@ impl<
 									None
 								),
 								"Handling SendChannelReady event in peer_handler for node {} for channel {}",
-									node_id,
+								node_id,
 								&msg.channel_id
 							);
 							let msg = Message::ChannelReady(msg);
@@ -2993,7 +2993,7 @@ impl<
 							log_debug!(
 								logger,
 								"Handling SendStfu event in peer_handler for node {} for channel {}",
-									node_id,
+								node_id,
 								&msg.channel_id
 							);
 							let msg = Message::Stfu(msg);
@@ -3009,7 +3009,7 @@ impl<
 							log_debug!(
 								logger,
 								"Handling SendSpliceInit event in peer_handler for node {} for channel {}",
-									node_id,
+								node_id,
 								&msg.channel_id
 							);
 							let msg = Message::SpliceInit(msg);
@@ -3025,7 +3025,7 @@ impl<
 							log_debug!(
 								logger,
 								"Handling SendSpliceAck event in peer_handler for node {} for channel {}",
-									node_id,
+								node_id,
 								&msg.channel_id
 							);
 							let msg = Message::SpliceAck(msg);
@@ -3041,7 +3041,7 @@ impl<
 							log_debug!(
 								logger,
 								"Handling SendSpliceLocked event in peer_handler for node {} for channel {}",
-									node_id,
+								node_id,
 								&msg.channel_id
 							);
 							let msg = Message::SpliceLocked(msg);
@@ -3056,7 +3056,7 @@ impl<
 									None
 								),
 								"Handling SendTxAddInput event in peer_handler for node {} for channel {}",
-									node_id,
+								node_id,
 								&msg.channel_id
 							);
 							let msg = Message::TxAddInput(msg);
@@ -3071,7 +3071,7 @@ impl<
 									None
 								),
 								"Handling SendTxAddOutput event in peer_handler for node {} for channel {}",
-									node_id,
+								node_id,
 								&msg.channel_id
 							);
 							let msg = Message::TxAddOutput(msg);
@@ -3086,7 +3086,7 @@ impl<
 									None
 								),
 								"Handling SendTxRemoveInput event in peer_handler for node {} for channel {}",
-									node_id,
+								node_id,
 								&msg.channel_id
 							);
 							let msg = Message::TxRemoveInput(msg);
@@ -3101,7 +3101,7 @@ impl<
 									None
 								),
 								"Handling SendTxRemoveOutput event in peer_handler for node {} for channel {}",
-									node_id,
+								node_id,
 								&msg.channel_id
 							);
 							let msg = Message::TxRemoveOutput(msg);
@@ -3116,7 +3116,7 @@ impl<
 									None
 								),
 								"Handling SendTxComplete event in peer_handler for node {} for channel {}",
-									node_id,
+								node_id,
 								&msg.channel_id
 							);
 							let msg = Message::TxComplete(msg);
@@ -3131,7 +3131,7 @@ impl<
 									None
 								),
 								"Handling SendTxSignatures event in peer_handler for node {} for channel {}",
-									node_id,
+								node_id,
 								&msg.channel_id
 							);
 							let msg = Message::TxSignatures(msg);
@@ -3146,7 +3146,7 @@ impl<
 									None
 								),
 								"Handling SendTxInitRbf event in peer_handler for node {} for channel {}",
-									node_id,
+								node_id,
 								&msg.channel_id
 							);
 							let msg = Message::TxInitRbf(msg);
@@ -3161,7 +3161,7 @@ impl<
 									None
 								),
 								"Handling SendTxAckRbf event in peer_handler for node {} for channel {}",
-									node_id,
+								node_id,
 								&msg.channel_id
 							);
 							let msg = Message::TxAckRbf(msg);
@@ -3176,7 +3176,7 @@ impl<
 									None
 								),
 								"Handling SendTxAbort event in peer_handler for node {} for channel {}",
-									node_id,
+								node_id,
 								&msg.channel_id
 							);
 							let msg = Message::TxAbort(msg);
@@ -3191,7 +3191,7 @@ impl<
 									None
 								),
 								"Handling SendAnnouncementSignatures event in peer_handler for node {} for channel {})",
-									node_id,
+								node_id,
 								&msg.channel_id
 							);
 							let msg = Message::AnnouncementSignatures(msg);
@@ -3218,11 +3218,11 @@ impl<
 									None
 								),
 								"Handling UpdateHTLCs event in peer_handler for node {} with {} adds, {} fulfills, {} fails, {} commits for channel {}",
-									node_id,
-									update_add_htlcs.len(),
-									update_fulfill_htlcs.len(),
-									update_fail_htlcs.len(),
-									commitment_signed.len(),
+								node_id,
+								update_add_htlcs.len(),
+								update_fulfill_htlcs.len(),
+								update_fail_htlcs.len(),
+								commitment_signed.len(),
 								channel_id
 							);
 							let mut peer = get_peer_for_forwarding!(node_id)?;
@@ -3269,7 +3269,7 @@ impl<
 									None
 								),
 								"Handling SendRevokeAndACK event in peer_handler for node {} for channel {}",
-									node_id,
+								node_id,
 								&msg.channel_id
 							);
 							let msg = Message::RevokeAndACK(msg);
@@ -3284,7 +3284,7 @@ impl<
 									None
 								),
 								"Handling SendClosingSigned event in peer_handler for node {} for channel {}",
-									node_id,
+								node_id,
 								&msg.channel_id
 							);
 							let msg = Message::ClosingSigned(msg);
@@ -3300,7 +3300,7 @@ impl<
 									None
 								),
 								"Handling SendClosingComplete event in peer_handler for node {} for channel {}",
-									node_id,
+								node_id,
 								&msg.channel_id
 							);
 							let msg = Message::ClosingComplete(msg);
@@ -3316,7 +3316,7 @@ impl<
 									None
 								),
 								"Handling SendClosingSig event in peer_handler for node {} for channel {}",
-									node_id,
+								node_id,
 								&msg.channel_id
 							);
 							let msg = Message::ClosingSig(msg);
@@ -3344,7 +3344,7 @@ impl<
 									None
 								),
 								"Handling SendChannelReestablish event in peer_handler for node {} for channel {}",
-									node_id,
+								node_id,
 								&msg.channel_id
 							);
 							let msg = Message::ChannelReestablish(msg);
@@ -3358,7 +3358,7 @@ impl<
 							log_debug!(
 								WithContext::from(&self.logger, Some(*node_id), None, None),
 								"Handling SendChannelAnnouncement event in peer_handler for node {} for short channel id {}",
-									node_id,
+								node_id,
 								msg.contents.short_channel_id
 							);
 							let msg = Message::ChannelAnnouncement(msg);
@@ -3489,7 +3489,7 @@ impl<
 										log_trace!(
 											logger,
 											"Handling DisconnectPeer HandleError event in peer_handler",
-											 );
+										);
 									}
 									// We do not have the peers write lock, so we just store that we're
 									// about to disconnect the peer and do it after we finish

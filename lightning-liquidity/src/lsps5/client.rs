@@ -596,8 +596,8 @@ mod tests {
 
 			assert!(
 				!peer_state
-				.pending_set_webhook_requests
-				.iter()
+					.pending_set_webhook_requests
+					.iter()
 					.any(|(id, _)| id == &request_ids[0])
 			);
 
@@ -627,8 +627,8 @@ mod tests {
 			let peer_state = state.get(&peer).unwrap().lock().unwrap();
 			assert!(
 				peer_state
-				.pending_set_webhook_requests
-				.iter()
+					.pending_set_webhook_requests
+					.iter()
 					.any(|(id, _)| id == &set_webhook_req_id)
 			);
 			assert!(peer_state.pending_list_webhooks_requests.contains(&list_webhooks_req_id));
@@ -650,8 +650,8 @@ mod tests {
 			let peer_state = state.get(&peer).unwrap().lock().unwrap();
 			assert!(
 				!peer_state
-				.pending_set_webhook_requests
-				.iter()
+					.pending_set_webhook_requests
+					.iter()
 					.any(|(id, _)| id == &set_webhook_req_id)
 			);
 			assert!(peer_state.pending_list_webhooks_requests.contains(&list_webhooks_req_id));

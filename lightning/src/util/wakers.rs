@@ -432,10 +432,10 @@ mod tests {
 		let exit_thread_clone = Arc::clone(&exit_thread);
 		thread::spawn(move || {
 			loop {
-			thread_notifier.notify();
-			if exit_thread_clone.load(Ordering::SeqCst) {
-				break;
-			}
+				thread_notifier.notify();
+				if exit_thread_clone.load(Ordering::SeqCst) {
+					break;
+				}
 			}
 		});
 

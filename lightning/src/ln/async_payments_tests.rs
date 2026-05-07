@@ -842,7 +842,7 @@ fn ignore_unexpected_static_invoice() {
 	assert!(!async_pmts_msgs.is_empty());
 	assert!(
 		async_pmts_msgs
-		.into_iter()
+			.into_iter()
 			.all(|(msg, _)| matches!(msg, AsyncPaymentsMessage::HeldHtlcAvailable(_)))
 	);
 
@@ -1826,8 +1826,8 @@ fn expired_static_invoice_message_path() {
 	for i in 0..2 {
 		assert!(
 			nodes[2]
-			.onion_messenger
-			.next_onion_message_for_peer(nodes[i].node.get_our_node_id())
+				.onion_messenger
+				.next_onion_message_for_peer(nodes[i].node.get_our_node_id())
 				.is_none()
 		);
 	}
@@ -2005,8 +2005,8 @@ fn ignore_expired_offer_paths_request() {
 	server.onion_messenger.handle_onion_message(recipient.node.get_our_node_id(), &offer_paths_req);
 	assert!(
 		server
-		.onion_messenger
-		.next_onion_message_for_peer(recipient.node.get_our_node_id())
+			.onion_messenger
+			.next_onion_message_for_peer(recipient.node.get_our_node_id())
 			.is_none()
 	);
 }
@@ -2063,8 +2063,8 @@ fn ignore_expired_offer_paths_message() {
 	recipient.onion_messenger.handle_onion_message(server.node.get_our_node_id(), &offer_paths);
 	assert!(
 		recipient
-		.onion_messenger
-		.next_onion_message_for_peer(server.node.get_our_node_id())
+			.onion_messenger
+			.next_onion_message_for_peer(server.node.get_our_node_id())
 			.is_none()
 	);
 }
@@ -2107,8 +2107,8 @@ fn limit_offer_paths_requests() {
 	recipient.node.test_check_refresh_async_receive_offers();
 	assert!(
 		recipient
-		.onion_messenger
-		.next_onion_message_for_peer(server.node.get_our_node_id())
+			.onion_messenger
+			.next_onion_message_for_peer(server.node.get_our_node_id())
 			.is_none()
 	);
 
@@ -2166,8 +2166,8 @@ fn limit_serve_static_invoice_requests() {
 	recipient.node.timer_tick_occurred();
 	assert!(
 		recipient
-		.onion_messenger
-		.next_onion_message_for_peer(server.node.get_our_node_id())
+			.onion_messenger
+			.next_onion_message_for_peer(server.node.get_our_node_id())
 			.is_none()
 	);
 
@@ -2183,8 +2183,8 @@ fn limit_serve_static_invoice_requests() {
 	recipient.onion_messenger.handle_onion_message(server.node.get_our_node_id(), &offer_paths);
 	assert!(
 		recipient
-		.onion_messenger
-		.next_onion_message_for_peer(server.node.get_our_node_id())
+			.onion_messenger
+			.next_onion_message_for_peer(server.node.get_our_node_id())
 			.is_none()
 	);
 }
@@ -2517,8 +2517,8 @@ fn ignore_offer_paths_expiry_too_soon() {
 		.handle_onion_message(server.node.get_our_node_id(), &offer_paths_expiry_too_soon);
 	assert!(
 		recipient
-		.onion_messenger
-		.next_onion_message_for_peer(server.node.get_our_node_id())
+			.onion_messenger
+			.next_onion_message_for_peer(server.node.get_our_node_id())
 			.is_none()
 	);
 }
@@ -2610,10 +2610,10 @@ fn refresh_unused_offers() {
 	advance_time_by(TEST_OFFER_REFRESH_THRESHOLD - Duration::from_secs(2), recipient);
 	assert!(
 		recipient
-		.onion_messenger
-		.release_pending_msgs()
-		.get(&server.node.get_our_node_id())
-		.unwrap()
+			.onion_messenger
+			.release_pending_msgs()
+			.get(&server.node.get_our_node_id())
+			.unwrap()
 			.is_empty()
 	);
 
@@ -2630,10 +2630,10 @@ fn refresh_unused_offers() {
 	recipient.node.timer_tick_occurred();
 	assert!(
 		recipient
-		.onion_messenger
-		.release_pending_msgs()
-		.get(&server.node.get_our_node_id())
-		.unwrap()
+			.onion_messenger
+			.release_pending_msgs()
+			.get(&server.node.get_our_node_id())
+			.unwrap()
 			.is_empty()
 	);
 

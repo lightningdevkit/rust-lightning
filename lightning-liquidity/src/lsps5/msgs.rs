@@ -329,7 +329,7 @@ impl Deref for LSPS5AppName {
 	type Target = str;
 
 	fn deref(&self) -> &Self::Target {
-		&self.0 .0
+		&self.0.0
 	}
 }
 

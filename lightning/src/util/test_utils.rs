@@ -809,16 +809,16 @@ impl<Signer: sign::ecdsa::EcdsaChannelSigner> Persist<Signer> for WatchtowerPers
 
 		assert!(
 			self.unsigned_justice_tx_data
-			.lock()
-			.unwrap()
-			.insert(data.channel_id(), VecDeque::new())
+				.lock()
+				.unwrap()
+				.insert(data.channel_id(), VecDeque::new())
 				.is_none()
 		);
 		assert!(
 			self.watchtower_state
-			.lock()
-			.unwrap()
-			.insert(data.channel_id(), new_hash_map())
+				.lock()
+				.unwrap()
+				.insert(data.channel_id(), new_hash_map())
 				.is_none()
 		);
 
@@ -1259,19 +1259,19 @@ impl chaininterface::BroadcasterInterface for TestBroadcaster {
 			let parent_txid = txs[0].0.compute_txid();
 			assert!(
 				txs[1]
-				.0
-				.input
-				.iter()
-				.map(|input| input.previous_output.txid)
+					.0
+					.input
+					.iter()
+					.map(|input| input.previous_output.txid)
 					.any(|txid| txid == parent_txid)
 			);
 			let child_txid = txs[1].0.compute_txid();
 			assert!(
 				txs[0]
-				.0
-				.input
-				.iter()
-				.map(|input| input.previous_output.txid)
+					.0
+					.input
+					.iter()
+					.map(|input| input.previous_output.txid)
 					.all(|txid| txid != child_txid)
 			);
 		}

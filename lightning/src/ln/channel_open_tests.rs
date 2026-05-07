@@ -832,8 +832,8 @@ pub fn bolt2_open_channel_sending_node_checks_part1() {
 	// channel_id, but now panics due to a colliding outbound SCID alias.
 	assert!(
 		nodes[0]
-		.node
-		.create_channel(node_b_id, channel_value_satoshis, push_msat, 42, None, None)
+			.node
+			.create_channel(node_b_id, channel_value_satoshis, push_msat, 42, None, None)
 			.is_err()
 	);
 }
@@ -853,8 +853,8 @@ pub fn bolt2_open_channel_sending_node_checks_part2() {
 	let push_msat = 1000 * channel_value_satoshis + 1;
 	assert!(
 		nodes[0]
-		.node
-		.create_channel(node_b_id, channel_value_satoshis, push_msat, 42, None, None)
+			.node
+			.create_channel(node_b_id, channel_value_satoshis, push_msat, 42, None, None)
 			.is_err()
 	);
 
@@ -950,9 +950,9 @@ pub fn test_user_configurable_csv_delay() {
 			APIError::APIMisuseError { err } => {
 				assert!(
 					regex::Regex::new(
-					r"Configured with an unreasonable our_to_self_delay \(\d+\) putting user funds at risks"
-				)
-				.unwrap()
+						r"Configured with an unreasonable our_to_self_delay \(\d+\) putting user funds at risks"
+					)
+					.unwrap()
 					.is_match(err.as_str())
 				);
 			},

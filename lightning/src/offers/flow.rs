@@ -1234,8 +1234,8 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 						self.logger,
 						"Failed to create blinded paths when enqueueing held_htlc_available message"
 					);
-						Bolt12SemanticError::MissingPaths
-					})?
+					Bolt12SemanticError::MissingPaths
+				})?
 			},
 			HeldHtlcReplyPath::ToCounterparty { path } => vec![path],
 		};

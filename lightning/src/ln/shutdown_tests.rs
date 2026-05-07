@@ -1000,8 +1000,8 @@ fn test_unsupported_anysegwit_upfront_shutdown_script() {
 		Event::OpenChannelRequest { temporary_channel_id, counterparty_node_id, .. } => {
 			assert!(
 				nodes[1]
-				.node
-				.accept_inbound_channel(temporary_channel_id, counterparty_node_id, 42, None,)
+					.node
+					.accept_inbound_channel(temporary_channel_id, counterparty_node_id, 42, None,)
 					.is_err()
 			);
 		},
@@ -1086,8 +1086,8 @@ fn test_invalid_upfront_shutdown_script() {
 		Event::OpenChannelRequest { temporary_channel_id, counterparty_node_id, .. } => {
 			assert!(
 				nodes[1]
-				.node
-				.accept_inbound_channel(temporary_channel_id, counterparty_node_id, 42, None,)
+					.node
+					.accept_inbound_channel(temporary_channel_id, counterparty_node_id, 42, None,)
 					.is_err()
 			);
 		},

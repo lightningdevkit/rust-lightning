@@ -766,7 +766,7 @@ impl Readable for UntrustedString {
 impl Writeable for WithoutLength<&UntrustedString> {
 	#[inline]
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		WithoutLength(&self.0 .0).write(w)
+		WithoutLength(&self.0.0).write(w)
 	}
 }
 impl LengthReadable for WithoutLength<UntrustedString> {

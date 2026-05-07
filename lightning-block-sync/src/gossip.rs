@@ -70,10 +70,10 @@ pub(crate) struct Joiner<
 }
 
 impl<
-		'a,
-		A: Future<Output = Result<(BlockHash, Option<u32>), BlockSourceError>>,
-		B: Future<Output = Result<BlockHash, BlockSourceError>>,
-	> Joiner<'a, A, B>
+	'a,
+	A: Future<Output = Result<(BlockHash, Option<u32>), BlockSourceError>>,
+	B: Future<Output = Result<BlockHash, BlockSourceError>>,
+> Joiner<'a, A, B>
 {
 	fn new(a: Pin<&'a mut A>, b: Pin<&'a mut B>) -> Self {
 		Self { a, b, a_res: None, b_res: None }
@@ -81,10 +81,10 @@ impl<
 }
 
 impl<
-		'a,
-		A: Future<Output = Result<(BlockHash, Option<u32>), BlockSourceError>>,
-		B: Future<Output = Result<BlockHash, BlockSourceError>>,
-	> Future for Joiner<'a, A, B>
+	'a,
+	A: Future<Output = Result<(BlockHash, Option<u32>), BlockSourceError>>,
+	B: Future<Output = Result<BlockHash, BlockSourceError>>,
+> Future for Joiner<'a, A, B>
 {
 	type Output = Result<((BlockHash, Option<u32>), BlockHash), BlockSourceError>;
 	fn poll(mut self: Pin<&mut Self>, ctx: &mut core::task::Context<'_>) -> Poll<Self::Output> {

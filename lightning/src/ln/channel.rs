@@ -2249,12 +2249,12 @@ where
 			if let Some(pending_splice) = pending_splice.as_ref() {
 				debug_assert!(
 					pending_splice
-					.funding_negotiation
-					.as_ref()
-					.map(|funding_negotiation| matches!(
-						funding_negotiation,
-						FundingNegotiation::AwaitingSignatures { .. }
-					))
+						.funding_negotiation
+						.as_ref()
+						.map(|funding_negotiation| matches!(
+							funding_negotiation,
+							FundingNegotiation::AwaitingSignatures { .. }
+						))
 						.unwrap_or(false)
 				);
 			}
@@ -4329,8 +4329,8 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		if holder_selected_contest_delay < BREAKDOWN_TIMEOUT {
 			return Err(APIError::APIMisuseError {
 				err: format!(
-				"Configured with an unreasonable our_to_self_delay ({holder_selected_contest_delay}) putting user funds at risks"
-			),
+					"Configured with an unreasonable our_to_self_delay ({holder_selected_contest_delay}) putting user funds at risks"
+				),
 			});
 		}
 
@@ -5626,13 +5626,13 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			self.get_max_dust_htlc_exposure_msat(dust_exposure_limiting_feerate);
 		if local_stats.commitment_stats.dust_exposure_msat > max_dust_htlc_exposure_msat {
 			return Err(ChannelError::close(format!(
-					"Peer sent update_fee with a feerate ({}) which may over-expose us to dust-in-flight on our own transactions (totaling {} msat)",
+				"Peer sent update_fee with a feerate ({}) which may over-expose us to dust-in-flight on our own transactions (totaling {} msat)",
 				new_feerate_per_kw, local_stats.commitment_stats.dust_exposure_msat,
 			)));
 		}
 		if remote_stats.commitment_stats.dust_exposure_msat > max_dust_htlc_exposure_msat {
 			return Err(ChannelError::close(format!(
-					"Peer sent update_fee with a feerate ({}) which may over-expose us to dust-in-flight on our counterparty's transactions (totaling {} msat)",
+				"Peer sent update_fee with a feerate ({}) which may over-expose us to dust-in-flight on our counterparty's transactions (totaling {} msat)",
 				new_feerate_per_kw, remote_stats.commitment_stats.dust_exposure_msat,
 			)));
 		}
@@ -5915,7 +5915,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			log_info!(
 				logger,
 				"Cannot accept value that would put our total dust exposure at {} over the limit {} on counterparty commitment tx",
-			        remote_stats.commitment_stats.dust_exposure_msat,
+				remote_stats.commitment_stats.dust_exposure_msat,
 				max_dust_htlc_exposure_msat,
 			);
 			return Err(LocalHTLCFailureReason::DustLimitCounterparty);
@@ -8432,9 +8432,9 @@ where
 	) -> Result<Option<ChannelMonitorUpdate>, ChannelError> {
 		debug_assert!(
 			self.context
-			.interactive_tx_signing_session
-			.as_ref()
-			.map(|signing_session| !signing_session.has_received_tx_signatures())
+				.interactive_tx_signing_session
+				.as_ref()
+				.map(|signing_session| !signing_session.has_received_tx_signatures())
 				.unwrap_or(false)
 		);
 
@@ -8805,7 +8805,7 @@ where
 			log_debug!(
 				logger,
 				"Received valid commitment_signed from peer, updated HTLC state but awaiting a monitor update resolution to reply.",
-				);
+			);
 			return Ok(self.push_ret_blockable_mon_update(monitor_update));
 		}
 
@@ -9635,12 +9635,12 @@ where
 			if let Some(pending_splice) = self.pending_splice.as_ref() {
 				debug_assert!(
 					pending_splice
-					.funding_negotiation
-					.as_ref()
-					.map(|funding_negotiation| matches!(
-						funding_negotiation,
-						FundingNegotiation::AwaitingSignatures { .. }
-					))
+						.funding_negotiation
+						.as_ref()
+						.map(|funding_negotiation| matches!(
+							funding_negotiation,
+							FundingNegotiation::AwaitingSignatures { .. }
+						))
 						.unwrap_or(false)
 				);
 			}
@@ -10389,7 +10389,7 @@ where
 		log_trace!(
 			logger,
 			"Regenerating latest commitment update with{} {} update_adds, {} update_fulfills, {} update_fails, and {} update_fail_malformeds",
-				if update_fee.is_some() { " update_fee," } else { "" },
+			if update_fee.is_some() { " update_fee," } else { "" },
 			update_add_htlcs.len(),
 			update_fulfill_htlcs.len(),
 			update_fail_htlcs.len(),
@@ -16937,10 +16937,10 @@ impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
 					} else {
 						Some(
 							holder_signer
-						.get_per_commitment_point(
-							holder_commitment_next_transaction_number + 3,
-							&secp_ctx,
-						)
+								.get_per_commitment_point(
+									holder_commitment_next_transaction_number + 3,
+									&secp_ctx,
+								)
 								.expect(
 									"Must be able to derive the previous revoked commitment point upon channel restoration",
 								),
@@ -16953,10 +16953,10 @@ impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
 				} else {
 					Some(
 						holder_signer
-						.get_per_commitment_point(
-							holder_commitment_next_transaction_number + 2,
-							&secp_ctx,
-						)
+							.get_per_commitment_point(
+								holder_commitment_next_transaction_number + 2,
+								&secp_ctx,
+							)
 							.expect(
 								"Must be able to derive the last revoked commitment point upon channel restoration",
 							),
@@ -18302,7 +18302,7 @@ mod tests {
 		// anchors: simple commitment tx with no HTLCs and single anchor
 		test_commitment_with_anchors!(
 			"30440220655bf909fb6fa81d086f1336ac72c97906dce29d1b166e305c99152d810e26e1022051f577faa46412c46707aaac46b65d50053550a66334e00a44af2706f27a8658",
-						 "3044022007cf6b405e9c9b4f527b0ecad9d8bb661fabb8b12abf7d1c0b3ad1855db3ed490220616d5c1eeadccc63bd775a131149455d62d95a42c2a1b01cc7821fc42dce7778",
+			"3044022007cf6b405e9c9b4f527b0ecad9d8bb661fabb8b12abf7d1c0b3ad1855db3ed490220616d5c1eeadccc63bd775a131149455d62d95a42c2a1b01cc7821fc42dce7778",
 			"02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b80024a010000000000002200202b1b5854183c12d3316565972c4668929d314d81c5dcdbb21cb45fe8a9a8114f10529800000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0400473044022007cf6b405e9c9b4f527b0ecad9d8bb661fabb8b12abf7d1c0b3ad1855db3ed490220616d5c1eeadccc63bd775a131149455d62d95a42c2a1b01cc7821fc42dce7778014730440220655bf909fb6fa81d086f1336ac72c97906dce29d1b166e305c99152d810e26e1022051f577faa46412c46707aaac46b65d50053550a66334e00a44af2706f27a865801475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220",
 			{}
 		);
@@ -18312,7 +18312,7 @@ mod tests {
 
 		test_commitment!(
 			"3045022100c3127b33dcc741dd6b05b1e63cbd1a9a7d816f37af9b6756fa2376b056f032370220408b96279808fe57eb7e463710804cdf4f108388bc5cf722d8c848d2c7f9f3b0",
-						 "30440220616210b2cc4d3afb601013c373bbd8aac54febd9f15400379a8cb65ce7deca60022034236c010991beb7ff770510561ae8dc885b8d38d1947248c38f2ae055647142",
+			"30440220616210b2cc4d3afb601013c373bbd8aac54febd9f15400379a8cb65ce7deca60022034236c010991beb7ff770510561ae8dc885b8d38d1947248c38f2ae055647142",
 			"02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b8002c0c62d0000000000160014cc1b07838e387deacd0e5232e1e8b49f4c29e48454a56a00000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e04004730440220616210b2cc4d3afb601013c373bbd8aac54febd9f15400379a8cb65ce7deca60022034236c010991beb7ff770510561ae8dc885b8d38d1947248c38f2ae05564714201483045022100c3127b33dcc741dd6b05b1e63cbd1a9a7d816f37af9b6756fa2376b056f032370220408b96279808fe57eb7e463710804cdf4f108388bc5cf722d8c848d2c7f9f3b001475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220",
 			{}
 		);
@@ -18320,7 +18320,7 @@ mod tests {
 		// anchors: simple commitment tx with no HTLCs
 		test_commitment_with_anchors!(
 			"3045022100f89034eba16b2be0e5581f750a0a6309192b75cce0f202f0ee2b4ec0cc394850022076c65dc507fe42276152b7a3d90e961e678adbe966e916ecfe85e64d430e75f3",
-						 "30450221008266ac6db5ea71aac3c95d97b0e172ff596844851a3216eb88382a8dddfd33d2022050e240974cfd5d708708b4365574517c18e7ae535ef732a3484d43d0d82be9f7",
+			"30450221008266ac6db5ea71aac3c95d97b0e172ff596844851a3216eb88382a8dddfd33d2022050e240974cfd5d708708b4365574517c18e7ae535ef732a3484d43d0d82be9f7",
 			"02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b80044a010000000000002200202b1b5854183c12d3316565972c4668929d314d81c5dcdbb21cb45fe8a9a8114f4a01000000000000220020e9e86e4823faa62e222ebc858a226636856158f07e69898da3b0d1af0ddb3994c0c62d0000000000220020f3394e1e619b0eca1f91be2fb5ab4dfc59ba5b84ebe014ad1d43a564d012994a508b6a00000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e04004830450221008266ac6db5ea71aac3c95d97b0e172ff596844851a3216eb88382a8dddfd33d2022050e240974cfd5d708708b4365574517c18e7ae535ef732a3484d43d0d82be9f701483045022100f89034eba16b2be0e5581f750a0a6309192b75cce0f202f0ee2b4ec0cc394850022076c65dc507fe42276152b7a3d90e961e678adbe966e916ecfe85e64d430e75f301475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220",
 			{}
 		);
@@ -18711,7 +18711,7 @@ mod tests {
 
 		test_commitment!(
 			"304402203a286936e74870ca1459c700c71202af0381910a6bfab687ef494ef1bc3e02c902202506c362d0e3bee15e802aa729bf378e051644648253513f1c085b264cc2a720",
-		                 "30450221008a953551f4d67cb4df3037207fc082ddaf6be84d417b0bd14c80aab66f1b01a402207508796dc75034b2dee876fe01dc05a08b019f3e5d689ac8842ade2f1befccf5",
+			"30450221008a953551f4d67cb4df3037207fc082ddaf6be84d417b0bd14c80aab66f1b01a402207508796dc75034b2dee876fe01dc05a08b019f3e5d689ac8842ade2f1befccf5",
 			"02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b8002c0c62d0000000000160014cc1b07838e387deacd0e5232e1e8b49f4c29e484fa926a00000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e04004830450221008a953551f4d67cb4df3037207fc082ddaf6be84d417b0bd14c80aab66f1b01a402207508796dc75034b2dee876fe01dc05a08b019f3e5d689ac8842ade2f1befccf50147304402203a286936e74870ca1459c700c71202af0381910a6bfab687ef494ef1bc3e02c902202506c362d0e3bee15e802aa729bf378e051644648253513f1c085b264cc2a72001475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220",
 			{}
 		);
@@ -18725,7 +18725,7 @@ mod tests {
 
 		test_commitment_with_anchors!(
 			"3045022100e784a66b1588575801e237d35e510fd92a81ae3a4a2a1b90c031ad803d07b3f3022021bc5f16501f167607d63b681442da193eb0a76b4b7fd25c2ed4f8b28fd35b95",
-		                 "30450221009f16ac85d232e4eddb3fcd750a68ebf0b58e3356eaada45d3513ede7e817bf4c02207c2b043b4e5f971261975406cb955219fa56bffe5d834a833694b5abc1ce4cfd",
+			"30450221009f16ac85d232e4eddb3fcd750a68ebf0b58e3356eaada45d3513ede7e817bf4c02207c2b043b4e5f971261975406cb955219fa56bffe5d834a833694b5abc1ce4cfd",
 			"02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b80044a010000000000002200202b1b5854183c12d3316565972c4668929d314d81c5dcdbb21cb45fe8a9a8114f4a01000000000000220020e9e86e4823faa62e222ebc858a226636856158f07e69898da3b0d1af0ddb3994c0c62d0000000000220020f3394e1e619b0eca1f91be2fb5ab4dfc59ba5b84ebe014ad1d43a564d012994ad0886a00000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e04004830450221009f16ac85d232e4eddb3fcd750a68ebf0b58e3356eaada45d3513ede7e817bf4c02207c2b043b4e5f971261975406cb955219fa56bffe5d834a833694b5abc1ce4cfd01483045022100e784a66b1588575801e237d35e510fd92a81ae3a4a2a1b90c031ad803d07b3f3022021bc5f16501f167607d63b681442da193eb0a76b4b7fd25c2ed4f8b28fd35b9501475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220",
 			{}
 		);
@@ -18739,7 +18739,7 @@ mod tests {
 
 		test_commitment!(
 			"304402200a8544eba1d216f5c5e530597665fa9bec56943c0f66d98fc3d028df52d84f7002201e45fa5c6bc3a506cc2553e7d1c0043a9811313fc39c954692c0d47cfce2bbd3",
-		                 "3045022100e11b638c05c650c2f63a421d36ef8756c5ce82f2184278643520311cdf50aa200220259565fb9c8e4a87ccaf17f27a3b9ca4f20625754a0920d9c6c239d8156a11de",
+			"3045022100e11b638c05c650c2f63a421d36ef8756c5ce82f2184278643520311cdf50aa200220259565fb9c8e4a87ccaf17f27a3b9ca4f20625754a0920d9c6c239d8156a11de",
 			"02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b800222020000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80ec0c62d0000000000160014cc1b07838e387deacd0e5232e1e8b49f4c29e4840400483045022100e11b638c05c650c2f63a421d36ef8756c5ce82f2184278643520311cdf50aa200220259565fb9c8e4a87ccaf17f27a3b9ca4f20625754a0920d9c6c239d8156a11de0147304402200a8544eba1d216f5c5e530597665fa9bec56943c0f66d98fc3d028df52d84f7002201e45fa5c6bc3a506cc2553e7d1c0043a9811313fc39c954692c0d47cfce2bbd301475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220",
 			{}
 		);
@@ -18750,7 +18750,7 @@ mod tests {
 
 		test_commitment!(
 			"304402202ade0142008309eb376736575ad58d03e5b115499709c6db0b46e36ff394b492022037b63d78d66404d6504d4c4ac13be346f3d1802928a6d3ad95a6a944227161a2",
-		                 "304402207e8d51e0c570a5868a78414f4e0cbfaed1106b171b9581542c30718ee4eb95ba02203af84194c97adf98898c9afe2f2ed4a7f8dba05a2dfab28ac9d9c604aa49a379",
+			"304402207e8d51e0c570a5868a78414f4e0cbfaed1106b171b9581542c30718ee4eb95ba02203af84194c97adf98898c9afe2f2ed4a7f8dba05a2dfab28ac9d9c604aa49a379",
 			"02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b8001c0c62d0000000000160014cc1b07838e387deacd0e5232e1e8b49f4c29e484040047304402207e8d51e0c570a5868a78414f4e0cbfaed1106b171b9581542c30718ee4eb95ba02203af84194c97adf98898c9afe2f2ed4a7f8dba05a2dfab28ac9d9c604aa49a3790147304402202ade0142008309eb376736575ad58d03e5b115499709c6db0b46e36ff394b492022037b63d78d66404d6504d4c4ac13be346f3d1802928a6d3ad95a6a944227161a201475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220",
 			{}
 		);
@@ -18764,7 +18764,7 @@ mod tests {
 
 		test_commitment_with_anchors!(
 			"30450221008fd5dbff02e4b59020d4cd23a3c30d3e287065fda75a0a09b402980adf68ccda022001e0b8b620cd915ddff11f1de32addf23d81d51b90e6841b2cb8dcaf3faa5ecf",
-		                 "30450221009ad80792e3038fe6968d12ff23e6888a565c3ddd065037f357445f01675d63f3022018384915e5f1f4ae157e15debf4f49b61c8d9d2b073c7d6f97c4a68caa3ed4c1",
+			"30450221009ad80792e3038fe6968d12ff23e6888a565c3ddd065037f357445f01675d63f3022018384915e5f1f4ae157e15debf4f49b61c8d9d2b073c7d6f97c4a68caa3ed4c1",
 			"02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b80024a01000000000000220020e9e86e4823faa62e222ebc858a226636856158f07e69898da3b0d1af0ddb3994c0c62d0000000000220020f3394e1e619b0eca1f91be2fb5ab4dfc59ba5b84ebe014ad1d43a564d012994a04004830450221009ad80792e3038fe6968d12ff23e6888a565c3ddd065037f357445f01675d63f3022018384915e5f1f4ae157e15debf4f49b61c8d9d2b073c7d6f97c4a68caa3ed4c1014830450221008fd5dbff02e4b59020d4cd23a3c30d3e287065fda75a0a09b402980adf68ccda022001e0b8b620cd915ddff11f1de32addf23d81d51b90e6841b2cb8dcaf3faa5ecf01475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220",
 			{}
 		);
@@ -18777,7 +18777,7 @@ mod tests {
 
 		test_commitment!(
 			"304402202ade0142008309eb376736575ad58d03e5b115499709c6db0b46e36ff394b492022037b63d78d66404d6504d4c4ac13be346f3d1802928a6d3ad95a6a944227161a2",
-		                 "304402207e8d51e0c570a5868a78414f4e0cbfaed1106b171b9581542c30718ee4eb95ba02203af84194c97adf98898c9afe2f2ed4a7f8dba05a2dfab28ac9d9c604aa49a379",
+			"304402207e8d51e0c570a5868a78414f4e0cbfaed1106b171b9581542c30718ee4eb95ba02203af84194c97adf98898c9afe2f2ed4a7f8dba05a2dfab28ac9d9c604aa49a379",
 			"02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b8001c0c62d0000000000160014cc1b07838e387deacd0e5232e1e8b49f4c29e484040047304402207e8d51e0c570a5868a78414f4e0cbfaed1106b171b9581542c30718ee4eb95ba02203af84194c97adf98898c9afe2f2ed4a7f8dba05a2dfab28ac9d9c604aa49a3790147304402202ade0142008309eb376736575ad58d03e5b115499709c6db0b46e36ff394b492022037b63d78d66404d6504d4c4ac13be346f3d1802928a6d3ad95a6a944227161a201475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220",
 			{}
 		);
@@ -19027,8 +19027,8 @@ mod tests {
 		chan.context.holder_dust_limit_satoshis = 15000;
 		chan.funding.value_to_self_msat = 9990000000;
 		test_commitment_with_zero_fee!(
-        "304402204042ce57689bb7e52af7fb9ec28d6610674ce00e5e438bb1119acfb91aad6386022065de45c4fe52d86249d80397f2c85e143550cb14b3de0cd1e6a54d0622a2bbd4",
-        "30450221009fb4e444e9fe2d7db0f867704745c8ea2e4e1018b5986fd8cb9d9facdc1bb1be02202d6589a20ea8a8e3594eac3c99bad523139a36e313a66c6302e619786cb42396",
+			"304402204042ce57689bb7e52af7fb9ec28d6610674ce00e5e438bb1119acfb91aad6386022065de45c4fe52d86249d80397f2c85e143550cb14b3de0cd1e6a54d0622a2bbd4",
+			"30450221009fb4e444e9fe2d7db0f867704745c8ea2e4e1018b5986fd8cb9d9facdc1bb1be02202d6589a20ea8a8e3594eac3c99bad523139a36e313a66c6302e619786cb42396",
 			"03000000000101ae1e3c841378cf9e4c383bfdd033d4b3c6945e0587ff16635a00b347eea2704b0100000000340fef8002f0000000000000000451024e73706f980000000000220020f2d298ffcfd6d899a3abada37bfc6f42ce0b7b66f3e39e903e8419ac97dca75a040047304402204042ce57689bb7e52af7fb9ec28d6610674ce00e5e438bb1119acfb91aad6386022065de45c4fe52d86249d80397f2c85e143550cb14b3de0cd1e6a54d0622a2bbd4014830450221009fb4e444e9fe2d7db0f867704745c8ea2e4e1018b5986fd8cb9d9facdc1bb1be02202d6589a20ea8a8e3594eac3c99bad523139a36e313a66c6302e619786cb4239601475221027eb9596a68740445fb151ff37d5422e7f65f2c497c90fda63e738eb606c15bd62103bbc16dc8851bece603322f06b3c8da329401b7be7e9fdd3f3090ad19aed0807052aec50fbb20",
 			{}
 		);

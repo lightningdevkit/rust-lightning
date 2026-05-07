@@ -105,10 +105,10 @@ pub(crate) struct ThreeSelector<
 }
 
 impl<
-		A: Future<Output = Option<()>> + Unpin,
-		B: Future<Output = Option<()>> + Unpin,
-		C: Future<Output = tokio::io::Result<()>> + Unpin,
-	> Future for ThreeSelector<A, B, C>
+	A: Future<Output = Option<()>> + Unpin,
+	B: Future<Output = Option<()>> + Unpin,
+	C: Future<Output = tokio::io::Result<()>> + Unpin,
+> Future for ThreeSelector<A, B, C>
 {
 	type Output = SelectorOutput;
 	fn poll(mut self: Pin<&mut Self>, ctx: &mut task::Context<'_>) -> Poll<SelectorOutput> {

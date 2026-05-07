@@ -142,7 +142,7 @@ impl<L: Logger> EsploraSyncClient<L> {
 										"Failed during transaction sync, aborting. Synced so far: {} confirmed, {} unconfirmed.",
 										num_confirmed,
 										num_unconfirmed
-										);
+									);
 									sync_state.pending_sync = true;
 									return Err(TxSyncError::from(err));
 								},

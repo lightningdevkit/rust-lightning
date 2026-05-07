@@ -2745,14 +2745,14 @@ pub mod benches {
 			let (stop_sender, stop_receiver) = mpsc::channel();
 			let handle = thread::spawn(move || {
 				loop {
-				keys_manager_clone.get_secure_random_bytes();
-				match stop_receiver.try_recv() {
-					Ok(_) | Err(TryRecvError::Disconnected) => {
-						println!("Terminating.");
-						break;
-					},
-					Err(TryRecvError::Empty) => {},
-				}
+					keys_manager_clone.get_secure_random_bytes();
+					match stop_receiver.try_recv() {
+						Ok(_) | Err(TryRecvError::Disconnected) => {
+							println!("Terminating.");
+							break;
+						},
+						Err(TryRecvError::Empty) => {},
+					}
 				}
 			});
 			handles.push(handle);

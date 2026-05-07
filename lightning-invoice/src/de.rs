@@ -1100,20 +1100,20 @@ mod test {
 				},
 				data: RawDataPart {
 					timestamp: PositiveTimestamp::from_unix_timestamp(1496314658).unwrap(),
-					tagged_fields: vec ! [
-								crate::TaggedField::PaymentHash(crate::PaymentHash(
-									<[u8; 32]>::try_from(
-										Vec::from_hex(
-											"0001020304050607080900010203040506070809000102030405060708090102",
-										)
-										.unwrap(),
-									)
-									.unwrap(),
-								))
-								.into(),
+					tagged_fields: vec![
+						crate::TaggedField::PaymentHash(crate::PaymentHash(
+							<[u8; 32]>::try_from(
+								Vec::from_hex(
+									"0001020304050607080900010203040506070809000102030405060708090102",
+								)
+								.unwrap(),
+							)
+							.unwrap(),
+						))
+						.into(),
 						Description(crate::Description::new("coffee beans".to_owned()).unwrap())
 							.into(),
-								PaymentSecret(crate::PaymentSecret([17; 32])).into(),
+						PaymentSecret(crate::PaymentSecret([17; 32])).into(),
 						Features(expected_features).into(),
 					],
 				},

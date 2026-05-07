@@ -247,10 +247,10 @@ impl OutboundJITChannelState {
 				{
 					return Err(ChannelStateError(format!(
 						"Payment size violates our limits: expected_payment_size_msat = {}, min_payment_size_msat = {}, max_payment_size_msat = {}",
-									expected_payment_size_msat,
-									opening_fee_params.min_payment_size_msat,
-									opening_fee_params.max_payment_size_msat
-							)));
+						expected_payment_size_msat,
+						opening_fee_params.min_payment_size_msat,
+						opening_fee_params.max_payment_size_msat
+					)));
 				}
 
 				let opening_fee_msat = compute_opening_fee(
@@ -697,7 +697,7 @@ macro_rules! get_or_insert_peer_state_entry {
 				}
 			},
 			Entry::Occupied(e) => e.into_mut(),
-			}
+		}
 	}};
 }
 
@@ -749,8 +749,8 @@ where
 				debug_assert!(res.is_none(), "Channel IDs should never collide");
 				if res.is_some() {
 					return Err(lightning::io::Error::new(
-							lightning::io::ErrorKind::InvalidData,
-							"Failed to read LSPS2 peer state due to data inconsistencies: Channel IDs should never collide",
+						lightning::io::ErrorKind::InvalidData,
+						"Failed to read LSPS2 peer state due to data inconsistencies: Channel IDs should never collide",
 					));
 				}
 			}

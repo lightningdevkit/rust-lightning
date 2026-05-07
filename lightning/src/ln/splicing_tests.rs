@@ -3403,10 +3403,10 @@ fn test_splice_buffer_commitment_signed_until_funding_tx_signed() {
 	assert_eq!(msg_events.len(), 1, "{msg_events:?}");
 	let initiator_commit_sig = if let MessageSendEvent::UpdateHTLCs { updates, .. } = &msg_events[0]
 	{
-			updates.commitment_signed[0].clone()
-		} else {
-			panic!("Expected UpdateHTLCs message");
-		};
+		updates.commitment_signed[0].clone()
+	} else {
+		panic!("Expected UpdateHTLCs message");
+	};
 
 	// The buffered commitment_signed should have been processed, resulting in a monitor update.
 	check_added_monitors(&nodes[0], 1);
@@ -4731,7 +4731,7 @@ fn test_splice_rbf_insufficient_feerate() {
 	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
 	assert!(
 		funding_template
-		.splice_in_sync(added_value, min_rbf_feerate, FeeRate::MAX, &wallet)
+			.splice_in_sync(added_value, min_rbf_feerate, FeeRate::MAX, &wallet)
 			.is_ok()
 	);
 

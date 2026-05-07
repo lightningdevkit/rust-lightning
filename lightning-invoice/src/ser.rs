@@ -306,13 +306,13 @@ impl Base32Len for Sha256 {
 
 impl Base32Iterable for Description {
 	fn fe_iter<'s>(&'s self) -> impl Iterator<Item = Fe32> + 's {
-		self.0 .0.as_bytes().fe_iter()
+		self.0.0.as_bytes().fe_iter()
 	}
 }
 
 impl Base32Len for Description {
 	fn base32_len(&self) -> usize {
-		self.0 .0.as_bytes().base32_len()
+		self.0.0.as_bytes().base32_len()
 	}
 }
 
@@ -405,7 +405,7 @@ impl Base32Iterable for PrivateRoute {
 			i1.chain(i2).chain(i3).chain(i4).chain(i5)
 		}
 
-		self.0 .0.iter().map(serialize_to_iter).flatten().bytes_to_fes()
+		self.0.0.iter().map(serialize_to_iter).flatten().bytes_to_fes()
 	}
 }
 

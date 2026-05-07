@@ -891,20 +891,20 @@ mod tests {
 
 		assert!(
 			network_graph
-			.read_only()
-			.nodes()
-			.get(&valid_announcement.contents.node_id_1)
-			.unwrap()
-			.announcement_info
+				.read_only()
+				.nodes()
+				.get(&valid_announcement.contents.node_id_1)
+				.unwrap()
+				.announcement_info
 				.is_some()
 		);
 		assert!(
 			network_graph
-			.read_only()
-			.nodes()
-			.get(&valid_announcement.contents.node_id_2)
-			.unwrap()
-			.announcement_info
+				.read_only()
+				.nodes()
+				.get(&valid_announcement.contents.node_id_2)
+				.unwrap()
+				.announcement_info
 				.is_some()
 		);
 	}

@@ -1217,12 +1217,12 @@ macro_rules! _impl_writeable_tlv_based_enum_common {
 							$(($type, $field, $fieldty, self)),*
 						});
 					}),*
-					$($st::$tuple_variant_name (ref field) => {
+					$($st::$tuple_variant_name(ref field) => {
 						let id: u8 = $tuple_variant_id;
 						id.write(writer)?;
 						field.write(writer)?;
 					}),*
-					$($st::$length_prefixed_tuple_variant_name (ref field) => {
+					$($st::$length_prefixed_tuple_variant_name(ref field) => {
 						let id: u8 = $length_prefixed_tuple_variant_id;
 						id.write(writer)?;
 						$crate::util::ser::BigSize(field.serialized_length() as u64).write(writer)?;

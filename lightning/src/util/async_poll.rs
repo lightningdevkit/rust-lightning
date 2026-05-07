@@ -110,12 +110,12 @@ impl<F: Future<Output = O>, O> Future for MultiResultFuturePoller<F, O> {
 		for state in futures_state.iter_mut() {
 			match state {
 				ResultFuture::Pending(fut) => match unsafe { Pin::new_unchecked(fut) }.poll(cx) {
-						Poll::Ready(res) => {
-							*state = ResultFuture::Ready(res);
-						},
-						Poll::Pending => {
-							have_pending_futures = true;
-						},
+					Poll::Ready(res) => {
+						*state = ResultFuture::Ready(res);
+					},
+					Poll::Pending => {
+						have_pending_futures = true;
+					},
 				},
 				ResultFuture::Ready(_) => continue,
 			}

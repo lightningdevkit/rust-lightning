@@ -771,7 +771,7 @@ impl<H: tb::Bool, T: tb::Bool, C: tb::Bool, S: tb::Bool, M: tb::Bool>
 		self, description: Bolt11InvoiceDescription,
 	) -> InvoiceBuilder<tb::True, H, T, C, S, M> {
 		match description {
-			Bolt11InvoiceDescription::Direct(desc) => self.description(desc.0 .0),
+			Bolt11InvoiceDescription::Direct(desc) => self.description(desc.0.0),
 			Bolt11InvoiceDescription::Hash(hash) => self.description_hash(hash.0),
 		}
 	}
@@ -781,7 +781,7 @@ impl<H: tb::Bool, T: tb::Bool, C: tb::Bool, S: tb::Bool, M: tb::Bool>
 		self, description_ref: Bolt11InvoiceDescriptionRef<'_>,
 	) -> InvoiceBuilder<tb::True, H, T, C, S, M> {
 		match description_ref {
-			Bolt11InvoiceDescriptionRef::Direct(desc) => self.description(desc.clone().0 .0),
+			Bolt11InvoiceDescriptionRef::Direct(desc) => self.description(desc.clone().0.0),
 			Bolt11InvoiceDescriptionRef::Hash(hash) => self.description_hash(hash.0),
 		}
 	}
@@ -2016,7 +2016,7 @@ mod test {
 				hrp: RawHrp { currency: Currency::Bitcoin, raw_amount: None, si_prefix: None },
 				data: RawDataPart {
 					timestamp: PositiveTimestamp::from_unix_timestamp(1496314658).unwrap(),
-					tagged_fields: vec ! [
+					tagged_fields: vec![
 						crate::TaggedField::PaymentHash(PaymentHash(
 							<[u8; 32]>::try_from(
 								Vec::from_hex(

@@ -2563,8 +2563,8 @@ pub fn test_peer_disconnected_before_funding_broadcasted() {
 
 	assert!(
 		nodes[0]
-		.node
-		.funding_transaction_generated(temporary_channel_id, node_b_id, tx.clone())
+			.node
+			.funding_transaction_generated(temporary_channel_id, node_b_id, tx.clone())
 			.is_ok()
 	);
 
@@ -6156,7 +6156,7 @@ pub fn test_announce_disable_channels() {
 		match e {
 			MessageSendEvent::BroadcastChannelUpdate { ref msg, .. } => {
 				assert_eq!(msg.contents.channel_flags & (1 << 1), 1 << 1); // The "channel disabled" bit should be set
-															   // Check that each channel gets updated exactly once
+				// Check that each channel gets updated exactly once
 				if chans_disabled
 					.insert(msg.contents.short_channel_id, msg.contents.timestamp)
 					.is_some()
