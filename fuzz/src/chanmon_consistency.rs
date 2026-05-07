@@ -2726,6 +2726,23 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		// PaymentSent event at the sender.
 		self.payments.assert_claims_reported();
 
+		// All HTLCs should have been claimed or failed once we reach quiescence.
+		for (idx, node) in self.nodes.iter().enumerate() {
+			for chan in node.list_channels() {
+				assert!(
+					chan.pending_inbound_htlcs.is_empty() && chan.pending_outbound_htlcs.is_empty(),
+					"Node {} channel {:?} has stuck HTLCs after settling all state: \
+					 {} inbound {:?}, {} outbound {:?}",
+					idx,
+					chan.channel_id,
+					chan.pending_inbound_htlcs.len(),
+					chan.pending_inbound_htlcs,
+					chan.pending_outbound_htlcs.len(),
+					chan.pending_outbound_htlcs
+				);
+			}
+		}
+
 		// Finally, make sure that at least one end of each channel can make a substantial payment.
 		let chan_ab_ids = self.ab_link.channel_ids().clone();
 		let chan_bc_ids = self.bc_link.channel_ids().clone();
