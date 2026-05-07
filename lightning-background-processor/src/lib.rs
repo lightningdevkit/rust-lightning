@@ -1107,16 +1107,14 @@ where
 		// before the persistence flag is set. Capturing outside would let us
 		// observe pending ops while the flag is still unset, causing us to
 		// flush monitor writes without persisting the ChannelManager.
-		// Declared before futures so it outlives the Joiner (drop order).
+		// Declared before the ChannelManager persistence future so it outlives it (drop order).
 		let pending_monitor_writes;
-
-		let mut futures = Joiner::new();
-
-		if channel_manager.get_cm().get_and_clear_needs_persistence() {
+		let channel_manager_persist = if channel_manager.get_cm().get_and_clear_needs_persistence()
+		{
 			pending_monitor_writes = chain_monitor.get_cm().pending_operation_count();
 			log_trace!(logger, "Persisting ChannelManager...");
 
-			let fut = async {
+			Some(async {
 				kv_store
 					.write(
 						CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
@@ -1130,10 +1128,15 @@ where
 				// that arrived after are left for the next iteration.
 				chain_monitor.get_cm().flush(pending_monitor_writes, &logger);
 				Ok(())
-			};
-			// TODO: Once our MSRV is 1.68 we should be able to drop the Box
-			let mut fut = Box::pin(fut);
+			})
+		} else {
+			None
+		};
+		let mut channel_manager_persist = core::pin::pin!(channel_manager_persist);
+		let mut channel_manager_persist_res = None;
+		let mut channel_manager_persist_pending = false;
 
+		if let Some(mut fut) = channel_manager_persist.as_mut().as_pin_mut() {
 			// Because persisting the ChannelManager is important to avoid accidental
 			// force-closures, go ahead and poll the future once before we do slightly more
 			// CPU-intensive tasks in the form of NetworkGraph pruning or scorer time-stepping
@@ -1141,9 +1144,9 @@ where
 			// future is actually async.
 			use core::future::Future;
 			let mut ctx = task::Context::from_waker(core::task::Waker::noop());
-			match core::pin::Pin::new(&mut fut).poll(&mut ctx) {
-				task::Poll::Ready(res) => futures.set_a_res(res),
-				task::Poll::Pending => futures.set_a(fut),
+			match fut.as_mut().poll(&mut ctx) {
+				task::Poll::Ready(res) => channel_manager_persist_res = Some(res),
+				task::Poll::Pending => channel_manager_persist_pending = true,
 			}
 
 			log_trace!(logger, "Done persisting ChannelManager.");
@@ -1191,6 +1194,7 @@ where
 			GossipSync::Rapid(_) => !have_pruned || prune_timer_elapsed,
 			_ => prune_timer_elapsed,
 		};
+		let mut network_graph_persist = None;
 		if should_prune {
 			// The network graph must not be pruned while rapid sync completion is pending
 			if let Some(network_graph) = gossip_sync.prunable_network_graph() {
@@ -1203,7 +1207,7 @@ where
 					log_warn!(logger, "Not pruning network graph, consider implementing the fetch_time argument or calling remove_stale_channels_and_tracking_with_time manually.");
 					log_trace!(logger, "Persisting network graph.");
 				}
-				let fut = async {
+				network_graph_persist = Some(async {
 					if let Err(e) = kv_store
 						.write(
 							NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE,
@@ -1217,14 +1221,13 @@ where
 					}
 
 					Ok(())
-				};
-
-				// TODO: Once our MSRV is 1.68 we should be able to drop the Box
-				futures.set_b(Box::pin(fut));
+				});
 
 				have_pruned = true;
 			}
 		}
+		let mut network_graph_persist = core::pin::pin!(network_graph_persist);
+
 		if !have_decayed_scorer {
 			if let Some(ref scorer) = scorer {
 				if let Some(duration_since_epoch) = fetch_time() {
@@ -1234,6 +1237,7 @@ where
 			}
 			have_decayed_scorer = true;
 		}
+		let mut scorer_persist = None;
 		match check_and_reset_sleeper(&mut last_scorer_persist_call, || {
 			sleeper(SCORER_PERSIST_TIMER)
 		}) {
@@ -1245,7 +1249,7 @@ where
 					} else {
 						log_trace!(logger, "Persisting scorer");
 					}
-					let fut = async {
+					scorer_persist = Some(async {
 						if let Err(e) = kv_store
 							.write(
 								SCORER_PERSISTENCE_PRIMARY_NAMESPACE,
@@ -1263,35 +1267,34 @@ where
 						}
 
 						Ok(())
-					};
-
-					// TODO: Once our MSRV is 1.68 we should be able to drop the Box
-					futures.set_c(Box::pin(fut));
+					});
 				}
 			},
 			Some(true) => break,
 			None => {},
 		}
+		let mut scorer_persist = core::pin::pin!(scorer_persist);
+
+		let mut sweeper_persist = None;
 		match check_and_reset_sleeper(&mut last_sweeper_call, || sleeper(SWEEPER_TIMER)) {
 			Some(false) => {
 				log_trace!(logger, "Regenerating sweeper spends if necessary");
 				if let Some(ref sweeper) = sweeper {
-					let fut = async {
+					sweeper_persist = Some(async {
 						let _ = sweeper.regenerate_and_broadcast_spend_if_necessary().await;
 
 						Ok(())
-					};
-
-					// TODO: Once our MSRV is 1.68 we should be able to drop the Box
-					futures.set_d(Box::pin(fut));
+					});
 				}
 			},
 			Some(true) => break,
 			None => {},
 		}
+		let mut sweeper_persist = core::pin::pin!(sweeper_persist);
 
+		let mut liquidity_persist = None;
 		if let Some(liquidity_manager) = liquidity_manager.as_ref() {
-			let fut = async {
+			liquidity_persist = Some(async {
 				liquidity_manager
 					.get_lm()
 					.persist()
@@ -1305,8 +1308,27 @@ where
 						log_error!(logger, "Persisting LiquidityManager failed: {}", e);
 						e
 					})
-			};
-			futures.set_e(Box::pin(fut));
+			});
+		}
+		let mut liquidity_persist = core::pin::pin!(liquidity_persist);
+
+		let mut futures = Joiner::new();
+		if let Some(res) = channel_manager_persist_res {
+			futures.set_a_res(res);
+		} else if channel_manager_persist_pending {
+			futures.set_a(channel_manager_persist.as_mut().as_pin_mut().unwrap());
+		}
+		if let Some(fut) = network_graph_persist.as_mut().as_pin_mut() {
+			futures.set_b(fut);
+		}
+		if let Some(fut) = scorer_persist.as_mut().as_pin_mut() {
+			futures.set_c(fut);
+		}
+		if let Some(fut) = sweeper_persist.as_mut().as_pin_mut() {
+			futures.set_d(fut);
+		}
+		if let Some(fut) = liquidity_persist.as_mut().as_pin_mut() {
+			futures.set_e(fut);
 		}
 
 		// Run persistence tasks in parallel and exit if any of them returns an error.
