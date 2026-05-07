@@ -15,7 +15,7 @@ use core::marker::Unpin;
 use core::pin::Pin;
 use core::task::{Context, Poll};
 
-pub(crate) enum ResultFuture<F: Future<Output = O> + Unpin, O> {
+pub(crate) enum ResultFuture<F: Future<Output = O>, O> {
 	Pending(F),
 	Ready(O),
 }
@@ -89,35 +89,35 @@ impl<AO, BO, AF: Future<Output = AO> + Unpin, BF: Future<Output = BO> + Unpin> F
 	}
 }
 
-pub(crate) struct MultiResultFuturePoller<F: Future<Output = O> + Unpin, O> {
+pub(crate) struct MultiResultFuturePoller<F: Future<Output = O>, O> {
 	futures_state: Vec<ResultFuture<F, O>>,
 }
 
-impl<F: Future<Output = O> + Unpin, O> MultiResultFuturePoller<F, O> {
+impl<F: Future<Output = O>, O> MultiResultFuturePoller<F, O> {
 	pub fn new(futures_state: Vec<ResultFuture<F, O>>) -> Self {
 		Self { futures_state }
 	}
 }
 
-impl<F: Future<Output = O> + Unpin, O> Future for MultiResultFuturePoller<F, O> {
+impl<F: Future<Output = O>, O> Future for MultiResultFuturePoller<F, O> {
 	type Output = Vec<O>;
 	fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Vec<O>> {
 		let mut have_pending_futures = false;
-		// SAFETY: While we are pinned, we can't get direct access to `futures_state` because we
-		// aren't `Unpin`. However, we don't actually need the `Pin` - we only use it below on the
-		// `Future` in the `ResultFuture::Pending` case, and the `Future` is bound by `Unpin`.
-		// Thus, the `Pin` is not actually used, and its safe to bypass it and access the inner
-		// reference directly.
+		// SAFETY: We never move a pending future after polling it. The vector is not reallocated
+		// while polling, and a pending future is only replaced once it returns `Ready`, at which
+		// point dropping the pinned future is allowed.
 		let futures_state = unsafe { &mut self.get_unchecked_mut().futures_state };
 		for state in futures_state.iter_mut() {
 			match state {
-				ResultFuture::Pending(ref mut fut) => match Pin::new(fut).poll(cx) {
-					Poll::Ready(res) => {
-						*state = ResultFuture::Ready(res);
-					},
-					Poll::Pending => {
-						have_pending_futures = true;
-					},
+				ResultFuture::Pending(ref mut fut) => {
+					match unsafe { Pin::new_unchecked(fut) }.poll(cx) {
+						Poll::Ready(res) => {
+							*state = ResultFuture::Ready(res);
+						},
+						Poll::Pending => {
+							have_pending_futures = true;
+						},
+					}
 				},
 				ResultFuture::Ready(_) => continue,
 			}

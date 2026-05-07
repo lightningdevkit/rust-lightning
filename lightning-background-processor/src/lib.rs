@@ -954,15 +954,14 @@ where
 	LM::Target: ALiquidityManager,
 	D::Target: ChangeDestinationSource,
 {
-	let async_event_handler = |event| {
-		let network_graph = gossip_sync.network_graph();
-		let event_handler = &event_handler;
-		let scorer = &scorer;
-		let logger = &logger;
-		let kv_store = &kv_store;
-		let fetch_time = &fetch_time;
-		// We should be able to drop the Box once our MSRV is 1.68
-		Box::pin(async move {
+	let async_event_handler =
+		async |event| {
+			let network_graph = gossip_sync.network_graph();
+			let event_handler = &event_handler;
+			let scorer = &scorer;
+			let logger = &logger;
+			let kv_store = &kv_store;
+			let fetch_time = &fetch_time;
 			if let Some(network_graph) = network_graph {
 				handle_network_graph_update(network_graph, &event)
 			}
@@ -989,8 +988,7 @@ where
 				}
 			}
 			event_handler(event).await
-		})
-	};
+		};
 	let mut batch_delay = BatchDelay::new();
 
 	log_trace!(logger, "Calling ChannelManager's timer_tick_occurred on startup");
