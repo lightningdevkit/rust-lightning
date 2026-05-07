@@ -3501,8 +3501,8 @@ pub fn expect_payment_failed_conditions<'a, 'b, 'c, 'd, 'e>(
 		check_added_monitors(node, 0);
 	}
 	let events = node.node.get_and_clear_pending_events();
-	if conditions.from_mon_update {
-		check_added_monitors(node, 1);
+	if conditions.from_mon_update && !node.node.test_persistent_monitor_events_enabled() {
+		check_added_monitors(node, 1); // ReleasePaymentComplete update
 	}
 	expect_payment_failed_conditions_event(
 		events,

@@ -1622,7 +1622,9 @@ fn do_test_revoked_counterparty_commitment_balances(keyed_anchors: bool, p2a_anc
 
 	check_added_monitors(&nodes[1], 0);
 	let mut payment_failed_events = nodes[1].node.get_and_clear_pending_events();
-	check_added_monitors(&nodes[1], 2);
+	if !nodes[1].node.test_persistent_monitor_events_enabled() {
+		check_added_monitors(&nodes[1], 2); // ReleasePaymentComplete monitor updates
+	}
 	expect_payment_failed_conditions_event(payment_failed_events[..2].to_vec(),
 		missing_htlc_payment_hash, false, PaymentFailedConditions::new());
 	expect_payment_failed_conditions_event(payment_failed_events[2..].to_vec(),
@@ -1633,7 +1635,9 @@ fn do_test_revoked_counterparty_commitment_balances(keyed_anchors: bool, p2a_anc
 		test_spendable_output(&nodes[1], &claim_txn[0], false);
 		check_added_monitors(&nodes[1], 0);
 		let mut payment_failed_events = nodes[1].node.get_and_clear_pending_events();
-		check_added_monitors(&nodes[1], 2);
+		if !nodes[1].node.test_persistent_monitor_events_enabled() {
+			check_added_monitors(&nodes[1], 2); // ReleasePaymentComplete monitor updates
+		}
 		expect_payment_failed_conditions_event(payment_failed_events[..2].to_vec(),
 			live_payment_hash, false, PaymentFailedConditions::new());
 		expect_payment_failed_conditions_event(payment_failed_events[2..].to_vec(),
@@ -1648,7 +1652,9 @@ fn do_test_revoked_counterparty_commitment_balances(keyed_anchors: bool, p2a_anc
 		test_spendable_output(&nodes[1], &claim_txn[0], false);
 		check_added_monitors(&nodes[1], 0);
 		let mut payment_failed_events = nodes[1].node.get_and_clear_pending_events();
-		check_added_monitors(&nodes[1], 2);
+		if !nodes[1].node.test_persistent_monitor_events_enabled() {
+			check_added_monitors(&nodes[1], 2); // ReleasePaymentComplete monitor updates
+		}
 		expect_payment_failed_conditions_event(payment_failed_events[..2].to_vec(),
 			live_payment_hash, false, PaymentFailedConditions::new());
 		expect_payment_failed_conditions_event(payment_failed_events[2..].to_vec(),

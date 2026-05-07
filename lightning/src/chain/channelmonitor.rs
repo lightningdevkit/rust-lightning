@@ -3371,7 +3371,25 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 				for &(ref htlc, ref source_option) in latest_outpoints.iter() {
 					if let &Some(ref source) = source_option {
 						let htlc_id = SentHTLCId::from_source(source);
-						if !us.htlcs_resolved_to_user.contains(&htlc_id) {
+						let skip_htlc = if us.persistent_events_enabled {
+							let htlc_resolved_on_chain = match htlc.transaction_output_index {
+								Some(idx) => us
+									.htlcs_resolved_on_chain
+									.iter()
+									.any(|r| r.commitment_tx_output_idx == Some(idx)),
+								None => {
+									// Dust HTLCs are implicitly resolved when the commitment reaches
+									// ANTI_REORG_DELAY
+									us.confirmed_funding_spend_past_anti_reorg().is_some()
+								},
+							};
+							// If the HTLC was resolved on-chain and we don't have a pending monitor event for
+							// it, that implies the event was acked due to the HTLC being resolved to the user.
+							htlc_resolved_on_chain && !us.has_pending_event_for_htlc(source)
+						} else {
+							us.htlcs_resolved_to_user.contains(&htlc_id)
+						};
+						if !skip_htlc {
 							let preimage_opt =
 								us.counterparty_fulfilled_htlcs.get(&htlc_id).cloned();
 							res.insert((**source).clone(), (htlc.clone(), preimage_opt));
@@ -7601,7 +7619,10 @@ mod tests {
 			assert!(events.iter().any(|e| matches!(e, Event::PaymentPathFailed { .. })));
 			assert!(events.iter().any(|e| matches!(e, Event::PaymentFailed { .. })));
 			assert!(events.iter().any(|e| matches!(e, Event::ChannelClosed { .. })));
-			check_added_monitors(&nodes[1], 2);
+			// If persistent monitor events are enabled, there won't be a ReleasePaymentComplete monitor
+			// update.
+			let persistent_mon_evs = nodes[1].node.test_persistent_monitor_events_enabled();
+			check_added_monitors(&nodes[1], if persistent_mon_evs { 1 } else { 2 });
 		} else {
 			check_closed_event(&nodes[1], 1, ClosureReason::CommitmentTxConfirmed, &[nodes[0].node.get_our_node_id()], 100000);
 			check_added_monitors(&nodes[1], 1);

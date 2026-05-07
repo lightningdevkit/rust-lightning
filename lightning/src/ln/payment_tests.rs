@@ -1972,7 +1972,9 @@ fn onchain_failed_probe_yields_event() {
 
 	check_added_monitors(&nodes[0], 0);
 	let mut events = nodes[0].node.get_and_clear_pending_events();
-	check_added_monitors(&nodes[0], 1);
+	if !nodes[0].node.test_persistent_monitor_events_enabled() {
+		check_added_monitors(&nodes[0], 1);
+	}
 	assert_eq!(events.len(), 2);
 	let mut found_probe_failed = false;
 	for event in events.drain(..) {

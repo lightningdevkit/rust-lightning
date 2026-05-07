@@ -1323,7 +1323,9 @@ fn do_test_split_htlc_expiry_tracking(use_third_htlc: bool, reorg_out: bool, p2a
 		if use_third_htlc {
 			check_added_monitors(&nodes[0], 0);
 			let failed_events = nodes[0].node.get_and_clear_pending_events();
-			check_added_monitors(&nodes[0], 1);
+			if !nodes[0].node.test_persistent_monitor_events_enabled() {
+				check_added_monitors(&nodes[0], 1);
+			}
 			assert_eq!(failed_events.len(), 2);
 			let mut found_expected_events = [false, false];
 			for event in failed_events {
