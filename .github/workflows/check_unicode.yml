@@ -1,0 +1,26 @@
+name: Unicode listing up to date
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '42 3 * * *'
+
+jobs:
+  check-unicode:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+      - name: Check unicode file state
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          curl --proto '=https' --tlsv1.2 -fsSL -o /tmp/UnicodeData.txt https://www.unicode.org/Public/UCD/latest/ucd/UnicodeData.txt
+          contrib/gen_unicode_general_category.py /tmp/UnicodeData.txt -o /tmp/unicode.rs
+          if ! diff -u lightning-types/src/unicode.rs /tmp/unicode.rs; then
+            TITLE="Unicode listing out of date: ${{ github.workflow }}"
+            RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            BODY="The unicode character listing is out of date, see $RUN_URL"
+            gh issue create --title "$TITLE" --body "$BODY"
+          fi

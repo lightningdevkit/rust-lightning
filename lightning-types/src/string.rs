@@ -12,6 +12,8 @@
 use alloc::string::String;
 use core::fmt;
 
+use crate::unicode::*;
+
 /// Struct to `Display` fields in a safe way using `PrintableString`
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub struct UntrustedString(pub String);
@@ -31,7 +33,9 @@ impl<'a> fmt::Display for PrintableString<'a> {
 	fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
 		use core::fmt::Write;
 		for c in self.0.chars() {
-			let c = if c.is_control() || is_format_char(c) {
+			let is_other = is_unicode_general_category_other(c);
+			let is_unassigned = is_unicode_general_category_unassigned(c);
+			let c = if c.is_control() || is_other || is_unassigned {
 				core::char::REPLACEMENT_CHARACTER
 			} else {
 				c
@@ -41,39 +45,6 @@ impl<'a> fmt::Display for PrintableString<'a> {
 
 		Ok(())
 	}
-}
-
-// Codepoints in Unicode general category `Cf` (Format), per Unicode standard. These are not
-// matched by `char::is_control` (which only covers `Cc`), but include the bidirectional override /
-// isolate controls (e.g. U+202E RLO) and zero-width characters behind the "Trojan Source" attack
-// family (CVE-2021-42574), where an attacker-supplied string renders to a human reader as
-// something other than its byte content. Strip them alongside `Cc` characters when sanitising
-// untrusted input.
-fn is_format_char(c: char) -> bool {
-	matches!(
-		c as u32,
-		0x00AD
-			| 0x0600..=0x0605
-			| 0x061C
-			| 0x06DD
-			| 0x070F
-			| 0x0890..=0x0891
-			| 0x08E2
-			| 0x180E
-			| 0x200B..=0x200F
-			| 0x202A..=0x202E
-			| 0x2060..=0x2064
-			| 0x2066..=0x206F
-			| 0xFEFF
-			| 0xFFF9..=0xFFFB
-			| 0x110BD
-			| 0x110CD
-			| 0x13430..=0x1343F
-			| 0x1BCA0..=0x1BCA3
-			| 0x1D173..=0x1D17A
-			| 0xE0001
-			| 0xE0020..=0xE007F
-	)
 }
 
 #[cfg(test)]
