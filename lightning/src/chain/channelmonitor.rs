@@ -3399,19 +3399,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		// We only want HTLCs with ANTI_REORG_DELAY confirmations, which implies the commitment
 		// transaction has least ANTI_REORG_DELAY confirmations for any dependent HTLC transactions
 		// to have been confirmed.
-		let confirmed_txid = us.funding_spend_confirmed.or_else(|| {
-			us.onchain_events_awaiting_threshold_conf.iter().find_map(|event| {
-				if let OnchainEvent::FundingSpendConfirmation { .. } = event.event {
-					if event.height + ANTI_REORG_DELAY - 1 <= us.best_block.height {
-						Some(event.txid)
-					} else {
-						None
-					}
-				} else {
-					None
-				}
-			})
-		});
+		let confirmed_txid = us.confirmed_funding_spend_past_anti_reorg();
 
 		let confirmed_txid = if let Some(txid) = confirmed_txid {
 			txid
@@ -6829,6 +6817,24 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 	fn channel_type_features(&self) -> &ChannelTypeFeatures {
 		&self.funding.channel_parameters.channel_type_features
+	}
+
+	/// Returns the txid of the confirmed funding spend if it has reached `ANTI_REORG_DELAY`
+	/// confirmations.
+	fn confirmed_funding_spend_past_anti_reorg(&self) -> Option<Txid> {
+		self.funding_spend_confirmed.or_else(|| {
+			self.onchain_events_awaiting_threshold_conf.iter().find_map(|event| {
+				if let OnchainEvent::FundingSpendConfirmation { .. } = event.event {
+					if event.height + ANTI_REORG_DELAY - 1 <= self.best_block.height {
+						Some(event.txid)
+					} else {
+						None
+					}
+				} else {
+					None
+				}
+			})
+		})
 	}
 }
 
