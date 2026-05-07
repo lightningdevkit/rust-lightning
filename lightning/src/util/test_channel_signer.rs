@@ -14,8 +14,8 @@ use crate::ln::chan_utils::{
 use crate::ln::channel::{ANCHOR_OUTPUT_VALUE_SATOSHI, MIN_CHAN_DUST_LIMIT_SATOSHIS};
 use crate::ln::channel_keys::HtlcKey;
 use crate::ln::msgs;
-use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::sign::ChannelSigner;
+use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::types::payment::PaymentPreimage;
 
 #[allow(unused_imports)]
@@ -28,17 +28,17 @@ use crate::sync::{Arc, Mutex};
 use core::cmp;
 use core::sync::atomic::{AtomicBool, Ordering};
 
+use bitcoin::Txid;
 use bitcoin::hashes::Hash;
 use bitcoin::sighash;
 use bitcoin::sighash::EcdsaSighashType;
 use bitcoin::transaction::Transaction;
-use bitcoin::Txid;
 
 use crate::sign::HTLCDescriptor;
 use crate::util::dyn_signer::DynSigner;
 use bitcoin::secp256k1;
-use bitcoin::secp256k1::{ecdsa::Signature, Secp256k1};
 use bitcoin::secp256k1::{PublicKey, SecretKey};
+use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature};
 
 /// Initial value for revoked commitment downward counter
 pub const INITIAL_REVOKED_COMMITMENT_NUMBER: u64 = 1 << 48;
@@ -200,8 +200,19 @@ impl ChannelSigner for TestChannelSigner {
 		}
 		let mut state = self.state.lock().unwrap();
 		if !self.disable_all_state_policy_checks {
-			assert!(idx == state.last_holder_revoked_commitment || idx == state.last_holder_revoked_commitment - 1, "can only revoke the current or next unrevoked commitment - trying {}, last revoked {}", idx, state.last_holder_revoked_commitment);
-			assert!(idx > state.last_holder_commitment, "cannot revoke the last holder commitment - attempted to revoke {} last commitment {}", idx, state.last_holder_commitment);
+			assert!(
+				idx == state.last_holder_revoked_commitment
+					|| idx == state.last_holder_revoked_commitment - 1,
+				"can only revoke the current or next unrevoked commitment - trying {}, last revoked {}",
+				idx,
+				state.last_holder_revoked_commitment
+			);
+			assert!(
+				idx > state.last_holder_commitment,
+				"cannot revoke the last holder commitment - attempted to revoke {} last commitment {}",
+				idx,
+				state.last_holder_commitment
+			);
 		}
 		state.last_holder_revoked_commitment = idx;
 		self.inner.release_commitment_secret(idx)
@@ -228,7 +239,13 @@ impl ChannelSigner for TestChannelSigner {
 	fn validate_counterparty_revocation(&self, idx: u64, _secret: &SecretKey) -> Result<(), ()> {
 		let mut state = self.state.lock().unwrap();
 		if !self.disable_all_state_policy_checks {
-			assert!(idx == state.last_counterparty_revoked_commitment || idx == state.last_counterparty_revoked_commitment - 1, "expecting to validate the current or next counterparty revocation - trying {}, current {}", idx, state.last_counterparty_revoked_commitment);
+			assert!(
+				idx == state.last_counterparty_revoked_commitment
+					|| idx == state.last_counterparty_revoked_commitment - 1,
+				"expecting to validate the current or next counterparty revocation - trying {}, current {}",
+				idx,
+				state.last_counterparty_revoked_commitment
+			);
 		}
 		state.last_counterparty_revoked_commitment = idx;
 		Ok(())
@@ -316,8 +333,12 @@ impl EcdsaChannelSigner for TestChannelSigner {
 				&& state.last_holder_revoked_commitment - 2 != commitment_number
 			{
 				if !self.disable_revocation_policy_check {
-					panic!("can only sign the next two unrevoked commitment numbers, revoked={} vs requested={} for {}",
-						state.last_holder_revoked_commitment, commitment_number, self.inner.channel_keys_id()[0])
+					panic!(
+						"can only sign the next two unrevoked commitment numbers, revoked={} vs requested={} for {}",
+						state.last_holder_revoked_commitment,
+						commitment_number,
+						self.inner.channel_keys_id()[0]
+					)
 				}
 			}
 		}
@@ -392,8 +413,12 @@ impl EcdsaChannelSigner for TestChannelSigner {
 				&& state.last_holder_revoked_commitment - 2 != htlc_descriptor.per_commitment_number
 			{
 				if !self.disable_revocation_policy_check {
-					panic!("can only sign the next two unrevoked commitment numbers, revoked={} vs requested={} for {}",
-						state.last_holder_revoked_commitment, htlc_descriptor.per_commitment_number, self.inner.channel_keys_id()[0])
+					panic!(
+						"can only sign the next two unrevoked commitment numbers, revoked={} vs requested={} for {}",
+						state.last_holder_revoked_commitment,
+						htlc_descriptor.per_commitment_number,
+						self.inner.channel_keys_id()[0]
+					)
 				}
 			}
 		}

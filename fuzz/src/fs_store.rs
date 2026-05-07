@@ -178,7 +178,7 @@ pub fn fs_store_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 }
 
 /// Method that needs to be added manually, {name}_run
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn fs_store_run(data: *const u8, datalen: usize) {
 	do_test(unsafe { std::slice::from_raw_parts(data, datalen) }, test_logger::DevNull {});
 }

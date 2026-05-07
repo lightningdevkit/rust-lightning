@@ -7,7 +7,7 @@ repository = "https://github.com/lightningdevkit/rust-lightning/"
 description = """
 A crate that wraps getrandom and always compiles, returning 0s when no randomness is available.
 """
-edition = "2021"
+edition = "2024"
 rust-version = "1.85"
 
 [package.metadata.docs.rs]

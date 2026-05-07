@@ -20,12 +20,12 @@ use core::task;
 
 use super::event::LSPS1ServiceEvent;
 use super::msgs::{
-	LSPS1ChannelInfo, LSPS1CreateOrderRequest, LSPS1CreateOrderResponse, LSPS1GetInfoResponse,
-	LSPS1GetOrderRequest, LSPS1Message, LSPS1Options, LSPS1OrderId, LSPS1OrderParams,
-	LSPS1PaymentInfo, LSPS1PaymentState, LSPS1Request, LSPS1Response,
 	LSPS1_CREATE_ORDER_REQUEST_OPTION_MISMATCH_ERROR_CODE,
 	LSPS1_CREATE_ORDER_REQUEST_UNRECOGNIZED_OR_STALE_TOKEN_ERROR_CODE,
-	LSPS1_GET_ORDER_REQUEST_ORDER_NOT_FOUND_ERROR_CODE,
+	LSPS1_GET_ORDER_REQUEST_ORDER_NOT_FOUND_ERROR_CODE, LSPS1ChannelInfo, LSPS1CreateOrderRequest,
+	LSPS1CreateOrderResponse, LSPS1GetInfoResponse, LSPS1GetOrderRequest, LSPS1Message,
+	LSPS1Options, LSPS1OrderId, LSPS1OrderParams, LSPS1PaymentInfo, LSPS1PaymentState,
+	LSPS1Request, LSPS1Response,
 };
 pub use super::peer_state::PaymentMethod;
 use super::peer_state::PeerState;
@@ -33,14 +33,14 @@ use crate::message_queue::MessageQueue;
 
 use crate::events::EventQueue;
 use crate::lsps0::ser::{
-	LSPSDateTime, LSPSProtocolMessageHandler, LSPSRequestId, LSPSResponseError,
-	LSPS0_CLIENT_REJECTED_ERROR_CODE,
+	LSPS0_CLIENT_REJECTED_ERROR_CODE, LSPSDateTime, LSPSProtocolMessageHandler, LSPSRequestId,
+	LSPSResponseError,
 };
 use crate::persist::{
 	LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE, LSPS1_SERVICE_PERSISTENCE_SECONDARY_NAMESPACE,
 };
-use crate::prelude::hash_map::Entry;
 use crate::prelude::HashMap;
+use crate::prelude::hash_map::Entry;
 use crate::sync::{Arc, Mutex, RwLock};
 use crate::utils;
 use crate::utils::time::TimeProvider;
@@ -789,7 +789,13 @@ where
 					false,
 					"Service handler received LSPS1 response message. This should never happen."
 				);
-				Err(LightningError { err: format!("Service handler received LSPS1 response message from node {:?}. This should never happen.", counterparty_node_id), action: ErrorAction::IgnoreAndLog(Level::Info)})
+				Err(LightningError {
+					err: format!(
+						"Service handler received LSPS1 response message from node {:?}. This should never happen.",
+						counterparty_node_id
+					),
+					action: ErrorAction::IgnoreAndLog(Level::Info),
+				})
 			},
 		}
 	}

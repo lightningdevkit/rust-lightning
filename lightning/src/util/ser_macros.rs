@@ -42,7 +42,7 @@ macro_rules! _encode_tlv {
 		$crate::_encode_tlv!($stream, $type, $encoding($field), required);
 	};
 	($stream: expr, $optional_type: expr, $optional_field: expr, option $(, $self: ident)?) => {
-		if let Some(ref field) = $optional_field {
+		if let Some(field) = &$optional_field {
 			BigSize($optional_type).write($stream)?;
 			BigSize(field.serialized_length() as u64).write($stream)?;
 			field.write($stream)?;
@@ -227,7 +227,7 @@ macro_rules! _get_varint_length_prefixed_tlv_length {
 		$crate::_get_varint_length_prefixed_tlv_length!($len, $type, field, required);
 	};
 	($len: expr, $optional_type: expr, $optional_field: expr, option $(, $self: ident)?) => {
-		if let Some(ref field) = $optional_field.as_ref() {
+		if let Some(field) = $optional_field.as_ref() {
 			BigSize($optional_type)
 				.write(&mut $len)
 				.expect("No in-memory data may fail to serialize");
@@ -360,9 +360,7 @@ macro_rules! _check_decoded_tlv_order {
 	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, optional_vec) => {{
 		// no-op
 	}};
-	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, upgradable_required) => {{
-		_check_decoded_tlv_order!($last_seen_type, $typ, $type, $field, required)
-	}};
+	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, upgradable_required) => {{ _check_decoded_tlv_order!($last_seen_type, $typ, $type, $field, required) }};
 	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, upgradable_option) => {{
 		// no-op
 	}};
@@ -436,9 +434,7 @@ macro_rules! _check_missing_tlv {
 	($last_seen_type: expr, $type: expr, $field: ident, optional_vec) => {{
 		// no-op
 	}};
-	($last_seen_type: expr, $type: expr, $field: ident, upgradable_required) => {{
-		_check_missing_tlv!($last_seen_type, $type, $field, required)
-	}};
+	($last_seen_type: expr, $type: expr, $field: ident, upgradable_required) => {{ _check_missing_tlv!($last_seen_type, $type, $field, required) }};
 	($last_seen_type: expr, $type: expr, $field: ident, upgradable_option) => {{
 		// no-op
 	}};
@@ -1765,7 +1761,14 @@ mod tests {
 		do_test!(concat!("0f", "fd26"), ShortRead);
 		do_test!(concat!("0f", "fd2602"), ShortRead);
 		do_test!(concat!("0f", "fd0001", "00"), InvalidValue);
-		do_test!(concat!("0f", "fd0201", "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"), ShortRead);
+		do_test!(
+			concat!(
+				"0f",
+				"fd0201",
+				"000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+			),
+			ShortRead
+		);
 
 		do_test!(concat!("12", "00"), UnknownRequiredFeature);
 		do_test!(concat!("fd0102", "00"), UnknownRequiredFeature);
@@ -1806,10 +1809,38 @@ mod tests {
 			),
 			ShortRead
 		);
-		do_test!(concat!("03", "29", "023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb0000000000000001"), ShortRead);
-		do_test!(concat!("03", "30", "023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb000000000000000100000000000001"), ShortRead);
-		do_test!(concat!("03", "31", "043da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb00000000000000010000000000000002"), InvalidValue);
-		do_test!(concat!("03", "32", "023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb0000000000000001000000000000000001"), InvalidValue);
+		do_test!(
+			concat!(
+				"03",
+				"29",
+				"023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb0000000000000001"
+			),
+			ShortRead
+		);
+		do_test!(
+			concat!(
+				"03",
+				"30",
+				"023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb000000000000000100000000000001"
+			),
+			ShortRead
+		);
+		do_test!(
+			concat!(
+				"03",
+				"31",
+				"043da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb00000000000000010000000000000002"
+			),
+			InvalidValue
+		);
+		do_test!(
+			concat!(
+				"03",
+				"32",
+				"023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb0000000000000001000000000000000001"
+			),
+			InvalidValue
+		);
 		do_test!(concat!("fd00fe", "00"), ShortRead);
 		do_test!(concat!("fd00fe", "01", "01"), ShortRead);
 		do_test!(concat!("fd00fe", "03", "010101"), InvalidValue);
@@ -1874,10 +1905,27 @@ mod tests {
 			None,
 			None
 		);
-		do_test!(concat!("03", "31", "023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb00000000000000010000000000000002"),
-			None, None, Some((
-				PublicKey::from_slice(&<Vec<u8>>::from_hex("023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb").unwrap()[..]).unwrap(), 1, 2)),
-			None);
+		do_test!(
+			concat!(
+				"03",
+				"31",
+				"023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb00000000000000010000000000000002"
+			),
+			None,
+			None,
+			Some((
+				PublicKey::from_slice(
+					&<Vec<u8>>::from_hex(
+						"023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb"
+					)
+					.unwrap()[..]
+				)
+				.unwrap(),
+				1,
+				2
+			)),
+			None
+		);
 		do_test!(concat!("fd00fe", "02", "0226"), None, None, None, Some(550));
 	}
 

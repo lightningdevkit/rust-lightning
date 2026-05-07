@@ -14,9 +14,9 @@ use crate::events::{EventQueue, LiquidityEvent};
 use crate::lsps0::client::LSPS0ClientHandler;
 use crate::lsps0::msgs::LSPS0Message;
 use crate::lsps0::ser::{
-	LSPSMessage, LSPSMethod, LSPSProtocolMessageHandler, LSPSRequestId, LSPSResponseError,
-	RawLSPSMessage, JSONRPC_INVALID_MESSAGE_ERROR_CODE, JSONRPC_INVALID_MESSAGE_ERROR_MESSAGE,
-	LSPS_MESSAGE_TYPE_ID,
+	JSONRPC_INVALID_MESSAGE_ERROR_CODE, JSONRPC_INVALID_MESSAGE_ERROR_MESSAGE,
+	LSPS_MESSAGE_TYPE_ID, LSPSMessage, LSPSMethod, LSPSProtocolMessageHandler, LSPSRequestId,
+	LSPSResponseError, RawLSPSMessage,
 };
 use crate::lsps0::service::LSPS0ServiceHandler;
 use crate::lsps5::client::{LSPS5ClientConfig, LSPS5ClientHandler};
@@ -35,7 +35,7 @@ use crate::lsps1::service::{LSPS1ServiceConfig, LSPS1ServiceHandler, LSPS1Servic
 use crate::lsps2::client::{LSPS2ClientConfig, LSPS2ClientHandler};
 use crate::lsps2::msgs::LSPS2Message;
 use crate::lsps2::service::{LSPS2ServiceConfig, LSPS2ServiceHandler, LSPS2ServiceHandlerSync};
-use crate::prelude::{new_hash_map, new_hash_set, HashMap, HashSet};
+use crate::prelude::{HashMap, HashSet, new_hash_map, new_hash_set};
 use crate::sync::{Arc, Mutex, RwLock};
 #[cfg(feature = "time")]
 use crate::utils::time::DefaultTimeProvider;
@@ -646,7 +646,13 @@ where
 	) -> Result<(), lightning::ln::msgs::LightningError> {
 		match msg {
 			LSPSMessage::Invalid(_error) => {
-				return Err(LightningError { err: format!("{} did not understand a message we previously sent, maybe they don't support a protocol we are trying to use?", sender_node_id), action: ErrorAction::IgnoreAndLog(Level::Error)});
+				return Err(LightningError {
+					err: format!(
+						"{} did not understand a message we previously sent, maybe they don't support a protocol we are trying to use?",
+						sender_node_id
+					),
+					action: ErrorAction::IgnoreAndLog(Level::Error),
+				});
 			},
 			LSPSMessage::LSPS0(msg @ LSPS0Message::Response(..)) => {
 				self.lsps0_client_handler.handle_message(msg, sender_node_id)?;
@@ -657,7 +663,13 @@ where
 						lsps0_service_handler.handle_message(msg, sender_node_id)?;
 					},
 					None => {
-						return Err(LightningError { err: format!("Received LSPS0 request message without LSPS0 service handler configured. From node {}", sender_node_id), action: ErrorAction::IgnoreAndLog(Level::Debug)});
+						return Err(LightningError {
+							err: format!(
+								"Received LSPS0 request message without LSPS0 service handler configured. From node {}",
+								sender_node_id
+							),
+							action: ErrorAction::IgnoreAndLog(Level::Debug),
+						});
 					},
 				}
 			},
@@ -667,7 +679,13 @@ where
 						lsps1_client_handler.handle_message(msg, sender_node_id)?;
 					},
 					None => {
-						return Err(LightningError { err: format!("Received LSPS1 response message without LSPS1 client handler configured. From node {}", sender_node_id), action: ErrorAction::IgnoreAndLog(Level::Debug)});
+						return Err(LightningError {
+							err: format!(
+								"Received LSPS1 response message without LSPS1 client handler configured. From node {}",
+								sender_node_id
+							),
+							action: ErrorAction::IgnoreAndLog(Level::Debug),
+						});
 					},
 				}
 			},
@@ -677,7 +695,13 @@ where
 						lsps1_service_handler.handle_message(msg, sender_node_id)?;
 					},
 					None => {
-						return Err(LightningError { err: format!("Received LSPS1 request message without LSPS1 service handler configured. From node {}", sender_node_id), action: ErrorAction::IgnoreAndLog(Level::Debug)});
+						return Err(LightningError {
+							err: format!(
+								"Received LSPS1 request message without LSPS1 service handler configured. From node {}",
+								sender_node_id
+							),
+							action: ErrorAction::IgnoreAndLog(Level::Debug),
+						});
 					},
 				}
 			},
@@ -687,7 +711,13 @@ where
 						lsps2_client_handler.handle_message(msg, sender_node_id)?;
 					},
 					None => {
-						return Err(LightningError { err: format!("Received LSPS2 response message without LSPS2 client handler configured. From node {}", sender_node_id), action: ErrorAction::IgnoreAndLog(Level::Debug)});
+						return Err(LightningError {
+							err: format!(
+								"Received LSPS2 response message without LSPS2 client handler configured. From node {}",
+								sender_node_id
+							),
+							action: ErrorAction::IgnoreAndLog(Level::Debug),
+						});
 					},
 				}
 			},
@@ -697,7 +727,13 @@ where
 						lsps2_service_handler.handle_message(msg, sender_node_id)?;
 					},
 					None => {
-						return Err(LightningError { err: format!("Received LSPS2 request message without LSPS2 service handler configured. From node {}", sender_node_id), action: ErrorAction::IgnoreAndLog(Level::Debug)});
+						return Err(LightningError {
+							err: format!(
+								"Received LSPS2 request message without LSPS2 service handler configured. From node {}",
+								sender_node_id
+							),
+							action: ErrorAction::IgnoreAndLog(Level::Debug),
+						});
 					},
 				}
 			},
@@ -707,7 +743,13 @@ where
 						lsps5_client_handler.handle_message(msg, sender_node_id)?;
 					},
 					None => {
-						return Err(LightningError { err: format!("Received LSPS5 response message without LSPS5 client handler configured. From node {}", sender_node_id), action: ErrorAction::IgnoreAndLog(Level::Debug)});
+						return Err(LightningError {
+							err: format!(
+								"Received LSPS5 response message without LSPS5 client handler configured. From node {}",
+								sender_node_id
+							),
+							action: ErrorAction::IgnoreAndLog(Level::Debug),
+						});
 					},
 				}
 			},
@@ -736,7 +778,13 @@ where
 						lsps5_service_handler.handle_message(msg, sender_node_id)?;
 					},
 					None => {
-						return Err(LightningError { err: format!("Received LSPS5 request message without LSPS5 service handler configured. From node {}", sender_node_id), action: ErrorAction::IgnoreAndLog(Level::Debug)});
+						return Err(LightningError {
+							err: format!(
+								"Received LSPS5 request message without LSPS5 service handler configured. From node {}",
+								sender_node_id
+							),
+							action: ErrorAction::IgnoreAndLog(Level::Debug),
+						});
 					},
 				}
 			},

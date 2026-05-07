@@ -650,13 +650,13 @@ fn do_test_claim_value_force_close(keyed_anchors: bool, p2a_anchor: bool, prev_c
 		match events.pop().unwrap() {
 			Event::BumpTransaction(bump_event) => {
 				let mut first_htlc_event = bump_event.clone();
-				if let BumpTransactionEvent::HTLCResolution { ref mut htlc_descriptors, .. } = &mut first_htlc_event {
+				if let BumpTransactionEvent::HTLCResolution { htlc_descriptors, .. } = &mut first_htlc_event {
 					htlc_descriptors.remove(1);
 				} else {
 					panic!("Unexpected event");
 				}
 				let mut second_htlc_event = bump_event;
-				if let BumpTransactionEvent::HTLCResolution { ref mut htlc_descriptors, .. } = &mut second_htlc_event {
+				if let BumpTransactionEvent::HTLCResolution { htlc_descriptors, .. } = &mut second_htlc_event {
 					htlc_descriptors.remove(0);
 				} else {
 					panic!("Unexpected event");

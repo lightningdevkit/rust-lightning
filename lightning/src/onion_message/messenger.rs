@@ -21,7 +21,7 @@ use super::offers::{OffersMessage, OffersMessageHandler};
 use super::packet::OnionMessageContents;
 use super::packet::ParsedOnionMessageContents;
 use super::packet::{
-	ForwardControlTlvs, Packet, Payload, ReceiveControlTlvs, BIG_PACKET_HOP_DATA_LEN,
+	BIG_PACKET_HOP_DATA_LEN, ForwardControlTlvs, Packet, Payload, ReceiveControlTlvs,
 	SMALL_PACKET_HOP_DATA_LEN,
 };
 use crate::blinded_path::message::{
@@ -1327,7 +1327,10 @@ pub fn peel_onion_message<NS: NodeSigner, L: Logger, CMH: CustomOnionMessageHand
 			Err(())
 		},
 		_ => {
-			log_trace!(logger, "Received bogus onion message packet, either the sender encoded a final hop as a forwarding hop or vice versa");
+			log_trace!(
+				logger,
+				"Received bogus onion message packet, either the sender encoded a final hop as a forwarding hop or vice versa"
+			);
 			Err(())
 		},
 	}
@@ -1664,7 +1667,12 @@ impl<
 			NextMessageHop::ShortChannelId(scid) => match self.node_id_lookup.next_node_id(scid) {
 				Some(pubkey) => pubkey,
 				None => {
-					log_trace!(self.logger, "Dropping forwarded onion messager: unable to resolve next hop using SCID {} {}", scid, log_suffix);
+					log_trace!(
+						self.logger,
+						"Dropping forwarded onion messager: unable to resolve next hop using SCID {} {}",
+						scid,
+						log_suffix
+					);
 					return Err(SendError::GetNodeIdFailed);
 				},
 			},

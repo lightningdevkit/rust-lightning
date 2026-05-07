@@ -3,7 +3,7 @@
 mod common;
 
 use common::create_service_and_client_nodes_with_kv_stores;
-use common::{get_lsps_message, LSPSNodes};
+use common::{LSPSNodes, get_lsps_message};
 
 use lightning::ln::peer_handler::CustomMessageHandler;
 use lightning_liquidity::events::LiquidityEvent;
@@ -30,7 +30,7 @@ use bitcoin::{Address, Network, OutPoint};
 use std::str::FromStr;
 use std::sync::Arc;
 
-use lightning::ln::functional_test_utils::{create_network, Node};
+use lightning::ln::functional_test_utils::{Node, create_network};
 use lightning_liquidity::lsps1::msgs::LSPS1OrderId;
 use lightning_liquidity::utils::time::TimeProvider;
 

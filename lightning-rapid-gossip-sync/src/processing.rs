@@ -326,8 +326,14 @@ impl<NG: Deref<Target = NetworkGraph<L>>, L: Logger> RapidGossipSync<NG, L> {
 		previous_scid = 0;
 
 		let update_count: u32 = Readable::read(read_cursor)?;
-		log_debug!(self.logger, "Processing RGS update from {} with {} nodes, {} channel announcements and {} channel updates.",
-			latest_seen_timestamp, node_id_count, announcement_count, update_count);
+		log_debug!(
+			self.logger,
+			"Processing RGS update from {} with {} nodes, {} channel announcements and {} channel updates.",
+			latest_seen_timestamp,
+			node_id_count,
+			announcement_count,
+			update_count
+		);
 		if update_count == 0 {
 			return Ok(latest_seen_timestamp);
 		}
@@ -400,9 +406,12 @@ impl<NG: Deref<Target = NetworkGraph<L>>, L: Logger> RapidGossipSync<NG, L> {
 					synthetic_update.fee_proportional_millionths =
 						directional_info.fees.proportional_millionths;
 				} else {
-					log_trace!(self.logger,
+					log_trace!(
+						self.logger,
 						"Skipping application of channel update for chan {} with flags {} as original data is missing.",
-						short_channel_id, channel_flags);
+						short_channel_id,
+						channel_flags
+					);
 					skip_update_for_unknown_channel = true;
 				}
 			};
@@ -785,14 +794,22 @@ mod tests {
 
 		assert_eq!(network_graph.read_only().channels().len(), 2);
 		let initialized = network_graph.to_string();
-		assert!(initialized
-			.contains("021607cfce19a4c5e7e6e738663dfafbbbac262e4ff76c2c9b30dbeefc35c00643"));
-		assert!(initialized
-			.contains("02247d9db0dfafea745ef8c9e161eb322f73ac3f8858d8730b6fd97254747ce76b"));
-		assert!(initialized
-			.contains("029e01f279986acc83ba235d46d80aede0b7595f410353b93a8ab540bb677f4432"));
-		assert!(initialized
-			.contains("02c913118a8895b9e29c89af6e20ed00d95a1f64e4952edbafa84d048f26804c61"));
+		assert!(
+			initialized
+				.contains("021607cfce19a4c5e7e6e738663dfafbbbac262e4ff76c2c9b30dbeefc35c00643")
+		);
+		assert!(
+			initialized
+				.contains("02247d9db0dfafea745ef8c9e161eb322f73ac3f8858d8730b6fd97254747ce76b")
+		);
+		assert!(
+			initialized
+				.contains("029e01f279986acc83ba235d46d80aede0b7595f410353b93a8ab540bb677f4432")
+		);
+		assert!(
+			initialized
+				.contains("02c913118a8895b9e29c89af6e20ed00d95a1f64e4952edbafa84d048f26804c61")
+		);
 		assert!(initialized.contains("619737530008010752"));
 		assert!(initialized.contains("783241506229452801"));
 

@@ -410,7 +410,11 @@ pub(super) fn verify<L: Logger>(
 				&iv_bytes,
 				&Hmac::from_engine(hmac).to_byte_array().split_at_mut(IV_LEN).0,
 			) {
-				log_trace!(logger, "Failing async payment HTLC with sender-generated payment_hash {}: unexpected payment_secret", &payment_hash);
+				log_trace!(
+					logger,
+					"Failing async payment HTLC with sender-generated payment_hash {}: unexpected payment_secret",
+					&payment_hash
+				);
 				return Err(());
 			}
 		},
@@ -440,7 +444,13 @@ pub(super) fn verify<L: Logger>(
 	let expiry = u64::from_be_bytes(expiry_bytes.try_into().unwrap());
 
 	if payment_data.total_msat < min_amt_msat {
-		log_trace!(logger, "Failing HTLC with payment_hash {} due to total_msat {} being less than the minimum amount of {} msat", &payment_hash, payment_data.total_msat, min_amt_msat);
+		log_trace!(
+			logger,
+			"Failing HTLC with payment_hash {} due to total_msat {} being less than the minimum amount of {} msat",
+			&payment_hash,
+			payment_data.total_msat,
+			min_amt_msat
+		);
 		return Err(());
 	}
 

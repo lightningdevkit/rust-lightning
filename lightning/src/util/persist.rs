@@ -13,15 +13,15 @@
 
 use alloc::sync::Arc;
 
-use bitcoin::hashes::hex::FromHex;
 use bitcoin::Txid;
+use bitcoin::hashes::hex::FromHex;
 
 use core::convert::Infallible;
 use core::fmt;
 use core::future::Future;
 use core::mem;
 use core::ops::Deref;
-use core::pin::{pin, Pin};
+use core::pin::{Pin, pin};
 use core::str::FromStr;
 use core::task;
 
@@ -29,13 +29,13 @@ use crate::prelude::*;
 use crate::{io, log_error};
 
 use crate::chain;
+use crate::chain::BlockLocator;
 use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use crate::chain::chainmonitor::Persist;
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate};
 use crate::chain::transaction::OutPoint;
-use crate::chain::BlockLocator;
 use crate::ln::types::ChannelId;
-use crate::sign::{ecdsa::EcdsaChannelSigner, EntropySource, SignerProvider};
+use crate::sign::{EntropySource, SignerProvider, ecdsa::EcdsaChannelSigner};
 use crate::sync::Mutex;
 use crate::util::async_poll::{MultiResultFuturePoller, ResultFuture, TwoFutureJoiner};
 use crate::util::logger::Logger;
@@ -686,7 +686,7 @@ where
 				return Err(io::Error::new(
 					io::ErrorKind::InvalidData,
 					"Failed to read ChannelMonitor",
-				))
+				));
 			},
 		}
 	}
@@ -1254,9 +1254,9 @@ impl<
 	) -> Result<Option<(BlockLocator, ChannelMonitor<SP::EcdsaSigner>)>, io::Error> {
 		let monitor_name = MonitorName::from_str(monitor_key)?;
 		let read_future = pin!(self.maybe_read_monitor(&monitor_name, monitor_key));
-		let list_future = pin!(self
-			.kv_store
-			.list(CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE, monitor_key));
+		let list_future = pin!(
+			self.kv_store.list(CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE, monitor_key)
+		);
 		let (read_res, list_res) = TwoFutureJoiner::new(read_future, list_future).await;
 		let (best_block, monitor) = match read_res? {
 			Some(res) => res,
@@ -1784,18 +1784,22 @@ mod tests {
 
 	#[test]
 	fn fails_parsing_monitor_name() {
-		assert!(MonitorName::from_str(
+		assert!(
+			MonitorName::from_str(
 			"deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef_"
 		)
-		.is_err());
-		assert!(MonitorName::from_str(
+			.is_err()
+		);
+		assert!(
+			MonitorName::from_str(
 			"deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef_65536"
 		)
-		.is_err());
-		assert!(MonitorName::from_str(
-			"deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef_21"
-		)
-		.is_err());
+			.is_err()
+		);
+		assert!(
+			MonitorName::from_str("deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef_21")
+				.is_err()
+		);
 	}
 
 	// Exercise the `MonitorUpdatingPersister` with real channels and payments.
@@ -2113,13 +2117,15 @@ mod tests {
 		persister_0.cleanup_stale_updates(false).unwrap();
 
 		// Confirm the stale update is unreadable/gone
-		assert!(KVStoreSync::read(
+		assert!(
+			KVStoreSync::read(
 			&kv_store_0,
 			CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
 			&monitor_name.to_string(),
 			UpdateName::from(1).as_str()
 		)
-		.is_err());
+			.is_err()
+		);
 	}
 
 	fn persist_fn<P: Deref, ChannelSigner: EcdsaChannelSigner>(_persist: P) -> bool

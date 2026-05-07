@@ -5,10 +5,10 @@ use bitcoin::secp256k1::ecdsa::RecoverableSignature;
 use bitcoin::secp256k1::schnorr;
 use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1, SecretKey};
 
+use lightning::blinded_path::EmptyNodeIdLookUp;
 use lightning::blinded_path::message::{
 	AsyncPaymentsContext, BlindedMessagePath, MessageContext, MessageForwardNode, OffersContext,
 };
-use lightning::blinded_path::EmptyNodeIdLookUp;
 use lightning::ln::inbound_payment::ExpandedKey;
 use lightning::ln::msgs::{self, BaseMessageHandler, DecodeError, OnionMessageHandler};
 use lightning::ln::peer_handler::IgnoringMessageHandler;
@@ -90,7 +90,7 @@ pub fn onion_message_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 }
 
 /// Method that needs to be added manually, {name}_run
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn onion_message_run(data: *const u8, datalen: usize) {
 	let logger = test_logger::TestLogger::new("".to_owned(), test_logger::DevNull {});
 	do_test(unsafe { std::slice::from_raw_parts(data, datalen) }, &logger);

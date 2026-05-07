@@ -20,7 +20,7 @@ use crate::util::ser::{Readable, Writeable, Writer};
 #[allow(unused_imports)]
 use crate::prelude::*;
 
-use bitcoin::hashes::{sha256::Hash as Sha256, Hash as _, HashEngine as _};
+use bitcoin::hashes::{Hash as _, HashEngine as _, sha256::Hash as Sha256};
 use bitcoin::hex::display::impl_fmt_traits;
 
 use core::borrow::Borrow;
@@ -131,7 +131,7 @@ impl_fmt_traits! {
 
 #[cfg(test)]
 mod tests {
-	use bitcoin::hashes::{sha256::Hash as Sha256, Hash as _, HashEngine as _};
+	use bitcoin::hashes::{Hash as _, HashEngine as _, sha256::Hash as Sha256};
 	use bitcoin::hex::DisplayHex;
 	use bitcoin::secp256k1::PublicKey;
 

@@ -414,11 +414,7 @@ impl AsyncReceiveOfferCache {
 	/// Returns an iterator over (offer_idx, offer)
 	fn offers_with_idx(&self) -> impl Iterator<Item = (usize, &AsyncReceiveOffer)> {
 		self.offers.iter().enumerate().filter_map(|(idx, offer_opt)| {
-			if let Some(offer) = offer_opt {
-				Some((idx, offer))
-			} else {
-				None
-			}
+			if let Some(offer) = offer_opt { Some((idx, offer)) } else { None }
 		})
 	}
 
@@ -487,7 +483,7 @@ impl AsyncReceiveOfferCache {
 
 		let mut offers = self.offers.iter_mut();
 		let offer_entry = offers.find(|o| o.as_ref().is_some_and(|o| o.offer.id() == offer_id));
-		if let Some(Some(ref mut offer)) = offer_entry {
+		if let Some(Some(offer)) = offer_entry {
 			match offer.status {
 				OfferStatus::Used { invoice_created_at: ref mut inv_created_at }
 				| OfferStatus::Ready { invoice_created_at: ref mut inv_created_at } => {

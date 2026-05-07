@@ -60,7 +60,7 @@ use lightning_types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 
 use bitcoin::script::Builder;
 use bitcoin::secp256k1::Secp256k1;
-use bitcoin::{opcodes, Amount, TxOut};
+use bitcoin::{Amount, TxOut, opcodes};
 
 use std::sync::Arc;
 

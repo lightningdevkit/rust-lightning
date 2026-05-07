@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{create_service_and_client_nodes, get_lsps_message, LSPSNodes};
+use common::{LSPSNodes, create_service_and_client_nodes, get_lsps_message};
 
 use lightning_liquidity::events::LiquidityEvent;
 use lightning_liquidity::lsps0::event::LSPS0ClientEvent;

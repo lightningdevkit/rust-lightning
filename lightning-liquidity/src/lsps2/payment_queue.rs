@@ -33,10 +33,9 @@ impl PaymentQueue {
 			// HTLCs within a payment should have the same payment hash.
 			debug_assert!(entry.htlcs.iter().all(|htlc| htlc.payment_hash == entry.payment_hash));
 			// The given HTLC should not already be present.
-			debug_assert!(entry
-				.htlcs
-				.iter()
-				.all(|htlc| htlc.intercept_id != new_htlc.intercept_id));
+			debug_assert!(
+				entry.htlcs.iter().all(|htlc| htlc.intercept_id != new_htlc.intercept_id)
+			);
 			entry.htlcs.push(new_htlc);
 			let total_expected_outbound_amount_msat =
 				entry.htlcs.iter().map(|htlc| htlc.expected_outbound_amount_msat).sum();

@@ -1092,7 +1092,10 @@ where
 		let mut monitors = self.monitors.write().unwrap();
 		let entry = match monitors.entry(channel_id) {
 			hash_map::Entry::Occupied(_) => {
-				log_error!(logger, "Failed to add new channel data: channel monitor for given channel ID is already present");
+				log_error!(
+					logger,
+					"Failed to add new channel data: channel monitor for given channel ID is already present"
+				);
 				return Err(());
 			},
 			hash_map::Entry::Vacant(e) => e,
@@ -1113,7 +1116,10 @@ where
 		let mut monitors = self.monitors.write().unwrap();
 		let entry = match monitors.entry(channel_id) {
 			hash_map::Entry::Occupied(_) => {
-				log_error!(logger, "Failed to add new channel data: channel monitor for given channel ID is already present");
+				log_error!(
+					logger,
+					"Failed to add new channel data: channel monitor for given channel ID is already present"
+				);
 				return Err(());
 			},
 			hash_map::Entry::Vacant(e) => e,
@@ -1163,7 +1169,9 @@ where
 				// user could use this object with some proxying in between which makes this
 				// possible, but in tests and fuzzing, this should be a panic.
 				#[cfg(debug_assertions)]
-				panic!("ChannelManager generated a channel update for a channel that was not yet registered!");
+				panic!(
+					"ChannelManager generated a channel update for a channel that was not yet registered!"
+				);
 				#[cfg(not(debug_assertions))]
 				ChannelMonitorUpdateStatus::InProgress
 			},
@@ -1191,7 +1199,10 @@ where
 					// We don't want to persist a `monitor_update` which results in a failure to apply later
 					// while reading `channel_monitor` with updates from storage. Instead, we should persist
 					// the entire `channel_monitor` here.
-					log_warn!(logger, "Failed to update ChannelMonitor. Going ahead and persisting the entire ChannelMonitor");
+					log_warn!(
+						logger,
+						"Failed to update ChannelMonitor. Going ahead and persisting the entire ChannelMonitor"
+					);
 					self.persister.update_persisted_channel(
 						monitor.persistence_key(),
 						None,
@@ -1776,7 +1787,7 @@ where
 #[cfg(test)]
 mod tests {
 	use super::ChainMonitor;
-	use crate::chain::channelmonitor::{ChannelMonitorUpdate, ANTI_REORG_DELAY};
+	use crate::chain::channelmonitor::{ANTI_REORG_DELAY, ChannelMonitorUpdate};
 	use crate::chain::{ChannelMonitorUpdateStatus, Watch};
 	use crate::events::{ClosureReason, Event};
 	use crate::ln::functional_test_utils::*;
@@ -2035,18 +2046,22 @@ mod tests {
 
 		chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::UnrecoverableError);
 
-		assert!(std::panic::catch_unwind(|| {
+		assert!(
+			std::panic::catch_unwind(|| {
 			// Returning an UnrecoverableError should always panic immediately
 			// Connecting [`DEFAULT_CHAINSYNC_PARTITION_FACTOR`] blocks so that we trigger some persistence
 			// after accounting for block-height based partitioning/distribution.
 			connect_blocks(&nodes[0], CHAINSYNC_MONITOR_PARTITION_FACTOR);
 		})
-		.is_err());
-		assert!(std::panic::catch_unwind(|| {
+			.is_err()
+		);
+		assert!(
+			std::panic::catch_unwind(|| {
 			// ...and also poison our locks causing later use to panic as well
 			core::mem::drop(nodes);
 		})
-		.is_err());
+			.is_err()
+		);
 	}
 
 	/// Concrete `ChainMonitor` type wired to the standard test utilities in deferred mode.
@@ -2152,13 +2167,15 @@ mod tests {
 		// update_persisted_channel was called for update_id 1, and because it returned
 		// InProgress, update_id 1 remains pending.
 		let monitor_name = deferred.get_monitor(chan).unwrap().persistence_key();
-		assert!(persister
+		assert!(
+			persister
 			.offchain_monitor_updates
 			.lock()
 			.unwrap()
 			.get(&monitor_name)
 			.unwrap()
-			.contains(&1));
+				.contains(&1)
+		);
 		assert!(pending_for_chan.contains(&1));
 
 		// Flush remaining: update_persisted_channel returns Completed (default), triggers
@@ -2167,13 +2184,15 @@ mod tests {
 		assert_eq!(deferred.pending_operation_count(), 0);
 
 		// update_persisted_channel was called for update_id 2.
-		assert!(persister
+		assert!(
+			persister
 			.offchain_monitor_updates
 			.lock()
 			.unwrap()
 			.get(&monitor_name)
 			.unwrap()
-			.contains(&2));
+				.contains(&2)
+		);
 
 		// update_id 1 is still pending from the InProgress earlier, but update_id 2 was
 		// completed in this flush so it is no longer pending.

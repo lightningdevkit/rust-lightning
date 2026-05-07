@@ -9,8 +9,8 @@
 
 //! Structs and enums useful for constructing and reading an onion message packet.
 
-use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::PublicKey;
+use bitcoin::secp256k1::ecdh::SharedSecret;
 
 use super::async_payments::AsyncPaymentsMessage;
 use super::dns_resolution::DNSResolverMessage;
@@ -168,19 +168,19 @@ impl<T: OnionMessageContents> OnionMessageContents for ParsedOnionMessageContent
 	#[cfg(c_bindings)]
 	fn msg_type(&self) -> String {
 		match self {
-			ParsedOnionMessageContents::Offers(ref msg) => msg.msg_type(),
-			ParsedOnionMessageContents::AsyncPayments(ref msg) => msg.msg_type(),
-			ParsedOnionMessageContents::DNSResolver(ref msg) => msg.msg_type(),
-			ParsedOnionMessageContents::Custom(ref msg) => msg.msg_type(),
+			ParsedOnionMessageContents::Offers(msg) => msg.msg_type(),
+			ParsedOnionMessageContents::AsyncPayments(msg) => msg.msg_type(),
+			ParsedOnionMessageContents::DNSResolver(msg) => msg.msg_type(),
+			ParsedOnionMessageContents::Custom(msg) => msg.msg_type(),
 		}
 	}
 	#[cfg(not(c_bindings))]
 	fn msg_type(&self) -> &'static str {
 		match self {
-			ParsedOnionMessageContents::Offers(ref msg) => msg.msg_type(),
-			ParsedOnionMessageContents::AsyncPayments(ref msg) => msg.msg_type(),
-			ParsedOnionMessageContents::DNSResolver(ref msg) => msg.msg_type(),
-			ParsedOnionMessageContents::Custom(ref msg) => msg.msg_type(),
+			ParsedOnionMessageContents::Offers(msg) => msg.msg_type(),
+			ParsedOnionMessageContents::AsyncPayments(msg) => msg.msg_type(),
+			ParsedOnionMessageContents::DNSResolver(msg) => msg.msg_type(),
+			ParsedOnionMessageContents::Custom(msg) => msg.msg_type(),
 		}
 	}
 }

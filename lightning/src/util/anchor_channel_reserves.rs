@@ -19,23 +19,23 @@
 //! appropriately, it can lead to loss of funds of the in-flight HLTCs as mentioned above. Only
 //! partially satisfying UTXO requirements incurs the risk of not being able to resolve a subset of
 //! HTLCs.
+use crate::chain::Filter;
 use crate::chain::chaininterface::BroadcasterInterface;
 use crate::chain::chaininterface::FeeEstimator;
 use crate::chain::chainmonitor::ChainMonitor;
 use crate::chain::chainmonitor::Persist;
-use crate::chain::Filter;
 use crate::ln::chan_utils::max_htlcs;
 use crate::ln::channelmanager::AChannelManager;
 use crate::prelude::new_hash_set;
-use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::sign::EntropySource;
+use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::types::features::ChannelTypeFeatures;
 use crate::util::logger::Logger;
 use crate::util::wallet_utils::Utxo;
-use bitcoin::constants::WITNESS_SCALE_FACTOR;
 use bitcoin::Amount;
 use bitcoin::FeeRate;
 use bitcoin::Weight;
+use bitcoin::constants::WITNESS_SCALE_FACTOR;
 use core::cmp::min;
 use core::ops::Deref;
 

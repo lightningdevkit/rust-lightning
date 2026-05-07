@@ -6,10 +6,10 @@ use core::time::Duration;
 
 use std::cell::RefCell;
 
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::RwLock as StdRwLock;
 use std::sync::RwLockReadGuard as StdRwLockReadGuard;
 use std::sync::RwLockWriteGuard as StdRwLockWriteGuard;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 #[cfg(feature = "std")]
 use parking_lot::Condvar as StdCondvar;
@@ -157,9 +157,11 @@ impl LockMetadata {
 			let mut locks = unsafe { LOCKS.as_ref() }.unwrap().lock();
 			match locks.entry(lock_constr_location) {
 				hash_map::Entry::Occupied(e) => {
-					assert_eq!(lock_constr_colno,
+					assert_eq!(
+						lock_constr_colno,
 						locate_call_symbol(&e.get()._lock_construction_bt).1,
-						"Because Windows doesn't support column number results in backtraces, we cannot construct two mutexes on the same line or we risk lockorder detection false positives.");
+						"Because Windows doesn't support column number results in backtraces, we cannot construct two mutexes on the same line or we risk lockorder detection false positives."
+					);
 					return Arc::clone(e.get());
 				},
 				hash_map::Entry::Vacant(e) => {
@@ -262,11 +264,7 @@ pub struct Mutex<T: Sized> {
 
 impl<T: Sized> Mutex<T> {
 	pub(crate) fn into_inner(self) -> LockResult<T> {
-		if self.poisoned.load(Ordering::Acquire) {
-			Err(())
-		} else {
-			Ok(self.inner.into_inner())
-		}
+		if self.poisoned.load(Ordering::Acquire) { Err(()) } else { Ok(self.inner.into_inner()) }
 	}
 }
 
@@ -373,11 +371,7 @@ impl<T> Mutex<T> {
 	}
 
 	pub fn get_mut<'a>(&'a mut self) -> LockResult<&'a mut T> {
-		if self.poisoned.load(Ordering::Acquire) {
-			Err(())
-		} else {
-			Ok(self.inner.get_mut())
-		}
+		if self.poisoned.load(Ordering::Acquire) { Err(()) } else { Ok(self.inner.get_mut()) }
 	}
 }
 

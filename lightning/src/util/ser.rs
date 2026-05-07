@@ -26,6 +26,7 @@ use core::str::FromStr;
 
 use alloc::collections::BTreeMap;
 
+use bitcoin::FeeRate;
 use bitcoin::absolute::LockTime as AbsoluteLockTime;
 use bitcoin::address::Address;
 use bitcoin::amount::{Amount, SignedAmount};
@@ -43,8 +44,7 @@ use bitcoin::secp256k1::ecdsa;
 use bitcoin::secp256k1::schnorr;
 use bitcoin::secp256k1::{PublicKey, SecretKey};
 use bitcoin::transaction::{OutPoint, Transaction, TxOut};
-use bitcoin::FeeRate;
-use bitcoin::{consensus, Sequence, TxIn, Weight, Witness};
+use bitcoin::{Sequence, TxIn, Weight, Witness, consensus};
 
 use dnssec_prover::rr::Name;
 
@@ -125,11 +125,7 @@ impl<'a, R: Read> BufRead for BufReader<'a, R> {
 			self.is_consumed = count == 0;
 		}
 
-		if self.is_consumed {
-			Ok(&[])
-		} else {
-			Ok(&self.buf[..])
-		}
+		if self.is_consumed { Ok(&[]) } else { Ok(&self.buf[..]) }
 	}
 
 	#[inline]
@@ -207,11 +203,7 @@ impl<'a, R: Read> FixedLengthReader<'a, R> {
 	#[inline]
 	pub fn eat_remaining(&mut self) -> Result<(), DecodeError> {
 		copy(self, &mut sink()).unwrap();
-		if self.bytes_read != self.total_bytes {
-			Err(DecodeError::ShortRead)
-		} else {
-			Ok(())
-		}
+		if self.bytes_read != self.total_bytes { Err(DecodeError::ShortRead) } else { Ok(()) }
 	}
 }
 impl<'a, R: Read> Read for FixedLengthReader<'a, R> {
@@ -528,27 +520,15 @@ impl Readable for BigSize {
 		match n {
 			0xFF => {
 				let x: u64 = Readable::read(reader)?;
-				if x < 0x100000000 {
-					Err(DecodeError::InvalidValue)
-				} else {
-					Ok(BigSize(x))
-				}
+				if x < 0x100000000 { Err(DecodeError::InvalidValue) } else { Ok(BigSize(x)) }
 			},
 			0xFE => {
 				let x: u32 = Readable::read(reader)?;
-				if x < 0x10000 {
-					Err(DecodeError::InvalidValue)
-				} else {
-					Ok(BigSize(x as u64))
-				}
+				if x < 0x10000 { Err(DecodeError::InvalidValue) } else { Ok(BigSize(x as u64)) }
 			},
 			0xFD => {
 				let x: u16 = Readable::read(reader)?;
-				if x < 0xFD {
-					Err(DecodeError::InvalidValue)
-				} else {
-					Ok(BigSize(x as u64))
-				}
+				if x < 0xFD { Err(DecodeError::InvalidValue) } else { Ok(BigSize(x as u64)) }
 			},
 			n => Ok(BigSize(n as u64)),
 		}
@@ -1697,22 +1677,14 @@ impl TryFrom<Vec<u8>> for Hostname {
 	type Error = ();
 
 	fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
-		if let Ok(s) = String::from_utf8(bytes) {
-			Hostname::try_from(s)
-		} else {
-			Err(())
-		}
+		if let Ok(s) = String::from_utf8(bytes) { Hostname::try_from(s) } else { Err(()) }
 	}
 }
 impl TryFrom<String> for Hostname {
 	type Error = ();
 
 	fn try_from(s: String) -> Result<Self, Self::Error> {
-		if Hostname::str_is_valid_hostname(&s) {
-			Ok(Hostname(s))
-		} else {
-			Err(())
-		}
+		if Hostname::str_is_valid_hostname(&s) { Ok(Hostname(s)) } else { Err(()) }
 	}
 }
 impl Writeable for Hostname {

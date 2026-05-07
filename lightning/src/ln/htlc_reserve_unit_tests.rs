@@ -2,14 +2,14 @@
 
 use crate::events::{ClosureReason, Event, HTLCHandlingFailureType, PaymentPurpose};
 use crate::ln::chan_utils::{
-	self, commit_tx_fee_sat, commitment_tx_base_weight, second_stage_tx_fees_sat,
-	shared_anchor_script_pubkey, CommitmentTransaction, COMMITMENT_TX_WEIGHT_PER_HTLC,
-	TRUC_CHILD_MAX_WEIGHT,
+	self, COMMITMENT_TX_WEIGHT_PER_HTLC, CommitmentTransaction, TRUC_CHILD_MAX_WEIGHT,
+	commit_tx_fee_sat, commitment_tx_base_weight, second_stage_tx_fees_sat,
+	shared_anchor_script_pubkey,
 };
 use crate::ln::channel::{
-	get_holder_selected_channel_reserve_satoshis, Channel, ANCHOR_OUTPUT_VALUE_SATOSHI,
-	FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE, MIN_AFFORDABLE_HTLC_COUNT,
-	MIN_CHAN_DUST_LIMIT_SATOSHIS,
+	ANCHOR_OUTPUT_VALUE_SATOSHI, Channel, FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE,
+	MIN_AFFORDABLE_HTLC_COUNT, MIN_CHAN_DUST_LIMIT_SATOSHIS,
+	get_holder_selected_channel_reserve_satoshis,
 };
 use crate::ln::channelmanager::{PaymentId, RAACommitmentOrder, TrustedChannelFeatures};
 use crate::ln::functional_test_utils::*;
@@ -18,9 +18,9 @@ use crate::ln::onion_utils::{self, AttributionData};
 use crate::ln::outbound_payment::RecipientOnionFields;
 use crate::ln::types::ChannelId;
 use crate::routing::router::PaymentParameters;
+use crate::sign::ChannelSigner;
 use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::sign::tx_builder::{SpecTxBuilder, TxBuilder};
-use crate::sign::ChannelSigner;
 use crate::types::features::ChannelTypeFeatures;
 use crate::types::payment::{PaymentHash, PaymentPreimage};
 use crate::util::config::UserConfig;
@@ -1240,10 +1240,18 @@ pub fn test_payment_route_reaching_same_channel_twice() {
 	let cloned_hops = route.paths[0].hops.clone();
 	route.paths[0].hops.extend_from_slice(&cloned_hops);
 
-	unwrap_send_err!(nodes[0], nodes[0].node.send_payment_with_route(route, our_payment_hash,
-		RecipientOnionFields::secret_only(our_payment_secret, 100000000), PaymentId(our_payment_hash.0)
-	), false, APIError::InvalidRoute { ref err },
-	assert_eq!(err, &"Path went through the same channel twice"));
+	unwrap_send_err!(
+		nodes[0],
+		nodes[0].node.send_payment_with_route(
+			route,
+			our_payment_hash,
+			RecipientOnionFields::secret_only(our_payment_secret, 100000000),
+			PaymentId(our_payment_hash.0)
+		),
+		false,
+		APIError::InvalidRoute { err },
+		assert_eq!(err, &"Path went through the same channel twice")
+	);
 	assert!(nodes[0].node.list_recent_payments().is_empty());
 }
 
@@ -1288,9 +1296,13 @@ pub fn test_update_add_htlc_bolt2_sender_zero_value_msat() {
 	let onion = RecipientOnionFields::secret_only(our_payment_secret, 0);
 	let id = PaymentId(our_payment_hash.0);
 	let res = nodes[0].node.send_payment_with_route(route, our_payment_hash, onion, id);
-	unwrap_send_err!(nodes[0], res,
-		true, APIError::ChannelUnavailable { ref err },
-		assert_eq!(err, "Cannot send 0-msat HTLC"));
+	unwrap_send_err!(
+		nodes[0],
+		res,
+		true,
+		APIError::ChannelUnavailable { err },
+		assert_eq!(err, "Cannot send 0-msat HTLC")
+	);
 
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	nodes[0].logger.assert_log_contains(
@@ -1360,8 +1372,13 @@ pub fn test_update_add_htlc_bolt2_sender_cltv_expiry_too_high() {
 	let onion = RecipientOnionFields::secret_only(our_payment_secret, 100000000);
 	let id = PaymentId(our_payment_hash.0);
 	let res = nodes[0].node.send_payment_with_route(route, our_payment_hash, onion, id);
-	unwrap_send_err!(nodes[0], res, true, APIError::InvalidRoute { ref err },
-		assert_eq!(err, &"Channel CLTV overflowed?"));
+	unwrap_send_err!(
+		nodes[0],
+		res,
+		true,
+		APIError::InvalidRoute { err },
+		assert_eq!(err, &"Channel CLTV overflowed?")
+	);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -1598,9 +1615,11 @@ pub fn test_update_add_htlc_bolt2_receiver_check_max_htlc_limit() {
 
 	assert!(nodes[1].node.list_channels().is_empty());
 	let err_msg = check_closed_broadcast(&nodes[1], 1, true).pop().unwrap();
-	assert!(regex::Regex::new(r"Remote tried to push more than our max accepted HTLCs \(\d+\)")
+	assert!(
+		regex::Regex::new(r"Remote tried to push more than our max accepted HTLCs \(\d+\)")
 		.unwrap()
-		.is_match(err_msg.data.as_str()));
+			.is_match(err_msg.data.as_str())
+	);
 	check_added_monitors(&nodes[1], 1);
 	let reason = ClosureReason::ProcessingError { err: err_msg.data };
 	check_closed_event(&nodes[1], 1, reason, &[node_a_id], 100000);
@@ -1633,9 +1652,11 @@ pub fn test_update_add_htlc_bolt2_receiver_check_max_in_flight_msat() {
 
 	assert!(nodes[1].node.list_channels().is_empty());
 	let err_msg = check_closed_broadcast(&nodes[1], 1, true).pop().unwrap();
-	assert!(regex::Regex::new("Remote HTLC add would put them over our max HTLC value")
+	assert!(
+		regex::Regex::new("Remote HTLC add would put them over our max HTLC value")
 		.unwrap()
-		.is_match(err_msg.data.as_str()));
+			.is_match(err_msg.data.as_str())
+	);
 	check_added_monitors(&nodes[1], 1);
 	let reason = ClosureReason::ProcessingError { err: err_msg.data };
 	check_closed_event(&nodes[1], 1, reason, &[node_a_id], 1000000);
@@ -1729,9 +1750,11 @@ pub fn test_update_add_htlc_bolt2_receiver_check_repeated_id_ignore() {
 
 	assert!(nodes[1].node.list_channels().is_empty());
 	let err_msg = check_closed_broadcast(&nodes[1], 1, true).pop().unwrap();
-	assert!(regex::Regex::new(r"Remote skipped HTLC ID \(skipped ID: \d+\)")
+	assert!(
+		regex::Regex::new(r"Remote skipped HTLC ID \(skipped ID: \d+\)")
 		.unwrap()
-		.is_match(err_msg.data.as_str()));
+			.is_match(err_msg.data.as_str())
+	);
 	check_added_monitors(&nodes[1], 1);
 	let reason = ClosureReason::ProcessingError { err: err_msg.data };
 	check_closed_event(&nodes[1], 1, reason, &[node_a_id], 100000);
@@ -1771,11 +1794,13 @@ pub fn test_update_fulfill_htlc_bolt2_update_fulfill_htlc_before_commitment() {
 
 	assert!(nodes[0].node.list_channels().is_empty());
 	let err_msg = check_closed_broadcast(&nodes[0], 1, true).pop().unwrap();
-	assert!(regex::Regex::new(
+	assert!(
+		regex::Regex::new(
 		r"Remote tried to fulfill/fail HTLC \(\d+\) before it had been committed"
 	)
 	.unwrap()
-	.is_match(err_msg.data.as_str()));
+		.is_match(err_msg.data.as_str())
+	);
 	check_added_monitors(&nodes[0], 1);
 	let reason = ClosureReason::ProcessingError { err: err_msg.data };
 	check_closed_event(&nodes[0], 1, reason, &[node_b_id], 100000);
@@ -1815,11 +1840,13 @@ pub fn test_update_fulfill_htlc_bolt2_update_fail_htlc_before_commitment() {
 
 	assert!(nodes[0].node.list_channels().is_empty());
 	let err_msg = check_closed_broadcast(&nodes[0], 1, true).pop().unwrap();
-	assert!(regex::Regex::new(
+	assert!(
+		regex::Regex::new(
 		r"Remote tried to fulfill/fail HTLC \(\d+\) before it had been committed"
 	)
 	.unwrap()
-	.is_match(err_msg.data.as_str()));
+		.is_match(err_msg.data.as_str())
+	);
 	check_added_monitors(&nodes[0], 1);
 	let reason = ClosureReason::ProcessingError { err: err_msg.data };
 	check_closed_event(&nodes[0], 1, reason, &[node_b_id], 100000);
@@ -1858,11 +1885,13 @@ pub fn test_update_fulfill_htlc_bolt2_update_fail_malformed_htlc_before_commitme
 
 	assert!(nodes[0].node.list_channels().is_empty());
 	let err_msg = check_closed_broadcast(&nodes[0], 1, true).pop().unwrap();
-	assert!(regex::Regex::new(
+	assert!(
+		regex::Regex::new(
 		r"Remote tried to fulfill/fail HTLC \(\d+\) before it had been committed"
 	)
 	.unwrap()
-	.is_match(err_msg.data.as_str()));
+		.is_match(err_msg.data.as_str())
+	);
 	check_added_monitors(&nodes[0], 1);
 	let reason = ClosureReason::ProcessingError { err: err_msg.data };
 	check_closed_event(&nodes[0], 1, reason, &[node_b_id], 100000);
@@ -1980,9 +2009,11 @@ pub fn test_update_fulfill_htlc_bolt2_wrong_preimage() {
 
 	assert!(nodes[0].node.list_channels().is_empty());
 	let err_msg = check_closed_broadcast(&nodes[0], 1, true).pop().unwrap();
-	assert!(regex::Regex::new(r"Remote tried to fulfill HTLC \(\d+\) with an incorrect preimage")
+	assert!(
+		regex::Regex::new(r"Remote tried to fulfill HTLC \(\d+\) with an incorrect preimage")
 		.unwrap()
-		.is_match(err_msg.data.as_str()));
+			.is_match(err_msg.data.as_str())
+	);
 	check_added_monitors(&nodes[0], 1);
 	let reason = ClosureReason::ProcessingError { err: err_msg.data };
 	check_closed_event(&nodes[0], 1, reason, &[node_b_id], 100000);

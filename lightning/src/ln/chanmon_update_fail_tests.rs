@@ -14,7 +14,7 @@
 
 use crate::chain::chaininterface::LowerBoundedFeeEstimator;
 use crate::chain::chainmonitor::ChainMonitor;
-use crate::chain::channelmonitor::{ChannelMonitor, MonitorEvent, ANTI_REORG_DELAY};
+use crate::chain::channelmonitor::{ANTI_REORG_DELAY, ChannelMonitor, MonitorEvent};
 use crate::chain::transaction::OutPoint;
 use crate::chain::{BlockLocator, ChannelMonitorUpdateStatus, Confirm, Listen, Watch};
 use crate::events::{ClosureReason, Event, HTLCHandlingFailureType, PaymentPurpose};
@@ -30,9 +30,9 @@ use crate::routing::router::{PaymentParameters, RouteParameters};
 use crate::sign::NodeSigner;
 use crate::util::native_async::FutureQueue;
 use crate::util::persist::{
-	MonitorName, MonitorUpdatingPersisterAsync, CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
-	CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
-	CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
+	CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE, CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+	CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE, MonitorName,
+	MonitorUpdatingPersisterAsync,
 };
 use crate::util::ser::{ReadableArgs, Writeable};
 use crate::util::test_channel_signer::TestChannelSigner;
@@ -2256,10 +2256,11 @@ fn do_during_funding_monitor_fail(
 	};
 	for (i, node) in nodes.iter().enumerate() {
 		let counterparty_node_id = nodes[(i + 1) % 2].node.get_our_node_id();
-		assert!(node
-			.gossip_sync
+		assert!(
+			node.gossip_sync
 			.handle_channel_announcement(Some(counterparty_node_id), &announcement)
-			.unwrap());
+				.unwrap()
+		);
 		node.gossip_sync.handle_channel_update(Some(counterparty_node_id), &as_update).unwrap();
 		node.gossip_sync.handle_channel_update(Some(counterparty_node_id), &bs_update).unwrap();
 	}
@@ -3901,15 +3902,7 @@ fn do_test_durable_preimages_on_closed_channel(
 	// After a timer tick a payment preimage ChannelMonitorUpdate is applied to the A<->B
 	// ChannelMonitor (possible twice), even though the channel has since been closed.
 	check_added_monitors(&nodes[1], 0);
-	let mons_added = if close_chans_before_reload {
-		if !close_only_a {
-			4
-		} else {
-			3
-		}
-	} else {
-		2
-	};
+	let mons_added = if close_chans_before_reload { if !close_only_a { 4 } else { 3 } } else { 2 };
 	if hold_post_reload_mon_update {
 		for _ in 0..mons_added {
 			persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
@@ -4219,11 +4212,13 @@ fn do_test_glacial_peer_cant_hang(hold_chan_a: bool) {
 		// ...but once we complete the A<->B channel preimage persistence, the B<->C channel
 		// unlocks and we send both peers commitment updates.
 		let (ab_update_id, _) = nodes[1].chain_monitor.get_latest_mon_update_id(chan_id_ab);
-		assert!(nodes[1]
+		assert!(
+			nodes[1]
 			.chain_monitor
 			.chain_monitor
 			.channel_monitor_updated(chan_id_ab, ab_update_id)
-			.is_ok());
+				.is_ok()
+		);
 
 		let mut msg_events = nodes[1].node.get_and_clear_pending_msg_events();
 		assert_eq!(msg_events.len(), 2);
@@ -4238,11 +4233,7 @@ fn do_test_glacial_peer_cant_hang(hold_chan_a: bool) {
 			.collect::<Vec<_>>();
 		let a_filtermap = |ev| {
 			if let MessageSendEvent::UpdateHTLCs { node_id, channel_id: _, updates } = ev {
-				if node_id == node_a_id {
-					Some(updates)
-				} else {
-					None
-				}
+				if node_id == node_a_id { Some(updates) } else { None }
 			} else {
 				None
 			}
@@ -4576,10 +4567,12 @@ fn test_claim_to_closed_channel_blocks_forwarded_preimage_removal() {
 	// At this point nodes[1] has the preimage and is waiting for the `ChannelMonitorUpdate` for
 	// channel A to hit disk. Until it does so, it shouldn't ever let the preimage dissapear from
 	// channel B's `ChannelMonitor`
-	assert!(get_monitor!(nodes[1], chan_b.2)
+	assert!(
+		get_monitor!(nodes[1], chan_b.2)
 		.get_all_current_outbound_htlcs()
 		.iter()
-		.any(|(_, (_, preimage))| *preimage == Some(payment_preimage)));
+			.any(|(_, (_, preimage))| *preimage == Some(payment_preimage))
+	);
 
 	// Once we complete the `ChannelMonitorUpdate` on channel A, and the `ChannelManager` processes
 	// background events (via `get_and_clear_pending_msg_events`), the final `ChannelMonitorUpdate`
@@ -4592,10 +4585,12 @@ fn test_claim_to_closed_channel_blocks_forwarded_preimage_removal() {
 	nodes[1].chain_monitor.complete_sole_pending_chan_update(&chan_a.2);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	check_added_monitors(&nodes[1], 1);
-	assert!(!get_monitor!(nodes[1], chan_b.2)
+	assert!(
+		!get_monitor!(nodes[1], chan_b.2)
 		.get_all_current_outbound_htlcs()
 		.iter()
-		.any(|(_, (_, preimage))| *preimage == Some(payment_preimage)));
+			.any(|(_, (_, preimage))| *preimage == Some(payment_preimage))
+	);
 	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], None, true, false);
 }
 

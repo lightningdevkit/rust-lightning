@@ -2,12 +2,12 @@
 
 use crate::events::{ClosureReason, Event};
 use crate::ln::chan_utils::{
-	self, commitment_tx_base_weight, CommitmentTransaction, HTLCOutputInCommitment,
-	COMMITMENT_TX_WEIGHT_PER_HTLC,
+	self, COMMITMENT_TX_WEIGHT_PER_HTLC, CommitmentTransaction, HTLCOutputInCommitment,
+	commitment_tx_base_weight,
 };
 use crate::ln::channel::{
-	get_holder_selected_channel_reserve_satoshis, ANCHOR_OUTPUT_VALUE_SATOSHI,
-	CONCURRENT_INBOUND_HTLC_FEE_BUFFER, MIN_AFFORDABLE_HTLC_COUNT,
+	ANCHOR_OUTPUT_VALUE_SATOSHI, CONCURRENT_INBOUND_HTLC_FEE_BUFFER, MIN_AFFORDABLE_HTLC_COUNT,
+	get_holder_selected_channel_reserve_satoshis,
 };
 use crate::ln::channelmanager::PaymentId;
 use crate::ln::functional_test_utils::*;
@@ -15,8 +15,8 @@ use crate::ln::msgs::{
 	self, BaseMessageHandler, ChannelMessageHandler, ErrorAction, MessageSendEvent,
 };
 use crate::ln::outbound_payment::RecipientOnionFields;
-use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::sign::ChannelSigner;
+use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::types::features::ChannelTypeFeatures;
 use crate::util::config::UserConfig;
 use crate::util::errors::APIError;
@@ -897,10 +897,12 @@ pub fn test_chan_init_feerate_unaffordability() {
 	assert_eq!(events.len(), 1);
 	match &events[0] {
 		Event::OpenChannelRequest { temporary_channel_id, counterparty_node_id, .. } => {
-			assert!(nodes[1]
+			assert!(
+				nodes[1]
 				.node
 				.accept_inbound_channel(temporary_channel_id, counterparty_node_id, 42, None,)
-				.is_err());
+					.is_err()
+			);
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -1399,11 +1401,9 @@ pub fn test_zero_fee_commitments_no_update_fee() {
 		for node in nodes.iter() {
 			let channels = node.node.list_channels();
 			assert_eq!(channels.len(), 1);
-			assert!(channels[0]
-				.channel_type
-				.as_ref()
-				.unwrap()
-				.supports_anchor_zero_fee_commitments());
+			assert!(
+				channels[0].channel_type.as_ref().unwrap().supports_anchor_zero_fee_commitments()
+			);
 			assert_eq!(channels[0].feerate_sat_per_1000_weight.unwrap(), 0);
 		}
 	};
@@ -1423,11 +1423,12 @@ pub fn test_zero_fee_commitments_no_update_fee() {
 	assert_eq!(events_1.len(), 1);
 	match events_1[0] {
 		MessageSendEvent::HandleError { ref action, .. } => match action {
-			ErrorAction::DisconnectPeerWithWarning { ref msg, .. } => {
+			ErrorAction::DisconnectPeerWithWarning { msg, .. } => {
 				assert_eq!(msg.channel_id, channel_id);
-				assert!(msg
-					.data
-					.contains("Update fee message received for zero fee commitment channel"));
+				assert!(
+					msg.data
+						.contains("Update fee message received for zero fee commitment channel")
+				);
 			},
 			_ => panic!("Expected DisconnectPeerWithWarning, got {:?}", action),
 		},

@@ -6,8 +6,8 @@ use crate::gossip::UtxoSource;
 use crate::http::{BinaryResponse, HttpClient, HttpClientError, JsonResponse, ToParseErrorMessage};
 use crate::{BlockData, BlockHeaderData, BlockSource, BlockSourceResult};
 
-use bitcoin::hash_types::BlockHash;
 use bitcoin::OutPoint;
+use bitcoin::hash_types::BlockHash;
 
 use std::convert::TryFrom;
 use std::convert::TryInto;

@@ -4,11 +4,11 @@ use crate::rpc::RpcClientError;
 use crate::utils::hex_to_work;
 use crate::{BlockHeaderData, BlockSourceError};
 
+use bitcoin::Transaction;
 use bitcoin::block::{Block, Header};
 use bitcoin::consensus::encode;
 use bitcoin::hash_types::{BlockHash, TxMerkleNode, Txid};
 use bitcoin::hex::FromHex;
-use bitcoin::Transaction;
 
 use serde_json;
 
@@ -336,8 +336,8 @@ pub(crate) mod tests {
 	use bitcoin::hashes::Hash;
 	use bitcoin::hex::DisplayHex;
 	use bitcoin::network::Network;
-	use serde_json::value::Number;
 	use serde_json::Value;
+	use serde_json::value::Number;
 
 	/// Converts from `BlockHeaderData` into a `GetHeaderResponse` JSON value.
 	impl From<BlockHeaderData> for serde_json::Value {

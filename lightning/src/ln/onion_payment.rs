@@ -3,8 +3,8 @@
 //! Primarily features [`peel_payment_onion`], which allows the decoding of an onion statelessly
 //! and can be used to predict whether we'd accept a payment.
 
-use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash;
+use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::{self, PublicKey, Secp256k1};
 
@@ -12,8 +12,8 @@ use crate::blinded_path;
 use crate::blinded_path::payment::{PaymentConstraints, PaymentRelay};
 use crate::chain::channelmonitor::{HTLC_FAIL_BACK_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS};
 use crate::ln::channelmanager::{
-	BlindedFailure, BlindedForward, HTLCFailureMsg, PendingHTLCInfo, PendingHTLCRouting,
-	CLTV_FAR_FAR_AWAY, MIN_CLTV_EXPIRY_DELTA,
+	BlindedFailure, BlindedForward, CLTV_FAR_FAR_AWAY, HTLCFailureMsg, MIN_CLTV_EXPIRY_DELTA,
+	PendingHTLCInfo, PendingHTLCRouting,
 };
 use crate::ln::msgs;
 use crate::ln::onion_utils;
@@ -760,8 +760,8 @@ mod tests {
 	use crate::types::features::{ChannelFeatures, NodeFeatures};
 	use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 	use crate::util::test_utils;
-	use bitcoin::hashes::sha256::Hash as Sha256;
 	use bitcoin::hashes::Hash;
+	use bitcoin::hashes::sha256::Hash as Sha256;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 
 	#[test]

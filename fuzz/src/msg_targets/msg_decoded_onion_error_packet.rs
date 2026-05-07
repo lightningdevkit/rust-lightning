@@ -20,7 +20,7 @@ pub fn msg_decoded_onion_error_packet_test<Out: test_logger::Output>(data: &[u8]
 	test_msg!(lightning::ln::msgs::DecodedOnionErrorPacket, data);
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn msg_decoded_onion_error_packet_run(data: *const u8, datalen: usize) {
 	let data = unsafe { std::slice::from_raw_parts(data, datalen) };
 	test_msg!(lightning::ln::msgs::DecodedOnionErrorPacket, data);

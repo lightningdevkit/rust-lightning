@@ -6,10 +6,10 @@ use crate::prelude::*;
 use bech32::{ByteIterExt, Fe32, Fe32IterExt};
 
 use super::{
-	constants, Bolt11Invoice, Bolt11InvoiceFeatures, Bolt11InvoiceSignature, Currency, Description,
+	Bolt11Invoice, Bolt11InvoiceFeatures, Bolt11InvoiceSignature, Currency, Description,
 	ExpiryTime, Fallback, MinFinalCltvExpiryDelta, PayeePubKey, PaymentHash, PaymentSecret,
 	PositiveTimestamp, PrivateRoute, RawDataPart, RawHrp, RawTaggedField, RouteHintHop, Sha256,
-	SiPrefix, SignedRawBolt11Invoice, TaggedField,
+	SiPrefix, SignedRawBolt11Invoice, TaggedField, constants,
 };
 
 macro_rules! define_iterator_enum {

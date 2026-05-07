@@ -19,7 +19,7 @@ use crate::blinded_path::payment::{
 };
 use crate::blinded_path::{BlindedHop, Direction, IntroductionNode};
 use crate::ln::channel_state::ChannelDetails;
-use crate::ln::channelmanager::{PaymentId, MIN_FINAL_CLTV_EXPIRY_DELTA};
+use crate::ln::channelmanager::{MIN_FINAL_CLTV_EXPIRY_DELTA, PaymentId};
 use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
 use crate::ln::onion_utils;
 use crate::ln::outbound_payment::RecipientOnionFields;
@@ -712,7 +712,9 @@ impl Route {
 			if let Some(max_total_fee) = route_params.max_total_routing_fee_msat {
 				let total_fee = self.get_total_fees();
 				if total_fee > max_total_fee {
-					let err = format!("Router returned an attempt to pay with a higher fee ({total_fee}msat) than we allowed ({max_total_fee}msat). Your router is critically buggy!");
+					let err = format!(
+						"Router returned an attempt to pay with a higher fee ({total_fee}msat) than we allowed ({max_total_fee}msat). Your router is critically buggy!"
+					);
 					debug_assert!(false, "{}", err);
 					log_error!(logger, "{}", err);
 					return Err(());
@@ -4077,21 +4079,21 @@ fn build_route_from_hops_internal<L: Logger>(
 
 #[cfg(test)]
 mod tests {
-	use crate::blinded_path::payment::{BlindedPayInfo, BlindedPaymentPath};
 	use crate::blinded_path::BlindedHop;
+	use crate::blinded_path::payment::{BlindedPayInfo, BlindedPaymentPath};
 	use crate::chain::transaction::OutPoint;
 	use crate::ln::chan_utils::make_funding_redeemscript;
 	use crate::ln::channel_state::{ChannelCounterparty, ChannelDetails, ChannelShutdownState};
 	use crate::ln::channelmanager;
-	use crate::ln::msgs::{UnsignedChannelUpdate, MAX_VALUE_MSAT};
+	use crate::ln::msgs::{MAX_VALUE_MSAT, UnsignedChannelUpdate};
 	use crate::ln::types::ChannelId;
 	use crate::routing::gossip::{EffectiveCapacity, NetworkGraph, NodeId, P2PGossipSync};
 	use crate::routing::router::{
-		add_random_cltv_offset, build_route_from_hops_internal, default_node_features, get_route,
-		BlindedPathCandidate, BlindedTail, CandidateRouteHop, InFlightHtlcs, Path,
-		PaymentParameters, PublicHopCandidate, Route, RouteHint, RouteHintHop, RouteHop,
-		RouteParameters, RoutingFees, ScorerAccountingForInFlightHtlcs,
-		DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA, MAX_PATH_LENGTH_ESTIMATE,
+		BlindedPathCandidate, BlindedTail, CandidateRouteHop, DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA,
+		InFlightHtlcs, MAX_PATH_LENGTH_ESTIMATE, Path, PaymentParameters, PublicHopCandidate,
+		Route, RouteHint, RouteHintHop, RouteHop, RouteParameters, RoutingFees,
+		ScorerAccountingForInFlightHtlcs, add_random_cltv_offset, build_route_from_hops_internal,
+		default_node_features, get_route,
 	};
 	use crate::routing::scoring::{
 		ChannelUsage, FixedPenaltyScorer, ProbabilisticScorer, ProbabilisticScoringDecayParameters,
@@ -7480,23 +7482,56 @@ mod tests {
 	#[test]
 	fn total_fees_single_path() {
 		let route = Route {
-			paths: vec![Path { hops: vec![
+			paths: vec![Path {
+				hops: vec![
 				RouteHop {
-					pubkey: PublicKey::from_slice(&<Vec<u8>>::from_hex("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap()[..]).unwrap(),
-					channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
-					short_channel_id: 0, fee_msat: 100, cltv_expiry_delta: 0, maybe_announced_channel: true,
+						pubkey: PublicKey::from_slice(
+							&<Vec<u8>>::from_hex(
+								"02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619",
+							)
+							.unwrap()[..],
+						)
+						.unwrap(),
+						channel_features: ChannelFeatures::empty(),
+						node_features: NodeFeatures::empty(),
+						short_channel_id: 0,
+						fee_msat: 100,
+						cltv_expiry_delta: 0,
+						maybe_announced_channel: true,
 				},
 				RouteHop {
-					pubkey: PublicKey::from_slice(&<Vec<u8>>::from_hex("0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c").unwrap()[..]).unwrap(),
-					channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
-					short_channel_id: 0, fee_msat: 150, cltv_expiry_delta: 0, maybe_announced_channel: true,
+						pubkey: PublicKey::from_slice(
+							&<Vec<u8>>::from_hex(
+								"0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c",
+							)
+							.unwrap()[..],
+						)
+						.unwrap(),
+						channel_features: ChannelFeatures::empty(),
+						node_features: NodeFeatures::empty(),
+						short_channel_id: 0,
+						fee_msat: 150,
+						cltv_expiry_delta: 0,
+						maybe_announced_channel: true,
 				},
 				RouteHop {
-					pubkey: PublicKey::from_slice(&<Vec<u8>>::from_hex("027f31ebc5462c1fdce1b737ecff52d37d75dea43ce11c74d25aa297165faa2007").unwrap()[..]).unwrap(),
-					channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
-					short_channel_id: 0, fee_msat: 225, cltv_expiry_delta: 0, maybe_announced_channel: true,
+						pubkey: PublicKey::from_slice(
+							&<Vec<u8>>::from_hex(
+								"027f31ebc5462c1fdce1b737ecff52d37d75dea43ce11c74d25aa297165faa2007",
+							)
+							.unwrap()[..],
+						)
+						.unwrap(),
+						channel_features: ChannelFeatures::empty(),
+						node_features: NodeFeatures::empty(),
+						short_channel_id: 0,
+						fee_msat: 225,
+						cltv_expiry_delta: 0,
+						maybe_announced_channel: true,
 				},
-			], blinded_tail: None }],
+				],
+				blinded_tail: None,
+			}],
 			route_params: None,
 		};
 
@@ -7507,29 +7542,78 @@ mod tests {
 	#[test]
 	fn total_fees_multi_path() {
 		let route = Route {
-			paths: vec![Path { hops: vec![
+			paths: vec![
+				Path {
+					hops: vec![
 				RouteHop {
-					pubkey: PublicKey::from_slice(&<Vec<u8>>::from_hex("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap()[..]).unwrap(),
-					channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
-					short_channel_id: 0, fee_msat: 100, cltv_expiry_delta: 0, maybe_announced_channel: true,
+							pubkey: PublicKey::from_slice(
+								&<Vec<u8>>::from_hex(
+									"02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619",
+								)
+								.unwrap()[..],
+							)
+							.unwrap(),
+							channel_features: ChannelFeatures::empty(),
+							node_features: NodeFeatures::empty(),
+							short_channel_id: 0,
+							fee_msat: 100,
+							cltv_expiry_delta: 0,
+							maybe_announced_channel: true,
 				},
 				RouteHop {
-					pubkey: PublicKey::from_slice(&<Vec<u8>>::from_hex("0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c").unwrap()[..]).unwrap(),
-					channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
-					short_channel_id: 0, fee_msat: 150, cltv_expiry_delta: 0, maybe_announced_channel: true,
+							pubkey: PublicKey::from_slice(
+								&<Vec<u8>>::from_hex(
+									"0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c",
+								)
+								.unwrap()[..],
+							)
+							.unwrap(),
+							channel_features: ChannelFeatures::empty(),
+							node_features: NodeFeatures::empty(),
+							short_channel_id: 0,
+							fee_msat: 150,
+							cltv_expiry_delta: 0,
+							maybe_announced_channel: true,
 				},
-			], blinded_tail: None }, Path { hops: vec![
+					],
+					blinded_tail: None,
+				},
+				Path {
+					hops: vec![
 				RouteHop {
-					pubkey: PublicKey::from_slice(&<Vec<u8>>::from_hex("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap()[..]).unwrap(),
-					channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
-					short_channel_id: 0, fee_msat: 100, cltv_expiry_delta: 0, maybe_announced_channel: true,
+							pubkey: PublicKey::from_slice(
+								&<Vec<u8>>::from_hex(
+									"02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619",
+								)
+								.unwrap()[..],
+							)
+							.unwrap(),
+							channel_features: ChannelFeatures::empty(),
+							node_features: NodeFeatures::empty(),
+							short_channel_id: 0,
+							fee_msat: 100,
+							cltv_expiry_delta: 0,
+							maybe_announced_channel: true,
 				},
 				RouteHop {
-					pubkey: PublicKey::from_slice(&<Vec<u8>>::from_hex("0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c").unwrap()[..]).unwrap(),
-					channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
-					short_channel_id: 0, fee_msat: 150, cltv_expiry_delta: 0, maybe_announced_channel: true,
+							pubkey: PublicKey::from_slice(
+								&<Vec<u8>>::from_hex(
+									"0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c",
+								)
+								.unwrap()[..],
+							)
+							.unwrap(),
+							channel_features: ChannelFeatures::empty(),
+							node_features: NodeFeatures::empty(),
+							short_channel_id: 0,
+							fee_msat: 150,
+							cltv_expiry_delta: 0,
+							maybe_announced_channel: true,
 				},
-			], blinded_tail: None }],
+					],
+					blinded_tail: None,
+				},
+			],
 			route_params: None,
 		};
 

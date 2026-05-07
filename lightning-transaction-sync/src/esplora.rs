@@ -17,11 +17,11 @@ use lightning_macros::{maybe_async, maybe_await};
 
 use bitcoin::{BlockHash, Script, Txid};
 
-#[cfg(not(feature = "async-interface"))]
-use esplora_client::blocking::BlockingClient;
+use esplora_client::Builder;
 #[cfg(feature = "async-interface")]
 use esplora_client::r#async::AsyncClient;
-use esplora_client::Builder;
+#[cfg(not(feature = "async-interface"))]
+use esplora_client::blocking::BlockingClient;
 
 use core::ops::Deref;
 use std::collections::HashSet;
@@ -122,7 +122,10 @@ impl<L: Logger> EsploraSyncClient<L> {
 									if check_tip_hash != tip_hash {
 										tip_hash = check_tip_hash;
 
-										log_debug!(self.logger, "Encountered inconsistency during transaction sync, restarting.");
+										log_debug!(
+											self.logger,
+											"Encountered inconsistency during transaction sync, restarting."
+										);
 										sync_state.pending_sync = true;
 										continue;
 									}
@@ -134,7 +137,8 @@ impl<L: Logger> EsploraSyncClient<L> {
 								},
 								Err(err) => {
 									// (Semi-)permanent failure, retry later.
-									log_error!(self.logger,
+									log_error!(
+										self.logger,
 										"Failed during transaction sync, aborting. Synced so far: {} confirmed, {} unconfirmed.",
 										num_confirmed,
 										num_unconfirmed
@@ -146,7 +150,8 @@ impl<L: Logger> EsploraSyncClient<L> {
 						},
 						Err(err) => {
 							// (Semi-)permanent failure, retry later.
-							log_error!(self.logger,
+							log_error!(
+								self.logger,
 								"Failed during transaction sync, aborting. Synced so far: {} confirmed, {} unconfirmed.",
 								num_confirmed,
 								num_unconfirmed
@@ -173,7 +178,8 @@ impl<L: Logger> EsploraSyncClient<L> {
 						},
 						Err(err) => {
 							// (Semi-)permanent failure, retry later.
-							log_error!(self.logger,
+							log_error!(
+								self.logger,
 								"Failed during transaction sync, aborting. Synced so far: {} confirmed, {} unconfirmed.",
 								num_confirmed,
 								num_unconfirmed
@@ -193,8 +199,10 @@ impl<L: Logger> EsploraSyncClient<L> {
 								if check_tip_hash != tip_hash {
 									tip_hash = check_tip_hash;
 
-									log_debug!(self.logger,
-										"Encountered inconsistency during transaction sync, restarting.");
+									log_debug!(
+										self.logger,
+										"Encountered inconsistency during transaction sync, restarting."
+									);
 									sync_state.pending_sync = true;
 									continue;
 								}
@@ -204,7 +212,8 @@ impl<L: Logger> EsploraSyncClient<L> {
 							},
 							Err(err) => {
 								// (Semi-)permanent failure, retry later.
-								log_error!(self.logger,
+								log_error!(
+									self.logger,
 									"Failed during transaction sync, aborting. Synced so far: {} confirmed, {} unconfirmed.",
 									num_confirmed,
 									num_unconfirmed
@@ -225,7 +234,8 @@ impl<L: Logger> EsploraSyncClient<L> {
 					},
 					Err(err) => {
 						// (Semi-)permanent failure, retry later.
-						log_error!(self.logger,
+						log_error!(
+							self.logger,
 							"Failed during transaction sync, aborting. Synced so far: {} confirmed, {} unconfirmed.",
 							num_confirmed,
 							num_unconfirmed
@@ -302,10 +312,9 @@ impl<L: Logger> EsploraSyncClient<L> {
 		}
 
 		for (_, output) in &sync_state.watched_outputs {
-			if let Some(output_status) = maybe_await!(self
-				.client
-				.get_output_status(&output.outpoint.txid, output.outpoint.index as u64))?
-			{
+			if let Some(output_status) = maybe_await!(
+				self.client.get_output_status(&output.outpoint.txid, output.outpoint.index as u64)
+			)? {
 				if let Some(spending_txid) = output_status.txid {
 					if let Some(spending_tx_status) = output_status.status {
 						if confirmed_txs.iter().any(|ctx| ctx.txid == spending_txid) {
@@ -313,7 +322,11 @@ impl<L: Logger> EsploraSyncClient<L> {
 								// Skip inserting duplicate ConfirmedTx entry
 								continue;
 							} else {
-								log_trace!(self.logger, "Inconsistency: Detected previously-confirmed Tx {} as unconfirmed", spending_txid);
+								log_trace!(
+									self.logger,
+									"Inconsistency: Detected previously-confirmed Tx {} as unconfirmed",
+									spending_txid
+								);
 								return Err(InternalError::Inconsistency);
 							}
 						}
@@ -368,7 +381,11 @@ impl<L: Logger> EsploraSyncClient<L> {
 				|| matches.len() != 1
 				|| matches[0] != txid
 			{
-				log_error!(self.logger, "Retrieved Merkle block for txid {} doesn't match expectations. This should not happen. Please verify server integrity.", txid);
+				log_error!(
+					self.logger,
+					"Retrieved Merkle block for txid {} doesn't match expectations. This should not happen. Please verify server integrity.",
+					txid
+				);
 				return Err(InternalError::Failed);
 			}
 
@@ -376,7 +393,11 @@ impl<L: Logger> EsploraSyncClient<L> {
 			let pos = *indexes.first().unwrap() as usize;
 			if let Some(tx) = maybe_await!(self.client.get_tx(&txid))? {
 				if tx.compute_txid() != txid {
-					log_error!(self.logger, "Retrieved transaction for txid {} doesn't match expectations. This should not happen. Please verify server integrity.", txid);
+					log_error!(
+						self.logger,
+						"Retrieved transaction for txid {} doesn't match expectations. This should not happen. Please verify server integrity.",
+						txid
+					);
 					return Err(InternalError::Failed);
 				}
 
@@ -445,8 +466,13 @@ impl<L: Logger> EsploraSyncClient<L> {
 
 				unconfirmed_txs.push(txid);
 			} else {
-				log_error!(self.logger, "Untracked confirmation of funding transaction. Please ensure none of your channels had been created with LDK prior to version 0.0.113!");
-				panic!("Untracked confirmation of funding transaction. Please ensure none of your channels had been created with LDK prior to version 0.0.113!");
+				log_error!(
+					self.logger,
+					"Untracked confirmation of funding transaction. Please ensure none of your channels had been created with LDK prior to version 0.0.113!"
+				);
+				panic!(
+					"Untracked confirmation of funding transaction. Please ensure none of your channels had been created with LDK prior to version 0.0.113!"
+				);
 			}
 		}
 		Ok(unconfirmed_txs)

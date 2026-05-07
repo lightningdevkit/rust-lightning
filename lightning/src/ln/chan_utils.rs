@@ -27,7 +27,7 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::{Hash, HashEngine};
 
 use crate::chain::chaininterface::{
-	fee_for_weight, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator,
+	ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator, fee_for_weight,
 };
 use crate::chain::package::WEIGHT_REVOKED_OUTPUT;
 use crate::ln::msgs::DecodeError;
@@ -38,9 +38,9 @@ use crate::util::transaction_utils;
 
 use bitcoin::ecdsa::Signature as BitcoinSignature;
 use bitcoin::locktime::absolute::LockTime;
-use bitcoin::secp256k1::{ecdsa::Signature, Message, Secp256k1};
+use bitcoin::secp256k1::{Message, Secp256k1, ecdsa::Signature};
 use bitcoin::secp256k1::{PublicKey, Scalar, SecretKey};
-use bitcoin::{secp256k1, Sequence, Witness};
+use bitcoin::{Sequence, Witness, secp256k1};
 
 use super::channel_keys::{
 	DelayedPaymentBasepoint, DelayedPaymentKey, HtlcBasepoint, HtlcKey, RevocationBasepoint,
@@ -985,11 +985,7 @@ pub(crate) fn legacy_deserialization_prevention_marker_for_channel_type_features
 
 	debug_assert!(!legacy_version_bit_set.supports_any_optional_bits());
 	debug_assert!(!features.supports_any_optional_bits());
-	if features.requires_unknown_bits_from(&legacy_version_bit_set) {
-		Some(())
-	} else {
-		None
-	}
+	if features.requires_unknown_bits_from(&legacy_version_bit_set) { Some(()) } else { None }
 }
 
 /// Gets the witnessScript for the to_remote output when anchors are enabled.
@@ -2254,20 +2250,19 @@ mod tests {
 	use super::{ChannelPublicKeys, CounterpartyCommitmentSecrets};
 	use crate::chain;
 	use crate::ln::chan_utils::{
-		get_htlc_redeemscript, get_keyed_anchor_redeemscript,
-		get_to_countersigner_keyed_anchor_redeemscript, shared_anchor_script_pubkey,
 		BuiltCommitmentTransaction, ChannelTransactionParameters, CommitmentTransaction,
 		CounterpartyChannelTransactionParameters, HTLCOutputInCommitment,
-		TrustedCommitmentTransaction,
+		TrustedCommitmentTransaction, get_htlc_redeemscript, get_keyed_anchor_redeemscript,
+		get_to_countersigner_keyed_anchor_redeemscript, shared_anchor_script_pubkey,
 	};
 	use crate::sign::{ChannelSigner, SignerProvider};
 	use crate::types::features::ChannelTypeFeatures;
 	use crate::types::payment::PaymentHash;
 	use crate::util::test_utils;
+	use bitcoin::PublicKey as BitcoinPublicKey;
 	use bitcoin::hashes::Hash;
 	use bitcoin::hex::FromHex;
 	use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
-	use bitcoin::PublicKey as BitcoinPublicKey;
 	use bitcoin::{CompressedPublicKey, Network, ScriptBuf, Txid};
 
 	#[allow(unused_imports)]
@@ -2583,9 +2578,9 @@ mod tests {
 			let hex = "c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964";
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
-			assert!(monitor
-				.provide_secret(281474976710654, secrets.last().unwrap().clone())
-				.is_err());
+			assert!(
+				monitor.provide_secret(281474976710654, secrets.last().unwrap().clone()).is_err()
+			);
 		}
 
 		{
@@ -2614,9 +2609,9 @@ mod tests {
 			let hex = "27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116";
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
-			assert!(monitor
-				.provide_secret(281474976710652, secrets.last().unwrap().clone())
-				.is_err());
+			assert!(
+				monitor.provide_secret(281474976710652, secrets.last().unwrap().clone()).is_err()
+			);
 		}
 
 		{
@@ -2645,9 +2640,9 @@ mod tests {
 			let hex = "27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116";
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
-			assert!(monitor
-				.provide_secret(281474976710652, secrets.last().unwrap().clone())
-				.is_err());
+			assert!(
+				monitor.provide_secret(281474976710652, secrets.last().unwrap().clone()).is_err()
+			);
 		}
 
 		{
@@ -2700,9 +2695,9 @@ mod tests {
 			let hex = "05cde6323d949933f7f7b78776bcc1ea6d9b31447732e3802e1f7ac44b650e17";
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
-			assert!(monitor
-				.provide_secret(281474976710648, secrets.last().unwrap().clone())
-				.is_err());
+			assert!(
+				monitor.provide_secret(281474976710648, secrets.last().unwrap().clone()).is_err()
+			);
 		}
 
 		{
@@ -2743,9 +2738,9 @@ mod tests {
 			let hex = "969660042a28f32d9be17344e09374b379962d03db1574df5a8a5a47e19ce3f2";
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
-			assert!(monitor
-				.provide_secret(281474976710650, secrets.last().unwrap().clone())
-				.is_err());
+			assert!(
+				monitor.provide_secret(281474976710650, secrets.last().unwrap().clone()).is_err()
+			);
 		}
 
 		{
@@ -2798,9 +2793,9 @@ mod tests {
 			let hex = "05cde6323d949933f7f7b78776bcc1ea6d9b31447732e3802e1f7ac44b650e17";
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
-			assert!(monitor
-				.provide_secret(281474976710648, secrets.last().unwrap().clone())
-				.is_err());
+			assert!(
+				monitor.provide_secret(281474976710648, secrets.last().unwrap().clone()).is_err()
+			);
 		}
 
 		{
@@ -2853,9 +2848,9 @@ mod tests {
 			let hex = "05cde6323d949933f7f7b78776bcc1ea6d9b31447732e3802e1f7ac44b650e17";
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
-			assert!(monitor
-				.provide_secret(281474976710648, secrets.last().unwrap().clone())
-				.is_err());
+			assert!(
+				monitor.provide_secret(281474976710648, secrets.last().unwrap().clone()).is_err()
+			);
 		}
 
 		{
@@ -2908,9 +2903,9 @@ mod tests {
 			let hex = "a7efbc61aac46d34f77778bac22c8a20c6a46ca460addc49009bda875ec88fa4";
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
-			assert!(monitor
-				.provide_secret(281474976710648, secrets.last().unwrap().clone())
-				.is_err());
+			assert!(
+				monitor.provide_secret(281474976710648, secrets.last().unwrap().clone()).is_err()
+			);
 		}
 	}
 

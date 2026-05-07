@@ -14,8 +14,8 @@ use super::msgs::{LSPS1ChannelInfo, LSPS1Options, LSPS1OrderParams, LSPS1Payment
 
 use crate::lsps0::ser::{LSPSRequestId, LSPSResponseError};
 
-use bitcoin::secp256k1::PublicKey;
 use bitcoin::Address;
+use bitcoin::secp256k1::PublicKey;
 
 /// An event which an bLIP-51 / LSPS1 client should take some action in response to.
 #[derive(Clone, Debug, PartialEq, Eq)]

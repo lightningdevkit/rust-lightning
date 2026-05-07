@@ -17,7 +17,7 @@ use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1, SecretKey};
 
 use super::message::BlindedMessagePath;
 use super::{BlindedHop, BlindedPath};
-use crate::crypto::streams::{chachapoly_encrypt_with_swapped_aad, ChaChaPolyWriteAdapter};
+use crate::crypto::streams::{ChaChaPolyWriteAdapter, chachapoly_encrypt_with_swapped_aad};
 use crate::io;
 use crate::ln::onion_utils;
 use crate::onion_message::messenger::Destination;

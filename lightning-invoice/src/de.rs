@@ -11,22 +11,23 @@ use std::error;
 use bech32::primitives::decode::{CheckedHrpstring, CheckedHrpstringError};
 use bech32::{Fe32, Fe32IterExt};
 
-use crate::prelude::*;
 use crate::Bolt11Bech32;
-use bitcoin::hashes::sha256;
+use crate::prelude::*;
 use bitcoin::hashes::Hash;
+use bitcoin::hashes::sha256;
 use bitcoin::{PubkeyHash, ScriptHash, WitnessVersion};
 use lightning_types::payment::{PaymentHash, PaymentSecret};
 use lightning_types::routing::{RouteHint, RouteHintHop, RoutingFees};
 
-use bitcoin::secp256k1::ecdsa::{RecoverableSignature, RecoveryId};
 use bitcoin::secp256k1::PublicKey;
+use bitcoin::secp256k1::ecdsa::{RecoverableSignature, RecoveryId};
 
 use super::{
-	constants, Bolt11Invoice, Bolt11InvoiceFeatures, Bolt11InvoiceSignature, Bolt11ParseError,
+	Bolt11Invoice, Bolt11InvoiceFeatures, Bolt11InvoiceSignature, Bolt11ParseError,
 	Bolt11SemanticError, Currency, Description, ExpiryTime, Fallback, MinFinalCltvExpiryDelta,
 	ParseOrSemanticError, PayeePubKey, PositiveTimestamp, PrivateRoute, RawBolt11Invoice,
 	RawDataPart, RawHrp, RawTaggedField, Sha256, SiPrefix, SignedRawBolt11Invoice, TaggedField,
+	constants,
 };
 
 use self::hrp_sm::parse_hrp;
@@ -1110,9 +1111,11 @@ mod test {
 									.unwrap(),
 								))
 								.into(),
-								Description(crate::Description::new("coffee beans".to_owned()).unwrap()).into(),
+						Description(crate::Description::new("coffee beans".to_owned()).unwrap())
+							.into(),
 								PaymentSecret(crate::PaymentSecret([17; 32])).into(),
-								Features(expected_features).into()],
+						Features(expected_features).into(),
+					],
 				},
 			},
 			hash: [
@@ -1236,7 +1239,7 @@ mod test {
 			 qqqqqqqqp9a5vs0t4z56p64xyma8s84yvdx7uhqj0gvrr424fea2wpztq2fwqqqqqqqqqqqqqqqqqqqqqqqqqq\
 			 qqqqmy9qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq\
 			 qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqpcnsxc32du9n7amlypuhclzqrt6lkegq\
-			 0v3r7nczjv9tv30z7phq80r3dm7pvgykl7gwuenmem93h5xwdwac6ngsmzqc34khrg3qjgsq6qk6lc"
+			 0v3r7nczjv9tv30z7phq80r3dm7pvgykl7gwuenmem93h5xwdwac6ngsmzqc34khrg3qjgsq6qk6lc",
 		);
 		// 1517 B mainnet invoice from Lexe proptest
 		parse_ok(
@@ -1257,7 +1260,7 @@ mod test {
 			 ccadacjtn52lpe6s85rjfqlxzp6frq33xshaz2nr9xjkhd3jj8qg39nmfzvpgmayakqmy9rseakwgcudug7hs4\
 			 5wh430ywh7qhj3khczh8gle4cn93ymgfwa7rrvcw9lywyyz58k4p40a3nu9svthaf0qeg8f2ay4tw9p48p70qm\
 			 ayu3ejl2q8pj9e2l22h7775tl44hs6ke4sdfgcr6aj8wra4r2v9sj6xa5chd5ctpfg8chtrer3kkp0e6af88lk\
-			 rfxcklf2hyslv2hr0xl5lwrm5y5uttxn4ndfz8789znf78nspa3xy68"
+			 rfxcklf2hyslv2hr0xl5lwrm5y5uttxn4ndfz8789znf78nspa3xy68",
 		);
 		// 1804 B regtest invoice from Lexe proptest
 		parse_ok(
@@ -1281,7 +1284,7 @@ mod test {
 			 zen7e2qmsdauk665g3llg5qtl79t3xulrhjnducehdn72gpmkjvtth7kh6ejpl9dv0qcsxv2jvzzvg0hzdmk3y\
 			 jsmydqksdk3h78kc63qnr265h8vyeslqexszppfm7y287t3gxvhw0ulg2wp0rsw3tevz03z50kpy77zdz9snxm\
 			 kkwxd76xvj4qvj2f89rrnuvdvzw947ay0kydc077pkec2jet9qwp2tud98s24u65uz07eaxk5jk3e4nggn2caa\
-			 ek2p5pkrc6mm6mxjm2ezpdu8p5jstg6tgvnttgac3ygt5ys04t4udujzlshpl7e4f3ff03xe6v24cp6aq4wa"
+			 ek2p5pkrc6mm6mxjm2ezpdu8p5jstg6tgvnttgac3ygt5ys04t4udujzlshpl7e4f3ff03xe6v24cp6aq4wa",
 		);
 		// 1870 B testnet invoice from Lexe proptest
 		parse_ok(
@@ -1306,7 +1309,7 @@ mod test {
 			 z38cnwl9ma6m5f4nhzqaj0tjxpfrk4nr5arv9d20lvxvddvffhzygmyuvwd959uhdcgcgjejchqt2qncuwpqqk\
 			 5vws7dflw8x6esrfwhz7h3jwmhevf445k76nme926sr8drsdveqg7l7t7lnjvhaludqnwk4l2pmevkjf9pla92\
 			 4p77v76r7x8jzyy7h59hmk0lgzfsk6c8dpj37hssj7jt4q7jzvy8hq25l3pag37axxanjqnq56c47gpgy6frsy\
-			 c0str9w2aahz4h6t7axaka4cwvhwg49r6qgj8kwz2mt6vcje25l9ekvmgq5spqtn"
+			 c0str9w2aahz4h6t7axaka4cwvhwg49r6qgj8kwz2mt6vcje25l9ekvmgq5spqtn",
 		);
 	}
 
@@ -1320,8 +1323,8 @@ mod test {
 			SignedRawBolt11Invoice,
 		};
 		use bitcoin::hex::FromHex;
-		use bitcoin::secp256k1::ecdsa::{RecoverableSignature, RecoveryId};
 		use bitcoin::secp256k1::PublicKey;
+		use bitcoin::secp256k1::ecdsa::{RecoverableSignature, RecoveryId};
 		use lightning_types::routing::{RouteHint, RouteHintHop, RoutingFees};
 
 		// Generate an `UnknownSemantics` field with a given length.
@@ -1425,7 +1428,7 @@ mod test {
 	// Test that invoices above the maximum length fail to parse with the expected error.
 	#[test]
 	fn test_deser_too_long_fails() {
-		use crate::{Bolt11Invoice, ParseOrSemanticError, MAX_LENGTH};
+		use crate::{Bolt11Invoice, MAX_LENGTH, ParseOrSemanticError};
 		use bech32::primitives::decode::{CheckedHrpstringError, ChecksumError};
 
 		fn parse_is_code_length_err(s: &str) -> bool {

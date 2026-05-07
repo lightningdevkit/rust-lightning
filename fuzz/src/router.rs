@@ -12,8 +12,8 @@ use bitcoin::constants::ChainHash;
 use bitcoin::script::Builder;
 use bitcoin::transaction::TxOut;
 
-use lightning::blinded_path::payment::{BlindedPayInfo, BlindedPaymentPath};
 use lightning::blinded_path::BlindedHop;
+use lightning::blinded_path::payment::{BlindedPayInfo, BlindedPaymentPath};
 use lightning::chain::transaction::OutPoint;
 use lightning::ln::channel_state::{ChannelCounterparty, ChannelDetails, ChannelShutdownState};
 use lightning::ln::channelmanager;
@@ -21,7 +21,7 @@ use lightning::ln::msgs;
 use lightning::ln::types::ChannelId;
 use lightning::routing::gossip::{NetworkGraph, RoutingFees};
 use lightning::routing::router::{
-	find_route, PaymentParameters, RouteHint, RouteHintHop, RouteParameters,
+	PaymentParameters, RouteHint, RouteHintHop, RouteParameters, find_route,
 };
 use lightning::routing::scoring::{
 	ProbabilisticScorer, ProbabilisticScoringDecayParameters, ProbabilisticScoringFeeParameters,
@@ -40,8 +40,8 @@ use bitcoin::secp256k1::PublicKey;
 use crate::utils::test_logger;
 
 use std::convert::TryInto;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[inline]
 pub fn slice_to_be16(v: &[u8]) -> u16 {
@@ -429,7 +429,7 @@ pub fn router_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 	do_test(data, out);
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn router_run(data: *const u8, datalen: usize) {
 	do_test(unsafe { std::slice::from_raw_parts(data, datalen) }, test_logger::DevNull {});
 }

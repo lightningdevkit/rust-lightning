@@ -9,7 +9,7 @@
 
 use lightning::util::hash_tables::*;
 use lightning::util::indexed_map::{self, IndexedMap};
-use std::collections::{btree_map, BTreeMap};
+use std::collections::{BTreeMap, btree_map};
 
 use crate::utils::test_logger;
 
@@ -177,7 +177,7 @@ pub fn indexedmap_test<Out: test_logger::Output>(data: &[u8], _out: Out) {
 	do_test(data);
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn indexedmap_run(data: *const u8, datalen: usize) {
 	do_test(unsafe { std::slice::from_raw_parts(data, datalen) });
 }

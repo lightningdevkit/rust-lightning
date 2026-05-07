@@ -51,7 +51,7 @@ pub fn bech32_parse_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 	do_test(data, out);
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn bech32_parse_run(data: *const u8, datalen: usize) {
 	do_test(unsafe { std::slice::from_raw_parts(data, datalen) }, test_logger::DevNull {});
 }

@@ -15,9 +15,9 @@ use crate::io;
 use crate::ln::inbound_payment::ExpandedKey;
 use crate::ln::msgs::DecodeError;
 use crate::offers::invoice::{
-	check_invoice_signing_pubkey, construct_payment_paths, filter_fallbacks,
 	ExperimentalInvoiceTlvStream, ExperimentalInvoiceTlvStreamRef, FallbackAddress,
-	InvoiceTlvStream, InvoiceTlvStreamRef,
+	InvoiceTlvStream, InvoiceTlvStreamRef, check_invoice_signing_pubkey, construct_payment_paths,
+	filter_fallbacks,
 };
 #[cfg(test)]
 use crate::offers::invoice_macros::invoice_builder_methods_test_common;
@@ -28,8 +28,8 @@ use crate::offers::merkle::{
 };
 use crate::offers::nonce::Nonce;
 use crate::offers::offer::{
-	Amount, ExperimentalOfferTlvStream, ExperimentalOfferTlvStreamRef, Offer, OfferContents,
-	OfferId, OfferTlvStream, OfferTlvStreamRef, Quantity, EXPERIMENTAL_OFFER_TYPES, OFFER_TYPES,
+	Amount, EXPERIMENTAL_OFFER_TYPES, ExperimentalOfferTlvStream, ExperimentalOfferTlvStreamRef,
+	OFFER_TYPES, Offer, OfferContents, OfferId, OfferTlvStream, OfferTlvStreamRef, Quantity,
 };
 use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
 use crate::types::features::{Bolt12InvoiceFeatures, OfferFeatures};
@@ -652,7 +652,7 @@ impl TryFrom<ParsedMessage<FullInvoiceTlvStream>> for StaticInvoice {
 			None => {
 				return Err(Bolt12ParseError::InvalidSemantics(
 					Bolt12SemanticError::MissingSignature,
-				))
+				));
 			},
 			Some(signature) => signature,
 		};
@@ -737,13 +737,13 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 
 #[cfg(test)]
 mod tests {
-	use crate::blinded_path::message::BlindedMessagePath;
 	use crate::blinded_path::BlindedHop;
+	use crate::blinded_path::message::BlindedMessagePath;
 	use crate::ln::inbound_payment::ExpandedKey;
 	use crate::ln::msgs::DecodeError;
 	use crate::offers::invoice::{
-		ExperimentalInvoiceTlvStreamRef, InvoiceTlvStreamRef, EXPERIMENTAL_INVOICE_TYPES,
-		INVOICE_TYPES,
+		EXPERIMENTAL_INVOICE_TYPES, ExperimentalInvoiceTlvStreamRef, INVOICE_TYPES,
+		InvoiceTlvStreamRef,
 	};
 	use crate::offers::merkle;
 	use crate::offers::merkle::{SignatureTlvStreamRef, TaggedHash, TlvStream};
@@ -753,15 +753,15 @@ mod tests {
 	};
 	use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError};
 	use crate::offers::static_invoice::{
-		StaticInvoice, StaticInvoiceBuilder, UnsignedStaticInvoice, DEFAULT_RELATIVE_EXPIRY,
-		SIGNATURE_TAG,
+		DEFAULT_RELATIVE_EXPIRY, SIGNATURE_TAG, StaticInvoice, StaticInvoiceBuilder,
+		UnsignedStaticInvoice,
 	};
 	use crate::offers::test_utils::*;
 	use crate::types::features::{Bolt12InvoiceFeatures, OfferFeatures};
 	use crate::util::ser::{BigSize, Iterable, Writeable};
+	use bitcoin::Network;
 	use bitcoin::constants::ChainHash;
 	use bitcoin::secp256k1::{self, Secp256k1};
-	use bitcoin::Network;
 	use core::time::Duration;
 
 	type FullInvoiceTlvStreamRef<'a> = (

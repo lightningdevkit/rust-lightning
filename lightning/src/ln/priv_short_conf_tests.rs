@@ -14,7 +14,7 @@
 use crate::chain::ChannelMonitorUpdateStatus;
 use crate::events::{ClosureReason, Event, HTLCHandlingFailureType, PaymentFailureReason};
 use crate::ln::channel::CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY;
-use crate::ln::channelmanager::{PaymentId, TrustedChannelFeatures, MIN_CLTV_EXPIRY_DELTA};
+use crate::ln::channelmanager::{MIN_CLTV_EXPIRY_DELTA, PaymentId, TrustedChannelFeatures};
 use crate::ln::msgs;
 use crate::ln::msgs::{
 	BaseMessageHandler, ChannelMessageHandler, ErrorAction, MessageSendEvent, RoutingMessageHandler,
@@ -286,10 +286,11 @@ fn do_test_1_conf_open(connect_style: ConnectStyle) {
 
 	for (i, node) in nodes.iter().enumerate() {
 		let counterparty_node_id = nodes[(i + 1) % 2].node.get_our_node_id();
-		assert!(node
-			.gossip_sync
+		assert!(
+			node.gossip_sync
 			.handle_channel_announcement(Some(counterparty_node_id), &announcement)
-			.unwrap());
+				.unwrap()
+		);
 		node.gossip_sync.handle_channel_update(Some(counterparty_node_id), &as_update).unwrap();
 		node.gossip_sync.handle_channel_update(Some(counterparty_node_id), &bs_update).unwrap();
 	}
@@ -442,12 +443,9 @@ fn test_scid_privacy_negotiation() {
 
 	let second_open_channel =
 		get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
-	assert!(!second_open_channel
-		.common_fields
-		.channel_type
-		.as_ref()
-		.unwrap()
-		.supports_scid_privacy());
+	assert!(
+		!second_open_channel.common_fields.channel_type.as_ref().unwrap().supports_scid_privacy()
+	);
 	handle_and_accept_open_channel(&nodes[1], node_a_id, &second_open_channel);
 	nodes[0].node.handle_accept_channel(
 		node_b_id,
@@ -461,16 +459,12 @@ fn test_scid_privacy_negotiation() {
 		_ => panic!("Unexpected event"),
 	}
 
-	assert!(!nodes[0].node.list_channels()[0]
-		.channel_type
-		.as_ref()
-		.unwrap()
-		.supports_scid_privacy());
-	assert!(!nodes[1].node.list_channels()[0]
-		.channel_type
-		.as_ref()
-		.unwrap()
-		.supports_scid_privacy());
+	assert!(
+		!nodes[0].node.list_channels()[0].channel_type.as_ref().unwrap().supports_scid_privacy()
+	);
+	assert!(
+		!nodes[1].node.list_channels()[0].channel_type.as_ref().unwrap().supports_scid_privacy()
+	);
 }
 
 #[test]
@@ -1334,10 +1328,12 @@ fn test_zero_conf_accept_reject() {
 	match events[0] {
 		Event::OpenChannelRequest { temporary_channel_id, .. } => {
 			// Assert we fail to accept via the non-0conf method
-			assert!(nodes[1]
+			assert!(
+				nodes[1]
 				.node
 				.accept_inbound_channel(&temporary_channel_id, &node_a_id, 0, None)
-				.is_err());
+					.is_err()
+			);
 		},
 		_ => panic!(),
 	}
@@ -1367,7 +1363,8 @@ fn test_zero_conf_accept_reject() {
 	match events[0] {
 		Event::OpenChannelRequest { temporary_channel_id, .. } => {
 			// Assert we can accept via the 0conf method
-			assert!(nodes[1]
+			assert!(
+				nodes[1]
 				.node
 				.accept_inbound_channel_from_trusted_peer(
 					&temporary_channel_id,
@@ -1376,7 +1373,8 @@ fn test_zero_conf_accept_reject() {
 					TrustedChannelFeatures::ZeroConf,
 					None,
 				)
-				.is_ok());
+					.is_ok()
+			);
 		},
 		_ => panic!(),
 	}
@@ -1526,7 +1524,7 @@ fn test_channel_update_dont_forward_flag() {
 	let public_channel_update = events
 		.iter()
 		.find_map(|e| {
-			if let MessageSendEvent::BroadcastChannelUpdate { ref msg, .. } = e {
+			if let MessageSendEvent::BroadcastChannelUpdate { msg, .. } = e {
 				Some(msg.clone())
 			} else {
 				None
@@ -1571,10 +1569,10 @@ fn test_channel_update_dont_forward_flag() {
 
 #[test]
 fn test_unknown_channel_update_with_dont_forward_logs_debug() {
+	use bitcoin::Network;
 	use bitcoin::constants::ChainHash;
 	use bitcoin::secp256k1::ecdsa::Signature;
 	use bitcoin::secp256k1::ffi::Signature as FFISignature;
-	use bitcoin::Network;
 
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);

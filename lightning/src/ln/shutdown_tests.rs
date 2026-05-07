@@ -10,8 +10,8 @@
 //! Tests of our shutdown and closing_signed negotiation logic as well as some assorted force-close
 //! handling tests.
 
-use crate::chain::transaction::OutPoint;
 use crate::chain::ChannelMonitorUpdateStatus;
+use crate::chain::transaction::OutPoint;
 use crate::events::{ClosureReason, Event, HTLCHandlingFailureReason, HTLCHandlingFailureType};
 use crate::ln::channel_state::{ChannelDetails, ChannelShutdownState};
 use crate::ln::channelmanager::{self, PaymentId};
@@ -22,7 +22,7 @@ use crate::ln::outbound_payment::{RecipientOnionFields, Retry};
 use crate::ln::script::ShutdownScript;
 use crate::ln::types::ChannelId;
 use crate::prelude::*;
-use crate::routing::router::{get_route, PaymentParameters, RouteParameters};
+use crate::routing::router::{PaymentParameters, RouteParameters, get_route};
 use crate::sign::{EntropySource, SignerProvider};
 use crate::types::string::UntrustedString;
 use crate::util::config::UserConfig;
@@ -998,10 +998,12 @@ fn test_unsupported_anysegwit_upfront_shutdown_script() {
 	assert_eq!(events.len(), 1);
 	match &events[0] {
 		Event::OpenChannelRequest { temporary_channel_id, counterparty_node_id, .. } => {
-			assert!(nodes[1]
+			assert!(
+				nodes[1]
 				.node
 				.accept_inbound_channel(temporary_channel_id, counterparty_node_id, 42, None,)
-				.is_err());
+					.is_err()
+			);
 		},
 		_ => panic!("Unexpected event"),
 	};
@@ -1014,7 +1016,10 @@ fn test_unsupported_anysegwit_upfront_shutdown_script() {
 			node_id,
 		} => {
 			assert_eq!(node_id, node_a_id);
-			assert_eq!(msg.data, "Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: OP_PUSHNUM_16 OP_PUSHBYTES_2 0028");
+			assert_eq!(
+				msg.data,
+				"Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: OP_PUSHNUM_16 OP_PUSHBYTES_2 0028"
+			);
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -1048,7 +1053,10 @@ fn test_unsupported_anysegwit_upfront_shutdown_script() {
 			node_id,
 		} => {
 			assert_eq!(node_id, node_b_id);
-			assert_eq!(msg.data, "Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: OP_PUSHNUM_16 OP_PUSHBYTES_2 0028");
+			assert_eq!(
+				msg.data,
+				"Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: OP_PUSHNUM_16 OP_PUSHBYTES_2 0028"
+			);
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -1076,10 +1084,12 @@ fn test_invalid_upfront_shutdown_script() {
 	assert_eq!(events.len(), 1);
 	match &events[0] {
 		Event::OpenChannelRequest { temporary_channel_id, counterparty_node_id, .. } => {
-			assert!(nodes[1]
+			assert!(
+				nodes[1]
 				.node
 				.accept_inbound_channel(temporary_channel_id, counterparty_node_id, 42, None,)
-				.is_err());
+					.is_err()
+			);
 		},
 		_ => panic!("Unexpected event"),
 	};
@@ -1092,7 +1102,10 @@ fn test_invalid_upfront_shutdown_script() {
 			node_id,
 		} => {
 			assert_eq!(node_id, node_a_id);
-			assert_eq!(msg.data, "Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: OP_0 OP_PUSHBYTES_2 0000");
+			assert_eq!(
+				msg.data,
+				"Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: OP_0 OP_PUSHBYTES_2 0000"
+			);
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -1368,8 +1381,10 @@ fn do_test_closing_signed_reinit_timeout(timeout_step: TimeoutStep) {
 
 	if timeout_step != TimeoutStep::AfterShutdown {
 		nodes[1].node.handle_closing_signed(node_a_id, &node_0_closing_signed);
-		assert!(check_warn_msg!(nodes[1], node_a_id, chan_id)
-			.starts_with("Unable to come to consensus about closing feerate"));
+		assert!(
+			check_warn_msg!(nodes[1], node_a_id, chan_id)
+				.starts_with("Unable to come to consensus about closing feerate")
+		);
 
 		// Now deliver a mutated closing_signed indicating a higher acceptable fee range, which
 		// nodes[1] should happily accept and respond to.

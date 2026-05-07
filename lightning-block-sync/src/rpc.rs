@@ -5,8 +5,8 @@ use crate::gossip::UtxoSource;
 use crate::http::{HttpClient, HttpClientError, JsonResponse, ToParseErrorMessage};
 use crate::{BlockData, BlockHeaderData, BlockSource, BlockSourceResult};
 
-use bitcoin::hash_types::BlockHash;
 use bitcoin::OutPoint;
+use bitcoin::hash_types::BlockHash;
 
 use serde_json;
 

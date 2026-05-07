@@ -9,7 +9,7 @@ description = """
 A Complete Bitcoin Lightning Library in Rust.
 Handles the core functionality of the Lightning Network, allowing clients to implement custom wallet, chain interactions, storage and network logic without enforcing a specific runtime.
 """
-edition = "2021"
+edition = "2024"
 rust-version = "1.85"
 
 [package.metadata.docs.rs]

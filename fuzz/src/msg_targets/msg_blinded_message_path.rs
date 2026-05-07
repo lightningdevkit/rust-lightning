@@ -20,7 +20,7 @@ pub fn msg_blinded_message_path_test<Out: test_logger::Output>(data: &[u8], _out
 	test_msg_simple!(lightning::blinded_path::message::BlindedMessagePath, data);
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn msg_blinded_message_path_run(data: *const u8, datalen: usize) {
 	let data = unsafe { std::slice::from_raw_parts(data, datalen) };
 	test_msg_simple!(lightning::blinded_path::message::BlindedMessagePath, data);

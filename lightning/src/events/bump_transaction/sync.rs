@@ -65,7 +65,9 @@ where
 			task::Poll::Ready(result) => result,
 			task::Poll::Pending => {
 				// In a sync context, we can't wait for the future to complete.
-				unreachable!("BumpTransactionEventHandlerSync::handle_event should not be pending in a sync context");
+				unreachable!(
+					"BumpTransactionEventHandlerSync::handle_event should not be pending in a sync context"
+				);
 			},
 		}
 	}

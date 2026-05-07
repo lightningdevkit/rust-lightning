@@ -12,9 +12,9 @@
 use bitcoin::secp256k1::schnorr::Signature;
 use bitcoin::secp256k1::{Keypair, PublicKey, Secp256k1, SecretKey};
 
+use crate::blinded_path::BlindedHop;
 use crate::blinded_path::message::BlindedMessagePath;
 use crate::blinded_path::payment::{BlindedPayInfo, BlindedPaymentPath};
-use crate::blinded_path::BlindedHop;
 use crate::ln::inbound_payment::ExpandedKey;
 use crate::offers::merkle::TaggedHash;
 use crate::sign::EntropySource;

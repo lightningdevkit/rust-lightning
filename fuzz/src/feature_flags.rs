@@ -91,7 +91,7 @@ pub fn feature_flags_test<Out: test_logger::Output>(data: &[u8], _out: Out) {
 	do_test(data);
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn feature_flags_run(data: *const u8, datalen: usize) {
 	do_test(unsafe { std::slice::from_raw_parts(data, datalen) });
 }

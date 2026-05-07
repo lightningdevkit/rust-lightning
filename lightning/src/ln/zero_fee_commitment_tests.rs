@@ -8,8 +8,8 @@ use crate::ln::functional_test_utils::*;
 use crate::ln::msgs::BaseMessageHandler;
 use crate::prelude::*;
 
-use bitcoin::constants::WITNESS_SCALE_FACTOR;
 use bitcoin::Amount;
+use bitcoin::constants::WITNESS_SCALE_FACTOR;
 
 #[test]
 fn test_p2a_anchor_values_under_trims_and_rounds() {

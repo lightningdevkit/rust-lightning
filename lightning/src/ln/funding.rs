@@ -13,14 +13,14 @@ use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::{Amount, FeeRate, OutPoint, ScriptBuf, SignedAmount, TxOut, WScriptHash, Weight};
 
+use crate::ln::LN_MAX_MSG_LEN;
 use crate::ln::chan_utils::{
-	make_funding_redeemscript, BASE_INPUT_WEIGHT, EMPTY_SCRIPT_SIG_WEIGHT,
-	FUNDING_TRANSACTION_WITNESS_WEIGHT,
+	BASE_INPUT_WEIGHT, EMPTY_SCRIPT_SIG_WEIGHT, FUNDING_TRANSACTION_WITNESS_WEIGHT,
+	make_funding_redeemscript,
 };
-use crate::ln::interactivetxs::{get_output_weight, TX_COMMON_FIELDS_WEIGHT};
+use crate::ln::interactivetxs::{TX_COMMON_FIELDS_WEIGHT, get_output_weight};
 use crate::ln::msgs;
 use crate::ln::types::ChannelId;
-use crate::ln::LN_MAX_MSG_LEN;
 use crate::prelude::*;
 use crate::util::native_async::MaybeSend;
 use crate::util::wallet_utils::{
@@ -768,11 +768,7 @@ impl FundingContribution {
 		for existing in existing_outputs {
 			outputs.retain(|output| *output != *existing);
 		}
-		if inputs.is_empty() && outputs.is_empty() {
-			None
-		} else {
-			Some((inputs, outputs))
-		}
+		if inputs.is_empty() && outputs.is_empty() { None } else { Some((inputs, outputs)) }
 	}
 
 	/// Computes the adjusted fee and change output value at the given target feerate, which may
@@ -1550,8 +1546,8 @@ impl<W: CoinSelectionSourceSync> SyncFundingBuilder<W> {
 #[cfg(test)]
 mod tests {
 	use super::{
-		estimate_transaction_fee, FeeRateAdjustmentError, FundingBuilder, FundingContribution,
-		FundingContributionError, FundingTemplate, FundingTxInput, PriorContribution,
+		FeeRateAdjustmentError, FundingBuilder, FundingContribution, FundingContributionError,
+		FundingTemplate, FundingTxInput, PriorContribution, estimate_transaction_fee,
 	};
 	use crate::chain::ClaimId;
 	use crate::util::wallet_utils::{CoinSelection, CoinSelectionSourceSync, Input};

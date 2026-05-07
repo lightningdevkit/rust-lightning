@@ -15,12 +15,12 @@ use crate::chain::transaction::OutPoint;
 use crate::chain::{self, ChannelMonitorUpdateStatus};
 use crate::events::{ClosureReason, Event, FundingInfo};
 use crate::ln::channel::{
-	get_holder_selected_channel_reserve_satoshis, ChannelError, InboundV1Channel,
-	OutboundV1Channel, COINBASE_MATURITY, UNFUNDED_CHANNEL_AGE_LIMIT_TICKS,
+	COINBASE_MATURITY, ChannelError, InboundV1Channel, OutboundV1Channel,
+	UNFUNDED_CHANNEL_AGE_LIMIT_TICKS, get_holder_selected_channel_reserve_satoshis,
 };
 use crate::ln::channelmanager::{
-	self, TrustedChannelFeatures, BREAKDOWN_TIMEOUT, MAX_UNFUNDED_CHANNEL_PEERS,
-	MAX_UNFUNDED_CHANS_PER_PEER,
+	self, BREAKDOWN_TIMEOUT, MAX_UNFUNDED_CHANNEL_PEERS, MAX_UNFUNDED_CHANS_PER_PEER,
+	TrustedChannelFeatures,
 };
 use crate::ln::msgs::{
 	AcceptChannel, BaseMessageHandler, ChannelMessageHandler, ErrorAction, MessageSendEvent,
@@ -34,6 +34,7 @@ use crate::util::config::{
 use crate::util::errors::APIError;
 use crate::util::test_utils::{self, TestLogger};
 
+use bitcoin::OutPoint as BitcoinOutPoint;
 use bitcoin::constants::ChainHash;
 use bitcoin::hashes::Hash;
 use bitcoin::locktime::absolute::LockTime;
@@ -41,7 +42,6 @@ use bitcoin::network::Network;
 use bitcoin::script::ScriptBuf;
 use bitcoin::secp256k1::{PublicKey, SecretKey};
 use bitcoin::transaction::Version;
-use bitcoin::OutPoint as BitcoinOutPoint;
 use bitcoin::{Amount, Sequence, Transaction, TxIn, TxOut, Witness};
 
 use lightning_macros::xtest;
@@ -830,10 +830,12 @@ pub fn bolt2_open_channel_sending_node_checks_part1() {
 
 	// Create a second channel with the same random values. This used to panic due to a colliding
 	// channel_id, but now panics due to a colliding outbound SCID alias.
-	assert!(nodes[0]
+	assert!(
+		nodes[0]
 		.node
 		.create_channel(node_b_id, channel_value_satoshis, push_msat, 42, None, None)
-		.is_err());
+			.is_err()
+	);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -849,10 +851,12 @@ pub fn bolt2_open_channel_sending_node_checks_part2() {
 	let channel_value_satoshis = 10000;
 	// Test when push_msat is equal to 1000 * funding_satoshis.
 	let push_msat = 1000 * channel_value_satoshis + 1;
-	assert!(nodes[0]
+	assert!(
+		nodes[0]
 		.node
 		.create_channel(node_b_id, channel_value_satoshis, push_msat, 42, None, None)
-		.is_err());
+			.is_err()
+	);
 
 	nodes[0].node.create_channel(node_b_id, 100_000, 0, 42, None, None).unwrap();
 
@@ -944,11 +948,13 @@ pub fn test_user_configurable_csv_delay() {
 	) {
 		match error {
 			APIError::APIMisuseError { err } => {
-				assert!(regex::Regex::new(
+				assert!(
+					regex::Regex::new(
 					r"Configured with an unreasonable our_to_self_delay \(\d+\) putting user funds at risks"
 				)
 				.unwrap()
-				.is_match(err.as_str()));
+					.is_match(err.as_str())
+				);
 			},
 			_ => panic!("Unexpected event"),
 		}
@@ -2477,7 +2483,10 @@ fn test_fund_pending_channel() {
 	let pending_chan = [(&open_msg.common_fields.temporary_channel_id, &node_b_id)];
 	let res = nodes[0].node.batch_funding_transaction_generated(&pending_chan, tx);
 	if let Err(APIError::APIMisuseError { err }) = res {
-		assert_eq!(err, "Channel f7fee84016d554015f5166c0a0df6479942ef55fd70713883b0493493a38e13a with counterparty 0355f8d2238a322d16b602bd0ceaad5b01019fb055971eaadcc9b29226a4da6c23 is not an unfunded, outbound channel ready to fund");
+		assert_eq!(
+			err,
+			"Channel f7fee84016d554015f5166c0a0df6479942ef55fd70713883b0493493a38e13a with counterparty 0355f8d2238a322d16b602bd0ceaad5b01019fb055971eaadcc9b29226a4da6c23 is not an unfunded, outbound channel ready to fund"
+		);
 	} else {
 		panic!("Unexpected result {res:?}");
 	}

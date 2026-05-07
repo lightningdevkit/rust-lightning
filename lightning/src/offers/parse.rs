@@ -27,7 +27,7 @@ pub use sealed::Bech32Encode;
 mod sealed {
 	use super::Bolt12ParseError;
 	use bech32::primitives::decode::CheckedHrpstring;
-	use bech32::{encode_to_fmt, EncodeError, Hrp, NoChecksum};
+	use bech32::{EncodeError, Hrp, NoChecksum, encode_to_fmt};
 	use core::fmt;
 
 	#[allow(unused_imports)]
@@ -285,16 +285,12 @@ mod bolt12_tests {
 		let offers = [
 			// A complete string is valid
 			"lno1pqps7sjqpgtyzm3qv4uxzmtsd3jjqer9wd3hy6tsw35k7msjzfpy7nz5yqcnygrfdej82um5wf5k2uckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd5xvxg",
-
 			// Uppercase is valid
 			"LNO1PQPS7SJQPGTYZM3QV4UXZMTSD3JJQER9WD3HY6TSW35K7MSJZFPY7NZ5YQCNYGRFDEJ82UM5WF5K2UCKYYPWA3EYT44H6TXTXQUQH7LZ5DJGE4AFGFJN7K4RGRKUAG0JSD5XVXG",
-
 			// + can join anywhere
 			"l+no1pqps7sjqpgtyzm3qv4uxzmtsd3jjqer9wd3hy6tsw35k7msjzfpy7nz5yqcnygrfdej82um5wf5k2uckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd5xvxg",
-
 			// Multiple + can join
 			"lno1pqps7sjqpgt+yzm3qv4uxzmtsd3jjqer9wd3hy6tsw3+5k7msjzfpy7nz5yqcn+ygrfdej82um5wf5k2uckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd+5xvxg",
-
 			// + can be followed by whitespace
 			"lno1pqps7sjqpgt+ yzm3qv4uxzmtsd3jjqer9wd3hy6tsw3+  5k7msjzfpy7nz5yqcn+\nygrfdej82um5wf5k2uckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd+\r\n 5xvxg",
 		];

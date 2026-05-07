@@ -9,10 +9,10 @@
 
 //! Further functional tests which test blockchain reorganizations.
 
-use crate::chain::chaininterface::LowerBoundedFeeEstimator;
-use crate::chain::channelmonitor::{Balance, ANTI_REORG_DELAY, LATENCY_GRACE_PERIOD_BLOCKS};
-use crate::chain::transaction::OutPoint;
 use crate::chain::Confirm;
+use crate::chain::chaininterface::LowerBoundedFeeEstimator;
+use crate::chain::channelmonitor::{ANTI_REORG_DELAY, Balance, LATENCY_GRACE_PERIOD_BLOCKS};
+use crate::chain::transaction::OutPoint;
 use crate::events::{ClosureReason, Event, HTLCHandlingFailureType};
 use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, Init, MessageSendEvent};
 use crate::ln::types::ChannelId;
@@ -341,8 +341,7 @@ fn do_test_unconf_chan(
 	}
 
 	let expected_err = "Funding transaction was un-confirmed, originally locked at 6 confs.";
-	let broadcast_close_msg =
-		"Channel closed because of an exception: Funding transaction was un-confirmed, originally locked at 6 confs.";
+	let broadcast_close_msg = "Channel closed because of an exception: Funding transaction was un-confirmed, originally locked at 6 confs.";
 	let counterparty_force_closed_reason = || ClosureReason::CounterpartyForceClosed {
 		peer_msg: UntrustedString(format!(
 			"Channel closed because of an exception: {}",
@@ -838,8 +837,8 @@ fn test_htlc_preimage_claim_holder_commitment_after_counterparty_commitment_reor
 }
 
 #[test]
-fn test_htlc_preimage_claim_prev_counterparty_commitment_after_current_counterparty_commitment_reorg(
-) {
+fn test_htlc_preimage_claim_prev_counterparty_commitment_after_current_counterparty_commitment_reorg()
+ {
 	// We detect a counterparty commitment confirm onchain, followed by a reorg and a
 	// confirmation of the previous (still unrevoked) counterparty commitment. Then, if we learn
 	// of the preimage for an HTLC in both commitments, test that we only claim the currently

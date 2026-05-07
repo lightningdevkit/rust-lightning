@@ -16,8 +16,8 @@ use crate::util::ser::Writeable;
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::{Amount, TxOut};
 
-use crate::chain::channelmonitor::LATENCY_GRACE_PERIOD_BLOCKS;
 use crate::chain::ChannelMonitorUpdateStatus;
+use crate::chain::channelmonitor::LATENCY_GRACE_PERIOD_BLOCKS;
 use crate::events::{ClosureReason, Event};
 use crate::ln::chan_utils::ClosingTransaction;
 use crate::ln::channel::DISCONNECT_PEER_AWAITING_RESPONSE_TICKS;
@@ -26,8 +26,8 @@ use crate::ln::channelmanager::{PaymentId, RAACommitmentOrder, TrustedChannelFea
 use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, ErrorAction, MessageSendEvent};
 use crate::ln::outbound_payment::RecipientOnionFields;
 use crate::ln::{functional_test_utils::*, msgs};
-use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::sign::SignerProvider;
+use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::util::logger::Logger;
 use crate::util::test_channel_signer::SignerOp;
 use crate::util::wallet_utils::WalletSourceSync;

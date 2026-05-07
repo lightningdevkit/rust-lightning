@@ -20,7 +20,7 @@ pub fn msg_accept_channel_test<Out: test_logger::Output>(data: &[u8], _out: Out)
 	test_msg_simple!(lightning::ln::msgs::AcceptChannel, data);
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn msg_accept_channel_run(data: *const u8, datalen: usize) {
 	let data = unsafe { std::slice::from_raw_parts(data, datalen) };
 	test_msg_simple!(lightning::ln::msgs::AcceptChannel, data);

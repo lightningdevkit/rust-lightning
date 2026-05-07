@@ -23,7 +23,7 @@ pub fn fromstr_to_netaddress_test<Out: test_logger::Output>(data: &[u8], _out: O
 	do_test(data);
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn fromstr_to_netaddress_run(data: *const u8, datalen: usize) {
 	do_test(unsafe { std::slice::from_raw_parts(data, datalen) });
 }

@@ -10,20 +10,20 @@ use core::fmt::{self, Display};
 use core::str::FromStr;
 
 use crate::lsps0::msgs::{
-	LSPS0ListProtocolsRequest, LSPS0Message, LSPS0Request, LSPS0Response,
-	LSPS0_LISTPROTOCOLS_METHOD_NAME,
+	LSPS0_LISTPROTOCOLS_METHOD_NAME, LSPS0ListProtocolsRequest, LSPS0Message, LSPS0Request,
+	LSPS0Response,
 };
 
 use crate::lsps1::msgs::{
-	LSPS1Message, LSPS1Request, LSPS1Response, LSPS1_CREATE_ORDER_METHOD_NAME,
-	LSPS1_GET_INFO_METHOD_NAME, LSPS1_GET_ORDER_METHOD_NAME,
+	LSPS1_CREATE_ORDER_METHOD_NAME, LSPS1_GET_INFO_METHOD_NAME, LSPS1_GET_ORDER_METHOD_NAME,
+	LSPS1Message, LSPS1Request, LSPS1Response,
 };
 use crate::lsps2::msgs::{
-	LSPS2Message, LSPS2Request, LSPS2Response, LSPS2_BUY_METHOD_NAME, LSPS2_GET_INFO_METHOD_NAME,
+	LSPS2_BUY_METHOD_NAME, LSPS2_GET_INFO_METHOD_NAME, LSPS2Message, LSPS2Request, LSPS2Response,
 };
 use crate::lsps5::msgs::{
-	LSPS5Message, LSPS5Request, LSPS5Response, LSPS5_LIST_WEBHOOKS_METHOD_NAME,
-	LSPS5_REMOVE_WEBHOOK_METHOD_NAME, LSPS5_SET_WEBHOOK_METHOD_NAME,
+	LSPS5_LIST_WEBHOOKS_METHOD_NAME, LSPS5_REMOVE_WEBHOOK_METHOD_NAME,
+	LSPS5_SET_WEBHOOK_METHOD_NAME, LSPS5Message, LSPS5Request, LSPS5Response,
 };
 
 use crate::prelude::HashMap;
@@ -664,7 +664,9 @@ impl<'de, 'a> Visitor<'de> for LSPSMessageVisitor<'a> {
 								LSPS0Response::ListProtocols(list_protocols_response),
 							)))
 						} else {
-							Err(de::Error::custom("Received invalid JSON-RPC object: one of method, result, or error required"))
+							Err(de::Error::custom(
+								"Received invalid JSON-RPC object: one of method, result, or error required",
+							))
 						}
 					},
 					LSPSMethod::LSPS1GetInfo => {
@@ -681,7 +683,9 @@ impl<'de, 'a> Visitor<'de> for LSPSMessageVisitor<'a> {
 								LSPS1Response::GetInfo(response),
 							)))
 						} else {
-							Err(de::Error::custom("Received invalid JSON-RPC object: one of method, result, or error required"))
+							Err(de::Error::custom(
+								"Received invalid JSON-RPC object: one of method, result, or error required",
+							))
 						}
 					},
 					LSPSMethod::LSPS1CreateOrder => {
@@ -698,7 +702,9 @@ impl<'de, 'a> Visitor<'de> for LSPSMessageVisitor<'a> {
 								LSPS1Response::CreateOrder(response),
 							)))
 						} else {
-							Err(de::Error::custom("Received invalid JSON-RPC object: one of method, result, or error required"))
+							Err(de::Error::custom(
+								"Received invalid JSON-RPC object: one of method, result, or error required",
+							))
 						}
 					},
 					LSPSMethod::LSPS1GetOrder => {
@@ -715,7 +721,9 @@ impl<'de, 'a> Visitor<'de> for LSPSMessageVisitor<'a> {
 								LSPS1Response::GetOrder(response),
 							)))
 						} else {
-							Err(de::Error::custom("Received invalid JSON-RPC object: one of method, result, or error required"))
+							Err(de::Error::custom(
+								"Received invalid JSON-RPC object: one of method, result, or error required",
+							))
 						}
 					},
 					LSPSMethod::LSPS2GetInfo => {
@@ -732,7 +740,9 @@ impl<'de, 'a> Visitor<'de> for LSPSMessageVisitor<'a> {
 								LSPS2Response::GetInfo(response),
 							)))
 						} else {
-							Err(de::Error::custom("Received invalid JSON-RPC object: one of method, result, or error required"))
+							Err(de::Error::custom(
+								"Received invalid JSON-RPC object: one of method, result, or error required",
+							))
 						}
 					},
 					LSPSMethod::LSPS2Buy => {
@@ -749,7 +759,9 @@ impl<'de, 'a> Visitor<'de> for LSPSMessageVisitor<'a> {
 								LSPS2Response::Buy(response),
 							)))
 						} else {
-							Err(de::Error::custom("Received invalid JSON-RPC object: one of method, result, or error required"))
+							Err(de::Error::custom(
+								"Received invalid JSON-RPC object: one of method, result, or error required",
+							))
 						}
 					},
 					LSPSMethod::LSPS5SetWebhook => {
@@ -766,7 +778,9 @@ impl<'de, 'a> Visitor<'de> for LSPSMessageVisitor<'a> {
 								LSPS5Response::SetWebhook(response),
 							)))
 						} else {
-							Err(de::Error::custom("Received invalid JSON-RPC object: one of method, result, or error required"))
+							Err(de::Error::custom(
+								"Received invalid JSON-RPC object: one of method, result, or error required",
+							))
 						}
 					},
 					LSPSMethod::LSPS5ListWebhooks => {
@@ -778,7 +792,9 @@ impl<'de, 'a> Visitor<'de> for LSPSMessageVisitor<'a> {
 								LSPS5Response::ListWebhooks(response),
 							)))
 						} else {
-							Err(de::Error::custom("Received invalid JSON-RPC object: one of method, result, or error required"))
+							Err(de::Error::custom(
+								"Received invalid JSON-RPC object: one of method, result, or error required",
+							))
 						}
 					},
 					LSPSMethod::LSPS5RemoveWebhook => {
@@ -795,7 +811,9 @@ impl<'de, 'a> Visitor<'de> for LSPSMessageVisitor<'a> {
 								LSPS5Response::RemoveWebhook(response),
 							)))
 						} else {
-							Err(de::Error::custom("Received invalid JSON-RPC object: one of method, result, or error required"))
+							Err(de::Error::custom(
+								"Received invalid JSON-RPC object: one of method, result, or error required",
+							))
 						}
 					},
 				},

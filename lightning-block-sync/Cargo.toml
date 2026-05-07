@@ -8,7 +8,7 @@ readme = "../README.md"
 description = """
 Utilities to fetch the chain data from a block source and feed them into Rust Lightning.
 """
-edition = "2021"
+edition = "2024"
 rust-version = "1.85"
 
 [package.metadata.docs.rs]

@@ -13,12 +13,12 @@ use bitcoin::amount::Amount;
 use bitcoin::constants::ChainHash;
 
 use bitcoin::secp256k1;
-use bitcoin::secp256k1::constants::PUBLIC_KEY_SIZE;
 use bitcoin::secp256k1::Secp256k1;
+use bitcoin::secp256k1::constants::PUBLIC_KEY_SIZE;
 use bitcoin::secp256k1::{PublicKey, Verification};
 
-use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hashes::Hash;
+use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::network::Network;
 
 use crate::ln::msgs;
@@ -26,8 +26,8 @@ use crate::ln::msgs::{
 	BaseMessageHandler, ChannelAnnouncement, ChannelUpdate, GossipTimestampFilter, NodeAnnouncement,
 };
 use crate::ln::msgs::{
-	DecodeError, ErrorAction, Init, LightningError, RoutingMessageHandler, SocketAddress,
-	MAX_VALUE_MSAT,
+	DecodeError, ErrorAction, Init, LightningError, MAX_VALUE_MSAT, RoutingMessageHandler,
+	SocketAddress,
 };
 use crate::ln::msgs::{
 	MessageSendEvent, QueryChannelRange, QueryShortChannelIds, ReplyChannelRange,
@@ -41,7 +41,7 @@ use crate::util::indexed_map::{
 	Entry as IndexedMapEntry, IndexedMap, OccupiedEntry as IndexedMapOccupiedEntry,
 };
 use crate::util::logger::{Level, Logger};
-use crate::util::scid_utils::{block_from_scid, scid_from_parts, MAX_SCID_BLOCK};
+use crate::util::scid_utils::{MAX_SCID_BLOCK, block_from_scid, scid_from_parts};
 use crate::util::ser::{MaybeReadable, Readable, ReadableArgs, RequiredWrapper, Writeable, Writer};
 use crate::util::wakers::Future;
 
@@ -384,7 +384,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, U: UtxoLookup, L: Logger> P2PGossipSync
 		pending_events.reserve(msgs.len());
 		for mut message in msgs {
 			match &mut message {
-				MessageSendEvent::BroadcastChannelAnnouncement { msg, ref mut update_msg } => {
+				MessageSendEvent::BroadcastChannelAnnouncement { msg, update_msg } => {
 					if msg.contents.excess_data.len() > MAX_EXCESS_BYTES_FOR_RELAY {
 						continue;
 					}
@@ -1098,11 +1098,7 @@ impl ChannelInfo {
 	/// Returns a [`ChannelUpdateInfo`] based on the direction implied by the channel_flag.
 	pub fn get_directional_info(&self, channel_flags: u8) -> Option<&ChannelUpdateInfo> {
 		let direction = channel_flags & 1u8;
-		if direction == 0 {
-			self.one_to_two.as_ref()
-		} else {
-			self.two_to_one.as_ref()
-		}
+		if direction == 0 { self.one_to_two.as_ref() } else { self.two_to_one.as_ref() }
 	}
 }
 
@@ -1256,11 +1252,7 @@ impl<'a> DirectedChannelInfo<'a> {
 	/// Refers to the `node_id` forwarding the payment to the next hop.
 	#[inline]
 	pub fn source(&self) -> &'a NodeId {
-		if self.from_node_one {
-			&self.channel.node_one
-		} else {
-			&self.channel.node_two
-		}
+		if self.from_node_one { &self.channel.node_one } else { &self.channel.node_two }
 	}
 
 	/// Returns the `node_id` of the target hop.
@@ -1268,11 +1260,7 @@ impl<'a> DirectedChannelInfo<'a> {
 	/// Refers to the `node_id` receiving the payment from the previous hop.
 	#[inline]
 	pub fn target(&self) -> &'a NodeId {
-		if self.from_node_one {
-			&self.channel.node_two
-		} else {
-			&self.channel.node_one
-		}
+		if self.from_node_one { &self.channel.node_two } else { &self.channel.node_one }
 	}
 
 	/// Returns the source node's counter
@@ -2185,8 +2173,12 @@ impl<L: Logger> NetworkGraph<L> {
 				|| removed_nodes.contains_key(&msg.node_id_2)
 			{
 				return Err(LightningError{
-					err: format!("Channel with SCID {} or one of its nodes was removed from our network graph recently", &msg.short_channel_id),
-					action: ErrorAction::IgnoreAndLog(Level::Gossip)});
+					err: format!(
+						"Channel with SCID {} or one of its nodes was removed from our network graph recently",
+						&msg.short_channel_id
+					),
+					action: ErrorAction::IgnoreAndLog(Level::Gossip),
+				});
 			}
 		}
 
@@ -2360,15 +2352,25 @@ impl<L: Logger> NetworkGraph<L> {
 			if info.one_to_two.is_some()
 				&& info.one_to_two.as_ref().unwrap().last_update < min_time_unix
 			{
-				log_gossip!(self.logger, "Removing directional update one_to_two (0) for channel {} due to its timestamp {} being below {}",
-					scid, info.one_to_two.as_ref().unwrap().last_update, min_time_unix);
+				log_gossip!(
+					self.logger,
+					"Removing directional update one_to_two (0) for channel {} due to its timestamp {} being below {}",
+					scid,
+					info.one_to_two.as_ref().unwrap().last_update,
+					min_time_unix
+				);
 				info.one_to_two = None;
 			}
 			if info.two_to_one.is_some()
 				&& info.two_to_one.as_ref().unwrap().last_update < min_time_unix
 			{
-				log_gossip!(self.logger, "Removing directional update two_to_one (1) for channel {} due to its timestamp {} being below {}",
-					scid, info.two_to_one.as_ref().unwrap().last_update, min_time_unix);
+				log_gossip!(
+					self.logger,
+					"Removing directional update two_to_one (1) for channel {} due to its timestamp {} being below {}",
+					scid,
+					info.two_to_one.as_ref().unwrap().last_update,
+					min_time_unix
+				);
 				info.two_to_one = None;
 			}
 			if info.one_to_two.is_none() || info.two_to_one.is_none() {
@@ -2377,8 +2379,13 @@ impl<L: Logger> NetworkGraph<L> {
 				// channel_update for.
 				let announcement_received_timestamp = info.announcement_received_time;
 				if announcement_received_timestamp < min_time_unix as u64 {
-					log_gossip!(self.logger, "Removing channel {} because both directional updates are missing and its announcement timestamp {} being below {}",
-						scid, announcement_received_timestamp, min_time_unix);
+					log_gossip!(
+						self.logger,
+						"Removing channel {} because both directional updates are missing and its announcement timestamp {} being below {}",
+						scid,
+						announcement_received_timestamp,
+						min_time_unix
+					);
 					scids_to_remove.insert(*scid);
 				}
 			}
@@ -2735,15 +2742,13 @@ pub(crate) mod tests {
 	use crate::ln::channelmanager;
 	use crate::ln::msgs::{BaseMessageHandler, MessageSendEvent, SocketAddress};
 	use crate::ln::msgs::{
-		ChannelAnnouncement, ChannelUpdate, NodeAnnouncement, QueryChannelRange,
+		ChannelAnnouncement, ChannelUpdate, MAX_VALUE_MSAT, NodeAnnouncement, QueryChannelRange,
 		QueryShortChannelIds, ReplyChannelRange, RoutingMessageHandler,
 		UnsignedChannelAnnouncement, UnsignedChannelUpdate, UnsignedNodeAnnouncement,
-		MAX_VALUE_MSAT,
 	};
 	use crate::routing::gossip::{
-		ChannelInfo, ChannelUpdateInfo, NetworkGraph, NetworkUpdate, NodeAlias,
-		NodeAnnouncementInfo, NodeId, NodeInfo, P2PGossipSync, RoutingFees,
-		MAX_EXCESS_BYTES_FOR_RELAY,
+		ChannelInfo, ChannelUpdateInfo, MAX_EXCESS_BYTES_FOR_RELAY, NetworkGraph, NetworkUpdate,
+		NodeAlias, NodeAnnouncementInfo, NodeId, NodeInfo, P2PGossipSync, RoutingFees,
 	};
 	use crate::routing::utxo::{UtxoLookupError, UtxoResult};
 	#[cfg(feature = "std")]
@@ -2758,8 +2763,8 @@ pub(crate) mod tests {
 
 	use bitcoin::amount::Amount;
 	use bitcoin::constants::ChainHash;
-	use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 	use bitcoin::hashes::Hash;
+	use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 	use bitcoin::hex::FromHex;
 	use bitcoin::network::Network;
 	use bitcoin::script::ScriptBuf;
@@ -3076,9 +3081,13 @@ pub(crate) mod tests {
 				node_2_privkey,
 				&secp_ctx,
 			);
-			match gossip_sync.handle_channel_announcement(Some(node_1_pubkey), &valid_announcement) {
+			match gossip_sync.handle_channel_announcement(Some(node_1_pubkey), &valid_announcement)
+			{
 				Ok(_) => panic!(),
-				Err(e) => assert_eq!(e.err, "Channel with SCID 3 or one of its nodes was removed from our network graph recently")
+				Err(e) => assert_eq!(
+					e.err,
+					"Channel with SCID 3 or one of its nodes was removed from our network graph recently"
+				),
 			}
 
 			gossip_sync.network_graph().remove_stale_channels_and_tracking_with_time(
@@ -3384,9 +3393,11 @@ pub(crate) mod tests {
 				get_signed_channel_announcement(|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
 			scid = valid_channel_announcement.contents.short_channel_id;
 			let chain_source: Option<&test_utils::TestChainSource> = None;
-			assert!(network_graph
+			assert!(
+				network_graph
 				.update_channel_from_announcement(&valid_channel_announcement, &chain_source)
-				.is_ok());
+					.is_ok()
+			);
 			assert!(network_graph.read_only().channels().get(&scid).is_some());
 
 			let valid_channel_update = get_signed_channel_update(|_| {}, node_1_privkey, &secp_ctx);
@@ -3437,9 +3448,11 @@ pub(crate) mod tests {
 				get_signed_channel_announcement(|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
 			let short_channel_id = valid_channel_announcement.contents.short_channel_id;
 			let chain_source: Option<&test_utils::TestChainSource> = None;
-			assert!(network_graph
+			assert!(
+				network_graph
 				.update_channel_from_announcement(&valid_channel_announcement, &chain_source)
-				.is_ok());
+					.is_ok()
+			);
 			assert!(network_graph.read_only().channels().get(&short_channel_id).is_some());
 
 			// Non-permanent node failure does not delete any nodes or channels
@@ -3480,16 +3493,18 @@ pub(crate) mod tests {
 			get_signed_channel_announcement(|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
 		let scid = valid_channel_announcement.contents.short_channel_id;
 		let chain_source: Option<&test_utils::TestChainSource> = None;
-		assert!(network_graph
+		assert!(
+			network_graph
 			.update_channel_from_announcement(&valid_channel_announcement, &chain_source)
-			.is_ok());
+				.is_ok()
+		);
 		assert!(network_graph.read_only().channels().get(&scid).is_some());
 
 		// Submit two channel updates for each channel direction (update.flags bit).
 		let valid_channel_update = get_signed_channel_update(|_| {}, node_1_privkey, &secp_ctx);
-		assert!(gossip_sync
-			.handle_channel_update(Some(node_1_pubkey), &valid_channel_update)
-			.is_ok());
+		assert!(
+			gossip_sync.handle_channel_update(Some(node_1_pubkey), &valid_channel_update).is_ok()
+		);
 		assert!(network_graph.read_only().channels().get(&scid).unwrap().one_to_two.is_some());
 
 		let valid_channel_update_2 = get_signed_channel_update(
@@ -3545,9 +3560,11 @@ pub(crate) mod tests {
 				node_1_privkey,
 				&secp_ctx,
 			);
-			assert!(gossip_sync
+			assert!(
+				gossip_sync
 				.handle_channel_update(Some(node_1_pubkey), &valid_channel_update)
-				.is_ok());
+					.is_ok()
+			);
 			assert!(network_graph.read_only().channels().get(&scid).unwrap().one_to_two.is_some());
 			network_graph.remove_stale_channels_and_tracking_with_time(
 				announcement_time + 1 + STALE_CHANNEL_UPDATE_AGE_LIMIT_SECS,
@@ -3581,9 +3598,11 @@ pub(crate) mod tests {
 
 			// Add a channel and nodes from channel announcement. So our network graph will
 			// now only consist of two nodes and one channel between them.
-			assert!(network_graph
+			assert!(
+				network_graph
 				.update_channel_from_announcement(&valid_channel_announcement, &chain_source)
-				.is_ok());
+					.is_ok()
+			);
 
 			// Mark the channel as permanently failed. This will also remove the two nodes
 			// and all of the entries will be tracked as removed.
@@ -3630,9 +3649,11 @@ pub(crate) mod tests {
 
 			// Add a channel and nodes from channel announcement. So our network graph will
 			// now only consist of two nodes and one channel between them.
-			assert!(network_graph
+			assert!(
+				network_graph
 				.update_channel_from_announcement(&valid_channel_announcement, &chain_source)
-				.is_ok());
+					.is_ok()
+			);
 
 			// Mark the channel as permanently failed. This will also remove the two nodes
 			// and all of the entries will be tracked as removed.
@@ -4304,7 +4325,10 @@ pub(crate) mod tests {
 			);
 		assert!(read_chan_update_info_res.is_err());
 
-		let legacy_chan_update_info_with_none: Vec<u8> = <Vec<u8>>::from_hex("2c0004000000170201010402002a060800000000000004d20801000a0d0c00040000000902040000000a0c0100").unwrap();
+		let legacy_chan_update_info_with_none: Vec<u8> = <Vec<u8>>::from_hex(
+			"2c0004000000170201010402002a060800000000000004d20801000a0d0c00040000000902040000000a0c0100",
+		)
+		.unwrap();
 		let read_chan_update_info_res: Result<ChannelUpdateInfo, crate::ln::msgs::DecodeError> =
 			crate::util::ser::Readable::read(&mut legacy_chan_update_info_with_none.as_slice());
 		assert!(read_chan_update_info_res.is_err());
@@ -4553,7 +4577,7 @@ pub(crate) mod tests {
 #[cfg(ldk_bench)]
 pub mod benches {
 	use super::*;
-	use criterion::{black_box, Criterion};
+	use criterion::{Criterion, black_box};
 	use std::io::Read;
 
 	pub fn read_network_graph(bench: &mut Criterion) {

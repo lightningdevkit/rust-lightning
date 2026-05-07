@@ -236,11 +236,7 @@ fn test_quiescence_waits_for_async_signer_and_monitor_update() {
 			$events
 				.iter()
 				.find_map(|event| {
-					if let MessageSendEvent::$msg { ref msg, .. } = event {
-						Some(msg)
-					} else {
-						None
-					}
+					if let MessageSendEvent::$msg { msg, .. } = event { Some(msg) } else { None }
 				})
 				.unwrap()
 		}};

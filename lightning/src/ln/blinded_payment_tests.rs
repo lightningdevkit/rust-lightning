@@ -8,8 +8,8 @@
 // licenses.
 
 use crate::blinded_path::payment::{
-	BlindedPaymentPath, Bolt12RefundContext, DummyTlvs, ForwardTlvs, PaymentConstraints,
-	PaymentContext, PaymentForwardNode, PaymentRelay, ReceiveTlvs, PAYMENT_PADDING_ROUND_OFF,
+	BlindedPaymentPath, Bolt12RefundContext, DummyTlvs, ForwardTlvs, PAYMENT_PADDING_ROUND_OFF,
+	PaymentConstraints, PaymentContext, PaymentForwardNode, PaymentRelay, ReceiveTlvs,
 };
 use crate::blinded_path::utils::is_padded;
 use crate::blinded_path::{self, BlindedHop};
@@ -23,7 +23,7 @@ use crate::ln::msgs::{
 use crate::ln::onion_payment;
 use crate::ln::onion_utils::{self, LocalHTLCFailureReason};
 use crate::ln::outbound_payment::{
-	RecipientCustomTlvs, RecipientOnionFields, Retry, IDEMPOTENCY_TIMEOUT_TICKS,
+	IDEMPOTENCY_TIMEOUT_TICKS, RecipientCustomTlvs, RecipientOnionFields, Retry,
 };
 use crate::ln::types::ChannelId;
 use crate::offers::invoice::UnsignedBolt12Invoice;
@@ -40,7 +40,7 @@ use crate::util::test_utils::{self, bytes_from_hex, pubkey_from_hex, secret_from
 use bitcoin::hex::DisplayHex;
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::{RecoverableSignature, Signature};
-use bitcoin::secp256k1::{schnorr, All, PublicKey, Scalar, Secp256k1, SecretKey};
+use bitcoin::secp256k1::{All, PublicKey, Scalar, Secp256k1, SecretKey, schnorr};
 use lightning_invoice::RawBolt11Invoice;
 use types::features::Features;
 
@@ -1074,7 +1074,7 @@ fn do_multi_hop_receiver_fail(check: ReceiveCheckFail) {
 
 			let update_add = &mut payment_event_1_2.msgs[0];
 			onion_payloads.last_mut().map(|p| {
-				if let msgs::OutboundOnionPayload::BlindedReceive { ref mut intro_node_blinding_point, .. } = p {
+			if let msgs::OutboundOnionPayload::BlindedReceive { intro_node_blinding_point, .. } = p {
 					// The receiver should error if both the update_add blinding_point and the
 					// intro_node_blinding_point are set.
 					assert!(intro_node_blinding_point.is_none() && update_add.blinding_point.is_some());

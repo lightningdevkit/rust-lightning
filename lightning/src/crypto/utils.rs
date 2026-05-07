@@ -1,7 +1,7 @@
 use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::{Hash, HashEngine};
-use bitcoin::secp256k1::{ecdsa::Signature, Message, Secp256k1, SecretKey, Signing};
+use bitcoin::secp256k1::{Message, Secp256k1, SecretKey, Signing, ecdsa::Signature};
 
 use crate::sign::EntropySource;
 

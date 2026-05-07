@@ -18,10 +18,11 @@ use bitcoin::hashes::Hash;
 use bitcoin::locktime::absolute::LockTime;
 use bitcoin::script::{Script, ScriptBuf};
 use bitcoin::secp256k1;
-use bitcoin::secp256k1::{ecdsa::Signature, PublicKey, Secp256k1};
+use bitcoin::secp256k1::{PublicKey, Secp256k1, ecdsa::Signature};
 use bitcoin::transaction::OutPoint as BitcoinOutPoint;
 use bitcoin::transaction::Transaction;
 
+use crate::chain::ClaimId;
 use crate::chain::chaininterface::ConfirmationTarget;
 use crate::chain::chaininterface::{
 	BroadcasterInterface, FeeEstimator, LowerBoundedFeeEstimator, TransactionType,
@@ -29,14 +30,13 @@ use crate::chain::chaininterface::{
 use crate::chain::channelmonitor::ANTI_REORG_DELAY;
 use crate::chain::package::{PackageSolvingData, PackageTemplate};
 use crate::chain::transaction::MaybeSignedTransaction;
-use crate::chain::ClaimId;
 use crate::ln::chan_utils::{
-	get_keyed_anchor_redeemscript, shared_anchor_script_pubkey, ChannelTransactionParameters,
-	HTLCOutputInCommitment, HolderCommitmentTransaction,
+	ChannelTransactionParameters, HTLCOutputInCommitment, HolderCommitmentTransaction,
+	get_keyed_anchor_redeemscript, shared_anchor_script_pubkey,
 };
 use crate::ln::msgs::DecodeError;
 use crate::ln::types::ChannelId;
-use crate::sign::{ecdsa::EcdsaChannelSigner, EntropySource, HTLCDescriptor, SignerProvider};
+use crate::sign::{EntropySource, HTLCDescriptor, SignerProvider, ecdsa::EcdsaChannelSigner};
 use crate::util::logger::Logger;
 use crate::util::ser::{
 	MaybeReadable, Readable, ReadableArgs, UpgradableRequired, Writeable, Writer,
@@ -1282,11 +1282,11 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 
 #[cfg(test)]
 mod tests {
-	use bitcoin::hash_types::Txid;
-	use bitcoin::hashes::sha256::Hash as Sha256;
-	use bitcoin::hashes::Hash;
 	use bitcoin::Network;
-	use bitcoin::{key::Secp256k1, secp256k1::PublicKey, secp256k1::SecretKey, ScriptBuf};
+	use bitcoin::hash_types::Txid;
+	use bitcoin::hashes::Hash;
+	use bitcoin::hashes::sha256::Hash as Sha256;
+	use bitcoin::{ScriptBuf, key::Secp256k1, secp256k1::PublicKey, secp256k1::SecretKey};
 	use types::features::ChannelTypeFeatures;
 
 	use crate::chain::chaininterface::{ConfirmationTarget, LowerBoundedFeeEstimator};

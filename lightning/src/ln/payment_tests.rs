@@ -21,19 +21,19 @@ use crate::events::{
 };
 use crate::ln::chan_utils;
 use crate::ln::channel::{
-	get_holder_selected_channel_reserve_satoshis, ANCHOR_OUTPUT_VALUE_SATOSHI,
-	EXPIRE_PREV_CONFIG_TICKS,
+	ANCHOR_OUTPUT_VALUE_SATOSHI, EXPIRE_PREV_CONFIG_TICKS,
+	get_holder_selected_channel_reserve_satoshis,
 };
 use crate::ln::channelmanager::{
-	HTLCForwardInfo, PaymentId, PendingAddHTLCInfo, PendingHTLCRouting, RecentPaymentDetails,
-	BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA, MPP_TIMEOUT_TICKS,
+	BREAKDOWN_TIMEOUT, HTLCForwardInfo, MIN_CLTV_EXPIRY_DELTA, MPP_TIMEOUT_TICKS, PaymentId,
+	PendingAddHTLCInfo, PendingHTLCRouting, RecentPaymentDetails,
 };
 use crate::ln::msgs;
 use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, MessageSendEvent};
 use crate::ln::onion_utils::{self, LocalHTLCFailureReason};
 use crate::ln::outbound_payment::{
-	ProbeSendFailure, RecipientCustomTlvs, RecipientOnionFields, Retry, RetryableSendFailure,
-	IDEMPOTENCY_TIMEOUT_TICKS,
+	IDEMPOTENCY_TIMEOUT_TICKS, ProbeSendFailure, RecipientCustomTlvs, RecipientOnionFields, Retry,
+	RetryableSendFailure,
 };
 use crate::ln::types::ChannelId;
 use crate::routing::gossip::{EffectiveCapacity, RoutingFees};
@@ -48,8 +48,8 @@ use crate::types::string::UntrustedString;
 use crate::util::config::{HTLCInterceptionFlags, UserConfig};
 use crate::util::errors::APIError;
 use crate::util::ser::Writeable;
-use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash;
+use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{Secp256k1, SecretKey};
 
 use crate::prelude::*;
@@ -802,8 +802,13 @@ fn no_pending_leak_on_initial_send_failure() {
 	let onion = RecipientOnionFields::secret_only(payment_secret, 100_000);
 	let payment_id = PaymentId(payment_hash.0);
 	let res = nodes[0].node.send_payment_with_route(route, payment_hash, onion, payment_id);
-	unwrap_send_err!(nodes[0], res, true, APIError::ChannelUnavailable { ref err },
-		assert_eq!(err, "Peer for first hop currently disconnected"));
+	unwrap_send_err!(
+		nodes[0],
+		res,
+		true,
+		APIError::ChannelUnavailable { err },
+		assert_eq!(err, "Peer for first hop currently disconnected")
+	);
 
 	assert!(!nodes[0].node.has_pending_payments());
 }
@@ -4327,11 +4332,7 @@ fn do_claim_from_closed_chan(fail_payment: bool) {
 
 	// Make sure the route is ordered as the B->D path before C->D
 	route.paths.sort_by(|a, _| {
-		if a.hops[0].pubkey == node_b_id {
-			Ordering::Less
-		} else {
-			Ordering::Greater
-		}
+		if a.hops[0].pubkey == node_b_id { Ordering::Less } else { Ordering::Greater }
 	});
 
 	// Note that we add an extra 1 in the send pipeline to compensate for any blocks found while
@@ -4350,11 +4351,7 @@ fn do_claim_from_closed_chan(fail_payment: bool) {
 	send_msgs.sort_by(|a, _| {
 		let a_node_id =
 			if let MessageSendEvent::UpdateHTLCs { node_id, .. } = a { node_id } else { panic!() };
-		if *a_node_id == node_b_id {
-			Ordering::Less
-		} else {
-			Ordering::Greater
-		}
+		if *a_node_id == node_b_id { Ordering::Less } else { Ordering::Greater }
 	});
 
 	assert_eq!(send_msgs.len(), 2);
@@ -4712,11 +4709,7 @@ fn do_test_custom_tlvs_consistency(
 	assert_eq!(route.paths.len(), 2);
 	route.paths.sort_by(|path_a, _| {
 		// Sort the path so that the path through nodes[1] comes first
-		if path_a.hops[0].pubkey == node_b_id {
-			Ordering::Less
-		} else {
-			Ordering::Greater
-		}
+		if path_a.hops[0].pubkey == node_b_id { Ordering::Less } else { Ordering::Greater }
 	});
 
 	let (preimage, hash, payment_secret) = get_payment_preimage_hash(&nodes[3], None, None);

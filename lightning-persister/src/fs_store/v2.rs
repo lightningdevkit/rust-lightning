@@ -1,6 +1,6 @@
 //! Objects related to [`FilesystemStoreV2`] live here.
 use crate::fs_store::common::{
-	dir_entry_is_key, get_key_from_dir_entry_path, FilesystemStoreState,
+	FilesystemStoreState, dir_entry_is_key, get_key_from_dir_entry_path,
 };
 
 use lightning::util::persist::{
@@ -488,11 +488,9 @@ mod tests {
 		assert_eq!(KVStoreSync::read(&fs_store, "primary", "secondary", "key3").unwrap(), data);
 
 		// Verify files are named just by key (no timestamp prefix)
-		assert!(temp_path
-			.join(EMPTY_NAMESPACE_DIR)
-			.join(EMPTY_NAMESPACE_DIR)
-			.join("key1")
-			.exists());
+		assert!(
+			temp_path.join(EMPTY_NAMESPACE_DIR).join(EMPTY_NAMESPACE_DIR).join("key1").exists()
+		);
 		assert!(temp_path.join("primary").join(EMPTY_NAMESPACE_DIR).join("key2").exists());
 		assert!(temp_path.join("primary").join("secondary").join("key3").exists());
 	}

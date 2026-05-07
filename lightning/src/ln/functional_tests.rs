@@ -12,30 +12,30 @@
 //! claim outputs on-chain.
 
 use crate::chain;
+use crate::chain::BlockLocator;
 use crate::chain::chaininterface::LowerBoundedFeeEstimator;
 use crate::chain::channelmonitor;
 use crate::chain::channelmonitor::{
-	Balance, ANTI_REORG_DELAY, CLTV_CLAIM_BUFFER, COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE,
+	ANTI_REORG_DELAY, Balance, CLTV_CLAIM_BUFFER, COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE,
 	LATENCY_GRACE_PERIOD_BLOCKS,
 };
 use crate::chain::transaction::OutPoint;
-use crate::chain::BlockLocator;
 use crate::chain::{ChannelMonitorUpdateStatus, Confirm, Listen, Watch};
 use crate::events::{
 	ClosureReason, Event, HTLCHandlingFailureType, PathFailure, PaymentFailureReason,
 	PaymentPurpose,
 };
 use crate::ln::chan_utils::{
-	commitment_tx_base_weight, second_stage_tx_fees_sat, COMMITMENT_TX_WEIGHT_PER_HTLC,
-	OFFERED_HTLC_SCRIPT_WEIGHT,
+	COMMITMENT_TX_WEIGHT_PER_HTLC, OFFERED_HTLC_SCRIPT_WEIGHT, commitment_tx_base_weight,
+	second_stage_tx_fees_sat,
 };
 use crate::ln::channel::{
-	get_holder_selected_channel_reserve_satoshis, Channel, DISCONNECT_PEER_AWAITING_RESPONSE_TICKS,
-	MIN_CHAN_DUST_LIMIT_SATOSHIS, UNFUNDED_CHANNEL_AGE_LIMIT_TICKS,
+	Channel, DISCONNECT_PEER_AWAITING_RESPONSE_TICKS, MIN_CHAN_DUST_LIMIT_SATOSHIS,
+	UNFUNDED_CHANNEL_AGE_LIMIT_TICKS, get_holder_selected_channel_reserve_satoshis,
 };
 use crate::ln::channelmanager::{
-	PaymentId, RAACommitmentOrder, BREAKDOWN_TIMEOUT, DISABLE_GOSSIP_TICKS, ENABLE_GOSSIP_TICKS,
-	MIN_CLTV_EXPIRY_DELTA,
+	BREAKDOWN_TIMEOUT, DISABLE_GOSSIP_TICKS, ENABLE_GOSSIP_TICKS, MIN_CLTV_EXPIRY_DELTA, PaymentId,
+	RAACommitmentOrder,
 };
 use crate::ln::msgs;
 use crate::ln::msgs::{
@@ -47,7 +47,7 @@ use crate::ln::types::ChannelId;
 use crate::ln::{chan_utils, onion_utils};
 use crate::routing::gossip::{NetworkGraph, NetworkUpdate};
 use crate::routing::router::{
-	get_route, Path, PaymentParameters, Route, RouteHop, RouteParameters,
+	Path, PaymentParameters, Route, RouteHop, RouteParameters, get_route,
 };
 use crate::sign::ChannelSigner;
 use crate::sign::{EntropySource, OutputSpender, SignerProvider};
@@ -334,7 +334,10 @@ pub fn test_duplicate_htlc_different_direction_onchain() {
 				action: msgs::ErrorAction::SendErrorMessage { ref msg },
 			} => {
 				assert_eq!(node_id, node_b_id);
-				assert_eq!(msg.data, "Channel closed because commitment or closing transaction was confirmed on chain.");
+				assert_eq!(
+					msg.data,
+					"Channel closed because commitment or closing transaction was confirmed on chain."
+				);
 			},
 			MessageSendEvent::UpdateHTLCs {
 				ref node_id,
@@ -762,11 +765,7 @@ pub fn channel_monitor_network_test() {
 		{
 			let mut node_txn = nodes[3].tx_broadcaster.txn_broadcasted.lock().unwrap();
 			node_txn.retain(|tx| {
-				if tx.input[0].previous_output.txid == node2_commitment_txid {
-					false
-				} else {
-					true
-				}
+				if tx.input[0].previous_output.txid == node2_commitment_txid { false } else { true }
 			});
 		}
 
@@ -2070,11 +2069,11 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(
 	)));
 	assert!(events.iter().any(|ev| matches!(
 		ev,
-		Event::PaymentPathFailed { ref payment_hash, .. } if *payment_hash == fourth_payment_hash
+		Event::PaymentPathFailed { payment_hash, .. } if *payment_hash == fourth_payment_hash
 	)));
 	assert!(events.iter().any(|ev| matches!(
 		ev,
-		Event::PaymentFailed { ref payment_hash, .. } if *payment_hash == Some(fourth_payment_hash)
+		Event::PaymentFailed { payment_hash, .. } if *payment_hash == Some(fourth_payment_hash)
 	)));
 
 	nodes[1].node.process_pending_htlc_forwards();
@@ -2562,10 +2561,12 @@ pub fn test_peer_disconnected_before_funding_broadcasted() {
 		create_funding_transaction(&nodes[0], &node_b_id, 1_000_000, 42);
 	assert_eq!(temporary_channel_id, expected_temporary_channel_id);
 
-	assert!(nodes[0]
+	assert!(
+		nodes[0]
 		.node
 		.funding_transaction_generated(temporary_channel_id, node_b_id, tx.clone())
-		.is_ok());
+			.is_ok()
+	);
 
 	let funding_created_msg =
 		get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, node_b_id);

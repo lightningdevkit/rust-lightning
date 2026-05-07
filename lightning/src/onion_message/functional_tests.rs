@@ -22,12 +22,12 @@ use super::messenger::{
 };
 use super::offers::{OffersMessage, OffersMessageHandler};
 use super::packet::{OnionMessageContents, Packet};
+use crate::blinded_path::EmptyNodeIdLookUp;
 use crate::blinded_path::message::{
-	AsyncPaymentsContext, BlindedMessagePath, DNSResolverContext, MessageContext,
-	MessageForwardNode, OffersContext, MESSAGE_PADDING_ROUND_OFF,
+	AsyncPaymentsContext, BlindedMessagePath, DNSResolverContext, MESSAGE_PADDING_ROUND_OFF,
+	MessageContext, MessageForwardNode, OffersContext,
 };
 use crate::blinded_path::utils::is_padded;
-use crate::blinded_path::EmptyNodeIdLookUp;
 use crate::events::{Event, EventsProvider};
 use crate::ln::msgs::{self, BaseMessageHandler, DecodeError, OnionMessageHandler};
 use crate::routing::gossip::{NetworkGraph, P2PGossipSync};

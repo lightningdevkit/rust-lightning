@@ -23,7 +23,7 @@
 #[allow(unused)]
 use crate::prelude::*;
 use crate::util::base32;
-use bitcoin::hashes::{sha256d, Hash};
+use bitcoin::hashes::{Hash, sha256d};
 use bitcoin::secp256k1::ecdsa::{RecoverableSignature, RecoveryId};
 use bitcoin::secp256k1::{Error, Message, PublicKey, Secp256k1, SecretKey};
 
@@ -100,7 +100,10 @@ mod test {
 		let one_key = SecretKey::from_slice(&ONE).unwrap();
 		let zbase32_sig = sign(message.as_bytes(), &one_key);
 
-		assert_eq!(zbase32_sig, "d9tibmnic9t5y41hg7hkakdcra94akas9ku3rmmj4ag9mritc8ok4p5qzefs78c9pqfhpuftqqzhydbdwfg7u6w6wdxcqpqn4sj4e73e")
+		assert_eq!(
+			zbase32_sig,
+			"d9tibmnic9t5y41hg7hkakdcra94akas9ku3rmmj4ag9mritc8ok4p5qzefs78c9pqfhpuftqqzhydbdwfg7u6w6wdxcqpqn4sj4e73e"
+		)
 	}
 
 	#[test]
@@ -129,18 +132,24 @@ mod test {
 		// Taken from https://github.com/ElementsProject/lightning/blob/1275af6fbb02460c8eb2f00990bb0ef9179ce8f3/tests/test_misc.py#L1925-L1938
 
 		let corpus = [
-			["@bitconner",
+			[
+				"@bitconner",
 			"is this compatible?",
 			"rbgfioj114mh48d8egqx8o9qxqw4fmhe8jbeeabdioxnjk8z3t1ma1hu1fiswpakgucwwzwo6ofycffbsqusqdimugbh41n1g698hr9t",
-			"02b80cabdf82638aac86948e4c06e82064f547768dcef977677b9ea931ea75bab5"],
-			["@duck1123",
+				"02b80cabdf82638aac86948e4c06e82064f547768dcef977677b9ea931ea75bab5",
+			],
+			[
+				"@duck1123",
 			"hi",
 			"rnrphcjswusbacjnmmmrynh9pqip7sy5cx695h6mfu64iac6qmcmsd8xnsyczwmpqp9shqkth3h4jmkgyqu5z47jfn1q7gpxtaqpx4xg",
-			"02de60d194e1ca5947b59fe8e2efd6aadeabfb67f2e89e13ae1a799c1e08e4a43b"],
-			["@jochemin",
+				"02de60d194e1ca5947b59fe8e2efd6aadeabfb67f2e89e13ae1a799c1e08e4a43b",
+			],
+			[
+				"@jochemin",
 			"hi",
 			"ry8bbsopmduhxy3dr5d9ekfeabdpimfx95kagdem7914wtca79jwamtbw4rxh69hg7n6x9ty8cqk33knbxaqftgxsfsaeprxkn1k48p3",
-			"022b8ece90ee891cbcdac0c1cc6af46b73c47212d8defbce80265ac81a6b794931"],
+				"022b8ece90ee891cbcdac0c1cc6af46b73c47212d8defbce80265ac81a6b794931",
+			],
 		];
 
 		for c in &corpus {

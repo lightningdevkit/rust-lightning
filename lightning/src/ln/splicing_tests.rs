@@ -9,10 +9,10 @@
 
 #![cfg_attr(not(test), allow(unused_imports))]
 
-use crate::chain::chaininterface::{FundingPurpose, TransactionType, FEERATE_FLOOR_SATS_PER_KW};
+use crate::chain::ChannelMonitorUpdateStatus;
+use crate::chain::chaininterface::{FEERATE_FLOOR_SATS_PER_KW, FundingPurpose, TransactionType};
 use crate::chain::channelmonitor::{ANTI_REORG_DELAY, LATENCY_GRACE_PERIOD_BLOCKS};
 use crate::chain::transaction::OutPoint;
-use crate::chain::ChannelMonitorUpdateStatus;
 use crate::events::{ClosureReason, Event, FundingInfo, HTLCHandlingFailureType};
 use crate::ln::chan_utils;
 use crate::ln::channel::{
@@ -20,7 +20,7 @@ use crate::ln::channel::{
 	DISCONNECT_PEER_AWAITING_RESPONSE_TICKS, FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE,
 	MIN_CHANNEL_VALUE_SATOSHIS,
 };
-use crate::ln::channelmanager::{provided_init_features, PaymentId, BREAKDOWN_TIMEOUT};
+use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, PaymentId, provided_init_features};
 use crate::ln::functional_test_utils::*;
 use crate::ln::funding::{FundingContribution, FundingContributionError};
 use crate::ln::msgs::{self, BaseMessageHandler, ChannelMessageHandler, MessageSendEvent};
@@ -116,9 +116,9 @@ fn test_v1_splice_in_negative_insufficient_inputs() {
 		nodes[0].node.splice_channel(&channel_id, &nodes[1].node.get_our_node_id()).unwrap();
 
 	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
-	assert!(funding_template
-		.splice_in_sync(splice_in_value, feerate, FeeRate::MAX, &wallet)
-		.is_err());
+	assert!(
+		funding_template.splice_in_sync(splice_in_value, feerate, FeeRate::MAX, &wallet).is_err()
+	);
 }
 
 /// A mock wallet that returns a pre-configured [`CoinSelection`] with a single input and change
@@ -537,7 +537,7 @@ pub fn sign_interactive_funding_tx_with_acceptor_contribution<'a, 'b, 'c, 'd>(
 	let msg_events = initiator.node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), 1, "{msg_events:?}");
 	let initial_commit_sig_for_acceptor =
-		if let MessageSendEvent::UpdateHTLCs { ref updates, .. } = &msg_events[0] {
+		if let MessageSendEvent::UpdateHTLCs { updates, .. } = &msg_events[0] {
 			updates.commitment_signed[0].clone()
 		} else {
 			panic!();
@@ -569,13 +569,13 @@ pub fn sign_interactive_funding_tx_with_acceptor_contribution<'a, 'b, 'c, 'd>(
 
 	let msg_events = acceptor.node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), 2, "{msg_events:?}");
-	if let MessageSendEvent::UpdateHTLCs { ref updates, .. } = &msg_events[0] {
+	if let MessageSendEvent::UpdateHTLCs { updates, .. } = &msg_events[0] {
 		let commitment_signed = &updates.commitment_signed[0];
 		initiator.node.handle_commitment_signed(node_id_acceptor, commitment_signed);
 	} else {
 		panic!();
 	}
-	if let MessageSendEvent::SendTxSignatures { ref msg, .. } = &msg_events[1] {
+	if let MessageSendEvent::SendTxSignatures { msg, .. } = &msg_events[1] {
 		initiator.node.handle_tx_signatures(node_id_acceptor, msg);
 	} else {
 		panic!();
@@ -583,7 +583,7 @@ pub fn sign_interactive_funding_tx_with_acceptor_contribution<'a, 'b, 'c, 'd>(
 
 	let mut msg_events = initiator.node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), if is_0conf { 2 } else { 1 }, "{msg_events:?}");
-	if let MessageSendEvent::SendTxSignatures { ref msg, .. } = &msg_events[0] {
+	if let MessageSendEvent::SendTxSignatures { msg, .. } = &msg_events[0] {
 		acceptor.node.handle_tx_signatures(node_id_initiator, msg);
 	} else {
 		panic!();
@@ -2562,7 +2562,7 @@ fn do_test_propose_splice_while_disconnected(use_0conf: bool) {
 	// Node 1's quiescent action was consumed, so it should NOT send stfu.
 	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), if use_0conf { 1 } else { 2 }, "{msg_events:?}");
-	if let MessageSendEvent::SendSpliceLocked { ref msg, .. } = &msg_events[0] {
+	if let MessageSendEvent::SendSpliceLocked { msg, .. } = &msg_events[0] {
 		nodes[0].node.handle_splice_locked(node_id_1, msg);
 		if use_0conf {
 			// TODO(splicing): Revisit splice transaction rebroadcasts.
@@ -2576,7 +2576,7 @@ fn do_test_propose_splice_while_disconnected(use_0conf: bool) {
 		panic!("Unexpected event {:?}", &msg_events[0]);
 	}
 	if !use_0conf {
-		if let MessageSendEvent::SendAnnouncementSignatures { ref msg, .. } = &msg_events[1] {
+		if let MessageSendEvent::SendAnnouncementSignatures { msg, .. } = &msg_events[1] {
 			nodes[0].node.handle_announcement_signatures(node_id_1, msg);
 		} else {
 			panic!("Unexpected event {:?}", &msg_events[1]);
@@ -2586,7 +2586,7 @@ fn do_test_propose_splice_while_disconnected(use_0conf: bool) {
 	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), if use_0conf { 0 } else { 2 }, "{msg_events:?}");
 	if !use_0conf {
-		if let MessageSendEvent::SendAnnouncementSignatures { ref msg, .. } = &msg_events[0] {
+		if let MessageSendEvent::SendAnnouncementSignatures { msg, .. } = &msg_events[0] {
 			nodes[1].node.handle_announcement_signatures(node_id_0, msg);
 		} else {
 			panic!("Unexpected event {:?}", &msg_events[1]);
@@ -2928,14 +2928,14 @@ fn free_holding_cell_on_tx_signatures_quiescence_exit() {
 
 	let msg_events = acceptor.node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), 2, "{msg_events:?}");
-	if let MessageSendEvent::UpdateHTLCs { ref updates, .. } = &msg_events[0] {
+	if let MessageSendEvent::UpdateHTLCs { updates, .. } = &msg_events[0] {
 		let commitment_signed = &updates.commitment_signed[0];
 		initiator.node.handle_commitment_signed(node_id_acceptor, commitment_signed);
 		check_added_monitors(&initiator, 1);
 	} else {
 		panic!("Unexpected event {:?}", &msg_events[0]);
 	}
-	if let MessageSendEvent::SendTxSignatures { ref msg, .. } = &msg_events[1] {
+	if let MessageSendEvent::SendTxSignatures { msg, .. } = &msg_events[1] {
 		initiator.node.handle_tx_signatures(node_id_acceptor, msg);
 	} else {
 		panic!("Unexpected event {:?}", &msg_events[1]);
@@ -2946,7 +2946,7 @@ fn free_holding_cell_on_tx_signatures_quiescence_exit() {
 	let msg_events = initiator.node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), 2, "{msg_events:?}");
 	check_added_monitors(initiator, 1); // Outgoing HTLC monitor update
-	if let MessageSendEvent::SendTxSignatures { ref msg, .. } = &msg_events[0] {
+	if let MessageSendEvent::SendTxSignatures { msg, .. } = &msg_events[0] {
 		acceptor.node.handle_tx_signatures(node_id_initiator, msg);
 	} else {
 		panic!("Unexpected event {:?}", &msg_events[0]);
@@ -3401,8 +3401,8 @@ fn test_splice_buffer_commitment_signed_until_funding_tx_signed() {
 	// 2. The buffered commitment_signed from the acceptor should be processed (monitor update)
 	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), 1, "{msg_events:?}");
-	let initiator_commit_sig =
-		if let MessageSendEvent::UpdateHTLCs { ref updates, .. } = &msg_events[0] {
+	let initiator_commit_sig = if let MessageSendEvent::UpdateHTLCs { updates, .. } = &msg_events[0]
+	{
 			updates.commitment_signed[0].clone()
 		} else {
 			panic!("Expected UpdateHTLCs message");
@@ -3415,7 +3415,7 @@ fn test_splice_buffer_commitment_signed_until_funding_tx_signed() {
 	nodes[1].node.handle_commitment_signed(node_id_0, &initiator_commit_sig);
 	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), 1, "{msg_events:?}");
-	if let MessageSendEvent::SendTxSignatures { ref msg, .. } = &msg_events[0] {
+	if let MessageSendEvent::SendTxSignatures { msg, .. } = &msg_events[0] {
 		nodes[0].node.handle_tx_signatures(node_id_1, msg);
 	} else {
 		panic!("Expected SendTxSignatures message");
@@ -3424,7 +3424,7 @@ fn test_splice_buffer_commitment_signed_until_funding_tx_signed() {
 
 	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), 1, "{msg_events:?}");
-	if let MessageSendEvent::SendTxSignatures { ref msg, .. } = &msg_events[0] {
+	if let MessageSendEvent::SendTxSignatures { msg, .. } = &msg_events[0] {
 		nodes[1].node.handle_tx_signatures(node_id_0, msg);
 	} else {
 		panic!("Expected SendTxSignatures message");
@@ -3535,14 +3535,14 @@ fn test_splice_buffer_invalid_commitment_signed_closes_channel() {
 	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), 3, "{msg_events:?}");
 	match &msg_events[0] {
-		MessageSendEvent::UpdateHTLCs { ref updates, .. } => {
+		MessageSendEvent::UpdateHTLCs { updates, .. } => {
 			assert!(!updates.commitment_signed.is_empty());
 		},
 		_ => panic!("Expected UpdateHTLCs message, got {:?}", msg_events[0]),
 	}
 	match &msg_events[1] {
 		MessageSendEvent::HandleError {
-			action: msgs::ErrorAction::SendErrorMessage { ref msg },
+			action: msgs::ErrorAction::SendErrorMessage { msg },
 			..
 		} => {
 			assert!(msg.data.contains("Invalid commitment tx signature from peer"));
@@ -3550,7 +3550,7 @@ fn test_splice_buffer_invalid_commitment_signed_closes_channel() {
 		_ => panic!("Expected HandleError with SendErrorMessage, got {:?}", msg_events[1]),
 	}
 	match &msg_events[2] {
-		MessageSendEvent::BroadcastChannelUpdate { ref msg, .. } => {
+		MessageSendEvent::BroadcastChannelUpdate { msg, .. } => {
 			assert_eq!(msg.contents.channel_flags & 2, 2);
 		},
 		_ => panic!("Expected BroadcastChannelUpdate, got {:?}", msg_events[2]),
@@ -3627,13 +3627,13 @@ fn do_splice_waits_for_initial_commitment_monitor_update_before_releasing_tx_sig
 	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), 2, "{msg_events:?}");
 	let counterparty_commit_sig =
-		if let MessageSendEvent::UpdateHTLCs { ref updates, .. } = &msg_events[0] {
+		if let MessageSendEvent::UpdateHTLCs { updates, .. } = &msg_events[0] {
 			updates.commitment_signed[0].clone()
 		} else {
 			panic!("Expected UpdateHTLCs message");
 		};
 	let counterparty_tx_signatures =
-		if let MessageSendEvent::SendTxSignatures { ref msg, .. } = &msg_events[1] {
+		if let MessageSendEvent::SendTxSignatures { msg, .. } = &msg_events[1] {
 			msg.clone()
 		} else {
 			panic!("Expected SendTxSignatures message");
@@ -4288,7 +4288,9 @@ fn do_test_splice_pending_htlcs(config: UserConfig) {
 		assert_eq!(error, APIError::APIMisuseError { err: cannot_accept_contribution });
 		let cannot_be_funded = format!(
 			"Channel {} cannot be funded: Our splice-out value of {} is greater than the maximum {}",
-			channel_id, splice_out_incl_fees + Amount::ONE_SAT, splice_out_incl_fees,
+			channel_id,
+			splice_out_incl_fees + Amount::ONE_SAT,
+			splice_out_incl_fees,
 		);
 		initiator.logger.assert_log("lightning::ln::channel", cannot_be_funded, 1);
 
@@ -4317,7 +4319,9 @@ fn do_test_splice_pending_htlcs(config: UserConfig) {
 		assert_eq!(msg.channel_id, channel_id);
 		let cannot_be_spliced_out = format!(
 			"Channel {} cannot be spliced out; their post-splice channel balance {} is smaller than our selected v2 reserve {}",
-			channel_id, post_splice_reserve - Amount::ONE_SAT, post_splice_reserve
+			channel_id,
+			post_splice_reserve - Amount::ONE_SAT,
+			post_splice_reserve
 		);
 		assert_eq!(msg.data, cannot_be_spliced_out);
 
@@ -4719,15 +4723,17 @@ fn test_splice_rbf_insufficient_feerate() {
 	assert_eq!(min_rbf_feerate, expected_floor);
 
 	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
-	assert!(funding_template
-		.splice_in_sync(added_value, same_feerate, FeeRate::MAX, &wallet)
-		.is_err());
+	assert!(
+		funding_template.splice_in_sync(added_value, same_feerate, FeeRate::MAX, &wallet).is_err()
+	);
 
 	// Verify that the floor feerate succeeds.
 	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
-	assert!(funding_template
+	assert!(
+		funding_template
 		.splice_in_sync(added_value, min_rbf_feerate, FeeRate::MAX, &wallet)
-		.is_ok());
+			.is_ok()
+	);
 
 	// Acceptor-side: tx_init_rbf with an insufficient feerate is also rejected.
 	// Node 0 initiates a proper RBF but we tamper the feerate to be insufficient.

@@ -13,9 +13,9 @@
 //! channel matches a UTXO on-chain, requiring at least some marginal on-chain transacting in
 //! order to announce a channel. This module handles that checking.
 
+use bitcoin::TxOut;
 use bitcoin::amount::Amount;
 use bitcoin::constants::ChainHash;
-use bitcoin::TxOut;
 
 use bitcoin::hex::DisplayHex;
 
@@ -889,20 +889,24 @@ mod tests {
 		assert!(network_graph.read_only().channels().get(&scid).unwrap().one_to_two.is_some());
 		assert!(network_graph.read_only().channels().get(&scid).unwrap().two_to_one.is_some());
 
-		assert!(network_graph
+		assert!(
+			network_graph
 			.read_only()
 			.nodes()
 			.get(&valid_announcement.contents.node_id_1)
 			.unwrap()
 			.announcement_info
-			.is_some());
-		assert!(network_graph
+				.is_some()
+		);
+		assert!(
+			network_graph
 			.read_only()
 			.nodes()
 			.get(&valid_announcement.contents.node_id_2)
 			.unwrap()
 			.announcement_info
-			.is_some());
+				.is_some()
+		);
 	}
 
 	#[test]

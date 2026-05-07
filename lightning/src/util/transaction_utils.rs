@@ -8,8 +8,8 @@
 // licenses.
 
 use bitcoin::amount::Amount;
-use bitcoin::consensus::encode::VarInt;
 use bitcoin::consensus::Encodable;
+use bitcoin::consensus::encode::VarInt;
 use bitcoin::script::ScriptBuf;
 use bitcoin::transaction::{Transaction, TxOut};
 
@@ -136,14 +136,18 @@ mod tests {
 	fn sort_output_by_bip_test() {
 		let txout1 = TxOut {
 			value: Amount::from_sat(100000000),
-			script_pubkey: script_from_hex("41046a0765b5865641ce08dd39690aade26dfbf5511430ca428a3089261361cef170e3929a68aee3d8d4848b0c5111b0a37b82b86ad559fd2a745b44d8e8d9dfdc0cac")
+			script_pubkey: script_from_hex(
+				"41046a0765b5865641ce08dd39690aade26dfbf5511430ca428a3089261361cef170e3929a68aee3d8d4848b0c5111b0a37b82b86ad559fd2a745b44d8e8d9dfdc0cac",
+			),
 		};
 		let txout1_ = txout1.clone();
 
 		// doesn't deserialize cleanly:
 		let txout2 = TxOut {
 			value: Amount::from_sat(2400000000),
-			script_pubkey: script_from_hex("41044a656f065871a353f216ca26cef8dde2f03e8c16202d2e8ad769f02032cb86a5eb5e56842e92e19141d60a01928f8dd2c875a390f67c1f6c94cfc617c0ea45afac")
+			script_pubkey: script_from_hex(
+				"41044a656f065871a353f216ca26cef8dde2f03e8c16202d2e8ad769f02032cb86a5eb5e56842e92e19141d60a01928f8dd2c875a390f67c1f6c94cfc617c0ea45afac",
+			),
 		};
 		let txout2_ = txout2.clone();
 
@@ -206,8 +210,14 @@ mod tests {
 		(40000000000, "76a9145be32612930b8323add2212a4ec03c1562084f8488ac"),
 	];
 	const TXOUT2: [(u64, &str); 2] = [
-		(100000000, "41046a0765b5865641ce08dd39690aade26dfbf5511430ca428a3089261361cef170e3929a68aee3d8d4848b0c5111b0a37b82b86ad559fd2a745b44d8e8d9dfdc0cac"),
-		(2400000000, "41044a656f065871a353f216ca26cef8dde2f03e8c16202d2e8ad769f02032cb86a5eb5e56842e92e19141d60a01928f8dd2c875a390f67c1f6c94cfc617c0ea45afac"),
+		(
+			100000000,
+			"41046a0765b5865641ce08dd39690aade26dfbf5511430ca428a3089261361cef170e3929a68aee3d8d4848b0c5111b0a37b82b86ad559fd2a745b44d8e8d9dfdc0cac",
+		),
+		(
+			2400000000,
+			"41044a656f065871a353f216ca26cef8dde2f03e8c16202d2e8ad769f02032cb86a5eb5e56842e92e19141d60a01928f8dd2c875a390f67c1f6c94cfc617c0ea45afac",
+		),
 	];
 	bip_txout_tests! {
 		bip69_txout_test_1: TXOUT1.to_vec(),

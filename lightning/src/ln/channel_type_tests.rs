@@ -1,5 +1,5 @@
 use crate::chain::chaininterface::LowerBoundedFeeEstimator;
-use crate::ln::channel::{get_initial_channel_type, InboundV1Channel, OutboundV1Channel};
+use crate::ln::channel::{InboundV1Channel, OutboundV1Channel, get_initial_channel_type};
 use crate::ln::channelmanager;
 use crate::prelude::*;
 use crate::util::config::UserConfig;

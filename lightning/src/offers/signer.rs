@@ -393,11 +393,7 @@ fn verify_metadata<T: secp256k1::Signing>(
 		if metadata[0] & 1 == 0 {
 			ok = true;
 		}
-		if ok {
-			Ok(Some(derived_keys))
-		} else {
-			Err(())
-		}
+		if ok { Ok(Some(derived_keys)) } else { Err(()) }
 	} else {
 		#[allow(unused_mut)]
 		let mut ok = metadata.len() == Nonce::LENGTH + Sha256::LEN
@@ -406,11 +402,7 @@ fn verify_metadata<T: secp256k1::Signing>(
 		if metadata.is_empty() || metadata[0] & 1 == 0 {
 			ok = true;
 		}
-		if ok {
-			Ok(None)
-		} else {
-			Err(())
-		}
+		if ok { Ok(None) } else { Err(()) }
 	}
 }
 

@@ -13,7 +13,7 @@ use crate::events::{EventQueueDeserWrapper, LiquidityEvent};
 use crate::lsps1::peer_state::PeerState as LSPS1ServicePeerState;
 use crate::lsps2::service::PeerState as LSPS2ServicePeerState;
 use crate::lsps5::service::PeerState as LSPS5ServicePeerState;
-use crate::prelude::{new_hash_map, HashMap};
+use crate::prelude::{HashMap, new_hash_map};
 use crate::sync::Mutex;
 
 use lightning::io::Cursor;

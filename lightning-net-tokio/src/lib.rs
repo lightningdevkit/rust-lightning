@@ -44,7 +44,7 @@ use std::hash::Hash;
 use std::net::SocketAddr;
 use std::net::TcpStream as StdTcpStream;
 use std::ops::Deref;
-use std::pin::{pin, Pin};
+use std::pin::{Pin, pin};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{self, Poll};
@@ -783,9 +783,9 @@ impl Hash for SocketDescriptor {
 
 #[cfg(test)]
 mod tests {
+	use bitcoin::Network;
 	use bitcoin::constants::ChainHash;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
-	use bitcoin::Network;
 	use lightning::ln::msgs::*;
 	use lightning::ln::peer_handler::{IgnoringMessageHandler, MessageHandler, PeerManager};
 	use lightning::ln::types::ChannelId;

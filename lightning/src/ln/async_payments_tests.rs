@@ -18,7 +18,7 @@ use crate::events::{
 	PaymentFailureReason, PaymentPurpose,
 };
 use crate::ln::blinded_payment_tests::{fail_blinded_htlc_backwards, get_blinded_route_parameters};
-use crate::ln::channelmanager::{OptionalOfferPaymentParams, PaymentId, MIN_CLTV_EXPIRY_DELTA};
+use crate::ln::channelmanager::{MIN_CLTV_EXPIRY_DELTA, OptionalOfferPaymentParams, PaymentId};
 use crate::ln::functional_test_utils::*;
 use crate::ln::inbound_payment;
 use crate::ln::msgs;
@@ -43,8 +43,8 @@ use crate::offers::invoice_request::InvoiceRequest;
 use crate::offers::nonce::Nonce;
 use crate::offers::offer::{Amount, Offer};
 use crate::offers::static_invoice::{
-	StaticInvoice, StaticInvoiceBuilder,
-	DEFAULT_RELATIVE_EXPIRY as STATIC_INVOICE_DEFAULT_RELATIVE_EXPIRY,
+	DEFAULT_RELATIVE_EXPIRY as STATIC_INVOICE_DEFAULT_RELATIVE_EXPIRY, StaticInvoice,
+	StaticInvoiceBuilder,
 };
 use crate::onion_message::async_payments::{AsyncPaymentsMessage, AsyncPaymentsMessageHandler};
 use crate::onion_message::messenger::{
@@ -53,7 +53,7 @@ use crate::onion_message::messenger::{
 use crate::onion_message::offers::OffersMessage;
 use crate::onion_message::packet::ParsedOnionMessageContents;
 use crate::prelude::*;
-use crate::routing::router::{Payee, PaymentParameters, DEFAULT_PAYMENT_DUMMY_HOPS};
+use crate::routing::router::{DEFAULT_PAYMENT_DUMMY_HOPS, Payee, PaymentParameters};
 use crate::sign::NodeSigner;
 use crate::sync::Mutex;
 use crate::types::features::Bolt12InvoiceFeatures;
@@ -334,9 +334,7 @@ fn create_static_invoice<T: secp256k1::Signing + secp256k1::Verification>(
 
 fn extract_payment_hash(event: &MessageSendEvent) -> PaymentHash {
 	match event {
-		MessageSendEvent::UpdateHTLCs { ref updates, .. } => {
-			updates.update_add_htlcs[0].payment_hash
-		},
+		MessageSendEvent::UpdateHTLCs { updates, .. } => updates.update_add_htlcs[0].payment_hash,
 		_ => panic!(),
 	}
 }
@@ -842,9 +840,11 @@ fn ignore_unexpected_static_invoice() {
 		.handle_onion_message(nodes[1].node.get_our_node_id(), &static_invoice_om);
 	let async_pmts_msgs = AsyncPaymentsMessageHandler::release_pending_messages(nodes[0].node);
 	assert!(!async_pmts_msgs.is_empty());
-	assert!(async_pmts_msgs
+	assert!(
+		async_pmts_msgs
 		.into_iter()
-		.all(|(msg, _)| matches!(msg, AsyncPaymentsMessage::HeldHtlcAvailable(_))));
+			.all(|(msg, _)| matches!(msg, AsyncPaymentsMessage::HeldHtlcAvailable(_)))
+	);
 
 	// Receiving a duplicate invoice will have no effect.
 	nodes[1]
@@ -1600,10 +1600,10 @@ fn reject_bad_payment_secret() {
 
 			// Modify the outbound payment parameters to use payment paths with an invalid payment secret.
 			sender.node.test_modify_pending_payment(&payment_id, |pmt| {
-				if let PendingOutboundPayment::Retryable { ref mut payment_params, .. } = pmt {
+				if let PendingOutboundPayment::Retryable { payment_params, .. } = pmt {
 					assert!(payment_params.is_some());
 					let valid_params = payment_params.clone();
-					if let Payee::Blinded { ref mut route_hints, .. } =
+					if let Payee::Blinded { route_hints, .. } =
 						&mut payment_params.as_mut().unwrap().payee
 					{
 						core::mem::swap(route_hints, &mut invalid_blinded_payment_paths);
@@ -1824,10 +1824,12 @@ fn expired_static_invoice_message_path() {
 		.onion_messenger
 		.handle_onion_message(nodes[1].node.get_our_node_id(), &held_htlc_available_om);
 	for i in 0..2 {
-		assert!(nodes[2]
+		assert!(
+			nodes[2]
 			.onion_messenger
 			.next_onion_message_for_peer(nodes[i].node.get_our_node_id())
-			.is_none());
+				.is_none()
+		);
 	}
 }
 
@@ -2001,10 +2003,12 @@ fn ignore_expired_offer_paths_request() {
 	// After the config path expiry the offer paths request will be ignored:
 	advance_time_by(OFFER_PATHS_REQ_RELATIVE_EXPIRY + Duration::from_secs(1), server);
 	server.onion_messenger.handle_onion_message(recipient.node.get_our_node_id(), &offer_paths_req);
-	assert!(server
+	assert!(
+		server
 		.onion_messenger
 		.next_onion_message_for_peer(recipient.node.get_our_node_id())
-		.is_none());
+			.is_none()
+	);
 }
 
 #[cfg_attr(feature = "std", ignore)]
@@ -2057,10 +2061,12 @@ fn ignore_expired_offer_paths_message() {
 	// sent over an expired reply path, and not respond with serve_static_invoice.
 	advance_time_by(TEST_TEMP_REPLY_PATH_RELATIVE_EXPIRY + Duration::from_secs(1), recipient);
 	recipient.onion_messenger.handle_onion_message(server.node.get_our_node_id(), &offer_paths);
-	assert!(recipient
+	assert!(
+		recipient
 		.onion_messenger
 		.next_onion_message_for_peer(server.node.get_our_node_id())
-		.is_none());
+			.is_none()
+	);
 }
 
 #[test]
@@ -2099,10 +2105,12 @@ fn limit_offer_paths_requests() {
 	// After the recipient runs out of attempts to request offer paths, they will give up until the
 	// next timer tick.
 	recipient.node.test_check_refresh_async_receive_offers();
-	assert!(recipient
+	assert!(
+		recipient
 		.onion_messenger
 		.next_onion_message_for_peer(server.node.get_our_node_id())
-		.is_none());
+			.is_none()
+	);
 
 	// On the next timer tick, more offer paths requests should be allowed to go through.
 	recipient.node.timer_tick_occurred();
@@ -2156,10 +2164,12 @@ fn limit_serve_static_invoice_requests() {
 	// Force allowing more offer paths request attempts so we can check that the recipient will not
 	// attempt to build any further offers.
 	recipient.node.timer_tick_occurred();
-	assert!(recipient
+	assert!(
+		recipient
 		.onion_messenger
 		.next_onion_message_for_peer(server.node.get_our_node_id())
-		.is_none());
+			.is_none()
+	);
 
 	// If the recipient now receives new offer_paths, they should not attempt to build new offers as
 	// they already have enough.
@@ -2171,10 +2181,12 @@ fn limit_serve_static_invoice_requests() {
 		.next_onion_message_for_peer(recipient.node.get_our_node_id())
 		.unwrap();
 	recipient.onion_messenger.handle_onion_message(server.node.get_our_node_id(), &offer_paths);
-	assert!(recipient
+	assert!(
+		recipient
 		.onion_messenger
 		.next_onion_message_for_peer(server.node.get_our_node_id())
-		.is_none());
+			.is_none()
+	);
 }
 
 #[test]
@@ -2503,10 +2515,12 @@ fn ignore_offer_paths_expiry_too_soon() {
 	recipient
 		.onion_messenger
 		.handle_onion_message(server.node.get_our_node_id(), &offer_paths_expiry_too_soon);
-	assert!(recipient
+	assert!(
+		recipient
 		.onion_messenger
 		.next_onion_message_for_peer(server.node.get_our_node_id())
-		.is_none());
+			.is_none()
+	);
 }
 
 #[test]
@@ -2594,12 +2608,14 @@ fn refresh_unused_offers() {
 
 	// Before the threshold, the recipient will not attempt to update any offers.
 	advance_time_by(TEST_OFFER_REFRESH_THRESHOLD - Duration::from_secs(2), recipient);
-	assert!(recipient
+	assert!(
+		recipient
 		.onion_messenger
 		.release_pending_msgs()
 		.get(&server.node.get_our_node_id())
 		.unwrap()
-		.is_empty());
+			.is_empty()
+	);
 
 	// After the threshold time passes, the recipient will attempt to replace all of their offers
 	// (which are all unused) except the last.
@@ -2612,12 +2628,14 @@ fn refresh_unused_offers() {
 		assert_eq!(flow_res.invoice_slot, expected_invoice_slot as u16);
 	}
 	recipient.node.timer_tick_occurred();
-	assert!(recipient
+	assert!(
+		recipient
 		.onion_messenger
 		.release_pending_msgs()
 		.get(&server.node.get_our_node_id())
 		.unwrap()
-		.is_empty());
+			.is_empty()
+	);
 
 	// The recipient will update the last offer after the threshold time has passed.
 	advance_time_by(Duration::from_secs(1), recipient);

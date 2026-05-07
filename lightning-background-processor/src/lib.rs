@@ -59,8 +59,8 @@ use lightning::util::logger::Logger;
 #[cfg(not(c_bindings))]
 use lightning::util::native_async::MaybeSend;
 use lightning::util::persist::{
-	KVStore, KVStoreSync, KVStoreSyncWrapper, CHANNEL_MANAGER_PERSISTENCE_KEY,
-	CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE, CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
+	CHANNEL_MANAGER_PERSISTENCE_KEY, CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+	CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE, KVStore, KVStoreSync, KVStoreSyncWrapper,
 	NETWORK_GRAPH_PERSISTENCE_KEY, NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE,
 	NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE, SCORER_PERSISTENCE_KEY,
 	SCORER_PERSISTENCE_PRIMARY_NAMESPACE, SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
@@ -187,11 +187,7 @@ const ARCHIVE_STALE_MONITORS_TIMER: Duration = Duration::from_secs(1);
 
 /// core::cmp::min is not currently const, so we define a trivial (and equivalent) replacement
 const fn min_duration(a: Duration, b: Duration) -> Duration {
-	if a.as_nanos() < b.as_nanos() {
-		a
-	} else {
-		b
-	}
+	if a.as_nanos() < b.as_nanos() { a } else { b }
 }
 const FASTEST_TIMER: Duration = min_duration(
 	min_duration(FRESHNESS_TIMER, PING_TIMER),
@@ -268,12 +264,7 @@ impl<
 }
 
 /// This is not exported to bindings users as the bindings concretize everything and have constructors for us
-impl<
-		'a,
-		R: Deref<Target = RapidGossipSync<G, L>>,
-		G: Deref<Target = NetworkGraph<L>>,
-		L: Logger,
-	>
+impl<'a, R: Deref<Target = RapidGossipSync<G, L>>, G: Deref<Target = NetworkGraph<L>>, L: Logger>
 	GossipSync<
 		&P2PGossipSync<G, &'a (dyn UtxoLookup + Send + Sync), L>,
 		R,
@@ -306,7 +297,7 @@ impl<'a, L: Logger>
 
 fn handle_network_graph_update<L: Logger>(network_graph: &NetworkGraph<L>, event: &Event) {
 	if let Event::PaymentPathFailed {
-		failure: PathFailure::OnPath { network_update: Some(ref upd) },
+		failure: PathFailure::OnPath { network_update: Some(upd) },
 		..
 	} = event
 	{
@@ -320,11 +311,11 @@ fn update_scorer<'a, S: Deref<Target = SC>, SC: 'a + WriteableScore<'a>>(
 	scorer: &'a S, event: &Event, duration_since_epoch: Duration,
 ) -> bool {
 	match event {
-		Event::PaymentPathFailed { ref path, short_channel_id: Some(scid), .. } => {
+		Event::PaymentPathFailed { path, short_channel_id: Some(scid), .. } => {
 			let mut score = scorer.write_lock();
 			score.payment_path_failed(path, *scid, duration_since_epoch);
 		},
-		Event::PaymentPathFailed { ref path, payment_failed_permanently: true, .. } => {
+		Event::PaymentPathFailed { path, payment_failed_permanently: true, .. } => {
 			// Reached if the destination explicitly failed it back. We treat this as a successful probe
 			// because the payment made it all the way to the destination with sufficient liquidity.
 			let mut score = scorer.write_lock();
@@ -682,7 +673,7 @@ pub(crate) mod futures_util {
 						JoinerResult::Pending(None) => {
 							self.$val = JoinerResult::Ready(Ok(()));
 						},
-						JoinerResult::<ERR, _>::Pending(Some(ref mut val)) => {
+						JoinerResult::<ERR, _>::Pending(Some(val)) => {
 							match Pin::new(val).poll(ctx) {
 								Poll::Ready(res) => {
 									self.$val = JoinerResult::Ready(res);
@@ -704,19 +695,19 @@ pub(crate) mod futures_util {
 
 			if all_complete {
 				let mut res = [Ok(()), Ok(()), Ok(()), Ok(()), Ok(())];
-				if let JoinerResult::Ready(ref mut val) = &mut self.a {
+				if let JoinerResult::Ready(val) = &mut self.a {
 					core::mem::swap(&mut res[0], val);
 				}
-				if let JoinerResult::Ready(ref mut val) = &mut self.b {
+				if let JoinerResult::Ready(val) = &mut self.b {
 					core::mem::swap(&mut res[1], val);
 				}
-				if let JoinerResult::Ready(ref mut val) = &mut self.c {
+				if let JoinerResult::Ready(val) = &mut self.c {
 					core::mem::swap(&mut res[2], val);
 				}
-				if let JoinerResult::Ready(ref mut val) = &mut self.d {
+				if let JoinerResult::Ready(val) = &mut self.d {
 					core::mem::swap(&mut res[3], val);
 				}
-				if let JoinerResult::Ready(ref mut val) = &mut self.e {
+				if let JoinerResult::Ready(val) = &mut self.e {
 					core::mem::swap(&mut res[4], val);
 				}
 				Poll::Ready(res)
@@ -954,8 +945,7 @@ where
 	LM::Target: ALiquidityManager,
 	D::Target: ChangeDestinationSource,
 {
-	let async_event_handler =
-		async |event| {
+	let async_event_handler = async |event| {
 			let network_graph = gossip_sync.network_graph();
 			let event_handler = &event_handler;
 			let scorer = &scorer;
@@ -965,7 +955,7 @@ where
 			if let Some(network_graph) = network_graph {
 				handle_network_graph_update(network_graph, &event)
 			}
-			if let Some(ref scorer) = scorer {
+		if let Some(scorer) = scorer {
 				if let Some(duration_since_epoch) = fetch_time() {
 					if update_scorer(scorer, &event, duration_since_epoch) {
 						log_trace!(logger, "Persisting scorer after update");
@@ -978,7 +968,11 @@ where
 							)
 							.await
 						{
-							log_error!(logger, "Error: Failed to persist scorer, check your disk and permissions {}", e);
+						log_error!(
+							logger,
+							"Error: Failed to persist scorer, check your disk and permissions {}",
+							e
+						);
 							// We opt not to abort early on persistence failure here as persisting
 							// the scorer is non-critical and we still hope that it will have
 							// resolved itself when it is potentially critical in event handling
@@ -1202,7 +1196,10 @@ where
 						duration_since_epoch.as_secs(),
 					);
 				} else {
-					log_warn!(logger, "Not pruning network graph, consider implementing the fetch_time argument or calling remove_stale_channels_and_tracking_with_time manually.");
+					log_warn!(
+						logger,
+						"Not pruning network graph, consider implementing the fetch_time argument or calling remove_stale_channels_and_tracking_with_time manually."
+					);
 					log_trace!(logger, "Persisting network graph.");
 				}
 				network_graph_persist = Some(async {
@@ -1215,7 +1212,11 @@ where
 						)
 						.await
 					{
-						log_error!(logger, "Error: Failed to persist network graph, check your disk and permissions {}",e);
+						log_error!(
+							logger,
+							"Error: Failed to persist network graph, check your disk and permissions {}",
+							e
+						);
 					}
 
 					Ok(())
@@ -1621,7 +1622,11 @@ impl BackgroundProcessor {
 							SCORER_PERSISTENCE_KEY,
 							scorer.encode(),
 						) {
-							log_error!(logger, "Error: Failed to persist scorer, check your disk and permissions {}", e)
+							log_error!(
+								logger,
+								"Error: Failed to persist scorer, check your disk and permissions {}",
+								e
+							)
 						}
 					}
 				}
@@ -1779,7 +1784,11 @@ impl BackgroundProcessor {
 							NETWORK_GRAPH_PERSISTENCE_KEY,
 							network_graph.encode(),
 						) {
-							log_error!(logger, "Error: Failed to persist network graph, check your disk and permissions {}", e);
+							log_error!(
+								logger,
+								"Error: Failed to persist network graph, check your disk and permissions {}",
+								e
+							);
 						}
 						have_pruned = true;
 					}
@@ -1808,7 +1817,11 @@ impl BackgroundProcessor {
 							SCORER_PERSISTENCE_KEY,
 							scorer.encode(),
 						) {
-							log_error!(logger, "Error: Failed to persist scorer, check your disk and permissions {}", e);
+							log_error!(
+								logger,
+								"Error: Failed to persist scorer, check your disk and permissions {}",
+								e
+							);
 						}
 					}
 					last_scorer_persist_call = Instant::now();
@@ -1924,8 +1937,8 @@ impl Drop for BackgroundProcessor {
 
 #[cfg(all(feature = "std", test))]
 mod tests {
-	use super::{BackgroundProcessor, GossipSync, FRESHNESS_TIMER};
-	use bitcoin::constants::{genesis_block, ChainHash};
+	use super::{BackgroundProcessor, FRESHNESS_TIMER, GossipSync};
+	use bitcoin::constants::{ChainHash, genesis_block};
 	use bitcoin::hashes::Hash;
 	use bitcoin::locktime::absolute::LockTime;
 	use bitcoin::network::Network;
@@ -1941,7 +1954,7 @@ mod tests {
 	use lightning::events::{Event, PathFailure, ReplayEvent};
 	use lightning::ln::channelmanager;
 	use lightning::ln::channelmanager::{
-		ChainParameters, PaymentId, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA,
+		BREAKDOWN_TIMEOUT, ChainParameters, MIN_CLTV_EXPIRY_DELTA, PaymentId,
 	};
 	use lightning::ln::functional_test_utils::*;
 	use lightning::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, Init, MessageSendEvent};
@@ -1958,12 +1971,11 @@ mod tests {
 	use lightning::types::payment::PaymentHash;
 	use lightning::util::config::UserConfig;
 	use lightning::util::persist::{
-		KVStoreSync, KVStoreSyncWrapper, CHANNEL_MANAGER_PERSISTENCE_KEY,
-		CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
-		CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE, NETWORK_GRAPH_PERSISTENCE_KEY,
-		NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE, NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE,
-		SCORER_PERSISTENCE_KEY, SCORER_PERSISTENCE_PRIMARY_NAMESPACE,
-		SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
+		CHANNEL_MANAGER_PERSISTENCE_KEY, CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+		CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE, KVStoreSync, KVStoreSyncWrapper,
+		NETWORK_GRAPH_PERSISTENCE_KEY, NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE,
+		NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE, SCORER_PERSISTENCE_KEY,
+		SCORER_PERSISTENCE_PRIMARY_NAMESPACE, SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
 	};
 	use lightning::util::ser::Writeable;
 	use lightning::util::sweep::{
@@ -1977,8 +1989,8 @@ mod tests {
 	use lightning_rapid_gossip_sync::RapidGossipSync;
 	use std::collections::VecDeque;
 	use std::path::PathBuf;
-	use std::sync::mpsc::SyncSender;
 	use std::sync::Arc;
+	use std::sync::mpsc::SyncSender;
 	use std::time::Duration;
 	use std::{env, fs};
 
@@ -1996,11 +2008,7 @@ mod tests {
 				let path_str = entry.path().to_str().unwrap().to_lowercase();
 				// Skip any .tmp files that may exist during persistence.
 				// On Windows, ReplaceFileW creates backup files with .TMP (uppercase).
-				if path_str.ends_with(".tmp") {
-					None
-				} else {
-					Some(entry)
-				}
+				if path_str.ends_with(".tmp") { None } else { Some(entry) }
 			})
 			.collect()
 	}

@@ -16,7 +16,7 @@ use lightning::util::wakers::Notifier;
 use std::collections::VecDeque;
 use std::future::Future;
 use std::ops::Deref;
-use std::pin::{pin, Pin};
+use std::pin::{Pin, pin};
 use std::sync::{Arc, Mutex};
 use std::task::Poll;
 
@@ -231,11 +231,7 @@ where
 		}
 		let outpoint_unspent =
 			source.is_output_unspent(outpoint).await.map_err(|_| UtxoLookupError::UnknownTx)?;
-		if outpoint_unspent {
-			Ok(output)
-		} else {
-			Err(UtxoLookupError::UnknownTx)
-		}
+		if outpoint_unspent { Ok(output) } else { Err(UtxoLookupError::UnknownTx) }
 	}
 }
 

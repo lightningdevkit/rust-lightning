@@ -28,7 +28,7 @@ pub fn zbase32_test<Out: test_logger::Output>(data: &[u8], _out: Out) {
 	do_test(data);
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn zbase32_run(data: *const u8, datalen: usize) {
 	do_test(unsafe { std::slice::from_raw_parts(data, datalen) });
 }

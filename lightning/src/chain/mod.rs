@@ -19,12 +19,12 @@ use bitcoin::script::{Script, ScriptBuf};
 use bitcoin::secp256k1::PublicKey;
 
 use crate::chain::channelmonitor::{
-	ChannelMonitor, ChannelMonitorUpdate, MonitorEvent, ANTI_REORG_DELAY,
+	ANTI_REORG_DELAY, ChannelMonitor, ChannelMonitorUpdate, MonitorEvent,
 };
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::ln::types::ChannelId;
-use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::sign::HTLCDescriptor;
+use crate::sign::ecdsa::EcdsaChannelSigner;
 
 use core::ops::Deref;
 

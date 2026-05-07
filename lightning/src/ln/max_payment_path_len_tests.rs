@@ -10,11 +10,11 @@
 //! Tests for calculating the maximum length of a path based on the payment metadata, custom TLVs,
 //! and/or blinded paths present.
 
+use crate::blinded_path::BlindedHop;
 use crate::blinded_path::payment::{
 	BlindedPayInfo, BlindedPaymentPath, Bolt12RefundContext, PaymentConstraints, PaymentContext,
 	ReceiveTlvs,
 };
-use crate::blinded_path::BlindedHop;
 use crate::events::Event;
 use crate::ln::blinded_payment_tests::get_blinded_route_parameters;
 use crate::ln::channelmanager::{OptionalOfferPaymentParams, PaymentId};
@@ -28,7 +28,7 @@ use crate::ln::outbound_payment::{
 };
 use crate::prelude::*;
 use crate::routing::router::{
-	PaymentParameters, RouteParameters, DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA,
+	DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA, PaymentParameters, RouteParameters,
 };
 use crate::sign::NodeSigner;
 use crate::types::features::BlindedHopFeatures;

@@ -18,6 +18,7 @@
 //! send-side handling is correct, other peers. We consider it a failure if any action results in a
 //! channel being force-closed.
 
+use bitcoin::FeeRate;
 use bitcoin::amount::Amount;
 use bitcoin::constants::genesis_block;
 use bitcoin::locktime::absolute::LockTime;
@@ -26,14 +27,13 @@ use bitcoin::opcodes;
 use bitcoin::script::{Builder, ScriptBuf};
 use bitcoin::transaction::Version;
 use bitcoin::transaction::{Transaction, TxOut};
-use bitcoin::FeeRate;
 
+use bitcoin::WPubkeyHash;
 use bitcoin::block::Header;
 use bitcoin::hash_types::Txid;
+use bitcoin::hashes::Hash as TraitImport;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
-use bitcoin::hashes::Hash as TraitImport;
-use bitcoin::WPubkeyHash;
 
 use lightning::blinded_path::message::{BlindedMessagePath, MessageContext, MessageForwardNode};
 use lightning::blinded_path::payment::{BlindedPaymentPath, ReceiveTlvs};
@@ -44,7 +44,7 @@ use lightning::chain::chaininterface::{
 use lightning::chain::channelmonitor::{ChannelMonitor, MonitorEvent};
 use lightning::chain::transaction::OutPoint;
 use lightning::chain::{
-	chainmonitor, channelmonitor, BlockLocator, ChannelMonitorUpdateStatus, Confirm, Watch,
+	BlockLocator, ChannelMonitorUpdateStatus, Confirm, Watch, chainmonitor, channelmonitor,
 };
 use lightning::events;
 use lightning::ln::channel::{
@@ -1348,7 +1348,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 			}
 			for (idx, node_event) in node_events.iter().enumerate() {
 				for event in node_event {
-					if let MessageSendEvent::SendChannelReady { ref node_id, ref msg } = event {
+					if let MessageSendEvent::SendChannelReady { node_id, msg } = event {
 						for node in $nodes.iter() {
 							if node.get_our_node_id() == *node_id {
 								node.handle_channel_ready($nodes[idx].get_our_node_id(), msg);
@@ -1609,90 +1609,170 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 			($excess_events: expr, $expect_drop_node: expr) => { {
 				let a_id = nodes[0].get_our_node_id();
 				let expect_drop_node: Option<usize> = $expect_drop_node;
-				let expect_drop_id = if let Some(id) = expect_drop_node { Some(nodes[id].get_our_node_id()) } else { None };
+				let expect_drop_id = if let Some(id) = expect_drop_node {
+					Some(nodes[id].get_our_node_id())
+				} else {
+					None
+				};
 				for event in $excess_events {
 					let push_a = match event {
 						MessageSendEvent::UpdateHTLCs { ref node_id, .. } => {
-							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
+							if Some(*node_id) == expect_drop_id {
+								panic!(
+									"peer_disconnected should drop msgs bound for the disconnected peer"
+								);
+							}
 							*node_id == a_id
 						},
 						MessageSendEvent::SendRevokeAndACK { ref node_id, .. } => {
-							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
+							if Some(*node_id) == expect_drop_id {
+								panic!(
+									"peer_disconnected should drop msgs bound for the disconnected peer"
+								);
+							}
 							*node_id == a_id
 						},
 						MessageSendEvent::SendChannelReestablish { ref node_id, .. } => {
-							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
+							if Some(*node_id) == expect_drop_id {
+								panic!(
+									"peer_disconnected should drop msgs bound for the disconnected peer"
+								);
+							}
 							*node_id == a_id
 						},
 						MessageSendEvent::SendStfu { ref node_id, .. } => {
-							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
+							if Some(*node_id) == expect_drop_id {
+								panic!(
+									"peer_disconnected should drop msgs bound for the disconnected peer"
+								);
+							}
 							*node_id == a_id
 						},
 						MessageSendEvent::SendSpliceInit { ref node_id, .. } => {
-							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
+							if Some(*node_id) == expect_drop_id {
+								panic!(
+									"peer_disconnected should drop msgs bound for the disconnected peer"
+								);
+							}
 							*node_id == a_id
 						},
 						MessageSendEvent::SendSpliceAck { ref node_id, .. } => {
-							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
+							if Some(*node_id) == expect_drop_id {
+								panic!(
+									"peer_disconnected should drop msgs bound for the disconnected peer"
+								);
+							}
 							*node_id == a_id
 						},
 						MessageSendEvent::SendSpliceLocked { ref node_id, .. } => {
-							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
+							if Some(*node_id) == expect_drop_id {
+								panic!(
+									"peer_disconnected should drop msgs bound for the disconnected peer"
+								);
+							}
 							*node_id == a_id
 						},
 						MessageSendEvent::SendTxAddInput { ref node_id, .. } => {
-							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
+							if Some(*node_id) == expect_drop_id {
+								panic!(
+									"peer_disconnected should drop msgs bound for the disconnected peer"
+								);
+							}
 							*node_id == a_id
 						},
 						MessageSendEvent::SendTxAddOutput { ref node_id, .. } => {
-							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
+							if Some(*node_id) == expect_drop_id {
+								panic!(
+									"peer_disconnected should drop msgs bound for the disconnected peer"
+								);
+							}
 							*node_id == a_id
 						},
 						MessageSendEvent::SendTxRemoveInput { ref node_id, .. } => {
-							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
+							if Some(*node_id) == expect_drop_id {
+								panic!(
+									"peer_disconnected should drop msgs bound for the disconnected peer"
+								);
+							}
 							*node_id == a_id
 						},
 						MessageSendEvent::SendTxRemoveOutput { ref node_id, .. } => {
-							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
+							if Some(*node_id) == expect_drop_id {
+								panic!(
+									"peer_disconnected should drop msgs bound for the disconnected peer"
+								);
+							}
 							*node_id == a_id
 						},
 						MessageSendEvent::SendTxComplete { ref node_id, .. } => {
-							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
+							if Some(*node_id) == expect_drop_id {
+								panic!(
+									"peer_disconnected should drop msgs bound for the disconnected peer"
+								);
+							}
 							*node_id == a_id
 						},
 						MessageSendEvent::SendTxAbort { ref node_id, .. } => {
-							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
+							if Some(*node_id) == expect_drop_id {
+								panic!(
+									"peer_disconnected should drop msgs bound for the disconnected peer"
+								);
+							}
 							*node_id == a_id
 						},
 						MessageSendEvent::SendTxInitRbf { ref node_id, .. } => {
-							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
+							if Some(*node_id) == expect_drop_id {
+								panic!(
+									"peer_disconnected should drop msgs bound for the disconnected peer"
+								);
+							}
 							*node_id == a_id
 						},
 						MessageSendEvent::SendTxAckRbf { ref node_id, .. } => {
-							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
+							if Some(*node_id) == expect_drop_id {
+								panic!(
+									"peer_disconnected should drop msgs bound for the disconnected peer"
+								);
+							}
 							*node_id == a_id
 						},
 						MessageSendEvent::SendTxSignatures { ref node_id, .. } => {
-							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
+							if Some(*node_id) == expect_drop_id {
+								panic!(
+									"peer_disconnected should drop msgs bound for the disconnected peer"
+								);
+							}
 							*node_id == a_id
 						},
 						MessageSendEvent::SendChannelReady { .. } => continue,
 						MessageSendEvent::SendAnnouncementSignatures { .. } => continue,
 						MessageSendEvent::BroadcastChannelUpdate { .. } => continue,
 						MessageSendEvent::SendChannelUpdate { ref node_id, .. } => {
-							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
+							if Some(*node_id) == expect_drop_id {
+								panic!(
+									"peer_disconnected should drop msgs bound for the disconnected peer"
+								);
+							}
 							*node_id == a_id
 						},
 						MessageSendEvent::HandleError { ref action, ref node_id } => {
 							assert_action_timeout_awaiting_response(action);
-							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
+							if Some(*node_id) == expect_drop_id {
+								panic!(
+									"peer_disconnected should drop msgs bound for the disconnected peer"
+								);
+							}
 							*node_id == a_id
 						},
 						_ => panic!("Unhandled message event {:?}", event),
 					};
-					if push_a { ba_events.push(event); } else { bc_events.push(event); }
+					if push_a {
+						ba_events.push(event);
+					} else {
+						bc_events.push(event);
 				}
-			} }
+				}
+			}};
 		}
 
 		// While delivering messages, we select across three possible message selection processes
@@ -1739,13 +1819,34 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 				for event in &mut events_iter {
 					had_events = true;
 					match event {
-						MessageSendEvent::UpdateHTLCs { node_id, channel_id, updates: CommitmentUpdate { update_add_htlcs, update_fail_htlcs, update_fulfill_htlcs, update_fail_malformed_htlcs, update_fee, commitment_signed } } => {
+						MessageSendEvent::UpdateHTLCs {
+							node_id,
+							channel_id,
+							updates:
+								CommitmentUpdate {
+									update_add_htlcs,
+									update_fail_htlcs,
+									update_fulfill_htlcs,
+									update_fail_malformed_htlcs,
+									update_fee,
+									commitment_signed,
+								},
+						} => {
 							for (idx, dest) in nodes.iter().enumerate() {
 								if dest.get_our_node_id() == node_id {
 									for update_add in update_add_htlcs.iter() {
-										out.locked_write(format!("Delivering update_add_htlc from node {} to node {}.\n", $node, idx).as_bytes());
+										out.locked_write(
+											format!(
+												"Delivering update_add_htlc from node {} to node {}.\n",
+												$node, idx
+											)
+											.as_bytes(),
+										);
 										if !$corrupt_forward {
-											dest.handle_update_add_htlc(nodes[$node].get_our_node_id(), update_add);
+											dest.handle_update_add_htlc(
+												nodes[$node].get_our_node_id(),
+												update_add,
+											);
 										} else {
 											// Corrupt the update_add_htlc message so that its HMAC
 											// check will fail and we generate a
@@ -1753,42 +1854,103 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 											// update_fail_htlc as we do when we reject a payment.
 											let mut msg_ser = update_add.encode();
 											msg_ser[1000] ^= 0xff;
-											let new_msg = UpdateAddHTLC::read_from_fixed_length_buffer(&mut &msg_ser[..]).unwrap();
-											dest.handle_update_add_htlc(nodes[$node].get_our_node_id(), &new_msg);
+											let new_msg =
+												UpdateAddHTLC::read_from_fixed_length_buffer(
+													&mut &msg_ser[..],
+												)
+												.unwrap();
+											dest.handle_update_add_htlc(
+												nodes[$node].get_our_node_id(),
+												&new_msg,
+											);
 										}
 									}
-									let processed_change = !update_add_htlcs.is_empty() || !update_fulfill_htlcs.is_empty() ||
-										!update_fail_htlcs.is_empty() || !update_fail_malformed_htlcs.is_empty();
+									let processed_change = !update_add_htlcs.is_empty()
+										|| !update_fulfill_htlcs.is_empty()
+										|| !update_fail_htlcs.is_empty()
+										|| !update_fail_malformed_htlcs.is_empty();
 									for update_fulfill in update_fulfill_htlcs {
-										out.locked_write(format!("Delivering update_fulfill_htlc from node {} to node {}.\n", $node, idx).as_bytes());
-										dest.handle_update_fulfill_htlc(nodes[$node].get_our_node_id(), update_fulfill);
+										out.locked_write(
+											format!(
+												"Delivering update_fulfill_htlc from node {} to node {}.\n",
+												$node, idx
+											)
+											.as_bytes(),
+										);
+										dest.handle_update_fulfill_htlc(
+											nodes[$node].get_our_node_id(),
+											update_fulfill,
+										);
 									}
 									for update_fail in update_fail_htlcs.iter() {
-										out.locked_write(format!("Delivering update_fail_htlc from node {} to node {}.\n", $node, idx).as_bytes());
-										dest.handle_update_fail_htlc(nodes[$node].get_our_node_id(), update_fail);
+										out.locked_write(
+											format!(
+												"Delivering update_fail_htlc from node {} to node {}.\n",
+												$node, idx
+											)
+											.as_bytes(),
+										);
+										dest.handle_update_fail_htlc(
+											nodes[$node].get_our_node_id(),
+											update_fail,
+										);
 									}
-									for update_fail_malformed in update_fail_malformed_htlcs.iter() {
-										out.locked_write(format!("Delivering update_fail_malformed_htlc from node {} to node {}.\n", $node, idx).as_bytes());
-										dest.handle_update_fail_malformed_htlc(nodes[$node].get_our_node_id(), update_fail_malformed);
+									for update_fail_malformed in update_fail_malformed_htlcs.iter()
+									{
+										out.locked_write(
+											format!(
+												"Delivering update_fail_malformed_htlc from node {} to node {}.\n",
+												$node, idx
+											)
+											.as_bytes(),
+										);
+										dest.handle_update_fail_malformed_htlc(
+											nodes[$node].get_our_node_id(),
+											update_fail_malformed,
+										);
 									}
 									if let Some(msg) = update_fee {
-										out.locked_write(format!("Delivering update_fee from node {} to node {}.\n", $node, idx).as_bytes());
-										dest.handle_update_fee(nodes[$node].get_our_node_id(), &msg);
+										out.locked_write(
+											format!(
+												"Delivering update_fee from node {} to node {}.\n",
+												$node, idx
+											)
+											.as_bytes(),
+										);
+										dest.handle_update_fee(
+											nodes[$node].get_our_node_id(),
+											&msg,
+										);
 									}
-									if $limit_events != ProcessMessages::AllMessages && processed_change {
+									if $limit_events != ProcessMessages::AllMessages
+										&& processed_change
+									{
 										// If we only want to process some messages, don't deliver the CS until later.
-										extra_ev = Some(MessageSendEvent::UpdateHTLCs { node_id, channel_id, updates: CommitmentUpdate {
+										extra_ev = Some(MessageSendEvent::UpdateHTLCs {
+											node_id,
+											channel_id,
+											updates: CommitmentUpdate {
 											update_add_htlcs: Vec::new(),
 											update_fail_htlcs: Vec::new(),
 											update_fulfill_htlcs: Vec::new(),
 											update_fail_malformed_htlcs: Vec::new(),
 											update_fee: None,
-											commitment_signed
-										} });
+												commitment_signed,
+											},
+										});
 										break;
 									}
-									out.locked_write(format!("Delivering commitment_signed from node {} to node {}.\n", $node, idx).as_bytes());
-									dest.handle_commitment_signed_batch_test(nodes[$node].get_our_node_id(), &commitment_signed);
+									out.locked_write(
+										format!(
+											"Delivering commitment_signed from node {} to node {}.\n",
+											$node, idx
+										)
+										.as_bytes(),
+									);
+									dest.handle_commitment_signed_batch_test(
+										nodes[$node].get_our_node_id(),
+										&commitment_signed,
+									);
 									break;
 								}
 							}
@@ -1796,7 +1958,13 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 						MessageSendEvent::SendRevokeAndACK { ref node_id, ref msg } => {
 							for (idx, dest) in nodes.iter().enumerate() {
 								if dest.get_our_node_id() == *node_id {
-									out.locked_write(format!("Delivering revoke_and_ack from node {} to node {}.\n", $node, idx).as_bytes());
+									out.locked_write(
+										format!(
+											"Delivering revoke_and_ack from node {} to node {}.\n",
+											$node, idx
+										)
+										.as_bytes(),
+									);
 									dest.handle_revoke_and_ack(nodes[$node].get_our_node_id(), msg);
 								}
 							}
@@ -1804,15 +1972,30 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 						MessageSendEvent::SendChannelReestablish { ref node_id, ref msg } => {
 							for (idx, dest) in nodes.iter().enumerate() {
 								if dest.get_our_node_id() == *node_id {
-									out.locked_write(format!("Delivering channel_reestablish from node {} to node {}.\n", $node, idx).as_bytes());
-									dest.handle_channel_reestablish(nodes[$node].get_our_node_id(), msg);
+									out.locked_write(
+										format!(
+											"Delivering channel_reestablish from node {} to node {}.\n",
+											$node, idx
+										)
+										.as_bytes(),
+									);
+									dest.handle_channel_reestablish(
+										nodes[$node].get_our_node_id(),
+										msg,
+									);
 								}
 							}
 						},
 						MessageSendEvent::SendStfu { ref node_id, ref msg } => {
 							for (idx, dest) in nodes.iter().enumerate() {
 								if dest.get_our_node_id() == *node_id {
-									out.locked_write(format!("Delivering stfu from node {} to node {}.\n", $node, idx).as_bytes());
+									out.locked_write(
+										format!(
+											"Delivering stfu from node {} to node {}.\n",
+											$node, idx
+										)
+										.as_bytes(),
+									);
 									dest.handle_stfu(nodes[$node].get_our_node_id(), msg);
 								}
 							}
@@ -1820,7 +2003,13 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 						MessageSendEvent::SendTxAddInput { ref node_id, ref msg } => {
 							for (idx, dest) in nodes.iter().enumerate() {
 								if dest.get_our_node_id() == *node_id {
-									out.locked_write(format!("Delivering tx_add_input from node {} to node {}.\n", $node, idx).as_bytes());
+									out.locked_write(
+										format!(
+											"Delivering tx_add_input from node {} to node {}.\n",
+											$node, idx
+										)
+										.as_bytes(),
+									);
 									dest.handle_tx_add_input(nodes[$node].get_our_node_id(), msg);
 								}
 							}
@@ -1828,7 +2017,13 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 						MessageSendEvent::SendTxAddOutput { ref node_id, ref msg } => {
 							for (idx, dest) in nodes.iter().enumerate() {
 								if dest.get_our_node_id() == *node_id {
-									out.locked_write(format!("Delivering tx_add_output from node {} to node {}.\n", $node, idx).as_bytes());
+									out.locked_write(
+										format!(
+											"Delivering tx_add_output from node {} to node {}.\n",
+											$node, idx
+										)
+										.as_bytes(),
+									);
 									dest.handle_tx_add_output(nodes[$node].get_our_node_id(), msg);
 								}
 							}
@@ -1836,23 +2031,47 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 						MessageSendEvent::SendTxRemoveInput { ref node_id, ref msg } => {
 							for (idx, dest) in nodes.iter().enumerate() {
 								if dest.get_our_node_id() == *node_id {
-									out.locked_write(format!("Delivering tx_remove_input from node {} to node {}.\n", $node, idx).as_bytes());
-									dest.handle_tx_remove_input(nodes[$node].get_our_node_id(), msg);
+									out.locked_write(
+										format!(
+											"Delivering tx_remove_input from node {} to node {}.\n",
+											$node, idx
+										)
+										.as_bytes(),
+									);
+									dest.handle_tx_remove_input(
+										nodes[$node].get_our_node_id(),
+										msg,
+									);
 								}
 							}
 						},
 						MessageSendEvent::SendTxRemoveOutput { ref node_id, ref msg } => {
 							for (idx, dest) in nodes.iter().enumerate() {
 								if dest.get_our_node_id() == *node_id {
-									out.locked_write(format!("Delivering tx_remove_output from node {} to node {}.\n", $node, idx).as_bytes());
-									dest.handle_tx_remove_output(nodes[$node].get_our_node_id(), msg);
+									out.locked_write(
+										format!(
+											"Delivering tx_remove_output from node {} to node {}.\n",
+											$node, idx
+										)
+										.as_bytes(),
+									);
+									dest.handle_tx_remove_output(
+										nodes[$node].get_our_node_id(),
+										msg,
+									);
 								}
 							}
 						},
 						MessageSendEvent::SendTxComplete { ref node_id, ref msg } => {
 							for (idx, dest) in nodes.iter().enumerate() {
 								if dest.get_our_node_id() == *node_id {
-									out.locked_write(format!("Delivering tx_complete from node {} to node {}.\n", $node, idx).as_bytes());
+									out.locked_write(
+										format!(
+											"Delivering tx_complete from node {} to node {}.\n",
+											$node, idx
+										)
+										.as_bytes(),
+									);
 									dest.handle_tx_complete(nodes[$node].get_our_node_id(), msg);
 								}
 							}
@@ -1860,7 +2079,13 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 						MessageSendEvent::SendTxAbort { ref node_id, ref msg } => {
 							for (idx, dest) in nodes.iter().enumerate() {
 								if dest.get_our_node_id() == *node_id {
-									out.locked_write(format!("Delivering tx_abort from node {} to node {}.\n", $node, idx).as_bytes());
+									out.locked_write(
+										format!(
+											"Delivering tx_abort from node {} to node {}.\n",
+											$node, idx
+										)
+										.as_bytes(),
+									);
 									dest.handle_tx_abort(nodes[$node].get_our_node_id(), msg);
 								}
 							}
@@ -1868,7 +2093,13 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 						MessageSendEvent::SendTxInitRbf { ref node_id, ref msg } => {
 							for (idx, dest) in nodes.iter().enumerate() {
 								if dest.get_our_node_id() == *node_id {
-									out.locked_write(format!("Delivering tx_init_rbf from node {} to node {}.\n", $node, idx).as_bytes());
+									out.locked_write(
+										format!(
+											"Delivering tx_init_rbf from node {} to node {}.\n",
+											$node, idx
+										)
+										.as_bytes(),
+									);
 									dest.handle_tx_init_rbf(nodes[$node].get_our_node_id(), msg);
 								}
 							}
@@ -1876,7 +2107,13 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 						MessageSendEvent::SendTxAckRbf { ref node_id, ref msg } => {
 							for (idx, dest) in nodes.iter().enumerate() {
 								if dest.get_our_node_id() == *node_id {
-									out.locked_write(format!("Delivering tx_ack_rbf from node {} to node {}.\n", $node, idx).as_bytes());
+									out.locked_write(
+										format!(
+											"Delivering tx_ack_rbf from node {} to node {}.\n",
+											$node, idx
+										)
+										.as_bytes(),
+									);
 									dest.handle_tx_ack_rbf(nodes[$node].get_our_node_id(), msg);
 								}
 							}
@@ -1884,7 +2121,13 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 						MessageSendEvent::SendTxSignatures { ref node_id, ref msg } => {
 							for (idx, dest) in nodes.iter().enumerate() {
 								if dest.get_our_node_id() == *node_id {
-									out.locked_write(format!("Delivering tx_signatures from node {} to node {}.\n", $node, idx).as_bytes());
+									out.locked_write(
+										format!(
+											"Delivering tx_signatures from node {} to node {}.\n",
+											$node, idx
+										)
+										.as_bytes(),
+									);
 									dest.handle_tx_signatures(nodes[$node].get_our_node_id(), msg);
 								}
 							}
@@ -1892,7 +2135,13 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 						MessageSendEvent::SendSpliceInit { ref node_id, ref msg } => {
 							for (idx, dest) in nodes.iter().enumerate() {
 								if dest.get_our_node_id() == *node_id {
-									out.locked_write(format!("Delivering splice_init from node {} to node {}.\n", $node, idx).as_bytes());
+									out.locked_write(
+										format!(
+											"Delivering splice_init from node {} to node {}.\n",
+											$node, idx
+										)
+										.as_bytes(),
+									);
 									dest.handle_splice_init(nodes[$node].get_our_node_id(), msg);
 								}
 							}
@@ -1900,7 +2149,13 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 						MessageSendEvent::SendSpliceAck { ref node_id, ref msg } => {
 							for (idx, dest) in nodes.iter().enumerate() {
 								if dest.get_our_node_id() == *node_id {
-									out.locked_write(format!("Delivering splice_ack from node {} to node {}.\n", $node, idx).as_bytes());
+									out.locked_write(
+										format!(
+											"Delivering splice_ack from node {} to node {}.\n",
+											$node, idx
+										)
+										.as_bytes(),
+									);
 									dest.handle_splice_ack(nodes[$node].get_our_node_id(), msg);
 								}
 							}
@@ -1908,7 +2163,13 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 						MessageSendEvent::SendSpliceLocked { ref node_id, ref msg } => {
 							for (idx, dest) in nodes.iter().enumerate() {
 								if dest.get_our_node_id() == *node_id {
-									out.locked_write(format!("Delivering splice_locked from node {} to node {}.\n", $node, idx).as_bytes());
+									out.locked_write(
+										format!(
+											"Delivering splice_locked from node {} to node {}.\n",
+											$node, idx
+										)
+										.as_bytes(),
+									);
 									dest.handle_splice_locked(nodes[$node].get_our_node_id(), msg);
 								}
 							}
@@ -1938,14 +2199,22 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 				if $node == 1 {
 					push_excess_b_events!(extra_ev.into_iter().chain(events_iter), None);
 				} else if $node == 0 {
-					if let Some(ev) = extra_ev { ab_events.push(ev); }
-					for event in events_iter { ab_events.push(event); }
+					if let Some(ev) = extra_ev {
+						ab_events.push(ev);
+					}
+					for event in events_iter {
+						ab_events.push(event);
+					}
 				} else {
-					if let Some(ev) = extra_ev { cb_events.push(ev); }
-					for event in events_iter { cb_events.push(event); }
+					if let Some(ev) = extra_ev {
+						cb_events.push(ev);
+					}
+					for event in events_iter {
+						cb_events.push(event);
+					}
 				}
 				had_events
-			} }
+			}};
 		}
 
 		macro_rules! process_msg_noret {
@@ -2976,7 +3245,7 @@ pub fn chanmon_consistency_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8]
 	do_test(data, out);
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn chanmon_consistency_run(data: *const u8, datalen: usize) {
 	do_test(unsafe { std::slice::from_raw_parts(data, datalen) }, test_logger::DevNull {});
 }

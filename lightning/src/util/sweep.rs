@@ -37,7 +37,7 @@ use bitcoin::{BlockHash, ScriptBuf, Transaction, Txid};
 
 use core::future::Future;
 use core::ops::Deref;
-use core::pin::{pin, Pin};
+use core::pin::{Pin, pin};
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::task;
 
@@ -177,7 +177,10 @@ impl OutputSpendStatus {
 			Self::PendingInitialBroadcast { .. } => {
 				// Generally we can't see any of our transactions confirmed if they haven't been
 				// broadcasted yet, so this should never be reachable via `transactions_confirmed`.
-				debug_assert!(false, "We should never confirm when we haven't broadcasted. This a bug and should never happen, please report.");
+				debug_assert!(
+					false,
+					"We should never confirm when we haven't broadcasted. This a bug and should never happen, please report."
+				);
 				*self = Self::PendingThresholdConfirmations {
 					first_broadcast_hash: confirmation_hash,
 					latest_broadcast_height: confirmation_height,
@@ -761,10 +764,15 @@ where
 		&self, header: &Header, txdata: &chain::transaction::TransactionData, height: u32,
 	) {
 		let mut state_lock = self.sweeper_state.lock().unwrap();
-		assert_eq!(state_lock.best_block.block_hash, header.prev_blockhash,
-			"Blocks must be connected in chain-order - the connected header must build on the last connected header");
-		assert_eq!(state_lock.best_block.height, height - 1,
-			"Blocks must be connected in chain-order - the connected block height must be one greater than the previous height");
+		assert_eq!(
+			state_lock.best_block.block_hash, header.prev_blockhash,
+			"Blocks must be connected in chain-order - the connected header must build on the last connected header"
+		);
+		assert_eq!(
+			state_lock.best_block.height,
+			height - 1,
+			"Blocks must be connected in chain-order - the connected block height must be one greater than the previous height"
+		);
 
 		self.transactions_confirmed_internal(&mut state_lock, header, txdata, height);
 		self.best_block_updated_internal(&mut state_lock, header, height);
@@ -773,8 +781,10 @@ where
 	fn blocks_disconnected(&self, fork_point: BlockLocator) {
 		let mut state_lock = self.sweeper_state.lock().unwrap();
 
-		assert!(state_lock.best_block.height > fork_point.height,
-			"Blocks disconnected must indicate disconnection from the current best height, i.e. the new chain tip must be lower than the previous best height");
+		assert!(
+			state_lock.best_block.height > fork_point.height,
+			"Blocks disconnected must indicate disconnection from the current best height, i.e. the new chain tip must be lower than the previous best height"
+		);
 		state_lock.best_block = fork_point;
 
 		for output_info in state_lock.outputs.iter_mut() {
@@ -893,8 +903,7 @@ impl<
 		K: KVStore,
 		L: Logger,
 		O: OutputSpender,
-	> ReadableArgs<(B, E, Option<F>, O, D, K, L)>
-	for (BlockLocator, OutputSweeper<B, D, E, F, K, L, O>)
+> ReadableArgs<(B, E, Option<F>, O, D, K, L)> for (BlockLocator, OutputSweeper<B, D, E, F, K, L, O>)
 where
 	D::Target: ChangeDestinationSource,
 {
@@ -1044,7 +1053,9 @@ where
 			task::Poll::Ready(result) => result,
 			task::Poll::Pending => {
 				// In a sync context, we can't wait for the future to complete.
-				unreachable!("OutputSweeper::track_spendable_outputs should not be pending in a sync context");
+				unreachable!(
+					"OutputSweeper::track_spendable_outputs should not be pending in a sync context"
+				);
 			},
 		}
 	}
@@ -1073,7 +1084,9 @@ where
 			task::Poll::Ready(result) => result,
 			task::Poll::Pending => {
 				// In a sync context, we can't wait for the future to complete.
-				unreachable!("OutputSweeper::regenerate_and_broadcast_spend_if_necessary should not be pending in a sync context");
+				unreachable!(
+					"OutputSweeper::regenerate_and_broadcast_spend_if_necessary should not be pending in a sync context"
+				);
 			},
 		}
 	}

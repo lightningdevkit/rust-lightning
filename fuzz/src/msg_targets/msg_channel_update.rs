@@ -20,7 +20,7 @@ pub fn msg_channel_update_test<Out: test_logger::Output>(data: &[u8], _out: Out)
 	test_msg_exact!(lightning::ln::msgs::ChannelUpdate, data);
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn msg_channel_update_run(data: *const u8, datalen: usize) {
 	let data = unsafe { std::slice::from_raw_parts(data, datalen) };
 	test_msg_exact!(lightning::ln::msgs::ChannelUpdate, data);

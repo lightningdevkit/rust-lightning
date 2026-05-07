@@ -22,8 +22,8 @@ use bitcoin::secp256k1::{Message, PublicKey};
 use bitcoin::sighash::SighashCache;
 use bitcoin::transaction::Version;
 use bitcoin::{
-	sighash, EcdsaSighashType, OutPoint as BitcoinOutPoint, ScriptBuf, Sequence, TapSighashType,
-	Transaction, TxIn, TxOut, Txid, Weight, Witness, XOnlyPublicKey,
+	EcdsaSighashType, OutPoint as BitcoinOutPoint, ScriptBuf, Sequence, TapSighashType,
+	Transaction, TxIn, TxOut, Txid, Weight, Witness, XOnlyPublicKey, sighash,
 };
 
 use crate::chain::chaininterface::fee_for_weight;
@@ -794,19 +794,27 @@ impl InteractiveTxSigningSession {
 			// P2WPKH
 			if script_pubkey.is_p2wpkh() {
 				if witness.len() != 2 {
-					let err = format!("The witness for input at index {input_idx} does not have the correct number of elements for a P2WPKH spend. Expected 2 got {}", witness.len());
+					let err = format!(
+						"The witness for input at index {input_idx} does not have the correct number of elements for a P2WPKH spend. Expected 2 got {}",
+						witness.len()
+					);
 					return Err(err);
 				}
 				let pubkey = PublicKey::from_slice(&witness[1]).map_err(|_| {
-					format!("The witness for input at index {input_idx} contains an invalid ECDSA public key")
+					format!(
+						"The witness for input at index {input_idx} contains an invalid ECDSA public key"
+					)
 				})?;
 
-				let sig =
-					bitcoin::ecdsa::Signature::from_slice(&witness[0]).map_err(|_| {
-						format!("The witness for input at index {input_idx} contains an invalid signature")
+				let sig = bitcoin::ecdsa::Signature::from_slice(&witness[0]).map_err(|_| {
+					format!(
+						"The witness for input at index {input_idx} contains an invalid signature"
+					)
 					})?;
 				if !matches!(sig.sighash_type, EcdsaSighashType::All) {
-					let err = format!("Signature does not use SIGHASH_ALL for input at index {input_idx} for P2WPKH spend");
+					let err = format!(
+						"Signature does not use SIGHASH_ALL for input at index {input_idx} for P2WPKH spend"
+					);
 					return Err(err);
 				}
 
@@ -824,7 +832,9 @@ impl InteractiveTxSigningSession {
 				let msg = Message::from_digest_slice(&sighash[..])
 					.expect("Sighash is a SHA256 which is 32 bytes long");
 				secp_ctx.verify_ecdsa(&msg, &sig.signature, &pubkey).map_err(|_| {
-					format!("Failed signature verification for input at index {input_idx} for P2WPKH spend")
+					format!(
+						"Failed signature verification for input at index {input_idx} for P2WPKH spend"
+					)
 				})?;
 
 				continue;
@@ -848,7 +858,9 @@ impl InteractiveTxSigningSession {
 					format!("The witness for input at index {input_idx} for a P2TR key path spend has an invalid signature")
 				})?;
 				if !matches!(sig.sighash_type, TapSighashType::Default | TapSighashType::All) {
-					let err = format!("Signature does not use SIGHASH_DEFAULT or SIGHASH_ALL for input at index {input_idx} for P2TR key path spend");
+					let err = format!(
+						"Signature does not use SIGHASH_DEFAULT or SIGHASH_ALL for input at index {input_idx} for P2TR key path spend"
+					);
 					return Err(err);
 				}
 
@@ -861,7 +873,9 @@ impl InteractiveTxSigningSession {
 				let msg = Message::from_digest_slice(&sighash[..])
 					.expect("Sighash is a SHA256 which is 32 bytes long");
 				secp_ctx.verify_schnorr(&sig.signature, &msg, &pubkey).map_err(|_| {
-					format!("Failed signature verification for input at index {input_idx} for P2TR key path spend")
+					format!(
+						"Failed signature verification for input at index {input_idx} for P2TR key path spend"
+					)
 				})?;
 
 				continue;
@@ -877,7 +891,9 @@ impl InteractiveTxSigningSession {
 								.map(|sig| matches!(sig.sighash_type, EcdsaSighashType::All))
 								.unwrap_or(true)
 							{
-								let err = format!("An ECDSA signature in the witness for input {input_idx} does not use SIGHASH_ALL");
+								let err = format!(
+									"An ECDSA signature in the witness for input {input_idx} does not use SIGHASH_ALL"
+								);
 								return Err(err);
 							}
 						},
@@ -898,7 +914,9 @@ impl InteractiveTxSigningSession {
 								.map(|sig| matches!(sig.sighash_type, TapSighashType::All))
 								.unwrap_or(true)
 							{
-								let err = format!("A (likely) Schnorr signature in the witness for input {input_idx} does not use SIGHASH_DEFAULT or SIGHASH_ALL");
+								let err = format!(
+									"A (likely) Schnorr signature in the witness for input {input_idx} does not use SIGHASH_DEFAULT or SIGHASH_ALL"
+								);
 								return Err(err);
 							}
 						},
@@ -1456,7 +1474,11 @@ define_state!(
 	ReceivedTxComplete,
 	"We have received a `tx_complete` message and the counterparty is awaiting ours."
 );
-define_state!(NegotiationComplete, InteractiveTxSigningSession, "We have exchanged consecutive `tx_complete` messages with the counterparty and the transaction negotiation is complete.");
+define_state!(
+	NegotiationComplete,
+	InteractiveTxSigningSession,
+	"We have exchanged consecutive `tx_complete` messages with the counterparty and the transaction negotiation is complete."
+);
 define_state!(
 	NegotiationAborted,
 	AbortReason,
@@ -1733,7 +1755,7 @@ impl InputOwned {
 
 	pub fn tx_in_mut(&mut self) -> &mut TxIn {
 		match self {
-			InputOwned::Single(ref mut single) => &mut single.input,
+			InputOwned::Single(single) => &mut single.input,
 			InputOwned::Shared(shared) => &mut shared.input,
 		}
 	}
@@ -2328,7 +2350,10 @@ impl InteractiveTxConstructor {
 						Ok(HandleTxCompleteValue::SendTxMessage(msg_send))
 					}, // We either had an input or output to contribute.
 					_ => {
-						debug_assert!(false, "We cannot transition to any other states after receiving `tx_complete` and responding");
+						debug_assert!(
+							false,
+							"We cannot transition to any other states after receiving `tx_complete` and responding"
+						);
 						Err(AbortReason::InvalidStateTransition)
 					},
 				}
@@ -2357,14 +2382,14 @@ impl InteractiveTxConstructor {
 
 #[cfg(test)]
 mod tests {
-	use crate::chain::chaininterface::{fee_for_weight, FEERATE_FLOOR_SATS_PER_KW};
+	use crate::chain::chaininterface::{FEERATE_FLOOR_SATS_PER_KW, fee_for_weight};
 	use crate::ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS;
 	use crate::ln::funding::FundingTxInput;
 	use crate::ln::interactivetxs::{
-		generate_holder_serial_id, AbortReason, HandleTxCompleteValue, InteractiveTxConstructor,
-		InteractiveTxConstructorArgs, InteractiveTxMessageSend, SharedOwnedInput,
-		SharedOwnedOutput, MAX_INPUTS_OUTPUTS_COUNT, MAX_RECEIVED_TX_ADD_INPUT_COUNT,
-		MAX_RECEIVED_TX_ADD_OUTPUT_COUNT,
+		AbortReason, HandleTxCompleteValue, InteractiveTxConstructor, InteractiveTxConstructorArgs,
+		InteractiveTxMessageSend, MAX_INPUTS_OUTPUTS_COUNT, MAX_RECEIVED_TX_ADD_INPUT_COUNT,
+		MAX_RECEIVED_TX_ADD_OUTPUT_COUNT, SharedOwnedInput, SharedOwnedOutput,
+		generate_holder_serial_id,
 	};
 	use crate::ln::types::ChannelId;
 	use crate::sign::EntropySource;
@@ -2377,15 +2402,15 @@ mod tests {
 	use bitcoin::script::Builder;
 	use bitcoin::secp256k1::{Keypair, PublicKey, Secp256k1, SecretKey};
 	use bitcoin::transaction::Version;
-	use bitcoin::{opcodes, WScriptHash, Weight, XOnlyPublicKey};
 	use bitcoin::{
 		OutPoint, PubkeyHash, ScriptBuf, Sequence, Transaction, TxIn, TxOut, WPubkeyHash,
 	};
+	use bitcoin::{WScriptHash, Weight, XOnlyPublicKey, opcodes};
 
 	use super::{
-		get_output_weight, ConstructedTransaction, InteractiveTxSigningSession, TxInMetadata,
-		P2TR_INPUT_WEIGHT_LOWER_BOUND, P2WPKH_INPUT_WEIGHT_LOWER_BOUND,
-		P2WSH_INPUT_WEIGHT_LOWER_BOUND, REMOTE_FEE_TOLERANCE_PERCENT, TX_COMMON_FIELDS_WEIGHT,
+		ConstructedTransaction, InteractiveTxSigningSession, P2TR_INPUT_WEIGHT_LOWER_BOUND,
+		P2WPKH_INPUT_WEIGHT_LOWER_BOUND, P2WSH_INPUT_WEIGHT_LOWER_BOUND,
+		REMOTE_FEE_TOLERANCE_PERCENT, TX_COMMON_FIELDS_WEIGHT, TxInMetadata, get_output_weight,
 	};
 
 	const TEST_FEERATE_SATS_PER_KW: u32 = FEERATE_FLOOR_SATS_PER_KW * 10;
@@ -3370,18 +3395,20 @@ mod tests {
 	fn test_verify_tx_signatures_p2tr_key_path_p2wsh_no_sig() {
 		// Uses transaction https://mempool.space/tx/c28d01b47b8426039306e4209534fc5235da4a31406179639c54c48212be7655
 		let transaction: Transaction = bitcoin::consensus::encode::deserialize_hex("02000000000105d08ef8a4eac88a9568d660732d6e1bd8f216fecb46b7ebc7fc7b5a85e3ba1da50000000000ffffffff3ae09cc085873112f0602cac61e005827e7f21ce03595c6bf1e5ab41643e2e240000000000ffffffff030d20d2b28c4f27797e90ab2259392e99070307f0ee14a621025f8adc9054720000000000100000007d2e78b06110de8ac2298e71fa6fd96e24a287597f3a3fbfaa60837e40453a990000000000100000007d2e78b06110de8ac2298e71fa6fd96e24a287597f3a3fbfaa60837e40453a990100000000100000000104310d01000000002251207434164bd41e2185651f084b6a79e11ce57abe69093b7f939bb1c8786e5d233b0140e612c3728bcc6ed6c4ef67238e57f0332fa77a4c2e76db183e28b7f3cea5eab6b235b6f0cbab8035fd79b3c1990c5c3f3a56e2c7d5e4609b390ddaad8ac1c1d7024730440220036e88464b21c8bd819d97ae746622da00053ec1374a932f33aa1ab60170c9da022041cabc146ebdd12f6316a2f72f870771e8e6ff51f3cadad4027eab2e443770110121030c7196376bc1df61b6da6ee711868fd30e370dd273332bfb02a2287d11e2e9c50200282102fd481d39bdbc090313b530fddfd1aa004a9e3263da1406cf806670fdeb8ebb91ac736460b2680200282102092f44ee333630b985e490dbbc69865e499853cba15a51426d0f4e5906087e55ac736460b26802002821021dadb5ffb2cb74f5427f039e2913738e5cd8e93cc0d12db4cfa4f555005c326aac736460b26800000000").unwrap();
-		let prev_outputs =
-			vec![
+		let prev_outputs = vec![
 				// Added by holder
 				TxOut {
 					value: Amount::from_sat(17414236),
 					script_pubkey: ScriptBuf::new_p2tr_tweaked(
-						TweakedPublicKey::dangerous_assume_tweaked(XOnlyPublicKey::from_slice(
+					TweakedPublicKey::dangerous_assume_tweaked(
+						XOnlyPublicKey::from_slice(
 							&<[u8; 32]>::from_hex(
 								"7434164bd41e2185651f084b6a79e11ce57abe69093b7f939bb1c8786e5d233b",
 							)
 							.unwrap(),
-						).unwrap()),
+						)
+						.unwrap(),
+					),
 					),
 				},
 				// Added by remote (corresponding input should not be checked)
@@ -3420,7 +3447,7 @@ mod tests {
 						)
 						.unwrap(),
 					)),
-				}
+			},
 			];
 
 		assert!(do_verify_tx_signatures(transaction, prev_outputs).is_ok());
@@ -3486,30 +3513,35 @@ mod tests {
 		// Using on-chain transaction: https://mempool.space/tx/f7636876156f3a8a48a6cddb150e07363c1641495f4b319faab1e8c4527e58db
 		let transaction: Transaction = bitcoin::consensus::encode::deserialize_hex("02000000000102977aba41d493f93acc890e49c292dad6cbe423cb1356c6e6191cb93eed3f60c20200000000ffffffff1d956f8838a87c551c308f49fe80da594bfb888209ae8159bc77c6f471dd3b540000000000ffffffff022202000000000000225120fcb2498c6a6a335951f4c96fc89266c388e1ef4c416a2c6fca438a2f5cbb7ffe26d0030000000000225120cbc74f986822b48c4801ef5a1cadc44b27f7d23e699d8244c391d5defd69802a0141b7b9685f6b790e24392670fa06b9af34331bd3308a58b4d8b2cd86a4bcea19a2a780565b410062b58fbff026ab74513f0bac00711eba9f80e3d6b2a7cf3887a1810140a5ae4d75b89e54cfe470eb152e527a403e30b2fb3fdf5dcad1019f015827a1871431dd7202cb520ddcd3b0205cc2b9aafcb6b52522562d381d05cac4522f258100000000").unwrap();
 
-		let prev_outputs =
-			vec![
+		let prev_outputs = vec![
 			// Added by holder (SIGHASH_ALL | ACP)
 			TxOut {
 				value: Amount::from_sat(546),
 				script_pubkey: ScriptBuf::new_p2tr_tweaked(
-					TweakedPublicKey::dangerous_assume_tweaked(XOnlyPublicKey::from_slice(
+					TweakedPublicKey::dangerous_assume_tweaked(
+						XOnlyPublicKey::from_slice(
 						&<[u8; 32]>::from_hex(
 							"cbc74f986822b48c4801ef5a1cadc44b27f7d23e699d8244c391d5defd69802a",
 						)
 						.unwrap(),
-					).unwrap()),
+						)
+						.unwrap(),
+					),
 				),
 			},
 			// Added by remote (corresponding input should not be checked)
 			TxOut {
 				value: Amount::from_sat(250148),
 				script_pubkey: ScriptBuf::new_p2tr_tweaked(
-					TweakedPublicKey::dangerous_assume_tweaked(XOnlyPublicKey::from_slice(
+					TweakedPublicKey::dangerous_assume_tweaked(
+						XOnlyPublicKey::from_slice(
 						&<[u8; 32]>::from_hex(
 							"56cee5ccf725d94a428100de365fdfa134ff4deb1a0dca14470e70b4a64ff32b",
 						)
 						.unwrap(),
-					).unwrap()),
+						)
+						.unwrap(),
+					),
 				),
 			},
 		];
@@ -3576,18 +3608,20 @@ mod tests {
 		// Using on-chain transaction: https://mempool.space/tx/d26108e025ada641e4f1163e372c74087c0e471f3756bd3c736854bee9b5a06a
 		let transaction: Transaction = bitcoin::consensus::encode::deserialize_hex("020000000001025f17ea06dd80e90a7c59bf2710903d938561f45c08cd3187d379e988f282d3c30000000000fdffffff10146764d4bb7e5fe0503df41a042ff39b175070ab1dd05345cbe1a12ac6fbbd0100000000fdffffff01a04f020000000000220020d55050579d2bcdf9ecfdf75df7741b8ac16d572b5cdf326028b4f3538ad34b5e0140e769ec44d5e30fe84ff5d873ed20d1a8ffa8b444e208b0584e24cb94b798286f46f4ba0d4dedfa279870c6b2e43aee45802128e7227e45a043c6193743c1c3240400483045022100cdf0cedd4e35d23af24e0c786bce5bbb47147e867e72fdb49b165a0fa7cac668022035493bb8f280115846c3475f51f7e1b56ec67dfb73744faa74b47d049e20436f01473044022034e60933f7a42effe174dbbb33ec60c1e4b06df1f0356caffbfae053944b552702207b59f352bb8a6100ca14c6dc486eb17145bde714c26766cd8bc2e0a139b06789014752210329a0c88d99fa89cb9497205a237da07b26737e5382dafca6cf40a3fd454b955021032e80b176382ccb76832cd773cf76cbb89883ea74a5b1bb5fa0e30b0bfc87ed8452ae7ed70d00").unwrap();
 
-		let prev_outputs =
-			vec![
+		let prev_outputs = vec![
 			// Added by holder
 			TxOut {
 				value: Amount::from_sat(25841),
 				script_pubkey: ScriptBuf::new_p2tr_tweaked(
-					TweakedPublicKey::dangerous_assume_tweaked(XOnlyPublicKey::from_slice(
+					TweakedPublicKey::dangerous_assume_tweaked(
+						XOnlyPublicKey::from_slice(
 						&<[u8; 32]>::from_hex(
 							"ce78617dd8b31b96b24e89140639f9d87b6c6cf3b2cc8f3ff2b3afa0e505d7ec",
 						)
 						.unwrap(),
-					).unwrap()),
+						)
+						.unwrap(),
+					),
 				),
 			},
 			// Added by remote (corresponding input should not be checked)
@@ -3610,18 +3644,20 @@ mod tests {
 		// Using on-chain transaction: https://mempool.space/tx/905ecdf95a84804b192f4dc221cfed4d77959b81ed66013a7e41a6e61e7ed530
 		let transaction: Transaction = bitcoin::consensus::encode::deserialize_hex("02000000000101b41b20295ac85fd2ae3e3d02900f1a1e7ddd6139b12e341386189c03d6f5795b0000000000fdffffff0100000000000000003c6a3a546878205361746f7368692120e2889e2f32316d696c20466972737420546170726f6f74206d756c7469736967207370656e64202d426974476f044123b1d4ff27b16af4b0fcb9672df671701a1a7f5a6bb7352b051f461edbc614aa6068b3e5313a174f90f3d95dc4e06f69bebd9cf5a3098fde034b01e69e8e788901400fd4a0d3f36a1f1074cb15838a48f572dc18d412d0f0f0fc1eeda9fa4820c942abb77e4d1a3c2b99ccf4ad29d9189e6e04a017fe611748464449f681bc38cf394420febe583fa77e49089f89b78fa8c116710715d6e40cc5f5a075ef1681550dd3c4ad20d0fa46cb883e940ac3dc5421f05b03859972639f51ed2eccbf3dc5a62e2e1b15ac41c02e44c9e47eaeb4bb313adecd11012dfad435cd72ce71f525329f24d75c5b9432774e148e9209baf3f1656a46986d5f38ddf4e20912c6ac28f48d6bf747469fb100000000").unwrap();
 
-		let prev_outputs =
-			vec![
+		let prev_outputs = vec![
 			// Added by holder
 			TxOut {
 				value: Amount::from_sat(7500),
 				script_pubkey: ScriptBuf::new_p2tr_tweaked(
-					TweakedPublicKey::dangerous_assume_tweaked(XOnlyPublicKey::from_slice(
+					TweakedPublicKey::dangerous_assume_tweaked(
+						XOnlyPublicKey::from_slice(
 						&<[u8; 32]>::from_hex(
 							"2fcad7470279652cc5f88b8908678d6f4d57af5627183b03fc8404cb4e16d889",
 						)
 						.unwrap(),
-					).unwrap()),
+						)
+						.unwrap(),
+					),
 				),
 			},
 		];

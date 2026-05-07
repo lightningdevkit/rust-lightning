@@ -20,7 +20,7 @@ pub fn msg_announcement_signatures_test<Out: test_logger::Output>(data: &[u8], _
 	test_msg_simple!(lightning::ln::msgs::AnnouncementSignatures, data);
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn msg_announcement_signatures_run(data: *const u8, datalen: usize) {
 	let data = unsafe { std::slice::from_raw_parts(data, datalen) };
 	test_msg_simple!(lightning::ln::msgs::AnnouncementSignatures, data);

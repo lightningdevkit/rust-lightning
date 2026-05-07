@@ -31,12 +31,12 @@ use crate::prelude::*;
 
 use crate::chain::BlockLocator;
 use crate::ln::channel_state::ChannelDetails;
-use crate::ln::channelmanager::{InterceptId, PaymentId, CLTV_FAR_FAR_AWAY};
+use crate::ln::channelmanager::{CLTV_FAR_FAR_AWAY, InterceptId, PaymentId};
 use crate::ln::inbound_payment;
 use crate::offers::async_receive_offer_cache::AsyncReceiveOfferCache;
 use crate::offers::invoice::{
-	Bolt12Invoice, DerivedSigningPubkey, ExplicitSigningPubkey, InvoiceBuilder,
-	DEFAULT_RELATIVE_EXPIRY,
+	Bolt12Invoice, DEFAULT_RELATIVE_EXPIRY, DerivedSigningPubkey, ExplicitSigningPubkey,
+	InvoiceBuilder,
 };
 use crate::offers::invoice_request::{
 	InvoiceRequest, InvoiceRequestBuilder, InvoiceRequestVerifiedFromOffer, VerifiedInvoiceRequest,
@@ -51,7 +51,7 @@ use crate::onion_message::async_payments::{
 	StaticInvoicePersisted,
 };
 use crate::onion_message::messenger::{
-	Destination, MessageRouter, MessageSendInstructions, Responder, DUMMY_HOPS_PATH_LENGTH,
+	DUMMY_HOPS_PATH_LENGTH, Destination, MessageRouter, MessageSendInstructions, Responder,
 };
 use crate::onion_message::offers::OffersMessage;
 use crate::onion_message::packet::OnionMessageContents;
@@ -294,11 +294,7 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 			per_node_paths.retain(|node_paths| !node_paths.is_empty());
 		}
 
-		if res.is_empty() {
-			Err(())
-		} else {
-			Ok(res)
-		}
+		if res.is_empty() { Err(()) } else { Ok(res) }
 	}
 
 	/// Creates a collection of blinded paths by delegating to
@@ -1233,9 +1229,11 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 					MessageContext::AsyncPayments(AsyncPaymentsContext::OutboundPayment {
 						payment_id,
 					});
-				self.create_blinded_paths(peers, context)
-					.map_err(|_| {
-						log_trace!(self.logger, "Failed to create blinded paths when enqueueing held_htlc_available message");
+				self.create_blinded_paths(peers, context).map_err(|_| {
+					log_trace!(
+						self.logger,
+						"Failed to create blinded paths when enqueueing held_htlc_available message"
+					);
 						Bolt12SemanticError::MissingPaths
 					})?
 			},

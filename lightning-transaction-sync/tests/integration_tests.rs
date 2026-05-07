@@ -19,7 +19,7 @@ use bitcoin::network::Network;
 use bitcoin::{Amount, BlockHash, Txid};
 
 use electrsd::corepc_node::Node as BitcoinD;
-use electrsd::{corepc_node, ElectrsD};
+use electrsd::{ElectrsD, corepc_node};
 
 use std::collections::{HashMap, HashSet};
 use std::env;
