@@ -15105,17 +15105,9 @@ impl<
 	) -> Vec<MessageForwardNode> {
 		channel_list.sort_unstable_by_key(|chan| chan.counterparty.node_id);
 		let mut res = Vec::new();
-		// TODO: When MSRV reaches 1.77 use chunk_by
-		let mut start = 0;
-		while start < channel_list.len() {
-			let counterparty_node_id = channel_list[start].counterparty.node_id;
-			let end = channel_list[start..]
-				.iter()
-				.position(|chan| chan.counterparty.node_id != counterparty_node_id)
-				.map(|pos| start + pos)
-				.unwrap_or(channel_list.len());
-
-			let peer_chans = &channel_list[start..end];
+		for peer_chans in
+			channel_list.chunk_by(|a, b| a.counterparty.node_id == b.counterparty.node_id)
+		{
 			if peer_chans.iter().any(|chan| chan.is_usable)
 				&& peer_chans.iter().any(|c| c.counterparty.features.supports_onion_messages())
 			{
@@ -15130,7 +15122,6 @@ impl<
 						.and_then(|chan| chan.get_inbound_payment_scid()),
 				})
 			}
-			start = end;
 		}
 		res
 	}
