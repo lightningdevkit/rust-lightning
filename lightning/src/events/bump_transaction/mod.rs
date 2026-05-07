@@ -15,16 +15,16 @@ pub mod sync;
 
 use alloc::collections::BTreeMap;
 
-use crate::chain::chaininterface::{
-	compute_feerate_sat_per_1000_weight, fee_for_weight, BroadcasterInterface, TransactionType,
-};
 use crate::chain::ClaimId;
+use crate::chain::chaininterface::{
+	BroadcasterInterface, TransactionType, compute_feerate_sat_per_1000_weight, fee_for_weight,
+};
 use crate::ln::chan_utils;
 use crate::ln::chan_utils::{
-	shared_anchor_script_pubkey, HTLCOutputInCommitment, ANCHOR_INPUT_WITNESS_WEIGHT,
-	EMPTY_SCRIPT_SIG_WEIGHT, EMPTY_WITNESS_WEIGHT, HTLC_SUCCESS_INPUT_KEYED_ANCHOR_WITNESS_WEIGHT,
-	HTLC_SUCCESS_INPUT_P2A_ANCHOR_WITNESS_WEIGHT, HTLC_TIMEOUT_INPUT_KEYED_ANCHOR_WITNESS_WEIGHT,
-	HTLC_TIMEOUT_INPUT_P2A_ANCHOR_WITNESS_WEIGHT, TRUC_CHILD_MAX_WEIGHT, TRUC_MAX_WEIGHT,
+	ANCHOR_INPUT_WITNESS_WEIGHT, EMPTY_SCRIPT_SIG_WEIGHT, EMPTY_WITNESS_WEIGHT,
+	HTLC_SUCCESS_INPUT_KEYED_ANCHOR_WITNESS_WEIGHT, HTLC_SUCCESS_INPUT_P2A_ANCHOR_WITNESS_WEIGHT,
+	HTLC_TIMEOUT_INPUT_KEYED_ANCHOR_WITNESS_WEIGHT, HTLC_TIMEOUT_INPUT_P2A_ANCHOR_WITNESS_WEIGHT,
+	HTLCOutputInCommitment, TRUC_CHILD_MAX_WEIGHT, TRUC_MAX_WEIGHT, shared_anchor_script_pubkey,
 };
 use crate::ln::types::ChannelId;
 use crate::prelude::*;
@@ -297,7 +297,10 @@ impl<B: BroadcasterInterface, C: CoinSelectionSource, SP: SignerProvider, L: Log
 			if tx.input.len() <= 1 {
 				// Transactions have to be at least 65 bytes in non-witness data, which we can run
 				// under if we have too few witness inputs.
-				log_debug!(self.logger, "Including large OP_RETURN output since an output is needed and a change output was not provided and the transaction is small");
+				log_debug!(
+					self.logger,
+					"Including large OP_RETURN output since an output is needed and a change output was not provided and the transaction is small"
+				);
 				debug_assert!(!tx.input.is_empty());
 				tx.output.push(TxOut {
 					value: Amount::ZERO,
@@ -307,7 +310,10 @@ impl<B: BroadcasterInterface, C: CoinSelectionSource, SP: SignerProvider, L: Log
 				});
 				debug_assert_eq!(tx.base_size(), 65);
 			} else {
-				log_debug!(self.logger, "Including dummy OP_RETURN output since an output is needed and a change output was not provided");
+				log_debug!(
+					self.logger,
+					"Including dummy OP_RETURN output since an output is needed and a change output was not provided"
+				);
 				tx.output.push(TxOut {
 					value: Amount::ZERO,
 					script_pubkey: ScriptBuf::new_op_return(&[]),
@@ -340,9 +346,13 @@ impl<B: BroadcasterInterface, C: CoinSelectionSource, SP: SignerProvider, L: Log
 			commitment_tx.weight().to_wu(),
 		);
 		if commitment_tx_feerate_sat_per_1000_weight >= package_target_feerate_sat_per_1000_weight {
-			log_debug!(self.logger, "Pre-signed commitment {} already has feerate {} sat/kW above required {} sat/kW, broadcasting.",
-				commitment_tx.compute_txid(), commitment_tx_feerate_sat_per_1000_weight,
-				package_target_feerate_sat_per_1000_weight);
+			log_debug!(
+				self.logger,
+				"Pre-signed commitment {} already has feerate {} sat/kW above required {} sat/kW, broadcasting.",
+				commitment_tx.compute_txid(),
+				commitment_tx_feerate_sat_per_1000_weight,
+				package_target_feerate_sat_per_1000_weight
+			);
 			self.broadcaster.broadcast_transactions(&[(
 				&commitment_tx,
 				TransactionType::UnilateralClose { counterparty_node_id, channel_id },
@@ -371,8 +381,11 @@ impl<B: BroadcasterInterface, C: CoinSelectionSource, SP: SignerProvider, L: Log
 			let must_spend_amount =
 				must_spend.iter().map(|input| input.previous_utxo.value).sum::<Amount>();
 
-			log_debug!(self.logger, "Performing coin selection for commitment package (commitment and anchor transaction) targeting {} sat/kW",
-				package_target_feerate_sat_per_1000_weight);
+			log_debug!(
+				self.logger,
+				"Performing coin selection for commitment package (commitment and anchor transaction) targeting {} sat/kW",
+				package_target_feerate_sat_per_1000_weight
+			);
 			let coin_selection: CoinSelection = self
 				.utxo_source
 				.select_confirmed_utxos(

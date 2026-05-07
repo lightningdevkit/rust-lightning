@@ -14,8 +14,8 @@ use alloc::string::String;
 use core::convert::TryFrom;
 
 use crate::lsps0::ser::{
-	string_amount, string_offer, u32_fee_rate, unchecked_address, unchecked_address_option,
-	LSPSDateTime, LSPSMessage, LSPSRequestId, LSPSResponseError,
+	LSPSDateTime, LSPSMessage, LSPSRequestId, LSPSResponseError, string_amount, string_offer,
+	u32_fee_rate, unchecked_address, unchecked_address_option,
 };
 
 use bitcoin::{Address, FeeRate, OutPoint};

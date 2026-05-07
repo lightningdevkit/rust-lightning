@@ -1,8 +1,8 @@
 use crate::de::FromBase32;
 use crate::ser::{Base32Iterable, Base32Len};
 use crate::{
-	sha256, PayeePubKey, PaymentHash, PaymentSecret, PositiveTimestamp, RawDataPart,
-	RawTaggedField, Sha256, TaggedField,
+	PayeePubKey, PaymentHash, PaymentSecret, PositiveTimestamp, RawDataPart, RawTaggedField,
+	Sha256, TaggedField, sha256,
 };
 use bech32::Fe32;
 use bitcoin::hex::FromHex;

@@ -13,15 +13,15 @@
 
 use alloc::sync::Arc;
 
-use bitcoin::hashes::hex::FromHex;
 use bitcoin::Txid;
+use bitcoin::hashes::hex::FromHex;
 
 use core::convert::Infallible;
 use core::fmt;
 use core::future::Future;
 use core::mem;
 use core::ops::Deref;
-use core::pin::{pin, Pin};
+use core::pin::{Pin, pin};
 use core::str::FromStr;
 use core::task;
 
@@ -29,17 +29,15 @@ use crate::prelude::*;
 use crate::{io, log_error};
 
 use crate::chain;
+use crate::chain::BlockLocator;
 use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use crate::chain::chainmonitor::Persist;
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate};
 use crate::chain::transaction::OutPoint;
-use crate::chain::BlockLocator;
 use crate::ln::types::ChannelId;
-use crate::sign::{ecdsa::EcdsaChannelSigner, EntropySource, SignerProvider};
+use crate::sign::{EntropySource, SignerProvider, ecdsa::EcdsaChannelSigner};
 use crate::sync::Mutex;
-use crate::util::async_poll::{
-	dummy_waker, MultiResultFuturePoller, ResultFuture, TwoFutureJoiner,
-};
+use crate::util::async_poll::{MultiResultFuturePoller, ResultFuture, TwoFutureJoiner};
 use crate::util::logger::Logger;
 use crate::util::native_async::{FutureSpawner, MaybeSend, MaybeSync};
 use crate::util::ser::{Readable, ReadableArgs, Writeable};
@@ -688,7 +686,7 @@ where
 				return Err(io::Error::new(
 					io::ErrorKind::InvalidData,
 					"Failed to read ChannelMonitor",
-				))
+				));
 			},
 		}
 	}
@@ -707,8 +705,7 @@ impl FutureSpawner for PanicingSpawner {
 }
 
 fn poll_sync_future<F: Future>(future: F) -> F::Output {
-	let mut waker = dummy_waker();
-	let mut ctx = task::Context::from_waker(&mut waker);
+	let mut ctx = task::Context::from_waker(core::task::Waker::noop());
 	match pin!(future).poll(&mut ctx) {
 		task::Poll::Ready(result) => result,
 		task::Poll::Pending => {
@@ -805,13 +802,13 @@ where
 	K::Target: KVStoreSync;
 
 impl<
-		K: Deref,
-		L: Logger,
-		ES: EntropySource,
-		SP: SignerProvider,
-		BI: BroadcasterInterface,
-		FE: FeeEstimator,
-	> MonitorUpdatingPersister<K, L, ES, SP, BI, FE>
+	K: Deref,
+	L: Logger,
+	ES: EntropySource,
+	SP: SignerProvider,
+	BI: BroadcasterInterface,
+	FE: FeeEstimator,
+> MonitorUpdatingPersister<K, L, ES, SP, BI, FE>
 where
 	K::Target: KVStoreSync,
 {
@@ -894,14 +891,14 @@ where
 }
 
 impl<
-		ChannelSigner: EcdsaChannelSigner,
-		K: Deref,
-		L: Logger,
-		ES: EntropySource,
-		SP: SignerProvider,
-		BI: BroadcasterInterface,
-		FE: FeeEstimator,
-	> Persist<ChannelSigner> for MonitorUpdatingPersister<K, L, ES, SP, BI, FE>
+	ChannelSigner: EcdsaChannelSigner,
+	K: Deref,
+	L: Logger,
+	ES: EntropySource,
+	SP: SignerProvider,
+	BI: BroadcasterInterface,
+	FE: FeeEstimator,
+> Persist<ChannelSigner> for MonitorUpdatingPersister<K, L, ES, SP, BI, FE>
 where
 	K::Target: KVStoreSync,
 {
@@ -910,12 +907,12 @@ where
 	fn persist_new_channel(
 		&self, monitor_name: MonitorName, monitor: &ChannelMonitor<ChannelSigner>,
 	) -> chain::ChannelMonitorUpdateStatus {
-		let res = poll_sync_future(self.0 .0.persist_new_channel(monitor_name, monitor));
+		let res = poll_sync_future(self.0.0.persist_new_channel(monitor_name, monitor));
 		match res {
 			Ok(_) => chain::ChannelMonitorUpdateStatus::Completed,
 			Err(e) => {
 				log_error!(
-					self.0 .0.logger,
+					self.0.0.logger,
 					"Failed to write ChannelMonitor {}/{}/{} reason: {}",
 					CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
 					CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
@@ -940,13 +937,13 @@ where
 		&self, monitor_name: MonitorName, update: Option<&ChannelMonitorUpdate>,
 		monitor: &ChannelMonitor<ChannelSigner>,
 	) -> chain::ChannelMonitorUpdateStatus {
-		let inner = Arc::clone(&self.0 .0);
+		let inner = Arc::clone(&self.0.0);
 		let res = poll_sync_future(inner.update_persisted_channel(monitor_name, update, monitor));
 		match res {
 			Ok(()) => chain::ChannelMonitorUpdateStatus::Completed,
 			Err(e) => {
 				log_error!(
-					self.0 .0.logger,
+					self.0.0.logger,
 					"Failed to write ChannelMonitorUpdate {} id {} reason: {}",
 					monitor_name,
 					update.as_ref().map(|upd| upd.update_id).unwrap_or(0),
@@ -958,7 +955,7 @@ where
 	}
 
 	fn archive_persisted_channel(&self, monitor_name: MonitorName) {
-		poll_sync_future(self.0 .0.archive_persisted_channel(monitor_name));
+		poll_sync_future(self.0.0.archive_persisted_channel(monitor_name));
 	}
 }
 
@@ -1005,14 +1002,14 @@ struct MonitorUpdatingPersisterAsyncInner<
 }
 
 impl<
-		K: KVStore,
-		S: FutureSpawner,
-		L: Logger,
-		ES: EntropySource,
-		SP: SignerProvider,
-		BI: BroadcasterInterface,
-		FE: FeeEstimator,
-	> MonitorUpdatingPersisterAsync<K, S, L, ES, SP, BI, FE>
+	K: KVStore,
+	S: FutureSpawner,
+	L: Logger,
+	ES: EntropySource,
+	SP: SignerProvider,
+	BI: BroadcasterInterface,
+	FE: FeeEstimator,
+> MonitorUpdatingPersisterAsync<K, S, L, ES, SP, BI, FE>
 {
 	/// Constructs a new [`MonitorUpdatingPersisterAsync`].
 	///
@@ -1142,14 +1139,14 @@ impl<
 }
 
 impl<
-		K: KVStore + MaybeSend + MaybeSync + 'static,
-		S: FutureSpawner,
-		L: Logger + MaybeSend + MaybeSync + 'static,
-		ES: EntropySource + MaybeSend + MaybeSync + 'static,
-		SP: SignerProvider + MaybeSend + MaybeSync + 'static,
-		BI: BroadcasterInterface + MaybeSend + MaybeSync + 'static,
-		FE: FeeEstimator + MaybeSend + MaybeSync + 'static,
-	> MonitorUpdatingPersisterAsync<K, S, L, ES, SP, BI, FE>
+	K: KVStore + MaybeSend + MaybeSync + 'static,
+	S: FutureSpawner,
+	L: Logger + MaybeSend + MaybeSync + 'static,
+	ES: EntropySource + MaybeSend + MaybeSync + 'static,
+	SP: SignerProvider + MaybeSend + MaybeSync + 'static,
+	BI: BroadcasterInterface + MaybeSend + MaybeSync + 'static,
+	FE: FeeEstimator + MaybeSend + MaybeSync + 'static,
+> MonitorUpdatingPersisterAsync<K, S, L, ES, SP, BI, FE>
 where
 	SP::EcdsaSigner: MaybeSend + 'static,
 {
@@ -1226,14 +1223,14 @@ trait MaybeSendableFuture: Future<Output = Result<(), io::Error>> + MaybeSend {}
 impl<F: Future<Output = Result<(), io::Error>> + MaybeSend> MaybeSendableFuture for F {}
 
 impl<
-		K: KVStore,
-		S: FutureSpawner,
-		L: Logger,
-		ES: EntropySource,
-		SP: SignerProvider,
-		BI: BroadcasterInterface,
-		FE: FeeEstimator,
-	> MonitorUpdatingPersisterAsyncInner<K, S, L, ES, SP, BI, FE>
+	K: KVStore,
+	S: FutureSpawner,
+	L: Logger,
+	ES: EntropySource,
+	SP: SignerProvider,
+	BI: BroadcasterInterface,
+	FE: FeeEstimator,
+> MonitorUpdatingPersisterAsyncInner<K, S, L, ES, SP, BI, FE>
 {
 	pub async fn read_channel_monitor_with_updates(
 		&self, monitor_key: &str,
@@ -1257,9 +1254,9 @@ impl<
 	) -> Result<Option<(BlockLocator, ChannelMonitor<SP::EcdsaSigner>)>, io::Error> {
 		let monitor_name = MonitorName::from_str(monitor_key)?;
 		let read_future = pin!(self.maybe_read_monitor(&monitor_name, monitor_key));
-		let list_future = pin!(self
-			.kv_store
-			.list(CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE, monitor_key));
+		let list_future = pin!(
+			self.kv_store.list(CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE, monitor_key)
+		);
 		let (read_res, list_res) = TwoFutureJoiner::new(read_future, list_future).await;
 		let (best_block, monitor) = match read_res? {
 			Some(res) => res,
@@ -1413,9 +1410,6 @@ impl<
 		// completion of the write. This ensures monitor persistence ordering is preserved.
 		let primary = CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE;
 		let secondary = CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE;
-		// There's no real reason why this needs to be boxed, but dropping it rams into the "hidden
-		// type for impl... captures lifetime that does not appear in bounds" issue. This can
-		// trivially be dropped once we upgrade to edition 2024/MSRV 1.85.
 		Box::pin(self.kv_store.write(primary, secondary, monitor_key.as_str(), monitor_bytes))
 	}
 
@@ -1787,18 +1781,22 @@ mod tests {
 
 	#[test]
 	fn fails_parsing_monitor_name() {
-		assert!(MonitorName::from_str(
-			"deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef_"
-		)
-		.is_err());
-		assert!(MonitorName::from_str(
-			"deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef_65536"
-		)
-		.is_err());
-		assert!(MonitorName::from_str(
-			"deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef_21"
-		)
-		.is_err());
+		assert!(
+			MonitorName::from_str(
+				"deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef_"
+			)
+			.is_err()
+		);
+		assert!(
+			MonitorName::from_str(
+				"deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef_65536"
+			)
+			.is_err()
+		);
+		assert!(
+			MonitorName::from_str("deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef_21")
+				.is_err()
+		);
 	}
 
 	// Exercise the `MonitorUpdatingPersister` with real channels and payments.
@@ -2116,13 +2114,15 @@ mod tests {
 		persister_0.cleanup_stale_updates(false).unwrap();
 
 		// Confirm the stale update is unreadable/gone
-		assert!(KVStoreSync::read(
-			&kv_store_0,
-			CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
-			&monitor_name.to_string(),
-			UpdateName::from(1).as_str()
-		)
-		.is_err());
+		assert!(
+			KVStoreSync::read(
+				&kv_store_0,
+				CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
+				&monitor_name.to_string(),
+				UpdateName::from(1).as_str()
+			)
+			.is_err()
+		);
 	}
 
 	fn persist_fn<P: Deref, ChannelSigner: EcdsaChannelSigner>(_persist: P) -> bool

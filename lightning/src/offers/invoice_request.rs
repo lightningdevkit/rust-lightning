@@ -77,8 +77,8 @@ use crate::offers::merkle::{
 };
 use crate::offers::nonce::Nonce;
 use crate::offers::offer::{
-	Amount, ExperimentalOfferTlvStream, ExperimentalOfferTlvStreamRef, Offer, OfferContents,
-	OfferId, OfferTlvStream, OfferTlvStreamRef, EXPERIMENTAL_OFFER_TYPES, OFFER_TYPES,
+	Amount, EXPERIMENTAL_OFFER_TYPES, ExperimentalOfferTlvStream, ExperimentalOfferTlvStreamRef,
+	OFFER_TYPES, Offer, OfferContents, OfferId, OfferTlvStream, OfferTlvStreamRef,
 };
 use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
 use crate::offers::payer::{PayerContents, PayerTlvStream, PayerTlvStreamRef};
@@ -1407,7 +1407,7 @@ impl TryFrom<Vec<u8>> for InvoiceRequest {
 			None => {
 				return Err(Bolt12ParseError::InvalidSemantics(
 					Bolt12SemanticError::MissingSignature,
-				))
+				));
 			},
 			Some(signature) => signature,
 		};
@@ -1548,9 +1548,9 @@ impl Readable for InvoiceRequestFields {
 #[cfg(test)]
 mod tests {
 	use super::{
-		ExperimentalInvoiceRequestTlvStreamRef, InvoiceRequest, InvoiceRequestFields,
-		InvoiceRequestTlvStreamRef, UnsignedInvoiceRequest, EXPERIMENTAL_INVOICE_REQUEST_TYPES,
-		INVOICE_REQUEST_TYPES, PAYER_NOTE_LIMIT, SIGNATURE_TAG,
+		EXPERIMENTAL_INVOICE_REQUEST_TYPES, ExperimentalInvoiceRequestTlvStreamRef,
+		INVOICE_REQUEST_TYPES, InvoiceRequest, InvoiceRequestFields, InvoiceRequestTlvStreamRef,
+		PAYER_NOTE_LIMIT, SIGNATURE_TAG, UnsignedInvoiceRequest,
 	};
 
 	use crate::ln::channelmanager::PaymentId;
@@ -1624,12 +1624,14 @@ mod tests {
 
 		let message =
 			TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &invoice_request.bytes);
-		assert!(merkle::verify_signature(
-			&invoice_request.signature,
-			&message,
-			invoice_request.payer_signing_pubkey(),
-		)
-		.is_ok());
+		assert!(
+			merkle::verify_signature(
+				&invoice_request.signature,
+				&message,
+				invoice_request.payer_signing_pubkey(),
+			)
+			.is_ok()
+		);
 
 		assert_eq!(
 			invoice_request.as_tlv_stream(),
@@ -1736,9 +1738,9 @@ mod tests {
 			.sign(recipient_sign)
 			.unwrap();
 		assert!(invoice.verify_using_metadata(&expanded_key, &secp_ctx).is_err());
-		assert!(invoice
-			.verify_using_payer_data(payment_id, nonce, &expanded_key, &secp_ctx)
-			.is_ok());
+		assert!(
+			invoice.verify_using_payer_data(payment_id, nonce, &expanded_key, &secp_ctx).is_ok()
+		);
 
 		// Fails verification with altered fields
 		let (
@@ -1774,9 +1776,9 @@ mod tests {
 			.unwrap();
 
 		let invoice = Bolt12Invoice::try_from(encoded_invoice).unwrap();
-		assert!(invoice
-			.verify_using_payer_data(payment_id, nonce, &expanded_key, &secp_ctx)
-			.is_err());
+		assert!(
+			invoice.verify_using_payer_data(payment_id, nonce, &expanded_key, &secp_ctx).is_err()
+		);
 
 		// Fails verification with altered payer id
 		let (
@@ -1812,9 +1814,9 @@ mod tests {
 			.unwrap();
 
 		let invoice = Bolt12Invoice::try_from(encoded_invoice).unwrap();
-		assert!(invoice
-			.verify_using_payer_data(payment_id, nonce, &expanded_key, &secp_ctx)
-			.is_err());
+		assert!(
+			invoice.verify_using_payer_data(payment_id, nonce, &expanded_key, &secp_ctx).is_err()
+		);
 	}
 
 	#[test]

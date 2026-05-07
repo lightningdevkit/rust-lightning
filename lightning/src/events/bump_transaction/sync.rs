@@ -16,7 +16,6 @@ use core::task;
 
 use crate::chain::chaininterface::BroadcasterInterface;
 use crate::sign::SignerProvider;
-use crate::util::async_poll::dummy_waker;
 use crate::util::logger::Logger;
 use crate::util::wallet_utils::{CoinSelectionSourceSync, CoinSelectionSourceSyncWrapper};
 
@@ -61,13 +60,14 @@ where
 	/// Handles all variants of [`BumpTransactionEvent`].
 	pub fn handle_event(&self, event: &BumpTransactionEvent) {
 		let mut fut = pin!(self.bump_transaction_event_handler.handle_event(event));
-		let mut waker = dummy_waker();
-		let mut ctx = task::Context::from_waker(&mut waker);
+		let mut ctx = task::Context::from_waker(core::task::Waker::noop());
 		match fut.as_mut().poll(&mut ctx) {
 			task::Poll::Ready(result) => result,
 			task::Poll::Pending => {
 				// In a sync context, we can't wait for the future to complete.
-				unreachable!("BumpTransactionEventHandlerSync::handle_event should not be pending in a sync context");
+				unreachable!(
+					"BumpTransactionEventHandlerSync::handle_event should not be pending in a sync context"
+				);
 			},
 		}
 	}

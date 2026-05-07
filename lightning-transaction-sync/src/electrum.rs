@@ -8,9 +8,9 @@
 use crate::common::{ConfirmedTx, FilterQueue, SyncState};
 use crate::error::{InternalError, TxSyncError};
 
-use electrum_client::utils::validate_merkle_proof;
 use electrum_client::Client as ElectrumClient;
 use electrum_client::ElectrumApi;
+use electrum_client::utils::validate_merkle_proof;
 
 use lightning::chain::WatchedOutput;
 use lightning::chain::{Confirm, Filter};
@@ -122,14 +122,17 @@ impl<L: Logger> ElectrumSyncClient<L> {
 									);
 								},
 								Ok(true) => {
-									log_debug!(self.logger,
-										"Encountered inconsistency during transaction sync, restarting.");
+									log_debug!(
+										self.logger,
+										"Encountered inconsistency during transaction sync, restarting."
+									);
 									sync_state.pending_sync = true;
 									continue;
 								},
 								Err(err) => {
 									// (Semi-)permanent failure, retry later.
-									log_error!(self.logger,
+									log_error!(
+										self.logger,
 										"Failed during transaction sync, aborting. Synced so far: {} confirmed, {} unconfirmed.",
 										num_confirmed,
 										num_unconfirmed
@@ -141,7 +144,8 @@ impl<L: Logger> ElectrumSyncClient<L> {
 						},
 						Err(err) => {
 							// (Semi-)permanent failure, retry later.
-							log_error!(self.logger,
+							log_error!(
+								self.logger,
 								"Failed during transaction sync, aborting. Synced so far: {} confirmed, {} unconfirmed.",
 								num_confirmed,
 								num_unconfirmed
@@ -171,14 +175,17 @@ impl<L: Logger> ElectrumSyncClient<L> {
 									.sync_confirmed_transactions(&confirmables, confirmed_txs);
 							},
 							Ok(true) => {
-								log_debug!(self.logger,
-									"Encountered inconsistency during transaction sync, restarting.");
+								log_debug!(
+									self.logger,
+									"Encountered inconsistency during transaction sync, restarting."
+								);
 								sync_state.pending_sync = true;
 								continue;
 							},
 							Err(err) => {
 								// (Semi-)permanent failure, retry later.
-								log_error!(self.logger,
+								log_error!(
+									self.logger,
 									"Failed during transaction sync, aborting. Synced so far: {} confirmed, {} unconfirmed.",
 									num_confirmed,
 									num_unconfirmed
@@ -199,7 +206,8 @@ impl<L: Logger> ElectrumSyncClient<L> {
 					},
 					Err(err) => {
 						// (Semi-)permanent failure, retry later.
-						log_error!(self.logger,
+						log_error!(
+							self.logger,
 							"Failed during transaction sync, aborting. Synced so far: {} confirmed, {} unconfirmed.",
 							num_confirmed,
 							num_unconfirmed
@@ -279,7 +287,11 @@ impl<L: Logger> ElectrumSyncClient<L> {
 					// To protect against this (highly unlikely) attack vector, we check that the
 					// transaction is at least 65 bytes in length.
 					if tx.total_size() == 64 {
-						log_error!(self.logger, "Skipping transaction {} due to retrieving potentially invalid tx data.", txid);
+						log_error!(
+							self.logger,
+							"Skipping transaction {} due to retrieving potentially invalid tx data.",
+							txid
+						);
 						continue;
 					}
 
@@ -434,9 +446,13 @@ impl<L: Logger> ElectrumSyncClient<L> {
 
 				unconfirmed_txs.push(txid);
 			} else {
-				log_error!(self.logger,
-					"Untracked confirmation of funding transaction. Please ensure none of your channels had been created with LDK prior to version 0.0.113!");
-				panic!("Untracked confirmation of funding transaction. Please ensure none of your channels had been created with LDK prior to version 0.0.113!");
+				log_error!(
+					self.logger,
+					"Untracked confirmation of funding transaction. Please ensure none of your channels had been created with LDK prior to version 0.0.113!"
+				);
+				panic!(
+					"Untracked confirmation of funding transaction. Please ensure none of your channels had been created with LDK prior to version 0.0.113!"
+				);
 			}
 		}
 		Ok(unconfirmed_txs)

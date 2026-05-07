@@ -1241,14 +1241,16 @@ mod tests {
 			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
 		};
 		let htlc_minimum_msat = 3798;
-		assert!(super::compute_payinfo(
-			&intermediate_nodes[..],
-			&[],
-			&recv_tlvs,
-			htlc_minimum_msat - 1,
-			TEST_FINAL_CLTV as u16
-		)
-		.is_err());
+		assert!(
+			super::compute_payinfo(
+				&intermediate_nodes[..],
+				&[],
+				&recv_tlvs,
+				htlc_minimum_msat - 1,
+				TEST_FINAL_CLTV as u16
+			)
+			.is_err()
+		);
 
 		let htlc_maximum_msat = htlc_minimum_msat + 1;
 		let blinded_payinfo = super::compute_payinfo(

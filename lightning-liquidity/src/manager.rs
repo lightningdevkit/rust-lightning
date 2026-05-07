@@ -14,9 +14,9 @@ use crate::events::{EventQueue, LiquidityEvent};
 use crate::lsps0::client::LSPS0ClientHandler;
 use crate::lsps0::msgs::LSPS0Message;
 use crate::lsps0::ser::{
-	LSPSMessage, LSPSMethod, LSPSProtocolMessageHandler, LSPSRequestId, LSPSResponseError,
-	RawLSPSMessage, JSONRPC_INVALID_MESSAGE_ERROR_CODE, JSONRPC_INVALID_MESSAGE_ERROR_MESSAGE,
-	LSPS_MESSAGE_TYPE_ID,
+	JSONRPC_INVALID_MESSAGE_ERROR_CODE, JSONRPC_INVALID_MESSAGE_ERROR_MESSAGE,
+	LSPS_MESSAGE_TYPE_ID, LSPSMessage, LSPSMethod, LSPSProtocolMessageHandler, LSPSRequestId,
+	LSPSResponseError, RawLSPSMessage,
 };
 use crate::lsps0::service::LSPS0ServiceHandler;
 use crate::lsps5::client::{LSPS5ClientConfig, LSPS5ClientHandler};
@@ -35,9 +35,8 @@ use crate::lsps1::service::{LSPS1ServiceConfig, LSPS1ServiceHandler, LSPS1Servic
 use crate::lsps2::client::{LSPS2ClientConfig, LSPS2ClientHandler};
 use crate::lsps2::msgs::LSPS2Message;
 use crate::lsps2::service::{LSPS2ServiceConfig, LSPS2ServiceHandler, LSPS2ServiceHandlerSync};
-use crate::prelude::{new_hash_map, new_hash_set, HashMap, HashSet};
+use crate::prelude::{HashMap, HashSet, new_hash_map, new_hash_set};
 use crate::sync::{Arc, Mutex, RwLock};
-use crate::utils::async_poll::dummy_waker;
 #[cfg(feature = "time")]
 use crate::utils::time::DefaultTimeProvider;
 use crate::utils::time::TimeProvider;
@@ -131,13 +130,13 @@ pub trait ALiquidityManager {
 }
 
 impl<
-		ES: EntropySource + Clone,
-		NS: NodeSigner + Clone,
-		CM: Deref + Clone,
-		K: KVStore + Clone,
-		TP: Deref + Clone,
-		T: BroadcasterInterface + Clone,
-	> ALiquidityManager for LiquidityManager<ES, NS, CM, K, TP, T>
+	ES: EntropySource + Clone,
+	NS: NodeSigner + Clone,
+	CM: Deref + Clone,
+	K: KVStore + Clone,
+	TP: Deref + Clone,
+	T: BroadcasterInterface + Clone,
+> ALiquidityManager for LiquidityManager<ES, NS, CM, K, TP, T>
 where
 	CM::Target: AChannelManager,
 	TP::Target: TimeProvider,
@@ -204,13 +203,13 @@ pub trait ALiquidityManagerSync {
 }
 
 impl<
-		ES: EntropySource + Clone,
-		NS: NodeSigner + Clone,
-		CM: Deref + Clone,
-		KS: Deref + Clone,
-		TP: Deref + Clone,
-		T: BroadcasterInterface + Clone,
-	> ALiquidityManagerSync for LiquidityManagerSync<ES, NS, CM, KS, TP, T>
+	ES: EntropySource + Clone,
+	NS: NodeSigner + Clone,
+	CM: Deref + Clone,
+	KS: Deref + Clone,
+	TP: Deref + Clone,
+	T: BroadcasterInterface + Clone,
+> ALiquidityManagerSync for LiquidityManagerSync<ES, NS, CM, KS, TP, T>
 where
 	CM::Target: AChannelManager,
 	KS::Target: KVStoreSync,
@@ -294,12 +293,12 @@ pub struct LiquidityManager<
 
 #[cfg(feature = "time")]
 impl<
-		ES: EntropySource + Clone,
-		NS: NodeSigner + Clone,
-		CM: Deref + Clone,
-		K: KVStore + Clone,
-		T: BroadcasterInterface + Clone,
-	> LiquidityManager<ES, NS, CM, K, DefaultTimeProvider, T>
+	ES: EntropySource + Clone,
+	NS: NodeSigner + Clone,
+	CM: Deref + Clone,
+	K: KVStore + Clone,
+	T: BroadcasterInterface + Clone,
+> LiquidityManager<ES, NS, CM, K, DefaultTimeProvider, T>
 where
 	CM::Target: AChannelManager,
 {
@@ -326,13 +325,13 @@ where
 }
 
 impl<
-		ES: EntropySource + Clone,
-		NS: NodeSigner + Clone,
-		CM: Deref + Clone,
-		K: KVStore + Clone,
-		TP: Deref + Clone,
-		T: BroadcasterInterface + Clone,
-	> LiquidityManager<ES, NS, CM, K, TP, T>
+	ES: EntropySource + Clone,
+	NS: NodeSigner + Clone,
+	CM: Deref + Clone,
+	K: KVStore + Clone,
+	TP: Deref + Clone,
+	T: BroadcasterInterface + Clone,
+> LiquidityManager<ES, NS, CM, K, TP, T>
 where
 	CM::Target: AChannelManager,
 	TP::Target: TimeProvider,
@@ -647,7 +646,13 @@ where
 	) -> Result<(), lightning::ln::msgs::LightningError> {
 		match msg {
 			LSPSMessage::Invalid(_error) => {
-				return Err(LightningError { err: format!("{} did not understand a message we previously sent, maybe they don't support a protocol we are trying to use?", sender_node_id), action: ErrorAction::IgnoreAndLog(Level::Error)});
+				return Err(LightningError {
+					err: format!(
+						"{} did not understand a message we previously sent, maybe they don't support a protocol we are trying to use?",
+						sender_node_id
+					),
+					action: ErrorAction::IgnoreAndLog(Level::Error),
+				});
 			},
 			LSPSMessage::LSPS0(msg @ LSPS0Message::Response(..)) => {
 				self.lsps0_client_handler.handle_message(msg, sender_node_id)?;
@@ -658,7 +663,13 @@ where
 						lsps0_service_handler.handle_message(msg, sender_node_id)?;
 					},
 					None => {
-						return Err(LightningError { err: format!("Received LSPS0 request message without LSPS0 service handler configured. From node {}", sender_node_id), action: ErrorAction::IgnoreAndLog(Level::Debug)});
+						return Err(LightningError {
+							err: format!(
+								"Received LSPS0 request message without LSPS0 service handler configured. From node {}",
+								sender_node_id
+							),
+							action: ErrorAction::IgnoreAndLog(Level::Debug),
+						});
 					},
 				}
 			},
@@ -668,7 +679,13 @@ where
 						lsps1_client_handler.handle_message(msg, sender_node_id)?;
 					},
 					None => {
-						return Err(LightningError { err: format!("Received LSPS1 response message without LSPS1 client handler configured. From node {}", sender_node_id), action: ErrorAction::IgnoreAndLog(Level::Debug)});
+						return Err(LightningError {
+							err: format!(
+								"Received LSPS1 response message without LSPS1 client handler configured. From node {}",
+								sender_node_id
+							),
+							action: ErrorAction::IgnoreAndLog(Level::Debug),
+						});
 					},
 				}
 			},
@@ -678,7 +695,13 @@ where
 						lsps1_service_handler.handle_message(msg, sender_node_id)?;
 					},
 					None => {
-						return Err(LightningError { err: format!("Received LSPS1 request message without LSPS1 service handler configured. From node {}", sender_node_id), action: ErrorAction::IgnoreAndLog(Level::Debug)});
+						return Err(LightningError {
+							err: format!(
+								"Received LSPS1 request message without LSPS1 service handler configured. From node {}",
+								sender_node_id
+							),
+							action: ErrorAction::IgnoreAndLog(Level::Debug),
+						});
 					},
 				}
 			},
@@ -688,7 +711,13 @@ where
 						lsps2_client_handler.handle_message(msg, sender_node_id)?;
 					},
 					None => {
-						return Err(LightningError { err: format!("Received LSPS2 response message without LSPS2 client handler configured. From node {}", sender_node_id), action: ErrorAction::IgnoreAndLog(Level::Debug)});
+						return Err(LightningError {
+							err: format!(
+								"Received LSPS2 response message without LSPS2 client handler configured. From node {}",
+								sender_node_id
+							),
+							action: ErrorAction::IgnoreAndLog(Level::Debug),
+						});
 					},
 				}
 			},
@@ -698,7 +727,13 @@ where
 						lsps2_service_handler.handle_message(msg, sender_node_id)?;
 					},
 					None => {
-						return Err(LightningError { err: format!("Received LSPS2 request message without LSPS2 service handler configured. From node {}", sender_node_id), action: ErrorAction::IgnoreAndLog(Level::Debug)});
+						return Err(LightningError {
+							err: format!(
+								"Received LSPS2 request message without LSPS2 service handler configured. From node {}",
+								sender_node_id
+							),
+							action: ErrorAction::IgnoreAndLog(Level::Debug),
+						});
 					},
 				}
 			},
@@ -708,7 +743,13 @@ where
 						lsps5_client_handler.handle_message(msg, sender_node_id)?;
 					},
 					None => {
-						return Err(LightningError { err: format!("Received LSPS5 response message without LSPS5 client handler configured. From node {}", sender_node_id), action: ErrorAction::IgnoreAndLog(Level::Debug)});
+						return Err(LightningError {
+							err: format!(
+								"Received LSPS5 response message without LSPS5 client handler configured. From node {}",
+								sender_node_id
+							),
+							action: ErrorAction::IgnoreAndLog(Level::Debug),
+						});
 					},
 				}
 			},
@@ -737,7 +778,13 @@ where
 						lsps5_service_handler.handle_message(msg, sender_node_id)?;
 					},
 					None => {
-						return Err(LightningError { err: format!("Received LSPS5 request message without LSPS5 service handler configured. From node {}", sender_node_id), action: ErrorAction::IgnoreAndLog(Level::Debug)});
+						return Err(LightningError {
+							err: format!(
+								"Received LSPS5 request message without LSPS5 service handler configured. From node {}",
+								sender_node_id
+							),
+							action: ErrorAction::IgnoreAndLog(Level::Debug),
+						});
 					},
 				}
 			},
@@ -747,13 +794,13 @@ where
 }
 
 impl<
-		ES: EntropySource + Clone,
-		NS: NodeSigner + Clone,
-		CM: Deref + Clone,
-		K: KVStore + Clone,
-		TP: Deref + Clone,
-		T: BroadcasterInterface + Clone,
-	> CustomMessageReader for LiquidityManager<ES, NS, CM, K, TP, T>
+	ES: EntropySource + Clone,
+	NS: NodeSigner + Clone,
+	CM: Deref + Clone,
+	K: KVStore + Clone,
+	TP: Deref + Clone,
+	T: BroadcasterInterface + Clone,
+> CustomMessageReader for LiquidityManager<ES, NS, CM, K, TP, T>
 where
 	CM::Target: AChannelManager,
 	TP::Target: TimeProvider,
@@ -773,13 +820,13 @@ where
 }
 
 impl<
-		ES: EntropySource + Clone,
-		NS: NodeSigner + Clone,
-		CM: Deref + Clone,
-		K: KVStore + Clone,
-		TP: Deref + Clone,
-		T: BroadcasterInterface + Clone,
-	> CustomMessageHandler for LiquidityManager<ES, NS, CM, K, TP, T>
+	ES: EntropySource + Clone,
+	NS: NodeSigner + Clone,
+	CM: Deref + Clone,
+	K: KVStore + Clone,
+	TP: Deref + Clone,
+	T: BroadcasterInterface + Clone,
+> CustomMessageHandler for LiquidityManager<ES, NS, CM, K, TP, T>
 where
 	CM::Target: AChannelManager,
 	TP::Target: TimeProvider,
@@ -923,12 +970,12 @@ pub struct LiquidityManagerSync<
 
 #[cfg(feature = "time")]
 impl<
-		ES: EntropySource + Clone,
-		NS: NodeSigner + Clone,
-		CM: Deref + Clone,
-		KS: Deref + Clone,
-		T: BroadcasterInterface + Clone,
-	> LiquidityManagerSync<ES, NS, CM, KS, DefaultTimeProvider, T>
+	ES: EntropySource + Clone,
+	NS: NodeSigner + Clone,
+	CM: Deref + Clone,
+	KS: Deref + Clone,
+	T: BroadcasterInterface + Clone,
+> LiquidityManagerSync<ES, NS, CM, KS, DefaultTimeProvider, T>
 where
 	CM::Target: AChannelManager,
 	KS::Target: KVStoreSync,
@@ -953,8 +1000,7 @@ where
 			client_config,
 		));
 
-		let mut waker = dummy_waker();
-		let mut ctx = task::Context::from_waker(&mut waker);
+		let mut ctx = task::Context::from_waker(core::task::Waker::noop());
 		let inner = match fut.as_mut().poll(&mut ctx) {
 			task::Poll::Ready(result) => result,
 			task::Poll::Pending => {
@@ -967,13 +1013,13 @@ where
 }
 
 impl<
-		ES: EntropySource + Clone,
-		NS: NodeSigner + Clone,
-		CM: Deref + Clone,
-		KS: Deref + Clone,
-		TP: Deref + Clone,
-		T: BroadcasterInterface + Clone,
-	> LiquidityManagerSync<ES, NS, CM, KS, TP, T>
+	ES: EntropySource + Clone,
+	NS: NodeSigner + Clone,
+	CM: Deref + Clone,
+	KS: Deref + Clone,
+	TP: Deref + Clone,
+	T: BroadcasterInterface + Clone,
+> LiquidityManagerSync<ES, NS, CM, KS, TP, T>
 where
 	CM::Target: AChannelManager,
 	KS::Target: KVStoreSync,
@@ -999,8 +1045,7 @@ where
 			time_provider,
 		));
 
-		let mut waker = dummy_waker();
-		let mut ctx = task::Context::from_waker(&mut waker);
+		let mut ctx = task::Context::from_waker(core::task::Waker::noop());
 		let inner = match fut.as_mut().poll(&mut ctx) {
 			task::Poll::Ready(result) => result,
 			task::Poll::Pending => {
@@ -1115,8 +1160,7 @@ where
 	///
 	/// Wraps [`LiquidityManager::persist`].
 	pub fn persist(&self) -> Result<bool, lightning::io::Error> {
-		let mut waker = dummy_waker();
-		let mut ctx = task::Context::from_waker(&mut waker);
+		let mut ctx = task::Context::from_waker(core::task::Waker::noop());
 		match pin!(self.inner.persist()).as_mut().poll(&mut ctx) {
 			task::Poll::Ready(result) => result,
 			task::Poll::Pending => {
@@ -1128,13 +1172,13 @@ where
 }
 
 impl<
-		ES: EntropySource + Clone,
-		NS: NodeSigner + Clone,
-		CM: Deref + Clone,
-		KS: Deref + Clone,
-		TP: Deref + Clone,
-		T: BroadcasterInterface + Clone,
-	> CustomMessageReader for LiquidityManagerSync<ES, NS, CM, KS, TP, T>
+	ES: EntropySource + Clone,
+	NS: NodeSigner + Clone,
+	CM: Deref + Clone,
+	KS: Deref + Clone,
+	TP: Deref + Clone,
+	T: BroadcasterInterface + Clone,
+> CustomMessageReader for LiquidityManagerSync<ES, NS, CM, KS, TP, T>
 where
 	CM::Target: AChannelManager,
 	KS::Target: KVStoreSync,
@@ -1150,13 +1194,13 @@ where
 }
 
 impl<
-		ES: EntropySource + Clone,
-		NS: NodeSigner + Clone,
-		CM: Deref + Clone,
-		KS: Deref + Clone,
-		TP: Deref + Clone,
-		T: BroadcasterInterface + Clone,
-	> CustomMessageHandler for LiquidityManagerSync<ES, NS, CM, KS, TP, T>
+	ES: EntropySource + Clone,
+	NS: NodeSigner + Clone,
+	CM: Deref + Clone,
+	KS: Deref + Clone,
+	TP: Deref + Clone,
+	T: BroadcasterInterface + Clone,
+> CustomMessageHandler for LiquidityManagerSync<ES, NS, CM, KS, TP, T>
 where
 	CM::Target: AChannelManager,
 	KS::Target: KVStoreSync,

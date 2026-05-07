@@ -11,7 +11,7 @@
 
 use core::borrow::Borrow;
 
-use bitcoin::hashes::{sha256::Hash as Sha256, Hash as _};
+use bitcoin::hashes::{Hash as _, sha256::Hash as Sha256};
 use bitcoin::hex::display::impl_fmt_traits;
 
 /// The payment hash is the hash of the [`PaymentPreimage`] which is the value used to lock funds

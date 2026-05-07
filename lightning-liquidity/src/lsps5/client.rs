@@ -19,7 +19,7 @@ use crate::lsps5::msgs::{
 };
 
 use crate::message_queue::MessageQueue;
-use crate::prelude::{new_hash_map, HashMap};
+use crate::prelude::{HashMap, new_hash_map};
 use crate::sync::{Arc, Mutex, RwLock};
 use crate::utils::generate_request_id;
 
@@ -498,16 +498,14 @@ mod tests {
 			let outer_state_lock = client.per_peer_state.read().unwrap();
 
 			let peer_1_state = outer_state_lock.get(&peer_1).unwrap().lock().unwrap();
-			assert!(peer_1_state
-				.pending_set_webhook_requests
-				.iter()
-				.any(|(id, _)| id == &req_id_1));
+			assert!(
+				peer_1_state.pending_set_webhook_requests.iter().any(|(id, _)| id == &req_id_1)
+			);
 
 			let peer_2_state = outer_state_lock.get(&peer_2).unwrap().lock().unwrap();
-			assert!(peer_2_state
-				.pending_set_webhook_requests
-				.iter()
-				.any(|(id, _)| id == &req_id_2));
+			assert!(
+				peer_2_state.pending_set_webhook_requests.iter().any(|(id, _)| id == &req_id_2)
+			);
 		}
 	}
 
@@ -596,19 +594,20 @@ mod tests {
 			let peer_state = outer_state_lock.get(&peer).unwrap().lock().unwrap();
 			assert_eq!(peer_state.pending_set_webhook_requests.len(), MAX_PENDING_REQUESTS);
 
-			assert!(!peer_state
-				.pending_set_webhook_requests
-				.iter()
-				.any(|(id, _)| id == &request_ids[0]));
+			assert!(
+				!peer_state
+					.pending_set_webhook_requests
+					.iter()
+					.any(|(id, _)| id == &request_ids[0])
+			);
 
 			for req_id in &request_ids[1..] {
 				assert!(peer_state.pending_set_webhook_requests.iter().any(|(id, _)| id == req_id));
 			}
 
-			assert!(peer_state
-				.pending_set_webhook_requests
-				.iter()
-				.any(|(id, _)| id == &new_req_id));
+			assert!(
+				peer_state.pending_set_webhook_requests.iter().any(|(id, _)| id == &new_req_id)
+			);
 		}
 	}
 
@@ -626,10 +625,12 @@ mod tests {
 			let state = client.per_peer_state.read().unwrap();
 			assert!(state.contains_key(&peer));
 			let peer_state = state.get(&peer).unwrap().lock().unwrap();
-			assert!(peer_state
-				.pending_set_webhook_requests
-				.iter()
-				.any(|(id, _)| id == &set_webhook_req_id));
+			assert!(
+				peer_state
+					.pending_set_webhook_requests
+					.iter()
+					.any(|(id, _)| id == &set_webhook_req_id)
+			);
 			assert!(peer_state.pending_list_webhooks_requests.contains(&list_webhooks_req_id));
 		}
 
@@ -647,10 +648,12 @@ mod tests {
 			let state = client.per_peer_state.read().unwrap();
 			assert!(state.contains_key(&peer));
 			let peer_state = state.get(&peer).unwrap().lock().unwrap();
-			assert!(!peer_state
-				.pending_set_webhook_requests
-				.iter()
-				.any(|(id, _)| id == &set_webhook_req_id));
+			assert!(
+				!peer_state
+					.pending_set_webhook_requests
+					.iter()
+					.any(|(id, _)| id == &set_webhook_req_id)
+			);
 			assert!(peer_state.pending_list_webhooks_requests.contains(&list_webhooks_req_id));
 		}
 
@@ -678,10 +681,9 @@ mod tests {
 			let state = client.per_peer_state.read().unwrap();
 			assert!(state.contains_key(&peer));
 			let peer_state = state.get(&peer).unwrap().lock().unwrap();
-			assert!(peer_state
-				.pending_set_webhook_requests
-				.iter()
-				.any(|(id, _)| id == &new_req_id));
+			assert!(
+				peer_state.pending_set_webhook_requests.iter().any(|(id, _)| id == &new_req_id)
+			);
 		}
 	}
 }

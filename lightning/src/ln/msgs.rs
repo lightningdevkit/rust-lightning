@@ -27,9 +27,9 @@
 use bitcoin::constants::ChainHash;
 use bitcoin::hash_types::Txid;
 use bitcoin::script::ScriptBuf;
-use bitcoin::secp256k1::ecdsa::Signature;
 use bitcoin::secp256k1::PublicKey;
-use bitcoin::{secp256k1, Transaction, Witness};
+use bitcoin::secp256k1::ecdsa::Signature;
+use bitcoin::{Transaction, Witness, secp256k1};
 
 use crate::blinded_path::message::BlindedMessagePath;
 use crate::blinded_path::payment::{BlindedPaymentTlvs, DummyTlvs, ForwardTlvs, ReceiveTlvs};
@@ -1214,9 +1214,14 @@ pub enum SocketAddressParseError {
 impl fmt::Display for SocketAddressParseError {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		match self {
-			SocketAddressParseError::SocketAddrParse => write!(f, "Socket address (IPv4/IPv6) parsing error"),
-			SocketAddressParseError::InvalidInput => write!(f, "Invalid input format. \
-				Expected: \"<ipv4>:<port>\", \"[<ipv6>]:<port>\", \"<onion address>.onion:<port>\" or \"<hostname>:<port>\""),
+			SocketAddressParseError::SocketAddrParse => {
+				write!(f, "Socket address (IPv4/IPv6) parsing error")
+			},
+			SocketAddressParseError::InvalidInput => write!(
+				f,
+				"Invalid input format. \
+				Expected: \"<ipv4>:<port>\", \"[<ipv6>]:<port>\", \"<onion address>.onion:<port>\" or \"<hostname>:<port>\""
+			),
 			SocketAddressParseError::InvalidPort => write!(f, "Invalid port"),
 			SocketAddressParseError::InvalidOnionV3 => write!(f, "Invalid onion v3 address"),
 		}
@@ -1266,7 +1271,7 @@ impl std::net::ToSocketAddrs for SocketAddress {
 				let socket_addr = SocketAddr::new(ip_addr.into(), *port);
 				Ok(vec![socket_addr].into_iter())
 			},
-			SocketAddress::Hostname { ref hostname, port } => {
+			SocketAddress::Hostname { hostname, port } => {
 				(hostname.as_str(), *port).to_socket_addrs()
 			},
 			SocketAddress::OnionV2(..) => Err(std::io::Error::other(
@@ -1311,27 +1316,40 @@ pub fn parse_onion_address(
 impl Display for SocketAddress {
 	fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
 		match self {
-			SocketAddress::TcpIpV4{addr, port} => write!(
-				f, "{}.{}.{}.{}:{}", addr[0], addr[1], addr[2], addr[3], port)?,
-			SocketAddress::TcpIpV6{addr, port} => write!(
+			SocketAddress::TcpIpV4 { addr, port } => {
+				write!(f, "{}.{}.{}.{}:{}", addr[0], addr[1], addr[2], addr[3], port)?
+			},
+			SocketAddress::TcpIpV6 { addr, port } => write!(
 				f,
 				"[{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}]:{}",
-				addr[0], addr[1], addr[2], addr[3], addr[4], addr[5], addr[6], addr[7], addr[8], addr[9], addr[10], addr[11], addr[12], addr[13], addr[14], addr[15], port
+				addr[0],
+				addr[1],
+				addr[2],
+				addr[3],
+				addr[4],
+				addr[5],
+				addr[6],
+				addr[7],
+				addr[8],
+				addr[9],
+				addr[10],
+				addr[11],
+				addr[12],
+				addr[13],
+				addr[14],
+				addr[15],
+				port
 			)?,
 			SocketAddress::OnionV2(bytes) => write!(f, "OnionV2({:?})", bytes)?,
-			SocketAddress::OnionV3 {
-				ed25519_pubkey,
-				checksum,
-				version,
-				port,
-			} => {
+			SocketAddress::OnionV3 { ed25519_pubkey, checksum, version, port } => {
 				let mut addr = Vec::with_capacity(35);
 				addr.extend_from_slice(ed25519_pubkey);
 				let [c0, c1] = checksum.to_be_bytes();
 				addr.push(c0);
 				addr.push(c1);
 				addr.push(*version);
-				let onion = base32::Alphabet::RFC4648 { padding: false }.encode(&addr).to_lowercase();
+				let onion =
+					base32::Alphabet::RFC4648 { padding: false }.encode(&addr).to_lowercase();
 				write!(f, "{}.onion:{}", onion, port)?
 			},
 			SocketAddress::Hostname { hostname, port } => write!(f, "{}:{}", hostname, port)?,
@@ -1381,9 +1399,9 @@ pub enum UnsignedGossipMessage<'a> {
 impl<'a> Writeable for UnsignedGossipMessage<'a> {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		match self {
-			UnsignedGossipMessage::ChannelAnnouncement(ref msg) => msg.write(writer),
-			UnsignedGossipMessage::ChannelUpdate(ref msg) => msg.write(writer),
-			UnsignedGossipMessage::NodeAnnouncement(ref msg) => msg.write(writer),
+			UnsignedGossipMessage::ChannelAnnouncement(msg) => msg.write(writer),
+			UnsignedGossipMessage::ChannelUpdate(msg) => msg.write(writer),
+			UnsignedGossipMessage::NodeAnnouncement(msg) => msg.write(writer),
 		}
 	}
 }
@@ -2050,7 +2068,7 @@ pub trait BaseMessageHandler {
 	///
 	/// [`Self::peer_disconnected`] will not be called if `Err(())` is returned.
 	fn peer_connected(&self, their_node_id: PublicKey, msg: &Init, inbound: bool)
-		-> Result<(), ()>;
+	-> Result<(), ()>;
 }
 
 impl<T: BaseMessageHandler + ?Sized, B: Deref<Target = T>> BaseMessageHandler for B {
@@ -2753,9 +2771,9 @@ pub struct OnionPacket {
 }
 
 impl onion_utils::Packet for OnionPacket {
-	type Data = onion_utils::FixedSizeOnionPacket;
-	fn new(pubkey: PublicKey, hop_data: onion_utils::FixedSizeOnionPacket, hmac: [u8; 32]) -> Self {
-		Self { version: 0, public_key: Ok(pubkey), hop_data: hop_data.0, hmac }
+	type Data = [u8; onion_utils::ONION_DATA_LEN];
+	fn new(pubkey: PublicKey, hop_data: [u8; onion_utils::ONION_DATA_LEN], hmac: [u8; 32]) -> Self {
+		Self { version: 0, public_key: Ok(pubkey), hop_data, hmac }
 	}
 }
 
@@ -3616,8 +3634,8 @@ impl<'a> Writeable for OutboundOnionPayload<'a> {
 			Self::TrampolineEntrypoint {
 				amt_to_forward,
 				outgoing_cltv_value,
-				ref multipath_trampoline_data,
-				ref trampoline_packet,
+				multipath_trampoline_data,
+				trampoline_packet,
 			} => {
 				_encode_varint_length_prefixed_tlv!(w, {
 					(2, HighZeroBytesDroppedBigSize(*amt_to_forward), required),
@@ -3630,8 +3648,8 @@ impl<'a> Writeable for OutboundOnionPayload<'a> {
 				amt_to_forward,
 				outgoing_cltv_value,
 				current_path_key,
-				ref multipath_trampoline_data,
-				ref trampoline_packet,
+				multipath_trampoline_data,
+				trampoline_packet,
 			} => {
 				_encode_varint_length_prefixed_tlv!(w, {
 					(2, HighZeroBytesDroppedBigSize(*amt_to_forward), required),
@@ -3642,12 +3660,12 @@ impl<'a> Writeable for OutboundOnionPayload<'a> {
 				});
 			},
 			Self::Receive {
-				ref payment_data,
-				ref payment_metadata,
-				ref keysend_preimage,
+				payment_data,
+				payment_metadata,
+				keysend_preimage,
 				sender_intended_htlc_amt_msat,
 				cltv_expiry_height,
-				ref custom_tlvs,
+				custom_tlvs,
 			} => {
 				// We need to update [`ln::outbound_payment::RecipientOnionFields::with_custom_tlvs`]
 				// to reject any reserved types in the experimental range if new ones are ever
@@ -3676,8 +3694,8 @@ impl<'a> Writeable for OutboundOnionPayload<'a> {
 				encrypted_tlvs,
 				intro_node_blinding_point,
 				keysend_preimage,
-				ref invoice_request,
-				ref custom_tlvs,
+				invoice_request,
+				custom_tlvs,
 			} => {
 				// We need to update [`ln::outbound_payments::RecipientCustomTlvs::new`]
 				// to reject any reserved types in the experimental range if new ones are ever
@@ -3714,11 +3732,7 @@ impl<'a> Writeable for OutboundTrampolinePayload<'a> {
 				});
 			},
 			#[cfg(test)]
-			Self::Receive {
-				ref payment_data,
-				sender_intended_htlc_amt_msat,
-				cltv_expiry_height,
-			} => {
+			Self::Receive { payment_data, sender_intended_htlc_amt_msat, cltv_expiry_height } => {
 				_encode_varint_length_prefixed_tlv!(w, {
 					(2, HighZeroBytesDroppedBigSize(*sender_intended_htlc_amt_msat), required),
 					(4, HighZeroBytesDroppedBigSize(*cltv_expiry_height), required),
@@ -3868,7 +3882,8 @@ impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPaylo
 					used_aad,
 				} => {
 					if amt.is_some()
-						|| cltv_value.is_some() || total_msat.is_some()
+						|| cltv_value.is_some()
+						|| total_msat.is_some()
 						|| keysend_preimage.is_some()
 						|| invoice_request.is_some()
 						|| used_aad != TriPolyAADUsed::None
@@ -3890,7 +3905,8 @@ impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPaylo
 					used_aad,
 				} => {
 					if amt.is_some()
-						|| cltv_value.is_some() || total_msat.is_some()
+						|| cltv_value.is_some()
+						|| total_msat.is_some()
 						|| keysend_preimage.is_some()
 						|| invoice_request.is_some()
 						|| used_aad == TriPolyAADUsed::None
@@ -4038,7 +4054,8 @@ impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundTrampoline
 					used_aad,
 				} => {
 					if amt.is_some()
-						|| cltv_value.is_some() || total_msat.is_some()
+						|| cltv_value.is_some()
+						|| total_msat.is_some()
 						|| keysend_preimage.is_some()
 						|| invoice_request.is_some()
 						|| used_aad != TriPolyAADUsed::None
@@ -5702,7 +5719,10 @@ mod tests {
 			require_confirmed_inputs: Some(()),
 		};
 		let encoded_value = splice_init.encode();
-		assert_eq!(encoded_value.as_hex().to_string(), "0202020202020202020202020202020202020202020202020202020202020202fffffffffffe1dc0000007d000000000031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f0200");
+		assert_eq!(
+			encoded_value.as_hex().to_string(),
+			"0202020202020202020202020202020202020202020202020202020202020202fffffffffffe1dc0000007d000000000031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f0200"
+		);
 	}
 
 	#[test]
@@ -5736,7 +5756,10 @@ mod tests {
 			require_confirmed_inputs: Some(()),
 		};
 		let encoded_value = splice_ack.encode();
-		assert_eq!(encoded_value.as_hex().to_string(), "0202020202020202020202020202020202020202020202020202020202020202fffffffffffe1dc0031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f0200");
+		assert_eq!(
+			encoded_value.as_hex().to_string(),
+			"0202020202020202020202020202020202020202020202020202020202020202fffffffffffe1dc0031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f0200"
+		);
 	}
 
 	#[test]
@@ -5749,7 +5772,10 @@ mod tests {
 			.unwrap(),
 		};
 		let encoded_value = splice_locked.encode();
-		assert_eq!(encoded_value.as_hex().to_string(), "02020202020202020202020202020202020202020202020202020202020202026e96fe9f8b0ddcd729ba03cfafa5a27b050b39d354dd980814268dfa9a44d4c2");
+		assert_eq!(
+			encoded_value.as_hex().to_string(),
+			"02020202020202020202020202020202020202020202020202020202020202026e96fe9f8b0ddcd729ba03cfafa5a27b050b39d354dd980814268dfa9a44d4c2"
+		);
 	}
 
 	#[test]
@@ -5988,7 +6014,10 @@ mod tests {
 	fn encoding_tx_abort() {
 		let tx_abort = msgs::TxAbort {
 			channel_id: ChannelId::from_bytes([2; 32]),
-			data: <Vec<u8>>::from_hex("54686520717569636B2062726F776E20666F78206A756D7073206F76657220746865206C617A7920646F672E").unwrap(),
+			data: <Vec<u8>>::from_hex(
+				"54686520717569636B2062726F776E20666F78206A756D7073206F76657220746865206C617A7920646F672E",
+			)
+			.unwrap(),
 		};
 		let encoded_value = tx_abort.encode();
 		let target_value = <Vec<u8>>::from_hex("0202020202020202020202020202020202020202020202020202020202020202002C54686520717569636B2062726F776E20666F78206A756D7073206F76657220746865206C617A7920646F672E").unwrap();
@@ -6260,11 +6289,18 @@ mod tests {
 	#[test]
 	fn encoding_init() {
 		let mainnet_hash = ChainHash::using_genesis_block(Network::Bitcoin);
-		assert_eq!(msgs::Init {
-			features: InitFeatures::from_le_bytes(vec![0xFF, 0xFF, 0xFF]),
-			networks: Some(vec![mainnet_hash]),
-			remote_network_address: None,
-		}.encode(), <Vec<u8>>::from_hex("00023fff0003ffffff01206fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap());
+		assert_eq!(
+			msgs::Init {
+				features: InitFeatures::from_le_bytes(vec![0xFF, 0xFF, 0xFF]),
+				networks: Some(vec![mainnet_hash]),
+				remote_network_address: None,
+			}
+			.encode(),
+			<Vec<u8>>::from_hex(
+				"00023fff0003ffffff01206fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000"
+			)
+			.unwrap()
+		);
 		assert_eq!(
 			msgs::Init {
 				features: InitFeatures::from_le_bytes(vec![0xFF]),
@@ -6300,7 +6336,10 @@ mod tests {
 			}),
 		};
 		let encoded_value = init_msg.encode();
-		let target_value = <Vec<u8>>::from_hex("0000000001206fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d61900000000000307017f00000103e8").unwrap();
+		let target_value = <Vec<u8>>::from_hex(
+			"0000000001206fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d61900000000000307017f00000103e8",
+		)
+		.unwrap();
 		assert_eq!(encoded_value, target_value);
 		assert_eq!(
 			msgs::Init::read_from_fixed_length_buffer(&mut &target_value[..]).unwrap(),
@@ -6479,11 +6518,13 @@ mod tests {
 		};
 		let encoded_value = msg.encode();
 		let node_signer = test_utils::TestKeysInterface::new(&[42; 32], Network::Testnet);
-		assert!(msgs::InboundOnionPayload::read(
-			&mut Cursor::new(&encoded_value[..]),
-			(None, &node_signer)
-		)
-		.is_err());
+		assert!(
+			msgs::InboundOnionPayload::read(
+				&mut Cursor::new(&encoded_value[..]),
+				(None, &node_signer)
+			)
+			.is_err()
+		);
 		let good_type_range_tlvs = vec![((1 << 16) - 3, vec![42]), ((1 << 16) - 1, vec![42; 32])];
 		if let msgs::OutboundOnionPayload::Receive { ref mut custom_tlvs, .. } = msg {
 			*custom_tlvs = &good_type_range_tlvs;
@@ -6512,7 +6553,10 @@ mod tests {
 			cltv_expiry_height: 0xffffffff,
 		};
 		let encoded_value = msg.encode();
-		let target_value = <Vec<u8>>::from_hex("2e02080badf00d010203040404ffffffffff0000000146c6616b021234ff0000000146c6616f084242424242424242").unwrap();
+		let target_value = <Vec<u8>>::from_hex(
+			"2e02080badf00d010203040404ffffffffff0000000146c6616b021234ff0000000146c6616f084242424242424242",
+		)
+		.unwrap();
 		assert_eq!(encoded_value, target_value);
 		let node_signer = test_utils::TestKeysInterface::new(&[42; 32], Network::Testnet);
 		let inbound_msg: msgs::InboundOnionPayload =
@@ -6648,7 +6692,10 @@ mod tests {
 			invoice_features: Some(trampoline_features),
 		};
 		let serialized_payload = trampoline_payload.encode().to_lower_hex_string();
-		assert_eq!(serialized_payload, "71020408f0d18004030c35001503020000165f032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e66868099102eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f28368661900000001f4000003e800240000000000000001000000001dcd65000000");
+		assert_eq!(
+			serialized_payload,
+			"71020408f0d18004030c35001503020000165f032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e66868099102eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f28368661900000001f4000003e800240000000000000001000000001dcd65000000"
+		);
 	}
 
 	#[test]
@@ -6663,14 +6710,20 @@ mod tests {
 			custom_tlvs: &vec![],
 		};
 		let eve_payload = trampoline_payload_eve.encode().to_lower_hex_string();
-		assert_eq!(eve_payload, "e4020408f0d18004030c35000ad1bcd747394fbd4d99588da075a623316e15a576df5bc785cccc7cd6ec7b398acce6faf520175f9ec920f2ef261cdb83dc28cc3a0eeb970107b3306489bf771ef5b1213bca811d345285405861d08a655b6c237fa247a8b4491beee20c878a60e9816492026d8feb9dafa84585b253978db6a0aa2945df5ef445c61e801fb82f43d5f00716baf9fc9b3de50bc22950a36bda8fc27bfb1242e5860c7e687438d4133e058770361a19b6c271a2a07788d34dccc27e39b9829b061a4d960eac4a2c2b0f4de506c24f9af3868c0aff6dda27281c120408f0d180");
+		assert_eq!(
+			eve_payload,
+			"e4020408f0d18004030c35000ad1bcd747394fbd4d99588da075a623316e15a576df5bc785cccc7cd6ec7b398acce6faf520175f9ec920f2ef261cdb83dc28cc3a0eeb970107b3306489bf771ef5b1213bca811d345285405861d08a655b6c237fa247a8b4491beee20c878a60e9816492026d8feb9dafa84585b253978db6a0aa2945df5ef445c61e801fb82f43d5f00716baf9fc9b3de50bc22950a36bda8fc27bfb1242e5860c7e687438d4133e058770361a19b6c271a2a07788d34dccc27e39b9829b061a4d960eac4a2c2b0f4de506c24f9af3868c0aff6dda27281c120408f0d180"
+		);
 
 		let trampoline_payload_dave = OutboundTrampolinePayload::BlindedForward {
 			encrypted_tlvs: &<Vec<u8>>::from_hex("0ccf3c8a58deaa603f657ee2a5ed9d604eb5c8ca1e5f801989afa8f3ea6d789bbdde2c7e7a1ef9ca8c38d2c54760febad8446d3f273ddb537569ef56613846ccd3aba78a").unwrap(),
 			intro_node_blinding_point: Some(PublicKey::from_slice(&<Vec<u8>>::from_hex("02988face71e92c345a068f740191fd8e53be14f0bb957ef730d3c5f76087b960e").unwrap()).unwrap()),
 		};
 		let dave_payload = trampoline_payload_dave.encode().to_lower_hex_string();
-		assert_eq!(dave_payload, "690a440ccf3c8a58deaa603f657ee2a5ed9d604eb5c8ca1e5f801989afa8f3ea6d789bbdde2c7e7a1ef9ca8c38d2c54760febad8446d3f273ddb537569ef56613846ccd3aba78a0c2102988face71e92c345a068f740191fd8e53be14f0bb957ef730d3c5f76087b960e")
+		assert_eq!(
+			dave_payload,
+			"690a440ccf3c8a58deaa603f657ee2a5ed9d604eb5c8ca1e5f801989afa8f3ea6d789bbdde2c7e7a1ef9ca8c38d2c54760febad8446d3f273ddb537569ef56613846ccd3aba78a0c2102988face71e92c345a068f740191fd8e53be14f0bb957ef730d3c5f76087b960e"
+		)
 	}
 
 	#[test]
@@ -6943,10 +6996,12 @@ mod tests {
 			SocketAddress::from_str("127.0.0.1@1234")
 		);
 		assert_eq!(Err(SocketAddressParseError::InvalidInput), "".parse::<SocketAddress>());
-		assert!(SocketAddress::from_str(
-			"pg6mmjiyjmcrsslvykfwnntlaru7p5svn6y2ymmju6nubxndf4pscryd.onion.onion:9735:94"
-		)
-		.is_err());
+		assert!(
+			SocketAddress::from_str(
+				"pg6mmjiyjmcrsslvykfwnntlaru7p5svn6y2ymmju6nubxndf4pscryd.onion.onion:9735:94"
+			)
+			.is_err()
+		);
 		assert!(SocketAddress::from_str("wrong$%#.com:1234").is_err());
 		assert_eq!(
 			Err(SocketAddressParseError::InvalidPort),
@@ -6957,10 +7012,12 @@ mod tests {
 		assert!("invalid-onion-v3-hostname.onion:8080".parse::<SocketAddress>().is_err());
 		assert!("b32.example.onion:invalid-port".parse::<SocketAddress>().is_err());
 		assert!("invalid-address".parse::<SocketAddress>().is_err());
-		assert!(SocketAddress::from_str(
-			"pg6mmjiyjmcrsslvykfwnntlaru7p5svn6y2ymmju6nubxndf4pscryd.onion.onion:1234"
-		)
-		.is_err());
+		assert!(
+			SocketAddress::from_str(
+				"pg6mmjiyjmcrsslvykfwnntlaru7p5svn6y2ymmju6nubxndf4pscryd.onion.onion:1234"
+			)
+			.is_err()
+		);
 	}
 
 	#[test]
@@ -6994,17 +7051,19 @@ mod tests {
 			SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::from([0u8; 4]), 0))
 		);
 		assert!(SocketAddress::OnionV2([0u8; 12]).to_socket_addrs().is_err());
-		assert!(SocketAddress::OnionV3 {
-			ed25519_pubkey: [
-				37, 24, 75, 5, 25, 73, 117, 194, 139, 102, 182, 107, 4, 105, 247, 246, 85, 111,
-				177, 172, 49, 137, 167, 155, 64, 221, 163, 47, 31, 33, 71, 3
-			],
-			checksum: 48326,
-			version: 121,
-			port: 1234
-		}
-		.to_socket_addrs()
-		.is_err());
+		assert!(
+			SocketAddress::OnionV3 {
+				ed25519_pubkey: [
+					37, 24, 75, 5, 25, 73, 117, 194, 139, 102, 182, 107, 4, 105, 247, 246, 85, 111,
+					177, 172, 49, 137, 167, 155, 64, 221, 163, 47, 31, 33, 71, 3
+				],
+				checksum: 48326,
+				version: 121,
+				port: 1234
+			}
+			.to_socket_addrs()
+			.is_err()
+		);
 	}
 
 	fn test_update_add_htlc() -> msgs::UpdateAddHTLC {

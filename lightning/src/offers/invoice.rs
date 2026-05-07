@@ -114,9 +114,9 @@
 //!
 //! ```
 
+use crate::blinded_path::BlindedPath;
 use crate::blinded_path::message::BlindedMessagePath;
 use crate::blinded_path::payment::{BlindedPayInfo, BlindedPaymentPath};
-use crate::blinded_path::BlindedPath;
 use crate::io;
 use crate::ln::channelmanager::PaymentId;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN};
@@ -125,24 +125,24 @@ use crate::ln::msgs::DecodeError;
 use crate::offers::invoice_macros::invoice_builder_methods_test_common;
 use crate::offers::invoice_macros::{invoice_accessors_common, invoice_builder_methods_common};
 use crate::offers::invoice_request::{
-	ExperimentalInvoiceRequestTlvStream, ExperimentalInvoiceRequestTlvStreamRef, InvoiceRequest,
-	InvoiceRequestContents, InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef,
-	EXPERIMENTAL_INVOICE_REQUEST_TYPES, INVOICE_REQUEST_PAYER_ID_TYPE, INVOICE_REQUEST_TYPES,
-	IV_BYTES as INVOICE_REQUEST_IV_BYTES,
+	EXPERIMENTAL_INVOICE_REQUEST_TYPES, ExperimentalInvoiceRequestTlvStream,
+	ExperimentalInvoiceRequestTlvStreamRef, INVOICE_REQUEST_PAYER_ID_TYPE, INVOICE_REQUEST_TYPES,
+	IV_BYTES as INVOICE_REQUEST_IV_BYTES, InvoiceRequest, InvoiceRequestContents,
+	InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef,
 };
 use crate::offers::merkle::{
 	self, SignError, SignFn, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash, TlvStream,
 };
 use crate::offers::nonce::Nonce;
 use crate::offers::offer::{
-	Amount, ExperimentalOfferTlvStream, ExperimentalOfferTlvStreamRef, OfferId, OfferTlvStream,
-	OfferTlvStreamRef, Quantity, EXPERIMENTAL_OFFER_TYPES, OFFER_TYPES,
+	Amount, EXPERIMENTAL_OFFER_TYPES, ExperimentalOfferTlvStream, ExperimentalOfferTlvStreamRef,
+	OFFER_TYPES, OfferId, OfferTlvStream, OfferTlvStreamRef, Quantity,
 };
 use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
-use crate::offers::payer::{PayerTlvStream, PayerTlvStreamRef, PAYER_METADATA_TYPE};
+use crate::offers::payer::{PAYER_METADATA_TYPE, PayerTlvStream, PayerTlvStreamRef};
 use crate::offers::refund::{
-	Refund, RefundContents, IV_BYTES_WITHOUT_METADATA as REFUND_IV_BYTES_WITHOUT_METADATA,
 	IV_BYTES_WITH_METADATA as REFUND_IV_BYTES_WITH_METADATA,
+	IV_BYTES_WITHOUT_METADATA as REFUND_IV_BYTES_WITHOUT_METADATA, Refund, RefundContents,
 };
 use crate::offers::signer::{self, Metadata};
 use crate::types::features::{Bolt12InvoiceFeatures, InvoiceRequestFeatures, OfferFeatures};
@@ -1824,9 +1824,9 @@ pub(super) fn check_invoice_signing_pubkey(
 #[cfg(test)]
 mod tests {
 	use super::{
-		Bolt12Invoice, ExperimentalInvoiceTlvStreamRef, FallbackAddress, FullInvoiceTlvStreamRef,
-		InvoiceTlvStreamRef, UnsignedBolt12Invoice, DEFAULT_RELATIVE_EXPIRY,
-		EXPERIMENTAL_INVOICE_TYPES, INVOICE_TYPES, SIGNATURE_TAG,
+		Bolt12Invoice, DEFAULT_RELATIVE_EXPIRY, EXPERIMENTAL_INVOICE_TYPES,
+		ExperimentalInvoiceTlvStreamRef, FallbackAddress, FullInvoiceTlvStreamRef, INVOICE_TYPES,
+		InvoiceTlvStreamRef, SIGNATURE_TAG, UnsignedBolt12Invoice,
 	};
 
 	use bitcoin::address::Address;
@@ -1839,8 +1839,8 @@ mod tests {
 	use bitcoin::{CompressedPublicKey, WitnessProgram, WitnessVersion};
 	use core::time::Duration;
 
-	use crate::blinded_path::message::BlindedMessagePath;
 	use crate::blinded_path::BlindedHop;
+	use crate::blinded_path::message::BlindedMessagePath;
 	use crate::ln::channelmanager::PaymentId;
 	use crate::ln::inbound_payment::ExpandedKey;
 	use crate::ln::msgs::DecodeError;
@@ -2285,9 +2285,9 @@ mod tests {
 		}
 
 		let expanded_key = ExpandedKey::new([41; 32]);
-		assert!(invoice_request
-			.verify_using_recipient_data(nonce, &expanded_key, &secp_ctx)
-			.is_err());
+		assert!(
+			invoice_request.verify_using_recipient_data(nonce, &expanded_key, &secp_ctx).is_err()
+		);
 	}
 
 	#[test]

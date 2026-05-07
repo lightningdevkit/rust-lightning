@@ -22,8 +22,8 @@ use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::hex::DisplayHex;
 
 use bitcoin::secp256k1;
-use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::Secp256k1;
+use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::{PublicKey, SecretKey};
 use chacha20_poly1305::{ChaCha20Poly1305, Key, Nonce};
 
@@ -263,7 +263,7 @@ impl PeerChannelEncryptor {
 				return Err(LightningError {
 					err: format!("Invalid public key {}", &act[1..34].as_hex()),
 					action: msgs::ErrorAction::DisconnectPeer { msg: None },
-				})
+				});
 			},
 			Ok(key) => key,
 		};
@@ -474,7 +474,7 @@ impl PeerChannelEncryptor {
 							return Err(LightningError {
 								err: format!("Bad node_id from peer, {}", &their_node_id.as_hex()),
 								action: msgs::ErrorAction::DisconnectPeer { msg: None },
-							})
+							});
 						},
 					});
 
@@ -663,7 +663,7 @@ impl MessageBuf {
 
 #[cfg(test)]
 mod tests {
-	use super::{MessageBuf, LN_MAX_MSG_LEN};
+	use super::{LN_MAX_MSG_LEN, MessageBuf};
 
 	use bitcoin::hex::FromHex;
 	use bitcoin::secp256k1::Secp256k1;
@@ -830,14 +830,16 @@ mod tests {
 
 			let hex = "01036360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f70df6086551151f58b8afe6c195782c6a";
 			let act_one = <Vec<u8>>::from_hex(hex).unwrap().to_vec();
-			assert!(inbound_peer
-				.process_act_one_with_keys(
-					&act_one[..],
-					&&node_signer,
-					our_ephemeral.clone(),
-					&secp_ctx
-				)
-				.is_err());
+			assert!(
+				inbound_peer
+					.process_act_one_with_keys(
+						&act_one[..],
+						&&node_signer,
+						our_ephemeral.clone(),
+						&secp_ctx
+					)
+					.is_err()
+			);
 		}
 		{
 			// transport-responder act1 bad key serialization test
@@ -845,14 +847,16 @@ mod tests {
 
 			let hex = "00046360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f70df6086551151f58b8afe6c195782c6a";
 			let act_one = <Vec<u8>>::from_hex(hex).unwrap().to_vec();
-			assert!(inbound_peer
-				.process_act_one_with_keys(
-					&act_one[..],
-					&&node_signer,
-					our_ephemeral.clone(),
-					&secp_ctx
-				)
-				.is_err());
+			assert!(
+				inbound_peer
+					.process_act_one_with_keys(
+						&act_one[..],
+						&&node_signer,
+						our_ephemeral.clone(),
+						&secp_ctx
+					)
+					.is_err()
+			);
 		}
 		{
 			// transport-responder act1 bad MAC test
@@ -860,14 +864,16 @@ mod tests {
 
 			let hex = "00036360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f70df6086551151f58b8afe6c195782c6b";
 			let act_one = <Vec<u8>>::from_hex(hex).unwrap().to_vec();
-			assert!(inbound_peer
-				.process_act_one_with_keys(
-					&act_one[..],
-					&&node_signer,
-					our_ephemeral.clone(),
-					&secp_ctx
-				)
-				.is_err());
+			assert!(
+				inbound_peer
+					.process_act_one_with_keys(
+						&act_one[..],
+						&&node_signer,
+						our_ephemeral.clone(),
+						&secp_ctx
+					)
+					.is_err()
+			);
 		}
 		{
 			// transport-responder act3 bad version test

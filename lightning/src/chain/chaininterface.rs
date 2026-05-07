@@ -381,7 +381,7 @@ impl<F: FeeEstimator> LowerBoundedFeeEstimator<F> {
 #[cfg(test)]
 mod tests {
 	use super::{
-		ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator, FEERATE_FLOOR_SATS_PER_KW,
+		ConfirmationTarget, FEERATE_FLOOR_SATS_PER_KW, FeeEstimator, LowerBoundedFeeEstimator,
 	};
 
 	struct TestFeeEstimator {

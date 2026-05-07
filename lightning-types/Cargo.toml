@@ -8,8 +8,8 @@ readme = "../README.md"
 description = """
 Basic types which are used in the lightning network
 """
-edition = "2021"
-rust-version = "1.75"
+edition = "2024"
+rust-version = "1.85"
 
 [package.metadata.docs.rs]
 rustdoc-args = ["--cfg", "docsrs"]

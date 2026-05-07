@@ -7,6 +7,7 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
+use bitcoin::Witness;
 use bitcoin::absolute::LockTime;
 use bitcoin::amount::{Amount, SignedAmount};
 use bitcoin::consensus::encode;
@@ -14,19 +15,19 @@ use bitcoin::constants::ChainHash;
 use bitcoin::script::{Builder, Script, ScriptBuf};
 use bitcoin::sighash::EcdsaSighashType;
 use bitcoin::transaction::{Transaction, TxOut};
-use bitcoin::Witness;
 
 use bitcoin::hash_types::{BlockHash, Txid};
+use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::sha256d::Hash as Sha256d;
-use bitcoin::hashes::Hash;
 
 use bitcoin::secp256k1::constants::PUBLIC_KEY_SIZE;
-use bitcoin::secp256k1::{ecdsa::Signature, Secp256k1};
 use bitcoin::secp256k1::{PublicKey, SecretKey};
-use bitcoin::{secp256k1, sighash, FeeRate, Sequence, TxIn};
+use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature};
+use bitcoin::{FeeRate, Sequence, TxIn, secp256k1, sighash};
 
 use crate::blinded_path::message::BlindedMessagePath;
+use crate::chain::BlockLocator;
 use crate::chain::chaininterface::{
 	ChannelFunding, ConfirmationTarget, FeeEstimator, FundingCandidate, FundingPurpose,
 	LowerBoundedFeeEstimator, TransactionType,
@@ -36,25 +37,24 @@ use crate::chain::channelmonitor::{
 	LATENCY_GRACE_PERIOD_BLOCKS,
 };
 use crate::chain::transaction::{OutPoint, TransactionData};
-use crate::chain::BlockLocator;
 use crate::events::{ClosureReason, FundingInfo};
 use crate::ln::chan_utils;
 use crate::ln::chan_utils::{
-	get_commitment_transaction_number_obscure_factor, max_htlcs, second_stage_tx_fees_sat,
-	selected_commitment_sat_per_1000_weight, ChannelPublicKeys, ChannelTransactionParameters,
-	ClosingTransaction, CommitmentTransaction, CounterpartyChannelTransactionParameters,
-	CounterpartyCommitmentSecrets, HTLCOutputInCommitment, HolderCommitmentTransaction,
-	EMPTY_SCRIPT_SIG_WEIGHT, FUNDING_TRANSACTION_WITNESS_WEIGHT,
+	ChannelPublicKeys, ChannelTransactionParameters, ClosingTransaction, CommitmentTransaction,
+	CounterpartyChannelTransactionParameters, CounterpartyCommitmentSecrets,
+	EMPTY_SCRIPT_SIG_WEIGHT, FUNDING_TRANSACTION_WITNESS_WEIGHT, HTLCOutputInCommitment,
+	HolderCommitmentTransaction, get_commitment_transaction_number_obscure_factor, max_htlcs,
+	second_stage_tx_fees_sat, selected_commitment_sat_per_1000_weight,
 };
 use crate::ln::channel_state::{
 	ChannelShutdownState, CounterpartyForwardingInfo, InboundHTLCDetails, InboundHTLCStateDetails,
 	OutboundHTLCDetails, OutboundHTLCStateDetails,
 };
 use crate::ln::channelmanager::{
-	self, BlindedFailure, ChannelReadyOrder, FundingConfirmedMessage, HTLCFailureMsg,
-	HTLCPreviousHopData, HTLCSource, OpenChannelMessage, PaymentClaimDetails, PendingHTLCInfo,
-	PendingHTLCStatus, RAACommitmentOrder, SentHTLCId, TrustedChannelFeatures, BREAKDOWN_TIMEOUT,
-	MAX_LOCAL_BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA,
+	self, BREAKDOWN_TIMEOUT, BlindedFailure, ChannelReadyOrder, FundingConfirmedMessage,
+	HTLCFailureMsg, HTLCPreviousHopData, HTLCSource, MAX_LOCAL_BREAKDOWN_TIMEOUT,
+	MIN_CLTV_EXPIRY_DELTA, OpenChannelMessage, PaymentClaimDetails, PendingHTLCInfo,
+	PendingHTLCStatus, RAACommitmentOrder, SentHTLCId, TrustedChannelFeatures,
 };
 use crate::ln::funding::{
 	FeeRateAdjustmentError, FundingContribution, FundingTemplate, FundingTxInput, PriorContribution,
@@ -66,7 +66,7 @@ use crate::ln::interactivetxs::{
 use crate::ln::msgs;
 use crate::ln::msgs::{ClosingSigned, ClosingSignedFeeRange, DecodeError, OnionErrorPacket};
 use crate::ln::onion_utils::{
-	AttributionData, HTLCFailReason, LocalHTLCFailureReason, HOLD_TIME_UNIT_MILLIS,
+	AttributionData, HOLD_TIME_UNIT_MILLIS, HTLCFailReason, LocalHTLCFailureReason,
 };
 use crate::ln::script::{self, ShutdownScript};
 use crate::ln::types::ChannelId;
@@ -90,7 +90,7 @@ use crate::util::ser::{Readable, ReadableArgs, RequiredWrapper, Writeable, Write
 use crate::util::wallet_utils::Input;
 use crate::{impl_readable_for_vec, impl_writeable_for_vec};
 
-use alloc::collections::{btree_map, BTreeMap};
+use alloc::collections::{BTreeMap, btree_map};
 
 use crate::io;
 use crate::prelude::*;
@@ -516,7 +516,7 @@ impl<'a> Into<Option<&'a HTLCFailReason>> for &'a OutboundHTLCOutcome {
 	fn into(self) -> Option<&'a HTLCFailReason> {
 		match self {
 			OutboundHTLCOutcome::Success { .. } => None,
-			OutboundHTLCOutcome::Failure(ref r) => Some(r),
+			OutboundHTLCOutcome::Failure(r) => Some(r),
 		}
 	}
 }
@@ -700,31 +700,69 @@ mod state_flags {
 
 define_state_flags!(
 	"Flags that apply to all [`ChannelState`] variants in which the channel is funded.",
-	FundedStateFlags, [
-		("Indicates the remote side is considered \"disconnected\" and no updates are allowed \
-			until after we've done a `channel_reestablish` dance.", PEER_DISCONNECTED, state_flags::PEER_DISCONNECTED,
-			is_peer_disconnected, set_peer_disconnected, clear_peer_disconnected),
-		("Indicates the user has told us a `ChannelMonitor` update is pending async persistence \
+	FundedStateFlags,
+	[
+		(
+			"Indicates the remote side is considered \"disconnected\" and no updates are allowed \
+			until after we've done a `channel_reestablish` dance.",
+			PEER_DISCONNECTED,
+			state_flags::PEER_DISCONNECTED,
+			is_peer_disconnected,
+			set_peer_disconnected,
+			clear_peer_disconnected
+		),
+		(
+			"Indicates the user has told us a `ChannelMonitor` update is pending async persistence \
 			somewhere and we should pause sending any outbound messages until they've managed to \
-			complete it.", MONITOR_UPDATE_IN_PROGRESS, state_flags::MONITOR_UPDATE_IN_PROGRESS,
-			is_monitor_update_in_progress, set_monitor_update_in_progress, clear_monitor_update_in_progress),
-		("Indicates we received a `shutdown` message from the remote end. If set, they may not add \
+			complete it.",
+			MONITOR_UPDATE_IN_PROGRESS,
+			state_flags::MONITOR_UPDATE_IN_PROGRESS,
+			is_monitor_update_in_progress,
+			set_monitor_update_in_progress,
+			clear_monitor_update_in_progress
+		),
+		(
+			"Indicates we received a `shutdown` message from the remote end. If set, they may not add \
 			any new HTLCs to the channel, and we are expected to respond with our own `shutdown` \
-			message when possible.", REMOTE_SHUTDOWN_SENT, state_flags::REMOTE_SHUTDOWN_SENT,
-			is_remote_shutdown_sent, set_remote_shutdown_sent, clear_remote_shutdown_sent),
-		("Indicates we sent a `shutdown` message. At this point, we may not add any new HTLCs to \
-			the channel.", LOCAL_SHUTDOWN_SENT, state_flags::LOCAL_SHUTDOWN_SENT,
-			is_local_shutdown_sent, set_local_shutdown_sent, clear_local_shutdown_sent)
+			message when possible.",
+			REMOTE_SHUTDOWN_SENT,
+			state_flags::REMOTE_SHUTDOWN_SENT,
+			is_remote_shutdown_sent,
+			set_remote_shutdown_sent,
+			clear_remote_shutdown_sent
+		),
+		(
+			"Indicates we sent a `shutdown` message. At this point, we may not add any new HTLCs to \
+			the channel.",
+			LOCAL_SHUTDOWN_SENT,
+			state_flags::LOCAL_SHUTDOWN_SENT,
+			is_local_shutdown_sent,
+			set_local_shutdown_sent,
+			clear_local_shutdown_sent
+		)
 	]
 );
 
 define_state_flags!(
 	"Flags that only apply to [`ChannelState::NegotiatingFunding`].",
-	NegotiatingFundingFlags, [
-		("Indicates we have (or are prepared to) send our `open_channel`/`accept_channel` message.",
-			OUR_INIT_SENT, state_flags::OUR_INIT_SENT, is_our_init_sent, set_our_init_sent, clear_our_init_sent),
-		("Indicates we have received their `open_channel`/`accept_channel` message.",
-			THEIR_INIT_SENT, state_flags::THEIR_INIT_SENT, is_their_init_sent, set_their_init_sent, clear_their_init_sent)
+	NegotiatingFundingFlags,
+	[
+		(
+			"Indicates we have (or are prepared to) send our `open_channel`/`accept_channel` message.",
+			OUR_INIT_SENT,
+			state_flags::OUR_INIT_SENT,
+			is_our_init_sent,
+			set_our_init_sent,
+			clear_our_init_sent
+		),
+		(
+			"Indicates we have received their `open_channel`/`accept_channel` message.",
+			THEIR_INIT_SENT,
+			state_flags::THEIR_INIT_SENT,
+			is_their_init_sent,
+			set_their_init_sent,
+			clear_their_init_sent
+		)
 	]
 );
 
@@ -737,45 +775,85 @@ define_state_flags!(
 
 define_state_flags!(
 	"Flags that only apply to [`ChannelState::AwaitingChannelReady`].",
-	FUNDED_STATE, AwaitingChannelReadyFlags, [
-		("Indicates they sent us a `channel_ready` message. Once both `THEIR_CHANNEL_READY` and \
+	FUNDED_STATE,
+	AwaitingChannelReadyFlags,
+	[
+		(
+			"Indicates they sent us a `channel_ready` message. Once both `THEIR_CHANNEL_READY` and \
 			`OUR_CHANNEL_READY` are set, our state moves on to `ChannelReady`.",
-			THEIR_CHANNEL_READY, state_flags::THEIR_CHANNEL_READY,
-			is_their_channel_ready, set_their_channel_ready, clear_their_channel_ready),
-		("Indicates we sent them a `channel_ready` message. Once both `THEIR_CHANNEL_READY` and \
+			THEIR_CHANNEL_READY,
+			state_flags::THEIR_CHANNEL_READY,
+			is_their_channel_ready,
+			set_their_channel_ready,
+			clear_their_channel_ready
+		),
+		(
+			"Indicates we sent them a `channel_ready` message. Once both `THEIR_CHANNEL_READY` and \
 			`OUR_CHANNEL_READY` are set, our state moves on to `ChannelReady`.",
-			OUR_CHANNEL_READY, state_flags::OUR_CHANNEL_READY,
-			is_our_channel_ready, set_our_channel_ready, clear_our_channel_ready),
-		("Indicates the channel was funded in a batch and the broadcast of the funding transaction \
+			OUR_CHANNEL_READY,
+			state_flags::OUR_CHANNEL_READY,
+			is_our_channel_ready,
+			set_our_channel_ready,
+			clear_our_channel_ready
+		),
+		(
+			"Indicates the channel was funded in a batch and the broadcast of the funding transaction \
 			is being held until all channels in the batch have received `funding_signed` and have \
-			their monitors persisted.", WAITING_FOR_BATCH, state_flags::WAITING_FOR_BATCH,
-			is_waiting_for_batch, set_waiting_for_batch, clear_waiting_for_batch)
+			their monitors persisted.",
+			WAITING_FOR_BATCH,
+			state_flags::WAITING_FOR_BATCH,
+			is_waiting_for_batch,
+			set_waiting_for_batch,
+			clear_waiting_for_batch
+		)
 	]
 );
 
 define_state_flags!(
 	"Flags that only apply to [`ChannelState::ChannelReady`].",
-	FUNDED_STATE, ChannelReadyFlags, [
-		("Indicates that we have sent a `commitment_signed` but are awaiting the responding \
+	FUNDED_STATE,
+	ChannelReadyFlags,
+	[
+		(
+			"Indicates that we have sent a `commitment_signed` but are awaiting the responding \
 			`revoke_and_ack` message. During this period, we can't generate new `commitment_signed` \
 			messages as we'd be unable to determine which HTLCs they included in their `revoke_and_ack` \
 			implicit ACK, so instead we have to hold them away temporarily to be sent later.",
-			AWAITING_REMOTE_REVOKE, state_flags::AWAITING_REMOTE_REVOKE,
-			is_awaiting_remote_revoke, set_awaiting_remote_revoke, clear_awaiting_remote_revoke),
-		("Indicates we have sent a `stfu` message to the counterparty. This message can only be sent \
+			AWAITING_REMOTE_REVOKE,
+			state_flags::AWAITING_REMOTE_REVOKE,
+			is_awaiting_remote_revoke,
+			set_awaiting_remote_revoke,
+			clear_awaiting_remote_revoke
+		),
+		(
+			"Indicates we have sent a `stfu` message to the counterparty. This message can only be sent \
 			if `REMOTE_STFU_SENT` is set, or a `QuiescentAction` is pending. Shutdown requests are \
 			rejected if this flag is set.",
-			LOCAL_STFU_SENT, state_flags::LOCAL_STFU_SENT,
-			is_local_stfu_sent, set_local_stfu_sent, clear_local_stfu_sent),
-		("Indicates we have received a `stfu` message from the counterparty. Shutdown requests are \
+			LOCAL_STFU_SENT,
+			state_flags::LOCAL_STFU_SENT,
+			is_local_stfu_sent,
+			set_local_stfu_sent,
+			clear_local_stfu_sent
+		),
+		(
+			"Indicates we have received a `stfu` message from the counterparty. Shutdown requests are \
 			rejected if this flag is set.",
-			REMOTE_STFU_SENT, state_flags::REMOTE_STFU_SENT,
-			is_remote_stfu_sent, set_remote_stfu_sent, clear_remote_stfu_sent),
-		("Indicates the quiescence handshake has completed and the channel is now quiescent. \
+			REMOTE_STFU_SENT,
+			state_flags::REMOTE_STFU_SENT,
+			is_remote_stfu_sent,
+			set_remote_stfu_sent,
+			clear_remote_stfu_sent
+		),
+		(
+			"Indicates the quiescence handshake has completed and the channel is now quiescent. \
 			Updates are not allowed while this flag is set, and any outbound updates will go \
 			directly into the holding cell.",
-			QUIESCENT, state_flags::QUIESCENT,
-			is_quiescent, set_quiescent, clear_quiescent)
+			QUIESCENT,
+			state_flags::QUIESCENT,
+			is_quiescent,
+			set_quiescent,
+			clear_quiescent
+		)
 	]
 );
 
@@ -1581,19 +1659,11 @@ where
 	}
 
 	pub fn as_funded(&self) -> Option<&FundedChannel<SP>> {
-		if let ChannelPhase::Funded(channel) = &self.phase {
-			Some(channel)
-		} else {
-			None
-		}
+		if let ChannelPhase::Funded(channel) = &self.phase { Some(channel) } else { None }
 	}
 
 	pub fn as_funded_mut(&mut self) -> Option<&mut FundedChannel<SP>> {
-		if let ChannelPhase::Funded(channel) = &mut self.phase {
-			Some(channel)
-		} else {
-			None
-		}
+		if let ChannelPhase::Funded(channel) = &mut self.phase { Some(channel) } else { None }
 	}
 
 	pub fn as_unfunded_outbound_v1_mut(&mut self) -> Option<&mut OutboundV1Channel<SP>> {
@@ -1645,11 +1715,7 @@ where
 	}
 
 	pub fn as_unfunded_v2(&self) -> Option<&PendingV2Channel<SP>> {
-		if let ChannelPhase::UnfundedV2(channel) = &self.phase {
-			Some(channel)
-		} else {
-			None
-		}
+		if let ChannelPhase::UnfundedV2(channel) = &self.phase { Some(channel) } else { None }
 	}
 
 	#[rustfmt::skip]
@@ -1844,7 +1910,10 @@ where
 				if funded_channel.should_reset_pending_splice_state(false) {
 					funded_channel.reset_pending_splice_state()
 				} else {
-					debug_assert!(false, "We should never fail an interactive funding negotiation once we're exchanging tx_signatures");
+					debug_assert!(
+						false,
+						"We should never fail an interactive funding negotiation once we're exchanging tx_signatures"
+					);
 					None
 				}
 			},
@@ -2178,14 +2247,16 @@ where
 			context.interactive_tx_signing_session.as_mut()
 		{
 			if let Some(pending_splice) = pending_splice.as_ref() {
-				debug_assert!(pending_splice
-					.funding_negotiation
-					.as_ref()
-					.map(|funding_negotiation| matches!(
-						funding_negotiation,
-						FundingNegotiation::AwaitingSignatures { .. }
-					))
-					.unwrap_or(false));
+				debug_assert!(
+					pending_splice
+						.funding_negotiation
+						.as_ref()
+						.map(|funding_negotiation| matches!(
+							funding_negotiation,
+							FundingNegotiation::AwaitingSignatures { .. }
+						))
+						.unwrap_or(false)
+				);
 			}
 
 			if signing_session.has_holder_tx_signatures() {
@@ -2284,7 +2355,7 @@ where
 					.and_then(|pending_splice| pending_splice.funding_negotiation.as_mut())
 					.and_then(|funding_negotiation| {
 						if let FundingNegotiation::AwaitingSignatures {
-							ref mut initial_commitment_signed_from_counterparty,
+							initial_commitment_signed_from_counterparty,
 							..
 						} = funding_negotiation
 						{
@@ -2354,11 +2425,9 @@ where
 				};
 				let res = funded_channel.initial_commitment_signed_v2(msg, best_block, signer_provider, logger)
 					.map(|monitor| (Some(monitor), None))
-					// TODO: Change to `inspect_err` when MSRV is high enough.
-					.map_err(|err| {
+					.inspect_err(|err| {
 						// We always expect a `ChannelError` close.
 						debug_assert!(matches!(err, ChannelError::Close(_)));
-						err
 					});
 				self.phase = ChannelPhase::Funded(funded_channel);
 				res
@@ -2402,7 +2471,7 @@ where
 							.expect("We have a pending splice negotiated");
 						log_debug!(logger, "Stashing counterparty initial commitment_signed to process after funding_transaction_signed");
 						if let FundingNegotiation::AwaitingSignatures {
-							ref mut initial_commitment_signed_from_counterparty, ..
+							initial_commitment_signed_from_counterparty, ..
 						} = funding_negotiation {
 							*initial_commitment_signed_from_counterparty = Some(msg.clone());
 						}
@@ -2721,11 +2790,7 @@ impl FundingScope {
 	/// Returns the height in which our funding transaction was confirmed.
 	pub fn get_funding_tx_confirmation_height(&self) -> Option<u32> {
 		let conf_height = self.funding_tx_confirmation_height;
-		if conf_height > 0 {
-			Some(conf_height)
-		} else {
-			None
-		}
+		if conf_height > 0 { Some(conf_height) } else { None }
 	}
 
 	/// Returns the current number of confirmations on the funding transaction.
@@ -3901,7 +3966,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		if config.channel_handshake_limits.force_announced_channel_preference {
 			if config.channel_handshake_config.announce_for_forwarding != announce_for_forwarding {
 				return Err(ChannelError::close(String::from(
-					"Peer tried to open channel but their announcement preference is different from ours"
+					"Peer tried to open channel but their announcement preference is different from ours",
 				)));
 			}
 		}
@@ -3925,7 +3990,8 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			log_debug!(
 				logger,
 				"channel_reserve_satoshis ({msg_channel_reserve_satoshis}) is smaller than our dust limit ({MIN_CHAN_DUST_LIMIT_SATOSHIS}). We can broadcast \
-				stale states without any risk, implying this channel is very insecure for our counterparty.");
+				stale states without any risk, implying this channel is very insecure for our counterparty."
+			);
 		}
 		if holder_selected_channel_reserve_satoshis < open_channel_fields.dust_limit_satoshis
 			&& holder_selected_channel_reserve_satoshis != 0
@@ -3940,32 +4006,33 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		debug_assert!(our_funding_satoshis == 0 || msg_push_msat == 0);
 		let value_to_self_msat = our_funding_satoshis * 1000 + msg_push_msat;
 
-		let counterparty_shutdown_scriptpubkey =
-			if their_features.supports_upfront_shutdown_script() {
-				match &open_channel_fields.shutdown_scriptpubkey {
-					&Some(ref script) => {
-						// Peer is signaling upfront_shutdown and has opt-out with a 0-length script. We don't enforce anything
-						if script.len() == 0 {
-							None
-						} else {
-							if !script::is_bolt2_compliant(&script, their_features) {
-								return Err(ChannelError::close(format!(
+		let counterparty_shutdown_scriptpubkey = if their_features
+			.supports_upfront_shutdown_script()
+		{
+			match &open_channel_fields.shutdown_scriptpubkey {
+				&Some(ref script) => {
+					// Peer is signaling upfront_shutdown and has opt-out with a 0-length script. We don't enforce anything
+					if script.len() == 0 {
+						None
+					} else {
+						if !script::is_bolt2_compliant(&script, their_features) {
+							return Err(ChannelError::close(format!(
 								"Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: {script}"
 							)));
-							}
-							Some(script.clone())
 						}
-					},
-					// Peer is signaling upfront shutdown but don't opt-out with correct mechanism (a.k.a 0-length script). Peer looks buggy, we fail the channel
-					&None => {
-						return Err(ChannelError::close(String::from(
-						"Peer is signaling upfront_shutdown but we don't get any script. Use 0-length script to opt-out"
+						Some(script.clone())
+					}
+				},
+				// Peer is signaling upfront shutdown but don't opt-out with correct mechanism (a.k.a 0-length script). Peer looks buggy, we fail the channel
+				&None => {
+					return Err(ChannelError::close(String::from(
+						"Peer is signaling upfront_shutdown but we don't get any script. Use 0-length script to opt-out",
 					)));
-					},
-				}
-			} else {
-				None
-			};
+				},
+			}
+		} else {
+			None
+		};
 
 		let shutdown_scriptpubkey =
 			if config.channel_handshake_config.commit_upfront_shutdown_pubkey {
@@ -3974,7 +4041,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 					Err(_) => {
 						return Err(ChannelError::close(
 							"Failed to get upfront shutdown scriptpubkey".to_owned(),
-						))
+						));
 					},
 				}
 			} else {
@@ -3992,7 +4059,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		let destination_script = match signer_provider.get_destination_script(channel_keys_id) {
 			Ok(script) => script,
 			Err(_) => {
-				return Err(ChannelError::close("Failed to get destination script".to_owned()))
+				return Err(ChannelError::close("Failed to get destination script".to_owned()));
 			},
 		};
 
@@ -4262,15 +4329,18 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		if holder_selected_contest_delay < BREAKDOWN_TIMEOUT {
 			return Err(APIError::APIMisuseError {
 				err: format!(
-				"Configured with an unreasonable our_to_self_delay ({holder_selected_contest_delay}) putting user funds at risks"
-			),
+					"Configured with an unreasonable our_to_self_delay ({holder_selected_contest_delay}) putting user funds at risks"
+				),
 			});
 		}
 
 		let channel_type = get_initial_channel_type(&config, their_features);
 		debug_assert!(!channel_type.supports_any_optional_bits());
-		debug_assert!(!channel_type
-			.requires_unknown_bits_from(&channelmanager::provided_channel_type_features(&config)));
+		debug_assert!(
+			!channel_type.requires_unknown_bits_from(
+				&channelmanager::provided_channel_type_features(&config)
+			)
+		);
 
 		let commitment_feerate =
 			selected_commitment_sat_per_1000_weight(&fee_estimator, &channel_type);
@@ -4287,7 +4357,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 					Err(_) => {
 						return Err(APIError::ChannelUnavailable {
 							err: "Failed to get shutdown scriptpubkey".to_owned(),
-						})
+						});
 					},
 				}
 			} else {
@@ -4307,7 +4377,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			Err(_) => {
 				return Err(APIError::ChannelUnavailable {
 					err: "Failed to get destination script".to_owned(),
-				})
+				});
 			},
 		};
 
@@ -4876,32 +4946,33 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			)));
 		}
 
-		let counterparty_shutdown_scriptpubkey =
-			if their_features.supports_upfront_shutdown_script() {
-				match &common_fields.shutdown_scriptpubkey {
-					&Some(ref script) => {
-						// Peer is signaling upfront_shutdown and has opt-out with a 0-length script. We don't enforce anything
-						if script.len() == 0 {
-							None
-						} else {
-							if !script::is_bolt2_compliant(&script, their_features) {
-								return Err(ChannelError::close(format!(
+		let counterparty_shutdown_scriptpubkey = if their_features
+			.supports_upfront_shutdown_script()
+		{
+			match &common_fields.shutdown_scriptpubkey {
+				&Some(ref script) => {
+					// Peer is signaling upfront_shutdown and has opt-out with a 0-length script. We don't enforce anything
+					if script.len() == 0 {
+						None
+					} else {
+						if !script::is_bolt2_compliant(&script, their_features) {
+							return Err(ChannelError::close(format!(
 								"Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: {script}"
 							)));
-							}
-							Some(script.clone())
 						}
-					},
-					// Peer is signaling upfront shutdown but don't opt-out with correct mechanism (a.k.a 0-length script). Peer looks buggy, we fail the channel
-					&None => {
-						return Err(ChannelError::close(String::from(
-						"Peer is signaling upfront_shutdown but we don't get any script. Use 0-length script to opt-out"
+						Some(script.clone())
+					}
+				},
+				// Peer is signaling upfront shutdown but don't opt-out with correct mechanism (a.k.a 0-length script). Peer looks buggy, we fail the channel
+				&None => {
+					return Err(ChannelError::close(String::from(
+						"Peer is signaling upfront_shutdown but we don't get any script. Use 0-length script to opt-out",
 					)));
-					},
-				}
-			} else {
-				None
-			};
+				},
+			}
+		} else {
+			None
+		};
 
 		self.counterparty_dust_limit_satoshis = common_fields.dust_limit_satoshis;
 		self.counterparty_max_htlc_value_in_flight_msat = cmp::min(
@@ -5554,22 +5625,16 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		let max_dust_htlc_exposure_msat =
 			self.get_max_dust_htlc_exposure_msat(dust_exposure_limiting_feerate);
 		if local_stats.commitment_stats.dust_exposure_msat > max_dust_htlc_exposure_msat {
-			return Err(ChannelError::close(
-				format!(
-					"Peer sent update_fee with a feerate ({}) which may over-expose us to dust-in-flight on our own transactions (totaling {} msat)",
-					new_feerate_per_kw,
-					local_stats.commitment_stats.dust_exposure_msat,
-				)
-			));
+			return Err(ChannelError::close(format!(
+				"Peer sent update_fee with a feerate ({}) which may over-expose us to dust-in-flight on our own transactions (totaling {} msat)",
+				new_feerate_per_kw, local_stats.commitment_stats.dust_exposure_msat,
+			)));
 		}
 		if remote_stats.commitment_stats.dust_exposure_msat > max_dust_htlc_exposure_msat {
-			return Err(ChannelError::close(
-				format!(
-					"Peer sent update_fee with a feerate ({}) which may over-expose us to dust-in-flight on our counterparty's transactions (totaling {} msat)",
-					new_feerate_per_kw,
-					remote_stats.commitment_stats.dust_exposure_msat,
-				)
-			));
+			return Err(ChannelError::close(format!(
+				"Peer sent update_fee with a feerate ({}) which may over-expose us to dust-in-flight on our counterparty's transactions (totaling {} msat)",
+				new_feerate_per_kw, remote_stats.commitment_stats.dust_exposure_msat,
+			)));
 		}
 
 		Ok(())
@@ -5603,11 +5668,14 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 
 			let sighash = bitcoin_tx.get_sighash_all(&funding_script, funding.get_value_satoshis());
 
-			log_trace!(logger, "Checking commitment tx signature {} by key {} against tx {} (sighash {}) with redeemscript {} in channel {}",
+			log_trace!(
+				logger,
+				"Checking commitment tx signature {} by key {} against tx {} (sighash {}) with redeemscript {} in channel {}",
 				log_bytes!(msg.signature.serialize_compact()[..]),
 				log_bytes!(funding.counterparty_funding_pubkey().serialize()),
 				encode::serialize_hex(&bitcoin_tx.transaction),
-				log_bytes!(sighash[..]), encode::serialize_hex(&funding_script),
+				log_bytes!(sighash[..]),
+				encode::serialize_hex(&funding_script),
 				&self.channel_id(),
 			);
 			if let Err(_) = self.secp_ctx.verify_ecdsa(
@@ -5673,7 +5741,9 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 					)
 					.unwrap()[..]
 			);
-			log_trace!(logger, "Checking HTLC tx signature {} by key {} against tx {} (sighash {}) with redeemscript {} in channel {}.",
+			log_trace!(
+				logger,
+				"Checking HTLC tx signature {} by key {} against tx {} (sighash {}) with redeemscript {} in channel {}.",
 				log_bytes!(counterparty_sig.serialize_compact()[..]),
 				log_bytes!(holder_keys.countersignatory_htlc_key.to_public_key().serialize()),
 				encode::serialize_hex(&htlc_tx),
@@ -5845,7 +5915,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			log_info!(
 				logger,
 				"Cannot accept value that would put our total dust exposure at {} over the limit {} on counterparty commitment tx",
-			        remote_stats.commitment_stats.dust_exposure_msat,
+				remote_stats.commitment_stats.dust_exposure_msat,
 				max_dust_htlc_exposure_msat,
 			);
 			return Err(LocalHTLCFailureReason::DustLimitCounterparty);
@@ -5893,7 +5963,6 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 				log_info!(
 					logger,
 					"Attempting to fail HTLC due to fee spike buffer violation. Rebalancing is required.",
-
 				);
 				return Err(LocalHTLCFailureReason::FeeSpikeBuffer);
 			}
@@ -6409,8 +6478,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		let unbroadcasted_batch_funding_txid = self.unbroadcasted_batch_funding_txid(funding);
 		let unbroadcasted_funding_tx = self.unbroadcasted_funding(funding);
 
-		if let ClosureReason::HolderForceClosed { ref mut broadcasted_latest_txn, .. } =
-			&mut closure_reason
+		if let ClosureReason::HolderForceClosed { broadcasted_latest_txn, .. } = &mut closure_reason
 		{
 			*broadcasted_latest_txn = Some(broadcast);
 		}
@@ -7548,7 +7616,12 @@ where
 					InboundHTLCState::LocalRemoved(ref reason) => {
 						if let &InboundHTLCRemovalReason::Fulfill { .. } = reason {
 						} else {
-							log_warn!(logger, "Have preimage and want to fulfill HTLC with payment hash {} we already failed against channel {}", &htlc.payment_hash, &self.context.channel_id());
+							log_warn!(
+								logger,
+								"Have preimage and want to fulfill HTLC with payment hash {} we already failed against channel {}",
+								&htlc.payment_hash,
+								&self.context.channel_id()
+							);
 							debug_assert!(
 								false,
 								"Tried to fulfill an HTLC that was already failed"
@@ -7557,7 +7630,10 @@ where
 						return UpdateFulfillFetch::DuplicateClaim {};
 					},
 					_ => {
-						debug_assert!(false, "Have an inbound HTLC we tried to claim before it was fully committed to");
+						debug_assert!(
+							false,
+							"Have an inbound HTLC we tried to claim before it was fully committed to"
+						);
 						// Don't return in release mode here so that we can update channel_monitor
 					},
 				}
@@ -7601,7 +7677,11 @@ where
 					&HTLCUpdateAwaitingACK::FailHTLC { htlc_id, .. }
 					| &HTLCUpdateAwaitingACK::FailMalformedHTLC { htlc_id, .. } => {
 						if htlc_id_arg == htlc_id {
-							log_warn!(logger, "Have preimage and want to fulfill HTLC with pending failure against channel {}", &self.context.channel_id());
+							log_warn!(
+								logger,
+								"Have preimage and want to fulfill HTLC with pending failure against channel {}",
+								&self.context.channel_id()
+							);
 							// TODO: We may actually be able to switch to a fulfill here, though its
 							// rare enough it may not be worth the complexity burden.
 							debug_assert!(
@@ -7702,7 +7782,10 @@ where
 						held_update.update.update_id += 1;
 					}
 					if !update_blocked {
-						debug_assert!(false, "If there is a pending blocked monitor we should have MonitorUpdateInProgress set");
+						debug_assert!(
+							false,
+							"If there is a pending blocked monitor we should have MonitorUpdateInProgress set"
+						);
 						let update = self.build_commitment_no_status_check(logger);
 						self.context
 							.blocked_monitor_updates
@@ -8190,13 +8273,23 @@ where
 					}
 				}
 				match htlc.state {
-					OutboundHTLCState::LocalAnnounced(_) =>
-						return Err(ChannelError::close(format!("Remote tried to fulfill/fail HTLC ({}) before it had been committed", htlc_id))),
+					OutboundHTLCState::LocalAnnounced(_) => {
+						return Err(ChannelError::close(format!(
+							"Remote tried to fulfill/fail HTLC ({}) before it had been committed",
+							htlc_id
+						)));
+					},
 					OutboundHTLCState::Committed => {
 						htlc.state = OutboundHTLCState::RemoteRemoved(outcome);
 					},
-					OutboundHTLCState::AwaitingRemoteRevokeToRemove(_) | OutboundHTLCState::AwaitingRemovedRemoteRevoke(_) | OutboundHTLCState::RemoteRemoved(_) =>
-						return Err(ChannelError::close(format!("Remote tried to fulfill/fail HTLC ({}) that they'd already fulfilled/failed", htlc_id))),
+					OutboundHTLCState::AwaitingRemoteRevokeToRemove(_)
+					| OutboundHTLCState::AwaitingRemovedRemoteRevoke(_)
+					| OutboundHTLCState::RemoteRemoved(_) => {
+						return Err(ChannelError::close(format!(
+							"Remote tried to fulfill/fail HTLC ({}) that they'd already fulfilled/failed",
+							htlc_id
+						)));
+					},
 				}
 				return Ok(htlc);
 			}
@@ -8337,12 +8430,13 @@ where
 		&mut self, msg: &msgs::CommitmentSigned, fee_estimator: &LowerBoundedFeeEstimator<F>,
 		logger: &L,
 	) -> Result<Option<ChannelMonitorUpdate>, ChannelError> {
-		debug_assert!(self
-			.context
-			.interactive_tx_signing_session
-			.as_ref()
-			.map(|signing_session| !signing_session.has_received_tx_signatures())
-			.unwrap_or(false));
+		debug_assert!(
+			self.context
+				.interactive_tx_signing_session
+				.as_ref()
+				.map(|signing_session| !signing_session.has_received_tx_signatures())
+				.unwrap_or(false)
+		);
 
 		let pending_splice_funding = self
 			.pending_splice
@@ -8605,7 +8699,10 @@ where
 			// the advance to the next point. This should be unreachable since
 			// a new commitment_signed should fail at our signature checks in
 			// validate_commitment_signed.
-			debug_assert!(false, "We should be ready to advance our commitment point by the time we receive commitment_signed");
+			debug_assert!(
+				false,
+				"We should be ready to advance our commitment point by the time we receive commitment_signed"
+			);
 			return Err(ChannelError::close("Failed to advance our commitment point".to_owned()));
 		}
 
@@ -8620,8 +8717,12 @@ where
 
 		for htlc in self.context.pending_inbound_htlcs.iter_mut() {
 			if let &InboundHTLCState::RemoteAnnounced(ref htlc_resolution) = &htlc.state {
-				log_trace!(logger, "Updating HTLC {} to AwaitingRemoteRevokeToAnnounce due to commitment_signed in channel {}.",
-					&htlc.payment_hash, &self.context.channel_id);
+				log_trace!(
+					logger,
+					"Updating HTLC {} to AwaitingRemoteRevokeToAnnounce due to commitment_signed in channel {}.",
+					&htlc.payment_hash,
+					&self.context.channel_id
+				);
 				htlc.state =
 					InboundHTLCState::AwaitingRemoteRevokeToAnnounce(htlc_resolution.clone());
 				need_commitment = true;
@@ -8630,8 +8731,12 @@ where
 		let mut claimed_htlcs = Vec::new();
 		for htlc in self.context.pending_outbound_htlcs.iter_mut() {
 			if let &mut OutboundHTLCState::RemoteRemoved(ref mut outcome) = &mut htlc.state {
-				log_trace!(logger, "Updating HTLC {} to AwaitingRemoteRevokeToRemove due to commitment_signed in channel {}.",
-					&htlc.payment_hash, &self.context.channel_id);
+				log_trace!(
+					logger,
+					"Updating HTLC {} to AwaitingRemoteRevokeToRemove due to commitment_signed in channel {}.",
+					&htlc.payment_hash,
+					&self.context.channel_id
+				);
 				// Swap against a dummy variant to avoid a potentially expensive clone of `OutboundHTLCOutcome::Failure(HTLCFailReason)`
 				let mut reason = OutboundHTLCOutcome::Success {
 					preimage: PaymentPreimage([0u8; 32]),
@@ -8654,14 +8759,14 @@ where
 
 		match &mut update {
 			ChannelMonitorUpdateStep::LatestHolderCommitment {
-				claimed_htlcs: ref mut update_claimed_htlcs,
+				claimed_htlcs: update_claimed_htlcs,
 				..
 			} => {
 				debug_assert!(update_claimed_htlcs.is_empty());
 				*update_claimed_htlcs = claimed_htlcs.clone();
 			},
 			ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo {
-				claimed_htlcs: ref mut update_claimed_htlcs,
+				claimed_htlcs: update_claimed_htlcs,
 				..
 			} => {
 				debug_assert!(update_claimed_htlcs.is_empty());
@@ -8697,8 +8802,10 @@ where
 				self.context.latest_monitor_update_id = monitor_update.update_id;
 				monitor_update.updates.append(&mut additional_update.updates);
 			}
-			log_debug!(logger, "Received valid commitment_signed from peer, updated HTLC state but awaiting a monitor update resolution to reply.",
-				);
+			log_debug!(
+				logger,
+				"Received valid commitment_signed from peer, updated HTLC state but awaiting a monitor update resolution to reply.",
+			);
 			return Ok(self.push_ret_blockable_mon_update(monitor_update));
 		}
 
@@ -8717,8 +8824,12 @@ where
 				false
 			};
 
-		log_debug!(logger, "Received valid commitment_signed from peer in channel {}, updating HTLC state and responding with{} a revoke_and_ack.",
-			&self.context.channel_id(), if need_commitment_signed { " our own commitment_signed and" } else { "" });
+		log_debug!(
+			logger,
+			"Received valid commitment_signed from peer in channel {}, updating HTLC state and responding with{} a revoke_and_ack.",
+			&self.context.channel_id(),
+			if need_commitment_signed { " our own commitment_signed and" } else { "" }
+		);
 		self.monitor_updating_paused(
 			true,
 			need_commitment_signed,
@@ -8921,9 +9032,14 @@ where
 			self.context.latest_monitor_update_id = monitor_update.update_id;
 			monitor_update.updates.append(&mut additional_update.updates);
 
-			log_debug!(logger, "Freeing holding cell resulted in {}{} HTLCs added, {} HTLCs fulfilled, and {} HTLCs failed.",
+			log_debug!(
+				logger,
+				"Freeing holding cell resulted in {}{} HTLCs added, {} HTLCs fulfilled, and {} HTLCs failed.",
 				if update_fee.is_some() { "a fee update, " } else { "" },
-				update_add_count, update_fulfill_count, update_fail_count);
+				update_add_count,
+				update_fulfill_count,
+				update_fail_count
+			);
 
 			self.monitor_updating_paused(
 				false,
@@ -9132,7 +9248,11 @@ where
 					mem::swap(&mut state, &mut htlc.state);
 
 					if let InboundHTLCState::AwaitingRemoteRevokeToAnnounce(resolution) = state {
-						log_trace!(logger, " ...promoting inbound AwaitingRemoteRevokeToAnnounce {} to AwaitingAnnouncedRemoteRevoke", &htlc.payment_hash);
+						log_trace!(
+							logger,
+							" ...promoting inbound AwaitingRemoteRevokeToAnnounce {} to AwaitingAnnouncedRemoteRevoke",
+							&htlc.payment_hash
+						);
 						htlc.state = InboundHTLCState::AwaitingAnnouncedRemoteRevoke(resolution);
 						require_commitment = true;
 					} else if let InboundHTLCState::AwaitingAnnouncedRemoteRevoke(resolution) =
@@ -9142,7 +9262,11 @@ where
 							InboundHTLCResolution::Resolved { pending_htlc_status } => {
 								match pending_htlc_status {
 									PendingHTLCStatus::Fail(fail_msg) => {
-										log_trace!(logger, " ...promoting inbound AwaitingAnnouncedRemoteRevoke {} to LocalRemoved due to PendingHTLCStatus indicating failure", &htlc.payment_hash);
+										log_trace!(
+											logger,
+											" ...promoting inbound AwaitingAnnouncedRemoteRevoke {} to LocalRemoved due to PendingHTLCStatus indicating failure",
+											&htlc.payment_hash
+										);
 										require_commitment = true;
 										match fail_msg {
 											HTLCFailureMsg::Relay(msg) => {
@@ -9165,7 +9289,11 @@ where
 										}
 									},
 									PendingHTLCStatus::Forward(forward_info) => {
-										log_trace!(logger, " ...promoting inbound AwaitingAnnouncedRemoteRevoke {} to Committed, attempting to forward", &htlc.payment_hash);
+										log_trace!(
+											logger,
+											" ...promoting inbound AwaitingAnnouncedRemoteRevoke {} to Committed, attempting to forward",
+											&htlc.payment_hash
+										);
 										to_forward_infos.push((forward_info, htlc.htlc_id));
 										htlc.state = InboundHTLCState::Committed {
 											// HTLCs will only be in state `InboundHTLCResolution::Resolved` if they were
@@ -9176,7 +9304,11 @@ where
 								}
 							},
 							InboundHTLCResolution::Pending { update_add_htlc } => {
-								log_trace!(logger, " ...promoting inbound AwaitingAnnouncedRemoteRevoke {} to Committed", &htlc.payment_hash);
+								log_trace!(
+									logger,
+									" ...promoting inbound AwaitingAnnouncedRemoteRevoke {} to Committed",
+									&htlc.payment_hash
+								);
 								pending_update_adds.push(update_add_htlc.clone());
 								htlc.state = InboundHTLCState::Committed {
 									update_add_htlc: InboundUpdateAdd::WithOnion {
@@ -9201,7 +9333,11 @@ where
 							// online. Otherwise, our counterparty could include paths for all of our HTLCs and
 							// use the responses sent to their paths to determine which of our HTLCs are async
 							// payments.
-							log_trace!(logger, "Counterparty included release_htlc_message_path for non-async payment HTLC {}", htlc_id);
+							log_trace!(
+								logger,
+								"Counterparty included release_htlc_message_path for non-async payment HTLC {}",
+								htlc_id
+							);
 							continue;
 						},
 					};
@@ -9219,7 +9355,11 @@ where
 				if let &mut OutboundHTLCState::AwaitingRemoteRevokeToRemove(ref mut outcome) =
 					&mut htlc.state
 				{
-					log_trace!(logger, " ...promoting outbound AwaitingRemoteRevokeToRemove {} to AwaitingRemovedRemoteRevoke", &htlc.payment_hash);
+					log_trace!(
+						logger,
+						" ...promoting outbound AwaitingRemoteRevokeToRemove {} to AwaitingRemovedRemoteRevoke",
+						&htlc.payment_hash
+					);
 					// Swap against a dummy variant to avoid a potentially expensive clone of `OutboundHTLCOutcome::Failure(HTLCFailReason)`
 					let mut reason = OutboundHTLCOutcome::Success {
 						preimage: PaymentPreimage([0u8; 32]),
@@ -9255,7 +9395,11 @@ where
 				},
 				FeeUpdateState::AwaitingRemoteRevokeToAnnounce => {
 					debug_assert!(!self.funding.is_outbound());
-					log_trace!(logger, " ...promoting inbound AwaitingRemoteRevokeToAnnounce fee update {} to Committed", feerate);
+					log_trace!(
+						logger,
+						" ...promoting inbound AwaitingRemoteRevokeToAnnounce fee update {} to Committed",
+						feerate
+					);
 					require_commitment = true;
 					self.context.feerate_per_kw = feerate;
 					self.context.pending_update_fee = None;
@@ -9293,8 +9437,11 @@ where
 				self.context.latest_monitor_update_id = monitor_update.update_id;
 				monitor_update.updates.append(&mut additional_update.updates);
 
-				log_debug!(logger, "Received a valid revoke_and_ack with holding cell HTLCs freed. {} monitor update.",
-					release_state_str);
+				log_debug!(
+					logger,
+					"Received a valid revoke_and_ack with holding cell HTLCs freed. {} monitor update.",
+					release_state_str
+				);
 
 				self.monitor_updating_paused(
 					false,
@@ -9327,9 +9474,12 @@ where
 						release_state_str
 					);
 					if self.context.channel_state.can_generate_new_commitment() {
-						log_debug!(logger, "Responding with a commitment update with {} HTLCs failed for channel {}",
+						log_debug!(
+							logger,
+							"Responding with a commitment update with {} HTLCs failed for channel {}",
 							update_fail_htlcs.len() + update_fail_malformed_htlcs.len(),
-							&self.context.channel_id);
+							&self.context.channel_id
+						);
 					} else {
 						let reason = if self.context.channel_state.is_local_stfu_sent() {
 							"exits quiescence"
@@ -9352,8 +9502,12 @@ where
 					);
 					return_with_htlcs_to_fail!(htlcs_to_fail);
 				} else {
-					log_debug!(logger, "Received a valid revoke_and_ack with no reply necessary. {} monitor update {}.",
-						release_state_str, monitor_update.update_id);
+					log_debug!(
+						logger,
+						"Received a valid revoke_and_ack with no reply necessary. {} monitor update {}.",
+						release_state_str,
+						monitor_update.update_id
+					);
 
 					self.monitor_updating_paused(
 						false,
@@ -9479,14 +9633,16 @@ where
 			}
 
 			if let Some(pending_splice) = self.pending_splice.as_ref() {
-				debug_assert!(pending_splice
-					.funding_negotiation
-					.as_ref()
-					.map(|funding_negotiation| matches!(
-						funding_negotiation,
-						FundingNegotiation::AwaitingSignatures { .. }
-					))
-					.unwrap_or(false));
+				debug_assert!(
+					pending_splice
+						.funding_negotiation
+						.as_ref()
+						.map(|funding_negotiation| matches!(
+							funding_negotiation,
+							FundingNegotiation::AwaitingSignatures { .. }
+						))
+						.unwrap_or(false)
+				);
 			}
 
 			signing_session
@@ -9899,9 +10055,11 @@ where
 		}
 
 		if self.context.feerate_per_kw < min_feerate {
-			log_info!(logger,
+			log_info!(
+				logger,
 				"Closing channel as feerate of {} is below required {} (the minimum required rate over the past day)",
-				self.context.feerate_per_kw, min_feerate
+				self.context.feerate_per_kw,
+				min_feerate
 			);
 			Err(ClosureReason::PeerFeerateTooLow {
 				peer_feerate_sat_per_kw: self.context.feerate_per_kw,
@@ -10129,13 +10287,19 @@ where
 			}
 		}
 		if !self.holder_commitment_point.can_advance() {
-			log_trace!(logger, "Last revoke-and-ack pending for sequence {} because the next per-commitment point is not available",
-				self.holder_commitment_point.next_transaction_number());
+			log_trace!(
+				logger,
+				"Last revoke-and-ack pending for sequence {} because the next per-commitment point is not available",
+				self.holder_commitment_point.next_transaction_number()
+			);
 		}
 		if per_commitment_secret.is_none() {
-			log_trace!(logger, "Last revoke-and-ack pending for sequence {} because the next per-commitment secret for {} is not available",
+			log_trace!(
+				logger,
+				"Last revoke-and-ack pending for sequence {} because the next per-commitment secret for {} is not available",
 				self.holder_commitment_point.next_transaction_number(),
-				self.holder_commitment_point.next_transaction_number() + 2);
+				self.holder_commitment_point.next_transaction_number() + 2
+			);
 		}
 		// Technically if HolderCommitmentPoint::can_advance is false,
 		// we have a commitment point ready to send in an RAA, however we
@@ -10143,8 +10307,11 @@ where
 		// CS before we have any commitment point available. Blocking our
 		// RAA here is a convenient way to make sure that post-funding
 		// we're only ever waiting on one commitment point at a time.
-		log_trace!(logger, "Last revoke-and-ack pending for sequence {} because the next per-commitment point is not available",
-			self.holder_commitment_point.next_transaction_number());
+		log_trace!(
+			logger,
+			"Last revoke-and-ack pending for sequence {} because the next per-commitment point is not available",
+			self.holder_commitment_point.next_transaction_number()
+		);
 		self.context.signer_pending_revoke_and_ack = true;
 		None
 	}
@@ -10219,9 +10386,15 @@ where
 			None
 		};
 
-		log_trace!(logger, "Regenerating latest commitment update with{} {} update_adds, {} update_fulfills, {} update_fails, and {} update_fail_malformeds",
-				if update_fee.is_some() { " update_fee," } else { "" },
-				update_add_htlcs.len(), update_fulfill_htlcs.len(), update_fail_htlcs.len(), update_fail_malformed_htlcs.len());
+		log_trace!(
+			logger,
+			"Regenerating latest commitment update with{} {} update_adds, {} update_fulfills, {} update_fails, and {} update_fail_malformeds",
+			if update_fee.is_some() { " update_fee," } else { "" },
+			update_add_htlcs.len(),
+			update_fulfill_htlcs.len(),
+			update_fail_htlcs.len(),
+			update_fail_malformed_htlcs.len()
+		);
 		let commitment_signed = if let Ok(update) = self.send_commitment_no_state_update(logger) {
 			if self.context.signer_pending_commitment_update {
 				log_trace!(
@@ -10271,13 +10444,15 @@ where
 				panic!($err_msg);
 			};
 		}
-		log_and_panic!("We have fallen behind - we have received proof that if we broadcast our counterparty is going to claim all our funds.\n\
+		log_and_panic!(
+			"We have fallen behind - we have received proof that if we broadcast our counterparty is going to claim all our funds.\n\
 			This implies you have restarted with lost ChannelMonitor and ChannelManager state, the first of which is a violation of the LDK chain::Watch requirements.\n\
 			More specifically, this means you have a bug in your implementation that can cause loss of funds, or you are running with an old backup, which is unsafe.\n\
 			If you have restored from an old backup and wish to claim any available funds, you should restart with\n\
 			an empty ChannelManager and no ChannelMonitors, reconnect to peer(s), ensure they've force-closed all of your\n\
 			previous channels and that the closure transaction(s) have confirmed on-chain,\n\
-			then restart with an empty ChannelManager and the latest ChannelMonitors that you do have.");
+			then restart with an empty ChannelManager and the latest ChannelMonitors that you do have."
+		);
 	}
 
 	/// May panic if some calls other than message-handling calls (which will all Err immediately)
@@ -10799,8 +10974,13 @@ where
 		assert!(self.context.shutdown_scriptpubkey.is_some());
 		let (closing_tx, total_fee_satoshis) =
 			self.build_closing_transaction(our_min_fee, false)?;
-		log_trace!(logger, "Proposing initial closing_signed for our counterparty with a fee range of {}-{} sat (with initial proposal {} sats)",
-			our_min_fee, our_max_fee, total_fee_satoshis);
+		log_trace!(
+			logger,
+			"Proposing initial closing_signed for our counterparty with a fee range of {}-{} sat (with initial proposal {} sats)",
+			our_min_fee,
+			our_max_fee,
+			total_fee_satoshis
+		);
 
 		let closing_signed = self.get_closing_signed_msg(
 			&closing_tx,
@@ -10914,7 +11094,10 @@ where
 
 		if self.context.counterparty_shutdown_scriptpubkey.is_some() {
 			if Some(&msg.scriptpubkey) != self.context.counterparty_shutdown_scriptpubkey.as_ref() {
-				return Err(ChannelError::Warn(format!("Got shutdown request with a scriptpubkey ({}) which did not match their previous scriptpubkey.", msg.scriptpubkey.to_hex_string())));
+				return Err(ChannelError::Warn(format!(
+					"Got shutdown request with a scriptpubkey ({}) which did not match their previous scriptpubkey.",
+					msg.scriptpubkey.to_hex_string()
+				)));
 			}
 		} else {
 			self.context.counterparty_shutdown_scriptpubkey = Some(msg.scriptpubkey.clone());
@@ -10934,7 +11117,7 @@ where
 					Err(_) => {
 						return Err(ChannelError::close(
 							"Failed to get shutdown scriptpubkey".to_owned(),
-						))
+						));
 					},
 				};
 				if !shutdown_scriptpubkey.is_compatible(their_features) {
@@ -11092,7 +11275,9 @@ where
 	) -> Result<(Option<msgs::ClosingSigned>, Option<(Transaction, ShutdownResult)>), ChannelError>
 	{
 		if self.is_shutdown_pending_signature() {
-			return Err(ChannelError::Warn(String::from("Remote end sent us a closing_signed while fully shutdown and just waiting on the final closing signature")));
+			return Err(ChannelError::Warn(String::from(
+				"Remote end sent us a closing_signed while fully shutdown and just waiting on the final closing signature",
+			)));
 		}
 		if !self.context.channel_state.is_both_sides_shutdown() {
 			return Err(ChannelError::close(
@@ -11134,7 +11319,10 @@ where
 		let (mut closing_tx, used_total_fee) =
 			self.build_closing_transaction(msg.fee_satoshis, skip_remote_output)?;
 		if used_total_fee != msg.fee_satoshis {
-			return Err(ChannelError::close(format!("Remote sent us a closing_signed with a fee other than the value they can claim. Fee in message: {}. Actual closing tx fee: {}", msg.fee_satoshis, used_total_fee)));
+			return Err(ChannelError::close(format!(
+				"Remote sent us a closing_signed with a fee other than the value they can claim. Fee in message: {}. Actual closing tx fee: {}",
+				msg.fee_satoshis, used_total_fee
+			)));
 		}
 		let sighash = closing_tx
 			.trust()
@@ -11229,13 +11417,22 @@ where
 			msg.fee_range
 		{
 			if msg.fee_satoshis < min_fee_satoshis || msg.fee_satoshis > max_fee_satoshis {
-				return Err(ChannelError::close(format!("Peer sent a bogus closing_signed - suggested fee of {} sat was not in their desired range of {} sat - {} sat", msg.fee_satoshis, min_fee_satoshis, max_fee_satoshis)));
+				return Err(ChannelError::close(format!(
+					"Peer sent a bogus closing_signed - suggested fee of {} sat was not in their desired range of {} sat - {} sat",
+					msg.fee_satoshis, min_fee_satoshis, max_fee_satoshis
+				)));
 			}
 			if max_fee_satoshis < our_min_fee {
-				return Err(ChannelError::Warn(format!("Unable to come to consensus about closing feerate, remote's max fee ({} sat) was smaller than our min fee ({} sat)", max_fee_satoshis, our_min_fee)));
+				return Err(ChannelError::Warn(format!(
+					"Unable to come to consensus about closing feerate, remote's max fee ({} sat) was smaller than our min fee ({} sat)",
+					max_fee_satoshis, our_min_fee
+				)));
 			}
 			if min_fee_satoshis > our_max_fee {
-				return Err(ChannelError::Warn(format!("Unable to come to consensus about closing feerate, remote's min fee ({} sat) was greater than our max fee ({} sat)", min_fee_satoshis, our_max_fee)));
+				return Err(ChannelError::Warn(format!(
+					"Unable to come to consensus about closing feerate, remote's min fee ({} sat) was greater than our max fee ({} sat)",
+					min_fee_satoshis, our_max_fee
+				)));
 			}
 
 			if !self.funding.is_outbound() {
@@ -11249,8 +11446,10 @@ where
 				propose_fee!(cmp::min(max_fee_satoshis, our_max_fee));
 			} else {
 				if msg.fee_satoshis < our_min_fee || msg.fee_satoshis > our_max_fee {
-					return Err(ChannelError::close(format!("Peer sent a bogus closing_signed - suggested fee of {} sat was not in our desired range of {} sat - {} sat after we informed them of our range.",
-						msg.fee_satoshis, our_min_fee, our_max_fee)));
+					return Err(ChannelError::close(format!(
+						"Peer sent a bogus closing_signed - suggested fee of {} sat was not in our desired range of {} sat - {} sat after we informed them of our range.",
+						msg.fee_satoshis, our_min_fee, our_max_fee
+					)));
 				}
 				// The proposed fee is in our acceptable range, accept it and broadcast!
 				propose_fee!(msg.fee_satoshis);
@@ -11265,7 +11464,10 @@ where
 					} else if last_fee < our_max_fee {
 						propose_fee!(our_max_fee);
 					} else {
-						return Err(ChannelError::close(format!("Unable to come to consensus about closing feerate, remote wants something ({} sat) higher than our max fee ({} sat)", msg.fee_satoshis, our_max_fee)));
+						return Err(ChannelError::close(format!(
+							"Unable to come to consensus about closing feerate, remote wants something ({} sat) higher than our max fee ({} sat)",
+							msg.fee_satoshis, our_max_fee
+						)));
 					}
 				} else {
 					if msg.fee_satoshis > our_min_fee {
@@ -11273,7 +11475,10 @@ where
 					} else if last_fee > our_min_fee {
 						propose_fee!(our_min_fee);
 					} else {
-						return Err(ChannelError::close(format!("Unable to come to consensus about closing feerate, remote wants something ({} sat) lower than our min fee ({} sat)", msg.fee_satoshis, our_min_fee)));
+						return Err(ChannelError::close(format!(
+							"Unable to come to consensus about closing feerate, remote wants something ({} sat) lower than our min fee ({} sat)",
+							msg.fee_satoshis, our_min_fee
+						)));
 					}
 				}
 			} else {
@@ -12644,13 +12849,13 @@ where
 
 		let our_funding_contribution = contribution.net_value();
 		let unsigned_contribution = our_funding_contribution.unsigned_abs();
-		if let Err(e) = self.get_next_splice_out_maximum(&self.funding)
-			.and_then(|splice_max| splice_max
-				.to_sat()
-				.checked_add_signed(our_funding_contribution.to_sat())
-				.ok_or(format!("Our splice-out value of {unsigned_contribution} is greater than the maximum {splice_max}"))
+		if let Err(e) = self.get_next_splice_out_maximum(&self.funding).and_then(|splice_max| {
+			splice_max.to_sat().checked_add_signed(our_funding_contribution.to_sat()).ok_or(
+				format!(
+					"Our splice-out value of {unsigned_contribution} is greater than the maximum {splice_max}"
+				),
 			)
-		{
+		}) {
 			log_error!(logger, "Channel {} cannot be funded: {}", self.context.channel_id(), e);
 			return Err(QuiescentError::FailSplice(self.splice_funding_failed_for(contribution)));
 		}
@@ -13754,7 +13959,11 @@ where
 					None
 				};
 			if let Some(state) = new_state {
-				log_trace!(logger, " ...promoting inbound AwaitingRemoteRevokeToAnnounce {} to AwaitingAnnouncedRemoteRevoke", &htlc.payment_hash);
+				log_trace!(
+					logger,
+					" ...promoting inbound AwaitingRemoteRevokeToAnnounce {} to AwaitingAnnouncedRemoteRevoke",
+					&htlc.payment_hash
+				);
 				htlc.state = state;
 			}
 		}
@@ -13762,7 +13971,11 @@ where
 			if let &mut OutboundHTLCState::AwaitingRemoteRevokeToRemove(ref mut outcome) =
 				&mut htlc.state
 			{
-				log_trace!(logger, " ...promoting outbound AwaitingRemoteRevokeToRemove {} to AwaitingRemovedRemoteRevoke", &htlc.payment_hash);
+				log_trace!(
+					logger,
+					" ...promoting outbound AwaitingRemoteRevokeToRemove {} to AwaitingRemovedRemoteRevoke",
+					&htlc.payment_hash
+				);
 				// Swap against a dummy variant to avoid a potentially expensive clone of `OutboundHTLCOutcome::Failure(HTLCFailReason)`
 				let mut reason = OutboundHTLCOutcome::Success {
 					preimage: PaymentPreimage([0u8; 32]),
@@ -13775,7 +13988,11 @@ where
 		if let Some((feerate, update_state)) = self.context.pending_update_fee {
 			if update_state == FeeUpdateState::AwaitingRemoteRevokeToAnnounce {
 				debug_assert!(!self.funding.is_outbound());
-				log_trace!(logger, " ...promoting inbound AwaitingRemoteRevokeToAnnounce fee update {} to Committed", feerate);
+				log_trace!(
+					logger,
+					" ...promoting inbound AwaitingRemoteRevokeToAnnounce fee update {} to Committed",
+					feerate
+				);
 				self.context.feerate_per_kw = feerate;
 				self.context.pending_update_fee = None;
 			}
@@ -14063,7 +14280,7 @@ where
 							Err(_) => {
 								return Err(APIError::ChannelUnavailable {
 									err: "Failed to get shutdown scriptpubkey".to_owned(),
-								})
+								});
 							},
 						}
 					},
@@ -15392,12 +15609,26 @@ impl<SP: SignerProvider> PendingV2Channel<SP> {
 	/// [`msgs::AcceptChannelV2`]: crate::ln::msgs::AcceptChannelV2
 	#[allow(dead_code)] // TODO(dual_funding): Remove once V2 channels is enabled.
 	fn generate_accept_channel_v2_message(&self) -> msgs::AcceptChannelV2 {
-		let first_per_commitment_point = self.context.holder_signer.get_per_commitment_point(
-			self.unfunded_context.transaction_number(), &self.context.secp_ctx)
-			.expect("TODO: async signing is not yet supported for commitment points in v2 channel establishment");
-		let second_per_commitment_point = self.context.holder_signer.get_per_commitment_point(
-			self.unfunded_context.transaction_number() - 1, &self.context.secp_ctx)
-			.expect("TODO: async signing is not yet supported for commitment points in v2 channel establishment");
+		let first_per_commitment_point = self
+			.context
+			.holder_signer
+			.get_per_commitment_point(
+				self.unfunded_context.transaction_number(),
+				&self.context.secp_ctx,
+			)
+			.expect(
+				"TODO: async signing is not yet supported for commitment points in v2 channel establishment",
+			);
+		let second_per_commitment_point = self
+			.context
+			.holder_signer
+			.get_per_commitment_point(
+				self.unfunded_context.transaction_number() - 1,
+				&self.context.secp_ctx,
+			)
+			.expect(
+				"TODO: async signing is not yet supported for commitment points in v2 channel establishment",
+			);
 		let keys = self.funding.get_holder_pubkeys();
 
 		msgs::AcceptChannelV2 {
@@ -16460,12 +16691,12 @@ impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
 		for htlc in pending_outbound_htlcs.iter_mut() {
 			match &mut htlc.state {
 				OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success {
-					ref mut preimage,
-					ref mut attribution_data,
+					preimage,
+					attribution_data,
 				})
 				| OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success {
-					ref mut preimage,
-					ref mut attribution_data,
+					preimage,
+					attribution_data,
 				}) => {
 					// This variant was initialized like this further above
 					debug_assert_eq!(preimage, &PaymentPreimage([0u8; 32]));
@@ -16521,7 +16752,7 @@ impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
 		if let Some(skimmed_fees) = holding_cell_skimmed_fees_opt {
 			let mut iter = skimmed_fees.into_iter();
 			for htlc in holding_cell_htlc_updates.iter_mut() {
-				if let HTLCUpdateAwaitingACK::AddHTLC { ref mut skimmed_fee_msat, .. } = htlc {
+				if let HTLCUpdateAwaitingACK::AddHTLC { skimmed_fee_msat, .. } = htlc {
 					*skimmed_fee_msat = iter.next().ok_or(DecodeError::InvalidValue)?;
 				}
 			}
@@ -16543,7 +16774,7 @@ impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
 		if let Some(blinding_pts) = holding_cell_blinding_points_opt {
 			let mut iter = blinding_pts.into_iter();
 			for htlc in holding_cell_htlc_updates.iter_mut() {
-				if let HTLCUpdateAwaitingACK::AddHTLC { ref mut blinding_point, .. } = htlc {
+				if let HTLCUpdateAwaitingACK::AddHTLC { blinding_point, .. } = htlc {
 					*blinding_point = iter.next().ok_or(DecodeError::InvalidValue)?;
 				}
 			}
@@ -16565,7 +16796,7 @@ impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
 		if let Some(held_htlcs) = holding_cell_held_htlc_flags_opt {
 			let mut iter = held_htlcs.into_iter();
 			for htlc in holding_cell_htlc_updates.iter_mut() {
-				if let HTLCUpdateAwaitingACK::AddHTLC { ref mut hold_htlc, .. } = htlc {
+				if let HTLCUpdateAwaitingACK::AddHTLC { hold_htlc, .. } = htlc {
 					*hold_htlc = iter.next().ok_or(DecodeError::InvalidValue)?;
 				}
 			}
@@ -16589,7 +16820,7 @@ impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
 		if let Some(accountable_htlcs) = holding_cell_accountable {
 			let mut iter = accountable_htlcs.into_iter();
 			for htlc in holding_cell_htlc_updates.iter_mut() {
-				if let HTLCUpdateAwaitingACK::AddHTLC { ref mut accountable, .. } = htlc {
+				if let HTLCUpdateAwaitingACK::AddHTLC { accountable, .. } = htlc {
 					*accountable = iter.next().ok_or(DecodeError::InvalidValue)?;
 				}
 			}
@@ -16612,10 +16843,10 @@ impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
 			let mut removed_htlcs = pending_inbound_htlcs.iter_mut().filter_map(|status| {
 				if let InboundHTLCState::LocalRemoved(reason) = &mut status.state {
 					match reason {
-						InboundHTLCRemovalReason::FailRelay(ref mut packet) => {
+						InboundHTLCRemovalReason::FailRelay(packet) => {
 							Some(&mut packet.attribution_data)
 						},
-						InboundHTLCRemovalReason::Fulfill { ref mut attribution_data, .. } => {
+						InboundHTLCRemovalReason::Fulfill { attribution_data, .. } => {
 							Some(attribution_data)
 						},
 						_ => None,
@@ -16637,7 +16868,7 @@ impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
 			let mut holding_cell_htlcs =
 				holding_cell_htlc_updates.iter_mut().filter_map(|upd| match upd {
 					HTLCUpdateAwaitingACK::FailHTLC {
-						err_packet: OnionErrorPacket { ref mut attribution_data, .. },
+						err_packet: OnionErrorPacket { attribution_data, .. },
 						..
 					} => Some(attribution_data),
 					HTLCUpdateAwaitingACK::ClaimHTLC { attribution_data, .. } => {
@@ -16704,24 +16935,32 @@ impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
 					if holder_commitment_next_transaction_number > INITIAL_COMMITMENT_NUMBER - 3 {
 						None
 					} else {
-						Some(holder_signer
-						.get_per_commitment_point(
-							holder_commitment_next_transaction_number + 3,
-							&secp_ctx,
+						Some(
+							holder_signer
+								.get_per_commitment_point(
+									holder_commitment_next_transaction_number + 3,
+									&secp_ctx,
+								)
+								.expect(
+									"Must be able to derive the previous revoked commitment point upon channel restoration",
+								),
 						)
-						.expect("Must be able to derive the previous revoked commitment point upon channel restoration"))
 					}
 				});
 			let last_revoked_point = holder_commitment_point_last_revoked_opt.or_else(|| {
 				if holder_commitment_next_transaction_number > INITIAL_COMMITMENT_NUMBER - 2 {
 					None
 				} else {
-					Some(holder_signer
-						.get_per_commitment_point(
-							holder_commitment_next_transaction_number + 2,
-							&secp_ctx,
-						)
-						.expect("Must be able to derive the last revoked commitment point upon channel restoration"))
+					Some(
+						holder_signer
+							.get_per_commitment_point(
+								holder_commitment_next_transaction_number + 2,
+								&secp_ctx,
+							)
+							.expect(
+								"Must be able to derive the last revoked commitment point upon channel restoration",
+							),
+					)
 				}
 			});
 
@@ -16736,7 +16975,10 @@ impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
 				},
 				(_, _) => {
 					let next_point = holder_signer
-						.get_per_commitment_point(holder_commitment_next_transaction_number, &secp_ctx)
+						.get_per_commitment_point(
+							holder_commitment_next_transaction_number,
+							&secp_ctx,
+						)
 						.expect(
 							"Must be able to derive the next commitment point upon channel restoration",
 						);
@@ -16940,20 +17182,20 @@ pub(crate) fn hold_time_since(send_timestamp: Option<Duration>) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
+	use crate::chain::BlockLocator;
 	use crate::chain::chaininterface::LowerBoundedFeeEstimator;
 	use crate::chain::transaction::OutPoint;
-	use crate::chain::BlockLocator;
 	use crate::ln::chan_utils::{self, commit_tx_fee_sat};
 	use crate::ln::channel::{
 		AwaitingChannelReadyFlags, ChannelState, FundedChannel, HTLCUpdateAwaitingACK,
 		InboundHTLCOutput, InboundHTLCState, InboundUpdateAdd, InboundV1Channel,
-		OutboundHTLCOutput, OutboundHTLCState, OutboundV1Channel, WithChannelContext,
-		MIN_THEIR_CHAN_RESERVE_SATOSHIS,
+		MIN_THEIR_CHAN_RESERVE_SATOSHIS, OutboundHTLCOutput, OutboundHTLCState, OutboundV1Channel,
+		WithChannelContext,
 	};
 	use crate::ln::channel_keys::{RevocationBasepoint, RevocationKey};
 	use crate::ln::channelmanager::{self, HTLCSource, PaymentId, TrustedChannelFeatures};
 	use crate::ln::msgs;
-	use crate::ln::msgs::{ChannelUpdate, UnsignedChannelUpdate, MAX_VALUE_MSAT};
+	use crate::ln::msgs::{ChannelUpdate, MAX_VALUE_MSAT, UnsignedChannelUpdate};
 	use crate::ln::onion_utils::{AttributionData, LocalHTLCFailureReason};
 	use crate::ln::script::ShutdownScript;
 	use crate::prelude::*;
@@ -16975,15 +17217,15 @@ mod tests {
 	};
 	use bitcoin::amount::Amount;
 	use bitcoin::constants::ChainHash;
-	use bitcoin::hashes::sha256::Hash as Sha256;
 	use bitcoin::hashes::Hash;
+	use bitcoin::hashes::sha256::Hash as Sha256;
 	use bitcoin::hex::FromHex;
 	use bitcoin::locktime::absolute::LockTime;
 	use bitcoin::network::Network;
 	use bitcoin::script::Builder;
 	use bitcoin::secp256k1::ffi::Signature as FFISignature;
-	use bitcoin::secp256k1::{ecdsa::Signature, Secp256k1};
 	use bitcoin::secp256k1::{PublicKey, SecretKey};
+	use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature};
 	use bitcoin::transaction::{Transaction, TxOut, Version};
 	use bitcoin::{WitnessProgram, WitnessVersion};
 	use std::cmp;
@@ -17766,9 +18008,7 @@ mod tests {
 				3 => {
 					let mut dummy_add = dummy_holding_cell_add_htlc.clone();
 					if let HTLCUpdateAwaitingACK::AddHTLC {
-						ref mut blinding_point,
-						ref mut skimmed_fee_msat,
-						..
+						blinding_point, skimmed_fee_msat, ..
 					} = &mut dummy_add
 					{
 						*blinding_point = Some(test_utils::pubkey(42 + i));
@@ -17916,7 +18156,7 @@ mod tests {
 		};
 		use crate::ln::channel::{HTLCOutputInCommitment, PredictedNextFee};
 		use crate::ln::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint};
-		use crate::sign::{ecdsa::EcdsaChannelSigner, ChannelDerivationParameters, HTLCDescriptor};
+		use crate::sign::{ChannelDerivationParameters, HTLCDescriptor, ecdsa::EcdsaChannelSigner};
 		use crate::sync::Arc;
 		use crate::types::payment::PaymentPreimage;
 		use crate::util::logger::Logger;
@@ -18060,21 +18300,30 @@ mod tests {
 		}
 
 		// anchors: simple commitment tx with no HTLCs and single anchor
-		test_commitment_with_anchors!("30440220655bf909fb6fa81d086f1336ac72c97906dce29d1b166e305c99152d810e26e1022051f577faa46412c46707aaac46b65d50053550a66334e00a44af2706f27a8658",
-						 "3044022007cf6b405e9c9b4f527b0ecad9d8bb661fabb8b12abf7d1c0b3ad1855db3ed490220616d5c1eeadccc63bd775a131149455d62d95a42c2a1b01cc7821fc42dce7778",
-						 "02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b80024a010000000000002200202b1b5854183c12d3316565972c4668929d314d81c5dcdbb21cb45fe8a9a8114f10529800000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0400473044022007cf6b405e9c9b4f527b0ecad9d8bb661fabb8b12abf7d1c0b3ad1855db3ed490220616d5c1eeadccc63bd775a131149455d62d95a42c2a1b01cc7821fc42dce7778014730440220655bf909fb6fa81d086f1336ac72c97906dce29d1b166e305c99152d810e26e1022051f577faa46412c46707aaac46b65d50053550a66334e00a44af2706f27a865801475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220", {});
+		test_commitment_with_anchors!(
+			"30440220655bf909fb6fa81d086f1336ac72c97906dce29d1b166e305c99152d810e26e1022051f577faa46412c46707aaac46b65d50053550a66334e00a44af2706f27a8658",
+			"3044022007cf6b405e9c9b4f527b0ecad9d8bb661fabb8b12abf7d1c0b3ad1855db3ed490220616d5c1eeadccc63bd775a131149455d62d95a42c2a1b01cc7821fc42dce7778",
+			"02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b80024a010000000000002200202b1b5854183c12d3316565972c4668929d314d81c5dcdbb21cb45fe8a9a8114f10529800000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0400473044022007cf6b405e9c9b4f527b0ecad9d8bb661fabb8b12abf7d1c0b3ad1855db3ed490220616d5c1eeadccc63bd775a131149455d62d95a42c2a1b01cc7821fc42dce7778014730440220655bf909fb6fa81d086f1336ac72c97906dce29d1b166e305c99152d810e26e1022051f577faa46412c46707aaac46b65d50053550a66334e00a44af2706f27a865801475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220",
+			{}
+		);
 
 		// simple commitment tx with no HTLCs
 		chan.funding.value_to_self_msat = 7000000000;
 
-		test_commitment!("3045022100c3127b33dcc741dd6b05b1e63cbd1a9a7d816f37af9b6756fa2376b056f032370220408b96279808fe57eb7e463710804cdf4f108388bc5cf722d8c848d2c7f9f3b0",
-						 "30440220616210b2cc4d3afb601013c373bbd8aac54febd9f15400379a8cb65ce7deca60022034236c010991beb7ff770510561ae8dc885b8d38d1947248c38f2ae055647142",
-						 "02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b8002c0c62d0000000000160014cc1b07838e387deacd0e5232e1e8b49f4c29e48454a56a00000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e04004730440220616210b2cc4d3afb601013c373bbd8aac54febd9f15400379a8cb65ce7deca60022034236c010991beb7ff770510561ae8dc885b8d38d1947248c38f2ae05564714201483045022100c3127b33dcc741dd6b05b1e63cbd1a9a7d816f37af9b6756fa2376b056f032370220408b96279808fe57eb7e463710804cdf4f108388bc5cf722d8c848d2c7f9f3b001475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220", {});
+		test_commitment!(
+			"3045022100c3127b33dcc741dd6b05b1e63cbd1a9a7d816f37af9b6756fa2376b056f032370220408b96279808fe57eb7e463710804cdf4f108388bc5cf722d8c848d2c7f9f3b0",
+			"30440220616210b2cc4d3afb601013c373bbd8aac54febd9f15400379a8cb65ce7deca60022034236c010991beb7ff770510561ae8dc885b8d38d1947248c38f2ae055647142",
+			"02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b8002c0c62d0000000000160014cc1b07838e387deacd0e5232e1e8b49f4c29e48454a56a00000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e04004730440220616210b2cc4d3afb601013c373bbd8aac54febd9f15400379a8cb65ce7deca60022034236c010991beb7ff770510561ae8dc885b8d38d1947248c38f2ae05564714201483045022100c3127b33dcc741dd6b05b1e63cbd1a9a7d816f37af9b6756fa2376b056f032370220408b96279808fe57eb7e463710804cdf4f108388bc5cf722d8c848d2c7f9f3b001475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220",
+			{}
+		);
 
 		// anchors: simple commitment tx with no HTLCs
-		test_commitment_with_anchors!("3045022100f89034eba16b2be0e5581f750a0a6309192b75cce0f202f0ee2b4ec0cc394850022076c65dc507fe42276152b7a3d90e961e678adbe966e916ecfe85e64d430e75f3",
-						 "30450221008266ac6db5ea71aac3c95d97b0e172ff596844851a3216eb88382a8dddfd33d2022050e240974cfd5d708708b4365574517c18e7ae535ef732a3484d43d0d82be9f7",
-						 "02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b80044a010000000000002200202b1b5854183c12d3316565972c4668929d314d81c5dcdbb21cb45fe8a9a8114f4a01000000000000220020e9e86e4823faa62e222ebc858a226636856158f07e69898da3b0d1af0ddb3994c0c62d0000000000220020f3394e1e619b0eca1f91be2fb5ab4dfc59ba5b84ebe014ad1d43a564d012994a508b6a00000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e04004830450221008266ac6db5ea71aac3c95d97b0e172ff596844851a3216eb88382a8dddfd33d2022050e240974cfd5d708708b4365574517c18e7ae535ef732a3484d43d0d82be9f701483045022100f89034eba16b2be0e5581f750a0a6309192b75cce0f202f0ee2b4ec0cc394850022076c65dc507fe42276152b7a3d90e961e678adbe966e916ecfe85e64d430e75f301475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220", {});
+		test_commitment_with_anchors!(
+			"3045022100f89034eba16b2be0e5581f750a0a6309192b75cce0f202f0ee2b4ec0cc394850022076c65dc507fe42276152b7a3d90e961e678adbe966e916ecfe85e64d430e75f3",
+			"30450221008266ac6db5ea71aac3c95d97b0e172ff596844851a3216eb88382a8dddfd33d2022050e240974cfd5d708708b4365574517c18e7ae535ef732a3484d43d0d82be9f7",
+			"02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b80044a010000000000002200202b1b5854183c12d3316565972c4668929d314d81c5dcdbb21cb45fe8a9a8114f4a01000000000000220020e9e86e4823faa62e222ebc858a226636856158f07e69898da3b0d1af0ddb3994c0c62d0000000000220020f3394e1e619b0eca1f91be2fb5ab4dfc59ba5b84ebe014ad1d43a564d012994a508b6a00000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e04004830450221008266ac6db5ea71aac3c95d97b0e172ff596844851a3216eb88382a8dddfd33d2022050e240974cfd5d708708b4365574517c18e7ae535ef732a3484d43d0d82be9f701483045022100f89034eba16b2be0e5581f750a0a6309192b75cce0f202f0ee2b4ec0cc394850022076c65dc507fe42276152b7a3d90e961e678adbe966e916ecfe85e64d430e75f301475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220",
+			{}
+		);
 
 		let payment_preimage_0 =
 			preimage_from_hex("0000000000000000000000000000000000000000000000000000000000000000");
@@ -18460,9 +18709,12 @@ mod tests {
 		chan.context.feerate_per_kw = 4915;
 		chan.context.holder_dust_limit_satoshis = 546;
 
-		test_commitment!("304402203a286936e74870ca1459c700c71202af0381910a6bfab687ef494ef1bc3e02c902202506c362d0e3bee15e802aa729bf378e051644648253513f1c085b264cc2a720",
-		                 "30450221008a953551f4d67cb4df3037207fc082ddaf6be84d417b0bd14c80aab66f1b01a402207508796dc75034b2dee876fe01dc05a08b019f3e5d689ac8842ade2f1befccf5",
-		                 "02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b8002c0c62d0000000000160014cc1b07838e387deacd0e5232e1e8b49f4c29e484fa926a00000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e04004830450221008a953551f4d67cb4df3037207fc082ddaf6be84d417b0bd14c80aab66f1b01a402207508796dc75034b2dee876fe01dc05a08b019f3e5d689ac8842ade2f1befccf50147304402203a286936e74870ca1459c700c71202af0381910a6bfab687ef494ef1bc3e02c902202506c362d0e3bee15e802aa729bf378e051644648253513f1c085b264cc2a72001475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220", {});
+		test_commitment!(
+			"304402203a286936e74870ca1459c700c71202af0381910a6bfab687ef494ef1bc3e02c902202506c362d0e3bee15e802aa729bf378e051644648253513f1c085b264cc2a720",
+			"30450221008a953551f4d67cb4df3037207fc082ddaf6be84d417b0bd14c80aab66f1b01a402207508796dc75034b2dee876fe01dc05a08b019f3e5d689ac8842ade2f1befccf5",
+			"02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b8002c0c62d0000000000160014cc1b07838e387deacd0e5232e1e8b49f4c29e484fa926a00000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e04004830450221008a953551f4d67cb4df3037207fc082ddaf6be84d417b0bd14c80aab66f1b01a402207508796dc75034b2dee876fe01dc05a08b019f3e5d689ac8842ade2f1befccf50147304402203a286936e74870ca1459c700c71202af0381910a6bfab687ef494ef1bc3e02c902202506c362d0e3bee15e802aa729bf378e051644648253513f1c085b264cc2a72001475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220",
+			{}
+		);
 
 		// anchors: commitment tx with two outputs untrimmed (minimum dust limit)
 		chan.funding.value_to_self_msat = 6993000000; // 7000000000 - 7000000
@@ -18471,9 +18723,12 @@ mod tests {
 		chan.funding.channel_transaction_parameters.channel_type_features =
 			ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
 
-		test_commitment_with_anchors!("3045022100e784a66b1588575801e237d35e510fd92a81ae3a4a2a1b90c031ad803d07b3f3022021bc5f16501f167607d63b681442da193eb0a76b4b7fd25c2ed4f8b28fd35b95",
-		                 "30450221009f16ac85d232e4eddb3fcd750a68ebf0b58e3356eaada45d3513ede7e817bf4c02207c2b043b4e5f971261975406cb955219fa56bffe5d834a833694b5abc1ce4cfd",
-		                 "02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b80044a010000000000002200202b1b5854183c12d3316565972c4668929d314d81c5dcdbb21cb45fe8a9a8114f4a01000000000000220020e9e86e4823faa62e222ebc858a226636856158f07e69898da3b0d1af0ddb3994c0c62d0000000000220020f3394e1e619b0eca1f91be2fb5ab4dfc59ba5b84ebe014ad1d43a564d012994ad0886a00000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e04004830450221009f16ac85d232e4eddb3fcd750a68ebf0b58e3356eaada45d3513ede7e817bf4c02207c2b043b4e5f971261975406cb955219fa56bffe5d834a833694b5abc1ce4cfd01483045022100e784a66b1588575801e237d35e510fd92a81ae3a4a2a1b90c031ad803d07b3f3022021bc5f16501f167607d63b681442da193eb0a76b4b7fd25c2ed4f8b28fd35b9501475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220", {});
+		test_commitment_with_anchors!(
+			"3045022100e784a66b1588575801e237d35e510fd92a81ae3a4a2a1b90c031ad803d07b3f3022021bc5f16501f167607d63b681442da193eb0a76b4b7fd25c2ed4f8b28fd35b95",
+			"30450221009f16ac85d232e4eddb3fcd750a68ebf0b58e3356eaada45d3513ede7e817bf4c02207c2b043b4e5f971261975406cb955219fa56bffe5d834a833694b5abc1ce4cfd",
+			"02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b80044a010000000000002200202b1b5854183c12d3316565972c4668929d314d81c5dcdbb21cb45fe8a9a8114f4a01000000000000220020e9e86e4823faa62e222ebc858a226636856158f07e69898da3b0d1af0ddb3994c0c62d0000000000220020f3394e1e619b0eca1f91be2fb5ab4dfc59ba5b84ebe014ad1d43a564d012994ad0886a00000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e04004830450221009f16ac85d232e4eddb3fcd750a68ebf0b58e3356eaada45d3513ede7e817bf4c02207c2b043b4e5f971261975406cb955219fa56bffe5d834a833694b5abc1ce4cfd01483045022100e784a66b1588575801e237d35e510fd92a81ae3a4a2a1b90c031ad803d07b3f3022021bc5f16501f167607d63b681442da193eb0a76b4b7fd25c2ed4f8b28fd35b9501475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220",
+			{}
+		);
 
 		// commitment tx with two outputs untrimmed (maximum feerate)
 		chan.funding.value_to_self_msat = 6993000000; // 7000000000 - 7000000
@@ -18482,17 +18737,23 @@ mod tests {
 		chan.funding.channel_transaction_parameters.channel_type_features =
 			cached_channel_type.clone();
 
-		test_commitment!("304402200a8544eba1d216f5c5e530597665fa9bec56943c0f66d98fc3d028df52d84f7002201e45fa5c6bc3a506cc2553e7d1c0043a9811313fc39c954692c0d47cfce2bbd3",
-		                 "3045022100e11b638c05c650c2f63a421d36ef8756c5ce82f2184278643520311cdf50aa200220259565fb9c8e4a87ccaf17f27a3b9ca4f20625754a0920d9c6c239d8156a11de",
-		                 "02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b800222020000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80ec0c62d0000000000160014cc1b07838e387deacd0e5232e1e8b49f4c29e4840400483045022100e11b638c05c650c2f63a421d36ef8756c5ce82f2184278643520311cdf50aa200220259565fb9c8e4a87ccaf17f27a3b9ca4f20625754a0920d9c6c239d8156a11de0147304402200a8544eba1d216f5c5e530597665fa9bec56943c0f66d98fc3d028df52d84f7002201e45fa5c6bc3a506cc2553e7d1c0043a9811313fc39c954692c0d47cfce2bbd301475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220", {});
+		test_commitment!(
+			"304402200a8544eba1d216f5c5e530597665fa9bec56943c0f66d98fc3d028df52d84f7002201e45fa5c6bc3a506cc2553e7d1c0043a9811313fc39c954692c0d47cfce2bbd3",
+			"3045022100e11b638c05c650c2f63a421d36ef8756c5ce82f2184278643520311cdf50aa200220259565fb9c8e4a87ccaf17f27a3b9ca4f20625754a0920d9c6c239d8156a11de",
+			"02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b800222020000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80ec0c62d0000000000160014cc1b07838e387deacd0e5232e1e8b49f4c29e4840400483045022100e11b638c05c650c2f63a421d36ef8756c5ce82f2184278643520311cdf50aa200220259565fb9c8e4a87ccaf17f27a3b9ca4f20625754a0920d9c6c239d8156a11de0147304402200a8544eba1d216f5c5e530597665fa9bec56943c0f66d98fc3d028df52d84f7002201e45fa5c6bc3a506cc2553e7d1c0043a9811313fc39c954692c0d47cfce2bbd301475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220",
+			{}
+		);
 
 		// commitment tx with one output untrimmed (minimum feerate)
 		chan.funding.value_to_self_msat = 6993000000; // 7000000000 - 7000000
 		chan.context.feerate_per_kw = 9651181;
 
-		test_commitment!("304402202ade0142008309eb376736575ad58d03e5b115499709c6db0b46e36ff394b492022037b63d78d66404d6504d4c4ac13be346f3d1802928a6d3ad95a6a944227161a2",
-		                 "304402207e8d51e0c570a5868a78414f4e0cbfaed1106b171b9581542c30718ee4eb95ba02203af84194c97adf98898c9afe2f2ed4a7f8dba05a2dfab28ac9d9c604aa49a379",
-		                 "02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b8001c0c62d0000000000160014cc1b07838e387deacd0e5232e1e8b49f4c29e484040047304402207e8d51e0c570a5868a78414f4e0cbfaed1106b171b9581542c30718ee4eb95ba02203af84194c97adf98898c9afe2f2ed4a7f8dba05a2dfab28ac9d9c604aa49a3790147304402202ade0142008309eb376736575ad58d03e5b115499709c6db0b46e36ff394b492022037b63d78d66404d6504d4c4ac13be346f3d1802928a6d3ad95a6a944227161a201475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220", {});
+		test_commitment!(
+			"304402202ade0142008309eb376736575ad58d03e5b115499709c6db0b46e36ff394b492022037b63d78d66404d6504d4c4ac13be346f3d1802928a6d3ad95a6a944227161a2",
+			"304402207e8d51e0c570a5868a78414f4e0cbfaed1106b171b9581542c30718ee4eb95ba02203af84194c97adf98898c9afe2f2ed4a7f8dba05a2dfab28ac9d9c604aa49a379",
+			"02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b8001c0c62d0000000000160014cc1b07838e387deacd0e5232e1e8b49f4c29e484040047304402207e8d51e0c570a5868a78414f4e0cbfaed1106b171b9581542c30718ee4eb95ba02203af84194c97adf98898c9afe2f2ed4a7f8dba05a2dfab28ac9d9c604aa49a3790147304402202ade0142008309eb376736575ad58d03e5b115499709c6db0b46e36ff394b492022037b63d78d66404d6504d4c4ac13be346f3d1802928a6d3ad95a6a944227161a201475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220",
+			{}
+		);
 
 		// anchors: commitment tx with one output untrimmed (minimum dust limit)
 		chan.funding.value_to_self_msat = 6993000000; // 7000000000 - 7000000
@@ -18501,9 +18762,12 @@ mod tests {
 		chan.funding.channel_transaction_parameters.channel_type_features =
 			ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
 
-		test_commitment_with_anchors!("30450221008fd5dbff02e4b59020d4cd23a3c30d3e287065fda75a0a09b402980adf68ccda022001e0b8b620cd915ddff11f1de32addf23d81d51b90e6841b2cb8dcaf3faa5ecf",
-		                 "30450221009ad80792e3038fe6968d12ff23e6888a565c3ddd065037f357445f01675d63f3022018384915e5f1f4ae157e15debf4f49b61c8d9d2b073c7d6f97c4a68caa3ed4c1",
-		                 "02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b80024a01000000000000220020e9e86e4823faa62e222ebc858a226636856158f07e69898da3b0d1af0ddb3994c0c62d0000000000220020f3394e1e619b0eca1f91be2fb5ab4dfc59ba5b84ebe014ad1d43a564d012994a04004830450221009ad80792e3038fe6968d12ff23e6888a565c3ddd065037f357445f01675d63f3022018384915e5f1f4ae157e15debf4f49b61c8d9d2b073c7d6f97c4a68caa3ed4c1014830450221008fd5dbff02e4b59020d4cd23a3c30d3e287065fda75a0a09b402980adf68ccda022001e0b8b620cd915ddff11f1de32addf23d81d51b90e6841b2cb8dcaf3faa5ecf01475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220", {});
+		test_commitment_with_anchors!(
+			"30450221008fd5dbff02e4b59020d4cd23a3c30d3e287065fda75a0a09b402980adf68ccda022001e0b8b620cd915ddff11f1de32addf23d81d51b90e6841b2cb8dcaf3faa5ecf",
+			"30450221009ad80792e3038fe6968d12ff23e6888a565c3ddd065037f357445f01675d63f3022018384915e5f1f4ae157e15debf4f49b61c8d9d2b073c7d6f97c4a68caa3ed4c1",
+			"02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b80024a01000000000000220020e9e86e4823faa62e222ebc858a226636856158f07e69898da3b0d1af0ddb3994c0c62d0000000000220020f3394e1e619b0eca1f91be2fb5ab4dfc59ba5b84ebe014ad1d43a564d012994a04004830450221009ad80792e3038fe6968d12ff23e6888a565c3ddd065037f357445f01675d63f3022018384915e5f1f4ae157e15debf4f49b61c8d9d2b073c7d6f97c4a68caa3ed4c1014830450221008fd5dbff02e4b59020d4cd23a3c30d3e287065fda75a0a09b402980adf68ccda022001e0b8b620cd915ddff11f1de32addf23d81d51b90e6841b2cb8dcaf3faa5ecf01475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220",
+			{}
+		);
 
 		// commitment tx with fee greater than funder amount
 		chan.funding.value_to_self_msat = 6993000000; // 7000000000 - 7000000
@@ -18511,9 +18775,12 @@ mod tests {
 		chan.context.holder_dust_limit_satoshis = 546;
 		chan.funding.channel_transaction_parameters.channel_type_features = cached_channel_type;
 
-		test_commitment!("304402202ade0142008309eb376736575ad58d03e5b115499709c6db0b46e36ff394b492022037b63d78d66404d6504d4c4ac13be346f3d1802928a6d3ad95a6a944227161a2",
-		                 "304402207e8d51e0c570a5868a78414f4e0cbfaed1106b171b9581542c30718ee4eb95ba02203af84194c97adf98898c9afe2f2ed4a7f8dba05a2dfab28ac9d9c604aa49a379",
-		                 "02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b8001c0c62d0000000000160014cc1b07838e387deacd0e5232e1e8b49f4c29e484040047304402207e8d51e0c570a5868a78414f4e0cbfaed1106b171b9581542c30718ee4eb95ba02203af84194c97adf98898c9afe2f2ed4a7f8dba05a2dfab28ac9d9c604aa49a3790147304402202ade0142008309eb376736575ad58d03e5b115499709c6db0b46e36ff394b492022037b63d78d66404d6504d4c4ac13be346f3d1802928a6d3ad95a6a944227161a201475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220", {});
+		test_commitment!(
+			"304402202ade0142008309eb376736575ad58d03e5b115499709c6db0b46e36ff394b492022037b63d78d66404d6504d4c4ac13be346f3d1802928a6d3ad95a6a944227161a2",
+			"304402207e8d51e0c570a5868a78414f4e0cbfaed1106b171b9581542c30718ee4eb95ba02203af84194c97adf98898c9afe2f2ed4a7f8dba05a2dfab28ac9d9c604aa49a379",
+			"02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b8001c0c62d0000000000160014cc1b07838e387deacd0e5232e1e8b49f4c29e484040047304402207e8d51e0c570a5868a78414f4e0cbfaed1106b171b9581542c30718ee4eb95ba02203af84194c97adf98898c9afe2f2ed4a7f8dba05a2dfab28ac9d9c604aa49a3790147304402202ade0142008309eb376736575ad58d03e5b115499709c6db0b46e36ff394b492022037b63d78d66404d6504d4c4ac13be346f3d1802928a6d3ad95a6a944227161a201475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220",
+			{}
+		);
 
 		// commitment tx with 3 htlc outputs, 2 offered having the same amount and preimage
 		chan.funding.value_to_self_msat = 7_000_000_000 - 2_000_000;
@@ -18606,7 +18873,7 @@ mod tests {
 			CounterpartyChannelTransactionParameters, HolderCommitmentTransaction,
 		};
 		use crate::ln::channel::HTLCOutputInCommitment;
-		use crate::sign::{ecdsa::EcdsaChannelSigner, ChannelDerivationParameters, HTLCDescriptor};
+		use crate::sign::{ChannelDerivationParameters, HTLCDescriptor, ecdsa::EcdsaChannelSigner};
 		use crate::sync::Arc;
 		use crate::types::features::ChannelTypeFeatures;
 		use crate::types::payment::PaymentPreimage;
@@ -18742,7 +19009,9 @@ mod tests {
 		test_commitment_with_zero_fee!(
 			"3045022100a05afcdfaf045a0a7b6adb194dcda430bb8e47db8c6d1536b2a94bd98fed77ed02206d580dcd5cba42aebed39515fbd00fdd90480825ae23cce87eef1f1711e2125e",
 			"304502210094afa18972599f7a78b06467bd11d742875baf74aa9e516a775720564671fd8e02206b9ed5f48fb92a1c19543d67f29ee3bd43afee1ec1af6f7f9b4e3371beb82162",
-			"03000000000101ae1e3c841378cf9e4c383bfdd033d4b3c6945e0587ff16635a00b347eea2704b0100000000340fef800300000000000000000451024e7380841e0000000000160014f2123f1a4b67887f2e5f02eda73e6327010152ea00127a0000000000220020f2d298ffcfd6d899a3abada37bfc6f42ce0b7b66f3e39e903e8419ac97dca75a0400483045022100a05afcdfaf045a0a7b6adb194dcda430bb8e47db8c6d1536b2a94bd98fed77ed02206d580dcd5cba42aebed39515fbd00fdd90480825ae23cce87eef1f1711e2125e0148304502210094afa18972599f7a78b06467bd11d742875baf74aa9e516a775720564671fd8e02206b9ed5f48fb92a1c19543d67f29ee3bd43afee1ec1af6f7f9b4e3371beb8216201475221027eb9596a68740445fb151ff37d5422e7f65f2c497c90fda63e738eb606c15bd62103bbc16dc8851bece603322f06b3c8da329401b7be7e9fdd3f3090ad19aed0807052aec50fbb20", {});
+			"03000000000101ae1e3c841378cf9e4c383bfdd033d4b3c6945e0587ff16635a00b347eea2704b0100000000340fef800300000000000000000451024e7380841e0000000000160014f2123f1a4b67887f2e5f02eda73e6327010152ea00127a0000000000220020f2d298ffcfd6d899a3abada37bfc6f42ce0b7b66f3e39e903e8419ac97dca75a0400483045022100a05afcdfaf045a0a7b6adb194dcda430bb8e47db8c6d1536b2a94bd98fed77ed02206d580dcd5cba42aebed39515fbd00fdd90480825ae23cce87eef1f1711e2125e0148304502210094afa18972599f7a78b06467bd11d742875baf74aa9e516a775720564671fd8e02206b9ed5f48fb92a1c19543d67f29ee3bd43afee1ec1af6f7f9b4e3371beb8216201475221027eb9596a68740445fb151ff37d5422e7f65f2c497c90fda63e738eb606c15bd62103bbc16dc8851bece603322f06b3c8da329401b7be7e9fdd3f3090ad19aed0807052aec50fbb20",
+			{}
+		);
 
 		// Commitment transaction without HTLCs, one output trimmed below maximum anchor amount
 		chan.context.holder_dust_limit_satoshis = 330;
@@ -18750,15 +19019,19 @@ mod tests {
 		test_commitment_with_zero_fee!(
 			"3045022100a13c79500a9b30eba7af13418816b54aea1da0bdf41c0aa10f53a29017080d5602201a11bcc10f99c4334f778ea94e83db63d2409ff10e9e95b4260ac0dba27a490f",
 			"30440220706abbc90e9ab70a7e1f0f28b24baf2f105e49b7a41bf3b5e694f060806fc54402206020a5e51e437c027610a59f0252ac075dfb2b8e5b45f49149e9532935ba5e7a",
-			"03000000000101ae1e3c841378cf9e4c383bfdd033d4b3c6945e0587ff16635a00b347eea2704b0100000000340fef8002c8000000000000000451024e73b895980000000000220020f2d298ffcfd6d899a3abada37bfc6f42ce0b7b66f3e39e903e8419ac97dca75a0400483045022100a13c79500a9b30eba7af13418816b54aea1da0bdf41c0aa10f53a29017080d5602201a11bcc10f99c4334f778ea94e83db63d2409ff10e9e95b4260ac0dba27a490f014730440220706abbc90e9ab70a7e1f0f28b24baf2f105e49b7a41bf3b5e694f060806fc54402206020a5e51e437c027610a59f0252ac075dfb2b8e5b45f49149e9532935ba5e7a01475221027eb9596a68740445fb151ff37d5422e7f65f2c497c90fda63e738eb606c15bd62103bbc16dc8851bece603322f06b3c8da329401b7be7e9fdd3f3090ad19aed0807052aec50fbb20", {});
+			"03000000000101ae1e3c841378cf9e4c383bfdd033d4b3c6945e0587ff16635a00b347eea2704b0100000000340fef8002c8000000000000000451024e73b895980000000000220020f2d298ffcfd6d899a3abada37bfc6f42ce0b7b66f3e39e903e8419ac97dca75a0400483045022100a13c79500a9b30eba7af13418816b54aea1da0bdf41c0aa10f53a29017080d5602201a11bcc10f99c4334f778ea94e83db63d2409ff10e9e95b4260ac0dba27a490f014730440220706abbc90e9ab70a7e1f0f28b24baf2f105e49b7a41bf3b5e694f060806fc54402206020a5e51e437c027610a59f0252ac075dfb2b8e5b45f49149e9532935ba5e7a01475221027eb9596a68740445fb151ff37d5422e7f65f2c497c90fda63e738eb606c15bd62103bbc16dc8851bece603322f06b3c8da329401b7be7e9fdd3f3090ad19aed0807052aec50fbb20",
+			{}
+		);
 
 		// Commitment transaction without HTLCs, one output trimmed above maximum anchor amount
 		chan.context.holder_dust_limit_satoshis = 15000;
 		chan.funding.value_to_self_msat = 9990000000;
 		test_commitment_with_zero_fee!(
-        "304402204042ce57689bb7e52af7fb9ec28d6610674ce00e5e438bb1119acfb91aad6386022065de45c4fe52d86249d80397f2c85e143550cb14b3de0cd1e6a54d0622a2bbd4",
-        "30450221009fb4e444e9fe2d7db0f867704745c8ea2e4e1018b5986fd8cb9d9facdc1bb1be02202d6589a20ea8a8e3594eac3c99bad523139a36e313a66c6302e619786cb42396",
-		"03000000000101ae1e3c841378cf9e4c383bfdd033d4b3c6945e0587ff16635a00b347eea2704b0100000000340fef8002f0000000000000000451024e73706f980000000000220020f2d298ffcfd6d899a3abada37bfc6f42ce0b7b66f3e39e903e8419ac97dca75a040047304402204042ce57689bb7e52af7fb9ec28d6610674ce00e5e438bb1119acfb91aad6386022065de45c4fe52d86249d80397f2c85e143550cb14b3de0cd1e6a54d0622a2bbd4014830450221009fb4e444e9fe2d7db0f867704745c8ea2e4e1018b5986fd8cb9d9facdc1bb1be02202d6589a20ea8a8e3594eac3c99bad523139a36e313a66c6302e619786cb4239601475221027eb9596a68740445fb151ff37d5422e7f65f2c497c90fda63e738eb606c15bd62103bbc16dc8851bece603322f06b3c8da329401b7be7e9fdd3f3090ad19aed0807052aec50fbb20", {});
+			"304402204042ce57689bb7e52af7fb9ec28d6610674ce00e5e438bb1119acfb91aad6386022065de45c4fe52d86249d80397f2c85e143550cb14b3de0cd1e6a54d0622a2bbd4",
+			"30450221009fb4e444e9fe2d7db0f867704745c8ea2e4e1018b5986fd8cb9d9facdc1bb1be02202d6589a20ea8a8e3594eac3c99bad523139a36e313a66c6302e619786cb42396",
+			"03000000000101ae1e3c841378cf9e4c383bfdd033d4b3c6945e0587ff16635a00b347eea2704b0100000000340fef8002f0000000000000000451024e73706f980000000000220020f2d298ffcfd6d899a3abada37bfc6f42ce0b7b66f3e39e903e8419ac97dca75a040047304402204042ce57689bb7e52af7fb9ec28d6610674ce00e5e438bb1119acfb91aad6386022065de45c4fe52d86249d80397f2c85e143550cb14b3de0cd1e6a54d0622a2bbd4014830450221009fb4e444e9fe2d7db0f867704745c8ea2e4e1018b5986fd8cb9d9facdc1bb1be02202d6589a20ea8a8e3594eac3c99bad523139a36e313a66c6302e619786cb4239601475221027eb9596a68740445fb151ff37d5422e7f65f2c497c90fda63e738eb606c15bd62103bbc16dc8851bece603322f06b3c8da329401b7be7e9fdd3f3090ad19aed0807052aec50fbb20",
+			{}
+		);
 
 		// Commitment transaction with all HTLCs above dust limit
 		chan.context.holder_dust_limit_satoshis = 5000;
@@ -19008,7 +19281,9 @@ mod tests {
 		test_commitment_with_zero_fee!(
 			"3044022034f22696dd7501d65fc117af3edcfed535eb301317fe35eef08658b571fca4d0022030ff6276cff9e22968f8b08f92a1d4f2c37fe4da29de095df4841d32bdaa501b",
 			"30450221009c820c376715329110045b3cf90f59838fd2f86b16774cb5ccccbd6a62830d9602205f2d970bef2589a5e37035937ab7db0461223e429b943b38ecf577e32b7b4572",
-			"03000000000101ae1e3c841378cf9e4c383bfdd033d4b3c6945e0587ff16635a00b347eea2704b0100000000340fef8003b4000000000000000451024e7344841e0000000000160014f2123f1a4b67887f2e5f02eda73e6327010152ea88117a0000000000220020f2d298ffcfd6d899a3abada37bfc6f42ce0b7b66f3e39e903e8419ac97dca75a0400473044022034f22696dd7501d65fc117af3edcfed535eb301317fe35eef08658b571fca4d0022030ff6276cff9e22968f8b08f92a1d4f2c37fe4da29de095df4841d32bdaa501b014830450221009c820c376715329110045b3cf90f59838fd2f86b16774cb5ccccbd6a62830d9602205f2d970bef2589a5e37035937ab7db0461223e429b943b38ecf577e32b7b457201475221027eb9596a68740445fb151ff37d5422e7f65f2c497c90fda63e738eb606c15bd62103bbc16dc8851bece603322f06b3c8da329401b7be7e9fdd3f3090ad19aed0807052aec50fbb20", {});
+			"03000000000101ae1e3c841378cf9e4c383bfdd033d4b3c6945e0587ff16635a00b347eea2704b0100000000340fef8003b4000000000000000451024e7344841e0000000000160014f2123f1a4b67887f2e5f02eda73e6327010152ea88117a0000000000220020f2d298ffcfd6d899a3abada37bfc6f42ce0b7b66f3e39e903e8419ac97dca75a0400473044022034f22696dd7501d65fc117af3edcfed535eb301317fe35eef08658b571fca4d0022030ff6276cff9e22968f8b08f92a1d4f2c37fe4da29de095df4841d32bdaa501b014830450221009c820c376715329110045b3cf90f59838fd2f86b16774cb5ccccbd6a62830d9602205f2d970bef2589a5e37035937ab7db0461223e429b943b38ecf577e32b7b457201475221027eb9596a68740445fb151ff37d5422e7f65f2c497c90fda63e738eb606c15bd62103bbc16dc8851bece603322f06b3c8da329401b7be7e9fdd3f3090ad19aed0807052aec50fbb20",
+			{}
+		);
 
 		// Commitment transaction with millisatoshi dust HTLCs adding to less than 1 satoshi"
 		chan.context.holder_dust_limit_satoshis = 330;
@@ -19046,7 +19321,9 @@ mod tests {
 		test_commitment_with_zero_fee!(
 			"304402201368dc415e11647edbfc1faaaccbe4717e5fdb88c4220a0bb19969781c9f757f02203fad3a7578fcfdc428b527b97f918b639ff07941b3b42c44f58b1364fdc57177",
 			"30440220338a338e0d477b63d2a7a00baca06c45b74bdd63d02e7d198cd8435180e9317e022014d0b95c9fde3409678417ee1a71d1d4d755f28db66a83eb10bea56de83d628d",
-			"03000000000101ae1e3c841378cf9e4c383bfdd033d4b3c6945e0587ff16635a00b347eea2704b0100000000340fef800334000000000000000451024e7362841e0000000000160014f2123f1a4b67887f2e5f02eda73e6327010152eaea117a0000000000220020f2d298ffcfd6d899a3abada37bfc6f42ce0b7b66f3e39e903e8419ac97dca75a040047304402201368dc415e11647edbfc1faaaccbe4717e5fdb88c4220a0bb19969781c9f757f02203fad3a7578fcfdc428b527b97f918b639ff07941b3b42c44f58b1364fdc57177014730440220338a338e0d477b63d2a7a00baca06c45b74bdd63d02e7d198cd8435180e9317e022014d0b95c9fde3409678417ee1a71d1d4d755f28db66a83eb10bea56de83d628d01475221027eb9596a68740445fb151ff37d5422e7f65f2c497c90fda63e738eb606c15bd62103bbc16dc8851bece603322f06b3c8da329401b7be7e9fdd3f3090ad19aed0807052aec50fbb20", {});
+			"03000000000101ae1e3c841378cf9e4c383bfdd033d4b3c6945e0587ff16635a00b347eea2704b0100000000340fef800334000000000000000451024e7362841e0000000000160014f2123f1a4b67887f2e5f02eda73e6327010152eaea117a0000000000220020f2d298ffcfd6d899a3abada37bfc6f42ce0b7b66f3e39e903e8419ac97dca75a040047304402201368dc415e11647edbfc1faaaccbe4717e5fdb88c4220a0bb19969781c9f757f02203fad3a7578fcfdc428b527b97f918b639ff07941b3b42c44f58b1364fdc57177014730440220338a338e0d477b63d2a7a00baca06c45b74bdd63d02e7d198cd8435180e9317e022014d0b95c9fde3409678417ee1a71d1d4d755f28db66a83eb10bea56de83d628d01475221027eb9596a68740445fb151ff37d5422e7f65f2c497c90fda63e738eb606c15bd62103bbc16dc8851bece603322f06b3c8da329401b7be7e9fdd3f3090ad19aed0807052aec50fbb20",
+			{}
+		);
 
 		// Commitment transaction with millisatoshi dust HTLCs adding to 1 satoshi"
 		chan.context.holder_dust_limit_satoshis = 330;
@@ -19084,7 +19361,9 @@ mod tests {
 		test_commitment_with_zero_fee!(
 			"304402201368dc415e11647edbfc1faaaccbe4717e5fdb88c4220a0bb19969781c9f757f02203fad3a7578fcfdc428b527b97f918b639ff07941b3b42c44f58b1364fdc57177",
 			"30440220338a338e0d477b63d2a7a00baca06c45b74bdd63d02e7d198cd8435180e9317e022014d0b95c9fde3409678417ee1a71d1d4d755f28db66a83eb10bea56de83d628d",
-			"03000000000101ae1e3c841378cf9e4c383bfdd033d4b3c6945e0587ff16635a00b347eea2704b0100000000340fef800334000000000000000451024e7362841e0000000000160014f2123f1a4b67887f2e5f02eda73e6327010152eaea117a0000000000220020f2d298ffcfd6d899a3abada37bfc6f42ce0b7b66f3e39e903e8419ac97dca75a040047304402201368dc415e11647edbfc1faaaccbe4717e5fdb88c4220a0bb19969781c9f757f02203fad3a7578fcfdc428b527b97f918b639ff07941b3b42c44f58b1364fdc57177014730440220338a338e0d477b63d2a7a00baca06c45b74bdd63d02e7d198cd8435180e9317e022014d0b95c9fde3409678417ee1a71d1d4d755f28db66a83eb10bea56de83d628d01475221027eb9596a68740445fb151ff37d5422e7f65f2c497c90fda63e738eb606c15bd62103bbc16dc8851bece603322f06b3c8da329401b7be7e9fdd3f3090ad19aed0807052aec50fbb20", {});
+			"03000000000101ae1e3c841378cf9e4c383bfdd033d4b3c6945e0587ff16635a00b347eea2704b0100000000340fef800334000000000000000451024e7362841e0000000000160014f2123f1a4b67887f2e5f02eda73e6327010152eaea117a0000000000220020f2d298ffcfd6d899a3abada37bfc6f42ce0b7b66f3e39e903e8419ac97dca75a040047304402201368dc415e11647edbfc1faaaccbe4717e5fdb88c4220a0bb19969781c9f757f02203fad3a7578fcfdc428b527b97f918b639ff07941b3b42c44f58b1364fdc57177014730440220338a338e0d477b63d2a7a00baca06c45b74bdd63d02e7d198cd8435180e9317e022014d0b95c9fde3409678417ee1a71d1d4d755f28db66a83eb10bea56de83d628d01475221027eb9596a68740445fb151ff37d5422e7f65f2c497c90fda63e738eb606c15bd62103bbc16dc8851bece603322f06b3c8da329401b7be7e9fdd3f3090ad19aed0807052aec50fbb20",
+			{}
+		);
 
 		// Commitment transaction with millisatoshi dust HTLCs adding to more than 1 satoshi"
 		chan.context.holder_dust_limit_satoshis = 330;
@@ -19122,7 +19401,9 @@ mod tests {
 		test_commitment_with_zero_fee!(
 			"304402201368dc415e11647edbfc1faaaccbe4717e5fdb88c4220a0bb19969781c9f757f02203fad3a7578fcfdc428b527b97f918b639ff07941b3b42c44f58b1364fdc57177",
 			"30440220338a338e0d477b63d2a7a00baca06c45b74bdd63d02e7d198cd8435180e9317e022014d0b95c9fde3409678417ee1a71d1d4d755f28db66a83eb10bea56de83d628d",
-			"03000000000101ae1e3c841378cf9e4c383bfdd033d4b3c6945e0587ff16635a00b347eea2704b0100000000340fef800334000000000000000451024e7362841e0000000000160014f2123f1a4b67887f2e5f02eda73e6327010152eaea117a0000000000220020f2d298ffcfd6d899a3abada37bfc6f42ce0b7b66f3e39e903e8419ac97dca75a040047304402201368dc415e11647edbfc1faaaccbe4717e5fdb88c4220a0bb19969781c9f757f02203fad3a7578fcfdc428b527b97f918b639ff07941b3b42c44f58b1364fdc57177014730440220338a338e0d477b63d2a7a00baca06c45b74bdd63d02e7d198cd8435180e9317e022014d0b95c9fde3409678417ee1a71d1d4d755f28db66a83eb10bea56de83d628d01475221027eb9596a68740445fb151ff37d5422e7f65f2c497c90fda63e738eb606c15bd62103bbc16dc8851bece603322f06b3c8da329401b7be7e9fdd3f3090ad19aed0807052aec50fbb20", {});
+			"03000000000101ae1e3c841378cf9e4c383bfdd033d4b3c6945e0587ff16635a00b347eea2704b0100000000340fef800334000000000000000451024e7362841e0000000000160014f2123f1a4b67887f2e5f02eda73e6327010152eaea117a0000000000220020f2d298ffcfd6d899a3abada37bfc6f42ce0b7b66f3e39e903e8419ac97dca75a040047304402201368dc415e11647edbfc1faaaccbe4717e5fdb88c4220a0bb19969781c9f757f02203fad3a7578fcfdc428b527b97f918b639ff07941b3b42c44f58b1364fdc57177014730440220338a338e0d477b63d2a7a00baca06c45b74bdd63d02e7d198cd8435180e9317e022014d0b95c9fde3409678417ee1a71d1d4d755f28db66a83eb10bea56de83d628d01475221027eb9596a68740445fb151ff37d5422e7f65f2c497c90fda63e738eb606c15bd62103bbc16dc8851bece603322f06b3c8da329401b7be7e9fdd3f3090ad19aed0807052aec50fbb20",
+			{}
+		);
 
 		// Commitment transaction with dust HTLCs above maximum anchor amount
 		chan.context.holder_dust_limit_satoshis = 2500;

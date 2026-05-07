@@ -32,12 +32,12 @@ use std::time::SystemTime;
 
 use bech32::primitives::decode::CheckedHrpstringError;
 use bech32::{Checksum, Fe32};
-use bitcoin::hashes::{sha256, Hash};
+use bitcoin::hashes::{Hash, sha256};
 use bitcoin::{Address, Network, PubkeyHash, ScriptHash, WitnessProgram, WitnessVersion};
 use lightning_types::features::Bolt11InvoiceFeatures;
 
-use bitcoin::secp256k1::ecdsa::RecoverableSignature;
 use bitcoin::secp256k1::PublicKey;
+use bitcoin::secp256k1::ecdsa::RecoverableSignature;
 use bitcoin::secp256k1::{Message, Secp256k1};
 
 use alloc::string;
@@ -51,7 +51,7 @@ use core::str::FromStr;
 use core::time::Duration;
 
 #[cfg(feature = "serde")]
-use serde::{de::Error, Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error};
 
 #[doc(no_inline)]
 pub use lightning_types::payment::{PaymentHash, PaymentSecret};
@@ -496,10 +496,8 @@ impl PartialOrd for RawTaggedField {
 impl Ord for RawTaggedField {
 	fn cmp(&self, other: &Self) -> core::cmp::Ordering {
 		match (self, other) {
-			(RawTaggedField::KnownSemantics(ref a), RawTaggedField::KnownSemantics(ref b)) => {
-				a.cmp(b)
-			},
-			(RawTaggedField::UnknownSemantics(ref a), RawTaggedField::UnknownSemantics(ref b)) => {
+			(RawTaggedField::KnownSemantics(a), RawTaggedField::KnownSemantics(b)) => a.cmp(b),
+			(RawTaggedField::UnknownSemantics(a), RawTaggedField::UnknownSemantics(b)) => {
 				a.iter().map(|a| a.to_u8()).cmp(b.iter().map(|b| b.to_u8()))
 			},
 			(RawTaggedField::KnownSemantics(..), RawTaggedField::UnknownSemantics(..)) => {
@@ -773,7 +771,7 @@ impl<H: tb::Bool, T: tb::Bool, C: tb::Bool, S: tb::Bool, M: tb::Bool>
 		self, description: Bolt11InvoiceDescription,
 	) -> InvoiceBuilder<tb::True, H, T, C, S, M> {
 		match description {
-			Bolt11InvoiceDescription::Direct(desc) => self.description(desc.0 .0),
+			Bolt11InvoiceDescription::Direct(desc) => self.description(desc.0.0),
 			Bolt11InvoiceDescription::Hash(hash) => self.description_hash(hash.0),
 		}
 	}
@@ -783,7 +781,7 @@ impl<H: tb::Bool, T: tb::Bool, C: tb::Bool, S: tb::Bool, M: tb::Bool>
 		self, description_ref: Bolt11InvoiceDescriptionRef<'_>,
 	) -> InvoiceBuilder<tb::True, H, T, C, S, M> {
 		match description_ref {
-			Bolt11InvoiceDescriptionRef::Direct(desc) => self.description(desc.clone().0 .0),
+			Bolt11InvoiceDescriptionRef::Direct(desc) => self.description(desc.clone().0.0),
 			Bolt11InvoiceDescriptionRef::Hash(hash) => self.description_hash(hash.0),
 		}
 	}
@@ -1743,11 +1741,7 @@ impl ExpiryTime {
 impl PrivateRoute {
 	/// Creates a new (partial) route from a list of hops
 	pub fn new(hops: RouteHint) -> Result<PrivateRoute, CreationError> {
-		if hops.0.len() <= 12 {
-			Ok(PrivateRoute(hops))
-		} else {
-			Err(CreationError::RouteTooLong)
-		}
+		if hops.0.len() <= 12 { Ok(PrivateRoute(hops)) } else { Err(CreationError::RouteTooLong) }
 	}
 
 	/// Returns the underlying list of hops
@@ -1813,13 +1807,24 @@ pub enum CreationError {
 impl Display for CreationError {
 	fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
 		match self {
-			CreationError::DescriptionTooLong => f.write_str("The supplied description string was longer than 639 bytes"),
-			CreationError::RouteTooLong => f.write_str("The specified route has too many hops and can't be encoded"),
-			CreationError::TimestampOutOfBounds => f.write_str("The Unix timestamp of the supplied date is less than zero or greater than 35-bits"),
-			CreationError::InvalidAmount => f.write_str("The supplied millisatoshi amount was greater than the total bitcoin supply"),
-			CreationError::MissingRouteHints => f.write_str("The invoice required route hints and they weren't provided"),
+			CreationError::DescriptionTooLong => {
+				f.write_str("The supplied description string was longer than 639 bytes")
+			},
+			CreationError::RouteTooLong => {
+				f.write_str("The specified route has too many hops and can't be encoded")
+			},
+			CreationError::TimestampOutOfBounds => f.write_str(
+				"The Unix timestamp of the supplied date is less than zero or greater than 35-bits",
+			),
+			CreationError::InvalidAmount => f.write_str(
+				"The supplied millisatoshi amount was greater than the total bitcoin supply",
+			),
+			CreationError::MissingRouteHints => {
+				f.write_str("The invoice required route hints and they weren't provided")
+			},
 			CreationError::MinFinalCltvExpiryDeltaTooShort => f.write_str(
-				"The supplied final CLTV expiry delta was less than LDK's `MIN_FINAL_CLTV_EXPIRY_DELTA`"),
+				"The supplied final CLTV expiry delta was less than LDK's `MIN_FINAL_CLTV_EXPIRY_DELTA`",
+			),
 		}
 	}
 }
@@ -1863,15 +1868,33 @@ pub enum Bolt11SemanticError {
 impl Display for Bolt11SemanticError {
 	fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
 		match self {
-			Bolt11SemanticError::NoPaymentHash => f.write_str("The invoice is missing the mandatory payment hash"),
-			Bolt11SemanticError::MultiplePaymentHashes => f.write_str("The invoice has multiple payment hashes which isn't allowed"),
-			Bolt11SemanticError::NoDescription => f.write_str("No description or description hash are part of the invoice"),
-			Bolt11SemanticError::MultipleDescriptions => f.write_str("The invoice contains multiple descriptions and/or description hashes which isn't allowed"),
-			Bolt11SemanticError::NoPaymentSecret => f.write_str("The invoice is missing the mandatory payment secret"),
-			Bolt11SemanticError::MultiplePaymentSecrets => f.write_str("The invoice contains multiple payment secrets"),
-			Bolt11SemanticError::InvalidFeatures => f.write_str("The invoice's features are invalid"),
-			Bolt11SemanticError::InvalidSignature => f.write_str("The invoice's signature is invalid"),
-			Bolt11SemanticError::ImpreciseAmount => f.write_str("The invoice's amount was not a whole number of millisatoshis"),
+			Bolt11SemanticError::NoPaymentHash => {
+				f.write_str("The invoice is missing the mandatory payment hash")
+			},
+			Bolt11SemanticError::MultiplePaymentHashes => {
+				f.write_str("The invoice has multiple payment hashes which isn't allowed")
+			},
+			Bolt11SemanticError::NoDescription => {
+				f.write_str("No description or description hash are part of the invoice")
+			},
+			Bolt11SemanticError::MultipleDescriptions => f.write_str(
+				"The invoice contains multiple descriptions and/or description hashes which isn't allowed",
+			),
+			Bolt11SemanticError::NoPaymentSecret => {
+				f.write_str("The invoice is missing the mandatory payment secret")
+			},
+			Bolt11SemanticError::MultiplePaymentSecrets => {
+				f.write_str("The invoice contains multiple payment secrets")
+			},
+			Bolt11SemanticError::InvalidFeatures => {
+				f.write_str("The invoice's features are invalid")
+			},
+			Bolt11SemanticError::InvalidSignature => {
+				f.write_str("The invoice's signature is invalid")
+			},
+			Bolt11SemanticError::ImpreciseAmount => {
+				f.write_str("The invoice's amount was not a whole number of millisatoshis")
+			},
 		}
 	}
 }
@@ -1984,8 +2007,8 @@ mod test {
 			RawDataPart, RawHrp, SignedRawBolt11Invoice,
 		};
 		use bitcoin::hex::FromHex;
-		use bitcoin::secp256k1::ecdsa::{RecoverableSignature, RecoveryId};
 		use bitcoin::secp256k1::Secp256k1;
+		use bitcoin::secp256k1::ecdsa::{RecoverableSignature, RecoveryId};
 		use bitcoin::secp256k1::{PublicKey, SecretKey};
 
 		let invoice = SignedRawBolt11Invoice {
@@ -1993,7 +2016,7 @@ mod test {
 				hrp: RawHrp { currency: Currency::Bitcoin, raw_amount: None, si_prefix: None },
 				data: RawDataPart {
 					timestamp: PositiveTimestamp::from_unix_timestamp(1496314658).unwrap(),
-					tagged_fields: vec ! [
+					tagged_fields: vec![
 						crate::TaggedField::PaymentHash(PaymentHash(
 							<[u8; 32]>::try_from(
 								Vec::from_hex(
@@ -2006,9 +2029,11 @@ mod test {
 						.into(),
 						Description(
 							crate::Description::new(
-								"Please consider supporting this project".to_owned()
-							).unwrap()
-						).into(),
+								"Please consider supporting this project".to_owned(),
+							)
+							.unwrap(),
+						)
+						.into(),
 					],
 				},
 			},

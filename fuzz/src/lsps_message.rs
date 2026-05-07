@@ -1,12 +1,12 @@
 use crate::utils::test_logger;
 
-use bitcoin::blockdata::constants::genesis_block;
-use bitcoin::hashes::{sha256, Hash};
-use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 use bitcoin::Network;
+use bitcoin::blockdata::constants::genesis_block;
+use bitcoin::hashes::{Hash, sha256};
+use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 
 use lightning::chain::Filter;
-use lightning::chain::{chainmonitor, BlockLocator};
+use lightning::chain::{BlockLocator, chainmonitor};
 use lightning::ln::channelmanager::{ChainParameters, ChannelManager};
 use lightning::ln::peer_handler::CustomMessageHandler;
 use lightning::ln::wire::CustomMessageReader;
@@ -20,8 +20,8 @@ use lightning::util::test_utils::{
 	TestBroadcaster, TestChainSource, TestFeeEstimator, TestLogger, TestScorer, TestStore,
 };
 
-use lightning_liquidity::lsps0::ser::LSPS_MESSAGE_TYPE_ID;
 use lightning_liquidity::LiquidityManagerSync;
+use lightning_liquidity::lsps0::ser::LSPS_MESSAGE_TYPE_ID;
 
 use core::time::Duration;
 
@@ -103,7 +103,7 @@ pub fn lsps_message_test<Out: test_logger::Output>(data: &[u8], _out: Out) {
 	do_test(data);
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn lsps_message_run(data: *const u8, datalen: usize) {
 	do_test(unsafe { core::slice::from_raw_parts(data, datalen) });
 }

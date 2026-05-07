@@ -9,7 +9,7 @@ use crate::prelude::*;
 
 use crate::ln::channel_state::ChannelDetails;
 use crate::ln::channelmanager::{
-	PhantomRouteHints, MIN_CLTV_EXPIRY_DELTA, MIN_FINAL_CLTV_EXPIRY_DELTA,
+	MIN_CLTV_EXPIRY_DELTA, MIN_FINAL_CLTV_EXPIRY_DELTA, PhantomRouteHints,
 };
 use crate::ln::inbound_payment::{create, create_from_hash};
 use crate::routing::gossip::RoutingFees;
@@ -17,7 +17,7 @@ use crate::routing::router::{RouteHint, RouteHintHop};
 use crate::sign::{EntropySource, NodeSigner, Recipient};
 use crate::types::payment::PaymentHash;
 use crate::util::logger::{Logger, Record};
-use alloc::collections::{btree_map, BTreeMap};
+use alloc::collections::{BTreeMap, btree_map};
 use bitcoin::secp256k1::PublicKey;
 #[cfg(not(feature = "std"))]
 use core::iter::Iterator;
@@ -355,7 +355,7 @@ fn rotate_through_iterators<T, I: Iterator<Item = T>>(mut vecs: Vec<I>) -> impl 
 ///   otherwise sort by highest inbound capacity to give the payment the best chance of succeeding.
 pub(super) fn sort_and_filter_channels<L: Logger>(
 	channels: Vec<ChannelDetails>, min_inbound_capacity_msat: Option<u64>, logger: &L,
-) -> impl ExactSizeIterator<Item = RouteHint> {
+) -> impl ExactSizeIterator<Item = RouteHint> + use<L> {
 	let mut filtered_channels: BTreeMap<PublicKey, ChannelDetails> = BTreeMap::new();
 	let min_inbound_capacity = min_inbound_capacity_msat.unwrap_or(0);
 	let mut min_capacity_channel_exists = false;
@@ -444,22 +444,30 @@ pub(super) fn sort_and_filter_channels<L: Logger>(
 					channel.is_announced == entry.get().is_announced && !prefer_current;
 
 				if new_now_public || new_channel_preferable {
-					log_trace!(logger,
+					log_trace!(
+						logger,
 						"Preferring counterparty {} channel {} (SCID {:?}, {} msats) over {} (SCID {:?}, {} msats) for invoice route hints",
 						log_pubkey!(channel.counterparty.node_id),
-						&channel.channel_id, channel.short_channel_id,
+						&channel.channel_id,
+						channel.short_channel_id,
 						channel.inbound_capacity_msat,
-						&entry.get().channel_id, entry.get().short_channel_id,
-						current_max_capacity);
+						&entry.get().channel_id,
+						entry.get().short_channel_id,
+						current_max_capacity
+					);
 					entry.insert(channel);
 				} else {
-					log_trace!(logger,
+					log_trace!(
+						logger,
 						"Preferring counterparty {} channel {} (SCID {:?}, {} msats) over {} (SCID {:?}, {} msats) for invoice route hints",
 						log_pubkey!(channel.counterparty.node_id),
-						&entry.get().channel_id, entry.get().short_channel_id,
+						&entry.get().channel_id,
+						entry.get().short_channel_id,
 						current_max_capacity,
-						&channel.channel_id, channel.short_channel_id,
-						channel.inbound_capacity_msat);
+						&channel.channel_id,
+						channel.short_channel_id,
+						channel.inbound_capacity_msat
+					);
 				}
 			},
 			btree_map::Entry::Vacant(entry) => {
@@ -587,8 +595,8 @@ mod test {
 	use super::*;
 	use crate::chain::channelmonitor::HTLC_FAIL_BACK_BUFFER;
 	use crate::ln::channelmanager::{
-		Bolt11InvoiceParameters, OptionalBolt11PaymentParams, PaymentId, PhantomRouteHints,
-		MIN_FINAL_CLTV_EXPIRY_DELTA,
+		Bolt11InvoiceParameters, MIN_FINAL_CLTV_EXPIRY_DELTA, OptionalBolt11PaymentParams,
+		PaymentId, PhantomRouteHints,
 	};
 	use crate::ln::functional_test_utils::*;
 	use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, MessageSendEvent};
@@ -600,8 +608,8 @@ mod test {
 	use crate::util::config::UserConfig;
 	use crate::util::dyn_signer::{DynKeysInterface, DynPhantomKeysInterface};
 	use crate::util::test_utils;
-	use bitcoin::hashes::sha256::Hash as Sha256;
 	use bitcoin::hashes::Hash;
+	use bitcoin::hashes::sha256::Hash as Sha256;
 	use bitcoin::network::Network;
 	use core::time::Duration;
 	use lightning_invoice::{
@@ -1297,11 +1305,7 @@ mod test {
 			assert_eq!(events.len(), 1);
 			let fwd_idx = match events[0] {
 				MessageSendEvent::UpdateHTLCs { node_id, .. } => {
-					if node_id == nodes[1].node.get_our_node_id() {
-						1
-					} else {
-						2
-					}
+					if node_id == nodes[1].node.get_our_node_id() { 1 } else { 2 }
 				},
 				_ => panic!("Unexpected event"),
 			};
@@ -1527,8 +1531,8 @@ mod test {
 	}
 
 	#[test]
-	fn test_multi_node_hints_includes_one_channel_of_each_counterparty_nodes_per_participating_node(
-	) {
+	fn test_multi_node_hints_includes_one_channel_of_each_counterparty_nodes_per_participating_node()
+	 {
 		let mut chanmon_cfgs = create_chanmon_cfgs(4);
 		let seed_1 = [42u8; 32];
 		let seed_2 = [43u8; 32];

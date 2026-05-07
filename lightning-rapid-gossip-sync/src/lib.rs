@@ -307,7 +307,10 @@ mod tests {
 		let start = std::time::Instant::now();
 		let sync_result = rapid_sync.sync_network_graph_with_file_path("./res/full_graph.lngossip");
 		if let Err(GraphSyncError::DecodeError(DecodeError::Io(io_error))) = &sync_result {
-			let error_string = format!("Input file lightning-rapid-gossip-sync/res/full_graph.lngossip is missing! Download it from https://bitcoin.ninja/ldk-compressed_graph-285cb27df79-2022-07-21.bin\n\n{:?}", io_error);
+			let error_string = format!(
+				"Input file lightning-rapid-gossip-sync/res/full_graph.lngossip is missing! Download it from https://bitcoin.ninja/ldk-compressed_graph-285cb27df79-2022-07-21.bin\n\n{:?}",
+				io_error
+			);
 			#[cfg(not(require_route_graph_test))]
 			{
 				println!("{}", error_string);

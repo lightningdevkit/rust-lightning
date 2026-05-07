@@ -179,7 +179,7 @@ impl_writeable_tlv_based!(PeerStorageMonitorHolder, {
 
 #[cfg(test)]
 mod tests {
-	use crate::ln::our_peer_storage::{derive_nonce, DecryptedOurPeerStorage};
+	use crate::ln::our_peer_storage::{DecryptedOurPeerStorage, derive_nonce};
 	use crate::sign::PeerStorageKey;
 
 	#[test]

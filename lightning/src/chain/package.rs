@@ -24,8 +24,8 @@ use bitcoin::transaction::{Transaction, TxIn, TxOut};
 use bitcoin::{Sequence, Witness};
 
 use crate::chain::chaininterface::{
-	compute_feerate_sat_per_1000_weight, ConfirmationTarget, FeeEstimator,
-	FEERATE_FLOOR_SATS_PER_KW, INCREMENTAL_RELAY_FEE_SAT_PER_1000_WEIGHT,
+	ConfirmationTarget, FEERATE_FLOOR_SATS_PER_KW, FeeEstimator,
+	INCREMENTAL_RELAY_FEE_SAT_PER_1000_WEIGHT, compute_feerate_sat_per_1000_weight,
 };
 use crate::chain::channelmonitor::COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE;
 use crate::chain::onchaintx::{FeerateStrategy, OnchainTxHandler};
@@ -742,18 +742,18 @@ impl PackageSolvingData {
 	#[rustfmt::skip]
 	fn amount(&self) -> u64 {
 		let amt = match self {
-			PackageSolvingData::RevokedOutput(ref outp) => outp.amount.to_sat(),
-			PackageSolvingData::RevokedHTLCOutput(ref outp) => outp.amount,
-			PackageSolvingData::CounterpartyOfferedHTLCOutput(ref outp) => outp.htlc.amount_msat / 1000,
-			PackageSolvingData::CounterpartyReceivedHTLCOutput(ref outp) => outp.htlc.amount_msat / 1000,
-			PackageSolvingData::HolderHTLCOutput(ref outp) => {
+			PackageSolvingData::RevokedOutput(outp) => outp.amount.to_sat(),
+			PackageSolvingData::RevokedHTLCOutput(outp) => outp.amount,
+			PackageSolvingData::CounterpartyOfferedHTLCOutput(outp) => outp.htlc.amount_msat / 1000,
+			PackageSolvingData::CounterpartyReceivedHTLCOutput(outp) => outp.htlc.amount_msat / 1000,
+			PackageSolvingData::HolderHTLCOutput(outp) => {
 				let free_htlcs = outp.channel_type_features.supports_anchors_zero_fee_htlc_tx();
 				let free_commitments =
 					outp.channel_type_features.supports_anchor_zero_fee_commitments();
 				debug_assert!(free_htlcs || free_commitments);
 				outp.amount_msat / 1000
 			},
-			PackageSolvingData::HolderFundingOutput(ref outp) => {
+			PackageSolvingData::HolderFundingOutput(outp) => {
 				let free_htlcs = outp.channel_type_features.supports_anchors_zero_fee_htlc_tx();
 				let free_commitments =
 					outp.channel_type_features.supports_anchor_zero_fee_commitments();
@@ -766,11 +766,11 @@ impl PackageSolvingData {
 	#[rustfmt::skip]
 	fn weight(&self) -> usize {
 		match self {
-			PackageSolvingData::RevokedOutput(ref outp) => outp.weight as usize,
-			PackageSolvingData::RevokedHTLCOutput(ref outp) => outp.weight as usize,
-			PackageSolvingData::CounterpartyOfferedHTLCOutput(ref outp) => weight_offered_htlc(&outp.channel_type_features) as usize,
-			PackageSolvingData::CounterpartyReceivedHTLCOutput(ref outp) => weight_received_htlc(&outp.channel_type_features) as usize,
-			PackageSolvingData::HolderHTLCOutput(ref outp) => {
+			PackageSolvingData::RevokedOutput(outp) => outp.weight as usize,
+			PackageSolvingData::RevokedHTLCOutput(outp) => outp.weight as usize,
+			PackageSolvingData::CounterpartyOfferedHTLCOutput(outp) => weight_offered_htlc(&outp.channel_type_features) as usize,
+			PackageSolvingData::CounterpartyReceivedHTLCOutput(outp) => weight_received_htlc(&outp.channel_type_features) as usize,
+			PackageSolvingData::HolderHTLCOutput(outp) => {
 				let free_htlcs = outp.channel_type_features.supports_anchors_zero_fee_htlc_tx();
 				let free_commitments =
 					outp.channel_type_features.supports_anchor_zero_fee_commitments();
@@ -878,7 +878,7 @@ impl PackageSolvingData {
 	fn finalize_input<Signer: EcdsaChannelSigner>(&self, bumped_tx: &mut Transaction, i: usize, onchain_handler: &mut OnchainTxHandler<Signer>) -> bool {
 		let channel_parameters = onchain_handler.channel_parameters();
 		match self {
-			PackageSolvingData::RevokedOutput(ref outp) => {
+			PackageSolvingData::RevokedOutput(outp) => {
 				let channel_parameters = outp.channel_parameters.as_ref().unwrap_or(channel_parameters);
 				let directed_parameters = channel_parameters.as_counterparty_broadcastable();
 				debug_assert_eq!(
@@ -903,7 +903,7 @@ impl PackageSolvingData {
 					bumped_tx.input[i].witness.push(witness_script.clone().into_bytes());
 				} else { return false; }
 			},
-			PackageSolvingData::RevokedHTLCOutput(ref outp) => {
+			PackageSolvingData::RevokedHTLCOutput(outp) => {
 				let channel_parameters = outp.channel_parameters.as_ref().unwrap_or(channel_parameters);
 				let directed_parameters = channel_parameters.as_counterparty_broadcastable();
 				debug_assert_eq!(
@@ -930,7 +930,7 @@ impl PackageSolvingData {
 					bumped_tx.input[i].witness.push(witness_script.clone().into_bytes());
 				} else { return false; }
 			},
-			PackageSolvingData::CounterpartyOfferedHTLCOutput(ref outp) => {
+			PackageSolvingData::CounterpartyOfferedHTLCOutput(outp) => {
 				let channel_parameters = outp.channel_parameters.as_ref().unwrap_or(channel_parameters);
 				let directed_parameters = channel_parameters.as_counterparty_broadcastable();
 				debug_assert_eq!(
@@ -957,7 +957,7 @@ impl PackageSolvingData {
 					bumped_tx.input[i].witness.push(witness_script.clone().into_bytes());
 				}
 			},
-			PackageSolvingData::CounterpartyReceivedHTLCOutput(ref outp) => {
+			PackageSolvingData::CounterpartyReceivedHTLCOutput(outp) => {
 				let channel_parameters = outp.channel_parameters.as_ref().unwrap_or(channel_parameters);
 				let directed_parameters = channel_parameters.as_counterparty_broadcastable();
 				debug_assert_eq!(
@@ -992,12 +992,12 @@ impl PackageSolvingData {
 	#[rustfmt::skip]
 	fn get_maybe_finalized_tx<Signer: EcdsaChannelSigner>(&self, outpoint: &BitcoinOutPoint, onchain_handler: &mut OnchainTxHandler<Signer>) -> Option<MaybeSignedTransaction> {
 		match self {
-			PackageSolvingData::HolderHTLCOutput(ref outp) => {
+			PackageSolvingData::HolderHTLCOutput(outp) => {
 				debug_assert!(!outp.channel_type_features.supports_anchors_zero_fee_htlc_tx());
 				debug_assert!(!outp.channel_type_features.supports_anchor_zero_fee_commitments());
 				outp.get_maybe_signed_htlc_tx(onchain_handler, outpoint)
 			}
-			PackageSolvingData::HolderFundingOutput(ref outp) => {
+			PackageSolvingData::HolderFundingOutput(outp) => {
 				Some(outp.get_maybe_signed_commitment_tx(onchain_handler))
 			}
 			_ => { panic!("API Error!"); }
@@ -1008,7 +1008,7 @@ impl PackageSolvingData {
 	#[rustfmt::skip]
 	fn minimum_locktime(&self) -> Option<u32> {
 		match self {
-			PackageSolvingData::CounterpartyReceivedHTLCOutput(ref outp) => Some(outp.htlc.cltv_expiry),
+			PackageSolvingData::CounterpartyReceivedHTLCOutput(outp) => Some(outp.htlc.cltv_expiry),
 			_ => None,
 		}
 	}
@@ -1016,7 +1016,7 @@ impl PackageSolvingData {
 	/// exact locktime. This returns that locktime for such outputs.
 	fn signed_locktime(&self) -> Option<u32> {
 		match self {
-			PackageSolvingData::HolderHTLCOutput(ref outp) => {
+			PackageSolvingData::HolderHTLCOutput(outp) => {
 				if outp.preimage.is_some() {
 					debug_assert_eq!(outp.cltv_expiry, 0);
 				}
@@ -1047,7 +1047,7 @@ impl PackageSolvingData {
 				PackageMalleability::Malleable(AggregationCluster::Unpinnable),
 			PackageSolvingData::CounterpartyReceivedHTLCOutput(..) =>
 				PackageMalleability::Malleable(AggregationCluster::Pinnable),
-			PackageSolvingData::HolderHTLCOutput(ref outp) => {
+			PackageSolvingData::HolderHTLCOutput(outp) => {
 				let free_htlcs = outp.channel_type_features.supports_anchors_zero_fee_htlc_tx();
 				let free_commits = outp.channel_type_features.supports_anchor_zero_fee_commitments();
 
@@ -1376,7 +1376,7 @@ impl PackageTemplate {
 		let mut htlcs: Option<Vec<HTLCDescriptor>> = None;
 		for (previous_output, input) in &self.inputs {
 			match input {
-				PackageSolvingData::HolderHTLCOutput(ref outp) => {
+				PackageSolvingData::HolderHTLCOutput(outp) => {
 					let free_htlcs = outp.channel_type_features.supports_anchors_zero_fee_htlc_tx();
 					let free_commitments =
 						outp.channel_type_features.supports_anchor_zero_fee_commitments();
@@ -1604,7 +1604,7 @@ impl PackageTemplate {
 impl Writeable for PackageTemplate {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		writer.write_all(&(self.inputs.len() as u64).to_be_bytes())?;
-		for (ref outpoint, ref rev_outp) in self.inputs.iter() {
+		for (outpoint, rev_outp) in self.inputs.iter() {
 			outpoint.write(writer)?;
 			rev_outp.write(writer)?;
 		}
@@ -1765,12 +1765,12 @@ fn feerate_bump<F: FeeEstimator, L: Logger>(
 
 #[cfg(test)]
 mod tests {
-	use crate::chain::package::{
-		feerate_bump, weight_offered_htlc, weight_received_htlc, CounterpartyOfferedHTLCOutput,
-		CounterpartyReceivedHTLCOutput, HolderFundingOutput, HolderHTLCOutput, PackageSolvingData,
-		PackageTemplate, RevokedHTLCOutput, RevokedOutput, WEIGHT_REVOKED_OUTPUT,
-	};
 	use crate::chain::Txid;
+	use crate::chain::package::{
+		CounterpartyOfferedHTLCOutput, CounterpartyReceivedHTLCOutput, HolderFundingOutput,
+		HolderHTLCOutput, PackageSolvingData, PackageTemplate, RevokedHTLCOutput, RevokedOutput,
+		WEIGHT_REVOKED_OUTPUT, feerate_bump, weight_offered_htlc, weight_received_htlc,
+	};
 	use crate::ln::chan_utils::{
 		ChannelTransactionParameters, HTLCOutputInCommitment, HolderCommitmentTransaction,
 	};
@@ -1788,7 +1788,7 @@ mod tests {
 	use bitcoin::hex::FromHex;
 
 	use crate::chain::chaininterface::{
-		ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator, FEERATE_FLOOR_SATS_PER_KW,
+		ConfirmationTarget, FEERATE_FLOOR_SATS_PER_KW, FeeEstimator, LowerBoundedFeeEstimator,
 	};
 	use crate::chain::onchaintx::FeerateStrategy;
 	use crate::types::features::ChannelTypeFeatures;

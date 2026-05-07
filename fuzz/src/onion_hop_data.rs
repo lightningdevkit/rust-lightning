@@ -25,7 +25,7 @@ pub fn onion_hop_data_test<Out: test_logger::Output>(data: &[u8], _out: Out) {
 	)>>::read(&mut r, (None, &&node_signer));
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn onion_hop_data_run(data: *const u8, datalen: usize) {
 	use bitcoin::secp256k1::PublicKey;
 	use lightning::util::ser::ReadableArgs;

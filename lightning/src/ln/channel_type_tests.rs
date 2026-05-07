@@ -1,5 +1,5 @@
 use crate::chain::chaininterface::LowerBoundedFeeEstimator;
-use crate::ln::channel::{get_initial_channel_type, InboundV1Channel, OutboundV1Channel};
+use crate::ln::channel::{InboundV1Channel, OutboundV1Channel, get_initial_channel_type};
 use crate::ln::channelmanager;
 use crate::prelude::*;
 use crate::util::config::UserConfig;
@@ -77,7 +77,7 @@ fn test_option_zero_fee_commitments_from_zero_htlc_anchors_initial() {
 	let mut start_features = InitFeatures::empty();
 	start_features.set_anchors_zero_fee_htlc_tx_optional();
 
-	let mut start_type = ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
+	let start_type = ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
 
 	let mut expected_type = ChannelTypeFeatures::empty();
 	expected_type.set_anchor_zero_fee_commitments_required();
@@ -98,7 +98,7 @@ fn test_option_zero_fee_commitments_from_zero_htlc_anchors_initial() {
 
 fn do_test_get_initial_channel_type<F1, F2>(
 	start_cfg: UserConfig, start_features: InitFeatures, start_type: ChannelTypeFeatures,
-	mut local_cfg_mod: F1, mut remote_features_mod: F2, channel_type: ChannelTypeFeatures,
+	local_cfg_mod: F1, remote_features_mod: F2, channel_type: ChannelTypeFeatures,
 ) where
 	F1: FnOnce(&mut UserConfig),
 	F2: FnOnce(&mut InitFeatures),

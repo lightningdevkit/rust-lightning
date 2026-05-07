@@ -5,13 +5,12 @@ use core::cmp;
 use bitcoin::secp256k1::{self, PublicKey, Secp256k1};
 
 use crate::ln::chan_utils::{
-	commit_tx_fee_sat, htlc_success_tx_weight, htlc_timeout_tx_weight, htlc_tx_fees_sat,
-	second_stage_tx_fees_sat, ChannelTransactionParameters, CommitmentTransaction,
-	HTLCOutputInCommitment,
+	ChannelTransactionParameters, CommitmentTransaction, HTLCOutputInCommitment, commit_tx_fee_sat,
+	htlc_success_tx_weight, htlc_timeout_tx_weight, htlc_tx_fees_sat, second_stage_tx_fees_sat,
 };
 use crate::ln::channel::{
-	get_v2_channel_reserve_satoshis, CommitmentStats, ANCHOR_OUTPUT_VALUE_SATOSHI,
-	MIN_CHANNEL_VALUE_SATOSHIS,
+	ANCHOR_OUTPUT_VALUE_SATOSHI, CommitmentStats, MIN_CHANNEL_VALUE_SATOSHIS,
+	get_v2_channel_reserve_satoshis,
 };
 use crate::prelude::*;
 use crate::types::features::ChannelTypeFeatures;

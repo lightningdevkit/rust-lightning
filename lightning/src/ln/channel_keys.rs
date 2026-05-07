@@ -15,9 +15,9 @@ use crate::ln::msgs::DecodeError;
 use crate::util::ser::Readable;
 use crate::util::ser::Writeable;
 use crate::util::ser::Writer;
-use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::HashEngine;
+use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1;
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::secp256k1::Scalar;
@@ -237,10 +237,17 @@ impl RevocationKey {
 			Sha256::from_engine(sha).to_byte_array()
 		};
 
-		let countersignatory_contrib = countersignatory_basepoint.to_public_key().mul_tweak(&secp_ctx, &Scalar::from_be_bytes(rev_append_commit_hash_key).unwrap())
-			.expect("Multiplying a valid public key by a hash is expected to never fail per secp256k1 docs");
-		let broadcaster_contrib = (&per_commitment_point).mul_tweak(&secp_ctx, &Scalar::from_be_bytes(commit_append_rev_hash_key).unwrap())
-			.expect("Multiplying a valid public key by a hash is expected to never fail per secp256k1 docs");
+		let countersignatory_contrib = countersignatory_basepoint
+			.to_public_key()
+			.mul_tweak(&secp_ctx, &Scalar::from_be_bytes(rev_append_commit_hash_key).unwrap())
+			.expect(
+				"Multiplying a valid public key by a hash is expected to never fail per secp256k1 docs",
+			);
+		let broadcaster_contrib = (&per_commitment_point)
+			.mul_tweak(&secp_ctx, &Scalar::from_be_bytes(commit_append_rev_hash_key).unwrap())
+			.expect(
+				"Multiplying a valid public key by a hash is expected to never fail per secp256k1 docs",
+			);
 		let pk = countersignatory_contrib.combine(&broadcaster_contrib)
 			.expect("Addition only fails if the tweak is the inverse of the key. This is not possible when the tweak commits to the key.");
 		Self(pk)

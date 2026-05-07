@@ -15,8 +15,8 @@ use crate::chain::channelmonitor::{CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCK
 use crate::events::{Event, HTLCHandlingFailureType, PathFailure, PaymentFailureReason};
 use crate::ln::channel::EXPIRE_PREV_CONFIG_TICKS;
 use crate::ln::channelmanager::{
-	FailureCode, HTLCForwardInfo, PaymentId, PendingAddHTLCInfo, PendingHTLCInfo,
-	PendingHTLCRouting, CLTV_FAR_FAR_AWAY, DISABLE_GOSSIP_TICKS, MIN_CLTV_EXPIRY_DELTA,
+	CLTV_FAR_FAR_AWAY, DISABLE_GOSSIP_TICKS, FailureCode, HTLCForwardInfo, MIN_CLTV_EXPIRY_DELTA,
+	PaymentId, PendingAddHTLCInfo, PendingHTLCInfo, PendingHTLCRouting,
 };
 use crate::ln::functional_test_utils::test_default_channel_config;
 use crate::ln::msgs;
@@ -25,14 +25,14 @@ use crate::ln::msgs::{
 	OutboundOnionPayload, OutboundTrampolinePayload,
 };
 use crate::ln::onion_utils::{
-	self, construct_onion_keys, test_build_onion_payloads, LocalHTLCFailureReason,
+	self, LocalHTLCFailureReason, construct_onion_keys, test_build_onion_payloads,
 };
 use crate::ln::outbound_payment::RecipientOnionFields;
 use crate::ln::wire::Encode;
 use crate::routing::gossip::{NetworkUpdate, RoutingFees};
 use crate::routing::router::{
-	get_route, BlindedTail, Path, PaymentParameters, Route, RouteHint, RouteHintHop, RouteHop,
-	RouteParameters, TrampolineHop,
+	BlindedTail, Path, PaymentParameters, Route, RouteHint, RouteHintHop, RouteHop,
+	RouteParameters, TrampolineHop, get_route,
 };
 use crate::sign::{EntropySource, NodeSigner, Recipient};
 use crate::types::features::{Bolt11InvoiceFeatures, InitFeatures};
@@ -391,7 +391,7 @@ fn test_fee_failures() {
 		&node_cfgs,
 		&[Some(config.clone()), Some(config.clone()), Some(config)],
 	);
-	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	let channels = [
 		create_announced_chan_between_nodes(&nodes, 0, 1),
 		create_announced_chan_between_nodes(&nodes, 1, 2),
@@ -492,7 +492,7 @@ fn test_onion_failure() {
 		&node_cfgs,
 		&[Some(config.clone()), Some(config), Some(node_2_cfg)],
 	);
-	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	let channels = [
 		create_announced_chan_between_nodes(&nodes, 0, 1),
 		create_announced_chan_between_nodes(&nodes, 1, 2),
@@ -1536,7 +1536,7 @@ fn test_overshoot_final_cltv() {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
-	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes(&nodes, 0, 1);
 	create_announced_chan_between_nodes(&nodes, 1, 2);
 	let (route, payment_hash, payment_preimage, payment_secret) =
@@ -1551,7 +1551,7 @@ fn test_overshoot_final_cltv() {
 
 	check_added_monitors(&nodes[0], 1);
 	let update_0 = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
-	let mut update_add_0 = update_0.update_add_htlcs[0].clone();
+	let update_add_0 = update_0.update_add_htlcs[0].clone();
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &update_add_0);
 	do_commitment_signed_dance(&nodes[1], &nodes[0], &update_0.commitment_signed, false, true);
 
@@ -1570,7 +1570,7 @@ fn test_overshoot_final_cltv() {
 
 	check_added_monitors(&nodes[1], 1);
 	let update_1 = get_htlc_update_msgs(&nodes[1], &nodes[2].node.get_our_node_id());
-	let mut update_add_1 = update_1.update_add_htlcs[0].clone();
+	let update_add_1 = update_1.update_add_htlcs[0].clone();
 	nodes[2].node.handle_update_add_htlc(nodes[1].node.get_our_node_id(), &update_add_1);
 	do_commitment_signed_dance(&nodes[2], &nodes[1], &update_1.commitment_signed, false, true);
 
@@ -1810,7 +1810,7 @@ fn test_always_create_tlv_format_onion_payloads() {
 	// specifies no support for variable length onions, as the legacy payload format has been
 	// deprecated in BOLT4.
 	let chanmon_cfgs = create_chanmon_cfgs(3);
-	let mut node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 
 	// Set `node[1]`'s init features to features which return `false` for
 	// `supports_variable_length_onion()`
@@ -1819,7 +1819,7 @@ fn test_always_create_tlv_format_onion_payloads() {
 	*node_cfgs[1].override_init_features.borrow_mut() = Some(no_variable_length_onion_features);
 
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
-	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	create_announced_chan_between_nodes(&nodes, 0, 1);
 	create_announced_chan_between_nodes(&nodes, 1, 2);
@@ -1887,7 +1887,10 @@ fn test_trampoline_onion_payload_serialization() {
 		|slice: &[u8]| slice.iter().map(|b| format!("{:02x}", b).to_string()).collect::<String>();
 
 	let carol_payload_hex = slice_to_hex(&trampoline_payload.encode());
-	assert_eq!(carol_payload_hex, "2e020405f5e10004030c35000e2102edabbd16b41c8371b92ef2f04c1185b4f03b6dcd52ba9b78d9d7c89c8f221145");
+	assert_eq!(
+		carol_payload_hex,
+		"2e020405f5e10004030c35000e2102edabbd16b41c8371b92ef2f04c1185b4f03b6dcd52ba9b78d9d7c89c8f221145"
+	);
 }
 
 #[test]
@@ -2097,14 +2100,20 @@ fn test_trampoline_onion_payload_construction_vectors() {
 		outgoing_node_id: PublicKey::from_slice(&<Vec<u8>>::from_hex(DAVE_HEX).unwrap()).unwrap(),
 	};
 	let carol_payload = trampoline_payload_carol.encode().to_lower_hex_string();
-	assert_eq!(carol_payload, "2e020408f31d6404030c35240e21032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991");
+	assert_eq!(
+		carol_payload,
+		"2e020408f31d6404030c35240e21032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991"
+	);
 
 	let trampoline_payload_dave = OutboundTrampolinePayload::BlindedForward {
 		encrypted_tlvs: &<Vec<u8>>::from_hex("0ccf3c8a58deaa603f657ee2a5ed9d604eb5c8ca1e5f801989afa8f3ea6d789bbdde2c7e7a1ef9ca8c38d2c54760febad8446d3f273ddb537569ef56613846ccd3aba78a").unwrap(),
 		intro_node_blinding_point: Some(PublicKey::from_slice(&<Vec<u8>>::from_hex(BLINDING_POINT_HEX).unwrap()).unwrap()),
 	};
 	let dave_payload = trampoline_payload_dave.encode().to_lower_hex_string();
-	assert_eq!(dave_payload, "690a440ccf3c8a58deaa603f657ee2a5ed9d604eb5c8ca1e5f801989afa8f3ea6d789bbdde2c7e7a1ef9ca8c38d2c54760febad8446d3f273ddb537569ef56613846ccd3aba78a0c2102988face71e92c345a068f740191fd8e53be14f0bb957ef730d3c5f76087b960e");
+	assert_eq!(
+		dave_payload,
+		"690a440ccf3c8a58deaa603f657ee2a5ed9d604eb5c8ca1e5f801989afa8f3ea6d789bbdde2c7e7a1ef9ca8c38d2c54760febad8446d3f273ddb537569ef56613846ccd3aba78a0c2102988face71e92c345a068f740191fd8e53be14f0bb957ef730d3c5f76087b960e"
+	);
 
 	let trampoline_payload_eve = OutboundTrampolinePayload::BlindedReceive {
 		sender_intended_htlc_amt_msat: 150_000_000,
@@ -2116,7 +2125,10 @@ fn test_trampoline_onion_payload_construction_vectors() {
 		custom_tlvs: &vec![],
 	};
 	let eve_payload = trampoline_payload_eve.encode().to_lower_hex_string();
-	assert_eq!(eve_payload, "e4020408f0d18004030c35000ad1bcd747394fbd4d99588da075a623316e15a576df5bc785cccc7cd6ec7b398acce6faf520175f9ec920f2ef261cdb83dc28cc3a0eeb970107b3306489bf771ef5b1213bca811d345285405861d08a655b6c237fa247a8b4491beee20c878a60e9816492026d8feb9dafa84585b253978db6a0aa2945df5ef445c61e801fb82f43d5f00716baf9fc9b3de50bc22950a36bda8fc27bfb1242e5860c7e687438d4133e058770361a19b6c271a2a07788d34dccc27e39b9829b061a4d960eac4a2c2b0f4de506c24f9af3868c0aff6dda27281c120408f0d180");
+	assert_eq!(
+		eve_payload,
+		"e4020408f0d18004030c35000ad1bcd747394fbd4d99588da075a623316e15a576df5bc785cccc7cd6ec7b398acce6faf520175f9ec920f2ef261cdb83dc28cc3a0eeb970107b3306489bf771ef5b1213bca811d345285405861d08a655b6c237fa247a8b4491beee20c878a60e9816492026d8feb9dafa84585b253978db6a0aa2945df5ef445c61e801fb82f43d5f00716baf9fc9b3de50bc22950a36bda8fc27bfb1242e5860c7e687438d4133e058770361a19b6c271a2a07788d34dccc27e39b9829b061a4d960eac4a2c2b0f4de506c24f9af3868c0aff6dda27281c120408f0d180"
+	);
 
 	let trampoline_payloads =
 		vec![trampoline_payload_carol, trampoline_payload_dave, trampoline_payload_eve];
@@ -2191,7 +2203,10 @@ fn test_trampoline_onion_payload_construction_vectors() {
 	)
 	.unwrap();
 	let trampoline_onion_packet_hex = trampoline_onion_packet.encode().to_lower_hex_string();
-	assert_eq!(trampoline_onion_packet_hex, "0002bc59a9abc893d75a8d4f56a6572f9a3507323a8de22abe0496ea8d37da166a8b4bba0e560f1a9deb602bfd98fe9167141d0b61d669df90c0149096d505b85d3d02806e6c12caeb308b878b6bc7f1b15839c038a6443cd3bec3a94c2293165375555f6d7720862b525930f41fddcc02260d197abd93fb58e60835fd97d9dc14e7979c12f59df08517b02e3e4d50e1817de4271df66d522c4e9675df71c635c4176a8381bc22b342ff4e9031cede87f74cc039fca74aa0a3786bc1db2e158a9a520ecb99667ef9a6bbfaf5f0e06f81c27ca48134ba2103229145937c5dc7b8ecc5201d6aeb592e78faa3c05d3a035df77628f0be9b1af3ef7d386dd5cc87b20778f47ebd40dbfcf12b9071c5d7112ab84c3e0c5c14867e684d09a18bc93ac47d73b7343e3403ef6e3b70366835988920e7d772c3719d3596e53c29c4017cb6938421a557ce81b4bb26701c25bf622d4c69f1359dc85857a375c5c74987a4d3152f66987001c68a50c4bf9e0b1dab4ad1a64b0535319bbf6c4fbe4f9c50cb65f5ef887bfb91b0a57c0f86ba3d91cbeea1607fb0c12c6c75d03bbb0d3a3019c40597027f5eebca23083e50ec79d41b1152131853525bf3fc13fb0be62c2e3ce733f59671eee5c4064863fb92ae74be9ca68b9c716f9519fd268478ee27d91d466b0de51404de3226b74217d28250ead9d2c95411e0230570f547d4cc7c1d589791623131aa73965dccc5aa17ec12b442215ce5d346df664d799190df5dd04a13");
+	assert_eq!(
+		trampoline_onion_packet_hex,
+		"0002bc59a9abc893d75a8d4f56a6572f9a3507323a8de22abe0496ea8d37da166a8b4bba0e560f1a9deb602bfd98fe9167141d0b61d669df90c0149096d505b85d3d02806e6c12caeb308b878b6bc7f1b15839c038a6443cd3bec3a94c2293165375555f6d7720862b525930f41fddcc02260d197abd93fb58e60835fd97d9dc14e7979c12f59df08517b02e3e4d50e1817de4271df66d522c4e9675df71c635c4176a8381bc22b342ff4e9031cede87f74cc039fca74aa0a3786bc1db2e158a9a520ecb99667ef9a6bbfaf5f0e06f81c27ca48134ba2103229145937c5dc7b8ecc5201d6aeb592e78faa3c05d3a035df77628f0be9b1af3ef7d386dd5cc87b20778f47ebd40dbfcf12b9071c5d7112ab84c3e0c5c14867e684d09a18bc93ac47d73b7343e3403ef6e3b70366835988920e7d772c3719d3596e53c29c4017cb6938421a557ce81b4bb26701c25bf622d4c69f1359dc85857a375c5c74987a4d3152f66987001c68a50c4bf9e0b1dab4ad1a64b0535319bbf6c4fbe4f9c50cb65f5ef887bfb91b0a57c0f86ba3d91cbeea1607fb0c12c6c75d03bbb0d3a3019c40597027f5eebca23083e50ec79d41b1152131853525bf3fc13fb0be62c2e3ce733f59671eee5c4064863fb92ae74be9ca68b9c716f9519fd268478ee27d91d466b0de51404de3226b74217d28250ead9d2c95411e0230570f547d4cc7c1d589791623131aa73965dccc5aa17ec12b442215ce5d346df664d799190df5dd04a13"
+	);
 
 	let outer_payloads = vec![
 		// Bob
@@ -2246,7 +2261,10 @@ fn test_trampoline_onion_payload_construction_vectors() {
 	assert_eq!(bob_payload, "15020408f3272804030c353c060808bbaa00002a0b05");
 
 	let carol_payload = outer_payloads[1].encode().to_lower_hex_string();
-	assert_eq!(carol_payload, "fd0255020408f3272804030c353c08247494b65bc092b48a75465e43e29be807eb2cc535ce8aaba31012b8ff1ceac5da08f3272814fd02200002bc59a9abc893d75a8d4f56a6572f9a3507323a8de22abe0496ea8d37da166a8b4bba0e560f1a9deb602bfd98fe9167141d0b61d669df90c0149096d505b85d3d02806e6c12caeb308b878b6bc7f1b15839c038a6443cd3bec3a94c2293165375555f6d7720862b525930f41fddcc02260d197abd93fb58e60835fd97d9dc14e7979c12f59df08517b02e3e4d50e1817de4271df66d522c4e9675df71c635c4176a8381bc22b342ff4e9031cede87f74cc039fca74aa0a3786bc1db2e158a9a520ecb99667ef9a6bbfaf5f0e06f81c27ca48134ba2103229145937c5dc7b8ecc5201d6aeb592e78faa3c05d3a035df77628f0be9b1af3ef7d386dd5cc87b20778f47ebd40dbfcf12b9071c5d7112ab84c3e0c5c14867e684d09a18bc93ac47d73b7343e3403ef6e3b70366835988920e7d772c3719d3596e53c29c4017cb6938421a557ce81b4bb26701c25bf622d4c69f1359dc85857a375c5c74987a4d3152f66987001c68a50c4bf9e0b1dab4ad1a64b0535319bbf6c4fbe4f9c50cb65f5ef887bfb91b0a57c0f86ba3d91cbeea1607fb0c12c6c75d03bbb0d3a3019c40597027f5eebca23083e50ec79d41b1152131853525bf3fc13fb0be62c2e3ce733f59671eee5c4064863fb92ae74be9ca68b9c716f9519fd268478ee27d91d466b0de51404de3226b74217d28250ead9d2c95411e0230570f547d4cc7c1d589791623131aa73965dccc5aa17ec12b442215ce5d346df664d799190df5dd04a13");
+	assert_eq!(
+		carol_payload,
+		"fd0255020408f3272804030c353c08247494b65bc092b48a75465e43e29be807eb2cc535ce8aaba31012b8ff1ceac5da08f3272814fd02200002bc59a9abc893d75a8d4f56a6572f9a3507323a8de22abe0496ea8d37da166a8b4bba0e560f1a9deb602bfd98fe9167141d0b61d669df90c0149096d505b85d3d02806e6c12caeb308b878b6bc7f1b15839c038a6443cd3bec3a94c2293165375555f6d7720862b525930f41fddcc02260d197abd93fb58e60835fd97d9dc14e7979c12f59df08517b02e3e4d50e1817de4271df66d522c4e9675df71c635c4176a8381bc22b342ff4e9031cede87f74cc039fca74aa0a3786bc1db2e158a9a520ecb99667ef9a6bbfaf5f0e06f81c27ca48134ba2103229145937c5dc7b8ecc5201d6aeb592e78faa3c05d3a035df77628f0be9b1af3ef7d386dd5cc87b20778f47ebd40dbfcf12b9071c5d7112ab84c3e0c5c14867e684d09a18bc93ac47d73b7343e3403ef6e3b70366835988920e7d772c3719d3596e53c29c4017cb6938421a557ce81b4bb26701c25bf622d4c69f1359dc85857a375c5c74987a4d3152f66987001c68a50c4bf9e0b1dab4ad1a64b0535319bbf6c4fbe4f9c50cb65f5ef887bfb91b0a57c0f86ba3d91cbeea1607fb0c12c6c75d03bbb0d3a3019c40597027f5eebca23083e50ec79d41b1152131853525bf3fc13fb0be62c2e3ce733f59671eee5c4064863fb92ae74be9ca68b9c716f9519fd268478ee27d91d466b0de51404de3226b74217d28250ead9d2c95411e0230570f547d4cc7c1d589791623131aa73965dccc5aa17ec12b442215ce5d346df664d799190df5dd04a13"
+	);
 
 	let outer_session_key = SecretKey::from_slice(
 		&<Vec<u8>>::from_hex("4f777e8dac16e6dfe333066d9efb014f7a51d11762ff76eca4d3a95ada99ba3e")
@@ -2264,7 +2282,10 @@ fn test_trampoline_onion_payload_construction_vectors() {
 	)
 	.unwrap();
 	let outer_onion_packet_hex = outer_onion_packet.encode().to_lower_hex_string();
-	assert_eq!(outer_onion_packet_hex, "00025fd60556c134ae97e4baedba220a644037754ee67c54fd05e93bf40c17cbb73362fb9dee96001ff229945595b6edb59437a6bc143406d3f90f749892a84d8d430c6890437d26d5bfc599d565316ef51347521075bbab87c59c57bcf20af7e63d7192b46cf171e4f73cb11f9f603915389105d91ad630224bea95d735e3988add1e24b5bf28f1d7128db64284d90a839ba340d088c74b1fb1bd21136b1809428ec5399c8649e9bdf92d2dcfc694deae5046fa5b2bdf646847aaad73f5e95275763091c90e71031cae1f9a770fdea559642c9c02f424a2a28163dd0957e3874bd28a97bec67d18c0321b0e68bc804aa8345b17cb626e2348ca06c8312a167c989521056b0f25c55559d446507d6c491d50605cb79fa87929ce64b0a9860926eeaec2c431d926a1cadb9a1186e4061cb01671a122fc1f57602cbef06d6c194ec4b715c2e3dd4120baca3172cd81900b49fef857fb6d6afd24c983b608108b0a5ac0c1c6c52011f23b8778059ffadd1bb7cd06e2525417365f485a7fd1d4a9ba3818ede7cdc9e71afee8532252d08e2531ca52538655b7e8d912f7ec6d37bbcce8d7ec690709dbf9321e92c565b78e7fe2c22edf23e0902153d1ca15a112ad32fb19695ec65ce11ddf670da7915f05ad4b86c154fb908cb567315d1124f303f75fa075ebde8ef7bb12e27737ad9e4924439097338ea6d7a6fc3721b88c9b830a34e8d55f4c582b74a3895cc848fe57f4fe29f115dabeb6b3175be15d94408ed6771109cfaf57067ae658201082eae7605d26b1449af4425ae8e8f58cdda5c6265f1fd7a386fc6cea3074e4f25b909b96175883676f7610a00fdf34df9eb6c7b9a4ae89b839c69fd1f285e38cdceb634d782cc6d81179759bc9fd47d7fd060470d0b048287764c6837963274e708314f017ac7dc26d0554d59bfcfd3136225798f65f0b0fea337c6b256ebbb63a90b994c0ab93fd8b1d6bd4c74aebe535d6110014cd3d525394027dfe8faa98b4e9b2bee7949eb1961f1b026791092f84deea63afab66603dbe9b6365a102a1fef2f6b9744bc1bb091a8da9130d34d4d39f25dbad191649cfb67e10246364b7ce0c6ec072f9690cabb459d9fda0c849e17535de4357e9907270c75953fca3c845bb613926ecf73205219c7057a4b6bb244c184362bb4e2f24279dc4e60b94a5b1ec11c34081a628428ba5646c995b9558821053ba9c84a05afbf00dabd60223723096516d2f5668f3ec7e11612b01eb7a3a0506189a2272b88e89807943adb34291a17f6cb5516ffd6f945a1c42a524b21f096d66f350b1dad4db455741ae3d0e023309fbda5ef55fb0dc74f3297041448b2be76c525141963934c6afc53d263fb7836626df502d7c2ee9e79cbbd87afd84bbb8dfbf45248af3cd61ad5fac827e7683ca4f91dfad507a8eb9c17b2c9ac5ec051fe645a4a6cb37136f6f19b611e0ea8da7960af2d779507e55f57305bc74b7568928c5dd5132990fe54c22117df91c257d8c7b61935a018a28c1c3b17bab8e4294fa699161ec21123c9fc4e71079df31f300c2822e1246561e04765d3aab333eafd026c7431ac7616debb0e022746f4538e1c6348b600c988eeb2d051fc60c468dca260a84c79ab3ab8342dc345a764672848ea234e17332bc124799daf7c5fcb2e2358514a7461357e1c19c802c5ee32deccf1776885dd825bedd5f781d459984370a6b7ae885d4483a76ddb19b30f47ed47cd56aa5a079a89793dbcad461c59f2e002067ac98dd5a534e525c9c46c2af730741bf1f8629357ec0bfc0bc9ecb31af96777e507648ff4260dc3673716e098d9111dfd245f1d7c55a6de340deb8bd7a053e5d62d760f184dc70ca8fa255b9023b9b9aedfb6e419a5b5951ba0f83b603793830ee68d442d7b88ee1bbf6bbd1bcd6f68cc1af");
+	assert_eq!(
+		outer_onion_packet_hex,
+		"00025fd60556c134ae97e4baedba220a644037754ee67c54fd05e93bf40c17cbb73362fb9dee96001ff229945595b6edb59437a6bc143406d3f90f749892a84d8d430c6890437d26d5bfc599d565316ef51347521075bbab87c59c57bcf20af7e63d7192b46cf171e4f73cb11f9f603915389105d91ad630224bea95d735e3988add1e24b5bf28f1d7128db64284d90a839ba340d088c74b1fb1bd21136b1809428ec5399c8649e9bdf92d2dcfc694deae5046fa5b2bdf646847aaad73f5e95275763091c90e71031cae1f9a770fdea559642c9c02f424a2a28163dd0957e3874bd28a97bec67d18c0321b0e68bc804aa8345b17cb626e2348ca06c8312a167c989521056b0f25c55559d446507d6c491d50605cb79fa87929ce64b0a9860926eeaec2c431d926a1cadb9a1186e4061cb01671a122fc1f57602cbef06d6c194ec4b715c2e3dd4120baca3172cd81900b49fef857fb6d6afd24c983b608108b0a5ac0c1c6c52011f23b8778059ffadd1bb7cd06e2525417365f485a7fd1d4a9ba3818ede7cdc9e71afee8532252d08e2531ca52538655b7e8d912f7ec6d37bbcce8d7ec690709dbf9321e92c565b78e7fe2c22edf23e0902153d1ca15a112ad32fb19695ec65ce11ddf670da7915f05ad4b86c154fb908cb567315d1124f303f75fa075ebde8ef7bb12e27737ad9e4924439097338ea6d7a6fc3721b88c9b830a34e8d55f4c582b74a3895cc848fe57f4fe29f115dabeb6b3175be15d94408ed6771109cfaf57067ae658201082eae7605d26b1449af4425ae8e8f58cdda5c6265f1fd7a386fc6cea3074e4f25b909b96175883676f7610a00fdf34df9eb6c7b9a4ae89b839c69fd1f285e38cdceb634d782cc6d81179759bc9fd47d7fd060470d0b048287764c6837963274e708314f017ac7dc26d0554d59bfcfd3136225798f65f0b0fea337c6b256ebbb63a90b994c0ab93fd8b1d6bd4c74aebe535d6110014cd3d525394027dfe8faa98b4e9b2bee7949eb1961f1b026791092f84deea63afab66603dbe9b6365a102a1fef2f6b9744bc1bb091a8da9130d34d4d39f25dbad191649cfb67e10246364b7ce0c6ec072f9690cabb459d9fda0c849e17535de4357e9907270c75953fca3c845bb613926ecf73205219c7057a4b6bb244c184362bb4e2f24279dc4e60b94a5b1ec11c34081a628428ba5646c995b9558821053ba9c84a05afbf00dabd60223723096516d2f5668f3ec7e11612b01eb7a3a0506189a2272b88e89807943adb34291a17f6cb5516ffd6f945a1c42a524b21f096d66f350b1dad4db455741ae3d0e023309fbda5ef55fb0dc74f3297041448b2be76c525141963934c6afc53d263fb7836626df502d7c2ee9e79cbbd87afd84bbb8dfbf45248af3cd61ad5fac827e7683ca4f91dfad507a8eb9c17b2c9ac5ec051fe645a4a6cb37136f6f19b611e0ea8da7960af2d779507e55f57305bc74b7568928c5dd5132990fe54c22117df91c257d8c7b61935a018a28c1c3b17bab8e4294fa699161ec21123c9fc4e71079df31f300c2822e1246561e04765d3aab333eafd026c7431ac7616debb0e022746f4538e1c6348b600c988eeb2d051fc60c468dca260a84c79ab3ab8342dc345a764672848ea234e17332bc124799daf7c5fcb2e2358514a7461357e1c19c802c5ee32deccf1776885dd825bedd5f781d459984370a6b7ae885d4483a76ddb19b30f47ed47cd56aa5a079a89793dbcad461c59f2e002067ac98dd5a534e525c9c46c2af730741bf1f8629357ec0bfc0bc9ecb31af96777e507648ff4260dc3673716e098d9111dfd245f1d7c55a6de340deb8bd7a053e5d62d760f184dc70ca8fa255b9023b9b9aedfb6e419a5b5951ba0f83b603793830ee68d442d7b88ee1bbf6bbd1bcd6f68cc1af"
+	);
 }
 
 fn do_test_fail_htlc_backwards_with_reason(failure_code: FailureCode) {
@@ -2286,7 +2307,7 @@ fn do_test_fail_htlc_backwards_with_reason(failure_code: FailureCode) {
 	check_added_monitors(&nodes[0], 1);
 
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
-	let mut payment_event = SendEvent::from_event(events.pop().unwrap());
+	let payment_event = SendEvent::from_event(events.pop().unwrap());
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
 	do_commitment_signed_dance(&nodes[1], &nodes[0], &payment_event.commitment_msg, false, false);
 
@@ -2435,7 +2456,7 @@ fn test_phantom_onion_hmac_failure() {
 		.unwrap();
 	check_added_monitors(&nodes[0], 1);
 	let update_0 = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
-	let mut update_add = update_0.update_add_htlcs[0].clone();
+	let update_add = update_0.update_add_htlcs[0].clone();
 
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &update_add);
 	do_commitment_signed_dance(&nodes[1], &nodes[0], &update_0.commitment_signed, false, true);
@@ -2445,7 +2466,7 @@ fn test_phantom_onion_hmac_failure() {
 	// Modify the payload so the phantom hop's HMAC is bogus.
 	let sha256_of_onion = {
 		let mut forward_htlcs = nodes[1].node.forward_htlcs.lock().unwrap();
-		let mut pending_forward = forward_htlcs.get_mut(&phantom_scid).unwrap();
+		let pending_forward = forward_htlcs.get_mut(&phantom_scid).unwrap();
 		match pending_forward[0] {
 			HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
 				forward_info:
@@ -2475,7 +2496,7 @@ fn test_phantom_onion_hmac_failure() {
 	do_commitment_signed_dance(&nodes[0], &nodes[1], &update_1.commitment_signed, false, false);
 
 	// Ensure the payment fails with the expected error.
-	let mut fail_conditions = PaymentFailedConditions::new()
+	let fail_conditions = PaymentFailedConditions::new()
 		.blamed_scid(phantom_scid)
 		.blamed_chan_closed(true)
 		.expected_htlc_error_data(LocalHTLCFailureReason::InvalidOnionHMAC, &sha256_of_onion);
@@ -2487,7 +2508,7 @@ fn test_phantom_invalid_onion_payload() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let channel = create_announced_chan_between_nodes(&nodes, 0, 1);
 
@@ -2508,7 +2529,7 @@ fn test_phantom_invalid_onion_payload() {
 		.unwrap();
 	check_added_monitors(&nodes[0], 1);
 	let update_0 = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
-	let mut update_add = update_0.update_add_htlcs[0].clone();
+	let update_add = update_0.update_add_htlcs[0].clone();
 
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &update_add);
 	do_commitment_signed_dance(&nodes[1], &nodes[0], &update_0.commitment_signed, false, true);
@@ -2577,7 +2598,7 @@ fn test_phantom_invalid_onion_payload() {
 
 	// Ensure the payment fails with the expected error.
 	let error_data = Vec::new();
-	let mut fail_conditions = PaymentFailedConditions::new()
+	let fail_conditions = PaymentFailedConditions::new()
 		.blamed_scid(phantom_scid)
 		.blamed_chan_closed(true)
 		.expected_htlc_error_data(LocalHTLCFailureReason::InvalidOnionPayload, &error_data);
@@ -2607,7 +2628,7 @@ fn test_phantom_final_incorrect_cltv_expiry() {
 		.unwrap();
 	check_added_monitors(&nodes[0], 1);
 	let update_0 = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
-	let mut update_add = update_0.update_add_htlcs[0].clone();
+	let update_add = update_0.update_add_htlcs[0].clone();
 
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &update_add);
 	do_commitment_signed_dance(&nodes[1], &nodes[0], &update_0.commitment_signed, false, true);
@@ -2644,7 +2665,7 @@ fn test_phantom_final_incorrect_cltv_expiry() {
 	// Ensure the payment fails with the expected error.
 	let expected_cltv: u32 = 80;
 	let error_data = expected_cltv.to_be_bytes().to_vec();
-	let mut fail_conditions = PaymentFailedConditions::new()
+	let fail_conditions = PaymentFailedConditions::new()
 		.blamed_scid(phantom_scid)
 		.expected_htlc_error_data(LocalHTLCFailureReason::FinalIncorrectCLTVExpiry, &error_data);
 	expect_payment_failed_conditions(&nodes[0], payment_hash, false, fail_conditions);
@@ -2676,7 +2697,7 @@ fn test_phantom_failure_too_low_cltv() {
 		.unwrap();
 	check_added_monitors(&nodes[0], 1);
 	let update_0 = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
-	let mut update_add = update_0.update_add_htlcs[0].clone();
+	let update_add = update_0.update_add_htlcs[0].clone();
 
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &update_add);
 	do_commitment_signed_dance(&nodes[1], &nodes[0], &update_0.commitment_signed, false, true);
@@ -2698,7 +2719,7 @@ fn test_phantom_failure_too_low_cltv() {
 	// Ensure the payment fails with the expected error.
 	let mut error_data = recv_value_msat.to_be_bytes().to_vec();
 	error_data.extend_from_slice(&nodes[0].node.best_block.read().unwrap().height.to_be_bytes());
-	let mut fail_conditions = PaymentFailedConditions::new()
+	let fail_conditions = PaymentFailedConditions::new()
 		.blamed_scid(phantom_scid)
 		.expected_htlc_error_data(LocalHTLCFailureReason::IncorrectPaymentDetails, &error_data);
 	expect_payment_failed_conditions(&nodes[0], payment_hash, true, fail_conditions);
@@ -2719,7 +2740,7 @@ fn test_phantom_failure_modified_cltv() {
 	let recv_value_msat = 10_000;
 	let (_, payment_hash, payment_secret) =
 		get_payment_preimage_hash(&nodes[1], Some(recv_value_msat), None);
-	let (mut route, phantom_scid) = get_phantom_route!(nodes, recv_value_msat, channel);
+	let (route, phantom_scid) = get_phantom_route!(nodes, recv_value_msat, channel);
 
 	// Route the HTLC through to the destination.
 	let recipient_onion = RecipientOnionFields::secret_only(payment_secret, recv_value_msat);
@@ -2753,7 +2774,7 @@ fn test_phantom_failure_modified_cltv() {
 	let mut err_data = Vec::new();
 	err_data.extend_from_slice(&update_add.cltv_expiry.to_be_bytes());
 	err_data.extend_from_slice(&0u16.to_be_bytes());
-	let mut fail_conditions = PaymentFailedConditions::new()
+	let fail_conditions = PaymentFailedConditions::new()
 		.blamed_scid(phantom_scid)
 		.expected_htlc_error_data(LocalHTLCFailureReason::IncorrectCLTVExpiry, &err_data);
 	expect_payment_failed_conditions(&nodes[0], payment_hash, false, fail_conditions);
@@ -2774,7 +2795,7 @@ fn test_phantom_failure_expires_too_soon() {
 	let recv_value_msat = 10_000;
 	let (_, payment_hash, payment_secret) =
 		get_payment_preimage_hash(&nodes[1], Some(recv_value_msat), None);
-	let (mut route, phantom_scid) = get_phantom_route!(nodes, recv_value_msat, channel);
+	let (route, phantom_scid) = get_phantom_route!(nodes, recv_value_msat, channel);
 
 	// Route the HTLC through to the destination.
 	let recipient_onion = RecipientOnionFields::secret_only(payment_secret, recv_value_msat);
@@ -2784,7 +2805,7 @@ fn test_phantom_failure_expires_too_soon() {
 		.unwrap();
 	check_added_monitors(&nodes[0], 1);
 	let update_0 = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
-	let mut update_add = update_0.update_add_htlcs[0].clone();
+	let update_add = update_0.update_add_htlcs[0].clone();
 
 	connect_blocks(&nodes[1], CLTV_FAR_FAR_AWAY);
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &update_add);
@@ -2804,7 +2825,7 @@ fn test_phantom_failure_expires_too_soon() {
 
 	// Ensure the payment fails with the expected error.
 	let err_data = 0u16.to_be_bytes();
-	let mut fail_conditions = PaymentFailedConditions::new()
+	let fail_conditions = PaymentFailedConditions::new()
 		.blamed_scid(phantom_scid)
 		.expected_htlc_error_data(LocalHTLCFailureReason::CLTVExpiryTooSoon, &err_data);
 	expect_payment_failed_conditions(&nodes[0], payment_hash, false, fail_conditions);
@@ -2824,7 +2845,7 @@ fn test_phantom_failure_too_low_recv_amt() {
 	let bad_recv_amt_msat = recv_amt_msat - 10;
 	let (_, payment_hash, payment_secret) =
 		get_payment_preimage_hash(&nodes[1], Some(recv_amt_msat), None);
-	let (mut route, phantom_scid) = get_phantom_route!(nodes, bad_recv_amt_msat, channel);
+	let (route, phantom_scid) = get_phantom_route!(nodes, bad_recv_amt_msat, channel);
 
 	// Route the HTLC through to the destination.
 	let recipient_onion =
@@ -2835,7 +2856,7 @@ fn test_phantom_failure_too_low_recv_amt() {
 		.unwrap();
 	check_added_monitors(&nodes[0], 1);
 	let update_0 = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
-	let mut update_add = update_0.update_add_htlcs[0].clone();
+	let update_add = update_0.update_add_htlcs[0].clone();
 
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &update_add);
 	do_commitment_signed_dance(&nodes[1], &nodes[0], &update_0.commitment_signed, false, true);
@@ -2859,7 +2880,7 @@ fn test_phantom_failure_too_low_recv_amt() {
 	// Ensure the payment fails with the expected error.
 	let mut error_data = bad_recv_amt_msat.to_be_bytes().to_vec();
 	error_data.extend_from_slice(&nodes[1].node.best_block.read().unwrap().height.to_be_bytes());
-	let mut fail_conditions = PaymentFailedConditions::new()
+	let fail_conditions = PaymentFailedConditions::new()
 		.blamed_scid(phantom_scid)
 		.expected_htlc_error_data(LocalHTLCFailureReason::IncorrectPaymentDetails, &error_data);
 	expect_payment_failed_conditions(&nodes[0], payment_hash, true, fail_conditions);
@@ -2894,7 +2915,7 @@ fn do_test_phantom_dust_exposure_failure(multiplier_dust_limit: bool) {
 	// Get the route with an amount exceeding the dust exposure threshold of nodes[1].
 	let (_, payment_hash, payment_secret) =
 		get_payment_preimage_hash(&nodes[1], Some(max_dust_exposure + 1), None);
-	let (mut route, phantom_scid) = get_phantom_route!(nodes, max_dust_exposure + 1, channel);
+	let (route, phantom_scid) = get_phantom_route!(nodes, max_dust_exposure + 1, channel);
 
 	// Route the HTLC through to the destination.
 	let recipient_onion = RecipientOnionFields::secret_only(payment_secret, max_dust_exposure + 1);
@@ -2905,7 +2926,7 @@ fn do_test_phantom_dust_exposure_failure(multiplier_dust_limit: bool) {
 		.unwrap();
 	check_added_monitors(&nodes[0], 1);
 	let update_0 = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
-	let mut update_add = update_0.update_add_htlcs[0].clone();
+	let update_add = update_0.update_add_htlcs[0].clone();
 
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &update_add);
 	do_commitment_signed_dance(&nodes[1], &nodes[0], &update_0.commitment_signed, false, true);
@@ -2924,7 +2945,7 @@ fn do_test_phantom_dust_exposure_failure(multiplier_dust_limit: bool) {
 
 	// Ensure the payment fails with the expected error.
 	let err_data = 0u16.to_be_bytes();
-	let mut fail_conditions = PaymentFailedConditions::new()
+	let fail_conditions = PaymentFailedConditions::new()
 		.blamed_scid(phantom_scid)
 		.expected_htlc_error_data(LocalHTLCFailureReason::TemporaryChannelFailure, &err_data);
 	expect_payment_failed_conditions(&nodes[0], payment_hash, false, fail_conditions);
@@ -2944,7 +2965,7 @@ fn test_phantom_failure_reject_payment() {
 	let recv_amt_msat = 10_000;
 	let (_, payment_hash, payment_secret) =
 		get_payment_preimage_hash(&nodes[1], Some(recv_amt_msat), None);
-	let (mut route, phantom_scid) = get_phantom_route!(nodes, recv_amt_msat, channel);
+	let (route, phantom_scid) = get_phantom_route!(nodes, recv_amt_msat, channel);
 
 	// Route the HTLC through to the destination.
 	let recipient_onion = RecipientOnionFields::secret_only(payment_secret, recv_amt_msat);
@@ -2955,7 +2976,7 @@ fn test_phantom_failure_reject_payment() {
 		.unwrap();
 	check_added_monitors(&nodes[0], 1);
 	let update_0 = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
-	let mut update_add = update_0.update_add_htlcs[0].clone();
+	let update_add = update_0.update_add_htlcs[0].clone();
 
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &update_add);
 	do_commitment_signed_dance(&nodes[1], &nodes[0], &update_0.commitment_signed, false, true);
@@ -2989,7 +3010,7 @@ fn test_phantom_failure_reject_payment() {
 	// Ensure the payment fails with the expected error.
 	let mut error_data = recv_amt_msat.to_be_bytes().to_vec();
 	error_data.extend_from_slice(&nodes[1].node.best_block.read().unwrap().height.to_be_bytes());
-	let mut fail_conditions = PaymentFailedConditions::new()
+	let fail_conditions = PaymentFailedConditions::new()
 		.blamed_scid(phantom_scid)
 		.expected_htlc_error_data(LocalHTLCFailureReason::IncorrectPaymentDetails, &error_data);
 	expect_payment_failed_conditions(&nodes[0], payment_hash, true, fail_conditions);

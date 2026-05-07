@@ -14,7 +14,7 @@
 
 use crate::chain::chaininterface::LowerBoundedFeeEstimator;
 use crate::chain::chainmonitor::ChainMonitor;
-use crate::chain::channelmonitor::{ChannelMonitor, MonitorEvent, ANTI_REORG_DELAY};
+use crate::chain::channelmonitor::{ANTI_REORG_DELAY, ChannelMonitor, MonitorEvent};
 use crate::chain::transaction::OutPoint;
 use crate::chain::{BlockLocator, ChannelMonitorUpdateStatus, Confirm, Listen, Watch};
 use crate::events::{ClosureReason, Event, HTLCHandlingFailureType, PaymentPurpose};
@@ -30,9 +30,9 @@ use crate::routing::router::{PaymentParameters, RouteParameters};
 use crate::sign::NodeSigner;
 use crate::util::native_async::FutureQueue;
 use crate::util::persist::{
-	MonitorName, MonitorUpdatingPersisterAsync, CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
-	CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
-	CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
+	CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE, CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+	CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE, MonitorName,
+	MonitorUpdatingPersisterAsync,
 };
 use crate::util::ser::{ReadableArgs, Writeable};
 use crate::util::test_channel_signer::TestChannelSigner;
@@ -58,7 +58,7 @@ fn test_monitor_and_persister_update_fail() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -126,7 +126,7 @@ fn test_monitor_and_persister_update_fail() {
 	nodes[0].node.handle_update_fulfill_htlc(node_b_id, updates.update_fulfill_htlcs.remove(0));
 
 	{
-		let mut per_peer_lock;
+		let per_peer_lock;
 		let mut peer_state_lock;
 		let chan_opt = get_channel_ref!(nodes[0], nodes[1], per_peer_lock, peer_state_lock, chan.2);
 		if let Some(channel) = chan_opt.as_funded_mut() {
@@ -175,7 +175,7 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool) {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	nodes[0].disable_monitor_completeness_assertion();
 
 	let node_a_id = nodes[0].node.get_our_node_id();
@@ -317,7 +317,7 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	nodes[0].disable_monitor_completeness_assertion();
 
 	let node_a_id = nodes[0].node.get_our_node_id();
@@ -728,7 +728,7 @@ fn test_monitor_update_fail_cs() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -838,7 +838,7 @@ fn test_monitor_update_fail_no_rebroadcast() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 
@@ -890,7 +890,7 @@ fn test_monitor_update_raa_while_paused() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -971,7 +971,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
-	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	nodes[1].disable_monitor_completeness_assertion();
 
 	let node_a_id = nodes[0].node.get_our_node_id();
@@ -1275,7 +1275,7 @@ fn test_monitor_update_fail_reestablish() {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
-	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -1376,7 +1376,7 @@ fn raa_no_response_awaiting_raa_state() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -1503,7 +1503,7 @@ fn claim_while_disconnected_monitor_update_fail() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	nodes[1].disable_monitor_completeness_assertion();
 
 	let node_a_id = nodes[0].node.get_our_node_id();
@@ -1633,21 +1633,21 @@ fn monitor_failed_no_reestablish_response() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
 
 	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
 	{
-		let mut per_peer_lock;
+		let per_peer_lock;
 		let mut peer_state_lock;
 		get_channel_ref!(nodes[0], nodes[1], per_peer_lock, peer_state_lock, channel_id)
 			.context_mut()
 			.announcement_sigs_state = AnnouncementSigsState::PeerReceived;
 	}
 	{
-		let mut per_peer_lock;
+		let per_peer_lock;
 		let mut peer_state_lock;
 		get_channel_ref!(nodes[1], nodes[0], per_peer_lock, peer_state_lock, channel_id)
 			.context_mut()
@@ -1731,7 +1731,7 @@ fn first_message_on_recv_ordering() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	nodes[1].disable_monitor_completeness_assertion();
 
 	let node_a_id = nodes[0].node.get_our_node_id();
@@ -1830,7 +1830,7 @@ fn test_monitor_update_fail_claim() {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
-	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -1977,7 +1977,7 @@ fn test_monitor_update_on_pending_forwards() {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
-	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -2061,7 +2061,7 @@ fn monitor_update_claim_fail_no_response() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -2123,7 +2123,7 @@ fn do_during_funding_monitor_fail(
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -2256,10 +2256,11 @@ fn do_during_funding_monitor_fail(
 	};
 	for (i, node) in nodes.iter().enumerate() {
 		let counterparty_node_id = nodes[(i + 1) % 2].node.get_our_node_id();
-		assert!(node
-			.gossip_sync
-			.handle_channel_announcement(Some(counterparty_node_id), &announcement)
-			.unwrap());
+		assert!(
+			node.gossip_sync
+				.handle_channel_announcement(Some(counterparty_node_id), &announcement)
+				.unwrap()
+		);
 		node.gossip_sync.handle_channel_update(Some(counterparty_node_id), &as_update).unwrap();
 		node.gossip_sync.handle_channel_update(Some(counterparty_node_id), &bs_update).unwrap();
 	}
@@ -2293,7 +2294,7 @@ fn test_path_paused_mpp() {
 	let chanmon_cfgs = create_chanmon_cfgs(4);
 	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
-	let mut nodes = create_network(4, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
 
 	let node_b_id = nodes[1].node.get_our_node_id();
 	let node_c_id = nodes[2].node.get_our_node_id();
@@ -2369,7 +2370,7 @@ fn test_pending_update_fee_ack_on_reconnect() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -2488,7 +2489,7 @@ fn test_fail_htlc_on_broadcast_after_claim() {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
-	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -2537,7 +2538,7 @@ fn do_update_fee_resend_test(deliver_update: bool, parallel_updates: bool) {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -2860,7 +2861,7 @@ fn do_test_reconnect_dup_htlc_claims(htlc_status: HTLCStatusAtDupClaim, second_f
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
-	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -3010,7 +3011,7 @@ fn test_temporary_error_during_shutdown() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -3078,7 +3079,7 @@ fn double_temp_error() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -3901,15 +3902,7 @@ fn do_test_durable_preimages_on_closed_channel(
 	// After a timer tick a payment preimage ChannelMonitorUpdate is applied to the A<->B
 	// ChannelMonitor (possible twice), even though the channel has since been closed.
 	check_added_monitors(&nodes[1], 0);
-	let mons_added = if close_chans_before_reload {
-		if !close_only_a {
-			4
-		} else {
-			3
-		}
-	} else {
-		2
-	};
+	let mons_added = if close_chans_before_reload { if !close_only_a { 4 } else { 3 } } else { 2 };
 	if hold_post_reload_mon_update {
 		for _ in 0..mons_added {
 			persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
@@ -4154,7 +4147,7 @@ fn do_test_glacial_peer_cant_hang(hold_chan_a: bool) {
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
-	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -4182,7 +4175,7 @@ fn do_test_glacial_peer_cant_hang(hold_chan_a: bool) {
 
 	if !hold_chan_a {
 		let mut bs_updates = get_htlc_update_msgs(&nodes[1], &node_a_id);
-		let mut update_fulfill = bs_updates.update_fulfill_htlcs.remove(0);
+		let update_fulfill = bs_updates.update_fulfill_htlcs.remove(0);
 		nodes[0].node.handle_update_fulfill_htlc(node_b_id, update_fulfill);
 		let commitment = &bs_updates.commitment_signed;
 		do_commitment_signed_dance(&nodes[0], &nodes[1], commitment, false, false);
@@ -4219,11 +4212,13 @@ fn do_test_glacial_peer_cant_hang(hold_chan_a: bool) {
 		// ...but once we complete the A<->B channel preimage persistence, the B<->C channel
 		// unlocks and we send both peers commitment updates.
 		let (ab_update_id, _) = nodes[1].chain_monitor.get_latest_mon_update_id(chan_id_ab);
-		assert!(nodes[1]
-			.chain_monitor
-			.chain_monitor
-			.channel_monitor_updated(chan_id_ab, ab_update_id)
-			.is_ok());
+		assert!(
+			nodes[1]
+				.chain_monitor
+				.chain_monitor
+				.channel_monitor_updated(chan_id_ab, ab_update_id)
+				.is_ok()
+		);
 
 		let mut msg_events = nodes[1].node.get_and_clear_pending_msg_events();
 		assert_eq!(msg_events.len(), 2);
@@ -4238,11 +4233,7 @@ fn do_test_glacial_peer_cant_hang(hold_chan_a: bool) {
 			.collect::<Vec<_>>();
 		let a_filtermap = |ev| {
 			if let MessageSendEvent::UpdateHTLCs { node_id, channel_id: _, updates } = ev {
-				if node_id == node_a_id {
-					Some(updates)
-				} else {
-					None
-				}
+				if node_id == node_a_id { Some(updates) } else { None }
 			} else {
 				None
 			}
@@ -4576,10 +4567,12 @@ fn test_claim_to_closed_channel_blocks_forwarded_preimage_removal() {
 	// At this point nodes[1] has the preimage and is waiting for the `ChannelMonitorUpdate` for
 	// channel A to hit disk. Until it does so, it shouldn't ever let the preimage dissapear from
 	// channel B's `ChannelMonitor`
-	assert!(get_monitor!(nodes[1], chan_b.2)
-		.get_all_current_outbound_htlcs()
-		.iter()
-		.any(|(_, (_, preimage))| *preimage == Some(payment_preimage)));
+	assert!(
+		get_monitor!(nodes[1], chan_b.2)
+			.get_all_current_outbound_htlcs()
+			.iter()
+			.any(|(_, (_, preimage))| *preimage == Some(payment_preimage))
+	);
 
 	// Once we complete the `ChannelMonitorUpdate` on channel A, and the `ChannelManager` processes
 	// background events (via `get_and_clear_pending_msg_events`), the final `ChannelMonitorUpdate`
@@ -4592,10 +4585,12 @@ fn test_claim_to_closed_channel_blocks_forwarded_preimage_removal() {
 	nodes[1].chain_monitor.complete_sole_pending_chan_update(&chan_a.2);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	check_added_monitors(&nodes[1], 1);
-	assert!(!get_monitor!(nodes[1], chan_b.2)
-		.get_all_current_outbound_htlcs()
-		.iter()
-		.any(|(_, (_, preimage))| *preimage == Some(payment_preimage)));
+	assert!(
+		!get_monitor!(nodes[1], chan_b.2)
+			.get_all_current_outbound_htlcs()
+			.iter()
+			.any(|(_, (_, preimage))| *preimage == Some(payment_preimage))
+	);
 	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], None, true, false);
 }
 
@@ -4674,7 +4669,7 @@ fn test_single_channel_multiple_mpp() {
 		10;
 	let configs: [Option<UserConfig>; 9] = core::array::from_fn(|_| Some(config.clone()));
 	let node_chanmgrs = create_node_chanmgrs(9, &node_cfgs, &configs);
-	let mut nodes = create_network(9, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(9, &node_cfgs, &node_chanmgrs);
 
 	let node_b_id = nodes[1].node.get_our_node_id();
 	let node_c_id = nodes[2].node.get_our_node_id();
@@ -4728,7 +4723,7 @@ fn test_single_channel_multiple_mpp() {
 	create_announced_chan_between_nodes_with_value(&nodes, 6, 7, 100_000, 0);
 	create_announced_chan_between_nodes_with_value(&nodes, 7, 8, 1_000_000, 0);
 
-	let (mut route, payment_hash, payment_preimage, payment_secret) =
+	let (route, payment_hash, payment_preimage, payment_secret) =
 		get_route_and_payment_hash!(&nodes[0], nodes[8], 50_000_000);
 
 	send_along_route_with_secret(
@@ -4772,7 +4767,7 @@ fn test_single_channel_multiple_mpp() {
 	let thrd_event = std::thread::spawn(move || {
 		let mut have_event = false;
 		while !have_event {
-			let mut events = event_node.get_and_clear_pending_events();
+			let events = event_node.get_and_clear_pending_events();
 			assert!(events.len() == 1 || events.len() == 0);
 			if events.len() == 1 {
 				if let Event::PaymentClaimed { .. } = events[0] {
@@ -5170,7 +5165,7 @@ fn test_mpp_claim_to_holding_cell() {
 	nodes[2].node.send_payment(paymnt_hash_2, onion, id, route_params, Retry::Attempts(0)).unwrap();
 	check_added_monitors(&nodes[2], 1);
 
-	let mut payment_event = SendEvent::from_node(&nodes[2]);
+	let payment_event = SendEvent::from_node(&nodes[2]);
 	nodes[3].node.handle_update_add_htlc(node_c_id, &payment_event.msgs[0]);
 	nodes[3].node.handle_commitment_signed_batch_test(node_c_id, &payment_event.commitment_msg);
 	check_added_monitors(&nodes[3], 1);
@@ -5217,7 +5212,7 @@ fn test_mpp_claim_to_holding_cell() {
 
 	// Finally, clear all the pending payments.
 	let path = [&[&nodes[1], &nodes[3]][..], &[&nodes[2], &nodes[3]][..]];
-	let mut args = ClaimAlongRouteArgs::new(&nodes[0], &path[..], preimage_1);
+	let args = ClaimAlongRouteArgs::new(&nodes[0], &path[..], preimage_1);
 	let b_claim_msgs = (b_claim.update_fulfill_htlcs.pop().unwrap(), b_claim.commitment_signed);
 	let c_claim_msgs = (c_claim.update_fulfill_htlcs.pop().unwrap(), c_claim.commitment_signed);
 	let claims = vec![(b_claim_msgs, node_b_id), (c_claim_msgs, node_c_id)];

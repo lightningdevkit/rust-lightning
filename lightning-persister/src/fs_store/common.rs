@@ -25,11 +25,7 @@ use std::os::windows::ffi::OsStrExt;
 #[cfg(target_os = "windows")]
 macro_rules! call {
 	($e: expr) => {
-		if $e != 0 {
-			Ok(())
-		} else {
-			Err(std::io::Error::last_os_error())
-		}
+		if $e != 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
 	};
 }
 

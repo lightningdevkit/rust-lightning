@@ -21,12 +21,12 @@
 extern crate alloc;
 
 use alloc::string::ToString;
-use proc_macro::{Delimiter, Group, TokenStream, TokenTree};
+use proc_macro::{Delimiter, Group, Punct, Spacing, TokenStream, TokenTree};
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::spanned::Spanned;
-use syn::{parse, ImplItemFn, Token};
-use syn::{parse_macro_input, Item};
+use syn::{ImplItemFn, Token, parse};
+use syn::{Item, parse_macro_input};
 
 fn add_async_method(mut parsed: ImplItemFn) -> TokenStream {
 	let output = quote! {
@@ -162,6 +162,8 @@ fn process_fields(group: Group) -> proc_macro::TokenStream {
 ///
 /// Wraps a `match self {..}` statement and scans the fields in the match patterns (in the form
 /// `ref $field_name: $field_ty`) for types marked `legacy` or `custom`, skipping those fields.
+/// The expanded match dereferences `self` so these explicit `ref` patterns continue to compile
+/// under Rust 2024's match ergonomics.
 ///
 /// Specifically, it expects input like the following, simply dropping `field3` and the
 /// `: $field_ty` after each field name.
@@ -187,6 +189,7 @@ pub fn skip_legacy_fields(expr: TokenStream) -> TokenStream {
 
 	let self_ident = stream.next().unwrap();
 	expect_ident(&self_ident, Some("self"));
+	res.extend(proc_macro::TokenStream::from(TokenTree::Punct(Punct::new('*', Spacing::Alone))));
 	res.extend(proc_macro::TokenStream::from(self_ident));
 
 	let arms = stream.next().unwrap();

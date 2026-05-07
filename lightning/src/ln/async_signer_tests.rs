@@ -16,8 +16,8 @@ use crate::util::ser::Writeable;
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::{Amount, TxOut};
 
-use crate::chain::channelmonitor::LATENCY_GRACE_PERIOD_BLOCKS;
 use crate::chain::ChannelMonitorUpdateStatus;
+use crate::chain::channelmonitor::LATENCY_GRACE_PERIOD_BLOCKS;
 use crate::events::{ClosureReason, Event};
 use crate::ln::chan_utils::ClosingTransaction;
 use crate::ln::channel::DISCONNECT_PEER_AWAITING_RESPONSE_TICKS;
@@ -26,8 +26,8 @@ use crate::ln::channelmanager::{PaymentId, RAACommitmentOrder, TrustedChannelFea
 use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, ErrorAction, MessageSendEvent};
 use crate::ln::outbound_payment::RecipientOnionFields;
 use crate::ln::{functional_test_utils::*, msgs};
-use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::sign::SignerProvider;
+use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::util::logger::Logger;
 use crate::util::test_channel_signer::SignerOp;
 use crate::util::wallet_utils::WalletSourceSync;
@@ -65,7 +65,7 @@ fn do_test_open_channel(zero_conf: bool) {
 	nodes[0].node.signer_unblocked(None);
 
 	// nodes[0] --- open_channel --> nodes[1]
-	let mut open_chan_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
+	let open_chan_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 
 	// Handle an inbound channel simulating an async signer.
 	nodes[1].disable_next_channel_signer_op(SignerOp::GetPerCommitmentPoint);
@@ -130,7 +130,7 @@ fn do_test_funding_created(signer_ops: Vec<SignerOp>) {
 	nodes[0].node.create_channel(node_b_id, 100000, 10001, 42, None, None).unwrap();
 
 	// nodes[0] --- open_channel --> nodes[1]
-	let mut open_chan_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
+	let open_chan_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 	handle_and_accept_open_channel(&nodes[1], node_a_id, &open_chan_msg);
 
 	// nodes[0] <-- accept_channel --- nodes[1]
@@ -169,7 +169,7 @@ fn do_test_funding_created(signer_ops: Vec<SignerOp>) {
 		nodes[0].node.signer_unblocked(Some((node_b_id, chan_id)));
 	}
 
-	let mut funding_created_msg =
+	let funding_created_msg =
 		get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, node_b_id);
 	nodes[1].node.handle_funding_created(node_a_id, &funding_created_msg);
 	check_added_monitors(&nodes[1], 1);
@@ -207,7 +207,7 @@ fn do_test_funding_signed(signer_ops: Vec<SignerOp>) {
 	nodes[0].node.create_channel(node_b_id, 100000, 10001, 42, None, None).unwrap();
 
 	// nodes[0] --- open_channel --> nodes[1]
-	let mut open_chan_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
+	let open_chan_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 	handle_and_accept_open_channel(&nodes[1], node_a_id, &open_chan_msg);
 
 	// nodes[0] <-- accept_channel --- nodes[1]
@@ -225,7 +225,7 @@ fn do_test_funding_signed(signer_ops: Vec<SignerOp>) {
 		.unwrap();
 	check_added_monitors(&nodes[0], 0);
 
-	let mut funding_created_msg =
+	let funding_created_msg =
 		get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, node_b_id);
 
 	// Now let's make node[1]'s signer be unavailable while handling the `funding_created`. It should
@@ -411,7 +411,7 @@ fn do_test_funding_signed_0conf(signer_ops: Vec<SignerOp>) {
 		.unwrap();
 	check_added_monitors(&nodes[0], 0);
 
-	let mut funding_created_msg =
+	let funding_created_msg =
 		get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, node_b_id);
 
 	// Now let's make node[1]'s signer be unavailable while handling the `funding_created`. It should
@@ -794,7 +794,7 @@ fn do_test_async_commitment_signature_ordering(monitor_update_failure: bool) {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
 	let (_, _, chan_id, _) = create_announced_chan_between_nodes(&nodes, 0, 1);
@@ -1508,7 +1508,7 @@ fn test_async_force_close_on_invalid_secret_for_stale_state() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_id_0 = nodes[0].node.get_our_node_id();
 	let node_id_1 = nodes[1].node.get_our_node_id();
@@ -1553,7 +1553,7 @@ fn test_async_splice_initial_commit_sig() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
 	send_payment(&nodes[0], &[&nodes[1]], 1_000);

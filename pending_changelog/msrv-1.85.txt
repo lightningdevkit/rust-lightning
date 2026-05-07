@@ -1,0 +1,3 @@
+# API Updates
+
+ * The LDK crate ecosystem MSRV has been increased to rustc 1.85.0.

@@ -20,7 +20,7 @@ pub fn msg_error_message_test<Out: test_logger::Output>(data: &[u8], _out: Out) 
 	test_msg_hole!(lightning::ln::msgs::ErrorMessage, data, 32, 2);
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn msg_error_message_run(data: *const u8, datalen: usize) {
 	let data = unsafe { std::slice::from_raw_parts(data, datalen) };
 	test_msg_hole!(lightning::ln::msgs::ErrorMessage, data, 32, 2);

@@ -19,7 +19,7 @@ use crate::message_queue::MessageQueue;
 
 use crate::events::EventQueue;
 use crate::lsps0::ser::{LSPSProtocolMessageHandler, LSPSRequestId, LSPSResponseError};
-use crate::prelude::{new_hash_map, HashMap, HashSet};
+use crate::prelude::{HashMap, HashSet, new_hash_map};
 use crate::sync::{Arc, Mutex, RwLock};
 
 use lightning::ln::msgs::{ErrorAction, LightningError};
@@ -27,8 +27,8 @@ use lightning::sign::EntropySource;
 use lightning::util::logger::Level;
 use lightning::util::persist::KVStore;
 
-use bitcoin::secp256k1::PublicKey;
 use bitcoin::Address;
+use bitcoin::secp256k1::PublicKey;
 
 /// Client-side configuration options for bLIP-51 / LSPS1 channel requests.
 #[derive(Clone, Debug)]
@@ -249,7 +249,7 @@ impl<ES: EntropySource, K: KVStore + Clone> LSPS1ClientHandler<ES, K> {
 						counterparty_node_id
 					),
 					action: ErrorAction::IgnoreAndLog(Level::Debug),
-				})
+				});
 			},
 		}
 
@@ -367,7 +367,7 @@ impl<ES: EntropySource, K: KVStore + Clone> LSPS1ClientHandler<ES, K> {
 						counterparty_node_id
 					),
 					action: ErrorAction::IgnoreAndLog(Level::Debug),
-				})
+				});
 			},
 		}
 

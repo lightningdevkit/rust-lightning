@@ -181,8 +181,10 @@ fn do_test_htlc_interception_flags(
 		assert_eq!(events.len(), 1, "{events:?}");
 		if let Event::HTLCIntercepted { intercept_id: id, requested_next_hop_scid, .. } = &events[0]
 		{
-			assert_eq!(*requested_next_hop_scid, target_scid,
-				"Bitmask {flags_bitmask:#x}: Expected interception for bit {flag:?} to target SCID {target_scid}");
+			assert_eq!(
+				*requested_next_hop_scid, target_scid,
+				"Bitmask {flags_bitmask:#x}: Expected interception for bit {flag:?} to target SCID {target_scid}"
+			);
 			intercept_id = *id;
 		} else {
 			panic!("{events:?}");

@@ -76,8 +76,8 @@ pub(crate) mod fake_scid {
 	use crate::prelude::*;
 	use crate::sign::EntropySource;
 	use crate::util::scid_utils;
-	use bitcoin::constants::ChainHash;
 	use bitcoin::Network;
+	use bitcoin::constants::ChainHash;
 	use chacha20_poly1305::chacha20::{ChaCha20, Key, Nonce};
 
 	const TEST_SEGWIT_ACTIVATION_HEIGHT: u32 = 1;
@@ -200,9 +200,9 @@ pub(crate) mod fake_scid {
 		use crate::sync::Arc;
 		use crate::util::scid_utils;
 		use crate::util::scid_utils::fake_scid::{
-			is_valid_intercept, is_valid_phantom, segwit_activation_height, Namespace,
 			MAINNET_SEGWIT_ACTIVATION_HEIGHT, MAX_NAMESPACES, MAX_TX_INDEX, NAMESPACE_ID_BITMASK,
-			TEST_SEGWIT_ACTIVATION_HEIGHT,
+			Namespace, TEST_SEGWIT_ACTIVATION_HEIGHT, is_valid_intercept, is_valid_phantom,
+			segwit_activation_height,
 		};
 		use crate::util::test_utils;
 		use bitcoin::constants::ChainHash;

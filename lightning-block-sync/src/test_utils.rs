@@ -3,13 +3,13 @@ use crate::{
 	BlockData, BlockHeaderData, BlockSource, BlockSourceError, BlockSourceResult, HeaderCache,
 };
 
+use bitcoin::Transaction;
 use bitcoin::block::{Block, Header, Version};
 use bitcoin::constants::genesis_block;
 use bitcoin::hash_types::{BlockHash, TxMerkleNode};
 use bitcoin::locktime::absolute::LockTime;
 use bitcoin::network::Network;
 use bitcoin::transaction;
-use bitcoin::Transaction;
 
 use lightning::chain;
 use lightning::chain::BlockLocator;

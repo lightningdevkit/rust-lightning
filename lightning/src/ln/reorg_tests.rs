@@ -9,10 +9,10 @@
 
 //! Further functional tests which test blockchain reorganizations.
 
-use crate::chain::chaininterface::LowerBoundedFeeEstimator;
-use crate::chain::channelmonitor::{Balance, ANTI_REORG_DELAY, LATENCY_GRACE_PERIOD_BLOCKS};
-use crate::chain::transaction::OutPoint;
 use crate::chain::Confirm;
+use crate::chain::chaininterface::LowerBoundedFeeEstimator;
+use crate::chain::channelmonitor::{ANTI_REORG_DELAY, Balance, LATENCY_GRACE_PERIOD_BLOCKS};
+use crate::chain::transaction::OutPoint;
 use crate::events::{ClosureReason, Event, HTLCHandlingFailureType};
 use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, Init, MessageSendEvent};
 use crate::ln::types::ChannelId;
@@ -341,8 +341,7 @@ fn do_test_unconf_chan(
 	}
 
 	let expected_err = "Funding transaction was un-confirmed, originally locked at 6 confs.";
-	let broadcast_close_msg =
-		"Channel closed because of an exception: Funding transaction was un-confirmed, originally locked at 6 confs.";
+	let broadcast_close_msg = "Channel closed because of an exception: Funding transaction was un-confirmed, originally locked at 6 confs.";
 	let counterparty_force_closed_reason = || ClosureReason::CounterpartyForceClosed {
 		peer_msg: UntrustedString(format!(
 			"Channel closed because of an exception: {}",
@@ -629,7 +628,7 @@ fn do_test_to_remote_after_local_detection(style: ConnectStyle) {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let node_id_0 = nodes[0].node.get_our_node_id();
 	let node_id_1 = nodes[1].node.get_our_node_id();
 
@@ -838,8 +837,8 @@ fn test_htlc_preimage_claim_holder_commitment_after_counterparty_commitment_reor
 }
 
 #[test]
-fn test_htlc_preimage_claim_prev_counterparty_commitment_after_current_counterparty_commitment_reorg(
-) {
+fn test_htlc_preimage_claim_prev_counterparty_commitment_after_current_counterparty_commitment_reorg()
+ {
 	// We detect a counterparty commitment confirm onchain, followed by a reorg and a
 	// confirmation of the previous (still unrevoked) counterparty commitment. Then, if we learn
 	// of the preimage for an HTLC in both commitments, test that we only claim the currently
@@ -1052,18 +1051,18 @@ fn do_test_retries_own_commitment_broadcast_after_reorg(
 			// `commitment_b`.
 			if keyed_anchors || p2a_anchor {
 				handle_bump_close_event(&nodes[0]);
-				let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
+				let txn = nodes[0].tx_broadcaster.txn_broadcast();
 				assert_eq!(txn.len(), 3);
 				check_spends!(txn[0], commitment_b);
 				check_spends!(txn[1], funding_tx);
 				check_spends!(txn[2], txn[1], coinbase_tx); // Anchor output spend transaction.
 			} else {
-				let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
+				let txn = nodes[0].tx_broadcaster.txn_broadcast();
 				assert_eq!(txn.len(), 2);
 				check_spends!(txn.last().unwrap(), commitment_b);
 			}
 		} else {
-			let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
+			let txn = nodes[0].tx_broadcaster.txn_broadcast();
 			assert_eq!(txn.len(), 1);
 			check_spends!(txn[0], commitment_b);
 		}
@@ -1077,7 +1076,7 @@ fn do_test_retries_own_commitment_broadcast_after_reorg(
 		handle_bump_close_event(&nodes[0]);
 	}
 	{
-		let mut txn = nodes[0].tx_broadcaster.unique_txn_broadcast();
+		let txn = nodes[0].tx_broadcaster.unique_txn_broadcast();
 		if keyed_anchors || p2a_anchor {
 			assert_eq!(txn.len(), 2);
 			check_spends!(txn[0], funding_tx);
@@ -1223,7 +1222,7 @@ fn do_test_split_htlc_expiry_tracking(use_third_htlc: bool, reorg_out: bool, p2a
 	// But confirm B's dual-HTLC-claim transaction instead. A should now have nothing to broadcast
 	// as the third HTLC (if there is one) won't expire for another block.
 	mine_transaction(&nodes[0], &bs_htlc_spend_tx);
-	let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
+	let txn = nodes[0].tx_broadcaster.txn_broadcast();
 	assert_eq!(txn.len(), 0);
 
 	check_added_monitors(&nodes[0], 0);
@@ -1278,7 +1277,7 @@ fn do_test_split_htlc_expiry_tracking(use_third_htlc: bool, reorg_out: bool, p2a
 	// We connect blocks until one block before `bs_htlc_spend_tx` reaches `ANTI_REORG_DELAY`
 	// confirmations.
 	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 4);
-	let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
+	let txn = nodes[0].tx_broadcaster.txn_broadcast();
 	assert_eq!(txn.len(), 0);
 	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
 

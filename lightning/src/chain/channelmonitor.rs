@@ -26,11 +26,11 @@ use bitcoin::script::{Script, ScriptBuf};
 use bitcoin::transaction::{OutPoint as BitcoinOutPoint, Transaction, TxOut};
 
 use bitcoin::hash_types::{BlockHash, Txid};
-use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash;
+use bitcoin::hashes::sha256::Hash as Sha256;
 
 use bitcoin::ecdsa::Signature as BitcoinSignature;
-use bitcoin::secp256k1::{self, ecdsa::Signature, PublicKey, Secp256k1, SecretKey};
+use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey, ecdsa::Signature};
 
 use crate::chain;
 use crate::chain::chaininterface::{
@@ -58,9 +58,9 @@ use crate::ln::channelmanager::{HTLCSource, PaymentClaimDetails, SentHTLCId};
 use crate::ln::msgs::DecodeError;
 use crate::ln::types::ChannelId;
 use crate::sign::{
-	ecdsa::EcdsaChannelSigner, ChannelDerivationParameters, DelayedPaymentOutputDescriptor,
-	EntropySource, HTLCDescriptor, SignerProvider, SpendableOutputDescriptor,
-	StaticPaymentOutputDescriptor,
+	ChannelDerivationParameters, DelayedPaymentOutputDescriptor, EntropySource, HTLCDescriptor,
+	SignerProvider, SpendableOutputDescriptor, StaticPaymentOutputDescriptor,
+	ecdsa::EcdsaChannelSigner,
 };
 use crate::types::features::ChannelTypeFeatures;
 use crate::types::payment::{PaymentHash, PaymentPreimage};
@@ -68,8 +68,8 @@ use crate::util::byte_utils;
 use crate::util::logger::{Logger, WithContext};
 use crate::util::persist::MonitorName;
 use crate::util::ser::{
-	MaybeReadable, Readable, ReadableArgs, RequiredWrapper, UpgradableRequired, Writeable, Writer,
-	U48,
+	MaybeReadable, Readable, ReadableArgs, RequiredWrapper, U48, UpgradableRequired, Writeable,
+	Writer,
 };
 
 #[allow(unused_imports)]
@@ -3227,11 +3227,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		{
 			let htlcs = funding.counterparty_claimable_outpoints.get(&confirmed_txid).unwrap();
 			walk_htlcs!(htlcs.iter().filter_map(|(a, b)| {
-				if let &Some(ref source) = b {
-					Some((a, Some(&**source)))
-				} else {
-					None
-				}
+				if let &Some(ref source) = b { Some((a, Some(&**source))) } else { None }
 			}));
 		} else if confirmed_txid == funding.current_holder_commitment_tx.trust().txid() {
 			walk_htlcs!(holder_commitment_htlcs!(us, CURRENT_WITH_SOURCES));
@@ -3416,7 +3412,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					// We only need to remove fulfilled HTLCs once for the first `FundingScope` we
 					// come across since all `FundingScope`s share the same set of HTLC sources.
 					if !removed_fulfilled_htlcs {
-						for (_, ref source_opt) in funding.counterparty_claimable_outpoints.get(&txid).unwrap() {
+						for (_, source_opt) in funding.counterparty_claimable_outpoints.get(&txid).unwrap() {
 							if let Some(source) = source_opt {
 								if !cur_claimables.iter()
 									.any(|(_, cur_source_opt)| cur_source_opt == source_opt)
@@ -4537,7 +4533,9 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		// of outputs to watch for spends of, otherwise we're likely to lose user funds. Because
 		// its trivial to do, double-check that here.
 		for txid in self.counterparty_commitment_txn_on_chain.keys() {
-			self.outputs_to_watch.get(txid).expect("Counterparty commitment txn which have been broadcast should have outputs registered");
+			self.outputs_to_watch.get(txid).expect(
+				"Counterparty commitment txn which have been broadcast should have outputs registered",
+			);
 		}
 		&self.outputs_to_watch
 	}
@@ -4906,11 +4904,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			// If counterparty commitment tx is the state previous to the latest valid state, use
 			// their previous per-commitment point (non-atomicity of revocation means it's valid for
 			// them to temporarily have two valid commitment txns from our viewpoint)
-			if per_commitment_points.0 == commitment_number + 1 {
-				Some(*point)
-			} else {
-				None
-			}
+			if per_commitment_points.0 == commitment_number + 1 { Some(*point) } else { None }
 		} else {
 			None
 		}
@@ -5224,7 +5218,10 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			assert_eq!(funding_spent.funding_txid(), funding_txid_spent);
 
 			let current_msg = if current { "latest holder" } else { "previous holder" };
-			log_info!(logger, "Got broadcast of {current_msg} commitment tx {commitment_txid}, searching for available HTLCs to claim");
+			log_info!(
+				logger,
+				"Got broadcast of {current_msg} commitment tx {commitment_txid}, searching for available HTLCs to claim"
+			);
 
 			let (claim_requests, broadcasted_holder_revokable_script) =
 				self.get_broadcasted_holder_claims(funding_spent, holder_commitment_tx, height);
@@ -5943,20 +5940,20 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		//- maturing spendable output has transaction paying us has been disconnected
 		self.onchain_events_awaiting_threshold_conf.retain(|ref entry| entry.height <= new_height);
 
-		// TODO: Replace with `take_if` once our MSRV is >= 1.80.
 		let mut should_broadcast_commitment = false;
-		if let Some((_, conf_height)) = self.alternative_funding_confirmed.as_ref() {
-			if *conf_height > new_height {
-				self.alternative_funding_confirmed.take();
-				if self.holder_tx_signed || self.funding_spend_seen {
-					// Cancel any previous claims that are no longer valid as they stemmed from a
-					// different funding transaction.
-					let new_holder_commitment_txid =
-						self.funding.current_holder_commitment_tx.trust().txid();
-					self.cancel_prev_commitment_claims(&logger, &new_holder_commitment_txid);
+		if self
+			.alternative_funding_confirmed
+			.take_if(|(_, conf_height)| *conf_height > new_height)
+			.is_some()
+		{
+			if self.holder_tx_signed || self.funding_spend_seen {
+				// Cancel any previous claims that are no longer valid as they stemmed from a
+				// different funding transaction.
+				let new_holder_commitment_txid =
+					self.funding.current_holder_commitment_tx.trust().txid();
+				self.cancel_prev_commitment_claims(&logger, &new_holder_commitment_txid);
 
-					should_broadcast_commitment = true;
-				}
+				should_broadcast_commitment = true;
 			}
 		}
 
@@ -6001,20 +5998,20 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 		debug_assert!(!self.onchain_events_awaiting_threshold_conf.iter().any(|ref entry| entry.txid == *txid));
 
-		// TODO: Replace with `take_if` once our MSRV is >= 1.80.
 		let mut should_broadcast_commitment = false;
-		if let Some((alternative_funding_txid, _)) = self.alternative_funding_confirmed.as_ref() {
-			if alternative_funding_txid == txid {
-				self.alternative_funding_confirmed.take();
-				if self.holder_tx_signed || self.funding_spend_seen {
-					// Cancel any previous claims that are no longer valid as they stemmed from a
-					// different funding transaction.
-					let new_holder_commitment_txid =
-						self.funding.current_holder_commitment_tx.trust().txid();
-					self.cancel_prev_commitment_claims(&logger, &new_holder_commitment_txid);
+		if self
+			.alternative_funding_confirmed
+			.take_if(|(alternative_funding_txid, _)| alternative_funding_txid == txid)
+			.is_some()
+		{
+			if self.holder_tx_signed || self.funding_spend_seen {
+				// Cancel any previous claims that are no longer valid as they stemmed from a
+				// different funding transaction.
+				let new_holder_commitment_txid =
+					self.funding.current_holder_commitment_tx.trust().txid();
+				self.cancel_prev_commitment_claims(&logger, &new_holder_commitment_txid);
 
-					should_broadcast_commitment = true;
-				}
+				should_broadcast_commitment = true;
 			}
 		}
 
@@ -6989,8 +6986,8 @@ pub(super) fn dummy_monitor<S: EcdsaChannelSigner + 'static>(
 mod tests {
 	use bitcoin::amount::Amount;
 	use bitcoin::hash_types::Txid;
-	use bitcoin::hashes::sha256::Hash as Sha256;
 	use bitcoin::hashes::Hash;
+	use bitcoin::hashes::sha256::Hash as Sha256;
 	use bitcoin::hex::FromHex;
 	use bitcoin::locktime::absolute::LockTime;
 	use bitcoin::network::Network;
@@ -7010,8 +7007,8 @@ mod tests {
 	use super::ChannelMonitorUpdateStep;
 	use crate::chain::channelmonitor::{ChannelMonitor, WithChannelMonitor};
 	use crate::chain::package::{
-		weight_offered_htlc, weight_received_htlc, weight_revoked_offered_htlc,
-		weight_revoked_received_htlc, WEIGHT_REVOKED_OUTPUT,
+		WEIGHT_REVOKED_OUTPUT, weight_offered_htlc, weight_received_htlc,
+		weight_revoked_offered_htlc, weight_revoked_received_htlc,
 	};
 	use crate::chain::transaction::OutPoint;
 	use crate::chain::{BlockLocator, Confirm};

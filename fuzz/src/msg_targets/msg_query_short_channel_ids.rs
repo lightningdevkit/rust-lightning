@@ -20,7 +20,7 @@ pub fn msg_query_short_channel_ids_test<Out: test_logger::Output>(data: &[u8], _
 	test_msg!(lightning::ln::msgs::QueryShortChannelIds, data);
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn msg_query_short_channel_ids_run(data: *const u8, datalen: usize) {
 	let data = unsafe { std::slice::from_raw_parts(data, datalen) };
 	test_msg!(lightning::ln::msgs::QueryShortChannelIds, data);

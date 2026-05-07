@@ -16,18 +16,18 @@ use crate::blinded_path::payment::{
 use crate::chain::channelmonitor::{ChannelMonitor, HTLC_FAIL_BACK_BUFFER};
 use crate::chain::transaction::OutPoint;
 use crate::chain::{BlockLocator, ChannelMonitorUpdateStatus, Confirm, Listen, Watch};
-use crate::events::bump_transaction::sync::BumpTransactionEventHandlerSync;
 use crate::events::bump_transaction::BumpTransactionEvent;
+use crate::events::bump_transaction::sync::BumpTransactionEventHandlerSync;
 use crate::events::{
 	ClaimedHTLC, ClosureReason, Event, FundingInfo, HTLCHandlingFailureType, PaidBolt12Invoice,
 	PathFailure, PaymentFailureReason, PaymentPurpose,
 };
 use crate::ln::chan_utils::{
-	commitment_tx_base_weight, COMMITMENT_TX_WEIGHT_PER_HTLC, TRUC_MAX_WEIGHT,
+	COMMITMENT_TX_WEIGHT_PER_HTLC, TRUC_MAX_WEIGHT, commitment_tx_base_weight,
 };
 use crate::ln::channelmanager::{
-	AChannelManager, ChainParameters, ChannelManager, ChannelManagerReadArgs, PaymentId,
-	RAACommitmentOrder, TrustedChannelFeatures, MIN_CLTV_EXPIRY_DELTA,
+	AChannelManager, ChainParameters, ChannelManager, ChannelManagerReadArgs,
+	MIN_CLTV_EXPIRY_DELTA, PaymentId, RAACommitmentOrder, TrustedChannelFeatures,
 };
 use crate::ln::funding::{FundingContribution, FundingTxInput};
 use crate::ln::msgs::{self, OpenChannel};
@@ -42,7 +42,7 @@ use crate::ln::types::ChannelId;
 use crate::onion_message::messenger::OnionMessenger;
 use crate::routing::gossip::{NetworkGraph, NetworkUpdate, P2PGossipSync};
 use crate::routing::router::{self, PaymentParameters, Route, RouteParameters};
-use crate::routing::router::{compute_fees, BlindedTail, TrampolineHop};
+use crate::routing::router::{BlindedTail, TrampolineHop, compute_fees};
 use crate::sign::{EntropySource, RandomBytes, ReceiveAuthKey};
 use crate::types::features::ChannelTypeFeatures;
 use crate::types::features::InitFeatures;
@@ -57,12 +57,13 @@ use crate::util::test_utils::{self, TestLogger};
 use crate::util::test_utils::{TestChainMonitor, TestKeysInterface, TestScorer};
 use crate::util::wallet_utils::{WalletSourceSync, WalletSync};
 
+use bitcoin::WPubkeyHash;
 use bitcoin::amount::Amount;
 use bitcoin::block::{Block, Header, Version as BlockVersion};
 use bitcoin::hash_types::{BlockHash, TxMerkleNode};
-use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash as _;
-use bitcoin::locktime::absolute::{LockTime, LOCK_TIME_THRESHOLD};
+use bitcoin::hashes::sha256::Hash as Sha256;
+use bitcoin::locktime::absolute::{LOCK_TIME_THRESHOLD, LockTime};
 use bitcoin::network::Network;
 use bitcoin::policy::MAX_STANDARD_TX_WEIGHT;
 use bitcoin::pow::CompactTarget;
@@ -70,7 +71,6 @@ use bitcoin::script::ScriptBuf;
 use bitcoin::secp256k1::{PublicKey, SecretKey};
 use bitcoin::transaction::{self, Version as TxVersion};
 use bitcoin::transaction::{Transaction, TxIn, TxOut};
-use bitcoin::WPubkeyHash;
 
 use crate::io;
 use crate::prelude::*;
@@ -1180,7 +1180,7 @@ macro_rules! get_channel_ref {
 #[cfg(any(test, feature = "_externalize_tests"))]
 macro_rules! get_feerate {
 	($node: expr, $counterparty_node: expr, $channel_id: expr) => {{
-		let mut per_peer_state_lock;
+		let per_peer_state_lock;
 		let mut peer_state_lock;
 		let chan = get_channel_ref!(
 			$node,
@@ -1196,7 +1196,7 @@ macro_rules! get_feerate {
 #[cfg(any(test, feature = "_externalize_tests"))]
 macro_rules! get_channel_type_features {
 	($node: expr, $counterparty_node: expr, $channel_id: expr) => {{
-		let mut per_peer_state_lock;
+		let per_peer_state_lock;
 		let mut peer_state_lock;
 		let chan = get_channel_ref!(
 			$node,
@@ -1212,9 +1212,7 @@ macro_rules! get_channel_type_features {
 /// Returns a channel monitor given a channel id, making some naive assumptions
 #[macro_export]
 macro_rules! get_monitor {
-	($node: expr, $channel_id: expr) => {{
-		$node.chain_monitor.chain_monitor.get_monitor($channel_id).unwrap()
-	}};
+	($node: expr, $channel_id: expr) => {{ $node.chain_monitor.chain_monitor.get_monitor($channel_id).unwrap() }};
 }
 
 /// Returns any local commitment transactions for the channel.
@@ -1551,10 +1549,12 @@ pub fn sign_funding_transaction<'a, 'b, 'c>(
 		create_funding_transaction(node_a, &node_b_id, channel_value, 42);
 	assert_eq!(temporary_channel_id, expected_temporary_channel_id);
 
-	assert!(node_a
-		.node
-		.funding_transaction_generated(temporary_channel_id, node_b_id, tx.clone())
-		.is_ok());
+	assert!(
+		node_a
+			.node
+			.funding_transaction_generated(temporary_channel_id, node_b_id, tx.clone())
+			.is_ok()
+	);
 	check_added_monitors(&node_a, 0);
 
 	let funding_created_msg =
@@ -1593,10 +1593,12 @@ pub fn sign_funding_transaction<'a, 'b, 'c>(
 	node_a.tx_broadcaster.clear();
 
 	// Ensure that funding_transaction_generated is idempotent.
-	assert!(node_a
-		.node
-		.funding_transaction_generated(temporary_channel_id, node_b_id, tx.clone())
-		.is_err());
+	assert!(
+		node_a
+			.node
+			.funding_transaction_generated(temporary_channel_id, node_b_id, tx.clone())
+			.is_err()
+	);
 	assert!(node_a.node.get_and_clear_pending_msg_events().is_empty());
 	check_added_monitors(&node_a, 0);
 
@@ -2906,11 +2908,7 @@ pub fn check_payment_claimable(
 ) {
 	match event {
 		Event::PaymentClaimable {
-			ref payment_hash,
-			ref purpose,
-			amount_msat,
-			receiver_node_id,
-			..
+			payment_hash, purpose, amount_msat, receiver_node_id, ..
 		} => {
 			assert_eq!(expected_payment_hash, *payment_hash);
 			assert_eq!(expected_recv_value, *amount_msat);
@@ -3442,7 +3440,7 @@ pub fn expect_payment_failed_conditions_event<'a, 'b, 'c, 'd, 'e>(
 	};
 	if !conditions.expected_mpp_parts_remain && !conditions.retry_expected {
 		match &payment_failed_events[1] {
-			Event::PaymentFailed { ref payment_hash, ref payment_id, ref reason } => {
+			Event::PaymentFailed { payment_hash, payment_id, reason } => {
 				assert_eq!(
 					*payment_hash,
 					Some(expected_payment_hash),
@@ -3664,11 +3662,11 @@ pub fn do_pass_along_path<'a, 'b, 'c>(args: PassAlongPathArgs) -> Option<Event> 
 				assert_eq!(events_2.len(), 1);
 				match &events_2[0] {
 					Event::PaymentClaimable {
-						ref payment_hash,
-						ref purpose,
+						payment_hash,
+						purpose,
 						amount_msat,
 						receiver_node_id,
-						ref receiving_channel_ids,
+						receiving_channel_ids,
 						claim_deadline,
 						onion_fields,
 						..
@@ -5066,7 +5064,7 @@ pub fn handle_announce_close_broadcast_events<'a, 'b, 'c>(
 	let events_2 = nodes[b].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_2.len(), if needs_err_handle { 1 } else { 2 });
 	let bs_update = match events_2.last().unwrap() {
-		MessageSendEvent::BroadcastChannelUpdate { ref msg, .. } => msg.clone(),
+		MessageSendEvent::BroadcastChannelUpdate { msg, .. } => msg.clone(),
 		_ => panic!("Unexpected event"),
 	};
 	if !needs_err_handle {
@@ -5206,10 +5204,9 @@ macro_rules! handle_chan_reestablish_msgs {
 				},
 				&MessageSendEvent::UpdateHTLCs { ref node_id, ref channel_id, ref updates } => {
 					assert_eq!(*node_id, $dst_node.node.get_our_node_id());
-					assert!(updates
-						.commitment_signed
-						.iter()
-						.all(|cs| cs.channel_id == *channel_id));
+					assert!(
+						updates.commitment_signed.iter().all(|cs| cs.channel_id == *channel_id)
+					);
 					commitment_update = Some(updates.clone());
 					idx += 1;
 					RAACommitmentOrder::CommitmentFirst
@@ -5231,10 +5228,9 @@ macro_rules! handle_chan_reestablish_msgs {
 				&MessageSendEvent::UpdateHTLCs { ref node_id, ref channel_id, ref updates } => {
 					assert_eq!(*node_id, $dst_node.node.get_our_node_id());
 					assert!(commitment_update.is_none());
-					assert!(updates
-						.commitment_signed
-						.iter()
-						.all(|cs| cs.channel_id == *channel_id));
+					assert!(
+						updates.commitment_signed.iter().all(|cs| cs.channel_id == *channel_id)
+					);
 					commitment_update = Some(updates.clone());
 					idx += 1;
 				},
@@ -5735,13 +5731,15 @@ pub fn create_batch_channel_funding<'a, 'b, 'c>(
 		input: Vec::new(),
 		output: tx_outs,
 	};
-	assert!(funding_node
-		.node
-		.batch_funding_transaction_generated(
-			temp_chan_ids.iter().map(|(a, b)| (a, b)).collect::<Vec<_>>().as_slice(),
-			tx.clone(),
-		)
-		.is_ok());
+	assert!(
+		funding_node
+			.node
+			.batch_funding_transaction_generated(
+				temp_chan_ids.iter().map(|(a, b)| (a, b)).collect::<Vec<_>>().as_slice(),
+				tx.clone(),
+			)
+			.is_ok()
+	);
 	check_added_monitors(&funding_node, 0);
 	let events = funding_node.node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), params.len());

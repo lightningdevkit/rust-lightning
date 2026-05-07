@@ -13,11 +13,11 @@
 //! announcements, channel updates, query messages, and pruning channels and nodes. Both valid
 //! and malformed messages are generated to exercise error paths.
 
+use bitcoin::TxOut;
 use bitcoin::amount::Amount;
 use bitcoin::constants::ChainHash;
 use bitcoin::network::Network;
 use bitcoin::secp256k1::PublicKey;
-use bitcoin::TxOut;
 
 use lightning::ln::chan_utils::make_funding_redeemscript;
 use lightning::ln::msgs::{self, BaseMessageHandler, MessageSendEvent, RoutingMessageHandler};
@@ -240,10 +240,9 @@ fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 					is_permanent: true,
 				});
 
-				assert!(network_graph
-					.read_only()
-					.node(&NodeId::from_pubkey(&peer_node_id))
-					.is_none());
+				assert!(
+					network_graph.read_only().node(&NodeId::from_pubkey(&peer_node_id)).is_none()
+				);
 			},
 			// Remove stale channels and tracking.
 			6 => {
@@ -259,7 +258,7 @@ pub fn gossip_discovery_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 	do_test(data, out);
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn gossip_discovery_run(data: *const u8, datalen: usize) {
 	do_test(unsafe { std::slice::from_raw_parts(data, datalen) }, test_logger::DevNull {});
 }

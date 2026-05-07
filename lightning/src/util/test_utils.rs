@@ -11,6 +11,8 @@ use crate::blinded_path::message::MessageContext;
 use crate::blinded_path::message::{BlindedMessagePath, MessageForwardNode};
 use crate::blinded_path::payment::{BlindedPaymentPath, ReceiveTlvs};
 use crate::chain;
+use crate::chain::BlockLocator;
+use crate::chain::WatchedOutput;
 use crate::chain::chaininterface;
 #[cfg(any(test, feature = "_externalize_tests"))]
 use crate::chain::chaininterface::FEERATE_FLOOR_SATS_PER_KW;
@@ -20,8 +22,6 @@ use crate::chain::channelmonitor::{
 	ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, MonitorEvent,
 };
 use crate::chain::transaction::OutPoint;
-use crate::chain::BlockLocator;
-use crate::chain::WatchedOutput;
 #[cfg(any(test, feature = "_externalize_tests"))]
 use crate::ln::chan_utils::CommitmentTransaction;
 use crate::ln::channel_state::ChannelDetails;
@@ -65,15 +65,15 @@ use crate::util::wallet_utils::{ConfirmedUtxo, Utxo, WalletSourceSync};
 
 use bitcoin::amount::Amount;
 use bitcoin::block::Block;
-use bitcoin::constants::genesis_block;
 use bitcoin::constants::ChainHash;
+use bitcoin::constants::genesis_block;
 use bitcoin::hash_types::Txid;
-use bitcoin::hashes::{hex::FromHex, Hash};
+use bitcoin::hashes::{Hash, hex::FromHex};
 use bitcoin::network::Network;
 use bitcoin::script::{Builder, Script, ScriptBuf};
 use bitcoin::sighash::{EcdsaSighashType, SighashCache};
 use bitcoin::transaction::{Transaction, TxOut};
-use bitcoin::{opcodes, Witness};
+use bitcoin::{Witness, opcodes};
 
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::{RecoverableSignature, Signature};
@@ -95,8 +95,8 @@ use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::task::{Context, Poll, Waker};
 use core::time::Duration;
 
-use bitcoin::psbt::Psbt;
 use bitcoin::Sequence;
+use bitcoin::psbt::Psbt;
 
 use super::test_channel_signer::SignerOp;
 
@@ -807,18 +807,20 @@ impl<Signer: sign::ecdsa::EcdsaChannelSigner> Persist<Signer> for WatchtowerPers
 	) -> chain::ChannelMonitorUpdateStatus {
 		let res = self.persister.persist_new_channel(monitor_name, data);
 
-		assert!(self
-			.unsigned_justice_tx_data
-			.lock()
-			.unwrap()
-			.insert(data.channel_id(), VecDeque::new())
-			.is_none());
-		assert!(self
-			.watchtower_state
-			.lock()
-			.unwrap()
-			.insert(data.channel_id(), new_hash_map())
-			.is_none());
+		assert!(
+			self.unsigned_justice_tx_data
+				.lock()
+				.unwrap()
+				.insert(data.channel_id(), VecDeque::new())
+				.is_none()
+		);
+		assert!(
+			self.watchtower_state
+				.lock()
+				.unwrap()
+				.insert(data.channel_id(), new_hash_map())
+				.is_none()
+		);
 
 		let initial_counterparty_commitment_tx =
 			data.initial_counterparty_commitment_tx().expect("First and only call expects Some");
@@ -1255,19 +1257,23 @@ impl chaininterface::BroadcasterInterface for TestBroadcaster {
 		assert!(txs.len() <= 2);
 		if txs.len() == 2 {
 			let parent_txid = txs[0].0.compute_txid();
-			assert!(txs[1]
-				.0
-				.input
-				.iter()
-				.map(|input| input.previous_output.txid)
-				.any(|txid| txid == parent_txid));
+			assert!(
+				txs[1]
+					.0
+					.input
+					.iter()
+					.map(|input| input.previous_output.txid)
+					.any(|txid| txid == parent_txid)
+			);
 			let child_txid = txs[1].0.compute_txid();
-			assert!(txs[0]
-				.0
-				.input
-				.iter()
-				.map(|input| input.previous_output.txid)
-				.all(|txid| txid != child_txid));
+			assert!(
+				txs[0]
+					.0
+					.input
+					.iter()
+					.map(|input| input.previous_output.txid)
+					.all(|txid| txid != child_txid)
+			);
 		}
 
 		for (tx, _broadcast_type) in txs {

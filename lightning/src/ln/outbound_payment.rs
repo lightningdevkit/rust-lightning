@@ -9,8 +9,8 @@
 
 //! This module contains various types which are used to configure or process outbound payments.
 
-use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash;
+use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{self, Secp256k1, SecretKey};
 use lightning_invoice::Bolt11Invoice;
 
@@ -341,8 +341,8 @@ impl PendingOutboundPayment {
 		};
 		if remove_res {
 			if let PendingOutboundPayment::Retryable {
-				ref mut pending_amt_msat, ref mut pending_fee_msat,
-				ref mut remaining_max_total_routing_fee_msat, ..
+				pending_amt_msat, pending_fee_msat,
+				remaining_max_total_routing_fee_msat, ..
 			} = self {
 				let path = path.expect("Removing a failed payment should always come with a path");
 				*pending_amt_msat -= path.final_value_msat();
@@ -375,8 +375,8 @@ impl PendingOutboundPayment {
 		};
 		if insert_res {
 			if let PendingOutboundPayment::Retryable {
-				ref mut pending_amt_msat, ref mut pending_fee_msat,
-				ref mut remaining_max_total_routing_fee_msat, ..
+				pending_amt_msat, pending_fee_msat,
+				remaining_max_total_routing_fee_msat, ..
 			} = self {
 					*pending_amt_msat += path.final_value_msat();
 					let path_fee_msat = path.fee_msat();
@@ -1285,18 +1285,20 @@ impl OutboundPayments {
 						));
 					}
 
-					let amount_msat = match InvoiceBuilder::<DerivedSigningPubkey>::amount_msats(
-						invreq,
-					) {
-						Ok(amt) => amt,
-						Err(_) => {
-							// We check this during invoice request parsing, when constructing the invreq's
-							// contents from its TLV stream.
-							debug_assert!(false, "LDK requires an msat amount in either the invreq or the invreq's underlying offer");
-							abandon_with_entry!(entry, PaymentFailureReason::UnexpectedError);
-							return Err(Bolt12PaymentError::UnknownRequiredFeatures);
-						},
-					};
+					let amount_msat =
+						match InvoiceBuilder::<DerivedSigningPubkey>::amount_msats(invreq) {
+							Ok(amt) => amt,
+							Err(_) => {
+								// We check this during invoice request parsing, when constructing the invreq's
+								// contents from its TLV stream.
+								debug_assert!(
+									false,
+									"LDK requires an msat amount in either the invreq or the invreq's underlying offer"
+								);
+								abandon_with_entry!(entry, PaymentFailureReason::UnexpectedError);
+								return Err(Bolt12PaymentError::UnknownRequiredFeatures);
+							},
+						};
 					let keysend_preimage =
 						PaymentPreimage(entropy_source.get_secure_random_bytes());
 					let payment_hash =
@@ -2699,13 +2701,24 @@ impl OutboundPayments {
 						entry.get_mut().insert(session_priv_bytes, &path)
 					},
 				};
-				log_info!(logger, "{} a pending payment path for {} msat for session priv {} on an existing pending payment with payment hash {}",
-					if newly_added { "Added" } else { "Had" }, path_amt, log_bytes!(session_priv_bytes), payment_hash);
+				log_info!(
+					logger,
+					"{} a pending payment path for {} msat for session priv {} on an existing pending payment with payment hash {}",
+					if newly_added { "Added" } else { "Had" },
+					path_amt,
+					log_bytes!(session_priv_bytes),
+					payment_hash
+				);
 			},
 			hash_map::Entry::Vacant(entry) => {
 				entry.insert(new_retryable!());
-				log_info!(logger, "Added a pending payment for {} msat with payment hash {} for path with session priv {}",
-					path_amt, payment_hash,  log_bytes!(session_priv_bytes));
+				log_info!(
+					logger,
+					"Added a pending payment for {} msat with payment hash {} for path with session priv {}",
+					path_amt,
+					payment_hash,
+					log_bytes!(session_priv_bytes)
+				);
 			},
 		}
 	}

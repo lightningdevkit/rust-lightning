@@ -60,7 +60,7 @@ use lightning_types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 
 use bitcoin::script::Builder;
 use bitcoin::secp256k1::Secp256k1;
-use bitcoin::{opcodes, Amount, TxOut};
+use bitcoin::{Amount, TxOut, opcodes};
 
 use std::sync::Arc;
 
@@ -78,7 +78,7 @@ fn simple_upgrade() {
 
 		let payment_preimage =
 			lightning_0_1_utils::route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
-		preimage = PaymentPreimage(payment_preimage.0 .0);
+		preimage = PaymentPreimage(payment_preimage.0.0);
 
 		node_a_ser = nodes[0].node.encode();
 		node_b_ser = nodes[1].node.encode();

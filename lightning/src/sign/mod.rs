@@ -28,12 +28,12 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hashes::{Hash, HashEngine};
 
+use bitcoin::secp256k1::All;
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::{RecoverableSignature, Signature};
 use bitcoin::secp256k1::schnorr;
-use bitcoin::secp256k1::All;
 use bitcoin::secp256k1::{Keypair, PublicKey, Scalar, Secp256k1, SecretKey, Signing};
-use bitcoin::{secp256k1, Psbt, Sequence, Txid, WPubkeyHash, Witness};
+use bitcoin::{Psbt, Sequence, Txid, WPubkeyHash, Witness, secp256k1};
 use chacha20_poly1305::chacha20::{ChaCha20, Key, Nonce};
 
 use lightning_invoice::RawBolt11Invoice;
@@ -42,14 +42,14 @@ use crate::chain::transaction::OutPoint;
 use crate::crypto::utils::{hkdf_extract_expand_twice, sign, sign_with_aux_rand};
 use crate::ln::chan_utils;
 use crate::ln::chan_utils::{
-	get_countersigner_payment_script, get_revokeable_redeemscript, make_funding_redeemscript,
 	ChannelPublicKeys, ChannelTransactionParameters, ClosingTransaction, CommitmentTransaction,
-	HTLCOutputInCommitment, HolderCommitmentTransaction,
+	HTLCOutputInCommitment, HolderCommitmentTransaction, get_countersigner_payment_script,
+	get_revokeable_redeemscript, make_funding_redeemscript,
 };
 use crate::ln::channel::ANCHOR_OUTPUT_VALUE_SATOSHI;
 use crate::ln::channel_keys::{
-	add_public_key_tweak, DelayedPaymentBasepoint, DelayedPaymentKey, HtlcBasepoint, HtlcKey,
-	RevocationBasepoint, RevocationKey,
+	DelayedPaymentBasepoint, DelayedPaymentKey, HtlcBasepoint, HtlcKey, RevocationBasepoint,
+	RevocationKey, add_public_key_tweak,
 };
 use crate::ln::inbound_payment::ExpandedKey;
 use crate::ln::msgs::{UnsignedChannelAnnouncement, UnsignedGossipMessage};
@@ -511,7 +511,7 @@ impl SpendableOutputDescriptor {
 					}
 					input_value += descriptor.output.value;
 				},
-				SpendableOutputDescriptor::StaticOutput { ref outpoint, ref output, .. } => {
+				SpendableOutputDescriptor::StaticOutput { outpoint, output, .. } => {
 					if !output_set.insert(*outpoint) {
 						return Err(());
 					}
@@ -2298,7 +2298,7 @@ impl KeysManager {
 					)?;
 					psbt.inputs[input_idx].final_script_witness = Some(witness);
 				},
-				SpendableOutputDescriptor::StaticOutput { ref outpoint, ref output, .. } => {
+				SpendableOutputDescriptor::StaticOutput { outpoint, output, .. } => {
 					let input_idx = get_input_idx(outpoint)?;
 					let derivation_idx =
 						if output.script_pubkey == self.destination_script { 1 } else { 2 };
@@ -2723,10 +2723,10 @@ pub fn dyn_sign() {
 #[cfg(ldk_bench)]
 pub mod benches {
 	use crate::sign::{EntropySource, KeysManager};
-	use bitcoin::constants::genesis_block;
 	use bitcoin::Network;
+	use bitcoin::constants::genesis_block;
 	use std::sync::mpsc::TryRecvError;
-	use std::sync::{mpsc, Arc};
+	use std::sync::{Arc, mpsc};
 	use std::thread;
 	use std::time::Duration;
 
@@ -2743,14 +2743,16 @@ pub mod benches {
 		for _ in 1..5 {
 			let keys_manager_clone = Arc::clone(&keys_manager);
 			let (stop_sender, stop_receiver) = mpsc::channel();
-			let handle = thread::spawn(move || loop {
-				keys_manager_clone.get_secure_random_bytes();
-				match stop_receiver.try_recv() {
-					Ok(_) | Err(TryRecvError::Disconnected) => {
-						println!("Terminating.");
-						break;
-					},
-					Err(TryRecvError::Empty) => {},
+			let handle = thread::spawn(move || {
+				loop {
+					keys_manager_clone.get_secure_random_bytes();
+					match stop_receiver.try_recv() {
+						Ok(_) | Err(TryRecvError::Disconnected) => {
+							println!("Terminating.");
+							break;
+						},
+						Err(TryRecvError::Empty) => {},
+					}
 				}
 			});
 			handles.push(handle);

@@ -4,8 +4,8 @@ version = "0.3.0+git"
 authors = ["Arik Sosman <git@arik.io>"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/lightningdevkit/rust-lightning"
-edition = "2021"
-rust-version = "1.75"
+edition = "2024"
+rust-version = "1.85"
 description = """
 Utility to process gossip routing data from Rapid Gossip Sync Server.
 """
@@ -21,7 +21,7 @@ bitcoin_hashes = { version = "0.14.0", default-features = false }
 bitcoin-io = { version = "0.1.2", default-features = false }
 
 [target.'cfg(ldk_bench)'.dependencies]
-criterion = { version = "0.4", optional = true, default-features = false }
+criterion = { version = "0.5", optional = true, default-features = false }
 
 [dev-dependencies]
 lightning = { version = "0.3.0", path = "../lightning", features = ["_test_utils"] }

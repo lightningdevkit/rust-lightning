@@ -1,8 +1,8 @@
 use lightning::events::ClosureReason;
 use lightning::ln::functional_test_utils::*;
 use lightning::util::persist::{
-	migrate_kv_store_data, read_channel_monitors, KVStoreSync, MigratableKVStore,
-	KVSTORE_NAMESPACE_KEY_ALPHABET, KVSTORE_NAMESPACE_KEY_MAX_LEN,
+	KVSTORE_NAMESPACE_KEY_ALPHABET, KVSTORE_NAMESPACE_KEY_MAX_LEN, KVStoreSync, MigratableKVStore,
+	migrate_kv_store_data, read_channel_monitors,
 };
 use lightning::util::test_utils;
 

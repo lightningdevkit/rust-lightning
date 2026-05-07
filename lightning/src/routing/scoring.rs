@@ -1439,10 +1439,10 @@ fn success_probability(
 }
 
 impl<
-		L: Deref<Target = u64>,
-		HT: Deref<Target = HistoricalLiquidityTracker>,
-		T: Deref<Target = Duration>,
-	> DirectedChannelLiquidity<L, HT, T>
+	L: Deref<Target = u64>,
+	HT: Deref<Target = HistoricalLiquidityTracker>,
+	T: Deref<Target = Duration>,
+> DirectedChannelLiquidity<L, HT, T>
 {
 	/// Returns a liquidity penalty for routing the given HTLC `amount_msat` through the channel in
 	/// this direction.
@@ -1580,10 +1580,10 @@ impl<
 }
 
 impl<
-		L: DerefMut<Target = u64>,
-		HT: DerefMut<Target = HistoricalLiquidityTracker>,
-		T: DerefMut<Target = Duration>,
-	> DirectedChannelLiquidity<L, HT, T>
+	L: DerefMut<Target = u64>,
+	HT: DerefMut<Target = HistoricalLiquidityTracker>,
+	T: DerefMut<Target = Duration>,
+> DirectedChannelLiquidity<L, HT, T>
 {
 	/// Adjusts the channel liquidity balance bounds when failing to route `amount_msat`.
 	#[rustfmt::skip]
@@ -2631,8 +2631,8 @@ mod tests {
 
 	use crate::io;
 	use bitcoin::constants::ChainHash;
-	use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 	use bitcoin::hashes::Hash;
+	use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 	use bitcoin::network::Network;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 	use core::time::Duration;

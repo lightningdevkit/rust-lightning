@@ -22,9 +22,9 @@ use core::task;
 
 use crate::events::EventQueue;
 use crate::lsps0::ser::{
-	LSPSMessage, LSPSProtocolMessageHandler, LSPSRequestId, LSPSResponseError,
 	JSONRPC_INTERNAL_ERROR_ERROR_CODE, JSONRPC_INTERNAL_ERROR_ERROR_MESSAGE,
-	LSPS0_CLIENT_REJECTED_ERROR_CODE,
+	LSPS0_CLIENT_REJECTED_ERROR_CODE, LSPSMessage, LSPSProtocolMessageHandler, LSPSRequestId,
+	LSPSResponseError,
 };
 use crate::lsps2::event::LSPS2ServiceEvent;
 use crate::lsps2::payment_queue::{InterceptedHTLC, PaymentQueue};
@@ -36,9 +36,8 @@ use crate::persist::{
 	LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE, LSPS2_SERVICE_PERSISTENCE_SECONDARY_NAMESPACE,
 };
 use crate::prelude::hash_map::Entry;
-use crate::prelude::{new_hash_map, HashMap};
+use crate::prelude::{HashMap, new_hash_map};
 use crate::sync::{Arc, Mutex, MutexGuard, RwLock};
-use crate::utils::async_poll::dummy_waker;
 
 use lightning::chain::chaininterface::{BroadcasterInterface, TransactionType};
 use lightning::events::HTLCHandlingFailureType;
@@ -52,16 +51,16 @@ use lightning::{impl_writeable_tlv_based, impl_writeable_tlv_based_enum};
 
 use lightning_types::payment::PaymentHash;
 
-use bitcoin::secp256k1::PublicKey;
 use bitcoin::Transaction;
+use bitcoin::secp256k1::PublicKey;
 
 use crate::lsps2::msgs::{
-	LSPS2BuyRequest, LSPS2BuyResponse, LSPS2GetInfoRequest, LSPS2GetInfoResponse, LSPS2Message,
-	LSPS2OpeningFeeParams, LSPS2RawOpeningFeeParams, LSPS2Request, LSPS2Response,
 	LSPS2_BUY_REQUEST_INVALID_OPENING_FEE_PARAMS_ERROR_CODE,
 	LSPS2_BUY_REQUEST_PAYMENT_SIZE_TOO_LARGE_ERROR_CODE,
 	LSPS2_BUY_REQUEST_PAYMENT_SIZE_TOO_SMALL_ERROR_CODE,
-	LSPS2_GET_INFO_REQUEST_UNRECOGNIZED_OR_STALE_TOKEN_ERROR_CODE,
+	LSPS2_GET_INFO_REQUEST_UNRECOGNIZED_OR_STALE_TOKEN_ERROR_CODE, LSPS2BuyRequest,
+	LSPS2BuyResponse, LSPS2GetInfoRequest, LSPS2GetInfoResponse, LSPS2Message,
+	LSPS2OpeningFeeParams, LSPS2RawOpeningFeeParams, LSPS2Request, LSPS2Response,
 };
 
 const MAX_PENDING_REQUESTS_PER_PEER: usize = 10;
@@ -246,12 +245,12 @@ impl OutboundJITChannelState {
 				if expected_payment_size_msat < opening_fee_params.min_payment_size_msat
 					|| expected_payment_size_msat > opening_fee_params.max_payment_size_msat
 				{
-					return Err(ChannelStateError(
-							format!("Payment size violates our limits: expected_payment_size_msat = {}, min_payment_size_msat = {}, max_payment_size_msat = {}",
-									expected_payment_size_msat,
-									opening_fee_params.min_payment_size_msat,
-									opening_fee_params.max_payment_size_msat
-							)));
+					return Err(ChannelStateError(format!(
+						"Payment size violates our limits: expected_payment_size_msat = {}, min_payment_size_msat = {}, max_payment_size_msat = {}",
+						expected_payment_size_msat,
+						opening_fee_params.min_payment_size_msat,
+						opening_fee_params.max_payment_size_msat
+					)));
 				}
 
 				let opening_fee_msat = compute_opening_fee(
@@ -677,7 +676,8 @@ macro_rules! get_or_insert_peer_state_entry {
 				if is_limited_by_max_total_peers {
 					let error_response = LSPSResponseError {
 						code: JSONRPC_INTERNAL_ERROR_ERROR_CODE,
-						message: JSONRPC_INTERNAL_ERROR_ERROR_MESSAGE.to_string(), data: None,
+						message: JSONRPC_INTERNAL_ERROR_ERROR_MESSAGE.to_string(),
+						data: None,
 					};
 
 					let msg = LSPSMessage::Invalid(error_response);
@@ -688,17 +688,17 @@ macro_rules! get_or_insert_peer_state_entry {
 						$counterparty_node_id, MAX_TOTAL_PEERS
 					);
 
-					return Err(LightningError { err, action: ErrorAction::IgnoreAndLog(Level::Error) });
+					return Err(LightningError {
+						err,
+						action: ErrorAction::IgnoreAndLog(Level::Error),
+					});
 				} else {
 					e.insert(Mutex::new(PeerState::new()))
 				}
-			}
-			Entry::Occupied(e) => {
-				e.into_mut()
-			}
+			},
+			Entry::Occupied(e) => e.into_mut(),
 		}
-
-	}}
+	}};
 }
 
 /// The main object allowing to send and receive bLIP-52 / LSPS2 messages.
@@ -749,8 +749,8 @@ where
 				debug_assert!(res.is_none(), "Channel IDs should never collide");
 				if res.is_some() {
 					return Err(lightning::io::Error::new(
-							lightning::io::ErrorKind::InvalidData,
-							"Failed to read LSPS2 peer state due to data inconsistencies: Channel IDs should never collide",
+						lightning::io::ErrorKind::InvalidData,
+						"Failed to read LSPS2 peer state due to data inconsistencies: Channel IDs should never collide",
 					));
 				}
 			}
@@ -946,14 +946,14 @@ where
 					_ => {
 						return Err(APIError::APIMisuseError {
 							err: format!("No pending buy request for request_id: {:?}", request_id),
-						})
+						});
 					},
 				}
 			},
 			None => {
 				return Err(APIError::APIMisuseError {
 					err: format!("No state for the counterparty exists: {}", counterparty_node_id),
-				})
+				});
 			},
 		};
 
@@ -1217,7 +1217,7 @@ where
 											"Forwarded payment was not applicable for JIT channel: {}",
 											e.err
 										),
-									})
+									});
 								},
 							}
 
@@ -1451,7 +1451,7 @@ where
 										"Failed to transition to channel ready: {}",
 										e.err
 									),
-								})
+								});
 							},
 						}
 					} else {
@@ -2080,7 +2080,13 @@ where
 					false,
 					"Service handler received LSPS2 response message. This should never happen."
 				);
-				Err(LightningError { err: format!("Service handler received LSPS2 response message from node {}. This should never happen.", counterparty_node_id), action: ErrorAction::IgnoreAndLog(Level::Info)})
+				Err(LightningError {
+					err: format!(
+						"Service handler received LSPS2 response message from node {}. This should never happen.",
+						counterparty_node_id
+					),
+					action: ErrorAction::IgnoreAndLog(Level::Info),
+				})
 			},
 		}
 	}
@@ -2190,8 +2196,7 @@ where
 			user_channel_id,
 		));
 
-		let mut waker = dummy_waker();
-		let mut ctx = task::Context::from_waker(&mut waker);
+		let mut ctx = task::Context::from_waker(core::task::Waker::noop());
 		match fut.as_mut().poll(&mut ctx) {
 			task::Poll::Ready(result) => result,
 			task::Poll::Pending => {
@@ -2217,8 +2222,7 @@ where
 			payment_hash,
 		));
 
-		let mut waker = dummy_waker();
-		let mut ctx = task::Context::from_waker(&mut waker);
+		let mut ctx = task::Context::from_waker(core::task::Waker::noop());
 		match fut.as_mut().poll(&mut ctx) {
 			task::Poll::Ready(result) => result,
 			task::Poll::Pending => {
@@ -2238,8 +2242,7 @@ where
 	) -> Result<(), APIError> {
 		let mut fut = pin!(self.inner.htlc_handling_failed(failure_type));
 
-		let mut waker = dummy_waker();
-		let mut ctx = task::Context::from_waker(&mut waker);
+		let mut ctx = task::Context::from_waker(core::task::Waker::noop());
 		match fut.as_mut().poll(&mut ctx) {
 			task::Poll::Ready(result) => result,
 			task::Poll::Pending => {
@@ -2259,8 +2262,7 @@ where
 	) -> Result<(), APIError> {
 		let mut fut = pin!(self.inner.payment_forwarded(next_channel_id, skimmed_fee_msat));
 
-		let mut waker = dummy_waker();
-		let mut ctx = task::Context::from_waker(&mut waker);
+		let mut ctx = task::Context::from_waker(core::task::Waker::noop());
 		match fut.as_mut().poll(&mut ctx) {
 			task::Poll::Ready(result) => result,
 			task::Poll::Pending => {
@@ -2300,8 +2302,7 @@ where
 		let mut fut =
 			pin!(self.inner.channel_open_abandoned(counterparty_node_id, user_channel_id));
 
-		let mut waker = dummy_waker();
-		let mut ctx = task::Context::from_waker(&mut waker);
+		let mut ctx = task::Context::from_waker(core::task::Waker::noop());
 		match fut.as_mut().poll(&mut ctx) {
 			task::Poll::Ready(result) => result,
 			task::Poll::Pending => {
@@ -2319,8 +2320,7 @@ where
 	) -> Result<(), APIError> {
 		let mut fut = pin!(self.inner.channel_open_failed(counterparty_node_id, user_channel_id));
 
-		let mut waker = dummy_waker();
-		let mut ctx = task::Context::from_waker(&mut waker);
+		let mut ctx = task::Context::from_waker(core::task::Waker::noop());
 		match fut.as_mut().poll(&mut ctx) {
 			task::Poll::Ready(result) => result,
 			task::Poll::Pending => {
@@ -2341,8 +2341,7 @@ where
 		let mut fut =
 			pin!(self.inner.channel_ready(user_channel_id, channel_id, counterparty_node_id));
 
-		let mut waker = dummy_waker();
-		let mut ctx = task::Context::from_waker(&mut waker);
+		let mut ctx = task::Context::from_waker(core::task::Waker::noop());
 		match fut.as_mut().poll(&mut ctx) {
 			task::Poll::Ready(result) => result,
 			task::Poll::Pending => {

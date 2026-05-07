@@ -11,7 +11,7 @@
 
 use crate::io;
 use crate::util::ser::{BigSize, Readable, Writeable, Writer};
-use bitcoin::hashes::{sha256, Hash, HashEngine};
+use bitcoin::hashes::{Hash, HashEngine, sha256};
 use bitcoin::secp256k1::schnorr::Signature;
 use bitcoin::secp256k1::{self, Message, PublicKey, Secp256k1};
 
@@ -282,7 +282,7 @@ impl<'a> Writeable for TlvRecord<'a> {
 
 #[cfg(test)]
 mod tests {
-	use super::{TlvStream, SIGNATURE_TYPES};
+	use super::{SIGNATURE_TYPES, TlvStream};
 
 	use crate::ln::channelmanager::PaymentId;
 	use crate::ln::inbound_payment::ExpandedKey;
@@ -293,7 +293,7 @@ mod tests {
 	use crate::offers::signer::Metadata;
 	use crate::offers::test_utils::recipient_pubkey;
 	use crate::util::ser::Writeable;
-	use bitcoin::hashes::{sha256, Hash};
+	use bitcoin::hashes::{Hash, sha256};
 	use bitcoin::hex::FromHex;
 	use bitcoin::secp256k1::schnorr::Signature;
 	use bitcoin::secp256k1::{Keypair, Message, Secp256k1, SecretKey};
@@ -319,7 +319,11 @@ mod tests {
 			sha256::Hash::from_slice(&bytes_2).unwrap(),
 		);
 
-		const HEX_3: &'static str = concat!("010203e8","02080000010000020003", "03310266e4598d1d3c415f572a8488830b60f7e744ed9235eb0b1ba93283b315c0351800000000000000010000000000000002");
+		const HEX_3: &'static str = concat!(
+			"010203e8",
+			"02080000010000020003",
+			"03310266e4598d1d3c415f572a8488830b60f7e744ed9235eb0b1ba93283b315c0351800000000000000010000000000000002"
+		);
 		let bytes_3 =
 			<Vec<u8>>::from_hex("ab2e79b1283b0b31e0b035258de23782df6b89a38cfa7237bde69aed1a658c5d")
 				.unwrap();

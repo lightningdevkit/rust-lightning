@@ -101,8 +101,8 @@ mod tests {
 		do_read_write_remove_list_persist, do_test_data_migration, do_test_store,
 	};
 
-	use lightning::chain::chainmonitor::Persist;
 	use lightning::chain::ChannelMonitorUpdateStatus;
+	use lightning::chain::chainmonitor::Persist;
 	use lightning::events::ClosureReason;
 	use lightning::ln::functional_test_utils::*;
 	use lightning::ln::msgs::BaseMessageHandler;

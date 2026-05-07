@@ -21,10 +21,10 @@ use lightning::util::ser::{Readable, Writeable};
 use lightning::{impl_writeable_tlv_based, impl_writeable_tlv_based_enum};
 use lightning_types::string::UntrustedString;
 
+use serde::Serializer;
 use serde::de::{self, Deserializer, MapAccess, Visitor};
 use serde::ser::SerializeMap;
 use serde::ser::SerializeStruct;
-use serde::Serializer;
 use serde::{Deserialize, Serialize};
 
 use alloc::string::String;
@@ -329,7 +329,7 @@ impl Deref for LSPS5AppName {
 	type Target = str;
 
 	fn deref(&self) -> &Self::Target {
-		&self.0 .0
+		&self.0.0
 	}
 }
 

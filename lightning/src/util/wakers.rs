@@ -430,10 +430,12 @@ mod tests {
 
 		let exit_thread = Arc::new(AtomicBool::new(false));
 		let exit_thread_clone = Arc::clone(&exit_thread);
-		thread::spawn(move || loop {
-			thread_notifier.notify();
-			if exit_thread_clone.load(Ordering::SeqCst) {
-				break;
+		thread::spawn(move || {
+			loop {
+				thread_notifier.notify();
+				if exit_thread_clone.load(Ordering::SeqCst) {
+					break;
+				}
 			}
 		});
 
@@ -554,19 +556,22 @@ mod tests {
 	const WAKER_V_TABLE: RawWakerVTable = RawWakerVTable::new(waker_clone, wake, wake_by_ref, drop);
 	unsafe fn wake_by_ref(ptr: *const ()) {
 		let p = ptr as *const Arc<AtomicBool>;
-		assert!(!(*p).fetch_or(true, Ordering::SeqCst));
+		assert!(!unsafe { (*p).fetch_or(true, Ordering::SeqCst) });
 	}
 	unsafe fn drop(ptr: *const ()) {
 		let p = ptr as *mut Arc<AtomicBool>;
-		let _freed = Box::from_raw(p);
+		let _freed = unsafe { Box::from_raw(p) };
 	}
 	unsafe fn wake(ptr: *const ()) {
-		wake_by_ref(ptr);
-		drop(ptr);
+		unsafe { wake_by_ref(ptr) };
+		unsafe { drop(ptr) };
 	}
 	unsafe fn waker_clone(ptr: *const ()) -> RawWaker {
 		let p = ptr as *const Arc<AtomicBool>;
-		RawWaker::new(Box::into_raw(Box::new(Arc::clone(&*p))) as *const (), &WAKER_V_TABLE)
+		RawWaker::new(
+			Box::into_raw(Box::new(Arc::clone(unsafe { &*p }))) as *const (),
+			&WAKER_V_TABLE,
+		)
 	}
 
 	fn create_waker() -> (Arc<AtomicBool>, Waker) {
@@ -720,8 +725,10 @@ mod tests {
 		Sleeper::from_futures([notifier_a.get_future(), notifier_b.get_future()]).wait();
 
 		// However once we've slept twice, we should no longer have any pending notifications
-		assert!(!Sleeper::from_futures([notifier_a.get_future(), notifier_b.get_future()])
-			.wait_timeout(Duration::from_millis(10)));
+		assert!(
+			!Sleeper::from_futures([notifier_a.get_future(), notifier_b.get_future()])
+				.wait_timeout(Duration::from_millis(10))
+		);
 
 		// Test ordering somewhat more.
 		notifier_a.notify();
@@ -767,8 +774,10 @@ mod tests {
 
 		assert!(callback_a.load(Ordering::SeqCst) && callback_b.load(Ordering::SeqCst));
 		Sleeper::from_futures([notifier_a.get_future(), notifier_b.get_future()]).wait();
-		assert!(!Sleeper::from_futures([notifier_a.get_future(), notifier_b.get_future()])
-			.wait_timeout(Duration::from_millis(10)));
+		assert!(
+			!Sleeper::from_futures([notifier_a.get_future(), notifier_b.get_future()])
+				.wait_timeout(Duration::from_millis(10))
+		);
 	}
 
 	#[test]

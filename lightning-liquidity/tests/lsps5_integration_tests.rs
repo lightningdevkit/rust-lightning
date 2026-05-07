@@ -3,20 +3,21 @@
 mod common;
 
 use common::{
-	create_service_and_client_nodes, create_service_and_client_nodes_with_kv_stores,
-	get_lsps_message, LSPSNodes, LiquidityNode,
+	LSPSNodes, LiquidityNode, create_service_and_client_nodes,
+	create_service_and_client_nodes_with_kv_stores, get_lsps_message,
 };
 
 use lightning::events::ClosureReason;
 use lightning::ln::channelmanager::InterceptId;
 use lightning::ln::functional_test_utils::{
-	check_closed_event, close_channel, create_chan_between_nodes, create_chanmon_cfgs,
-	create_network, create_node_cfgs, create_node_chanmgrs, Node,
+	Node, check_closed_event, close_channel, create_chan_between_nodes, create_chanmon_cfgs,
+	create_network, create_node_cfgs, create_node_chanmgrs,
 };
 use lightning::ln::msgs::Init;
 use lightning::ln::peer_handler::CustomMessageHandler;
 use lightning::util::hash_tables::HashSet;
 use lightning::util::test_utils::TestStore;
+use lightning_liquidity::LiquidityManagerSync;
 use lightning_liquidity::events::LiquidityEvent;
 use lightning_liquidity::lsps0::ser::LSPSDateTime;
 use lightning_liquidity::lsps2::client::LSPS2ClientConfig;
@@ -30,14 +31,13 @@ use lightning_liquidity::lsps5::msgs::{
 	WebhookNotificationMethod,
 };
 use lightning_liquidity::lsps5::service::{
-	LSPS5ServiceConfig, DEFAULT_MAX_WEBHOOKS_PER_CLIENT, NOTIFICATION_COOLDOWN_TIME,
+	DEFAULT_MAX_WEBHOOKS_PER_CLIENT, LSPS5ServiceConfig, NOTIFICATION_COOLDOWN_TIME,
 };
 use lightning_liquidity::lsps5::service::{
 	MIN_WEBHOOK_RETENTION_DAYS, PRUNE_STALE_WEBHOOKS_INTERVAL_DAYS,
 };
 use lightning_liquidity::lsps5::validator::{LSPS5Validator, MAX_RECENT_SIGNATURES};
 use lightning_liquidity::utils::time::{DefaultTimeProvider, TimeProvider};
-use lightning_liquidity::LiquidityManagerSync;
 use lightning_liquidity::{LiquidityClientConfig, LiquidityServiceConfig};
 
 use lightning_types::payment::PaymentHash;

@@ -148,10 +148,10 @@ mod test {
 
 	use bitcoin::secp256k1::{self, PublicKey, Secp256k1};
 
+	use lightning::blinded_path::NodeIdLookUp;
 	use lightning::blinded_path::message::{
 		BlindedMessagePath, MessageContext, MessageForwardNode,
 	};
-	use lightning::blinded_path::NodeIdLookUp;
 	use lightning::ln::channelmanager::PaymentId;
 	use lightning::ln::msgs::{BaseMessageHandler, Init, OnionMessageHandler};
 	use lightning::onion_message::dns_resolution::{HumanReadableName, OMNameResolver};

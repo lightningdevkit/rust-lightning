@@ -627,7 +627,8 @@ mod sealed {
 		supports_channel_type,
 		requires_channel_type
 	);
-	define_feature!(47,
+	define_feature!(
+		47,
 		SCIDPrivacy,
 		[InitContext, NodeContext, ChannelTypeContext],
 		"Feature flags for only forwarding with SCID aliasing. Called `option_scid_alias` in the BOLTs",

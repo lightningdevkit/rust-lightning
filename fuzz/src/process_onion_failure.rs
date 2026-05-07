@@ -155,7 +155,7 @@ pub fn process_onion_failure_test<Out: test_logger::Output>(data: &[u8], out: Ou
 }
 
 /// Method that needs to be added manually, {name}_run
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn process_onion_failure_run(data: *const u8, datalen: usize) {
 	do_test(unsafe { std::slice::from_raw_parts(data, datalen) }, test_logger::DevNull {});
 }

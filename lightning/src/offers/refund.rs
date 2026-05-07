@@ -1032,14 +1032,14 @@ mod tests {
 
 	use core::time::Duration;
 
-	use crate::blinded_path::message::BlindedMessagePath;
 	use crate::blinded_path::BlindedHop;
+	use crate::blinded_path::message::BlindedMessagePath;
 	use crate::ln::channelmanager::PaymentId;
 	use crate::ln::inbound_payment::ExpandedKey;
 	use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
 	use crate::offers::invoice_request::{
-		ExperimentalInvoiceRequestTlvStreamRef, InvoiceRequestTlvStreamRef,
-		EXPERIMENTAL_INVOICE_REQUEST_TYPES, INVOICE_REQUEST_TYPES,
+		EXPERIMENTAL_INVOICE_REQUEST_TYPES, ExperimentalInvoiceRequestTlvStreamRef,
+		INVOICE_REQUEST_TYPES, InvoiceRequestTlvStreamRef,
 	};
 	use crate::offers::nonce::Nonce;
 	use crate::offers::offer::{ExperimentalOfferTlvStreamRef, OfferTlvStreamRef};
@@ -1167,9 +1167,9 @@ mod tests {
 			Ok(payment_id) => assert_eq!(payment_id, PaymentId([1; 32])),
 			Err(()) => panic!("verification failed"),
 		}
-		assert!(invoice
-			.verify_using_payer_data(payment_id, nonce, &expanded_key, &secp_ctx)
-			.is_err());
+		assert!(
+			invoice.verify_using_payer_data(payment_id, nonce, &expanded_key, &secp_ctx).is_err()
+		);
 
 		let mut tlv_stream = refund.as_tlv_stream();
 		tlv_stream.2.amount = Some(2000);
@@ -1249,9 +1249,9 @@ mod tests {
 			.sign(recipient_sign)
 			.unwrap();
 		assert!(invoice.verify_using_metadata(&expanded_key, &secp_ctx).is_err());
-		assert!(invoice
-			.verify_using_payer_data(payment_id, nonce, &expanded_key, &secp_ctx)
-			.is_ok());
+		assert!(
+			invoice.verify_using_payer_data(payment_id, nonce, &expanded_key, &secp_ctx).is_ok()
+		);
 
 		// Fails verification with altered fields
 		let mut tlv_stream = refund.as_tlv_stream();
@@ -1268,9 +1268,9 @@ mod tests {
 			.unwrap()
 			.sign(recipient_sign)
 			.unwrap();
-		assert!(invoice
-			.verify_using_payer_data(payment_id, nonce, &expanded_key, &secp_ctx)
-			.is_err());
+		assert!(
+			invoice.verify_using_payer_data(payment_id, nonce, &expanded_key, &secp_ctx).is_err()
+		);
 
 		// Fails verification with altered payer_id
 		let mut tlv_stream = refund.as_tlv_stream();
@@ -1288,9 +1288,9 @@ mod tests {
 			.unwrap()
 			.sign(recipient_sign)
 			.unwrap();
-		assert!(invoice
-			.verify_using_payer_data(payment_id, nonce, &expanded_key, &secp_ctx)
-			.is_err());
+		assert!(
+			invoice.verify_using_payer_data(payment_id, nonce, &expanded_key, &secp_ctx).is_err()
+		);
 	}
 
 	#[test]

@@ -18,7 +18,7 @@ use crate::events::EventQueue;
 use crate::lsps0::ser::{LSPSProtocolMessageHandler, LSPSRequestId, LSPSResponseError};
 use crate::lsps2::event::LSPS2ClientEvent;
 use crate::message_queue::MessageQueue;
-use crate::prelude::{new_hash_map, new_hash_set, HashMap, HashSet};
+use crate::prelude::{HashMap, HashSet, new_hash_map, new_hash_set};
 use crate::sync::{Arc, Mutex, RwLock};
 
 use lightning::ln::msgs::{ErrorAction, LightningError};
@@ -222,7 +222,7 @@ impl<ES: EntropySource, K: KVStore + Clone> LSPS2ClientHandler<ES, K> {
 						counterparty_node_id
 					),
 					action: ErrorAction::IgnoreAndLog(Level::Debug),
-				})
+				});
 			},
 		}
 
@@ -266,7 +266,13 @@ impl<ES: EntropySource, K: KVStore + Clone> LSPS2ClientHandler<ES, K> {
 				Err(lightning_error)
 			},
 			None => {
-				return Err(LightningError { err: format!("Received error response for a get_info request from an unknown counterparty {}",counterparty_node_id), action: ErrorAction::IgnoreAndLog(Level::Debug)});
+				return Err(LightningError {
+					err: format!(
+						"Received error response for a get_info request from an unknown counterparty {}",
+						counterparty_node_id
+					),
+					action: ErrorAction::IgnoreAndLog(Level::Debug),
+				});
 			},
 		}
 	}
@@ -395,7 +401,13 @@ impl<ES: EntropySource, K: KVStore + Clone> LSPSProtocolMessageHandler
 					false,
 					"Client handler received LSPS2 request message. This should never happen."
 				);
-				Err(LightningError { err: format!("Client handler received LSPS2 request message from node {}. This should never happen.", counterparty_node_id), action: ErrorAction::IgnoreAndLog(Level::Info)})
+				Err(LightningError {
+					err: format!(
+						"Client handler received LSPS2 request message from node {}. This should never happen.",
+						counterparty_node_id
+					),
+					action: ErrorAction::IgnoreAndLog(Level::Info),
+				})
 			},
 		}
 	}

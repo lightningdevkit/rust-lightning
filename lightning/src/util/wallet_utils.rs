@@ -14,8 +14,8 @@ use core::ops::Deref;
 use core::pin::pin;
 use core::task;
 
-use crate::chain::chaininterface::fee_for_weight;
 use crate::chain::ClaimId;
+use crate::chain::chaininterface::fee_for_weight;
 use crate::io_extras::sink;
 use crate::ln::chan_utils::{
 	BASE_INPUT_WEIGHT, BASE_TX_SIZE, EMPTY_SCRIPT_SIG_WEIGHT, P2WSH_TXOUT_WEIGHT,
@@ -24,8 +24,7 @@ use crate::ln::chan_utils::{
 use crate::prelude::*;
 use crate::sign::{P2TR_KEY_PATH_WITNESS_WEIGHT, P2WPKH_WITNESS_WEIGHT};
 use crate::sync::Mutex;
-use crate::util::async_poll::dummy_waker;
-use crate::util::hash_tables::{new_hash_map, HashMap};
+use crate::util::hash_tables::{HashMap, new_hash_map};
 use crate::util::logger::Logger;
 use crate::util::native_async::{MaybeSend, MaybeSync};
 
@@ -851,8 +850,7 @@ where
 			target_feerate_sat_per_1000_weight,
 			max_tx_weight,
 		);
-		let mut waker = dummy_waker();
-		let mut ctx = task::Context::from_waker(&mut waker);
+		let mut ctx = task::Context::from_waker(core::task::Waker::noop());
 		match pin!(fut).poll(&mut ctx) {
 			task::Poll::Ready(result) => result,
 			task::Poll::Pending => {
@@ -865,8 +863,7 @@ where
 
 	fn sign_psbt(&self, psbt: Psbt) -> Result<Transaction, ()> {
 		let fut = self.wallet.sign_psbt(psbt);
-		let mut waker = dummy_waker();
-		let mut ctx = task::Context::from_waker(&mut waker);
+		let mut ctx = task::Context::from_waker(core::task::Waker::noop());
 		match pin!(fut).poll(&mut ctx) {
 			task::Poll::Ready(result) => result,
 			task::Poll::Pending => {

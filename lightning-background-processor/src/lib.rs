@@ -59,8 +59,8 @@ use lightning::util::logger::Logger;
 #[cfg(not(c_bindings))]
 use lightning::util::native_async::MaybeSend;
 use lightning::util::persist::{
-	KVStore, KVStoreSync, KVStoreSyncWrapper, CHANNEL_MANAGER_PERSISTENCE_KEY,
-	CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE, CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
+	CHANNEL_MANAGER_PERSISTENCE_KEY, CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+	CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE, KVStore, KVStoreSync, KVStoreSyncWrapper,
 	NETWORK_GRAPH_PERSISTENCE_KEY, NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE,
 	NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE, SCORER_PERSISTENCE_KEY,
 	SCORER_PERSISTENCE_PRIMARY_NAMESPACE, SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
@@ -187,11 +187,7 @@ const ARCHIVE_STALE_MONITORS_TIMER: Duration = Duration::from_secs(1);
 
 /// core::cmp::min is not currently const, so we define a trivial (and equivalent) replacement
 const fn min_duration(a: Duration, b: Duration) -> Duration {
-	if a.as_nanos() < b.as_nanos() {
-		a
-	} else {
-		b
-	}
+	if a.as_nanos() < b.as_nanos() { a } else { b }
 }
 const FASTEST_TIMER: Duration = min_duration(
 	min_duration(FRESHNESS_TIMER, PING_TIMER),
@@ -215,12 +211,12 @@ pub enum GossipSync<
 }
 
 impl<
-		P: Deref<Target = P2PGossipSync<G, U, L>>,
-		R: Deref<Target = RapidGossipSync<G, L>>,
-		G: Deref<Target = NetworkGraph<L>>,
-		U: UtxoLookup,
-		L: Logger,
-	> GossipSync<P, R, G, U, L>
+	P: Deref<Target = P2PGossipSync<G, U, L>>,
+	R: Deref<Target = RapidGossipSync<G, L>>,
+	G: Deref<Target = NetworkGraph<L>>,
+	U: UtxoLookup,
+	L: Logger,
+> GossipSync<P, R, G, U, L>
 {
 	fn network_graph(&self) -> Option<&G> {
 		match self {
@@ -255,11 +251,11 @@ impl<
 
 /// This is not exported to bindings users as the bindings concretize everything and have constructors for us
 impl<
-		P: Deref<Target = P2PGossipSync<G, U, L>>,
-		G: Deref<Target = NetworkGraph<L>>,
-		U: UtxoLookup,
-		L: Logger,
-	> GossipSync<P, &RapidGossipSync<G, L>, G, U, L>
+	P: Deref<Target = P2PGossipSync<G, U, L>>,
+	G: Deref<Target = NetworkGraph<L>>,
+	U: UtxoLookup,
+	L: Logger,
+> GossipSync<P, &RapidGossipSync<G, L>, G, U, L>
 {
 	/// Initializes a new [`GossipSync::P2P`] variant.
 	pub fn p2p(gossip_sync: P) -> Self {
@@ -268,12 +264,7 @@ impl<
 }
 
 /// This is not exported to bindings users as the bindings concretize everything and have constructors for us
-impl<
-		'a,
-		R: Deref<Target = RapidGossipSync<G, L>>,
-		G: Deref<Target = NetworkGraph<L>>,
-		L: Logger,
-	>
+impl<'a, R: Deref<Target = RapidGossipSync<G, L>>, G: Deref<Target = NetworkGraph<L>>, L: Logger>
 	GossipSync<
 		&P2PGossipSync<G, &'a (dyn UtxoLookup + Send + Sync), L>,
 		R,
@@ -306,7 +297,7 @@ impl<'a, L: Logger>
 
 fn handle_network_graph_update<L: Logger>(network_graph: &NetworkGraph<L>, event: &Event) {
 	if let Event::PaymentPathFailed {
-		failure: PathFailure::OnPath { network_update: Some(ref upd) },
+		failure: PathFailure::OnPath { network_update: Some(upd) },
 		..
 	} = event
 	{
@@ -320,11 +311,11 @@ fn update_scorer<'a, S: Deref<Target = SC>, SC: 'a + WriteableScore<'a>>(
 	scorer: &'a S, event: &Event, duration_since_epoch: Duration,
 ) -> bool {
 	match event {
-		Event::PaymentPathFailed { ref path, short_channel_id: Some(scid), .. } => {
+		Event::PaymentPathFailed { path, short_channel_id: Some(scid), .. } => {
 			let mut score = scorer.write_lock();
 			score.payment_path_failed(path, *scid, duration_since_epoch);
 		},
-		Event::PaymentPathFailed { ref path, payment_failed_permanently: true, .. } => {
+		Event::PaymentPathFailed { path, payment_failed_permanently: true, .. } => {
 			// Reached if the destination explicitly failed it back. We treat this as a successful probe
 			// because the payment made it all the way to the destination with sufficient liquidity.
 			let mut score = scorer.write_lock();
@@ -494,7 +485,7 @@ pub(crate) mod futures_util {
 	use core::future::Future;
 	use core::marker::Unpin;
 	use core::pin::Pin;
-	use core::task::{Poll, RawWaker, RawWakerVTable, Waker};
+	use core::task::Poll;
 	pub(crate) struct Selector<
 		A: Future<Output = bool> + Unpin,
 		B: Future<Output = ()> + Unpin,
@@ -521,13 +512,13 @@ pub(crate) mod futures_util {
 	}
 
 	impl<
-			A: Future<Output = bool> + Unpin,
-			B: Future<Output = ()> + Unpin,
-			C: Future<Output = ()> + Unpin,
-			D: Future<Output = ()> + Unpin,
-			E: Future<Output = ()> + Unpin,
-			F: Future<Output = ()> + Unpin,
-		> Future for Selector<A, B, C, D, E, F>
+		A: Future<Output = bool> + Unpin,
+		B: Future<Output = ()> + Unpin,
+		C: Future<Output = ()> + Unpin,
+		D: Future<Output = ()> + Unpin,
+		E: Future<Output = ()> + Unpin,
+		F: Future<Output = ()> + Unpin,
+	> Future for Selector<A, B, C, D, E, F>
 	{
 		type Output = SelectorOutput;
 		fn poll(
@@ -603,24 +594,6 @@ pub(crate) mod futures_util {
 		}
 	}
 
-	// If we want to poll a future without an async context to figure out if it has completed or
-	// not without awaiting, we need a Waker, which needs a vtable...we fill it with dummy values
-	// but sadly there's a good bit of boilerplate here.
-	fn dummy_waker_clone(_: *const ()) -> RawWaker {
-		RawWaker::new(core::ptr::null(), &DUMMY_WAKER_VTABLE)
-	}
-	fn dummy_waker_action(_: *const ()) {}
-
-	const DUMMY_WAKER_VTABLE: RawWakerVTable = RawWakerVTable::new(
-		dummy_waker_clone,
-		dummy_waker_action,
-		dummy_waker_action,
-		dummy_waker_action,
-	);
-	pub(crate) fn dummy_waker() -> Waker {
-		unsafe { Waker::from_raw(RawWaker::new(core::ptr::null(), &DUMMY_WAKER_VTABLE)) }
-	}
-
 	enum JoinerResult<ERR, F: Future<Output = Result<(), ERR>> + Unpin> {
 		Pending(Option<F>),
 		Ready(Result<(), ERR>),
@@ -642,13 +615,13 @@ pub(crate) mod futures_util {
 	}
 
 	impl<
-			ERR,
-			A: Future<Output = Result<(), ERR>> + Unpin,
-			B: Future<Output = Result<(), ERR>> + Unpin,
-			C: Future<Output = Result<(), ERR>> + Unpin,
-			D: Future<Output = Result<(), ERR>> + Unpin,
-			E: Future<Output = Result<(), ERR>> + Unpin,
-		> Joiner<ERR, A, B, C, D, E>
+		ERR,
+		A: Future<Output = Result<(), ERR>> + Unpin,
+		B: Future<Output = Result<(), ERR>> + Unpin,
+		C: Future<Output = Result<(), ERR>> + Unpin,
+		D: Future<Output = Result<(), ERR>> + Unpin,
+		E: Future<Output = Result<(), ERR>> + Unpin,
+	> Joiner<ERR, A, B, C, D, E>
 	{
 		pub(crate) fn new() -> Self {
 			Self {
@@ -681,13 +654,13 @@ pub(crate) mod futures_util {
 	}
 
 	impl<
-			ERR,
-			A: Future<Output = Result<(), ERR>> + Unpin,
-			B: Future<Output = Result<(), ERR>> + Unpin,
-			C: Future<Output = Result<(), ERR>> + Unpin,
-			D: Future<Output = Result<(), ERR>> + Unpin,
-			E: Future<Output = Result<(), ERR>> + Unpin,
-		> Future for Joiner<ERR, A, B, C, D, E>
+		ERR,
+		A: Future<Output = Result<(), ERR>> + Unpin,
+		B: Future<Output = Result<(), ERR>> + Unpin,
+		C: Future<Output = Result<(), ERR>> + Unpin,
+		D: Future<Output = Result<(), ERR>> + Unpin,
+		E: Future<Output = Result<(), ERR>> + Unpin,
+	> Future for Joiner<ERR, A, B, C, D, E>
 	where
 		Joiner<ERR, A, B, C, D, E>: Unpin,
 	{
@@ -700,7 +673,7 @@ pub(crate) mod futures_util {
 						JoinerResult::Pending(None) => {
 							self.$val = JoinerResult::Ready(Ok(()));
 						},
-						JoinerResult::<ERR, _>::Pending(Some(ref mut val)) => {
+						JoinerResult::<ERR, _>::Pending(Some(val)) => {
 							match Pin::new(val).poll(ctx) {
 								Poll::Ready(res) => {
 									self.$val = JoinerResult::Ready(res);
@@ -722,19 +695,19 @@ pub(crate) mod futures_util {
 
 			if all_complete {
 				let mut res = [Ok(()), Ok(()), Ok(()), Ok(()), Ok(())];
-				if let JoinerResult::Ready(ref mut val) = &mut self.a {
+				if let JoinerResult::Ready(val) = &mut self.a {
 					core::mem::swap(&mut res[0], val);
 				}
-				if let JoinerResult::Ready(ref mut val) = &mut self.b {
+				if let JoinerResult::Ready(val) = &mut self.b {
 					core::mem::swap(&mut res[1], val);
 				}
-				if let JoinerResult::Ready(ref mut val) = &mut self.c {
+				if let JoinerResult::Ready(val) = &mut self.c {
 					core::mem::swap(&mut res[2], val);
 				}
-				if let JoinerResult::Ready(ref mut val) = &mut self.d {
+				if let JoinerResult::Ready(val) = &mut self.d {
 					core::mem::swap(&mut res[3], val);
 				}
-				if let JoinerResult::Ready(ref mut val) = &mut self.e {
+				if let JoinerResult::Ready(val) = &mut self.e {
 					core::mem::swap(&mut res[4], val);
 				}
 				Poll::Ready(res)
@@ -745,7 +718,7 @@ pub(crate) mod futures_util {
 	}
 }
 use core::task;
-use futures_util::{dummy_waker, Joiner, OptionalSelector, Selector, SelectorOutput};
+use futures_util::{Joiner, OptionalSelector, Selector, SelectorOutput};
 
 /// Processes background events in a future.
 ///
@@ -972,42 +945,43 @@ where
 	LM::Target: ALiquidityManager,
 	D::Target: ChangeDestinationSource,
 {
-	let async_event_handler = |event| {
+	let async_event_handler = async |event| {
 		let network_graph = gossip_sync.network_graph();
 		let event_handler = &event_handler;
 		let scorer = &scorer;
 		let logger = &logger;
 		let kv_store = &kv_store;
 		let fetch_time = &fetch_time;
-		// We should be able to drop the Box once our MSRV is 1.68
-		Box::pin(async move {
-			if let Some(network_graph) = network_graph {
-				handle_network_graph_update(network_graph, &event)
-			}
-			if let Some(ref scorer) = scorer {
-				if let Some(duration_since_epoch) = fetch_time() {
-					if update_scorer(scorer, &event, duration_since_epoch) {
-						log_trace!(logger, "Persisting scorer after update");
-						if let Err(e) = kv_store
-							.write(
-								SCORER_PERSISTENCE_PRIMARY_NAMESPACE,
-								SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
-								SCORER_PERSISTENCE_KEY,
-								scorer.encode(),
-							)
-							.await
-						{
-							log_error!(logger, "Error: Failed to persist scorer, check your disk and permissions {}", e);
-							// We opt not to abort early on persistence failure here as persisting
-							// the scorer is non-critical and we still hope that it will have
-							// resolved itself when it is potentially critical in event handling
-							// below.
-						}
+		if let Some(network_graph) = network_graph {
+			handle_network_graph_update(network_graph, &event)
+		}
+		if let Some(scorer) = scorer {
+			if let Some(duration_since_epoch) = fetch_time() {
+				if update_scorer(scorer, &event, duration_since_epoch) {
+					log_trace!(logger, "Persisting scorer after update");
+					if let Err(e) = kv_store
+						.write(
+							SCORER_PERSISTENCE_PRIMARY_NAMESPACE,
+							SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
+							SCORER_PERSISTENCE_KEY,
+							scorer.encode(),
+						)
+						.await
+					{
+						log_error!(
+							logger,
+							"Error: Failed to persist scorer, check your disk and permissions {}",
+							e
+						);
+						// We opt not to abort early on persistence failure here as persisting
+						// the scorer is non-critical and we still hope that it will have
+						// resolved itself when it is potentially critical in event handling
+						// below.
 					}
 				}
 			}
-			event_handler(event).await
-		})
+		}
+		event_handler(event).await
 	};
 	let mut batch_delay = BatchDelay::new();
 
@@ -1125,16 +1099,14 @@ where
 		// before the persistence flag is set. Capturing outside would let us
 		// observe pending ops while the flag is still unset, causing us to
 		// flush monitor writes without persisting the ChannelManager.
-		// Declared before futures so it outlives the Joiner (drop order).
+		// Declared before the ChannelManager persistence future so it outlives it (drop order).
 		let pending_monitor_writes;
-
-		let mut futures = Joiner::new();
-
-		if channel_manager.get_cm().get_and_clear_needs_persistence() {
+		let channel_manager_persist = if channel_manager.get_cm().get_and_clear_needs_persistence()
+		{
 			pending_monitor_writes = chain_monitor.get_cm().pending_operation_count();
 			log_trace!(logger, "Persisting ChannelManager...");
 
-			let fut = async {
+			Some(async {
 				kv_store
 					.write(
 						CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
@@ -1148,21 +1120,25 @@ where
 				// that arrived after are left for the next iteration.
 				chain_monitor.get_cm().flush(pending_monitor_writes, &logger);
 				Ok(())
-			};
-			// TODO: Once our MSRV is 1.68 we should be able to drop the Box
-			let mut fut = Box::pin(fut);
+			})
+		} else {
+			None
+		};
+		let mut channel_manager_persist = core::pin::pin!(channel_manager_persist);
+		let mut channel_manager_persist_res = None;
+		let mut channel_manager_persist_pending = false;
 
+		if let Some(mut fut) = channel_manager_persist.as_mut().as_pin_mut() {
 			// Because persisting the ChannelManager is important to avoid accidental
 			// force-closures, go ahead and poll the future once before we do slightly more
 			// CPU-intensive tasks in the form of NetworkGraph pruning or scorer time-stepping
 			// below. This will get it moving but won't block us for too long if the underlying
 			// future is actually async.
 			use core::future::Future;
-			let mut waker = dummy_waker();
-			let mut ctx = task::Context::from_waker(&mut waker);
-			match core::pin::Pin::new(&mut fut).poll(&mut ctx) {
-				task::Poll::Ready(res) => futures.set_a_res(res),
-				task::Poll::Pending => futures.set_a(fut),
+			let mut ctx = task::Context::from_waker(core::task::Waker::noop());
+			match fut.as_mut().poll(&mut ctx) {
+				task::Poll::Ready(res) => channel_manager_persist_res = Some(res),
+				task::Poll::Pending => channel_manager_persist_pending = true,
 			}
 
 			log_trace!(logger, "Done persisting ChannelManager.");
@@ -1210,6 +1186,7 @@ where
 			GossipSync::Rapid(_) => !have_pruned || prune_timer_elapsed,
 			_ => prune_timer_elapsed,
 		};
+		let mut network_graph_persist = None;
 		if should_prune {
 			// The network graph must not be pruned while rapid sync completion is pending
 			if let Some(network_graph) = gossip_sync.prunable_network_graph() {
@@ -1219,10 +1196,13 @@ where
 						duration_since_epoch.as_secs(),
 					);
 				} else {
-					log_warn!(logger, "Not pruning network graph, consider implementing the fetch_time argument or calling remove_stale_channels_and_tracking_with_time manually.");
+					log_warn!(
+						logger,
+						"Not pruning network graph, consider implementing the fetch_time argument or calling remove_stale_channels_and_tracking_with_time manually."
+					);
 					log_trace!(logger, "Persisting network graph.");
 				}
-				let fut = async {
+				network_graph_persist = Some(async {
 					if let Err(e) = kv_store
 						.write(
 							NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE,
@@ -1232,18 +1212,21 @@ where
 						)
 						.await
 					{
-						log_error!(logger, "Error: Failed to persist network graph, check your disk and permissions {}",e);
+						log_error!(
+							logger,
+							"Error: Failed to persist network graph, check your disk and permissions {}",
+							e
+						);
 					}
 
 					Ok(())
-				};
-
-				// TODO: Once our MSRV is 1.68 we should be able to drop the Box
-				futures.set_b(Box::pin(fut));
+				});
 
 				have_pruned = true;
 			}
 		}
+		let mut network_graph_persist = core::pin::pin!(network_graph_persist);
+
 		if !have_decayed_scorer {
 			if let Some(ref scorer) = scorer {
 				if let Some(duration_since_epoch) = fetch_time() {
@@ -1253,6 +1236,7 @@ where
 			}
 			have_decayed_scorer = true;
 		}
+		let mut scorer_persist = None;
 		match check_and_reset_sleeper(&mut last_scorer_persist_call, || {
 			sleeper(SCORER_PERSIST_TIMER)
 		}) {
@@ -1264,7 +1248,7 @@ where
 					} else {
 						log_trace!(logger, "Persisting scorer");
 					}
-					let fut = async {
+					scorer_persist = Some(async {
 						if let Err(e) = kv_store
 							.write(
 								SCORER_PERSISTENCE_PRIMARY_NAMESPACE,
@@ -1275,42 +1259,41 @@ where
 							.await
 						{
 							log_error!(
-							logger,
-							"Error: Failed to persist scorer, check your disk and permissions {}",
-							e
-						);
+								logger,
+								"Error: Failed to persist scorer, check your disk and permissions {}",
+								e
+							);
 						}
 
 						Ok(())
-					};
-
-					// TODO: Once our MSRV is 1.68 we should be able to drop the Box
-					futures.set_c(Box::pin(fut));
+					});
 				}
 			},
 			Some(true) => break,
 			None => {},
 		}
+		let mut scorer_persist = core::pin::pin!(scorer_persist);
+
+		let mut sweeper_persist = None;
 		match check_and_reset_sleeper(&mut last_sweeper_call, || sleeper(SWEEPER_TIMER)) {
 			Some(false) => {
 				log_trace!(logger, "Regenerating sweeper spends if necessary");
 				if let Some(ref sweeper) = sweeper {
-					let fut = async {
+					sweeper_persist = Some(async {
 						let _ = sweeper.regenerate_and_broadcast_spend_if_necessary().await;
 
 						Ok(())
-					};
-
-					// TODO: Once our MSRV is 1.68 we should be able to drop the Box
-					futures.set_d(Box::pin(fut));
+					});
 				}
 			},
 			Some(true) => break,
 			None => {},
 		}
+		let mut sweeper_persist = core::pin::pin!(sweeper_persist);
 
+		let mut liquidity_persist = None;
 		if let Some(liquidity_manager) = liquidity_manager.as_ref() {
-			let fut = async {
+			liquidity_persist = Some(async {
 				liquidity_manager
 					.get_lm()
 					.persist()
@@ -1324,8 +1307,27 @@ where
 						log_error!(logger, "Persisting LiquidityManager failed: {}", e);
 						e
 					})
-			};
-			futures.set_e(Box::pin(fut));
+			});
+		}
+		let mut liquidity_persist = core::pin::pin!(liquidity_persist);
+
+		let mut futures = Joiner::new();
+		if let Some(res) = channel_manager_persist_res {
+			futures.set_a_res(res);
+		} else if channel_manager_persist_pending {
+			futures.set_a(channel_manager_persist.as_mut().as_pin_mut().unwrap());
+		}
+		if let Some(fut) = network_graph_persist.as_mut().as_pin_mut() {
+			futures.set_b(fut);
+		}
+		if let Some(fut) = scorer_persist.as_mut().as_pin_mut() {
+			futures.set_c(fut);
+		}
+		if let Some(fut) = sweeper_persist.as_mut().as_pin_mut() {
+			futures.set_d(fut);
+		}
+		if let Some(fut) = liquidity_persist.as_mut().as_pin_mut() {
+			futures.set_e(fut);
 		}
 
 		// Run persistence tasks in parallel and exit if any of them returns an error.
@@ -1430,8 +1432,7 @@ fn check_and_reset_sleeper<
 >(
 	fut: &mut SleepFuture, mut new_sleeper: impl FnMut() -> SleepFuture,
 ) -> Option<bool> {
-	let mut waker = dummy_waker();
-	let mut ctx = task::Context::from_waker(&mut waker);
+	let mut ctx = task::Context::from_waker(core::task::Waker::noop());
 	match core::pin::Pin::new(&mut *fut).poll(&mut ctx) {
 		task::Poll::Ready(exit) => {
 			*fut = new_sleeper();
@@ -1621,7 +1622,11 @@ impl BackgroundProcessor {
 							SCORER_PERSISTENCE_KEY,
 							scorer.encode(),
 						) {
-							log_error!(logger, "Error: Failed to persist scorer, check your disk and permissions {}", e)
+							log_error!(
+								logger,
+								"Error: Failed to persist scorer, check your disk and permissions {}",
+								e
+							)
 						}
 					}
 				}
@@ -1779,7 +1784,11 @@ impl BackgroundProcessor {
 							NETWORK_GRAPH_PERSISTENCE_KEY,
 							network_graph.encode(),
 						) {
-							log_error!(logger, "Error: Failed to persist network graph, check your disk and permissions {}", e);
+							log_error!(
+								logger,
+								"Error: Failed to persist network graph, check your disk and permissions {}",
+								e
+							);
 						}
 						have_pruned = true;
 					}
@@ -1808,7 +1817,11 @@ impl BackgroundProcessor {
 							SCORER_PERSISTENCE_KEY,
 							scorer.encode(),
 						) {
-							log_error!(logger, "Error: Failed to persist scorer, check your disk and permissions {}", e);
+							log_error!(
+								logger,
+								"Error: Failed to persist scorer, check your disk and permissions {}",
+								e
+							);
 						}
 					}
 					last_scorer_persist_call = Instant::now();
@@ -1924,8 +1937,8 @@ impl Drop for BackgroundProcessor {
 
 #[cfg(all(feature = "std", test))]
 mod tests {
-	use super::{BackgroundProcessor, GossipSync, FRESHNESS_TIMER};
-	use bitcoin::constants::{genesis_block, ChainHash};
+	use super::{BackgroundProcessor, FRESHNESS_TIMER, GossipSync};
+	use bitcoin::constants::{ChainHash, genesis_block};
 	use bitcoin::hashes::Hash;
 	use bitcoin::locktime::absolute::LockTime;
 	use bitcoin::network::Network;
@@ -1941,7 +1954,7 @@ mod tests {
 	use lightning::events::{Event, PathFailure, ReplayEvent};
 	use lightning::ln::channelmanager;
 	use lightning::ln::channelmanager::{
-		ChainParameters, PaymentId, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA,
+		BREAKDOWN_TIMEOUT, ChainParameters, MIN_CLTV_EXPIRY_DELTA, PaymentId,
 	};
 	use lightning::ln::functional_test_utils::*;
 	use lightning::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, Init, MessageSendEvent};
@@ -1958,12 +1971,11 @@ mod tests {
 	use lightning::types::payment::PaymentHash;
 	use lightning::util::config::UserConfig;
 	use lightning::util::persist::{
-		KVStoreSync, KVStoreSyncWrapper, CHANNEL_MANAGER_PERSISTENCE_KEY,
-		CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
-		CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE, NETWORK_GRAPH_PERSISTENCE_KEY,
-		NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE, NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE,
-		SCORER_PERSISTENCE_KEY, SCORER_PERSISTENCE_PRIMARY_NAMESPACE,
-		SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
+		CHANNEL_MANAGER_PERSISTENCE_KEY, CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+		CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE, KVStoreSync, KVStoreSyncWrapper,
+		NETWORK_GRAPH_PERSISTENCE_KEY, NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE,
+		NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE, SCORER_PERSISTENCE_KEY,
+		SCORER_PERSISTENCE_PRIMARY_NAMESPACE, SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
 	};
 	use lightning::util::ser::Writeable;
 	use lightning::util::sweep::{
@@ -1977,8 +1989,8 @@ mod tests {
 	use lightning_rapid_gossip_sync::RapidGossipSync;
 	use std::collections::VecDeque;
 	use std::path::PathBuf;
-	use std::sync::mpsc::SyncSender;
 	use std::sync::Arc;
+	use std::sync::mpsc::SyncSender;
 	use std::time::Duration;
 	use std::{env, fs};
 
@@ -1996,11 +2008,7 @@ mod tests {
 				let path_str = entry.path().to_str().unwrap().to_lowercase();
 				// Skip any .tmp files that may exist during persistence.
 				// On Windows, ReplaceFileW creates backup files with .TMP (uppercase).
-				if path_str.ends_with(".tmp") {
-					None
-				} else {
-					Some(entry)
-				}
+				if path_str.ends_with(".tmp") { None } else { Some(entry) }
 			})
 			.collect()
 	}

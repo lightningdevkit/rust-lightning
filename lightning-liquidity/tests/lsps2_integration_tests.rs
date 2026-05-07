@@ -3,8 +3,8 @@
 mod common;
 
 use common::{
-	create_service_and_client_nodes_with_kv_stores, create_service_client_and_payer_nodes,
-	get_lsps_message, LSPSNodes, LSPSNodesWithPayer, LiquidityNode,
+	LSPSNodes, LSPSNodesWithPayer, LiquidityNode, create_service_and_client_nodes_with_kv_stores,
+	create_service_client_and_payer_nodes, get_lsps_message,
 };
 
 use lightning::events::{ClosureReason, Event};
@@ -30,10 +30,10 @@ use lightning_liquidity::utils::time::{DefaultTimeProvider, TimeProvider};
 use lightning_liquidity::{LiquidityClientConfig, LiquidityManagerSync, LiquidityServiceConfig};
 
 use lightning::ln::channelmanager::{InterceptId, MIN_FINAL_CLTV_EXPIRY_DELTA};
+use lightning::ln::functional_test_utils::{Node, create_network};
 use lightning::ln::functional_test_utils::{
 	create_chanmon_cfgs, create_node_cfgs, create_node_chanmgrs,
 };
-use lightning::ln::functional_test_utils::{create_network, Node};
 use lightning::ln::peer_handler::CustomMessageHandler;
 use lightning::log_error;
 use lightning::routing::router::{RouteHint, RouteHintHop};
@@ -47,8 +47,8 @@ use lightning_invoice::{Bolt11Invoice, InvoiceBuilder, RoutingFees};
 
 use lightning_types::payment::PaymentHash;
 
-use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 use bitcoin::Network;
+use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 use lightning_types::payment::PaymentPreimage;
 
 use std::str::FromStr;
@@ -1483,17 +1483,19 @@ fn create_channel_with_manual_broadcast(
 	client_node: &LiquidityNode, user_channel_id: u128, expected_outbound_amount_msat: &u64,
 	mark_broadcast_safe: bool,
 ) -> (ChannelId, bitcoin::Transaction) {
-	assert!(service_node
-		.node
-		.create_channel(
-			*client_node_id,
-			*expected_outbound_amount_msat,
-			0,
-			user_channel_id,
-			None,
-			None
-		)
-		.is_ok());
+	assert!(
+		service_node
+			.node
+			.create_channel(
+				*client_node_id,
+				*expected_outbound_amount_msat,
+				0,
+				user_channel_id,
+				None,
+				None
+			)
+			.is_ok()
+	);
 	let open_channel =
 		get_event_msg!(service_node, MessageSendEvent::SendOpenChannel, *client_node_id);
 
@@ -1976,9 +1978,9 @@ fn htlc_timeout_before_client_claim_results_in_handling_failed() {
 	// Payer->service channel should remain open
 	{
 		let chans = service_node.inner.node.list_channels();
-		assert!(chans
-			.iter()
-			.any(|cd| cd.counterparty.node_id == payer_node_id && cd.is_channel_ready));
+		assert!(
+			chans.iter().any(|cd| cd.counterparty.node_id == payer_node_id && cd.is_channel_ready)
+		);
 	}
 
 	service_node.inner.node.get_and_clear_pending_msg_events();
@@ -2247,9 +2249,9 @@ fn client_trusts_lsp_partial_fee_does_not_trigger_broadcast() {
 		other => panic!("Unexpected event: {:?}", other),
 	};
 
-	assert!(service_handler
-		.channel_needs_manual_broadcast(user_channel_id, &client_node_id)
-		.unwrap());
+	assert!(
+		service_handler.channel_needs_manual_broadcast(user_channel_id, &client_node_id).unwrap()
+	);
 
 	let (channel_id, _) = create_channel_with_manual_broadcast(
 		&service_node_id,

@@ -8,8 +8,8 @@
 // licenses.
 
 use crate::blinded_path::payment::{
-	BlindedPaymentPath, Bolt12RefundContext, DummyTlvs, ForwardTlvs, PaymentConstraints,
-	PaymentContext, PaymentForwardNode, PaymentRelay, ReceiveTlvs, PAYMENT_PADDING_ROUND_OFF,
+	BlindedPaymentPath, Bolt12RefundContext, DummyTlvs, ForwardTlvs, PAYMENT_PADDING_ROUND_OFF,
+	PaymentConstraints, PaymentContext, PaymentForwardNode, PaymentRelay, ReceiveTlvs,
 };
 use crate::blinded_path::utils::is_padded;
 use crate::blinded_path::{self, BlindedHop};
@@ -23,7 +23,7 @@ use crate::ln::msgs::{
 use crate::ln::onion_payment;
 use crate::ln::onion_utils::{self, LocalHTLCFailureReason};
 use crate::ln::outbound_payment::{
-	RecipientCustomTlvs, RecipientOnionFields, Retry, IDEMPOTENCY_TIMEOUT_TICKS,
+	IDEMPOTENCY_TIMEOUT_TICKS, RecipientCustomTlvs, RecipientOnionFields, Retry,
 };
 use crate::ln::types::ChannelId;
 use crate::offers::invoice::UnsignedBolt12Invoice;
@@ -40,7 +40,7 @@ use crate::util::test_utils::{self, bytes_from_hex, pubkey_from_hex, secret_from
 use bitcoin::hex::DisplayHex;
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::{RecoverableSignature, Signature};
-use bitcoin::secp256k1::{schnorr, All, PublicKey, Scalar, Secp256k1, SecretKey};
+use bitcoin::secp256k1::{All, PublicKey, Scalar, Secp256k1, SecretKey, schnorr};
 use lightning_invoice::RawBolt11Invoice;
 use types::features::Features;
 
@@ -88,7 +88,7 @@ pub fn blinded_payment_path(
 
 	let receive_auth_key = keys_manager.get_receive_auth_key();
 
-	let mut secp_ctx = Secp256k1::new();
+	let secp_ctx = Secp256k1::new();
 	BlindedPaymentPath::new(
 		&intermediate_nodes[..], *node_ids.last().unwrap(), receive_auth_key,
 		payee_tlvs, intro_node_max_htlc_opt.unwrap_or_else(|| channel_upds.last().unwrap().htlc_maximum_msat),
@@ -176,7 +176,7 @@ fn do_one_hop_blinded_path(success: bool) {
 	};
 	let receive_auth_key = chanmon_cfgs[1].keys_manager.get_receive_auth_key();
 
-	let mut secp_ctx = Secp256k1::new();
+	let secp_ctx = Secp256k1::new();
 	let blinded_path = BlindedPaymentPath::new(
 		&[], nodes[1].node.get_our_node_id(), receive_auth_key,
 		payee_tlvs, u64::MAX, TEST_FINAL_CLTV as u16,
@@ -221,7 +221,7 @@ fn one_hop_blinded_path_with_dummy_hops() {
 	let receive_auth_key = chanmon_cfgs[1].keys_manager.get_receive_auth_key();
 	let dummy_tlvs = [DummyTlvs::default(); 2];
 
-	let mut secp_ctx = Secp256k1::new();
+	let secp_ctx = Secp256k1::new();
 	let blinded_path = BlindedPaymentPath::new_with_dummy_hops(
 		&[],
 		nodes[1].node.get_our_node_id(),
@@ -275,7 +275,7 @@ fn mpp_to_one_hop_blinded_path() {
 	let configs: [Option<UserConfig>; 4] = core::array::from_fn(|_| Some(config.clone()));
 	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &configs);
 	let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
-	let mut secp_ctx = Secp256k1::new();
+	let secp_ctx = Secp256k1::new();
 
 	create_announced_chan_between_nodes(&nodes, 0, 1);
 	create_announced_chan_between_nodes(&nodes, 0, 2);
@@ -454,7 +454,7 @@ fn do_forward_checks_failure(check: ForwardCheckFail, intro_fails: bool) {
 	let chanmon_cfgs = create_chanmon_cfgs(4);
 	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
-	let mut nodes = create_network(4, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
 	// We need the session priv to construct a bogus onion packet later.
 	*nodes[0].keys_manager.override_random_bytes.lock().unwrap() = Some([3; 32]);
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
@@ -521,7 +521,7 @@ fn do_forward_checks_failure(check: ForwardCheckFail, intro_fails: bool) {
 	check_added_monitors(&nodes[1], 1);
 
 	if intro_fails {
-		let mut updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
+		let updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
 		nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &updates.update_fail_htlcs[0]);
 		do_commitment_signed_dance(&nodes[0], &nodes[1], &updates.commitment_signed, false, false);
 		let failed_destination = match check {
@@ -547,7 +547,7 @@ fn do_forward_checks_failure(check: ForwardCheckFail, intro_fails: bool) {
 	}
 
 	let mut updates_1_2 = get_htlc_update_msgs(&nodes[1], &nodes[2].node.get_our_node_id());
-	let mut update_add = &mut updates_1_2.update_add_htlcs[0];
+	let update_add = &mut updates_1_2.update_add_htlcs[0];
 
 	cause_error!(2, 3, update_add);
 
@@ -577,7 +577,7 @@ fn do_forward_checks_failure(check: ForwardCheckFail, intro_fails: bool) {
 	nodes[1].node.handle_update_fail_malformed_htlc(nodes[2].node.get_our_node_id(), update_malformed);
 	do_commitment_signed_dance(&nodes[1], &nodes[2], &updates.commitment_signed, true, false);
 
-	let mut updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
+	let updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &updates.update_fail_htlcs[0]);
 	do_commitment_signed_dance(&nodes[0], &nodes[1], &updates.commitment_signed, false, false);
 	expect_payment_failed_conditions(&nodes[0], payment_hash, false,
@@ -592,7 +592,7 @@ fn failed_backwards_to_intro_node() {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
-	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
 	let chan_upd_1_2 = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0).0.contents;
 
@@ -608,7 +608,7 @@ fn failed_backwards_to_intro_node() {
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
 	let ev = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
-	let mut payment_event = SendEvent::from_event(ev);
+	let payment_event = SendEvent::from_event(ev);
 
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
 	check_added_monitors(&nodes[1], 0);
@@ -632,7 +632,7 @@ fn failed_backwards_to_intro_node() {
 	check_added_monitors(&nodes[2], 1);
 
 	let mut updates = get_htlc_update_msgs(&nodes[2], &nodes[1].node.get_our_node_id());
-	let mut update_malformed = &mut updates.update_fail_malformed_htlcs[0];
+	let update_malformed = &mut updates.update_fail_malformed_htlcs[0];
 	// Check that the final node encodes its failure correctly.
 	assert_eq!(update_malformed.failure_code, LocalHTLCFailureReason::InvalidOnionBlinding.failure_code());
 	assert_eq!(update_malformed.sha256_of_onion, [0; 32]);
@@ -643,7 +643,7 @@ fn failed_backwards_to_intro_node() {
 	nodes[1].node.handle_update_fail_malformed_htlc(nodes[2].node.get_our_node_id(), update_malformed);
 	do_commitment_signed_dance(&nodes[1], &nodes[2], &updates.commitment_signed, true, false);
 
-	let mut updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
+	let updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &updates.update_fail_htlcs[0]);
 	do_commitment_signed_dance(&nodes[0], &nodes[1], &updates.commitment_signed, false, false);
 	expect_payment_failed_conditions(&nodes[0], payment_hash, false,
@@ -670,7 +670,7 @@ fn do_forward_fail_in_process_pending_htlc_fwds(check: ProcessPendingHTLCsCheck,
 	let chanmon_cfgs = create_chanmon_cfgs(4);
 	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
-	let mut nodes = create_network(4, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
 	let (chan_upd_1_2, chan_id_1_2) = {
 		let chan = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
@@ -694,7 +694,7 @@ fn do_forward_fail_in_process_pending_htlc_fwds(check: ProcessPendingHTLCsCheck,
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
 	let ev = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
-	let mut payment_event = SendEvent::from_event(ev);
+	let payment_event = SendEvent::from_event(ev);
 
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
 	check_added_monitors(&nodes[1], 0);
@@ -742,7 +742,7 @@ fn do_forward_fail_in_process_pending_htlc_fwds(check: ProcessPendingHTLCsCheck,
 	check_added_monitors(&nodes[1], 1);
 
 	let mut updates_1_2 = get_htlc_update_msgs(&nodes[1], &nodes[2].node.get_our_node_id());
-	let mut update_add = &mut updates_1_2.update_add_htlcs[0];
+	let update_add = &mut updates_1_2.update_add_htlcs[0];
 	nodes[2].node.handle_update_add_htlc(nodes[1].node.get_our_node_id(), &update_add);
 	check_added_monitors(&nodes[2], 0);
 	do_commitment_signed_dance(&nodes[2], &nodes[1], &updates_1_2.commitment_signed, true, true);
@@ -761,7 +761,7 @@ fn do_forward_fail_in_process_pending_htlc_fwds(check: ProcessPendingHTLCsCheck,
 	nodes[1].node.handle_update_fail_malformed_htlc(nodes[2].node.get_our_node_id(), update_malformed);
 	do_commitment_signed_dance(&nodes[1], &nodes[2], &updates.commitment_signed, true, false);
 
-	let mut updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
+	let updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &updates.update_fail_htlcs[0]);
 	do_commitment_signed_dance(&nodes[0], &nodes[1], &updates.commitment_signed, false, false);
 	expect_payment_failed_conditions(&nodes[0], payment_hash, false,
@@ -863,7 +863,7 @@ fn two_hop_blinded_path_success() {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
-	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
 	let chan_upd_1_2 = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0).0.contents;
 
@@ -885,7 +885,7 @@ fn three_hop_blinded_path_success() {
 	let chanmon_cfgs = create_chanmon_cfgs(5);
 	let node_cfgs = create_node_cfgs(5, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(5, &node_cfgs, &[None, None, None, None, None]);
-	let mut nodes = create_network(5, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(5, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
 	create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
 	let chan_upd_2_3 = create_announced_chan_between_nodes_with_value(&nodes, 2, 3, 1_000_000, 0).0.contents;
@@ -917,7 +917,7 @@ fn three_hop_blinded_path_fail() {
 	let chanmon_cfgs = create_chanmon_cfgs(4);
 	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
-	let mut nodes = create_network(4, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
 	let chan_upd_1_2 = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0).0.contents;
 	let chan_upd_2_3 = create_announced_chan_between_nodes_with_value(&nodes, 2, 3, 1_000_000, 0).0.contents;
@@ -976,7 +976,7 @@ fn do_multi_hop_receiver_fail(check: ReceiveCheckFail) {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
-	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	// We need the session priv to construct an invalid onion packet later.
 	let session_priv = [3; 32];
 	*nodes[0].keys_manager.override_random_bytes.lock().unwrap() = Some(session_priv);
@@ -1028,7 +1028,7 @@ fn do_multi_hop_receiver_fail(check: ReceiveCheckFail) {
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(amt_msat), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
 	check_added_monitors(&nodes[0], 1);
 
-	let mut payment_event_0_1 = {
+	let payment_event_0_1 = {
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
 		let ev = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
@@ -1074,7 +1074,7 @@ fn do_multi_hop_receiver_fail(check: ReceiveCheckFail) {
 
 			let update_add = &mut payment_event_1_2.msgs[0];
 			onion_payloads.last_mut().map(|p| {
-				if let msgs::OutboundOnionPayload::BlindedReceive { ref mut intro_node_blinding_point, .. } = p {
+			if let msgs::OutboundOnionPayload::BlindedReceive { intro_node_blinding_point, .. } = p {
 					// The receiver should error if both the update_add blinding_point and the
 					// intro_node_blinding_point are set.
 					assert!(intro_node_blinding_point.is_none() && update_add.blinding_point.is_some());
@@ -1174,7 +1174,7 @@ fn blinded_path_retries() {
 	higher_fee_chan_cfg.channel_config.forwarding_fee_base_msat += 1;
 	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, Some(higher_fee_chan_cfg), None]);
-	let mut nodes = create_network(4, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
 
 	// Create this network topology so nodes[0] has a blinded route hint to retry over.
 	//      n1
@@ -1239,7 +1239,7 @@ fn blinded_path_retries() {
 			nodes[0].node.handle_update_fail_htlc($intro_node.node.get_our_node_id(), &updates.update_fail_htlcs[0]);
 			do_commitment_signed_dance(&nodes[0], &$intro_node, &updates.commitment_signed, false, false);
 
-			let mut events = nodes[0].node.get_and_clear_pending_events();
+			let events = nodes[0].node.get_and_clear_pending_events();
 			assert_eq!(events.len(), 1);
 			match events[0] {
 				Event::PaymentPathFailed { payment_hash: ev_payment_hash, payment_failed_permanently, ..  } => {
@@ -1328,7 +1328,7 @@ fn min_htlc() {
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(route_params.final_value_msat), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
 	check_added_monitors(&nodes[0], 1);
 
-	let mut payment_event_0_1 = {
+	let payment_event_0_1 = {
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
 		let ev = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
@@ -1343,7 +1343,7 @@ fn min_htlc() {
 		&[HTLCHandlingFailureType::Forward { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan_1_2.2 }]
 	);
 	check_added_monitors(&nodes[1], 1);
-	let mut updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
+	let updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &updates.update_fail_htlcs[0]);
 	do_commitment_signed_dance(&nodes[0], &nodes[1], &updates.commitment_signed, false, false);
 	expect_payment_failed_conditions(&nodes[0], payment_hash, false,
@@ -1396,7 +1396,7 @@ fn conditionally_round_fwd_amt() {
 	nodes[4].node.claim_funds(payment_preimage);
 	let expected_path = &[&nodes[1], &nodes[2], &nodes[3], &nodes[4]];
 	let expected_route = &[&expected_path[..]];
-	let mut args = ClaimAlongRouteArgs::new(&nodes[0], &expected_route[..], payment_preimage)
+	let args = ClaimAlongRouteArgs::new(&nodes[0], &expected_route[..], payment_preimage)
 		.allow_1_msat_fee_overpay();
 	let expected_fee = pass_claimed_payment_along_route(args);
 	expect_payment_sent(&nodes[0], payment_preimage, Some(Some(expected_fee)), true, true);
@@ -1423,7 +1423,7 @@ fn custom_tlvs_to_blinded_path() {
 	};
 	let receive_auth_key = chanmon_cfgs[1].keys_manager.get_receive_auth_key();
 
-	let mut secp_ctx = Secp256k1::new();
+	let secp_ctx = Secp256k1::new();
 	let blinded_path = BlindedPaymentPath::new(
 		&[], nodes[1].node.get_our_node_id(), receive_auth_key,
 		payee_tlvs, u64::MAX, TEST_FINAL_CLTV as u16,
@@ -1477,7 +1477,7 @@ fn fails_receive_tlvs_authentication() {
 	};
 	let receive_auth_key = chanmon_cfgs[1].keys_manager.get_receive_auth_key();
 
-	let mut secp_ctx = Secp256k1::new();
+	let secp_ctx = Secp256k1::new();
 	let blinded_path = BlindedPaymentPath::new(
 		&[], nodes[1].node.get_our_node_id(), receive_auth_key,
 		payee_tlvs, u64::MAX, TEST_FINAL_CLTV as u16,
@@ -1508,7 +1508,7 @@ fn fails_receive_tlvs_authentication() {
 	// Use a mismatched ReceiveAuthKey to force auth failure:
 	let mismatched_receive_auth_key = ReceiveAuthKey([0u8; 32]);
 
-	let mut secp_ctx = Secp256k1::new();
+	let secp_ctx = Secp256k1::new();
 	let blinded_path = BlindedPaymentPath::new(
 		&[], nodes[1].node.get_our_node_id(), mismatched_receive_auth_key,
 		payee_tlvs, u64::MAX, TEST_FINAL_CLTV as u16,
@@ -1526,7 +1526,7 @@ fn fails_receive_tlvs_authentication() {
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
 	let ev = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
-	let mut payment_event = SendEvent::from_event(ev);
+	let payment_event = SendEvent::from_event(ev);
 
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
 	do_commitment_signed_dance(&nodes[1], &nodes[0], &payment_event.commitment_msg, true, true);
@@ -1535,7 +1535,7 @@ fn fails_receive_tlvs_authentication() {
 	check_added_monitors(&nodes[1], 1);
 	expect_htlc_handling_failed_destinations!(nodes[1].node.get_and_clear_pending_events(), &[HTLCHandlingFailureType::InvalidOnion]);
 
-	let mut update_fail = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
+	let update_fail = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
 	assert!(update_fail.update_fail_htlcs.len() == 1);
 	let fail_msg = &update_fail.update_fail_htlcs[0];
 	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), fail_msg);
@@ -1553,7 +1553,7 @@ fn blinded_payment_path_padding() {
 	let chanmon_cfgs = create_chanmon_cfgs(5);
 	let node_cfgs = create_node_cfgs(5, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(5, &node_cfgs, &[None, None, None, None, None]);
-	let mut nodes = create_network(5, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(5, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
 	create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
 	let chan_upd_2_3 = create_announced_chan_between_nodes_with_value(&nodes, 2, 3, 1_000_000, 0).0.contents;
@@ -1604,7 +1604,7 @@ fn update_add_msg(
 #[test]
 #[rustfmt::skip]
 fn route_blinding_spec_test_vector() {
-	let mut secp_ctx = Secp256k1::new();
+	let secp_ctx = Secp256k1::new();
 	let bob_secret = secret_from_hex("4242424242424242424242424242424242424242424242424242424242424242");
 	let bob_node_id = PublicKey::from_secret_key(&secp_ctx, &bob_secret);
 	let bob_unblinded_tlvs = bytes_from_hex("011a0000000000000000000000000000000000000000000000000000020800000000000006c10a0800240000009627100c06000b69e505dc0e00fd023103123456");
@@ -1663,7 +1663,7 @@ fn route_blinding_spec_test_vector() {
 		blinded_hops.iter().map(|bh| bh.encrypted_payload.clone()).collect::<Vec<Vec<u8>>>()
 	);
 
-	let mut amt_msat = 100_000;
+	let amt_msat = 100_000;
 	let session_priv = secret_from_hex("0303030303030303030303030303030303030303030303030303030303030303");
 	let path = Path {
 		hops: vec![RouteHop {
@@ -1837,7 +1837,7 @@ fn route_blinding_spec_test_vector() {
 fn test_combined_trampoline_onion_creation_vectors() {
 	// As per https://github.com/lightning/bolts/blob/fa0594ac2af3531d734f1d707a146d6e13679451/bolt04/trampoline-to-blinded-path-payment-onion-test.json#L251
 
-	let mut secp_ctx = Secp256k1::new();
+	let secp_ctx = Secp256k1::new();
 	let session_priv = secret_from_hex("a64feb81abd58e473df290e9e1c07dc3e56114495cadf33191f44ba5448ebe99");
 
 	let path = Path {
@@ -2074,7 +2074,7 @@ fn test_trampoline_forward_payload_encoded_as_receive() {
 	let chanmon_cfgs = create_chanmon_cfgs(TOTAL_NODE_COUNT);
 	let node_cfgs = create_node_cfgs(TOTAL_NODE_COUNT, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(TOTAL_NODE_COUNT, &node_cfgs, &vec![None; TOTAL_NODE_COUNT]);
-	let mut nodes = create_network(TOTAL_NODE_COUNT, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(TOTAL_NODE_COUNT, &node_cfgs, &node_chanmgrs);
 
 	let (_, _, chan_id_alice_bob, _) = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
 	let (_, _, chan_id_bob_carol, _) = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
@@ -2214,7 +2214,7 @@ fn test_trampoline_forward_payload_encoded_as_receive() {
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
 	let mut first_message_event = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
-	let mut update_message = match first_message_event {
+	let update_message = match first_message_event {
 		MessageSendEvent::UpdateHTLCs { ref mut updates, .. } => {
 			assert_eq!(updates.update_add_htlcs.len(), 1);
 			updates.update_add_htlcs.get_mut(0)
@@ -2261,7 +2261,7 @@ fn do_test_trampoline_single_hop_receive(success: bool) {
 	let chanmon_cfgs = create_chanmon_cfgs(TOTAL_NODE_COUNT);
 	let node_cfgs = create_node_cfgs(TOTAL_NODE_COUNT, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(TOTAL_NODE_COUNT, &node_cfgs, &vec![None; TOTAL_NODE_COUNT]);
-	let mut nodes = create_network(TOTAL_NODE_COUNT, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(TOTAL_NODE_COUNT, &node_cfgs, &node_chanmgrs);
 
 	let (_, _, chan_id_alice_bob, _) = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
 	let (_, _, chan_id_bob_carol, _) = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
@@ -2539,7 +2539,7 @@ fn do_test_trampoline_relay(blinded: bool, test_case: TrampolineTestCase) {
 	let node_cfgs = create_node_cfgs(TOTAL_NODE_COUNT, &chanmon_cfgs);
 	let user_cfgs = &vec![None; TOTAL_NODE_COUNT];
 	let node_chanmgrs = create_node_chanmgrs(TOTAL_NODE_COUNT, &node_cfgs, &user_cfgs);
-	let mut nodes = create_network(TOTAL_NODE_COUNT, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(TOTAL_NODE_COUNT, &node_cfgs, &node_chanmgrs);
 
 	let alice_bob_chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
 	let bob_carol_chan = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
@@ -2632,7 +2632,7 @@ fn do_test_trampoline_relay(blinded: bool, test_case: TrampolineTestCase) {
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
 	let mut first_message_event = remove_first_msg_event_to_node(&bob_node_id, &mut events);
-	let mut update_message = match first_message_event {
+	let update_message = match first_message_event {
 		MessageSendEvent::UpdateHTLCs { ref mut updates, .. } => {
 			assert_eq!(updates.update_add_htlcs.len(), 1);
 			updates.update_add_htlcs.get_mut(0)
@@ -2732,7 +2732,7 @@ fn test_trampoline_forward_rejection() {
 	let chanmon_cfgs = create_chanmon_cfgs(TOTAL_NODE_COUNT);
 	let node_cfgs = create_node_cfgs(TOTAL_NODE_COUNT, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(TOTAL_NODE_COUNT, &node_cfgs, &vec![None; TOTAL_NODE_COUNT]);
-	let mut nodes = create_network(TOTAL_NODE_COUNT, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(TOTAL_NODE_COUNT, &node_cfgs, &node_chanmgrs);
 
 	let (_, _, chan_id_alice_bob, _) = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
 	let (_, _, chan_id_bob_carol, _) = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);

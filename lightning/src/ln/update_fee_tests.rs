@@ -2,12 +2,12 @@
 
 use crate::events::{ClosureReason, Event};
 use crate::ln::chan_utils::{
-	self, commitment_tx_base_weight, CommitmentTransaction, HTLCOutputInCommitment,
-	COMMITMENT_TX_WEIGHT_PER_HTLC,
+	self, COMMITMENT_TX_WEIGHT_PER_HTLC, CommitmentTransaction, HTLCOutputInCommitment,
+	commitment_tx_base_weight,
 };
 use crate::ln::channel::{
-	get_holder_selected_channel_reserve_satoshis, ANCHOR_OUTPUT_VALUE_SATOSHI,
-	CONCURRENT_INBOUND_HTLC_FEE_BUFFER, MIN_AFFORDABLE_HTLC_COUNT,
+	ANCHOR_OUTPUT_VALUE_SATOSHI, CONCURRENT_INBOUND_HTLC_FEE_BUFFER, MIN_AFFORDABLE_HTLC_COUNT,
+	get_holder_selected_channel_reserve_satoshis,
 };
 use crate::ln::channelmanager::PaymentId;
 use crate::ln::functional_test_utils::*;
@@ -15,8 +15,8 @@ use crate::ln::msgs::{
 	self, BaseMessageHandler, ChannelMessageHandler, ErrorAction, MessageSendEvent,
 };
 use crate::ln::outbound_payment::RecipientOnionFields;
-use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::sign::ChannelSigner;
+use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::types::features::ChannelTypeFeatures;
 use crate::util::config::UserConfig;
 use crate::util::errors::APIError;
@@ -30,7 +30,7 @@ pub fn test_async_inbound_update_fee() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -148,7 +148,7 @@ pub fn test_update_fee_unordered_raa() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -467,7 +467,7 @@ pub fn do_test_update_fee_that_funder_cannot_afford(channel_type_features: Chann
 	const INITIAL_COMMITMENT_NUMBER: u64 = 281474976710654;
 
 	let remote_point = {
-		let mut per_peer_lock;
+		let per_peer_lock;
 		let mut peer_state_lock;
 
 		let channel = get_channel_ref!(nodes[1], nodes[0], per_peer_lock, peer_state_lock, chan.2);
@@ -477,7 +477,7 @@ pub fn do_test_update_fee_that_funder_cannot_afford(channel_type_features: Chann
 	};
 
 	let res = {
-		let mut per_peer_lock;
+		let per_peer_lock;
 		let mut peer_state_lock;
 
 		let local_chan =
@@ -540,13 +540,13 @@ pub fn test_update_fee_that_saturates_subs() {
 	// on the commitment transaction that is greater than her balance, we saturate the subtractions,
 	// and force close the channel.
 
-	let mut cfg = test_legacy_channel_config();
+	let cfg = test_legacy_channel_config();
 	let secp_ctx = Secp256k1::new();
 
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(cfg.clone()), Some(cfg)]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 
@@ -565,7 +565,7 @@ pub fn test_update_fee_that_saturates_subs() {
 	// in `commitment_signed`.
 
 	let remote_point = {
-		let mut per_peer_lock;
+		let per_peer_lock;
 		let mut peer_state_lock;
 
 		let channel = get_channel_ref!(nodes[1], nodes[0], per_peer_lock, peer_state_lock, chan_id);
@@ -574,7 +574,7 @@ pub fn test_update_fee_that_saturates_subs() {
 	};
 
 	let res = {
-		let mut per_peer_lock;
+		let per_peer_lock;
 		let mut peer_state_lock;
 
 		let local_chan =
@@ -624,7 +624,7 @@ pub fn test_update_fee_with_fundee_update_add_htlc() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -854,13 +854,13 @@ pub fn test_update_fee() {
 pub fn test_chan_init_feerate_unaffordability() {
 	// Test that we will reject channel opens which do not leave enough to pay for any HTLCs due to
 	// channel reserve and feerate requirements.
-	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let feerate_per_kw = *chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap();
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let legacy_cfg = test_legacy_channel_config();
 	let node_chanmgrs =
 		create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -897,10 +897,12 @@ pub fn test_chan_init_feerate_unaffordability() {
 	assert_eq!(events.len(), 1);
 	match &events[0] {
 		Event::OpenChannelRequest { temporary_channel_id, counterparty_node_id, .. } => {
-			assert!(nodes[1]
-				.node
-				.accept_inbound_channel(temporary_channel_id, counterparty_node_id, 42, None,)
-				.is_err());
+			assert!(
+				nodes[1]
+					.node
+					.accept_inbound_channel(temporary_channel_id, counterparty_node_id, 42, None,)
+					.is_err()
+			);
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -922,7 +924,7 @@ pub fn accept_busted_but_better_fee() {
 	// If a peer sends us a fee update that is too low, but higher than our previous channel
 	// feerate, we should accept it. In the future we may want to consider closing the channel
 	// later, but for now we only accept the update.
-	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
@@ -1040,7 +1042,7 @@ pub fn do_cannot_afford_on_holding_cell_release(
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(cfg.clone()), Some(cfg)]);
 
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -1234,7 +1236,7 @@ pub fn do_can_afford_given_trimmed_htlcs(inequality_regions: core::cmp::Ordering
 	let node_chanmgrs =
 		create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
 
-	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -1399,11 +1401,9 @@ pub fn test_zero_fee_commitments_no_update_fee() {
 		for node in nodes.iter() {
 			let channels = node.node.list_channels();
 			assert_eq!(channels.len(), 1);
-			assert!(channels[0]
-				.channel_type
-				.as_ref()
-				.unwrap()
-				.supports_anchor_zero_fee_commitments());
+			assert!(
+				channels[0].channel_type.as_ref().unwrap().supports_anchor_zero_fee_commitments()
+			);
 			assert_eq!(channels[0].feerate_sat_per_1000_weight.unwrap(), 0);
 		}
 	};
@@ -1423,11 +1423,12 @@ pub fn test_zero_fee_commitments_no_update_fee() {
 	assert_eq!(events_1.len(), 1);
 	match events_1[0] {
 		MessageSendEvent::HandleError { ref action, .. } => match action {
-			ErrorAction::DisconnectPeerWithWarning { ref msg, .. } => {
+			ErrorAction::DisconnectPeerWithWarning { msg, .. } => {
 				assert_eq!(msg.channel_id, channel_id);
-				assert!(msg
-					.data
-					.contains("Update fee message received for zero fee commitment channel"));
+				assert!(
+					msg.data
+						.contains("Update fee message received for zero fee commitment channel")
+				);
 			},
 			_ => panic!("Expected DisconnectPeerWithWarning, got {:?}", action),
 		},

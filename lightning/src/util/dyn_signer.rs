@@ -11,8 +11,8 @@ use crate::ln::chan_utils::{
 use crate::ln::inbound_payment::ExpandedKey;
 use crate::ln::msgs::{UnsignedChannelAnnouncement, UnsignedGossipMessage};
 use crate::ln::script::ShutdownScript;
-use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::sign::InMemorySigner;
+use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::sign::{ChannelSigner, ReceiveAuthKey};
 use crate::sign::{EntropySource, HTLCDescriptor, OutputSpender, PhantomKeysManager};
 use crate::sign::{
@@ -21,10 +21,10 @@ use crate::sign::{
 use bitcoin;
 use bitcoin::absolute::LockTime;
 use bitcoin::secp256k1::All;
-use bitcoin::{secp256k1, ScriptBuf, Transaction, TxOut, Txid};
+use bitcoin::{ScriptBuf, Transaction, TxOut, Txid, secp256k1};
 use lightning_invoice::RawBolt11Invoice;
 use secp256k1::ecdsa::RecoverableSignature;
-use secp256k1::{ecdh::SharedSecret, ecdsa::Signature, PublicKey, Scalar, Secp256k1, SecretKey};
+use secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey, ecdh::SharedSecret, ecdsa::Signature};
 use types::payment::PaymentPreimage;
 
 /// A super-trait for all the traits that a dyn signer backing implements
