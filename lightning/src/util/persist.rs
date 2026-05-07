@@ -1410,9 +1410,6 @@ impl<
 		// completion of the write. This ensures monitor persistence ordering is preserved.
 		let primary = CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE;
 		let secondary = CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE;
-		// There's no real reason why this needs to be boxed, but dropping it rams into the "hidden
-		// type for impl... captures lifetime that does not appear in bounds" issue. This can
-		// trivially be dropped once we upgrade to edition 2024/MSRV 1.85.
 		Box::pin(self.kv_store.write(primary, secondary, monitor_key.as_str(), monitor_bytes))
 	}
 
