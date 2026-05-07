@@ -195,8 +195,7 @@ impl FutureQueue {
 			futures = self.0.borrow_mut();
 		}
 		futures.retain_mut(|fut| {
-			let waker = crate::util::async_poll::dummy_waker();
-			match fut.as_mut().poll(&mut Context::from_waker(&waker)) {
+			match fut.as_mut().poll(&mut Context::from_waker(core::task::Waker::noop())) {
 				Poll::Ready(()) => false,
 				Poll::Pending => true,
 			}

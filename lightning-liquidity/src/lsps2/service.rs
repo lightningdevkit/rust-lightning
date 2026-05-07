@@ -38,7 +38,6 @@ use crate::persist::{
 use crate::prelude::hash_map::Entry;
 use crate::prelude::{new_hash_map, HashMap};
 use crate::sync::{Arc, Mutex, MutexGuard, RwLock};
-use crate::utils::async_poll::dummy_waker;
 
 use lightning::chain::chaininterface::{BroadcasterInterface, TransactionType};
 use lightning::events::HTLCHandlingFailureType;
@@ -2190,8 +2189,7 @@ where
 			user_channel_id,
 		));
 
-		let mut waker = dummy_waker();
-		let mut ctx = task::Context::from_waker(&mut waker);
+		let mut ctx = task::Context::from_waker(core::task::Waker::noop());
 		match fut.as_mut().poll(&mut ctx) {
 			task::Poll::Ready(result) => result,
 			task::Poll::Pending => {
@@ -2217,8 +2215,7 @@ where
 			payment_hash,
 		));
 
-		let mut waker = dummy_waker();
-		let mut ctx = task::Context::from_waker(&mut waker);
+		let mut ctx = task::Context::from_waker(core::task::Waker::noop());
 		match fut.as_mut().poll(&mut ctx) {
 			task::Poll::Ready(result) => result,
 			task::Poll::Pending => {
@@ -2238,8 +2235,7 @@ where
 	) -> Result<(), APIError> {
 		let mut fut = pin!(self.inner.htlc_handling_failed(failure_type));
 
-		let mut waker = dummy_waker();
-		let mut ctx = task::Context::from_waker(&mut waker);
+		let mut ctx = task::Context::from_waker(core::task::Waker::noop());
 		match fut.as_mut().poll(&mut ctx) {
 			task::Poll::Ready(result) => result,
 			task::Poll::Pending => {
@@ -2259,8 +2255,7 @@ where
 	) -> Result<(), APIError> {
 		let mut fut = pin!(self.inner.payment_forwarded(next_channel_id, skimmed_fee_msat));
 
-		let mut waker = dummy_waker();
-		let mut ctx = task::Context::from_waker(&mut waker);
+		let mut ctx = task::Context::from_waker(core::task::Waker::noop());
 		match fut.as_mut().poll(&mut ctx) {
 			task::Poll::Ready(result) => result,
 			task::Poll::Pending => {
@@ -2300,8 +2295,7 @@ where
 		let mut fut =
 			pin!(self.inner.channel_open_abandoned(counterparty_node_id, user_channel_id));
 
-		let mut waker = dummy_waker();
-		let mut ctx = task::Context::from_waker(&mut waker);
+		let mut ctx = task::Context::from_waker(core::task::Waker::noop());
 		match fut.as_mut().poll(&mut ctx) {
 			task::Poll::Ready(result) => result,
 			task::Poll::Pending => {
@@ -2319,8 +2313,7 @@ where
 	) -> Result<(), APIError> {
 		let mut fut = pin!(self.inner.channel_open_failed(counterparty_node_id, user_channel_id));
 
-		let mut waker = dummy_waker();
-		let mut ctx = task::Context::from_waker(&mut waker);
+		let mut ctx = task::Context::from_waker(core::task::Waker::noop());
 		match fut.as_mut().poll(&mut ctx) {
 			task::Poll::Ready(result) => result,
 			task::Poll::Pending => {
@@ -2341,8 +2334,7 @@ where
 		let mut fut =
 			pin!(self.inner.channel_ready(user_channel_id, channel_id, counterparty_node_id));
 
-		let mut waker = dummy_waker();
-		let mut ctx = task::Context::from_waker(&mut waker);
+		let mut ctx = task::Context::from_waker(core::task::Waker::noop());
 		match fut.as_mut().poll(&mut ctx) {
 			task::Poll::Ready(result) => result,
 			task::Poll::Pending => {

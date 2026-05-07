@@ -41,8 +41,6 @@ use core::pin::{pin, Pin};
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::task;
 
-use super::async_poll::dummy_waker;
-
 /// The number of blocks we wait before we prune the tracked spendable outputs.
 pub const PRUNE_DELAY_BLOCKS: u32 = ARCHIVAL_DELAY_BLOCKS + ANTI_REORG_DELAY;
 
@@ -1041,8 +1039,7 @@ where
 			exclude_static_outputs,
 			delay_until_height,
 		));
-		let mut waker = dummy_waker();
-		let mut ctx = task::Context::from_waker(&mut waker);
+		let mut ctx = task::Context::from_waker(core::task::Waker::noop());
 		match fut.as_mut().poll(&mut ctx) {
 			task::Poll::Ready(result) => result,
 			task::Poll::Pending => {
@@ -1071,8 +1068,7 @@ where
 	/// Wraps [`OutputSweeper::regenerate_and_broadcast_spend_if_necessary`].
 	pub fn regenerate_and_broadcast_spend_if_necessary(&self) -> Result<(), ()> {
 		let mut fut = pin!(self.sweeper.regenerate_and_broadcast_spend_if_necessary());
-		let mut waker = dummy_waker();
-		let mut ctx = task::Context::from_waker(&mut waker);
+		let mut ctx = task::Context::from_waker(core::task::Waker::noop());
 		match fut.as_mut().poll(&mut ctx) {
 			task::Poll::Ready(result) => result,
 			task::Poll::Pending => {
@@ -1189,7 +1185,6 @@ mod tests {
 	use super::*;
 	use crate::chain::transaction::OutPoint;
 	use crate::sign::{ChangeDestinationSource, OutputSpender};
-	use crate::util::async_poll::dummy_waker;
 	use crate::util::logger::Record;
 	use crate::util::native_async::MaybeSend;
 
@@ -1315,8 +1310,7 @@ mod tests {
 		// cancellation - the sort of thing a `tokio::time::timeout` wrapper produces.
 		{
 			let mut fut = pin!(sweeper.regenerate_and_broadcast_spend_if_necessary());
-			let waker = dummy_waker();
-			let mut ctx = task::Context::from_waker(&waker);
+			let mut ctx = task::Context::from_waker(core::task::Waker::noop());
 			assert!(matches!(fut.as_mut().poll(&mut ctx), Poll::Pending));
 		}
 

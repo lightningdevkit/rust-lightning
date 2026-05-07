@@ -43,7 +43,6 @@ use crate::prelude::hash_map::Entry;
 use crate::prelude::HashMap;
 use crate::sync::{Arc, Mutex, RwLock};
 use crate::utils;
-use crate::utils::async_poll::dummy_waker;
 use crate::utils::time::TimeProvider;
 
 use lightning::ln::channelmanager::AChannelManager;
@@ -841,8 +840,7 @@ where
 			payment_details
 		));
 
-		let mut waker = dummy_waker();
-		let mut ctx = task::Context::from_waker(&mut waker);
+		let mut ctx = task::Context::from_waker(core::task::Waker::noop());
 		match fut.as_mut().poll(&mut ctx) {
 			task::Poll::Ready(result) => result,
 			task::Poll::Pending => {
@@ -880,8 +878,7 @@ where
 		let mut fut =
 			pin!(self.inner.order_payment_received(counterparty_node_id, order_id, method));
 
-		let mut waker = dummy_waker();
-		let mut ctx = task::Context::from_waker(&mut waker);
+		let mut ctx = task::Context::from_waker(core::task::Waker::noop());
 		match fut.as_mut().poll(&mut ctx) {
 			task::Poll::Ready(result) => result,
 			task::Poll::Pending => {
@@ -901,8 +898,7 @@ where
 		let mut fut =
 			pin!(self.inner.order_channel_opened(counterparty_node_id, order_id, channel_info));
 
-		let mut waker = dummy_waker();
-		let mut ctx = task::Context::from_waker(&mut waker);
+		let mut ctx = task::Context::from_waker(core::task::Waker::noop());
 		match fut.as_mut().poll(&mut ctx) {
 			task::Poll::Ready(result) => result,
 			task::Poll::Pending => {
@@ -920,8 +916,7 @@ where
 	) -> Result<(), APIError> {
 		let mut fut = pin!(self.inner.order_failed_and_refunded(counterparty_node_id, order_id));
 
-		let mut waker = dummy_waker();
-		let mut ctx = task::Context::from_waker(&mut waker);
+		let mut ctx = task::Context::from_waker(core::task::Waker::noop());
 		match fut.as_mut().poll(&mut ctx) {
 			task::Poll::Ready(result) => result,
 			task::Poll::Pending => {

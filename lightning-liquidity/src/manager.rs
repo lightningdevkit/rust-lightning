@@ -37,7 +37,6 @@ use crate::lsps2::msgs::LSPS2Message;
 use crate::lsps2::service::{LSPS2ServiceConfig, LSPS2ServiceHandler, LSPS2ServiceHandlerSync};
 use crate::prelude::{new_hash_map, new_hash_set, HashMap, HashSet};
 use crate::sync::{Arc, Mutex, RwLock};
-use crate::utils::async_poll::dummy_waker;
 #[cfg(feature = "time")]
 use crate::utils::time::DefaultTimeProvider;
 use crate::utils::time::TimeProvider;
@@ -953,8 +952,7 @@ where
 			client_config,
 		));
 
-		let mut waker = dummy_waker();
-		let mut ctx = task::Context::from_waker(&mut waker);
+		let mut ctx = task::Context::from_waker(core::task::Waker::noop());
 		let inner = match fut.as_mut().poll(&mut ctx) {
 			task::Poll::Ready(result) => result,
 			task::Poll::Pending => {
@@ -999,8 +997,7 @@ where
 			time_provider,
 		));
 
-		let mut waker = dummy_waker();
-		let mut ctx = task::Context::from_waker(&mut waker);
+		let mut ctx = task::Context::from_waker(core::task::Waker::noop());
 		let inner = match fut.as_mut().poll(&mut ctx) {
 			task::Poll::Ready(result) => result,
 			task::Poll::Pending => {
@@ -1115,8 +1112,7 @@ where
 	///
 	/// Wraps [`LiquidityManager::persist`].
 	pub fn persist(&self) -> Result<bool, lightning::io::Error> {
-		let mut waker = dummy_waker();
-		let mut ctx = task::Context::from_waker(&mut waker);
+		let mut ctx = task::Context::from_waker(core::task::Waker::noop());
 		match pin!(self.inner.persist()).as_mut().poll(&mut ctx) {
 			task::Poll::Ready(result) => result,
 			task::Poll::Pending => {

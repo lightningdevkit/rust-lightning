@@ -37,9 +37,7 @@ use crate::chain::BlockLocator;
 use crate::ln::types::ChannelId;
 use crate::sign::{ecdsa::EcdsaChannelSigner, EntropySource, SignerProvider};
 use crate::sync::Mutex;
-use crate::util::async_poll::{
-	dummy_waker, MultiResultFuturePoller, ResultFuture, TwoFutureJoiner,
-};
+use crate::util::async_poll::{MultiResultFuturePoller, ResultFuture, TwoFutureJoiner};
 use crate::util::logger::Logger;
 use crate::util::native_async::{FutureSpawner, MaybeSend, MaybeSync};
 use crate::util::ser::{Readable, ReadableArgs, Writeable};
@@ -707,8 +705,7 @@ impl FutureSpawner for PanicingSpawner {
 }
 
 fn poll_sync_future<F: Future>(future: F) -> F::Output {
-	let mut waker = dummy_waker();
-	let mut ctx = task::Context::from_waker(&mut waker);
+	let mut ctx = task::Context::from_waker(core::task::Waker::noop());
 	match pin!(future).poll(&mut ctx) {
 		task::Poll::Ready(result) => result,
 		task::Poll::Pending => {
