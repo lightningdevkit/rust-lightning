@@ -194,7 +194,7 @@ fn push_monitor_event(
 }
 
 /// An event to be processed by the ChannelManager.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum MonitorEvent {
 	/// A monitor event containing an HTLCUpdate.
 	HTLCEvent(HTLCUpdate),
@@ -256,7 +256,7 @@ impl_writeable_tlv_based_enum_upgradable_legacy!(MonitorEvent,
 /// Simple structure sent back by `chain::Watch` when an HTLC from a forward channel is detected on
 /// chain. Used to update the corresponding HTLC in the backward channel. Failing to pass the
 /// preimage claim backward will lead to loss of funds.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct HTLCUpdate {
 	pub(crate) payment_hash: PaymentHash,
 	pub(crate) payment_preimage: Option<PaymentPreimage>,
@@ -2270,6 +2270,16 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		self_inner.provided_monitor_events = provided;
 		self_inner.pending_monitor_events = pending;
 		self_inner.next_monitor_event_id = next_id;
+	}
+
+	/// Used by test infra to check for monitor event leaks at the end of a test.
+	#[cfg(any(test, feature = "_test_utils"))]
+	pub fn drain_unacked_monitor_events(&self) -> Vec<(u64, MonitorEvent)> {
+		let mut inner = self.inner.lock().unwrap();
+		let mut events = Vec::new();
+		events.append(&mut inner.pending_monitor_events);
+		events.append(&mut inner.provided_monitor_events);
+		events
 	}
 
 	/// Processes [`SpendableOutputs`] events produced from each [`ChannelMonitor`] upon maturity.
