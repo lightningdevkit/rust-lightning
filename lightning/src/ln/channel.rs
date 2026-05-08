@@ -1187,6 +1187,35 @@ pub(super) struct InteractiveTxMsgError {
 	/// If a splice was in progress when processing the message, this contains the splice funding
 	/// information for emitting a `SpliceNegotiationFailed` event.
 	pub(super) splice_funding_failed: Option<SpliceFundingFailed>,
+	/// The event reason to use if this error causes a `SpliceNegotiationFailed` event.
+	pub(super) negotiation_failure_reason: Option<NegotiationFailureReason>,
+}
+
+impl InteractiveTxMsgError {
+	fn new(err: ChannelError, splice_funding_failed: Option<SpliceFundingFailed>) -> Self {
+		Self { err, splice_funding_failed, negotiation_failure_reason: None }
+	}
+
+	fn with_negotiation_failure_reason(mut self, reason: NegotiationFailureReason) -> Self {
+		self.negotiation_failure_reason = Some(reason);
+		self
+	}
+
+	pub(super) fn into_parts(
+		self,
+	) -> (ChannelError, Option<(SpliceFundingFailed, NegotiationFailureReason)>) {
+		let Self { err, splice_funding_failed, negotiation_failure_reason } = self;
+		let splice_failure = splice_funding_failed.map(|splice_funding_failed| {
+			let reason =
+				negotiation_failure_reason.unwrap_or_else(|| Self::reason_from_channel_error(&err));
+			(splice_funding_failed, reason)
+		});
+		(err, splice_failure)
+	}
+
+	fn reason_from_channel_error(err: &ChannelError) -> NegotiationFailureReason {
+		NegotiationFailureReason::NegotiationError { msg: format!("{:?}", err) }
+	}
 }
 
 /// The return value of `monitor_updating_restored`
@@ -1850,7 +1879,7 @@ where
 			},
 		};
 
-		InteractiveTxMsgError { err: ChannelError::Abort(reason), splice_funding_failed }
+		InteractiveTxMsgError::new(ChannelError::Abort(reason), splice_funding_failed)
 	}
 
 	pub fn tx_add_input<L: Logger>(
@@ -1860,12 +1889,12 @@ where
 			Some(interactive_tx_constructor) => interactive_tx_constructor
 				.handle_tx_add_input(msg)
 				.map_err(|reason| self.fail_interactive_tx_negotiation(reason, logger)),
-			None => Err(InteractiveTxMsgError {
-				err: ChannelError::WarnAndDisconnect(
+			None => Err(InteractiveTxMsgError::new(
+				ChannelError::WarnAndDisconnect(
 					"Received unexpected interactive transaction negotiation message".to_owned(),
 				),
-				splice_funding_failed: None,
-			}),
+				None,
+			)),
 		}
 	}
 
@@ -1876,12 +1905,12 @@ where
 			Some(interactive_tx_constructor) => interactive_tx_constructor
 				.handle_tx_add_output(msg)
 				.map_err(|reason| self.fail_interactive_tx_negotiation(reason, logger)),
-			None => Err(InteractiveTxMsgError {
-				err: ChannelError::WarnAndDisconnect(
+			None => Err(InteractiveTxMsgError::new(
+				ChannelError::WarnAndDisconnect(
 					"Received unexpected interactive transaction negotiation message".to_owned(),
 				),
-				splice_funding_failed: None,
-			}),
+				None,
+			)),
 		}
 	}
 
@@ -1892,12 +1921,12 @@ where
 			Some(interactive_tx_constructor) => interactive_tx_constructor
 				.handle_tx_remove_input(msg)
 				.map_err(|reason| self.fail_interactive_tx_negotiation(reason, logger)),
-			None => Err(InteractiveTxMsgError {
-				err: ChannelError::WarnAndDisconnect(
+			None => Err(InteractiveTxMsgError::new(
+				ChannelError::WarnAndDisconnect(
 					"Received unexpected interactive transaction negotiation message".to_owned(),
 				),
-				splice_funding_failed: None,
-			}),
+				None,
+			)),
 		}
 	}
 
@@ -1908,12 +1937,12 @@ where
 			Some(interactive_tx_constructor) => interactive_tx_constructor
 				.handle_tx_remove_output(msg)
 				.map_err(|reason| self.fail_interactive_tx_negotiation(reason, logger)),
-			None => Err(InteractiveTxMsgError {
-				err: ChannelError::WarnAndDisconnect(
+			None => Err(InteractiveTxMsgError::new(
+				ChannelError::WarnAndDisconnect(
 					"Received unexpected interactive transaction negotiation message".to_owned(),
 				),
-				splice_funding_failed: None,
-			}),
+				None,
+			)),
 		}
 	}
 
@@ -1926,10 +1955,10 @@ where
 				.map_err(|reason| self.fail_interactive_tx_negotiation(reason, logger))?,
 			None => {
 				let err = "Received unexpected interactive transaction negotiation message";
-				return Err(InteractiveTxMsgError {
-					err: ChannelError::WarnAndDisconnect(err.to_owned()),
-					splice_funding_failed: None,
-				});
+				return Err(InteractiveTxMsgError::new(
+					ChannelError::WarnAndDisconnect(err.to_owned()),
+					None,
+				));
 			},
 		};
 
@@ -12797,7 +12826,8 @@ where
 				// quiescent for it.
 				ChannelError::Ignore(str.into())
 			};
-			return Ok(InteractiveTxMsgError { err, splice_funding_failed });
+			return Ok(InteractiveTxMsgError::new(err, splice_funding_failed)
+				.with_negotiation_failure_reason(NegotiationFailureReason::LocallyCanceled));
 		}
 
 		let funding_negotiation = self
@@ -12864,10 +12894,11 @@ where
 		debug_assert!(self.context.channel_state.is_quiescent());
 		let splice_funding_failed = self.reset_pending_splice_state();
 		debug_assert!(splice_funding_failed.is_some());
-		Ok(InteractiveTxMsgError {
-			err: ChannelError::Abort(AbortReason::ManualIntervention),
+		Ok(InteractiveTxMsgError::new(
+			ChannelError::Abort(AbortReason::ManualIntervention),
 			splice_funding_failed,
-		})
+		)
+		.with_negotiation_failure_reason(NegotiationFailureReason::LocallyCanceled))
 	}
 
 	/// Checks during handling splice_init
@@ -14520,7 +14551,7 @@ where
 			debug_assert!(self.context.channel_state.is_quiescent());
 			self.exit_quiescence();
 		}
-		InteractiveTxMsgError { err, splice_funding_failed: None }
+		InteractiveTxMsgError::new(err, None)
 	}
 
 	pub fn remove_legacy_scids_before_block(&mut self, height: u32) -> alloc::vec::Drain<'_, u64> {
