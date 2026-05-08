@@ -815,13 +815,16 @@ fn test_onion_failure() {
 	let (_, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[2], None, None);
 
 	// Our immediate peer sent UpdateFailMalformedHTLC because it couldn't understand the onion in
-	// the UpdateAddHTLC that we sent.
+	// the UpdateAddHTLC that we sent. These tests explicitly route via the real SCID (not the
+	// alias) so the expected_short_channel_id assertions below match.
 	let short_channel_id = channels[0].0.contents.short_channel_id;
+	let mut route_via_real_scid = route.clone();
+	route_via_real_scid.paths[0].hops[0].short_channel_id = short_channel_id;
 	run_onion_failure_test(
 		"invalid_onion_version",
 		0,
 		&nodes,
-		&route,
+		&route_via_real_scid,
 		&payment_hash,
 		&payment_secret,
 		|msg| {
@@ -839,7 +842,7 @@ fn test_onion_failure() {
 		"invalid_onion_hmac",
 		0,
 		&nodes,
-		&route,
+		&route_via_real_scid,
 		&payment_hash,
 		&payment_secret,
 		|msg| {
@@ -857,7 +860,7 @@ fn test_onion_failure() {
 		"invalid_onion_key",
 		0,
 		&nodes,
-		&route,
+		&route_via_real_scid,
 		&payment_hash,
 		&payment_secret,
 		|msg| {
