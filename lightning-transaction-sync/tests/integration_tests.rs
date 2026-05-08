@@ -18,8 +18,8 @@ use bitcoin::constants::genesis_block;
 use bitcoin::network::Network;
 use bitcoin::{Amount, BlockHash, Txid};
 
-use electrsd::corepc_node::Node as BitcoinD;
-use electrsd::{corepc_node, ElectrsD};
+use bitcoind::BitcoinD;
+use electrsd::ElectrsD;
 
 use std::collections::{HashMap, HashSet};
 use std::env;
@@ -28,10 +28,10 @@ use std::time::Duration;
 
 pub fn setup_bitcoind_and_electrsd() -> (BitcoinD, ElectrsD) {
 	let bitcoind_exe =
-		env::var("BITCOIND_EXE").ok().or_else(|| corepc_node::downloaded_exe_path().ok()).expect(
+		env::var("BITCOIND_EXE").ok().or_else(|| bitcoind::downloaded_exe_path().ok()).expect(
 			"you need to provide an env var BITCOIND_EXE or specify a bitcoind version feature",
 		);
-	let mut bitcoind_conf = corepc_node::Conf::default();
+	let mut bitcoind_conf = bitcoind::Conf::default();
 	bitcoind_conf.network = "regtest";
 	let bitcoind = BitcoinD::with_conf(bitcoind_exe, &bitcoind_conf).unwrap();
 
