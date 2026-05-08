@@ -9,7 +9,7 @@ use bitcoin::block::Header;
 use bitcoin::network::Network;
 
 use lightning::chain;
-use lightning::chain::BestBlock;
+use lightning::chain::BlockLocator;
 
 use std::ops::Deref;
 
@@ -46,7 +46,7 @@ where
 /// use bitcoin::network::Network;
 ///
 /// use lightning::chain;
-/// use lightning::chain::{BestBlock, Watch};
+/// use lightning::chain::{BlockLocator, Watch};
 /// use lightning::chain::chainmonitor;
 /// use lightning::chain::chainmonitor::ChainMonitor;
 /// use lightning::chain::channelmonitor::ChannelMonitor;
@@ -93,7 +93,7 @@ where
 /// ) {
 /// 	// Read a serialized channel monitor paired with the best block when it was persisted.
 /// 	let serialized_monitor = "...";
-/// 	let (monitor_best_block, mut monitor) = <(BestBlock, ChannelMonitor<SP::EcdsaSigner>)>::read(
+/// 	let (monitor_best_block, mut monitor) = <(BlockLocator, ChannelMonitor<SP::EcdsaSigner>)>::read(
 /// 		&mut Cursor::new(&serialized_monitor), (entropy_source, signer_provider)).unwrap();
 ///
 /// 	// Read the channel manager paired with the best block when it was persisted.
@@ -112,7 +112,7 @@ where
 /// 			config,
 /// 			vec![&mut monitor],
 /// 		);
-/// 		<(BestBlock, ChannelManager<&ChainMonitor<SP::EcdsaSigner, &C, &T, &F, &L, &P, &ES>, &T, &ES, &NS, &SP, &F, &R, &MR, &L>)>::read(
+/// 		<(BlockLocator, ChannelManager<&ChainMonitor<SP::EcdsaSigner, &C, &T, &F, &L, &P, &ES>, &T, &ES, &NS, &SP, &F, &R, &MR, &L>)>::read(
 /// 			&mut Cursor::new(&serialized_manager), read_args).unwrap()
 /// 	};
 ///
@@ -140,7 +140,7 @@ where
 /// [`ChannelManager`]: lightning::ln::channelmanager::ChannelManager
 /// [`ChannelMonitor`]: lightning::chain::channelmonitor::ChannelMonitor
 pub async fn synchronize_listeners<B: Deref + Sized + Send + Sync, L: chain::Listen + ?Sized>(
-	block_source: B, network: Network, mut chain_listeners: Vec<(BestBlock, &L)>,
+	block_source: B, network: Network, mut chain_listeners: Vec<(BlockLocator, &L)>,
 ) -> BlockSourceResult<(HeaderCache, ValidatedBlockHeader)>
 where
 	B::Target: BlockSource,
@@ -242,7 +242,7 @@ impl<'a, L: chain::Listen + ?Sized> chain::Listen for DynamicChainListener<'a, L
 		unreachable!()
 	}
 
-	fn blocks_disconnected(&self, fork_point: BestBlock) {
+	fn blocks_disconnected(&self, fork_point: BlockLocator) {
 		self.0.blocks_disconnected(fork_point)
 	}
 }
@@ -266,9 +266,9 @@ mod tests {
 		let listener_3 = MockChainListener::new().expect_block_connected(*chain.at_height(4));
 
 		let listeners = vec![
-			(chain.best_block_at_height(1), &listener_1 as &dyn chain::Listen),
-			(chain.best_block_at_height(2), &listener_2 as &dyn chain::Listen),
-			(chain.best_block_at_height(3), &listener_3 as &dyn chain::Listen),
+			(chain.block_locator_at_height(1), &listener_1 as &dyn chain::Listen),
+			(chain.block_locator_at_height(2), &listener_2 as &dyn chain::Listen),
+			(chain.block_locator_at_height(3), &listener_3 as &dyn chain::Listen),
 		];
 		match synchronize_listeners(&chain, Network::Bitcoin, listeners).await {
 			Ok((cache, header)) => {

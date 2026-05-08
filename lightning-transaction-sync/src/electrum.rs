@@ -329,11 +329,11 @@ impl<L: Logger> ElectrumSyncClient<L> {
 					let mut filtered_history =
 						script_history.iter().filter(|h| h.tx_hash == **txid);
 					if let Some(history) = filtered_history.next() {
-						let prob_conf_height = history.height as u32;
-						if prob_conf_height <= 0 {
+						if history.height <= 0 {
 							// Skip if it's a an unconfirmed entry.
 							continue;
 						}
+						let prob_conf_height = history.height as u32;
 						let confirmed_tx = self.get_confirmed_tx(tx, prob_conf_height)?;
 						confirmed_txs.push(confirmed_tx);
 					}

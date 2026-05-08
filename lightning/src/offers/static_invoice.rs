@@ -408,7 +408,7 @@ impl StaticInvoice {
 	/// Whether the [`Offer`] that this invoice is based on is expired.
 	#[cfg(feature = "std")]
 	pub fn is_offer_expired(&self) -> bool {
-		self.contents.is_expired()
+		self.contents.is_offer_expired()
 	}
 
 	/// Whether the [`Offer`] that this invoice is based on is expired, given the current time as
@@ -1001,6 +1001,43 @@ mod tests {
 		} else {
 			panic!("expected error")
 		}
+	}
+
+	#[cfg(feature = "std")]
+	#[test]
+	fn is_offer_expired_does_not_check_invoice_expiry() {
+		// Regression test: `StaticInvoice::is_offer_expired` must reflect the offer's expiry,
+		// not the invoice's own expiry. Build an invoice whose offer has no absolute expiry
+		// (so the offer never expires) but whose own `created_at + relative_expiry` lies in
+		// the past (so the invoice itself is expired).
+		let node_id = recipient_pubkey();
+		let payment_paths = payment_paths();
+		let expanded_key = ExpandedKey::new([42; 32]);
+		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
+		let secp_ctx = Secp256k1::new();
+
+		let offer = OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
+			.path(blinded_path())
+			.build()
+			.unwrap();
+
+		let invoice = StaticInvoiceBuilder::for_offer_using_derived_keys(
+			&offer,
+			payment_paths.clone(),
+			vec![blinded_path()],
+			Duration::from_secs(0),
+			&expanded_key,
+			nonce,
+			&secp_ctx,
+		)
+		.unwrap()
+		.relative_expiry(1)
+		.build_and_sign(&secp_ctx)
+		.unwrap();
+
+		assert!(invoice.is_expired());
+		assert!(!invoice.is_offer_expired());
 	}
 
 	#[test]

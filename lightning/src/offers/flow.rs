@@ -29,7 +29,7 @@ use crate::chain::channelmonitor::LATENCY_GRACE_PERIOD_BLOCKS;
 #[allow(unused_imports)]
 use crate::prelude::*;
 
-use crate::chain::BestBlock;
+use crate::chain::BlockLocator;
 use crate::ln::channel_state::ChannelDetails;
 use crate::ln::channelmanager::{InterceptId, PaymentId, CLTV_FAR_FAR_AWAY};
 use crate::ln::inbound_payment;
@@ -69,7 +69,7 @@ use crate::util::ser::Writeable;
 /// for finding message paths when initiating and retrying onion messages.
 pub struct OffersMessageFlow<MR: MessageRouter, L: Logger> {
 	chain_hash: ChainHash,
-	best_block: RwLock<BestBlock>,
+	best_block: RwLock<BlockLocator>,
 
 	our_network_pubkey: PublicKey,
 	highest_seen_timestamp: AtomicUsize,
@@ -94,7 +94,7 @@ pub struct OffersMessageFlow<MR: MessageRouter, L: Logger> {
 impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 	/// Creates a new [`OffersMessageFlow`]
 	pub fn new(
-		chain_hash: ChainHash, best_block: BestBlock, our_network_pubkey: PublicKey,
+		chain_hash: ChainHash, best_block: BlockLocator, our_network_pubkey: PublicKey,
 		current_timestamp: u32, inbound_payment_key: inbound_payment::ExpandedKey,
 		receive_auth_key: ReceiveAuthKey, secp_ctx: Secp256k1<secp256k1::All>, message_router: MR,
 		logger: L,
@@ -189,7 +189,7 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 
 		// Note that we deliberately don't use `update_for_new_tip` as we dont rely on receiving
 		// disconnection information instead expecting to simply "jump" to the new tip.
-		*self.best_block.write().unwrap() = BestBlock::new(header.block_hash(), height);
+		*self.best_block.write().unwrap() = BlockLocator::new(header.block_hash(), height);
 
 		loop {
 			// Update timestamp to be the max of its current value and the block

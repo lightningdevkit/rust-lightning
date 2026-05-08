@@ -876,7 +876,7 @@ mod tests {
 	}
 
 	#[test]
-	fn test_url_security_validation() {
+	fn test_webhook_url_validation() {
 		let urls_that_should_throw = [
 			"test-app",
 			"http://example.com/webhook",
@@ -904,6 +904,16 @@ mod tests {
 				},
 			}
 		}
+	}
+
+	#[test]
+	fn test_webhook_url_accepts_https_userinfo_and_ipv6() {
+		let userinfo_url =
+			LSPS5WebhookUrl::new("https://user:pass@example.com/webhook".to_string()).unwrap();
+		assert_eq!(userinfo_url.as_str(), "https://user:pass@example.com/webhook");
+
+		let ipv6_url = LSPS5WebhookUrl::new("https://[::1]/webhook".to_string()).unwrap();
+		assert_eq!(ipv6_url.as_str(), "https://[::1]/webhook");
 	}
 
 	#[test]

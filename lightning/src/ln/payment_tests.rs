@@ -1596,17 +1596,32 @@ fn sent_probe_is_probe_of_sending_node() {
 	// Then build an actual two-hop probing path
 	let (route, _, _, _) = get_route_and_payment_hash!(&nodes[0], nodes[2], 100_000);
 
-	match nodes[0].node.send_probe(route.paths[0].clone()) {
-		Ok((payment_hash, payment_id)) => {
-			assert!(nodes[0].node.payment_is_probe(&payment_hash, &payment_id));
-			assert!(!nodes[1].node.payment_is_probe(&payment_hash, &payment_id));
-			assert!(!nodes[2].node.payment_is_probe(&payment_hash, &payment_id));
-		},
-		_ => panic!(),
-	}
+	let (payment_hash, payment_id) = nodes[0].node.send_probe(route.paths[0].clone()).unwrap();
+	assert!(nodes[0].node.payment_is_probe(&payment_hash, &payment_id));
+	assert!(!nodes[1].node.payment_is_probe(&payment_hash, &payment_id));
+	assert!(!nodes[2].node.payment_is_probe(&payment_hash, &payment_id));
+	assert!(matches!(
+		nodes[0].node.list_recent_payments().as_slice(),
+		[RecentPaymentDetails::Pending {
+			payment_id: listed_payment_id,
+			payment_hash: listed_payment_hash,
+			is_probe: true,
+			..
+		}] if *listed_payment_id == payment_id && *listed_payment_hash == payment_hash
+	));
 
 	get_htlc_update_msgs(&nodes[0], &node_b_id);
 	check_added_monitors(&nodes[0], 1);
+
+	nodes[0].node.abandon_payment(payment_id);
+	assert!(matches!(
+		nodes[0].node.list_recent_payments().as_slice(),
+		[RecentPaymentDetails::Abandoned {
+			payment_id: listed_payment_id,
+			payment_hash: listed_payment_hash,
+			is_probe: true,
+		}] if *listed_payment_id == payment_id && *listed_payment_hash == payment_hash
+	));
 }
 
 #[test]
@@ -2157,7 +2172,12 @@ fn test_trivial_inflight_htlc_tracking() {
 	}
 	let pending_payments = nodes[0].node.list_recent_payments();
 	assert_eq!(pending_payments.len(), 1);
-	let details = RecentPaymentDetails::Pending { payment_id, payment_hash, total_msat: 500000 };
+	let details = RecentPaymentDetails::Pending {
+		payment_id,
+		payment_hash,
+		total_msat: 500000,
+		is_probe: false,
+	};
 	assert_eq!(pending_payments[0], details);
 
 	// Now, let's claim the payment. This should result in the used liquidity to return `None`.

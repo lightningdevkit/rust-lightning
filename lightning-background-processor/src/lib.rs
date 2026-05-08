@@ -1937,7 +1937,7 @@ mod tests {
 	use lightning::chain::chainmonitor;
 	use lightning::chain::channelmonitor::ANTI_REORG_DELAY;
 	use lightning::chain::transaction::OutPoint;
-	use lightning::chain::{BestBlock, Confirm};
+	use lightning::chain::{BlockLocator, Confirm};
 	use lightning::events::{Event, PathFailure, ReplayEvent};
 	use lightning::ln::channelmanager;
 	use lightning::ln::channelmanager::{
@@ -2121,7 +2121,7 @@ mod tests {
 		tx_broadcaster: Arc<test_utils::TestBroadcaster>,
 		network_graph: Arc<NetworkGraph<Arc<test_utils::TestLogger>>>,
 		logger: Arc<test_utils::TestLogger>,
-		best_block: BestBlock,
+		best_block: BlockLocator,
 		scorer: Arc<LockingWrapper<TestScorer>>,
 		sweeper: Arc<
 			OutputSweeperSync<
@@ -2484,7 +2484,7 @@ mod tests {
 				keys_manager.get_peer_storage_key(),
 				true,
 			));
-			let best_block = BestBlock::from_network(network);
+			let best_block = BlockLocator::from_network(network);
 			let params = ChainParameters { network, best_block };
 			let mut config = UserConfig::default();
 			config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = false;
@@ -2726,7 +2726,7 @@ mod tests {
 			let height = node.best_block.height + 1;
 			let header = create_dummy_header(prev_blockhash, height);
 			let txdata = vec![(0, tx)];
-			node.best_block = BestBlock::new(header.block_hash(), height);
+			node.best_block = BlockLocator::new(header.block_hash(), height);
 			match i {
 				1 => {
 					node.node.transactions_confirmed(&header, &txdata, height);
@@ -2753,7 +2753,7 @@ mod tests {
 			let prev_blockhash = node.best_block.block_hash;
 			let height = node.best_block.height + 1;
 			let header = create_dummy_header(prev_blockhash, height);
-			node.best_block = BestBlock::new(header.block_hash(), height);
+			node.best_block = BlockLocator::new(header.block_hash(), height);
 			if i == num_blocks {
 				// We need the TestBroadcaster to know about the new height so that it doesn't think
 				// we're violating the time lock requirements of transactions broadcasted at that

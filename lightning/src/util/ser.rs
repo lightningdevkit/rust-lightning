@@ -1633,6 +1633,13 @@ impl Readable for () {
 impl Writeable for String {
 	#[inline]
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.as_str().write(w)
+	}
+}
+
+impl Writeable for &str {
+	#[inline]
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		CollectionLength(self.len() as u64).write(w)?;
 		w.write_all(self.as_bytes())
 	}
@@ -1795,6 +1802,12 @@ mod tests {
 		let mut buf: Vec<u8> = Vec::new();
 		hostname.write(&mut buf).unwrap();
 		assert_eq!(Hostname::read(&mut buf.as_slice()).unwrap().as_str(), "test");
+	}
+
+	#[test]
+	fn str_serialization_matches_string() {
+		let s = "test";
+		assert_eq!(s.encode(), s.to_string().encode());
 	}
 
 	#[test]

@@ -361,8 +361,13 @@ impl<L: Logger> EsploraSyncClient<L> {
 
 			let mut matches = Vec::new();
 			let mut indexes = Vec::new();
-			let _ = merkle_block.txn.extract_matches(&mut matches, &mut indexes);
-			if indexes.len() != 1 || matches.len() != 1 || matches[0] != txid {
+			let computed_merkle_root =
+				merkle_block.txn.extract_matches(&mut matches, &mut indexes).ok();
+			if computed_merkle_root != Some(block_header.merkle_root)
+				|| indexes.len() != 1
+				|| matches.len() != 1
+				|| matches[0] != txid
+			{
 				log_error!(self.logger, "Retrieved Merkle block for txid {} doesn't match expectations. This should not happen. Please verify server integrity.", txid);
 				return Err(InternalError::Failed);
 			}

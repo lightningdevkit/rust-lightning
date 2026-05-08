@@ -15,9 +15,11 @@
 
 use core::{cmp, ops::Deref};
 
+use crate::ln::funding::FundingContribution;
 use crate::ln::types::ChannelId;
 use crate::prelude::*;
 
+use bitcoin::hash_types::Txid;
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::transaction::Transaction;
 
@@ -104,18 +106,75 @@ pub enum TransactionType {
 		/// A single sweep transaction may aggregate outputs from multiple channels.
 		channels: Vec<(PublicKey, ChannelId)>,
 	},
-	/// A splice transaction modifying an existing channel's funding.
+	/// An interactively-negotiated funding transaction.
 	///
-	/// A transaction of this type will be broadcast as a result of a [`ChannelManager::splice_channel`] operation.
+	/// A transaction of this type will be broadcast as a result of a
+	/// [`ChannelManager::splice_channel`] operation, or (once supported) V2 (dual-funded) channel
+	/// establishment. The same variant is used for batches of either or both.
 	///
 	/// [`ChannelManager::splice_channel`]: crate::ln::channelmanager::ChannelManager::splice_channel
-	Splice {
-		/// The `node_id` of the channel counterparty.
-		counterparty_node_id: PublicKey,
-		/// The ID of the channel being spliced.
-		channel_id: ChannelId,
+	InteractiveFunding {
+		/// Every negotiated candidate for this funding in order: the original negotiation
+		/// followed by any RBF replacements. The last entry is the candidate being broadcast.
+		candidates: Vec<FundingCandidate>,
 	},
 }
+
+/// A single negotiated candidate within a [`TransactionType::InteractiveFunding`] broadcast.
+///
+/// The candidate is identified by its [`Txid`] and lists the channels participating in it. A
+/// single candidate funds more than one channel only when batching splices and/or V2 channel
+/// openings (not yet implemented).
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct FundingCandidate {
+	/// The txid of this candidate.
+	pub txid: Txid,
+	/// The channels participating in this candidate.
+	pub channels: Vec<ChannelFunding>,
+}
+
+/// Information about a single channel's participation in a [`FundingCandidate`].
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct ChannelFunding {
+	/// The `node_id` of the channel counterparty.
+	pub counterparty_node_id: PublicKey,
+	/// The ID of the channel.
+	pub channel_id: ChannelId,
+	/// Whether this channel is being newly established or is an existing channel being spliced.
+	pub purpose: FundingPurpose,
+	/// The local node's contribution to this channel in this candidate, or `None` if we did
+	/// not contribute (e.g., a pure acceptor with zero value added, or a leading RBF round
+	/// before we began contributing).
+	pub contribution: Option<FundingContribution>,
+}
+
+/// The role of a channel within a [`FundingCandidate`].
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub enum FundingPurpose {
+	/// The channel is being newly established (V2 dual-funded open).
+	Establishment,
+	/// An existing channel is being spliced.
+	Splice,
+}
+
+// Needed so downstream consumers can persist these without needing to define wrapper types
+// mirroring the type structure.
+impl_writeable_tlv_based!(FundingCandidate, {
+	(1, txid, required),
+	(3, channels, required_vec),
+});
+
+impl_writeable_tlv_based!(ChannelFunding, {
+	(1, counterparty_node_id, required),
+	(3, channel_id, required),
+	(5, purpose, required),
+	(7, contribution, option),
+});
+
+impl_writeable_tlv_based_enum!(FundingPurpose,
+	(0, Establishment) => {},
+	(2, Splice) => {},
+);
 
 // TODO: Define typed abstraction over feerates to handle their conversions.
 pub(crate) fn compute_feerate_sat_per_1000_weight(fee_sat: u64, weight: u64) -> u32 {

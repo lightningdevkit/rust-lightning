@@ -54,7 +54,7 @@ use bitcoin::hash_types::BlockHash;
 use bitcoin::pow::Work;
 
 use lightning::chain;
-use lightning::chain::BestBlock;
+use lightning::chain::BlockLocator;
 
 use std::future::Future;
 use std::ops::Deref;
@@ -372,7 +372,7 @@ impl<'a, L: chain::Listen + ?Sized> ChainNotifier<'a, L> {
 	/// Updates the header cache as it goes, tracking headers needed to find the diff to reuse for
 	/// other objects that might need similar headers.
 	async fn find_difference_from_best_block<P: Poll>(
-		&mut self, current_header: ValidatedBlockHeader, prev_best_block: BestBlock,
+		&mut self, current_header: ValidatedBlockHeader, prev_best_block: BlockLocator,
 		chain_poller: &mut P,
 	) -> BlockSourceResult<ChainDifference> {
 		// Try to resolve the header for the previous best block. First try the block_hash,
@@ -393,7 +393,9 @@ impl<'a, L: chain::Listen + ?Sized> ChainNotifier<'a, L> {
 				break;
 			}
 			let height = prev_best_block.height.checked_sub(height_diff).ok_or(
-				BlockSourceError::persistent("BestBlock had more previous_blocks than its height"),
+				BlockSourceError::persistent(
+					"BlockLocator had more previous_blocks than its height",
+				),
 			)?;
 			if let Ok(header) = chain_poller.get_header(block_hash, Some(height)).await {
 				found_header = Some(header);
@@ -402,7 +404,7 @@ impl<'a, L: chain::Listen + ?Sized> ChainNotifier<'a, L> {
 			}
 		}
 		let found_header = found_header.ok_or_else(|| {
-			BlockSourceError::persistent("could not resolve any block from BestBlock")
+			BlockSourceError::persistent("could not resolve any block from BlockLocator")
 		})?;
 
 		self.find_difference_from_header(current_header, &found_header, chain_poller).await
@@ -456,7 +458,7 @@ impl<'a, L: chain::Listen + ?Sized> ChainNotifier<'a, L> {
 	/// Notifies the chain listeners of disconnected blocks.
 	fn disconnect_blocks(&mut self, fork_point: ValidatedBlockHeader) {
 		self.header_cache.blocks_disconnected(&fork_point);
-		let best_block = BestBlock::new(fork_point.block_hash, fork_point.height);
+		let best_block = BlockLocator::new(fork_point.block_hash, fork_point.height);
 		self.chain_listener.blocks_disconnected(best_block);
 	}
 

@@ -1,0 +1,11 @@
+# API Updates
+
+ * `Event::SplicePending` has been renamed to `Event::SpliceNegotiated`.
+
+ * `Event::SpliceFailed` has been renamed to `Event::SpliceNegotiationFailed`.
+
+ * `Event::SpliceNegotiationFailed` now includes a `reason` field
+   (`NegotiationFailureReason`) indicating why the negotiation round failed,
+   and a `contribution` field returning the `FundingContribution` for retry.
+
+ * `FundingContribution` now exposes `feerate()` and `inputs()` accessor methods.

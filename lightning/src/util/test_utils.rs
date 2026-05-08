@@ -20,7 +20,7 @@ use crate::chain::channelmonitor::{
 	ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, MonitorEvent,
 };
 use crate::chain::transaction::OutPoint;
-use crate::chain::BestBlock;
+use crate::chain::BlockLocator;
 use crate::chain::WatchedOutput;
 #[cfg(any(test, feature = "_externalize_tests"))]
 use crate::ln::chan_utils::CommitmentTransaction;
@@ -606,7 +606,7 @@ impl<'a> TestChainMonitor<'a> {
 		// underlying `ChainMonitor`.
 		let mut w = TestVecWriter(Vec::new());
 		monitor.write(&mut w).unwrap();
-		let new_monitor = <(BestBlock, ChannelMonitor<TestChannelSigner>)>::read(
+		let new_monitor = <(BlockLocator, ChannelMonitor<TestChannelSigner>)>::read(
 			&mut io::Cursor::new(&w.0),
 			(self.keys_manager, self.keys_manager),
 		)
@@ -643,7 +643,7 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 		// monitor to a serialized copy and get he same one back.
 		let mut w = TestVecWriter(Vec::new());
 		monitor.write(&mut w).unwrap();
-		let new_monitor = <(BestBlock, ChannelMonitor<TestChannelSigner>)>::read(
+		let new_monitor = <(BlockLocator, ChannelMonitor<TestChannelSigner>)>::read(
 			&mut io::Cursor::new(&w.0),
 			(self.keys_manager, self.keys_manager),
 		)
@@ -699,7 +699,7 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 		let monitor = self.chain_monitor.get_monitor(channel_id).unwrap();
 		w.0.clear();
 		monitor.write(&mut w).unwrap();
-		let new_monitor = <(BestBlock, ChannelMonitor<TestChannelSigner>)>::read(
+		let new_monitor = <(BlockLocator, ChannelMonitor<TestChannelSigner>)>::read(
 			&mut io::Cursor::new(&w.0),
 			(self.keys_manager, self.keys_manager),
 		)

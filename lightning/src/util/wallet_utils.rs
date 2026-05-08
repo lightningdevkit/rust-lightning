@@ -149,7 +149,7 @@ impl Utxo {
 ///
 /// Can be used as an input to contribute to a channel's funding transaction either when using the
 /// v2 channel establishment protocol or when splicing.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct ConfirmedUtxo {
 	/// The unspent [`TxOut`] found in [`prevtx`].
 	///

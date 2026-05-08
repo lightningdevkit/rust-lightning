@@ -326,7 +326,8 @@ pub struct ChannelHandshakeLimits {
 	/// only applies to inbound channels.
 	///
 	/// Default value: `1000`
-	/// (Minimum of [`ChannelHandshakeConfig::their_channel_reserve_proportional_millionths`])
+	///
+	/// Minimum value: `1000` (Any values less will be treated as `1000` instead.)
 	pub min_funding_satoshis: u64,
 	/// The remote node sets a limit on the minimum size of HTLCs we can send to them. This allows
 	/// you to limit the maximum minimum-size they can require.

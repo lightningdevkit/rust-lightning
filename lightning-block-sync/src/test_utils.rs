@@ -12,7 +12,7 @@ use bitcoin::transaction;
 use bitcoin::Transaction;
 
 use lightning::chain;
-use lightning::chain::BestBlock;
+use lightning::chain::BlockLocator;
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -104,12 +104,12 @@ impl Blockchain {
 		block_header.validate(block_hash).unwrap()
 	}
 
-	pub fn best_block_at_height(&self, height: usize) -> BestBlock {
+	pub fn block_locator_at_height(&self, height: usize) -> BlockLocator {
 		let mut previous_blocks = [None; 12];
 		for (i, height) in (0..height).rev().take(12).enumerate() {
 			previous_blocks[i] = Some(self.blocks[height].block_hash());
 		}
-		BestBlock {
+		BlockLocator {
 			height: height as u32,
 			block_hash: self.blocks[height].block_hash(),
 			previous_blocks,
@@ -135,9 +135,9 @@ impl Blockchain {
 		self.at_height(self.blocks.len() - 1)
 	}
 
-	pub fn best_block(&self) -> BestBlock {
+	pub fn best_block(&self) -> BlockLocator {
 		assert!(!self.blocks.is_empty());
-		self.best_block_at_height(self.blocks.len() - 1)
+		self.block_locator_at_height(self.blocks.len() - 1)
 	}
 
 	pub fn disconnect_tip(&mut self) -> Option<Block> {
@@ -223,7 +223,7 @@ impl chain::Listen for NullChainListener {
 		&self, _header: &Header, _txdata: &chain::transaction::TransactionData, _height: u32,
 	) {
 	}
-	fn blocks_disconnected(&self, _fork_point: BestBlock) {}
+	fn blocks_disconnected(&self, _fork_point: BlockLocator) {}
 }
 
 pub struct MockChainListener {
@@ -284,7 +284,7 @@ impl chain::Listen for MockChainListener {
 		}
 	}
 
-	fn blocks_disconnected(&self, fork_point: BestBlock) {
+	fn blocks_disconnected(&self, fork_point: BlockLocator) {
 		match self.expected_blocks_disconnected.borrow_mut().pop_front() {
 			None => {
 				panic!(

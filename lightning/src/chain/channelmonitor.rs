@@ -42,7 +42,7 @@ use crate::chain::package::{
 	HolderHTLCOutput, PackageSolvingData, PackageTemplate, RevokedHTLCOutput, RevokedOutput,
 };
 use crate::chain::transaction::{OutPoint, TransactionData};
-use crate::chain::{BestBlock, WatchedOutput};
+use crate::chain::{BlockLocator, WatchedOutput};
 use crate::events::bump_transaction::{AnchorDescriptor, BumpTransactionEvent};
 use crate::events::{ClosureReason, Event, EventHandler, ReplayEvent};
 use crate::ln::chan_utils::{
@@ -505,7 +505,7 @@ impl OnchainEventEntry {
 		conf_threshold
 	}
 
-	fn has_reached_confirmation_threshold(&self, best_block: &BestBlock) -> bool {
+	fn has_reached_confirmation_threshold(&self, best_block: &BlockLocator) -> bool {
 		best_block.height >= self.confirmation_threshold()
 	}
 }
@@ -1058,15 +1058,15 @@ impl Readable for IrrevocablyResolvedHTLC {
 /// You MUST ensure that no ChannelMonitors for a given channel anywhere contain out-of-date
 /// information and are actively monitoring the chain.
 ///
-/// Like the [`ChannelManager`], deserialization is implemented for `(BestBlock, ChannelMonitor)`,
-/// providing you with the last block hash which was connected before shutting down. You must begin
-/// syncing the chain from that point, disconnecting and connecting blocks as required to get to
-/// the best chain on startup. Note that all [`ChannelMonitor`]s passed to a [`ChainMonitor`] must
+/// Like the [`ChannelManager`], deserialization is implemented for `(BlockLocator, ChannelMonitor)`,
+/// providing a locator for the best chain as of the last write before shutting down. You must
+/// begin syncing the chain from that locator, disconnecting and connecting blocks as required to
+/// get to the best chain on startup. Note that all [`ChannelMonitor`]s passed to a [`ChainMonitor`] must
 /// by synced as of the same block, so syncing must happen prior to [`ChainMonitor`]
 /// initialization.
 ///
 /// For those loading potentially-ancient [`ChannelMonitor`]s, deserialization is also implemented
-/// for `Option<(BestBlock, ChannelMonitor)>`. LDK can no longer deserialize a [`ChannelMonitor`]
+/// for `Option<(BlockLocator, ChannelMonitor)>`. LDK can no longer deserialize a [`ChannelMonitor`]
 /// that was first created in LDK prior to 0.0.110 and last updated prior to LDK 0.0.119. In such
 /// cases, the `Option<(..)>` deserialization option may return `Ok(None)` rather than failing to
 /// deserialize, allowing you to differentiate between the two cases.
@@ -1354,7 +1354,7 @@ pub(crate) struct ChannelMonitorImpl<Signer: EcdsaChannelSigner> {
 	// (we do *not*, however, update them in update_monitor to ensure any local user copies keep
 	// their best_block from its state and not based on updated copies that didn't run through
 	// the full block_connected).
-	best_block: BestBlock,
+	best_block: BlockLocator,
 
 	/// The node_id of our counterparty
 	counterparty_node_id: PublicKey,
@@ -1858,7 +1858,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		on_counterparty_tx_csv: u16, destination_script: &Script,
 		channel_parameters: &ChannelTransactionParameters, holder_pays_commitment_tx_fee: bool,
 		commitment_transaction_number_obscure_factor: u64,
-		initial_holder_commitment_tx: HolderCommitmentTransaction, best_block: BestBlock,
+		initial_holder_commitment_tx: HolderCommitmentTransaction, best_block: BlockLocator,
 		counterparty_node_id: PublicKey, channel_id: ChannelId,
 		is_manual_broadcast: bool,
 	) -> ChannelMonitor<Signer> {
@@ -2379,7 +2379,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// Determines if the disconnected block contained any transactions of interest and updates
 	/// appropriately.
 	pub fn blocks_disconnected<B: BroadcasterInterface, F: FeeEstimator, L: Logger>(
-		&self, fork_point: BestBlock, broadcaster: B, fee_estimator: F, logger: &L,
+		&self, fork_point: BlockLocator, broadcaster: B, fee_estimator: F, logger: &L,
 	) {
 		let mut inner = self.inner.lock().unwrap();
 		let logger = WithChannelMonitor::from_impl(logger, &*inner, None);
@@ -2472,7 +2472,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 
 	/// Gets the latest best block which was connected either via the [`chain::Listen`] or
 	/// [`chain::Confirm`] interfaces.
-	pub fn current_best_block(&self) -> BestBlock {
+	pub fn current_best_block(&self) -> BlockLocator {
 		self.inner.lock().unwrap().best_block.clone()
 	}
 
@@ -5414,7 +5414,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			log_trace!(logger, "Connecting new block {} at height {}", block_hash, height);
 			self.block_confirmed(height, block_hash, vec![], vec![], vec![], &broadcaster, &fee_estimator, logger)
 		} else if block_hash != self.best_block.block_hash {
-			self.best_block = BestBlock::new(block_hash, height);
+			self.best_block = BlockLocator::new(block_hash, height);
 			log_trace!(logger, "Best block re-orged, replaced with new block {} at height {}", block_hash, height);
 			self.onchain_events_awaiting_threshold_conf.retain(|ref entry| entry.height <= height);
 			let conf_target = self.closure_conf_target();
@@ -5931,7 +5931,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 	#[rustfmt::skip]
 	fn blocks_disconnected<B: BroadcasterInterface, F: FeeEstimator, L: Logger>(
-		&mut self, fork_point: BestBlock, broadcaster: B, fee_estimator: F, logger: &WithContext<L>
+		&mut self, fork_point: BlockLocator, broadcaster: B, fee_estimator: F, logger: &WithContext<L>
 	) {
 		let new_height = fork_point.height;
 		log_trace!(logger, "Block(s) disconnected to height {}", new_height);
@@ -6440,7 +6440,7 @@ impl<Signer: EcdsaChannelSigner, T: BroadcasterInterface, F: FeeEstimator, L: Lo
 		self.0.block_connected(header, txdata, height, &self.1, &self.2, &self.3);
 	}
 
-	fn blocks_disconnected(&self, fork_point: BestBlock) {
+	fn blocks_disconnected(&self, fork_point: BlockLocator) {
 		self.0.blocks_disconnected(fork_point, &self.1, &self.2, &self.3);
 	}
 }
@@ -6470,7 +6470,7 @@ where
 const MAX_ALLOC_SIZE: usize = 64 * 1024;
 
 impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP)>
-	for (BestBlock, ChannelMonitor<SP::EcdsaSigner>)
+	for (BlockLocator, ChannelMonitor<SP::EcdsaSigner>)
 {
 	fn read<R: io::Read>(reader: &mut R, args: (&'a ES, &'b SP)) -> Result<Self, DecodeError> {
 		match <Option<Self>>::read(reader, args) {
@@ -6482,7 +6482,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 }
 
 impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP)>
-	for Option<(BestBlock, ChannelMonitor<SP::EcdsaSigner>)>
+	for Option<(BlockLocator, ChannelMonitor<SP::EcdsaSigner>)>
 {
 	#[rustfmt::skip]
 	fn read<R: io::Read>(reader: &mut R, args: (&'a ES, &'b SP)) -> Result<Self, DecodeError> {
@@ -6645,7 +6645,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			}
 		}
 
-		let mut best_block = BestBlock::new(Readable::read(reader)?, Readable::read(reader)?);
+		let mut best_block = BlockLocator::new(Readable::read(reader)?, Readable::read(reader)?);
 
 		let waiting_threshold_conf_len: u64 = Readable::read(reader)?;
 		let mut onchain_events_awaiting_threshold_conf = Vec::with_capacity(cmp::min(waiting_threshold_conf_len as usize, MAX_ALLOC_SIZE / 128));
@@ -6966,7 +6966,7 @@ pub(super) fn dummy_monitor<S: EcdsaChannelSigner + 'static>(
 		channel_value_satoshis: 0,
 	};
 	let shutdown_script = crate::ln::script::ShutdownScript::new_p2wpkh_from_pubkey(dummy_key);
-	let best_block = BestBlock::from_network(Network::Testnet);
+	let best_block = BlockLocator::from_network(Network::Testnet);
 	let signer = wrap_signer(keys);
 	ChannelMonitor::new(
 		secp_ctx,
@@ -7014,7 +7014,7 @@ mod tests {
 		weight_revoked_received_htlc, WEIGHT_REVOKED_OUTPUT,
 	};
 	use crate::chain::transaction::OutPoint;
-	use crate::chain::{BestBlock, Confirm};
+	use crate::chain::{BlockLocator, Confirm};
 	use crate::io;
 	use crate::ln::chan_utils::{self, HTLCOutputInCommitment, HolderCommitmentTransaction};
 	use crate::ln::channel_keys::{
@@ -7081,7 +7081,7 @@ mod tests {
 		nodes[1].chain_monitor.chain_monitor.transactions_confirmed(&new_header,
 			&[(0, broadcast_tx)], conf_height);
 
-		let (_, pre_update_monitor) = <(BestBlock, ChannelMonitor<_>)>::read(
+		let (_, pre_update_monitor) = <(BlockLocator, ChannelMonitor<_>)>::read(
 						&mut io::Cursor::new(&get_monitor!(nodes[1], channel.2).encode()),
 						(&nodes[1].keys_manager.backing, &nodes[1].keys_manager.backing)).unwrap();
 

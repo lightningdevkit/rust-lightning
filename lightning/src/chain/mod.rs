@@ -38,36 +38,38 @@ pub(crate) mod onchaintx;
 pub(crate) mod package;
 pub mod transaction;
 
-/// The best known block as identified by its hash and height.
+/// Identifies a position in the chain by its block hash and height, along with recent ancestor
+/// hashes used to locate the fork point of a reorg.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
-pub struct BestBlock {
-	/// The block's hash
+pub struct BlockLocator {
+	/// The block's hash.
 	pub block_hash: BlockHash,
-	/// The height at which the block was confirmed.
+	/// The block's height.
 	pub height: u32,
-	/// Previous blocks immediately before [`Self::block_hash`], in reverse chronological order.
+	/// Ancestor block hashes immediately before [`Self::block_hash`], in reverse chronological
+	/// order.
 	///
 	/// These ensure we can find the fork point of a reorg if our block source no longer has the
-	/// previous best tip after a restart.
+	/// previous tip after a restart.
 	pub previous_blocks: [Option<BlockHash>; ANTI_REORG_DELAY as usize * 2],
 }
 
-impl BestBlock {
-	/// Constructs a `BestBlock` that represents the genesis block at height 0 of the given
+impl BlockLocator {
+	/// Constructs a `BlockLocator` that represents the genesis block at height 0 of the given
 	/// network.
 	pub fn from_network(network: Network) -> Self {
 		let block_hash = genesis_block(network).header.block_hash();
 		let previous_blocks = [None; ANTI_REORG_DELAY as usize * 2];
-		BestBlock { block_hash, height: 0, previous_blocks }
+		BlockLocator { block_hash, height: 0, previous_blocks }
 	}
 
-	/// Returns a `BestBlock` as identified by the given block hash and height.
+	/// Returns a `BlockLocator` as identified by the given block hash and height.
 	///
 	/// This is not exported to bindings users directly as the bindings auto-generate an
 	/// equivalent `new`.
 	pub fn new(block_hash: BlockHash, height: u32) -> Self {
 		let previous_blocks = [None; ANTI_REORG_DELAY as usize * 2];
-		BestBlock { block_hash, height, previous_blocks }
+		BlockLocator { block_hash, height, previous_blocks }
 	}
 
 	/// Advances to a new block at height [`Self::height`] + 1.
@@ -85,14 +87,14 @@ impl BestBlock {
 		self.height += 1;
 	}
 
-	/// Updates this object for a new best-block, either delegating to [`Self::advance`] if the new
+	/// Updates this locator for a new chain tip, either delegating to [`Self::advance`] if the new
 	/// block is simply one higher than the current tip and wiping [`Self::previous_blocks`] if a
 	/// few blocks have been skipped.
 	pub fn update_for_new_tip(&mut self, new_tip_hash: BlockHash, new_tip_height: u32) {
 		if new_tip_height == self.height + 1 {
 			self.advance(new_tip_hash);
 		} else {
-			*self = BestBlock::new(new_tip_hash, new_tip_height);
+			*self = BlockLocator::new(new_tip_hash, new_tip_height);
 		}
 	}
 
@@ -115,12 +117,12 @@ impl BestBlock {
 		}
 	}
 
-	/// Find the most recent common ancestor between two BestBlocks by searching their block hash
-	/// histories.
+	/// Finds the most recent common ancestor between two [`BlockLocator`]s by searching their
+	/// ancestor hash histories.
 	///
 	/// Returns the common block hash and height, or None if no common block is found in the
 	/// available histories.
-	pub fn find_common_ancestor(&self, other: &BestBlock) -> Option<(BlockHash, u32)> {
+	pub fn find_common_ancestor(&self, other: &BlockLocator) -> Option<(BlockHash, u32)> {
 		// First check if either tip matches
 		if self.block_hash == other.block_hash && self.height == other.height {
 			return Some((self.block_hash, self.height));
@@ -141,11 +143,11 @@ impl BestBlock {
 	}
 }
 
-impl_writeable_tlv_based!(BestBlock, {
+impl_writeable_tlv_based!(BlockLocator, {
 	(0, block_hash, required),
 	// Note that any change to the previous_blocks array length will change the serialization
 	// format and thus it is specified without constants here.
-	(1, previous_blocks_read, (legacy, [Option<BlockHash>; 6 * 2], |_| Ok(()), |us: &BestBlock| Some(us.previous_blocks))),
+	(1, previous_blocks_read, (legacy, [Option<BlockHash>; 6 * 2], |_| Ok(()), |us: &BlockLocator| Some(us.previous_blocks))),
 	(2, height, required),
 	(unused, previous_blocks, (static_value, previous_blocks_read.unwrap_or([None; 6 * 2]))),
 });
@@ -177,8 +179,8 @@ impl_writeable_tlv_based!(BestBlock, {
 ///
 /// # Object Birthday
 ///
-/// Note that most implementations take a [`BestBlock`] on construction and blocks only need to be
-/// applied starting from that point.
+/// Note that most implementations take a [`BlockLocator`] on construction identifying the best
+/// block at that time, and blocks only need to be applied starting from that point.
 pub trait Listen {
 	/// Notifies the listener that a block was added at the given height, with the transaction data
 	/// possibly filtered.
@@ -192,11 +194,11 @@ pub trait Listen {
 
 	/// Notifies the listener that one or more blocks were removed in anticipation of a reorg.
 	///
-	/// The provided [`BestBlock`] is the new best block after disconnecting blocks in the reorg
-	/// but before connecting new ones (i.e. the "fork point" block). For backwards compatibility,
-	/// you may instead walk the chain backwards, calling `blocks_disconnected` for each block
-	/// that is disconnected in a reorg.
-	fn blocks_disconnected(&self, fork_point_block: BestBlock);
+	/// The provided [`BlockLocator`] identifies the new best block after disconnecting blocks in
+	/// the reorg but before connecting new ones (i.e. the "fork point" block). For backwards
+	/// compatibility, you may instead walk the chain backwards, calling `blocks_disconnected` for
+	/// each block that is disconnected in a reorg.
+	fn blocks_disconnected(&self, fork_point_block: BlockLocator);
 }
 
 /// The `Confirm` trait is used to notify LDK when relevant transactions have been confirmed on
@@ -532,7 +534,7 @@ impl<T: Listen> Listen for dyn core::ops::Deref<Target = T> {
 		(**self).filtered_block_connected(header, txdata, height);
 	}
 
-	fn blocks_disconnected(&self, fork_point: BestBlock) {
+	fn blocks_disconnected(&self, fork_point: BlockLocator) {
 		(**self).blocks_disconnected(fork_point);
 	}
 }
@@ -547,7 +549,7 @@ where
 		self.1.filtered_block_connected(header, txdata, height);
 	}
 
-	fn blocks_disconnected(&self, fork_point: BestBlock) {
+	fn blocks_disconnected(&self, fork_point: BlockLocator) {
 		self.0.blocks_disconnected(fork_point);
 		self.1.blocks_disconnected(fork_point);
 	}
@@ -584,8 +586,8 @@ mod tests {
 	#[test]
 	fn test_best_block() {
 		let hash1 = BlockHash::from_slice(&[1; 32]).unwrap();
-		let mut chain_a = BestBlock::new(hash1, 100);
-		let mut chain_b = BestBlock::new(hash1, 100);
+		let mut chain_a = BlockLocator::new(hash1, 100);
+		let mut chain_b = BlockLocator::new(hash1, 100);
 
 		// Test get_hash_at_height on initial block
 		assert_eq!(chain_a.get_hash_at_height(100), Some(hash1));
@@ -613,7 +615,7 @@ mod tests {
 
 		// Test find_common_ancestor with no common history
 		let hash_other = BlockHash::from_slice(&[99; 32]).unwrap();
-		let chain_c = BestBlock::new(hash_other, 200);
+		let chain_c = BlockLocator::new(hash_other, 200);
 		assert_eq!(chain_a.find_common_ancestor(&chain_c), None);
 	}
 }

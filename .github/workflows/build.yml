@@ -82,18 +82,25 @@ jobs:
           # Maybe if codecov wasn't broken we wouldn't need to do this...
           ./codecov --verbose upload-process --disable-search --fail-on-error -f target/codecov.json -t "f421b687-4dc2-4387-ac3d-dc3b2528af57" -F 'tests'
           cargo clean
-      - name: Download honggfuzz corpus
-        uses: actions/download-artifact@v4
-        with:
-          name: hfuzz-corpus
-          path: fuzz/hfuzz_workspace
+      - name: Clone fuzzing corpus
+        run: git clone --depth=1 https://github.com/lightningdevkit/ldk-fuzzing-corpus.git fuzz/ldk-fuzzing-corpus
+      - name: Symlink corpus into hfuzz_workspace
+        run: |
+          set -eu
+          cd fuzz
+          for D in ldk-fuzzing-corpus/rust-lightning/*/; do
+            NAME=$(basename "$D")
+            mkdir -p "hfuzz_workspace/${NAME}_target"
+            cp -r "ldk-fuzzing-corpus/rust-lightning/${NAME}" "hfuzz_workspace/${NAME}_target/input"
+          done
       - name: Run fuzz coverage generation
         run: |
           ./contrib/generate_fuzz_coverage.sh --output-dir `pwd` --output-codecov-json
           # Could you use this to fake the coverage report for your PR? Sure.
           # Will anyone be impressed by your amazing coverage? No
           # Maybe if codecov wasn't broken we wouldn't need to do this...
-          ./codecov --verbose upload-process --disable-search --fail-on-error -f fuzz-codecov.json -t "f421b687-4dc2-4387-ac3d-dc3b2528af57" -F 'fuzzing'
+          ./codecov --verbose upload-process --disable-search --fail-on-error -f fuzz-fake-hashes-codecov.json -t "f421b687-4dc2-4387-ac3d-dc3b2528af57" -F 'fuzzing-fake-hashes'
+          ./codecov --verbose upload-process --disable-search --fail-on-error -f fuzz-real-hashes-codecov.json -t "f421b687-4dc2-4387-ac3d-dc3b2528af57" -F 'fuzzing-real-hashes'
 
   benchmark:
     runs-on: ubuntu-latest
@@ -218,7 +225,9 @@ jobs:
       - name: Sanity check fuzz targets on Rust ${{ env.TOOLCHAIN }}
         run: |
           cd fuzz
-          cargo test --quiet --color always --lib --bins -j8
+          RUSTFLAGS="--cfg=fuzzing --cfg=secp256k1_fuzz --cfg=hashes_fuzz --cfg=chacha20_poly1305_fuzz" cargo test --quiet --color always --lib -j8
+          RUSTFLAGS="--cfg=fuzzing --cfg=secp256k1_fuzz --cfg=hashes_fuzz --cfg=chacha20_poly1305_fuzz" cargo test --manifest-path fuzz-fake-hashes/Cargo.toml --quiet --color always --bins -j8
+          RUSTFLAGS="--cfg=fuzzing --cfg=secp256k1_fuzz --cfg=chacha20_poly1305_fuzz" cargo test --manifest-path fuzz-real-hashes/Cargo.toml --quiet --color always --bins -j8
 
   fuzz:
     runs-on: self-hosted
@@ -230,39 +239,59 @@ jobs:
       - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ env.TOOLCHAIN }}
-      # This is read-only for PRs. It seeds the fuzzer for a more effective run.
-      # NOTE: The `key` is unique and will always miss, forcing a fallback to
-      # the `restore-keys` to find the latest global cache from the `main` branch.
-      - name: Restore persistent fuzz corpus (PR)
-        if: ${{ github.ref != 'refs/heads/main' }}
-        uses: actions/cache/restore@v4
-        with:
-          path: fuzz/hfuzz_workspace
-          key: fuzz-corpus-${{ github.ref }}-${{ github.sha }}
-          restore-keys: |
-            fuzz-corpus-refs/heads/main-
-      # The `restore-keys` performs a prefix search to find the most recent
-      # cache from a previous `main` run. We then save with a new, unique
-      # `key` (using the SHA) to ensure the cache is always updated,
-      # as caches are immutable.
-      - name: Restore/Save persistent honggfuzz corpus (Main)
-        if: ${{ github.ref == 'refs/heads/main' }}
-        uses: actions/cache@v4
-        with:
-          path: fuzz/hfuzz_workspace
-          key: fuzz-corpus-refs/heads/main-${{ github.sha }}
-          restore-keys: |
-            fuzz-corpus-refs/heads/main-
+      - name: Clone fuzzing corpus
+        run: git clone --depth=1 https://github.com/lightningdevkit/ldk-fuzzing-corpus.git fuzz/ldk-fuzzing-corpus
+      - name: Symlink corpus into hfuzz_workspace
+        run: |
+          set -eu
+          cd fuzz
+          for D in ldk-fuzzing-corpus/rust-lightning/*/; do
+            NAME=$(basename "$D")
+            mkdir -p "hfuzz_workspace/${NAME}_target"
+            ln -sfn "../../ldk-fuzzing-corpus/rust-lightning/${NAME}" \
+              "hfuzz_workspace/${NAME}_target/input"
+          done
       - name: Run fuzzers
         run: cd fuzz && ./ci-fuzz.sh && cd ..
         env:
           FUZZ_MINIMIZE: ${{ contains(github.event.pull_request.labels.*.name, 'fuzz-minimize') }}
-      - name: Upload honggfuzz corpus
+      - name: Stage new corpus entries for upload
+        if: success() || failure()
+        run: |
+          set -eu
+          WORKSPACE="$(pwd)"
+          rm -rf "$WORKSPACE/new-corpus"
+          mkdir -p "$WORKSPACE/new-corpus"
+
+          cd fuzz/ldk-fuzzing-corpus
+          while IFS= read -r F; do
+            mkdir -p "$WORKSPACE/new-corpus/$(dirname "$F")"
+            cp -a "$F" "$WORKSPACE/new-corpus/$F"
+          done < <(git ls-files --others --exclude-standard rust-lightning/)
+          cd "$WORKSPACE"
+
+          for D in fuzz/hfuzz_workspace/*_target/; do
+            [ -d "$D" ] || continue
+            BASE=$(basename "$D")
+            NAME="${BASE%_target}"
+            [ -d "$WORKSPACE/new-corpus/$NAME" ] || continue
+            for F in "$D"/SIG*; do
+              FILE="$(basename "$F")"
+              [ -f "$F" -a ! -f "$WORKSPACE/new-corpus/$NAME/$FILE" ] &&
+                cp "$F" "$WORKSPACE/new-corpus/$NAME/$FILE"
+            done
+          done
+
+          NEW=$(find new-corpus -type f 2>/dev/null | wc -l)
+          echo "Staged $NEW new corpus entries (including any SIG* crashes)"
+      - name: Upload new corpus entries
+        if: success() || failure()
         uses: actions/upload-artifact@v4
         with:
           name: hfuzz-corpus
-          path: fuzz/hfuzz_workspace
+          path: new-corpus
           compression-level: 0
+          if-no-files-found: ignore
 
   linting:
     runs-on: ubuntu-latest
@@ -302,6 +331,8 @@ jobs:
         run: cargo fmt --check
       - name: Run rustfmt checks on lightning-tests
         run: cd lightning-tests && cargo fmt --check
+      - name: Run rustfmt checks on fuzz
+        run: cd fuzz && cargo fmt --check
   tor-connect:
     runs-on: ubuntu-latest
     env:
