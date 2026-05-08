@@ -3847,7 +3847,7 @@ fn do_abandon_splice_quiescent_action_on_shutdown(local_shutdown: bool, pending_
 		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_capacity, 0);
 
 	// When testing with a prior pending splice, complete splice A first so that
-	// `quiescent_action_into_error` filters against `pending_splice.contributed_inputs/outputs`.
+	// `splice_funding_failed_for` filters against `pending_splice.contributed_inputs/outputs`.
 	if pending_splice {
 		let funding_contribution = do_initiate_splice_in(
 			&nodes[0],

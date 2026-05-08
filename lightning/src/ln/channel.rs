@@ -3250,16 +3250,6 @@ pub(super) enum QuiescentError {
 	FailSplice(SpliceFundingFailed, NegotiationFailureReason),
 }
 
-impl QuiescentError {
-	fn with_negotiation_failure_reason(mut self, reason: NegotiationFailureReason) -> Self {
-		match self {
-			QuiescentError::FailSplice(_, ref mut r) => *r = reason,
-			_ => debug_assert!(false, "Expected FailSplice variant"),
-		}
-		self
-	}
-}
-
 pub(crate) enum StfuResponse {
 	Stfu(msgs::Stfu),
 	SpliceInit(msgs::SpliceInit),
@@ -7217,27 +7207,13 @@ where
 		.expect("is_initiator is true so this always returns Some")
 	}
 
-	fn quiescent_action_into_error(&self, action: QuiescentAction) -> QuiescentError {
-		match action {
-			QuiescentAction::Splice { contribution, .. } => QuiescentError::FailSplice(
-				self.splice_funding_failed_for(contribution),
-				NegotiationFailureReason::Unknown,
-			),
-			#[cfg(any(test, fuzzing, feature = "_test_utils"))]
-			QuiescentAction::DoNothing => QuiescentError::DoNothing,
-		}
-	}
-
 	fn abandon_quiescent_action(&mut self) -> Option<SpliceFundingFailed> {
-		let action = self.quiescent_action.take()?;
-		match self.quiescent_action_into_error(action) {
-			QuiescentError::FailSplice(failed, _) => Some(failed),
-			#[cfg(any(test, fuzzing, feature = "_test_utils"))]
-			QuiescentError::DoNothing => None,
-			_ => {
-				debug_assert!(false);
-				None
+		match self.quiescent_action.take()? {
+			QuiescentAction::Splice { contribution, .. } => {
+				Some(self.splice_funding_failed_for(contribution))
 			},
+			#[cfg(any(test, fuzzing, feature = "_test_utils"))]
+			QuiescentAction::DoNothing => None,
 		}
 	}
 
@@ -12734,22 +12710,28 @@ where
 	) -> Result<Option<msgs::Stfu>, QuiescentError> {
 		debug_assert!(contribution.is_splice());
 
-		if let Some(QuiescentAction::Splice { contribution: existing, .. }) = &self.quiescent_action
-		{
-			let pending_splice = self.pending_splice.as_ref();
-			let prior_inputs = pending_splice
-				.into_iter()
-				.flat_map(|pending_splice| pending_splice.contributed_inputs());
-			let prior_outputs = pending_splice
-				.into_iter()
-				.flat_map(|pending_splice| pending_splice.contributed_outputs());
-			return match contribution.into_unique_contributions(
-				existing.contributed_inputs().chain(prior_inputs),
-				existing.contributed_outputs().chain(prior_outputs),
-			) {
-				None => Err(QuiescentError::DoNothing),
-				Some((inputs, outputs)) => Err(QuiescentError::DiscardFunding { inputs, outputs }),
-			};
+		match self.quiescent_action.as_ref() {
+			Some(QuiescentAction::Splice { contribution: existing, .. }) => {
+				let pending_splice = self.pending_splice.as_ref();
+				let prior_inputs = pending_splice
+					.into_iter()
+					.flat_map(|pending_splice| pending_splice.contributed_inputs());
+				let prior_outputs = pending_splice
+					.into_iter()
+					.flat_map(|pending_splice| pending_splice.contributed_outputs());
+				return match contribution.into_unique_contributions(
+					existing.contributed_inputs().chain(prior_inputs),
+					existing.contributed_outputs().chain(prior_outputs),
+				) {
+					None => Err(QuiescentError::DoNothing),
+					Some((inputs, outputs)) => {
+						Err(QuiescentError::DiscardFunding { inputs, outputs })
+					},
+				};
+			},
+			#[cfg(any(test, fuzzing, feature = "_test_utils"))]
+			Some(QuiescentAction::DoNothing) => unreachable!(),
+			None => {},
 		}
 
 		let initiated_funding_negotiation = self
@@ -14396,9 +14378,6 @@ where
 	) -> Result<Option<msgs::Stfu>, QuiescentError> {
 		log_debug!(logger, "Attempting to initiate quiescence");
 
-		// TODO: NegotiationFailureReason is splice-specific, but propose_quiescence is
-		// generic. The reason should be selected by the caller, but it currently can't
-		// distinguish why quiescence failed. Revisit when a second quiescent protocol is added.
 		if !self.context.is_usable() {
 			debug_assert!(
 				self.context.channel_state.is_local_shutdown_sent()
@@ -14406,15 +14385,34 @@ where
 				"splice_channel should have prevented reaching propose_quiescence on a non-ready channel"
 			);
 			log_debug!(logger, "Channel is not in a usable state to propose quiescence");
-			return Err(self.quiescent_action_into_error(action)
-				.with_negotiation_failure_reason(NegotiationFailureReason::ChannelClosing));
+			return Err(match action {
+				QuiescentAction::Splice { contribution, .. } => QuiescentError::FailSplice(
+					self.splice_funding_failed_for(contribution),
+					NegotiationFailureReason::ChannelClosing,
+				),
+				#[cfg(any(test, fuzzing, feature = "_test_utils"))]
+				QuiescentAction::DoNothing => QuiescentError::DoNothing,
+			});
 		}
+
 		if self.quiescent_action.is_some() {
+			debug_assert!(
+				false,
+				"callers must not invoke propose_quiescence with {:?} while quiescent_action is set",
+				action,
+			);
 			log_debug!(
 				logger,
 				"Channel already has a pending quiescent action and cannot start another",
 			);
-			return Err(self.quiescent_action_into_error(action));
+			return Err(match action {
+				#[cfg(any(test, fuzzing, feature = "_test_utils"))]
+				QuiescentAction::DoNothing => QuiescentError::DoNothing,
+				QuiescentAction::Splice { contribution, .. } => QuiescentError::FailSplice(
+					self.splice_funding_failed_for(contribution),
+					NegotiationFailureReason::Unknown,
+				),
+			});
 		}
 		// Since we don't have a pending quiescent action, we should never be in a state where we
 		// sent `stfu` without already having become quiescent.
