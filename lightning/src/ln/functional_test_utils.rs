@@ -801,6 +801,18 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 				panic!("Had excess RAA blockers on node {}: {:?}", self.logger.id, raa_blockers);
 			}
 
+			for channel_id in self.chain_monitor.chain_monitor.list_monitors() {
+				let monitor = self.chain_monitor.chain_monitor.get_monitor(channel_id).unwrap();
+				let unacked_monitor_events = monitor.drain_unacked_monitor_events();
+				if !unacked_monitor_events.is_empty() {
+					panic!(
+						"Node {} channel {channel_id:?} had {} unacked monitor events at drop: {unacked_monitor_events:#?}",
+						unacked_monitor_events.len(),
+						self.logger.id
+					);
+				}
+			}
+
 			// Check that if we serialize the network graph, we can deserialize it again.
 			let network_graph = {
 				let mut w = test_utils::TestVecWriter(Vec::new());
