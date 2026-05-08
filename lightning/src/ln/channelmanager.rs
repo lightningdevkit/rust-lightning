@@ -84,7 +84,6 @@ use crate::ln::onion_utils::{
 };
 use crate::ln::onion_utils::{process_fulfill_attribution_data, AttributionData};
 use crate::ln::our_peer_storage::{EncryptedOurPeerStorage, PeerStorageMonitorHolder};
-#[cfg(test)]
 use crate::ln::outbound_payment;
 #[cfg(any(test, feature = "_externalize_tests"))]
 use crate::ln::outbound_payment::PaymentSendFailure;
@@ -3289,6 +3288,8 @@ pub enum RecentPaymentDetails {
 		/// Total amount (in msat, excluding fees) across all paths for this payment,
 		/// not just the amount currently inflight.
 		total_msat: u64,
+		/// Whether this payment is a liquidity probe.
+		is_probe: bool,
 	},
 	/// When a pending payment is fulfilled, we continue tracking it until all pending HTLCs have
 	/// been resolved. Upon receiving [`Event::PaymentSent`], we delay for a few minutes before the
@@ -3316,6 +3317,8 @@ pub enum RecentPaymentDetails {
 		payment_id: PaymentId,
 		/// Hash of the payment that we have given up trying to send.
 		payment_hash: PaymentHash,
+		/// Whether this payment is a liquidity probe.
+		is_probe: bool,
 	},
 }
 
@@ -4102,14 +4105,21 @@ impl<
 					Some(RecentPaymentDetails::AwaitingInvoice { payment_id: *payment_id })
 				},
 				PendingOutboundPayment::Retryable { payment_hash, total_msat, .. } => {
+					let is_probe = outbound_payment::payment_is_probe(payment_hash, payment_id, self.probing_cookie_secret);
 					Some(RecentPaymentDetails::Pending {
 						payment_id: *payment_id,
 						payment_hash: *payment_hash,
 						total_msat: *total_msat,
+						is_probe,
 					})
 				},
 				PendingOutboundPayment::Abandoned { payment_hash, .. } => {
-					Some(RecentPaymentDetails::Abandoned { payment_id: *payment_id, payment_hash: *payment_hash })
+					let is_probe = outbound_payment::payment_is_probe(payment_hash, payment_id, self.probing_cookie_secret);
+					Some(RecentPaymentDetails::Abandoned {
+						payment_id: *payment_id,
+						payment_hash: *payment_hash,
+						is_probe,
+					})
 				},
 				PendingOutboundPayment::Fulfilled { payment_hash, .. } => {
 					Some(RecentPaymentDetails::Fulfilled { payment_id: *payment_id, payment_hash: *payment_hash })
