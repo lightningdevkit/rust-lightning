@@ -2268,6 +2268,16 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		self_inner.pending_monitor_events = pending;
 	}
 
+	/// Used by test infra to check for unexpected pending monitor events.
+	#[cfg(any(test, feature = "_test_utils"))]
+	pub fn list_unacked_monitor_events(&self) -> Vec<(u128, MonitorEvent)> {
+		let inner = self.inner.lock().unwrap();
+		let mut events = Vec::new();
+		events.append(&mut inner.pending_monitor_events.clone());
+		events.append(&mut inner.provided_monitor_events.clone());
+		events
+	}
+
 	/// Processes [`SpendableOutputs`] events produced from each [`ChannelMonitor`] upon maturity.
 	///
 	/// For channels featuring anchor outputs, this method will also process [`BumpTransaction`]
