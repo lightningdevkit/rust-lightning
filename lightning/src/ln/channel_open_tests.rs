@@ -16,7 +16,8 @@ use crate::chain::{self, ChannelMonitorUpdateStatus};
 use crate::events::{ClosureReason, Event, FundingInfo};
 use crate::ln::channel::{
 	get_holder_selected_channel_reserve_satoshis, ChannelError, InboundV1Channel,
-	OutboundV1Channel, COINBASE_MATURITY, UNFUNDED_CHANNEL_AGE_LIMIT_TICKS,
+	OutboundV1Channel, COINBASE_MATURITY, MIN_THEIR_CHAN_RESERVE_SATOSHIS,
+	UNFUNDED_CHANNEL_AGE_LIMIT_TICKS,
 };
 use crate::ln::channelmanager::{
 	self, TrustedChannelFeatures, BREAKDOWN_TIMEOUT, MAX_UNFUNDED_CHANNEL_PEERS,
@@ -473,7 +474,8 @@ pub fn test_insane_channel_opens() {
 	// funding satoshis
 	let channel_value_sat = 31337; // same as funding satoshis
 	let channel_reserve_satoshis =
-		get_holder_selected_channel_reserve_satoshis(channel_value_sat, 0, &legacy_cfg, false);
+		get_holder_selected_channel_reserve_satoshis(channel_value_sat, 0, &legacy_cfg, false)
+			.unwrap();
 	let push_msat = (channel_value_sat - channel_reserve_satoshis) * 1000;
 
 	// Have node0 initiate a channel to node1 with aforementioned parameters
@@ -552,7 +554,13 @@ pub fn test_insane_channel_opens() {
 		},
 	);
 
-	insane_open_helper("Peer never wants payout outputs?", |mut msg| {
+	let crazy_dust_limit = channel_value_sat + 1;
+	let expected_error_str = format!(
+		"Got non-closing error: The channel value \
+		{channel_value_sat} is smaller than either their dust limit {crazy_dust_limit}, or \
+		{MIN_THEIR_CHAN_RESERVE_SATOSHIS}"
+	);
+	insane_open_helper(&expected_error_str, |mut msg| {
 		msg.common_fields.dust_limit_satoshis = msg.common_fields.funding_satoshis + 1;
 		msg
 	});

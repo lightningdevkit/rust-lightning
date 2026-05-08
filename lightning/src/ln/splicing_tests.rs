@@ -8666,13 +8666,15 @@ fn do_test_0reserve_splice_counterparty_validation(
 			// They obviously can't afford their contribution, so we fail before even
 			// querying `TxBuilder`
 			format!(
-				"Got non-closing error: Their contribution candidate {funding_contribution_sat}sat \
+				"Got non-closing error: Channel {channel_id} cannot be spliced; \
+				Their contribution candidate {funding_contribution_sat}sat \
 				is greater than their total balance in the channel {initiator_value_to_self_sat}sat"
 			)
 		} else if post_channel_value_sat < MIN_CHANNEL_VALUE_SATOSHIS {
 			// We require all spliced channels to have a value of at least 1000 satoshis after the splice
 			format!(
-				"Got non-closing error: Spliced channel value must be at least {MIN_CHANNEL_VALUE_SATOSHIS} satoshis. \
+				"Got non-closing error: Channel {channel_id} cannot be spliced; \
+				Spliced channel value must be at least {MIN_CHANNEL_VALUE_SATOSHIS} satoshis. \
 				It would be {post_channel_value_sat}"
 			)
 		} else {
@@ -8688,4 +8690,245 @@ fn do_test_0reserve_splice_counterparty_validation(
 	}
 
 	channel_type
+}
+
+/// We previously allowed a splice initiator to splice out funds past their channel reserve if the
+/// the acceptor had no balance in the channel, and there were no HTLCs in the channel
+#[cfg(test)]
+enum AcceptorBalance {
+	NoBalance,
+	BalanceInHTLC,
+	SettledBalance,
+}
+
+#[cfg(test)]
+enum ValidationCase {
+	Passes,
+	FailsAtHolder,
+	FailsAtCounterparty,
+}
+
+#[test]
+fn test_splice_out_initiator_reserve_breach_zero_fee_commitments() {
+	do_test_splice_out_initiator_reserve_breach_zero_fee_commitments(
+		AcceptorBalance::NoBalance,
+		ValidationCase::Passes,
+	);
+	do_test_splice_out_initiator_reserve_breach_zero_fee_commitments(
+		AcceptorBalance::BalanceInHTLC,
+		ValidationCase::Passes,
+	);
+	do_test_splice_out_initiator_reserve_breach_zero_fee_commitments(
+		AcceptorBalance::SettledBalance,
+		ValidationCase::Passes,
+	);
+
+	// We used to fail this case here
+	do_test_splice_out_initiator_reserve_breach_zero_fee_commitments(
+		AcceptorBalance::NoBalance,
+		ValidationCase::FailsAtHolder,
+	);
+
+	do_test_splice_out_initiator_reserve_breach_zero_fee_commitments(
+		AcceptorBalance::BalanceInHTLC,
+		ValidationCase::FailsAtHolder,
+	);
+	do_test_splice_out_initiator_reserve_breach_zero_fee_commitments(
+		AcceptorBalance::SettledBalance,
+		ValidationCase::FailsAtHolder,
+	);
+
+	// We used to fail this case here
+	do_test_splice_out_initiator_reserve_breach_zero_fee_commitments(
+		AcceptorBalance::NoBalance,
+		ValidationCase::FailsAtCounterparty,
+	);
+
+	do_test_splice_out_initiator_reserve_breach_zero_fee_commitments(
+		AcceptorBalance::BalanceInHTLC,
+		ValidationCase::FailsAtCounterparty,
+	);
+	do_test_splice_out_initiator_reserve_breach_zero_fee_commitments(
+		AcceptorBalance::SettledBalance,
+		ValidationCase::FailsAtCounterparty,
+	);
+}
+
+#[cfg(test)]
+fn do_test_splice_out_initiator_reserve_breach_zero_fee_commitments(
+	acceptor_balance: AcceptorBalance, validation_case: ValidationCase,
+) {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let mut config = test_default_channel_config();
+	// This reserve breach was only possible in 0FC channels
+	config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
+	config.channel_handshake_config.our_htlc_minimum_msat = 1;
+	let node_chanmgrs =
+		create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config.clone())]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	// Node 0 is initiator, node 1 is acceptor
+	let _node_id_0 = nodes[0].node.get_our_node_id();
+	let _node_id_1 = nodes[1].node.get_our_node_id();
+
+	let channel_value_sat = 100_000;
+	let node_1_settled_balance_msat =
+		if matches!(acceptor_balance, AcceptorBalance::SettledBalance) { 1 } else { 0 };
+	let node_1_htlc_balance_msat =
+		if matches!(acceptor_balance, AcceptorBalance::BalanceInHTLC) { 1 } else { 0 };
+	let node_0_balance_msat =
+		channel_value_sat * 1000 - node_1_settled_balance_msat - node_1_htlc_balance_msat;
+
+	// Bump initiator's dust limit to the highest value we allow in anchor channels
+	let high_dust_limit_satoshis = 10_000;
+
+	let (_, _, channel_id, _tx) = create_announced_chan_between_nodes_with_value(
+		&nodes,
+		0,
+		1,
+		channel_value_sat,
+		node_1_settled_balance_msat,
+	);
+
+	if matches!(acceptor_balance, AcceptorBalance::BalanceInHTLC) {
+		let _ = route_payment(&nodes[0], &[&nodes[1]], node_1_htlc_balance_msat);
+	}
+
+	{
+		let per_peer_lock;
+		let mut peer_state_lock;
+		let channel =
+			get_channel_ref!(nodes[0], nodes[1], per_peer_lock, peer_state_lock, channel_id);
+		if let Some(chan) = channel.as_funded_mut() {
+			chan.context.holder_dust_limit_satoshis = high_dust_limit_satoshis;
+		} else {
+			panic!("Unexpected Channel phase");
+		}
+	}
+
+	{
+		let per_peer_lock;
+		let mut peer_state_lock;
+		let channel =
+			get_channel_ref!(nodes[1], nodes[0], per_peer_lock, peer_state_lock, channel_id);
+		if let Some(chan) = channel.as_funded_mut() {
+			chan.context.counterparty_dust_limit_satoshis = high_dust_limit_satoshis;
+		} else {
+			panic!("Unexpected Channel phase");
+		}
+	}
+
+	if matches!(validation_case, ValidationCase::Passes) {
+		let node_0_balance_leftover_amount = Amount::from_sat(high_dust_limit_satoshis);
+		// Estimated fees of a splice_out at 253sat/kw
+		let estimated_fees = 183;
+		// Note in 0FC we've got no fee spike buffer, no commit tx fee, no anchors
+		let splice_out_output_sat =
+			node_0_balance_msat / 1000 - node_0_balance_leftover_amount.to_sat() - estimated_fees;
+		let splice_out_output_amount = Amount::from_sat(splice_out_output_sat);
+		let outputs = vec![TxOut {
+			value: splice_out_output_amount,
+			script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
+		}];
+		let contribution = initiate_splice_out(&nodes[0], &nodes[1], channel_id, outputs).unwrap();
+
+		let (splice_tx, _) = splice_channel(&nodes[0], &nodes[1], channel_id, contribution);
+		mine_transaction(&nodes[0], &splice_tx);
+		mine_transaction(&nodes[1], &splice_tx);
+		lock_splice_after_blocks(&nodes[0], &nodes[1], ANTI_REORG_DELAY - 1);
+	} else {
+		let node_0_balance_leftover_amount = Amount::from_sat(high_dust_limit_satoshis - 1);
+		// Note in 0FC we've got no fee spike buffer, no commit tx fee, no anchors
+		let funding_contribution_sat =
+			-((node_0_balance_msat / 1000 - node_0_balance_leftover_amount.to_sat()) as i64);
+		let value = if matches!(validation_case, ValidationCase::FailsAtHolder) {
+			Amount::from_sat(funding_contribution_sat.unsigned_abs() - 183)
+		} else if matches!(validation_case, ValidationCase::FailsAtCounterparty) {
+			// Splice out some dummy amount to get past the initiator's validation,
+			// we'll modify the message in-flight.
+			Amount::from_sat(1000)
+		} else {
+			panic!("Unexpected test case");
+		};
+		let outputs = vec![TxOut {
+			value,
+			script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
+		}];
+		let contribution = initiate_splice_out(&nodes[0], &nodes[1], channel_id, outputs);
+
+		if matches!(validation_case, ValidationCase::FailsAtHolder) {
+			assert_eq!(
+				contribution.unwrap_err(),
+				APIError::APIMisuseError {
+					err: format!("Channel {channel_id} cannot accept funding contribution"),
+				}
+			);
+			let splice_out_value = value + Amount::from_sat(183);
+			let splice_out_max = splice_out_value - Amount::ONE_SAT;
+			let cannot_splice_out = format!(
+				"Channel {channel_id} cannot be funded: \
+				Our splice-out value of {splice_out_value} is greater than the \
+				maximum {splice_out_max}"
+			);
+			nodes[0].logger.assert_log("lightning::ln::channel", cannot_splice_out, 1);
+			return;
+		}
+
+		// The dummy contribution should have passed the holder's validation
+		assert!(contribution.is_ok());
+
+		// When acceptor has no balance, the reserve the initiator should keep should remain
+		// clamped at its dust limit. We previously allowed the initiator to withdraw past
+		// this point.
+		let v2_channel_reserve = Amount::from_sat(high_dust_limit_satoshis);
+
+		let initiator = &nodes[0];
+		let acceptor = &nodes[1];
+		let node_id_initiator = initiator.node.get_our_node_id();
+		let node_id_acceptor = acceptor.node.get_our_node_id();
+
+		let stfu_init = get_event_msg!(initiator, MessageSendEvent::SendStfu, node_id_acceptor);
+		acceptor.node.handle_stfu(node_id_initiator, &stfu_init);
+		let stfu_ack = get_event_msg!(acceptor, MessageSendEvent::SendStfu, node_id_initiator);
+		initiator.node.handle_stfu(node_id_acceptor, &stfu_ack);
+
+		let mut splice_init =
+			get_event_msg!(initiator, MessageSendEvent::SendSpliceInit, node_id_acceptor);
+		// Make the modification here, acceptor should now complain. If the acceptor has no
+		// balance, we previously would not complain.
+		splice_init.funding_contribution_satoshis = funding_contribution_sat;
+		acceptor.node.handle_splice_init(node_id_initiator, &splice_init);
+		let msg_events = acceptor.node.get_and_clear_pending_msg_events();
+		assert_eq!(msg_events.len(), 1);
+		if let MessageSendEvent::HandleError { action, .. } = &msg_events[0] {
+			assert!(matches!(action, msgs::ErrorAction::DisconnectPeerWithWarning { .. }));
+		} else {
+			panic!("Expected MessageSendEvent::HandleError");
+		}
+		let post_splice_channel_value_sat = node_0_balance_leftover_amount.to_sat();
+		let cannot_splice_out = if matches!(acceptor_balance, AcceptorBalance::NoBalance) {
+			format!(
+				"Got non-closing error: Channel {channel_id} cannot \
+				be spliced; The post-splice channel value {post_splice_channel_value_sat} \
+				is smaller than their dust limit {high_dust_limit_satoshis}"
+			)
+		} else {
+			// As soon as we've pushed any sats out of our balance, the channel value
+			// is now at the dust limit, so we don't complain when determining the new
+			// dust limits, but later when we check the balances against those new
+			// dust limits
+			assert_eq!(
+				channel_value_sat.checked_add_signed(funding_contribution_sat).unwrap(),
+				high_dust_limit_satoshis
+			);
+			format!(
+				"Got non-closing error: Channel {channel_id} cannot \
+				be spliced out; their post-splice channel balance \
+				{node_0_balance_leftover_amount} is smaller than our selected v2 reserve \
+				{v2_channel_reserve}"
+			)
+		};
+		acceptor.logger.assert_log("lightning::ln::channelmanager", cannot_splice_out, 1);
+	}
 }

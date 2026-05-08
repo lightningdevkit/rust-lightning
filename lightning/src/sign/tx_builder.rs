@@ -365,7 +365,8 @@ fn get_next_splice_out_maximum_sat(
 				channel_value_satoshis,
 				channel_constraints.holder_dust_limit_satoshis,
 				false,
-			);
+			)
+			.unwrap();
 			// If the holder cannot splice out anything, they must be at or
 			// below the v2 reserve
 			debug_assert!(current_balance_sat <= v2_reserve_sat);
@@ -374,7 +375,8 @@ fn get_next_splice_out_maximum_sat(
 				channel_value_satoshis.saturating_sub(max_splice_out_sat),
 				channel_constraints.holder_dust_limit_satoshis,
 				false,
-			);
+			)
+			.unwrap();
 			// If the holder can splice out some maximum, splicing out that
 			// maximum lands them at exactly the new v2 reserve + the
 			// `post_splice_delta_above_reserve_sat`
@@ -382,6 +384,20 @@ fn get_next_splice_out_maximum_sat(
 				local_balance_before_fee_sat.saturating_sub(max_splice_out_sat),
 				post_splice_reserve_sat.saturating_add(post_splice_delta_above_reserve_sat)
 			);
+			// Splice out an additional satoshi, and check that we are offside
+			let offside_splice_out_sat = max_splice_out_sat + 1;
+			let post_splice_reserve_sat_result = get_v2_channel_reserve_satoshis(
+				channel_value_satoshis.saturating_sub(offside_splice_out_sat),
+				channel_constraints.holder_dust_limit_satoshis,
+				false,
+			);
+			match post_splice_reserve_sat_result {
+				Ok(reserve) => debug_assert!(
+					local_balance_before_fee_sat.saturating_sub(offside_splice_out_sat)
+						< reserve.saturating_add(post_splice_delta_above_reserve_sat)
+				),
+				Err(()) => (),
+			}
 		}
 		max_splice_out_sat
 	} else {
