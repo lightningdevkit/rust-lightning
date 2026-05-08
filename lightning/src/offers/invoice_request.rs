@@ -91,10 +91,13 @@ use crate::util::ser::{
 	CursorReadable, HighZeroBytesDroppedBigSize, LengthLimitedRead, LengthReadable, Readable,
 	WithoutLength, Writeable, Writer,
 };
+
 use bitcoin::constants::ChainHash;
 use bitcoin::network::Network;
 use bitcoin::secp256k1::schnorr::Signature;
 use bitcoin::secp256k1::{self, Keypair, PublicKey, Secp256k1};
+
+use core::time::Duration;
 
 #[cfg(not(c_bindings))]
 use crate::offers::invoice::InvoiceBuilder;
@@ -641,6 +644,8 @@ pub struct VerifiedInvoiceRequest<S: SigningPubkeyStrategy> {
 	/// The verified request.
 	pub(crate) inner: InvoiceRequest,
 
+	pub(crate) resolved_basetime: Option<u64>,
+
 	/// Keys for signing a [`Bolt12Invoice`] for the request.
 	///
 	#[cfg_attr(
@@ -895,8 +900,42 @@ impl UnsignedInvoiceRequest {
 	invoice_request_accessors!(self, self.contents);
 }
 
+macro_rules! invoice_request_recurrence_methods { (
+	$self: ident, $contents: expr
+) => {
+		pub(crate) fn recurrence_basetime(
+			&$self, created_at: Duration, resolved_basetime: Option<u64>,
+		) -> Result<Option<u64>, Bolt12SemanticError> {
+			let offer_recurrence = match $self.offer_recurrence() {
+				Some(offer_recurrence) => offer_recurrence,
+				None => return Ok(None),
+			};
+
+			let offer_base = match offer_recurrence {
+				Recurrence::Optional { .. } => None,
+				Recurrence::Compulsory { base, .. } => base,
+			};
+
+			let recurrence_counter = $contents
+				.invoice_request_recurrence()
+				.as_ref()
+				.and_then(|recurrence| recurrence.fields().0);
+
+			match (offer_base, recurrence_counter) {
+				(Some(base), _) => Ok(Some(base.basetime)),
+				(None, Some(0)) => Ok(Some(created_at.as_secs())),
+				(None, Some(_)) => {
+					resolved_basetime
+						.map(Some)
+						.ok_or(Bolt12SemanticError::InvalidMetadata)
+				},
+				(None, None) => Ok(Some(created_at.as_secs())),
+			}
+		}
+}; }
+
 macro_rules! invoice_request_respond_with_explicit_signing_pubkey_methods { (
-	$self: ident, $contents: expr, $builder: ty
+	$self: ident, $contents: expr, $basetime: expr, $builder: ty
 ) => {
 	/// Creates an [`InvoiceBuilder`] for the request with the given required fields and using the
 	/// [`Duration`] since [`std::time::SystemTime::UNIX_EPOCH`] as the creation time.
@@ -954,7 +993,9 @@ macro_rules! invoice_request_respond_with_explicit_signing_pubkey_methods { (
 			None => return Err(Bolt12SemanticError::MissingIssuerSigningPubkey),
 		};
 
-		<$builder>::for_offer(&$contents, payment_paths, created_at, payment_hash, signing_pubkey)
+		let recurrence_basetime = $self.recurrence_basetime(created_at, $basetime)?;
+
+		<$builder>::for_offer(&$contents, payment_paths, created_at, recurrence_basetime, payment_hash, signing_pubkey)
 	}
 
 	#[cfg(test)]
@@ -969,14 +1010,34 @@ macro_rules! invoice_request_respond_with_explicit_signing_pubkey_methods { (
 			return Err(Bolt12SemanticError::UnknownRequiredFeatures);
 		}
 
-		<$builder>::for_offer(&$contents, payment_paths, created_at, payment_hash, signing_pubkey)
+		let recurrence_basetime = $self.recurrence_basetime(created_at, $basetime)?;
+
+		<$builder>::for_offer(&$contents, payment_paths, created_at, recurrence_basetime, payment_hash, signing_pubkey)
 	}
 } }
 
 macro_rules! invoice_request_verify_method {
 	($self: ident, $self_type: ty) => {
+		/// Verifies the speculative recurrence token echoed by the payer and resolves the recurrence
+		/// basetime to reuse for subsequent invoices.
+		///
+		/// Returns `Ok(None)` when the request carries no recurrence token.
+		// Token validation and basetime recovery for token-carrying requests are deferred to follow-up work.
+		pub(crate) fn verify_recurrence_token(
+			$self: &$self_type, _key: &ExpandedKey,
+		) -> Result<Option<u64>, ()> {
+			let recurrence_token =
+				$self.invoice_request_recurrence().as_ref().and_then(|rec| rec.fields().2);
+
+			if recurrence_token.is_some() {
+				// TODO: "Token verification and basetime resolve logic to be implemented in follow-up commits."
+				Err(())
+			} else {
+				Ok(None)
+			}
+		}
 /// Verifies that the request was for an offer created using the given key by checking the
-	/// metadata from the offer.
+			/// metadata from the offer.
 	///
 	/// Returns the verified request which contains the derived keys needed to sign a
 	/// [`Bolt12Invoice`] for the request if they could be extracted from the metadata.
@@ -1002,15 +1063,19 @@ macro_rules! invoice_request_verify_method {
 			{ $self.clone() }
 		};
 
+		let resolved_basetime = inner.verify_recurrence_token(key)?;
+
 		let verified = match keys {
 			None => InvoiceRequestVerifiedFromOffer::ExplicitKeys(VerifiedInvoiceRequest {
 				offer_id,
 				inner,
+				resolved_basetime,
 				keys: ExplicitSigningPubkey {},
 			}),
 			Some(keys) => InvoiceRequestVerifiedFromOffer::DerivedKeys(VerifiedInvoiceRequest {
 				offer_id,
 				inner,
+				resolved_basetime,
 				keys: DerivedSigningPubkey(keys),
 			}),
 		};
@@ -1019,7 +1084,7 @@ macro_rules! invoice_request_verify_method {
 	}
 
 /// Verifies that the request was for an offer created using the given key by checking a nonce
-	/// included with the [`BlindedMessagePath`] for which the request was sent through.
+			/// included with the [`BlindedMessagePath`] for which the request was sent through.
 	///
 	/// Returns the verified request which contains the derived keys needed to sign a
 	/// [`Bolt12Invoice`] for the request if they could be extracted from the metadata.
@@ -1047,15 +1112,19 @@ macro_rules! invoice_request_verify_method {
 			{ $self.clone() }
 		};
 
+		let resolved_basetime = inner.verify_recurrence_token(key)?;
+
 		let verified = match keys {
 			None => InvoiceRequestVerifiedFromOffer::ExplicitKeys(VerifiedInvoiceRequest {
 				offer_id,
 				inner,
+				resolved_basetime,
 				keys: ExplicitSigningPubkey {},
 			}),
 			Some(keys) => InvoiceRequestVerifiedFromOffer::DerivedKeys(VerifiedInvoiceRequest {
 				offer_id,
 				inner,
+				resolved_basetime,
 				keys: DerivedSigningPubkey(keys),
 			}),
 		};
@@ -1069,9 +1138,12 @@ macro_rules! invoice_request_verify_method {
 impl InvoiceRequest {
 	offer_accessors!(self, self.contents.inner.offer);
 	invoice_request_accessors!(self, self.contents);
+	invoice_request_recurrence_methods!(self, self.contents);
+
 	invoice_request_respond_with_explicit_signing_pubkey_methods!(
 		self,
 		self,
+		None,
 		InvoiceBuilder<'_, ExplicitSigningPubkey>
 	);
 	invoice_request_verify_method!(self, Self);
@@ -1086,9 +1158,12 @@ impl InvoiceRequest {
 impl InvoiceRequest {
 	offer_accessors!(self, self.contents.inner.offer);
 	invoice_request_accessors!(self, self.contents);
+	invoice_request_recurrence_methods!(self, self.contents);
+
 	invoice_request_respond_with_explicit_signing_pubkey_methods!(
 		self,
 		self,
+		None,
 		InvoiceWithExplicitSigningPubkeyBuilder
 	);
 	invoice_request_verify_method!(self, &Self);
@@ -1128,7 +1203,7 @@ impl InvoiceRequest {
 }
 
 macro_rules! invoice_request_respond_with_derived_signing_pubkey_methods { (
-	$self: ident, $contents: expr, $builder: ty
+	$self: ident, $contents: expr, $basetime: expr, $builder: ty
 ) => {
 	/// Creates an [`InvoiceBuilder`] for the request using the given required fields and that uses
 	/// derived signing keys from the originating [`Offer`] to sign the [`Bolt12Invoice`]. Must use
@@ -1170,8 +1245,10 @@ macro_rules! invoice_request_respond_with_derived_signing_pubkey_methods { (
 			None => return Err(Bolt12SemanticError::MissingIssuerSigningPubkey),
 		}
 
+		let recurrence_basetime = $self.recurrence_basetime(created_at, $basetime)?;
+
 		<$builder>::for_offer_using_keys(
-			&$self.inner, payment_paths, created_at, payment_hash, keys
+			&$self.inner, payment_paths, created_at, recurrence_basetime, payment_hash, keys
 		)
 	}
 } }
@@ -1216,16 +1293,20 @@ impl VerifiedInvoiceRequest<DerivedSigningPubkey> {
 	invoice_request_accessors!(self, self.inner.contents);
 	fields_accessor!(self, self.inner.contents);
 
+	invoice_request_recurrence_methods!(self, self.inner.contents);
+
 	#[cfg(not(c_bindings))]
 	invoice_request_respond_with_derived_signing_pubkey_methods!(
 		self,
 		self.inner,
+		self.resolved_basetime,
 		InvoiceBuilder<'_, DerivedSigningPubkey>
 	);
 	#[cfg(c_bindings)]
 	invoice_request_respond_with_derived_signing_pubkey_methods!(
 		self,
 		self.inner,
+		self.resolved_basetime,
 		InvoiceWithDerivedSigningPubkeyBuilder
 	);
 }
@@ -1235,16 +1316,20 @@ impl VerifiedInvoiceRequest<ExplicitSigningPubkey> {
 	invoice_request_accessors!(self, self.inner.contents);
 	fields_accessor!(self, self.inner.contents);
 
+	invoice_request_recurrence_methods!(self, self.inner.contents);
+
 	#[cfg(not(c_bindings))]
 	invoice_request_respond_with_explicit_signing_pubkey_methods!(
 		self,
 		self.inner,
+		self.resolved_basetime,
 		InvoiceBuilder<'_, ExplicitSigningPubkey>
 	);
 	#[cfg(c_bindings)]
 	invoice_request_respond_with_explicit_signing_pubkey_methods!(
 		self,
 		self.inner,
+		self.resolved_basetime,
 		InvoiceWithExplicitSigningPubkeyBuilder
 	);
 }
