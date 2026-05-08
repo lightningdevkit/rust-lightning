@@ -1706,6 +1706,12 @@ pub enum Event {
 		/// Alternatively, call [`ChannelManager::splice_channel`] to obtain a fresh
 		/// [`FundingTemplate`] and build a new contribution.
 		///
+		/// The contribution preserves the full set of inputs and outputs from the failed round,
+		/// including any that were also committed to a prior negotiated (but not yet locked)
+		/// splice transaction. Those overlapping inputs and outputs are intentionally omitted
+		/// from the preceding [`Event::DiscardFunding`], since they remain committed to that
+		/// prior splice.
+		///
 		/// [`ChannelManager::funding_contributed`]: crate::ln::channelmanager::ChannelManager::funding_contributed
 		/// [`ChannelManager::splice_channel`]: crate::ln::channelmanager::ChannelManager::splice_channel
 		/// [`FundingTemplate`]: crate::ln::funding::FundingTemplate
