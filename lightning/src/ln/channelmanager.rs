@@ -4930,96 +4930,80 @@ impl<
 		}
 	}
 
-	#[cfg(test)]
-	pub(crate) fn abandon_splice(
+	/// Cancels an in-flight [`FundingContribution`].
+	///
+	/// This is primarily useful after receiving an [`Event::FundingTransactionReadyForSigning`] for
+	/// a [`FundingContribution`] you no longer wish to proceed with. This may be called for any
+	/// pending [`FundingContribution`] after its corresponding
+	/// [`ChannelManager::funding_contributed`] call up until
+	/// [`ChannelManager::funding_transaction_signed`].
+	///
+	/// Returns [`ChannelUnavailable`] when a channel is not found or an incorrect
+	/// `counterparty_node_id` is provided, or [`APIMisuseError`] otherwise with the error details.
+	///
+	/// [`Event::FundingTransactionReadyForSigning`]: events::Event::FundingTransactionReadyForSigning
+	/// [`ChannelUnavailable`]: APIError::ChannelUnavailable
+	/// [`APIMisuseError`]: APIError::APIMisuseError
+	pub fn cancel_funding_contributed(
 		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey,
 	) -> Result<(), APIError> {
-		let mut res = Ok(());
-		PersistenceNotifierGuard::optionally_notify(self, || {
-			let result = self.internal_abandon_splice(channel_id, counterparty_node_id);
-			res = result;
-			match res {
-				Ok(_) => NotifyOption::SkipPersistHandleEvents,
-				Err(_) => NotifyOption::SkipPersistNoEvents,
+		let mut result = Ok(());
+		PersistenceNotifierGuard::manually_notify(self, || {
+			let per_peer_state = self.per_peer_state.read().unwrap();
+			let peer_state_mutex = match per_peer_state
+				.get(counterparty_node_id)
+				.ok_or_else(|| APIError::no_such_peer(counterparty_node_id))
+			{
+				Ok(p) => p,
+				Err(e) => {
+					result = Err(e);
+					return;
+				},
+			};
+			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+			let peer_state = &mut *peer_state_lock;
+
+			match peer_state.channel_by_id.entry(*channel_id) {
+				hash_map::Entry::Occupied(mut chan_entry) => {
+					if let Some(channel) = chan_entry.get_mut().as_funded_mut() {
+						let err = match channel.cancel_funding_contributed() {
+							Ok(v) => v,
+							Err(e) => {
+								result = Err(e);
+								return;
+							},
+						};
+						let user_channel_id = channel.context().get_user_id();
+						mem::drop(peer_state_lock);
+						mem::drop(per_peer_state);
+
+						let err = self.handle_interactive_tx_msg_err(
+							err,
+							*channel_id,
+							counterparty_node_id,
+							user_channel_id,
+							Some(events::NegotiationFailureReason::LocallyCanceled),
+						);
+						let _ = self.handle_error(Err::<(), _>(err), *counterparty_node_id);
+						self.event_persist_notifier.notify();
+					} else {
+						result = Err(APIError::ChannelUnavailable {
+							err: format!(
+								"Channel with id {} is not funded, cannot cancel splice",
+								channel_id
+							),
+						});
+						return;
+					}
+				},
+				hash_map::Entry::Vacant(_) => {
+					result =
+						Err(APIError::no_such_channel_for_peer(channel_id, counterparty_node_id));
+					return;
+				},
 			}
 		});
-		res
-	}
-
-	#[cfg(test)]
-	fn internal_abandon_splice(
-		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey,
-	) -> Result<(), APIError> {
-		let per_peer_state = self.per_peer_state.read().unwrap();
-
-		let peer_state_mutex = match per_peer_state
-			.get(counterparty_node_id)
-			.ok_or_else(|| APIError::no_such_peer(counterparty_node_id))
-		{
-			Ok(p) => p,
-			Err(e) => return Err(e),
-		};
-
-		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
-		let peer_state = &mut *peer_state_lock;
-
-		// Look for the channel
-		match peer_state.channel_by_id.entry(*channel_id) {
-			hash_map::Entry::Occupied(mut chan_phase_entry) => {
-				if !chan_phase_entry.get().context().is_connected() {
-					// TODO: We should probably support this, but right now `splice_channel` refuses when
-					// the peer is disconnected, so we just check it here.
-					return Err(APIError::ChannelUnavailable {
-						err: "Cannot abandon splice while peer is disconnected".to_owned(),
-					});
-				}
-
-				if let Some(chan) = chan_phase_entry.get_mut().as_funded_mut() {
-					let (tx_abort, splice_funding_failed) = chan.abandon_splice()?;
-
-					peer_state.pending_msg_events.push(MessageSendEvent::SendTxAbort {
-						node_id: *counterparty_node_id,
-						msg: tx_abort,
-					});
-
-					if let Some(splice_funding_failed) = splice_funding_failed {
-						let (funding_info, contribution) = splice_funding_failed.into_parts();
-						let pending_events = &mut self.pending_events.lock().unwrap();
-						if let Some(funding_info) = funding_info {
-							pending_events.push_back((
-								events::Event::DiscardFunding {
-									channel_id: *channel_id,
-									funding_info,
-								},
-								None,
-							));
-						}
-						pending_events.push_back((
-							events::Event::SpliceNegotiationFailed {
-								channel_id: *channel_id,
-								counterparty_node_id: *counterparty_node_id,
-								user_channel_id: chan.context.get_user_id(),
-								contribution,
-								reason: events::NegotiationFailureReason::LocallyAbandoned,
-							},
-							None,
-						));
-					}
-
-					Ok(())
-				} else {
-					Err(APIError::ChannelUnavailable {
-						err: format!(
-							"Channel with id {} is not funded, cannot abandon splice",
-							channel_id
-						),
-					})
-				}
-			},
-			hash_map::Entry::Vacant(_) => {
-				Err(APIError::no_such_channel_for_peer(channel_id, counterparty_node_id))
-			},
-		}
+		result
 	}
 
 	fn forward_needs_intercept_to_known_chan(
@@ -11972,7 +11956,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 	fn handle_interactive_tx_msg_err(
 		&self, err: InteractiveTxMsgError, channel_id: ChannelId, counterparty_node_id: &PublicKey,
-		user_channel_id: u128,
+		user_channel_id: u128, reason: Option<events::NegotiationFailureReason>,
 	) -> MsgHandleErrInternal {
 		if let Some(splice_funding_failed) = err.splice_funding_failed {
 			let (funding_info, contribution) = splice_funding_failed.into_parts();
@@ -11987,9 +11971,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					counterparty_node_id: *counterparty_node_id,
 					user_channel_id,
 					contribution,
-					reason: events::NegotiationFailureReason::NegotiationError {
+					reason: reason.unwrap_or(events::NegotiationFailureReason::NegotiationError {
 						msg: format!("{:?}", err.err),
-					},
+					}),
 				},
 				None,
 			));
@@ -12025,6 +12009,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							channel_id,
 							counterparty_node_id,
 							user_channel_id,
+							None,
 						))
 					},
 				}
@@ -12160,6 +12145,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							msg.channel_id,
 							&counterparty_node_id,
 							user_channel_id,
+							None,
 						))
 					},
 				}
@@ -13405,6 +13391,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								msg.channel_id,
 								counterparty_node_id,
 								user_channel_id,
+								None,
 							))
 						},
 					}
@@ -13462,6 +13449,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								msg.channel_id,
 								counterparty_node_id,
 								user_channel_id,
+								None,
 							))
 						},
 					}
