@@ -837,11 +837,10 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger + MaybeSend + MaybeSync>
 			},
 			16 => {
 				let payment_preimage = PaymentPreimage(keys_manager.get_secure_random_bytes());
-				let payment_hash =
-					PaymentHash(Sha256::hash(&payment_preimage.0[..]).to_byte_array());
+				let hash = PaymentHash(Sha256::hash(&payment_preimage.0[..]).to_byte_array());
 				// Note that this may fail - our hashes may collide and we'll end up trying to
 				// double-register the same payment_hash.
-				let _ = channelmanager.create_inbound_payment_for_hash(payment_hash, None, 1, None);
+				let _ = channelmanager.create_inbound_payment_for_hash(hash, None, 1, None, None);
 			},
 			9 => {
 				for payment in payments_received.drain(..) {

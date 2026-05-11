@@ -293,8 +293,10 @@ pub fn test_duplicate_htlc_different_direction_onchain() {
 	let (payment_preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 900_000);
 
 	let (route, _, _, _) = get_route_and_payment_hash!(nodes[1], nodes[0], payment_value_msats);
-	let node_a_payment_secret =
-		nodes[0].node.create_inbound_payment_for_hash(payment_hash, None, 7200, None).unwrap();
+	let node_a_payment_secret = nodes[0]
+		.node
+		.create_inbound_payment_for_hash(payment_hash, None, 7200, None, None)
+		.unwrap();
 	send_along_route_with_secret(
 		&nodes[1],
 		route,
@@ -4157,8 +4159,10 @@ pub fn test_duplicate_payment_hash_one_failure_one_success() {
 	let (our_payment_preimage, dup_payment_hash, ..) =
 		route_payment(&nodes[0], &[&nodes[1], &nodes[2], &nodes[3]], 900_000);
 
-	let payment_secret =
-		nodes[4].node.create_inbound_payment_for_hash(dup_payment_hash, None, 7200, None).unwrap();
+	let payment_secret = nodes[4]
+		.node
+		.create_inbound_payment_for_hash(dup_payment_hash, None, 7200, None, None)
+		.unwrap();
 	let payment_params = PaymentParameters::from_node_id(node_e_id, TEST_FINAL_CLTV)
 		.with_bolt11_features(nodes[4].node.bolt11_invoice_features())
 		.unwrap();
@@ -4425,13 +4429,13 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 	// 2nd HTLC (not added - smaller than dust limit + HTLC tx fee):
 	let path_5: &[&[_]] = &[&[&nodes[2], &nodes[3], &nodes[5]]];
 	let payment_secret =
-		nodes[5].node.create_inbound_payment_for_hash(hash_1, None, 7200, None).unwrap();
+		nodes[5].node.create_inbound_payment_for_hash(hash_1, None, 7200, None, None).unwrap();
 	let route = route_to_5.clone();
 	send_along_route_with_secret(&nodes[1], route, path_5, dust_limit_msat, hash_1, payment_secret);
 
 	// 3rd HTLC (not added - smaller than dust limit + HTLC tx fee):
 	let payment_secret =
-		nodes[5].node.create_inbound_payment_for_hash(hash_2, None, 7200, None).unwrap();
+		nodes[5].node.create_inbound_payment_for_hash(hash_2, None, 7200, None, None).unwrap();
 	let route = route_to_5;
 	send_along_route_with_secret(&nodes[1], route, path_5, dust_limit_msat, hash_2, payment_secret);
 
@@ -4444,12 +4448,12 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 
 	// 6th HTLC:
 	let payment_secret =
-		nodes[5].node.create_inbound_payment_for_hash(hash_3, None, 7200, None).unwrap();
+		nodes[5].node.create_inbound_payment_for_hash(hash_3, None, 7200, None, None).unwrap();
 	send_along_route_with_secret(&nodes[1], route.clone(), path_5, 1000000, hash_3, payment_secret);
 
 	// 7th HTLC:
 	let payment_secret =
-		nodes[5].node.create_inbound_payment_for_hash(hash_4, None, 7200, None).unwrap();
+		nodes[5].node.create_inbound_payment_for_hash(hash_4, None, 7200, None, None).unwrap();
 	send_along_route_with_secret(&nodes[1], route, path_5, 1000000, hash_4, payment_secret);
 
 	// 8th HTLC:
@@ -4458,7 +4462,7 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 	// 9th HTLC (not added - smaller than dust limit + HTLC tx fee):
 	let (route, _, _, _) = get_route_and_payment_hash!(nodes[1], nodes[5], dust_limit_msat);
 	let payment_secret =
-		nodes[5].node.create_inbound_payment_for_hash(hash_5, None, 7200, None).unwrap();
+		nodes[5].node.create_inbound_payment_for_hash(hash_5, None, 7200, None, None).unwrap();
 	send_along_route_with_secret(&nodes[1], route, path_5, dust_limit_msat, hash_5, payment_secret);
 
 	// 10th HTLC (not added - smaller than dust limit + HTLC tx fee):
@@ -4467,7 +4471,7 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 	// 11th HTLC:
 	let (route, _, _, _) = get_route_and_payment_hash!(nodes[1], nodes[5], 1000000);
 	let payment_secret =
-		nodes[5].node.create_inbound_payment_for_hash(hash_6, None, 7200, None).unwrap();
+		nodes[5].node.create_inbound_payment_for_hash(hash_6, None, 7200, None, None).unwrap();
 	send_along_route_with_secret(&nodes[1], route, path_5, 1000000, hash_6, payment_secret);
 
 	// Double-check that six of the new HTLC were added
@@ -6062,7 +6066,7 @@ pub fn test_check_htlc_underpaying() {
 	let (_, our_payment_hash, _) = get_payment_preimage_hash(&nodes[0], None, None);
 	let our_payment_secret = nodes[1]
 		.node
-		.create_inbound_payment_for_hash(our_payment_hash, Some(100_000), 7200, None)
+		.create_inbound_payment_for_hash(our_payment_hash, Some(100_000), 7200, None, None)
 		.unwrap();
 	let onion = RecipientOnionFields::secret_only(our_payment_secret, route.get_total_amount());
 	let id = PaymentId(our_payment_hash.0);
@@ -7230,7 +7234,7 @@ pub fn test_preimage_storage() {
 
 	{
 		let (payment_hash, payment_secret) =
-			nodes[1].node.create_inbound_payment(Some(100_000), 7200, None).unwrap();
+			nodes[1].node.create_inbound_payment(Some(100_000), 7200, None, None).unwrap();
 		let (route, _, _, _) = get_route_and_payment_hash!(nodes[0], nodes[1], 100_000);
 		let onion = RecipientOnionFields::secret_only(payment_secret, 100_000);
 		let id = PaymentId(payment_hash.0);
@@ -7275,7 +7279,7 @@ pub fn test_bad_secret_hash() {
 	let random_hash = PaymentHash([42; 32]);
 	let random_secret = PaymentSecret([43; 32]);
 	let (our_payment_hash, our_payment_secret) =
-		nodes[1].node.create_inbound_payment(Some(100_000), 2, None).unwrap();
+		nodes[1].node.create_inbound_payment(Some(100_000), 2, None, None).unwrap();
 	let (route, _, _, _) = get_route_and_payment_hash!(nodes[0], nodes[1], 100_000);
 
 	// All the below cases should end up being handled exactly identically, so we macro the
@@ -9494,9 +9498,13 @@ fn do_payment_with_custom_min_final_cltv_expiry(valid_delta: bool, use_user_hash
 	} else {
 		let (hash, payment_secret) = nodes[1]
 			.node
-			.create_inbound_payment(Some(recv_value), 7200, Some(min_cltv_expiry_delta))
+			.create_inbound_payment(Some(recv_value), 7200, Some(min_cltv_expiry_delta), None)
 			.unwrap();
-		(hash, nodes[1].node.get_payment_preimage(hash, payment_secret).unwrap(), payment_secret)
+		(
+			hash,
+			nodes[1].node.get_payment_preimage(hash, payment_secret, None).unwrap(),
+			payment_secret,
+		)
 	};
 	let route = get_route!(nodes[0], payment_parameters, recv_value).unwrap();
 	let onion = RecipientOnionFields::secret_only(payment_secret, recv_value);
