@@ -6250,7 +6250,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		let dust_exposure_limiting_feerate =
 			self.get_dust_exposure_limiting_feerate(&fee_estimator, funding.get_channel_type());
 
-		let balances = self
+		let mut balances = self
 			.get_next_remote_commitment_stats(
 				funding,
 				htlc_candidate,
@@ -6261,11 +6261,14 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			)
 			.map(|(remote_stats, _)| remote_stats.available_balances)?;
 
-		#[cfg(debug_assertions)]
 		if balances.next_outbound_htlc_limit_msat >= balances.next_outbound_htlc_minimum_msat
 			&& balances.next_outbound_htlc_limit_msat != 0
 		{
-			let (remote_stats, _remote_htlcs) = self
+			let reserve_msat = funding
+				.counterparty_selected_channel_reserve_satoshis
+				.unwrap_or(0)
+				.saturating_mul(1000);
+			let can_add_max_htlc = self
 				.get_next_remote_commitment_stats(
 					funding,
 					Some(HTLCAmountDirection {
@@ -6280,11 +6283,13 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 					self.feerate_per_kw,
 					dust_exposure_limiting_feerate,
 				)
-				.unwrap();
-			assert!(
-				remote_stats.commitment_stats.holder_balance_msat
-					>= funding.counterparty_selected_channel_reserve_satoshis.unwrap_or(0) * 1000
-			);
+				.map(|(remote_stats, _remote_htlcs)| {
+					remote_stats.commitment_stats.holder_balance_msat >= reserve_msat
+				})
+				.unwrap_or(false);
+			if !can_add_max_htlc {
+				balances.next_outbound_htlc_limit_msat = 0;
+			}
 		}
 
 		Ok(balances)
