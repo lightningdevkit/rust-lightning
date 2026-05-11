@@ -4982,7 +4982,6 @@ impl<
 							*channel_id,
 							counterparty_node_id,
 							user_channel_id,
-							Some(events::NegotiationFailureReason::LocallyCanceled),
 						);
 						let _ = self.handle_error(Err::<(), _>(err), *counterparty_node_id);
 						self.event_persist_notifier.notify();
@@ -11956,9 +11955,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 	fn handle_interactive_tx_msg_err(
 		&self, err: InteractiveTxMsgError, channel_id: ChannelId, counterparty_node_id: &PublicKey,
-		user_channel_id: u128, reason: Option<events::NegotiationFailureReason>,
+		user_channel_id: u128,
 	) -> MsgHandleErrInternal {
-		if let Some(splice_funding_failed) = err.splice_funding_failed {
+		let (err, splice_failure) = err.into_parts();
+		if let Some((splice_funding_failed, reason)) = splice_failure {
 			let (funding_info, contribution) = splice_funding_failed.into_parts();
 			let pending_events = &mut self.pending_events.lock().unwrap();
 			if let Some(funding_info) = funding_info {
@@ -11971,14 +11971,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					counterparty_node_id: *counterparty_node_id,
 					user_channel_id,
 					contribution,
-					reason: reason.unwrap_or(events::NegotiationFailureReason::NegotiationError {
-						msg: format!("{:?}", err.err),
-					}),
+					reason,
 				},
 				None,
 			));
 		}
-		MsgHandleErrInternal::from_chan_no_close(err.err, channel_id)
+		MsgHandleErrInternal::from_chan_no_close(err, channel_id)
 	}
 
 	fn internal_tx_msg<
@@ -12009,7 +12007,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							channel_id,
 							counterparty_node_id,
 							user_channel_id,
-							None,
 						))
 					},
 				}
@@ -12145,7 +12142,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							msg.channel_id,
 							&counterparty_node_id,
 							user_channel_id,
-							None,
 						))
 					},
 				}
@@ -13391,7 +13387,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								msg.channel_id,
 								counterparty_node_id,
 								user_channel_id,
-								None,
 							))
 						},
 					}
@@ -13449,7 +13444,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								msg.channel_id,
 								counterparty_node_id,
 								user_channel_id,
-								None,
 							))
 						},
 					}
