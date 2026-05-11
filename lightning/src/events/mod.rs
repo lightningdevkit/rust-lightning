@@ -52,7 +52,7 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash;
 use bitcoin::script::ScriptBuf;
 use bitcoin::secp256k1::PublicKey;
-use bitcoin::{OutPoint, Transaction, TxOut};
+use bitcoin::{OutPoint, Transaction};
 use core::ops::Deref;
 
 #[allow(unused_imports)]
@@ -82,8 +82,8 @@ pub enum FundingInfo {
 	Contribution {
 		/// UTXOs spent as inputs contributed to the funding transaction.
 		inputs: Vec<OutPoint>,
-		/// Outputs contributed to the funding transaction.
-		outputs: Vec<TxOut>,
+		/// Output scripts contributed to the funding transaction.
+		outputs: Vec<ScriptBuf>,
 	},
 }
 

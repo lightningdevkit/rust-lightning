@@ -685,8 +685,8 @@ pub fn splice_channel<'a, 'b, 'c, 'd>(
 
 pub struct SpliceLockedResult {
 	pub stfu: Option<MessageSendEvent>,
-	pub node_a_discarded: Vec<(Vec<bitcoin::OutPoint>, Vec<TxOut>)>,
-	pub node_b_discarded: Vec<(Vec<bitcoin::OutPoint>, Vec<TxOut>)>,
+	pub node_a_discarded: Vec<(Vec<bitcoin::OutPoint>, Vec<ScriptBuf>)>,
+	pub node_b_discarded: Vec<(Vec<bitcoin::OutPoint>, Vec<ScriptBuf>)>,
 }
 
 pub fn lock_splice_after_blocks<'a, 'b, 'c, 'd>(
@@ -1842,6 +1842,8 @@ fn do_test_splice_commitment_broadcast(splice_status: SpliceStatus, claim_htlcs:
 	let splice_in_amount = initial_channel_capacity / 2;
 	let initiator_contribution =
 		do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, Amount::from_sat(splice_in_amount));
+	let (expected_discarded_inputs, expected_discarded_outputs) =
+		initiator_contribution.clone().into_contributed_inputs_and_outputs();
 	let (splice_tx, _) =
 		splice_channel(&nodes[0], &nodes[1], channel_id, initiator_contribution.clone());
 	let (preimage2, payment_hash2, ..) = route_payment(&nodes[0], &[&nodes[1]], payment_amount);
@@ -1985,20 +1987,34 @@ fn do_test_splice_commitment_broadcast(splice_status: SpliceStatus, claim_htlcs:
 			.chain_source
 			.remove_watched_txn_and_outputs(funding_outpoint, txout.script_pubkey.clone());
 
-		// `SpendableOutputs` events are also included here, but we don't care for them.
 		let events = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
 		assert_eq!(events.len(), if claim_htlcs { 2 } else { 4 }, "{events:?}");
 		if let Event::DiscardFunding { funding_info, .. } = &events[0] {
-			assert_eq!(*funding_info, FundingInfo::OutPoint { outpoint: funding_outpoint });
+			assert_eq!(
+				*funding_info,
+				FundingInfo::Contribution {
+					inputs: expected_discarded_inputs,
+					outputs: expected_discarded_outputs,
+				}
+			);
 		} else {
 			panic!();
 		}
+		assert!(matches!(&events[1], Event::SpendableOutputs { .. }));
+		if !claim_htlcs {
+			assert!(matches!(&events[2], Event::SpendableOutputs { .. }));
+			assert!(matches!(&events[3], Event::SpendableOutputs { .. }));
+		}
+
 		let events = nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events();
 		assert_eq!(events.len(), if claim_htlcs { 2 } else { 1 }, "{events:?}");
 		if let Event::DiscardFunding { funding_info, .. } = &events[0] {
 			assert_eq!(*funding_info, FundingInfo::OutPoint { outpoint: funding_outpoint });
 		} else {
 			panic!();
+		}
+		if claim_htlcs {
+			assert!(matches!(&events[1], Event::SpendableOutputs { .. }));
 		}
 	}
 }
@@ -3622,7 +3638,8 @@ fn do_abandon_splice_quiescent_action_on_shutdown(local_shutdown: bool, pending_
 				assert!(inputs.is_empty(), "Expected empty inputs (filtered), got {:?}", inputs);
 				// The change output was filtered (same script_pubkey as the prior splice's
 				// change output), but the splice-out output survives (different script_pubkey).
-				let expected_outputs: Vec<_> = splice_out_output.into_iter().collect();
+				let expected_outputs: Vec<_> =
+					splice_out_output.into_iter().map(|output| output.script_pubkey).collect();
 				assert_eq!(*outputs, expected_outputs);
 			},
 			other => panic!("Expected DiscardFunding with Contribution, got {:?}", other),
@@ -4319,10 +4336,6 @@ fn test_funding_contributed_splice_already_pending() {
 
 	// Clear UTXOs and add a LARGER one for the second contribution to ensure
 	// the change output will be different from the first contribution's change
-	//
-	// FIXME: Should we actually not consider the change value given DiscardFunding is meant to
-	// reclaim the change script pubkey? But that means for other cases we'd need to track which
-	// output is for change later in the pipeline.
 	nodes[0].wallet_source.clear_utxos();
 	provide_utxo_reserves(&nodes, 1, splice_in_amount * 3);
 
@@ -4336,6 +4349,13 @@ fn test_funding_contributed_splice_already_pending() {
 		.build()
 		.unwrap();
 
+	// The change script should remain the same.
+	assert_eq!(
+		first_contribution.change_output().map(|output| &output.script_pubkey),
+		second_contribution.change_output().map(|output| &output.script_pubkey),
+	);
+	let change_script = first_contribution.change_output().unwrap().script_pubkey.clone();
+
 	// First funding_contributed - this sets up the quiescent action
 	nodes[0].node.funding_contributed(&channel_id, &node_id_1, first_contribution, None).unwrap();
 
@@ -4345,7 +4365,9 @@ fn test_funding_contributed_splice_already_pending() {
 	// Second funding_contributed with a different contribution - this should trigger
 	// DiscardFunding because there's already a pending quiescent action (splice contribution).
 	// Only inputs/outputs NOT in the existing contribution should be discarded.
-	let expected_inputs: Vec<_> = second_contribution.contributed_inputs().collect();
+	let (expected_inputs, mut expected_outputs) =
+		second_contribution.clone().into_contributed_inputs_and_outputs();
+	expected_outputs.retain(|output| *output != change_script);
 
 	// Returns Err(APIMisuseError) and emits DiscardFunding for the non-duplicate parts of the second contribution
 	assert_eq!(
@@ -4355,8 +4377,6 @@ fn test_funding_contributed_splice_already_pending() {
 		})
 	);
 
-	// The second contribution has different outputs (second_splice_out differs from first_splice_out),
-	// so those outputs should NOT be filtered out - they should appear in DiscardFunding.
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match &events[0] {
@@ -4365,10 +4385,9 @@ fn test_funding_contributed_splice_already_pending() {
 			if let FundingInfo::Contribution { inputs, outputs } = funding_info {
 				// The input is different, so it should be in the discard event
 				assert_eq!(*inputs, expected_inputs);
-				// The splice-out output (different script_pubkey) survives filtering;
-				// the change output (same script_pubkey as first contribution) is filtered.
-				assert_eq!(outputs.len(), 1);
-				assert!(outputs.contains(&second_splice_out));
+				// The different output should NOT be filtered out, but the change script should as
+				// it is the same in both contributions.
+				assert_eq!(*outputs, expected_outputs);
 			} else {
 				panic!("Expected FundingInfo::Contribution");
 			}
@@ -4480,6 +4499,13 @@ fn do_test_funding_contributed_active_funding_negotiation(state: u8) {
 		.build()
 		.unwrap();
 
+	// The change script should remain the same.
+	assert_eq!(
+		first_contribution.change_output().map(|output| &output.script_pubkey),
+		second_contribution.change_output().map(|output| &output.script_pubkey),
+	);
+	let change_script = first_contribution.change_output().unwrap().script_pubkey.clone();
+
 	// First funding_contributed - sets up the quiescent action and queues STFU
 	nodes[0]
 		.node
@@ -4526,7 +4552,9 @@ fn do_test_funding_contributed_active_funding_negotiation(state: u8) {
 	// Call funding_contributed with the second contribution. Inputs don't overlap (different
 	// UTXOs) so they all survive. The splice-out output (different script_pubkey) survives
 	// while the change output (same script_pubkey as first contribution) is filtered.
-	let expected_inputs: Vec<_> = second_contribution.contributed_inputs().collect();
+	let (expected_inputs, mut expected_outputs) =
+		second_contribution.clone().into_contributed_inputs_and_outputs();
+	expected_outputs.retain(|output| *output != change_script);
 	assert_eq!(
 		nodes[0].node.funding_contributed(&channel_id, &node_id_1, second_contribution, None),
 		Err(APIError::APIMisuseError {
@@ -4544,7 +4572,7 @@ fn do_test_funding_contributed_active_funding_negotiation(state: u8) {
 				assert_eq!(*inputs, expected_inputs);
 				// Only the splice-out output survives; the change output is filtered
 				// (same script_pubkey as first contribution's change).
-				assert_eq!(*outputs, vec![splice_out_output]);
+				assert_eq!(*outputs, vec![splice_out_output.script_pubkey]);
 			} else {
 				panic!("Expected FundingInfo::Contribution");
 			}
@@ -5221,7 +5249,7 @@ fn test_splice_rbf_discard_unique_contribution() {
 	assert_eq!(result.node_a_discarded.len(), 1);
 	let (ref inputs, ref outputs) = result.node_a_discarded[0];
 	assert_eq!(*inputs, round_0_inputs);
-	assert_eq!(*outputs, vec![splice_out_output]);
+	assert_eq!(*outputs, vec![splice_out_output.script_pubkey]);
 
 	// Node 1 (non-contributing acceptor) has no contributions to discard.
 	assert!(result.node_b_discarded.is_empty());
@@ -7246,7 +7274,7 @@ fn test_splice_rbf_disconnect_filters_prior_contributions() {
 			assert!(inputs.is_empty(), "Expected empty inputs (filtered), got {:?}", inputs);
 			// The change output was filtered (same script_pubkey as round 0's change output),
 			// but the splice-out output survives (different script_pubkey).
-			assert_eq!(*outputs, vec![splice_out_output.clone()]);
+			assert_eq!(*outputs, vec![splice_out_output.script_pubkey.clone()]);
 		},
 		other => panic!("Expected DiscardFunding with Contribution, got {:?}", other),
 	}

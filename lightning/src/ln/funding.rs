@@ -582,12 +582,15 @@ impl FundingContribution {
 		self.is_splice
 	}
 
-	pub(super) fn contributed_inputs(&self) -> impl Iterator<Item = OutPoint> + '_ {
+	pub(crate) fn contributed_inputs(&self) -> impl Iterator<Item = OutPoint> + '_ {
 		self.inputs.iter().map(|input| input.utxo.outpoint)
 	}
 
-	pub(super) fn contributed_outputs(&self) -> impl Iterator<Item = &TxOut> + '_ {
-		self.outputs.iter().chain(self.change_output.iter())
+	pub(crate) fn contributed_outputs(&self) -> impl Iterator<Item = &bitcoin::Script> + '_ {
+		self.outputs
+			.iter()
+			.chain(self.change_output.iter())
+			.map(|output| output.script_pubkey.as_script())
 	}
 
 	/// The value that will be added to the channel after fees. See [`Self::net_value`] for the net
@@ -751,26 +754,41 @@ impl FundingContribution {
 		(inputs, outputs)
 	}
 
-	pub(super) fn into_contributed_inputs_and_outputs(self) -> (Vec<OutPoint>, Vec<TxOut>) {
-		let (inputs, outputs) = self.into_tx_parts();
-
-		(inputs.into_iter().map(|input| input.utxo.outpoint).collect(), outputs)
+	pub(super) fn into_contributed_inputs_and_outputs(self) -> (Vec<OutPoint>, Vec<ScriptBuf>) {
+		let FundingContribution { inputs, outputs, change_output, .. } = self;
+		let contributed_inputs = inputs.into_iter().map(|input| input.utxo.outpoint).collect();
+		let contributed_outputs = outputs.into_iter().chain(change_output.into_iter());
+		(contributed_inputs, contributed_outputs.map(|output| output.script_pubkey).collect())
 	}
 
-	pub(super) fn into_unique_contributions<'a>(
+	pub(crate) fn into_unique_contributions<'a>(
 		self, existing_inputs: impl Iterator<Item = OutPoint>,
-		existing_outputs: impl Iterator<Item = &'a TxOut>,
-	) -> Option<(Vec<OutPoint>, Vec<TxOut>)> {
-		let (mut inputs, mut outputs) = self.into_contributed_inputs_and_outputs();
+		existing_outputs: impl Iterator<Item = &'a bitcoin::Script>,
+	) -> Option<(Vec<OutPoint>, Vec<ScriptBuf>)> {
+		let FundingContribution { mut inputs, mut outputs, mut change_output, .. } = self;
 		for existing in existing_inputs {
-			inputs.retain(|input| *input != existing);
+			inputs.retain(|input| input.outpoint() != existing);
 		}
 		for existing in existing_outputs {
-			outputs.retain(|output| output.script_pubkey != existing.script_pubkey);
+			outputs.retain(|output| output.script_pubkey.as_script() != existing);
+			// TODO: Replace with `take_if` once our MSRV is >= 1.80.
+			if change_output
+				.as_ref()
+				.filter(|output| output.script_pubkey.as_script() == existing)
+				.is_some()
+			{
+				change_output.take();
+			}
 		}
-		if inputs.is_empty() && outputs.is_empty() {
+		if inputs.is_empty() && outputs.is_empty() && change_output.as_ref().is_none() {
 			None
 		} else {
+			let inputs = inputs.into_iter().map(|input| input.outpoint()).collect();
+			let outputs = outputs
+				.into_iter()
+				.chain(change_output.into_iter())
+				.map(|output| output.script_pubkey)
+				.collect();
 			Some((inputs, outputs))
 		}
 	}

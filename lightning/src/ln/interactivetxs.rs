@@ -384,7 +384,7 @@ impl ConstructedTransaction {
 			.map(|(_, (txin, _))| txin.previous_output)
 	}
 
-	fn contributed_outputs(&self) -> impl Iterator<Item = &TxOut> + '_ {
+	fn contributed_outputs(&self) -> impl Iterator<Item = &bitcoin::Script> + '_ {
 		self.tx
 			.output
 			.iter()
@@ -392,7 +392,7 @@ impl ConstructedTransaction {
 			.enumerate()
 			.filter(|(_, (_, output))| output.is_local(self.holder_is_initiator))
 			.filter(|(index, _)| *index != self.shared_output_index as usize)
-			.map(|(_, (txout, _))| txout)
+			.map(|(_, (txout, _))| txout.script_pubkey.as_script())
 	}
 
 	pub fn tx(&self) -> &Transaction {
@@ -885,7 +885,7 @@ impl InteractiveTxSigningSession {
 		self.unsigned_tx.contributed_inputs()
 	}
 
-	pub(super) fn contributed_outputs(&self) -> impl Iterator<Item = &TxOut> + '_ {
+	pub(super) fn contributed_outputs(&self) -> impl Iterator<Item = &bitcoin::Script> + '_ {
 		self.unsigned_tx.contributed_outputs()
 	}
 }
@@ -2127,11 +2127,11 @@ impl InteractiveTxConstructor {
 			.map(|(_, input)| input.tx_in().previous_output)
 	}
 
-	pub(super) fn contributed_outputs(&self) -> impl Iterator<Item = &TxOut> + '_ {
+	pub(super) fn contributed_outputs(&self) -> impl Iterator<Item = &bitcoin::Script> + '_ {
 		self.outputs_to_contribute
 			.iter()
 			.filter(|(_, output)| !output.is_shared())
-			.map(|(_, output)| output.tx_out())
+			.map(|(_, output)| output.tx_out().script_pubkey.as_script())
 	}
 
 	pub fn is_initiator(&self) -> bool {
