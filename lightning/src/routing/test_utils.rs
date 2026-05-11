@@ -36,8 +36,14 @@ pub(crate) fn channel_announcement(
 	node_1_privkey: &SecretKey, node_2_privkey: &SecretKey, features: ChannelFeatures,
 	short_channel_id: u64, secp_ctx: &Secp256k1<All>,
 ) -> ChannelAnnouncement {
-	let node_id_1 = NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, node_1_privkey));
-	let node_id_2 = NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, node_2_privkey));
+	let mut node_id_1 = NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, node_1_privkey));
+	let mut node_id_2 = NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, node_2_privkey));
+	let mut signer_1 = node_1_privkey;
+	let mut signer_2 = node_2_privkey;
+	if node_id_1 > node_id_2 {
+		core::mem::swap(&mut node_id_1, &mut node_id_2);
+		core::mem::swap(&mut signer_1, &mut signer_2);
+	}
 
 	let unsigned_announcement = UnsignedChannelAnnouncement {
 		features,
@@ -52,10 +58,10 @@ pub(crate) fn channel_announcement(
 
 	let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
 	ChannelAnnouncement {
-		node_signature_1: secp_ctx.sign_ecdsa(&msghash, node_1_privkey),
-		node_signature_2: secp_ctx.sign_ecdsa(&msghash, node_2_privkey),
-		bitcoin_signature_1: secp_ctx.sign_ecdsa(&msghash, node_1_privkey),
-		bitcoin_signature_2: secp_ctx.sign_ecdsa(&msghash, node_2_privkey),
+		node_signature_1: secp_ctx.sign_ecdsa(&msghash, signer_1),
+		node_signature_2: secp_ctx.sign_ecdsa(&msghash, signer_2),
+		bitcoin_signature_1: secp_ctx.sign_ecdsa(&msghash, signer_1),
+		bitcoin_signature_2: secp_ctx.sign_ecdsa(&msghash, signer_2),
 		contents: unsigned_announcement.clone(),
 	}
 }
@@ -119,9 +125,25 @@ pub(crate) fn add_or_update_node(
 
 pub(crate) fn update_channel(
 	gossip_sync: &P2PGossipSync<Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>,
-	secp_ctx: &Secp256k1<All>, node_privkey: &SecretKey, update: UnsignedChannelUpdate
+	secp_ctx: &Secp256k1<All>, node_privkey: &SecretKey, mut update: UnsignedChannelUpdate
 ) {
 	let node_pubkey = PublicKey::from_secret_key(&secp_ctx, node_privkey);
+	let node_id = NodeId::from_pubkey(&node_pubkey);
+
+	// `channel_announcement` may have swapped the node order to satisfy the spec's sorted node_ids
+	// requirement, so override `channel_flags` bit 0 to match the actual node position recorded in
+	// the network graph.
+	{
+		let network_graph = gossip_sync.network_graph().read_only();
+		if let Some(channel) = network_graph.channel(update.short_channel_id) {
+			if channel.node_one == node_id {
+				update.channel_flags &= !1;
+			} else {
+				update.channel_flags |= 1;
+			}
+		}
+	}
+
 	let msghash = hash_to_message!(&Sha256dHash::hash(&update.encode()[..])[..]);
 	let valid_channel_update = ChannelUpdate {
 		signature: secp_ctx.sign_ecdsa(&msghash, node_privkey),
