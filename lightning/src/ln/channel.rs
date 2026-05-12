@@ -10581,30 +10581,32 @@ where
 					self.context.expecting_peer_commitment_signed = true;
 				}
 
-				// - if it has not received `tx_signatures` for that funding transaction:
-				//   - if the `commitment_signed` bit is set in `retransmit_flags`:
-				if !session.has_received_tx_signatures()
-					&& next_funding.should_retransmit(msgs::NextFundingFlag::CommitmentSigned)
-				{
-					// - MUST retransmit its `commitment_signed` for that funding transaction.
-					retransmit_funding_commit_sig = Some(next_funding.txid);
-				}
-
-				// - if it has already received `commitment_signed` and it should sign first
-				//   - MUST send its `tx_signatures` for that funding transaction.
-				//
-				// - if it has already received `tx_signatures` for that funding transaction:
-				//   - MUST send its `tx_signatures` for that funding transaction.
-				if let Some(holder_tx_signatures) = session.holder_tx_signatures() {
-					if self.is_awaiting_monitor_update() {
-						log_debug!(logger, "Waiting for monitor update before providing funding transaction signatures");
-					} else if self.context.signer_pending_funding {
-						log_debug!(logger, "Waiting for signer to provide counterparty commitment_signed before releasing funding transaction signatures");
-					} else {
-						tx_signatures = Some(holder_tx_signatures);
-					}
-				} else if !session.has_holder_witnesses() {
+				if !session.has_holder_witnesses() {
 					log_debug!(logger, "Waiting for funding transaction signatures to be provided");
+				} else {
+					// - if it has not received `tx_signatures` for that funding transaction:
+					//   - if the `commitment_signed` bit is set in `retransmit_flags`:
+					if !session.has_received_tx_signatures()
+						&& next_funding.should_retransmit(msgs::NextFundingFlag::CommitmentSigned)
+					{
+						// - MUST retransmit its `commitment_signed` for that funding transaction.
+						retransmit_funding_commit_sig = Some(next_funding.txid);
+					}
+
+					// - if it has already received `commitment_signed` and it should sign first
+					//   - MUST send its `tx_signatures` for that funding transaction.
+					//
+					// - if it has already received `tx_signatures` for that funding transaction:
+					//   - MUST send its `tx_signatures` for that funding transaction.
+					if let Some(holder_tx_signatures) = session.holder_tx_signatures() {
+						if self.is_awaiting_monitor_update() {
+							log_debug!(logger, "Waiting for monitor update before providing funding transaction signatures");
+						} else if self.context.signer_pending_funding {
+							log_debug!(logger, "Waiting for signer to provide counterparty commitment_signed before releasing funding transaction signatures");
+						} else {
+							tx_signatures = Some(holder_tx_signatures);
+						}
+					}
 				}
 			} else {
 				// We'll just send a `tx_abort` here if we don't have a signing session for this channel

@@ -2677,6 +2677,77 @@ fn test_splice_locked_waits_for_channel_reestablish() {
 }
 
 #[test]
+fn test_splice_reestablish_waits_for_holder_tx_signatures_before_commitment_signed() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let outputs = vec![TxOut {
+		value: Amount::from_sat(initial_channel_value_sat / 4),
+		script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
+	}];
+	let initiator_contribution =
+		initiate_splice_out(&nodes[0], &nodes[1], channel_id, outputs).unwrap();
+	negotiate_splice_tx(&nodes[0], &nodes[1], channel_id, initiator_contribution);
+
+	let signing_event = get_event!(nodes[0], Event::FundingTransactionReadyForSigning);
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+
+	// Drop the acceptor's initial `commitment_signed`. On reconnection, node 0's
+	// `channel_reestablish` should request it again, while node 1's `channel_reestablish` should
+	// not make node 0 retransmit a `commitment_signed` before holder transaction signatures are
+	// available.
+	let _ = get_htlc_update_msgs(&nodes[1], &node_id_0);
+	nodes[0].node.peer_disconnected(node_id_1);
+	nodes[1].node.peer_disconnected(node_id_0);
+
+	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
+	reconnect_args.send_announcement_sigs = (true, true);
+	reconnect_args.send_interactive_tx_commit_sig = (true, false);
+	reconnect_nodes(reconnect_args);
+
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+	let unsigned_transaction = if let Event::FundingTransactionReadyForSigning {
+		unsigned_transaction,
+		..
+	} = signing_event
+	{
+		unsigned_transaction
+	} else {
+		panic!("Expected FundingTransactionReadyForSigning event");
+	};
+	let tx = nodes[0].wallet_source.sign_tx(unsigned_transaction).unwrap();
+	nodes[0].node.funding_transaction_signed(&channel_id, &node_id_1, tx).unwrap();
+	check_added_monitors(&nodes[0], 1);
+
+	let initiator_commit_sig = get_htlc_update_msgs(&nodes[0], &node_id_1);
+	nodes[1]
+		.node
+		.handle_commitment_signed_batch_test(node_id_0, &initiator_commit_sig.commitment_signed);
+	check_added_monitors(&nodes[1], 1);
+
+	let acceptor_tx_signatures =
+		get_event_msg!(nodes[1], MessageSendEvent::SendTxSignatures, node_id_0);
+	nodes[0].node.handle_tx_signatures(node_id_1, &acceptor_tx_signatures);
+	let initiator_tx_signatures =
+		get_event_msg!(nodes[0], MessageSendEvent::SendTxSignatures, node_id_1);
+	nodes[1].node.handle_tx_signatures(node_id_0, &initiator_tx_signatures);
+
+	expect_splice_pending_event(&nodes[0], &node_id_1);
+	expect_splice_pending_event(&nodes[1], &node_id_0);
+}
+
+#[test]
 fn test_splice_confirms_on_both_sides_while_disconnected() {
 	// Regression test: when a splice transaction confirms on both sides while peers are
 	// disconnected, each peer's `channel_reestablish` carries `my_current_funding_locked` with the
