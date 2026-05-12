@@ -4629,6 +4629,41 @@ impl<
 				monitor_update,
 			);
 		}
+
+		if self.persistent_monitor_events && !shutdown_res.htlcs_to_ack.is_empty() {
+			{
+				let per_peer_state = self.per_peer_state.read().unwrap();
+				if let Some(peer_state_mutex) =
+					per_peer_state.get(&shutdown_res.counterparty_node_id)
+				{
+					let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+					let peer_state = &mut *peer_state_lock;
+					// If there are in-flight updates for the channel, wait for them to complete before
+					// acking the monitor event that resolves this HTLC. In particular, this prevents us from
+					// treating an HTLC's preimage as durably persisted if the preimage update is still
+					// in-flight when the channel closes.
+					let has_in_flight_update = peer_state
+						.in_flight_monitor_updates
+						.get(&shutdown_res.channel_id)
+						.map(|(_, updates)| !updates.is_empty())
+						.unwrap_or(false);
+					if has_in_flight_update {
+						peer_state
+							.monitor_update_blocked_actions
+							.entry(shutdown_res.channel_id)
+							.or_default()
+							.push(MonitorUpdateCompletionAction::AckMonitorEvents {
+								channel_id: shutdown_res.channel_id,
+								htlc_ids: mem::take(&mut shutdown_res.htlcs_to_ack),
+							});
+					}
+				}
+			}
+			for htlc_id in shutdown_res.htlcs_to_ack.drain(..) {
+				self.handle_monitor_event_htlc_ack(htlc_id, shutdown_res.channel_id);
+			}
+		}
+
 		if self.background_events_processed_since_startup.load(Ordering::Acquire) {
 			// If a `ChannelMonitorUpdate` was applied (i.e. any time we have a funding txo and are
 			// not in the startup sequence) check if we need to handle any

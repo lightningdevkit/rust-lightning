@@ -1288,6 +1288,9 @@ pub(crate) struct ShutdownResult {
 	pub(crate) monitor_update: Option<(PublicKey, OutPoint, ChannelId, ChannelMonitorUpdate)>,
 	/// A list of dropped outbound HTLCs that can safely be failed backwards immediately.
 	pub(crate) dropped_outbound_htlcs: Vec<(HTLCSource, PaymentHash, PublicKey, ChannelId)>,
+	/// A list of inbound HTLC ids whose forwarded monitor-event ack condition is complete because
+	/// the HTLC was already claimed when the channel closed.
+	pub(crate) htlcs_to_ack: Vec<u64>,
 	/// An unbroadcasted batch funding transaction id. The closure of this channel should be
 	/// propagated to the remainder of the batch.
 	pub(crate) unbroadcasted_batch_funding_txid: Option<Txid>,
@@ -6422,6 +6425,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		assert!(!matches!(self.channel_state, ChannelState::ShutdownComplete));
 
 		let broadcast = self.is_funding_broadcastable();
+		let mut htlcs_to_ack = Vec::new();
 
 		// We go ahead and "free" any holding cell HTLCs or HTLCs we haven't yet committed to and
 		// return them to fail the payment.
@@ -6437,6 +6441,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 						self.channel_id,
 					));
 				},
+				HTLCUpdateAwaitingACK::ClaimHTLC { htlc_id, .. } => htlcs_to_ack.push(htlc_id),
 				_ => {},
 			}
 		}
@@ -6484,6 +6489,15 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			}
 		}
 
+		// See `ShutdownResult::htlcs_to_ack`.
+		for htlc in self.pending_inbound_htlcs.iter() {
+			if let InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill { .. }) =
+				&htlc.state
+			{
+				htlcs_to_ack.push(htlc.htlc_id);
+			}
+		}
+
 		let monitor_update = if let Some(funding_txo) = funding.get_funding_txo() {
 			// We should only generate a closing `ChannelMonitorUpdate` if we already have a
 			// `ChannelMonitor` for the disk (i.e. `counterparty_next_commitment_transaction_number`
@@ -6522,6 +6536,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			closure_reason,
 			monitor_update,
 			dropped_outbound_htlcs,
+			htlcs_to_ack,
 			unbroadcasted_batch_funding_txid,
 			channel_id: self.channel_id,
 			user_channel_id: self.user_id,
@@ -11251,6 +11266,7 @@ where
 			closure_reason,
 			monitor_update: None,
 			dropped_outbound_htlcs: Vec::new(),
+			htlcs_to_ack: Vec::new(),
 			unbroadcasted_batch_funding_txid: self
 				.context
 				.unbroadcasted_batch_funding_txid(&self.funding),
