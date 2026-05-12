@@ -932,6 +932,7 @@ mod fuzzy_channelmanager {
 				channel_id: value.channel_id,
 				user_channel_id: value.user_channel_id,
 				node_id: value.counterparty_node_id,
+				htlc_id: Some(value.htlc_id),
 			}
 		}
 	}
@@ -10333,6 +10334,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								channel_id: next_channel_id,
 								user_channel_id: next_user_channel_id,
 								node_id: Some(next_channel_counterparty_node_id),
+								htlc_id: None,
 							}],
 							total_fee_earned_msat,
 							skimmed_fee_msat,
@@ -10367,6 +10369,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 										channel_id: next_channel_id,
 										user_channel_id: next_user_channel_id,
 										node_id: Some(next_channel_counterparty_node_id),
+										htlc_id: None,
 									}],
 									// TODO: When trampoline payments are tracked in our
 									// pending_outbound_payments, we'll be able to lookup our total
