@@ -1158,7 +1158,7 @@ pub(crate) struct CommitmentStats {
 /// description
 enum UpdateFulfillFetch {
 	NewClaim { monitor_update: ChannelMonitorUpdate, htlc_value_msat: u64, update_blocked: bool },
-	DuplicateClaim {},
+	DuplicateClaim { htlc_not_found: bool },
 }
 
 /// The return type of get_update_fulfill_htlc_and_commit.
@@ -1174,7 +1174,12 @@ pub enum UpdateFulfillCommitFetch {
 	},
 	/// Indicates the HTLC fulfill is duplicative and already existed either in the holding cell
 	/// or has been forgotten (presumably previously claimed).
-	DuplicateClaim {},
+	DuplicateClaim {
+		/// Set if the HTLC was already fully removed from the channel. This can happen if the claim
+		/// came from the outbound edge claiming onchain *after* the HTLC was already fully removed
+		/// from this inbound edge channel off-chain.
+		htlc_not_found: bool,
+	},
 }
 
 /// Error returned when processing an invalid interactive-tx message from our counterparty.
@@ -7655,7 +7660,7 @@ where
 								"Tried to fulfill an HTLC that was already failed"
 							);
 						}
-						return UpdateFulfillFetch::DuplicateClaim {};
+						return UpdateFulfillFetch::DuplicateClaim { htlc_not_found: false };
 					},
 					_ => {
 						debug_assert!(false, "Have an inbound HTLC we tried to claim before it was fully committed to");
@@ -7668,7 +7673,7 @@ where
 			}
 		}
 		if pending_idx == core::usize::MAX {
-			return UpdateFulfillFetch::DuplicateClaim {};
+			return UpdateFulfillFetch::DuplicateClaim { htlc_not_found: true };
 		}
 
 		// Now update local state:
@@ -7696,7 +7701,7 @@ where
 						if htlc_id_arg == htlc_id {
 							// Make sure we don't leave latest_monitor_update_id incremented here:
 							self.context.latest_monitor_update_id -= 1;
-							return UpdateFulfillFetch::DuplicateClaim {};
+							return UpdateFulfillFetch::DuplicateClaim { htlc_not_found: false };
 						}
 					},
 					&HTLCUpdateAwaitingACK::FailHTLC { htlc_id, .. }
@@ -7823,7 +7828,9 @@ where
 				);
 				UpdateFulfillCommitFetch::NewClaim { monitor_update, htlc_value_msat }
 			},
-			UpdateFulfillFetch::DuplicateClaim {} => UpdateFulfillCommitFetch::DuplicateClaim {},
+			UpdateFulfillFetch::DuplicateClaim { htlc_not_found } => {
+				UpdateFulfillCommitFetch::DuplicateClaim { htlc_not_found }
+			},
 		}
 	}
 
