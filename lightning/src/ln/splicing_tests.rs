@@ -751,7 +751,21 @@ pub fn lock_splice<'a, 'b, 'c, 'd>(
 		.get_monitor(splice_locked_for_node_b.channel_id)
 		.map(|monitor| monitor.get_funding_txo().txid)
 		.unwrap();
+	complete_splice_locked_exchange(
+		node_a,
+		node_b,
+		splice_locked_for_node_b,
+		is_0conf,
+		expected_discard_txids,
+		prev_funding_txid,
+	)
+}
 
+fn complete_splice_locked_exchange<'a, 'b, 'c, 'd>(
+	node_a: &'a Node<'b, 'c, 'd>, node_b: &'a Node<'b, 'c, 'd>,
+	splice_locked_for_node_b: &msgs::SpliceLocked, is_0conf: bool, expected_discard_txids: &[Txid],
+	prev_funding_txid: Txid,
+) -> SpliceLockedResult {
 	let node_id_a = node_a.node.get_our_node_id();
 	let node_id_b = node_b.node.get_our_node_id();
 
@@ -2583,6 +2597,83 @@ fn do_test_splice_reestablish(reload: bool, async_monitor_update: bool) {
 	nodes[1]
 		.chain_source
 		.remove_watched_txn_and_outputs(prev_funding_outpoint, prev_funding_script);
+}
+
+#[test]
+fn test_splice_locked_waits_for_channel_reestablish() {
+	// If a splice confirms after `peer_connected` but before `channel_reestablish` is handled, the
+	// peer state is connected while the channel still has its disconnected bit set. We must not send
+	// `splice_locked` until the channel is reestablished, but should send it immediately after.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+	let prev_funding_txid = get_monitor!(nodes[0], channel_id).get_funding_txo().txid;
+
+	send_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+
+	let outputs = vec![
+		TxOut {
+			value: Amount::from_sat(initial_channel_value_sat / 4),
+			script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
+		},
+		TxOut {
+			value: Amount::from_sat(initial_channel_value_sat / 4),
+			script_pubkey: nodes[1].wallet_source.get_change_script().unwrap(),
+		},
+	];
+	let funding_contribution =
+		initiate_splice_out(&nodes[0], &nodes[1], channel_id, outputs).unwrap();
+	let (splice_tx, _) = splice_channel(&nodes[0], &nodes[1], channel_id, funding_contribution);
+
+	nodes[0].node.peer_disconnected(node_id_1);
+	nodes[1].node.peer_disconnected(node_id_0);
+
+	connect_nodes(&nodes[0], &nodes[1]);
+	let reestablish_0 =
+		get_event_msg!(nodes[0], MessageSendEvent::SendChannelReestablish, node_id_1);
+	let reestablish_1 =
+		get_event_msg!(nodes[1], MessageSendEvent::SendChannelReestablish, node_id_0);
+
+	confirm_transaction(&nodes[0], &splice_tx);
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+
+	nodes[1].node.handle_channel_reestablish(node_id_0, &reestablish_0);
+	let _ = get_event_msg!(nodes[1], MessageSendEvent::SendChannelUpdate, node_id_0);
+	nodes[0].node.handle_channel_reestablish(node_id_1, &reestablish_1);
+	let mut msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 2, "{msg_events:?}");
+	let splice_locked_0 =
+		if let MessageSendEvent::SendSpliceLocked { node_id, msg } = msg_events.remove(0) {
+			assert_eq!(node_id, node_id_1);
+			msg
+		} else {
+			panic!();
+		};
+	if let MessageSendEvent::SendChannelUpdate { node_id, .. } = msg_events.remove(0) {
+		assert_eq!(node_id, node_id_1);
+	} else {
+		panic!();
+	}
+
+	confirm_transaction(&nodes[1], &splice_tx);
+	complete_splice_locked_exchange(
+		&nodes[0],
+		&nodes[1],
+		&splice_locked_0,
+		false,
+		&[],
+		prev_funding_txid,
+	);
+
+	send_payment(&nodes[0], &[&nodes[1]], 1_000_000);
 }
 
 #[test]

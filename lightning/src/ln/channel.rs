@@ -1265,6 +1265,7 @@ pub(super) struct ReestablishResponses {
 	pub shutdown_msg: Option<msgs::Shutdown>,
 	pub tx_signatures: Option<msgs::TxSignatures>,
 	pub tx_abort: Option<msgs::TxAbort>,
+	pub splice_locked: Option<msgs::SpliceLocked>,
 	pub inferred_splice_locked: Option<msgs::SpliceLocked>,
 }
 
@@ -3503,6 +3504,12 @@ pub(super) struct ChannelContext<SP: SignerProvider> {
 	/// See-also <https://github.com/lightningnetwork/lnd/issues/4006>
 	pub workaround_lnd_bug_4006: Option<msgs::ChannelReady>,
 
+	/// The `my_current_funding_locked` txid included in our `channel_reestablish` for the current
+	/// reconnect, if any. We track this as we cannot tell what was included after we've already
+	/// sent it, as it's possible it was unconfirmed at the time we sent it, but confirmed shortly
+	/// after.
+	funding_locked_txid_sent_in_reestablish: Option<Txid>,
+
 	/// An option set when we wish to track how many ticks have elapsed while waiting for a response
 	/// from our counterparty after entering specific states. If the peer has yet to respond after
 	/// reaching `DISCONNECT_PEER_AWAITING_RESPONSE_TICKS`, a reconnection should be attempted to
@@ -4225,6 +4232,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			announcement_sigs: None,
 
 			workaround_lnd_bug_4006: None,
+			funding_locked_txid_sent_in_reestablish: None,
 			sent_message_awaiting_response: None,
 
 			latest_inbound_scid_alias: None,
@@ -4536,6 +4544,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			announcement_sigs: None,
 
 			workaround_lnd_bug_4006: None,
+			funding_locked_txid_sent_in_reestablish: None,
 			sent_message_awaiting_response: None,
 
 			latest_inbound_scid_alias: None,
@@ -10512,6 +10521,8 @@ where
 		// remaining cases either succeed or ErrorMessage-fail).
 		self.context.channel_state.clear_peer_disconnected();
 		self.mark_response_received();
+		let funding_locked_txid_sent_in_reestablish =
+			self.context.funding_locked_txid_sent_in_reestablish.take();
 
 		let shutdown_msg = self.get_outbound_shutdown();
 
@@ -10663,6 +10674,7 @@ where
 					shutdown_msg, announcement_sigs,
 					tx_signatures,
 					tx_abort: None,
+					splice_locked: None,
 					inferred_splice_locked: None,
 				});
 			}
@@ -10676,6 +10688,7 @@ where
 				shutdown_msg, announcement_sigs,
 				tx_signatures,
 				tx_abort,
+				splice_locked: None,
 				inferred_splice_locked: None,
 			});
 		}
@@ -10745,6 +10758,15 @@ where
 					splice_txid,
 				})
 		});
+		let splice_locked = self.pending_splice.as_ref().and_then(|pending_splice| {
+			pending_splice
+				.sent_funding_txid
+				.filter(|splice_txid| Some(*splice_txid) != funding_locked_txid_sent_in_reestablish)
+				.map(|splice_txid| msgs::SpliceLocked {
+					channel_id: self.context.channel_id,
+					splice_txid,
+				})
+		});
 
 		if msg.next_local_commitment_number == next_counterparty_commitment_number {
 			if required_revoke.is_some() || self.context.signer_pending_revoke_and_ack {
@@ -10763,6 +10785,7 @@ where
 				commitment_order: self.context.resend_order.clone(),
 				tx_signatures,
 				tx_abort,
+				splice_locked,
 				inferred_splice_locked,
 			})
 		} else if msg.next_local_commitment_number == next_counterparty_commitment_number - 1 {
@@ -10788,6 +10811,7 @@ where
 					commitment_order: self.context.resend_order.clone(),
 					tx_signatures: None,
 					tx_abort,
+					splice_locked,
 					inferred_splice_locked,
 				})
 			} else {
@@ -10815,6 +10839,7 @@ where
 					commitment_order: self.context.resend_order.clone(),
 					tx_signatures: None,
 					tx_abort,
+					splice_locked,
 					inferred_splice_locked,
 				})
 			}
@@ -12492,6 +12517,9 @@ where
 			log_info!(logger, "Sending a data_loss_protect with no previous remote per_commitment_secret for channel {}", &self.context.channel_id());
 			[0;32]
 		};
+		let my_current_funding_locked = self.maybe_get_my_current_funding_locked();
+		self.context.funding_locked_txid_sent_in_reestablish =
+			my_current_funding_locked.as_ref().map(|funding_locked| funding_locked.txid);
 		msgs::ChannelReestablish {
 			channel_id: self.context.channel_id(),
 			// The protocol has two different commitment number concepts - the "commitment
@@ -12515,7 +12543,7 @@ where
 			your_last_per_commitment_secret: remote_last_secret,
 			my_current_per_commitment_point: dummy_pubkey,
 			next_funding: self.maybe_get_next_funding(),
-			my_current_funding_locked: self.maybe_get_my_current_funding_locked(),
+			my_current_funding_locked,
 		}
 	}
 
@@ -17196,6 +17224,7 @@ impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
 				announcement_sigs,
 
 				workaround_lnd_bug_4006: None,
+				funding_locked_txid_sent_in_reestablish: None,
 				sent_message_awaiting_response: None,
 
 				latest_inbound_scid_alias,

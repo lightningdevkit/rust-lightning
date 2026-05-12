@@ -13285,10 +13285,15 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							}
 						}
 						let need_lnd_workaround = chan.context.workaround_lnd_bug_4006.take();
-						let funding_tx_signed = responses.tx_signatures.map(|tx_signatures| FundingTxSigned {
-							tx_signatures: Some(tx_signatures),
-							..Default::default()
-						});
+						let funding_tx_signed = if responses.tx_signatures.is_some() || responses.splice_locked.is_some() {
+							Some(FundingTxSigned {
+								tx_signatures: responses.tx_signatures,
+								splice_locked: responses.splice_locked,
+								..Default::default()
+							})
+						} else {
+							None
+						};
 						let (htlc_forwards, decode_update_add_htlcs) = self.handle_channel_resumption(
 							&mut peer_state.pending_msg_events, chan, responses.raa, responses.commitment_update, responses.commitment_order,
 							Vec::new(), Vec::new(), None, responses.channel_ready, responses.announcement_sigs,
