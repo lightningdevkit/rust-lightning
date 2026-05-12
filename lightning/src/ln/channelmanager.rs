@@ -10090,7 +10090,14 @@ impl<
 								let _ = self.handle_post_monitor_update_chan_resume(data);
 							}
 						},
-						UpdateFulfillCommitFetch::DuplicateClaim {} => {
+						UpdateFulfillCommitFetch::DuplicateClaim { htlc_not_found } => {
+							if self.persistent_monitor_events && htlc_not_found {
+								// If this HTLC was a duplicate and already fully removed from the channel, that
+								// means we both persisted the preimage in the inbound edge monitor and fulfilled
+								// HTLC upstream to our peer, so it is safe to ack the monitor event here.
+								self.handle_monitor_event_htlc_ack(prev_hop.htlc_id, chan_id);
+							}
+
 							let (action_opt, raa_blocker_opt) =
 								completion_action(ClaimCompletionActionParams::duplicate_claim());
 							if let Some(raa_blocker) = raa_blocker_opt {
