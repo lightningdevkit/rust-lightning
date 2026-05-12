@@ -7842,6 +7842,53 @@ fn test_funding_contributed_rbf_adjustment_exceeds_max_feerate() {
 }
 
 #[test]
+fn test_peer_initiated_stfu_skips_local_rbf_feerate_check() {
+	// Test that a local low-fee splice RBF attempt does not prevent us from responding to a
+	// counterparty-initiated quiescence attempt.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 4, added_value * 2);
+
+	let floor_feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64);
+	let node_0_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
+	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
+	let node_0_contribution =
+		node_0_template.splice_in_sync(added_value, floor_feerate, floor_feerate, &wallet).unwrap();
+
+	// Node 1 creates a pending splice before node 0 submits its contribution. Node 0's
+	// contribution cannot be adjusted up to the pending splice's minimum RBF feerate, so it must
+	// not send its own stfu yet.
+	let node_1_contribution = do_initiate_splice_in(&nodes[1], &nodes[0], channel_id, added_value);
+	let (_first_splice_tx, _) =
+		splice_channel(&nodes[1], &nodes[0], channel_id, node_1_contribution);
+	nodes[0].node.funding_contributed(&channel_id, &node_id_1, node_0_contribution, None).unwrap();
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+
+	// Node 1 can still initiate quiescence for its own RBF attempt. Node 0 should reply as the
+	// non-initiator instead of applying its local splice RBF feerate check to the response.
+	let min_rbf_feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64 + 25);
+	let _node_1_rbf_contribution =
+		do_initiate_rbf_splice_in(&nodes[1], &nodes[0], channel_id, min_rbf_feerate);
+	let stfu_init = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
+	assert!(stfu_init.initiator);
+
+	nodes[0].node.handle_stfu(node_id_1, &stfu_init);
+	let stfu_response = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+	assert!(!stfu_response.initiator);
+}
+
+#[test]
 fn test_funding_contributed_rbf_adjustment_insufficient_budget() {
 	// Test that when the change output can't absorb the fee increase needed for the minimum RBF feerate
 	// (even though max_feerate allows it), the adjustment fails gracefully and the splice

@@ -14636,7 +14636,24 @@ where
 			return None;
 		}
 
-		if let Some(action) = self.quiescent_action.as_ref() {
+		if self.context.is_waiting_on_peer_pending_channel_update()
+			|| self.context.is_monitor_or_signer_pending_channel_update()
+		{
+			log_given_level!(
+				logger,
+				logger_level,
+				"Waiting for state machine pending changes to complete before sending stfu"
+			);
+			return None;
+		}
+
+		let initiator = if self.context.channel_state.is_remote_stfu_sent() {
+			// Since we may have also attempted to initiate quiescence but the counterparty
+			// initiated first, we'll retry after we're no longer quiescent.
+			self.context.channel_state.clear_remote_stfu_sent();
+			self.context.channel_state.set_quiescent();
+			false
+		} else if let Some(action) = self.quiescent_action.as_ref() {
 			#[allow(irrefutable_let_patterns)]
 			if let QuiescentAction::Splice { contribution, .. } = action {
 				if self.pending_splice.is_some() {
@@ -14663,29 +14680,16 @@ where
 					}
 				}
 			}
-		}
 
-		if self.context.is_waiting_on_peer_pending_channel_update()
-			|| self.context.is_monitor_or_signer_pending_channel_update()
-		{
-			log_given_level!(
-				logger,
-				logger_level,
-				"Waiting for state machine pending changes to complete before sending stfu"
-			);
-			return None;
-		}
-
-		let initiator = if self.context.channel_state.is_remote_stfu_sent() {
-			// Since we may have also attempted to initiate quiescence but the counterparty
-			// initiated first, we'll retry after we're no longer quiescent.
-			self.context.channel_state.clear_remote_stfu_sent();
-			self.context.channel_state.set_quiescent();
-			false
-		} else {
 			log_debug!(logger, "Sending stfu as quiescence initiator");
 			self.context.channel_state.set_local_stfu_sent();
 			true
+		} else {
+			debug_assert!(
+				false,
+				"Either we have a pending quiescent action or need to respond to the counterparty"
+			);
+			false
 		};
 
 		Some(msgs::Stfu { channel_id: self.context.channel_id, initiator })
