@@ -6537,17 +6537,15 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 	/// If we receive an error message when attempting to open a channel, it may only be a rejection
 	/// of the channel type we tried, not of our ability to open any channel at all. We can see if a
 	/// downgrade of channel features would be possible so that we can still open the channel.
-	#[rustfmt::skip]
 	pub(crate) fn maybe_downgrade_channel_features<F: FeeEstimator>(
 		&mut self, funding: &mut FundingScope, fee_estimator: &LowerBoundedFeeEstimator<F>,
 		user_config: &UserConfig, their_features: &InitFeatures,
 	) -> Result<(), ()> {
-		if !funding.is_outbound() ||
-			!matches!(
+		if !funding.is_outbound()
+			|| !matches!(
 				self.channel_state, ChannelState::NegotiatingFunding(flags)
 				if flags == NegotiatingFundingFlags::OUR_INIT_SENT
-			)
-		{
+			) {
 			return Err(());
 		}
 		if funding.get_channel_type() == &ChannelTypeFeatures::only_static_remote_key() {
@@ -6579,10 +6577,9 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 
 		let next_channel_type = get_initial_channel_type(user_config, &eligible_features);
 
-		self.feerate_per_kw = selected_commitment_sat_per_1000_weight(
-			&fee_estimator, &next_channel_type,
-		);
-	 	funding.channel_transaction_parameters.channel_type_features = next_channel_type;
+		self.feerate_per_kw =
+			selected_commitment_sat_per_1000_weight(&fee_estimator, &next_channel_type);
+		funding.channel_transaction_parameters.channel_type_features = next_channel_type;
 
 		Ok(())
 	}
