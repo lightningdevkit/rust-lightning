@@ -876,12 +876,18 @@ pub struct HTLCLocator {
 	/// This is only `None` for HTLCs received prior to 0.1 or for events serialized by versions
 	/// prior to 0.1.
 	pub node_id: Option<PublicKey>,
+
+	/// The channel-local HTLC id assigned by the channel that this locator refers to. Together with
+	/// [`Self::channel_id`] this uniquely identifies the HTLC. Only set for upstream HTLCs received
+	/// on 0.4+ for now.
+	pub(crate) htlc_id: Option<u64>,
 }
 
 impl_ser_tlv_based!(HTLCLocator, {
 	(1, channel_id, required),
 	(3, user_channel_id, option),
 	(5, node_id, option),
+	(7, htlc_id, option),
 });
 
 /// An Event which you should probably take some action in response to.
@@ -2199,6 +2205,7 @@ impl Writeable for Event {
 					channel_id: ChannelId::new_zero(),
 					user_channel_id: None,
 					node_id: None,
+					htlc_id: None,
 				};
 				let legacy_prev = prev_htlcs.first().unwrap_or(&empty_locator);
 				let legacy_next = next_htlcs.first().unwrap_or(&empty_locator);
@@ -2758,11 +2765,13 @@ impl MaybeReadable for Event {
 							channel_id: prev_channel_id_legacy.ok_or(DecodeError::InvalidValue)?,
 							user_channel_id: prev_user_channel_id_legacy,
 							node_id: prev_node_id_legacy,
+							htlc_id: None,
 						}])),
 						(19, next_htlcs, (default_value, vec![HTLCLocator{
 							channel_id: next_channel_id_legacy.ok_or(DecodeError::InvalidValue)?,
 							user_channel_id: next_user_channel_id_legacy,
 							node_id: next_node_id_legacy,
+							htlc_id: None,
 						}])),
 					});
 					Ok(Some(Event::PaymentForwarded {
