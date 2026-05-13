@@ -930,10 +930,13 @@ impl<'a> HarnessNode<'a> {
 		self.persister.mark_update_completed(chan_id, monitor_id, data);
 	}
 
-	fn complete_all_monitor_updates(&self, chan_id: &ChannelId) {
-		for (monitor_id, data) in self.persister.drain_pending_updates(chan_id) {
+	fn complete_all_monitor_updates(&self, chan_id: &ChannelId) -> bool {
+		let completed_updates = self.persister.drain_pending_updates(chan_id);
+		let completed_any = !completed_updates.is_empty();
+		for (monitor_id, data) in completed_updates {
 			self.finish_monitor_update(*chan_id, monitor_id, data);
 		}
+		completed_any
 	}
 
 	fn complete_all_pending_monitor_updates(&self) {
@@ -966,9 +969,12 @@ impl<'a> HarnessNode<'a> {
 		}
 	}
 
-	fn refresh_serialized_manager(&mut self) {
+	fn refresh_serialized_manager(&mut self) -> bool {
 		if self.node.get_and_clear_needs_persistence() {
 			self.serialized_manager = self.node.encode();
+			true
+		} else {
+			false
 		}
 	}
 
@@ -1362,11 +1368,13 @@ impl PeerLink {
 			|| (self.node_a == node_b && self.node_b == node_a)
 	}
 
-	fn complete_all_monitor_updates(&self, nodes: &[HarnessNode<'_>; 3]) {
+	fn complete_all_monitor_updates(&self, nodes: &[HarnessNode<'_>; 3]) -> bool {
+		let mut completed_updates = false;
 		for id in &self.channel_ids {
-			nodes[self.node_a].complete_all_monitor_updates(id);
-			nodes[self.node_b].complete_all_monitor_updates(id);
+			completed_updates |= nodes[self.node_a].complete_all_monitor_updates(id);
+			completed_updates |= nodes[self.node_b].complete_all_monitor_updates(id);
 		}
+		completed_updates
 	}
 
 	fn complete_monitor_updates_for_node(
@@ -2143,7 +2151,6 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 				ChannelMonitorUpdateStatus::Completed
 			},
 		];
-
 		let wallet_a = TestWalletSource::new(SecretKey::from_slice(&[1; 32]).unwrap());
 		let wallet_b = TestWalletSource::new(SecretKey::from_slice(&[2; 32]).unwrap());
 		let wallet_c = TestWalletSource::new(SecretKey::from_slice(&[3; 32]).unwrap());
@@ -2672,7 +2679,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		// claim/fail handling per event batch.
 		let mut claim_set = new_hash_map();
 		let mut events = nodes[node_idx].get_and_clear_pending_events();
-		let had_events = !events.is_empty();
+		let mut had_events = !events.is_empty();
 		for event in events.drain(..) {
 			match event {
 				events::Event::PaymentClaimable { payment_hash, .. } => {
@@ -2728,6 +2735,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		}
 		while nodes[node_idx].needs_pending_htlc_processing() {
 			nodes[node_idx].process_pending_htlc_forwards();
+			had_events = true;
 		}
 		had_events
 	}
@@ -2750,9 +2758,10 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 					"It may take may iterations to settle the state, but it should not take forever"
 				);
 			}
+			let mut made_progress = self.refresh_serialized_managers();
 			// Next, make sure no monitor completion callbacks are pending.
-			self.ab_link.complete_all_monitor_updates(&self.nodes);
-			self.bc_link.complete_all_monitor_updates(&self.nodes);
+			made_progress |= self.ab_link.complete_all_monitor_updates(&self.nodes);
+			made_progress |= self.bc_link.complete_all_monitor_updates(&self.nodes);
 			// Then, make sure any current forwards make their way to their destination.
 			if self.process_msg_events(0, false, ProcessMessages::AllMessages) {
 				last_pass_no_updates = false;
@@ -2776,6 +2785,10 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 				continue;
 			}
 			if self.process_events(2, false) {
+				last_pass_no_updates = false;
+				continue;
+			}
+			if made_progress {
 				last_pass_no_updates = false;
 				continue;
 			}
@@ -2894,10 +2907,12 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		self.nodes[2].record_last_htlc_clear_fee();
 	}
 
-	fn refresh_serialized_managers(&mut self) {
+	fn refresh_serialized_managers(&mut self) -> bool {
+		let mut made_progress = false;
 		for node in &mut self.nodes {
-			node.refresh_serialized_manager();
+			made_progress |= node.refresh_serialized_manager();
 		}
+		made_progress
 	}
 }
 
