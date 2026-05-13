@@ -18,6 +18,7 @@ use bitcoin::constants::WITNESS_SCALE_FACTOR;
 use bitcoin::ecdsa::Signature as BitcoinSignature;
 use bitcoin::key::Secp256k1;
 use bitcoin::policy::MAX_STANDARD_TX_WEIGHT;
+use bitcoin::secp256k1::ecdsa::Signature;
 use bitcoin::secp256k1::{Message, PublicKey};
 use bitcoin::sighash::SighashCache;
 use bitcoin::transaction::Version;
@@ -432,12 +433,12 @@ impl ConstructedTransaction {
 	}
 
 	fn finalize(
-		&self, holder_tx_signatures: &TxSignatures, counterparty_tx_signatures: &TxSignatures,
-		shared_input_sig: Option<&SharedInputSignature>,
+		&self, holder_tx_signatures: TxSignatures, counterparty_tx_signatures: TxSignatures,
+		shared_input_sig: Option<SharedInputSignature>,
 	) -> Option<Transaction> {
 		let mut tx = self.tx.clone();
-		self.add_local_witnesses(&mut tx, holder_tx_signatures.witnesses.clone());
-		self.add_remote_witnesses(&mut tx, counterparty_tx_signatures.witnesses.clone());
+		self.add_local_witnesses(&mut tx, holder_tx_signatures.witnesses);
+		self.add_remote_witnesses(&mut tx, counterparty_tx_signatures.witnesses);
 
 		if let Some(shared_input_index) = self.shared_input_index {
 			let holder_shared_input_sig =
@@ -568,13 +569,25 @@ impl InteractiveTxSigningSession {
 		self.counterparty_tx_signatures.is_some()
 	}
 
-	pub fn has_holder_tx_signatures(&self) -> bool {
+	pub fn has_holder_witnesses(&self) -> bool {
 		self.holder_tx_signatures.is_some()
+	}
+
+	pub fn awaiting_holder_shared_input_signature(&self) -> bool {
+		self.holder_tx_signatures
+			.as_ref()
+			.map(|tx_signatures| {
+				self.shared_input().is_some() && tx_signatures.shared_input_signature.is_none()
+			})
+			.unwrap_or(false)
 	}
 
 	pub fn holder_tx_signatures(&self) -> Option<TxSignatures> {
 		self.holder_tx_signatures
 			.as_ref()
+			.filter(|tx_signatures| {
+				self.shared_input().is_none() || tx_signatures.shared_input_signature.is_some()
+			})
 			.filter(|_| {
 				(self.has_received_commitment_signed && self.holder_sends_tx_signatures_first)
 					|| self.has_received_tx_signatures()
@@ -615,48 +628,75 @@ impl InteractiveTxSigningSession {
 
 		self.counterparty_tx_signatures = Some(tx_signatures.clone());
 
-		let holder_tx_signatures = if !self.holder_sends_tx_signatures_first {
-			self.holder_tx_signatures.clone()
-		} else {
-			None
-		};
+		let holder_tx_signatures =
+			if !self.holder_sends_tx_signatures_first { self.holder_tx_signatures() } else { None };
 
 		let funding_tx_opt = self.signed_tx();
 
 		Ok((holder_tx_signatures, funding_tx_opt))
 	}
 
-	/// Provides the holder witnesses for the unsigned transaction.
+	/// Provides the holder witnesses for the unsigned transaction's non-shared inputs.
+	///
+	/// For splices, call [`Self::provide_holder_shared_input_signature`] separately after the
+	/// shared input signature is available.
 	///
 	/// Returns an error if the witness count does not equal the holder's input count in the
 	/// unsigned transaction.
 	pub fn provide_holder_witnesses<C: bitcoin::secp256k1::Verification>(
-		&mut self, tx_signatures: TxSignatures, secp_ctx: &Secp256k1<C>,
+		&mut self, channel_id: ChannelId, funding_txid_signed: Txid, witnesses: Vec<Witness>,
+		secp_ctx: &Secp256k1<C>,
 	) -> Result<(Option<TxSignatures>, Option<Transaction>), String> {
 		if self.holder_tx_signatures.is_some() {
 			return Err("Holder witnesses were already provided".to_string());
 		}
 
+		if funding_txid_signed != self.unsigned_tx().compute_txid() {
+			return Err("Transaction was malleated prior to signing".to_string());
+		}
+
 		let local_inputs_count = self.local_inputs_count();
-		if tx_signatures.witnesses.len() != local_inputs_count {
+		if witnesses.len() != local_inputs_count {
 			return Err(format!(
 				"Provided witness count of {} does not match required count for {} non-shared inputs",
-				tx_signatures.witnesses.len(),
+				witnesses.len(),
 				local_inputs_count
 			));
 		}
 
-		self.verify_interactive_tx_signatures(secp_ctx, &tx_signatures.witnesses)?;
+		self.verify_interactive_tx_signatures(secp_ctx, &witnesses)?;
 
-		self.holder_tx_signatures = Some(tx_signatures);
-
-		let funding_tx_opt = self.signed_tx();
-		let holder_tx_signatures = (self.has_received_commitment_signed
-			&& (self.holder_sends_tx_signatures_first || self.has_received_tx_signatures()))
-		.then(|| {
-			self.holder_tx_signatures.clone().expect("Holder tx_signatures were just provided")
+		self.holder_tx_signatures = Some(TxSignatures {
+			channel_id,
+			tx_hash: funding_txid_signed,
+			witnesses,
+			shared_input_signature: None,
 		});
 
+		let holder_tx_signatures = self.holder_tx_signatures();
+		let funding_tx_opt = self.signed_tx();
+
+		Ok((holder_tx_signatures, funding_tx_opt))
+	}
+
+	pub fn provide_holder_shared_input_signature(
+		&mut self, shared_input_signature: Signature,
+	) -> Result<(Option<TxSignatures>, Option<Transaction>), String> {
+		if self.shared_input().is_none() {
+			return Err("No shared input exists for this transaction".to_string());
+		}
+
+		let holder_tx_signatures = self.holder_tx_signatures.as_mut().ok_or_else(|| {
+			"Holder witnesses must be provided before the shared input signature".to_string()
+		})?;
+		if holder_tx_signatures.shared_input_signature.is_some() {
+			return Err("The shared input signature was already provided".to_string());
+		}
+
+		holder_tx_signatures.shared_input_signature = Some(shared_input_signature);
+
+		let funding_tx_opt = self.signed_tx();
+		let holder_tx_signatures = self.holder_tx_signatures();
 		Ok((holder_tx_signatures, funding_tx_opt))
 	}
 
@@ -710,9 +750,9 @@ impl InteractiveTxSigningSession {
 	/// Returns `Some` with the fully signed transaction if both holder and counterparty signatures
 	/// are available.
 	pub fn signed_tx(&self) -> Option<Transaction> {
-		let holder_tx_signatures = self.holder_tx_signatures.as_ref()?;
-		let counterparty_tx_signatures = self.counterparty_tx_signatures.as_ref()?;
-		let shared_input_signature = self.shared_input_signature.as_ref();
+		let holder_tx_signatures = self.holder_tx_signatures()?;
+		let counterparty_tx_signatures = self.counterparty_tx_signatures.clone()?;
+		let shared_input_signature = self.shared_input_signature.clone();
 		self.unsigned_tx.finalize(
 			holder_tx_signatures,
 			counterparty_tx_signatures,
