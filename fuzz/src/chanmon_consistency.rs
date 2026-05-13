@@ -1079,9 +1079,7 @@ impl<'a> HarnessNode<'a> {
 		&mut self, use_old_mons: u8, out: &Out, router: &'a FuzzRouter, chan_type: ChanType,
 	) {
 		let logger = Self::build_logger(self.node_id, out);
-		// Re-registering monitors during reload reflects data that was already selected from
-		// simulated storage, so these startup watch_channel calls should complete immediately.
-		let persister = Self::build_persister(ChannelMonitorUpdateStatus::Completed);
+		let persister = Self::build_persister(self.persistence_style);
 		let chain_monitor = Self::build_chain_monitor(
 			&self.broadcaster,
 			&self.fee_estimator,
@@ -1135,14 +1133,8 @@ impl<'a> HarnessNode<'a> {
 		let manager = <(BlockLocator, ChanMan)>::read(&mut &self.serialized_manager[..], read_args)
 			.expect("Failed to read manager");
 		for (channel_id, mon) in monitors.drain() {
-			assert_eq!(
-				chain_monitor.watch_channel(channel_id, mon),
-				Ok(ChannelMonitorUpdateStatus::Completed)
-			);
+			assert_eq!(chain_monitor.watch_channel(channel_id, mon), Ok(self.persistence_style));
 		}
-		// Future monitor writes should follow the node's configured persistence style; only the
-		// startup watch_channel registration above is forced to Completed.
-		*persister.update_ret.lock().unwrap() = self.persistence_style;
 		self.node = manager.1;
 		self.monitor = chain_monitor;
 		self.persister = persister;
