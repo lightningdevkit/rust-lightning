@@ -628,7 +628,7 @@ fn assert_action_timeout_awaiting_response(action: &msgs::ErrorAction) {
 	);
 }
 
-#[derive(Copy, Clone)]
+#[derive(Clone, Copy, PartialEq)]
 enum ChanType {
 	Legacy,
 	KeyedAnchors,
@@ -2082,19 +2082,20 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		connect_peers(&nodes[0], &nodes[1]);
 		connect_peers(&nodes[1], &nodes[2]);
 
+		let set_0reserve = chan_type != ChanType::Legacy;
 		// Create 3 channels between A-B and 3 channels between B-C (6 total).
 		//
 		// Use distinct version numbers for each funding transaction so each test
 		// channel gets its own txid and funding outpoint.
 		// A-B: channel 2 A and B have 0-reserve (trusted open + trusted accept),
-		//      channel 3 A has 0-reserve (trusted accept).
+		//      channel 3 A has 0-reserve (trusted accept), if channels are non-legacy.
 		make_channel(&nodes[0], &nodes[1], 1, false, false, &mut chain_state);
-		make_channel(&nodes[0], &nodes[1], 2, true, true, &mut chain_state);
-		make_channel(&nodes[0], &nodes[1], 3, false, true, &mut chain_state);
+		make_channel(&nodes[0], &nodes[1], 2, set_0reserve, set_0reserve, &mut chain_state);
+		make_channel(&nodes[0], &nodes[1], 3, false, set_0reserve, &mut chain_state);
 		// B-C: channel 4 B has 0-reserve (via trusted accept),
-		//      channel 5 C has 0-reserve (via trusted open).
-		make_channel(&nodes[1], &nodes[2], 4, false, true, &mut chain_state);
-		make_channel(&nodes[1], &nodes[2], 5, true, false, &mut chain_state);
+		//      channel 5 C has 0-reserve (via trusted open), if channels are non-legacy.
+		make_channel(&nodes[1], &nodes[2], 4, false, set_0reserve, &mut chain_state);
+		make_channel(&nodes[1], &nodes[2], 5, set_0reserve, false, &mut chain_state);
 		make_channel(&nodes[1], &nodes[2], 6, false, false, &mut chain_state);
 
 		// Wipe the transactions-broadcasted set to make sure we don't broadcast

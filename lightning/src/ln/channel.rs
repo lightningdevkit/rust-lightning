@@ -3832,6 +3832,14 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 				"Funding must be smaller than the total bitcoin supply. It was {channel_value_satoshis}"
 			)));
 		}
+		if !channel_type.supports_anchors_zero_fee_htlc_tx()
+			&& !channel_type.supports_anchor_zero_fee_commitments()
+			&& holder_selected_channel_reserve_satoshis == 0
+		{
+			return Err(ChannelError::close(
+				"0-reserve is not allowed on legacy channels".to_owned(),
+			));
+		}
 		if msg_channel_reserve_satoshis > channel_value_satoshis {
 			return Err(ChannelError::close(format!(
 				"Bogus channel_reserve_satoshis ({msg_channel_reserve_satoshis}). Must be no greater than channel_value_satoshis: {channel_value_satoshis}"
@@ -4323,6 +4331,14 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		}
 
 		let channel_type = get_initial_channel_type(&config, their_features);
+		if !channel_type.supports_anchors_zero_fee_htlc_tx()
+			&& !channel_type.supports_anchor_zero_fee_commitments()
+			&& holder_selected_channel_reserve_satoshis == 0
+		{
+			return Err(APIError::APIMisuseError {
+				err: "0-reserve is not allowed on legacy channels".to_owned(),
+			});
+		}
 		debug_assert!(!channel_type.supports_any_optional_bits());
 		debug_assert!(!channel_type
 			.requires_unknown_bits_from(&channelmanager::provided_channel_type_features(&config)));
@@ -4869,6 +4885,14 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		}
 
 		let channel_type = funding.get_channel_type();
+		if !channel_type.supports_anchors_zero_fee_htlc_tx()
+			&& !channel_type.supports_anchor_zero_fee_commitments()
+			&& funding.holder_selected_channel_reserve_satoshis == 0
+		{
+			return Err(ChannelError::close(
+				"0-reserve is not allowed on legacy channels".to_owned(),
+			));
+		}
 		if common_fields.max_accepted_htlcs > max_htlcs(channel_type) {
 			return Err(ChannelError::close(format!(
 				"max_accepted_htlcs was {}. It must not be larger than {}",
@@ -6576,6 +6600,13 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		}
 
 		let next_channel_type = get_initial_channel_type(user_config, &eligible_features);
+		if !next_channel_type.supports_anchors_zero_fee_htlc_tx()
+			&& !next_channel_type.supports_anchor_zero_fee_commitments()
+			&& funding.holder_selected_channel_reserve_satoshis == 0
+		{
+			// 0-reserve is not allowed on legacy channels
+			return Err(());
+		}
 
 		self.feerate_per_kw =
 			selected_commitment_sat_per_1000_weight(&fee_estimator, &next_channel_type);
