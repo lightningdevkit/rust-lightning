@@ -9304,3 +9304,175 @@ fn do_test_splice_out_initiator_reserve_breach_zero_fee_commitments(
 		acceptor.logger.assert_log("lightning::ln::channelmanager", cannot_splice_out, 1);
 	}
 }
+
+#[test]
+fn test_splice_out_maximum_on_both_commitments_dust_on_fundee_commitment() {
+	use crate::ln::htlc_reserve_unit_tests::setup_0reserve_no_outputs_channels;
+
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let mut config = test_default_channel_config();
+	config.channel_handshake_config.announced_channel_max_inbound_htlc_value_in_flight_percentage =
+		100;
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	const CHANNEL_VALUE_SAT: u64 = 100_000;
+	const FEERATE: u32 = 253;
+	const TOTAL_ANCHORS_SAT: u64 = 2 * 330;
+	const NODE_0_DUST_LIMIT_SAT: u64 = 354;
+	const NODE_1_DUST_LIMIT_SAT: u64 = 10_000;
+
+	let (channel_id, _transaction) =
+		setup_0reserve_no_outputs_channels(&nodes, CHANNEL_VALUE_SAT, NODE_0_DUST_LIMIT_SAT);
+
+	{
+		let per_peer_state_lock;
+		let mut peer_state_lock;
+		let chan =
+			get_channel_ref!(nodes[0], nodes[1], per_peer_state_lock, peer_state_lock, channel_id);
+		chan.context_mut().counterparty_dust_limit_satoshis = NODE_1_DUST_LIMIT_SAT;
+		assert_eq!(chan.context().holder_dust_limit_satoshis, NODE_0_DUST_LIMIT_SAT);
+		assert_eq!(chan.funding().holder_selected_channel_reserve_satoshis, 0);
+		assert_eq!(chan.funding().counterparty_selected_channel_reserve_satoshis, Some(0));
+	}
+
+	{
+		let per_peer_state_lock;
+		let mut peer_state_lock;
+		let chan =
+			get_channel_ref!(nodes[1], nodes[0], per_peer_state_lock, peer_state_lock, channel_id);
+		chan.context_mut().holder_dust_limit_satoshis = NODE_1_DUST_LIMIT_SAT;
+		assert_eq!(chan.context().counterparty_dust_limit_satoshis, NODE_0_DUST_LIMIT_SAT);
+		assert_eq!(chan.funding().holder_selected_channel_reserve_satoshis, 0);
+		assert_eq!(chan.funding().counterparty_selected_channel_reserve_satoshis, Some(0));
+	}
+
+	let details = &nodes[0].node.list_channels()[0];
+	let channel_type = details.channel_type.clone().unwrap();
+	assert_eq!(channel_type, ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies());
+
+	// This HTLC is only present on node 0's commitment
+	const SNEAKY_HTLC_SAT: u64 = 5_000;
+
+	let (_, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], SNEAKY_HTLC_SAT * 1000);
+
+	let node_0_details = &nodes[0].node.list_channels()[0];
+	let reserved_fee_sat = chan_utils::commit_tx_fee_sat(FEERATE, 0, &channel_type);
+	let expected_next_splice_out_maximum_sat = CHANNEL_VALUE_SAT
+		- SNEAKY_HTLC_SAT
+		- TOTAL_ANCHORS_SAT
+		- reserved_fee_sat
+		- NODE_1_DUST_LIMIT_SAT;
+	assert_eq!(node_0_details.next_splice_out_maximum_sat, expected_next_splice_out_maximum_sat);
+	let node_1_details = &nodes[1].node.list_channels()[0];
+	assert_eq!(node_1_details.next_splice_out_maximum_sat, 0);
+
+	fail_payment(&nodes[0], &[&nodes[1]], payment_hash);
+
+	let details = &nodes[0].node.list_channels()[0];
+	let reserved_fee_sat = chan_utils::commit_tx_fee_sat(FEERATE, 2, &channel_type);
+	let expected_available_capacity_sat = CHANNEL_VALUE_SAT - TOTAL_ANCHORS_SAT - reserved_fee_sat;
+	assert_eq!(details.next_outbound_htlc_limit_msat, expected_available_capacity_sat * 1000);
+	let node_0_payment_sat = expected_available_capacity_sat;
+	send_payment(&nodes[0], &[&nodes[1]], node_0_payment_sat * 1000);
+
+	// Make sure the local output is now gone from node 1's commitment
+	assert!(TOTAL_ANCHORS_SAT + reserved_fee_sat < NODE_1_DUST_LIMIT_SAT);
+
+	let details = &nodes[1].node.list_channels()[0];
+	let expected_next_splice_out_maximum_sat = node_0_payment_sat - NODE_1_DUST_LIMIT_SAT;
+	assert_eq!(details.next_splice_out_maximum_sat, expected_next_splice_out_maximum_sat);
+
+	let details = &nodes[0].node.list_channels()[0];
+	let reserved_fee_sat = chan_utils::commit_tx_fee_sat(FEERATE, 1, &channel_type);
+	let expected_next_splice_out_maximum_sat =
+		CHANNEL_VALUE_SAT - node_0_payment_sat - TOTAL_ANCHORS_SAT - reserved_fee_sat;
+	assert_eq!(details.next_splice_out_maximum_sat, expected_next_splice_out_maximum_sat);
+}
+
+#[test]
+fn test_splice_out_maximum_on_both_commitments_dust_on_funder_commitment() {
+	use crate::ln::htlc_reserve_unit_tests::setup_0reserve_no_outputs_channels;
+
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let mut config = test_default_channel_config();
+	config.channel_handshake_config.announced_channel_max_inbound_htlc_value_in_flight_percentage =
+		100;
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	const CHANNEL_VALUE_SAT: u64 = 100_000;
+	const FEERATE: u32 = 253;
+	const TOTAL_ANCHORS_SAT: u64 = 2 * 330;
+	const NODE_0_DUST_LIMIT_SAT: u64 = 10_000;
+	const NODE_1_DUST_LIMIT_SAT: u64 = 354;
+
+	let (channel_id, _transaction) =
+		setup_0reserve_no_outputs_channels(&nodes, CHANNEL_VALUE_SAT, NODE_1_DUST_LIMIT_SAT);
+
+	{
+		let per_peer_state_lock;
+		let mut peer_state_lock;
+		let chan =
+			get_channel_ref!(nodes[0], nodes[1], per_peer_state_lock, peer_state_lock, channel_id);
+		chan.context_mut().holder_dust_limit_satoshis = NODE_0_DUST_LIMIT_SAT;
+		assert_eq!(chan.context().counterparty_dust_limit_satoshis, NODE_1_DUST_LIMIT_SAT);
+		assert_eq!(chan.funding().holder_selected_channel_reserve_satoshis, 0);
+		assert_eq!(chan.funding().counterparty_selected_channel_reserve_satoshis, Some(0));
+	}
+
+	{
+		let per_peer_state_lock;
+		let mut peer_state_lock;
+		let chan =
+			get_channel_ref!(nodes[1], nodes[0], per_peer_state_lock, peer_state_lock, channel_id);
+		chan.context_mut().counterparty_dust_limit_satoshis = NODE_0_DUST_LIMIT_SAT;
+		assert_eq!(chan.context().holder_dust_limit_satoshis, NODE_1_DUST_LIMIT_SAT);
+		assert_eq!(chan.funding().holder_selected_channel_reserve_satoshis, 0);
+		assert_eq!(chan.funding().counterparty_selected_channel_reserve_satoshis, Some(0));
+	}
+
+	let details = &nodes[0].node.list_channels()[0];
+	let channel_type = details.channel_type.clone().unwrap();
+	assert_eq!(channel_type, ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies());
+
+	// This HTLC is only present on node 1's commitment
+	const SNEAKY_HTLC_SAT: u64 = 5_000;
+
+	let (_, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], SNEAKY_HTLC_SAT * 1000);
+
+	let node_0_details = &nodes[0].node.list_channels()[0];
+	let reserved_fee_sat = chan_utils::commit_tx_fee_sat(FEERATE, 0, &channel_type);
+	let expected_next_splice_out_maximum_sat = CHANNEL_VALUE_SAT
+		- SNEAKY_HTLC_SAT
+		- TOTAL_ANCHORS_SAT
+		- reserved_fee_sat
+		- NODE_0_DUST_LIMIT_SAT;
+	assert_eq!(node_0_details.next_splice_out_maximum_sat, expected_next_splice_out_maximum_sat);
+	let node_1_details = &nodes[1].node.list_channels()[0];
+	assert_eq!(node_1_details.next_splice_out_maximum_sat, 0);
+
+	fail_payment(&nodes[0], &[&nodes[1]], payment_hash);
+
+	let details = &nodes[0].node.list_channels()[0];
+	let reserved_fee_sat = chan_utils::commit_tx_fee_sat(FEERATE, 2, &channel_type);
+	let expected_available_capacity_sat = CHANNEL_VALUE_SAT - TOTAL_ANCHORS_SAT - reserved_fee_sat;
+	assert_eq!(details.next_outbound_htlc_limit_msat, expected_available_capacity_sat * 1000);
+	let node_0_payment_sat = expected_available_capacity_sat;
+	send_payment(&nodes[0], &[&nodes[1]], node_0_payment_sat * 1000);
+
+	// Make sure the local output is now gone from node 0's commitment
+	assert!(TOTAL_ANCHORS_SAT + reserved_fee_sat < NODE_0_DUST_LIMIT_SAT);
+
+	let details = &nodes[1].node.list_channels()[0];
+	let expected_next_splice_out_maximum_sat = node_0_payment_sat - NODE_0_DUST_LIMIT_SAT;
+	assert_eq!(details.next_splice_out_maximum_sat, expected_next_splice_out_maximum_sat);
+
+	let details = &nodes[0].node.list_channels()[0];
+	let reserved_fee_sat = chan_utils::commit_tx_fee_sat(FEERATE, 1, &channel_type);
+	let expected_next_splice_out_maximum_sat =
+		CHANNEL_VALUE_SAT - node_0_payment_sat - TOTAL_ANCHORS_SAT - reserved_fee_sat;
+	assert_eq!(details.next_splice_out_maximum_sat, expected_next_splice_out_maximum_sat);
+}
