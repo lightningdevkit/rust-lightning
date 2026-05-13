@@ -418,7 +418,6 @@ fn get_test_tuples() -> Vec<(String, SignedRawBolt11Invoice, bool, bool)> {
 			))
 				.description("payment metadata inside".to_owned())
 				.payment_metadata(<Vec<u8>>::from_hex("01fafaf0").unwrap())
-				.require_payment_metadata()
 				.payee_pub_key(PublicKey::from_slice(&<Vec<u8>>::from_hex(
 						"03e7156ae33b0a208d0744199163177e909e80176e55d97a2f221ede0f934dd9ad"
 					).unwrap()).unwrap())
@@ -450,7 +449,6 @@ fn get_test_tuples() -> Vec<(String, SignedRawBolt11Invoice, bool, bool)> {
 			))
 				.description("payment metadata inside".to_owned())
 				.payment_metadata(<Vec<u8>>::from_hex("01fafaf0").unwrap())
-				.require_payment_metadata()
 				.payment_secret(PaymentSecret([0x11; 32]))
 				.build_raw()
 				.unwrap()
