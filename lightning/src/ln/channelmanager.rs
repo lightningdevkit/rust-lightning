@@ -1472,6 +1472,11 @@ enum BackgroundEvent {
 		channel_id: ChannelId,
 		highest_update_id_completed: u64,
 	},
+	/// A channel had blocked monitor updates waiting on startup. If the updates were blocked on
+	/// an MPP claim blocker not written to disk, we may be able to unblock them now.
+	///
+	/// This event is never written to disk.
+	AttemptUnblockMonitorUpdates { counterparty_node_id: PublicKey, channel_id: ChannelId },
 }
 
 /// A pointer to a channel that is unblocked when an event is surfaced
@@ -8779,6 +8784,12 @@ impl<
 						&counterparty_node_id,
 					);
 				},
+				BackgroundEvent::AttemptUnblockMonitorUpdates {
+					counterparty_node_id,
+					channel_id,
+				} => {
+					self.handle_monitor_update_release(counterparty_node_id, channel_id, None);
+				},
 			}
 		}
 		NotifyOption::DoPersist
@@ -9735,6 +9746,7 @@ impl<
 									BackgroundEvent::MonitorUpdatesComplete {
 										channel_id, ..
 									} => *channel_id == _prev_channel_id,
+									BackgroundEvent::AttemptUnblockMonitorUpdates { .. } => false,
 								}
 							});
 						assert!(channel_closed || matching_bg_event, "{:?}", *background_events);
@@ -19553,6 +19565,14 @@ impl<
 						log_error!(logger, " Without the latest ChannelMonitor we cannot continue without risking funds.");
 						log_error!(logger, " Please ensure the chain::Watch API requirements are met and file a bug report at https://github.com/lightningdevkit/rust-lightning");
 						return Err(DecodeError::DangerousValue);
+					}
+					if funded_chan.blocked_monitor_updates_pending() > 0 {
+						pending_background_events.push(
+							BackgroundEvent::AttemptUnblockMonitorUpdates {
+								counterparty_node_id: *counterparty_id,
+								channel_id: *chan_id,
+							},
+						);
 					}
 				} else {
 					// We shouldn't have persisted (or read) any unfunded channel types so none should have been
