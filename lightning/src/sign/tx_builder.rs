@@ -11,7 +11,7 @@ use crate::ln::chan_utils::{
 };
 use crate::ln::channel::{
 	get_v2_channel_reserve_satoshis, CommitmentStats, ANCHOR_OUTPUT_VALUE_SATOSHI,
-	MIN_CHANNEL_VALUE_SATOSHIS,
+	FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE, MIN_CHANNEL_VALUE_SATOSHIS,
 };
 use crate::prelude::*;
 use crate::types::features::ChannelTypeFeatures;
@@ -219,7 +219,7 @@ fn has_output(
 fn get_next_commitment_stats(
 	local: bool, is_outbound_from_holder: bool, channel_value_satoshis: u64,
 	value_to_holder_msat: u64, next_commitment_htlcs: &[HTLCAmountDirection],
-	addl_nondust_htlc_count: usize, feerate_per_kw: u32,
+	addl_nondust_htlc_count: usize, feerate_per_kw: u32, assume_fee_spike: bool,
 	dust_exposure_limiting_feerate: Option<u32>, broadcaster_dust_limit_satoshis: u64,
 	channel_type: &ChannelTypeFeatures,
 ) -> Result<NextCommitmentStats, ()> {
@@ -270,11 +270,16 @@ fn get_next_commitment_stats(
 		channel_type,
 	);
 
-	// Calculate fees on commitment transaction
-	let nondust_htlc_count = next_commitment_htlcs
+	let spiked_feerate = if assume_fee_spike && !channel_type.supports_anchors_zero_fee_htlc_tx() {
+		feerate_per_kw.saturating_mul(FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE as u32)
+	} else {
+		feerate_per_kw
+	};
+
+	let spiked_nondust_htlc_count = next_commitment_htlcs
 		.iter()
 		.filter(|htlc| {
-			!htlc.is_dust(local, feerate_per_kw, broadcaster_dust_limit_satoshis, channel_type)
+			!htlc.is_dust(local, spiked_feerate, broadcaster_dust_limit_satoshis, channel_type)
 		})
 		.count();
 
@@ -284,8 +289,8 @@ fn get_next_commitment_stats(
 		is_outbound_from_holder,
 		holder_balance_before_fee_msat,
 		counterparty_balance_before_fee_msat,
-		feerate_per_kw,
-		nondust_htlc_count,
+		spiked_feerate,
+		spiked_nondust_htlc_count,
 		broadcaster_dust_limit_satoshis,
 		channel_type,
 	) {
@@ -295,8 +300,17 @@ fn get_next_commitment_stats(
 	// 2) Now including any additional non-dust HTLCs (usually the fee spike buffer HTLC), does the funder cover
 	// this bigger transaction fee ? The funder can dip below their dust limit to cover this case, as the
 	// commitment will have at least one output: the non-dust fee spike buffer HTLC offered by the counterparty.
+	let nondust_htlc_count = next_commitment_htlcs
+		.iter()
+		.filter(|htlc| {
+			!htlc.is_dust(local, feerate_per_kw, broadcaster_dust_limit_satoshis, channel_type)
+		})
+		.count();
+	// Note here we use the htlc count at the current feerate together with the spiked feerate;
+	// this makes sure that the holder can afford any fee bump between 1x to 2x from the current
+	// feerate if the fee spike multiple is included.
 	let commit_tx_fee_sat = commit_tx_fee_sat(
-		feerate_per_kw,
+		spiked_feerate,
 		nondust_htlc_count + addl_nondust_htlc_count,
 		channel_type,
 	);
@@ -475,12 +489,27 @@ fn get_available_balances(
 		.filter(|htlc| {
 			!htlc.is_dust(
 				true,
+				feerate_per_kw,
+				channel_constraints.holder_dust_limit_satoshis,
+				channel_type,
+			)
+		})
+		.count();
+	let local_spiked_nondust_htlc_count = pending_htlcs
+		.iter()
+		.filter(|htlc| {
+			!htlc.is_dust(
+				true,
 				spiked_feerate,
 				channel_constraints.holder_dust_limit_satoshis,
 				channel_type,
 			)
 		})
 		.count();
+
+	// Note here we use the htlc count at the current feerate together with the spiked feerate;
+	// this makes sure that the holder can afford any fee bump between 1x to 2x from the current
+	// feerate.
 	let local_max_commit_tx_fee_sat = commit_tx_fee_sat(
 		spiked_feerate,
 		local_nondust_htlc_count + fee_spike_buffer_htlc + 1,
@@ -544,7 +573,7 @@ fn get_available_balances(
 		remote_balance_before_fee_msat,
 		spiked_feerate,
 		// The number of non-dust HTLCs on the local commitment at the spiked feerate
-		local_nondust_htlc_count,
+		local_spiked_nondust_htlc_count,
 		// The post-splice minimum balance of the holder
 		if is_outbound_from_holder { local_min_commit_tx_fee_sat } else { 0 },
 		&channel_constraints,
@@ -677,7 +706,7 @@ fn get_available_balances(
 	// Now adjust our min and max size HTLC to make sure both the local and the remote commitments still have
 	// at least one output at the spiked feerate.
 
-	let remote_nondust_htlc_count = pending_htlcs
+	let remote_spiked_nondust_htlc_count = pending_htlcs
 		.iter()
 		.filter(|htlc| {
 			!htlc.is_dust(
@@ -695,8 +724,8 @@ fn get_available_balances(
 			is_outbound_from_holder,
 			local_balance_before_fee_msat,
 			remote_balance_before_fee_msat,
-			local_nondust_htlc_count,
 			spiked_feerate,
+			local_spiked_nondust_htlc_count,
 			channel_constraints.holder_dust_limit_satoshis,
 			channel_type,
 			next_outbound_htlc_minimum_msat,
@@ -709,8 +738,8 @@ fn get_available_balances(
 			is_outbound_from_holder,
 			local_balance_before_fee_msat,
 			remote_balance_before_fee_msat,
-			remote_nondust_htlc_count,
 			spiked_feerate,
+			remote_spiked_nondust_htlc_count,
 			channel_constraints.counterparty_dust_limit_satoshis,
 			channel_type,
 			next_outbound_htlc_minimum_msat,
@@ -731,9 +760,10 @@ fn get_available_balances(
 
 fn adjust_boundaries_if_max_dust_htlc_produces_no_output(
 	local: bool, is_outbound_from_holder: bool, holder_balance_before_fee_msat: u64,
-	counterparty_balance_before_fee_msat: u64, nondust_htlc_count: usize, spiked_feerate: u32,
-	dust_limit_satoshis: u64, channel_type: &ChannelTypeFeatures,
-	next_outbound_htlc_minimum_msat: u64, available_capacity_msat: u64,
+	counterparty_balance_before_fee_msat: u64, spiked_feerate: u32,
+	spiked_feerate_nondust_htlc_count: usize, dust_limit_satoshis: u64,
+	channel_type: &ChannelTypeFeatures, next_outbound_htlc_minimum_msat: u64,
+	available_capacity_msat: u64,
 ) -> (u64, u64) {
 	// First, determine the biggest dust HTLC we could send
 	let (htlc_success_tx_fee_sat, htlc_timeout_tx_fee_sat) =
@@ -749,7 +779,7 @@ fn adjust_boundaries_if_max_dust_htlc_produces_no_output(
 		holder_balance_before_fee_msat.saturating_sub(max_dust_htlc_msat),
 		counterparty_balance_before_fee_msat,
 		spiked_feerate,
-		nondust_htlc_count,
+		spiked_feerate_nondust_htlc_count,
 		dust_limit_satoshis,
 		channel_type,
 	) {
@@ -802,7 +832,7 @@ pub(crate) trait TxBuilder {
 	fn get_channel_stats(
 		&self, local: bool, is_outbound_from_holder: bool, channel_value_satoshis: u64,
 		value_to_holder_msat: u64, pending_htlcs: &[HTLCAmountDirection],
-		addl_nondust_htlc_count: usize, feerate_per_kw: u32,
+		addl_nondust_htlc_count: usize, feerate_per_kw: u32, assume_fee_spike: bool,
 		dust_exposure_limiting_feerate: Option<u32>, max_dust_htlc_exposure_msat: u64,
 		channel_constraints: ChannelConstraints, channel_type: &ChannelTypeFeatures,
 	) -> Result<ChannelStats, ()>;
@@ -820,7 +850,7 @@ impl TxBuilder for SpecTxBuilder {
 	fn get_channel_stats(
 		&self, local: bool, is_outbound_from_holder: bool, channel_value_satoshis: u64,
 		value_to_holder_msat: u64, pending_htlcs: &[HTLCAmountDirection],
-		addl_nondust_htlc_count: usize, feerate_per_kw: u32,
+		addl_nondust_htlc_count: usize, feerate_per_kw: u32, assume_fee_spike: bool,
 		dust_exposure_limiting_feerate: Option<u32>, max_dust_htlc_exposure_msat: u64,
 		channel_constraints: ChannelConstraints, channel_type: &ChannelTypeFeatures,
 	) -> Result<ChannelStats, ()> {
@@ -833,6 +863,7 @@ impl TxBuilder for SpecTxBuilder {
 				pending_htlcs,
 				addl_nondust_htlc_count,
 				feerate_per_kw,
+				assume_fee_spike,
 				dust_exposure_limiting_feerate,
 				channel_constraints.holder_dust_limit_satoshis,
 				channel_type,
@@ -846,6 +877,7 @@ impl TxBuilder for SpecTxBuilder {
 				pending_htlcs,
 				addl_nondust_htlc_count,
 				feerate_per_kw,
+				assume_fee_spike,
 				dust_exposure_limiting_feerate,
 				channel_constraints.counterparty_dust_limit_satoshis,
 				channel_type,
