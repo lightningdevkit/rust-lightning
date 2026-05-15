@@ -323,7 +323,8 @@ impl Readable for ChannelHandshakeConfig {
 #[derive(Copy, Clone, Debug)]
 pub struct ChannelHandshakeLimits {
 	/// Minimum allowed satoshis when a channel is funded. This is supplied by the sender and so
-	/// only applies to inbound channels.
+	/// only applies to inbound channels. It is also enforced for inbound channels on splices in
+	/// which the counterparty's contribution is negative.
 	///
 	/// Default value: `1000`
 	///
