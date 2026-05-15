@@ -8698,7 +8698,7 @@ impl<
 									},
 								};
 
-								let verify_opt = invoice_request_opt.and_then(|invreq| {
+								let verified_invreq = match invoice_request_opt.and_then(|invreq| {
 									invreq
 										.verify_using_recipient_data(
 											offer_nonce,
@@ -8706,22 +8706,28 @@ impl<
 											&self.secp_ctx,
 										)
 										.ok()
-								});
-								let verified_invreq = match verify_opt {
-									Some(verified_invreq) => {
-										if let Some(invreq_amt_msat) =
-											verified_invreq.amount_msats()
-										{
-											if payment_data.total_msat < invreq_amt_msat {
-												fail_htlc!(payment_hash);
-											}
-										}
-										verified_invreq
-									},
+								}) {
+									Some(verified_invreq) => verified_invreq,
 									None => {
 										fail_htlc!(payment_hash);
 									},
 								};
+
+								match verified_invreq
+									.payable_amount_msats(&self.currency_conversion)
+								{
+									Ok(invreq_amt_msat) => {
+										if payment_data.total_msat < invreq_amt_msat {
+											fail_htlc!(payment_hash);
+										}
+									},
+									// If we cannot check the offer amount, reject the payment instead of risking
+									// accepting an underpayment.
+									Err(_) => {
+										fail_htlc!(payment_hash);
+									},
+								}
+
 								let payment_purpose_context =
 									PaymentContext::Bolt12Offer(Bolt12OfferContext {
 										offer_id: verified_invreq.offer_id(),

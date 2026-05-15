@@ -70,15 +70,16 @@ use crate::blinded_path::payment::BlindedPaymentPath;
 use crate::io;
 use crate::ln::channelmanager::PaymentId;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN};
-use crate::ln::msgs::DecodeError;
+use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
+use crate::offers::currency::CurrencyConversion;
 use crate::offers::invoice::{DerivedSigningPubkey, ExplicitSigningPubkey, SigningPubkeyStrategy};
 use crate::offers::merkle::{
 	self, SignError, SignFn, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash, TlvStream,
 };
 use crate::offers::nonce::Nonce;
 use crate::offers::offer::{
-	Amount, ExperimentalOfferTlvStream, ExperimentalOfferTlvStreamRef, Offer, OfferContents,
-	OfferId, OfferTlvStream, OfferTlvStreamRef, EXPERIMENTAL_OFFER_TYPES, OFFER_TYPES,
+	ExperimentalOfferTlvStream, ExperimentalOfferTlvStreamRef, Offer, OfferContents, OfferId,
+	OfferTlvStream, OfferTlvStreamRef, EXPERIMENTAL_OFFER_TYPES, OFFER_TYPES,
 };
 use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
 use crate::offers::payer::{PayerContents, PayerTlvStream, PayerTlvStreamRef};
@@ -708,21 +709,27 @@ macro_rules! invoice_request_accessors { ($self: ident, $contents: expr) => {
 		$contents.chain()
 	}
 
-	/// The amount to pay in msats (i.e., the minimum lightning-payable unit for [`chain`]), which
-	/// must be greater than or equal to [`Offer::amount`], converted if necessary.
-	///
-	/// [`chain`]: Self::chain
+	/// Returns the amount explicitly requested in the invoice request,
+	/// in millisatoshis.
 	pub fn amount_msats(&$self) -> Option<u64> {
 		$contents.amount_msats()
 	}
 
-	/// Returns whether an amount was set in the request; otherwise, if [`amount_msats`] is `Some`
-	/// then it was inferred from the [`Offer::amount`] and [`quantity`].
+	/// Returns the amount payable for this invoice request, in millisatoshis.
 	///
-	/// [`amount_msats`]: Self::amount_msats
-	/// [`quantity`]: Self::quantity
-	pub fn has_amount_msats(&$self) -> bool {
-		$contents.has_amount_msats()
+	/// The payable amount is determined as follows:
+	///
+	/// - If the invoice request explicitly specifies an amount, that amount is returned.
+	/// - Otherwise, the amount is inferred from the [`Offer`] amount and the requested
+	///   quantity.
+	///
+	/// Returns an error if:
+	///
+	/// - no payable amount can be determined,
+	/// - the offer amount cannot be converted to Bitcoin, or
+	/// - the amount is semantically invalid.
+	pub fn payable_amount_msats<CC: CurrencyConversion>(&$self, converter: &CC) -> Result<u64, Bolt12SemanticError> {
+		$contents.payable_amount_msats(converter)
 	}
 
 	/// Features pertaining to requesting an invoice.
@@ -1147,20 +1154,33 @@ impl InvoiceRequestContents {
 	}
 
 	pub(super) fn amount_msats(&self) -> Option<u64> {
-		self.inner.amount_msats().or_else(|| match self.inner.offer.amount() {
-			Some(Amount::Bitcoin { amount_msats }) => {
-				Some(amount_msats.saturating_mul(self.quantity().unwrap_or(1)))
-			},
-			Some(Amount::Currency { .. }) => None,
-			None => {
-				debug_assert!(false);
-				None
-			},
-		})
+		self.inner.amount_msats()
 	}
 
-	pub(super) fn has_amount_msats(&self) -> bool {
-		self.inner.amount_msats().is_some()
+	pub(super) fn payable_amount_msats<CC: CurrencyConversion>(
+		&self, converter: &CC,
+	) -> Result<u64, Bolt12SemanticError> {
+		if let Some(amount_msats) = self.inner.amount_msats() {
+			return Ok(amount_msats);
+		}
+
+		match self.inner.offer.amount() {
+			Some(amount) => {
+				// Use the lower bound when choosing the concrete payable amount. The range
+				// represents the payee's accepted exchange-rate uncertainty, and choosing the
+				// minimum avoids overcharging the payer.
+				let (minimum_msats, _maximum_msats) = amount.to_msats_range(converter)?;
+
+				minimum_msats
+					.checked_mul(self.quantity().unwrap_or(1))
+					.filter(|msats| *msats <= MAX_VALUE_MSAT)
+					.ok_or(Bolt12SemanticError::InvalidAmount)
+			},
+			None => {
+				debug_assert!(false);
+				Err(Bolt12SemanticError::MissingAmount)
+			},
+		}
 	}
 
 	pub(super) fn features(&self) -> &InvoiceRequestFeatures {
@@ -1626,7 +1646,7 @@ mod tests {
 		assert_eq!(invoice_request.supported_quantity(), Quantity::One);
 		assert_eq!(invoice_request.issuer_signing_pubkey(), Some(recipient_pubkey()));
 		assert_eq!(invoice_request.chain(), ChainHash::using_genesis_block(Network::Bitcoin));
-		assert_eq!(invoice_request.amount_msats(), Some(1000));
+		assert_eq!(invoice_request.payable_amount_msats(&NullCurrencyConversion), Ok(1000));
 		assert_eq!(invoice_request.invoice_request_features(), &InvoiceRequestFeatures::empty());
 		assert_eq!(invoice_request.quantity(), None);
 		assert_eq!(invoice_request.payer_note(), None);
@@ -1942,7 +1962,6 @@ mod tests {
 			.build_and_sign()
 			.unwrap();
 		let (_, _, tlv_stream, _, _, _) = invoice_request.as_tlv_stream();
-		assert!(invoice_request.has_amount_msats());
 		assert_eq!(invoice_request.amount_msats(), Some(1000));
 		assert_eq!(tlv_stream.amount, Some(1000));
 
@@ -1959,7 +1978,6 @@ mod tests {
 			.build_and_sign()
 			.unwrap();
 		let (_, _, tlv_stream, _, _, _) = invoice_request.as_tlv_stream();
-		assert!(invoice_request.has_amount_msats());
 		assert_eq!(invoice_request.amount_msats(), Some(1000));
 		assert_eq!(tlv_stream.amount, Some(1000));
 
@@ -1974,7 +1992,6 @@ mod tests {
 			.build_and_sign()
 			.unwrap();
 		let (_, _, tlv_stream, _, _, _) = invoice_request.as_tlv_stream();
-		assert!(invoice_request.has_amount_msats());
 		assert_eq!(invoice_request.amount_msats(), Some(1001));
 		assert_eq!(tlv_stream.amount, Some(1001));
 
@@ -2085,8 +2102,8 @@ mod tests {
 			.build_and_sign()
 			.unwrap();
 		let (_, _, tlv_stream, _, _, _) = invoice_request.as_tlv_stream();
-		assert!(!invoice_request.has_amount_msats());
-		assert_eq!(invoice_request.amount_msats(), Some(1000));
+		assert!(invoice_request.amount_msats().is_none());
+		assert_eq!(invoice_request.payable_amount_msats(&NullCurrencyConversion), Ok(1000));
 		assert_eq!(tlv_stream.amount, None);
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
@@ -2101,8 +2118,8 @@ mod tests {
 			.build_and_sign()
 			.unwrap();
 		let (_, _, tlv_stream, _, _, _) = invoice_request.as_tlv_stream();
-		assert!(!invoice_request.has_amount_msats());
-		assert_eq!(invoice_request.amount_msats(), Some(2000));
+		assert!(invoice_request.amount_msats().is_none());
+		assert_eq!(invoice_request.payable_amount_msats(&NullCurrencyConversion), Ok(2000));
 		assert_eq!(tlv_stream.amount, None);
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
@@ -2115,8 +2132,11 @@ mod tests {
 			.unwrap()
 			.build_unchecked_and_sign();
 		let (_, _, tlv_stream, _, _, _) = invoice_request.as_tlv_stream();
-		assert!(!invoice_request.has_amount_msats());
-		assert_eq!(invoice_request.amount_msats(), None);
+		assert!(invoice_request.amount_msats().is_none());
+		assert_eq!(
+			invoice_request.payable_amount_msats(&NullCurrencyConversion),
+			Err(Bolt12SemanticError::UnsupportedCurrency)
+		);
 		assert_eq!(tlv_stream.amount, None);
 	}
 
