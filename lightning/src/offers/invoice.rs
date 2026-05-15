@@ -121,6 +121,7 @@ use crate::io;
 use crate::ln::channelmanager::PaymentId;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN};
 use crate::ln::msgs::DecodeError;
+use crate::offers::currency::NullCurrencyConversion;
 #[cfg(test)]
 use crate::offers::invoice_macros::invoice_builder_methods_test_common;
 use crate::offers::invoice_macros::{invoice_accessors_common, invoice_builder_methods_common};
@@ -1755,7 +1756,9 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 				experimental_invoice_request_tlv_stream,
 			))?;
 
-			if let Some(requested_amount_msats) = invoice_request.amount_msats() {
+			if let Ok(requested_amount_msats) =
+				invoice_request.payable_amount_msats(&NullCurrencyConversion)
+			{
 				if amount_msats != requested_amount_msats {
 					return Err(Bolt12SemanticError::InvalidAmount);
 				}
