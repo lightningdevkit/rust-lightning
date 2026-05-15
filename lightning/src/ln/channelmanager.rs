@@ -8552,8 +8552,8 @@ impl<
 								});
 								let verified_invreq = match verify_opt {
 									Some(verified_invreq) => {
-										if let Some(invreq_amt_msat) =
-											verified_invreq.amount_msats()
+										if let Ok(invreq_amt_msat) = verified_invreq
+											.payable_amount_msats(&self.currency_conversion)
 										{
 											if payment_data.total_msat < invreq_amt_msat {
 												fail_htlc!(claimable_htlc, payment_hash);
