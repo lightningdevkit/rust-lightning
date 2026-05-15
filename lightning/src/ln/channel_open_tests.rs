@@ -24,7 +24,8 @@ use crate::ln::channelmanager::{
 	MAX_UNFUNDED_CHANS_PER_PEER,
 };
 use crate::ln::msgs::{
-	AcceptChannel, BaseMessageHandler, ChannelMessageHandler, ErrorAction, MessageSendEvent,
+	AcceptChannel, BaseMessageHandler, ChannelMessageHandler, ErrorAction, ErrorMessage,
+	MessageSendEvent,
 };
 use crate::ln::types::ChannelId;
 use crate::ln::{functional_test_utils::*, msgs};
@@ -48,6 +49,7 @@ use bitcoin::{Amount, Sequence, Transaction, TxIn, TxOut, Witness};
 use lightning_macros::xtest;
 
 use lightning_types::features::ChannelTypeFeatures;
+use types::string::UntrustedString;
 
 #[test]
 fn test_outbound_chans_unlimited() {
@@ -2495,4 +2497,190 @@ fn test_fund_pending_channel() {
 		err: "Error in transaction funding: Misuse error: Channel f7fee84016d554015f5166c0a0df6479942ef55fd70713883b0493493a38e13a with counterparty 0355f8d2238a322d16b602bd0ceaad5b01019fb055971eaadcc9b29226a4da6c23 is not an unfunded, outbound channel ready to fund".to_owned(),
 	};
 	check_closed_event(&nodes[0], 1, reason, &[node_b_id], 100_000);
+}
+
+#[xtest(feature = "_externalize_tests")]
+fn test_holder_selected_0reserve_on_legacy_channel_is_not_allowed() {
+	{
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let mut channel_config = test_default_channel_config();
+		assert!(channel_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx);
+		let node_chanmgrs = create_node_chanmgrs(
+			2,
+			&node_cfgs,
+			&[Some(channel_config.clone()), Some(channel_config.clone())],
+		);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+		let _node_a_id = nodes[0].node.get_our_node_id();
+		let node_b_id = nodes[1].node.get_our_node_id();
+
+		let mut legacy_channel_config = test_default_channel_config();
+		legacy_channel_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = false;
+		legacy_channel_config.channel_handshake_config.negotiate_anchor_zero_fee_commitments =
+			false;
+
+		// User tries to open a legacy 0-reserve channel with a config override, we fail
+		assert_eq!(
+			nodes[0]
+				.node
+				.create_channel_to_trusted_peer_0reserve(
+					node_b_id,
+					100_000,
+					0,
+					42,
+					None,
+					Some(legacy_channel_config)
+				)
+				.unwrap_err(),
+			APIError::APIMisuseError {
+				err: "0-reserve is not allowed on legacy channels".to_owned()
+			}
+		);
+	}
+	{
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let mut channel_config = test_default_channel_config();
+		channel_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = false;
+		channel_config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = false;
+		let node_chanmgrs = create_node_chanmgrs(
+			2,
+			&node_cfgs,
+			&[Some(channel_config.clone()), Some(channel_config.clone())],
+		);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+		let _node_a_id = nodes[0].node.get_our_node_id();
+		let node_b_id = nodes[1].node.get_our_node_id();
+
+		// User tries to open a legacy 0-reserve channel from the default config, we fail
+		assert_eq!(
+			nodes[0]
+				.node
+				.create_channel_to_trusted_peer_0reserve(node_b_id, 100_000, 0, 42, None, None)
+				.unwrap_err(),
+			APIError::APIMisuseError {
+				err: "0-reserve is not allowed on legacy channels".to_owned()
+			}
+		);
+	}
+
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let mut channel_config = test_default_channel_config();
+	channel_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = false;
+	channel_config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = false;
+	let node_chanmgrs = create_node_chanmgrs(
+		2,
+		&node_cfgs,
+		&[Some(channel_config.clone()), Some(channel_config.clone())],
+	);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
+
+	nodes[0].node.create_channel(node_b_id, 100_000, 0, 42, None, None).unwrap();
+	let mut open_channel_msg_0reserve =
+		get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
+	open_channel_msg_0reserve.channel_reserve_satoshis = 0;
+	assert_eq!(
+		open_channel_msg_0reserve.common_fields.channel_type,
+		Some(ChannelTypeFeatures::only_static_remote_key())
+	);
+
+	// User accepts a legacy channel, and sets 0-reserve for the counterparty, we fail
+	nodes[1].node.handle_open_channel(node_a_id, &open_channel_msg_0reserve);
+	let events = nodes[1].node.get_and_clear_pending_events();
+	match events[0] {
+		Event::OpenChannelRequest { temporary_channel_id, .. } => {
+			let error = nodes[1]
+				.node
+				.accept_inbound_channel_from_trusted_peer(
+					&temporary_channel_id,
+					&node_a_id,
+					42,
+					TrustedChannelFeatures::ZeroReserve,
+					None,
+				)
+				.unwrap_err();
+			assert_eq!(
+				error,
+				APIError::ChannelUnavailable {
+					err: "0-reserve is not allowed on legacy channels".to_owned()
+				}
+			);
+		},
+		_ => panic!("Unexpected event"),
+	}
+	let err_msg = get_err_msg(&nodes[1], &node_a_id);
+	assert_eq!(
+		err_msg,
+		ErrorMessage {
+			channel_id: open_channel_msg_0reserve.common_fields.temporary_channel_id,
+			data: "0-reserve is not allowed on legacy channels".to_string()
+		}
+	);
+
+	// But legacy channels where only the counterparty sets 0-reserve are ok!
+	// Here node 1 accepts 0-reserve from node 0, and node 1 sets some non-zero reserve...
+	handle_and_accept_open_channel(&nodes[1], node_a_id, &open_channel_msg_0reserve);
+	let mut accept_channel_msg =
+		get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, node_a_id);
+	// Override the reserve selected by node 1, make sure node 0 accepts too
+	accept_channel_msg.channel_reserve_satoshis = 0;
+
+	nodes[0].node.handle_accept_channel(node_b_id, &accept_channel_msg);
+
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	assert!(
+		matches!(events[0], Event::FundingGenerationReady { channel_value_satoshis: 100_000, user_channel_id: 42, counterparty_node_id, .. } if counterparty_node_id == node_b_id)
+	);
+}
+
+#[xtest(feature = "_externalize_tests")]
+fn test_error_if_0reserve_negotiates_down_to_legacy() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let channel_config = test_default_channel_config();
+	assert!(channel_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx);
+	let node_chanmgrs = create_node_chanmgrs(
+		2,
+		&node_cfgs,
+		&[Some(channel_config.clone()), Some(channel_config.clone())],
+	);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_b_id = nodes[1].node.get_our_node_id();
+
+	nodes[0]
+		.node
+		.create_channel_to_trusted_peer_0reserve(node_b_id, 100_000, 0, 42, None, None)
+		.unwrap();
+	let open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
+	assert_eq!(
+		open_channel_msg.common_fields.channel_type,
+		Some(ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies())
+	);
+	assert_eq!(open_channel_msg.channel_reserve_satoshis, 0);
+
+	let reason = "Don't like your channel".to_owned();
+	nodes[0].node.handle_error(
+		node_b_id,
+		&ErrorMessage {
+			channel_id: open_channel_msg.common_fields.temporary_channel_id,
+			data: reason.clone(),
+		},
+	);
+
+	let reason = ClosureReason::CounterpartyForceClosed { peer_msg: UntrustedString(reason) };
+	let expected_closing = ExpectedCloseEvent::from_id_reason(
+		open_channel_msg.common_fields.temporary_channel_id,
+		false,
+		reason,
+	);
+	check_closed_events(&nodes[0], &[expected_closing]);
 }
