@@ -217,6 +217,8 @@ macro_rules! invoice_request_builder_methods { (
 
 	/// Sets the [`InvoiceRequest::amount_msats`] for paying an invoice. Errors if `amount_msats` is
 	/// not at least the expected invoice amount (i.e., [`Offer::amount`] times [`quantity`]).
+	/// Currency-denominated offers are not checked here because the final millisatoshi amount is
+	/// resolved by the payee when creating the invoice.
 	///
 	/// Successive calls to this method will override the previous setting.
 	///
@@ -279,6 +281,8 @@ macro_rules! invoice_request_builder_methods { (
 		}
 
 		$self.invoice_request.offer.check_quantity($self.invoice_request.quantity)?;
+		// Currency-denominated offer amounts are checked by the payee when
+		// responding with an invoice, after applying their conversion rate.
 		$self.invoice_request.offer.check_amount_msats_for_quantity(
 			$self.invoice_request.amount_msats, $self.invoice_request.quantity
 		)?;
@@ -1457,6 +1461,8 @@ impl TryFrom<PartialInvoiceRequestTlvStream> for InvoiceRequestContents {
 		}
 
 		offer.check_quantity(quantity)?;
+		// Currency-denominated offer amounts are checked by the payee when
+		// responding with an invoice, after applying their conversion rate.
 		offer.check_amount_msats_for_quantity(amount, quantity)?;
 
 		let features = features.unwrap_or_else(InvoiceRequestFeatures::empty);
@@ -2503,14 +2509,8 @@ mod tests {
 		let mut buffer = Vec::new();
 		invoice_request.write(&mut buffer).unwrap();
 
-		match InvoiceRequest::try_from(buffer) {
-			Ok(_) => panic!("expected error"),
-			Err(e) => {
-				assert_eq!(
-					e,
-					Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::UnsupportedCurrency)
-				);
-			},
+		if let Err(e) = InvoiceRequest::try_from(buffer) {
+			panic!("error parsing invoice_request: {:?}", e);
 		}
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)

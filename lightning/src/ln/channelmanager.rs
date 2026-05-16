@@ -14928,6 +14928,12 @@ impl<
 	/// `amount_msats` allows you to overpay what is required to satisfy the offer, or may be
 	/// required if the offer does not require a specific amount.
 	///
+	/// If the offer specifies an amount in a fiat currency, `amount_msats` is not locally
+	/// checked against the offer amount when building the [`InvoiceRequest`]. Instead, the
+	/// payee verifies whether the requested amount is sufficient when deciding whether to
+	/// issue a [`Bolt12Invoice`]. If `amount_msats` is omitted, the payee may determine the
+	/// final invoice amount.
+	///
 	/// If the [`Offer`] was built from a human readable name resolved using BIP 353, you *must*
 	/// instead call [`Self::pay_for_offer_from_hrn`].
 	///
