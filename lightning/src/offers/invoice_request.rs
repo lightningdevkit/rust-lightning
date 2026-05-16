@@ -1556,6 +1556,7 @@ mod tests {
 	use crate::ln::channelmanager::PaymentId;
 	use crate::ln::inbound_payment::ExpandedKey;
 	use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
+	use crate::offers::currency::NullCurrencyConversion;
 	use crate::offers::invoice::{Bolt12Invoice, SIGNATURE_TAG as INVOICE_SIGNATURE_TAG};
 	use crate::offers::invoice_request::string_truncate_safe;
 	use crate::offers::merkle::{self, SignatureTlvStreamRef, TaggedHash, TlvStream};
@@ -1589,7 +1590,7 @@ mod tests {
 		let payment_id = PaymentId([1; 32]);
 		let encrypted_payment_id = expanded_key.crypt_for_offer(payment_id.0, nonce);
 
-		let invoice_request = OfferBuilder::new(recipient_pubkey())
+		let invoice_request = OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.build()
 			.unwrap()
@@ -1681,7 +1682,7 @@ mod tests {
 		let future_expiry = Duration::from_secs(u64::max_value());
 		let past_expiry = Duration::from_secs(0);
 
-		if let Err(e) = OfferBuilder::new(recipient_pubkey())
+		if let Err(e) = OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.absolute_expiry(future_expiry)
 			.build()
@@ -1693,7 +1694,7 @@ mod tests {
 			panic!("error building invoice_request: {:?}", e);
 		}
 
-		match OfferBuilder::new(recipient_pubkey())
+		match OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.absolute_expiry(past_expiry)
 			.build()
@@ -1715,7 +1716,7 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
 
-		let offer = OfferBuilder::new(recipient_pubkey())
+		let offer = OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.experimental_foo(42)
 			.build()
@@ -1828,7 +1829,7 @@ mod tests {
 		let mainnet = ChainHash::using_genesis_block(Network::Bitcoin);
 		let testnet = ChainHash::using_genesis_block(Network::Testnet);
 
-		let invoice_request = OfferBuilder::new(recipient_pubkey())
+		let invoice_request = OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.build()
 			.unwrap()
@@ -1842,7 +1843,7 @@ mod tests {
 		assert_eq!(invoice_request.chain(), mainnet);
 		assert_eq!(tlv_stream.chain, None);
 
-		let invoice_request = OfferBuilder::new(recipient_pubkey())
+		let invoice_request = OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.chain(Network::Testnet)
 			.build()
@@ -1857,7 +1858,7 @@ mod tests {
 		assert_eq!(invoice_request.chain(), testnet);
 		assert_eq!(tlv_stream.chain, Some(&testnet));
 
-		let invoice_request = OfferBuilder::new(recipient_pubkey())
+		let invoice_request = OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.chain(Network::Bitcoin)
 			.chain(Network::Testnet)
@@ -1873,7 +1874,7 @@ mod tests {
 		assert_eq!(invoice_request.chain(), mainnet);
 		assert_eq!(tlv_stream.chain, None);
 
-		let invoice_request = OfferBuilder::new(recipient_pubkey())
+		let invoice_request = OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.chain(Network::Bitcoin)
 			.chain(Network::Testnet)
@@ -1891,7 +1892,7 @@ mod tests {
 		assert_eq!(invoice_request.chain(), testnet);
 		assert_eq!(tlv_stream.chain, Some(&testnet));
 
-		match OfferBuilder::new(recipient_pubkey())
+		match OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.chain(Network::Testnet)
 			.build()
@@ -1904,7 +1905,7 @@ mod tests {
 			Err(e) => assert_eq!(e, Bolt12SemanticError::UnsupportedChain),
 		}
 
-		match OfferBuilder::new(recipient_pubkey())
+		match OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.chain(Network::Testnet)
 			.build()
@@ -1926,7 +1927,7 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
 
-		let invoice_request = OfferBuilder::new(recipient_pubkey())
+		let invoice_request = OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.build()
 			.unwrap()
@@ -1941,7 +1942,7 @@ mod tests {
 		assert_eq!(invoice_request.amount_msats(), Some(1000));
 		assert_eq!(tlv_stream.amount, Some(1000));
 
-		let invoice_request = OfferBuilder::new(recipient_pubkey())
+		let invoice_request = OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.build()
 			.unwrap()
@@ -1958,7 +1959,7 @@ mod tests {
 		assert_eq!(invoice_request.amount_msats(), Some(1000));
 		assert_eq!(tlv_stream.amount, Some(1000));
 
-		let invoice_request = OfferBuilder::new(recipient_pubkey())
+		let invoice_request = OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.build()
 			.unwrap()
@@ -1973,7 +1974,7 @@ mod tests {
 		assert_eq!(invoice_request.amount_msats(), Some(1001));
 		assert_eq!(tlv_stream.amount, Some(1001));
 
-		match OfferBuilder::new(recipient_pubkey())
+		match OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.build()
 			.unwrap()
@@ -1985,7 +1986,7 @@ mod tests {
 			Err(e) => assert_eq!(e, Bolt12SemanticError::InsufficientAmount),
 		}
 
-		match OfferBuilder::new(recipient_pubkey())
+		match OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.supported_quantity(Quantity::Unbounded)
 			.build()
@@ -2000,7 +2001,7 @@ mod tests {
 			Err(e) => assert_eq!(e, Bolt12SemanticError::InsufficientAmount),
 		}
 
-		match OfferBuilder::new(recipient_pubkey())
+		match OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.build()
 			.unwrap()
@@ -2012,7 +2013,7 @@ mod tests {
 			Err(e) => assert_eq!(e, Bolt12SemanticError::InvalidAmount),
 		}
 
-		match OfferBuilder::new(recipient_pubkey())
+		match OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.supported_quantity(Quantity::Unbounded)
 			.build()
@@ -2029,7 +2030,7 @@ mod tests {
 			Err(e) => assert_eq!(e, Bolt12SemanticError::InsufficientAmount),
 		}
 
-		match OfferBuilder::new(recipient_pubkey())
+		match OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.build()
 			.unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
@@ -2041,12 +2042,13 @@ mod tests {
 		}
 
 		// An offer with amount_msats(0) must be rejected by the builder per BOLT 12.
-		match OfferBuilder::new(recipient_pubkey()).amount_msats(0).build() {
+		match OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion).amount_msats(0).build()
+		{
 			Ok(_) => panic!("expected error"),
 			Err(e) => assert_eq!(e, Bolt12SemanticError::InvalidAmount),
 		}
 
-		match OfferBuilder::new(recipient_pubkey())
+		match OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.supported_quantity(Quantity::Unbounded)
 			.build()
@@ -2070,7 +2072,7 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
 
-		let invoice_request = OfferBuilder::new(recipient_pubkey())
+		let invoice_request = OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.build()
 			.unwrap()
@@ -2083,7 +2085,7 @@ mod tests {
 		assert_eq!(invoice_request.amount_msats(), Some(1000));
 		assert_eq!(tlv_stream.amount, None);
 
-		let invoice_request = OfferBuilder::new(recipient_pubkey())
+		let invoice_request = OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.supported_quantity(Quantity::Unbounded)
 			.build()
@@ -2099,7 +2101,7 @@ mod tests {
 		assert_eq!(invoice_request.amount_msats(), Some(2000));
 		assert_eq!(tlv_stream.amount, None);
 
-		let invoice_request = OfferBuilder::new(recipient_pubkey())
+		let invoice_request = OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount(Amount::Currency {
 				iso4217_code: CurrencyCode::new(*b"USD").unwrap(),
 				amount: 10,
@@ -2122,7 +2124,7 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
 
-		let invoice_request = OfferBuilder::new(recipient_pubkey())
+		let invoice_request = OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.build()
 			.unwrap()
@@ -2135,7 +2137,7 @@ mod tests {
 		assert_eq!(invoice_request.invoice_request_features(), &InvoiceRequestFeatures::unknown());
 		assert_eq!(tlv_stream.features, Some(&InvoiceRequestFeatures::unknown()));
 
-		let invoice_request = OfferBuilder::new(recipient_pubkey())
+		let invoice_request = OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.build()
 			.unwrap()
@@ -2161,7 +2163,7 @@ mod tests {
 		let one = NonZeroU64::new(1).unwrap();
 		let ten = NonZeroU64::new(10).unwrap();
 
-		let invoice_request = OfferBuilder::new(recipient_pubkey())
+		let invoice_request = OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.supported_quantity(Quantity::One)
 			.build()
@@ -2174,7 +2176,7 @@ mod tests {
 		assert_eq!(invoice_request.quantity(), None);
 		assert_eq!(tlv_stream.quantity, None);
 
-		match OfferBuilder::new(recipient_pubkey())
+		match OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.supported_quantity(Quantity::One)
 			.build()
@@ -2189,7 +2191,7 @@ mod tests {
 			Err(e) => assert_eq!(e, Bolt12SemanticError::UnexpectedQuantity),
 		}
 
-		let invoice_request = OfferBuilder::new(recipient_pubkey())
+		let invoice_request = OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.supported_quantity(Quantity::Bounded(ten))
 			.build()
@@ -2206,7 +2208,7 @@ mod tests {
 		assert_eq!(invoice_request.amount_msats(), Some(10_000));
 		assert_eq!(tlv_stream.amount, Some(10_000));
 
-		match OfferBuilder::new(recipient_pubkey())
+		match OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.supported_quantity(Quantity::Bounded(ten))
 			.build()
@@ -2221,7 +2223,7 @@ mod tests {
 			Err(e) => assert_eq!(e, Bolt12SemanticError::InvalidQuantity),
 		}
 
-		let invoice_request = OfferBuilder::new(recipient_pubkey())
+		let invoice_request = OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.supported_quantity(Quantity::Unbounded)
 			.build()
@@ -2238,7 +2240,7 @@ mod tests {
 		assert_eq!(invoice_request.amount_msats(), Some(2_000));
 		assert_eq!(tlv_stream.amount, Some(2_000));
 
-		match OfferBuilder::new(recipient_pubkey())
+		match OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.supported_quantity(Quantity::Unbounded)
 			.build()
@@ -2251,7 +2253,7 @@ mod tests {
 			Err(e) => assert_eq!(e, Bolt12SemanticError::MissingQuantity),
 		}
 
-		match OfferBuilder::new(recipient_pubkey())
+		match OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.supported_quantity(Quantity::Bounded(one))
 			.build()
@@ -2273,7 +2275,7 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
 
-		let invoice_request = OfferBuilder::new(recipient_pubkey())
+		let invoice_request = OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.build()
 			.unwrap()
@@ -2286,7 +2288,7 @@ mod tests {
 		assert_eq!(invoice_request.payer_note(), Some(PrintableString("bar")));
 		assert_eq!(tlv_stream.payer_note, Some(&String::from("bar")));
 
-		let invoice_request = OfferBuilder::new(recipient_pubkey())
+		let invoice_request = OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.build()
 			.unwrap()
@@ -2309,7 +2311,7 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
 
-		match OfferBuilder::new(recipient_pubkey())
+		match OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.build()
 			.unwrap()
@@ -2333,7 +2335,7 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
 
-		let invoice_request = OfferBuilder::new(recipient_pubkey())
+		let invoice_request = OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.build()
 			.unwrap()
@@ -2358,7 +2360,7 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
 
-		let invoice_request = OfferBuilder::new(recipient_pubkey())
+		let invoice_request = OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.build()
 			.unwrap()
@@ -2376,7 +2378,7 @@ mod tests {
 			panic!("error parsing invoice_request: {:?}", e);
 		}
 
-		let invoice_request = OfferBuilder::new(recipient_pubkey())
+		let invoice_request = OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.build()
 			.unwrap()
@@ -2405,7 +2407,7 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
 
-		let invoice_request = OfferBuilder::new(recipient_pubkey())
+		let invoice_request = OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.build()
 			.unwrap()
@@ -2421,7 +2423,7 @@ mod tests {
 			panic!("error parsing invoice_request: {:?}", e);
 		}
 
-		let invoice_request = OfferBuilder::new(recipient_pubkey())
+		let invoice_request = OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.build()
 			.unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
@@ -2438,7 +2440,7 @@ mod tests {
 			panic!("error parsing invoice_request: {:?}", e);
 		}
 
-		let invoice_request = OfferBuilder::new(recipient_pubkey())
+		let invoice_request = OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.build()
 			.unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
@@ -2456,7 +2458,7 @@ mod tests {
 			),
 		}
 
-		let invoice_request = OfferBuilder::new(recipient_pubkey())
+		let invoice_request = OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.build()
 			.unwrap()
@@ -2476,7 +2478,7 @@ mod tests {
 			),
 		}
 
-		let invoice_request = OfferBuilder::new(recipient_pubkey())
+		let invoice_request = OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.description("foo".to_string())
 			.amount(Amount::Currency {
 				iso4217_code: CurrencyCode::new(*b"USD").unwrap(),
@@ -2500,7 +2502,7 @@ mod tests {
 			},
 		}
 
-		let invoice_request = OfferBuilder::new(recipient_pubkey())
+		let invoice_request = OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.supported_quantity(Quantity::Unbounded)
 			.build()
@@ -2534,7 +2536,7 @@ mod tests {
 		let one = NonZeroU64::new(1).unwrap();
 		let ten = NonZeroU64::new(10).unwrap();
 
-		let invoice_request = OfferBuilder::new(recipient_pubkey())
+		let invoice_request = OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.supported_quantity(Quantity::One)
 			.build()
@@ -2551,7 +2553,7 @@ mod tests {
 			panic!("error parsing invoice_request: {:?}", e);
 		}
 
-		let invoice_request = OfferBuilder::new(recipient_pubkey())
+		let invoice_request = OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.supported_quantity(Quantity::One)
 			.build()
@@ -2576,7 +2578,7 @@ mod tests {
 			},
 		}
 
-		let invoice_request = OfferBuilder::new(recipient_pubkey())
+		let invoice_request = OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.supported_quantity(Quantity::Bounded(ten))
 			.build()
@@ -2597,7 +2599,7 @@ mod tests {
 			panic!("error parsing invoice_request: {:?}", e);
 		}
 
-		let invoice_request = OfferBuilder::new(recipient_pubkey())
+		let invoice_request = OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.supported_quantity(Quantity::Bounded(ten))
 			.build()
@@ -2620,7 +2622,7 @@ mod tests {
 			),
 		}
 
-		let invoice_request = OfferBuilder::new(recipient_pubkey())
+		let invoice_request = OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.supported_quantity(Quantity::Unbounded)
 			.build()
@@ -2641,7 +2643,7 @@ mod tests {
 			panic!("error parsing invoice_request: {:?}", e);
 		}
 
-		let invoice_request = OfferBuilder::new(recipient_pubkey())
+		let invoice_request = OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.supported_quantity(Quantity::Unbounded)
 			.build()
@@ -2661,7 +2663,7 @@ mod tests {
 			),
 		}
 
-		let invoice_request = OfferBuilder::new(recipient_pubkey())
+		let invoice_request = OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.supported_quantity(Quantity::Bounded(one))
 			.build()
@@ -2690,13 +2692,14 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
 
-		let unsigned_invoice_request = OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
-			.build()
-			.unwrap()
-			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
-			.unwrap()
-			.build_unchecked();
+		let unsigned_invoice_request =
+			OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
+				.amount_msats(1000)
+				.build()
+				.unwrap()
+				.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
+				.unwrap()
+				.build_unchecked();
 		let mut tlv_stream = unsigned_invoice_request.contents.as_tlv_stream();
 		tlv_stream.0.metadata = None;
 
@@ -2722,13 +2725,14 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
 
-		let unsigned_invoice_request = OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
-			.build()
-			.unwrap()
-			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
-			.unwrap()
-			.build_unchecked();
+		let unsigned_invoice_request =
+			OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
+				.amount_msats(1000)
+				.build()
+				.unwrap()
+				.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
+				.unwrap()
+				.build_unchecked();
 		let mut tlv_stream = unsigned_invoice_request.contents.as_tlv_stream();
 		tlv_stream.2.payer_id = None;
 
@@ -2752,13 +2756,14 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
 
-		let unsigned_invoice_request = OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
-			.build()
-			.unwrap()
-			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
-			.unwrap()
-			.build_unchecked();
+		let unsigned_invoice_request =
+			OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
+				.amount_msats(1000)
+				.build()
+				.unwrap()
+				.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
+				.unwrap()
+				.build_unchecked();
 		let mut tlv_stream = unsigned_invoice_request.contents.as_tlv_stream();
 		tlv_stream.1.issuer_id = None;
 
@@ -2787,7 +2792,7 @@ mod tests {
 		let payment_id = PaymentId([1; 32]);
 
 		let mut buffer = Vec::new();
-		OfferBuilder::new(recipient_pubkey())
+		OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.build()
 			.unwrap()
@@ -2815,7 +2820,7 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
 
-		let mut invoice_request = OfferBuilder::new(recipient_pubkey())
+		let mut invoice_request = OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.build()
 			.unwrap()
@@ -2852,13 +2857,14 @@ mod tests {
 
 		let secp_ctx = Secp256k1::new();
 		let keys = Keypair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
-		let (mut unsigned_invoice_request, payer_keys, _) = OfferBuilder::new(keys.public_key())
-			.amount_msats(1000)
-			.build()
-			.unwrap()
-			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
-			.unwrap()
-			.build_without_checks();
+		let (mut unsigned_invoice_request, payer_keys, _) =
+			OfferBuilder::new(keys.public_key(), &NullCurrencyConversion)
+				.amount_msats(1000)
+				.build()
+				.unwrap()
+				.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
+				.unwrap()
+				.build_without_checks();
 
 		let mut unknown_bytes = Vec::new();
 		BigSize(UNKNOWN_ODD_TYPE).write(&mut unknown_bytes).unwrap();
@@ -2887,13 +2893,14 @@ mod tests {
 		const UNKNOWN_EVEN_TYPE: u64 = INVOICE_REQUEST_TYPES.end - 2;
 		assert!(UNKNOWN_EVEN_TYPE % 2 == 0);
 
-		let (mut unsigned_invoice_request, payer_keys, _) = OfferBuilder::new(keys.public_key())
-			.amount_msats(1000)
-			.build()
-			.unwrap()
-			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
-			.unwrap()
-			.build_without_checks();
+		let (mut unsigned_invoice_request, payer_keys, _) =
+			OfferBuilder::new(keys.public_key(), &NullCurrencyConversion)
+				.amount_msats(1000)
+				.build()
+				.unwrap()
+				.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
+				.unwrap()
+				.build_without_checks();
 
 		let mut unknown_bytes = Vec::new();
 		BigSize(UNKNOWN_EVEN_TYPE).write(&mut unknown_bytes).unwrap();
@@ -2932,13 +2939,14 @@ mod tests {
 
 		let secp_ctx = Secp256k1::new();
 		let keys = Keypair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
-		let (mut unsigned_invoice_request, payer_keys, _) = OfferBuilder::new(keys.public_key())
-			.amount_msats(1000)
-			.build()
-			.unwrap()
-			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
-			.unwrap()
-			.build_without_checks();
+		let (mut unsigned_invoice_request, payer_keys, _) =
+			OfferBuilder::new(keys.public_key(), &NullCurrencyConversion)
+				.amount_msats(1000)
+				.build()
+				.unwrap()
+				.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
+				.unwrap()
+				.build_without_checks();
 
 		let mut unknown_bytes = Vec::new();
 		BigSize(UNKNOWN_ODD_TYPE).write(&mut unknown_bytes).unwrap();
@@ -2970,13 +2978,14 @@ mod tests {
 		const UNKNOWN_EVEN_TYPE: u64 = EXPERIMENTAL_INVOICE_REQUEST_TYPES.start;
 		assert!(UNKNOWN_EVEN_TYPE % 2 == 0);
 
-		let (mut unsigned_invoice_request, payer_keys, _) = OfferBuilder::new(keys.public_key())
-			.amount_msats(1000)
-			.build()
-			.unwrap()
-			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
-			.unwrap()
-			.build_without_checks();
+		let (mut unsigned_invoice_request, payer_keys, _) =
+			OfferBuilder::new(keys.public_key(), &NullCurrencyConversion)
+				.amount_msats(1000)
+				.build()
+				.unwrap()
+				.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
+				.unwrap()
+				.build_without_checks();
 
 		let mut unknown_bytes = Vec::new();
 		BigSize(UNKNOWN_EVEN_TYPE).write(&mut unknown_bytes).unwrap();
@@ -3005,7 +3014,7 @@ mod tests {
 			Err(e) => assert_eq!(e, Bolt12ParseError::Decode(DecodeError::UnknownRequiredFeature)),
 		}
 
-		let invoice_request = OfferBuilder::new(keys.public_key())
+		let invoice_request = OfferBuilder::new(keys.public_key(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.build()
 			.unwrap()
@@ -3038,7 +3047,7 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
 
-		let invoice_request = OfferBuilder::new(recipient_pubkey())
+		let invoice_request = OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.build()
 			.unwrap()
@@ -3083,12 +3092,18 @@ mod tests {
 
 		#[cfg(c_bindings)]
 		use crate::offers::offer::OfferWithDerivedMetadataBuilder as OfferBuilder;
-		let offer = OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
-			.chain(Network::Testnet)
-			.amount_msats(1000)
-			.supported_quantity(Quantity::Unbounded)
-			.build()
-			.unwrap();
+		let offer = OfferBuilder::deriving_signing_pubkey(
+			node_id,
+			&expanded_key,
+			nonce,
+			&NullCurrencyConversion,
+			&secp_ctx,
+		)
+		.chain(Network::Testnet)
+		.amount_msats(1000)
+		.supported_quantity(Quantity::Unbounded)
+		.build()
+		.unwrap();
 		assert_eq!(offer.issuer_signing_pubkey(), Some(node_id));
 
 		// UTF-8 payer note that we can't naively `.truncate(PAYER_NOTE_LIMIT)`
