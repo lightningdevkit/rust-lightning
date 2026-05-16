@@ -5930,6 +5930,7 @@ impl<
 			let outbound_pmts_res = self.pending_outbound_payments.static_invoice_received(
 				invoice,
 				payment_id,
+				&self.currency_conversion,
 				features,
 				best_block_height,
 				self.duration_since_epoch(),
@@ -17383,6 +17384,7 @@ impl<
 						let result = self.flow.create_invoice_builder_from_invoice_request_with_keys(
 							&self.router,
 							&request,
+							&self.currency_conversion,
 							self.list_usable_channels(),
 							get_payment_info,
 							payment_metadata,
@@ -17408,6 +17410,7 @@ impl<
 						let result = self.flow.create_invoice_builder_from_invoice_request_without_keys(
 							&self.router,
 							&request,
+							&self.currency_conversion,
 							self.list_usable_channels(),
 							get_payment_info,
 							payment_metadata,
