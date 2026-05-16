@@ -357,7 +357,7 @@ macro_rules! offer_builder_methods { (
 	/// Sets the [`Offer::amount`].
 	///
 	/// Successive calls to this method will override the previous setting.
-	pub(super) fn amount($($self_mut)* $self: $self_type, amount: Amount) -> $return_type {
+	pub fn amount($($self_mut)* $self: $self_type, amount: Amount) -> $return_type {
 		$self.offer.amount = Some(amount);
 		$return_value
 	}
@@ -409,13 +409,20 @@ macro_rules! offer_builder_methods { (
 	/// Builds an [`Offer`] from the builder's settings.
 	pub fn build($($self_mut)* $self: $self_type) -> Result<Offer, Bolt12SemanticError> {
 		match $self.offer.amount {
-			Some(Amount::Bitcoin { amount_msats }) => {
-				if amount_msats == 0 || amount_msats > MAX_VALUE_MSAT {
+			None => {},
+			Some(amount) => {
+				// Validate that the offer amount resolves to a non-zero
+				// millisatoshi range within the maximum msats allowed.
+				let (minimum_msats, maximum_msats) = amount
+					.to_msats_range($self.converter)?;
+
+				if minimum_msats == 0
+					|| minimum_msats > maximum_msats
+					|| maximum_msats > MAX_VALUE_MSAT
+				{
 					return Err(Bolt12SemanticError::InvalidAmount);
 				}
-			},
-			Some(Amount::Currency { .. }) => return Err(Bolt12SemanticError::UnsupportedCurrency),
-			None => {},
+			}
 		}
 
 		if $self.offer.amount.is_some() && $self.offer.description.is_none() {
@@ -1136,6 +1143,39 @@ pub enum Amount {
 	},
 }
 
+impl Amount {
+	/// Returns the accepted millisatoshi range for this amount.
+	///
+	/// Bitcoin-denominated amounts return an exact range where the minimum
+	/// and maximum values are equal.
+	///
+	/// Currency-denominated amounts are converted using the exchange-rate
+	/// range provided by the given [`CurrencyConversion`] implementation.
+	pub fn to_msats_range<CC: CurrencyConversion>(
+		&self, converter: &CC,
+	) -> Result<(u64, u64), Bolt12SemanticError> {
+		match *self {
+			Amount::Bitcoin { amount_msats } => Ok((amount_msats, amount_msats)),
+			Amount::Currency { iso4217_code, amount } => {
+				let range = converter
+					.conversion_range(iso4217_code)
+					.map_err(|_| Bolt12SemanticError::UnsupportedCurrency)?;
+
+				let minimum_msats = range
+					.minimum
+					.convert_to_msats(amount)
+					.map_err(|_| Bolt12SemanticError::InvalidAmount)?;
+				let maximum_msats = range
+					.maximum
+					.convert_to_msats(amount)
+					.map_err(|_| Bolt12SemanticError::InvalidAmount)?;
+
+				Ok((minimum_msats, maximum_msats))
+			},
+		}
+	}
+}
+
 /// An ISO 4217 three-letter currency code (e.g., USD).
 ///
 /// Currency codes must be exactly 3 ASCII uppercase letters.
@@ -1414,6 +1454,7 @@ mod tests {
 	use crate::types::features::OfferFeatures;
 	use crate::types::string::PrintableString;
 	use crate::util::ser::{BigSize, Writeable};
+	use crate::util::test_utils::TestCurrencyConversion;
 	use bitcoin::constants::ChainHash;
 	use bitcoin::network::Network;
 	use bitcoin::secp256k1::Secp256k1;
@@ -1726,6 +1767,15 @@ mod tests {
 			Ok(_) => panic!("expected error"),
 			Err(e) => assert_eq!(e, Bolt12SemanticError::UnsupportedCurrency),
 		}
+
+		let offer = OfferBuilder::new(pubkey(42), &TestCurrencyConversion {})
+			.amount(currency_amount.clone())
+			.build()
+			.unwrap();
+		let tlv_stream = offer.as_tlv_stream();
+		assert_eq!(offer.amount(), Some(currency_amount.clone()));
+		assert_eq!(tlv_stream.0.amount, Some(10));
+		assert_eq!(tlv_stream.0.currency, Some(b"USD"));
 
 		let offer = OfferBuilder::new(pubkey(42), &NullCurrencyConversion)
 			.amount(currency_amount.clone())
