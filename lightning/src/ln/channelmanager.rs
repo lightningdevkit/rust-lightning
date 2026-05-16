@@ -2550,7 +2550,7 @@ impl<
 ///     .create_offer_builder()?
 /// # ;
 /// # // Needed for compiling for c_bindings
-/// # let builder: lightning::offers::offer::OfferBuilder<_, _> = offer.into();
+/// # let builder: lightning::offers::offer::OfferBuilder<_, _, _> = offer.into();
 /// # let offer = builder
 ///     .description("coffee".to_string())
 ///     .amount_msats(10_000_000)
@@ -14701,7 +14701,7 @@ macro_rules! create_offer_builder { ($self: ident, $builder: ty) => {
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 	pub fn create_offer_builder(&$self) -> Result<$builder, Bolt12SemanticError> {
 		let builder = $self.flow.create_offer_builder(
-			&$self.entropy_source, $self.get_peers_for_blinded_path()
+			&$self.entropy_source, &$self.currency_conversion, $self.get_peers_for_blinded_path()
 		)?;
 
 		Ok(builder.into())
@@ -14723,7 +14723,7 @@ macro_rules! create_offer_builder { ($self: ident, $builder: ty) => {
 		router: ME,
 	) -> Result<$builder, Bolt12SemanticError> {
 		let builder = $self.flow.create_offer_builder_using_router(
-			router, &$self.entropy_source, $self.get_peers_for_blinded_path()
+			router, &$self.entropy_source, &$self.currency_conversion, $self.get_peers_for_blinded_path()
 		)?;
 
 		Ok(builder.into())
@@ -14764,7 +14764,7 @@ macro_rules! create_offer_builder { ($self: ident, $builder: ty) => {
 		}
 
 		let builder = $self.flow.create_phantom_offer_builder(
-			&$self.entropy_source, peers, path_count_limit
+			&$self.entropy_source, &$self.currency_conversion, peers, path_count_limit
 		)?;
 
 		Ok(builder.into())
@@ -14891,12 +14891,12 @@ impl<
 	> ChannelManager<M, T, ES, NS, SP, F, R, MR, CC, L>
 {
 	#[cfg(not(c_bindings))]
-	create_offer_builder!(self, OfferBuilder<'_, DerivedMetadata, secp256k1::All>);
+	create_offer_builder!(self, OfferBuilder<'_, DerivedMetadata, secp256k1::All, CC>);
 	#[cfg(not(c_bindings))]
 	create_refund_builder!(self, RefundBuilder<'_, secp256k1::All>);
 
 	#[cfg(c_bindings)]
-	create_offer_builder!(self, OfferWithDerivedMetadataBuilder);
+	create_offer_builder!(self, OfferWithDerivedMetadataBuilder<'_, CC>);
 	#[cfg(c_bindings)]
 	create_refund_builder!(self, RefundMaybeWithDerivedMetadataBuilder);
 
@@ -17552,6 +17552,7 @@ impl<
 			self.get_peers_for_blinded_path(),
 			self.list_usable_channels(),
 			&self.entropy_source,
+			&self.currency_conversion,
 			&self.router,
 		) {
 			Some((msg, ctx)) => (msg, ctx),
