@@ -16,6 +16,7 @@ use crate::blinded_path::message::BlindedMessagePath;
 use crate::blinded_path::payment::{BlindedPayInfo, BlindedPaymentPath};
 use crate::blinded_path::BlindedHop;
 use crate::ln::inbound_payment::ExpandedKey;
+use crate::offers::currency::NullCurrencyConversion;
 use crate::offers::merkle::TaggedHash;
 use crate::sign::EntropySource;
 use crate::types::features::BlindedHopFeatures;
@@ -147,10 +148,16 @@ pub fn dummy_static_invoice() -> StaticInvoice {
 	let nonce = Nonce::from_entropy_source(&entropy);
 	let secp_ctx = Secp256k1::new();
 
-	let offer = OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
-		.path(blinded_path())
-		.build()
-		.unwrap();
+	let offer = OfferBuilder::deriving_signing_pubkey(
+		node_id,
+		&expanded_key,
+		nonce,
+		&NullCurrencyConversion,
+		&secp_ctx,
+	)
+	.path(blinded_path())
+	.build()
+	.unwrap();
 
 	StaticInvoiceBuilder::for_offer_using_derived_keys(
 		&offer,

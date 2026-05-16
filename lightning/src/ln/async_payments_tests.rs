@@ -35,6 +35,7 @@ use crate::offers::async_receive_offer_cache::{
 	TEST_INVOICE_REFRESH_THRESHOLD, TEST_MAX_CACHED_OFFERS_TARGET, TEST_MAX_UPDATE_ATTEMPTS,
 	TEST_MIN_OFFER_PATHS_RELATIVE_EXPIRY_SECS, TEST_OFFER_REFRESH_THRESHOLD,
 };
+use crate::offers::currency::NullCurrencyConversion;
 use crate::offers::flow::{
 	TEST_DEFAULT_ASYNC_RECEIVE_OFFER_EXPIRY, TEST_OFFERS_MESSAGE_REQUEST_LIMIT,
 	TEST_TEMP_REPLY_PATH_RELATIVE_EXPIRY,
@@ -322,7 +323,11 @@ fn create_static_invoice<T: secp256k1::Signing + secp256k1::Verification>(
 	let (offer_builder, offer_nonce) = recipient
 		.node
 		.flow
-		.create_async_receive_offer_builder(entropy_source, blinded_paths_to_always_online_node)
+		.create_async_receive_offer_builder(
+			entropy_source,
+			&NullCurrencyConversion,
+			blinded_paths_to_always_online_node,
+		)
 		.unwrap();
 	let offer = offer_builder.build().unwrap();
 	let static_invoice =
@@ -693,7 +698,11 @@ fn static_invoice_unknown_required_features() {
 	let (offer_builder, nonce) = nodes[2]
 		.node
 		.flow
-		.create_async_receive_offer_builder(entropy_source, blinded_paths_to_always_online_node)
+		.create_async_receive_offer_builder(
+			entropy_source,
+			&NullCurrencyConversion,
+			blinded_paths_to_always_online_node,
+		)
 		.unwrap();
 	let offer = offer_builder.build().unwrap();
 	let static_invoice_unknown_req_features =
@@ -1677,7 +1686,11 @@ fn invalid_async_receive_with_retry<F1, F2>(
 	let (offer_builder, offer_nonce) = nodes[2]
 		.node
 		.flow
-		.create_async_receive_offer_builder(entropy_source, blinded_paths_to_always_online_node)
+		.create_async_receive_offer_builder(
+			entropy_source,
+			&NullCurrencyConversion,
+			blinded_paths_to_always_online_node,
+		)
 		.unwrap();
 	let offer = offer_builder.build().unwrap();
 	let amt_msat = 5000;
