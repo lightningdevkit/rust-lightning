@@ -63,6 +63,7 @@ use lightning::ln::msgs::{
 use lightning::ln::outbound_payment::RecipientOnionFields;
 use lightning::ln::script::ShutdownScript;
 use lightning::ln::types::ChannelId;
+use lightning::offers::currency::NullCurrencyConversion;
 use lightning::offers::invoice::UnsignedBolt12Invoice;
 use lightning::onion_message::messenger::{Destination, MessageRouter, OnionMessagePath};
 use lightning::routing::router::{
@@ -767,6 +768,7 @@ type ChanMan<'a> = ChannelManager<
 	Arc<FuzzEstimator>,
 	&'a FuzzRouter,
 	&'a FuzzRouter,
+	Arc<NullCurrencyConversion>,
 	Arc<dyn Logger + MaybeSend + MaybeSync>,
 >;
 
@@ -814,6 +816,7 @@ struct HarnessNode<'a> {
 	monitor: Arc<TestChainMonitor>,
 	persister: Arc<HarnessPersister>,
 	keys_manager: Arc<KeyProvider>,
+	currency_conversion: Arc<NullCurrencyConversion>,
 	logger: Arc<dyn Logger + MaybeSend + MaybeSync>,
 	broadcaster: Arc<TestBroadcaster>,
 	fee_estimator: Arc<FuzzEstimator>,
@@ -867,8 +870,9 @@ impl<'a> HarnessNode<'a> {
 
 	fn new<Out: Output + MaybeSend + MaybeSync>(
 		node_id: u8, wallet: TestWalletSource, fee_estimator: Arc<FuzzEstimator>,
-		broadcaster: Arc<TestBroadcaster>, persistence_style: ChannelMonitorUpdateStatus,
-		deferred: bool, out: &Out, router: &'a FuzzRouter, chan_type: ChanType,
+		broadcaster: Arc<TestBroadcaster>, currency_conversion: Arc<NullCurrencyConversion>,
+		persistence_style: ChannelMonitorUpdateStatus, deferred: bool, out: &Out,
+		router: &'a FuzzRouter, chan_type: ChanType,
 	) -> Self {
 		let logger = Self::build_logger(node_id, out);
 		let node_secret = SecretKey::from_slice(&[
@@ -899,6 +903,7 @@ impl<'a> HarnessNode<'a> {
 			Arc::clone(&broadcaster),
 			router,
 			router,
+			Arc::clone(&currency_conversion),
 			Arc::clone(&logger),
 			Arc::clone(&keys_manager),
 			Arc::clone(&keys_manager),
@@ -913,6 +918,7 @@ impl<'a> HarnessNode<'a> {
 			monitor,
 			persister,
 			keys_manager,
+			currency_conversion,
 			logger,
 			broadcaster,
 			fee_estimator,
@@ -1157,6 +1163,7 @@ impl<'a> HarnessNode<'a> {
 			chain_monitor: Arc::clone(&chain_monitor),
 			tx_broadcaster: Arc::clone(&self.broadcaster),
 			router,
+			currency_conversion: Arc::clone(&self.currency_conversion),
 			message_router: router,
 			logger: Arc::clone(&logger),
 			config: build_node_config(chan_type),
@@ -2268,6 +2275,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		let broadcast_a = Arc::new(TestBroadcaster { txn_broadcasted: RefCell::new(Vec::new()) });
 		let broadcast_b = Arc::new(TestBroadcaster { txn_broadcasted: RefCell::new(Vec::new()) });
 		let broadcast_c = Arc::new(TestBroadcaster { txn_broadcasted: RefCell::new(Vec::new()) });
+		let currency_conversion = Arc::new(NullCurrencyConversion);
 
 		// 3 nodes is enough to hit all the possible cases, notably
 		// unknown-source-unknown-dest forwarding.
@@ -2277,6 +2285,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 				wallet_a,
 				Arc::clone(&fee_est_a),
 				Arc::clone(&broadcast_a),
+				Arc::clone(&currency_conversion),
 				persistence_styles[0],
 				deferred[0],
 				&out,
@@ -2288,6 +2297,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 				wallet_b,
 				Arc::clone(&fee_est_b),
 				Arc::clone(&broadcast_b),
+				Arc::clone(&currency_conversion),
 				persistence_styles[1],
 				deferred[1],
 				&out,
@@ -2299,6 +2309,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 				wallet_c,
 				Arc::clone(&fee_est_c),
 				Arc::clone(&broadcast_c),
+				Arc::clone(&currency_conversion),
 				persistence_styles[2],
 				deferred[2],
 				&out,
