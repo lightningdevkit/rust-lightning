@@ -990,9 +990,14 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 	/// Returns a [`Bolt12SemanticError`] if:
 	/// - Valid blinded payment paths could not be generated for the [`Bolt12Invoice`].
 	/// - The [`InvoiceBuilder`] could not be created from the [`InvoiceRequest`].
-	pub fn create_invoice_builder_from_invoice_request_with_keys<'a, R: Router, F>(
+	pub fn create_invoice_builder_from_invoice_request_with_keys<
+		'a,
+		R: Router,
+		CC: CurrencyConversion,
+		F,
+	>(
 		&self, router: &R, invoice_request: &'a VerifiedInvoiceRequest<DerivedSigningPubkey>,
-		usable_channels: Vec<ChannelDetails>, get_payment_info: F,
+		converter: &'a CC, usable_channels: Vec<ChannelDetails>, get_payment_info: F,
 		payment_metadata: Option<BTreeMap<u64, Vec<u8>>>,
 	) -> Result<(InvoiceBuilder<'a, DerivedSigningPubkey>, MessageContext), Bolt12SemanticError>
 	where
@@ -1000,8 +1005,10 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 	{
 		let relative_expiry = DEFAULT_RELATIVE_EXPIRY.as_secs() as u32;
 
-		let amount_msats =
-			InvoiceBuilder::<DerivedSigningPubkey>::amount_msats(&invoice_request.inner)?;
+		let amount_msats = InvoiceBuilder::<DerivedSigningPubkey>::amount_msats(
+			&invoice_request.inner,
+			converter,
+		)?;
 
 		let (payment_hash, payment_secret) = get_payment_info(amount_msats, relative_expiry)?;
 
@@ -1023,14 +1030,21 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
 		#[cfg(all(feature = "std", not(fuzzing)))]
-		let builder = invoice_request.respond_using_derived_keys(payment_paths, payment_hash);
+		let created_at = std::time::SystemTime::now()
+			.duration_since(std::time::SystemTime::UNIX_EPOCH)
+			.expect("time must be after unix epoch");
+
 		#[cfg(any(not(feature = "std"), fuzzing))]
-		let builder = invoice_request.respond_using_derived_keys_no_std(
-			payment_paths,
-			payment_hash,
-			Duration::from_secs(self.highest_seen_timestamp.load(Ordering::Acquire) as u64),
-		);
-		let builder = builder.map(|b| InvoiceBuilder::from(b).allow_mpp())?;
+		let created_at = Duration::from_secs(self.highest_seen_timestamp.load(Ordering::Acquire) as u64);
+
+		let builder = invoice_request
+			.respond_using_derived_keys_with_amount(
+				amount_msats,
+				payment_paths,
+				payment_hash,
+				created_at,
+			)
+			.map(|b| InvoiceBuilder::from(b).allow_mpp())?;
 
 		let context = MessageContext::Offers(OffersContext::InboundPayment { payment_hash });
 
@@ -1051,9 +1065,14 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 	/// Returns a [`Bolt12SemanticError`] if:
 	/// - Valid blinded payment paths could not be generated for the [`Bolt12Invoice`].
 	/// - The [`InvoiceBuilder`] could not be created from the [`InvoiceRequest`].
-	pub fn create_invoice_builder_from_invoice_request_without_keys<'a, R: Router, F>(
+	pub fn create_invoice_builder_from_invoice_request_without_keys<
+		'a,
+		R: Router,
+		CC: CurrencyConversion,
+		F,
+	>(
 		&self, router: &R, invoice_request: &'a VerifiedInvoiceRequest<ExplicitSigningPubkey>,
-		usable_channels: Vec<ChannelDetails>, get_payment_info: F,
+		converter: &'a CC, usable_channels: Vec<ChannelDetails>, get_payment_info: F,
 		payment_metadata: Option<BTreeMap<u64, Vec<u8>>>,
 	) -> Result<(InvoiceBuilder<'a, ExplicitSigningPubkey>, MessageContext), Bolt12SemanticError>
 	where
@@ -1061,8 +1080,10 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 	{
 		let relative_expiry = DEFAULT_RELATIVE_EXPIRY.as_secs() as u32;
 
-		let amount_msats =
-			InvoiceBuilder::<DerivedSigningPubkey>::amount_msats(&invoice_request.inner)?;
+		let amount_msats = InvoiceBuilder::<DerivedSigningPubkey>::amount_msats(
+			&invoice_request.inner,
+			converter,
+		)?;
 
 		let (payment_hash, payment_secret) = get_payment_info(amount_msats, relative_expiry)?;
 
@@ -1084,15 +1105,16 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
 		#[cfg(all(feature = "std", not(fuzzing)))]
-		let builder = invoice_request.respond_with(payment_paths, payment_hash);
-		#[cfg(any(not(feature = "std"), fuzzing))]
-		let builder = invoice_request.respond_with_no_std(
-			payment_paths,
-			payment_hash,
-			Duration::from_secs(self.highest_seen_timestamp.load(Ordering::Acquire) as u64),
-		);
+		let created_at = std::time::SystemTime::now()
+			.duration_since(std::time::SystemTime::UNIX_EPOCH)
+			.expect("time must be after unix epoch");
 
-		let builder = builder.map(|b| InvoiceBuilder::from(b).allow_mpp())?;
+		#[cfg(any(not(feature = "std"), fuzzing))]
+		let created_at = Duration::from_secs(self.highest_seen_timestamp.load(Ordering::Acquire) as u64);
+
+		let builder = invoice_request
+			.respond_with_amount(amount_msats, payment_paths, payment_hash, created_at)
+			.map(|b| InvoiceBuilder::from(b).allow_mpp())?;
 
 		let context = MessageContext::Offers(OffersContext::InboundPayment { payment_hash });
 
