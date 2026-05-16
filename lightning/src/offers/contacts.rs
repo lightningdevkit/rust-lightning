@@ -25,6 +25,14 @@ use bitcoin::secp256k1::{Secp256k1, SecretKey};
 #[allow(unused_imports)]
 use crate::prelude::*;
 
+/// TLV record type for the `invreq_contact_secret` field defined in
+/// [BLIP 42](https://github.com/lightning/blips/blob/master/blip-0042.md).
+pub(super) const INVREQ_CONTACT_SECRET_TYPE: u64 = 2_000_001_729;
+
+/// TLV record type for the `invreq_payer_offer` field defined in
+/// [BLIP 42](https://github.com/lightning/blips/blob/master/blip-0042.md).
+pub(super) const INVREQ_PAYER_OFFER_TYPE: u64 = 2_000_001_731;
+
 /// A contact secret used in experimental TLV fields for BLIP-42.
 ///
 /// This is a 32-byte secret that can be included in invoice requests to establish

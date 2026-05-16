@@ -71,6 +71,7 @@ use crate::io;
 use crate::ln::channelmanager::PaymentId;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN};
 use crate::ln::msgs::DecodeError;
+use crate::offers::contacts::{ContactSecret, INVREQ_CONTACT_SECRET_TYPE, INVREQ_PAYER_OFFER_TYPE};
 use crate::offers::invoice::{DerivedSigningPubkey, ExplicitSigningPubkey, SigningPubkeyStrategy};
 use crate::offers::merkle::{
 	self, SignError, SignFn, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash, TlvStream,
@@ -263,7 +264,7 @@ macro_rules! invoice_request_builder_methods { (
 	///
 	/// [`ContactSecrets`]: crate::offers::contacts::ContactSecrets
 	pub fn contact_secrets($($self_mut)* $self: $self_type, contact_secrets: crate::offers::contacts::ContactSecrets) -> $return_type {
-		$self.invoice_request.invreq_contact_secret = Some(*contact_secrets.primary_secret().as_bytes());
+		$self.invoice_request.invreq_contact_secret = Some(*contact_secrets.primary_secret());
 		$return_value
 	}
 
@@ -712,7 +713,7 @@ pub(super) struct InvoiceRequestContentsWithoutPayerSigningPubkey {
 	quantity: Option<u64>,
 	payer_note: Option<String>,
 	offer_from_hrn: Option<HumanReadableName>,
-	invreq_contact_secret: Option<[u8; 32]>,
+	invreq_contact_secret: Option<ContactSecret>,
 	invreq_payer_offer: Option<Vec<u8>>,
 	#[cfg(test)]
 	experimental_bar: Option<u64>,
@@ -777,7 +778,7 @@ macro_rules! invoice_request_accessors { ($self: ident, $contents: expr) => {
 	}
 
 	/// Returns the contact secret if present in the invoice request.
-	pub fn contact_secret(&$self) -> Option<[u8; 32]> {
+	pub fn contact_secret(&$self) -> Option<ContactSecret> {
 		$contents.contact_secret()
 	}
 
@@ -1223,7 +1224,7 @@ impl InvoiceRequestContents {
 		&self.inner.offer_from_hrn
 	}
 
-	pub(super) fn contact_secret(&self) -> Option<[u8; 32]> {
+	pub(super) fn contact_secret(&self) -> Option<ContactSecret> {
 		self.inner.invreq_contact_secret
 	}
 
@@ -1351,8 +1352,8 @@ tlv_stream!(
 	ExperimentalInvoiceRequestTlvStreamRef<'a>,
 	EXPERIMENTAL_INVOICE_REQUEST_TYPES,
 	{
-		(2_000_001_729, invreq_contact_secret: [u8; 32]),
-		(2_000_001_731, invreq_payer_offer: (Vec<u8>, WithoutLength)),
+		(INVREQ_CONTACT_SECRET_TYPE, invreq_contact_secret: ContactSecret),
+		(INVREQ_PAYER_OFFER_TYPE, invreq_payer_offer: (Vec<u8>, WithoutLength)),
 		// When adding experimental TLVs, update EXPERIMENTAL_TLV_ALLOCATION_SIZE accordingly in
 		// UnsignedInvoiceRequest::new to avoid unnecessary allocations.
 	}
@@ -1362,8 +1363,8 @@ tlv_stream!(
 tlv_stream!(
 	ExperimentalInvoiceRequestTlvStream, ExperimentalInvoiceRequestTlvStreamRef<'a>,
 	EXPERIMENTAL_INVOICE_REQUEST_TYPES, {
-		(2_000_001_729, invreq_contact_secret: [u8; 32]),
-		(2_000_001_731, invreq_payer_offer: (Vec<u8>, WithoutLength)),
+		(INVREQ_CONTACT_SECRET_TYPE, invreq_contact_secret: ContactSecret),
+		(INVREQ_PAYER_OFFER_TYPE, invreq_payer_offer: (Vec<u8>, WithoutLength)),
 		(2_999_999_999, experimental_bar: (u64, HighZeroBytesDroppedBigSize)),
 	}
 );
@@ -1573,7 +1574,12 @@ pub struct InvoiceRequestFields {
 
 	/// BLIP-42: The contact secret included by the payer for contact management.
 	/// This allows the recipient to establish a contact relationship with the payer.
-	pub contact_secret: Option<[u8; 32]>,
+	///
+	/// Per BLIP 42, if this matches an existing contact of the recipient, the recipient MUST
+	/// ignore [`Self::payer_offer`] (and any future `bip_353_name` field) to prevent a leaked
+	/// `contact_secret` from being used to redirect future payments. Enforcement of this rule
+	/// is the responsibility of the application that owns the contacts list.
+	pub contact_secret: Option<ContactSecret>,
 
 	/// BLIP-42: The payer's minimal offer included in the invoice request.
 	/// This is a compact offer (just node_id) to fit within payment onion size constraints.
