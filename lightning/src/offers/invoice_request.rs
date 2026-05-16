@@ -2492,14 +2492,8 @@ mod tests {
 		let mut buffer = Vec::new();
 		invoice_request.write(&mut buffer).unwrap();
 
-		match InvoiceRequest::try_from(buffer) {
-			Ok(_) => panic!("expected error"),
-			Err(e) => {
-				assert_eq!(
-					e,
-					Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::UnsupportedCurrency)
-				);
-			},
+		if let Err(e) = InvoiceRequest::try_from(buffer) {
+			panic!("error parsing invoice_request: {:?}", e);
 		}
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
