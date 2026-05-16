@@ -54,6 +54,7 @@ use crate::blinded_path::message::{MessageContext, OffersContext};
 use crate::events::{ClosureReason, Event, HTLCHandlingFailureType, PaidBolt12Invoice, PaymentFailureReason, PaymentPurpose};
 use crate::ln::channelmanager::{PaymentId, RecentPaymentDetails, self};
 use crate::ln::outbound_payment::{Bolt12PaymentError, RecipientOnionFields, Retry};
+use crate::offers::currency::NullCurrencyConversion;
 use crate::types::features::Bolt12InvoiceFeatures;
 use crate::ln::functional_test_utils::*;
 use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, Init, OnionMessage, OnionMessageHandler};
@@ -872,7 +873,7 @@ fn pays_for_offer_with_payment_metadata_in_invoice_request_context() {
 	assert!(!paths.is_empty());
 
 	let expanded_key = alice.keys_manager.get_expanded_key();
-	let mut builder = OfferBuilder::deriving_signing_pubkey(alice_id, &expanded_key, nonce, &secp_ctx)
+	let mut builder = OfferBuilder::deriving_signing_pubkey(alice_id, &expanded_key, nonce, &NullCurrencyConversion, &secp_ctx)
 		.chain(Network::Testnet)
 		.amount_msats(10_000_000);
 	for path in paths {

@@ -2877,6 +2877,8 @@ mod tests {
 		RetryableSendFailure, StaleExpiration,
 	};
 	#[cfg(feature = "std")]
+	use crate::offers::currency::NullCurrencyConversion;
+	#[cfg(feature = "std")]
 	use crate::offers::invoice::DEFAULT_RELATIVE_EXPIRY;
 	use crate::offers::invoice_request::InvoiceRequest;
 	use crate::offers::nonce::Nonce;
@@ -3266,7 +3268,7 @@ mod tests {
 		assert!(outbound_payments.has_pending_payments());
 
 		let created_at = now() - DEFAULT_RELATIVE_EXPIRY;
-		let invoice = OfferBuilder::new(recipient_pubkey())
+		let invoice = OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.build().unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
@@ -3315,7 +3317,7 @@ mod tests {
 		let payment_id = PaymentId([0; 32]);
 		let expiration = StaleExpiration::AbsoluteTimeout(Duration::from_secs(100));
 
-		let invoice = OfferBuilder::new(recipient_pubkey())
+		let invoice = OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.build().unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
@@ -3380,7 +3382,7 @@ mod tests {
 		let payment_id = PaymentId([0; 32]);
 		let expiration = StaleExpiration::AbsoluteTimeout(Duration::from_secs(100));
 
-		let invoice = OfferBuilder::new(recipient_pubkey())
+		let invoice = OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.build().unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
@@ -3469,7 +3471,7 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
 
-		OfferBuilder::new(recipient_pubkey())
+		OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.build().unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
