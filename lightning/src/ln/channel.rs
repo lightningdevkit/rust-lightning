@@ -2778,7 +2778,7 @@ impl FundingScope {
 	fn for_splice<SP: SignerProvider>(
 		prev_funding: &Self, context: &ChannelContext<SP>, our_funding_contribution: SignedAmount,
 		their_funding_contribution: SignedAmount, counterparty_funding_pubkey: PublicKey,
-		our_new_holder_keys: ChannelPublicKeys,
+		our_new_holder_keys: ChannelPublicKeys, min_funding_satoshis: u64,
 	) -> Result<Self, String> {
 		if our_funding_contribution.unsigned_abs() > Amount::MAX_MONEY {
 			return Err(format!(
@@ -2817,13 +2817,27 @@ impl FundingScope {
 			),
 		)?;
 
-		let post_channel_value_sat = prev_funding.get_value_satoshis()
+		let post_channel_value_sat = prev_funding
+			.get_value_satoshis()
 			.checked_add_signed(our_funding_contribution.to_sat())
 			.and_then(|v| v.checked_add_signed(their_funding_contribution.to_sat()))
-			.ok_or(format!("The sum of contributions {our_funding_contribution} and {their_funding_contribution} is greater than the channel's value"))?;
+			.ok_or(format!(
+				"The sum of contributions {our_funding_contribution} and \
+				{their_funding_contribution} is greater than the channel's value"
+			))?;
 		if post_channel_value_sat < MIN_CHANNEL_VALUE_SATOSHIS {
 			return Err(format!(
-				"Spliced channel value must be at least 1000 satoshis. It would be {post_channel_value_sat}",
+				"Spliced channel value must be at least 1000 satoshis. It would be \
+				{post_channel_value_sat}"
+			));
+		}
+		if post_channel_value_sat < min_funding_satoshis
+			&& their_funding_contribution.is_negative()
+			&& !prev_funding.is_outbound()
+		{
+			return Err(format!(
+				"Spliced channel value {post_channel_value_sat} would be smaller \
+				than the configured min_funding_satoshis {min_funding_satoshis}"
 			));
 		}
 
@@ -13048,6 +13062,7 @@ where
 	fn validate_splice_contributions(
 		&self, our_funding_contribution: SignedAmount, their_funding_contribution: SignedAmount,
 		counterparty_funding_pubkey: PublicKey, our_new_holder_keys: ChannelPublicKeys,
+		min_funding_satoshis: u64,
 	) -> Result<FundingScope, String> {
 		let candidate_scope = FundingScope::for_splice(
 			&self.funding,
@@ -13056,6 +13071,7 @@ where
 			their_funding_contribution,
 			counterparty_funding_pubkey,
 			our_new_holder_keys,
+			min_funding_satoshis,
 		)
 		.map_err(|e| format!("Channel {} cannot be spliced; {}", self.context.channel_id(), e))?;
 
@@ -13166,7 +13182,7 @@ where
 
 	pub(crate) fn splice_init<ES: EntropySource, L: Logger>(
 		&mut self, msg: &msgs::SpliceInit, entropy_source: &ES, holder_node_id: &PublicKey,
-		logger: &L,
+		min_funding_satoshis: u64, logger: &L,
 	) -> Result<msgs::SpliceAck, InteractiveTxMsgError> {
 		self.validate_splice_init(msg).map_err(|e| self.quiescent_negotiation_err(e))?;
 
@@ -13199,6 +13215,7 @@ where
 				their_funding_contribution,
 				msg.funding_pubkey,
 				holder_pubkeys,
+				min_funding_satoshis,
 			)
 			.map_err(|e| self.quiescent_negotiation_err(ChannelError::WarnAndDisconnect(e)))?;
 
@@ -13334,7 +13351,7 @@ where
 
 	pub(crate) fn tx_init_rbf<ES: EntropySource, F: FeeEstimator, L: Logger>(
 		&mut self, msg: &msgs::TxInitRbf, entropy_source: &ES, holder_node_id: &PublicKey,
-		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
+		fee_estimator: &LowerBoundedFeeEstimator<F>, min_funding_satoshis: u64, logger: &L,
 	) -> Result<msgs::TxAckRbf, InteractiveTxMsgError> {
 		let (holder_pubkeys, counterparty_funding_pubkey) = self
 			.validate_tx_init_rbf(msg, fee_estimator)
@@ -13381,6 +13398,7 @@ where
 				their_funding_contribution,
 				counterparty_funding_pubkey,
 				holder_pubkeys,
+				min_funding_satoshis,
 			)
 			.map_err(|e| self.quiescent_negotiation_err(ChannelError::WarnAndDisconnect(e)))?;
 
@@ -13452,7 +13470,9 @@ where
 		})
 	}
 
-	fn validate_tx_ack_rbf(&self, msg: &msgs::TxAckRbf) -> Result<FundingScope, ChannelError> {
+	fn validate_tx_ack_rbf(
+		&self, msg: &msgs::TxAckRbf, min_funding_satoshis: u64,
+	) -> Result<FundingScope, ChannelError> {
 		let pending_splice = self
 			.pending_splice
 			.as_ref()
@@ -13478,6 +13498,7 @@ where
 				their_funding_contribution,
 				counterparty_funding_pubkey,
 				holder_pubkeys,
+				min_funding_satoshis,
 			)
 			.map_err(|e| ChannelError::WarnAndDisconnect(e))?;
 
@@ -13486,9 +13507,9 @@ where
 
 	pub(crate) fn tx_ack_rbf<ES: EntropySource, L: Logger>(
 		&mut self, msg: &msgs::TxAckRbf, entropy_source: &ES, holder_node_id: &PublicKey,
-		logger: &L,
+		min_funding_satoshis: u64, logger: &L,
 	) -> Result<Option<InteractiveTxMessageSend>, ChannelError> {
-		let rbf_funding = self.validate_tx_ack_rbf(msg)?;
+		let rbf_funding = self.validate_tx_ack_rbf(msg, min_funding_satoshis)?;
 
 		log_info!(
 			logger,
@@ -13519,9 +13540,9 @@ where
 
 	pub(crate) fn splice_ack<ES: EntropySource, L: Logger>(
 		&mut self, msg: &msgs::SpliceAck, entropy_source: &ES, holder_node_id: &PublicKey,
-		logger: &L,
+		min_funding_satoshis: u64, logger: &L,
 	) -> Result<Option<InteractiveTxMessageSend>, ChannelError> {
-		let splice_funding = self.validate_splice_ack(msg)?;
+		let splice_funding = self.validate_splice_ack(msg, min_funding_satoshis)?;
 
 		log_info!(
 			logger,
@@ -13553,7 +13574,9 @@ where
 		Ok(tx_msg_opt)
 	}
 
-	fn validate_splice_ack(&self, msg: &msgs::SpliceAck) -> Result<FundingScope, ChannelError> {
+	fn validate_splice_ack(
+		&self, msg: &msgs::SpliceAck, min_funding_satoshis: u64,
+	) -> Result<FundingScope, ChannelError> {
 		// TODO(splicing): Add check that we are the splice (quiescence) initiator
 
 		let pending_splice = self
@@ -13576,6 +13599,7 @@ where
 				their_funding_contribution,
 				msg.funding_pubkey,
 				new_keys,
+				min_funding_satoshis,
 			)
 			.map_err(|e| ChannelError::WarnAndDisconnect(e))?;
 
@@ -13692,6 +13716,9 @@ where
 				SignedAmount::ZERO,
 				funding.counterparty_funding_pubkey().clone(),
 				funding.get_holder_pubkeys().clone(),
+				// When the counterparty's contribution is non-negative, we don't validate
+				// the post splice channel value against `min_funding_satoshis`
+				0,
 			)
 			.unwrap();
 			// Splice-out an additional satoshi, and validation fails!
@@ -13700,6 +13727,9 @@ where
 				SignedAmount::ZERO,
 				funding.counterparty_funding_pubkey().clone(),
 				funding.get_holder_pubkeys().clone(),
+				// When the counterparty's contribution is non-negative, we don't validate
+				// the post splice channel value against `min_funding_satoshis`
+				0,
 			)
 			.unwrap_err();
 		}

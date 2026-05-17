@@ -163,6 +163,35 @@ impl CoinSelectionSourceSync for TightBudgetWallet {
 	}
 }
 
+#[cfg(test)]
+fn config_with_min_funding_satoshis(min_funding_satoshis: u64) -> UserConfig {
+	let mut config = test_default_channel_config();
+	config.channel_handshake_limits.min_funding_satoshis = min_funding_satoshis;
+	config.channel_handshake_config.announced_channel_max_inbound_htlc_value_in_flight_percentage =
+		100;
+	config
+}
+
+#[cfg(test)]
+fn assert_min_funding_error<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, min_funding_satoshis: u64) {
+	let msg_events = node.node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1, "{msg_events:?}");
+	match &msg_events[0] {
+		MessageSendEvent::HandleError {
+			action: msgs::ErrorAction::DisconnectPeerWithWarning { msg },
+			..
+		} => {
+			assert!(
+				msg.data
+					.contains(&format!("configured min_funding_satoshis {min_funding_satoshis}")),
+				"unexpected warning: {}",
+				msg.data
+			);
+		},
+		_ => panic!("Expected HandleError with warning, got {:?}", msg_events[0]),
+	}
+}
+
 pub fn negotiate_splice_tx<'a, 'b, 'c, 'd>(
 	initiator: &'a Node<'b, 'c, 'd>, acceptor: &'a Node<'b, 'c, 'd>, channel_id: ChannelId,
 	funding_contribution: FundingContribution,
@@ -1207,6 +1236,268 @@ fn test_splice_in() {
 	let htlc_limit_msat = nodes[0].node.list_channels()[0].next_outbound_htlc_limit_msat;
 	assert!(htlc_limit_msat > initial_channel_value_sat);
 	let _ = send_payment(&nodes[0], &[&nodes[1]], htlc_limit_msat);
+}
+
+#[test]
+fn test_min_funding_satoshis_allows_splice_init_with_positive_counterparty_contribution() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let min_funding_satoshis = 150_000;
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+	nodes[1].node.set_current_config(config_with_min_funding_satoshis(min_funding_satoshis));
+
+	let added_value = Amount::from_sat(10_000);
+	provide_utxo_reserves(&nodes, 1, Amount::from_sat(100_000));
+	let _funding_contribution = initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+
+	let stfu_init = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+	nodes[1].node.handle_stfu(node_id_0, &stfu_init);
+	let stfu_ack = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
+	nodes[0].node.handle_stfu(node_id_1, &stfu_ack);
+
+	let splice_init = get_event_msg!(nodes[0], MessageSendEvent::SendSpliceInit, node_id_1);
+	assert!(splice_init.funding_contribution_satoshis > 0);
+	nodes[1].node.handle_splice_init(node_id_0, &splice_init);
+	let _splice_ack = get_event_msg!(nodes[1], MessageSendEvent::SendSpliceAck, node_id_0);
+}
+
+#[test]
+fn test_min_funding_satoshis_rejects_splice_init_with_negative_counterparty_contribution() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let min_funding_satoshis = 150_000;
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+	nodes[1].node.set_current_config(config_with_min_funding_satoshis(min_funding_satoshis));
+
+	let outputs = vec![TxOut {
+		value: Amount::from_sat(10_000),
+		script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
+	}];
+	let _funding_contribution =
+		initiate_splice_out(&nodes[0], &nodes[1], channel_id, outputs).unwrap();
+
+	let stfu_init = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+	nodes[1].node.handle_stfu(node_id_0, &stfu_init);
+	let stfu_ack = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
+	nodes[0].node.handle_stfu(node_id_1, &stfu_ack);
+
+	let splice_init = get_event_msg!(nodes[0], MessageSendEvent::SendSpliceInit, node_id_1);
+	assert!(splice_init.funding_contribution_satoshis < 0);
+	nodes[1].node.handle_splice_init(node_id_0, &splice_init);
+	assert_min_funding_error(&nodes[1], min_funding_satoshis);
+}
+
+#[test]
+fn test_min_funding_satoshis_allows_outbound_splice_ack_with_negative_counterparty_contribution() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let min_funding_satoshis = 150_000;
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) = create_announced_chan_between_nodes_with_value(
+		&nodes,
+		0,
+		1,
+		initial_channel_value_sat,
+		50_000_000,
+	);
+	nodes[0].node.set_current_config(config_with_min_funding_satoshis(min_funding_satoshis));
+
+	let added_value = Amount::from_sat(10_000);
+	provide_utxo_reserves(&nodes, 1, Amount::from_sat(100_000));
+	let _node_0_contribution = initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+	let outputs = vec![TxOut {
+		value: Amount::from_sat(10_000),
+		script_pubkey: nodes[1].wallet_source.get_change_script().unwrap(),
+	}];
+	let _node_1_contribution =
+		initiate_splice_out(&nodes[1], &nodes[0], channel_id, outputs).unwrap();
+
+	let stfu_0 = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+	let stfu_1 = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
+	nodes[1].node.handle_stfu(node_id_0, &stfu_0);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+	nodes[0].node.handle_stfu(node_id_1, &stfu_1);
+
+	let splice_init = get_event_msg!(nodes[0], MessageSendEvent::SendSpliceInit, node_id_1);
+	nodes[1].node.handle_splice_init(node_id_0, &splice_init);
+	let splice_ack = get_event_msg!(nodes[1], MessageSendEvent::SendSpliceAck, node_id_0);
+	assert!(splice_ack.funding_contribution_satoshis < 0);
+	nodes[0].node.handle_splice_ack(node_id_1, &splice_ack);
+
+	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert!(!msg_events.is_empty(), "{msg_events:?}");
+	assert!(
+		!msg_events.iter().any(|event| matches!(event, MessageSendEvent::HandleError { .. })),
+		"{msg_events:?}"
+	);
+}
+
+#[test]
+fn test_min_funding_satoshis_rejects_splice_ack_with_negative_counterparty_contribution() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let min_funding_satoshis = 150_000;
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) = create_announced_chan_between_nodes_with_value(
+		&nodes,
+		1,
+		0,
+		initial_channel_value_sat,
+		50_000_000,
+	);
+	nodes[0].node.set_current_config(config_with_min_funding_satoshis(min_funding_satoshis));
+
+	let added_value = Amount::from_sat(10_000);
+	provide_utxo_reserves(&nodes, 1, Amount::from_sat(100_000));
+	let _node_0_contribution = initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+
+	let stfu_init = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+	nodes[1].node.handle_stfu(node_id_0, &stfu_init);
+
+	let outputs = vec![TxOut {
+		value: Amount::from_sat(10_000),
+		script_pubkey: nodes[1].wallet_source.get_change_script().unwrap(),
+	}];
+	let _node_1_contribution =
+		initiate_splice_out(&nodes[1], &nodes[0], channel_id, outputs).unwrap();
+
+	let stfu_ack = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
+	assert!(!stfu_ack.initiator);
+	nodes[0].node.handle_stfu(node_id_1, &stfu_ack);
+
+	let splice_init = get_event_msg!(nodes[0], MessageSendEvent::SendSpliceInit, node_id_1);
+	nodes[1].node.handle_splice_init(node_id_0, &splice_init);
+	let splice_ack = get_event_msg!(nodes[1], MessageSendEvent::SendSpliceAck, node_id_0);
+	assert!(splice_ack.funding_contribution_satoshis < 0);
+	nodes[0].node.handle_splice_ack(node_id_1, &splice_ack);
+	assert_min_funding_error(&nodes[0], min_funding_satoshis);
+}
+
+#[test]
+fn test_min_funding_satoshis_rejects_tx_init_rbf_with_negative_counterparty_contribution() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let min_funding_satoshis = 150_000;
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+	nodes[1].node.set_current_config(config_with_min_funding_satoshis(min_funding_satoshis));
+
+	let added_value = Amount::from_sat(10_000);
+	provide_utxo_reserves(&nodes, 1, Amount::from_sat(100_000));
+	let first_contribution = initiate_splice_in(&nodes[1], &nodes[0], channel_id, added_value);
+	let (_first_splice_tx, _) =
+		splice_channel(&nodes[1], &nodes[0], channel_id, first_contribution);
+
+	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
+	let rbf_feerate = funding_template.min_rbf_feerate().unwrap();
+	let outputs = vec![TxOut {
+		value: Amount::from_sat(10_000),
+		script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
+	}];
+	let rbf_contribution = funding_template.splice_out(outputs, rbf_feerate, FeeRate::MAX).unwrap();
+	nodes[0].node.funding_contributed(&channel_id, &node_id_1, rbf_contribution, None).unwrap();
+
+	let stfu_init = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+	nodes[1].node.handle_stfu(node_id_0, &stfu_init);
+	let stfu_ack = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
+	nodes[0].node.handle_stfu(node_id_1, &stfu_ack);
+
+	let tx_init_rbf = get_event_msg!(nodes[0], MessageSendEvent::SendTxInitRbf, node_id_1);
+	assert!(tx_init_rbf.funding_output_contribution.unwrap() < 0);
+	nodes[1].node.handle_tx_init_rbf(node_id_0, &tx_init_rbf);
+	assert_min_funding_error(&nodes[1], min_funding_satoshis);
+}
+
+#[test]
+fn test_min_funding_satoshis_rejects_tx_ack_rbf_with_negative_counterparty_contribution() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let min_funding_satoshis = 150_000;
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) = create_announced_chan_between_nodes_with_value(
+		&nodes,
+		1,
+		0,
+		initial_channel_value_sat,
+		50_000_000,
+	);
+	nodes[0].node.set_current_config(config_with_min_funding_satoshis(min_funding_satoshis));
+
+	let added_value = Amount::from_sat(10_000);
+	provide_utxo_reserves(&nodes, 1, Amount::from_sat(100_000));
+	let first_contribution = initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+	let (_first_splice_tx, _) =
+		splice_channel(&nodes[0], &nodes[1], channel_id, first_contribution);
+
+	let funding_template_0 = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
+	let rbf_feerate = funding_template_0.min_rbf_feerate().unwrap();
+	let node_0_contribution =
+		funding_template_0.with_prior_contribution(rbf_feerate, FeeRate::MAX).build().unwrap();
+	nodes[0].node.funding_contributed(&channel_id, &node_id_1, node_0_contribution, None).unwrap();
+
+	let stfu_init = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+	nodes[1].node.handle_stfu(node_id_0, &stfu_init);
+
+	let outputs = vec![TxOut {
+		value: Amount::from_sat(10_000),
+		script_pubkey: nodes[1].wallet_source.get_change_script().unwrap(),
+	}];
+	let funding_template_1 = nodes[1].node.splice_channel(&channel_id, &node_id_0).unwrap();
+	let node_1_contribution =
+		funding_template_1.splice_out(outputs, rbf_feerate, FeeRate::MAX).unwrap();
+	nodes[1].node.funding_contributed(&channel_id, &node_id_0, node_1_contribution, None).unwrap();
+
+	let stfu_ack = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
+	assert!(!stfu_ack.initiator);
+	nodes[0].node.handle_stfu(node_id_1, &stfu_ack);
+
+	let tx_init_rbf = get_event_msg!(nodes[0], MessageSendEvent::SendTxInitRbf, node_id_1);
+	nodes[1].node.handle_tx_init_rbf(node_id_0, &tx_init_rbf);
+	let tx_ack_rbf = get_event_msg!(nodes[1], MessageSendEvent::SendTxAckRbf, node_id_0);
+	assert!(tx_ack_rbf.funding_output_contribution.unwrap() < 0);
+	nodes[0].node.handle_tx_ack_rbf(node_id_1, &tx_ack_rbf);
+	assert_min_funding_error(&nodes[0], min_funding_satoshis);
 }
 
 #[test]

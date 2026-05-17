@@ -13384,6 +13384,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						msg,
 						&self.entropy_source,
 						&self.get_our_node_id(),
+						self.config.read().unwrap().channel_handshake_limits.min_funding_satoshis,
 						&self.logger,
 					) {
 						Ok(splice_ack_msg) => {
@@ -13441,6 +13442,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						&self.entropy_source,
 						&self.get_our_node_id(),
 						&self.fee_estimator,
+						self.config.read().unwrap().channel_handshake_limits.min_funding_satoshis,
 						&self.logger,
 					) {
 						Ok(tx_ack_rbf_msg) => {
@@ -13497,6 +13499,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						msg,
 						&self.entropy_source,
 						&self.get_our_node_id(),
+						self.config.read().unwrap().channel_handshake_limits.min_funding_satoshis,
 						&self.logger,
 					);
 					let tx_msg_opt =
@@ -13541,6 +13544,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						msg,
 						&self.entropy_source,
 						&self.get_our_node_id(),
+						self.config.read().unwrap().channel_handshake_limits.min_funding_satoshis,
 						&self.logger,
 					);
 					let tx_msg_opt =
