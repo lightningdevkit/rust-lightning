@@ -487,19 +487,25 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 	/// Verifies a [`Bolt12Invoice`] using the provided [`OffersContext`] or the invoice's payer
 	/// metadata, returning the corresponding [`PaymentId`] if successful.
 	///
+	/// This also verifies that the invoice amount is consistent with the underlying
+	/// offer or refund. For currency-denominated offers, this includes validating
+	/// the invoice amount against the payable amount derived using the provided
+	/// [`CurrencyConversion`] when the invoice request did not carry an explicit
+	/// amount.
+	///
 	/// - If an [`OffersContext::OutboundPaymentForOffer`] or
 	///   [`OffersContext::OutboundPaymentForRefund`] with a `nonce` is provided, verification is
 	///   performed using this to form the payer metadata.
 	/// - If no context is provided and the invoice corresponds to a [`Refund`] without blinded paths,
 	///   verification is performed using the [`Bolt12Invoice::payer_metadata`].
 	/// - If neither condition is met, verification fails.
-	pub fn verify_bolt12_invoice(
-		&self, invoice: &Bolt12Invoice, context: Option<&OffersContext>,
-	) -> Result<PaymentId, ()> {
+	pub fn verify_bolt12_invoice<CC: CurrencyConversion>(
+		&self, invoice: &Bolt12Invoice, converter: &CC, context: Option<&OffersContext>,
+	) -> Result<PaymentId, Bolt12SemanticError> {
 		let secp_ctx = &self.secp_ctx;
 		let expanded_key = &self.inbound_payment_key;
 
-		match context {
+		let payment_id = match context {
 			None if invoice.is_for_refund_without_paths() => {
 				invoice.verify_using_metadata(expanded_key, secp_ctx)
 			},
@@ -519,6 +525,11 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 			},
 			_ => Err(()),
 		}
+		.map_err(|_| Bolt12SemanticError::UnexpectedAmount)?;
+
+		invoice.verify_amount_acceptable_for_payment(converter)?;
+
+		Ok(payment_id)
 	}
 
 	/// Verifies the provided [`AsyncPaymentsContext`] for an inbound [`HeldHtlcAvailable`] message.

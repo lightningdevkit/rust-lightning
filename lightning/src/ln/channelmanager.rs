@@ -5829,6 +5829,13 @@ impl<
 	///   offer, or
 	/// - the refund corresponding to the invoice has already expired.
 	///
+	/// If the invoice corresponds to a currency-denominated offer and the invoice request did not
+	/// specify an explicit amount, the invoice amount is checked against the maximum amount payable
+	/// using the configured currency conversion. [`Bolt12PaymentError::UnverifiableAmount`] is
+	/// returned if the invoice amount could not be verified against the converted offer amount, and
+	/// [`Bolt12PaymentError::ExcessiveAmount`] is returned if the invoice quotes more than the
+	/// maximum amount we are willing to pay for the offer.
+	///
 	/// To retry the payment, request another invoice using a new `payment_id`.
 	///
 	/// Attempting to pay the same invoice twice while the first payment is still pending will
@@ -5841,9 +5848,16 @@ impl<
 	pub fn send_payment_for_bolt12_invoice(
 		&self, invoice: &Bolt12Invoice, context: Option<&OffersContext>,
 	) -> Result<(), Bolt12PaymentError> {
-		match self.flow.verify_bolt12_invoice(invoice, context) {
+		match self.flow.verify_bolt12_invoice(invoice, &self.currency_conversion, context) {
 			Ok(payment_id) => self.send_payment_for_verified_bolt12_invoice(invoice, payment_id),
-			Err(()) => Err(Bolt12PaymentError::UnexpectedInvoice),
+			Err(Bolt12SemanticError::UnexpectedAmount) => {
+				Err(Bolt12PaymentError::UnexpectedInvoice)
+			},
+			Err(Bolt12SemanticError::UnsupportedCurrency)
+			| Err(Bolt12SemanticError::MissingAmount)
+			| Err(Bolt12SemanticError::InvalidAmount) => Err(Bolt12PaymentError::UnverifiableAmount),
+			Err(Bolt12SemanticError::ExcessiveAmount) => Err(Bolt12PaymentError::ExcessiveAmount),
+			_ => Err(Bolt12PaymentError::UnexpectedInvoice),
 		}
 	}
 
@@ -17444,9 +17458,9 @@ impl<
 				})
 			},
 			OffersMessage::Invoice(invoice) => {
-				let payment_id = match self.flow.verify_bolt12_invoice(&invoice, context.as_ref()) {
+				let payment_id = match self.flow.verify_bolt12_invoice(&invoice, &self.currency_conversion, context.as_ref()) {
 					Ok(payment_id) => payment_id,
-					Err(()) => return None,
+					Err(_) => return None,
 				};
 
 				let logger = WithContext::for_payment(
