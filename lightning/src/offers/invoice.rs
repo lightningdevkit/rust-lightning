@@ -1034,6 +1034,42 @@ impl Bolt12Invoice {
 		self.contents.verify(&self.bytes, metadata, key, iv_bytes, secp_ctx)
 	}
 
+	/// Verifies that the invoice amount is acceptable for payment relative to the
+	/// underlying offer.
+	///
+	/// For currency-denominated offers where the invoice request did not carry an
+	/// explicit amount, this checks that the invoice amount does not exceed the
+	/// maximum payable amount derived from the provided currency conversion.
+	///
+	/// Invoices for refunds or invoice requests with explicit amounts are assumed
+	/// to have already been validated during parsing.
+	pub fn verify_amount_acceptable_for_payment<CC: CurrencyConversion>(
+		&self, converter: &CC,
+	) -> Result<(), Bolt12SemanticError> {
+		if let InvoiceContents::ForOffer { invoice_request, .. } = &self.contents {
+			if invoice_request.amount_msats().is_none() {
+				let offer_amount = invoice_request
+					.inner
+					.offer
+					.amount()
+					.ok_or(Bolt12SemanticError::MissingAmount)?;
+
+				let (_minimum_unit_msats, maximum_unit_msats) =
+					offer_amount.to_msats_range(converter)?;
+
+				let maximum_msats = maximum_unit_msats
+					.saturating_mul(self.quantity().unwrap_or(1))
+					.min(MAX_VALUE_MSAT);
+
+				if self.amount_msats() > maximum_msats {
+					return Err(Bolt12SemanticError::ExcessiveAmount);
+				}
+			}
+		}
+
+		Ok(())
+	}
+
 	pub(crate) fn as_tlv_stream(&self) -> FullInvoiceTlvStreamRef<'_> {
 		let (
 			payer_tlv_stream,
