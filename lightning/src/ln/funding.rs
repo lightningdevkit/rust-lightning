@@ -761,6 +761,13 @@ impl FundingContribution {
 		(contributed_inputs, contributed_outputs.map(|output| output.script_pubkey).collect())
 	}
 
+	/// Returns this contribution's inputs and outputs after removing any that overlap
+	/// with the provided `existing_inputs`/`existing_outputs`.
+	///
+	/// Multiple contribution outputs sharing a `script_pubkey` are all dropped when any
+	/// existing output uses the same script.
+	///
+	/// Returns `None` if every input and output was filtered as overlapping.
 	pub(crate) fn into_unique_contributions<'a>(
 		self, existing_inputs: impl Iterator<Item = OutPoint>,
 		existing_outputs: impl Iterator<Item = &'a bitcoin::Script>,
