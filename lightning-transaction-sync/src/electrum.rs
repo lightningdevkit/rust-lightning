@@ -96,7 +96,13 @@ impl<L: Logger> ElectrumSyncClient<L> {
 		let mut tip_header = tip_notification.header;
 		let mut tip_height = tip_notification.height as u32;
 
-		loop {
+		for i in 0..100 {
+			if i >= 10 {
+				log_debug!(self.logger, "Giving up trying to sync transactions after 10 attempts.");
+				sync_state.pending_sync = true;
+				return Err(TxSyncError::Failed);
+			}
+
 			let pending_registrations = self.queue.lock().unwrap().process_queues(&mut sync_state);
 			let tip_is_new = Some(tip_header.block_hash()) != sync_state.last_sync_hash;
 
