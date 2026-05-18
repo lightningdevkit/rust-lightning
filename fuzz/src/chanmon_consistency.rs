@@ -1207,6 +1207,42 @@ struct EventQueues {
 	cb: Vec<MessageSendEvent>,
 }
 
+fn find_destination_node(nodes: &[HarnessNode<'_>; 3], node_id: &PublicKey) -> usize {
+	nodes
+		.iter()
+		.position(|node| node.get_our_node_id() == *node_id)
+		.expect("message destination should be a known harness node")
+}
+
+fn directed_msg_destination(event: &MessageSendEvent) -> Option<PublicKey> {
+	match event {
+		MessageSendEvent::UpdateHTLCs { ref node_id, .. }
+		| MessageSendEvent::SendRevokeAndACK { ref node_id, .. }
+		| MessageSendEvent::SendChannelReestablish { ref node_id, .. }
+		| MessageSendEvent::SendStfu { ref node_id, .. }
+		| MessageSendEvent::SendSpliceInit { ref node_id, .. }
+		| MessageSendEvent::SendSpliceAck { ref node_id, .. }
+		| MessageSendEvent::SendSpliceLocked { ref node_id, .. }
+		| MessageSendEvent::SendTxAddInput { ref node_id, .. }
+		| MessageSendEvent::SendTxAddOutput { ref node_id, .. }
+		| MessageSendEvent::SendTxRemoveInput { ref node_id, .. }
+		| MessageSendEvent::SendTxRemoveOutput { ref node_id, .. }
+		| MessageSendEvent::SendTxComplete { ref node_id, .. }
+		| MessageSendEvent::SendTxAbort { ref node_id, .. }
+		| MessageSendEvent::SendTxInitRbf { ref node_id, .. }
+		| MessageSendEvent::SendTxAckRbf { ref node_id, .. }
+		| MessageSendEvent::SendTxSignatures { ref node_id, .. }
+		| MessageSendEvent::SendChannelReady { ref node_id, .. }
+		| MessageSendEvent::SendAnnouncementSignatures { ref node_id, .. }
+		| MessageSendEvent::SendChannelUpdate { ref node_id, .. }
+		| MessageSendEvent::HandleError { ref node_id, .. } => Some(*node_id),
+		MessageSendEvent::BroadcastChannelUpdate { .. }
+		| MessageSendEvent::BroadcastChannelAnnouncement { .. }
+		| MessageSendEvent::BroadcastNodeAnnouncement { .. } => None,
+		_ => panic!("Unhandled message event {:?}", event),
+	}
+}
+
 impl EventQueues {
 	fn new() -> Self {
 		Self { ab: Vec::new(), ba: Vec::new(), bc: Vec::new(), cb: Vec::new() }
@@ -1235,76 +1271,41 @@ impl EventQueues {
 		}
 	}
 
-	fn push_for_node(&mut self, node_idx: usize, event: MessageSendEvent) {
-		match node_idx {
-			0 => self.ab.push(event),
-			2 => self.cb.push(event),
-			_ => panic!("cannot directly queue messages for node {}", node_idx),
-		}
-	}
-
-	fn extend_for_node<I: IntoIterator<Item = MessageSendEvent>>(
-		&mut self, node_idx: usize, events: I,
+	fn route_from_node<'a, I: IntoIterator<Item = MessageSendEvent>>(
+		&mut self, source_idx: usize, events: I, expect_drop_node: Option<usize>,
+		nodes: &[HarnessNode<'a>; 3],
 	) {
-		match node_idx {
-			0 => self.ab.extend(events),
-			2 => self.cb.extend(events),
-			_ => panic!("cannot directly queue messages for node {}", node_idx),
-		}
-	}
-
-	fn route_from_middle<'a, I: IntoIterator<Item = MessageSendEvent>>(
-		&mut self, excess_events: I, expect_drop_node: Option<usize>, nodes: &[HarnessNode<'a>; 3],
-	) {
-		// Push any events from Node B onto queues.ba and queues.bc.
-		let a_id = nodes[0].get_our_node_id();
 		let expect_drop_id = expect_drop_node.map(|id| nodes[id].get_our_node_id());
-		for event in excess_events {
-			let push_a = match event {
-				MessageSendEvent::UpdateHTLCs { ref node_id, .. }
-				| MessageSendEvent::SendRevokeAndACK { ref node_id, .. }
-				| MessageSendEvent::SendChannelReestablish { ref node_id, .. }
-				| MessageSendEvent::SendStfu { ref node_id, .. }
-				| MessageSendEvent::SendSpliceInit { ref node_id, .. }
-				| MessageSendEvent::SendSpliceAck { ref node_id, .. }
-				| MessageSendEvent::SendSpliceLocked { ref node_id, .. }
-				| MessageSendEvent::SendTxAddInput { ref node_id, .. }
-				| MessageSendEvent::SendTxAddOutput { ref node_id, .. }
-				| MessageSendEvent::SendTxRemoveInput { ref node_id, .. }
-				| MessageSendEvent::SendTxRemoveOutput { ref node_id, .. }
-				| MessageSendEvent::SendTxComplete { ref node_id, .. }
-				| MessageSendEvent::SendTxAbort { ref node_id, .. }
-				| MessageSendEvent::SendTxInitRbf { ref node_id, .. }
-				| MessageSendEvent::SendTxAckRbf { ref node_id, .. }
-				| MessageSendEvent::SendTxSignatures { ref node_id, .. }
-				| MessageSendEvent::SendChannelUpdate { ref node_id, .. } => {
-					if Some(*node_id) == expect_drop_id {
-						panic!(
-							"peer_disconnected should drop msgs bound for the disconnected peer"
-						);
-					}
-					*node_id == a_id
-				},
-				MessageSendEvent::HandleError { ref action, ref node_id } => {
-					assert_action_timeout_awaiting_response(action);
-					if Some(*node_id) == expect_drop_id {
-						panic!(
-							"peer_disconnected should drop msgs bound for the disconnected peer"
-						);
-					}
-					*node_id == a_id
-				},
-				MessageSendEvent::SendChannelReady { .. }
-				| MessageSendEvent::SendAnnouncementSignatures { .. }
-				| MessageSendEvent::BroadcastChannelUpdate { .. } => continue,
-				_ => panic!("Unhandled message event {:?}", event),
+		for event in events {
+			if let MessageSendEvent::HandleError { ref action, .. } = event {
+				assert_action_timeout_awaiting_response(action);
+			}
+			let Some(node_id) = directed_msg_destination(&event) else {
+				continue;
 			};
-			if push_a {
-				self.ba.push(event);
-			} else {
-				self.bc.push(event);
+			if Some(node_id) == expect_drop_id {
+				panic!("peer_disconnected should drop msgs bound for the disconnected peer");
+			}
+			let dest_idx = find_destination_node(nodes, &node_id);
+			match (source_idx, dest_idx) {
+				(0, 1) => self.ab.push(event),
+				(1, 0) => self.ba.push(event),
+				(1, 2) => self.bc.push(event),
+				(2, 1) => self.cb.push(event),
+				_ => panic!("unsupported message route {} -> {}", source_idx, dest_idx),
 			}
 		}
+	}
+
+	fn route_pending_from_node(
+		&mut self, source_idx: usize, expect_drop_node: Option<usize>, nodes: &[HarnessNode<'_>; 3],
+	) {
+		self.route_from_node(
+			source_idx,
+			nodes[source_idx].get_and_clear_pending_msg_events(),
+			expect_drop_node,
+			nodes,
+		);
 	}
 
 	fn clear_link(&mut self, link: &PeerLink) {
@@ -1324,42 +1325,12 @@ impl EventQueues {
 	fn drain_on_disconnect(&mut self, edge_node: usize, nodes: &[HarnessNode<'_>; 3]) {
 		match edge_node {
 			0 => {
-				for event in nodes[0].get_and_clear_pending_msg_events() {
-					match event {
-						MessageSendEvent::UpdateHTLCs { .. } => {},
-						MessageSendEvent::SendRevokeAndACK { .. } => {},
-						MessageSendEvent::SendChannelReestablish { .. } => {},
-						MessageSendEvent::SendStfu { .. } => {},
-						MessageSendEvent::SendChannelReady { .. } => {},
-						MessageSendEvent::SendAnnouncementSignatures { .. } => {},
-						MessageSendEvent::BroadcastChannelUpdate { .. } => {},
-						MessageSendEvent::SendChannelUpdate { .. } => {},
-						MessageSendEvent::HandleError { ref action, .. } => {
-							assert_action_timeout_awaiting_response(action);
-						},
-						_ => panic!("Unhandled message event"),
-					}
-				}
-				self.route_from_middle(nodes[1].get_and_clear_pending_msg_events(), Some(0), nodes);
+				self.route_pending_from_node(0, Some(1), nodes);
+				self.route_pending_from_node(1, Some(0), nodes);
 			},
 			2 => {
-				for event in nodes[2].get_and_clear_pending_msg_events() {
-					match event {
-						MessageSendEvent::UpdateHTLCs { .. } => {},
-						MessageSendEvent::SendRevokeAndACK { .. } => {},
-						MessageSendEvent::SendChannelReestablish { .. } => {},
-						MessageSendEvent::SendStfu { .. } => {},
-						MessageSendEvent::SendChannelReady { .. } => {},
-						MessageSendEvent::SendAnnouncementSignatures { .. } => {},
-						MessageSendEvent::BroadcastChannelUpdate { .. } => {},
-						MessageSendEvent::SendChannelUpdate { .. } => {},
-						MessageSendEvent::HandleError { ref action, .. } => {
-							assert_action_timeout_awaiting_response(action);
-						},
-						_ => panic!("Unhandled message event"),
-					}
-				}
-				self.route_from_middle(nodes[1].get_and_clear_pending_msg_events(), Some(2), nodes);
+				self.route_pending_from_node(2, Some(1), nodes);
+				self.route_pending_from_node(1, Some(2), nodes);
 			},
 			_ => panic!("unsupported disconnected edge"),
 		}
@@ -1429,7 +1400,7 @@ impl PeerLink {
 		queues.clear_link(self);
 	}
 
-	fn reconnect(&mut self, nodes: &[HarnessNode<'_>; 3]) {
+	fn reconnect(&mut self, nodes: &[HarnessNode<'_>; 3], queues: &mut EventQueues) {
 		if !self.disconnected {
 			return;
 		}
@@ -1448,6 +1419,8 @@ impl PeerLink {
 		};
 		nodes[self.node_b].peer_connected(node_a_id, &init_a, false).unwrap();
 		self.disconnected = false;
+		queues.route_pending_from_node(self.node_a, None, nodes);
+		queues.route_pending_from_node(self.node_b, None, nodes);
 	}
 
 	fn disconnect_for_reload(
@@ -1463,15 +1436,7 @@ impl PeerLink {
 		nodes[remaining_node].peer_disconnected(restarted_node_id);
 		self.disconnected = true;
 
-		if remaining_node == 1 {
-			queues.route_from_middle(
-				nodes[1].get_and_clear_pending_msg_events(),
-				Some(restarted_node),
-				nodes,
-			);
-		} else {
-			nodes[remaining_node].get_and_clear_pending_msg_events();
-		}
+		queues.route_pending_from_node(remaining_node, Some(restarted_node), nodes);
 		queues.clear_link(self);
 	}
 }
@@ -2443,13 +2408,6 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 	fn process_msg_events(
 		&mut self, node_idx: usize, corrupt_forward: bool, limit_events: ProcessMessages,
 	) -> bool {
-		fn find_destination_node(nodes: &[HarnessNode<'_>; 3], node_id: &PublicKey) -> usize {
-			nodes
-				.iter()
-				.position(|node| node.get_our_node_id() == *node_id)
-				.expect("message destination should be a known harness node")
-		}
-
 		fn log_msg_delivery<Out: Output + MaybeSend + MaybeSync>(
 			node_idx: usize, dest_idx: usize, msg_name: &str, out: &Out,
 		) {
@@ -2690,20 +2648,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 				break;
 			}
 		}
-		if node_idx == 1 {
-			let remaining = extra_ev.into_iter().chain(events_iter).collect::<Vec<_>>();
-			queues.route_from_middle(remaining, None, nodes);
-		} else if node_idx == 0 {
-			if let Some(ev) = extra_ev {
-				queues.push_for_node(0, ev);
-			}
-			queues.extend_for_node(0, events_iter);
-		} else {
-			if let Some(ev) = extra_ev {
-				queues.push_for_node(2, ev);
-			}
-			queues.extend_for_node(2, events_iter);
-		}
+		queues.route_from_node(node_idx, extra_ev.into_iter().chain(events_iter), None, nodes);
 		had_events
 	}
 
@@ -2851,11 +2796,11 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 	}
 
 	fn reconnect_ab(&mut self) {
-		self.ab_link.reconnect(&self.nodes);
+		self.ab_link.reconnect(&self.nodes, &mut self.queues);
 	}
 
 	fn reconnect_bc(&mut self) {
-		self.bc_link.reconnect(&self.nodes);
+		self.bc_link.reconnect(&self.nodes, &mut self.queues);
 	}
 
 	fn restart_node(&mut self, node_idx: usize, v: u8, router: &'a FuzzRouter) {
