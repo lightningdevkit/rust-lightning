@@ -196,26 +196,26 @@ impl Checksum for Bolt11Bech32 {
 /// # #[cfg(feature = "std")]
 /// # fn main() {
 /// let private_key = SecretKey::from_slice(
-///		&[
-///			0xe1, 0x26, 0xf6, 0x8f, 0x7e, 0xaf, 0xcc, 0x8b, 0x74, 0xf5, 0x4d, 0x26, 0x9f,
-///			0xe2, 0x06, 0xbe, 0x71, 0x50, 0x00, 0xf9, 0x4d, 0xac, 0x06, 0x7d, 0x1c, 0x04,
-/// 		0xa8, 0xca, 0x3b, 0x2d, 0xb7, 0x34
-/// 	][..]
-///	).unwrap();
+///    &[
+///        0xe1, 0x26, 0xf6, 0x8f, 0x7e, 0xaf, 0xcc, 0x8b, 0x74, 0xf5, 0x4d, 0x26, 0x9f,
+///        0xe2, 0x06, 0xbe, 0x71, 0x50, 0x00, 0xf9, 0x4d, 0xac, 0x06, 0x7d, 0x1c, 0x04,
+///        0xa8, 0xca, 0x3b, 0x2d, 0xb7, 0x34
+///    ][..]
+/// ).unwrap();
 ///
 /// let payment_hash = PaymentHash([0; 32]);
 /// let payment_secret = PaymentSecret([42u8; 32]);
 ///
 /// let invoice = InvoiceBuilder::new(Currency::Bitcoin)
-/// 	.description("Coins pls!".into())
-/// 	.payment_hash(payment_hash)
-/// 	.payment_secret(payment_secret)
-/// 	.current_timestamp()
-/// 	.min_final_cltv_expiry_delta(144)
-/// 	.build_signed(|hash| {
-/// 		Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key)
-/// 	})
-/// 	.unwrap();
+///    .description("Coins pls!".into())
+///    .payment_hash(payment_hash)
+///    .payment_secret(payment_secret)
+///    .current_timestamp()
+///    .min_final_cltv_expiry_delta(144)
+///    .build_signed(|hash| {
+///        Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key)
+///    })
+///    .unwrap();
 ///
 /// assert!(invoice.to_string().starts_with("lnbc1"));
 /// # }
@@ -325,10 +325,10 @@ pub struct SignedRawBolt11Invoice {
 	/// Hash of the [`RawBolt11Invoice`] that will be used to check the signature.
 	///
 	/// * if the `SignedRawBolt11Invoice` was deserialized the hash is of from the original encoded form,
-	/// since it's not guaranteed that encoding it again will lead to the same result since integers
-	/// could have been encoded with leading zeroes etc.
+	///   since it's not guaranteed that encoding it again will lead to the same result since integers
+	///   could have been encoded with leading zeroes etc.
 	/// * if the `SignedRawBolt11Invoice` was constructed manually the hash will be the calculated hash
-	/// from the [`RawBolt11Invoice`]
+	///   from the [`RawBolt11Invoice`]
 	hash: [u8; 32],
 
 	/// signature of the payment request
@@ -1037,8 +1037,8 @@ impl SignedRawBolt11Invoice {
 ///
 /// ```ignore
 /// enum Enum {
-/// 	A(u8),
-/// 	B(u16)
+///    A(u8),
+///    B(u16)
 /// }
 ///
 /// let elements = vec![Enum::A(1), Enum::A(2), Enum::B(3), Enum::A(4)];
@@ -1058,15 +1058,15 @@ macro_rules! find_extract {
 ///
 /// ```ignore
 /// enum Enum {
-/// 	A(u8),
-/// 	B(u16)
+///    A(u8),
+///    B(u16)
 /// }
 ///
 /// let elements = vec![Enum::A(1), Enum::A(2), Enum::B(3), Enum::A(4)];
 ///
 /// assert_eq!(
-/// 	find_all_extract!(elements.iter(), Enum::A(x), x).collect::<Vec<u8>>(),
-/// 	vec![1u8, 2u8, 4u8]
+///    find_all_extract!(elements.iter(), Enum::A(x), x).collect::<Vec<u8>>(),
+///    vec![1u8, 2u8, 4u8]
 /// );
 /// ```
 macro_rules! find_all_extract {
