@@ -1243,6 +1243,15 @@ fn directed_msg_destination(event: &MessageSendEvent) -> Option<PublicKey> {
 	}
 }
 
+fn is_funding_lock_msg_event(event: &MessageSendEvent) -> bool {
+	matches!(
+		event,
+		MessageSendEvent::SendChannelReady { .. }
+			| MessageSendEvent::SendAnnouncementSignatures { .. }
+			| MessageSendEvent::BroadcastChannelAnnouncement { .. }
+	)
+}
+
 impl EventQueues {
 	fn new() -> Self {
 		Self { ab: Vec::new(), ba: Vec::new(), bc: Vec::new(), cb: Vec::new() }
@@ -1894,6 +1903,7 @@ fn build_node_config(chan_type: ChanType) -> UserConfig {
 	let mut config = UserConfig::default();
 	config.channel_config.forwarding_fee_proportional_millionths = 0;
 	config.channel_handshake_config.announce_for_forwarding = true;
+	config.channel_handshake_limits.force_announced_channel_preference = false;
 	config.reject_inbound_splices = false;
 	match chan_type {
 		ChanType::Legacy => {
@@ -1935,7 +1945,7 @@ fn connect_peers(source: &ChanMan<'_>, dest: &ChanMan<'_>) {
 fn make_channel(
 	nodes: &mut [HarnessNode<'_>; 3], source_idx: usize, dest_idx: usize, chan_id: i32,
 	trusted_open: bool, trusted_accept: bool, chain_state: &mut ChainState,
-) {
+) -> ChannelId {
 	assert!(source_idx < dest_idx);
 	let (left, right) = nodes.split_at_mut(dest_idx);
 	let (source, dest) = (&mut left[source_idx], &mut right[0]);
@@ -2088,36 +2098,7 @@ fn make_channel(
 	} else {
 		panic!("Wrong event type");
 	}
-}
-
-fn lock_fundings(nodes: &[HarnessNode<'_>; 3]) {
-	let mut node_events = Vec::new();
-	for node in nodes.iter() {
-		node_events.push(node.get_and_clear_pending_msg_events());
-	}
-	for (idx, node_event) in node_events.iter().enumerate() {
-		for event in node_event {
-			if let MessageSendEvent::SendChannelReady { ref node_id, ref msg } = event {
-				for node in nodes.iter() {
-					if node.get_our_node_id() == *node_id {
-						node.handle_channel_ready(nodes[idx].get_our_node_id(), msg);
-					}
-				}
-			} else {
-				panic!("Wrong event type");
-			}
-		}
-	}
-
-	for node in nodes.iter() {
-		let events = node.get_and_clear_pending_msg_events();
-		for event in events {
-			if let MessageSendEvent::SendAnnouncementSignatures { .. } = event {
-			} else {
-				panic!("Wrong event type");
-			}
-		}
-	}
+	channel_id
 }
 
 impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
@@ -2226,14 +2207,18 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		// channel gets its own txid and funding outpoint.
 		// A-B: channel 2 A and B have 0-reserve (trusted open + trusted accept),
 		//      channel 3 A has 0-reserve (trusted accept).
-		make_channel(&mut nodes, 0, 1, 1, false, false, &mut chain_state);
-		make_channel(&mut nodes, 0, 1, 2, true, true, &mut chain_state);
-		make_channel(&mut nodes, 0, 1, 3, false, true, &mut chain_state);
+		let chan_ab_ids = [
+			make_channel(&mut nodes, 0, 1, 1, false, false, &mut chain_state),
+			make_channel(&mut nodes, 0, 1, 2, true, true, &mut chain_state),
+			make_channel(&mut nodes, 0, 1, 3, false, true, &mut chain_state),
+		];
 		// B-C: channel 4 B has 0-reserve (via trusted accept),
 		//      channel 5 C has 0-reserve (via trusted open).
-		make_channel(&mut nodes, 1, 2, 4, false, true, &mut chain_state);
-		make_channel(&mut nodes, 1, 2, 5, true, false, &mut chain_state);
-		make_channel(&mut nodes, 1, 2, 6, false, false, &mut chain_state);
+		let chan_bc_ids = [
+			make_channel(&mut nodes, 1, 2, 4, false, true, &mut chain_state),
+			make_channel(&mut nodes, 1, 2, 5, true, false, &mut chain_state),
+			make_channel(&mut nodes, 1, 2, 6, false, false, &mut chain_state),
+		];
 
 		// Wipe the transactions-broadcasted set to make sure we don't broadcast
 		// any transactions during normal operation after setup.
@@ -2246,24 +2231,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		nodes[1].sync_with_chain_state(&chain_state, None);
 		nodes[2].sync_with_chain_state(&chain_state, None);
 
-		lock_fundings(&nodes);
-
-		let chan_ab_ids = {
-			// Get channel IDs for all A-B channels (from node A's perspective).
-			let node_a_chans = nodes[0].list_usable_channels();
-			[node_a_chans[0].channel_id, node_a_chans[1].channel_id, node_a_chans[2].channel_id]
-		};
-		let chan_bc_ids = {
-			// Get channel IDs for all B-C channels (from node C's perspective).
-			let node_c_chans = nodes[2].list_usable_channels();
-			[node_c_chans[0].channel_id, node_c_chans[1].channel_id, node_c_chans[2].channel_id]
-		};
-
-		for node in &mut nodes {
-			node.force_checkpoint_manager_persistence();
-		}
-
-		Self {
+		let mut harness = Self {
 			out,
 			chan_type,
 			chain_state,
@@ -2272,7 +2240,33 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 			bc_link: PeerLink::new(1, 2, chan_bc_ids),
 			queues: EventQueues::new(),
 			payments: PaymentTracker::new(),
+		};
+
+		harness.lock_fundings();
+
+		for node in &mut harness.nodes {
+			node.force_checkpoint_manager_persistence();
 		}
+
+		harness
+	}
+
+	fn lock_fundings(&mut self) {
+		for _ in 0..10 {
+			let mut had_events = false;
+			for node_idx in 0..self.nodes.len() {
+				had_events |= self.process_msg_events_matching(
+					node_idx,
+					false,
+					ProcessMessages::AllMessages,
+					Some(is_funding_lock_msg_event),
+				);
+			}
+			if !had_events {
+				return;
+			}
+		}
+		panic!("lock_fundings did not settle");
 	}
 
 	fn chan_a_id(&self) -> ChannelId {
@@ -2405,8 +2399,9 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		}
 	}
 
-	fn process_msg_events(
+	fn process_msg_events_matching(
 		&mut self, node_idx: usize, corrupt_forward: bool, limit_events: ProcessMessages,
+		expected_event: Option<fn(&MessageSendEvent) -> bool>,
 	) -> bool {
 		fn log_msg_delivery<Out: Output + MaybeSend + MaybeSync>(
 			node_idx: usize, dest_idx: usize, msg_name: &str, out: &Out,
@@ -2643,6 +2638,13 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		let mut events_iter = events.drain(..).chain(new_events.drain(..));
 		let mut extra_ev = None;
 		for event in &mut events_iter {
+			if let Some(expected_event) = expected_event {
+				assert!(
+					expected_event(&event),
+					"Unexpected message event while locking fundings: {:?}",
+					event
+				);
+			}
 			had_events = true;
 			extra_ev = process_msg_event(
 				node_idx,
@@ -2659,6 +2661,12 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		}
 		queues.route_from_node(node_idx, extra_ev.into_iter().chain(events_iter), None, nodes);
 		had_events
+	}
+
+	fn process_msg_events(
+		&mut self, node_idx: usize, corrupt_forward: bool, limit_events: ProcessMessages,
+	) -> bool {
+		self.process_msg_events_matching(node_idx, corrupt_forward, limit_events, None)
 	}
 
 	fn process_events(&mut self, node_idx: usize, fail: bool) -> bool {
