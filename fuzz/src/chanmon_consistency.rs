@@ -2606,17 +2606,26 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 					assert_action_timeout_awaiting_response(action);
 					None
 				},
-				MessageSendEvent::SendChannelReady { .. }
-				| MessageSendEvent::SendAnnouncementSignatures { .. }
-				| MessageSendEvent::SendChannelUpdate { .. } => {
-					// Can be generated as a reestablish response.
+				MessageSendEvent::SendChannelReady { ref node_id, ref msg } => {
+					let dest_idx = log_peer_message(node_idx, node_id, nodes, out, "channel_ready");
+					nodes[dest_idx].handle_channel_ready(source_node_id, msg);
 					None
 				},
-				MessageSendEvent::BroadcastChannelUpdate { .. } => {
-					// Can be generated as a result of calling `timer_tick_occurred` enough
-					// times while peers are disconnected.
+				MessageSendEvent::SendAnnouncementSignatures { ref node_id, ref msg } => {
+					let dest_idx =
+						log_peer_message(node_idx, node_id, nodes, out, "announcement_signatures");
+					nodes[dest_idx].handle_announcement_signatures(source_node_id, msg);
 					None
 				},
+				MessageSendEvent::SendChannelUpdate { ref node_id, ref msg } => {
+					let dest_idx =
+						log_peer_message(node_idx, node_id, nodes, out, "channel_update");
+					nodes[dest_idx].handle_channel_update(source_node_id, msg);
+					None
+				},
+				MessageSendEvent::BroadcastChannelUpdate { .. } => None,
+				MessageSendEvent::BroadcastChannelAnnouncement { .. } => None,
+				MessageSendEvent::BroadcastNodeAnnouncement { .. } => None,
 				_ => panic!("Unhandled message event {:?}", event),
 			}
 		}
