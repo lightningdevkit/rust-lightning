@@ -268,7 +268,7 @@ fn encoded_int_be_base32_size(int: u64) -> usize {
 impl Base32Iterable for RawDataPart {
 	fn fe_iter<'s>(&'s self) -> impl Iterator<Item = Fe32> + 's {
 		let ts_iter = self.timestamp.fe_iter();
-		let fields_iter = self.tagged_fields.iter().map(RawTaggedField::fe_iter).flatten();
+		let fields_iter = self.tagged_fields.iter().flat_map(RawTaggedField::fe_iter);
 		ts_iter.chain(fields_iter)
 	}
 }
@@ -405,7 +405,7 @@ impl Base32Iterable for PrivateRoute {
 			i1.chain(i2).chain(i3).chain(i4).chain(i5)
 		}
 
-		self.0 .0.iter().map(serialize_to_iter).flatten().bytes_to_fes()
+		self.0 .0.iter().flat_map(serialize_to_iter).bytes_to_fes()
 	}
 }
 
