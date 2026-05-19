@@ -28,6 +28,7 @@ use crate::offers::currency::CurrencyConversion;
 use crate::offers::invoice::{Bolt12Invoice, DerivedSigningPubkey, InvoiceBuilder};
 use crate::offers::invoice_request::InvoiceRequest;
 use crate::offers::nonce::Nonce;
+use crate::offers::parse::Bolt12SemanticError;
 use crate::offers::static_invoice::StaticInvoice;
 use crate::routing::router::{
 	BlindedTail, InFlightHtlcs, Path, PaymentParameters, Route, RouteParameters,
@@ -670,6 +671,28 @@ pub enum Bolt12PaymentError {
 	UnexpectedInvoice,
 	/// Payment for an invoice with the corresponding [`PaymentId`] was already initiated.
 	DuplicateInvoice,
+	/// The invoice was valid for the corresponding [`PaymentId`], but its amount
+	/// could not be verified.
+	///
+	/// This occurs for currency-denominated offers without an explicitly requested
+	/// amount when the offer amount could not be converted to msats because the
+	/// currency was unsupported or the converted amount exceeded supported bounds.
+	UnverifiableAmount,
+	/// The invoice was valid for the corresponding [`PaymentId`], but its amount
+	/// was lower than the minimum acceptable amount derived from the underlying
+	/// offer.
+	///
+	/// This occurs for currency-denominated offers with an explicitly requested
+	/// amount when the requested invoice amount was lower than the minimum amount
+	/// the payee was willing to accept after currency conversion.
+	InsufficientAmount,
+	/// The invoice was valid for the corresponding [`PaymentId`], but its amount
+	/// exceeded the maximum acceptable amount derived from the underlying offer.
+	///
+	/// This occurs for currency-denominated offers without an explicitly requested
+	/// amount when the invoice amount was higher than the payer was willing to pay
+	/// after currency conversion.
+	ExcessiveAmount,
 	/// The invoice was valid for the corresponding [`PaymentId`], but required unknown features.
 	UnknownRequiredFeatures,
 	/// The invoice was valid for the corresponding [`PaymentId`], but sending the payment failed.
@@ -1305,6 +1328,15 @@ impl OutboundPayments {
 						invreq, converter,
 					) {
 						Ok(amt) => amt,
+						Err(Bolt12SemanticError::UnsupportedCurrency)
+						| Err(Bolt12SemanticError::InvalidAmount) => {
+							abandon_with_entry!(entry, PaymentFailureReason::UnexpectedError);
+							return Err(Bolt12PaymentError::UnverifiableAmount);
+						},
+						Err(Bolt12SemanticError::InsufficientAmount) => {
+							abandon_with_entry!(entry, PaymentFailureReason::UnexpectedError);
+							return Err(Bolt12PaymentError::InsufficientAmount);
+						},
 						Err(_) => {
 							// We check this during invoice request parsing, when constructing the invreq's
 							// contents from its TLV stream.
