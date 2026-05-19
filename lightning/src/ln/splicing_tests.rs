@@ -8671,20 +8671,6 @@ fn test_no_disconnect_after_quiescence_on_reconnect() {
 #[test]
 fn test_0reserve_splice() {
 	let mut config = test_default_channel_config();
-	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = false;
-	config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = false;
-	let a = do_test_0reserve_splice_holder_validation(false, false, false, config.clone());
-	let _b = do_test_0reserve_splice_holder_validation(true, false, false, config.clone());
-	let _c = do_test_0reserve_splice_holder_validation(false, true, false, config.clone());
-	let _d = do_test_0reserve_splice_holder_validation(true, true, false, config.clone());
-
-	let _e = do_test_0reserve_splice_holder_validation(false, false, true, config.clone());
-	let _f = do_test_0reserve_splice_holder_validation(true, false, true, config.clone());
-	let _g = do_test_0reserve_splice_holder_validation(false, true, true, config.clone());
-	let _h = do_test_0reserve_splice_holder_validation(true, true, true, config.clone());
-
-	assert_eq!(a, ChannelTypeFeatures::only_static_remote_key());
-
 	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 	config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = false;
 	let a = do_test_0reserve_splice_holder_validation(false, false, false, config.clone());
@@ -8714,20 +8700,6 @@ fn test_0reserve_splice() {
 	assert_eq!(a, ChannelTypeFeatures::anchors_zero_fee_commitments());
 
 	let mut config = test_default_channel_config();
-	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = false;
-	config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = false;
-	let a = do_test_0reserve_splice_counterparty_validation(false, false, false, config.clone());
-	let _b = do_test_0reserve_splice_counterparty_validation(true, false, false, config.clone());
-	let _c = do_test_0reserve_splice_counterparty_validation(false, true, false, config.clone());
-	let _d = do_test_0reserve_splice_counterparty_validation(true, true, false, config.clone());
-
-	let _e = do_test_0reserve_splice_counterparty_validation(false, false, true, config.clone());
-	let _f = do_test_0reserve_splice_counterparty_validation(true, false, true, config.clone());
-	let _g = do_test_0reserve_splice_counterparty_validation(false, true, true, config.clone());
-	let _h = do_test_0reserve_splice_counterparty_validation(true, true, true, config.clone());
-
-	assert_eq!(a, ChannelTypeFeatures::only_static_remote_key());
-
 	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 	config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = false;
 	let a = do_test_0reserve_splice_counterparty_validation(false, false, false, config.clone());
@@ -8786,11 +8758,6 @@ fn do_test_0reserve_splice_holder_validation(
 
 	let feerate =
 		if channel_type == ChannelTypeFeatures::anchors_zero_fee_commitments() { 0 } else { 253 };
-	let spiked_feerate = if channel_type == ChannelTypeFeatures::only_static_remote_key() {
-		feerate * FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE as u32
-	} else {
-		feerate
-	};
 	let anchors_sat =
 		if channel_type == ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies() {
 			ANCHOR_OUTPUT_VALUE_SATOSHI * 2
@@ -8802,7 +8769,7 @@ fn do_test_0reserve_splice_holder_validation(
 		send_payment(&nodes[0], &[&nodes[1]], channel_value_sat / 2 * 1_000);
 		channel_value_sat / 2
 	} else if !node_0_is_initiator {
-		let tx_fee_msat = chan_utils::commit_tx_fee_sat(spiked_feerate, 2, &channel_type) * 1000;
+		let tx_fee_msat = chan_utils::commit_tx_fee_sat(feerate, 2, &channel_type) * 1000;
 		let node_0_details = &nodes[0].node.list_channels()[0];
 		let outbound_capacity_msat = node_0_details.outbound_capacity_msat;
 		let available_capacity_msat = node_0_details.next_outbound_htlc_limit_msat;
@@ -8839,12 +8806,12 @@ fn do_test_0reserve_splice_holder_validation(
 	// The estimated fees to splice out a single output at 253sat/kw
 	let estimated_fees_sat = 183;
 	let mut splice_out_max_value = if counterparty_has_output && node_0_is_initiator {
-		let commit_tx_fee_sat = chan_utils::commit_tx_fee_sat(spiked_feerate, 1, &channel_type);
+		let commit_tx_fee_sat = chan_utils::commit_tx_fee_sat(feerate, 1, &channel_type);
 		Amount::from_sat(
 			initiator_value_to_self_sat - commit_tx_fee_sat - anchors_sat - estimated_fees_sat,
 		)
 	} else if !counterparty_has_output && node_0_is_initiator {
-		let commit_tx_fee_sat = chan_utils::commit_tx_fee_sat(spiked_feerate, 0, &channel_type);
+		let commit_tx_fee_sat = chan_utils::commit_tx_fee_sat(feerate, 0, &channel_type);
 		Amount::from_sat(
 			initiator_value_to_self_sat
 				- commit_tx_fee_sat
@@ -8927,11 +8894,6 @@ fn do_test_0reserve_splice_counterparty_validation(
 
 	let feerate =
 		if channel_type == ChannelTypeFeatures::anchors_zero_fee_commitments() { 0 } else { 253 };
-	let spiked_feerate = if channel_type == ChannelTypeFeatures::only_static_remote_key() {
-		feerate * FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE as u32
-	} else {
-		feerate
-	};
 	let anchors_sat =
 		if channel_type == ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies() {
 			ANCHOR_OUTPUT_VALUE_SATOSHI * 2
@@ -8943,7 +8905,7 @@ fn do_test_0reserve_splice_counterparty_validation(
 		send_payment(&nodes[0], &[&nodes[1]], channel_value_sat / 2 * 1_000);
 		channel_value_sat / 2
 	} else if !node_0_is_initiator {
-		let tx_fee_msat = chan_utils::commit_tx_fee_sat(spiked_feerate, 2, &channel_type) * 1000;
+		let tx_fee_msat = chan_utils::commit_tx_fee_sat(feerate, 2, &channel_type) * 1000;
 		let node_0_details = &nodes[0].node.list_channels()[0];
 		let outbound_capacity_msat = node_0_details.outbound_capacity_msat;
 		let available_capacity_msat = node_0_details.next_outbound_htlc_limit_msat;
@@ -8955,7 +8917,7 @@ fn do_test_0reserve_splice_counterparty_validation(
 		let node_0_to_local_output_msat = channel_value_sat * 1000
 			- available_capacity_msat
 			- anchors_sat * 1000
-			- chan_utils::commit_tx_fee_sat(spiked_feerate, 0, &channel_type) * 1000;
+			- chan_utils::commit_tx_fee_sat(feerate, 0, &channel_type) * 1000;
 		assert!(node_0_to_local_output_msat / 1000 < dust_limit_satoshis);
 		let commit_tx = &get_local_commitment_txn!(nodes[0], channel_id)[0];
 		assert_eq!(
@@ -8978,10 +8940,10 @@ fn do_test_0reserve_splice_counterparty_validation(
 	};
 
 	let mut splice_out_value_incl_fees = if counterparty_has_output && node_0_is_initiator {
-		let commit_tx_fee_sat = chan_utils::commit_tx_fee_sat(spiked_feerate, 1, &channel_type);
+		let commit_tx_fee_sat = chan_utils::commit_tx_fee_sat(feerate, 1, &channel_type);
 		Amount::from_sat(initiator_value_to_self_sat - commit_tx_fee_sat - anchors_sat)
 	} else if !counterparty_has_output && node_0_is_initiator {
-		let commit_tx_fee_sat = chan_utils::commit_tx_fee_sat(spiked_feerate, 0, &channel_type);
+		let commit_tx_fee_sat = chan_utils::commit_tx_fee_sat(feerate, 0, &channel_type);
 		Amount::from_sat(
 			initiator_value_to_self_sat - commit_tx_fee_sat - anchors_sat - dust_limit_satoshis,
 		)

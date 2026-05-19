@@ -3617,6 +3617,8 @@ pub enum TrustedChannelFeatures {
 	/// with a revoked commitment transaction *for free*.
 	///
 	/// Note that there is no guarantee that the counterparty accepts such a channel themselves.
+	///
+	/// The zero-reserve feature is not allowed on legacy / anchorless channels.
 	ZeroReserve,
 	/// Sets the combination of [`TrustedChannelFeatures::ZeroConf`] and [`TrustedChannelFeatures::ZeroReserve`]
 	ZeroConfZeroReserve,
@@ -3873,6 +3875,8 @@ impl<
 	/// transaction *for free*.
 	///
 	/// Note that there is no guarantee that the counterparty accepts such a channel.
+	///
+	/// The zero-reserve feature is not allowed on legacy / anchorless channels.
 	pub fn create_channel_to_trusted_peer_0reserve(
 		&self, their_network_key: PublicKey, channel_value_satoshis: u64, push_msat: u64,
 		user_channel_id: u128, temporary_channel_id: Option<ChannelId>,
