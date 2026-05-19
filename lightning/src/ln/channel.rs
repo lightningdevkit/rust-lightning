@@ -56,9 +56,7 @@ use crate::ln::channelmanager::{
 	PendingHTLCStatus, RAACommitmentOrder, SentHTLCId, TrustedChannelFeatures, BREAKDOWN_TIMEOUT,
 	MAX_LOCAL_BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA,
 };
-use crate::ln::funding::{
-	FeeRateAdjustmentError, FundingContribution, FundingTemplate, FundingTxInput,
-};
+use crate::ln::funding::{FeeRateAdjustmentError, FundingContribution, FundingTemplate};
 use crate::ln::interactivetxs::{
 	AbortReason, HandleTxCompleteValue, InteractiveTxConstructor, InteractiveTxConstructorArgs,
 	InteractiveTxMessageSend, InteractiveTxSigningSession, SharedOwnedInput, SharedOwnedOutput,
@@ -87,7 +85,7 @@ use crate::util::errors::APIError;
 use crate::util::logger::{Level as LoggerLevel, Logger, Record, WithContext};
 use crate::util::scid_utils::{block_from_scid, scid_from_parts};
 use crate::util::ser::{Readable, ReadableArgs, RequiredWrapper, Writeable, Writer};
-use crate::util::wallet_utils::Input;
+use crate::util::wallet_utils::{ConfirmedUtxo, Input};
 use crate::{impl_readable_for_vec, impl_writeable_for_vec};
 
 use alloc::collections::{btree_map, BTreeMap};
@@ -3100,7 +3098,7 @@ impl FundingNegotiation {
 		funding: FundingScope, context: &ChannelContext<SP>, entropy_source: &ES,
 		holder_node_id: &PublicKey, our_funding_contribution: SignedAmount,
 		prev_funding_input: SharedOwnedInput, locktime: u32, feerate_sat_per_1000_weight: u32,
-		our_funding_inputs: Vec<FundingTxInput>, our_funding_outputs: Vec<TxOut>,
+		our_funding_inputs: Vec<ConfirmedUtxo>, our_funding_outputs: Vec<TxOut>,
 	) -> FundingNegotiation {
 		let funding_negotiation_context = FundingNegotiationContext {
 			is_initiator: false,
@@ -6933,7 +6931,7 @@ pub(super) struct FundingNegotiationContext {
 	pub shared_funding_input: Option<SharedOwnedInput>,
 	/// The funding inputs we will be contributing to the channel.
 	#[allow(dead_code)] // TODO(dual_funding): Remove once contribution to V2 channels is enabled.
-	pub our_funding_inputs: Vec<FundingTxInput>,
+	pub our_funding_inputs: Vec<ConfirmedUtxo>,
 	/// The funding outputs we will be contributing to the channel.
 	#[allow(dead_code)] // TODO(dual_funding): Remove once contribution to V2 channels is enabled.
 	pub our_funding_outputs: Vec<TxOut>,
@@ -15430,7 +15428,7 @@ impl<SP: SignerProvider> PendingV2Channel<SP> {
 	pub fn new_outbound<ES: EntropySource, F: FeeEstimator, L: Logger>(
 		fee_estimator: &LowerBoundedFeeEstimator<F>, entropy_source: &ES, signer_provider: &SP,
 		counterparty_node_id: PublicKey, their_features: &InitFeatures, funding_satoshis: u64,
-		funding_inputs: Vec<FundingTxInput>, user_id: u128, config: &UserConfig,
+		funding_inputs: Vec<ConfirmedUtxo>, user_id: u128, config: &UserConfig,
 		current_chain_height: u32, outbound_scid_alias: u64, funding_confirmation_target: ConfirmationTarget,
 		logger: L, trusted_channel_features: Option<TrustedChannelFeatures>,
 	) -> Result<Self, APIError> {

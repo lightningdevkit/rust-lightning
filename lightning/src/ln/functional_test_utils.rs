@@ -29,7 +29,7 @@ use crate::ln::channelmanager::{
 	AChannelManager, ChainParameters, ChannelManager, ChannelManagerReadArgs, PaymentId,
 	RAACommitmentOrder, TrustedChannelFeatures, MIN_CLTV_EXPIRY_DELTA,
 };
-use crate::ln::funding::{FundingContribution, FundingTxInput};
+use crate::ln::funding::FundingContribution;
 use crate::ln::msgs::{self, OpenChannel};
 use crate::ln::msgs::{
 	BaseMessageHandler, ChannelMessageHandler, MessageSendEvent, RoutingMessageHandler,
@@ -55,7 +55,7 @@ use crate::util::test_channel_signer::SignerOp;
 use crate::util::test_channel_signer::TestChannelSigner;
 use crate::util::test_utils::{self, TestLogger};
 use crate::util::test_utils::{TestChainMonitor, TestKeysInterface, TestScorer};
-use crate::util::wallet_utils::{WalletSourceSync, WalletSync};
+use crate::util::wallet_utils::{ConfirmedUtxo, WalletSourceSync, WalletSync};
 
 use bitcoin::amount::Amount;
 use bitcoin::block::{Block, Header, Version as BlockVersion};
@@ -1512,7 +1512,7 @@ fn internal_create_funding_transaction<'a, 'b, 'c>(
 /// Return the inputs (with prev tx), and the total witness weight for these inputs
 pub fn create_dual_funding_utxos_with_prev_txs(
 	node: &Node<'_, '_, '_>, utxo_values_in_satoshis: &[u64],
-) -> Vec<FundingTxInput> {
+) -> Vec<ConfirmedUtxo> {
 	// Ensure we have unique transactions per node by using the locktime.
 	let tx = Transaction {
 		version: TxVersion::TWO,
@@ -1536,7 +1536,7 @@ pub fn create_dual_funding_utxos_with_prev_txs(
 		.iter()
 		.enumerate()
 		.map(|(index, _)| index as u32)
-		.map(|vout| FundingTxInput::new_p2wpkh(tx.clone(), vout).unwrap())
+		.map(|vout| ConfirmedUtxo::new_p2wpkh(tx.clone(), vout).unwrap())
 		.collect()
 }
 

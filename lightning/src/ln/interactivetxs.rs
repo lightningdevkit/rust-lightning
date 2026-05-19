@@ -33,11 +33,11 @@ use crate::ln::chan_utils::{
 	SEGWIT_MARKER_FLAG_WEIGHT,
 };
 use crate::ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS;
-use crate::ln::funding::FundingTxInput;
 use crate::ln::msgs;
 use crate::ln::msgs::{MessageSendEvent, SerialId, TxSignatures};
 use crate::ln::types::ChannelId;
 use crate::sign::{EntropySource, P2TR_KEY_PATH_WITNESS_WEIGHT, P2WPKH_WITNESS_WEIGHT};
+use crate::util::wallet_utils::ConfirmedUtxo;
 
 use core::fmt::Display;
 
@@ -2034,7 +2034,7 @@ pub(super) struct InteractiveTxConstructorArgs<'a, ES: EntropySource> {
 	pub channel_id: ChannelId,
 	pub feerate_sat_per_kw: u32,
 	pub funding_tx_locktime: AbsoluteLockTime,
-	pub inputs_to_contribute: Vec<FundingTxInput>,
+	pub inputs_to_contribute: Vec<ConfirmedUtxo>,
 	pub shared_funding_input: Option<SharedOwnedInput>,
 	pub shared_funding_output: SharedOwnedOutput,
 	pub outputs_to_contribute: Vec<TxOut>,
@@ -2071,7 +2071,7 @@ impl InteractiveTxConstructor {
 
 		let mut inputs_to_contribute: Vec<(SerialId, InputOwned)> = inputs_to_contribute
 			.into_iter()
-			.map(|FundingTxInput { utxo, prevtx: prev_tx }| {
+			.map(|ConfirmedUtxo { utxo, prevtx: prev_tx }| {
 				let serial_id = generate_holder_serial_id(entropy_source, is_initiator);
 				let txin = TxIn {
 					previous_output: utxo.outpoint,
@@ -2322,7 +2322,6 @@ impl InteractiveTxConstructor {
 mod tests {
 	use crate::chain::chaininterface::{fee_for_weight, FEERATE_FLOOR_SATS_PER_KW};
 	use crate::ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS;
-	use crate::ln::funding::FundingTxInput;
 	use crate::ln::interactivetxs::{
 		generate_holder_serial_id, AbortReason, HandleTxCompleteValue, InteractiveTxConstructor,
 		InteractiveTxConstructorArgs, InteractiveTxMessageSend, SharedOwnedInput,
@@ -2332,6 +2331,7 @@ mod tests {
 	use crate::ln::types::ChannelId;
 	use crate::sign::EntropySource;
 	use crate::util::atomic_counter::AtomicCounter;
+	use crate::util::wallet_utils::ConfirmedUtxo;
 	use bitcoin::absolute::LockTime as AbsoluteLockTime;
 	use bitcoin::amount::Amount;
 	use bitcoin::hashes::Hash;
@@ -2395,12 +2395,12 @@ mod tests {
 
 	struct TestSession {
 		description: &'static str,
-		inputs_a: Vec<FundingTxInput>,
+		inputs_a: Vec<ConfirmedUtxo>,
 		a_shared_input: Option<(OutPoint, TxOut, u64)>,
 		/// The funding output, with the value contributed
 		shared_output_a: (TxOut, u64),
 		outputs_a: Vec<TxOut>,
-		inputs_b: Vec<FundingTxInput>,
+		inputs_b: Vec<ConfirmedUtxo>,
 		b_shared_input: Option<(OutPoint, TxOut, u64)>,
 		/// The funding output, with the value contributed
 		shared_output_b: (TxOut, u64),
@@ -2642,22 +2642,20 @@ mod tests {
 		}
 	}
 
-	fn generate_inputs(outputs: &[TestOutput]) -> Vec<FundingTxInput> {
+	fn generate_inputs(outputs: &[TestOutput]) -> Vec<ConfirmedUtxo> {
 		let tx = generate_tx(outputs);
 		outputs
 			.iter()
 			.enumerate()
 			.map(|(idx, output)| match output {
-				TestOutput::P2WPKH(_) => {
-					FundingTxInput::new_p2wpkh(tx.clone(), idx as u32).unwrap()
-				},
+				TestOutput::P2WPKH(_) => ConfirmedUtxo::new_p2wpkh(tx.clone(), idx as u32).unwrap(),
 				TestOutput::P2WSH(_) => {
-					FundingTxInput::new_p2wsh(tx.clone(), idx as u32, Weight::from_wu(42)).unwrap()
+					ConfirmedUtxo::new_p2wsh(tx.clone(), idx as u32, Weight::from_wu(42)).unwrap()
 				},
 				TestOutput::P2TR(_) => {
-					FundingTxInput::new_p2tr_key_spend(tx.clone(), idx as u32).unwrap()
+					ConfirmedUtxo::new_p2tr_key_spend(tx.clone(), idx as u32).unwrap()
 				},
-				TestOutput::P2PKH(_) => FundingTxInput::new_p2pkh(tx.clone(), idx as u32).unwrap(),
+				TestOutput::P2PKH(_) => ConfirmedUtxo::new_p2pkh(tx.clone(), idx as u32).unwrap(),
 			})
 			.collect()
 	}
@@ -2705,12 +2703,12 @@ mod tests {
 		(generate_txout(&TestOutput::P2WSH(value)), local_value)
 	}
 
-	fn generate_fixed_number_of_inputs(count: u16) -> Vec<FundingTxInput> {
+	fn generate_fixed_number_of_inputs(count: u16) -> Vec<ConfirmedUtxo> {
 		// Generate transactions with a total `count` number of outputs such that no transaction has a
 		// serialized length greater than u16::MAX.
 		let max_outputs_per_prevtx = 1_500;
 		let mut remaining = count;
-		let mut inputs: Vec<FundingTxInput> = Vec::with_capacity(count as usize);
+		let mut inputs: Vec<ConfirmedUtxo> = Vec::with_capacity(count as usize);
 
 		while remaining > 0 {
 			let tx_output_count = remaining.min(max_outputs_per_prevtx);
@@ -2721,10 +2719,10 @@ mod tests {
 			// Use unique locktime for each tx so outpoints are different across transactions
 			let tx = generate_tx_with_locktime(&outputs, (1337 + remaining).into());
 
-			let mut temp: Vec<FundingTxInput> = outputs
+			let mut temp: Vec<ConfirmedUtxo> = outputs
 				.iter()
 				.enumerate()
-				.map(|(idx, _)| FundingTxInput::new_p2wpkh(tx.clone(), idx as u32).unwrap())
+				.map(|(idx, _)| ConfirmedUtxo::new_p2wpkh(tx.clone(), idx as u32).unwrap())
 				.collect();
 
 			inputs.append(&mut temp);
@@ -2935,7 +2933,7 @@ mod tests {
 		});
 
 		let tx = generate_tx(&[TestOutput::P2WPKH(1_000_000)]);
-		let mut invalid_sequence_input = FundingTxInput::new_p2wpkh(tx.clone(), 0).unwrap();
+		let mut invalid_sequence_input = ConfirmedUtxo::new_p2wpkh(tx.clone(), 0).unwrap();
 		invalid_sequence_input.set_sequence(Default::default());
 		do_test_interactive_tx_constructor(TestSession {
 			description: "Invalid input sequence from initiator",
@@ -2949,7 +2947,7 @@ mod tests {
 			outputs_b: vec![],
 			expect_error: Some((AbortReason::IncorrectInputSequenceValue, ErrorCulprit::NodeA)),
 		});
-		let duplicate_input = FundingTxInput::new_p2wpkh(tx.clone(), 0).unwrap();
+		let duplicate_input = ConfirmedUtxo::new_p2wpkh(tx.clone(), 0).unwrap();
 		do_test_interactive_tx_constructor(TestSession {
 			description: "Duplicate prevout from initiator",
 			inputs_a: vec![duplicate_input.clone(), duplicate_input],
@@ -2963,7 +2961,7 @@ mod tests {
 			expect_error: Some((AbortReason::PrevTxOutInvalid, ErrorCulprit::NodeB)),
 		});
 		// Non-initiator uses same prevout as initiator.
-		let duplicate_input = FundingTxInput::new_p2wpkh(tx.clone(), 0).unwrap();
+		let duplicate_input = ConfirmedUtxo::new_p2wpkh(tx.clone(), 0).unwrap();
 		do_test_interactive_tx_constructor(TestSession {
 			description: "Non-initiator uses same prevout as initiator",
 			inputs_a: vec![duplicate_input.clone()],
@@ -2976,7 +2974,7 @@ mod tests {
 			outputs_b: vec![],
 			expect_error: Some((AbortReason::PrevTxOutInvalid, ErrorCulprit::NodeA)),
 		});
-		let duplicate_input = FundingTxInput::new_p2wpkh(tx.clone(), 0).unwrap();
+		let duplicate_input = ConfirmedUtxo::new_p2wpkh(tx.clone(), 0).unwrap();
 		do_test_interactive_tx_constructor(TestSession {
 			description: "Non-initiator uses same prevout as initiator",
 			inputs_a: vec![duplicate_input.clone()],
