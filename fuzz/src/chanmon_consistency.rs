@@ -1105,7 +1105,7 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(
 			// by shifting `use_old_mons` one in base-3.
 			let cross_version_round_trip = use_old_mons % 3 == 2;
 			use_old_mons /= 3;
-			let mut serialized_mon = serialized_mon;
+			let mut serialized_mon = serialized_mon;XUX
 			if cross_version_round_trip {
 			let old_mon_res: Result<
 				(
