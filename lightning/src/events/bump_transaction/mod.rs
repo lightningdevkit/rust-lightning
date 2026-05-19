@@ -331,7 +331,13 @@ impl<B: BroadcasterInterface, C: CoinSelectionSource, SP: SignerProvider, L: Log
 		let anchor_input_witness_weight = if channel_type.supports_anchor_zero_fee_commitments() {
 			EMPTY_WITNESS_WEIGHT
 		} else {
-			ANCHOR_INPUT_WITNESS_WEIGHT
+			let weight = ANCHOR_INPUT_WITNESS_WEIGHT;
+			#[cfg(secp256k1_fuzz)]
+			let weight = {
+				// The secp256k1 fuzz signer does not low-S normalize dummy signatures.
+				weight + 1
+			};
+			weight
 		};
 
 		// First, check if the commitment transaction has sufficient fees on its own.
@@ -547,6 +553,18 @@ impl<B: BroadcasterInterface, C: CoinSelectionSource, SP: SignerProvider, L: Log
 			} else {
 				panic!("channel type should be either zero-fee HTLCs, or zero-fee commitments");
 			};
+		// The secp256k1 fuzz signer emits dummy signatures without low-S normalization, so
+		// DER+sighash can be one byte larger for each of the two HTLC signatures.
+		#[cfg(secp256k1_fuzz)]
+		let (htlc_success_witness_weight, htlc_timeout_witness_weight) =
+			(htlc_success_witness_weight + 2, htlc_timeout_witness_weight + 2);
+		let (htlc_success_input_output_pair_weight, htlc_timeout_input_output_pair_weight) = (
+			chan_utils::aggregated_htlc_success_input_output_pair_weight(channel_type),
+			chan_utils::aggregated_htlc_timeout_input_output_pair_weight(channel_type),
+		);
+		#[cfg(secp256k1_fuzz)]
+		let (htlc_success_input_output_pair_weight, htlc_timeout_input_output_pair_weight) =
+			(htlc_success_input_output_pair_weight + 2, htlc_timeout_input_output_pair_weight + 2);
 
 		let max_tx_weight = if channel_type.supports_anchor_zero_fee_commitments() {
 			// Cap the size of transactions claiming `HolderHTLCOutput` in 0FC channels.
@@ -587,9 +605,9 @@ impl<B: BroadcasterInterface, C: CoinSelectionSource, SP: SignerProvider, L: Log
 				&htlc_descriptors[broadcasted_htlcs..broadcasted_htlcs + batch_size]
 			{
 				let input_output_weight = if htlc_descriptor.preimage.is_some() {
-					chan_utils::aggregated_htlc_success_input_output_pair_weight(channel_type)
+					htlc_success_input_output_pair_weight
 				} else {
-					chan_utils::aggregated_htlc_timeout_input_output_pair_weight(channel_type)
+					htlc_timeout_input_output_pair_weight
 				};
 				if htlc_weight_sum + input_output_weight >= max_tx_weight - USER_COINS_WEIGHT_BUDGET
 				{
@@ -649,9 +667,8 @@ impl<B: BroadcasterInterface, C: CoinSelectionSource, SP: SignerProvider, L: Log
 			{
 				Ok(selection) => selection,
 				Err(()) => {
-					let htlcs_to_remove = USER_COINS_WEIGHT_BUDGET.div_ceil(
-						chan_utils::aggregated_htlc_timeout_input_output_pair_weight(channel_type),
-					);
+					let htlcs_to_remove =
+						USER_COINS_WEIGHT_BUDGET.div_ceil(htlc_timeout_input_output_pair_weight);
 					batch_size = batch_size.checked_sub(htlcs_to_remove as usize).ok_or(())?;
 					if batch_size == 0 {
 						return Err(());
