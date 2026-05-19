@@ -6,7 +6,7 @@ publish = false
 edition = "2021"
 
 [dependencies]
-lightning = { path = "../lightning", features = ["regex", "_test_utils"] }
+lightning = { path = "../lightning", default-features = false, features = ["std", "regex", "_test_utils"] }
 lightning-invoice = { path = "../lightning-invoice" }
 lightning-liquidity = { path = "../lightning-liquidity" }
 lightning-rapid-gossip-sync = { path = "../lightning-rapid-gossip-sync" }
