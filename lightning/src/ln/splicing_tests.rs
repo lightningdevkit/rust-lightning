@@ -24,7 +24,7 @@ use crate::ln::channel::{
 };
 use crate::ln::channelmanager::{provided_init_features, PaymentId, BREAKDOWN_TIMEOUT};
 use crate::ln::functional_test_utils::*;
-use crate::ln::funding::{FundingContribution, FundingContributionError};
+use crate::ln::funding::{FundingContribution, FundingContributionError, FundingTemplate};
 use crate::ln::msgs::{self, BaseMessageHandler, ChannelMessageHandler, MessageSendEvent};
 use crate::ln::outbound_payment::RecipientOnionFields;
 use crate::ln::types::ChannelId;
@@ -44,6 +44,7 @@ use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::ecdsa::Signature;
 use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 use bitcoin::transaction::Version;
+use bitcoin::SignedAmount;
 use bitcoin::{
 	Amount, FeeRate, OutPoint as BitcoinOutPoint, Psbt, ScriptBuf, Transaction, TxOut, Txid,
 	WPubkeyHash, WScriptHash,
@@ -284,10 +285,8 @@ pub fn initiate_splice_out<'a, 'b, 'c, 'd>(
 	outputs: Vec<TxOut>,
 ) -> Result<FundingContribution, APIError> {
 	let node_id_acceptor = acceptor.node.get_our_node_id();
-	let floor_feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64);
-	let funding_template = initiator.node.splice_channel(&channel_id, &node_id_acceptor).unwrap();
-	let feerate = funding_template.min_rbf_feerate().unwrap_or(floor_feerate);
-	let funding_contribution = funding_template.splice_out(outputs, feerate, FeeRate::MAX).unwrap();
+	let funding_contribution =
+		build_splice_out_contribution(initiator, acceptor, channel_id, outputs).unwrap();
 	match initiator.node.funding_contributed(
 		&channel_id,
 		&node_id_acceptor,
@@ -305,6 +304,17 @@ pub fn initiate_splice_out<'a, 'b, 'c, 'd>(
 			Err(e)
 		},
 	}
+}
+
+pub fn build_splice_out_contribution<'a, 'b, 'c, 'd>(
+	initiator: &'a Node<'b, 'c, 'd>, acceptor: &'a Node<'b, 'c, 'd>, channel_id: ChannelId,
+	outputs: Vec<TxOut>,
+) -> Result<FundingContribution, FundingContributionError> {
+	let node_id_acceptor = acceptor.node.get_our_node_id();
+	let floor_feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64);
+	let funding_template = initiator.node.splice_channel(&channel_id, &node_id_acceptor).unwrap();
+	let feerate = funding_template.min_rbf_feerate().unwrap_or(floor_feerate);
+	funding_template.splice_out(outputs, feerate, FeeRate::MAX)
 }
 
 pub fn initiate_splice_in_and_out<'a, 'b, 'c, 'd>(
@@ -327,6 +337,7 @@ pub fn do_initiate_splice_in_and_out<'a, 'b, 'c, 'd>(
 		.without_prior_contribution(feerate, FeeRate::MAX)
 		.with_coin_selection_source_sync(&wallet)
 		.add_value(value_added)
+		.unwrap()
 		.add_outputs(outputs)
 		.build()
 		.unwrap();
@@ -4614,6 +4625,7 @@ fn test_funding_contributed_splice_already_pending() {
 		.with_prior_contribution(feerate, FeeRate::MAX)
 		.with_coin_selection_source_sync(&wallet)
 		.add_value(splice_in_amount)
+		.unwrap()
 		.add_output(first_splice_out.clone())
 		.build()
 		.unwrap();
@@ -4636,6 +4648,7 @@ fn test_funding_contributed_splice_already_pending() {
 		.without_prior_contribution(feerate, FeeRate::MAX)
 		.with_coin_selection_source_sync(&wallet)
 		.add_value(splice_in_amount)
+		.unwrap()
 		.add_output(second_splice_out.clone())
 		.build()
 		.unwrap();
@@ -4786,6 +4799,7 @@ fn do_test_funding_contributed_active_funding_negotiation(state: u8) {
 		.without_prior_contribution(feerate, FeeRate::MAX)
 		.with_coin_selection_source_sync(&wallet)
 		.add_value(splice_in_amount)
+		.unwrap()
 		.add_outputs(vec![splice_out_output.clone()])
 		.build()
 		.unwrap();
@@ -5084,15 +5098,10 @@ fn do_test_splice_pending_htlcs(config: UserConfig) {
 
 		let script_pubkey = initiator.wallet_source.get_change_script().unwrap();
 		let outputs = vec![TxOut { value: splice_out + Amount::ONE_SAT, script_pubkey }];
-		let error = initiate_splice_out(initiator, acceptor, channel_id, outputs).unwrap_err();
-		let cannot_accept_contribution =
-			format!("Channel {} cannot accept funding contribution", channel_id);
-		assert_eq!(error, APIError::APIMisuseError { err: cannot_accept_contribution });
-		let cannot_be_funded = format!(
-			"Channel {} cannot be funded: Our splice-out value of {} is greater than the maximum {}",
-			channel_id, splice_out_incl_fees + Amount::ONE_SAT, splice_out_incl_fees,
-		);
-		initiator.logger.assert_log("lightning::ln::channel", cannot_be_funded, 1);
+		assert!(matches!(
+			build_splice_out_contribution(initiator, acceptor, channel_id, outputs),
+			Err(FundingContributionError::InvalidSpliceValue),
+		));
 
 		// 2) Check that splicing out with the additional satoshi removed passes validation on the sender's side.
 
@@ -5495,6 +5504,7 @@ fn test_splice_rbf_discard_unique_contribution() {
 		.without_prior_contribution(rbf_feerate, FeeRate::MAX)
 		.with_coin_selection_source_sync(&wallet)
 		.add_value(added_value)
+		.unwrap()
 		.build()
 		.unwrap();
 	nodes[0]
@@ -6066,6 +6076,7 @@ fn test_splice_rbf_stfu_after_splice_locked() {
 		.without_prior_contribution(rbf_feerate, FeeRate::MAX)
 		.with_coin_selection_source_sync(&wallet)
 		.add_value(added_value)
+		.unwrap()
 		.build()
 		.unwrap();
 	nodes[0]
@@ -7240,6 +7251,7 @@ fn test_splice_rbf_amends_prior_net_positive_contribution_request() {
 		.with_prior_contribution(rbf_feerate, FeeRate::MAX)
 		.with_coin_selection_source_sync(&wallet)
 		.remove_value(half_added_value)
+		.unwrap()
 		.build()
 		.unwrap();
 	let (inputs_2, _) = contribution_2.clone().into_contributed_inputs_and_outputs();
@@ -7323,6 +7335,11 @@ fn test_splice_rbf_amends_prior_net_negative_contribution_request() {
 	assert!(initial_inputs.is_empty());
 	let (splice_tx_0, new_funding_script) =
 		splice_channel(&nodes[0], &nodes[1], channel_id, initial_contribution.clone());
+	let manual_input_pair_tx = provide_utxo_reserves(&nodes, 2, Amount::from_sat(20_000));
+	let manual_input_single_tx = provide_utxo_reserves(&nodes, 1, Amount::from_sat(10_000));
+	let manual_input_0 = ConfirmedUtxo::new_p2wpkh(manual_input_pair_tx.clone(), 0).unwrap();
+	let manual_input_1 = ConfirmedUtxo::new_p2wpkh(manual_input_pair_tx, 1).unwrap();
+	let manual_input_2 = ConfirmedUtxo::new_p2wpkh(manual_input_single_tx, 0).unwrap();
 
 	let run_rbf_round = |contribution: FundingContribution, replaced_txid: Txid| {
 		nodes[0]
@@ -7376,21 +7393,72 @@ fn test_splice_rbf_amends_prior_net_negative_contribution_request() {
 
 	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
 	assert_eq!(funding_template.prior_contribution().unwrap().outputs(), contribution_2.outputs());
-	let contribution_3 =
-		funding_template.rbf_prior_contribution_sync(None, FeeRate::MAX, &wallet).unwrap();
+	let rbf_feerate = funding_template.min_rbf_feerate().unwrap();
+	let contribution_3 = funding_template
+		.with_prior_contribution(rbf_feerate, FeeRate::MAX)
+		.add_inputs(vec![manual_input_0.clone(), manual_input_1.clone()])
+		.unwrap()
+		.build()
+		.unwrap();
 	let (inputs_3, _) = contribution_3.clone().into_contributed_inputs_and_outputs();
-	assert!(inputs_3.is_empty());
+	assert_eq!(inputs_3, vec![manual_input_0.utxo.outpoint, manual_input_1.utxo.outpoint],);
 	assert_eq!(contribution_3.outputs(), contribution_2.outputs());
-	assert!(contribution_3.net_value() < contribution_2.net_value());
+	assert!(contribution_3.net_value() > SignedAmount::ZERO);
 	assert!(contribution_3.change_output().is_none());
-	let rbf_tx_final = run_rbf_round(contribution_3, splice_tx_2.compute_txid());
+	let splice_tx_3 = run_rbf_round(contribution_3.clone(), splice_tx_2.compute_txid());
+
+	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
+	assert_eq!(funding_template.prior_contribution().unwrap().outputs(), contribution_3.outputs());
+	let prior_inputs = funding_template
+		.prior_contribution()
+		.unwrap()
+		.clone()
+		.into_contributed_inputs_and_outputs()
+		.0;
+	assert_eq!(prior_inputs, vec![manual_input_0.utxo.outpoint, manual_input_1.utxo.outpoint],);
+	let rbf_feerate = funding_template.min_rbf_feerate().unwrap();
+	let contribution_4 = funding_template
+		.with_prior_contribution(rbf_feerate, FeeRate::MAX)
+		.add_input(manual_input_2.clone())
+		.unwrap()
+		.remove_input(&manual_input_0.utxo.outpoint)
+		.unwrap()
+		.remove_input(&manual_input_1.utxo.outpoint)
+		.unwrap()
+		.build()
+		.unwrap();
+	let (inputs_4, _) = contribution_4.clone().into_contributed_inputs_and_outputs();
+	assert_eq!(inputs_4, vec![manual_input_2.utxo.outpoint]);
+	assert_eq!(contribution_4.outputs(), contribution_3.outputs());
+	assert!(contribution_4.net_value() < SignedAmount::ZERO);
+	assert!(contribution_4.net_value() < contribution_3.net_value());
+	assert!(contribution_4.change_output().is_none());
+	let splice_tx_4 = run_rbf_round(contribution_4.clone(), splice_tx_3.compute_txid());
+
+	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
+	assert_eq!(funding_template.prior_contribution().unwrap().outputs(), contribution_4.outputs());
+	let contribution_5 =
+		funding_template.rbf_prior_contribution_sync(None, FeeRate::MAX, &wallet).unwrap();
+	let (inputs_5, _) = contribution_5.clone().into_contributed_inputs_and_outputs();
+	assert_eq!(inputs_5, vec![manual_input_2.utxo.outpoint]);
+	assert_eq!(contribution_5.outputs(), contribution_4.outputs());
+	assert!(contribution_5.net_value() < SignedAmount::ZERO);
+	assert!(contribution_5.net_value() < contribution_4.net_value());
+	assert!(contribution_5.change_output().is_none());
+	let rbf_tx_final = run_rbf_round(contribution_5, splice_tx_4.compute_txid());
 
 	lock_rbf_splice_after_blocks(
 		&nodes[0],
 		&nodes[1],
 		&rbf_tx_final,
 		ANTI_REORG_DELAY - 1,
-		&[splice_tx_0.compute_txid(), splice_tx_1.compute_txid(), splice_tx_2.compute_txid()],
+		&[
+			splice_tx_0.compute_txid(),
+			splice_tx_1.compute_txid(),
+			splice_tx_2.compute_txid(),
+			splice_tx_3.compute_txid(),
+			splice_tx_4.compute_txid(),
+		],
 	);
 }
 
@@ -8379,6 +8447,7 @@ fn test_splice_rbf_rejects_own_low_feerate_after_several_attempts() {
 		.without_prior_contribution(rbf_feerate, FeeRate::MAX)
 		.with_coin_selection_source_sync(&wallet)
 		.add_value(added_value)
+		.unwrap()
 		.build()
 		.unwrap();
 	let result = nodes[0].node.funding_contributed(&channel_id, &node_id_1, contribution, None);
@@ -8820,16 +8889,10 @@ fn do_test_0reserve_splice_holder_validation(
 		mine_transaction(acceptor, &splice_tx);
 		lock_splice_after_blocks(initiator, acceptor, ANTI_REORG_DELAY - 1);
 	} else {
-		assert!(initiate_splice_out(initiator, acceptor, channel_id, outputs).is_err());
-		let splice_out_value =
-			splice_out_max_value + Amount::from_sat(estimated_fees_sat) + Amount::ONE_SAT;
-		let splice_out_max_value = splice_out_max_value + Amount::from_sat(estimated_fees_sat);
-		let cannot_be_funded = format!(
-			"Channel {channel_id} cannot be funded: Our \
-			splice-out value of {splice_out_value} is greater than the maximum \
-			{splice_out_max_value}"
-		);
-		initiator.logger.assert_log("lightning::ln::channel", cannot_be_funded, 1);
+		assert!(matches!(
+			build_splice_out_contribution(initiator, acceptor, channel_id, outputs),
+			Err(FundingContributionError::InvalidSpliceValue),
+		));
 	}
 
 	channel_type
@@ -9114,6 +9177,39 @@ fn do_test_splice_out_initiator_reserve_breach_zero_fee_commitments(
 		let _ = route_payment(&nodes[0], &[&nodes[1]], node_1_htlc_balance_msat);
 	}
 
+	let initiator = &nodes[0];
+	let acceptor = &nodes[1];
+	let node_id_initiator = initiator.node.get_our_node_id();
+	let node_id_acceptor = acceptor.node.get_our_node_id();
+
+	// We use a stale funding template to get around the enforcement of
+	// [`FundingTemplate::spliceable_balance`].
+	let stale_funding_template =
+		nodes[0].node.splice_channel(&channel_id, &node_id_acceptor).unwrap();
+	let splice_out = |funding_template: FundingTemplate, outputs: Vec<TxOut>| {
+		let floor_feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64);
+		let feerate = funding_template.min_rbf_feerate().unwrap_or(floor_feerate);
+		let funding_contribution =
+			funding_template.splice_out(outputs, feerate, FeeRate::MAX).unwrap();
+		match nodes[0].node.funding_contributed(
+			&channel_id,
+			&node_id_acceptor,
+			funding_contribution.clone(),
+			None,
+		) {
+			Ok(()) => Ok(funding_contribution),
+			Err(e) => {
+				expect_splice_failed_events(
+					&nodes[0],
+					&channel_id,
+					funding_contribution,
+					NegotiationFailureReason::ContributionInvalid,
+				);
+				Err(e)
+			},
+		}
+	};
+
 	{
 		let per_peer_lock;
 		let mut peer_state_lock;
@@ -9150,7 +9246,7 @@ fn do_test_splice_out_initiator_reserve_breach_zero_fee_commitments(
 			value: splice_out_output_amount,
 			script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
 		}];
-		let contribution = initiate_splice_out(&nodes[0], &nodes[1], channel_id, outputs).unwrap();
+		let contribution = splice_out(stale_funding_template, outputs).unwrap();
 
 		let (splice_tx, _) = splice_channel(&nodes[0], &nodes[1], channel_id, contribution);
 		mine_transaction(&nodes[0], &splice_tx);
@@ -9174,7 +9270,7 @@ fn do_test_splice_out_initiator_reserve_breach_zero_fee_commitments(
 			value,
 			script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
 		}];
-		let contribution = initiate_splice_out(&nodes[0], &nodes[1], channel_id, outputs);
+		let contribution = splice_out(stale_funding_template, outputs);
 
 		if matches!(validation_case, ValidationCase::FailsAtHolder) {
 			assert_eq!(
@@ -9201,11 +9297,6 @@ fn do_test_splice_out_initiator_reserve_breach_zero_fee_commitments(
 		// clamped at its dust limit. We previously allowed the initiator to withdraw past
 		// this point.
 		let v2_channel_reserve = Amount::from_sat(high_dust_limit_satoshis);
-
-		let initiator = &nodes[0];
-		let acceptor = &nodes[1];
-		let node_id_initiator = initiator.node.get_our_node_id();
-		let node_id_acceptor = acceptor.node.get_our_node_id();
 
 		let stfu_init = get_event_msg!(initiator, MessageSendEvent::SendStfu, node_id_acceptor);
 		acceptor.node.handle_stfu(node_id_initiator, &stfu_init);

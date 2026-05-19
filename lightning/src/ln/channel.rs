@@ -57,7 +57,7 @@ use crate::ln::channelmanager::{
 	MAX_LOCAL_BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA,
 };
 use crate::ln::funding::{
-	FeeRateAdjustmentError, FundingContribution, FundingTemplate, FundingTxInput, PriorContribution,
+	FeeRateAdjustmentError, FundingContribution, FundingTemplate, FundingTxInput,
 };
 use crate::ln::interactivetxs::{
 	AbortReason, HandleTxCompleteValue, InteractiveTxConstructor, InteractiveTxConstructorArgs,
@@ -12536,6 +12536,16 @@ where
 			});
 		}
 
+		let spliceable_balance = self.get_next_splice_out_maximum(&self.funding).map_err(|e| {
+			APIError::ChannelUnavailable {
+				err: format!(
+					"Channel {} cannot be spliced at this time: {}",
+					self.context.channel_id(),
+					e
+				),
+			}
+		})?;
+
 		let (min_rbf_feerate, prior_contribution) = if self.is_rbf_compatible().is_err() {
 			// Channel can never RBF (e.g., zero-conf).
 			(None, None)
@@ -12568,16 +12578,7 @@ where
 					.as_ref()
 					.and_then(|pending_splice| pending_splice.contributions.last())
 				{
-					let spliceable_balance = self
-						.get_next_splice_out_maximum(&self.funding)
-						.map_err(|e| APIError::ChannelUnavailable {
-							err: format!(
-								"Channel {} cannot be spliced at this time: {}",
-								self.context.channel_id(),
-								e
-							),
-						})?;
-					Some(PriorContribution::new(prior.clone(), spliceable_balance))
+					Some(prior.clone())
 				} else {
 					None
 				}
@@ -12599,7 +12600,12 @@ where
 			satisfaction_weight: EMPTY_SCRIPT_SIG_WEIGHT + FUNDING_TRANSACTION_WITNESS_WEIGHT,
 		};
 
-		Ok(FundingTemplate::new(Some(shared_input), min_rbf_feerate, prior_contribution))
+		Ok(FundingTemplate::new(
+			Some(shared_input),
+			min_rbf_feerate,
+			prior_contribution,
+			spliceable_balance,
+		))
 	}
 
 	/// Returns whether this channel can ever RBF, independent of splice state.
