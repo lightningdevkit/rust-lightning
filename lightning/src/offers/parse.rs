@@ -180,6 +180,8 @@ pub enum Bolt12SemanticError {
 	InvalidCurrencyCode,
 	/// An amount was provided but was not sufficient in value.
 	InsufficientAmount,
+	/// An amount was provided but exceeded the acceptable value.
+	ExcessiveAmount,
 	/// An amount was provided but was not expected.
 	UnexpectedAmount,
 	/// A currency was provided that is not supported.
