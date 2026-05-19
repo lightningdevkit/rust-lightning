@@ -2795,6 +2795,91 @@ fn test_splice_confirms_on_both_sides_while_disconnected() {
 }
 
 #[test]
+fn test_holding_cell_claim_freed_after_inferred_splice_locked() {
+	// If `channel_reestablish` infers a missed `splice_locked`, it must promote the splice before
+	// freeing holding-cell updates. If the promotion monitor update is asynchronous, holding-cell
+	// updates must remain held until that monitor update completes.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+	let prev_funding_outpoint = get_monitor!(nodes[0], channel_id).get_funding_txo();
+	let prev_funding_script = get_monitor!(nodes[0], channel_id).get_funding_script();
+	let prev_scid = nodes[0].node.list_channels()[0].short_channel_id;
+
+	let (payment_preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+
+	let outputs = vec![
+		TxOut {
+			value: Amount::from_sat(initial_channel_value_sat / 4),
+			script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
+		},
+		TxOut {
+			value: Amount::from_sat(initial_channel_value_sat / 4),
+			script_pubkey: nodes[1].wallet_source.get_change_script().unwrap(),
+		},
+	];
+	let funding_contribution =
+		initiate_splice_out(&nodes[0], &nodes[1], channel_id, outputs).unwrap();
+	let (splice_tx, _) = splice_channel(&nodes[0], &nodes[1], channel_id, funding_contribution);
+
+	nodes[0].node.peer_disconnected(node_id_1);
+	nodes[1].node.peer_disconnected(node_id_0);
+
+	nodes[1].node.claim_funds(payment_preimage);
+	check_added_monitors(&nodes[1], 1);
+	expect_payment_claimed!(nodes[1], payment_hash, 1_000_000);
+
+	confirm_transaction(&nodes[0], &splice_tx);
+	confirm_transaction(&nodes[1], &splice_tx);
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
+
+	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
+	reconnect_args.expect_renegotiated_funding_locked_monitor_update = (true, true);
+	reconnect_args.send_announcement_sigs = (true, true);
+	reconnect_nodes(reconnect_args);
+
+	expect_channel_ready_event(&nodes[0], &node_id_1);
+	expect_channel_ready_event(&nodes[1], &node_id_0);
+	assert_ne!(prev_scid, nodes[0].node.list_channels()[0].short_channel_id);
+
+	nodes[1].chain_monitor.complete_sole_pending_chan_update(&channel_id);
+	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
+
+	let mut commitment_update = get_htlc_update_msgs(&nodes[1], &node_id_0);
+	check_added_monitors(&nodes[1], 1);
+	nodes[0]
+		.node
+		.handle_update_fulfill_htlc(node_id_1, commitment_update.update_fulfill_htlcs.remove(0));
+	do_commitment_signed_dance(
+		&nodes[0],
+		&nodes[1],
+		&commitment_update.commitment_signed,
+		false,
+		false,
+	);
+
+	expect_payment_sent!(nodes[0], payment_preimage);
+
+	nodes[0]
+		.chain_source
+		.remove_watched_txn_and_outputs(prev_funding_outpoint, prev_funding_script.clone());
+	nodes[1]
+		.chain_source
+		.remove_watched_txn_and_outputs(prev_funding_outpoint, prev_funding_script);
+}
+
+#[test]
 fn test_stale_announcement_signatures_ignored_after_splice_lock() {
 	// Regression test: a peer may transmit `announcement_signatures` signed over a pre-splice
 	// `short_channel_id` (for example, a stale retransmission or a peer implementation that

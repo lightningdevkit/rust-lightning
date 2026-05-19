@@ -12368,43 +12368,13 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan_entry) => {
 				if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
-					let logger = WithChannelContext::from(&self.logger, &chan.context, None);
-					let res = chan.channel_ready(
-						&msg,
-						&self.node_signer,
-						self.chain_hash,
-						&self.config.read().unwrap(),
-						&self.best_block.read().unwrap(),
-						&&logger
+					let res = self.internal_channel_ready_with_funded_channel(
+						counterparty_node_id,
+						msg,
+						chan,
+						&mut peer_state.pending_msg_events,
 					);
-					let announcement_sigs_opt =
-						try_channel_entry!(self, peer_state, res, chan_entry);
-					if let Some(announcement_sigs) = announcement_sigs_opt {
-						log_trace!(logger, "Sending announcement_signatures");
-						peer_state.pending_msg_events.push(MessageSendEvent::SendAnnouncementSignatures {
-							node_id: counterparty_node_id.clone(),
-							msg: announcement_sigs,
-						});
-					} else if chan.context.is_usable() {
-						// If we're sending an announcement_signatures, we'll send the (public)
-						// channel_update after sending a channel_announcement when we receive our
-						// counterparty's announcement_signatures. Thus, we only bother to send a
-						// channel_update here if the channel is not public, i.e. we're not sending an
-						// announcement_signatures.
-						log_trace!(logger, "Sending private initial channel_update for our counterparty");
-						if let Ok((msg, _, _)) = self.get_channel_update_for_unicast(chan) {
-							peer_state.pending_msg_events.push(MessageSendEvent::SendChannelUpdate {
-								node_id: counterparty_node_id.clone(),
-								msg,
-							});
-						}
-					}
-
-					{
-						let mut pending_events = self.pending_events.lock().unwrap();
-						emit_initial_channel_ready_event!(pending_events, chan);
-					}
-
+					try_channel_entry!(self, peer_state, res, chan_entry);
 					Ok(())
 				} else {
 					try_channel_entry!(self, peer_state, Err(ChannelError::close(
@@ -12415,6 +12385,49 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				Err(MsgHandleErrInternal::no_such_channel_for_peer(counterparty_node_id, msg.channel_id))
 			}
 		}
+	}
+
+	#[rustfmt::skip]
+	fn internal_channel_ready_with_funded_channel(
+		&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelReady,
+		chan: &mut FundedChannel<SP>, pending_msg_events: &mut Vec<MessageSendEvent>,
+	) -> Result<(), ChannelError> {
+		let logger = WithChannelContext::from(&self.logger, &chan.context, None);
+		let announcement_sigs_opt = chan.channel_ready(
+			&msg,
+			&self.node_signer,
+			self.chain_hash,
+			&self.config.read().unwrap(),
+			&self.best_block.read().unwrap(),
+			&&logger
+		)?;
+		if let Some(announcement_sigs) = announcement_sigs_opt {
+			log_trace!(logger, "Sending announcement_signatures");
+			pending_msg_events.push(MessageSendEvent::SendAnnouncementSignatures {
+				node_id: counterparty_node_id.clone(),
+				msg: announcement_sigs,
+			});
+		} else if chan.context.is_usable() {
+			// If we're sending an announcement_signatures, we'll send the (public)
+			// channel_update after sending a channel_announcement when we receive our
+			// counterparty's announcement_signatures. Thus, we only bother to send a
+			// channel_update here if the channel is not public, i.e. we're not sending an
+			// announcement_signatures.
+			log_trace!(logger, "Sending private initial channel_update for our counterparty");
+			if let Ok((msg, _, _)) = self.get_channel_update_for_unicast(chan) {
+				pending_msg_events.push(MessageSendEvent::SendChannelUpdate {
+					node_id: counterparty_node_id.clone(),
+					msg,
+				});
+			}
+		}
+
+		{
+			let mut pending_events = self.pending_events.lock().unwrap();
+			emit_initial_channel_ready_event!(pending_events, chan);
+		}
+
+		Ok(())
 	}
 
 	fn internal_shutdown(
@@ -13240,7 +13253,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 	#[rustfmt::skip]
 	fn internal_channel_reestablish(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelReestablish) -> Result<(), MsgHandleErrInternal> {
-		let (inferred_splice_locked, need_lnd_workaround, holding_cell_res) = {
+		let (post_splice_locked_update, holding_cell_res) = {
 			let per_peer_state = self.per_peer_state.read().unwrap();
 
 			let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
@@ -13249,7 +13262,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			let logger = WithContext::from(&self.logger, Some(*counterparty_node_id), Some(msg.channel_id), None);
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
-			match peer_state.channel_by_id.entry(msg.channel_id) {
+			let post_splice_locked_update = match peer_state.channel_by_id.entry(msg.channel_id) {
 				hash_map::Entry::Occupied(mut chan_entry) => {
 					if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
 						// Currently, we expect all holding cell update_adds to be dropped on peer
@@ -13285,6 +13298,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							}
 						}
 						let need_lnd_workaround = chan.context.workaround_lnd_bug_4006.take();
+						let inferred_splice_locked = responses.inferred_splice_locked;
 						let funding_tx_signed = if responses.tx_signatures.is_some() || responses.splice_locked.is_some() {
 							Some(FundingTxSigned {
 								tx_signatures: responses.tx_signatures,
@@ -13305,8 +13319,33 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							peer_state.pending_msg_events.push(upd);
 						}
 
-						let holding_cell_res = self.check_free_peer_holding_cells(peer_state);
-						(responses.inferred_splice_locked, need_lnd_workaround, holding_cell_res)
+						if let Some(channel_ready_msg) = need_lnd_workaround {
+							let res = self.internal_channel_ready_with_funded_channel(
+								counterparty_node_id,
+								&channel_ready_msg,
+								chan,
+								&mut peer_state.pending_msg_events,
+							);
+							try_channel_entry!(self, peer_state, res, chan_entry);
+						}
+
+						// A reestablish may infer a missed `splice_locked`; apply it before freeing
+						// holding cells so we don't generate commitment updates against stale splice
+						// state.
+						if let Some(splice_locked) = inferred_splice_locked {
+							let result = self.internal_splice_locked_with_funded_channel(
+								counterparty_node_id,
+								&splice_locked,
+								chan,
+								&mut peer_state.in_flight_monitor_updates,
+								&mut peer_state.monitor_update_blocked_actions,
+								&mut peer_state.pending_msg_events,
+								peer_state.is_connected,
+							);
+							try_channel_entry!(self, peer_state, result, chan_entry)
+						} else {
+							None
+						}
 					} else {
 						return try_channel_entry!(self, peer_state, Err(ChannelError::close(
 							"Got a channel_reestablish message for an unfunded channel!".into())), chan_entry);
@@ -13344,18 +13383,16 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					return Err(MsgHandleErrInternal::no_such_channel_for_peer(counterparty_node_id, msg.channel_id)
 					)
 				}
-			}
+			};
+
+			let holding_cell_res = self.check_free_peer_holding_cells(peer_state);
+			(post_splice_locked_update, holding_cell_res)
 		};
 
+		if let Some(data) = post_splice_locked_update {
+			self.handle_post_monitor_update_chan_resume(data);
+		}
 		self.handle_holding_cell_free_result(holding_cell_res);
-
-		if let Some(channel_ready_msg) = need_lnd_workaround {
-			self.internal_channel_ready(counterparty_node_id, &channel_ready_msg)?;
-		}
-
-		if let Some(splice_locked) = inferred_splice_locked {
-			self.internal_splice_locked(counterparty_node_id, &splice_locked)?;
-		}
 
 		Ok(())
 	}
@@ -13585,9 +13622,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
-
 		// Look for the channel
-		match peer_state.channel_by_id.entry(msg.channel_id) {
+		let post_update_data = match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Vacant(_) => {
 				return Err(MsgHandleErrInternal::no_such_channel_for_peer(
 					counterparty_node_id,
@@ -13596,73 +13632,16 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			},
 			hash_map::Entry::Occupied(mut chan_entry) => {
 				if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
-					let logger = WithChannelContext::from(&self.logger, &chan.context, None);
-					let result = chan.splice_locked(
+					let result = self.internal_splice_locked_with_funded_channel(
+						counterparty_node_id,
 						msg,
-						&self.node_signer,
-						self.chain_hash,
-						&self.config.read().unwrap(),
-						self.best_block.read().unwrap().height,
-						&&logger,
+						chan,
+						&mut peer_state.in_flight_monitor_updates,
+						&mut peer_state.monitor_update_blocked_actions,
+						&mut peer_state.pending_msg_events,
+						peer_state.is_connected,
 					);
-					let splice_promotion = try_channel_entry!(self, peer_state, result, chan_entry);
-					if let Some(splice_promotion) = splice_promotion {
-						{
-							let mut short_to_chan_info = self.short_to_chan_info.write().unwrap();
-							insert_short_channel_id!(short_to_chan_info, chan);
-						}
-
-						{
-							let mut pending_events = self.pending_events.lock().unwrap();
-							pending_events.push_back((
-								events::Event::ChannelReady {
-									channel_id: chan.context.channel_id(),
-									user_channel_id: chan.context.get_user_id(),
-									counterparty_node_id: chan.context.get_counterparty_node_id(),
-									funding_txo: Some(
-										splice_promotion.funding_txo.into_bitcoin_outpoint(),
-									),
-									channel_type: chan.funding.get_channel_type().clone(),
-								},
-								None,
-							));
-							splice_promotion.discarded_funding.into_iter().for_each(
-								|funding_info| {
-									let event = Event::DiscardFunding {
-										channel_id: chan.context.channel_id(),
-										funding_info,
-									};
-									pending_events.push_back((event, None));
-								},
-							);
-						}
-
-						if let Some(announcement_sigs) = splice_promotion.announcement_sigs {
-							log_trace!(logger, "Sending announcement_signatures",);
-							peer_state.pending_msg_events.push(
-								MessageSendEvent::SendAnnouncementSignatures {
-									node_id: counterparty_node_id.clone(),
-									msg: announcement_sigs,
-								},
-							);
-						}
-
-						if let Some(monitor_update) = splice_promotion.monitor_update {
-							if let Some(data) = self.handle_new_monitor_update(
-								&mut peer_state.in_flight_monitor_updates,
-								&mut peer_state.monitor_update_blocked_actions,
-								&mut peer_state.pending_msg_events,
-								peer_state.is_connected,
-								chan,
-								splice_promotion.funding_txo,
-								monitor_update,
-							) {
-								mem::drop(peer_state_lock);
-								mem::drop(per_peer_state);
-								self.handle_post_monitor_update_chan_resume(data);
-							}
-						}
-					}
+					try_channel_entry!(self, peer_state, result, chan_entry)
 				} else {
 					return Err(MsgHandleErrInternal::send_err_msg_no_close(
 						"Channel is not funded, cannot splice".to_owned(),
@@ -13671,8 +13650,85 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				}
 			},
 		};
+		mem::drop(peer_state_lock);
+		mem::drop(per_peer_state);
+
+		if let Some(data) = post_update_data {
+			self.handle_post_monitor_update_chan_resume(data);
+		}
 
 		Ok(())
+	}
+
+	fn internal_splice_locked_with_funded_channel(
+		&self, counterparty_node_id: &PublicKey, msg: &msgs::SpliceLocked,
+		chan: &mut FundedChannel<SP>,
+		in_flight_monitor_updates: &mut BTreeMap<ChannelId, (OutPoint, Vec<ChannelMonitorUpdate>)>,
+		monitor_update_blocked_actions: &mut BTreeMap<
+			ChannelId,
+			Vec<MonitorUpdateCompletionAction>,
+		>,
+		pending_msg_events: &mut Vec<MessageSendEvent>, is_connected: bool,
+	) -> Result<Option<PostMonitorUpdateChanResume>, ChannelError> {
+		let logger = WithChannelContext::from(&self.logger, &chan.context, None);
+		let splice_promotion = chan.splice_locked(
+			msg,
+			&self.node_signer,
+			self.chain_hash,
+			&self.config.read().unwrap(),
+			self.best_block.read().unwrap().height,
+			&&logger,
+		)?;
+		let mut post_update_data = None;
+		if let Some(splice_promotion) = splice_promotion {
+			{
+				let mut short_to_chan_info = self.short_to_chan_info.write().unwrap();
+				insert_short_channel_id!(short_to_chan_info, chan);
+			}
+
+			{
+				let mut pending_events = self.pending_events.lock().unwrap();
+				pending_events.push_back((
+					events::Event::ChannelReady {
+						channel_id: chan.context.channel_id(),
+						user_channel_id: chan.context.get_user_id(),
+						counterparty_node_id: chan.context.get_counterparty_node_id(),
+						funding_txo: Some(splice_promotion.funding_txo.into_bitcoin_outpoint()),
+						channel_type: chan.funding.get_channel_type().clone(),
+					},
+					None,
+				));
+				splice_promotion.discarded_funding.into_iter().for_each(|funding_info| {
+					let event = Event::DiscardFunding {
+						channel_id: chan.context.channel_id(),
+						funding_info,
+					};
+					pending_events.push_back((event, None));
+				});
+			}
+
+			if let Some(announcement_sigs) = splice_promotion.announcement_sigs {
+				log_trace!(logger, "Sending announcement_signatures",);
+				pending_msg_events.push(MessageSendEvent::SendAnnouncementSignatures {
+					node_id: counterparty_node_id.clone(),
+					msg: announcement_sigs,
+				});
+			}
+
+			if let Some(monitor_update) = splice_promotion.monitor_update {
+				post_update_data = self.handle_new_monitor_update(
+					in_flight_monitor_updates,
+					monitor_update_blocked_actions,
+					pending_msg_events,
+					is_connected,
+					chan,
+					splice_promotion.funding_txo,
+					monitor_update,
+				);
+			}
+		}
+
+		Ok(post_update_data)
 	}
 
 	/// Process pending events from the [`chain::Watch`], returning whether any events were processed.
