@@ -24,7 +24,7 @@ use crate::ln::LN_MAX_MSG_LEN;
 use crate::prelude::*;
 use crate::util::native_async::MaybeSend;
 use crate::util::wallet_utils::{
-	CoinSelection, CoinSelectionSource, CoinSelectionSourceSync, Input,
+	CoinSelection, CoinSelectionSource, CoinSelectionSourceSync, ConfirmedUtxo, Input,
 };
 
 /// Error returned when a [`FundingContribution`] cannot be adjusted to a target feerate.
@@ -370,7 +370,7 @@ impl FundingTemplate {
 	/// when that is set. `max_feerate` is the highest feerate we are willing to tolerate if we end
 	/// up as the acceptor, and must be at least `min_feerate`.
 	pub fn splice_in_inputs(
-		self, inputs: Vec<FundingTxInput>, min_feerate: FeeRate, max_feerate: FeeRate,
+		self, inputs: Vec<ConfirmedUtxo>, min_feerate: FeeRate, max_feerate: FeeRate,
 	) -> Result<FundingContribution, FundingContributionError> {
 		self.with_prior_contribution(min_feerate, max_feerate).add_inputs(inputs)?.build()
 	}
@@ -466,8 +466,8 @@ impl FundingTemplate {
 }
 
 fn estimate_transaction_fee(
-	inputs: &[FundingTxInput], outputs: &[TxOut], change_output: Option<&TxOut>,
-	is_initiator: bool, is_splice: bool, feerate: FeeRate,
+	inputs: &[ConfirmedUtxo], outputs: &[TxOut], change_output: Option<&TxOut>, is_initiator: bool,
+	is_splice: bool, feerate: FeeRate,
 ) -> Amount {
 	let input_weight: u64 = inputs
 		.iter()
@@ -515,7 +515,7 @@ fn estimate_transaction_fee(
 	Weight::from_wu(weight) * feerate
 }
 
-fn validate_inputs(inputs: &[FundingTxInput]) -> Result<(), FundingContributionError> {
+fn validate_inputs(inputs: &[ConfirmedUtxo]) -> Result<(), FundingContributionError> {
 	let mut total_value = Amount::ZERO;
 	for (idx, input) in inputs.iter().enumerate() {
 		if inputs[..idx]
@@ -559,7 +559,7 @@ enum FundingInputs {
 	/// Replaces the contribution's inputs with the provided set and fully consumes them without a
 	/// change output. The amount added to the channel is recomputed from the input total minus fees,
 	/// while explicit withdrawal outputs still reduce the splice's net value.
-	ManuallySelected { inputs: Vec<FundingTxInput> },
+	ManuallySelected { inputs: Vec<ConfirmedUtxo> },
 }
 
 impl FundingInputs {
@@ -584,7 +584,7 @@ impl FundingInputs {
 		}
 	}
 
-	fn manually_selected_inputs(&self) -> &[FundingTxInput] {
+	fn manually_selected_inputs(&self) -> &[ConfirmedUtxo] {
 		match self {
 			FundingInputs::ManuallySelected { inputs } => inputs,
 			FundingInputs::CoinSelected { .. } => &[],
@@ -613,7 +613,7 @@ pub struct FundingContribution {
 	///
 	/// For coin-selected contributions, excess value is returned via [`Self::change_output`]. For
 	/// manually selected inputs, the full input value is consumed and no change output is created.
-	inputs: Vec<FundingTxInput>,
+	inputs: Vec<ConfirmedUtxo>,
 
 	/// The outputs to include in the funding transaction.
 	///
@@ -691,7 +691,7 @@ impl FundingContribution {
 	}
 
 	/// Returns the inputs included in this contribution.
-	pub fn inputs(&self) -> &[FundingTxInput] {
+	pub fn inputs(&self) -> &[ConfirmedUtxo] {
 		&self.inputs
 	}
 
@@ -827,7 +827,7 @@ impl FundingContribution {
 		Some(new_contribution_at_target_feerate)
 	}
 
-	pub(super) fn into_tx_parts(self) -> (Vec<FundingTxInput>, Vec<TxOut>) {
+	pub(super) fn into_tx_parts(self) -> (Vec<ConfirmedUtxo>, Vec<TxOut>) {
 		let FundingContribution { inputs, mut outputs, change_output, .. } = self;
 
 		if let Some(change_output) = change_output {
@@ -1130,10 +1130,6 @@ impl FundingContribution {
 			.expect("all amounts are validated to not exceed Amount::MAX_MONEY")
 	}
 }
-
-/// An input to contribute to a channel's funding transaction either when using the v2 channel
-/// establishment protocol or when splicing.
-pub type FundingTxInput = crate::util::wallet_utils::ConfirmedUtxo;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NoCoinSelectionSource;
@@ -1472,7 +1468,7 @@ impl FundingBuilder {
 	///
 	/// Returns [`FundingContributionError::InvalidSpliceValue`] if the builder already has a
 	/// coin-selected value request.
-	pub fn add_input(self, input: FundingTxInput) -> Result<Self, FundingContributionError> {
+	pub fn add_input(self, input: ConfirmedUtxo) -> Result<Self, FundingContributionError> {
 		self.0.add_input_inner(input).map(FundingBuilder)
 	}
 
@@ -1490,7 +1486,7 @@ impl FundingBuilder {
 	///
 	/// Returns [`FundingContributionError::InvalidSpliceValue`] if the builder already has a
 	/// coin-selected value request.
-	pub fn add_inputs(self, inputs: Vec<FundingTxInput>) -> Result<Self, FundingContributionError> {
+	pub fn add_inputs(self, inputs: Vec<ConfirmedUtxo>) -> Result<Self, FundingContributionError> {
 		self.0.add_inputs_inner(inputs).map(FundingBuilder)
 	}
 
@@ -1585,7 +1581,7 @@ impl<State> FundingBuilderInner<State> {
 		Ok(self)
 	}
 
-	fn add_input_inner(mut self, input: FundingTxInput) -> Result<Self, FundingContributionError> {
+	fn add_input_inner(mut self, input: ConfirmedUtxo) -> Result<Self, FundingContributionError> {
 		match &mut self.funding_inputs {
 			None => {
 				self.funding_inputs = Some(FundingInputs::ManuallySelected { inputs: vec![input] })
@@ -1599,7 +1595,7 @@ impl<State> FundingBuilderInner<State> {
 	}
 
 	fn add_inputs_inner(
-		mut self, inputs: Vec<FundingTxInput>,
+		mut self, inputs: Vec<ConfirmedUtxo>,
 	) -> Result<Self, FundingContributionError> {
 		match &mut self.funding_inputs {
 			None => self.funding_inputs = Some(FundingInputs::ManuallySelected { inputs }),
@@ -1875,11 +1871,11 @@ impl<W: CoinSelectionSourceSync> SyncFundingBuilder<W> {
 mod tests {
 	use super::{
 		estimate_transaction_fee, FeeRateAdjustmentError, FundingBuilder, FundingContribution,
-		FundingContributionError, FundingInputMode, FundingTemplate, FundingTxInput,
-		SyncCoinSelectionSource, SyncFundingBuilder,
+		FundingContributionError, FundingInputMode, FundingTemplate, SyncCoinSelectionSource,
+		SyncFundingBuilder,
 	};
 	use crate::chain::ClaimId;
-	use crate::util::wallet_utils::{CoinSelection, CoinSelectionSourceSync, Input};
+	use crate::util::wallet_utils::{CoinSelection, CoinSelectionSourceSync, ConfirmedUtxo, Input};
 	use bitcoin::hashes::Hash;
 	use bitcoin::transaction::{Transaction, TxOut, Version};
 	use bitcoin::{Amount, FeeRate, Psbt, ScriptBuf, SignedAmount, WPubkeyHash, WScriptHash};
@@ -1960,7 +1956,7 @@ mod tests {
 	}
 
 	#[rustfmt::skip]
-	fn funding_input_sats(input_value_sats: u64) -> FundingTxInput {
+	fn funding_input_sats(input_value_sats: u64) -> ConfirmedUtxo {
 		let prevout = TxOut {
 			value: Amount::from_sat(input_value_sats),
 			script_pubkey: ScriptBuf::new_p2wpkh(&WPubkeyHash::all_zeros()),
@@ -1970,7 +1966,7 @@ mod tests {
 			version: Version::TWO, lock_time: bitcoin::absolute::LockTime::ZERO,
 		};
 
-		FundingTxInput::new_p2wpkh(prevtx, 0).unwrap()
+		ConfirmedUtxo::new_p2wpkh(prevtx, 0).unwrap()
 	}
 
 	fn funding_output_sats(output_value_sats: u64) -> TxOut {
@@ -1995,7 +1991,7 @@ mod tests {
 	}
 
 	struct MustPayToWallet {
-		utxo: FundingTxInput,
+		utxo: ConfirmedUtxo,
 		change_output: Option<TxOut>,
 		expected_must_pay_to_values: Vec<Amount>,
 	}
@@ -2805,7 +2801,7 @@ mod tests {
 		assert!(prevtx.serialized_length() > crate::ln::LN_MAX_MSG_LEN);
 
 		let wallet = SingleUtxoWallet {
-			utxo: FundingTxInput::new_p2wpkh(prevtx, 0).unwrap(),
+			utxo: ConfirmedUtxo::new_p2wpkh(prevtx, 0).unwrap(),
 			change_output: None,
 		};
 		assert!(matches!(
@@ -3713,7 +3709,7 @@ mod tests {
 
 	/// A mock wallet that returns a single UTXO for coin selection.
 	struct SingleUtxoWallet {
-		utxo: FundingTxInput,
+		utxo: ConfirmedUtxo,
 		change_output: Option<TxOut>,
 	}
 
