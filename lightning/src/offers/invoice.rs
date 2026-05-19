@@ -123,7 +123,7 @@ use crate::blinded_path::BlindedPath;
 use crate::io;
 use crate::ln::channelmanager::PaymentId;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN};
-use crate::ln::msgs::DecodeError;
+use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
 use crate::offers::currency::{CurrencyConversion, NullCurrencyConversion};
 #[cfg(test)]
 use crate::offers::invoice_macros::invoice_builder_methods_test_common;
@@ -399,14 +399,26 @@ macro_rules! invoice_builder_methods {
 		pub(crate) fn amount_msats<CC: CurrencyConversion>(
 			invoice_request: &InvoiceRequest, converter: &CC,
 		) -> Result<u64, Bolt12SemanticError> {
-			match invoice_request.contents.inner.amount_msats() {
-				Some(amount_msats) => Ok(amount_msats),
-				None => match invoice_request.contents.inner.offer.amount() {
-					Some(Amount::Bitcoin { amount_msats }) => amount_msats
+			let requested_amount = invoice_request.amount_msats();
+
+			match invoice_request.amount() {
+				None => requested_amount.ok_or(Bolt12SemanticError::MissingAmount),
+				Some(offer_amount) => {
+					let (minimum_unit_msats, _maximum_unit_msats) =
+						offer_amount.to_msats_range(converter)?;
+
+					let minimum_msats = minimum_unit_msats
 						.checked_mul(invoice_request.quantity().unwrap_or(1))
-						.ok_or(Bolt12SemanticError::InvalidAmount),
-					Some(Amount::Currency { .. }) => Err(Bolt12SemanticError::UnsupportedCurrency),
-					None => Err(Bolt12SemanticError::MissingAmount),
+						.filter(|msats| *msats <= MAX_VALUE_MSAT)
+						.ok_or(Bolt12SemanticError::InvalidAmount)?;
+
+					match requested_amount {
+						Some(amount) if amount < minimum_msats => {
+							Err(Bolt12SemanticError::InsufficientAmount)
+						},
+						Some(amount) => Ok(amount),
+						None => Ok(minimum_msats),
+					}
 				},
 			}
 		}

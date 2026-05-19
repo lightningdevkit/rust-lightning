@@ -17329,6 +17329,9 @@ impl<
 					},
 					Err(Bolt12PaymentError::UnexpectedInvoice)
 						| Err(Bolt12PaymentError::DuplicateInvoice)
+						| Err(Bolt12PaymentError::UnverifiableAmount)
+						| Err(Bolt12PaymentError::InsufficientAmount)
+						| Err(Bolt12PaymentError::ExcessiveAmount)
 						| Ok(()) => return None,
 				};
 
