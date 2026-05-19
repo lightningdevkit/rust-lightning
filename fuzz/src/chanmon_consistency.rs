@@ -2269,10 +2269,11 @@ fn assert_test_invariants(nodes: &[HarnessNode<'_>; 3]) {
 	assert_eq!(nodes[1].list_channels().len(), 6);
 	assert_eq!(nodes[2].list_channels().len(), 3);
 
-	// All broadcasters should be empty. Broadcast transactions are handled explicitly.
-	assert!(nodes[0].broadcaster.txn_broadcasted.borrow().is_empty());
-	assert!(nodes[1].broadcaster.txn_broadcasted.borrow().is_empty());
-	assert!(nodes[2].broadcaster.txn_broadcasted.borrow().is_empty());
+	// All broadcasters should be empty because broadcast transactions only enter
+	// the modeled mempool through explicit relay commands or finish cleanup.
+	for node in nodes {
+		assert!(node.broadcaster.txn_broadcasted.borrow().is_empty());
+	}
 }
 
 fn connect_peers(source: &ChanMan<'_>, dest: &ChanMan<'_>) {
@@ -2589,16 +2590,17 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		make_channel(&mut nodes, 1, 2, 5, set_0reserve, false, &mut chain_state);
 		make_channel(&mut nodes, 1, 2, 6, false, false, &mut chain_state);
 
-		// Wipe the transactions-broadcasted set to make sure we don't broadcast
-		// any transactions during normal operation after setup.
-		nodes[0].broadcaster.txn_broadcasted.borrow_mut().clear();
-		nodes[1].broadcaster.txn_broadcasted.borrow_mut().clear();
-		nodes[2].broadcaster.txn_broadcasted.borrow_mut().clear();
+		// Wipe setup-time broadcasts so normal operation starts with an empty
+		// relay queue. Later broadcasts only enter the mempool through relay
+		// commands or finish cleanup.
+		for node in &nodes {
+			node.broadcaster.txn_broadcasted.borrow_mut().clear();
+		}
 
 		// Sync all nodes to tip to lock the funding.
-		nodes[0].sync_with_chain_state(&chain_state, None);
-		nodes[1].sync_with_chain_state(&chain_state, None);
-		nodes[2].sync_with_chain_state(&chain_state, None);
+		for node in &mut nodes {
+			node.sync_with_chain_state(&chain_state, None);
+		}
 
 		lock_fundings(&nodes);
 
@@ -3198,7 +3200,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 
 	fn process_all_events(&mut self) {
 		let mut last_pass_no_updates = false;
-		for i in 0..std::usize::MAX {
+		'settle: for i in 0..std::usize::MAX {
 			if i == MAX_SETTLE_ITERATIONS {
 				panic!(
 					"It may take many iterations to settle the state, but it should not take forever"
@@ -3209,30 +3211,18 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 			made_progress |= self.ab_link.complete_all_monitor_updates(&self.nodes);
 			made_progress |= self.bc_link.complete_all_monitor_updates(&self.nodes);
 			// Then, make sure any current forwards make their way to their destination.
-			if self.process_msg_events(0, false, ProcessMessages::AllMessages) {
-				last_pass_no_updates = false;
-				continue;
-			}
-			if self.process_msg_events(1, false, ProcessMessages::AllMessages) {
-				last_pass_no_updates = false;
-				continue;
-			}
-			if self.process_msg_events(2, false, ProcessMessages::AllMessages) {
-				last_pass_no_updates = false;
-				continue;
+			for node_idx in 0..3 {
+				if self.process_msg_events(node_idx, false, ProcessMessages::AllMessages) {
+					last_pass_no_updates = false;
+					continue 'settle;
+				}
 			}
 			// ...making sure any payments are claimed.
-			if self.process_events(0, false) {
-				last_pass_no_updates = false;
-				continue;
-			}
-			if self.process_events(1, false) {
-				last_pass_no_updates = false;
-				continue;
-			}
-			if self.process_events(2, false) {
-				last_pass_no_updates = false;
-				continue;
+			for node_idx in 0..3 {
+				if self.process_events(node_idx, false) {
+					last_pass_no_updates = false;
+					continue 'settle;
+				}
 			}
 			if made_progress {
 				last_pass_no_updates = false;
