@@ -163,7 +163,7 @@ use lightning_invoice::{
 	InvoiceBuilder as Bolt11InvoiceBuilder, SignOrCreationError, DEFAULT_EXPIRY_TIME,
 };
 
-use alloc::collections::{btree_map, BTreeMap};
+use alloc::collections::{btree_map, BTreeMap, BTreeSet};
 
 use crate::io;
 use crate::io::Read;
@@ -1517,6 +1517,56 @@ impl MaybeReadable for EventUnblockedChannel {
 	}
 }
 
+/// A unique identifier for an inbound HTLC corresponding to an outbound edge [`MonitorEvent`].
+/// Used when tracking when the monitor event should be acked within
+/// [`ChannelManager::pending_forward_monitor_event_acks`].
+#[derive(Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
+struct InboundHTLCId {
+	htlc_id: u64,
+	channel_id: ChannelId,
+}
+
+impl From<&HTLCPreviousHopData> for InboundHTLCId {
+	fn from(prev_hop: &HTLCPreviousHopData) -> Self {
+		Self { htlc_id: prev_hop.htlc_id, channel_id: prev_hop.channel_id }
+	}
+}
+
+/// A unique ID for a forward, deterministically derived from the forward's
+/// [`HTLCPreviousHopData`]s and [`PaymentHash`] via [`Self::from_previous_hop_data`].
+///
+/// Used when tracking when to ack the [`MonitorEvent`]s corresponding to this forward within
+/// [`ChannelManager::pending_forward_monitor_event_acks`].
+#[derive(Clone, Hash, PartialEq, Eq)]
+struct ForwardClaimId {
+	payment_hash: PaymentHash,
+	/// An inbound HTLC chosen to uniquely represent this forward payment. Necessary because multiple
+	/// separate forwards may have the same [`PaymentHash`].
+	representative_htlc: InboundHTLCId,
+}
+
+impl ForwardClaimId {
+	fn from_previous_hop_data(
+		payment_hash: PaymentHash, previous_hop_data: &[HTLCPreviousHopData],
+	) -> Option<Self> {
+		previous_hop_data
+			.iter()
+			.map(InboundHTLCId::from)
+			// Use `min` to ensure we always get the same `ForwardClaimId` given the same set of
+			// previous_hop_data and payment hash.
+			.min()
+			.map(|representative_htlc| Self { payment_hash, representative_htlc })
+	}
+}
+
+/// See [`ChannelManager::pending_forward_monitor_event_acks`].
+struct PendingForwardMonitorEventAcks {
+	/// The inbound HTLCs that still need to be durably resolved before the set of [`MonitorEvent`]s
+	/// below can be acked via [`chain::Watch::ack_monitor_event`].
+	remaining_htlcs: BTreeSet<InboundHTLCId>,
+	monitor_events: Vec<MonitorEventSource>,
+}
+
 #[derive(Debug)]
 /// Note that these run after all *non-blocked* [`ChannelMonitorUpdate`]s have been persisted.
 /// Thus, they're primarily useful for (and currently only used for) claims, where the
@@ -1676,6 +1726,10 @@ pub(crate) enum EventCompletionAction {
 	/// user. For example, we may want a [`MonitorEvent::HTLCEvent`] to keep being re-provided to us
 	/// until after an [`Event::PaymentSent`] is processed.
 	AckMonitorEvent { event_id: MonitorEventSource },
+	/// Indicates that an inbound HTLC of a forward was durably resolved and the user processed the
+	/// corresponding [`Event::PaymentForwarded`], so it's safe to ack the [`MonitorEvent`]
+	/// corresponding to this HTLC via [`ChannelManager::handle_monitor_event_htlc_ack`].
+	AckMonitorEventForHtlc { htlc_id: u64, channel_id: ChannelId },
 }
 impl_ser_tlv_based_enum!(EventCompletionAction,
 	(0, ReleaseRAAChannelMonitorUpdate) => {
@@ -1690,6 +1744,10 @@ impl_ser_tlv_based_enum!(EventCompletionAction,
 	},
 	(3, AckMonitorEvent) => {
 		(1, event_id, required),
+	},
+	(5, AckMonitorEventForHtlc) => {
+		(1, htlc_id, required),
+		(3, channel_id, required),
 	}
 	{1, ReleasePaymentCompleteChannelMonitorUpdate} => (),
 );
@@ -2889,6 +2947,20 @@ pub struct ChannelManager<
 	/// See `PendingOutboundPayment` documentation for more info.
 	pending_outbound_payments: OutboundPayments,
 
+	/// In-memory progress for forwards where one or more outbound edge [`MonitorEvent`] may resolve
+	/// a set of one or more inbound HTLCs. If the forward is not trampoline + MPP, there will
+	/// only be one inbound HTLC corresponding to one outbound edge [`MonitorEvent`].
+	///
+	/// The monitor events for an entry are only acked via [`chain::Watch::ack_monitor_event`] once
+	/// all corresponding inbound HTLCs have been durably resolved, e.g. via a preimage monitor
+	/// update, removal via RAA, and/or processing of a corresponding [`Event::PaymentForwarded`].
+	/// See [`Self::handle_monitor_event_htlc_ack`].
+	///
+	/// This map is not persisted because any unacked monitor events will be replayed on startup,
+	/// causing the map to be reconstructed.
+	pending_forward_monitor_event_acks:
+		Mutex<HashMap<ForwardClaimId, PendingForwardMonitorEventAcks>>,
+
 	/// SCID/SCID Alias -> forward infos. Key of 0 means payments received.
 	///
 	/// Note that because we may have an SCID Alias as the key we can have two entries per channel,
@@ -3782,6 +3854,7 @@ impl<
 
 			outbound_scid_aliases: Mutex::new(new_hash_set()),
 			pending_outbound_payments: OutboundPayments::new(new_hash_map()),
+			pending_forward_monitor_event_acks: Mutex::new(new_hash_map()),
 			forward_htlcs: Mutex::new(new_hash_map()),
 			decode_update_add_htlcs: Mutex::new(new_hash_map()),
 			claimable_payments: Mutex::new(ClaimablePayments { claimable_payments: new_hash_map(), pending_claiming_payments: new_hash_map() }),
@@ -10216,6 +10289,106 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		self.pending_outbound_payments.finalize_claims(hold_times, &self.pending_events);
 	}
 
+	/// Registers a pending forward that has had its resolution surfaced by the outbound edge via a
+	/// [`MonitorEvent`].
+	///
+	/// Once this resolution is durably propagated to the inbound edge, the entry will be removed and
+	/// the [`MonitorEvent`] corresponding to `event_source` will be acked, via
+	/// [`Self::handle_monitor_event_htlc_ack`].
+	///
+	/// Note that we may have multiple inbound HTLCs corresponding to multiple outbound-edge
+	/// [`MonitorEventSource`]s, in the case of trampoline MPP forwards.
+	fn register_pending_forward_monitor_event_acks(
+		&self, payment_hash: PaymentHash, previous_hop_data: &[HTLCPreviousHopData],
+		event_source: MonitorEventSource,
+	) {
+		let Some(claim_id) =
+			ForwardClaimId::from_previous_hop_data(payment_hash, previous_hop_data)
+		else {
+			// Outbound payment
+			return;
+		};
+
+		let mut pending_acks = self.pending_forward_monitor_event_acks.lock().unwrap();
+		match pending_acks.entry(claim_id) {
+			hash_map::Entry::Vacant(entry) => {
+				let remaining_htlcs: BTreeSet<_> =
+					previous_hop_data.iter().map(Into::into).collect();
+				let monitor_events = vec![event_source];
+				entry.insert(PendingForwardMonitorEventAcks { remaining_htlcs, monitor_events });
+			},
+			hash_map::Entry::Occupied(mut entry) => {
+				let pending_acks = entry.get_mut();
+				if !pending_acks.monitor_events.contains(&event_source) {
+					pending_acks.monitor_events.push(event_source);
+				}
+			},
+		}
+	}
+
+	/// Attaches an [`EventCompletionAction::AckMonitorEventForHtlc`] to a pending
+	/// [`Event::PaymentForwarded`], if such an event exists and matches the given HTLC.
+	///
+	/// Useful for guaranteeing that the user will see an event for every payment forward, as the
+	/// monitor event corresponding to the completion action will be re-provided to us on startup
+	/// until it is explicitly acked.
+	fn attach_monitor_event_htlc_ack_to_pending_forward(
+		&self, htlc_id: u64, channel_id: ChannelId,
+	) -> bool {
+		let mut pending_events = self.pending_events.lock().unwrap();
+		for (event, post_event_action) in pending_events.iter_mut() {
+			if post_event_action.is_none() {
+				if let Event::PaymentForwarded { prev_htlcs, .. } = event {
+					if prev_htlcs
+						.iter()
+						.any(|htlc| htlc.channel_id == channel_id && htlc.htlc_id == Some(htlc_id))
+					{
+						*post_event_action = Some(EventCompletionAction::AckMonitorEventForHtlc {
+							htlc_id,
+							channel_id,
+						});
+						return true;
+					}
+				}
+			}
+		}
+		false
+	}
+
+	/// Handles an inbound HTLC that was durably resolved. If this is a non-trampoline forward, here
+	/// we (a) remove the forward's entry in [`Self::pending_forward_monitor_event_acks`] and (b) ack
+	/// the outbound-edge [`MonitorEvent`] that originated this HTLC's resolution.
+	///
+	/// In the case of an MPP trampoline forward, we may just remove this specific HTLC from the map
+	/// and wait on other inbound edge MPP parts to resolve before it's safe to ack the outbound edge
+	/// [`MonitorEvent`]s.
+	fn handle_monitor_event_htlc_ack(&self, htlc_id: u64, channel_id: ChannelId) {
+		if self.attach_monitor_event_htlc_ack_to_pending_forward(htlc_id, channel_id) {
+			return;
+		}
+
+		let mut completed_claim = None;
+		let mut pending_acks = self.pending_forward_monitor_event_acks.lock().unwrap();
+		for (claim_id, acks) in pending_acks.iter_mut() {
+			if acks.remaining_htlcs.remove(&InboundHTLCId { htlc_id, channel_id }) {
+				if acks.remaining_htlcs.is_empty() {
+					completed_claim = Some(claim_id.clone());
+				}
+				break;
+			}
+		}
+
+		let monitor_events_to_ack = completed_claim
+			.and_then(|claim_id| pending_acks.remove(&claim_id))
+			.map(|acks| acks.monitor_events)
+			.unwrap_or_default();
+		mem::drop(pending_acks);
+
+		for event_source in monitor_events_to_ack {
+			self.chain_monitor.ack_monitor_event(event_source);
+		}
+	}
+
 	fn claim_funds_internal(
 		&self, source: HTLCSource, payment_preimage: PaymentPreimage,
 		forwarded_htlc_value_msat: Option<u64>, skimmed_fee_msat: Option<u64>, from_onchain: bool,
@@ -15864,6 +16037,9 @@ impl<
 				EventCompletionAction::AckMonitorEvent { event_id } => {
 					self.chain_monitor.ack_monitor_event(event_id);
 				},
+				EventCompletionAction::AckMonitorEventForHtlc { htlc_id, channel_id } => {
+					self.handle_monitor_event_htlc_ack(htlc_id, channel_id);
+				},
 			}
 		}
 	}
@@ -20664,6 +20840,7 @@ impl<
 
 			inbound_payment_key: expanded_inbound_key,
 			pending_outbound_payments: pending_outbounds,
+			pending_forward_monitor_event_acks: Mutex::new(new_hash_map()),
 			pending_intercepted_htlcs: Mutex::new(pending_intercepted_htlcs),
 
 			forward_htlcs: Mutex::new(forward_htlcs),
