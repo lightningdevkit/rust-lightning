@@ -41,6 +41,23 @@ check_crash() {
 	fi
 }
 
+corpus_count() {
+	local CORPUS_DIR=$1
+	# CI links cloned corpus directories into hfuzz_workspace.
+	find -L "$CORPUS_DIR" -type f 2>/dev/null | wc -l
+}
+
+check_linked_corpus() {
+	local CORPUS_DIR=$1
+	local FILE=$2
+	local CORPUS_COUNT=$3
+
+	if [ -L "$CORPUS_DIR" ] && [ "$CORPUS_COUNT" -eq 0 ]; then
+		echo "Linked corpus for $FILE has no visible input files: $CORPUS_DIR"
+		exit 1
+	fi
+}
+
 run_targets() {
 	local CRATE_DIR=$1
 	local TARGET_RUSTFLAGS=$2
@@ -55,7 +72,8 @@ run_targets() {
 		FILENAME=$(basename "$TARGET")
 		FILE="${FILENAME%.*}"
 		CORPUS_DIR="$HFUZZ_WORKSPACE/$FILE/input"
-		CORPUS_COUNT=$(find "$CORPUS_DIR" -type f 2>/dev/null | wc -l)
+		CORPUS_COUNT=$(corpus_count "$CORPUS_DIR")
+		check_linked_corpus "$CORPUS_DIR" "$FILE" "$CORPUS_COUNT"
 		# Run 8x the corpus size plus a baseline, ensuring full corpus replay
 		# with room for new mutations. The 10-minute hard cap (--run_time 600)
 		# prevents slow-per-iteration targets from running too long.
@@ -69,7 +87,7 @@ run_targets() {
 		cargo --color always hfuzz run "$FILE"
 		FUZZ_END=$(date +%s)
 		FUZZ_TIME=$((FUZZ_END - FUZZ_START))
-		FUZZ_CORPUS_COUNT=$(find "$CORPUS_DIR" -type f 2>/dev/null | wc -l)
+		FUZZ_CORPUS_COUNT=$(corpus_count "$CORPUS_DIR")
 		check_crash "$HFUZZ_WORKSPACE" "$FILE"
 		if [ "$GITHUB_REF" = "refs/heads/main" ] || [ "$FUZZ_MINIMIZE" = "true" ]; then
 			HFUZZ_RUN_ARGS="-M -q -n8 -t 3"
@@ -78,7 +96,7 @@ run_targets() {
 			cargo --color always hfuzz run "$FILE"
 			MIN_END=$(date +%s)
 			MIN_TIME=$((MIN_END - MIN_START))
-			MIN_CORPUS_COUNT=$(find "$CORPUS_DIR" -type f 2>/dev/null | wc -l)
+			MIN_CORPUS_COUNT=$(corpus_count "$CORPUS_DIR")
 			check_crash "$HFUZZ_WORKSPACE" "$FILE"
 			SUMMARY="${SUMMARY}${FILE}|${ITERATIONS}|${CORPUS_COUNT}|${FUZZ_CORPUS_COUNT}|${FUZZ_TIME}|${MIN_CORPUS_COUNT}|${MIN_TIME}\n"
 		else
