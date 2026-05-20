@@ -66,6 +66,8 @@ use core::iter::Cycle;
 use core::ops::Deref;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
+const MAX_LOGGED_TXIDS: usize = 8;
+
 /// A pending operation queued for later execution when `ChainMonitor` is in deferred mode.
 enum PendingMonitorOp<ChannelSigner: EcdsaChannelSigner> {
 	/// A new monitor to insert and persist.
@@ -1446,12 +1448,24 @@ where
 	P::Target: Persist<ChannelSigner>,
 {
 	fn filtered_block_connected(&self, header: &Header, txdata: &TransactionData, height: u32) {
-		log_debug!(
-			self.logger,
-			"New best block {} at height {} provided via block_connected",
-			header.block_hash(),
-			height
-		);
+		let block_hash = header.block_hash();
+		if txdata.len() <= MAX_LOGGED_TXIDS {
+			log_debug!(
+				self.logger,
+				"New best block {} at height {} provided via block_connected with transactions {}",
+				block_hash,
+				height,
+				log_iter!(txdata.iter().map(|(_, tx)| tx.compute_txid()))
+			);
+		} else {
+			log_debug!(
+				self.logger,
+				"New best block {} at height {} provided via block_connected with {} transactions",
+				block_hash,
+				height,
+				txdata.len()
+			);
+		}
 		self.process_chain_data(header, Some(height), &txdata, |monitor, txdata| {
 			monitor.block_connected(
 				header,
@@ -1505,13 +1519,25 @@ where
 	P::Target: Persist<ChannelSigner>,
 {
 	fn transactions_confirmed(&self, header: &Header, txdata: &TransactionData, height: u32) {
-		log_debug!(
-			self.logger,
-			"{} provided transactions confirmed at height {} in block {}",
-			txdata.len(),
-			height,
-			header.block_hash()
-		);
+		let block_hash = header.block_hash();
+		if txdata.len() <= MAX_LOGGED_TXIDS {
+			log_debug!(
+				self.logger,
+				"{} provided transactions confirmed at height {} in block {}: {}",
+				txdata.len(),
+				height,
+				block_hash,
+				log_iter!(txdata.iter().map(|(_, tx)| tx.compute_txid()))
+			);
+		} else {
+			log_debug!(
+				self.logger,
+				"{} provided transactions confirmed at height {} in block {}",
+				txdata.len(),
+				height,
+				block_hash
+			);
+		}
 		self.process_chain_data(header, None, txdata, |monitor, txdata| {
 			monitor.transactions_confirmed(
 				header,
