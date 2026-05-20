@@ -2635,14 +2635,9 @@ impl OutboundPayments {
 					// next-hop is needlessly blaming us!
 					payment.get_mut().insert_previously_failed_scid(scid);
 				}
-				if decoded_onion.failed_within_blinded_path {
-					debug_assert!(decoded_onion.short_channel_id.is_none());
-					if let Some(bt) = &path.blinded_tail {
-						payment.get_mut().insert_previously_failed_blinded_path(&bt);
-					} else {
-						debug_assert!(false);
-					}
-				}
+				// Inter-trampoline routing always targets a clear next-hop node chosen by the
+				// original sender, so a trampoline forward can never fail within a blinded path.
+				debug_assert!(!decoded_onion.failed_within_blinded_path);
 
 				if !is_retryable_now || decoded_onion.payment_failed_permanently {
 					let reason = if decoded_onion.payment_failed_permanently {
@@ -2752,7 +2747,10 @@ impl OutboundPayments {
 					// next-hop is needlessly blaming us!
 					payment.get_mut().insert_previously_failed_scid(scid);
 				}
-				if failed_within_blinded_path {
+				// A trampoline payment's blinded hops are part of the inner trampoline onion
+				// rather than a payee blinded path selected by the router, so there is no blinded
+				// route hint to record for retry avoidance.
+				if failed_within_blinded_path && !path.has_trampoline_hops() {
 					debug_assert!(short_channel_id.is_none());
 					if let Some(bt) = &path.blinded_tail {
 						payment.get_mut().insert_previously_failed_blinded_path(&bt);

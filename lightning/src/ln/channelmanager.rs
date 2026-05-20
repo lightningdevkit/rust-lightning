@@ -5188,29 +5188,23 @@ impl<
 			// our required delta and fee later on, so here we just check that the forwarding node
 			// did not "skim" off some of the sender's intended fee/cltv.
 			HopConnector::Trampoline(_) => {
-				// We do not yet support reloading our trampoline HTLCs on restart, so we just
-				// fail them for now (except in tests).
-				#[cfg(not(test))]
-				{
-					return Err(LocalHTLCFailureReason::InvalidTrampolineForward);
+				// Trampoline forwarding is experimental and unconditionally enabled here purely
+				// for Eclair interop testing — this hard-coded acceptance must be reworked into a
+				// proper UserConfig opt-in (and persistence story) before LDK trampoline support
+				// is exposed for general use.
+				if msg.amount_msat < next_hop.outgoing_amt_msat {
+					return Err(LocalHTLCFailureReason::FeeInsufficient);
 				}
 
-				#[cfg(test)]
-				{
-					if msg.amount_msat < next_hop.outgoing_amt_msat {
-						return Err(LocalHTLCFailureReason::FeeInsufficient);
-					}
+				check_incoming_htlc_cltv(
+					cur_height,
+					next_hop.outgoing_cltv_value,
+					msg.cltv_expiry,
+					0,
+				)?;
 
-					check_incoming_htlc_cltv(
-						cur_height,
-						next_hop.outgoing_cltv_value,
-						msg.cltv_expiry,
-						0,
-					)?;
-
-					// TODO: add interception flag specifically for trampoline
-					return Ok(false);
-				}
+				// TODO: add interception flag specifically for trampoline
+				return Ok(false);
 			},
 		};
 		// TODO: We do the fake SCID namespace check a bunch of times here (and indirectly via
@@ -18087,6 +18081,11 @@ pub fn provided_init_features(config: &UserConfig) -> InitFeatures {
 		features.set_htlc_hold_optional();
 	}
 
+	// Trampoline forwarding is experimental and unconditionally enabled here purely for Eclair
+	// interop testing — this hard-coded advertisement must be reworked into a proper UserConfig
+	// opt-in before LDK trampoline support is exposed for general use.
+	features.set_trampoline_routing_optional();
+
 	features
 }
 
@@ -22285,6 +22284,16 @@ mod tests {
 			assert_eq!(txn.len(), 1);
 			check_spends!(txn[0], funding_tx);
 		}
+	}
+
+	#[test]
+	fn test_trampoline_routing_feature_advertisement() {
+		// Trampoline routing is currently hard-on for interop testing; assert that we advertise it
+		// (and only as optional) so any later refactor that gates it has to update this test.
+		let config = crate::util::config::UserConfig::default();
+		let features = super::provided_init_features(&config);
+		assert!(features.supports_trampoline_routing());
+		assert!(!features.requires_trampoline_routing());
 	}
 }
 
