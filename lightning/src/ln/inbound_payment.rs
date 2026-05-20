@@ -15,7 +15,7 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::{Hash, HashEngine};
 use chacha20_poly1305::chacha20::{ChaCha20, Key, Nonce};
 
-use crate::crypto::utils::hkdf_extract_expand_7x;
+use crate::crypto::utils::hkdf_extract_expand_8x;
 use crate::ln::msgs;
 use crate::ln::msgs::MAX_VALUE_MSAT;
 use crate::offers::nonce::Nonce as LocalNonce;
@@ -60,6 +60,8 @@ pub struct ExpandedKey {
 	/// that this is not used for blinded paths that are not expected to be shared across nodes
 	/// participating in a "phantom node".
 	pub(crate) phantom_node_blinded_path_key: [u8; 32],
+	/// The key used to encrypt payment metadata.
+	metadata_enc_key: [u8; 32],
 }
 
 impl ExpandedKey {
@@ -75,7 +77,8 @@ impl ExpandedKey {
 			offers_encryption_key,
 			spontaneous_pmt_key,
 			phantom_node_blinded_path_key,
-		) = hkdf_extract_expand_7x(b"LDK Inbound Payment Key Expansion", &key_material);
+			metadata_enc_key,
+		) = hkdf_extract_expand_8x(b"LDK Inbound Payment Key Expansion", &key_material);
 		Self {
 			info_key,
 			ldk_pmt_hash_key,
@@ -84,6 +87,7 @@ impl ExpandedKey {
 			offers_encryption_key,
 			spontaneous_pmt_key,
 			phantom_node_blinded_path_key,
+			metadata_enc_key,
 		}
 	}
 
@@ -150,13 +154,16 @@ fn min_final_cltv_expiry_delta_from_info(bytes: [u8; INFO_LEN]) -> u16 {
 /// Note that if `min_final_cltv_expiry_delta` is set to some value, then the payment will not be receivable
 /// on versions of LDK prior to 0.0.114.
 ///
+/// Returns an encrypted copy of the `payment_metadata` (if any) which must be included as a part of
+/// validation.
+///
 /// [phantom node payments]: crate::sign::PhantomKeysManager
 /// [`NodeSigner::get_expanded_key`]: crate::sign::NodeSigner::get_expanded_key
 pub fn create<ES: EntropySource>(
 	keys: &ExpandedKey, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32,
 	entropy_source: &ES, current_time: u64, min_final_cltv_expiry_delta: Option<u16>,
-	payment_metadata: Option<&[u8]>,
-) -> Result<(PaymentHash, PaymentSecret), ()> {
+	mut payment_metadata: Option<Vec<u8>>,
+) -> Result<(PaymentHash, PaymentSecret, Option<Vec<u8>>), ()> {
 	let info_bytes = construct_info_bytes(
 		min_value_msat,
 		if min_final_cltv_expiry_delta.is_some() {
@@ -173,10 +180,19 @@ pub fn create<ES: EntropySource>(
 	let rand_bytes = entropy_source.get_secure_random_bytes();
 	iv_bytes.copy_from_slice(&rand_bytes[..IV_LEN]);
 
+	if let Some(metadata) = payment_metadata.as_mut() {
+		ChaCha20::new_from_block(
+			Key::new(keys.metadata_enc_key),
+			Nonce::new(iv_bytes[4..].try_into().unwrap()),
+			u32::from_le_bytes(iv_bytes[..4].try_into().unwrap()),
+		)
+		.apply_keystream(metadata.as_mut_slice());
+	}
+
 	let mut hmac = HmacEngine::<Sha256>::new(&keys.ldk_pmt_hash_key);
 	hmac.input(&iv_bytes);
 	hmac.input(&info_bytes);
-	if let Some(metadata) = payment_metadata {
+	if let Some(metadata) = payment_metadata.as_ref() {
 		hmac.input(&(metadata.len() as u64).to_le_bytes());
 		hmac.input(metadata);
 	}
@@ -184,7 +200,7 @@ pub fn create<ES: EntropySource>(
 
 	let ldk_pmt_hash = PaymentHash(Sha256::hash(&payment_preimage_bytes).to_byte_array());
 	let payment_secret = construct_payment_secret(&iv_bytes, &info_bytes, &keys.info_key);
-	Ok((ldk_pmt_hash, payment_secret))
+	Ok((ldk_pmt_hash, payment_secret, payment_metadata))
 }
 
 /// Equivalent to [`crate::ln::channelmanager::ChannelManager::create_inbound_payment_for_hash`],
@@ -196,12 +212,15 @@ pub fn create<ES: EntropySource>(
 /// Note that if `min_final_cltv_expiry_delta` is set to some value, then the payment will not be receivable
 /// on versions of LDK prior to 0.0.114.
 ///
+/// Returns an encrypted copy of the `payment_metadata` (if any) which must be included as a part of
+/// validation.
+///
 /// [phantom node payments]: crate::sign::PhantomKeysManager
-pub fn create_from_hash(
+pub fn create_from_hash<ES: EntropySource>(
 	keys: &ExpandedKey, min_value_msat: Option<u64>, payment_hash: PaymentHash,
-	invoice_expiry_delta_secs: u32, current_time: u64, min_final_cltv_expiry_delta: Option<u16>,
-	payment_metadata: Option<&[u8]>,
-) -> Result<PaymentSecret, ()> {
+	invoice_expiry_delta_secs: u32, entropy_source: &ES, current_time: u64,
+	min_final_cltv_expiry_delta: Option<u16>, mut payment_metadata: Option<Vec<u8>>,
+) -> Result<(PaymentSecret, Option<Vec<u8>>), ()> {
 	let info_bytes = construct_info_bytes(
 		min_value_msat,
 		if min_final_cltv_expiry_delta.is_some() {
@@ -214,10 +233,24 @@ pub fn create_from_hash(
 		min_final_cltv_expiry_delta,
 	)?;
 
+	if let Some(metadata) = payment_metadata.as_mut() {
+		let mut iv_bytes = [0 as u8; IV_LEN];
+		let rand_bytes = entropy_source.get_secure_random_bytes();
+		iv_bytes.copy_from_slice(&rand_bytes[..IV_LEN]);
+
+		ChaCha20::new_from_block(
+			Key::new(keys.metadata_enc_key),
+			Nonce::new(iv_bytes[4..16].try_into().unwrap()),
+			u32::from_le_bytes(iv_bytes[..4].try_into().unwrap()),
+		)
+		.apply_keystream(metadata.as_mut_slice());
+		metadata.extend_from_slice(&iv_bytes);
+	}
+
 	let mut hmac = HmacEngine::<Sha256>::new(&keys.user_pmt_hash_key);
 	hmac.input(&info_bytes);
 	hmac.input(&payment_hash.0);
-	if let Some(metadata) = payment_metadata {
+	if let Some(metadata) = payment_metadata.as_ref() {
 		hmac.input(&(metadata.len() as u64).to_le_bytes());
 		hmac.input(metadata);
 	}
@@ -226,7 +259,7 @@ pub fn create_from_hash(
 	let mut iv_bytes = [0 as u8; IV_LEN];
 	iv_bytes.copy_from_slice(&hmac_bytes[..IV_LEN]);
 
-	Ok(construct_payment_secret(&iv_bytes, &info_bytes, &keys.info_key))
+	Ok((construct_payment_secret(&iv_bytes, &info_bytes, &keys.info_key), payment_metadata))
 }
 
 pub(crate) fn create_for_spontaneous_payment(
@@ -364,7 +397,8 @@ fn construct_payment_secret(
 /// [`create_inbound_payment_for_hash`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment_for_hash
 pub(super) fn verify<L: Logger>(
 	payment_hash: PaymentHash, payment_data: &msgs::FinalOnionHopData,
-	payment_metadata: Option<&[u8]>, highest_seen_timestamp: u64, keys: &ExpandedKey, logger: &L,
+	mut payment_metadata: Option<&mut Vec<u8>>, highest_seen_timestamp: u64, keys: &ExpandedKey,
+	logger: &L,
 ) -> Result<(Option<PaymentPreimage>, Option<u16>), ()> {
 	let (iv_bytes, info_bytes) = decrypt_info(payment_data.payment_secret, keys);
 
@@ -385,7 +419,7 @@ pub(super) fn verify<L: Logger>(
 			let mut hmac = HmacEngine::<Sha256>::new(&keys.user_pmt_hash_key);
 			hmac.input(&info_bytes[..]);
 			hmac.input(&payment_hash.0);
-			if let Some(metadata) = payment_metadata {
+			if let Some(metadata) = payment_metadata.as_deref() {
 				hmac.input(&(metadata.len() as u64).to_le_bytes());
 				hmac.input(metadata);
 			}
@@ -399,6 +433,23 @@ pub(super) fn verify<L: Logger>(
 					&payment_hash
 				);
 				return Err(());
+			};
+
+			if let Some(metadata) = payment_metadata.as_mut() {
+				if metadata.len() < IV_LEN {
+					log_trace!(logger, "payment_metadata was shorter than expected IV. Failing HTLC with payment_hash {payment_hash}");
+					return Err(());
+				}
+				let new_len = metadata.len() - IV_LEN;
+				let (metadata_enc, metadata_iv) = metadata.split_at_mut(new_len);
+
+				ChaCha20::new_from_block(
+					Key::new(keys.metadata_enc_key),
+					Nonce::new(metadata_iv[4..16].try_into().unwrap()),
+					u32::from_le_bytes(metadata_iv[..4].try_into().unwrap()),
+				)
+				.apply_keystream(metadata_enc);
+				metadata.truncate(new_len);
 			}
 		},
 		Ok(Method::LdkPaymentHash) | Ok(Method::LdkPaymentHashCustomFinalCltv) => {
@@ -406,7 +457,7 @@ pub(super) fn verify<L: Logger>(
 				payment_hash,
 				&iv_bytes,
 				&info_bytes,
-				payment_metadata,
+				payment_metadata.as_deref().map(Vec::as_slice),
 				keys,
 			) {
 				Ok(preimage) => payment_preimage = Some(preimage),
@@ -420,8 +471,21 @@ pub(super) fn verify<L: Logger>(
 					return Err(());
 				},
 			}
+
+			if let Some(metadata) = payment_metadata {
+				ChaCha20::new_from_block(
+					Key::new(keys.metadata_enc_key),
+					Nonce::new(iv_bytes[4..].try_into().unwrap()),
+					u32::from_le_bytes(iv_bytes[..4].try_into().unwrap()),
+				)
+				.apply_keystream(metadata);
+			}
 		},
 		Ok(Method::SpontaneousPayment) => {
+			if payment_metadata.is_some() {
+				log_trace!(logger, "Shouldn't have a payment_metadata for a spontaneous payment, failing payment with hash {payment_hash}");
+				return Err(());
+			}
 			let mut hmac = HmacEngine::<Sha256>::new(&keys.spontaneous_pmt_key);
 			hmac.input(&info_bytes[..]);
 			if !fixed_time_eq(
@@ -470,18 +534,18 @@ pub(super) fn verify<L: Logger>(
 }
 
 pub(super) fn get_payment_preimage(
-	payment_hash: PaymentHash, payment_secret: PaymentSecret, payment_metadata: Option<&[u8]>,
+	payment_hash: PaymentHash, payment_secret: PaymentSecret, payment_metadata: Option<&mut [u8]>,
 	keys: &ExpandedKey,
 ) -> Result<PaymentPreimage, APIError> {
 	let (iv_bytes, info_bytes) = decrypt_info(payment_secret, keys);
 
 	match Method::from_bits((info_bytes[0] & 0b1110_0000) >> METHOD_TYPE_OFFSET) {
 		Ok(Method::LdkPaymentHash) | Ok(Method::LdkPaymentHashCustomFinalCltv) => {
-			derive_ldk_payment_preimage(
+			let preimage = derive_ldk_payment_preimage(
 				payment_hash,
 				&iv_bytes,
 				&info_bytes,
-				payment_metadata,
+				payment_metadata.as_deref(),
 				keys,
 			)
 			.map_err(|bad_preimage_bytes| APIError::APIMisuseError {
@@ -490,7 +554,17 @@ pub(super) fn get_payment_preimage(
 					&payment_hash,
 					log_bytes!(bad_preimage_bytes)
 				),
-			})
+			})?;
+
+			if let Some(metadata) = payment_metadata {
+				ChaCha20::new_from_block(
+					Key::new(keys.metadata_enc_key),
+					Nonce::new(iv_bytes[4..].try_into().unwrap()),
+					u32::from_le_bytes(iv_bytes[..4].try_into().unwrap()),
+				)
+				.apply_keystream(metadata);
+			}
+			Ok(preimage)
 		},
 		Ok(Method::UserPaymentHash) | Ok(Method::UserPaymentHashCustomFinalCltv) => {
 			Err(APIError::APIMisuseError {

@@ -1369,7 +1369,7 @@ impl PaymentTracker {
 		let mut payment_preimage = PaymentPreimage([0; 32]);
 		payment_preimage.0[0..8].copy_from_slice(&self.payment_ctr.to_be_bytes());
 		let hash = PaymentHash(Sha256::hash(&payment_preimage.0).to_byte_array());
-		let secret = dest
+		let (secret, _no_metadata) = dest
 			.create_inbound_payment_for_hash(hash, None, 3600, None, None)
 			.expect("create_inbound_payment_for_hash failed");
 		assert!(self.payment_preimages.insert(hash, payment_preimage).is_none());

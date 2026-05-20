@@ -184,11 +184,12 @@ fn _create_phantom_invoice<ES: EntropySource, NS: NodeSigner, L: Logger>(
 
 	let keys = node_signer.get_expanded_key();
 	let (payment_hash, payment_secret) = if let Some(payment_hash) = payment_hash {
-		let payment_secret = create_from_hash(
+		let (payment_secret, _no_metadata) = create_from_hash(
 			&keys,
 			amt_msat,
 			payment_hash,
 			invoice_expiry_delta_secs,
+			&entropy_source,
 			duration_since_epoch.as_secs(),
 			min_final_cltv_expiry_delta,
 			None,
@@ -196,7 +197,7 @@ fn _create_phantom_invoice<ES: EntropySource, NS: NodeSigner, L: Logger>(
 		.map_err(|_| SignOrCreationError::CreationError(CreationError::InvalidAmount))?;
 		(payment_hash, payment_secret)
 	} else {
-		create(
+		let (payment_hash, payment_secret, _no_metadata) = create(
 			&keys,
 			amt_msat,
 			invoice_expiry_delta_secs,
@@ -205,7 +206,8 @@ fn _create_phantom_invoice<ES: EntropySource, NS: NodeSigner, L: Logger>(
 			min_final_cltv_expiry_delta,
 			None,
 		)
-		.map_err(|_| SignOrCreationError::CreationError(CreationError::InvalidAmount))?
+		.map_err(|_| SignOrCreationError::CreationError(CreationError::InvalidAmount))?;
+		(payment_hash, payment_secret)
 	};
 
 	log_trace!(
@@ -672,8 +674,10 @@ mod test {
 
 		let (payment_hash, payment_secret) = (invoice.payment_hash(), *invoice.payment_secret());
 
-		let preimage =
-			nodes[1].node.get_payment_preimage(payment_hash, payment_secret, None).unwrap();
+		let preimage = nodes[1]
+			.node
+			.get_payment_preimage_decrypt_metadata(payment_hash, payment_secret, None)
+			.unwrap();
 
 		// Invoice SCIDs should always use inbound SCID aliases over the real channel ID, if one is
 		// available.
@@ -1258,7 +1262,10 @@ mod test {
 		let payment_preimage = if user_generated_pmt_hash {
 			user_payment_preimage
 		} else {
-			nodes[1].node.get_payment_preimage(payment_hash, payment_secret, None).unwrap()
+			nodes[1]
+				.node
+				.get_payment_preimage_decrypt_metadata(payment_hash, payment_secret, None)
+				.unwrap()
 		};
 
 		assert_eq!(invoice.min_final_cltv_expiry_delta(), MIN_FINAL_CLTV_EXPIRY_DELTA as u64);
@@ -1365,7 +1372,7 @@ mod test {
 		create_unannounced_chan_between_nodes_with_value(&nodes, 0, 2, 100000, 10001);
 
 		let payment_amt = 20_000;
-		let (payment_hash, _payment_secret) =
+		let (payment_hash, _payment_secret, _) =
 			nodes[1].node.create_inbound_payment(Some(payment_amt), 3600, None, None).unwrap();
 		let route_hints =
 			vec![nodes[1].node.get_phantom_route_hints(), nodes[2].node.get_phantom_route_hints()];

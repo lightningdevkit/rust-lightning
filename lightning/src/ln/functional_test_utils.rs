@@ -2800,7 +2800,7 @@ pub fn get_payment_preimage_hash(
 	let payment_preimage = PaymentPreimage([*payment_count; 32]);
 	*payment_count += 1;
 	let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0[..]).to_byte_array());
-	let payment_secret = recipient
+	let (payment_secret, _) = recipient
 		.node
 		.create_inbound_payment_for_hash(
 			payment_hash,

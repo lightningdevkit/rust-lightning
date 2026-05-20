@@ -8462,7 +8462,7 @@ impl<
 						payment_data,
 						payment_context,
 						phantom_shared_secret,
-						onion_fields,
+						mut onion_fields,
 						has_recipient_created_payment_secret,
 						invoice_request_opt,
 						trampoline_shared_secret,
@@ -8603,7 +8603,7 @@ impl<
 							let verify_res = inbound_payment::verify(
 								payment_hash,
 								&payment_data,
-								onion_fields.payment_metadata.as_deref(),
+								onion_fields.payment_metadata.as_mut(),
 								self.highest_seen_timestamp.load(Ordering::Acquire) as u64,
 								&self.inbound_payment_key,
 								&self.logger,
@@ -14372,24 +14372,24 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			}
 		}
 
-		let (payment_hash, payment_secret) = match payment_hash {
+		let (payment_hash, payment_secret, payment_metadata) = match payment_hash {
 			Some(payment_hash) => {
-				let payment_secret = self
+				let (payment_secret, payment_metadata) = self
 					.create_inbound_payment_for_hash(
 						payment_hash, amount_msats,
 						invoice_expiry_delta_secs.unwrap_or(DEFAULT_EXPIRY_TIME as u32),
 						min_final_cltv_expiry_delta,
-						payment_metadata.as_deref(),
+						payment_metadata,
 					)
 					.map_err(|()| SignOrCreationError::CreationError(CreationError::InvalidAmount))?;
-				(payment_hash, payment_secret)
+				(payment_hash, payment_secret, payment_metadata)
 			},
 			None => {
 				self
 					.create_inbound_payment(
 						amount_msats, invoice_expiry_delta_secs.unwrap_or(DEFAULT_EXPIRY_TIME as u32),
 						min_final_cltv_expiry_delta,
-						payment_metadata.as_deref(),
+						payment_metadata,
 					)
 					.map_err(|()| SignOrCreationError::CreationError(CreationError::InvalidAmount))?
 			},
@@ -14516,8 +14516,7 @@ pub struct Bolt11InvoiceParameters {
 	/// onion by the sender, available as [`RecipientOnionFields::payment_metadata`] via
 	/// [`Event::PaymentClaimable::onion_fields`].
 	///
-	/// Note that because it is exposed to the sender in the invoice you should consider encrypting
-	/// it. It is committed to, however, so cannot be modified by the sender.
+	/// The metadata itself is encrypted and HMAC'd before being stored in the BOLT 11 invoice.
 	pub payment_metadata: Option<Vec<u8>>,
 }
 
@@ -15023,6 +15022,7 @@ impl<
 			|amount_msats, relative_expiry| {
 				self.create_inbound_payment(Some(amount_msats), relative_expiry, None, None)
 					.map_err(|()| Bolt12SemanticError::InvalidAmount)
+					.map(|(preimage, secret, _no_metadata)| (preimage, secret))
 			},
 			None,
 		)?;
@@ -15033,8 +15033,8 @@ impl<
 		Ok(invoice)
 	}
 
-	/// Gets a payment secret and payment hash for use in an invoice given to a third party wishing
-	/// to pay us.
+	/// Gets a payment secret, payment hash, and encrypts the `payment_metadata` for use in an
+	/// invoice given to a third party wishing to pay us.
 	///
 	/// This differs from [`create_inbound_payment_for_hash`] only in that it generates the
 	/// [`PaymentHash`] and [`PaymentPreimage`] for you.
@@ -15065,8 +15065,8 @@ impl<
 	/// [`create_inbound_payment_for_hash`]: Self::create_inbound_payment_for_hash
 	pub fn create_inbound_payment(
 		&self, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32,
-		min_final_cltv_expiry_delta: Option<u16>, payment_metadata: Option<&[u8]>,
-	) -> Result<(PaymentHash, PaymentSecret), ()> {
+		min_final_cltv_expiry_delta: Option<u16>, payment_metadata: Option<Vec<u8>>,
+	) -> Result<(PaymentHash, PaymentSecret, Option<Vec<u8>>), ()> {
 		inbound_payment::create(
 			&self.inbound_payment_key,
 			min_value_msat,
@@ -15078,8 +15078,8 @@ impl<
 		)
 	}
 
-	/// Gets a [`PaymentSecret`] for a given [`PaymentHash`], for which the payment preimage is
-	/// stored external to LDK.
+	/// Gets a [`PaymentSecret`] for a given [`PaymentHash`] (for which the payment preimage is
+	/// stored external to LDK) and encrypts the `payment_metadata`.
 	///
 	/// A [`PaymentClaimable`] event will only be generated if the [`PaymentSecret`] matches a
 	/// payment secret fetched via this method or [`create_inbound_payment`], and which is at least
@@ -15115,41 +15115,34 @@ impl<
 	/// Note that a malicious eavesdropper can intuit whether an inbound payment was created by
 	/// `create_inbound_payment` or `create_inbound_payment_for_hash` based on runtime.
 	///
-	/// # Note
-	///
-	/// If you register an inbound payment with this method, then serialize the `ChannelManager`, then
-	/// deserialize it with a node running 0.0.103 and earlier, the payment will fail to be received.
-	///
 	/// Errors if `min_value_msat` is greater than total bitcoin supply.
-	///
-	/// If `min_final_cltv_expiry_delta` is set to some value, then the payment will not be receivable
-	/// on versions of LDK prior to 0.0.114.
 	///
 	/// [`create_inbound_payment`]: Self::create_inbound_payment
 	/// [`PaymentClaimable`]: events::Event::PaymentClaimable
 	pub fn create_inbound_payment_for_hash(
 		&self, payment_hash: PaymentHash, min_value_msat: Option<u64>,
 		invoice_expiry_delta_secs: u32, min_final_cltv_expiry: Option<u16>,
-		payment_metadata: Option<&[u8]>,
-	) -> Result<PaymentSecret, ()> {
+		payment_metadata: Option<Vec<u8>>,
+	) -> Result<(PaymentSecret, Option<Vec<u8>>), ()> {
 		inbound_payment::create_from_hash(
 			&self.inbound_payment_key,
 			min_value_msat,
 			payment_hash,
 			invoice_expiry_delta_secs,
+			&self.entropy_source,
 			self.highest_seen_timestamp.load(Ordering::Acquire) as u64,
 			min_final_cltv_expiry,
 			payment_metadata,
 		)
 	}
 
-	/// Gets an LDK-generated payment preimage from a payment hash, metadata and secret that were
-	/// previously returned from [`create_inbound_payment`].
+	/// Gets an LDK-generated payment preimage from a payment hash and secret and decrypts the
+	/// metadata (if any) that were previously returned from [`create_inbound_payment`].
 	///
 	/// [`create_inbound_payment`]: Self::create_inbound_payment
-	pub fn get_payment_preimage(
+	pub fn get_payment_preimage_decrypt_metadata(
 		&self, payment_hash: PaymentHash, payment_secret: PaymentSecret,
-		payment_metadata: Option<&[u8]>,
+		payment_metadata: Option<&mut [u8]>,
 	) -> Result<PaymentPreimage, APIError> {
 		let expanded_key = &self.inbound_payment_key;
 		inbound_payment::get_payment_preimage(
@@ -17235,7 +17228,9 @@ impl<
 						relative_expiry,
 						None,
 						None,
-					).map_err(|_| Bolt12SemanticError::InvalidAmount)
+					)
+					.map_err(|_| Bolt12SemanticError::InvalidAmount)
+					.map(|(preimage, secret, _no_metadata)| (preimage, secret))
 				};
 
 				let (result, context) = match invoice_request {
@@ -22137,7 +22132,8 @@ pub mod bench {
 				payment_preimage.0[0..8].copy_from_slice(&payment_count.to_le_bytes());
 				payment_count += 1;
 				let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0[..]).to_byte_array());
-				let payment_secret = $node_b.create_inbound_payment_for_hash(payment_hash, None, 7200, None, None).unwrap();
+				let (payment_secret, _no_payment_metadata) =
+					$node_b.create_inbound_payment_for_hash(payment_hash, None, 7200, None, None).unwrap();
 
 				$node_a.send_payment(payment_hash, RecipientOnionFields::secret_only(payment_secret, 10_000),
 					PaymentId(payment_hash.0),
