@@ -63,7 +63,7 @@ use crate::offers::invoice::Bolt12Invoice;
 use crate::offers::invoice_error::InvoiceError;
 use crate::offers::invoice_request::{InvoiceRequest, InvoiceRequestFields, InvoiceRequestVerifiedFromOffer};
 use crate::offers::nonce::Nonce;
-use crate::offers::offer::OfferBuilder;
+use crate::offers::offer::{Amount, CurrencyCode, OfferBuilder};
 use crate::offers::parse::Bolt12SemanticError;
 use crate::onion_message::messenger::{DefaultMessageRouter, Destination, MessageRouter, MessageSendInstructions, NodeIdMessageRouter, NullMessageRouter, PeeledOnion, DUMMY_HOPS_PATH_LENGTH, QR_CODED_DUMMY_HOPS_PATH_LENGTH};
 use crate::onion_message::offers::OffersMessage;
@@ -1552,6 +1552,64 @@ fn pays_bolt12_invoice_asynchronously() {
 		bob.node.send_payment_for_bolt12_invoice(&invoice, context.as_ref()),
 		Err(Bolt12PaymentError::UnexpectedInvoice),
 	);
+}
+
+#[test]
+fn creates_and_pays_bolt12_invoice_for_currency_denominated_offer() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000);
+
+	let alice = &nodes[0];
+	let alice_id = alice.node.get_our_node_id();
+	let bob = &nodes[1];
+	let bob_id = bob.node.get_our_node_id();
+
+	let offer = alice.node
+		.create_offer_builder()
+		.unwrap()
+		.amount(Amount::Currency {
+			iso4217_code: CurrencyCode::new(*b"USD").unwrap(),
+			amount: 10,
+		})
+		.build()
+		.unwrap();
+
+	let payment_id = PaymentId([1; 32]);
+	bob.node.pay_for_offer(&offer, None, payment_id, Default::default()).unwrap();
+	expect_recent_payment!(bob, RecentPaymentDetails::AwaitingInvoice, payment_id);
+
+	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
+	let (invoice_request, _) = extract_invoice_request(alice, &onion_message);
+	assert_eq!(invoice_request.amount_msats(), None);
+
+	let payment_context = PaymentContext::Bolt12Offer(Bolt12OfferContext {
+		offer_id: offer.id(),
+		invoice_request: InvoiceRequestFields {
+			payer_signing_pubkey: invoice_request.payer_signing_pubkey(),
+			quantity: None,
+			payer_note_truncated: None,
+			human_readable_name: None,
+		},
+		payment_metadata: None,
+	});
+
+	alice.onion_messenger.handle_onion_message(bob_id, &onion_message);
+
+	let invoice_onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
+	let (invoice, _) = extract_invoice(bob, &invoice_onion_message);
+	assert_eq!(invoice.amount_msats(), 10_000);
+
+	bob.onion_messenger.handle_onion_message(alice_id, &invoice_onion_message);
+
+	route_bolt12_payment(bob, &[alice], &invoice);
+	expect_recent_payment!(bob, RecentPaymentDetails::Pending, payment_id);
+
+	claim_bolt12_payment(bob, &[alice], payment_context, &invoice);
+	expect_recent_payment!(bob, RecentPaymentDetails::Fulfilled, payment_id);
 }
 
 /// Checks that an offer can be created using an unannounced node as a blinded path's introduction
