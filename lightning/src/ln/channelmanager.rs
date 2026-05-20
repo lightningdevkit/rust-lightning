@@ -138,6 +138,8 @@ use crate::util::ser::{
 };
 use crate::util::wakers::{Future, Notifier};
 
+const MAX_LOGGED_TXIDS: usize = 8;
+
 #[cfg(test)]
 use crate::blinded_path::payment::BlindedPaymentPath;
 
@@ -16052,6 +16054,12 @@ impl<
 	}
 
 	fn blocks_disconnected(&self, fork_point: BlockLocator) {
+		log_trace!(
+			self.logger,
+			"Block(s) disconnected to height {} with new tip {}",
+			fork_point.height,
+			fork_point.block_hash
+		);
 		let _persistence_guard =
 			PersistenceNotifierGuard::optionally_notify_skipping_background_events(
 				self,
@@ -16096,7 +16104,11 @@ impl<
 		// See the docs for `ChannelManagerReadArgs` for more.
 
 		let block_hash = header.block_hash();
-		log_trace!(self.logger, "{} transactions included in block {} at height {} provided", txdata.len(), block_hash, height);
+		if txdata.len() <= MAX_LOGGED_TXIDS {
+			log_trace!(self.logger, "{} transactions included in block {} at height {} provided: {}", txdata.len(), block_hash, height, log_iter!(txdata.iter().map(|(_, tx)| tx.compute_txid())));
+		} else {
+			log_trace!(self.logger, "{} transactions included in block {} at height {} provided", txdata.len(), block_hash, height);
+		}
 
 		let _persistence_guard =
 			PersistenceNotifierGuard::optionally_notify_skipping_background_events(
@@ -16223,6 +16235,7 @@ impl<
 	}
 
 	fn transaction_unconfirmed(&self, txid: &Txid) {
+		log_trace!(self.logger, "Transaction {} reorganized out of chain", txid);
 		let _persistence_guard =
 			PersistenceNotifierGuard::optionally_notify_skipping_background_events(
 				self,
