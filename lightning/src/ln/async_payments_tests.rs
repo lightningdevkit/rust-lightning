@@ -44,7 +44,7 @@ use crate::offers::flow::{
 };
 use crate::offers::invoice_request::InvoiceRequest;
 use crate::offers::nonce::Nonce;
-use crate::offers::offer::{Amount, Offer};
+use crate::offers::offer::{Amount, CurrencyCode, Offer};
 use crate::offers::static_invoice::{
 	StaticInvoice, StaticInvoiceBuilder,
 	DEFAULT_RELATIVE_EXPIRY as STATIC_INVOICE_DEFAULT_RELATIVE_EXPIRY,
@@ -63,6 +63,7 @@ use crate::types::features::Bolt12InvoiceFeatures;
 use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::util::config::{HTLCInterceptionFlags, UserConfig};
 use crate::util::ser::Writeable;
+use crate::util::test_utils::TestCurrencyConversion;
 use bitcoin::constants::ChainHash;
 use bitcoin::network::Network;
 use bitcoin::secp256k1;
@@ -1165,6 +1166,127 @@ fn async_receive_flow_success() {
 	let keysend_preimage = extract_payment_preimage(&claimable_ev);
 	let (res, _) =
 		claim_payment_along_route(ClaimAlongRouteArgs::new(&nodes[0], route, keysend_preimage));
+	assert_eq!(res, Some(PaidBolt12Invoice::StaticInvoice(static_invoice)));
+}
+
+#[test]
+fn async_receive_flow_uses_currency_conversion() {
+	// Test that an often-offline recipient's currency-denominated async offer is paid using the
+	// sender's configured currency conversion when the sender receives the static invoice.
+	let secp_ctx = Secp256k1::new();
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+
+	let mut allow_priv_chan_fwds_cfg = test_default_channel_config();
+	allow_priv_chan_fwds_cfg.accept_forwards_to_priv_channels = true;
+	let node_chanmgrs =
+		create_node_chanmgrs(3, &node_cfgs, &[None, Some(allow_priv_chan_fwds_cfg), None]);
+
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+	create_unannounced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
+
+	let sender = &nodes[0];
+	let always_online_node = &nodes[1];
+	let async_recipient = &nodes[2];
+	let sender_id = sender.node.get_our_node_id();
+	let always_online_node_id = always_online_node.node.get_our_node_id();
+	let async_recipient_id = async_recipient.node.get_our_node_id();
+
+	let blinded_paths_to_always_online_node = always_online_node
+		.message_router
+		.create_blinded_paths(
+			always_online_node_id,
+			always_online_node.keys_manager.get_receive_auth_key(),
+			MessageContext::Offers(OffersContext::InvoiceRequest {
+				nonce: Nonce([42; 16]),
+				payment_metadata: None,
+			}),
+			Vec::new(),
+			&secp_ctx,
+		)
+		.unwrap();
+	let (offer_builder, nonce) = async_recipient
+		.node
+		.flow
+		.create_async_receive_offer_builder(
+			async_recipient.keys_manager,
+			&TestCurrencyConversion {},
+			blinded_paths_to_always_online_node,
+		)
+		.unwrap();
+	let offer = offer_builder
+		.amount(Amount::Currency { iso4217_code: CurrencyCode::new(*b"USD").unwrap(), amount: 10 })
+		.build()
+		.unwrap();
+	let static_invoice = create_static_invoice_builder(async_recipient, &offer, nonce, None)
+		.build_and_sign(&secp_ctx)
+		.unwrap();
+	assert!(static_invoice.invoice_features().supports_basic_mpp());
+
+	let converted_amt_msat = 10_000;
+	let expected_first_hop_amt_msat = converted_amt_msat + 1_000;
+	let payment_id = PaymentId([1; 32]);
+	sender.node.pay_for_offer(&offer, None, payment_id, Default::default()).unwrap();
+
+	let invreq_om =
+		sender.onion_messenger.next_onion_message_for_peer(always_online_node_id).unwrap();
+	let (invoice_request, invreq_reply_path) =
+		offers_tests::extract_invoice_request(always_online_node, &invreq_om);
+	assert_eq!(invoice_request.amount_msats(), None);
+
+	always_online_node
+		.onion_messenger
+		.send_onion_message(
+			ParsedOnionMessageContents::<Infallible>::Offers(OffersMessage::StaticInvoice(
+				static_invoice.clone(),
+			)),
+			MessageSendInstructions::WithoutReplyPath {
+				destination: Destination::BlindedPath(invreq_reply_path),
+			},
+		)
+		.unwrap();
+
+	let static_invoice_om =
+		always_online_node.onion_messenger.next_onion_message_for_peer(sender_id).unwrap();
+	sender.onion_messenger.handle_onion_message(always_online_node_id, &static_invoice_om);
+	sender.node.process_pending_htlc_forwards();
+	assert!(sender.node.get_and_clear_pending_msg_events().is_empty());
+
+	let held_htlc_available_om_0_1 =
+		sender.onion_messenger.next_onion_message_for_peer(always_online_node_id).unwrap();
+	always_online_node.onion_messenger.handle_onion_message(sender_id, &held_htlc_available_om_0_1);
+	let held_htlc_available_om_1_2 =
+		always_online_node.onion_messenger.next_onion_message_for_peer(async_recipient_id).unwrap();
+	async_recipient
+		.onion_messenger
+		.handle_onion_message(always_online_node_id, &held_htlc_available_om_1_2);
+
+	let release_held_htlc_om =
+		async_recipient.onion_messenger.next_onion_message_for_peer(sender_id).unwrap();
+	sender.onion_messenger.handle_onion_message(async_recipient_id, &release_held_htlc_om);
+
+	let mut events = sender.node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let ev = remove_first_msg_event_to_node(&always_online_node_id, &mut events);
+	let payment_hash = match ev {
+		MessageSendEvent::UpdateHTLCs { ref updates, .. } => {
+			// The first-hop HTLC includes the routing fee, while the final payment
+			// amount remains the currency-converted offer amount.
+			assert_eq!(updates.update_add_htlcs[0].amount_msat, expected_first_hop_amt_msat);
+			updates.update_add_htlcs[0].payment_hash
+		},
+		_ => panic!(),
+	};
+	check_added_monitors(sender, 1);
+
+	let route: &[&[&Node]] = &[&[always_online_node, async_recipient]];
+	let args = PassAlongPathArgs::new(sender, route[0], converted_amt_msat, payment_hash, ev)
+		.with_dummy_tlvs(&[DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS]);
+	let claimable_ev = do_pass_along_path(args).unwrap();
+	let keysend_preimage = extract_payment_preimage(&claimable_ev);
+	let (res, _) =
+		claim_payment_along_route(ClaimAlongRouteArgs::new(sender, route, keysend_preimage));
 	assert_eq!(res, Some(PaidBolt12Invoice::StaticInvoice(static_invoice)));
 }
 

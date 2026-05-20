@@ -1901,6 +1901,7 @@ mod tests {
 	use crate::types::features::{Bolt12InvoiceFeatures, InvoiceRequestFeatures, OfferFeatures};
 	use crate::types::string::PrintableString;
 	use crate::util::ser::{BigSize, Iterable, Writeable};
+	use crate::util::test_utils::TestCurrencyConversion;
 	#[cfg(not(c_bindings))]
 	use {crate::offers::offer::OfferBuilder, crate::offers::refund::RefundBuilder};
 	#[cfg(c_bindings)]
@@ -2538,6 +2539,121 @@ mod tests {
 			Ok(_) => panic!("expected error"),
 			Err(e) => assert_eq!(e, Bolt12SemanticError::InvalidAmount),
 		}
+	}
+
+	#[test]
+	fn rejects_excessive_amount_for_currency_offer() {
+		let expanded_key = ExpandedKey::new([42; 32]);
+		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
+		let secp_ctx = Secp256k1::new();
+		let payment_id = PaymentId([1; 32]);
+		let converter = TestCurrencyConversion {};
+
+		let invoice = OfferBuilder::new(recipient_pubkey(), &converter)
+			.amount(Amount::Currency {
+				iso4217_code: crate::offers::offer::CurrencyCode::new(*b"USD").unwrap(),
+				amount: 10,
+			})
+			.build()
+			.unwrap()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
+			.unwrap()
+			.build_and_sign()
+			.unwrap()
+			.respond_with_no_std(&converter, payment_paths(), payment_hash(), now())
+			.unwrap()
+			.amount_msats_unchecked(10_001)
+			.build()
+			.unwrap()
+			.sign(recipient_sign)
+			.unwrap();
+
+		assert_eq!(
+			invoice.verify_amount_acceptable_for_payment(&converter),
+			Err(Bolt12SemanticError::ExcessiveAmount),
+		);
+	}
+
+	#[test]
+	fn fails_verifying_currency_offer_invoice_without_conversion_support() {
+		let expanded_key = ExpandedKey::new([42; 32]);
+		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
+		let secp_ctx = Secp256k1::new();
+		let payment_id = PaymentId([1; 32]);
+		let converter = TestCurrencyConversion {};
+
+		let invoice = OfferBuilder::new(recipient_pubkey(), &converter)
+			.amount(Amount::Currency {
+				iso4217_code: crate::offers::offer::CurrencyCode::new(*b"USD").unwrap(),
+				amount: 10,
+			})
+			.build()
+			.unwrap()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
+			.unwrap()
+			.build_and_sign()
+			.unwrap()
+			.respond_with_no_std(&converter, payment_paths(), payment_hash(), now())
+			.unwrap()
+			.build()
+			.unwrap()
+			.sign(recipient_sign)
+			.unwrap();
+
+		assert_eq!(
+			invoice.verify_amount_acceptable_for_payment(&NullCurrencyConversion),
+			Err(Bolt12SemanticError::UnsupportedCurrency),
+		);
+	}
+
+	#[test]
+	fn verifies_currency_offer_invoice_amount_with_quantity() {
+		let expanded_key = ExpandedKey::new([42; 32]);
+		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
+		let secp_ctx = Secp256k1::new();
+		let payment_id = PaymentId([1; 32]);
+		let converter = TestCurrencyConversion {};
+
+		let invoice_request = OfferBuilder::new(recipient_pubkey(), &converter)
+			.amount(Amount::Currency {
+				iso4217_code: crate::offers::offer::CurrencyCode::new(*b"USD").unwrap(),
+				amount: 10,
+			})
+			.supported_quantity(Quantity::Unbounded)
+			.build()
+			.unwrap()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
+			.unwrap()
+			.quantity(2)
+			.unwrap()
+			.build_and_sign()
+			.unwrap();
+
+		let invoice = invoice_request
+			.respond_with_no_std(&converter, payment_paths(), payment_hash(), now())
+			.unwrap()
+			.build()
+			.unwrap()
+			.sign(recipient_sign)
+			.unwrap();
+		assert_eq!(invoice.amount_msats(), 20_000);
+		assert_eq!(invoice.verify_amount_acceptable_for_payment(&converter), Ok(()));
+
+		let invoice = invoice_request
+			.respond_with_no_std(&converter, payment_paths(), payment_hash(), now())
+			.unwrap()
+			.amount_msats_unchecked(20_001)
+			.build()
+			.unwrap()
+			.sign(recipient_sign)
+			.unwrap();
+		assert_eq!(
+			invoice.verify_amount_acceptable_for_payment(&converter),
+			Err(Bolt12SemanticError::ExcessiveAmount),
+		);
 	}
 
 	#[test]
