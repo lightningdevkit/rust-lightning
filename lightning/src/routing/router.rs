@@ -283,6 +283,12 @@ pub trait Router {
 	/// Creates [`BlindedPaymentPath`]s for payment to the `recipient` node. The channels in `first_hops`
 	/// are assumed to be with the `recipient`'s peers. The payment secret and any constraints are
 	/// given in `tlvs`. The `local_node_receive_key` is required to authenticate the blinded payment paths.
+	///
+	/// While payments will fail if most of `tlvs` is modified, modifying
+	/// [`ReceiveTlvs::payment_context`]'s [`PaymentContext::payment_metadata`] fields prior to
+	/// blinded path construction is allowed.
+	///
+	/// [`PaymentContext::payment_metadata`]: crate::blinded_path::payment::PaymentContext::payment_metadata
 	fn create_blinded_payment_paths<T: secp256k1::Signing + secp256k1::Verification>(
 		&self, recipient: PublicKey, local_node_receive_key: ReceiveAuthKey,
 		first_hops: Vec<ChannelDetails>, tlvs: ReceiveTlvs, amount_msats: Option<u64>,

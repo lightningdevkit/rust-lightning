@@ -8660,7 +8660,7 @@ impl<
 						},
 						OnionPayload::Spontaneous(keysend_preimage) => {
 							let purpose = if let Some(PaymentContext::AsyncBolt12Offer(
-								AsyncBolt12OfferContext { offer_nonce },
+								AsyncBolt12OfferContext { offer_nonce, payment_metadata },
 							)) = payment_context
 							{
 								let payment_data = match payment_data {
@@ -8702,6 +8702,7 @@ impl<
 									PaymentContext::Bolt12Offer(Bolt12OfferContext {
 										offer_id: verified_invreq.offer_id(),
 										invoice_request: verified_invreq.fields(),
+										payment_metadata,
 									});
 								let from_parts_res = events::PaymentPurpose::from_parts(
 									Some(keysend_preimage),
@@ -15023,6 +15024,7 @@ impl<
 				self.create_inbound_payment(Some(amount_msats), relative_expiry, None, None)
 					.map_err(|()| Bolt12SemanticError::InvalidAmount)
 			},
+			None,
 		)?;
 
 		let invoice = builder.allow_mpp().build_and_sign(secp_ctx)?;
@@ -17208,6 +17210,13 @@ impl<
 					None => return None,
 				};
 
+				let payment_metadata =
+					if let Some(OffersContext::InvoiceRequest { payment_metadata, .. }) = &context {
+						payment_metadata.clone()
+					} else {
+						None
+					};
+
 				let invoice_request = match self.flow.verify_invoice_request(invoice_request, context) {
 					Ok(InvreqResponseInstructions::SendInvoice(invoice_request)) => invoice_request,
 					Ok(InvreqResponseInstructions::SendStaticInvoice { recipient_id, invoice_slot, invoice_request }) => {
@@ -17236,6 +17245,7 @@ impl<
 							&request,
 							self.list_usable_channels(),
 							get_payment_info,
+							payment_metadata,
 						);
 
 						match result {
@@ -17260,6 +17270,7 @@ impl<
 							&request,
 							self.list_usable_channels(),
 							get_payment_info,
+							payment_metadata,
 						);
 
 						match result {

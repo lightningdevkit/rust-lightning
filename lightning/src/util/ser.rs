@@ -610,6 +610,13 @@ macro_rules! impl_writeable_primitive {
 				writer.write_all(&self.0.to_be_bytes()[(self.0.leading_zeros() / 8) as usize..$len])
 			}
 		}
+		impl Writeable for HighZeroBytesDroppedBigSize<&$val_type> {
+			#[inline]
+			fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+				// Skip any full leading 0 bytes when writing (in BE):
+				writer.write_all(&self.0.to_be_bytes()[(self.0.leading_zeros() / 8) as usize..$len])
+			}
+		}
 		impl Readable for $val_type {
 			#[inline]
 			fn read<R: Read>(reader: &mut R) -> Result<$val_type, DecodeError> {
@@ -751,12 +758,20 @@ impl_array!(HMAC_LEN * HMAC_COUNT, u8);
 /// This is not exported to bindings users as manual TLV building is not currently supported in bindings
 pub struct WithoutLength<T>(pub T);
 
+impl Writeable for WithoutLength<&&String> {
+	#[inline]
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		w.write_all(self.0.as_bytes())
+	}
+}
+
 impl Writeable for WithoutLength<&String> {
 	#[inline]
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		w.write_all(self.0.as_bytes())
 	}
 }
+
 impl LengthReadable for WithoutLength<String> {
 	#[inline]
 	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(r: &mut R) -> Result<Self, DecodeError> {
@@ -808,6 +823,14 @@ impl<T: Writeable> AsWriteableSlice for &Vec<T> {
 		&self
 	}
 }
+
+impl<T: Writeable> AsWriteableSlice for &&Vec<T> {
+	type Inner = T;
+	fn as_slice(&self) -> &[T] {
+		&self
+	}
+}
+
 impl<T: Writeable> AsWriteableSlice for &[T] {
 	type Inner = T;
 	fn as_slice(&self) -> &[T] {
@@ -945,6 +968,37 @@ macro_rules! impl_for_map {
 
 impl_for_map!(BTreeMap, Ord, |_| BTreeMap::new());
 impl_for_map!(HashMap, Hash, |len| hash_map_with_capacity(len));
+
+/// A wrapper used to serialize a `BTreeMap<u64, Vec<u8>>` with a few less bytes.
+pub(crate) struct BigSizeKeyedMap<T>(pub T);
+
+impl Writeable for BigSizeKeyedMap<&BTreeMap<u64, Vec<u8>>> {
+	#[inline]
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		BigSize(self.0.len() as u64).write(w)?;
+		for (key, value) in self.0.iter() {
+			BigSize(*key).write(w)?;
+			value.write(w)?;
+		}
+		Ok(())
+	}
+}
+
+impl LengthReadable for BigSizeKeyedMap<BTreeMap<u64, Vec<u8>>> {
+	#[inline]
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(r: &mut R) -> Result<Self, DecodeError> {
+		let len: BigSize = Readable::read(r)?;
+		let mut ret = BTreeMap::new();
+		for _ in 0..len.0 {
+			let key: BigSize = Readable::read(r)?;
+			let value: Vec<u8> = Readable::read(r)?;
+			if ret.insert(key.0, value).is_some() {
+				return Err(DecodeError::InvalidValue);
+			}
+		}
+		Ok(BigSizeKeyedMap(ret))
+	}
+}
 
 // HashSet
 impl<T> Writeable for HashSet<T>

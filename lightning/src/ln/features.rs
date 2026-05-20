@@ -81,6 +81,12 @@ macro_rules! impl_feature_write_without_length {
 			}
 		}
 
+		impl Writeable for WithoutLength<&&$features> {
+			fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+				write_be(w, self.0.le_flags())
+			}
+		}
+
 		impl Readable for WithoutLength<$features> {
 			fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
 				let v = io_extras::read_to_end(r)?;

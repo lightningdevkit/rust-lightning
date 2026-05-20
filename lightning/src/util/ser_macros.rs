@@ -80,8 +80,8 @@ macro_rules! _encode_tlv {
 	($stream: expr, $type: expr, $field: expr, upgradable_option $(, $self: ident)?) => {
 		$crate::_encode_tlv!($stream, $type, $field, option);
 	};
-	($stream: expr, $type: expr, $field: expr, (option, encoding: ($fieldty: ty, $encoding: ident) $(, $self: ident)?)) => {
-		$crate::_encode_tlv!($stream, $type, $field.map(|f| $encoding(f)), option);
+	($stream: expr, $type: expr, $field: expr, (option, encoding: ($fieldty: ty, $encoding: ident)) $(, $self: ident)?) => {
+		$crate::_encode_tlv!($stream, $type, $field.as_ref().map(|f| $encoding(f)), option);
 	};
 	($stream: expr, $type: expr, $field: expr, (option, encoding: $fieldty: ty) $(, $self: ident)?) => {
 		$crate::_encode_tlv!($stream, $type, $field, option);
@@ -253,8 +253,7 @@ macro_rules! _get_varint_length_prefixed_tlv_length {
 		$crate::_get_varint_length_prefixed_tlv_length!($len, $type, $field, option);
 	};
 	($len: expr, $type: expr, $field: expr, (option, encoding: ($fieldty: ty, $encoding: ident)) $(, $self: ident)?) => {
-		let field = $field.map(|f| $encoding(f));
-		$crate::_get_varint_length_prefixed_tlv_length!($len, $type, field, option);
+		$crate::_get_varint_length_prefixed_tlv_length!($len, $type, $field.as_ref().map(|f| $encoding(f)), option);
 	};
 	($len: expr, $type: expr, $field: expr, upgradable_required $(, $self: ident)?) => {
 		$crate::_get_varint_length_prefixed_tlv_length!($len, $type, $field, required);

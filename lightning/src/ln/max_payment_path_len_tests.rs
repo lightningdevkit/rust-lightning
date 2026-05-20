@@ -254,7 +254,9 @@ fn one_hop_blinded_path_with_custom_tlv() {
 			max_cltv_expiry: u32::max_value(),
 			htlc_minimum_msat: chan_upd_1_2.htlc_minimum_msat,
 		},
-		payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
+		payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {
+			payment_metadata: None,
+		}),
 	};
 	let receive_auth_key = chanmon_cfgs[2].keys_manager.get_receive_auth_key();
 	let mut secp_ctx = Secp256k1::new();
