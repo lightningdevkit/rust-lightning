@@ -970,10 +970,53 @@ impl<'a> HarnessNode<'a> {
 					prev_state.pending_monitors.pop().unwrap_or(old_mon)
 				};
 				// Use a different value of `use_old_mons` if we have another monitor
-				// (only for node B) by shifting `use_old_mons` one in base-3.
-				use_old_mons /= 3;
+				// (only for node B) by shifting `use_old_mons` one digit in base-6.
+				// use_old_mons is decoded as base-6:
+				// values 0, 1, 2 => oldest, second-oldest, newest monitor
+				// values 3, 4, 5 => oldest, second-oldest, newest
+				// monitor with cross-version roundtrip.
+				let strategy_idx = use_old_mons % 6;
+				let do_roundtrip = strategy_idx >= 3;
+
+				// Shift the base-6 value so the next channel monitor
+				// iteration can select an independent strategy.
+				use_old_mons /= 6;
+
+				let mut monitor_bytes = serialized_mon.clone();
+
+				if do_roundtrip {
+					// The signer state is reconstructed from serialized
+					// monitor bytes during deserialization.
+					let keys_manager_0_2 =
+						lightning_0_2::sign::KeysManager::new(&[0u8; 32], 0, 0, false);
+
+					let read_res: Result<
+						(
+							bitcoin::BlockHash,
+							lightning_0_2::chain::channelmonitor::ChannelMonitor<
+								lightning_0_2::sign::InMemorySigner,
+							>,
+						),
+						_,
+					> = lightning_0_2::util::ser::ReadableArgs::read(
+						&mut &monitor_bytes[..],
+						(&keys_manager_0_2, &keys_manager_0_2),
+					);
+
+					// Ignore monitors unreadable by lightning_0_2 so the
+					// fuzzer can continue exploring newer-version states.
+					if let Ok((block_hash_0_2, old_monitor)) = read_res {
+						let mut reserialized = Vec::new();
+						lightning_0_2::util::ser::Writeable::write(
+							&(block_hash_0_2, &old_monitor),
+							&mut reserialized,
+						)
+						.unwrap();
+						monitor_bytes = reserialized;
+					}
+				}
 				let mon = <(BlockLocator, ChannelMonitor<TestChannelSigner>)>::read(
-					&mut &serialized_mon[..],
+					&mut &monitor_bytes[..],
 					(&*self.keys_manager, &*self.keys_manager),
 				)
 				.expect("Failed to read monitor");
