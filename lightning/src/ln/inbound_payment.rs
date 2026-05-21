@@ -13,9 +13,8 @@ use bitcoin::hashes::cmp::fixed_time_eq;
 use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::{Hash, HashEngine};
-use chacha20_poly1305::chacha20::{ChaCha20, Key, Nonce};
 
-use crate::crypto::utils::hkdf_extract_expand_8x;
+use crate::crypto::utils::{apply_chacha20, hkdf_extract_expand_8x};
 use crate::ln::msgs;
 use crate::ln::msgs::MAX_VALUE_MSAT;
 use crate::offers::nonce::Nonce as LocalNonce;
@@ -101,12 +100,7 @@ impl ExpandedKey {
 	/// Encrypts or decrypts the given `bytes`. Used for data included in an offer message's
 	/// metadata (e.g., payment id).
 	pub(crate) fn crypt_for_offer(&self, mut bytes: [u8; 32], nonce: LocalNonce) -> [u8; 32] {
-		ChaCha20::new_from_block(
-			Key::new(self.offers_encryption_key),
-			Nonce::new(nonce.0[4..].try_into().unwrap()),
-			u32::from_le_bytes(nonce.0[..4].try_into().unwrap()),
-		)
-		.apply_keystream(&mut bytes);
+		apply_chacha20(self.offers_encryption_key, nonce.0, &mut bytes);
 		bytes
 	}
 }
@@ -181,12 +175,7 @@ pub fn create<ES: EntropySource>(
 	iv_bytes.copy_from_slice(&rand_bytes[..IV_LEN]);
 
 	if let Some(metadata) = payment_metadata.as_mut() {
-		ChaCha20::new_from_block(
-			Key::new(keys.metadata_enc_key),
-			Nonce::new(iv_bytes[4..].try_into().unwrap()),
-			u32::from_le_bytes(iv_bytes[..4].try_into().unwrap()),
-		)
-		.apply_keystream(metadata.as_mut_slice());
+		apply_chacha20(keys.metadata_enc_key, iv_bytes, metadata.as_mut_slice());
 	}
 
 	let mut hmac = HmacEngine::<Sha256>::new(&keys.ldk_pmt_hash_key);
@@ -238,12 +227,7 @@ pub fn create_from_hash<ES: EntropySource>(
 		let rand_bytes = entropy_source.get_secure_random_bytes();
 		iv_bytes.copy_from_slice(&rand_bytes[..IV_LEN]);
 
-		ChaCha20::new_from_block(
-			Key::new(keys.metadata_enc_key),
-			Nonce::new(iv_bytes[4..16].try_into().unwrap()),
-			u32::from_le_bytes(iv_bytes[..4].try_into().unwrap()),
-		)
-		.apply_keystream(metadata.as_mut_slice());
+		apply_chacha20(keys.metadata_enc_key, iv_bytes, metadata.as_mut_slice());
 		metadata.extend_from_slice(&iv_bytes);
 	}
 
@@ -349,12 +333,7 @@ fn construct_payment_secret(
 	iv_slice.copy_from_slice(iv_bytes);
 
 	encrypted_info_slice.copy_from_slice(info_bytes);
-	ChaCha20::new_from_block(
-		Key::new(*info_key),
-		Nonce::new(iv_bytes[4..].try_into().unwrap()),
-		u32::from_le_bytes(iv_bytes[..4].try_into().unwrap()),
-	)
-	.apply_keystream(encrypted_info_slice);
+	apply_chacha20(*info_key, *iv_bytes, encrypted_info_slice);
 
 	PaymentSecret(payment_secret_bytes)
 }
@@ -442,13 +421,9 @@ pub(super) fn verify<L: Logger>(
 				}
 				let new_len = metadata.len() - IV_LEN;
 				let (metadata_enc, metadata_iv) = metadata.split_at_mut(new_len);
+				let metadata_iv: [u8; IV_LEN] = metadata_iv.try_into().expect("len checked");
 
-				ChaCha20::new_from_block(
-					Key::new(keys.metadata_enc_key),
-					Nonce::new(metadata_iv[4..16].try_into().unwrap()),
-					u32::from_le_bytes(metadata_iv[..4].try_into().unwrap()),
-				)
-				.apply_keystream(metadata_enc);
+				apply_chacha20(keys.metadata_enc_key, metadata_iv, metadata_enc);
 				metadata.truncate(new_len);
 			}
 		},
@@ -473,12 +448,7 @@ pub(super) fn verify<L: Logger>(
 			}
 
 			if let Some(metadata) = payment_metadata {
-				ChaCha20::new_from_block(
-					Key::new(keys.metadata_enc_key),
-					Nonce::new(iv_bytes[4..].try_into().unwrap()),
-					u32::from_le_bytes(iv_bytes[..4].try_into().unwrap()),
-				)
-				.apply_keystream(metadata);
+				apply_chacha20(keys.metadata_enc_key, iv_bytes, metadata);
 			}
 		},
 		Ok(Method::SpontaneousPayment) => {
@@ -557,12 +527,7 @@ pub(super) fn get_payment_preimage(
 			})?;
 
 			if let Some(metadata) = payment_metadata {
-				ChaCha20::new_from_block(
-					Key::new(keys.metadata_enc_key),
-					Nonce::new(iv_bytes[4..].try_into().unwrap()),
-					u32::from_le_bytes(iv_bytes[..4].try_into().unwrap()),
-				)
-				.apply_keystream(metadata);
+				apply_chacha20(keys.metadata_enc_key, iv_bytes, metadata);
 			}
 			Ok(preimage)
 		},
@@ -590,12 +555,7 @@ fn decrypt_info(
 
 	let mut info_bytes: [u8; INFO_LEN] = [0; INFO_LEN];
 	info_bytes.copy_from_slice(encrypted_info_bytes);
-	ChaCha20::new_from_block(
-		Key::new(keys.info_key),
-		Nonce::new(iv_bytes[4..].try_into().unwrap()),
-		u32::from_le_bytes(iv_bytes[..4].try_into().unwrap()),
-	)
-	.apply_keystream(&mut info_bytes);
+	apply_chacha20(keys.info_key, iv_bytes, &mut info_bytes);
 
 	(iv_bytes, info_bytes)
 }

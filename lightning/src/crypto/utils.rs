@@ -3,6 +3,8 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::secp256k1::{ecdsa::Signature, Message, Secp256k1, SecretKey, Signing};
 
+use chacha20_poly1305::chacha20::{ChaCha20, Key, Nonce};
+
 use crate::sign::EntropySource;
 
 macro_rules! hkdf_extract_expand {
@@ -95,4 +97,13 @@ pub fn sign_with_aux_rand<C: Signing, ES: EntropySource>(
 	#[cfg(all(not(feature = "grind_signatures"), ldk_test_vectors))]
 	let sig = sign(ctx, msg, sk);
 	sig
+}
+
+pub fn apply_chacha20(key: [u8; 32], nonce: [u8; 16], data: &mut [u8]) {
+	ChaCha20::new_from_block(
+		Key::new(key),
+		Nonce::new(nonce[4..].try_into().unwrap()),
+		u32::from_le_bytes(nonce[..4].try_into().unwrap()),
+	)
+	.apply_keystream(data);
 }
