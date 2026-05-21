@@ -2860,6 +2860,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 	}
 
 	fn restart_node(&mut self, node_idx: usize, v: u8, router: &'a FuzzRouter) {
+		self.nodes[node_idx].checkpoint_manager_persistence();
 		match node_idx {
 			0 => {
 				self.ab_link.disconnect_for_reload(0, &self.nodes, &mut self.queues);
@@ -3116,6 +3117,16 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 			0x88 => harness.nodes[2].bump_fee_estimate(harness.chan_type),
 			0x89 => harness.nodes[2].reset_fee_estimate(),
 
+			0x90 => {
+				harness.nodes[0].checkpoint_manager_persistence();
+			},
+			0x91 => {
+				harness.nodes[1].checkpoint_manager_persistence();
+			},
+			0x92 => {
+				harness.nodes[2].checkpoint_manager_persistence();
+			},
+
 			0xa0 => {
 				if !cfg!(splicing) {
 					break 'fuzz_loop;
@@ -3370,8 +3381,6 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 			},
 			_ => break 'fuzz_loop,
 		}
-
-		harness.checkpoint_manager_persistences();
 	}
 	harness.finish();
 }
