@@ -819,6 +819,7 @@ struct HarnessNode<'a> {
 	persistence_style: ChannelMonitorUpdateStatus,
 	deferred: bool,
 	serialized_manager: Vec<u8>,
+	serialized_manager_generation: u64,
 	height: u32,
 	last_htlc_clear_fee: u32,
 }
@@ -917,6 +918,7 @@ impl<'a> HarnessNode<'a> {
 			persistence_style,
 			deferred,
 			serialized_manager: Vec::new(),
+			serialized_manager_generation: 0,
 			height: 0,
 			last_htlc_clear_fee: 253,
 		}
@@ -976,6 +978,7 @@ impl<'a> HarnessNode<'a> {
 		if self.node.get_and_clear_needs_persistence() {
 			let pending_monitor_writes = self.monitor.pending_operation_count();
 			self.serialized_manager = self.node.encode();
+			self.serialized_manager_generation += 1;
 			if self.deferred {
 				self.monitor.flush(pending_monitor_writes, &self.logger);
 			} else {
@@ -991,12 +994,17 @@ impl<'a> HarnessNode<'a> {
 	fn force_checkpoint_manager_persistence(&mut self) {
 		let pending_monitor_writes = self.monitor.pending_operation_count();
 		self.serialized_manager = self.node.encode();
+		self.serialized_manager_generation += 1;
 		self.node.get_and_clear_needs_persistence();
 		if self.deferred {
 			self.monitor.flush(pending_monitor_writes, &self.logger);
 		} else {
 			assert_eq!(pending_monitor_writes, 0);
 		}
+	}
+
+	fn next_manager_persistence_generation(&self) -> u64 {
+		self.serialized_manager_generation + 1
 	}
 
 	fn bump_fee_estimate(&mut self, chan_type: ChanType) {
@@ -1098,7 +1106,8 @@ impl<'a> HarnessNode<'a> {
 
 	fn reload<Out: Output + MaybeSend + MaybeSync>(
 		&mut self, use_old_mons: u8, out: &Out, router: &'a FuzzRouter, chan_type: ChanType,
-	) {
+	) -> u64 {
+		let loaded_manager_generation = self.serialized_manager_generation;
 		let logger = Self::build_logger(self.node_id, out);
 		let persister = Self::build_persister(self.persistence_style);
 		let chain_monitor = Self::build_chain_monitor(
@@ -1170,6 +1179,7 @@ impl<'a> HarnessNode<'a> {
 		// even if the reloaded ChannelManager does not need persistence. Always checkpoint here so
 		// those registrations can be flushed against the manager snapshot they belong to.
 		self.force_checkpoint_manager_persistence();
+		loaded_manager_generation
 	}
 }
 
@@ -1476,8 +1486,14 @@ impl PeerLink {
 	}
 }
 
+struct PendingPayment {
+	payment_id: PaymentId,
+	payment_hash: PaymentHash,
+	first_persisted_manager_generation: u64,
+}
+
 struct NodePayments {
-	pending: Vec<PaymentId>,
+	pending: Vec<PendingPayment>,
 	resolved: HashMap<PaymentId, Option<PaymentHash>>,
 }
 
@@ -1486,12 +1502,19 @@ impl NodePayments {
 		Self { pending: Vec::new(), resolved: new_hash_map() }
 	}
 
-	fn add_pending(&mut self, payment_id: PaymentId) {
-		self.pending.push(payment_id);
+	fn add_pending(
+		&mut self, payment_id: PaymentId, payment_hash: PaymentHash,
+		first_persisted_manager_generation: u64,
+	) {
+		self.pending.push(PendingPayment {
+			payment_id,
+			payment_hash,
+			first_persisted_manager_generation,
+		});
 	}
 
 	fn mark_sent(&mut self, sent_id: PaymentId, payment_hash: PaymentHash) {
-		let idx_opt = self.pending.iter().position(|id| *id == sent_id);
+		let idx_opt = self.pending.iter().position(|pending| pending.payment_id == sent_id);
 		if let Some(idx) = idx_opt {
 			self.pending.remove(idx);
 			self.resolved.insert(sent_id, Some(payment_hash));
@@ -1501,7 +1524,7 @@ impl NodePayments {
 	}
 
 	fn mark_resolved_without_hash(&mut self, payment_id: PaymentId) {
-		let idx_opt = self.pending.iter().position(|id| *id == payment_id);
+		let idx_opt = self.pending.iter().position(|pending| pending.payment_id == payment_id);
 		if let Some(idx) = idx_opt {
 			self.pending.remove(idx);
 			self.resolved.insert(payment_id, None);
@@ -1513,13 +1536,28 @@ impl NodePayments {
 	}
 
 	fn mark_successful_probe(&mut self, payment_id: PaymentId) {
-		let idx_opt = self.pending.iter().position(|id| *id == payment_id);
+		let idx_opt = self.pending.iter().position(|pending| pending.payment_id == payment_id);
 		if let Some(idx) = idx_opt {
 			self.pending.remove(idx);
 			self.resolved.insert(payment_id, None);
 		} else {
 			assert!(self.resolved.contains_key(&payment_id));
 		}
+	}
+
+	fn sync_pending_with_manager_generation(
+		&mut self, loaded_manager_generation: u64,
+	) -> Vec<PaymentHash> {
+		let mut rolled_back_payment_hashes = Vec::new();
+		let pending = mem::take(&mut self.pending);
+		for pending_payment in pending {
+			if pending_payment.first_persisted_manager_generation > loaded_manager_generation {
+				rolled_back_payment_hashes.push(pending_payment.payment_hash);
+			} else {
+				self.pending.push(pending_payment);
+			}
+		}
+		rolled_back_payment_hashes
 	}
 }
 
@@ -1626,7 +1664,11 @@ impl PaymentTracker {
 			},
 		};
 		if succeeded {
-			self.nodes[source_idx].add_pending(id);
+			self.nodes[source_idx].add_pending(
+				id,
+				hash,
+				source.next_manager_persistence_generation(),
+			);
 		}
 		succeeded
 	}
@@ -1703,7 +1745,11 @@ impl PaymentTracker {
 			},
 		};
 		if succeeded {
-			self.nodes[source_idx].add_pending(id);
+			self.nodes[source_idx].add_pending(
+				id,
+				hash,
+				source.next_manager_persistence_generation(),
+			);
 		}
 	}
 
@@ -1772,7 +1818,11 @@ impl PaymentTracker {
 			Ok(()) => Self::check_payment_send_events(source, id),
 		};
 		if succeeded {
-			self.nodes[source_idx].add_pending(id);
+			self.nodes[source_idx].add_pending(
+				id,
+				hash,
+				source.next_manager_persistence_generation(),
+			);
 		}
 	}
 
@@ -1872,7 +1922,11 @@ impl PaymentTracker {
 			Ok(()) => Self::check_payment_send_events(source, id),
 		};
 		if succeeded {
-			self.nodes[source_idx].add_pending(id);
+			self.nodes[source_idx].add_pending(
+				id,
+				hash,
+				source.next_manager_persistence_generation(),
+			);
 		}
 	}
 
@@ -2861,7 +2915,9 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 	}
 
 	fn restart_node(&mut self, node_idx: usize, v: u8, router: &'a FuzzRouter) {
-		self.nodes[node_idx].checkpoint_manager_persistence();
+		if !self.nodes[node_idx].deferred {
+			self.nodes[node_idx].checkpoint_manager_persistence();
+		}
 		match node_idx {
 			0 => {
 				self.ab_link.disconnect_for_reload(0, &self.nodes, &mut self.queues);
@@ -2875,7 +2931,13 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 			},
 			_ => panic!("invalid node index"),
 		}
-		self.nodes[node_idx].reload(v, &self.out, router, self.chan_type);
+		let loaded_manager_generation =
+			self.nodes[node_idx].reload(v, &self.out, router, self.chan_type);
+		let rolled_back_payment_hashes = self.payments.nodes[node_idx]
+			.sync_pending_with_manager_generation(loaded_manager_generation);
+		for payment_hash in rolled_back_payment_hashes {
+			self.payments.claimed_payment_hashes.remove(&payment_hash);
+		}
 	}
 
 	fn settle_all(&mut self) {
