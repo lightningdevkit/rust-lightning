@@ -120,7 +120,7 @@ fn create_jit_invoice(
 ) -> Result<Bolt11Invoice, ()> {
 	// LSPS2 requires min_final_cltv_expiry_delta to be at least 2 more than usual.
 	let min_final_cltv_expiry_delta = MIN_FINAL_CLTV_EXPIRY_DELTA + 2;
-	let (payment_hash, payment_secret) = node
+	let (payment_hash, payment_secret, _) = node
 		.node
 		.create_inbound_payment(None, expiry_secs, Some(min_final_cltv_expiry_delta), None)
 		.map_err(|e| {

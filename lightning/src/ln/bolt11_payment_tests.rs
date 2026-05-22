@@ -30,8 +30,10 @@ fn payment_metadata_end_to_end_for_invoice_with_amount() {
 
 	let payment_metadata = vec![42, 43, 44, 45, 46, 47, 48, 49, 42];
 
-	let (payment_hash, payment_secret) =
-		nodes[1].node.create_inbound_payment(None, 7200, None, Some(&payment_metadata)).unwrap();
+	let (payment_hash, payment_secret, encrypted_metadata) = nodes[1]
+		.node
+		.create_inbound_payment(None, 7200, None, Some(payment_metadata.clone()))
+		.unwrap();
 
 	let timestamp = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap();
 	let invoice = InvoiceBuilder::new(Currency::Bitcoin)
@@ -41,7 +43,7 @@ fn payment_metadata_end_to_end_for_invoice_with_amount() {
 		.duration_since_epoch(timestamp)
 		.min_final_cltv_expiry_delta(144)
 		.amount_milli_satoshis(50_000)
-		.payment_metadata(payment_metadata.clone())
+		.payment_metadata(encrypted_metadata.unwrap())
 		.build_raw()
 		.unwrap();
 	let sig = nodes[1].keys_manager.backing.sign_invoice(&invoice, Recipient::Node).unwrap();
@@ -97,8 +99,10 @@ fn payment_metadata_end_to_end_for_invoice_with_no_amount() {
 
 	let payment_metadata = vec![42, 43, 44, 45, 46, 47, 48, 49, 42];
 
-	let (payment_hash, payment_secret) =
-		nodes[1].node.create_inbound_payment(None, 7200, None, Some(&payment_metadata)).unwrap();
+	let (payment_hash, payment_secret, encrypted_metadata) = nodes[1]
+		.node
+		.create_inbound_payment(None, 7200, None, Some(payment_metadata.clone()))
+		.unwrap();
 
 	let timestamp = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap();
 	let invoice = InvoiceBuilder::new(Currency::Bitcoin)
@@ -107,7 +111,7 @@ fn payment_metadata_end_to_end_for_invoice_with_no_amount() {
 		.payment_secret(payment_secret)
 		.duration_since_epoch(timestamp)
 		.min_final_cltv_expiry_delta(144)
-		.payment_metadata(payment_metadata.clone())
+		.payment_metadata(encrypted_metadata.unwrap())
 		.build_raw()
 		.unwrap();
 	let sig = nodes[1].keys_manager.backing.sign_invoice(&invoice, Recipient::Node).unwrap();
