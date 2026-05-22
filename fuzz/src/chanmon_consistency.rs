@@ -1485,6 +1485,42 @@ impl NodePayments {
 	fn new() -> Self {
 		Self { pending: Vec::new(), resolved: new_hash_map() }
 	}
+
+	fn add_pending(&mut self, payment_id: PaymentId) {
+		self.pending.push(payment_id);
+	}
+
+	fn mark_sent(&mut self, sent_id: PaymentId, payment_hash: PaymentHash) {
+		let idx_opt = self.pending.iter().position(|id| *id == sent_id);
+		if let Some(idx) = idx_opt {
+			self.pending.remove(idx);
+			self.resolved.insert(sent_id, Some(payment_hash));
+		} else {
+			assert!(self.resolved.contains_key(&sent_id));
+		}
+	}
+
+	fn mark_resolved_without_hash(&mut self, payment_id: PaymentId) {
+		let idx_opt = self.pending.iter().position(|id| *id == payment_id);
+		if let Some(idx) = idx_opt {
+			self.pending.remove(idx);
+			self.resolved.insert(payment_id, None);
+		} else if !self.resolved.contains_key(&payment_id) {
+			// Some resolutions can arrive immediately, before the send helper records
+			// the payment as pending. Track them so later duplicate events are accepted.
+			self.resolved.insert(payment_id, None);
+		}
+	}
+
+	fn mark_successful_probe(&mut self, payment_id: PaymentId) {
+		let idx_opt = self.pending.iter().position(|id| *id == payment_id);
+		if let Some(idx) = idx_opt {
+			self.pending.remove(idx);
+			self.resolved.insert(payment_id, None);
+		} else {
+			assert!(self.resolved.contains_key(&payment_id));
+		}
+	}
 }
 
 struct PaymentTracker {
@@ -1590,7 +1626,7 @@ impl PaymentTracker {
 			},
 		};
 		if succeeded {
-			self.nodes[source_idx].pending.push(id);
+			self.nodes[source_idx].add_pending(id);
 		}
 		succeeded
 	}
@@ -1667,7 +1703,7 @@ impl PaymentTracker {
 			},
 		};
 		if succeeded {
-			self.nodes[source_idx].pending.push(id);
+			self.nodes[source_idx].add_pending(id);
 		}
 	}
 
@@ -1736,7 +1772,7 @@ impl PaymentTracker {
 			Ok(()) => Self::check_payment_send_events(source, id),
 		};
 		if succeeded {
-			self.nodes[source_idx].pending.push(id);
+			self.nodes[source_idx].add_pending(id);
 		}
 	}
 
@@ -1836,7 +1872,7 @@ impl PaymentTracker {
 			Ok(()) => Self::check_payment_send_events(source, id),
 		};
 		if succeeded {
-			self.nodes[source_idx].pending.push(id);
+			self.nodes[source_idx].add_pending(id);
 		}
 	}
 
@@ -1850,41 +1886,6 @@ impl PaymentTracker {
 				.expect("PaymentClaimable for unknown payment hash");
 			node.claim_funds(payment_preimage);
 			self.claimed_payment_hashes.insert(payment_hash);
-		}
-	}
-
-	fn mark_sent(&mut self, node_idx: usize, sent_id: PaymentId, payment_hash: PaymentHash) {
-		let node = &mut self.nodes[node_idx];
-		let idx_opt = node.pending.iter().position(|id| *id == sent_id);
-		if let Some(idx) = idx_opt {
-			node.pending.remove(idx);
-			node.resolved.insert(sent_id, Some(payment_hash));
-		} else {
-			assert!(node.resolved.contains_key(&sent_id));
-		}
-	}
-
-	fn mark_resolved_without_hash(&mut self, node_idx: usize, payment_id: PaymentId) {
-		let node = &mut self.nodes[node_idx];
-		let idx_opt = node.pending.iter().position(|id| *id == payment_id);
-		if let Some(idx) = idx_opt {
-			node.pending.remove(idx);
-			node.resolved.insert(payment_id, None);
-		} else if !node.resolved.contains_key(&payment_id) {
-			// Some resolutions can arrive immediately, before the send helper records
-			// the payment as pending. Track them so later duplicate events are accepted.
-			node.resolved.insert(payment_id, None);
-		}
-	}
-
-	fn mark_successful_probe(&mut self, node_idx: usize, payment_id: PaymentId) {
-		let node = &mut self.nodes[node_idx];
-		let idx_opt = node.pending.iter().position(|id| *id == payment_id);
-		if let Some(idx) = idx_opt {
-			node.pending.remove(idx);
-			node.resolved.insert(payment_id, None);
-		} else {
-			assert!(node.resolved.contains_key(&payment_id));
 		}
 	}
 
@@ -2725,17 +2726,17 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 					}
 				},
 				events::Event::PaymentSent { payment_id, payment_hash, .. } => {
-					payments.mark_sent(node_idx, payment_id.unwrap(), payment_hash);
+					payments.nodes[node_idx].mark_sent(payment_id.unwrap(), payment_hash);
 				},
 				// Even though we don't explicitly send probes, because probes are detected based on
 				// hashing the payment hash+preimage, it is rather trivial for the fuzzer to build
 				// payments that accidentally end up looking like probes.
 				events::Event::ProbeSuccessful { payment_id, .. } => {
-					payments.mark_successful_probe(node_idx, payment_id);
+					payments.nodes[node_idx].mark_successful_probe(payment_id);
 				},
 				events::Event::PaymentFailed { payment_id, .. }
 				| events::Event::ProbeFailed { payment_id, .. } => {
-					payments.mark_resolved_without_hash(node_idx, payment_id);
+					payments.nodes[node_idx].mark_resolved_without_hash(payment_id);
 				},
 				events::Event::PaymentClaimed { .. } => {},
 				events::Event::PaymentPathSuccessful { .. } => {},
