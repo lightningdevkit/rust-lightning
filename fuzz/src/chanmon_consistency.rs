@@ -720,10 +720,11 @@ impl SignerProvider for KeyProvider {
 
 // Since this fuzzer is only concerned with live-channel operations, we don't need to worry about
 // any signer operations that come after a force close.
-const SUPPORTED_SIGNER_OPS: [SignerOp; 3] = [
+const SUPPORTED_SIGNER_OPS: [SignerOp; 4] = [
 	SignerOp::SignCounterpartyCommitment,
 	SignerOp::GetPerCommitmentPoint,
 	SignerOp::ReleaseCommitmentSecret,
+	SignerOp::SignSpliceSharedInput,
 ];
 
 impl KeyProvider {
@@ -3125,59 +3126,35 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 			0x89 => harness.nodes[2].reset_fee_estimate(),
 
 			0xa0 => {
-				if !cfg!(splicing) {
-					break 'fuzz_loop;
-				}
 				let cp_node_id = harness.nodes[1].get_our_node_id();
 				harness.nodes[0].splice_in(&cp_node_id, &harness.chan_a_id());
 			},
 			0xa1 => {
-				if !cfg!(splicing) {
-					break 'fuzz_loop;
-				}
 				let cp_node_id = harness.nodes[0].get_our_node_id();
 				harness.nodes[1].splice_in(&cp_node_id, &harness.chan_a_id());
 			},
 			0xa2 => {
-				if !cfg!(splicing) {
-					break 'fuzz_loop;
-				}
 				let cp_node_id = harness.nodes[2].get_our_node_id();
 				harness.nodes[1].splice_in(&cp_node_id, &harness.chan_b_id());
 			},
 			0xa3 => {
-				if !cfg!(splicing) {
-					break 'fuzz_loop;
-				}
 				let cp_node_id = harness.nodes[1].get_our_node_id();
 				harness.nodes[2].splice_in(&cp_node_id, &harness.chan_b_id());
 			},
 
 			0xa4 => {
-				if !cfg!(splicing) {
-					break 'fuzz_loop;
-				}
 				let cp_node_id = harness.nodes[1].get_our_node_id();
 				harness.nodes[0].splice_out(&cp_node_id, &harness.chan_a_id());
 			},
 			0xa5 => {
-				if !cfg!(splicing) {
-					break 'fuzz_loop;
-				}
 				let cp_node_id = harness.nodes[0].get_our_node_id();
 				harness.nodes[1].splice_out(&cp_node_id, &harness.chan_a_id());
 			},
 			0xa6 => {
-				if !cfg!(splicing) {
-					break 'fuzz_loop;
-				}
 				let cp_node_id = harness.nodes[2].get_our_node_id();
 				harness.nodes[1].splice_out(&cp_node_id, &harness.chan_b_id());
 			},
 			0xa7 => {
-				if !cfg!(splicing) {
-					break 'fuzz_loop;
-				}
 				let cp_node_id = harness.nodes[1].get_our_node_id();
 				harness.nodes[2].splice_out(&cp_node_id, &harness.chan_b_id());
 			},
@@ -3304,6 +3281,32 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 				harness.nodes[2]
 					.keys_manager
 					.enable_op_for_all_signers(SignerOp::ReleaseCommitmentSecret);
+				harness.nodes[2].signer_unblocked(None);
+			},
+			0xcf => {
+				harness.nodes[0]
+					.keys_manager
+					.enable_op_for_all_signers(SignerOp::SignSpliceSharedInput);
+				harness.nodes[0].signer_unblocked(None);
+			},
+			0xd0 => {
+				harness.nodes[1]
+					.keys_manager
+					.enable_op_for_all_signers(SignerOp::SignSpliceSharedInput);
+				let filter = Some((harness.nodes[0].get_our_node_id(), harness.chan_a_id()));
+				harness.nodes[1].signer_unblocked(filter);
+			},
+			0xd1 => {
+				harness.nodes[1]
+					.keys_manager
+					.enable_op_for_all_signers(SignerOp::SignSpliceSharedInput);
+				let filter = Some((harness.nodes[2].get_our_node_id(), harness.chan_b_id()));
+				harness.nodes[1].signer_unblocked(filter);
+			},
+			0xd2 => {
+				harness.nodes[2]
+					.keys_manager
+					.enable_op_for_all_signers(SignerOp::SignSpliceSharedInput);
 				harness.nodes[2].signer_unblocked(None);
 			},
 
