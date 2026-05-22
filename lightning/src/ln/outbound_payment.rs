@@ -38,7 +38,7 @@ use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::util::errors::APIError;
 use crate::util::logger::{Logger, WithContext};
 use crate::util::ser::ReadableArgs;
-#[cfg(feature = "std")]
+#[cfg(all(feature = "std", not(fuzzing)))]
 use crate::util::time::Instant;
 
 use core::fmt::{self, Display, Formatter};
