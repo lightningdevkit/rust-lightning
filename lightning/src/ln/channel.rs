@@ -2553,6 +2553,9 @@ pub(super) struct FundingScope {
 	value_to_self_msat: u64, // Excluding all pending_htlcs, fees, and anchor outputs
 
 	/// minimum channel reserve for self to maintain - set by them.
+	#[cfg(any(test, feature = "_externalize_tests"))]
+	pub(super) counterparty_selected_channel_reserve_satoshis: Option<u64>,
+	#[cfg(not(any(test, feature = "_externalize_tests")))]
 	counterparty_selected_channel_reserve_satoshis: Option<u64>,
 
 	#[cfg(any(test, feature = "_externalize_tests"))]
