@@ -769,19 +769,19 @@ type ChanMan<'a> = ChannelManager<
 >;
 
 #[inline]
-fn assert_action_timeout_awaiting_response(action: &msgs::ErrorAction) {
+fn assert_disconnect_action(action: &msgs::ErrorAction) -> (&msgs::WarningMessage, bool) {
 	// Since sending/receiving messages may be delayed, `timer_tick_occurred` may cause a node to
 	// disconnect their counterparty if they're expecting a timely response.
-	assert!(
-		matches!(
-			action,
-			msgs::ErrorAction::DisconnectPeerWithWarning { msg }
-			if msg.data.contains("Disconnecting due to timeout awaiting response")
-				|| msg.data.contains("already sent splice_locked, cannot RBF")
-		),
-		"Expected timeout disconnect, got: {:?}",
-		action,
-	);
+	if let msgs::ErrorAction::DisconnectPeerWithWarning { ref msg } = action {
+		let is_quiescent_msg = msg.data.contains("already sent splice_locked, cannot RBF");
+		if !msg.data.contains("Disconnecting due to timeout awaiting response") && !is_quiescent_msg
+		{
+			panic!("Unexpected disconnect case: {}", msg.data);
+		}
+		(msg, is_quiescent_msg)
+	} else {
+		panic!("Expected disconnect, got: {:?}", action);
+	}
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -1286,7 +1286,7 @@ impl EventQueues {
 					*node_id == a_id
 				},
 				MessageSendEvent::HandleError { ref action, ref node_id } => {
-					assert_action_timeout_awaiting_response(action);
+					assert_disconnect_action(action);
 					if Some(*node_id) == expect_drop_id {
 						panic!(
 							"peer_disconnected should drop msgs bound for the disconnected peer"
@@ -1335,7 +1335,7 @@ impl EventQueues {
 						MessageSendEvent::BroadcastChannelUpdate { .. } => {},
 						MessageSendEvent::SendChannelUpdate { .. } => {},
 						MessageSendEvent::HandleError { ref action, .. } => {
-							assert_action_timeout_awaiting_response(action);
+							assert_disconnect_action(action);
 						},
 						_ => panic!("Unhandled message event"),
 					}
@@ -1354,7 +1354,7 @@ impl EventQueues {
 						MessageSendEvent::BroadcastChannelUpdate { .. } => {},
 						MessageSendEvent::SendChannelUpdate { .. } => {},
 						MessageSendEvent::HandleError { ref action, .. } => {
-							assert_action_timeout_awaiting_response(action);
+							assert_disconnect_action(action);
 						},
 						_ => panic!("Unhandled message event"),
 					}
@@ -2645,8 +2645,16 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 					nodes[dest_idx].handle_splice_locked(source_node_id, msg);
 					None
 				},
-				MessageSendEvent::HandleError { ref action, .. } => {
-					assert_action_timeout_awaiting_response(action);
+				MessageSendEvent::HandleError { ref action, ref node_id, .. } => {
+					let (msg, is_quiescent) = assert_disconnect_action(action);
+					let dest_idx = log_peer_message(node_idx, node_id, nodes, out, "warning");
+					if is_quiescent {
+						nodes[node_idx].node.exit_quiescence(node_id, &msg.channel_id).unwrap();
+						nodes[dest_idx]
+							.node
+							.exit_quiescence(&source_node_id, &msg.channel_id)
+							.unwrap();
+					}
 					None
 				},
 				MessageSendEvent::SendChannelReady { .. }
