@@ -3200,35 +3200,59 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 			},
 
 			0xa0 => {
+				if !cfg!(splicing) {
+					break 'fuzz_loop;
+				}
 				let cp_node_id = harness.nodes[1].get_our_node_id();
 				harness.nodes[0].splice_in(&cp_node_id, &harness.chan_a_id());
 			},
 			0xa1 => {
+				if !cfg!(splicing) {
+					break 'fuzz_loop;
+				}
 				let cp_node_id = harness.nodes[0].get_our_node_id();
 				harness.nodes[1].splice_in(&cp_node_id, &harness.chan_a_id());
 			},
 			0xa2 => {
+				if !cfg!(splicing) {
+					break 'fuzz_loop;
+				}
 				let cp_node_id = harness.nodes[2].get_our_node_id();
 				harness.nodes[1].splice_in(&cp_node_id, &harness.chan_b_id());
 			},
 			0xa3 => {
+				if !cfg!(splicing) {
+					break 'fuzz_loop;
+				}
 				let cp_node_id = harness.nodes[1].get_our_node_id();
 				harness.nodes[2].splice_in(&cp_node_id, &harness.chan_b_id());
 			},
 
 			0xa4 => {
+				if !cfg!(splicing) {
+					break 'fuzz_loop;
+				}
 				let cp_node_id = harness.nodes[1].get_our_node_id();
 				harness.nodes[0].splice_out(&cp_node_id, &harness.chan_a_id());
 			},
 			0xa5 => {
+				if !cfg!(splicing) {
+					break 'fuzz_loop;
+				}
 				let cp_node_id = harness.nodes[0].get_our_node_id();
 				harness.nodes[1].splice_out(&cp_node_id, &harness.chan_a_id());
 			},
 			0xa6 => {
+				if !cfg!(splicing) {
+					break 'fuzz_loop;
+				}
 				let cp_node_id = harness.nodes[2].get_our_node_id();
 				harness.nodes[1].splice_out(&cp_node_id, &harness.chan_b_id());
 			},
 			0xa7 => {
+				if !cfg!(splicing) {
+					break 'fuzz_loop;
+				}
 				let cp_node_id = harness.nodes[1].get_our_node_id();
 				harness.nodes[2].splice_out(&cp_node_id, &harness.chan_b_id());
 			},
