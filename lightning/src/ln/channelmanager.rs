@@ -8532,7 +8532,7 @@ impl<
 				},
 			};
 			if let Some((queue_fail_htlc_res, htlc_id)) = queue_fail_htlc_res {
-				if let Err(e) = queue_fail_htlc_res {
+				if let Err((e, htlc_not_found)) = queue_fail_htlc_res {
 					if let ChannelError::Ignore(msg) = e {
 						if let Some(chan) = peer_state
 							.channel_by_id
