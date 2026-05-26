@@ -1940,8 +1940,11 @@ impl PaymentTracker {
 				.get(&payment_hash)
 				.expect("PaymentClaimable for unknown payment hash");
 			node.claim_funds(payment_preimage);
-			self.claimed_payment_hashes.insert(payment_hash);
 		}
+	}
+
+	fn mark_claimed(&mut self, payment_hash: PaymentHash) {
+		self.claimed_payment_hashes.insert(payment_hash);
 	}
 
 	fn assert_all_resolved(&self) {
@@ -2801,7 +2804,9 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 				| events::Event::ProbeFailed { payment_id, .. } => {
 					payments.nodes[node_idx].mark_resolved_without_hash(payment_id);
 				},
-				events::Event::PaymentClaimed { .. } => {},
+				events::Event::PaymentClaimed { payment_hash, .. } => {
+					payments.mark_claimed(payment_hash);
+				},
 				events::Event::PaymentPathSuccessful { .. } => {},
 				events::Event::PaymentPathFailed { .. } => {},
 				events::Event::PaymentForwarded { .. } if node_idx == 1 => {},
