@@ -24,8 +24,8 @@ const OFFER_PATHS_REQ_TLV_TYPE: u64 = 75540;
 const OFFER_PATHS_TLV_TYPE: u64 = 75542;
 const SERVE_INVOICE_TLV_TYPE: u64 = 75544;
 const INVOICE_PERSISTED_TLV_TYPE: u64 = 75546;
-const HELD_HTLC_AVAILABLE_TLV_TYPE: u64 = 72;
-const RELEASE_HELD_HTLC_TLV_TYPE: u64 = 74;
+const HELD_HTLC_AVAILABLE_TLV_TYPE: u64 = 75548;
+const RELEASE_HELD_HTLC_TLV_TYPE: u64 = 75550;
 
 /// A handler for an [`OnionMessage`] containing an async payments message as its payload.
 ///

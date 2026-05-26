@@ -17430,6 +17430,7 @@ impl<
 				let res = self.send_payment_for_verified_bolt12_invoice(&invoice, payment_id);
 				handle_pay_invoice_res!(res, invoice, logger);
 			},
+			OffersMessage::Bolt11Invoice(_) => return None,
 			OffersMessage::StaticInvoice(invoice) => {
 				let payment_id = match context {
 					Some(OffersContext::OutboundPaymentForOffer { payment_id, .. }) => payment_id,
