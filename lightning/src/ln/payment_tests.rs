@@ -5090,6 +5090,19 @@ fn do_test_payment_metadata_consistency(do_reload: bool, do_modify: bool) {
 		let fail_type =
 			HTLCHandlingFailureType::Forward { node_id: Some(node_d_id), channel_id: cd_chan_id };
 		expect_htlc_failure_conditions(events, &[fail_type]);
+
+		expect_and_process_pending_htlcs(&nodes[2], false);
+		check_added_monitors(&nodes[2], 1);
+		let cs_fail_a = get_htlc_update_msgs(&nodes[2], &node_a_id);
+		nodes[0].node.handle_update_fail_htlc(node_c_id, &cs_fail_a.update_fail_htlcs[0]);
+		do_commitment_signed_dance(&nodes[0], &nodes[2], &cs_fail_a.commitment_signed, false, true);
+		// The other MPP part is still in flight at D, so only PaymentPathFailed fires here.
+		expect_payment_failed_conditions(
+			&nodes[0],
+			payment_hash,
+			true,
+			PaymentFailedConditions::new().mpp_parts_remain(),
+		);
 	} else {
 		expect_and_process_pending_htlcs(&nodes[3], false);
 		expect_payment_claimable!(nodes[3], payment_hash, payment_secret, amt_msat);

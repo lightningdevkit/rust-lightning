@@ -1821,6 +1821,13 @@ fn do_test_htlc_on_chain_timeout(connect_style: ConnectStyle) {
 	let commitment_tx = get_local_commitment_txn!(nodes[1], chan_1.2);
 	check_spends!(commitment_tx[0], chan_1.3);
 
+	// Close the channel from each node's perspective, by mining the commitment on each of their
+	// chains
+	mine_transaction(&nodes[1], &commitment_tx[0]);
+	check_closed_broadcast(&nodes[1], 1, true);
+	check_added_monitors(&nodes[1], 1);
+	check_closed_event(&nodes[1], 1, ClosureReason::CommitmentTxConfirmed, &[node_a_id], 100000);
+
 	mine_transaction(&nodes[0], &commitment_tx[0]);
 	connect_blocks(&nodes[0], TEST_FINAL_CLTV + MIN_CLTV_EXPIRY_DELTA as u32); // Confirm blocks until the HTLC expires
 
@@ -5681,7 +5688,7 @@ pub fn test_update_fulfill_htlc_bolt2_after_malformed_htlc_message_must_forward_
 	assert_eq!(events_4.len(), 1);
 
 	//Confirm that handlinge the update_malformed_htlc message produces an update_fail_htlc message to be forwarded back along the route
-	match events_4[0] {
+	let ba_fail = match events_4[0] {
 		MessageSendEvent::UpdateHTLCs {
 			updates:
 				msgs::CommitmentUpdate {
@@ -5690,7 +5697,7 @@ pub fn test_update_fulfill_htlc_bolt2_after_malformed_htlc_message_must_forward_
 					ref update_fail_htlcs,
 					ref update_fail_malformed_htlcs,
 					ref update_fee,
-					..
+					ref commitment_signed,
 				},
 			..
 		} => {
@@ -5699,11 +5706,18 @@ pub fn test_update_fulfill_htlc_bolt2_after_malformed_htlc_message_must_forward_
 			assert_eq!(update_fail_htlcs.len(), 1);
 			assert!(update_fail_malformed_htlcs.is_empty());
 			assert!(update_fee.is_none());
+			(update_fail_htlcs[0].clone(), commitment_signed.clone())
 		},
 		_ => panic!("Unexpected event"),
 	};
 
 	check_added_monitors(&nodes[1], 1);
+
+	// Push the fail back to A so the A-B inbound RAA completes and acks the outbound-edge
+	// monitor event on B-C.
+	nodes[0].node.handle_update_fail_htlc(node_b_id, &ba_fail.0);
+	do_commitment_signed_dance(&nodes[0], &nodes[1], &ba_fail.1, false, true);
+	expect_payment_failed!(nodes[0], our_payment_hash, false);
 }
 
 #[xtest(feature = "_externalize_tests")]

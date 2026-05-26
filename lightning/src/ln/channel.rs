@@ -1289,7 +1289,7 @@ pub(crate) struct ShutdownResult {
 	/// A list of dropped outbound HTLCs that can safely be failed backwards immediately.
 	pub(crate) dropped_outbound_htlcs: Vec<(HTLCSource, PaymentHash, PublicKey, ChannelId)>,
 	/// A list of inbound HTLC ids whose forwarded monitor-event ack condition is complete because
-	/// the HTLC was already claimed when the channel closed.
+	/// the HTLC was already locally removed when the channel closed.
 	pub(crate) htlcs_to_ack: Vec<u64>,
 	/// An unbroadcasted batch funding transaction id. The closure of this channel should be
 	/// propagated to the remainder of the batch.
@@ -6441,8 +6441,9 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 						self.channel_id,
 					));
 				},
-				HTLCUpdateAwaitingACK::ClaimHTLC { htlc_id, .. } => htlcs_to_ack.push(htlc_id),
-				_ => {},
+				HTLCUpdateAwaitingACK::ClaimHTLC { htlc_id, .. }
+				| HTLCUpdateAwaitingACK::FailHTLC { htlc_id, .. }
+				| HTLCUpdateAwaitingACK::FailMalformedHTLC { htlc_id, .. } => htlcs_to_ack.push(htlc_id),
 			}
 		}
 
@@ -6491,9 +6492,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 
 		// See `ShutdownResult::htlcs_to_ack`.
 		for htlc in self.pending_inbound_htlcs.iter() {
-			if let InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill { .. }) =
-				&htlc.state
-			{
+			if let InboundHTLCState::LocalRemoved(_) = &htlc.state {
 				htlcs_to_ack.push(htlc.htlc_id);
 			}
 		}
@@ -9255,8 +9254,8 @@ where
 					log_trace!(logger, " ...removing inbound LocalRemoved {}", &htlc.payment_hash);
 					if let &InboundHTLCRemovalReason::Fulfill { .. } = reason {
 						value_to_self_msat_diff += htlc.amount_msat as i64;
-						htlc_ids_to_ack.push(htlc.htlc_id);
 					}
+					htlc_ids_to_ack.push(htlc.htlc_id);
 					*expecting_peer_commitment_signed = true;
 					false
 				} else {
