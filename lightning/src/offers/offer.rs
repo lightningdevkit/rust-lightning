@@ -420,6 +420,13 @@ macro_rules! offer_builder_methods { (
 			}
 		}
 
+		if $self.offer.supported_quantity == Quantity::One &&
+			$self.offer.paths.as_ref().map_or(true, |paths| paths.is_empty()) &&
+			$self.offer.issuer_signing_pubkey.is_some()
+		{
+			$self.offer.features.set_bolt11_request_optional();
+		}
+
 		Ok($self.build_without_checks())
 	}
 
@@ -1411,6 +1418,8 @@ mod tests {
 	#[test]
 	fn builds_offer_with_defaults() {
 		let offer = OfferBuilder::new(pubkey(42)).build().unwrap();
+		let mut expected_features = OfferFeatures::empty();
+		expected_features.set_bolt11_request_optional();
 
 		let mut buffer = Vec::new();
 		offer.write(&mut buffer).unwrap();
@@ -1421,7 +1430,7 @@ mod tests {
 		assert_eq!(offer.metadata(), None);
 		assert_eq!(offer.amount(), None);
 		assert_eq!(offer.description(), None);
-		assert_eq!(offer.offer_features(), &OfferFeatures::empty());
+		assert_eq!(offer.offer_features(), &expected_features);
 		assert_eq!(offer.absolute_expiry(), None);
 		#[cfg(feature = "std")]
 		assert!(!offer.is_expired());
@@ -1440,7 +1449,7 @@ mod tests {
 					currency: None,
 					amount: None,
 					description: None,
-					features: None,
+					features: Some(&expected_features),
 					absolute_expiry: None,
 					paths: None,
 					issuer: None,
@@ -1732,20 +1741,24 @@ mod tests {
 
 	#[test]
 	fn builds_offer_with_features() {
+		let mut expected_unknown_features = OfferFeatures::unknown();
+		expected_unknown_features.set_bolt11_request_optional();
 		let offer = OfferBuilder::new(pubkey(42))
 			.features_unchecked(OfferFeatures::unknown())
 			.build()
 			.unwrap();
-		assert_eq!(offer.offer_features(), &OfferFeatures::unknown());
-		assert_eq!(offer.as_tlv_stream().0.features, Some(&OfferFeatures::unknown()));
+		assert_eq!(offer.offer_features(), &expected_unknown_features);
+		assert_eq!(offer.as_tlv_stream().0.features, Some(&expected_unknown_features));
 
+		let mut expected_features = OfferFeatures::empty();
+		expected_features.set_bolt11_request_optional();
 		let offer = OfferBuilder::new(pubkey(42))
 			.features_unchecked(OfferFeatures::unknown())
 			.features_unchecked(OfferFeatures::empty())
 			.build()
 			.unwrap();
-		assert_eq!(offer.offer_features(), &OfferFeatures::empty());
-		assert_eq!(offer.as_tlv_stream().0.features, None);
+		assert_eq!(offer.offer_features(), &expected_features);
+		assert_eq!(offer.as_tlv_stream().0.features, Some(&expected_features));
 	}
 
 	#[test]
