@@ -806,9 +806,9 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 				let unacked_monitor_events = monitor.drain_unacked_monitor_events();
 				if !unacked_monitor_events.is_empty() {
 					panic!(
-						"Node {} channel {channel_id:?} had {} unacked monitor events at drop: {unacked_monitor_events:#?}",
-						unacked_monitor_events.len(),
-						self.logger.id
+						"{} had {} unacked monitor events on channel {channel_id:?} at drop: {unacked_monitor_events:#?}",
+						self.logger.id,
+						unacked_monitor_events.len()
 					);
 				}
 			}

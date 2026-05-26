@@ -1544,7 +1544,12 @@ fn removed_payment_no_manager_persistence() {
 		_ => panic!("Unexpected event"),
 	}
 
-	expect_payment_failed!(nodes[0], payment_hash, false);
+	// Whether nodes[0] sees a permanent failure depends on nodes[1]'s mode: with persistent
+	// monitor events nodes[1] re-provides the recipient's `IncorrectPaymentDetails` rejection via
+	// a monitor event; otherwise it proactively fails the forwarded HTLC back with
+	// `ChannelClosed` (non-permanent).
+	let payment_failed_permanently = nodes[1].node.test_persistent_monitor_events_enabled();
+	expect_payment_failed!(nodes[0], payment_hash, payment_failed_permanently);
 }
 
 #[test]
@@ -2455,8 +2460,10 @@ fn test_reload_node_without_preimage_fails_htlc() {
 	reconnect_args.pending_cell_htlc_fails = (0, 1);
 	reconnect_nodes(reconnect_args);
 
-	// nodes[0] should now have received the failure and generate PaymentFailed.
-	expect_payment_failed_conditions(&nodes[0], payment_hash, false, PaymentFailedConditions::new());
+	// nodes[0] should now have received the failure and generate PaymentFailed. If persistent
+	// monitor events are enabled, nodes[1] will remember that the recipient rejected the payment.
+	let payment_failed_permanently = nodes[1].node.test_persistent_monitor_events_enabled();
+	expect_payment_failed_conditions(&nodes[0], payment_hash, payment_failed_permanently, PaymentFailedConditions::new());
 }
 
 #[test]
