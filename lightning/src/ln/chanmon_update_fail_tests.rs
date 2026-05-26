@@ -5553,15 +5553,8 @@ fn native_async_persist() {
 
 	persist_futures.poll_futures();
 	let events = async_chain_monitor.release_pending_monitor_events();
-	if persistent_monitor_events {
-		// With persistent monitor events, the LatestHolderCommitmentTXInfo update containing
-		// claimed_htlcs generates an HTLCEvent with the preimage.
-		assert_eq!(events.len(), 1);
-		assert_eq!(events[0].2.len(), 1);
-		assert!(matches!(events[0].2[0].1, MonitorEvent::HTLCEvent(..)));
-	} else {
-		assert!(events.is_empty());
-	}
+	// HTLC resolution monitor events are held back while monitor updates are in-progress.
+	assert!(events.is_empty());
 
 	let pending_writes = kv_store.list_pending_async_writes(
 		CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
@@ -5593,12 +5586,29 @@ fn native_async_persist() {
 	);
 	persist_futures.poll_futures();
 	let completed_persist = async_chain_monitor.release_pending_monitor_events();
-	assert_eq!(completed_persist.len(), 1);
-	assert_eq!(completed_persist[0].2.len(), 1);
-	if let (_, MonitorEvent::Completed { monitor_update_id, .. }) = &completed_persist[0].2[0] {
-		assert_eq!(*monitor_update_id, 4);
+	if persistent_monitor_events {
+		let mon_evs: Vec<_> = completed_persist.iter().flat_map(|(_, _, evs, _)| evs).collect();
+		assert_eq!(mon_evs.len(), 2);
+		// We previously held back an HTLC event because there was an in-flight update in progress, but
+		// now that that's completed the event will be surfaced.
+		match mon_evs[0].1 {
+			MonitorEvent::HTLCEvent(..) => {},
+			_ => panic!(),
+		}
+		match mon_evs[1].1 {
+			MonitorEvent::Completed { monitor_update_id, .. } => {
+				assert_eq!(monitor_update_id, 4);
+			},
+			_ => panic!(),
+		}
 	} else {
-		panic!();
+		assert_eq!(completed_persist.len(), 1);
+		assert_eq!(completed_persist[0].2.len(), 1);
+		if let (_, MonitorEvent::Completed { monitor_update_id, .. }) = &completed_persist[0].2[0] {
+			assert_eq!(*monitor_update_id, 4);
+		} else {
+			panic!();
+		}
 	}
 }
 
