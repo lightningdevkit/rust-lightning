@@ -2361,7 +2361,17 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// Get the list of HTLCs who's status has been updated on chain. This should be called by
 	/// ChannelManager via [`chain::Watch::release_pending_monitor_events`].
 	pub fn get_and_clear_pending_monitor_events(&self) -> Vec<(u64, MonitorEvent)> {
-		self.inner.lock().unwrap().get_and_clear_pending_monitor_events()
+		self.inner.lock().unwrap().get_and_clear_pending_monitor_events_filtered(|_| true)
+	}
+
+	/// Drains and returns pending monitor events except [`MonitorEvent::HTLCEvent`]s. Used by the
+	/// [`crate::chain::chainmonitor::ChainMonitor`] to avoid surfacing HTLC resolutions that arise
+	/// from a monitor update which has been propagated to the monitor in-memory but not yet durably
+	/// persisted.
+	pub(super) fn get_and_clear_pending_non_htlc_monitor_events(&self) -> Vec<(u64, MonitorEvent)> {
+		self.inner.lock().unwrap().get_and_clear_pending_monitor_events_filtered(|ev| {
+			!matches!(ev, MonitorEvent::HTLCEvent(_))
+		})
 	}
 
 	pub(super) fn push_monitor_event(&self, event: MonitorEvent) {
@@ -4937,17 +4947,27 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		})
 	}
 
-	fn get_and_clear_pending_monitor_events(&mut self) -> Vec<(u64, MonitorEvent)> {
-		if self.persistent_events_enabled {
-			let mut ret = Vec::new();
-			mem::swap(&mut ret, &mut self.pending_monitor_events);
-			self.provided_monitor_events.extend(ret.iter().cloned());
-			ret
-		} else {
-			let mut ret = Vec::new();
-			mem::swap(&mut ret, &mut self.pending_monitor_events);
-			ret
+	/// Drains and returns the pending monitor events for which `predicate` returns true. Events that
+	/// don't match the predicate stay in `pending_monitor_events` so they're eligible for release on
+	/// a later call.
+	fn get_and_clear_pending_monitor_events_filtered<F: FnMut(&MonitorEvent) -> bool>(
+		&mut self, mut predicate: F,
+	) -> Vec<(u64, MonitorEvent)> {
+		let mut released = Vec::new();
+		let mut retained = Vec::new();
+		// Note: we can use Vec::extract_if here once MSRV reaches 1.87
+		for entry in self.pending_monitor_events.drain(..) {
+			if predicate(&entry.1) {
+				released.push(entry);
+			} else {
+				retained.push(entry);
+			}
 		}
+		self.pending_monitor_events = retained;
+		if self.persistent_events_enabled {
+			self.provided_monitor_events.extend(released.iter().cloned());
+		}
+		released
 	}
 
 	/// Gets the set of events that are repeated regularly (e.g. those which RBF bump

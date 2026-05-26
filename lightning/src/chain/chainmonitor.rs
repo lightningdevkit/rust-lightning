@@ -828,7 +828,10 @@ where
 	#[cfg(any(test, fuzzing))]
 	pub fn force_channel_monitor_updated(&self, channel_id: ChannelId, monitor_update_id: u64) {
 		let monitors = self.monitors.read().unwrap();
-		let monitor = &monitors.get(&channel_id).unwrap().monitor;
+		let monitor_state = monitors.get(&channel_id).unwrap();
+		let monitor = &monitor_state.monitor;
+		let mut pending_monitor_updates = monitor_state.pending_monitor_updates.lock().unwrap();
+		pending_monitor_updates.retain(|update_id| *update_id > monitor_update_id);
 		monitor.push_monitor_event(MonitorEvent::Completed {
 			funding_txo: monitor.get_funding_txo(),
 			channel_id,
@@ -1646,7 +1649,20 @@ where
 		let monitors = self.monitors.read().unwrap();
 		let mut pending_monitor_events = Vec::new();
 		for monitor_state in monitors.values() {
-			let monitor_events = monitor_state.monitor.get_and_clear_pending_monitor_events();
+			// Hold back HTLC monitor events for channels with in-flight updates. The monitor may have
+			// queued an event based on in-memory state from an as-yet-unpersisted update; surfacing it
+			// before persistence would let us act on (e.g. fail upstream) state that could be lost on a
+			// crash + reconnect. Other monitor events (e.g., channel close) aren't subject to those
+			// restrictions and can be released immediately.
+			let has_pending_updates = {
+				let pending_updates = monitor_state.pending_monitor_updates.lock().unwrap();
+				monitor_state.has_pending_updates(&pending_updates)
+			};
+			let monitor_events = if has_pending_updates {
+				monitor_state.monitor.get_and_clear_pending_non_htlc_monitor_events()
+			} else {
+				monitor_state.monitor.get_and_clear_pending_monitor_events()
+			};
 			if monitor_events.len() > 0 {
 				let monitor_funding_txo = monitor_state.monitor.get_funding_txo();
 				let monitor_channel_id = monitor_state.monitor.channel_id();
