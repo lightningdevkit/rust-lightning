@@ -7851,9 +7851,13 @@ where
 
 	/// Returns `Err` (always with [`ChannelError::Ignore`]) if the HTLC could not be failed (e.g.
 	/// if it was already resolved). Otherwise returns `Ok`.
+	///
+	/// On `Err`, the returned bool is set if the HTLC was already fully removed from the channel.
+	/// Callers may use it to clean up any state that was waiting on this HTLC removal, such as a
+	/// pending monitor event on the outbound edge.
 	pub fn queue_fail_htlc<L: Logger>(
 		&mut self, htlc_id_arg: u64, err_packet: msgs::OnionErrorPacket, logger: &L,
-	) -> Result<(), ChannelError> {
+	) -> Result<(), (ChannelError, bool)> {
 		self.fail_htlc(htlc_id_arg, err_packet, true, logger)
 			.map(|msg_opt| assert!(msg_opt.is_none(), "We forced holding cell?"))
 	}
@@ -7864,18 +7868,20 @@ where
 	/// See [`Self::queue_fail_htlc`] for more info.
 	pub fn queue_fail_malformed_htlc<L: Logger>(
 		&mut self, htlc_id_arg: u64, failure_code: u16, sha256_of_onion: [u8; 32], logger: &L,
-	) -> Result<(), ChannelError> {
+	) -> Result<(), (ChannelError, bool)> {
 		self.fail_htlc(htlc_id_arg, (sha256_of_onion, failure_code), true, logger)
 			.map(|msg_opt| assert!(msg_opt.is_none(), "We forced holding cell?"))
 	}
 
 	/// Returns `Err` (always with [`ChannelError::Ignore`]) if the HTLC could not be failed (e.g.
 	/// if it was already resolved). Otherwise returns `Ok`.
+	///
+	/// On `Err`, the returned bool is set if the HTLC was already fully removed from the channel.
 	#[rustfmt::skip]
 	fn fail_htlc<L: Logger, E: FailHTLCContents + Clone>(
 		&mut self, htlc_id_arg: u64, err_contents: E, mut force_holding_cell: bool,
 		logger: &L
-	) -> Result<Option<E::Message>, ChannelError> {
+	) -> Result<Option<E::Message>, (ChannelError, bool)> {
 		if !matches!(self.context.channel_state, ChannelState::ChannelReady(_)) {
 			panic!("Was asked to fail an HTLC when channel was not in an operational state");
 		}
@@ -7890,18 +7896,18 @@ where
 				match htlc.state {
 					InboundHTLCState::Committed { .. } => {},
 					InboundHTLCState::LocalRemoved(_) => {
-						return Err(ChannelError::Ignore(format!("HTLC {} was already resolved", htlc.htlc_id)));
+						return Err((ChannelError::Ignore(format!("HTLC {} was already resolved", htlc.htlc_id)), false));
 					},
 					_ => {
 						debug_assert!(false, "Have an inbound HTLC we tried to claim before it was fully committed to");
-						return Err(ChannelError::Ignore(format!("Unable to find a pending HTLC which matched the given HTLC ID ({})", htlc.htlc_id)));
+						return Err((ChannelError::Ignore(format!("Unable to find a pending HTLC which matched the given HTLC ID ({})", htlc.htlc_id)), false));
 					}
 				}
 				pending_idx = idx;
 			}
 		}
 		if pending_idx == core::usize::MAX {
-			return Err(ChannelError::Ignore(format!("Unable to find a pending HTLC which matched the given HTLC ID ({})", htlc_id_arg)));
+			return Err((ChannelError::Ignore(format!("Unable to find a pending HTLC which matched the given HTLC ID ({})", htlc_id_arg)), true));
 		}
 
 		if !self.context.channel_state.can_generate_new_commitment() {
@@ -7915,14 +7921,14 @@ where
 				match pending_update {
 					&HTLCUpdateAwaitingACK::ClaimHTLC { htlc_id, .. } => {
 						if htlc_id_arg == htlc_id {
-							return Err(ChannelError::Ignore(format!("HTLC {} was already claimed!", htlc_id)));
+							return Err((ChannelError::Ignore(format!("HTLC {} was already claimed!", htlc_id)), false));
 						}
 					},
 					&HTLCUpdateAwaitingACK::FailHTLC { htlc_id, .. } |
 						&HTLCUpdateAwaitingACK::FailMalformedHTLC { htlc_id, .. } =>
 					{
 						if htlc_id_arg == htlc_id {
-							return Err(ChannelError::Ignore(format!("HTLC {} was already pending failure", htlc_id)));
+							return Err((ChannelError::Ignore(format!("HTLC {} was already pending failure", htlc_id)), false));
 						}
 					},
 					_ => {}
@@ -9024,18 +9030,27 @@ where
 						monitor_update.updates.append(&mut additional_monitor_update.updates);
 						None
 					},
-					&HTLCUpdateAwaitingACK::FailHTLC { htlc_id, ref err_packet } => Some(
-						self.fail_htlc(htlc_id, err_packet.clone(), false, logger)
-							.map(|fail_msg_opt| fail_msg_opt.map(|_| ())),
-					),
+					&HTLCUpdateAwaitingACK::FailHTLC { htlc_id, ref err_packet } => {
+						let res = self.fail_htlc(htlc_id, err_packet.clone(), false, logger);
+						debug_assert!(
+							!matches!(&res, Err((_, true))),
+							"holding cell HTLC fails are always present in pending_inbound_htlcs",
+						);
+						Some(res.map(|fail_msg_opt| fail_msg_opt.map(|_| ())).map_err(|(e, _)| e))
+					},
 					&HTLCUpdateAwaitingACK::FailMalformedHTLC {
 						htlc_id,
 						failure_code,
 						sha256_of_onion,
-					} => Some(
-						self.fail_htlc(htlc_id, (sha256_of_onion, failure_code), false, logger)
-							.map(|fail_msg_opt| fail_msg_opt.map(|_| ())),
-					),
+					} => {
+						let res =
+							self.fail_htlc(htlc_id, (sha256_of_onion, failure_code), false, logger);
+						debug_assert!(
+							!matches!(&res, Err((_, true))),
+							"holding cell HTLC fail-malformeds are always present in pending_inbound_htlcs",
+						);
+						Some(res.map(|fail_msg_opt| fail_msg_opt.map(|_| ())).map_err(|(e, _)| e))
+					},
 				};
 				if let Some(res) = fail_htlc_res {
 					match res {
