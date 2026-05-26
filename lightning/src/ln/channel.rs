@@ -8779,7 +8779,7 @@ where
 					attribution_data: None,
 				};
 				mem::swap(outcome, &mut reason);
-				match reason {
+				match &mut reason {
 					OutboundHTLCOutcome::Success { preimage, .. } => {
 						// If a user (a) receives an HTLC claim using LDK 0.0.104 or before, then (b)
 						// upgrades to LDK 0.0.114 or later before the HTLC is fully resolved, we could
@@ -8789,11 +8789,16 @@ where
 						// claim anyway.
 						claimed_htlcs.push(OutboundHTLCClaim {
 							htlc_id: SentHTLCId::from_source(&htlc.source),
-							preimage,
+							preimage: *preimage,
 							skimmed_fee_msat: htlc.skimmed_fee_msat,
 						});
 					},
-					OutboundHTLCOutcome::Failure(ref fail_reason) => {
+					OutboundHTLCOutcome::Failure(fail_reason) => {
+						// The monitor needs the HTLC hold time to correctly resolve the HTLC when generating a
+						// monitor event for its failure.
+						hold_time_since(htlc.send_timestamp).map(|hold_time| {
+							fail_reason.set_hold_time(hold_time);
+						});
 						failed_htlcs.push(OutboundHTLCFail {
 							htlc_id: SentHTLCId::from_source(&htlc.source),
 							failure_reason: fail_reason.clone(),
