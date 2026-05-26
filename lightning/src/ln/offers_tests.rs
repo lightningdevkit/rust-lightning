@@ -70,6 +70,7 @@ use crate::routing::gossip::{NodeAlias, NodeId};
 use crate::routing::router::{DEFAULT_PAYMENT_DUMMY_HOPS, PaymentParameters, RouteParameters, RouteParametersConfig};
 use crate::sign::{NodeSigner, Recipient};
 use crate::util::ser::Writeable;
+use lightning_invoice::Bolt11Invoice;
 
 /// This used to determine whether we built a compact path or not, but now its just a random
 /// constant we apply to blinded path expiry in these tests.
@@ -275,6 +276,7 @@ pub(super) fn extract_invoice_request<'a, 'b, 'c>(
 			OffersMessage::InvoiceRequest(invoice_request) => (invoice_request, reply_path.unwrap()),
 			OffersMessage::Invoice(invoice) => panic!("Unexpected invoice: {:?}", invoice),
 			OffersMessage::StaticInvoice(invoice) => panic!("Unexpected static invoice: {:?}", invoice),
+			OffersMessage::Bolt11Invoice(invoice) => panic!("Unexpected BOLT 11 invoice: {:?}", invoice),
 			OffersMessage::InvoiceError(error) => panic!("Unexpected invoice_error: {:?}", error),
 		},
 		Ok(PeeledOnion::Forward(_, _)) => panic!("Unexpected onion message forward"),
@@ -289,6 +291,7 @@ fn extract_invoice<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, message: &OnionMessage) 
 			OffersMessage::InvoiceRequest(invoice_request) => panic!("Unexpected invoice_request: {:?}", invoice_request),
 			OffersMessage::Invoice(invoice) => (invoice, reply_path.unwrap()),
 			OffersMessage::StaticInvoice(invoice) => panic!("Unexpected static invoice: {:?}", invoice),
+			OffersMessage::Bolt11Invoice(invoice) => panic!("Unexpected BOLT 11 invoice: {:?}", invoice),
 			OffersMessage::InvoiceError(error) => panic!("Unexpected invoice_error: {:?}", error),
 		},
 		Ok(PeeledOnion::Forward(_, _)) => panic!("Unexpected onion message forward"),
@@ -305,7 +308,25 @@ fn extract_invoice_error<'a, 'b, 'c>(
 			OffersMessage::InvoiceRequest(invoice_request) => panic!("Unexpected invoice_request: {:?}", invoice_request),
 			OffersMessage::Invoice(invoice) => panic!("Unexpected invoice: {:?}", invoice),
 			OffersMessage::StaticInvoice(invoice) => panic!("Unexpected invoice: {:?}", invoice),
+			OffersMessage::Bolt11Invoice(invoice) => panic!("Unexpected BOLT 11 invoice: {:?}", invoice),
 			OffersMessage::InvoiceError(error) => error,
+		},
+		Ok(PeeledOnion::Forward(_, _)) => panic!("Unexpected onion message forward"),
+		Ok(_) => panic!("Unexpected onion message"),
+		Err(e) => panic!("Failed to process onion message {:?}", e),
+	}
+}
+
+fn extract_bolt11_invoice<'a, 'b, 'c>(
+	node: &Node<'a, 'b, 'c>, message: &OnionMessage
+) -> Bolt11Invoice {
+	match node.onion_messenger.peel_onion_message(message) {
+		Ok(PeeledOnion::Offers(message, _, _)) => match message {
+			OffersMessage::InvoiceRequest(invoice_request) => panic!("Unexpected invoice_request: {:?}", invoice_request),
+			OffersMessage::Invoice(invoice) => panic!("Unexpected invoice: {:?}", invoice),
+			OffersMessage::StaticInvoice(invoice) => panic!("Unexpected static invoice: {:?}", invoice),
+			OffersMessage::Bolt11Invoice(invoice) => invoice,
+			OffersMessage::InvoiceError(error) => panic!("Unexpected invoice_error: {:?}", error),
 		},
 		Ok(PeeledOnion::Forward(_, _)) => panic!("Unexpected onion message forward"),
 		Ok(_) => panic!("Unexpected onion message"),
@@ -333,6 +354,7 @@ fn create_offer_with_no_blinded_path() {
 		.build().unwrap();
 	assert_eq!(offer.issuer_signing_pubkey(), Some(alice_id));
 	assert!(offer.paths().is_empty());
+	assert!(offer.offer_features().supports_bolt11_request());
 }
 
 /// Checks that a refund can be created with no blinded paths.
@@ -1175,6 +1197,69 @@ fn pays_for_offer_without_blinded_paths() {
 	expect_recent_payment!(bob, RecentPaymentDetails::Pending, payment_id);
 
 	claim_bolt12_payment(bob, &[alice], payment_context, &invoice);
+	expect_recent_payment!(bob, RecentPaymentDetails::Fulfilled, payment_id);
+}
+
+/// Checks that a pathless offer can request and pay a BOLT 11 invoice response.
+#[test]
+fn pays_bolt11_invoice_for_offer_without_blinded_paths() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000);
+
+	let alice = &nodes[0];
+	let alice_id = alice.node.get_our_node_id();
+	let bob = &nodes[1];
+	let bob_id = bob.node.get_our_node_id();
+
+	let offer = alice.node
+		.create_offer_builder().unwrap()
+		.clear_paths()
+		.amount_msats(10_000_000)
+		.build().unwrap();
+	assert_eq!(offer.issuer_signing_pubkey(), Some(alice_id));
+	assert!(offer.paths().is_empty());
+	assert!(offer.offer_features().supports_bolt11_request());
+
+	let payment_id = PaymentId([1; 32]);
+	bob.node
+		.pay_for_offer_requesting_bolt11_invoice(&offer, None, payment_id, Default::default())
+		.unwrap();
+	expect_recent_payment!(bob, RecentPaymentDetails::AwaitingInvoice, payment_id);
+
+	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
+	alice.onion_messenger.handle_onion_message(bob_id, &onion_message);
+
+	let (invoice_request, _) = extract_invoice_request(alice, &onion_message);
+	assert!(invoice_request.requests_bolt11_invoice());
+	assert_eq!(invoice_request.amount_msats(), Some(10_000_000));
+
+	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
+	let invoice = extract_bolt11_invoice(bob, &onion_message);
+	assert_eq!(invoice.amount_milli_satoshis(), Some(10_000_000));
+	bob.onion_messenger.handle_onion_message(alice_id, &onion_message);
+
+	check_added_monitors(bob, 1);
+	let mut events = bob.node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let ev = remove_first_msg_event_to_node(&alice_id, &mut events);
+
+	let payment_hash = invoice.payment_hash();
+	let payment_secret = *invoice.payment_secret();
+	let payment_preimage = alice.node
+		.get_payment_preimage_decrypt_metadata(payment_hash, payment_secret, None)
+		.unwrap();
+	let path = [alice];
+	let args = PassAlongPathArgs::new(bob, &path, 10_000_000, payment_hash, ev)
+		.with_payment_preimage(payment_preimage)
+		.with_payment_secret(payment_secret);
+	do_pass_along_path(args);
+
+	let expected_paths = [&path[..]];
+	claim_payment_along_route(ClaimAlongRouteArgs::new(bob, &expected_paths, payment_preimage));
 	expect_recent_payment!(bob, RecentPaymentDetails::Fulfilled, payment_id);
 }
 
